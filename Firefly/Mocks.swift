@@ -9,8 +9,8 @@ import Foundation
 import SwiftUI
 
 
-extension User {
-    static func mock(id: String = UUID().uuidString, name: String = "Test User", isMe: Bool = false) -> User {
+extension FireflyUser {
+    static func mock(id: String = UUID().uuidString, name: String = "Test User", isMe: Bool = false) -> FireflyUser {
         .init(id: id, name: name, isMe: isMe)
     }
 }
@@ -20,7 +20,7 @@ extension Message {
         id: String = UUID().uuidString,
         date: Date = .now,
         text: String = "Test message",
-        sender: User
+        sender: FireflyUser
     ) -> Message {
         .init(id: id, date: date, text: text, sender: sender)
     }
@@ -29,7 +29,7 @@ extension Chat {
     static func mock(
         id: String = UUID().uuidString,
         name: String = "Test Chat",
-        users: [User],
+        users: [FireflyUser],
         messages: [Message]
     ) -> Chat {
         .init(id: id, name: name, users: users, messages: messages)
@@ -37,10 +37,10 @@ extension Chat {
 }
 
 enum MockData {
-    static let me = User.mock(id: "u-me", name: "Jake Holland", isMe: true)
-    static let alice = User.mock(id: "u-alice", name: "Alice Turtle")
-    static let bob = User.mock(id: "u-bob", name: "Bob Lake")
-    static let carol = User.mock(id: "u-carol", name: "Carol Baskin")
+    static let me = FireflyUser.mock(id: "u-me", name: "Jake Holland", isMe: true)
+    static let alice = FireflyUser.mock(id: "u-alice", name: "Alice Turtle")
+    static let bob = FireflyUser.mock(id: "u-bob", name: "Bob Lake")
+    static let carol = FireflyUser.mock(id: "u-carol", name: "Carol Baskin")
 
     // Messages for Chat 1 (Group chat)
     static let messagesChat1: [Message] = {
@@ -97,6 +97,6 @@ enum MockData {
     )
 
     static let allChats: [Chat] = [chat1, chat2, chat3]
-    static let allUsers: [User] = [me, alice, bob, carol]
+    static let allUsers: [FireflyUser] = [me, alice, bob, carol]
 }
 

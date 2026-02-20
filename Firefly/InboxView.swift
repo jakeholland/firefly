@@ -21,7 +21,7 @@ struct InboxView: View {
                                 .foregroundStyle(.secondary)
                         }
                         Spacer()
-                        Text(chat.messages.first?.date.formatted(date: .abbreviated, time: .shortened) ?? "")
+                        Text(chat.messages.first?.date.formatted(.relative(presentation: .named)) ?? "")
                     }
                 }
             }.navigationTitle("Inbox")
