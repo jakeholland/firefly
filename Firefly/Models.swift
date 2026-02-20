@@ -20,6 +20,12 @@ struct User: Identifiable, Hashable {
     let isMe: Bool
 }
 
+extension User {
+    var initials: String {
+        return name.split(separator: " ").compactMap { $0.first }.map { String($0).uppercased() }.joined()
+    }
+}
+
 struct Message: Identifiable, Hashable {
     let id: String
     let date: Date

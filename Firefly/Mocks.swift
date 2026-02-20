@@ -37,10 +37,10 @@ extension Chat {
 }
 
 enum MockData {
-    static let me = User.mock(id: "u-me", name: "Me", isMe: true)
-    static let alice = User.mock(id: "u-alice", name: "Alice")
-    static let bob = User.mock(id: "u-bob", name: "Bob")
-    static let carol = User.mock(id: "u-carol", name: "Carol")
+    static let me = User.mock(id: "u-me", name: "Jake Holland", isMe: true)
+    static let alice = User.mock(id: "u-alice", name: "Alice Turtle")
+    static let bob = User.mock(id: "u-bob", name: "Bob Lake")
+    static let carol = User.mock(id: "u-carol", name: "Carol Baskin")
 
     // Messages for Chat 1 (Group chat)
     static let messagesChat1: [Message] = {

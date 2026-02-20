@@ -12,17 +12,19 @@ struct ChatView: View {
     
     var body: some View {
         ForEach(chat.messages) { message in
-            VStack(alignment: . leading) {
-                Text(message.sender.name)
-                    .font(.headline)
-                
+            VStack(alignment: . leading) {                
                 HStack(alignment: .bottom)  {
                     if (!message.sender.isMe) {
-                        Image(systemName: "person")
-                            .frame(width: 32, height: 32, alignment: .center)
-                            .padding(.bottom, 0)
-                            .background(.green)
-                            .cornerRadius(16)
+                        ZStack(alignment: .center) {
+                            Circle()
+                                .foregroundColor(.green)
+                                .frame(width: 32, height: 32, alignment: .center)
+                                .padding(.bottom, 0)
+                            
+                            Text(message.sender.initials)
+                                .font(.headline)
+                        }
+                        
                     }
                     
                     HStack(alignment: .top) {
