@@ -29,6 +29,8 @@ final class MockMessagingService: MessagingServiceProtocol {
         discoveredDevicesSubject.value
     }
     
+    var myNodeId: UInt32?
+    
     var allMessages: [MeshMessage] = []
     private var channelsList: [MeshChannel] = []
     

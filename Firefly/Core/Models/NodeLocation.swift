@@ -15,6 +15,13 @@ struct NodeLocation: Equatable, Codable, Hashable {
     let altitude: Int32?
     let timestamp: Date
     
+    init(latitude: Double, longitude: Double, altitude: Int32? = nil, timestamp: Date = Date()) {
+        self.latitude = latitude
+        self.longitude = longitude
+        self.altitude = altitude
+        self.timestamp = timestamp
+    }
+    
     var coordinate: CLLocationCoordinate2D {
         CLLocationCoordinate2D(latitude: latitude, longitude: longitude)
     }

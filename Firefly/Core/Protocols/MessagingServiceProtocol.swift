@@ -26,6 +26,9 @@ protocol MessagingServiceProtocol {
     /// Currently discovered devices
     var discoveredDevices: [PeripheralDevice] { get }
     
+    /// The local node's ID (once connected)
+    var myNodeId: UInt32? { get }
+    
     /// Get messages for a specific channel
     func messages(for channel: UInt32) -> [MeshMessage]
     

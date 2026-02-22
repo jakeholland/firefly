@@ -17,6 +17,7 @@ final class DependencyContainer {
     let messagingService: MessagingServiceProtocol
     let mapService: MapServiceProtocol
     let notificationService: NotificationServiceProtocol
+    let persistenceService: PersistenceService?
     
     // MARK: - Initialization
     
@@ -25,7 +26,9 @@ final class DependencyContainer {
         meshtasticClient: MeshtasticClientProtocol? = nil,
         messagingService: MessagingServiceProtocol? = nil,
         mapService: MapServiceProtocol? = nil,
-        notificationService: NotificationServiceProtocol? = nil
+        notificationService: NotificationServiceProtocol? = nil,
+        persistenceService: PersistenceService? = nil,
+        enablePersistence: Bool = true
     ) {
         // Initialize services with dependency injection
         // Use provided mocks for testing, or create real implementations
@@ -39,9 +42,17 @@ final class DependencyContainer {
         let notification = notificationService ?? LocalNotificationService()
         self.notificationService = notification
         
+        // Set up persistence if enabled
+        if enablePersistence && persistenceService == nil {
+            self.persistenceService = PersistenceService.shared
+        } else {
+            self.persistenceService = persistenceService
+        }
+        
         self.messagingService = messagingService ?? MessagingService(
             client: client,
-            notificationService: notification
+            notificationService: notification,
+            persistenceService: self.persistenceService
         )
         
         self.mapService = mapService ?? MapService(client: client)
@@ -49,7 +60,7 @@ final class DependencyContainer {
     
     /// Convenience initializer for production use
     static func production() -> DependencyContainer {
-        DependencyContainer()
+        DependencyContainer(enablePersistence: true)
     }
     
     /// Convenience initializer for testing with mocks
@@ -65,7 +76,8 @@ final class DependencyContainer {
             meshtasticClient: meshtasticClient,
             messagingService: messagingService,
             mapService: mapService,
-            notificationService: notificationService
+            notificationService: notificationService,
+            enablePersistence: false // Disable persistence in tests
         )
     }
 }

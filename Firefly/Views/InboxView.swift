@@ -10,6 +10,7 @@ import SwiftUI
 /// Main inbox view showing channels and direct messages
 struct InboxView: View {
     @StateObject private var viewModel: InboxViewModel
+    @State private var showingNewConversation = false
     
     init(container: DependencyContainer = .production()) {
         _viewModel = StateObject(wrappedValue: InboxViewModel(messagingService: container.messagingService))
@@ -37,8 +38,31 @@ struct InboxView: View {
             }
             .navigationTitle("Inbox")
             .navigationBarTitleDisplayMode(.large)
+            .toolbar {
+                ToolbarItem(placement: .primaryAction) {
+                    Button {
+                        showingNewConversation = true
+                    } label: {
+                        Image(systemName: "plus.circle.fill")
+                            .font(.title2)
+                            .foregroundStyle(.cyan)
+                    }
+                    .disabled(!viewModel.isConnected)
+                }
+            }
             .sheet(isPresented: $viewModel.showingDeviceSelection) {
                 DeviceSelectionView(viewModel: viewModel)
+            }
+            .sheet(isPresented: $showingNewConversation) {
+                NewConversationView(
+                    messagingService: viewModel.messagingService,
+                    persistenceService: PersistenceService.shared,
+                    myNodeId: viewModel.myNodeId
+                )
+                .onDisappear {
+                    // Refresh conversations when sheet dismisses
+                    viewModel.refreshConversations()
+                }
             }
         }
         .preferredColorScheme(.dark)

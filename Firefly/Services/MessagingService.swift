@@ -11,6 +11,7 @@ import Combine
 final class MessagingService: MessagingServiceProtocol {
     private let client: MeshtasticClientProtocol
     private let notificationService: NotificationServiceProtocol
+    private let persistenceService: PersistenceService?
     
     var connectionState: AnyPublisher<BluetoothConnectionState, Never> {
         client.connectionState
@@ -22,6 +23,10 @@ final class MessagingService: MessagingServiceProtocol {
     
     var discoveredDevices: [PeripheralDevice] {
         client.discoveredDevices
+    }
+    
+    var myNodeId: UInt32? {
+        client.myNodeId
     }
     
     private let newMessageSubject = PassthroughSubject<MeshMessage, Never>()
@@ -36,11 +41,20 @@ final class MessagingService: MessagingServiceProtocol {
         messageRepository.sorted { $0.timestamp > $1.timestamp }
     }
     
-    init(client: MeshtasticClientProtocol, notificationService: NotificationServiceProtocol) {
+    init(client: MeshtasticClientProtocol, notificationService: NotificationServiceProtocol, persistenceService: PersistenceService? = nil) {
         self.client = client
         self.notificationService = notificationService
+        self.persistenceService = persistenceService
         
-        NSLog("💬 [Messaging] Initializing MessagingService")
+        NSLog("💬 [Messaging] Initializing MessagingService (persistence: \(persistenceService != nil ? "enabled" : "disabled"))")
+        
+        // Load persisted messages if available
+        if let persistenceService = persistenceService {
+            Task { @MainActor in
+                messageRepository = persistenceService.fetchAllMessages()
+                NSLog("💬 [Messaging] 📚 Loaded \(messageRepository.count) messages from persistence")
+            }
+        }
         
         client.messagesPublisher
             .sink { [weak self] message in
@@ -48,7 +62,19 @@ final class MessagingService: MessagingServiceProtocol {
             }
             .store(in: &cancellables)
         
-        NSLog("💬 [Messaging] ✅ Subscribed to message publisher")
+        // Subscribe to node updates and persist them if persistence is available
+        if persistenceService != nil {
+            client.nodeUpdatesPublisher
+                .sink { [weak self] node in
+                    guard let self = self, let persistenceService = self.persistenceService else { return }
+                    Task { @MainActor in
+                        persistenceService.saveNode(node)
+                    }
+                }
+                .store(in: &cancellables)
+        }
+        
+        NSLog("💬 [Messaging] ✅ Subscribed to message and node publishers")
     }
     
     func messages(for channel: UInt32) -> [MeshMessage] {
@@ -79,6 +105,13 @@ final class MessagingService: MessagingServiceProtocol {
             messageRepository.append(message)
             newMessageSubject.send(message)
             
+            // Persist the message if persistence is available
+            if let persistenceService = persistenceService {
+                Task { @MainActor in
+                    persistenceService.saveMessage(message)
+                }
+            }
+            
             NSLog("💬 [Messaging] ✅ Message sent and stored (repository now has \(messageRepository.count) messages)")
         } catch {
             NSLog("💬 [Messaging] ❌ Failed to send message: \(error.localizedDescription)")
@@ -95,6 +128,13 @@ final class MessagingService: MessagingServiceProtocol {
             let message = MeshMessage(id: UInt32.random(in: 1...UInt32.max), from: client.myNodeId ?? 0, to: nodeId, channel: 0, text: text, timestamp: Date(), isFromMe: true)
             messageRepository.append(message)
             newMessageSubject.send(message)
+            
+            // Persist the message if persistence is available
+            if let persistenceService = persistenceService {
+                Task { @MainActor in
+                    persistenceService.saveMessage(message)
+                }
+            }
             
             NSLog("💬 [Messaging] ✅ Direct message sent and stored (repository now has \(messageRepository.count) messages)")
         } catch {
@@ -156,6 +196,13 @@ final class MessagingService: MessagingServiceProtocol {
         
         messageRepository.append(message)
         newMessageSubject.send(message)
+        
+        // Persist the message if persistence is available
+        if let persistenceService = persistenceService {
+            Task { @MainActor in
+                persistenceService.saveMessage(message)
+            }
+        }
         
         NSLog("💬 [Messaging] 💾 Message stored (repository now has \(messageRepository.count) messages)")
         

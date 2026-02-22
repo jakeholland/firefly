@@ -30,38 +30,9 @@
 		78FE20E82F47C32600E98DC8 /* Firefly.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Firefly.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
-/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
-		7893724D2F4AF02000F29878 /* Exceptions for "FireflyTests" folder in "Firefly" target */ = {
-			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
-			membershipExceptions = (
-				Mocks/MockBluetoothService.swift,
-				Mocks/MockMapService.swift,
-				Mocks/MockMeshtasticClient.swift,
-				Mocks/MockMessagingService.swift,
-				Mocks/MockNotificationService.swift,
-			);
-			target = 78FE20E72F47C32600E98DC8 /* Firefly */;
-		};
-		7893724E2F4AF02000F29878 /* Exceptions for "FireflyTests" folder in "FireflyTests" target */ = {
-			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
-			membershipExceptions = (
-				Mocks/MockBluetoothService.swift,
-				Mocks/MockMapService.swift,
-				Mocks/MockMeshtasticClient.swift,
-				Mocks/MockMessagingService.swift,
-				Mocks/MockNotificationService.swift,
-			);
-			target = 789372432F4AEFE600F29878 /* FireflyTests */;
-		};
-/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
-
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		789372452F4AEFE600F29878 /* FireflyTests */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
-			exceptions = (
-				7893724D2F4AF02000F29878 /* Exceptions for "FireflyTests" folder in "Firefly" target */,
-				7893724E2F4AF02000F29878 /* Exceptions for "FireflyTests" folder in "FireflyTests" target */,
-			);
 			path = FireflyTests;
 			sourceTree = "<group>";
 		};

@@ -17,8 +17,12 @@ final class InboxViewModel: ObservableObject {
     @Published var discoveredDevices: [PeripheralDevice] = []
     @Published var showingDeviceSelection: Bool = false
     
-    private let messagingService: MessagingServiceProtocol
+    let messagingService: MessagingServiceProtocol
     private var cancellables = Set<AnyCancellable>()
+    
+    var myNodeId: UInt32? {
+        messagingService.myNodeId
+    }
     
     var isConnected: Bool {
         if case .connected = connectionState { return true }
