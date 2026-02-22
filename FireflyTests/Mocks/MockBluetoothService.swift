@@ -17,6 +17,15 @@ final class MockBluetoothService: BluetoothServiceProtocol {
         receivedDataSubject.eraseToAnyPublisher()
     }
     
+    private let discoveredDevicesSubject = CurrentValueSubject<[PeripheralDevice], Never>([])
+    var discoveredDevicesPublisher: AnyPublisher<[PeripheralDevice], Never> {
+        discoveredDevicesSubject.eraseToAnyPublisher()
+    }
+    
+    var discoveredDevices: [PeripheralDevice] {
+        discoveredDevicesSubject.value
+    }
+    
     var didCallStartScanning = false
     var didCallStopScanning = false
     var didCallConnect = false
@@ -65,5 +74,9 @@ final class MockBluetoothService: BluetoothServiceProtocol {
     
     func simulateError(_ error: Error) {
         connectionState.send(.failed(error))
+    }
+    
+    func simulateDiscoveredDevices(_ devices: [PeripheralDevice]) {
+        discoveredDevicesSubject.send(devices)
     }
 }

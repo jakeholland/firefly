@@ -16,6 +16,14 @@ final class MeshtasticClient: MeshtasticClientProtocol {
         bluetoothService.connectionState.eraseToAnyPublisher()
     }
     
+    var discoveredDevicesPublisher: AnyPublisher<[PeripheralDevice], Never> {
+        bluetoothService.discoveredDevicesPublisher
+    }
+    
+    var discoveredDevices: [PeripheralDevice] {
+        bluetoothService.discoveredDevices
+    }
+    
     private let messagesSubject = PassthroughSubject<MeshMessage, Never>()
     var messagesPublisher: AnyPublisher<MeshMessage, Never> {
         messagesSubject.eraseToAnyPublisher()
@@ -52,8 +60,17 @@ final class MeshtasticClient: MeshtasticClientProtocol {
         channelUpdatesSubject.send(primaryChannel)
     }
     
-    func connect() async throws {
+    func startScanning() {
         bluetoothService.startScanning()
+    }
+    
+    func stopScanning() {
+        bluetoothService.stopScanning()
+    }
+    
+    func connect(to deviceIdentifier: UUID) async throws {
+        bluetoothService.connect(to: deviceIdentifier)
+        
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
             var resumed = false
             bluetoothService.connectionState

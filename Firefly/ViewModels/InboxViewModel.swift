@@ -14,12 +14,19 @@ final class InboxViewModel: ObservableObject {
     @Published var connectionState: BluetoothConnectionState = .disconnected
     @Published var isConnecting: Bool = false
     @Published var errorMessage: String?
+    @Published var discoveredDevices: [PeripheralDevice] = []
+    @Published var showingDeviceSelection: Bool = false
     
     private let messagingService: MessagingServiceProtocol
     private var cancellables = Set<AnyCancellable>()
     
     var isConnected: Bool {
         if case .connected = connectionState { return true }
+        return false
+    }
+    
+    var isScanning: Bool {
+        if case .scanning = connectionState { return true }
         return false
     }
     
@@ -51,15 +58,47 @@ final class InboxViewModel: ObservableObject {
             }
             .store(in: &cancellables)
         
+        messagingService.discoveredDevicesPublisher
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] devices in
+                self?.discoveredDevices = devices
+            }
+            .store(in: &cancellables)
+        
         refreshConversations()
     }
     
     func connect() {
-        isConnecting = true
-        errorMessage = nil
+        showingDeviceSelection = true
     }
     
-    func disconnect() { }
+    func startScanning() {
+        messagingService.startScanning()
+    }
+    
+    func stopScanning() {
+        messagingService.stopScanning()
+    }
+    
+    func connectToDevice(_ device: PeripheralDevice) {
+        isConnecting = true
+        errorMessage = nil
+        
+        Task {
+            do {
+                try await messagingService.connect(to: device.id)
+                refreshConversations()
+            } catch {
+                errorMessage = error.localizedDescription
+                isConnecting = false
+            }
+        }
+    }
+    
+    func disconnect() {
+        messagingService.disconnect()
+        refreshConversations()
+    }
     
     func refreshConversations() {
         conversations = messagingService.recentConversations()

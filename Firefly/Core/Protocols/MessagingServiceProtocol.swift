@@ -20,6 +20,12 @@ protocol MessagingServiceProtocol {
     /// Publisher for new messages
     var newMessagePublisher: AnyPublisher<MeshMessage, Never> { get }
     
+    /// Publisher for discovered devices during scanning
+    var discoveredDevicesPublisher: AnyPublisher<[PeripheralDevice], Never> { get }
+    
+    /// Currently discovered devices
+    var discoveredDevices: [PeripheralDevice] { get }
+    
     /// Get messages for a specific channel
     func messages(for channel: UInt32) -> [MeshMessage]
     
@@ -37,6 +43,18 @@ protocol MessagingServiceProtocol {
     
     /// Get recent conversations (channels + DMs)
     func recentConversations() -> [Conversation]
+    
+    /// Start scanning for devices
+    func startScanning()
+    
+    /// Stop scanning
+    func stopScanning()
+    
+    /// Connect to a specific device
+    func connect(to deviceIdentifier: UUID) async throws
+    
+    /// Disconnect from current device
+    func disconnect()
 }
 
 /// Represents a conversation (either a channel or DM)

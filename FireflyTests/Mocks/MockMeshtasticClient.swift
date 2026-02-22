@@ -30,15 +30,34 @@ final class MockMeshtasticClient: MeshtasticClientProtocol {
         channelUpdatesSubject.eraseToAnyPublisher()
     }
     
+    private let discoveredDevicesSubject = CurrentValueSubject<[PeripheralDevice], Never>([])
+    var discoveredDevicesPublisher: AnyPublisher<[PeripheralDevice], Never> {
+        discoveredDevicesSubject.eraseToAnyPublisher()
+    }
+    
+    var discoveredDevices: [PeripheralDevice] {
+        discoveredDevicesSubject.value
+    }
+    
     var nodes: [MeshNode] = []
     var channels: [MeshChannel] = []
     var myNodeId: UInt32?
     
     var didCallConnect = false
     var didCallDisconnect = false
+    var didCallStartScanning = false
+    var didCallStopScanning = false
     var sentMessages: [(text: String, destination: UInt32?, channel: UInt32)] = []
     
-    func connect() async throws {
+    func startScanning() {
+        didCallStartScanning = true
+    }
+    
+    func stopScanning() {
+        didCallStopScanning = true
+    }
+    
+    func connect(to deviceIdentifier: UUID) async throws {
         didCallConnect = true
         connectionStateSubject.send(.connected)
     }
@@ -81,5 +100,9 @@ final class MockMeshtasticClient: MeshtasticClientProtocol {
             channels.append(channel)
         }
         channelUpdatesSubject.send(channel)
+    }
+    
+    func simulateDiscoveredDevices(_ devices: [PeripheralDevice]) {
+        discoveredDevicesSubject.send(devices)
     }
 }

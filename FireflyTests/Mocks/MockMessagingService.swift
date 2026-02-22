@@ -20,11 +20,24 @@ final class MockMessagingService: MessagingServiceProtocol {
         newMessageSubject.eraseToAnyPublisher()
     }
     
+    private let discoveredDevicesSubject = CurrentValueSubject<[PeripheralDevice], Never>([])
+    var discoveredDevicesPublisher: AnyPublisher<[PeripheralDevice], Never> {
+        discoveredDevicesSubject.eraseToAnyPublisher()
+    }
+    
+    var discoveredDevices: [PeripheralDevice] {
+        discoveredDevicesSubject.value
+    }
+    
     var allMessages: [MeshMessage] = []
     private var channelsList: [MeshChannel] = []
     
     var sentMessages: [(text: String, channel: UInt32)] = []
     var sentDirectMessages: [(text: String, nodeId: UInt32)] = []
+    var didCallStartScanning = false
+    var didCallStopScanning = false
+    var didCallConnect = false
+    var didCallDisconnect = false
     
     func messages(for channel: UInt32) -> [MeshMessage] {
         allMessages.filter { $0.channel == channel && !$0.isDirectMessage }
@@ -46,6 +59,24 @@ final class MockMessagingService: MessagingServiceProtocol {
     
     func sendDirectMessage(text: String, to nodeId: UInt32) async throws {
         sentDirectMessages.append((text, nodeId))
+    }
+    
+    func startScanning() {
+        didCallStartScanning = true
+    }
+    
+    func stopScanning() {
+        didCallStopScanning = true
+    }
+    
+    func connect(to deviceIdentifier: UUID) async throws {
+        didCallConnect = true
+        connectionStateSubject.send(.connected)
+    }
+    
+    func disconnect() {
+        didCallDisconnect = true
+        connectionStateSubject.send(.disconnected)
     }
     
     func recentConversations() -> [Conversation] {
@@ -85,5 +116,9 @@ final class MockMessagingService: MessagingServiceProtocol {
     
     func setChannels(_ channels: [MeshChannel]) {
         channelsList = channels
+    }
+    
+    func simulateDiscoveredDevices(_ devices: [PeripheralDevice]) {
+        discoveredDevicesSubject.send(devices)
     }
 }

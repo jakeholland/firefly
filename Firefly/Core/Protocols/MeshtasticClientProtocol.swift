@@ -23,6 +23,12 @@ protocol MeshtasticClientProtocol {
     /// Publisher for channel updates
     var channelUpdatesPublisher: AnyPublisher<MeshChannel, Never> { get }
     
+    /// Publisher for discovered devices during scanning
+    var discoveredDevicesPublisher: AnyPublisher<[PeripheralDevice], Never> { get }
+    
+    /// Currently discovered devices
+    var discoveredDevices: [PeripheralDevice] { get }
+    
     /// All known nodes in the mesh
     var nodes: [MeshNode] { get }
     
@@ -32,8 +38,14 @@ protocol MeshtasticClientProtocol {
     /// The local node's ID (once connected)
     var myNodeId: UInt32? { get }
     
-    /// Start connection process
-    func connect() async throws
+    /// Start scanning for devices
+    func startScanning()
+    
+    /// Stop scanning
+    func stopScanning()
+    
+    /// Connect to a specific device
+    func connect(to deviceIdentifier: UUID) async throws
     
     /// Disconnect from mesh
     func disconnect()

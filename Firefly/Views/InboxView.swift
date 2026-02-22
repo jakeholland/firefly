@@ -35,8 +35,11 @@ struct InboxView: View {
                     }
                 }
             }
-            .navigationTitle("Firefly")
+            .navigationTitle("Inbox")
             .navigationBarTitleDisplayMode(.large)
+            .sheet(isPresented: $viewModel.showingDeviceSelection) {
+                DeviceSelectionView(viewModel: viewModel)
+            }
         }
         .preferredColorScheme(.dark)
     }
@@ -53,13 +56,23 @@ struct InboxView: View {
             
             Spacer()
             
-            if !viewModel.isConnected {
+            if viewModel.isConnecting {
+                ProgressView()
+                    .scaleEffect(0.8)
+            } else if !viewModel.isConnected {
                 Button("Connect") {
                     viewModel.connect()
                 }
                 .font(.caption)
                 .buttonStyle(.borderedProminent)
                 .tint(.cyan)
+            } else {
+                Button("Disconnect") {
+                    viewModel.disconnect()
+                }
+                .font(.caption)
+                .buttonStyle(.bordered)
+                .tint(.red)
             }
         }
         .padding()

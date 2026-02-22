@@ -20,6 +20,15 @@ final class CoreBluetoothService: NSObject, BluetoothServiceProtocol {
         receivedDataSubject.eraseToAnyPublisher()
     }
     
+    private let discoveredDevicesSubject = CurrentValueSubject<[PeripheralDevice], Never>([])
+    var discoveredDevicesPublisher: AnyPublisher<[PeripheralDevice], Never> {
+        discoveredDevicesSubject.eraseToAnyPublisher()
+    }
+    
+    var discoveredDevices: [PeripheralDevice] {
+        discoveredDevicesSubject.value
+    }
+    
     private var centralManager: CBCentralManager!
     private var connectedPeripheral: CBPeripheral?
     private var toRadioCharacteristic: CBCharacteristic?
@@ -58,16 +67,28 @@ final class CoreBluetoothService: NSObject, BluetoothServiceProtocol {
     
     func stopScanning() {
         centralManager.stopScan()
+        discoveredDevicesSubject.send([])
     }
     
     func connect(to deviceIdentifier: UUID) {
-        // For now, connect to the first discovered peripheral
-        // In production, you'd match by UUID
-        guard let peripheral = connectedPeripheral ?? centralManager.retrievePeripherals(withIdentifiers: [deviceIdentifier]).first else {
+        stopScanning()
+        
+        // Find the peripheral from discovered devices or retrieve from system
+        let peripheral: CBPeripheral?
+        
+        if let device = discoveredDevicesSubject.value.first(where: { $0.id == deviceIdentifier }) {
+            peripheral = device.peripheral
+        } else {
+            peripheral = centralManager.retrievePeripherals(withIdentifiers: [deviceIdentifier]).first
+        }
+        
+        guard let peripheral = peripheral else {
             connectionState.send(.failed(BluetoothError.deviceNotFound))
             return
         }
         
+        connectedPeripheral = peripheral
+        peripheral.delegate = self
         connectionState.send(.connecting)
         centralManager.connect(peripheral, options: nil)
     }
@@ -97,6 +118,7 @@ final class CoreBluetoothService: NSObject, BluetoothServiceProtocol {
         toRadioCharacteristic = nil
         fromRadioCharacteristic = nil
         connectedPeripheral = nil
+        discoveredDevicesSubject.send([])
         connectionState.send(.disconnected)
     }
 }
@@ -117,12 +139,18 @@ extension CoreBluetoothService: CBCentralManagerDelegate {
     }
     
     func centralManager(_ central: CBCentralManager, didDiscover peripheral: CBPeripheral, advertisementData: [String : Any], rssi RSSI: NSNumber) {
-        // Auto-connect to first Meshtastic device found
-        connectedPeripheral = peripheral
-        peripheral.delegate = self
-        stopScanning()
-        connectionState.send(.connecting)
-        centralManager.connect(peripheral, options: nil)
+        // Add to discovered devices list
+        let device = PeripheralDevice(peripheral: peripheral, rssi: RSSI.intValue)
+        var devices = discoveredDevicesSubject.value
+        
+        // Update existing device or add new one
+        if let index = devices.firstIndex(where: { $0.id == device.id }) {
+            devices[index] = device
+        } else {
+            devices.append(device)
+        }
+        
+        discoveredDevicesSubject.send(devices)
     }
     
     func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {

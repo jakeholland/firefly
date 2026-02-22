@@ -16,6 +16,14 @@ final class MessagingService: MessagingServiceProtocol {
         client.connectionState
     }
     
+    var discoveredDevicesPublisher: AnyPublisher<[PeripheralDevice], Never> {
+        client.discoveredDevicesPublisher
+    }
+    
+    var discoveredDevices: [PeripheralDevice] {
+        client.discoveredDevices
+    }
+    
     private let newMessageSubject = PassthroughSubject<MeshMessage, Never>()
     var newMessagePublisher: AnyPublisher<MeshMessage, Never> {
         newMessageSubject.eraseToAnyPublisher()
@@ -86,6 +94,22 @@ final class MessagingService: MessagingServiceProtocol {
         }
         
         return conversations.sorted { ($0.lastMessage?.timestamp ?? .distantPast) > ($1.lastMessage?.timestamp ?? .distantPast) }
+    }
+    
+    func startScanning() {
+        client.startScanning()
+    }
+    
+    func stopScanning() {
+        client.stopScanning()
+    }
+    
+    func connect(to deviceIdentifier: UUID) async throws {
+        try await client.connect(to: deviceIdentifier)
+    }
+    
+    func disconnect() {
+        client.disconnect()
     }
     
     private func handleIncomingMessage(_ message: MeshMessage) {

@@ -17,6 +17,12 @@ protocol BluetoothServiceProtocol {
     /// Publisher for received data packets from the device
     var receivedDataPublisher: AnyPublisher<Data, Never> { get }
     
+    /// Publisher for discovered devices during scanning
+    var discoveredDevicesPublisher: AnyPublisher<[PeripheralDevice], Never> { get }
+    
+    /// Currently discovered devices
+    var discoveredDevices: [PeripheralDevice] { get }
+    
     /// Start scanning for Meshtastic devices
     func startScanning()
     

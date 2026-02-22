@@ -11,11 +11,56 @@
 		78FE21322F48FFFD00E98DC8 /* SwiftProtobufPluginLibrary in Frameworks */ = {isa = PBXBuildFile; productRef = 78FE21312F48FFFD00E98DC8 /* SwiftProtobufPluginLibrary */; };
 /* End PBXBuildFile section */
 
+/* Begin PBXContainerItemProxy section */
+		789372482F4AEFE600F29878 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 78FE20E02F47C32600E98DC8 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 78FE20E72F47C32600E98DC8;
+			remoteInfo = Firefly;
+		};
+/* End PBXContainerItemProxy section */
+
 /* Begin PBXFileReference section */
+		789372442F4AEFE600F29878 /* FireflyTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = FireflyTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		78FE20E82F47C32600E98DC8 /* Firefly.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Firefly.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		7893724D2F4AF02000F29878 /* Exceptions for "FireflyTests" folder in "Firefly" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Mocks/MockBluetoothService.swift,
+				Mocks/MockMapService.swift,
+				Mocks/MockMeshtasticClient.swift,
+				Mocks/MockMessagingService.swift,
+				Mocks/MockNotificationService.swift,
+			);
+			target = 78FE20E72F47C32600E98DC8 /* Firefly */;
+		};
+		7893724E2F4AF02000F29878 /* Exceptions for "FireflyTests" folder in "FireflyTests" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Mocks/MockBluetoothService.swift,
+				Mocks/MockMapService.swift,
+				Mocks/MockMeshtasticClient.swift,
+				Mocks/MockMessagingService.swift,
+				Mocks/MockNotificationService.swift,
+			);
+			target = 789372432F4AEFE600F29878 /* FireflyTests */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
+
 /* Begin PBXFileSystemSynchronizedRootGroup section */
+		789372452F4AEFE600F29878 /* FireflyTests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				7893724D2F4AF02000F29878 /* Exceptions for "FireflyTests" folder in "Firefly" target */,
+				7893724E2F4AF02000F29878 /* Exceptions for "FireflyTests" folder in "FireflyTests" target */,
+			);
+			path = FireflyTests;
+			sourceTree = "<group>";
+		};
 		78FE20EA2F47C32600E98DC8 /* Firefly */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			path = Firefly;
@@ -24,6 +69,13 @@
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
+		789372412F4AEFE600F29878 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		78FE20E52F47C32600E98DC8 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
@@ -40,6 +92,7 @@
 			isa = PBXGroup;
 			children = (
 				78FE20EA2F47C32600E98DC8 /* Firefly */,
+				789372452F4AEFE600F29878 /* FireflyTests */,
 				78FE20E92F47C32600E98DC8 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -48,6 +101,7 @@
 			isa = PBXGroup;
 			children = (
 				78FE20E82F47C32600E98DC8 /* Firefly.app */,
+				789372442F4AEFE600F29878 /* FireflyTests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -55,6 +109,29 @@
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
+		789372432F4AEFE600F29878 /* FireflyTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 7893724A2F4AEFE600F29878 /* Build configuration list for PBXNativeTarget "FireflyTests" */;
+			buildPhases = (
+				789372402F4AEFE600F29878 /* Sources */,
+				789372412F4AEFE600F29878 /* Frameworks */,
+				789372422F4AEFE600F29878 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				789372492F4AEFE600F29878 /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				789372452F4AEFE600F29878 /* FireflyTests */,
+			);
+			name = FireflyTests;
+			packageProductDependencies = (
+			);
+			productName = FireflyTests;
+			productReference = 789372442F4AEFE600F29878 /* FireflyTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
 		78FE20E72F47C32600E98DC8 /* Firefly */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = 78FE20F32F47C32800E98DC8 /* Build configuration list for PBXNativeTarget "Firefly" */;
@@ -89,6 +166,10 @@
 				LastSwiftUpdateCheck = 2620;
 				LastUpgradeCheck = 2620;
 				TargetAttributes = {
+					789372432F4AEFE600F29878 = {
+						CreatedOnToolsVersion = 26.2;
+						TestTargetID = 78FE20E72F47C32600E98DC8;
+					};
 					78FE20E72F47C32600E98DC8 = {
 						CreatedOnToolsVersion = 26.2;
 					};
@@ -112,11 +193,19 @@
 			projectRoot = "";
 			targets = (
 				78FE20E72F47C32600E98DC8 /* Firefly */,
+				789372432F4AEFE600F29878 /* FireflyTests */,
 			);
 		};
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
+		789372422F4AEFE600F29878 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		78FE20E62F47C32600E98DC8 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -127,6 +216,13 @@
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
+		789372402F4AEFE600F29878 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		78FE20E42F47C32600E98DC8 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -136,7 +232,62 @@
 		};
 /* End PBXSourcesBuildPhase section */
 
+/* Begin PBXTargetDependency section */
+		789372492F4AEFE600F29878 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 78FE20E72F47C32600E98DC8 /* Firefly */;
+			targetProxy = 789372482F4AEFE600F29878 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
 /* Begin XCBuildConfiguration section */
+		7893724B2F4AEFE600F29878 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = SU4T96VBX6;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.2;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.jakeholland.FireflyTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				STRING_CATALOG_GENERATE_SYMBOLS = NO;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Firefly.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Firefly";
+			};
+			name = Debug;
+		};
+		7893724C2F4AEFE600F29878 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = SU4T96VBX6;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.2;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.jakeholland.FireflyTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				STRING_CATALOG_GENERATE_SYMBOLS = NO;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Firefly.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Firefly";
+				VALIDATE_PRODUCT = YES;
+			};
+			name = Release;
+		};
 		78FE20F12F47C32800E98DC8 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -362,6 +513,15 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
+		7893724A2F4AEFE600F29878 /* Build configuration list for PBXNativeTarget "FireflyTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				7893724B2F4AEFE600F29878 /* Debug */,
+				7893724C2F4AEFE600F29878 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
 		78FE20E32F47C32600E98DC8 /* Build configuration list for PBXProject "Firefly" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
