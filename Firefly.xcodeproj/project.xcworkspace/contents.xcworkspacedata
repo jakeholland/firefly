@@ -4,4 +4,127 @@
    <FileRef
       location = "self:">
    </FileRef>
+   <FileRef
+      location = "group:Architecture.md">
+   </FileRef>
+   <FileRef
+      location = "group:CoreModelsMeshNode.swift">
+   </FileRef>
+   <FileRef
+      location = "group:CoreModelsNodeLocation.swift">
+   </FileRef>
+   <FileRef
+      location = "group:CoreModelsMeshMessage.swift">
+   </FileRef>
+   <FileRef
+      location = "group:CoreModelsMeshChannel.swift">
+   </FileRef>
+   <FileRef
+      location = "group:CoreProtocolsBluetoothServiceProtocol.swift">
+   </FileRef>
+   <FileRef
+      location = "group:CoreProtocolsMeshtasticClientProtocol.swift">
+   </FileRef>
+   <FileRef
+      location = "group:CoreProtocolsMessagingServiceProtocol.swift">
+   </FileRef>
+   <FileRef
+      location = "group:CoreProtocolsMapServiceProtocol.swift">
+   </FileRef>
+   <FileRef
+      location = "group:CoreProtocolsNotificationServiceProtocol.swift">
+   </FileRef>
+   <FileRef
+      location = "group:ServicesBluetoothMeshtasticBLEConstants.swift">
+   </FileRef>
+   <FileRef
+      location = "group:ServicesBluetoothCoreBluetoothService.swift">
+   </FileRef>
+   <FileRef
+      location = "group:ServicesMeshtasticMeshtasticClient.swift">
+   </FileRef>
+   <FileRef
+      location = "group:DomainMessagingMessagingService.swift">
+   </FileRef>
+   <FileRef
+      location = "group:DomainMapMapService.swift">
+   </FileRef>
+   <FileRef
+      location = "group:ServicesNotificationLocalNotificationService.swift">
+   </FileRef>
+   <FileRef
+      location = "group:CoreDependencyContainer.swift">
+   </FileRef>
+   <FileRef
+      location = "group:ViewModelsInboxViewModel.swift">
+   </FileRef>
+   <FileRef
+      location = "group:ViewModelsConversationViewModel.swift">
+   </FileRef>
+   <FileRef
+      location = "group:ViewModelsMapViewModel.swift">
+   </FileRef>
+   <FileRef
+      location = "group:ViewsInboxView.swift">
+   </FileRef>
+   <FileRef
+      location = "group:ViewsConversationView.swift">
+   </FileRef>
+   <FileRef
+      location = "group:ViewsMapView.swift">
+   </FileRef>
+   <FileRef
+      location = "group:MocksMockBluetoothService.swift">
+   </FileRef>
+   <FileRef
+      location = "group:MocksMockMeshtasticClient.swift">
+   </FileRef>
+   <FileRef
+      location = "group:MocksMockMessagingService.swift">
+   </FileRef>
+   <FileRef
+      location = "group:MocksMockMapService.swift">
+   </FileRef>
+   <FileRef
+      location = "group:MocksMockNotificationService.swift">
+   </FileRef>
+   <FileRef
+      location = "group:TestsMessagingServiceTests.swift">
+   </FileRef>
+   <FileRef
+      location = "group:TestsMeshtasticClientTests.swift">
+   </FileRef>
+   <FileRef
+      location = "group:TestsInboxViewModelTests.swift">
+   </FileRef>
+   <FileRef
+      location = "group:TestsConversationViewModelTests.swift">
+   </FileRef>
+   <FileRef
+      location = "group:TestsMapViewModelTests.swift">
+   </FileRef>
+   <FileRef
+      location = "group:README.md">
+   </FileRef>
+   <FileRef
+      location = "group:TestsDependencyContainerTests.swift">
+   </FileRef>
+   <FileRef
+      location = "group:IMPLEMENTATION_GUIDE.md">
+   </FileRef>
+   <FileRef
+      location = "group:INFO_PLIST_GUIDE.md">
+   </FileRef>
+   <FileRef
+      location = "group:PROJECT_SUMMARY.md">
+   </FileRef>
+   <FileRef
+      location = "group:SETUP_CHECKLIST.md">
+   </FileRef>
+   <FileRef
+      location = "group:FILE_INDEX.md">
+   </FileRef>
+   <FileRef
+      location = "group:DATA_FLOW.md">
+   </FileRef>
 </Workspace>

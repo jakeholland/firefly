@@ -9,7 +9,7 @@ git submodule update --init --recursive
 
 git submodule foreach --recursive git pull origin master
 
-protoc --proto_path=./protobufs --swift_opt=Visibility=Public --swift_out=./Firefly/ ./protobufs/meshtastic/*.proto
+protoc --proto_path=./protobufs --swift_opt=Visibility=Public --swift_out=./Firefly/ --protoc= ./Protobuf/*.proto
 
 echo "Done generating the swift files from the proto files."
 echo "Build, test, and commit changes."
