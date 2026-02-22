@@ -42,6 +42,8 @@ final class CoreBluetoothService: NSObject, BluetoothServiceProtocol {
         self.connectionState = CurrentValueSubject(.disconnected)
         super.init()
         
+        NSLog("🛜 [BLE] Initializing CoreBluetoothService")
+        
         // Initialize central manager on main queue
         self.centralManager = CBCentralManager(
             delegate: self,
@@ -53,58 +55,84 @@ final class CoreBluetoothService: NSObject, BluetoothServiceProtocol {
     // MARK: - Public Methods
     
     func startScanning() {
+        NSLog("🛜 [BLE] startScanning() called - Central Manager state: \(cbManagerStateDescription(centralManager.state))")
+        
         guard centralManager.state == .poweredOn else {
+            NSLog("🛜 [BLE] ❌ Cannot start scanning - centralManager is not powered on (state: \(cbManagerStateDescription(centralManager.state)))")
             connectionState.send(.failed(BluetoothError.deviceNotFound))
             return
         }
         
+        NSLog("🛜 [BLE] 📡 Starting scan for Meshtastic devices (service UUID: \(MeshtasticBLE.serviceUUID))")
         connectionState.send(.scanning)
+        
         centralManager.scanForPeripherals(
             withServices: [MeshtasticBLE.serviceUUID],
-            options: [CBCentralManagerScanOptionAllowDuplicatesKey: false]
+            options: [CBCentralManagerScanOptionAllowDuplicatesKey: true]
         )
     }
     
     func stopScanning() {
+        NSLog("🛜 [BLE] 🛑 Stopping scan and clearing discovered devices")
         centralManager.stopScan()
         discoveredDevicesSubject.send([])
     }
     
     func connect(to deviceIdentifier: UUID) {
+        NSLog("🛜 [BLE] 🔌 Attempting to connect to device: \(deviceIdentifier.uuidString)")
         stopScanning()
         
         // Find the peripheral from discovered devices or retrieve from system
         let peripheral: CBPeripheral?
         
         if let device = discoveredDevicesSubject.value.first(where: { $0.id == deviceIdentifier }) {
+            NSLog("🛜 [BLE] ✅ Found device in discovered devices list: \(device.name)")
             peripheral = device.peripheral
         } else {
+            NSLog("🛜 [BLE] 🔍 Device not in discovered list, retrieving from system")
             peripheral = centralManager.retrievePeripherals(withIdentifiers: [deviceIdentifier]).first
+            if peripheral != nil {
+                NSLog("🛜 [BLE] ✅ Retrieved peripheral from system")
+            }
         }
         
         guard let peripheral = peripheral else {
+            NSLog("🛜 [BLE] ❌ Failed to find peripheral with identifier: \(deviceIdentifier.uuidString)")
             connectionState.send(.failed(BluetoothError.deviceNotFound))
             return
         }
+        
+        NSLog("🛜 [BLE] 📱 Peripheral name: \(peripheral.name ?? "Unknown"), state: \(cbPeripheralStateDescription(peripheral.state))")
         
         connectedPeripheral = peripheral
         peripheral.delegate = self
         connectionState.send(.connecting)
         centralManager.connect(peripheral, options: nil)
+        
+        NSLog("🛜 [BLE] ⏳ Connection initiated, waiting for callback...")
     }
     
     func disconnect() {
+        NSLog("🛜 [BLE] 🔌 Disconnect requested")
         if let peripheral = connectedPeripheral {
+            NSLog("🛜 [BLE] Cancelling connection to peripheral: \(peripheral.name ?? "Unknown")")
             centralManager.cancelPeripheralConnection(peripheral)
+        } else {
+            NSLog("🛜 [BLE] No connected peripheral to disconnect from")
         }
         cleanup()
     }
     
     func send(_ data: Data) async throws {
+        NSLog("🛜 [BLE] 📤 Attempting to send \(data.count) bytes")
+        
         guard let characteristic = toRadioCharacteristic,
               let peripheral = connectedPeripheral else {
+            NSLog("🛜 [BLE] ❌ Cannot send - not connected (characteristic: \(toRadioCharacteristic != nil), peripheral: \(connectedPeripheral != nil))")
             throw BluetoothError.notConnected
         }
+        
+        NSLog("🛜 [BLE] Writing to characteristic \(characteristic.uuid)")
         
         return try await withCheckedThrowingContinuation { continuation in
             pendingSendContinuations.append(continuation)
@@ -115,11 +143,13 @@ final class CoreBluetoothService: NSObject, BluetoothServiceProtocol {
     // MARK: - Private Methods
     
     private func cleanup() {
+        NSLog("🛜 [BLE] 🧹 Cleaning up connection resources")
         toRadioCharacteristic = nil
         fromRadioCharacteristic = nil
         connectedPeripheral = nil
         discoveredDevicesSubject.send([])
         connectionState.send(.disconnected)
+        NSLog("🛜 [BLE] ✅ Cleanup complete")
     }
 }
 
@@ -127,18 +157,37 @@ final class CoreBluetoothService: NSObject, BluetoothServiceProtocol {
 
 extension CoreBluetoothService: CBCentralManagerDelegate {
     func centralManagerDidUpdateState(_ central: CBCentralManager) {
+        NSLog("🛜 [BLE] 🔄 Central Manager state changed to: \(cbManagerStateDescription(central.state))")
+        
         switch central.state {
         case .poweredOn:
+            NSLog("🛜 [BLE] ✅ Bluetooth is powered on and ready")
             // Ready to scan
             break
-        case .poweredOff, .unsupported, .unauthorized:
+        case .poweredOff:
+            NSLog("🛜 [BLE] ⚠️ Bluetooth is powered off")
             connectionState.send(.disconnected)
+        case .unauthorized:
+            NSLog("🛜 [BLE] ❌ Bluetooth is unauthorized")
+            connectionState.send(.failed(BluetoothError.unauthorized))
+        case .unsupported:
+            NSLog("🛜 [BLE] ❌ Bluetooth is not supported on this device")
+            connectionState.send(.failed(BluetoothError.unsupported))
+        case .resetting:
+            NSLog("🛜 [BLE] 🔄 Bluetooth is resetting")
+            connectionState.send(.resetting)
+        case .unknown:
+            NSLog("🛜 [BLE] ❓ Bluetooth state is unknown")
+            connectionState.send(.unknown)
         default:
             break
         }
     }
     
     func centralManager(_ central: CBCentralManager, didDiscover peripheral: CBPeripheral, advertisementData: [String : Any], rssi RSSI: NSNumber) {
+        let deviceName = peripheral.name ?? "Unknown Device"
+        NSLog("🛜 [BLE] 📡 Discovered device: \(deviceName) (\(peripheral.identifier.uuidString)) - RSSI: \(RSSI) dBm")
+        
         // Add to discovered devices list
         let device = PeripheralDevice(peripheral: peripheral, rssi: RSSI.intValue)
         var devices = discoveredDevicesSubject.value
@@ -147,22 +196,33 @@ extension CoreBluetoothService: CBCentralManagerDelegate {
         if let index = devices.firstIndex(where: { $0.id == device.id }) {
             devices[index] = device
         } else {
+            NSLog("🛜 [BLE] ➕ Adding new device to discovered list: \(deviceName)")
             devices.append(device)
         }
         
         discoveredDevicesSubject.send(devices)
+        NSLog("🛜 [BLE] 📊 Total discovered devices: \(devices.count)")
     }
     
     func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
+        NSLog("🛜 [BLE] ✅ Successfully connected to peripheral: \(peripheral.name ?? "Unknown") (\(peripheral.identifier.uuidString))")
+        NSLog("🛜 [BLE] 🔍 Discovering services (looking for \(MeshtasticBLE.serviceUUID))...")
         peripheral.discoverServices([MeshtasticBLE.serviceUUID])
     }
     
     func centralManager(_ central: CBCentralManager, didFailToConnect peripheral: CBPeripheral, error: Error?) {
+        let errorMsg = error?.localizedDescription ?? "Unknown error"
+        NSLog("🛜 [BLE] ❌ Failed to connect to peripheral: \(peripheral.name ?? "Unknown") - Error: \(errorMsg)")
         connectionState.send(.failed(error ?? BluetoothError.deviceNotFound))
         cleanup()
     }
     
     func centralManager(_ central: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral, error: Error?) {
+        if let error = error {
+            NSLog("🛜 [BLE] ⚠️ Disconnected from peripheral: \(peripheral.name ?? "Unknown") with error: \(error.localizedDescription)")
+        } else {
+            NSLog("🛜 [BLE] 🔌 Disconnected from peripheral: \(peripheral.name ?? "Unknown") (normal disconnection)")
+        }
         cleanup()
     }
 }
@@ -171,10 +231,27 @@ extension CoreBluetoothService: CBCentralManagerDelegate {
 
 extension CoreBluetoothService: CBPeripheralDelegate {
     func peripheral(_ peripheral: CBPeripheral, didDiscoverServices error: Error?) {
-        guard let service = peripheral.services?.first(where: { $0.uuid == MeshtasticBLE.serviceUUID }) else {
+        if let error = error {
+            NSLog("🛜 [BLE] ❌ Error discovering services: \(error.localizedDescription)")
             connectionState.send(.failed(BluetoothError.deviceNotFound))
             return
         }
+        
+        NSLog("🛜 [BLE] 📋 Discovered \(peripheral.services?.count ?? 0) service(s)")
+        
+        guard let service = peripheral.services?.first(where: { $0.uuid == MeshtasticBLE.serviceUUID }) else {
+            NSLog("🛜 [BLE] ❌ Meshtastic service not found in discovered services")
+            if let services = peripheral.services {
+                for svc in services {
+                    NSLog("🛜 [BLE]    - Found service: \(svc.uuid)")
+                }
+            }
+            connectionState.send(.failed(BluetoothError.deviceNotFound))
+            return
+        }
+        
+        NSLog("🛜 [BLE] ✅ Found Meshtastic service: \(service.uuid)")
+        NSLog("🛜 [BLE] 🔍 Discovering characteristics...")
         
         peripheral.discoverCharacteristics(
             [MeshtasticBLE.toRadioUUID, MeshtasticBLE.fromRadioUUID],
@@ -183,47 +260,125 @@ extension CoreBluetoothService: CBPeripheralDelegate {
     }
     
     func peripheral(_ peripheral: CBPeripheral, didDiscoverCharacteristicsFor service: CBService, error: Error?) {
-        guard let characteristics = service.characteristics else { return }
+        if let error = error {
+            NSLog("🛜 [BLE] ❌ Error discovering characteristics: \(error.localizedDescription)")
+            return
+        }
+        
+        guard let characteristics = service.characteristics else {
+            NSLog("🛜 [BLE] ⚠️ No characteristics found for service \(service.uuid)")
+            return
+        }
+        
+        NSLog("🛜 [BLE] 📋 Discovered \(characteristics.count) characteristic(s)")
         
         for characteristic in characteristics {
+            NSLog("🛜 [BLE]    - Characteristic: \(characteristic.uuid), properties: \(characteristicPropertiesDescription(characteristic.properties))")
+            
             switch characteristic.uuid {
             case MeshtasticBLE.toRadioUUID:
+                NSLog("🛜 [BLE] ✅ Found TORADIO characteristic")
                 toRadioCharacteristic = characteristic
                 
             case MeshtasticBLE.fromRadioUUID:
+                NSLog("🛜 [BLE] ✅ Found FROMRADIO characteristic")
                 fromRadioCharacteristic = characteristic
                 // Subscribe to notifications
+                NSLog("🛜 [BLE] 📬 Subscribing to FROMRADIO notifications...")
                 peripheral.setNotifyValue(true, for: characteristic)
                 
             default:
+                NSLog("🛜 [BLE] ℹ️ Found other characteristic: \(characteristic.uuid)")
                 break
             }
         }
         
         // Once both characteristics are discovered, we're connected
         if toRadioCharacteristic != nil && fromRadioCharacteristic != nil {
+            NSLog("🛜 [BLE] 🎉 Both characteristics found - Connection fully established!")
             connectionState.send(.connected)
+        } else {
+            NSLog("🛜 [BLE] ⚠️ Missing characteristics - toRadio: \(toRadioCharacteristic != nil), fromRadio: \(fromRadioCharacteristic != nil)")
         }
     }
     
     func peripheral(_ peripheral: CBPeripheral, didUpdateValueFor characteristic: CBCharacteristic, error: Error?) {
+        if let error = error {
+            NSLog("🛜 [BLE] ❌ Error updating value for characteristic: \(error.localizedDescription)")
+            return
+        }
+        
         guard characteristic.uuid == MeshtasticBLE.fromRadioUUID,
               let data = characteristic.value else {
             return
         }
+        
+        NSLog("🛜 [BLE] 📥 Received \(data.count) bytes from device")
         
         // Publish received data
         receivedDataSubject.send(data)
     }
     
     func peripheral(_ peripheral: CBPeripheral, didWriteValueFor characteristic: CBCharacteristic, error: Error?) {
-        guard !pendingSendContinuations.isEmpty else { return }
+        guard !pendingSendContinuations.isEmpty else {
+            NSLog("🛜 [BLE] ⚠️ Received write callback but no pending continuations")
+            return
+        }
         
         let continuation = pendingSendContinuations.removeFirst()
         if let error = error {
+            NSLog("🛜 [BLE] ❌ Write failed: \(error.localizedDescription)")
             continuation.resume(throwing: error)
         } else {
+            NSLog("🛜 [BLE] ✅ Write succeeded")
             continuation.resume()
         }
     }
 }
+
+/// Returns a human-readable description for a CBManagerState value.
+private func cbManagerStateDescription(_ state: CBManagerState) -> String {
+    switch state {
+    case .unknown: return "unknown"
+    case .resetting: return "resetting"
+    case .unsupported: return "unsupported"
+    case .unauthorized: return "unauthorized"
+    case .poweredOff: return "poweredOff"
+    case .poweredOn: return "poweredOn"
+    @unknown default: return "unhandled state"
+    }
+}
+
+/// Returns a human-readable description for a CBPeripheralState value.
+func cbPeripheralStateDescription(_ state: CBPeripheralState) -> String {
+    switch state {
+    case .disconnected:
+        return "disconnected"
+    case .connecting:
+        return "connecting"
+    case .connected:
+        return "connected"
+    case .disconnecting:
+        return "disconnecting"
+    @unknown default:
+        return "unhandled state"
+    }
+}
+/// Returns a human-readable description for CBCharacteristicProperties.
+private func characteristicPropertiesDescription(_ properties: CBCharacteristicProperties) -> String {
+    var descriptions: [String] = []
+    
+    if properties.contains(.broadcast) { descriptions.append("broadcast") }
+    if properties.contains(.read) { descriptions.append("read") }
+    if properties.contains(.writeWithoutResponse) { descriptions.append("writeWithoutResponse") }
+    if properties.contains(.write) { descriptions.append("write") }
+    if properties.contains(.notify) { descriptions.append("notify") }
+    if properties.contains(.indicate) { descriptions.append("indicate") }
+    if properties.contains(.authenticatedSignedWrites) { descriptions.append("authenticatedSignedWrites") }
+    if properties.contains(.extendedProperties) { descriptions.append("extendedProperties") }
+    if properties.contains(.notifyEncryptionRequired) { descriptions.append("notifyEncryptionRequired") }
+    if properties.contains(.indicateEncryptionRequired) { descriptions.append("indicateEncryptionRequired") }
+    
+    return descriptions.isEmpty ? "none" : descriptions.joined(separator: ", ")
+}
+

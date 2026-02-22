@@ -18,7 +18,7 @@ enum MeshtasticBLE {
     static let toRadioUUID = CBUUID(string: "F75C76D2-129E-4DAD-A1DD-7866124401E7")
     
     /// FromRadio characteristic (device -> app)
-    static let fromRadioUUID = CBUUID(string: "8BA2BCC2-EE02-4A55-A531-C525C5E454D5")
+    static let fromRadioUUID = CBUUID(string: "2C55E69E-4993-11ED-B878-0242AC120002")
     
     /// FromNum characteristic (number of queued messages)
     static let fromNumUUID = CBUUID(string: "ED9DA18C-A800-4F66-A670-AA7547E34453")

@@ -7,6 +7,8 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		789372512F4AF39000F29878 /* MapKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 789372502F4AF39000F29878 /* MapKit.framework */; };
+		789372532F4AF39800F29878 /* CoreBluetooth.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 789372522F4AF39800F29878 /* CoreBluetooth.framework */; };
 		78FE21302F48FFFD00E98DC8 /* SwiftProtobuf in Frameworks */ = {isa = PBXBuildFile; productRef = 78FE212F2F48FFFD00E98DC8 /* SwiftProtobuf */; };
 		78FE21322F48FFFD00E98DC8 /* SwiftProtobufPluginLibrary in Frameworks */ = {isa = PBXBuildFile; productRef = 78FE21312F48FFFD00E98DC8 /* SwiftProtobufPluginLibrary */; };
 /* End PBXBuildFile section */
@@ -23,6 +25,8 @@
 
 /* Begin PBXFileReference section */
 		789372442F4AEFE600F29878 /* FireflyTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = FireflyTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		789372502F4AF39000F29878 /* MapKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = MapKit.framework; path = System/iOSSupport/System/Library/Frameworks/MapKit.framework; sourceTree = SDKROOT; };
+		789372522F4AF39800F29878 /* CoreBluetooth.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreBluetooth.framework; path = System/Library/Frameworks/CoreBluetooth.framework; sourceTree = SDKROOT; };
 		78FE20E82F47C32600E98DC8 /* Firefly.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Firefly.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
@@ -73,6 +77,8 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				789372532F4AF39800F29878 /* CoreBluetooth.framework in Frameworks */,
+				789372512F4AF39000F29878 /* MapKit.framework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -88,11 +94,21 @@
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
+		7893724F2F4AF38F00F29878 /* Frameworks */ = {
+			isa = PBXGroup;
+			children = (
+				789372522F4AF39800F29878 /* CoreBluetooth.framework */,
+				789372502F4AF39000F29878 /* MapKit.framework */,
+			);
+			name = Frameworks;
+			sourceTree = "<group>";
+		};
 		78FE20DF2F47C32600E98DC8 = {
 			isa = PBXGroup;
 			children = (
 				78FE20EA2F47C32600E98DC8 /* Firefly */,
 				789372452F4AEFE600F29878 /* FireflyTests */,
+				7893724F2F4AF38F00F29878 /* Frameworks */,
 				78FE20E92F47C32600E98DC8 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -248,6 +264,10 @@
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = SU4T96VBX6;
+				FRAMEWORK_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(SDKROOT)/System/iOSSupport/System/Library/Frameworks",
+				);
 				GENERATE_INFOPLIST_FILE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 26.2;
 				MARKETING_VERSION = 1.0;
@@ -271,6 +291,10 @@
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = SU4T96VBX6;
+				FRAMEWORK_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(SDKROOT)/System/iOSSupport/System/Library/Frameworks",
+				);
 				GENERATE_INFOPLIST_FILE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 26.2;
 				MARKETING_VERSION = 1.0;
@@ -425,6 +449,8 @@
 				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.utilities";
+				INFOPLIST_KEY_NSBluetoothAlwaysUsageDescription = "Bluetooth is required to connect to a Meshtastic device";
+				INFOPLIST_KEY_NSBluetoothPeripheralUsageDescription = "Bluetooth is required to connect to a Meshtastic device";
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphoneos*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphonesimulator*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents[sdk=iphoneos*]" = YES;
@@ -479,6 +505,8 @@
 				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.utilities";
+				INFOPLIST_KEY_NSBluetoothAlwaysUsageDescription = "Bluetooth is required to connect to a Meshtastic device";
+				INFOPLIST_KEY_NSBluetoothPeripheralUsageDescription = "Bluetooth is required to connect to a Meshtastic device";
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphoneos*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphonesimulator*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents[sdk=iphoneos*]" = YES;

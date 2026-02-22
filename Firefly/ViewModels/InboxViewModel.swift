@@ -37,6 +37,8 @@ final class InboxViewModel: ObservableObject {
         case .connecting: return "Connecting..."
         case .connected: return "Connected"
         case .failed(let error): return "Error: \(error.localizedDescription)"
+        case .resetting: return "Resetting..."
+        case .unknown: return "Unknown"
         }
     }
     

@@ -44,6 +44,8 @@ enum BluetoothConnectionState: Equatable {
     case scanning
     case connecting
     case connected
+    case resetting
+    case unknown
     case failed(Error)
     
     static func == (lhs: BluetoothConnectionState, rhs: BluetoothConnectionState) -> Bool {
@@ -51,7 +53,9 @@ enum BluetoothConnectionState: Equatable {
         case (.disconnected, .disconnected),
              (.scanning, .scanning),
              (.connecting, .connecting),
-             (.connected, .connected):
+             (.connected, .connected),
+             (.resetting, .resetting),
+             (.unknown, .unknown):
             return true
         case (.failed(let lhsError), .failed(let rhsError)):
             return lhsError.localizedDescription == rhsError.localizedDescription
@@ -65,6 +69,8 @@ enum BluetoothError: LocalizedError {
     case notConnected
     case sendFailed
     case deviceNotFound
+    case unauthorized
+    case unsupported
     
     var errorDescription: String? {
         switch self {
@@ -74,6 +80,10 @@ enum BluetoothError: LocalizedError {
             return "Failed to send data to device"
         case .deviceNotFound:
             return "Meshtastic device not found"
+        case .unauthorized:
+            return "Bluetooth is unauthorized on this device"
+        case .unsupported:
+            return "Bluetooth is unsupported on this device"
         }
     }
 }
