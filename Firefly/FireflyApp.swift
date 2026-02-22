@@ -22,7 +22,7 @@ struct FireflyApp: App {
     
     var body: some Scene {
         WindowGroup {
-            InboxView(container: container)
+            MainTabView(container: container)
         }
     }
 }

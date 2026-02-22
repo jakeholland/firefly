@@ -10,7 +10,6 @@ import SwiftUI
 /// Main inbox view showing channels and direct messages
 struct InboxView: View {
     @StateObject private var viewModel: InboxViewModel
-    @State private var showingMapView = false
     
     init(container: DependencyContainer = .production()) {
         _viewModel = StateObject(wrappedValue: InboxViewModel(messagingService: container.messagingService))
@@ -38,19 +37,6 @@ struct InboxView: View {
             }
             .navigationTitle("Firefly")
             .navigationBarTitleDisplayMode(.large)
-            .toolbar {
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    Button {
-                        showingMapView = true
-                    } label: {
-                        Image(systemName: "map.fill")
-                            .foregroundStyle(.cyan)
-                    }
-                }
-            }
-            .sheet(isPresented: $showingMapView) {
-                MapViewSheet()
-            }
         }
         .preferredColorScheme(.dark)
     }

@@ -8,6 +8,68 @@
 import SwiftUI
 import MapKit
 
+/// Map view for use in tab view
+struct MapViewTab: View {
+    @StateObject private var viewModel: MapViewModel
+    @State private var position: MapCameraPosition = .automatic
+    
+    init(container: DependencyContainer = .production()) {
+        _viewModel = StateObject(wrappedValue: MapViewModel(mapService: container.mapService))
+    }
+    
+    private func updatePosition() {
+        position = .region(viewModel.region)
+    }
+    
+    var body: some View {
+        NavigationStack {
+            ZStack {
+//                Map {
+//                    ForEach(viewModel.annotations) { annotation in
+//                        Annotation(annotation.node.displayName, coordinate: annotation.coordinate) {
+//                            NodeMarkerView(node: annotation.node)
+//                        }
+//                    }
+//                }
+                
+                VStack {
+                    Spacer()
+                    
+                    HStack {
+                        Toggle(isOn: $viewModel.showFriendsOnly) {
+                            Label("Friends Only", systemImage: "person.2.fill")
+                                .font(.caption)
+                        }
+                        .toggleStyle(.button)
+                        .tint(.cyan)
+                        .padding()
+                        .background(Color.black.opacity(0.7))
+                        .clipShape(RoundedRectangle(cornerRadius: 12))
+                        
+                        Spacer()
+                        
+                        Button {
+                            viewModel.centerOnAnnotations()
+                        } label: {
+                            Image(systemName: "location.fill")
+                                .font(.title3)
+                                .foregroundStyle(.white)
+                                .padding()
+                                .background(Color.cyan)
+                                .clipShape(Circle())
+                        }
+                    }
+                    .padding()
+                }
+            }
+            .navigationTitle("Map")
+            .navigationBarTitleDisplayMode(.large)
+            .preferredColorScheme(.dark)
+        }
+    }
+}
+
+/// Map view for use in sheets (legacy)
 struct MapViewSheet: View {
     @StateObject private var viewModel: MapViewModel
     @Environment(\.dismiss) private var dismiss
@@ -98,6 +160,10 @@ struct NodeMarkerView: View {
     }
 }
 
-#Preview {
+#Preview("Map Tab") {
+    MapViewTab()
+}
+
+#Preview("Map Sheet") {
     MapViewSheet()
 }
