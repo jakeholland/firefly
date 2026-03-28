@@ -33,6 +33,7 @@ final class MockMessagingService: MessagingServiceProtocol {
     
     var allMessages: [MeshMessage] = []
     private var channelsList: [MeshChannel] = []
+    private var nodesList: [MeshNode] = []
     
     var sentMessages: [(text: String, channel: UInt32)] = []
     var sentDirectMessages: [(text: String, nodeId: UInt32)] = []
@@ -40,6 +41,10 @@ final class MockMessagingService: MessagingServiceProtocol {
     var didCallStopScanning = false
     var didCallConnect = false
     var didCallDisconnect = false
+    
+    init() {
+        // Empty initializer for mock service
+    }
     
     func messages(for channel: UInt32) -> [MeshMessage] {
         allMessages.filter { $0.channel == channel && !$0.isDirectMessage }
@@ -53,6 +58,10 @@ final class MockMessagingService: MessagingServiceProtocol {
     
     func channels() -> [MeshChannel] {
         channelsList
+    }
+    
+    func nodes() -> [MeshNode] {
+        nodesList
     }
     
     func sendMessage(text: String, to channel: UInt32) async throws {
@@ -118,6 +127,10 @@ final class MockMessagingService: MessagingServiceProtocol {
     
     func setChannels(_ channels: [MeshChannel]) {
         channelsList = channels
+    }
+    
+    func setNodes(_ nodes: [MeshNode]) {
+        nodesList = nodes
     }
     
     func simulateDiscoveredDevices(_ devices: [PeripheralDevice]) {

@@ -8,6 +8,7 @@
 import Foundation
 import CoreBluetooth
 import Combine
+import SwiftProtobuf
 
 /// CoreBluetooth-based implementation of BluetoothServiceProtocol
 final class CoreBluetoothService: NSObject, BluetoothServiceProtocol {
@@ -33,6 +34,8 @@ final class CoreBluetoothService: NSObject, BluetoothServiceProtocol {
     private var connectedPeripheral: CBPeripheral?
     private var toRadioCharacteristic: CBCharacteristic?
     private var fromRadioCharacteristic: CBCharacteristic?
+    private var fromNumCharacteristic: CBCharacteristic?
+    private var logRadioCharacteristic: CBCharacteristic?
     
     private var pendingSendContinuations: [CheckedContinuation<Void, Error>] = []
     
@@ -254,7 +257,7 @@ extension CoreBluetoothService: CBPeripheralDelegate {
         NSLog("🛜 [BLE] 🔍 Discovering characteristics...")
         
         peripheral.discoverCharacteristics(
-            [MeshtasticBLE.toRadioUUID, MeshtasticBLE.fromRadioUUID],
+            [MeshtasticBLE.toRadioUUID, MeshtasticBLE.fromRadioUUID, MeshtasticBLE.fromNumUUID,MeshtasticBLE.serviceUUID],
             for: service
         )
     }
@@ -287,18 +290,32 @@ extension CoreBluetoothService: CBPeripheralDelegate {
                 NSLog("🛜 [BLE] 📬 Subscribing to FROMRADIO notifications...")
                 peripheral.setNotifyValue(true, for: characteristic)
                 
+            case MeshtasticBLE.fromNumUUID:
+                NSLog("🛜 [BLE] ✅ Found FROMNUM (Notify) characteristic")
+                fromNumCharacteristic = characteristic
+                // Subscribe to notifications
+                NSLog("🛜 [BLE] 📬 Subscribing to FROMNUM notifications...")
+                peripheral.setNotifyValue(true, for: characteristic)
+                
+            case MeshtasticBLE.logRadioUUID:
+                NSLog("🛜 [BLE] ✅ Found LOGRADIO (Notify) characteristic")
+                logRadioCharacteristic = characteristic
+                // Subscribe to notifications
+                NSLog("🛜 [BLE] 📬 Subscribing to LOGRADIO notifications...")
+                peripheral.setNotifyValue(true, for: characteristic)
+                
             default:
                 NSLog("🛜 [BLE] ℹ️ Found other characteristic: \(characteristic.uuid)")
                 break
             }
         }
         
-        // Once both characteristics are discovered, we're connected
-        if toRadioCharacteristic != nil && fromRadioCharacteristic != nil {
-            NSLog("🛜 [BLE] 🎉 Both characteristics found - Connection fully established!")
+        // Once all characteristics are discovered, we're connected
+        if toRadioCharacteristic != nil && fromRadioCharacteristic != nil &&  fromNumCharacteristic != nil && logRadioCharacteristic != nil {
+            NSLog("🛜 [BLE] 🎉 All characteristics found - Connection fully established!")
             connectionState.send(.connected)
         } else {
-            NSLog("🛜 [BLE] ⚠️ Missing characteristics - toRadio: \(toRadioCharacteristic != nil), fromRadio: \(fromRadioCharacteristic != nil)")
+            NSLog("🛜 [BLE] ⚠️ Missing characteristics - toRadio: \(toRadioCharacteristic != nil), fromRadio: \(fromRadioCharacteristic != nil) fromNum: \(fromNumCharacteristic != nil) logRadio: \(logRadioCharacteristic != nil)")
         }
     }
     
@@ -308,15 +325,29 @@ extension CoreBluetoothService: CBPeripheralDelegate {
             return
         }
         
-        guard characteristic.uuid == MeshtasticBLE.fromRadioUUID,
-              let data = characteristic.value else {
-            return
+        NSLog("🛜 [BLE] Did update value for \(characteristic.meshtasticCharacteristicName)")
+        
+        guard let data = characteristic.value else { return }
+        
+        switch characteristic.uuid {
+        case MeshtasticBLE.fromRadioUUID:
+            if let fromRadio = try? FromRadio(serializedBytes: data) {
+                NSLog("🛜 [BLE] Received Data: \(String(describing: try? fromRadio.jsonString()))")
+//                receivedDataSubject.send(value) TODO JAKE
+            }
+
+        case MeshtasticBLE.fromNumUUID:
+//            try? startDrainPendingPackets()
+            break
+            
+        case MeshtasticBLE.logRadioUUID:
+            if let logRecord = try? LogRecord(serializedBytes: data) {
+                NSLog("🛜 [BLE] Received Log: \(logRecord.message)")
+            }
+            
+        default:
+            break
         }
-        
-        NSLog("🛜 [BLE] 📥 Received \(data.count) bytes from device")
-        
-        // Publish received data
-        receivedDataSubject.send(data)
     }
     
     func peripheral(_ peripheral: CBPeripheral, didWriteValueFor characteristic: CBCharacteristic, error: Error?) {
@@ -380,5 +411,23 @@ private func characteristicPropertiesDescription(_ properties: CBCharacteristicP
     if properties.contains(.indicateEncryptionRequired) { descriptions.append("indicateEncryptionRequired") }
     
     return descriptions.isEmpty ? "none" : descriptions.joined(separator: ", ")
+}
+
+extension CBCharacteristic {
+    
+    var meshtasticCharacteristicName: String {
+        switch self.uuid {
+        case MeshtasticBLE.toRadioUUID:
+            return "TORADIO"
+        case MeshtasticBLE.fromRadioUUID:
+            return "FROMRADIO"
+        case MeshtasticBLE.fromNumUUID:
+            return "FROMNUM"
+        case MeshtasticBLE.logRadioUUID:
+            return "LOGRADIO"
+        default:
+            return "UNKNOWN (\(self.uuid.uuidString))"
+        }
+    }
 }
 

@@ -95,6 +95,12 @@ final class MessagingService: MessagingServiceProtocol {
         return channels
     }
     
+    func nodes() -> [MeshNode] {
+        let nodes = client.nodes
+        NSLog("💬 [Messaging] 📋 Retrieved \(nodes.count) nodes from mesh")
+        return nodes
+    }
+    
     func sendMessage(text: String, to channel: UInt32) async throws {
         NSLog("💬 [Messaging] 📤 Sending message to channel \(channel): \"\(text.prefix(50))\(text.count > 50 ? "..." : "")\"")
         

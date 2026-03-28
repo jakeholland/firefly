@@ -23,6 +23,9 @@ enum MeshtasticBLE {
     /// FromNum characteristic (number of queued messages)
     static let fromNumUUID = CBUUID(string: "ED9DA18C-A800-4F66-A670-AA7547E34453")
     
+    /// LogRadio characteristic (logs)
+    static let logRadioUUID = CBUUID(string: "5a3d6e49-06e6-4423-9944-e9de8cdf9547")
+    
     /// Service name filter for scanning
     static let deviceNamePrefix = "Meshtastic"
 }

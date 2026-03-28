@@ -29,6 +29,9 @@ protocol MessagingServiceProtocol {
     /// The local node's ID (once connected)
     var myNodeId: UInt32? { get }
     
+    /// Get all nodes (users) on the mesh
+    func nodes() -> [MeshNode]
+    
     /// Get messages for a specific channel
     func messages(for channel: UInt32) -> [MeshMessage]
     

@@ -8,7 +8,7 @@
 import SwiftUI
 import Combine
 
-/// View for starting a new 1-1 conversation with nearby nodes
+/// View for starting a new 1-1 conversation with nearby users
 struct NewConversationView: View {
     @Environment(\.dismiss) private var dismiss
     @StateObject private var viewModel: NewConversationViewModel
@@ -36,10 +36,10 @@ struct NewConversationView: View {
                     
                     if viewModel.isLoading {
                         loadingView
-                    } else if viewModel.filteredNodes.isEmpty {
+                    } else if viewModel.filteredUsers.isEmpty {
                         emptyStateView
                     } else {
-                        nodeList
+                        userList
                     }
                 }
             }
@@ -54,14 +54,14 @@ struct NewConversationView: View {
                 
                 ToolbarItem(placement: .primaryAction) {
                     Button {
-                        viewModel.refreshNodes()
+                        viewModel.refreshUsers()
                     } label: {
                         Image(systemName: "arrow.clockwise")
                     }
                 }
             }
             .onAppear {
-                viewModel.loadNodes()
+                viewModel.loadUsers()
             }
         }
         .preferredColorScheme(.dark)
@@ -72,7 +72,7 @@ struct NewConversationView: View {
             Image(systemName: "magnifyingglass")
                 .foregroundStyle(.secondary)
             
-            TextField("Search nodes...", text: $viewModel.searchText)
+            TextField("Search users...", text: $viewModel.searchText)
                 .textFieldStyle(.plain)
                 .foregroundStyle(.primary)
             
@@ -91,20 +91,20 @@ struct NewConversationView: View {
         .padding()
     }
     
-    private var nodeList: some View {
+    private var userList: some View {
         List {
             Section {
-                ForEach(viewModel.filteredNodes) { node in
+                ForEach(viewModel.filteredUsers) { user in
                     Button {
-                        viewModel.selectNode(node)
+                        viewModel.selectUser(user)
                         dismiss()
                     } label: {
-                        NodeRowView(node: node)
+                        UserRowView(user: user)
                     }
                     .listRowBackground(Color.black.opacity(0.3))
                 }
             } header: {
-                Text("\(viewModel.filteredNodes.count) Nearby Nodes")
+                Text("\(viewModel.filteredUsers.count) Nearby Users")
                     .foregroundStyle(.secondary)
             }
         }
@@ -118,7 +118,7 @@ struct NewConversationView: View {
                 .scaleEffect(1.5)
                 .tint(.cyan)
             
-            Text("Loading nodes...")
+            Text("Looking for users...")
                 .font(.title3)
                 .foregroundStyle(.secondary)
         }
@@ -131,18 +131,18 @@ struct NewConversationView: View {
                 .font(.system(size: 60))
                 .foregroundStyle(.cyan.opacity(0.5))
             
-            Text("No Nodes Found")
+            Text("No Users Found")
                 .font(.title2)
                 .foregroundStyle(.secondary)
             
-            Text(viewModel.searchText.isEmpty ? "No nodes are currently visible on the mesh" : "No nodes match your search")
+            Text(viewModel.searchText.isEmpty ? "No users are currently visible on the mesh" : "No users match your search")
                 .font(.caption)
                 .foregroundStyle(.tertiary)
                 .multilineTextAlignment(.center)
                 .padding(.horizontal)
             
             Button {
-                viewModel.refreshNodes()
+                viewModel.refreshUsers()
             } label: {
                 Label("Refresh", systemImage: "arrow.clockwise")
                     .font(.headline)
@@ -155,8 +155,8 @@ struct NewConversationView: View {
     }
 }
 
-struct NodeRowView: View {
-    let node: MeshNode
+struct UserRowView: View {
+    let user: MeshNode
     
     var body: some View {
         HStack(spacing: 16) {
@@ -168,18 +168,18 @@ struct NodeRowView: View {
                 .clipShape(Circle())
             
             VStack(alignment: .leading, spacing: 4) {
-                Text(node.displayName)
+                Text(user.displayName)
                     .font(.headline)
                     .foregroundStyle(.primary)
                 
                 HStack(spacing: 8) {
-                    if let hardwareModel = node.hardwareModel {
+                    if let hardwareModel = user.hardwareModel {
                         Text(hardwareModel)
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
                     
-                    if let lastHeard = node.lastHeard {
+                    if let lastHeard = user.lastHeard {
                         Text("•")
                             .foregroundStyle(.tertiary)
                         
@@ -202,23 +202,23 @@ struct NodeRowView: View {
 
 @MainActor
 final class NewConversationViewModel: ObservableObject {
-    @Published var nodes: [MeshNode] = []
+    @Published var users: [MeshNode] = []
     @Published var searchText: String = ""
     @Published var isLoading: Bool = false
-    @Published var selectedNode: MeshNode?
+    @Published var selectedUser: MeshNode?
     
     private let messagingService: MessagingServiceProtocol
     private let persistenceService: PersistenceService
     private let myNodeId: UInt32?
     
-    var filteredNodes: [MeshNode] {
+    var filteredUsers: [MeshNode] {
         if searchText.isEmpty {
-            return nodes
+            return users
         } else {
-            return nodes.filter { node in
-                node.displayName.localizedCaseInsensitiveContains(searchText) ||
-                node.shortName?.localizedCaseInsensitiveContains(searchText) == true ||
-                node.hardwareModel?.localizedCaseInsensitiveContains(searchText) == true
+            return users.filter { user in
+                user.displayName.localizedCaseInsensitiveContains(searchText) ||
+                user.shortName?.localizedCaseInsensitiveContains(searchText) == true ||
+                user.hardwareModel?.localizedCaseInsensitiveContains(searchText) == true
             }
         }
     }
@@ -231,26 +231,50 @@ final class NewConversationViewModel: ObservableObject {
         NSLog("💬 [NewConversation] Initialized with myNodeId: \(myNodeId.map { String($0, radix: 16) } ?? "nil")")
     }
     
-    func loadNodes() {
-        NSLog("💬 [NewConversation] Loading nodes...")
+    func loadUsers() {
+        NSLog("💬 [NewConversation] Loading users from mesh...")
         isLoading = true
         
-        // Get nodes from persistence and filter out self
-        let allNodes = persistenceService.fetchAllNodes()
-        nodes = allNodes.filter { $0.id != myNodeId }
+        // First, get users from the live mesh network
+        var meshUsers = messagingService.nodes().filter { $0.id != myNodeId }
+        NSLog("💬 [NewConversation] 📡 Found \(meshUsers.count) users from mesh")
+        
+        // Then, get any persisted users we might have talked to before
+        let persistedUsers = persistenceService.fetchAllNodes().filter { $0.id != myNodeId }
+        NSLog("💬 [NewConversation] 💾 Found \(persistedUsers.count) users from persistence")
+        
+        // Merge them, preferring mesh data for users that exist in both
+        let meshUserIds = Set(meshUsers.map { $0.id })
+        let additionalPersistedUsers = persistedUsers.filter { !meshUserIds.contains($0.id) }
+        
+        meshUsers.append(contentsOf: additionalPersistedUsers)
+        
+        // Sort by last heard (most recent first), with users never heard at the end
+        users = meshUsers.sorted { user1, user2 in
+            switch (user1.lastHeard, user2.lastHeard) {
+            case (.some(let date1), .some(let date2)):
+                return date1 > date2
+            case (.some, .none):
+                return true
+            case (.none, .some):
+                return false
+            case (.none, .none):
+                return user1.displayName < user2.displayName
+            }
+        }
         
         isLoading = false
-        NSLog("💬 [NewConversation] ✅ Loaded \(nodes.count) nodes (filtered out self)")
+        NSLog("💬 [NewConversation] ✅ Loaded \(users.count) total users")
     }
     
-    func refreshNodes() {
-        NSLog("💬 [NewConversation] 🔄 Refreshing nodes...")
-        loadNodes()
+    func refreshUsers() {
+        NSLog("💬 [NewConversation] 🔄 Refreshing users...")
+        loadUsers()
     }
     
-    func selectNode(_ node: MeshNode) {
-        NSLog("💬 [NewConversation] 👤 Selected node: \(node.displayName)")
-        selectedNode = node
+    func selectUser(_ user: MeshNode) {
+        NSLog("💬 [NewConversation] 👤 Selected user: \(user.displayName)")
+        selectedUser = user
     }
 }
 
