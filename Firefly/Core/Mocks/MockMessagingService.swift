@@ -8,9 +8,9 @@
 import Foundation
 import Combine
 
-/// Mock messaging service for testing
+/// Mock messaging service for testing and simulator builds
 final class MockMessagingService: MessagingServiceProtocol {
-    private let connectionStateSubject = PassthroughSubject<BluetoothConnectionState, Never>()
+    private let connectionStateSubject: CurrentValueSubject<BluetoothConnectionState, Never>
     var connectionState: AnyPublisher<BluetoothConnectionState, Never> {
         connectionStateSubject.eraseToAnyPublisher()
     }
@@ -18,6 +18,11 @@ final class MockMessagingService: MessagingServiceProtocol {
     private let newMessageSubject = PassthroughSubject<MeshMessage, Never>()
     var newMessagePublisher: AnyPublisher<MeshMessage, Never> {
         newMessageSubject.eraseToAnyPublisher()
+    }
+
+    private let nodeUpdatesSubject = PassthroughSubject<MeshNode, Never>()
+    var nodeUpdatesPublisher: AnyPublisher<MeshNode, Never> {
+        nodeUpdatesSubject.eraseToAnyPublisher()
     }
     
     private let discoveredDevicesSubject = CurrentValueSubject<[PeripheralDevice], Never>([])
@@ -42,8 +47,8 @@ final class MockMessagingService: MessagingServiceProtocol {
     var didCallConnect = false
     var didCallDisconnect = false
     
-    init() {
-        // Empty initializer for mock service
+    init(initialConnectionState: BluetoothConnectionState = .disconnected) {
+        connectionStateSubject = CurrentValueSubject(initialConnectionState)
     }
     
     func messages(for channel: UInt32) -> [MeshMessage] {
@@ -82,31 +87,41 @@ final class MockMessagingService: MessagingServiceProtocol {
     
     func connect(to deviceIdentifier: UUID) async throws {
         didCallConnect = true
-        connectionStateSubject.send(.connected)
+        connectionStateSubject.value = .connected
     }
-    
+
     func disconnect() {
         didCallDisconnect = true
-        connectionStateSubject.send(.disconnected)
+        connectionStateSubject.value = .disconnected
     }
     
     func recentConversations() -> [Conversation] {
         var conversations: [Conversation] = []
-        
-        // Add channels
-        for channel in channelsList {
+
+        // Active (non-disabled) channels
+        for channel in channelsList where channel.role != .disabled {
             let msgs = messages(for: channel.id)
             conversations.append(.channel(channel, lastMessage: msgs.last))
         }
-        
-        // Add DMs
-        let dmNodeIds = Set(allMessages.filter { $0.isDirectMessage }.flatMap { [$0.from, $0.to] })
+
+        // DM threads — collect unique remote node IDs (exclude our own ID)
+        let selfId = myNodeId   // capture as non-optional context so Swift doesn't widen the set type
+        let dmNodeIds = Set(
+            allMessages
+                .filter { $0.isDirectMessage }
+                .flatMap { [$0.from, $0.to] }
+                .filter { id in
+                    guard let selfId else { return true }
+                    return id != selfId
+                }
+        )
         for nodeId in dmNodeIds {
             let dms = directMessages(with: nodeId)
-            let node = MeshNode(
+            // Use a known node from nodesList when available; fall back to a stub
+            let node = nodesList.first { $0.id == nodeId } ?? MeshNode(
                 id: nodeId,
-                shortName: "Node\(nodeId)",
-                longName: "Test Node \(nodeId)",
+                shortName: String(format: "%08X", nodeId),
+                longName: "Unknown Node",
                 hardwareModel: nil,
                 macAddress: nil,
                 lastHeard: nil,
@@ -115,10 +130,29 @@ final class MockMessagingService: MessagingServiceProtocol {
             )
             conversations.append(.directMessage(node: node, lastMessage: dms.last))
         }
-        
-        return conversations
+
+        return conversations.sorted {
+            ($0.lastMessage?.timestamp ?? .distantPast) > ($1.lastMessage?.timestamp ?? .distantPast)
+        }
     }
     
+    func renameNode(longName: String) async throws {
+        // no-op for mock
+    }
+
+    func myNodeInfo() -> MeshNode? {
+        guard let id = myNodeId else { return nil }
+        return nodesList.first { $0.id == id }
+    }
+
+    func deleteConversation(_ conversation: Conversation) {
+        if case .directMessage(let node, _) = conversation {
+            allMessages.removeAll {
+                $0.isDirectMessage && ($0.from == node.id || $0.to == node.id)
+            }
+        }
+    }
+
     // Test helpers
     func simulateMessage(_ message: MeshMessage) {
         allMessages.append(message)
@@ -135,5 +169,11 @@ final class MockMessagingService: MessagingServiceProtocol {
     
     func simulateDiscoveredDevices(_ devices: [PeripheralDevice]) {
         discoveredDevicesSubject.send(devices)
+    }
+
+    func simulateNodeUpdate(_ node: MeshNode) {
+        nodesList.removeAll { $0.id == node.id }
+        nodesList.append(node)
+        nodeUpdatesSubject.send(node)
     }
 }

@@ -53,7 +53,8 @@ final class PersistedNode {
     func toMeshNode() -> MeshNode {
         let location: NodeLocation?
         if let lat = latitude, let lon = longitude {
-            location = NodeLocation(latitude: lat, longitude: lon, altitude: altitude ?? 0)
+            // Pass altitude as-is (nil means unknown, not zero)
+            location = NodeLocation(latitude: lat, longitude: lon, altitude: altitude)
         } else {
             location = nil
         }

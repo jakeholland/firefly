@@ -38,6 +38,9 @@ final class CoreBluetoothService: NSObject, BluetoothServiceProtocol {
     private var logRadioCharacteristic: CBCharacteristic?
     
     private var pendingSendContinuations: [CheckedContinuation<Void, Error>] = []
+    /// Prevents multiple concurrent FROMRADIO reads from piling up.
+    /// Only one drain loop runs at a time; further requests are coalesced.
+    private var isDrainingFromRadio = false
     
     // MARK: - Initialization
     
@@ -145,11 +148,23 @@ final class CoreBluetoothService: NSObject, BluetoothServiceProtocol {
     
     // MARK: - Private Methods
     
+    private func readFromRadioQueue() {
+        // Coalesce concurrent drain requests — only one read can be in-flight at a time.
+        guard !isDrainingFromRadio,
+              let peripheral = connectedPeripheral,
+              let fromRadio = fromRadioCharacteristic else { return }
+        isDrainingFromRadio = true
+        peripheral.readValue(for: fromRadio)
+    }
+
     private func cleanup() {
         NSLog("🛜 [BLE] 🧹 Cleaning up connection resources")
         toRadioCharacteristic = nil
         fromRadioCharacteristic = nil
+        fromNumCharacteristic = nil
+        logRadioCharacteristic = nil
         connectedPeripheral = nil
+        isDrainingFromRadio = false
         discoveredDevicesSubject.send([])
         connectionState.send(.disconnected)
         NSLog("🛜 [BLE] ✅ Cleanup complete")
@@ -165,8 +180,10 @@ extension CoreBluetoothService: CBCentralManagerDelegate {
         switch central.state {
         case .poweredOn:
             NSLog("🛜 [BLE] ✅ Bluetooth is powered on and ready")
-            // Ready to scan
-            break
+            // Re-emit .disconnected so subscribers (e.g. InboxViewModel) know BT
+            // is now available and can kick off auto-reconnect if needed.
+            // CurrentValueSubject.send() always notifies even when the value is unchanged.
+            connectionState.send(.disconnected)
         case .poweredOff:
             NSLog("🛜 [BLE] ⚠️ Bluetooth is powered off")
             connectionState.send(.disconnected)
@@ -257,7 +274,7 @@ extension CoreBluetoothService: CBPeripheralDelegate {
         NSLog("🛜 [BLE] 🔍 Discovering characteristics...")
         
         peripheral.discoverCharacteristics(
-            [MeshtasticBLE.toRadioUUID, MeshtasticBLE.fromRadioUUID, MeshtasticBLE.fromNumUUID,MeshtasticBLE.serviceUUID],
+            [MeshtasticBLE.toRadioUUID, MeshtasticBLE.fromRadioUUID, MeshtasticBLE.fromNumUUID, MeshtasticBLE.logRadioUUID],
             for: service
         )
     }
@@ -286,9 +303,7 @@ extension CoreBluetoothService: CBPeripheralDelegate {
             case MeshtasticBLE.fromRadioUUID:
                 NSLog("🛜 [BLE] ✅ Found FROMRADIO characteristic")
                 fromRadioCharacteristic = characteristic
-                // Subscribe to notifications
-                NSLog("🛜 [BLE] 📬 Subscribing to FROMRADIO notifications...")
-                peripheral.setNotifyValue(true, for: characteristic)
+                // FROMRADIO is read-only (no notify support) — we read it when fromNum notifies
                 
             case MeshtasticBLE.fromNumUUID:
                 NSLog("🛜 [BLE] ✅ Found FROMNUM (Notify) characteristic")
@@ -310,12 +325,37 @@ extension CoreBluetoothService: CBPeripheralDelegate {
             }
         }
         
-        // Once all characteristics are discovered, we're connected
-        if toRadioCharacteristic != nil && fromRadioCharacteristic != nil &&  fromNumCharacteristic != nil && logRadioCharacteristic != nil {
-            NSLog("🛜 [BLE] 🎉 All characteristics found - Connection fully established!")
-            connectionState.send(.connected)
+        // Only toRadio, fromRadio, and fromNum are required; logRadio is optional
+        if toRadioCharacteristic != nil && fromRadioCharacteristic != nil && fromNumCharacteristic != nil {
+            if logRadioCharacteristic == nil {
+                NSLog("🛜 [BLE] ℹ️ LogRadio characteristic not found (optional, continuing)")
+            }
+            // Do NOT signal .connected yet — wait for the FROMNUM CCCD write to be
+            // acknowledged by the peripheral (didUpdateNotificationStateFor).  If we
+            // fire .connected now the WantConfig write races with the subscription ACK
+            // and the device's FROMNUM notifications are silently dropped.
+            NSLog("🛜 [BLE] ✅ Required characteristics found — awaiting FROMNUM subscription confirmation")
         } else {
-            NSLog("🛜 [BLE] ⚠️ Missing characteristics - toRadio: \(toRadioCharacteristic != nil), fromRadio: \(fromRadioCharacteristic != nil) fromNum: \(fromNumCharacteristic != nil) logRadio: \(logRadioCharacteristic != nil)")
+            NSLog("🛜 [BLE] ⚠️ Missing required characteristics - toRadio: \(toRadioCharacteristic != nil), fromRadio: \(fromRadioCharacteristic != nil), fromNum: \(fromNumCharacteristic != nil)")
+        }
+    }
+
+    func peripheral(_ peripheral: CBPeripheral, didUpdateNotificationStateFor characteristic: CBCharacteristic, error: Error?) {
+        if let error = error {
+            NSLog("🛜 [BLE] ❌ Notification subscription failed for \(characteristic.meshtasticCharacteristicName): \(error.localizedDescription)")
+            return
+        }
+        let state = characteristic.isNotifying ? "enabled" : "disabled"
+        NSLog("🛜 [BLE] 🔔 Notifications \(state) for \(characteristic.meshtasticCharacteristicName)")
+
+        // Signal connected only once the FROMNUM subscription is confirmed.
+        // At this point the peripheral will definitely deliver future FROMNUM
+        // notifications, so it is safe to send WantConfig.
+        if characteristic.uuid == MeshtasticBLE.fromNumUUID && characteristic.isNotifying {
+            NSLog("🛜 [BLE] 🎉 FROMNUM subscription confirmed — Connection established!")
+            connectionState.send(.connected)
+            // Drain any packets the device may have already queued
+            readFromRadioQueue()
         }
     }
     
@@ -331,14 +371,20 @@ extension CoreBluetoothService: CBPeripheralDelegate {
         
         switch characteristic.uuid {
         case MeshtasticBLE.fromRadioUUID:
-            if let fromRadio = try? FromRadio(serializedBytes: data) {
-                NSLog("🛜 [BLE] Received Data: \(String(describing: try? fromRadio.jsonString()))")
-//                receivedDataSubject.send(value) TODO JAKE
+            // Mark drain as complete before potentially kicking off the next read.
+            isDrainingFromRadio = false
+            guard !data.isEmpty else {
+                NSLog("🛜 [BLE] 📭 FromRadio queue drained (empty response)")
+                return
             }
+            NSLog("🛜 [BLE] 📨 FromRadio: forwarding \(data.count) bytes to client")
+            receivedDataSubject.send(data)
+            // Immediately read next packet — device queues multiple FromRadio messages
+            readFromRadioQueue()
 
         case MeshtasticBLE.fromNumUUID:
-//            try? startDrainPendingPackets()
-            break
+            NSLog("🛜 [BLE] 🔔 FromNum notification — draining packet queue")
+            readFromRadioQueue()
             
         case MeshtasticBLE.logRadioUUID:
             if let logRecord = try? LogRecord(serializedBytes: data) {
@@ -355,7 +401,7 @@ extension CoreBluetoothService: CBPeripheralDelegate {
             NSLog("🛜 [BLE] ⚠️ Received write callback but no pending continuations")
             return
         }
-        
+
         let continuation = pendingSendContinuations.removeFirst()
         if let error = error {
             NSLog("🛜 [BLE] ❌ Write failed: \(error.localizedDescription)")
@@ -363,6 +409,11 @@ extension CoreBluetoothService: CBPeripheralDelegate {
         } else {
             NSLog("🛜 [BLE] ✅ Write succeeded")
             continuation.resume()
+            // Immediately kick off a drain attempt after every TORADIO write.
+            // The device may have queued response packets before FROMNUM notification arrives.
+            if characteristic.uuid == MeshtasticBLE.toRadioUUID {
+                readFromRadioQueue()
+            }
         }
     }
 }
@@ -381,7 +432,7 @@ private func cbManagerStateDescription(_ state: CBManagerState) -> String {
 }
 
 /// Returns a human-readable description for a CBPeripheralState value.
-func cbPeripheralStateDescription(_ state: CBPeripheralState) -> String {
+private func cbPeripheralStateDescription(_ state: CBPeripheralState) -> String {
     switch state {
     case .disconnected:
         return "disconnected"

@@ -11,11 +11,11 @@ struct ConversationView: View {
     @StateObject private var viewModel: ConversationViewModel
     @Environment(\.dismiss) private var dismiss
     
-    init(conversation: Conversation, container: DependencyContainer = .production()) {
+    init(conversation: Conversation, messagingService: MessagingServiceProtocol) {
         _viewModel = StateObject(
             wrappedValue: ConversationViewModel(
                 conversation: conversation,
-                messagingService: container.messagingService
+                messagingService: messagingService
             )
         )
     }
@@ -53,7 +53,9 @@ struct ConversationView: View {
             }
         }
         .navigationTitle(viewModel.title)
+        #if os(iOS)
         .navigationBarTitleDisplayMode(.inline)
+        #endif
         .preferredColorScheme(.dark)
     }
     
@@ -113,10 +115,8 @@ struct MessageBubbleView: View {
 }
 
 #Preview {
-    let channel = MeshChannel(id: 0, name: "Primary", role: .primary)
-    let conversation = Conversation.channel(channel, lastMessage: nil)
-    
     NavigationStack {
-        ConversationView(conversation: conversation)
+        Text("ConversationView — open from InboxView to preview with live service")
+            .foregroundStyle(.secondary)
     }
 }

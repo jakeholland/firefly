@@ -74,6 +74,10 @@ final class MockMeshtasticClient: MeshtasticClientProtocol {
     func requestNodeInfo(for nodeId: UInt32) async throws {
         // No-op for mock
     }
+
+    func setOwner(longName: String, shortName: String) async throws {
+        // No-op for mock
+    }
     
     func node(for id: UInt32) -> MeshNode? {
         nodes.first { $0.id == id }

@@ -19,6 +19,9 @@ protocol MessagingServiceProtocol {
     
     /// Publisher for new messages
     var newMessagePublisher: AnyPublisher<MeshMessage, Never> { get }
+
+    /// Publisher that fires whenever a node is added or updated
+    var nodeUpdatesPublisher: AnyPublisher<MeshNode, Never> { get }
     
     /// Publisher for discovered devices during scanning
     var discoveredDevicesPublisher: AnyPublisher<[PeripheralDevice], Never> { get }
@@ -49,6 +52,16 @@ protocol MessagingServiceProtocol {
     
     /// Get recent conversations (channels + DMs)
     func recentConversations() -> [Conversation]
+
+    /// Delete a conversation. For DMs this removes all messages in the thread.
+    /// Channels cannot be deleted (they are defined by the mesh network).
+    func deleteConversation(_ conversation: Conversation)
+
+    /// Rename the local node on the connected device (short name is preserved automatically).
+    func renameNode(longName: String) async throws
+
+    /// The current node info for the local device (nil until connected and synced).
+    func myNodeInfo() -> MeshNode?
     
     /// Start scanning for devices
     func startScanning()
