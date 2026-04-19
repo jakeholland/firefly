@@ -13,10 +13,15 @@ struct FireflyApp: App {
     private let container = DependencyContainer.production()
     
     init() {
-        // Request notification authorization on app launch
+        // Request notification authorization on app launch.
+        // Errors are non-fatal (user may decline) — log but don't propagate.
         let notificationService = container.notificationService
         Task {
-            try? await notificationService.requestAuthorization()
+            do {
+                try await notificationService.requestAuthorization()
+            } catch {
+                NSLog("🔔 [App] ⚠️ Notification authorization failed: \(error.localizedDescription)")
+            }
         }
     }
     

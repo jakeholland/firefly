@@ -16,9 +16,11 @@ final class InboxViewModel: ObservableObject {
     @Published var errorMessage: String?
     @Published var discoveredDevices: [PeripheralDevice] = []
     @Published var showingDeviceSelection: Bool = false
-    
+
     let messagingService: MessagingServiceProtocol
     private var cancellables = Set<AnyCancellable>()
+    /// Prevents concurrent auto-reconnect attempts
+    private var isAutoReconnecting = false
     
     var myNodeId: UInt32? {
         messagingService.myNodeId
@@ -50,22 +52,29 @@ final class InboxViewModel: ObservableObject {
         self.messagingService = messagingService
         
         messagingService.connectionState
-            .receive(on: DispatchQueue.main)
+            .receive(on: RunLoop.main)
             .sink { [weak self] state in
-                self?.connectionState = state
-                self?.isConnecting = false
+                guard let self else { return }
+                self.connectionState = state
+                self.isConnecting = false
+
+                // Auto-reconnect: when we see .disconnected and have a saved device,
+                // attempt to reconnect (handles both startup and unexpected drops).
+                if case .disconnected = state {
+                    self.attemptAutoReconnect()
+                }
             }
             .store(in: &cancellables)
         
         messagingService.newMessagePublisher
-            .receive(on: DispatchQueue.main)
+            .receive(on: RunLoop.main)
             .sink { [weak self] _ in
                 self?.refreshConversations()
             }
             .store(in: &cancellables)
         
         messagingService.discoveredDevicesPublisher
-            .receive(on: DispatchQueue.main)
+            .receive(on: RunLoop.main)
             .sink { [weak self] devices in
                 self?.discoveredDevices = devices
             }
@@ -93,10 +102,11 @@ final class InboxViewModel: ObservableObject {
         Task {
             do {
                 try await messagingService.connect(to: device.id)
+                isConnecting = false
                 refreshConversations()
             } catch {
-                errorMessage = error.localizedDescription
                 isConnecting = false
+                errorMessage = error.localizedDescription
             }
         }
     }
@@ -108,5 +118,35 @@ final class InboxViewModel: ObservableObject {
     
     func refreshConversations() {
         conversations = messagingService.recentConversations()
+    }
+
+    func deleteConversation(_ conversation: Conversation) {
+        messagingService.deleteConversation(conversation)
+        refreshConversations()
+    }
+
+    // MARK: - Auto-reconnect
+
+    private func attemptAutoReconnect() {
+        guard !isAutoReconnecting,
+              !isConnecting,
+              let savedString = UserDefaults.standard.string(forKey: "lastConnectedDeviceId"),
+              let deviceId = UUID(uuidString: savedString) else { return }
+
+        NSLog("💬 [Inbox] 🔄 Auto-reconnecting to last device: \(savedString)")
+        isAutoReconnecting = true
+        isConnecting = true
+
+        Task {
+            do {
+                try await messagingService.connect(to: deviceId)
+                refreshConversations()
+                NSLog("💬 [Inbox] ✅ Auto-reconnect succeeded")
+            } catch {
+                NSLog("💬 [Inbox] ⚠️ Auto-reconnect failed: \(error.localizedDescription)")
+                // Don't surface this error — user can manually connect
+            }
+            isAutoReconnecting = false
+        }
     }
 }

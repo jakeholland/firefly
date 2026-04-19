@@ -11,92 +11,25 @@ import MapKit
 /// Map view for use in tab view
 struct MapViewTab: View {
     @StateObject private var viewModel: MapViewModel
-    @State private var position: MapCameraPosition = .automatic
-    
-    init(container: DependencyContainer = .production()) {
-        _viewModel = StateObject(wrappedValue: MapViewModel(mapService: container.mapService))
-    }
-    
-    private func updatePosition() {
-        position = .region(viewModel.region)
-    }
-    
-    var body: some View {
-        NavigationStack {
-            ZStack {
-//                Map {
-//                    ForEach(viewModel.annotations) { annotation in
-//                        Annotation(annotation.node.displayName, coordinate: annotation.coordinate) {
-//                            NodeMarkerView(node: annotation.node)
-//                        }
-//                    }
-//                }
-                
-                VStack {
-                    Spacer()
-                    
-                    HStack {
-                        Toggle(isOn: $viewModel.showFriendsOnly) {
-                            Label("Friends Only", systemImage: "person.2.fill")
-                                .font(.caption)
-                        }
-                        .toggleStyle(.button)
-                        .tint(.cyan)
-                        .padding()
-                        .background(Color.black.opacity(0.7))
-                        .clipShape(RoundedRectangle(cornerRadius: 12))
-                        
-                        Spacer()
-                        
-                        Button {
-                            viewModel.centerOnAnnotations()
-                        } label: {
-                            Image(systemName: "location.fill")
-                                .font(.title3)
-                                .foregroundStyle(.white)
-                                .padding()
-                                .background(Color.cyan)
-                                .clipShape(Circle())
-                        }
-                    }
-                    .padding()
-                }
-            }
-            .navigationTitle("Map")
-            .navigationBarTitleDisplayMode(.large)
-            .preferredColorScheme(.dark)
-        }
-    }
-}
 
-/// Map view for use in sheets (legacy)
-struct MapViewSheet: View {
-    @StateObject private var viewModel: MapViewModel
-    @Environment(\.dismiss) private var dismiss
-    @State private var position: MapCameraPosition = .automatic
-    
     init(container: DependencyContainer = .production()) {
         _viewModel = StateObject(wrappedValue: MapViewModel(mapService: container.mapService))
     }
-    
-    private func updatePosition() {
-        position = .region(viewModel.region)
-    }
-    
+
     var body: some View {
         NavigationStack {
             ZStack {
-//                Map {
-//                    ForEach(viewModel.annotations) { annotation in
-//                        Annotation(annotation.node.displayName, coordinate: annotation.coordinate) {
-//                            NodeMarkerView(node: annotation.node)
-//                        }
-//                    }
-//                }
-                
+                // Use MapKit.Map explicitly to avoid SwiftProtobuf name collision
+                MapKit.Map(coordinateRegion: $viewModel.region, annotationItems: viewModel.annotations) { annotation in
+                    MapAnnotation(coordinate: annotation.coordinate) {
+                        NodeMarkerView(node: annotation.node)
+                    }
+                }
+                .ignoresSafeArea()
+
                 VStack {
                     Spacer()
-                    
+
                     HStack {
                         Toggle(isOn: $viewModel.showFriendsOnly) {
                             Label("Friends Only", systemImage: "person.2.fill")
@@ -107,9 +40,9 @@ struct MapViewSheet: View {
                         .padding()
                         .background(Color.black.opacity(0.7))
                         .clipShape(RoundedRectangle(cornerRadius: 12))
-                        
+
                         Spacer()
-                        
+
                         Button {
                             viewModel.centerOnAnnotations()
                         } label: {
@@ -125,14 +58,9 @@ struct MapViewSheet: View {
                 }
             }
             .navigationTitle("Map")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    Button("Done") {
-                        dismiss()
-                    }
-                }
-            }
+            #if os(iOS)
+            .navigationBarTitleDisplayMode(.large)
+            #endif
             .preferredColorScheme(.dark)
         }
     }
@@ -140,7 +68,7 @@ struct MapViewSheet: View {
 
 struct NodeMarkerView: View {
     let node: MeshNode
-    
+
     var body: some View {
         VStack(spacing: 4) {
             Image(systemName: node.isFriend ? "star.fill" : "circle.fill")
@@ -149,7 +77,7 @@ struct NodeMarkerView: View {
                 .padding(8)
                 .background(Color.black.opacity(0.7))
                 .clipShape(Circle())
-            
+
             Text(node.displayName)
                 .font(.caption2)
                 .padding(4)
@@ -162,8 +90,4 @@ struct NodeMarkerView: View {
 
 #Preview("Map Tab") {
     MapViewTab()
-}
-
-#Preview("Map Sheet") {
-    MapViewSheet()
 }

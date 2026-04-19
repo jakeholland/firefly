@@ -28,7 +28,7 @@ final class ConversationViewModel: ObservableObject {
         self.messagingService = messagingService
         
         messagingService.newMessagePublisher
-            .receive(on: DispatchQueue.main)
+            .receive(on: RunLoop.main)
             .sink { [weak self] _ in
                 self?.refreshMessages()
             }
@@ -53,15 +53,11 @@ final class ConversationViewModel: ObservableObject {
                 case .directMessage(let node, _):
                     try await messagingService.sendDirectMessage(text: text, to: node.id)
                 }
-                await MainActor.run {
-                    isSending = false
-                    refreshMessages()
-                }
+                isSending = false
+                refreshMessages()
             } catch {
-                await MainActor.run {
-                    isSending = false
-                    errorMessage = error.localizedDescription
-                }
+                isSending = false
+                errorMessage = error.localizedDescription
             }
         }
     }

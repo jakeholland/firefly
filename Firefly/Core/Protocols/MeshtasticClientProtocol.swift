@@ -59,7 +59,11 @@ protocol MeshtasticClientProtocol {
     
     /// Request node information
     func requestNodeInfo(for nodeId: UInt32) async throws
-    
+
+    /// Set the display name of the local node via an AdminMessage.
+    /// shortName is preserved from the existing node info (or defaults to last-4-hex of node ID).
+    func setOwner(longName: String, shortName: String) async throws
+
     /// Get a specific node by ID
     func node(for id: UInt32) -> MeshNode?
 }
