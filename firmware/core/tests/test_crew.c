@@ -89,6 +89,39 @@ static void S02_AC1_freshness_never_when_no_pos_ever(void)
     TEST_ASSERT_EQUAL(FF_FRESH_NEVER, ff_crew_freshness(&m, 999999u));
 }
 
+static void S02_AC1_freshness_just_under_600000ms_is_stale(void)
+{
+    /* Symmetric to S02_AC1_freshness_exactly_600000ms_is_stale: the STALE
+     * side immediately below the LOST boundary, mirroring the
+     * just-under-45s LIVE-side test above. */
+    ff_crew_member_t m;
+    memset(&m, 0, sizeof(m));
+    m.has_pos = true;
+    m.pos_age_ms = 0;
+    TEST_ASSERT_EQUAL(FF_FRESH_STALE, ff_crew_freshness(&m, 599999u));
+}
+
+static void S02_AC1_freshness_handles_uint32_wraparound(void)
+{
+    /* pos_age_ms stores an absolute clock timestamp (see ff_crew.h's
+     * header comment); ff_crew_freshness computes elapsed age as
+     * `now_ms - m->pos_age_ms`, unsigned subtraction, which must stay
+     * correct across a uint32_t rollover the same way ff_clock_t's own
+     * documented convention promises.
+     *
+     * pos_age_ms = UINT32_MAX - 99 sits 100 ticks before the 0-rollover
+     * (...UINT32_MAX-99, UINT32_MAX-98, ..., UINT32_MAX, 0, 1, ...);
+     * now_ms = 100 is 100 ticks past the rollover. True elapsed time is
+     * therefore 100 + 100 = 200ms - comfortably LIVE - not the ~4.29
+     * billion ms a naive signed/unwrapped subtraction would produce. */
+    ff_crew_member_t m;
+    memset(&m, 0, sizeof(m));
+    m.has_pos = true;
+    m.pos_age_ms = UINT32_MAX - 99u;
+
+    TEST_ASSERT_EQUAL(FF_FRESH_LIVE, ff_crew_freshness(&m, 100u));
+}
+
 /* ------------------------------------------------------------------- */
 /* AC2 — upsert / no-eviction policy                                    */
 /* ------------------------------------------------------------------- */
@@ -143,6 +176,41 @@ static void S02_AC2_ninth_rejected_even_when_a_slot_is_unpaired(void)
     ff_crew_member_t *still_there = ff_crew_upsert(&c, 1u);
     TEST_ASSERT_NOT_NULL(still_there);
     TEST_ASSERT_EQUAL_UINT32(1u, still_there->node_id);
+}
+
+static void S02_AC2_set_paired_cannot_exceed_capacity(void)
+{
+    /* ff_crew_set_paired find-or-creates internally, same as upsert - the
+     * no-eviction cap must hold on THIS path too, not just via
+     * ff_crew_upsert. A capacity-bypass regression here would write past
+     * the fixed-size `members[FF_CREW_MAX]` array (an out-of-bounds
+     * write), so this also guards AC8's zero-heap/no-corruption story. */
+    fake_clock_t fc = {0};
+    ff_clock_t clk = make_clock(&fc);
+    ff_crew_t c;
+    ff_crew_init(&c, &clk);
+
+    for (uint32_t i = 1; i <= FF_CREW_MAX; i++) {
+        ff_crew_member_t *p = ff_crew_upsert(&c, i);
+        TEST_ASSERT_NOT_NULL(p);
+    }
+    TEST_ASSERT_EQUAL_UINT8(FF_CREW_MAX, c.count);
+
+    uint32_t const novel_id = 999u;
+    ff_crew_set_paired(&c, novel_id, true);
+
+    /* No new slot was created ... */
+    TEST_ASSERT_EQUAL_UINT8(FF_CREW_MAX, c.count);
+    /* ... and nothing in the roster now claims the novel id. */
+    for (uint8_t i = 0; i < c.count; i++) {
+        TEST_ASSERT_NOT_EQUAL_UINT32(novel_id, c.members[i].node_id);
+    }
+    /* The 9 original members are untouched (no silent overwrite either). */
+    for (uint32_t i = 1; i <= FF_CREW_MAX; i++) {
+        ff_crew_member_t *m = ff_crew_upsert(&c, i);
+        TEST_ASSERT_NOT_NULL(m);
+        TEST_ASSERT_EQUAL_UINT32(i, m->node_id);
+    }
 }
 
 /* ------------------------------------------------------------------- */
@@ -403,6 +471,26 @@ static void S02_AC6_distance_formatting_1km_boundary_is_exclusive_of_m(void)
     TEST_ASSERT_EQUAL_STRING("1.0 km", buf); /* exactly 1000 -> km branch, not "1000 m" */
 }
 
+static void S02_AC6_distance_formatting_1000ft_boundary_is_exclusive_of_ft(void)
+{
+    /* Imperial analogue of the 1km boundary test above: the breakpoint is
+     * 1000ft, which is 304.8m - but ff_fmt_distance's boundary check
+     * operates on the float32 *feet* value (meters / 0.3048f), not on
+     * meters directly, and 304.8f/0.3048f rounds down to 999.99994ft in
+     * float32 (verified: it does NOT cross the boundary). So this test
+     * deliberately does not use the mathematically "clean" 304.8m value
+     * for the over-the-line case - it uses 304.81m, which reliably
+     * computes to just over 1000ft in float32. A future refactor "simplifying"
+     * this to 304.8m would silently flip that row back into the ft branch. */
+    char buf[32];
+
+    ff_fmt_distance(buf, sizeof(buf), 304.76952f, true); /* ~999.9 ft */
+    TEST_ASSERT_EQUAL_STRING("1000 ft", buf); /* still under 1000.0f ft -> ft branch, rounds to 1000 */
+
+    ff_fmt_distance(buf, sizeof(buf), 304.81f, true); /* ~1000.03 ft */
+    TEST_ASSERT_EQUAL_STRING("0.2 mi", buf); /* over 1000ft -> mi branch, not "1000 ft" */
+}
+
 /* ------------------------------------------------------------------- */
 /* AC7 — age formatting                                                 */
 /* ------------------------------------------------------------------- */
@@ -516,6 +604,34 @@ static void S02_selection_none_paired_returns_null(void)
     TEST_ASSERT_NULL(ff_crew_selected(&c));
 }
 
+static void S02_selection_single_paired_member_wraps_to_itself(void)
+{
+    /* With exactly one paired member, "next" has nowhere else to go and
+     * must land back on the same member, not NULL or a crash. */
+    fake_clock_t fc = {0};
+    ff_clock_t clk = make_clock(&fc);
+    ff_crew_t c;
+    ff_crew_init(&c, &clk);
+
+    ff_crew_upsert(&c, 1u);
+    ff_crew_upsert(&c, 2u); /* present but unpaired - must stay skipped */
+    ff_crew_set_paired(&c, 1u, true);
+
+    ff_crew_member_t *sel = ff_crew_selected(&c);
+    TEST_ASSERT_NOT_NULL(sel);
+    TEST_ASSERT_EQUAL_UINT32(1u, sel->node_id);
+
+    ff_crew_select_next(&c);
+    sel = ff_crew_selected(&c);
+    TEST_ASSERT_NOT_NULL(sel);
+    TEST_ASSERT_EQUAL_UINT32(1u, sel->node_id);
+
+    /* Repeated calls stay stable too. */
+    ff_crew_select_next(&c);
+    sel = ff_crew_selected(&c);
+    TEST_ASSERT_EQUAL_UINT32(1u, sel->node_id);
+}
+
 static void S02_selection_survives_member_disappearing(void)
 {
     fake_clock_t fc = {0};
@@ -570,10 +686,13 @@ int main(void)
     RUN_TEST(S02_AC1_freshness_exactly_600000ms_is_stale);
     RUN_TEST(S02_AC1_freshness_just_over_600000ms_is_lost);
     RUN_TEST(S02_AC1_freshness_never_when_no_pos_ever);
+    RUN_TEST(S02_AC1_freshness_just_under_600000ms_is_stale);
+    RUN_TEST(S02_AC1_freshness_handles_uint32_wraparound);
 
     RUN_TEST(S02_AC2_upsert_existing_id_returns_same_slot);
     RUN_TEST(S02_AC2_ninth_unpaired_member_rejected);
     RUN_TEST(S02_AC2_ninth_rejected_even_when_a_slot_is_unpaired);
+    RUN_TEST(S02_AC2_set_paired_cannot_exceed_capacity);
 
     RUN_TEST(S02_AC3_on_position_first_fix_is_never_to_live);
     RUN_TEST(S02_AC3_on_position_age_advances_with_now_ms);
@@ -592,6 +711,7 @@ int main(void)
 
     RUN_TEST(S02_AC6_distance_formatting_exact_strings);
     RUN_TEST(S02_AC6_distance_formatting_1km_boundary_is_exclusive_of_m);
+    RUN_TEST(S02_AC6_distance_formatting_1000ft_boundary_is_exclusive_of_ft);
 
     RUN_TEST(S02_AC7_age_formatting_exact_strings);
     RUN_TEST(S02_AC7_age_formatting_60s_boundary_rolls_to_minutes);
@@ -603,6 +723,7 @@ int main(void)
     RUN_TEST(S02_selection_none_paired_returns_null);
     RUN_TEST(S02_selection_survives_member_disappearing);
     RUN_TEST(S02_selection_survives_member_appearing);
+    RUN_TEST(S02_selection_single_paired_member_wraps_to_itself);
 
     return UNITY_END();
 }

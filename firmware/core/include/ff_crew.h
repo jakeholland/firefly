@@ -80,9 +80,12 @@ extern "C" {
 #define FF_CREW_RSSI_TREND_WINDOW_MS ((uint32_t)5u * 1000u)
 #define FF_CREW_RSSI_TREND_THRESHOLD_DBM 1.5
 /* Ring-buffer capacity per member for the trend window. 16 comfortably
- * covers several samples/sec over a 5s window with headroom; oldest
- * samples are simply aged out of the window at read time, not evicted
- * early. */
+ * covers several samples/sec over a 5s window with headroom; below that
+ * rate, oldest samples are simply aged out of the window at read time,
+ * not evicted early. No Meshtastic RSSI report rate gets remotely close
+ * to 16 samples/5s, but note the cap-vs-window interaction for the
+ * record: a burst above ~3.2 samples/sec would ring-evict a sample
+ * before it naturally ages out of the 5s window. */
 #define FF_CREW_RSSI_HIST_CAP 16
 
 typedef enum { FF_FRESH_LIVE, FF_FRESH_STALE, FF_FRESH_LOST, FF_FRESH_NEVER } ff_freshness_t;
