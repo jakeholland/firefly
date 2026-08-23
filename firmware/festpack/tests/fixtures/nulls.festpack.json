@@ -1,0 +1,59 @@
+{
+  "festpack": "0.1",
+  "festival": {
+    "name": "Null Test Fest",
+    "year": 2027,
+    "start": "2027-06-10",
+    "end": "2027-06-12",
+    "timezone": "America/New_York",
+    "venue": {
+      "name": "Test Venue",
+      "lat": 40.0,
+      "lon": -83.0,
+      "approximate": false
+    }
+  },
+  "utc_offset_min": -300,
+  "stages": [
+    {
+      "id": "main",
+      "name": "Main Stage",
+      "color": "#ff0000"
+    }
+  ],
+  "schedule": [
+    {
+      "artist": "Nobody",
+      "stage": null,
+      "day": "2027-06-10",
+      "start": null,
+      "end": null,
+      "note": null
+    },
+    {
+      "artist": "Somebody",
+      "stage": "main",
+      "day": "2027-06-11",
+      "start": "14:30",
+      "end": "15:30"
+    }
+  ],
+  "map": {
+    "features": [
+      {
+        "kind": "entrance",
+        "stage": null,
+        "label": "Gate",
+        "polygon": null
+      }
+    ],
+    "landmarks": [
+      {
+        "id": "lm1",
+        "name": "Mystery Landmark",
+        "lat": null,
+        "lon": null
+      }
+    ]
+  }
+}

@@ -1,0 +1,31 @@
+{
+  "festpack": "0.1",
+  "festival": {
+    "name": "Unknown Venue Fest",
+    "year": 2027,
+    "start": "2027-09-01",
+    "end": "2027-09-02",
+    "venue": {
+      "name": "TBD",
+      "lat": null,
+      "lon": null,
+      "approximate": false
+    }
+  },
+  "stages": [
+    {
+      "id": "a",
+      "name": "A Stage",
+      "color": "#00ff00"
+    }
+  ],
+  "schedule": [
+    {
+      "artist": "Solo Act",
+      "stage": "a",
+      "day": "2027-09-01",
+      "start": null,
+      "end": null
+    }
+  ]
+}
