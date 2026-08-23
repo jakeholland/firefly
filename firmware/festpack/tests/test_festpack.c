@@ -428,14 +428,17 @@ static void S05_AC5_feature_polygon_projects_known_square_within_1m(void)
     TEST_ASSERT_EQUAL_UINT8(1, pack.n_features);
     TEST_ASSERT_EQUAL_UINT8(4, pack.features[0].n_pts);
 
-    /* Expected values computed independently (scripts/gen_fixtures, see
-     * PR body) with the same documented constants fp_project() uses:
-     * east = dlon * cos(lat0) * 111320, north = dlat * 110540. */
+    /* Expected values computed independently (see PR body for the delta
+     * vs. the old local fp_project() stub) with ff_geo_project()'s actual
+     * formula: north = dlat_rad * R, east = dlon_rad * R * cos(lat0_rad),
+     * R = 6,371,000 m (mean earth radius) — a proper radian/great-circle
+     * scale rather than fp_project()'s fixed 111320/110540 m/deg
+     * constants. Values differ from the old stub by well under 1%. */
     static const float expect_en[4][2] = {
-        {85.3559f, 110.5400f},   /* NE */
-        {-85.3559f, 110.5400f},  /* NW */
-        {-85.3559f, -110.5400f}, /* SW */
-        {85.3559f, -110.5400f},  /* SE */
+        {85.2600f, 111.1949f},   /* NE */
+        {-85.2600f, 111.1949f},  /* NW */
+        {-85.2600f, -111.1949f}, /* SW */
+        {85.2600f, -111.1949f},  /* SE */
     };
     for (int i = 0; i < 4; i++) {
         TEST_ASSERT_FLOAT_WITHIN(1.0f, expect_en[i][0], pack.features[0].pts_en[i][0]);

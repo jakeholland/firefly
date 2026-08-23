@@ -4,8 +4,8 @@
  * Makes this device a Meshtastic *client* (same role as the phone apps)
  * over any byte transport: stream framing, the want_config handshake,
  * node/position/message events, and sending. Extraction-grade: no
- * includes from firefly's core/ or app/ (the one shared type, ff_clock_t,
- * lives in platform/, see docs/ARCHITECTURE.md).
+ * includes from firefly's core/ or app/ (the shared types, ff_clock_t and
+ * ff_latlon_t, live in platform/, see docs/ARCHITECTURE.md).
  *
  * See docs/specs/S03-meshclient.md for the full behavioral contract.
  *
@@ -20,6 +20,7 @@
 #include <stdint.h>
 
 #include "ff_clock.h"
+#include "ff_latlon.h"
 
 #include "mc_framing.h" /* MC_MAX_FRAME */
 
@@ -62,14 +63,6 @@ typedef struct {
     int (*read)(void *io, uint8_t *buf, size_t maxlen); /* nonblocking, 0 = nothing */
     void *io;
 } mc_transport_t;
-
-/** A geographic point, degrees. Mirrors core/geo's ff_latlon_t (S01) by
- * shape; meshclient can't include core/, so it carries its own copy of
- * this tiny type until a shared platform/ header exists for it too. */
-typedef struct {
-    double lat;
-    double lon;
-} ff_latlon_t;
 
 /* -------------------------------------------------------------------- */
 /* Decoded value types (decode scope v1)                                */

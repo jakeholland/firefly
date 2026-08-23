@@ -16,6 +16,7 @@
 
 #include "unity.h"
 
+#include "ff_geo.h"
 #include "ff_settings.h"
 #include "ff_store.h"
 #include "store_file.h"
@@ -155,9 +156,11 @@ static void settings_round_trip_through_real_file_store(void)
     out.quiet_to_min = 480;
     strncpy(out.my_name, "Riley", sizeof(out.my_name) - 1);
     out.cal_valid = true;
-    for (size_t i = 0; i < FF_SETTINGS_CAL_BLOB_LEN; i++) {
-        out.compass_cal_blob[i] = (uint8_t)(255 - i);
-    }
+    out.compass_cal.hard_offset = (ff_vec3_t){-8.0f, 4.5f, 1.25f};
+    out.compass_cal.soft_scale[0] = 0.92f;
+    out.compass_cal.soft_scale[1] = 1.08f;
+    out.compass_cal.soft_scale[2] = 1.00f;
+    out.compass_cal.declination_deg = 4.0f; /* e.g. Thornville, OH (Lost Lands) */
 
     ff_settings_save(&out, &st);
 

@@ -7,6 +7,10 @@ add_library(ff-core STATIC
 
 target_include_directories(ff-core PUBLIC include)
 target_compile_features(ff-core PUBLIC c_std_11)
+# ff_geo.h's ff_latlon_t lives in platform/ (docs/ARCHITECTURE.md's shared
+# seam, see firmware/platform/include/ff_latlon.h) — PUBLIC so anything
+# linking ff-core also sees platform/include for that (and ff_clock.h).
+target_link_libraries(ff-core PUBLIC ff-platform)
 # ff_geo.c calls cos()/sqrt()/fmodf() etc (math.h). On macOS/AppleClang that
 # resolves via libSystem with no extra flag, which is why this was missed
 # locally; glibc (Linux CI) needs an explicit -lm or the final link fails

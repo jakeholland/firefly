@@ -18,6 +18,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "ff_latlon.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -27,23 +29,6 @@ extern "C" {
 #define FP_MAX_FEATURES 24
 #define FP_MAX_LANDMARKS 12
 #define FP_MAX_POLY_PTS 24
-
-/*
- * ff_latlon_t — WGS84 degrees.
- *
- * S01 (core/geo) defines this same shape in ff_geo.h and is being built in
- * parallel; per this slice's brief we do NOT depend on it. This is a
- * deliberate, documented duplicate.
- * TODO(S01): once core/geo lands, drop this typedef and
- * `#include "ff_geo.h"` instead — the field layout matches exactly, so the
- * swap is a no-op at every call site.
- */
-#ifndef FF_LATLON_T_DEFINED
-#define FF_LATLON_T_DEFINED
-typedef struct {
-    double lat, lon; /* degrees, WGS84 */
-} ff_latlon_t;
-#endif
 
 /** Result of fp_parse(). */
 typedef enum {
