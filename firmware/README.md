@@ -8,9 +8,12 @@ firmware/
   meshclient/   Meshtastic client library (skeleton — S03)
   festpack/     festpack.json parser (skeleton — S05)
   app/          ff_app_state.h (S13b) + LVGL screens (skeleton — S06+)
-  targets/sim/  ffsim — desktop sim target (S13); fixture.h/fixture_view.h (S13b)
+  targets/sim/  ffsim — desktop sim target (S13); fixture.h/fixture_view.h (S13b);
+                ctl_server.h/.c (S13c control socket), live.h/.c (S13c --connect/--pack)
   tools/        compare_png — golden-screenshot pixel diff (S14 slice b)
+                dev/         compose.yml + crew_sim.py + CTL.md — the live dev loop (S13d)
   tests/        tests/fixtures/*.json, tests/golden/*.png, run_goldens.sh (S13/S14 slice b)
+                e2e/         pytest e2e scenarios against dockerized meshtasticd (S14d)
   third_party/  vendored single-header libs (stb_image_write.h, stb_image.h)
   lv_conf.h     LVGL configuration for the sim build
 ```
@@ -58,6 +61,25 @@ mode; a no-op-but-honored belt-and-suspenders in headless mode, which is
 already deterministic on its own — see `targets/sim/main.c`'s header
 comment).
 
+### Live mode + the control socket (S13 slice c/d)
+
+```sh
+./build/ffsim --headless --ctl 9000 \
+    --connect 127.0.0.1:4403 \
+    --pack festpack/tests/fixtures/lost-lands-2026.festpack.json
+```
+
+Opens a newline-JSON control socket on `127.0.0.1:9000` (protocol:
+`tools/dev/CTL.md`) instead of rendering once and exiting — `tap`/
+`swipe`/`clock`/`state`/`screenshot`/`quit` commands, one JSON object per
+line in, one JSON line back. `--connect HOST:PORT` wires up a live
+Meshtastic connection (`targets/sim/live.h`) so `{"cmd":"state"}` dumps
+reflect real mesh traffic instead of a static fixture; `--pack FILE`
+anchors "my position" at a festpack's venue origin (the sim has no real
+GPS). See `tools/dev/README.md` for the whole dev loop (dockerized
+meshtasticd + `crew_sim.py` scenario driver) and its documented,
+verified-against-the-real-container limitations.
+
 ## Golden screenshots
 
 ```sh
@@ -87,8 +109,35 @@ criteria-numbered per spec (`SNN_ACX_description`), per `AGENTS.md`.
 - `test_store_file` — `targets/sim/store_file.h`, the sim's trivial
   file-backed `ff_store_t` (single key-value file), plus an end-to-end
   `ff_settings_t` round trip through the real file store.
-- `test_fixture` (S13b) — `targets/sim/fixture.h`'s JSON loader: the
-  three committed radar fixtures parse to their exact documented values,
-  IO/JSON error paths, missing-section defaults, `ff_fixture_stem`.
+- `test_fixture` (S13b/c) — `targets/sim/fixture.h`'s JSON loader/dumper:
+  the three committed radar fixtures parse to their exact documented
+  values, IO/JSON error paths, missing-section defaults,
+  `ff_fixture_stem`, and (S13c) `ff_fixture_dump_json`'s dump-then-reload
+  round trip, including JSON-escaped strings and a maximally-populated
+  state.
+- `test_ctl_server` (S13c) — `targets/sim/ctl_server.h`'s line framing
+  (exact `FF_CTL_MAX_LINE` boundary, oversized-line resync) and command
+  dispatch (every command's success path and guard paths), plus a real
+  loopback-socket end-to-end pass.
+- `test_live` (S13c) — `targets/sim/live.h`'s festpack-venue-origin
+  loading and a full synthetic mc_client -> crew -> radar/signals
+  pipeline test (mock transport, hand-encoded protobuf frames, same
+  technique as `meshclient/tests/test_meshclient.c`).
 - `test_png_diff` (S14 slice b) — `tools/png_diff.h`'s pixel-diff core,
   including the exact 0.4%/0.5%/0.6% threshold boundary.
+
+## e2e tests (S14 slice d)
+
+`tests/e2e/` (pytest): docker compose up meshtasticd -> `ffsim --headless
+--ctl PORT --connect ...` -> drive scenarios with `tools/dev/crew_sim.py`
+-> assert via the ctl socket's state dump. Nightly + `workflow_dispatch`
+only (`.github/workflows/e2e.yml`) — not a PR gate, docker's too slow.
+See `tests/e2e/test_scenarios.py`'s module docstring for exactly what's
+verified working end to end and what's a documented, evidence-based
+limitation of testing against a single stock (no-hardware) meshtasticd
+instance.
+
+```sh
+pip install -r tests/e2e/requirements.txt
+cd tests/e2e && pytest -v   # conftest.py brings meshtasticd up/down itself
+```

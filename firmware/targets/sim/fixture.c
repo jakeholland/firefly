@@ -20,6 +20,7 @@
 
 #include "fixture.h"
 
+#include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -92,16 +93,118 @@ static bool fx_is_null(fx_ctx_t const *c, int i)
            memcmp(c->js + t->start, "null", 4) == 0;
 }
 
+/* Appends the UTF-8 encoding of a single BMP code point to *w (bounded by
+ * end), advancing *w. Surrogate pairs (\uD800-\uDFFF) aren't handled —
+ * S13c's dump function (fw_json_str) never emits them (every byte >=
+ * 0x20 is passed through raw, UTF-8 and all; only control bytes get
+ * \u-escaped, and control bytes are always single UTF-16 code units) —
+ * so this is a non-goal here, not a silently-wrong path: a lone
+ * surrogate from some other JSON source falls through the ASCII/2-byte
+ * cases below and encodes as an (invalid but bounded, non-crashing)
+ * 3-byte sequence, same as any other BMP code point. */
+static void fx_append_utf8(char **w, char const *end, unsigned cp)
+{
+    if (cp < 0x80) {
+        if ((end - *w) >= 1) *(*w)++ = (char)cp;
+    } else if (cp < 0x800) {
+        if ((end - *w) >= 2) {
+            *(*w)++ = (char)(0xC0 | (cp >> 6));
+            *(*w)++ = (char)(0x80 | (cp & 0x3F));
+        }
+    } else {
+        if ((end - *w) >= 3) {
+            *(*w)++ = (char)(0xE0 | (cp >> 12));
+            *(*w)++ = (char)(0x80 | ((cp >> 6) & 0x3F));
+            *(*w)++ = (char)(0x80 | (cp & 0x3F));
+        }
+    }
+}
+
+static int fx_hex_digit(char ch)
+{
+    if (ch >= '0' && ch <= '9') return ch - '0';
+    if (ch >= 'a' && ch <= 'f') return ch - 'a' + 10;
+    if (ch >= 'A' && ch <= 'F') return ch - 'A' + 10;
+    return -1;
+}
+
+/* fx_copy_str — copies a JSMN_STRING token, decoding standard JSON
+ * backslash escapes (\" \\ \/ \n \r \t \b \f \uXXXX) rather than copying
+ * jsmn's raw (still-escaped) substring verbatim.
+ *
+ * jsmn itself never decodes escapes (it only finds string boundaries) —
+ * this was never a problem for the hand-authored fixtures under
+ * tests/fixtures/ (none of their string fields use quotes/backslashes),
+ * but it broke ff_fixture_dump_json's round-trip contract the moment a
+ * dumped name/text field (which CAN contain arbitrary live mesh data —
+ * see fixture.h's ff_fixture_dump_json doc comment) needed escaping: the
+ * reloaded string came back with literal backslashes still in it instead
+ * of the original characters. Decoding here, once, fixes every caller
+ * (fixture loading AND the ctl socket's round-trip contract) instead of
+ * papering over it only where it was first noticed.
+ *
+ * Truncates to `dst_sz` like before if needed; an incomplete/malformed
+ * escape at the very end of the token (should never happen for
+ * well-formed JSON, which is all jsmn will have accepted) is written out
+ * literally rather than read past the token's bounds. */
 static void fx_copy_str(fx_ctx_t const *c, int i, char *dst, size_t dst_sz)
 {
     dst[0] = '\0';
     if (i < 0 || i >= c->ntoks || dst_sz == 0) return;
     jsmntok_t const *t = &c->toks[i];
     if (t->type != JSMN_STRING) return;
-    size_t n = (size_t)(t->end - t->start);
-    if (n >= dst_sz) n = dst_sz - 1;
-    memcpy(dst, c->js + t->start, n);
-    dst[n] = '\0';
+
+    char const *src = c->js + t->start;
+    char const *src_end = c->js + t->end;
+    char *w = dst;
+    char *w_end = dst + (dst_sz - 1); /* reserve the final NUL */
+
+    while (src < src_end && w < w_end) {
+        if (*src != '\\') {
+            *w++ = *src++;
+            continue;
+        }
+        /* Backslash with nothing after it (shouldn't happen inside a
+         * jsmn-validated string, but bounds-check regardless): stop
+         * rather than read past src_end. */
+        if (src + 1 >= src_end) break;
+        char esc = src[1];
+        switch (esc) {
+            case '"': *w++ = '"'; src += 2; break;
+            case '\\': *w++ = '\\'; src += 2; break;
+            case '/': *w++ = '/'; src += 2; break;
+            case 'n': *w++ = '\n'; src += 2; break;
+            case 'r': *w++ = '\r'; src += 2; break;
+            case 't': *w++ = '\t'; src += 2; break;
+            case 'b': *w++ = '\b'; src += 2; break;
+            case 'f': *w++ = '\f'; src += 2; break;
+            case 'u': {
+                if (src + 6 > src_end) {
+                    /* Truncated \u escape: emit literally, bounded. */
+                    *w++ = *src++;
+                    break;
+                }
+                int d0 = fx_hex_digit(src[2]), d1 = fx_hex_digit(src[3]);
+                int d2 = fx_hex_digit(src[4]), d3 = fx_hex_digit(src[5]);
+                if (d0 < 0 || d1 < 0 || d2 < 0 || d3 < 0) {
+                    *w++ = *src++;
+                    break;
+                }
+                unsigned cp = ((unsigned)d0 << 12) | ((unsigned)d1 << 8) | ((unsigned)d2 << 4) | (unsigned)d3;
+                fx_append_utf8(&w, w_end, cp);
+                src += 6;
+                break;
+            }
+            default:
+                /* Unrecognized escape: emit the backslash literally
+                 * (matches "tolerant, never a hard parse failure" style
+                 * used throughout this loader) and let the next byte be
+                 * read normally on the next loop iteration. */
+                *w++ = *src++;
+                break;
+        }
+    }
+    *w = '\0';
 }
 
 static double fx_num(fx_ctx_t const *c, int i, double dflt)
@@ -523,4 +626,230 @@ void ff_fixture_stem(char const *path, char *out, size_t out_sz)
     if (len >= out_sz) len = out_sz - 1;
     memcpy(out, base, len);
     out[len] = '\0';
+}
+
+/* ---------------------------------------------------------------------
+ * S13c — ff_fixture_dump_json: ff_app_state_t -> JSON (inverse of the
+ * loader above). See fixture.h's doc comment for the round-trip contract;
+ * reuses the same fx_*_table[] enum tables the loader defines above (this
+ * is the one direction where sharing beats "duplicated here, not shared" —
+ * same translation unit, same tables, zero risk of the two directions
+ * drifting apart on an enum string).
+ * ------------------------------------------------------------------- */
+
+/* Bounded, allocation-free cursor writer. `end` reserves exactly one byte
+ * for the final NUL terminator ff_fixture_dump_json writes on success, so
+ * every fw_* helper below can treat [p, end) as the full usable range and
+ * never has to special-case the terminator itself. */
+typedef struct {
+    char *p;
+    char *end;
+    bool overflow;
+} fw_cur_t;
+
+static void fw_init(fw_cur_t *w, char *buf, size_t buf_sz)
+{
+    w->overflow = (buf == NULL || buf_sz == 0);
+    w->p = buf;
+    w->end = w->overflow ? buf : buf + (buf_sz - 1);
+}
+
+static void fw_raw(fw_cur_t *w, char const *s)
+{
+    if (w->overflow) return;
+    size_t n = strlen(s);
+    if ((size_t)(w->end - w->p) < n) {
+        w->overflow = true;
+        return;
+    }
+    memcpy(w->p, s, n);
+    w->p += n;
+}
+
+/* printf-style append, bounded to the remaining [p, end) span. Safe to
+ * call even when nearly full: vsnprintf is given exactly enough room to
+ * write its own trailing NUL at `end` (the byte fw_init reserved for
+ * *this* function's final terminator), which is always within `buf`. */
+static void fw_fmt(fw_cur_t *w, char const *fmt, ...)
+{
+    if (w->overflow) return;
+    size_t avail = (size_t)(w->end - w->p);
+    va_list ap;
+    va_start(ap, fmt);
+    int n = vsnprintf(w->p, avail + 1, fmt, ap);
+    va_end(ap);
+    if (n < 0 || (size_t)n > avail) {
+        w->overflow = true;
+        return;
+    }
+    w->p += (size_t)n;
+}
+
+/* Writes `s` as a quoted, escaped JSON string. `s` is untrusted-ish: it
+ * can carry live mesh data (node long/short names, free-text messages)
+ * that isn't developer-authored, so every byte is escaped rather than
+ * assumed JSON-safe — an unescaped `"` or control byte here would corrupt
+ * the ctl socket's response framing (see ctl_server.c, which embeds this
+ * output directly into its own response line). */
+static void fw_json_str(fw_cur_t *w, char const *s)
+{
+    if (w->overflow) return;
+    fw_raw(w, "\"");
+    if (s == NULL) s = "";
+    for (unsigned char const *p = (unsigned char const *)s; *p != '\0' && !w->overflow; p++) {
+        switch (*p) {
+            case '"': fw_raw(w, "\\\""); break;
+            case '\\': fw_raw(w, "\\\\"); break;
+            case '\n': fw_raw(w, "\\n"); break;
+            case '\r': fw_raw(w, "\\r"); break;
+            case '\t': fw_raw(w, "\\t"); break;
+            default:
+                if (*p < 0x20) {
+                    fw_fmt(w, "\\u%04x", (unsigned)*p);
+                } else {
+                    char one[2] = {(char)*p, '\0'};
+                    fw_raw(w, one);
+                }
+                break;
+        }
+    }
+    fw_raw(w, "\"");
+}
+
+static char const *fx_enum_name(fx_enum_entry_t const *table, size_t n_entries, int value, char const *dflt)
+{
+    for (size_t k = 0; k < n_entries; k++) {
+        if (table[k].value == value) return table[k].name;
+    }
+    return dflt;
+}
+
+static void fw_radar_dot(fw_cur_t *w, ff_radar_dot_t const *d)
+{
+    fw_raw(w, "{\"ring_deg\":");
+    fw_fmt(w, "%g", (double)d->ring_deg);
+    char initial[2] = {d->initial, '\0'}; /* '\0' initial -> writes "" */
+    fw_raw(w, ",\"initial\":");
+    fw_json_str(w, initial);
+    fw_fmt(w, ",\"color_idx\":%u", (unsigned)d->color_idx);
+    fw_raw(w, d->stale ? ",\"stale\":true}" : ",\"stale\":false}");
+}
+
+static void fw_now_row(fw_cur_t *w, ff_app_now_row_t const *r)
+{
+    fw_raw(w, "{\"artist\":");
+    fw_json_str(w, r->artist);
+    fw_raw(w, ",\"stage_name\":");
+    fw_json_str(w, r->stage_name);
+    fw_fmt(w, ",\"stage_color_rgb\":\"#%06x\"", (unsigned)(r->stage_color_rgb & 0xFFFFFFu));
+    fw_fmt(w, ",\"mins_left\":%d", (int)r->mins_left);
+    fw_fmt(w, ",\"pct_done\":%u}", (unsigned)r->pct_done);
+}
+
+static void fw_feed_item(fw_cur_t *w, ff_app_feed_item_t const *it)
+{
+    fw_raw(w, "{\"kind\":\"");
+    fw_raw(w, fx_enum_name(fx_feed_kind_table, sizeof(fx_feed_kind_table) / sizeof(fx_feed_kind_table[0]), it->kind,
+                            "text"));
+    fw_raw(w, "\",\"from_name\":");
+    fw_json_str(w, it->from_name);
+    fw_raw(w, ",\"text\":");
+    fw_json_str(w, it->text);
+    fw_raw(w, ",\"age_str\":");
+    fw_json_str(w, it->age_str);
+    fw_raw(w, it->unread ? ",\"unread\":true}" : ",\"unread\":false}");
+}
+
+int ff_fixture_dump_json(ff_app_state_t const *s, char *buf, size_t buf_sz)
+{
+    if (s == NULL || buf == NULL || buf_sz == 0) return -1;
+
+    fw_cur_t w;
+    fw_init(&w, buf, buf_sz);
+
+    fw_raw(&w, "{\"fixture\":");
+    fw_json_str(&w, s->fixture_name);
+    fw_raw(&w, ",\"face\":\"");
+    fw_raw(&w, fx_enum_name(fx_face_table, sizeof(fx_face_table) / sizeof(fx_face_table[0]), s->active_face,
+                             "radar"));
+    fw_raw(&w, "\"");
+
+    /* radar */
+    fw_raw(&w, ",\"radar\":{\"mode\":\"");
+    fw_raw(&w, fx_enum_name(fx_radar_mode_table, sizeof(fx_radar_mode_table) / sizeof(fx_radar_mode_table[0]),
+                             s->radar.mode, "nosel"));
+    fw_raw(&w, "\"");
+    fw_fmt(&w, ",\"arrow_deg\":%g", (double)s->radar.arrow_deg);
+    fw_raw(&w, s->radar.arrow_valid ? ",\"arrow_valid\":true" : ",\"arrow_valid\":false");
+    fw_raw(&w, ",\"name\":");
+    fw_json_str(&w, s->radar.name);
+    fw_raw(&w, ",\"dist_str\":");
+    fw_json_str(&w, s->radar.dist_str);
+    fw_raw(&w, ",\"age_str\":");
+    fw_json_str(&w, s->radar.age_str);
+    fw_fmt(&w, ",\"trend\":%d", (int)s->radar.trend);
+    fw_raw(&w, ",\"clock_str\":");
+    fw_json_str(&w, s->radar.clock_str);
+    fw_fmt(&w, ",\"batt_pct\":%d", (int)s->radar.batt_pct);
+    fw_raw(&w, s->radar.mesh_ok ? ",\"mesh_ok\":true" : ",\"mesh_ok\":false");
+    fw_raw(&w, ",\"dots\":[");
+    for (uint8_t i = 0; i < s->radar.n_dots; i++) {
+        if (i > 0) fw_raw(&w, ",");
+        fw_radar_dot(&w, &s->radar.dots[i]);
+    }
+    fw_raw(&w, "]}");
+
+    /* now */
+    fw_raw(&w, ",\"now\":{\"rows\":[");
+    for (uint8_t i = 0; i < s->now.n_rows; i++) {
+        if (i > 0) fw_raw(&w, ",");
+        fw_now_row(&w, &s->now.rows[i]);
+    }
+    fw_raw(&w, "]");
+    if (s->now.next.valid) {
+        fw_raw(&w, ",\"next\":{\"artist\":");
+        fw_json_str(&w, s->now.next.artist);
+        fw_raw(&w, ",\"stage_name\":");
+        fw_json_str(&w, s->now.next.stage_name);
+        fw_fmt(&w, ",\"mins_until\":%d}", (int)s->now.next.mins_until);
+    }
+    fw_raw(&w, s->now.tbd ? ",\"tbd\":true}" : ",\"tbd\":false}");
+
+    /* signals */
+    fw_raw(&w, ",\"signals\":{\"items\":[");
+    for (uint8_t i = 0; i < s->signals.n_items; i++) {
+        if (i > 0) fw_raw(&w, ",");
+        fw_feed_item(&w, &s->signals.items[i]);
+    }
+    fw_fmt(&w, "],\"unread_count\":%u}", (unsigned)s->signals.unread_count);
+
+    /* flare */
+    fw_raw(&w, ",\"flare\":{\"state\":\"");
+    fw_raw(&w, fx_enum_name(fx_flare_state_table, sizeof(fx_flare_state_table) / sizeof(fx_flare_state_table[0]),
+                             s->flare.state, "idle"));
+    fw_raw(&w, "\",\"from_name\":");
+    fw_json_str(&w, s->flare.from_name);
+    fw_fmt(&w, ",\"expires_in_ms\":%d}", (int)s->flare.expires_in_ms);
+
+    /* settings */
+    fw_raw(&w, ",\"settings\":{");
+    fw_raw(&w, s->settings.imperial ? "\"imperial\":true" : "\"imperial\":false");
+    fw_raw(&w, ",\"share_mode\":\"");
+    fw_raw(&w, fx_enum_name(fx_share_mode_table, sizeof(fx_share_mode_table) / sizeof(fx_share_mode_table[0]),
+                             s->settings.share_mode, "live"));
+    fw_raw(&w, "\"");
+    fw_raw(&w, s->settings.haptics ? ",\"haptics\":true" : ",\"haptics\":false");
+    fw_raw(&w, s->settings.night_glow ? ",\"night_glow\":true" : ",\"night_glow\":false");
+    fw_fmt(&w, ",\"water_min\":%u", (unsigned)s->settings.water_min);
+    fw_fmt(&w, ",\"quiet_from_min\":%u", (unsigned)s->settings.quiet_from_min);
+    fw_fmt(&w, ",\"quiet_to_min\":%u", (unsigned)s->settings.quiet_to_min);
+    fw_raw(&w, ",\"my_name\":");
+    fw_json_str(&w, s->settings.my_name);
+    fw_raw(&w, "}");
+
+    fw_raw(&w, "}"); /* close root */
+
+    if (w.overflow) return -1;
+    *w.p = '\0';
+    return (int)(w.p - buf);
 }

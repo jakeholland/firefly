@@ -30,6 +30,64 @@ if(FF_BUILD_TESTS)
     add_test(NAME test_fixture COMMAND test_fixture)
 endif()
 
+# S13c
+# ---------------------------------------------------------------------------
+# ff_ctl_server: the --ctl PORT control socket. A STATIC library (not
+# sources compiled straight into ffsim) for the same reason as
+# ff-sim-fixture above — test_ctl_server links the exact object under
+# test rather than duplicating it in a second translation unit. No
+# ff-app/LVGL/fixture dependency at all (see ctl_server.h's design note):
+# it only knows ff_ctl_handlers_t, a caller-supplied vtable.
+# ---------------------------------------------------------------------------
+add_library(ff-sim-ctl STATIC
+    ctl_server.c
+)
+target_include_directories(ff-sim-ctl PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(ff-sim-ctl PRIVATE ff-jsmn)
+ff_apply_warnings(ff-sim-ctl)
+
+if(FF_BUILD_TESTS)
+    add_executable(test_ctl_server
+        tests/test_ctl_server.c
+    )
+    target_link_libraries(test_ctl_server PRIVATE ff-sim-ctl unity)
+    ff_apply_warnings(test_ctl_server)
+
+    add_test(NAME test_ctl_server COMMAND test_ctl_server)
+endif()
+
+# S13c
+# ---------------------------------------------------------------------------
+# ff_live: minimal mc_client -> ff_app_state_t wiring for `ffsim --connect`
+# (S13 slice a's --connect flag, implemented here as slice c/d's
+# prerequisite — see the PR body's "deviations" section for why this
+# landed in this slice rather than a/b). STATIC library so test_live can
+# link it directly.
+# ---------------------------------------------------------------------------
+add_library(ff-sim-live STATIC
+    live.c
+)
+target_include_directories(ff-sim-live PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(ff-sim-live PUBLIC ff-sim-fixture ff-meshclient ff-core PRIVATE ff-festpack)
+ff_apply_warnings(ff-sim-live)
+
+if(FF_BUILD_TESTS)
+    add_executable(test_live
+        tests/test_live.c
+    )
+    # test_live.c hand-encodes synthetic mc protobuf frames (same technique
+    # as meshclient/tests/test_meshclient.c) to drive ff_live_t end to end
+    # without a real meshtasticd/docker — needs the proto message structs
+    # and nanopb's encoder directly, not just ff-meshclient's public API.
+    target_link_libraries(test_live PRIVATE ff-sim-live ff-meshclient-proto ff-nanopb unity)
+    target_compile_definitions(test_live PRIVATE
+        FF_LIVE_FESTPACK_FIXTURES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../../festpack/tests/fixtures"
+    )
+    ff_apply_warnings(test_live)
+
+    add_test(NAME test_live COMMAND test_live)
+endif()
+
 add_executable(ffsim
     main.c
     fixture_view.c  # S13b — placeholder fixture debug face; no separate
@@ -37,6 +95,10 @@ add_executable(ffsim
                      # covered by golden PNGs, not unit tests, per
                      # docs/ARCHITECTURE.md's "compute = unit; render =
                      # golden PNG" split).
+    screenshot.c     # S13c — shared XRGB8888->PNG writer (extracted out of
+                     # main.c so the ctl socket's "screenshot" command and
+                     # the one-shot --headless --screenshot path share one
+                     # implementation).
 )
 
 # Land the binary at build/ffsim regardless of source nesting — that's the
@@ -52,6 +114,8 @@ target_link_libraries(ffsim PRIVATE
     # the final link line (harmless on Linux/GNU ld, but Apple's ld warns
     # "ignoring duplicate libraries" for it).
     ff-sim-fixture  # S13b — fixture.h loader (fixture.c above)
+    ff-sim-ctl      # S13c — ctl_server.h/.c (ctl_server.c above)
+    ff-sim-live     # S13c — live.h/.c: --connect / --pack wiring (live.c above)
     lvgl::lvgl
     ff-stb-image-write
 )

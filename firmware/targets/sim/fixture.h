@@ -69,6 +69,50 @@ ff_fixture_result_t ff_fixture_load_file(char const *path, ff_app_state_t *out);
  */
 void ff_fixture_stem(char const *path, char *out, size_t out_sz);
 
+/* -----------------------------------------------------------------------
+ * S13c — the inverse direction: ff_app_state_t -> JSON.
+ *
+ * Written for the ctl socket's `{"cmd":"state"}` response (docs/specs/
+ * S13-sim-target.md slice c: "dump the current ff_app_state_t as JSON,
+ * the same schema the fixture loader reads, so dumps round-trip as
+ * fixtures"). Emits exactly the schema documented in
+ * tests/fixtures/README.md/parsed by ff_fixture_load_json above — every
+ * field this file's loader understands, the dumper writes, so
+ * `ff_fixture_load_json(dump(s)) == s` for any `s` reachable through the
+ * loader (dump -> load round-trips; the reverse isn't guaranteed, since a
+ * hand-authored fixture may omit fields that then read back as their
+ * documented zero default, which is exactly what gets dumped for them
+ * too, so it still round-trips — the only source of divergence would be a
+ * fixture deliberately relying on "key entirely absent" vs "key present
+ * with the zero value", which the loader treats identically).
+ * --------------------------------------------------------------------- */
+
+/* Output budget for ff_fixture_dump_json: generous enough for a
+ * maximally-populated state (8 radar dots, 3 now rows, 8 signal items,
+ * every string field at its cap) with headroom — see test_fixture.c's
+ * `dump_max_populated_state_fits_budget` for the actual worst-case size
+ * check. Matches the same "fixed arena, no allocation surprises" budget
+ * discipline as FIX_MAX_JSON_LEN in fixture.c (kept here, not there,
+ * because callers sizing a response/scratch buffer need it without
+ * pulling in fixture.c's internals). */
+#define FF_FIXTURE_DUMP_MAX (8u * 1024u)
+
+/**
+ * ff_fixture_dump_json — serialize `*s` into `buf` as a single JSON
+ * object (no trailing newline), matching the schema ff_fixture_load_json
+ * parses. Every string field is JSON-escaped (quotes/backslashes/control
+ * bytes) — state can carry live mesh data (node long/short names, free
+ * text messages) that is not developer-authored and must not be able to
+ * break the response framing.
+ *
+ * Returns the number of bytes written (excluding the NUL terminator, always
+ * NUL-terminated on success) on success, or -1 if the serialized form
+ * would not fit in `buf_sz` (buf is left in an unspecified, NOT
+ * necessarily NUL-terminated state in that case — callers must check the
+ * return value before using `buf`) or if `s`/`buf` is NULL/`buf_sz` is 0.
+ */
+int ff_fixture_dump_json(ff_app_state_t const *s, char *buf, size_t buf_sz);
+
 #ifdef __cplusplus
 }
 #endif
