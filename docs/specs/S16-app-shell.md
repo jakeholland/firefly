@@ -65,15 +65,31 @@ stray default change from being live.
 ### 2. Reconnect silently refreshes stale positions
 
 `mc_client` auto-reconnects and restarts `want_config`, which replays
-meshtasticd's cached node DB: a burst of `on_node`/`on_position` carrying **old
+meshtasticd's cached node DB: a burst of **`on_node`** callbacks carrying **old
 positions that arrive now**. `live.c:99-107` stamps every one with the local
-clock, ignoring `mc_position_t.time` and `rx_time`. Post-reconnect, every crew
-member instantly reads LIVE off cached data — a textbook violation of the
-honest-data rule, and what the surviving pipeline inherits unless forbidden.
+clock. Post-reconnect, every crew member instantly reads LIVE off cached data —
+a textbook violation of the honest-data rule, and what the surviving pipeline
+inherits unless forbidden.
+
+**The replay carries no `rx_time`** (PR #34 round-2 review, W1).
+`mc_client.c:222` calls `mc_position_from_pb(&ni->position, false, 0, ...)` —
+`has_rx_time` is hardcoded false on the NodeInfo path, because `rx_time` is a
+`MeshPacket` field and a `NodeInfo` is not a `MeshPacket`. So an "if
+`has_rx_time`, stamp from it" rule is silent on precisely the path this defect
+is about, and a test written as an `on_position` call would pass while the real
+replay — which arrives as `on_node` — stayed broken.
+
+The honest age source for a replayed position is `mc_nodeinfo_t.last_heard`
+(unix seconds, populated unconditionally at `mc_client.c:230`, currently unused
+by anything). So the rule has three branches and no fallback to "now":
+
+> A position's age is stamped from `rx_time` when it arrives over the air
+> (`on_position`), from `last_heard` when it arrives in a NodeInfo replay
+> (`on_node`), and **never from the local clock**. If neither is available the
+> age is *unknown* — which is `FF_FRESH_NEVER`, not fresh.
 
 `ff_crew_on_position`'s fourth parameter is already named `rx_time_ms`, so a
-past receive time can be stamped. **A position carrying `has_rx_time` is
-stamped from `rx_time`, never from the local clock.**
+past receive time can be stamped.
 
 ## Wall clock — the seam that doesn't exist yet
 
@@ -84,34 +100,58 @@ it. `ff_quiet_now()` and `ff_water_tick()` both take `now_min`. Without this,
 the entire Now face is unreachable through the shell and quiet hours cannot be
 evaluated. S16 is the only candidate owner, so it claims it.
 
-Everything needed already exists:
+The pieces exist, but **not** where the first draft said. `rx_time` rides only
+on live over-the-air packets, so it cannot bootstrap anything — the handshake
+would establish no offset and the puck would sit in UNKNOWN until the first
+spontaneous Position arrived. The bootstrap source is
+`mc_nodeinfo_t.last_heard`, unix seconds, populated on every NodeInfo including
+the want_config replay — so the offset latches during the handshake.
 
-- `mc_position_t.rx_time` is **unix seconds**, stamped by the local radio — the
-  comms brain is a stock Meshtastic node with an L76K GPS, so it knows real
-  time. First position with `has_rx_time` establishes an offset against the
-  monotonic clock; wall time is monotonic + offset from then on.
-- `fp_pack_t.utc_offset_min` converts unix → local minutes-of-day, and
-  `fp_pack_t.utc_offset_assumed` already flags when that offset was a default
-  rather than stated by the pack.
-- `ff_sched.h:63-75` defines the festival-day mapping (`now_min` in
-  `[360, 1800)`; a 01:00 set belongs to the *previous* `day_doy`).
+- **Offset**: `last_heard` (or `rx_time`, when live) minus the monotonic clock
+  at the moment of receipt. Wall time is monotonic + offset thereafter.
+- **Local time**: `fp_pack_t.utc_offset_min`, with `utc_offset_assumed` already
+  flagging a defaulted rather than stated offset.
+- **Festival day**: `ff_sched.h:63-75`'s mapping (`now_min` in `[360, 1800)`;
+  01:00 belongs to the *previous* `day_doy` at `now_min == 1500`). Confirmed to
+  compose correctly with a unix→local conversion.
 
-**The honesty rule, and it is the point of this section:** until a position
-with `has_rx_time` arrives, **the puck does not know what time it is**, and
-must say so rather than guessing. Not "assume boot time", not "start at
-00:00" — unknown, explicitly, the same way an unknown position is. A Now face
-showing a plausible-but-invented clock is precisely the failure this project
-exists to avoid. Quiet hours cannot be evaluated in that state; the water nudge
-does not fire.
+**Re-latch, don't latch once.** Not for drift — ~15 s over three days against
+minute-granularity consumers is irrelevant. The reason is that the comms
+brain's clock **steps** when GPS locks: before lock it reports an uncorrected
+RTC. A puck that latched the pre-lock offset is then confidently wrong forever
+while `src == FF_WALL_MESH` asserts that it knows. Re-derive on a large
+disagreement between the stored offset and a fresh reading, and gate readings
+for plausibility (a timestamp before the festpack's own event dates is not a
+time, it's a bug).
+
+**The honesty rule, which is the point of this section:** until an offset
+latches, **the puck does not know what time it is** and must say so rather than
+guess. Not boot time, not 00:00 — unknown, explicitly, the same as an unknown
+position. A Now face showing a plausible invented clock is precisely the
+failure this project exists to avoid. Quiet hours cannot be evaluated in that
+state; the water nudge does not fire.
 
 ```c
-typedef enum { FF_WALL_UNKNOWN = 0, FF_WALL_MESH, FF_WALL_USER } ff_wall_src_t;
+typedef enum { FF_WALL_UNKNOWN = 0, FF_WALL_MESH } ff_wall_src_t;
 typedef struct { ff_wall_src_t src;   /* UNKNOWN: every field below is meaningless */
                  uint16_t day_doy; int16_t now_min;
-                 bool offset_assumed; /* from fp_pack_t.utc_offset_assumed */
+                 bool offset_assumed; /* the UTC offset was defaulted, not stated */
                } ff_wall_t;
 ff_wall_t ff_shell_wall(ff_shell_t const *sh);
 ```
+
+**There is no user-set time source.** A `FF_WALL_USER` was drafted and cut: it
+is the one source that cannot be checked against a plausibility gate — an
+unfalsifiable number typed on a T9 keypad at 3 a.m. that would outrank
+`UNKNOWN` and defeat this whole section. If it is ever wanted, S12 (first-run)
+is its owner.
+
+**Gap this exposes, requiring an S11 amendment.** `ff_settings_t` has no UTC
+offset field, so with no pack loaded there is no way to reach local time — and
+quiet hours is a *settings* feature that has nothing to do with any festival.
+Resolution order must be: pack's stated offset → a new `ff_settings_t`
+offset → `FF_WALL_UNKNOWN`. Adding that field is an `[api]` change to S11 and
+is recorded in the amendments section.
 
 ## App: routing (`app/include/ff_route.h`)
 
@@ -123,10 +163,31 @@ is the other way: `core/` today has *zero* knowledge that screens exist, and a
 face enum would make core's contents change whenever a face is added.
 
 **And there is no second enum.** `ff_app_face_t` is extended with the two
-members it already lacks (`FF_APP_FACE_NONE = 0`, `FF_APP_FACE_FLARE` — the
-takeover is a real shipped full-screen face) and routing uses it. A parallel
-`ff_route_face_t` would re-open the DRIFT GUARD problem `ff_app_state.h:22-37`
-records paying for once already. `[api]`.
+members it already lacks (`FF_APP_FACE_NONE = 0`, `FF_APP_FACE_FLARE`) and
+routing uses it. A parallel `ff_route_face_t` would re-open the DRIFT GUARD
+problem `ff_app_state.h:22-37` records paying for once already. `[api]`.
+
+Renumbering is safe — verified across all 23 fixtures (every one encodes the
+face **by name**, none omits the key), and nothing indexes an array by ordinal
+or persists a face ordinal. Two traps to carry into implementation, both of
+which pass CI while changing meaning:
+
+- **`fixture.c`'s unknown-face default must stay `RADAR`**, not `NONE`. That
+  runs *against* the convention `ff_app_state.h:155-162` documents ("the enum's
+  first member is the least-claiming state"), so an implementer following the
+  documented rule would flip it — and `fx_enum()` degrades silently
+  ([#28](https://github.com/jakeholland/firefly/issues/28)), so nothing would
+  say so. State it in the code comment.
+- **`fixture_view.c` has an explicit `default:` label**, so `-Wswitch` under
+  `-Werror` will *not* flag the new members in any consumer. The compiler will
+  not help here; the switches must be audited by hand.
+
+**`active_face` is never `FF_APP_FACE_FLARE`.** The member exists so
+`ff_route_visible()` has something to return — it is a *routing* answer. The
+takeover remains `ff_flare_t`'s single fact, and `face_dispatch.c:17-20`
+keeps dispatching on `flare.takeover_active` as it already does. Writing FLARE
+into `ff_app_state_t.active_face` would put the same fact in two places and
+re-create the `ff_route_t.takeover` desync one layer down. (AC13)
 
 ```c
 typedef struct { ff_app_face_t base;   /* RADAR|NOW|SIGNALS */
@@ -236,10 +297,26 @@ typedef struct {
         uint8_t  rally_idx;                     /* SELECT_RALLY */
         uint8_t  t9_key;                        /* T9_KEY: 0-9 */
         char const *text;                       /* T9_INSERT (not owned; copied) */
-        struct { ff_setting_id_t id; int32_t value; } setting; /* SETTING_SET */
+        struct { ff_setting_id_t id;            /* SETTING_SET */
+                 union { int32_t i; char const *s; } v; } setting;
     } u;                                        /* validity per kind, ff_flare_result_t convention */
 } ff_intent_t;
+
+/* One member per mutable ff_settings_t field. Split int/string because
+ * `my_name` is char[16] and compass_cal is a struct — an int32_t-only payload
+ * could not carry the one setting users actually type. */
+typedef enum {
+    FF_SETTING_IMPERIAL, FF_SETTING_SHARE_MODE, FF_SETTING_HAPTICS,
+    FF_SETTING_NIGHT_GLOW, FF_SETTING_WATER_MIN,
+    FF_SETTING_QUIET_FROM_MIN, FF_SETTING_QUIET_TO_MIN,
+    FF_SETTING_UTC_OFFSET_MIN,   /* new field, see the wall-clock section */
+    FF_SETTING_MY_NAME,          /* string payload */
+} ff_setting_id_t;
 ```
+
+`compass_cal`/`cal_valid` are deliberately absent: calibration is written by
+S12's calibration ritual, not by a settings toggle, and giving it a generic
+setter would let any caller assert a calibration it never performed.
 
 `FF_INTENT_SEND_TEXT` carries no payload: the draft is shell-owned T9 state.
 That is required — `scr_compose.c:151` currently holds `static ff_t9_t s_t9`,
@@ -296,17 +373,20 @@ Each maps to a slice (right column). Tests are named `S16_ACn_...`.
 | 6 | Without `--dev-trust-all`, `ffsim --connect` routes every inbound event through the same entry points the shell uses, and a node that has sent only NodeInfo + Position produces zero feed items. The flag auto-pairs on NodeInfo only, logs a line naming itself at startup, and is absent from a non-sim build (compile-time assertion). | b2 |
 | 7 | `FF_INTENT_CANNED_REPLY{.reply=OMW}` with a non-empty feed sends "omw" to `items[0].from_node`; with an empty feed it broadcasts. Mock sender captures dest. | c2 |
 | 8 | A `FF_INTENT_SETTING_SET` is persisted: shell closed, re-inited against the same store, value survives. | e |
-| 9 | A transport drop moves link state to `reconnecting`, and the reconnect's `want_config` replay does not refresh any position's age. Member last positioned at T, drop at T+40 s, reconnect at T+5 min replaying that cached position → `ff_crew_freshness` reads `FF_FRESH_STALE`; the same replay at T+12 min reads `FF_FRESH_LOST`. Positions with `has_rx_time` are stamped from `rx_time`, never the local clock. | b1 |
+| 9 | A transport drop moves link state to `reconnecting`, and the reconnect's `want_config` replay does not refresh any position's age. **Driven as an `on_node` callback carrying `has_position` + `last_heard`** — the shape the real replay takes, since `mc_client.c:222` hardcodes `has_rx_time = false` on that path. Member last positioned at T, drop at T+40 s, reconnect at T+5 min replaying that cached position → `ff_crew_freshness` reads `FF_FRESH_STALE`; the same replay at T+12 min reads `FF_FRESH_LOST`. A replayed position with `last_heard == 0` reads `FF_FRESH_NEVER`, never fresh. | b1 |
 | 10 | Sequence test via the ctl socket (**not** the single-frame golden harness): draft typed → flare injected → takeover renders → takeover cleared → composer returns with draft intact. Requires a new ctl `flare` command. | c3, d |
 | 11 | `ff_flare_result_t.should_alert` fires the haptic during quiet hours; a feed-push haptic during quiet hours does not. | b1 |
-| 12 | Wall clock: before any `has_rx_time` position, `ff_shell_wall().src == FF_WALL_UNKNOWN` and the Now face renders its unknown-time state rather than a clock. After one arrives, `(day_doy, now_min)` resolves per `ff_sched`'s festival-day mapping — including a 01:00 local time mapping to the *previous* `day_doy` with `now_min == 1500`. | b1 |
+| 12 | Wall clock: before any timestamp, `ff_shell_wall().src == FF_WALL_UNKNOWN` and the Now face renders its unknown-time state rather than a clock; `ff_quiet_now` is not evaluated and the water nudge does not fire. A NodeInfo carrying `last_heard` latches the offset (the bootstrap path — `rx_time` alone cannot, being live-packet-only). `(day_doy, now_min)` then resolves per `ff_sched`'s mapping, including 01:00 local → previous `day_doy`, `now_min == 1500`. | b0 |
+| 12b | A second reading disagreeing with the latched offset by more than the plausibility threshold re-latches rather than being ignored (the GPS-lock clock step); a reading earlier than the pack's own event dates is rejected and leaves the previous state untouched. | b0 |
+| 13 | `ff_app_state_t.active_face` is never `FF_APP_FACE_FLARE` in any projection, including while a takeover is active — the takeover stays `ff_flare_t`'s single fact and `face_dispatch` keeps reading `takeover_active`. | b1 |
 
 ## Slices
 
 | Slice | Scope | Depends on |
 |---|---|---|
 | **a** | `ff_route` + `ff_app_face_t` extension `[api]` + unit tests. AC1, 2, 3. | — |
-| **b1** | `ff_shell` skeleton (init/tick/view/close), core→view projection, all five `mc_events_t` callbacks with the roster trust policy, wall-clock derivation, haptic/quiet composition. `main.c` untouched, still on `live.c`. AC4(a), 5a, 5b, 9, 11, 12. | a |
+| **b0** | Wall-clock derivation as a standalone unit: offset latch/re-latch, plausibility gate, unix→local→`(day_doy, now_min)`. Testable against synthetic timestamps with no shell, no transport. Includes the `ff_settings_t` UTC-offset field `[api]`. AC12, 12b. | — |
+| **b1** | `ff_shell` skeleton (init/tick/view/close), core→view projection, all five `mc_events_t` callbacks with the roster trust policy, haptic/quiet composition. `main.c` untouched, still on `live.c`. AC4(a), 5a, 5b, 9, 11, 13. | a, b0 |
 | **b2** | Cut `targets/sim` over: retire `live.{c,h}` + its tests, rewire `--connect` and the ctl loop, add `--dev-trust-all`, update the e2e fixture. AC6. | b1 |
 | **c1** | Define `ff_intent_t`, `ff_shell_intent`, the emit seam, and the three navigation-only stubs (nav long-press, compose back, signals `+`). | b1 |
 | **c2** | Core-mutating stubs (compose SEND, rally tap, canned replies, radar FLARE) + the five-signature `[api]` change dropping `ff_flare_t *` from `ff_scr_nav_build`, `ff_scr_radar_build`, `ff_scr_flare_build_takeover`, `ff_scr_flare_build_sender_overlay`, `ff_scr_flare_selection_locked`. AC7. | c1 |
@@ -314,8 +394,10 @@ Each maps to a slice (right column). Tests are named `S16_ACn_...`.
 | **d** | Render lifecycle: build-once/update-in-place driven by the dirty return. Closes #17 and #29. Adds the ctl `flare` command. AC4(b), 10. | b1, c3 |
 | **e** | Reconnect UI + link state in the status bar, settings write-through and persistence round-trip. AC8. | b1 |
 
-Dependency graph: `a → b1 → {b2, c1, e}`, `c1 → c2 → c3`, `{b1, c3} → d`.
-Slice **a** has no dependencies and can start immediately.
+Dependency graph: `{a, b0} → b1 → {b2, c1, e}`, `c1 → c2 → c3`, `{b1, c3} → d`.
+Slices **a** and **b0** have no dependencies and can start immediately, in
+parallel — b0 needs no shell, no transport and no display, only synthetic
+timestamps.
 
 ## Amendments to prior specs
 
@@ -329,6 +411,11 @@ section, as S08 and S10 carry.
 - **S13** — `live.{c,h}` is retired and `--connect` re-pointed at the shell.
   `live.h`'s self-documented "deliberate, PR-flagged spec-gap deviation" note
   should be closed rather than left dangling.
+- **S11** — `ff_settings_t` gains a UTC-offset field `[api]`. Quiet hours is a
+  settings feature with no festival dependency, but without a pack there is
+  currently no path to local time at all, so it silently cannot be evaluated.
+  Resolution order: pack's stated offset → settings offset → `FF_WALL_UNKNOWN`.
+  Recorded in slice b0.
 
 ## Open question for the implementer
 
