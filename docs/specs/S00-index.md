@@ -8,7 +8,7 @@ Specs are contracts. Acceptance criteria (AC) become test names (`S01_AC3_...`).
 | S02 | core/crew — crew model & freshness state machine | S01 | YES | ☐ |
 | S03 | meshclient — Meshtastic client library | — | YES | ☐ |
 | S04 | firefly protocol — pulse/flare/rally/status packets | S03 | YES | ☐ |
-| S05 | festpack — pack parser | — | YES | ☐ |
+| S05 | festpack — pack parser | — | YES | ✅ merged (PR #5) |
 | S06 | app/radar — Radar face (live/stale/close) | S01,S02 | YES | ☐ |
 | S07 | app/now — schedule engine + Now face + alarms | S05 | YES | ☐ |
 | S08 | app/signals + T9 composer | S03,S04 | YES (T9 predictive: no) | ☐ |
