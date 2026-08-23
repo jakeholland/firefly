@@ -1,0 +1,16 @@
+{
+  "fixture": "now_tbd",
+  "face": "now",
+  "now": {
+    "state": "tbd",
+    "lineup": [
+      { "artist": "Excision", "stage_name": "Prehistoric Stage" },
+      { "artist": "NGHTMRE", "stage_name": "" },
+      { "artist": "Borgore", "stage_name": "" },
+      { "artist": "Levity", "stage_name": "" },
+      { "artist": "TYNAN", "stage_name": "" },
+      { "artist": "Doctor P", "stage_name": "" },
+      { "artist": "Hairitage", "stage_name": "" }
+    ]
+  }
+}

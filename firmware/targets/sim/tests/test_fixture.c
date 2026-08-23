@@ -186,6 +186,7 @@ static void now_stage_color_rgb_hex_string_parses(void)
     char const *json = "{\"now\": {\"rows\": [{\"stage_color_rgb\": \"#ffc66b\"}]}}";
     TEST_ASSERT_EQUAL_INT(FF_FIXTURE_OK, ff_fixture_load_json(json, strlen(json), &s));
     TEST_ASSERT_EQUAL_UINT8(1, s.now.n_rows);
+    TEST_ASSERT_TRUE(s.now.rows[0].stage_color_valid);
     TEST_ASSERT_EQUAL_HEX32(0xffc66bu, s.now.rows[0].stage_color_rgb);
 }
 
@@ -196,16 +197,13 @@ static void now_stage_color_rgb_numeric_form_parses(void)
      * above — the README documents both forms as accepted. */
     char const *json = "{\"now\": {\"rows\": [{\"stage_color_rgb\": 16762475}]}}";
     TEST_ASSERT_EQUAL_INT(FF_FIXTURE_OK, ff_fixture_load_json(json, strlen(json), &s));
+    TEST_ASSERT_TRUE(s.now.rows[0].stage_color_valid);
     TEST_ASSERT_EQUAL_HEX32(0xffc66bu, s.now.rows[0].stage_color_rgb);
 }
 
-static void now_stage_color_rgb_malformed_hex_falls_back_to_zero(void)
-{
-    ff_app_state_t s;
-    char const *json = "{\"now\": {\"rows\": [{\"stage_color_rgb\": \"#zzzzzz\"}]}}";
-    TEST_ASSERT_EQUAL_INT(FF_FIXTURE_OK, ff_fixture_load_json(json, strlen(json), &s));
-    TEST_ASSERT_EQUAL_HEX32(0u, s.now.rows[0].stage_color_rgb);
-}
+/* now_stage_color_rgb_malformed_hex_marks_invalid (PR #21 code review
+ * finding #3's corrected version of this exact repro) lives further down
+ * with the other stage_color_valid cases. */
 
 /* ---------------------------------------------------------------------
  * Section coverage (PR #12 review finding #2): one happy-path fixture
@@ -217,19 +215,21 @@ static void now_section_parses_every_field(void)
 {
     ff_app_state_t s;
     char const *json = "{\"now\": {"
+                        "  \"state\": \"live\","
                         "  \"rows\": [{\"artist\": \"GRiZ\", \"stage_name\": \"Bass Camp\", "
-                        "               \"stage_color_rgb\": \"#ffc66b\", \"mins_left\": 12, \"pct_done\": 60}],"
+                        "               \"stage_color_rgb\": \"#ffc66b\", \"pct_done\": 60}],"
                         "  \"next\": {\"artist\": \"Subtronics\", \"stage_name\": \"Grand Illusion\", "
-                        "             \"mins_until\": 45},"
-                        "  \"tbd\": false"
+                        "             \"mins_until\": 45}"
                         "}}";
     TEST_ASSERT_EQUAL_INT(FF_FIXTURE_OK, ff_fixture_load_json(json, strlen(json), &s));
+
+    TEST_ASSERT_EQUAL_INT(NOW_LIVE, s.now.state);
 
     TEST_ASSERT_EQUAL_UINT8(1, s.now.n_rows);
     TEST_ASSERT_EQUAL_STRING("GRiZ", s.now.rows[0].artist);
     TEST_ASSERT_EQUAL_STRING("Bass Camp", s.now.rows[0].stage_name);
+    TEST_ASSERT_TRUE(s.now.rows[0].stage_color_valid);
     TEST_ASSERT_EQUAL_HEX32(0xffc66bu, s.now.rows[0].stage_color_rgb);
-    TEST_ASSERT_EQUAL_INT(12, s.now.rows[0].mins_left);
     TEST_ASSERT_EQUAL_UINT8(60, s.now.rows[0].pct_done);
 
     TEST_ASSERT_TRUE(s.now.next.valid);
@@ -237,7 +237,135 @@ static void now_section_parses_every_field(void)
     TEST_ASSERT_EQUAL_STRING("Grand Illusion", s.now.next.stage_name);
     TEST_ASSERT_EQUAL_INT(45, s.now.next.mins_until);
 
-    TEST_ASSERT_FALSE(s.now.tbd);
+    TEST_ASSERT_EQUAL_UINT8(0, s.now.n_lineup);
+}
+
+/* PR #21 code review finding #2/ruling: `now.state` (now_state_t)
+ * replaces the earlier `pack_loaded`+`tbd` bool pair — exercised
+ * separately from the happy-path "live" section test above since a real
+ * TBD/MIXED fixture never carries rows/next the same way a LIVE one
+ * does. */
+static void now_state_defaults_no_pack(void)
+{
+    ff_app_state_t s;
+    char const *json = "{\"now\": {\"rows\": []}}"; /* section present, but `state` omitted */
+    TEST_ASSERT_EQUAL_INT(FF_FIXTURE_OK, ff_fixture_load_json(json, strlen(json), &s));
+    TEST_ASSERT_EQUAL_INT(NOW_NO_PACK, s.now.state);
+}
+
+static void now_state_unrecognized_string_falls_back_to_no_pack(void)
+{
+    ff_app_state_t s;
+    char const *json = "{\"now\": {\"state\": \"totally_bogus\"}}";
+    TEST_ASSERT_EQUAL_INT(FF_FIXTURE_OK, ff_fixture_load_json(json, strlen(json), &s));
+    TEST_ASSERT_EQUAL_INT(NOW_NO_PACK, s.now.state);
+}
+
+static void now_state_every_enum_value_round_trips(void)
+{
+    static struct {
+        char const *str;
+        now_state_t want;
+    } const cases[] = {
+        {"no_pack", NOW_NO_PACK},         {"tbd", NOW_TBD},
+        {"mixed", NOW_MIXED},             {"live", NOW_LIVE},
+        {"nothing_playing", NOW_NOTHING_PLAYING},
+    };
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        char json[64];
+        snprintf(json, sizeof(json), "{\"now\": {\"state\": \"%s\"}}", cases[i].str);
+        ff_app_state_t s;
+        TEST_ASSERT_EQUAL_INT(FF_FIXTURE_OK, ff_fixture_load_json(json, strlen(json), &s));
+        TEST_ASSERT_EQUAL_INT(cases[i].want, s.now.state);
+    }
+}
+
+static void now_lineup_section_parses_every_field(void)
+{
+    ff_app_state_t s;
+    char const *json = "{\"now\": {"
+                        "  \"state\": \"tbd\","
+                        "  \"lineup\": ["
+                        "    {\"artist\": \"Excision\", \"stage_name\": \"Prehistoric Stage\"},"
+                        "    {\"artist\": \"NGHTMRE\", \"stage_name\": \"\"}"
+                        "  ]"
+                        "}}";
+    TEST_ASSERT_EQUAL_INT(FF_FIXTURE_OK, ff_fixture_load_json(json, strlen(json), &s));
+
+    TEST_ASSERT_EQUAL_INT(NOW_TBD, s.now.state);
+    TEST_ASSERT_EQUAL_UINT8(0, s.now.n_rows);
+    TEST_ASSERT_FALSE(s.now.next.valid);
+
+    TEST_ASSERT_EQUAL_UINT8(2, s.now.n_lineup);
+    TEST_ASSERT_EQUAL_STRING("Excision", s.now.lineup[0].artist);
+    TEST_ASSERT_EQUAL_STRING("Prehistoric Stage", s.now.lineup[0].stage_name);
+    TEST_ASSERT_EQUAL_STRING("NGHTMRE", s.now.lineup[1].artist);
+    TEST_ASSERT_EQUAL_STRING("", s.now.lineup[1].stage_name);
+}
+
+/* PR #21 code review finding #1/ruling: NOW_MIXED carries BOTH known-time
+ * content (rows/next) AND the still-unknown subset (lineup) at once —
+ * the fix for "an unknown-time set silently disappears the moment any
+ * set on the day gets a real time". */
+static void now_mixed_state_carries_both_known_and_unknown(void)
+{
+    ff_app_state_t s;
+    char const *json = "{\"now\": {"
+                        "  \"state\": \"mixed\","
+                        "  \"rows\": [{\"artist\": \"Excision\", \"stage_name\": \"Prehistoric Stage\", "
+                        "               \"stage_color_rgb\": \"#ffc66b\", \"pct_done\": 22}],"
+                        "  \"lineup\": ["
+                        "    {\"artist\": \"NGHTMRE\", \"stage_name\": \"\"},"
+                        "    {\"artist\": \"Borgore\", \"stage_name\": \"\"}"
+                        "  ]"
+                        "}}";
+    TEST_ASSERT_EQUAL_INT(FF_FIXTURE_OK, ff_fixture_load_json(json, strlen(json), &s));
+
+    TEST_ASSERT_EQUAL_INT(NOW_MIXED, s.now.state);
+    TEST_ASSERT_EQUAL_UINT8(1, s.now.n_rows);
+    TEST_ASSERT_EQUAL_STRING("Excision", s.now.rows[0].artist);
+    TEST_ASSERT_EQUAL_UINT8(2, s.now.n_lineup);
+    TEST_ASSERT_EQUAL_STRING("NGHTMRE", s.now.lineup[0].artist);
+    TEST_ASSERT_EQUAL_STRING("Borgore", s.now.lineup[1].artist);
+}
+
+/* ---------------------------------------------------------------------
+ * stage_color_valid (PR #21 code review finding #3): 0x000000 must
+ * render as a real black stage, not be conflated with "no color given"
+ * or "malformed color" — all three are now distinguishable in the parsed
+ * data, not just in theory.
+ * ------------------------------------------------------------------- */
+
+static void now_stage_color_rgb_valid_black_is_marked_valid(void)
+{
+    ff_app_state_t s;
+    char const *json = "{\"now\": {\"rows\": [{\"stage_color_rgb\": \"#000000\"}]}}";
+    TEST_ASSERT_EQUAL_INT(FF_FIXTURE_OK, ff_fixture_load_json(json, strlen(json), &s));
+    TEST_ASSERT_TRUE(s.now.rows[0].stage_color_valid);
+    TEST_ASSERT_EQUAL_HEX32(0x000000u, s.now.rows[0].stage_color_rgb);
+}
+
+static void now_stage_color_rgb_malformed_hex_marks_invalid(void)
+{
+    /* Was `now_stage_color_rgb_malformed_hex_falls_back_to_zero` before
+     * PR #21 code review finding #3 — that test name/assertion encoded
+     * the very bug being fixed (a malformed color silently becoming the
+     * same 0x000000 a real black stage would parse to). Same repro
+     * input, corrected expectation: this is now an explicitly INVALID
+     * color, not a color that happens to be black. */
+    ff_app_state_t s;
+    char const *json = "{\"now\": {\"rows\": [{\"stage_color_rgb\": \"#zzzzzz\"}]}}";
+    TEST_ASSERT_EQUAL_INT(FF_FIXTURE_OK, ff_fixture_load_json(json, strlen(json), &s));
+    TEST_ASSERT_FALSE(s.now.rows[0].stage_color_valid);
+    TEST_ASSERT_EQUAL_HEX32(0u, s.now.rows[0].stage_color_rgb);
+}
+
+static void now_stage_color_rgb_absent_key_marks_invalid(void)
+{
+    ff_app_state_t s;
+    char const *json = "{\"now\": {\"rows\": [{\"artist\": \"GRiZ\"}]}}";
+    TEST_ASSERT_EQUAL_INT(FF_FIXTURE_OK, ff_fixture_load_json(json, strlen(json), &s));
+    TEST_ASSERT_FALSE(s.now.rows[0].stage_color_valid);
 }
 
 static void signals_section_parses_every_field(void)
@@ -415,6 +543,30 @@ static void now_rows_over_cap_fails_loud(void)
     TEST_ASSERT_EQUAL_MEMORY(&zero, &s, sizeof(s));
 }
 
+static void now_lineup_over_cap_fails_loud(void)
+{
+    char json[2048];
+    build_n_element_array_json(json, sizeof(json), "now", "lineup", FF_APP_NOW_MAX_LINEUP + 1);
+
+    ff_app_state_t s;
+    memset(&s, 0xAA, sizeof(s));
+    TEST_ASSERT_EQUAL_INT(FF_FIXTURE_ERR_TOO_BIG, ff_fixture_load_json(json, strlen(json), &s));
+
+    ff_app_state_t zero;
+    memset(&zero, 0, sizeof(zero));
+    TEST_ASSERT_EQUAL_MEMORY(&zero, &s, sizeof(s));
+}
+
+static void now_lineup_at_cap_still_loads_ok(void)
+{
+    char json[2048];
+    build_n_element_array_json(json, sizeof(json), "now", "lineup", FF_APP_NOW_MAX_LINEUP);
+
+    ff_app_state_t s;
+    TEST_ASSERT_EQUAL_INT(FF_FIXTURE_OK, ff_fixture_load_json(json, strlen(json), &s));
+    TEST_ASSERT_EQUAL_UINT8(FF_APP_NOW_MAX_LINEUP, s.now.n_lineup);
+}
+
 static void signals_items_over_cap_fails_loud(void)
 {
     char json[1024];
@@ -536,6 +688,59 @@ static void dump_then_reload_round_trips_flare_takeover_locked_fixture(void)
     TEST_ASSERT_EQUAL_MEMORY(&original, &reloaded, sizeof(original));
 }
 
+/* PR #21 (S07 slice b round 2) merge fixup, same category as the flare
+ * round-trip test just above: ff_fixture_dump_json's `now` section was
+ * rewritten to match the new `now_state_t` shape (replacing the old
+ * `pack_loaded`+`tbd` bool pair) — this fixture is the richest real-world
+ * exercise of that rewrite, per the coordinator's request: NOW_MIXED
+ * populates `rows` (with a stage_color_valid row), `next`, AND `lineup`
+ * all at once, the only one of the five now_state_t fixtures that
+ * exercises every one of `now`'s fields in a single load. Mirrors the
+ * exact "dump -> reload -> whole-struct memory compare" pattern the
+ * flare section's own merge fixup used, so the dumper and loader can't
+ * silently drift apart again the same way they just did here. */
+static void dump_then_reload_round_trips_now_mixed_fixture(void)
+{
+    ff_app_state_t original;
+    TEST_ASSERT_EQUAL_INT(FF_FIXTURE_OK, ff_fixture_load_file(fixture_path("now_mixed.json"), &original));
+    TEST_ASSERT_EQUAL_INT(NOW_MIXED, original.now.state);
+    TEST_ASSERT_EQUAL_UINT8(1, original.now.n_rows);
+    TEST_ASSERT_TRUE(original.now.rows[0].stage_color_valid);
+    TEST_ASSERT_TRUE(original.now.next.valid);
+    TEST_ASSERT_EQUAL_UINT8(5, original.now.n_lineup);
+
+    char json[FF_FIXTURE_DUMP_MAX];
+    int n = ff_fixture_dump_json(&original, json, sizeof(json));
+    TEST_ASSERT_GREATER_THAN_INT(0, n);
+
+    ff_app_state_t reloaded;
+    TEST_ASSERT_EQUAL_INT(FF_FIXTURE_OK, ff_fixture_load_json(json, (size_t)n, &reloaded));
+    TEST_ASSERT_EQUAL_MEMORY(&original, &reloaded, sizeof(original));
+}
+
+/* now_tbd.json covers the OTHER shape of `now`: `lineup` populated with
+ * every entry (not a subset — NOW_TBD's whole-day meaning), `rows`/`next`
+ * both at their empty default. Confirms the round-trip holds for the
+ * "known-time sections genuinely absent" case too, not just the
+ * "everything populated" one above. */
+static void dump_then_reload_round_trips_now_tbd_fixture(void)
+{
+    ff_app_state_t original;
+    TEST_ASSERT_EQUAL_INT(FF_FIXTURE_OK, ff_fixture_load_file(fixture_path("now_tbd.json"), &original));
+    TEST_ASSERT_EQUAL_INT(NOW_TBD, original.now.state);
+    TEST_ASSERT_EQUAL_UINT8(0, original.now.n_rows);
+    TEST_ASSERT_FALSE(original.now.next.valid);
+    TEST_ASSERT_EQUAL_UINT8(7, original.now.n_lineup);
+
+    char json[FF_FIXTURE_DUMP_MAX];
+    int n = ff_fixture_dump_json(&original, json, sizeof(json));
+    TEST_ASSERT_GREATER_THAN_INT(0, n);
+
+    ff_app_state_t reloaded;
+    TEST_ASSERT_EQUAL_INT(FF_FIXTURE_OK, ff_fixture_load_json(json, (size_t)n, &reloaded));
+    TEST_ASSERT_EQUAL_MEMORY(&original, &reloaded, sizeof(original));
+}
+
 /* Mutation check: if fw_json_str ever stopped escaping `"`/`\`, this test
  * would fail loudly (either ff_fixture_load_json would reject the
  * corrupted JSON outright, or — worse, silently — the reloaded string
@@ -581,6 +786,15 @@ static void dump_maximally_populated_state_fits_budget(void)
         s.radar.dots[i].stale = (i % 2) == 0;
     }
 
+    /* S07 slice b round 2 merge fixup: `mins_left` no longer exists
+     * (removed with `now_state_t`); `stage_color_valid` must be set for
+     * the row's color key to actually appear in the dump (see
+     * fw_now_row's doc comment) — this "maximally populated" stress test
+     * needs it true to genuinely stress that field's dumped size, not
+     * silently omit it. `lineup` is new in this same shape change and,
+     * at its FF_APP_NOW_MAX_LINEUP cap, is a real contributor to the
+     * worst-case dump size this test exists to bound — populated below. */
+    s.now.state = NOW_MIXED;
     s.now.n_rows = FF_APP_NOW_MAX_ROWS;
     for (uint8_t i = 0; i < FF_APP_NOW_MAX_ROWS; i++) {
         (void)snprintf(s.now.rows[i].artist, sizeof(s.now.rows[i].artist), "%s",
@@ -588,11 +802,21 @@ static void dump_maximally_populated_state_fits_budget(void)
         (void)snprintf(s.now.rows[i].stage_name, sizeof(s.now.rows[i].stage_name), "%s",
                         "Exactly Twenty Seven Chars!"); /* fits FF_APP_STAGE_LEN (28) - 1 for the NUL */
         s.now.rows[i].stage_color_rgb = 0x00FFC66B;
-        s.now.rows[i].mins_left = 999;
+        s.now.rows[i].stage_color_valid = true;
         s.now.rows[i].pct_done = 100;
     }
     s.now.next.valid = true;
     (void)snprintf(s.now.next.artist, sizeof(s.now.next.artist), "%s", "Exactly Thirty One Chars Long!!");
+    (void)snprintf(s.now.next.stage_name, sizeof(s.now.next.stage_name), "%s", "Exactly Twenty Seven Chars!");
+    s.now.next.mins_until = 999;
+
+    s.now.n_lineup = FF_APP_NOW_MAX_LINEUP;
+    for (uint8_t i = 0; i < FF_APP_NOW_MAX_LINEUP; i++) {
+        (void)snprintf(s.now.lineup[i].artist, sizeof(s.now.lineup[i].artist), "%s",
+                        "Exactly Thirty One Chars Long!!");
+        (void)snprintf(s.now.lineup[i].stage_name, sizeof(s.now.lineup[i].stage_name), "%s",
+                        "Exactly Twenty Seven Chars!");
+    }
 
     s.signals.n_items = FF_APP_SIGNALS_MAX_ITEMS;
     for (uint8_t i = 0; i < FF_APP_SIGNALS_MAX_ITEMS; i++) {
@@ -651,9 +875,16 @@ int main(void)
 
     RUN_TEST(now_stage_color_rgb_hex_string_parses);
     RUN_TEST(now_stage_color_rgb_numeric_form_parses);
-    RUN_TEST(now_stage_color_rgb_malformed_hex_falls_back_to_zero);
+    RUN_TEST(now_stage_color_rgb_valid_black_is_marked_valid);
+    RUN_TEST(now_stage_color_rgb_malformed_hex_marks_invalid);
+    RUN_TEST(now_stage_color_rgb_absent_key_marks_invalid);
 
     RUN_TEST(now_section_parses_every_field);
+    RUN_TEST(now_state_defaults_no_pack);
+    RUN_TEST(now_state_unrecognized_string_falls_back_to_no_pack);
+    RUN_TEST(now_state_every_enum_value_round_trips);
+    RUN_TEST(now_lineup_section_parses_every_field);
+    RUN_TEST(now_mixed_state_carries_both_known_and_unknown);
     RUN_TEST(signals_section_parses_every_field);
     RUN_TEST(flare_section_parses_every_field);
     RUN_TEST(flare_omitted_group_defaults_independently);
@@ -663,6 +894,8 @@ int main(void)
     RUN_TEST(radar_dots_over_cap_fails_loud);
     RUN_TEST(radar_dots_at_cap_still_loads_ok);
     RUN_TEST(now_rows_over_cap_fails_loud);
+    RUN_TEST(now_lineup_over_cap_fails_loud);
+    RUN_TEST(now_lineup_at_cap_still_loads_ok);
     RUN_TEST(signals_items_over_cap_fails_loud);
     RUN_TEST(oversized_array_zeroes_entire_state_including_other_sections);
 
@@ -673,6 +906,8 @@ int main(void)
 
     RUN_TEST(dump_then_reload_round_trips_committed_fixture);
     RUN_TEST(dump_then_reload_round_trips_flare_takeover_locked_fixture);
+    RUN_TEST(dump_then_reload_round_trips_now_mixed_fixture);
+    RUN_TEST(dump_then_reload_round_trips_now_tbd_fixture);
     RUN_TEST(dump_escapes_quotes_and_backslashes_in_names);
     RUN_TEST(dump_maximally_populated_state_fits_budget);
     RUN_TEST(dump_buffer_too_small_returns_negative);

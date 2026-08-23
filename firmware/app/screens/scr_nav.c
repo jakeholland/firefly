@@ -10,6 +10,7 @@
 
 #include "ff_theme.h"
 #include "scr_flare.h" /* S10 slice b — lock chip + sender overlay */
+#include "scr_now.h" /* S07b — ff_scr_now_build, the Now face */
 #include "scr_radar.h"
 
 /* TODO(S11 slice b): open the real settings screen once it exists. This
@@ -110,7 +111,7 @@ void ff_scr_nav_build(ff_app_state_t const *state, ff_flare_t *flare_rt)
     lv_obj_clear_flag(tile_signals, LV_OBJ_FLAG_SCROLLABLE);
 
     ff_scr_radar_build(tile_radar, &state->radar, flare_rt);
-    nav_build_todo_pane(tile_now, "NOW", "S07");
+    ff_scr_now_build(tile_now, &state->now); /* S07b — real content, replaces the placeholder pane */
     nav_build_todo_pane(tile_signals, "SIGNALS", "S08");
 
     /* S10 slice b: the Radar face's lock chip. Added as a child of

@@ -63,26 +63,14 @@ static void ffv_build_radar_body(char *buf, size_t n, ff_radar_view_t const *r)
              r->mesh_ok ? "OK" : "--", r->clock_str, (unsigned)r->n_dots);
 }
 
-static void ffv_build_now_body(char *buf, size_t n, ff_app_now_t const *now)
-{
-    if (now->tbd) {
-        snprintf(buf, n, "FACE: NOW\nSET TIMES TBD\nROWS: %u", (unsigned)now->n_rows);
-        return;
-    }
-    if (now->n_rows > 0) {
-        ff_app_now_row_t const *row = &now->rows[0];
-        snprintf(buf, n,
-                 "FACE: NOW\n"
-                 "ROWS: %u\n"
-                 "1ST: %s @ %s\n"
-                 "MINS LEFT: %d PCT: %u%%\n"
-                 "NEXT: %s",
-                 (unsigned)now->n_rows, row->artist, row->stage_name, (int)row->mins_left,
-                 (unsigned)row->pct_done, now->next.valid ? now->next.artist : "(none)");
-    } else {
-        snprintf(buf, n, "FACE: NOW\nROWS: 0\nNEXT: %s", now->next.valid ? now->next.artist : "(none)");
-    }
-}
+/* ffv_build_now_body — REMOVED (PR #21 code review finding #5c): this
+ * placeholder's FF_APP_FACE_NOW path is dead code as of S07 slice b —
+ * main.c's ff_build_face_screen() routes every FF_APP_FACE_NOW fixture to
+ * the real shell (scr_nav.c -> scr_now.c) before this file is ever
+ * reached, the same way it already did for FF_APP_FACE_RADAR once S06
+ * landed. The switch below falls through to the generic "FACE: ?" default
+ * for FF_APP_FACE_NOW now, which is the honest answer for this file: it
+ * no longer has (or needs) a Now-specific rendering, by design. */
 
 static void ffv_build_signals_body(char *buf, size_t n, ff_app_signals_t const *sig)
 {
@@ -138,7 +126,8 @@ void ff_fixture_view_build(ff_app_state_t const *state)
     char face_text[448];
     switch (state->active_face) {
     case FF_APP_FACE_RADAR: ffv_build_radar_body(face_text, sizeof(face_text), &state->radar); break;
-    case FF_APP_FACE_NOW: ffv_build_now_body(face_text, sizeof(face_text), &state->now); break;
+    /* FF_APP_FACE_NOW: no case here — see the removed ffv_build_now_body's
+     * comment just above. Falls to `default` below. */
     case FF_APP_FACE_SIGNALS: ffv_build_signals_body(face_text, sizeof(face_text), &state->signals); break;
     case FF_APP_FACE_SETTINGS: ffv_build_settings_body(face_text, sizeof(face_text), &state->settings); break;
     default: snprintf(face_text, sizeof(face_text), "FACE: ?"); break;

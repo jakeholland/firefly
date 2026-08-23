@@ -14,11 +14,12 @@
  *                                  ff_app_state_t (fixture.h) and renders
  *                                  it instead of the boot screen, writing
  *                                  DIR/<stem>.png. A fixture whose
- *                                  active_face is "radar" gets the real
- *                                  S06 shell + radar face (scr_nav.h);
- *                                  every other face still gets the S13
- *                                  placeholder debug face (fixture_view.h)
- *                                  — see ff_build_face_screen below.
+ *                                  active_face is "radar" or "now" gets
+ *                                  the real shell + face render (scr_nav.h,
+ *                                  S06/S07b); every other face still gets
+ *                                  the S13 placeholder debug face
+ *                                  (fixture_view.h) — see
+ *                                  ff_build_face_screen below.
  *   ffsim --fixture FILE.json      window mode with the fixture loaded
  *                                  (interactive preview; same
  *                                  face-selection and load path as
@@ -133,10 +134,13 @@ static void ff_build_boot_screen(void)
     lv_obj_center(label);
 }
 
-/* S06 — replaces the S13 debug placeholder with the real shell+radar
- * face whenever a loaded fixture's active_face is radar; every other
- * face still falls through to fixture_view.h's placeholder (Now/Signals/
- * Settings screens arrive with their own specs — S07/S08/S11).
+/* S06 — replaces the S13 debug placeholder with the real shell+face
+ * render whenever a loaded fixture's active_face already has a real
+ * screen; every other face still falls through to fixture_view.h's
+ * placeholder (Settings arrives with its own spec — S11; Signals with
+ * S08). S07 slice b adds FF_APP_FACE_NOW to the real-shell list
+ * (scr_nav.c's tile_now now builds ff_scr_now_build, not a placeholder
+ * pane, driven by state->now).
  *
  * S10 slice b: a pending receive takeover (`state->flare.takeover_active`)
  * is checked FIRST and, if true, is the ONLY thing built — per spec
@@ -152,7 +156,7 @@ static void ff_build_face_screen(ff_app_state_t const *state, ff_flare_t *flare_
         ff_scr_flare_build_takeover(&state->flare, flare_rt);
         return;
     }
-    if (state->active_face == FF_APP_FACE_RADAR) {
+    if (state->active_face == FF_APP_FACE_RADAR || state->active_face == FF_APP_FACE_NOW) {
         ff_scr_nav_build(state, flare_rt);
     } else {
         ff_fixture_view_build(state);
