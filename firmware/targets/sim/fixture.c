@@ -368,24 +368,50 @@ static void fx_parse_compose(fx_ctx_t const *c, int obj_i, ff_app_compose_t *cp)
                                                     FF_APP_COMPOSE_ABC);
 }
 
-static const fx_enum_entry_t fx_flare_state_table[] = {
-    {"idle", FF_APP_FLARE_IDLE},
-    {"sending", FF_APP_FLARE_SENDING},
-    {"received", FF_APP_FLARE_RECEIVED},
-    {"locked", FF_APP_FLARE_LOCKED},
-};
-
+/* fx_parse_flare — [api] S10 slice b: the three independent groups on
+ * ff_app_flare_t (see ff_app_state.h's updated doc comment). Each group's
+ * own "n/a" sentinel is set BEFORE reading that group's fields, same
+ * pattern as ff_fixture_load_json's top-level flare.expires_in_ms default
+ * used to be — now three independent defaults instead of one, since the
+ * three groups no longer share a single `expires_in_ms`.
+ *
+ * (Merge note: the old string->enum `fx_flare_state_table` for the
+ * removed single-`state` IDLE/SENDING/RECEIVED/LOCKED shape is gone —
+ * S10 slice b's Amendments replaced that enum with the three independent
+ * groups this function parses; nothing maps a bare "state" string to
+ * anything any more.) */
 static void fx_parse_flare(fx_ctx_t const *c, int obj_i, ff_app_flare_t *fl)
 {
     int t;
-    fl->expires_in_ms = -1;
-    if (fx_obj_get(c, obj_i, "state", &t))
-        fl->state = (ff_app_flare_state_t)fx_enum(c, t, fx_flare_state_table,
-                                                   sizeof(fx_flare_state_table) / sizeof(fx_flare_state_table[0]),
-                                                   FF_APP_FLARE_IDLE);
-    if (fx_obj_get(c, obj_i, "from_name", &t)) fx_copy_str(c, t, fl->from_name, sizeof(fl->from_name));
-    if (fx_obj_get(c, obj_i, "expires_in_ms", &t) && !fx_is_null(c, t))
-        fl->expires_in_ms = (int32_t)fx_num(c, t, -1.0);
+
+    fl->send_expires_in_ms = -1;
+    if (fx_obj_get(c, obj_i, "sending", &t)) fl->sending = fx_bool(c, t, false);
+    if (fx_obj_get(c, obj_i, "send_expires_in_ms", &t) && !fx_is_null(c, t))
+        fl->send_expires_in_ms = (int32_t)fx_num(c, t, -1.0);
+
+    fl->takeover_expires_in_ms = -1;
+    if (fx_obj_get(c, obj_i, "takeover_active", &t)) fl->takeover_active = fx_bool(c, t, false);
+    if (fx_obj_get(c, obj_i, "takeover_from_name", &t))
+        fx_copy_str(c, t, fl->takeover_from_name, sizeof(fl->takeover_from_name));
+    /* takeover_bearing_valid defaults to false (unknown) — see
+     * ff_app_state.h's doc comment on this field, same "prove you meant
+     * this" convention as ff_radar_view_t's arrow_valid. Read BEFORE
+     * takeover_bearing_deg so a fixture author who sets the degree value
+     * but forgets the validity flag gets an honest "unknown, ignore the
+     * degrees" render rather than a silently-fabricated compass point. */
+    if (fx_obj_get(c, obj_i, "takeover_bearing_valid", &t)) fl->takeover_bearing_valid = fx_bool(c, t, false);
+    if (fx_obj_get(c, obj_i, "takeover_bearing_deg", &t)) fl->takeover_bearing_deg = (float)fx_num(c, t, 0.0);
+    if (fx_obj_get(c, obj_i, "takeover_dist_str", &t))
+        fx_copy_str(c, t, fl->takeover_dist_str, sizeof(fl->takeover_dist_str));
+    if (fx_obj_get(c, obj_i, "takeover_expires_in_ms", &t) && !fx_is_null(c, t))
+        fl->takeover_expires_in_ms = (int32_t)fx_num(c, t, -1.0);
+
+    fl->locked_expires_in_ms = -1;
+    if (fx_obj_get(c, obj_i, "locked", &t)) fl->locked = fx_bool(c, t, false);
+    if (fx_obj_get(c, obj_i, "locked_from_name", &t))
+        fx_copy_str(c, t, fl->locked_from_name, sizeof(fl->locked_from_name));
+    if (fx_obj_get(c, obj_i, "locked_expires_in_ms", &t) && !fx_is_null(c, t))
+        fl->locked_expires_in_ms = (int32_t)fx_num(c, t, -1.0);
 }
 
 static const fx_enum_entry_t fx_share_mode_table[] = {
@@ -450,7 +476,14 @@ ff_fixture_result_t ff_fixture_load_json(char const *json, size_t len, ff_app_st
      * out). Section parsers below may still override these from
      * explicit JSON fields. */
     out->radar.mode = RADAR_NOSEL;
-    out->flare.expires_in_ms = -1;
+    /* Three independent "n/a" defaults (S10 slice b) — see fx_parse_flare's
+     * doc comment for why there are three now instead of one. Set here too
+     * (not only inside fx_parse_flare) so they hold even when the "flare"
+     * section is absent entirely from the document (fx_parse_flare is
+     * never called in that case — see the call site below). */
+    out->flare.send_expires_in_ms = -1;
+    out->flare.takeover_expires_in_ms = -1;
+    out->flare.locked_expires_in_ms = -1;
 
     int t;
     if (fx_obj_get(&ctx, 0, "fixture", &t)) fx_copy_str(&ctx, t, out->fixture_name, sizeof(out->fixture_name));
@@ -488,7 +521,7 @@ ff_fixture_result_t ff_fixture_load_json(char const *json, size_t len, ff_app_st
     if (fx_obj_get(&ctx, 0, "compose", &sec_i) && !fx_is_null(&ctx, sec_i))
         fx_parse_compose(&ctx, sec_i, &out->compose);
     if (fx_obj_get(&ctx, 0, "flare", &sec_i) && !fx_is_null(&ctx, sec_i)) fx_parse_flare(&ctx, sec_i, &out->flare);
-    /* else: out->flare.expires_in_ms's -1 "n/a" default (set above) stands. */
+    /* else: out->flare's three -1 "n/a" defaults (set above) stand. */
     if (fx_obj_get(&ctx, 0, "settings", &sec_i) && !fx_is_null(&ctx, sec_i))
         fx_parse_settings(&ctx, sec_i, &out->settings);
 

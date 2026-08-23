@@ -200,7 +200,11 @@ static sweep_result_t sweep_fixture(char const *path, char const *name)
     ff_fixture_result_t fr = ff_fixture_load_file(path, &state);
     TEST_ASSERT_EQUAL_INT_MESSAGE(FF_FIXTURE_OK, fr, path);
 
-    ff_build_face_screen(&state);
+    /* NULL flare_rt: same convention as ffsim's own headless render path
+     * (main.c's ff_run_headless) — a one-shot geometry sweep has no
+     * interactivity for a GO/DISMISS/CANCEL press to act on, and NULL is
+     * a fully-defined, safe value here (see scr_flare.h's top comment). */
+    ff_build_face_screen(&state, NULL);
     lv_refr_now(disp);
 
     sweep_result_t result = {0, 0, 0};

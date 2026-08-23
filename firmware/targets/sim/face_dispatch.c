@@ -5,16 +5,22 @@
 
 #include "fixture_view.h"
 #include "scr_compose.h"
+#include "scr_flare.h" /* S10 slice b — full-screen receive takeover */
 #include "scr_nav.h"
 
-void ff_build_face_screen(ff_app_state_t const *state)
+void ff_build_face_screen(ff_app_state_t const *state, ff_flare_t *flare_rt)
 {
     if (state == NULL) {
         return;
     }
 
+    if (state->flare.takeover_active) {
+        ff_scr_flare_build_takeover(&state->flare, flare_rt);
+        return;
+    }
+
     if (state->active_face == FF_APP_FACE_RADAR || state->active_face == FF_APP_FACE_SIGNALS) {
-        ff_scr_nav_build(state);
+        ff_scr_nav_build(state, flare_rt);
     } else if (state->active_face == FF_APP_FACE_COMPOSE) {
         ff_scr_compose_build(&state->compose);
     } else {
