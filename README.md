@@ -5,11 +5,11 @@
 Firefly is a palm-sized round-screen puck for music festivals: a compass arrow that points at your crew over LoRa mesh radio, off-grid messaging (pulses, canned replies, T9), the full lineup with set alarms, and a vector map of the grounds — so your phone stays at camp.
 
 <p align="center">
-  <img src="docs/screens/radar-find.gif" width="300" alt="The Radar face: the arrow swings around and locks onto a crew member, distance counts down from 320 m to 16 m, then hands off to close-range rings.">
+  <img src="docs/screens/three-faces.gif" width="300" alt="Firefly cycling through its faces: the radar arrow locking onto a crew member, the Now face showing the Lost Lands lineup with set times still unpublished, and a flare takeover from a crew member.">
 </p>
 
 <p align="center"><em>Not a mockup — that's the firmware rendering, frame by frame.<br>
-Turn toward your friend, walk in, and when GPS stops being useful it hands off to short range.</em></p>
+The arrow finds your friend, the lineup admits which set times aren't published yet,<br>and a flare takes over the screen when someone needs finding.</em></p>
 
 ## Status
 
@@ -21,13 +21,15 @@ Turn toward your friend, walk in, and when GPS stops being useful it hands off t
 | Meshtastic client library (`meshclient`) | ✅ on `main` |
 | festpack parser + the [Lost Lands 2026 pack](https://github.com/jakeholland/fest-almanac) | ✅ on `main` |
 | **Radar face** — live / stale / lost / close-range / no-fix / no-selection | ✅ on `main` |
-| Now face (lineup + set times), Signals + T9 composer, Flare UI | 🔨 in review |
-| Dev harness — control socket, dockerised mesh, end-to-end tests | 🔨 in review |
+| **Now face** — live set times, starred-set countdown, and honest "times not published yet" states | ✅ on `main` |
+| **Flare** — takeover screen, sender state, navigation lock | ✅ on `main` |
+| Dev harness — control socket, dockerised Meshtastic node, end-to-end tests | ✅ on `main` |
+| Signals feed + T9 composer | 🔨 in review |
 | ESP32-S3 device target, enclosure | ⏳ when boards arrive |
 
 Every merged line went through an independent code review plus, for anything on screen, a review in the persona of a tired raver at 2 a.m. ([why](docs/review/ux-raver.md)).
 
-### The Radar face, on `main` today
+### On `main` today
 
 | Live | Lost | Close range |
 |---|---|---|
@@ -35,6 +37,11 @@ Every merged line went through an independent code review plus, for anything on 
 | A fresh fix. Solid arrow, exact distance. | The fix is old. Different in *kind*, not just dimmer — the screen stops claiming to know. | Under 30 m, GPS is useless in a crowd. Rings and a hot/cold trend take over. |
 
 The middle one is the point of the whole project: most trackers keep pointing confidently at data they no longer have.
+
+| Set times, honestly | A flare arriving |
+|---|---|
+| <img src="docs/screens/now-tbd.png" width="200" alt="Now face listing Friday's Lost Lands lineup under a SET TIMES TBD banner"> | <img src="docs/screens/flare-takeover.png" width="200" alt="Full-screen takeover reading KEV IS FLARING, E - 40 m, with a chip warning that GO switches the lock from Dana to Kev"> |
+| Lost Lands hasn't published set times yet, so the puck says so and lists the day instead of inventing a schedule. | Press and hold, and your crew's pucks light up and point at you. If you were already navigating to someone else, it tells you what GO will cost you. |
 
 ## How it works
 
