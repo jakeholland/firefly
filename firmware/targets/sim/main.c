@@ -12,12 +12,17 @@
  *   ffsim --headless --screenshot DIR --fixture FILE.json
  *                                  same, but loads FILE.json into an
  *                                  ff_app_state_t (fixture.h) and renders
- *                                  the S13 placeholder debug face
- *                                  (fixture_view.h) instead of the boot
- *                                  screen, writing DIR/<stem>.png.
+ *                                  it instead of the boot screen, writing
+ *                                  DIR/<stem>.png. A fixture whose
+ *                                  active_face is "radar" gets the real
+ *                                  S06 shell + radar face (scr_nav.h);
+ *                                  every other face still gets the S13
+ *                                  placeholder debug face (fixture_view.h)
+ *                                  — see ff_build_face_screen below.
  *   ffsim --fixture FILE.json      window mode with the fixture loaded
- *                                  (interactive preview of the debug
- *                                  face; same load path as headless).
+ *                                  (interactive preview; same
+ *                                  face-selection and load path as
+ *                                  headless).
  *
  * --mock-clock freezes the LVGL tick source (see ff_mock_tick_cb below).
  * Headless rendering is already deterministic without it — a single
@@ -47,6 +52,7 @@
 
 #include "fixture.h"
 #include "fixture_view.h"
+#include "scr_nav.h"
 
 #define FF_SIM_WINDOW_W 456
 #define FF_SIM_WINDOW_H 456
@@ -76,6 +82,19 @@ static void ff_build_boot_screen(void)
     lv_label_set_text(label, "FIREFLY");
     lv_obj_set_style_text_color(label, lv_color_hex(FF_COLOR_AMBER), 0);
     lv_obj_center(label);
+}
+
+/* S06 — replaces the S13 debug placeholder with the real shell+radar
+ * face whenever a loaded fixture's active_face is radar; every other
+ * face still falls through to fixture_view.h's placeholder (Now/Signals/
+ * Settings screens arrive with their own specs — S07/S08/S11). */
+static void ff_build_face_screen(ff_app_state_t const *state)
+{
+    if (state->active_face == FF_APP_FACE_RADAR) {
+        ff_scr_nav_build(state);
+    } else {
+        ff_fixture_view_build(state);
+    }
 }
 
 /* Full-frame render mode: the whole buffer is the flushed frame, so the
@@ -164,7 +183,7 @@ static int ff_run_headless(const char *screenshot_dir, const char *fixture_path)
             lv_deinit();
             return 1;
         }
-        ff_fixture_view_build(&state);
+        ff_build_face_screen(&state);
 
         char stem[256];
         ff_fixture_stem(fixture_path, stem, sizeof(stem));
@@ -198,7 +217,7 @@ static int ff_run_window(const char *fixture_path, bool mock_clock)
             fprintf(stderr, "ffsim: failed to load fixture %s (error %d)\n", fixture_path, (int)fr);
             return 1;
         }
-        ff_fixture_view_build(&state);
+        ff_build_face_screen(&state);
     } else {
         ff_build_boot_screen();
     }

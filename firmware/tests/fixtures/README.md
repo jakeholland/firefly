@@ -145,35 +145,39 @@ and when the key itself is omitted or `null` within it.
 
 ## Current fixtures
 
-Three radar fixtures exist as of S13/S14 slice b — one per S06 radar mode
-called out in the spec's acceptance criteria (AC4): `radar_live.json`,
-`radar_stale.json`, `radar_close.json`. All three follow one synthetic
-scenario (crew member "DANA", tracked over a few minutes) so the three
-goldens read as a coherent before/after sequence:
+Six radar fixtures exist as of S06 (compute in slice a, `scr_radar.c` +
+`scr_nav.c` rendering in slice b/c/d): `radar_live.json`, `radar_stale.json`,
+`radar_close.json` (S13/S14 slice b, goldens regenerated in S06 PR B once
+the real radar face replaced the S13 debug placeholder — see this repo's
+PR history for the before/after), plus three added in S06 PR B —
+`radar_nofix.json`, `radar_nosel.json`, and `radar_never.json`. The first
+four cover S06 AC4's exact named fixtures (`radar_live`/`stale`/`close`/
+`nofix`); `radar_nosel` and `radar_never` are additional coverage beyond
+AC4's literal list, added because they're real, distinct render states
+`scr_radar.c` has to handle honestly (empty-crew, and a paired member who
+has never sent a fix at all — see `ff_radar.h`'s "RENDERER CONTRACT").
 
 | Fixture | mode | dist_str | age_str | notes |
 |---|---|---|---|---|
 | `radar_live.json` | `live` | `320 m` | `8 SEC` | fresh fix, arrow valid |
 | `radar_stale.json` | `stale` | `320 m` (last known) | `4 MIN` | no new fix since; distance is honestly stale, not re-measured (CLAUDE.md: "never fake freshness, positions, or times") |
 | `radar_close.json` | `close` | `15 m` | `3 SEC` | close-range predicate tripped; `arrow_valid: false` per S06 ("false in CLOSE/NOFIX/NOSEL") |
+| `radar_nofix.json` | `nofix` | `""` (unknown — my position invalid) | `6 MIN` (the *selected member's* last-known age is still honestly known even though mine isn't) | arrow hidden, "NO FIX - RADIO ONLY" |
+| `radar_nosel.json` | `nosel` | `""` | `""` | no paired crew member at all — empty-crew state, `mesh_ok: false` for variety |
+| `radar_never.json` | `lost` (folded — see below) | `""` | `""` | selected member "JAMIE" is paired but has never sent a fix; `age_str[0] == '\0'` is what `scr_radar.c` keys off to show "NO FIX YET" instead of a "LAST SEEN" chip — NOT distinguishable from a genuinely-old fix by `mode` alone (both are `RADAR_LOST`) |
 
-**Provenance note:** the specific numbers (DANA, 320 m, 8 s / 4 min / 15 m)
-came from the task brief that commissioned this slice, not from a value
-transcribed directly out of `docs/specs/S06-radar-face.md`'s own text —
-per `CLAUDE.md` ("Design references: screen mockups and plan live as
-Claude artifacts (ask Jake)"), the actual mockup artboards this repo's
-specs describe aren't checked into the repo, so there's no in-tree source
-to transcribe pixel/value tables from directly. These three fixtures are
-therefore a good-faith reconstruction consistent with the spec's *prose*
-(the three named modes, S06 AC4's exact three fixture names, S02's
-close-range/freshness thresholds), not a byte-for-byte transcription of a
-mockup this agent could not access. Flagged per AGENTS.md's "if blocked by
-a spec gap… note the interpretation" — noted here and in the PR body.
-`radar_nofix.json`/`radar_nosel.json` (also named in S06 AC4/AC1) are not
-included in this slice; S06 itself (Wave 3) is expected to add the
-remaining mode fixtures alongside its real `ff_radar_compute()` /
-`scr_radar.c` — the loader and schema above already support them (just
-`"mode": "nofix"` / `"nosel"`, `"arrow_valid": false`).
+**Provenance note:** the specific numbers (DANA, 320 m, 8 s / 4 min / 15 m,
+and PR B's additions) came from the task briefs that commissioned these
+slices, not from a value transcribed directly out of
+`docs/specs/S06-radar-face.md`'s own text — per `CLAUDE.md` ("Design
+references: screen mockups and plan live as Claude artifacts (ask
+Jake)"), the actual mockup artboards this repo's specs describe aren't
+checked into the repo, so there's no in-tree source to transcribe
+pixel/value tables from directly. These fixtures are therefore a
+good-faith reconstruction consistent with the spec's *prose*, not a
+byte-for-byte transcription of a mockup this agent could not access.
+Flagged per AGENTS.md's "if blocked by a spec gap… note the
+interpretation" — noted here and in the PR body.
 
 ## Adding a fixture
 

@@ -1,0 +1,19 @@
+{
+  "fixture": "radar_never",
+  "face": "radar",
+  "radar": {
+    "mode": "lost",
+    "arrow_deg": 0.0,
+    "arrow_valid": false,
+    "name": "JAMIE",
+    "dist_str": "",
+    "age_str": "",
+    "trend": 0,
+    "clock_str": "9:55",
+    "batt_pct": 42,
+    "mesh_ok": true,
+    "dots": [
+      {"ring_deg": 128.0, "initial": "R", "color_idx": 1, "stale": false}
+    ]
+  }
+}
