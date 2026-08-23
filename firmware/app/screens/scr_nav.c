@@ -9,6 +9,7 @@
 #include <stdio.h>
 
 #include "ff_theme.h"
+#include "scr_flare.h" /* S10 slice b — lock chip + sender overlay */
 #include "scr_radar.h"
 
 /* TODO(S11 slice b): open the real settings screen once it exists. This
@@ -63,7 +64,7 @@ static void nav_build_page_dots(lv_obj_t *puck, uint32_t active_idx)
     }
 }
 
-void ff_scr_nav_build(ff_app_state_t const *state)
+void ff_scr_nav_build(ff_app_state_t const *state, ff_flare_t *flare_rt)
 {
     if (state == NULL) {
         return;
@@ -108,9 +109,15 @@ void ff_scr_nav_build(ff_app_state_t const *state)
     lv_obj_set_style_bg_opa(tile_signals, LV_OPA_TRANSP, 0);
     lv_obj_clear_flag(tile_signals, LV_OBJ_FLAG_SCROLLABLE);
 
-    ff_scr_radar_build(tile_radar, &state->radar);
+    ff_scr_radar_build(tile_radar, &state->radar, flare_rt);
     nav_build_todo_pane(tile_now, "NOW", "S07");
     nav_build_todo_pane(tile_signals, "SIGNALS", "S08");
+
+    /* S10 slice b: the Radar face's lock chip. Added as a child of
+     * tile_radar specifically (not the puck) — spec: "the Radar face
+     * shows a lock indicator" — so it only ever appears alongside the
+     * Radar tile's own content, not on Now/Signals. */
+    ff_scr_flare_build_lock_chip(tile_radar, &state->flare);
 
     uint32_t tile_idx;
     switch (state->active_face) {
@@ -132,5 +139,30 @@ void ff_scr_nav_build(ff_app_state_t const *state)
     }
     lv_tileview_set_tile_by_index(tileview, tile_idx, 0, LV_ANIM_OFF);
 
+    /* PR #20 UX review (finding #4, BLOCKING — "flaring_self reads as an
+     * error"): whatever face is showing underneath, its own headline-
+     * shaped content (NOSEL's "NO CREW SELECTED", NOFIX's "NO FIX -
+     * RADIO ONLY", a LIVE/STALE name label, ...) was drawn at full
+     * opacity and visually outshouted the sender overlay's actual news
+     * ("you are flaring"). Fixed STRUCTURALLY, at the tileview container
+     * (one place), not per-renderer: dim the WHOLE base face when
+     * sending, then draw the overlay at full opacity on top. This is
+     * deliberately face-agnostic — it needs no "am I flaring" branch
+     * threaded through scr_radar.c's per-mode renderers (or any future
+     * Now/Signals screen's own headline), and unlike a per-label opacity
+     * flag it can't miss a mode this reviewer didn't happen to check.
+     * `lv_obj_set_style_opa` on a container blends its whole subtree as
+     * one layer, so every child (status bar, arrow, dots, chips, ...)
+     * dims together, not just top-level labels. */
+    if (state->flare.sending) {
+        lv_obj_set_style_opa(tileview, LV_OPA_30, 0);
+    }
+
     nav_build_page_dots(puck, tile_idx);
+
+    /* S10 slice b: the sender overlay, built LAST (on the puck itself,
+     * not any one tile) so it paints on top of whichever tile/page-dots
+     * are showing — spec: "own screen pulses amber" applies regardless
+     * of which face is active. No-op internally when !state->flare.sending. */
+    ff_scr_flare_build_sender_overlay(puck, &state->flare, flare_rt);
 }

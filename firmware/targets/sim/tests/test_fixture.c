@@ -65,8 +65,12 @@ static void radar_live_parses_exact_values(void)
     TEST_ASSERT_EQUAL_UINT8(0, s.now.n_rows);
     TEST_ASSERT_FALSE(s.now.next.valid);
     TEST_ASSERT_EQUAL_UINT8(0, s.signals.n_items);
-    TEST_ASSERT_EQUAL_INT(FF_APP_FLARE_IDLE, s.flare.state);
-    TEST_ASSERT_EQUAL_INT32(-1, s.flare.expires_in_ms);
+    TEST_ASSERT_FALSE(s.flare.sending);
+    TEST_ASSERT_EQUAL_INT32(-1, s.flare.send_expires_in_ms);
+    TEST_ASSERT_FALSE(s.flare.takeover_active);
+    TEST_ASSERT_EQUAL_INT32(-1, s.flare.takeover_expires_in_ms);
+    TEST_ASSERT_FALSE(s.flare.locked);
+    TEST_ASSERT_EQUAL_INT32(-1, s.flare.locked_expires_in_ms);
 }
 
 static void radar_stale_parses_exact_values(void)
@@ -150,8 +154,12 @@ static void absent_sections_default_to_zero(void)
     TEST_ASSERT_EQUAL_INT(RADAR_NOSEL, s.radar.mode); /* documented default */
     TEST_ASSERT_EQUAL_UINT8(0, s.radar.n_dots);
     TEST_ASSERT_FALSE(s.radar.mesh_ok);
-    TEST_ASSERT_EQUAL_INT(FF_APP_FLARE_IDLE, s.flare.state);
-    TEST_ASSERT_EQUAL_INT32(-1, s.flare.expires_in_ms);
+    TEST_ASSERT_FALSE(s.flare.sending);
+    TEST_ASSERT_EQUAL_INT32(-1, s.flare.send_expires_in_ms);
+    TEST_ASSERT_FALSE(s.flare.takeover_active);
+    TEST_ASSERT_EQUAL_INT32(-1, s.flare.takeover_expires_in_ms);
+    TEST_ASSERT_FALSE(s.flare.locked);
+    TEST_ASSERT_EQUAL_INT32(-1, s.flare.locked_expires_in_ms);
 }
 
 static void unknown_keys_are_tolerated(void)
@@ -251,15 +259,75 @@ static void signals_section_parses_every_field(void)
     TEST_ASSERT_EQUAL_UINT8(1, s.signals.unread_count);
 }
 
+/* [api] S10 slice b — ff_app_flare_t's three independent groups (see
+ * ff_app_state.h's updated doc comment). This is the reviewer-repro shape
+ * itself: a fixture with `sending`, `takeover_active`, AND `locked` ALL
+ * true at once, for DIFFERENT crew members, is exactly the legitimate
+ * simultaneous state PR #15's Ruling 1/2 exist to allow (single-slot
+ * `state` enum couldn't have represented this fixture at all). */
 static void flare_section_parses_every_field(void)
 {
     ff_app_state_t s;
-    char const *json = "{\"flare\": {\"state\": \"received\", \"from_name\": \"MAX\", \"expires_in_ms\": 4200}}";
+    char const *json = "{\"flare\": {"
+                        "  \"sending\": true, \"send_expires_in_ms\": 120000,"
+                        "  \"takeover_active\": true, \"takeover_from_name\": \"KEV\","
+                        "  \"takeover_bearing_valid\": true, \"takeover_bearing_deg\": 90.0,"
+                        "  \"takeover_dist_str\": \"40 m\","
+                        "  \"takeover_expires_in_ms\": 4200,"
+                        "  \"locked\": true, \"locked_from_name\": \"DANA\", \"locked_expires_in_ms\": 9000"
+                        "}}";
     TEST_ASSERT_EQUAL_INT(FF_FIXTURE_OK, ff_fixture_load_json(json, strlen(json), &s));
 
-    TEST_ASSERT_EQUAL_INT(FF_APP_FLARE_RECEIVED, s.flare.state);
-    TEST_ASSERT_EQUAL_STRING("MAX", s.flare.from_name);
-    TEST_ASSERT_EQUAL_INT32(4200, s.flare.expires_in_ms);
+    TEST_ASSERT_TRUE(s.flare.sending);
+    TEST_ASSERT_EQUAL_INT32(120000, s.flare.send_expires_in_ms);
+
+    TEST_ASSERT_TRUE(s.flare.takeover_active);
+    TEST_ASSERT_EQUAL_STRING("KEV", s.flare.takeover_from_name);
+    TEST_ASSERT_TRUE(s.flare.takeover_bearing_valid);
+    TEST_ASSERT_EQUAL_FLOAT(90.0f, s.flare.takeover_bearing_deg);
+    TEST_ASSERT_EQUAL_STRING("40 m", s.flare.takeover_dist_str);
+    TEST_ASSERT_EQUAL_INT32(4200, s.flare.takeover_expires_in_ms);
+
+    TEST_ASSERT_TRUE(s.flare.locked);
+    TEST_ASSERT_EQUAL_STRING("DANA", s.flare.locked_from_name);
+    TEST_ASSERT_EQUAL_INT32(9000, s.flare.locked_expires_in_ms);
+}
+
+/* PR #20 code review (LOW finding): `takeover_bearing_valid` defaults to
+ * false ("unknown") both when the whole `flare` section is absent AND
+ * when the takeover group is present but this one key is omitted —
+ * providing `takeover_bearing_deg` without the validity flag must NOT be
+ * read as "valid" (a fixture author forgetting the flag should get an
+ * honest "unknown" render, not a silently-fabricated compass point). */
+static void flare_takeover_bearing_valid_defaults_false(void)
+{
+    ff_app_state_t s;
+    char const *json = "{\"flare\": {\"takeover_active\": true, \"takeover_bearing_deg\": 90.0}}";
+    TEST_ASSERT_EQUAL_INT(FF_FIXTURE_OK, ff_fixture_load_json(json, strlen(json), &s));
+
+    TEST_ASSERT_FALSE(s.flare.takeover_bearing_valid);
+    TEST_ASSERT_EQUAL_FLOAT(90.0f, s.flare.takeover_bearing_deg); /* parsed regardless — just not honestly usable */
+}
+
+/* Each group's own "n/a" sentinel is independent — omitting only the
+ * takeover group must NOT disturb the (present) sending/locked groups'
+ * real values, and must still default takeover_expires_in_ms to -1 as if
+ * the whole "flare" section were absent (fx_parse_flare's doc comment). */
+static void flare_omitted_group_defaults_independently(void)
+{
+    ff_app_state_t s;
+    char const *json = "{\"flare\": {\"sending\": true, \"send_expires_in_ms\": 5000, "
+                        "\"locked\": true, \"locked_expires_in_ms\": 9000}}";
+    TEST_ASSERT_EQUAL_INT(FF_FIXTURE_OK, ff_fixture_load_json(json, strlen(json), &s));
+
+    TEST_ASSERT_TRUE(s.flare.sending);
+    TEST_ASSERT_EQUAL_INT32(5000, s.flare.send_expires_in_ms);
+
+    TEST_ASSERT_FALSE(s.flare.takeover_active);
+    TEST_ASSERT_EQUAL_INT32(-1, s.flare.takeover_expires_in_ms);
+
+    TEST_ASSERT_TRUE(s.flare.locked);
+    TEST_ASSERT_EQUAL_INT32(9000, s.flare.locked_expires_in_ms);
 }
 
 static void settings_section_parses_every_field(void)
@@ -441,6 +509,8 @@ int main(void)
     RUN_TEST(now_section_parses_every_field);
     RUN_TEST(signals_section_parses_every_field);
     RUN_TEST(flare_section_parses_every_field);
+    RUN_TEST(flare_omitted_group_defaults_independently);
+    RUN_TEST(flare_takeover_bearing_valid_defaults_false);
     RUN_TEST(settings_section_parses_every_field);
 
     RUN_TEST(radar_dots_over_cap_fails_loud);

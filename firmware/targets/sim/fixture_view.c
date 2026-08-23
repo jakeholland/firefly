@@ -33,15 +33,17 @@ static char const *ffv_radar_mode_str(radar_mode_t m)
     return "?";
 }
 
-static char const *ffv_flare_state_str(ff_app_flare_state_t s)
+/* [api] S10 slice b: ff_app_flare_t is no longer a single `state` enum
+ * (see ff_app_state.h's updated doc comment) — it's three independent
+ * groups that can each be true or false at once. This debug placeholder
+ * just prints all three rather than picking one, so it stays honest about
+ * that independence instead of collapsing it back into a fake single
+ * "state" the way the old ffv_flare_state_str() did. */
+static void ffv_flare_line(char *buf, size_t n, ff_app_flare_t const *fl)
 {
-    switch (s) {
-    case FF_APP_FLARE_IDLE: return "IDLE";
-    case FF_APP_FLARE_SENDING: return "SENDING";
-    case FF_APP_FLARE_RECEIVED: return "RECEIVED";
-    case FF_APP_FLARE_LOCKED: return "LOCKED";
-    }
-    return "?";
+    snprintf(buf, n, "FLARE: send=%s takeover=%s(%s) lock=%s(%s)", fl->sending ? "Y" : "N",
+             fl->takeover_active ? "Y" : "N", fl->takeover_active ? fl->takeover_from_name : "-",
+             fl->locked ? "Y" : "N", fl->locked ? fl->locked_from_name : "-");
 }
 
 static void ffv_build_radar_body(char *buf, size_t n, ff_radar_view_t const *r)
@@ -144,12 +146,21 @@ void ff_fixture_view_build(ff_app_state_t const *state)
 
     /* Flare is a cross-face overlay in the real app (S10: "full-screen
      * takeover regardless of current face"), so it's always appended
-     * rather than gated behind active_face. Composed via one snprintf
-     * (not a manual append) — simpler and no truncation-math to get
-     * wrong; `face_text`'s 448-byte budget leaves comfortable headroom
-     * before this 512-byte buffer for the flare line's worst case. */
-    char buf[512];
-    snprintf(buf, sizeof(buf), "%s\nFLARE: %s", face_text, ffv_flare_state_str(state->flare.state));
+     * rather than gated behind active_face. `buf` is sized to the sum of
+     * both source buffers' FULL declared capacity (448 + 128) plus the
+     * separator/terminator, not a "should be enough in practice" guess —
+     * GCC's `-Wformat-truncation` (gcc-only; AppleClang doesn't emit
+     * this, which is why this was missed building locally on macOS, same
+     * "caught in CI, not locally" class of gap this repo's other
+     * cross-compiler notes call out) reasons conservatively from each
+     * source buffer's declared size, not its actual (much shorter)
+     * runtime contents, and fails the build under -Werror otherwise —
+     * verified against a real Linux/gcc CI failure, not just satisfying
+     * the warning speculatively. */
+    char flare_line[128];
+    ffv_flare_line(flare_line, sizeof(flare_line), &state->flare);
+    char buf[sizeof(face_text) + sizeof(flare_line) + 2]; /* +1 '\n', +1 NUL */
+    snprintf(buf, sizeof(buf), "%s\n%s", face_text, flare_line);
 
     lv_obj_t *body = lv_label_create(puck);
     lv_label_set_text(body, buf);

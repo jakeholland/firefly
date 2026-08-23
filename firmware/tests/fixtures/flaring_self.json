@@ -1,0 +1,14 @@
+{
+  "fixture": "flaring_self",
+  "face": "radar",
+  "radar": {
+    "mode": "nosel",
+    "clock_str": "2:14",
+    "batt_pct": 55,
+    "mesh_ok": true
+  },
+  "flare": {
+    "sending": true,
+    "send_expires_in_ms": 245000
+  }
+}
