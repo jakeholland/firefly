@@ -1,8 +1,8 @@
 # Build-log video at milestones
 
-**Standing policy:** every logical milestone produces a short vertical clip for TikTok/Reels, rendered from the real firmware — not a mockup. The pipeline is `firmware/tools/social/render_scene.py` (renders app-state fixtures through `ffsim`, stitches with ffmpeg, emits 9:16 + GIF + square).
+**Standing policy:** every logical milestone produces a short **9:16 vertical clip for TikTok** (1080×1920), rendered from the real firmware — not a mockup. The pipeline is `firmware/tools/social/render_scene.py` (renders app-state fixtures through `ffsim`, stitches with ffmpeg).
 
-The GIF output doubles as README material, so the repo's front page always shows the current state of the device.
+**9:16 is the default and the only output unless another is asked for.** The puck sits above centre in the frame so the platform's caption/username overlay — which covers roughly the bottom quarter on a real phone — never lands on the distance readout. Other cuts are opt-in: `--formats gif` (README/embed material) and `--formats square` (Instagram feed); combine with commas.
 
 ## What counts as a milestone
 

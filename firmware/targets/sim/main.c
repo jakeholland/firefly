@@ -12,12 +12,17 @@
  *   ffsim --headless --screenshot DIR --fixture FILE.json
  *                                  same, but loads FILE.json into an
  *                                  ff_app_state_t (fixture.h) and renders
- *                                  the S13 placeholder debug face
- *                                  (fixture_view.h) instead of the boot
- *                                  screen, writing DIR/<stem>.png.
+ *                                  it instead of the boot screen, writing
+ *                                  DIR/<stem>.png. A fixture whose
+ *                                  active_face is "radar" gets the real
+ *                                  S06 shell + radar face (scr_nav.h);
+ *                                  every other face still gets the S13
+ *                                  placeholder debug face (fixture_view.h)
+ *                                  — see ff_build_face_screen below.
  *   ffsim --fixture FILE.json      window mode with the fixture loaded
- *                                  (interactive preview of the debug
- *                                  face; same load path as headless).
+ *                                  (interactive preview; same
+ *                                  face-selection and load path as
+ *                                  headless).
  *   ffsim --headless --ctl PORT [--fixture FILE.json] [--mock-clock]
  *         [--connect HOST:PORT] [--pack FILE.json]
  *                                  S13 slice c: opens a persistent,
@@ -31,8 +36,18 @@
  *                                  section for why).
  *
  * --mock-clock freezes the LVGL tick source for the one-shot headless and
- * window paths (see ff_mock_tick_cb below). In --ctl mode it instead
- * gates the ctl socket's `{"cmd":"clock"}` command — see
+ * window paths (see ff_mock_tick_cb below); ff_run_headless_once()
+ * UNCONDITIONALLY calls lv_tick_set_cb(ff_mock_tick_cb) regardless of
+ * whether --mock-clock was passed — headless rendering is deterministic
+ * either way (lv_refr_now() does NOT skip the tick — it unconditionally
+ * calls lv_anim_refr_now() internally, which reads the tick and runs one
+ * animation step; this matters since S06's CLOSE-mode radar face starts a
+ * real lv_anim_t for its pulsing rings, see app/screens/scr_radar.c — but
+ * the unconditional freeze is what actually makes it deterministic, not
+ * the flag). The flag is accepted and honored in headless mode purely so
+ * callers (tests/run_goldens.sh) can pass it explicitly rather than
+ * depending on undocumented default behavior. In --ctl mode --mock-clock
+ * instead gates the ctl socket's `{"cmd":"clock"}` command — see
  * ff_loop_clock_advance/ff_loop_tick_cb.
  *
  * --connect/--pack (S13 slice a/b flags) are implemented in live.h/live.c
@@ -61,6 +76,7 @@
 #include "fixture.h"
 #include "fixture_view.h"
 #include "live.h"
+#include "scr_nav.h"
 #include "screenshot.h"
 
 #define FF_SIM_WINDOW_W 456
@@ -91,6 +107,19 @@ static void ff_build_boot_screen(void)
     lv_label_set_text(label, "FIREFLY");
     lv_obj_set_style_text_color(label, lv_color_hex(FF_COLOR_AMBER), 0);
     lv_obj_center(label);
+}
+
+/* S06 — replaces the S13 debug placeholder with the real shell+radar
+ * face whenever a loaded fixture's active_face is radar; every other
+ * face still falls through to fixture_view.h's placeholder (Now/Signals/
+ * Settings screens arrive with their own specs — S07/S08/S11). */
+static void ff_build_face_screen(ff_app_state_t const *state)
+{
+    if (state->active_face == FF_APP_FACE_RADAR) {
+        ff_scr_nav_build(state);
+    } else {
+        ff_fixture_view_build(state);
+    }
 }
 
 /* Full-frame render mode: the whole buffer is the flushed frame, so the
@@ -150,7 +179,7 @@ static int ff_run_headless_once(const char *screenshot_dir, const char *fixture_
             lv_deinit();
             return 1;
         }
-        ff_fixture_view_build(&state);
+        ff_build_face_screen(&state);
 
         char stem[256];
         ff_fixture_stem(fixture_path, stem, sizeof(stem));
@@ -184,7 +213,7 @@ static int ff_run_window(const char *fixture_path, bool mock_clock)
             fprintf(stderr, "ffsim: failed to load fixture %s (error %d)\n", fixture_path, (int)fr);
             return 1;
         }
-        ff_fixture_view_build(&state);
+        ff_build_face_screen(&state);
     } else {
         ff_build_boot_screen();
     }
@@ -396,7 +425,7 @@ static int ff_run_ctl_loop(uint16_t ctl_port, const char *fixture_path, bool moc
             lv_deinit();
             return 1;
         }
-        ff_fixture_view_build(&state);
+        ff_build_face_screen(&state);
     } else {
         ff_build_boot_screen();
     }

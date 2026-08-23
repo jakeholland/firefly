@@ -90,9 +90,11 @@ endif()
 
 add_executable(ffsim
     main.c
-    fixture_view.c  # S13b — placeholder fixture debug face; no separate
-                     # lib (nothing else links/tests it — rendering is
-                     # covered by golden PNGs, not unit tests, per
+    fixture_view.c  # S13b — placeholder fixture debug face (still used
+                     # for every face except radar; see main.c's
+                     # ff_build_face_screen). No separate lib (nothing
+                     # else links/tests it — rendering is covered by
+                     # golden PNGs, not unit tests, per
                      # docs/ARCHITECTURE.md's "compute = unit; render =
                      # golden PNG" split).
     screenshot.c     # S13c — shared XRGB8888->PNG writer (extracted out of
@@ -116,6 +118,7 @@ target_link_libraries(ffsim PRIVATE
     ff-sim-fixture  # S13b — fixture.h loader (fixture.c above)
     ff-sim-ctl      # S13c — ctl_server.h/.c (ctl_server.c above)
     ff-sim-live     # S13c — live.h/.c: --connect / --pack wiring (live.c above)
+    ff-app-ui       # S06b — scr_nav.h/scr_radar.h (app/CMakeLists.txt)
     lvgl::lvgl
     ff-stb-image-write
 )
