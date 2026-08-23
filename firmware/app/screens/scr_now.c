@@ -95,17 +95,23 @@ static void now_build_next_card(lv_obj_t *parent, ff_app_next_t const *next)
     /* Anxiety-critical text (S07 spec / UX review brief: "the countdown
      * ... keep >= 13px equivalent"). FF_THEME_FONT_LABEL/CHIP (14px)
      * already clears that floor with margin (see ff_theme.h's own
-     * rounding rationale), but this is the single most time-pressure-
-     * sensitive string on the whole face — bumped to FF_THEME_FONT_NAME
-     * (22px, the same size the Radar face gives its own most-important
-     * readout, the distance-to-crew number) for real emphasis, not just
-     * floor compliance. Judgment call, no mockup access — see
-     * now_layout.h's top comment for the same category of call. */
+     * rounding rationale). UX review round 1 (PR #21) had this at
+     * FF_THEME_FONT_NAME (22px) — legible, but tied for biggest text on
+     * the card with the artist name above it. Reviewer's note: on the
+     * Radar face, the single most time-critical number (distance) is
+     * STRICTLY the largest thing on that whole face (36px, bigger than
+     * the 22px name) — this is the Now face's equivalent anxiety-killer
+     * number and should read the same way: unambiguously the most
+     * prominent element, not merely tied for it. Bumped to
+     * FF_THEME_FONT_DISTANCE (36px, the same constant Radar's own
+     * distance readout uses) for that reason, not just floor compliance.
+     * Judgment call, no mockup access — see now_layout.h's top comment
+     * for the same category of call. */
     char countdown[24];
     now_layout_format_countdown(next->mins_until, countdown, sizeof(countdown));
     lv_obj_t *cd_lbl = lv_label_create(parent);
     lv_label_set_text(cd_lbl, countdown);
-    lv_obj_set_style_text_font(cd_lbl, FF_THEME_FONT_NAME, 0);
+    lv_obj_set_style_text_font(cd_lbl, FF_THEME_FONT_DISTANCE, 0);
     lv_obj_set_style_text_color(cd_lbl, lv_color_hex(FF_THEME_COLOR_AMBER), 0);
     lv_obj_align(cd_lbl, LV_ALIGN_CENTER, 0, (int32_t)NOW_LAYOUT_NEXT_COUNTDOWN_DY);
 }
@@ -227,15 +233,22 @@ static void now_render_tbd(lv_obj_t *parent, ff_app_now_t const *now)
         ff_app_lineup_item_t const *item = &now->lineup[i];
         char line[FF_APP_ARTIST_LEN + FF_APP_STAGE_LEN + 4];
         char const *artist = (item->artist[0] != '\0') ? item->artist : "(unknown)";
-        if (item->stage_name[0] != '\0') {
-            /* Plain hyphen, not an em dash: LVGL's built-in Montserrat
-             * bitmap fonts only cover the ASCII printable range by
-             * default (same substitution scr_radar.c's radar_render_nofix
-             * already makes for U+00B7, for the identical reason). */
-            snprintf(line, sizeof(line), "%s - %s", artist, item->stage_name);
-        } else {
-            snprintf(line, sizeof(line), "%s", artist);
-        }
+        /* UX review finding #2 (PR #21): this used to omit the stage
+         * silently when unknown, while now_build_row() (the LIVE rows,
+         * just above in this same file) falls back to the literal
+         * "STAGE UNKNOWN" string for the identical missing-data case.
+         * Same face, same "we don't know the stage" fact, must read the
+         * same way — a bare artist name next to five others that DO show
+         * a stage reads as a broken template, not a stated unknown
+         * (CLAUDE.md: unknown must stay explicit). Always show a stage
+         * field now, honest placeholder or not.
+         *
+         * Plain hyphen, not an em dash: LVGL's built-in Montserrat bitmap
+         * fonts only cover the ASCII printable range by default (same
+         * substitution scr_radar.c's radar_render_nofix already makes
+         * for U+00B7, for the identical reason). */
+        char const *stage = (item->stage_name[0] != '\0') ? item->stage_name : "STAGE UNKNOWN";
+        snprintf(line, sizeof(line), "%s - %s", artist, stage);
 
         lv_obj_t *item_lbl = lv_label_create(list);
         lv_label_set_text(item_lbl, line);

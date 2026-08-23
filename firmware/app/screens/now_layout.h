@@ -94,11 +94,15 @@ extern "C" {
 #define NOW_LAYOUT_ROW_BAR_TRACK_W_PX 210
 #define NOW_LAYOUT_ROW_BAR_H_PX 6
 
-/* LIVE state: starred-next card, below the row stack. */
+/* LIVE state: starred-next card, below the row stack. NEXT_COUNTDOWN_DY
+ * carries extra clearance from NEXT_STAGE_DY (was 122, UX review round 1
+ * — see scr_now.c's now_build_next_card) because the countdown now
+ * renders at FF_THEME_FONT_DISTANCE (36px, up from 22px) per UX review
+ * round 2 (PR #21 finding #4): the taller glyph needs the room. */
 #define NOW_LAYOUT_NEXT_LABEL_DY 40.0f
 #define NOW_LAYOUT_NEXT_ARTIST_DY 64.0f
 #define NOW_LAYOUT_NEXT_STAGE_DY 88.0f
-#define NOW_LAYOUT_NEXT_COUNTDOWN_DY 122.0f
+#define NOW_LAYOUT_NEXT_COUNTDOWN_DY 132.0f
 
 /* LIVE state, no rows at all (a quiet moment: pack loaded, known
  * schedule, nothing live right now) — same headline/sub vertical slots as

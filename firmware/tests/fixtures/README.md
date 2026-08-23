@@ -190,20 +190,30 @@ interpretation" — noted here and in the PR body.
 
 ### Now face fixtures (S07 slice b)
 
-Three fixtures cover the Now face's three honestly-distinct states:
+Four fixtures cover the Now face's four honestly-distinct states (the
+fourth, `now_nothing_live.json`, added in PR #21's UX review round 1 —
+it was reachable in code from the first pass but had no golden):
 
 | Fixture | `pack_loaded` | `tbd` | What it exercises |
 |---|---|---|---|
-| `now_live.json` | `true` | `false` | Three concurrent now-playing rows (mocked artists/stages/times, one per stage color) plus a starred-next card — "Excision · IN 33 MIN" is the literal countdown text the spec's own example ("IN 33 MIN") transcribes. |
-| `now_tbd.json` | `true` | `true` | The real 2026 Lost Lands pack's actual state today: every set's start/end is null. `lineup` is transcribed verbatim (artist + stage, in pack order) from day 1 (2026-09-18) of `firmware/festpack/tests/fixtures/lost-lands-2026.festpack.json` — 7 sets, most with `stage: null` (rendered as unknown, not guessed) except Excision (`prehistoric` → "Prehistoric Stage"). This is the pack-update story CLAUDE.md's honesty rule exists for: don't invent set times the source data doesn't have. |
+| `now_live.json` | `true` | `false` | Three concurrent now-playing rows (mocked artists/times; stage names + colors are the REAL Lost Lands stages — see the provenance note below, UX review round 1 flagged the original EDC-flavored placeholders) plus a starred-next card — "IN 33 MIN" is the literal countdown text the spec's own example transcribes. |
+| `now_tbd.json` | `true` | `true` | The real 2026 Lost Lands pack's actual state today: every set's start/end is null. `lineup` is transcribed verbatim (artist + stage, in pack order) from day 1 (2026-09-18) of `firmware/festpack/tests/fixtures/lost-lands-2026.festpack.json` — 7 sets, most with `stage: null` (rendered as the explicit "STAGE UNKNOWN" fallback, not silently omitted — see the provenance note) except Excision (`prehistoric` → "Prehistoric Stage"). This is the pack-update story CLAUDE.md's honesty rule exists for: don't invent set times the source data doesn't have. |
+| `now_nothing_live.json` | `true` | `false` | Pack loaded, schedule known, but nothing is currently playing and nothing is starred upcoming — a genuinely reachable state (early morning between sets) distinct from both TBD and no-pack-loaded. `rows`/`next` are both absent. |
 | `now_empty.json` | `false` (omitted) | — | No festpack loaded at all — `now` is entirely absent from the fixture. Deliberately distinct from `now_tbd.json`: a puck with nothing loaded must never show schedule chrome (a "SET TIMES TBD" banner) that implies a pack exists. |
 
-**Provenance note (`now_live.json`):** artist/stage names and times are
-mocked test data (GRiZ, Subtronics, etc. — not from any real festpack),
-same "good-faith reconstruction, not a mockup transcription" category as
-the radar fixtures above (no mockup artboards in-tree — see CLAUDE.md).
-**`now_tbd.json` is the one Now fixture that is NOT mocked** — its
-`lineup` entries are copied field-for-field from the real vendored Lost
+**Provenance note (`now_live.json`):** artist names and set times/percentages
+are mocked test data (GRiZ, Wooli, Kompany — not real Lost Lands 2026
+performers), same "good-faith reconstruction, not a mockup transcription"
+category as the radar fixtures above (no mockup artboards in-tree — see
+CLAUDE.md). **Stage names and colors, however, are the real ones** —
+`Prehistoric Stage` (`#ffc66b`), `Subsidia Stage` (`#ff5ca8`), `Forest
+Stage` (`#9be07b`), copied from `firmware/festpack/tests/fixtures/lost-lands-2026.festpack.json`'s
+`stages[]`, after UX review round 1 (PR #21) flagged the original fixture's
+"Bass Camp"/"Kinetic Field"/"The Grove" as reading like a different
+festival's stage names — this PNG is permanent repo history, worth
+getting right even though it's mocked data. **`now_tbd.json` is the one
+Now fixture that is NOT mocked at all** — its `lineup` entries are copied
+field-for-field from the real vendored Lost
 Lands pack, specifically because the spec calls out this exact case
 ("real Lost Lands pack") as the thing this fixture must prove.
 
