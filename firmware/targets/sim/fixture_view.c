@@ -20,15 +20,15 @@
 #define FFV_COLOR_AMBER   0xffc66b
 #define FFV_COLOR_DIM     0xaaaaaa
 
-static char const *ffv_radar_mode_str(ff_app_radar_mode_t m)
+static char const *ffv_radar_mode_str(radar_mode_t m)
 {
     switch (m) {
-    case FF_APP_RADAR_LIVE: return "LIVE";
-    case FF_APP_RADAR_STALE: return "STALE";
-    case FF_APP_RADAR_LOST: return "LOST";
-    case FF_APP_RADAR_CLOSE: return "CLOSE";
-    case FF_APP_RADAR_NOFIX: return "NOFIX";
-    case FF_APP_RADAR_NOSEL: return "NOSEL";
+    case RADAR_LIVE: return "LIVE";
+    case RADAR_STALE: return "STALE";
+    case RADAR_LOST: return "LOST";
+    case RADAR_CLOSE: return "CLOSE";
+    case RADAR_NOFIX: return "NOFIX";
+    case RADAR_NOSEL: return "NOSEL";
     }
     return "?";
 }
@@ -44,7 +44,7 @@ static char const *ffv_flare_state_str(ff_app_flare_state_t s)
     return "?";
 }
 
-static void ffv_build_radar_body(char *buf, size_t n, ff_app_radar_t const *r)
+static void ffv_build_radar_body(char *buf, size_t n, ff_radar_view_t const *r)
 {
     snprintf(buf, n,
              "FACE: RADAR\n"

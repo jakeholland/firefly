@@ -12,6 +12,7 @@
 #include "unity.h"
 
 #include "fixture.h"
+#include "ff_crew.h" /* FF_CREW_MAX — radar.dots[] cap */
 
 #ifndef FF_FIXTURE_DIR
 #define FF_FIXTURE_DIR "tests/fixtures/"
@@ -41,7 +42,7 @@ static void radar_live_parses_exact_values(void)
     TEST_ASSERT_EQUAL_STRING("radar_live", s.fixture_name);
     TEST_ASSERT_EQUAL_INT(FF_APP_FACE_RADAR, s.active_face);
 
-    TEST_ASSERT_EQUAL_INT(FF_APP_RADAR_LIVE, s.radar.mode);
+    TEST_ASSERT_EQUAL_INT(RADAR_LIVE, s.radar.mode);
     TEST_ASSERT_EQUAL_FLOAT(42.0f, s.radar.arrow_deg);
     TEST_ASSERT_TRUE(s.radar.arrow_valid);
     TEST_ASSERT_EQUAL_STRING("DANA", s.radar.name);
@@ -73,7 +74,7 @@ static void radar_stale_parses_exact_values(void)
     ff_app_state_t s;
     TEST_ASSERT_EQUAL_INT(FF_FIXTURE_OK, ff_fixture_load_file(fixture_path("radar_stale.json"), &s));
 
-    TEST_ASSERT_EQUAL_INT(FF_APP_RADAR_STALE, s.radar.mode);
+    TEST_ASSERT_EQUAL_INT(RADAR_STALE, s.radar.mode);
     TEST_ASSERT_EQUAL_STRING("320 m", s.radar.dist_str); /* last known distance, honestly stale */
     TEST_ASSERT_EQUAL_STRING("4 MIN", s.radar.age_str);
     TEST_ASSERT_TRUE(s.radar.arrow_valid); /* STALE still draws a (dashed) arrow per S06 */
@@ -84,7 +85,7 @@ static void radar_close_parses_exact_values(void)
     ff_app_state_t s;
     TEST_ASSERT_EQUAL_INT(FF_FIXTURE_OK, ff_fixture_load_file(fixture_path("radar_close.json"), &s));
 
-    TEST_ASSERT_EQUAL_INT(FF_APP_RADAR_CLOSE, s.radar.mode);
+    TEST_ASSERT_EQUAL_INT(RADAR_CLOSE, s.radar.mode);
     TEST_ASSERT_EQUAL_STRING("15 m", s.radar.dist_str);
     TEST_ASSERT_EQUAL_STRING("3 SEC", s.radar.age_str);
     TEST_ASSERT_EQUAL_INT(1, s.radar.trend);
@@ -146,7 +147,7 @@ static void absent_sections_default_to_zero(void)
 
     TEST_ASSERT_EQUAL_STRING("minimal", s.fixture_name);
     TEST_ASSERT_EQUAL_INT(FF_APP_FACE_RADAR, s.active_face); /* documented default */
-    TEST_ASSERT_EQUAL_INT(FF_APP_RADAR_NOSEL, s.radar.mode); /* documented default */
+    TEST_ASSERT_EQUAL_INT(RADAR_NOSEL, s.radar.mode); /* documented default */
     TEST_ASSERT_EQUAL_UINT8(0, s.radar.n_dots);
     TEST_ASSERT_FALSE(s.radar.mesh_ok);
     TEST_ASSERT_EQUAL_INT(FF_APP_FLARE_IDLE, s.flare.state);
@@ -159,7 +160,7 @@ static void unknown_keys_are_tolerated(void)
     char const *json = "{\"fixture\": \"x\", \"totally_unknown_key\": {\"a\": [1,2,3]}, "
                         "\"radar\": {\"mode\": \"live\", \"also_unknown\": true}}";
     TEST_ASSERT_EQUAL_INT(FF_FIXTURE_OK, ff_fixture_load_json(json, strlen(json), &s));
-    TEST_ASSERT_EQUAL_INT(FF_APP_RADAR_LIVE, s.radar.mode);
+    TEST_ASSERT_EQUAL_INT(RADAR_LIVE, s.radar.mode);
 }
 
 /* ---------------------------------------------------------------------
@@ -311,7 +312,7 @@ static void build_n_element_array_json(char *buf, size_t buf_sz, char const *sec
 static void radar_dots_over_cap_fails_loud(void)
 {
     char json[512];
-    build_n_element_array_json(json, sizeof(json), "radar", "dots", FF_APP_RADAR_MAX_DOTS + 1);
+    build_n_element_array_json(json, sizeof(json), "radar", "dots", FF_CREW_MAX + 1);
 
     ff_app_state_t s;
     memset(&s, 0xAA, sizeof(s));
@@ -325,11 +326,11 @@ static void radar_dots_over_cap_fails_loud(void)
 static void radar_dots_at_cap_still_loads_ok(void)
 {
     char json[512];
-    build_n_element_array_json(json, sizeof(json), "radar", "dots", FF_APP_RADAR_MAX_DOTS);
+    build_n_element_array_json(json, sizeof(json), "radar", "dots", FF_CREW_MAX);
 
     ff_app_state_t s;
     TEST_ASSERT_EQUAL_INT(FF_FIXTURE_OK, ff_fixture_load_json(json, strlen(json), &s));
-    TEST_ASSERT_EQUAL_UINT8(FF_APP_RADAR_MAX_DOTS, s.radar.n_dots);
+    TEST_ASSERT_EQUAL_UINT8(FF_CREW_MAX, s.radar.n_dots);
 }
 
 static void now_rows_over_cap_fails_loud(void)
@@ -369,7 +370,7 @@ static void oversized_array_zeroes_entire_state_including_other_sections(void)
      * struct, not just the section that failed, regardless of where in
      * the document the failing section appears. */
     char dots[128] = "";
-    for (int i = 0; i < FF_APP_RADAR_MAX_DOTS + 1; i++) {
+    for (int i = 0; i < FF_CREW_MAX + 1; i++) {
         strcat(dots, i == 0 ? "{}" : ",{}");
     }
     char json[512];

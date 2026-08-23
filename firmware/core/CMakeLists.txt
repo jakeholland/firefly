@@ -83,3 +83,16 @@ if(FF_BUILD_TESTS)
 
     add_test(NAME test_crew COMMAND test_crew)
 endif()
+
+# S06 (core/radar — radar-face view compute; docs/specs/S06-radar-face.md)
+target_sources(ff-core PRIVATE src/ff_radar.c)
+
+if(FF_BUILD_TESTS)
+    add_executable(test_radar
+        tests/test_radar.c
+    )
+    target_link_libraries(test_radar PRIVATE ff-core unity)
+    ff_apply_warnings(test_radar)
+
+    add_test(NAME test_radar COMMAND test_radar)
+endif()
