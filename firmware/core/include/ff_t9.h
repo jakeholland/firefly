@@ -71,6 +71,25 @@
  *    cap was hit, but likewise will not append the space itself once the
  *    committed text is already at the cap. Backspace is always allowed (it
  *    only ever shrinks the buffer).
+ *
+ *  - **`ff_t9_insert_text()` is new, added in S08 slice c/d (Signals/
+ *    Compose faces) — not in the spec's original interface sketch.** The
+ *    Compose keypad's SYM page (docs/specs/S08-signals-t9.md's Amendments:
+ *    2026-08-23 owner ruling on the digits/symbols question) inserts
+ *    multi-character ASCII shortcuts — emoticons like ":)" — as a single
+ *    keypress, which the per-key multi-tap model (one pending char, cycled
+ *    by repeated presses of the SAME key) has no way to express: there is
+ *    no key whose letter table is `{":)"}` as one "letter". This function
+ *    commits any pending char (same first step as `ff_t9_space`), then
+ *    appends a plain ASCII string atomically, subject to the same 160-char
+ *    cap. It is deliberately named `_text`, not `_utf8` — every string it
+ *    accepts is one byte per character (ASCII emoticons/punctuation, S08
+ *    Amendments' "acceptable fallback" tier); it does not attempt to
+ *    special-case multi-byte codepoint boundaries, so it must not be used
+ *    to insert real multi-byte UTF-8 (a future real-emoji tier would need
+ *    its own codepoint-aware entry point, not this one, precisely so this
+ *    one's backspace-is-always-one-`char` behavior stays correct for
+ *    everything it actually accepts).
  */
 #ifndef FF_T9_H
 #define FF_T9_H
@@ -146,6 +165,27 @@ void ff_t9_backspace(ff_t9_t *t);
  * "Deviations" note.
  */
 void ff_t9_space(ff_t9_t *t);
+
+/**
+ * ff_t9_insert_text — commit any pending character (per `ff_t9_space`'s
+ * first step), then atomically append the plain ASCII string `s` to the
+ * committed text, subject to the 160-char cap. All-or-nothing: if `s`
+ * would not fully fit in the remaining budget, `t` is left completely
+ * unmodified (pending char included) and this returns false — a
+ * half-inserted symbol reading as garbage would be worse than a silently
+ * ignored keypress. Returns true if `s` was fully appended (including the
+ * trivial case of an empty `s`, which still commits any pending char).
+ * `s` must be NUL-terminated, single-byte-per-character ASCII — see the
+ * header's "Deviations" note for why this is not a UTF-8 insertion API.
+ * Enforced at runtime, not just documented: any byte in `s` with its high
+ * bit set (>= 0x80, i.e. any byte that could only appear as part of a
+ * multi-byte UTF-8 sequence) is rejected outright — `t` untouched, same
+ * as a would-not-fit `s` — rather than silently truncating, mis-copying,
+ * or accepting text that would corrupt on a later byte-at-a-time
+ * backspace (S08 PR #25 code review, LOW finding).
+ * Returns false without modifying `t` if `t` or `s` is NULL.
+ */
+bool ff_t9_insert_text(ff_t9_t *t, char const *s);
 
 /**
  * ff_t9_text — committed text plus the live pending character (if any),

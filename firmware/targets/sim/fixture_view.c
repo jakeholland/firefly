@@ -87,6 +87,27 @@ static void ffv_build_signals_body(char *buf, size_t n, ff_app_signals_t const *
     }
 }
 
+static char const *ffv_compose_mode_str(ff_app_compose_mode_t m)
+{
+    switch (m) {
+    case FF_APP_COMPOSE_ABC: return "ABC";
+    case FF_APP_COMPOSE_123: return "123";
+    case FF_APP_COMPOSE_SYM: return "SYM";
+    }
+    return "?";
+}
+
+static void ffv_build_compose_body(char *buf, size_t n, ff_app_compose_t const *cp)
+{
+    snprintf(buf, n,
+             "FACE: COMPOSE\n"
+             "TO: %s\n"
+             "MODE: %s\n"
+             "TEXT: %s%s",
+             cp->to_name[0] != '\0' ? cp->to_name : "(broadcast)", ffv_compose_mode_str(cp->mode), cp->text,
+             cp->has_pending ? " |" : "");
+}
+
 static void ffv_build_settings_body(char *buf, size_t n, ff_app_settings_t const *s)
 {
     snprintf(buf, n,
@@ -130,6 +151,7 @@ void ff_fixture_view_build(ff_app_state_t const *state)
      * comment just above. Falls to `default` below. */
     case FF_APP_FACE_SIGNALS: ffv_build_signals_body(face_text, sizeof(face_text), &state->signals); break;
     case FF_APP_FACE_SETTINGS: ffv_build_settings_body(face_text, sizeof(face_text), &state->settings); break;
+    case FF_APP_FACE_COMPOSE: ffv_build_compose_body(face_text, sizeof(face_text), &state->compose); break;
     default: snprintf(face_text, sizeof(face_text), "FACE: ?"); break;
     }
 

@@ -14,12 +14,13 @@
  *                                  ff_app_state_t (fixture.h) and renders
  *                                  it instead of the boot screen, writing
  *                                  DIR/<stem>.png. A fixture whose
- *                                  active_face is "radar" or "now" gets
- *                                  the real shell + face render (scr_nav.h,
- *                                  S06/S07b); every other face still gets
- *                                  the S13 placeholder debug face
- *                                  (fixture_view.h) — see
- *                                  ff_build_face_screen below.
+ *                                  active_face already has a real screen
+ *                                  (radar/now/signals via the shared shell,
+ *                                  scr_nav.h; compose as its own full
+ *                                  screen) gets that; every other face
+ *                                  still gets the S13 placeholder debug
+ *                                  face (fixture_view.h) — see
+ *                                  face_dispatch.h's ff_build_face_screen.
  *   ffsim --fixture FILE.json      window mode with the fixture loaded
  *                                  (interactive preview; same
  *                                  face-selection and load path as
@@ -93,11 +94,11 @@
 
 #include "ctl_out_path.h"
 #include "ctl_server.h"
+#include "face_dispatch.h" /* PR #25 UX review follow-up — ff_build_face_screen extracted
+                             * here (shared with targets/sim/tests/test_face_hit_targets.c)
+                             * instead of defined locally in this file. */
 #include "fixture.h"
-#include "fixture_view.h"
 #include "live.h"
-#include "scr_flare.h" /* S10 slice b — full-screen receive takeover */
-#include "scr_nav.h"
 #include "screenshot.h"
 
 #ifndef PATH_MAX
@@ -132,35 +133,6 @@ static void ff_build_boot_screen(void)
     lv_label_set_text(label, "FIREFLY");
     lv_obj_set_style_text_color(label, lv_color_hex(FF_COLOR_AMBER), 0);
     lv_obj_center(label);
-}
-
-/* S06 — replaces the S13 debug placeholder with the real shell+face
- * render whenever a loaded fixture's active_face already has a real
- * screen; every other face still falls through to fixture_view.h's
- * placeholder (Settings arrives with its own spec — S11; Signals with
- * S08). S07 slice b adds FF_APP_FACE_NOW to the real-shell list
- * (scr_nav.c's tile_now now builds ff_scr_now_build, not a placeholder
- * pane, driven by state->now).
- *
- * S10 slice b: a pending receive takeover (`state->flare.takeover_active`)
- * is checked FIRST and, if true, is the ONLY thing built — per spec
- * ("full-screen takeover regardless of current face"), it replaces
- * whatever face would otherwise show, exactly like a real full-screen
- * interrupt would; `active_face` is not consulted at all on that path.
- * `flare_rt` (NULL in headless one-shot rendering, a real per-process
- * engine in window mode — see ff_run_window below) is forwarded to
- * whichever screen builder needs it for its button callbacks. */
-static void ff_build_face_screen(ff_app_state_t const *state, ff_flare_t *flare_rt)
-{
-    if (state->flare.takeover_active) {
-        ff_scr_flare_build_takeover(&state->flare, flare_rt);
-        return;
-    }
-    if (state->active_face == FF_APP_FACE_RADAR || state->active_face == FF_APP_FACE_NOW) {
-        ff_scr_nav_build(state, flare_rt);
-    } else {
-        ff_fixture_view_build(state);
-    }
 }
 
 /* Full-frame render mode: the whole buffer is the flushed frame, so the

@@ -1,0 +1,8 @@
+{
+  "fixture": "signals_empty",
+  "face": "signals",
+  "signals": {
+    "items": [],
+    "unread_count": 0
+  }
+}

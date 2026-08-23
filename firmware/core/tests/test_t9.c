@@ -263,6 +263,199 @@ static void S08_AC2_pending_char_committed_exactly_at_cap_blocks_next_pending(vo
 }
 
 /* ------------------------------------------------------------------- */
+/* ff_t9_insert_text (S08 slice c/d, SYM-page ASCII-emoticon shortcuts) */
+/* ------------------------------------------------------------------- */
+
+static void S08_insert_text_appends_atomically_to_empty_buffer(void)
+{
+    ff_t9_t t;
+    ff_t9_reset(&t);
+
+    bool ok = ff_t9_insert_text(&t, ":)");
+
+    TEST_ASSERT_TRUE(ok);
+    TEST_ASSERT_EQUAL_STRING(":)", ff_t9_text(&t));
+    TEST_ASSERT_EQUAL_UINT8(2, t.len);
+    TEST_ASSERT_FALSE(t.has_pending);
+}
+
+static void S08_insert_text_commits_pending_char_first(void)
+{
+    ff_t9_t t;
+    ff_t9_reset(&t);
+
+    ff_t9_key(&t, 2, 0); /* pending 'a', not yet committed */
+    TEST_ASSERT_EQUAL_UINT8(0, t.len);
+
+    bool ok = ff_t9_insert_text(&t, "<3");
+
+    TEST_ASSERT_TRUE(ok);
+    TEST_ASSERT_FALSE(t.has_pending);
+    TEST_ASSERT_EQUAL_STRING("a<3", ff_t9_text(&t));
+}
+
+static void S08_insert_text_that_fits_exactly_at_cap_is_accepted(void)
+{
+    ff_t9_t t;
+    ff_t9_reset(&t);
+
+    char filler[FF_T9_MAX_LEN - 1]; /* leaves exactly 2 bytes of budget */
+    memset(filler, 'x', sizeof(filler));
+    filler[sizeof(filler) - 1] = '\0';
+    TEST_ASSERT_TRUE(ff_t9_insert_text(&t, filler));
+    TEST_ASSERT_EQUAL_UINT8(FF_T9_MAX_LEN - 2, t.len);
+
+    bool ok = ff_t9_insert_text(&t, ":)"); /* exactly the remaining 2 bytes */
+
+    TEST_ASSERT_TRUE(ok);
+    TEST_ASSERT_EQUAL_UINT8(FF_T9_MAX_LEN, t.len);
+    TEST_ASSERT_EQUAL_UINT(FF_T9_MAX_LEN, (unsigned)strlen(ff_t9_text(&t)));
+}
+
+static void S08_insert_text_that_overflows_cap_is_rejected_and_leaves_t_untouched(void)
+{
+    ff_t9_t t;
+    ff_t9_reset(&t);
+
+    char filler[FF_T9_MAX_LEN]; /* fills the buffer completely, 1 byte short */
+    memset(filler, 'x', sizeof(filler) - 1);
+    filler[sizeof(filler) - 1] = '\0';
+    TEST_ASSERT_TRUE(ff_t9_insert_text(&t, filler));
+    TEST_ASSERT_EQUAL_UINT8(FF_T9_MAX_LEN - 1, t.len);
+
+    /* A pending char is still legal to start (len < cap)... */
+    ff_t9_key(&t, 2, 0); /* pending 'a' */
+    TEST_ASSERT_TRUE(t.has_pending);
+
+    /* ...but ":)" needs 2 committed bytes and only 0 remain once that
+     * pending char also commits (len would become MAX_LEN, leaving 0
+     * budget) — must be rejected all-or-nothing, and MUST NOT silently
+     * commit the pending char as a side effect of the failed attempt
+     * (mutation-check: a buggy "commit first, THEN check" ordering would
+     * pass a length-only assertion but corrupt has_pending). */
+    uint8_t len_before = t.len;
+    bool has_pending_before = t.has_pending;
+    char pending_char_before = t.pending_char;
+
+    bool ok = ff_t9_insert_text(&t, ":)");
+
+    TEST_ASSERT_FALSE(ok);
+    TEST_ASSERT_EQUAL_UINT8(len_before, t.len);
+    TEST_ASSERT_EQUAL(has_pending_before, t.has_pending);
+    TEST_ASSERT_EQUAL(pending_char_before, t.pending_char);
+}
+
+static void S08_insert_text_empty_string_still_commits_pending(void)
+{
+    ff_t9_t t;
+    ff_t9_reset(&t);
+    ff_t9_key(&t, 2, 0); /* pending 'a' */
+
+    bool ok = ff_t9_insert_text(&t, "");
+
+    TEST_ASSERT_TRUE(ok);
+    TEST_ASSERT_FALSE(t.has_pending);
+    TEST_ASSERT_EQUAL_STRING("a", ff_t9_text(&t));
+}
+
+static void S08_insert_text_then_backspace_removes_one_char_at_a_time(void)
+{
+    /* The classic multi-char-shortcut bug: backspace must remove exactly
+     * one character of the inserted string per press, not the whole
+     * shortcut atomically and not a partial/corrupted remainder. Since
+     * ff_t9_insert_text only ever accepts single-byte ASCII (see its
+     * header doc), the existing byte-at-a-time ff_t9_backspace is already
+     * correct for it — this test pins that down explicitly so a future
+     * change can't silently break it. */
+    ff_t9_t t;
+    ff_t9_reset(&t);
+    ff_t9_insert_text(&t, ":)");
+
+    ff_t9_backspace(&t);
+    TEST_ASSERT_EQUAL_STRING(":", ff_t9_text(&t));
+
+    ff_t9_backspace(&t);
+    TEST_ASSERT_EQUAL_STRING("", ff_t9_text(&t));
+}
+
+static void S08_insert_text_null_args_are_safe_and_return_false(void)
+{
+    ff_t9_t t;
+    ff_t9_reset(&t);
+
+    TEST_ASSERT_FALSE(ff_t9_insert_text(NULL, ":)"));
+    TEST_ASSERT_FALSE(ff_t9_insert_text(&t, NULL));
+    TEST_ASSERT_EQUAL_STRING("", ff_t9_text(&t)); /* untouched */
+}
+
+/* PR #25 code review, LOW finding: the ASCII-only contract is enforced
+ * at runtime, not just documented — a future caller reusing this
+ * function with multi-byte UTF-8 must be rejected outright, not
+ * silently corrupt a later byte-at-a-time backspace. */
+static void S08_insert_text_rejects_a_high_bit_byte_and_leaves_t_untouched(void)
+{
+    ff_t9_t t;
+    ff_t9_reset(&t);
+    ff_t9_insert_text(&t, "hi "); /* some prior committed state to prove is untouched */
+
+    /* "\xF0\x9F\x94\xA5" is the (well-formed) 4-byte UTF-8 encoding of
+     * U+1F525 FIRE — exactly the kind of string a hypothetical real-emoji
+     * caller (issue #22) might mistakenly pass to this ASCII-only
+     * function. Every byte has its high bit set. */
+    bool ok = ff_t9_insert_text(&t, "\xF0\x9F\x94\xA5");
+
+    TEST_ASSERT_FALSE(ok);
+    TEST_ASSERT_EQUAL_STRING("hi ", ff_t9_text(&t)); /* unchanged, not partially appended */
+    TEST_ASSERT_EQUAL_UINT8(3, t.len);
+}
+
+static void S08_insert_text_rejects_if_ANY_byte_is_high_bit_even_with_ascii_around_it(void)
+{
+    /* Mutation-check: a check that only looks at s[0] (or only the LAST
+     * byte) would pass this — the reject must scan every byte. */
+    ff_t9_t t;
+    ff_t9_reset(&t);
+
+    bool ok = ff_t9_insert_text(&t, "ok\x80ok");
+
+    TEST_ASSERT_FALSE(ok);
+    TEST_ASSERT_EQUAL_STRING("", ff_t9_text(&t));
+    TEST_ASSERT_EQUAL_UINT8(0, t.len);
+}
+
+static void S08_insert_text_rejects_high_bit_byte_even_when_pending_char_exists(void)
+{
+    /* The all-or-nothing/untouched contract must hold for the ASCII
+     * check too, not just the capacity check — a pending char must
+     * survive a rejected non-ASCII insert exactly like it survives a
+     * rejected over-cap insert. */
+    ff_t9_t t;
+    ff_t9_reset(&t);
+    ff_t9_key(&t, 2, 0); /* pending 'a' */
+
+    bool ok = ff_t9_insert_text(&t, "\xFF");
+
+    TEST_ASSERT_FALSE(ok);
+    TEST_ASSERT_TRUE(t.has_pending);
+    TEST_ASSERT_EQUAL_STRING("a", ff_t9_text(&t)); /* pending char still live, not committed or lost */
+}
+
+static void S08_insert_text_accepts_full_printable_ascii_range(void)
+{
+    /* The boundary immediately below the rejection threshold (0x7F DEL,
+     * the highest 7-bit ASCII value) must still be accepted — this isn't
+     * a "reject anything unusual" filter, specifically "reject >= 0x80". */
+    ff_t9_t t;
+    ff_t9_reset(&t);
+
+    char s[2] = {(char)0x7F, '\0'};
+    bool ok = ff_t9_insert_text(&t, s);
+
+    TEST_ASSERT_TRUE(ok);
+    TEST_ASSERT_EQUAL_UINT8(1, t.len);
+}
+
+/* ------------------------------------------------------------------- */
 /* Guard paths (not spec-numbered, but load-bearing)                    */
 /* ------------------------------------------------------------------- */
 
@@ -322,6 +515,18 @@ int main(void)
     RUN_TEST(S08_AC2_key0_and_ff_t9_space_are_equivalent);
     RUN_TEST(S08_AC2_160_char_cap_exactly_160_accepted_161st_rejected);
     RUN_TEST(S08_AC2_pending_char_committed_exactly_at_cap_blocks_next_pending);
+
+    RUN_TEST(S08_insert_text_appends_atomically_to_empty_buffer);
+    RUN_TEST(S08_insert_text_commits_pending_char_first);
+    RUN_TEST(S08_insert_text_that_fits_exactly_at_cap_is_accepted);
+    RUN_TEST(S08_insert_text_that_overflows_cap_is_rejected_and_leaves_t_untouched);
+    RUN_TEST(S08_insert_text_empty_string_still_commits_pending);
+    RUN_TEST(S08_insert_text_then_backspace_removes_one_char_at_a_time);
+    RUN_TEST(S08_insert_text_null_args_are_safe_and_return_false);
+    RUN_TEST(S08_insert_text_rejects_a_high_bit_byte_and_leaves_t_untouched);
+    RUN_TEST(S08_insert_text_rejects_if_ANY_byte_is_high_bit_even_with_ascii_around_it);
+    RUN_TEST(S08_insert_text_rejects_high_bit_byte_even_when_pending_char_exists);
+    RUN_TEST(S08_insert_text_accepts_full_printable_ascii_range);
 
     RUN_TEST(S08_guard_null_pointer_calls_are_safe_noops);
     RUN_TEST(S08_guard_invalid_key_above_9_is_ignored);

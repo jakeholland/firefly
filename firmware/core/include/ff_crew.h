@@ -162,6 +162,24 @@ void ff_crew_init(ff_crew_t *c, ff_clock_t const *clock);
 ff_crew_member_t *ff_crew_upsert(ff_crew_t *c, uint32_t node_id);
 
 /**
+ * ff_crew_find — read-only lookup: `node_id`'s existing slot, or NULL if
+ * it has none. NEVER creates a slot and NEVER mutates `*c` in any way —
+ * unlike `ff_crew_upsert`'s find-**or-create** contract, this is pure
+ * find (S08 PR #25 code review, MEDIUM finding: `ff_wiring.c` was the
+ * first live call path that let untrusted RF input consume the roster's
+ * fixed `FF_CREW_MAX` slots just by asking "is this sender paired?" —
+ * `ff_crew_upsert`'s create-on-miss behavior meant a flood of packets
+ * from distinct never-before-heard node ids could permanently fill every
+ * slot before any of them were ever paired, since v1 has no eviction).
+ * Callers that only need to ask "do I already know this id, and is it
+ * paired?" — without the side effect of claiming a slot for it — should
+ * use this, not `ff_crew_upsert`. Pairing a genuinely new node still
+ * goes through `ff_crew_upsert`/`ff_crew_set_paired` as before (an
+ * explicit user pairing action, never inbound radio traffic).
+ */
+ff_crew_member_t const *ff_crew_find(ff_crew_t const *c, uint32_t node_id);
+
+/**
  * ff_crew_set_paired — mark `node_id` paired/unpaired (in-crew vs.
  * merely-heard). Find-or-creates the slot (same no-eviction-when-full
  * policy as `ff_crew_upsert`); a no-op if the roster is full and

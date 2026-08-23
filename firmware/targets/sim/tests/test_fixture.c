@@ -478,6 +478,32 @@ static void settings_section_parses_every_field(void)
     TEST_ASSERT_EQUAL_STRING("DANA", s.settings.my_name);
 }
 
+static void compose_section_parses_every_field(void)
+{
+    ff_app_state_t s;
+    char const *json = "{\"face\": \"compose\", \"compose\": {"
+                        "  \"text\": \"OMW THE\", \"to_name\": \"DANA\", "
+                        "  \"has_pending\": true, \"mode\": \"123\""
+                        "}}";
+    TEST_ASSERT_EQUAL_INT(FF_FIXTURE_OK, ff_fixture_load_json(json, strlen(json), &s));
+
+    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_COMPOSE, s.active_face);
+    TEST_ASSERT_EQUAL_STRING("OMW THE", s.compose.text);
+    TEST_ASSERT_EQUAL_STRING("DANA", s.compose.to_name);
+    TEST_ASSERT_TRUE(s.compose.has_pending);
+    TEST_ASSERT_EQUAL_INT(FF_APP_COMPOSE_123, s.compose.mode);
+}
+
+static void compose_mode_defaults_to_abc_when_omitted(void)
+{
+    ff_app_state_t s;
+    char const *json = "{\"compose\": {\"text\": \"hi\"}}";
+    TEST_ASSERT_EQUAL_INT(FF_FIXTURE_OK, ff_fixture_load_json(json, strlen(json), &s));
+
+    TEST_ASSERT_EQUAL_INT(FF_APP_COMPOSE_ABC, s.compose.mode);
+    TEST_ASSERT_FALSE(s.compose.has_pending);
+}
+
 /* ---------------------------------------------------------------------
  * Fail-loud on oversized arrays (PR #12 review finding #3, orchestrator
  * ruling on deviation #6): a section array beyond its documented cap
@@ -890,6 +916,8 @@ int main(void)
     RUN_TEST(flare_omitted_group_defaults_independently);
     RUN_TEST(flare_takeover_bearing_valid_defaults_false);
     RUN_TEST(settings_section_parses_every_field);
+    RUN_TEST(compose_section_parses_every_field);
+    RUN_TEST(compose_mode_defaults_to_abc_when_omitted);
 
     RUN_TEST(radar_dots_over_cap_fails_loud);
     RUN_TEST(radar_dots_at_cap_still_loads_ok);

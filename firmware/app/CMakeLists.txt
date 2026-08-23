@@ -28,6 +28,34 @@ target_link_libraries(ff-app INTERFACE ff-core)
 # sources that need compiling and linking, not just a header to publish.
 # ---------------------------------------------------------------------------
 
+# ff_layout.c is a SEPARATE, face-agnostic library from ff-app-ui, and
+# deliberately has zero LVGL dependency (plain C11 + <math.h>): PR #25 UX
+# review (S08 slice d, blocking finding) — Compose shipped chrome
+# positioned against the puck's square bounding box instead of the round
+# glass. This is the shared "is this rect inside the circle" / "how wide
+# fits at this height" primitive every face needs so that bug class can't
+# repeat (see ff_layout.h's header comment for why this is a DIFFERENT
+# kind of sharing from issue #24's deferred widget-library extraction,
+# and doesn't conflict with that deferral).
+add_library(ff-layout STATIC
+    screens/ff_layout.c
+)
+target_include_directories(ff-layout PUBLIC screens)
+if(UNIX)
+    target_link_libraries(ff-layout PRIVATE m)
+endif()
+ff_apply_warnings(ff-layout)
+
+if(FF_BUILD_TESTS)
+    add_executable(test_ff_layout
+        screens/tests/test_ff_layout.c
+    )
+    target_link_libraries(test_ff_layout PRIVATE ff-layout unity)
+    ff_apply_warnings(test_ff_layout)
+
+    add_test(NAME test_ff_layout COMMAND test_ff_layout)
+endif()
+
 # radar_layout.c is a SEPARATE library from ff-app-ui, and deliberately
 # has zero LVGL dependency (plain C11 + <math.h>): it's the radar face's
 # collision-free layout math (arrow shortening, ring-dot placement +
@@ -86,10 +114,12 @@ endif()
 add_library(ff-app-ui STATIC
     screens/scr_radar.c
     screens/scr_nav.c
+    screens/scr_signals.c # S08c
+    screens/scr_compose.c # S08d
     screens/scr_flare.c # S10b
 )
 target_include_directories(ff-app-ui PUBLIC theme screens)
-target_link_libraries(ff-app-ui PUBLIC ff-app ff-radar-layout ff-flare-fmt lvgl::lvgl)
+target_link_libraries(ff-app-ui PUBLIC ff-app ff-radar-layout ff-layout ff-flare-fmt lvgl::lvgl)
 # scr_radar.c's arrow/dot trigonometry (sinf/cosf) needs libm — same
 # rationale as ff-core's CMakeLists.txt note on why this is missed
 # locally (AppleClang resolves it via libSystem) but required on
@@ -98,6 +128,28 @@ if(UNIX)
     target_link_libraries(ff-app-ui PRIVATE m)
 endif()
 ff_apply_warnings(ff-app-ui)
+
+# S08b (app/ff_wiring.c — crew-filtered feed wiring;
+# docs/specs/S08-signals-t9.md slice b). Deliberately the ONE library that
+# links core + meshclient together (docs/ARCHITECTURE.md) — everything
+# else in this repo keeps core/meshclient/app strictly unaware of each
+# other. Not part of ff-app-ui: this is data-plumbing, no LVGL.
+add_library(ff-wiring STATIC
+    ff_wiring.c
+)
+target_include_directories(ff-wiring PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(ff-wiring PUBLIC ff-core ff-meshclient)
+ff_apply_warnings(ff-wiring)
+
+if(FF_BUILD_TESTS)
+    add_executable(test_wiring
+        tests/test_wiring.c
+    )
+    target_link_libraries(test_wiring PRIVATE ff-wiring ff-core ff-meshclient unity)
+    ff_apply_warnings(test_wiring)
+
+    add_test(NAME test_wiring COMMAND test_wiring)
+endif()
 
 # S07b (app/screens/now_layout.c, scr_now.c — Now face render;
 # docs/specs/S07-now-face.md slice b)

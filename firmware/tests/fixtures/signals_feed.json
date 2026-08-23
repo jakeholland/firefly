@@ -1,0 +1,12 @@
+{
+  "fixture": "signals_feed",
+  "face": "signals",
+  "signals": {
+    "items": [
+      {"kind": "pulse", "from_name": "DANA", "text": "", "age_str": "1 MIN", "unread": true},
+      {"kind": "rally", "from_name": "RILEY", "text": "MAIN STAGE", "age_str": "6 MIN", "unread": false},
+      {"kind": "text", "from_name": "MAX", "text": "on my way!", "age_str": "14 MIN", "unread": false}
+    ],
+    "unread_count": 1
+  }
+}
