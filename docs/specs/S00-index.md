@@ -11,7 +11,7 @@ Specs are contracts. Acceptance criteria (AC) become test names (`S01_AC3_...`).
 | S05 | festpack — pack parser | — | YES | ✅ merged (PR #5) |
 | S06 | app/radar — Radar face (live/stale/close) | S01,S02 | YES | ✅ merged (PR #13 compute, #16 face+shell) |
 | S07 | app/now — schedule engine + Now face + alarms | S05 | YES | ✅ merged (PR #9 engine, #21 face) |
-| S08 | app/signals + T9 composer | S03,S04 | YES (T9 predictive: no) | ◐ T9 engine merged (PR #14); feed+UI pending shell |
+| S08 | app/signals + T9 composer | S03,S04 | YES (T9 predictive: no) | ✅ merged (PR #14 engine, #25 feed+UI) |
 | S09 | app/map — vector map face | S05,S02 | stretch | ☐ |
 | S10 | flare flow — send/receive/takeover | S04,S06 | YES | ✅ merged (PR #15 core, #20 UI) |
 | S11 | settings & persistence | — | YES | ◐ slice a merged (PR #4) |
