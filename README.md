@@ -4,7 +4,37 @@
 
 Firefly is a palm-sized round-screen puck for music festivals: a compass arrow that points at your crew over LoRa mesh radio, off-grid messaging (pulses, canned replies, T9), the full lineup with set alarms, and a vector map of the grounds — so your phone stays at camp.
 
-> Status: **pre-hardware**. Parts are ordered, screens are designed, firmware starts when the boards land. First field test: Lost Lands 2026.
+<p align="center">
+  <img src="docs/screens/radar-find.gif" width="300" alt="The Radar face: the arrow swings around and locks onto a crew member, distance counts down from 320 m to 16 m, then hands off to close-range rings.">
+</p>
+
+<p align="center"><em>Not a mockup — that's the firmware rendering, frame by frame.<br>
+Turn toward your friend, walk in, and when GPS stops being useful it hands off to short range.</em></p>
+
+## Status
+
+**Pre-hardware, firmware in progress.** Parts are ordered; the app runs today on a desktop simulator that renders the real screens. First field test: **Lost Lands, Sep 18–20 2026**.
+
+| Piece | State |
+|---|---|
+| Core logic — geo/bearing math, crew model & freshness, schedule engine, settings, T9, flare state machine | ✅ on `main` |
+| Meshtastic client library (`meshclient`) | ✅ on `main` |
+| festpack parser + the [Lost Lands 2026 pack](https://github.com/jakeholland/fest-almanac) | ✅ on `main` |
+| **Radar face** — live / stale / lost / close-range / no-fix / no-selection | ✅ on `main` |
+| Now face (lineup + set times), Signals + T9 composer, Flare UI | 🔨 in review |
+| Dev harness — control socket, dockerised mesh, end-to-end tests | 🔨 in review |
+| ESP32-S3 device target, enclosure | ⏳ when boards arrive |
+
+Every merged line went through an independent code review plus, for anything on screen, a review in the persona of a tired raver at 2 a.m. ([why](docs/review/ux-raver.md)).
+
+### The Radar face, on `main` today
+
+| Live | Lost | Close range |
+|---|---|---|
+| <img src="docs/screens/radar-live.png" width="200" alt="Radar face with a solid amber arrow, DANA, 320 m, and a green LIVE chip"> | <img src="docs/screens/radar-lost.png" width="200" alt="Radar face showing a faint outline arrow, ~1.1 km, and a grey LAST SEEN 42 MIN chip"> | <img src="docs/screens/radar-close.png" width="200" alt="Radar face at close range with pulsing rings, ~15 m, and a FLARE button"> |
+| A fresh fix. Solid arrow, exact distance. | The fix is old. Different in *kind*, not just dimmer — the screen stops claiming to know. | Under 30 m, GPS is useless in a crowd. Rings and a hot/cold trend take over. |
+
+The middle one is the point of the whole project: most trackers keep pointing confidently at data they no longer have.
 
 ## How it works
 
@@ -27,13 +57,25 @@ No fork to maintain, no phone required, ~$80 in parts, multi-day battery.
 
 Festival data (map polygons + lineup + set times) loads as a **festpack** — see [fest-almanac](https://github.com/jakeholland/fest-almanac), the open per-festival data repo.
 
+## Try it without hardware
+
+The whole app runs on macOS/Linux against a simulated round display:
+
+```bash
+cmake -S firmware -B build -DFF_TARGET=sim && cmake --build build -j8
+ctest --test-dir build --output-on-failure     # the full suite
+cd firmware && ../build/ffsim --fixture tests/fixtures/radar_live.json
+```
+
+Swap the fixture for any state in `firmware/tests/fixtures/` to see it rendered. Every screenshot in this README came out of that same binary — [`firmware/tools/social/render_scene.py`](firmware/tools/social/render_scene.py) is what turns a sequence of them into the animation above.
+
 ## Repo layout
 
 ```
 firmware/   UI-brain application (LVGL, Meshtastic client API)
 case/       3D-printable enclosure (~82mm puck, PETG, glow diffuser ring)
 web/        Browser flasher + puck setup tools
-docs/       Architecture, power budget, build guide
+docs/       Architecture, specs, power budget, build guide
 ```
 
 ## Prior art & thanks
