@@ -1,0 +1,69 @@
+name: e2e
+
+# S14 slice d — docs/specs/S14-testing-ci.md: "Runs nightly + on `e2e`
+# label (docker too slow for every PR)". Deliberately NOT an unconditional
+# PR gate — the `pull_request` trigger below only ever RUNS the job when
+# the label applied is specifically "e2e" (the job-level `if:` gates on
+# that), so opening/updating/labeling a PR with some other label never
+# triggers this; a maintainer opts a specific PR in on demand by applying
+# the "e2e" label. See docs/specs/S13-sim-target.md slice d and PR #19's
+# body/review for the documented, evidence-based limitations of two of
+# the three scenarios (test_pulse_reaches_feed / test_text_roundtrip are
+# xfail(strict=False), not skipped — see
+# firmware/tests/e2e/test_scenarios.py's module docstring).
+on:
+  schedule:
+    # 09:00 UTC, daily.
+    - cron: "0 9 * * *"
+  workflow_dispatch: {}
+  pull_request:
+    types: [labeled]
+
+jobs:
+  e2e:
+    name: e2e
+    runs-on: ubuntu-latest
+    # Only actually run for the pull_request trigger when "e2e" was the
+    # label just applied — GitHub fires `labeled` for every label, not
+    # just this one, and this job is not meant to run on e.g. "bug" or
+    # "needs-review" being added.
+    if: github.event_name != 'pull_request' || github.event.label.name == 'e2e'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install SDL2
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libsdl2-dev
+
+      - name: Cache CMake FetchContent deps
+        uses: actions/cache@v4
+        with:
+          path: firmware/build/_deps
+          key: ${{ runner.os }}-fetchcontent-${{ hashFiles('firmware/CMakeLists.txt') }}
+
+      - name: Build ffsim
+        working-directory: firmware
+        run: |
+          cmake -B build -DFF_TARGET=sim
+          cmake --build build --parallel
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Python deps
+        working-directory: firmware/tests/e2e
+        run: pip install -r requirements.txt
+
+      # actions/runner-images' ubuntu-latest ships Docker + the compose
+      # plugin preinstalled — no separate setup step needed, matching
+      # what firmware/tests/e2e/conftest.py's docker_ready fixture checks
+      # for (`docker version` / `docker compose version`).
+      - name: Run e2e scenarios
+        working-directory: firmware/tests/e2e
+        run: pytest -v
+
+      - name: Dump meshtasticd container logs on failure
+        if: failure()
+        run: docker compose -f firmware/tools/dev/compose.yml -p ffsim-e2e logs || true

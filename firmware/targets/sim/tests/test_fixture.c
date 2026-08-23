@@ -486,6 +486,153 @@ static void stem_handles_null_path(void)
     TEST_ASSERT_EQUAL_STRING("", out);
 }
 
+/* ---------------------------------------------------------------------
+ * S13c — ff_fixture_dump_json: dump -> reload round-trips, per this
+ * slice's ctl socket doc comment ("dumps round-trip as fixtures").
+ * ------------------------------------------------------------------- */
+
+static void dump_then_reload_round_trips_committed_fixture(void)
+{
+    ff_app_state_t original;
+    TEST_ASSERT_EQUAL_INT(FF_FIXTURE_OK, ff_fixture_load_file(fixture_path("radar_live.json"), &original));
+
+    char json[FF_FIXTURE_DUMP_MAX];
+    int n = ff_fixture_dump_json(&original, json, sizeof(json));
+    TEST_ASSERT_GREATER_THAN_INT(0, n);
+    TEST_ASSERT_EQUAL_UINT32((uint32_t)strlen(json), (uint32_t)n);
+
+    ff_app_state_t reloaded;
+    TEST_ASSERT_EQUAL_INT(FF_FIXTURE_OK, ff_fixture_load_json(json, (size_t)n, &reloaded));
+
+    /* Both structs came from memset(0)-then-parse, so padding bytes are
+     * deterministically zero on both sides — a whole-struct compare is
+     * the strongest statement of "round-trips exactly" available and
+     * catches any field this test forgot to name individually. */
+    TEST_ASSERT_EQUAL_MEMORY(&original, &reloaded, sizeof(original));
+}
+
+/* S10b merge: ff_fixture_dump_json's flare section was rewritten to match
+ * the new three-independent-groups ff_app_flare_t shape (S10 slice b,
+ * [api], replacing the old single-`state`-enum scaffolding) — this
+ * fixture is the richest real-world exercise of that rewrite: all three
+ * groups populated at once (sending is NOT set here, so this also covers
+ * the "some fields at their zero default, others populated" case, not
+ * just all-populated or all-zeroed). */
+static void dump_then_reload_round_trips_flare_takeover_locked_fixture(void)
+{
+    ff_app_state_t original;
+    TEST_ASSERT_EQUAL_INT(FF_FIXTURE_OK,
+                           ff_fixture_load_file(fixture_path("flare_takeover_locked.json"), &original));
+    TEST_ASSERT_TRUE(original.flare.takeover_active);
+    TEST_ASSERT_TRUE(original.flare.locked);
+    TEST_ASSERT_FALSE(original.flare.sending); /* not set in the fixture -> zero default */
+
+    char json[FF_FIXTURE_DUMP_MAX];
+    int n = ff_fixture_dump_json(&original, json, sizeof(json));
+    TEST_ASSERT_GREATER_THAN_INT(0, n);
+
+    ff_app_state_t reloaded;
+    TEST_ASSERT_EQUAL_INT(FF_FIXTURE_OK, ff_fixture_load_json(json, (size_t)n, &reloaded));
+    TEST_ASSERT_EQUAL_MEMORY(&original, &reloaded, sizeof(original));
+}
+
+/* Mutation check: if fw_json_str ever stopped escaping `"`/`\`, this test
+ * would fail loudly (either ff_fixture_load_json would reject the
+ * corrupted JSON outright, or — worse, silently — the reloaded string
+ * would come back truncated/shifted at the unescaped character) rather
+ * than the escaping bug going unnoticed. */
+static void dump_escapes_quotes_and_backslashes_in_names(void)
+{
+    ff_app_state_t original;
+    memset(&original, 0, sizeof(original));
+    original.radar.mode = RADAR_LIVE;
+    (void)snprintf(original.radar.name, sizeof(original.radar.name), "\"Q\\R\"");
+    original.signals.n_items = 1;
+    original.signals.items[0].kind = FF_APP_FEED_TEXT;
+    (void)snprintf(original.signals.items[0].from_name, sizeof(original.signals.items[0].from_name), "A\"B");
+    (void)snprintf(original.signals.items[0].text, sizeof(original.signals.items[0].text),
+                    "line1\nline2\ttab\\slash");
+
+    char json[FF_FIXTURE_DUMP_MAX];
+    int n = ff_fixture_dump_json(&original, json, sizeof(json));
+    TEST_ASSERT_GREATER_THAN_INT(0, n);
+
+    ff_app_state_t reloaded;
+    TEST_ASSERT_EQUAL_INT(FF_FIXTURE_OK, ff_fixture_load_json(json, (size_t)n, &reloaded));
+
+    TEST_ASSERT_EQUAL_STRING("\"Q\\R\"", reloaded.radar.name);
+    TEST_ASSERT_EQUAL_STRING("A\"B", reloaded.signals.items[0].from_name);
+    TEST_ASSERT_EQUAL_STRING("line1\nline2\ttab\\slash", reloaded.signals.items[0].text);
+}
+
+static void dump_maximally_populated_state_fits_budget(void)
+{
+    ff_app_state_t s;
+    memset(&s, 0, sizeof(s));
+    (void)snprintf(s.fixture_name, sizeof(s.fixture_name), "%s", "0123456789012345678901234567890");
+    s.active_face = FF_APP_FACE_SIGNALS;
+
+    s.radar.mode = RADAR_CLOSE;
+    s.radar.n_dots = FF_CREW_MAX;
+    for (uint8_t i = 0; i < FF_CREW_MAX; i++) {
+        s.radar.dots[i].ring_deg = 359.5f;
+        s.radar.dots[i].initial = 'A' + (char)i;
+        s.radar.dots[i].color_idx = i;
+        s.radar.dots[i].stale = (i % 2) == 0;
+    }
+
+    s.now.n_rows = FF_APP_NOW_MAX_ROWS;
+    for (uint8_t i = 0; i < FF_APP_NOW_MAX_ROWS; i++) {
+        (void)snprintf(s.now.rows[i].artist, sizeof(s.now.rows[i].artist), "%s",
+                        "Exactly Thirty One Chars Long!!"); /* fits FF_APP_ARTIST_LEN (32) - 1 for the NUL */
+        (void)snprintf(s.now.rows[i].stage_name, sizeof(s.now.rows[i].stage_name), "%s",
+                        "Exactly Twenty Seven Chars!"); /* fits FF_APP_STAGE_LEN (28) - 1 for the NUL */
+        s.now.rows[i].stage_color_rgb = 0x00FFC66B;
+        s.now.rows[i].mins_left = 999;
+        s.now.rows[i].pct_done = 100;
+    }
+    s.now.next.valid = true;
+    (void)snprintf(s.now.next.artist, sizeof(s.now.next.artist), "%s", "Exactly Thirty One Chars Long!!");
+
+    s.signals.n_items = FF_APP_SIGNALS_MAX_ITEMS;
+    for (uint8_t i = 0; i < FF_APP_SIGNALS_MAX_ITEMS; i++) {
+        s.signals.items[i].kind = FF_APP_FEED_STATUS;
+        /* 63 chars: FF_APP_TEXT_LEN (64) - 1 for the NUL. */
+        (void)snprintf(s.signals.items[i].text, sizeof(s.signals.items[i].text), "%s",
+                        "012345678901234567890123456789012345678901234567890123456789012");
+        s.signals.items[i].unread = true;
+    }
+
+    char json[FF_FIXTURE_DUMP_MAX];
+    int n = ff_fixture_dump_json(&s, json, sizeof(json));
+    TEST_ASSERT_GREATER_THAN_INT(0, n);
+    TEST_ASSERT_LESS_OR_EQUAL_INT((int)FF_FIXTURE_DUMP_MAX, n);
+
+    ff_app_state_t reloaded;
+    TEST_ASSERT_EQUAL_INT(FF_FIXTURE_OK, ff_fixture_load_json(json, (size_t)n, &reloaded));
+    TEST_ASSERT_EQUAL_MEMORY(&s, &reloaded, sizeof(s));
+}
+
+static void dump_buffer_too_small_returns_negative(void)
+{
+    ff_app_state_t s;
+    memset(&s, 0, sizeof(s));
+    s.radar.mode = RADAR_LIVE;
+
+    char tiny[4];
+    TEST_ASSERT_EQUAL_INT(-1, ff_fixture_dump_json(&s, tiny, sizeof(tiny)));
+}
+
+static void dump_null_args_return_negative(void)
+{
+    ff_app_state_t s;
+    memset(&s, 0, sizeof(s));
+    char buf[64];
+    TEST_ASSERT_EQUAL_INT(-1, ff_fixture_dump_json(NULL, buf, sizeof(buf)));
+    TEST_ASSERT_EQUAL_INT(-1, ff_fixture_dump_json(&s, NULL, sizeof(buf)));
+    TEST_ASSERT_EQUAL_INT(-1, ff_fixture_dump_json(&s, buf, 0));
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -523,6 +670,13 @@ int main(void)
     RUN_TEST(stem_handles_bare_filename);
     RUN_TEST(stem_leaves_non_json_extension_alone);
     RUN_TEST(stem_handles_null_path);
+
+    RUN_TEST(dump_then_reload_round_trips_committed_fixture);
+    RUN_TEST(dump_then_reload_round_trips_flare_takeover_locked_fixture);
+    RUN_TEST(dump_escapes_quotes_and_backslashes_in_names);
+    RUN_TEST(dump_maximally_populated_state_fits_budget);
+    RUN_TEST(dump_buffer_too_small_returns_negative);
+    RUN_TEST(dump_null_args_return_negative);
 
     return UNITY_END();
 }
