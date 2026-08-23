@@ -5,15 +5,15 @@
 Firefly is a palm-sized round-screen puck for music festivals: a compass arrow that points at your crew over LoRa mesh radio, off-grid messaging (pulses, canned replies, T9), the full lineup with set alarms, and a vector map of the grounds — so your phone stays at camp.
 
 <p align="center">
-  <img src="docs/screens/three-faces.gif" width="300" alt="Firefly cycling through its faces: the radar arrow locking onto a crew member, the Now face showing the Lost Lands lineup with set times still unpublished, and a flare takeover from a crew member.">
+  <img src="docs/screens/all-faces.gif" width="300" alt="Firefly cycling through every screen: the radar arrow locking onto a crew member, the Lost Lands lineup with set times still unpublished, the live schedule, the signals feed, the T9 composer, and a flare takeover.">
 </p>
 
 <p align="center"><em>Not a mockup — that's the firmware rendering, frame by frame.<br>
-The arrow finds your friend, the lineup admits which set times aren't published yet,<br>and a flare takes over the screen when someone needs finding.</em></p>
+Every screen, running. The arrow finds your friend, the lineup admits which set times<br>aren't published yet, you can message without a network, and a flare takes over when someone needs finding.</em></p>
 
 ## Status
 
-**Pre-hardware, firmware in progress.** Parts are ordered; the app runs today on a desktop simulator that renders the real screens. First field test: **Lost Lands, Sep 18–20 2026**.
+**Every v1 screen is built and on `main`.** Parts are ordered; the app runs today on a desktop simulator that renders the real screens. What's left is the device target — display driver, UART to the comms brain, sensors — which needs the hardware in hand. First field test: **Lost Lands, Sep 18–20 2026**.
 
 | Piece | State |
 |---|---|
@@ -24,7 +24,7 @@ The arrow finds your friend, the lineup admits which set times aren't published 
 | **Now face** — live set times, starred-set countdown, and honest "times not published yet" states | ✅ on `main` |
 | **Flare** — takeover screen, sender state, navigation lock | ✅ on `main` |
 | Dev harness — control socket, dockerised Meshtastic node, end-to-end tests | ✅ on `main` |
-| Signals feed + T9 composer | 🔨 in review |
+| **Signals + Compose** — pulses, rally points, canned replies, and a T9 keypad with ABC/123/SYM pages | ✅ on `main` |
 | ESP32-S3 device target, enclosure | ⏳ when boards arrive |
 
 Every merged line went through an independent code review plus, for anything on screen, a review in the persona of a tired raver at 2 a.m. ([why](docs/review/ux-raver.md)).
@@ -42,6 +42,11 @@ The middle one is the point of the whole project: most trackers keep pointing co
 |---|---|
 | <img src="docs/screens/now-tbd.png" width="200" alt="Now face listing Friday's Lost Lands lineup under a SET TIMES TBD banner"> | <img src="docs/screens/flare-takeover.png" width="200" alt="Full-screen takeover reading KEV IS FLARING, E - 40 m, with a chip warning that GO switches the lock from Dana to Kev"> |
 | Lost Lands hasn't published set times yet, so the puck says so and lists the day instead of inventing a schedule. | Press and hold, and your crew's pucks light up and point at you. If you were already navigating to someone else, it tells you what GO will cost you. |
+
+| Signals | Typing, off-grid |
+|---|---|
+| <img src="docs/screens/signals.png" width="200" alt="Signals face listing a pulse from Dana, a rally point, and a message, above OMW / 5 MIN / PULSE reply chips"> | <img src="docs/screens/compose.png" width="200" alt="T9 composer showing the SYM page of symbols and emoticons"> |
+| Pulses, rally points, and one-tap replies — most festival coordination is four words or fewer. | A T9 keypad, because a QWERTY at 37 mm is a joke. ABC, 123, and a symbols page. |
 
 ## How it works
 

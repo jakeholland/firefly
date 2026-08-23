@@ -108,8 +108,36 @@ def scene_three_faces():
     return out
 
 
+
+def scene_all_faces():
+    """Every v1 screen, on main: radar, lineup, signals, typing, flare."""
+    import json as _json
+    fx = pathlib.Path("tests/fixtures")
+
+    def load(name):
+        return _json.loads((fx / f"{name}.json").read_text())
+
+    out = []
+    base = load("radar_live")
+    n = int(1.8 * FPS)
+    for i in range(n):
+        e = 1 - (1 - i / (n - 1)) ** 3
+        f = _json.loads(_json.dumps(base))
+        f["radar"]["arrow_deg"] = round((-120 + e * 162) % 360, 2)
+        for d in f["radar"]["dots"]:
+            d["ring_deg"] = round((d["ring_deg"] - 120 + e * 120) % 360, 2)
+        out.append(f)
+    for name, secs in (("radar_live", 0.6), ("now_tbd", 1.6), ("now_live", 1.6),
+                       ("signals_feed", 1.8), ("compose_abc", 1.0),
+                       ("compose_sym", 1.2), ("flare_takeover_locked", 2.2)):
+        for _ in range(int(secs * FPS)):
+            out.append(load(name))
+    return out
+
+
 SCENES = {"find_dana": scene_find_dana, "honest_arrow": scene_honest_arrow,
-          "three_faces": scene_three_faces}
+          "three_faces": scene_three_faces,
+          "all_faces": scene_all_faces}
 
 
 def main():
