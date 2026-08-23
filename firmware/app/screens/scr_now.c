@@ -53,12 +53,14 @@ static char const *now_stage_or_unknown(char const *stage_name)
     return (stage_name != NULL && stage_name[0] != '\0') ? stage_name : "STAGE UNKNOWN";
 }
 
-/* now_build_times_tbd_banner — the "SET TIMES TBD" pill, shared by
- * NOW_TBD and NOW_MIXED (PR #21 code review finding #1/ruling: "show the
- * TBD banner whenever ANY set on the day lacks a time" — the reviewer's
- * literal wording; same banner, same text, just a different `dy` since
- * NOW_MIXED needs more room below it for the known-section too). */
-static void now_build_times_tbd_banner(lv_obj_t *parent, int32_t dy)
+/* now_build_tbd_banner — the amber pill shared by NOW_TBD and NOW_MIXED
+ * (PR #21 code review finding #1/ruling: "show the TBD banner whenever
+ * ANY set on the day lacks a time" — the reviewer's literal wording).
+ * `text` differs between the two callers (UX review round 2 finding #3:
+ * NOW_TBD's literal "SET TIMES TBD" sitting directly above a "KNOWN SO
+ * FAR" section that proves some times AREN'T TBD read as a wording
+ * tension in NOW_MIXED — see now_render_mixed's "SOME SET TIMES TBD"). */
+static void now_build_tbd_banner(lv_obj_t *parent, char const *text, int32_t dy)
 {
     lv_obj_t *banner = lv_obj_create(parent);
     lv_obj_remove_style_all(banner);
@@ -76,7 +78,7 @@ static void now_build_times_tbd_banner(lv_obj_t *parent, int32_t dy)
     lv_obj_align(banner, LV_ALIGN_CENTER, 0, dy);
 
     lv_obj_t *banner_lbl = lv_label_create(banner);
-    lv_label_set_text(banner_lbl, "SET TIMES TBD");
+    lv_label_set_text(banner_lbl, text);
     lv_obj_set_style_text_font(banner_lbl, FF_THEME_FONT_CHIP, 0);
     lv_obj_set_style_text_color(banner_lbl, lv_color_hex(FF_THEME_COLOR_BG), 0);
     lv_obj_center(banner_lbl);
@@ -297,7 +299,7 @@ static void now_render_nothing_playing(lv_obj_t *parent)
 
 static void now_render_tbd(lv_obj_t *parent, ff_app_now_t const *now)
 {
-    now_build_times_tbd_banner(parent, (int32_t)NOW_LAYOUT_TBD_BANNER_DY);
+    now_build_tbd_banner(parent, "SET TIMES TBD", (int32_t)NOW_LAYOUT_TBD_BANNER_DY);
     now_build_unknown_list(parent, now->lineup, now->n_lineup, (int32_t)NOW_LAYOUT_LINEUP_TOP_DY,
                             (int32_t)NOW_SCR_LINEUP_BOTTOM_DY);
 }
@@ -307,37 +309,66 @@ static void now_render_tbd(lv_obj_t *parent, ff_app_now_t const *now)
  * day's sets have a known time, some don't — both must be visible. The
  * fix for "a set with an unknown time used to disappear the moment ANY
  * set on the day got a real time" (the bug the ruling targets).
+ *
+ * UX review round 2 RULING: three classes inside "known so far", each
+ * unmistakable at a glance, never distinguished by an ABSENCE of an
+ * element (that's the same in-band-unknown mistake the color-validity
+ * flag and the state enum already fixed elsewhere on this face):
+ *   (a) playing now       -> now_build_row(), same treatment as NOW_LIVE.
+ *   (b) scheduled, later   -> now_build_mixed_next(), countdown-LED, no bar.
+ *   (c) time unknown       -> now_build_unknown_list(), unchanged.
  * ------------------------------------------------------------------- */
 
-/* now_build_known_line — one compact "Artist - Stage[ - suffix]" line for
- * the "KNOWN SO FAR" section — deliberately NOT the full progress-bar
- * row treatment now_build_row() gives NOW_LIVE: this state also has to
- * fit the still-unknown list on the same screen, so the known section
- * stays compact. `suffix` is NULL for a plain now-playing entry, or the
- * formatted countdown text for the next-starred entry. */
-static void now_build_known_line(lv_obj_t *parent, char const *artist, char const *stage_name, char const *suffix,
-                                  int32_t dy)
+/* now_build_mixed_next — class (b): the starred-next set, INSIDE
+ * NOW_MIXED's "known so far" section. Countdown-led and un-mistakably
+ * prominent (UX review round 2 finding #2: round 1 gave NOW_LIVE's
+ * next-card countdown FF_THEME_FONT_DISTANCE/36px specifically so it
+ * reads as the anxiety-killer element; an inline 14px suffix on a plain
+ * text line lost that entirely the moment the SAME field appeared in
+ * NOW_MIXED instead). Not literally 36px here — this block shares the
+ * screen with a variable-height "playing now" stack above it and the
+ * still-unknown list below, so the full NOW_LIVE hero treatment doesn't
+ * fit — but FF_THEME_FONT_NAME (22px, amber) is still clearly the
+ * biggest, most colorful element in its own block and in the whole
+ * "known so far" section (next to 14px header/artist/stage text
+ * everywhere else here), which is the actual bar this needs to clear:
+ * "reads as the prominent element of its row/card", not a specific
+ * point size. No progress bar, ever — that absence is now what
+ * DISTINGUISHES this from a now_build_row() entry, on purpose, but the
+ * countdown lead is what a glance actually keys off, not the absence. */
+static void now_build_mixed_next(lv_obj_t *parent, ff_app_next_t const *next, int32_t block_dy)
 {
-    char line[FF_APP_ARTIST_LEN + FF_APP_STAGE_LEN + 24];
-    char const *artist_s = (artist[0] != '\0') ? artist : "(unknown)";
-    if (suffix != NULL) {
-        snprintf(line, sizeof(line), "%s - %s - %s", artist_s, now_stage_or_unknown(stage_name), suffix);
-    } else {
-        snprintf(line, sizeof(line), "%s - %s", artist_s, now_stage_or_unknown(stage_name));
-    }
+    char countdown[24];
+    now_layout_format_countdown(next->mins_until, countdown, sizeof(countdown));
+    lv_obj_t *cd_lbl = lv_label_create(parent);
+    lv_label_set_text(cd_lbl, countdown);
+    lv_obj_set_style_text_font(cd_lbl, FF_THEME_FONT_NAME, 0);
+    lv_obj_set_style_text_color(cd_lbl, lv_color_hex(FF_THEME_COLOR_AMBER), 0);
+    lv_obj_align(cd_lbl, LV_ALIGN_CENTER, 0, block_dy);
 
+    char line[FF_APP_ARTIST_LEN + FF_APP_STAGE_LEN + 4];
+    char const *artist = (next->artist[0] != '\0') ? next->artist : "(unknown)";
+    snprintf(line, sizeof(line), "%s - %s", artist, now_stage_or_unknown(next->stage_name));
     lv_obj_t *lbl = lv_label_create(parent);
     lv_label_set_text(lbl, line);
     lv_obj_set_style_text_font(lbl, FF_THEME_FONT_LABEL, 0);
-    lv_obj_set_style_text_color(lbl, lv_color_hex(FF_THEME_COLOR_INK), 0);
-    lv_obj_align(lbl, LV_ALIGN_CENTER, 0, dy);
+    lv_obj_set_style_text_color(lbl, lv_color_hex(FF_THEME_COLOR_MUTED), 0);
+    lv_obj_align(lbl, LV_ALIGN_CENTER, 0, block_dy + 20);
 }
 
 static void now_render_mixed(lv_obj_t *parent, ff_app_now_t const *now)
 {
-    now_build_times_tbd_banner(parent, (int32_t)NOW_LAYOUT_MIXED_BANNER_DY);
+    /* UX review round 2 finding #3: NOT the literal "SET TIMES TBD" —
+     * that wording sitting directly above a "KNOWN SO FAR" section that
+     * proves some times AREN'T TBD read as a self-contradiction at a
+     * glance. "SOME SET TIMES TBD" keeps the same banner (finding #1's
+     * "same banner whenever ANY set lacks a time") honest about there
+     * being a known/unknown split, not just an unqualified "TBD". */
+    now_build_tbd_banner(parent, "SOME SET TIMES TBD", (int32_t)NOW_LAYOUT_MIXED_BANNER_DY);
 
     bool any_known = (now->n_rows > 0) || now->next.valid;
+    int32_t cursor_dy = (int32_t)NOW_LAYOUT_MIXED_ROW0_DY;
+
     if (any_known) {
         lv_obj_t *header = lv_label_create(parent);
         lv_label_set_text(header, "KNOWN SO FAR");
@@ -345,29 +376,40 @@ static void now_render_mixed(lv_obj_t *parent, ff_app_now_t const *now)
         lv_obj_set_style_text_color(header, lv_color_hex(FF_THEME_COLOR_DIM), 0);
         lv_obj_align(header, LV_ALIGN_CENTER, 0, (int32_t)NOW_LAYOUT_MIXED_KNOWN_HEADER_DY);
 
-        int32_t item_dy = (int32_t)NOW_LAYOUT_MIXED_KNOWN_ITEM0_DY;
+        /* Class (a) first — reuses now_build_row() verbatim (stage-
+         * colored label + progress bar), NOT a compact re-implementation,
+         * so "playing now" is provably the identical visual fact in
+         * every state it appears in. */
         for (uint8_t i = 0; i < now->n_rows && i < FF_APP_NOW_MAX_ROWS; i++) {
-            now_build_known_line(parent, now->rows[i].artist, now->rows[i].stage_name, NULL, item_dy);
-            item_dy += (int32_t)NOW_LAYOUT_MIXED_KNOWN_ITEM_SPACING_DY;
+            now_build_row(parent, &now->rows[i], cursor_dy);
+            cursor_dy += (int32_t)NOW_LAYOUT_MIXED_ROW_SPACING_DY;
         }
+        /* Class (b) after: the one starred-next entry, countdown-led. */
         if (now->next.valid) {
-            char countdown[24];
-            now_layout_format_countdown(now->next.mins_until, countdown, sizeof(countdown));
-            now_build_known_line(parent, now->next.artist, now->next.stage_name, countdown, item_dy);
+            now_build_mixed_next(parent, &now->next, cursor_dy);
+            cursor_dy += (int32_t)NOW_LAYOUT_MIXED_NEXT_BLOCK_H_DY;
         }
     }
 
-    /* "STILL TBD" always shown (unlike "KNOWN SO FAR" above): NOW_MIXED
-     * is defined as "at least one known-time set AND at least one
-     * unknown-time set", so this section is never empty by construction
-     * — see now_state_t's doc comment. */
+    /* "STILL TBD" (class (c)) always shown: NOW_MIXED is defined as "at
+     * least one known-time set AND at least one unknown-time set" (see
+     * now_state_t's doc comment), so `lineup` is never empty here. Its
+     * header sits just below wherever the known section actually ended
+     * (or at a fixed fallback position if `any_known` was false — a
+     * known-time set that's neither currently playing nor starred-
+     * upcoming, e.g. one that already finished, is a real if unusual
+     * case this still has to render honestly). */
+    int32_t unknown_header_dy =
+        any_known ? cursor_dy + (int32_t)NOW_LAYOUT_MIXED_SECTION_GAP_DY : (int32_t)NOW_LAYOUT_MIXED_UNKNOWN_HEADER_MIN_DY;
+
     lv_obj_t *unknown_header = lv_label_create(parent);
     lv_label_set_text(unknown_header, "STILL TBD");
     lv_obj_set_style_text_font(unknown_header, FF_THEME_FONT_LABEL, 0);
     lv_obj_set_style_text_color(unknown_header, lv_color_hex(FF_THEME_COLOR_DIM), 0);
-    lv_obj_align(unknown_header, LV_ALIGN_CENTER, 0, (int32_t)NOW_LAYOUT_MIXED_UNKNOWN_HEADER_DY);
+    lv_obj_align(unknown_header, LV_ALIGN_CENTER, 0, unknown_header_dy);
 
-    now_build_unknown_list(parent, now->lineup, now->n_lineup, (int32_t)NOW_LAYOUT_MIXED_LIST_TOP_DY,
+    now_build_unknown_list(parent, now->lineup, now->n_lineup,
+                            unknown_header_dy + (int32_t)NOW_LAYOUT_MIXED_UNKNOWN_HEADER_TO_LIST_GAP_DY,
                             (int32_t)NOW_SCR_LINEUP_BOTTOM_DY);
 }
 

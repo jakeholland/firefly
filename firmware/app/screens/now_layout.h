@@ -120,24 +120,46 @@ extern "C" {
 #define NOW_LAYOUT_TBD_BANNER_DY (-156.0f)
 #define NOW_LAYOUT_LINEUP_TOP_DY (-118.0f)
 
-/* NOW_MIXED state (PR #21 code review finding #1/ruling): the SAME banner
- * as NOW_TBD ("show the TBD banner whenever ANY set on the day lacks a
- * time" — the reviewer's literal wording), positioned slightly higher to
- * leave room below for BOTH a compact "known so far" section (the day's
- * rows/next — reused from the LIVE layout, but as short one-line entries,
- * not full progress-bar rows, since this state has to share the screen
- * with the unknown-time list) and the still-unknown list beneath it. The
- * known section's band is a fixed size (room for up to
- * FF_APP_NOW_MAX_ROWS+1 = 4 compact lines) regardless of how many are
- * actually populated — simpler than a dynamic band, and correct because
- * unused lines just aren't drawn (top-aligned within the reserved band),
- * per scr_now.c's now_render_mixed. */
-#define NOW_LAYOUT_MIXED_BANNER_DY (-172.0f)
-#define NOW_LAYOUT_MIXED_KNOWN_HEADER_DY (-140.0f) /* "KNOWN SO FAR" — only drawn if at least one row/next exists */
-#define NOW_LAYOUT_MIXED_KNOWN_ITEM0_DY (-120.0f)
-#define NOW_LAYOUT_MIXED_KNOWN_ITEM_SPACING_DY 20.0f
-#define NOW_LAYOUT_MIXED_UNKNOWN_HEADER_DY (-34.0f) /* "STILL TBD" — always drawn: NOW_MIXED implies >=1 unknown set */
-#define NOW_LAYOUT_MIXED_LIST_TOP_DY (-14.0f)
+/* NOW_MIXED state — the SAME banner text/pill NOW_TBD uses ("show the TBD
+ * banner whenever ANY set on the day lacks a time" — PR #21 code review
+ * finding #1/ruling's literal wording), positioned slightly higher to
+ * leave room below for a "known so far" section and the still-unknown
+ * list beneath it.
+ *
+ * UX review round 2 (PR #21, "the state I'll actually live in for weeks
+ * before the festival deserves the most care, not the least") RULING:
+ * three visually distinct classes inside "known so far", never
+ * distinguished by the absence of an element —
+ *   (a) PLAYING NOW: the exact same treatment NOW_LIVE gives a row
+ *       (stage-colored label + artist + progress bar, via
+ *       now_build_row() — reused, not re-implemented, because it's the
+ *       same fact and must look the same everywhere it appears).
+ *   (b) SCHEDULED, NOT STARTED (the starred-next set): countdown-LED —
+ *       the "IN N MIN" text is the first, largest, most colorful thing
+ *       in its block, exactly like NOW_LIVE's next-card, not a trailing
+ *       suffix on an otherwise-plain line — and it has NO progress bar
+ *       (round 1's compact "Artist - Stage - IN N MIN" line made this
+ *       indistinguishable from (a) except by a suffix nobody was told to
+ *       look for).
+ *   (c) TIME UNKNOWN: the "STILL TBD" list, unchanged.
+ *
+ * Because how many (a)-class rows exist varies (0..FF_APP_NOW_MAX_ROWS)
+ * and item (b) is optional (next.valid), the vertical stack below
+ * MIXED_KNOWN_HEADER_DY is laid out DYNAMICALLY at runtime (scr_now.c's
+ * now_render_mixed advances a running `cursor_dy`) rather than from a
+ * fixed set of per-slot constants the way NOW_LIVE's rows are — a
+ * pathological 3-rows-and-a-next mixed day is rare (the realistic near-
+ * term Lost Lands scenario the review flagged is 1-2 known items), and
+ * dynamic placement means the common case doesn't waste the vertical
+ * budget the "still unknown" list needs. */
+#define NOW_LAYOUT_MIXED_BANNER_DY (-174.0f)
+#define NOW_LAYOUT_MIXED_KNOWN_HEADER_DY (-142.0f) /* "KNOWN SO FAR" — only drawn if at least one row/next exists */
+#define NOW_LAYOUT_MIXED_ROW0_DY (-110.0f)         /* first (a)-class row's dy, same internal offsets as NOW_LIVE's rows */
+#define NOW_LAYOUT_MIXED_ROW_SPACING_DY 46.0f       /* between successive (a)-class rows */
+#define NOW_LAYOUT_MIXED_NEXT_BLOCK_H_DY 46.0f       /* vertical space one (b)-class block reserves (countdown line + artist/stage line) */
+#define NOW_LAYOUT_MIXED_SECTION_GAP_DY 18.0f        /* gap between the known section's last item and "STILL TBD" */
+#define NOW_LAYOUT_MIXED_UNKNOWN_HEADER_MIN_DY (-140.0f) /* "STILL TBD" position when there's NO known section to push it down (any_known == false) */
+#define NOW_LAYOUT_MIXED_UNKNOWN_HEADER_TO_LIST_GAP_DY 20.0f
 
 /* NOW_NO_PACK state: no festpack loaded at all. */
 #define NOW_LAYOUT_NO_PACK_HEADLINE_DY (-10.0f)
