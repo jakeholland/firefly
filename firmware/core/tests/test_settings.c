@@ -20,6 +20,7 @@
 
 #include "unity.h"
 
+#include "ff_geo.h"
 #include "ff_settings.h"
 #include "ff_store.h"
 
@@ -102,9 +103,9 @@ static void ff_assert_defaults(ff_settings_t const *s)
     TEST_ASSERT_EQUAL_STRING("", s->my_name);
     TEST_ASSERT_FALSE(s->cal_valid);
 
-    uint8_t zero_blob[FF_SETTINGS_CAL_BLOB_LEN];
-    memset(zero_blob, 0, sizeof(zero_blob));
-    TEST_ASSERT_EQUAL_UINT8_ARRAY(zero_blob, s->compass_cal_blob, FF_SETTINGS_CAL_BLOB_LEN);
+    ff_geo_cal_t zero_cal;
+    memset(&zero_cal, 0, sizeof(zero_cal));
+    TEST_ASSERT_EQUAL_MEMORY(&zero_cal, &s->compass_cal, sizeof(ff_geo_cal_t));
 }
 
 static void S11_AC1_load_with_empty_store_yields_exact_defaults(void)
@@ -215,9 +216,11 @@ static void S11_AC2_round_trip_save_load_is_exact_including_calibration(void)
     out.quiet_to_min = 120;    /* 02:00 */
     strncpy(out.my_name, "Dana", sizeof(out.my_name) - 1);
     out.cal_valid = true;
-    for (size_t i = 0; i < FF_SETTINGS_CAL_BLOB_LEN; i++) {
-        out.compass_cal_blob[i] = (uint8_t)(i * 7 + 1);
-    }
+    out.compass_cal.hard_offset = (ff_vec3_t){12.5f, -3.25f, 0.75f};
+    out.compass_cal.soft_scale[0] = 1.04f;
+    out.compass_cal.soft_scale[1] = 0.97f;
+    out.compass_cal.soft_scale[2] = 1.11f;
+    out.compass_cal.declination_deg = -6.5f; /* e.g. Columbus, OH */
 
     ff_settings_save(&out, &st);
 

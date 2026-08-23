@@ -22,15 +22,11 @@
 
 #include <stdbool.h>
 
+#include "ff_latlon.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
-
-/** A WGS84 geodetic coordinate, degrees. */
-typedef struct {
-    double lat;
-    double lon;
-} ff_latlon_t;
 
 /** A 3-axis sensor sample in board frame. */
 typedef struct {

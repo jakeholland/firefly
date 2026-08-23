@@ -7,16 +7,17 @@ add_library(ff-festpack STATIC
 
 target_include_directories(ff-festpack PUBLIC include)
 target_compile_features(ff-festpack PUBLIC c_std_11)
-target_link_libraries(ff-festpack PRIVATE ff-jsmn)
-# fp_project() calls cos() (math.h). On macOS/AppleClang that resolves via
-# libSystem with no extra flag, which is why this was missed locally; glibc
-# (Linux CI) needs an explicit -lm or the final link fails with "undefined
-# reference to `cos'". CMake propagates a STATIC library's PRIVATE link
-# libraries to whatever links this one, so this is enough for test_festpack
-# and any future consumer.
-if(UNIX)
-    target_link_libraries(ff-festpack PRIVATE m)
-endif()
+# fp_pack.h's ff_latlon_t comes from platform/ (see
+# firmware/platform/include/ff_latlon.h) — PUBLIC so consumers of
+# fp_pack.h resolve that include without also pulling in core/.
+# ff-core is PRIVATE: fp_pack.c calls ff_geo_project() (ff_geo.h) to do
+# the lat/lon -> east/north projection (was a local TODO(S01) stub, now
+# the real thing — see docs/specs/S01-core-geo.md), but that dependency
+# is an implementation detail, not part of fp_pack.h's public surface.
+target_link_libraries(ff-festpack
+    PUBLIC ff-platform
+    PRIVATE ff-jsmn ff-core
+)
 ff_apply_warnings(ff-festpack)
 
 if(FF_BUILD_TESTS)

@@ -8,11 +8,6 @@
  * load/save with defaults-on-corruption, quiet-hours math, and the
  * water-nudge tick. It does NOT implement the Settings face (slice b) or
  * GHOST admin-message wiring (slice c) — see docs/specs/S11-settings.md.
- *
- * Parallel-work note: ff_geo_cal_t is owned by S01 (core/geo) and isn't
- * available yet. Compass calibration is stored as an opaque blob here;
- * S01 should replace `compass_cal_blob` with a real `ff_geo_cal_t` once
- * that header lands, per the TODO below.
  */
 #ifndef FF_SETTINGS_H
 #define FF_SETTINGS_H
@@ -20,6 +15,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "ff_geo.h"
 #include "ff_store.h"
 
 #ifdef __cplusplus
@@ -36,7 +32,10 @@ extern "C" {
 /* my_name capacity, including NUL terminator, per spec (`char my_name[16]`). */
 #define FF_SETTINGS_NAME_LEN 16
 
-/* Opaque compass-calibration blob capacity. */
+/* Persisted-layout budget for the compass-calibration field, bytes. Kept
+ * as a named constant (rather than just sizeof(ff_geo_cal_t)) so growth in
+ * ff_geo_cal_t is a deliberate, reviewed budget decision — see the
+ * _Static_assert below ff_settings_t. */
 #define FF_SETTINGS_CAL_BLOB_LEN 32
 
 typedef struct {
@@ -53,13 +52,19 @@ typedef struct {
      * any consumer treats it as a C string. */
     char my_name[FF_SETTINGS_NAME_LEN];
 
-    /* TODO(S01): replace compass_cal_blob with a real ff_geo_cal_t once
-     * core/geo lands (S01 is defining that type in parallel). Until then
-     * this is an opaque, defaults-to-zero blob that round-trips through
-     * load/save untouched. */
-    uint8_t compass_cal_blob[FF_SETTINGS_CAL_BLOB_LEN];
+    /* Compass calibration (hard/soft-iron correction + declination), S01
+     * (ff_geo.h). Defaults to a zeroed ff_geo_cal_t (identity: no offset,
+     * unit scale, zero declination) until a real calibration ritual
+     * (S12) populates it and sets cal_valid. */
+    ff_geo_cal_t compass_cal;
     bool cal_valid;
 } ff_settings_t;
+
+/* ff_geo_cal_t must fit the persisted-layout budget above — a layout
+ * change to it (or a bump to FF_SETTINGS_CAL_BLOB_LEN) is a settings
+ * format change and must bump FF_SETTINGS_FORMAT_VERSION (ff_settings.c). */
+_Static_assert(sizeof(ff_geo_cal_t) <= FF_SETTINGS_CAL_BLOB_LEN,
+               "ff_geo_cal_t no longer fits the settings' compass-cal budget");
 
 /**
  * ff_settings_load — populate `s` from the store, or with exact defaults

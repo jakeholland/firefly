@@ -14,7 +14,8 @@
 
 #include "fp_pack.h"
 
-#include <math.h>
+#include "ff_geo.h"
+
 #include <stdlib.h>
 #include <string.h>
 
@@ -34,33 +35,6 @@
  * capping fp_skip()'s own C call-stack usage regardless of how deeply an
  * attacker nests input JSON. See fp_skip_depth(). */
 #define FP_MAX_JSON_DEPTH 16
-
-/* ---------------------------------------------------------------------
- * fp_project — local equirectangular lat/lon -> east/north projection.
- *
- * TODO(S01): S01 (core/geo, ff_geo_project) is being built in parallel
- * with this slice; per the S05 brief we must not depend on it. Swap this
- * for `ff_geo_project()` once S01 lands — same signature shape, so the
- * call sites below need no change beyond the #include.
- *
- * Constants:
- *   111320 m/deg — meters per degree of longitude at the equator
- *     (WGS84 mean meridian length / 360), scaled by cos(lat0) to account
- *     for meridian convergence at the origin's latitude.
- *   110540 m/deg — meters per degree of latitude (WGS84 mean; the true
- *     value varies from ~110,574 m/deg at the equator to ~111,694 m/deg
- *     at the poles — 110540 is the standard mid-latitude approximation
- *     used by equirectangular "flat-earth" projections).
- * Valid at festival scale (<10 km from origin) per S01's own bound.
- * ------------------------------------------------------------------- */
-#define FP_DEG_TO_RAD (3.14159265358979323846 / 180.0)
-
-static void fp_project(ff_latlon_t origin, ff_latlon_t p, float *east_m, float *north_m)
-{
-    double lat0_rad = origin.lat * FP_DEG_TO_RAD;
-    *east_m = (float)((p.lon - origin.lon) * cos(lat0_rad) * 111320.0);
-    *north_m = (float)((p.lat - origin.lat) * 110540.0);
-}
 
 /* ---------------------------------------------------------------------
  * Token-array helpers.
@@ -437,7 +411,7 @@ static fp_result_t fp_parse_polygon(fp_ctx_t const *c, int poly_i, ff_latlon_t o
         if (lat_tok->type != JSMN_PRIMITIVE || lon_tok->type != JSMN_PRIMITIVE) return FP_ERR_JSON;
 
         ff_latlon_t p = {fp_num(c, lat_i, 0.0), fp_num(c, lon_i, 0.0)};
-        fp_project(origin, p, &f->pts_en[f->n_pts][0], &f->pts_en[f->n_pts][1]);
+        ff_geo_project(origin, p, &f->pts_en[f->n_pts][0], &f->pts_en[f->n_pts][1]);
         f->n_pts++;
         idx = fp_skip(c, pt_tok_i);
     }
@@ -488,7 +462,7 @@ static fp_result_t fp_parse_landmarks(fp_ctx_t const *c, int arr_i, ff_latlon_t 
         bool have_lon = fp_obj_get(c, obj_i, "lon", &lon_i) && !fp_is_null(c, lon_i);
         if (have_lat && have_lon) {
             ff_latlon_t p = {fp_num(c, lat_i, 0.0), fp_num(c, lon_i, 0.0)};
-            fp_project(origin, p, &lm->east_m, &lm->north_m);
+            ff_geo_project(origin, p, &lm->east_m, &lm->north_m);
             lm->has_pos = true;
         }
         out->n_landmarks++;
