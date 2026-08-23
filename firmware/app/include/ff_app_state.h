@@ -76,11 +76,17 @@ extern "C" {
 
 #define FF_APP_NOW_MAX_ROWS 3 /* S07: "three now-rows max" */
 
-/* S07 slice b: per-day lineup list, shown (with the "SET TIMES TBD"
- * banner) when `tbd` is true — ff_sched_day_sets()'s output flattened the
- * same way `rows`/`next` are (see this section's top comment). 32 is
- * generous headroom over any real single festival day we've actually
- * seen (the vendored Lost Lands 2026 pack's day 1 has 7 sets — see
+/* S07 slice b, round 2 (PR #21 code review finding #1): per-day list of
+ * sets whose time is NOT known yet. Used two ways depending on
+ * `ff_app_now_t.state`: under NOW_TBD it's every set on the day (all of
+ * them lack a time, by definition of that state); under NOW_MIXED it's
+ * just the still-unknown subset, alongside `rows`/`next` for the sets
+ * that DO have a time. Never used to hide a known set the app knows
+ * about — see NOW_MIXED's doc comment below for why this field exists at
+ * all (the bug this fixes: a set with an unknown time used to disappear
+ * entirely rather than showing up here). 32 is generous headroom over any
+ * real single festival day we've actually seen (the vendored Lost Lands
+ * 2026 pack's day 1 has 7 sets — see
  * firmware/festpack/tests/fixtures/lost-lands-2026.festpack.json) while
  * staying well under fp_pack.h's whole-pack FP_MAX_SETS (256) cap; a
  * pathological single-day lineup beyond this fails loud at fixture-load
@@ -91,8 +97,19 @@ extern "C" {
 typedef struct {
     char    artist[FF_APP_ARTIST_LEN];
     char    stage_name[FF_APP_STAGE_LEN];
-    uint32_t stage_color_rgb; /* 0x00RRGGBB, from fp_stage_t.color_rgb */
-    int16_t mins_left;
+    uint32_t stage_color_rgb;  /* 0x00RRGGBB, from fp_stage_t.color_rgb — meaningless unless stage_color_valid */
+    /* PR #21 code review finding #3: 0 used to double as BOTH "no color
+     * given" and "the fixture's #rrggbb was malformed" (fx_color_rgb's old
+     * failure return), which silently misrendered a genuinely BLACK stage
+     * color as the same "unset -> muted grey" fallback as a missing/broken
+     * one — and made a malformed color indistinguishable from a valid one
+     * that just happens to parse to 0x000000. An explicit validity flag
+     * fixes both: a real black stage renders black, and a malformed color
+     * is now a distinctly observable/testable state (fixture.c sets this
+     * false, not just stage_color_rgb=0, on a parse failure) rather than
+     * silently masquerading as "not provided". See
+     * targets/sim/tests/test_fixture.c's now_stage_color_rgb_* cases. */
+    bool     stage_color_valid;
     uint8_t pct_done;
 } ff_app_now_row_t;
 
@@ -103,40 +120,63 @@ typedef struct {
     int16_t mins_until;
 } ff_app_next_t;
 
-/* One entry in the TBD-path day lineup list: just enough to render
- * "ARTIST — STAGE" (or "ARTIST" alone when the stage itself is unknown —
+/* One entry in the still-unknown-time list (`ff_app_now_t.lineup`): just
+ * enough to render "ARTIST — STAGE" (or the explicit "STAGE UNKNOWN"
+ * fallback scr_now.c renders when the stage itself is also unknown —
  * fp_set_t.stage_idx can be -1, e.g. several of the real Lost Lands
- * pack's early-entry sets). No times: this struct only ever appears when
- * `ff_app_now_t.tbd` is true, i.e. every set on the day already has null
- * start/end (S07 spec's day-lineup behavior). */
+ * pack's early-entry sets). No times: every set that reaches this list
+ * is, by construction, one whose start/end the app does not know. */
 typedef struct {
     char artist[FF_APP_ARTIST_LEN];
     char stage_name[FF_APP_STAGE_LEN]; /* "" = stage unknown, render honestly (never invent one) */
 } ff_app_lineup_item_t;
 
-typedef struct {
-    /* S07 slice b addition (not in the original S13 scaffolding): false
-     * iff no festpack is loaded at all. This is the "no pack loaded"
-     * empty state (tests/fixtures/now_empty.json) and is deliberately
-     * distinct from `tbd` (a pack IS loaded, but every set's times are
-     * null — tests/fixtures/now_tbd.json): conflating the two would be
-     * exactly the kind of dishonest-by-omission rendering CLAUDE.md's
-     * "honest data over pretty data" rule exists to prevent — a puck with
-     * no festival data loaded must never show a schedule-flavored banner
-     * that implies a pack exists. Defaults false (the zero value), same
-     * "unknown/absent defaults to the least-claiming state" convention as
-     * radar.mode defaulting to RADAR_NOSEL rather than RADAR_LIVE (see
-     * fixture.c's ff_fixture_load_json) — a fixture that omits `now`
-     * entirely, or omits `pack_loaded` within it, honestly renders as
-     * "nothing loaded" rather than silently claiming live schedule data
-     * exists. */
-    bool pack_loaded;
+/**
+ * now_state_t — the Now face's render state, mutually exclusive by
+ * construction (PR #21 code review finding #2/ruling: this replaces an
+ * earlier `pack_loaded`+`tbd` bool pair, which represented a 3-state
+ * lifecycle with 4 representable combinations — the nonsense one wasn't
+ * even the bug, the real cost was that "which state is this" depended on
+ * check ORDER in the renderer rather than being a fact of the data. Same
+ * fix `core/include/ff_radar.h`'s `radar_mode_t` already applied to the
+ * Radar face.) A fixture/view-builder sets exactly one of these; nothing
+ * downstream re-derives it from other fields.
+ */
+typedef enum {
+    NOW_NO_PACK,         /* no festpack loaded at all (tests/fixtures/now_empty.json) */
+    NOW_TBD,              /* pack loaded; every set on the day lacks a known time (now_tbd.json) */
+    NOW_MIXED,            /* pack loaded; day.mixed, ROUND 2 fix — see NOW_MIXED's own note below */
+    NOW_LIVE,             /* pack loaded; every set on the day has a known time; something's now/next */
+    NOW_NOTHING_PLAYING,  /* pack loaded; every set on the day has a known time; nothing now/next right now */
+} now_state_t;
 
+typedef struct {
+    /* Mutually exclusive by construction — see now_state_t's own doc
+     * comment for the [api] history (was `pack_loaded`+`tbd` bools).
+     * Defaults to NOW_NO_PACK (the zero value: the enum's first member is
+     * deliberately the least-claiming state, same "unknown/absent
+     * defaults to the least-claiming state" convention as radar.mode
+     * defaulting to RADAR_NOSEL — see fixture.c's ff_fixture_load_json).
+     * A fixture that omits `now` entirely, or omits `state` within it,
+     * honestly renders as "nothing loaded" rather than silently claiming
+     * live schedule data exists. */
+    now_state_t state;
+
+    /* NOW_LIVE / NOW_NOTHING_PLAYING / NOW_MIXED: the day's known-time
+     * sets that are currently playing (up to 3) and the next starred one.
+     * Unused (left zeroed) under NOW_NO_PACK/NOW_TBD. */
     ff_app_now_row_t rows[FF_APP_NOW_MAX_ROWS];
     uint8_t n_rows;
     ff_app_next_t next;
-    bool tbd; /* S07: all-null-times pack -> "SET TIMES TBD" banner */
 
+    /* NOW_TBD (every entry) / NOW_MIXED (round 2 fix — code review
+     * finding #1: the day's REMAINING unknown-time sets, rendered
+     * alongside `rows`/`next` rather than disappearing the moment even
+     * one set on the day gets a real time; the real-world trigger the
+     * reviewer flagged is Lost Lands' pack times landing stage-by-stage
+     * before the Sep 18-20 field test — a "some known, most still not"
+     * day is the expected near-term state, not a hypothetical edge case).
+     * Unused under NOW_NO_PACK/NOW_LIVE/NOW_NOTHING_PLAYING. */
     ff_app_lineup_item_t lineup[FF_APP_NOW_MAX_LINEUP];
     uint8_t n_lineup;
 } ff_app_now_t;
@@ -235,6 +275,21 @@ typedef struct {
     ff_app_flare_t    flare;
     ff_app_settings_t settings;
 } ff_app_state_t;
+
+/* PR #21 code review finding #4: ff_app_state_t grew ~2.5x in this PR
+ * (~1300B -> ~3.2KB) with nothing tracking the total. Mirrors
+ * fp_pack_t's own documented budget (fp_pack.h: "must live comfortably
+ * in ESP32-S3 PSRAM"). Unlike that 48KB figure, no spec states a hard
+ * number for THIS struct — this is a judgment call (flagged per
+ * AGENTS.md's "note the interpretation" rule), picked as generous
+ * headroom (roughly 2.5x today's actual size) over a hard hardware
+ * limit, specifically so it catches runaway growth (a face adding an
+ * unbounded or needlessly large array) rather than nuisance-tripping on
+ * ordinary per-slice growth as S08/S10/S11 add their own sections to
+ * this same struct. Revisit the number if a future slice has a real
+ * reason to grow past it. */
+_Static_assert(sizeof(ff_app_state_t) <= 8 * 1024,
+               "ff_app_state_t exceeds its 8KB view-state budget (see this assert's comment)");
 
 #ifdef __cplusplus
 }

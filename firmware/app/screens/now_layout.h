@@ -104,13 +104,14 @@ extern "C" {
 #define NOW_LAYOUT_NEXT_STAGE_DY 88.0f
 #define NOW_LAYOUT_NEXT_COUNTDOWN_DY 132.0f
 
-/* LIVE state, no rows at all (a quiet moment: pack loaded, known
- * schedule, nothing live right now) — same headline/sub vertical slots as
- * radar's NOSEL treatment for visual consistency across faces. */
-#define NOW_LAYOUT_QUIET_HEADLINE_DY (-10.0f)
-#define NOW_LAYOUT_QUIET_SUB_DY 30.0f
+/* NOW_NOTHING_PLAYING state (pack loaded, known schedule, nothing live
+ * right now) — same headline/sub vertical slots as radar's NOSEL
+ * treatment for visual consistency across faces. */
+#define NOW_LAYOUT_NOTHING_PLAYING_HEADLINE_DY (-10.0f)
+#define NOW_LAYOUT_NOTHING_PLAYING_SUB_DY 30.0f
 
-/* TBD state: banner + scrollable day-lineup list. NOW_LAYOUT_LINEUP_TOP_DY
+/* NOW_TBD state: banner + scrollable day-lineup list (every entry, since
+ * NOW_TBD means every set on the day lacks a time). NOW_LAYOUT_LINEUP_TOP_DY
  * is independently chosen (below the banner); the list's BOTTOM edge is
  * deliberately NOT a constant here — see this header's top comment —
  * scr_now.c derives it directly from radar_layout.h's
@@ -119,9 +120,28 @@ extern "C" {
 #define NOW_LAYOUT_TBD_BANNER_DY (-156.0f)
 #define NOW_LAYOUT_LINEUP_TOP_DY (-118.0f)
 
-/* Empty state: no pack loaded at all. */
-#define NOW_LAYOUT_EMPTY_HEADLINE_DY (-10.0f)
-#define NOW_LAYOUT_EMPTY_SUB_DY 30.0f
+/* NOW_MIXED state (PR #21 code review finding #1/ruling): the SAME banner
+ * as NOW_TBD ("show the TBD banner whenever ANY set on the day lacks a
+ * time" — the reviewer's literal wording), positioned slightly higher to
+ * leave room below for BOTH a compact "known so far" section (the day's
+ * rows/next — reused from the LIVE layout, but as short one-line entries,
+ * not full progress-bar rows, since this state has to share the screen
+ * with the unknown-time list) and the still-unknown list beneath it. The
+ * known section's band is a fixed size (room for up to
+ * FF_APP_NOW_MAX_ROWS+1 = 4 compact lines) regardless of how many are
+ * actually populated — simpler than a dynamic band, and correct because
+ * unused lines just aren't drawn (top-aligned within the reserved band),
+ * per scr_now.c's now_render_mixed. */
+#define NOW_LAYOUT_MIXED_BANNER_DY (-172.0f)
+#define NOW_LAYOUT_MIXED_KNOWN_HEADER_DY (-140.0f) /* "KNOWN SO FAR" — only drawn if at least one row/next exists */
+#define NOW_LAYOUT_MIXED_KNOWN_ITEM0_DY (-120.0f)
+#define NOW_LAYOUT_MIXED_KNOWN_ITEM_SPACING_DY 20.0f
+#define NOW_LAYOUT_MIXED_UNKNOWN_HEADER_DY (-34.0f) /* "STILL TBD" — always drawn: NOW_MIXED implies >=1 unknown set */
+#define NOW_LAYOUT_MIXED_LIST_TOP_DY (-14.0f)
+
+/* NOW_NO_PACK state: no festpack loaded at all. */
+#define NOW_LAYOUT_NO_PACK_HEADLINE_DY (-10.0f)
+#define NOW_LAYOUT_NO_PACK_SUB_DY 30.0f
 
 /**
  * now_layout_format_countdown — formats `mins_until` as the spec's

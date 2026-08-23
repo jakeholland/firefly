@@ -2,7 +2,6 @@
   "fixture": "now_nothing_live",
   "face": "now",
   "now": {
-    "pack_loaded": true,
-    "tbd": false
+    "state": "nothing_playing"
   }
 }

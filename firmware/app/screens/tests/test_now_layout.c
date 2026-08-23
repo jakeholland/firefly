@@ -57,6 +57,28 @@ static void S07_AC6_countdown_format_single_digit(void)
     TEST_ASSERT_EQUAL_STRING("IN 1 MIN", buf);
 }
 
+/* PR #21 code review finding #6: the 59/60-minute boundary specifically.
+ * now_layout_format_countdown has no hour-conversion branch — it's a flat
+ * "IN %d MIN" print for every value — so 59 and 60 aren't actually
+ * different code paths from 33 today, but the boundary is asserted
+ * explicitly anyway: it's the exact pair a FUTURE hour-conversion feature
+ * (e.g. "IN 1 HR 5 MIN") would need to get right, and a test written
+ * before that feature exists is the one most likely to survive being
+ * forgotten when it lands. */
+static void S07_AC6_countdown_format_59_minutes(void)
+{
+    char buf[16];
+    now_layout_format_countdown(59, buf, sizeof(buf));
+    TEST_ASSERT_EQUAL_STRING("IN 59 MIN", buf);
+}
+
+static void S07_AC6_countdown_format_60_minutes(void)
+{
+    char buf[16];
+    now_layout_format_countdown(60, buf, sizeof(buf));
+    TEST_ASSERT_EQUAL_STRING("IN 60 MIN", buf);
+}
+
 static void S07_AC6_countdown_format_null_out_is_a_noop(void)
 {
     /* Must not crash — same defensive-NULL convention as
@@ -148,6 +170,8 @@ int main(void)
     RUN_TEST(S07_AC6_countdown_format_zero);
     RUN_TEST(S07_AC6_countdown_format_clamps_negative_to_zero);
     RUN_TEST(S07_AC6_countdown_format_single_digit);
+    RUN_TEST(S07_AC6_countdown_format_59_minutes);
+    RUN_TEST(S07_AC6_countdown_format_60_minutes);
     RUN_TEST(S07_AC6_countdown_format_null_out_is_a_noop);
 
     RUN_TEST(S07_AC6_bar_fill_zero_pct_is_zero_width);

@@ -168,14 +168,25 @@ static int fx_hex_nibble(char ch)
  * "accepts a \"#rrggbb\" string or a bare integer"). A JSON string token
  * is parsed as "#rrggbb" (leading '#' optional) into 0x00RRGGBB, same
  * convention as festpack's fp_color_rgb(); a JSON number token is taken
- * as the packed integer directly. Any other token type, or a malformed
- * hex string, returns `dflt`. (Review finding #1: this used to route
- * unconditionally through fx_num(), which silently returned 0 for the
- * documented "#rrggbb" string form — a JSON_STRING token is not a
- * JSMN_PRIMITIVE, so fx_num() rejected it without any signal.) */
-static uint32_t fx_color_rgb(fx_ctx_t const *c, int i, uint32_t dflt)
+ * as the packed integer directly.
+ *
+ * Returns true and writes the parsed value to *out on success; returns
+ * false (and leaves *out untouched) for any other token type or a
+ * malformed hex string. PR #21 code review finding #3: this used to
+ * return a plain uint32_t with a `dflt` fallback (0) for failure — the
+ * SAME 0 a legitimately black "#000000" stage color parses to, so a
+ * malformed color and a real black one were bit-for-bit indistinguishable
+ * downstream, and the renderer's "0 means unset" convention silently
+ * masked BOTH a genuine black stage and a broken fixture value as the
+ * same muted-grey fallback. Reporting success/failure explicitly lets the
+ * caller (fx_parse_now_row) set ff_app_now_row_t.stage_color_valid
+ * correctly instead of overloading the color value itself as its own
+ * validity signal. (Review finding #1, still true here: a JSON_STRING
+ * token is not a JSMN_PRIMITIVE, so the numeric path must not swallow the
+ * string form — that bug predates this refactor and remains fixed.) */
+static bool fx_color_rgb(fx_ctx_t const *c, int i, uint32_t *out)
 {
-    if (i < 0 || i >= c->ntoks) return dflt;
+    if (i < 0 || i >= c->ntoks) return false;
     jsmntok_t const *t = &c->toks[i];
     if (t->type == JSMN_STRING) {
         char const *s = c->js + t->start;
@@ -184,17 +195,30 @@ static uint32_t fx_color_rgb(fx_ctx_t const *c, int i, uint32_t dflt)
             s++;
             n--;
         }
-        if (n != 6) return dflt;
+        if (n != 6) return false;
         uint32_t v = 0;
         for (int k = 0; k < 6; k++) {
             int nib = fx_hex_nibble(s[k]);
-            if (nib < 0) return dflt;
+            if (nib < 0) return false;
             v = (v << 4) | (uint32_t)nib;
         }
-        return v;
+        *out = v;
+        return true;
     }
-    if (t->type == JSMN_PRIMITIVE) return (uint32_t)fx_num(c, i, (double)dflt);
-    return dflt;
+    if (t->type == JSMN_PRIMITIVE) {
+        /* fx_num() itself has its own null/malformed-primitive fallback
+         * (returns its `dflt` argument) — pass a sentinel we can never
+         * confuse with a real result and check for it explicitly, rather
+         * than trusting fx_num()'s success implicitly. */
+        double dflt_sentinel = -1.0;
+        double v = fx_num(c, i, dflt_sentinel);
+        if (v == dflt_sentinel) {
+            return false;
+        }
+        *out = (uint32_t)v;
+        return true;
+    }
+    return false;
 }
 
 /* ---------------------------------------------------------------------
@@ -273,10 +297,18 @@ static void fx_parse_now_row(fx_ctx_t const *c, int obj_i, ff_app_now_row_t *row
     int t;
     if (fx_obj_get(c, obj_i, "artist", &t)) fx_copy_str(c, t, row->artist, sizeof(row->artist));
     if (fx_obj_get(c, obj_i, "stage_name", &t)) fx_copy_str(c, t, row->stage_name, sizeof(row->stage_name));
-    /* Review finding #1: this used to be fx_num() directly, which
-     * silently returned 0 for the documented "#rrggbb" string form. */
-    if (fx_obj_get(c, obj_i, "stage_color_rgb", &t)) row->stage_color_rgb = fx_color_rgb(c, t, 0);
-    if (fx_obj_get(c, obj_i, "mins_left", &t)) row->mins_left = (int16_t)fx_num(c, t, 0.0);
+    /* PR #21 code review finding #3: stage_color_valid is set from
+     * fx_color_rgb's own success/failure report, not inferred from
+     * whether the parsed value is nonzero — see that function's doc
+     * comment for why the old "0 == unset" convention was a bug (masked
+     * both a genuine black stage AND a malformed fixture value the same
+     * way). Key left absent entirely -> stays false (the zeroed default),
+     * same as every other "not provided" field in this parser. */
+    if (fx_obj_get(c, obj_i, "stage_color_rgb", &t)) {
+        uint32_t color = 0;
+        row->stage_color_valid = fx_color_rgb(c, t, &color);
+        row->stage_color_rgb = row->stage_color_valid ? color : 0;
+    }
     if (fx_obj_get(c, obj_i, "pct_done", &t)) row->pct_done = (uint8_t)fx_num(c, t, 0.0);
 }
 
@@ -287,6 +319,20 @@ static void fx_parse_lineup_item(fx_ctx_t const *c, int obj_i, ff_app_lineup_ite
     if (fx_obj_get(c, obj_i, "stage_name", &t)) fx_copy_str(c, t, item->stage_name, sizeof(item->stage_name));
 }
 
+/* PR #21 code review finding #2/ruling: `now.state` replaces the earlier
+ * `pack_loaded`+`tbd` bool pair, same string-enum convention as
+ * fx_radar_mode_table above. Absent/unrecognized -> NOW_NO_PACK (the
+ * enum's zero value — see now_state_t's own doc comment for why that's
+ * the correct default, same reasoning as radar.mode's RADAR_NOSEL
+ * default). */
+static const fx_enum_entry_t fx_now_state_table[] = {
+    {"no_pack", NOW_NO_PACK},
+    {"tbd", NOW_TBD},
+    {"mixed", NOW_MIXED},
+    {"live", NOW_LIVE},
+    {"nothing_playing", NOW_NOTHING_PLAYING},
+};
+
 /* fx_parse_now — same fail-loud-on-oversized-array treatment as
  * fx_parse_radar_dots above, for the `rows` array (cap
  * FF_APP_NOW_MAX_ROWS) and, as of S07 slice b, the `lineup` array (cap
@@ -294,7 +340,10 @@ static void fx_parse_lineup_item(fx_ctx_t const *c, int obj_i, ff_app_lineup_ite
 static ff_fixture_result_t fx_parse_now(fx_ctx_t const *c, int obj_i, ff_app_now_t *now)
 {
     int t;
-    if (fx_obj_get(c, obj_i, "pack_loaded", &t)) now->pack_loaded = fx_bool(c, t, false);
+    if (fx_obj_get(c, obj_i, "state", &t)) {
+        now->state = (now_state_t)fx_enum(c, t, fx_now_state_table,
+                                           sizeof(fx_now_state_table) / sizeof(fx_now_state_table[0]), NOW_NO_PACK);
+    }
 
     int rows_i;
     if (fx_obj_get(c, obj_i, "rows", &rows_i) && !fx_is_null(c, rows_i)) {
@@ -318,7 +367,6 @@ static ff_fixture_result_t fx_parse_now(fx_ctx_t const *c, int obj_i, ff_app_now
             fx_copy_str(c, t, now->next.stage_name, sizeof(now->next.stage_name));
         if (fx_obj_get(c, next_i, "mins_until", &t)) now->next.mins_until = (int16_t)fx_num(c, t, 0.0);
     }
-    if (fx_obj_get(c, obj_i, "tbd", &t)) now->tbd = fx_bool(c, t, false);
 
     int lineup_i;
     if (fx_obj_get(c, obj_i, "lineup", &lineup_i) && !fx_is_null(c, lineup_i)) {

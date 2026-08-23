@@ -2,8 +2,7 @@
   "fixture": "now_tbd",
   "face": "now",
   "now": {
-    "pack_loaded": true,
-    "tbd": true,
+    "state": "tbd",
     "lineup": [
       { "artist": "Excision", "stage_name": "Prehistoric Stage" },
       { "artist": "NGHTMRE", "stage_name": "" },

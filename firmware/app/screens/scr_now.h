@@ -23,19 +23,30 @@ extern "C" {
  * tile sized to the puck, same as scr_radar.h's contract). Builds fresh
  * children every call; does not clear `parent` itself.
  *
- * Renders exactly one of three honestly-distinct states, per
- * docs/specs/S07-now-face.md:
- *   - `!now->pack_loaded`: no festpack loaded at all — an honest empty
- *     state, distinct from the TBD banner below (see ff_app_state.h's
- *     `pack_loaded` doc comment for why conflating the two would be
- *     dishonest).
- *   - `now->tbd`: every set's start/end time is null (today's real Lost
- *     Lands state) — the day's lineup list plus a "SET TIMES TBD"
+ * Dispatches on `now->state` (`now_state_t`, ff_app_state.h) — five
+ * mutually-exclusive-by-construction states, per docs/specs/S07-now-face.md
+ * and PR #21's review rounds:
+ *   - `NOW_NO_PACK`: no festpack loaded at all — an honest empty state,
+ *     distinct from every TBD-flavored state below (see now_state_t's doc
+ *     comment for why conflating them would be dishonest).
+ *   - `NOW_TBD`: every set on the day lacks a known time (today's real
+ *     Lost Lands state) — the full day lineup plus a "SET TIMES TBD"
  *     banner, never an invented time.
- *   - otherwise: up to three now-playing rows (stage label, artist,
- *     progress bar in the stage's own color) and a starred-next card with
- *     an "IN N MIN" countdown, or an honest "nothing live right now" note
- *     if there's neither a live row nor an upcoming starred set.
+ *   - `NOW_MIXED`: SOME of the day's sets have a known time and some
+ *     don't (the expected near-term state as Lost Lands' real pack times
+ *     land stage-by-stage) — known-time sets render as usual (compact
+ *     "known so far" lines) AND the still-unknown sets stay visible in a
+ *     "still TBD" list, under the same banner as NOW_TBD. Fixes an
+ *     earlier bug where an unknown-time set would silently vanish the
+ *     moment ANY set on the day got a real time.
+ *   - `NOW_LIVE`: every set on the day has a known time and something is
+ *     currently playing or starred-upcoming — up to three now-playing
+ *     rows (stage label, artist, progress bar in the stage's own color)
+ *     and/or a starred-next card with an "IN N MIN" countdown.
+ *   - `NOW_NOTHING_PLAYING`: every set's time is known, but nothing is
+ *     live and nothing is starred-upcoming right now — an honest "nothing
+ *     live right now" note, distinct from NOW_NO_PACK and every TBD
+ *     state.
  */
 void ff_scr_now_build(lv_obj_t *parent, ff_app_now_t const *now);
 
