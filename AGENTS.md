@@ -7,10 +7,12 @@ How implementation agents (and humans) ship work in this repo.
 1. **Claim a spec** from `docs/specs/` (or a slice of one — specs list their slices).
 2. Branch: `feat/sNN-short-name` (e.g. `feat/s01-geo`).
 3. Implement **to the acceptance criteria**, with tests written alongside (test names mirror the criteria numbering: `S01_AC3_...`).
-4. Local gate: `cmake -B build -DFF_TARGET=sim && cmake --build build && ctest --test-dir build` — all green, zero warnings.
+4. Local gate: `cmake -S firmware -B build -DFF_TARGET=sim && cmake --build build -j8 && ctest --test-dir build --output-on-failure` — all green, zero warnings.
 5. UI work: run the sim's screenshot dump (`build/ffsim --screenshot out/`) and commit the PNGs under `docs/screens/` so the PR renders them.
 6. PR via `gh pr create`: body = spec link, criteria checklist (checked), screenshots if UI, notes on any interpretation calls.
-7. Merge when CI is green: `gh pr merge --squash --auto`. CI is the referee; no human gate needed for spec-conformant work.
+7. **Independent review — required before merge.** The author never reviews their own PR. The orchestrator spawns a separate reviewer agent (fresh context, different instance than the author) with the brief in `docs/review/code-review.md`; UI PRs additionally get the persona review in `docs/review/ux-raver.md` run against the PR's screenshots. Reviewers post findings as PR comments (`gh pr comment`) with verdict `APPROVE` or `CHANGES`; the author addresses `CHANGES` findings and re-requests. A PR is mergeable only with an APPROVE comment from a non-author reviewer.
+8. Merge when CI is green AND review approved: `gh pr merge --squash --auto`. Branch protection enforces the CI check; the review verdict is enforced by process (orchestrator does not merge unapproved work).
+
 8. Small PRs. One spec slice per PR. A PR that touches core AND ui AND meshclient is three PRs.
 
 ## Rules

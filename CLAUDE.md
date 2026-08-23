@@ -15,5 +15,6 @@ Open-source festival friend-compass puck. Dual-brain: a Seeed XIAO+SX1262 comms 
 
 ## Build
 
-- Desktop sim + tests: `cmake -B build -DFF_TARGET=sim && cmake --build build && ctest --test-dir build`
+- Desktop sim + tests: `cmake -S firmware -B build -DFF_TARGET=sim && cmake --build build -j8 && ctest --test-dir build --output-on-failure`
+- Screenshots: `mkdir -p out && ./build/ffsim --headless --screenshot out/`
 - Device target (`FF_TARGET=esp32s3`) arrives with S15; keep core compiling under `-Wall -Wextra -Werror` both ways.
