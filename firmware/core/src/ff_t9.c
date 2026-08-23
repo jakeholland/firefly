@@ -143,6 +143,37 @@ void ff_t9_backspace(ff_t9_t *t)
     t9_refresh_display(t);
 }
 
+bool ff_t9_insert_text(ff_t9_t *t, char const *s)
+{
+    if (!t || !s) {
+        return false;
+    }
+
+    size_t slen = strlen(s);
+    if (slen == 0) {
+        t9_commit_pending(t);
+        t9_refresh_display(t);
+        return true;
+    }
+
+    /* All-or-nothing check BEFORE any mutation: capacity is evaluated
+     * against what the committed length WOULD be once the pending char
+     * (if any) commits, so a failing insert leaves `t` — pending state
+     * included — completely untouched, per the header's documented
+     * contract. */
+    size_t committed_len_after_pending = (size_t)t->len + (t->has_pending ? 1u : 0u);
+    if (committed_len_after_pending + slen > FF_T9_MAX_LEN) {
+        return false;
+    }
+
+    t9_commit_pending(t);
+    memcpy(t->buf + t->len, s, slen);
+    t->len = (uint8_t)(t->len + slen);
+    t->buf[t->len] = '\0';
+    t9_refresh_display(t);
+    return true;
+}
+
 char const *ff_t9_text(ff_t9_t const *t)
 {
     if (!t) {

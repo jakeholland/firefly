@@ -1,0 +1,10 @@
+{
+  "fixture": "compose_123",
+  "face": "compose",
+  "compose": {
+    "to_name": "DANA",
+    "text": "",
+    "has_pending": false,
+    "mode": "123"
+  }
+}

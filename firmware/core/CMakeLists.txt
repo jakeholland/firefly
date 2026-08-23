@@ -125,3 +125,18 @@ if(FF_BUILD_TESTS)
 
     add_test(NAME test_flare COMMAND test_flare)
 endif()
+
+# S08b (core/feed — Signals-face event ring buffer; docs/specs/S08-signals-t9.md,
+# slice b. Wiring — mc events -> feed pushes, crew-paired-sender filter —
+# lives in app/ff_wiring.c, not here: core stays free of meshclient.)
+target_sources(ff-core PRIVATE src/ff_feed.c)
+
+if(FF_BUILD_TESTS)
+    add_executable(test_feed
+        tests/test_feed.c
+    )
+    target_link_libraries(test_feed PRIVATE ff-core unity)
+    ff_apply_warnings(test_feed)
+
+    add_test(NAME test_feed COMMAND test_feed)
+endif()

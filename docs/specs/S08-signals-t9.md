@@ -38,3 +38,16 @@ v1 = **multi-tap only** (2→abc cycling, 900 ms commit timer, key 1 cycles `. ,
 
 ## Slices
 a) T9 engine + tests · b) feed + wiring + crew filter · c) Signals render + goldens · d) Compose render + input plumbing + goldens.
+
+## Amendments
+
+- **2026-08-23, owner ruling (Compose keypad: digits/symbols question).** Slice (a)'s T9 engine is multi-tap letters only (`0`=space, `1`=punctuation, `2`-`9`=letters) — it cannot produce digits, so the original slice (d) brief said the Compose keypad must never print a digit legend it can't honor. That left an open product question: how does anyone type "stage 3" or "5 min" at all? Ruling: the keypad gets **mode pages**, cycled by a dedicated mode key that always shows the current mode's name (never a mystery toggle) —
+  - **ABC** (default): the merged multi-tap letter behavior, unchanged. Legends show letter groups only, per the original brief — this mode still can't produce a digit, so it still never claims to.
+  - **123**: a numeric page where every key types its literal digit (1-9, 0). Legends show the digits.
+  - **SYM**: a page of curated symbols/shortcuts — the owner's framing: "could have emojis or emoticons there too... the crew's real vocabulary is 🔥💀👽✨🙏❤️ more than prose."
+
+  Implementation guidance (from the ruling) was tiered by preference: (1) real emoji via a curated custom LVGL font subset, which would need `ff_t9.h` extended to accept multi-byte UTF-8 insertion; (2) an acceptable fallback — ABC/123 plus an ASCII-emoticon SYM page, which transmits as plain text every Meshtastic receiver (including older pucks and phone apps) already renders correctly.
+
+  **Shipped: tier 2 (the ASCII-emoticon fallback).** Font subsetting/generation tooling and a licensed emoji glyph source are a real asset-authoring task that doesn't fit alongside this PR's feed/wiring/Signals/Compose scope — tracked as a follow-up: https://github.com/jakeholland/firefly/issues/22. `core/include/ff_t9.h` gained one new, purely additive entry point either tier needed regardless — `ff_t9_insert_text()`, which commits any pending char then atomically appends a plain-ASCII string (all-or-nothing against the 160-char cap) — because even tier 2's multi-character shortcuts (`:)`, `<3`, ...) have no way to express as a single per-key multi-tap press. Every pre-existing `ff_t9` test still passes unmodified; `ff_t9_insert_text` has its own new test coverage in `core/tests/test_t9.c` (atomic insert, cap all-or-nothing rejection leaving `t` untouched, commits-pending-first, and the classic "backspace must remove one character of a multi-char shortcut at a time" regression check).
+
+  Acceptance criterion 2's "punctuation key and space behave per spec" predates this amendment and is unaffected (ABC mode's key 1/key 0 behavior is unchanged) — this amendment only adds the 123/SYM pages alongside it. See `firmware/app/screens/scr_compose.c`'s header comment for the render-side detail, and `compose_abc.json`/`compose_123.json`/`compose_sym.json` + their goldens for all three pages.

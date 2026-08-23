@@ -350,6 +350,24 @@ static ff_fixture_result_t fx_parse_signals(fx_ctx_t const *c, int obj_i, ff_app
     return FF_FIXTURE_OK;
 }
 
+static const fx_enum_entry_t fx_compose_mode_table[] = {
+    {"abc", FF_APP_COMPOSE_ABC},
+    {"123", FF_APP_COMPOSE_123},
+    {"sym", FF_APP_COMPOSE_SYM},
+};
+
+static void fx_parse_compose(fx_ctx_t const *c, int obj_i, ff_app_compose_t *cp)
+{
+    int t;
+    if (fx_obj_get(c, obj_i, "text", &t)) fx_copy_str(c, t, cp->text, sizeof(cp->text));
+    if (fx_obj_get(c, obj_i, "to_name", &t)) fx_copy_str(c, t, cp->to_name, sizeof(cp->to_name));
+    if (fx_obj_get(c, obj_i, "has_pending", &t)) cp->has_pending = fx_bool(c, t, false);
+    if (fx_obj_get(c, obj_i, "mode", &t))
+        cp->mode = (ff_app_compose_mode_t)fx_enum(c, t, fx_compose_mode_table,
+                                                    sizeof(fx_compose_mode_table) / sizeof(fx_compose_mode_table[0]),
+                                                    FF_APP_COMPOSE_ABC);
+}
+
 static const fx_enum_entry_t fx_flare_state_table[] = {
     {"idle", FF_APP_FLARE_IDLE},
     {"sending", FF_APP_FLARE_SENDING},
@@ -394,6 +412,7 @@ static const fx_enum_entry_t fx_face_table[] = {
     {"now", FF_APP_FACE_NOW},
     {"signals", FF_APP_FACE_SIGNALS},
     {"settings", FF_APP_FACE_SETTINGS},
+    {"compose", FF_APP_FACE_COMPOSE},
 };
 
 ff_fixture_result_t ff_fixture_load_json(char const *json, size_t len, ff_app_state_t *out)
@@ -466,6 +485,8 @@ ff_fixture_result_t ff_fixture_load_json(char const *json, size_t len, ff_app_st
             return rc;
         }
     }
+    if (fx_obj_get(&ctx, 0, "compose", &sec_i) && !fx_is_null(&ctx, sec_i))
+        fx_parse_compose(&ctx, sec_i, &out->compose);
     if (fx_obj_get(&ctx, 0, "flare", &sec_i) && !fx_is_null(&ctx, sec_i)) fx_parse_flare(&ctx, sec_i, &out->flare);
     /* else: out->flare.expires_in_ms's -1 "n/a" default (set above) stands. */
     if (fx_obj_get(&ctx, 0, "settings", &sec_i) && !fx_is_null(&ctx, sec_i))

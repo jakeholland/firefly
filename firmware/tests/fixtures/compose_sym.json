@@ -1,0 +1,10 @@
+{
+  "fixture": "compose_sym",
+  "face": "compose",
+  "compose": {
+    "to_name": "DANA",
+    "text": "",
+    "has_pending": false,
+    "mode": "sym"
+  }
+}

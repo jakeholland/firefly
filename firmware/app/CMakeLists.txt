@@ -58,6 +58,8 @@ endif()
 add_library(ff-app-ui STATIC
     screens/scr_radar.c
     screens/scr_nav.c
+    screens/scr_signals.c # S08c
+    screens/scr_compose.c # S08d
 )
 target_include_directories(ff-app-ui PUBLIC theme screens)
 target_link_libraries(ff-app-ui PUBLIC ff-app ff-radar-layout lvgl::lvgl)
@@ -69,3 +71,25 @@ if(UNIX)
     target_link_libraries(ff-app-ui PRIVATE m)
 endif()
 ff_apply_warnings(ff-app-ui)
+
+# S08b (app/ff_wiring.c — crew-filtered feed wiring;
+# docs/specs/S08-signals-t9.md slice b). Deliberately the ONE library that
+# links core + meshclient together (docs/ARCHITECTURE.md) — everything
+# else in this repo keeps core/meshclient/app strictly unaware of each
+# other. Not part of ff-app-ui: this is data-plumbing, no LVGL.
+add_library(ff-wiring STATIC
+    ff_wiring.c
+)
+target_include_directories(ff-wiring PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(ff-wiring PUBLIC ff-core ff-meshclient)
+ff_apply_warnings(ff-wiring)
+
+if(FF_BUILD_TESTS)
+    add_executable(test_wiring
+        tests/test_wiring.c
+    )
+    target_link_libraries(test_wiring PRIVATE ff-wiring ff-core ff-meshclient unity)
+    ff_apply_warnings(test_wiring)
+
+    add_test(NAME test_wiring COMMAND test_wiring)
+endif()

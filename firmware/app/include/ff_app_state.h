@@ -131,6 +131,54 @@ typedef struct {
 } ff_app_signals_t;
 
 /* -------------------------------------------------------------------
+ * compose (S08 slice d) — the T9 composer screen. Flattened, same
+ * "JSON-fixture-friendly, no live core struct" convention as now/signals
+ * above (NOT the radar drift-guard exception): a fixture is a standalone
+ * snapshot, and the real Compose screen owns its own live `ff_t9_t`
+ * internally (app/screens/scr_compose.c), mutated by keypresses — it
+ * isn't reconstructed from this struct on every render. This struct only
+ * needs to describe what a snapshot LOOKS like: the recipient, the
+ * display text `ff_t9_text()` would currently show (committed + any live
+ * pending char), and which keypad page is active.
+ * ------------------------------------------------------------------- */
+
+/* Deliberately NOT `#include "ff_t9.h"` for this one budget constant —
+ * see this section's header note above (a plain flattened struct, unlike
+ * `radar`). Value mirrors FF_T9_MAX_LEN(160)+2 (ff_t9.h's own committed +
+ * pending-char + NUL display budget) so a fixture's `compose.text` can
+ * always hold anything the real engine could ever show; kept as an
+ * independent literal rather than pulling in a second core include for
+ * one number.  */
+#define FF_APP_COMPOSE_TEXT_LEN 162
+
+/* Keypad page — S08 Amendments (2026-08-23, owner ruling on the open
+ * digits/symbols question): ABC (multi-tap letters, the original v1
+ * scope) -> 123 (literal digits) -> SYM (curated ASCII-emoticon
+ * shortcuts, the tier-2 fallback — see docs/specs/S08-signals-t9.md's
+ * Amendments and app/screens/scr_compose.c's header comment for why
+ * real-emoji-font tier 1 wasn't shipped this PR), cycled by a dedicated
+ * mode key. */
+typedef enum {
+    FF_APP_COMPOSE_ABC,
+    FF_APP_COMPOSE_123,
+    FF_APP_COMPOSE_SYM,
+} ff_app_compose_mode_t;
+
+typedef struct {
+    char text[FF_APP_COMPOSE_TEXT_LEN]; /* mirrors ff_t9_text(): committed + live pending char */
+    char to_name[FF_APP_NAME_LEN];      /* recipient display name; "" = broadcast */
+    /* True when the LAST character in `text` is a live pending (not yet
+     * committed) char — drives the pending-char visual treatment
+     * (S08: "message bubble with live pending character"). Not derivable
+     * from `text` alone (a fixture can't tell "the last char is
+     * committed" from "the last char is pending" just by reading the
+     * string — both look identical), so it's carried as its own field,
+     * same reasoning as `ff_t9_t.has_pending` in core/include/ff_t9.h. */
+    bool                    has_pending;
+    ff_app_compose_mode_t   mode;
+} ff_app_compose_t;
+
+/* -------------------------------------------------------------------
  * flare (S10) — mirrors the IDLE/SENDING/RECEIVED/LOCKED state machine.
  * ------------------------------------------------------------------- */
 
@@ -175,6 +223,10 @@ typedef enum {
     FF_APP_FACE_NOW,
     FF_APP_FACE_SIGNALS,
     FF_APP_FACE_SETTINGS,
+    /* S08 slice d — reached from Signals' "+", not a swipe tile of its
+     * own (scr_nav.c's tileview only ever has 3 tiles: Radar/Now/
+     * Signals); rendered as its own full screen, see scr_compose.h. */
+    FF_APP_FACE_COMPOSE,
 } ff_app_face_t;
 
 typedef struct {
@@ -189,6 +241,7 @@ typedef struct {
     ff_radar_view_t   radar;
     ff_app_now_t      now;
     ff_app_signals_t  signals;
+    ff_app_compose_t  compose;
     ff_app_flare_t    flare;
     ff_app_settings_t settings;
 } ff_app_state_t;

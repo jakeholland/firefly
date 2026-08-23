@@ -64,6 +64,7 @@
 
 #include "fixture.h"
 #include "fixture_view.h"
+#include "scr_compose.h" /* S08d */
 #include "scr_nav.h"
 
 #define FF_SIM_WINDOW_W 456
@@ -96,14 +97,19 @@ static void ff_build_boot_screen(void)
     lv_obj_center(label);
 }
 
-/* S06 — replaces the S13 debug placeholder with the real shell+radar
- * face whenever a loaded fixture's active_face is radar; every other
- * face still falls through to fixture_view.h's placeholder (Now/Signals/
- * Settings screens arrive with their own specs — S07/S08/S11). */
+/* S06/S08 — replaces the S13 debug placeholder with a real screen once
+ * one exists for the fixture's active_face: RADAR and SIGNALS both go
+ * through the shared three-tile shell (ff_scr_nav_build — SIGNALS renders
+ * real content there as of S08c, see scr_nav.c); COMPOSE is its own
+ * full-screen face (reached from Signals' "+", not a swipe tile — see
+ * scr_compose.h). Now/Settings still have no real screen yet and fall
+ * through to fixture_view.h's placeholder (arrives with S07/S11). */
 static void ff_build_face_screen(ff_app_state_t const *state)
 {
-    if (state->active_face == FF_APP_FACE_RADAR) {
+    if (state->active_face == FF_APP_FACE_RADAR || state->active_face == FF_APP_FACE_SIGNALS) {
         ff_scr_nav_build(state);
+    } else if (state->active_face == FF_APP_FACE_COMPOSE) {
+        ff_scr_compose_build(&state->compose);
     } else {
         ff_fixture_view_build(state);
     }

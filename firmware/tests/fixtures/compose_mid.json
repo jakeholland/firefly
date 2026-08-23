@@ -1,0 +1,10 @@
+{
+  "fixture": "compose_mid",
+  "face": "compose",
+  "compose": {
+    "to_name": "DANA",
+    "text": "omw the m",
+    "has_pending": true,
+    "mode": "abc"
+  }
+}
