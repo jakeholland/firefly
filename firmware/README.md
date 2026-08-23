@@ -50,5 +50,13 @@ This is the path CI uses to produce the boot screenshot artifact.
 ## Tests
 
 Unit tests use Unity and run via ctest, one test executable per module
-(`test_core`, ...). Test names are criteria-numbered per spec
-(`SNN_ACX_description`), per `AGENTS.md`.
+(`test_core`, `test_settings`, `test_store_file`, ...). Test names are
+criteria-numbered per spec (`SNN_ACX_description`), per `AGENTS.md`.
+
+- `test_settings` (S11 slice a) — `core/ff_settings.h`/`ff_store.h`:
+  load-with-defaults, save/load round trip, `ff_quiet_now` wraparound,
+  water-nudge tick, write-amplification, all against an in-memory mock
+  store.
+- `test_store_file` — `targets/sim/store_file.h`, the sim's trivial
+  file-backed `ff_store_t` (single key-value file), plus an end-to-end
+  `ff_settings_t` round trip through the real file store.
