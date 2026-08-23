@@ -19,7 +19,10 @@ Specs are contracts. Acceptance criteria (AC) become test names (`S01_AC3_...`).
 | S13 | sim target — SDL/headless + screenshots | — | YES (dev-critical, build FIRST) | ✅ merged (PR #2, #12, #19) |
 | S14 | testing & CI | S13 | YES (build FIRST) | ✅ merged (PR #2, #12, #19) |
 | S15 | esp32s3 target — ESP-IDF build + UART + sensors | most | YES (when boards arrive) | ☐ |
+| S16 | app/shell — event loop, routing, input dispatch | S06,S08,S10,S11 | YES | ☐ |
 
-**Wave plan:** Wave 0 = S13+S14 (the loop itself). Wave 1 = S01,S03,S05,S11 (parallel, no deps). Wave 2 = S02,S04,S07. Wave 3 = S06,S08,S10. Wave 4 = S09,S12,S15.
+**Wave plan:** Wave 0 = S13+S14 (the loop itself). Wave 1 = S01,S03,S05,S11 (parallel, no deps). Wave 2 = S02,S04,S07. Wave 3 = S06,S08,S10. Wave 4 = S16, then S09,S12,S15.
+
+S16 was not in the original wave plan — the specs covered every core module, every face and both build targets, but nothing owned *the running application*. The gap only became visible once every face had landed and their controls had nowhere to call into (#23). It precedes S15 deliberately: bring-up should plug a display driver into a loop that already works, not invent the loop on unfamiliar hardware.
 
 Explicitly cut from v1 (post–Lost Lands): WiFi-FTM ranging, SoftAP setup portal (S12 ships name+calibrate on-device only), predictive T9 (multi-tap ships), voice, BPM, camera, festival-wide channel.
