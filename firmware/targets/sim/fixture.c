@@ -841,9 +841,31 @@ static void fw_now_row(fw_cur_t *w, ff_app_now_row_t const *r)
     fw_json_str(w, r->artist);
     fw_raw(w, ",\"stage_name\":");
     fw_json_str(w, r->stage_name);
-    fw_fmt(w, ",\"stage_color_rgb\":\"#%06x\"", (unsigned)(r->stage_color_rgb & 0xFFFFFFu));
-    fw_fmt(w, ",\"mins_left\":%d", (int)r->mins_left);
+    /* PR #21 code review finding #3: stage_color_rgb is only meaningful
+     * when stage_color_valid — the key is OMITTED entirely rather than
+     * written as "#000000" (or any other placeholder) when invalid, so a
+     * dump->reload round-trip doesn't accidentally turn "no valid color"
+     * into "a real, valid black color" (fx_color_rgb parses "#000000"
+     * successfully, so writing it unconditionally here would silently
+     * flip stage_color_valid from false to true on reload). Same
+     * "absent key -> invalid, by construction" contract fx_parse_now_row
+     * already gives the loader side. */
+    if (r->stage_color_valid) {
+        fw_fmt(w, ",\"stage_color_rgb\":\"#%06x\"", (unsigned)(r->stage_color_rgb & 0xFFFFFFu));
+    }
     fw_fmt(w, ",\"pct_done\":%u}", (unsigned)r->pct_done);
+}
+
+/* fw_lineup_item — one entry of ff_app_now_t.lineup (the day's
+ * still-unknown-time sets, S07 slice b round 2's now_state_t /
+ * NOW_MIXED shape). Mirrors fx_parse_lineup_item's fields exactly. */
+static void fw_lineup_item(fw_cur_t *w, ff_app_lineup_item_t const *item)
+{
+    fw_raw(w, "{\"artist\":");
+    fw_json_str(w, item->artist);
+    fw_raw(w, ",\"stage_name\":");
+    fw_json_str(w, item->stage_name);
+    fw_raw(w, "}");
 }
 
 static void fw_feed_item(fw_cur_t *w, ff_app_feed_item_t const *it)
@@ -899,8 +921,20 @@ int ff_fixture_dump_json(ff_app_state_t const *s, char *buf, size_t buf_sz)
     }
     fw_raw(&w, "]}");
 
-    /* now */
-    fw_raw(&w, ",\"now\":{\"rows\":[");
+    /* now (S07 slice b round 2's now_state_t shape — see ff_app_state.h's
+     * doc comment and fx_parse_now/fx_now_state_table above, which this
+     * mirrors field-for-field so a dump round-trips through the loader.
+     * [api] merge note: this section used to write the old
+     * `pack_loaded`+`tbd` bool-pair shape (pre-round-2 scaffolding);
+     * rewritten here to match that PR's breaking replacement (the
+     * `now_state_t` enum + the `lineup` array's generalized meaning),
+     * landed while PR #19 (this dumper's own PR) was in flight — same
+     * class of merge fixup the flare section just above needed for
+     * S10b's reshape. */
+    fw_raw(&w, ",\"now\":{\"state\":\"");
+    fw_raw(&w, fx_enum_name(fx_now_state_table, sizeof(fx_now_state_table) / sizeof(fx_now_state_table[0]),
+                             s->now.state, "no_pack"));
+    fw_raw(&w, "\",\"rows\":[");
     for (uint8_t i = 0; i < s->now.n_rows; i++) {
         if (i > 0) fw_raw(&w, ",");
         fw_now_row(&w, &s->now.rows[i]);
@@ -913,7 +947,12 @@ int ff_fixture_dump_json(ff_app_state_t const *s, char *buf, size_t buf_sz)
         fw_json_str(&w, s->now.next.stage_name);
         fw_fmt(&w, ",\"mins_until\":%d}", (int)s->now.next.mins_until);
     }
-    fw_raw(&w, s->now.tbd ? ",\"tbd\":true}" : ",\"tbd\":false}");
+    fw_raw(&w, ",\"lineup\":[");
+    for (uint8_t i = 0; i < s->now.n_lineup; i++) {
+        if (i > 0) fw_raw(&w, ",");
+        fw_lineup_item(&w, &s->now.lineup[i]);
+    }
+    fw_raw(&w, "]}");
 
     /* signals */
     fw_raw(&w, ",\"signals\":{\"items\":[");

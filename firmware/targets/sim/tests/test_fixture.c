@@ -688,6 +688,59 @@ static void dump_then_reload_round_trips_flare_takeover_locked_fixture(void)
     TEST_ASSERT_EQUAL_MEMORY(&original, &reloaded, sizeof(original));
 }
 
+/* PR #21 (S07 slice b round 2) merge fixup, same category as the flare
+ * round-trip test just above: ff_fixture_dump_json's `now` section was
+ * rewritten to match the new `now_state_t` shape (replacing the old
+ * `pack_loaded`+`tbd` bool pair) — this fixture is the richest real-world
+ * exercise of that rewrite, per the coordinator's request: NOW_MIXED
+ * populates `rows` (with a stage_color_valid row), `next`, AND `lineup`
+ * all at once, the only one of the five now_state_t fixtures that
+ * exercises every one of `now`'s fields in a single load. Mirrors the
+ * exact "dump -> reload -> whole-struct memory compare" pattern the
+ * flare section's own merge fixup used, so the dumper and loader can't
+ * silently drift apart again the same way they just did here. */
+static void dump_then_reload_round_trips_now_mixed_fixture(void)
+{
+    ff_app_state_t original;
+    TEST_ASSERT_EQUAL_INT(FF_FIXTURE_OK, ff_fixture_load_file(fixture_path("now_mixed.json"), &original));
+    TEST_ASSERT_EQUAL_INT(NOW_MIXED, original.now.state);
+    TEST_ASSERT_EQUAL_UINT8(1, original.now.n_rows);
+    TEST_ASSERT_TRUE(original.now.rows[0].stage_color_valid);
+    TEST_ASSERT_TRUE(original.now.next.valid);
+    TEST_ASSERT_EQUAL_UINT8(5, original.now.n_lineup);
+
+    char json[FF_FIXTURE_DUMP_MAX];
+    int n = ff_fixture_dump_json(&original, json, sizeof(json));
+    TEST_ASSERT_GREATER_THAN_INT(0, n);
+
+    ff_app_state_t reloaded;
+    TEST_ASSERT_EQUAL_INT(FF_FIXTURE_OK, ff_fixture_load_json(json, (size_t)n, &reloaded));
+    TEST_ASSERT_EQUAL_MEMORY(&original, &reloaded, sizeof(original));
+}
+
+/* now_tbd.json covers the OTHER shape of `now`: `lineup` populated with
+ * every entry (not a subset — NOW_TBD's whole-day meaning), `rows`/`next`
+ * both at their empty default. Confirms the round-trip holds for the
+ * "known-time sections genuinely absent" case too, not just the
+ * "everything populated" one above. */
+static void dump_then_reload_round_trips_now_tbd_fixture(void)
+{
+    ff_app_state_t original;
+    TEST_ASSERT_EQUAL_INT(FF_FIXTURE_OK, ff_fixture_load_file(fixture_path("now_tbd.json"), &original));
+    TEST_ASSERT_EQUAL_INT(NOW_TBD, original.now.state);
+    TEST_ASSERT_EQUAL_UINT8(0, original.now.n_rows);
+    TEST_ASSERT_FALSE(original.now.next.valid);
+    TEST_ASSERT_EQUAL_UINT8(7, original.now.n_lineup);
+
+    char json[FF_FIXTURE_DUMP_MAX];
+    int n = ff_fixture_dump_json(&original, json, sizeof(json));
+    TEST_ASSERT_GREATER_THAN_INT(0, n);
+
+    ff_app_state_t reloaded;
+    TEST_ASSERT_EQUAL_INT(FF_FIXTURE_OK, ff_fixture_load_json(json, (size_t)n, &reloaded));
+    TEST_ASSERT_EQUAL_MEMORY(&original, &reloaded, sizeof(original));
+}
+
 /* Mutation check: if fw_json_str ever stopped escaping `"`/`\`, this test
  * would fail loudly (either ff_fixture_load_json would reject the
  * corrupted JSON outright, or — worse, silently — the reloaded string
@@ -733,6 +786,15 @@ static void dump_maximally_populated_state_fits_budget(void)
         s.radar.dots[i].stale = (i % 2) == 0;
     }
 
+    /* S07 slice b round 2 merge fixup: `mins_left` no longer exists
+     * (removed with `now_state_t`); `stage_color_valid` must be set for
+     * the row's color key to actually appear in the dump (see
+     * fw_now_row's doc comment) — this "maximally populated" stress test
+     * needs it true to genuinely stress that field's dumped size, not
+     * silently omit it. `lineup` is new in this same shape change and,
+     * at its FF_APP_NOW_MAX_LINEUP cap, is a real contributor to the
+     * worst-case dump size this test exists to bound — populated below. */
+    s.now.state = NOW_MIXED;
     s.now.n_rows = FF_APP_NOW_MAX_ROWS;
     for (uint8_t i = 0; i < FF_APP_NOW_MAX_ROWS; i++) {
         (void)snprintf(s.now.rows[i].artist, sizeof(s.now.rows[i].artist), "%s",
@@ -740,11 +802,21 @@ static void dump_maximally_populated_state_fits_budget(void)
         (void)snprintf(s.now.rows[i].stage_name, sizeof(s.now.rows[i].stage_name), "%s",
                         "Exactly Twenty Seven Chars!"); /* fits FF_APP_STAGE_LEN (28) - 1 for the NUL */
         s.now.rows[i].stage_color_rgb = 0x00FFC66B;
-        s.now.rows[i].mins_left = 999;
+        s.now.rows[i].stage_color_valid = true;
         s.now.rows[i].pct_done = 100;
     }
     s.now.next.valid = true;
     (void)snprintf(s.now.next.artist, sizeof(s.now.next.artist), "%s", "Exactly Thirty One Chars Long!!");
+    (void)snprintf(s.now.next.stage_name, sizeof(s.now.next.stage_name), "%s", "Exactly Twenty Seven Chars!");
+    s.now.next.mins_until = 999;
+
+    s.now.n_lineup = FF_APP_NOW_MAX_LINEUP;
+    for (uint8_t i = 0; i < FF_APP_NOW_MAX_LINEUP; i++) {
+        (void)snprintf(s.now.lineup[i].artist, sizeof(s.now.lineup[i].artist), "%s",
+                        "Exactly Thirty One Chars Long!!");
+        (void)snprintf(s.now.lineup[i].stage_name, sizeof(s.now.lineup[i].stage_name), "%s",
+                        "Exactly Twenty Seven Chars!");
+    }
 
     s.signals.n_items = FF_APP_SIGNALS_MAX_ITEMS;
     for (uint8_t i = 0; i < FF_APP_SIGNALS_MAX_ITEMS; i++) {
@@ -834,6 +906,8 @@ int main(void)
 
     RUN_TEST(dump_then_reload_round_trips_committed_fixture);
     RUN_TEST(dump_then_reload_round_trips_flare_takeover_locked_fixture);
+    RUN_TEST(dump_then_reload_round_trips_now_mixed_fixture);
+    RUN_TEST(dump_then_reload_round_trips_now_tbd_fixture);
     RUN_TEST(dump_escapes_quotes_and_backslashes_in_names);
     RUN_TEST(dump_maximally_populated_state_fits_budget);
     RUN_TEST(dump_buffer_too_small_returns_negative);
