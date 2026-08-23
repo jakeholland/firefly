@@ -6,4 +6,7 @@ build/
 # build output — see docs/specs/S03-meshclient.md and
 # firmware/meshclient/tools/dev/record_fixture.py.
 !firmware/meshclient/tests/fixtures/*.bin
+# S04: the golden bytes fixture is committed too — see
+# docs/specs/S04-firefly-protocol.md AC5.
+!firmware/core/tests/fixtures/*.bin
 firmware/out/
