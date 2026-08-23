@@ -46,26 +46,92 @@
  * receiver also carrying the same font. Follow-up for real emoji:
  * tracked in https://github.com/jakeholland/firefly/issues/22 (tier-1,
  * per the ruling's own fallback clause).
+ *
+ * ## Round-glass layout (PR #25 UX review, blocking finding)
+ * The first pass of this file positioned header/footer chrome against
+ * the puck's SQUARE bounding box (`LV_ALIGN_TOP_LEFT`/`TOP_RIGHT` with
+ * flat pixel offsets) — the back button ended up ~42px entirely off the
+ * round glass, the mode chip ~35px off, DEL/SEND lost roughly half their
+ * tappable area. Every position below is now computed from
+ * `ff_layout_chord_half_width` (app/screens/ff_layout.h — hoisted out of
+ * this bug specifically so the next face doesn't repeat it) against the
+ * puck's REAL circle, not eyeballed against its square corners: each
+ * row's horizontal margin is derived from how wide the circle actually
+ * is at that row's OWN worst-case (farthest-from-center) y, with a fixed
+ * `FF_COMPOSE_SAFETY_PX` buffer subtracted for slack. This is why the
+ * grid's rows get progressively MORE inset the closer they sit to the
+ * puck's bottom pole (the reviewer's own suggested fix: "a grid inscribed
+ * in a circle wants a narrower row" near the edge, not a uniform one) —
+ * and it's asserted, not just designed-and-hoped: see
+ * targets/sim/tests/test_face_hit_targets.c, which builds this exact
+ * screen from every committed fixture and fails if any hit-rect ever
+ * drifts back outside the circle.
  */
 #include "scr_compose.h"
 
+#include <math.h>
 #include <stdio.h>
 #include <string.h>
 
+#include "ff_layout.h"
 #include "ff_t9.h"
 #include "ff_theme.h"
 
 /* ---------------------------------------------------------------------
  * Layout constants.
+ *
+ * Row Y positions/heights are the fixed design choices; horizontal
+ * margins are NOT independently chosen numbers — they're derived from
+ * these Y values via compose_safe_margin_x() below, so the two can never
+ * drift out of sync the way the original off-glass layout did (a Y
+ * value could change here and the margins would automatically follow).
  * ------------------------------------------------------------------- */
 
-#define FF_COMPOSE_MARGIN_X     20
-#define FF_COMPOSE_BUBBLE_Y     70
-#define FF_COMPOSE_BUBBLE_H     84
-#define FF_COMPOSE_GRID_Y       166
-#define FF_COMPOSE_KEY_GAP      8
-#define FF_COMPOSE_KEY_H        56
-#define FF_COMPOSE_BOTTOM_ROW_H 52
+#define FF_COMPOSE_SAFETY_PX 10.0f /* inset from the true glass edge — comfortable slack,
+                                     * same "generous inset" spirit as radar_layout.h's
+                                     * RING_RADIUS_PX (185) vs the puck's own 220px radius */
+
+#define FF_COMPOSE_HEADER_Y 56
+#define FF_COMPOSE_HEADER_H FF_THEME_MIN_HIT_PX /* back button / mode chip */
+
+#define FF_COMPOSE_BUBBLE_Y (FF_COMPOSE_HEADER_Y + FF_COMPOSE_HEADER_H + 8)
+#define FF_COMPOSE_BUBBLE_H 84
+
+#define FF_COMPOSE_GRID_Y (FF_COMPOSE_BUBBLE_Y + FF_COMPOSE_BUBBLE_H + 8)
+#define FF_COMPOSE_KEY_GAP 6
+#define FF_COMPOSE_KEY_H   46 /* >= FF_THEME_MIN_HIT_PX; see the _Static_assert below */
+#define FF_COMPOSE_BOTTOM_ROW_GAP_EXTRA 4
+#define FF_COMPOSE_BOTTOM_ROW_H 46 /* >= FF_THEME_MIN_HIT_PX; see the _Static_assert below */
+
+_Static_assert(FF_COMPOSE_KEY_H >= FF_THEME_MIN_HIT_PX, "compose grid keys must clear the 44px hit-target floor");
+_Static_assert(FF_COMPOSE_BOTTOM_ROW_H >= FF_THEME_MIN_HIT_PX,
+               "compose bottom row must clear the 44px hit-target floor");
+
+/* Row 0 (keys 1-3), row 1 (keys 4-6), row 2 (keys 7-9), then the DEL/0/SEND row. */
+#define FF_COMPOSE_ROW0_Y (FF_COMPOSE_GRID_Y)
+#define FF_COMPOSE_ROW1_Y (FF_COMPOSE_ROW0_Y + FF_COMPOSE_KEY_H + FF_COMPOSE_KEY_GAP)
+#define FF_COMPOSE_ROW2_Y (FF_COMPOSE_ROW1_Y + FF_COMPOSE_KEY_H + FF_COMPOSE_KEY_GAP)
+#define FF_COMPOSE_BOTTOM_ROW_Y (FF_COMPOSE_ROW2_Y + FF_COMPOSE_KEY_H + FF_COMPOSE_KEY_GAP + FF_COMPOSE_BOTTOM_ROW_GAP_EXTRA)
+
+/* ---------------------------------------------------------------------
+ * Chord-aware horizontal margin — see this file's header comment and
+ * ff_layout.h's own doc comment for ff_layout_chord_half_width.
+ * ------------------------------------------------------------------- */
+
+/**
+ * compose_safe_margin_x — thin int32_t/ceil wrapper around
+ * ff_layout.h's shared `ff_layout_safe_margin_x`, bound to this puck's
+ * own center/radius (ff_theme.h) and this file's safety buffer. Kept
+ * local (not inlined at every call site) purely so the six call sites
+ * below don't each repeat the `FF_THEME_PUCK_RADIUS_PX,
+ * FF_THEME_PUCK_RADIUS_PX, FF_COMPOSE_SAFETY_PX` argument triple.
+ */
+static int32_t compose_safe_margin_x(int32_t top_y, int32_t h)
+{
+    float margin = ff_layout_safe_margin_x((float)top_y, (float)h, (float)FF_THEME_PUCK_RADIUS_PX,
+                                            (float)FF_THEME_PUCK_RADIUS_PX, FF_COMPOSE_SAFETY_PX);
+    return (int32_t)ceilf(margin);
+}
 
 /* ---------------------------------------------------------------------
  * Static screen state.
@@ -281,41 +347,38 @@ static lv_obj_t *compose_make_key(lv_obj_t *parent, char const *legend, int32_t 
     return btn;
 }
 
-/* Builds the 3x3 letter/digit/symbol grid (keys 1-9) plus the DEL / 0 /
- * SEND bottom row into `container` (already positioned/sized by the
- * caller; every position below is relative to `container`'s own
- * top-left). All hit areas clear FF_THEME_MIN_HIT_PX in both dimensions
- * (docs/review/ux-raver.md checklist item 2) — the 3x3 grid cells alone
- * comfortably exceed it (>120px wide at this puck size); DEL/0/SEND are
- * explicitly checked below. */
-static void compose_build_keys(lv_obj_t *container, ff_app_compose_mode_t mode)
+/* Builds ONE row of the grid (either the 3-key letter/digit/symbol row,
+ * or the DEL/0/SEND row conceptually — callers pass their own widths)
+ * with `margin_x` computed per-row by the caller via
+ * compose_safe_margin_x — see this file's header comment for why each
+ * row gets its OWN margin instead of one uniform value for the whole
+ * grid: the circle narrows as y moves away from center, so a margin
+ * generous enough for the bottom row would waste usable width on rows
+ * closer to center, while a margin sized for the top row would leave the
+ * bottom row off-glass — exactly the original bug. */
+static void compose_build_grid_row(lv_obj_t *container, ff_app_compose_mode_t mode, int32_t y, uint8_t first_key,
+                                    int32_t margin_x)
 {
-    int32_t grid_w = FF_THEME_PUCK_PX - 2 * FF_COMPOSE_MARGIN_X;
-    int32_t key_w = (grid_w - 2 * FF_COMPOSE_KEY_GAP) / 3;
+    int32_t row_w = FF_THEME_PUCK_PX - 2 * margin_x;
+    int32_t key_w = (row_w - 2 * FF_COMPOSE_KEY_GAP) / 3;
 
-    for (uint8_t row = 0; row < 3; row++) {
-        for (uint8_t col = 0; col < 3; col++) {
-            uint8_t key = (uint8_t)(row * 3 + col + 1); /* 1..9 */
-            int32_t x = FF_COMPOSE_MARGIN_X + (int32_t)col * (key_w + FF_COMPOSE_KEY_GAP);
-            int32_t y = (int32_t)row * (FF_COMPOSE_KEY_H + FF_COMPOSE_KEY_GAP);
-            compose_make_key(container, compose_legend_for(mode, key), x, y, key_w, FF_COMPOSE_KEY_H, key,
-                              FF_THEME_COLOR_SURFACE, FF_THEME_COLOR_INK);
-        }
+    for (int32_t col = 0; col < 3; col++) {
+        uint8_t key = (uint8_t)(first_key + col);
+        int32_t x = margin_x + col * (key_w + FF_COMPOSE_KEY_GAP);
+        compose_make_key(container, compose_legend_for(mode, key), x, y, key_w, FF_COMPOSE_KEY_H, key,
+                          FF_THEME_COLOR_SURFACE, FF_THEME_COLOR_INK);
     }
+}
 
-    int32_t bottom_y = 3 * (FF_COMPOSE_KEY_H + FF_COMPOSE_KEY_GAP) + 4;
-    /* FF_COMPOSE_BOTTOM_ROW_H (52) and key_w (>120 at this puck size)
-     * both clear FF_THEME_MIN_HIT_PX (44) — asserted, not just claimed by
-     * comment, so a future layout-constant change that shrinks either one
-     * below the floor fails the build loudly instead of silently
-     * regressing tap-target size. */
-    _Static_assert(FF_COMPOSE_BOTTOM_ROW_H >= FF_THEME_MIN_HIT_PX,
-                   "compose bottom row must clear the ux-raver 44px hit-target floor");
+static void compose_build_bottom_row(lv_obj_t *container, ff_app_compose_mode_t mode, int32_t y, int32_t margin_x)
+{
+    int32_t row_w = FF_THEME_PUCK_PX - 2 * margin_x;
+    int32_t btn_w = (row_w - 2 * FF_COMPOSE_KEY_GAP) / 3;
 
     lv_obj_t *del = lv_button_create(container);
     lv_obj_remove_style_all(del);
-    lv_obj_set_size(del, key_w, FF_COMPOSE_BOTTOM_ROW_H);
-    lv_obj_set_pos(del, FF_COMPOSE_MARGIN_X, bottom_y);
+    lv_obj_set_size(del, btn_w, FF_COMPOSE_BOTTOM_ROW_H);
+    lv_obj_set_pos(del, margin_x, y);
     lv_obj_set_style_bg_color(del, lv_color_hex(FF_THEME_COLOR_SURFACE), 0);
     lv_obj_set_style_bg_opa(del, LV_OPA_COVER, 0);
     lv_obj_set_style_radius(del, LV_RADIUS_CIRCLE, 0);
@@ -326,13 +389,13 @@ static void compose_build_keys(lv_obj_t *container, ff_app_compose_mode_t mode)
     lv_obj_set_style_text_color(del_lbl, lv_color_hex(FF_THEME_COLOR_STALE_AMBER), 0);
     lv_obj_center(del_lbl);
 
-    compose_make_key(container, compose_legend_for(mode, 0), FF_COMPOSE_MARGIN_X + key_w + FF_COMPOSE_KEY_GAP,
-                      bottom_y, key_w, FF_COMPOSE_BOTTOM_ROW_H, 0, FF_THEME_COLOR_SURFACE, FF_THEME_COLOR_INK);
+    compose_make_key(container, compose_legend_for(mode, 0), margin_x + btn_w + FF_COMPOSE_KEY_GAP, y, btn_w,
+                      FF_COMPOSE_BOTTOM_ROW_H, 0, FF_THEME_COLOR_SURFACE, FF_THEME_COLOR_INK);
 
     lv_obj_t *send = lv_button_create(container);
     lv_obj_remove_style_all(send);
-    lv_obj_set_size(send, key_w, FF_COMPOSE_BOTTOM_ROW_H);
-    lv_obj_set_pos(send, FF_COMPOSE_MARGIN_X + 2 * (key_w + FF_COMPOSE_KEY_GAP), bottom_y);
+    lv_obj_set_size(send, btn_w, FF_COMPOSE_BOTTOM_ROW_H);
+    lv_obj_set_pos(send, margin_x + 2 * (btn_w + FF_COMPOSE_KEY_GAP), y);
     lv_obj_set_style_bg_color(send, lv_color_hex(FF_THEME_COLOR_AMBER), 0);
     lv_obj_set_style_bg_opa(send, LV_OPA_COVER, 0);
     lv_obj_set_style_radius(send, LV_RADIUS_CIRCLE, 0);
@@ -342,6 +405,32 @@ static void compose_build_keys(lv_obj_t *container, ff_app_compose_mode_t mode)
     lv_obj_set_style_text_font(send_lbl, FF_THEME_FONT_CHIP, 0);
     lv_obj_set_style_text_color(send_lbl, lv_color_hex(FF_THEME_COLOR_BG), 0);
     lv_obj_center(send_lbl);
+}
+
+/* Builds the 3x3 letter/digit/symbol grid (keys 1-9) plus the DEL / 0 /
+ * SEND bottom row into `container` — one row at a time, each with its
+ * OWN chord-derived margin (see compose_safe_margin_x).
+ *
+ * `container` itself is positioned at puck-local y = FF_COMPOSE_GRID_Y
+ * (set in ff_scr_compose_build), so every child position passed to
+ * `lv_obj_set_pos` below must be CONTAINER-relative (subtract
+ * FF_COMPOSE_GRID_Y) — but compose_safe_margin_x's circle math needs the
+ * ABSOLUTE puck-local y (the circle's center is defined in that space,
+ * not the container's). The FF_COMPOSE_ROW*_Y / FF_COMPOSE_BOTTOM_ROW_Y
+ * constants are absolute; this function is the one place that converts
+ * between the two spaces, so that conversion can't drift out of sync
+ * between the margin calculation and the actual child placement. */
+static void compose_build_keys(lv_obj_t *container, ff_app_compose_mode_t mode)
+{
+    int32_t margin_row0 = compose_safe_margin_x(FF_COMPOSE_ROW0_Y, FF_COMPOSE_KEY_H);
+    int32_t margin_row1 = compose_safe_margin_x(FF_COMPOSE_ROW1_Y, FF_COMPOSE_KEY_H);
+    int32_t margin_row2 = compose_safe_margin_x(FF_COMPOSE_ROW2_Y, FF_COMPOSE_KEY_H);
+    int32_t margin_bottom = compose_safe_margin_x(FF_COMPOSE_BOTTOM_ROW_Y, FF_COMPOSE_BOTTOM_ROW_H);
+
+    compose_build_grid_row(container, mode, FF_COMPOSE_ROW0_Y - FF_COMPOSE_GRID_Y, 1, margin_row0);
+    compose_build_grid_row(container, mode, FF_COMPOSE_ROW1_Y - FF_COMPOSE_GRID_Y, 4, margin_row1);
+    compose_build_grid_row(container, mode, FF_COMPOSE_ROW2_Y - FF_COMPOSE_GRID_Y, 7, margin_row2);
+    compose_build_bottom_row(container, mode, FF_COMPOSE_BOTTOM_ROW_Y - FF_COMPOSE_GRID_Y, margin_bottom);
 }
 
 static void compose_rebuild_keypad(void)
@@ -395,12 +484,18 @@ void ff_scr_compose_build(ff_app_compose_t const *compose)
     lv_obj_set_style_bg_opa(puck, LV_OPA_COVER, 0);
     lv_obj_set_style_border_width(puck, 0, 0);
     lv_obj_clear_flag(puck, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_clear_flag(puck, LV_OBJ_FLAG_CLICKABLE); /* base lv_obj defaults clickable; this one is a plain backdrop */
 
-    /* --- Header: back (dead-end escape, ux-raver checklist item 6) / TO / mode chip. --- */
+    /* --- Header: back (dead-end escape, ux-raver checklist item 6) / TO / mode chip. ---
+     * Margin derived from the header row's own y band, per this file's
+     * header comment — NOT the flat "16, 10" pixel offsets the original
+     * (off-glass) version used. */
+    int32_t header_margin = compose_safe_margin_x(FF_COMPOSE_HEADER_Y, FF_COMPOSE_HEADER_H);
+
     lv_obj_t *back = lv_button_create(puck);
     lv_obj_remove_style_all(back);
     lv_obj_set_size(back, FF_THEME_MIN_HIT_PX, FF_THEME_MIN_HIT_PX);
-    lv_obj_align(back, LV_ALIGN_TOP_LEFT, 16, 10);
+    lv_obj_set_pos(back, header_margin, FF_COMPOSE_HEADER_Y);
     lv_obj_set_style_bg_opa(back, LV_OPA_TRANSP, 0);
     lv_obj_add_event_cb(back, compose_back_stub_cb, LV_EVENT_CLICKED, NULL);
     lv_obj_t *back_lbl = lv_label_create(back);
@@ -415,12 +510,13 @@ void ff_scr_compose_build(ff_app_compose_t const *compose)
     lv_label_set_text(to_lbl, to_buf);
     lv_obj_set_style_text_font(to_lbl, FF_THEME_FONT_LABEL, 0);
     lv_obj_set_style_text_color(to_lbl, lv_color_hex(FF_THEME_COLOR_DIM), 0);
-    lv_obj_align(to_lbl, LV_ALIGN_TOP_MID, 0, 26);
+    lv_obj_align(to_lbl, LV_ALIGN_TOP_MID, 0, FF_COMPOSE_HEADER_Y + 12);
 
+    int32_t mode_chip_w = 64;
     lv_obj_t *mode_chip = lv_button_create(puck);
     lv_obj_remove_style_all(mode_chip);
-    lv_obj_set_size(mode_chip, 64, FF_THEME_MIN_HIT_PX);
-    lv_obj_align(mode_chip, LV_ALIGN_TOP_RIGHT, -16, 10);
+    lv_obj_set_size(mode_chip, mode_chip_w, FF_THEME_MIN_HIT_PX);
+    lv_obj_set_pos(mode_chip, FF_THEME_PUCK_PX - header_margin - mode_chip_w, FF_COMPOSE_HEADER_Y);
     lv_obj_set_style_bg_color(mode_chip, lv_color_hex(FF_THEME_COLOR_SURFACE), 0);
     lv_obj_set_style_bg_opa(mode_chip, LV_OPA_COVER, 0);
     lv_obj_set_style_radius(mode_chip, LV_RADIUS_CIRCLE, 0);
@@ -432,19 +528,21 @@ void ff_scr_compose_build(ff_app_compose_t const *compose)
     compose_update_mode_chip_label();
 
     /* --- Message bubble. --- */
+    int32_t bubble_margin = compose_safe_margin_x(FF_COMPOSE_BUBBLE_Y, FF_COMPOSE_BUBBLE_H);
     lv_obj_t *bubble = lv_obj_create(puck);
     lv_obj_remove_style_all(bubble);
-    lv_obj_set_size(bubble, FF_THEME_PUCK_PX - 2 * FF_COMPOSE_MARGIN_X, FF_COMPOSE_BUBBLE_H);
-    lv_obj_set_pos(bubble, FF_COMPOSE_MARGIN_X, FF_COMPOSE_BUBBLE_Y);
+    lv_obj_set_size(bubble, FF_THEME_PUCK_PX - 2 * bubble_margin, FF_COMPOSE_BUBBLE_H);
+    lv_obj_set_pos(bubble, bubble_margin, FF_COMPOSE_BUBBLE_Y);
     lv_obj_set_style_bg_color(bubble, lv_color_hex(FF_THEME_COLOR_SURFACE), 0);
     lv_obj_set_style_bg_opa(bubble, LV_OPA_COVER, 0);
     lv_obj_set_style_radius(bubble, 14, 0);
     lv_obj_set_style_pad_all(bubble, 12, 0);
     lv_obj_clear_flag(bubble, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_clear_flag(bubble, LV_OBJ_FLAG_CLICKABLE); /* a display box, not a control */
 
     s_bubble_label = lv_label_create(bubble);
     lv_label_set_long_mode(s_bubble_label, LV_LABEL_LONG_MODE_WRAP);
-    lv_obj_set_width(s_bubble_label, FF_THEME_PUCK_PX - 2 * FF_COMPOSE_MARGIN_X - 24);
+    lv_obj_set_width(s_bubble_label, FF_THEME_PUCK_PX - 2 * bubble_margin - 24);
     lv_obj_set_style_text_font(s_bubble_label, FF_THEME_FONT_LABEL, 0);
     lv_obj_align(s_bubble_label, LV_ALIGN_TOP_LEFT, 0, 0);
     compose_render_bubble_text(s_bubble_label, compose->text, compose->has_pending);
@@ -453,8 +551,9 @@ void ff_scr_compose_build(ff_app_compose_t const *compose)
     s_keys_container = lv_obj_create(puck);
     lv_obj_remove_style_all(s_keys_container);
     lv_obj_set_size(s_keys_container, FF_THEME_PUCK_PX,
-                     3 * (FF_COMPOSE_KEY_H + FF_COMPOSE_KEY_GAP) + 4 + FF_COMPOSE_BOTTOM_ROW_H);
+                     (FF_COMPOSE_BOTTOM_ROW_Y + FF_COMPOSE_BOTTOM_ROW_H) - FF_COMPOSE_GRID_Y);
     lv_obj_set_pos(s_keys_container, 0, FF_COMPOSE_GRID_Y);
     lv_obj_clear_flag(s_keys_container, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_clear_flag(s_keys_container, LV_OBJ_FLAG_CLICKABLE); /* a layout container, not a control itself */
     compose_build_keys(s_keys_container, s_mode);
 }

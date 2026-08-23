@@ -18,7 +18,7 @@
  *                                  S06 shell + radar face (scr_nav.h);
  *                                  every other face still gets the S13
  *                                  placeholder debug face (fixture_view.h)
- *                                  — see ff_build_face_screen below.
+ *                                  — see face_dispatch.h's ff_build_face_screen.
  *   ffsim --fixture FILE.json      window mode with the fixture loaded
  *                                  (interactive preview; same
  *                                  face-selection and load path as
@@ -62,10 +62,8 @@
 
 #include "ff_version.h"
 
+#include "face_dispatch.h"
 #include "fixture.h"
-#include "fixture_view.h"
-#include "scr_compose.h" /* S08d */
-#include "scr_nav.h"
 
 #define FF_SIM_WINDOW_W 456
 #define FF_SIM_WINDOW_H 456
@@ -95,24 +93,6 @@ static void ff_build_boot_screen(void)
     lv_label_set_text(label, "FIREFLY");
     lv_obj_set_style_text_color(label, lv_color_hex(FF_COLOR_AMBER), 0);
     lv_obj_center(label);
-}
-
-/* S06/S08 — replaces the S13 debug placeholder with a real screen once
- * one exists for the fixture's active_face: RADAR and SIGNALS both go
- * through the shared three-tile shell (ff_scr_nav_build — SIGNALS renders
- * real content there as of S08c, see scr_nav.c); COMPOSE is its own
- * full-screen face (reached from Signals' "+", not a swipe tile — see
- * scr_compose.h). Now/Settings still have no real screen yet and fall
- * through to fixture_view.h's placeholder (arrives with S07/S11). */
-static void ff_build_face_screen(ff_app_state_t const *state)
-{
-    if (state->active_face == FF_APP_FACE_RADAR || state->active_face == FF_APP_FACE_SIGNALS) {
-        ff_scr_nav_build(state);
-    } else if (state->active_face == FF_APP_FACE_COMPOSE) {
-        ff_scr_compose_build(&state->compose);
-    } else {
-        ff_fixture_view_build(state);
-    }
 }
 
 /* Full-frame render mode: the whole buffer is the flushed frame, so the

@@ -1,27 +1,81 @@
 /**
  * scr_signals.c — see scr_signals.h.
+ *
+ * ## Round-glass layout (PR #25 UX review follow-up)
+ * The first pass of this file placed the "+" button and the OMW/5 MIN/
+ * PULSE reply row with flat pixel offsets against the puck's SQUARE
+ * corners/edges — `targets/sim/tests/test_face_hit_targets.c`'s sweep
+ * (added for this same review) caught the "+" button, the feed list, the
+ * RALLY row, and the outer two reply buttons all sitting partly off the
+ * round glass. Every position below is now derived from
+ * `ff_layout_safe_margin_x` (app/screens/ff_layout.h — the same shared
+ * helper `scr_compose.c` uses for its own round-glass fix), computed
+ * from each block's own worst-case (farthest-from-center) y, not
+ * eyeballed against the square bounding box. See that test file for the
+ * assertion this is checked against on every build.
+ *
+ * A second, unrelated class of bug the same sweep surfaced: several
+ * purely decorative containers (the "+" button aside, which IS meant to
+ * be a control) were left CLICKABLE by omission — `lv_obj_create`
+ * defaults to clickable in LVGL, and this file cleared that flag on every
+ * icon-badge primitive but missed the feed-item rows themselves, the
+ * scrollable list container, and the reply-row container. Fixed by
+ * explicitly clearing LV_OBJ_FLAG_CLICKABLE on every container that
+ * isn't meant to be a tap target, rather than relying on "nothing calls
+ * add_flag on it so it must not be clickable" (false — the default is
+ * the opposite).
  */
 #include "scr_signals.h"
 
+#include <math.h>
 #include <stdio.h>
+#include <string.h>
 
+#include "ff_layout.h"
 #include "ff_theme.h"
 
 /* ---------------------------------------------------------------------
  * Layout constants — local to this file (no cross-file geometry-testing
  * need like radar_layout.h's collision-tested numbers, so these don't
- * warrant their own header/module).
+ * warrant their own header/module — the geometry MATH they're checked
+ * against, ff_layout.h, is shared; these specific Y/height choices are
+ * this face's own design, same split as scr_compose.c).
  * ------------------------------------------------------------------- */
 
-#define FF_SIGNALS_MARGIN_X    18
-#define FF_SIGNALS_LIST_TOP_Y  44  /* below the header row */
-#define FF_SIGNALS_LIST_BOT_Y  340 /* above the canned-reply chip row (and the shared
-                                     * page-dot chrome scr_nav.c draws at puck-center-
-                                     * relative y=186, i.e. absolute y~406 at this puck
-                                     * size — see signals_build_reply_row's own comment) */
+#define FF_SIGNALS_SAFETY_PX 10.0f /* see scr_compose.c's FF_COMPOSE_SAFETY_PX — same rationale */
+
+#define FF_SIGNALS_HEADER_Y 56
+#define FF_SIGNALS_HEADER_H FF_THEME_MIN_HIT_PX /* the "+" button's row */
+
+#define FF_SIGNALS_LIST_TOP_Y 108 /* header + gap */
+#define FF_SIGNALS_LIST_H     192
+#define FF_SIGNALS_LIST_BOT_Y (FF_SIGNALS_LIST_TOP_Y + FF_SIGNALS_LIST_H)
+
+#define FF_SIGNALS_TARGET_LABEL_Y 306
+#define FF_SIGNALS_TARGET_LABEL_H 18
+
+#define FF_SIGNALS_REPLY_ROW_Y 332 /* well clear of scr_nav.c's shared page-dot chrome,
+                                     * which sits at puck-center-relative dy=186 ->
+                                     * absolute y~406-411 at this puck size */
+#define FF_SIGNALS_REPLY_ROW_H FF_THEME_MIN_HIT_PX
+
 #define FF_SIGNALS_ROW_H       58
 #define FF_SIGNALS_ROW_GAP     6
 #define FF_SIGNALS_ICON_PX     30
+
+/**
+ * signals_safe_margin_x — thin int32_t/ceil wrapper around
+ * ff_layout_safe_margin_x, bound to this puck's own center/radius
+ * (ff_theme.h) and this file's safety buffer — see scr_compose.c's
+ * `compose_safe_margin_x` (identical shape, deliberately: both wrap the
+ * same shared primitive around the same puck geometry).
+ */
+static int32_t signals_safe_margin_x(int32_t top_y, int32_t h)
+{
+    float margin = ff_layout_safe_margin_x((float)top_y, (float)h, (float)FF_THEME_PUCK_RADIUS_PX,
+                                            (float)FF_THEME_PUCK_RADIUS_PX, FF_SIGNALS_SAFETY_PX);
+    return (int32_t)ceilf(margin);
+}
 
 /* ---------------------------------------------------------------------
  * Header: "SIGNALS" title + "+" (open Compose) button.
@@ -39,21 +93,25 @@ static void signals_open_compose_stub_cb(lv_event_t *e)
 
 static void signals_build_header(lv_obj_t *parent)
 {
+    int32_t margin = signals_safe_margin_x(FF_SIGNALS_HEADER_Y, FF_SIGNALS_HEADER_H);
+
     lv_obj_t *title = lv_label_create(parent);
     lv_label_set_text(title, "SIGNALS");
     lv_obj_set_style_text_font(title, FF_THEME_FONT_LABEL, 0);
     lv_obj_set_style_text_color(title, lv_color_hex(FF_THEME_COLOR_DIM), 0);
-    lv_obj_align(title, LV_ALIGN_TOP_LEFT, FF_SIGNALS_MARGIN_X, 16);
+    lv_obj_set_pos(title, margin, FF_SIGNALS_HEADER_Y + 12);
 
     /* "+" open-Compose button — FF_THEME_MIN_HIT_PX square, clears the
-     * ux-raver fat-thumb floor with room to spare even at a corner. */
+     * ux-raver fat-thumb floor with room to spare, and (per the margin
+     * above) sits entirely on the round glass rather than the square
+     * corner the first pass placed it against. */
     lv_obj_t *btn = lv_button_create(parent);
     lv_obj_remove_style_all(btn);
     lv_obj_set_size(btn, FF_THEME_MIN_HIT_PX, FF_THEME_MIN_HIT_PX);
+    lv_obj_set_pos(btn, FF_THEME_PUCK_PX - margin - FF_THEME_MIN_HIT_PX, FF_SIGNALS_HEADER_Y);
     lv_obj_set_style_bg_color(btn, lv_color_hex(FF_THEME_COLOR_SURFACE), 0);
     lv_obj_set_style_bg_opa(btn, LV_OPA_COVER, 0);
     lv_obj_set_style_radius(btn, LV_RADIUS_CIRCLE, 0);
-    lv_obj_align(btn, LV_ALIGN_TOP_RIGHT, -FF_SIGNALS_MARGIN_X + (FF_THEME_MIN_HIT_PX / 2), 8);
     lv_obj_add_event_cb(btn, signals_open_compose_stub_cb, LV_EVENT_CLICKED, NULL);
 
     lv_obj_t *plus = lv_label_create(btn);
@@ -224,20 +282,30 @@ static void signals_rally_tap_stub_cb(lv_event_t *e)
     (void)e;
 }
 
-static void signals_build_row(lv_obj_t *parent, ff_app_feed_item_t const *it, int32_t y)
+static void signals_build_row(lv_obj_t *parent, ff_app_feed_item_t const *it, int32_t y, int32_t margin_x)
 {
     lv_obj_t *row = lv_obj_create(parent);
     lv_obj_remove_style_all(row);
-    lv_obj_set_size(row, FF_THEME_PUCK_PX - 2 * FF_SIGNALS_MARGIN_X, FF_SIGNALS_ROW_H);
-    lv_obj_set_pos(row, FF_SIGNALS_MARGIN_X, y);
+    lv_obj_set_size(row, FF_THEME_PUCK_PX - 2 * margin_x, FF_SIGNALS_ROW_H);
+    lv_obj_set_pos(row, margin_x, y);
     lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+    /* lv_obj_create defaults CLICKABLE — explicitly clear it first so
+     * every kind starts non-interactive, then opt RALLY back in below.
+     * A prior pass relied on "nothing add_flag's it" to mean
+     * non-clickable, which is backwards (see this file's header
+     * comment) and is exactly why test_face_hit_targets.c flagged every
+     * non-RALLY row as an unchecked (and off-glass) hit-rect. */
+    lv_obj_clear_flag(row, LV_OBJ_FLAG_CLICKABLE);
 
     if (it->kind == FF_APP_FEED_RALLY) {
         /* Only RALLY rows are documented as tappable (S08 spec: "Rally row
          * tap -> sets rally as radar/map target") — everything else is
          * informational, so leaving them non-clickable avoids a "what does
          * tapping this do?" dead end (ux-raver checklist item 6). Height
-         * already clears FF_THEME_MIN_HIT_PX (58 > 44). */
+         * already clears FF_THEME_MIN_HIT_PX (58 > 44); `margin_x` (the
+         * list's own, computed against its worst-case row slot — see
+         * ff_scr_signals_build) keeps the whole row's width on-glass
+         * regardless of which slot a RALLY item happens to scroll into. */
         lv_obj_add_flag(row, LV_OBJ_FLAG_CLICKABLE);
         lv_obj_add_event_cb(row, signals_rally_tap_stub_cb, LV_EVENT_CLICKED, NULL);
     }
@@ -260,7 +328,7 @@ static void signals_build_row(lv_obj_t *parent, ff_app_feed_item_t const *it, in
 
     lv_obj_t *text = lv_label_create(row);
     lv_label_set_long_mode(text, LV_LABEL_LONG_MODE_DOTS);
-    lv_obj_set_width(text, FF_THEME_PUCK_PX - 2 * FF_SIGNALS_MARGIN_X - text_x - 56);
+    lv_obj_set_width(text, FF_THEME_PUCK_PX - 2 * margin_x - text_x - 56);
     lv_label_set_text(text, (it->text[0] != '\0') ? it->text : "-");
     lv_obj_set_style_text_font(text, FF_THEME_FONT_LABEL, 0);
     lv_obj_set_style_text_color(text, lv_color_hex(FF_THEME_COLOR_DIM), 0);
@@ -319,7 +387,10 @@ static void signals_build_empty_state(lv_obj_t *parent)
  * reply-context exists" — that selection already happens correctly by
  * construction once this is wired (the caller passes the same
  * `ff_app_signals_t` this screen renders, whose `items[0]` is newest,
- * matching `ff_feed_at(feed, 0)` on the live core side). */
+ * matching `ff_feed_at(feed, 0)` on the live core side). See
+ * signals_build_target_label below for the ON-SCREEN half of this same
+ * fact — PR #25 UX review (non-blocking finding): a code comment saying
+ * "it's items[0]" is invisible to Bailey; the label makes it visible. */
 static void signals_canned_reply_stub_cb(lv_event_t *e)
 {
     (void)e;
@@ -329,8 +400,8 @@ static lv_obj_t *signals_make_reply_button(lv_obj_t *parent, char const *text, i
 {
     lv_obj_t *btn = lv_button_create(parent);
     lv_obj_remove_style_all(btn);
-    lv_obj_set_size(btn, w, FF_THEME_MIN_HIT_PX);
-    lv_obj_set_pos(btn, x, -1); /* y set by caller via lv_obj_align on the row container instead */
+    lv_obj_set_size(btn, w, FF_SIGNALS_REPLY_ROW_H);
+    lv_obj_set_pos(btn, x, 0);
     lv_obj_set_style_bg_color(btn, lv_color_hex(FF_THEME_COLOR_SURFACE), 0);
     lv_obj_set_style_bg_opa(btn, LV_OPA_COVER, 0);
     lv_obj_set_style_radius(btn, LV_RADIUS_CIRCLE, 0);
@@ -345,23 +416,40 @@ static lv_obj_t *signals_make_reply_button(lv_obj_t *parent, char const *text, i
     return btn;
 }
 
+/* PR #25 UX review (non-blocking finding): "nothing on screen says which
+ * row a canned reply targets... at 2am I'd genuinely wonder 'did OMW
+ * just go to Dana, or to everyone?'". Renders "-> <name>" (the newest
+ * feed item's sender, matching the reply-context this row will actually
+ * use once wired — see signals_canned_reply_stub_cb's comment) or
+ * "-> EVERYONE" when there's no feed item to reply to (broadcast, per
+ * S08's "...else broadcast"). */
+static void signals_build_target_label(lv_obj_t *parent, ff_app_signals_t const *signals, int32_t margin_x)
+{
+    char buf[FF_APP_NAME_LEN + 8];
+    if (signals->n_items > 0 && signals->items[0].from_name[0] != '\0') {
+        snprintf(buf, sizeof(buf), "-> %s", signals->items[0].from_name);
+    } else {
+        snprintf(buf, sizeof(buf), "-> EVERYONE");
+    }
+
+    lv_obj_t *label = lv_label_create(parent);
+    lv_label_set_text(label, buf);
+    lv_obj_set_style_text_font(label, FF_THEME_FONT_CHIP, 0);
+    lv_obj_set_style_text_color(label, lv_color_hex(FF_THEME_COLOR_DIM), 0);
+    lv_obj_set_pos(label, margin_x, FF_SIGNALS_TARGET_LABEL_Y);
+}
+
 static void signals_build_reply_row(lv_obj_t *parent)
 {
+    int32_t margin_x = signals_safe_margin_x(FF_SIGNALS_REPLY_ROW_Y, FF_SIGNALS_REPLY_ROW_H);
+    int32_t row_w = FF_THEME_PUCK_PX - 2 * margin_x;
+
     lv_obj_t *row = lv_obj_create(parent);
     lv_obj_remove_style_all(row);
-    int32_t row_w = FF_THEME_PUCK_PX - 2 * FF_SIGNALS_MARGIN_X;
-    lv_obj_set_size(row, row_w, FF_THEME_MIN_HIT_PX);
-    /* dy=-48, not the "eyeballed" -20 a first pass used: scr_nav.c draws
-     * the shared page-dot row at puck-center-relative y=186 (absolute
-     * y~406 at FF_THEME_PUCK_PX=440) on TOP of every tile's content, and
-     * -20 put this row's bottom edge at y=420 — squarely on top of the
-     * dots (caught visually, not by any golden diff, since a single bad
-     * golden generation would've just "become" the new golden; re-check
-     * any future page-dot geometry change against this row's bottom edge
-     * too). -48 keeps the bottom edge at y=392, a clear ~14px above the
-     * dots' own 401px top edge. */
-    lv_obj_align(row, LV_ALIGN_BOTTOM_MID, 0, -48);
+    lv_obj_set_size(row, row_w, FF_SIGNALS_REPLY_ROW_H);
+    lv_obj_set_pos(row, margin_x, FF_SIGNALS_REPLY_ROW_Y);
     lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_clear_flag(row, LV_OBJ_FLAG_CLICKABLE); /* a layout container, not a control itself */
 
     int32_t gap = 8;
     int32_t btn_w = (row_w - 2 * gap) / 3;
@@ -388,24 +476,38 @@ void ff_scr_signals_build(lv_obj_t *parent, ff_app_signals_t const *signals)
     } else {
         /* Scrollable list container so more items than fit on screen are
          * reachable (S08's fixture cap is 8; the row math above fits
-         * about 5 before needing to scroll) without ever clipping/hiding
+         * about 3 before needing to scroll) without ever clipping/hiding
          * an item outright — CLAUDE.md's honesty rule applies to
-         * visibility too, not just values. */
+         * visibility too, not just values.
+         *
+         * The list container itself is NOT clickable (a scroll viewport,
+         * not a control — lv_obj_create defaults clickable, cleared
+         * explicitly below per this file's header comment); it stays
+         * full puck width so scrolling isn't accidentally narrowed, and
+         * each ROW is individually positioned at `list_margin` — the
+         * list's own chord-derived margin, computed once against its
+         * worst-case (farthest-from-center) edge so it's correct
+         * regardless of which item scrolls into which visible slot. */
+        int32_t list_margin = signals_safe_margin_x(FF_SIGNALS_LIST_TOP_Y, FF_SIGNALS_LIST_H);
+
         lv_obj_t *list = lv_obj_create(parent);
         lv_obj_remove_style_all(list);
         lv_obj_set_pos(list, 0, FF_SIGNALS_LIST_TOP_Y);
-        lv_obj_set_size(list, FF_THEME_PUCK_PX, FF_SIGNALS_LIST_BOT_Y - FF_SIGNALS_LIST_TOP_Y);
+        lv_obj_set_size(list, FF_THEME_PUCK_PX, FF_SIGNALS_LIST_H);
         lv_obj_set_style_bg_opa(list, LV_OPA_TRANSP, 0);
         lv_obj_add_flag(list, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_clear_flag(list, LV_OBJ_FLAG_CLICKABLE);
         lv_obj_set_scroll_dir(list, LV_DIR_VER);
         lv_obj_set_scrollbar_mode(list, LV_SCROLLBAR_MODE_OFF);
 
         int32_t y = 0;
         for (uint8_t i = 0; i < signals->n_items && i < FF_APP_SIGNALS_MAX_ITEMS; i++) {
-            signals_build_row(list, &signals->items[i], y);
+            signals_build_row(list, &signals->items[i], y, list_margin);
             y += FF_SIGNALS_ROW_H + FF_SIGNALS_ROW_GAP;
         }
     }
 
+    int32_t target_margin = signals_safe_margin_x(FF_SIGNALS_TARGET_LABEL_Y, FF_SIGNALS_TARGET_LABEL_H);
+    signals_build_target_label(parent, signals, target_margin);
     signals_build_reply_row(parent);
 }
