@@ -5,7 +5,7 @@ Firefly-specific messages between pucks, riding Meshtastic as opaque payloads on
 
 ## Wire format
 - **Portnum: 269** (private app range 256–511; chosen constant `FF_PORTNUM`).
-- Payload: `[ver:1][type:1][body…]`, little-endian, max 200 B. `ver = 1`. Unknown ver or type ⇒ ignore silently (forward compat).
+- Payload: `[ver:1][type:1][body…]`, little-endian, max 200 B. `ver = 1`. Unknown ver or type ⇒ ignore silently (forward compat). Decode is strict: ver-1 bodies must be exactly their defined length; trailing bytes ⇒ ignore message. The 200 B cap is an encode/transport bound.
 - Types:
 
 | type | name | body | semantics |
@@ -41,3 +41,6 @@ Pure encode/decode only — sending is `mc_send_private(…, FF_PORTNUM, …)` w
 
 ## Slices
 Single PR.
+
+## Amendments
+- **2026-08-22, PR #10:** Independent review flagged that `ff_proto_decode` accepted and silently discarded arbitrary trailing bytes past a message's declared body on every type (confirmed concretely: a 24-byte RALLY padded with 176 bytes of `0xEF` garbage to the 200 B cap still decoded successfully). Ruling (siding with the reviewer): decode is strict — each ver-1 type requires its exact body length; any trailing bytes ⇒ return 0 (reject). Rationale: the `ver` byte is the extensibility mechanism, not open-ended per-message padding within `ver=1`; on untrusted RF input, silently accepting unexplained trailing data can mask framing/concatenation bugs elsewhere rather than surface them. The 200 B cap stays as the encode/transport-level maximum only (a Meshtastic packet size bound), not a decode-side "trailing bytes are fine up to here" allowance.

@@ -53,3 +53,20 @@ if(FF_BUILD_TESTS)
 
     add_test(NAME test_geo COMMAND test_geo)
 endif()
+
+# S04 (firefly protocol — app-layer pulse/flare/rally/status packets;
+# docs/specs/S04-firefly-protocol.md)
+target_sources(ff-core PRIVATE src/ff_proto.c)
+
+if(FF_BUILD_TESTS)
+    add_executable(test_proto
+        tests/test_proto.c
+    )
+    target_compile_definitions(test_proto PRIVATE
+        FF_PROTO_FIXTURES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures"
+    )
+    target_link_libraries(test_proto PRIVATE ff-core unity)
+    ff_apply_warnings(test_proto)
+
+    add_test(NAME test_proto COMMAND test_proto)
+endif()
