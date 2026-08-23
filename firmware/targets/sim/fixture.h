@@ -1,0 +1,63 @@
+/**
+ * fixture.h — ff_app_state_t JSON fixture loader (S13 slice b).
+ *
+ * Loads the JSON schema documented in tests/fixtures/README.md into a
+ * caller-owned ff_app_state_t. Platform code (file I/O), lives under
+ * targets/sim/ rather than core/ or app/ — see docs/ARCHITECTURE.md
+ * principle 4 ("platform code lives only under targets/").
+ *
+ * Zero dynamic allocation (fixed jsmn token arena, same pattern as
+ * firmware/festpack/src/fp_pack.c). Not reentrant — one fixture load at a
+ * time, matching every caller's actual usage (ffsim loads at most one
+ * fixture per process invocation).
+ */
+#ifndef FF_FIXTURE_H
+#define FF_FIXTURE_H
+
+#include <stddef.h>
+
+#include "ff_app_state.h"
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+typedef enum {
+    FF_FIXTURE_OK = 0,
+    FF_FIXTURE_ERR_IO,      /* file missing/unreadable, or too large */
+    FF_FIXTURE_ERR_JSON,    /* malformed/truncated/non-object JSON */
+    FF_FIXTURE_ERR_TOO_BIG, /* input exceeded the parser's size/token budget */
+} ff_fixture_result_t;
+
+/**
+ * ff_fixture_load_json — parse `json[0..len)` into `*out`.
+ *
+ * On any return other than FF_FIXTURE_OK, `*out` is left zeroed, not
+ * partially populated (matches fp_parse()'s contract). Fields the JSON
+ * omits are left at their zero value in `*out` — every section is
+ * optional (see tests/fixtures/README.md).
+ */
+ff_fixture_result_t ff_fixture_load_json(char const *json, size_t len, ff_app_state_t *out);
+
+/**
+ * ff_fixture_load_file — read `path` and parse it via
+ * ff_fixture_load_json(). FF_FIXTURE_ERR_IO if the file can't be opened,
+ * is empty, or exceeds the loader's input-size budget.
+ */
+ff_fixture_result_t ff_fixture_load_file(char const *path, ff_app_state_t *out);
+
+/**
+ * ff_fixture_stem — the filename component of `path` with its directory
+ * and a trailing ".json" extension stripped, e.g.
+ * "tests/fixtures/radar_live.json" -> "radar_live". Used to name the
+ * headless renderer's output PNG (`<fixture-stem>.png`). Always
+ * NUL-terminates `out` (truncating if `out_sz` is too small); writes ""
+ * if `path` is NULL.
+ */
+void ff_fixture_stem(char const *path, char *out, size_t out_sz);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif /* FF_FIXTURE_H */

@@ -5,3 +5,10 @@
 # This INTERFACE target reserves the module's place in the superbuild.
 
 add_library(ff-app INTERFACE)
+
+# S13b
+# Publishes ff_app_state.h — the plain view-state struct screens will
+# render (docs/ARCHITECTURE.md principle 3: "the UI is a projection").
+# Header-only: no .c sources belong here until a real screen lands (no
+# domain logic allowed in app/, per CLAUDE.md).
+target_include_directories(ff-app INTERFACE include)

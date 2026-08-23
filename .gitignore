@@ -10,3 +10,7 @@ build/
 # docs/specs/S04-firefly-protocol.md AC5.
 !firmware/core/tests/fixtures/*.bin
 firmware/out/
+# S13b: tests/run_goldens.sh's scratch diff-artifact output (regenerated
+# on every failing run; only the committed tests/golden/*.png goldens
+# themselves are checked in).
+firmware/tests/golden/_diff_out/
