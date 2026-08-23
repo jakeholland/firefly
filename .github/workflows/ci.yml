@@ -1,0 +1,49 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  build-test:
+    name: build-test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install SDL2
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libsdl2-dev
+
+      - name: Cache CMake FetchContent deps
+        uses: actions/cache@v4
+        with:
+          path: firmware/build/_deps
+          key: ${{ runner.os }}-fetchcontent-${{ hashFiles('firmware/CMakeLists.txt') }}
+
+      - name: Configure
+        working-directory: firmware
+        run: cmake -B build -DFF_TARGET=sim
+
+      - name: Build
+        working-directory: firmware
+        run: cmake --build build --parallel
+
+      - name: Test
+        working-directory: firmware
+        run: ctest --test-dir build --output-on-failure
+
+      - name: Headless boot screenshot
+        working-directory: firmware
+        run: |
+          mkdir -p out
+          ./build/ffsim --headless --screenshot out/
+
+      - name: Upload boot screenshot
+        uses: actions/upload-artifact@v4
+        with:
+          name: ffsim-screenshots
+          path: firmware/out/*.png
+          if-no-files-found: error
