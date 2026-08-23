@@ -1,0 +1,202 @@
+/**
+ * ff_sched.c — see ff_sched.h for the full contract (module placement
+ * rationale, festival-day/now_min semantics, midnight-crossing rule,
+ * half-open "now" window — see docs/specs/S07-now-face.md's
+ * ## Amendments for the ruling that changed it from inclusive-both-ends
+ * to half-open, PR #9).
+ */
+#include "ff_sched.h"
+
+#include <string.h>
+
+/* Effective end-of-set minute, folding a midnight-crossing set (end_min
+ * < start_min) forward by one day so all comparisons against `now_min`
+ * (which may itself exceed 1440 for late-night queries) are plain
+ * integer comparisons. */
+static int16_t sched_effective_end(fp_set_t const *s)
+{
+    if (s->end_min < s->start_min) {
+        return (int16_t)(s->end_min + FF_SCHED_DAY_SPAN_MIN);
+    }
+    return s->end_min;
+}
+
+static bool sched_times_known(fp_set_t const *s)
+{
+    return s->start_min >= 0 && s->end_min >= 0;
+}
+
+/* ff_sched_alarm_t.fired bit helpers. Declared up top (rather than just
+ * above ff_sched_alarm_tick) because ff_sched_toggle_star also needs
+ * sched_bit_clear. */
+static bool sched_bit_get(uint8_t const *bits, uint16_t idx)
+{
+    return (bits[idx / 8] >> (idx % 8)) & 1u;
+}
+
+static void sched_bit_set(uint8_t *bits, uint16_t idx)
+{
+    bits[idx / 8] |= (uint8_t)(1u << (idx % 8));
+}
+
+static void sched_bit_clear(uint8_t *bits, uint16_t idx)
+{
+    bits[idx / 8] &= (uint8_t)~(1u << (idx % 8));
+}
+
+uint8_t ff_sched_now_playing(fp_pack_t const *p, uint16_t day_doy, int16_t now_min,
+                              ff_now_row_t out[], uint8_t max)
+{
+    uint8_t n = 0;
+    for (uint16_t i = 0; i < p->n_sets && n < max; i++) {
+        fp_set_t const *s = &p->sets[i];
+        if (s->day_doy != day_doy) continue;
+        if (!sched_times_known(s)) continue;
+
+        int16_t end = sched_effective_end(s);
+        /* Half-open: start_min <= now_min < end. At a zero-gap changeover
+         * (set A's end_min == set B's start_min) this is what makes B the
+         * sole "now" row on that stage — A's `now_min >= end` excludes it
+         * the same minute B's `now_min >= start` includes it. See
+         * docs/specs/S07-now-face.md ## Amendments. */
+        if (now_min < s->start_min || now_min >= end) continue;
+
+        int16_t dur = (int16_t)(end - s->start_min);
+        uint8_t pct;
+        if (dur <= 0) {
+            /* Degenerate zero-length set (start_min == end_min): unreachable
+             * given the half-open range check above (start_min <= now_min <
+             * end_min has no solutions when end_min == start_min), but kept
+             * as a defensive guard against a divide-by-zero if that check
+             * is ever refactored. */
+            pct = 0;
+        } else {
+            /* now_min ranges [start_min, end-1] here (half-open), so this
+             * is always < 100 — the set leaves "now" at end_min itself
+             * rather than lingering for one more tick at pct=100. */
+            int32_t scaled = (int32_t)(now_min - s->start_min) * 100;
+            int32_t p100 = scaled / dur;
+            if (p100 > 99) p100 = 99;   /* defensive clamp; unreachable given the range above */
+            if (p100 < 0) p100 = 0;
+            pct = (uint8_t)p100;
+        }
+
+        out[n].set = s;
+        out[n].mins_left = (int16_t)(end - now_min);
+        out[n].pct_done = pct;
+        n++;
+    }
+    return n;
+}
+
+bool ff_sched_next_starred(fp_pack_t const *p, uint16_t day_doy, int16_t now_min, ff_next_t *out)
+{
+    fp_set_t const *best = NULL;
+    for (uint16_t i = 0; i < p->n_sets; i++) {
+        fp_set_t const *s = &p->sets[i];
+        if (!s->starred) continue;
+        if (s->day_doy != day_doy) continue;
+        if (!sched_times_known(s)) continue;
+        if (s->start_min <= now_min) continue; /* not strictly future */
+
+        if (best == NULL || s->start_min < best->start_min) {
+            best = s;
+        }
+    }
+
+    if (best == NULL) {
+        out->set = NULL;
+        out->mins_until = 0;
+        return false;
+    }
+
+    out->set = best;
+    out->mins_until = (int16_t)(best->start_min - now_min);
+    return true;
+}
+
+void ff_sched_toggle_star(fp_pack_t *p, uint16_t set_idx, ff_sched_alarm_t *alarm)
+{
+    if (set_idx >= p->n_sets) return;
+
+    bool was_starred = p->sets[set_idx].starred;
+    p->sets[set_idx].starred = !was_starred;
+
+    /* Un-starring forgets any prior alarm firing for this set, so a later
+     * re-star re-arms the T-15 alert immediately (fat-finger recovery) —
+     * see ff_sched.h and docs/specs/S07-now-face.md ## Amendments. Only
+     * relevant on the starred->unstarred transition; starring a
+     * previously-unstarred set has no fired-bit to clear (ff_sched_alarm_tick
+     * already self-clears unstarred sets' bits as a second line of
+     * defense for callers that pass alarm=NULL here). */
+    if (was_starred && alarm != NULL) {
+        sched_bit_clear(alarm->fired, set_idx);
+    }
+}
+
+uint16_t ff_sched_day_sets(fp_pack_t const *p, uint16_t day_doy,
+                            fp_set_t const *out[], uint16_t max)
+{
+    uint16_t n = 0;
+    for (uint16_t i = 0; i < p->n_sets && n < max; i++) {
+        if (p->sets[i].day_doy != day_doy) continue;
+        out[n++] = &p->sets[i];
+    }
+    return n;
+}
+
+bool ff_sched_day_tbd(fp_pack_t const *p, uint16_t day_doy)
+{
+    bool any = false;
+    for (uint16_t i = 0; i < p->n_sets; i++) {
+        if (p->sets[i].day_doy != day_doy) continue;
+        any = true;
+        if (sched_times_known(&p->sets[i])) {
+            return false;
+        }
+    }
+    return any;
+}
+
+void ff_sched_alarm_init(ff_sched_alarm_t *st)
+{
+    memset(st, 0, sizeof(*st));
+}
+
+fp_set_t const *ff_sched_alarm_tick(ff_sched_alarm_t *st, fp_pack_t const *p,
+                                     uint16_t day_doy, int16_t now_min)
+{
+    uint16_t best_idx = UINT16_MAX;
+
+    for (uint16_t i = 0; i < p->n_sets; i++) {
+        fp_set_t const *s = &p->sets[i];
+        if (!s->starred) {
+            /* Unstarred sets carry no fired memory: clearing here (in
+             * addition to ff_sched_toggle_star's immediate clear when it's
+             * given the alarm state) means a future re-star always
+             * re-arms the T-15 alert even for callers that pass alarm=NULL
+             * to ff_sched_toggle_star and only ever touch this state
+             * through ticks. See ff_sched.h. */
+            sched_bit_clear(st->fired, i);
+            continue;
+        }
+        if (s->day_doy != day_doy) continue;
+        if (!sched_times_known(s)) continue;
+        if (sched_bit_get(st->fired, i)) continue;
+
+        int16_t mins_until = (int16_t)(s->start_min - now_min);
+        if (mins_until > 15) continue; /* not due yet */
+
+        int16_t end = sched_effective_end(s);
+        if (now_min > end) continue; /* already over; don't fire a stale alert */
+
+        if (best_idx == UINT16_MAX || s->start_min < p->sets[best_idx].start_min) {
+            best_idx = i;
+        }
+    }
+
+    if (best_idx == UINT16_MAX) return NULL;
+
+    sched_bit_set(st->fired, best_idx);
+    return &p->sets[best_idx];
+}

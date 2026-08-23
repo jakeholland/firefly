@@ -34,3 +34,29 @@ if(FF_BUILD_TESTS)
 
     add_test(NAME test_festpack COMMAND test_festpack)
 endif()
+
+# S07 — schedule engine (now-playing/next-starred/day-lineup/alarm), slices
+# a + c. See firmware/festpack/include/ff_sched.h for why this lives here
+# instead of core/ (module-placement rationale in the header's top
+# comment) — its entire public surface is fp_pack_t/fp_set_t, so it is
+# built into ff-festpack itself rather than as a separate library.
+target_sources(ff-festpack PRIVATE src/ff_sched.c)
+
+if(FF_BUILD_TESTS)
+    add_executable(test_sched
+        tests/test_sched.c
+    )
+    target_link_libraries(test_sched PRIVATE ff-festpack unity)
+    # test_sched's one integration case (S07_AC5, real Lost Lands fixture)
+    # reads fixtures/ from disk at test time, same fixture dir as
+    # test_festpack above — no need for a separate test_sched_integration
+    # executable: ff_sched already lives inside ff-festpack, so linking
+    # fp_parse alongside the rest of test_sched's fixture-literal cases
+    # has no layering cost (see ff_sched.h's placement note).
+    target_compile_definitions(test_sched PRIVATE
+        FP_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/"
+    )
+    ff_apply_warnings(test_sched)
+
+    add_test(NAME test_sched COMMAND test_sched)
+endif()
