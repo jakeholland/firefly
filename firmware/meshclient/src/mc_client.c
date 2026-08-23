@@ -195,6 +195,11 @@ static void mc_process_from_radio(mc_client_t *c, meshtastic_FromRadio const *fr
         break;
 
     case meshtastic_FromRadio_node_info_tag: {
+        /* Note: if this NodeInfo's User.long_name/short_name exceeds
+         * MC_NAME_MAX, we never get here at all — nanopb already failed
+         * pb_decode() on the whole FromRadio in mc_tick(), and that node's
+         * num/position/battery are silently lost with it (counted only in
+         * decode_errors). See the MC_NAME_MAX doc comment in mc_client.h. */
         meshtastic_NodeInfo const *ni = &fr->payload_variant.node_info;
         mc_nodeinfo_t out;
         memset(&out, 0, sizeof(out));

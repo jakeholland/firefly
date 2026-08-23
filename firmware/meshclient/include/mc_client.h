@@ -36,7 +36,19 @@ extern "C" {
 
 /* Static field sizes, per docs/specs/S03-meshclient.md ("callback field
  * sizes per spec: names 40 B, text 237 B (Meshtastic max)"). Must match
- * meshclient/tools/mc_nanopb.options. */
+ * meshclient/tools/mc_nanopb.options.
+ *
+ * nanopb behavior note: these are hard budgets, not truncation limits. A
+ * User.long_name/short_name longer than MC_NAME_MAX (or a Data.payload
+ * longer than MC_TEXT_MAX) makes nanopb's pb_decode() fail the *entire*
+ * enclosing FromRadio message — not just drop or truncate that one field.
+ * Concretely: one NodeInfo dump entry with an oversized name silently
+ * loses its node_num/position/battery too (counted only in the aggregate
+ * mc_stats_t.decode_errors, since mc_client.c never sees a partially
+ * decoded message to inspect). This is memory-safe (verified against
+ * pb_decode.c's pb_dec_string) and matches "skipped silently but
+ * counted" in spirit, but it's coarser-grained than per-field truncation
+ * and worth knowing before debugging a "node just didn't show up" report. */
 #define MC_NAME_MAX 40u
 #define MC_TEXT_MAX 237u
 

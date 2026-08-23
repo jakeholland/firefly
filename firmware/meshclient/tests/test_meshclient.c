@@ -311,6 +311,80 @@ static void S03_AC1_oversize_len_resyncs_without_overflow(void)
     free(text);
 }
 
+/* PR #7 review finding 2: oversize_len.bin declares 0xFFFF, nowhere near
+ * MC_MAX_FRAME (512) — that doesn't exercise the actual boundary check
+ * in mc_framing.c (`expected > MC_MAX_FRAME`). These two tests pin the
+ * exact edge: 512 must be accepted, 513 must resync. */
+static void S03_AC1_frame_length_exactly_512_is_accepted(void)
+{
+    static uint8_t payload[MC_MAX_FRAME];
+    for (size_t i = 0; i < sizeof(payload); i++) {
+        payload[i] = (uint8_t)((i * 37u) + 11u);
+    }
+
+    uint8_t framed[MC_MAX_FRAME + 4u];
+    uint16_t framed_len = mc_frame_encode(framed, sizeof(framed), payload, (uint16_t)sizeof(payload));
+    TEST_ASSERT_EQUAL_UINT16(sizeof(framed), framed_len);
+    /* Confirm the fixture actually declares 512 before trusting the rest. */
+    TEST_ASSERT_EQUAL_UINT16(MC_MAX_FRAME, (uint16_t)((framed[2] << 8) | framed[3]));
+
+    mc_framer_t f;
+    mc_framer_init(&f);
+    int complete_count = 0;
+    uint8_t const *out = NULL;
+    uint16_t out_len = 0;
+    for (uint16_t i = 0; i < framed_len; i++) {
+        if (mc_framer_feed(&f, framed[i], &out, &out_len)) {
+            complete_count++;
+            TEST_ASSERT_EQUAL_UINT16(MC_MAX_FRAME, out_len);
+            TEST_ASSERT_EQUAL_MEMORY(payload, out, sizeof(payload));
+        }
+    }
+
+    TEST_ASSERT_EQUAL_INT(1, complete_count);
+    TEST_ASSERT_EQUAL_UINT32(0, f.resync_count);
+}
+
+static void S03_AC1_frame_length_513_resyncs(void)
+{
+    size_t text_len;
+    uint8_t *text = load_fixture("text_packet.bin", &text_len);
+
+    /* mc_frame_encode() itself refuses payload_len > MC_MAX_FRAME, so a
+     * 513-byte declared length has to be hand-built to reach the receive
+     * side at all. 513 = 0x0201. */
+    uint8_t const oversize_513_hdr[4] = {MC_FRAME_MAGIC1, MC_FRAME_MAGIC2, 0x02, 0x01};
+    TEST_ASSERT_EQUAL_UINT16(513u, (uint16_t)((oversize_513_hdr[2] << 8) | oversize_513_hdr[3]));
+
+    mc_framer_t f;
+    mc_framer_init(&f);
+    uint8_t const *out = NULL;
+    uint16_t out_len = 0;
+
+    for (size_t i = 0; i < sizeof(oversize_513_hdr); i++) {
+        TEST_ASSERT_FALSE(mc_framer_feed(&f, oversize_513_hdr[i], &out, &out_len));
+    }
+    /* Resynced immediately after reading the length, before ever touching
+     * PAYLOAD — the whole point of the MC_MAX_FRAME check. */
+    TEST_ASSERT_EQUAL(MC_FRAMER_START1, f.state);
+    TEST_ASSERT_EQUAL_UINT32(1, f.resync_count);
+
+    /* Recovery: a real frame immediately after must still complete
+     * cleanly — none of the 513-declared header's bytes should have been
+     * mistaken for payload of anything. */
+    int complete_count = 0;
+    for (size_t i = 0; i < text_len; i++) {
+        if (mc_framer_feed(&f, text[i], &out, &out_len)) {
+            complete_count++;
+            TEST_ASSERT_EQUAL_UINT16((uint16_t)(text_len - 4), out_len);
+            TEST_ASSERT_EQUAL_MEMORY(text + 4, out, out_len);
+        }
+    }
+    TEST_ASSERT_EQUAL_INT(1, complete_count);
+
+    free(text);
+}
+
 /* -------------------------------------------------------------------- */
 /* AC2 — handshake                                                      */
 /* -------------------------------------------------------------------- */
@@ -395,6 +469,47 @@ static void S03_AC2_handshake_dump_reaches_ready_with_node_and_myinfo(void)
     TEST_ASSERT_GREATER_OR_EQUAL_INT(1, cap.node_count);
 
     free(handshake);
+}
+
+/* PR #7 review finding 4: every test that reaches READY does so with a
+ * hand-matched nonce — nothing pinned that a *mismatched*
+ * config_complete_id must NOT complete the handshake. This is the
+ * mutation that would slip through: deleting the `== c->want_config_id`
+ * comparison in mc_client.c's config_complete_id case. */
+static void S03_AC2_handshake_wrong_nonce_stays_in_handshake(void)
+{
+    mock_io_t io;
+    mock_io_reset(&io);
+    mock_clock_t clk = {.t = 0};
+    ff_clock_t clock = {.now_ms = mock_now, .user = &clk};
+    events_capture_t cap;
+    memset(&cap, 0, sizeof(cap));
+
+    mc_client_t c;
+    mc_init(&c, (mc_transport_t){.write = mock_write, .read = mock_read, .io = &io}, make_events(&cap),
+             &clock);
+
+    mc_connect(&c); /* -> HANDSHAKE with a real (random) want_config_id */
+
+    uint8_t wrong_frame[32];
+    /* Bitwise complement: guaranteed different from want_config_id for any
+     * value, no modular-arithmetic edge case to worry about. */
+    uint32_t wrong_nonce = c.want_config_id ^ 0xFFFFFFFFu;
+    uint16_t wrong_len = build_config_complete_frame(wrong_nonce, wrong_frame, sizeof(wrong_frame));
+    TEST_ASSERT_TRUE(wrong_len > 0);
+    io.rx_data = wrong_frame;
+    io.rx_len = wrong_len;
+    io.rx_pos = 0;
+
+    mc_tick(&c, 50);
+
+    TEST_ASSERT_EQUAL(MC_STATE_HANDSHAKE, mc_state(&c));
+    /* Only the initial HANDSHAKE transition fired — no spurious READY. */
+    TEST_ASSERT_EQUAL_INT(1, cap.state_count);
+    TEST_ASSERT_EQUAL(MC_STATE_HANDSHAKE, cap.states[0]);
+
+    mc_stats_t stats = mc_get_stats(&c);
+    TEST_ASSERT_GREATER_OR_EQUAL_UINT32(1, stats.decode_skipped);
 }
 
 /* -------------------------------------------------------------------- */
@@ -501,6 +616,92 @@ static void S03_AC5_on_private_fires_for_portnum_256_511_untouched(void)
     TEST_ASSERT_EQUAL_MEMORY(expected, cap.privates[0].payload, sizeof(expected));
 
     free(fixture);
+}
+
+/* PR #7 review finding 3: the fixture above only exercises portnum 257, an
+ * interior value of the [256, 511] private range — nothing pinned the
+ * boundaries themselves or the excluded neighbors. Built programmatically
+ * (rather than more fixture files) so the four cases stay obviously
+ * matched to MC_PORTNUM_PRIVATE_MIN/MAX in mc_client.h. */
+static uint16_t build_data_packet_frame(uint32_t from, uint32_t to, uint32_t portnum,
+                                         uint8_t const *payload, size_t len, uint8_t *out,
+                                         size_t out_cap)
+{
+    meshtastic_FromRadio fr = meshtastic_FromRadio_init_zero;
+    fr.which_payload_variant = meshtastic_FromRadio_packet_tag;
+    fr.payload_variant.packet.from = from;
+    fr.payload_variant.packet.to = to;
+    fr.payload_variant.packet.which_payload_variant = meshtastic_MeshPacket_decoded_tag;
+    fr.payload_variant.packet.payload_variant.decoded.portnum = (meshtastic_PortNum)portnum;
+    fr.payload_variant.packet.payload_variant.decoded.payload.size = (pb_size_t)len;
+    if (len > 0) {
+        memcpy(fr.payload_variant.packet.payload_variant.decoded.payload.bytes, payload, len);
+    }
+
+    uint8_t buf[300];
+    pb_ostream_t os = pb_ostream_from_buffer(buf, sizeof(buf));
+    if (!pb_encode(&os, meshtastic_FromRadio_fields, &fr)) {
+        return 0;
+    }
+    return mc_frame_encode(out, out_cap, buf, (uint16_t)os.bytes_written);
+}
+
+static void run_private_portnum_boundary_case(uint32_t portnum, bool expect_private)
+{
+    uint8_t const payload[3] = {0xAA, 0xBB, 0xCC};
+    uint8_t frame[64];
+    uint16_t flen =
+        build_data_packet_frame(0x0A0A0A0Au, MC_ADDR_BROADCAST, portnum, payload, sizeof(payload), frame,
+                                 sizeof(frame));
+    TEST_ASSERT_TRUE(flen > 0);
+
+    mock_io_t io;
+    mock_io_reset(&io);
+    io.rx_data = frame;
+    io.rx_len = flen;
+
+    mock_clock_t clk = {.t = 0};
+    ff_clock_t clock = {.now_ms = mock_now, .user = &clk};
+    events_capture_t cap;
+    memset(&cap, 0, sizeof(cap));
+
+    mc_client_t c;
+    mc_init(&c, (mc_transport_t){.write = mock_write, .read = mock_read, .io = &io}, make_events(&cap),
+             &clock);
+    c.state = MC_STATE_READY;
+
+    mc_tick(&c, 5);
+
+    if (expect_private) {
+        TEST_ASSERT_EQUAL_INT(1, cap.private_count);
+        TEST_ASSERT_EQUAL_UINT32(portnum, cap.privates[0].portnum);
+        TEST_ASSERT_EQUAL_UINT(sizeof(payload), cap.privates[0].len);
+        TEST_ASSERT_EQUAL_MEMORY(payload, cap.privates[0].payload, sizeof(payload));
+    } else {
+        TEST_ASSERT_EQUAL_INT(0, cap.private_count);
+        mc_stats_t stats = mc_get_stats(&c);
+        TEST_ASSERT_GREATER_OR_EQUAL_UINT32(1, stats.decode_skipped);
+    }
+}
+
+static void S03_AC5_private_portnum_boundary_255_is_not_private(void)
+{
+    run_private_portnum_boundary_case(255u, false);
+}
+
+static void S03_AC5_private_portnum_boundary_256_is_private(void)
+{
+    run_private_portnum_boundary_case(256u, true);
+}
+
+static void S03_AC5_private_portnum_boundary_511_is_private(void)
+{
+    run_private_portnum_boundary_case(511u, true);
+}
+
+static void S03_AC5_private_portnum_boundary_512_is_not_private(void)
+{
+    run_private_portnum_boundary_case(512u, false);
 }
 
 /* -------------------------------------------------------------------- */
@@ -650,21 +851,148 @@ static void S03_AC7_zero_core_or_app_includes(void)
 /* AC8 — fuzz smoke                                                     */
 /* -------------------------------------------------------------------- */
 
+/* PR #7 review finding 1: the original version of this test fed a
+ * uniform-random 10,000-byte stream (fixed seed 0xC0FFEE) straight to
+ * mc_tick() and called it a fuzz test. An independent replay of that exact
+ * PRNG found *zero* 0x94 0xC3 occurrences anywhere in the stream — the
+ * framer never left START1/START2, mc_framer_feed() never reached
+ * LEN_HI/LEN_LO/PAYLOAD, and pb_decode() was never called. The test
+ * "passed" without ever touching the code it claimed to fuzz.
+ *
+ * Fix: bias generation toward valid framing. fuzz_rng_next() drives three
+ * kinds of segments: pure noise (still worth keeping — exercises the
+ * resync path on real garbage), well-formed template frames encoded via
+ * nanopb (exercises the full decode dispatch — my_info/node_info/
+ * position/text/private/config_complete), and those same template frames
+ * with a handful of payload bytes randomly flipped (exercises malformed-
+ * but-framed input — decode_errors, truncated submessages, etc). Vacuity
+ * is no longer just avoided by construction: the test structurally
+ * ASSERTs (via mc_get_stats()) that frames_ok is nonzero, so a future
+ * regression back to an all-garbage stream fails loudly instead of
+ * quietly passing. */
+
+static uint32_t fuzz_rng_next(uint32_t *state)
+{
+    uint32_t x = *state;
+    x ^= x << 13;
+    x ^= x >> 17;
+    x ^= x << 5;
+    *state = x;
+    return x;
+}
+
+/* Builds one of a handful of realistic FromRadio messages (selected by
+ * `variant`), framed and ready to inject into the fuzz stream. Returns the
+ * framed length, or 0 on failure (shouldn't happen — fixed, small inputs). */
+static uint16_t build_fuzz_template_frame(uint32_t variant, uint8_t *out, size_t out_cap)
+{
+    meshtastic_FromRadio fr = meshtastic_FromRadio_init_zero;
+
+    switch (variant % 5u) {
+    case 0:
+        fr.which_payload_variant = meshtastic_FromRadio_my_info_tag;
+        fr.payload_variant.my_info.my_node_num = 0x11223344u;
+        break;
+
+    case 1:
+        fr.which_payload_variant = meshtastic_FromRadio_node_info_tag;
+        fr.payload_variant.node_info.num = 0x0A0A0A0Au;
+        fr.payload_variant.node_info.has_user = true;
+        (void)snprintf(fr.payload_variant.node_info.user.long_name, MC_NAME_MAX, "Fuzz Node");
+        fr.payload_variant.node_info.has_position = true;
+        fr.payload_variant.node_info.position.has_latitude_i = true;
+        fr.payload_variant.node_info.position.latitude_i = 407128000;
+        fr.payload_variant.node_info.position.has_longitude_i = true;
+        fr.payload_variant.node_info.position.longitude_i = -740060000;
+        break;
+
+    case 2: {
+        fr.which_payload_variant = meshtastic_FromRadio_packet_tag;
+        fr.payload_variant.packet.from = 0x0A0A0A0Au;
+        fr.payload_variant.packet.to = MC_ADDR_BROADCAST;
+        fr.payload_variant.packet.which_payload_variant = meshtastic_MeshPacket_decoded_tag;
+        fr.payload_variant.packet.payload_variant.decoded.portnum = meshtastic_PortNum_TEXT_MESSAGE_APP;
+        char const *txt = "fuzz";
+        size_t tlen = strlen(txt);
+        fr.payload_variant.packet.payload_variant.decoded.payload.size = (pb_size_t)tlen;
+        memcpy(fr.payload_variant.packet.payload_variant.decoded.payload.bytes, txt, tlen);
+        break;
+    }
+
+    case 3: {
+        fr.which_payload_variant = meshtastic_FromRadio_packet_tag;
+        fr.payload_variant.packet.from = 0x0B0B0B0Bu;
+        fr.payload_variant.packet.to = MC_ADDR_BROADCAST;
+        fr.payload_variant.packet.which_payload_variant = meshtastic_MeshPacket_decoded_tag;
+        fr.payload_variant.packet.payload_variant.decoded.portnum = (meshtastic_PortNum)300;
+        uint8_t const priv[4] = {1, 2, 3, 4};
+        fr.payload_variant.packet.payload_variant.decoded.payload.size = sizeof(priv);
+        memcpy(fr.payload_variant.packet.payload_variant.decoded.payload.bytes, priv, sizeof(priv));
+        break;
+    }
+
+    default:
+        fr.which_payload_variant = meshtastic_FromRadio_config_complete_id_tag;
+        fr.payload_variant.config_complete_id = 0xDEADBEEFu;
+        break;
+    }
+
+    uint8_t payload[300];
+    pb_ostream_t os = pb_ostream_from_buffer(payload, sizeof(payload));
+    if (!pb_encode(&os, meshtastic_FromRadio_fields, &fr)) {
+        return 0;
+    }
+    return mc_frame_encode(out, out_cap, payload, (uint16_t)os.bytes_written);
+}
+
 static void S03_AC8_fuzz_smoke_10k_random_frames_no_crash(void)
 {
-    static uint8_t random_bytes[10000];
+    static uint8_t buf[10000];
     uint32_t rng = 0xC0FFEEu; /* fixed seed: deterministic */
-    for (size_t i = 0; i < sizeof(random_bytes); i++) {
-        rng ^= rng << 13;
-        rng ^= rng >> 17;
-        rng ^= rng << 5;
-        random_bytes[i] = (uint8_t)(rng & 0xFFu);
+    uint32_t variant = 0;
+    size_t pos = 0;
+
+    while (pos < sizeof(buf)) {
+        uint32_t choice = fuzz_rng_next(&rng) % 3u;
+
+        if (choice == 0) {
+            /* Pure noise segment — still worth fuzzing: exercises the
+             * resync path on real garbage between valid frames. */
+            size_t n = 1u + (fuzz_rng_next(&rng) % 40u);
+            for (size_t i = 0; i < n && pos < sizeof(buf); i++, pos++) {
+                buf[pos] = (uint8_t)(fuzz_rng_next(&rng) & 0xFFu);
+            }
+            continue;
+        }
+
+        uint8_t frame[300];
+        uint16_t flen = build_fuzz_template_frame(variant++, frame, sizeof(frame));
+        TEST_ASSERT_TRUE(flen > 4);
+
+        if (choice == 2) {
+            /* Mutate a few payload bytes (never the 4-byte header, so it
+             * still frames) — well-formed-but-malformed input, reaching
+             * pb_decode()/mc_process_from_radio() with garbage inside a
+             * structurally valid frame. */
+            uint32_t nmut = 1u + (fuzz_rng_next(&rng) % 3u);
+            for (uint32_t m = 0; m < nmut; m++) {
+                uint16_t idx = (uint16_t)(4u + (fuzz_rng_next(&rng) % (uint32_t)(flen - 4u)));
+                frame[idx] = (uint8_t)(fuzz_rng_next(&rng) & 0xFFu);
+            }
+        }
+
+        size_t n = (size_t)flen;
+        if (n > sizeof(buf) - pos) {
+            n = sizeof(buf) - pos;
+        }
+        memcpy(buf + pos, frame, n);
+        pos += n;
     }
 
     mock_io_t io;
     mock_io_reset(&io);
-    io.rx_data = random_bytes;
-    io.rx_len = sizeof(random_bytes);
+    io.rx_data = buf;
+    io.rx_len = sizeof(buf);
 
     mock_clock_t clk = {.t = 0};
     ff_clock_t clock = {.now_ms = mock_now, .user = &clk};
@@ -679,8 +1007,12 @@ static void S03_AC8_fuzz_smoke_10k_random_frames_no_crash(void)
     mc_tick(&c, 1); /* mc_tick drains until the mock transport returns 0 */
 
     /* Reaching here without crashing/asserting under ASan/UBSan (run
-     * manually — see the S03 PR body) is the point of this test. */
+     * manually — see the S03 PR body) is half the point. The other half,
+     * per review finding 1: prove the fuzzed bytes actually reached the
+     * frame+decode path, not just the framer's garbage-scanning loop. */
     TEST_ASSERT_EQUAL_UINT(io.rx_len, io.rx_pos);
+    mc_stats_t stats = mc_get_stats(&c);
+    TEST_ASSERT_GREATER_OR_EQUAL_UINT32(1, stats.frames_ok);
 }
 
 /* -------------------------------------------------------------------- */
@@ -692,15 +1024,22 @@ int main(void)
     RUN_TEST(S03_AC1_byte_dribble_yields_frame_once);
     RUN_TEST(S03_AC1_garbage_prefix_yields_frame_once);
     RUN_TEST(S03_AC1_oversize_len_resyncs_without_overflow);
+    RUN_TEST(S03_AC1_frame_length_exactly_512_is_accepted);
+    RUN_TEST(S03_AC1_frame_length_513_resyncs);
 
     RUN_TEST(S03_AC2_connect_sends_want_config_and_enters_handshake);
     RUN_TEST(S03_AC2_handshake_dump_reaches_ready_with_node_and_myinfo);
+    RUN_TEST(S03_AC2_handshake_wrong_nonce_stays_in_handshake);
 
     RUN_TEST(S03_AC3_position_packet_decodes_with_1e7_conversion_and_rx_time);
 
     RUN_TEST(S03_AC4_send_text_matches_byte_golden);
 
     RUN_TEST(S03_AC5_on_private_fires_for_portnum_256_511_untouched);
+    RUN_TEST(S03_AC5_private_portnum_boundary_255_is_not_private);
+    RUN_TEST(S03_AC5_private_portnum_boundary_256_is_private);
+    RUN_TEST(S03_AC5_private_portnum_boundary_511_is_private);
+    RUN_TEST(S03_AC5_private_portnum_boundary_512_is_not_private);
 
     RUN_TEST(S03_AC6_silence_30s_reconnects_ready_disconnected_handshake);
     RUN_TEST(S03_AC6_transport_error_triggers_reconnect);
