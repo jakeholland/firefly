@@ -44,7 +44,13 @@ add_executable(ffsim
 set_target_properties(ffsim PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
 
 target_link_libraries(ffsim PRIVATE
-    ff-core
+    # ff-core: not listed explicitly — main.c's ff_version.h and
+    # fixture_view.c's ff_app_state.h (-> S06's ff_radar.h) both need it,
+    # but ff-sim-fixture already brings it in transitively (ff-sim-fixture
+    # PUBLIC ff-app INTERFACE ff-core, see app/CMakeLists.txt's S06 note);
+    # listing it again here just duplicated the static-library entry on
+    # the final link line (harmless on Linux/GNU ld, but Apple's ld warns
+    # "ignoring duplicate libraries" for it).
     ff-sim-fixture  # S13b — fixture.h loader (fixture.c above)
     lvgl::lvgl
     ff-stb-image-write

@@ -46,7 +46,7 @@ unrelated-looking golden diff.)
 | `fixture` | string | `""` | Debug-only provenance name. The S13 placeholder debug face renders this verbatim as its title — real S06+ screens ignore it. Conventionally matches the filename stem. |
 | `face` | string enum: `radar` \| `now` \| `signals` \| `settings` | `radar` | Which `ff_app_state_t.active_face` this snapshot represents; selects which section the S13 placeholder debug face's body renders. |
 
-## `radar` (mirrors `ff_app_radar_t`)
+## `radar` (mirrors `ff_radar_view_t`, `core/include/ff_radar.h`)
 
 ```json
 "radar": {
@@ -78,11 +78,13 @@ unrelated-looking golden diff.)
 | `clock_str` | string (≤5 chars) | `""` |
 | `batt_pct` | integer | `0` (note: `-1` is the documented "unknown" sentinel elsewhere in this codebase — pass it explicitly if that's what a fixture needs) |
 | `mesh_ok` | bool | `false` |
-| `dots` | array of `{ring_deg, initial, color_idx, stale}`, up to `FF_APP_RADAR_MAX_DOTS` (8) — more than 8 fails the whole load (`FF_FIXTURE_ERR_TOO_BIG`) | `[]` |
+| `dots` | array of `{ring_deg, initial, color_idx, stale}`, up to `FF_CREW_MAX` (8) — more than 8 fails the whole load (`FF_FIXTURE_ERR_TOO_BIG`) | `[]` |
 
 Field names/semantics are transcribed 1:1 from `docs/specs/S06-radar-face.md`'s
-`ff_radar_view_t`. See `ff_app_state.h`'s header comment for why this
-loader's struct is named `ff_app_radar_t`, not `ff_radar_view_t`.
+`ff_radar_view_t` — as of S06, `ff_app_state_t.radar` *is* the real
+`core/include/ff_radar.h` `ff_radar_view_t` (DRIFT GUARD resolution; see
+`ff_app_state.h`'s header comment). `dots[]`'s cap is `FF_CREW_MAX` (8, from
+`core/include/ff_crew.h`), not an app-local constant.
 
 ## `now` (flattened `ff_now_row_t`/`ff_next_t`, S07)
 

@@ -24,6 +24,8 @@
 #include <string.h>
 #include <stdlib.h>
 
+#include "ff_crew.h" /* FF_CREW_MAX — radar.dots[] cap, see fx_parse_radar_dots below */
+
 /* Input-size / token-arena budget. Fixtures are small, hand-authored
  * dev/test data (not attacker-controlled RF bytes like festpack's input),
  * but the same zero-alloc fixed-arena discipline applies per
@@ -200,8 +202,8 @@ static uint32_t fx_color_rgb(fx_ctx_t const *c, int i, uint32_t dflt)
  * ------------------------------------------------------------------- */
 
 static const fx_enum_entry_t fx_radar_mode_table[] = {
-    {"live", FF_APP_RADAR_LIVE}, {"stale", FF_APP_RADAR_STALE}, {"lost", FF_APP_RADAR_LOST},
-    {"close", FF_APP_RADAR_CLOSE}, {"nofix", FF_APP_RADAR_NOFIX}, {"nosel", FF_APP_RADAR_NOSEL},
+    {"live", RADAR_LIVE}, {"stale", RADAR_STALE}, {"lost", RADAR_LOST},
+    {"close", RADAR_CLOSE}, {"nofix", RADAR_NOFIX}, {"nosel", RADAR_NOSEL},
 };
 
 /* fx_parse_radar_dots — fail-loud on an oversized array (orchestrator
@@ -211,21 +213,21 @@ static const fx_enum_entry_t fx_radar_mode_table[] = {
  * grows a 9th dot should get a loud "fixture X has 9 items, cap is 8"
  * failure, not a quietly-dropped entry that surfaces later as an
  * unrelated-looking golden diff). The size check runs BEFORE any writes
- * into `r->dots[]`, so `r->n_dots` never exceeds FF_APP_RADAR_MAX_DOTS
+ * into `r->dots[]`, so `r->n_dots` never exceeds FF_CREW_MAX
  * on any code path through this function — see test_fixture.c's
  * `radar_dots_over_cap_fails_loud` for the regression test (and the
  * mutation-testing rationale: if this check is ever deleted, that test
  * stops observing FF_FIXTURE_ERR_TOO_BIG and fails, rather than the
  * cap-overflow going unnoticed as before). */
-static ff_fixture_result_t fx_parse_radar_dots(fx_ctx_t const *c, int arr_i, ff_app_radar_t *r)
+static ff_fixture_result_t fx_parse_radar_dots(fx_ctx_t const *c, int arr_i, ff_radar_view_t *r)
 {
     jsmntok_t const *at = &c->toks[arr_i];
     if (at->type != JSMN_ARRAY) return FF_FIXTURE_ERR_JSON;
-    if (at->size > FF_APP_RADAR_MAX_DOTS) return FF_FIXTURE_ERR_TOO_BIG;
+    if (at->size > FF_CREW_MAX) return FF_FIXTURE_ERR_TOO_BIG;
     int idx = arr_i + 1;
     for (int i = 0; i < at->size; i++) {
         int obj_i = idx;
-        ff_app_radar_dot_t *d = &r->dots[r->n_dots];
+        ff_radar_dot_t *d = &r->dots[r->n_dots];
         memset(d, 0, sizeof(*d));
         int t;
         if (fx_obj_get(c, obj_i, "ring_deg", &t)) d->ring_deg = (float)fx_num(c, t, 0.0);
@@ -242,13 +244,12 @@ static ff_fixture_result_t fx_parse_radar_dots(fx_ctx_t const *c, int arr_i, ff_
     return FF_FIXTURE_OK;
 }
 
-static ff_fixture_result_t fx_parse_radar(fx_ctx_t const *c, int obj_i, ff_app_radar_t *r)
+static ff_fixture_result_t fx_parse_radar(fx_ctx_t const *c, int obj_i, ff_radar_view_t *r)
 {
     int t;
     if (fx_obj_get(c, obj_i, "mode", &t)) {
-        r->mode = (ff_app_radar_mode_t)fx_enum(c, t, fx_radar_mode_table,
-                                                sizeof(fx_radar_mode_table) / sizeof(fx_radar_mode_table[0]),
-                                                FF_APP_RADAR_NOSEL);
+        r->mode = (radar_mode_t)fx_enum(c, t, fx_radar_mode_table,
+                                         sizeof(fx_radar_mode_table) / sizeof(fx_radar_mode_table[0]), RADAR_NOSEL);
     }
     if (fx_obj_get(c, obj_i, "arrow_deg", &t)) r->arrow_deg = (float)fx_num(c, t, 0.0);
     if (fx_obj_get(c, obj_i, "arrow_valid", &t)) r->arrow_valid = fx_bool(c, t, false);
@@ -423,13 +424,13 @@ ff_fixture_result_t ff_fixture_load_json(char const *json, size_t len, ff_app_st
      * the enclosing section is present with the field omitted, or the
      * whole section is absent from the document: plain memset(0) above
      * would otherwise silently give radar.mode the *first* enum value
-     * (FF_APP_RADAR_LIVE == 0), a much stronger, more misleading claim
+     * (RADAR_LIVE == 0), a much stronger, more misleading claim
      * than "no fixture data provided" (CLAUDE.md: "unknown = explicitly
      * unknown... never fake freshness, positions, or times" — LIVE is
      * exactly the kind of fake-freshness claim that principle rules
      * out). Section parsers below may still override these from
      * explicit JSON fields. */
-    out->radar.mode = FF_APP_RADAR_NOSEL;
+    out->radar.mode = RADAR_NOSEL;
     out->flare.expires_in_ms = -1;
 
     int t;

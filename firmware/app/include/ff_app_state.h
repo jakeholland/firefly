@@ -5,16 +5,14 @@
  * Spec: docs/specs/S13-sim-target.md slice b ("fixtures + headless"),
  * docs/specs/S14-testing-ci.md slice b ("goldens tooling").
  *
- * This header is [api] scaffolding for Wave 3 (S06/S08/S10 own the real
- * screens): it exists now so the dev-loop infra — JSON fixtures, the
- * headless per-fixture renderer, and golden-screenshot tooling — has a
+ * This header started as [api] scaffolding for Wave 3 (S06/S08/S10 own the
+ * real screens): it existed so the dev-loop infra — JSON fixtures, the
+ * headless per-fixture renderer, and golden-screenshot tooling — had a
  * concrete state shape to load into and render, before any real screen
- * exists. Per CLAUDE.md ("core… no logic; screens only render") and the
- * task brief ("keep it dumb data, no logic"): this file is nothing but
- * plain structs and named constants. No function bodies, no behavior, no
- * includes from core/ or meshclient/ — deliberately self-contained so
- * targets/sim/fixture.c (and any screen, later) can depend on it without
- * pulling in domain logic it doesn't need.
+ * existed. The `now`/`signals`/`flare`/`settings` sections are still that
+ * kind of scaffolding (plain structs, no behavior, no core/ includes,
+ * pending their own S07/S08/S10/S11 slices) — but `radar` is not, as of
+ * S06 (see the section below).
  *
  * ## Shape: union of what each mockup face needs
  * One sub-struct per face (`radar`, `now`, `signals`, `flare`, `settings`),
@@ -22,29 +20,29 @@
  * `fp_pack_t`/`ff_crew_t`/etc. (fixtures are standalone JSON snapshots, not
  * live wiring; see tests/fixtures/README.md for the schema and why).
  *
- * ## `radar` and `ff_radar_view_t` — a deliberate naming split, not a typo
- * docs/specs/S06-radar-face.md specs a real `ff_radar_view_t` that will
- * live in `core/include/ff_radar.h` once S06 lands, computed by
- * `ff_radar_compute()`. This header's `ff_app_radar_t` mirrors that
- * struct's fields 1:1 (same names, same types, same semantics) so a
- * future adapter is a pure field-copy — but it is deliberately NOT named
- * `ff_radar_view_t` and does NOT live in core/. Two anonymous structs with
- * identical member lists defined in two different headers are still
- * distinct, incompatible C types even when the typedef name matches
- * exactly (each `struct { ... }` is its own type); reusing the name here
- * would set up a hard redefinition error (or, on some compilers, a silent
- * ODR violation) the moment both headers are included in the same
- * translation unit — which every future screen file will do. Deviation
- * flagged here and in the PR body per AGENTS.md; S06's implementer should
- * either (a) have `ff_app_state_t.radar` become a real `ff_radar_view_t`
- * once core/include/ff_radar.h exists (delete `ff_app_radar_t`, s/.//),
- * or (b) keep both and add a one-line copy adapter — (a) is preferred.
+ * ## `radar` — DRIFT GUARD resolution (PR #12 review finding #5)
+ * Earlier waves carried a scaffolding `ff_app_radar_t` here that mirrored
+ * docs/specs/S06-radar-face.md's `ff_radar_view_t` sketch field-for-field
+ * under a different type name, specifically because `core/include/ff_radar.h`
+ * didn't exist yet (two anonymous structs with identical member lists are
+ * still distinct C types under the same typedef name, so reusing the name
+ * before the real header existed would have been a redefinition hazard).
+ * S06 has now landed `core/include/ff_radar.h` / `ff_radar_view_t`
+ * (computed by `ff_radar_compute()`) for real, so per that spec comment's
+ * option (a): `ff_app_radar_t` is gone, and `radar` below is the genuine
+ * `ff_radar_view_t` — this header now takes a `core/` dependency
+ * (`#include "ff_radar.h"`) specifically for this one field, which is why
+ * the "no includes from core/" rule in this file's history no longer
+ * applies file-wide (it still holds for every other section, which remain
+ * plain scaffolding).
  */
 #ifndef FF_APP_STATE_H
 #define FF_APP_STATE_H
 
 #include <stdbool.h>
 #include <stdint.h>
+
+#include "ff_radar.h" /* S06 — ff_radar_view_t, the real `radar` field type */
 
 #ifdef __cplusplus
 extern "C" {
@@ -65,56 +63,10 @@ extern "C" {
 #define FF_APP_FIXTURE_NAME_LEN 32
 
 /* -------------------------------------------------------------------
- * radar (S06) — mirrors ff_radar_view_t field-for-field. See the
- * header-comment deviation note above for why the type name differs.
+ * radar (S06) — real ff_radar_view_t, defined in core/include/ff_radar.h
+ * (included above). See this header's top comment for the DRIFT GUARD
+ * resolution: there is no app-local radar struct anymore.
  * ------------------------------------------------------------------- */
-
-/* Mirrors S06's radar_mode_t exactly (name, order, and members). */
-typedef enum {
-    FF_APP_RADAR_LIVE,
-    FF_APP_RADAR_STALE,
-    FF_APP_RADAR_LOST,
-    FF_APP_RADAR_CLOSE,
-    FF_APP_RADAR_NOFIX,
-    FF_APP_RADAR_NOSEL,
-} ff_app_radar_mode_t;
-
-/* FF_CREW_MAX (firmware/core/include/ff_crew.h) is 8 as of S02; mirrored
- * here as a literal rather than an include (see header-comment: this file
- * takes no core/ dependency). If FF_CREW_MAX ever changes, this constant
- * must be updated to match — there is no automatic link between them. */
-#define FF_APP_RADAR_MAX_DOTS 8
-
-typedef struct {
-    float   ring_deg;  /* heading-relative bearing around the crew ring */
-    char    initial;   /* display letter, '\0' if unknown */
-    uint8_t color_idx;  /* index into the theme crew palette */
-    bool    stale;      /* dashed-dot rendering */
-} ff_app_radar_dot_t;
-
-/* DRIFT GUARD (PR #12 review finding #5): this struct's field list must
- * stay byte-for-byte in sync with docs/specs/S06-radar-face.md's
- * ff_radar_view_t sketch — see that spec file's matching comment right
- * above its own struct. Nothing enforces this at compile time (can't,
- * until core/include/ff_radar.h actually exists — see the header
- * comment above for the naming-collision reason this isn't just a
- * shared typedef). Until S06 lands and this whole struct is deleted in
- * favor of the real ff_radar_view_t: if you add/remove/retype a field
- * in ONE of these two places, update the other in the same change. */
-typedef struct {
-    ff_app_radar_mode_t mode;
-    float arrow_deg;             /* smoothed screen rotation */
-    bool  arrow_valid;           /* false in CLOSE/NOFIX/NOSEL */
-    char  name[FF_APP_NAME_LEN];
-    char  dist_str[FF_APP_STR_SHORT];
-    char  age_str[FF_APP_STR_SHORT];
-    int8_t trend;                /* -1/0/+1 (CLOSE mode hot/cold) */
-    ff_app_radar_dot_t dots[FF_APP_RADAR_MAX_DOTS];
-    uint8_t n_dots;
-    char  clock_str[6];
-    int8_t batt_pct;
-    bool  mesh_ok;
-} ff_app_radar_t;
 
 /* -------------------------------------------------------------------
  * now (S07) — flattened: fp_set_t pointers in the real core struct
@@ -234,7 +186,7 @@ typedef struct {
 
     ff_app_face_t active_face;
 
-    ff_app_radar_t    radar;
+    ff_radar_view_t   radar;
     ff_app_now_t      now;
     ff_app_signals_t  signals;
     ff_app_flare_t    flare;

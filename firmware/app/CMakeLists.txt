@@ -12,3 +12,10 @@ add_library(ff-app INTERFACE)
 # Header-only: no .c sources belong here until a real screen lands (no
 # domain logic allowed in app/, per CLAUDE.md).
 target_include_directories(ff-app INTERFACE include)
+
+# S06 — ff_app_state.h's `radar` field is the real core/include/ff_radar.h
+# ff_radar_view_t (DRIFT GUARD resolution, see that header's comment), so
+# anything consuming ff_app_state.h now needs ff-core's include path too.
+# INTERFACE, not PRIVATE: ff-app itself has no sources to compile, only
+# this header to propagate.
+target_link_libraries(ff-app INTERFACE ff-core)
