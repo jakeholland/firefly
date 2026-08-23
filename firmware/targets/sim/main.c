@@ -60,10 +60,12 @@
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "stb_image_write.h"
 
+#include "ff_flare.h" /* S10 slice b — ff_flare_init/ff_flare_t, window mode's live engine */
 #include "ff_version.h"
 
 #include "fixture.h"
 #include "fixture_view.h"
+#include "scr_flare.h" /* S10 slice b — full-screen receive takeover */
 #include "scr_nav.h"
 
 #define FF_SIM_WINDOW_W 456
@@ -99,11 +101,24 @@ static void ff_build_boot_screen(void)
 /* S06 — replaces the S13 debug placeholder with the real shell+radar
  * face whenever a loaded fixture's active_face is radar; every other
  * face still falls through to fixture_view.h's placeholder (Now/Signals/
- * Settings screens arrive with their own specs — S07/S08/S11). */
-static void ff_build_face_screen(ff_app_state_t const *state)
+ * Settings screens arrive with their own specs — S07/S08/S11).
+ *
+ * S10 slice b: a pending receive takeover (`state->flare.takeover_active`)
+ * is checked FIRST and, if true, is the ONLY thing built — per spec
+ * ("full-screen takeover regardless of current face"), it replaces
+ * whatever face would otherwise show, exactly like a real full-screen
+ * interrupt would; `active_face` is not consulted at all on that path.
+ * `flare_rt` (NULL in headless one-shot rendering, a real per-process
+ * engine in window mode — see ff_run_window below) is forwarded to
+ * whichever screen builder needs it for its button callbacks. */
+static void ff_build_face_screen(ff_app_state_t const *state, ff_flare_t *flare_rt)
 {
+    if (state->flare.takeover_active) {
+        ff_scr_flare_build_takeover(&state->flare, flare_rt);
+        return;
+    }
     if (state->active_face == FF_APP_FACE_RADAR) {
-        ff_scr_nav_build(state);
+        ff_scr_nav_build(state, flare_rt);
     } else {
         ff_fixture_view_build(state);
     }
@@ -195,7 +210,13 @@ static int ff_run_headless(const char *screenshot_dir, const char *fixture_path)
             lv_deinit();
             return 1;
         }
-        ff_build_face_screen(&state);
+        /* flare_rt = NULL: a headless run renders exactly one frame and
+         * exits, so there is no interactivity for any GO/DISMISS/CANCEL
+         * button press to act on — see ff_build_face_screen's doc
+         * comment and scr_flare.h's top comment for why NULL is always a
+         * safe, fully-defined value here (buttons still render, just
+         * inertly). */
+        ff_build_face_screen(&state, NULL);
 
         char stem[256];
         ff_fixture_stem(fixture_path, stem, sizeof(stem));
@@ -222,6 +243,15 @@ static int ff_run_window(const char *fixture_path, bool mock_clock)
     lv_sdl_window_set_title(disp, "Firefly (ffsim)");
     lv_sdl_mouse_create();
 
+    /* S10 slice b: window mode owns exactly ONE real `ff_flare_t` for the
+     * whole process — the live engine GO/DISMISS/CANCEL/FLARE button
+     * presses actually mutate (see ff_build_face_screen's doc comment).
+     * A local (not static) variable is fine here: ff_run_window never
+     * returns before the process exits (its event loop is `while(true)`
+     * below), so this outlives every screen built against its address. */
+    ff_flare_t flare_rt;
+    ff_flare_init(&flare_rt);
+
     if (fixture_path != NULL) {
         ff_app_state_t state;
         ff_fixture_result_t fr = ff_fixture_load_file(fixture_path, &state);
@@ -229,7 +259,7 @@ static int ff_run_window(const char *fixture_path, bool mock_clock)
             fprintf(stderr, "ffsim: failed to load fixture %s (error %d)\n", fixture_path, (int)fr);
             return 1;
         }
-        ff_build_face_screen(&state);
+        ff_build_face_screen(&state, &flare_rt);
     } else {
         ff_build_boot_screen();
     }

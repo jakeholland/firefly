@@ -122,15 +122,50 @@ object sets `ff_app_next_t.valid = true`.
 up to `FF_APP_SIGNALS_MAX_ITEMS` (8), newest first — a 9th fails the whole
 load with `FF_FIXTURE_ERR_TOO_BIG`.
 
-## `flare` (S10)
+## `flare` (S10 slice b)
+
+`ff_app_flare_t` mirrors `core/include/ff_flare.h`'s `ff_flare_t` shape:
+THREE independent groups (outbound send, pending takeover, navigation
+lock) that can each be true or false at once — see that header's
+"Independent state" doc comment and `docs/specs/S10-flare.md`'s Amendments
+(2026-08-23, PR #15) for why a single `state` enum (this section's
+pre-slice-b shape) doesn't honestly represent this data. All three groups
+can be present in the same fixture (I can be sending my own flare, have a
+*different* crew member's takeover pending, and still be locked onto a
+*third* member's earlier flare, simultaneously):
 
 ```json
-"flare": {"state": "received", "from_name": "MAX", "expires_in_ms": 4200}
+"flare": {
+  "sending": true, "send_expires_in_ms": 120000,
+  "takeover_active": true, "takeover_from_name": "KEV",
+  "takeover_bearing_deg": 90.0, "takeover_dist_str": "40 m",
+  "takeover_expires_in_ms": 4200,
+  "locked": true, "locked_from_name": "DANA", "locked_expires_in_ms": 9000
+}
 ```
 
-`state` is one of `idle`\|`sending`\|`received`\|`locked`. `expires_in_ms`
-defaults to `-1` ("n/a") both when the `flare` section is entirely absent
-and when the key itself is omitted or `null` within it.
+| Key | Type | Default |
+|---|---|---|
+| `sending` | bool | `false` |
+| `send_expires_in_ms` | integer | `-1` ("n/a") |
+| `takeover_active` | bool | `false` |
+| `takeover_from_name` | string (≤15 chars) | `""` |
+| `takeover_bearing_deg` | number, `[0, 360)` | `0` |
+| `takeover_dist_str` | string (≤11 chars) | `""` |
+| `takeover_expires_in_ms` | integer | `-1` ("n/a") |
+| `locked` | bool | `false` |
+| `locked_from_name` | string (≤15 chars) | `""` |
+| `locked_expires_in_ms` | integer | `-1` ("n/a") |
+
+Each group's own `*_expires_in_ms` defaults to `-1` independently — both
+when the whole `flare` section is absent, and when that one key is
+omitted/`null` while the other two groups are present (see
+`test_fixture.c`'s `flare_omitted_group_defaults_independently`).
+`takeover_bearing_deg`/`takeover_dist_str` have no equivalent in core's
+`ff_flare_t` (that module deliberately has zero `ff_crew`/`ff_radar`
+dependency) — they're the app layer's own already-computed
+bearing/distance-to-sender read for the takeover screen, same convention
+as `radar.dist_str` above.
 
 ## `settings` (S11)
 
@@ -169,6 +204,16 @@ and a worst-case crew-ring layout).
 | `radar_nofix.json` | `nofix` | `""` (unknown — my position invalid) | `6 MIN` (the *selected member's* last-known age is still honestly known even though mine isn't) | arrow hidden, "NO FIX - RADIO ONLY" |
 | `radar_nosel.json` | `nosel` | `""` | `""` | no paired crew member at all — empty-crew state, `mesh_ok: false` for variety |
 | `radar_never.json` | `lost` (folded — see below) | `""` | `""` | selected member "JAMIE" is paired but has never sent a fix; `age_str[0] == '\0'` is what `scr_radar.c` keys off to show "NO FIX YET" instead of a "LAST SEEN" chip — NOT distinguishable from a genuinely-old fix by `mode` alone (both are `RADAR_LOST`; see `radar_lost.json` above for the other side of that same `mode`) |
+
+Three S10 slice b fixtures exist alongside the radar set, one per
+`ff_scr_flare_*` builder: `flare_takeover.json` (`flare.takeover_active`
+— the full-screen receive takeover, which per spec interrupts whatever
+`face`/`radar` content is also present in the fixture, exercised here
+deliberately by pairing it with a live `radar` section that never
+actually renders), `flaring_self.json` (`flare.sending` — the pulsing
+sender overlay on top of an otherwise-NOSEL radar tile), and
+`radar_flare_locked.json` (`flare.locked` on an otherwise-ordinary LIVE
+radar render — the lock chip).
 
 **Provenance note:** the specific numbers (DANA, 320 m, 8 s / 4 min / 15 m,
 and PR B's additions) came from the task briefs that commissioned these
