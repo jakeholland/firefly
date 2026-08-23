@@ -8,6 +8,11 @@
  * and fall back to exact defaults rather than trusting garbage. */
 #define FF_SETTINGS_STORE_KEY "ff.settings"
 #define FF_SETTINGS_MAGIC ((uint32_t)0x46465331u) /* ASCII "FFS1" */
+/* Bump on ANY change to ff_settings_t's layout — field add/remove/reorder/
+ * retype — not just changes that alter sizeof(). The payload_size check
+ * below only catches size mismatches; two different layouts can share the
+ * same sizeof() (e.g. a reordering, or swapping a bool+uint8_t pair) and
+ * would otherwise pass validation with silently corrupted semantics. */
 #define FF_SETTINGS_FORMAT_VERSION ((uint16_t)1u)
 
 typedef struct {
@@ -129,6 +134,24 @@ void ff_water_state_init(ff_water_state_t *state)
     memset(state, 0, sizeof(*state));
 }
 
+/* Counts how many of the `delta` minutes starting at `start_min`
+ * (normalized 0..1439) are NOT quiet hours, i.e. awake minutes, per the
+ * spec's "every water_min while awake". `delta` is bounded to < 1440 by
+ * ff_water_tick (see ff_norm_min's wraparound), so this walks at most
+ * one lap of the clock — a plain per-minute scan, since ticks are an
+ * infrequent, human-timescale event (not a hot loop). */
+static uint16_t ff_awake_minutes_in_window(ff_settings_t const *s, int32_t start_min, int32_t delta)
+{
+    uint16_t awake = 0;
+    for (int32_t i = 0; i < delta; i++) {
+        int32_t minute = (start_min + i) % 1440;
+        if (!ff_quiet_now(s, (int16_t)minute)) {
+            awake++;
+        }
+    }
+    return awake;
+}
+
 bool ff_water_tick(ff_water_state_t *state, ff_settings_t const *s, int16_t now_min)
 {
     if (state == NULL || s == NULL) {
@@ -147,7 +170,8 @@ bool ff_water_tick(ff_water_state_t *state, ff_settings_t const *s, int16_t now_
         return false;
     }
 
-    int32_t delta = nm - state->last_now_min;
+    int32_t start = state->last_now_min;
+    int32_t delta = nm - start;
     if (delta < 0) {
         delta += 1440;
     }
@@ -159,15 +183,29 @@ bool ff_water_tick(ff_water_state_t *state, ff_settings_t const *s, int16_t now_
         return false;
     }
 
-    state->elapsed_min = (uint16_t)(state->elapsed_min + (uint16_t)delta);
+    /* Only minutes spent awake count toward the interval — quiet-hours
+     * minutes are never banked, per spec ("every water_min while
+     * awake", suppressed in quiet hours). Saturating add: elapsed_min
+     * can never usefully exceed water_min (max preset 120), so this
+     * only guards against a corrupt/out-of-range water_min ever making
+     * the accumulator overflow instead of just plateauing. */
+    uint16_t awake_delta = ff_awake_minutes_in_window(s, start, delta);
+    uint32_t sum = (uint32_t)state->elapsed_min + (uint32_t)awake_delta;
+    state->elapsed_min = (uint16_t)(sum > UINT16_MAX ? UINT16_MAX : sum);
 
     if (state->elapsed_min < s->water_min) {
         return false;
     }
 
     if (ff_quiet_now(s, (int16_t)nm)) {
-        /* Interval elapsed during quiet hours: consume it silently
-         * rather than firing the instant quiet hours end. */
+        /* Defensive boundary case: accrual only ever counts awake
+         * minutes now, so this should be unreachable in practice — but
+         * if `nm` itself (the tick instant, exclusive upper bound of
+         * the window just scanned) lands exactly on a quiet-hours
+         * boundary, don't deliver the nudge into quiet hours. Consumed,
+         * not deferred (same policy as the whole-interval-during-quiet
+         * case above), so this can't compound into a double-length
+         * silent window either. */
         state->elapsed_min = 0;
         return false;
     }

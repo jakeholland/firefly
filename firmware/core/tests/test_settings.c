@@ -368,19 +368,39 @@ static void S11_AC4_water_tick_silent_during_quiet_hours(void)
     ff_water_state_t st;
     ff_water_state_init(&st);
 
-    TEST_ASSERT_FALSE(ff_water_tick(&st, &s, 500)); /* prime, inside quiet */
+    TEST_ASSERT_FALSE(ff_water_tick(&st, &s, 300)); /* prime, inside quiet */
 
-    /* Interval elapses exactly while still inside quiet hours: it would
-     * fire, but is suppressed instead. */
-    TEST_ASSERT_FALSE(ff_water_tick(&st, &s, 590)); /* +90, still quiet (4:50a-9:50a window) */
+    /* 295 minutes of WALL-CLOCK time elapse (> water_min=90), entirely
+     * inside quiet hours -> zero awake minutes accrued -> never fires,
+     * no matter how long the quiet span runs. */
+    TEST_ASSERT_FALSE(ff_water_tick(&st, &s, 595)); /* +295, still quiet (300-595 < 600) */
+    TEST_ASSERT_FALSE(ff_water_tick(&st, &s, 600)); /* +5, still quiet (599 < 600) */
 
-    /* The suppressed cycle is consumed, not deferred: a small tick just
-     * after quiet hours end does NOT fire retroactively. */
-    TEST_ASSERT_FALSE(ff_water_tick(&st, &s, 605)); /* +15, quiet just ended -> elapsed 15 */
+    /* Counting only starts once minutes are genuinely awake; it fires
+     * after exactly water_min awake minutes, not sooner. */
+    TEST_ASSERT_TRUE(ff_water_tick(&st, &s, 690)); /* +90, fully awake -> fires */
+}
 
-    /* Counting resumes from the quiet-suppressed reset; it fires once a
-     * full interval has genuinely elapsed while awake. */
-    TEST_ASSERT_TRUE(ff_water_tick(&st, &s, 680)); /* +75 -> elapsed 90, not quiet -> fires */
+static void S11_AC4_quiet_minutes_do_not_accrue(void)
+{
+    /* Regression for the reviewer-reported gap: elapsed_min must only
+     * count AWAKE minutes, not be gated solely at the fire instant.
+     * water_min=90, quiet 4a-10a (240-600): prime@550 (quiet), tick@600
+     * (+50, all quiet -> 0 awake accrued), tick@640 (+40, all awake ->
+     * 40 accrued) must NOT fire (40 < 90). The pre-fix implementation
+     * banked the 50 quiet minutes too and fired here at 90/90. */
+    ff_settings_t s;
+    memset(&s, 0, sizeof(s));
+    s.water_min = 90;
+    s.quiet_from_min = 240;
+    s.quiet_to_min = 600;
+
+    ff_water_state_t st;
+    ff_water_state_init(&st);
+
+    TEST_ASSERT_FALSE(ff_water_tick(&st, &s, 550)); /* prime, inside quiet */
+    TEST_ASSERT_FALSE(ff_water_tick(&st, &s, 600)); /* +50, all quiet -> 0 awake accrued */
+    TEST_ASSERT_FALSE(ff_water_tick(&st, &s, 640)); /* +40, all awake -> 40 accrued; must NOT fire */
 }
 
 /* ---------------------------------------------------------------------
@@ -439,6 +459,7 @@ int main(void)
     RUN_TEST(S11_AC4_water_tick_off_never_fires);
     RUN_TEST(S11_AC4_water_tick_resets_on_interval_change);
     RUN_TEST(S11_AC4_water_tick_silent_during_quiet_hours);
+    RUN_TEST(S11_AC4_quiet_minutes_do_not_accrue);
 
     RUN_TEST(S11_AC6_save_issues_exactly_one_store_write);
     RUN_TEST(S11_AC6_load_does_not_write_to_store);

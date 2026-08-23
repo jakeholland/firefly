@@ -47,6 +47,10 @@ typedef struct {
     uint16_t water_min;             /* water-nudge interval, minutes; 0 = off, default 90 */
     uint16_t quiet_from_min;        /* quiet hours start, local minutes-of-day, default 240 (4:00a) */
     uint16_t quiet_to_min;          /* quiet hours end, local minutes-of-day, default 600 (10:00a)  */
+    /* Not guaranteed NUL-terminated by this layer — load/save round-trip
+     * the raw bytes as-is. Slice b (name-entry UI) must NUL-terminate
+     * (or otherwise bound) whatever it writes here before this layer or
+     * any consumer treats it as a C string. */
     char my_name[FF_SETTINGS_NAME_LEN];
 
     /* TODO(S01): replace compass_cal_blob with a real ff_geo_cal_t once
@@ -104,20 +108,24 @@ typedef struct {
 void ff_water_state_init(ff_water_state_t *state);
 
 /**
- * ff_water_tick — advance the water-nudge timer by the elapsed time
- * between this call's `now_min` and the previous call's, and report
- * whether the nudge should fire now.
+ * ff_water_tick — advance the water-nudge timer by the AWAKE minutes
+ * elapsed between this call's `now_min` and the previous call's, and
+ * report whether the nudge should fire now.
  *
- * - Fires (returns true) once `water_min` minutes have elapsed since the
- *   last fire, awake, outside quiet hours.
+ * - Fires (returns true) once `water_min` minutes have elapsed AWAKE
+ *   (outside quiet hours) since the last fire/reset — per spec, "every
+ *   water_min while awake". Minutes spent inside quiet hours are never
+ *   counted toward the interval, not just gated at the fire instant: a
+ *   tick spanning a quiet/awake boundary only banks the awake portion.
  * - `water_min == 0` means off: never fires.
  * - A change in `s->water_min` since the last tick resets the elapsed
  *   timer (that tick reports false; the new interval starts counting
  *   from this call).
- * - Silent during quiet hours: if the interval has elapsed while
- *   `ff_quiet_now` is true, the tick does not fire — the elapsed timer
- *   is consumed (reset to 0) rather than firing retroactively the
- *   instant quiet hours end.
+ * - Silent during quiet hours: since only awake minutes accrue, the
+ *   interval essentially can't complete while quiet — the residual
+ *   check against `ff_quiet_now` at the tick instant is a defensive
+ *   boundary case (`now_min` landing exactly on a quiet transition),
+ *   consumed (reset to 0) rather than firing into quiet hours.
  * - `now_min` is local minutes-of-day (0..1439, normalized modulo 1440,
  *   same units as ff_quiet_now); the first call after init/reset primes
  *   the state and never fires.
