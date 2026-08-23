@@ -146,12 +146,20 @@ void ff_fixture_view_build(ff_app_state_t const *state)
 
     /* Flare is a cross-face overlay in the real app (S10: "full-screen
      * takeover regardless of current face"), so it's always appended
-     * rather than gated behind active_face. `face_text`'s 448-byte budget
-     * leaves comfortable headroom before this 512-byte buffer for the
-     * flare line's worst case. */
+     * rather than gated behind active_face. `buf` is sized to the sum of
+     * both source buffers' FULL declared capacity (448 + 128) plus the
+     * separator/terminator, not a "should be enough in practice" guess —
+     * GCC's `-Wformat-truncation` (gcc-only; AppleClang doesn't emit
+     * this, which is why this was missed building locally on macOS, same
+     * "caught in CI, not locally" class of gap this repo's other
+     * cross-compiler notes call out) reasons conservatively from each
+     * source buffer's declared size, not its actual (much shorter)
+     * runtime contents, and fails the build under -Werror otherwise —
+     * verified against a real Linux/gcc CI failure, not just satisfying
+     * the warning speculatively. */
     char flare_line[128];
     ffv_flare_line(flare_line, sizeof(flare_line), &state->flare);
-    char buf[512];
+    char buf[sizeof(face_text) + sizeof(flare_line) + 2]; /* +1 '\n', +1 NUL */
     snprintf(buf, sizeof(buf), "%s\n%s", face_text, flare_line);
 
     lv_obj_t *body = lv_label_create(puck);
