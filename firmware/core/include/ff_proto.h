@@ -12,18 +12,22 @@
  * S06/S10.
  *
  * ## Wire format
- * `[ver:1][type:1][body...]`, little-endian, max FF_PROTO_MAX_PAYLOAD (200)
- * bytes total. `ver` is always FF_PROTO_VERSION (1) on encode. On decode,
- * an unrecognized `ver` or `type`, a body too short for its type, or a
- * total length outside [2, FF_PROTO_MAX_PAYLOAD] all mean "ignore silently"
- * (forward compat with newer/older pucks at the same festival) — decode
- * returns 0 and never reads past `buf[0..n)`.
+ * `[ver:1][type:1][body...]`, little-endian. FF_PROTO_MAX_PAYLOAD (200)
+ * bytes total is the encode/transport-level maximum (a Meshtastic packet
+ * size bound, not a per-message body allowance). `ver` is always
+ * FF_PROTO_VERSION (1) on encode.
  *
- * Fixed-body types (PULSE/FLARE_END/RALLY_CLEAR) and any trailing bytes
- * beyond what a variable-body type declares (RALLY's name, STATUS's text)
- * are ignored rather than rejected — this is what lets a minor-version
- * receiver decode a message a future minor version padded with extra
- * fields it doesn't understand yet.
+ * Decode is **strict**: an unrecognized `ver` or `type`, or a body that
+ * isn't *exactly* the defined length for its type (fixed 0 for
+ * PULSE/FLARE_END/RALLY_CLEAR, exactly 2/4 for FLARE/ACK_PING, exactly
+ * `9 + name_len` for RALLY, exactly `1 + status_len` for STATUS) — all
+ * mean "ignore silently" (forward compat with newer/older pucks at the
+ * same festival is handled by the `ver` byte, not by tolerating unexplained
+ * trailing bytes within `ver=1`; see docs/specs/S04-firefly-protocol.md's
+ * Amendments). Decode returns 0 and never reads past `buf[0..n)`. See
+ * S04-firefly-protocol.md's Amendments (PR #10) for the ruling and
+ * rationale — untrusted RF input silently swallowing trailing garbage
+ * could mask a framing/concatenation bug elsewhere.
  *
  * ## Deviations from the spec's interface sketch (see PR for detail)
  *  - The spec's `## Interface` code block only shows encoders for
@@ -145,11 +149,13 @@ int ff_proto_encode_status(uint8_t *buf, size_t n, char const *status);
  *  - `n` is outside [FF_PROTO_ENVELOPE_LEN, FF_PROTO_MAX_PAYLOAD],
  *  - the version byte isn't FF_PROTO_VERSION,
  *  - the type byte is unrecognized, or
- *  - the body is too short for its type (including a declared
- *    name_len/status_len that would run past the end of `buf`).
+ *  - the body length isn't *exactly* the defined length for its type
+ *    (including a declared name_len/status_len that would run past the
+ *    end of `buf`, or that leaves unexplained bytes after it).
  *
- * Trailing bytes beyond what a type's body needs are ignored, not
- * rejected (forward-compat padding room for future minor versions).
+ * Strict: any trailing bytes beyond a type's exact defined body length are
+ * rejected, not ignored — see ff_proto.h's Wire format section and
+ * docs/specs/S04-firefly-protocol.md's Amendments (PR #10).
  */
 int ff_proto_decode(uint8_t const *buf, size_t n, ff_proto_msg_t *out);
 

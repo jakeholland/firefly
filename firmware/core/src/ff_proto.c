@@ -185,13 +185,16 @@ int ff_proto_decode(uint8_t const *buf, size_t n, ff_proto_msg_t *out)
     case FF_PROTO_TYPE_PULSE:
     case FF_PROTO_TYPE_FLARE_END:
     case FF_PROTO_TYPE_RALLY_CLEAR:
-        /* No body to check; any trailing bytes are ignored (forward-compat
-         * padding room), per ff_proto.h. */
+        /* Strict: these types define an empty body, so any body at all
+         * (trailing bytes) is rejected — see ff_proto.h / spec Amendments. */
+        if (body_len != 0u) {
+            return 0;
+        }
         out->type = type;
         return type;
 
     case FF_PROTO_TYPE_FLARE:
-        if (body_len < 2u) {
+        if (body_len != 2u) {
             return 0;
         }
         out->type = type;
@@ -203,7 +206,7 @@ int ff_proto_decode(uint8_t const *buf, size_t n, ff_proto_msg_t *out)
             return 0;
         }
         uint8_t name_len = body[8];
-        if (name_len > FF_PROTO_RALLY_NAME_MAX || body_len < 9u + (size_t)name_len) {
+        if (name_len > FF_PROTO_RALLY_NAME_MAX || body_len != 9u + (size_t)name_len) {
             return 0;
         }
         out->type = type;
@@ -221,7 +224,7 @@ int ff_proto_decode(uint8_t const *buf, size_t n, ff_proto_msg_t *out)
             return 0;
         }
         uint8_t status_len = body[0];
-        if (status_len > FF_PROTO_STATUS_MAX || body_len < 1u + (size_t)status_len) {
+        if (status_len > FF_PROTO_STATUS_MAX || body_len != 1u + (size_t)status_len) {
             return 0;
         }
         out->type = type;
@@ -233,7 +236,7 @@ int ff_proto_decode(uint8_t const *buf, size_t n, ff_proto_msg_t *out)
     }
 
     case FF_PROTO_TYPE_ACK_PING:
-        if (body_len < 4u) {
+        if (body_len != 4u) {
             return 0;
         }
         out->type = type;

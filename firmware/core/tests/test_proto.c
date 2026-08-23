@@ -10,7 +10,9 @@
  *   AC2 — bad ver / unknown type / truncated body all return 0, and never
  *         read past the buffer (the per-length truncation loops are what
  *         actually exercise "never OOB" — run this file under ASan, see
- *         PR notes). Also covers the whole-payload 200-byte cap.
+ *         PR notes). Also covers the whole-payload 200-byte cap and, per
+ *         the spec's Amendments (PR #10 review), strict rejection of any
+ *         trailing bytes beyond a type's exact defined body length.
  *   AC3 — RALLY lat/lon 1e-7 fixed-point matches Meshtastic's own
  *         convention, cross-checked against hand-computed literal bytes
  *         (not derived by calling the encoder circularly).
@@ -330,21 +332,14 @@ static void S04_AC2_status_len_over_max_is_ignored(void)
     TEST_ASSERT_EQUAL_INT(0, ff_proto_decode(buf, sizeof(buf), &out));
 }
 
-/* Whole-payload cap (spec: "max 200 B"): exactly 200 is accepted (extra
- * trailing bytes past what PULSE needs are forward-compat padding, not an
- * error — see ff_proto.h); 201 is rejected outright, regardless of
- * content, before any type-specific parsing happens. */
-static void S04_AC2_payload_of_200_bytes_is_accepted(void)
-{
-    uint8_t buf[FF_PROTO_MAX_PAYLOAD];
-    memset(buf, 0, sizeof(buf));
-    buf[0] = (uint8_t)FF_PROTO_VERSION;
-    buf[1] = (uint8_t)FF_PROTO_TYPE_PULSE;
-
-    ff_proto_msg_t out;
-    TEST_ASSERT_EQUAL_INT(FF_PROTO_TYPE_PULSE, ff_proto_decode(buf, sizeof(buf), &out));
-}
-
+/* Whole-payload cap (spec: "max 200 B") is an encode/transport-level
+ * maximum, per the Amendments ruling (PR #10) — not a decode-side "extra
+ * bytes up to here are fine" allowance. 201 is rejected outright,
+ * regardless of content, before any type-specific parsing happens. There
+ * is no "200 accepted" case any more: decode requires an *exact* body
+ * length per type (see S04_AC2_trailing_bytes_rejected below), and no
+ * defined type has a body anywhere near 198 bytes, so a maximally-padded
+ * 200-byte buffer is now a rejection case, not an acceptance case. */
 static void S04_AC2_payload_of_201_bytes_is_rejected(void)
 {
     uint8_t buf[FF_PROTO_MAX_PAYLOAD + 1];
@@ -352,6 +347,68 @@ static void S04_AC2_payload_of_201_bytes_is_rejected(void)
     buf[0] = (uint8_t)FF_PROTO_VERSION;
     buf[1] = (uint8_t)FF_PROTO_TYPE_PULSE;
 
+    ff_proto_msg_t out;
+    TEST_ASSERT_EQUAL_INT(0, ff_proto_decode(buf, sizeof(buf), &out));
+}
+
+/* Reviewer's exact repro from the PR #10 review: a normal, otherwise
+ * valid 24-byte RALLY embedded at the front of a 200-byte buffer, with
+ * the remaining 176 bytes filled with 0xEF garbage. Under the old
+ * (lenient) decode this returned FF_PROTO_TYPE_RALLY with correct
+ * fields — the garbage was silently swallowed. Per the Amendments
+ * ruling, decode now requires the body to be *exactly* its type's
+ * defined length, so this must return 0. */
+static void S04_AC2_trailing_bytes_rejected(void)
+{
+    uint8_t buf[FF_PROTO_MAX_PAYLOAD];
+    memset(buf, 0xEF, sizeof(buf));
+
+    ff_latlon_t p = {39.9012, -82.4562};
+    int len = ff_proto_encode_rally(buf, sizeof(buf), p, "LEGEND VALLEY");
+    TEST_ASSERT_EQUAL_INT(24, len); /* same shape as the golden fixture */
+    /* buf[0..len) is now the valid message; buf[len..200) is still 0xEF
+     * garbage left over from the memset (the encoder only wrote the
+     * first `len` bytes). */
+
+    ff_proto_msg_t out;
+    TEST_ASSERT_EQUAL_INT_MESSAGE(0, ff_proto_decode(buf, sizeof(buf), &out),
+                                   "200-byte buffer with 176 trailing 0xEF bytes must be rejected");
+
+    /* Sanity: the exact-length prefix alone still decodes fine — isolates
+     * the rejection to the trailing bytes, not some other regression. */
+    TEST_ASSERT_EQUAL_INT(FF_PROTO_TYPE_RALLY, ff_proto_decode(buf, (size_t)len, &out));
+}
+
+/* Branch coverage for the strict per-type exact-length checks: one
+ * trailing byte is enough to flip each of PULSE/FLARE_END/RALLY_CLEAR
+ * (body_len != 0), FLARE (!= 2), and ACK_PING (!= 4) from accept to
+ * reject — each of these is a distinct comparison in ff_proto_decode's
+ * switch, so the single RALLY-shaped repro above doesn't exercise them. */
+static void S04_AC2_empty_body_types_reject_one_trailing_byte(void)
+{
+    uint8_t const types[] = {
+        (uint8_t)FF_PROTO_TYPE_PULSE,
+        (uint8_t)FF_PROTO_TYPE_FLARE_END,
+        (uint8_t)FF_PROTO_TYPE_RALLY_CLEAR,
+    };
+    for (size_t i = 0; i < sizeof(types) / sizeof(types[0]); i++) {
+        uint8_t buf[] = {(uint8_t)FF_PROTO_VERSION, types[i], 0x00};
+        ff_proto_msg_t out;
+        TEST_ASSERT_EQUAL_INT(0, ff_proto_decode(buf, sizeof(buf), &out));
+    }
+}
+
+static void S04_AC2_flare_rejects_one_trailing_byte(void)
+{
+    uint8_t buf[] = {(uint8_t)FF_PROTO_VERSION, (uint8_t)FF_PROTO_TYPE_FLARE, 0x2C, 0x01, 0x00};
+    ff_proto_msg_t out;
+    TEST_ASSERT_EQUAL_INT(0, ff_proto_decode(buf, sizeof(buf), &out));
+}
+
+static void S04_AC2_ack_ping_rejects_one_trailing_byte(void)
+{
+    uint8_t buf[] = {(uint8_t)FF_PROTO_VERSION, (uint8_t)FF_PROTO_TYPE_ACK_PING,
+                      0x01, 0x02, 0x03, 0x04, 0x00};
     ff_proto_msg_t out;
     TEST_ASSERT_EQUAL_INT(0, ff_proto_decode(buf, sizeof(buf), &out));
 }
@@ -536,8 +593,11 @@ int main(void)
     RUN_TEST(S04_AC2_status_truncated_at_every_length_returns_zero);
     RUN_TEST(S04_AC2_rally_name_len_over_max_is_ignored);
     RUN_TEST(S04_AC2_status_len_over_max_is_ignored);
-    RUN_TEST(S04_AC2_payload_of_200_bytes_is_accepted);
     RUN_TEST(S04_AC2_payload_of_201_bytes_is_rejected);
+    RUN_TEST(S04_AC2_trailing_bytes_rejected);
+    RUN_TEST(S04_AC2_empty_body_types_reject_one_trailing_byte);
+    RUN_TEST(S04_AC2_flare_rejects_one_trailing_byte);
+    RUN_TEST(S04_AC2_ack_ping_rejects_one_trailing_byte);
 
     RUN_TEST(S04_AC3_rally_latlon_1e7_matches_hand_computed_bytes);
 
