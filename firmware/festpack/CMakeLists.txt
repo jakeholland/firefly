@@ -8,6 +8,15 @@ add_library(ff-festpack STATIC
 target_include_directories(ff-festpack PUBLIC include)
 target_compile_features(ff-festpack PUBLIC c_std_11)
 target_link_libraries(ff-festpack PRIVATE ff-jsmn)
+# fp_project() calls cos() (math.h). On macOS/AppleClang that resolves via
+# libSystem with no extra flag, which is why this was missed locally; glibc
+# (Linux CI) needs an explicit -lm or the final link fails with "undefined
+# reference to `cos'". CMake propagates a STATIC library's PRIVATE link
+# libraries to whatever links this one, so this is enough for test_festpack
+# and any future consumer.
+if(UNIX)
+    target_link_libraries(ff-festpack PRIVATE m)
+endif()
 ff_apply_warnings(ff-festpack)
 
 if(FF_BUILD_TESTS)
