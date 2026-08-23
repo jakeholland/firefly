@@ -110,3 +110,18 @@ if(FF_BUILD_TESTS)
 
     add_test(NAME test_t9 COMMAND test_t9)
 endif()
+
+# S10a (flare state machine — IDLE/SENDING/RECEIVED/LOCKED;
+# docs/specs/S10-flare.md, slice a. Slice b — takeover + sender UI +
+# goldens — needs the S06 app shell and is not part of this slice.)
+target_sources(ff-core PRIVATE src/ff_flare.c)
+
+if(FF_BUILD_TESTS)
+    add_executable(test_flare
+        tests/test_flare.c
+    )
+    target_link_libraries(test_flare PRIVATE ff-core unity)
+    ff_apply_warnings(test_flare)
+
+    add_test(NAME test_flare COMMAND test_flare)
+endif()
