@@ -113,7 +113,7 @@ typedef struct {
     int off_window_inactive_tile; /* see this file's header comment, exclusion #2 */
 } sweep_result_t;
 
-/* Puck circle, in the SAME absolute display-pixel space lv_obj_get_coords
+/* Puck circle, in the SAME absolute display-pixel space lv_obj_get_click_area
  * reports (this codebase's window/puck geometry, ff_theme.h): the puck is
  * centered in the WINDOW_PX square, so its own center sits
  * (margin + PUCK_RADIUS) from the window's top-left in both axes. */
@@ -130,7 +130,18 @@ static void sweep_walk(lv_obj_t *obj, char const *fixture_name, sweep_result_t *
 
         if (lv_obj_has_flag(child, LV_OBJ_FLAG_CLICKABLE)) {
             lv_area_t area;
-            lv_obj_get_coords(child, &area);
+            /* lv_obj_get_click_area (not lv_obj_get_coords): the object's
+             * normal box PLUS its ext_click_area, i.e. the SAME effective
+             * hit-rect lv_obj_hit_test itself checks a real touch against
+             * (LVGL nit, S08 PR #25 code review, finding #4) — a future
+             * face that shrinks a button's visible box while widening its
+             * tap target via lv_obj_set_ext_click_area would otherwise
+             * sail past this sweep's off-glass/too-small checks even
+             * though nothing here currently calls that API (confirmed:
+             * `grep -rn ext_click_area app/ core/ targets/` has no
+             * call sites as of this PR — this is a forward-looking
+             * correctness fix, not a regression fix). */
+            lv_obj_get_click_area(child, &area);
 
             /* Exclusion #2 (see header comment): an inactive tileview
              * tile's content sits at its un-scrolled position, which can

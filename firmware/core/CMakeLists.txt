@@ -140,3 +140,18 @@ if(FF_BUILD_TESTS)
 
     add_test(NAME test_feed COMMAND test_feed)
 endif()
+
+# S08b follow-up (PR #25 code review, MEDIUM finding — roster exhaustion
+# from untrusted RF) — core/heard: bounded LRU-evictable heard-node list,
+# separate from ff_crew's protected paired roster. See ff_heard.h.
+target_sources(ff-core PRIVATE src/ff_heard.c)
+
+if(FF_BUILD_TESTS)
+    add_executable(test_heard
+        tests/test_heard.c
+    )
+    target_link_libraries(test_heard PRIVATE ff-core unity)
+    ff_apply_warnings(test_heard)
+
+    add_test(NAME test_heard COMMAND test_heard)
+endif()

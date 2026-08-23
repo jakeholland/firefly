@@ -1,0 +1,32 @@
+{
+  "fixture": "now_live",
+  "face": "now",
+  "now": {
+    "state": "live",
+    "rows": [
+      {
+        "artist": "GRiZ",
+        "stage_name": "Prehistoric Stage",
+        "stage_color_rgb": "#ffc66b",
+        "pct_done": 40
+      },
+      {
+        "artist": "Wooli",
+        "stage_name": "Subsidia Stage",
+        "stage_color_rgb": "#ff5ca8",
+        "pct_done": 85
+      },
+      {
+        "artist": "Kompany",
+        "stage_name": "Forest Stage",
+        "stage_color_rgb": "#9be07b",
+        "pct_done": 10
+      }
+    ],
+    "next": {
+      "artist": "Excision",
+      "stage_name": "Prehistoric Stage",
+      "mins_until": 33
+    }
+  }
+}

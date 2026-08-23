@@ -156,6 +156,25 @@ bool ff_t9_insert_text(ff_t9_t *t, char const *s)
         return true;
     }
 
+    /* Enforce the documented ASCII-only contract at RUNTIME, not just in
+     * the header comment (S08 PR #25 code review, LOW finding): every
+     * current caller passes a static ASCII literal, so this never
+     * actually fires today, but nothing stopped a future caller (e.g.
+     * issue #22's real-emoji tier-1 follow-up) from reusing this
+     * single-byte-per-character function with multi-byte UTF-8 and
+     * silently reintroducing the exact "backspace eats half a codepoint"
+     * corruption this header's own Deviations note warns against. Reject
+     * outright (same all-or-nothing, `t`-untouched contract as the
+     * capacity check below) rather than truncating or best-effort
+     * accepting — a caller that needs real multi-byte text needs its own
+     * codepoint-aware entry point, not a silently-degraded version of
+     * this one. */
+    for (size_t i = 0; i < slen; i++) {
+        if (((unsigned char)s[i]) >= 0x80u) {
+            return false;
+        }
+    }
+
     /* All-or-nothing check BEFORE any mutation: capacity is evaluated
      * against what the committed length WOULD be once the pending char
      * (if any) commits, so a failing insert leaves `t` — pending state

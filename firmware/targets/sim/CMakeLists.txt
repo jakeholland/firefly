@@ -145,17 +145,26 @@ add_executable(ffsim
 set_target_properties(ffsim PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
 
 target_link_libraries(ffsim PRIVATE
-    # ff-core: not listed explicitly — main.c's ff_version.h needs it, but
-    # ff-sim-fixture already brings it in transitively (ff-sim-fixture
-    # PUBLIC ff-app INTERFACE ff-core, see app/CMakeLists.txt's S06 note);
-    # listing it again here just duplicated the static-library entry on
-    # the final link line (harmless on Linux/GNU ld, but Apple's ld warns
-    # "ignoring duplicate libraries" for it).
-    ff-sim-fixture       # S13b — fixture.h loader (fixture.c above)
+    # ff-core and ff-sim-fixture: NEITHER is listed explicitly here, even
+    # though main.c uses both directly (ff_version.h, fixture.h's
+    # ff_fixture_load_file) — both are already brought in transitively
+    # through ff-sim-live (`ff-sim-live PUBLIC ff-sim-fixture ff-core ...`,
+    # see the S13c library declaration above), which itself is listed
+    # below. Listing either of them AGAIN here just duplicates the
+    # static-library entry on the final link line: harmless (CMake/the
+    # linker still resolve every symbol correctly — confirmed by a clean
+    # from-scratch build), but Apple's ld warns "ignoring duplicate
+    # libraries" for it, which is pure noise once you've confirmed it's
+    # harmless (S08 PR #25 code review, NIT finding — this used to list
+    # ff-sim-fixture explicitly, which is exactly the ff-sim-live-vs-
+    # direct duplicate the warning was flagging; ff-core was already
+    # correctly omitted for the identical reason, see the note this one
+    # replaces).
     ff-sim-face-dispatch # S08 — face_dispatch.h (this file, above)
     ff-sim-ctl           # S13c — ctl_server.h/.c (ctl_server.c above)
     ff-sim-ctlout        # S13c — ctl_out_path.h/.c: screenshot path confinement (review fixup)
-    ff-sim-live          # S13c — live.h/.c: --connect / --pack wiring (live.c above)
+    ff-sim-live          # S13c — live.h/.c: --connect / --pack wiring (live.c above); also the
+                         # transitive source of ff-sim-fixture/ff-core above
     ff-app-ui            # S06b — scr_nav.h/scr_radar.h (app/CMakeLists.txt)
     lvgl::lvgl
     ff-stb-image-write

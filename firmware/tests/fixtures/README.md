@@ -90,22 +90,40 @@ Field names/semantics are transcribed 1:1 from `docs/specs/S06-radar-face.md`'s
 
 ```json
 "now": {
+  "state": "live",
   "rows": [
-    {"artist": "GRiZ", "stage_name": "Bass Camp", "stage_color_rgb": "#ffc66b",
-     "mins_left": 12, "pct_done": 60}
+    {"artist": "GRiZ", "stage_name": "Prehistoric Stage", "stage_color_rgb": "#ffc66b",
+     "pct_done": 60}
   ],
-  "next": {"artist": "Subtronics", "stage_name": "Grand Illusion", "mins_until": 45},
-  "tbd": false
+  "next": {"artist": "Excision", "stage_name": "Prehistoric Stage", "mins_until": 45},
+  "lineup": [
+    {"artist": "NGHTMRE", "stage_name": ""}
+  ]
 }
 ```
 
-`rows` holds up to `FF_APP_NOW_MAX_ROWS` (3) entries (a 4th fails the whole
-load with `FF_FIXTURE_ERR_TOO_BIG`); `stage_color_rgb` accepts a
-`"#rrggbb"` string (leading `#` optional) or a bare integer — both forms
-are exercised in `test_fixture.c` (`now_stage_color_rgb_hex_string_parses`,
-`now_stage_color_rgb_numeric_form_parses`). `next` is omitted entirely
-(not `null`) when there's no upcoming starred set — presence of the `next`
-object sets `ff_app_next_t.valid = true`.
+| Key | Type | Default | Notes |
+|---|---|---|---|
+| `state` | string enum: `no_pack`\|`tbd`\|`mixed`\|`live`\|`nothing_playing` | `no_pack` | **[api], PR #21 code review finding #2/ruling.** Replaces an earlier `pack_loaded`+`tbd` bool pair — see `now_state_t`'s doc comment in `ff_app_state.h` for why an explicit, mutually-exclusive-by-construction enum (same convention as `radar.mode`) replaced two independent bools. An absent or unrecognized string defaults to `no_pack`, the least-claiming state — same convention as `radar.mode`'s `nosel` default. |
+| `rows` | array, up to `FF_APP_NOW_MAX_ROWS` (3) | `[]` | Populated for `state: "live"` and `state: "mixed"` (the day's known-time sets). A 4th entry fails the whole load with `FF_FIXTURE_ERR_TOO_BIG`. `stage_color_rgb` accepts a `"#rrggbb"` string (leading `#` optional) or a bare integer — both forms are exercised in `test_fixture.c` (`now_stage_color_rgb_hex_string_parses`, `now_stage_color_rgb_numeric_form_parses`). **`mins_left` was removed** (PR #21 code review finding #5a) — it was parsed and fixture-populated but never rendered (the row's progress bar is driven by `pct_done` alone; the spec's row requirement is a bar, not per-row minutes text). |
+| `next` | object or omitted | omitted (`ff_app_next_t.valid = false`) | Populated for `state: "live"` and `state: "mixed"`. Omit entirely (not `null`) when there's no upcoming starred set — presence of the `next` object sets `valid = true`. Renders differently by state: `state: "live"` gives it the full next-card treatment (label/artist/stage/36px countdown); `state: "mixed"` (UX review round 2 finding #2) gives it a more compact but still countdown-LED block (22px amber countdown first, artist/stage below) — same field, deliberately still the visually prominent element in its own block, just scaled to share the screen with the mixed state's other sections. |
+| `lineup` | array, up to `FF_APP_NOW_MAX_LINEUP` (32) | `[]` | The day's sets whose time is **not** known. For `state: "tbd"`, this is every set on the day (all of them lack a time, by definition). For `state: "mixed"` (PR #21 code review finding #1/ruling), this is just the still-unknown SUBSET — the known-time sets render via `rows`/`next` at the same time, so an unknown-time set is never silently dropped just because some other set on the same day got a real time. `stage_name: ""` means the set's stage is genuinely unknown in the source pack (`fp_set_t.stage_idx == -1`); rendered honestly (`"STAGE UNKNOWN"`), never guessed. A 33rd entry fails the whole load with `FF_FIXTURE_ERR_TOO_BIG`. |
+
+`ff_app_now_row_t.stage_color_valid` (PR #21 code review finding #3, not
+a fixture-authorable key — it's derived from whether `stage_color_rgb`
+parsed successfully): a malformed `"#rrggbb"` string, or the key being
+absent entirely, marks the row's color invalid rather than silently
+defaulting to `0x000000` — the old behavior conflated "no color given" /
+"malformed color" / "a genuinely black stage" into the same bit pattern.
+See `test_fixture.c`'s `now_stage_color_rgb_valid_black_is_marked_valid`
+/ `_malformed_hex_marks_invalid` / `_absent_key_marks_invalid`.
+
+**Banner wording is state-aware** (UX review round 2 finding #3): `state:
+"tbd"` shows "SET TIMES TBD"; `state: "mixed"` shows "SOME SET TIMES
+TBD" instead — the unqualified wording sitting directly above a section
+proving some times AREN'T unknown read as a self-contradiction at a
+glance. Not a fixture field — `scr_now.c` picks the text from `state`
+itself.
 
 ## `signals` (flattened `ff_feed_item_t`, S08)
 
@@ -251,6 +269,49 @@ good-faith reconstruction consistent with the spec's *prose*, not a
 byte-for-byte transcription of a mockup this agent could not access.
 Flagged per AGENTS.md's "if blocked by a spec gap… note the
 interpretation" — noted here and in the PR body.
+
+### Now face fixtures (S07 slice b)
+
+Five fixtures cover the Now face's five honestly-distinct `now_state_t`
+values — one apiece. `now_nothing_live.json` was added in PR #21 UX
+review round 1 (reachable in code from the first pass, no golden yet);
+`now_mixed.json` was added in PR #21 code review round 2, alongside the
+`now_state_t` enum itself replacing an earlier `pack_loaded`+`tbd` bool
+pair that could only represent 3 of these states cleanly (see the
+schema section above).
+
+| Fixture | `state` | What it exercises |
+|---|---|---|
+| `now_live.json` | `live` | Three concurrent now-playing rows (mocked artists/percentages; stage names + colors are the REAL Lost Lands stages — see the provenance note below, UX review round 1 flagged the original EDC-flavored placeholders) plus a starred-next card — "IN 33 MIN" is the literal countdown text the spec's own example transcribes. |
+| `now_mixed.json` | `mixed` | Code review round 2's fix in action, refined in UX review round 2 into three visually distinct classes (never distinguished by an absent element): Excision (`rows[0]`, `pct_done: 22`) renders as a full **playing-now** row — the exact same stage-colored-label + progress-bar treatment `NOW_LIVE` uses, via the same `now_build_row()` call, because it's the same fact; TYNAN (`next`) renders as **scheduled, not started** — a countdown-LED block ("IN 58 MIN" first, biggest, amber, no progress bar); five more real Lost Lands day-1 artists (NGHTMRE, Borgore, Levity, Doctor P, Hairitage) stay visible as **time unknown** in the "STILL TBD" list under a "SOME SET TIMES TBD" banner (not the unqualified "SET TIMES TBD" `now_tbd.json` uses — see the schema section above), rather than silently vanishing the moment the day stopped being all-null. |
+| `now_tbd.json` | `tbd` | The real 2026 Lost Lands pack's actual state today: every set's start/end is null. `lineup` is transcribed verbatim (artist + stage, in pack order) from day 1 (2026-09-18) of `firmware/festpack/tests/fixtures/lost-lands-2026.festpack.json` — 7 sets, most with `stage: null` (rendered as the explicit "STAGE UNKNOWN" fallback, not silently omitted — see the provenance note) except Excision (`prehistoric` → "Prehistoric Stage"). This is the pack-update story CLAUDE.md's honesty rule exists for: don't invent set times the source data doesn't have. |
+| `now_nothing_live.json` | `nothing_playing` | Pack loaded, schedule known, but nothing is currently playing and nothing is starred upcoming — a genuinely reachable state (early morning between sets) distinct from every other state in this table. `rows`/`next`/`lineup` are all absent. |
+| `now_empty.json` | `no_pack` (omitted — the default) | No festpack loaded at all — `now` is entirely absent from the fixture. Deliberately distinct from `now_tbd.json`/`now_mixed.json`: a puck with nothing loaded must never show schedule chrome (a "SET TIMES TBD" banner) that implies a pack exists. |
+
+**Provenance note (`now_live.json`/`now_mixed.json`):** artist names and
+set times/percentages are mocked test data (GRiZ, Wooli, Kompany, and
+`now_mixed.json`'s illustrative "TYNAN just got a time and a stage"
+scenario — none of this is a real Lost Lands 2026 announcement), same
+"good-faith reconstruction, not a mockup transcription" category as the
+radar fixtures above (no mockup artboards in-tree — see CLAUDE.md).
+**Stage names + colors in `now_live.json`, however, are the real ones**
+— `Prehistoric Stage` (`#ffc66b`), `Subsidia Stage` (`#ff5ca8`), `Forest
+Stage` (`#9be07b`), copied from
+`firmware/festpack/tests/fixtures/lost-lands-2026.festpack.json`'s
+`stages[]`, after UX review round 1 (PR #21) flagged the original
+fixture's "Bass Camp"/"Kinetic Field"/"The Grove" as reading like a
+different festival's stage names — this PNG is permanent repo history,
+worth getting right even though it's mocked data. `now_mixed.json`'s
+still-unknown `lineup` entries (NGHTMRE, Borgore, Levity, Doctor P,
+Hairitage) and its one known row's artist (Excision) ARE the real Lost
+Lands day-1 names, continuing `now_tbd.json`'s same day — only the
+*times/percentages/second stage* attached to them are invented, to
+illustrate the day partway through the real pack-update process the
+reviewer described. **`now_tbd.json` is the one Now fixture that is NOT
+mocked at all** — its `lineup` entries are copied field-for-field from
+the real vendored Lost Lands pack, specifically because the spec calls
+out this exact case ("real Lost Lands pack") as the thing this fixture
+must prove.
 
 ## Adding a fixture
 

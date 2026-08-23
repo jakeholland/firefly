@@ -11,19 +11,35 @@
  * Crew-paired-sender filter + feed push.
  * ------------------------------------------------------------------- */
 
+static uint32_t wiring_now_ms(ff_wiring_ctx_t const *w)
+{
+    return (w->clock != NULL && w->clock->now_ms != NULL) ? w->clock->now_ms(w->clock->user) : 0;
+}
+
 static void wiring_push_if_paired(ff_wiring_ctx_t *w, uint32_t from, ff_feed_kind_t kind, char const *text,
                                    size_t text_len)
 {
     if (w == NULL || w->crew == NULL || w->feed == NULL) return;
 
-    /* Find-or-create: hearing from a brand-new node earns it an
-     * "unpaired/merely heard" slot (S02's model) — this alone does NOT
-     * make the sender trusted. NULL (roster full and this id is new)
-     * degrades to the same drop path as "found but unpaired": no slot to
-     * read `paired` from means this code cannot honestly claim the
-     * sender is a paired crew member. */
-    ff_crew_member_t *m = ff_crew_upsert(w->crew, from);
-    if (m == NULL || !m->paired) return;
+    /* READ-ONLY lookup — never ff_crew_upsert here (S08 PR #25 code
+     * review, MEDIUM finding: find-or-CREATE on every inbound packet let
+     * untrusted RF input consume the roster's fixed, non-evicting
+     * FF_CREW_MAX slots regardless of whether the sender ever turned out
+     * to be paired — see ff_wiring.h's header comment for the full
+     * ruling). A miss (never-heard id, or a roster with no room to have
+     * ever tracked it) and a hit-but-unpaired member are both handled
+     * the same way: drop the event, and — for a miss specifically — note
+     * the sender in the bounded, LRU-evictable heard list instead, so a
+     * future pairing UI can still offer it without ever costing a
+     * protected roster slot. */
+    ff_crew_member_t const *m = ff_crew_find(w->crew, from);
+    if (m == NULL) {
+        if (w->heard != NULL) {
+            ff_heard_note(w->heard, from, wiring_now_ms(w));
+        }
+        return;
+    }
+    if (!m->paired) return; /* known (already tracked as heard, or paired-then-unpaired) but not trusted */
 
     ff_feed_item_t it;
     memset(&it, 0, sizeof(it));
@@ -103,27 +119,29 @@ static int wiring_mc_send_private(void *ctx, uint32_t dest, uint8_t const *paylo
     return mc_send_private((mc_client_t *)ctx, dest, FF_PORTNUM, payload, len, false);
 }
 
-void ff_wiring_init_with_sender(ff_wiring_ctx_t *w, ff_feed_t *feed, ff_crew_t *crew, ff_wiring_sender_t sender,
-                                 void (*haptic_cb)(void *user), void *haptic_user, ff_clock_t const *clock)
+void ff_wiring_init_with_sender(ff_wiring_ctx_t *w, ff_feed_t *feed, ff_crew_t *crew, ff_heard_t *heard,
+                                 ff_wiring_sender_t sender, void (*haptic_cb)(void *user), void *haptic_user,
+                                 ff_clock_t const *clock)
 {
     if (w == NULL) return;
     memset(w, 0, sizeof(*w));
     w->feed = feed;
     w->crew = crew;
+    w->heard = heard;
     w->sender = sender;
     w->haptic_cb = haptic_cb;
     w->haptic_user = haptic_user;
     w->clock = clock;
 }
 
-void ff_wiring_init(ff_wiring_ctx_t *w, ff_feed_t *feed, ff_crew_t *crew, mc_client_t *mc,
+void ff_wiring_init(ff_wiring_ctx_t *w, ff_feed_t *feed, ff_crew_t *crew, ff_heard_t *heard, mc_client_t *mc,
                      void (*haptic_cb)(void *user), void *haptic_user, ff_clock_t const *clock)
 {
     ff_wiring_sender_t sender;
     sender.send_text = wiring_mc_send_text;
     sender.send_private = wiring_mc_send_private;
     sender.ctx = mc;
-    ff_wiring_init_with_sender(w, feed, crew, sender, haptic_cb, haptic_user, clock);
+    ff_wiring_init_with_sender(w, feed, crew, heard, sender, haptic_cb, haptic_user, clock);
 }
 
 /* ---------------------------------------------------------------------

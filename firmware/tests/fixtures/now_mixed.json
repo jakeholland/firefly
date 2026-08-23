@@ -1,0 +1,27 @@
+{
+  "fixture": "now_mixed",
+  "face": "now",
+  "now": {
+    "state": "mixed",
+    "rows": [
+      {
+        "artist": "Excision",
+        "stage_name": "Prehistoric Stage",
+        "stage_color_rgb": "#ffc66b",
+        "pct_done": 22
+      }
+    ],
+    "next": {
+      "artist": "TYNAN",
+      "stage_name": "Subsidia Stage",
+      "mins_until": 58
+    },
+    "lineup": [
+      { "artist": "NGHTMRE", "stage_name": "" },
+      { "artist": "Borgore", "stage_name": "" },
+      { "artist": "Levity", "stage_name": "" },
+      { "artist": "Doctor P", "stage_name": "" },
+      { "artist": "Hairitage", "stage_name": "" }
+    ]
+  }
+}

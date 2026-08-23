@@ -388,6 +388,73 @@ static void S08_insert_text_null_args_are_safe_and_return_false(void)
     TEST_ASSERT_EQUAL_STRING("", ff_t9_text(&t)); /* untouched */
 }
 
+/* PR #25 code review, LOW finding: the ASCII-only contract is enforced
+ * at runtime, not just documented — a future caller reusing this
+ * function with multi-byte UTF-8 must be rejected outright, not
+ * silently corrupt a later byte-at-a-time backspace. */
+static void S08_insert_text_rejects_a_high_bit_byte_and_leaves_t_untouched(void)
+{
+    ff_t9_t t;
+    ff_t9_reset(&t);
+    ff_t9_insert_text(&t, "hi "); /* some prior committed state to prove is untouched */
+
+    /* "\xF0\x9F\x94\xA5" is the (well-formed) 4-byte UTF-8 encoding of
+     * U+1F525 FIRE — exactly the kind of string a hypothetical real-emoji
+     * caller (issue #22) might mistakenly pass to this ASCII-only
+     * function. Every byte has its high bit set. */
+    bool ok = ff_t9_insert_text(&t, "\xF0\x9F\x94\xA5");
+
+    TEST_ASSERT_FALSE(ok);
+    TEST_ASSERT_EQUAL_STRING("hi ", ff_t9_text(&t)); /* unchanged, not partially appended */
+    TEST_ASSERT_EQUAL_UINT8(3, t.len);
+}
+
+static void S08_insert_text_rejects_if_ANY_byte_is_high_bit_even_with_ascii_around_it(void)
+{
+    /* Mutation-check: a check that only looks at s[0] (or only the LAST
+     * byte) would pass this — the reject must scan every byte. */
+    ff_t9_t t;
+    ff_t9_reset(&t);
+
+    bool ok = ff_t9_insert_text(&t, "ok\x80ok");
+
+    TEST_ASSERT_FALSE(ok);
+    TEST_ASSERT_EQUAL_STRING("", ff_t9_text(&t));
+    TEST_ASSERT_EQUAL_UINT8(0, t.len);
+}
+
+static void S08_insert_text_rejects_high_bit_byte_even_when_pending_char_exists(void)
+{
+    /* The all-or-nothing/untouched contract must hold for the ASCII
+     * check too, not just the capacity check — a pending char must
+     * survive a rejected non-ASCII insert exactly like it survives a
+     * rejected over-cap insert. */
+    ff_t9_t t;
+    ff_t9_reset(&t);
+    ff_t9_key(&t, 2, 0); /* pending 'a' */
+
+    bool ok = ff_t9_insert_text(&t, "\xFF");
+
+    TEST_ASSERT_FALSE(ok);
+    TEST_ASSERT_TRUE(t.has_pending);
+    TEST_ASSERT_EQUAL_STRING("a", ff_t9_text(&t)); /* pending char still live, not committed or lost */
+}
+
+static void S08_insert_text_accepts_full_printable_ascii_range(void)
+{
+    /* The boundary immediately below the rejection threshold (0x7F DEL,
+     * the highest 7-bit ASCII value) must still be accepted — this isn't
+     * a "reject anything unusual" filter, specifically "reject >= 0x80". */
+    ff_t9_t t;
+    ff_t9_reset(&t);
+
+    char s[2] = {(char)0x7F, '\0'};
+    bool ok = ff_t9_insert_text(&t, s);
+
+    TEST_ASSERT_TRUE(ok);
+    TEST_ASSERT_EQUAL_UINT8(1, t.len);
+}
+
 /* ------------------------------------------------------------------- */
 /* Guard paths (not spec-numbered, but load-bearing)                    */
 /* ------------------------------------------------------------------- */
@@ -456,6 +523,10 @@ int main(void)
     RUN_TEST(S08_insert_text_empty_string_still_commits_pending);
     RUN_TEST(S08_insert_text_then_backspace_removes_one_char_at_a_time);
     RUN_TEST(S08_insert_text_null_args_are_safe_and_return_false);
+    RUN_TEST(S08_insert_text_rejects_a_high_bit_byte_and_leaves_t_untouched);
+    RUN_TEST(S08_insert_text_rejects_if_ANY_byte_is_high_bit_even_with_ascii_around_it);
+    RUN_TEST(S08_insert_text_rejects_high_bit_byte_even_when_pending_char_exists);
+    RUN_TEST(S08_insert_text_accepts_full_printable_ascii_range);
 
     RUN_TEST(S08_guard_null_pointer_calls_are_safe_noops);
     RUN_TEST(S08_guard_invalid_key_above_9_is_ignored);

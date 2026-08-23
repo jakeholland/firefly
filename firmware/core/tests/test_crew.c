@@ -677,6 +677,93 @@ static void S02_selection_survives_member_appearing(void)
     TEST_ASSERT_EQUAL_UINT32(2u, sel->node_id);
 }
 
+/* ------------------------------------------------------------------- */
+/* ff_crew_find — read-only lookup (S08 PR #25 code review, MEDIUM       */
+/* finding: distinguishes this from ff_crew_upsert's find-or-CREATE).   */
+/* ------------------------------------------------------------------- */
+
+static void S02_find_returns_existing_paired_member(void)
+{
+    fake_clock_t fc = {0};
+    ff_clock_t clk = make_clock(&fc);
+    ff_crew_t c;
+    ff_crew_init(&c, &clk);
+
+    ff_crew_upsert(&c, 42u);
+    ff_crew_set_paired(&c, 42u, true);
+
+    ff_crew_member_t const *m = ff_crew_find(&c, 42u);
+    TEST_ASSERT_NOT_NULL(m);
+    TEST_ASSERT_EQUAL_UINT32(42u, m->node_id);
+    TEST_ASSERT_TRUE(m->paired);
+}
+
+static void S02_find_returns_existing_unpaired_member(void)
+{
+    /* "merely heard" slots are found too — ff_crew_find reports
+     * existence/pairing state, it doesn't filter on paired. */
+    fake_clock_t fc = {0};
+    ff_clock_t clk = make_clock(&fc);
+    ff_crew_t c;
+    ff_crew_init(&c, &clk);
+
+    ff_crew_upsert(&c, 7u); /* never paired */
+
+    ff_crew_member_t const *m = ff_crew_find(&c, 7u);
+    TEST_ASSERT_NOT_NULL(m);
+    TEST_ASSERT_FALSE(m->paired);
+}
+
+static void S02_find_unknown_id_returns_null(void)
+{
+    fake_clock_t fc = {0};
+    ff_clock_t clk = make_clock(&fc);
+    ff_crew_t c;
+    ff_crew_init(&c, &clk);
+
+    ff_crew_upsert(&c, 1u);
+
+    TEST_ASSERT_NULL(ff_crew_find(&c, 999u));
+}
+
+static void S02_find_never_creates_a_slot(void)
+{
+    /* The whole point: unlike ff_crew_upsert, a lookup miss must NOT
+     * grow c->count or occupy a slot — mutation-check: fill the roster
+     * to FF_CREW_MAX-1, then find() an unknown id FF_CREW_MAX times;
+     * count must never move, and a genuinely new node must still be
+     * upsert-able afterward (the roster-exhaustion bug this function
+     * exists to prevent, from the OTHER direction: proving find() itself
+     * carries no slot cost, not just that ff_wiring.c stopped calling
+     * upsert). */
+    fake_clock_t fc = {0};
+    ff_clock_t clk = make_clock(&fc);
+    ff_crew_t c;
+    ff_crew_init(&c, &clk);
+
+    for (uint32_t i = 0; i < FF_CREW_MAX - 1; i++) {
+        ff_crew_upsert(&c, 100u + i);
+    }
+    uint8_t count_before = c.count;
+    TEST_ASSERT_EQUAL_UINT8(FF_CREW_MAX - 1, count_before);
+
+    for (int i = 0; i < 50; i++) {
+        ff_crew_member_t const *m = ff_crew_find(&c, 999000u + (uint32_t)i);
+        TEST_ASSERT_NULL(m);
+    }
+    TEST_ASSERT_EQUAL_UINT8(count_before, c.count); /* untouched by 50 misses */
+
+    /* One slot was always left free — a real new node can still claim it. */
+    ff_crew_member_t *fresh = ff_crew_upsert(&c, 5555u);
+    TEST_ASSERT_NOT_NULL(fresh);
+    TEST_ASSERT_EQUAL_UINT8(FF_CREW_MAX, c.count);
+}
+
+static void S02_find_null_crew_is_safe(void)
+{
+    TEST_ASSERT_NULL(ff_crew_find(NULL, 1u));
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -724,6 +811,12 @@ int main(void)
     RUN_TEST(S02_selection_survives_member_disappearing);
     RUN_TEST(S02_selection_survives_member_appearing);
     RUN_TEST(S02_selection_single_paired_member_wraps_to_itself);
+
+    RUN_TEST(S02_find_returns_existing_paired_member);
+    RUN_TEST(S02_find_returns_existing_unpaired_member);
+    RUN_TEST(S02_find_unknown_id_returns_null);
+    RUN_TEST(S02_find_never_creates_a_slot);
+    RUN_TEST(S02_find_null_crew_is_safe);
 
     return UNITY_END();
 }

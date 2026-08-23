@@ -75,7 +75,41 @@ def scene_honest_arrow():
     return out
 
 
-SCENES = {"find_dana": scene_find_dana, "honest_arrow": scene_honest_arrow}
+
+def scene_three_faces():
+    """The device you can hold today: radar locks on, set times, a flare arrives."""
+    import json as _json
+    fx = pathlib.Path("tests/fixtures")
+
+    def load(name):
+        return _json.loads((fx / f"{name}.json").read_text())
+
+    out = []
+    # Radar: arrow swings around and locks on.
+    base = load("radar_live")
+    n = int(2.2 * FPS)
+    for i in range(n):
+        e = 1 - (1 - i / (n - 1)) ** 3
+        f = _json.loads(_json.dumps(base))
+        f["radar"]["arrow_deg"] = round((-120 + e * 162) % 360, 2)
+        for d in f["radar"]["dots"]:
+            d["ring_deg"] = round((d["ring_deg"] - 120 + e * 120) % 360, 2)
+        out.append(f)
+    for _ in range(int(0.8 * FPS)):
+        out.append(_json.loads(_json.dumps(base)))
+    # Now: the honest TBD lineup, then the live schedule.
+    for _ in range(int(2.0 * FPS)):
+        out.append(load("now_tbd"))
+    for _ in range(int(2.0 * FPS)):
+        out.append(load("now_live"))
+    # Flare: someone needs finding.
+    for _ in range(int(2.4 * FPS)):
+        out.append(load("flare_takeover_locked"))
+    return out
+
+
+SCENES = {"find_dana": scene_find_dana, "honest_arrow": scene_honest_arrow,
+          "three_faces": scene_three_faces}
 
 
 def main():

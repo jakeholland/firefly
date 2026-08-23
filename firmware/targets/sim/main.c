@@ -14,11 +14,13 @@
  *                                  ff_app_state_t (fixture.h) and renders
  *                                  it instead of the boot screen, writing
  *                                  DIR/<stem>.png. A fixture whose
- *                                  active_face is "radar" gets the real
- *                                  S06 shell + radar face (scr_nav.h);
- *                                  every other face still gets the S13
- *                                  placeholder debug face (fixture_view.h)
- *                                  — see face_dispatch.h's ff_build_face_screen.
+ *                                  active_face already has a real screen
+ *                                  (radar/now/signals via the shared shell,
+ *                                  scr_nav.h; compose as its own full
+ *                                  screen) gets that; every other face
+ *                                  still gets the S13 placeholder debug
+ *                                  face (fixture_view.h) — see
+ *                                  face_dispatch.h's ff_build_face_screen.
  *   ffsim --fixture FILE.json      window mode with the fixture loaded
  *                                  (interactive preview; same
  *                                  face-selection and load path as

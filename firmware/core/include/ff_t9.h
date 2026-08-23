@@ -177,6 +177,12 @@ void ff_t9_space(ff_t9_t *t);
  * trivial case of an empty `s`, which still commits any pending char).
  * `s` must be NUL-terminated, single-byte-per-character ASCII — see the
  * header's "Deviations" note for why this is not a UTF-8 insertion API.
+ * Enforced at runtime, not just documented: any byte in `s` with its high
+ * bit set (>= 0x80, i.e. any byte that could only appear as part of a
+ * multi-byte UTF-8 sequence) is rejected outright — `t` untouched, same
+ * as a would-not-fit `s` — rather than silently truncating, mis-copying,
+ * or accepting text that would corrupt on a later byte-at-a-time
+ * backspace (S08 PR #25 code review, LOW finding).
  * Returns false without modifying `t` if `t` or `s` is NULL.
  */
 bool ff_t9_insert_text(ff_t9_t *t, char const *s);

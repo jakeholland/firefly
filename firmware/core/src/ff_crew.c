@@ -73,6 +73,19 @@ ff_crew_member_t *ff_crew_upsert(ff_crew_t *c, uint32_t node_id)
     return crew_find_or_create(c, node_id, NULL);
 }
 
+ff_crew_member_t const *ff_crew_find(ff_crew_t const *c, uint32_t node_id)
+{
+    if (!c) {
+        return NULL;
+    }
+    for (uint8_t i = 0; i < c->count; i++) {
+        if (c->members[i].node_id == node_id) {
+            return &c->members[i];
+        }
+    }
+    return NULL;
+}
+
 void ff_crew_set_paired(ff_crew_t *c, uint32_t node_id, bool paired)
 {
     if (!c) {

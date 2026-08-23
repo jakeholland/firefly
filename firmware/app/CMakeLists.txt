@@ -151,6 +151,47 @@ if(FF_BUILD_TESTS)
     add_test(NAME test_wiring COMMAND test_wiring)
 endif()
 
+# S07b (app/screens/now_layout.c, scr_now.c — Now face render;
+# docs/specs/S07-now-face.md slice b)
+# ---------------------------------------------------------------------------
+# ff-now-layout: same "pure C11, zero LVGL, unit-tested directly" split as
+# ff-radar-layout above (format/geometry helpers only — see
+# app/screens/now_layout.h's top comment for what it reuses from
+# radar_layout.h and what it doesn't). Even lighter-weight than
+# ff-radar-layout: no ff_radar.h/FF_CREW_MAX dependency at all, so this
+# links only ff_apply_warnings + libm, not ff-app.
+# ---------------------------------------------------------------------------
+add_library(ff-now-layout STATIC
+    screens/now_layout.c
+)
+target_include_directories(ff-now-layout PUBLIC screens)
+target_compile_features(ff-now-layout PUBLIC c_std_11)
+if(UNIX)
+    target_link_libraries(ff-now-layout PRIVATE m)
+endif()
+ff_apply_warnings(ff-now-layout)
+
+if(FF_BUILD_TESTS)
+    add_executable(test_now_layout
+        screens/tests/test_now_layout.c
+    )
+    target_link_libraries(test_now_layout PRIVATE ff-now-layout unity)
+    ff_apply_warnings(test_now_layout)
+
+    add_test(NAME test_now_layout COMMAND test_now_layout)
+endif()
+
+# scr_now.c joins ff-app-ui (declared above) rather than a new library:
+# same shape as scr_radar.c/scr_nav.c — real LVGL screen code, not a
+# separately-tested pure module. Appended via target_sources (not folded
+# into the add_library() call above) so this stays a purely additive diff
+# — two other face agents (Signals/Flare UI) are touching this same file
+# in parallel for their own tiles.
+target_sources(ff-app-ui PRIVATE
+    screens/scr_now.c
+)
+target_link_libraries(ff-app-ui PUBLIC ff-now-layout)
+
 # S10b (continued) — headless LVGL INTERACTION tests for the flare UI's
 # button bindings (PR #20 independent code review, HIGH finding: goldens
 # never fire a click, so nothing proved GO calls ff_flare_go and not

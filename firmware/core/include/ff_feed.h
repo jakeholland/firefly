@@ -27,8 +27,21 @@
  * not recomputed by scanning the ring on every read. Pushing an item with
  * `unread == true` increments it; evicting a still-unread item (cap
  * reached) decrements it; `ff_feed_mark_all_read` zeroes it and clears
- * every item's `unread` flag (S08 AC3: "clears on face view" — the
- * Signals screen calls this once when it becomes the active face).
+ * every item's `unread` flag (S08 AC3: "clears on face view").
+ *
+ * **Known gap (S08 PR #25 code review, MEDIUM finding, disclosed rather
+ * than silently left checked off):** as of this PR, nothing outside this
+ * module's own unit tests calls `ff_feed_mark_all_read` — the "clears on
+ * face view" half of AC3 is implemented and correctly tested in
+ * isolation, but not yet WIRED to an actual face-became-active event,
+ * because no real app main loop exists yet to detect that transition and
+ * hold a live `ff_feed_t` to call this on (`ff_app_state_t.active_face`
+ * is currently read once per fixture load/render, never diffed against
+ * a previous value — see issue #23's tracking comment for the full
+ * writeup and why this is a slightly different gap in kind from that
+ * issue's other five stub callbacks). The increment half of AC3 is real
+ * end-to-end (`app/ff_wiring.c` pushes with `unread = true` on every
+ * live feed item).
  */
 #ifndef FF_FEED_H
 #define FF_FEED_H
@@ -108,8 +121,11 @@ uint16_t ff_feed_unread_count(ff_feed_t const *f);
 
 /**
  * ff_feed_mark_all_read — clear every currently-held item's `unread` flag
- * and zero the running unread count. S08 AC3: "clears on face view" — call
- * this once when Signals becomes the active face, not on every render.
+ * and zero the running unread count. S08 AC3: "clears on face view" —
+ * the INTENDED caller is whatever real event loop eventually owns face
+ * transitions, calling this once when Signals becomes the active face
+ * (not on every render) — see this header's top comment for the current
+ * "nothing calls this yet" disclosure and issue #23.
  */
 void ff_feed_mark_all_read(ff_feed_t *f);
 

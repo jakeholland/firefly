@@ -31,11 +31,11 @@ extern "C" {
  * whatever face would otherwise show, exactly like a real full-screen
  * interrupt would; `active_face` is not consulted at all on that path.
  *
- * Otherwise: RADAR and SIGNALS both go through the shared three-tile
- * shell (`ff_scr_nav_build` — SIGNALS renders real content there as of
- * S08c); COMPOSE is its own full-screen face (`ff_scr_compose_build`,
- * reached from Signals' "+", not a swipe tile). Every other face (Now,
- * Settings) still has no real screen and falls through to
+ * Otherwise: RADAR, NOW, and SIGNALS all go through the shared three-tile
+ * shell (`ff_scr_nav_build` — NOW renders real content as of S07b, SIGNALS
+ * as of S08c); COMPOSE is its own full-screen face (`ff_scr_compose_build`,
+ * reached from Signals' "+", not a swipe tile). Every other face
+ * (Settings) still has no real screen and falls through to
  * fixture_view.h's S13 placeholder.
  *
  * `flare_rt` is forwarded to whichever screen builder needs it for its

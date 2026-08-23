@@ -1,0 +1,7 @@
+{
+  "fixture": "now_nothing_live",
+  "face": "now",
+  "now": {
+    "state": "nothing_playing"
+  }
+}

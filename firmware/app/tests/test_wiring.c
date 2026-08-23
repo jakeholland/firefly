@@ -17,6 +17,7 @@
 
 #include "ff_wiring.h"
 
+#include "ff_heard.h"
 #include "ff_proto.h"
 
 void setUp(void) {}
@@ -109,6 +110,7 @@ static void haptic_cb(void *user)
 typedef struct {
     ff_crew_t            crew;
     ff_feed_t             feed;
+    ff_heard_t            heard;
     fake_clock_t           fc;
     ff_clock_t              clk;
     mock_sender_state_t sender_state;
@@ -122,8 +124,9 @@ static void rig_init(test_rig_t *r)
     r->clk = make_clock(&r->fc);
     ff_crew_init(&r->crew, &r->clk);
     ff_feed_init(&r->feed);
+    ff_heard_init(&r->heard);
     ff_wiring_sender_t sender = make_mock_sender(&r->sender_state);
-    ff_wiring_init_with_sender(&r->w, &r->feed, &r->crew, sender, haptic_cb, &r->haptic, &r->clk);
+    ff_wiring_init_with_sender(&r->w, &r->feed, &r->crew, &r->heard, sender, haptic_cb, &r->haptic, &r->clk);
 }
 
 static void rig_pair(test_rig_t *r, uint32_t node_id)
@@ -164,8 +167,9 @@ static void S08_AC4_pulse_from_unpaired_node_is_dropped(void)
 {
     test_rig_t r;
     rig_init(&r);
-    /* UNPAIRED_NODE deliberately never paired — merely heard, per the
-     * crew model, but not trusted for feed purposes. */
+    /* UNPAIRED_NODE deliberately never paired — a genuine crew miss (this
+     * node has no crew slot at all), not trusted for feed purposes. */
+    r.fc.t = 7000;
 
     uint8_t buf[FF_PROTO_ENVELOPE_LEN];
     int n = ff_proto_encode_pulse(buf, sizeof(buf));
@@ -174,19 +178,31 @@ static void S08_AC4_pulse_from_unpaired_node_is_dropped(void)
 
     TEST_ASSERT_EQUAL_UINT8(0, ff_feed_count(&r.feed));
     TEST_ASSERT_EQUAL_INT(0, r.haptic.count); /* mutation-check: no buzz on a dropped event either */
+    TEST_ASSERT_EQUAL_UINT8(0, r.crew.count); /* the roster-exhaustion fix: a crew MISS never claims a slot */
+    /* ...but the sender IS noted in the heard list, per the PR #25 review
+     * ruling — unpaired/unknown senders still populate the future
+     * "add from heard nodes" pairing UI, just never at roster-slot cost. */
+    TEST_ASSERT_TRUE(ff_heard_contains(&r.heard, UNPAIRED_NODE));
+    ff_heard_entry_t const *he = ff_heard_at(&r.heard, 0);
+    TEST_ASSERT_NOT_NULL(he);
+    TEST_ASSERT_EQUAL_UINT32(7000, he->last_heard_ms);
 }
 
 static void S08_AC4_pulse_from_node_with_no_roster_room_is_dropped(void)
 {
-    /* Fill the crew roster to FF_CREW_MAX with OTHER node ids, then hear
-     * from a brand-new node id that has no room — ff_crew_upsert returns
-     * NULL, and wiring must treat that the same as "not paired", not
-     * crash or silently trust it. */
+    /* Fill the crew roster to FF_CREW_MAX with OTHER node ids (directly,
+     * simulating "the roster is already full for unrelated reasons"),
+     * then hear from a brand-new node id: ff_crew_find (read-only) simply
+     * misses — it never attempts to claim a slot, so "no room" and
+     * "plenty of room" behave identically from wiring's point of view
+     * (this is precisely the roster-exhaustion fix: a full roster no
+     * longer changes what happens to an incoming unknown sender). */
     test_rig_t r;
     rig_init(&r);
     for (uint32_t i = 0; i < FF_CREW_MAX; i++) {
         ff_crew_upsert(&r.crew, 0x9000u + i);
     }
+    TEST_ASSERT_EQUAL_UINT8(FF_CREW_MAX, r.crew.count);
 
     uint8_t buf[FF_PROTO_ENVELOPE_LEN];
     int n = ff_proto_encode_pulse(buf, sizeof(buf));
@@ -195,6 +211,59 @@ static void S08_AC4_pulse_from_node_with_no_roster_room_is_dropped(void)
 
     TEST_ASSERT_EQUAL_UINT8(0, ff_feed_count(&r.feed));
     TEST_ASSERT_EQUAL_INT(0, r.haptic.count);
+    TEST_ASSERT_EQUAL_UINT8(FF_CREW_MAX, r.crew.count); /* unchanged — no upsert attempted */
+    TEST_ASSERT_TRUE(ff_heard_contains(&r.heard, 0xABCDu)); /* still surfaced via the heard list */
+}
+
+/* ------------------------------------------------------------------- */
+/* PR #25 code review, MEDIUM finding — roster exhaustion from a flood  */
+/* of unpaired/unknown senders. This is the regression test for the     */
+/* actual attack scenario, not just the unit-level guard above.        */
+/* ------------------------------------------------------------------- */
+
+static void S08_AC4_flood_of_unknown_senders_does_not_exhaust_roster_or_block_pairing(void)
+{
+    test_rig_t r;
+    rig_init(&r);
+
+    /* Flood: well past BOTH FF_CREW_MAX (8) and FF_HEARD_MAX (16) distinct
+     * never-before-heard node ids, each sending one PULSE — large enough
+     * to prove two separate things at once: the (non-evicting) crew
+     * roster never grows at all, AND the heard list, which SHOULD grow,
+     * stays genuinely bounded via real eviction rather than "happened to
+     * be big enough to hold this test's flood". */
+    uint8_t buf[FF_PROTO_ENVELOPE_LEN];
+    int n = ff_proto_encode_pulse(buf, sizeof(buf));
+    TEST_ASSERT_TRUE(n > 0);
+
+    enum { FLOOD_N = FF_HEARD_MAX + 5 };
+    for (int i = 0; i < FLOOD_N; i++) {
+        r.fc.t = (uint32_t)(1000 + i);
+        ff_wiring_on_private(&r.w, 0xF0000u + (uint32_t)i, FF_PORTNUM, buf, (size_t)n);
+    }
+
+    /* Nothing got fed (all unpaired) and — the actual fix — the roster
+     * itself never grew at all. */
+    TEST_ASSERT_EQUAL_UINT8(0, ff_feed_count(&r.feed));
+    TEST_ASSERT_EQUAL_UINT8(0, r.crew.count);
+
+    /* The real-world consequence this test exists to rule out: a real
+     * crew member must still be pairable after the flood. Before the
+     * fix, ff_crew_set_paired here would have silently no-op'd (roster
+     * full, id not already present). */
+    uint32_t const real_friend = 0xDEADBEEFu;
+    ff_crew_set_paired(&r.crew, real_friend, true);
+    ff_crew_member_t const *m = ff_crew_find(&r.crew, real_friend);
+    TEST_ASSERT_NOT_NULL(m);
+    TEST_ASSERT_TRUE(m->paired);
+
+    /* And the heard list did its job: bounded at FF_HEARD_MAX (not
+     * FLOOD_N — proving it's genuinely capped, not just "big enough for
+     * this test"), holding the MOST RECENT senders (LRU eviction, not
+     * whichever arrived first). */
+    TEST_ASSERT_EQUAL_UINT8(FF_HEARD_MAX, ff_heard_count(&r.heard));
+    TEST_ASSERT_FALSE(ff_heard_contains(&r.heard, 0xF0000u)); /* earliest — evicted */
+    TEST_ASSERT_TRUE(ff_heard_contains(&r.heard, 0xF0000u + (FLOOD_N - 1))); /* most recent — kept */
 }
 
 /* ------------------------------------------------------------------- */
@@ -414,6 +483,7 @@ int main(void)
     RUN_TEST(S08_AC4_pulse_from_paired_node_pushes_feed_item_and_fires_haptic);
     RUN_TEST(S08_AC4_pulse_from_unpaired_node_is_dropped);
     RUN_TEST(S08_AC4_pulse_from_node_with_no_roster_room_is_dropped);
+    RUN_TEST(S08_AC4_flood_of_unknown_senders_does_not_exhaust_roster_or_block_pairing);
 
     RUN_TEST(S08_AC4_wrong_portnum_is_ignored);
     RUN_TEST(S08_AC4_malformed_payload_is_ignored);

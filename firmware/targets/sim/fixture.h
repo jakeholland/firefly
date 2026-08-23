@@ -28,11 +28,12 @@ typedef enum {
     FF_FIXTURE_ERR_JSON,    /* malformed/truncated/non-object JSON */
     FF_FIXTURE_ERR_TOO_BIG, /* input exceeded the parser's size/token budget,
                                 OR a section's array (radar.dots/now.rows/
-                                signals.items) exceeded its documented cap:
-                                FF_CREW_MAX (core/include/ff_crew.h) for
-                                radar.dots, FF_APP_NOW_MAX_ROWS/
+                                now.lineup/signals.items) exceeded its
+                                documented cap: FF_CREW_MAX
+                                (core/include/ff_crew.h) for radar.dots,
+                                FF_APP_NOW_MAX_ROWS/FF_APP_NOW_MAX_LINEUP/
                                 FF_APP_SIGNALS_MAX_ITEMS (ff_app_state.h)
-                                for the other two.
+                                for the other three.
                                 Fail-loud by design (PR #12 review ruling):
                                 an over-cap array is rejected outright, not
                                 silently truncated, so a fixture that grows

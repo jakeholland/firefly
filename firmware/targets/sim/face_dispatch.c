@@ -19,7 +19,8 @@ void ff_build_face_screen(ff_app_state_t const *state, ff_flare_t *flare_rt)
         return;
     }
 
-    if (state->active_face == FF_APP_FACE_RADAR || state->active_face == FF_APP_FACE_SIGNALS) {
+    if (state->active_face == FF_APP_FACE_RADAR || state->active_face == FF_APP_FACE_NOW ||
+        state->active_face == FF_APP_FACE_SIGNALS) {
         ff_scr_nav_build(state, flare_rt);
     } else if (state->active_face == FF_APP_FACE_COMPOSE) {
         ff_scr_compose_build(&state->compose);

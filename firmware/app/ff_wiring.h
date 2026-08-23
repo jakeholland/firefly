@@ -18,15 +18,30 @@
  *    injector" (no live mc_client_t/transport/radio required — this is
  *    the injection seam S08 slice b's AC4 asks for).
  *  - **Crew-paired-sender filter**: an incoming event's `from` node is
- *    looked up via `ff_crew_upsert` (find-or-create — hearing from a new
- *    node earns it an unpaired "merely heard" slot per S02's model, same
- *    as any other crew-observing code path); if that member isn't
- *    `paired`, the event is dropped — not pushed to the feed, no haptic.
- *    A node the roster has no room to track (`ff_crew_upsert` returns
- *    NULL because the roster is full and this id isn't already in it) is
- *    treated the same as "unpaired" — honest default: without a slot to
- *    read `paired` from, this code cannot claim the sender is trusted, so
- *    it drops rather than guesses trusted.
+ *    looked up via `ff_crew_find` — a READ-ONLY lookup, never
+ *    `ff_crew_upsert` — if that lookup misses, or finds a member who
+ *    isn't `paired`, the event is dropped: not pushed to the feed, no
+ *    haptic. This module used to call `ff_crew_upsert` (find-**or-
+ *    create**) here, which meant an unpaired/unknown sender's packet
+ *    still claimed one of `ff_crew_t`'s fixed `FF_CREW_MAX` (8) slots
+ *    even though the event itself got dropped — v1 has no eviction
+ *    (`ff_crew.h`), so 8 packets from 8 distinct never-before-heard node
+ *    ids permanently filled the roster and no real crew member could
+ *    ever be paired again for the rest of the session (S08 PR #25 code
+ *    review, MEDIUM finding — this module is the first live call path
+ *    that lets untrusted RF input touch the roster at all, and at a
+ *    festival with thousands of nodes in range this needs no malice,
+ *    just normal RF volume). Fixed by the ruling: the paired roster and
+ *    "which nodes has this puck heard" are two different things.
+ *    Unknown senders are instead noted in `w->heard` (`core/include/
+ *    ff_heard.h` — a separate, bounded, LRU-evictable list; see that
+ *    header for why it lives in core/ alongside ff_crew, not here) if
+ *    one was injected, so they're still surfaceable to a future
+ *    "add from heard nodes" pairing UI (S04's stated v1 pairing model) —
+ *    but never at the cost of a protected roster slot. Only an explicit
+ *    user pairing action (`ff_crew_upsert`/`ff_crew_set_paired` from the
+ *    Settings/pairing screen, not yet built) ever grows the roster;
+ *    inbound radio traffic alone never does.
  *  - On a successful (paired-sender) push, fires the injected haptic
  *    callback once per pushed item. The spec's AC4 wording calls this out
  *    specifically for PULSE ("feed item + haptic callback"); this module
@@ -71,6 +86,7 @@
 
 #include "ff_crew.h"
 #include "ff_feed.h"
+#include "ff_heard.h"
 
 #include "mc_client.h"
 
@@ -93,6 +109,7 @@ typedef struct {
 typedef struct {
     ff_feed_t          *feed;
     ff_crew_t           *crew;
+    ff_heard_t          *heard; /* NULL = don't track heard-but-unpaired senders (still safe: just no UI list to populate) */
     ff_wiring_sender_t   sender;
     void (*haptic_cb)(void *user); /* NULL = no-op */
     void                *haptic_user;
@@ -103,8 +120,9 @@ typedef struct {
  * ff_wiring_init — production wiring: binds `w->sender` to `mc` via
  * internal thin wrapper functions (`mc_send_text`/`mc_send_private` on
  * the given, already-initialized `mc_client_t`). `mc` must outlive `w`.
+ * `heard` may be NULL if the caller has no heard-node UI to feed yet.
  */
-void ff_wiring_init(ff_wiring_ctx_t *w, ff_feed_t *feed, ff_crew_t *crew, mc_client_t *mc,
+void ff_wiring_init(ff_wiring_ctx_t *w, ff_feed_t *feed, ff_crew_t *crew, ff_heard_t *heard, mc_client_t *mc,
                      void (*haptic_cb)(void *user), void *haptic_user, ff_clock_t const *clock);
 
 /**
@@ -114,8 +132,9 @@ void ff_wiring_init(ff_wiring_ctx_t *w, ff_feed_t *feed, ff_crew_t *crew, mc_cli
  * mock sender that just records `dest`/text/payload, no live radio or
  * handshake needed).
  */
-void ff_wiring_init_with_sender(ff_wiring_ctx_t *w, ff_feed_t *feed, ff_crew_t *crew, ff_wiring_sender_t sender,
-                                 void (*haptic_cb)(void *user), void *haptic_user, ff_clock_t const *clock);
+void ff_wiring_init_with_sender(ff_wiring_ctx_t *w, ff_feed_t *feed, ff_crew_t *crew, ff_heard_t *heard,
+                                 ff_wiring_sender_t sender, void (*haptic_cb)(void *user), void *haptic_user,
+                                 ff_clock_t const *clock);
 
 /**
  * ff_wiring_on_private — `mc_events_t.on_private`-shaped handler. `user`
