@@ -3,8 +3,12 @@
  *
  * Test names follow docs/specs/S10-flare.md's numbered acceptance criteria:
  * S10_ACn_description. AC5 (goldens/UI) is out of scope for this slice —
- * see the PR body. `S10_ruling{1,2}_*` tests cover the two product rulings
- * recorded in the spec's `## Amendments` (2026-08-23, PR #15 review).
+ * see the PR body. `S10_ruling{1,2,3}_*` tests cover the three product
+ * rulings recorded in the spec's `## Amendments` (2026-08-23, PR #15
+ * review): Ruling 1 (independent send/receive), Ruling 2 (an established
+ * lock is never silently replaced), Ruling 3 (dismiss/release split into
+ * two intent-aware functions instead of one mode-dependent
+ * ff_flare_dismiss(), taken as a same-slice fix on the approved PR).
  *
  * All `now_ms` values are plain literals (no fake-clock harness needed):
  * ff_flare's entry points take `now_ms` explicitly rather than reading an
@@ -202,16 +206,37 @@ static void S10_AC1_go_transitions_received_to_locked(void)
     TEST_ASSERT_EQUAL_UINT32(42u, ff_flare_locked_node(&f));
 }
 
-static void S10_AC1_dismiss_transitions_to_idle_and_unlocks(void)
+static void S10_AC1_dismiss_takeover_transitions_to_idle(void)
 {
+    /* The plain "DISMISS -> IDLE" case (spec's original language): a
+     * pending takeover with no lock behind it, explicitly dismissed
+     * without ever pressing GO. */
+    ff_flare_t f;
+    ff_flare_init(&f);
+    ff_flare_on_flare_rx(&f, 42u, true, 120u, 5000u);
+    TEST_ASSERT_TRUE(f.takeover_active);
+
+    ff_flare_result_t r = ff_flare_dismiss_takeover(&f);
+
+    TEST_ASSERT_EQUAL(FF_FLARE_INTENT_NONE, r.intent);
+    TEST_ASSERT_FALSE(f.takeover_active);
+    TEST_ASSERT_EQUAL_UINT32(0u, f.takeover_node_id);
+    TEST_ASSERT_EQUAL_UINT32(0u, f.takeover_expiry_ms);
+    TEST_ASSERT_EQUAL_UINT32(0u, ff_flare_locked_node(&f)); /* never was locked */
+}
+
+static void S10_AC1_release_lock_transitions_to_idle(void)
+{
+    /* The LOCKED "DISMISS -> IDLE" case (spec's original language),
+     * post-split: releasing a lock with nothing new pending on top of it. */
     ff_flare_t f;
     ff_flare_init(&f);
     ff_flare_on_flare_rx(&f, 42u, true, 120u, 5000u);
     ff_flare_go(&f);
     TEST_ASSERT_EQUAL_UINT32(42u, f.locked_node_id);
-    TEST_ASSERT_FALSE(f.takeover_active); /* nothing pending: this dismiss releases the lock itself */
+    TEST_ASSERT_FALSE(f.takeover_active); /* nothing pending on top of the lock */
 
-    ff_flare_result_t r = ff_flare_dismiss(&f);
+    ff_flare_result_t r = ff_flare_release_lock(&f);
 
     TEST_ASSERT_EQUAL(FF_FLARE_INTENT_NONE, r.intent);
     TEST_ASSERT_FALSE(f.takeover_active);
@@ -396,7 +421,7 @@ static void S10_ruling2_flare_from_b_while_locked_to_a_shows_takeover_keeps_lock
     TEST_ASSERT_EQUAL_UINT32(0xA1u, ff_flare_locked_node(&f)); /* lock on Dana is untouched */
 }
 
-static void S10_ruling2_dismiss_on_new_takeover_returns_to_intact_lock(void)
+static void S10_ruling2_dismiss_takeover_on_new_takeover_returns_to_intact_lock(void)
 {
     ff_flare_t f;
     ff_flare_init(&f);
@@ -405,7 +430,7 @@ static void S10_ruling2_dismiss_on_new_takeover_returns_to_intact_lock(void)
     ff_flare_on_flare_rx(&f, 0xB2u, true, 60u, 10000u); /* B's takeover raised */
     TEST_ASSERT_EQUAL_UINT32(0xA1u, ff_flare_locked_node(&f));
 
-    ff_flare_result_t r = ff_flare_dismiss(&f);
+    ff_flare_result_t r = ff_flare_dismiss_takeover(&f);
 
     TEST_ASSERT_EQUAL(FF_FLARE_INTENT_NONE, r.intent);
     TEST_ASSERT_FALSE(f.takeover_active); /* B's takeover cleared */
@@ -427,6 +452,78 @@ static void S10_ruling2_go_on_new_takeover_switches_lock_to_b(void)
     TEST_ASSERT_FALSE(f.takeover_active);
     TEST_ASSERT_EQUAL_UINT32(0xB2u, ff_flare_locked_node(&f)); /* explicit switch to B */
     TEST_ASSERT_EQUAL_UINT32(10000u + 60000u, f.locked_expiry_ms);
+}
+
+/* ------------------------------------------------------------------- */
+/* Ruling 3 (PR #15 review, approved with recommendation taken
+ * immediately; Amendment 2026-08-23, third entry) — dismiss/release
+ * split into two intent-aware functions instead of one mode-dependent
+ * ff_flare_dismiss().                                                  */
+/* ------------------------------------------------------------------- */
+
+static void S10_ruling3_release_lock_while_takeover_pending_keeps_takeover_visible(void)
+{
+    /* The reviewer's concrete repro, directly: user taps "stop
+     * navigating" (intending ff_flare_release_lock) at the exact instant
+     * a new flare's takeover is pending. With the old double-duty
+     * dismiss(), this would have silently taken the takeover-dismiss
+     * branch instead — dropping the user's actual intent AND swallowing
+     * the new takeover unseen. release_lock() only ever touches the
+     * lock: the takeover must come through completely untouched. */
+    ff_flare_t f;
+    ff_flare_init(&f);
+    ff_flare_on_flare_rx(&f, 0xA1u, true, 300u, 0u);
+    ff_flare_go(&f); /* locked to A */
+    ff_flare_on_flare_rx(&f, 0xB2u, true, 60u, 10000u); /* Kev's takeover arrives */
+    TEST_ASSERT_EQUAL_UINT32(0xA1u, ff_flare_locked_node(&f));
+    TEST_ASSERT_TRUE(f.takeover_active);
+
+    ff_flare_result_t r = ff_flare_release_lock(&f);
+
+    TEST_ASSERT_EQUAL(FF_FLARE_INTENT_NONE, r.intent);
+    TEST_ASSERT_EQUAL_UINT32(0u, ff_flare_locked_node(&f)); /* lock released, as intended */
+    TEST_ASSERT_TRUE(f.takeover_active);                    /* Kev's takeover: still pending, still visible */
+    TEST_ASSERT_EQUAL_UINT32(0xB2u, f.takeover_node_id);
+    TEST_ASSERT_EQUAL_UINT32(10000u + 60000u, f.takeover_expiry_ms);
+}
+
+static void S10_ruling3_dismiss_takeover_while_locked_with_nothing_pending_is_noop(void)
+{
+    /* Mirror of the race case: dismissing a takeover that doesn't exist
+     * must not accidentally release an unrelated lock. */
+    ff_flare_t f;
+    ff_flare_init(&f);
+    ff_flare_on_flare_rx(&f, 0xA1u, true, 300u, 0u);
+    ff_flare_go(&f); /* locked to A, nothing pending */
+    TEST_ASSERT_FALSE(f.takeover_active);
+
+    ff_flare_result_t r = ff_flare_dismiss_takeover(&f);
+
+    TEST_ASSERT_EQUAL(FF_FLARE_INTENT_NONE, r.intent);
+    TEST_ASSERT_EQUAL_UINT32(0xA1u, ff_flare_locked_node(&f)); /* untouched */
+}
+
+static void S10_ruling3_dismiss_takeover_while_idle_is_noop(void)
+{
+    ff_flare_t f;
+    ff_flare_init(&f);
+
+    ff_flare_result_t r = ff_flare_dismiss_takeover(&f);
+
+    TEST_ASSERT_EQUAL(FF_FLARE_INTENT_NONE, r.intent);
+    TEST_ASSERT_FALSE(f.takeover_active);
+    TEST_ASSERT_EQUAL_UINT32(0u, ff_flare_locked_node(&f));
+}
+
+static void S10_ruling3_release_lock_while_idle_is_noop(void)
+{
+    ff_flare_t f;
+    ff_flare_init(&f);
+
+    ff_flare_result_t r = ff_flare_release_lock(&f);
+
+    TEST_ASSERT_EQUAL(FF_FLARE_INTENT_NONE, r.intent);
+    TEST_ASSERT_EQUAL_UINT32(0u, ff_flare_locked_node(&f));
 }
 
 /* ------------------------------------------------------------------- */
@@ -453,18 +550,6 @@ static void S10_go_while_idle_is_noop(void)
     ff_flare_result_t r = ff_flare_go(&f);
 
     TEST_ASSERT_EQUAL(FF_FLARE_INTENT_NONE, r.intent);
-    TEST_ASSERT_EQUAL_UINT32(0u, ff_flare_locked_node(&f));
-}
-
-static void S10_dismiss_while_idle_is_noop(void)
-{
-    ff_flare_t f;
-    ff_flare_init(&f);
-
-    ff_flare_result_t r = ff_flare_dismiss(&f);
-
-    TEST_ASSERT_EQUAL(FF_FLARE_INTENT_NONE, r.intent);
-    TEST_ASSERT_FALSE(f.takeover_active);
     TEST_ASSERT_EQUAL_UINT32(0u, ff_flare_locked_node(&f));
 }
 
@@ -563,7 +648,8 @@ int main(void)
     RUN_TEST(S10_AC1_newest_flare_wins_while_received);
     RUN_TEST(S10_AC1_newest_flare_while_locked_raises_takeover);
     RUN_TEST(S10_AC1_go_transitions_received_to_locked);
-    RUN_TEST(S10_AC1_dismiss_transitions_to_idle_and_unlocks);
+    RUN_TEST(S10_AC1_dismiss_takeover_transitions_to_idle);
+    RUN_TEST(S10_AC1_release_lock_transitions_to_idle);
 
     RUN_TEST(S10_AC2_receive_haptic_override_is_unconditional_by_design);
 
@@ -576,12 +662,16 @@ int main(void)
     RUN_TEST(S10_ruling1_send_and_receive_expire_independently);
 
     RUN_TEST(S10_ruling2_flare_from_b_while_locked_to_a_shows_takeover_keeps_lock);
-    RUN_TEST(S10_ruling2_dismiss_on_new_takeover_returns_to_intact_lock);
+    RUN_TEST(S10_ruling2_dismiss_takeover_on_new_takeover_returns_to_intact_lock);
     RUN_TEST(S10_ruling2_go_on_new_takeover_switches_lock_to_b);
+
+    RUN_TEST(S10_ruling3_release_lock_while_takeover_pending_keeps_takeover_visible);
+    RUN_TEST(S10_ruling3_dismiss_takeover_while_locked_with_nothing_pending_is_noop);
+    RUN_TEST(S10_ruling3_dismiss_takeover_while_idle_is_noop);
+    RUN_TEST(S10_ruling3_release_lock_while_idle_is_noop);
 
     RUN_TEST(S10_send_cancel_while_idle_is_noop);
     RUN_TEST(S10_go_while_idle_is_noop);
-    RUN_TEST(S10_dismiss_while_idle_is_noop);
     RUN_TEST(S10_flare_end_rx_while_idle_is_ignored);
     RUN_TEST(S10_flare_end_rx_while_sending_is_ignored);
     RUN_TEST(S10_flare_end_rx_matching_both_takeover_and_lock_clears_both);

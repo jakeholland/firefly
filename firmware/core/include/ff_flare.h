@@ -3,9 +3,9 @@
  *
  * Spec: docs/specs/S10-flare.md (this slice: "state machine + tests";
  * takeover/sender UI is slice b, gated on the S06 app shell). See that
- * spec's `## Amendments` (2026-08-23, PR #15) for the two product rulings
- * this shape implements — summarized in the "Independent state" and
- * "Judgment calls" sections below.
+ * spec's `## Amendments` (2026-08-23, PR #15) for the three product
+ * rulings this shape implements — summarized in the "Independent state",
+ * "Intent-aware dismiss/release" and "Judgment calls" sections below.
  *
  * Pure C11, no I/O, no allocation, no clock-reading of its own: every entry
  * point that needs "now" takes it as an explicit `uint32_t now_ms`
@@ -42,7 +42,7 @@
  *  - `locked_node_id`/`locked_expiry_ms` — the node navigation is
  *    actually committed to (0 = not locked). Set only by `ff_flare_go()`
  *    (which also consumes/clears the pending takeover), cleared only by
- *    `ff_flare_dismiss()`, its own expiry, or a matching FLARE_END.
+ *    `ff_flare_release_lock()`, its own expiry, or a matching FLARE_END.
  *    **A newly-arriving takeover never touches this** — the MEDIUM
  *    finding's fix: an established lock is never silently replaced. It
  *    can coexist with a *different* pending takeover (Kev flares while
@@ -61,6 +61,34 @@
  * the UI needs to render is always just a direct read of `ff_flare_t`'s
  * fields (fully-defined struct, not opaque) — nothing about that needs to
  * ride inside the result too.
+ *
+ * ## Intent-aware dismiss/release (PR #15 review, approved with a
+ * recommendation taken immediately rather than deferred — see this
+ * header's top comment and docs/specs/S10-flare.md's Amendments, third
+ * entry, 2026-08-23)
+ * The first pass at Ruling 2 gave `ff_flare_dismiss()` double duty:
+ * "dismiss the pending takeover if one exists, else release the lock."
+ * Reviewer's concrete repro: if a user taps "stop navigating" (intending
+ * to release the lock) at the same instant a new flare arrives, that
+ * single overloaded call silently takes the takeover-dismiss branch —
+ * the user's actual intent (release the lock) is dropped, AND the new
+ * takeover is swallowed unseen (never shown, never decided). A
+ * mode-dependent API can't tell those two intents apart; only the caller
+ * knows which one it meant. Fixed by splitting into two explicit,
+ * single-purpose functions with no mode-sensing between them:
+ *  - `ff_flare_dismiss_takeover()` — clears a pending takeover only. No
+ *    effect on `locked_node_id` either way (present or absent).
+ *  - `ff_flare_release_lock()` — releases the navigation lock only. No
+ *    effect on `takeover_active` either way (present or absent) — so the
+ *    race case above is now handled correctly: `locked_node_id` clears,
+ *    `takeover_active` stays exactly as it was (still pending, still
+ *    due to be shown) — nothing is silently swallowed.
+ * This was taken as a same-slice fix (not deferred to a follow-up PR)
+ * specifically because nothing in this repo calls `ff_flare_dismiss()`
+ * yet (slice b/UI wiring hasn't started) — changing the signature now is
+ * a pure addition-then-removal with zero call sites to update, where
+ * doing it after slice b existed would have been a breaking `[api]`
+ * change against real call sites.
  *
  * ## Dependency-light by design (documented per the task brief)
  *  - **No `ff_crew.h` include.** "Is this sender paired?" is passed in as
@@ -109,16 +137,18 @@
  *     `sending` or an existing `locked_node_id` — see "Independent state"
  *     above for the full rationale and docs/specs/S10-flare.md's
  *     Amendments for the ruling.
- *  4. **`ff_flare_dismiss()` does double duty**: if a takeover is pending,
- *     it dismisses *that* (leaving any existing lock untouched — this is
- *     the MEDIUM finding's "DISMISS returns to the intact A lock");
- *     otherwise, if there's no pending takeover but the selection is
- *     LOCKED, it releases the lock instead (preserves the original spec
- *     behavior of dismissing out of a lock entirely when nothing new is
- *     overlaid on it). The two conditions are mutually exclusive by
- *     construction (a fresh takeover is the only path that could coexist
- *     with a lock in the first place), so there's no ambiguity about
- *     which one a given `ff_flare_dismiss()` call means.
+ *  4. **`ff_flare_dismiss_takeover()` and `ff_flare_release_lock()` are
+ *     separate, single-purpose functions, not one mode-dependent
+ *     `dismiss()`.** See "Intent-aware dismiss/release" above — this
+ *     superseded an earlier double-duty `ff_flare_dismiss()` in the same
+ *     PR, before anything called it, precisely so the API never shipped
+ *     the mode-sensing footgun the reviewer's race case describes. The
+ *     spec's original "DISMISS -> IDLE" language (predating both Ruling 2
+ *     and this split) now maps to whichever of the two the UI's DISMISS
+ *     button means in context: dismissing a shown takeover calls
+ *     `ff_flare_dismiss_takeover()`; a separate "stop navigating" affordance
+ *     (if/when slice b adds one) calls `ff_flare_release_lock()`. Slice b
+ *     decides the UI mapping; this module just refuses to guess at it.
  */
 #ifndef FF_FLARE_H
 #define FF_FLARE_H
@@ -257,19 +287,33 @@ ff_flare_result_t ff_flare_on_flare_end_rx(ff_flare_t *f, uint32_t node_id);
 ff_flare_result_t ff_flare_go(ff_flare_t *f);
 
 /**
- * ff_flare_dismiss — user dismissed the current takeover. If a takeover
- * is pending, clears just that (`takeover_active` -> false), leaving any
- * existing `locked_node_id` completely untouched (MEDIUM finding:
- * "DISMISS returns to the intact A lock"). Otherwise, if there's no
- * pending takeover but the selection is locked, releases the lock instead
- * (`locked_node_id` -> 0) — see this header's judgment call (4) for why
- * these two conditions are mutually exclusive and both belong under
- * "dismiss". Per spec, the feed item itself is NOT cleared by this — feed
- * ownership is out of scope for this module entirely (S08), so there is
- * nothing here that could clear it anyway. A no-op if neither applies
- * (nothing pending, nothing locked).
+ * ff_flare_dismiss_takeover — user dismissed the currently pending
+ * takeover: `takeover_active` -> false, clearing `takeover_node_id`/
+ * `takeover_expiry_ms`. Has NO effect on `locked_node_id`/
+ * `locked_expiry_ms` either way — present or absent, they are simply not
+ * read or written (MEDIUM finding: "DISMISS returns to the intact A
+ * lock"; see this header's "Intent-aware dismiss/release" section for why
+ * this is a separate function from `ff_flare_release_lock` rather than
+ * one mode-dependent call). Per spec, the feed item itself is NOT cleared
+ * by this — feed ownership is out of scope for this module entirely
+ * (S08), so there is nothing here that could clear it anyway. A no-op if
+ * no takeover is pending.
  */
-ff_flare_result_t ff_flare_dismiss(ff_flare_t *f);
+ff_flare_result_t ff_flare_dismiss_takeover(ff_flare_t *f);
+
+/**
+ * ff_flare_release_lock — user released the navigation lock (e.g. a
+ * "stop navigating" affordance): `locked_node_id` -> 0, clearing
+ * `locked_expiry_ms`. Has NO effect on `takeover_active`/
+ * `takeover_node_id`/`takeover_expiry_ms` either way — present or absent,
+ * they are simply not read or written. This is what makes the reviewer's
+ * race case safe: releasing the lock at the exact instant a new flare's
+ * takeover is pending clears the lock and leaves that takeover fully
+ * intact and still due to be shown, rather than one call silently
+ * consuming the other's intent (see this header's "Intent-aware
+ * dismiss/release" section). A no-op if not currently locked.
+ */
+ff_flare_result_t ff_flare_release_lock(ff_flare_t *f);
 
 /**
  * ff_flare_tick — periodic expiry check, called with the current clock

@@ -140,28 +140,35 @@ ff_flare_result_t ff_flare_go(ff_flare_t *f)
     return r;
 }
 
-ff_flare_result_t ff_flare_dismiss(ff_flare_t *f)
+ff_flare_result_t ff_flare_dismiss_takeover(ff_flare_t *f)
 {
     ff_flare_result_t r = ff_flare_no_result();
-    if (!f) {
+    if (!f || !f->takeover_active) {
         return r;
     }
 
-    if (f->takeover_active) {
-        /* Dismiss just the pending takeover; any existing lock is left
-         * completely untouched (MEDIUM finding fix). */
-        f->takeover_active = false;
-        f->takeover_node_id = 0;
-        f->takeover_expiry_ms = 0;
+    /* Only the pending takeover; locked_node_id/locked_expiry_ms are not
+     * read or written here, present or absent (review's race-case fix —
+     * see ff_flare.h's "Intent-aware dismiss/release" section). */
+    f->takeover_active = false;
+    f->takeover_node_id = 0;
+    f->takeover_expiry_ms = 0;
+    return r;
+}
+
+ff_flare_result_t ff_flare_release_lock(ff_flare_t *f)
+{
+    ff_flare_result_t r = ff_flare_no_result();
+    if (!f || f->locked_node_id == 0) {
         return r;
     }
 
-    if (f->locked_node_id != 0) {
-        /* Nothing pending to dismiss: release the lock itself instead
-         * (see ff_flare.h's judgment call (4)). */
-        f->locked_node_id = 0;
-        f->locked_expiry_ms = 0;
-    }
+    /* Only the lock; takeover_active/takeover_node_id/takeover_expiry_ms
+     * are not read or written here, present or absent (review's
+     * race-case fix — see ff_flare.h's "Intent-aware dismiss/release"
+     * section). */
+    f->locked_node_id = 0;
+    f->locked_expiry_ms = 0;
     return r;
 }
 
