@@ -17,6 +17,16 @@ loader is tolerant of missing/unknown keys, matching
 `firmware/festpack/src/fp_pack.c`'s "schema will grow" philosophy. Unknown
 keys anywhere are silently skipped, not errors.
 
+**Array caps are enforced fail-loud, not by silent truncation.** A section
+array (`radar.dots`, `now.rows`, `signals.items`) that exceeds its
+documented cap makes the whole load fail with `FF_FIXTURE_ERR_TOO_BIG` —
+`*out` comes back fully zeroed, same as any other load failure — rather
+than quietly keeping only the first N entries. (Ruled on during PR #12
+review: consistent with `fp_parse`'s `FP_ERR_TOO_BIG` and this repo's
+honest-data culture — a fixture that grows past a cap should get a loud,
+attributable failure, not a dropped entry that only shows up later as an
+unrelated-looking golden diff.)
+
 ## Top level
 
 ```json
@@ -68,7 +78,7 @@ keys anywhere are silently skipped, not errors.
 | `clock_str` | string (≤5 chars) | `""` |
 | `batt_pct` | integer | `0` (note: `-1` is the documented "unknown" sentinel elsewhere in this codebase — pass it explicitly if that's what a fixture needs) |
 | `mesh_ok` | bool | `false` |
-| `dots` | array of `{ring_deg, initial, color_idx, stale}`, up to `FF_APP_RADAR_MAX_DOTS` (8) | `[]` |
+| `dots` | array of `{ring_deg, initial, color_idx, stale}`, up to `FF_APP_RADAR_MAX_DOTS` (8) — more than 8 fails the whole load (`FF_FIXTURE_ERR_TOO_BIG`) | `[]` |
 
 Field names/semantics are transcribed 1:1 from `docs/specs/S06-radar-face.md`'s
 `ff_radar_view_t`. See `ff_app_state.h`'s header comment for why this
@@ -87,8 +97,11 @@ loader's struct is named `ff_app_radar_t`, not `ff_radar_view_t`.
 }
 ```
 
-`rows` holds up to `FF_APP_NOW_MAX_ROWS` (3) entries; `stage_color_rgb`
-accepts a `"#rrggbb"` string or a bare integer. `next` is omitted entirely
+`rows` holds up to `FF_APP_NOW_MAX_ROWS` (3) entries (a 4th fails the whole
+load with `FF_FIXTURE_ERR_TOO_BIG`); `stage_color_rgb` accepts a
+`"#rrggbb"` string (leading `#` optional) or a bare integer — both forms
+are exercised in `test_fixture.c` (`now_stage_color_rgb_hex_string_parses`,
+`now_stage_color_rgb_numeric_form_parses`). `next` is omitted entirely
 (not `null`) when there's no upcoming starred set — presence of the `next`
 object sets `ff_app_next_t.valid = true`.
 
@@ -104,7 +117,8 @@ object sets `ff_app_next_t.valid = true`.
 ```
 
 `kind` is one of `pulse`\|`text`\|`rally`\|`status`\|`flare`. `items` holds
-up to `FF_APP_SIGNALS_MAX_ITEMS` (8), newest first.
+up to `FF_APP_SIGNALS_MAX_ITEMS` (8), newest first — a 9th fails the whole
+load with `FF_FIXTURE_ERR_TOO_BIG`.
 
 ## `flare` (S10)
 

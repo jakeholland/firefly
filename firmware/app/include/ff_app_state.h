@@ -92,6 +92,15 @@ typedef struct {
     bool    stale;      /* dashed-dot rendering */
 } ff_app_radar_dot_t;
 
+/* DRIFT GUARD (PR #12 review finding #5): this struct's field list must
+ * stay byte-for-byte in sync with docs/specs/S06-radar-face.md's
+ * ff_radar_view_t sketch — see that spec file's matching comment right
+ * above its own struct. Nothing enforces this at compile time (can't,
+ * until core/include/ff_radar.h actually exists — see the header
+ * comment above for the naming-collision reason this isn't just a
+ * shared typedef). Until S06 lands and this whole struct is deleted in
+ * favor of the real ff_radar_view_t: if you add/remove/retype a field
+ * in ONE of these two places, update the other in the same change. */
 typedef struct {
     ff_app_radar_mode_t mode;
     float arrow_deg;             /* smoothed screen rotation */

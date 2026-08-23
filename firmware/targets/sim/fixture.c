@@ -154,6 +154,47 @@ static int fx_enum(fx_ctx_t const *c, int i, fx_enum_entry_t const *table, size_
     return dflt;
 }
 
+static int fx_hex_nibble(char ch)
+{
+    if (ch >= '0' && ch <= '9') return ch - '0';
+    if (ch >= 'a' && ch <= 'f') return ch - 'a' + 10;
+    if (ch >= 'A' && ch <= 'F') return ch - 'A' + 10;
+    return -1;
+}
+
+/* fx_color_rgb — reads `stage_color_rgb` (tests/fixtures/README.md:
+ * "accepts a \"#rrggbb\" string or a bare integer"). A JSON string token
+ * is parsed as "#rrggbb" (leading '#' optional) into 0x00RRGGBB, same
+ * convention as festpack's fp_color_rgb(); a JSON number token is taken
+ * as the packed integer directly. Any other token type, or a malformed
+ * hex string, returns `dflt`. (Review finding #1: this used to route
+ * unconditionally through fx_num(), which silently returned 0 for the
+ * documented "#rrggbb" string form — a JSON_STRING token is not a
+ * JSMN_PRIMITIVE, so fx_num() rejected it without any signal.) */
+static uint32_t fx_color_rgb(fx_ctx_t const *c, int i, uint32_t dflt)
+{
+    if (i < 0 || i >= c->ntoks) return dflt;
+    jsmntok_t const *t = &c->toks[i];
+    if (t->type == JSMN_STRING) {
+        char const *s = c->js + t->start;
+        int n = t->end - t->start;
+        if (n > 0 && s[0] == '#') {
+            s++;
+            n--;
+        }
+        if (n != 6) return dflt;
+        uint32_t v = 0;
+        for (int k = 0; k < 6; k++) {
+            int nib = fx_hex_nibble(s[k]);
+            if (nib < 0) return dflt;
+            v = (v << 4) | (uint32_t)nib;
+        }
+        return v;
+    }
+    if (t->type == JSMN_PRIMITIVE) return (uint32_t)fx_num(c, i, (double)dflt);
+    return dflt;
+}
+
 /* ---------------------------------------------------------------------
  * Section parsers.
  * ------------------------------------------------------------------- */
@@ -163,34 +204,45 @@ static const fx_enum_entry_t fx_radar_mode_table[] = {
     {"close", FF_APP_RADAR_CLOSE}, {"nofix", FF_APP_RADAR_NOFIX}, {"nosel", FF_APP_RADAR_NOSEL},
 };
 
-static void fx_parse_radar_dots(fx_ctx_t const *c, int arr_i, ff_app_radar_t *r)
+/* fx_parse_radar_dots — fail-loud on an oversized array (orchestrator
+ * ruling on PR review finding #3/#4: consistent with fp_parse's
+ * FP_ERR_TOO_BIG and the honest-data culture, an over-cap array is
+ * rejected outright rather than silently truncated — a fixture that
+ * grows a 9th dot should get a loud "fixture X has 9 items, cap is 8"
+ * failure, not a quietly-dropped entry that surfaces later as an
+ * unrelated-looking golden diff). The size check runs BEFORE any writes
+ * into `r->dots[]`, so `r->n_dots` never exceeds FF_APP_RADAR_MAX_DOTS
+ * on any code path through this function — see test_fixture.c's
+ * `radar_dots_over_cap_fails_loud` for the regression test (and the
+ * mutation-testing rationale: if this check is ever deleted, that test
+ * stops observing FF_FIXTURE_ERR_TOO_BIG and fails, rather than the
+ * cap-overflow going unnoticed as before). */
+static ff_fixture_result_t fx_parse_radar_dots(fx_ctx_t const *c, int arr_i, ff_app_radar_t *r)
 {
     jsmntok_t const *at = &c->toks[arr_i];
-    if (at->type != JSMN_ARRAY) return;
-    int n = at->size;
-    if (n > FF_APP_RADAR_MAX_DOTS) n = FF_APP_RADAR_MAX_DOTS;
+    if (at->type != JSMN_ARRAY) return FF_FIXTURE_ERR_JSON;
+    if (at->size > FF_APP_RADAR_MAX_DOTS) return FF_FIXTURE_ERR_TOO_BIG;
     int idx = arr_i + 1;
     for (int i = 0; i < at->size; i++) {
         int obj_i = idx;
-        if (i < n) {
-            ff_app_radar_dot_t *d = &r->dots[r->n_dots];
-            memset(d, 0, sizeof(*d));
-            int t;
-            if (fx_obj_get(c, obj_i, "ring_deg", &t)) d->ring_deg = (float)fx_num(c, t, 0.0);
-            if (fx_obj_get(c, obj_i, "initial", &t)) {
-                char buf[2];
-                fx_copy_str(c, t, buf, sizeof(buf));
-                d->initial = buf[0];
-            }
-            if (fx_obj_get(c, obj_i, "color_idx", &t)) d->color_idx = (uint8_t)fx_num(c, t, 0.0);
-            if (fx_obj_get(c, obj_i, "stale", &t)) d->stale = fx_bool(c, t, false);
-            r->n_dots++;
+        ff_app_radar_dot_t *d = &r->dots[r->n_dots];
+        memset(d, 0, sizeof(*d));
+        int t;
+        if (fx_obj_get(c, obj_i, "ring_deg", &t)) d->ring_deg = (float)fx_num(c, t, 0.0);
+        if (fx_obj_get(c, obj_i, "initial", &t)) {
+            char buf[2];
+            fx_copy_str(c, t, buf, sizeof(buf));
+            d->initial = buf[0];
         }
+        if (fx_obj_get(c, obj_i, "color_idx", &t)) d->color_idx = (uint8_t)fx_num(c, t, 0.0);
+        if (fx_obj_get(c, obj_i, "stale", &t)) d->stale = fx_bool(c, t, false);
+        r->n_dots++;
         idx = fx_skip(c, obj_i);
     }
+    return FF_FIXTURE_OK;
 }
 
-static void fx_parse_radar(fx_ctx_t const *c, int obj_i, ff_app_radar_t *r)
+static ff_fixture_result_t fx_parse_radar(fx_ctx_t const *c, int obj_i, ff_app_radar_t *r)
 {
     int t;
     if (fx_obj_get(c, obj_i, "mode", &t)) {
@@ -208,7 +260,11 @@ static void fx_parse_radar(fx_ctx_t const *c, int obj_i, ff_app_radar_t *r)
     if (fx_obj_get(c, obj_i, "batt_pct", &t)) r->batt_pct = (int8_t)fx_num(c, t, -1.0);
     if (fx_obj_get(c, obj_i, "mesh_ok", &t)) r->mesh_ok = fx_bool(c, t, false);
     int dots_i;
-    if (fx_obj_get(c, obj_i, "dots", &dots_i) && !fx_is_null(c, dots_i)) fx_parse_radar_dots(c, dots_i, r);
+    if (fx_obj_get(c, obj_i, "dots", &dots_i) && !fx_is_null(c, dots_i)) {
+        ff_fixture_result_t rc = fx_parse_radar_dots(c, dots_i, r);
+        if (rc != FF_FIXTURE_OK) return rc;
+    }
+    return FF_FIXTURE_OK;
 }
 
 static void fx_parse_now_row(fx_ctx_t const *c, int obj_i, ff_app_now_row_t *row)
@@ -216,28 +272,31 @@ static void fx_parse_now_row(fx_ctx_t const *c, int obj_i, ff_app_now_row_t *row
     int t;
     if (fx_obj_get(c, obj_i, "artist", &t)) fx_copy_str(c, t, row->artist, sizeof(row->artist));
     if (fx_obj_get(c, obj_i, "stage_name", &t)) fx_copy_str(c, t, row->stage_name, sizeof(row->stage_name));
-    if (fx_obj_get(c, obj_i, "stage_color_rgb", &t)) row->stage_color_rgb = (uint32_t)fx_num(c, t, 0.0);
+    /* Review finding #1: this used to be fx_num() directly, which
+     * silently returned 0 for the documented "#rrggbb" string form. */
+    if (fx_obj_get(c, obj_i, "stage_color_rgb", &t)) row->stage_color_rgb = fx_color_rgb(c, t, 0);
     if (fx_obj_get(c, obj_i, "mins_left", &t)) row->mins_left = (int16_t)fx_num(c, t, 0.0);
     if (fx_obj_get(c, obj_i, "pct_done", &t)) row->pct_done = (uint8_t)fx_num(c, t, 0.0);
 }
 
-static void fx_parse_now(fx_ctx_t const *c, int obj_i, ff_app_now_t *now)
+/* fx_parse_now — same fail-loud-on-oversized-array treatment as
+ * fx_parse_radar_dots above, for the `rows` array (cap
+ * FF_APP_NOW_MAX_ROWS). */
+static ff_fixture_result_t fx_parse_now(fx_ctx_t const *c, int obj_i, ff_app_now_t *now)
 {
     int t;
     int rows_i;
     if (fx_obj_get(c, obj_i, "rows", &rows_i) && !fx_is_null(c, rows_i)) {
         jsmntok_t const *at = &c->toks[rows_i];
-        if (at->type == JSMN_ARRAY) {
-            int idx = rows_i + 1;
-            for (int i = 0; i < at->size; i++) {
-                int row_obj_i = idx;
-                if (i < FF_APP_NOW_MAX_ROWS) {
-                    memset(&now->rows[now->n_rows], 0, sizeof(now->rows[0]));
-                    fx_parse_now_row(c, row_obj_i, &now->rows[now->n_rows]);
-                    now->n_rows++;
-                }
-                idx = fx_skip(c, row_obj_i);
-            }
+        if (at->type != JSMN_ARRAY) return FF_FIXTURE_ERR_JSON;
+        if (at->size > FF_APP_NOW_MAX_ROWS) return FF_FIXTURE_ERR_TOO_BIG;
+        int idx = rows_i + 1;
+        for (int i = 0; i < at->size; i++) {
+            int row_obj_i = idx;
+            memset(&now->rows[now->n_rows], 0, sizeof(now->rows[0]));
+            fx_parse_now_row(c, row_obj_i, &now->rows[now->n_rows]);
+            now->n_rows++;
+            idx = fx_skip(c, row_obj_i);
         }
     }
     int next_i;
@@ -249,6 +308,7 @@ static void fx_parse_now(fx_ctx_t const *c, int obj_i, ff_app_now_t *now)
         if (fx_obj_get(c, next_i, "mins_until", &t)) now->next.mins_until = (int16_t)fx_num(c, t, 0.0);
     }
     if (fx_obj_get(c, obj_i, "tbd", &t)) now->tbd = fx_bool(c, t, false);
+    return FF_FIXTURE_OK;
 }
 
 static const fx_enum_entry_t fx_feed_kind_table[] = {
@@ -256,36 +316,37 @@ static const fx_enum_entry_t fx_feed_kind_table[] = {
     {"status", FF_APP_FEED_STATUS}, {"flare", FF_APP_FEED_FLARE},
 };
 
-static void fx_parse_signals(fx_ctx_t const *c, int obj_i, ff_app_signals_t *sig)
+/* fx_parse_signals — same fail-loud-on-oversized-array treatment as
+ * fx_parse_radar_dots above, for the `items` array (cap
+ * FF_APP_SIGNALS_MAX_ITEMS). */
+static ff_fixture_result_t fx_parse_signals(fx_ctx_t const *c, int obj_i, ff_app_signals_t *sig)
 {
     int t;
     int items_i;
     if (fx_obj_get(c, obj_i, "items", &items_i) && !fx_is_null(c, items_i)) {
         jsmntok_t const *at = &c->toks[items_i];
-        if (at->type == JSMN_ARRAY) {
-            int idx = items_i + 1;
-            for (int i = 0; i < at->size; i++) {
-                int item_i = idx;
-                if (i < FF_APP_SIGNALS_MAX_ITEMS) {
-                    ff_app_feed_item_t *it = &sig->items[sig->n_items];
-                    memset(it, 0, sizeof(*it));
-                    int kt;
-                    if (fx_obj_get(c, item_i, "kind", &kt))
-                        it->kind = (ff_app_feed_kind_t)fx_enum(c, kt, fx_feed_kind_table,
-                                                                sizeof(fx_feed_kind_table) / sizeof(fx_feed_kind_table[0]),
-                                                                FF_APP_FEED_TEXT);
-                    if (fx_obj_get(c, item_i, "from_name", &kt))
-                        fx_copy_str(c, kt, it->from_name, sizeof(it->from_name));
-                    if (fx_obj_get(c, item_i, "text", &kt)) fx_copy_str(c, kt, it->text, sizeof(it->text));
-                    if (fx_obj_get(c, item_i, "age_str", &kt)) fx_copy_str(c, kt, it->age_str, sizeof(it->age_str));
-                    if (fx_obj_get(c, item_i, "unread", &kt)) it->unread = fx_bool(c, kt, false);
-                    sig->n_items++;
-                }
-                idx = fx_skip(c, item_i);
-            }
+        if (at->type != JSMN_ARRAY) return FF_FIXTURE_ERR_JSON;
+        if (at->size > FF_APP_SIGNALS_MAX_ITEMS) return FF_FIXTURE_ERR_TOO_BIG;
+        int idx = items_i + 1;
+        for (int i = 0; i < at->size; i++) {
+            int item_i = idx;
+            ff_app_feed_item_t *it = &sig->items[sig->n_items];
+            memset(it, 0, sizeof(*it));
+            int kt;
+            if (fx_obj_get(c, item_i, "kind", &kt))
+                it->kind = (ff_app_feed_kind_t)fx_enum(c, kt, fx_feed_kind_table,
+                                                        sizeof(fx_feed_kind_table) / sizeof(fx_feed_kind_table[0]),
+                                                        FF_APP_FEED_TEXT);
+            if (fx_obj_get(c, item_i, "from_name", &kt)) fx_copy_str(c, kt, it->from_name, sizeof(it->from_name));
+            if (fx_obj_get(c, item_i, "text", &kt)) fx_copy_str(c, kt, it->text, sizeof(it->text));
+            if (fx_obj_get(c, item_i, "age_str", &kt)) fx_copy_str(c, kt, it->age_str, sizeof(it->age_str));
+            if (fx_obj_get(c, item_i, "unread", &kt)) it->unread = fx_bool(c, kt, false);
+            sig->n_items++;
+            idx = fx_skip(c, item_i);
         }
     }
     if (fx_obj_get(c, obj_i, "unread_count", &t)) sig->unread_count = (uint8_t)fx_num(c, t, 0.0);
+    return FF_FIXTURE_OK;
 }
 
 static const fx_enum_entry_t fx_flare_state_table[] = {
@@ -378,11 +439,32 @@ ff_fixture_result_t ff_fixture_load_json(char const *json, size_t len, ff_app_st
                                                     sizeof(fx_face_table) / sizeof(fx_face_table[0]),
                                                     FF_APP_FACE_RADAR);
 
+    /* radar/now/signals can fail-loud on an oversized array (see their
+     * parsers' doc comments) — on any such failure, re-zero `out` before
+     * returning, matching this function's documented "non-OK return
+     * leaves *out fully zeroed" contract (same as fp_parse()'s). */
     int sec_i;
-    if (fx_obj_get(&ctx, 0, "radar", &sec_i) && !fx_is_null(&ctx, sec_i)) fx_parse_radar(&ctx, sec_i, &out->radar);
-    if (fx_obj_get(&ctx, 0, "now", &sec_i) && !fx_is_null(&ctx, sec_i)) fx_parse_now(&ctx, sec_i, &out->now);
-    if (fx_obj_get(&ctx, 0, "signals", &sec_i) && !fx_is_null(&ctx, sec_i))
-        fx_parse_signals(&ctx, sec_i, &out->signals);
+    if (fx_obj_get(&ctx, 0, "radar", &sec_i) && !fx_is_null(&ctx, sec_i)) {
+        ff_fixture_result_t rc = fx_parse_radar(&ctx, sec_i, &out->radar);
+        if (rc != FF_FIXTURE_OK) {
+            memset(out, 0, sizeof(*out));
+            return rc;
+        }
+    }
+    if (fx_obj_get(&ctx, 0, "now", &sec_i) && !fx_is_null(&ctx, sec_i)) {
+        ff_fixture_result_t rc = fx_parse_now(&ctx, sec_i, &out->now);
+        if (rc != FF_FIXTURE_OK) {
+            memset(out, 0, sizeof(*out));
+            return rc;
+        }
+    }
+    if (fx_obj_get(&ctx, 0, "signals", &sec_i) && !fx_is_null(&ctx, sec_i)) {
+        ff_fixture_result_t rc = fx_parse_signals(&ctx, sec_i, &out->signals);
+        if (rc != FF_FIXTURE_OK) {
+            memset(out, 0, sizeof(*out));
+            return rc;
+        }
+    }
     if (fx_obj_get(&ctx, 0, "flare", &sec_i) && !fx_is_null(&ctx, sec_i)) fx_parse_flare(&ctx, sec_i, &out->flare);
     /* else: out->flare.expires_in_ms's -1 "n/a" default (set above) stands. */
     if (fx_obj_get(&ctx, 0, "settings", &sec_i) && !fx_is_null(&ctx, sec_i))

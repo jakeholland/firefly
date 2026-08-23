@@ -7,6 +7,17 @@ The hero screen: honest arrow to the selected crew member, whole-crew ring, thre
 Radar renders `ff_radar_view_t` computed in core (`core/src/ff_radar.c`) from crew + geo + clock:
 ```c
 typedef enum { RADAR_LIVE, RADAR_STALE, RADAR_LOST, RADAR_CLOSE, RADAR_NOFIX, RADAR_NOSEL } radar_mode_t;
+// DRIFT GUARD (PR #12 review finding #5): until this lands in
+// core/include/ff_radar.h, firmware/app/include/ff_app_state.h's
+// ff_app_radar_t mirrors this struct field-for-field under a different
+// type name (two anonymous structs with an identical member list are
+// still distinct C types under the same typedef name — reusing
+// ff_radar_view_t there would be a redefinition hazard the moment a
+// screen file includes both headers). Whoever implements this slice:
+// either (a) delete ff_app_radar_t and point ff_app_state_t.radar at
+// the real ff_radar_view_t below (preferred), or (b) if both must
+// coexist a while longer, update ff_app_state.h's copy in the same
+// change as any field added/removed/retyped here.
 typedef struct {
   radar_mode_t mode;
   float arrow_deg;            // smoothed screen rotation

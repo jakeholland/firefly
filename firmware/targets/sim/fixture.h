@@ -26,7 +26,18 @@ typedef enum {
     FF_FIXTURE_OK = 0,
     FF_FIXTURE_ERR_IO,      /* file missing/unreadable, or too large */
     FF_FIXTURE_ERR_JSON,    /* malformed/truncated/non-object JSON */
-    FF_FIXTURE_ERR_TOO_BIG, /* input exceeded the parser's size/token budget */
+    FF_FIXTURE_ERR_TOO_BIG, /* input exceeded the parser's size/token budget,
+                                OR a section's array (radar.dots/now.rows/
+                                signals.items) exceeded its documented cap
+                                (FF_APP_RADAR_MAX_DOTS/FF_APP_NOW_MAX_ROWS/
+                                FF_APP_SIGNALS_MAX_ITEMS — ff_app_state.h).
+                                Fail-loud by design (PR #12 review ruling):
+                                an over-cap array is rejected outright, not
+                                silently truncated, so a fixture that grows
+                                past a cap gets a loud, attributable failure
+                                instead of a quietly-dropped entry that only
+                                surfaces later as an unrelated-looking
+                                golden diff. */
 } ff_fixture_result_t;
 
 /**
