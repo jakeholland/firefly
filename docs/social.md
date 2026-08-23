@@ -37,6 +37,17 @@ python3 tools/social/render_scene.py --scene find_dana --out /tmp/clip   # add -
 
 Adding a scene: write a function returning app-state frames, register it in `SCENES`. Keep clips 6–10 s — long enough to tell one story, short enough to loop.
 
+## Keep the README current
+
+The repo's front page is the other half of this job — it is where everyone who clicks through from a video lands.
+
+**At every milestone, alongside the clip:**
+- Refresh `docs/screens/radar-find.gif` (or add a new hero animation if a better story exists) so the top of the README shows the current firmware, not an old build.
+- Update the **Status** table: move rows from *in review* to *on `main`*, add newly-started work, and keep the hardware row honest.
+- When a new face lands on `main`, add its screenshots to the README's screenshot section — but only once it is actually merged. The README must never show a screen that doesn't exist yet; same honesty rule as below, applied to the shopfront.
+
+Screens live in `docs/screens/` (committed PNG/GIF, rendered by `ffsim`). Keep the total under a couple of megabytes so clones stay light — replace stale images rather than accumulating them.
+
 ## Honesty rule
 
 The same rule the device follows applies to its marketing: **never show a state the firmware can't actually produce.** If a scene needs a capability that isn't built yet, either build it or don't post it. Renders are labeled as renders until hardware exists; once it does, prefer real footage.

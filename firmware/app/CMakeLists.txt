@@ -55,12 +55,41 @@ if(FF_BUILD_TESTS)
     add_test(NAME test_radar_layout COMMAND test_radar_layout)
 endif()
 
+# S10b (app/screens — flare UI: takeover, sender overlay, lock chip;
+# docs/specs/S10-flare.md slice b)
+# ---------------------------------------------------------------------------
+# flare_fmt.c is a SEPARATE library from ff-app-ui, same rationale as
+# ff-radar-layout above: plain C11, zero LVGL dependency, so its output
+# (headline/compass/countdown strings) is unit-testable with direct string
+# assertions (test_flare_fmt, below) rather than only inferable from a
+# golden PNG diff.
+add_library(ff-flare-fmt STATIC
+    screens/flare_fmt.c
+)
+target_include_directories(ff-flare-fmt PUBLIC screens)
+if(UNIX)
+    target_link_libraries(ff-flare-fmt PRIVATE m) # fmodf
+endif()
+ff_apply_warnings(ff-flare-fmt)
+
+if(FF_BUILD_TESTS)
+    add_executable(test_flare_fmt
+        screens/tests/test_flare_fmt.c
+    )
+    target_link_libraries(test_flare_fmt PRIVATE ff-flare-fmt unity)
+    ff_apply_warnings(test_flare_fmt)
+
+    add_test(NAME test_flare_fmt COMMAND test_flare_fmt)
+endif()
+# ---------------------------------------------------------------------------
+
 add_library(ff-app-ui STATIC
     screens/scr_radar.c
     screens/scr_nav.c
+    screens/scr_flare.c # S10b
 )
 target_include_directories(ff-app-ui PUBLIC theme screens)
-target_link_libraries(ff-app-ui PUBLIC ff-app ff-radar-layout lvgl::lvgl)
+target_link_libraries(ff-app-ui PUBLIC ff-app ff-radar-layout ff-flare-fmt lvgl::lvgl)
 # scr_radar.c's arrow/dot trigonometry (sinf/cosf) needs libm — same
 # rationale as ff-core's CMakeLists.txt note on why this is missed
 # locally (AppleClang resolves it via libSystem) but required on
@@ -110,3 +139,23 @@ target_sources(ff-app-ui PRIVATE
     screens/scr_now.c
 )
 target_link_libraries(ff-app-ui PUBLIC ff-now-layout)
+
+# S10b (continued) — headless LVGL INTERACTION tests for the flare UI's
+# button bindings (PR #20 independent code review, HIGH finding: goldens
+# never fire a click, so nothing proved GO calls ff_flare_go and not
+# ff_flare_dismiss_takeover, or vice versa — exactly the class of
+# regression Amendment 3 exists to prevent). Declared here, after
+# ff-app-ui, since it needs the real screen builders (scr_flare.c/
+# scr_radar.c) linked in — see test_scr_flare.c's header comment for the
+# reusable "build against a real ff_flare_t, locate the button, synthesize
+# a click, assert on the CORE struct" pattern future faces' input tests
+# should follow.
+if(FF_BUILD_TESTS)
+    add_executable(test_scr_flare
+        screens/tests/test_scr_flare.c
+    )
+    target_link_libraries(test_scr_flare PRIVATE ff-app-ui unity)
+    ff_apply_warnings(test_scr_flare)
+
+    add_test(NAME test_scr_flare COMMAND test_scr_flare)
+endif()

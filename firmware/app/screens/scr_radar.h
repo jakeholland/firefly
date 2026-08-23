@@ -9,6 +9,7 @@
 #ifndef FF_SCR_RADAR_H
 #define FF_SCR_RADAR_H
 
+#include "ff_flare.h" /* S10 slice b — flare_rt param, see ff_scr_radar_build's doc comment */
 #include "ff_radar.h"
 #include "lvgl.h"
 
@@ -30,8 +31,17 @@ extern "C" {
  * age_str[0] == '\0'` gets "NO FIX YET", never "LAST SEEN"). Also draws
  * the cross-mode chrome: status bar (clock/mesh/battery) and crew ring
  * dots (dashed when a dot's own freshness isn't LIVE).
+ *
+ * `flare_rt` (S10 slice b — [api] new parameter): the live `ff_flare_t`
+ * the CLOSE-mode FLARE button's press forwards into
+ * (`ff_flare_send_begin`), or NULL to leave that button visible but
+ * inert (golden/headless rendering, which never fires a click at all —
+ * see scr_flare.h's top comment for the same NULL-is-always-safe
+ * contract every S10 button callback in this codebase follows). This
+ * screen file makes no decision about WHAT pressing FLARE means beyond
+ * that one forwarding call (CLAUDE.md: no domain logic in app/screens).
  */
-void ff_scr_radar_build(lv_obj_t *parent, ff_radar_view_t const *radar);
+void ff_scr_radar_build(lv_obj_t *parent, ff_radar_view_t const *radar, ff_flare_t *flare_rt);
 
 #ifdef __cplusplus
 }

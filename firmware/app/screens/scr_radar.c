@@ -513,12 +513,30 @@ static void radar_render_lost(lv_obj_t *parent, ff_radar_view_t const *r, radar_
     }
 }
 
-/* TODO(S10): wire to the real flare-send flow once it exists. This PR
- * only reserves the callback hook, per docs/specs/S06-radar-face.md
- * slice d ("FLARE button... fires S10 callback"). */
+/* S10 slice b: wired to the real flare-send flow (docs/specs/
+ * S06-radar-face.md slice d's reserved hook, "FLARE button... fires S10
+ * callback"). Forwards straight into ff_flare_send_begin (core owns
+ * everything about what "begin sending" means — default duration,
+ * expiry, the SEND_FLARE intent the caller still has to act on by
+ * encoding+broadcasting; no meshclient wiring exists yet to do that last
+ * part, tracked the same as this file's other known gaps). `user_data`
+ * is the `ff_flare_t *flare_rt` passed into ff_scr_radar_build — NULL in
+ * golden/headless rendering, where this is a safe no-op (see
+ * ff_scr_radar_build's doc comment). */
 static void radar_flare_stub_cb(lv_event_t *e)
 {
-    (void)e;
+    ff_flare_t *flare_rt = (ff_flare_t *)lv_event_get_user_data(e);
+    if (flare_rt != NULL) {
+        (void)ff_flare_send_begin(flare_rt, 0, lv_tick_get());
+        /* Diagnostic-only stdout, same rationale as scr_flare.c's
+         * GO/DISMISS/CANCEL callbacks (PR #20 code review, MEDIUM
+         * finding): this window has no live redraw (issue #17), so a
+         * click that mutates the real ff_flare_t produces no visible
+         * on-screen change — this is the minimum honest confirmation
+         * that the press was received and forwarded correctly. */
+        printf("ffsim: FLARE pressed -> ff_flare_send_begin() (sending now %s)\n",
+               flare_rt->sending ? "true" : "false");
+    }
 }
 
 /* lv_anim_exec_xcb_t is `void(*)(void*, int32_t)`; lv_obj_set_style_opa
@@ -530,7 +548,7 @@ static void radar_anim_set_opa_cb(void *obj, int32_t v)
     lv_obj_set_style_opa((lv_obj_t *)obj, (lv_opa_t)v, 0);
 }
 
-static void radar_render_close(lv_obj_t *parent, ff_radar_view_t const *r)
+static void radar_render_close(lv_obj_t *parent, ff_radar_view_t const *r, ff_flare_t *flare_rt)
 {
     /* Three pulsing rings (S06: "LVGL anim, 1.2 s period"). Headless
      * single-frame capture never runs the animation timer, so every
@@ -591,7 +609,7 @@ static void radar_render_close(lv_obj_t *parent, ff_radar_view_t const *r)
     lv_obj_set_style_bg_opa(btn, LV_OPA_COVER, 0);
     lv_obj_set_style_radius(btn, LV_RADIUS_CIRCLE, 0);
     lv_obj_align(btn, LV_ALIGN_CENTER, 0, (int32_t)RADAR_LAYOUT_CLOSE_FLARE_DY);
-    lv_obj_add_event_cb(btn, radar_flare_stub_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_add_event_cb(btn, radar_flare_stub_cb, LV_EVENT_CLICKED, flare_rt);
 
     lv_obj_t *btn_label = lv_label_create(btn);
     lv_label_set_text(btn_label, "FLARE");
@@ -659,7 +677,7 @@ static void radar_render_nosel(lv_obj_t *parent)
  * Entry point.
  * ------------------------------------------------------------------- */
 
-void ff_scr_radar_build(lv_obj_t *parent, ff_radar_view_t const *radar)
+void ff_scr_radar_build(lv_obj_t *parent, ff_radar_view_t const *radar, ff_flare_t *flare_rt)
 {
     if (parent == NULL || radar == NULL) {
         return;
@@ -691,7 +709,7 @@ void ff_scr_radar_build(lv_obj_t *parent, ff_radar_view_t const *radar)
         radar_render_lost(parent, radar, &reg);
         break;
     case RADAR_CLOSE:
-        radar_render_close(parent, radar);
+        radar_render_close(parent, radar, flare_rt);
         break;
     case RADAR_NOFIX:
         radar_render_nofix(parent, radar);

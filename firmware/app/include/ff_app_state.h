@@ -214,20 +214,75 @@ typedef struct {
 } ff_app_signals_t;
 
 /* -------------------------------------------------------------------
- * flare (S10) — mirrors the IDLE/SENDING/RECEIVED/LOCKED state machine.
+ * flare (S10 slice b) — [api] REPLACES the old single `state`
+ * IDLE/SENDING/RECEIVED/LOCKED enum mirror (S10 slice a scaffolding,
+ * predating the spec's Amendments) with a flattened mirror of
+ * `ff_flare_t`'s THREE INDEPENDENT pieces — see core/include/ff_flare.h's
+ * "Independent state" doc comment and docs/specs/S10-flare.md's
+ * Amendments (2026-08-23, PR #15) for the full rationale: outbound send,
+ * the pending takeover, and the navigation lock are legitimately
+ * simultaneous, unrelated facts (I can be sending my own flare AND have
+ * a different crew member's takeover pending AND still be locked onto a
+ * third member's earlier flare, all at once), so one shared `state` enum
+ * that only fits ONE of them at a time is exactly the bug PR #15's
+ * review caught and ruled out in core. This mirror carries the same
+ * three-way split, flattened to plain display fields (not a live
+ * `ff_flare_t *`) for the same reason `now`/`signals` are flattened
+ * above: fixtures are standalone JSON snapshots, not live wiring.
+ *
+ * This is a breaking change to every field this struct used to have
+ * (`state`, unqualified `expires_in_ms`) — flagged in the PR title with
+ * `[api]` per AGENTS.md. Safe to make now because, same as ff_flare.h's
+ * own Ruling 3 note, nothing in this repo has a real (non-fixture) call
+ * site for the old shape yet — S10 slice a never wired this struct to
+ * anything, and slice b (this PR) is the first and only consumer.
  * ------------------------------------------------------------------- */
 
-typedef enum {
-    FF_APP_FLARE_IDLE,
-    FF_APP_FLARE_SENDING,
-    FF_APP_FLARE_RECEIVED,
-    FF_APP_FLARE_LOCKED,
-} ff_app_flare_state_t;
-
 typedef struct {
-    ff_app_flare_state_t state;
-    char    from_name[FF_APP_NAME_LEN]; /* sender, meaningful in RECEIVED/LOCKED */
-    int32_t expires_in_ms;              /* -1: n/a (IDLE) or unknown */
+    /* Outbound: am I currently sending my own flare? Independent of the
+     * two groups below — mirrors ff_flare_t's `sending`/`send_expiry_ms`. */
+    bool     sending;
+    int32_t  send_expires_in_ms; /* -1: n/a (not sending) or unknown */
+
+    /* The full-screen takeover currently awaiting a GO/DISMISS decision,
+     * if any — mirrors ff_flare_t's `takeover_active`/`takeover_node_id`/
+     * `takeover_expiry_ms`. `takeover_bearing_deg`/`takeover_dist_str`
+     * are NOT part of core's `ff_flare_t` (that struct deliberately has
+     * no ff_crew/ff_radar dependency, see ff_flare.h's "Dependency-light
+     * by design") — they're the app-layer's own bearing/distance-to-sender
+     * read for this screen, the same "already-computed display string,
+     * not a raw fact for the renderer to re-derive" convention
+     * `ff_radar_view_t.dist_str` uses.
+     *
+     * `takeover_bearing_valid` (PR #20 code review, LOW finding): a
+     * bearing genuinely can be unknown (no position fix on either end —
+     * the exact case `ff_radar_view_t.arrow_valid` exists to represent
+     * on the sibling Radar face), and unlike `takeover_dist_str` (which
+     * has an honest empty-string "unknown" of its own, see
+     * `ff_scr_flare_build_takeover`'s "-- m" fallback), a bare `float`
+     * has no such value — `0.0` is indistinguishable from "genuinely due
+     * north." Mirrors `arrow_valid`'s name and meaning exactly: false
+     * means `takeover_bearing_deg` must NOT be rendered as a real
+     * reading (CLAUDE.md: "never fake... positions"). Defaults to false
+     * (unknown) both via zero-init and the fixture loader's explicit
+     * default, matching every other "prove you meant this" field in this
+     * struct family. */
+    bool     takeover_active;
+    char     takeover_from_name[FF_APP_NAME_LEN];
+    bool     takeover_bearing_valid;          /* false: bearing unknown, do not render takeover_bearing_deg */
+    float    takeover_bearing_deg;            /* [0, 360), compass bearing to sender; meaningful iff *_valid */
+    char     takeover_dist_str[FF_APP_STR_SHORT];
+    int32_t  takeover_expires_in_ms;          /* -1: n/a */
+
+    /* The node navigation is actually locked to, if any — mirrors
+     * ff_flare_t's `locked_node_id`/`locked_expiry_ms`. Set only by a
+     * user GO decision, cleared only by ff_flare_release_lock()/its own
+     * expiry/a matching FLARE_END — see ff_flare.h's "Independent state"
+     * section for why a newly-arriving takeover_active above never
+     * touches this. */
+    bool     locked;
+    char     locked_from_name[FF_APP_NAME_LEN];
+    int32_t  locked_expires_in_ms; /* -1: n/a */
 } ff_app_flare_t;
 
 /* -------------------------------------------------------------------
