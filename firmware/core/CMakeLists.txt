@@ -2,6 +2,7 @@
 
 add_library(ff-core STATIC
     src/ff_version.c
+    src/ff_settings.c # S11
 )
 
 target_include_directories(ff-core PUBLIC include)
@@ -16,4 +17,13 @@ if(FF_BUILD_TESTS)
     ff_apply_warnings(test_core)
 
     add_test(NAME test_core COMMAND test_core)
+
+    # S11 — settings & persistence (slice a: store seam + settings + logic).
+    add_executable(test_settings
+        tests/test_settings.c
+    )
+    target_link_libraries(test_settings PRIVATE ff-core unity)
+    ff_apply_warnings(test_settings)
+
+    add_test(NAME test_settings COMMAND test_settings)
 endif()
