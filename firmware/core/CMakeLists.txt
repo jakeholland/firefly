@@ -70,3 +70,16 @@ if(FF_BUILD_TESTS)
 
     add_test(NAME test_proto COMMAND test_proto)
 endif()
+
+# S02 (core/crew — crew model & freshness; docs/specs/S02-core-crew.md)
+target_sources(ff-core PRIVATE src/ff_crew.c)
+
+if(FF_BUILD_TESTS)
+    add_executable(test_crew
+        tests/test_crew.c
+    )
+    target_link_libraries(test_crew PRIVATE ff-core unity)
+    ff_apply_warnings(test_crew)
+
+    add_test(NAME test_crew COMMAND test_crew)
+endif()
