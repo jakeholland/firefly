@@ -55,7 +55,16 @@ inherits `ff_wiring.h`'s ruling verbatim as the roster policy:
 
 > **Inbound radio traffic never grows the paired roster.** Unknown senders go
 > to `ff_heard` (bounded, LRU-evictable). Only an explicit user pairing action
-> calls `ff_crew_upsert`.
+> adds a roster slot.
+
+**The rule is about effect, not about which function is called.**
+`ff_crew_on_position` itself calls `crew_find_or_create` internally
+(`ff_crew.c`), so an implementer can satisfy "only pairing calls
+`ff_crew_upsert`" to the letter while upserting on every inbound position —
+this spec's own headline defect, through a different door. The shell must
+therefore `ff_crew_find()` first and call `ff_crew_on_position` **only for a
+member already in the roster**; an unknown sender's position is dropped and the
+sender noted in `ff_heard`.
 
 Auto-pairing survives as a sim-only dev affordance, `--dev-trust-all`, and is
 **compiled out** on device (`#if FF_TARGET_SIM`) rather than merely defaulted
@@ -119,10 +128,24 @@ the want_config replay — so the offset latches during the handshake.
 minute-granularity consumers is irrelevant. The reason is that the comms
 brain's clock **steps** when GPS locks: before lock it reports an uncorrected
 RTC. A puck that latched the pre-lock offset is then confidently wrong forever
-while `src == FF_WALL_MESH` asserts that it knows. Re-derive on a large
-disagreement between the stored offset and a fresh reading, and gate readings
-for plausibility (a timestamp before the festpack's own event dates is not a
-time, it's a bug).
+while `src == FF_WALL_MESH` asserts that it knows.
+
+The gate is two tiers, with concrete values — an unnamed "plausibility
+threshold" is not implementable, and two implementers would pick 60 s and an
+hour and both pass the AC:
+
+- **Absolute floor (primary):** a compile-time constant `FF_WALL_EPOCH_FLOOR`,
+  set to the build date. Any timestamp before it is not a time, it's an
+  uncorrected RTC — reject it and stay `UNKNOWN`. This is what catches the
+  pre-GPS-lock case, and it needs **no pack and no festival data**, which
+  matters because the bootstrap happens during the want_config handshake,
+  before `ff_shell_load_pack` is called.
+- **Re-latch delta:** a fresh reading disagreeing with the latched offset by
+  more than **30 s** re-latches. Wide enough to swallow transport and
+  processing jitter, far narrower than any real clock step.
+- **Pack dates (secondary, only once a pack is loaded):** a timestamp outside
+  the festpack's event window is suspect and worth surfacing, but it is *not*
+  the bootstrap gate and must never be required for one — b0 has no pack.
 
 **The honesty rule, which is the point of this section:** until an offset
 latches, **the puck does not know what time it is** and must say so rather than
@@ -149,9 +172,22 @@ is its owner.
 **Gap this exposes, requiring an S11 amendment.** `ff_settings_t` has no UTC
 offset field, so with no pack loaded there is no way to reach local time — and
 quiet hours is a *settings* feature that has nothing to do with any festival.
-Resolution order must be: pack's stated offset → a new `ff_settings_t`
-offset → `FF_WALL_UNKNOWN`. Adding that field is an `[api]` change to S11 and
-is recorded in the amendments section.
+
+Resolution order, and **"stated" is load-bearing**: `fp_parse` *always*
+populates `utc_offset_min`, defaulting to −240 (EDT) with
+`utc_offset_assumed = true`. So the order is
+
+> pack offset **when `!utc_offset_assumed`** → settings offset when set →
+> pack's assumed default → `FF_WALL_UNKNOWN`
+
+The naive `if (pack_loaded) use pack.utc_offset_min` makes the settings field
+dead code the moment any pack loads, and lets an assumed default silently
+outrank a value the user configured deliberately.
+
+The new settings field needs its own `utc_offset_set` flag: `int16_t` has no
+free sentinel, because **0 is legitimately UTC**. Absence must not be encoded
+as a value that means something — the same ruling as `stage_color_valid` and
+`FF_FRESH_NEVER`. `[api]` change to S11, recorded in the amendments section.
 
 ## App: routing (`app/include/ff_route.h`)
 
@@ -188,6 +224,12 @@ takeover remains `ff_flare_t`'s single fact, and `face_dispatch.c:17-20`
 keeps dispatching on `flare.takeover_active` as it already does. Writing FLARE
 into `ff_app_state_t.active_face` would put the same fact in two places and
 re-create the `ff_route_t.takeover` desync one layer down. (AC13)
+
+The consequence reads oddly and is worth stating plainly: `ff_route_visible()`'s
+one distinctive return value is the very value AC13 forbids storing in
+`active_face`. That is coherent — the function answers *"where does the next
+intent go?"*, which is an input-dispatch question, not a render instruction.
+Rendering continues to read `takeover_active` directly.
 
 ```c
 typedef struct { ff_app_face_t base;   /* RADAR|NOW|SIGNALS */
@@ -377,7 +419,9 @@ Each maps to a slice (right column). Tests are named `S16_ACn_...`.
 | 10 | Sequence test via the ctl socket (**not** the single-frame golden harness): draft typed → flare injected → takeover renders → takeover cleared → composer returns with draft intact. Requires a new ctl `flare` command. | c3, d |
 | 11 | `ff_flare_result_t.should_alert` fires the haptic during quiet hours; a feed-push haptic during quiet hours does not. | b1 |
 | 12 | Wall clock: before any timestamp, `ff_shell_wall().src == FF_WALL_UNKNOWN` and the Now face renders its unknown-time state rather than a clock; `ff_quiet_now` is not evaluated and the water nudge does not fire. A NodeInfo carrying `last_heard` latches the offset (the bootstrap path — `rx_time` alone cannot, being live-packet-only). `(day_doy, now_min)` then resolves per `ff_sched`'s mapping, including 01:00 local → previous `day_doy`, `now_min == 1500`. | b0 |
-| 12b | A second reading disagreeing with the latched offset by more than the plausibility threshold re-latches rather than being ignored (the GPS-lock clock step); a reading earlier than the pack's own event dates is rejected and leaves the previous state untouched. | b0 |
+| 12b | A timestamp before `FF_WALL_EPOCH_FLOOR` is rejected and leaves `src == FF_WALL_UNKNOWN` (the uncorrected-RTC case, tested with no pack loaded). Once latched, a reading disagreeing by >30 s re-latches rather than being ignored; one disagreeing by less does not. | b0 |
+| 12c | Offset resolution order: a pack with `utc_offset_assumed == true` does **not** outrank a set settings offset; a pack with `utc_offset_assumed == false` does. With neither set, `src == FF_WALL_UNKNOWN` rather than a defaulted guess. | b0 |
+| 5c | A position from a node not in the roster is dropped and the sender noted in `ff_heard` — asserted by roster count before and after, since `ff_crew_on_position` would otherwise create the slot internally. | b1 |
 | 13 | `ff_app_state_t.active_face` is never `FF_APP_FACE_FLARE` in any projection, including while a takeover is active — the takeover stays `ff_flare_t`'s single fact and `face_dispatch` keeps reading `takeover_active`. | b1 |
 
 ## Slices
