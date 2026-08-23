@@ -225,6 +225,66 @@ static void S01_AC4_heading_beyond_60deg_tilt_returns_negative(void)
     }
 }
 
+static void S01_AC4_heading_at_exactly_60deg_tilt_is_reliable(void)
+{
+    /* Pins the spec's ">60°" wording literally: the guard is
+     * `tilt_deg > 60.0f`, so a tilt of exactly 60 degrees must NOT trip it
+     * (see the boundary note on ff_geo_heading_deg in ff_geo.h). accel.z is
+     * the exact float32 value 0.5f (cos(60deg)) and accel.y is the
+     * correctly-rounded float32 value of -sin(60deg); on both toolchains
+     * this module ships on (AppleClang/macOS dev, glibc/Ubuntu CI) this
+     * normalizes to tilt_deg == 60.0f bit-for-bit, not just "close to 60".
+     * If that ever stops holding on some platform's libm, loosen this to a
+     * near-60 fixture rather than deleting the boundary coverage. */
+    ff_vec3_t accel = {0.000000000f, -0.866025404f, 0.500000000f};
+    ff_vec3_t mag = {-0.353553391f, 0.926776695f, -0.126826484f};
+    float got = ff_geo_heading_deg(mag, accel, NULL);
+    TEST_ASSERT_TRUE(got >= 0.0f);
+    float err = fabsf(ff_geo_angdiff_deg(45.0f, got));
+    TEST_ASSERT_FLOAT_WITHIN(2.0f, 0.0f, err);
+}
+
+/* Guard-mutation coverage: each of these must fail if the guard it targets
+ * is deleted from ff_geo_heading_deg. Without the guard, the offending
+ * division becomes 0/0 (NaN) rather than a clean early return, so
+ * `got < 0.0f` — true today via the guard's `-1.0f` — would instead be
+ * false for a NaN result (NaN compares false against everything), flipping
+ * these assertions. */
+
+static void S01_AC4_sentinel_zero_accel(void)
+{
+    /* amag == 0: tilt can't be determined at all. */
+    ff_vec3_t accel = {0.0f, 0.0f, 0.0f};
+    ff_vec3_t mag = {0.0f, 0.5f, -0.866025404f}; /* otherwise-valid reading */
+    float got = ff_geo_heading_deg(mag, accel, NULL);
+    TEST_ASSERT_TRUE(got < 0.0f);
+    TEST_ASSERT_FALSE(isnan(got));
+}
+
+static void S01_AC4_sentinel_zero_mag(void)
+{
+    /* mag == 0: no horizontal field component to resolve heading from,
+     * regardless of accel/tilt. */
+    ff_vec3_t accel = {0.0f, 0.0f, 1.0f}; /* level, otherwise valid */
+    ff_vec3_t mag = {0.0f, 0.0f, 0.0f};
+    float got = ff_geo_heading_deg(mag, accel, NULL);
+    TEST_ASSERT_TRUE(got < 0.0f);
+    TEST_ASSERT_FALSE(isnan(got));
+}
+
+static void S01_AC4_sentinel_mag_parallel_gravity(void)
+{
+    /* mag is nonzero but points straight along the accel (gravity) axis:
+     * down x mag == 0, so there's still no horizontal component, distinct
+     * from the mag==0 case above (a guard that only special-cased the zero
+     * vector would miss this). */
+    ff_vec3_t accel = {0.0f, 0.0f, 1.0f};
+    ff_vec3_t mag = {0.0f, 0.0f, 5.0f}; /* parallel to accel's "up" axis */
+    float got = ff_geo_heading_deg(mag, accel, NULL);
+    TEST_ASSERT_TRUE(got < 0.0f);
+    TEST_ASSERT_FALSE(isnan(got));
+}
+
 /* ------------------------------------------------------------------- */
 /* AC5 — calibration                                                    */
 /* ------------------------------------------------------------------- */
@@ -410,7 +470,11 @@ int main(void)
 
     RUN_TEST(S01_AC4_heading_within_2deg_at_0_20_40_tilt);
     RUN_TEST(S01_AC4_heading_just_under_60deg_tilt_is_still_reliable);
+    RUN_TEST(S01_AC4_heading_at_exactly_60deg_tilt_is_reliable);
     RUN_TEST(S01_AC4_heading_beyond_60deg_tilt_returns_negative);
+    RUN_TEST(S01_AC4_sentinel_zero_accel);
+    RUN_TEST(S01_AC4_sentinel_zero_mag);
+    RUN_TEST(S01_AC4_sentinel_mag_parallel_gravity);
 
     RUN_TEST(S01_AC5_calibration_recovers_hard_offset_and_improves_heading);
     RUN_TEST(S01_AC5_calibration_below_70pct_coverage_finish_fails);

@@ -22,7 +22,10 @@ float ff_geo_wrap_deg(float deg)
     if (r < 0.0f) {
         r += 360.0f;
     }
-    return r;
+    /* Normalize -0.0f to +0.0f (e.g. wrap_deg(-360.0f)): both compare equal
+     * to 0.0f everywhere this is used, but +0.0f is the friendlier value to
+     * print/log. */
+    return r + 0.0f;
 }
 
 float ff_geo_angdiff_deg(float a, float b)

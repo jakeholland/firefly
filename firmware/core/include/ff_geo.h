@@ -99,8 +99,15 @@ typedef struct {
  * unit scale, zero declination).
  *
  * Returns heading in degrees [0, 360), 0 = north, clockwise — OR a negative
- * value if the device is tilted more than 60 degrees from level (heading is
- * unreliable at extreme tilt; caller should show "hold flatter").
+ * value if any of the following make the result unreliable:
+ *  - the device is tilted MORE THAN 60 degrees from level. The boundary is
+ *    exclusive: a tilt of exactly 60 degrees is still considered reliable
+ *    and returns a heading (guard condition is `tilt_deg > 60.0f`, per the
+ *    spec's ">60°" wording) — caller should show "hold flatter" only once
+ *    this function actually returns negative.
+ *  - `accel` is a zero (or near-zero) vector, so tilt can't be determined.
+ *  - the (calibrated) `mag` reading is zero, or parallel to gravity (no
+ *    usable horizontal component), so heading can't be resolved.
  */
 float ff_geo_heading_deg(ff_vec3_t mag, ff_vec3_t accel, ff_geo_cal_t const *cal);
 
