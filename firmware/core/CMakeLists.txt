@@ -6,6 +6,15 @@ add_library(ff-core STATIC
 
 target_include_directories(ff-core PUBLIC include)
 target_compile_features(ff-core PUBLIC c_std_11)
+# ff_geo.c calls cos()/sqrt()/fmodf() etc (math.h). On macOS/AppleClang that
+# resolves via libSystem with no extra flag, which is why this was missed
+# locally; glibc (Linux CI) needs an explicit -lm or the final link fails
+# with "undefined reference to `cos'". CMake propagates a STATIC library's
+# PRIVATE link libraries to whatever links this one, so this is enough for
+# test_core, test_geo, and any future consumer.
+if(UNIX)
+    target_link_libraries(ff-core PRIVATE m)
+endif()
 ff_apply_warnings(ff-core)
 
 if(FF_BUILD_TESTS)
