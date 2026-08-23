@@ -94,13 +94,25 @@
  * rather than the raw end_min.
  *
  * ---------------------------------------------------------------------
- * "Now" window is inclusive on both ends
+ * "Now" window is half-open: [start_min, effective_end)
  * ---------------------------------------------------------------------
- * A set counts as playing for start_min <= now_min <= effective_end
- * (inclusive at the end, not exclusive) — this gives pct_done a real
- * 100% instant at the set's last minute (spec AC1: "pct_done correct at
- * boundaries, start=0%, end=100%") instead of the set vanishing from
- * ff_sched_now_playing() one minute before it's actually over.
+ * A set counts as playing for start_min <= now_min < effective_end —
+ * inclusive at the start, EXCLUSIVE at the end. pct_done starts at 0%
+ * at start_min and increases monotonically but never reaches a literal
+ * 100% while the set is still "now" (it caps at whatever the last live
+ * minute computes to); the set leaves "now" exactly at effective_end,
+ * the same instant a back-to-back set on the same stage starting then
+ * becomes "now". This is a deliberate spec ruling (see
+ * docs/specs/S07-now-face.md's ## Amendments, PR #9 review) that
+ * supersedes an earlier inclusive-both-ends design: at a zero-gap
+ * festival changeover (stage 0's set A ends at the same minute stage
+ * 0's set B starts — completely normal scheduling), an inclusive end
+ * made both A and B "now" simultaneously on the same stage, violating
+ * the "one row per stage" contract ff_sched_now_playing() and the Now
+ * face layout both depend on. Half-open fixes that for free: at the
+ * changeover minute, A's `now_min >= effective_end` excludes it the
+ * same instant B's `now_min >= start_min` includes it — the starting
+ * set always wins, with no explicit per-stage dedup needed.
  */
 #ifndef FF_SCHED_H
 #define FF_SCHED_H
@@ -126,8 +138,8 @@ extern "C" {
 /** One row of ff_sched_now_playing() output: a live set on some stage. */
 typedef struct {
     fp_set_t const *set; /* points into the caller's fp_pack_t; valid as long as it is */
-    int16_t mins_left;   /* effective_end - now_min; >= 0, 0 at the set's last minute */
-    uint8_t pct_done;    /* 0 at start_min, 100 at effective_end (both inclusive) */
+    int16_t mins_left;   /* effective_end - now_min; > 0 while "now" (half-open end — see above) */
+    uint8_t pct_done;    /* 0 at start_min, monotonically increasing, never reaches 100 while "now" */
 } ff_now_row_t;
 
 /** Output of ff_sched_next_starred(): the next upcoming starred set. */
@@ -138,10 +150,11 @@ typedef struct {
 
 /**
  * ff_sched_now_playing — every set on `day_doy` currently live at
- * `now_min` (start_min <= now_min <= effective_end, both times known —
- * see the "Now window" note above), one row per matching set, written
- * in pack order (firmware/festpack sets[] order, which is schedule
- * order within a day).
+ * `now_min` (start_min <= now_min < effective_end, half-open, both
+ * times known — see the "Now window" note above), one row per matching
+ * set, written in pack order (firmware/festpack sets[] order, which is
+ * schedule order within a day). At a zero-gap same-stage changeover the
+ * starting set alone is "now" — see the half-open note.
  *
  * Writes up to `max` rows to `out` and returns the number written.
  * Rows beyond `max` are silently dropped in pack order — size `max` to
@@ -171,6 +184,29 @@ uint8_t ff_sched_now_playing(fp_pack_t const *p, uint16_t day_doy, int16_t now_m
 bool ff_sched_next_starred(fp_pack_t const *p, uint16_t day_doy, int16_t now_min, ff_next_t *out);
 
 /**
+ * ff_sched_alarm_t — caller-owned tick state for ff_sched_alarm_tick().
+ * This module holds no globals (per docs/ARCHITECTURE.md), so the
+ * per-set "already fired" bookkeeping lives here. Declared here (ahead
+ * of ff_sched_toggle_star below, which optionally takes one) rather
+ * than just above ff_sched_alarm_tick.
+ *
+ * Zero-initialize (or call ff_sched_alarm_init) before the first tick,
+ * and again whenever the underlying fp_pack_t's set list changes
+ * (a fresh pack load, a schema update) — this struct only tracks fired
+ * state by array index and has no way to detect on its own that the set
+ * at a given index is no longer the set it fired for.
+ */
+typedef struct {
+    /* One bit per fp_pack_t.sets[] index: bit i set means sets[i] has
+     * already fired its T-15 alarm under this state. Sized to
+     * FP_MAX_SETS so any loaded pack's indices fit. */
+    uint8_t fired[(FP_MAX_SETS + 7) / 8];
+} ff_sched_alarm_t;
+
+/** ff_sched_alarm_init — clear all fired-bits (nothing has alarmed yet). */
+void ff_sched_alarm_init(ff_sched_alarm_t *st);
+
+/**
  * ff_sched_toggle_star — flip fp_set_t.starred for p->sets[set_idx].
  *
  * Bounds-checked: a no-op if set_idx >= p->n_sets (defensive; embedded
@@ -178,8 +214,21 @@ bool ff_sched_next_starred(fp_pack_t const *p, uint16_t day_doy, int16_t now_min
  * list). Pure in-memory mutation — persisting the change (S11's
  * ff_store_t) is the caller's job, same as quiet hours: this module has
  * no I/O.
+ *
+ * `alarm` is optional (pass NULL if the caller doesn't have live alarm
+ * state handy, e.g. UI code that only edits the pack). When non-NULL
+ * AND this call transitions the set from starred to unstarred, its
+ * fired-bit in `alarm` is cleared immediately, so a later re-star
+ * re-arms the T-15 alert right away — deliberate "fat-finger recovery"
+ * per docs/specs/S07-now-face.md's ## Amendments: un-star by accident,
+ * re-star, still get alerted. (ff_sched_alarm_tick() also self-clears
+ * any unstarred set's fired-bit as it scans, so re-arming still
+ * eventually happens on the next tick even if `alarm` is NULL here —
+ * passing it through just makes the re-arm immediate rather than
+ * tick-delayed.) Starring a previously-unstarred set never touches
+ * `alarm` — there is nothing to clear on that transition.
  */
-void ff_sched_toggle_star(fp_pack_t *p, uint16_t set_idx);
+void ff_sched_toggle_star(fp_pack_t *p, uint16_t set_idx, ff_sched_alarm_t *alarm);
 
 /**
  * ff_sched_day_sets — every set attributed to `day_doy` (by
@@ -210,27 +259,6 @@ uint16_t ff_sched_day_sets(fp_pack_t const *p, uint16_t day_doy,
 bool ff_sched_day_tbd(fp_pack_t const *p, uint16_t day_doy);
 
 /**
- * ff_sched_alarm_t — caller-owned tick state for ff_sched_alarm_tick().
- * This module holds no globals (per docs/ARCHITECTURE.md), so the
- * per-set "already fired" bookkeeping lives here.
- *
- * Zero-initialize (or call ff_sched_alarm_init) before the first tick,
- * and again whenever the underlying fp_pack_t's set list changes
- * (a fresh pack load, a schema update) — this struct only tracks fired
- * state by array index and has no way to detect on its own that the set
- * at a given index is no longer the set it fired for.
- */
-typedef struct {
-    /* One bit per fp_pack_t.sets[] index: bit i set means sets[i] has
-     * already fired its T-15 alarm under this state. Sized to
-     * FP_MAX_SETS so any loaded pack's indices fit. */
-    uint8_t fired[(FP_MAX_SETS + 7) / 8];
-} ff_sched_alarm_t;
-
-/** ff_sched_alarm_init — clear all fired-bits (nothing has alarmed yet). */
-void ff_sched_alarm_init(ff_sched_alarm_t *st);
-
-/**
  * ff_sched_alarm_tick — advance the alarm state and report at most one
  * newly-due starred-set alert.
  *
@@ -247,10 +275,21 @@ void ff_sched_alarm_init(ff_sched_alarm_t *st);
  * crossings at once, on separate *calls* to this function) and fire in
  * start order.
  *
+ * Every call also clears the fired-bit of any set that is currently
+ * NOT starred (across the whole pack, not just `day_doy`) — an
+ * unstarred set carries no fired memory. Combined with
+ * ff_sched_toggle_star's immediate clear-on-unstar, this guarantees a
+ * re-starred set re-arms: either instantly (if the caller threaded
+ * `alarm` into ff_sched_toggle_star) or on the very next tick after
+ * re-starring (if it didn't). See docs/specs/S07-now-face.md's
+ * ## Amendments.
+ *
  * Returns a pointer into `p->sets[]` for the fired set (and marks its
- * fired-bit in `st`, so it never re-fires from this `st` again), or
- * NULL if nothing is newly due. Idempotent: re-ticking with the same or
- * a later `now_min` and no newly-due set returns NULL every time.
+ * fired-bit in `st`, so it never re-fires from this `st` again unless
+ * un-starred and re-starred in between), or NULL if nothing is newly
+ * due. Idempotent for an unchanged star/time state: re-ticking with the
+ * same or a later `now_min` and no newly-due set returns NULL every
+ * time.
  *
  * This function has no notion of quiet hours or haptics — see the
  * header-level purity note; the caller must still call this every tick

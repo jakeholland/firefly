@@ -3,10 +3,17 @@
  * per docs/specs/S07-now-face.md.
  *
  *   AC1 — now_playing: concurrent/finished/future filtering, exact
- *         pct_done at both boundaries.
+ *         pct_done boundaries under the half-open "now" window (start=0%,
+ *         monotonically increasing, never reaches 100 while live; a
+ *         zero-gap same-stage changeover yields exactly one row — the
+ *         starting set). See docs/specs/S07-now-face.md's ## Amendments
+ *         (PR #9 review) for the ruling that made the window half-open;
+ *         it was originally inclusive at both ends.
  *   AC2 — midnight-crossing set attribution + math with now_min > 1440.
- *   AC3 — next_starred: earliest future starred set, false cases.
- *   AC4 — alarm: fires once at T-15 crossing, idempotent, ordered.
+ *   AC3 — next_starred: earliest future starred set, false cases, and a
+ *         tie-break case (equal start_min -> lower set index).
+ *   AC4 — alarm: fires once at T-15 crossing, idempotent, ordered
+ *         (including a tie-break case), un-star/re-star re-arms.
  *   AC5 — all-null-times pack: now/next empty/false, TBD flagged. The
  *         last AC5 case parses the real vendored Lost Lands 2026
  *         fixture via fp_parse (firmware/festpack/tests/fixtures/) —
@@ -108,22 +115,42 @@ static void S07_AC1_pct_done_boundary_start_is_zero(void)
     TEST_ASSERT_EQUAL_INT16(60, rows[0].mins_left);
 }
 
-static void S07_AC1_pct_done_boundary_end_is_hundred(void)
+static void S07_AC1_pct_done_leaves_now_exactly_at_end_half_open(void)
 {
     fp_pack_t p;
     pack_init(&p);
-    pack_add(&p, mk_set("Closer", 0, DAY_A, 600, 660, false));
+    pack_add(&p, mk_set("Closer", 0, DAY_A, 600, 660, false)); /* 60-minute set */
 
     ff_now_row_t rows[4];
-    /* Exactly the last minute: inclusive end per ff_sched.h's "now window". */
-    uint8_t n = ff_sched_now_playing(&p, DAY_A, 660, rows, 4);
-    TEST_ASSERT_EQUAL_UINT8(1, n);
-    TEST_ASSERT_EQUAL_UINT8(100, rows[0].pct_done);
-    TEST_ASSERT_EQUAL_INT16(0, rows[0].mins_left);
 
-    /* One minute past the end: no longer "now". */
-    n = ff_sched_now_playing(&p, DAY_A, 661, rows, 4);
+    /* Last live minute (end - 1 = 659): pct is high but never 100 — the
+     * half-open window means the set leaves "now" at end_min itself. */
+    uint8_t n = ff_sched_now_playing(&p, DAY_A, 659, rows, 4);
+    TEST_ASSERT_EQUAL_UINT8(1, n);
+    TEST_ASSERT_EQUAL_UINT8(98, rows[0].pct_done); /* (59*100)/60 = 98 */
+    TEST_ASSERT_EQUAL_INT16(1, rows[0].mins_left);
+
+    /* Exactly at end_min (660): half-open -> no longer "now" at all. */
+    n = ff_sched_now_playing(&p, DAY_A, 660, rows, 4);
     TEST_ASSERT_EQUAL_UINT8(0, n);
+}
+
+static void S07_AC1_zero_gap_changeover_single_row(void)
+{
+    fp_pack_t p;
+    pack_init(&p);
+    /* Ordinary festival scheduling: one stage, no gap between sets — the
+     * next artist's start_min equals the previous artist's end_min. Per
+     * the spec's ## Amendments ruling, the STARTING set wins at that
+     * exact minute; the ending set has already left "now". */
+    pack_add(&p, mk_set("Ending", 0, DAY_A, 600, 660, false));
+    pack_add(&p, mk_set("Starting", 0, DAY_A, 660, 720, false));
+
+    ff_now_row_t rows[4];
+    uint8_t n = ff_sched_now_playing(&p, DAY_A, 660, rows, 4);
+    TEST_ASSERT_EQUAL_UINT8(1, n); /* exactly one row, not two, for stage 0 */
+    TEST_ASSERT_EQUAL_STRING("Starting", rows[0].set->artist);
+    TEST_ASSERT_EQUAL_UINT8(0, rows[0].pct_done);
 }
 
 static void S07_AC1_pct_done_midpoint(void)
@@ -219,14 +246,15 @@ static void S07_AC2_midnight_crossing_pct_done_across_midnight(void)
     TEST_ASSERT_EQUAL_UINT8(1, n);
     TEST_ASSERT_EQUAL_UINT8(66, rows[0].pct_done);
 
-    /* End instant: 01:00, now_min = 1500, pct 100 (inclusive). */
-    n = ff_sched_now_playing(&p, DAY_A, 1500, rows, 4);
+    /* Last live minute (effective_end - 1 = 1499): high but not 100
+     * (half-open — same rule as the same-day case). */
+    n = ff_sched_now_playing(&p, DAY_A, 1499, rows, 4);
     TEST_ASSERT_EQUAL_UINT8(1, n);
-    TEST_ASSERT_EQUAL_UINT8(100, rows[0].pct_done);
-    TEST_ASSERT_EQUAL_INT16(0, rows[0].mins_left);
+    TEST_ASSERT_EQUAL_UINT8(98, rows[0].pct_done); /* (89*100)/90 = 98 */
+    TEST_ASSERT_EQUAL_INT16(1, rows[0].mins_left);
 
-    /* One minute past: gone. */
-    n = ff_sched_now_playing(&p, DAY_A, 1501, rows, 4);
+    /* Exactly at effective_end (01:00, now_min=1500): half-open -> gone. */
+    n = ff_sched_now_playing(&p, DAY_A, 1500, rows, 4);
     TEST_ASSERT_EQUAL_UINT8(0, n);
 }
 
@@ -259,8 +287,8 @@ static void S07_AC2_0600_boundary_both_sides(void)
     TEST_ASSERT_EQUAL_UINT8(0, n);
 
     /* Exactly 06:00: started, pct 0 — no special-casing needed at the
-     * boundary itself, same start_min<=now_min<=end comparison as any
-     * other minute. */
+     * boundary itself, same half-open start_min<=now_min<end comparison
+     * as any other minute. */
     n = ff_sched_now_playing(&p, DAY_A, FF_SCHED_FESTIVAL_DAY_START_MIN, rows, 4);
     TEST_ASSERT_EQUAL_UINT8(1, n);
     TEST_ASSERT_EQUAL_UINT8(0, rows[0].pct_done);
@@ -333,6 +361,23 @@ static void S07_AC3_ignores_other_days(void)
     TEST_ASSERT_FALSE(found);
 }
 
+static void S07_AC3_tie_break_equal_start_min_prefers_lower_index(void)
+{
+    fp_pack_t p;
+    pack_init(&p);
+    /* Two starred sets with an IDENTICAL start_min — locks in the
+     * documented "ties -> lower set index" contract. A `<` -> `<=`
+     * mutation in the tie-break comparison would flip this to prefer
+     * the higher index and this test would catch it. */
+    pack_add(&p, mk_set("Lower Index", 0, DAY_A, 700, 760, true));
+    pack_add(&p, mk_set("Higher Index", 1, DAY_A, 700, 760, true));
+
+    ff_next_t next;
+    bool found = ff_sched_next_starred(&p, DAY_A, 600, &next);
+    TEST_ASSERT_TRUE(found);
+    TEST_ASSERT_EQUAL_STRING("Lower Index", next.set->artist);
+}
+
 /* ======================================================================
  * toggle_star (not individually numbered by the spec's AC list, but in
  * this PR's scope)
@@ -344,14 +389,16 @@ static void test_toggle_star_flips_and_is_bounds_checked(void)
     pack_init(&p);
     pack_add(&p, mk_set("Toggle Me", 0, DAY_A, 600, 700, false));
 
+    /* alarm=NULL: caller with no live alarm state (e.g. UI editing the
+     * pack) — pure in-memory star flip only, per ff_sched.h. */
     TEST_ASSERT_FALSE(p.sets[0].starred);
-    ff_sched_toggle_star(&p, 0);
+    ff_sched_toggle_star(&p, 0, NULL);
     TEST_ASSERT_TRUE(p.sets[0].starred);
-    ff_sched_toggle_star(&p, 0);
+    ff_sched_toggle_star(&p, 0, NULL);
     TEST_ASSERT_FALSE(p.sets[0].starred);
 
     /* Out-of-range index: no-op, no crash. */
-    ff_sched_toggle_star(&p, 999);
+    ff_sched_toggle_star(&p, 999, NULL);
     TEST_ASSERT_FALSE(p.sets[0].starred);
 }
 
@@ -487,6 +534,108 @@ static void S07_AC4_reinit_clears_fired_state(void)
     TEST_ASSERT_NOT_NULL(ff_sched_alarm_tick(&st, &p, DAY_A, 886));
 }
 
+static void S07_AC4_tie_break_equal_start_min_prefers_lower_index(void)
+{
+    fp_pack_t p;
+    pack_init(&p);
+    /* Two starred sets with an IDENTICAL start_min, both due on the same
+     * tick — locks in "ties -> lower set index"; each call fires exactly
+     * one, lower index first. A `<` -> `<=` mutation in the tie-break
+     * comparison would flip this ordering and this test would catch it. */
+    pack_add(&p, mk_set("Lower Index", 0, DAY_A, 900, 960, true));
+    pack_add(&p, mk_set("Higher Index", 1, DAY_A, 900, 960, true));
+
+    ff_sched_alarm_t st;
+    ff_sched_alarm_init(&st);
+
+    fp_set_t const *first = ff_sched_alarm_tick(&st, &p, DAY_A, 890);
+    TEST_ASSERT_NOT_NULL(first);
+    TEST_ASSERT_EQUAL_STRING("Lower Index", first->artist);
+
+    fp_set_t const *second = ff_sched_alarm_tick(&st, &p, DAY_A, 890);
+    TEST_ASSERT_NOT_NULL(second);
+    TEST_ASSERT_EQUAL_STRING("Higher Index", second->artist);
+}
+
+static void S07_AC4_unstar_restar_rearms(void)
+{
+    fp_pack_t p;
+    pack_init(&p);
+    pack_add(&p, mk_set("Star", 0, DAY_A, 900, 960, true));
+
+    ff_sched_alarm_t st;
+    ff_sched_alarm_init(&st);
+
+    /* Fires once at T-15. */
+    TEST_ASSERT_NOT_NULL(ff_sched_alarm_tick(&st, &p, DAY_A, 885));
+    TEST_ASSERT_NULL(ff_sched_alarm_tick(&st, &p, DAY_A, 886));
+
+    /* Fat-finger: un-star (threading the live alarm state through, so
+     * the fired-bit clears immediately per ff_sched.h's ## Amendments
+     * note), then re-star, still within the T-15 window. */
+    ff_sched_toggle_star(&p, 0, &st);
+    TEST_ASSERT_FALSE(p.sets[0].starred);
+    ff_sched_toggle_star(&p, 0, &st);
+    TEST_ASSERT_TRUE(p.sets[0].starred);
+
+    /* Re-arm: fires again since we're still within the due window —
+     * this is the "un-star must clear the fired bit" guarantee, not an
+     * accident of tick timing. */
+    fp_set_t const *refired = ff_sched_alarm_tick(&st, &p, DAY_A, 887);
+    TEST_ASSERT_NOT_NULL(refired);
+    TEST_ASSERT_EQUAL_STRING("Star", refired->artist);
+}
+
+static void S07_AC4_unstar_without_alarm_arg_still_rearms_on_next_tick(void)
+{
+    fp_pack_t p;
+    pack_init(&p);
+    pack_add(&p, mk_set("Star", 0, DAY_A, 900, 960, true));
+
+    ff_sched_alarm_t st;
+    ff_sched_alarm_init(&st);
+
+    TEST_ASSERT_NOT_NULL(ff_sched_alarm_tick(&st, &p, DAY_A, 885));
+
+    /* Un-star/re-star WITHOUT threading `st` through (alarm=NULL) — the
+     * caller has no live alarm state handy. ff_sched_alarm_tick's own
+     * self-clear-on-unstarred sweep still catches this on the next tick
+     * while the set is unstarred. */
+    ff_sched_toggle_star(&p, 0, NULL);
+    TEST_ASSERT_FALSE(p.sets[0].starred);
+    TEST_ASSERT_NULL(ff_sched_alarm_tick(&st, &p, DAY_A, 886)); /* unstarred: nothing fires, but bit clears */
+    ff_sched_toggle_star(&p, 0, NULL);
+    TEST_ASSERT_TRUE(p.sets[0].starred);
+
+    fp_set_t const *refired = ff_sched_alarm_tick(&st, &p, DAY_A, 887);
+    TEST_ASSERT_NOT_NULL(refired);
+    TEST_ASSERT_EQUAL_STRING("Star", refired->artist);
+}
+
+static void S07_AC4_star_after_t15_crossing_fires_on_next_tick(void)
+{
+    fp_pack_t p;
+    pack_init(&p);
+    /* Not starred at fixture time: the user stars it late. */
+    pack_add(&p, mk_set("LateStar", 0, DAY_A, 900, 960, false));
+
+    ff_sched_alarm_t st;
+    ff_sched_alarm_init(&st);
+
+    /* At T-15, unstarred: nothing fires (and nothing to fire). */
+    TEST_ASSERT_NULL(ff_sched_alarm_tick(&st, &p, DAY_A, 885));
+
+    /* Star it late, at T-10 — after the T-15 threshold already passed. */
+    ff_sched_toggle_star(&p, 0, &st);
+    TEST_ASSERT_TRUE(p.sets[0].starred);
+
+    /* Fires on the very next tick: no "already-seen-unstarred" latch
+     * suppresses a late star. */
+    fp_set_t const *fired = ff_sched_alarm_tick(&st, &p, DAY_A, 890);
+    TEST_ASSERT_NOT_NULL(fired);
+    TEST_ASSERT_EQUAL_STRING("LateStar", fired->artist);
+}
+
 /* ======================================================================
  * AC5 — all-null-times pack: now/next empty/false, TBD flagged
  * ==================================================================== */
@@ -614,7 +763,8 @@ int main(void)
 
     RUN_TEST(S07_AC1_now_playing_returns_exactly_the_concurrent_sets);
     RUN_TEST(S07_AC1_pct_done_boundary_start_is_zero);
-    RUN_TEST(S07_AC1_pct_done_boundary_end_is_hundred);
+    RUN_TEST(S07_AC1_pct_done_leaves_now_exactly_at_end_half_open);
+    RUN_TEST(S07_AC1_zero_gap_changeover_single_row);
     RUN_TEST(S07_AC1_pct_done_midpoint);
     RUN_TEST(S07_AC1_null_time_sets_never_appear);
     RUN_TEST(S07_AC1_max_cap_truncates_in_pack_order);
@@ -630,6 +780,7 @@ int main(void)
     RUN_TEST(S07_AC3_false_when_starred_sets_are_past_or_live);
     RUN_TEST(S07_AC3_ignores_null_time_starred_sets);
     RUN_TEST(S07_AC3_ignores_other_days);
+    RUN_TEST(S07_AC3_tie_break_equal_start_min_prefers_lower_index);
 
     RUN_TEST(test_toggle_star_flips_and_is_bounds_checked);
 
@@ -640,6 +791,10 @@ int main(void)
     RUN_TEST(S07_AC4_does_not_fire_for_a_set_already_ended);
     RUN_TEST(S07_AC4_ignores_unstarred_and_null_time_sets);
     RUN_TEST(S07_AC4_reinit_clears_fired_state);
+    RUN_TEST(S07_AC4_tie_break_equal_start_min_prefers_lower_index);
+    RUN_TEST(S07_AC4_unstar_restar_rearms);
+    RUN_TEST(S07_AC4_unstar_without_alarm_arg_still_rearms_on_next_tick);
+    RUN_TEST(S07_AC4_star_after_t15_crossing_fires_on_next_tick);
 
     RUN_TEST(S07_AC5_all_null_pack_now_playing_is_empty);
     RUN_TEST(S07_AC5_all_null_pack_next_starred_is_false);
