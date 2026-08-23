@@ -16,8 +16,8 @@ Specs are contracts. Acceptance criteria (AC) become test names (`S01_AC3_...`).
 | S10 | flare flow — send/receive/takeover | S04,S06 | YES | ☐ |
 | S11 | settings & persistence | — | YES | ◐ slice a merged (PR #4) |
 | S12 | first-run flow | S08(T9),S11 | stretch (device can ship pre-named) | ☐ |
-| S13 | sim target — SDL/headless + screenshots | — | YES (dev-critical, build FIRST) | ☐ |
-| S14 | testing & CI | S13 | YES (build FIRST) | ☐ |
+| S13 | sim target — SDL/headless + screenshots | — | YES (dev-critical, build FIRST) | ◐ slice a merged (PR #2) |
+| S14 | testing & CI | S13 | YES (build FIRST) | ◐ slice a merged (PR #2) |
 | S15 | esp32s3 target — ESP-IDF build + UART + sensors | most | YES (when boards arrive) | ☐ |
 
 **Wave plan:** Wave 0 = S13+S14 (the loop itself). Wave 1 = S01,S03,S05,S11 (parallel, no deps). Wave 2 = S02,S04,S07. Wave 3 = S06,S08,S10. Wave 4 = S09,S12,S15.
