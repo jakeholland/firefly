@@ -1,0 +1,19 @@
+# S03 meshclient — nanopb generator options.
+#
+# Static allocation everywhere nanopb would otherwise need a callback field.
+# Field sizes for names/text follow docs/specs/S03-meshclient.md ("callback
+# field sizes per spec: names 40 B, text 237 B (Meshtastic max)"). Every
+# other unbounded field (Config/ModuleConfig internals, encrypted bytes,
+# public keys, User.id, etc.) is out of the v1 decode scope and is
+# intentionally left as a pb_callback_t field with no callback installed —
+# nanopb silently skips such fields during decode, which is exactly the
+# "everything else skipped [but counted]" behavior the spec calls for, at
+# zero extra static RAM cost.
+#
+# max_size is a hard budget, not a truncation limit: a value that overflows
+# it fails pb_decode() for the *whole* enclosing message (e.g. FromRadio),
+# not just that field. See the MC_NAME_MAX doc comment in mc_client.h.
+
+meshtastic.User.long_name          max_size:40
+meshtastic.User.short_name         max_size:40
+meshtastic.Data.payload            max_size:237

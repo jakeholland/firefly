@@ -2,4 +2,8 @@
 .claude/
 build/
 *.bin
+# S03: hand-crafted meshclient test fixtures are committed .bin files, not
+# build output — see docs/specs/S03-meshclient.md and
+# firmware/meshclient/tools/dev/record_fixture.py.
+!firmware/meshclient/tests/fixtures/*.bin
 firmware/out/

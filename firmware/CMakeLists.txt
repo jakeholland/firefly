@@ -59,6 +59,13 @@ FetchContent_Declare(
 
 FetchContent_MakeAvailable(lvgl unity)
 
+# S03: meshclient's position tests compare doubles (GPS lat/lon need more
+# precision than float32 offers); Unity only compiles its double-precision
+# assertion helpers in when this is defined, and it has to be defined for
+# unity.c itself (not just the test .c files) or the assertion symbols
+# won't exist to link against.
+target_compile_definitions(unity PUBLIC UNITY_INCLUDE_DOUBLE)
+
 # stb_image_write.h is vendored directly under third_party/ (single header,
 # no build system of its own) — see firmware/third_party/CMakeLists.txt.
 
@@ -71,9 +78,42 @@ else()
     target_link_libraries(lvgl PUBLIC ${SDL2_LIBRARIES})
 endif()
 
+# ---------------------------------------------------------------------------
+# S03: nanopb runtime (pb_common/pb_decode/pb_encode) — vendored via
+# FetchContent, pinned to a commit (tag 0.4.9.1). We deliberately do NOT
+# add_subdirectory() nanopb's own CMakeLists.txt: it unconditionally
+# find_program()s protoc and FATAL_ERRORs if missing, even when only the
+# runtime library (not the generator) is wanted. The generated protobuf C
+# sources under meshclient/proto/ are committed to the repo (see
+# meshclient/tools/gen_nanopb.sh), so a normal build never needs protoc —
+# only pb.h/pb_common.c/pb_decode.c/pb_encode.c from nanopb itself are
+# needed, and we build those directly as our own tiny static library.
+FetchContent_Declare(
+    nanopb
+    GIT_REPOSITORY https://github.com/nanopb/nanopb.git
+    GIT_TAG        cad3c18ef15a663e30e3e43e3a752b66378adec1 # v0.4.9.1
+    GIT_SHALLOW    TRUE
+)
+FetchContent_GetProperties(nanopb)
+if(NOT nanopb_POPULATED)
+    if(POLICY CMP0169)
+        cmake_policy(SET CMP0169 OLD)
+    endif()
+    FetchContent_Populate(nanopb)
+endif()
+
+add_library(ff-nanopb STATIC
+    ${nanopb_SOURCE_DIR}/pb_common.c
+    ${nanopb_SOURCE_DIR}/pb_decode.c
+    ${nanopb_SOURCE_DIR}/pb_encode.c
+)
+target_include_directories(ff-nanopb PUBLIC ${nanopb_SOURCE_DIR})
+# Vendored code: not ours, no -Wall -Wextra -Werror.
+
 enable_testing()
 
 add_subdirectory(third_party)
+add_subdirectory(platform)
 add_subdirectory(core)
 add_subdirectory(meshclient)
 add_subdirectory(festpack)
