@@ -9,6 +9,7 @@
 #include <arpa/inet.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <math.h>
 #include <netinet/in.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -16,6 +17,7 @@
 #include <sys/select.h>
 #include <sys/socket.h>
 #include <sys/time.h>
+#include <time.h>
 #include <unistd.h>
 
 /* -----------------------------------------------------------------------
@@ -152,7 +154,16 @@ static void ctl_ok(char *resp, size_t resp_sz)
 static void ctl_err(char *resp, size_t resp_sz, char const *msg)
 {
     /* Every message passed here is a static string literal we control
-     * (never client input), so no JSON escaping is needed. */
+     * (never client input), so no JSON escaping is needed — PROVIDED
+     * `msg` itself never contains a literal '"' or '\\'. This has bitten
+     * this file once already (a "left"/"right" error message with
+     * embedded quotes corrupted its own JSON response; found and fixed
+     * alongside PR #19's review-fixup round, along with the same bug in
+     * ctl_out_path.c). Every `ctl_err(...)` call site's literal must
+     * stay quote-free — there is deliberately no runtime escaping here,
+     * matching this whole module's "every callback pointer/string is
+     * either developer-authored or explicitly validated, never both
+     * assumed and unescaped" discipline. */
     (void)snprintf(resp, resp_sz, "{\"ok\":false,\"error\":\"%s\"}", msg);
 }
 
@@ -205,11 +216,29 @@ bool ff_ctl_process_line(char const *line, ff_ctl_handlers_t const *h, char *res
             ctl_err(resp, resp_sz, "tap requires numeric x,y");
             return false;
         }
+        /* NAN as ctl_num()'s "missing/unparseable" sentinel would itself
+         * fail isfinite() below and get rejected the same as any other
+         * out-of-range value — no separate "couldn't parse the number"
+         * case needed. */
+        double x = ctl_num(&ctx, xi, NAN);
+        double y = ctl_num(&ctx, yi, NAN);
+        /* Review fix (PR #19 finding #1): a bare (lv_coord_t)x cast of an
+         * out-of-range or non-finite double is undefined behavior per
+         * C11 6.3.1.4 — reproduced with {"cmd":"tap","x":1e300,"y":0}
+         * under -fsanitize=undefined. Validate BEFORE this ever reaches
+         * a narrowing cast in the handler (main.c's ff_loop_tap), not
+         * after — same "fail loud instead of silently misbehaving"
+         * discipline screenshot's path-length check already uses. */
+        if (!isfinite(x) || !isfinite(y) || x < FF_CTL_TAP_COORD_MIN || x > FF_CTL_TAP_COORD_MAX ||
+            y < FF_CTL_TAP_COORD_MIN || y > FF_CTL_TAP_COORD_MAX) {
+            ctl_err(resp, resp_sz, "tap x,y must be finite and within [-32768, 32767]");
+            return false;
+        }
         if (h->tap == NULL) {
             ctl_err(resp, resp_sz, "tap unsupported");
             return false;
         }
-        h->tap(h->user, ctl_num(&ctx, xi, 0.0), ctl_num(&ctx, yi, 0.0));
+        h->tap(h->user, x, y);
         ctl_ok(resp, resp_sz);
         return false;
     }
@@ -223,7 +252,12 @@ bool ff_ctl_process_line(char const *line, ff_ctl_handlers_t const *h, char *res
         char dir[8];
         ctl_copy_str(&ctx, di, dir, sizeof(dir));
         if (strcmp(dir, "left") != 0 && strcmp(dir, "right") != 0) {
-            ctl_err(resp, resp_sz, "swipe dir must be \"left\" or \"right\"");
+            /* No embedded '"' — see ctl_err()'s doc comment: it does not
+             * escape the messages it's given, so a literal quote here
+             * would corrupt the JSON response (found and fixed alongside
+             * PR #19's review-fixup round; ctl_out_path.c's error
+             * strings had the same bug). */
+            ctl_err(resp, resp_sz, "swipe dir must be left or right");
             return false;
         }
         if (h->swipe == NULL) {
@@ -323,12 +357,25 @@ bool ff_ctl_process_line(char const *line, ff_ctl_handlers_t const *h, char *res
  * Layer 2: the POSIX TCP driver.
  * --------------------------------------------------------------------- */
 
-int ff_ctl_open(ff_ctl_server_t *srv, uint16_t port)
+/* Monotonic milliseconds — self-contained (no injected ff_clock_t; this
+ * is the socket-facing layer, not the pure core, and every other timing
+ * source in this file, e.g. ctl_send_line's select() timeout, already
+ * reads real time directly). Mirrors main.c's own ff_wall_clock_ms(). */
+static uint32_t ctl_now_ms(void)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint32_t)((uint64_t)ts.tv_sec * 1000u + (uint64_t)(ts.tv_nsec / 1000000));
+}
+
+int ff_ctl_open(ff_ctl_server_t *srv, uint16_t port, uint32_t idle_timeout_ms)
 {
     if (srv == NULL) return -1;
     srv->listen_fd = -1;
     srv->client_fd = -1;
     memset(&srv->lb, 0, sizeof(srv->lb));
+    srv->idle_timeout_ms = idle_timeout_ms;
+    srv->client_last_activity_ms = 0;
 
     int fd = socket(AF_INET, SOCK_STREAM, 0);
     if (fd < 0) return -1;
@@ -393,6 +440,7 @@ static void ctl_accept_if_needed(ff_ctl_server_t *srv)
      * behavior, not a bug (see ctl_server.h's ff_ctl_poll doc comment). */
     srv->client_fd = fd;
     memset(&srv->lb, 0, sizeof(srv->lb));
+    srv->client_last_activity_ms = ctl_now_ms();
 }
 
 static void ctl_send_line(int fd, char const *resp)
@@ -430,6 +478,20 @@ bool ff_ctl_poll(ff_ctl_server_t *srv, ff_ctl_handlers_t const *h)
     ctl_accept_if_needed(srv);
     if (srv->client_fd < 0) return false;
 
+    /* Review fix (PR #19 finding #3): a connected-but-silent client
+     * would otherwise hold the single client slot (listen backlog 1)
+     * forever, starving any well-behaved client (the e2e/nightly
+     * harness) that tries to connect next, with no recovery path. Drop
+     * it and let the very next ff_ctl_poll call accept a replacement. */
+    if (srv->idle_timeout_ms > 0) {
+        uint32_t now = ctl_now_ms();
+        if (now - srv->client_last_activity_ms > srv->idle_timeout_ms) {
+            close(srv->client_fd);
+            srv->client_fd = -1;
+            return false;
+        }
+    }
+
     uint8_t chunk[512];
     ssize_t n = recv(srv->client_fd, chunk, sizeof(chunk), 0);
     if (n == 0) {
@@ -452,6 +514,13 @@ bool ff_ctl_poll(ff_ctl_server_t *srv, ff_ctl_handlers_t const *h)
             continue;
         }
         if (fr != FF_CTL_FEED_LINE) continue;
+
+        /* Refresh the idle deadline only on a FULLY-PROCESSED command
+         * line, not on every raw byte or an oversized-line event — a
+         * client dribbling in bytes of an oversized line forever would
+         * otherwise reset the clock indefinitely without ever completing
+         * a real command. */
+        srv->client_last_activity_ms = ctl_now_ms();
 
         char resp[FF_CTL_MAX_RESP];
         bool this_is_quit = ff_ctl_process_line(srv->lb.buf, h, resp, sizeof(resp));

@@ -76,9 +76,12 @@ line in, one JSON line back. `--connect HOST:PORT` wires up a live
 Meshtastic connection (`targets/sim/live.h`) so `{"cmd":"state"}` dumps
 reflect real mesh traffic instead of a static fixture; `--pack FILE`
 anchors "my position" at a festpack's venue origin (the sim has no real
-GPS). See `tools/dev/README.md` for the whole dev loop (dockerized
-meshtasticd + `crew_sim.py` scenario driver) and its documented,
-verified-against-the-real-container limitations.
+GPS); `--ctl-out DIR` sets where the `screenshot` command may write
+(`path` in that command is a relative name confined under this root —
+never an arbitrary filesystem path — see CTL.md). See `tools/dev/
+README.md` for the whole dev loop (dockerized meshtasticd + `crew_sim.py`
+scenario driver) and its documented, verified-against-the-real-container
+limitations.
 
 ## Golden screenshots
 

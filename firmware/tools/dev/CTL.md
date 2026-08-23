@@ -7,7 +7,9 @@ instead of adding a `--script FILE.py` flag (see
 `docs/specs/S13-sim-target.md`: "scripting stays external").
 
 Currently requires `--headless` — see `targets/sim/main.c`'s "ctl loop"
-section for why window mode isn't wired up too.
+section for why window mode isn't wired up too. `--ctl-out DIR` sets
+where the `screenshot` command is allowed to write (see that command's
+section below) — optional; ffsim picks a sensible default if omitted.
 
 ## Protocol
 
@@ -42,6 +44,13 @@ over that bound gets a `{"ok":false,"error":"line too long"}` response and
 the connection silently discards bytes up to the next `\n` before
 resuming normal parsing (no need to reconnect).
 
+**Idle timeout:** a connected client that goes 30s (`FF_CTL_DEFAULT_
+IDLE_TIMEOUT_MS`) without completing a single command is dropped, so a
+stalled or misbehaving client can't permanently starve the socket (the
+listen backlog is 1 — this is a single-client dev tool, not a
+multiplexed server). The very next poll accepts a replacement client
+immediately.
+
 ## Commands
 
 ### `tap`
@@ -57,7 +66,16 @@ real interactive screens, there's nothing on screen to click yet, but the
 injection path itself is exercised and unit-tested
 (`targets/sim/tests/test_ctl_server.c`).
 
-Response: `{"ok": true}`, or `{"ok": false, "error": "tap requires numeric x,y"}`.
+`x`/`y` must be finite numbers within `[-32768, 32767]`
+(`FF_CTL_TAP_COORD_MIN`/`MAX` in `ctl_server.h`) — rejected otherwise,
+*before* either value ever reaches a narrowing cast to the sim's internal
+coordinate type. (An earlier version of this socket didn't validate this:
+`{"cmd":"tap","x":1e300,"y":0}` reached an out-of-range `(lv_coord_t)`
+cast, undefined behavior per C11 6.3.1.4, confirmed under
+`-fsanitize=undefined`. Fixed; pinned as a regression test.)
+
+Response: `{"ok": true}`, or `{"ok": false, "error": "tap requires numeric x,y"}`
+or `{"ok": false, "error": "tap x,y must be finite and within [-32768, 32767]"}`.
 
 ### `swipe`
 
@@ -68,7 +86,7 @@ Response: `{"ok": true}`, or `{"ok": false, "error": "tap requires numeric x,y"}
 `dir` must be exactly `"left"` or `"right"`. Injects a press → several
 move steps → release sequence through the same pointer indev as `tap`.
 
-Response: `{"ok": true}`, or `{"ok": false, "error": "swipe dir must be \"left\" or \"right\""}`.
+Response: `{"ok": true}`, or `{"ok": false, "error": "swipe dir must be left or right"}`.
 
 ### `clock`
 
@@ -101,16 +119,37 @@ Response: `{"ok": true, "state": {"fixture": "...", "face": "radar", "radar": {.
 ### `screenshot`
 
 ```json
-{"cmd": "screenshot", "path": "/tmp/out.png"}
+{"cmd": "screenshot", "path": "out.png"}
 ```
 
 Renders the current frame (forces a fresh `lv_refr_now()` first, so this
 always reflects the latest `tap`/`swipe`/`clock`/live-mesh-driven state,
-not a stale cached frame) to a PNG at `path`. `path` may be absolute or
-relative to ffsim's working directory; the directory must already exist.
+not a stale cached frame) to a PNG at `path`.
+
+**`path` is a RELATIVE name, confined to a single configured output
+root** — never an arbitrary filesystem path. The root is `--ctl-out DIR`
+if given (created if missing), else the `--screenshot DIR` this same
+`ffsim` invocation was started with (must already exist), else a fresh
+temp directory ffsim creates itself; ffsim prints the resolved root at
+startup (`ffsim: ctl screenshot writes confined to ...`). Rejected:
+- an absolute `path`,
+- any `..` path component, anywhere in `path`,
+- a path whose containing directory doesn't already exist under the
+  root, or resolves (symlinks included) outside it,
+- a leaf name that already exists as a symlink.
+
+(This used to be unconstrained: `{"cmd":"screenshot","path":"/tmp/
+anything.png"}` wrote exactly there, an arbitrary-file-write primitive
+for anything the ffsim process can write to — loopback-only binding
+limited who could reach it, but that's not the same as it being safe.
+Fixed; see `targets/sim/ctl_out_path.h` for the confinement policy and
+`targets/sim/tests/test_ctl_out_path.c` for the absolute/`..`/symlink-
+escape regression tests, including a symlinked-root-itself case.)
 
 Response: `{"ok": true}`, or `{"ok": false, "error": "screenshot write failed"}`
-(bad directory, permissions, etc — see stderr for the underlying reason).
+(bad directory, permissions, etc — see stderr for the underlying reason),
+or one of the path-confinement rejection messages above (e.g.
+`{"ok": false, "error": "screenshot path escapes the configured output root (--ctl-out)"}`).
 
 ### `quit`
 

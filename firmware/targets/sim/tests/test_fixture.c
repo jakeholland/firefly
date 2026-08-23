@@ -490,15 +490,16 @@ static void dump_maximally_populated_state_fits_budget(void)
 
     s.now.n_rows = FF_APP_NOW_MAX_ROWS;
     for (uint8_t i = 0; i < FF_APP_NOW_MAX_ROWS; i++) {
-        (void)snprintf(s.now.rows[i].artist, sizeof(s.now.rows[i].artist), "%s", "Artist Name Thirty One Chars!!");
+        (void)snprintf(s.now.rows[i].artist, sizeof(s.now.rows[i].artist), "%s",
+                        "Exactly Thirty One Chars Long!!"); /* fits FF_APP_ARTIST_LEN (32) - 1 for the NUL */
         (void)snprintf(s.now.rows[i].stage_name, sizeof(s.now.rows[i].stage_name), "%s",
-                        "Stage Name Twenty Seven Ch"); /* fits FF_APP_STAGE_LEN (28) - 1 for the NUL */
+                        "Exactly Twenty Seven Chars!"); /* fits FF_APP_STAGE_LEN (28) - 1 for the NUL */
         s.now.rows[i].stage_color_rgb = 0x00FFC66B;
         s.now.rows[i].mins_left = 999;
         s.now.rows[i].pct_done = 100;
     }
     s.now.next.valid = true;
-    (void)snprintf(s.now.next.artist, sizeof(s.now.next.artist), "%s", "Artist Name Thirty One Chars!!");
+    (void)snprintf(s.now.next.artist, sizeof(s.now.next.artist), "%s", "Exactly Thirty One Chars Long!!");
 
     s.signals.n_items = FF_APP_SIGNALS_MAX_ITEMS;
     for (uint8_t i = 0; i < FF_APP_SIGNALS_MAX_ITEMS; i++) {

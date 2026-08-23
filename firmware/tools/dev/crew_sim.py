@@ -41,20 +41,36 @@ design:
      is only observed by whoever is connected at the moment the daemon's
      async "send completed" event fires — with no other real or simulated
      radio node to relay it, and given constraint #1, that is at best a
-     narrow, racy window, not a reliable delivery path.
+     narrow, racy window, not a reliable delivery path. (Also root-caused
+     *why* a two-container "virtual mesh" can't be used to route around
+     this either — see test_scenarios.py's module docstring for the full
+     `build_src_filter` writeup.)
+  5. **Position updates from the client API are rate-limited, and
+     precision is truncated to the channel's configured
+     `position_precision`.** A tight loop of `sendPosition()` calls gets
+     most of them silently dropped (`WARN ... [ServerAPI] Rate limit
+     portnum 3` in the daemon's own logs, never surfaced to the client);
+     a readback of an *accepted* update does not exactly equal what was
+     sent (`Truncate phone position to channel precision 13` — a real
+     Meshtastic privacy feature, default 13 bits on this image's primary
+     channel, enough truncation error to swamp the distance between two
+     of this file's own STAGE_OFFSETS_M entries). See
+     MIN_POSITION_SEND_INTERVAL_S and `_wait_for_a_position` below for
+     how `walk()` accounts for both.
 
 Net effect: `crew_sim.py walk` genuinely drives ffsim's radar face end to
 end against real meshtasticd (see firmware/tests/e2e/
-test_position_reaches_radar). `pulse`/`status`/`text` are implemented
-here for real (correct wire format, verified against the pinned image)
-and are exactly what a real multi-node mesh would carry, but delivering
-them to a *second*, already-connected observer needs either real
-Meshtastic hardware or genuine multi-instance radio simulation (the
-Meshtasticator project's interactive-sim tooling, not something stock
-`docker compose up meshtasticd` provides) — flagged as follow-up work,
-not silently assumed to work. See this slice's PR body for the full
-writeup and firmware/tests/e2e/test_scenarios.py's comments for how the
-e2e suite handles this honestly.
+test_position_reaches_radar) — slowly (up to about a minute, per finding
+#5), but reliably. `pulse`/`status`/`text` are implemented here for real
+(correct wire format, verified against the pinned image) and are exactly
+what a real multi-node mesh would carry, but delivering them to a
+*second*, already-connected observer needs either real Meshtastic
+hardware or genuine multi-instance radio simulation (the Meshtasticator
+project's interactive-sim tooling, not something stock `docker compose up
+meshtasticd` provides — and not a config flag away, either: see finding
+#4's cross-reference) — flagged as follow-up work, not silently assumed
+to work. See this slice's PR body and firmware/tests/e2e/
+test_scenarios.py's module docstring for the full writeup.
 
 ## Scenario API + CLI
 
@@ -193,14 +209,101 @@ def rename_node(iface: TCPInterface, name: str) -> None:
     iface.localNode.setOwner(long_name=name, short_name=short)
 
 
+def _local_node_position(iface: TCPInterface) -> dict | None:
+    """Reads back the connected daemon's OWN current position from its
+    NodeDB (`iface.nodes`, keyed by node id string) — used to poll for
+    convergence after a sendPosition() call instead of guessing how long
+    the daemon needs to apply it."""
+    my_num = iface.myInfo.my_node_num
+    for n in iface.nodes.values():
+        if n.get("num") == my_num:
+            return n.get("position")
+    return None
+
+
+# Review fix (PR #19 finding #5) — two real constraints of the pinned
+# meshtasticd image, found empirically (NOT documented anywhere obvious)
+# while replacing the original blind-sleep fix with a poll:
+#
+#  1. **Position updates via the client API are rate-limited.** Sending
+#     them faster than roughly once every few seconds gets most of them
+#     silently dropped — visible only in the daemon's own log as
+#     `WARN ... [ServerAPI] Rate limit portnum 3` (3 = POSITION_APP), NOT
+#     surfaced to the client in any way. A tight loop of sendPosition()
+#     calls (which is what this function used to do at high --update-hz)
+#     mostly does nothing.
+#  2. **Position precision is truncated to the channel's configured
+#     `position_precision`** (13 bits by default on this image's primary
+#     channel — logged as `Truncate phone position to channel precision
+#     13`), a real Meshtastic privacy feature (limits how precisely GPS
+#     position is shared over the mesh). The truncated readback does NOT
+#     equal the value sent — observed drift on the order of several
+#     hundredths of a degree (multi-km) — and that's larger than the
+#     distance between this file's own STAGE_OFFSETS_M entries. Waiting
+#     for the NodeDB to converge to an *exact* sent lat/lon is therefore
+#     not achievable against this image's default config; waiting for
+#     *a* real position to land (replacing the "no fix yet" empty state)
+#     is what MIN_POSITION_SEND_INTERVAL_S / _wait_for_a_position below
+#     actually check.
+#
+# Net effect on this file's design: `walk()` no longer sends one position
+# per loop iteration (nearly all would be rate-limited away, for no
+# benefit) — it throttles to at most one real send per
+# MIN_POSITION_SEND_INTERVAL_S, always including the very first and very
+# last (destination) point. For test_position_reaches_radar's purposes
+# (and any real dev-loop use) this is what actually reaches ffsim; the
+# smoother "one update per 1/update_hz seconds" motion --update-hz
+# implies is now a display/pacing hint for the printed narration, not a
+# promise every intermediate point is transmitted.
+MIN_POSITION_SEND_INTERVAL_S = 6.0
+
+
+def _wait_for_a_position(iface: TCPInterface, timeout: float = 45.0, interval: float = 0.5,
+                           stable_reads: int = 2) -> dict:
+    """Polls the daemon's own NodeDB entry (see _local_node_position)
+    until it reports SOME position (latitude/longitude both present),
+    stable for `stable_reads` consecutive polls, or raises TimeoutError
+    after `timeout` seconds. Returns the converged position dict.
+
+    Deliberately does NOT check the position against any particular
+    target lat/lon — see the MIN_POSITION_SEND_INTERVAL_S comment above
+    for why an exact match isn't achievable against this image's default
+    channel precision. `timeout` defaults generously (45s): convergence
+    from "no fix yet" to a real reported position was observed taking up
+    to ~30s in this repo's own dev session, well past what a short blind
+    sleep could have covered reliably either.
+    """
+    deadline = time.monotonic() + timeout
+    last_seen: dict | None = None
+    consecutive = 0
+    while time.monotonic() < deadline:
+        pos = _local_node_position(iface)
+        if pos is not None and pos.get("latitude") is not None and pos.get("longitude") is not None:
+            last_seen = pos
+            consecutive += 1
+            if consecutive >= stable_reads:
+                return pos
+        else:
+            consecutive = 0
+        time.sleep(interval)
+    raise TimeoutError(
+        f"meshtasticd's NodeDB never reported a position within {timeout}s "
+        f"(last observed NodeDB entry for the local node: {last_seen!r})"
+    )
+
+
 def walk(iface: TCPInterface, node: str, from_stage: str, to_stage: str, speed_mps: float,
           update_hz: float = 1.0) -> None:
-    """Sends a straight-line walk from `from_stage` to `to_stage` at
-    `speed_mps`, emitting one sendPosition() per 1/update_hz seconds —
-    "Dana walks 300 m NE at 1.2 m/s" as the task brief's one-liner
-    example puts it. Blocks until the walk completes. `node` is a display
-    label only (see top-of-module note #3 for why this doesn't call
-    setOwner())."""
+    """Walks a straight line from `from_stage` to `to_stage` at
+    `speed_mps` — "Dana walks 300 m NE at 1.2 m/s" as the task brief's
+    one-liner example puts it — narrating progress at roughly
+    1/update_hz intervals, but only actually calling sendPosition() at
+    most once every MIN_POSITION_SEND_INTERVAL_S (see that constant's
+    comment for why: meshtasticd rate-limits and precision-truncates
+    position updates from the client API). Always sends the destination
+    point and blocks until the daemon reports a real position before
+    returning. `node` is a display label only (see top-of-module note #3
+    for why this doesn't call setOwner())."""
     lat0, lon0 = stage_latlon(from_stage)
     lat1, lon1 = stage_latlon(to_stage)
 
@@ -214,33 +317,29 @@ def walk(iface: TCPInterface, node: str, from_stage: str, to_stage: str, speed_m
     e1, n1 = to_en(lat1, lon1)
     dist_m = math.hypot(e1 - e0, n1 - n0)
     duration_s = dist_m / speed_mps if speed_mps > 0 else 0.0
-    steps = max(1, int(duration_s * update_hz))
+    narration_steps = max(1, int(duration_s * update_hz))
 
     print(f"crew_sim: {node} walking {from_stage} -> {to_stage} "
-          f"({dist_m:.0f} m at {speed_mps:.2f} m/s, ~{duration_s:.0f}s, {steps} updates)")
+          f"({dist_m:.0f} m at {speed_mps:.2f} m/s, ~{duration_s:.0f}s)")
 
-    for i in range(steps + 1):
-        t = i / steps
+    last_sent_at = 0.0
+    for i in range(narration_steps + 1):
+        t = i / narration_steps
         e = e0 + (e1 - e0) * t
         n = n0 + (n1 - n0) * t
         lat = origin_lat + n / _M_PER_DEG_LAT
         lon = origin_lon + e / m_per_deg_lon
-        iface.sendPosition(latitude=lat, longitude=lon, altitude=0)
-        if i < steps:
+
+        is_last = (i == narration_steps)
+        now = time.monotonic()
+        if is_last or now - last_sent_at >= MIN_POSITION_SEND_INTERVAL_S:
+            iface.sendPosition(latitude=lat, longitude=lon, altitude=0)
+            last_sent_at = now
+
+        if not is_last:
             time.sleep(1.0 / update_hz)
 
-    # Resend the final (destination) position once more, with a settle
-    # delay before and after: a rapid burst of sendPosition() calls
-    # (this loop can fire several per second at high --update-hz) was
-    # observed, in this repo's own e2e test runs against real
-    # meshtasticd, to occasionally leave the daemon's NodeDB holding an
-    # *earlier* (even the very first/origin) position instead of the
-    # last one sent — some internal update/dedup timing on meshtasticd's
-    # side, not something crew_sim.py controls. A final, isolated resend
-    # well after the burst reliably lands as the last word.
-    time.sleep(0.5)
-    iface.sendPosition(latitude=lat1, longitude=lon1, altitude=0)
-    time.sleep(1.5)
+    _wait_for_a_position(iface)
     print(f"crew_sim: {node} arrived at {to_stage} ({lat1:.6f}, {lon1:.6f})")
 
 

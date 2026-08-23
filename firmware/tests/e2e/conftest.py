@@ -187,7 +187,14 @@ def crew_sim():
     firmware/tools/dev/crew_sim.py against the compose.yml meshtasticd
     (127.0.0.1:4403) and blocks until it exits. Raises on nonzero exit."""
 
-    def _run(args: list[str], timeout: float = 60.0) -> None:
+    def _run(args: list[str], timeout: float = 90.0) -> None:
+        # 90s default: crew_sim.py's `walk` can legitimately take up to
+        # ~45s just for _wait_for_a_position's own timeout (see that
+        # function's docstring — meshtasticd's position-update rate
+        # limiting and precision truncation, found empirically while
+        # fixing PR #19 finding #5, mean waiting for the daemon to
+        # actually report a position back can take tens of seconds even
+        # on a healthy run), plus the walk's own narration time.
         subprocess.run(
             [sys.executable, str(CREW_SIM), "--host", "127.0.0.1", "--port", str(MESHTASTICD_PORT)] + args,
             check=True,

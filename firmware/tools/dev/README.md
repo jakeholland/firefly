@@ -71,10 +71,19 @@ evidence, and exactly what does/doesn't work); the short version:
   same explanation, not a skip and not a deletion — the scenarios are
   real and worth having ready to go once the gap below is closed.
 - **Two separate meshtasticd containers do not hear each other by
-  default either** — verified directly (ran two instances on one docker
-  network, sent a broadcast from one, the other's connected client saw
-  nothing). Genuine multi-node RF simulation needs either real hardware
-  or the Meshtastic project's separate Meshtasticator interactive-sim
+  default either — and it's not a missing config flag, it's dead code.**
+  Verified directly (two instances on one docker network, broadcast from
+  one, nothing arrives at the other), then root-caused in PR #19's
+  independent review by trying the real documented feature for this
+  (`network.enabled_protocols = UDP_BROADCAST`, still no delivery) and
+  reading the firmware source: the native/Linux build's
+  `variants/native/portduino.ini` sets `HAS_UDP_MULTICAST=1` for header
+  compatibility, but its `build_src_filter` excludes `mesh/wifi/` and
+  `mesh/eth/` — the only places that start the UDP-multicast thread. The
+  macro is defined; the code that would act on it isn't compiled in. See
+  `firmware/tests/e2e/test_scenarios.py`'s module docstring for the full
+  writeup. Genuine multi-node RF simulation needs either real hardware or
+  the Meshtastic project's separate Meshtasticator interactive-sim
   tooling (a different project, not something `docker compose up`
   provides) — flagged as follow-up work, not attempted here.
 - **`crew_sim.py rename` (renaming the connected node's identity) reboots
@@ -84,14 +93,19 @@ evidence, and exactly what does/doesn't work); the short version:
   don't rename the node on every call — `--node NAME` is a display label
   for scenario narration, not an in-mesh identity change. Use `rename`
   deliberately, and expect to restart the container afterward.
-- **A rapid burst of `sendPosition()` calls can leave meshtasticd's
-  NodeDB holding an earlier position than the last one sent** — observed
-  intermittently while building the e2e tests. `crew_sim.py walk` works
-  around this with a final, isolated resend of the destination position
-  (see its source comment) rather than trusting the last update in a
-  fast burst; if you write a different call pattern (e.g. driving
-  `sendPosition()` directly instead of through `walk`) and see a stale
-  position, the same workaround applies.
+- **Position updates from the client API are rate-limited and
+  precision-truncated — both silent, neither obvious from the Python API
+  alone.** A tight loop of `sendPosition()` calls gets most of them
+  dropped (`WARN ... [ServerAPI] Rate limit portnum 3` in the daemon's
+  own logs only); an *accepted* update's readback doesn't exactly equal
+  what was sent (`Truncate phone position to channel precision 13` — a
+  real per-channel privacy feature). `crew_sim.py walk` accounts for
+  both: it throttles real sends to at most one per
+  `MIN_POSITION_SEND_INTERVAL_S` and waits for *a* position to land
+  rather than an exact match (see that module's docstring and
+  `_wait_for_a_position`). Net effect: `walk` is reliable but can take up
+  to about a minute — this is real daemon behavior, not something
+  crew_sim.py can make faster.
 
 ## Files
 

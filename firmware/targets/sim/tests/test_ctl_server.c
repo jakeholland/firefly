@@ -19,9 +19,11 @@
  * localhost connections.
  */
 #include <arpa/inet.h>
+#include <errno.h>
 #include <netinet/in.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <time.h>
 #include <unistd.h>
 
 #include "unity.h"
@@ -270,6 +272,100 @@ static void S13c_ctl_process_line_tap_missing_y_is_error(void)
     TEST_ASSERT_EQUAL_INT(0, s.tap_calls); /* guard path: handler must not fire */
 }
 
+/* --- Review fix (PR #19 finding #1): tap coordinate bounds. ---
+ * Reproduces (as a real unit test, not just a manual `nc` session) the
+ * UBSan-confirmed finding: {"cmd":"tap","x":1e300,"y":0} used to reach a
+ * bare (lv_coord_t)x cast in main.c's ff_loop_tap, undefined behavior per
+ * C11 6.3.1.4. Exact boundary per the task brief's "exact boundary
+ * tests": FF_CTL_TAP_COORD_MAX (32767) accepted, one past it rejected —
+ * same shape as the line-length boundary tests above. */
+static void S13c_ctl_process_line_tap_at_coord_max_accepted(void)
+{
+    spy_t s = {0};
+    ff_ctl_handlers_t h = spy_handlers(&s);
+    char resp[512];
+
+    ff_ctl_process_line("{\"cmd\":\"tap\",\"x\":32767,\"y\":-32768}", &h, resp, sizeof(resp));
+
+    TEST_ASSERT_TRUE(resp_ok(resp));
+    TEST_ASSERT_EQUAL_INT(1, s.tap_calls);
+    TEST_ASSERT_EQUAL_DOUBLE(32767.0, s.tap_x);
+    TEST_ASSERT_EQUAL_DOUBLE(-32768.0, s.tap_y);
+}
+
+static void S13c_ctl_process_line_tap_one_past_coord_max_is_error(void)
+{
+    spy_t s = {0};
+    ff_ctl_handlers_t h = spy_handlers(&s);
+    char resp[512];
+
+    ff_ctl_process_line("{\"cmd\":\"tap\",\"x\":32768,\"y\":0}", &h, resp, sizeof(resp));
+
+    TEST_ASSERT_FALSE(resp_ok(resp));
+    TEST_ASSERT_EQUAL_INT(0, s.tap_calls); /* rejected before the handler ever runs */
+}
+
+static void S13c_ctl_process_line_tap_one_past_coord_min_is_error(void)
+{
+    spy_t s = {0};
+    ff_ctl_handlers_t h = spy_handlers(&s);
+    char resp[512];
+
+    ff_ctl_process_line("{\"cmd\":\"tap\",\"x\":0,\"y\":-32769}", &h, resp, sizeof(resp));
+
+    TEST_ASSERT_FALSE(resp_ok(resp));
+    TEST_ASSERT_EQUAL_INT(0, s.tap_calls);
+}
+
+/* The exact finding from the review: 1e300 used to fire
+ * "runtime error: 1e+300 is outside the range of representable values of
+ * type 'int'" under -fsanitize=undefined. Pinned here so a regression
+ * (someone loosening the bounds check) is caught by ctest, not by a
+ * human re-running the sim under UBSan by hand. */
+static void S13c_ctl_process_line_tap_huge_value_is_error(void)
+{
+    spy_t s = {0};
+    ff_ctl_handlers_t h = spy_handlers(&s);
+    char resp[512];
+
+    ff_ctl_process_line("{\"cmd\":\"tap\",\"x\":1e300,\"y\":0}", &h, resp, sizeof(resp));
+
+    TEST_ASSERT_FALSE(resp_ok(resp));
+    TEST_ASSERT_EQUAL_INT(0, s.tap_calls);
+}
+
+static void S13c_ctl_process_line_tap_infinity_is_error(void)
+{
+    spy_t s = {0};
+    ff_ctl_handlers_t h = spy_handlers(&s);
+    char resp[512];
+
+    ff_ctl_process_line("{\"cmd\":\"tap\",\"x\":1e999,\"y\":0}", &h, resp, sizeof(resp)); /* strtod overflow -> +inf */
+
+    TEST_ASSERT_FALSE(resp_ok(resp));
+    TEST_ASSERT_EQUAL_INT(0, s.tap_calls);
+}
+
+/* JSON itself has no NaN literal, so this exercises the OTHER path to a
+ * non-finite value: ctl_num()'s "couldn't parse this token" sentinel
+ * (NAN, since S13 review fixup) rather than a client-supplied literal —
+ * e.g. a numeric field jsmn tokenized as a primitive but strtod can't
+ * parse (here: the primitive "null", handled distinctly elsewhere, but
+ * an unparseable bare-word primitive like "NaN" — not valid JSON, so
+ * this reaches ctl_num() as a JSMN_PRIMITIVE token strtod() still can't
+ * consume in this implementation's minimal parser). */
+static void S13c_ctl_process_line_tap_unparseable_number_is_error(void)
+{
+    spy_t s = {0};
+    ff_ctl_handlers_t h = spy_handlers(&s);
+    char resp[512];
+
+    ff_ctl_process_line("{\"cmd\":\"tap\",\"x\":truthy,\"y\":0}", &h, resp, sizeof(resp));
+
+    TEST_ASSERT_FALSE(resp_ok(resp));
+    TEST_ASSERT_EQUAL_INT(0, s.tap_calls);
+}
+
 static void S13c_ctl_process_line_swipe_left_and_right(void)
 {
     spy_t s = {0};
@@ -296,6 +392,13 @@ static void S13c_ctl_process_line_swipe_invalid_dir_is_error(void)
 
     TEST_ASSERT_FALSE(resp_ok(resp));
     TEST_ASSERT_EQUAL_INT(0, s.swipe_calls);
+    /* Regression pin: an earlier version of this error message had
+     * literal embedded quotes ("swipe dir must be \"left\" or
+     * \"right\"") that corrupted the JSON response, since ctl_err()
+     * doesn't escape its message argument — exact-match the whole
+     * response (not just "ok:false somewhere in there") so that class of
+     * bug can't creep back in unnoticed. */
+    TEST_ASSERT_EQUAL_STRING("{\"ok\":false,\"error\":\"swipe dir must be left or right\"}", resp);
 }
 
 static void S13c_ctl_process_line_clock_advance(void)
@@ -588,7 +691,7 @@ static int connect_loopback(uint16_t port)
 static void S13c_ctl_socket_binds_loopback_only(void)
 {
     ff_ctl_server_t srv;
-    TEST_ASSERT_EQUAL_INT(0, ff_ctl_open(&srv, 0)); /* port 0: OS picks an ephemeral port */
+    TEST_ASSERT_EQUAL_INT(0, ff_ctl_open(&srv, 0, 0)); /* port 0: OS picks an ephemeral port; idle timeout disabled */
 
     struct sockaddr_in addr;
     socklen_t len = sizeof(addr);
@@ -608,7 +711,7 @@ static void S13c_ctl_socket_poll_end_to_end(void)
     ff_ctl_handlers_t h = spy_handlers(&s);
 
     ff_ctl_server_t srv;
-    TEST_ASSERT_EQUAL_INT(0, ff_ctl_open(&srv, 0));
+    TEST_ASSERT_EQUAL_INT(0, ff_ctl_open(&srv, 0, 0)); /* idle timeout disabled */
     uint16_t port = ctl_bound_port(&srv);
 
     int client = connect_loopback(port);
@@ -636,13 +739,93 @@ static void S13c_ctl_socket_poll_end_to_end(void)
     ff_ctl_close(&srv);
 }
 
+/* --- Review fix (PR #19 finding #3): idle-connection eviction. ---
+ * A tiny idle_timeout_ms (real time, not mocked — this module has no
+ * injected clock, see ctl_server.c's ctl_now_ms) keeps this test fast
+ * (well under a second) while still exercising the real code path: a
+ * connected-but-silent client is dropped once idle_timeout_ms elapses,
+ * and the listener accepts a replacement right after. */
+static void S13c_ctl_socket_idle_client_is_evicted_and_replaced(void)
+{
+    spy_t s = {0};
+    s.state_json_value = "{\"fixture\":\"after-evict\"}";
+    ff_ctl_handlers_t h = spy_handlers(&s);
+
+    ff_ctl_server_t srv;
+    TEST_ASSERT_EQUAL_INT(0, ff_ctl_open(&srv, 0, 100)); /* 100ms idle timeout */
+    uint16_t port = ctl_bound_port(&srv);
+
+    int silent_client = connect_loopback(port);
+    /* Never sends anything. Poll for well past idle_timeout_ms, giving
+     * ff_ctl_poll every chance to evict it. */
+    for (int i = 0; i < 400; i++) {
+        (void)ff_ctl_poll(&srv, &h);
+        struct timespec ts = {.tv_sec = 0, .tv_nsec = 1000000}; /* 1ms */
+        nanosleep(&ts, NULL);
+    }
+
+    /* The evicted client's socket should observe EOF (the far end closed
+     * it) rather than staying silently open forever. */
+    char buf[8];
+    ssize_t n = recv(silent_client, buf, sizeof(buf), MSG_DONTWAIT);
+    TEST_ASSERT_EQUAL_INT(0, (int)n); /* 0 = orderly close (EOF), not "no data yet" (-1/EAGAIN) */
+    close(silent_client);
+
+    /* A second, well-behaved client must now be able to connect and get
+     * served — proving the slot was actually freed, not just the old
+     * connection torn down with the harness stuck. */
+    int client2 = connect_loopback(port);
+    char const *req = "{\"cmd\":\"state\"}\n";
+    TEST_ASSERT_EQUAL_INT((int)strlen(req), (int)send(client2, req, strlen(req), 0));
+
+    char got[256] = {0};
+    for (int i = 0; i < 200 && got[0] == '\0'; i++) {
+        (void)ff_ctl_poll(&srv, &h);
+        ssize_t r = recv(client2, got, sizeof(got) - 1, MSG_DONTWAIT);
+        if (r > 0) got[r] = '\0';
+    }
+    TEST_ASSERT_NOT_NULL(strstr(got, "\"ok\":true"));
+    TEST_ASSERT_NOT_NULL(strstr(got, "after-evict"));
+
+    close(client2);
+    ff_ctl_close(&srv);
+}
+
+/* idle_timeout_ms == 0 means "disabled" — a silent client must NOT be
+ * evicted (this is what every other test in this file relies on, since
+ * they all pass 0; pinned explicitly here as its own guard-path test). */
+static void S13c_ctl_socket_idle_timeout_zero_disables_eviction(void)
+{
+    spy_t s = {0};
+    ff_ctl_handlers_t h = spy_handlers(&s);
+
+    ff_ctl_server_t srv;
+    TEST_ASSERT_EQUAL_INT(0, ff_ctl_open(&srv, 0, 0)); /* disabled */
+    uint16_t port = ctl_bound_port(&srv);
+
+    int silent_client = connect_loopback(port);
+    for (int i = 0; i < 150; i++) { /* well past what would be a 100ms timeout */
+        (void)ff_ctl_poll(&srv, &h);
+        struct timespec ts = {.tv_sec = 0, .tv_nsec = 1000000};
+        nanosleep(&ts, NULL);
+    }
+
+    char buf[8];
+    ssize_t n = recv(silent_client, buf, sizeof(buf), MSG_DONTWAIT);
+    /* Still open: -1/EAGAIN ("no data, but not closed"), not 0 (EOF). */
+    TEST_ASSERT_TRUE(n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK));
+
+    close(silent_client);
+    ff_ctl_close(&srv);
+}
+
 static void S13c_ctl_socket_poll_quit_returns_true(void)
 {
     spy_t s = {0};
     ff_ctl_handlers_t h = spy_handlers(&s);
 
     ff_ctl_server_t srv;
-    TEST_ASSERT_EQUAL_INT(0, ff_ctl_open(&srv, 0));
+    TEST_ASSERT_EQUAL_INT(0, ff_ctl_open(&srv, 0, 0)); /* idle timeout disabled */
     uint16_t port = ctl_bound_port(&srv);
     int client = connect_loopback(port);
 
@@ -674,6 +857,12 @@ int main(void)
 
     RUN_TEST(S13c_ctl_process_line_tap);
     RUN_TEST(S13c_ctl_process_line_tap_missing_y_is_error);
+    RUN_TEST(S13c_ctl_process_line_tap_at_coord_max_accepted);
+    RUN_TEST(S13c_ctl_process_line_tap_one_past_coord_max_is_error);
+    RUN_TEST(S13c_ctl_process_line_tap_one_past_coord_min_is_error);
+    RUN_TEST(S13c_ctl_process_line_tap_huge_value_is_error);
+    RUN_TEST(S13c_ctl_process_line_tap_infinity_is_error);
+    RUN_TEST(S13c_ctl_process_line_tap_unparseable_number_is_error);
     RUN_TEST(S13c_ctl_process_line_swipe_left_and_right);
     RUN_TEST(S13c_ctl_process_line_swipe_invalid_dir_is_error);
     RUN_TEST(S13c_ctl_process_line_clock_advance);
@@ -698,6 +887,8 @@ int main(void)
 
     RUN_TEST(S13c_ctl_socket_binds_loopback_only);
     RUN_TEST(S13c_ctl_socket_poll_end_to_end);
+    RUN_TEST(S13c_ctl_socket_idle_client_is_evicted_and_replaced);
+    RUN_TEST(S13c_ctl_socket_idle_timeout_zero_disables_eviction);
     RUN_TEST(S13c_ctl_socket_poll_quit_returns_true);
 
     return UNITY_END();

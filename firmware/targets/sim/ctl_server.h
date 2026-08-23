@@ -44,6 +44,32 @@ extern "C" {
  * (`{"ok":true,"state":...}`) — sized with headroom above that. */
 #define FF_CTL_MAX_RESP (10u * 1024u)
 
+/* tap's x/y bounds (review fix, PR #19 finding #1): a bare `(lv_coord_t)x`
+ * cast of a client-supplied double is undefined behavior per C11 6.3.1.4
+ * whenever x is outside the target integer type's representable range —
+ * reproduced with `{"cmd":"tap","x":1e300,"y":0}` under
+ * -fsanitize=undefined. INT16 is generous headroom over any real screen
+ * coordinate (the sim window is 456x456) while staying comfortably inside
+ * every integer width `lv_coord_t` could plausibly be (int16_t or
+ * int32_t, depending on LVGL build config) — this module intentionally
+ * doesn't know the sim's actual window size (see the handler vtable's
+ * design note: zero LVGL/PNG/state-struct dependency), so the bound here
+ * is a generic, honest "safe to narrow" guarantee, not a claim about
+ * on-screen validity (the real screen has the final say on whether a
+ * point makes sense). */
+#define FF_CTL_TAP_COORD_MIN (-32768.0)
+#define FF_CTL_TAP_COORD_MAX (32767.0)
+
+/* Idle-connection timeout (review fix, PR #19 finding #3): a client that
+ * connects and never completes a command holds the single client slot
+ * forever otherwise (listen backlog is 1 — this is a single-client dev
+ * tool, not a multiplexed server), starving any well-behaved client
+ * (e.g. the e2e/nightly harness) that tries to connect next, with no
+ * recovery path. 0 disables the timeout (used by tests that don't want
+ * it in play); ff_run_ctl_loop (main.c) uses
+ * FF_CTL_DEFAULT_IDLE_TIMEOUT_MS. */
+#define FF_CTL_DEFAULT_IDLE_TIMEOUT_MS (30u * 1000u)
+
 /** Handler vtable: what a "tap"/"swipe"/"clock"/"state"/"screenshot"/
  * "quit" command actually *does*, injected by the caller (main.c) so this
  * module has zero LVGL/PNG/state-struct dependencies of its own — same
@@ -53,9 +79,13 @@ extern "C" {
 typedef struct {
     void *user;
 
-    /** Inject a tap/click at (x, y) (screen pixels; not range-checked
-     * here — LVGL's own indev handling is the authority on out-of-bounds
-     * coordinates). */
+    /** Inject a tap/click at (x, y) (screen pixels). `ff_ctl_process_line`
+     * has already rejected non-finite values and anything outside
+     * [FF_CTL_TAP_COORD_MIN, FF_CTL_TAP_COORD_MAX] before this is called —
+     * safe to narrow to a smaller integer coordinate type without further
+     * range checks here — but on-screen validity (is this point actually
+     * within the sim's window) is still this callback's call; LVGL's own
+     * indev handling is the authority on that. */
     void (*tap)(void *user, double x, double y);
 
     /** Inject a swipe gesture. `dir` is exactly "left" or "right"
@@ -153,16 +183,27 @@ typedef struct {
     int listen_fd; /* -1 = not open */
     int client_fd; /* -1 = no client currently connected */
     ff_ctl_linebuf_t lb;
+    uint32_t idle_timeout_ms;        /* 0 = disabled; see FF_CTL_DEFAULT_IDLE_TIMEOUT_MS */
+    uint32_t client_last_activity_ms; /* only meaningful while client_fd >= 0;
+                                          set on accept, refreshed on every
+                                          FULLY-PROCESSED command line (not on
+                                          raw bytes or an oversized-line event —
+                                          see ff_ctl_poll's doc comment) */
 } ff_ctl_server_t;
 
 /**
  * ff_ctl_open — opens a listening socket bound to 127.0.0.1:`port` (IPv4
  * loopback only — "localhost only" per spec: never binds INADDR_ANY),
- * nonblocking, `SO_REUSEADDR`. Returns 0 on success, negative on failure
- * (socket/bind/listen error). `*srv` is fully initialized either way
- * (listen_fd == -1 on failure).
+ * nonblocking, `SO_REUSEADDR`. `idle_timeout_ms` is the "no complete
+ * command received" duration (measured from accept, or from the last
+ * complete command) after which ff_ctl_poll drops a connected-but-silent
+ * client so the listener can accept a replacement — pass 0 to disable
+ * (real callers should use FF_CTL_DEFAULT_IDLE_TIMEOUT_MS; tests that
+ * don't want this in play can pass 0). Returns 0 on success, negative on
+ * failure (socket/bind/listen error). `*srv` is fully initialized either
+ * way (listen_fd == -1 on failure).
  */
-int ff_ctl_open(ff_ctl_server_t *srv, uint16_t port);
+int ff_ctl_open(ff_ctl_server_t *srv, uint16_t port, uint32_t idle_timeout_ms);
 
 /** Closes the listening socket and any connected client. Safe to call on
  * an already-closed/never-opened `*srv`. */
@@ -178,7 +219,11 @@ void ff_ctl_close(ff_ctl_server_t *srv);
  *
  * A client that disconnects (EOF/reset) is dropped silently; ff_ctl_poll
  * goes back to accepting a new one on the next call — no special
- * handling needed by the caller.
+ * handling needed by the caller. Same for a client that goes silent for
+ * longer than `srv->idle_timeout_ms` without completing a command (see
+ * ff_ctl_open) — dropped, ready to accept a replacement on the very next
+ * call. Without this, one connect-and-never-send client would starve the
+ * socket forever (listen backlog is 1).
  *
  * Returns true the moment a `"quit"` command has been fully processed
  * (response already sent) — the caller should stop calling ff_ctl_poll

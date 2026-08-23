@@ -1,22 +1,33 @@
 name: e2e
 
 # S14 slice d — docs/specs/S14-testing-ci.md: "Runs nightly + on `e2e`
-# label (docker too slow for every PR)". Deliberately NOT a PR-gate
-# workflow (no `pull_request` trigger) — see docs/specs/S13-sim-target.md
-# slice d and the S13c/d PR body for the documented, evidence-based
-# limitations of two of the three scenarios (test_pulse_reaches_feed /
-# test_text_roundtrip are xfail(strict=False), not skipped — see
+# label (docker too slow for every PR)". Deliberately NOT an unconditional
+# PR gate — the `pull_request` trigger below only ever RUNS the job when
+# the label applied is specifically "e2e" (the job-level `if:` gates on
+# that), so opening/updating/labeling a PR with some other label never
+# triggers this; a maintainer opts a specific PR in on demand by applying
+# the "e2e" label. See docs/specs/S13-sim-target.md slice d and PR #19's
+# body/review for the documented, evidence-based limitations of two of
+# the three scenarios (test_pulse_reaches_feed / test_text_roundtrip are
+# xfail(strict=False), not skipped — see
 # firmware/tests/e2e/test_scenarios.py's module docstring).
 on:
   schedule:
     # 09:00 UTC, daily.
     - cron: "0 9 * * *"
   workflow_dispatch: {}
+  pull_request:
+    types: [labeled]
 
 jobs:
   e2e:
     name: e2e
     runs-on: ubuntu-latest
+    # Only actually run for the pull_request trigger when "e2e" was the
+    # label just applied — GitHub fires `labeled` for every label, not
+    # just this one, and this job is not meant to run on e.g. "bug" or
+    # "needs-review" being added.
+    if: github.event_name != 'pull_request' || github.event.label.name == 'e2e'
     steps:
       - uses: actions/checkout@v4
 

@@ -27,16 +27,56 @@ at all, and doing so force-disconnects ffsim's own connection (#1), and
 the packet isn't queued for ffsim to see once it reconnects (#2), a
 PULSE/text message crew_sim.py sends cannot reach an already-connected
 (or later-reconnecting) ffsim through a single stock meshtasticd
-instance — full stop, not a timing flake. Genuine cross-client delivery
-needs either real Meshtastic hardware or true multi-instance radio
-simulation (the Meshtastic project's separate Meshtasticator tooling;
-verified in this same session that two independent meshtasticd
-containers do NOT hear each other by default), which is out of scope
-here and flagged as follow-up work in this slice's PR body.
+instance — full stop, not a timing flake.
 
-test_position_reaches_radar has no such problem (position persists) and
-is a real, currently-passing e2e test — verified end to end against the
-same pinned image in this session, not just written and hoped-for.
+## Why "two meshtasticd containers as a virtual mesh" doesn't work either
+## (root-caused in PR #19's independent review — recorded here so nobody
+## has to rediscover it)
+
+The obvious next idea — run two meshtasticd containers on one docker
+network instead of one — was tried and independently confirmed dead,
+*and* root-caused all the way down, not just observed:
+
+  - Two containers with distinct identities (each needs its own `-h
+    <hwid>` — otherwise both get the same hardcoded fallback node number,
+    0x4e1c43b, and are indistinguishable) do NOT hear each other by
+    default: a broadcast from node A never reaches node B's NodeDB.
+  - Meshtastic does have a real, documented feature for exactly this —
+    `network.enabled_protocols = UDP_BROADCAST` (protobuf
+    `Config.NetworkConfig.ProtocolFlags`, multicast 224.0.0.69:4403,
+    meshtastic/firmware#5779). Setting it explicitly on both nodes via
+    the Python API (confirmed persisted through the required reboot)
+    still didn't produce cross-node delivery — no UDP/multicast activity
+    in either container's logs at all.
+  - Root cause, from the firmware source itself: the native/Linux
+    `[env:native]` build (what the meshtasticd Docker image actually is)
+    sets `-DHAS_UDP_MULTICAST=1` in `variants/native/portduino.ini`'s
+    `build_flags` purely for header-compatibility reasons, but that same
+    file's `build_src_filter` explicitly EXCLUDES `mesh/wifi/` and
+    `mesh/eth/` — the only places that start the UDP-multicast thread
+    (`WiFiAPClient.cpp`'s `onNetworkConnected()` callback). The macro is
+    defined; the code that would act on it is compiled out of every
+    meshtasticd build. UDP-multicast mesh linking is effectively
+    ESP32/networked-hardware-only — it is DEAD CONFIGURATION on the
+    native Linux binary this project pins, not a missing docker-compose
+    flag or a config mistake on our part.
+
+Genuine cross-client delivery therefore needs either real Meshtastic
+hardware or the separate Meshtasticator project's discrete-event/
+interactive simulator (which runs firmware instances and shuttles
+LoRa-layer packets between them in Python — a materially bigger lift
+than a compose-network tweak: different tooling, different node-driving
+API, not a drop-in for crew_sim.py/ctl_client.py's current TCP-client
+model). Real follow-up work, correctly out of scope for this PR.
+
+test_position_reaches_radar has no such problem (position persists in
+meshtasticd's own NodeDB across a disconnect/reconnect) and is a real,
+currently-passing e2e test — verified end to end against the same pinned
+image repeatedly, not just written and hoped-for. It IS a genuinely slow
+test (crew_sim.py's `walk` can legitimately take up to a minute — see
+that module's MIN_POSITION_SEND_INTERVAL_S / _wait_for_a_position
+docstrings for the empirically-found reason: meshtasticd rate-limits and
+precision-truncates position updates from the client API).
 """
 from __future__ import annotations
 
@@ -69,7 +109,9 @@ def test_position_reaches_radar(run_ffsim, crew_sim):
     # that transient without weakening what's actually being checked.
     state = fp.ctl.wait_for(
         lambda s: s["radar"]["mode"] not in ("nosel", "nofix") and s["radar"]["dist_str"] not in ("", "0 m"),
-        timeout=40.0,
+        timeout=60.0,  # generous: meshtasticd's own position-update timing (see crew_sim.py's
+                       # MIN_POSITION_SEND_INTERVAL_S / _wait_for_a_position docstrings) is
+                       # itself slow enough that this needs real margin, not just ffsim's side.
     )
 
     radar = state["radar"]

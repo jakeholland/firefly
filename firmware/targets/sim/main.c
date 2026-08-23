@@ -24,7 +24,7 @@
  *                                  face-selection and load path as
  *                                  headless).
  *   ffsim --headless --ctl PORT [--fixture FILE.json] [--mock-clock]
- *         [--connect HOST:PORT] [--pack FILE.json]
+ *         [--connect HOST:PORT] [--pack FILE.json] [--ctl-out DIR]
  *                                  S13 slice c: opens a persistent,
  *                                  headless control-socket-driven session
  *                                  instead of rendering once and exiting.
@@ -33,7 +33,14 @@
  *                                  protocol. Runs until a `{"cmd":"quit"}`
  *                                  is received. --ctl currently requires
  *                                  --headless (see this file's "ctl loop"
- *                                  section for why).
+ *                                  section for why). --ctl-out DIR
+ *                                  confines the ctl socket's "screenshot"
+ *                                  command's writes under DIR (created if
+ *                                  missing; defaults to --screenshot's
+ *                                  DIR if that was also given, else a
+ *                                  fresh temp directory) — see
+ *                                  ctl_out_path.h and this file's
+ *                                  ff_loop_screenshot.
  *
  * --mock-clock freezes the LVGL tick source for the one-shot headless and
  * window paths (see ff_mock_tick_cb below); ff_run_headless_once()
@@ -58,11 +65,14 @@
  * screens arrive with S06+.
  */
 
+#include <errno.h>
+#include <limits.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -72,12 +82,17 @@
 
 #include "ff_version.h"
 
+#include "ctl_out_path.h"
 #include "ctl_server.h"
 #include "fixture.h"
 #include "fixture_view.h"
 #include "live.h"
 #include "scr_nav.h"
 #include "screenshot.h"
+
+#ifndef PATH_MAX
+#define PATH_MAX 4096 /* POSIX guarantees this exists, but fall back just in case */
+#endif
 
 #define FF_SIM_WINDOW_W 456
 #define FF_SIM_WINDOW_H 456
@@ -252,6 +267,11 @@ typedef struct {
 
     bool     live_connected;
     ff_live_t live;
+
+    /* Review fixup (PR #19 finding #2): the ctl socket's "screenshot"
+     * path is confined under this ALREADY-CANONICALIZED (realpath()'d at
+     * startup — see ff_run_ctl_loop) root — see ctl_out_path.h. */
+    char ctl_out_dir_real[PATH_MAX];
 } ff_loop_ctx_t;
 
 /* Wall-clock milliseconds (POSIX monotonic clock) — used whenever
@@ -291,6 +311,14 @@ static void ff_loop_pointer_read_cb(lv_indev_t *indev, lv_indev_data_t *data)
 static void ff_loop_tap(void *user, double x, double y)
 {
     ff_loop_ctx_t *ctx = (ff_loop_ctx_t *)user;
+    /* Safe to narrow unconditionally: ctl_server.c's tap handler already
+     * rejected non-finite values and anything outside
+     * [FF_CTL_TAP_COORD_MIN, FF_CTL_TAP_COORD_MAX] (-32768..32767) before
+     * ever calling this — that used to NOT be true, and an out-of-range
+     * double cast to lv_coord_t here was reproducible undefined behavior
+     * (PR #19 review finding #1, confirmed under -fsanitize=undefined
+     * with {"cmd":"tap","x":1e300,"y":0}). See ctl_server.h's tap
+     * handler doc comment for the contract this now relies on. */
     ctx->pointer_point.x = (lv_coord_t)x;
     ctx->pointer_point.y = (lv_coord_t)y;
     ctx->pointer_state = LV_INDEV_STATE_PRESSED;
@@ -342,8 +370,21 @@ static int ff_loop_state_json(void *user, char *buf, size_t buf_sz)
 static bool ff_loop_screenshot(void *user, char const *path, char const **err)
 {
     ff_loop_ctx_t *ctx = (ff_loop_ctx_t *)user;
+
+    /* Review fixup (PR #19 finding #2): `path` is untrusted ctl-socket
+     * input, requested a RELATIVE name — confine it under
+     * ctx->ctl_out_dir_real (rejects absolute paths, "..", and symlink
+     * escapes; see ctl_out_path.h) before it ever reaches a filesystem
+     * write. This used to go straight to ff_screenshot_write() with only
+     * a length check — a reproducible arbitrary-file-write via e.g.
+     * {"cmd":"screenshot","path":"/tmp/anything.png"}. */
+    char resolved[PATH_MAX];
+    if (!ff_ctl_out_resolve_path(path, ctx->ctl_out_dir_real, resolved, sizeof(resolved), err)) {
+        return false; /* *err already set by ff_ctl_out_resolve_path */
+    }
+
     lv_refr_now(ctx->disp);
-    if (ff_screenshot_write(path, ctx->xrgb_buf, ctx->w, ctx->h) != 0) {
+    if (ff_screenshot_write(resolved, ctx->xrgb_buf, ctx->w, ctx->h) != 0) {
         *err = "screenshot write failed";
         return false;
     }
@@ -381,8 +422,47 @@ static bool ff_parse_host_port(char const *hostport, char *host_out, size_t host
     return true;
 }
 
+/* Review fixup (PR #19 finding #2): determines and canonicalizes the
+ * root the ctl socket's "screenshot" command confines writes to.
+ * Priority: --ctl-out DIR (created if missing) > --screenshot DIR (must
+ * already exist — same "caller creates it" contract --screenshot always
+ * had) > a fresh mkdtemp() temp directory (created here). Writes the
+ * canonicalized (realpath()'d) root into `out` (capacity `out_sz`).
+ * Returns true on success; on failure prints a diagnostic to stderr
+ * itself (this only ever runs once, at startup, so an inline message is
+ * simpler than threading an error string back through main()). */
+static bool ff_loop_setup_ctl_out_dir(char const *ctl_out_arg, char const *screenshot_dir, char *out, size_t out_sz)
+{
+    char root[PATH_MAX];
+
+    if (ctl_out_arg != NULL) {
+        if (mkdir(ctl_out_arg, 0700) != 0 && errno != EEXIST) {
+            fprintf(stderr, "ffsim: --ctl-out %s: %s\n", ctl_out_arg, strerror(errno));
+            return false;
+        }
+        (void)snprintf(root, sizeof(root), "%s", ctl_out_arg);
+    } else if (screenshot_dir != NULL) {
+        (void)snprintf(root, sizeof(root), "%s", screenshot_dir);
+    } else {
+        char const *tmp = getenv("TMPDIR");
+        if (tmp == NULL || tmp[0] == '\0') tmp = "/tmp";
+        int n = snprintf(root, sizeof(root), "%s/ffsim-ctl-XXXXXX", tmp);
+        if (n < 0 || (size_t)n >= sizeof(root) || mkdtemp(root) == NULL) {
+            fprintf(stderr, "ffsim: failed to create a temp dir for --ctl screenshots under %s\n", tmp);
+            return false;
+        }
+    }
+
+    if (!ff_ctl_out_resolve_root(root, out, out_sz)) {
+        fprintf(stderr, "ffsim: --ctl-out directory %s does not exist or could not be resolved\n", root);
+        return false;
+    }
+    printf("ffsim: ctl screenshot writes confined to %s\n", out);
+    return true;
+}
+
 static int ff_run_ctl_loop(uint16_t ctl_port, const char *fixture_path, bool mock_clock, const char *connect_hostport,
-                            const char *pack_path)
+                            const char *pack_path, const char *ctl_out_arg, const char *screenshot_dir)
 {
     lv_init();
     lv_tick_set_cb(ff_loop_tick_cb);
@@ -461,8 +541,15 @@ static int ff_run_ctl_loop(uint16_t ctl_port, const char *fixture_path, bool moc
         printf("ffsim: connected to %s:%u\n", host, (unsigned)port);
     }
 
+    if (!ff_loop_setup_ctl_out_dir(ctl_out_arg, screenshot_dir, ctx.ctl_out_dir_real, sizeof(ctx.ctl_out_dir_real))) {
+        if (ctx.live_connected) ff_live_close(&ctx.live);
+        free(ctx.xrgb_buf);
+        lv_deinit();
+        return 1;
+    }
+
     ff_ctl_server_t ctl_srv;
-    if (ff_ctl_open(&ctl_srv, ctl_port) != 0) {
+    if (ff_ctl_open(&ctl_srv, ctl_port, FF_CTL_DEFAULT_IDLE_TIMEOUT_MS) != 0) {
         fprintf(stderr, "ffsim: failed to open ctl socket on 127.0.0.1:%u\n", (unsigned)ctl_port);
         if (ctx.live_connected) ff_live_close(&ctx.live);
         free(ctx.xrgb_buf);
@@ -507,6 +594,7 @@ int main(int argc, char **argv)
     const char *ctl_port_str = NULL;
     const char *connect_hostport = NULL;
     const char *pack_path = NULL;
+    const char *ctl_out_arg = NULL;
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--headless") == 0) {
@@ -519,6 +607,8 @@ int main(int argc, char **argv)
             mock_clock = true;
         } else if (strcmp(argv[i], "--ctl") == 0 && i + 1 < argc) {
             ctl_port_str = argv[++i];
+        } else if (strcmp(argv[i], "--ctl-out") == 0 && i + 1 < argc) {
+            ctl_out_arg = argv[++i];
         } else if (strcmp(argv[i], "--connect") == 0 && i + 1 < argc) {
             connect_hostport = argv[++i];
         } else if (strcmp(argv[i], "--pack") == 0 && i + 1 < argc) {
@@ -539,7 +629,8 @@ int main(int argc, char **argv)
             fprintf(stderr, "ffsim: --ctl expects a port number, got \"%s\"\n", ctl_port_str);
             return 1;
         }
-        return ff_run_ctl_loop((uint16_t)port, fixture_path, mock_clock, connect_hostport, pack_path);
+        return ff_run_ctl_loop((uint16_t)port, fixture_path, mock_clock, connect_hostport, pack_path, ctl_out_arg,
+                                screenshot_dir);
     }
 
     if (headless) {

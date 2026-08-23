@@ -56,6 +56,29 @@ if(FF_BUILD_TESTS)
     add_test(NAME test_ctl_server COMMAND test_ctl_server)
 endif()
 
+# S13c (review fixup, PR #19 finding #2)
+# ---------------------------------------------------------------------------
+# ff_ctl_out_path: confines the ctl socket's `screenshot` path to a single
+# configured output root (--ctl-out DIR). Separate STATIC library from
+# ff-sim-ctl above (same "test links the exact object" reasoning) — this
+# one needs realpath()/lstat(), ctl_server.c deliberately doesn't.
+# ---------------------------------------------------------------------------
+add_library(ff-sim-ctlout STATIC
+    ctl_out_path.c
+)
+target_include_directories(ff-sim-ctlout PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+ff_apply_warnings(ff-sim-ctlout)
+
+if(FF_BUILD_TESTS)
+    add_executable(test_ctl_out_path
+        tests/test_ctl_out_path.c
+    )
+    target_link_libraries(test_ctl_out_path PRIVATE ff-sim-ctlout unity)
+    ff_apply_warnings(test_ctl_out_path)
+
+    add_test(NAME test_ctl_out_path COMMAND test_ctl_out_path)
+endif()
+
 # S13c
 # ---------------------------------------------------------------------------
 # ff_live: minimal mc_client -> ff_app_state_t wiring for `ffsim --connect`
@@ -117,6 +140,7 @@ target_link_libraries(ffsim PRIVATE
     # "ignoring duplicate libraries" for it).
     ff-sim-fixture  # S13b — fixture.h loader (fixture.c above)
     ff-sim-ctl      # S13c — ctl_server.h/.c (ctl_server.c above)
+    ff-sim-ctlout   # S13c — ctl_out_path.h/.c: screenshot path confinement (review fixup)
     ff-sim-live     # S13c — live.h/.c: --connect / --pack wiring (live.c above)
     ff-app-ui       # S06b — scr_nav.h/scr_radar.h (app/CMakeLists.txt)
     lvgl::lvgl
