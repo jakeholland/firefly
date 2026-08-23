@@ -84,6 +84,8 @@ def main():
     ap.add_argument("--out", default="/tmp/firefly_clip")
     ap.add_argument("--ffsim", default="build/ffsim")
     ap.add_argument("--list", action="store_true")
+    ap.add_argument("--formats", default="tiktok",
+                    help="comma-separated: tiktok (9:16, default), gif, square")
     a = ap.parse_args()
     if a.list:
         print("\n".join(f"{k}: {v.__doc__}" for k, v in SCENES.items()))
@@ -112,16 +114,25 @@ def main():
     print(f"rendered {len(frames)} frames ({len(frames)/FPS:.1f}s)")
 
     glob = str(png / f"{a.scene}_*.png")
-    runs = [
-        (["-vf", "scale=912:912:flags=lanczos,pad=1080:1920:84:504:color=0x050507",
-          "-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "18",
-          "-movflags", "+faststart"], f"{a.scene}_9x16.mp4"),
-        (["-vf", "scale=456:456:flags=lanczos,split[x][y];[x]palettegen=stats_mode=diff[p];"
-          "[y][p]paletteuse=dither=bayer:bayer_scale=3", "-loop", "0"], f"{a.scene}.gif"),
-        (["-vf", "scale=912:912:flags=lanczos", "-c:v", "libx264",
-          "-pix_fmt", "yuv420p", "-crf", "18"], f"{a.scene}_square.mp4"),
-    ]
-    for args, name in runs:
+    # TikTok/Reels: 1080x1920. The puck is placed ABOVE centre (y=380) so it clears
+    # the platform's bottom caption/username overlay, which eats roughly the lower
+    # quarter of the frame — a vertically centred puck gets its distance readout
+    # covered by the caption on a real phone.
+    formats = {
+        "tiktok": (["-vf", "scale=912:912:flags=lanczos,pad=1080:1920:84:380:color=0x050507",
+                    "-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "18",
+                    "-movflags", "+faststart"], f"{a.scene}_9x16.mp4"),
+        "gif": (["-vf", "scale=456:456:flags=lanczos,split[x][y];[x]palettegen=stats_mode=diff[p];"
+                 "[y][p]paletteuse=dither=bayer:bayer_scale=3", "-loop", "0"], f"{a.scene}.gif"),
+        "square": (["-vf", "scale=912:912:flags=lanczos", "-c:v", "libx264",
+                    "-pix_fmt", "yuv420p", "-crf", "18"], f"{a.scene}_square.mp4"),
+    }
+    want = [f.strip() for f in a.formats.split(",") if f.strip()]
+    unknown = [f for f in want if f not in formats]
+    if unknown:
+        sys.exit(f"unknown format(s): {', '.join(unknown)}; choose from {', '.join(formats)}")
+    for key in want:
+        args, name = formats[key]
         subprocess.run(["ffmpeg", "-y", "-framerate", str(FPS), "-pattern_type", "glob",
                         "-i", glob, *args, str(out / name), "-loglevel", "error"], check=True)
         print(f"  {out / name}")
