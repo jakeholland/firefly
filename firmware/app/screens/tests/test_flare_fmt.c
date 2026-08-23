@@ -101,6 +101,24 @@ static void S10_ACn_compass8_over_360_wraps(void)
     TEST_ASSERT_EQUAL_STRING("NE", ff_flare_fmt_compass8(405.0f)); /* 405 - 360 = 45 */
 }
 
+/* PR #20 independent code review (LOW finding): the boundary-rolls-forward
+ * and negative-wraparound cases were each covered separately, but never
+ * their INTERSECTION — a negative bearing that lands exactly ON a
+ * boundary once normalized. fmodf keeps the dividend's sign (C99), so
+ * -22.5 does NOT fold straight to 337.5 the way a naive "always positive"
+ * mental model might suggest; ff_flare_fmt_compass8 explicitly re-adds
+ * 360 for negative results before classifying (see its source) — this
+ * pins that fold-up actually happens, not just that the final answer
+ * looks right by coincidence. */
+static void S10_ACn_compass8_negative_bearing_on_boundary_rolls_forward(void)
+{
+    /* -22.5 normalizes to 337.5, which this codebase's "boundary rolls
+     * forward" convention places in N (not NW). */
+    TEST_ASSERT_EQUAL_STRING("N", ff_flare_fmt_compass8(-22.5f));
+    /* -337.5 normalizes to 22.5, which rolls forward into NE (not N). */
+    TEST_ASSERT_EQUAL_STRING("NE", ff_flare_fmt_compass8(-337.5f));
+}
+
 /* ------------------------------------------------------------------- */
 /* ff_flare_fmt_countdown                                               */
 /* ------------------------------------------------------------------- */
@@ -141,6 +159,37 @@ static void S10_ACn_countdown_default_send_duration(void)
     TEST_ASSERT_EQUAL_STRING("5:00", buf);
 }
 
+/* ------------------------------------------------------------------- */
+/* ff_flare_fmt_go_switches_lock (PR #20 UX review, BLOCKING finding #3) */
+/* ------------------------------------------------------------------- */
+
+static void S10_ACn_go_switches_lock_different_names_true(void)
+{
+    TEST_ASSERT_TRUE(ff_flare_fmt_go_switches_lock("DANA", "KEV"));
+}
+
+static void S10_ACn_go_switches_lock_same_name_false(void)
+{
+    /* Re-confirming a lock on the SAME sender already flaring costs
+     * nothing — nothing to disclose. */
+    TEST_ASSERT_FALSE(ff_flare_fmt_go_switches_lock("DANA", "DANA"));
+}
+
+static void S10_ACn_go_switches_lock_not_locked_false(void)
+{
+    TEST_ASSERT_FALSE(ff_flare_fmt_go_switches_lock("", "KEV"));
+    TEST_ASSERT_FALSE(ff_flare_fmt_go_switches_lock(NULL, "KEV"));
+}
+
+static void S10_ACn_go_switches_lock_no_takeover_name_false(void)
+{
+    /* No honest sender name to compare against — say nothing rather than
+     * guess (mirrors ff_flare_fmt_headline's own "don't fabricate"
+     * stance for an empty name). */
+    TEST_ASSERT_FALSE(ff_flare_fmt_go_switches_lock("DANA", ""));
+    TEST_ASSERT_FALSE(ff_flare_fmt_go_switches_lock("DANA", NULL));
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -154,12 +203,18 @@ int main(void)
     RUN_TEST(S10_ACn_compass8_boundary_rolls_forward);
     RUN_TEST(S10_ACn_compass8_negative_bearing_wraps);
     RUN_TEST(S10_ACn_compass8_over_360_wraps);
+    RUN_TEST(S10_ACn_compass8_negative_bearing_on_boundary_rolls_forward);
 
     RUN_TEST(S10_ACn_countdown_negative_is_na);
     RUN_TEST(S10_ACn_countdown_zero_is_a_real_value_not_na);
     RUN_TEST(S10_ACn_countdown_truncates_seconds_toward_zero);
     RUN_TEST(S10_ACn_countdown_minute_boundary);
     RUN_TEST(S10_ACn_countdown_default_send_duration);
+
+    RUN_TEST(S10_ACn_go_switches_lock_different_names_true);
+    RUN_TEST(S10_ACn_go_switches_lock_same_name_false);
+    RUN_TEST(S10_ACn_go_switches_lock_not_locked_false);
+    RUN_TEST(S10_ACn_go_switches_lock_no_takeover_name_false);
 
     return UNITY_END();
 }

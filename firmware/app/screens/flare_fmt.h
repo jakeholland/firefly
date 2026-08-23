@@ -17,6 +17,7 @@
 #ifndef FF_FLARE_FMT_H
 #define FF_FLARE_FMT_H
 
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -63,6 +64,27 @@ char const *ff_flare_fmt_compass8(float bearing_deg);
  * value, not an unknown one. A NULL `out` or zero `out_sz` is a no-op.
  */
 void ff_flare_fmt_countdown(char *out, size_t out_sz, int32_t expires_in_ms);
+
+/**
+ * ff_flare_fmt_go_switches_lock — true iff pressing GO on a takeover from
+ * `takeover_from_name` would actually change an existing lock, given the
+ * currently-locked name `locked_from_name` (empty/NULL: not locked).
+ * Pulled out as a pure, unit-testable predicate (PR #20 UX review,
+ * BLOCKING finding #3 — "GO must disclose what it costs") rather than an
+ * inline `if` in scr_flare.c, per CLAUDE.md ("if you're writing an `if`
+ * about domain behavior inside a screen file, it belongs in core" — this
+ * is presentation-adjacent, not core-owned domain state, but the same
+ * "make the decision a named, testable thing" discipline applies).
+ * False whenever there is nothing to disclose: `locked_from_name` is
+ * NULL/empty (not locked at all), OR the locked name and the takeover's
+ * sender name are the SAME string (re-confirming an existing lock on the
+ * same person costs nothing — nothing to disclose). Name comparison is a
+ * plain `strcmp` (both fields are always NUL-terminated fixed-budget
+ * strings — `ff_app_state.h`'s `char[FF_APP_NAME_LEN]` arrays) — this
+ * module has no `ff_app_state.h` dependency itself, so the caller passes
+ * plain `char const *` rather than the struct.
+ */
+bool ff_flare_fmt_go_switches_lock(char const *locked_from_name, char const *takeover_from_name);
 
 #ifdef __cplusplus
 }

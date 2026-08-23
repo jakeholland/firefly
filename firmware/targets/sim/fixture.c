@@ -369,6 +369,13 @@ static void fx_parse_flare(fx_ctx_t const *c, int obj_i, ff_app_flare_t *fl)
     if (fx_obj_get(c, obj_i, "takeover_active", &t)) fl->takeover_active = fx_bool(c, t, false);
     if (fx_obj_get(c, obj_i, "takeover_from_name", &t))
         fx_copy_str(c, t, fl->takeover_from_name, sizeof(fl->takeover_from_name));
+    /* takeover_bearing_valid defaults to false (unknown) — see
+     * ff_app_state.h's doc comment on this field, same "prove you meant
+     * this" convention as ff_radar_view_t's arrow_valid. Read BEFORE
+     * takeover_bearing_deg so a fixture author who sets the degree value
+     * but forgets the validity flag gets an honest "unknown, ignore the
+     * degrees" render rather than a silently-fabricated compass point. */
+    if (fx_obj_get(c, obj_i, "takeover_bearing_valid", &t)) fl->takeover_bearing_valid = fx_bool(c, t, false);
     if (fx_obj_get(c, obj_i, "takeover_bearing_deg", &t)) fl->takeover_bearing_deg = (float)fx_num(c, t, 0.0);
     if (fx_obj_get(c, obj_i, "takeover_dist_str", &t))
         fx_copy_str(c, t, fl->takeover_dist_str, sizeof(fl->takeover_dist_str));

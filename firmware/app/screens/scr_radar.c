@@ -528,6 +528,14 @@ static void radar_flare_stub_cb(lv_event_t *e)
     ff_flare_t *flare_rt = (ff_flare_t *)lv_event_get_user_data(e);
     if (flare_rt != NULL) {
         (void)ff_flare_send_begin(flare_rt, 0, lv_tick_get());
+        /* Diagnostic-only stdout, same rationale as scr_flare.c's
+         * GO/DISMISS/CANCEL callbacks (PR #20 code review, MEDIUM
+         * finding): this window has no live redraw (issue #17), so a
+         * click that mutates the real ff_flare_t produces no visible
+         * on-screen change — this is the minimum honest confirmation
+         * that the press was received and forwarded correctly. */
+        printf("ffsim: FLARE pressed -> ff_flare_send_begin() (sending now %s)\n",
+               flare_rt->sending ? "true" : "false");
     }
 }
 

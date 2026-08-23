@@ -259,6 +259,39 @@ static int ff_run_window(const char *fixture_path, bool mock_clock)
             fprintf(stderr, "ffsim: failed to load fixture %s (error %d)\n", fixture_path, (int)fr);
             return 1;
         }
+
+        /* PR #20 independent code review, MEDIUM finding: this window is
+         * built ONCE from a static `ff_app_state_t` snapshot (`state`)
+         * that never changes after load, while `&flare_rt` above is a
+         * SEPARATE, real engine the GO/DISMISS/CANCEL/FLARE callbacks
+         * genuinely mutate. Nothing re-renders `state` from `flare_rt`
+         * (that would need a live crew/name/bearing lookup this
+         * fixture-driven sim target has no wiring for at all — out of
+         * scope here, and the underlying "nothing re-renders on state
+         * change" gap is already tracked as issue #17). The reviewer's
+         * concrete repro: load a takeover fixture in window mode and
+         * GO/DISMISS silently do nothing ON SCREEN — no visible
+         * feedback, no way to tell the click even registered, and (for a
+         * full-screen takeover specifically) no way to leave the screen
+         * at all short of closing the window. Per the reviewer's own
+         * fallback guidance ("if a full fix is out of scope, ensure the
+         * window-mode path... logs/labels clearly that it's a static
+         * preview" — do not ship a silent trap), this prints an
+         * unmissable, impossible-to-miss note up front for exactly the
+         * fixtures where that matters (a pending takeover has no other
+         * way to dismiss itself), rather than leaving a user to discover
+         * the limitation by confused clicking. */
+        if (state.flare.takeover_active) {
+            fprintf(stderr,
+                    "ffsim: NOTE — this is a STATIC single-frame preview. GO/DISMISS "
+                    "genuinely mutate the live ff_flare_t (check stdout/a debugger), "
+                    "but this window will NOT redraw to reflect it (tracked: issue "
+                    "#17 — no live crew/name/bearing wiring exists in this sim target "
+                    "to re-derive the display snapshot from). This takeover screen has "
+                    "NO on-screen way to leave until that lands — close the window or "
+                    "Ctrl+C to exit.\n");
+        }
+
         ff_build_face_screen(&state, &flare_rt);
     } else {
         ff_build_boot_screen();

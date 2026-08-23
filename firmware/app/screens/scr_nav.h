@@ -37,7 +37,11 @@ extern "C" {
  *    (scr_flare.h's ff_scr_flare_build_lock_chip);
  *  - the puck itself (survives a face swipe) gets the pulsing-amber
  *    sender overlay when `state->flare.sending`
- *    (scr_flare.h's ff_scr_flare_build_sender_overlay).
+ *    (scr_flare.h's ff_scr_flare_build_sender_overlay), and the base
+ *    face's tileview is dimmed to LV_OPA_30 first (PR #20 UX review
+ *    finding #4: the overlay must OWN the headline slot while sending,
+ *    structurally, for whichever face happens to be showing — not just
+ *    a NOSEL-specific fix).
  * The full-screen RECEIVE takeover (`state->flare.takeover_active`) is
  * NOT built here — per spec it "interrupts any face", so the caller
  * (targets/sim/main.c) builds `ff_scr_flare_build_takeover` INSTEAD of

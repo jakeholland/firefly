@@ -169,10 +169,25 @@ typedef struct {
      * by design") — they're the app-layer's own bearing/distance-to-sender
      * read for this screen, the same "already-computed display string,
      * not a raw fact for the renderer to re-derive" convention
-     * `ff_radar_view_t.dist_str` uses. */
+     * `ff_radar_view_t.dist_str` uses.
+     *
+     * `takeover_bearing_valid` (PR #20 code review, LOW finding): a
+     * bearing genuinely can be unknown (no position fix on either end —
+     * the exact case `ff_radar_view_t.arrow_valid` exists to represent
+     * on the sibling Radar face), and unlike `takeover_dist_str` (which
+     * has an honest empty-string "unknown" of its own, see
+     * `ff_scr_flare_build_takeover`'s "-- m" fallback), a bare `float`
+     * has no such value — `0.0` is indistinguishable from "genuinely due
+     * north." Mirrors `arrow_valid`'s name and meaning exactly: false
+     * means `takeover_bearing_deg` must NOT be rendered as a real
+     * reading (CLAUDE.md: "never fake... positions"). Defaults to false
+     * (unknown) both via zero-init and the fixture loader's explicit
+     * default, matching every other "prove you meant this" field in this
+     * struct family. */
     bool     takeover_active;
     char     takeover_from_name[FF_APP_NAME_LEN];
-    float    takeover_bearing_deg;            /* [0, 360), compass bearing to sender */
+    bool     takeover_bearing_valid;          /* false: bearing unknown, do not render takeover_bearing_deg */
+    float    takeover_bearing_deg;            /* [0, 360), compass bearing to sender; meaningful iff *_valid */
     char     takeover_dist_str[FF_APP_STR_SHORT];
     int32_t  takeover_expires_in_ms;          /* -1: n/a */
 

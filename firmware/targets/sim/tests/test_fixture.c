@@ -271,7 +271,8 @@ static void flare_section_parses_every_field(void)
     char const *json = "{\"flare\": {"
                         "  \"sending\": true, \"send_expires_in_ms\": 120000,"
                         "  \"takeover_active\": true, \"takeover_from_name\": \"KEV\","
-                        "  \"takeover_bearing_deg\": 90.0, \"takeover_dist_str\": \"40 m\","
+                        "  \"takeover_bearing_valid\": true, \"takeover_bearing_deg\": 90.0,"
+                        "  \"takeover_dist_str\": \"40 m\","
                         "  \"takeover_expires_in_ms\": 4200,"
                         "  \"locked\": true, \"locked_from_name\": \"DANA\", \"locked_expires_in_ms\": 9000"
                         "}}";
@@ -282,6 +283,7 @@ static void flare_section_parses_every_field(void)
 
     TEST_ASSERT_TRUE(s.flare.takeover_active);
     TEST_ASSERT_EQUAL_STRING("KEV", s.flare.takeover_from_name);
+    TEST_ASSERT_TRUE(s.flare.takeover_bearing_valid);
     TEST_ASSERT_EQUAL_FLOAT(90.0f, s.flare.takeover_bearing_deg);
     TEST_ASSERT_EQUAL_STRING("40 m", s.flare.takeover_dist_str);
     TEST_ASSERT_EQUAL_INT32(4200, s.flare.takeover_expires_in_ms);
@@ -289,6 +291,22 @@ static void flare_section_parses_every_field(void)
     TEST_ASSERT_TRUE(s.flare.locked);
     TEST_ASSERT_EQUAL_STRING("DANA", s.flare.locked_from_name);
     TEST_ASSERT_EQUAL_INT32(9000, s.flare.locked_expires_in_ms);
+}
+
+/* PR #20 code review (LOW finding): `takeover_bearing_valid` defaults to
+ * false ("unknown") both when the whole `flare` section is absent AND
+ * when the takeover group is present but this one key is omitted —
+ * providing `takeover_bearing_deg` without the validity flag must NOT be
+ * read as "valid" (a fixture author forgetting the flag should get an
+ * honest "unknown" render, not a silently-fabricated compass point). */
+static void flare_takeover_bearing_valid_defaults_false(void)
+{
+    ff_app_state_t s;
+    char const *json = "{\"flare\": {\"takeover_active\": true, \"takeover_bearing_deg\": 90.0}}";
+    TEST_ASSERT_EQUAL_INT(FF_FIXTURE_OK, ff_fixture_load_json(json, strlen(json), &s));
+
+    TEST_ASSERT_FALSE(s.flare.takeover_bearing_valid);
+    TEST_ASSERT_EQUAL_FLOAT(90.0f, s.flare.takeover_bearing_deg); /* parsed regardless — just not honestly usable */
 }
 
 /* Each group's own "n/a" sentinel is independent — omitting only the
@@ -492,6 +510,7 @@ int main(void)
     RUN_TEST(signals_section_parses_every_field);
     RUN_TEST(flare_section_parses_every_field);
     RUN_TEST(flare_omitted_group_defaults_independently);
+    RUN_TEST(flare_takeover_bearing_valid_defaults_false);
     RUN_TEST(settings_section_parses_every_field);
 
     RUN_TEST(radar_dots_over_cap_fails_loud);

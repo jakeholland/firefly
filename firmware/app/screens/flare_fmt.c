@@ -5,6 +5,7 @@
 
 #include <math.h>
 #include <stdio.h>
+#include <string.h>
 
 void ff_flare_fmt_headline(char *out, size_t out_sz, char const *name)
 {
@@ -55,4 +56,21 @@ void ff_flare_fmt_countdown(char *out, size_t out_sz, int32_t expires_in_ms)
     int32_t mins = total_s / 60;
     int32_t secs = total_s % 60;
     snprintf(out, out_sz, "%d:%02d", (int)mins, (int)secs);
+}
+
+bool ff_flare_fmt_go_switches_lock(char const *locked_from_name, char const *takeover_from_name)
+{
+    if (locked_from_name == NULL || locked_from_name[0] == '\0') {
+        return false; /* not locked at all — nothing for GO to switch away from */
+    }
+    if (takeover_from_name == NULL || takeover_from_name[0] == '\0') {
+        return false; /* no honest sender name to compare against — say nothing rather than guess */
+    }
+    /* strcmp, not strncmp: both fields are already NUL-terminated,
+     * fixed-budget display strings (ff_app_state.h's FF_APP_NAME_LEN) —
+     * a plain strcmp compares exactly the same bytes a length-bounded
+     * strncmp would here, with no risk of either argument lacking a
+     * terminator (both come from ff_app_flare_t's char[FF_APP_NAME_LEN]
+     * arrays, always NUL-terminated by the fixture loader / caller). */
+    return strcmp(locked_from_name, takeover_from_name) != 0;
 }

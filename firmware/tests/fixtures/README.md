@@ -138,7 +138,8 @@ can be present in the same fixture (I can be sending my own flare, have a
 "flare": {
   "sending": true, "send_expires_in_ms": 120000,
   "takeover_active": true, "takeover_from_name": "KEV",
-  "takeover_bearing_deg": 90.0, "takeover_dist_str": "40 m",
+  "takeover_bearing_valid": true, "takeover_bearing_deg": 90.0,
+  "takeover_dist_str": "40 m",
   "takeover_expires_in_ms": 4200,
   "locked": true, "locked_from_name": "DANA", "locked_expires_in_ms": 9000
 }
@@ -150,7 +151,8 @@ can be present in the same fixture (I can be sending my own flare, have a
 | `send_expires_in_ms` | integer | `-1` ("n/a") |
 | `takeover_active` | bool | `false` |
 | `takeover_from_name` | string (≤15 chars) | `""` |
-| `takeover_bearing_deg` | number, `[0, 360)` | `0` |
+| `takeover_bearing_valid` | bool | `false` ("unknown" — see below) |
+| `takeover_bearing_deg` | number, `[0, 360)` | `0`; meaningful only if `takeover_bearing_valid` |
 | `takeover_dist_str` | string (≤11 chars) | `""` |
 | `takeover_expires_in_ms` | integer | `-1` ("n/a") |
 | `locked` | bool | `false` |
@@ -165,7 +167,24 @@ omitted/`null` while the other two groups are present (see
 `ff_flare_t` (that module deliberately has zero `ff_crew`/`ff_radar`
 dependency) — they're the app layer's own already-computed
 bearing/distance-to-sender read for the takeover screen, same convention
-as `radar.dist_str` above.
+as `radar.dist_str` above. Similarly, `takeover_from_name`/
+`locked_from_name` carry only a display name, never the underlying mesh
+node id core's `ff_flare_t` actually keys on (`takeover_node_id`/
+`locked_node_id`) — two crew members sharing a display name are
+indistinguishable in this flattened snapshot, which is fine for what it's
+for (pixels), but the one place a real lock DECISION gets made
+(`ff_scr_flare_selection_locked`) always consults the live `ff_flare_t`
+via `ff_flare_locked_node()` directly, never this struct.
+
+`takeover_bearing_valid` (PR #20 code review, LOW finding) exists because
+a bearing genuinely can be unknown (no position fix on either end) and
+`takeover_bearing_deg` alone has no way to say so — `0.0` is
+indistinguishable from "really due north." Defaults to `false`
+independently of whether `takeover_bearing_deg` itself is present (see
+`test_fixture.c`'s `flare_takeover_bearing_valid_defaults_false` —
+providing the degree value without the flag still renders "bearing
+unknown", never a fabricated compass point), same "prove you meant this"
+convention `radar.arrow_valid` already uses.
 
 ## `settings` (S11)
 
@@ -205,13 +224,18 @@ and a worst-case crew-ring layout).
 | `radar_nosel.json` | `nosel` | `""` | `""` | no paired crew member at all — empty-crew state, `mesh_ok: false` for variety |
 | `radar_never.json` | `lost` (folded — see below) | `""` | `""` | selected member "JAMIE" is paired but has never sent a fix; `age_str[0] == '\0'` is what `scr_radar.c` keys off to show "NO FIX YET" instead of a "LAST SEEN" chip — NOT distinguishable from a genuinely-old fix by `mode` alone (both are `RADAR_LOST`; see `radar_lost.json` above for the other side of that same `mode`) |
 
-Three S10 slice b fixtures exist alongside the radar set, one per
-`ff_scr_flare_*` builder: `flare_takeover.json` (`flare.takeover_active`
-— the full-screen receive takeover, which per spec interrupts whatever
-`face`/`radar` content is also present in the fixture, exercised here
-deliberately by pairing it with a live `radar` section that never
-actually renders), `flaring_self.json` (`flare.sending` — the pulsing
-sender overlay on top of an otherwise-NOSEL radar tile), and
+Four S10 slice b fixtures exist alongside the radar set, one per
+`ff_scr_flare_*` builder plus one for the takeover/lock interaction PR #20
+UX review flagged as unrepresented: `flare_takeover.json`
+(`flare.takeover_active` — the full-screen receive takeover, which per
+spec interrupts whatever `face`/`radar` content is also present in the
+fixture, exercised here deliberately by pairing it with a live `radar`
+section that never actually renders), `flare_takeover_locked.json` (same
+takeover, but with `flare.locked` ALSO set to a *different* node than
+`takeover_from_name` — exercises the GO-discloses-the-lock-cost chip;
+see `ff_scr_flare_build_takeover`'s doc comment), `flaring_self.json`
+(`flare.sending` — the pulsing sender overlay on top of an otherwise-NOSEL
+radar tile, whose own headline is dimmed while sending), and
 `radar_flare_locked.json` (`flare.locked` on an otherwise-ordinary LIVE
 radar render — the lock chip).
 

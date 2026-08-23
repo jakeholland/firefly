@@ -98,3 +98,23 @@ if(UNIX)
     target_link_libraries(ff-app-ui PRIVATE m)
 endif()
 ff_apply_warnings(ff-app-ui)
+
+# S10b (continued) — headless LVGL INTERACTION tests for the flare UI's
+# button bindings (PR #20 independent code review, HIGH finding: goldens
+# never fire a click, so nothing proved GO calls ff_flare_go and not
+# ff_flare_dismiss_takeover, or vice versa — exactly the class of
+# regression Amendment 3 exists to prevent). Declared here, after
+# ff-app-ui, since it needs the real screen builders (scr_flare.c/
+# scr_radar.c) linked in — see test_scr_flare.c's header comment for the
+# reusable "build against a real ff_flare_t, locate the button, synthesize
+# a click, assert on the CORE struct" pattern future faces' input tests
+# should follow.
+if(FF_BUILD_TESTS)
+    add_executable(test_scr_flare
+        screens/tests/test_scr_flare.c
+    )
+    target_link_libraries(test_scr_flare PRIVATE ff-app-ui unity)
+    ff_apply_warnings(test_scr_flare)
+
+    add_test(NAME test_scr_flare COMMAND test_scr_flare)
+endif()
