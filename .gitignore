@@ -14,3 +14,6 @@ firmware/out/
 # on every failing run; only the committed tests/golden/*.png goldens
 # themselves are checked in).
 firmware/tests/golden/_diff_out/
+# S14d: Python scratch dirs from running firmware/tests/e2e/ locally.
+__pycache__/
+.pytest_cache/

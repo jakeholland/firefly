@@ -1,0 +1,50 @@
+# firmware/tools/dev/compose.yml — S13 slice d: the dockerized meshtasticd
+# stand-in for the comms brain, for the live dev loop and firmware/tests/e2e/.
+#
+# Pinned image tag (not `latest`, per the task brief): the daily-* tags on
+# Docker Hub are multi-arch but float (rebuilt continuously), which fails
+# the "reproducible dev/CI environment" goal this file exists for. The
+# `GHA-<version>.<commit>-<os>-<arch>` tags are the immutable per-build
+# artifacts meshtastic/meshtasticd actually publishes — this pins one of
+# those instead.
+#
+# **Verification note (see the PR body's "what was actually executed"
+# section, and PR #19's independent review — which reran this file too):**
+# this WAS brought up and exercised end to end with real Docker (colima on
+# this dev machine, and confirmed separately in review) — repeatedly,
+# across the dev loop, the e2e suite, and the two-node-mesh investigation.
+# "No radio hardware attached" is confirmed live in the container's own
+# boot log: `No 'config.yaml' found, running simulated.` / `Use SIMULATED
+# radio!` — meshtasticd's genuine behavior with no device passthrough and
+# no radio preset copied into its config.d, not an assumption.
+#
+# Usage: see firmware/tools/dev/README.md.
+
+services:
+  meshtasticd:
+    image: meshtastic/meshtasticd:GHA-2.6.1.499ea56-debian-linux_amd64
+    # Apple Silicon (arm64) dev machines: override with an arm64 build of
+    # the same version, e.g.
+    #   MESHTASTICD_IMAGE=meshtastic/meshtasticd:GHA-2.6.1.<commit>-debian-linux_arm64 \
+    #     docker compose -f tools/dev/compose.yml up
+    # (exact arm64 commit-hash tag not independently confirmed here — see
+    # the note above; Docker Hub's tag list is the source of truth:
+    # https://hub.docker.com/r/meshtastic/meshtasticd/tags)
+    container_name: ffsim-meshtasticd
+    ports:
+      # Meshtastic client TCP API — same port ffsim's mc_transport_tcp.c
+      # (and crew_sim.py, via the `meshtastic` pip package) connect to.
+      # Bound to loopback only (127.0.0.1:4403), not all interfaces —
+      # review fix (PR #19 finding #7): Docker binds "4403:4403" to
+      # 0.0.0.0 by default, which would expose an open, unauthenticated
+      # mesh-node control port on the LAN whenever `docker compose up`
+      # runs on a machine that's on a shared network. Consistent with the
+      # ctl socket's own loopback-only stance (see ctl_server.c).
+      - "127.0.0.1:4403:4403"
+    # No USB/SPI device is passed through on purpose: with no LoRa radio
+    # attached, meshtasticd comes up as a client-API-only node with no
+    # real mesh link — exactly the "simulated/no-radio node" the S13 spec
+    # asks for. Position/text/pulse traffic in the dev loop and e2e tests
+    # is injected entirely by crew_sim.py talking to this same client API,
+    # not by any real RF link.
+    restart: unless-stopped

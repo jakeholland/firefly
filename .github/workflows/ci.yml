@@ -67,3 +67,48 @@ jobs:
           name: ffsim-screenshots
           path: firmware/out/*.png
           if-no-files-found: warn
+
+  # S14 slice c (partial) — docs/specs/S14-testing-ci.md: "sim/unit builds
+  # compile with ASan+UBSan in CI". A separate build dir/job (not folded
+  # into build-test) so a sanitizer finding is clearly attributed and a
+  # sanitizer-only failure never blocks on/duplicates the plain build's
+  # own diagnostics. Verified locally (this slice's PR body has the full
+  # writeup) by actually running this exact configure/build/ctest
+  # sequence in an ubuntu:22.04 container before committing it — not
+  # just written and assumed to work.
+  sanitizers:
+    name: sanitizers
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install SDL2
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libsdl2-dev
+
+      - name: Cache CMake FetchContent deps
+        uses: actions/cache@v4
+        with:
+          path: firmware/build-asan/_deps
+          key: ${{ runner.os }}-asan-fetchcontent-${{ hashFiles('firmware/CMakeLists.txt') }}
+
+      - name: Configure (ASan + UBSan)
+        working-directory: firmware
+        run: |
+          cmake -B build-asan -DFF_TARGET=sim \
+            -DCMAKE_C_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer -g" \
+            -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined"
+
+      - name: Build
+        working-directory: firmware
+        run: cmake --build build-asan --parallel
+
+      - name: Test
+        working-directory: firmware
+        env:
+          # UBSan: fail loud on any finding rather than just printing a
+          # diagnostic and continuing. ASan's default (abort on error) is
+          # already the behavior we want.
+          UBSAN_OPTIONS: halt_on_error=1
+        run: ctest --test-dir build-asan --output-on-failure
