@@ -1,0 +1,22 @@
+{
+  "fixture": "radar_lost",
+  "face": "radar",
+  "radar": {
+    "mode": "lost",
+    "arrow_deg": 200.0,
+    "arrow_valid": true,
+    "name": "DANA",
+    "dist_str": "1.1 km",
+    "age_str": "42 MIN",
+    "trend": 0,
+    "clock_str": "10:12",
+    "batt_pct": 33,
+    "mesh_ok": true,
+    "dots": [
+      {"ring_deg": 42.0, "initial": "D", "color_idx": 0, "stale": true},
+      {"ring_deg": 128.0, "initial": "R", "color_idx": 1, "stale": false},
+      {"ring_deg": 205.0, "initial": "M", "color_idx": 2, "stale": true},
+      {"ring_deg": 301.0, "initial": "J", "color_idx": 3, "stale": false}
+    ]
+  }
+}

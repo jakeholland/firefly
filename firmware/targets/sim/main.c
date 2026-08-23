@@ -25,11 +25,23 @@
  *                                  headless).
  *
  * --mock-clock freezes the LVGL tick source (see ff_mock_tick_cb below).
- * Headless rendering is already deterministic without it — a single
- * lv_refr_now() call with no timers run and no animations started never
- * reads the tick at all — but it's accepted (and honored) in headless
- * mode too so callers (tests/run_goldens.sh) can pass it explicitly
- * rather than relying on that being true forever as a coincidence.
+ * Headless rendering is deterministic WITHOUT the flag too, but not for
+ * the reason an earlier version of this comment claimed: lv_refr_now()
+ * does NOT skip the tick — it unconditionally calls lv_anim_refr_now()
+ * internally, which reads the tick and runs one animation step (verified
+ * against lvgl/src/core/lv_refr.c; this matters now that S06's CLOSE-mode
+ * radar face starts a real lv_anim_t for its pulsing rings, see
+ * app/screens/scr_radar.c). Determinism instead comes from
+ * ff_run_headless() below UNCONDITIONALLY calling
+ * lv_tick_set_cb(ff_mock_tick_cb) regardless of whether --mock-clock was
+ * passed — the flag is accepted and honored in headless mode purely so
+ * callers (tests/run_goldens.sh) can pass it explicitly rather than
+ * depending on undocumented default behavior, not because it changes
+ * anything here. Getting this reasoning right matters: an "obviously
+ * doesn't touch the tick" argument is exactly the kind of thing a future
+ * refactor could use to justify removing the unconditional freeze,
+ * which would silently reintroduce animation-phase flakiness in
+ * tests/run_goldens.sh.
  *
  * The boot screen and the fixture debug face are both scaffolding: real
  * screens arrive with S06+.

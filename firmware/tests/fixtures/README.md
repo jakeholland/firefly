@@ -145,26 +145,30 @@ and when the key itself is omitted or `null` within it.
 
 ## Current fixtures
 
-Six radar fixtures exist as of S06 (compute in slice a, `scr_radar.c` +
+Eight radar fixtures exist as of S06 (compute in slice a, `scr_radar.c` +
 `scr_nav.c` rendering in slice b/c/d): `radar_live.json`, `radar_stale.json`,
 `radar_close.json` (S13/S14 slice b, goldens regenerated in S06 PR B once
 the real radar face replaced the S13 debug placeholder — see this repo's
-PR history for the before/after), plus three added in S06 PR B —
-`radar_nofix.json`, `radar_nosel.json`, and `radar_never.json`. The first
-four cover S06 AC4's exact named fixtures (`radar_live`/`stale`/`close`/
-`nofix`); `radar_nosel` and `radar_never` are additional coverage beyond
-AC4's literal list, added because they're real, distinct render states
-`scr_radar.c` has to handle honestly (empty-crew, and a paired member who
-has never sent a fix at all — see `ff_radar.h`'s "RENDERER CONTRACT").
+PR history for the before/after), `radar_nofix.json`, `radar_nosel.json`,
+and `radar_never.json` (added in S06 PR B's first pass), plus
+`radar_lost.json` and `radar_close_collision.json` (added in PR B's UX
+review follow-up). The first four cover S06 AC4's exact named fixtures
+(`radar_live`/`stale`/`close`/`nofix`); the rest are additional coverage
+beyond AC4's literal list, added because they're real, distinct render
+states `scr_radar.c` has to handle honestly (empty-crew, a paired member
+who has never sent a fix at all, a paired member with a genuinely old fix,
+and a worst-case crew-ring layout).
 
 | Fixture | mode | dist_str | age_str | notes |
 |---|---|---|---|---|
 | `radar_live.json` | `live` | `320 m` | `8 SEC` | fresh fix, arrow valid |
 | `radar_stale.json` | `stale` | `320 m` (last known) | `4 MIN` | no new fix since; distance is honestly stale, not re-measured (CLAUDE.md: "never fake freshness, positions, or times") |
+| `radar_lost.json` | `lost` (real fix) | `1.1 km` (rendered `~1.1 km`) | `42 MIN` | genuinely old fix — PR #16 UX review's top finding: this state had no fixture/golden at all in the first pass of this PR, so nobody had ever seen it rendered. Must read as a *different screen* from STALE, not a dimmer one (see `scr_radar.c`'s `radar_render_lost`) |
 | `radar_close.json` | `close` | `15 m` | `3 SEC` | close-range predicate tripped; `arrow_valid: false` per S06 ("false in CLOSE/NOFIX/NOSEL") |
+| `radar_close_collision.json` | `close` | `15 m` | `3 SEC` | same scenario as `radar_close.json`, but with crew-ring dots deliberately placed at worst-case bearings (straight at the status bar, straight at the FLARE button, straight at the trend chip) to exercise `scr_radar.c`'s chrome keep-out policy — regressing the collision-avoidance logic will show up here even if it doesn't show up in the plain `radar_close` golden |
 | `radar_nofix.json` | `nofix` | `""` (unknown — my position invalid) | `6 MIN` (the *selected member's* last-known age is still honestly known even though mine isn't) | arrow hidden, "NO FIX - RADIO ONLY" |
 | `radar_nosel.json` | `nosel` | `""` | `""` | no paired crew member at all — empty-crew state, `mesh_ok: false` for variety |
-| `radar_never.json` | `lost` (folded — see below) | `""` | `""` | selected member "JAMIE" is paired but has never sent a fix; `age_str[0] == '\0'` is what `scr_radar.c` keys off to show "NO FIX YET" instead of a "LAST SEEN" chip — NOT distinguishable from a genuinely-old fix by `mode` alone (both are `RADAR_LOST`) |
+| `radar_never.json` | `lost` (folded — see below) | `""` | `""` | selected member "JAMIE" is paired but has never sent a fix; `age_str[0] == '\0'` is what `scr_radar.c` keys off to show "NO FIX YET" instead of a "LAST SEEN" chip — NOT distinguishable from a genuinely-old fix by `mode` alone (both are `RADAR_LOST`; see `radar_lost.json` above for the other side of that same `mode`) |
 
 **Provenance note:** the specific numbers (DANA, 320 m, 8 s / 4 min / 15 m,
 and PR B's additions) came from the task briefs that commissioned these
