@@ -2,7 +2,10 @@
  * ff_flare.h — S10 (slice a): the flare come-find-me state machine.
  *
  * Spec: docs/specs/S10-flare.md (this slice: "state machine + tests";
- * takeover/sender UI is slice b, gated on the S06 app shell).
+ * takeover/sender UI is slice b, gated on the S06 app shell). See that
+ * spec's `## Amendments` (2026-08-23, PR #15) for the two product rulings
+ * this shape implements — summarized in the "Independent state" and
+ * "Judgment calls" sections below.
  *
  * Pure C11, no I/O, no allocation, no clock-reading of its own: every entry
  * point that needs "now" takes it as an explicit `uint32_t now_ms`
@@ -12,6 +15,52 @@
  * dependency-free struct (same "explicit now_ms in, no hidden clock"
  * shape `ff_radar_compute` uses in S06 for the same reason). Safe on the
  * stack or in a static.
+ *
+ * ## Independent state (PR #15 review, HIGH + MEDIUM findings; ruling
+ * recorded in docs/specs/S10-flare.md's Amendments)
+ * The original slice-a shape had one "current flare" slot shared between
+ * "am I sending" and "am I being flared at" — review found this silently
+ * broke `ff_flare_send_cancel()` the moment anyone else's flare arrived
+ * mid-send (state got overwritten, so cancel became a permanent no-op for
+ * the rest of that send's duration) and, separately, let a fresh incoming
+ * flare silently yank an already-`GO`'d LOCKED selection out from under
+ * the user mid-walk — exactly the "confident but wrong arrow" failure this
+ * project exists to prevent (CLAUDE.md: "honest data over pretty data").
+ * Both were ruled real bugs, not framing issues, and fixed by making
+ * outbound send, the pending takeover, and the navigation lock three
+ * independent fields on `ff_flare_t`:
+ *  - `sending`/`send_expiry_ms` — my own outbound flare. Set only by
+ *    `ff_flare_send_begin`, cleared only by `ff_flare_send_cancel` or its
+ *    own expiry in `ff_flare_tick`. **Nothing inbound ever touches this**
+ *    — `ff_flare_send_cancel()` now always works regardless of any
+ *    incoming flare, which is exactly the HIGH finding's fix.
+ *  - `takeover_active`/`takeover_node_id`/`takeover_expiry_ms` — the
+ *    full-screen takeover currently awaiting a GO/DISMISS decision, if
+ *    any. A new paired FLARE always wins this slot ("newest flare wins
+ *    the takeover", spec) — unconditionally, regardless of `sending` or
+ *    `locked_node_id` below.
+ *  - `locked_node_id`/`locked_expiry_ms` — the node navigation is
+ *    actually committed to (0 = not locked). Set only by `ff_flare_go()`
+ *    (which also consumes/clears the pending takeover), cleared only by
+ *    `ff_flare_dismiss()`, its own expiry, or a matching FLARE_END.
+ *    **A newly-arriving takeover never touches this** — the MEDIUM
+ *    finding's fix: an established lock is never silently replaced. It
+ *    can coexist with a *different* pending takeover (Kev flares while
+ *    I'm locked-and-walking toward Dana: I still see Kev's takeover, my
+ *    arrow keeps pointing at Dana underneath until I explicitly decide).
+ *
+ * `ff_flare_result_t` did not need a second field to "express an outbound
+ * intent and a UI takeover in the same tick": `intent` is the only thing
+ * that ever needs to be *acted on* out-of-band (a network send), and it
+ * is now fully orthogonal to receive state, since receiving no longer
+ * touches sending at all — `ff_flare_on_flare_rx` never produces an
+ * intent, and `ff_flare_tick` already inspects all three independent
+ * deadlines (`send_expiry_ms`/`takeover_expiry_ms`/`locked_expiry_ms`) in
+ * one call, applying every expiry that's due and returning
+ * `FF_FLARE_INTENT_SEND_FLARE_END` if the send-side one fired. Whatever
+ * the UI needs to render is always just a direct read of `ff_flare_t`'s
+ * fields (fully-defined struct, not opaque) — nothing about that needs to
+ * ride inside the result too.
  *
  * ## Dependency-light by design (documented per the task brief)
  *  - **No `ff_crew.h` include.** "Is this sender paired?" is passed in as
@@ -45,35 +94,31 @@
  * ## Judgment calls (flagged per AGENTS.md; see the PR body for the same
  * notes)
  *  1. **Expiry boundary is INCLUSIVE.** `ff_flare_tick(f, now_ms)` treats
- *     `now_ms == expiry_ms` as already expired (fires the SENDING auto-end
- *     / RECEIVED-or-LOCKED unlock at that exact tick, not one tick later).
- *     Chosen to match `ff_crew_freshness`'s own "boundary rolls forward"
- *     convention (S02: age exactly 45000ms is already STALE, not LIVE) —
- *     "expiry" reads naturally as the instant the flare stops being valid,
- *     not the last instant it's still valid.
- *  2. **`ff_flare_send_begin` is unconditional.** It transitions to
- *     SENDING from *any* prior state (including overwriting an in-progress
- *     RECEIVED/LOCKED takeover), not just from IDLE. The spec doesn't
- *     restrict which face/state the send affordance is reachable from —
- *     that's a UI-layer call for S06/S10-slice-b to make (e.g. hiding the
- *     FLARE button during a takeover) — so the state machine itself stays
- *     permissive rather than guessing a restriction into existence.
- *  3. **A newly-received paired FLARE always lands in RECEIVED, never
- *     preserves LOCKED.** "Newest flare wins the takeover" (spec) is
- *     interpreted as: a genuinely new sender's takeover is a fresh
- *     decision the user hasn't made GO/DISMISS on yet, so it always starts
- *     unlocked — even if the *previous* takeover had been GO'd to LOCKED.
- *     Locking was a decision about the previous sender, not a sticky mode.
- *  4. **A newly-received paired FLARE also overrides an active SENDING
- *     state** (the state machine has exactly one "current flare" slot, and
- *     receive takeovers are specified as happening "regardless of current
- *     face"). This does NOT emit a SEND_FLARE_END for the caller's own
- *     in-flight send — the local UI stops showing "you are flaring", but
- *     the network-visible FLARE from this node isn't cancelled by this
- *     path (the user can still see and use `ff_flare_send_cancel` results
- *     from before the override if the app kept them; in practice this is a
- *     rare double-flare edge case, not a primary flow). Noted here rather
- *     than silently guessed at.
+ *     `now_ms == expiry_ms` as already expired (fires each of the three
+ *     independent expiries — send/takeover/lock — at that exact tick, not
+ *     one tick later). Chosen to match `ff_crew_freshness`'s own "boundary
+ *     rolls forward" convention (S02: age exactly 45000ms is already
+ *     STALE, not LIVE) — "expiry" reads naturally as the instant a flare
+ *     stops being valid, not the last instant it's still valid.
+ *  2. **`ff_flare_send_begin` is unconditional** with respect to receive
+ *     state (it always was, but is now trivially true rather than a
+ *     special case — see "Independent state" above: sending and receiving
+ *     share no field to conflict over in the first place).
+ *  3. **A newly-received paired FLARE always wins the `takeover_active`
+ *     slot** ("newest flare wins the takeover", spec) regardless of
+ *     `sending` or an existing `locked_node_id` — see "Independent state"
+ *     above for the full rationale and docs/specs/S10-flare.md's
+ *     Amendments for the ruling.
+ *  4. **`ff_flare_dismiss()` does double duty**: if a takeover is pending,
+ *     it dismisses *that* (leaving any existing lock untouched — this is
+ *     the MEDIUM finding's "DISMISS returns to the intact A lock");
+ *     otherwise, if there's no pending takeover but the selection is
+ *     LOCKED, it releases the lock instead (preserves the original spec
+ *     behavior of dismissing out of a lock entirely when nothing new is
+ *     overlaid on it). The two conditions are mutually exclusive by
+ *     construction (a fresh takeover is the only path that could coexist
+ *     with a lock in the first place), so there's no ambiguity about
+ *     which one a given `ff_flare_dismiss()` call means.
  */
 #ifndef FF_FLARE_H
 #define FF_FLARE_H
@@ -91,16 +136,9 @@ extern "C" {
  * always used as-is, never defaulted — see this header's top comment. */
 #define FF_FLARE_DEFAULT_DUR_S ((uint16_t)300u)
 
-typedef enum {
-    FF_FLARE_IDLE = 0,
-    FF_FLARE_SENDING,
-    FF_FLARE_RECEIVED,
-    FF_FLARE_LOCKED,
-} ff_flare_state_t;
-
 /** Outbound network intent a transition wants the caller to act on. This
  * module never touches wire bytes or a transport — the caller already
- * owns `ff_proto_encode_flare`/`_flare_end` + `mc_send_private`(see this
+ * owns `ff_proto_encode_flare`/`_flare_end` + `mc_send_private` (see this
  * header's top comment). */
 typedef enum {
     FF_FLARE_INTENT_NONE = 0,
@@ -120,42 +158,59 @@ typedef struct {
                          * here to skip: the caller must honor this flag
                          * unconditionally rather than running it through
                          * its own `ff_quiet_now` gate. The caller (app)
-                         * owns the actual buzzing. */
+                         * owns the actual buzzing. Only ever set by
+                         * ff_flare_on_flare_rx (a paired receive) — never
+                         * by tick-driven expiry. */
 } ff_flare_result_t;
 
 /**
- * ff_flare_t — the whole flare state machine. Fully-defined (not opaque)
- * so callers can put it on the stack or in a static with zero heap
- * allocation; zero-initialize or call `ff_flare_init` before use.
+ * ff_flare_t — the whole flare state: three independent pieces (outbound
+ * send, pending takeover, navigation lock — see this header's top comment
+ * "Independent state" section for why they're separate). Fully-defined
+ * (not opaque) so callers can put it on the stack or in a static with
+ * zero heap allocation, and so the app can read any field directly to
+ * render UI; zero-initialize or call `ff_flare_init` before use.
  */
 typedef struct {
-    ff_flare_state_t state;
-    uint32_t node_id;   /* active sender's Meshtastic node num; meaningful
-                          * in RECEIVED/LOCKED only, 0 otherwise. */
-    uint32_t expiry_ms; /* absolute deadline in the injected clock's
-                          * now_ms domain; meaningful in
-                          * SENDING/RECEIVED/LOCKED only, 0 in IDLE. */
+    /* Outbound: am I currently sending a flare? Independent of anything
+     * inbound. */
+    bool     sending;
+    uint32_t send_expiry_ms; /* meaningful iff sending */
+
+    /* The full-screen takeover currently pending a GO/DISMISS decision,
+     * if any. */
+    bool     takeover_active;
+    uint32_t takeover_node_id;   /* meaningful iff takeover_active */
+    uint32_t takeover_expiry_ms; /* meaningful iff takeover_active */
+
+    /* The node my selection is actually locked to (navigating toward),
+     * or 0 if not locked. */
+    uint32_t locked_node_id;
+    uint32_t locked_expiry_ms; /* meaningful iff locked_node_id != 0 */
 } ff_flare_t;
 
-/** ff_flare_init — zero a flare state machine to IDLE. */
+/** ff_flare_init — zero a flare state machine (nothing sending, no
+ * takeover pending, not locked). */
 void ff_flare_init(ff_flare_t *f);
 
 /**
  * ff_flare_send_begin — start (or restart) sending a flare: records
- * `expiry_ms = now_ms + dur_s*1000` (or `+ FF_FLARE_DEFAULT_DUR_S*1000` if
- * `dur_s == 0`) and transitions to SENDING. Always returns
+ * `send_expiry_ms = now_ms + dur_s*1000` (or `+ FF_FLARE_DEFAULT_DUR_S*1000`
+ * if `dur_s == 0`) and sets `sending = true`. Always returns
  * FF_FLARE_INTENT_SEND_FLARE with the actual duration used (post-default)
- * in `dur_s`. See this header's judgment call (2) for why this is
- * unconditional regardless of prior state.
+ * in `dur_s`. Never reads or writes `takeover_*`/`locked_*` — completely
+ * independent of receive state (see this header's top comment).
  */
 ff_flare_result_t ff_flare_send_begin(ff_flare_t *f, uint16_t dur_s, uint32_t now_ms);
 
 /**
- * ff_flare_send_cancel — cancel an in-progress send: SENDING -> IDLE,
+ * ff_flare_send_cancel — cancel an in-progress send: `sending` -> false,
  * returning FF_FLARE_INTENT_SEND_FLARE_END exactly once. A no-op
- * (FF_FLARE_INTENT_NONE, no state change) when not currently SENDING —
+ * (FF_FLARE_INTENT_NONE, no state change) when not currently sending —
  * including a second call right after the first, which is what guarantees
- * "emits FLARE_END once, not twice" (spec AC1).
+ * "emits FLARE_END once, not twice" (spec AC1). Always works regardless
+ * of `takeover_active`/`locked_node_id` (the HIGH-finding fix, PR #15) —
+ * this never reads or writes them.
  */
 ff_flare_result_t ff_flare_send_cancel(ff_flare_t *f);
 
@@ -169,55 +224,75 @@ ff_flare_result_t ff_flare_send_cancel(ff_flare_t *f);
  * no state change, FF_FLARE_INTENT_NONE, should_alert=false. This is the
  * unpaired-sender guard from the spec's Receive section.
  *
- * If `paired`, this always transitions to RECEIVED with `node_id`/expiry
- * set from this message — "newest flare wins the takeover" (spec),
- * unconditionally, from any prior state (see judgment calls 3 and 4).
+ * If `paired`, this always sets `takeover_active = true` with
+ * `takeover_node_id`/`takeover_expiry_ms` from this message —
+ * unconditionally, discarding whatever takeover was previously pending
+ * ("newest flare wins the takeover", spec). Never reads or writes
+ * `sending`/`send_expiry_ms` (HIGH finding fix) or `locked_node_id`/
+ * `locked_expiry_ms` (MEDIUM finding fix) — see this header's top comment.
  * should_alert is always true on this path (haptic override, spec AC2).
  */
 ff_flare_result_t ff_flare_on_flare_rx(ff_flare_t *f, uint32_t node_id, bool paired, uint16_t dur_s, uint32_t now_ms);
 
 /**
  * ff_flare_on_flare_end_rx — handle an already-decoded incoming
- * FLARE_END from `node_id`. If currently RECEIVED or LOCKED to exactly
- * this `node_id`, transitions to IDLE (unlocking if it was LOCKED).
- * Otherwise a no-op — including FLARE_END from a node that isn't the
- * active sender (ignored, spec AC1), and FLARE_END received while
- * IDLE/SENDING (nothing to end on the receive side).
+ * FLARE_END from `node_id`. Clears whichever of the pending takeover or
+ * the navigation lock currently belongs to exactly this `node_id` (either,
+ * both, or neither can match — they're independent). A no-op on any field
+ * that doesn't match `node_id`, including doing nothing at all if neither
+ * matches (FLARE_END from a node that's neither the pending takeover nor
+ * the lock is ignored, spec AC1).
  */
 ff_flare_result_t ff_flare_on_flare_end_rx(ff_flare_t *f, uint32_t node_id);
 
 /**
- * ff_flare_go — user pressed GO on the takeover: RECEIVED -> LOCKED,
- * keeping the same node_id/expiry. No-op outside RECEIVED (including when
- * already LOCKED, or IDLE/SENDING).
+ * ff_flare_go — user pressed GO on the pending takeover: consumes it into
+ * the lock (`locked_node_id`/`locked_expiry_ms` <- `takeover_node_id`/
+ * `takeover_expiry_ms`, `takeover_active` -> false), REPLACING any
+ * previous lock — GO is an explicit user decision, so a deliberate switch
+ * is allowed even though a passive newly-arriving takeover alone is not
+ * (MEDIUM finding: "GO explicitly switches to B"). No-op if no takeover
+ * is pending.
  */
 ff_flare_result_t ff_flare_go(ff_flare_t *f);
 
 /**
- * ff_flare_dismiss — user dismissed the takeover: RECEIVED or LOCKED ->
- * IDLE (unlocking if it was LOCKED). Per spec, the feed item itself is
- * NOT cleared by this — feed ownership is out of scope for this module
- * entirely (S08), so there is nothing here that could clear it anyway.
- * No-op outside RECEIVED/LOCKED.
+ * ff_flare_dismiss — user dismissed the current takeover. If a takeover
+ * is pending, clears just that (`takeover_active` -> false), leaving any
+ * existing `locked_node_id` completely untouched (MEDIUM finding:
+ * "DISMISS returns to the intact A lock"). Otherwise, if there's no
+ * pending takeover but the selection is locked, releases the lock instead
+ * (`locked_node_id` -> 0) — see this header's judgment call (4) for why
+ * these two conditions are mutually exclusive and both belong under
+ * "dismiss". Per spec, the feed item itself is NOT cleared by this — feed
+ * ownership is out of scope for this module entirely (S08), so there is
+ * nothing here that could clear it anyway. A no-op if neither applies
+ * (nothing pending, nothing locked).
  */
 ff_flare_result_t ff_flare_dismiss(ff_flare_t *f);
 
 /**
  * ff_flare_tick — periodic expiry check, called with the current clock
- * reading. SENDING past its deadline auto-ends (-> IDLE,
- * FF_FLARE_INTENT_SEND_FLARE_END). RECEIVED or LOCKED past its deadline
- * expires (-> IDLE, unlocking if it was LOCKED; no outbound intent — a
- * receiver has nothing to announce when someone else's flare times out).
- * A no-op in IDLE, or before the deadline. See this header's judgment
- * call (1) for the inclusive boundary: `now_ms == expiry_ms` already
- * fires. Wraparound-safe against `now_ms`/`expiry_ms` uint32_t rollover,
- * matching `ff_clock_t`'s documented convention.
+ * reading. Evaluates all three independent deadlines in one call:
+ *  - `sending` past `send_expiry_ms` auto-ends (-> `sending = false`,
+ *    FF_FLARE_INTENT_SEND_FLARE_END).
+ *  - `takeover_active` past `takeover_expiry_ms` expires (-> false; no
+ *    outbound intent — a receiver has nothing to announce when someone
+ *    else's flare times out).
+ *  - `locked_node_id != 0` past `locked_expiry_ms` unlocks (-> 0; spec
+ *    AC3: "unlock on expiry restores cycling").
+ * Each check is independent — any subset (including all three, or none)
+ * can fire in a single call depending on which deadlines are due. A no-op
+ * for any field already at its resting state, or before its deadline. See
+ * this header's judgment call (1) for the inclusive boundary: `now_ms ==
+ * expiry_ms` already fires. Wraparound-safe against `now_ms`/`*_expiry_ms`
+ * uint32_t rollover, matching `ff_clock_t`'s documented convention.
  */
 ff_flare_result_t ff_flare_tick(ff_flare_t *f, uint32_t now_ms);
 
 /**
  * ff_flare_locked_node — the node this puck's selection is currently
- * locked to, or 0 if not LOCKED. For S06's radar/crew selection code to
+ * locked to, or 0 if not locked. For S06's radar/crew selection code to
  * consult (e.g. `ff_crew_select_next` should no-op while this is nonzero)
  * — this module never reaches into `ff_crew` itself (see top comment).
  */

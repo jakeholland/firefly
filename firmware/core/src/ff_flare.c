@@ -34,11 +34,10 @@ void ff_flare_init(ff_flare_t *f)
         return;
     }
     memset(f, 0, sizeof(*f));
-    f->state = FF_FLARE_IDLE;
 }
 
 /* ------------------------------------------------------------------- */
-/* sending                                                              */
+/* sending — fully independent of takeover_active/locked_node_id        */
 /* ------------------------------------------------------------------- */
 
 ff_flare_result_t ff_flare_send_begin(ff_flare_t *f, uint16_t dur_s, uint32_t now_ms)
@@ -50,9 +49,8 @@ ff_flare_result_t ff_flare_send_begin(ff_flare_t *f, uint16_t dur_s, uint32_t no
 
     uint16_t dur = (dur_s == 0u) ? FF_FLARE_DEFAULT_DUR_S : dur_s;
 
-    f->state = FF_FLARE_SENDING;
-    f->node_id = 0;
-    f->expiry_ms = now_ms + (uint32_t)dur * 1000u;
+    f->sending = true;
+    f->send_expiry_ms = now_ms + (uint32_t)dur * 1000u;
 
     r.intent = FF_FLARE_INTENT_SEND_FLARE;
     r.dur_s = dur;
@@ -62,19 +60,20 @@ ff_flare_result_t ff_flare_send_begin(ff_flare_t *f, uint16_t dur_s, uint32_t no
 ff_flare_result_t ff_flare_send_cancel(ff_flare_t *f)
 {
     ff_flare_result_t r = ff_flare_no_result();
-    if (!f || f->state != FF_FLARE_SENDING) {
+    if (!f || !f->sending) {
         return r; /* not sending: nothing to cancel, no FLARE_END emitted */
     }
 
-    f->state = FF_FLARE_IDLE;
-    f->expiry_ms = 0;
+    f->sending = false;
+    f->send_expiry_ms = 0;
 
     r.intent = FF_FLARE_INTENT_SEND_FLARE_END;
     return r;
 }
 
 /* ------------------------------------------------------------------- */
-/* receiving                                                            */
+/* receiving — never touches sending/send_expiry_ms; never touches      */
+/* locked_node_id/locked_expiry_ms                                      */
 /* ------------------------------------------------------------------- */
 
 ff_flare_result_t ff_flare_on_flare_rx(ff_flare_t *f, uint32_t node_id, bool paired, uint16_t dur_s,
@@ -85,11 +84,12 @@ ff_flare_result_t ff_flare_on_flare_rx(ff_flare_t *f, uint32_t node_id, bool pai
         return r; /* unpaired sender: ignored entirely, no state change */
     }
 
-    /* Newest flare wins: always a fresh, unlocked takeover, from any
-     * prior state (see ff_flare.h's judgment calls 3 and 4). */
-    f->state = FF_FLARE_RECEIVED;
-    f->node_id = node_id;
-    f->expiry_ms = now_ms + (uint32_t)dur_s * 1000u;
+    /* Newest flare always wins the pending-takeover slot, regardless of
+     * `sending` (HIGH finding fix) or an existing lock (MEDIUM finding
+     * fix) — see ff_flare.h's "Independent state" section. */
+    f->takeover_active = true;
+    f->takeover_node_id = node_id;
+    f->takeover_expiry_ms = now_ms + (uint32_t)dur_s * 1000u;
 
     r.should_alert = true; /* haptic override applies unconditionally, incl. quiet hours */
     return r;
@@ -101,13 +101,21 @@ ff_flare_result_t ff_flare_on_flare_end_rx(ff_flare_t *f, uint32_t node_id)
     if (!f) {
         return r;
     }
-    if ((f->state != FF_FLARE_RECEIVED && f->state != FF_FLARE_LOCKED) || f->node_id != node_id) {
-        return r; /* no active takeover from exactly this node: ignored */
-    }
 
-    f->state = FF_FLARE_IDLE;
-    f->node_id = 0;
-    f->expiry_ms = 0;
+    /* node_id == 0 is never a real sender (see ff_flare_locked_node's "0 =
+     * not locked" sentinel) so an explicit != 0 guard keeps a hypothetical
+     * node_id == 0 call from spuriously matching an unlocked/no-takeover
+     * resting state. Independent fields: either, both, or neither may
+     * match. */
+    if (f->takeover_active && f->takeover_node_id == node_id) {
+        f->takeover_active = false;
+        f->takeover_node_id = 0;
+        f->takeover_expiry_ms = 0;
+    }
+    if (f->locked_node_id != 0 && f->locked_node_id == node_id) {
+        f->locked_node_id = 0;
+        f->locked_expiry_ms = 0;
+    }
     return r;
 }
 
@@ -118,27 +126,47 @@ ff_flare_result_t ff_flare_on_flare_end_rx(ff_flare_t *f, uint32_t node_id)
 ff_flare_result_t ff_flare_go(ff_flare_t *f)
 {
     ff_flare_result_t r = ff_flare_no_result();
-    if (!f || f->state != FF_FLARE_RECEIVED) {
+    if (!f || !f->takeover_active) {
         return r;
     }
-    f->state = FF_FLARE_LOCKED;
+
+    /* Explicit user decision: replaces any previous lock outright. */
+    f->locked_node_id = f->takeover_node_id;
+    f->locked_expiry_ms = f->takeover_expiry_ms;
+
+    f->takeover_active = false;
+    f->takeover_node_id = 0;
+    f->takeover_expiry_ms = 0;
     return r;
 }
 
 ff_flare_result_t ff_flare_dismiss(ff_flare_t *f)
 {
     ff_flare_result_t r = ff_flare_no_result();
-    if (!f || (f->state != FF_FLARE_RECEIVED && f->state != FF_FLARE_LOCKED)) {
+    if (!f) {
         return r;
     }
-    f->state = FF_FLARE_IDLE;
-    f->node_id = 0;
-    f->expiry_ms = 0;
+
+    if (f->takeover_active) {
+        /* Dismiss just the pending takeover; any existing lock is left
+         * completely untouched (MEDIUM finding fix). */
+        f->takeover_active = false;
+        f->takeover_node_id = 0;
+        f->takeover_expiry_ms = 0;
+        return r;
+    }
+
+    if (f->locked_node_id != 0) {
+        /* Nothing pending to dismiss: release the lock itself instead
+         * (see ff_flare.h's judgment call (4)). */
+        f->locked_node_id = 0;
+        f->locked_expiry_ms = 0;
+    }
     return r;
 }
 
 /* ------------------------------------------------------------------- */
-/* tick — periodic expiry check                                        */
+/* tick — periodic expiry check, three independent deadlines            */
 /* ------------------------------------------------------------------- */
 
 ff_flare_result_t ff_flare_tick(ff_flare_t *f, uint32_t now_ms)
@@ -148,26 +176,23 @@ ff_flare_result_t ff_flare_tick(ff_flare_t *f, uint32_t now_ms)
         return r;
     }
 
-    switch (f->state) {
-    case FF_FLARE_SENDING:
-        if (ff_flare_deadline_reached(now_ms, f->expiry_ms)) {
-            f->state = FF_FLARE_IDLE;
-            f->expiry_ms = 0;
-            r.intent = FF_FLARE_INTENT_SEND_FLARE_END;
-        }
-        break;
-    case FF_FLARE_RECEIVED:
-    case FF_FLARE_LOCKED:
-        if (ff_flare_deadline_reached(now_ms, f->expiry_ms)) {
-            f->state = FF_FLARE_IDLE;
-            f->node_id = 0;
-            f->expiry_ms = 0;
-        }
-        break;
-    case FF_FLARE_IDLE:
-    default:
-        break;
+    if (f->sending && ff_flare_deadline_reached(now_ms, f->send_expiry_ms)) {
+        f->sending = false;
+        f->send_expiry_ms = 0;
+        r.intent = FF_FLARE_INTENT_SEND_FLARE_END;
     }
+
+    if (f->takeover_active && ff_flare_deadline_reached(now_ms, f->takeover_expiry_ms)) {
+        f->takeover_active = false;
+        f->takeover_node_id = 0;
+        f->takeover_expiry_ms = 0;
+    }
+
+    if (f->locked_node_id != 0 && ff_flare_deadline_reached(now_ms, f->locked_expiry_ms)) {
+        f->locked_node_id = 0;
+        f->locked_expiry_ms = 0;
+    }
+
     return r;
 }
 
@@ -177,8 +202,8 @@ ff_flare_result_t ff_flare_tick(ff_flare_t *f, uint32_t now_ms)
 
 uint32_t ff_flare_locked_node(ff_flare_t const *f)
 {
-    if (!f || f->state != FF_FLARE_LOCKED) {
+    if (!f) {
         return 0;
     }
-    return f->node_id;
+    return f->locked_node_id;
 }
