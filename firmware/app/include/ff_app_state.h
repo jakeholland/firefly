@@ -76,6 +76,18 @@ extern "C" {
 
 #define FF_APP_NOW_MAX_ROWS 3 /* S07: "three now-rows max" */
 
+/* S07 slice b: per-day lineup list, shown (with the "SET TIMES TBD"
+ * banner) when `tbd` is true — ff_sched_day_sets()'s output flattened the
+ * same way `rows`/`next` are (see this section's top comment). 32 is
+ * generous headroom over any real single festival day we've actually
+ * seen (the vendored Lost Lands 2026 pack's day 1 has 7 sets — see
+ * firmware/festpack/tests/fixtures/lost-lands-2026.festpack.json) while
+ * staying well under fp_pack.h's whole-pack FP_MAX_SETS (256) cap; a
+ * pathological single-day lineup beyond this fails loud at fixture-load
+ * time (see fixture.c's fx_parse_now), same "cap enforced, never silently
+ * truncated" contract as `rows`/signals.items. */
+#define FF_APP_NOW_MAX_LINEUP 32
+
 typedef struct {
     char    artist[FF_APP_ARTIST_LEN];
     char    stage_name[FF_APP_STAGE_LEN];
@@ -91,11 +103,42 @@ typedef struct {
     int16_t mins_until;
 } ff_app_next_t;
 
+/* One entry in the TBD-path day lineup list: just enough to render
+ * "ARTIST — STAGE" (or "ARTIST" alone when the stage itself is unknown —
+ * fp_set_t.stage_idx can be -1, e.g. several of the real Lost Lands
+ * pack's early-entry sets). No times: this struct only ever appears when
+ * `ff_app_now_t.tbd` is true, i.e. every set on the day already has null
+ * start/end (S07 spec's day-lineup behavior). */
 typedef struct {
+    char artist[FF_APP_ARTIST_LEN];
+    char stage_name[FF_APP_STAGE_LEN]; /* "" = stage unknown, render honestly (never invent one) */
+} ff_app_lineup_item_t;
+
+typedef struct {
+    /* S07 slice b addition (not in the original S13 scaffolding): false
+     * iff no festpack is loaded at all. This is the "no pack loaded"
+     * empty state (tests/fixtures/now_empty.json) and is deliberately
+     * distinct from `tbd` (a pack IS loaded, but every set's times are
+     * null — tests/fixtures/now_tbd.json): conflating the two would be
+     * exactly the kind of dishonest-by-omission rendering CLAUDE.md's
+     * "honest data over pretty data" rule exists to prevent — a puck with
+     * no festival data loaded must never show a schedule-flavored banner
+     * that implies a pack exists. Defaults false (the zero value), same
+     * "unknown/absent defaults to the least-claiming state" convention as
+     * radar.mode defaulting to RADAR_NOSEL rather than RADAR_LIVE (see
+     * fixture.c's ff_fixture_load_json) — a fixture that omits `now`
+     * entirely, or omits `pack_loaded` within it, honestly renders as
+     * "nothing loaded" rather than silently claiming live schedule data
+     * exists. */
+    bool pack_loaded;
+
     ff_app_now_row_t rows[FF_APP_NOW_MAX_ROWS];
     uint8_t n_rows;
     ff_app_next_t next;
     bool tbd; /* S07: all-null-times pack -> "SET TIMES TBD" banner */
+
+    ff_app_lineup_item_t lineup[FF_APP_NOW_MAX_LINEUP];
+    uint8_t n_lineup;
 } ff_app_now_t;
 
 /* -------------------------------------------------------------------

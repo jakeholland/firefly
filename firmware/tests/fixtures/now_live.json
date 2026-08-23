@@ -1,0 +1,36 @@
+{
+  "fixture": "now_live",
+  "face": "now",
+  "now": {
+    "pack_loaded": true,
+    "rows": [
+      {
+        "artist": "GRiZ",
+        "stage_name": "Bass Camp",
+        "stage_color_rgb": "#ffc66b",
+        "mins_left": 18,
+        "pct_done": 40
+      },
+      {
+        "artist": "Wooli",
+        "stage_name": "Kinetic Field",
+        "stage_color_rgb": "#4fd8c4",
+        "mins_left": 5,
+        "pct_done": 85
+      },
+      {
+        "artist": "Kompany",
+        "stage_name": "The Grove",
+        "stage_color_rgb": "#ff5ca8",
+        "mins_left": 42,
+        "pct_done": 10
+      }
+    ],
+    "next": {
+      "artist": "Excision",
+      "stage_name": "Bass Camp",
+      "mins_until": 33
+    },
+    "tbd": false
+  }
+}

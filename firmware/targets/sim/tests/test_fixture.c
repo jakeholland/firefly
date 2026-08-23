@@ -209,6 +209,7 @@ static void now_section_parses_every_field(void)
 {
     ff_app_state_t s;
     char const *json = "{\"now\": {"
+                        "  \"pack_loaded\": true,"
                         "  \"rows\": [{\"artist\": \"GRiZ\", \"stage_name\": \"Bass Camp\", "
                         "               \"stage_color_rgb\": \"#ffc66b\", \"mins_left\": 12, \"pct_done\": 60}],"
                         "  \"next\": {\"artist\": \"Subtronics\", \"stage_name\": \"Grand Illusion\", "
@@ -216,6 +217,8 @@ static void now_section_parses_every_field(void)
                         "  \"tbd\": false"
                         "}}";
     TEST_ASSERT_EQUAL_INT(FF_FIXTURE_OK, ff_fixture_load_json(json, strlen(json), &s));
+
+    TEST_ASSERT_TRUE(s.now.pack_loaded);
 
     TEST_ASSERT_EQUAL_UINT8(1, s.now.n_rows);
     TEST_ASSERT_EQUAL_STRING("GRiZ", s.now.rows[0].artist);
@@ -230,6 +233,43 @@ static void now_section_parses_every_field(void)
     TEST_ASSERT_EQUAL_INT(45, s.now.next.mins_until);
 
     TEST_ASSERT_FALSE(s.now.tbd);
+    TEST_ASSERT_EQUAL_UINT8(0, s.now.n_lineup);
+}
+
+/* S07 slice b: pack_loaded/lineup, exercised separately from the
+ * happy-path "live" section test above since a real TBD fixture never
+ * carries rows/next at the same time (see now_tbd.json). */
+static void now_pack_loaded_defaults_false(void)
+{
+    ff_app_state_t s;
+    char const *json = "{\"now\": {\"tbd\": true}}";
+    TEST_ASSERT_EQUAL_INT(FF_FIXTURE_OK, ff_fixture_load_json(json, strlen(json), &s));
+    TEST_ASSERT_FALSE(s.now.pack_loaded);
+}
+
+static void now_lineup_section_parses_every_field(void)
+{
+    ff_app_state_t s;
+    char const *json = "{\"now\": {"
+                        "  \"pack_loaded\": true,"
+                        "  \"tbd\": true,"
+                        "  \"lineup\": ["
+                        "    {\"artist\": \"Excision\", \"stage_name\": \"Prehistoric Stage\"},"
+                        "    {\"artist\": \"NGHTMRE\", \"stage_name\": \"\"}"
+                        "  ]"
+                        "}}";
+    TEST_ASSERT_EQUAL_INT(FF_FIXTURE_OK, ff_fixture_load_json(json, strlen(json), &s));
+
+    TEST_ASSERT_TRUE(s.now.pack_loaded);
+    TEST_ASSERT_TRUE(s.now.tbd);
+    TEST_ASSERT_EQUAL_UINT8(0, s.now.n_rows);
+    TEST_ASSERT_FALSE(s.now.next.valid);
+
+    TEST_ASSERT_EQUAL_UINT8(2, s.now.n_lineup);
+    TEST_ASSERT_EQUAL_STRING("Excision", s.now.lineup[0].artist);
+    TEST_ASSERT_EQUAL_STRING("Prehistoric Stage", s.now.lineup[0].stage_name);
+    TEST_ASSERT_EQUAL_STRING("NGHTMRE", s.now.lineup[1].artist);
+    TEST_ASSERT_EQUAL_STRING("", s.now.lineup[1].stage_name);
 }
 
 static void signals_section_parses_every_field(void)
@@ -347,6 +387,30 @@ static void now_rows_over_cap_fails_loud(void)
     TEST_ASSERT_EQUAL_MEMORY(&zero, &s, sizeof(s));
 }
 
+static void now_lineup_over_cap_fails_loud(void)
+{
+    char json[2048];
+    build_n_element_array_json(json, sizeof(json), "now", "lineup", FF_APP_NOW_MAX_LINEUP + 1);
+
+    ff_app_state_t s;
+    memset(&s, 0xAA, sizeof(s));
+    TEST_ASSERT_EQUAL_INT(FF_FIXTURE_ERR_TOO_BIG, ff_fixture_load_json(json, strlen(json), &s));
+
+    ff_app_state_t zero;
+    memset(&zero, 0, sizeof(zero));
+    TEST_ASSERT_EQUAL_MEMORY(&zero, &s, sizeof(s));
+}
+
+static void now_lineup_at_cap_still_loads_ok(void)
+{
+    char json[2048];
+    build_n_element_array_json(json, sizeof(json), "now", "lineup", FF_APP_NOW_MAX_LINEUP);
+
+    ff_app_state_t s;
+    TEST_ASSERT_EQUAL_INT(FF_FIXTURE_OK, ff_fixture_load_json(json, strlen(json), &s));
+    TEST_ASSERT_EQUAL_UINT8(FF_APP_NOW_MAX_LINEUP, s.now.n_lineup);
+}
+
 static void signals_items_over_cap_fails_loud(void)
 {
     char json[1024];
@@ -439,6 +503,8 @@ int main(void)
     RUN_TEST(now_stage_color_rgb_malformed_hex_falls_back_to_zero);
 
     RUN_TEST(now_section_parses_every_field);
+    RUN_TEST(now_pack_loaded_defaults_false);
+    RUN_TEST(now_lineup_section_parses_every_field);
     RUN_TEST(signals_section_parses_every_field);
     RUN_TEST(flare_section_parses_every_field);
     RUN_TEST(settings_section_parses_every_field);
@@ -446,6 +512,8 @@ int main(void)
     RUN_TEST(radar_dots_over_cap_fails_loud);
     RUN_TEST(radar_dots_at_cap_still_loads_ok);
     RUN_TEST(now_rows_over_cap_fails_loud);
+    RUN_TEST(now_lineup_over_cap_fails_loud);
+    RUN_TEST(now_lineup_at_cap_still_loads_ok);
     RUN_TEST(signals_items_over_cap_fails_loud);
     RUN_TEST(oversized_array_zeroes_entire_state_including_other_sections);
 

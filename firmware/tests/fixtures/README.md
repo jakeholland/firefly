@@ -90,22 +90,27 @@ Field names/semantics are transcribed 1:1 from `docs/specs/S06-radar-face.md`'s
 
 ```json
 "now": {
+  "pack_loaded": true,
   "rows": [
     {"artist": "GRiZ", "stage_name": "Bass Camp", "stage_color_rgb": "#ffc66b",
      "mins_left": 12, "pct_done": 60}
   ],
   "next": {"artist": "Subtronics", "stage_name": "Grand Illusion", "mins_until": 45},
-  "tbd": false
+  "tbd": false,
+  "lineup": [
+    {"artist": "Excision", "stage_name": "Prehistoric Stage"},
+    {"artist": "NGHTMRE", "stage_name": ""}
+  ]
 }
 ```
 
-`rows` holds up to `FF_APP_NOW_MAX_ROWS` (3) entries (a 4th fails the whole
-load with `FF_FIXTURE_ERR_TOO_BIG`); `stage_color_rgb` accepts a
-`"#rrggbb"` string (leading `#` optional) or a bare integer — both forms
-are exercised in `test_fixture.c` (`now_stage_color_rgb_hex_string_parses`,
-`now_stage_color_rgb_numeric_form_parses`). `next` is omitted entirely
-(not `null`) when there's no upcoming starred set — presence of the `next`
-object sets `ff_app_next_t.valid = true`.
+| Key | Type | Default | Notes |
+|---|---|---|---|
+| `pack_loaded` | bool | `false` | S07 slice b. `false` = no festpack loaded at all — the honest "nothing to show" empty state (`now_empty.json`), distinct from `tbd` below (a pack IS loaded, every set's times are just null). Defaults to the least-claiming state, same convention as `radar.mode`'s `nosel` default. |
+| `rows` | array, up to `FF_APP_NOW_MAX_ROWS` (3) | `[]` | A 4th entry fails the whole load with `FF_FIXTURE_ERR_TOO_BIG`. `stage_color_rgb` accepts a `"#rrggbb"` string (leading `#` optional) or a bare integer — both forms are exercised in `test_fixture.c` (`now_stage_color_rgb_hex_string_parses`, `now_stage_color_rgb_numeric_form_parses`). |
+| `next` | object or omitted | omitted (`ff_app_next_t.valid = false`) | Omit entirely (not `null`) when there's no upcoming starred set — presence of the `next` object sets `valid = true`. |
+| `tbd` | bool | `false` | S07: all-null-times day — the face shows `lineup` + a "SET TIMES TBD" banner instead of `rows`/`next`. |
+| `lineup` | array, up to `FF_APP_NOW_MAX_LINEUP` (32) | `[]` | S07 slice b. The day's full lineup (per `ff_sched_day_sets()`), rendered only when `tbd` is true — see `now_tbd.json`. `stage_name: ""` means the set's stage is genuinely unknown in the source pack (`fp_set_t.stage_idx == -1`); rendered honestly as unknown, never guessed. A 33rd entry fails the whole load with `FF_FIXTURE_ERR_TOO_BIG`. |
 
 ## `signals` (flattened `ff_feed_item_t`, S08)
 
@@ -182,6 +187,25 @@ good-faith reconstruction consistent with the spec's *prose*, not a
 byte-for-byte transcription of a mockup this agent could not access.
 Flagged per AGENTS.md's "if blocked by a spec gap… note the
 interpretation" — noted here and in the PR body.
+
+### Now face fixtures (S07 slice b)
+
+Three fixtures cover the Now face's three honestly-distinct states:
+
+| Fixture | `pack_loaded` | `tbd` | What it exercises |
+|---|---|---|---|
+| `now_live.json` | `true` | `false` | Three concurrent now-playing rows (mocked artists/stages/times, one per stage color) plus a starred-next card — "Excision · IN 33 MIN" is the literal countdown text the spec's own example ("IN 33 MIN") transcribes. |
+| `now_tbd.json` | `true` | `true` | The real 2026 Lost Lands pack's actual state today: every set's start/end is null. `lineup` is transcribed verbatim (artist + stage, in pack order) from day 1 (2026-09-18) of `firmware/festpack/tests/fixtures/lost-lands-2026.festpack.json` — 7 sets, most with `stage: null` (rendered as unknown, not guessed) except Excision (`prehistoric` → "Prehistoric Stage"). This is the pack-update story CLAUDE.md's honesty rule exists for: don't invent set times the source data doesn't have. |
+| `now_empty.json` | `false` (omitted) | — | No festpack loaded at all — `now` is entirely absent from the fixture. Deliberately distinct from `now_tbd.json`: a puck with nothing loaded must never show schedule chrome (a "SET TIMES TBD" banner) that implies a pack exists. |
+
+**Provenance note (`now_live.json`):** artist/stage names and times are
+mocked test data (GRiZ, Subtronics, etc. — not from any real festpack),
+same "good-faith reconstruction, not a mockup transcription" category as
+the radar fixtures above (no mockup artboards in-tree — see CLAUDE.md).
+**`now_tbd.json` is the one Now fixture that is NOT mocked** — its
+`lineup` entries are copied field-for-field from the real vendored Lost
+Lands pack, specifically because the spec calls out this exact case
+("real Lost Lands pack") as the thing this fixture must prove.
 
 ## Adding a fixture
 

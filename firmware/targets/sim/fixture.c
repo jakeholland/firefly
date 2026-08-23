@@ -280,12 +280,22 @@ static void fx_parse_now_row(fx_ctx_t const *c, int obj_i, ff_app_now_row_t *row
     if (fx_obj_get(c, obj_i, "pct_done", &t)) row->pct_done = (uint8_t)fx_num(c, t, 0.0);
 }
 
+static void fx_parse_lineup_item(fx_ctx_t const *c, int obj_i, ff_app_lineup_item_t *item)
+{
+    int t;
+    if (fx_obj_get(c, obj_i, "artist", &t)) fx_copy_str(c, t, item->artist, sizeof(item->artist));
+    if (fx_obj_get(c, obj_i, "stage_name", &t)) fx_copy_str(c, t, item->stage_name, sizeof(item->stage_name));
+}
+
 /* fx_parse_now — same fail-loud-on-oversized-array treatment as
  * fx_parse_radar_dots above, for the `rows` array (cap
- * FF_APP_NOW_MAX_ROWS). */
+ * FF_APP_NOW_MAX_ROWS) and, as of S07 slice b, the `lineup` array (cap
+ * FF_APP_NOW_MAX_LINEUP). */
 static ff_fixture_result_t fx_parse_now(fx_ctx_t const *c, int obj_i, ff_app_now_t *now)
 {
     int t;
+    if (fx_obj_get(c, obj_i, "pack_loaded", &t)) now->pack_loaded = fx_bool(c, t, false);
+
     int rows_i;
     if (fx_obj_get(c, obj_i, "rows", &rows_i) && !fx_is_null(c, rows_i)) {
         jsmntok_t const *at = &c->toks[rows_i];
@@ -309,6 +319,21 @@ static ff_fixture_result_t fx_parse_now(fx_ctx_t const *c, int obj_i, ff_app_now
         if (fx_obj_get(c, next_i, "mins_until", &t)) now->next.mins_until = (int16_t)fx_num(c, t, 0.0);
     }
     if (fx_obj_get(c, obj_i, "tbd", &t)) now->tbd = fx_bool(c, t, false);
+
+    int lineup_i;
+    if (fx_obj_get(c, obj_i, "lineup", &lineup_i) && !fx_is_null(c, lineup_i)) {
+        jsmntok_t const *at = &c->toks[lineup_i];
+        if (at->type != JSMN_ARRAY) return FF_FIXTURE_ERR_JSON;
+        if (at->size > FF_APP_NOW_MAX_LINEUP) return FF_FIXTURE_ERR_TOO_BIG;
+        int idx = lineup_i + 1;
+        for (int i = 0; i < at->size; i++) {
+            int item_obj_i = idx;
+            memset(&now->lineup[now->n_lineup], 0, sizeof(now->lineup[0]));
+            fx_parse_lineup_item(c, item_obj_i, &now->lineup[now->n_lineup]);
+            now->n_lineup++;
+            idx = fx_skip(c, item_obj_i);
+        }
+    }
     return FF_FIXTURE_OK;
 }
 

@@ -21,12 +21,12 @@ extern "C" {
  * active screen (same calling convention as fixture_view.h's
  * ff_fixture_view_build: a display must already be the LVGL default).
  *
- * Only the Radar tile renders real content in this slice
- * (`ff_scr_radar_build`, driven by `state->radar`) — Now/Signals are
- * placeholder panes clearly marked with their owning spec number
- * (S07/S08), per the PR B brief ("Only Radar renders real content this
- * PR; Now/Signals get placeholder panes clearly marked TODO"). The
- * tileview opens on whichever tile matches `state->active_face`
+ * Radar (`ff_scr_radar_build`, driven by `state->radar`) and, as of S07
+ * slice b, Now (`ff_scr_now_build`, driven by `state->now`) render real
+ * content — Signals is still a placeholder pane clearly marked with its
+ * owning spec number (S08), per the original PR B brief's "placeholder
+ * panes clearly marked TODO" pattern, now updated as each face's own
+ * slice lands. The tileview opens on whichever tile matches `state->active_face`
  * (`FF_APP_FACE_SETTINGS` falls back to the Radar tile — Settings has no
  * tile of its own here).
  */
