@@ -1,0 +1,15 @@
+{
+  "festpack": "0.1",
+  "festival": {
+    "name": "Minimal Fest",
+    "year": 2027,
+    "start": "2027-07-01",
+    "end": "2027-07-02",
+    "venue": {
+      "lat": 41.0,
+      "lon": -84.0
+    }
+  },
+  "stages": [
+    {
+     

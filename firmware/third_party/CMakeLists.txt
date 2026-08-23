@@ -4,3 +4,7 @@
 
 add_library(ff-stb-image-write INTERFACE)
 target_include_directories(ff-stb-image-write INTERFACE ${CMAKE_CURRENT_SOURCE_DIR})
+
+# S05
+add_library(ff-jsmn INTERFACE)
+target_include_directories(ff-jsmn INTERFACE ${CMAKE_CURRENT_SOURCE_DIR})

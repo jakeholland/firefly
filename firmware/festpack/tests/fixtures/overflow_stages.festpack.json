@@ -1,0 +1,89 @@
+{
+  "festpack": "0.1",
+  "festival": {
+    "name": "Minimal Fest",
+    "year": 2027,
+    "start": "2027-07-01",
+    "end": "2027-07-02",
+    "venue": {
+      "lat": 41.0,
+      "lon": -84.0
+    }
+  },
+  "stages": [
+    {
+      "id": "s0",
+      "name": "Stage 0",
+      "color": "#ffffff"
+    },
+    {
+      "id": "s1",
+      "name": "Stage 1",
+      "color": "#ffffff"
+    },
+    {
+      "id": "s2",
+      "name": "Stage 2",
+      "color": "#ffffff"
+    },
+    {
+      "id": "s3",
+      "name": "Stage 3",
+      "color": "#ffffff"
+    },
+    {
+      "id": "s4",
+      "name": "Stage 4",
+      "color": "#ffffff"
+    },
+    {
+      "id": "s5",
+      "name": "Stage 5",
+      "color": "#ffffff"
+    },
+    {
+      "id": "s6",
+      "name": "Stage 6",
+      "color": "#ffffff"
+    },
+    {
+      "id": "s7",
+      "name": "Stage 7",
+      "color": "#ffffff"
+    },
+    {
+      "id": "s8",
+      "name": "Stage 8",
+      "color": "#ffffff"
+    },
+    {
+      "id": "s9",
+      "name": "Stage 9",
+      "color": "#ffffff"
+    },
+    {
+      "id": "s10",
+      "name": "Stage 10",
+      "color": "#ffffff"
+    },
+    {
+      "id": "s11",
+      "name": "Stage 11",
+      "color": "#ffffff"
+    },
+    {
+      "id": "s12",
+      "name": "Stage 12",
+      "color": "#ffffff"
+    }
+  ],
+  "schedule": [
+    {
+      "artist": "Solo Act",
+      "stage": "a",
+      "day": "2027-07-01",
+      "start": "20:00",
+      "end": "21:00"
+    }
+  ]
+}

@@ -1,0 +1,44 @@
+{
+  "festpack": "0.1",
+  "festival": {
+    "name": "Square Test Fest",
+    "year": 2027,
+    "start": "2027-08-01",
+    "end": "2027-08-01",
+    "venue": {
+      "name": "Origin",
+      "lat": 39.936,
+      "lon": -82.414,
+      "approximate": false
+    }
+  },
+  "stages": [],
+  "schedule": [],
+  "map": {
+    "features": [
+      {
+        "kind": "water",
+        "label": "Square Pond",
+        "polygon": [
+          {
+            "lat": 39.937,
+            "lon": -82.413
+          },
+          {
+            "lat": 39.937,
+            "lon": -82.415
+          },
+          {
+            "lat": 39.935,
+            "lon": -82.415
+          },
+          {
+            "lat": 39.935,
+            "lon": -82.413
+          }
+        ]
+      }
+    ],
+    "landmarks": []
+  }
+}
