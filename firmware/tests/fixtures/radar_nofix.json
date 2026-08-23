@@ -1,0 +1,17 @@
+{
+  "fixture": "radar_nofix",
+  "face": "radar",
+  "radar": {
+    "mode": "nofix",
+    "arrow_deg": 0.0,
+    "arrow_valid": false,
+    "name": "DANA",
+    "dist_str": "",
+    "age_str": "6 MIN",
+    "trend": 0,
+    "clock_str": "9:50",
+    "batt_pct": 61,
+    "mesh_ok": true,
+    "dots": []
+  }
+}

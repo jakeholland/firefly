@@ -26,9 +26,23 @@
     #define LV_SDL_DIRECT_EXIT      1
 #endif
 
-/* One label ("FIREFLY") on a flat background — the 14px default font is
- * legible at the sim's scale without pulling in extra sizes. */
+/* Boot placeholder / S13 debug face: one label ("FIREFLY") on a flat
+ * background — kept as the LVGL default so that pre-S06 rendering
+ * (fixture_view.c, main.c's boot screen) is unaffected. */
 #define LV_FONT_MONTSERRAT_24 1
 #define LV_FONT_DEFAULT &lv_font_montserrat_24
+
+/* S06 (app/theme/ff_theme.h): the radar face's type scale. Nearest
+ * built-in sizes to the mockup's 21px name / 36px distance / ~11-12px
+ * chip — see ff_theme.h's own comment for the exact rounding rationale
+ * (rounds UP to clear docs/review/ux-raver.md's legibility floor, never
+ * down). LV_FONT_MONTSERRAT_20 backs NOFIX/NOSEL headline text. */
+#define LV_FONT_MONTSERRAT_14 1
+#define LV_FONT_MONTSERRAT_20 1
+#define LV_FONT_MONTSERRAT_22 1
+#define LV_FONT_MONTSERRAT_36 1
+
+/* S06 (app/screens/scr_nav.c): three-face swipe shell. */
+#define LV_USE_TILEVIEW 1
 
 #endif /* LV_CONF_H */

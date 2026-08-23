@@ -32,9 +32,11 @@ endif()
 
 add_executable(ffsim
     main.c
-    fixture_view.c  # S13b — placeholder fixture debug face; no separate
-                     # lib (nothing else links/tests it — rendering is
-                     # covered by golden PNGs, not unit tests, per
+    fixture_view.c  # S13b — placeholder fixture debug face (still used
+                     # for every face except radar; see main.c's
+                     # ff_build_face_screen). No separate lib (nothing
+                     # else links/tests it — rendering is covered by
+                     # golden PNGs, not unit tests, per
                      # docs/ARCHITECTURE.md's "compute = unit; render =
                      # golden PNG" split).
 )
@@ -52,6 +54,7 @@ target_link_libraries(ffsim PRIVATE
     # the final link line (harmless on Linux/GNU ld, but Apple's ld warns
     # "ignoring duplicate libraries" for it).
     ff-sim-fixture  # S13b — fixture.h loader (fixture.c above)
+    ff-app-ui       # S06b — scr_nav.h/scr_radar.h (app/CMakeLists.txt)
     lvgl::lvgl
     ff-stb-image-write
 )

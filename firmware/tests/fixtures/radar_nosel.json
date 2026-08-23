@@ -1,0 +1,17 @@
+{
+  "fixture": "radar_nosel",
+  "face": "radar",
+  "radar": {
+    "mode": "nosel",
+    "arrow_deg": 0.0,
+    "arrow_valid": false,
+    "name": "",
+    "dist_str": "",
+    "age_str": "",
+    "trend": 0,
+    "clock_str": "9:52",
+    "batt_pct": 55,
+    "mesh_ok": false,
+    "dots": []
+  }
+}
