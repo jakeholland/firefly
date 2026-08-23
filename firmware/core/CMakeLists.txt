@@ -96,3 +96,17 @@ if(FF_BUILD_TESTS)
 
     add_test(NAME test_radar COMMAND test_radar)
 endif()
+
+# S08a (core/t9 — multi-tap T9 text-entry engine; docs/specs/S08-signals-t9.md,
+# slice a. UI + feed wiring are separate slices, not part of this build unit.)
+target_sources(ff-core PRIVATE src/ff_t9.c)
+
+if(FF_BUILD_TESTS)
+    add_executable(test_t9
+        tests/test_t9.c
+    )
+    target_link_libraries(test_t9 PRIVATE ff-core unity)
+    ff_apply_warnings(test_t9)
+
+    add_test(NAME test_t9 COMMAND test_t9)
+endif()
