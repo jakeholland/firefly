@@ -119,3 +119,6 @@ add_subdirectory(meshclient)
 add_subdirectory(festpack)
 add_subdirectory(app)
 add_subdirectory(targets/sim)
+
+# S13b
+add_subdirectory(tools) # compare_png — golden-screenshot pixel diff (S14 slice b)

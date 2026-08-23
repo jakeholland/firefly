@@ -5,6 +5,11 @@
 add_library(ff-stb-image-write INTERFACE)
 target_include_directories(ff-stb-image-write INTERFACE ${CMAKE_CURRENT_SOURCE_DIR})
 
+# S13/S14 slice b/c — tools/compare_png.c (golden PNG diff) needs to *read*
+# PNGs; stb_image_write.h above is write-only. Same pinned stb commit.
+add_library(ff-stb-image INTERFACE)
+target_include_directories(ff-stb-image INTERFACE ${CMAKE_CURRENT_SOURCE_DIR})
+
 # S05
 add_library(ff-jsmn INTERFACE)
 target_include_directories(ff-jsmn INTERFACE ${CMAKE_CURRENT_SOURCE_DIR})

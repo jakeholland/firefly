@@ -35,6 +35,25 @@ jobs:
         working-directory: firmware
         run: ctest --test-dir build --output-on-failure
 
+      # S13b — golden screenshots (docs/specs/S14-testing-ci.md slice b).
+      # Renders every tests/fixtures/*.json headlessly (twice each, to
+      # prove determinism) and diffs against tests/golden/*.png at the
+      # <=0.5% threshold. This step itself has NO continue-on-error: a
+      # golden failure must fail the build-test gate. Only the artifact
+      # upload right below it is allowed to no-op on quota/outage.
+      - name: Golden screenshots
+        working-directory: firmware
+        run: ./tests/run_goldens.sh
+
+      - name: Upload golden diff artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        continue-on-error: true   # artifact quota outages must not fail the build gate
+        with:
+          name: golden-diffs
+          path: firmware/tests/golden/_diff_out/*.png
+          if-no-files-found: ignore
+
       - name: Headless boot screenshot
         working-directory: firmware
         run: |
