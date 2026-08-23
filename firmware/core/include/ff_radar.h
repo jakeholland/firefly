@@ -149,6 +149,22 @@ void ff_radar_smooth_reset(ff_radar_smooth_t *s);
  *     trust this position"); this is flagged as an interpretation call in
  *     the PR body per AGENTS.md.
  *
+ * RENDERER CONTRACT (PR #13 review finding #2 — read this before writing
+ * scr_radar.c): because of the FF_FRESH_NEVER folding above, `mode ==
+ * RADAR_LOST` alone does NOT distinguish "this member's fix is genuinely
+ * old" from "this member has never sent a fix at all" — and those two
+ * cases need different copy (CLAUDE.md's honesty rule: a never-fixed
+ * member must not be told apart from a real "LAST SEEN 47 MIN" by name
+ * alone, or the UI ends up implying a real-but-stale position that never
+ * existed). Disambiguate on `age_str`, not `mode`:
+ *   - `mode == RADAR_LOST && age_str[0] != '\0'` — a real past fix exists;
+ *     show it ("LAST SEEN <age_str>").
+ *   - `mode == RADAR_LOST && age_str[0] == '\0'` — never fixed; show a
+ *     distinct "NO FIX YET" (or equivalent), never a "LAST SEEN" label.
+ * This is exactly the invariant `S06_AC1_mode_lost_via_never_had_a_fix`
+ * (core/tests/test_radar.c) pins: `age_str == ""` whenever there is no
+ * real fix to report, regardless of `mode`.
+ *
  * `arrow_valid` is true only when a bearing genuinely exists to smooth
  * toward: `my_pos_ok && heading_deg` valid `&&` the selected member has a
  * position fix (`has_pos`). This is `false` for CLOSE/NOFIX/NOSEL per the

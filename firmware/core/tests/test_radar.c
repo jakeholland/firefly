@@ -276,6 +276,111 @@ static void S06_AC1_mode_lost_via_never_had_a_fix(void)
     TEST_ASSERT_EQUAL_STRING("", v.age_str);
 }
 
+/* ---------------------------------------------------------------------
+ * AC1 — mode-priority interaction cases (PR #13 review finding #1).
+ *
+ * The rows above each hold every OTHER input fixed at a value that can't
+ * trip an earlier-priority check, so none of them actually pin the
+ * check ORDER itself: e.g. every CLOSE row above uses a fresh
+ * (would-be-LIVE) position, so swapping the CLOSE check and the
+ * freshness switch wouldn't change their result. These two do pin the
+ * order — each is constructed so a specific pair of checks disagree,
+ * and only wins if the higher-priority one runs first.
+ * ------------------------------------------------------------------- */
+
+static void S06_AC1_close_by_rssi_wins_over_stale_gps(void)
+{
+    ff_crew_t c;
+    ff_crew_member_t *m = setup_selected_member(&c);
+    m->has_pos = true;
+    m->pos = (ff_latlon_t){0.01, 0.0}; /* ~1112 m: outside 30 m, distance leg false */
+    m->pos_age_ms = 0u;                /* age at now_ms=700000 is 700000ms: LOST on its own */
+    m->rssi_dbm = -50;                 /* > -60 dBm threshold */
+    m->rssi_age_ms = 700000u - 500u;   /* age 500ms at now_ms=700000: inside the 10s window */
+
+    ff_radar_view_t v;
+    memset(&v, 0, sizeof(v));
+    ff_radar_smooth_t sm;
+    ff_radar_smooth_reset(&sm);
+    ff_latlon_t my_pos = {0.0, 0.0};
+
+    ff_radar_compute(&v, &sm, &c, 0.0f, my_pos, true, false, 700000u);
+
+    /* This member's GPS fix is 700s old — comfortably past the 600s LOST
+     * threshold, so freshness alone says LOST. If the CLOSE check ran
+     * AFTER the freshness switch instead of before it, this would
+     * resolve RADAR_LOST. Pins the priority order CLOSE > freshness
+     * (S06 spec: "CLOSE per S02 predicate; else LIVE/STALE/LOST from
+     * freshness" — CLOSE is checked first, unconditionally). */
+    TEST_ASSERT_EQUAL_INT(RADAR_CLOSE, v.mode);
+    TEST_ASSERT_FALSE(v.arrow_valid);
+}
+
+static void S06_AC1_nofix_beats_close_by_rssi(void)
+{
+    ff_crew_t c;
+    ff_crew_member_t *m = setup_selected_member(&c);
+    m->has_pos = true;
+    m->pos = (ff_latlon_t){0.01, 0.0};
+    m->pos_age_ms = 0u;
+    m->rssi_dbm = -50;             /* > -60 dBm threshold: RSSI-close on its own */
+    m->rssi_age_ms = 5000u - 500u; /* age 500ms at now_ms=5000: inside the 10s window */
+
+    ff_radar_view_t v;
+    memset(&v, 0, sizeof(v));
+    ff_radar_smooth_t sm;
+    ff_radar_smooth_reset(&sm);
+    ff_latlon_t my_pos = {0.0, 0.0};
+
+    /* my_pos_ok=false: this member is RSSI-close (ff_crew_close_range
+     * would return true on its own), but if the CLOSE check ran BEFORE
+     * the NOFIX check instead of after it, that RSSI-close reading
+     * would win and produce RADAR_CLOSE. Pins the priority order
+     * NOFIX > CLOSE (S06 spec lists NOFIX before CLOSE). */
+    ff_radar_compute(&v, &sm, &c, 0.0f, my_pos, /*my_pos_ok=*/false, false, 5000u);
+
+    TEST_ASSERT_EQUAL_INT(RADAR_NOFIX, v.mode);
+    TEST_ASSERT_FALSE(v.arrow_valid);
+}
+
+/* ---------------------------------------------------------------------
+ * clock_str/batt_pct/mesh_ok left untouched (PR #13 review finding #3).
+ *
+ * These three are caller-owned — RTC/battery/mesh-link inputs
+ * ff_radar_compute never receives (see ff_radar.h's deviation note) —
+ * so it must leave them bit-for-bit as it found them. Whole-struct
+ * 0xAA poisoning (same model as
+ * S06_AC3_dots_empty_when_my_pos_or_heading_invalid) makes an
+ * accidental write to any of the three fail loudly, regardless of what
+ * value it happened to write.
+ * ------------------------------------------------------------------- */
+
+static void S06_AC1_compute_leaves_clock_batt_mesh_untouched(void)
+{
+    ff_crew_t c;
+    ff_crew_member_t *m = setup_selected_member(&c);
+    m->has_pos = true;
+    m->pos = (ff_latlon_t){0.01, 0.0};
+    m->pos_age_ms = 0u;
+
+    ff_radar_view_t v;
+    memset(&v, 0xAA, sizeof(v));
+    ff_radar_smooth_t sm;
+    ff_radar_smooth_reset(&sm);
+    ff_latlon_t my_pos = {0.0, 0.0};
+
+    ff_radar_compute(&v, &sm, &c, 0.0f, my_pos, true, false, 0u);
+
+    char poisoned_clock[FF_RADAR_CLOCK_LEN];
+    memset(poisoned_clock, 0xAA, sizeof(poisoned_clock));
+    TEST_ASSERT_EQUAL_MEMORY(poisoned_clock, v.clock_str, sizeof(poisoned_clock));
+    TEST_ASSERT_EQUAL_INT8((int8_t)0xAA, v.batt_pct);
+
+    unsigned char mesh_ok_byte;
+    memcpy(&mesh_ok_byte, &v.mesh_ok, sizeof(mesh_ok_byte));
+    TEST_ASSERT_EQUAL_UINT8(0xAA, mesh_ok_byte);
+}
+
 /* ------------------------------------------------------------------- */
 /* AC2 — arrow smoothing                                                */
 /* ------------------------------------------------------------------- */
@@ -505,6 +610,10 @@ int main(void)
     RUN_TEST(S06_AC1_mode_stale);
     RUN_TEST(S06_AC1_mode_lost);
     RUN_TEST(S06_AC1_mode_lost_via_never_had_a_fix);
+
+    RUN_TEST(S06_AC1_close_by_rssi_wins_over_stale_gps);
+    RUN_TEST(S06_AC1_nofix_beats_close_by_rssi);
+    RUN_TEST(S06_AC1_compute_leaves_clock_batt_mesh_untouched);
 
     RUN_TEST(S06_AC2_smoothing_reaches_at_least_81deg_by_600ms_no_overshoot);
     RUN_TEST(S06_AC2_smoothing_350_to_10_wraps_through_zero_not_180);
