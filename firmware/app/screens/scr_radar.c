@@ -2,15 +2,23 @@
  * scr_radar.c — see scr_radar.h. Pure render: ff_radar_view_t -> LVGL
  * objects. No domain logic (CLAUDE.md) — every branch below is "how to
  * draw mode X", never "should this be mode X".
+ *
+ * Collision-free placement (arrow length, ring-dot position/clustering)
+ * is NOT computed here — it's resolved by app/screens/radar_layout.h/.c
+ * (a pure C11 module with no LVGL dependency, unit-tested directly with
+ * geometric assertions — see app/screens/tests/test_radar_layout.c).
+ * This file only draws the coordinates that module hands back; see
+ * radar_layout.h's top comment for why (PR #16 UX review round 3 / code
+ * review round 2: three rounds of one-off overlap patches produced three
+ * new overlaps, because the old resolver lived in here mixed with LVGL
+ * object creation and used iterative push instead of search).
  */
 #include "scr_radar.h"
 
-#include <math.h>
 #include <stdio.h>
 
 #include "ff_theme.h"
-
-#define FF_SCR_RADAR_PI 3.14159265358979323846f
+#include "radar_layout.h"
 
 /* ---------------------------------------------------------------------
  * lv_line point storage.
@@ -51,16 +59,6 @@ static lv_point_precise_t *radar_alloc_line_pts(void)
     return s_line_pts[s_line_pt_next++];
 }
 
-/* Screen direction convention shared with ff_radar_compute/ff_geo: 0 deg
- * = straight "up" (ahead), clockwise — same as ff_geo_bearing_deg's and
- * ff_geo_arrow_deg's documented convention. */
-static void radar_deg_to_offset(float deg, float radius_px, float *dx, float *dy)
-{
-    float rad = deg * (FF_SCR_RADAR_PI / 180.0f);
-    *dx = radius_px * sinf(rad);
-    *dy = -radius_px * cosf(rad);
-}
-
 /* ---------------------------------------------------------------------
  * Small shared builders.
  * ------------------------------------------------------------------- */
@@ -91,10 +89,11 @@ static lv_obj_t *radar_make_chip(lv_obj_t *parent, char const *text, uint32_t bg
     return chip;
 }
 
-/* A translucent ring hugging the puck's own edge — the STALE/LOST "rim
- * tint" (S06: "amber rim tint"). Drawn here (not by the shell, which owns
- * the puck object) so this file stays a pure function of (parent, radar)
- * with no dependency on the shell's internal object tree. */
+/* A translucent ring hugging the puck's own edge — the STALE "rim tint"
+ * (S06: "amber rim tint"; LOST deliberately gets none — see
+ * radar_render_lost). Drawn here (not by the shell, which owns the puck
+ * object) so this file stays a pure function of (parent, radar) with no
+ * dependency on the shell's internal object tree. */
 static void radar_build_rim_tint(lv_obj_t *parent, uint32_t color_hex, lv_opa_t opa)
 {
     lv_obj_t *rim = lv_obj_create(parent);
@@ -113,7 +112,9 @@ static void radar_build_rim_tint(lv_obj_t *parent, uint32_t color_hex, lv_opa_t 
 /* Status bar: clock / mesh / battery. Cross-mode chrome, not part of the
  * mode-specific truth table — always rendered from whatever the caller
  * populated in *r (ff_radar_compute never touches these three fields;
- * see ff_radar.h's deviation note). */
+ * see ff_radar.h's deviation note). Its position (dy=
+ * RADAR_LAYOUT_STATUS_BAR_DY) is also one of radar_layout's registered
+ * reserved rectangles — every mode's dots and arrow steer clear of it. */
 static void radar_build_status_bar(lv_obj_t *parent, ff_radar_view_t const *r)
 {
     char buf[24];
@@ -122,7 +123,7 @@ static void radar_build_status_bar(lv_obj_t *parent, ff_radar_view_t const *r)
     lv_label_set_text(clock_lbl, r->clock_str[0] != '\0' ? r->clock_str : "--:--");
     lv_obj_set_style_text_font(clock_lbl, FF_THEME_FONT_LABEL, 0);
     lv_obj_set_style_text_color(clock_lbl, lv_color_hex(FF_THEME_COLOR_MUTED), 0);
-    lv_obj_align(clock_lbl, LV_ALIGN_CENTER, -78, -195);
+    lv_obj_align(clock_lbl, LV_ALIGN_CENTER, -78, (int32_t)RADAR_LAYOUT_STATUS_BAR_DY);
 
     lv_obj_t *mesh_lbl = lv_label_create(parent);
     lv_label_set_text(mesh_lbl, r->mesh_ok ? "MESH" : "NO MESH");
@@ -131,9 +132,9 @@ static void radar_build_status_bar(lv_obj_t *parent, ff_radar_view_t const *r)
      * the whole point of the puck (finding friends) — it must read at
      * least as alarming as a low battery, not as flat grey chrome. Same
      * alert color as the low-battery case below. */
-    lv_obj_set_style_text_color(mesh_lbl, lv_color_hex(r->mesh_ok ? FF_THEME_COLOR_LIVE_GREEN : FF_THEME_COLOR_STALE_AMBER),
-                                 0);
-    lv_obj_align(mesh_lbl, LV_ALIGN_CENTER, 0, -195);
+    lv_obj_set_style_text_color(
+        mesh_lbl, lv_color_hex(r->mesh_ok ? FF_THEME_COLOR_LIVE_GREEN : FF_THEME_COLOR_STALE_AMBER), 0);
+    lv_obj_align(mesh_lbl, LV_ALIGN_CENTER, 0, (int32_t)RADAR_LAYOUT_STATUS_BAR_DY);
 
     lv_obj_t *batt_lbl = lv_label_create(parent);
     if (r->batt_pct < 0) {
@@ -146,162 +147,83 @@ static void radar_build_status_bar(lv_obj_t *parent, ff_radar_view_t const *r)
     bool batt_low = (r->batt_pct >= 0 && r->batt_pct <= FF_THEME_BATT_LOW_PCT);
     lv_obj_set_style_text_color(batt_lbl,
                                  lv_color_hex(batt_low ? FF_THEME_COLOR_STALE_AMBER : FF_THEME_COLOR_MUTED), 0);
-    lv_obj_align(batt_lbl, LV_ALIGN_CENTER, 78, -195);
+    lv_obj_align(batt_lbl, LV_ALIGN_CENTER, 78, (int32_t)RADAR_LAYOUT_STATUS_BAR_DY);
 }
 
-/* ---------------------------------------------------------------------
- * Chrome keep-out policy (UX review finding #3).
- *
- * Ring dots are positioned by heading-relative bearing, so ANY fixed
- * chrome (chips, buttons, the name/distance block) can collide with a
- * dot at some heading — confirmed in review at three different spots
- * (FLARE button vs. a dot, the STALE chip vs. a dot, the CLOSE ring vs.
- * the name). Rather than one-off nudge each report, every mode declares
- * its fixed chrome as a short list of rectangles (center-relative,
- * generous rather than pixel-exact — better to push a dot a little
- * further than strictly required than to leave a real overlap); a dot
- * whose position falls inside (or within its own half-size of) any
- * rectangle is pushed OUT along whichever edge of that rectangle is
- * nearest — a standard axis-aligned minimum-translation push, not a
- * pure "reduce the radius toward center" pull-in.
- *
- * Pure radial pull-in was tried first and doesn't work in general: for a
- * bearing pointing roughly at a wide keep-out band (e.g. straight "south"
- * into the name/distance/chip stack, which spans nearly the puck's full
- * width), EVERY radius between the stack's near and far edge collides,
- * and the stack's far edge already sits close to the ring's own natural
- * radius — there is no inward radius left that both clears the stack and
- * stays a sane distance from center. Push-to-nearest-edge instead moves
- * the dot along whichever axis needs the LEAST displacement — which, for
- * a chip near the puck's lower edge, is usually "push it further out and
- * around", still comfortably inside the puck (clamped below by
- * FF_SCR_RADAR_DOT_MAX_CENTER_DIST_PX so a push can never place a dot
- * outside the puck's own circle). This is geometry, not domain logic —
- * no crew/position data is re-derived, only where an already-computed
- * dot is allowed to sit on screen.
- * ------------------------------------------------------------------- */
-typedef struct {
-    int32_t x1, y1, x2, y2;
-} radar_rect_t;
-
-#define FF_SCR_RADAR_MAX_KEEPOUT_RECTS 6
-/* Furthest a dot's center may sit from the puck's own center — its own
- * half-size inside the puck radius, with a small extra margin — so a
- * collision push can never place any part of a dot outside the puck's
- * circular silhouette. */
-#define FF_SCR_RADAR_DOT_MAX_CENTER_DIST_PX \
-    ((float)FF_THEME_PUCK_RADIUS_PX - (float)FF_THEME_DOT_PX / 2.0f - 2.0f)
-
-/* Pushes (dx,dy) out of every rectangle in `rects` it currently falls
- * inside (inflated by the dot's own half-size), along the nearest edge,
- * iterated a few passes to settle multi-rectangle cases; then clamps the
- * result to stay within the puck. */
-static void radar_resolve_dot_collision(radar_rect_t const *rects, int n_rects, float *dx, float *dy)
+/* Crew ring: every dot ff_radar_compute produced, placed and clustered by
+ * radar_layout_resolve_dots (see that function's doc comment) against
+ * `*reg`. Renders exactly one visual marker per distinct cluster_id:
+ *   - cluster_size == 1: the member's own initial/color, filled when
+ *     LIVE, outline-only "ghost" otherwise (freshness != LIVE).
+ *   - cluster_size > 1: a neutral count marker — ORCHESTRATOR RULING
+ *     (round 4): several crew members converged on nearly the same
+ *     bearing get merged into ONE marker showing how many, never hidden
+ *     (CLAUDE.md's honesty rule: dropping a *known* crew member from the
+ *     ring is a lie by omission, the same category of dishonesty as
+ *     fabricating one that isn't there). No single crew color or
+ *     stale/fresh convention applies honestly to a mixed group, so the
+ *     marker uses a neutral surface color instead. */
+static void radar_build_dots(lv_obj_t *parent, ff_radar_view_t const *r, radar_layout_registry_t const *reg)
 {
-    float half = (float)FF_THEME_DOT_PX / 2.0f;
-    const float eps = 1.0f;
-
-    for (int pass = 0; pass < 4; pass++) {
-        bool moved = false;
-        for (int i = 0; i < n_rects; i++) {
-            float x1 = (float)rects[i].x1 - half;
-            float x2 = (float)rects[i].x2 + half;
-            float y1 = (float)rects[i].y1 - half;
-            float y2 = (float)rects[i].y2 + half;
-            if (*dx < x1 || *dx > x2 || *dy < y1 || *dy > y2) {
-                continue; /* not inside this (inflated) rectangle */
-            }
-
-            float d_left = *dx - x1;
-            float d_right = x2 - *dx;
-            float d_top = *dy - y1;
-            float d_bottom = y2 - *dy;
-            float m = d_left;
-            int dir = 0; /* 0=left 1=right 2=top 3=bottom */
-            if (d_right < m) {
-                m = d_right;
-                dir = 1;
-            }
-            if (d_top < m) {
-                m = d_top;
-                dir = 2;
-            }
-            if (d_bottom < m) {
-                m = d_bottom;
-                dir = 3;
-            }
-            switch (dir) {
-            case 0:
-                *dx = x1 - eps;
-                break;
-            case 1:
-                *dx = x2 + eps;
-                break;
-            case 2:
-                *dy = y1 - eps;
-                break;
-            default:
-                *dy = y2 + eps;
-                break;
-            }
-            moved = true;
-        }
-        if (!moved) {
-            break;
-        }
+    if (r->n_dots == 0) {
+        return;
     }
 
-    float dist = sqrtf((*dx) * (*dx) + (*dy) * (*dy));
-    if (dist > FF_SCR_RADAR_DOT_MAX_CENTER_DIST_PX) {
-        float scale = FF_SCR_RADAR_DOT_MAX_CENTER_DIST_PX / dist;
-        *dx *= scale;
-        *dy *= scale;
+    float ring_deg[FF_CREW_MAX];
+    for (uint8_t i = 0; i < r->n_dots && i < FF_CREW_MAX; i++) {
+        ring_deg[i] = r->dots[i].ring_deg;
     }
-}
 
-/* Crew ring: every dot ff_radar_compute produced, heading-relative,
- * dashed (outline-only) when that member's own freshness isn't LIVE.
- * Independent of `mode` (see ff_radar.h: dots are computed whenever a
- * bearing frame exists, regardless of the *selected* member's state).
- * `keepout`/`n_keepout` is this mode's fixed-chrome rectangle list (see
- * the keep-out policy comment above) — pass NULL/0 for none. */
-static void radar_build_dots(lv_obj_t *parent, ff_radar_view_t const *r, radar_rect_t const *keepout, int n_keepout)
-{
-    for (uint8_t i = 0; i < r->n_dots; i++) {
-        ff_radar_dot_t const *d = &r->dots[i];
-        float dx, dy;
-        radar_deg_to_offset(d->ring_deg, (float)FF_THEME_RING_RADIUS_PX, &dx, &dy);
-        radar_resolve_dot_collision(keepout, n_keepout, &dx, &dy);
+    radar_layout_dot_result_t resolved[FF_CREW_MAX];
+    radar_layout_resolve_dots(reg, ring_deg, (int)r->n_dots, resolved);
+
+    for (uint8_t i = 0; i < r->n_dots && i < FF_CREW_MAX; i++) {
+        if (resolved[i].cluster_id != (int)i) {
+            continue; /* not this cluster's anchor member — its marker is drawn at cluster_id's iteration */
+        }
 
         lv_obj_t *dot = lv_obj_create(parent);
         lv_obj_remove_style_all(dot);
-        lv_obj_set_size(dot, FF_THEME_DOT_PX, FF_THEME_DOT_PX);
+        lv_obj_set_size(dot, RADAR_LAYOUT_DOT_PX, RADAR_LAYOUT_DOT_PX);
         lv_obj_set_style_radius(dot, LV_RADIUS_CIRCLE, 0);
         lv_obj_clear_flag(dot, LV_OBJ_FLAG_SCROLLABLE);
         lv_obj_clear_flag(dot, LV_OBJ_FLAG_CLICKABLE); /* indicator only in this slice */
 
-        uint32_t crew_hex = ff_theme_crew_color(d->color_idx);
-        if (d->stale) {
-            /* Outline-only "ghost" — readable as "not current" without
-             * needing to read any text (ux-raver honesty-read check). */
-            lv_obj_set_style_bg_opa(dot, LV_OPA_TRANSP, 0);
-            lv_obj_set_style_border_width(dot, 2, 0);
-            lv_obj_set_style_border_color(dot, lv_color_hex(crew_hex), 0);
-            lv_obj_set_style_border_opa(dot, LV_OPA_70, 0);
-        } else {
-            lv_obj_set_style_bg_color(dot, lv_color_hex(crew_hex), 0);
-            lv_obj_set_style_bg_opa(dot, LV_OPA_COVER, 0);
-        }
-        lv_obj_align(dot, LV_ALIGN_CENTER, (int32_t)dx, (int32_t)dy);
+        lv_obj_t *label = lv_label_create(dot);
+        lv_obj_set_style_text_font(label, FF_THEME_FONT_LABEL, 0);
 
-        if (d->initial != '\0') {
+        if (resolved[i].cluster_size > 1) {
+            lv_obj_set_style_bg_color(dot, lv_color_hex(FF_THEME_COLOR_SURFACE), 0);
+            lv_obj_set_style_bg_opa(dot, LV_OPA_COVER, 0);
+            lv_obj_set_style_border_width(dot, 2, 0);
+            lv_obj_set_style_border_color(dot, lv_color_hex(FF_THEME_COLOR_INK), 0);
+
+            char count_buf[4];
+            snprintf(count_buf, sizeof(count_buf), "%d", resolved[i].cluster_size);
+            lv_label_set_text(label, count_buf);
+            lv_obj_set_style_text_color(label, lv_color_hex(FF_THEME_COLOR_INK), 0);
+        } else {
+            ff_radar_dot_t const *d = &r->dots[i];
+            uint32_t crew_hex = ff_theme_crew_color(d->color_idx);
+            if (d->stale) {
+                /* Outline-only "ghost" — readable as "not current"
+                 * without needing to read any text (ux-raver honesty-read
+                 * check). */
+                lv_obj_set_style_bg_opa(dot, LV_OPA_TRANSP, 0);
+                lv_obj_set_style_border_width(dot, 2, 0);
+                lv_obj_set_style_border_color(dot, lv_color_hex(crew_hex), 0);
+                lv_obj_set_style_border_opa(dot, LV_OPA_70, 0);
+            } else {
+                lv_obj_set_style_bg_color(dot, lv_color_hex(crew_hex), 0);
+                lv_obj_set_style_bg_opa(dot, LV_OPA_COVER, 0);
+            }
             char ch[2] = {d->initial, '\0'};
-            lv_obj_t *label = lv_label_create(dot);
-            lv_label_set_text(label, ch);
-            lv_obj_set_style_text_font(label, FF_THEME_FONT_LABEL, 0);
+            lv_label_set_text(label, d->initial != '\0' ? ch : "");
             lv_obj_set_style_text_color(label, lv_color_hex(d->stale ? crew_hex : FF_THEME_COLOR_BG), 0);
-            lv_obj_center(label);
         }
+        lv_obj_center(label);
+
+        lv_obj_align(dot, LV_ALIGN_CENTER, (int32_t)resolved[i].dx, (int32_t)resolved[i].dy);
     }
 }
 
@@ -425,9 +347,9 @@ static void radar_draw_filled_triangle(lv_obj_t *parent, float p0x, float p0y, f
 static void radar_draw_outline_triangle(lv_obj_t *parent, float p0x, float p0y, float p1x, float p1y, float p2x,
                                          float p2y, uint32_t color_hex, lv_opa_t opa)
 {
-    radar_draw_segment(parent, p0x, p0y, p1x, p1y, color_hex, opa, 3);
-    radar_draw_segment(parent, p1x, p1y, p2x, p2y, color_hex, opa, 3);
-    radar_draw_segment(parent, p2x, p2y, p0x, p0y, color_hex, opa, 3);
+    radar_draw_segment(parent, p0x, p0y, p1x, p1y, color_hex, opa, 4);
+    radar_draw_segment(parent, p1x, p1y, p2x, p2y, color_hex, opa, 4);
+    radar_draw_segment(parent, p2x, p2y, p0x, p0y, color_hex, opa, 4);
 }
 
 typedef enum {
@@ -436,45 +358,32 @@ typedef enum {
     RADAR_ARROW_GHOST,  /* LOST (real fix): faint dashed tail + OUTLINE-ONLY head */
 } radar_arrow_style_t;
 
-/* Tapered arrow — PR #16 UX review finding #2: a shaft+circle "doesn't
- * read as an arrow" ("a ball doesn't have a pointy end"). Replaced with a
- * real kite/chevron: a thin tail from puck-center out to the head's base,
- * then a triangular head from that base to the tip at `deg`. `style`
- * controls the tail's dash pattern and whether the head is filled or
- * outline-only (see radar_arrow_style_t). Direction convention matches
- * radar_deg_to_offset (0 deg = up/ahead, clockwise). */
-static void radar_draw_arrow(lv_obj_t *parent, float deg, uint32_t color_hex, lv_opa_t opa, radar_arrow_style_t style)
+/* Draws an ALREADY-RESOLVED arrow (radar_layout_resolve_arrow's output —
+ * this file does no arrow placement math itself, see the file's top
+ * comment): a thin tail from puck-center to the head's base, then a
+ * triangular head from that base to the tip. `style` controls the tail's
+ * dash pattern and whether the head is filled or outline-only. */
+static void radar_draw_arrow(lv_obj_t *parent, radar_layout_arrow_t const *arrow, uint32_t color_hex, lv_opa_t opa,
+                              radar_arrow_style_t style)
 {
-    float rad = deg * (FF_SCR_RADAR_PI / 180.0f);
-    float fx = sinf(rad);  /* forward unit vector (toward the tip) */
-    float fy = -cosf(rad);
-    float px = cosf(rad); /* perpendicular unit vector (the head's base spread) */
-    float py = sinf(rad);
-
-    float tip_r = (float)FF_THEME_ARROW_LEN_PX;
-    float base_r = tip_r - (float)FF_THEME_ARROW_HEAD_LEN_PX;
-    float half_w = (float)FF_THEME_ARROW_HEAD_WIDTH_PX / 2.0f;
-
-    float base_x = fx * base_r, base_y = fy * base_r;
-    float tip_x = fx * tip_r, tip_y = fy * tip_r;
-    float left_x = base_x - px * half_w, left_y = base_y - py * half_w;
-    float right_x = base_x + px * half_w, right_y = base_y + py * half_w;
-
     if (style == RADAR_ARROW_SOLID) {
-        radar_draw_segment(parent, 0.0f, 0.0f, base_x, base_y, color_hex, opa, 6);
+        radar_draw_segment(parent, 0.0f, 0.0f, arrow->base_dx, arrow->base_dy, color_hex, opa, 6);
     } else {
         enum { N_DASHES = 3 };
         for (int i = 0; i < N_DASHES; i++) {
             float t0 = ((float)i + 0.15f) / (float)N_DASHES;
             float t1 = ((float)i + 0.65f) / (float)N_DASHES;
-            radar_draw_segment(parent, base_x * t0, base_y * t0, base_x * t1, base_y * t1, color_hex, opa, 5);
+            radar_draw_segment(parent, arrow->base_dx * t0, arrow->base_dy * t0, arrow->base_dx * t1,
+                                arrow->base_dy * t1, color_hex, opa, 5);
         }
     }
 
     if (style == RADAR_ARROW_GHOST) {
-        radar_draw_outline_triangle(parent, tip_x, tip_y, left_x, left_y, right_x, right_y, color_hex, opa);
+        radar_draw_outline_triangle(parent, arrow->tip_dx, arrow->tip_dy, arrow->left_dx, arrow->left_dy,
+                                     arrow->right_dx, arrow->right_dy, color_hex, opa);
     } else {
-        radar_draw_filled_triangle(parent, tip_x, tip_y, left_x, left_y, right_x, right_y, color_hex, opa);
+        radar_draw_filled_triangle(parent, arrow->tip_dx, arrow->tip_dy, arrow->left_dx, arrow->left_dy,
+                                    arrow->right_dx, arrow->right_dy, color_hex, opa);
     }
 }
 
@@ -499,68 +408,44 @@ static lv_obj_t *radar_build_distance_label(lv_obj_t *parent, char const *dist_s
 }
 
 /* ---------------------------------------------------------------------
- * Per-mode renderers.
- *
- * Vertical positions are named constants, not inline magic numbers,
- * specifically so `ff_scr_radar_build`'s keep-out rectangles (which must
- * describe the SAME regions these functions actually draw into) are
- * built from the same source of truth instead of independently-guessed
- * duplicate literals that could silently drift apart (UX review finding
- * #3: "implement a keep-out layout rule, not one-off nudges").
+ * Per-mode renderers. Vertical positions come from radar_layout.h's
+ * RADAR_LAYOUT_* constants (not local magic numbers) — the SAME values
+ * radar_layout_build_registry uses to declare its reserved rectangles,
+ * so there is exactly one place either could drift out of sync with the
+ * other, and that place is radar_layout.h itself.
  * ------------------------------------------------------------------- */
 
-/* LIVE / STALE / LOST-with-a-real-fix share one vertical stack. */
-#define RADAR_STACK_NAME_DY 60
-#define RADAR_STACK_DIST_DY 100
-#define RADAR_STACK_CHIP_DY 148
-
-/* LOST, never fixed. */
-#define RADAR_NEVER_HEADLINE_DY (-10)
-#define RADAR_NEVER_NAME_DY 40
-#define RADAR_NEVER_SUB_DY 90
-
-/* NOFIX. */
-#define RADAR_NOFIX_HEADLINE_DY (-10)
-#define RADAR_NOFIX_SUB_DY 40
-#define RADAR_NOFIX_CHIP_DY 80
-
-/* NOSEL. */
-#define RADAR_NOSEL_HEADLINE_DY (-10)
-#define RADAR_NOSEL_SUB_DY 40
-
-/* CLOSE — restructured per UX review findings #3(a)/(b): the FLARE
- * button no longer overlaps a ring dot at any bearing (handled by the
- * generic keep-out mechanism below, not a one-off nudge), and the name
- * label is pushed below the outer ring's radius instead of sitting
- * inside it. */
-#define RADAR_CLOSE_RING_CY (-55)
-#define RADAR_CLOSE_NAME_DY 59
-#define RADAR_CLOSE_CHIP_DY 98
-#define RADAR_CLOSE_FLARE_DY 147
-
-static void radar_render_live(lv_obj_t *parent, ff_radar_view_t const *r)
+static void radar_render_live(lv_obj_t *parent, ff_radar_view_t const *r, radar_layout_registry_t const *reg)
 {
-    radar_draw_arrow(parent, r->arrow_deg, FF_THEME_COLOR_AMBER, LV_OPA_COVER, RADAR_ARROW_SOLID);
-    radar_build_name_label(parent, r->name, RADAR_STACK_NAME_DY);
-    radar_build_distance_label(parent, r->dist_str, RADAR_STACK_DIST_DY);
-    radar_make_chip(parent, "LIVE", FF_THEME_COLOR_LIVE_GREEN, FF_THEME_COLOR_BG, RADAR_STACK_CHIP_DY);
+    radar_layout_arrow_t arrow;
+    radar_layout_resolve_arrow(reg, r->arrow_deg, &arrow);
+    radar_draw_arrow(parent, &arrow, FF_THEME_COLOR_AMBER, LV_OPA_COVER, RADAR_ARROW_SOLID);
+
+    radar_build_name_label(parent, r->name, (int32_t)RADAR_LAYOUT_STACK_NAME_DY);
+    radar_build_distance_label(parent, r->dist_str, (int32_t)RADAR_LAYOUT_STACK_DIST_DY);
+    radar_make_chip(parent, "LIVE", FF_THEME_COLOR_LIVE_GREEN, FF_THEME_COLOR_BG, (int32_t)RADAR_LAYOUT_STACK_CHIP_DY);
 }
 
-static void radar_render_stale(lv_obj_t *parent, ff_radar_view_t const *r)
+static void radar_render_stale(lv_obj_t *parent, ff_radar_view_t const *r, radar_layout_registry_t const *reg)
 {
     radar_build_rim_tint(parent, FF_THEME_COLOR_STALE_AMBER, LV_OPA_50);
+
+    radar_layout_arrow_t arrow;
+    radar_layout_resolve_arrow(reg, r->arrow_deg, &arrow);
     /* S06 spec: "dashed arrow at 28% opacity". LV_OPA values are 0-255;
      * 28% of 255 rounds to 71. */
-    radar_draw_arrow(parent, r->arrow_deg, FF_THEME_COLOR_STALE_AMBER, 71, RADAR_ARROW_DASHED);
-    radar_build_name_label(parent, r->name, RADAR_STACK_NAME_DY);
-    radar_build_distance_label(parent, r->dist_str, RADAR_STACK_DIST_DY);
+    radar_draw_arrow(parent, &arrow, FF_THEME_COLOR_STALE_AMBER, 71, RADAR_ARROW_DASHED);
+
+    radar_build_name_label(parent, r->name, (int32_t)RADAR_LAYOUT_STACK_NAME_DY);
+    radar_build_distance_label(parent, r->dist_str, (int32_t)RADAR_LAYOUT_STACK_DIST_DY);
 
     char chip_text[40];
     snprintf(chip_text, sizeof(chip_text), "LAST SEEN %s", r->age_str);
-    radar_make_chip(parent, chip_text, FF_THEME_COLOR_STALE_AMBER, FF_THEME_COLOR_BG, RADAR_STACK_CHIP_DY);
+    radar_make_chip(parent, chip_text, FF_THEME_COLOR_STALE_AMBER, FF_THEME_COLOR_BG,
+                     (int32_t)RADAR_LAYOUT_STACK_CHIP_DY);
 }
 
-static void radar_render_lost(lv_obj_t *parent, ff_radar_view_t const *r)
+static void radar_render_lost(lv_obj_t *parent, ff_radar_view_t const *r, radar_layout_registry_t const *reg)
 {
     /* RENDERER CONTRACT (ff_radar.h): mode == RADAR_LOST alone doesn't
      * distinguish "genuinely old fix" from "never fixed" — key off
@@ -585,20 +470,27 @@ static void radar_render_lost(lv_obj_t *parent, ff_radar_view_t const *r)
          *   4. The chip is a dark/muted pill ("give up on" language),
          *      not STALE's bright amber pill ("aging but plausible").
          */
-        /* ~22% opacity: dimmer than STALE's 28% (71/255). The outline-
-         * only shape above already carries most of the "different kind"
-         * signal; opacity is a secondary cue, not the primary one this
-         * time (that was the whole bug last round). */
-        radar_draw_arrow(parent, r->arrow_deg, FF_THEME_COLOR_MUTED, 56, RADAR_ARROW_GHOST);
-        radar_build_name_label(parent, r->name, RADAR_STACK_NAME_DY);
+        radar_layout_arrow_t arrow;
+        radar_layout_resolve_arrow(reg, r->arrow_deg, &arrow);
+        /* ~30% opacity: dimmer than LIVE's full strength but bumped up
+         * from an earlier, too-faint pass (UX review round 3, non-
+         * blocking finding #3: "may be faint enough to read as no arrow
+         * at all rather than an old one") — the outline-only shape above
+         * already carries most of the "different kind" signal; this is
+         * tuned to stay clearly *present* while still reading as
+         * untrusted, not to vanish. */
+        radar_draw_arrow(parent, &arrow, FF_THEME_COLOR_MUTED, 77, RADAR_ARROW_GHOST);
+
+        radar_build_name_label(parent, r->name, (int32_t)RADAR_LAYOUT_STACK_NAME_DY);
 
         char lost_dist[24];
         snprintf(lost_dist, sizeof(lost_dist), "~%s", (r->dist_str[0] != '\0') ? r->dist_str : "?");
-        radar_build_distance_label(parent, lost_dist, RADAR_STACK_DIST_DY);
+        radar_build_distance_label(parent, lost_dist, (int32_t)RADAR_LAYOUT_STACK_DIST_DY);
 
         char chip_text[40];
         snprintf(chip_text, sizeof(chip_text), "LAST SEEN %s", r->age_str);
-        radar_make_chip(parent, chip_text, FF_THEME_COLOR_DIM, FF_THEME_COLOR_INK, RADAR_STACK_CHIP_DY);
+        radar_make_chip(parent, chip_text, FF_THEME_COLOR_DIM, FF_THEME_COLOR_INK,
+                         (int32_t)RADAR_LAYOUT_STACK_CHIP_DY);
     } else {
         /* Never had a fix at all: arrow_valid is already false (nothing
          * to point at, honestly) — no arrow, no rim tint, no invented
@@ -609,15 +501,15 @@ static void radar_render_lost(lv_obj_t *parent, ff_radar_view_t const *r)
         lv_label_set_text(headline, "NO FIX YET");
         lv_obj_set_style_text_font(headline, FF_THEME_FONT_HEADLINE, 0);
         lv_obj_set_style_text_color(headline, lv_color_hex(FF_THEME_COLOR_MUTED), 0);
-        lv_obj_align(headline, LV_ALIGN_CENTER, 0, RADAR_NEVER_HEADLINE_DY);
+        lv_obj_align(headline, LV_ALIGN_CENTER, 0, (int32_t)RADAR_LAYOUT_NEVER_HEADLINE_DY);
 
-        radar_build_name_label(parent, r->name, RADAR_NEVER_NAME_DY);
+        radar_build_name_label(parent, r->name, (int32_t)RADAR_LAYOUT_NEVER_NAME_DY);
 
         lv_obj_t *sub = lv_label_create(parent);
         lv_label_set_text(sub, "Waiting for their first GPS fix");
         lv_obj_set_style_text_font(sub, FF_THEME_FONT_LABEL, 0);
         lv_obj_set_style_text_color(sub, lv_color_hex(FF_THEME_COLOR_DIM), 0);
-        lv_obj_align(sub, LV_ALIGN_CENTER, 0, RADAR_NEVER_SUB_DY);
+        lv_obj_align(sub, LV_ALIGN_CENTER, 0, (int32_t)RADAR_LAYOUT_NEVER_SUB_DY);
     }
 }
 
@@ -643,10 +535,9 @@ static void radar_render_close(lv_obj_t *parent, ff_radar_view_t const *r)
     /* Three pulsing rings (S06: "LVGL anim, 1.2 s period"). Headless
      * single-frame capture never runs the animation timer, so every
      * golden deterministically shows animation-start state — see this
-     * function's anim setup below. Radii/center shrunk and shifted up
-     * from the original slice (UX review finding #4): the outer ring
-     * used to reach past RADAR_STACK_NAME_DY's old position and cut
-     * through the name text every pulse. */
+     * function's anim setup below. CLOSE has no arrow (arrow_valid is
+     * always false in this mode — ff_radar.h), so there's nothing here
+     * for radar_layout_resolve_arrow to do. */
     static const int32_t ring_radii[3] = {38, 64, 90};
     static const lv_opa_t ring_opa[3] = {LV_OPA_80, LV_OPA_50, LV_OPA_20};
     for (int i = 0; i < 3; i++) {
@@ -660,7 +551,7 @@ static void radar_render_close(lv_obj_t *parent, ff_radar_view_t const *r)
         lv_obj_set_style_border_opa(ring, ring_opa[i], 0);
         lv_obj_clear_flag(ring, LV_OBJ_FLAG_SCROLLABLE);
         lv_obj_clear_flag(ring, LV_OBJ_FLAG_CLICKABLE);
-        lv_obj_align(ring, LV_ALIGN_CENTER, 0, RADAR_CLOSE_RING_CY);
+        lv_obj_align(ring, LV_ALIGN_CENTER, 0, (int32_t)RADAR_LAYOUT_CLOSE_RING_CY);
 
         lv_anim_t a;
         lv_anim_init(&a);
@@ -676,9 +567,9 @@ static void radar_render_close(lv_obj_t *parent, ff_radar_view_t const *r)
 
     char big_dist[24];
     snprintf(big_dist, sizeof(big_dist), "~%s", (r->dist_str[0] != '\0') ? r->dist_str : "?");
-    radar_build_distance_label(parent, big_dist, RADAR_CLOSE_RING_CY);
+    radar_build_distance_label(parent, big_dist, (int32_t)RADAR_LAYOUT_CLOSE_RING_CY);
 
-    radar_build_name_label(parent, r->name, RADAR_CLOSE_NAME_DY);
+    radar_build_name_label(parent, r->name, (int32_t)RADAR_LAYOUT_CLOSE_NAME_DY);
 
     char const *trend_text = "STEADY";
     uint32_t trend_color = FF_THEME_COLOR_MUTED;
@@ -689,7 +580,7 @@ static void radar_render_close(lv_obj_t *parent, ff_radar_view_t const *r)
         trend_text = "GETTING FARTHER";
         trend_color = FF_THEME_COLOR_STALE_AMBER;
     }
-    radar_make_chip(parent, trend_text, trend_color, FF_THEME_COLOR_BG, RADAR_CLOSE_CHIP_DY);
+    radar_make_chip(parent, trend_text, trend_color, FF_THEME_COLOR_BG, (int32_t)RADAR_LAYOUT_CLOSE_CHIP_DY);
 
     /* FLARE button: S06 spec "48 px high, full hit area" — also clears
      * docs/review/ux-raver.md's >=44px tap-target floor with margin. */
@@ -699,7 +590,7 @@ static void radar_render_close(lv_obj_t *parent, ff_radar_view_t const *r)
     lv_obj_set_style_bg_color(btn, lv_color_hex(FF_THEME_COLOR_AMBER), 0);
     lv_obj_set_style_bg_opa(btn, LV_OPA_COVER, 0);
     lv_obj_set_style_radius(btn, LV_RADIUS_CIRCLE, 0);
-    lv_obj_align(btn, LV_ALIGN_CENTER, 0, RADAR_CLOSE_FLARE_DY);
+    lv_obj_align(btn, LV_ALIGN_CENTER, 0, (int32_t)RADAR_LAYOUT_CLOSE_FLARE_DY);
     lv_obj_add_event_cb(btn, radar_flare_stub_cb, LV_EVENT_CLICKED, NULL);
 
     lv_obj_t *btn_label = lv_label_create(btn);
@@ -724,7 +615,7 @@ static void radar_render_nofix(lv_obj_t *parent, ff_radar_view_t const *r)
     lv_obj_set_style_text_color(headline, lv_color_hex(FF_THEME_COLOR_MUTED), 0);
     lv_obj_set_width(headline, 320);
     lv_obj_set_style_text_align(headline, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_align(headline, LV_ALIGN_CENTER, 0, RADAR_NOFIX_HEADLINE_DY);
+    lv_obj_align(headline, LV_ALIGN_CENTER, 0, (int32_t)RADAR_LAYOUT_NOFIX_HEADLINE_DY);
 
     if (r->name[0] != '\0') {
         char sub[40];
@@ -733,7 +624,7 @@ static void radar_render_nofix(lv_obj_t *parent, ff_radar_view_t const *r)
         lv_label_set_text(sub_lbl, sub);
         lv_obj_set_style_text_font(sub_lbl, FF_THEME_FONT_LABEL, 0);
         lv_obj_set_style_text_color(sub_lbl, lv_color_hex(FF_THEME_COLOR_DIM), 0);
-        lv_obj_align(sub_lbl, LV_ALIGN_CENTER, 0, RADAR_NOFIX_SUB_DY);
+        lv_obj_align(sub_lbl, LV_ALIGN_CENTER, 0, (int32_t)RADAR_LAYOUT_NOFIX_SUB_DY);
     }
 
     /* Honest extra: NOFIX means *my* fix/heading is unusable, but the
@@ -744,7 +635,8 @@ static void radar_render_nofix(lv_obj_t *parent, ff_radar_view_t const *r)
     if (r->age_str[0] != '\0') {
         char chip_text[40];
         snprintf(chip_text, sizeof(chip_text), "LAST KNOWN %s", r->age_str);
-        radar_make_chip(parent, chip_text, FF_THEME_COLOR_SURFACE, FF_THEME_COLOR_MUTED, RADAR_NOFIX_CHIP_DY);
+        radar_make_chip(parent, chip_text, FF_THEME_COLOR_SURFACE, FF_THEME_COLOR_MUTED,
+                         (int32_t)RADAR_LAYOUT_NOFIX_CHIP_DY);
     }
 }
 
@@ -754,13 +646,13 @@ static void radar_render_nosel(lv_obj_t *parent)
     lv_label_set_text(headline, "NO CREW SELECTED");
     lv_obj_set_style_text_font(headline, FF_THEME_FONT_HEADLINE, 0);
     lv_obj_set_style_text_color(headline, lv_color_hex(FF_THEME_COLOR_MUTED), 0);
-    lv_obj_align(headline, LV_ALIGN_CENTER, 0, RADAR_NOSEL_HEADLINE_DY);
+    lv_obj_align(headline, LV_ALIGN_CENTER, 0, (int32_t)RADAR_LAYOUT_NOSEL_HEADLINE_DY);
 
     lv_obj_t *sub = lv_label_create(parent);
     lv_label_set_text(sub, "Pair a friend in Settings");
     lv_obj_set_style_text_font(sub, FF_THEME_FONT_LABEL, 0);
     lv_obj_set_style_text_color(sub, lv_color_hex(FF_THEME_COLOR_DIM), 0);
-    lv_obj_align(sub, LV_ALIGN_CENTER, 0, RADAR_NOSEL_SUB_DY);
+    lv_obj_align(sub, LV_ALIGN_CENTER, 0, (int32_t)RADAR_LAYOUT_NOSEL_SUB_DY);
 }
 
 /* ---------------------------------------------------------------------
@@ -778,74 +670,25 @@ void ff_scr_radar_build(lv_obj_t *parent, ff_radar_view_t const *radar)
 
     radar_build_status_bar(parent, radar);
 
-    /* Keep-out rectangles for this mode's fixed chrome, generous rather
-     * than pixel-exact, built from the SAME named dy constants the
-     * render functions below actually draw at (see the per-mode-renderer
-     * section's top comment) — see radar_build_dots's doc comment for
-     * the pull-in algorithm these feed. */
+    /* ONE reserved-region registry for this render, built before any
+     * movable element is resolved — every movable element (dots below,
+     * the arrow inside the per-mode renderers) resolves against this
+     * SAME registry, no exceptions (see radar_layout.h's top comment). */
     bool never_fixed = (radar->mode == RADAR_LOST && radar->age_str[0] == '\0');
-    radar_rect_t keepout[FF_SCR_RADAR_MAX_KEEPOUT_RECTS];
-    int n_keepout = 0;
-    /* Status bar (clock/mesh/battery, radar_build_status_bar, all at
-     * dy=-195): cross-mode chrome, always present, so its keep-out
-     * applies to every mode — a dot at ring_deg near 0 (straight "up")
-     * would otherwise land right on top of it (caught while building
-     * tests/fixtures/radar_close_collision.json, not by the reviewer —
-     * one more worst-case bearing this fixture now exercises). */
-    keepout[n_keepout++] = (radar_rect_t){-120, -212, 120, -178};
-    /* Page-dot row (scr_nav.c's nav_build_page_dots, at dy=186 on the
-     * puck): also cross-mode chrome, drawn by the shell on top of
-     * whichever tile this screen renders into. Found while eyeballing
-     * tests/fixtures/radar_close_collision.json's own worst-case
-     * bearings — small (10px, purely navigational, not information) but
-     * cheap to protect using the exact same mechanism as everything
-     * else here. */
-    keepout[n_keepout++] = (radar_rect_t){-70, 176, 70, 196};
-    switch (radar->mode) {
-    case RADAR_LIVE:
-    case RADAR_STALE:
-        /* name/distance/chip stack: RADAR_STACK_NAME_DY..RADAR_STACK_CHIP_DY,
-         * generous margin on every side. */
-        keepout[n_keepout++] = (radar_rect_t){-140, RADAR_STACK_NAME_DY - 20, 140, RADAR_STACK_CHIP_DY + 24};
-        break;
-    case RADAR_LOST:
-        if (never_fixed) {
-            keepout[n_keepout++] = (radar_rect_t){-170, RADAR_NEVER_HEADLINE_DY - 18, 170, RADAR_NEVER_SUB_DY + 15};
-        } else {
-            keepout[n_keepout++] = (radar_rect_t){-140, RADAR_STACK_NAME_DY - 20, 140, RADAR_STACK_CHIP_DY + 24};
-        }
-        break;
-    case RADAR_CLOSE:
-        /* Rings + big distance (rings reach RADAR_CLOSE_RING_CY +/- the
-         * outer radius, 90). */
-        keepout[n_keepout++] =
-            (radar_rect_t){-100, RADAR_CLOSE_RING_CY - 95, 100, RADAR_CLOSE_RING_CY + 95};
-        /* Name + trend chip. */
-        keepout[n_keepout++] = (radar_rect_t){-110, RADAR_CLOSE_NAME_DY - 15, 110, RADAR_CLOSE_CHIP_DY + 20};
-        /* FLARE button (this is the specific overlap UX review finding
-         * #3(a) reported — "FLARE button no longer swallows the M dot"). */
-        keepout[n_keepout++] = (radar_rect_t){-104, RADAR_CLOSE_FLARE_DY - 26, 104, RADAR_CLOSE_FLARE_DY + 26};
-        break;
-    case RADAR_NOFIX:
-        keepout[n_keepout++] = (radar_rect_t){-170, RADAR_NOFIX_HEADLINE_DY - 18, 170, RADAR_NOFIX_CHIP_DY + 20};
-        break;
-    case RADAR_NOSEL:
-    default:
-        keepout[n_keepout++] = (radar_rect_t){-170, RADAR_NOSEL_HEADLINE_DY - 18, 170, RADAR_NOSEL_SUB_DY + 15};
-        break;
-    }
+    radar_layout_registry_t reg;
+    radar_layout_build_registry(radar->mode, never_fixed, &reg);
 
-    radar_build_dots(parent, radar, keepout, n_keepout);
+    radar_build_dots(parent, radar, &reg);
 
     switch (radar->mode) {
     case RADAR_LIVE:
-        radar_render_live(parent, radar);
+        radar_render_live(parent, radar, &reg);
         break;
     case RADAR_STALE:
-        radar_render_stale(parent, radar);
+        radar_render_stale(parent, radar, &reg);
         break;
     case RADAR_LOST:
-        radar_render_lost(parent, radar);
+        radar_render_lost(parent, radar, &reg);
         break;
     case RADAR_CLOSE:
         radar_render_close(parent, radar);

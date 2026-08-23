@@ -126,21 +126,15 @@ static inline uint32_t ff_theme_crew_color(uint8_t color_idx)
 #define FF_THEME_PUCK_PX   440 /* window - 16 */
 #define FF_THEME_PUCK_RADIUS_PX (FF_THEME_PUCK_PX / 2)
 
-#define FF_THEME_ARROW_LEN_PX 140 /* S06 spec: "arrow 140 px glyph" — tip radius from puck center */
-/* PR #16 UX review finding #2: a shaft+circle doesn't read as directional
- * ("a ball doesn't have a pointy end") — replaced with a real tapered
- * chevron/kite: a thin tail from center out to the head's base, then a
- * filled (or outline-only, for the LOST "ghost" treatment) isoceles
- * triangle from that base to the tip. */
-#define FF_THEME_ARROW_HEAD_LEN_PX   46 /* triangle length along the direction axis */
-#define FF_THEME_ARROW_HEAD_WIDTH_PX 34 /* triangle base width */
-#define FF_THEME_RING_RADIUS_PX  185 /* crew-ring dot placement radius from puck center */
-#define FF_THEME_DOT_PX          34  /* crew-ring dot diameter */
-/* PR #16 UX review finding #3: fixed chrome (chips/buttons/name block)
- * can collide with heading-relative ring dots at some bearings — a dot
- * that collides gets pushed out of whichever rectangle it's inside,
- * along the nearest edge, then clamped to never leave the puck's own
- * circle. See scr_radar.c's radar_resolve_dot_collision. */
+/* Arrow/ring/dot placement geometry (arrow length & taper, ring radius,
+ * dot size) moved to app/screens/radar_layout.h as of PR #16's round-4
+ * rework — that module is the single source of truth for every number
+ * that also has to be collision-tested (RADAR_LAYOUT_ARROW_LEN_PX,
+ * RADAR_LAYOUT_RING_RADIUS_PX, RADAR_LAYOUT_DOT_PX, etc.). scr_radar.c
+ * includes radar_layout.h directly for those; nothing in this header
+ * duplicates them anymore, precisely so they can't drift apart from what
+ * the resolver actually tests against.
+ */
 
 #define FF_THEME_FLARE_BTN_H_PX 48 /* S06 spec: "FLARE button (48 px high, full hit area)" */
 
