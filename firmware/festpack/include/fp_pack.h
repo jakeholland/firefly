@@ -54,19 +54,21 @@ typedef enum {
                         budget exceeded */
 } fp_result_t;
 
-/** Map/feature kind. Unrecognized JSON kind strings map to FP_KIND_UNKNOWN
- *  rather than failing the parse — the schema is expected to grow. */
+/** Map/feature kind. Mirrors the fest-almanac schema's closed `kind` enum
+ *  exactly (["stage","camping","water","path","entrance","vendor",
+ *  "medical","poi"] — see schema/festpack.schema.json). Any other JSON
+ *  string (schema additions, typos, etc.) maps to FP_KIND_UNKNOWN rather
+ *  than failing the parse, so the parser stays forward-tolerant even
+ *  though the enum itself is closed today. */
 typedef enum {
     FP_KIND_UNKNOWN = 0,
-    FP_KIND_ENTRANCE,
     FP_KIND_STAGE,
-    FP_KIND_WATER,
-    FP_KIND_VENDOR,
     FP_KIND_CAMPING,
-    FP_KIND_PARKING,
+    FP_KIND_WATER,
+    FP_KIND_PATH,
+    FP_KIND_ENTRANCE,
+    FP_KIND_VENDOR,
     FP_KIND_MEDICAL,
-    FP_KIND_FOOD,
-    FP_KIND_GATE,
     FP_KIND_POI,
 } fp_feature_kind_t;
 
@@ -104,12 +106,31 @@ typedef struct {
 typedef struct {
     char name[32];
     uint16_t year;
-    ff_latlon_t origin; /* festival.venue lat/lon — projection origin */
-    bool origin_approx;
+    ff_latlon_t origin; /* festival.venue lat/lon — projection origin.
+                            Meaningless (reads as {0,0}) unless origin_known
+                            is true — see origin_known below. */
+    bool origin_known;  /* true iff festival.venue.lat AND .lon were both
+                            present and non-null. The schema allows either
+                            to be null ("unknown venue"), distinct from
+                            origin_approx ("known, but guesswork"). Callers
+                            (map/radar screens) MUST check this before
+                            trusting `origin` or any projected east_m/
+                            north_m in features[]/landmarks[] — when false,
+                            those were computed against a (0,0) fallback
+                            origin and are not real positions. */
+    bool origin_approx; /* true iff festival.venue.approximate == true:
+                            venue-center guesswork, not surveyed. Only
+                            meaningful when origin_known is also true. */
     uint16_t start_doy, end_doy;
     int16_t utc_offset_min; /* minutes east of UTC; defaults to -240 (EDT)
                                 when the pack omits utc_offset_min — see
                                 docs/specs/S05-festpack.md */
+    bool utc_offset_assumed; /* true iff utc_offset_min was absent from the
+                                 pack and the -240 default was applied
+                                 (rather than an explicit value read from
+                                 the pack). Callers should treat schedule
+                                 times as EDT-assumed, not verified, when
+                                 this is true. */
 
     fp_stage_t stages[FP_MAX_STAGES];
     uint8_t n_stages;

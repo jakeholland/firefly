@@ -4,8 +4,10 @@
  * Vendored jsmn (firmware/third_party/jsmn.h) tokenizes the input into a
  * flat, zero-alloc token array; the extraction below walks that array by
  * hand, matching keys and copying/converting into the caller-provided
- * fp_pack_t. No malloc, no recursion beyond the JSON's own (small,
- * bounded) nesting depth in fp_skip().
+ * fp_pack_t. No malloc. fp_skip()'s recursion depth is explicitly capped
+ * (FP_MAX_JSON_DEPTH) — untrusted/attacker-controlled input (this device
+ * "eats untrusted RF bytes") could otherwise nest JSON deep enough to
+ * overflow a small ESP32-S3 task stack; see fp_skip_depth().
  */
 #define JSMN_STATIC
 #include "jsmn.h"
@@ -25,6 +27,13 @@
  * ------------------------------------------------------------------- */
 #define FP_MAX_JSON_LEN (64u * 1024u)
 #define FP_MAX_TOKENS 8192
+
+/* Real festpacks nest ~7-8 levels deep at most (root -> map -> features ->
+ * [i] -> polygon -> [k] -> [lat,lon] -> number). 16 is generous headroom;
+ * beyond it fp_skip_depth() bails out rather than recursing further,
+ * capping fp_skip()'s own C call-stack usage regardless of how deeply an
+ * attacker nests input JSON. See fp_skip_depth(). */
+#define FP_MAX_JSON_DEPTH 16
 
 /* ---------------------------------------------------------------------
  * fp_project — local equirectangular lat/lon -> east/north projection.
@@ -60,26 +69,47 @@ typedef struct {
     char const *js;
     jsmntok_t const *toks;
     int ntoks;
+    bool *depth_exceeded; /* set true (never cleared) if fp_skip_depth() ever
+                              hits FP_MAX_JSON_DEPTH. fp_parse() checks this
+                              once at the end and forces FP_ERR_JSON if set,
+                              regardless of what fp_parse_inner() otherwise
+                              returned — a depth-capped skip means we may
+                              have stopped short partway through some
+                              subtree, so nothing downstream of it can be
+                              trusted. */
 } fp_ctx_t;
 
-/* Returns the index of the token immediately after tok i's subtree
- * (i's own value plus, for containers, all descendants). */
-static int fp_skip(fp_ctx_t const *c, int i)
+/* Returns the index of the token immediately after tok i's subtree (i's
+ * own value plus, for containers, all descendants), or c->ntoks if the
+ * subtree's nesting exceeds FP_MAX_JSON_DEPTH (and sets *depth_exceeded).
+ * `depth` is the nesting depth of token i itself (0 at any top-level call
+ * site) — bounding it bounds this function's own recursion, which is the
+ * only attacker-controlled-depth recursion in this file. */
+static int fp_skip_depth(fp_ctx_t const *c, int i, int depth)
 {
+    if (depth > FP_MAX_JSON_DEPTH) {
+        *c->depth_exceeded = true;
+        return c->ntoks;
+    }
     if (i < 0 || i >= c->ntoks) return c->ntoks;
     jsmntok_t const *t = &c->toks[i];
     int next = i + 1;
     if (t->type == JSMN_OBJECT) {
         for (int k = 0; k < t->size; k++) {
-            next = fp_skip(c, next); /* key */
-            next = fp_skip(c, next); /* value */
+            next = fp_skip_depth(c, next, depth + 1); /* key */
+            next = fp_skip_depth(c, next, depth + 1); /* value */
         }
     } else if (t->type == JSMN_ARRAY) {
         for (int k = 0; k < t->size; k++) {
-            next = fp_skip(c, next);
+            next = fp_skip_depth(c, next, depth + 1);
         }
     }
     return next;
+}
+
+static int fp_skip(fp_ctx_t const *c, int i)
+{
+    return fp_skip_depth(c, i, 0);
 }
 
 /* Looks up `key` among the top-level members of the object at index
@@ -95,6 +125,7 @@ static bool fp_obj_get(fp_ctx_t const *c, int obj_i, char const *key, int *val_i
     int i = obj_i + 1;
     for (int k = 0; k < t->size; k++) {
         int key_i = i;
+        if (key_i < 0 || key_i >= c->ntoks) return false;
         jsmntok_t const *kt = &c->toks[key_i];
         int val_index = fp_skip(c, key_i); /* keys are plain strings: key_i + 1 */
         if (kt->type == JSMN_STRING && (size_t)(kt->end - kt->start) == keylen &&
@@ -255,14 +286,15 @@ static fp_feature_kind_t fp_kind_from_tok(fp_ctx_t const *c, int i)
     if (i < 0 || i >= c->ntoks) return FP_KIND_UNKNOWN;
     jsmntok_t const *t = &c->toks[i];
     if (t->type != JSMN_STRING) return FP_KIND_UNKNOWN;
+    /* Matches schema/festpack.schema.json's closed `kind` enum exactly:
+     * ["stage","camping","water","path","entrance","vendor","medical","poi"] */
     static const struct {
         char const *s;
         fp_feature_kind_t k;
     } table[] = {
-        {"entrance", FP_KIND_ENTRANCE}, {"stage", FP_KIND_STAGE}, {"water", FP_KIND_WATER},
-        {"vendor", FP_KIND_VENDOR},     {"camping", FP_KIND_CAMPING}, {"parking", FP_KIND_PARKING},
-        {"medical", FP_KIND_MEDICAL},   {"food", FP_KIND_FOOD},     {"gate", FP_KIND_GATE},
-        {"poi", FP_KIND_POI},
+        {"stage", FP_KIND_STAGE},     {"camping", FP_KIND_CAMPING}, {"water", FP_KIND_WATER},
+        {"path", FP_KIND_PATH},       {"entrance", FP_KIND_ENTRANCE}, {"vendor", FP_KIND_VENDOR},
+        {"medical", FP_KIND_MEDICAL}, {"poi", FP_KIND_POI},
     };
     int n = t->end - t->start;
     for (size_t k = 0; k < sizeof(table) / sizeof(table[0]); k++) {
@@ -306,9 +338,18 @@ static fp_result_t fp_parse_festival(fp_ctx_t const *c, int fest_i, fp_pack_t *o
     int venue_i = -1;
     fp_obj_get(c, fest_i, "venue", &venue_i);
     if (venue_i >= 0 && !fp_is_null(c, venue_i)) {
+        int lat_i = -1, lon_i = -1;
+        bool have_lat = fp_obj_get(c, venue_i, "lat", &lat_i) && !fp_is_null(c, lat_i);
+        bool have_lon = fp_obj_get(c, venue_i, "lon", &lon_i) && !fp_is_null(c, lon_i);
+        if (have_lat && have_lon) {
+            origin->lat = fp_num(c, lat_i, 0.0);
+            origin->lon = fp_num(c, lon_i, 0.0);
+            out->origin_known = true;
+        }
+        /* venue.lat/lon may be null (schema: "unknown venue") — origin
+         * stays {0,0} and origin_known stays false, per fp_pack_t's
+         * documented contract. Don't silently present that as real. */
         int lt;
-        if (fp_obj_get(c, venue_i, "lat", &lt)) origin->lat = fp_num(c, lt, 0.0);
-        if (fp_obj_get(c, venue_i, "lon", &lt)) origin->lon = fp_num(c, lt, 0.0);
         if (fp_obj_get(c, venue_i, "approximate", &lt)) out->origin_approx = fp_bool(c, lt, false);
     }
     return FP_OK;
@@ -370,6 +411,12 @@ static fp_result_t fp_parse_schedule(fp_ctx_t const *c, int arr_i, fp_pack_t *ou
     return FP_OK;
 }
 
+/* polygon: [[lat, lon], ...] per schema/festpack.schema.json's
+ * `prefixItems: [{number},{number}]` — each point is a 2-element tuple
+ * ARRAY, not a {"lat":,"lon":} object. A point that isn't a well-formed
+ * 2-number tuple is a schema violation and must fail the parse
+ * (FP_ERR_JSON) rather than silently projecting a (0,0) fallback as if
+ * it were real data — see CLAUDE.md's "honest data over pretty data". */
 static fp_result_t fp_parse_polygon(fp_ctx_t const *c, int poly_i, ff_latlon_t origin, fp_feature_t *f)
 {
     jsmntok_t const *pt = &c->toks[poly_i];
@@ -377,14 +424,22 @@ static fp_result_t fp_parse_polygon(fp_ctx_t const *c, int poly_i, ff_latlon_t o
     if (pt->size > FP_MAX_POLY_PTS) return FP_ERR_TOO_BIG;
     int idx = poly_i + 1;
     for (int k = 0; k < pt->size; k++) {
-        int pt_obj = idx;
-        int lt;
-        ff_latlon_t p = {0.0, 0.0};
-        if (fp_obj_get(c, pt_obj, "lat", &lt)) p.lat = fp_num(c, lt, 0.0);
-        if (fp_obj_get(c, pt_obj, "lon", &lt)) p.lon = fp_num(c, lt, 0.0);
+        int pt_tok_i = idx;
+        if (pt_tok_i < 0 || pt_tok_i >= c->ntoks) return FP_ERR_JSON;
+        jsmntok_t const *pt_tok = &c->toks[pt_tok_i];
+        if (pt_tok->type != JSMN_ARRAY || pt_tok->size != 2) return FP_ERR_JSON;
+
+        int lat_i = pt_tok_i + 1;
+        int lon_i = fp_skip(c, lat_i);
+        if (lat_i >= c->ntoks || lon_i >= c->ntoks) return FP_ERR_JSON;
+        jsmntok_t const *lat_tok = &c->toks[lat_i];
+        jsmntok_t const *lon_tok = &c->toks[lon_i];
+        if (lat_tok->type != JSMN_PRIMITIVE || lon_tok->type != JSMN_PRIMITIVE) return FP_ERR_JSON;
+
+        ff_latlon_t p = {fp_num(c, lat_i, 0.0), fp_num(c, lon_i, 0.0)};
         fp_project(origin, p, &f->pts_en[f->n_pts][0], &f->pts_en[f->n_pts][1]);
         f->n_pts++;
-        idx = fp_skip(c, pt_obj);
+        idx = fp_skip(c, pt_tok_i);
     }
     return FP_OK;
 }
@@ -486,10 +541,13 @@ static fp_result_t fp_parse_inner(fp_ctx_t const *c, fp_pack_t *out)
         int t;
         if (fp_obj_get(c, 0, "utc_offset_min", &t) && !fp_is_null(c, t)) {
             out->utc_offset_min = (int16_t)fp_num(c, t, -240.0);
+            out->utc_offset_assumed = false;
         } else if (fest_i >= 0 && fp_obj_get(c, fest_i, "utc_offset_min", &t) && !fp_is_null(c, t)) {
             out->utc_offset_min = (int16_t)fp_num(c, t, -240.0);
+            out->utc_offset_assumed = false;
         } else {
             out->utc_offset_min = -240;
+            out->utc_offset_assumed = true;
         }
     }
 
@@ -533,10 +591,17 @@ fp_result_t fp_parse(char const *json, size_t len, fp_pack_t *out)
     if (r == JSMN_ERROR_NOMEM) return FP_ERR_TOO_BIG;
     if (r < 0 || r == 0) return FP_ERR_JSON; /* INVAL / PART / empty */
 
-    fp_ctx_t ctx = {json, toks, r};
+    bool depth_exceeded = false;
+    fp_ctx_t ctx = {json, toks, r, &depth_exceeded};
     if (toks[0].type != JSMN_OBJECT) return FP_ERR_JSON;
 
     fp_result_t res = fp_parse_inner(&ctx, out);
+    /* A depth-capped fp_skip() means some subtree was walked only
+     * partway (see fp_skip_depth()) — nothing extracted downstream of
+     * it can be trusted, even if fp_parse_inner() otherwise reported
+     * FP_OK. Force the honest answer: malformed/hostile input, not a
+     * successful parse. */
+    if (depth_exceeded) res = FP_ERR_JSON;
     if (res != FP_OK) memset(out, 0, sizeof(*out));
     return res;
 }

@@ -30,7 +30,7 @@
     "features": [
       {
         "kind": "water",
-        "label": "Big Pond",
+        "label": "Cap Pond",
         "polygon": [
           [
             41.0,
@@ -127,10 +127,6 @@
           [
             41.0023,
             -83.9977
-          ],
-          [
-            41.0024,
-            -83.9976
           ]
         ]
       }

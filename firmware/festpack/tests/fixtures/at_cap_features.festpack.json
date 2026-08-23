@@ -1,0 +1,154 @@
+{
+  "festpack": "0.1",
+  "festival": {
+    "name": "Minimal Fest",
+    "year": 2027,
+    "start": "2027-07-01",
+    "end": "2027-07-02",
+    "venue": {
+      "lat": 41.0,
+      "lon": -84.0
+    }
+  },
+  "stages": [
+    {
+      "id": "a",
+      "name": "A Stage",
+      "color": "#00ff00"
+    }
+  ],
+  "schedule": [
+    {
+      "artist": "Solo Act",
+      "stage": "a",
+      "day": "2027-07-01",
+      "start": "20:00",
+      "end": "21:00"
+    }
+  ],
+  "map": {
+    "features": [
+      {
+        "kind": "poi",
+        "label": "Feature 0",
+        "polygon": null
+      },
+      {
+        "kind": "poi",
+        "label": "Feature 1",
+        "polygon": null
+      },
+      {
+        "kind": "poi",
+        "label": "Feature 2",
+        "polygon": null
+      },
+      {
+        "kind": "poi",
+        "label": "Feature 3",
+        "polygon": null
+      },
+      {
+        "kind": "poi",
+        "label": "Feature 4",
+        "polygon": null
+      },
+      {
+        "kind": "poi",
+        "label": "Feature 5",
+        "polygon": null
+      },
+      {
+        "kind": "poi",
+        "label": "Feature 6",
+        "polygon": null
+      },
+      {
+        "kind": "poi",
+        "label": "Feature 7",
+        "polygon": null
+      },
+      {
+        "kind": "poi",
+        "label": "Feature 8",
+        "polygon": null
+      },
+      {
+        "kind": "poi",
+        "label": "Feature 9",
+        "polygon": null
+      },
+      {
+        "kind": "poi",
+        "label": "Feature 10",
+        "polygon": null
+      },
+      {
+        "kind": "poi",
+        "label": "Feature 11",
+        "polygon": null
+      },
+      {
+        "kind": "poi",
+        "label": "Feature 12",
+        "polygon": null
+      },
+      {
+        "kind": "poi",
+        "label": "Feature 13",
+        "polygon": null
+      },
+      {
+        "kind": "poi",
+        "label": "Feature 14",
+        "polygon": null
+      },
+      {
+        "kind": "poi",
+        "label": "Feature 15",
+        "polygon": null
+      },
+      {
+        "kind": "poi",
+        "label": "Feature 16",
+        "polygon": null
+      },
+      {
+        "kind": "poi",
+        "label": "Feature 17",
+        "polygon": null
+      },
+      {
+        "kind": "poi",
+        "label": "Feature 18",
+        "polygon": null
+      },
+      {
+        "kind": "poi",
+        "label": "Feature 19",
+        "polygon": null
+      },
+      {
+        "kind": "poi",
+        "label": "Feature 20",
+        "polygon": null
+      },
+      {
+        "kind": "poi",
+        "label": "Feature 21",
+        "polygon": null
+      },
+      {
+        "kind": "poi",
+        "label": "Feature 22",
+        "polygon": null
+      },
+      {
+        "kind": "poi",
+        "label": "Feature 23",
+        "polygon": null
+      }
+    ],
+    "landmarks": []
+  }
+}

@@ -1,0 +1,106 @@
+{
+  "festpack": "0.1",
+  "festival": {
+    "name": "Minimal Fest",
+    "year": 2027,
+    "start": "2027-07-01",
+    "end": "2027-07-02",
+    "venue": {
+      "lat": 41.0,
+      "lon": -84.0
+    }
+  },
+  "stages": [
+    {
+      "id": "a",
+      "name": "A Stage",
+      "color": "#00ff00"
+    }
+  ],
+  "schedule": [
+    {
+      "artist": "Solo Act",
+      "stage": "a",
+      "day": "2027-07-01",
+      "start": "20:00",
+      "end": "21:00"
+    }
+  ],
+  "map": {
+    "features": [],
+    "landmarks": [
+      {
+        "id": "lm0",
+        "name": "Landmark 0",
+        "lat": null,
+        "lon": null
+      },
+      {
+        "id": "lm1",
+        "name": "Landmark 1",
+        "lat": null,
+        "lon": null
+      },
+      {
+        "id": "lm2",
+        "name": "Landmark 2",
+        "lat": null,
+        "lon": null
+      },
+      {
+        "id": "lm3",
+        "name": "Landmark 3",
+        "lat": null,
+        "lon": null
+      },
+      {
+        "id": "lm4",
+        "name": "Landmark 4",
+        "lat": null,
+        "lon": null
+      },
+      {
+        "id": "lm5",
+        "name": "Landmark 5",
+        "lat": null,
+        "lon": null
+      },
+      {
+        "id": "lm6",
+        "name": "Landmark 6",
+        "lat": null,
+        "lon": null
+      },
+      {
+        "id": "lm7",
+        "name": "Landmark 7",
+        "lat": null,
+        "lon": null
+      },
+      {
+        "id": "lm8",
+        "name": "Landmark 8",
+        "lat": null,
+        "lon": null
+      },
+      {
+        "id": "lm9",
+        "name": "Landmark 9",
+        "lat": null,
+        "lon": null
+      },
+      {
+        "id": "lm10",
+        "name": "Landmark 10",
+        "lat": null,
+        "lon": null
+      },
+      {
+        "id": "lm11",
+        "name": "Landmark 11",
+        "lat": null,
+        "lon": null
+      }
+    ]
+  }
+}

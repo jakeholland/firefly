@@ -101,13 +101,16 @@ static void S05_AC1_lost_lands_festival_meta_and_utc_offset_default(void)
     TEST_ASSERT_EQUAL_UINT16(2026, pack.year);
     TEST_ASSERT_EQUAL_UINT16(261, pack.start_doy); /* 2026-09-18 */
     TEST_ASSERT_EQUAL_UINT16(263, pack.end_doy);   /* 2026-09-20 */
+    TEST_ASSERT_TRUE(pack.origin_known); /* venue.lat/lon both present, non-null */
     TEST_ASSERT_TRUE(pack.origin_approx);
     TEST_ASSERT_FLOAT_WITHIN(0.0001f, 39.936f, (float)pack.origin.lat);
     TEST_ASSERT_FLOAT_WITHIN(0.0001f, -82.414f, (float)pack.origin.lon);
 
     /* The real Lost Lands 2026 pack has no utc_offset_min field — see the
-     * S05 PR body. Must default to -240 (EDT) rather than error. */
+     * S05 PR body. Must default to -240 (EDT) rather than error, and the
+     * "this was assumed, not read" flag must be set. */
     TEST_ASSERT_EQUAL_INT16(-240, pack.utc_offset_min);
+    TEST_ASSERT_TRUE(pack.utc_offset_assumed);
 
     TEST_ASSERT_EQUAL_UINT8(9, pack.n_features);
     TEST_ASSERT_EQUAL_UINT8(2, pack.n_landmarks);
@@ -153,7 +156,9 @@ static void S05_AC2_nulls_in_every_nullable_slot_parse(void)
     TEST_ASSERT_EQUAL_UINT8(1, pack.n_landmarks);
     TEST_ASSERT_FALSE(pack.landmarks[0].has_pos); /* lat/lon: null */
 
+    TEST_ASSERT_TRUE(pack.origin_known); /* venue.lat/lon present in this fixture */
     TEST_ASSERT_EQUAL_INT16(-300, pack.utc_offset_min); /* explicit, not defaulted */
+    TEST_ASSERT_FALSE(pack.utc_offset_assumed);
 }
 
 static void S05_AC2_absent_optional_sections_parse(void)
@@ -169,7 +174,9 @@ static void S05_AC2_absent_optional_sections_parse(void)
     TEST_ASSERT_EQUAL_UINT8(0, pack.n_features);
     TEST_ASSERT_EQUAL_UINT8(0, pack.n_landmarks);
     TEST_ASSERT_EQUAL_INT16(-240, pack.utc_offset_min); /* defaulted */
-    TEST_ASSERT_FALSE(pack.origin_approx);              /* defaulted */
+    TEST_ASSERT_TRUE(pack.utc_offset_assumed);          /* field absent */
+    TEST_ASSERT_TRUE(pack.origin_known);                /* venue.lat/lon present */
+    TEST_ASSERT_FALSE(pack.origin_approx);              /* defaulted (approximate absent) */
     TEST_ASSERT_EQUAL_UINT16(182, pack.start_doy);       /* 2027-07-01 */
 
     TEST_ASSERT_EQUAL_INT16(20 * 60, pack.sets[0].start_min);
@@ -271,6 +278,35 @@ static void S05_AC3_fuzz_smoke_10000_iterations_no_crash(void)
     }
 }
 
+static void S05_AC3_deeply_nested_input_returns_err_json_no_crash(void)
+{
+    /* 100 levels of array nesting, well past FP_MAX_JSON_DEPTH (16),
+     * placed where fp_obj_get() must fp_skip() over it while looking for
+     * "festival"/"stages"/"schedule". Must fail cleanly, not overflow
+     * the call stack (see fp_skip_depth() in fp_pack.c). */
+    char buf[FIXTURE_BUF_SZ];
+    size_t len = load_fixture("deep_nesting.festpack.json", buf, sizeof(buf));
+    fp_pack_t pack;
+    fp_result_t r = fp_parse(buf, len, &pack);
+    TEST_ASSERT_EQUAL_INT(FP_ERR_JSON, r);
+    TEST_ASSERT_EQUAL_UINT8(0, pack.n_stages); /* left zeroed */
+}
+
+/* ======================================================================
+ * Polygon point format: schema mandates [[lat, lon], ...] tuple arrays,
+ * not {"lat":,"lon":} objects. An object-shaped point must be a parse
+ * error, never silently projected as wrong data.
+ * ==================================================================== */
+
+static void S05_review_object_format_polygon_point_returns_err_json(void)
+{
+    char buf[FIXTURE_BUF_SZ];
+    size_t len = load_fixture("object_format_polygon.festpack.json", buf, sizeof(buf));
+    fp_pack_t pack;
+    fp_result_t r = fp_parse(buf, len, &pack);
+    TEST_ASSERT_EQUAL_INT(FP_ERR_JSON, r);
+}
+
 /* ======================================================================
  * AC4 — overflow fixtures.
  * ==================================================================== */
@@ -323,6 +359,61 @@ static void S05_AC4_25_polygon_points_returns_err_too_big(void)
     TEST_ASSERT_EQUAL_INT(FP_ERR_TOO_BIG, r);
 }
 
+/* "Exactly at the cap" companions to the five overflow tests above — each
+ * proves cap -> FP_OK (not just cap+1 -> FP_ERR_TOO_BIG), so an off-by-one
+ * mutation (`>` -> `>=` in any fp_parse_* size check) fails the suite. */
+
+static void S05_AC4_at_cap_12_stages_returns_ok(void)
+{
+    char buf[FIXTURE_BUF_SZ];
+    size_t len = load_fixture("at_cap_stages.festpack.json", buf, sizeof(buf));
+    fp_pack_t pack;
+    fp_result_t r = fp_parse(buf, len, &pack);
+    TEST_ASSERT_EQUAL_INT(FP_OK, r);
+    TEST_ASSERT_EQUAL_UINT8(FP_MAX_STAGES, pack.n_stages);
+}
+
+static void S05_AC4_at_cap_256_sets_returns_ok(void)
+{
+    char buf[FIXTURE_BUF_SZ];
+    size_t len = load_fixture("at_cap_sets.festpack.json", buf, sizeof(buf));
+    fp_pack_t pack;
+    fp_result_t r = fp_parse(buf, len, &pack);
+    TEST_ASSERT_EQUAL_INT(FP_OK, r);
+    TEST_ASSERT_EQUAL_UINT16(FP_MAX_SETS, pack.n_sets);
+}
+
+static void S05_AC4_at_cap_24_features_returns_ok(void)
+{
+    char buf[FIXTURE_BUF_SZ];
+    size_t len = load_fixture("at_cap_features.festpack.json", buf, sizeof(buf));
+    fp_pack_t pack;
+    fp_result_t r = fp_parse(buf, len, &pack);
+    TEST_ASSERT_EQUAL_INT(FP_OK, r);
+    TEST_ASSERT_EQUAL_UINT8(FP_MAX_FEATURES, pack.n_features);
+}
+
+static void S05_AC4_at_cap_12_landmarks_returns_ok(void)
+{
+    char buf[FIXTURE_BUF_SZ];
+    size_t len = load_fixture("at_cap_landmarks.festpack.json", buf, sizeof(buf));
+    fp_pack_t pack;
+    fp_result_t r = fp_parse(buf, len, &pack);
+    TEST_ASSERT_EQUAL_INT(FP_OK, r);
+    TEST_ASSERT_EQUAL_UINT8(FP_MAX_LANDMARKS, pack.n_landmarks);
+}
+
+static void S05_AC4_at_cap_24_polygon_points_returns_ok(void)
+{
+    char buf[FIXTURE_BUF_SZ];
+    size_t len = load_fixture("at_cap_polygon.festpack.json", buf, sizeof(buf));
+    fp_pack_t pack;
+    fp_result_t r = fp_parse(buf, len, &pack);
+    TEST_ASSERT_EQUAL_INT(FP_OK, r);
+    TEST_ASSERT_EQUAL_UINT8(1, pack.n_features);
+    TEST_ASSERT_EQUAL_UINT8(FP_MAX_POLY_PTS, pack.features[0].n_pts);
+}
+
 /* ======================================================================
  * AC5 — feature polygon lat/lon -> east/north projection.
  * ==================================================================== */
@@ -353,6 +444,23 @@ static void S05_AC5_feature_polygon_projects_known_square_within_1m(void)
 }
 
 /* ======================================================================
+ * Honest-data: a null festival.venue.lat/lon must surface as
+ * origin_known == false, never a silent (0,0) origin presented as real.
+ * ==================================================================== */
+
+static void S05_review_null_venue_position_sets_origin_known_false(void)
+{
+    char buf[FIXTURE_BUF_SZ];
+    size_t len = load_fixture("null_venue.festpack.json", buf, sizeof(buf));
+    fp_pack_t pack;
+    fp_result_t r = fp_parse(buf, len, &pack);
+    TEST_ASSERT_EQUAL_INT(FP_OK, r);
+    TEST_ASSERT_FALSE(pack.origin_known);
+    TEST_ASSERT_EQUAL_FLOAT(0.0f, (float)pack.origin.lat);
+    TEST_ASSERT_EQUAL_FLOAT(0.0f, (float)pack.origin.lon);
+}
+
+/* ======================================================================
  * AC6 — struct size budget (also enforced at compile time in fp_pack.h).
  * ==================================================================== */
 
@@ -378,14 +486,24 @@ int main(void)
     RUN_TEST(S05_AC3_non_json_returns_err_json);
     RUN_TEST(S05_AC3_null_and_empty_input_return_err_json_no_crash);
     RUN_TEST(S05_AC3_fuzz_smoke_10000_iterations_no_crash);
+    RUN_TEST(S05_AC3_deeply_nested_input_returns_err_json_no_crash);
+
+    RUN_TEST(S05_review_object_format_polygon_point_returns_err_json);
 
     RUN_TEST(S05_AC4_13_stages_returns_err_too_big);
     RUN_TEST(S05_AC4_257_sets_returns_err_too_big);
     RUN_TEST(S05_AC4_25_features_returns_err_too_big);
     RUN_TEST(S05_AC4_13_landmarks_returns_err_too_big);
     RUN_TEST(S05_AC4_25_polygon_points_returns_err_too_big);
+    RUN_TEST(S05_AC4_at_cap_12_stages_returns_ok);
+    RUN_TEST(S05_AC4_at_cap_256_sets_returns_ok);
+    RUN_TEST(S05_AC4_at_cap_24_features_returns_ok);
+    RUN_TEST(S05_AC4_at_cap_12_landmarks_returns_ok);
+    RUN_TEST(S05_AC4_at_cap_24_polygon_points_returns_ok);
 
     RUN_TEST(S05_AC5_feature_polygon_projects_known_square_within_1m);
+
+    RUN_TEST(S05_review_null_venue_position_sets_origin_known_false);
 
     RUN_TEST(S05_AC6_pack_struct_fits_48kb_budget);
 
