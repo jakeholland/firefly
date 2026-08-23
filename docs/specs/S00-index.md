@@ -5,7 +5,7 @@ Specs are contracts. Acceptance criteria (AC) become test names (`S01_AC3_...`).
 | # | Spec | Depends on | Lost Lands MVP? | Status |
 |---|---|---|---|---|
 | S01 | core/geo — bearing, distance, heading fusion | — | YES | ✅ merged (PR #6) |
-| S02 | core/crew — crew model & freshness state machine | S01 | YES | ☐ |
+| S02 | core/crew — crew model & freshness state machine | S01 | YES | ✅ merged (PR #11) |
 | S03 | meshclient — Meshtastic client library | — | YES | ✅ merged (PR #7) |
 | S04 | firefly protocol — pulse/flare/rally/status packets | S03 | YES | ✅ merged (PR #10) |
 | S05 | festpack — pack parser | — | YES | ✅ merged (PR #5) |
