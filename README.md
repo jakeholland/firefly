@@ -46,4 +46,4 @@ This repo previously held a Meshtastic iOS/macOS client app — preserved at the
 
 ## License
 
-**GPL-3.0-only** — see [LICENSE](LICENSE) and [docs/LICENSING.md](docs/LICENSING.md) for the reasoning (short version: the vendored Meshtastic protobuf derivations make GPL the honest choice, the ecosystem matches, and it's the license under which this project can't be taken away). Selling kits/assembled pucks under GPL is fine and encouraged.
+**GPL-3.0-only** — see [LICENSE](LICENSE) and [docs/LICENSING.md](docs/LICENSING.md) for the reasoning (short version: the vendored Meshtastic protobuf derivations make GPL the honest choice, the ecosystem matches, and it's the license under which this project can't be taken away). Selling kits/assembled pucks under GPL is fine and encouraged — but the **Firefly name and flare mark are trademarks**: see [TRADEMARKS.md](TRADEMARKS.md) before selling anything under the name.
