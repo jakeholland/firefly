@@ -269,11 +269,80 @@ static void S16_AC10_draft_typed_flare_injected_takeover_clears_draft_survives(v
     lv_deinit();
 }
 
+/* PR #60 review finding: the slice's headline claim — "rebuild only on a
+ * dirty tick, never every frame" — had no regression test. The reviewer
+ * proved it by mutation: ignoring `dirty` in ctl_loop.c passed the entire
+ * suite, because nothing exercised an idle stretch long enough to notice.
+ * Proxy: the suite is green. Property: idle frames don't rebuild.
+ *
+ * Observable: a rebuild is `lv_obj_clean(screen)` + rebuild, so the
+ * screen's first child (the puck) is destroyed and recreated. Pointer
+ * identity is NOT a sound observable for that — writing this test
+ * proved it: LVGL's allocator reused the freed block and the rebuilt
+ * puck landed at the same address, failing the positive control. A
+ * user_data sentinel is sound in both directions: it survives on a
+ * live object and cannot survive recreation (the constructor zeroes
+ * user_data), regardless of where the new object is allocated. The
+ * positive control keeps the observable honest either way. */
+static void S16_d_idle_ticks_never_rebuild_the_screen(void)
+{
+    static ff_shell_t shell;
+    static fp_pack_t pack;
+    static ff_ctl_loop_ctx_t ctx;
+
+    ff_shell_cfg_t shell_cfg;
+    memset(&shell_cfg, 0, sizeof(shell_cfg));
+
+    ff_ctl_loop_cfg_t cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.mock_clock = true;
+
+    TEST_ASSERT_EQUAL_INT(0, ff_ctl_loop_open(&ctx, &shell, &pack, &shell_cfg, &cfg));
+
+    bool quit_flag = false;
+    ff_ctl_handlers_t h = ff_ctl_loop_handlers(&ctx, &quit_flag);
+
+    ctl_settle(&ctx, &h); /* initial build */
+    lv_obj_t *puck_before = lv_obj_get_child(lv_screen_active(), 0);
+    TEST_ASSERT_NOT_NULL(puck_before);
+    static int sentinel; /* any stable address */
+    lv_obj_set_user_data(puck_before, &sentinel);
+
+    /* 200 idle ticks. No traffic, no intents, no flare: nothing rendered
+     * can change (no crew/feed rows to age; wall clock UNKNOWN so no
+     * clock string). Any rebuild here is the dirty gate being ignored. */
+    for (int i = 0; i < 200; i++) {
+        ctl_clock_advance(&h, 50);
+        lv_timer_handler();
+        ff_ctl_loop_pump(&ctx);
+    }
+    lv_obj_t *puck_after_idle = lv_obj_get_child(lv_screen_active(), 0);
+    TEST_ASSERT_NOT_NULL(puck_after_idle);
+    TEST_ASSERT_EQUAL_PTR_MESSAGE(&sentinel, lv_obj_get_user_data(puck_after_idle),
+                                   "screen was rebuilt during idle ticks — the dirty gate is being ignored");
+
+    /* Positive control: a real state change must rebuild (pointer moves),
+     * proving the observable can detect rebuilds at all. */
+    char resp[FF_CTL_MAX_RESP];
+    ctl_send(&h, "{\"cmd\":\"flare\",\"from\":55834,\"dur_s\":60}", resp, sizeof(resp));
+    ctl_settle(&ctx, &h);
+    lv_obj_t *puck_after_flare = lv_obj_get_child(lv_screen_active(), 0);
+    TEST_ASSERT_NOT_NULL(puck_after_flare);
+    TEST_ASSERT_NOT_EQUAL_MESSAGE(&sentinel, lv_obj_get_user_data(puck_after_flare),
+                                   "positive control failed: a takeover did not rebuild the screen, so this "
+                                   "test's sentinel observable can no longer detect rebuilds");
+
+    ff_ctl_loop_close(&ctx);
+    ff_shell_close(&shell);
+    lv_deinit();
+}
+
 int main(void)
 {
     UNITY_BEGIN();
 
     RUN_TEST(S16_AC10_draft_typed_flare_injected_takeover_clears_draft_survives);
+    RUN_TEST(S16_d_idle_ticks_never_rebuild_the_screen);
 
     return UNITY_END();
 }
