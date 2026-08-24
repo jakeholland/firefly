@@ -51,6 +51,13 @@ typedef struct {
     ff_radar_smooth_t smooth;
     ff_route_t route;
 
+    /* The composer's destination, resolved when FF_INTENT_OPEN_COMPOSE
+     * pushed the modal (S16 slice c1). 0 = broadcast ("TO: EVERYONE").
+     * The DRAFT stays scr_compose.c's static ff_t9_t until slice c3
+     * moves it in here; this field is only the "who", which the intent
+     * seam owns as of c1. Cleared when BACK pops the composer. */
+    uint32_t compose_to_node;
+
     /* Feed pushes + the crew-paired-sender filter are ff_wiring's, not
      * reimplemented here. Holds interior pointers into this struct — see
      * ff_shell.h's "NOT RELOCATABLE" note. */
@@ -934,9 +941,27 @@ static void shell_project(shell_t *sh, uint32_t now_ms)
     shell_project_flare(sh, now_ms, &sh->view.flare);
     shell_project_settings(sh, &sh->view.settings);
 
-    /* compose: the draft is shell-owned T9 state from slice c3 onward
-     * (scr_compose.c still holds a `static ff_t9_t` today). Left zeroed
-     * — an empty broadcast draft — rather than mirrored from anywhere. */
+    /* compose: the draft (text/mode/pending) is shell-owned T9 state
+     * from slice c3 onward (scr_compose.c still holds a `static ff_t9_t`
+     * today) — left zeroed. The DESTINATION is c1's (the intent seam
+     * resolved it when OPEN_COMPOSE pushed the modal): the name is
+     * looked up at projection time, not captured at open time, so a
+     * NodeInfo rename mid-compose is reflected — same "the view is a
+     * projection" rule as everything else in this function. 0 (or a
+     * member the roster no longer holds) projects "", which scr_compose
+     * renders as "TO: EVERYONE".
+     *
+     * Known edge, stated rather than hidden: a paired member whose name
+     * has never arrived projects "" too, which renders as EVERYONE while
+     * the stored destination is that member — dishonest for the one
+     * frame-sequence between pairing and the first named NodeInfo.
+     * Nothing renders this projection yet (scr_compose still runs off
+     * fixtures until c3); c3 owns making the render side honest here,
+     * flagged in its brief via the PR body. */
+    if (sh->compose_to_node != 0u) {
+        shell_copy_str(sh->view.compose.to_name, sizeof(sh->view.compose.to_name),
+                        shell_name_of(sh, sh->compose_to_node));
+    }
 }
 
 /* ---------------------------------------------------------------------
@@ -1127,6 +1152,168 @@ mc_events_t ff_shell_events(ff_shell_t *sh_pub)
     return ev;
 }
 
+/* ---------------------------------------------------------------------
+ * Intent dispatch (S16 slice c1) — see ff_shell.h's ff_shell_intent doc
+ * ------------------------------------------------------------------- */
+
+/**
+ * THE SETTINGS JUDGMENT CALL (S16 slice c1, argued in the PR body).
+ *
+ * FF_INTENT_OPEN_SETTINGS routes to a modal whose renderer does not
+ * exist (S11 slice b was never built). Until it does, the shell REJECTS
+ * the intent — the long-press stays the no-op it has been since S06
+ * reserved the hook — rather than pushing a modal:
+ *
+ *  - Pushing without a renderer creates a DEAD END, not a placeholder:
+ *    any modal suppresses swipe (AC2), a placeholder has no BACK
+ *    control, and nothing else on a placeholder emits — the user is
+ *    wedged on a not-a-screen until reboot. The repo's own UX checklist
+ *    treats a dead-end screen as a blocking finding (scr_compose.c's
+ *    back button exists for exactly that item), and building an
+ *    escapable placeholder is renderer work c1's scope excludes.
+ *  - Honest-data: a screen claiming to be Settings, or the S13 debug
+ *    fixture view standing in for one, asserts a feature the device
+ *    does not have. A gesture that does nothing under-claims; a fake
+ *    screen mis-claims — this repo consistently prefers the former.
+ *
+ * The routing itself is complete and stays compiled (`if`, not `#if`,
+ * so -Werror and -Wswitch keep checking it): S11b flips this one
+ * constant to true and the seam needs no other change. The push path it
+ * enables is the same `ff_route_push_modal` machinery OPEN_COMPOSE
+ * exercises below, and SETTINGS-as-modal is already covered at the
+ * route layer by slice a's AC2 tests.
+ */
+static bool const k_settings_renderer_exists = false; /* S11 slice b flips this */
+
+/**
+ * The composer destination rule (S08 Behavior: "Composer: reached from
+ * Signals '+'; TO = selected crew member").
+ *
+ *  - An explicit `requested` naming a paired roster member is honored —
+ *    a future per-item reply affordance passes the item's sender, who
+ *    is paired by construction (only paired senders reach the feed).
+ *  - An explicit id the trust policy won't message (unknown, or known
+ *    but unpaired) degrades to BROADCAST, never to a different member:
+ *    silently retargeting a message at someone the caller did not name
+ *    is worse than over-sharing to everyone.
+ *  - No explicit id (0 — the Signals '+', which is a pure renderer and
+ *    cannot know the selection) resolves per S08: the currently
+ *    selected paired member, else broadcast. NOT the newest feed item —
+ *    that is the CANNED-REPLY context rule (`ff_wiring_send_canned_reply`,
+ *    issue #23), and S08's Behavior section gives the composer its own,
+ *    different rule.
+ */
+static uint32_t shell_compose_dest(shell_t *sh, uint32_t requested)
+{
+    if (requested != 0u) {
+        ff_crew_member_t const *m = ff_crew_find(&sh->crew, requested);
+        return (m != NULL && m->paired) ? requested : 0u;
+    }
+    ff_crew_member_t const *sel = ff_crew_selected(&sh->crew);
+    return (sel != NULL) ? sel->node_id : 0u;
+}
+
+void ff_shell_intent(ff_shell_t *sh_pub, ff_intent_t const *in)
+{
+    if (sh_pub == NULL || in == NULL) return;
+    shell_t *sh = shell_of(sh_pub);
+
+    /* Routing rule 4: dispatch targets the VISIBLE face. The takeover
+     * flag is ff_flare_t's single fact, read fresh at every dispatch —
+     * ff_flare_tick clears it autonomously on expiry, so a cached copy
+     * would outlive the fact it copied (ff_route_visible's doc). */
+    bool const takeover_up = (ff_route_visible(&sh->route, sh->flare.takeover_active) == FF_APP_FACE_FLARE);
+
+    switch (in->kind) {
+    case FF_INTENT_SWIPE:
+        /* While a takeover is up the swipe faces are not the visible
+         * face, so they receive no intents (AC3b's routing half). The
+         * modal-suppression and bounded-not-wrapping rules are the
+         * route's own (AC1/AC2). */
+        if (takeover_up) return;
+        (void)ff_route_swipe(&sh->route, in->u.swipe_dir);
+        return;
+
+    case FF_INTENT_BACK:
+        if (takeover_up) return; /* a tap where "<" was must not close the composer under a takeover */
+        if (ff_route_pop_modal(&sh->route)) {
+            /* Leaving the composer abandons its destination; the next
+             * OPEN_COMPOSE re-resolves. (The T9 draft's lifecycle is
+             * c3's; this only keeps the "who" from leaking across two
+             * unrelated compose sessions.) */
+            sh->compose_to_node = 0u;
+        }
+        return;
+
+    case FF_INTENT_OPEN_COMPOSE:
+        if (takeover_up) return;
+        /* push_modal enforces the rest: rejected over an existing modal
+         * (one slot, never silently replaced — a half-typed draft is
+         * exactly what that rule protects) and over an off-axis base. */
+        if (ff_route_push_modal(&sh->route, FF_APP_FACE_COMPOSE)) {
+            sh->compose_to_node = shell_compose_dest(sh, in->u.node_id);
+        }
+        return;
+
+    case FF_INTENT_OPEN_SETTINGS:
+        if (takeover_up) return;
+        if (!k_settings_renderer_exists) return; /* the judgment call — see the constant's comment */
+        (void)ff_route_push_modal(&sh->route, FF_APP_FACE_SETTINGS);
+        return;
+
+    case FF_INTENT_TAKEOVER_GO:
+        /* A decision ABOUT the takeover screen: only meaningful while it
+         * is the visible face. (ff_flare_go would no-op anyway with no
+         * pending takeover; the gate keeps the routing statement true
+         * rather than merely the outcome.) */
+        if (!takeover_up) return;
+        (void)ff_flare_go(&sh->flare);
+        return;
+
+    case FF_INTENT_TAKEOVER_DISMISS:
+        if (!takeover_up) return;
+        (void)ff_flare_dismiss_takeover(&sh->flare);
+        return;
+
+    case FF_INTENT_RELEASE_LOCK:
+        /* Deliberately NOT gated on the takeover, and deliberately not
+         * one branch shared with TAKEOVER_DISMISS: S10 Ruling 3. The
+         * only real-world source of this intent while a takeover is
+         * visible is the race the ruling exists for — "stop navigating"
+         * tapped in the instant a new takeover arrives — and the correct
+         * outcome is: lock released (the user's actual intent), takeover
+         * left pending and shown (nothing swallowed unseen).
+         * ff_flare_release_lock touches only the lock, by that ruling's
+         * own construction. */
+        (void)ff_flare_release_lock(&sh->flare);
+        return;
+
+    /* --- deliberate no-ops until their owning slice lands ------------ */
+    case FF_INTENT_CANNED_REPLY:   /* c2 — ff_wiring_send_canned_reply, newest-feed-item context */
+    case FF_INTENT_SEND_TEXT:      /* c2/c3 — needs the shell-owned draft */
+    case FF_INTENT_MARK_FEED_READ: /* c2 — the shell already clears unread on face view (S08 AC3) */
+    case FF_INTENT_SELECT_CREW:    /* c2 — radar tap-cycle */
+    case FF_INTENT_SELECT_RALLY:   /* c2 — ff_crew_select_rally, itself still unbuilt */
+    case FF_INTENT_FLARE_START:    /* c2 — radar FLARE button */
+    case FF_INTENT_FLARE_END:      /* c2 — sender-overlay CANCEL */
+    case FF_INTENT_T9_KEY:         /* c3 — shell-owned ff_t9_t */
+    case FF_INTENT_T9_SPACE:       /* c3 */
+    case FF_INTENT_T9_BACKSPACE:   /* c3 */
+    case FF_INTENT_T9_MODE:        /* c3 */
+    case FF_INTENT_T9_INSERT:      /* c3 — payload copied, never stored (ff_intent.h) */
+    case FF_INTENT_SETTING_SET:    /* e — settings write-through + persistence */
+        return;
+    }
+    /* No default: -Wswitch under -Werror flags any new ff_intent_kind_t
+     * member left unhandled (the S16 fixture_view.c trap, avoided). A
+     * corrupted out-of-enum value falls through to here — a no-op. */
+}
+
+void ff_shell_intent_sink(void *user, ff_intent_t const *in)
+{
+    ff_shell_intent((ff_shell_t *)user, in);
+}
+
 bool ff_shell_pair(ff_shell_t *sh_pub, uint32_t node_id, bool paired)
 {
     if (sh_pub == NULL) return false;
@@ -1193,6 +1380,11 @@ ff_flare_t const *ff_shell_flare(ff_shell_t const *sh_pub)
 ff_settings_t const *ff_shell_settings(ff_shell_t const *sh_pub)
 {
     return (sh_pub == NULL) ? NULL : &shell_of_const(sh_pub)->settings;
+}
+
+uint32_t ff_shell_compose_to_node(ff_shell_t const *sh_pub)
+{
+    return (sh_pub == NULL) ? 0u : shell_of_const(sh_pub)->compose_to_node;
 }
 
 /* ---------------------------------------------------------------------

@@ -50,6 +50,26 @@ if(FF_BUILD_TESTS)
     add_test(NAME test_route COMMAND test_route)
 endif()
 
+# S16c1 (app/ff_intent.c + app/include/ff_intent.h — the intent seam;
+# docs/specs/S16-app-shell.md slice c1)
+# ---------------------------------------------------------------------------
+# The contract screens emit through (`ff_intent_t`) and its one moving
+# part (the process-global emit sink). Pure C11, zero LVGL, zero
+# meshclient — deliberately: screens link this to BUILD intents, and this
+# library pulling mc_client.h in would hand every screen the
+# core+meshclient+app inclusion only ff_wiring.c/ff_shell.c are allowed
+# (see ff_intent.h's header comment; ff_wiring_canned_reply_t moved into
+# ff_intent.h for the same reason). The RECEIVING end, ff_shell_intent,
+# lives in ff-shell below and does not link this — the target binds the
+# two together at startup via ff_intent_emit_bind(ff_shell_intent_sink,..).
+# ---------------------------------------------------------------------------
+add_library(ff-intent STATIC
+    ff_intent.c
+)
+target_link_libraries(ff-intent PUBLIC ff-app) # app/include/ff_intent.h's include path
+target_compile_features(ff-intent PUBLIC c_std_11)
+ff_apply_warnings(ff-intent)
+
 # S06b (app/theme, app/screens — shell/nav + radar-face rendering;
 # docs/specs/S06-radar-face.md slices b/c/d)
 # ---------------------------------------------------------------------------
@@ -149,7 +169,10 @@ add_library(ff-app-ui STATIC
     screens/scr_flare.c # S10b
 )
 target_include_directories(ff-app-ui PUBLIC theme screens)
-target_link_libraries(ff-app-ui PUBLIC ff-app ff-radar-layout ff-layout ff-flare-fmt lvgl::lvgl)
+# ff-intent (S16c1): scr_nav/scr_signals/scr_compose emit navigation
+# intents through the seam — see ff_intent.h for why this dependency is
+# safe for screens (no meshclient, no shell, no core state).
+target_link_libraries(ff-app-ui PUBLIC ff-app ff-radar-layout ff-layout ff-flare-fmt ff-intent lvgl::lvgl)
 # scr_radar.c's arrow/dot trigonometry (sinf/cosf) needs libm — same
 # rationale as ff-core's CMakeLists.txt note on why this is missed
 # locally (AppleClang resolves it via libSystem) but required on
@@ -169,7 +192,11 @@ add_library(ff-wiring STATIC
     ff_wiring.c
 )
 target_include_directories(ff-wiring PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
-target_link_libraries(ff-wiring PUBLIC ff-core ff-meshclient)
+# ff-app: ff_wiring.h now includes app/include/ff_intent.h — the
+# ff_wiring_canned_reply_t definition moved there in S16c1 so screens can
+# build intents without transitively including mc_client.h. ff-app is the
+# INTERFACE library that publishes that include path.
+target_link_libraries(ff-wiring PUBLIC ff-core ff-meshclient ff-app)
 ff_apply_warnings(ff-wiring)
 
 if(FF_BUILD_TESTS)
@@ -293,4 +320,29 @@ if(FF_BUILD_TESTS)
     ff_apply_warnings(test_shell)
 
     add_test(NAME test_shell COMMAND test_shell)
+
+    # S16c1 — ff_shell_intent dispatch + the emit seam, driven with no
+    # transport/LVGL (same injection harness as test_shell). Separate
+    # executable rather than more test_shell.c so the intent slice's
+    # coverage reads (and reviews) as one unit.
+    add_executable(test_intent
+        tests/test_intent.c
+    )
+    target_link_libraries(test_intent PRIVATE ff-shell ff-intent unity)
+    ff_apply_warnings(test_intent)
+
+    add_test(NAME test_intent COMMAND test_intent)
+
+    # S16c1 — headless LVGL INTERACTION tests for the three wired emit
+    # sites (nav long-press, Compose back, Signals "+"): same pattern as
+    # test_scr_flare above ("build the real screen, synthesize the event,
+    # assert on what came out the seam") — a golden can't prove a click
+    # emits the right intent, or any intent at all.
+    add_executable(test_scr_intent
+        screens/tests/test_scr_intent.c
+    )
+    target_link_libraries(test_scr_intent PRIVATE ff-app-ui ff-intent unity)
+    ff_apply_warnings(test_scr_intent)
+
+    add_test(NAME test_scr_intent COMMAND test_scr_intent)
 endif()

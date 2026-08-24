@@ -98,6 +98,7 @@
 #include "ff_crew.h"
 #include "ff_feed.h"
 #include "ff_heard.h"
+#include "ff_intent.h" /* ff_wiring_canned_reply_t — definition moved there, see below */
 
 #include "mc_client.h"
 
@@ -166,11 +167,14 @@ void ff_wiring_on_private(void *user, uint32_t from, uint32_t portnum, uint8_t c
  */
 void ff_wiring_on_text(void *user, uint32_t from, uint32_t to, char const *utf8, size_t len);
 
-typedef enum {
-    FF_WIRING_REPLY_OMW,
-    FF_WIRING_REPLY_5MIN,
-    FF_WIRING_REPLY_PULSE,
-} ff_wiring_canned_reply_t;
+/* `ff_wiring_canned_reply_t` (OMW / 5MIN / PULSE) is still this module's
+ * vocabulary, but its DEFINITION lives in app/include/ff_intent.h as of
+ * S16 slice c1 (included above, so every existing consumer of this
+ * header compiles unchanged): the intent union carries a
+ * `ff_wiring_canned_reply_t reply` by the spec's exact wording, and
+ * screens must be able to build intents without transitively including
+ * mc_client.h — which including THIS header would do. Same members, same
+ * order, same name; only the textual home moved. `[api]`. */
 
 /**
  * ff_wiring_send_canned_reply — send OMW ("omw" text) / 5 MIN ("5 min"

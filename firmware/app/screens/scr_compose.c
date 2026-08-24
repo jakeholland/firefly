@@ -73,6 +73,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "ff_intent.h" /* S16c1 — the emit seam; see compose_back_cb */
 #include "ff_layout.h"
 #include "ff_t9.h"
 #include "ff_theme.h"
@@ -308,12 +309,16 @@ static void compose_send_stub_cb(lv_event_t *e)
     (void)e;
 }
 
-/* TODO(issue #23): return to the Signals face. Which face is active
- * is app-state owned by the real event loop (not yet built), not a
- * pure-render screen's decision to make — reserved hook. */
-static void compose_back_stub_cb(lv_event_t *e)
+/* Back "<" -> emits FF_INTENT_BACK through the intent seam (S16 slice
+ * c1 — this replaces the issue-#23 stub). Which face is revealed is
+ * still not this file's decision: the shell pops its modal route and
+ * the next projection says what to render. Unbound (goldens/headless),
+ * the emit is a no-op. */
+static void compose_back_cb(lv_event_t *e)
 {
     (void)e;
+    ff_intent_t in = {.kind = FF_INTENT_BACK, .u = {0}};
+    ff_intent_emit(&in);
 }
 
 static void compose_update_mode_chip_label(void)
@@ -497,7 +502,7 @@ void ff_scr_compose_build(ff_app_compose_t const *compose)
     lv_obj_set_size(back, FF_THEME_MIN_HIT_PX, FF_THEME_MIN_HIT_PX);
     lv_obj_set_pos(back, header_margin, FF_COMPOSE_HEADER_Y);
     lv_obj_set_style_bg_opa(back, LV_OPA_TRANSP, 0);
-    lv_obj_add_event_cb(back, compose_back_stub_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_add_event_cb(back, compose_back_cb, LV_EVENT_CLICKED, NULL);
     lv_obj_t *back_lbl = lv_label_create(back);
     lv_label_set_text(back_lbl, "<");
     lv_obj_set_style_text_font(back_lbl, FF_THEME_FONT_NAME, 0);
