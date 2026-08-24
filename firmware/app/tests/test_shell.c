@@ -818,6 +818,78 @@ static void S16_AC13_active_face_is_never_flare_even_during_a_takeover(void)
 }
 
 /* =================================================================== */
+/* AC3b — SEND_TEXT/BACK rejected during a takeover; draft survives     */
+/* (S16 slice c3)                                                       */
+/* =================================================================== */
+
+/**
+ * S16 spec, AC3b: "While a takeover is visible, SEND_TEXT and BACK are
+ * rejected and the draft is unchanged; clearing the takeover restores
+ * dispatch to Compose with the draft intact." Unimplementable before
+ * this slice per the Intents section ("scr_compose.c's `static ff_t9_t
+ * s_t9`... has not moved yet") — the draft is typed through the real T9
+ * intent seam (the same path a real keypress takes), not poked directly
+ * into shell internals, so this is also the first test that exercises
+ * T9_KEY/T9_SPACE end to end at the shell level.
+ */
+static void S16_AC3b_send_text_and_back_rejected_during_takeover_draft_survives(void)
+{
+    harness_init(U_EVENING, false);
+    inject_my_info(MY_ID);
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, true));
+
+    ff_intent_t open = {.kind = FF_INTENT_OPEN_COMPOSE, .u = {0}};
+    ff_shell_intent(&H.shell, &open);
+
+    /* Type "a " via the real keypad intents: key 2 once (pending 'a'),
+     * then space (commits the pending char, appends the space). */
+    ff_intent_t key = {.kind = FF_INTENT_T9_KEY, .u = {0}};
+    key.u.t9_key = 2;
+    ff_shell_intent(&H.shell, &key);
+    ff_intent_t space = {.kind = FF_INTENT_T9_SPACE, .u = {0}};
+    ff_shell_intent(&H.shell, &space);
+
+    (void)ff_shell_tick(&H.shell, H.clk.t);
+    TEST_ASSERT_EQUAL(FF_APP_FACE_COMPOSE, ff_shell_view(&H.shell)->active_face);
+    char draft_before[FF_APP_COMPOSE_TEXT_LEN];
+    strncpy(draft_before, ff_shell_view(&H.shell)->compose.text, sizeof(draft_before) - 1u);
+    draft_before[sizeof(draft_before) - 1u] = '\0';
+    TEST_ASSERT_EQUAL_STRING("a ", draft_before);
+
+    /* A flare arrives: the takeover is now the visible face (routing rule
+     * 4), not Compose. */
+    inject_flare(DANA, 300u);
+    TEST_ASSERT_TRUE(ff_shell_flare(&H.shell)->takeover_active);
+
+    ff_intent_t send = {.kind = FF_INTENT_SEND_TEXT, .u = {0}};
+    ff_shell_intent(&H.shell, &send);
+    ff_intent_t back = {.kind = FF_INTENT_BACK, .u = {0}};
+    ff_shell_intent(&H.shell, &back);
+
+    (void)ff_shell_tick(&H.shell, H.clk.t);
+    /* Rejected, not partially consumed: still Compose underneath, and the
+     * exact same draft — not sent, not cleared, not popped. */
+    TEST_ASSERT_EQUAL_STRING(draft_before, ff_shell_view(&H.shell)->compose.text);
+
+    /* Clearing the takeover restores dispatch to Compose, draft intact. */
+    ff_intent_t dismiss = {.kind = FF_INTENT_TAKEOVER_DISMISS, .u = {0}};
+    ff_shell_intent(&H.shell, &dismiss);
+    TEST_ASSERT_FALSE(ff_shell_flare(&H.shell)->takeover_active);
+
+    (void)ff_shell_tick(&H.shell, H.clk.t);
+    TEST_ASSERT_EQUAL(FF_APP_FACE_COMPOSE, ff_shell_view(&H.shell)->active_face);
+    TEST_ASSERT_EQUAL_STRING(draft_before, ff_shell_view(&H.shell)->compose.text);
+
+    /* And SEND genuinely works once the seam is open again — proving the
+     * earlier rejection was specifically "not while a takeover is up",
+     * not "SEND_TEXT never does anything". */
+    ff_shell_intent(&H.shell, &send);
+    (void)ff_shell_tick(&H.shell, H.clk.t);
+    TEST_ASSERT_EQUAL(FF_APP_FACE_RADAR, ff_shell_view(&H.shell)->active_face); /* SEND pops back to base */
+    TEST_ASSERT_EQUAL_STRING("", ff_shell_view(&H.shell)->compose.text);       /* draft reset on send */
+}
+
+/* =================================================================== */
 /* AC4(a) — the dirty bit over the RENDERED projection                  */
 /* =================================================================== */
 
@@ -1364,6 +1436,28 @@ static uint32_t decode_packet_to(uint8_t const *buf, size_t len)
     return tr.payload_variant.packet.to;
 }
 
+/** Decode a single outbound ToRadio frame's decoded payload bytes as a
+ *  NUL-terminated string into `out` (capacity `out_cap`) — the SEND_TEXT
+ *  test below's way of checking WHAT was sent, not just to whom. */
+static void decode_packet_text(uint8_t const *buf, size_t len, char *out, size_t out_cap)
+{
+    TEST_ASSERT_GREATER_OR_EQUAL_size_t(5u, len);
+    uint16_t flen = (uint16_t)((buf[2] << 8) | buf[3]);
+    TEST_ASSERT_LESS_OR_EQUAL_size_t(len - 4u, flen);
+
+    meshtastic_ToRadio tr = meshtastic_ToRadio_init_zero;
+    pb_istream_t is = pb_istream_from_buffer(buf + 4, flen);
+    TEST_ASSERT_TRUE(pb_decode(&is, meshtastic_ToRadio_fields, &tr));
+    TEST_ASSERT_EQUAL_INT(meshtastic_ToRadio_packet_tag, tr.which_payload_variant);
+
+    meshtastic_MeshPacket const *pkt = &tr.payload_variant.packet;
+    TEST_ASSERT_EQUAL_INT(meshtastic_MeshPacket_decoded_tag, pkt->which_payload_variant);
+    size_t n = (size_t)pkt->payload_variant.decoded.payload.size;
+    if (n >= out_cap) n = out_cap - 1u;
+    memcpy(out, pkt->payload_variant.decoded.payload.bytes, n);
+    out[n] = '\0';
+}
+
 /**
  * AC6, the without-the-flag half, driven through the REAL pipeline the
  * cutover ships: a scripted transport into the shell's own mc_client_t.
@@ -1610,6 +1704,99 @@ static void S16_AC7_canned_reply_uses_newest_feed_item_or_broadcasts(void)
     TEST_ASSERT_EQUAL_size_t(tx_before, P.tx_len); /* nothing sent */
 }
 
+/* =================================================================== */
+/* S16 slice c3 — SEND_TEXT sends the shell-owned draft                 */
+/* =================================================================== */
+
+/**
+ * SEND_TEXT, driven through the REAL pipeline the same way AC6/AC7 are:
+ * a scripted transport into the shell's own `mc_client_t`, which is also
+ * `ff_wiring_ctx_t.sender` — the seam SEND_TEXT sends through, same as
+ * the canned replies. Types a draft via the real T9 intents, sends it,
+ * and decodes the outbound frame for BOTH destination and text — AC7's
+ * test only ever needed `decode_packet_to`; this one adds
+ * `decode_packet_text` since "what was sent" is the whole point here.
+ */
+static void S16_c3_send_text_sends_the_shell_owned_draft(void)
+{
+    memset(&P, 0, sizeof(P));
+    memset(&H, 0, sizeof(H));
+    H.clk.t = 100000u;
+    H.clock.now_ms = fake_now;
+    H.clock.user = &H.clk;
+
+    ff_shell_cfg_t cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.clock = &H.clock;
+    cfg.pack = &H.pack;
+    cfg.transport.read = pipe_read;
+    cfg.transport.write = pipe_write;
+    cfg.transport.io = &P;
+
+    TEST_ASSERT_EQUAL_INT(0, ff_shell_init(&H.shell, &cfg));
+    uint32_t const nonce = pipe_want_config_id(&P);
+
+    size_t n = 0;
+    n += frame_my_info(P.rx + n, sizeof(P.rx) - n, MY_ID);
+    n += frame_config_complete(P.rx + n, sizeof(P.rx) - n, nonce);
+    P.rx_len = n;
+
+    advance(20u);
+    (void)ff_shell_tick(&H.shell, H.clk.t);
+    TEST_ASSERT_EQUAL_INT(FF_SHELL_LINK_CONNECTED, ff_shell_link(&H.shell));
+
+    /* Broadcast half: no explicit destination AND nobody paired yet (so
+     * `ff_crew_selected` has nothing to self-heal to either) — same
+     * "before any pairing exists" shape AC7's broadcast half uses, for
+     * the same reason: pairing DANA first would make her the crew's own
+     * self-healing selection and this half would pass for the wrong
+     * reason. SEND on an empty draft must not fire at all. */
+    size_t tx_before = P.tx_len;
+    ff_intent_t send = {.kind = FF_INTENT_SEND_TEXT, .u = {0}};
+    ff_shell_intent(&H.shell, &send);
+    TEST_ASSERT_EQUAL_size_t(tx_before, P.tx_len); /* empty draft: no-op */
+
+    ff_intent_t open = {.kind = FF_INTENT_OPEN_COMPOSE, .u = {0}};
+    ff_shell_intent(&H.shell, &open); /* node_id 0: broadcast (no selection, no explicit id) */
+
+    ff_intent_t k5 = {.kind = FF_INTENT_T9_KEY, .u = {0}};
+    k5.u.t9_key = 5; /* 'j' */
+    ff_shell_intent(&H.shell, &k5);
+    ff_intent_t space = {.kind = FF_INTENT_T9_SPACE, .u = {0}};
+    ff_shell_intent(&H.shell, &space); /* commits -> "j " */
+
+    tx_before = P.tx_len;
+    ff_shell_intent(&H.shell, &send);
+    TEST_ASSERT_GREATER_THAN_size_t(tx_before, P.tx_len);
+    TEST_ASSERT_EQUAL_UINT32(MC_ADDR_BROADCAST, decode_packet_to(P.tx + tx_before, P.tx_len - tx_before));
+    char text[32];
+    decode_packet_text(P.tx + tx_before, P.tx_len - tx_before, text, sizeof(text));
+    TEST_ASSERT_EQUAL_STRING("j ", text);
+
+    /* Sending closed the composer and reset the draft (interpretation
+     * call, noted in the PR body): back at the base face, and typing
+     * again after re-opening starts from empty, not from "j ". */
+    (void)ff_shell_tick(&H.shell, H.clk.t);
+    TEST_ASSERT_EQUAL(FF_APP_FACE_RADAR, ff_shell_view(&H.shell)->active_face);
+    TEST_ASSERT_EQUAL_STRING("", ff_shell_view(&H.shell)->compose.text);
+
+    /* Explicit-destination half: OPEN_COMPOSE(DANA) -> SEND targets DANA,
+     * not broadcast. Paired here, not before the broadcast half above. */
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, true));
+    ff_intent_t open_dana = {.kind = FF_INTENT_OPEN_COMPOSE, .u = {0}};
+    open_dana.u.node_id = DANA;
+    ff_shell_intent(&H.shell, &open_dana);
+    ff_intent_t k2 = {.kind = FF_INTENT_T9_KEY, .u = {0}};
+    k2.u.t9_key = 2;
+    ff_shell_intent(&H.shell, &k2);
+    ff_shell_intent(&H.shell, &space);
+
+    tx_before = P.tx_len;
+    ff_shell_intent(&H.shell, &send);
+    TEST_ASSERT_GREATER_THAN_size_t(tx_before, P.tx_len);
+    TEST_ASSERT_EQUAL_UINT32(DANA, decode_packet_to(P.tx + tx_before, P.tx_len - tx_before));
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -1631,6 +1818,8 @@ int main(void)
 
     RUN_TEST(S16_AC13_active_face_is_never_flare_even_during_a_takeover);
 
+    RUN_TEST(S16_AC3b_send_text_and_back_rejected_during_takeover_draft_survives);
+
     RUN_TEST(S16_AC4a_idle_shell_is_not_dirty_for_1000_ticks);
     RUN_TEST(S16_AC4a_dirty_is_the_rendered_projection_not_the_raw_struct);
 
@@ -1651,6 +1840,7 @@ int main(void)
     RUN_TEST(S16_b2_my_info_purges_our_own_id_from_heard);
 
     RUN_TEST(S16_AC7_canned_reply_uses_newest_feed_item_or_broadcasts);
+    RUN_TEST(S16_c3_send_text_sends_the_shell_owned_draft);
 
     return UNITY_END();
 }

@@ -9,22 +9,21 @@
  * reproducible: a headless single-frame render never processes a click
  * event, so it always shows exactly what the fixture says, nothing more.
  *
- * Real keypad presses DO drive a genuine, internal `ff_t9_t` (this is
- * the "input plumbing" S08 slice d asks for — `core/include/ff_t9.h`,
- * the merged multi-tap engine) — but that engine starts EMPTY
- * (`ff_t9_reset`) at build time, independent of the fixture's pre-seeded
- * text, and the bubble label only switches over to rendering
- * `ff_t9_text()`'s live output once the very first real keypress lands
- * (`s_started_typing`). There is no attempt to reverse-engineer a
- * `ff_t9_t` internal state (committed buffer + a specific pending
- * multi-tap cycle position) that would reproduce an arbitrary fixture's
- * `text`/`has_pending` — `ff_t9_t`'s public API has no "load this
- * committed string" entry point (by design: every mutation is a modeled
- * keypress), so a fixture-seeded live session isn't attempted here.
- * Interactive typing in window mode is therefore always a FRESH compose
- * session, not a "resume this draft" feature — nothing in the S08 spec
- * asks for the latter, and this keeps the render path honest (never a
- * hybrid of "some of this came from the fixture, some from the engine").
+ * As of S16 slice c3 this file no longer holds a live `ff_t9_t` at all —
+ * it moved to shell-owned draft state (`app/ff_shell.c`'s `compose_draft`,
+ * per the spec's Intents section: "the draft is shell-owned T9 state").
+ * Every keypad control below is a pure emitter, same shape as SEND/BACK
+ * already were: it reports WHICH key was pressed, in the context of the
+ * mode this screen itself is currently showing (`s_mode`, still a local
+ * snapshot from `*compose` at build time — deciding "is this a multi-tap
+ * letter key or a literal insert" is what makes the intent semantic
+ * rather than a bare hardware scancode), and the shell decides what, if
+ * anything, mutates. This screen never touches `ff_t9.h` directly anymore
+ * — no engine, no local echo, nothing to reset. A live session's bubble
+ * only reflects a keypress once the shell's next projection reaches the
+ * screen through the render lifecycle (S16 slice d); until then, exactly
+ * like every other button in this codebase, a click here is a report, not
+ * a repaint.
  *
  * ## Keypad mode paging + which emoji tier this PR ships
  * S08's Amendments (2026-08-23, owner ruling) resolves the open digits/
@@ -75,7 +74,6 @@
 
 #include "ff_intent.h" /* S16c1 — the emit seam; see compose_back_cb */
 #include "ff_layout.h"
-#include "ff_t9.h"
 #include "ff_theme.h"
 
 /* ---------------------------------------------------------------------
@@ -147,11 +145,14 @@ static int32_t compose_safe_margin_x(int32_t top_y, int32_t h)
  * process). `ff_scr_compose_build` resets every static below at entry,
  * so at least repeated calls WITHIN one process (not currently done
  * anywhere) start from a clean slate rather than leaking the previous
- * call's compose session.
+ * call's compose session. `s_mode` is the one piece of state this file
+ * still keeps: a build-time snapshot of `*compose`, needed to decide
+ * which intent a keypress means (T9_KEY vs. T9_INSERT — see
+ * compose_key_pressed) — not live state, since nothing here mutates it
+ * anymore (S16 slice c3 moved the mode chip's cycling to the shell too;
+ * see compose_mode_chip_click_cb).
  * ------------------------------------------------------------------- */
-static ff_t9_t             s_t9;
 static ff_app_compose_mode_t s_mode;
-static bool                 s_started_typing;
 static lv_obj_t            *s_bubble_label;
 static lv_obj_t            *s_mode_chip_label;
 static lv_obj_t            *s_keys_container;
@@ -239,51 +240,51 @@ static void compose_render_bubble_text(lv_obj_t *label, char const *text, bool h
     }
 }
 
-/* Only repaints from the LIVE engine once typing has actually started —
- * see this file's header comment for why the fixture-seeded initial
- * paint is otherwise left alone. */
-static void compose_refresh_bubble(void)
-{
-    if (s_bubble_label == NULL || !s_started_typing) {
-        return;
-    }
-    compose_render_bubble_text(s_bubble_label, ff_t9_text(&s_t9), s_t9.has_pending);
-}
-
 /* ---------------------------------------------------------------------
- * Keypad input handlers — real ff_t9 plumbing (S08 slice d).
+ * Keypad input handlers — S16 slice c3: every path below is a pure
+ * emitter now (see this file's header comment). `s_mode` (the build-time
+ * snapshot) decides which INTENT a keypress means, matching exactly what
+ * the removed `ff_t9_*` calls used to do directly:
+ *   ABC key 0    -> T9_SPACE          ABC key 1-9  -> T9_KEY(key)
+ *   123 key 0-9  -> T9_INSERT("0".."9")  (still a literal digit insert,
+ *                   same as the engine-side call this replaces)
+ *   SYM key 0    -> T9_SPACE          SYM key 1-9  -> T9_INSERT(legend)
+ * The shell interprets T9_KEY as multi-tap and T9_INSERT as an atomic
+ * append (ff_t9_key / ff_t9_insert_text respectively) — this file never
+ * calls either again.
  * ------------------------------------------------------------------- */
 
 static void compose_key_pressed(uint8_t key)
 {
-    s_started_typing = true;
+    ff_intent_t in = {.kind = FF_INTENT_T9_SPACE, .u = {0}};
 
     switch (s_mode) {
     case FF_APP_COMPOSE_ABC:
         if (key == 0) {
-            ff_t9_space(&s_t9);
+            in.kind = FF_INTENT_T9_SPACE;
         } else {
-            ff_t9_key(&s_t9, key, lv_tick_get());
+            in.kind = FF_INTENT_T9_KEY;
+            in.u.t9_key = key;
         }
         break;
-    case FF_APP_COMPOSE_123:
-        if (key == 0) {
-            ff_t9_insert_text(&s_t9, "0");
-        } else {
-            char digit[2] = {(char)('0' + key), '\0'};
-            ff_t9_insert_text(&s_t9, digit);
-        }
-        break;
+    case FF_APP_COMPOSE_123: {
+        char digit[2] = {(char)('0' + key), '\0'};
+        in.kind = FF_INTENT_T9_INSERT;
+        in.u.text = digit;
+        ff_intent_emit(&in); /* emit here: `digit` doesn't outlive this block */
+        return;
+    }
     case FF_APP_COMPOSE_SYM:
         if (key == 0) {
-            ff_t9_space(&s_t9);
+            in.kind = FF_INTENT_T9_SPACE;
         } else {
-            ff_t9_insert_text(&s_t9, kSymLegends[key]);
+            in.kind = FF_INTENT_T9_INSERT;
+            in.u.text = kSymLegends[key];
         }
         break;
     }
 
-    compose_refresh_bubble();
+    ff_intent_emit(&in);
 }
 
 static void compose_key_click_cb(lv_event_t *e)
@@ -295,21 +296,18 @@ static void compose_key_click_cb(lv_event_t *e)
 static void compose_backspace_cb(lv_event_t *e)
 {
     (void)e;
-    s_started_typing = true;
-    ff_t9_backspace(&s_t9);
-    compose_refresh_bubble();
+    ff_intent_t in = {.kind = FF_INTENT_T9_BACKSPACE, .u = {0}};
+    ff_intent_emit(&in);
 }
 
 /* SEND -> emits FF_INTENT_SEND_TEXT through the intent seam (S16 slice
- * c2 — this replaces the issue-#23 stub). No payload: the draft is
- * shell-owned T9 state per the spec's Intents section ("scr_compose.c's
- * `static ff_t9_t s_t9` currently holds it, reset on every build"), which
- * has not moved yet — that is slice c3's job. So `ff_shell_intent`'s
- * FF_INTENT_SEND_TEXT case stays a no-op for now (nothing to send FROM),
- * but the routing rule this button must already respect is real: S16
- * Rule 4 says explicitly "a touch landing where SEND was does not send"
- * while a takeover is up, which the shell enforces once c3 wires the real
- * send. Unbound (goldens/headless), the emit is a no-op. */
+ * c2 wired the emit; c3 wires the shell's handling of it). No payload:
+ * the draft is shell-owned T9 state (`app/ff_shell.c`'s `compose_draft`)
+ * as of this slice, so `ff_shell_intent`'s FF_INTENT_SEND_TEXT case
+ * actually sends now, via `sh->wiring.sender` — see ff_shell.c. Routing
+ * rule 4 ("a touch landing where SEND was does not send" while a takeover
+ * is up) is enforced there, not here: this button still only ever reports
+ * the tap. Unbound (goldens/headless), the emit is a no-op. */
 static void compose_send_cb(lv_event_t *e)
 {
     (void)e;
@@ -336,8 +334,27 @@ static void compose_update_mode_chip_label(void)
     }
 }
 
+/* Mode chip "ABC"/"123"/"SYM" -> emits FF_INTENT_T9_MODE (S16 slice c3).
+ * This used to cycle `s_mode` locally and rebuild the keypad in place for
+ * instant feedback; now, like every other control in this file, it only
+ * reports the tap — the shell owns the mode (so SEND/backspace/keys stay
+ * consistent with whatever mode is actually current even across a
+ * takeover interruption) and the next projection reaches this screen
+ * through the render lifecycle (S16 slice d), not through a local
+ * rebuild here. */
+static void compose_mode_chip_click_cb(lv_event_t *e)
+{
+    (void)e;
+    ff_intent_t in = {.kind = FF_INTENT_T9_MODE, .u = {0}};
+    ff_intent_emit(&in);
+}
+
 /* ---------------------------------------------------------------------
- * Keypad construction (rebuilt in place on a mode switch).
+ * Keypad construction. Built once, at ff_scr_compose_build entry — S16
+ * slice c3 retired the local "clear and rebuild in place" path a mode
+ * chip tap used to trigger; a live mode change now reaches this screen
+ * only through the render lifecycle (S16 slice d), same as everything
+ * else the shell owns.
  * ------------------------------------------------------------------- */
 
 static lv_obj_t *compose_make_key(lv_obj_t *parent, char const *legend, int32_t x, int32_t y, int32_t w, int32_t h,
@@ -446,27 +463,6 @@ static void compose_build_keys(lv_obj_t *container, ff_app_compose_mode_t mode)
     compose_build_bottom_row(container, mode, FF_COMPOSE_BOTTOM_ROW_Y - FF_COMPOSE_GRID_Y, margin_bottom);
 }
 
-static void compose_rebuild_keypad(void)
-{
-    if (s_keys_container == NULL) {
-        return;
-    }
-    lv_obj_clean(s_keys_container);
-    compose_build_keys(s_keys_container, s_mode);
-}
-
-static void compose_mode_chip_click_cb(lv_event_t *e)
-{
-    (void)e;
-    switch (s_mode) {
-    case FF_APP_COMPOSE_ABC: s_mode = FF_APP_COMPOSE_123; break;
-    case FF_APP_COMPOSE_123: s_mode = FF_APP_COMPOSE_SYM; break;
-    case FF_APP_COMPOSE_SYM: s_mode = FF_APP_COMPOSE_ABC; break;
-    }
-    compose_update_mode_chip_label();
-    compose_rebuild_keypad();
-}
-
 /* ---------------------------------------------------------------------
  * Entry point.
  * ------------------------------------------------------------------- */
@@ -478,8 +474,6 @@ void ff_scr_compose_build(ff_app_compose_t const *compose)
     }
 
     s_mode = compose->mode;
-    s_started_typing = false;
-    ff_t9_reset(&s_t9);
     s_bubble_label = NULL;
     s_mode_chip_label = NULL;
     s_keys_container = NULL;

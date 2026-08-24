@@ -228,6 +228,21 @@ loop while also fighting unfamiliar hardware for the first time.
   belongs to the canned-reply chips (`ff_wiring_send_canned_reply`,
   issue #23), and S08 gives the composer its own, different rule.
 
+- **2026-08-24, slice c3 — what SEND does after it sends is an
+  interpretation call, recorded per CLAUDE.md.** S08's Behavior line
+  ("SEND → `mc_send_text`; sent item appears in feed optimistically
+  with pending marker") says what SEND triggers, not what the screen
+  does next. Ruling, implemented in `ff_shell.c`'s `FF_INTENT_SEND_TEXT`
+  case: a non-empty draft is sent, then the draft resets and the modal
+  pops back to `base` — the composer is a single-message-bubble screen,
+  not a thread view, and "sent item appears in feed" reads as returning
+  to Signals to see it land, not staying on an emptied composer. An
+  empty draft (nothing typed) is a silent no-op rather than a broadcast
+  of `""`. Optimistic feed insertion itself (the "pending marker" half
+  of that same line) is still out of scope here, exactly as
+  `ff_wiring.h`'s header comment already defers it to "ack UX v1.5" —
+  slice c3 wires the send, not the optimistic echo.
+
 ## Two defects this closes
 
 ### 1. Two inbound pipelines that disagree about trust
