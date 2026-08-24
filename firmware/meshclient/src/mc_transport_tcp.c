@@ -19,10 +19,37 @@ static int mc_tcp_set_nonblocking(int fd)
     return fcntl(fd, F_SETFL, flags | O_NONBLOCK);
 }
 
+/**
+ * Bound on how long ONE candidate address is given to complete its
+ * TCP handshake (review round 1, PR #61, D1). `mc_tcp_dial` is called
+ * from `mc_tcp_redial`, which `mc_tcp_write_cb` calls from inside
+ * `mc_tick()`'s synchronous tick loop, roughly every 2 s while
+ * disconnected (`mc_client`'s own reconnect backoff) — a connect() that
+ * blocks for the OS's own timeout (60-75 s, measured >8 s before this
+ * fix against an unreachable-but-not-refused host) freezes the render
+ * loop on every single retry. A refused connection (ECONNREFUSED) still
+ * fails near-instantly, exactly as before; this bound only matters for
+ * the "nobody answers at all" case — a comms brain mid-reboot or out of
+ * range, which is precisely the case reconnect logic exists to survive.
+ * Small relative to the 2 s retry cadence so it doesn't itself become a
+ * visible stall, generous relative to a real handshake (loopback/LAN
+ * completes in low single-digit ms). */
+#define MC_TCP_CONNECT_TIMEOUT_MS 300
+
 /** The actual dial: resolve + connect + set nonblocking. Returns an open
  *  fd, or -1 on any failure. Shared by mc_tcp_open (the first connect)
  *  and mc_tcp_redial (S16 slice e's recovery from a drop) so there is
- *  exactly one place that knows how to make a socket. */
+ *  exactly one place that knows how to make a socket.
+ *
+ *  Nonblocking is set BEFORE connect(), not after — connect() itself is
+ *  the call that can hang, so setting nonblocking only once it returns
+ *  bounds nothing (review round 1, PR #61, D1). A connect() that can't
+ *  complete synchronously (EINPROGRESS, the normal case for anything not
+ *  on the same host) is given MC_TCP_CONNECT_TIMEOUT_MS via select() to
+ *  finish, then its outcome is read from SO_ERROR — writability alone
+ *  doesn't distinguish "connected" from "failed", both make the fd
+ *  writable. Timing out closes the candidate and moves on/fails, exactly
+ *  as a refused connection already did. */
 static int mc_tcp_dial(char const *host, uint16_t port)
 {
     if (host == NULL) {
@@ -44,27 +71,52 @@ static int mc_tcp_dial(char const *host, uint16_t port)
 
     int fd = -1;
     for (struct addrinfo *ai = res; ai != NULL; ai = ai->ai_next) {
-        fd = socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
-        if (fd < 0) {
+        int candidate = socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
+        if (candidate < 0) {
             continue;
         }
-        if (connect(fd, ai->ai_addr, ai->ai_addrlen) == 0) {
+        if (mc_tcp_set_nonblocking(candidate) < 0) {
+            close(candidate);
+            continue;
+        }
+
+        int rc = connect(candidate, ai->ai_addr, ai->ai_addrlen);
+        if (rc == 0) {
+            fd = candidate; /* completed synchronously (e.g. loopback) */
             break;
         }
-        close(fd);
-        fd = -1;
+        if (errno != EINPROGRESS) {
+            /* Refused, no route, etc. — fails fast, no wait needed. */
+            close(candidate);
+            continue;
+        }
+
+        fd_set wfds;
+        FD_ZERO(&wfds);
+        FD_SET(candidate, &wfds);
+        struct timeval tv = {.tv_sec = 0, .tv_usec = MC_TCP_CONNECT_TIMEOUT_MS * 1000};
+        int sel = select(candidate + 1, NULL, &wfds, NULL, &tv);
+        if (sel <= 0) {
+            /* Timed out (the blackhole case this bound exists for), or
+             * select() itself failed: give up on this candidate rather
+             * than wait any longer. */
+            close(candidate);
+            continue;
+        }
+
+        int soerr = 0;
+        socklen_t soerr_len = sizeof(soerr);
+        if (getsockopt(candidate, SOL_SOCKET, SO_ERROR, &soerr, &soerr_len) != 0 || soerr != 0) {
+            close(candidate); /* writable because it failed, not because it connected */
+            continue;
+        }
+
+        fd = candidate;
+        break;
     }
     freeaddrinfo(res);
 
-    if (fd < 0) {
-        return -1;
-    }
-    if (mc_tcp_set_nonblocking(fd) < 0) {
-        close(fd);
-        return -1;
-    }
-
-    return fd;
+    return fd; /* already nonblocking on success; -1 if every candidate failed */
 }
 
 int mc_tcp_open(mc_tcp_t *t, char const *host, uint16_t port)

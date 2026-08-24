@@ -216,6 +216,63 @@ static void S16_e_explicit_close_does_not_redial(void)
     TEST_ASSERT_EQUAL_INT(0, r); /* nothing pending to accept */
 }
 
+/**
+ * THE FLIP CONDITION from review round 1 (PR #61, D1): `mc_tcp_dial()`'s
+ * `connect()` used to run on a BLOCKING socket — `mc_tcp_set_nonblocking`
+ * only ran after `connect()` returned, which is too late to bound
+ * anything `connect()` itself does. Harmless while `mc_tcp_open()` was
+ * the only caller (once, at startup); this PR's own `mc_tcp_redial()` is
+ * a second caller, reached from `mc_tcp_write_cb()` inside `mc_tick()`'s
+ * synchronous loop roughly every 2 s while disconnected. Reviewer
+ * measured a blocking `connect()` to an unreachable-but-not-refused host
+ * hang for >8 s (consistent with the OS's ~60-75 s default TCP connect
+ * timeout) — which, called from the tick loop on every retry, freezes
+ * the whole render loop repeatedly. A refused connection (ECONNREFUSED,
+ * the case every other test in this file exercises) was never the
+ * problem: that fails near-instantly on any OS. The problem is silence —
+ * a comms brain mid-reboot or out of Wi-Fi/LoRa range presents exactly
+ * that shape (nothing refuses the connection; nothing answers it
+ * either), and it's the case reconnect logic exists to survive.
+ *
+ * 192.0.2.1 is RFC 5737's TEST-NET-1 — reserved for documentation,
+ * genuinely never assigned to a live host anywhere. Depending on the
+ * sandbox this test runs in, connecting to it either fails immediately
+ * (no route configured at all) or is silently dropped somewhere
+ * upstream (the actual blackhole this bound exists for) — the assertion
+ * below holds either way, since it bounds how LONG the attempt is
+ * allowed to take rather than requiring a specific outcome. 2 s is
+ * generous slack over the transport's own internal bound
+ * (`MC_TCP_CONNECT_TIMEOUT_MS`, a few hundred ms) while remaining a tiny
+ * fraction of the OS's default connect timeout this test guards against
+ * — a reverted fix would blow well past it in any environment that DOES
+ * exhibit the blackhole case, which is the common one off a real
+ * network (not this sandboxed one).
+ */
+static void S16_e_dial_is_bounded_against_an_unresponsive_host(void)
+{
+    struct timespec t0, t1;
+    clock_gettime(CLOCK_MONOTONIC, &t0);
+
+    mc_tcp_t t;
+    int rc = mc_tcp_open(&t, "192.0.2.1", 54321u);
+
+    clock_gettime(CLOCK_MONOTONIC, &t1);
+    double const elapsed_ms =
+        (double)(t1.tv_sec - t0.tv_sec) * 1000.0 + (double)(t1.tv_nsec - t0.tv_nsec) / 1.0e6;
+
+    TEST_ASSERT_LESS_THAN_DOUBLE_MESSAGE(
+        2000.0, elapsed_ms,
+        "mc_tcp_open (via mc_tcp_dial, the same path mc_tcp_redial uses) blocked far longer than its "
+        "documented bounded wait against an unresponsive host — the connect() is no longer nonblocking");
+
+    if (rc == 0) {
+        /* This sandbox happened to route 192.0.2.1 somewhere that
+         * accepted — still a valid run (the bound is what's under test,
+         * not the outcome); just clean up. */
+        mc_tcp_close(&t);
+    }
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -224,6 +281,7 @@ int main(void)
     RUN_TEST(S16_e_transport_redials_after_a_force_close);
     RUN_TEST(S16_e_redial_fails_honestly_when_nothing_is_listening);
     RUN_TEST(S16_e_explicit_close_does_not_redial);
+    RUN_TEST(S16_e_dial_is_bounded_against_an_unresponsive_host);
 
     return UNITY_END();
 }

@@ -38,6 +38,20 @@
  * backoff window could never actually elapse and `mc_begin_handshake`
  * was never reached at all. Reporting the error exactly once, then
  * "nothing available", lets the schedule run.
+ *
+ * **The dial itself is BOUNDED, not blocking (review round 1, PR #61).**
+ * The redial above runs from inside `write()`, which `mc_client` calls
+ * from `mc_tick()`'s synchronous loop — a `connect()` that can hang for
+ * the OS's own TCP timeout (60-75 s) against a host that is unreachable
+ * but never actively refuses the connection (measured >8 s before this
+ * fix; a comms brain mid-reboot or out of range is exactly this shape,
+ * not the "process exited cleanly" shape a refused connection is) would
+ * freeze the render loop on every single retry. `mc_tcp_open`/redial's
+ * internal dial therefore connects nonblocking and gives each candidate
+ * address a short, bounded wait (`MC_TCP_CONNECT_TIMEOUT_MS`,
+ * `mc_transport_tcp.c`) to complete before giving up on it — a refused
+ * connection still fails near-instantly, exactly as before; only the
+ * "nobody answers at all" case is now bounded rather than open-ended.
  */
 #ifndef MC_TRANSPORT_TCP_H
 #define MC_TRANSPORT_TCP_H
@@ -70,10 +84,14 @@ typedef struct {
 } mc_tcp_t;
 
 /**
- * Open a TCP connection to host:port (blocking connect — this call
- * returns once connected or once it fails; the socket itself is left
- * nonblocking for subsequent read()/write() calls). Returns 0 on success,
- * negative on failure (bad host, connect refused, etc).
+ * Open a TCP connection to host:port. Bounded, not open-endedly blocking
+ * (S16 slice e, review round 1) — this call returns once connected, once
+ * it fails, or once a candidate address's connect attempt exceeds a
+ * short internal timeout (`MC_TCP_CONNECT_TIMEOUT_MS`, well under a
+ * second; see this header's top comment), whichever comes first. The
+ * socket itself is left nonblocking for subsequent read()/write() calls.
+ * Returns 0 on success, negative on failure (bad host, connect refused,
+ * every candidate timed out, etc).
  *
  * Also records `host`/`port` (truncated to MC_TCP_HOST_MAX - 1 bytes) so
  * a later drop can be redialed — see this header's top comment. `host`
