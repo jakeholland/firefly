@@ -164,6 +164,29 @@ loop while also fighting unfamiliar hardware for the first time.
   footprints at the time of writing: `ff_shell_t` 12,240 B against a
   16 KB budget; `fp_pack_t` 23,696 B against its own 48 KB budget.
 
+- **2026-08-24, PR #54 (slice c1) — `FF_INTENT_OPEN_COMPOSE`'s payload
+  comment "(0 = broadcast)" is refined, not taken literally.**
+
+  Read literally, 0-always-forces-EVERYONE makes S08's own Behavior rule
+  — *"Composer: reached from Signals '+'; TO = selected crew member"* —
+  unreachable through the seam: the `+` is a pure renderer and cannot
+  know the selection, so the only value it can honestly emit is 0.
+  Ruling, implemented in `ff_shell.c`'s `shell_compose_dest`:
+
+  > `node_id` is an *explicit destination*; 0 means "none given". An
+  > explicit id naming a **paired** roster member is honored. An
+  > explicit id the trust policy won't message (unknown, or known but
+  > unpaired) degrades to **broadcast, never to a different member** —
+  > a message must not be silently retargeted at somebody the caller
+  > did not name. 0 resolves per S08: the currently selected paired
+  > member, else broadcast.
+
+  So "(0 = broadcast)" remains true precisely when nothing is selected
+  — the refinement is *how* 0 gets there, not where it can end up
+  landing. Deliberately NOT the newest feed item: that context rule
+  belongs to the canned-reply chips (`ff_wiring_send_canned_reply`,
+  issue #23), and S08 gives the composer its own, different rule.
+
 ## Two defects this closes
 
 ### 1. Two inbound pipelines that disagree about trust

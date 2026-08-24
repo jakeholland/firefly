@@ -54,18 +54,22 @@
  * fires a click, and keeps producing byte-identical frames.
  *
  * A global, rather than an emit context threaded through every screen
- * builder's signature, is a deliberate judgment call:
+ * builder's signature, is **the design, not a stopgap** (PR #54 review
+ * asked which — this is the answer, recorded where it binds: the
+ * global does NOT get replaced when slice c2 rewrites the builder
+ * signatures for its own reasons). Why it is the right permanent shape:
  *  - the screens are process-singletons already, by construction — they
  *    hold file-static LVGL state (`scr_compose.c`'s `static ff_t9_t
  *    s_t9`, its label pointers) and render to the one default display,
- *    so "which instance's sink?" has exactly one answer;
- *  - the alternative touches all five builder signatures, which is
- *    slice c2's own `[api]` change (dropping `ff_flare_t *`) — two
- *    parallel slices rewriting the same five signatures is a merge
- *    hazard with no offsetting benefit;
+ *    so "which instance's sink?" has exactly one answer: one display,
+ *    one shell, one seam. A second simultaneous sink would mean a
+ *    second display and a second shell, which is a different device;
  *  - LVGL event `user_data` slots are already carrying per-key payloads
  *    (scr_compose.c's key indices), so per-callback context would be a
  *    second mechanism alongside this one anyway.
+ * (That c1 threading a context would also have collided with c2's
+ * five-signature `[api]` change was sequencing luck, not the rationale
+ * — the rationale is the two bullets above, and it outlives c2.)
  * Single-threaded by the same assumption LVGL itself imposes on every
  * caller in this repo (one UI thread); no locking.
  */
@@ -161,6 +165,13 @@ typedef void (*ff_intent_emit_fn)(void *user, ff_intent_t const *in);
  * its shell exists; tests bind a spy. Rebinding replaces the previous
  * sink. Not thread-safe by design — one UI thread, LVGL's own standing
  * assumption.
+ *
+ * LIFETIME: the seam holds `user` as a raw pointer and cannot know when
+ * it dies. Unbind (or rebind) BEFORE the bound object goes away — in
+ * particular before `ff_shell_close()` on a bound shell, and before a
+ * test's stack-allocated shell or spy leaves scope. An emit through a
+ * stale binding is a use-after-free, not a no-op. (`ff_shell_close`
+ * cannot do this for you: the shell does not know it is the sink.)
  */
 void ff_intent_emit_bind(ff_intent_emit_fn fn, void *user);
 

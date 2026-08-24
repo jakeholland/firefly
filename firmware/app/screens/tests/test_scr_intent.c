@@ -114,10 +114,33 @@ static void click(lv_obj_t *obj)
 }
 
 /* =================================================================== */
-/* nav long-press -> OPEN_SETTINGS                                      */
+/* nav long-press CALLBACK -> OPEN_SETTINGS                             */
 /* =================================================================== */
 
-static void S16_c1_nav_long_press_emits_open_settings(void)
+/**
+ * WHAT THIS PROVES — AND WHAT IT DELIBERATELY DOES NOT (PR #54 review,
+ * HIGH finding, kept honest here rather than papered over).
+ *
+ * `lv_obj_send_event` delivers LV_EVENT_LONG_PRESSED DIRECTLY to the
+ * puck, so this test pins the CALLBACK: when the hook fires, it emits
+ * OPEN_SETTINGS, exactly once. It does NOT prove a physical long-press
+ * reaches that callback — and today one does not: the full-size
+ * tileview sits over the puck, LVGL objects are CLICKABLE by default,
+ * and nothing sets LV_OBJ_FLAG_EVENT_BUBBLE, so `lv_indev_search_obj`
+ * resolves every on-puck press to the tileview/tiles and the puck
+ * never sees the gesture (measured by the reviewer at three probe
+ * points: zero intents emitted through the indev path).
+ *
+ * Making the gesture reach the seam is S16 slice c3's, deliberately:
+ * c3 owns the tileview's input handling — the same work that disables
+ * its native swipe scrolling — and the two interact (whatever routes
+ * the press must also decide when it is a swipe). The indev-driven
+ * press test belongs with that fix; writing it now would pin an input
+ * topology c3 is about to replace. See scr_nav.c's TODO(S16 slice c3)
+ * at the hook site and S06's Amendments entry, both corrected to say
+ * exactly this.
+ */
+static void S16_c1_nav_long_press_callback_emits_open_settings(void)
 {
     ff_app_state_t state;
     memset(&state, 0, sizeof(state));
@@ -210,7 +233,7 @@ int main(void)
 {
     UNITY_BEGIN();
 
-    RUN_TEST(S16_c1_nav_long_press_emits_open_settings);
+    RUN_TEST(S16_c1_nav_long_press_callback_emits_open_settings);
     RUN_TEST(S16_c1_compose_back_emits_back);
     RUN_TEST(S16_c1_signals_plus_emits_open_compose_with_no_destination);
     RUN_TEST(S16_c1_wired_sites_are_noops_while_the_seam_is_unbound);

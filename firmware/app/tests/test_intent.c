@@ -90,19 +90,24 @@ static void harness_init(uint32_t t0_ms)
     H.ev.on_my_info(H.ev.user, MY_ID);
 }
 
-/** Pair `node` and give it a display name via the same NodeInfo path the
- *  radio uses. `last_heard = 0` is mc_client.h's "unknown", so this
- *  never touches the wall-clock latch — these tests are about routing,
- *  not time. */
-static void pair_named(uint32_t node, char const *name)
+/** Give an existing roster member a display name via the same NodeInfo
+ *  path the radio uses. `last_heard = 0` is mc_client.h's "unknown", so
+ *  this never touches the wall-clock latch — these tests are about
+ *  routing, not time. */
+static void name_node(uint32_t node, char const *name)
 {
-    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, node, true));
     mc_nodeinfo_t n;
     memset(&n, 0, sizeof(n));
     n.node_num = node;
     n.has_short_name = true;
     strncpy(n.short_name, name, sizeof(n.short_name) - 1);
     H.ev.on_node(H.ev.user, &n);
+}
+
+static void pair_named(uint32_t node, char const *name)
+{
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, node, true));
+    name_node(node, name);
 }
 
 static void inject_flare(uint32_t from, uint16_t dur_s)
@@ -140,6 +145,18 @@ static ff_app_state_t const *view(void)
 {
     (void)ff_shell_tick(&H.shell, H.clk.t);
     return ff_shell_view(&H.shell);
+}
+
+/** The composer destination FACT, not its name projection. Every
+ *  destination assertion below checks this alongside (or instead of)
+ *  `compose.to_name`: the name is a lossy proxy — "" is broadcast AND
+ *  any nameless/unknown node — and PR #54's review found a surviving
+ *  mutant (`shell_compose_dest` minus its trust guard) living exactly
+ *  in that overlap: it stored a stranger's id while every name-based
+ *  assertion kept passing. */
+static uint32_t compose_to(void)
+{
+    return ff_shell_compose_to_node(&H.shell);
 }
 
 void setUp(void)
@@ -216,6 +233,7 @@ static void S16_c1_open_compose_with_no_crew_is_broadcast(void)
     harness_init(100000u);
     send_open_compose(0u);
     TEST_ASSERT_EQUAL(FF_APP_FACE_COMPOSE, view()->active_face);
+    TEST_ASSERT_EQUAL_UINT32(0u, compose_to());
     TEST_ASSERT_EQUAL_STRING("", view()->compose.to_name); /* scr_compose renders "TO: EVERYONE" */
 }
 
@@ -227,6 +245,7 @@ static void S16_c1_open_compose_defaults_to_the_selected_crew_member(void)
 
     send_open_compose(0u); /* the Signals "+" shape: no explicit destination */
     TEST_ASSERT_EQUAL(FF_APP_FACE_COMPOSE, view()->active_face);
+    TEST_ASSERT_EQUAL_UINT32(DANA, compose_to());
     TEST_ASSERT_EQUAL_STRING("DANA", view()->compose.to_name);
 }
 
@@ -237,6 +256,7 @@ static void S16_c1_open_compose_honors_an_explicit_paired_destination(void)
     pair_named(KEV_ID, "KEV");
 
     send_open_compose(KEV_ID);
+    TEST_ASSERT_EQUAL_UINT32(KEV_ID, compose_to());
     TEST_ASSERT_EQUAL_STRING("KEV", view()->compose.to_name);
 }
 
@@ -247,17 +267,57 @@ static void S16_c1_open_compose_never_retargets_an_unhonorable_destination(void)
 
     /* An explicit id the trust policy won't message degrades to
      * BROADCAST — never to the selected member: a message must not be
-     * silently retargeted at somebody the caller did not name. */
+     * silently retargeted at somebody the caller did not name.
+     *
+     * Asserted on the FACT (`ff_shell_compose_to_node`), not only the
+     * name: PR #54's review showed the name-only version green over a
+     * `shell_compose_dest` with its trust guard deleted, because a
+     * stranger's stored id still projects to_name == "" — the proxy is
+     * lossy at exactly the values under test. The fact assertion is
+     * what kills that mutant: guard deleted, this reads STRANGER. */
     send_open_compose(STRANGER); /* never heard of them */
     TEST_ASSERT_EQUAL(FF_APP_FACE_COMPOSE, view()->active_face);
+    TEST_ASSERT_EQUAL_UINT32(0u, compose_to());
     TEST_ASSERT_EQUAL_STRING("", view()->compose.to_name);
     send_kind(FF_INTENT_BACK);
 
     /* Known but unpaired: same rule (the roster can hold unpaired
-     * members; pairing is the messaging trust gate). */
+     * members; pairing is the messaging trust gate). KEV gets a NAME
+     * first — reviewer's second half of the same finding: a nameless
+     * unpaired member makes even the name assertion vacuous, while a
+     * named one turns it into a second, independent mutant-killer
+     * (guard deleted -> to_name reads "KEV", not ""). */
     TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, KEV_ID, false));
+    name_node(KEV_ID, "KEV");
     send_open_compose(KEV_ID);
+    TEST_ASSERT_EQUAL_UINT32(0u, compose_to());
     TEST_ASSERT_EQUAL_STRING("", view()->compose.to_name);
+}
+
+static void S16_c1_a_rejected_open_compose_does_not_retarget_the_composer(void)
+{
+    harness_init(100000u);
+    pair_named(DANA, "DANA"); /* first paired member == the selection */
+    pair_named(KEV_ID, "KEV");
+
+    /* Open explicitly to KEV — deliberately NOT the selection (DANA), so
+     * both mutant shapes below produce an observable wrong value. */
+    send_open_compose(KEV_ID);
+    TEST_ASSERT_EQUAL_UINT32(KEV_ID, compose_to());
+
+    /* One modal slot: a second OPEN_COMPOSE while the composer is up is
+     * rejected by push_modal — and a REJECTED open must not touch the
+     * destination either. PR #54 review, second surviving mutant:
+     * hoisting the destination write out of the push_modal guard passed
+     * every then-existing test while silently retargeting a half-typed
+     * draft at whoever the second request named. */
+    send_open_compose(DANA); /* explicit: hoisted write would store DANA */
+    TEST_ASSERT_EQUAL_UINT32(KEV_ID, compose_to());
+    TEST_ASSERT_EQUAL_STRING("KEV", view()->compose.to_name);
+
+    send_open_compose(0u); /* the "+" shape: hoisted write would resolve the selection (DANA) */
+    TEST_ASSERT_EQUAL_UINT32(KEV_ID, compose_to());
+    TEST_ASSERT_EQUAL_STRING("KEV", view()->compose.to_name);
 }
 
 static void S16_c1_back_clears_the_compose_destination(void)
@@ -266,10 +326,12 @@ static void S16_c1_back_clears_the_compose_destination(void)
     pair_named(DANA, "DANA");
 
     send_open_compose(DANA);
+    TEST_ASSERT_EQUAL_UINT32(DANA, compose_to());
     TEST_ASSERT_EQUAL_STRING("DANA", view()->compose.to_name);
     send_kind(FF_INTENT_BACK);
 
     /* A later compose session must not inherit the abandoned "who". */
+    TEST_ASSERT_EQUAL_UINT32(0u, compose_to());
     TEST_ASSERT_EQUAL_STRING("", view()->compose.to_name);
 }
 
@@ -326,6 +388,7 @@ static void S16_c1_route_intents_are_rejected_while_a_takeover_is_visible(void)
     send_kind(FF_INTENT_TAKEOVER_DISMISS);
     TEST_ASSERT_FALSE(ff_shell_flare(&H.shell)->takeover_active);
     TEST_ASSERT_EQUAL(FF_APP_FACE_COMPOSE, view()->active_face);
+    TEST_ASSERT_EQUAL_UINT32(KEV_ID, compose_to());
     TEST_ASSERT_EQUAL_STRING("KEV", view()->compose.to_name);
 
     /* And dispatch to Compose is restored with it. */
@@ -518,6 +581,7 @@ int main(void)
     RUN_TEST(S16_c1_open_compose_defaults_to_the_selected_crew_member);
     RUN_TEST(S16_c1_open_compose_honors_an_explicit_paired_destination);
     RUN_TEST(S16_c1_open_compose_never_retargets_an_unhonorable_destination);
+    RUN_TEST(S16_c1_a_rejected_open_compose_does_not_retarget_the_composer);
     RUN_TEST(S16_c1_back_clears_the_compose_destination);
     RUN_TEST(S16_c1_open_settings_is_rejected_until_a_renderer_exists);
     RUN_TEST(S16_c1_route_intents_are_rejected_while_a_takeover_is_visible);

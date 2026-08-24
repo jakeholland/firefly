@@ -1314,3 +1314,8 @@ ff_settings_t const *ff_shell_settings(ff_shell_t const *sh_pub)
 {
     return (sh_pub == NULL) ? NULL : &shell_of_const(sh_pub)->settings;
 }
+
+uint32_t ff_shell_compose_to_node(ff_shell_t const *sh_pub)
+{
+    return (sh_pub == NULL) ? 0u : shell_of_const(sh_pub)->compose_to_node;
+}

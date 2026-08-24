@@ -420,7 +420,14 @@ ff_wall_t ff_shell_wall(ff_shell_t const *sh);
 /** ff_shell_close — tear down: stops driving the client and marks the
  *  shell detached. Does NOT close the transport — the target opened it
  *  and owns it (the shell was handed a vtable, not a socket). Safe on a
- *  never-initialised or already-closed shell. */
+ *  never-initialised or already-closed shell.
+ *
+ *  If the emit seam is bound to this shell
+ *  (`ff_intent_emit_bind(ff_shell_intent_sink, sh)`), the caller must
+ *  `ff_intent_emit_bind(NULL, NULL)` BEFORE closing or reusing the
+ *  shell's storage — the seam holds a raw pointer this function cannot
+ *  reach, and an emit through the stale binding is a use-after-free
+ *  (ff_intent.h, "LIFETIME"). */
 void ff_shell_close(ff_shell_t *sh);
 
 /* ---------------------------------------------------------------------
@@ -591,6 +598,22 @@ ff_flare_t const *ff_shell_flare(ff_shell_t const *sh);
  *  NULL. Write-through (`FF_INTENT_SETTING_SET` + persistence) is
  *  slice e. */
 ff_settings_t const *ff_shell_settings(ff_shell_t const *sh);
+
+/**
+ * ff_shell_compose_to_node — the composer's current destination node
+ * id; 0 = broadcast (and 0 for a NULL `sh`).
+ *
+ * This is the FACT behind the projected `compose.to_name`, exposed
+ * because the name is a lossy proxy for the destination: "" is both
+ * "broadcast" and "a member whose name has not arrived yet", and an
+ * unknown node's name lookup returns "" too. PR #54's review found a
+ * surviving mutant hiding in exactly that overlap — a
+ * `shell_compose_dest` with its trust-policy guard deleted stored a
+ * stranger's id while still projecting "", so every name-based
+ * assertion passed. Tests (and any future status/pairing UI) assert
+ * this fact directly; slice c3's SEND reads the same field internally.
+ */
+uint32_t ff_shell_compose_to_node(ff_shell_t const *sh);
 
 #ifdef __cplusplus
 }

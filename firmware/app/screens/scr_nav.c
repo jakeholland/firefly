@@ -19,7 +19,21 @@
  * today `ff_shell_intent` rejects it, deliberately, because the S11b
  * Settings renderer does not exist yet (see ff_shell.c's judgment-call
  * comment) — this screen just reports the gesture and stays a pure
- * renderer. Unbound (goldens/headless), the emit is a no-op. */
+ * renderer. Unbound (goldens/headless), the emit is a no-op.
+ *
+ * TODO(S16 slice c3): A REAL FINGER CANNOT REACH THIS CALLBACK YET
+ * (PR #54 review, HIGH). The full-size tileview created below covers
+ * the puck; LVGL objects are CLICKABLE by default and nothing here sets
+ * LV_OBJ_FLAG_EVENT_BUBBLE, so `lv_indev_search_obj` resolves every
+ * on-puck press to the tileview/tiles and this handler only ever fires
+ * from a directly-delivered event (as test_scr_intent.c does — that
+ * test pins the callback body, not the gesture). Routing the physical
+ * gesture belongs to c3, which owns the tileview's input handling (the
+ * same work that disables its native swipe: whatever intercepts the
+ * press must also decide when it is a swipe) — do NOT fix it here with
+ * a bare EVENT_BUBBLE flag, which would also re-route the tile
+ * content's own clicks. Until c3, the long-press is doubly inert:
+ * unreachable at the input layer and rejected at the shell. */
 static void nav_long_press_cb(lv_event_t *e)
 {
     (void)e;
@@ -100,7 +114,10 @@ void ff_scr_nav_build(ff_app_state_t const *state, ff_flare_t *flare_rt)
     lv_obj_clear_flag(puck, LV_OBJ_FLAG_SCROLLABLE);
 
     /* Long-press-anywhere -> Settings: emits an intent (S16c1); the shell
-     * decides (rejected until the S11b renderer exists). */
+     * decides (rejected until the S11b renderer exists). NOTE: the
+     * tileview built below covers this object, so the gesture does not
+     * physically reach it yet — see nav_long_press_cb's TODO(S16 slice
+     * c3). */
     lv_obj_add_flag(puck, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_add_event_cb(puck, nav_long_press_cb, LV_EVENT_LONG_PRESSED, NULL);
 
