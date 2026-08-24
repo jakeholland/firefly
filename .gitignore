@@ -17,3 +17,6 @@ firmware/tests/golden/_diff_out/
 # S14d: Python scratch dirs from running firmware/tests/e2e/ locally.
 __pycache__/
 .pytest_cache/
+
+# Python venv for the dev tools (firmware/tests/e2e/requirements.txt)
+.venv/
