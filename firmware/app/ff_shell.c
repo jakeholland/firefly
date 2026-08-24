@@ -1234,6 +1234,122 @@ static uint32_t shell_compose_dest(shell_t *sh, uint32_t requested)
     return (sel != NULL) ? sel->node_id : 0u;
 }
 
+/**
+ * FF_INTENT_SETTING_SET write-through (S16 slice e, AC8).
+ *
+ * Any nonzero `v.i` means true for the four bool-backed settings — the
+ * struct fields are `bool`, and there is no documented narrower contract
+ * than "nonzero is true" for an int payload crossing that seam.
+ *
+ * Every other field is validated against the range its own doc comment
+ * states, and an OUT-OF-RANGE value is REJECTED — left exactly as it
+ * was, never clamped to the nearest legal value. Clamping would silently
+ * apply something the caller did not ask for; honest-data (CLAUDE.md)
+ * says refuse it instead:
+ *   - FF_SETTING_SHARE_MODE: [FF_SHARE_LIVE, FF_SHARE_GHOST] (ff_settings.h).
+ *   - FF_SETTING_QUIET_FROM_MIN / _TO_MIN: [0, 1439], the local
+ *     minutes-of-day domain ff_quiet_now's own doc states.
+ *   - FF_SETTING_UTC_OFFSET_MIN: [FF_WALL_OFFSET_MIN_LO,
+ *     FF_WALL_OFFSET_MIN_HI] (ff_wall.h) — the same real-world
+ *     UTC-12:00..UTC+14:00 gate the wall clock itself validates offsets
+ *     against, so a setting the shell would accept can never be one
+ *     `ff_wall_resolve_offset` would then silently ignore.
+ *   - FF_SETTING_WATER_MIN: the field's own type, uint16_t — "0 = off"
+ *     is its only documented constraint, so anything a uint16_t can hold
+ *     is valid.
+ *   - FF_SETTING_MY_NAME: bounded/NUL-terminated into the field's
+ *     documented [FF_SETTINGS_NAME_LEN] budget (truncated, not
+ *     rejected — ff_settings.h already documents this layer's own
+ *     bytes-as-given contract; slice e is the first writer through this
+ *     seam and chooses to bound rather than refuse an overlong name).
+ *
+ * Persisted on CHANGE ONLY (S16 "Behavior": "saved on change, never
+ * every tick") — every branch below compares the OLD value before
+ * overwriting it, and the save call at the bottom is gated on that
+ * comparison, not on "a SETTING_SET intent arrived". A NULL store is the
+ * documented "no persistence" case (`ff_settings_save` itself no-ops on
+ * one) and is not treated as a rejection: the in-memory setting still
+ * applies.
+ */
+static void shell_setting_set(shell_t *sh, ff_intent_t const *in)
+{
+    ff_settings_t *s = &sh->settings;
+    bool changed = false;
+
+    switch (in->u.setting.id) {
+    case FF_SETTING_IMPERIAL: {
+        bool const v = (in->u.setting.v.i != 0);
+        changed = (s->imperial != v);
+        s->imperial = v;
+        break;
+    }
+    case FF_SETTING_SHARE_MODE: {
+        int32_t const v = in->u.setting.v.i;
+        if (v < FF_SHARE_LIVE || v > FF_SHARE_GHOST) return; /* out of range: rejected, not clamped */
+        changed = (s->share_mode != (uint8_t)v);
+        s->share_mode = (uint8_t)v;
+        break;
+    }
+    case FF_SETTING_HAPTICS: {
+        bool const v = (in->u.setting.v.i != 0);
+        changed = (s->haptics != v);
+        s->haptics = v;
+        break;
+    }
+    case FF_SETTING_NIGHT_GLOW: {
+        bool const v = (in->u.setting.v.i != 0);
+        changed = (s->night_glow != v);
+        s->night_glow = v;
+        break;
+    }
+    case FF_SETTING_WATER_MIN: {
+        int32_t const v = in->u.setting.v.i;
+        if (v < 0 || v > (int32_t)UINT16_MAX) return;
+        changed = (s->water_min != (uint16_t)v);
+        s->water_min = (uint16_t)v;
+        break;
+    }
+    case FF_SETTING_QUIET_FROM_MIN: {
+        int32_t const v = in->u.setting.v.i;
+        if (v < 0 || v > 1439) return;
+        changed = (s->quiet_from_min != (uint16_t)v);
+        s->quiet_from_min = (uint16_t)v;
+        break;
+    }
+    case FF_SETTING_QUIET_TO_MIN: {
+        int32_t const v = in->u.setting.v.i;
+        if (v < 0 || v > 1439) return;
+        changed = (s->quiet_to_min != (uint16_t)v);
+        s->quiet_to_min = (uint16_t)v;
+        break;
+    }
+    case FF_SETTING_UTC_OFFSET_MIN: {
+        int32_t const v = in->u.setting.v.i;
+        if (v < FF_WALL_OFFSET_MIN_LO || v > FF_WALL_OFFSET_MIN_HI) return;
+        /* Unset -> set is itself a change worth persisting even when the
+         * magnitude happens to coincide with the struct's zeroed default. */
+        changed = (!s->utc_offset_set) || (s->utc_offset_min != (int16_t)v);
+        s->utc_offset_min = (int16_t)v;
+        s->utc_offset_set = true;
+        break;
+    }
+    case FF_SETTING_MY_NAME: {
+        char const *v = in->u.setting.v.s;
+        if (v == NULL) return; /* nothing to copy: not owned, borrowed (ff_intent.h) */
+        char tmp[FF_SETTINGS_NAME_LEN];
+        memset(tmp, 0, sizeof(tmp)); /* every byte defined, so the memcmp below is honest */
+        shell_copy_str(tmp, sizeof(tmp), v);
+        changed = (memcmp(s->my_name, tmp, sizeof(tmp)) != 0);
+        memcpy(s->my_name, tmp, sizeof(tmp));
+        break;
+    }
+    }
+
+    if (changed && sh->store != NULL) {
+        ff_settings_save(s, sh->store);
+    }
+}
+
 void ff_shell_intent(ff_shell_t *sh_pub, ff_intent_t const *in)
 {
     if (sh_pub == NULL || in == NULL) return;
@@ -1450,6 +1566,17 @@ void ff_shell_intent(ff_shell_t *sh_pub, ff_intent_t const *in)
         (void)ff_t9_insert_text(&sh->compose_draft, in->u.text);
         return;
 
+    case FF_INTENT_SETTING_SET:
+        /* Settings write-through + persistence (S16 slice e, AC8). Gated
+         * on the visible face like every other core-mutating intent
+         * (routing rule 4) — there is no Settings renderer yet
+         * (k_settings_renderer_exists above), so nothing legitimate can
+         * emit this while a takeover is up, but the seam still honors
+         * the same rule the future Settings screen's taps will need. */
+        if (takeover_up) return;
+        shell_setting_set(sh, in);
+        return;
+
     /* --- deliberate no-ops until their owning slice lands ------------ */
     case FF_INTENT_MARK_FEED_READ: /* c2 — the shell already clears unread on face view (S08 AC3) */
     case FF_INTENT_SELECT_CREW:    /* c2 — radar tap-cycle */
@@ -1461,7 +1588,6 @@ void ff_shell_intent(ff_shell_t *sh_pub, ff_intent_t const *in)
                                      * target"), and the shell has nothing to call yet — wiring
                                      * the emit site now means the eventual handler is the
                                      * only piece still missing, not a second UI change too. */
-    case FF_INTENT_SETTING_SET:    /* e — settings write-through + persistence */
         return;
     }
     /* No default: -Wswitch under -Werror flags any new ff_intent_kind_t

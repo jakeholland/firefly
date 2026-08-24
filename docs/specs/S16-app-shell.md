@@ -285,6 +285,64 @@ loop while also fighting unfamiliar hardware for the first time.
      round-trips through the loader (`test_fixture.c`'s existing
      round-trip tests cover it unchanged).
 
+- **2026-08-24, slice e — three interpretation calls, recorded per
+  CLAUDE.md.**
+
+  1. **`FF_INTENT_SETTING_SET`'s "documented ranges"** are, per field:
+     `FF_SETTING_SHARE_MODE` — `[FF_SHARE_LIVE, FF_SHARE_GHOST]`
+     (`ff_settings.h`); `FF_SETTING_QUIET_FROM_MIN` / `_TO_MIN` —
+     `[0, 1439]`, the local minutes-of-day domain `ff_quiet_now`'s own
+     doc states; `FF_SETTING_UTC_OFFSET_MIN` —
+     `[FF_WALL_OFFSET_MIN_LO, FF_WALL_OFFSET_MIN_HI]` (`ff_wall.h`), so a
+     value the shell accepts can never be one `ff_wall_resolve_offset`
+     then silently ignores; `FF_SETTING_WATER_MIN` — the field's own
+     `uint16_t` range, since "0 = off" is its only stated constraint;
+     the three bool-backed settings — any nonzero `v.i` is true. An
+     out-of-range value is **rejected outright, not clamped** — clamping
+     would silently apply a value the caller never asked for, which
+     honest-data (CLAUDE.md) rules out. `FF_SETTING_MY_NAME` is bounded
+     and NUL-terminated into `FF_SETTINGS_NAME_LEN` (truncated, not
+     rejected — this layer's own documented bytes-as-given contract).
+     Persistence is on-change, checked field-by-field against the OLD
+     value before it's overwritten, so a repeated `SETTING_SET` with the
+     same value issues zero additional `ff_store_t.set` calls
+     (`app/tests/test_intent.c`'s `S16_AC8_*` tests pin this against a
+     spy store; `targets/sim/tests/test_shell_settings_persist.c` pins
+     AC8's own close/reinit sequence against the REAL file-backed store,
+     not a mock — the AC's wording is "the same store").
+  2. **The status-bar link indicator is unchanged.** `ff_shell.c` has
+     projected `radar.mesh_ok = (link == FF_SHELL_LINK_CONNECTED)` since
+     slice b1, which already satisfies the honesty rule in full: a
+     `RECONNECTING` or `NONE` link renders "NO MESH", never "MESH" —
+     a stale view during reconnect cannot present itself as live. Slice
+     e's job was making `RECONNECTING` a state the transport can
+     actually *reach and recover from* (the re-dial fix below), not
+     adding a third rendered state to distinguish "retrying" from
+     "never connected" — no AC asks for that distinction, and every
+     committed golden fixture is unaffected (`tests/run_goldens.sh`
+     reports 0.0000% diff on all 25). Bench-level visibility into the
+     three-way state (as opposed to the binary status-bar reading) is
+     what the ctl `state` dump's new `link` key is for — see below.
+  3. **The re-dial fix stays inside `mc_tcp_t` (`meshclient/`), with no
+     new timer.** `mc_client.c`'s own reconnect backoff already calls
+     `transport.write()` at the moments it is genuinely trying to
+     (re)establish something (`mc_begin_handshake` on its 2 s schedule,
+     heartbeats, a `MC_STATE_READY`-gated send) — so `mc_tcp_write_cb`
+     redialing its last-opened host/port when the fd is down is
+     naturally rate-limited by that existing schedule, and needs no
+     second clock in the transport. The companion half, also required:
+     `mc_tcp_read_cb` must report a drop **exactly once** (`-1`), then
+     "nothing available" (`0`) — not `-1` on every subsequent tick.
+     Before this fix, a repeating `-1` reset `mc_client`'s own
+     `reconnect_at_ms` back out another 2 s on every single call, so the
+     backoff window could never elapse and `mc_begin_handshake` was
+     never reached at all — the transport's silence, not just its
+     inability to reconnect, is what made `RECONNECTING` unreachable in
+     practice. Pinned with a real loopback socket, force-closed from the
+     peer side (`meshclient/tests/test_transport_tcp.c`) — a mock
+     read/write transport, which every other `mc_client` test uses, has
+     no fd to break and cannot exercise this class of bug at all.
+
 ## Two defects this closes
 
 ### 1. Two inbound pipelines that disagree about trust

@@ -251,6 +251,20 @@ if(FF_BUILD_TESTS)
     ff_apply_warnings(test_store_file)
 
     add_test(NAME test_store_file COMMAND test_store_file)
+
+    # S16 slice e, AC8 — "a FF_INTENT_SETTING_SET is persisted: shell
+    # closed, re-inited against the same store, value survives", against
+    # the REAL file-backed store (not a mock round-trip — see the file's
+    # header comment for why that distinction matters here). Lives here
+    # rather than app/tests/test_intent.c because store_file.c (ff-sim-store)
+    # is a targets/sim-only seam; app/ cannot depend on it.
+    add_executable(test_shell_settings_persist
+        tests/test_shell_settings_persist.c
+    )
+    target_link_libraries(test_shell_settings_persist PRIVATE ff-shell ff-sim-store unity)
+    ff_apply_warnings(test_shell_settings_persist)
+
+    add_test(NAME test_shell_settings_persist COMMAND test_shell_settings_persist)
 endif()
 
 # ---------------------------------------------------------------------------

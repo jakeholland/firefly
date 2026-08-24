@@ -154,7 +154,14 @@ want to see what the *mesh* latches must therefore run without
 unknown keys, so a saved `state` dump still loads as a fixture; it is
 simply not renderable view state.
 
-Response: `{"ok": true, "state": {"fixture": "...", "face": "radar", "radar": {...}, ..., "wall": {...}}}`.
+**`link` (S16e):** one more top-level key, `ff_shell_link()`'s value
+verbatim as a string — `"connected"`, `"reconnecting"`, or `"none"`. Same
+rationale as `wall`: the mesh link is derived live state the bench needs
+to SEE (is a dropped connection actually redialing?) rather than infer
+from side effects. Also not part of the fixture schema, for the same
+reason `wall` isn't.
+
+Response: `{"ok": true, "state": {"fixture": "...", "face": "radar", "radar": {...}, ..., "wall": {...}, "link": "connected"}}`.
 
 ### `screenshot`
 

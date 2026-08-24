@@ -52,4 +52,19 @@ if(FF_BUILD_TESTS)
     ff_apply_warnings(test_meshclient)
 
     add_test(NAME test_meshclient COMMAND test_meshclient)
+
+    # S16 slice e: mc_tcp re-dial after a dropped connection. A real
+    # loopback socket, deliberately — see test_transport_tcp.c's header
+    # comment for why the mock-transport tests above can't catch this
+    # class of bug at all (they have no fd to break in the first place).
+    add_executable(test_transport_tcp
+        tests/test_transport_tcp.c
+    )
+    target_link_libraries(test_transport_tcp PRIVATE
+        ff-meshclient
+        unity
+    )
+    ff_apply_warnings(test_transport_tcp)
+
+    add_test(NAME test_transport_tcp COMMAND test_transport_tcp)
 endif()
