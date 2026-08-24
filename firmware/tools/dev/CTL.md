@@ -6,10 +6,19 @@
 instead of adding a `--script FILE.py` flag (see
 `docs/specs/S13-sim-target.md`: "scripting stays external").
 
-Currently requires `--headless` — see `targets/sim/main.c`'s "ctl loop"
-section for why window mode isn't wired up too. `--ctl-out DIR` sets
-where the `screenshot` command is allowed to write (see that command's
-section below) — optional; ffsim picks a sensible default if omitted.
+Currently requires `--headless` — capturing a screenshot from window
+mode's SDL-backed display would need querying LVGL's internal draw
+buffer, for no benefit to this mode's actual consumers (the e2e harness
+always drives ffsim headless); see `targets/sim/main.c`'s top comment.
+`--ctl-out DIR` sets where the `screenshot` command is allowed to write
+(see that command's section below) — optional; ffsim picks a sensible
+default if omitted.
+
+(A *window* can still be live without `--ctl`, since S16 slice d: plain
+`ffsim --connect HOST:PORT [--pack FILE.json] [--dev-trust-all]` opens an
+SDL window driving a real `ff_shell_t`, no control socket involved — see
+`docs/specs/S16-app-shell.md` slice d and `main.c`'s top comment. This
+file only documents the `--ctl` socket protocol.)
 
 ## Protocol
 
@@ -181,6 +190,31 @@ Response: `{"ok": true}`, or `{"ok": false, "error": "screenshot write failed"}`
 (bad directory, permissions, etc — see stderr for the underlying reason),
 or one of the path-confinement rejection messages above (e.g.
 `{"ok": false, "error": "screenshot path escapes the configured output root (--ctl-out)"}`).
+
+### `flare`
+
+```json
+{"cmd": "flare", "from": 3735928559, "dur_s": 300}
+```
+
+S16 slice d (AC10): injects a synthetic inbound FLARE from node id `from`,
+lasting `dur_s` seconds (optional, default 300 — `FF_FLARE_DEFAULT_DUR_S`).
+`from` is paired first if it wasn't already (the roster trust policy would
+otherwise drop an unpaired sender's flare entirely — the same class of
+dev/test affordance `clock`'s mock-clock control and `tap`/`swipe`'s
+synthetic pointer injection already are, reaching past the transport the
+way a real over-the-air FLARE never could). This is what lets a fully
+scripted sequence test — draft typed, flare injected, takeover renders,
+takeover cleared, composer returns with the draft intact — run against a
+live `ff_shell_t` with no real meshtasticd anywhere in the loop; see
+`firmware/targets/sim/tests/test_ctl_flare_sequence.c`.
+
+`from` must be a valid node id (`0..4294967295`); `dur_s`, if given, must
+be within `[0, 65535]`.
+
+Response: `{"ok": true}`, or `{"ok": false, "error": "flare requires numeric from"}`
+/ `"flare dur_s must be within [0, 65535]"` / `"flare unsupported"` (no
+live shell behind this session).
 
 ### `quit`
 

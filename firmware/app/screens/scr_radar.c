@@ -25,28 +25,32 @@
  * lv_line point storage.
  *
  * lv_line_set_points() keeps the POINTER it's given, not a copy — the
- * array must outlive the lv_line object. This file only ever builds one
- * radar screen per process TODAY (targets/sim/main.c calls
- * ff_scr_radar_build/ff_scr_nav_build exactly once per run/window
- * session — headless mode renders a single frame and exits; window mode
- * builds the screen once and lets LVGL's own timer loop repaint that same
- * static tree), so this small static pool — reset at the top of every
- * ff_scr_radar_build() call — is safe for now and needs no lifetime
- * bookkeeping beyond that.
+ * array must outlive the lv_line object. This file builds a fresh radar
+ * screen every time its caller decides the rendered view changed (S16
+ * slice d's dirty-driven rebuild — targets/sim/ctl_loop.c's
+ * ff_ctl_loop_pump, and the live SDL window loop in main.c), which can
+ * now happen many times per process. That is safe ONLY because of an
+ * invariant the CALLER upholds, not this file: every rebuild is preceded
+ * by `lv_obj_clean()` on the screen being rebuilt, which deletes every
+ * `lv_line`/triangle-descriptor object from the PREVIOUS build before
+ * this file's static pools reset their indices back to 0. By the time
+ * `s_line_pt_next`/`s_tri_desc_next` are reused, nothing still-alive
+ * references the points about to be overwritten.
  *
- * THIS BREAKS THE MOMENT ANYTHING RE-RENDERS AT 10 HZ (S06's own spec'd
- * update rate for live crew data) OR TEARS DOWN/REBUILDS A SCREEN ON FACE
- * SWITCH: resetting `s_line_pt_next` on a second call overwrites points a
- * still-alive `lv_line` from the *first* call still points to — silent
- * corruption, not a crash. Nothing in app/ or targets/sim/ currently
- * calls lv_obj_del/lv_obj_clean either, so there is no teardown path at
- * all yet. Tracked in https://github.com/jakeholland/firefly/issues/17
- * (likely fix: an update-in-place model — create these objects once,
- * mutate their properties at 10 Hz — plus per-object point storage,
- * rather than rebuild-and-teardown every tick); out of scope for this PR,
- * which only ever builds a screen once per process. See this same note
- * on the triangle-descriptor pool below (same hazard, same tracking
- * issue).
+ * ISSUE #17 (closed by this discipline): building without ever tearing
+ * down leaked LVGL objects without bound, and resetting these pools
+ * while a still-alive `lv_line` from an earlier build pointed at them
+ * corrupted that line silently. Both are fixed by the same rule — never
+ * rebuild without cleaning first — enforced by the caller, not by this
+ * file (this file has no way to know whether it's being called for the
+ * first time or the fifty-thousandth). A caller that ever rebuilds
+ * WITHOUT cleaning first (or clones this file's build call without that
+ * discipline) reintroduces exactly this bug; there is nothing in this
+ * file's own API that can prevent that mistake, only a well-documented
+ * contract each caller must honour. See ctl_loop.h's top comment for the
+ * caller-side half of this invariant. Same reasoning applies to the
+ * triangle-descriptor pool below, and to scr_flare.c's own
+ * `s_flare_mark_ray_pts`.
  * ------------------------------------------------------------------- */
 #define FF_SCR_RADAR_MAX_LINE_SEGMENTS 16
 static lv_point_precise_t s_line_pts[FF_SCR_RADAR_MAX_LINE_SEGMENTS][2];
@@ -387,8 +391,8 @@ static void radar_draw_segment(lv_obj_t *parent, float from_dx, float from_dy, f
  * lv_draw_triangle() API directly (lvgl.h -> core/lv_obj.h ->
  * lv_obj_draw.h -> draw/lv_draw_triangle.h — already transitively
  * visible, no extra include needed). Same static-storage-pool lifetime
- * pattern, and the SAME re-render/teardown hazard, as the line-point pool
- * above — see that comment and https://github.com/jakeholland/firefly/issues/17.
+ * pattern, and the same caller-cleans-before-rebuild safety invariant, as
+ * the line-point pool above (issue #17, closed) — see that comment.
  * ------------------------------------------------------------------- */
 #define FF_SCR_RADAR_MAX_TRIANGLES 2
 typedef struct {

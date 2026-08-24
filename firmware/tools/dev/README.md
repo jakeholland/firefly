@@ -46,9 +46,13 @@ printf '{"cmd":"quit"}\n' | nc 127.0.0.1 9000
 docker compose -f tools/dev/compose.yml down
 ```
 
-`ffsim --window --connect 127.0.0.1:4403 --pack ...` is *not* wired up
-yet — `--ctl` (and therefore live mode's practical use today) requires
-`--headless`; see `targets/sim/main.c`'s "ctl loop" comment for why.
+As of S16 slice d, `ffsim --connect 127.0.0.1:4403 --pack ... [--dev-trust-all]`
+(no `--ctl`, no `--headless`) opens a real SDL window driving the same
+live shell, buttons and all — the FLARE button, T9 keypad, GO/DISMISS,
+... all reach `ff_shell_intent` and the window re-renders whenever the
+tick's dirty bit says the view changed. `--ctl` (and therefore the
+control-socket workflow the rest of this file uses) still requires
+`--headless`; see `targets/sim/main.c`'s top comment for why.
 
 ## What's real here, and what's a documented, verified limitation
 

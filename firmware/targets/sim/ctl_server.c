@@ -343,6 +343,50 @@ bool ff_ctl_process_line(char const *line, ff_ctl_handlers_t const *h, char *res
         return false;
     }
 
+    if (strcmp(cmd, "flare") == 0) {
+        int fi;
+        if (!ctl_obj_get(&ctx, 0, "from", &fi) || toks[fi].type != JSMN_PRIMITIVE) {
+            ctl_err(resp, resp_sz, "flare requires numeric from");
+            return false;
+        }
+        /* NAN as ctl_num()'s "missing/unparseable" sentinel fails the
+         * range check below the same way any other bad value does — see
+         * the "tap" handler's identical convention above. */
+        double from = ctl_num(&ctx, fi, NAN);
+        if (!isfinite(from) || from < 0.0 || from > 4294967295.0 /* UINT32_MAX */) {
+            ctl_err(resp, resp_sz, "flare from must be a valid node id (0..4294967295)");
+            return false;
+        }
+
+        double dur_s = 300.0; /* FF_FLARE_DEFAULT_DUR_S — this module deliberately has no
+                                * core dependency (see this header's design note), so the
+                                * default is restated as a literal rather than #included. */
+        int di;
+        if (ctl_obj_get(&ctx, 0, "dur_s", &di)) {
+            if (toks[di].type != JSMN_PRIMITIVE) {
+                ctl_err(resp, resp_sz, "flare dur_s must be numeric");
+                return false;
+            }
+            dur_s = ctl_num(&ctx, di, NAN);
+            if (!isfinite(dur_s) || dur_s < 0.0 || dur_s > 65535.0 /* UINT16_MAX */) {
+                ctl_err(resp, resp_sz, "flare dur_s must be within [0, 65535]");
+                return false;
+            }
+        }
+
+        if (h->flare == NULL) {
+            ctl_err(resp, resp_sz, "flare unsupported");
+            return false;
+        }
+        char const *err = NULL;
+        if (!h->flare(h->user, (uint32_t)from, (uint16_t)dur_s, &err)) {
+            ctl_err(resp, resp_sz, (err != NULL) ? err : "flare failed");
+            return false;
+        }
+        ctl_ok(resp, resp_sz);
+        return false;
+    }
+
     if (strcmp(cmd, "quit") == 0) {
         if (h->quit != NULL) h->quit(h->user);
         ctl_ok(resp, resp_sz);

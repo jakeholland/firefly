@@ -224,6 +224,31 @@ providing the degree value without the flag still renders "bearing
 unknown", never a fabricated compass point), same "prove you meant this"
 convention `radar.arrow_valid` already uses.
 
+## `compose` (S08, dump added S16 slice d)
+
+```json
+"compose": {
+  "text": "omw!", "to_name": "DANA", "has_pending": false, "mode": "abc"
+}
+```
+
+| Key | Type | Default |
+|---|---|---|
+| `text` | string (≤160 chars) | `""` |
+| `to_name` | string (≤15 chars) | `""` ("" = broadcast, "TO: EVERYONE") |
+| `has_pending` | bool | `false` |
+| `mode` | string enum: `abc` \| `123` \| `sym` | `abc` |
+
+The LOADER has accepted this section since S08 (`fx_parse_compose`), but
+`ff_fixture_dump_json` never wrote it back out until S16 slice d — a real
+gap, not a deliberate omission: the ctl `state` dump could never show the
+composer's own draft, which the S16 AC10 sequence test (draft typed ->
+flare injected -> takeover renders -> cleared -> composer returns with
+draft intact) needs to observe surviving a takeover through the socket,
+not just by reading `ff_app_state_t` directly. `text` mirrors
+`ff_t9_text()`: committed characters plus the live pending (uncommitted)
+one, if any — the same value `scr_compose.c` renders.
+
 ## `settings` (S11)
 
 ```json

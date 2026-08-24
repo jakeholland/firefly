@@ -202,16 +202,23 @@ void ff_scr_nav_build(ff_app_state_t const *state)
     lv_obj_clear_flag(tile_signals, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_flag(tile_signals, LV_OBJ_FLAG_EVENT_BUBBLE); /* GESTURE_BUBBLE: already on by default */
 
-    ff_scr_radar_build(tile_radar, &state->radar);
-    ff_scr_now_build(tile_now, &state->now); /* S07b — real content, replaces the placeholder pane */
-    ff_scr_signals_build(tile_signals, &state->signals); /* S08c */
-
-    /* S10 slice b: the Radar face's lock chip. Added as a child of
-     * tile_radar specifically (not the puck) — spec: "the Radar face
-     * shows a lock indicator" — so it only ever appears alongside the
-     * Radar tile's own content, not on Now/Signals. */
-    ff_scr_flare_build_lock_chip(tile_radar, &state->flare);
-
+    /* ISSUE #29, closed: build content into the ACTIVE tile ONLY. Before
+     * S16 slice d, all three tiles' content was built on every render —
+     * harmless while a screen only ever built once per process, but
+     * three faces' worth of LVGL objects on every dirty-driven rebuild is
+     * real, unbounded-per-tick cost, and the two inactive tiles' controls
+     * sat at their un-scrolled tileview position: hundreds of pixels
+     * outside the 456px window, not merely outside the round glass —
+     * unreachable by any real touch, and the hit-target sweep
+     * (test_face_hit_targets.c) had to carve out an exception for
+     * exactly that. `ff_route` already drives face navigation and native
+     * tileview swipe is disabled (LV_DIR_NONE, S16 slice c3), so nothing
+     * depends on an inactive tile ever holding real content — the
+     * tileview's three tiles stay purely as the swap surface
+     * `lv_tileview_set_tile_by_index` jumps between (LV_ANIM_OFF: no
+     * motion, so which tiles are populated is invisible to a real touch
+     * either way). The tile index is resolved FIRST so exactly one
+     * builder call fires. */
     uint32_t tile_idx;
     switch (state->active_face) {
     case FF_APP_FACE_RADAR:
@@ -230,6 +237,24 @@ void ff_scr_nav_build(ff_app_state_t const *state)
         tile_idx = 0;
         break;
     }
+
+    switch (tile_idx) {
+    case 0:
+        ff_scr_radar_build(tile_radar, &state->radar);
+        /* S10 slice b: the Radar face's lock chip. Added as a child of
+         * tile_radar specifically (not the puck) — spec: "the Radar face
+         * shows a lock indicator" — so it only ever appears alongside the
+         * Radar tile's own content, not on Now/Signals. */
+        ff_scr_flare_build_lock_chip(tile_radar, &state->flare);
+        break;
+    case 1:
+        ff_scr_now_build(tile_now, &state->now); /* S07b */
+        break;
+    default:
+        ff_scr_signals_build(tile_signals, &state->signals); /* S08c */
+        break;
+    }
+
     lv_tileview_set_tile_by_index(tileview, tile_idx, 0, LV_ANIM_OFF);
 
     /* PR #20 UX review (finding #4, BLOCKING — "flaring_self reads as an

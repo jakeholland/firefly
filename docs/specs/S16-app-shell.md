@@ -243,6 +243,48 @@ loop while also fighting unfamiliar hardware for the first time.
   `ff_wiring.h`'s header comment already defers it to "ack UX v1.5" —
   slice c3 wires the send, not the optimistic echo.
 
+- **2026-08-24, slice d — three interpretation calls, recorded per
+  CLAUDE.md.**
+
+  1. **Live window mode.** The slice table's own words ("render
+     lifecycle... driven by the dirty return") say nothing about window
+     mode specifically — read narrowly, closing #17/#29 only required
+     fixing the ctl loop's rebuild discipline. But main.c's own
+     pre-slice-d comment on `ff_run_window` said the honest thing was
+     stronger: every S10/S16 button had been a documented no-op there
+     since c2, purely because nothing bound the intent seam, and c2's
+     own note promised that would stop being true once re-rendering
+     worked. Slice d is that "once" — `ffsim --connect HOST:PORT` (no
+     `--ctl`, no `--headless`) now opens a live SDL window sharing the
+     exact setup sequence (`live_setup.h`) and dirty-driven rebuild
+     ctl_loop.c uses. `--mock-clock` is accepted but silently ignored in
+     this mode: there is no ctl socket there to advance a frozen clock
+     by hand, so honoring it would just mean the window never redraws
+     past its first frame.
+  2. **The ctl `state` dump now always mirrors the live shell**, not
+     only when `--connect` was given. Before this slice, a fixture-only
+     (`--fixture`, no `--connect`) `--ctl` session's `state` dump stayed
+     the static fixture forever, since nothing ever ticked a shell to
+     project over it. Now every `--ctl` session owns a real `ff_shell_t`
+     (transport-less when `--connect` is absent — the documented
+     "no transport" test seam, `ff_shell_cfg_t.transport`), and its
+     first tick (always dirty) overwrites the fixture-seeded screen
+     within one loop iteration. `--fixture` therefore now means "seed
+     the screen shown before the first tick", not "hold this state for
+     the session" — no committed fixture/doc combination relied on the
+     old meaning (checked: no test or documented workflow starts `--ctl`
+     with `--fixture` and no `--connect`).
+  3. **`ff_fixture_dump_json` gained a `compose` section** (`fixture.c`,
+     `tests/fixtures/README.md`). `fx_parse_compose` has accepted one on
+     LOAD since S08, but the dump side never wrote it — a real gap, not
+     a deliberate one, that left the composer's own draft permanently
+     invisible to the ctl `state` command. AC10's sequence test needs to
+     observe the draft surviving a takeover THROUGH THE SOCKET, not only
+     by reading `ff_app_state_t` directly, so this slice closes it.
+     Field-for-field mirror of `fx_parse_compose`, so a dump still
+     round-trips through the loader (`test_fixture.c`'s existing
+     round-trip tests cover it unchanged).
+
 ## Two defects this closes
 
 ### 1. Two inbound pipelines that disagree about trust
