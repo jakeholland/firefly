@@ -13,7 +13,7 @@ Four of the six v1 faces, running. The arrow finds your friend, the lineup admit
 
 ## Status
 
-**The app runs.** As of 2026-08-24 the shell (S16) is complete: swipe between faces, type on the T9, get interrupted by a flare and keep your draft, reconnect when the link drops, and settings persist across restarts — live, against a real Meshtastic node, on the desktop simulator. Four of the six v1 faces are built (Radar, Now, Signals with its composer, Flare); Map and Settings aren't started. What's left is those two faces and the device target itself — display driver, the link to the comms brain, sensors — which needs the hardware in hand. First field test: **Lost Lands, Sep 18–20 2026**.
+**Four of the six v1 faces are built and on `main`** — Radar, Now, Signals (with its T9 composer) and Flare. Map and Settings aren't started. Parts are ordered; the app runs today on a desktop simulator that renders the real screens. What's left is the app shell that makes them a running device, those two faces, and the device target itself — display driver, the link to the comms brain, sensors — which needs the hardware in hand. First field test: **Lost Lands, Sep 18–20 2026**.
 
 This table is meant to be accurate rather than flattering — if something renders but can't run on hardware yet, it says so.
 
@@ -30,7 +30,7 @@ This table is meant to be accurate rather than flattering — if something rende
 | **Signals + Compose** — pulses, rally points, canned replies, and a T9 keypad with ABC/123/SYM pages | ✅ on `main` |
 | **Map face** — vector festival grounds with crew dots | ⏳ not started (S09) |
 | **Settings face** — units, quiet hours, share mode, name | ⏳ model on `main`, no screen yet (S11 slice b) |
-| **App shell** — event loop, face routing, input dispatch, wall clock, link state, settings persistence | ✅ complete (S16, 9 slices) |
+| App shell — event loop, face routing, wall clock | ◐ in progress (S16) |
 | ESP32-S3 device target, enclosure | ⏳ when boards arrive |
 
 Every merged line went through an independent code review plus, for anything on screen, a review in the persona of a tired raver at 2 a.m. ([why](docs/review/ux-raver.md)).
