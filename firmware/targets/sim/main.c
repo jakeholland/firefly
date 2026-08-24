@@ -554,6 +554,15 @@ static int ff_run_ctl_loop(uint16_t ctl_port, const char *fixture_path, bool moc
     static ff_app_state_t state; /* static: outlives this function via ctx.state,
                                      and ff_live_t's callbacks hold a pointer to it */
     memset(&state, 0, sizeof(state));
+    /* S16 slice a: FF_APP_FACE_NONE = 0 renumbered ff_app_face_t, so the
+     * memset above no longer leaves active_face on RADAR the way it did
+     * when RADAR was the zero value. Set it explicitly to keep live
+     * (--connect) mode's opening face exactly what it has always been:
+     * without this, a live session's state would report NONE, and the
+     * ctl `dump` command's fx_enum_name() would quietly write it out as
+     * "radar" anyway (its unknown-value fallback) — a state and its own
+     * dump disagreeing, with nothing to notice. */
+    state.active_face = FF_APP_FACE_RADAR;
     ctx.state = &state;
 
     if (fixture_path != NULL) {
