@@ -161,6 +161,17 @@ def run_ffsim(ffsim_bin: pathlib.Path, meshtasticd: None, tmp_path: pathlib.Path
             str(port),
             "--pack",
             str(FESTPACK_FIXTURE),
+            # S16 slice b2: live mode drives the app shell, which (unlike
+            # the retired live.c wiring) enforces the roster trust policy
+            # — unpaired senders produce no feed items and no crew slots.
+            # --dev-trust-all is the sim-only dev affordance for exactly
+            # this harness: it auto-pairs NodeInfo senders, suspends the
+            # self filter (the dockerized meshtasticd is a SINGLE node
+            # whose id is also ffsim's own — crew_sim.py's "one node
+            # plays every role" constraint), and latches the wall clock
+            # from the host so the replayed position can be aged honestly
+            # (see ff_shell.h's dev-affordances section).
+            "--dev-trust-all",
         ] + (extra_args or [])
         log_path = tmp_path / f"ffsim-{port}.log"
         log_file = log_path.open("wb")

@@ -97,37 +97,11 @@ if(FF_BUILD_TESTS)
     add_test(NAME test_ctl_out_path COMMAND test_ctl_out_path)
 endif()
 
-# S13c
-# ---------------------------------------------------------------------------
-# ff_live: minimal mc_client -> ff_app_state_t wiring for `ffsim --connect`
-# (S13 slice a's --connect flag, implemented here as slice c/d's
-# prerequisite — see the PR body's "deviations" section for why this
-# landed in this slice rather than a/b). STATIC library so test_live can
-# link it directly.
-# ---------------------------------------------------------------------------
-add_library(ff-sim-live STATIC
-    live.c
-)
-target_include_directories(ff-sim-live PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
-target_link_libraries(ff-sim-live PUBLIC ff-sim-fixture ff-meshclient ff-core PRIVATE ff-festpack)
-ff_apply_warnings(ff-sim-live)
-
-if(FF_BUILD_TESTS)
-    add_executable(test_live
-        tests/test_live.c
-    )
-    # test_live.c hand-encodes synthetic mc protobuf frames (same technique
-    # as meshclient/tests/test_meshclient.c) to drive ff_live_t end to end
-    # without a real meshtasticd/docker — needs the proto message structs
-    # and nanopb's encoder directly, not just ff-meshclient's public API.
-    target_link_libraries(test_live PRIVATE ff-sim-live ff-meshclient-proto ff-nanopb unity)
-    target_compile_definitions(test_live PRIVATE
-        FF_LIVE_FESTPACK_FIXTURES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../../festpack/tests/fixtures"
-    )
-    ff_apply_warnings(test_live)
-
-    add_test(NAME test_live COMMAND test_live)
-endif()
+# S16b2: live.{c,h} (S13c's interim mc_client -> ff_app_state_t wiring,
+# `ff-sim-live`) and its tests are RETIRED — `ffsim --connect` drives the
+# app shell (app/ff_shell.h, linked below) instead, closing live.h's
+# self-documented spec-gap deviation. See docs/specs/S13-sim-target.md's
+# Amendments and docs/specs/S16-app-shell.md slice b2.
 
 # Issue #3 — ff_screenshot_write now creates its output directory itself
 # (`--headless --screenshot DIR` used to fail until the caller mkdir'd
@@ -163,26 +137,20 @@ add_executable(ffsim
 set_target_properties(ffsim PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
 
 target_link_libraries(ffsim PRIVATE
-    # ff-core and ff-sim-fixture: NEITHER is listed explicitly here, even
-    # though main.c uses both directly (ff_version.h, fixture.h's
-    # ff_fixture_load_file) — both are already brought in transitively
-    # through ff-sim-live (`ff-sim-live PUBLIC ff-sim-fixture ff-core ...`,
-    # see the S13c library declaration above), which itself is listed
-    # below. Listing either of them AGAIN here just duplicates the
-    # static-library entry on the final link line: harmless (CMake/the
-    # linker still resolve every symbol correctly — confirmed by a clean
-    # from-scratch build), but Apple's ld warns "ignoring duplicate
-    # libraries" for it, which is pure noise once you've confirmed it's
-    # harmless (S08 PR #25 code review, NIT finding — this used to list
-    # ff-sim-fixture explicitly, which is exactly the ff-sim-live-vs-
-    # direct duplicate the warning was flagging; ff-core was already
-    # correctly omitted for the identical reason, see the note this one
-    # replaces).
+    # ff-core and ff-meshclient are NOT listed explicitly, even though
+    # main.c uses both directly (ff_version.h, mc_transport_tcp.h) —
+    # both arrive transitively through ff-shell (`ff-shell PUBLIC ...
+    # ff-core ff-meshclient ff-festpack`, app/CMakeLists.txt). Listing
+    # them AGAIN would duplicate the static-library entry on the final
+    # link line: harmless, but Apple's ld warns "ignoring duplicate
+    # libraries" for it (S08 PR #25 code review, NIT finding — same
+    # reasoning as the ff-sim-live-era note this one replaces).
     ff-sim-face-dispatch # S08 — face_dispatch.h (this file, above)
     ff-sim-ctl           # S13c — ctl_server.h/.c (ctl_server.c above)
     ff-sim-ctlout        # S13c — ctl_out_path.h/.c: screenshot path confinement (review fixup)
-    ff-sim-live          # S13c — live.h/.c: --connect / --pack wiring (live.c above); also the
-                         # transitive source of ff-sim-fixture/ff-core above
+    ff-sim-fixture       # S13b — fixture.h: --fixture load + the ctl `state` dump
+    ff-shell             # S16b2 — the app shell: --connect / --pack / --dev-trust-all
+                         # (replaces ff-sim-live); transitive source of ff-core/ff-meshclient
     ff-app-ui            # S06b — scr_nav.h/scr_radar.h (app/CMakeLists.txt)
     lvgl::lvgl
     ff-stb-image-write

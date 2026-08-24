@@ -30,11 +30,16 @@ pip install -r ../tests/e2e/requirements.txt
 # 4. Drive a scenario:
 python3 tools/dev/crew_sim.py walk --node Dana --from-stage prehistoric --to-stage wompy-woods --speed 1.2
 
-# 5. Connect ffsim and look:
-./build/ffsim --headless --ctl 9000 --connect 127.0.0.1:4403 \
+# 5. Connect ffsim and look. --dev-trust-all matters (S16b2): live mode
+#    drives the app shell, which drops unpaired senders — and the dev
+#    daemon's single node is also "us" — so without the flag a --connect
+#    session honestly shows nothing. The flag auto-pairs NodeInfo
+#    senders, suspends the self filter, and latches the wall clock from
+#    the host (sim-only; compiled out of device builds; logged).
+./build/ffsim --headless --ctl 9000 --connect 127.0.0.1:4403 --dev-trust-all \
     --pack festpack/tests/fixtures/lost-lands-2026.festpack.json &
 printf '{"cmd":"state"}\n' | nc 127.0.0.1 9000
-#   -> {"ok":true,"state":{"radar":{"mode":"live","dist_str":"260 m",...}}}
+#   -> {"ok":true,"state":{"radar":{"mode":"live","dist_str":"260 m",...},...,"wall":{"src":"mesh",...}}}
 
 # 6. Tear down:
 printf '{"cmd":"quit"}\n' | nc 127.0.0.1 9000

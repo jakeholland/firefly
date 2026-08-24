@@ -304,7 +304,19 @@ if(FF_BUILD_TESTS)
     add_executable(test_shell
         tests/test_shell.c
     )
-    target_link_libraries(test_shell PRIVATE ff-shell unity)
+    # ff-meshclient-proto: S16b2's transport-driven AC6 test hand-encodes
+    # synthetic Meshtastic frames (the technique the retired
+    # targets/sim/tests/test_live.c used) — it needs the proto message
+    # structs and nanopb's encoder directly, not just ff-meshclient's
+    # public API (ff-meshclient links proto PRIVATE, so neither the
+    # includes nor the archive propagate). ff-nanopb is deliberately NOT
+    # listed (proto links it PUBLIC). Apple's ld still warns "ignoring
+    # duplicate libraries" for the proto archive — it appears once here
+    # and once in ff-meshclient's PRIVATE link closure — and that one is
+    # structurally unavoidable without changing meshclient's visibility,
+    # which is not this slice's call (S08 PR #25's NIT ruling: harmless,
+    # confirmed, documented).
+    target_link_libraries(test_shell PRIVATE ff-shell ff-meshclient-proto unity)
     ff_apply_warnings(test_shell)
 
     add_test(NAME test_shell COMMAND test_shell)

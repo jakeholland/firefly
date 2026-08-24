@@ -93,6 +93,20 @@ void ff_heard_init(ff_heard_t *h);
  */
 void ff_heard_note(ff_heard_t *h, uint32_t node_id, uint32_t now_ms);
 
+/**
+ * ff_heard_remove — forget `node_id` entirely. Returns true iff it was
+ * tracked. No-op (false) if `h` is NULL or the id is not tracked.
+ *
+ * Added for S16 slice b2 (PR #46 review caveat): a puck can note its OWN
+ * id here if its NodeInfo arrives before `on_my_info` names it —
+ * whichever order the radio picks — and without removal that entry
+ * lingers until LRU eviction, so S12's "add from heard nodes" pairing UI
+ * would offer the user their own puck. The shell purges its own id the
+ * moment `on_my_info` lands. This is the only removal path: heard
+ * entries otherwise only ever age out via LRU eviction, by design.
+ */
+bool ff_heard_remove(ff_heard_t *h, uint32_t node_id);
+
 /** ff_heard_count — number of distinct node ids currently tracked, 0..FF_HEARD_MAX. */
 uint8_t ff_heard_count(ff_heard_t const *h);
 

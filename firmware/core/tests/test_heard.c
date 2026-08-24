@@ -159,6 +159,43 @@ static void S08_heard_many_pushes_beyond_cap_stays_bounded(void)
 /* NULL-argument guards                                                 */
 /* ------------------------------------------------------------------- */
 
+/* S16 slice b2 (PR #46 review caveat): the shell purges its own id from
+ * the heard list once on_my_info names it. This is the primitive that
+ * makes that possible; the shell-level behavior is pinned in
+ * app/tests/test_shell.c (S16_b2_my_info_purges_our_own_id_from_heard). */
+static void S16_b2_heard_remove_forgets_only_the_named_id(void)
+{
+    ff_heard_t h;
+    ff_heard_init(&h);
+    ff_heard_note(&h, 0xA, 100);
+    ff_heard_note(&h, 0xB, 200);
+    ff_heard_note(&h, 0xC, 300);
+
+    TEST_ASSERT_TRUE(ff_heard_remove(&h, 0xB));
+    TEST_ASSERT_EQUAL_UINT8(2, ff_heard_count(&h));
+    TEST_ASSERT_FALSE(ff_heard_contains(&h, 0xB));
+    TEST_ASSERT_TRUE(ff_heard_contains(&h, 0xA));
+    TEST_ASSERT_TRUE(ff_heard_contains(&h, 0xC));
+
+    /* Removing an untracked id reports false and changes nothing. */
+    TEST_ASSERT_FALSE(ff_heard_remove(&h, 0xB));
+    TEST_ASSERT_EQUAL_UINT8(2, ff_heard_count(&h));
+
+    /* A removed id can be re-noted later as a brand-new sighting. */
+    ff_heard_note(&h, 0xB, 400);
+    TEST_ASSERT_TRUE(ff_heard_contains(&h, 0xB));
+    TEST_ASSERT_EQUAL_UINT8(3, ff_heard_count(&h));
+
+    /* And the freed slot genuinely came back: fill to the cap and check
+     * the count is exactly FF_HEARD_MAX, not FF_HEARD_MAX - 1. */
+    for (uint32_t i = 0; i < FF_HEARD_MAX; i++) {
+        ff_heard_note(&h, 0x1000u + i, 500 + i);
+    }
+    TEST_ASSERT_EQUAL_UINT8(FF_HEARD_MAX, ff_heard_count(&h));
+
+    TEST_ASSERT_FALSE(ff_heard_remove(NULL, 0xA)); /* NULL guard */
+}
+
 static void S08_heard_null_guards_are_no_ops_not_crashes(void)
 {
     ff_heard_init(NULL);
@@ -185,6 +222,8 @@ int main(void)
     RUN_TEST(S08_heard_over_max_evicts_least_recently_heard);
     RUN_TEST(S08_heard_renoting_the_oldest_protects_it_from_eviction);
     RUN_TEST(S08_heard_many_pushes_beyond_cap_stays_bounded);
+
+    RUN_TEST(S16_b2_heard_remove_forgets_only_the_named_id);
 
     RUN_TEST(S08_heard_null_guards_are_no_ops_not_crashes);
 

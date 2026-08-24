@@ -24,3 +24,35 @@ Run the whole app on a Mac/Linux host: LVGL in an SDL window or fully headless, 
 
 ## Slices
 a) CMake superbuild + LVGL SDL window + PNG dump · b) fixtures + headless + mock clock · c) ctl socket · d) tools/dev harness.
+
+## Amendments
+
+- **2026-08-24, PR (S16 slice b2) — `live.{c,h}` is retired; `--connect`
+  is re-pointed at the app shell.**
+
+  Slice (c) shipped `targets/sim/live.{c,h}` as interim wiring for
+  `--connect`/`--pack`, self-documented as a "deliberate, PR-flagged
+  spec-gap deviation": the S06+ orchestration layer did not exist yet,
+  and the ctl socket's `state` dump and the S14 e2e scenarios were
+  meaningless without *something* live to dump. That gap is now closed
+  for real — S16's `ff_shell_t` is the orchestration layer live.c stood
+  in for — so the deviation is closed rather than left dangling, per
+  S16's "Amendments to prior specs".
+
+  What changed for this spec's deliverables:
+  - `--connect HOST:PORT` drives an `ff_shell_t` over the mc TCP
+    transport; the ctl `state` dump reads `ff_shell_view()` and gains a
+    `"wall"` key from `ff_shell_wall()` (tools/dev/CTL.md).
+  - live.c's "every heard node is auto-paired" behavior — its stated
+    only-honest-option stopgap — does NOT survive by default: the shell
+    enforces S16's roster trust policy. The dev harness opts back into
+    trust with `--dev-trust-all` (sim-only, compiled out on device,
+    logged at startup; S16 AC6 and its Amendments).
+  - live.c's venue-origin-as-my-position and fixed-north-heading dev
+    stand-ins survive, but in `main.c`, visibly, through the shell's
+    public sensor seam (`ff_shell_set_my_pos`/`ff_shell_set_heading`) —
+    the shell itself refuses to fabricate either (S16b1's ruling).
+  - Criterion 4's smoke ("reaches mc READY, receives ≥1 position") is
+    superseded in practice by firmware/tests/e2e's
+    `test_position_reaches_radar`, which now runs with
+    `--dev-trust-all`.
