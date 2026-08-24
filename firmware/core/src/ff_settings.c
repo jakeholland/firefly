@@ -13,13 +13,20 @@
  * below only catches size mismatches; two different layouts can share the
  * same sizeof() (e.g. a reordering, or swapping a bool+uint8_t pair) and
  * would otherwise pass validation with silently corrupted semantics. */
-#define FF_SETTINGS_FORMAT_VERSION ((uint16_t)2u)
+#define FF_SETTINGS_FORMAT_VERSION ((uint16_t)3u)
 /* v2: compass_cal_blob (opaque uint8_t[32]) -> compass_cal (ff_geo_cal_t),
  * per TODO(S01) in ff_settings.h. Same sizeof() risk the header comment
  * warns about (a reordering/retype can share sizeof() with the old
  * layout) doesn't apply numerically here — ff_geo_cal_t is 28 bytes vs.
  * the blob's 32 — but the version bump is required regardless: this is a
  * field type/semantics change, not just a size change. */
+/* v3: + utc_offset_min / utc_offset_set (S16 slice b0's [api] amendment
+ * to S11 — see ff_settings.h). A v2 blob is rejected on load and the
+ * full defaults apply, which is the honest outcome here: the new field
+ * has no v2 representation to migrate from, and "unset" is exactly what
+ * a v2 puck's real state was. Everything else in a v2 blob is user
+ * preference that is cheap to re-set, and this is pre-v1 firmware with
+ * no fielded devices. */
 
 typedef struct {
     uint32_t magic;
@@ -39,6 +46,11 @@ static void ff_settings_apply_defaults(ff_settings_t *s)
     s->water_min = 90;
     s->quiet_from_min = 240; /* 4:00a */
     s->quiet_to_min = 600;   /* 10:00a */
+    /* utc_offset_min / utc_offset_set: left zeroed -> UNSET. Deliberately
+     * not defaulted to any real zone: an unset offset makes the wall
+     * clock read FF_WALL_UNKNOWN (honest), while a defaulted one would
+     * silently outrank nothing and quietly produce a wrong local time on
+     * a puck that was never configured. See ff_wall.h. */
     /* my_name: left zeroed -> empty string. */
     /* compass_cal: left zeroed -> identity ff_geo_cal_t; cal_valid stays false. */
 }

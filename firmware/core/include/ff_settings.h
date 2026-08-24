@@ -46,6 +46,27 @@ typedef struct {
     uint16_t water_min;             /* water-nudge interval, minutes; 0 = off, default 90 */
     uint16_t quiet_from_min;        /* quiet hours start, local minutes-of-day, default 240 (4:00a) */
     uint16_t quiet_to_min;          /* quiet hours end, local minutes-of-day, default 600 (10:00a)  */
+
+    /* Local UTC offset, minutes east of UTC (S16 wall clock, slice b0 —
+     * docs/specs/S16-app-shell.md's "Wall clock" section; recorded there
+     * as an [api] amendment to S11).
+     *
+     * MEANINGLESS unless utc_offset_set is true. The flag is not
+     * redundant: int16_t has no free sentinel here because 0 is
+     * legitimately UTC, so absence cannot be encoded as a value that
+     * already means something — the same ruling as stage_color_valid and
+     * FF_FRESH_NEVER. Defaults to unset, which is honest: a puck that
+     * has never been told its offset does not know one, and with no pack
+     * loaded the wall clock stays FF_WALL_UNKNOWN rather than guessing
+     * (see ff_wall_resolve_offset in ff_wall.h for the full resolution
+     * order against the pack's offset).
+     *
+     * Quiet hours is a settings feature with no festival dependency, so
+     * without this field there is no path to local time at all when no
+     * pack is loaded and ff_quiet_now silently cannot be evaluated. */
+    int16_t utc_offset_min;
+    bool utc_offset_set;
+
     /* Not guaranteed NUL-terminated by this layer — load/save round-trip
      * the raw bytes as-is. Slice b (name-entry UI) must NUL-terminate
      * (or otherwise bound) whatever it writes here before this layer or
