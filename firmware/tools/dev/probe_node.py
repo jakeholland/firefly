@@ -63,20 +63,34 @@ def _require_meshtastic():
 LOC_SOURCE_KNOWN = {"LOC_UNSET", "LOC_MANUAL", "LOC_INTERNAL", "LOC_EXTERNAL"}
 
 
+_LOC_BY_NUM = ["LOC_UNSET", "LOC_MANUAL", "LOC_INTERNAL", "LOC_EXTERNAL"]
+
+
 def _loc_source(pos):
     """Read location_source from a position dict, honouring proto3 defaults.
+
+    Returns (code, explanation) — see _rx_path for why tests assert on the
+    code rather than matching prose.
 
     `pos` must be a real decoded Position; pass None if there wasn't one.
     """
     if pos is None:
-        return "no position at all"
+        return ("NO_POSITION", "this node reported no position at all")
     v = pos.get("locationSource")
     if v is None:
-        return "LOC_UNSET (field omitted — proto3 drops the zero value)"
+        return ("LOC_UNSET", "field omitted — proto3 drops the zero value")
     if isinstance(v, int):  # in case a future lib version stops stringifying
-        return f"{['LOC_UNSET', 'LOC_MANUAL', 'LOC_INTERNAL', 'LOC_EXTERNAL'][v]} ({v})" \
-            if 0 <= v < 4 else f"UNKNOWN VALUE ({v})"
-    return str(v) if v in LOC_SOURCE_KNOWN else f"UNKNOWN VALUE ({v!r})"
+        if 0 <= v < len(_LOC_BY_NUM):
+            return (_LOC_BY_NUM[v], f"numeric form, {v}")
+        return ("UNRECOGNISED", f"numeric value {v} is not a known LocSource")
+    if v in LOC_SOURCE_KNOWN:
+        return (str(v), "")
+    return ("UNRECOGNISED", f"{v!r} is not a known LocSource")
+
+
+def _fmt(pair):
+    code, why = pair
+    return f"{code} ({why})" if why else code
 
 
 def _rx_path(packet):
@@ -85,25 +99,32 @@ def _rx_path(packet):
     about "direct", the tool validates the wrong thing, and RSSI is only a
     distance proxy on a genuinely direct packet.
 
+    Returns (code, explanation). The code is what tests assert on: matching
+    prose by substring is unsound here because "DIRECT" is a substring of
+    "INDIRECT", so a classifier that returned the wrong one would still
+    "contain" the right word. That is the same proxy failure documented in
+    docs/review/code-review.md, and it was live in this file's own selftest
+    until PR #42's review caught it.
+
     proto3 again: absent hopStart/hopLimit/viaMqtt all mean zero/false.
     """
     if bool(packet.get("viaMqtt", False)):
         # Checked FIRST, as the firmware does. Whatever our radio measured,
         # it was not this sender's transmission.
-        return "INDIRECT (via MQTT — arrived over the internet, not our radio)"
+        return ("INDIRECT", "via MQTT — arrived over the internet, not our radio")
     hs = packet.get("hopStart", 0)
     hl = packet.get("hopLimit", 0)
     if hs > 0:
         if hl > hs:
-            return "UNKNOWN (malformed — hops travelled would be negative)"
+            return ("UNKNOWN", "malformed — hops travelled would be negative")
         if hl == hs:
-            return "DIRECT (rssi is this sender's own signal)"
-        return f"INDIRECT, {hs - hl} hop(s) — rssi is the RELAY's signal, not theirs"
+            return ("DIRECT", "rssi is this sender's own signal")
+        return ("INDIRECT", f"{hs - hl} hop(s) — rssi is the RELAY's signal, not theirs")
     # hop_start == 0: a real zero-hop packet, or pre-2.3.0 firmware that never
     # set the field. Only the sender's Data.bitfield separates them, and the
     # library doesn't surface it — so this tool cannot resolve what the
     # firmware can. Say so rather than guessing.
-    return "UNKNOWN (hop_start 0: zero-hop, or a pre-2.3.0 sender — can't tell here)"
+    return ("UNKNOWN", "hop_start 0: zero-hop, or a pre-2.3.0 sender — can't tell here")
 
 
 def _selftest():
@@ -116,23 +137,30 @@ def _selftest():
     none. See PR #42's review.
     """
     cases = [
-        # (what, got, expected-substring)
-        ("manual position", _loc_source({"locationSource": "LOC_MANUAL"}), "LOC_MANUAL"),
-        ("unset is omitted, not absent", _loc_source({"latitude": 39.0}), "LOC_UNSET"),
-        ("int form still works", _loc_source({"locationSource": 2}), "LOC_INTERNAL"),
-        ("future value not folded", _loc_source({"locationSource": "LOC_NEW"}), "UNKNOWN VALUE"),
-        ("no position at all", _loc_source(None), "no position"),
-        ("mqtt beats hop match", _rx_path({"viaMqtt": True, "hopStart": 3, "hopLimit": 3}), "INDIRECT"),
-        ("direct", _rx_path({"hopStart": 3, "hopLimit": 3}), "DIRECT"),
-        ("relayed", _rx_path({"hopStart": 3, "hopLimit": 1}), "2 hop"),
-        ("malformed", _rx_path({"hopStart": 1, "hopLimit": 3}), "malformed"),
-        ("absent hops", _rx_path({}), "UNKNOWN"),
+        # (what, got-code, expected-code) — exact equality on the code, never
+        # a substring of the prose. "DIRECT" is a substring of "INDIRECT", so
+        # substring matching would pass a classifier that returned the exact
+        # opposite. That bug was live here until PR #42's review found it.
+        ("manual position", _loc_source({"locationSource": "LOC_MANUAL"})[0], "LOC_MANUAL"),
+        ("unset is omitted, not absent", _loc_source({"latitude": 39.0})[0], "LOC_UNSET"),
+        ("int form still works", _loc_source({"locationSource": 2})[0], "LOC_INTERNAL"),
+        ("future value not folded", _loc_source({"locationSource": "LOC_NEW"})[0], "UNRECOGNISED"),
+        ("out-of-range int not folded", _loc_source({"locationSource": 99})[0], "UNRECOGNISED"),
+        ("no position at all", _loc_source(None)[0], "NO_POSITION"),
+        ("mqtt beats a matching hop count", _rx_path({"viaMqtt": True, "hopStart": 3, "hopLimit": 3})[0], "INDIRECT"),
+        ("direct", _rx_path({"hopStart": 3, "hopLimit": 3})[0], "DIRECT"),
+        ("relayed", _rx_path({"hopStart": 3, "hopLimit": 1})[0], "INDIRECT"),
+        ("relayed reports the hop count", _rx_path({"hopStart": 3, "hopLimit": 1})[1], "2 hop(s) — rssi is the RELAY's signal, not theirs"),
+        ("malformed", _rx_path({"hopStart": 1, "hopLimit": 3})[0], "UNKNOWN"),
+        ("absent hops", _rx_path({})[0], "UNKNOWN"),
     ]
-    bad = [(w, g, e) for w, g, e in cases if e not in g]
-    for what, got, _ in cases:
-        print(f"  {'FAIL' if any(w == what for w, _, _ in bad) else 'ok  '}  {what}: {got}")
-    if bad:
-        print(f"\n{len(bad)} case(s) failed")
+    fails = 0
+    for what, got, want in cases:
+        ok = got == want
+        fails += not ok
+        print(f"  {'ok  ' if ok else 'FAIL'}  {what}: {got!r}" + ("" if ok else f"  != {want!r}"))
+    if fails:
+        print(f"\n{fails} of {len(cases)} case(s) failed")
         return 1
     print(f"\n{len(cases)} cases pass")
     return 0
@@ -166,7 +194,7 @@ def dump_nodedb(iface):
             print("    position     : absent")
             continue
         print(f"    position     : lat={pos.get('latitude')} lon={pos.get('longitude')} alt={pos.get('altitude')}")
-        print(f"    ** location_source : {_loc_source(pos)}")
+        print(f"    ** location_source : {_fmt(_loc_source(pos))}")
         print(f"    pos time     : {_fmt_unix(pos.get('time'))}")
         print(f"    precision    : {pos.get('precisionBits', 'absent')}")
 
@@ -191,9 +219,9 @@ def listen(iface, seconds):
         hl = packet.get("hopLimit", 0)
         via_mqtt = bool(packet.get("viaMqtt", False))
         print(f"    hop_start    : {hs}   hop_limit: {hl}   via_mqtt: {via_mqtt}")
-        print(f"    -> path     : {_rx_path(packet)}")
+        print(f"    -> path     : {_fmt(_rx_path(packet))}")
         if d.get("portnum") == "POSITION_APP":
-            print(f"    ** location_source : {_loc_source(d.get('position'))}")
+            print(f"    ** location_source : {_fmt(_loc_source(d.get('position')))}")
 
     pub.subscribe(on_receive, "meshtastic.receive")
     deadline = time.time() + seconds
