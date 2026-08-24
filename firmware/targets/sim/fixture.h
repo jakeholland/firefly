@@ -41,6 +41,26 @@ typedef enum {
                                 instead of a quietly-dropped entry that only
                                 surfaces later as an unrelated-looking
                                 golden diff. */
+    FF_FIXTURE_ERR_BAD_ENUM, /* an enum-string key (`face`, `radar.mode`,
+                                `now.state`, `signals.items[].kind`,
+                                `compose.mode`, `settings.share_mode`) is
+                                PRESENT but its value isn't one of that
+                                key's documented strings (or isn't a JSON
+                                string at all). Fail-loud by design
+                                (issue #28, orchestrator ruling): fixtures
+                                feed the golden suite, so a typo'd enum
+                                that silently defaulted rendered a
+                                DIFFERENT state and then committed it as
+                                the golden — a test green forever about
+                                the wrong screen (the exact vacuous-test
+                                failure mode PR #36's memset/renumbering
+                                incident hit). The loader prints a
+                                one-line stderr diagnostic naming the bad
+                                key and value. An ABSENT enum key is NOT
+                                this error — it takes its documented
+                                default (absent != malformed; in
+                                particular `face` omitted defaults to
+                                `radar`, PR #36's deliberate exception). */
 } ff_fixture_result_t;
 
 /**

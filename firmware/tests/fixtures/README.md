@@ -17,6 +17,23 @@ loader is tolerant of missing/unknown keys, matching
 `firmware/festpack/src/fp_pack.c`'s "schema will grow" philosophy. Unknown
 keys anywhere are silently skipped, not errors.
 
+**But a PRESENT enum key must carry one of its documented strings**
+(issue #28, orchestrator ruling). `face`, `radar.mode`, `now.state`,
+`signals.items[].kind`, `compose.mode`, and `settings.share_mode` fail
+the whole load with `FF_FIXTURE_ERR_BAD_ENUM` — `*out` fully zeroed, and
+a stderr line naming the bad key and value — when the key is present but
+its value isn't one of that key's documented strings (or isn't a JSON
+string at all). No silent defaults: fixtures are the inputs to the
+golden suite, so a typo'd enum (`"mixxed"`, `"no-pack"` for `no_pack`)
+used to silently render a *different* state and then commit it as the
+golden — a test green forever about the wrong screen. **Absent ≠
+malformed:** an *omitted* enum key still takes its documented default,
+exactly like every other omitted field; in particular an absent `face`
+defaults to `radar` (PR #36's deliberate exception — a hand-written or
+truncated snapshot gets the home face, not a blank screen). See
+`test_fixture.c`'s `every_enum_key_fails_loud_on_unrecognized_string` /
+`face_absent_still_defaults_to_radar`.
+
 **Array caps are enforced fail-loud, not by silent truncation.** A section
 array (`radar.dots`, `now.rows`, `signals.items`) that exceeds its
 documented cap makes the whole load fail with `FF_FIXTURE_ERR_TOO_BIG` —
@@ -44,7 +61,7 @@ unrelated-looking golden diff.)
 | Key | Type | Default | Notes |
 |---|---|---|---|
 | `fixture` | string | `""` | Debug-only provenance name. The S13 placeholder debug face renders this verbatim as its title — real S06+ screens ignore it. Conventionally matches the filename stem. |
-| `face` | string enum: `radar` \| `now` \| `signals` \| `settings` | `radar` | Which `ff_app_state_t.active_face` this snapshot represents; selects which section the S13 placeholder debug face's body renders. |
+| `face` | string enum: `radar` \| `now` \| `signals` \| `settings` \| `compose` | `radar` (when the key is **absent** — an unrecognized string fails the load, see the fail-loud note above) | Which `ff_app_state_t.active_face` this snapshot represents; selects which section the S13 placeholder debug face's body renders. |
 
 ## `radar` (mirrors `ff_radar_view_t`, `core/include/ff_radar.h`)
 
@@ -104,7 +121,7 @@ Field names/semantics are transcribed 1:1 from `docs/specs/S06-radar-face.md`'s
 
 | Key | Type | Default | Notes |
 |---|---|---|---|
-| `state` | string enum: `no_pack`\|`tbd`\|`mixed`\|`live`\|`nothing_playing` | `no_pack` | **[api], PR #21 code review finding #2/ruling.** Replaces an earlier `pack_loaded`+`tbd` bool pair — see `now_state_t`'s doc comment in `ff_app_state.h` for why an explicit, mutually-exclusive-by-construction enum (same convention as `radar.mode`) replaced two independent bools. An absent or unrecognized string defaults to `no_pack`, the least-claiming state — same convention as `radar.mode`'s `nosel` default. |
+| `state` | string enum: `no_pack`\|`tbd`\|`mixed`\|`live`\|`nothing_playing` | `no_pack` | **[api], PR #21 code review finding #2/ruling.** Replaces an earlier `pack_loaded`+`tbd` bool pair — see `now_state_t`'s doc comment in `ff_app_state.h` for why an explicit, mutually-exclusive-by-construction enum (same convention as `radar.mode`) replaced two independent bools. An absent key defaults to `no_pack`, the least-claiming state — same convention as `radar.mode`'s `nosel` default. An unrecognized string fails the load (`FF_FIXTURE_ERR_BAD_ENUM`, issue #28 — it used to silently take the same default). |
 | `rows` | array, up to `FF_APP_NOW_MAX_ROWS` (3) | `[]` | Populated for `state: "live"` and `state: "mixed"` (the day's known-time sets). A 4th entry fails the whole load with `FF_FIXTURE_ERR_TOO_BIG`. `stage_color_rgb` accepts a `"#rrggbb"` string (leading `#` optional) or a bare integer — both forms are exercised in `test_fixture.c` (`now_stage_color_rgb_hex_string_parses`, `now_stage_color_rgb_numeric_form_parses`). **`mins_left` was removed** (PR #21 code review finding #5a) — it was parsed and fixture-populated but never rendered (the row's progress bar is driven by `pct_done` alone; the spec's row requirement is a bar, not per-row minutes text). |
 | `next` | object or omitted | omitted (`ff_app_next_t.valid = false`) | Populated for `state: "live"` and `state: "mixed"`. Omit entirely (not `null`) when there's no upcoming starred set — presence of the `next` object sets `valid = true`. Renders differently by state: `state: "live"` gives it the full next-card treatment (label/artist/stage/36px countdown); `state: "mixed"` (UX review round 2 finding #2) gives it a more compact but still countdown-LED block (22px amber countdown first, artist/stage below) — same field, deliberately still the visually prominent element in its own block, just scaled to share the screen with the mixed state's other sections. |
 | `lineup` | array, up to `FF_APP_NOW_MAX_LINEUP` (32) | `[]` | The day's sets whose time is **not** known. For `state: "tbd"`, this is every set on the day (all of them lack a time, by definition). For `state: "mixed"` (PR #21 code review finding #1/ruling), this is just the still-unknown SUBSET — the known-time sets render via `rows`/`next` at the same time, so an unknown-time set is never silently dropped just because some other set on the same day got a real time. `stage_name: ""` means the set's stage is genuinely unknown in the source pack (`fp_set_t.stage_idx == -1`); rendered honestly (`"STAGE UNKNOWN"`), never guessed. A 33rd entry fails the whole load with `FF_FIXTURE_ERR_TOO_BIG`. |
