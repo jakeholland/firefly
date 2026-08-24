@@ -366,8 +366,10 @@ typedef enum {
      * where `modal == FF_APP_FACE_NONE` IS the entire "no modal is up"
      * predicate — there is deliberately no separate has_modal flag.
      *
-     * NOT a valid `ff_app_state_t.active_face`: a projection always
-     * names a real face. Note that adding this member renumbered the
+     * NOT a renderable `ff_app_state_t.active_face`: a projection names
+     * a real face (the sole exception is a failed fixture load, which
+     * zeroes the whole struct — see that field's own comment). Note
+     * that adding this member renumbered the
      * enum, so `memset(0)` on an ff_app_state_t now leaves active_face
      * as NONE where it previously landed on RADAR — every producer that
      * relied on that coincidence sets RADAR explicitly now (see
@@ -403,9 +405,18 @@ typedef struct {
      * screen ignores this field entirely. */
     char fixture_name[FF_APP_FIXTURE_NAME_LEN];
 
-    /* Always a real, renderable face: RADAR/NOW/SIGNALS/SETTINGS/
-     * COMPOSE. Never FF_APP_FACE_NONE (a projection names a face) and
-     * never FF_APP_FACE_FLARE (S16 AC13 — see that member's comment). */
+    /* In any RENDERABLE state: a real face — RADAR/NOW/SIGNALS/
+     * SETTINGS/COMPOSE — and never FF_APP_FACE_FLARE (S16 AC13, see
+     * that member's comment).
+     *
+     * The one exception, stated because the invariant is otherwise
+     * false rather than because it is a good idea (PR #36 review, D2):
+     * a FAILED ff_fixture_load_json leaves *out fully zeroed by its own
+     * documented contract, so active_face reads NONE. That is a state
+     * no caller may render — every call site today bails on a non-OK
+     * return before building anything, and one that logs-and-continues
+     * instead would get the S13 debug placeholder. Check the result
+     * code; do not check this field for NONE. */
     ff_app_face_t active_face;
 
     ff_radar_view_t   radar;

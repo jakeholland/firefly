@@ -138,6 +138,13 @@ bool ff_route_swipe(ff_route_t *r, int8_t dir);
  * prevent, through a different door. (S16 does not state this case;
  * interpretation noted in the PR body.) No real flow reaches it today:
  * Compose has no nav bar to long-press Settings from.
+ *
+ * **Pushing over an off-axis `base` is also rejected**, the same rule
+ * `ff_route_swipe()` applies — because a modal is the one operation
+ * that could hide a forgotten `ff_route_init()` instead of exposing it.
+ * The composer would open, render and accept input perfectly normally;
+ * the invalid route would only appear on the way back out, by which
+ * point nothing points at the cause. (PR #36 review, D1.)
  */
 bool ff_route_push_modal(ff_route_t *r, ff_app_face_t f);
 
@@ -145,6 +152,14 @@ bool ff_route_push_modal(ff_route_t *r, ff_app_face_t f);
  * Drops the modal, revealing `base` unchanged. Returns true iff a modal
  * was up; false (no-op) when there was nothing to pop, so a stray BACK
  * intent on a bare face cannot be mistaken for a state change.
+ *
+ * Unlike `ff_route_push_modal()`, this does **not** check that `base`
+ * is on the swipe axis, and the asymmetry is deliberate rather than an
+ * oversight: `push` raises new state over an invalid base and conceals
+ * it, while `pop` removes state and moves an invalid route toward the
+ * visible NONE the zero value is designed to produce. Guarding here
+ * would strand a caller inside a modal with no way out — the same
+ * masking failure, from the other side. (PR #36 review, D1.)
  */
 bool ff_route_pop_modal(ff_route_t *r);
 

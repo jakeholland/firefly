@@ -2,6 +2,8 @@
  * ff_route.c — see ff_route.h for the contract and the reasoning behind
  * every rule implemented here (S16 slice a).
  */
+#include <stddef.h> /* NULL */
+
 #include "ff_route.h"
 
 /* The swipe axis, in order. `ff_route_swipe`'s `dir` steps along THIS
@@ -88,6 +90,18 @@ bool ff_route_push_modal(ff_route_t *r, ff_app_face_t f)
     if (f != FF_APP_FACE_COMPOSE && f != FF_APP_FACE_SETTINGS) {
         return false;
     }
+    /* Same base-validity rule as ff_route_swipe, and for a sharper
+     * reason than symmetry (PR #36 review, D1). A route whose base is
+     * off the swipe axis was never initialised; raising a modal over it
+     * would MASK that, because the modal works perfectly — it renders,
+     * it accepts input, it sends — right up until the user backs out of
+     * it and lands on a broken route with no visible cause. That is the
+     * exact opposite of the fail-visibly-and-immediately behaviour this
+     * module's deliberately-invalid zero value exists to produce. */
+    int base_idx;
+    if (!route_axis_index(r->base, &base_idx)) {
+        return false;
+    }
     /* One slot, not a stack: replacing a live modal would silently
      * discard a half-typed Compose draft. */
     if (r->modal != FF_APP_FACE_NONE) {
@@ -99,6 +113,13 @@ bool ff_route_push_modal(ff_route_t *r, ff_app_face_t f)
 
 bool ff_route_pop_modal(ff_route_t *r)
 {
+    /* Deliberately NOT guarded on base validity, unlike push_modal
+     * directly above — see that function's comment, and ff_route.h's
+     * note on the asymmetry. push raises new state over an invalid
+     * base and hides it; pop drains state and moves an invalid route
+     * TOWARD the visible NONE the design wants surfaced. Guarding here
+     * would trap a caller inside a modal it could never leave, which is
+     * the masking failure again wearing the other mask. */
     if (r == NULL || r->modal == FF_APP_FACE_NONE) {
         return false;
     }

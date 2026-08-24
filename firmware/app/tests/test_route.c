@@ -30,7 +30,13 @@ static ff_route_t route_at(ff_app_face_t base)
 {
     ff_route_t r;
     ff_route_init(&r);
-    while (r.base != base) {
+    /* Bounded, not a bare `while` (PR #36 review, N1): an ff_route_swipe
+     * that returned true without advancing would spin here forever, and
+     * since every test below routes through this helper, CI would report
+     * a ctest timeout instead of naming the broken function. The axis is
+     * three faces, so two swipes always suffice. */
+    for (int guard = 0; r.base != base; guard++) {
+        TEST_ASSERT_LESS_THAN_INT_MESSAGE(3, guard, "ff_route_swipe is not advancing toward the target base");
         TEST_ASSERT_TRUE(ff_route_swipe(&r, 1));
     }
     return r;
@@ -306,6 +312,43 @@ static void push_modal_over_a_live_modal_is_rejected(void)
     TEST_ASSERT_EQUAL_INT(FF_APP_FACE_COMPOSE, r.modal);
 }
 
+static void push_modal_on_a_base_off_the_axis_is_a_no_op(void)
+{
+    /* The counterpart to swipe_on_a_base_off_the_axis_is_a_no_op, and
+     * the sharper of the two: a forgotten ff_route_init must not be
+     * MASKED by a modal that behaves perfectly until it is popped
+     * (PR #36 review, D1). Both modal faces, since the rule is about
+     * the base, not about which modal is being raised. */
+    ff_app_face_t const modals[] = {FF_APP_FACE_COMPOSE, FF_APP_FACE_SETTINGS};
+    for (size_t i = 0; i < sizeof(modals) / sizeof(modals[0]); i++) {
+        ff_route_t r;
+        memset(&r, 0, sizeof(r)); /* the deliberately-invalid zero value */
+        TEST_ASSERT_FALSE(ff_route_push_modal(&r, modals[i]));
+        TEST_ASSERT_EQUAL_INT(FF_APP_FACE_NONE, r.modal);
+        /* The point of the guard: `visible` must not report a working
+         * face for a route that was never initialised. */
+        TEST_ASSERT_EQUAL_INT(FF_APP_FACE_NONE, ff_route_visible(&r, false));
+    }
+}
+
+static void pop_modal_on_a_base_off_the_axis_still_pops(void)
+{
+    /* Pins the DELIBERATE asymmetry with push_modal above: pop drains
+     * state and moves an invalid route toward the visible NONE, so
+     * guarding it would strand a caller inside a modal with no way out.
+     * Fields are set directly because ff_route_push_modal can no longer
+     * produce this shape — which is exactly what D1's fix accomplished,
+     * and why this test has to build it by hand to keep testing it. */
+    ff_route_t r;
+    memset(&r, 0, sizeof(r));
+    r.modal = FF_APP_FACE_COMPOSE;
+
+    TEST_ASSERT_TRUE(ff_route_pop_modal(&r));
+    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_NONE, r.modal);
+    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_NONE, r.base); /* still invalid, now visibly so */
+    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_NONE, ff_route_visible(&r, false));
+}
+
 static void pop_modal_restores_the_base_face(void)
 {
     ff_route_t r = route_at(FF_APP_FACE_NOW);
@@ -365,6 +408,8 @@ int main(void)
     RUN_TEST(push_modal_accepts_only_compose_and_settings);
     RUN_TEST(push_modal_leaves_base_untouched);
     RUN_TEST(push_modal_over_a_live_modal_is_rejected);
+    RUN_TEST(push_modal_on_a_base_off_the_axis_is_a_no_op);
+    RUN_TEST(pop_modal_on_a_base_off_the_axis_still_pops);
     RUN_TEST(pop_modal_restores_the_base_face);
     RUN_TEST(pop_modal_with_nothing_up_is_a_no_op);
     RUN_TEST(modal_null_guards_are_no_ops_not_crashes);
