@@ -13,8 +13,20 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 
+/* Issue #26: the vendored stb_image_write.h (pinned upstream copy —
+ * never edited, per AGENTS.md) uses sprintf, which newer toolchains
+ * flag with -Wdeprecated-declarations; our -Werror turns that into a
+ * build failure in sanitizer builds. Suppress that ONE warning for the
+ * header's own compilation only — everything outside this push/pop,
+ * including the rest of this file, keeps the full -Wall -Wextra -Werror
+ * treatment. (`#pragma GCC diagnostic` is understood by both GCC and
+ * clang, the two compilers this repo builds under — see CLAUDE.md's
+ * local-gate-vs-CI note / issue #44.) */
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "stb_image_write.h"
+#pragma GCC diagnostic pop
 
 /* Issue #3: `ffsim --headless --screenshot DIR` used to fail if DIR
  * didn't exist yet (the S13 AC's "works after mkdir" finding, from Wave

@@ -28,8 +28,18 @@
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
 
+/* Issue #26: the vendored stb_image_write.h uses sprintf, which newer
+ * toolchains flag with -Wdeprecated-declarations — a build failure under
+ * our -Werror in sanitizer builds. Suppressed for the vendored header's
+ * own compilation only (same targeted push/pop as
+ * targets/sim/screenshot.c, the other include site); this file's own
+ * code keeps full -Wall -Wextra -Werror. stb_image.h above doesn't need
+ * it — that header contains no sprintf. */
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "stb_image_write.h"
+#pragma GCC diagnostic pop
 
 #define FF_COMPARE_PNG_DEFAULT_THRESHOLD_PCT 0.5
 
