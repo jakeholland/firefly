@@ -87,61 +87,6 @@ void ff_flare_fmt_countdown(char *out, size_t out_sz, int32_t expires_in_ms);
 bool ff_flare_fmt_go_switches_lock(char const *locked_from_name, char const *takeover_from_name);
 
 /**
- * FF_FLARE_FMT_LOCK_NAME_MAX — how many BYTES of the locked name
- * ff_flare_fmt_lock_cost will print before truncating, and
- * FF_FLARE_FMT_ELLIPSIS — the marker appended when it does.
- *
- * BYTES, not characters (PR #41 code review, minor finding): the
- * underlying `snprintf("%.*s", ...)` precision is a byte count, crew
- * names arrive as untrusted UTF-8 off the radio (Meshtastic
- * `User.long_name`), and this codebase already truncates by bytes at
- * ingest (`mc_copy_name`). ff_flare_fmt_lock_cost backs the cut off to
- * the last COMPLETE codepoint rather than emitting a severed one, so a
- * name like "ANDRÉ" simply spends 2 of its budget on that one glyph
- * instead of rendering a stray byte.
- *
- * Why truncate at all: `ff_app_flare_t`'s name fields are
- * `char[FF_APP_NAME_LEN]` (16, i.e. up to 15 printable characters), and
- * the puck is a CIRCLE, so a chip that merely fits the 440px bounding
- * box can still have its ends hanging off the visible display (the exact
- * class of bug ff_layout.h exists because of: PR #25 shipped a back
- * button 42px outside the round area).
- *
- * Why the ellipsis is not optional (PR #41 UX review, BLOCKING 2): the
- * previous two-name form truncated with a bare `%.*s`, so ALEXANDRIA and
- * ALEXANDRINA both rendered `ALEXANDRI` — the disclosure chip printed a
- * trade of a person for themselves, which reads as "this costs nothing,
- * press GO", the precise outcome the chip exists to prevent. The
- * single-name wording removes the false-equality failure entirely (there
- * is no second name to collide with), and the ellipsis additionally
- * guarantees the weaker property the reviewer asked for as a floor: a
- * cut name always LOOKS cut, so a truncated name is never mistaken for a
- * whole one.
- *
- * The cap is chosen by MEASUREMENT, not arithmetic. Instrumenting
- * test_scr_flare.c's
- * S10_ACn_lock_disclosure_chip_stays_inside_the_round_glass to print the
- * chip's real lv_area_t and its worst corner's distance from the puck
- * centre, with a 15-character locked name (the longest FF_APP_NAME_LEN
- * permits) at FF_THEME_FONT_HEADLINE:
- *
- *   cap 10 -> chip 386x34 px, worst corner 194.9, slack to r=220  +25.1
- *   cap 11 -> chip 407x34 px, worst corner 205.8, slack to r=220  +14.2  <- shipped
- *   cap 12 -> passes, but within ~3px of the edge
- *   cap 13 -> chip 453x34 px, worst corner 228.6, slack to r=220   -8.6  (fails)
- *   cap 15 -> chip 485x34 px, worst corner 244.5, slack to r=220  -24.5  (fails)
- *
- * So 13 is the failure threshold and 11 keeps genuine margin rather than
- * sitting on the boundary — the same standard PR #41's code reviewer
- * applied to the previous cap. The single-name wording is what bought
- * the increase from 9: dropping the repeated sender name freed the width
- * that now covers ALEXANDRIA and ALEXANDRINA whole, which is exactly the
- * pair that collided under the two-name form.
- */
-#define FF_FLARE_FMT_LOCK_NAME_MAX 11
-#define FF_FLARE_FMT_ELLIPSIS "..."
-
-/**
  * ff_flare_fmt_lock_cost — the takeover screen's lock-disclosure chip
  * text: `"GO DROPS LOCK - <locked>"` (e.g. `"GO DROPS LOCK - DANA"`).
  *
@@ -155,10 +100,10 @@ bool ff_flare_fmt_go_switches_lock(char const *locked_from_name, char const *tak
  * that switches it). Ruling 2 is why an established lock is a decision
  * the user owns; finding #3 is why pressing GO has to say so on screen.
  * PR #41's code review caught this file attributing the second to the
- * first — corrected here, because the whole point of writing the
- * requirement down is that a future re-wording can be checked against
- * it, and a citation pointing at a paragraph that doesn't contain it is
- * worse than no citation.
+ * first — corrected, because the whole point of writing the requirement
+ * down is that a future re-wording can be checked against it, and a
+ * citation pointing at a paragraph that doesn't contain it is worse than
+ * no citation.
  *
  * ## Why one name and a verb (PR #41 UX review, BLOCKING 1)
  * The form this replaces was `"GO: DANA > KEV"`. Shortening the original
@@ -184,6 +129,25 @@ bool ff_flare_fmt_go_switches_lock(char const *locked_from_name, char const *tak
  * KEV twice on one screen spends the chip's whole width budget on the
  * one fact that is already the largest thing in view.
  *
+ * ## This function does NOT truncate, and that is deliberate
+ * An earlier version capped the name at 11 bytes and appended an
+ * ellipsis, on the theory that this kept the chip on the round glass. It
+ * did not: Montserrat is proportional, so a byte count bounds pixels
+ * only if every glyph is the same width, and PR #41's code review
+ * measured eleven `W`s rendering 80px wider than eleven typical
+ * characters — 25px past the bezel. A byte cap cannot express a pixel
+ * constraint, so it has been removed rather than tuned; tuning it would
+ * only move the width at which it is wrong.
+ *
+ * Truncation now happens where the pixels are known — scr_flare.c's
+ * flare_make_chip clamps the label to
+ * ff_layout_centered_band_max_width() and lets LVGL's
+ * LV_LABEL_LONG_MODE_DOTS place the ellipsis. That also means a name of
+ * NARROW glyphs is no longer cut short for no reason: the old cap
+ * truncated "IIIIIIIIIIIIIII" identically to "WWWWWWWWWWWWWWW" though
+ * one fits with room to spare. One mechanism, in the right units, in one
+ * place.
+ *
  * `locked_from_name` being NULL/empty renders as `"?"` — the same
  * explicit unknown marker ff_scr_flare_build_lock_chip uses, never a
  * fabricated identity (CLAUDE.md's honesty rule). Unreachable in
@@ -192,10 +156,11 @@ bool ff_flare_fmt_go_switches_lock(char const *locked_from_name, char const *tak
  * (verified by PR #41's UX reviewer, who rendered it). Kept as a guard,
  * not claimed as covered.
  *
- * Names longer than FF_FLARE_FMT_LOCK_NAME_MAX bytes are truncated to
- * the last complete codepoint at or before that budget and suffixed with
- * FF_FLARE_FMT_ELLIPSIS. Truncates rather than overflowing if `out_sz` is
- * too small; a NULL `out` or zero `out_sz` is a no-op.
+ * Truncates rather than overflowing if `out_sz` is too small — but
+ * `out_sz` is a BUFFER bound, not a display one; give it room for the
+ * full FF_APP_NAME_LEN name (48 bytes is comfortable) so the renderer,
+ * not this function, decides what fits. A NULL `out` or zero `out_sz` is
+ * a no-op.
  */
 void ff_flare_fmt_lock_cost(char *out, size_t out_sz, char const *locked_from_name);
 

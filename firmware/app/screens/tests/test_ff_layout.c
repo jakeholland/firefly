@@ -188,6 +188,103 @@ static void safe_margin_zero_radius_needs_full_width(void)
     TEST_ASSERT_FLOAT_WITHIN(0.001f, 220.0f, margin);
 }
 
+
+/* ---------------------------------------------------------------------
+ * ff_layout_centered_band_max_width (PR #41 code review — the disclosure
+ * chip's byte cap did not bound its rendered width).
+ * ------------------------------------------------------------------- */
+
+static void centered_band_at_center_is_the_full_diameter(void)
+{
+    /* A zero-height band on the circle's own center-y spans the widest
+     * chord there is. */
+    TEST_ASSERT_FLOAT_WITHIN(0.01f, 440.0f, ff_layout_centered_band_max_width(0.0f, 0.0f, 220.0f, 0.0f));
+}
+
+static void centered_band_is_bound_by_its_far_edge_not_its_center(void)
+{
+    /* THE point of this function. The flare takeover's disclosure chip:
+     * cy = 10, h = 34, so the band spans [-7, 27] and the binding edge is
+     * the bottom one at 27 — not cy. Sizing to the chord at cy would
+     * over-grant, which is the whole class of "sized to the wrong number,
+     * looked fine in the golden" bug this exists to prevent. */
+    float at_cy = 2.0f * ff_layout_chord_half_width(10.0f, 220.0f);
+    float actual = ff_layout_centered_band_max_width(10.0f, 34.0f, 220.0f, 0.0f);
+    float at_far_edge = 2.0f * ff_layout_chord_half_width(27.0f, 220.0f);
+
+    TEST_ASSERT_FLOAT_WITHIN(0.01f, at_far_edge, actual);
+    TEST_ASSERT_TRUE_MESSAGE(actual < at_cy, "the far edge must bind, never the band's center");
+}
+
+static void centered_band_is_symmetric_about_the_equator(void)
+{
+    /* A band above center and its mirror below get the same width. */
+    TEST_ASSERT_FLOAT_WITHIN(0.01f, ff_layout_centered_band_max_width(-60.0f, 40.0f, 220.0f, 4.0f),
+                              ff_layout_centered_band_max_width(60.0f, 40.0f, 220.0f, 4.0f));
+}
+
+static void centered_band_taller_is_never_wider(void)
+{
+    /* Monotonic in height: growing an element can only ever cost it
+     * width, never gain it. Swept rather than spot-checked. */
+    float prev = ff_layout_centered_band_max_width(30.0f, 0.0f, 220.0f, 0.0f);
+    for (float h = 2.0f; h <= 200.0f; h += 2.0f) {
+        float w = ff_layout_centered_band_max_width(30.0f, h, 220.0f, 0.0f);
+        TEST_ASSERT_TRUE_MESSAGE(w <= prev + 0.01f, "a taller band must never be granted more width");
+        prev = w;
+    }
+}
+
+static void centered_band_safety_px_comes_off_both_sides(void)
+{
+    float bare = ff_layout_centered_band_max_width(0.0f, 20.0f, 220.0f, 0.0f);
+    float with_safety = ff_layout_centered_band_max_width(0.0f, 20.0f, 220.0f, 8.0f);
+    TEST_ASSERT_FLOAT_WITHIN(0.01f, bare - 16.0f, with_safety);
+}
+
+static void centered_band_off_glass_or_degenerate_is_zero(void)
+{
+    /* A band whose far edge misses the circle entirely, a safety margin
+     * wider than the chord, and a negative radius all yield 0 rather
+     * than a negative width. */
+    TEST_ASSERT_FLOAT_WITHIN(0.01f, 0.0f, ff_layout_centered_band_max_width(300.0f, 10.0f, 220.0f, 0.0f));
+    TEST_ASSERT_FLOAT_WITHIN(0.01f, 0.0f, ff_layout_centered_band_max_width(0.0f, 10.0f, 220.0f, 500.0f));
+    TEST_ASSERT_FLOAT_WITHIN(0.01f, 0.0f, ff_layout_centered_band_max_width(0.0f, 10.0f, -1.0f, 0.0f));
+}
+
+static void centered_band_round_trips_through_rect_in_circle(void)
+{
+    /* The real guarantee, checked end to end against the other
+     * primitive rather than against arithmetic: a rect built at the
+     * granted width fits the circle, and a meaningfully wider one does
+     * not — so the number is the MAXIMUM, not merely some safe value.
+     *
+     * Checked with 1px of safety rather than at the exact mathematical
+     * boundary. The bound is `sqrtf(r*r - dy*dy)`, and squaring that
+     * result back can land an ulp outside `r*r`, so a zero-safety rect
+     * sits exactly on the knife edge of ff_layout_rect_in_circle's own
+     * `>` comparison and can fail on rounding alone. That is not a
+     * defect to assert around — it is why ff_layout_safe_margin_x takes
+     * a `safety_px` and why the flare chip passes a real one. Asserting
+     * ulp-exactness here would be pinning float noise, not behaviour. */
+    for (float cy = -180.0f; cy <= 180.0f; cy += 10.0f) {
+        float h = 34.0f;
+        float w = ff_layout_centered_band_max_width(cy, h, 220.0f, 1.0f);
+        if (w <= 4.0f) {
+            continue; /* degenerate near the poles — nothing meaningful to fit */
+        }
+        ff_layout_rect_t fits = {-w / 2.0f, cy - h / 2.0f, w / 2.0f, cy + h / 2.0f};
+        TEST_ASSERT_TRUE_MESSAGE(ff_layout_rect_in_circle(fits, 0.0f, 0.0f, 220.0f),
+                                  "a rect at the granted width must fit the circle");
+
+        /* 4px wider than granted, against the same 1px of safety, is
+         * unambiguously past the boundary. */
+        ff_layout_rect_t too_wide = {-w / 2.0f - 2.0f, cy - h / 2.0f, w / 2.0f + 2.0f, cy + h / 2.0f};
+        TEST_ASSERT_FALSE_MESSAGE(ff_layout_rect_in_circle(too_wide, 0.0f, 0.0f, 220.0f),
+                                   "the granted width must be the maximum, not merely a safe value");
+    }
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -214,6 +311,14 @@ int main(void)
     RUN_TEST(safe_margin_matches_compose_back_button_worked_example);
     RUN_TEST(safe_margin_is_never_negative);
     RUN_TEST(safe_margin_zero_radius_needs_full_width);
+
+    RUN_TEST(centered_band_at_center_is_the_full_diameter);
+    RUN_TEST(centered_band_is_bound_by_its_far_edge_not_its_center);
+    RUN_TEST(centered_band_is_symmetric_about_the_equator);
+    RUN_TEST(centered_band_taller_is_never_wider);
+    RUN_TEST(centered_band_safety_px_comes_off_both_sides);
+    RUN_TEST(centered_band_off_glass_or_degenerate_is_zero);
+    RUN_TEST(centered_band_round_trips_through_rect_in_circle);
 
     return UNITY_END();
 }

@@ -53,3 +53,21 @@ float ff_layout_safe_margin_x(float top_y, float h, float center, float radius, 
     }
     return margin;
 }
+
+float ff_layout_centered_band_max_width(float cy, float h, float radius, float safety_px)
+{
+    /* Whichever edge of the band is farther from center-y is the one
+     * that binds — see this function's doc comment for why `cy` alone
+     * is the wrong input. `h` is treated as a magnitude; a negative
+     * height is the same band as its absolute value. */
+    float half_h = fabsf(h) / 2.0f;
+    float top = cy - half_h;
+    float bottom = cy + half_h;
+    float far_dy = (fabsf(top) > fabsf(bottom)) ? top : bottom;
+
+    float half_w = ff_layout_chord_half_width(far_dy, radius) - safety_px;
+    if (half_w < 0.0f) {
+        return 0.0f;
+    }
+    return half_w * 2.0f;
+}

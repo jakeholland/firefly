@@ -75,21 +75,6 @@ bool ff_flare_fmt_go_switches_lock(char const *locked_from_name, char const *tak
     return strcmp(locked_from_name, takeover_from_name) != 0;
 }
 
-/* Largest index <= `cut` that is NOT a UTF-8 continuation byte
- * (0b10xxxxxx) — i.e. the end of the last COMPLETE codepoint at or
- * before a byte budget. Crew names are untrusted UTF-8 off the radio
- * (see FF_FLARE_FMT_LOCK_NAME_MAX's doc comment), so a fixed byte cut
- * can land mid-codepoint; backing off here means the chip never renders
- * a severed one. Pure ASCII (every fixture and every realistic crew
- * short name) never enters the loop at all. */
-static size_t flare_fmt_utf8_backoff(char const *s, size_t cut)
-{
-    while (cut > 0 && ((unsigned char)s[cut] & 0xC0u) == 0x80u) {
-        cut--;
-    }
-    return cut;
-}
-
 void ff_flare_fmt_lock_cost(char *out, size_t out_sz, char const *locked_from_name)
 {
     if (out == NULL || out_sz == 0) {
@@ -98,21 +83,10 @@ void ff_flare_fmt_lock_cost(char *out, size_t out_sz, char const *locked_from_na
 
     /* No honest name to show. Unreachable through the caller's gate —
      * see this function's doc comment; a guard, not a covered path. */
-    if (locked_from_name == NULL || locked_from_name[0] == '\0') {
-        snprintf(out, out_sz, "GO DROPS LOCK - ?");
-        return;
-    }
+    char const *name = (locked_from_name != NULL && locked_from_name[0] != '\0') ? locked_from_name : "?";
 
-    size_t len = strlen(locked_from_name);
-    if (len <= FF_FLARE_FMT_LOCK_NAME_MAX) {
-        snprintf(out, out_sz, "GO DROPS LOCK - %s", locked_from_name);
-        return;
-    }
-
-    /* Over budget: cut to the last complete codepoint and SAY SO. The
-     * ellipsis is load-bearing, not decoration — a cut name that doesn't
-     * look cut is a different person's name rendered as this one's
-     * (PR #41 UX review, BLOCKING 2). */
-    size_t cut = flare_fmt_utf8_backoff(locked_from_name, FF_FLARE_FMT_LOCK_NAME_MAX);
-    snprintf(out, out_sz, "GO DROPS LOCK - %.*s%s", (int)cut, locked_from_name, FF_FLARE_FMT_ELLIPSIS);
+    /* Deliberately no length cap — see the doc comment. The name is
+     * emitted whole and the renderer clamps it in pixels, because pixels
+     * are the units the round glass is measured in and bytes are not. */
+    snprintf(out, out_sz, "GO DROPS LOCK - %s", name);
 }

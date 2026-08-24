@@ -6,6 +6,7 @@
 #include <math.h>
 #include <stdio.h>
 
+#include "ff_layout.h"
 #include "ff_theme.h"
 #include "flare_fmt.h"
 
@@ -99,6 +100,20 @@ static lv_point_precise_t s_flare_mark_ray_pts[FLARE_MARK_N_RAYS][2];
 #define FLARE_SENDER_CANCEL_W     140
 #define FLARE_SENDER_CANCEL_H     48
 
+/* Chip padding, named because the round-glass clamp in flare_make_chip
+ * has to subtract it from the available width to get the label's budget.
+ * A literal here and a different literal there is exactly how a bound
+ * drifts away from the thing it is bounding. */
+#define FLARE_CHIP_PAD_X 14
+#define FLARE_CHIP_PAD_Y 6
+
+/* Slack left between a chip's corners and the bezel. Non-zero on
+ * purpose: the chord bound is a float square root, so a zero-safety
+ * element sits exactly on the knife edge of the in-circle test (see
+ * test_ff_layout.c's centered_band_round_trips_through_rect_in_circle),
+ * and on real glass there is a bezel, not a mathematical boundary. */
+#define FLARE_CHIP_GLASS_SAFETY_PX 8.0f
+
 #define FLARE_LOCK_CHIP_DY (-165.0f) /* clear of RADAR_LAYOUT_STATUS_BAR_DY (-195) and every mode's top content */
 
 /* ---------------------------------------------------------------------
@@ -113,6 +128,39 @@ static lv_point_precise_t s_flare_mark_ray_pts[FLARE_MARK_N_RAYS][2];
  * (issue #27): the lock-disclosure chip is the one chip on this screen
  * carrying a decision's cost rather than a status readout, and it earns a
  * bigger step of the type scale than the countdown/lock chips do. */
+/* `font` is a parameter rather than a hardcoded FF_THEME_FONT_CHIP
+ * (issue #27): the lock-disclosure chip is the one chip on this screen
+ * carrying a decision's cost rather than a status readout, and it earns a
+ * bigger step of the type scale than the countdown/lock chips do.
+ *
+ * ROUND-GLASS SIZING (PR #41 code review, blocking). Every chip built
+ * here is clamped to the width actually available on the circular
+ * display at its own vertical offset, and truncated in PIXELS if its
+ * text doesn't fit.
+ *
+ * The previous attempt bounded the disclosure chip's content by a BYTE
+ * count (an 11-character name cap) and called that a round-glass guard.
+ * It isn't one: Montserrat is proportional, so eleven bytes is anywhere
+ * from ~310px of `I`s to ~487px of `W`s, and the reviewer's sweep put
+ * eleven `W`s 25px past the bezel — the PR #25 class of bug, reachable
+ * from untrusted input, since crew names arrive as Meshtastic
+ * `User.long_name` off the radio. Worse, the test asserted the bug could
+ * not happen: its "maximum-length crew names" were a LENGTH worst case,
+ * not a WIDTH one, so the one guard that existed passed for the wrong
+ * reason.
+ *
+ * So the bound is now taken in the units the constraint is expressed in.
+ * ff_layout_centered_band_max_width answers "how wide may an element of
+ * this height, centered at this dy, be inside the glass" (the primitive
+ * ff_layout.h says exists so a layout is "sized to fit the glass by
+ * construction, rather than built rectangle-first and only checked after
+ * the fact"), and LVGL's own LV_LABEL_LONG_MODE_DOTS places the ellipsis
+ * at the correct pixel. No character count can be wrong, because no
+ * character count is consulted.
+ *
+ * The chip is measured before it is aligned: LV_SIZE_CONTENT needs a
+ * layout pass to have a height, and the height is what decides which
+ * edge of the band binds. */
 static lv_obj_t *flare_make_chip(lv_obj_t *parent, char const *text, uint32_t bg_hex, uint32_t fg_hex,
                                   lv_font_t const *font, int32_t dy)
 {
@@ -121,21 +169,42 @@ static lv_obj_t *flare_make_chip(lv_obj_t *parent, char const *text, uint32_t bg
     lv_obj_set_style_bg_color(chip, lv_color_hex(bg_hex), 0);
     lv_obj_set_style_bg_opa(chip, LV_OPA_COVER, 0);
     lv_obj_set_style_radius(chip, LV_RADIUS_CIRCLE, 0);
-    lv_obj_set_style_pad_left(chip, 14, 0);
-    lv_obj_set_style_pad_right(chip, 14, 0);
-    lv_obj_set_style_pad_top(chip, 6, 0);
-    lv_obj_set_style_pad_bottom(chip, 6, 0);
+    lv_obj_set_style_pad_left(chip, FLARE_CHIP_PAD_X, 0);
+    lv_obj_set_style_pad_right(chip, FLARE_CHIP_PAD_X, 0);
+    lv_obj_set_style_pad_top(chip, FLARE_CHIP_PAD_Y, 0);
+    lv_obj_set_style_pad_bottom(chip, FLARE_CHIP_PAD_Y, 0);
     lv_obj_set_width(chip, LV_SIZE_CONTENT);
     lv_obj_set_height(chip, LV_SIZE_CONTENT);
     lv_obj_clear_flag(chip, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_clear_flag(chip, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_align(chip, LV_ALIGN_CENTER, 0, dy);
 
     lv_obj_t *label = lv_label_create(chip);
     lv_label_set_text(label, text);
     lv_obj_set_style_text_font(label, font, 0);
     lv_obj_set_style_text_color(label, lv_color_hex(fg_hex), 0);
     lv_obj_center(label);
+
+    /* Force the content pass so the chip has a real height, then clamp
+     * the LABEL (not the chip: the chip is content-sized, so clamping the
+     * label is what makes the pill shrink with it, padding intact). */
+    lv_obj_update_layout(chip);
+    float chip_h = (float)lv_obj_get_height(chip);
+    float max_chip_w = ff_layout_centered_band_max_width((float)dy, chip_h, (float)FF_THEME_PUCK_RADIUS_PX,
+                                                          FLARE_CHIP_GLASS_SAFETY_PX);
+    int32_t max_label_w = (int32_t)max_chip_w - (FLARE_CHIP_PAD_X * 2);
+    if (max_label_w > 0 && lv_obj_get_width(label) > max_label_w) {
+        /* Both dimensions, in this order. LVGL's DOTS mode triggers on
+         * VERTICAL overflow (lv_label.c: `size.y > lv_area_get_height(
+         * &txt_coords)`), so a width-only clamp makes the text WRAP to a
+         * second line and the chip grow taller instead of gaining an
+         * ellipsis — which would quietly break the single-line height
+         * this chip's slot is sized around. Pinning the height to one
+         * line is what turns the overflow into dots. */
+        lv_label_set_long_mode(label, LV_LABEL_LONG_MODE_DOTS);
+        lv_obj_set_size(label, max_label_w, lv_font_get_line_height(font));
+    }
+
+    lv_obj_align(chip, LV_ALIGN_CENTER, 0, dy);
 
     return chip;
 }

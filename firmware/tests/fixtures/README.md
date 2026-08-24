@@ -246,7 +246,7 @@ and a worst-case crew-ring layout).
 | `radar_nosel.json` | `nosel` | `""` | `""` | no paired crew member at all — empty-crew state, `mesh_ok: false` for variety |
 | `radar_never.json` | `lost` (folded — see below) | `""` | `""` | selected member "JAMIE" is paired but has never sent a fix; `age_str[0] == '\0'` is what `scr_radar.c` keys off to show "NO FIX YET" instead of a "LAST SEEN" chip — NOT distinguishable from a genuinely-old fix by `mode` alone (both are `RADAR_LOST`; see `radar_lost.json` above for the other side of that same `mode`) |
 
-Four S10 slice b fixtures exist alongside the radar set, one per
+Five S10 slice b fixtures exist alongside the radar set, one per
 `ff_scr_flare_*` builder plus one for the takeover/lock interaction PR #20
 UX review flagged as unrepresented: `flare_takeover.json`
 (`flare.takeover_active` — the full-screen receive takeover, which per
@@ -255,7 +255,18 @@ fixture, exercised here deliberately by pairing it with a live `radar`
 section that never actually renders), `flare_takeover_locked.json` (same
 takeover, but with `flare.locked` ALSO set to a *different* node than
 `takeover_from_name` — exercises the GO-discloses-the-lock-cost chip;
-see `ff_scr_flare_build_takeover`'s doc comment), `flaring_self.json`
+see `ff_scr_flare_build_takeover`'s doc comment),
+`flare_takeover_wide_name.json` (added in PR #41's second code-review
+round: the same takeover with a locked name of fifteen `W`s — the widest
+glyph in the compiled font at the longest `FF_APP_NAME_LEN` permits.
+Crew names are Meshtastic `User.long_name`, i.e. arbitrary UTF-8 chosen
+by someone else and arriving over the radio, so this is a reachable
+input, not a hypothetical. The chip's earlier guard capped the name by
+BYTE count, which bounds nothing in a proportional font — this fixture is
+the visible proof that the replacement bound (a pixel clamp from
+`ff_layout_centered_band_max_width`, with LVGL placing the ellipsis) keeps
+the pill on the round glass and shows the name as cut. Deliberately ugly:
+it is the adversarial case, not a design reference), `flaring_self.json`
 (`flare.sending` — the pulsing sender overlay on top of an otherwise-NOSEL
 radar tile, whose own headline is dimmed while sending), and
 `radar_flare_locked.json` (`flare.locked` on an otherwise-ordinary LIVE

@@ -303,22 +303,42 @@ static void S10_ACn_go_click_with_null_rt_is_safe_noop(void)
 /* ---------------------------------------------------------------------
  * Issue #27 — the lock-disclosure chip stays on the ROUND GLASS.
  *
- * The chip grew from 14px to 20px type as part of shortening it from a
- * sentence to a glance, and the puck is a CIRCLE: a chip that merely fits
- * the 440px bounding box can still hang off the visible display, which is
- * exactly how PR #25 shipped a back button 42px outside the round area.
- * The existing sweep (targets/sim/tests/test_face_hit_targets.c) can't
- * catch it — that one only examines CLICKABLE objects, and this chip is
+ * The chip is 20px type on a CIRCLE: a chip that merely fits the 440px
+ * bounding box can still hang off the visible display, which is exactly
+ * how PR #25 shipped a back button 42px outside the round area. The
+ * existing sweep (targets/sim/tests/test_face_hit_targets.c) can't catch
+ * it — that one only examines CLICKABLE objects, and this chip is
  * deliberately an inert indicator.
  *
- * Uses the worst case the formatter can produce: a locked name at the
- * full FF_APP_NAME_LEN budget (15 characters — PR #41 code review caught
- * the previous strings being 14, so the comment and the inputs agree
- * now), which truncates and therefore also carries the ellipsis, making
- * this the widest string ff_flare_fmt_lock_cost can emit. If
- * FF_FLARE_FMT_LOCK_NAME_MAX is ever raised past what the glass holds at
- * this type size, this fails instead of shipping a name past the bezel.
+ * THIS TEST WAS PREVIOUSLY WRONG IN A WAY WORTH RECORDING (PR #41 code
+ * review, blocking). It used "BARTHOLOMEWWWWW"/"MAXIMILIANOOOOO" and
+ * claimed to cover "two maximum-length crew names" — true of LENGTH and
+ * false of WIDTH. Montserrat is proportional, so the guard it was
+ * protecting (an 11-BYTE name cap) bounded the wrong quantity entirely:
+ * eleven `W`s render ~80px wider than eleven typical characters and put
+ * the chip 25px past the bezel. The test passed, on a name that happened
+ * to be narrow. A guard whose test passes for the wrong reason is worse
+ * than no guard, because it is why the bug got signed off.
+ *
+ * So the sweep below is over WIDTH worst cases — the widest glyphs in
+ * the font, at the longest length FF_APP_NAME_LEN permits — and includes
+ * the reviewer's own off-glass repros. Crew names are Meshtastic
+ * `User.long_name`: arbitrary UTF-8 chosen by someone else, arriving
+ * over the radio, so these are reachable inputs and not hypotheticals.
  * ------------------------------------------------------------------- */
+
+/* 15 characters each — the full FF_APP_NAME_LEN budget. The first four
+ * are the reviewer's measured off-glass cases scaled to full length; the
+ * last two are a realistic name and a narrow one, present so the sweep
+ * also proves the clamp doesn't mangle names that fit. */
+static char const *const k_lock_name_width_cases[] = {
+    "WWWWWWWWWWWWWWW", /* widest glyph in the font, repeated */
+    "MMMMMMMMMMMMMMM", /* reviewer's -3.64px case, at full length */
+    "MWMWMWMWMWMWMWM", /* reviewer's -11.58px case, at full length */
+    "WWW MMM WWW MMM", /* reviewer's +5.30px case, at full length */
+    "BARTHOLOMEWWWWW", /* what this test used to check, and only this */
+    "IIIIIIIIIIIIIII", /* narrowest — must survive uncut, see below */
+};
 
 static lv_obj_t *find_label_with_prefix(lv_obj_t *root, char const *prefix)
 {
@@ -341,53 +361,94 @@ static lv_obj_t *find_label_with_prefix(lv_obj_t *root, char const *prefix)
 
 static void S10_ACn_lock_disclosure_chip_stays_inside_the_round_glass(void)
 {
-    ff_app_flare_t disp;
-    memset(&disp, 0, sizeof(disp));
-    disp.takeover_active = true;
-    /* snprintf, not strncpy: these two names are exactly 15 characters,
-     * i.e. exactly the strncpy bound, and GCC's -Wstringop-truncation
-     * correctly points out that no NUL gets copied in that case. The
-     * memset above makes it harmless, but the compiler can't see that,
-     * and this file builds under -Werror. snprintf always terminates, so
-     * the intent ("fill the field to its full FF_APP_NAME_LEN budget")
-     * is stated without leaning on the memset. */
-    snprintf(disp.takeover_from_name, sizeof(disp.takeover_from_name), "%s", "MAXIMILIANOOOOO");
-    disp.locked = true;
-    snprintf(disp.locked_from_name, sizeof(disp.locked_from_name), "%s", "BARTHOLOMEWWWWW");
-
-    ff_scr_flare_build_takeover(&disp, NULL);
-
-    /* Force layout without rendering a frame — this file has no draw
-     * buffers (see setUp), and lv_obj_update_layout only runs the
-     * size/position pass, never the draw pass. */
-    lv_obj_update_layout(lv_screen_active());
-
-    lv_obj_t *label = find_label_with_prefix(lv_screen_active(), "GO DROPS LOCK");
-    TEST_ASSERT_NOT_NULL_MESSAGE(label, "the lock-disclosure chip must be built when GO would switch the lock");
-
-    /* The chip is the label's parent — assert on the PILL, not the text:
-     * the pill's padding is what actually reaches furthest toward the
-     * bezel. */
-    lv_obj_t *chip = lv_obj_get_parent(label);
-    TEST_ASSERT_NOT_NULL(chip);
-
-    lv_area_t area;
-    lv_obj_get_coords(chip, &area);
-
-    /* lv_area_t's x2/y2 are INCLUSIVE last-pixel coordinates; ff_layout's
-     * are exclusive far edges — hence the +1 (same conversion
-     * test_face_hit_targets.c documents). Circle center is the puck's
-     * center within the window, radius the puck's own radius. */
     float margin = (float)((FF_THEME_WINDOW_PX - FF_THEME_PUCK_PX) / 2);
     float cx = margin + (float)FF_THEME_PUCK_RADIUS_PX;
     float cy = margin + (float)FF_THEME_PUCK_RADIUS_PX;
 
-    ff_layout_rect_t r = {(float)area.x1, (float)area.y1, (float)area.x2 + 1.0f, (float)area.y2 + 1.0f};
-    TEST_ASSERT_TRUE_MESSAGE(ff_layout_rect_in_circle(r, cx, cy, (float)FF_THEME_PUCK_RADIUS_PX),
-                              "the lock-disclosure chip must lie entirely within the round glass, "
-                              "even with two maximum-length crew names");
+    for (size_t i = 0; i < sizeof(k_lock_name_width_cases) / sizeof(k_lock_name_width_cases[0]); i++) {
+        char const *locked = k_lock_name_width_cases[i];
+
+        /* Fresh screen per case — this file's setUp/tearDown bracket the
+         * whole test, so each iteration clears what the last one built. */
+        lv_obj_clean(lv_screen_active());
+
+        ff_app_flare_t disp;
+        memset(&disp, 0, sizeof(disp));
+        disp.takeover_active = true;
+        /* snprintf, not strncpy: these names are exactly 15 characters,
+         * i.e. exactly the strncpy bound, and GCC's
+         * -Wstringop-truncation correctly points out no NUL gets copied
+         * in that case. snprintf always terminates. */
+        snprintf(disp.takeover_from_name, sizeof(disp.takeover_from_name), "%s", "MAXIMILIANOOOOO");
+        disp.locked = true;
+        snprintf(disp.locked_from_name, sizeof(disp.locked_from_name), "%s", locked);
+
+        ff_scr_flare_build_takeover(&disp, NULL);
+
+        /* Force layout without rendering a frame — this file has no draw
+         * buffers (see setUp), and lv_obj_update_layout only runs the
+         * size/position pass, never the draw pass. */
+        lv_obj_update_layout(lv_screen_active());
+
+        lv_obj_t *label = find_label_with_prefix(lv_screen_active(), "GO DROPS LOCK");
+        TEST_ASSERT_NOT_NULL_MESSAGE(label, "the lock-disclosure chip must be built when GO would switch the lock");
+
+        /* Assert on the PILL, not the text: the pill's padding is what
+         * actually reaches furthest toward the bezel. */
+        lv_obj_t *chip = lv_obj_get_parent(label);
+        TEST_ASSERT_NOT_NULL(chip);
+
+        lv_area_t area;
+        lv_obj_get_coords(chip, &area);
+
+        /* lv_area_t's x2/y2 are INCLUSIVE last-pixel coordinates;
+         * ff_layout's are exclusive far edges — hence the +1 (same
+         * conversion test_face_hit_targets.c documents). */
+        ff_layout_rect_t r = {(float)area.x1, (float)area.y1, (float)area.x2 + 1.0f, (float)area.y2 + 1.0f};
+        TEST_ASSERT_TRUE_MESSAGE(ff_layout_rect_in_circle(r, cx, cy, (float)FF_THEME_PUCK_RADIUS_PX),
+                                  "the lock-disclosure chip must lie entirely within the round glass, "
+                                  "for EVERY name width — not just the narrow one this test used to check");
+    }
 }
 
+static void S10_ACn_lock_disclosure_only_truncates_names_that_dont_fit(void)
+{
+    /* The other half of the guarantee. Clamping in pixels is only an
+     * improvement over the old byte cap if it ALSO stops cutting names
+     * that fit: the byte cap truncated "IIIIIIIIIIIIIII" and
+     * "WWWWWWWWWWWWWWW" identically, though one has room to spare.
+     *
+     * A narrow full-length name must render whole (no ellipsis), and a
+     * name of the widest glyphs must be visibly cut. */
+    ff_app_flare_t disp;
+    memset(&disp, 0, sizeof(disp));
+    disp.takeover_active = true;
+    snprintf(disp.takeover_from_name, sizeof(disp.takeover_from_name), "%s", "KEV");
+    disp.locked = true;
+    snprintf(disp.locked_from_name, sizeof(disp.locked_from_name), "%s", "IIIIIIIIIIIIIII");
+
+    ff_scr_flare_build_takeover(&disp, NULL);
+    lv_obj_update_layout(lv_screen_active());
+
+    lv_obj_t *label = find_label_with_prefix(lv_screen_active(), "GO DROPS LOCK");
+    TEST_ASSERT_NOT_NULL(label);
+    TEST_ASSERT_EQUAL_STRING_MESSAGE("GO DROPS LOCK - IIIIIIIIIIIIIII", lv_label_get_text(label),
+                                      "a full-length name of narrow glyphs fits and must not be cut");
+
+    /* Now the wide one: same length, must be truncated by the renderer. */
+    lv_obj_clean(lv_screen_active());
+    snprintf(disp.locked_from_name, sizeof(disp.locked_from_name), "%s", "WWWWWWWWWWWWWWW");
+    ff_scr_flare_build_takeover(&disp, NULL);
+    lv_obj_update_layout(lv_screen_active());
+
+    label = find_label_with_prefix(lv_screen_active(), "GO DROPS LOCK");
+    TEST_ASSERT_NOT_NULL(label);
+    /* LVGL rewrites the label's own text when LV_LABEL_LONG_MODE_DOTS
+     * shortens it, so the ellipsis is observable here rather than only
+     * in pixels. */
+    TEST_ASSERT_NOT_NULL_MESSAGE(strstr(lv_label_get_text(label), "..."),
+                                  "a name too wide for the glass must be visibly cut, not silently clipped");
+}
 
 /* ---------------------------------------------------------------------
  * The disclosure chip names only the lock it would cost you; the
@@ -437,6 +498,7 @@ int main(void)
     RUN_TEST(S10_ACn_flare_button_click_begins_send);
     RUN_TEST(S10_ACn_go_click_with_null_rt_is_safe_noop);
     RUN_TEST(S10_ACn_lock_disclosure_chip_stays_inside_the_round_glass);
+    RUN_TEST(S10_ACn_lock_disclosure_only_truncates_names_that_dont_fit);
     RUN_TEST(S10_ACn_lock_disclosure_is_always_accompanied_by_the_headline);
 
     return UNITY_END();
