@@ -244,21 +244,6 @@ static void ctl_loop_pointer_read_cb(lv_indev_t *indev, lv_indev_data_t *data)
     data->state = ctx->pointer_state;
 }
 
-static void ctl_loop_tap(void *user, double x, double y)
-{
-    ff_ctl_loop_ctx_t *ctx = (ff_ctl_loop_ctx_t *)user;
-    /* Safe to narrow unconditionally: ctl_server.c's tap handler already
-     * rejected non-finite values and anything outside
-     * [FF_CTL_TAP_COORD_MIN, FF_CTL_TAP_COORD_MAX] — see ctl_server.h's
-     * tap handler doc comment for the contract this relies on. */
-    ctx->pointer_point.x = (lv_coord_t)x;
-    ctx->pointer_point.y = (lv_coord_t)y;
-    ctx->pointer_state = LV_INDEV_STATE_PRESSED;
-    lv_timer_handler();
-    ctx->pointer_state = LV_INDEV_STATE_RELEASED;
-    lv_timer_handler();
-}
-
 /* Advance time between the synthetic pointer steps below, so LVGL's
  * indev read timer (33 ms period — the exact constraint
  * test_ctl_flare_sequence.c's top comment documents for `tap`) actually
@@ -268,13 +253,38 @@ static void ctl_loop_tap(void *user, double x, double y)
  * {"ok":true} while the face never changed — found the day someone
  * finally drove it end to end (the AC10 test had deliberately avoided
  * it). Proxy: the command replied ok. Property: the face changed. */
-static void ctl_loop_swipe_step_delay(ff_ctl_loop_ctx_t *ctx)
+static void ctl_loop_pointer_step_delay(ff_ctl_loop_ctx_t *ctx)
 {
     if (ctx->mock_clock) {
         ctx->mock_clock_ms += 40u; /* > the 33 ms indev period */
     } else {
         usleep(40 * 1000);
     }
+}
+
+static void ctl_loop_tap(void *user, double x, double y)
+{
+    ff_ctl_loop_ctx_t *ctx = (ff_ctl_loop_ctx_t *)user;
+    /* Safe to narrow unconditionally: ctl_server.c's tap handler already
+     * rejected non-finite values and anything outside
+     * [FF_CTL_TAP_COORD_MIN, FF_CTL_TAP_COORD_MAX] — see ctl_server.h's
+     * tap handler doc comment for the contract this relies on. */
+    ctx->pointer_point.x = (lv_coord_t)x;
+    ctx->pointer_point.y = (lv_coord_t)y;
+    /* Same time-advance discipline as ctl_loop_swipe (see the comment on
+     * ctl_loop_pointer_step_delay): without it, both lv_timer_handler calls
+     * below run with zero elapsed time and the indev timer polls at most
+     * once — over the REAL socket loop (which pumps after every command,
+     * consuming any staleness a prior `clock` command left) that meant a
+     * tap could be lost entirely while still replying ok. AC10's test
+     * never saw this because it drives the handlers directly with manual
+     * clock choreography and no pump in between. */
+    ctl_loop_pointer_step_delay(ctx);
+    ctx->pointer_state = LV_INDEV_STATE_PRESSED;
+    lv_timer_handler();
+    ctl_loop_pointer_step_delay(ctx);
+    ctx->pointer_state = LV_INDEV_STATE_RELEASED;
+    lv_timer_handler();
 }
 
 static void ctl_loop_swipe(void *user, char const *dir)
@@ -285,7 +295,7 @@ static void ctl_loop_swipe(void *user, char const *dir)
     int32_t end_x = left ? 60 : (ctx->w - 60);
     int32_t y = ctx->h / 2;
 
-    ctl_loop_swipe_step_delay(ctx); /* make the indev timer stale BEFORE the press */
+    ctl_loop_pointer_step_delay(ctx); /* make the indev timer stale BEFORE the press */
     ctx->pointer_point.x = (lv_coord_t)start_x;
     ctx->pointer_point.y = (lv_coord_t)y;
     ctx->pointer_state = LV_INDEV_STATE_PRESSED;
@@ -294,12 +304,12 @@ static void ctl_loop_swipe(void *user, char const *dir)
     enum { STEPS = 6 };
     for (int i = 1; i <= STEPS; i++) {
         ctx->pointer_point.x = (lv_coord_t)(start_x + (end_x - start_x) * i / STEPS);
-        ctl_loop_swipe_step_delay(ctx);
+        ctl_loop_pointer_step_delay(ctx);
         lv_timer_handler();
     }
 
     ctx->pointer_state = LV_INDEV_STATE_RELEASED;
-    ctl_loop_swipe_step_delay(ctx);
+    ctl_loop_pointer_step_delay(ctx);
     lv_timer_handler();
 }
 

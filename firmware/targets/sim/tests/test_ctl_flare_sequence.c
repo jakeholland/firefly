@@ -155,7 +155,14 @@ static void ctl_settle(ff_ctl_loop_ctx_t *ctx, ff_ctl_handlers_t const *h)
  */
 static void ctl_tap(ff_ctl_loop_ctx_t *ctx, ff_ctl_handlers_t const *h, double x, double y)
 {
-    ctl_clock_advance(h, 50); /* stale on purpose — see step 1 above */
+    /* NOTE: no pre-advance here anymore, deliberately. ctl_loop_tap now
+     * advances time internally around press and release (the PR #62 fix —
+     * over the real socket loop, a pump after every command consumed any
+     * staleness a prior `clock` command left, and the tap was lost while
+     * replying ok). Running AC10 WITHOUT external choreography is what
+     * pins that self-sufficiency: re-adding a dependency on caller-side
+     * clock staging would make this suite pass while socket-driven taps
+     * break again. */
 
     char cmd[128], resp[256];
     int n = snprintf(cmd, sizeof(cmd), "{\"cmd\":\"tap\",\"x\":%.2f,\"y\":%.2f}", x, y);
