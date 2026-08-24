@@ -39,6 +39,7 @@
  * stays true instead of clearing, and locked_node_id gets overwritten
  * instead of staying put) — reverted after confirming.
  */
+#include <stdio.h>
 #include <string.h>
 
 #include "unity.h"
@@ -343,9 +344,16 @@ static void S10_ACn_lock_disclosure_chip_stays_inside_the_round_glass(void)
     ff_app_flare_t disp;
     memset(&disp, 0, sizeof(disp));
     disp.takeover_active = true;
-    strncpy(disp.takeover_from_name, "MAXIMILIANOOOOO", sizeof(disp.takeover_from_name) - 1);
+    /* snprintf, not strncpy: these two names are exactly 15 characters,
+     * i.e. exactly the strncpy bound, and GCC's -Wstringop-truncation
+     * correctly points out that no NUL gets copied in that case. The
+     * memset above makes it harmless, but the compiler can't see that,
+     * and this file builds under -Werror. snprintf always terminates, so
+     * the intent ("fill the field to its full FF_APP_NAME_LEN budget")
+     * is stated without leaning on the memset. */
+    snprintf(disp.takeover_from_name, sizeof(disp.takeover_from_name), "%s", "MAXIMILIANOOOOO");
     disp.locked = true;
-    strncpy(disp.locked_from_name, "BARTHOLOMEWWWWW", sizeof(disp.locked_from_name) - 1);
+    snprintf(disp.locked_from_name, sizeof(disp.locked_from_name), "%s", "BARTHOLOMEWWWWW");
 
     ff_scr_flare_build_takeover(&disp, NULL);
 
