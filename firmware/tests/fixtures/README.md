@@ -246,7 +246,7 @@ and a worst-case crew-ring layout).
 | `radar_nosel.json` | `nosel` | `""` | `""` | no paired crew member at all — empty-crew state, `mesh_ok: false` for variety |
 | `radar_never.json` | `lost` (folded — see below) | `""` | `""` | selected member "JAMIE" is paired but has never sent a fix; `age_str[0] == '\0'` is what `scr_radar.c` keys off to show "NO FIX YET" instead of a "LAST SEEN" chip — NOT distinguishable from a genuinely-old fix by `mode` alone (both are `RADAR_LOST`; see `radar_lost.json` above for the other side of that same `mode`) |
 
-Five S10 slice b fixtures exist alongside the radar set, one per
+Four S10 slice b fixtures exist alongside the radar set, one per
 `ff_scr_flare_*` builder plus one for the takeover/lock interaction PR #20
 UX review flagged as unrepresented: `flare_takeover.json`
 (`flare.takeover_active` — the full-screen receive takeover, which per
@@ -256,17 +256,7 @@ section that never actually renders), `flare_takeover_locked.json` (same
 takeover, but with `flare.locked` ALSO set to a *different* node than
 `takeover_from_name` — exercises the GO-discloses-the-lock-cost chip;
 see `ff_scr_flare_build_takeover`'s doc comment),
-`flare_takeover_wide_name.json` (added in PR #41's second code-review
-round: the same takeover with a locked name of fifteen `W`s — the widest
-glyph in the compiled font at the longest `FF_APP_NAME_LEN` permits.
-Crew names are Meshtastic `User.long_name`, i.e. arbitrary UTF-8 chosen
-by someone else and arriving over the radio, so this is a reachable
-input, not a hypothetical. The chip's earlier guard capped the name by
-BYTE count, which bounds nothing in a proportional font — this fixture is
-the visible proof that the replacement bound (a pixel clamp from
-`ff_layout_centered_band_max_width`, with LVGL placing the ellipsis) keeps
-the pill on the round glass and shows the name as cut. Deliberately ugly:
-it is the adversarial case, not a design reference), `flaring_self.json`
+`flaring_self.json`
 (`flare.sending` — the pulsing sender overlay on top of an otherwise-NOSEL
 radar tile, whose own headline is dimmed while sending), and
 `radar_flare_locked.json` (`flare.locked` on an otherwise-ordinary LIVE
@@ -327,6 +317,33 @@ mocked at all** — its `lineup` entries are copied field-for-field from
 the real vendored Lost Lands pack, specifically because the spec calls
 out this exact case ("real Lost Lands pack") as the thing this fixture
 must prove.
+
+## Do not golden anything whose pixels depend on text truncation
+
+**`LV_LABEL_LONG_MODE_DOTS` is not bit-reproducible across
+architectures.** PR #41 added a `flare_takeover_wide_name` fixture — the
+flare takeover with a locked name of fifteen `W`s, to make the
+disclosure chip's pixel clamp visible — and CI caught it immediately:
+**2.27% of pixels differed between an arm64 macOS render and CI's x86-64
+Linux one, while all 25 other fixtures were byte-identical at
+`0.0000%`.** Each platform is internally deterministic (the two-render
+determinism check passes on both), so this is not flakiness; the
+truncation point itself lands on a different character.
+
+Only that one fixture exercised LVGL's dot-placement path, which is what
+isolates the cause. The *behaviour* is portable — every assertion-level
+test passes on both platforms, including under ASan/UBSan — but the
+exact pixel LVGL chooses for the ellipsis is not, so it must never be
+the subject of a byte comparison.
+
+The rendered proof lives at `docs/screens/flare-takeover-wide-name.png`
+instead, where it is context rather than a gate, and the guarantee is
+enforced by assertions that hold on any platform:
+`S10_ACn_lock_disclosure_chip_stays_inside_the_round_glass` (a sweep over
+width worst cases, checked against `ff_layout_rect_in_circle`) and
+`S10_ACn_lock_disclosure_only_truncates_names_that_dont_fit`. This is the
+same "assertion-level, not visual" discipline `test_radar_layout.c`'s
+header argues for, arrived at the hard way.
 
 ## Adding a fixture
 
