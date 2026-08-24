@@ -100,6 +100,10 @@ static void ff_assert_defaults(ff_settings_t const *s)
     TEST_ASSERT_EQUAL_UINT16(90, s->water_min);
     TEST_ASSERT_EQUAL_UINT16(240, s->quiet_from_min);
     TEST_ASSERT_EQUAL_UINT16(600, s->quiet_to_min);
+    /* UTC offset defaults to UNSET (S16 slice b0): 0 is legitimately
+     * UTC, so the flag — not the value — encodes absence. */
+    TEST_ASSERT_FALSE(s->utc_offset_set);
+    TEST_ASSERT_EQUAL_INT16(0, s->utc_offset_min);
     TEST_ASSERT_EQUAL_STRING("", s->my_name);
     TEST_ASSERT_FALSE(s->cal_valid);
 
@@ -214,6 +218,8 @@ static void S11_AC2_round_trip_save_load_is_exact_including_calibration(void)
     out.water_min = 45;
     out.quiet_from_min = 1380; /* 23:00 */
     out.quiet_to_min = 120;    /* 02:00 */
+    out.utc_offset_min = -420; /* MDT (S16 slice b0) */
+    out.utc_offset_set = true;
     strncpy(out.my_name, "Dana", sizeof(out.my_name) - 1);
     out.cal_valid = true;
     out.compass_cal.hard_offset = (ff_vec3_t){12.5f, -3.25f, 0.75f};
