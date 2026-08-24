@@ -69,8 +69,8 @@ _LOC_BY_NUM = ["LOC_UNSET", "LOC_MANUAL", "LOC_INTERNAL", "LOC_EXTERNAL"]
 def _loc_source(pos):
     """Read location_source from a position dict, honouring proto3 defaults.
 
-    Returns (code, explanation) — see _rx_path for why tests assert on the
-    code rather than matching prose.
+    Returns (code, explanation) — tests assert on the code, never on the
+    prose; see _rx_path for why.
 
     `pos` must be a real decoded Position; pass None if there wasn't one.
     """
@@ -89,8 +89,22 @@ def _loc_source(pos):
 
 
 def _fmt(pair):
-    code, why = pair
+    code, why = pair[0], pair[1]
     return f"{code} ({why})" if why else code
+
+
+def _proto3_num(d, key, unit):
+    """Format a numeric proto3 field, distinguishing zero from unpopulated.
+
+    A missing key means the zero value, not "no reading" — the wire format
+    drops zeros. An rx_snr of exactly 0.0 dB is a real measurement on a
+    marginal link, and reporting it as ABSENT would answer this tool's own
+    question backwards. Same reasoning as _loc_source.
+    """
+    v = d.get(key)
+    if v is None:
+        return f"0 {unit} — or unpopulated; proto3 drops the zero, they're identical on the wire"
+    return f"{v} {unit}"
 
 
 def _rx_path(packet):
@@ -99,10 +113,11 @@ def _rx_path(packet):
     about "direct", the tool validates the wrong thing, and RSSI is only a
     distance proxy on a genuinely direct packet.
 
-    Returns (code, explanation). The code is what tests assert on: matching
-    prose by substring is unsound here because "DIRECT" is a substring of
-    "INDIRECT", so a classifier that returned the wrong one would still
-    "contain" the right word. That is the same proxy failure documented in
+    Returns (code, explanation, hops) — `hops` is None where the concept
+    doesn't apply. Tests assert on the code and the number, never the prose:
+    substring matching is unsound here because "DIRECT" is a substring of
+    "INDIRECT", so a classifier returning the wrong one would still "contain"
+    the right word. That is the proxy failure documented in
     docs/review/code-review.md, and it was live in this file's own selftest
     until PR #42's review caught it.
 
@@ -111,20 +126,20 @@ def _rx_path(packet):
     if bool(packet.get("viaMqtt", False)):
         # Checked FIRST, as the firmware does. Whatever our radio measured,
         # it was not this sender's transmission.
-        return ("INDIRECT", "via MQTT — arrived over the internet, not our radio")
+        return ("INDIRECT", "via MQTT — arrived over the internet, not our radio", None)
     hs = packet.get("hopStart", 0)
     hl = packet.get("hopLimit", 0)
     if hs > 0:
         if hl > hs:
-            return ("UNKNOWN", "malformed — hops travelled would be negative")
+            return ("UNKNOWN", "malformed — hops travelled would be negative", None)
         if hl == hs:
-            return ("DIRECT", "rssi is this sender's own signal")
-        return ("INDIRECT", f"{hs - hl} hop(s) — rssi is the RELAY's signal, not theirs")
+            return ("DIRECT", "rssi is this sender's own signal", 0)
+        return ("INDIRECT", f"{hs - hl} hop(s) — rssi is the RELAY's signal, not theirs", hs - hl)
     # hop_start == 0: a real zero-hop packet, or pre-2.3.0 firmware that never
     # set the field. Only the sender's Data.bitfield separates them, and the
     # library doesn't surface it — so this tool cannot resolve what the
     # firmware can. Say so rather than guessing.
-    return ("UNKNOWN", "hop_start 0: zero-hop, or a pre-2.3.0 sender — can't tell here")
+    return ("UNKNOWN", "hop_start 0: zero-hop, or a pre-2.3.0 sender — can't tell here", None)
 
 
 def _selftest():
@@ -150,7 +165,7 @@ def _selftest():
         ("mqtt beats a matching hop count", _rx_path({"viaMqtt": True, "hopStart": 3, "hopLimit": 3})[0], "INDIRECT"),
         ("direct", _rx_path({"hopStart": 3, "hopLimit": 3})[0], "DIRECT"),
         ("relayed", _rx_path({"hopStart": 3, "hopLimit": 1})[0], "INDIRECT"),
-        ("relayed reports the hop count", _rx_path({"hopStart": 3, "hopLimit": 1})[1], "2 hop(s) — rssi is the RELAY's signal, not theirs"),
+        ("relayed reports the hop count", _rx_path({"hopStart": 3, "hopLimit": 1})[2], 2),
         ("malformed", _rx_path({"hopStart": 1, "hopLimit": 3})[0], "UNKNOWN"),
         ("absent hops", _rx_path({})[0], "UNKNOWN"),
     ]
@@ -172,16 +187,25 @@ def _fmt_unix(ts):
     return f"{ts} ({time.strftime('%Y-%m-%d %H:%M:%SZ', time.gmtime(ts))})"
 
 
-def dump_nodedb(iface):
+def dump_nodedb(iface, my_num=None):
     print("\n=== node DB (from the connect handshake) ===")
     nodes = getattr(iface, "nodes", None) or {}
     if not nodes:
         print("  (empty — the handshake returned no nodes)")
         return
 
+    # Row keys are hex (`!11223344`); my_node_num arrives in decimal. Without
+    # converting one to the other you cannot tell at a glance which row is the
+    # board you're plugged into — and that row's location_source is your own
+    # --setlat readback, NOT an over-the-air observation. Mistaking it for one
+    # answers question 1 with your own input. The real answer is the OTHER row.
+    me = f"!{my_num:08x}" if isinstance(my_num, int) else None
+
     for node_id, n in nodes.items():
         user = n.get("user") or {}
-        print(f"\n  {node_id}  {user.get('shortName', '?')} / {user.get('longName', '?')}")
+        tag = "  <<< THIS BOARD (its readings are your own input, not observations)" \
+            if me is not None and node_id == me else ""
+        print(f"\n  {node_id}  {user.get('shortName', '?')} / {user.get('longName', '?')}{tag}")
         print(f"    last_heard   : {_fmt_unix(n.get('lastHeard'))}")
         print(f"    hops_away    : {n.get('hopsAway', 'absent')}")
         # snr here is the cached NodeInfo value — deliberately NOT surfaced by
@@ -212,8 +236,13 @@ def listen(iface, seconds):
         print(
             f"\n  #{seen['n']} from={packet.get('fromId')} portnum={d.get('portnum', '?')}"
         )
-        print(f"    rx_rssi      : {packet.get('rxRssi', 'ABSENT')}")
-        print(f"    rx_snr       : {packet.get('rxSnr', 'ABSENT')}")
+        # proto3 again, and it bites hardest exactly here: an rx_snr of
+        # exactly 0.0 dB — a real reading on a marginal link — is dropped from
+        # the dict and looks identical to a field that was never populated.
+        # Question 2 is literally "is rx_snr populated?", so printing a bare
+        # ABSENT would answer it wrongly on the one reading that matters most.
+        print(f"    rx_rssi      : {_proto3_num(packet, 'rxRssi', 'dBm')}")
+        print(f"    rx_snr       : {_proto3_num(packet, 'rxSnr', 'dB')}")
         print(f"    rx_time      : {_fmt_unix(packet.get('rxTime'))}")
         hs = packet.get("hopStart", 0)
         hl = packet.get("hopLimit", 0)
@@ -268,9 +297,13 @@ def main():
     packets = 0
     try:
         mi = getattr(iface, "myInfo", None)
-        if mi is not None:
-            print(f"connected: my_node_num={getattr(mi, 'my_node_num', '?')}")
-        dump_nodedb(iface)
+        my_num = getattr(mi, "my_node_num", None) if mi is not None else None
+        if my_num is not None:
+            # Both forms, because the node DB keys in hex and this arrives
+            # in decimal — the conversion is the whole reason the local row
+            # is hard to spot.
+            print(f"connected: my_node_num={my_num} (!{my_num:08x})")
+        dump_nodedb(iface, my_num)
         if a.listen:
             packets = listen(iface, a.listen)
     finally:
