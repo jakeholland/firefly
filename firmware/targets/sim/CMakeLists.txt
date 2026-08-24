@@ -129,6 +129,24 @@ if(FF_BUILD_TESTS)
     add_test(NAME test_live COMMAND test_live)
 endif()
 
+# Issue #3 — ff_screenshot_write now creates its output directory itself
+# (`--headless --screenshot DIR` used to fail until the caller mkdir'd
+# DIR). screenshot.c is compiled directly into this test binary (a second
+# independent executable, so no duplicate-symbol concern with ffsim's own
+# copy) rather than split into a static lib — it's one function plus a
+# vendored stb implementation, and nothing else links it.
+if(FF_BUILD_TESTS)
+    add_executable(test_screenshot
+        tests/test_screenshot.c
+        screenshot.c
+    )
+    target_include_directories(test_screenshot PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+    target_link_libraries(test_screenshot PRIVATE ff-stb-image-write unity)
+    ff_apply_warnings(test_screenshot)
+
+    add_test(NAME test_screenshot COMMAND test_screenshot)
+endif()
+
 add_executable(ffsim
     main.c
     screenshot.c     # S13c — shared XRGB8888->PNG writer (extracted out of

@@ -18,9 +18,13 @@ extern "C" {
 /**
  * ff_screenshot_write — converts an LVGL XRGB8888 framebuffer (byte order
  * B,G,R,X per pixel — see lv_color32_t) to tightly-packed RGB24 and
- * writes it as a PNG at the exact path given. Returns 0 on success, 1 on
- * failure (out-of-memory converting, or the PNG write itself failing —
- * e.g. an unwritable directory in `path`). Prints a one-line diagnostic
+ * writes it as a PNG at the exact path given. The path's containing
+ * directory (and any missing parents) is created first if it doesn't
+ * exist (issue #3 — `--headless --screenshot DIR` no longer requires the
+ * caller to mkdir DIR beforehand). Returns 0 on success, 1 on failure
+ * (a directory component that couldn't be created, out-of-memory
+ * converting, or the PNG write itself failing — e.g. an unwritable
+ * directory in `path`). Prints a one-line diagnostic
  * to stderr on failure; callers needing a machine-readable reason (the
  * ctl socket) just report "screenshot write failed" for any nonzero
  * return, since stderr already carries the detail for a human running

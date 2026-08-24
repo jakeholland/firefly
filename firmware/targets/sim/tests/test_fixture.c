@@ -253,12 +253,76 @@ static void now_state_defaults_no_pack(void)
     TEST_ASSERT_EQUAL_INT(NOW_NO_PACK, s.now.state);
 }
 
-static void now_state_unrecognized_string_falls_back_to_no_pack(void)
+/* Issue #28 (orchestrator ruling): the predecessor of this test —
+ * `now_state_unrecognized_string_falls_back_to_no_pack` — pinned the
+ * OLD behavior, a silent NOW_NO_PACK default for any unrecognized
+ * string. That silent-degrade convention already contributed to a real
+ * bug class (a typo'd fixture renders a plausible-but-different state
+ * and commits it as the golden; see also PR #36's memset/renumbering
+ * incident). Same repro input, corrected expectation: wrong dev data
+ * now refuses to load, loudly. Mutation check: restore fx_enum's silent
+ * default and this returns FF_FIXTURE_OK again — this assertion fails. */
+static void now_state_unrecognized_string_fails_loud(void)
 {
     ff_app_state_t s;
+    memset(&s, 0xAA, sizeof(s));
     char const *json = "{\"now\": {\"state\": \"totally_bogus\"}}";
+    TEST_ASSERT_EQUAL_INT(FF_FIXTURE_ERR_BAD_ENUM, ff_fixture_load_json(json, strlen(json), &s));
+
+    /* Contract: on any non-OK return, *out is left zeroed. */
+    ff_app_state_t zero;
+    memset(&zero, 0, sizeof(zero));
+    TEST_ASSERT_EQUAL_MEMORY(&zero, &s, sizeof(s));
+}
+
+/* Issue #28, the general case: EVERY enum-string key in the schema
+ * fails loud on an unrecognized value — one sweep so a future enum
+ * that's added with the old silent-default shape can't hide behind
+ * "only now.state was pinned". The typo'd values are the realistic
+ * near-miss kind ("radr", "no-pack" for "no_pack"), not just garbage. */
+static void every_enum_key_fails_loud_on_unrecognized_string(void)
+{
+    static char const *const cases[] = {
+        "{\"face\": \"radr\"}",
+        "{\"radar\": {\"mode\": \"livee\"}}",
+        "{\"now\": {\"state\": \"no-pack\"}}",
+        "{\"signals\": {\"items\": [{\"kind\": \"pluse\"}]}}",
+        "{\"compose\": {\"mode\": \"ABC\"}}",
+        "{\"settings\": {\"share_mode\": \"ghosts\"}}",
+    };
+    ff_app_state_t zero;
+    memset(&zero, 0, sizeof(zero));
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        ff_app_state_t s;
+        memset(&s, 0xAA, sizeof(s));
+        TEST_ASSERT_EQUAL_INT_MESSAGE(FF_FIXTURE_ERR_BAD_ENUM,
+                                      ff_fixture_load_json(cases[i], strlen(cases[i]), &s), cases[i]);
+        TEST_ASSERT_EQUAL_MEMORY_MESSAGE(&zero, &s, sizeof(s), cases[i]);
+    }
+}
+
+/* A present enum key whose value isn't a JSON string at all (a number,
+ * null, an object...) is the same authoring bug wearing a different
+ * token type — also loud, never a silent default. */
+static void enum_key_with_non_string_value_fails_loud(void)
+{
+    ff_app_state_t s;
+    char const *json = "{\"radar\": {\"mode\": 3}}";
+    TEST_ASSERT_EQUAL_INT(FF_FIXTURE_ERR_BAD_ENUM, ff_fixture_load_json(json, strlen(json), &s));
+}
+
+/* The one deliberate exception, pinned from BOTH sides (PR #36's ruling,
+ * preserved through issue #28): an ABSENT `face` key is a documented
+ * default (RADAR — "show me the home face"), not a parse failure.
+ * Absent != malformed. absent_sections_default_to_zero also covers
+ * this; repeated here next to the fail-loud sweep so the exception and
+ * the rule read together. */
+static void face_absent_still_defaults_to_radar(void)
+{
+    ff_app_state_t s;
+    char const *json = "{\"radar\": {\"mode\": \"live\"}}";
     TEST_ASSERT_EQUAL_INT(FF_FIXTURE_OK, ff_fixture_load_json(json, strlen(json), &s));
-    TEST_ASSERT_EQUAL_INT(NOW_NO_PACK, s.now.state);
+    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_RADAR, s.active_face);
 }
 
 static void now_state_every_enum_value_round_trips(void)
@@ -907,7 +971,10 @@ int main(void)
 
     RUN_TEST(now_section_parses_every_field);
     RUN_TEST(now_state_defaults_no_pack);
-    RUN_TEST(now_state_unrecognized_string_falls_back_to_no_pack);
+    RUN_TEST(now_state_unrecognized_string_fails_loud);
+    RUN_TEST(every_enum_key_fails_loud_on_unrecognized_string);
+    RUN_TEST(enum_key_with_non_string_value_fails_loud);
+    RUN_TEST(face_absent_still_defaults_to_radar);
     RUN_TEST(now_state_every_enum_value_round_trips);
     RUN_TEST(now_lineup_section_parses_every_field);
     RUN_TEST(now_mixed_state_carries_both_known_and_unknown);
