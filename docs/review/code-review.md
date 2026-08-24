@@ -11,6 +11,19 @@ You are reviewing a PR you did not write. You have fresh eyes — use them. Read
 5. **Allocation & size:** no hidden malloc in core/libs; fixed buffers respect their caps; struct growth flagged.
 6. **Tests are real:** run them locally. Try one deliberate mutation (revert a line mentally) — would a test catch it? If not, say which criterion is under-tested.
 
+   **And check the test's proxy.** A test rarely measures the property that matters; it measures a stand-in. The recurring bug in this repo is an *exception in that correspondence* — the proxy holds, the property doesn't, and the test passes for the wrong reason. Ask the finite question: **what input satisfies the proxy and violates the property?** If you can name one, the test is wrong even when it's green.
+
+   Four real instances, all from one PR (#41):
+
+   | proxy | property | the exception |
+   |---|---|---|
+   | a byte cap on a name | the chip fits the round glass | the font is proportional — 11 `W`s are 80px wider than 11 `I`s |
+   | one name truncates correctly | two names stay distinguishable | truncation isn't injective — `ALEXANDRIA` and `ALEXANDRINA` both became `ALEXANDRI` |
+   | the round-glass sweep passes | the chip fits its slot | a two-line chip is narrow *and* taller — it fit, wrapped, and dropped the ellipsis |
+   | `CC=gcc` built cleanly | a second compiler checked it | `gcc` on macOS **is** Apple clang (#44) |
+
+   The caveat that keeps this from becoming ritual: in every one of those, what resolved it was **measuring, not reasoning harder**. Reviewers had read the code carefully and still missed them. Instrument it, render it, print the number — a sweep you ran beats a sweep you reasoned about.
+
 ## Output
 
 PR comment via `gh pr comment N --body ...`, structured:
