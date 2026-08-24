@@ -21,3 +21,4 @@ __pycache__/
 # Python venv for the dev tools (firmware/tests/e2e/requirements.txt)
 .venv/
 build-gcc/
+firmware/build
