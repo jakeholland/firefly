@@ -652,6 +652,32 @@ ff_fixture_result_t ff_fixture_load_json(char const *json, size_t len, ff_app_st
      * out). Section parsers below may still override these from
      * explicit JSON fields. */
     out->radar.mode = RADAR_NOSEL;
+    /* S16 slice a: `face` defaults to RADAR — and it must STAY RADAR,
+     * which runs deliberately AGAINST the "least-claiming first enum
+     * member" convention this block otherwise applies (radar.mode above
+     * picks NOSEL over LIVE for exactly that reason). Two things
+     * changed underneath this line and neither would announce itself:
+     *
+     *   1. FF_APP_FACE_NONE = 0 renumbered ff_app_face_t, so the
+     *      memset(0) above no longer leaves active_face on RADAR by
+     *      coincidence. Without this assignment, a fixture that omits
+     *      `face` would silently start rendering as NONE — which
+     *      face_dispatch.c routes to the S13 debug placeholder instead
+     *      of the real nav shell.
+     *   2. fx_enum() below degrades silently on an unrecognised face
+     *      string (issue #28), so its RADAR fallback is the only thing
+     *      standing between a typo'd `"face": "radr"` and a blank face.
+     *
+     * RADAR is right here because this is a FIXTURE default, not a
+     * claim about live data: every committed fixture names its face
+     * explicitly (all 23 do), so this path is only reached by a
+     * hand-written or truncated snapshot, where "show me the home face"
+     * is more useful than "show me nothing". NONE would be the honest
+     * answer if this field described the world; it describes which
+     * screen to draw. Documented in tests/fixtures/README.md's field
+     * table and asserted by test_fixture.c's
+     * absent_sections_default_to_zero. */
+    out->active_face = FF_APP_FACE_RADAR;
     /* Three independent "n/a" defaults (S10 slice b) — see fx_parse_flare's
      * doc comment for why there are three now instead of one. Set here too
      * (not only inside fx_parse_flare) so they hold even when the "flare"
