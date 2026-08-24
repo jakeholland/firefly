@@ -148,6 +148,63 @@ typedef struct {
      * age information; `time`/`rx_time` remain the only freshness inputs.
      * See mc_loc_source_t. */
     mc_loc_source_t loc_source;
+
+    /* Coordinate precision as stated by the sender. The vendored protobuf
+     * says only: "Indicates the bits of precision set by the sending node"
+     * (mesh.pb.h, Position.precision_bits, tag 23) — concretely, how many
+     * high-order bits of latitude_i/longitude_i survived the sending
+     * channel's positionPrecision truncation. This matters because the
+     * truncation is invisible in the coordinates themselves: the default
+     * public channel keeps 13 bits (~5.8 km grid), and the resulting
+     * multi-km error arrives as two perfectly ordinary-looking doubles
+     * with a fresh timestamp (issue #47 — 2673 m measured on hardware).
+     * This field is the only wire-level tell.
+     *
+     * When present, the value is 1..32. Approximate cell edge in metres:
+     * (2^32 >> bits) * 1e-7 deg * ~111,320 m/deg of latitude — ~5836 m at
+     * 13 bits, ~730 m at 16, ~2.9 m at 24; 32 is untruncated. (Longitude
+     * cells shrink by cos(latitude); treat this as a scale, not a radius.)
+     *
+     * has_precision_bits == false folds together three wire situations
+     * this library cannot tell apart — stated honestly rather than
+     * inventing a distinction the wire can't carry (proto3 implicit
+     * presence; the same reasoning probe_node.py's _proto3_num documents):
+     *  - the field was never set (sender predates it, or a replay dropped
+     *    it — see the path caveat below);
+     *  - a wire value of exactly 0, byte-identical to absent. No real fix
+     *    is lost here: in Meshtastic's channel config, precision 0 means
+     *    "position disabled on this channel", so 0 never legitimately
+     *    accompanies actual coordinates;
+     *  - a value > 32, which is not a precision of a 32-bit coordinate —
+     *    untrusted RF garbage, reported absent rather than clamped (same
+     *    policy as the RSSI/SNR range gates in mc_rx_meta_t).
+     *
+     * Absent must NOT be read as "full precision". Absent means the
+     * sender did not say; the coordinates may still be truncated.
+     *
+     * Path caveat, hardware-verified (two Heltec V3s, firmware 2.7.26):
+     * both decode paths (live POSITION_APP packets and the want_config
+     * NodeInfo replay) fill this field identically, and the wire format
+     * allows it on both — but presence is NOT uniform in practice.
+     *  - Live packets stamp it affirmatively, even at full precision: a
+     *    fix sent on a positionPrecision:32 channel arrived with
+     *    precisionBits: 32 on the wire (nonzero, so proto3 keeps it), so
+     *    on modern firmware a full-precision live fix is distinguishable
+     *    from an unstamped one.
+     *  - The same node's row in the receiving board's node DB, seconds
+     *    later, had no precision field at all — on both a truncated
+     *    (13-bit) and a full-precision channel. Stock firmware does not
+     *    preserve it across the nodeDB (its PositionLite → Position
+     *    conversion never copies precision_bits; firmware
+     *    TypeConversions.cpp, checked at master 2026-08), exactly as the
+     *    replay carries no rx_time.
+     * So a consumer that assumes uniform presence will mis-handle the
+     * replay — and the replay is the cold-boot path. Note the affirmative
+     * stamping is observed on one firmware version; what an older sender
+     * puts here is not established, which is why absent stays "unknown,
+     * not full" rather than being assumed impossible. */
+    bool has_precision_bits;
+    uint32_t precision_bits;
 } mc_position_t;
 
 typedef struct {
