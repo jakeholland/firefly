@@ -6,18 +6,25 @@
  */
 #include "scr_nav.h"
 
+#include "ff_intent.h" /* S16c1 — the emit seam; see nav_long_press_cb */
 #include "ff_theme.h"
 #include "scr_flare.h" /* S10 slice b — lock chip + sender overlay */
 #include "scr_now.h" /* S07b — ff_scr_now_build, the Now face */
 #include "scr_radar.h"
 #include "scr_signals.h" /* S08c */
 
-/* TODO(S11 slice b): open the real settings screen once it exists. This
- * PR only reserves the hook, per the S06 PR B brief
- * ("long-press-anywhere hook reserved for Settings, stub target"). */
-static void nav_long_press_stub_cb(lv_event_t *e)
+/* Long-press-anywhere -> Settings: emits FF_INTENT_OPEN_SETTINGS through
+ * the intent seam (S16 slice c1 — this replaces the stub S06 reserved).
+ * Whether anything HAPPENS is the shell's decision, not this file's:
+ * today `ff_shell_intent` rejects it, deliberately, because the S11b
+ * Settings renderer does not exist yet (see ff_shell.c's judgment-call
+ * comment) — this screen just reports the gesture and stays a pure
+ * renderer. Unbound (goldens/headless), the emit is a no-op. */
+static void nav_long_press_cb(lv_event_t *e)
 {
     (void)e;
+    ff_intent_t in = {.kind = FF_INTENT_OPEN_SETTINGS, .u = {0}};
+    ff_intent_emit(&in);
 }
 
 /* Page-dot row: chrome that sits ON the puck (not inside any one tile),
@@ -92,9 +99,10 @@ void ff_scr_nav_build(ff_app_state_t const *state, ff_flare_t *flare_rt)
     lv_obj_set_style_border_width(puck, 0, 0);
     lv_obj_clear_flag(puck, LV_OBJ_FLAG_SCROLLABLE);
 
-    /* Long-press-anywhere -> Settings (S11 slice b), stubbed for now. */
+    /* Long-press-anywhere -> Settings: emits an intent (S16c1); the shell
+     * decides (rejected until the S11b renderer exists). */
     lv_obj_add_flag(puck, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_add_event_cb(puck, nav_long_press_stub_cb, LV_EVENT_LONG_PRESSED, NULL);
+    lv_obj_add_event_cb(puck, nav_long_press_cb, LV_EVENT_LONG_PRESSED, NULL);
 
     lv_obj_t *tileview = lv_tileview_create(puck);
     lv_obj_remove_style_all(tileview);

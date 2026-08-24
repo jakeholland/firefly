@@ -18,8 +18,16 @@
  *   - haptic / quiet-hours composition,
  *   - wall-clock accessor over `core/include/ff_wall.h` (slice b0).
  *
+ * Slice c1 adds the intent seam: `ff_intent_t` (app/include/ff_intent.h),
+ * `ff_shell_intent` / `ff_shell_intent_sink` below, and the navigation
+ * intent handling (SWIPE / BACK / OPEN_COMPOSE / OPEN_SETTINGS, plus the
+ * takeover-decision trio GO / DISMISS / RELEASE_LOCK, which the S10
+ * Ruling 3 distinctness test needs observable). Core-mutating intents
+ * (canned replies, SEND, FLARE_START/END, selection) are slice c2; the
+ * T9 draft and keypad intents are slice c3; SETTING_SET write-through is
+ * slice e — all deliberate no-ops here until their slice lands.
+ *
  * Deliberately NOT here yet, each with its own slice:
- *   - `ff_shell_intent` and the intent enum (slice c1-c3),
  *   - build-once/update-in-place render lifecycle (slice d),
  *   - reconnect UI and settings write-through (slice e),
  *   - retiring `targets/sim/live.{c,h}` and repointing `--connect`
@@ -156,6 +164,7 @@
 #include "ff_feed.h"
 #include "ff_flare.h"
 #include "ff_heard.h"
+#include "ff_intent.h"
 #include "ff_latlon.h"
 #include "ff_settings.h"
 #include "ff_store.h"
@@ -448,6 +457,79 @@ mc_events_t ff_shell_events(ff_shell_t *sh);
  * and `node_id` is not already in it.
  */
 bool ff_shell_pair(ff_shell_t *sh, uint32_t node_id, bool paired);
+
+/* ---------------------------------------------------------------------
+ * Intent seam — how screens talk to the shell (S16 slice c1)
+ * ------------------------------------------------------------------- */
+
+/**
+ * ff_shell_intent — dispatch one semantic intent from the UI.
+ *
+ * The receiving end of the seam ff_intent.h defines. Dispatch targets
+ * `ff_route_visible(&route, flare.takeover_active)` — the takeover flag
+ * is read from `ff_flare_t` fresh, at this call, never cached (S16
+ * routing rule 4). Note the residual honesty of that read: `ff_flare_tick`
+ * clears an expired takeover on the *tick*, so between ticks this
+ * dispatches against the same fact the last-rendered frame showed the
+ * user — which is the frame their finger was aimed at.
+ *
+ * Handled in this slice:
+ *  - SWIPE           -> `ff_route_swipe` (bounded, modal-suppressed —
+ *                       the route's own rules). Rejected while a
+ *                       takeover is visible.
+ *  - BACK            -> `ff_route_pop_modal`. Rejected while a takeover
+ *                       is visible (AC3b's routing half; the draft half
+ *                       lands with slice c3's shell-owned T9 state).
+ *  - OPEN_COMPOSE    -> `ff_route_push_modal(COMPOSE)`. The destination:
+ *                       `u.node_id` names a paired roster member -> that
+ *                       member; otherwise (0, or an id the trust policy
+ *                       won't message) S08's Behavior rule — "TO =
+ *                       selected crew member" — resolves it to the
+ *                       current selection, else broadcast. An unknown
+ *                       explicit id falls back to BROADCAST, never to a
+ *                       different member: a message must not be silently
+ *                       retargeted at somebody the caller did not name.
+ *  - OPEN_SETTINGS   -> deliberately rejected (a no-op) until the S11b
+ *                       Settings renderer exists — see the judgment-call
+ *                       note in ff_shell.c's OPEN_SETTINGS case. The
+ *                       route/dispatch path is complete; S11b flips one
+ *                       named constant, no seam change.
+ *  - TAKEOVER_GO / TAKEOVER_DISMISS -> `ff_flare_go` /
+ *                       `ff_flare_dismiss_takeover`, only while the
+ *                       takeover is visible (they are decisions ABOUT
+ *                       the takeover screen).
+ *  - RELEASE_LOCK    -> `ff_flare_release_lock`, and deliberately NOT
+ *                       gated on the takeover: S10 Ruling 3's race —
+ *                       tapping "stop navigating" as a new takeover
+ *                       arrives — must release the lock and leave the
+ *                       takeover pending and shown. Folding it into the
+ *                       dismiss branch, or dropping it, re-creates the
+ *                       exact bug the ruling split two core functions to
+ *                       kill. RELEASE_LOCK and TAKEOVER_DISMISS are
+ *                       distinct and never folded.
+ *
+ * Every other kind is a documented no-op until its owning slice (c2:
+ * core-mutating; c3: T9/compose; e: SETTING_SET) — see ff_shell.c.
+ *
+ * Pointer payloads (`u.text`, `u.setting.v.s`) are borrowed for this
+ * call only; the shell copies what it keeps (ff_intent.h, "Payload
+ * ownership"). State changes surface in the projection on the NEXT
+ * `ff_shell_tick` — this function never rebuilds the view itself.
+ *
+ * NULL `sh` or `in`: safe no-op.
+ */
+void ff_shell_intent(ff_shell_t *sh, ff_intent_t const *in);
+
+/**
+ * ff_shell_intent_sink — `ff_intent_emit_fn`-shaped adapter: `user` must
+ * be the `ff_shell_t *`. Exists so a target binds the seam without a
+ * function-pointer cast (`ff_intent_emit_bind(ff_shell_intent_sink,
+ * &shell)`) — casting `ff_shell_intent` itself to `ff_intent_emit_fn`
+ * would call through an incompatible pointer type, which is undefined
+ * behavior even where it happens to work. Same "callback-shaped wrapper"
+ * convention as ff_wiring's mc_events_t-shaped handlers.
+ */
+void ff_shell_intent_sink(void *user, ff_intent_t const *in);
 
 /* ---------------------------------------------------------------------
  * Sensor seam — what the shell cannot know by itself
