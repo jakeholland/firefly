@@ -31,6 +31,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "ff_intent.h" /* S16c1 — the emit seam; see signals_open_compose_cb */
 #include "ff_layout.h"
 #include "ff_theme.h"
 
@@ -81,14 +82,22 @@ static int32_t signals_safe_margin_x(int32_t top_y, int32_t h)
  * Header: "SIGNALS" title + "+" (open Compose) button.
  * ------------------------------------------------------------------- */
 
-/* TODO(issue #23): open the real Compose face once face-switching
- * exists in the app's main loop (this screen only renders — which face is
- * active lives in ff_app_state_t, owned by whatever drives the real
- * event loop, not by a pure-render screen file per CLAUDE.md). Reserved
- * hook, same pattern as scr_radar.c's radar_flare_stub_cb. */
-static void signals_open_compose_stub_cb(lv_event_t *e)
+/* "+" -> emits FF_INTENT_OPEN_COMPOSE through the intent seam (S16
+ * slice c1 — this replaces the issue-#23 stub). node_id = 0: NO explicit
+ * destination. This screen is a pure renderer and cannot know the crew
+ * selection, and S08's Behavior section says the composer's TO is the
+ * SELECTED CREW MEMBER — so resolving it is the shell's job
+ * (`shell_compose_dest` in ff_shell.c: selection if any, else
+ * broadcast). Deliberately NOT the newest feed item: that context rule
+ * belongs to the canned-reply chips (`ff_wiring_send_canned_reply`),
+ * and S08 gives the composer its own, different rule. Unbound
+ * (goldens/headless), the emit is a no-op. */
+static void signals_open_compose_cb(lv_event_t *e)
 {
     (void)e;
+    ff_intent_t in = {.kind = FF_INTENT_OPEN_COMPOSE, .u = {0}};
+    in.u.node_id = 0u;
+    ff_intent_emit(&in);
 }
 
 static void signals_build_header(lv_obj_t *parent)
@@ -112,7 +121,7 @@ static void signals_build_header(lv_obj_t *parent)
     lv_obj_set_style_bg_color(btn, lv_color_hex(FF_THEME_COLOR_SURFACE), 0);
     lv_obj_set_style_bg_opa(btn, LV_OPA_COVER, 0);
     lv_obj_set_style_radius(btn, LV_RADIUS_CIRCLE, 0);
-    lv_obj_add_event_cb(btn, signals_open_compose_stub_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_add_event_cb(btn, signals_open_compose_cb, LV_EVENT_CLICKED, NULL);
 
     lv_obj_t *plus = lv_label_create(btn);
     lv_label_set_text(plus, "+");

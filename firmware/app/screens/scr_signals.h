@@ -8,10 +8,13 @@
  * sending a canned reply, marking the feed read, or targeting a rally
  * point are all real behavior that needs core+meshclient (app/ff_wiring.c,
  * core/include/ff_crew.h's deferred `ff_crew_select_rally`), which a pure
- * render file must not reach into directly. Every interactive control
- * below is wired to a clearly-marked stub callback reserved for that
- * follow-up wiring, same convention as scr_radar.c's FLARE-button stub
- * and scr_nav.c's long-press-Settings stub.
+ * render file must not reach into directly.
+ *
+ * As of S16 slice c1 the "+" (open Compose) forwards through the intent
+ * seam (`ff_intent_emit`, app/include/ff_intent.h) — still zero domain
+ * logic here; the shell decides. The rally-row and canned-reply chips
+ * remain clearly-marked stub callbacks until S16 slice c2 converts them
+ * to intents, same convention as scr_radar.c's FLARE-button stub.
  */
 #ifndef FF_SCR_SIGNALS_H
 #define FF_SCR_SIGNALS_H

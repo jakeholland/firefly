@@ -6,18 +6,39 @@
  */
 #include "scr_nav.h"
 
+#include "ff_intent.h" /* S16c1 — the emit seam; see nav_long_press_cb */
 #include "ff_theme.h"
 #include "scr_flare.h" /* S10 slice b — lock chip + sender overlay */
 #include "scr_now.h" /* S07b — ff_scr_now_build, the Now face */
 #include "scr_radar.h"
 #include "scr_signals.h" /* S08c */
 
-/* TODO(S11 slice b): open the real settings screen once it exists. This
- * PR only reserves the hook, per the S06 PR B brief
- * ("long-press-anywhere hook reserved for Settings, stub target"). */
-static void nav_long_press_stub_cb(lv_event_t *e)
+/* Long-press-anywhere -> Settings: emits FF_INTENT_OPEN_SETTINGS through
+ * the intent seam (S16 slice c1 — this replaces the stub S06 reserved).
+ * Whether anything HAPPENS is the shell's decision, not this file's:
+ * today `ff_shell_intent` rejects it, deliberately, because the S11b
+ * Settings renderer does not exist yet (see ff_shell.c's judgment-call
+ * comment) — this screen just reports the gesture and stays a pure
+ * renderer. Unbound (goldens/headless), the emit is a no-op.
+ *
+ * TODO(S16 slice c3): A REAL FINGER CANNOT REACH THIS CALLBACK YET
+ * (PR #54 review, HIGH). The full-size tileview created below covers
+ * the puck; LVGL objects are CLICKABLE by default and nothing here sets
+ * LV_OBJ_FLAG_EVENT_BUBBLE, so `lv_indev_search_obj` resolves every
+ * on-puck press to the tileview/tiles and this handler only ever fires
+ * from a directly-delivered event (as test_scr_intent.c does — that
+ * test pins the callback body, not the gesture). Routing the physical
+ * gesture belongs to c3, which owns the tileview's input handling (the
+ * same work that disables its native swipe: whatever intercepts the
+ * press must also decide when it is a swipe) — do NOT fix it here with
+ * a bare EVENT_BUBBLE flag, which would also re-route the tile
+ * content's own clicks. Until c3, the long-press is doubly inert:
+ * unreachable at the input layer and rejected at the shell. */
+static void nav_long_press_cb(lv_event_t *e)
 {
     (void)e;
+    ff_intent_t in = {.kind = FF_INTENT_OPEN_SETTINGS, .u = {0}};
+    ff_intent_emit(&in);
 }
 
 /* Page-dot row: chrome that sits ON the puck (not inside any one tile),
@@ -92,9 +113,13 @@ void ff_scr_nav_build(ff_app_state_t const *state, ff_flare_t *flare_rt)
     lv_obj_set_style_border_width(puck, 0, 0);
     lv_obj_clear_flag(puck, LV_OBJ_FLAG_SCROLLABLE);
 
-    /* Long-press-anywhere -> Settings (S11 slice b), stubbed for now. */
+    /* Long-press-anywhere -> Settings: emits an intent (S16c1); the shell
+     * decides (rejected until the S11b renderer exists). NOTE: the
+     * tileview built below covers this object, so the gesture does not
+     * physically reach it yet — see nav_long_press_cb's TODO(S16 slice
+     * c3). */
     lv_obj_add_flag(puck, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_add_event_cb(puck, nav_long_press_stub_cb, LV_EVENT_LONG_PRESSED, NULL);
+    lv_obj_add_event_cb(puck, nav_long_press_cb, LV_EVENT_LONG_PRESSED, NULL);
 
     lv_obj_t *tileview = lv_tileview_create(puck);
     lv_obj_remove_style_all(tileview);
