@@ -107,6 +107,38 @@ float ff_layout_chord_half_width(float dy, float radius);
  */
 float ff_layout_safe_margin_x(float top_y, float h, float center, float radius, float safety_px);
 
+/**
+ * ff_layout_centered_band_max_width — the widest a rectangle of height
+ * `h`, CENTERED on the circle's own vertical axis at center-relative
+ * offset `cy`, can be while staying entirely inside a circle of
+ * `radius`, less `safety_px` of slack on each side. Never negative.
+ *
+ * The sibling of ff_layout_safe_margin_x for the other common phrasing:
+ * that one answers "how far must this row be inset", expressed in
+ * puck-local top-left coordinates; this one answers "how wide may this
+ * centered element be", expressed center-relative — which is the form
+ * every `*_DY` constant in this app's screen files is already written
+ * in, so callers don't have to convert coordinate spaces to ask.
+ *
+ * The subtlety it exists to encapsulate is which edge binds. A band
+ * centered at `cy` spans `[cy - h/2, cy + h/2]`, and the limit is set by
+ * whichever of those two edges is FARTHER from the circle's center-y —
+ * NOT by `cy` itself. Sizing to the chord at `cy` is the natural mistake
+ * and it silently over-grants: for the flare takeover's disclosure chip
+ * (cy=10, h=34) the chord at cy=10 is 219.8 while the true bound, set by
+ * the bottom edge at 27, is 218.3 — small there, and much larger for a
+ * tall element near a pole.
+ *
+ * PR #41 code review: the disclosure chip previously bounded its content
+ * by a BYTE count instead, which does not bound pixels at all in a
+ * proportional font — eleven `W`s rendered 80px wider than eleven
+ * average characters and put the chip 25px past the bezel. The byte cap
+ * looked like a guard rail and wasn't one. This is the query that
+ * actually answers the question, in the units the constraint is
+ * expressed in.
+ */
+float ff_layout_centered_band_max_width(float cy, float h, float radius, float safety_px);
+
 #ifdef __cplusplus
 }
 #endif

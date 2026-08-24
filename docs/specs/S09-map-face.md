@@ -1,4 +1,4 @@
-# S09 · app/map — vector map face (stretch for Lost Lands)
+# S09 · app/map — vector map face
 
 ## Purpose
 Radar's alternate view: the festpack's features + crew dots + rally pin + YOU marker. Mockup "Map — Lost Lands" is layout authority.

@@ -74,3 +74,19 @@ bool ff_flare_fmt_go_switches_lock(char const *locked_from_name, char const *tak
      * arrays, always NUL-terminated by the fixture loader / caller). */
     return strcmp(locked_from_name, takeover_from_name) != 0;
 }
+
+void ff_flare_fmt_lock_cost(char *out, size_t out_sz, char const *locked_from_name)
+{
+    if (out == NULL || out_sz == 0) {
+        return;
+    }
+
+    /* No honest name to show. Unreachable through the caller's gate —
+     * see this function's doc comment; a guard, not a covered path. */
+    char const *name = (locked_from_name != NULL && locked_from_name[0] != '\0') ? locked_from_name : "?";
+
+    /* Deliberately no length cap — see the doc comment. The name is
+     * emitted whole and the renderer clamps it in pixels, because pixels
+     * are the units the round glass is measured in and bytes are not. */
+    snprintf(out, out_sz, "GO DROPS LOCK - %s", name);
+}
