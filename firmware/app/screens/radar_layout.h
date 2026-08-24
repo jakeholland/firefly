@@ -227,14 +227,33 @@ void radar_layout_resolve_dots(radar_layout_registry_t const *reg, float const *
  * neutral version could not say at all.
  * ------------------------------------------------------------------- */
 
-/** Ring thickness of a cluster marker's wedges, in px. Sized against
- * RADAR_LAYOUT_DOT_PX so the wedges live INSIDE the marker's existing
- * footprint: the marker stays exactly one dot-diameter wide, so nothing
- * about the collision geometry above changes, and the count digit still
- * has RADAR_LAYOUT_DOT_PX - 2*this of clear middle to sit in.
- * Deliberately thicker than the 2px outline a lone STALE ("ghost") dot
- * gets, so the two never read as the same treatment. */
+/** Ring thickness of a cluster marker's wedges, in px — one value per
+ * freshness, mirroring the treatment a LONE dot already uses for the
+ * same fact. Sized against RADAR_LAYOUT_DOT_PX so the wedges live INSIDE
+ * the marker's existing footprint: the marker stays exactly one
+ * dot-diameter wide, so nothing about the collision geometry above
+ * changes, and the count digit still has clear middle to sit in.
+ *
+ * PR #41 UX review, BLOCKING 3. The first pass drew every wedge at one
+ * thickness and expressed staleness by crushing its OPACITY to 40%. That
+ * fails two ways. It is *relative* — a dimmed wedge only reads as dimmed
+ * next to a bright one, so a cluster where EVERY member is stale looks
+ * like an ordinary live marker and the user walks toward a
+ * forty-minute-old fix. And it is the WRONG IDIOM: a lone stale dot is
+ * hollow-and-bright (transparent fill, 2px crew-colored ring), so the
+ * face teaches "hollow means old" everywhere except here, where the
+ * first pass taught "dark means old" — and dark on a near-black puck
+ * reads as dropping out, a scarier and different fact than the true one.
+ * Measured: the stale violet wedge came out at 2.2:1 against the puck
+ * background, i.e. effectively invisible at arm's length.
+ *
+ * So freshness is now carried by THICKNESS at full color, which is
+ * absolute (it needs no neighbour to compare against) and matches the
+ * lone dot exactly: STALE_W is the lone ghost dot's own 2px border, at
+ * the same outer radius (lv_arc puts an arc's outer edge at the object
+ * bound, just as a border sits at the object edge). */
 #define RADAR_LAYOUT_CLUSTER_RING_W_PX 6.0f
+#define RADAR_LAYOUT_CLUSTER_RING_STALE_W_PX 2.0f
 
 /** Angular gap between adjacent wedges, in degrees — the dark marker
  * fill showing through, so two adjacent members' colours read as two
@@ -269,8 +288,15 @@ typedef struct {
 /**
  * radar_layout_cluster_wedges — the per-member wedges for the cluster
  * anchored at `cluster_id`, given the full `resolved[0..n)` array
- * radar_layout_resolve_dots produced. Writes up to `out_max` wedges and
- * returns how many it wrote.
+ * radar_layout_resolve_dots produced. Returns how many wedges it wrote,
+ * or **-1 if the cluster has more members than `out_max` can hold** —
+ * it never writes a PARTIAL ring. Emitting out_max wedges and reporting
+ * the short count would let this function satisfy its own signature by
+ * hiding a crew member, which is the exact lie by omission the
+ * clustering ruling above exists to prevent (PR #41 code review).
+ * Callers should treat a negative return as "draw no wedges", degrading
+ * to the plain count marker rather than to a ring showing some friends
+ * and not others.
  *
  * Members are emitted in ascending ORIGINAL DOT INDEX order — the same
  * order the caller's own `dots` array is in, and a stable one, so the

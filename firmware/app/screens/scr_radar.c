@@ -94,14 +94,14 @@ static lv_obj_t *radar_make_chip(lv_obj_t *parent, char const *text, uint32_t bg
  * inside the marker's existing one-dot-diameter footprint and no
  * collision geometry changes.
  *
- * `stale` dims the wedge instead of hiding or recolouring it, mirroring
- * the outline-only "ghost" treatment a lone stale dot already gets: the
- * old neutral marker could not express per-member freshness at all
- * (its own comment said as much — "no single crew color or stale/fresh
- * convention applies honestly to a mixed group"), so a mixed cluster
- * silently flattened a stale member and a live one into the same grey
- * digit. Per-member wedges make that honest — each member's own
- * freshness is now shown at wedge resolution.
+ * `stale` selects the WIDTH, not the opacity (PR #41 UX review,
+ * BLOCKING 3 — see RADAR_LAYOUT_CLUSTER_RING_STALE_W_PX's doc comment
+ * for the measurements and the full reasoning). A stale member's wedge
+ * is drawn at the lone ghost dot's own 2px, at the same outer radius and
+ * the same LV_OPA_70, so "hollow/thin means old" is now one idiom across
+ * the whole face instead of two contradictory ones. The previous pass
+ * dimmed the fill instead, which only read as dim next to a bright
+ * neighbour — so an all-stale cluster read as live.
  *
  * lv_obj_remove_style_all() leaves the INDICATOR part at arc_width 0 and
  * the KNOB part at bg_opa 0, so neither draws; only the MAIN part
@@ -123,12 +123,35 @@ static void radar_make_cluster_wedge(lv_obj_t *parent, radar_layout_wedge_t cons
     lv_arc_set_rotation(arc, 0);
     lv_arc_set_bg_angles(arc, (lv_value_precise_t)wedge->start_deg, (lv_value_precise_t)wedge->end_deg);
 
-    lv_obj_set_style_arc_width(arc, (int32_t)RADAR_LAYOUT_CLUSTER_RING_W_PX, LV_PART_MAIN);
+    int32_t w = (int32_t)(stale ? RADAR_LAYOUT_CLUSTER_RING_STALE_W_PX : RADAR_LAYOUT_CLUSTER_RING_W_PX);
+    lv_obj_set_style_arc_width(arc, w, LV_PART_MAIN);
     lv_obj_set_style_arc_color(arc, lv_color_hex(color_hex), LV_PART_MAIN);
-    lv_obj_set_style_arc_opa(arc, stale ? LV_OPA_40 : LV_OPA_COVER, LV_PART_MAIN);
-    /* Square wedge ends: rounded caps on a 6px arc would round away most
-     * of a small wedge and blur the gaps that separate members. */
+    /* Full crew color either way — LV_OPA_70 for stale is the lone ghost
+     * dot's own border opacity, not a further dimming on top of the
+     * thickness change. */
+    lv_obj_set_style_arc_opa(arc, stale ? LV_OPA_70 : LV_OPA_COVER, LV_PART_MAIN);
+    /* Square wedge ends: rounded caps on a small arc would round away
+     * most of a narrow wedge and blur the gaps that separate members. */
     lv_obj_set_style_arc_rounded(arc, false, LV_PART_MAIN);
+}
+
+/* True iff EVERY member drawn on this cluster marker has a stale fix.
+ *
+ * Reads the same per-dot `stale` display flag the lone-dot branch below
+ * already branches on to pick a style — an aggregation of a fact
+ * `ff_radar_view_t` carries, not a decision about what that fact should
+ * be (no domain `if` enters this file; CLAUDE.md). It exists because the
+ * count digit is the brightest, crispest element on the marker, so on a
+ * marker where nothing is current the most confident-looking thing on
+ * screen was the number (PR #41 UX review, BLOCKING 3). */
+static bool radar_cluster_all_stale(ff_radar_view_t const *r, radar_layout_wedge_t const *wedges, int n_wedges)
+{
+    for (int w = 0; w < n_wedges; w++) {
+        if (!r->dots[wedges[w].index].stale) {
+            return false;
+        }
+    }
+    return n_wedges > 0;
 }
 
 /* A translucent ring hugging the puck's own edge — the STALE "rim tint"
@@ -262,7 +285,17 @@ static void radar_build_dots(lv_obj_t *parent, ff_radar_view_t const *r, radar_l
             lv_obj_set_style_bg_opa(dot, LV_OPA_COVER, 0);
 
             radar_layout_wedge_t wedges[FF_CREW_MAX];
+            /* Negative means the resolver refused to emit a PARTIAL ring
+             * rather than silently drop a member (see
+             * radar_layout_cluster_wedges) — draw no wedges at all in
+             * that case, which degrades to the plain count marker rather
+             * than to a ring that shows some friends and not others.
+             * Unreachable at this call site: out_max is FF_CREW_MAX and a
+             * cluster can never exceed it. */
             int n_wedges = radar_layout_cluster_wedges(resolved, n_dots, (int)i, wedges, FF_CREW_MAX);
+            if (n_wedges < 0) {
+                n_wedges = 0;
+            }
             for (int w = 0; w < n_wedges; w++) {
                 ff_radar_dot_t const *member = &r->dots[wedges[w].index];
                 radar_make_cluster_wedge(dot, &wedges[w], ff_theme_crew_color(member->color_idx), member->stale);
@@ -271,7 +304,14 @@ static void radar_build_dots(lv_obj_t *parent, ff_radar_view_t const *r, radar_l
             char count_buf[4];
             snprintf(count_buf, sizeof(count_buf), "%d", resolved[i].cluster_size);
             lv_label_set_text(label, count_buf);
-            lv_obj_set_style_text_color(label, lv_color_hex(FF_THEME_COLOR_INK), 0);
+            /* The digit follows the marker's overall freshness (PR #41
+             * UX review, BLOCKING 3): full INK while at least one member
+             * is current, MUTED when none are. Otherwise the one element
+             * that looks like a hard fact stays at full strength on the
+             * exact marker where nothing on it is current. */
+            bool all_stale = radar_cluster_all_stale(r, wedges, n_wedges);
+            lv_obj_set_style_text_color(
+                label, lv_color_hex(all_stale ? FF_THEME_COLOR_MUTED : FF_THEME_COLOR_INK), 0);
             /* The label is built before the wedges in this function's
              * object order, so lift it back to the top of the marker's
              * children — LVGL draws siblings in tree order, and a 6px

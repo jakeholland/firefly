@@ -75,36 +75,44 @@ bool ff_flare_fmt_go_switches_lock(char const *locked_from_name, char const *tak
     return strcmp(locked_from_name, takeover_from_name) != 0;
 }
 
-/* One name, truncated to FF_FLARE_FMT_TRADE_NAME_MAX printable characters
- * (see that macro's doc comment for why truncation is the right failure
- * mode on a round display), or "?" when there is no honest name to show.
- * `dst` must have room for FF_FLARE_FMT_TRADE_NAME_MAX + 1 bytes. */
-static void flare_fmt_trade_name(char *dst, size_t dst_sz, char const *name)
+/* Largest index <= `cut` that is NOT a UTF-8 continuation byte
+ * (0b10xxxxxx) — i.e. the end of the last COMPLETE codepoint at or
+ * before a byte budget. Crew names are untrusted UTF-8 off the radio
+ * (see FF_FLARE_FMT_LOCK_NAME_MAX's doc comment), so a fixed byte cut
+ * can land mid-codepoint; backing off here means the chip never renders
+ * a severed one. Pure ASCII (every fixture and every realistic crew
+ * short name) never enters the loop at all. */
+static size_t flare_fmt_utf8_backoff(char const *s, size_t cut)
 {
-    if (name == NULL || name[0] == '\0') {
-        snprintf(dst, dst_sz, "?");
-        return;
+    while (cut > 0 && ((unsigned char)s[cut] & 0xC0u) == 0x80u) {
+        cut--;
     }
-    snprintf(dst, dst_sz, "%.*s", FF_FLARE_FMT_TRADE_NAME_MAX, name);
+    return cut;
 }
 
-void ff_flare_fmt_lock_trade(char *out, size_t out_sz, char const *locked_from_name,
-                              char const *takeover_from_name, char const *arrow)
+void ff_flare_fmt_lock_cost(char *out, size_t out_sz, char const *locked_from_name)
 {
     if (out == NULL || out_sz == 0) {
         return;
     }
 
-    char from[FF_FLARE_FMT_TRADE_NAME_MAX + 1];
-    char to[FF_FLARE_FMT_TRADE_NAME_MAX + 1];
-    flare_fmt_trade_name(from, sizeof(from), locked_from_name);
-    flare_fmt_trade_name(to, sizeof(to), takeover_from_name);
+    /* No honest name to show. Unreachable through the caller's gate —
+     * see this function's doc comment; a guard, not a covered path. */
+    if (locked_from_name == NULL || locked_from_name[0] == '\0') {
+        snprintf(out, out_sz, "GO DROPS LOCK - ?");
+        return;
+    }
 
-    /* ASCII ">" fallback: every font this repo compiles covers it, so a
-     * caller that has no glyph to offer still gets a directional
-     * separator rather than a bare space (which would read as two
-     * unrelated names). */
-    char const *sep = (arrow != NULL && arrow[0] != '\0') ? arrow : ">";
+    size_t len = strlen(locked_from_name);
+    if (len <= FF_FLARE_FMT_LOCK_NAME_MAX) {
+        snprintf(out, out_sz, "GO DROPS LOCK - %s", locked_from_name);
+        return;
+    }
 
-    snprintf(out, out_sz, "GO: %s %s %s", from, sep, to);
+    /* Over budget: cut to the last complete codepoint and SAY SO. The
+     * ellipsis is load-bearing, not decoration — a cut name that doesn't
+     * look cut is a different person's name rendered as this one's
+     * (PR #41 UX review, BLOCKING 2). */
+    size_t cut = flare_fmt_utf8_backoff(locked_from_name, FF_FLARE_FMT_LOCK_NAME_MAX);
+    snprintf(out, out_sz, "GO DROPS LOCK - %.*s%s", (int)cut, locked_from_name, FF_FLARE_FMT_ELLIPSIS);
 }

@@ -453,9 +453,14 @@ static void test_cluster_wedges_guard_paths_return_zero(void)
     TEST_ASSERT_EQUAL_INT(0, radar_layout_cluster_wedges(resolved, 2, 7, wedges, FF_CREW_MAX));
 }
 
-static void test_cluster_wedges_respect_out_max(void)
+static void test_cluster_wedges_refuse_rather_than_drop_a_member(void)
 {
-    /* Never writes past the caller's buffer, and reports what it wrote. */
+    /* PR #41 code review: a buffer too small for the whole cluster must
+     * REFUSE (-1), not write out_max wedges and report the short count.
+     * The short-count form would let this function satisfy its signature
+     * by hiding a crew member — the exact lie by omission the clustering
+     * ruling exists to prevent, one layer further in. Unreachable from
+     * scr_radar.c; the point is that it cannot be reached at all. */
     radar_layout_dot_result_t resolved[4];
     for (int i = 0; i < 4; i++) {
         resolved[i].dx = 0.0f;
@@ -466,10 +471,16 @@ static void test_cluster_wedges_respect_out_max(void)
 
     radar_layout_wedge_t wedges[4];
     memset(wedges, 0, sizeof(wedges));
-    int n = radar_layout_cluster_wedges(resolved, 4, 0, wedges, 2);
-    TEST_ASSERT_EQUAL_INT(2, n);
-    TEST_ASSERT_EQUAL_INT(0, wedges[2].index);
-    TEST_ASSERT_EQUAL_FLOAT(0.0f, wedges[2].start_deg);
+    TEST_ASSERT_EQUAL_INT_MESSAGE(-1, radar_layout_cluster_wedges(resolved, 4, 0, wedges, 2),
+                                    "a cluster larger than out_max must refuse, not emit a partial ring");
+    /* And nothing was written on the refusal path. */
+    for (int k = 0; k < 4; k++) {
+        TEST_ASSERT_EQUAL_INT(0, wedges[k].index);
+        TEST_ASSERT_EQUAL_FLOAT(0.0f, wedges[k].start_deg);
+    }
+
+    /* Exactly-fits is not an overflow. */
+    TEST_ASSERT_EQUAL_INT(4, radar_layout_cluster_wedges(resolved, 4, 0, wedges, 4));
 }
 
 static void test_cluster_wedges_match_a_real_resolve_pass(void)
@@ -533,7 +544,7 @@ int main(void)
     RUN_TEST(test_cluster_wedges_two_members_split_left_right);
     RUN_TEST(test_cluster_wedges_single_member_is_a_full_ring);
     RUN_TEST(test_cluster_wedges_guard_paths_return_zero);
-    RUN_TEST(test_cluster_wedges_respect_out_max);
+    RUN_TEST(test_cluster_wedges_refuse_rather_than_drop_a_member);
     RUN_TEST(test_cluster_wedges_match_a_real_resolve_pass);
 
     return UNITY_END();

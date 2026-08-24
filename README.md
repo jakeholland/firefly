@@ -40,7 +40,7 @@ The middle one is the point of the whole project: most trackers keep pointing co
 
 | Set times, honestly | A flare arriving |
 |---|---|
-| <img src="docs/screens/now-tbd.png" width="200" alt="Now face listing Friday's Lost Lands lineup under a SET TIMES TBD banner"> | <img src="docs/screens/flare-takeover.png" width="200" alt="Full-screen takeover reading KEV IS FLARING, E - 40 m, above an amber chip reading GO: DANA to KEV — the disclosure that pressing GO trades an existing navigation lock"> |
+| <img src="docs/screens/now-tbd.png" width="200" alt="Now face listing Friday's Lost Lands lineup under a SET TIMES TBD banner"> | <img src="docs/screens/flare-takeover.png" width="200" alt="Full-screen takeover reading KEV IS FLARING, E - 40 m, above an amber chip reading GO DROPS LOCK - DANA — the disclosure that pressing GO costs you the navigation lock you already have"> |
 | Lost Lands hasn't published set times yet, so the puck says so and lists the day instead of inventing a schedule. | Press and hold, and your crew's pucks light up and point at you. If you were already navigating to someone else, it tells you what GO will cost you. |
 
 | Signals | Typing, off-grid |

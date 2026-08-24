@@ -351,50 +351,53 @@ void ff_scr_flare_build_takeover(ff_app_flare_t const *flare, ff_flare_t *rt)
     /* PR #20 UX review (finding #3, BLOCKING — "GO must disclose what it
      * costs"): if a DIFFERENT node is already locked, pressing GO
      * silently drops it (ff_flare_go() REPLACES any existing lock — see
-     * ff_flare.h's doc comment on that function). Amendment Ruling 2
-     * requires the locked node to be "a fact the user chose" — a choice
-     * that hides its cost isn't informed. Shown as a solid amber chip
-     * (the same high-contrast treatment ff_scr_flare_build_lock_chip
-     * already uses on the Radar face, which this same review round
-     * called out as "clean, immediate, correct" — reusing a component the
-     * review already approved of, not inventing a new visual language for
-     * one screen) in a FIXED slot so GO/DISMISS never move based on
-     * whether it's shown (keeps the button-gap math in one place). Only
-     * shown when the lock would actually change (same sender re-flaring
-     * while already locked on them costs nothing to confirm again).
+     * ff_flare.h's doc comment on that function). That finding is the
+     * source of this chip; S10's Amendment Ruling 2 is the source of the
+     * *reason it matters* ("the currently-locked node must always be a
+     * fact the user chose"), but states nothing about a chip or a
+     * disclosure — PR #41's code review caught this file conflating the
+     * two, and the citation is split correctly here now.
      *
-     * ISSUE #27 — the same disclosure, re-worded for a glance instead of
-     * a read. It used to be a 36-character, two-clause sentence
-     * ("LOCKED ON DANA - GO SWITCHES TO KEV") set in 14px chip type; it
-     * is now "GO: DANA > KEV" in 20px, built by ff_flare_fmt_lock_trade()
-     * (see that function's doc comment for the three facts Amendment
-     * Ruling 2 requires and where each one lives in the short form —
-     * nothing disclosed was dropped to buy the brevity).
+     * Shown as a solid amber chip (the same treatment
+     * ff_scr_flare_build_lock_chip uses on the Radar face, which an
+     * earlier review called "clean, immediate, correct") in a FIXED slot
+     * so GO/DISMISS never move based on whether it's shown (keeps the
+     * button-gap math in one place). Only shown when the lock would
+     * actually change (same sender re-flaring while already locked on
+     * them costs nothing to confirm again).
+     *
+     * ISSUE #27 / PR #41 UX review BLOCKING 1 — the wording. The original
+     * was a 36-character sentence ("LOCKED ON DANA - GO SWITCHES TO KEV")
+     * at 14px: correct, but a read rather than a glance on the one screen
+     * that interrupts the user mid-panic. This PR's first attempt at
+     * shortening it ("GO: DANA > KEV") was faster to SEE and slower to
+     * UNDERSTAND — it deleted the sentence's verb, and the verb was the
+     * disclosure; "A > B" reads as "via"/"then" everywhere else a person
+     * meets it, so it parsed as an itinerary, i.e. as KEEPING the lock.
+     * It also dropped the word LOCK, severing the only vocabulary link to
+     * the Radar face's own "LOCKED - DANA" chip.
+     *
+     * Now "GO DROPS LOCK - DANA": a verb of loss, the noun the user
+     * already knows, and the same " - <name>" tail the Radar chip uses.
+     * See ff_flare_fmt_lock_cost's doc comment for why the incoming
+     * sender's name is deliberately not repeated here (it is the 22px
+     * headline directly above, built unconditionally by this same
+     * function).
      *
      * FF_THEME_FONT_HEADLINE (20px), not FF_THEME_FONT_NAME (22px): the
-     * GO button's own label is 22px, and this chip is already an amber
-     * pill with dark text sitting 15px above an amber pill with dark
-     * text. Matching GO's type as well would have made an INERT
-     * indicator (the chip is not clickable) look like a second button —
-     * a mis-tap invitation, docs/review/ux-raver.md checklist item 2. One
-     * step down the scale, plus a 34px height against GO's 56px, keeps
-     * the two visually ranked.
-     *
-     * LV_SYMBOL_RIGHT as the arrow, per issue #27's constraint 1
-     * ("verify the arrow renders before designing around it"): U+2192 is
-     * NOT in the compiled Montserrat subset (its text range is
-     * 0x20-0x7F, 0xB0, 0x2022 — the same gap that turned U+00B7 MIDDLE
-     * DOT into a hyphen everywhere else in this file), but LVGL's
-     * built-in FontAwesome symbol range IS compiled into those same
-     * fonts, and 61524 == 0xF054 == LV_SYMBOL_RIGHT appears in the range
-     * list of every montserrat size this repo enables (see the
-     * `--font FontAwesome5-Solid+Brands+Regular.woff -r ...` line at the
-     * top of lvgl's lv_font_montserrat_20.c). Confirmed rendering as a
-     * chevron, not tofu, in the regenerated golden. */
+     * GO button's own label is 22px, and this chip is an amber pill with
+     * dark text sitting 15px above an amber pill with dark text. Matching
+     * GO's type as well would push an INERT indicator (the chip is not
+     * clickable) further toward looking like a second button — a mis-tap
+     * invitation, docs/review/ux-raver.md checklist item 2. One step down
+     * the scale, a 34px height against GO's 56px, and a width the longer
+     * wording now pushes clear of GO's 190px keep the two ranked. The
+     * full-pill radius is kept DELIBERATELY rather than squared off: it
+     * is what makes this read as the same component as the Radar face's
+     * lock chip, which is the connection BLOCKING 1 asked for. */
     if (flare->locked && ff_flare_fmt_go_switches_lock(flare->locked_from_name, flare->takeover_from_name)) {
-        char lock_line[40];
-        ff_flare_fmt_lock_trade(lock_line, sizeof(lock_line), flare->locked_from_name, flare->takeover_from_name,
-                                 LV_SYMBOL_RIGHT);
+        char lock_line[48];
+        ff_flare_fmt_lock_cost(lock_line, sizeof(lock_line), flare->locked_from_name);
         flare_make_chip(puck, lock_line, FF_THEME_COLOR_AMBER, FF_THEME_COLOR_BG, FF_THEME_FONT_HEADLINE,
                          (int32_t)FLARE_TAKEOVER_LOCK_LINE_DY);
     }

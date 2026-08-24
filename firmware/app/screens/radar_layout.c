@@ -323,8 +323,20 @@ int radar_layout_cluster_wedges(radar_layout_dot_result_t const *resolved, int n
     float slice = 360.0f / (float)count;
     float half_gap = RADAR_LAYOUT_CLUSTER_WEDGE_GAP_DEG / 2.0f;
 
+    /* Refuse rather than emit a partial ring (PR #41 code review): this
+     * function's whole reason for existing is that a dropped member is
+     * "the same lie by omission as hiding the dot", and quietly writing
+     * out_max wedges and reporting the short count would satisfy the
+     * signature by doing exactly that. Unreachable from scr_radar.c
+     * (out_max is FF_CREW_MAX and count <= n <= FF_CREW_MAX); the point
+     * is that the contract cannot be satisfied by hiding someone even if
+     * a future caller passes a smaller buffer. */
+    if (count > out_max) {
+        return -1;
+    }
+
     int written = 0;
-    for (int k = 0; k < count && written < out_max; k++) {
+    for (int k = 0; k < count; k++) {
         /* 270 == 12 o'clock in LVGL's arc convention (0 == 3 o'clock,
          * clockwise). */
         float base = 270.0f + (float)k * slice;

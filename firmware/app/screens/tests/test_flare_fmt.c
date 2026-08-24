@@ -191,112 +191,160 @@ static void S10_ACn_go_switches_lock_no_takeover_name_false(void)
 }
 
 /* ------------------------------------------------------------------- */
-/* ff_flare_fmt_lock_trade (issue #27 — the glance-sized disclosure)     */
-/*                                                                       */
-/* Every assertion below uses the ASCII ">" fallback rather than         */
-/* LV_SYMBOL_RIGHT: this file has no LVGL dependency by design (see the  */
-/* header comment), and pinning the tests to a private FontAwesome       */
-/* codepoint would make them a font-subset test rather than a formatting */
-/* test. What the real caller passes is verified where it actually       */
-/* matters — the regenerated flare_takeover_locked.png golden, where a   */
-/* missing glyph would show as tofu.                                     */
+/* ff_flare_fmt_lock_cost (issue #27; re-worded per PR #41 UX review     */
+/* BLOCKING 1 and BLOCKING 2)                                            */
 /* ------------------------------------------------------------------- */
 
-static void S10_ACn_lock_trade_names_both_sides_of_the_arrow(void)
+static void S10_ACn_lock_cost_names_the_verb_the_lock_and_the_holder(void)
 {
-    /* The whole point of the short form: the lock's CURRENT holder and
-     * what GO would trade it for, in that order, with the button that
-     * spends it named. Issue #27's "the information that must survive". */
-    char buf[40];
-    ff_flare_fmt_lock_trade(buf, sizeof(buf), "DANA", "KEV", NULL);
-    TEST_ASSERT_EQUAL_STRING("GO: DANA > KEV", buf);
+    /* The three things PR #20's UX review finding #3 requires the chip to
+     * say, in the form PR #41's UX review asked for: what pressing GO
+     * DOES (a verb of loss), to WHAT (the lock — the user's only
+     * vocabulary for this, and the word the Radar face's own chip uses),
+     * and WHOSE (the name). The incoming sender is deliberately absent —
+     * it is the headline directly above, pinned separately by
+     * test_scr_flare.c. */
+    char buf[48];
+    ff_flare_fmt_lock_cost(buf, sizeof(buf), "DANA");
+    TEST_ASSERT_EQUAL_STRING("GO DROPS LOCK - DANA", buf);
 }
 
-static void S10_ACn_lock_trade_uses_callers_arrow_glyph(void)
+static void S10_ACn_lock_cost_reviewers_collision_pair_now_renders_distinctly(void)
 {
-    /* The separator is the caller's to choose (scr_flare.c passes
-     * LV_SYMBOL_RIGHT) — this module must not bake in a glyph it has no
-     * way to know renders. */
-    char buf[40];
-    ff_flare_fmt_lock_trade(buf, sizeof(buf), "DANA", "KEV", "=>");
-    TEST_ASSERT_EQUAL_STRING("GO: DANA => KEV", buf);
+    /* PR #41 UX review BLOCKING 2, the reviewer's exact repro. The
+     * previous two-name form rendered ALEXANDRIA-locked /
+     * ALEXANDRINA-flaring as "GO: ALEXANDRI > ALEXANDRI" — a trade of a
+     * person for themselves, which reads as "costs nothing, press GO",
+     * the precise outcome the chip exists to prevent.
+     *
+     * Two independent things fix it, and this pins both:
+     *   1. STRUCTURAL — there is only one name on the chip now, so a
+     *      chip can no longer state an identity between two people at
+     *      all. That is the reviewer's own preferred fix, and it is the
+     *      one that makes the failure mode inexpressible rather than
+     *      merely unlikely.
+     *   2. BUDGET — the single-name wording frees enough width that the
+     *      cap rose from 9 to 11, so this particular pair now renders
+     *      whole on both sides rather than being cut at all. */
+    char a[48];
+    char b[48];
+    ff_flare_fmt_lock_cost(a, sizeof(a), "ALEXANDRIA");
+    ff_flare_fmt_lock_cost(b, sizeof(b), "ALEXANDRINA");
+    TEST_ASSERT_EQUAL_STRING("GO DROPS LOCK - ALEXANDRIA", a);
+    TEST_ASSERT_EQUAL_STRING("GO DROPS LOCK - ALEXANDRINA", b);
+    TEST_ASSERT_TRUE_MESSAGE(strcmp(a, b) != 0, "two distinct crew names must not render as the same chip");
+
+    /* And the reviewer's second pair, MIKE SMITH / MIKE SMYTHE, which
+     * the old form cut to "MIKE SMIT" / "MIKE SMYT". */
+    ff_flare_fmt_lock_cost(a, sizeof(a), "MIKE SMITH");
+    ff_flare_fmt_lock_cost(b, sizeof(b), "MIKE SMYTHE");
+    TEST_ASSERT_EQUAL_STRING("GO DROPS LOCK - MIKE SMITH", a);
+    TEST_ASSERT_EQUAL_STRING("GO DROPS LOCK - MIKE SMYTHE", b);
 }
 
-static void S10_ACn_lock_trade_empty_arrow_falls_back_to_ascii(void)
+static void S10_ACn_lock_cost_shared_prefix_over_budget_still_looks_cut(void)
 {
-    /* An empty string is as unusable as NULL — both must still produce a
-     * DIRECTIONAL separator, never a bare space that would read as two
-     * unrelated names ("GO: DANA KEV" discloses nothing about which way
-     * the trade goes). */
-    char buf[40];
-    ff_flare_fmt_lock_trade(buf, sizeof(buf), "DANA", "KEV", "");
-    TEST_ASSERT_EQUAL_STRING("GO: DANA > KEV", buf);
+    /* The residual case, stated honestly rather than papered over: two
+     * names that AGREE for the whole budget and both exceed it still
+     * produce the same chip. That is ordinary display truncation, and
+     * the ellipsis is what keeps it honest — the chip visibly says "this
+     * name is longer than what you're reading" rather than presenting a
+     * cut name as a whole one.
+     *
+     * Crucially it is no longer the BLOCKING 2 failure: with one name
+     * there is no second name for it to be equated WITH, so the chip
+     * never implies the trade is free. It just identifies its subject
+     * less precisely, while saying so. */
+    char a[48];
+    char b[48];
+    ff_flare_fmt_lock_cost(a, sizeof(a), "ALEXANDRINAX");
+    ff_flare_fmt_lock_cost(b, sizeof(b), "ALEXANDRINAY");
+    TEST_ASSERT_EQUAL_STRING("GO DROPS LOCK - ALEXANDRINA...", a);
+    TEST_ASSERT_EQUAL_STRING("GO DROPS LOCK - ALEXANDRINA...", b);
+    TEST_ASSERT_NOT_NULL_MESSAGE(strstr(a, FF_FLARE_FMT_ELLIPSIS),
+                                  "a name cut short must always show that it was cut");
 }
 
-static void S10_ACn_lock_trade_missing_name_is_explicitly_unknown(void)
+static void S10_ACn_lock_cost_truncated_name_looks_truncated(void)
+{
+    /* The floor PR #41's UX reviewer asked for: a cut name must LOOK cut,
+     * so it is never mistaken for a whole one. */
+    char buf[48];
+    ff_flare_fmt_lock_cost(buf, sizeof(buf), "BARTHOLOMEWWWWW");
+    TEST_ASSERT_EQUAL_STRING("GO DROPS LOCK - BARTHOLOMEW...", buf);
+}
+
+static void S10_ACn_lock_cost_exact_max_length_name_is_not_truncated(void)
+{
+    /* Both sides of the FF_FLARE_FMT_LOCK_NAME_MAX boundary: a name
+     * exactly at budget survives whole and gets NO ellipsis (an ellipsis
+     * on an intact name would be its own small lie). */
+    char buf[48];
+    ff_flare_fmt_lock_cost(buf, sizeof(buf), "ALEXANDRIA1");
+    TEST_ASSERT_EQUAL_STRING("GO DROPS LOCK - ALEXANDRIA1", buf);
+    ff_flare_fmt_lock_cost(buf, sizeof(buf), "ALEXANDRIA12");
+    TEST_ASSERT_EQUAL_STRING("GO DROPS LOCK - ALEXANDRIA1...", buf);
+}
+
+static void S10_ACn_lock_cost_truncation_never_severs_a_codepoint(void)
+{
+    /* Crew names are untrusted UTF-8 off the radio (PR #41 code review,
+     * minor finding: the cap is a BYTE budget). A cut landing mid-glyph
+     * backs off to the last complete codepoint instead of emitting a
+     * severed one. "ANDREEEEEEE" + "E-acute" puts a 2-byte codepoint
+     * across the 11-byte boundary. */
+    char buf[48];
+    ff_flare_fmt_lock_cost(buf, sizeof(buf), "ANDREEEEEEE\xC3\x89X");
+    TEST_ASSERT_EQUAL_STRING("GO DROPS LOCK - ANDREEEEEEE...", buf);
+
+    /* And a codepoint that ends exactly ON the budget is kept whole. */
+    ff_flare_fmt_lock_cost(buf, sizeof(buf), "ANDREEEEE\xC3\x89X");
+    TEST_ASSERT_EQUAL_STRING("GO DROPS LOCK - ANDREEEEE\xC3\x89...", buf);
+}
+
+static void S10_ACn_lock_cost_missing_name_is_explicitly_unknown(void)
 {
     /* CLAUDE.md's honesty rule: "?" (the marker
      * ff_scr_flare_build_lock_chip already uses), never an invented
-     * identity. Defensive — the caller gates on
-     * ff_flare_fmt_go_switches_lock, which is already false for either
-     * name being empty. */
-    char buf[40];
-    ff_flare_fmt_lock_trade(buf, sizeof(buf), "", "KEV", NULL);
-    TEST_ASSERT_EQUAL_STRING("GO: ? > KEV", buf);
-    ff_flare_fmt_lock_trade(buf, sizeof(buf), "DANA", NULL, NULL);
-    TEST_ASSERT_EQUAL_STRING("GO: DANA > ?", buf);
+     * identity. Defensive only — the caller gates on
+     * ff_flare_fmt_go_switches_lock, which is already false for an empty
+     * locked name, so no chip is built at all. Tested because the guard
+     * exists, not because the path ships. */
+    char buf[48];
+    ff_flare_fmt_lock_cost(buf, sizeof(buf), "");
+    TEST_ASSERT_EQUAL_STRING("GO DROPS LOCK - ?", buf);
+    ff_flare_fmt_lock_cost(buf, sizeof(buf), NULL);
+    TEST_ASSERT_EQUAL_STRING("GO DROPS LOCK - ?", buf);
 }
 
-static void S10_ACn_lock_trade_truncates_long_names_to_stay_on_glass(void)
+static void S10_ACn_lock_cost_worst_case_fits_the_callers_buffer(void)
 {
-    /* FF_APP_NAME_LEN is 16, so a name can legitimately be 15 characters.
-     * Two of those plus the prefix and arrow is wider than the round
-     * glass at the chip's y-offset — truncation is the honest failure
-     * mode (a clipped name still identifies who you'd be dropping; a name
-     * rendered past the bezel identifies nobody). Pins the exact
-     * FF_FLARE_FMT_TRADE_NAME_MAX boundary: 9 kept, the 10th dropped. */
-    char buf[40];
-    ff_flare_fmt_lock_trade(buf, sizeof(buf), "ABCDEFGHIJKLMNO", "PQRSTUVWXYZ", NULL);
-    TEST_ASSERT_EQUAL_STRING("GO: ABCDEFGHI > PQRSTUVWX", buf);
+    /* scr_flare.c declares char lock_line[48]; the longest string this
+     * function can produce is "GO DROPS LOCK - " (16) + 11 + "..." (3)
+     * = 30 bytes + NUL. Asserting it here means shrinking that call-site
+     * buffer, or growing FF_FLARE_FMT_LOCK_NAME_MAX past what it holds,
+     * fails a test rather than silently truncating a disclosure on real
+     * hardware. */
+    char buf[48];
+    ff_flare_fmt_lock_cost(buf, sizeof(buf), "ABCDEFGHIJKLMNO");
+    TEST_ASSERT_TRUE_MESSAGE(strlen(buf) < 48, "worst-case lock-cost line must fit scr_flare.c's lock_line[48]");
 }
 
-static void S10_ACn_lock_trade_exact_max_length_name_is_not_truncated(void)
-{
-    /* The other side of the same boundary — a name EXACTLY
-     * FF_FLARE_FMT_TRADE_NAME_MAX long must survive whole. */
-    char buf[40];
-    ff_flare_fmt_lock_trade(buf, sizeof(buf), "ABCDEFGHI", "KEV", NULL);
-    TEST_ASSERT_EQUAL_STRING("GO: ABCDEFGHI > KEV", buf);
-}
-
-static void S10_ACn_lock_trade_worst_case_fits_the_callers_buffer(void)
-{
-    /* scr_flare.c declares char lock_line[40]; the longest string this
-     * function can ever produce with the 3-byte LV_SYMBOL_RIGHT is
-     * "GO: " + 9 + " " + 3 + " " + 9 = 27 bytes + NUL. Asserting it here
-     * means shrinking that call-site buffer, or growing
-     * FF_FLARE_FMT_TRADE_NAME_MAX past what it can hold, fails a test
-     * rather than silently truncating a disclosure on real hardware. */
-    char buf[40];
-    ff_flare_fmt_lock_trade(buf, sizeof(buf), "ABCDEFGHIJKLMNO", "PQRSTUVWXYZABCDE", "\xEF\x81\x94");
-    TEST_ASSERT_TRUE_MESSAGE(strlen(buf) < 40, "worst-case trade line must fit scr_flare.c's lock_line[40]");
-}
-
-static void S10_ACn_lock_trade_truncates_rather_than_overflowing(void)
+static void S10_ACn_lock_cost_truncates_rather_than_overflowing(void)
 {
     /* Same snprintf discipline as every other formatter here: a short
      * buffer truncates, never overflows. */
     char buf[8];
     memset(buf, 'x', sizeof(buf));
-    ff_flare_fmt_lock_trade(buf, sizeof(buf), "DANA", "KEV", NULL);
-    TEST_ASSERT_EQUAL_STRING("GO: DAN", buf);
+    ff_flare_fmt_lock_cost(buf, sizeof(buf), "DANA");
+    TEST_ASSERT_EQUAL_STRING("GO DROP", buf);
 }
 
-static void S10_ACn_lock_trade_null_out_is_noop(void)
+static void S10_ACn_lock_cost_null_out_is_noop(void)
 {
-    ff_flare_fmt_lock_trade(NULL, 16, "DANA", "KEV", NULL);
+    ff_flare_fmt_lock_cost(NULL, 16, "DANA");
     char buf[8] = "keep";
-    ff_flare_fmt_lock_trade(buf, 0, "DANA", "KEV", NULL);
+    ff_flare_fmt_lock_cost(buf, 0, "DANA");
     TEST_ASSERT_EQUAL_STRING("keep", buf);
 }
 
@@ -326,15 +374,16 @@ int main(void)
     RUN_TEST(S10_ACn_go_switches_lock_not_locked_false);
     RUN_TEST(S10_ACn_go_switches_lock_no_takeover_name_false);
 
-    RUN_TEST(S10_ACn_lock_trade_names_both_sides_of_the_arrow);
-    RUN_TEST(S10_ACn_lock_trade_uses_callers_arrow_glyph);
-    RUN_TEST(S10_ACn_lock_trade_empty_arrow_falls_back_to_ascii);
-    RUN_TEST(S10_ACn_lock_trade_missing_name_is_explicitly_unknown);
-    RUN_TEST(S10_ACn_lock_trade_truncates_long_names_to_stay_on_glass);
-    RUN_TEST(S10_ACn_lock_trade_exact_max_length_name_is_not_truncated);
-    RUN_TEST(S10_ACn_lock_trade_worst_case_fits_the_callers_buffer);
-    RUN_TEST(S10_ACn_lock_trade_truncates_rather_than_overflowing);
-    RUN_TEST(S10_ACn_lock_trade_null_out_is_noop);
+    RUN_TEST(S10_ACn_lock_cost_names_the_verb_the_lock_and_the_holder);
+    RUN_TEST(S10_ACn_lock_cost_reviewers_collision_pair_now_renders_distinctly);
+    RUN_TEST(S10_ACn_lock_cost_shared_prefix_over_budget_still_looks_cut);
+    RUN_TEST(S10_ACn_lock_cost_truncated_name_looks_truncated);
+    RUN_TEST(S10_ACn_lock_cost_exact_max_length_name_is_not_truncated);
+    RUN_TEST(S10_ACn_lock_cost_truncation_never_severs_a_codepoint);
+    RUN_TEST(S10_ACn_lock_cost_missing_name_is_explicitly_unknown);
+    RUN_TEST(S10_ACn_lock_cost_worst_case_fits_the_callers_buffer);
+    RUN_TEST(S10_ACn_lock_cost_truncates_rather_than_overflowing);
+    RUN_TEST(S10_ACn_lock_cost_null_out_is_noop);
 
     return UNITY_END();
 }

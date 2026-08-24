@@ -217,15 +217,16 @@ convention `radar.arrow_valid` already uses.
 
 ## Current fixtures
 
-Nine radar fixtures exist as of S06 (compute in slice a, `scr_radar.c` +
+Ten radar fixtures exist as of S06 (compute in slice a, `scr_radar.c` +
 `scr_nav.c` rendering in slice b/c/d): `radar_live.json`, `radar_stale.json`,
 `radar_close.json` (S13/S14 slice b, goldens regenerated in S06 PR B once
 the real radar face replaced the S13 debug placeholder — see this repo's
 PR history for the before/after), `radar_nofix.json`, `radar_nosel.json`,
 and `radar_never.json` (added in S06 PR B's first pass), plus
 `radar_lost.json` and `radar_close_collision.json` (added in PR B's UX
-review follow-up) and `radar_cluster.json` (added for issue #18's cluster
-marker restyle). The first four cover S06 AC4's exact named fixtures
+review follow-up) and `radar_cluster.json`/`radar_cluster_stale.json` (added for issue
+#18's cluster marker restyle, the second one in that PR's UX review
+round). The first four cover S06 AC4's exact named fixtures
 (`radar_live`/`stale`/`close`/`nofix`); the rest are additional coverage
 beyond AC4's literal list, added because they're real, distinct render
 states `scr_radar.c` has to handle honestly (empty-crew, a paired member
@@ -238,7 +239,8 @@ and a worst-case crew-ring layout).
 | `radar_stale.json` | `stale` | `320 m` (last known) | `4 MIN` | no new fix since; distance is honestly stale, not re-measured (CLAUDE.md: "never fake freshness, positions, or times") |
 | `radar_lost.json` | `lost` (real fix) | `1.1 km` (rendered `~1.1 km`) | `42 MIN` | genuinely old fix — PR #16 UX review's top finding: this state had no fixture/golden at all in the first pass of this PR, so nobody had ever seen it rendered. Must read as a *different screen* from STALE, not a dimmer one (see `scr_radar.c`'s `radar_render_lost`) |
 | `radar_close.json` | `close` | `15 m` | `3 SEC` | close-range predicate tripped; `arrow_valid: false` per S06 ("false in CLOSE/NOFIX/NOSEL") |
-| `radar_cluster.json` | `live` | `320 m` | `8 SEC` | added for issue #18 (cluster marker styling). Four crew members 4 degrees apart on the ring, so all four resolve into ONE cluster marker — the widest wedge ring the crew palette can produce (pink/teal/violet/green, one wedge each), with the violet member stale so the per-member dimming is visible too. `radar_close_collision.json` below only ever produces a 2-member cluster, which can't show whether the ring generalizes past a half-and-half split; this is the fixture that proves a full crew standing together still reads as *people* rather than a counter |
+| `radar_cluster.json` | `live` | `320 m` | `8 SEC` | added for issue #18 (cluster marker styling). Four crew members 4 degrees apart on the ring, so all four resolve into ONE cluster marker — one wedge each, in all four **distinct** crew colors (pink/teal/violet/green), with the violet member stale so the mixed-freshness case is visible: three 6px wedges and one 2px one. `radar_close_collision.json` below only ever produces a 2-member cluster, which can't show whether the ring generalizes past a half-and-half split. **Not** the widest ring the marker can draw — `FF_CREW_MAX` is 8 while the palette has 4 colors, so a 5+ member cluster repeats colors; nothing above 4 members has a golden, and that gap is recorded in `docs/specs/S06-radar-face.md`'s Amendments |
+| `radar_cluster_stale.json` | `stale` | `320 m` (last known) | `4 MIN` | same four clustered members, but **every one of them stale** — added in PR #41's UX review round, which found that the first implementation expressed staleness by dimming a wedge's opacity, and dimming is *relative*: with no fresh wedge in frame for contrast, an all-stale marker rendered indistinguishably from a live one. This is the fixture that pins the fix (2px hollow wedges at full crew color, plus a `FF_THEME_COLOR_MUTED` count digit). Deliberately paired with `radar_cluster.json` — the pair only means something read side by side, since the whole finding was that one of them used to look like the other |
 | `radar_close_collision.json` | `close` | `15 m` | `3 SEC` | same scenario as `radar_close.json`, but with 4 crew-ring dots deliberately placed at worst-case bearings (one straight at the status bar, three clustered straight at the FLARE button / trend chip) to exercise `app/screens/radar_layout.c`'s layout resolver — the three southward dots resolve into a 1-dot + 1-cluster-of-2 outcome (a "2" marker, not a hidden member), and the northward dot lands clear of the status bar. Regressing the resolver will show up here even if it doesn't show up in the plain `radar_close` golden — though the authoritative regression coverage is `app/screens/tests/test_radar_layout.c`'s geometry-level sweep, not this golden (see that file's header comment for why) |
 | `radar_nofix.json` | `nofix` | `""` (unknown — my position invalid) | `6 MIN` (the *selected member's* last-known age is still honestly known even though mine isn't) | arrow hidden, "NO FIX - RADIO ONLY" |
 | `radar_nosel.json` | `nosel` | `""` | `""` | no paired crew member at all — empty-crew state, `mesh_ok: false` for variety |

@@ -310,10 +310,13 @@ static void S10_ACn_go_click_with_null_rt_is_safe_noop(void)
  * catch it — that one only examines CLICKABLE objects, and this chip is
  * deliberately an inert indicator.
  *
- * Uses the worst case the formatter can produce: two names at the full
- * FF_APP_NAME_LEN budget. If FF_FLARE_FMT_TRADE_NAME_MAX is ever raised
- * (or the truncation removed) past what the glass can hold at this type
- * size, this fails instead of shipping a name rendered past the bezel.
+ * Uses the worst case the formatter can produce: a locked name at the
+ * full FF_APP_NAME_LEN budget (15 characters — PR #41 code review caught
+ * the previous strings being 14, so the comment and the inputs agree
+ * now), which truncates and therefore also carries the ellipsis, making
+ * this the widest string ff_flare_fmt_lock_cost can emit. If
+ * FF_FLARE_FMT_LOCK_NAME_MAX is ever raised past what the glass holds at
+ * this type size, this fails instead of shipping a name past the bezel.
  * ------------------------------------------------------------------- */
 
 static lv_obj_t *find_label_with_prefix(lv_obj_t *root, char const *prefix)
@@ -340,9 +343,9 @@ static void S10_ACn_lock_disclosure_chip_stays_inside_the_round_glass(void)
     ff_app_flare_t disp;
     memset(&disp, 0, sizeof(disp));
     disp.takeover_active = true;
-    strncpy(disp.takeover_from_name, "MAXIMILIANOOOO", sizeof(disp.takeover_from_name) - 1);
+    strncpy(disp.takeover_from_name, "MAXIMILIANOOOOO", sizeof(disp.takeover_from_name) - 1);
     disp.locked = true;
-    strncpy(disp.locked_from_name, "BARTHOLOMEWWWW", sizeof(disp.locked_from_name) - 1);
+    strncpy(disp.locked_from_name, "BARTHOLOMEWWWWW", sizeof(disp.locked_from_name) - 1);
 
     ff_scr_flare_build_takeover(&disp, NULL);
 
@@ -351,7 +354,7 @@ static void S10_ACn_lock_disclosure_chip_stays_inside_the_round_glass(void)
      * size/position pass, never the draw pass. */
     lv_obj_update_layout(lv_screen_active());
 
-    lv_obj_t *label = find_label_with_prefix(lv_screen_active(), "GO: ");
+    lv_obj_t *label = find_label_with_prefix(lv_screen_active(), "GO DROPS LOCK");
     TEST_ASSERT_NOT_NULL_MESSAGE(label, "the lock-disclosure chip must be built when GO would switch the lock");
 
     /* The chip is the label's parent — assert on the PILL, not the text:
@@ -377,6 +380,44 @@ static void S10_ACn_lock_disclosure_chip_stays_inside_the_round_glass(void)
                               "even with two maximum-length crew names");
 }
 
+
+/* ---------------------------------------------------------------------
+ * The disclosure chip names only the lock it would cost you; the
+ * incoming sender's name lives in the headline directly above it
+ * (PR #41 UX review, BLOCKING 1 — "KEV is not the news, KEV is the whole
+ * reason the screen woke up").
+ *
+ * That split is only honest while the headline is actually there. This
+ * pins the pairing structurally, so a future change that drops or gates
+ * the headline fails here instead of silently reducing the disclosure to
+ * "you lose Dana" with no indication of what for.
+ * ------------------------------------------------------------------- */
+
+static void S10_ACn_lock_disclosure_is_always_accompanied_by_the_headline(void)
+{
+    ff_app_flare_t disp;
+    memset(&disp, 0, sizeof(disp));
+    disp.takeover_active = true;
+    strncpy(disp.takeover_from_name, "KEV", sizeof(disp.takeover_from_name) - 1);
+    disp.locked = true;
+    strncpy(disp.locked_from_name, "DANA", sizeof(disp.locked_from_name) - 1);
+
+    ff_scr_flare_build_takeover(&disp, NULL);
+
+    lv_obj_t *chip_label = find_label_with_prefix(lv_screen_active(), "GO DROPS LOCK - DANA");
+    TEST_ASSERT_NOT_NULL_MESSAGE(chip_label, "the disclosure chip must name the lock GO would cost");
+
+    lv_obj_t *headline = find_label_with_prefix(lv_screen_active(), "KEV IS FLARING");
+    TEST_ASSERT_NOT_NULL_MESSAGE(headline,
+                                  "the incoming sender must be named on screen whenever the chip omits them");
+
+    /* And the chip must NOT repeat the sender — that repetition is what
+     * spent the chip's width budget on the largest thing already in
+     * view. */
+    TEST_ASSERT_NULL_MESSAGE(strstr(lv_label_get_text(chip_label), "KEV"),
+                              "the chip must not repeat the sender already named in the headline");
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -388,6 +429,7 @@ int main(void)
     RUN_TEST(S10_ACn_flare_button_click_begins_send);
     RUN_TEST(S10_ACn_go_click_with_null_rt_is_safe_noop);
     RUN_TEST(S10_ACn_lock_disclosure_chip_stays_inside_the_round_glass);
+    RUN_TEST(S10_ACn_lock_disclosure_is_always_accompanied_by_the_headline);
 
     return UNITY_END();
 }

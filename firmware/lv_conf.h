@@ -45,11 +45,19 @@
 /* S06 (app/screens/scr_nav.c): three-face swipe shell. */
 #define LV_USE_TILEVIEW 1
 
-/* S06 (app/screens/scr_radar.c): the crew-colored wedge ring on a cluster
- * marker (issue #18). LVGL's own default for this is already 1, but it is
- * declared explicitly here because a rendering feature the radar face
- * cannot draw without should fail at configure time in a stripped-down
- * build, not silently render markers with no ring at all. */
+/* S06 (app/screens/scr_radar.c): lv_arc backs the crew-colored wedge ring
+ * on a cluster marker (issue #18).
+ *
+ * LVGL already defaults this to 1, so this line changes nothing today —
+ * it is here as a PIN, recording that the radar face now has a hard
+ * dependency on the arc widget. Without it, a future move to
+ * LV_CONF_MINIMAL (where the default flips to 0) or an upstream default
+ * change would silently render every cluster marker with no ring at all
+ * — a marker that looks like the pre-#18 badge again, which no test
+ * would catch because the goldens would simply be regenerated around it.
+ * (PR #41 code review: the previous wording here claimed this made a
+ * stripped-down build fail at configure time, which a `#define ... 1`
+ * plainly cannot do. Corrected.) */
 #define LV_USE_ARC 1
 
 #endif /* LV_CONF_H */

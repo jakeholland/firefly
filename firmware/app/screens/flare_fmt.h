@@ -87,64 +87,117 @@ void ff_flare_fmt_countdown(char *out, size_t out_sz, int32_t expires_in_ms);
 bool ff_flare_fmt_go_switches_lock(char const *locked_from_name, char const *takeover_from_name);
 
 /**
- * FF_FLARE_FMT_TRADE_NAME_MAX — how many characters of each name
- * ff_flare_fmt_lock_trade will print before truncating.
+ * FF_FLARE_FMT_LOCK_NAME_MAX — how many BYTES of the locked name
+ * ff_flare_fmt_lock_cost will print before truncating, and
+ * FF_FLARE_FMT_ELLIPSIS — the marker appended when it does.
  *
- * `ff_app_flare_t`'s name fields are `char[FF_APP_NAME_LEN]` (16, i.e. up
- * to 15 printable characters). Two names at full length, plus the "GO: "
- * prefix and the arrow, is a ~37-character string that at the disclosure
- * chip's type size is WIDER THAN THE ROUND GLASS — and the puck is a
- * circle, so a chip that merely fits the 440px bounding box can still
- * have its ends hanging off the visible display (the exact class of bug
- * ff_layout.h exists because of: PR #25 shipped a back button 42px
- * outside the round area). Truncating is the honest failure mode here:
- * a clipped-but-on-glass name still identifies who you'd be dropping,
- * where a name rendered past the bezel identifies nobody. 9 characters
- * keeps the worst case ("GO: " + 9 + " > " + 9 = 25 chars) comfortably
- * inside the chord available at the chip's y-offset, and crew short
- * names in practice are 3-6 characters ("DANA", "KEV") — this truncation
- * is a guard rail, not the normal path.
+ * BYTES, not characters (PR #41 code review, minor finding): the
+ * underlying `snprintf("%.*s", ...)` precision is a byte count, crew
+ * names arrive as untrusted UTF-8 off the radio (Meshtastic
+ * `User.long_name`), and this codebase already truncates by bytes at
+ * ingest (`mc_copy_name`). ff_flare_fmt_lock_cost backs the cut off to
+ * the last COMPLETE codepoint rather than emitting a severed one, so a
+ * name like "ANDRÉ" simply spends 2 of its budget on that one glyph
+ * instead of rendering a stray byte.
+ *
+ * Why truncate at all: `ff_app_flare_t`'s name fields are
+ * `char[FF_APP_NAME_LEN]` (16, i.e. up to 15 printable characters), and
+ * the puck is a CIRCLE, so a chip that merely fits the 440px bounding
+ * box can still have its ends hanging off the visible display (the exact
+ * class of bug ff_layout.h exists because of: PR #25 shipped a back
+ * button 42px outside the round area).
+ *
+ * Why the ellipsis is not optional (PR #41 UX review, BLOCKING 2): the
+ * previous two-name form truncated with a bare `%.*s`, so ALEXANDRIA and
+ * ALEXANDRINA both rendered `ALEXANDRI` — the disclosure chip printed a
+ * trade of a person for themselves, which reads as "this costs nothing,
+ * press GO", the precise outcome the chip exists to prevent. The
+ * single-name wording removes the false-equality failure entirely (there
+ * is no second name to collide with), and the ellipsis additionally
+ * guarantees the weaker property the reviewer asked for as a floor: a
+ * cut name always LOOKS cut, so a truncated name is never mistaken for a
+ * whole one.
+ *
+ * The cap is chosen by MEASUREMENT, not arithmetic. Instrumenting
+ * test_scr_flare.c's
+ * S10_ACn_lock_disclosure_chip_stays_inside_the_round_glass to print the
+ * chip's real lv_area_t and its worst corner's distance from the puck
+ * centre, with a 15-character locked name (the longest FF_APP_NAME_LEN
+ * permits) at FF_THEME_FONT_HEADLINE:
+ *
+ *   cap 10 -> chip 386x34 px, worst corner 194.9, slack to r=220  +25.1
+ *   cap 11 -> chip 407x34 px, worst corner 205.8, slack to r=220  +14.2  <- shipped
+ *   cap 12 -> passes, but within ~3px of the edge
+ *   cap 13 -> chip 453x34 px, worst corner 228.6, slack to r=220   -8.6  (fails)
+ *   cap 15 -> chip 485x34 px, worst corner 244.5, slack to r=220  -24.5  (fails)
+ *
+ * So 13 is the failure threshold and 11 keeps genuine margin rather than
+ * sitting on the boundary — the same standard PR #41's code reviewer
+ * applied to the previous cap. The single-name wording is what bought
+ * the increase from 9: dropping the repeated sender name freed the width
+ * that now covers ALEXANDRIA and ALEXANDRINA whole, which is exactly the
+ * pair that collided under the two-name form.
  */
-#define FF_FLARE_FMT_TRADE_NAME_MAX 9
+#define FF_FLARE_FMT_LOCK_NAME_MAX 11
+#define FF_FLARE_FMT_ELLIPSIS "..."
 
 /**
- * ff_flare_fmt_lock_trade — the takeover screen's lock-disclosure chip
- * text: `"GO: <locked> <arrow> <takeover>"` (e.g. `"GO: DANA > KEV"`).
+ * ff_flare_fmt_lock_cost — the takeover screen's lock-disclosure chip
+ * text: `"GO DROPS LOCK - <locked>"` (e.g. `"GO DROPS LOCK - DANA"`).
  *
- * This is the glance-sized form of the disclosure S10's Amendment
- * Ruling 2 requires ("an established LOCK is never silently replaced" —
- * an informed choice must show its cost). It is a pure re-*wording*, not
- * a reduction of what is disclosed: all three facts the ruling needs
- * survive — that a lock exists (`<locked>` is named), that GO is what
- * spends it (the `GO:` prefix names the button, so the chip is a caption
- * for the control 60px below it rather than a free-floating status line),
- * and what is traded for what (the arrow's direction). Issue #27: the
- * sentence form it replaces ("LOCKED ON DANA - GO SWITCHES TO KEV") was
- * legible and correct but was a *read* on the one screen that interrupts
- * the user mid-panic at 2 AM.
+ * ## What this must disclose, and where that requirement comes from
+ * The requirement is PR #20's UX review, BLOCKING finding #3 — "GO must
+ * disclose what it costs" — the same finding
+ * ff_flare_fmt_go_switches_lock's doc comment already cites. It is NOT
+ * stated by S10's Amendment Ruling 2, which is entirely state-machine
+ * semantics (that a newer flare never touches an existing lock, that
+ * DISMISS returns to the intact lock, that GO is the explicit decision
+ * that switches it). Ruling 2 is why an established lock is a decision
+ * the user owns; finding #3 is why pressing GO has to say so on screen.
+ * PR #41's code review caught this file attributing the second to the
+ * first — corrected here, because the whole point of writing the
+ * requirement down is that a future re-wording can be checked against
+ * it, and a citation pointing at a paragraph that doesn't contain it is
+ * worse than no citation.
  *
- * `arrow` is the separator glyph, supplied BY THE CALLER rather than
- * baked in, because the only good arrow available on this device lives
- * in LVGL's symbol range (`LV_SYMBOL_RIGHT`) and this module deliberately
- * has no LVGL dependency (see this header's top comment — that is what
- * makes it directly unit-testable). NULL or empty falls back to a plain
- * ASCII `">"`, which every font in this repo covers; that fallback is
- * what the unit tests assert against, so the tests never depend on which
- * glyphs a particular compiled font subset happens to include.
+ * ## Why one name and a verb (PR #41 UX review, BLOCKING 1)
+ * The form this replaces was `"GO: DANA > KEV"`. Shortening the original
+ * sentence had deleted its verb, and the verb was the disclosure: `A > B`
+ * means *via* or *then* in every other context a person meets it
+ * (breadcrumbs, file paths, map directions), so the chip read as an
+ * itinerary — "go to Dana, then Kev" — i.e. as KEEPING the lock. It also
+ * dropped the word LOCK, which is the only vocabulary the user has for
+ * this: the Radar face's own chip reads `LOCKED - DANA`
+ * (ff_scr_flare_build_lock_chip), and the takeover screen had stopped
+ * connecting to it.
  *
- * Either name being NULL/empty renders as `"?"` — the same explicit
- * unknown marker `ff_scr_flare_build_lock_chip` already uses, never a
- * fabricated identity (CLAUDE.md's honesty rule). In practice the caller
- * gates on `ff_flare_fmt_go_switches_lock` first, which is already false
- * for either name being empty, so `"?"` is a defensive path rather than
- * a reachable one.
+ * So: a verb of loss (`DROPS`), the noun the user already knows
+ * (`LOCK`), and the same ` - <name>` tail the Radar chip uses, so the two
+ * chips visibly belong to each other. No glyph whose convention has to be
+ * learned, and no direction to misread — there is no direction in it.
  *
- * Names longer than FF_FLARE_FMT_TRADE_NAME_MAX are truncated (see that
- * macro for why). Truncates rather than overflowing if `out_sz` is too
- * small; a NULL `out` or zero `out_sz` is a no-op.
+ * The incoming sender's name is deliberately NOT here. It is the
+ * takeover's headline, in 22px type, directly above this chip
+ * (ff_flare_fmt_headline, built unconditionally by the same function
+ * that builds this chip — pinned by
+ * S10_ACn_lock_disclosure_is_always_accompanied_by_the_headline). Naming
+ * KEV twice on one screen spends the chip's whole width budget on the
+ * one fact that is already the largest thing in view.
+ *
+ * `locked_from_name` being NULL/empty renders as `"?"` — the same
+ * explicit unknown marker ff_scr_flare_build_lock_chip uses, never a
+ * fabricated identity (CLAUDE.md's honesty rule). Unreachable in
+ * practice: the caller gates on ff_flare_fmt_go_switches_lock, which is
+ * already false for an empty locked name, so no chip is built at all
+ * (verified by PR #41's UX reviewer, who rendered it). Kept as a guard,
+ * not claimed as covered.
+ *
+ * Names longer than FF_FLARE_FMT_LOCK_NAME_MAX bytes are truncated to
+ * the last complete codepoint at or before that budget and suffixed with
+ * FF_FLARE_FMT_ELLIPSIS. Truncates rather than overflowing if `out_sz` is
+ * too small; a NULL `out` or zero `out_sz` is a no-op.
  */
-void ff_flare_fmt_lock_trade(char *out, size_t out_sz, char const *locked_from_name,
-                              char const *takeover_from_name, char const *arrow);
+void ff_flare_fmt_lock_cost(char *out, size_t out_sz, char const *locked_from_name);
 
 #ifdef __cplusplus
 }
