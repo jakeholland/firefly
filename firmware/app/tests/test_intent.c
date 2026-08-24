@@ -516,6 +516,195 @@ static void S16_c2_flare_end_cancels_a_send_even_while_a_takeover_is_visible(voi
 }
 
 /* =================================================================== */
+/* S16 slice e — FF_INTENT_SETTING_SET (AC8)                            */
+/* =================================================================== */
+
+/* A separate, self-contained store spy rather than reusing the global H
+ * harness: these tests need to COUNT writes across repeated dispatches,
+ * and a dedicated ff_shell_t keeps that bookkeeping local to this
+ * section instead of threading a spy through every other test above. */
+typedef struct {
+    uint8_t buf[512];
+    size_t len;
+    bool present;
+    int set_calls; /* AC8's "on change, never every tick" proxy-killer */
+} setting_store_t;
+
+static int setting_store_get(void *io, char const *key, void *buf, size_t n)
+{
+    setting_store_t *st = (setting_store_t *)io;
+    (void)key;
+    if (!st->present || st->len > n) return -1;
+    memcpy(buf, st->buf, st->len);
+    return (int)st->len;
+}
+
+static int setting_store_set(void *io, char const *key, void const *buf, size_t n)
+{
+    setting_store_t *st = (setting_store_t *)io;
+    (void)key;
+    if (n > sizeof(st->buf)) return -1;
+    memcpy(st->buf, buf, n);
+    st->len = n;
+    st->present = true;
+    st->set_calls++;
+    return (int)n;
+}
+
+static ff_store_t setting_store(setting_store_t *st)
+{
+    ff_store_t s;
+    s.get = setting_store_get;
+    s.set = setting_store_set;
+    s.io = st;
+    return s;
+}
+
+typedef struct {
+    fake_clock_t clk;
+    ff_clock_t clock;
+    fp_pack_t pack;
+    setting_store_t store_mem;
+    ff_store_t store;
+    ff_shell_t shell;
+} setting_harness_t;
+
+static void setting_harness_init(setting_harness_t *sh)
+{
+    memset(sh, 0, sizeof(*sh));
+    sh->clk.t = 100000u;
+    sh->clock.now_ms = fake_now;
+    sh->clock.user = &sh->clk;
+    sh->store = setting_store(&sh->store_mem);
+
+    ff_shell_cfg_t cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.clock = &sh->clock;
+    cfg.store = &sh->store;
+    cfg.pack = &sh->pack;
+
+    TEST_ASSERT_EQUAL_INT(0, ff_shell_init(&sh->shell, &cfg));
+}
+
+static void setting_send(ff_shell_t *shell, ff_setting_id_t id, int32_t i, char const *s)
+{
+    ff_intent_t in = {.kind = FF_INTENT_SETTING_SET, .u = {0}};
+    in.u.setting.id = id;
+    if (s != NULL) {
+        in.u.setting.v.s = s;
+    } else {
+        in.u.setting.v.i = i;
+    }
+    ff_shell_intent(shell, &in);
+}
+
+static void S16_AC8_setting_set_applies_and_persists_only_on_change(void)
+{
+    setting_harness_t h;
+    setting_harness_init(&h);
+
+    TEST_ASSERT_TRUE(ff_shell_settings(&h.shell)->imperial); /* default */
+    TEST_ASSERT_EQUAL_INT(0, h.store_mem.set_calls);
+
+    setting_send(&h.shell, FF_SETTING_IMPERIAL, 0, NULL); /* false: a real change */
+    TEST_ASSERT_FALSE(ff_shell_settings(&h.shell)->imperial);
+    TEST_ASSERT_EQUAL_INT(1, h.store_mem.set_calls);
+
+    /* Re-sending the SAME value must not write again — "saved on change,
+     * never every tick" (S16 Behavior). Ticking the shell repeatedly in
+     * between rules out a per-tick save entirely, not just a per-dispatch
+     * one. */
+    for (int i = 0; i < 50; i++) {
+        (void)ff_shell_tick(&h.shell, h.clk.t + (uint32_t)i);
+    }
+    setting_send(&h.shell, FF_SETTING_IMPERIAL, 0, NULL); /* same value again */
+    TEST_ASSERT_EQUAL_INT(1, h.store_mem.set_calls);      /* unchanged: no new write */
+
+    setting_send(&h.shell, FF_SETTING_IMPERIAL, 1, NULL); /* back to true: a change again */
+    TEST_ASSERT_TRUE(ff_shell_settings(&h.shell)->imperial);
+    TEST_ASSERT_EQUAL_INT(2, h.store_mem.set_calls);
+
+    ff_shell_close(&h.shell);
+}
+
+static void S16_AC8_setting_set_out_of_range_is_rejected_not_clamped(void)
+{
+    setting_harness_t h;
+    setting_harness_init(&h);
+
+    uint8_t const share_before = ff_shell_settings(&h.shell)->share_mode;
+    setting_send(&h.shell, FF_SETTING_SHARE_MODE, 3, NULL); /* FF_SHARE_GHOST is 2 — 3 is out of range */
+    TEST_ASSERT_EQUAL_UINT8(share_before, ff_shell_settings(&h.shell)->share_mode);
+    TEST_ASSERT_EQUAL_INT(0, h.store_mem.set_calls); /* rejected outright: no write either */
+
+    setting_send(&h.shell, FF_SETTING_SHARE_MODE, -1, NULL);
+    TEST_ASSERT_EQUAL_UINT8(share_before, ff_shell_settings(&h.shell)->share_mode);
+
+    setting_send(&h.shell, FF_SETTING_QUIET_FROM_MIN, 1440, NULL); /* one past [0,1439] */
+    TEST_ASSERT_EQUAL_UINT16(240u, ff_shell_settings(&h.shell)->quiet_from_min); /* default, untouched */
+
+    setting_send(&h.shell, FF_SETTING_QUIET_TO_MIN, -1, NULL);
+    TEST_ASSERT_EQUAL_UINT16(600u, ff_shell_settings(&h.shell)->quiet_to_min); /* default, untouched */
+
+    bool const offset_set_before = ff_shell_settings(&h.shell)->utc_offset_set;
+    setting_send(&h.shell, FF_SETTING_UTC_OFFSET_MIN, FF_WALL_OFFSET_MIN_LO - 1, NULL);
+    TEST_ASSERT_EQUAL(offset_set_before, ff_shell_settings(&h.shell)->utc_offset_set);
+    setting_send(&h.shell, FF_SETTING_UTC_OFFSET_MIN, FF_WALL_OFFSET_MIN_HI + 1, NULL);
+    TEST_ASSERT_EQUAL(offset_set_before, ff_shell_settings(&h.shell)->utc_offset_set);
+
+    /* Positive control: the same fields accept an in-range value —
+     * including each boundary itself — so the rejections above are the
+     * validation gate, not a broken setter. */
+    setting_send(&h.shell, FF_SETTING_SHARE_MODE, FF_SHARE_GHOST, NULL);
+    TEST_ASSERT_EQUAL_UINT8(FF_SHARE_GHOST, ff_shell_settings(&h.shell)->share_mode);
+
+    setting_send(&h.shell, FF_SETTING_UTC_OFFSET_MIN, FF_WALL_OFFSET_MIN_LO, NULL);
+    TEST_ASSERT_TRUE(ff_shell_settings(&h.shell)->utc_offset_set);
+    TEST_ASSERT_EQUAL_INT16(FF_WALL_OFFSET_MIN_LO, ff_shell_settings(&h.shell)->utc_offset_min);
+    setting_send(&h.shell, FF_SETTING_UTC_OFFSET_MIN, FF_WALL_OFFSET_MIN_HI, NULL);
+    TEST_ASSERT_EQUAL_INT16(FF_WALL_OFFSET_MIN_HI, ff_shell_settings(&h.shell)->utc_offset_min);
+
+    ff_shell_close(&h.shell);
+}
+
+static void S16_AC8_setting_set_my_name_is_bounded_and_terminated(void)
+{
+    setting_harness_t h;
+    setting_harness_init(&h);
+
+    setting_send(&h.shell, FF_SETTING_MY_NAME, 0, "this name is definitely longer than fifteen characters");
+    /* FF_SETTINGS_NAME_LEN is 16, including the NUL — 15 chars survive. */
+    TEST_ASSERT_EQUAL_INT(15, (int)strlen(ff_shell_settings(&h.shell)->my_name));
+    TEST_ASSERT_EQUAL_STRING("this name is de", ff_shell_settings(&h.shell)->my_name);
+
+    setting_send(&h.shell, FF_SETTING_MY_NAME, 0, NULL); /* NULL payload: a no-op, not a crash or a blank name */
+    TEST_ASSERT_EQUAL_STRING("this name is de", ff_shell_settings(&h.shell)->my_name);
+
+    ff_shell_close(&h.shell);
+}
+
+static void S16_AC8_setting_set_is_rejected_while_a_takeover_is_visible(void)
+{
+    setting_harness_t h;
+    setting_harness_init(&h);
+    TEST_ASSERT_TRUE(ff_shell_pair(&h.shell, DANA, true));
+
+    mc_events_t const ev = ff_shell_events(&h.shell);
+    uint8_t buf[FF_PROTO_MAX_PAYLOAD];
+    int n = ff_proto_encode_flare(buf, sizeof(buf), 300u);
+    TEST_ASSERT_GREATER_THAN_INT(0, n);
+    ev.on_private(ev.user, DANA, FF_PORTNUM, buf, (size_t)n);
+    TEST_ASSERT_TRUE(ff_shell_flare(&h.shell)->takeover_active);
+
+    bool const before = ff_shell_settings(&h.shell)->imperial;
+    setting_send(&h.shell, FF_SETTING_IMPERIAL, before ? 0 : 1, NULL);
+    TEST_ASSERT_EQUAL(before, ff_shell_settings(&h.shell)->imperial); /* rejected: routing rule 4 */
+    TEST_ASSERT_EQUAL_INT(0, h.store_mem.set_calls);
+
+    ff_shell_close(&h.shell);
+}
+
+/* =================================================================== */
 /* Payload ownership — NOT owned; copied                                */
 /* =================================================================== */
 
@@ -547,13 +736,12 @@ static void S16_c1_intent_struct_and_pointer_payloads_are_borrowed_only(void)
     memset(&t9, 0xA5, sizeof(t9));
     TEST_ASSERT_EQUAL_STRING(":)", view()->compose.text);
 
-    /* SETTING_SET is still slice e's to ACT on, so this half keeps the
-     * test's original no-op shape: the projection is bit-identical before
-     * and after a clobbered-payload dispatch — nothing retained, nothing
-     * read late. When e wires it up it inherits this test with a real
-     * state assertion, the same way T9_INSERT's half just did for c3. */
-    ff_app_state_t const before = *view();
-
+    /* SETTING_SET (S16 slice e): the same ownership contract, now proven
+     * with a REAL mutation the same way T9_INSERT's half just did above
+     * — clobber the source buffer the instant dispatch returns, and the
+     * projection must still show the applied name, which is only
+     * possible if the shell copied every byte it needed before
+     * returning. */
     char name_buf[16];
     strcpy(name_buf, "JAKE");
     ff_intent_t set = {.kind = FF_INTENT_SETTING_SET, .u = {0}};
@@ -561,9 +749,9 @@ static void S16_c1_intent_struct_and_pointer_payloads_are_borrowed_only(void)
     set.u.setting.v.s = name_buf;
     ff_shell_intent(&H.shell, &set);
     memset(name_buf, 0xA5, sizeof(name_buf));
+    memset(&set, 0xA5, sizeof(set));
 
-    ff_app_state_t const *after = view();
-    TEST_ASSERT_EQUAL_MEMORY(&before, after, sizeof(before));
+    TEST_ASSERT_EQUAL_STRING("JAKE", view()->settings.my_name);
 }
 
 /* =================================================================== */
@@ -653,6 +841,10 @@ int main(void)
     RUN_TEST(S16_c2_flare_start_begins_sending);
     RUN_TEST(S16_c2_flare_start_is_rejected_while_a_takeover_is_visible);
     RUN_TEST(S16_c2_flare_end_cancels_a_send_even_while_a_takeover_is_visible);
+    RUN_TEST(S16_AC8_setting_set_applies_and_persists_only_on_change);
+    RUN_TEST(S16_AC8_setting_set_out_of_range_is_rejected_not_clamped);
+    RUN_TEST(S16_AC8_setting_set_my_name_is_bounded_and_terminated);
+    RUN_TEST(S16_AC8_setting_set_is_rejected_while_a_takeover_is_visible);
     RUN_TEST(S16_c1_intent_struct_and_pointer_payloads_are_borrowed_only);
     RUN_TEST(S16_c1_emit_seam_forwards_when_bound_and_noops_unbound);
     RUN_TEST(S16_c1_null_and_garbage_dispatch_is_safe);

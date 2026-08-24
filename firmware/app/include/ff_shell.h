@@ -42,9 +42,18 @@
  * takeover is up (AC3b), leaving the draft untouched rather than
  * partially consumed.
  *
- * Deliberately NOT here yet, each with its own slice:
- *   - build-once/update-in-place render lifecycle (slice d),
- *   - reconnect UI and settings write-through (slice e).
+ * Slice e wires `FF_INTENT_SETTING_SET` (validated per `ff_setting_id_t`,
+ * applied to `ff_settings_t`, persisted via `cfg->store` on change only —
+ * AC8) and makes link state (`ff_shell_link_t`) reachable end to end: the
+ * transport layer can now redial a dropped connection
+ * (`meshclient/include/mc_transport_tcp.h`), so "reconnecting" is a
+ * state `mc_client`'s own auto-reconnect can actually recover from,
+ * closing the pre-existing gap PR #56 flagged. `ff_shell_link` was
+ * already correct against `mc_state_t` since slice b1 — see the
+ * `ff_shell_link_t` doc below.
+ *
+ * Deliberately NOT here yet:
+ *   - build-once/update-in-place render lifecycle (slice d).
  *
  * ---------------------------------------------------------------------
  * LAYERING — a correction, not an exception
@@ -550,9 +559,16 @@ bool ff_shell_pair(ff_shell_t *sh, uint32_t node_id, bool paired);
  *                       left completely untouched, not partially sent.
  *                       An empty draft is a silent no-op either way: SEND
  *                       on an untouched composer must not broadcast "".
+ *  - SETTING_SET (slice e) -> validated per `ff_setting_id_t`'s
+ *                       documented range, applied to `ff_settings_t`, and
+ *                       persisted via `cfg->store` ON CHANGE ONLY (never
+ *                       every tick — S16 "Behavior"). An out-of-range
+ *                       value is rejected outright, not clamped. Rejected
+ *                       while a takeover is visible, same routing rule as
+ *                       every other core-mutating intent (AC8).
  *
  * Every other kind is a documented no-op until its owning slice (c2:
- * remaining core-mutating intents; e: SETTING_SET) — see ff_shell.c.
+ * remaining core-mutating intents) — see ff_shell.c.
  *
  * Pointer payloads (`u.text`, `u.setting.v.s`) are borrowed for this
  * call only; the shell copies what it keeps (ff_intent.h, "Payload
@@ -631,8 +647,8 @@ ff_feed_t const *ff_shell_feed(ff_shell_t const *sh);
 ff_flare_t const *ff_shell_flare(ff_shell_t const *sh);
 
 /** ff_shell_settings — current settings, read-only. NULL if `sh` is
- *  NULL. Write-through (`FF_INTENT_SETTING_SET` + persistence) is
- *  slice e. */
+ *  NULL. Write-through is `FF_INTENT_SETTING_SET` (slice e); persisted
+ *  via the injected `ff_store_t` on change, never every tick. */
 ff_settings_t const *ff_shell_settings(ff_shell_t const *sh);
 
 /**

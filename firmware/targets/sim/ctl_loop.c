@@ -293,37 +293,56 @@ static bool ctl_loop_clock_advance(void *user, uint32_t advance_ms, char const *
     return true;
 }
 
+/** "connected" / "reconnecting" / "none" — ff_shell_link_t's own
+ *  vocabulary, verbatim (ff_shell.h). */
+static char const *ctl_loop_link_str(ff_shell_link_t link)
+{
+    switch (link) {
+    case FF_SHELL_LINK_CONNECTED:
+        return "connected";
+    case FF_SHELL_LINK_RECONNECTING:
+        return "reconnecting";
+    case FF_SHELL_LINK_NONE:
+    default:
+        return "none";
+    }
+}
+
 static int ctl_loop_state_json(void *user, char *buf, size_t buf_sz)
 {
     ff_ctl_loop_ctx_t *ctx = (ff_ctl_loop_ctx_t *)user;
     int n = ff_fixture_dump_json(&ctx->state, buf, buf_sz);
     if (n <= 0) return n;
 
-    /* Append what the wall clock thinks as a "wall" object —
-     * ff_shell_wall() is the only honest source, and the hardware bench
-     * work (issue #49) needs to SEE what latched rather than infer it.
-     * Spliced over the dump's closing '}' rather than added to the
-     * fixture schema: the wall is derived live state, not renderable
-     * view state, and the fixture loader ignores unknown keys, so a
-     * saved state dump still loads as a fixture (see CTL.md). */
+    /* Append what the wall clock thinks as a "wall" object, and the mesh
+     * link state as a "link" string (S16 slice e) — ff_shell_wall() /
+     * ff_shell_link() are the only honest sources, and the hardware
+     * bench work (issue #49) needs to SEE both rather than infer them
+     * (same rationale for "link" as for "wall"). Spliced over the dump's
+     * closing '}' rather than added to the fixture schema: both are
+     * derived live state, not renderable view state, and the fixture
+     * loader ignores unknown keys, so a saved state dump still loads as
+     * a fixture (see CTL.md). */
     ff_wall_t const w = ff_shell_wall(ctx->shell);
-    char wall[160];
-    int wn;
+    char const *link = ctl_loop_link_str(ff_shell_link(ctx->shell));
+    char extra[200];
+    int en;
     char const *host = ctx->live.wall_host_observed ? "true" : "false";
     if (w.src == FF_WALL_MESH) {
-        wn = snprintf(wall, sizeof(wall),
+        en = snprintf(extra, sizeof(extra),
                       ",\"wall\":{\"src\":\"mesh\",\"host_observed\":%s,\"day_doy\":%u,\"now_min\":%d,"
-                      "\"offset_assumed\":%s}}",
-                      host, (unsigned)w.day_doy, (int)w.now_min, w.offset_assumed ? "true" : "false");
+                      "\"offset_assumed\":%s},\"link\":\"%s\"}",
+                      host, (unsigned)w.day_doy, (int)w.now_min, w.offset_assumed ? "true" : "false", link);
     } else {
         /* UNKNOWN: every other ff_wall_t field is meaningless and is
          * deliberately not dumped — absent, not zero (CLAUDE.md). */
-        wn = snprintf(wall, sizeof(wall), ",\"wall\":{\"src\":\"unknown\",\"host_observed\":%s}}", host);
+        en = snprintf(extra, sizeof(extra), ",\"wall\":{\"src\":\"unknown\",\"host_observed\":%s},\"link\":\"%s\"}",
+                      host, link);
     }
-    if (wn < 0 || (size_t)wn >= sizeof(wall)) return -1;
-    if ((size_t)n + (size_t)wn > buf_sz) return -1; /* n-1 kept + wn + NUL <= buf_sz */
-    memcpy(buf + n - 1, wall, (size_t)wn + 1u);      /* overwrite trailing '}' */
-    return n - 1 + wn;
+    if (en < 0 || (size_t)en >= sizeof(extra)) return -1;
+    if ((size_t)n + (size_t)en > buf_sz) return -1; /* n-1 kept + en + NUL <= buf_sz */
+    memcpy(buf + n - 1, extra, (size_t)en + 1u);     /* overwrite trailing '}' */
+    return n - 1 + en;
 }
 
 static bool ctl_loop_screenshot(void *user, char const *path, char const **err)

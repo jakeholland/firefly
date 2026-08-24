@@ -263,6 +263,10 @@ static void S16_AC10_draft_typed_flare_injected_takeover_clears_draft_survives(v
     ctl_send(&h, "{\"cmd\":\"state\"}", resp, sizeof(resp));
     TEST_ASSERT_NOT_NULL_MESSAGE(strstr(resp, "\"face\":\"compose\""), resp);
     TEST_ASSERT_NOT_NULL_MESSAGE(strstr(resp, "\"text\":\"d\""), resp);
+    /* S16 slice e: the ctl `state` dump exposes link state too, same
+     * bench-visibility rationale as "wall" — this session never opened a
+     * transport (no --connect), so the honest reading is "none". */
+    TEST_ASSERT_NOT_NULL_MESSAGE(strstr(resp, "\"link\":\"none\""), resp);
 
     ff_ctl_loop_close(&ctx);
     ff_shell_close(&shell);
