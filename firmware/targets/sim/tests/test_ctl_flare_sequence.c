@@ -341,12 +341,57 @@ static void S16_d_idle_ticks_never_rebuild_the_screen(void)
     lv_deinit();
 }
 
+/* ctl `swipe` regression: the command used to run its press/moves/release
+ * with zero elapsed time between steps, so LVGL's indev timer polled at
+ * most once, no gesture was recognized, and the face never changed while
+ * the command replied ok. This drives a real swipe end to end and asserts
+ * the face actually moved. (This file's top comment explains why AC10
+ * itself deliberately avoided `swipe`; that avoidance is also why the bug
+ * survived until someone drove the command for real.) */
+static void ctl_swipe_actually_changes_the_face(void)
+{
+    static ff_shell_t shell;
+    static fp_pack_t pack;
+    static ff_ctl_loop_ctx_t ctx;
+
+    ff_shell_cfg_t shell_cfg;
+    memset(&shell_cfg, 0, sizeof(shell_cfg));
+
+    ff_ctl_loop_cfg_t cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.mock_clock = true;
+
+    TEST_ASSERT_EQUAL_INT(0, ff_ctl_loop_open(&ctx, &shell, &pack, &shell_cfg, &cfg));
+
+    bool quit_flag = false;
+    ff_ctl_handlers_t h = ff_ctl_loop_handlers(&ctx, &quit_flag);
+
+    ctl_settle(&ctx, &h);
+    TEST_ASSERT_EQUAL(FF_APP_FACE_RADAR, ctx.state.active_face);
+
+    char resp[256];
+    ctl_send(&h, "{\"cmd\":\"swipe\",\"dir\":\"left\"}", resp, sizeof(resp));
+    ctl_settle(&ctx, &h);
+    TEST_ASSERT_EQUAL_MESSAGE(FF_APP_FACE_NOW, ctx.state.active_face,
+                               "ctl swipe left did not move radar -> now");
+
+    ctl_send(&h, "{\"cmd\":\"swipe\",\"dir\":\"right\"}", resp, sizeof(resp));
+    ctl_settle(&ctx, &h);
+    TEST_ASSERT_EQUAL_MESSAGE(FF_APP_FACE_RADAR, ctx.state.active_face,
+                               "ctl swipe right did not move now -> radar");
+
+    ff_ctl_loop_close(&ctx);
+    ff_shell_close(&shell);
+    lv_deinit();
+}
+
 int main(void)
 {
     UNITY_BEGIN();
 
     RUN_TEST(S16_AC10_draft_typed_flare_injected_takeover_clears_draft_survives);
     RUN_TEST(S16_d_idle_ticks_never_rebuild_the_screen);
+    RUN_TEST(ctl_swipe_actually_changes_the_face);
 
     return UNITY_END();
 }

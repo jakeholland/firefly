@@ -259,6 +259,24 @@ static void ctl_loop_tap(void *user, double x, double y)
     lv_timer_handler();
 }
 
+/* Advance time between the synthetic pointer steps below, so LVGL's
+ * indev read timer (33 ms period — the exact constraint
+ * test_ctl_flare_sequence.c's top comment documents for `tap`) actually
+ * polls each step instead of at most the first one. Without this the
+ * whole press→moves→release ran in zero elapsed time, LVGL saw at most
+ * a single poll, no gesture was ever recognized, and `swipe` returned
+ * {"ok":true} while the face never changed — found the day someone
+ * finally drove it end to end (the AC10 test had deliberately avoided
+ * it). Proxy: the command replied ok. Property: the face changed. */
+static void ctl_loop_swipe_step_delay(ff_ctl_loop_ctx_t *ctx)
+{
+    if (ctx->mock_clock) {
+        ctx->mock_clock_ms += 40u; /* > the 33 ms indev period */
+    } else {
+        usleep(40 * 1000);
+    }
+}
+
 static void ctl_loop_swipe(void *user, char const *dir)
 {
     ff_ctl_loop_ctx_t *ctx = (ff_ctl_loop_ctx_t *)user;
@@ -267,6 +285,7 @@ static void ctl_loop_swipe(void *user, char const *dir)
     int32_t end_x = left ? 60 : (ctx->w - 60);
     int32_t y = ctx->h / 2;
 
+    ctl_loop_swipe_step_delay(ctx); /* make the indev timer stale BEFORE the press */
     ctx->pointer_point.x = (lv_coord_t)start_x;
     ctx->pointer_point.y = (lv_coord_t)y;
     ctx->pointer_state = LV_INDEV_STATE_PRESSED;
@@ -275,10 +294,12 @@ static void ctl_loop_swipe(void *user, char const *dir)
     enum { STEPS = 6 };
     for (int i = 1; i <= STEPS; i++) {
         ctx->pointer_point.x = (lv_coord_t)(start_x + (end_x - start_x) * i / STEPS);
+        ctl_loop_swipe_step_delay(ctx);
         lv_timer_handler();
     }
 
     ctx->pointer_state = LV_INDEV_STATE_RELEASED;
+    ctl_loop_swipe_step_delay(ctx);
     lv_timer_handler();
 }
 
