@@ -12,14 +12,14 @@ Specs are contracts. Acceptance criteria (AC) become test names (`S01_AC3_...`).
 | S06 | app/radar — Radar face (live/stale/close) | S01,S02 | YES | ✅ merged (PR #13 compute, #16 face+shell) |
 | S07 | app/now — schedule engine + Now face + alarms | S05 | YES | ✅ merged (PR #9 engine, #21 face) |
 | S08 | app/signals + T9 composer | S03,S04 | YES (T9 predictive: no) | ✅ merged (PR #14 engine, #25 feed+UI) |
-| S09 | app/map — vector map face | S05,S02 | stretch | ☐ |
+| S09 | app/map — vector map face | S05,S02 | YES (wanted for v1) | ☐ |
 | S10 | flare flow — send/receive/takeover | S04,S06 | YES | ✅ merged (PR #15 core, #20 UI) |
 | S11 | settings & persistence | — | YES | ◐ slice a merged (PR #4) |
 | S12 | first-run flow | S08(T9),S11 | stretch (device can ship pre-named) | ☐ |
 | S13 | sim target — SDL/headless + screenshots | — | YES (dev-critical, build FIRST) | ✅ merged (PR #2, #12, #19) |
 | S14 | testing & CI | S13 | YES (build FIRST) | ✅ merged (PR #2, #12, #19) |
 | S15 | esp32s3 target — ESP-IDF build + UART + sensors | most | YES (when boards arrive) | ☐ |
-| S16 | app/shell — event loop, routing, input dispatch, wall clock | S02,S03,S06,S08,S10,S11,S13 | YES | ☐ |
+| S16 | app/shell — event loop, routing, input dispatch, wall clock | S02,S03,S06,S08,S10,S11,S13 | YES | ◐ slices a, b0 merged (PR #36, #37) |
 
 **Wave plan:** Wave 0 = S13+S14 (the loop itself). Wave 1 = S01,S03,S05,S11 (parallel, no deps). Wave 2 = S02,S04,S07. Wave 3 = S06,S08,S10. Wave 4 = S16, then S09,S12,S15.
 
