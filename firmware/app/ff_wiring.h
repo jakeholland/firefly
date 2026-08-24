@@ -2,12 +2,23 @@
  * ff_wiring.h — app/ff_wiring.c: crew-filtered feed wiring.
  *
  * Spec: docs/specs/S08-signals-t9.md, slice (b). Per docs/ARCHITECTURE.md
- * this is deliberately the ONE file allowed to include core + meshclient +
- * app together — every other module keeps the strict layering (core has no
- * meshclient/LVGL dependency; meshclient has no core/app dependency; app
- * screens render core state and forward input, no domain logic). The glue
- * that turns decoded Meshtastic events into `ff_feed_t` pushes has to live
- * somewhere that can see both sides, and this is that somewhere.
+ * this is one of the TWO files allowed to include core + meshclient + app
+ * together — this one and `app/ff_shell.c` (S16 slice b1). Every other
+ * module keeps the strict layering (core has no meshclient/LVGL
+ * dependency; meshclient has no core/app dependency; app screens render
+ * core state and forward input, no domain logic). The glue that turns
+ * decoded Meshtastic events into `ff_feed_t` pushes has to live somewhere
+ * that can see both sides, and this is one of the two somewheres.
+ *
+ * This header used to say "deliberately the ONE file". S16 deliberately
+ * changes that rather than working around it: `ff_shell_cfg_t` holds an
+ * `mc_transport_t`, so `ff_shell.h` breaks the old invariant by
+ * construction, and the object that owns a live client, the core domain
+ * state and the view snapshot *together across time* has nowhere else to
+ * live. Recorded here rather than left as a claim the design no longer
+ * holds — an implementer taking the old sentence literally would contort
+ * the design to preserve an invariant this spec retires (S16,
+ * "Layering — a correction to a prior claim").
  *
  * ## What this module does
  *  - `ff_wiring_on_private` / `ff_wiring_on_text` have exactly the call

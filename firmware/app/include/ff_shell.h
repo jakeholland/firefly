@@ -1,0 +1,487 @@
+/**
+ * ff_shell.h — the running application (S16 slice b1).
+ *
+ * Spec: docs/specs/S16-app-shell.md, "App: the shell".
+ *
+ * `ff_shell_t` is the object that owns a live `mc_client_t`, the core
+ * domain state (crew / heard / feed / flare / settings / wall clock) and
+ * the `ff_app_state_t` the screens render — together, across time. It is
+ * target-agnostic: `targets/sim` and `targets/esp32s3` both drive the
+ * same object, and neither of them owns any domain logic.
+ *
+ * This slice (b1) is the skeleton plus the inbound half:
+ *   - lifecycle (`ff_shell_init` / `ff_shell_tick` / `ff_shell_view` /
+ *     `ff_shell_close`),
+ *   - the core -> view projection and its dirty bit,
+ *   - all SEVEN `mc_events_t` callbacks, carrying the roster trust
+ *     policy (the spec's slice table said five; see S16's Amendments),
+ *   - haptic / quiet-hours composition,
+ *   - wall-clock accessor over `core/include/ff_wall.h` (slice b0).
+ *
+ * Deliberately NOT here yet, each with its own slice:
+ *   - `ff_shell_intent` and the intent enum (slice c1-c3),
+ *   - build-once/update-in-place render lifecycle (slice d),
+ *   - reconnect UI and settings write-through (slice e),
+ *   - retiring `targets/sim/live.{c,h}` and repointing `--connect`
+ *     (slice b2 — `main.c` and `targets/` are untouched by this slice,
+ *     on purpose: it keeps a large change reviewable).
+ *
+ * ---------------------------------------------------------------------
+ * LAYERING — a correction, not an exception
+ * ---------------------------------------------------------------------
+ * `app/ff_wiring.h` used to describe itself as "deliberately the ONE file
+ * allowed to include core + meshclient + app together". `ff_shell.h`
+ * breaks that by construction (`ff_shell_cfg_t` holds an
+ * `mc_transport_t`), which S16 anticipates and rules on: the invariant
+ * becomes **`ff_wiring.c` and `ff_shell.c` are the two such files**.
+ * `ff_wiring.h`'s comment is updated in this slice rather than left
+ * asserting something the design no longer holds.
+ *
+ * ---------------------------------------------------------------------
+ * THE ROSTER TRUST POLICY (inherited verbatim from ff_wiring.h)
+ * ---------------------------------------------------------------------
+ *   > Inbound radio traffic never grows the paired roster. Unknown
+ *   > senders go to `ff_heard` (bounded, LRU-evictable). Only an explicit
+ *   > user pairing action adds a roster slot.
+ *
+ * **The rule is about effect, not about which function is called.** Four
+ * core entry points find-or-CREATE internally and therefore may never be
+ * reached from an inbound callback without a prior `ff_crew_find`:
+ * `ff_crew_upsert`, `ff_crew_set_paired`, `ff_crew_on_position` and
+ * `ff_crew_on_rssi`. Calling `ff_crew_on_position` straight from
+ * `on_position` satisfies the letter of "don't call `ff_crew_upsert`"
+ * while committing the exact roster-exhaustion bug the rule exists to
+ * prevent (S16 AC5c). Every inbound path in `ff_shell.c` therefore looks
+ * the sender up read-only first and drops it — noting it in `ff_heard` —
+ * when it is not already a roster member.
+ *
+ * `ff_shell_pair()` is the one entry point that may grow the roster, and
+ * it is not reachable from the radio.
+ *
+ * ---------------------------------------------------------------------
+ * POSITION AGES — never "now"
+ * ---------------------------------------------------------------------
+ * `mc_client` auto-reconnects and restarts `want_config`, which replays
+ * the cached node DB: a burst of **`on_node`** callbacks carrying old
+ * positions that arrive now. Stamping those with the local clock makes
+ * every crew member read LIVE off cached data the instant the link
+ * flaps. So (S16 AC9):
+ *
+ *   - a position arriving over the air (`on_position`) is aged from
+ *     `mc_position_t.rx_time`;
+ *   - a position arriving in a NodeInfo replay (`on_node`) is aged from
+ *     `mc_nodeinfo_t.last_heard` — `mc_client.c:222` hardcodes
+ *     `has_rx_time = false` on that path, so there is no rx_time to use;
+ *   - if neither is available the age is **unknown**, which is
+ *     `FF_FRESH_NEVER`, not fresh. The shell does not record the position
+ *     at all in that case — `ff_crew_on_position` sets `has_pos`, and a
+ *     recorded position with a fabricated age is exactly the lie this
+ *     rule forbids.
+ *
+ * Consequence worth stating plainly: **until the wall clock latches, no
+ * position is recorded.** Unix timestamps off the wire cannot be related
+ * to the monotonic clock without a latch, and there is no honest
+ * fallback. In practice the latch happens during the want_config
+ * handshake, from the same NodeInfo burst (see ff_wall.h).
+ *
+ * ---------------------------------------------------------------------
+ * HAPTICS AND QUIET HOURS
+ * ---------------------------------------------------------------------
+ * `ff_flare_result_t.should_alert` **overrides quiet hours** and is
+ * honoured unconditionally — never re-gated through `ff_quiet_now`.
+ * Feed-push haptics ARE quiet-hours gated. Getting this backwards
+ * silences a flare at 3 a.m., which is the one alert that must always
+ * land (S16 AC11).
+ *
+ * Both are gated on `ff_settings_t.haptics`, the user's master switch:
+ * "overrides quiet hours" is a statement about the quiet-hours window,
+ * not about a user who has turned buzzing off entirely. Interpretation
+ * noted in the PR body per CLAUDE.md.
+ *
+ * When the wall clock is `FF_WALL_UNKNOWN` there is no honest `now_min`,
+ * so `ff_quiet_now` is not evaluated at all (ff_wall.h forbids it) and
+ * nothing is suppressed. Under-suppressing is the safe direction: a
+ * surprise buzz is recoverable, a swallowed flare is not.
+ *
+ * ---------------------------------------------------------------------
+ * `active_face` IS NEVER `FF_APP_FACE_FLARE`
+ * ---------------------------------------------------------------------
+ * That member exists so `ff_route_visible()` has something to return —
+ * an input-dispatch answer. The takeover stays `ff_flare_t`'s single
+ * fact, projected as `ff_app_state_t.flare.takeover_active`, and
+ * `targets/sim/face_dispatch.c` keeps dispatching on it. The projection
+ * writes `modal ? modal : base` into `active_face` and never consults
+ * `ff_route_visible()` (S16 AC13).
+ */
+#ifndef FF_SHELL_H
+#define FF_SHELL_H
+
+#include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
+
+#include "ff_app_state.h"
+#include "ff_clock.h"
+#include "ff_crew.h"
+#include "ff_feed.h"
+#include "ff_flare.h"
+#include "ff_heard.h"
+#include "ff_latlon.h"
+#include "ff_settings.h"
+#include "ff_store.h"
+#include "ff_wall.h"
+
+#include "fp_pack.h"
+
+#include "mc_client.h"
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/**
+ * Link state — first-class, per S16's "Behavior" section. A stale view
+ * during reconnect must not present itself as live.
+ *
+ * Three values, the spec's own vocabulary. The mapping from
+ * `mc_state_t`:
+ *
+ *   MC_STATE_READY        -> FF_SHELL_LINK_CONNECTED
+ *   MC_STATE_HANDSHAKE    -> FF_SHELL_LINK_RECONNECTING
+ *   MC_STATE_DISCONNECTED -> FF_SHELL_LINK_RECONNECTING once the link has
+ *                            ever been up, else FF_SHELL_LINK_NONE
+ *
+ * `mc_client` schedules a retry on every failure and never gives up
+ * (`mc_fail_and_schedule_reconnect`), so after the first successful
+ * handshake the link genuinely is only ever connected or reconnecting —
+ * FF_SHELL_LINK_NONE after that would claim a finality the client does
+ * not have. Before the first success, "no link" is the honest reading.
+ */
+typedef enum {
+    FF_SHELL_LINK_NONE = 0,     /* never connected, or no transport attached */
+    FF_SHELL_LINK_RECONNECTING, /* handshake in flight, or dropped and retrying */
+    FF_SHELL_LINK_CONNECTED,    /* want_config complete, mc_client READY */
+} ff_shell_link_t;
+
+/**
+ * ff_shell_cfg_t — everything the shell needs from its target.
+ *
+ * Every pointer must outlive the shell. `transport` is copied by value
+ * (it is itself a vtable + `io` pointer, and the `io` object must
+ * outlive the shell).
+ */
+typedef struct {
+    ff_clock_t const *clock; /* monotonic; wall time is derived, see ff_wall.h */
+    ff_store_t const *store; /* settings persistence (S11); NULL = defaults, no persistence */
+
+    /** UART on device, TCP in sim. A transport whose `read`/`write` are
+     *  both NULL is treated as "no transport": `ff_shell_init` skips
+     *  `mc_connect`, the link stays FF_SHELL_LINK_NONE, and events can
+     *  still be injected through `ff_shell_events()`. That is the test
+     *  seam, and the same one `ff_wiring.h` documents for its own
+     *  handlers — no radio, no handshake, no socket. */
+    mc_transport_t transport;
+
+    /** Fired for feed pushes (quiet-hours gated) and flare alerts
+     *  (unconditional). NULL = no haptics. */
+    void (*haptic)(void *user);
+    void *haptic_user;
+
+    /**
+     * WHERE `fp_pack_t` LIVES — the decision S16 leaves to the
+     * implementer, made here explicitly rather than left implied.
+     *
+     * **Beside the shell, not inside it.** The target owns pack storage
+     * and hands the shell a pointer; `ff_shell_load_pack` parses into
+     * it. NULL means this target has no pack support at all, and
+     * `ff_shell_load_pack` fails rather than silently doing nothing.
+     *
+     * Why beside:
+     *  - `fp_pack_t` carries a ~48 KB budget of its own (fp_pack.h),
+     *    four times everything else in the shell put together. Folding
+     *    it in would make `ff_shell_t`'s stated footprint one field's
+     *    footprint, and the `_Static_assert` below would stop being a
+     *    guard against runaway growth in the shell — which is the only
+     *    thing it is for.
+     *  - On device the two objects want different memory. The shell is
+     *    touched every tick and belongs in internal SRAM; the pack is
+     *    read a few times a minute and belongs in PSRAM
+     *    (`EXT_RAM_BSS_ATTR`), which is exactly the placement fp_pack.h
+     *    already assumes ("must live comfortably in ESP32-S3 PSRAM").
+     *    One combined object has to go wherever the larger half needs
+     *    to, and that is the wrong place for the hot half.
+     *  - Pack lifetime is then the target's, which is where it already
+     *    is: the target reads the file, under its own documented read
+     *    budget, and the shell only parses bytes.
+     *
+     * The cost, stated: `ff_shell_cfg_t` gains a field the spec's own
+     * sketch does not have, and a target that wants a pack must
+     * allocate one. Noted in the PR body as a deviation.
+     */
+    fp_pack_t *pack;
+} ff_shell_cfg_t;
+
+/* ---------------------------------------------------------------------
+ * ff_shell_t — opaque, caller-allocated
+ * ------------------------------------------------------------------- */
+
+/**
+ * FF_SHELL_BYTES — the shell's stated footprint budget.
+ *
+ * `ff_shell_t` is **opaque**: the real layout lives in `ff_shell.c` and
+ * no field of it is public. But the shell also allocates nothing (core
+ * and the libraries are zero-heap, and the device target has no business
+ * malloc'ing its own application object at boot), so the caller has to
+ * be able to allocate it — hence a public, opaque byte budget rather
+ * than a public struct. Targets do `static ff_shell_t s_shell;` and hold
+ * a pointer, exactly as S16 describes.
+ *
+ * `ff_shell.c` static-asserts that the real struct fits, so this is a
+ * hard build-time guard and not merely documentation: a slice that grows
+ * the shell past its budget fails to compile with a named error, the
+ * same discipline `ff_app_state.h` and `fp_pack.h` apply to their own
+ * structs.
+ *
+ * 16 KB against 12,240 bytes actually used today, measured, not
+ * estimated: two `ff_app_state_t` projections at 3,448 B each — the view
+ * and the previous frame's render key — plus `ff_feed_t`, `ff_crew_t`,
+ * `mc_client_t` and small change. Headroom is deliberate but modest:
+ * c1-c3 add an `ff_t9_t` draft, and d adds render bookkeeping. Note that
+ * `fp_pack_t` is NOT in here — see `ff_shell_cfg_t.pack`.
+ */
+#define FF_SHELL_BYTES 16384u
+
+/** Alignment of the opaque payload. 8 covers every member the shell
+ *  holds today (the widest are `double` inside `ff_latlon_t` and
+ *  pointers); `ff_shell.c` static-asserts the real struct's `_Alignof`
+ *  against it, so an over-aligned member added later fails the build
+ *  rather than mis-aligning at runtime. */
+#define FF_SHELL_ALIGN 8u
+
+/**
+ * The shell object. **Treat as opaque** — the byte array is storage, not
+ * a field, and reading it is not supported. Allocate it (static, or on a
+ * host stack in tests), pass `&it` to `ff_shell_init`, keep the pointer.
+ *
+ * NOT RELOCATABLE after `ff_shell_init`: the shell holds interior
+ * pointers into itself (the `ff_wiring_ctx_t` it drives its feed through,
+ * and `mc_events_t.user`). `memcpy`ing an initialised shell to another
+ * address produces an object whose callbacks write into the old one.
+ * Move the pointer, never the bytes.
+ */
+typedef struct ff_shell {
+    _Alignas(FF_SHELL_ALIGN) unsigned char opaque[FF_SHELL_BYTES];
+} ff_shell_t;
+
+/* ---------------------------------------------------------------------
+ * Lifecycle
+ * ------------------------------------------------------------------- */
+
+/**
+ * ff_shell_init — bring the shell up.
+ *
+ * Zeroes `*sh`, initialises every core module it owns, loads settings
+ * from `cfg->store` (defaults if absent or corrupt — see
+ * `ff_settings_load`), wires all seven `mc_events_t` callbacks, and — if
+ * `cfg->transport` has a read or a write — calls `mc_connect` to start
+ * the want_config handshake.
+ *
+ * Returns 0 on success, negative on failure (`sh` or `cfg` NULL, or
+ * `cfg->clock` NULL — the shell cannot honestly do anything without a
+ * clock). Matches `ff_live_load_pack`'s 0/negative convention, as S16
+ * specifies for every int return here.
+ */
+int ff_shell_init(ff_shell_t *sh, ff_shell_cfg_t const *cfg);
+
+/**
+ * ff_shell_load_pack — parse `len` bytes of festpack JSON into the
+ * caller-provided `cfg->pack`.
+ *
+ * Bytes, not a path: the device has no filesystem the way the sim does,
+ * and `fp_parse` is already bytes-based. The target reads the file under
+ * its own documented budget; the shell parses.
+ *
+ * Returns 0 on success, negative on failure (no pack storage was
+ * configured, NULL/empty input, or `fp_parse` rejected it). On failure
+ * the shell's "a pack is loaded" flag is cleared — `fp_parse` zeroes
+ * `*out` on any error, and a zeroed `fp_pack_t` reads as a deliberately
+ * STATED UTC offset of 0, which would silently outrank the user's
+ * configured offset (see `ff_wall_offset_cfg_t`).
+ *
+ * Deliberately does NOT adopt the pack's venue origin as "my position",
+ * which `targets/sim/live.c` does. That is a dev-harness affordance: the
+ * venue centre is not where the wearer is standing, and asserting it as
+ * a fix would fabricate a position (CLAUDE.md). A target that wants that
+ * behaviour for development calls `ff_shell_set_my_pos` itself, visibly.
+ */
+int ff_shell_load_pack(ff_shell_t *sh, char const *json, size_t len);
+
+/**
+ * ff_shell_tick — pump the client, expire the flare timers, rebuild the
+ * projection. The shell is passive: it never sleeps, blocks, or owns a
+ * thread. The target picks the cadence (SDL callback in sim, an ESP-IDF
+ * task on device); `mc_client.h` asks for ~50 Hz.
+ *
+ * Returns **true iff the RENDERED projection changed** since the last
+ * tick — the input signal the slice-(d) render lifecycle runs on.
+ *
+ * "Rendered", not "raw", is the whole point. Several `ff_app_state_t`
+ * fields are pure functions of elapsed time and change every tick by
+ * construction (`send_expires_in_ms`, `takeover_expires_in_ms`,
+ * `locked_expires_in_ms`) or every frame by asymptotic convergence
+ * (`radar.arrow_deg`, exponentially smoothed). A whole-struct `memcmp`
+ * would pass an idle test and still return true on every single frame in
+ * the field, and slice (d) would buy nothing. The comparison is made
+ * against a *render key*: the projection with exactly those fields
+ * coarsened to the granularity that actually reaches the screen —
+ * countdowns to whole seconds (what `flare_fmt` prints), the arrow to
+ * 0.1 degrees (LVGL's own rotation unit). Every other field is compared
+ * verbatim.
+ *
+ * The key is built by copying the whole projection and coarsening the
+ * named fields, never by listing the fields that matter. That direction
+ * is deliberate: a view field added by a later slice is automatically in
+ * the key, so the failure mode of forgetting to update this is a
+ * redundant repaint, never a stale screen.
+ *
+ * The first tick after `ff_shell_init` always returns true.
+ */
+bool ff_shell_tick(ff_shell_t *sh, uint32_t now_ms);
+
+/**
+ * ff_shell_view — the current projection, rebuilt by the last
+ * `ff_shell_tick`. Valid until the next tick. NULL if `sh` is NULL.
+ *
+ * Before the first tick this is the zeroed struct, whose `active_face`
+ * is `FF_APP_FACE_NONE` — not renderable, exactly as `ff_app_state.h`
+ * documents for a failed fixture load. Tick before you render.
+ */
+ff_app_state_t const *ff_shell_view(ff_shell_t const *sh);
+
+/**
+ * ff_shell_wall — the wall clock now.
+ *
+ * A thin accessor over `ff_wall_now()` (slice b0): the latch, the
+ * plausibility gate and the festival-day mapping all live in
+ * `core/ff_wall.c`; this only composes the latch with the offset sources
+ * (pack, then settings, in `ff_wall_resolve_offset`'s order).
+ *
+ * Reads the injected clock at the moment of the call rather than
+ * reporting the last tick's answer — the shell's own quiet-hours gate
+ * runs inside inbound callbacks, between ticks, and "is it quiet right
+ * now" must not be answered from a tick that happened before the window
+ * opened. (The projection is the exception and passes its own tick time
+ * internally, so one frame describes one instant.)
+ *
+ * Reports `FF_WALL_UNKNOWN` — with every other field zeroed — until a
+ * plausible mesh timestamp has latched, and says so rather than guessing.
+ */
+ff_wall_t ff_shell_wall(ff_shell_t const *sh);
+
+/** ff_shell_close — tear down: stops driving the client and marks the
+ *  shell detached. Does NOT close the transport — the target opened it
+ *  and owns it (the shell was handed a vtable, not a socket). Safe on a
+ *  never-initialised or already-closed shell. */
+void ff_shell_close(ff_shell_t *sh);
+
+/* ---------------------------------------------------------------------
+ * Inbound seam
+ * ------------------------------------------------------------------- */
+
+/**
+ * ff_shell_events — the `mc_events_t` the shell wires into its client,
+ * with `user` already bound to `sh`.
+ *
+ * Two uses, same as `ff_wiring.h`'s handlers:
+ *  - a target driving its own `mc_client_t` can attach these directly;
+ *  - a test can call them with synthetic values as a mock event
+ *    injector, with no transport, socket or handshake anywhere. That is
+ *    how every AC5/AC9/AC11/AC13 test in `app/tests/test_shell.c` drives
+ *    the shell.
+ *
+ * Returns a zeroed `mc_events_t` for a NULL `sh`.
+ */
+mc_events_t ff_shell_events(ff_shell_t *sh);
+
+/**
+ * ff_shell_pair — the explicit user pairing action, and **the only entry
+ * point that may grow the paired roster**.
+ *
+ * Not reachable from the radio: nothing in `ff_shell.c`'s seven inbound
+ * callbacks calls this, which is what makes the roster-trust policy a
+ * property of the code rather than a comment. The pairing UI (S12) and
+ * `--dev-trust-all` (slice b2, sim-only and compiled out on device) are
+ * its callers.
+ *
+ * Returns true if `node_id` now has the requested paired state; false if
+ * `sh` is NULL, or the roster is full (`FF_CREW_MAX`, no eviction in v1)
+ * and `node_id` is not already in it.
+ */
+bool ff_shell_pair(ff_shell_t *sh, uint32_t node_id, bool paired);
+
+/* ---------------------------------------------------------------------
+ * Sensor seam — what the shell cannot know by itself
+ * ------------------------------------------------------------------- */
+
+/**
+ * ff_shell_set_my_pos — where this puck is.
+ *
+ * The shell has no GPS of its own: the comms brain owns position, and on
+ * the sim there is none at all. Until this is called, `my_pos_ok` is
+ * false and the radar face honestly reports NOFIX for any selection —
+ * "no position of mine to compare against" is a true statement, not a
+ * bug. Nothing else ever sets this; see `ff_shell_load_pack` for why a
+ * pack's venue origin does not.
+ */
+void ff_shell_set_my_pos(ff_shell_t *sh, ff_latlon_t pos);
+
+/** ff_shell_clear_my_pos — go back to "I do not know where I am". */
+void ff_shell_clear_my_pos(ff_shell_t *sh);
+
+/**
+ * ff_shell_set_heading — compass heading, degrees [0, 360), 0 = north.
+ *
+ * Pass a **negative** value for "unknown / unreliable" — the same
+ * sentinel `ff_geo_heading_deg` already returns when the puck is tilted
+ * past 60 degrees or the magnetometer reading is unusable, and what
+ * `ff_radar_compute` already tests for. The shell starts at -1.
+ */
+void ff_shell_set_heading(ff_shell_t *sh, float heading_deg);
+
+/* ---------------------------------------------------------------------
+ * Read-only accessors (status bar, pairing UI, tests)
+ * ------------------------------------------------------------------- */
+
+/** ff_shell_link — current link state. FF_SHELL_LINK_NONE if `sh` is NULL. */
+ff_shell_link_t ff_shell_link(ff_shell_t const *sh);
+
+/** ff_shell_my_node_id — this node's id as reported by
+ *  `mc_events_t.on_my_info`, or 0 if the handshake has not got that far.
+ *  The shell uses it to avoid treating its own traffic as inbound. */
+uint32_t ff_shell_my_node_id(ff_shell_t const *sh);
+
+/** ff_shell_crew — the paired roster, read-only. NULL if `sh` is NULL. */
+ff_crew_t const *ff_shell_crew(ff_shell_t const *sh);
+
+/** ff_shell_heard — heard-but-unpaired nodes, read-only (the
+ *  "add from heard nodes" list). NULL if `sh` is NULL. */
+ff_heard_t const *ff_shell_heard(ff_shell_t const *sh);
+
+/** ff_shell_feed — the Signals feed ring, read-only. NULL if `sh` is NULL. */
+ff_feed_t const *ff_shell_feed(ff_shell_t const *sh);
+
+/** ff_shell_flare — flare state, read-only. NULL if `sh` is NULL. The
+ *  takeover is this struct's single fact; see AC13 in this header's top
+ *  comment for why it is not also in `active_face`. */
+ff_flare_t const *ff_shell_flare(ff_shell_t const *sh);
+
+/** ff_shell_settings — current settings, read-only. NULL if `sh` is
+ *  NULL. Write-through (`FF_INTENT_SETTING_SET` + persistence) is
+ *  slice e. */
+ff_settings_t const *ff_shell_settings(ff_shell_t const *sh);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif /* FF_SHELL_H */

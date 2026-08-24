@@ -7,7 +7,9 @@ firmware/
   core/         firefly-core: pure C11 domain logic (no I/O, no LVGL)
   meshclient/   Meshtastic client library (skeleton — S03)
   festpack/     festpack.json parser (skeleton — S05)
-  app/          ff_app_state.h (S13b) + LVGL screens (skeleton — S06+)
+  app/          ff_app_state.h (S13b) + LVGL screens (S06+)
+                ff_route.h (S16a routing), ff_shell.h (S16b1 — the running app:
+                lifecycle, mc_events_t callbacks, core->view projection)
   targets/sim/  ffsim — desktop sim target (S13); fixture.h/fixture_view.h (S13b);
                 ctl_server.h/.c (S13c control socket), live.h/.c (S13c --connect/--pack)
   tools/        compare_png — golden-screenshot pixel diff (S14 slice b)
@@ -126,6 +128,16 @@ criteria-numbered per spec (`SNN_ACX_description`), per `AGENTS.md`.
   loading and a full synthetic mc_client -> crew -> radar/signals
   pipeline test (mock transport, hand-encoded protobuf frames, same
   technique as `meshclient/tests/test_meshclient.c`).
+- `test_shell` (S16 slice b1) — `app/ff_shell.h`, the running
+  application: the roster trust policy across all seven `mc_events_t`
+  callbacks (unknown senders reach `ff_heard`, never the paired roster),
+  position ages that come from `rx_time`/`last_heard` and never from the
+  local clock (the reconnect-replay defect), haptic-vs-quiet-hours
+  composition, and the dirty bit computed over the *rendered* projection.
+  No transport or handshake anywhere: events are injected through
+  `ff_shell_events()`, the same mock-injector seam `ff_wiring.h`
+  documents. Two of its criteria are easy to pass for the wrong reason,
+  so both carry an explicit measurement — see the file's header comment.
 - `test_png_diff` (S14 slice b) — `tools/png_diff.h`'s pixel-diff core,
   including the exact 0.4%/0.5%/0.6% threshold boundary.
 - `test_wall` (S16 slice b0) — `core/ff_wall.h`'s wall-clock derivation:
