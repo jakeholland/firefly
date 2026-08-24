@@ -9,22 +9,27 @@ Firefly is a palm-sized round-screen puck for music festivals: a compass arrow t
 </p>
 
 <p align="center"><em>Not a mockup — that's the firmware rendering, frame by frame.<br>
-Every screen, running. The arrow finds your friend, the lineup admits which set times<br>aren't published yet, you can message without a network, and a flare takes over when someone needs finding.</em></p>
+Five of the six v1 screens, running. The arrow finds your friend, the lineup admits which set times<br>aren't published yet, you can message without a network, and a flare takes over when someone needs finding.</em></p>
 
 ## Status
 
-**Every v1 screen is built and on `main`.** Parts are ordered; the app runs today on a desktop simulator that renders the real screens. What's left is the device target — display driver, UART to the comms brain, sensors — which needs the hardware in hand. First field test: **Lost Lands, Sep 18–20 2026**.
+**Five of the six v1 screens are built and on `main`** — Radar, Now, Signals, Compose and Flare. The map face isn't started. Parts are ordered; the app runs today on a desktop simulator that renders the real screens. What's left is the app shell that makes them a running device, the map, and the device target itself — display driver, UART to the comms brain, sensors — which needs the hardware in hand. First field test: **Lost Lands, Sep 18–20 2026**.
+
+This table is meant to be accurate rather than flattering — if something renders but can't run on hardware yet, it says so.
 
 | Piece | State |
 |---|---|
 | Core logic — geo/bearing math, crew model & freshness, schedule engine, settings, T9, flare state machine | ✅ on `main` |
 | Meshtastic client library (`meshclient`) | ✅ on `main` |
 | festpack parser + the [Lost Lands 2026 pack](https://github.com/jakeholland/fest-almanac) | ✅ on `main` |
-| **Radar face** — live / stale / lost / close-range / no-fix / no-selection | ✅ on `main` |
+| **Radar face** — live / stale / lost / no-fix / no-selection | ✅ on `main` |
+| Radar **close-range** mode — signal-strength rings under ~30 m | ⚠️ built, not yet wired ([#35](https://github.com/jakeholland/firefly/issues/35)) |
 | **Now face** — live set times, starred-set countdown, and honest "times not published yet" states | ✅ on `main` |
 | **Flare** — takeover screen, sender state, navigation lock | ✅ on `main` |
 | Dev harness — control socket, dockerised Meshtastic node, end-to-end tests | ✅ on `main` |
 | **Signals + Compose** — pulses, rally points, canned replies, and a T9 keypad with ABC/123/SYM pages | ✅ on `main` |
+| **Map face** — vector festival grounds with crew dots | ⏳ not started (S09) |
+| App shell — event loop, face routing, wall clock | ◐ in progress (S16) |
 | ESP32-S3 device target, enclosure | ⏳ when boards arrive |
 
 Every merged line went through an independent code review plus, for anything on screen, a review in the persona of a tired raver at 2 a.m. ([why](docs/review/ux-raver.md)).
@@ -34,9 +39,11 @@ Every merged line went through an independent code review plus, for anything on 
 | Live | Lost | Close range |
 |---|---|---|
 | <img src="docs/screens/radar-live.png" width="200" alt="Radar face with a solid amber arrow, DANA, 320 m, and a green LIVE chip"> | <img src="docs/screens/radar-lost.png" width="200" alt="Radar face showing a faint outline arrow, ~1.1 km, and a grey LAST SEEN 42 MIN chip"> | <img src="docs/screens/radar-close.png" width="200" alt="Radar face at close range with pulsing rings, ~15 m, and a FLARE button"> |
-| A fresh fix. Solid arrow, exact distance. | The fix is old. Different in *kind*, not just dimmer — the screen stops claiming to know. | Under 30 m, GPS is useless in a crowd. Rings and a hot/cold trend take over. |
+| A fresh fix. Solid arrow, exact distance. | The fix is old. Different in *kind*, not just dimmer — the screen stops claiming to know. | Under 30 m, GPS is useless in a crowd. Rings and a hot/cold trend take over. **Renders, but can't trigger on hardware yet** — see below. |
 
 The middle one is the point of the whole project: most trackers keep pointing confidently at data they no longer have.
+
+> **On close-range mode, honestly.** It renders, it has tests and golden screenshots — and it has never run on a radio. The mode needs per-packet signal strength, and our Meshtastic client library doesn't yet surface it, so nothing can feed it ([#35](https://github.com/jakeholland/firefly/issues/35)). A screenshot proves a thing *draws*, not that it *works*. Since not overstating what we know is the entire pitch of this project, it would be a bad look to let a screenshot imply otherwise here.
 
 | Set times, honestly | A flare arriving |
 |---|---|
@@ -64,8 +71,8 @@ No fork to maintain, no phone required, ~$80 in parts, multi-day battery.
 | **Radar** | Big honest arrow + distance to a crew member; whole-crew dots; live/stale/close-range states |
 | **Now** | Lineup per stage, set progress, starred-set alarms |
 | **Signals** | Pulses, rally points, canned replies, T9 composer |
-| **Map** | Vector festival grounds from a festival pack, crew dots included |
 | **Flare** | Press-and-hold "come find me" — crew pucks buzz and lock their arrows on you |
+| **Map** *(not built yet)* | Vector festival grounds from a festival pack, crew dots included — specced as S09, wanted for v1, no code yet |
 
 Festival data (map polygons + lineup + set times) loads as a **festpack** — see [fest-almanac](https://github.com/jakeholland/fest-almanac), the open per-festival data repo.
 
