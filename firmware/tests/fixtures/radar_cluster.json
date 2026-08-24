@@ -1,0 +1,21 @@
+{
+  "fixture": "radar_cluster",
+  "face": "radar",
+  "radar": {
+    "mode": "live",
+    "arrow_deg": 42.0,
+    "arrow_valid": true,
+    "name": "DANA",
+    "dist_str": "320 m",
+    "age_str": "8 SEC",
+    "clock_str": "2:14",
+    "batt_pct": 61,
+    "mesh_ok": true,
+    "dots": [
+      {"ring_deg": 100.0, "initial": "R", "color_idx": 0, "stale": false},
+      {"ring_deg": 104.0, "initial": "K", "color_idx": 1, "stale": false},
+      {"ring_deg": 108.0, "initial": "J", "color_idx": 2, "stale": true},
+      {"ring_deg": 112.0, "initial": "M", "color_idx": 3, "stale": false}
+    ]
+  }
+}

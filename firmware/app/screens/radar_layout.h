@@ -207,6 +207,120 @@ typedef struct {
 void radar_layout_resolve_dots(radar_layout_registry_t const *reg, float const *ring_deg, int n,
                                 radar_layout_dot_result_t *out);
 
+/* -------------------------------------------------------------------
+ * Cluster marker ring (issue #18).
+ *
+ * A cluster marker used to be drawn as a plain white outline around a
+ * digit. That is the visual vocabulary of a NOTIFICATION BADGE, not of
+ * this app's crew: every other crew element on the ring is
+ * colour + letter, so the one marker that means "several of your
+ * friends are standing together over there" was the one marker that
+ * looked like generic chrome (PR #16 UX review; the reviewer's words:
+ * it "reads closer to generic chrome than to a crew dot").
+ *
+ * The fix is to spend the marker's ring on the members themselves: one
+ * WEDGE per clustered member, in that member's own crew colour, so the
+ * marker's shape says "friends" before the digit is parsed. The count
+ * digit stays — the clustering ruling ("cluster, never hide") is
+ * unchanged and every member is still represented in exactly one
+ * marker; the wedges just make the marker say WHICH friends, which the
+ * neutral version could not say at all.
+ * ------------------------------------------------------------------- */
+
+/** Ring thickness of a cluster marker's wedges, in px — one value per
+ * freshness, mirroring the treatment a LONE dot already uses for the
+ * same fact. Sized against RADAR_LAYOUT_DOT_PX so the wedges live INSIDE
+ * the marker's existing footprint: the marker stays exactly one
+ * dot-diameter wide, so nothing about the collision geometry above
+ * changes, and the count digit still has clear middle to sit in.
+ *
+ * PR #41 UX review, BLOCKING 3. The first pass drew every wedge at one
+ * thickness and expressed staleness by crushing its OPACITY to 40%. That
+ * fails two ways. It is *relative* — a dimmed wedge only reads as dimmed
+ * next to a bright one, so a cluster where EVERY member is stale looks
+ * like an ordinary live marker and the user walks toward a
+ * forty-minute-old fix. And it is the WRONG IDIOM: a lone stale dot is
+ * hollow-and-bright (transparent fill, 2px crew-colored ring), so the
+ * face teaches "hollow means old" everywhere except here, where the
+ * first pass taught "dark means old" — and dark on a near-black puck
+ * reads as dropping out, a scarier and different fact than the true one.
+ * Measured: the stale violet wedge came out at 2.2:1 against the puck
+ * background, i.e. effectively invisible at arm's length.
+ *
+ * So freshness is now carried by THICKNESS at full color, which is
+ * absolute (it needs no neighbour to compare against) and matches the
+ * lone dot exactly: STALE_W is the lone ghost dot's own 2px border, at
+ * the same outer radius (lv_arc puts an arc's outer edge at the object
+ * bound, just as a border sits at the object edge). */
+#define RADAR_LAYOUT_CLUSTER_RING_W_PX 6.0f
+#define RADAR_LAYOUT_CLUSTER_RING_STALE_W_PX 2.0f
+
+/** Angular gap between adjacent wedges, in degrees — the dark marker
+ * fill showing through, so two adjacent members' colours read as two
+ * wedges rather than one blended ring. Applied only when there is more
+ * than one wedge (a single wedge would be a lone dot, which never takes
+ * this path). */
+#define RADAR_LAYOUT_CLUSTER_WEDGE_GAP_DEG 12.0f
+
+/**
+ * radar_layout_wedge_t — one clustered member's slice of a cluster
+ * marker's ring. Angles are in LVGL's arc convention (0 degrees = 3
+ * o'clock, increasing CLOCKWISE, always normalized into [0, 360)) so the
+ * render layer can hand them to lv_arc_set_bg_angles() unmodified.
+ *
+ * `end_deg` may be NUMERICALLY LESS than `start_deg` — that is a wedge
+ * that crosses the 0/360 seam, which LVGL draws correctly (lv_arc.c:
+ * "if(bg_angle_end < bg_angle_start) bg_end += 360") and which is
+ * unavoidable given the first wedge starts at 12 o'clock. Callers must
+ * not "fix" it by swapping the two.
+ *
+ * The ONE angle outside [0, 360) is a full ring — `{0, 360}`, LVGL's own
+ * complete-arc form, emitted only for a single-member "cluster". A
+ * normalized `{270, 270}` would be indistinguishable from a zero-width
+ * wedge, so it is deliberately not normalized.
+ */
+typedef struct {
+    int index;       /* original dot index (into the caller's dots array) this wedge represents */
+    float start_deg; /* inclusive start, [0, 360) */
+    float end_deg;   /* exclusive end, [0, 360) — or exactly 360 for a full ring; < start_deg iff it crosses the seam */
+} radar_layout_wedge_t;
+
+/**
+ * radar_layout_cluster_wedges — the per-member wedges for the cluster
+ * anchored at `cluster_id`, given the full `resolved[0..n)` array
+ * radar_layout_resolve_dots produced. Returns how many wedges it wrote,
+ * or **-1 if the cluster has more members than `out_max` can hold** —
+ * it never writes a PARTIAL ring. Emitting out_max wedges and reporting
+ * the short count would let this function satisfy its own signature by
+ * hiding a crew member, which is the exact lie by omission the
+ * clustering ruling above exists to prevent (PR #41 code review).
+ * Callers should treat a negative return as "draw no wedges", degrading
+ * to the plain count marker rather than to a ring showing some friends
+ * and not others.
+ *
+ * Members are emitted in ascending ORIGINAL DOT INDEX order — the same
+ * order the caller's own `dots` array is in, and a stable one, so the
+ * same crew standing in the same place always produces the same-looking
+ * marker rather than a ring that reshuffles its colours between frames.
+ * `out[k].index` is the original index, so the caller looks up that
+ * member's crew colour and freshness itself (this module knows nothing
+ * about either — it is pure geometry, no LVGL, no theme).
+ *
+ * The ring is divided into equal slices starting at 12 o'clock, each
+ * inset by half of RADAR_LAYOUT_CLUSTER_WEDGE_GAP_DEG at both ends.
+ * Twelve o'clock is the start so a two-member cluster splits
+ * left/right — two people side by side — rather than top/bottom.
+ *
+ * Returns 0 (writing nothing) for a NULL `resolved`/`out`, a non-positive
+ * `n`/`out_max`, or a `cluster_id` no dot belongs to. Passing a
+ * `cluster_id` whose cluster has only one member returns a single
+ * `{0, 360}` full-ring wedge with no gap — well-defined, though the
+ * render layer never takes this path (a lone dot draws its own initial
+ * instead).
+ */
+int radar_layout_cluster_wedges(radar_layout_dot_result_t const *resolved, int n, int cluster_id,
+                                 radar_layout_wedge_t *out, int out_max);
+
 #ifdef __cplusplus
 }
 #endif
