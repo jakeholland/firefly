@@ -155,3 +155,32 @@ if(FF_BUILD_TESTS)
 
     add_test(NAME test_heard COMMAND test_heard)
 endif()
+
+# S16 slice b0 (core/wall — wall-clock derivation: mesh-timestamp offset
+# latch/re-latch, the plausibility gate, and unix -> local ->
+# (day_doy, now_min). docs/specs/S16-app-shell.md's "Wall clock" section.)
+#
+# Lives in core/, not app/, even though the spec presents it as
+# ff_shell_wall(): it is pure math and policy with no I/O, and it takes
+# the UTC offset as plain values rather than an fp_pack_t, so core keeps
+# its zero-dependency, no-festpack posture. Full rationale in ff_wall.h.
+target_sources(ff-core PRIVATE src/ff_wall.c)
+
+if(FF_BUILD_TESTS)
+    add_executable(test_wall
+        tests/test_wall.c
+    )
+    target_link_libraries(test_wall PRIVATE ff-core unity)
+    # ff_sched.h is pulled in HEADER-ONLY (its include dir, not the
+    # library) so test_wall can static-assert FF_WALL_DAY_START_MIN ==
+    # FF_SCHED_FESTIVAL_DAY_START_MIN — the festival-day boundary must
+    # not drift between the two. Nothing links ff-festpack here, and
+    # ff-core itself deliberately does not (and must not) depend on it:
+    # see ff_wall.h's placement note and ff_sched.h's.
+    target_include_directories(test_wall PRIVATE
+        $<TARGET_PROPERTY:ff-festpack,INTERFACE_INCLUDE_DIRECTORIES>
+    )
+    ff_apply_warnings(test_wall)
+
+    add_test(NAME test_wall COMMAND test_wall)
+endif()

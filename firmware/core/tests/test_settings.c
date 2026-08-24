@@ -100,6 +100,10 @@ static void ff_assert_defaults(ff_settings_t const *s)
     TEST_ASSERT_EQUAL_UINT16(90, s->water_min);
     TEST_ASSERT_EQUAL_UINT16(240, s->quiet_from_min);
     TEST_ASSERT_EQUAL_UINT16(600, s->quiet_to_min);
+    /* UTC offset defaults to UNSET (S16 slice b0): 0 is legitimately
+     * UTC, so the flag — not the value — encodes absence. */
+    TEST_ASSERT_FALSE(s->utc_offset_set);
+    TEST_ASSERT_EQUAL_INT16(0, s->utc_offset_min);
     TEST_ASSERT_EQUAL_STRING("", s->my_name);
     TEST_ASSERT_FALSE(s->cal_valid);
 
@@ -195,6 +199,40 @@ static void S11_AC1_load_with_wrong_version_yields_defaults(void)
     ff_assert_defaults(&s);
 }
 
+static void S11_AC1_load_with_v2_blob_yields_defaults_not_a_migration(void)
+{
+    /* The specific transition this build performs, pinned rather than
+     * covered incidentally by the generic 0xFFFF case above (PR #37
+     * review, D6): v2 -> v3 added ff_settings_t's UTC-offset field, and
+     * there is deliberately NO migration — a v2 blob is discarded whole
+     * and the full defaults stand. That resets compass calibration along
+     * with everything else, which is the part a user would notice; the
+     * decision and its blast radius are recorded in
+     * docs/specs/S11-settings.md's ## Amendments. When the next bump
+     * lands, this is the test that should be updated to name it. */
+    mock_store_io_t m;
+    mock_store_reset(&m);
+    ff_store_t st = mock_store_vtable(&m);
+
+    ff_settings_t saved;
+    memset(&saved, 0, sizeof(saved));
+    saved.imperial = false;
+    saved.water_min = 45;
+    saved.cal_valid = true; /* the field whose loss actually costs a user */
+    ff_settings_save(&saved, &st);
+    TEST_ASSERT_TRUE(m.has_value);
+
+    uint16_t v2 = 2;
+    memcpy(m.data + 4, &v2, sizeof(v2));
+
+    ff_settings_t s;
+    memset(&s, 0xAA, sizeof(s));
+    ff_settings_load(&s, &st);
+
+    ff_assert_defaults(&s);
+    TEST_ASSERT_FALSE(s.cal_valid); /* discarded, not carried across */
+}
+
 /* ---------------------------------------------------------------------
  * AC2 — round-trip save/load equality, including calibration.
  * ------------------------------------------------------------------- */
@@ -214,6 +252,8 @@ static void S11_AC2_round_trip_save_load_is_exact_including_calibration(void)
     out.water_min = 45;
     out.quiet_from_min = 1380; /* 23:00 */
     out.quiet_to_min = 120;    /* 02:00 */
+    out.utc_offset_min = -420; /* MDT (S16 slice b0) */
+    out.utc_offset_set = true;
     strncpy(out.my_name, "Dana", sizeof(out.my_name) - 1);
     out.cal_valid = true;
     out.compass_cal.hard_offset = (ff_vec3_t){12.5f, -3.25f, 0.75f};
@@ -450,6 +490,7 @@ int main(void)
     RUN_TEST(S11_AC1_load_with_wrong_size_blob_yields_defaults);
     RUN_TEST(S11_AC1_load_with_bad_magic_yields_defaults);
     RUN_TEST(S11_AC1_load_with_wrong_version_yields_defaults);
+    RUN_TEST(S11_AC1_load_with_v2_blob_yields_defaults_not_a_migration);
 
     RUN_TEST(S11_AC2_round_trip_save_load_is_exact_including_calibration);
     RUN_TEST(S11_AC2_round_trip_preserves_exact_defaults);

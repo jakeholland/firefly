@@ -40,3 +40,13 @@ Also persisted: paired crew list (S02), starred sets (S07), selected pack id.
 
 ## Slices
 a) store seam + settings struct + tests · b) face render + interactions + golden · c) GHOST admin-message wiring (e2e).
+
+## Amendments
+
+- **2026-08-23, PR #37 (S16 slice b0) — `ff_settings_t` gains a UTC offset `[api]`.** Foreseen by S16's "Wall clock" section, which records the amendment here. Quiet hours is a settings feature with no festival dependency, but before this there was no path to local time at all without a loaded festpack, so on a puck with no pack `ff_quiet_now` silently could not be evaluated.
+
+  Two new fields: `int16_t utc_offset_min` (minutes east of UTC) and its own `bool utc_offset_set`. The flag is not redundant — `int16_t` has no free sentinel here because **0 is legitimately UTC**, so absence cannot be encoded as a value that already means something. Same ruling as `stage_color_valid` and `FF_FRESH_NEVER`. Defaults to *unset*, which keeps a never-configured puck honestly `FF_WALL_UNKNOWN` rather than guessing a zone.
+
+  Resolution order against a loaded pack lives in `ff_wall_resolve_offset` (`core/include/ff_wall.h`), not here: pack's **stated** offset → settings offset when set → pack's assumed default → `FF_WALL_UNKNOWN`. The settings value deliberately outranks `fp_parse`'s −240 fallback; a value the user configured must not lose to a parser default.
+
+  **Release note — a v2 settings blob is discarded, not migrated.** `FF_SETTINGS_FORMAT_VERSION` goes 2 → 3, and `ff_settings_load` rejects any blob whose version does not match, falling back to the full default struct. There is no migration path. The blast radius is wider than the new field: units, share mode, haptics, night glow, water interval, quiet hours, `my_name` **and compass calibration** all reset — and the calibration is the one a user would actually notice having to redo (S12's calibration ritual). Accepted rather than mitigated: this is pre-v1 firmware with no fielded devices, `sizeof(ff_settings_t)` changed anyway so the payload-size check would have rejected the blob regardless, and it matches the precedent set by the v1 → v2 bump. Flagged in the review of PR #37 (D6) as needing to be written down where the next version bump will look for it, which is here.
