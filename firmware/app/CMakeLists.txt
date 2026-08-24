@@ -160,10 +160,11 @@ endif()
 ff_apply_warnings(ff-app-ui)
 
 # S08b (app/ff_wiring.c — crew-filtered feed wiring;
-# docs/specs/S08-signals-t9.md slice b). Deliberately the ONE library that
-# links core + meshclient together (docs/ARCHITECTURE.md) — everything
-# else in this repo keeps core/meshclient/app strictly unaware of each
-# other. Not part of ff-app-ui: this is data-plumbing, no LVGL.
+# docs/specs/S08-signals-t9.md slice b). One of the TWO libraries that
+# link core + meshclient together (the other is ff-shell, S16 slice b1 —
+# see ff_wiring.h's header comment for why that invariant changed);
+# everything else in this repo keeps core/meshclient/app strictly unaware
+# of each other. Not part of ff-app-ui: this is data-plumbing, no LVGL.
 add_library(ff-wiring STATIC
     ff_wiring.c
 )
@@ -240,4 +241,44 @@ if(FF_BUILD_TESTS)
     ff_apply_warnings(test_scr_flare)
 
     add_test(NAME test_scr_flare COMMAND test_scr_flare)
+endif()
+
+# S16b1 (app/ff_shell.c — the running application; docs/specs/S16-app-shell.md
+# slice b1)
+# ---------------------------------------------------------------------------
+# The object that owns a live mc_client_t, the core domain state and the
+# ff_app_state_t projection together across time. Target-agnostic: both
+# targets/sim and targets/esp32s3 drive this same library.
+#
+# The SECOND library in this repo that links core + meshclient + app
+# together, alongside ff-wiring. That is the design, not a slip: S16's
+# "Layering — a correction to a prior claim" retires ff_wiring's old "the
+# ONE file" invariant, since ff_shell_cfg_t holds an mc_transport_t by
+# construction. ff_wiring.h's header comment is updated to match in this
+# same slice.
+#
+# Links ff-festpack for fp_pack_t (the Now-face projection and the
+# wall-clock UTC-offset resolution both need a pack) — note the pack
+# STORAGE is the target's, handed in through ff_shell_cfg_t.pack, so the
+# ~48 KB never lands inside ff_shell_t. See ff_shell.h.
+#
+# No LVGL: this is data-plumbing and projection, exactly like ff-wiring.
+# The screens read ff_shell_view()'s output; they are not linked here.
+# ---------------------------------------------------------------------------
+add_library(ff-shell STATIC
+    ff_shell.c
+)
+target_include_directories(ff-shell PUBLIC include)
+target_link_libraries(ff-shell PUBLIC ff-app ff-route ff-wiring ff-core ff-meshclient ff-festpack)
+target_compile_features(ff-shell PUBLIC c_std_11)
+ff_apply_warnings(ff-shell)
+
+if(FF_BUILD_TESTS)
+    add_executable(test_shell
+        tests/test_shell.c
+    )
+    target_link_libraries(test_shell PRIVATE ff-shell unity)
+    ff_apply_warnings(test_shell)
+
+    add_test(NAME test_shell COMMAND test_shell)
 endif()

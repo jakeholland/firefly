@@ -1,0 +1,1129 @@
+/**
+ * ff_shell.c — see ff_shell.h.
+ *
+ * This is the second file in the repo that includes core + meshclient +
+ * app together, alongside app/ff_wiring.c. That is by construction (S16
+ * "Layering — a correction to a prior claim"), not an accident: the glue
+ * that turns decoded Meshtastic events into domain state has to see both
+ * sides, and there is nowhere else for the object that owns them across
+ * time to live.
+ */
+#include "ff_shell.h"
+
+#include <string.h>
+
+#include "ff_geo.h"
+#include "ff_proto.h"
+#include "ff_radar.h"
+#include "ff_route.h"
+#include "ff_sched.h"
+#include "ff_wiring.h"
+
+/* ---------------------------------------------------------------------
+ * The real shell. Opaque to everyone else — see ff_shell.h's
+ * ff_shell_t / FF_SHELL_BYTES comments.
+ * ------------------------------------------------------------------- */
+
+typedef struct {
+    /* --- injected config --------------------------------------------- */
+    ff_clock_t const *clock;
+    ff_store_t const *store;
+    void (*haptic)(void *user);
+    void *haptic_user;
+    fp_pack_t *pack; /* caller-owned storage; NULL = this target has no pack */
+    bool pack_loaded;
+
+    /* --- mesh link --------------------------------------------------- */
+    mc_client_t mc;
+    bool attached; /* a transport was supplied and mc_connect has run */
+    uint32_t my_node_id;
+    bool has_my_node_id;
+    ff_shell_link_t link;
+    bool ever_connected; /* the link has been READY at least once */
+
+    /* --- core domain state ------------------------------------------- */
+    ff_crew_t crew;
+    ff_heard_t heard;
+    ff_feed_t feed;
+    ff_flare_t flare;
+    ff_settings_t settings;
+    ff_wall_state_t wall;
+    ff_radar_smooth_t smooth;
+    ff_route_t route;
+
+    /* Feed pushes + the crew-paired-sender filter are ff_wiring's, not
+     * reimplemented here. Holds interior pointers into this struct — see
+     * ff_shell.h's "NOT RELOCATABLE" note. */
+    ff_wiring_ctx_t wiring;
+
+    /* --- sensors the shell cannot know by itself --------------------- */
+    ff_latlon_t my_pos;
+    bool my_pos_ok;
+    float heading_deg; /* negative = unknown/unreliable (ff_geo_heading_deg's sentinel) */
+
+    /* --- tick bookkeeping -------------------------------------------- */
+    uint32_t now_ms;         /* the last ff_shell_tick's clock reading */
+    ff_app_face_t prev_face; /* to detect "Signals became visible" (S08 AC3) */
+
+    /* True for the duration of one inbound FLARE dispatch. Suppresses
+     * the feed-push haptic so a single flare produces exactly ONE buzz —
+     * the alert one, which overrides quiet hours — rather than the feed
+     * one as well. See shell_haptic_feed. */
+    bool in_flare_dispatch;
+
+    /* --- projection --------------------------------------------------- */
+    ff_app_state_t view;
+    ff_app_state_t prev_key; /* the PREVIOUS frame's render key, see shell_render_key */
+    bool has_prev_key;
+} shell_t;
+
+_Static_assert(sizeof(shell_t) <= FF_SHELL_BYTES,
+               "ff_shell_t exceeds FF_SHELL_BYTES — raise the budget deliberately "
+               "(and say why in the PR), or stop growing the shell");
+_Static_assert(_Alignof(shell_t) <= FF_SHELL_ALIGN,
+               "ff_shell_t needs stricter alignment than FF_SHELL_ALIGN provides");
+_Static_assert(sizeof(ff_shell_t) >= sizeof(shell_t), "opaque storage smaller than the object it holds");
+
+static shell_t *shell_of(ff_shell_t *sh)
+{
+    return (shell_t *)(void *)sh;
+}
+
+static shell_t const *shell_of_const(ff_shell_t const *sh)
+{
+    return (shell_t const *)(void const *)sh;
+}
+
+/* ---------------------------------------------------------------------
+ * Small helpers
+ * ------------------------------------------------------------------- */
+
+static uint32_t shell_now(shell_t const *sh)
+{
+    if (sh->clock != NULL && sh->clock->now_ms != NULL) {
+        return sh->clock->now_ms(sh->clock->user);
+    }
+    return sh->now_ms;
+}
+
+static void shell_copy_str(char *dst, size_t n, char const *src)
+{
+    if (n == 0) return;
+    if (src == NULL) {
+        dst[0] = '\0';
+        return;
+    }
+    size_t i = 0;
+    while (i + 1 < n && src[i] != '\0') {
+        dst[i] = src[i];
+        i++;
+    }
+    dst[i] = '\0';
+}
+
+/**
+ * A MUTABLE handle to an EXISTING roster member, or NULL.
+ *
+ * Never creates. `ff_crew_upsert` is reached only after `ff_crew_find`
+ * has already proven the slot exists, so its find-or-create contract
+ * degenerates to pure find — the roster cannot grow through here. This
+ * wrapper exists so that every inbound path in this file gets its
+ * mutable member pointer through one audited place rather than each
+ * reaching for `ff_crew_upsert` and hoping (S16's roster rule is about
+ * EFFECT, not about which function is named — see ff_shell.h).
+ */
+static ff_crew_member_t *shell_member(shell_t *sh, uint32_t node_id)
+{
+    if (ff_crew_find(&sh->crew, node_id) == NULL) return NULL;
+    return ff_crew_upsert(&sh->crew, node_id);
+}
+
+static bool shell_is_paired(shell_t const *sh, uint32_t node_id)
+{
+    ff_crew_member_t const *m = ff_crew_find(&sh->crew, node_id);
+    return m != NULL && m->paired;
+}
+
+static bool shell_is_self(shell_t const *sh, uint32_t node_id)
+{
+    return sh->has_my_node_id && node_id == sh->my_node_id;
+}
+
+/* ---------------------------------------------------------------------
+ * Wall clock — a thin composition over core/ff_wall.c (slice b0)
+ * ------------------------------------------------------------------- */
+
+/**
+ * The wall clock at monotonic time `now_ms`. `ff_shell_wall()` is this
+ * and nothing else: the latch, the plausibility gate and the
+ * festival-day mapping all live in core, and all this adds is the
+ * offset-source resolution the shell is the only thing positioned to do
+ * (it is the one object that can see both a pack and the settings).
+ *
+ * `now_ms` is a parameter rather than a read of `sh->now_ms` so the
+ * projection and the quiet-hours gate can each ask for the instant they
+ * mean. The projection passes its own tick time, so every field of one
+ * frame describes one instant; the quiet-hours gate — which runs inside
+ * an inbound callback, between ticks — passes the live clock, because
+ * "is it quiet right now" must not be answered from a tick that happened
+ * before the window opened.
+ */
+static ff_wall_t shell_wall(shell_t const *sh, uint32_t now_ms)
+{
+    ff_wall_offset_cfg_t cfg;
+    memset(&cfg, 0, sizeof(cfg));
+
+    /* pack_loaded is carried explicitly rather than inferred from a
+     * non-NULL pointer: fp_parse zeroes *out on failure, and a zeroed
+     * fp_pack_t reads as a deliberately STATED offset of UTC, which would
+     * outrank the user's configured one (ff_wall.h). */
+    cfg.pack_loaded = sh->pack_loaded && sh->pack != NULL;
+    if (cfg.pack_loaded) {
+        cfg.pack_offset_min = sh->pack->utc_offset_min;
+        cfg.pack_offset_assumed = sh->pack->utc_offset_assumed;
+    }
+    cfg.settings_offset_set = sh->settings.utc_offset_set;
+    cfg.settings_offset_min = sh->settings.utc_offset_min;
+
+    return ff_wall_now(&sh->wall, now_ms, &cfg);
+}
+
+/* ---------------------------------------------------------------------
+ * Quiet hours + haptics
+ * ------------------------------------------------------------------- */
+
+/**
+ * True only when the puck KNOWS it is inside quiet hours.
+ *
+ * `ff_wall.h` forbids evaluating `ff_quiet_now` while the wall clock is
+ * FF_WALL_UNKNOWN — there is no honest `now_min` to hand it, and it would
+ * silently accept a fabricated one. So an unknown clock does not suppress
+ * anything. Under-suppressing is the safe direction: a surprise buzz is
+ * recoverable, a swallowed alert is not.
+ */
+static bool shell_quiet_now(shell_t const *sh)
+{
+    ff_wall_t const w = shell_wall(sh, shell_now(sh));
+    if (w.src == FF_WALL_UNKNOWN) return false;
+    return ff_quiet_now(&sh->settings, w.now_min);
+}
+
+static void shell_haptic_fire(shell_t *sh)
+{
+    if (sh->haptic != NULL) sh->haptic(sh->haptic_user);
+}
+
+/**
+ * The feed-push haptic — QUIET-HOURS GATED (S16 AC11, second half).
+ *
+ * Wired into `ff_wiring_ctx_t.haptic_cb`, so it fires once per item that
+ * actually reaches the feed (a paired sender), which is exactly what
+ * ff_wiring already guarantees.
+ *
+ * `in_flare_dispatch` suppression: an inbound FLARE produces both a feed
+ * item and a `should_alert`. Letting both buzz would double-buzz one
+ * event outside quiet hours, and — worse for reasoning about it — make
+ * "did the flare alert fire?" untestable by buzz count. The alert is the
+ * one that must survive quiet hours, so it is the one that keeps the
+ * buzz.
+ */
+static void shell_haptic_feed(void *user)
+{
+    shell_t *sh = (shell_t *)user;
+    if (sh == NULL || sh->in_flare_dispatch) return;
+    if (!sh->settings.haptics) return;
+    if (shell_quiet_now(sh)) return;
+    shell_haptic_fire(sh);
+}
+
+/**
+ * The flare alert haptic — NEVER quiet-hours gated (S16 AC11, first
+ * half). `ff_flare_result_t.should_alert` explicitly overrides quiet
+ * hours; re-running it through `ff_quiet_now` here silences the one
+ * alert that must always land.
+ *
+ * `settings.haptics` — the user's master switch — still applies. That is
+ * a different statement from quiet hours: "override the 4 a.m. window"
+ * is not "override a user who turned buzzing off". Interpretation noted
+ * in the PR body.
+ */
+static void shell_haptic_alert(shell_t *sh)
+{
+    if (!sh->settings.haptics) return;
+    shell_haptic_fire(sh);
+}
+
+/* ---------------------------------------------------------------------
+ * Wall-clock observation
+ * ------------------------------------------------------------------- */
+
+/**
+ * Offer a NodeInfo's `last_heard` to the wall latch.
+ *
+ * **Returns true iff this reading is what the latch is now made of** —
+ * it bootstrapped the latch or re-latched it. The caller must then not
+ * age anything from the same reading; see shell_ev_node.
+ *
+ * Bootstrap source (ff_wall.h: populated unconditionally, including
+ * during the want_config replay, so the offset latches during the
+ * handshake) — but **forward-only once latched**, and that qualifier is
+ * load-bearing rather than defensive.
+ *
+ * `last_heard` is "when the nodeDB last heard this node", which is by
+ * construction <= now. On the want_config replay a cached node's
+ * `last_heard` can be many minutes old. Offered unconditionally, that
+ * reading disagrees with the latch by more than
+ * FF_WALL_RELATCH_DELTA_S and RE-LATCHES the wall clock backwards by the
+ * node's staleness. Every position age then computes from a clock that
+ * has been dragged back to the moment of the replay — which reads as
+ * "just now", which is precisely the reconnect defect S16 exists to
+ * close, rebuilt one layer up (AC9 fails on exactly this).
+ *
+ * So a reading EARLIER than the latch predicts is evidence about the
+ * node, not about our clock, and is ignored. A reading LATER than the
+ * latch predicts cannot be explained by staleness at all — only by our
+ * latch being wrong (the comms brain's clock stepping when GPS locks,
+ * which is the case FF_WALL_RELATCH_DELTA_S exists for) — so that one is
+ * offered and re-latches.
+ *
+ * The residual limit, stated: a clock that steps BACKWARDS is not
+ * re-latched from NodeInfo. `on_position`'s `rx_time` is a genuine
+ * per-packet local receive time rather than a cached summary, so it is
+ * offered unconditionally and re-latches in both directions.
+ */
+static bool shell_observe_wall_nodeinfo(shell_t *sh, uint32_t last_heard, uint32_t now_ms)
+{
+    int64_t predicted = 0;
+    if (ff_wall_unix_now(&sh->wall, now_ms, &predicted) && (int64_t)last_heard <= predicted) {
+        return false; /* told us nothing new about the clock */
+    }
+    ff_wall_obs_t const obs = ff_wall_observe(&sh->wall, (int64_t)last_heard, now_ms);
+    return obs == FF_WALL_OBS_LATCHED || obs == FF_WALL_OBS_RELATCHED;
+}
+
+/**
+ * Turn a unix receive time into the monotonic timestamp
+ * `ff_crew_on_position` wants, or fail.
+ *
+ * Fails — and the caller then does NOT record the position at all — when
+ * the age cannot be established honestly:
+ *  - `unix_s == 0`, mc_client.h's "unknown" for `last_heard`;
+ *  - outside the plausibility window (an uncorrected RTC below the floor,
+ *    a corrupt or hostile clock above the ceiling);
+ *  - nothing has latched, so unix seconds cannot be related to the
+ *    monotonic clock at all;
+ *  - the timestamp claims the future relative to our own derived now;
+ *  - the fix is older than FF_WALL_LATCH_MAX_AGE_MS, past which the
+ *    monotonic delta stops being unambiguous.
+ *
+ * The last case under-claims: a nine-day-old cached fix reads
+ * FF_FRESH_NEVER rather than FF_FRESH_LOST. Both mean "do not trust this
+ * position"; NEVER additionally declines to claim a fix we cannot place
+ * in time, which is the direction this project errs in everywhere else
+ * (FF_FRESH_NEVER, stage_color_valid, has_rssi).
+ */
+static bool shell_rx_ms_from_unix(shell_t const *sh, uint32_t unix_s, uint32_t now_ms, uint32_t *out_rx_ms)
+{
+    if (unix_s == 0u) return false;
+
+    int64_t const u = (int64_t)unix_s;
+    if (u < FF_WALL_EPOCH_FLOOR || u >= FF_WALL_EPOCH_CEILING) return false;
+
+    int64_t now_unix = 0;
+    if (!ff_wall_unix_now(&sh->wall, now_ms, &now_unix)) return false;
+
+    int64_t const age_s = now_unix - u;
+    if (age_s < 0) return false;
+    if (age_s > (int64_t)(FF_WALL_LATCH_MAX_AGE_MS / 1000u)) return false;
+
+    *out_rx_ms = now_ms - (uint32_t)(age_s * 1000);
+    return true;
+}
+
+/* ---------------------------------------------------------------------
+ * mc_events_t callbacks — all seven
+ * ------------------------------------------------------------------- */
+
+static void shell_ev_state(void *u, mc_state_t s)
+{
+    shell_t *sh = (shell_t *)u;
+    if (sh == NULL) return;
+
+    switch (s) {
+    case MC_STATE_READY:
+        sh->ever_connected = true;
+        sh->link = FF_SHELL_LINK_CONNECTED;
+        break;
+    case MC_STATE_HANDSHAKE:
+        sh->link = FF_SHELL_LINK_RECONNECTING;
+        break;
+    case MC_STATE_DISCONNECTED:
+    default:
+        /* mc_client schedules a retry on every failure and never gives
+         * up, so once the link has been up, "disconnected" IS
+         * "reconnecting" — see ff_shell.h's ff_shell_link_t comment. */
+        sh->link = sh->ever_connected ? FF_SHELL_LINK_RECONNECTING : FF_SHELL_LINK_NONE;
+        break;
+    }
+}
+
+static void shell_ev_my_info(void *u, uint32_t my_node_id)
+{
+    shell_t *sh = (shell_t *)u;
+    if (sh == NULL) return;
+    sh->my_node_id = my_node_id;
+    sh->has_my_node_id = true;
+}
+
+static void shell_ev_node(void *u, mc_nodeinfo_t const *n)
+{
+    shell_t *sh = (shell_t *)u;
+    if (sh == NULL || n == NULL) return;
+
+    uint32_t const now = shell_now(sh);
+
+    /* Before the self-check: our own NodeInfo carries the freshest
+     * `last_heard` of any node in the dump, and it is the one the
+     * bootstrap most wants. */
+    bool const defined_the_latch = shell_observe_wall_nodeinfo(sh, n->last_heard, now);
+
+    if (shell_is_self(sh, n->node_num)) return; /* never treat our own traffic as inbound */
+
+    /* ROSTER TRUST POLICY. Read-only first; a miss is noted in the
+     * bounded heard list and dropped. Inbound radio traffic never grows
+     * the roster — not even a NodeInfo, which is the friendliest-looking
+     * packet on the mesh and still arrives unauthenticated. */
+    ff_crew_member_t *m = shell_member(sh, n->node_num);
+    if (m == NULL) {
+        ff_heard_note(&sh->heard, n->node_num, now);
+        return;
+    }
+
+    char const *name = n->has_short_name ? n->short_name : (n->has_long_name ? n->long_name : "");
+    if (name[0] != '\0') {
+        shell_copy_str(m->name, sizeof(m->name), name);
+        m->initial = name[0];
+    }
+    if (n->has_battery_level) {
+        m->battery_pct = (int8_t)(n->battery_level > 100u ? 100u : n->battery_level);
+    }
+
+    if (n->has_position) {
+        /* THE RECONNECT RULE (AC9). This is the want_config replay's
+         * shape: a cached position arriving now. `mc_client.c:222`
+         * hardcodes has_rx_time = false on this path — rx_time is a
+         * MeshPacket field and a NodeInfo is not a MeshPacket — so the
+         * honest age source is `last_heard`, and there is no fallback to
+         * the local clock. If the age cannot be established, the
+         * position is not recorded at all and freshness stays
+         * FF_FRESH_NEVER.
+         *
+         * AND: NOT FROM THE READING THAT JUST DEFINED THE CLOCK.
+         * `defined_the_latch` is the whole of PR #46 review finding D1.
+         * If this NodeInfo bootstrapped or moved the latch, then
+         * ff_wall_unix_now() now returns exactly this node's
+         * `last_heard`, so its position's derived age is zero BY
+         * CONSTRUCTION rather than by measurement — a six-hour-old
+         * cached fix reads LIVE on every cold boot, and, ordering aside,
+         * whichever node carries the greatest `last_heard` in the burst
+         * always does. That is defect 2 of S16 a third time, arriving
+         * through the latch instead of through the local clock.
+         *
+         * We have just learned what time it is FROM this node; we cannot
+         * also use it to say how old this node is. Not recorded ->
+         * FF_FRESH_NEVER, which the radar renders as "NO FIX YET" rather
+         * than a fabricated "LAST SEEN" (ff_radar.h's renderer
+         * contract). A later node in the same burst with an OLDER
+         * `last_heard` does not move the latch, so it IS aged — against
+         * the running maximum, which is the best estimate of "now" the
+         * puck has.
+         *
+         * That makes the OUTCOME ordering-dependent: a descending burst
+         * leaves only its freshest node unplaceable, an ascending one
+         * leaves everything NEVER. Honest either way — never fresher than
+         * reality — but the ascending case is needlessly pessimistic, and
+         * recovering that precision needs deferred re-aging against the
+         * burst's final clock:
+         * https://github.com/jakeholland/firefly/issues/50.
+         *
+         * `n->position.has_rx_time` is deliberately not consulted: it is
+         * hardcoded false on this path today, so a branch on it would be
+         * dead code that reads as if it were handling a case. If
+         * meshclient ever populates it here, it becomes the better
+         * source and this is where to prefer it. */
+        uint32_t rx_ms = 0;
+        if (!defined_the_latch && shell_rx_ms_from_unix(sh, n->last_heard, now, &rx_ms)) {
+            ff_latlon_t const p = {n->position.lat, n->position.lon};
+            ff_crew_on_position(&sh->crew, n->node_num, p, rx_ms);
+        }
+    }
+
+    /* n->rx_path is a nodeDB SUMMARY with no timestamp (mc_client.h), so
+     * it is deliberately not used to attribute RSSI. That question is
+     * per-packet and is answered in shell_ev_rx_meta. */
+}
+
+static void shell_ev_position(void *u, uint32_t node, mc_position_t const *p)
+{
+    shell_t *sh = (shell_t *)u;
+    if (sh == NULL || p == NULL) return;
+    if (shell_is_self(sh, node)) return;
+
+    uint32_t const now = shell_now(sh);
+
+    /* A live per-packet local receive time: the authoritative re-latch
+     * source, offered unconditionally in both directions (unlike a
+     * NodeInfo's cached `last_heard` — see shell_observe_wall_nodeinfo).
+     * The plausibility window in ff_wall_observe is the guard.
+     *
+     * Note this path deliberately does NOT carry shell_ev_node's
+     * "don't age from the reading that defined the latch" guard (D1).
+     * `rx_time` is THIS PACKET's local receive time, so "when did this
+     * arrive" and "what time is it now" genuinely coincide and an age of
+     * ~0 is a measurement, not a construction. See ff_shell.h for the
+     * assumption that rests on. */
+    if (p->has_rx_time) {
+        (void)ff_wall_observe(&sh->wall, (int64_t)p->rx_time, now);
+    }
+
+    /* AC5c. `ff_crew_on_position` calls crew_find_or_create internally,
+     * so calling it here on an unknown sender would satisfy "we never
+     * call ff_crew_upsert" while committing the exact roster-exhaustion
+     * bug the rule exists to prevent — on the MORE untrusted trigger, a
+     * bare Position with no name and no handshake behind it. Find first;
+     * an unknown sender's position is dropped and the sender noted. */
+    if (ff_crew_find(&sh->crew, node) == NULL) {
+        ff_heard_note(&sh->heard, node, now);
+        return;
+    }
+
+    /* No rx_time means no honest age — and "it arrived now" is not the
+     * answer (S16 defect 2). Drop it; freshness stays whatever it
+     * honestly was. */
+    if (!p->has_rx_time) return;
+
+    uint32_t rx_ms = 0;
+    if (!shell_rx_ms_from_unix(sh, p->rx_time, now, &rx_ms)) return;
+
+    ff_latlon_t const pos = {p->lat, p->lon};
+    ff_crew_on_position(&sh->crew, node, pos, rx_ms);
+}
+
+static void shell_ev_text(void *u, uint32_t from, uint32_t to, char const *utf8, size_t len)
+{
+    shell_t *sh = (shell_t *)u;
+    if (sh == NULL) return;
+    if (shell_is_self(sh, from)) return;
+    /* ff_wiring owns the crew-paired filter, the heard-note on a miss,
+     * the feed push and the (quiet-gated, via shell_haptic_feed) buzz. */
+    ff_wiring_on_text(&sh->wiring, from, to, utf8, len);
+}
+
+static void shell_ev_private(void *u, uint32_t from, uint32_t portnum, uint8_t const *payload, size_t len)
+{
+    shell_t *sh = (shell_t *)u;
+    if (sh == NULL) return;
+    if (portnum != FF_PORTNUM) return; /* not this app's protocol */
+    if (shell_is_self(sh, from)) return;
+
+    ff_proto_msg_t msg;
+    memset(&msg, 0, sizeof(msg));
+    int const type = ff_proto_decode(payload, len, &msg);
+
+    /* Feed side first, so the Signals item exists before the takeover
+     * that references it. For a FLARE the feed haptic is suppressed —
+     * one inbound flare, one buzz, and it is the alert one. */
+    sh->in_flare_dispatch = (type == FF_PROTO_TYPE_FLARE);
+    ff_wiring_on_private(&sh->wiring, from, portnum, payload, len);
+    sh->in_flare_dispatch = false;
+
+    if (type == FF_PROTO_TYPE_FLARE) {
+        /* `paired` is a plain bool by ff_flare.h's design — an unpaired
+         * sender's flare is ignored entirely there, so this read-only
+         * lookup is also the trust gate. */
+        ff_flare_result_t const r = ff_flare_on_flare_rx(&sh->flare, from, shell_is_paired(sh, from),
+                                                         msg.body.flare.dur_s, shell_now(sh));
+        if (r.should_alert) {
+            shell_haptic_alert(sh); /* UNCONDITIONAL w.r.t. quiet hours — AC11 */
+        }
+    } else if (type == FF_PROTO_TYPE_FLARE_END) {
+        (void)ff_flare_on_flare_end_rx(&sh->flare, from);
+    }
+}
+
+static void shell_ev_rx_meta(void *u, uint32_t from, mc_rx_meta_t const *m)
+{
+    shell_t *sh = (shell_t *)u;
+    if (sh == NULL || m == NULL) return;
+
+    /* mc_client.h warns explicitly: self-packets are NOT filtered by the
+     * library, and a caller maintaining a per-peer roster wants to skip
+     * its own id rather than create a slot for itself. */
+    if (shell_is_self(sh, from)) return;
+
+    uint32_t const now = shell_now(sh);
+
+    /* This fires for EVERY inbound MeshPacket naming a sender, including
+     * encrypted ones and portnums out of decode scope — which makes it
+     * the most complete "who has this puck heard" signal there is, and
+     * exactly what ff_heard is for (bounded, LRU-evictable, expected to
+     * churn under real festival RF volume). It still never grows the
+     * roster. */
+    if (ff_crew_find(&sh->crew, from) == NULL) {
+        ff_heard_note(&sh->heard, from, now);
+        return;
+    }
+
+    /* `ff_crew_on_rssi` find-or-creates too — same effect-not-name rule
+     * as ff_crew_on_position above; the find has already gated it.
+     *
+     * DIRECT is required, not a nicety: RSSI is measured against the
+     * signal that actually arrived, which for a relayed packet is the
+     * RELAY's transmission. Attributing it to `from` reports a loud
+     * neighbouring relay as if the distant friend it forwarded for were
+     * standing next to you — and ff_crew_close_range turns exactly that
+     * number into a CLOSE lock. */
+    if (m->rx_path == MC_RX_PATH_DIRECT && m->has_rssi) {
+        ff_crew_on_rssi(&sh->crew, from, m->rssi_dbm);
+    }
+
+    /* m->has_snr / m->snr_db: nothing in core consumes SNR yet. Left
+     * unread rather than stashed somewhere it would go stale. */
+}
+
+/* ---------------------------------------------------------------------
+ * Projection: core state -> ff_app_state_t
+ * ------------------------------------------------------------------- */
+
+static char const *shell_name_of(shell_t const *sh, uint32_t node_id)
+{
+    ff_crew_member_t const *m = ff_crew_find(&sh->crew, node_id);
+    return (m != NULL) ? m->name : "";
+}
+
+/** Milliseconds until `expiry_ms`, or -1 when the fact is not live.
+ *  Wraparound-safe: the subtraction is unsigned, and a deadline already
+ *  passed (which ff_flare_tick clears in the same tick) reads as 0. */
+static int32_t shell_remaining_ms(bool live, uint32_t expiry_ms, uint32_t now_ms)
+{
+    if (!live) return -1;
+    uint32_t const d = expiry_ms - now_ms;
+    if (d > (uint32_t)0x7FFFFFFF) return 0; /* already past */
+    return (int32_t)d;
+}
+
+static void shell_project_flare(shell_t const *sh, uint32_t now_ms, ff_app_flare_t *out)
+{
+    ff_flare_t const *f = &sh->flare;
+
+    out->sending = f->sending;
+    out->send_expires_in_ms = shell_remaining_ms(f->sending, f->send_expiry_ms, now_ms);
+
+    out->takeover_active = f->takeover_active;
+    out->takeover_expires_in_ms = shell_remaining_ms(f->takeover_active, f->takeover_expiry_ms, now_ms);
+    out->takeover_bearing_valid = false;
+    out->takeover_bearing_deg = 0.0f;
+    out->takeover_dist_str[0] = '\0';
+    out->takeover_from_name[0] = '\0';
+
+    if (f->takeover_active) {
+        shell_copy_str(out->takeover_from_name, sizeof(out->takeover_from_name),
+                        shell_name_of(sh, f->takeover_node_id));
+
+        /* Bearing/distance to the sender are the app layer's own read
+         * (ff_flare_t deliberately has no crew/geo dependency). Both stay
+         * honestly absent unless BOTH ends have a position — a bare float
+         * cannot express "unknown", which is why takeover_bearing_valid
+         * exists at all. */
+        ff_crew_member_t const *m = ff_crew_find(&sh->crew, f->takeover_node_id);
+        if (m != NULL && m->has_pos && sh->my_pos_ok) {
+            out->takeover_bearing_valid = true;
+            out->takeover_bearing_deg = ff_geo_bearing_deg(sh->my_pos, m->pos);
+            ff_fmt_distance(out->takeover_dist_str, sizeof(out->takeover_dist_str),
+                             ff_geo_distance_m(sh->my_pos, m->pos), sh->settings.imperial);
+        }
+    }
+
+    out->locked = (f->locked_node_id != 0u);
+    out->locked_expires_in_ms = shell_remaining_ms(out->locked, f->locked_expiry_ms, now_ms);
+    out->locked_from_name[0] = '\0';
+    if (out->locked) {
+        shell_copy_str(out->locked_from_name, sizeof(out->locked_from_name),
+                        shell_name_of(sh, f->locked_node_id));
+    }
+}
+
+static void shell_project_signals(shell_t const *sh, uint32_t now_ms, ff_app_signals_t *out)
+{
+    uint8_t const have = ff_feed_count(&sh->feed);
+    uint8_t const n = (have < FF_APP_SIGNALS_MAX_ITEMS) ? have : (uint8_t)FF_APP_SIGNALS_MAX_ITEMS;
+
+    for (uint8_t i = 0; i < n; i++) {
+        ff_feed_item_t const *it = ff_feed_at(&sh->feed, i); /* 0 = newest */
+        if (it == NULL) break;
+        ff_app_feed_item_t *o = &out->items[i];
+
+        /* ff_app_feed_kind_t "mirrors S08's ff_feed_kind_t exactly (name,
+         * order, members)" per ff_app_state.h, so the cast is the
+         * documented contract rather than a coincidence. */
+        o->kind = (ff_app_feed_kind_t)it->kind;
+        shell_copy_str(o->from_name, sizeof(o->from_name), shell_name_of(sh, it->from_node));
+        shell_copy_str(o->text, sizeof(o->text), it->text);
+        ff_fmt_age(o->age_str, sizeof(o->age_str), now_ms - it->at_ms); /* unsigned: wraparound-safe */
+        o->unread = it->unread;
+        out->n_items = (uint8_t)(i + 1);
+    }
+
+    uint16_t const unread = ff_feed_unread_count(&sh->feed);
+    out->unread_count = (uint8_t)(unread > 0xFFu ? 0xFFu : unread);
+}
+
+/**
+ * Stack budget for one day's set list inside shell_project_now.
+ *
+ * `ff_sched_day_sets` would happily fill FP_MAX_SETS (256) pointers —
+ * 2 KB of stack, on a tick path that on device runs inside an ESP-IDF
+ * task whose default stack is single-digit KB. 64 pointers is 512 bytes
+ * and is generous headroom over any real day (the vendored Lost Lands
+ * 2026 pack's busiest day has 7 sets, and FP_MAX_STAGES is 12).
+ *
+ * The truncation semantics, stated because they are not free: past this
+ * many sets on one day, later sets are dropped in pack order and would
+ * not reach the unknown-time lineup. That is `ff_sched_day_sets`'s own
+ * documented "silently drop past max" contract, and `n_lineup` is capped
+ * at FF_APP_NOW_MAX_LINEUP (32) below anyway.
+ */
+#define SHELL_DAY_SETS_MAX 64
+
+static char const *shell_stage_name(fp_pack_t const *p, int8_t stage_idx)
+{
+    if (stage_idx < 0 || (uint8_t)stage_idx >= p->n_stages) return "";
+    return p->stages[stage_idx].name;
+}
+
+static bool shell_stage_color(fp_pack_t const *p, int8_t stage_idx, uint32_t *out_rgb)
+{
+    if (stage_idx < 0 || (uint8_t)stage_idx >= p->n_stages) return false;
+    *out_rgb = p->stages[stage_idx].color_rgb;
+    return true;
+}
+
+/**
+ * The Now face.
+ *
+ * KNOWN DEFECT, tracked as
+ * https://github.com/jakeholland/firefly/issues/48 — do not let this
+ * harden into intended behaviour by default.
+ *
+ * `now_state_t` has no member for "a pack is loaded but the puck does not
+ * know what time it is", which is not exotic: it is the NORMAL BOOT PATH,
+ * since FF_WALL_UNKNOWN holds until a plausible mesh timestamp latches
+ * during the handshake. NOW_NO_PACK is used as the least-bad of the five
+ * existing members, and it never invents a clock — but calling it an
+ * under-claim (as this PR first did) is wrong: scr_now.c:419-433 renders
+ * it as "NO FESTIVAL LOADED / Load a festpack to see what's playing",
+ * which MIS-claims. It names the wrong missing fact and tells the user to
+ * redo something they already did. The honest unknown here is the TIME.
+ *
+ * NOW_TBD is not the answer either — that would assert the day's set
+ * times are unknown, a statement about the DATA rather than about our
+ * clock, and a straightforward lie. The fix is a new state; see #48.
+ * (PR #46 review, D3.)
+ */
+static void shell_project_now(shell_t const *sh, ff_wall_t wall, ff_app_now_t *out)
+{
+    if (!sh->pack_loaded || sh->pack == NULL || wall.src == FF_WALL_UNKNOWN) {
+        out->state = NOW_NO_PACK;
+        return;
+    }
+
+    fp_pack_t const *p = sh->pack;
+    uint16_t const day = wall.day_doy;
+    int16_t const now_min = wall.now_min;
+
+    ff_now_row_t rows[FF_APP_NOW_MAX_ROWS];
+    uint8_t const n_rows = ff_sched_now_playing(p, day, now_min, rows, (uint8_t)FF_APP_NOW_MAX_ROWS);
+    for (uint8_t i = 0; i < n_rows; i++) {
+        ff_app_now_row_t *o = &out->rows[i];
+        shell_copy_str(o->artist, sizeof(o->artist), rows[i].set->artist);
+        shell_copy_str(o->stage_name, sizeof(o->stage_name), shell_stage_name(p, rows[i].set->stage_idx));
+        o->stage_color_valid = shell_stage_color(p, rows[i].set->stage_idx, &o->stage_color_rgb);
+        o->pct_done = rows[i].pct_done;
+    }
+    out->n_rows = n_rows;
+
+    ff_next_t next;
+    if (ff_sched_next_starred(p, day, now_min, &next)) {
+        out->next.valid = true;
+        shell_copy_str(out->next.artist, sizeof(out->next.artist), next.set->artist);
+        shell_copy_str(out->next.stage_name, sizeof(out->next.stage_name),
+                        shell_stage_name(p, next.set->stage_idx));
+        out->next.mins_until = next.mins_until;
+    }
+
+    /* The still-unknown-time sets. Under NOW_TBD that is every set on the
+     * day (by definition of the state); under NOW_MIXED it is the subset
+     * that still lacks a time, listed ALONGSIDE rows/next rather than
+     * disappearing the moment one set on the day gets a real time — the
+     * expected near-term Lost Lands state. */
+    fp_set_t const *day_sets[SHELL_DAY_SETS_MAX];
+    uint16_t const n_day = ff_sched_day_sets(p, day, day_sets, (uint16_t)SHELL_DAY_SETS_MAX);
+    uint8_t n_lineup = 0;
+    for (uint16_t i = 0; i < n_day && n_lineup < FF_APP_NOW_MAX_LINEUP; i++) {
+        if (day_sets[i]->start_min >= 0 && day_sets[i]->end_min >= 0) continue;
+        ff_app_lineup_item_t *o = &out->lineup[n_lineup];
+        shell_copy_str(o->artist, sizeof(o->artist), day_sets[i]->artist);
+        shell_copy_str(o->stage_name, sizeof(o->stage_name), shell_stage_name(p, day_sets[i]->stage_idx));
+        n_lineup++;
+    }
+    out->n_lineup = n_lineup;
+
+    if (ff_sched_day_tbd(p, day)) {
+        out->state = NOW_TBD;
+    } else if (n_lineup > 0) {
+        out->state = NOW_MIXED;
+    } else if (n_rows > 0 || out->next.valid) {
+        out->state = NOW_LIVE;
+    } else {
+        out->state = NOW_NOTHING_PLAYING;
+    }
+}
+
+static void shell_project_settings(shell_t const *sh, ff_app_settings_t *out)
+{
+    out->imperial = sh->settings.imperial;
+    out->share_mode = sh->settings.share_mode;
+    out->haptics = sh->settings.haptics;
+    out->night_glow = sh->settings.night_glow;
+    out->water_min = sh->settings.water_min;
+    out->quiet_from_min = sh->settings.quiet_from_min;
+    out->quiet_to_min = sh->settings.quiet_to_min;
+    /* ff_settings_t.my_name is NOT guaranteed NUL-terminated by that
+     * layer (it round-trips raw bytes); bound it here before it becomes a
+     * C string anything renders. */
+    memcpy(out->my_name, sh->settings.my_name, sizeof(out->my_name) - 1u);
+    out->my_name[sizeof(out->my_name) - 1u] = '\0';
+}
+
+/** "HH:MM", or "" when the puck does not know what time it is.
+ *  scr_radar renders an empty clock_str as "--:--" — an explicit
+ *  unknown, never an invented time. */
+static void shell_project_clock_str(ff_wall_t w, char *buf, size_t n)
+{
+    if (n == 0) return;
+    buf[0] = '\0';
+    if (w.src == FF_WALL_UNKNOWN || n < 6u) return;
+
+    int const minute_of_day = (int)(((w.now_min % 1440) + 1440) % 1440);
+    int const hh = minute_of_day / 60;
+    int const mm = minute_of_day % 60;
+    buf[0] = (char)('0' + (hh / 10));
+    buf[1] = (char)('0' + (hh % 10));
+    buf[2] = ':';
+    buf[3] = (char)('0' + (mm / 10));
+    buf[4] = (char)('0' + (mm % 10));
+    buf[5] = '\0';
+}
+
+static void shell_project(shell_t *sh, uint32_t now_ms)
+{
+    ff_wall_t const wall = shell_wall(sh, now_ms);
+
+    /* Rebuild from zero every tick. Two reasons, both load-bearing: a
+     * field a later slice stops writing cannot linger from an earlier
+     * frame, and the render key below is compared with memcmp — so
+     * padding bytes have to be deterministic, which memset guarantees
+     * and field-by-field assignment does not. */
+    memset(&sh->view, 0, sizeof(sh->view));
+
+    /* AC13. `modal ? modal : base` — deliberately NOT ff_route_visible(),
+     * whose one distinctive answer is FF_APP_FACE_FLARE. That is a
+     * routing answer ("where does the next intent go?"), not a render
+     * instruction: writing it here would put the takeover in two places
+     * and re-create the desync that keeps `takeover` out of ff_route_t.
+     * The takeover reaches the screen as flare.takeover_active, which
+     * face_dispatch.c already reads. */
+    sh->view.active_face = (sh->route.modal != FF_APP_FACE_NONE) ? sh->route.modal : sh->route.base;
+
+    /* S08 AC3, "unread clears on face view" — the shell's call, not the
+     * screen's, and on the TRANSITION rather than every render. */
+    if (sh->view.active_face == FF_APP_FACE_SIGNALS && sh->prev_face != FF_APP_FACE_SIGNALS) {
+        ff_feed_mark_all_read(&sh->feed);
+    }
+    sh->prev_face = sh->view.active_face;
+
+    ff_radar_compute(&sh->view.radar, &sh->smooth, &sh->crew, sh->heading_deg, sh->my_pos, sh->my_pos_ok,
+                      sh->settings.imperial, now_ms);
+    /* ff_radar_compute deliberately does not write these three — they
+     * come from the RTC, the battery ADC and the mesh link, none of which
+     * are its inputs (see ff_radar.h's deviation note). */
+    shell_project_clock_str(wall, sh->view.radar.clock_str, sizeof(sh->view.radar.clock_str));
+    sh->view.radar.batt_pct = -1; /* no battery ADC on either target yet: honestly unknown */
+    sh->view.radar.mesh_ok = (sh->link == FF_SHELL_LINK_CONNECTED);
+
+    shell_project_now(sh, wall, &sh->view.now);
+    shell_project_signals(sh, now_ms, &sh->view.signals);
+    shell_project_flare(sh, now_ms, &sh->view.flare);
+    shell_project_settings(sh, &sh->view.settings);
+
+    /* compose: the draft is shell-owned T9 state from slice c3 onward
+     * (scr_compose.c still holds a `static ff_t9_t` today). Left zeroed
+     * — an empty broadcast draft — rather than mirrored from anywhere. */
+}
+
+/* ---------------------------------------------------------------------
+ * The dirty bit, computed over the RENDERED projection
+ * ------------------------------------------------------------------- */
+
+/** Milliseconds -> whole seconds, preserving the -1 "not applicable"
+ *  sentinel. Countdowns reach the screen through flare_fmt at 1 s
+ *  granularity, so that is the granularity they are compared at. */
+static int32_t shell_coarsen_ms(int32_t ms)
+{
+    return (ms < 0) ? -1 : (ms / 1000);
+}
+
+/**
+ * Build the render key: the projection, with exactly the fields that are
+ * pure functions of elapsed time coarsened to what actually reaches the
+ * screen.
+ *
+ * Built by COPYING the whole projection and then coarsening named
+ * fields, rather than by listing the fields that matter. That direction
+ * is the point: a view field added by a later slice is in the key
+ * automatically, so forgetting to update this function causes a
+ * redundant repaint, never a stale screen. The reverse construction
+ * fails silently and looks fine in review.
+ */
+static void shell_render_key(ff_app_state_t const *v, ff_app_state_t *key)
+{
+    memcpy(key, v, sizeof(*key));
+
+    key->flare.send_expires_in_ms = shell_coarsen_ms(v->flare.send_expires_in_ms);
+    key->flare.takeover_expires_in_ms = shell_coarsen_ms(v->flare.takeover_expires_in_ms);
+    key->flare.locked_expires_in_ms = shell_coarsen_ms(v->flare.locked_expires_in_ms);
+
+    /* The arrow is exponentially smoothed, so with a completely static
+     * scene it converges toward its target forever without ever quite
+     * arriving — a raw float compare is true on every frame in the field,
+     * which is exactly the whole-struct-memcmp failure S16 warns about.
+     * 0.1 degrees is LVGL's own rotation unit: below it, no pixel moves. */
+    key->radar.arrow_deg = (float)(int32_t)(v->radar.arrow_deg * 10.0f);
+}
+
+/* ---------------------------------------------------------------------
+ * Public API
+ * ------------------------------------------------------------------- */
+
+int ff_shell_init(ff_shell_t *sh_pub, ff_shell_cfg_t const *cfg)
+{
+    if (sh_pub == NULL || cfg == NULL || cfg->clock == NULL) return -1;
+
+    shell_t *sh = shell_of(sh_pub);
+    memset(sh, 0, sizeof(*sh));
+
+    sh->clock = cfg->clock;
+    sh->store = cfg->store;
+    sh->haptic = cfg->haptic;
+    sh->haptic_user = cfg->haptic_user;
+    sh->pack = cfg->pack;
+    sh->pack_loaded = false;
+
+    ff_crew_init(&sh->crew, sh->clock);
+    ff_heard_init(&sh->heard);
+    ff_feed_init(&sh->feed);
+    ff_flare_init(&sh->flare);
+    ff_wall_init(&sh->wall);
+    ff_radar_smooth_reset(&sh->smooth);
+    ff_route_init(&sh->route);
+
+    /* Settings are loaded at init and never re-read per tick (S16
+     * "Behavior"). A NULL store yields the exact defaults. */
+    ff_settings_load(&sh->settings, sh->store);
+
+    sh->my_pos_ok = false;
+    sh->heading_deg = -1.0f; /* unknown, ff_geo_heading_deg's sentinel */
+    sh->link = FF_SHELL_LINK_NONE;
+    sh->prev_face = FF_APP_FACE_NONE;
+    sh->has_prev_key = false;
+
+    mc_events_t const ev = ff_shell_events(sh_pub);
+    mc_init(&sh->mc, cfg->transport, ev, sh->clock);
+
+    /* Feed pushes go through ff_wiring, which already owns the
+     * crew-paired-sender filter, the heard-note on a miss and the feed
+     * push itself — none of that is reimplemented here. The haptic it
+     * fires is the quiet-gated one. Bound after mc_init so its
+     * canned-reply sender points at a client that exists (the replies
+     * themselves are slice c2). */
+    ff_wiring_init(&sh->wiring, &sh->feed, &sh->crew, &sh->heard, &sh->mc, shell_haptic_feed, sh, sh->clock);
+
+    /* A transport with neither read nor write is the documented "no
+     * transport" case: events get injected through ff_shell_events()
+     * instead (tests, and any target driving its own client). */
+    if (cfg->transport.read != NULL || cfg->transport.write != NULL) {
+        sh->attached = true;
+        mc_connect(&sh->mc);
+    }
+
+    return 0;
+}
+
+int ff_shell_load_pack(ff_shell_t *sh_pub, char const *json, size_t len)
+{
+    if (sh_pub == NULL) return -1;
+    shell_t *sh = shell_of(sh_pub);
+
+    /* Cleared up front: fp_parse zeroes *out on any failure, and a zeroed
+     * fp_pack_t reads as a deliberately STATED UTC offset of 0 — which
+     * would silently outrank the user's configured offset (ff_wall.h's
+     * ff_wall_offset_cfg_t comment). A failed load must leave "no pack",
+     * not "a pack that says London". */
+    sh->pack_loaded = false;
+
+    if (sh->pack == NULL || json == NULL || len == 0u) return -1;
+    if (fp_parse(json, len, sh->pack) != FP_OK) return -1;
+
+    sh->pack_loaded = true;
+    return 0;
+}
+
+bool ff_shell_tick(ff_shell_t *sh_pub, uint32_t now_ms)
+{
+    if (sh_pub == NULL) return false;
+    shell_t *sh = shell_of(sh_pub);
+
+    sh->now_ms = now_ms;
+
+    if (sh->attached) {
+        mc_tick(&sh->mc, now_ms);
+    }
+
+    /* All three flare deadlines in one call; takeover_active can clear
+     * here with no route involved, which is why ff_route_visible takes
+     * takeover as a parameter rather than caching it. */
+    (void)ff_flare_tick(&sh->flare, now_ms);
+
+    shell_project(sh, now_ms);
+
+    ff_app_state_t key;
+    shell_render_key(&sh->view, &key);
+
+    bool const changed = (!sh->has_prev_key) || (memcmp(&key, &sh->prev_key, sizeof(key)) != 0);
+    sh->prev_key = key;
+    sh->has_prev_key = true;
+    return changed;
+}
+
+ff_app_state_t const *ff_shell_view(ff_shell_t const *sh_pub)
+{
+    if (sh_pub == NULL) return NULL;
+    return &shell_of_const(sh_pub)->view;
+}
+
+ff_wall_t ff_shell_wall(ff_shell_t const *sh_pub)
+{
+    if (sh_pub == NULL) {
+        ff_wall_t unknown;
+        memset(&unknown, 0, sizeof(unknown));
+        return unknown;
+    }
+    shell_t const *sh = shell_of_const(sh_pub);
+    return shell_wall(sh, shell_now(sh));
+}
+
+void ff_shell_close(ff_shell_t *sh_pub)
+{
+    if (sh_pub == NULL) return;
+    shell_t *sh = shell_of(sh_pub);
+    sh->attached = false;
+    sh->link = FF_SHELL_LINK_NONE;
+    /* The transport is the target's: it was handed in as a vtable, and
+     * closing a socket the shell never opened is not the shell's call. */
+}
+
+mc_events_t ff_shell_events(ff_shell_t *sh_pub)
+{
+    mc_events_t ev;
+    memset(&ev, 0, sizeof(ev));
+    if (sh_pub == NULL) return ev;
+
+    ev.on_state = shell_ev_state;
+    ev.on_node = shell_ev_node;
+    ev.on_position = shell_ev_position;
+    ev.on_text = shell_ev_text;
+    ev.on_private = shell_ev_private;
+    ev.on_my_info = shell_ev_my_info;
+    ev.on_rx_meta = shell_ev_rx_meta;
+    ev.user = shell_of(sh_pub);
+    return ev;
+}
+
+bool ff_shell_pair(ff_shell_t *sh_pub, uint32_t node_id, bool paired)
+{
+    if (sh_pub == NULL) return false;
+    shell_t *sh = shell_of(sh_pub);
+
+    /* THE one place a roster slot may be created. Reachable only from a
+     * user action; nothing in the seven inbound callbacks calls it. */
+    if (ff_crew_upsert(&sh->crew, node_id) == NULL) return false; /* roster full, no eviction in v1 */
+    ff_crew_set_paired(&sh->crew, node_id, paired);
+    return true;
+}
+
+void ff_shell_set_my_pos(ff_shell_t *sh_pub, ff_latlon_t pos)
+{
+    if (sh_pub == NULL) return;
+    shell_t *sh = shell_of(sh_pub);
+    sh->my_pos = pos;
+    sh->my_pos_ok = true;
+}
+
+void ff_shell_clear_my_pos(ff_shell_t *sh_pub)
+{
+    if (sh_pub == NULL) return;
+    shell_of(sh_pub)->my_pos_ok = false;
+}
+
+void ff_shell_set_heading(ff_shell_t *sh_pub, float heading_deg)
+{
+    if (sh_pub == NULL) return;
+    shell_of(sh_pub)->heading_deg = heading_deg;
+}
+
+ff_shell_link_t ff_shell_link(ff_shell_t const *sh_pub)
+{
+    return (sh_pub == NULL) ? FF_SHELL_LINK_NONE : shell_of_const(sh_pub)->link;
+}
+
+uint32_t ff_shell_my_node_id(ff_shell_t const *sh_pub)
+{
+    if (sh_pub == NULL) return 0u;
+    shell_t const *sh = shell_of_const(sh_pub);
+    return sh->has_my_node_id ? sh->my_node_id : 0u;
+}
+
+ff_crew_t const *ff_shell_crew(ff_shell_t const *sh_pub)
+{
+    return (sh_pub == NULL) ? NULL : &shell_of_const(sh_pub)->crew;
+}
+
+ff_heard_t const *ff_shell_heard(ff_shell_t const *sh_pub)
+{
+    return (sh_pub == NULL) ? NULL : &shell_of_const(sh_pub)->heard;
+}
+
+ff_feed_t const *ff_shell_feed(ff_shell_t const *sh_pub)
+{
+    return (sh_pub == NULL) ? NULL : &shell_of_const(sh_pub)->feed;
+}
+
+ff_flare_t const *ff_shell_flare(ff_shell_t const *sh_pub)
+{
+    return (sh_pub == NULL) ? NULL : &shell_of_const(sh_pub)->flare;
+}
+
+ff_settings_t const *ff_shell_settings(ff_shell_t const *sh_pub)
+{
+    return (sh_pub == NULL) ? NULL : &shell_of_const(sh_pub)->settings;
+}

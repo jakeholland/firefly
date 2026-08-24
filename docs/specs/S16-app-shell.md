@@ -20,6 +20,150 @@ It is specced *before* S15 deliberately. Board bring-up should be plugging a
 display driver into a loop that already works on the desktop, not inventing the
 loop while also fighting unfamiliar hardware for the first time.
 
+## Amendments
+
+- **2026-08-23, PR (slice b1) — the slice table said "all five `mc_events_t`
+  callbacks". There are seven, and the count was wrong in two separate ways.**
+
+  `mc_events_t` today has `on_state`, `on_node`, `on_position`, `on_text`,
+  `on_private`, `on_my_info` and `on_rx_meta`
+  (`firmware/meshclient/include/mc_client.h`). The b1 row's "five" was:
+
+  - **off by one when this spec was written.** Five is the count of what
+    `targets/sim/live.c` wires, which is where the number came from — and
+    the narrative in "Two defects this closes" quite correctly uses it that
+    way ("wire five `mc_events_t` callbacks", "`ff_wiring` handles 2 of 5").
+    But `on_my_info` already existed and was never a `live.c` callback, and
+    this same spec's Behavior section requires the shell to own it
+    ("**`my_node_id`** comes from `mc_events_t.on_my_info`"). Carrying
+    `live.c`'s count into the *shell's* scope line silently dropped a
+    callback the spec elsewhere demands.
+  - **off by one again after [#39](https://github.com/jakeholland/firefly/pull/39)**,
+    which added `on_rx_meta` (per-packet RSSI/SNR/hop path) after this spec
+    was merged.
+
+  Corrected to seven in the slice table. Recorded rather than quietly fixed
+  because the number is load-bearing for review: "did this PR wire them
+  all?" is checkable only against a correct count, and a scope line that
+  undercounts is how a callback ships unhandled. `on_rx_meta` in particular
+  is not decorative — it is the only frequent-enough source to feed
+  `ff_crew_rssi_trend`'s 5 s window, and it carries the `rx_path`
+  qualifier without which RSSI must not be attributed to `from` at all.
+
+  The b1 row also now lists **AC5c**, which its own row in the criteria
+  table already assigned to b1.
+
+- **2026-08-23, PR (slice b1) — a NodeInfo's `last_heard` may bootstrap the
+  wall-clock latch but must not re-latch it backwards.**
+
+  The wall-clock section names `mc_nodeinfo_t.last_heard` as the bootstrap
+  source, correctly: it is populated unconditionally, including during the
+  `want_config` replay, so the offset latches during the handshake. What
+  the section does not say is what happens on the *second* handshake.
+
+  `last_heard` means "when the nodeDB last heard this node", which is by
+  construction `<= now`. On a reconnect replay a cached node's `last_heard`
+  can be many minutes stale. Offered to `ff_wall_observe` unconditionally,
+  it disagrees with the existing latch by more than
+  `FF_WALL_RELATCH_DELTA_S` and **re-latches the wall clock backwards by
+  that node's staleness** — pinning the puck's idea of "now" to the moment
+  of the replay. Every position age then computes against a clock that says
+  the replay instant *is* now, which is defect 2 of this very spec,
+  reconstructed one layer up. AC9 fails on exactly this, and the failure
+  looks like a wall-clock bug rather than the position-age bug it is.
+
+  Ruling, implemented in `app/ff_shell.c`:
+
+  > A NodeInfo's `last_heard` is offered to the latch when nothing has
+  > latched yet, or when it is **later** than the latch predicts. A reading
+  > earlier than predicted is evidence about the node, not about our clock,
+  > and is ignored. `mc_position_t.rx_time` from `on_position` is a
+  > per-packet *local receive* time rather than a cached summary, so it is
+  > offered unconditionally and remains the re-latch source in both
+  > directions.
+
+  Residual limit, stated rather than papered over: a comms-brain clock that
+  steps *backwards* is not re-latched from NodeInfo alone. It is re-latched
+  by the first live `on_position`.
+
+- **2026-08-23, PR (slice b1, review round 1) — and the same reading may not
+  age the position it just latched from. This is the COLD-BOOT half, and the
+  entry above is incomplete without it.**
+
+  The rule above fixes the *warm* reconnect: a stale cached `last_heard`
+  can no longer drag an established latch backwards. Independent review
+  (PR #46, D1) found the *cold* case still broken, and worse, because it
+  fires on every single power-on.
+
+  `on_node` latches the wall from `last_heard`, then ages that same
+  NodeInfo's cached position from that same `last_heard`. When the
+  observation latches or re-latches, `ff_wall_unix_now()` returns exactly
+  that value — so `age_s == 0` and the cached fix is recorded as having
+  arrived this instant. **Age zero by construction, not by measurement.**
+  Measured on a cold boot with three paired members replayed:
+
+  ```
+  DANA (3h cached) -> LIVE    KEV (1h cached) -> LIVE    STRG (2m cached) -> LIVE
+  ```
+
+  The ordering-independent form is the one to internalise: whichever node
+  carries the greatest `last_heard` in the burst is *always* stamped LIVE,
+  because the latch is defined from it. A puck rebooted at the festival
+  shows a friend six hours out of range as LIVE — defect 2 of this spec, a
+  third time, now arriving through the latch instead of through the local
+  clock.
+
+  Generalised so it does not return a fourth time:
+
+  > **A timestamp may not age a fix if that same timestamp is what defines
+  > the clock the age is measured against.**
+
+  Implemented as: a NodeInfo whose reading bootstrapped or moved the latch
+  does not age its own position. It reads `FF_FRESH_NEVER`, which
+  `ff_radar.h`'s renderer contract turns into "NO FIX YET" rather than a
+  fabricated "LAST SEEN". Nodes later in the same burst with older
+  timestamps do not move the latch and ARE aged, against the running
+  maximum.
+
+  `on_position` deliberately does **not** carry the guard: `rx_time` is
+  *this packet's local receive time*, so "when did this arrive" and "what
+  time is it" genuinely coincide and an age of ~0 is a measurement. The
+  assumption that rests on — `mc_client` delivers MeshPackets as they
+  arrive, and a post-disconnect backlog replays as NodeInfo rather than as
+  MeshPackets — is stated in `ff_shell.h` so it can be checked rather than
+  assumed.
+
+  Consequence, recorded because it is a real cost and not obviously
+  acceptable: the outcome is ordering-dependent. A descending burst leaves
+  only its freshest node unplaceable; an ascending one leaves every node
+  `NEVER` until live traffic arrives. Both are honest — never fresher than
+  reality — but recovering the lost precision needs deferred re-aging
+  against the burst's final clock, which has no burst-end signal to hang
+  off in `mc_events_t`. Tracked as
+  [#50](https://github.com/jakeholland/firefly/issues/50).
+
+  **The test that mattered was the one asserting the bug as correct.** The
+  slice's own AC9 coverage latched the wall *before* the replay, so it only
+  ever exercised the warm path, and its positive control asserted
+  `FF_FRESH_LIVE` for a cold-boot replay — the defect, pinned as expected
+  behaviour. Proxy: *the AC9 test passes*. Property: *a replayed position is
+  never stamped fresh*. Exception: *the test's own control asserts the wrong
+  answer for the case it does not cover*. Cold boot is now a first-class
+  criterion rather than a variant of the warm one.
+
+- **2026-08-23, PR (slice b1) — `fp_pack_t` lives BESIDE the shell, and
+  `ff_shell_cfg_t` gains a field for it.** Answering the "Open question for
+  the implementer" at the foot of this spec. The target owns pack storage
+  and passes `ff_shell_cfg_t.pack`; `ff_shell_load_pack` parses into it.
+  Rationale: the pack's ~48 KB budget is four times everything else in the
+  shell put together, so folding it in would make the shell's stated
+  footprint one field's footprint and destroy the `_Static_assert`'s only
+  purpose; and on device the two objects want different memory (the shell
+  is touched every tick and belongs in internal SRAM, the pack belongs in
+  PSRAM, which is where `fp_pack.h` already assumes it lives). Measured
+  footprints at the time of writing: `ff_shell_t` 12,240 B against a
+  16 KB budget; `fp_pack_t` 23,696 B against its own 48 KB budget.
+
 ## Two defects this closes
 
 ### 1. Two inbound pipelines that disagree about trust
@@ -417,7 +561,7 @@ Each maps to a slice (right column). Tests are named `S16_ACn_...`.
 | 8 | A `FF_INTENT_SETTING_SET` is persisted: shell closed, re-inited against the same store, value survives. | e |
 | 9 | A transport drop moves link state to `reconnecting`, and the reconnect's `want_config` replay does not refresh any position's age. **Driven as an `on_node` callback carrying `has_position` + `last_heard`** — the shape the real replay takes, since `mc_client.c:222` hardcodes `has_rx_time = false` on that path. Member last positioned at T, drop at T+40 s, reconnect at T+5 min replaying that cached position → `ff_crew_freshness` reads `FF_FRESH_STALE`; the same replay at T+12 min reads `FF_FRESH_LOST`. A replayed position with `last_heard == 0` reads `FF_FRESH_NEVER`, never fresh. | b1 |
 | 10 | Sequence test via the ctl socket (**not** the single-frame golden harness): draft typed → flare injected → takeover renders → takeover cleared → composer returns with draft intact. Requires a new ctl `flare` command. | c3, d |
-| 11 | `ff_flare_result_t.should_alert` fires the haptic during quiet hours; a feed-push haptic during quiet hours does not. | b1 |
+| 11 | `ff_flare_result_t.should_alert` fires the haptic during quiet hours; a feed-push haptic during quiet hours does not. **`should_alert` overrides quiet hours only — it does not override `ff_settings_t.haptics`, the user's master switch**, which silences both (the takeover still renders, so the flare is silenced rather than swallowed). Whether critical alerts should ignore the master switch is a product question S11/S12 owns, not one this criterion settles by implication. | b1 |
 | 12 | Wall clock: before any timestamp, `ff_shell_wall().src == FF_WALL_UNKNOWN` and the Now face renders its unknown-time state rather than a clock; `ff_quiet_now` is not evaluated and the water nudge does not fire. A NodeInfo carrying `last_heard` latches the offset (the bootstrap path — `rx_time` alone cannot, being live-packet-only). `(day_doy, now_min)` then resolves per `ff_sched`'s mapping, including 01:00 local → previous `day_doy`, `now_min == 1500`. | b0 |
 | 12b | A timestamp before `FF_WALL_EPOCH_FLOOR` is rejected and leaves `src == FF_WALL_UNKNOWN` (the uncorrected-RTC case, tested with no pack loaded). Once latched, a reading disagreeing by >30 s re-latches rather than being ignored; one disagreeing by less does not. | b0 |
 | 12c | Offset resolution order: a pack with `utc_offset_assumed == true` does **not** outrank a set settings offset; a pack with `utc_offset_assumed == false` does. With neither set, `src == FF_WALL_UNKNOWN` rather than a defaulted guess. | b0 |
@@ -430,7 +574,7 @@ Each maps to a slice (right column). Tests are named `S16_ACn_...`.
 |---|---|---|
 | **a** | `ff_route` + `ff_app_face_t` extension `[api]` + unit tests. AC1, 2, 3. | — |
 | **b0** | Wall-clock derivation as a standalone unit: offset latch/re-latch, plausibility gate, unix→local→`(day_doy, now_min)`. Testable against synthetic timestamps with no shell, no transport. Includes the `ff_settings_t` UTC-offset field `[api]`. AC12, 12b. | — |
-| **b1** | `ff_shell` skeleton (init/tick/view/close), core→view projection, all five `mc_events_t` callbacks with the roster trust policy, haptic/quiet composition. `main.c` untouched, still on `live.c`. AC4(a), 5a, 5b, 9, 11, 13. | a, b0 |
+| **b1** | `ff_shell` skeleton (init/tick/view/close), core→view projection, **all seven** `mc_events_t` callbacks with the roster trust policy, haptic/quiet composition. `main.c` untouched, still on `live.c`. AC4(a), 5a, 5b, 5c, 9, 11, 13. | a, b0 |
 | **b2** | Cut `targets/sim` over: retire `live.{c,h}` + its tests, rewire `--connect` and the ctl loop, add `--dev-trust-all`, update the e2e fixture. AC6. | b1 |
 | **c1** | Define `ff_intent_t`, `ff_shell_intent`, the emit seam, and the three navigation-only stubs (nav long-press, compose back, signals `+`). | b1 |
 | **c2** | Core-mutating stubs (compose SEND, rally tap, canned replies, radar FLARE) + the five-signature `[api]` change dropping `ff_flare_t *` from `ff_scr_nav_build`, `ff_scr_radar_build`, `ff_scr_flare_build_takeover`, `ff_scr_flare_build_sender_overlay`, `ff_scr_flare_selection_locked`. AC7. | c1 |
@@ -461,9 +605,14 @@ section, as S08 and S10 carry.
   Resolution order: pack's stated offset → settings offset → `FF_WALL_UNKNOWN`.
   Recorded in slice b0.
 
-## Open question for the implementer
+## Open question for the implementer — ANSWERED in slice b1
 
 **Where does `fp_pack_t` live?** ~48 KB against `ff_shell_t`'s stated budget.
 Inside the shell makes it non-stack-allocatable on device; beside it means the
 target owns pack lifetime. Decide explicitly and document in the header — do
 not leave it implied.
+
+> **Answer: beside.** `ff_shell_cfg_t.pack` is caller-provided storage and
+> `ff_shell_load_pack` parses into it. See the third Amendments entry above
+> for the reasoning, and `app/include/ff_shell.h` for the header
+> documentation this question asks for.

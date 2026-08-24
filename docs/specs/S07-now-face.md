@@ -36,6 +36,30 @@ a) engine + tests · b) face render + goldens · c) alarm + haptic hook + star p
 
 ## Amendments
 
+- **2026-08-23, PR #46 review (S16 slice b1), finding D3 — `now_state_t` is
+  missing a state, and the substitute mis-states the cause.** There is no
+  member for *"a festpack is loaded, but the puck does not know what time it
+  is."* That is not an exotic state: it is the **normal boot path**, since
+  `ff_wall_t.src` stays `FF_WALL_UNKNOWN` until a plausible mesh timestamp
+  latches during the `want_config` handshake, and a pack can be loaded
+  before that.
+
+  `app/ff_shell.c`'s projection currently falls back to `NOW_NO_PACK`, the
+  least-claiming of the five existing members. It never invents a clock —
+  but `scr_now.c:419-433` renders it as **"NO FESTIVAL LOADED / Load a
+  festpack to see what's playing"**, which does not under-claim, it
+  *mis*-claims: it names the wrong missing fact and instructs the user to
+  redo something they have already done. `NOW_TBD` would be worse still,
+  asserting the day's set times are unknown — a statement about the data
+  rather than about our clock.
+
+  Resolution: S07 gains `NOW_TIME_UNKNOWN` (`[api]`) with copy naming the
+  actual missing fact. Tracked as
+  [#48](https://github.com/jakeholland/firefly/issues/48); the fallback in
+  `ff_shell.c` carries the issue link so it cannot harden into intended
+  behaviour by default.
+
+
 - **2026-08-22, PR #9 review (AC1 "now" window: half-open, not inclusive-both-ends).** Ruling from the spec owner during independent review of the slice (a)+(c) implementation. Original text read "pct_done correct at boundaries (start=0%, end=100%)", which an inclusive-both-ends window (`start_min <= now_min <= effective_end`) satisfied literally — but at a zero-gap same-stage changeover (set A ends the same minute set B starts on the same stage, ordinary festival scheduling) that window made **both** A and B "now" simultaneously, contradicting the Interface's own "one per stage w/ live set" contract and the Now face's one-row-per-stage layout. Ruling: the window is **half-open**, `start_min <= now_min < effective_end`. At the changeover minute the *starting* set wins; the ending set is no longer "now". Consequence: `pct_done` never displays a literal 100 while a set is still live (it caps at the last minute's value) — this is correct UI behavior, not a bug: a set showing "100% done" while its progress bar is still on screen reads as finished, not playing. AC1's text above is updated to match. Implemented in `firmware/festpack/src/ff_sched.c` (`ff_sched_now_playing`); regression-tested by `S07_AC1_zero_gap_changeover_single_row` and the rewritten boundary tests in `firmware/festpack/tests/test_sched.c`.
 - **2026-08-22, PR #9 review (`ff_sched_toggle_star` signature: adds an optional alarm-state parameter).** Same review. `ff_sched_toggle_star(fp_pack_t *p, uint16_t set_idx)` from the Interface block above is now `ff_sched_toggle_star(fp_pack_t *p, uint16_t set_idx, ff_sched_alarm_t *alarm)` (`alarm` may be NULL). Un-starring an already-fired starred set now clears that set's alarm fired-bit (immediately when `alarm` is passed through here; otherwise self-healing on the next `ff_sched_alarm_tick` call, since that function also clears any currently-unstarred set's fired-bit as it scans) — so a later re-star re-arms the T-15 alert instead of silently never firing again. This is deliberate "fat-finger recovery": per-field testing expectation is that a user who accidentally un-stars a set they're about to see, then re-stars it, still gets alerted. See `firmware/festpack/include/ff_sched.h` for the full contract; regression-tested by `S07_AC4_unstar_restar_rearms`.
 - Both amendments are on top of the already-documented module-placement deviation (`firmware/festpack/` instead of `core/include/ff_sched.h`) from the original PR; that call was reviewed and adjudicated correct (see PR #9 review comments), no change to that decision.
