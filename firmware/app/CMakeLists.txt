@@ -250,16 +250,16 @@ target_sources(ff-app-ui PRIVATE
 )
 target_link_libraries(ff-app-ui PUBLIC ff-now-layout)
 
-# S10b (continued) — headless LVGL INTERACTION tests for the flare UI's
-# button bindings (PR #20 independent code review, HIGH finding: goldens
-# never fire a click, so nothing proved GO calls ff_flare_go and not
-# ff_flare_dismiss_takeover, or vice versa — exactly the class of
-# regression Amendment 3 exists to prevent). Declared here, after
-# ff-app-ui, since it needs the real screen builders (scr_flare.c/
-# scr_radar.c) linked in — see test_scr_flare.c's header comment for the
-# reusable "build against a real ff_flare_t, locate the button, synthesize
-# a click, assert on the CORE struct" pattern future faces' input tests
-# should follow.
+# S10b (continued) — headless LVGL geometry tests for the flare UI (the
+# lock-disclosure chip's round-glass clamp, issue #27). Declared here,
+# after ff-app-ui, since it needs the real screen builder (scr_flare.c)
+# linked in. The button-binding proofs this test used to carry (PR #20
+# independent code review, HIGH finding: goldens never fire a click) moved
+# to test_scr_intent.c in S16 slice c2, once GO/DISMISS/CANCEL/FLARE
+# stopped mutating a live ff_flare_t directly and started emitting
+# through the intent seam instead — see that file's header comment for
+# the reusable "build the real screen, synthesize a click, assert on what
+# came out of the seam" pattern this repo's input tests now follow.
 if(FF_BUILD_TESTS)
     add_executable(test_scr_flare
         screens/tests/test_scr_flare.c
@@ -333,11 +333,15 @@ if(FF_BUILD_TESTS)
 
     add_test(NAME test_intent COMMAND test_intent)
 
-    # S16c1 — headless LVGL INTERACTION tests for the three wired emit
-    # sites (nav long-press, Compose back, Signals "+"): same pattern as
-    # test_scr_flare above ("build the real screen, synthesize the event,
-    # assert on what came out the seam") — a golden can't prove a click
-    # emits the right intent, or any intent at all.
+    # S16c1/c2 — headless LVGL INTERACTION tests for every wired emit
+    # site: c1's three navigation-only stubs (nav long-press, Compose
+    # back, Signals "+") plus c2's core-mutating ones (Compose SEND,
+    # Signals rally tap + canned-reply chips, radar FLARE, and the S10
+    # takeover/sender-overlay buttons GO/DISMISS/CANCEL, moved here from
+    # test_scr_flare.c once they stopped mutating a live ff_flare_t
+    # directly) — "build the real screen, synthesize the event, assert on
+    # what came out the seam". A golden can't prove a click emits the
+    # right intent, or any intent at all.
     add_executable(test_scr_intent
         screens/tests/test_scr_intent.c
     )

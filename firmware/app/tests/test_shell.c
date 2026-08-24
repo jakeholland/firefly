@@ -1,5 +1,5 @@
 /**
- * test_shell.c — S16 slice b1: the app shell.
+ * test_shell.c — S16 slices b1/b2/c2: the app shell.
  *
  * Criteria covered (docs/specs/S16-app-shell.md, "Acceptance criteria"):
  *   AC4(a) — the dirty bit is exact against the RENDERED projection: a
@@ -12,6 +12,10 @@
  *            item and no new ff_heard entry.
  *   AC5c   — a position from a node not in the roster is dropped and the
  *            sender noted, asserted by roster count before and after.
+ *   AC7    — FF_INTENT_CANNED_REPLY sends to the newest feed item's
+ *            sender, or broadcasts with an empty feed; captured through
+ *            the same real-transport pipeline AC6 uses, decoding the
+ *            outbound frame's destination (slice c2).
  *   AC9    — a transport drop moves link state to reconnecting, and the
  *            reconnect's want_config replay does not refresh any
  *            position's age.
@@ -1324,6 +1328,42 @@ static size_t frame_position_packet(uint8_t *out, size_t cap, uint32_t from, uin
     return frame_from_radio(&fr, out, cap);
 }
 
+/** An inbound TEXT_MESSAGE_APP packet — raw UTF-8 bytes, no sub-message
+ *  to encode (unlike Position above). Used by the AC7 test below to seed
+ *  a feed item whose sender the canned-reply intent should target. */
+static size_t frame_text_packet(uint8_t *out, size_t cap, uint32_t from, char const *utf8)
+{
+    meshtastic_FromRadio fr = meshtastic_FromRadio_init_zero;
+    fr.which_payload_variant = meshtastic_FromRadio_packet_tag;
+    fr.payload_variant.packet.from = from;
+    fr.payload_variant.packet.to = MY_ID;
+    fr.payload_variant.packet.id = 78;
+    fr.payload_variant.packet.which_payload_variant = meshtastic_MeshPacket_decoded_tag;
+    fr.payload_variant.packet.payload_variant.decoded.portnum = meshtastic_PortNum_TEXT_MESSAGE_APP;
+    size_t const len = strlen(utf8);
+    fr.payload_variant.packet.payload_variant.decoded.payload.size = (pb_size_t)len;
+    memcpy(fr.payload_variant.packet.payload_variant.decoded.payload.bytes, utf8, len);
+    return frame_from_radio(&fr, out, cap);
+}
+
+/** Decode a single outbound ToRadio frame (as written by mc_send_text /
+ *  mc_send_private into P.tx) and return its MeshPacket.to — the
+ *  destination the AC7 test below is the whole point of capturing. */
+static uint32_t decode_packet_to(uint8_t const *buf, size_t len)
+{
+    TEST_ASSERT_GREATER_OR_EQUAL_size_t(5u, len);
+    TEST_ASSERT_EQUAL_HEX8(MC_FRAME_MAGIC1, buf[0]);
+    TEST_ASSERT_EQUAL_HEX8(MC_FRAME_MAGIC2, buf[1]);
+    uint16_t flen = (uint16_t)((buf[2] << 8) | buf[3]);
+    TEST_ASSERT_LESS_OR_EQUAL_size_t(len - 4u, flen);
+
+    meshtastic_ToRadio tr = meshtastic_ToRadio_init_zero;
+    pb_istream_t is = pb_istream_from_buffer(buf + 4, flen);
+    TEST_ASSERT_TRUE(pb_decode(&is, meshtastic_ToRadio_fields, &tr));
+    TEST_ASSERT_EQUAL_INT(meshtastic_ToRadio_packet_tag, tr.which_payload_variant);
+    return tr.payload_variant.packet.to;
+}
+
 /**
  * AC6, the without-the-flag half, driven through the REAL pipeline the
  * cutover ships: a scripted transport into the shell's own mc_client_t.
@@ -1485,6 +1525,91 @@ static void S16_b2_my_info_purges_our_own_id_from_heard(void)
     TEST_ASSERT_EQUAL_UINT8(0, ff_shell_crew(&H.shell)->count);
 }
 
+/* =================================================================== */
+/* S16 slice c2 — AC7: canned reply, mock sender captures dest          */
+/* =================================================================== */
+
+/**
+ * AC7, driven through the REAL pipeline the same way AC6 is (S16 slice
+ * b2): a scripted transport into the shell's own mc_client_t, which is
+ * also the shell's canned-reply sender (`ff_wiring_init` binds
+ * `w->sender` to `mc_send_text`/`mc_send_private` on that same client —
+ * ff_wiring.h). Decoding the outbound frame IS the "mock sender captures
+ * dest" the task brief asks for at this layer: `ff_wiring_send_canned_reply`
+ * itself is already covered against a synthetic `ff_wiring_sender_t`
+ * mock in test_wiring.c's S08 AC6 suite, so this test's job is narrower
+ * and different — that `FF_INTENT_CANNED_REPLY`'s dispatch in
+ * `ff_shell_intent` resolves the reply-context correctly (newest feed
+ * item, or none) BEFORE handing it to that already-tested function.
+ */
+static void S16_AC7_canned_reply_uses_newest_feed_item_or_broadcasts(void)
+{
+    memset(&P, 0, sizeof(P));
+    memset(&H, 0, sizeof(H));
+    H.clk.t = 100000u;
+    H.clock.now_ms = fake_now;
+    H.clock.user = &H.clk;
+
+    ff_shell_cfg_t cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.clock = &H.clock;
+    cfg.pack = &H.pack;
+    cfg.transport.read = pipe_read;
+    cfg.transport.write = pipe_write;
+    cfg.transport.io = &P;
+
+    TEST_ASSERT_EQUAL_INT(0, ff_shell_init(&H.shell, &cfg));
+    uint32_t const nonce = pipe_want_config_id(&P);
+
+    size_t n = 0;
+    n += frame_my_info(P.rx + n, sizeof(P.rx) - n, MY_ID);
+    n += frame_config_complete(P.rx + n, sizeof(P.rx) - n, nonce);
+    P.rx_len = n;
+
+    advance(20u);
+    (void)ff_shell_tick(&H.shell, H.clk.t);
+    TEST_ASSERT_EQUAL_INT(FF_SHELL_LINK_CONNECTED, ff_shell_link(&H.shell));
+
+    /* Empty feed -> broadcast, BEFORE any sender is paired at all: proves
+     * the broadcast half doesn't depend on there being a roster to fall
+     * back to. */
+    size_t tx_before = P.tx_len;
+    ff_intent_t in = {.kind = FF_INTENT_CANNED_REPLY, .u = {0}};
+    in.u.reply = FF_WIRING_REPLY_OMW;
+    ff_shell_intent(&H.shell, &in);
+    TEST_ASSERT_GREATER_THAN_size_t(tx_before, P.tx_len);
+    TEST_ASSERT_EQUAL_UINT32(MC_ADDR_BROADCAST, decode_packet_to(P.tx + tx_before, P.tx_len - tx_before));
+
+    /* Now seed a feed item — DANA, paired, sends "hey" over the real
+     * decode path — and the SAME intent must target DANA's node id, not
+     * broadcast. */
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, true));
+    n = frame_text_packet(P.rx, sizeof(P.rx), DANA, "hey");
+    P.rx_len = n;
+    P.rx_pos = 0;
+    (void)ff_shell_tick(&H.shell, H.clk.t);
+    TEST_ASSERT_EQUAL_UINT8(1, ff_feed_count(ff_shell_feed(&H.shell)));
+
+    tx_before = P.tx_len;
+    ff_shell_intent(&H.shell, &in); /* the identical OMW intent */
+    TEST_ASSERT_GREATER_THAN_size_t(tx_before, P.tx_len);
+    TEST_ASSERT_EQUAL_UINT32(DANA, decode_packet_to(P.tx + tx_before, P.tx_len - tx_before));
+
+    /* And while a takeover is visible, the reply chips are not — the
+     * shell must not send at all (routing rule 4, same principle
+     * test_intent.c pins for Compose and FLARE_START). inject_flare uses
+     * the H.ev this file's other tests share; set it once here since this
+     * test built its own shell manually (real-transport bring-up, like
+     * AC6) rather than through harness_init. */
+    H.ev = ff_shell_events(&H.shell);
+    inject_flare(DANA, 300u);
+    TEST_ASSERT_TRUE(ff_shell_flare(&H.shell)->takeover_active);
+
+    tx_before = P.tx_len;
+    ff_shell_intent(&H.shell, &in);
+    TEST_ASSERT_EQUAL_size_t(tx_before, P.tx_len); /* nothing sent */
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -1524,6 +1649,8 @@ int main(void)
     RUN_TEST(S16_AC6_dev_trust_all_auto_pairs_on_nodeinfo_only);
     RUN_TEST(S16_AC6_dev_trust_all_lets_the_single_dev_node_play_a_crew_member);
     RUN_TEST(S16_b2_my_info_purges_our_own_id_from_heard);
+
+    RUN_TEST(S16_AC7_canned_reply_uses_newest_feed_item_or_broadcasts);
 
     return UNITY_END();
 }

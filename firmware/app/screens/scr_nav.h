@@ -10,7 +10,6 @@
 #define FF_SCR_NAV_H
 
 #include "ff_app_state.h"
-#include "ff_flare.h" /* S10 slice b — flare_rt param, see ff_scr_nav_build's doc comment */
 #include "lvgl.h"
 
 #ifdef __cplusplus
@@ -47,12 +46,18 @@ extern "C" {
  * (targets/sim/main.c) builds `ff_scr_flare_build_takeover` INSTEAD of
  * calling this function at all when a takeover is pending.
  *
- * `flare_rt` ([api] new parameter, S10 slice b): the live `ff_flare_t`
- * forwarded to `ff_scr_radar_build`'s FLARE button and the sender
- * overlay's CANCEL button — NULL is always safe (golden/headless
- * rendering never fires a click at all; see scr_flare.h's top comment).
+ * S16 slice c2's `[api]` change dropped the `ff_flare_t *flare_rt`
+ * parameter this function used to take and forward to
+ * `ff_scr_radar_build`'s FLARE button and the sender overlay's CANCEL
+ * button: both now emit semantic intents through the seam
+ * (`ff_intent_emit`, app/include/ff_intent.h — `FF_INTENT_FLARE_START`
+ * and `FF_INTENT_FLARE_END` respectively) instead of mutating a live
+ * core struct handed down through three layers of build functions.
+ * Unbound (golden/headless rendering, which never fires a click), every
+ * emit is a safe no-op — same contract every intent emit site in this
+ * codebase follows.
  */
-void ff_scr_nav_build(ff_app_state_t const *state, ff_flare_t *flare_rt);
+void ff_scr_nav_build(ff_app_state_t const *state);
 
 #ifdef __cplusplus
 }

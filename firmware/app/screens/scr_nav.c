@@ -93,7 +93,7 @@ static void nav_build_page_dots(lv_obj_t *puck, uint32_t active_idx, uint16_t si
     }
 }
 
-void ff_scr_nav_build(ff_app_state_t const *state, ff_flare_t *flare_rt)
+void ff_scr_nav_build(ff_app_state_t const *state)
 {
     if (state == NULL) {
         return;
@@ -142,7 +142,7 @@ void ff_scr_nav_build(ff_app_state_t const *state, ff_flare_t *flare_rt)
     lv_obj_set_style_bg_opa(tile_signals, LV_OPA_TRANSP, 0);
     lv_obj_clear_flag(tile_signals, LV_OBJ_FLAG_SCROLLABLE);
 
-    ff_scr_radar_build(tile_radar, &state->radar, flare_rt);
+    ff_scr_radar_build(tile_radar, &state->radar);
     ff_scr_now_build(tile_now, &state->now); /* S07b — real content, replaces the placeholder pane */
     ff_scr_signals_build(tile_signals, &state->signals); /* S08c */
 
@@ -197,5 +197,5 @@ void ff_scr_nav_build(ff_app_state_t const *state, ff_flare_t *flare_rt)
      * not any one tile) so it paints on top of whichever tile/page-dots
      * are showing — spec: "own screen pulses amber" applies regardless
      * of which face is active. No-op internally when !state->flare.sending. */
-    ff_scr_flare_build_sender_overlay(puck, &state->flare, flare_rt);
+    ff_scr_flare_build_sender_overlay(puck, &state->flare);
 }

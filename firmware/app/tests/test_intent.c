@@ -458,6 +458,64 @@ static void S16_c1_release_lock_and_takeover_dismiss_are_never_folded(void)
 }
 
 /* =================================================================== */
+/* S16 slice c2 — FLARE_START / FLARE_END                               */
+/* =================================================================== */
+
+static void S16_c2_flare_start_begins_sending(void)
+{
+    harness_init(100000u);
+    TEST_ASSERT_FALSE(ff_shell_flare(&H.shell)->sending);
+
+    send_kind(FF_INTENT_FLARE_START);
+    TEST_ASSERT_TRUE(ff_shell_flare(&H.shell)->sending);
+}
+
+static void S16_c2_flare_start_is_rejected_while_a_takeover_is_visible(void)
+{
+    /* Routing rule 4: the FLARE button lives on the Radar tile, which is
+     * not the visible face while a takeover is up — same principle
+     * S16_c1_route_intents_are_rejected_while_a_takeover_is_visible pins
+     * for Compose. */
+    harness_init(100000u);
+    pair_named(DANA, "DANA");
+
+    inject_flare(DANA, 300u);
+    TEST_ASSERT_TRUE(ff_shell_flare(&H.shell)->takeover_active);
+
+    send_kind(FF_INTENT_FLARE_START);
+    TEST_ASSERT_FALSE(ff_shell_flare(&H.shell)->sending);
+
+    /* Positive control: with the takeover cleared, the identical intent
+     * does begin sending — so the rejection above is the routing gate,
+     * not a FLARE_START path that never works. */
+    send_kind(FF_INTENT_TAKEOVER_DISMISS);
+    send_kind(FF_INTENT_FLARE_START);
+    TEST_ASSERT_TRUE(ff_shell_flare(&H.shell)->sending);
+}
+
+static void S16_c2_flare_end_cancels_a_send_even_while_a_takeover_is_visible(void)
+{
+    /* FLARE_END (the sender overlay's CANCEL) is deliberately UNGATED:
+     * `sending` and `takeover_active` are independent facts by
+     * ff_flare_h's own "Independent state" design (I can be sending my
+     * own flare AND have a different crew member's takeover pending at
+     * once), and the sender overlay renders on the puck itself regardless
+     * of face or takeover — same un-gated precedent as RELEASE_LOCK. */
+    harness_init(100000u);
+    pair_named(DANA, "DANA");
+
+    send_kind(FF_INTENT_FLARE_START);
+    TEST_ASSERT_TRUE(ff_shell_flare(&H.shell)->sending);
+
+    inject_flare(DANA, 300u); /* someone else's takeover arrives mid-send */
+    TEST_ASSERT_TRUE(ff_shell_flare(&H.shell)->takeover_active);
+
+    send_kind(FF_INTENT_FLARE_END);
+    TEST_ASSERT_FALSE(ff_shell_flare(&H.shell)->sending); /* positive half */
+    TEST_ASSERT_TRUE(ff_shell_flare(&H.shell)->takeover_active); /* untouched: FLARE_END touches only sending */
+}
+
+/* =================================================================== */
 /* Payload ownership — NOT owned; copied                                */
 /* =================================================================== */
 
@@ -587,6 +645,9 @@ int main(void)
     RUN_TEST(S16_c1_route_intents_are_rejected_while_a_takeover_is_visible);
     RUN_TEST(S16_c1_takeover_decisions_require_a_visible_takeover);
     RUN_TEST(S16_c1_release_lock_and_takeover_dismiss_are_never_folded);
+    RUN_TEST(S16_c2_flare_start_begins_sending);
+    RUN_TEST(S16_c2_flare_start_is_rejected_while_a_takeover_is_visible);
+    RUN_TEST(S16_c2_flare_end_cancels_a_send_even_while_a_takeover_is_visible);
     RUN_TEST(S16_c1_intent_struct_and_pointer_payloads_are_borrowed_only);
     RUN_TEST(S16_c1_emit_seam_forwards_when_bound_and_noops_unbound);
     RUN_TEST(S16_c1_null_and_garbage_dispatch_is_safe);
