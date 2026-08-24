@@ -11,6 +11,17 @@ You are reviewing a PR you did not write. You have fresh eyes — use them. Read
 5. **Allocation & size:** no hidden malloc in core/libs; fixed buffers respect their caps; struct growth flagged.
 6. **Tests are real:** run them locally. Try one deliberate mutation (revert a line mentally) — would a test catch it? If not, say which criterion is under-tested.
 
+   **And check the test's proxy.** Tests measure a stand-in for the property that matters. Where the correspondence has an exception, the proxy holds while the property breaks and the test passes for the wrong reason. Ask: **what input satisfies the proxy and violates the property?** Name one and the test is wrong even when green.
+
+   | proxy | property | the exception |
+   |---|---|---|
+   | a byte cap on a name | the chip fits the round glass | proportional font — 11 chars span ~310px of `I`s to ~487px of `W`s |
+   | one name truncates correctly | two names stay distinguishable | truncation isn't injective — `ALEXANDRIA` and `ALEXANDRINA` both became `ALEXANDRI` |
+   | the round-glass sweep passes | the chip fits its slot | a two-line chip is narrow *and* taller — it fit, wrapped, and dropped the ellipsis |
+   | the local `-Werror` gate is green | the code is warning-clean | the gate uses the host compiler (clang); CI runs GCC, which has warnings clang doesn't implement (#44) |
+
+   First three are PR #41. What keeps this from becoming ritual: every one was resolved by **measuring, not reasoning harder** — reviewers had read the code closely and still missed them. Instrument it, render it, print the number.
+
 ## Output
 
 PR comment via `gh pr comment N --body ...`, structured:
