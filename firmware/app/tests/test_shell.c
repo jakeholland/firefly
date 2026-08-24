@@ -515,15 +515,20 @@ static void S16_AC9_replayed_position_with_no_last_heard_reads_never(void)
     TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, true));
     TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, KEV_ID, true));
 
-    /* Latch the wall from a node that DOES have a timestamp, and prove
-     * the latch works by recording that node's replayed position — so
-     * KEV's outcome below is about KEV's missing timestamp and not about
-     * an unlatched clock. (The derived wall clock still reads UNKNOWN
-     * here because no UTC offset is configured; the latch and the offset
-     * are independent, and only the latch ages a position.) */
-    inject_node_with_position(DANA, U_EVENING, 39.0, -82.0);
+    /* Latch the wall from a POSITIONLESS NodeInfo, so the latch exists
+     * independently of any position being aged against it, and prove it
+     * works by replaying an OLDER cached position that the latch can
+     * honestly age. KEV's outcome below is then about KEV's missing
+     * timestamp and nothing else.
+     *
+     * This setup used to be `inject_node_with_position(DANA, U_EVENING)`
+     * asserted LIVE — which was the D1 defect asserted as correct: DANA
+     * both defined the latch and was aged against it, so age 0 was
+     * guaranteed rather than measured. (PR #46 review, D1.) */
+    inject_node(DANA, "DANA", U_EVENING);
+    inject_node_with_position(DANA, U_EVENING - 120u, 39.0, -82.0);
     TEST_ASSERT_TRUE(member(DANA)->has_pos);
-    TEST_ASSERT_EQUAL_INT(FF_FRESH_LIVE, ff_crew_freshness(member(DANA), H.clk.t));
+    TEST_ASSERT_EQUAL_INT(FF_FRESH_STALE, ff_crew_freshness(member(DANA), H.clk.t)); /* 2 min: 45 s..10 min */
 
     /* last_heard == 0 is mc_client.h's "unknown". The position is not
      * recorded at all: ff_crew_on_position sets has_pos, and a recorded
@@ -534,6 +539,89 @@ static void S16_AC9_replayed_position_with_no_last_heard_reads_never(void)
     TEST_ASSERT_FALSE(member(KEV_ID)->has_pos);
     TEST_ASSERT_EQUAL_INT(FF_FRESH_NEVER, ff_crew_freshness(member(KEV_ID), H.clk.t));
     TEST_ASSERT_NOT_EQUAL_INT(FF_FRESH_LIVE, ff_crew_freshness(member(KEV_ID), H.clk.t));
+}
+
+static void S16_AC9_cold_boot_replay_is_never_stamped_fresh(void)
+{
+    /* THE CASE THE WARM TEST ABOVE CANNOT REACH (PR #46 review, D1).
+     * `S16_AC9_want_config_replay_does_not_refresh_position_age` latches
+     * the wall before the drop, so the replay is always aged against a
+     * clock established earlier. On a COLD BOOT there is no such clock:
+     * the shell learns the time from the very burst it is trying to age.
+     *
+     * The durable, ordering-independent form: whichever node carries the
+     * greatest `last_heard` in the burst defines the latch, so
+     * ff_wall_unix_now() returns exactly its timestamp and its position
+     * ages to zero — LIVE, however stale it really is. Here the entire
+     * nodeDB is six hours cold: the puck has heard nobody since last
+     * night, and there is nothing fresh anywhere in the burst. */
+    harness_init(100000u, false);
+    inject_my_info(MY_ID);
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, true));
+
+    TEST_ASSERT_EQUAL_INT(FF_WALL_UNKNOWN, ff_shell_wall(&H.shell).src);
+    inject_node_with_position(DANA, U_EVENING - 21600u, 39.0, -82.0); /* 6 h cold */
+
+    /* Not recorded at all: we have just learned the time FROM this node,
+     * so we have no independent evidence of how old its fix is. NEVER is
+     * the honest answer, and ff_radar.h's renderer contract turns it into
+     * "NO FIX YET" rather than a fabricated "LAST SEEN". */
+    TEST_ASSERT_NOT_EQUAL_INT(FF_FRESH_LIVE, ff_crew_freshness(member(DANA), H.clk.t));
+    TEST_ASSERT_EQUAL_INT(FF_FRESH_NEVER, ff_crew_freshness(member(DANA), H.clk.t));
+    TEST_ASSERT_FALSE(member(DANA)->has_pos);
+}
+
+static void S16_AC9_cold_boot_burst_ages_against_the_running_maximum(void)
+{
+    /* The other half, and the reason the fix is "don't age from the
+     * reading that defined the latch" rather than "don't age on a cold
+     * boot": a node whose `last_heard` does NOT move the latch is aged
+     * normally, against the best estimate of "now" the puck has.
+     *
+     * Descending burst — the freshest node first, which is what pins the
+     * clock; the older ones behind it are then genuinely measurable. */
+    harness_init(100000u, false);
+    inject_my_info(MY_ID);
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, STRANGER, true));
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, KEV_ID, true));
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, true));
+
+    inject_node_with_position(STRANGER, U_EVENING - 120u, 39.2, -82.2);   /* newest: defines the latch */
+    inject_node_with_position(KEV_ID, U_EVENING - 3600u, 39.1, -82.1);    /* 58 min behind it */
+    inject_node_with_position(DANA, U_EVENING - 10800u, 39.0, -82.0);     /* 2 h 58 min behind it */
+
+    /* The latch-definer is the one we cannot place in time. */
+    TEST_ASSERT_EQUAL_INT(FF_FRESH_NEVER, ff_crew_freshness(member(STRANGER), H.clk.t));
+
+    /* The other two are measured against it and read honestly stale —
+     * so the fix is not "record nothing", it is "record nothing we would
+     * have to invent a number for". */
+    TEST_ASSERT_TRUE(member(KEV_ID)->has_pos);
+    TEST_ASSERT_EQUAL_INT(FF_FRESH_LOST, ff_crew_freshness(member(KEV_ID), H.clk.t));
+    TEST_ASSERT_TRUE(member(DANA)->has_pos);
+    TEST_ASSERT_EQUAL_INT(FF_FRESH_LOST, ff_crew_freshness(member(DANA), H.clk.t));
+
+    /* Ascending order is the pessimistic case and must still never lie:
+     * each node in turn advances the latch, so each is unplaceable. The
+     * outcome is ordering-dependent; its HONESTY is not. */
+    harness_init(100000u, false);
+    inject_my_info(MY_ID);
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, true));
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, KEV_ID, true));
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, STRANGER, true));
+
+    inject_node_with_position(DANA, U_EVENING - 10800u, 39.0, -82.0);
+    inject_node_with_position(KEV_ID, U_EVENING - 3600u, 39.1, -82.1);
+    inject_node_with_position(STRANGER, U_EVENING - 120u, 39.2, -82.2);
+
+    TEST_ASSERT_NOT_EQUAL_INT(FF_FRESH_LIVE, ff_crew_freshness(member(DANA), H.clk.t));
+    TEST_ASSERT_NOT_EQUAL_INT(FF_FRESH_LIVE, ff_crew_freshness(member(KEV_ID), H.clk.t));
+    TEST_ASSERT_NOT_EQUAL_INT(FF_FRESH_LIVE, ff_crew_freshness(member(STRANGER), H.clk.t));
+
+    /* And a live position afterwards still lands normally, so the burst
+     * being unplaceable does not poison the session. */
+    inject_position(DANA, U_EVENING, 39.0, -82.0);
+    TEST_ASSERT_EQUAL_INT(FF_FRESH_LIVE, ff_crew_freshness(member(DANA), H.clk.t));
 }
 
 /* =================================================================== */
@@ -597,6 +685,69 @@ static void S16_AC11_feed_push_haptic_does_fire_outside_quiet_hours(void)
     /* And one flare is still exactly one buzz, not two, outside quiet
      * hours — the feed-push buzz is suppressed for a FLARE so the alert
      * is the one that lands. */
+    H.haptic.count = 0;
+    inject_flare(DANA, 300);
+    TEST_ASSERT_EQUAL_INT(1, H.haptic.count);
+}
+
+static void S16_AC11_the_haptics_master_switch_silences_even_a_flare_alert(void)
+{
+    /* THE INTERPRETATION, PINNED (PR #46 review, D2). `should_alert`
+     * overrides QUIET HOURS — a schedule. It does not override
+     * `ff_settings_t.haptics`, the user's "stop buzzing" switch, because
+     * those are different statements and the second one is not about a
+     * time window at all. The flare is silenced, never swallowed: the
+     * takeover still renders full-screen.
+     *
+     * This is the judgement call in this slice a reader is most likely
+     * to disagree with, so it gets a test rather than only a paragraph —
+     * otherwise a later slice can flip it either way and nothing says so.
+     * Whether critical alerts should ignore the master switch is a real
+     * product question, and S11/S12 owns it; it is not settled here by
+     * implication. */
+    ff_settings_t s;
+    ff_settings_load(&s, NULL);
+    s.haptics = false;
+    s.utc_offset_min = 0;
+    s.utc_offset_set = true;
+    memset(&H.store_mem, 0, sizeof(H.store_mem));
+    H.store = mem_store(&H.store_mem);
+    ff_settings_save(&s, &H.store);
+
+    harness_init(100000u, true);
+    inject_my_info(MY_ID);
+    TEST_ASSERT_FALSE(ff_shell_settings(&H.shell)->haptics);
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, true));
+
+    inject_node(DANA, "DANA", U_AWAKE); /* 20:00 local — NOT quiet hours */
+    TEST_ASSERT_FALSE(ff_quiet_now(ff_shell_settings(&H.shell), ff_shell_wall(&H.shell).now_min));
+
+    H.haptic.count = 0;
+    inject_text(DANA, "where you at");
+    inject_flare(DANA, 300);
+
+    /* Silenced — both of them, and outside quiet hours, so this is the
+     * master switch and nothing else. */
+    TEST_ASSERT_EQUAL_INT(0, H.haptic.count);
+
+    /* But NOT swallowed: the takeover is up and the feed items landed. */
+    TEST_ASSERT_TRUE(ff_shell_flare(&H.shell)->takeover_active);
+    TEST_ASSERT_EQUAL_UINT8(2, ff_feed_count(ff_shell_feed(&H.shell)));
+
+    /* Positive control: the identical scene with the switch ON buzzes,
+     * so "0" above is the switch and not a broken path. */
+    ff_settings_load(&s, NULL);
+    s.haptics = true;
+    s.utc_offset_min = 0;
+    s.utc_offset_set = true;
+    memset(&H.store_mem, 0, sizeof(H.store_mem));
+    H.store = mem_store(&H.store_mem);
+    ff_settings_save(&s, &H.store);
+
+    harness_init(100000u, true);
+    inject_my_info(MY_ID);
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, true));
+    inject_node(DANA, "DANA", U_AWAKE);
     H.haptic.count = 0;
     inject_flare(DANA, 300);
     TEST_ASSERT_EQUAL_INT(1, H.haptic.count);
@@ -938,6 +1089,61 @@ static void S16_b1_loading_a_pack_does_not_fabricate_my_position(void)
     TEST_ASSERT_TRUE(ff_shell_view(&H.shell)->radar.arrow_valid);
 }
 
+static void S16_b1_our_own_nodeinfo_can_bootstrap_the_wall_clock(void)
+{
+    /* shell_ev_node offers `last_heard` to the latch BEFORE the
+     * self-check, deliberately: our own node's NodeInfo carries the
+     * freshest `last_heard` in the dump (meshtasticd keeps it current),
+     * so it is the tightest bootstrap available and the one that best
+     * pins the "running maximum" every other node's age is measured
+     * against. Moving the observe below the self-check broke nothing in
+     * this suite (PR #46 review, D4) — and after D1 made latch
+     * provenance load-bearing, that gap is worth closing. */
+    harness_seed_settings(0);
+    harness_init(100000u, true);
+    inject_my_info(MY_ID);
+
+    TEST_ASSERT_EQUAL_INT(FF_WALL_UNKNOWN, ff_shell_wall(&H.shell).src);
+
+    /* Only our OWN NodeInfo arrives. It must still latch, while
+     * correctly claiming no roster or heard slot for ourselves. */
+    inject_node(MY_ID, "ME", U_EVENING);
+
+    ff_wall_t const w = ff_shell_wall(&H.shell);
+    TEST_ASSERT_EQUAL_INT(FF_WALL_MESH, w.src);
+    TEST_ASSERT_EQUAL_INT16(1320, w.now_min);
+    TEST_ASSERT_EQUAL_UINT8(0, ff_shell_crew(&H.shell)->count);
+    TEST_ASSERT_EQUAL_UINT8(0, ff_heard_count(ff_shell_heard(&H.shell)));
+}
+
+static void S16_b1_a_flare_on_a_foreign_portnum_raises_no_takeover(void)
+{
+    /* The shell's own flare branch does not go through ff_wiring, so
+     * ff_wiring's portnum check does not cover it: without the check in
+     * shell_ev_private a well-formed FLARE envelope arriving on any other
+     * private portnum would raise a full-screen takeover. Currently
+     * unreachable through mc_client, but it is real logic and it had no
+     * test (PR #46 review, mutation survivor). */
+    harness_init(100000u, false);
+    inject_my_info(MY_ID);
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, true));
+
+    uint8_t buf[FF_PROTO_MAX_PAYLOAD];
+    int const n = ff_proto_encode_flare(buf, sizeof(buf), 300);
+    TEST_ASSERT_GREATER_THAN_INT(0, n);
+
+    H.haptic.count = 0;
+    H.ev.on_private(H.ev.user, DANA, FF_PORTNUM + 1u, buf, (size_t)n);
+
+    TEST_ASSERT_FALSE(ff_shell_flare(&H.shell)->takeover_active);
+    TEST_ASSERT_EQUAL_INT(0, H.haptic.count);
+    TEST_ASSERT_EQUAL_UINT8(0, ff_feed_count(ff_shell_feed(&H.shell)));
+
+    /* Positive control: the same bytes on the right portnum do. */
+    H.ev.on_private(H.ev.user, DANA, FF_PORTNUM, buf, (size_t)n);
+    TEST_ASSERT_TRUE(ff_shell_flare(&H.shell)->takeover_active);
+}
+
 static void S16_b1_shell_footprint_excludes_the_pack(void)
 {
     /* The fp_pack_t decision, pinned rather than described: the pack is
@@ -984,9 +1190,12 @@ int main(void)
     RUN_TEST(S16_AC9_transport_drop_moves_link_state_to_reconnecting);
     RUN_TEST(S16_AC9_want_config_replay_does_not_refresh_position_age);
     RUN_TEST(S16_AC9_replayed_position_with_no_last_heard_reads_never);
+    RUN_TEST(S16_AC9_cold_boot_replay_is_never_stamped_fresh);
+    RUN_TEST(S16_AC9_cold_boot_burst_ages_against_the_running_maximum);
 
     RUN_TEST(S16_AC11_should_alert_fires_during_quiet_hours_feed_push_does_not);
     RUN_TEST(S16_AC11_feed_push_haptic_does_fire_outside_quiet_hours);
+    RUN_TEST(S16_AC11_the_haptics_master_switch_silences_even_a_flare_alert);
     RUN_TEST(S16_AC11_unpaired_flare_neither_alerts_nor_takes_over);
 
     RUN_TEST(S16_AC13_active_face_is_never_flare_even_during_a_takeover);
@@ -1000,6 +1209,8 @@ int main(void)
     RUN_TEST(S16_b1_rssi_is_attributed_only_on_a_direct_path);
     RUN_TEST(S16_b1_now_projection_needs_both_a_pack_and_a_known_clock);
     RUN_TEST(S16_b1_loading_a_pack_does_not_fabricate_my_position);
+    RUN_TEST(S16_b1_our_own_nodeinfo_can_bootstrap_the_wall_clock);
+    RUN_TEST(S16_b1_a_flare_on_a_foreign_portnum_raises_no_takeover);
     RUN_TEST(S16_b1_shell_footprint_excludes_the_pack);
     RUN_TEST(S16_b1_failed_pack_load_does_not_outrank_the_settings_offset);
 

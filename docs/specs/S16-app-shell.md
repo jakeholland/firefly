@@ -86,6 +86,71 @@ loop while also fighting unfamiliar hardware for the first time.
   steps *backwards* is not re-latched from NodeInfo alone. It is re-latched
   by the first live `on_position`.
 
+- **2026-08-23, PR (slice b1, review round 1) — and the same reading may not
+  age the position it just latched from. This is the COLD-BOOT half, and the
+  entry above is incomplete without it.**
+
+  The rule above fixes the *warm* reconnect: a stale cached `last_heard`
+  can no longer drag an established latch backwards. Independent review
+  (PR #46, D1) found the *cold* case still broken, and worse, because it
+  fires on every single power-on.
+
+  `on_node` latches the wall from `last_heard`, then ages that same
+  NodeInfo's cached position from that same `last_heard`. When the
+  observation latches or re-latches, `ff_wall_unix_now()` returns exactly
+  that value — so `age_s == 0` and the cached fix is recorded as having
+  arrived this instant. **Age zero by construction, not by measurement.**
+  Measured on a cold boot with three paired members replayed:
+
+  ```
+  DANA (3h cached) -> LIVE    KEV (1h cached) -> LIVE    STRG (2m cached) -> LIVE
+  ```
+
+  The ordering-independent form is the one to internalise: whichever node
+  carries the greatest `last_heard` in the burst is *always* stamped LIVE,
+  because the latch is defined from it. A puck rebooted at the festival
+  shows a friend six hours out of range as LIVE — defect 2 of this spec, a
+  third time, now arriving through the latch instead of through the local
+  clock.
+
+  Generalised so it does not return a fourth time:
+
+  > **A timestamp may not age a fix if that same timestamp is what defines
+  > the clock the age is measured against.**
+
+  Implemented as: a NodeInfo whose reading bootstrapped or moved the latch
+  does not age its own position. It reads `FF_FRESH_NEVER`, which
+  `ff_radar.h`'s renderer contract turns into "NO FIX YET" rather than a
+  fabricated "LAST SEEN". Nodes later in the same burst with older
+  timestamps do not move the latch and ARE aged, against the running
+  maximum.
+
+  `on_position` deliberately does **not** carry the guard: `rx_time` is
+  *this packet's local receive time*, so "when did this arrive" and "what
+  time is it" genuinely coincide and an age of ~0 is a measurement. The
+  assumption that rests on — `mc_client` delivers MeshPackets as they
+  arrive, and a post-disconnect backlog replays as NodeInfo rather than as
+  MeshPackets — is stated in `ff_shell.h` so it can be checked rather than
+  assumed.
+
+  Consequence, recorded because it is a real cost and not obviously
+  acceptable: the outcome is ordering-dependent. A descending burst leaves
+  only its freshest node unplaceable; an ascending one leaves every node
+  `NEVER` until live traffic arrives. Both are honest — never fresher than
+  reality — but recovering the lost precision needs deferred re-aging
+  against the burst's final clock, which has no burst-end signal to hang
+  off in `mc_events_t`. Tracked as
+  [#50](https://github.com/jakeholland/firefly/issues/50).
+
+  **The test that mattered was the one asserting the bug as correct.** The
+  slice's own AC9 coverage latched the wall *before* the replay, so it only
+  ever exercised the warm path, and its positive control asserted
+  `FF_FRESH_LIVE` for a cold-boot replay — the defect, pinned as expected
+  behaviour. Proxy: *the AC9 test passes*. Property: *a replayed position is
+  never stamped fresh*. Exception: *the test's own control asserts the wrong
+  answer for the case it does not cover*. Cold boot is now a first-class
+  criterion rather than a variant of the warm one.
+
 - **2026-08-23, PR (slice b1) — `fp_pack_t` lives BESIDE the shell, and
   `ff_shell_cfg_t` gains a field for it.** Answering the "Open question for
   the implementer" at the foot of this spec. The target owns pack storage
@@ -496,7 +561,7 @@ Each maps to a slice (right column). Tests are named `S16_ACn_...`.
 | 8 | A `FF_INTENT_SETTING_SET` is persisted: shell closed, re-inited against the same store, value survives. | e |
 | 9 | A transport drop moves link state to `reconnecting`, and the reconnect's `want_config` replay does not refresh any position's age. **Driven as an `on_node` callback carrying `has_position` + `last_heard`** — the shape the real replay takes, since `mc_client.c:222` hardcodes `has_rx_time = false` on that path. Member last positioned at T, drop at T+40 s, reconnect at T+5 min replaying that cached position → `ff_crew_freshness` reads `FF_FRESH_STALE`; the same replay at T+12 min reads `FF_FRESH_LOST`. A replayed position with `last_heard == 0` reads `FF_FRESH_NEVER`, never fresh. | b1 |
 | 10 | Sequence test via the ctl socket (**not** the single-frame golden harness): draft typed → flare injected → takeover renders → takeover cleared → composer returns with draft intact. Requires a new ctl `flare` command. | c3, d |
-| 11 | `ff_flare_result_t.should_alert` fires the haptic during quiet hours; a feed-push haptic during quiet hours does not. | b1 |
+| 11 | `ff_flare_result_t.should_alert` fires the haptic during quiet hours; a feed-push haptic during quiet hours does not. **`should_alert` overrides quiet hours only — it does not override `ff_settings_t.haptics`, the user's master switch**, which silences both (the takeover still renders, so the flare is silenced rather than swallowed). Whether critical alerts should ignore the master switch is a product question S11/S12 owns, not one this criterion settles by implication. | b1 |
 | 12 | Wall clock: before any timestamp, `ff_shell_wall().src == FF_WALL_UNKNOWN` and the Now face renders its unknown-time state rather than a clock; `ff_quiet_now` is not evaluated and the water nudge does not fire. A NodeInfo carrying `last_heard` latches the offset (the bootstrap path — `rx_time` alone cannot, being live-packet-only). `(day_doy, now_min)` then resolves per `ff_sched`'s mapping, including 01:00 local → previous `day_doy`, `now_min == 1500`. | b0 |
 | 12b | A timestamp before `FF_WALL_EPOCH_FLOOR` is rejected and leaves `src == FF_WALL_UNKNOWN` (the uncorrected-RTC case, tested with no pack loaded). Once latched, a reading disagreeing by >30 s re-latches rather than being ignored; one disagreeing by less does not. | b0 |
 | 12c | Offset resolution order: a pack with `utc_offset_assumed == true` does **not** outrank a set settings offset; a pack with `utc_offset_assumed == false` does. With neither set, `src == FF_WALL_UNKNOWN` rather than a defaulted guess. | b0 |

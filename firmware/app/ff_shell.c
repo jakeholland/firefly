@@ -260,6 +260,10 @@ static void shell_haptic_alert(shell_t *sh)
 /**
  * Offer a NodeInfo's `last_heard` to the wall latch.
  *
+ * **Returns true iff this reading is what the latch is now made of** —
+ * it bootstrapped the latch or re-latched it. The caller must then not
+ * age anything from the same reading; see shell_ev_node.
+ *
  * Bootstrap source (ff_wall.h: populated unconditionally, including
  * during the want_config replay, so the offset latches during the
  * handshake) — but **forward-only once latched**, and that qualifier is
@@ -287,13 +291,14 @@ static void shell_haptic_alert(shell_t *sh)
  * per-packet local receive time rather than a cached summary, so it is
  * offered unconditionally and re-latches in both directions.
  */
-static void shell_observe_wall_nodeinfo(shell_t *sh, uint32_t last_heard, uint32_t now_ms)
+static bool shell_observe_wall_nodeinfo(shell_t *sh, uint32_t last_heard, uint32_t now_ms)
 {
     int64_t predicted = 0;
     if (ff_wall_unix_now(&sh->wall, now_ms, &predicted) && (int64_t)last_heard <= predicted) {
-        return;
+        return false; /* told us nothing new about the clock */
     }
-    (void)ff_wall_observe(&sh->wall, (int64_t)last_heard, now_ms);
+    ff_wall_obs_t const obs = ff_wall_observe(&sh->wall, (int64_t)last_heard, now_ms);
+    return obs == FF_WALL_OBS_LATCHED || obs == FF_WALL_OBS_RELATCHED;
 }
 
 /**
@@ -380,7 +385,7 @@ static void shell_ev_node(void *u, mc_nodeinfo_t const *n)
     /* Before the self-check: our own NodeInfo carries the freshest
      * `last_heard` of any node in the dump, and it is the one the
      * bootstrap most wants. */
-    shell_observe_wall_nodeinfo(sh, n->last_heard, now);
+    bool const defined_the_latch = shell_observe_wall_nodeinfo(sh, n->last_heard, now);
 
     if (shell_is_self(sh, n->node_num)) return; /* never treat our own traffic as inbound */
 
@@ -413,13 +418,41 @@ static void shell_ev_node(void *u, mc_nodeinfo_t const *n)
          * position is not recorded at all and freshness stays
          * FF_FRESH_NEVER.
          *
+         * AND: NOT FROM THE READING THAT JUST DEFINED THE CLOCK.
+         * `defined_the_latch` is the whole of PR #46 review finding D1.
+         * If this NodeInfo bootstrapped or moved the latch, then
+         * ff_wall_unix_now() now returns exactly this node's
+         * `last_heard`, so its position's derived age is zero BY
+         * CONSTRUCTION rather than by measurement — a six-hour-old
+         * cached fix reads LIVE on every cold boot, and, ordering aside,
+         * whichever node carries the greatest `last_heard` in the burst
+         * always does. That is defect 2 of S16 a third time, arriving
+         * through the latch instead of through the local clock.
+         *
+         * We have just learned what time it is FROM this node; we cannot
+         * also use it to say how old this node is. Not recorded ->
+         * FF_FRESH_NEVER, which the radar renders as "NO FIX YET" rather
+         * than a fabricated "LAST SEEN" (ff_radar.h's renderer
+         * contract). A later node in the same burst with an OLDER
+         * `last_heard` does not move the latch, so it IS aged — against
+         * the running maximum, which is the best estimate of "now" the
+         * puck has.
+         *
+         * That makes the OUTCOME ordering-dependent: a descending burst
+         * leaves only its freshest node unplaceable, an ascending one
+         * leaves everything NEVER. Honest either way — never fresher than
+         * reality — but the ascending case is needlessly pessimistic, and
+         * recovering that precision needs deferred re-aging against the
+         * burst's final clock:
+         * https://github.com/jakeholland/firefly/issues/50.
+         *
          * `n->position.has_rx_time` is deliberately not consulted: it is
          * hardcoded false on this path today, so a branch on it would be
          * dead code that reads as if it were handling a case. If
          * meshclient ever populates it here, it becomes the better
          * source and this is where to prefer it. */
         uint32_t rx_ms = 0;
-        if (shell_rx_ms_from_unix(sh, n->last_heard, now, &rx_ms)) {
+        if (!defined_the_latch && shell_rx_ms_from_unix(sh, n->last_heard, now, &rx_ms)) {
             ff_latlon_t const p = {n->position.lat, n->position.lon};
             ff_crew_on_position(&sh->crew, n->node_num, p, rx_ms);
         }
@@ -441,7 +474,14 @@ static void shell_ev_position(void *u, uint32_t node, mc_position_t const *p)
     /* A live per-packet local receive time: the authoritative re-latch
      * source, offered unconditionally in both directions (unlike a
      * NodeInfo's cached `last_heard` — see shell_observe_wall_nodeinfo).
-     * The plausibility window in ff_wall_observe is the guard. */
+     * The plausibility window in ff_wall_observe is the guard.
+     *
+     * Note this path deliberately does NOT carry shell_ev_node's
+     * "don't age from the reading that defined the latch" guard (D1).
+     * `rx_time` is THIS PACKET's local receive time, so "when did this
+     * arrive" and "what time is it now" genuinely coincide and an age of
+     * ~0 is a measurement, not a construction. See ff_shell.h for the
+     * assumption that rests on. */
     if (p->has_rx_time) {
         (void)ff_wall_observe(&sh->wall, (int64_t)p->rx_time, now);
     }
@@ -671,16 +711,24 @@ static bool shell_stage_color(fp_pack_t const *p, int8_t stage_idx, uint32_t *ou
 /**
  * The Now face.
  *
- * INTERPRETATION, flagged per CLAUDE.md. `now_state_t` has no member for
- * "a pack is loaded but the puck does not know what time it is", which is
- * a reachable and expected state (FF_WALL_UNKNOWN before the first
- * plausible mesh timestamp). NOW_NO_PACK is used for it: it is the
- * enum's least-claiming member, and scr_now renders it as "nothing
- * loaded" — which under-claims (we do have a pack) rather than
- * over-claiming (NOW_TBD would assert the day's set times are unknown,
- * which is a statement about the DATA and would be a lie). Under-claiming
- * is the direction this project errs in. S07 arguably wants its own
- * NOW_TIME_UNKNOWN state; noted in the PR rather than invented here.
+ * KNOWN DEFECT, tracked as
+ * https://github.com/jakeholland/firefly/issues/48 — do not let this
+ * harden into intended behaviour by default.
+ *
+ * `now_state_t` has no member for "a pack is loaded but the puck does not
+ * know what time it is", which is not exotic: it is the NORMAL BOOT PATH,
+ * since FF_WALL_UNKNOWN holds until a plausible mesh timestamp latches
+ * during the handshake. NOW_NO_PACK is used as the least-bad of the five
+ * existing members, and it never invents a clock — but calling it an
+ * under-claim (as this PR first did) is wrong: scr_now.c:419-433 renders
+ * it as "NO FESTIVAL LOADED / Load a festpack to see what's playing",
+ * which MIS-claims. It names the wrong missing fact and tells the user to
+ * redo something they already did. The honest unknown here is the TIME.
+ *
+ * NOW_TBD is not the answer either — that would assert the day's set
+ * times are unknown, a statement about the DATA rather than about our
+ * clock, and a straightforward lie. The fix is a new state; see #48.
+ * (PR #46 review, D3.)
  */
 static void shell_project_now(shell_t const *sh, ff_wall_t wall, ff_app_now_t *out)
 {

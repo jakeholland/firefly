@@ -84,6 +84,36 @@
  * fallback. In practice the latch happens during the want_config
  * handshake, from the same NodeInfo burst (see ff_wall.h).
  *
+ * And the rule that closes the third incarnation of this defect (PR #46
+ * review, D1):
+ *
+ *   > **A timestamp may not age a fix if that same timestamp is what
+ *   > defines the clock the age is measured against.**
+ *
+ * `on_node` latches the wall from `last_heard` and then wants to age
+ * that node's cached position from the same `last_heard`. When the
+ * observation latches or re-latches, `ff_wall_unix_now()` returns
+ * exactly that value, so the age is **zero by construction rather than
+ * by measurement** — every cold boot stamps its cached positions LIVE,
+ * and whichever node carries the greatest `last_heard` in a burst always
+ * does, whatever the nodeDB order. So a NodeInfo that moved the latch
+ * does not age its own position: it reads `FF_FRESH_NEVER`, which the
+ * radar renders as "NO FIX YET" rather than a fabricated "LAST SEEN"
+ * (ff_radar.h's renderer contract). Nodes later in the same burst with
+ * older timestamps do not move the latch and ARE aged, against the
+ * running maximum — the best estimate of "now" available.
+ *
+ * `on_position` deliberately does NOT carry the same guard, and the
+ * asymmetry is the point rather than an oversight: `rx_time` is *this
+ * packet's local receive time*, so "when did this arrive" and "what time
+ * is it" genuinely coincide, and age ~0 is a measurement. `last_heard`
+ * is *the node's contact history* — a lower bound on now and the receive
+ * time of a possibly much older cached fix, which coincide only by
+ * accident. The assumption `on_position` rests on, stated so it can be
+ * checked: `mc_client` delivers MeshPackets as they arrive, and a
+ * post-disconnect backlog is replayed as NodeInfo rather than as
+ * MeshPackets, so a live `rx_time` is never long-stale.
+ *
  * ---------------------------------------------------------------------
  * HAPTICS AND QUIET HOURS
  * ---------------------------------------------------------------------
