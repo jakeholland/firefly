@@ -190,6 +190,120 @@ static void S10_ACn_go_switches_lock_no_takeover_name_false(void)
     TEST_ASSERT_FALSE(ff_flare_fmt_go_switches_lock("DANA", NULL));
 }
 
+/* ------------------------------------------------------------------- */
+/* ff_flare_fmt_lock_cost (issue #27; re-worded per PR #41 UX review     */
+/* BLOCKING 1 and BLOCKING 2)                                            */
+/* ------------------------------------------------------------------- */
+
+static void S10_ACn_lock_cost_names_the_verb_the_lock_and_the_holder(void)
+{
+    /* The three things PR #20's UX review finding #3 requires the chip to
+     * say, in the form PR #41's UX review asked for: what pressing GO
+     * DOES (a verb of loss), to WHAT (the lock — the user's only
+     * vocabulary for this, and the word the Radar face's own chip uses),
+     * and WHOSE (the name). The incoming sender is deliberately absent —
+     * it is the headline directly above, pinned separately by
+     * test_scr_flare.c. */
+    char buf[48];
+    ff_flare_fmt_lock_cost(buf, sizeof(buf), "DANA");
+    TEST_ASSERT_EQUAL_STRING("GO DROPS LOCK - DANA", buf);
+}
+
+static void S10_ACn_lock_cost_reviewers_collision_pair_renders_distinctly(void)
+{
+    /* PR #41 UX review BLOCKING 2, the reviewer's exact repro. The old
+     * two-name form rendered ALEXANDRIA-locked / ALEXANDRINA-flaring as
+     * "GO: ALEXANDRI > ALEXANDRI" — a trade of a person for themselves,
+     * which reads as "costs nothing, press GO", the precise outcome the
+     * chip exists to prevent.
+     *
+     * Structurally gone: there is one name on the chip now, so a chip
+     * cannot state an identity between two people. */
+    char a[48];
+    char b[48];
+    ff_flare_fmt_lock_cost(a, sizeof(a), "ALEXANDRIA");
+    ff_flare_fmt_lock_cost(b, sizeof(b), "ALEXANDRINA");
+    TEST_ASSERT_EQUAL_STRING("GO DROPS LOCK - ALEXANDRIA", a);
+    TEST_ASSERT_EQUAL_STRING("GO DROPS LOCK - ALEXANDRINA", b);
+    TEST_ASSERT_TRUE_MESSAGE(strcmp(a, b) != 0, "two distinct crew names must not render as the same chip");
+
+    ff_flare_fmt_lock_cost(a, sizeof(a), "MIKE SMITH");
+    ff_flare_fmt_lock_cost(b, sizeof(b), "MIKE SMYTHE");
+    TEST_ASSERT_EQUAL_STRING("GO DROPS LOCK - MIKE SMITH", a);
+    TEST_ASSERT_EQUAL_STRING("GO DROPS LOCK - MIKE SMYTHE", b);
+}
+
+static void S10_ACn_lock_cost_does_not_truncate_by_length(void)
+{
+    /* PR #41 code review, blocking: a BYTE cap cannot bound a
+     * proportional font's WIDTH, so this function no longer has one —
+     * fitting the round glass belongs to the renderer, which knows the
+     * pixels (scr_flare.c's flare_make_chip, via
+     * ff_layout_centered_band_max_width + LV_LABEL_LONG_MODE_DOTS).
+     *
+     * Asserted explicitly, and with two names of the same LENGTH but
+     * wildly different WIDTH, so that re-introducing a character cap
+     * here fails a test instead of quietly re-creating a guard rail that
+     * doesn't guard. The full FF_APP_NAME_LEN budget (15) passes through
+     * untouched in both cases. */
+    char buf[48];
+    ff_flare_fmt_lock_cost(buf, sizeof(buf), "WWWWWWWWWWWWWWW");
+    TEST_ASSERT_EQUAL_STRING("GO DROPS LOCK - WWWWWWWWWWWWWWW", buf);
+    ff_flare_fmt_lock_cost(buf, sizeof(buf), "IIIIIIIIIIIIIII");
+    TEST_ASSERT_EQUAL_STRING("GO DROPS LOCK - IIIIIIIIIIIIIII", buf);
+
+    /* And a multi-byte name is not cut on a byte boundary either, since
+     * nothing here counts bytes any more. */
+    ff_flare_fmt_lock_cost(buf, sizeof(buf), "ANDR\xC3\x89 W");
+    TEST_ASSERT_EQUAL_STRING("GO DROPS LOCK - ANDR\xC3\x89 W", buf);
+}
+
+static void S10_ACn_lock_cost_missing_name_is_explicitly_unknown(void)
+{
+    /* CLAUDE.md's honesty rule: "?" (the marker
+     * ff_scr_flare_build_lock_chip already uses), never an invented
+     * identity. Defensive only — the caller gates on
+     * ff_flare_fmt_go_switches_lock, which is already false for an empty
+     * locked name, so no chip is built at all. Tested because the guard
+     * exists, not because the path ships. */
+    char buf[48];
+    ff_flare_fmt_lock_cost(buf, sizeof(buf), "");
+    TEST_ASSERT_EQUAL_STRING("GO DROPS LOCK - ?", buf);
+    ff_flare_fmt_lock_cost(buf, sizeof(buf), NULL);
+    TEST_ASSERT_EQUAL_STRING("GO DROPS LOCK - ?", buf);
+}
+
+static void S10_ACn_lock_cost_worst_case_fits_the_callers_buffer(void)
+{
+    /* scr_flare.c declares char lock_line[48]; the longest string this
+     * function can produce is "GO DROPS LOCK - " (16) + a full
+     * FF_APP_NAME_LEN name (15) = 31 bytes + NUL. Asserting it means
+     * shrinking that call-site buffer, or FF_APP_NAME_LEN growing past
+     * what it holds, fails a test rather than silently truncating a
+     * disclosure on real hardware. */
+    char buf[48];
+    ff_flare_fmt_lock_cost(buf, sizeof(buf), "ABCDEFGHIJKLMNO");
+    TEST_ASSERT_TRUE_MESSAGE(strlen(buf) < 48, "worst-case lock-cost line must fit scr_flare.c's lock_line[48]");
+}
+
+static void S10_ACn_lock_cost_truncates_rather_than_overflowing(void)
+{
+    /* Same snprintf discipline as every other formatter here: a short
+     * buffer truncates, never overflows. */
+    char buf[8];
+    memset(buf, 'x', sizeof(buf));
+    ff_flare_fmt_lock_cost(buf, sizeof(buf), "DANA");
+    TEST_ASSERT_EQUAL_STRING("GO DROP", buf);
+}
+
+static void S10_ACn_lock_cost_null_out_is_noop(void)
+{
+    ff_flare_fmt_lock_cost(NULL, 16, "DANA");
+    char buf[8] = "keep";
+    ff_flare_fmt_lock_cost(buf, 0, "DANA");
+    TEST_ASSERT_EQUAL_STRING("keep", buf);
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -215,6 +329,14 @@ int main(void)
     RUN_TEST(S10_ACn_go_switches_lock_same_name_false);
     RUN_TEST(S10_ACn_go_switches_lock_not_locked_false);
     RUN_TEST(S10_ACn_go_switches_lock_no_takeover_name_false);
+
+    RUN_TEST(S10_ACn_lock_cost_names_the_verb_the_lock_and_the_holder);
+    RUN_TEST(S10_ACn_lock_cost_reviewers_collision_pair_renders_distinctly);
+    RUN_TEST(S10_ACn_lock_cost_does_not_truncate_by_length);
+    RUN_TEST(S10_ACn_lock_cost_missing_name_is_explicitly_unknown);
+    RUN_TEST(S10_ACn_lock_cost_worst_case_fits_the_callers_buffer);
+    RUN_TEST(S10_ACn_lock_cost_truncates_rather_than_overflowing);
+    RUN_TEST(S10_ACn_lock_cost_null_out_is_noop);
 
     return UNITY_END();
 }

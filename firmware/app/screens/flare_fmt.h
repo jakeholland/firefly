@@ -86,6 +86,84 @@ void ff_flare_fmt_countdown(char *out, size_t out_sz, int32_t expires_in_ms);
  */
 bool ff_flare_fmt_go_switches_lock(char const *locked_from_name, char const *takeover_from_name);
 
+/**
+ * ff_flare_fmt_lock_cost — the takeover screen's lock-disclosure chip
+ * text: `"GO DROPS LOCK - <locked>"` (e.g. `"GO DROPS LOCK - DANA"`).
+ *
+ * ## What this must disclose, and where that requirement comes from
+ * The requirement is PR #20's UX review, BLOCKING finding #3 — "GO must
+ * disclose what it costs" — the same finding
+ * ff_flare_fmt_go_switches_lock's doc comment already cites. It is NOT
+ * stated by S10's Amendment Ruling 2, which is entirely state-machine
+ * semantics (that a newer flare never touches an existing lock, that
+ * DISMISS returns to the intact lock, that GO is the explicit decision
+ * that switches it). Ruling 2 is why an established lock is a decision
+ * the user owns; finding #3 is why pressing GO has to say so on screen.
+ * PR #41's code review caught this file attributing the second to the
+ * first — corrected, because the whole point of writing the requirement
+ * down is that a future re-wording can be checked against it, and a
+ * citation pointing at a paragraph that doesn't contain it is worse than
+ * no citation.
+ *
+ * ## Why one name and a verb (PR #41 UX review, BLOCKING 1)
+ * The form this replaces was `"GO: DANA > KEV"`. Shortening the original
+ * sentence had deleted its verb, and the verb was the disclosure: `A > B`
+ * means *via* or *then* in every other context a person meets it
+ * (breadcrumbs, file paths, map directions), so the chip read as an
+ * itinerary — "go to Dana, then Kev" — i.e. as KEEPING the lock. It also
+ * dropped the word LOCK, which is the only vocabulary the user has for
+ * this: the Radar face's own chip reads `LOCKED - DANA`
+ * (ff_scr_flare_build_lock_chip), and the takeover screen had stopped
+ * connecting to it.
+ *
+ * So: a verb of loss (`DROPS`), the noun the user already knows
+ * (`LOCK`), and the same ` - <name>` tail the Radar chip uses, so the two
+ * chips visibly belong to each other. No glyph whose convention has to be
+ * learned, and no direction to misread — there is no direction in it.
+ *
+ * The incoming sender's name is deliberately NOT here. It is the
+ * takeover's headline, in 22px type, directly above this chip
+ * (ff_flare_fmt_headline, built unconditionally by the same function
+ * that builds this chip — pinned by
+ * S10_ACn_lock_disclosure_is_always_accompanied_by_the_headline). Naming
+ * KEV twice on one screen spends the chip's whole width budget on the
+ * one fact that is already the largest thing in view.
+ *
+ * ## This function does NOT truncate, and that is deliberate
+ * An earlier version capped the name at 11 bytes and appended an
+ * ellipsis, on the theory that this kept the chip on the round glass. It
+ * did not: Montserrat is proportional, so a byte count bounds pixels
+ * only if every glyph is the same width, and PR #41's code review
+ * measured eleven `W`s rendering 80px wider than eleven typical
+ * characters — 25px past the bezel. A byte cap cannot express a pixel
+ * constraint, so it has been removed rather than tuned; tuning it would
+ * only move the width at which it is wrong.
+ *
+ * Truncation now happens where the pixels are known — scr_flare.c's
+ * flare_make_chip clamps the label to
+ * ff_layout_centered_band_max_width() and lets LVGL's
+ * LV_LABEL_LONG_MODE_DOTS place the ellipsis. That also means a name of
+ * NARROW glyphs is no longer cut short for no reason: the old cap
+ * truncated "IIIIIIIIIIIIIII" identically to "WWWWWWWWWWWWWWW" though
+ * one fits with room to spare. One mechanism, in the right units, in one
+ * place.
+ *
+ * `locked_from_name` being NULL/empty renders as `"?"` — the same
+ * explicit unknown marker ff_scr_flare_build_lock_chip uses, never a
+ * fabricated identity (CLAUDE.md's honesty rule). Unreachable in
+ * practice: the caller gates on ff_flare_fmt_go_switches_lock, which is
+ * already false for an empty locked name, so no chip is built at all
+ * (verified by PR #41's UX reviewer, who rendered it). Kept as a guard,
+ * not claimed as covered.
+ *
+ * Truncates rather than overflowing if `out_sz` is too small — but
+ * `out_sz` is a BUFFER bound, not a display one; give it room for the
+ * full FF_APP_NAME_LEN name (48 bytes is comfortable) so the renderer,
+ * not this function, decides what fits. A NULL `out` or zero `out_sz` is
+ * a no-op.
+ */
+void ff_flare_fmt_lock_cost(char *out, size_t out_sz, char const *locked_from_name);
+
 #ifdef __cplusplus
 }
 #endif

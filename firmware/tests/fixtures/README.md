@@ -217,14 +217,16 @@ convention `radar.arrow_valid` already uses.
 
 ## Current fixtures
 
-Eight radar fixtures exist as of S06 (compute in slice a, `scr_radar.c` +
+Ten radar fixtures exist as of S06 (compute in slice a, `scr_radar.c` +
 `scr_nav.c` rendering in slice b/c/d): `radar_live.json`, `radar_stale.json`,
 `radar_close.json` (S13/S14 slice b, goldens regenerated in S06 PR B once
 the real radar face replaced the S13 debug placeholder — see this repo's
 PR history for the before/after), `radar_nofix.json`, `radar_nosel.json`,
 and `radar_never.json` (added in S06 PR B's first pass), plus
 `radar_lost.json` and `radar_close_collision.json` (added in PR B's UX
-review follow-up). The first four cover S06 AC4's exact named fixtures
+review follow-up) and `radar_cluster.json`/`radar_cluster_stale.json` (added for issue
+#18's cluster marker restyle, the second one in that PR's UX review
+round). The first four cover S06 AC4's exact named fixtures
 (`radar_live`/`stale`/`close`/`nofix`); the rest are additional coverage
 beyond AC4's literal list, added because they're real, distinct render
 states `scr_radar.c` has to handle honestly (empty-crew, a paired member
@@ -237,6 +239,8 @@ and a worst-case crew-ring layout).
 | `radar_stale.json` | `stale` | `320 m` (last known) | `4 MIN` | no new fix since; distance is honestly stale, not re-measured (CLAUDE.md: "never fake freshness, positions, or times") |
 | `radar_lost.json` | `lost` (real fix) | `1.1 km` (rendered `~1.1 km`) | `42 MIN` | genuinely old fix — PR #16 UX review's top finding: this state had no fixture/golden at all in the first pass of this PR, so nobody had ever seen it rendered. Must read as a *different screen* from STALE, not a dimmer one (see `scr_radar.c`'s `radar_render_lost`) |
 | `radar_close.json` | `close` | `15 m` | `3 SEC` | close-range predicate tripped; `arrow_valid: false` per S06 ("false in CLOSE/NOFIX/NOSEL") |
+| `radar_cluster.json` | `live` | `320 m` | `8 SEC` | added for issue #18 (cluster marker styling). Four crew members 4 degrees apart on the ring, so all four resolve into ONE cluster marker — one wedge each, in all four **distinct** crew colors (pink/teal/violet/green), with the violet member stale so the mixed-freshness case is visible: three 6px wedges and one 2px one. `radar_close_collision.json` below only ever produces a 2-member cluster, which can't show whether the ring generalizes past a half-and-half split. **Not** the widest ring the marker can draw — `FF_CREW_MAX` is 8 while the palette has 4 colors, so a 5+ member cluster repeats colors; nothing above 4 members has a golden, and that gap is recorded in `docs/specs/S06-radar-face.md`'s Amendments |
+| `radar_cluster_stale.json` | `stale` | `320 m` (last known) | `4 MIN` | same four clustered members, but **every one of them stale** — added in PR #41's UX review round, which found that the first implementation expressed staleness by dimming a wedge's opacity, and dimming is *relative*: with no fresh wedge in frame for contrast, an all-stale marker rendered indistinguishably from a live one. This is the fixture that pins the fix (2px hollow wedges at full crew color, plus a `FF_THEME_COLOR_MUTED` count digit). Deliberately paired with `radar_cluster.json` — the pair only means something read side by side, since the whole finding was that one of them used to look like the other |
 | `radar_close_collision.json` | `close` | `15 m` | `3 SEC` | same scenario as `radar_close.json`, but with 4 crew-ring dots deliberately placed at worst-case bearings (one straight at the status bar, three clustered straight at the FLARE button / trend chip) to exercise `app/screens/radar_layout.c`'s layout resolver — the three southward dots resolve into a 1-dot + 1-cluster-of-2 outcome (a "2" marker, not a hidden member), and the northward dot lands clear of the status bar. Regressing the resolver will show up here even if it doesn't show up in the plain `radar_close` golden — though the authoritative regression coverage is `app/screens/tests/test_radar_layout.c`'s geometry-level sweep, not this golden (see that file's header comment for why) |
 | `radar_nofix.json` | `nofix` | `""` (unknown — my position invalid) | `6 MIN` (the *selected member's* last-known age is still honestly known even though mine isn't) | arrow hidden, "NO FIX - RADIO ONLY" |
 | `radar_nosel.json` | `nosel` | `""` | `""` | no paired crew member at all — empty-crew state, `mesh_ok: false` for variety |
@@ -251,7 +255,8 @@ fixture, exercised here deliberately by pairing it with a live `radar`
 section that never actually renders), `flare_takeover_locked.json` (same
 takeover, but with `flare.locked` ALSO set to a *different* node than
 `takeover_from_name` — exercises the GO-discloses-the-lock-cost chip;
-see `ff_scr_flare_build_takeover`'s doc comment), `flaring_self.json`
+see `ff_scr_flare_build_takeover`'s doc comment),
+`flaring_self.json`
 (`flare.sending` — the pulsing sender overlay on top of an otherwise-NOSEL
 radar tile, whose own headline is dimmed while sending), and
 `radar_flare_locked.json` (`flare.locked` on an otherwise-ordinary LIVE
@@ -312,6 +317,55 @@ mocked at all** — its `lineup` entries are copied field-for-field from
 the real vendored Lost Lands pack, specifically because the spec calls
 out this exact case ("real Lost Lands pack") as the thing this fixture
 must prove.
+
+## Do not golden anything whose pixels depend on text truncation
+
+**`LV_LABEL_LONG_MODE_DOTS` is not bit-reproducible across
+architectures.** PR #41 added a `flare_takeover_wide_name` fixture — the
+flare takeover with a locked name of fifteen `W`s, to make the
+disclosure chip's pixel clamp visible — and CI caught it immediately:
+**2.27% of pixels differed between an arm64 macOS render and CI's x86-64
+Linux one, while all 25 other fixtures were byte-identical at
+`0.0000%`.** Each platform is internally deterministic (the two-render
+determinism check passes on both), so this is not flakiness; the
+truncation point itself lands on a different character.
+
+Only that one fixture exercised LVGL's dot-placement path, which is what
+isolates the cause. The *behaviour* is portable — every assertion-level
+test passes on both platforms, including under ASan/UBSan — but the
+exact pixel LVGL chooses for the ellipsis is not, so it must never be
+the subject of a byte comparison.
+
+**And a per-fixture threshold override would be the wrong escape hatch.**
+`run_goldens.sh` compares every fixture against ONE shared
+`THRESHOLD_PCT` (0.5%). Keeping a 2.27% fixture means raising that to
+~2.5% for all 25 others — blunting every golden gate five-fold to
+accommodate the single fixture that cannot hold to it. Adding a
+per-fixture override instead would keep the number but lose the
+property: the whole value of a shared threshold is that no fixture gets
+to negotiate its own standard. Neither trade is worth a picture.
+
+The rendered proof lives at `docs/screens/flare-takeover-wide-name.png`
+instead, where it is context rather than a gate, and the guarantee is
+enforced by assertions that hold on any platform:
+`S10_ACn_lock_disclosure_chip_stays_inside_the_round_glass` (a sweep over
+width worst cases, checked against `ff_layout_rect_in_circle`) and
+`S10_ACn_lock_disclosure_only_truncates_names_that_dont_fit`. This is the
+same "assertion-level, not visual" discipline `test_radar_layout.c`'s
+header argues for, arrived at the hard way.
+
+**That PNG is an arm64 macOS render**, matching every other image in the
+repo, and it is *the shipped side of the 2.27% discrepancy this section
+describes* — so it is worth saying which side you are looking at. Render
+the same state on x86-64 Linux and roughly a third of the chip's pixels
+land differently, because the ellipsis falls on a different character.
+Neither render is more correct than the other; on real hardware there is
+exactly one platform and whatever it does is what users see. To check it
+yourself, recreate the fixture (the flare takeover with
+`locked_from_name` set to fifteen `W`s), render it, and diff against the
+committed PNG with `build/compare_png` — on arm64 you will get
+`0/207936 (0.0000%)`, and a non-zero result means you are on the other
+side of the discrepancy, not that the image is stale.
 
 ## Adding a fixture
 

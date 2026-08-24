@@ -282,3 +282,83 @@ void radar_layout_resolve_dots(radar_layout_registry_t const *reg, float const *
         out[i].cluster_size = size;
     }
 }
+
+int radar_layout_cluster_wedges(radar_layout_dot_result_t const *resolved, int n, int cluster_id,
+                                 radar_layout_wedge_t *out, int out_max)
+{
+    if (resolved == NULL || out == NULL || n <= 0 || out_max <= 0) {
+        return 0;
+    }
+    if (n > FF_CREW_MAX) {
+        n = FF_CREW_MAX; /* same defensive clamp radar_layout_resolve_dots applies */
+    }
+
+    /* Count first, then place: every wedge's width depends on how many
+     * members share the ring, so nothing can be emitted until the whole
+     * membership is known. Ascending original-index order falls out of
+     * the single forward scan — see this function's doc comment for why
+     * that stability matters. */
+    int members[FF_CREW_MAX];
+    int count = 0;
+    for (int i = 0; i < n; i++) {
+        if (resolved[i].cluster_id == cluster_id) {
+            members[count++] = i;
+        }
+    }
+    if (count == 0) {
+        return 0; /* no dot belongs to this cluster_id */
+    }
+
+    /* A lone member gets the whole circle with no gap (a gap would be a
+     * seam in a ring with nothing to separate), expressed as LVGL's own
+     * full-arc form 0..360 rather than a normalized 270..270 — the
+     * latter is indistinguishable from a zero-width wedge. */
+    if (count == 1) {
+        out[0].index = members[0];
+        out[0].start_deg = 0.0f;
+        out[0].end_deg = 360.0f;
+        return 1;
+    }
+
+    float slice = 360.0f / (float)count;
+    float half_gap = RADAR_LAYOUT_CLUSTER_WEDGE_GAP_DEG / 2.0f;
+
+    /* Refuse rather than emit a partial ring (PR #41 code review): this
+     * function's whole reason for existing is that a dropped member is
+     * "the same lie by omission as hiding the dot", and quietly writing
+     * out_max wedges and reporting the short count would satisfy the
+     * signature by doing exactly that. Unreachable from scr_radar.c
+     * (out_max is FF_CREW_MAX and count <= n <= FF_CREW_MAX); the point
+     * is that the contract cannot be satisfied by hiding someone even if
+     * a future caller passes a smaller buffer. */
+    if (count > out_max) {
+        return -1;
+    }
+
+    int written = 0;
+    for (int k = 0; k < count; k++) {
+        /* 270 == 12 o'clock in LVGL's arc convention (0 == 3 o'clock,
+         * clockwise). */
+        float base = 270.0f + (float)k * slice;
+        float start = base + half_gap;
+        float end = base + slice - half_gap;
+
+        /* Normalize into [0, 360). A wedge that crosses the seam ends up
+         * with end < start, which is exactly what LVGL's arc widget
+         * expects for a wrapping arc — see radar_layout_wedge_t's doc
+         * comment. */
+        while (start >= 360.0f) {
+            start -= 360.0f;
+        }
+        while (end >= 360.0f) {
+            end -= 360.0f;
+        }
+
+        out[written].index = members[k];
+        out[written].start_deg = start;
+        out[written].end_deg = end;
+        written++;
+    }
+
+    return written;
+}
