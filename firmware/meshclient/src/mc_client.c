@@ -86,6 +86,23 @@ static void mc_position_from_pb(meshtastic_Position const *pb, bool has_rx_time,
     out->has_rx_time = has_rx_time;
     out->rx_time = rx_time;
     out->loc_source = mc_loc_source_from_pb(pb->location_source);
+
+    /* precision_bits has implicit presence: a wire value of 0 and an absent
+     * field are the same bytes, and >32 bits of a 32-bit coordinate is
+     * untrusted-RF garbage, not a measurement — reported absent, never
+     * clamped (a clamped 32 would assert "full precision" for a malformed
+     * packet). See the field's doc comment in mc_client.h.
+     *
+     * Wire varints above UINT32_MAX never reach this gate: vendored nanopb
+     * fails the whole Position decode ("integer too large") — a nonstandard
+     * strictness (mainline protobuf C++ truncates, which would turn 2^32+32
+     * into a present 32) that S03_AC11_precision_overflow_varint_yields_no_
+     * position pins; if a decoder change breaks that test, add a pre-decode
+     * guard here rather than deleting the test. */
+    out->has_precision_bits = (pb->precision_bits >= 1u) && (pb->precision_bits <= 32u);
+    if (out->has_precision_bits) {
+        out->precision_bits = pb->precision_bits;
+    } /* else: left zeroed by the memset above, benign for flag-ignoring callers */
 }
 
 /**
