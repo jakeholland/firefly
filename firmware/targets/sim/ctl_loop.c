@@ -258,6 +258,9 @@ static void ctl_loop_pointer_step_delay(ff_ctl_loop_ctx_t *ctx)
     if (ctx->mock_clock) {
         ctx->mock_clock_ms += 40u; /* > the 33 ms indev period */
     } else {
+        /* Untested branch: every test runs --mock-clock. Structurally
+         * identical to the proven mock path; acceptable for a dev tool,
+         * noted per PR #62's review rather than implied covered. */
         usleep(40 * 1000);
     }
 }
