@@ -11,18 +11,16 @@ You are reviewing a PR you did not write. You have fresh eyes — use them. Read
 5. **Allocation & size:** no hidden malloc in core/libs; fixed buffers respect their caps; struct growth flagged.
 6. **Tests are real:** run them locally. Try one deliberate mutation (revert a line mentally) — would a test catch it? If not, say which criterion is under-tested.
 
-   **And check the test's proxy.** A test rarely measures the property that matters; it measures a stand-in. The recurring bug in this repo is an *exception in that correspondence* — the proxy holds, the property doesn't, and the test passes for the wrong reason. Ask the finite question: **what input satisfies the proxy and violates the property?** If you can name one, the test is wrong even when it's green.
-
-   Four real instances, all from one PR (#41):
+   **And check the test's proxy.** Tests measure a stand-in for the property that matters. Where the correspondence has an exception, the proxy holds while the property breaks and the test passes for the wrong reason. Ask: **what input satisfies the proxy and violates the property?** Name one and the test is wrong even when green.
 
    | proxy | property | the exception |
    |---|---|---|
-   | a byte cap on a name | the chip fits the round glass | the font is proportional — 11 `W`s are 80px wider than 11 `I`s |
+   | a byte cap on a name | the chip fits the round glass | proportional font — 11 chars span ~310px of `I`s to ~487px of `W`s |
    | one name truncates correctly | two names stay distinguishable | truncation isn't injective — `ALEXANDRIA` and `ALEXANDRINA` both became `ALEXANDRI` |
    | the round-glass sweep passes | the chip fits its slot | a two-line chip is narrow *and* taller — it fit, wrapped, and dropped the ellipsis |
-   | `CC=gcc` built cleanly | a second compiler checked it | `gcc` on macOS **is** Apple clang (#44) |
+   | the local `-Werror` gate is green | the code is warning-clean | the gate uses the host compiler (clang); CI runs GCC, which has warnings clang doesn't implement (#44) |
 
-   The caveat that keeps this from becoming ritual: in every one of those, what resolved it was **measuring, not reasoning harder**. Reviewers had read the code carefully and still missed them. Instrument it, render it, print the number — a sweep you ran beats a sweep you reasoned about.
+   First three are PR #41. What keeps this from becoming ritual: every one was resolved by **measuring, not reasoning harder** — reviewers had read the code closely and still missed them. Instrument it, render it, print the number.
 
 ## Output
 
