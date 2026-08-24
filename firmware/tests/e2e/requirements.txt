@@ -1,2 +1,10 @@
 pytest>=7.0
-meshtastic>=2.5
+# Pinned to the 2.7 line (was an unpinned `>=2.5`, flagged in PR #42's
+# review): tools/dev/probe_node.py's dict-shape handling depends on the
+# library's MessageToDict conventions, which can shift between release
+# lines — its correctness was verified against meshtastic 2.7.11 (the
+# version in this repo's .venv, reviewed twice in PR #42) and driven
+# against real Heltec V3 hardware running firmware 2.7.26 on 2026-08-23
+# (the issue #47 position-precision measurements). Cap below 3 so a
+# future major can't silently change the shapes under us.
+meshtastic>=2.7,<3
