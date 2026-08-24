@@ -199,6 +199,40 @@ static void S11_AC1_load_with_wrong_version_yields_defaults(void)
     ff_assert_defaults(&s);
 }
 
+static void S11_AC1_load_with_v2_blob_yields_defaults_not_a_migration(void)
+{
+    /* The specific transition this build performs, pinned rather than
+     * covered incidentally by the generic 0xFFFF case above (PR #37
+     * review, D6): v2 -> v3 added ff_settings_t's UTC-offset field, and
+     * there is deliberately NO migration — a v2 blob is discarded whole
+     * and the full defaults stand. That resets compass calibration along
+     * with everything else, which is the part a user would notice; the
+     * decision and its blast radius are recorded in
+     * docs/specs/S11-settings.md's ## Amendments. When the next bump
+     * lands, this is the test that should be updated to name it. */
+    mock_store_io_t m;
+    mock_store_reset(&m);
+    ff_store_t st = mock_store_vtable(&m);
+
+    ff_settings_t saved;
+    memset(&saved, 0, sizeof(saved));
+    saved.imperial = false;
+    saved.water_min = 45;
+    saved.cal_valid = true; /* the field whose loss actually costs a user */
+    ff_settings_save(&saved, &st);
+    TEST_ASSERT_TRUE(m.has_value);
+
+    uint16_t v2 = 2;
+    memcpy(m.data + 4, &v2, sizeof(v2));
+
+    ff_settings_t s;
+    memset(&s, 0xAA, sizeof(s));
+    ff_settings_load(&s, &st);
+
+    ff_assert_defaults(&s);
+    TEST_ASSERT_FALSE(s.cal_valid); /* discarded, not carried across */
+}
+
 /* ---------------------------------------------------------------------
  * AC2 — round-trip save/load equality, including calibration.
  * ------------------------------------------------------------------- */
@@ -456,6 +490,7 @@ int main(void)
     RUN_TEST(S11_AC1_load_with_wrong_size_blob_yields_defaults);
     RUN_TEST(S11_AC1_load_with_bad_magic_yields_defaults);
     RUN_TEST(S11_AC1_load_with_wrong_version_yields_defaults);
+    RUN_TEST(S11_AC1_load_with_v2_blob_yields_defaults_not_a_migration);
 
     RUN_TEST(S11_AC2_round_trip_save_load_is_exact_including_calibration);
     RUN_TEST(S11_AC2_round_trip_preserves_exact_defaults);

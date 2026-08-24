@@ -66,6 +66,25 @@ static bool ff_wall_offset_valid(int16_t off_min)
     return off_min >= FF_WALL_OFFSET_MIN_LO && off_min <= FF_WALL_OFFSET_MIN_HI;
 }
 
+/* The plausibility window, half-open: [FLOOR, CEILING). The single
+ * definition both entry points (ff_wall_observe and ff_wall_split_local)
+ * call, so they cannot drift into disagreeing about what counts as a
+ * time. Below the floor is an uncorrected RTC; at or above the ceiling
+ * is a corrupt or hostile clock. See ff_wall.h for why the upper bound
+ * cannot be deferred to a downstream pack check. */
+static bool ff_wall_plausible(int64_t unix_s)
+{
+    return unix_s >= FF_WALL_EPOCH_FLOOR && unix_s < FF_WALL_EPOCH_CEILING;
+}
+
+_Static_assert(FF_WALL_EPOCH_CEILING > FF_WALL_EPOCH_FLOOR,
+               "the wall-clock plausibility window is empty or inverted");
+/* The age limit and the backwards-step detection limit are complements
+ * within the uint32_t millisecond lap; neither may be set independently
+ * of the other. See FF_WALL_BACKWARD_DETECT_LIMIT_MS in ff_wall.h. */
+_Static_assert(FF_WALL_LATCH_MAX_AGE_MS < 0xFFFFFFFFu,
+               "a latch age limit at or above the uint32_t lap can never expire");
+
 /* ---------------------------------------------------------------------
  * Latch
  * ------------------------------------------------------------------- */
@@ -83,9 +102,14 @@ void ff_wall_init(ff_wall_state_t *st)
 /* Elapsed monotonic milliseconds since the latch, or false if the latch
  * is absent or has aged past the point where a uint32_t wrap could
  * masquerade as a small delta. Unsigned subtraction is wraparound-safe
- * (the idiom at targets/sim/live.c:245); a `now_ms` that went backwards
- * produces a near-2^32 delta and trips the same limit, degrading to
- * "unknown" rather than to a wrong time. */
+ * (the idiom at targets/sim/live.c:245).
+ *
+ * A `now_ms` that went backwards produces a 2^32 - step delta, which
+ * trips this same limit and degrades to "unknown" rather than to a wrong
+ * time — but only for steps below FF_WALL_BACKWARD_DETECT_LIMIT_MS; a
+ * larger one lands back inside the window and reads as a forward jump.
+ * That bound is stated exactly in ff_wall.h and pinned by a test on both
+ * sides; it is a limit, not a guarantee. */
 static bool ff_wall_elapsed_ms(ff_wall_state_t const *st, uint32_t now_ms, uint32_t *out_ms)
 {
     if (st == NULL || !st->latched) {
@@ -105,10 +129,11 @@ ff_wall_obs_t ff_wall_observe(ff_wall_state_t *st, int64_t unix_s, uint32_t rx_m
         return FF_WALL_OBS_REJECTED;
     }
 
-    /* Primary gate. Needs no pack and no festival data — which is what
-     * lets this run during the want_config handshake. A rejection never
-     * disturbs an existing good latch. */
-    if (unix_s < FF_WALL_EPOCH_FLOOR) {
+    /* The plausibility window. Needs no pack and no festival data —
+     * which is what lets this run during the want_config handshake. A
+     * rejection returns before touching `st`, so no implausible reading
+     * can disturb an existing good latch from either direction. */
+    if (!ff_wall_plausible(unix_s)) {
         return FF_WALL_OBS_REJECTED;
     }
 
@@ -209,7 +234,7 @@ bool ff_wall_split_local(int64_t unix_s, int16_t utc_offset_min, uint16_t *out_d
     if (out_day_doy == NULL || out_now_min == NULL) {
         return false;
     }
-    if (unix_s < FF_WALL_EPOCH_FLOOR || !ff_wall_offset_valid(utc_offset_min)) {
+    if (!ff_wall_plausible(unix_s) || !ff_wall_offset_valid(utc_offset_min)) {
         return false;
     }
 

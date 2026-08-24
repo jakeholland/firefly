@@ -28,11 +28,15 @@
  *     zero-dependency; festpack keeps its one-way edge.
  *   - The consequence worth stating: this module cannot itself apply the
  *     spec's *secondary* pack-event-window check, because it cannot see
- *     a pack. That is deliberate and costs nothing — the spec makes that
- *     check optional, non-bootstrap, and "only once a pack is loaded",
- *     so it belongs with the pack in b1, layered on top of
- *     ff_wall_unix_now(). The primary gate (FF_WALL_EPOCH_FLOOR) needs
- *     no pack, which is what makes bootstrap-during-handshake work.
+ *     a pack. b1 can still layer that on for display purposes —
+ *     ff_wall_unix_now() is public and returns absolute unix seconds.
+ *     What b1 CANNOT do from downstream is protect the latch, because
+ *     by the time it sees a value the latch has already been written
+ *     (PR #37 review, D1). That is why the plausibility WINDOW below has
+ *     an upper bound as well as a lower one, and why both are absolute
+ *     constants needing no pack: the gate has to live at the point of
+ *     observation, which is here, and it has to work during the
+ *     want_config handshake before any pack exists.
  *
  * ---------------------------------------------------------------------
  * The honesty rule (the whole point of this module)
@@ -90,24 +94,63 @@ extern "C" {
 #endif
 
 /**
- * FF_WALL_EPOCH_FLOOR — the primary plausibility gate: any unix
- * timestamp BEFORE this is not a time, it is an uncorrected RTC.
- * Rejected outright; the puck stays FF_WALL_UNKNOWN. The boundary
- * itself is accepted (the spec's wording is "any timestamp before it").
+ * The plausibility WINDOW — [FF_WALL_EPOCH_FLOOR, FF_WALL_EPOCH_CEILING),
+ * half-open, the same convention as ff_sched's "now" window.
  *
- * 2026-08-01T00:00:00Z. The spec says "set to the build date"; a fixed
- * constant is used rather than a __DATE__-derived one on purpose —
- * __DATE__ would make the gate move on every rebuild, break reproducible
- * builds, and make these tests' pass/fail depend on the day CI ran.
- * The property that matters is "comfortably after any plausible
- * uncorrected RTC and before any real festival timestamp", which a
- * fixed constant satisfies. Bump it at each release; it is only ever
- * allowed to move forward.
+ * A unix timestamp outside it is not a time: below the floor it is an
+ * uncorrected RTC, above the ceiling it is a corrupt or hostile clock.
+ * Either way it is rejected outright and can never disturb an existing
+ * latch; the puck stays FF_WALL_UNKNOWN rather than adopting it.
  *
- * This gate needs no pack and no festival data, which is what lets the
- * offset latch during the want_config handshake, before any pack loads.
+ * BOTH bounds are absolute and need no pack and no festival data, which
+ * is what lets the offset latch during the want_config handshake, before
+ * any pack loads. The bound above matters as much as the one below:
+ * `unix_s` reaches this module from `mc_nodeinfo_t.last_heard`, i.e.
+ * straight off the radio from an unpaired node with no handshake. Without
+ * an upper bound, one broken or hostile node could latch an arbitrary
+ * future time — and, through the re-latch path, OVERWRITE an
+ * already-correct latch and keep it wrong. A year-2100 timestamp renders
+ * as an ordinary festival evening, because ff_wall_t carries no year;
+ * that is precisely the "plausible invented clock" this slice exists to
+ * prevent. (PR #37 review, D1.)
+ *
+ * Note this cannot be delegated to a later slice's pack-window check:
+ * by the time anything downstream sees the derived value, the good latch
+ * inside ff_wall_state_t has already been destroyed. The window has to
+ * be enforced at the point of observation, which is here.
+ *
+ * FLOOR is 2026-08-01T00:00:00Z. The spec says "set to the build date";
+ * a fixed constant is used rather than a __DATE__-derived one on purpose
+ * — __DATE__ would make the gate move on every rebuild, break
+ * reproducible builds, and make these tests' pass/fail depend on the day
+ * CI ran. The property that matters is "comfortably after any plausible
+ * uncorrected RTC and before any real festival timestamp", which a fixed
+ * constant satisfies.
+ *
+ * MAINTENANCE, and it is real: an uncorrected RTC's reported time drifts
+ * forward with the calendar while these constants do not, so the floor
+ * decays into a weaker guard every year it is not bumped, silently — no
+ * test breaks, nothing warns. Both bounds move forward together at each
+ * release (the ceiling is derived from the floor, so bumping the floor
+ * carries it). That promise is recorded as a release-checklist item in
+ * firmware/README.md's "Release checklist" section rather than left in a
+ * comment nobody greps. Deliberately NOT enforced by date-dependent
+ * code: a test whose verdict depends on the day CI runs is worse than
+ * the hazard it guards.
  */
 #define FF_WALL_EPOCH_FLOOR ((int64_t)1785542400)
+
+/** The window's width, floor -> ceiling: 1461 days (4 years, one leap
+ *  day). Long enough to outlive the device's plausible service life
+ *  against a given build; short enough that a garbage far-future
+ *  timestamp has nowhere to hide. Derived rather than written out so a
+ *  floor bump cannot leave the ceiling behind. */
+#define FF_WALL_PLAUSIBLE_SPAN_S ((int64_t)126230400)
+
+/** Exclusive upper bound of the plausibility window: 2030-08-01T00:00:00Z
+ *  at the current floor. See FF_WALL_EPOCH_FLOOR above for the whole
+ *  rationale and the bump policy. */
+#define FF_WALL_EPOCH_CEILING (FF_WALL_EPOCH_FLOOR + FF_WALL_PLAUSIBLE_SPAN_S)
 
 /**
  * FF_WALL_RELATCH_DELTA_S — a fresh reading disagreeing with the latched
@@ -127,20 +170,54 @@ extern "C" {
  * FF_WALL_LATCH_MAX_AGE_MS — a latch older than this is expired:
  * ff_wall_unix_now() reports failure and the wall reads UNKNOWN again.
  *
- * 40 days. The monotonic clock is uint32_t milliseconds and wraps at
+ * 7 days. The monotonic clock is uint32_t milliseconds and wraps at
  * ~49.7 days, so beyond that a wrapped delta is indistinguishable from a
  * small one and the derived time would be silently wrong by ~49 days.
- * Expiring at 40 days keeps a decidable margin. Honest limit statement:
- * this cannot detect a wrap when NO query happens for a full 49.7-day
- * lap — with a single uint32_t monotonic source and no other input,
- * nothing can. Both are far outside a festival puck's duty cycle, and
- * any reconnect re-latches.
  *
- * This also absorbs a non-monotonic `now_ms` (a clock that went
- * backwards): the unsigned delta becomes enormous, trips this limit, and
- * the answer degrades to UNKNOWN rather than to a wrong time.
+ * The size of this window is a DIRECT TRADE against how large a
+ * backwards clock step stays detectable — the two sum to the 49.7-day
+ * lap, see FF_WALL_BACKWARD_DETECT_LIMIT_MS. 7 days is chosen well below
+ * the available 40 because a latch that has gone a week without a single
+ * plausible mesh timestamp is not something to keep trusting anyway
+ * (NodeInfo traffic is continuous; a week of silence means something is
+ * badly wrong), and spending the rest on backwards detection is the
+ * better use of it.
+ *
+ * Honest limit statement: this cannot detect a wrap when NO query
+ * happens for a full 49.7-day lap — with a single uint32_t monotonic
+ * source and no other input, nothing can. Far outside a festival puck's
+ * duty cycle, and any reconnect re-latches.
  */
-#define FF_WALL_LATCH_MAX_AGE_MS ((uint32_t)3456000000u) /* 40 days */
+#define FF_WALL_LATCH_MAX_AGE_MS ((uint32_t)604800000u) /* 7 days */
+
+/**
+ * FF_WALL_BACKWARD_DETECT_LIMIT_MS — the exact, and only, guarantee
+ * about a non-monotonic `now_ms`.
+ *
+ * ff_clock_t documents its clock as monotonically nondecreasing, so a
+ * backwards step is a platform contract violation rather than an
+ * expected event. When one happens anyway, the unsigned delta becomes
+ * 2^32 - step, which trips the age limit and degrades the answer to
+ * UNKNOWN rather than to a wrong time — but ONLY while that stays above
+ * FF_WALL_LATCH_MAX_AGE_MS. So:
+ *
+ *   detected     iff  step <  2^32 - FF_WALL_LATCH_MAX_AGE_MS  (~42.71 d)
+ *   NOT detected      step >= that — the wrapped delta lands back inside
+ *                     the accepted window and reads as a FORWARD jump.
+ *
+ * That residual blind spot is the same lap-length hole described above
+ * and cannot be closed from a single uint32_t source. It is stated as a
+ * bound rather than as a guarantee because the earlier wording claimed
+ * one size larger than the mechanism has (PR #37 review, D2), and on
+ * this module in particular an overstated guarantee is worse than a
+ * precisely stated limit. Pinned by a test asserting BOTH sides.
+ *
+ * FOR SLICE b1: do not persist ff_wall_state_t across a reboot. `now_ms`
+ * restarts at 0, so a restored latch reads as a ~29.7-day-old forward
+ * delta and sails through the age check. Re-latch from the mesh instead
+ * — it costs one NodeInfo.
+ */
+#define FF_WALL_BACKWARD_DETECT_LIMIT_MS ((uint32_t)(0xFFFFFFFFu - FF_WALL_LATCH_MAX_AGE_MS) + 1u)
 
 /** Local-time offset validity, minutes east of UTC: UTC-12:00 .. UTC+14:00
  *  (the real-world range). A value outside it is corrupt — from a bad
@@ -235,10 +312,13 @@ void ff_wall_init(ff_wall_state_t *st);
  *     because rx_time is a MeshPacket field.
  * `rx_ms` is the monotonic clock at the moment of receipt.
  *
- * Gate: `unix_s < FF_WALL_EPOCH_FLOOR` is rejected and the latch is
- * left exactly as it was. This covers `last_heard == 0` ("unknown", per
- * mc_client.h:107) for free, and is the uncorrected-pre-GPS-lock RTC
- * case. Rejection can never un-latch a good latch.
+ * Gate: `unix_s` outside [FF_WALL_EPOCH_FLOOR, FF_WALL_EPOCH_CEILING) is
+ * rejected and the latch is left exactly as it was. The lower bound
+ * covers `last_heard == 0` ("unknown", per mc_client.h:107) for free and
+ * is the uncorrected-pre-GPS-lock RTC case; the upper bound stops an
+ * untrusted node from latching — or overwriting a good latch with — an
+ * arbitrary future time. Rejection can never un-latch a good latch, in
+ * either direction.
  *
  * Re-latch, don't latch once: once latched, a reading is compared
  * against what the latch predicts for `rx_ms`, and re-latches when they
@@ -293,8 +373,11 @@ bool ff_wall_resolve_offset(ff_wall_offset_cfg_t const *cfg, int16_t *out_offset
  * metal, and would drag in a TZ database this project deliberately does
  * not carry — the offset is an explicit input instead).
  *
- * Returns false without writing anything when `unix_s` fails the epoch
- * floor or `utc_offset_min` is out of range.
+ * Returns false without writing anything when `unix_s` falls outside the
+ * plausibility window [FF_WALL_EPOCH_FLOOR, FF_WALL_EPOCH_CEILING) or
+ * `utc_offset_min` is out of range — the same window ff_wall_observe
+ * enforces, so the two entry points cannot disagree about what counts as
+ * a time.
  *
  * Note this takes a FIXED offset: there is no DST rule anywhere in this
  * project. A pack states one offset for the whole event, which is

@@ -7,10 +7,12 @@
  *           path); (day_doy, now_min) then resolves per ff_sched's
  *           festival-day mapping, including 01:00 local -> previous
  *           day_doy at now_min == 1500.
- *   AC12b — a timestamp before FF_WALL_EPOCH_FLOOR is rejected and
- *           leaves src == FF_WALL_UNKNOWN, with no pack loaded; once
- *           latched, a reading disagreeing by > 30 s re-latches and one
- *           disagreeing by less does not.
+ *   AC12b — a timestamp outside the plausibility window
+ *           [FF_WALL_EPOCH_FLOOR, FF_WALL_EPOCH_CEILING) is rejected and
+ *           leaves src == FF_WALL_UNKNOWN, with no pack loaded, and
+ *           cannot overwrite a good latch; once latched, a reading
+ *           disagreeing by > 30 s re-latches and one disagreeing by less
+ *           does not.
  *   AC12c — offset resolution order: an assumed pack offset does not
  *           outrank a set settings offset, a stated one does, and with
  *           neither set the answer is UNKNOWN rather than a guess.
@@ -27,6 +29,13 @@
  * Reference timestamps below are Lost Lands 2026 (Sep 18-20, EDT =
  * UTC-240), cross-checked against Python's datetime before being frozen
  * here. Sep 18 2026 is day-of-year 261, Sep 19 is 262.
+ *
+ * The civil-date arithmetic additionally has a differential test against
+ * Python's datetime over a large random sweep —
+ * firmware/tools/dev/wall_crosscheck.py. It is not a ctest because it
+ * needs a compiler and an interpreter at once; run it after touching the
+ * date math. Hand-written expectations in this file share their author's
+ * misconceptions with the code; that harness does not.
  */
 #include <stdio.h>
 #include <string.h>
@@ -345,6 +354,79 @@ static void S16_AC12b_timestamp_before_epoch_floor_is_rejected(void)
     TEST_ASSERT_EQUAL_INT(FF_WALL_MESH, ff_wall_now(&st, 1000u, &cfg).src);
 }
 
+static void S16_AC12b_timestamp_at_or_after_epoch_ceiling_is_rejected(void)
+{
+    /* The top half of the window, mirroring the floor test above. Also
+     * with no pack loaded: both bounds must hold during the want_config
+     * handshake. */
+    ff_wall_state_t st;
+    ff_wall_init(&st);
+
+    ff_wall_offset_cfg_t cfg = cfg_none();
+    cfg.settings_offset_set = true;
+    cfg.settings_offset_min = EDT;
+
+    /* Year 2100, the 2038-rollover neighbourhood, and INT32_MAX seconds —
+     * all of which a corrupt or hostile node can put in `last_heard`. */
+    int64_t const impossible[] = {4102444800LL /* 2100-01-01 */, 2147483647LL, FF_WALL_EPOCH_CEILING};
+
+    for (size_t i = 0; i < sizeof(impossible) / sizeof(impossible[0]); i++) {
+        TEST_ASSERT_EQUAL_INT(FF_WALL_OBS_REJECTED, ff_wall_observe(&st, impossible[i], 1000u));
+        TEST_ASSERT_EQUAL_INT(FF_WALL_UNKNOWN, ff_wall_now(&st, 1000u, &cfg).src);
+    }
+
+    /* Half-open, so the last second below the ceiling is still a time. */
+    TEST_ASSERT_EQUAL_INT(FF_WALL_OBS_LATCHED, ff_wall_observe(&st, FF_WALL_EPOCH_CEILING - 1, 1000u));
+    TEST_ASSERT_EQUAL_INT(FF_WALL_MESH, ff_wall_now(&st, 1000u, &cfg).src);
+}
+
+static void S16_AC12b_far_future_reading_cannot_overwrite_a_good_latch(void)
+{
+    /* The attack the ceiling exists for (PR #37 review, D1). `unix_s`
+     * arrives as mc_nodeinfo_t.last_heard — straight off the radio, from
+     * an unpaired node, with no handshake. Without an upper bound, the
+     * re-latch path would accept a year-2100 reading, DESTROY a correct
+     * latch, and keep asserting FF_WALL_MESH over it. And since
+     * ff_wall_t carries no year, it would render as an ordinary festival
+     * evening rather than as anything visibly wrong. */
+    ff_wall_state_t st;
+    ff_wall_init(&st);
+    ff_wall_offset_cfg_t cfg = cfg_pack_stated(EDT);
+
+    TEST_ASSERT_EQUAL_INT(FF_WALL_OBS_LATCHED, ff_wall_observe(&st, T_SEP19_1430_EDT, 1000u));
+
+    int64_t const hostile[] = {4102444800LL /* 2100 */, FF_WALL_EPOCH_CEILING, 0, 1451606400LL};
+
+    for (size_t i = 0; i < sizeof(hostile) / sizeof(hostile[0]); i++) {
+        TEST_ASSERT_EQUAL_INT(FF_WALL_OBS_REJECTED, ff_wall_observe(&st, hostile[i], 2000u));
+
+        /* The good latch is byte-for-byte intact and still answers. */
+        ff_wall_t w = ff_wall_now(&st, 2000u, &cfg);
+        TEST_ASSERT_EQUAL_INT(FF_WALL_MESH, w.src);
+        TEST_ASSERT_EQUAL_UINT16(262, w.day_doy);
+        TEST_ASSERT_EQUAL_INT16(870, w.now_min); /* still 14:30 — 1 s of monotonic elapsed */
+    }
+}
+
+static void S16_AC12b_split_local_enforces_the_same_window(void)
+{
+    /* ff_wall_split_local documents the window as part of its public
+     * contract, and D1 makes that check load-bearing rather than merely
+     * belt-and-braces: the two entry points must not be able to disagree
+     * about what counts as a time. (PR #37 review, D4.) */
+    uint16_t doy = 0;
+    int16_t now_min = 0;
+
+    TEST_ASSERT_FALSE(ff_wall_split_local(FF_WALL_EPOCH_FLOOR - 1, EDT, &doy, &now_min));
+    TEST_ASSERT_FALSE(ff_wall_split_local(0, EDT, &doy, &now_min));
+    TEST_ASSERT_FALSE(ff_wall_split_local(FF_WALL_EPOCH_CEILING, EDT, &doy, &now_min));
+    TEST_ASSERT_FALSE(ff_wall_split_local(4102444800LL, EDT, &doy, &now_min));
+
+    /* Both inclusive/exclusive boundaries, matching ff_wall_observe. */
+    TEST_ASSERT_TRUE(ff_wall_split_local(FF_WALL_EPOCH_FLOOR, EDT, &doy, &now_min));
+    TEST_ASSERT_TRUE(ff_wall_split_local(FF_WALL_EPOCH_CEILING - 1, EDT, &doy, &now_min));
+}
+
 static void S16_AC12b_rejection_never_disturbs_a_good_latch(void)
 {
     ff_wall_state_t st;
@@ -461,6 +543,50 @@ static void S16_AC12b_expired_latch_reads_unknown_not_a_wrapped_time(void)
     /* And a fresh plausible reading re-latches out of that state. */
     TEST_ASSERT_EQUAL_INT(FF_WALL_OBS_RELATCHED, ff_wall_observe(&st, T_SEP19_1430_EDT, 500000u));
     TEST_ASSERT_EQUAL_INT(FF_WALL_MESH, ff_wall_now(&st, 500000u, &cfg).src);
+}
+
+static void S16_AC12b_backwards_clock_detection_bound_is_exactly_as_documented(void)
+{
+    /* ff_clock_t promises a monotonically nondecreasing clock, so a
+     * backwards step is a platform contract violation. When one happens
+     * anyway, detection holds only below FF_WALL_BACKWARD_DETECT_LIMIT_MS
+     * (= 2^32 - FF_WALL_LATCH_MAX_AGE_MS). This test pins BOTH sides,
+     * including the negative — an earlier revision of the header claimed
+     * a blanket guarantee, and on this module an overstated guarantee is
+     * worse than a precisely stated limit (PR #37 review, D2). If the
+     * age limit is ever retuned, the failing side of this test is the
+     * thing that forces the header's number to be retuned with it. */
+    ff_wall_offset_cfg_t cfg = cfg_pack_stated(EDT);
+    /* Latch at the top of the lap so both cases below are a plain
+     * smaller-than-the-latch clock reading, not themselves a wrap. */
+    uint32_t const latch_ms = 0xFFFFFFFFu;
+
+    /* Just inside the bound: detected, and the answer degrades to
+     * UNKNOWN rather than to a wrong time. */
+    {
+        ff_wall_state_t st;
+        ff_wall_init(&st);
+        ff_wall_observe(&st, T_SEP19_1430_EDT, latch_ms);
+        uint32_t back = latch_ms - (FF_WALL_BACKWARD_DETECT_LIMIT_MS - 1u);
+        TEST_ASSERT_EQUAL_INT(FF_WALL_UNKNOWN, ff_wall_now(&st, back, &cfg).src);
+    }
+
+    /* At the bound and beyond: NOT detected. The wrapped delta lands back
+     * inside the accepted window and reads as a forward jump. This is the
+     * documented residual blind spot — asserted, not glossed over. */
+    {
+        ff_wall_state_t st;
+        ff_wall_init(&st);
+        ff_wall_observe(&st, T_SEP19_1430_EDT, latch_ms);
+        uint32_t back = latch_ms - FF_WALL_BACKWARD_DETECT_LIMIT_MS;
+        TEST_ASSERT_EQUAL_INT(FF_WALL_MESH, ff_wall_now(&st, back, &cfg).src);
+    }
+
+    /* The complement identity the two constants must satisfy: an age
+     * limit and a backwards-detection limit that together span exactly
+     * one uint32_t lap. Neither can be retuned without the other. */
+    TEST_ASSERT_EQUAL_UINT64((uint64_t)0x100000000ULL,
+                             (uint64_t)FF_WALL_LATCH_MAX_AGE_MS + (uint64_t)FF_WALL_BACKWARD_DETECT_LIMIT_MS);
 }
 
 /* ---------------------------------------------------------------------
@@ -728,11 +854,15 @@ int main(void)
     RUN_TEST(S16_AC12_null_inputs_read_as_unknown);
 
     RUN_TEST(S16_AC12b_timestamp_before_epoch_floor_is_rejected);
+    RUN_TEST(S16_AC12b_timestamp_at_or_after_epoch_ceiling_is_rejected);
+    RUN_TEST(S16_AC12b_far_future_reading_cannot_overwrite_a_good_latch);
+    RUN_TEST(S16_AC12b_split_local_enforces_the_same_window);
     RUN_TEST(S16_AC12b_rejection_never_disturbs_a_good_latch);
     RUN_TEST(S16_AC12b_disagreement_over_30s_relatches);
     RUN_TEST(S16_AC12b_disagreement_within_30s_does_not_relatch);
     RUN_TEST(S16_AC12b_pre_gps_lock_offset_is_corrected_by_relatch);
     RUN_TEST(S16_AC12b_expired_latch_reads_unknown_not_a_wrapped_time);
+    RUN_TEST(S16_AC12b_backwards_clock_detection_bound_is_exactly_as_documented);
 
     RUN_TEST(S16_AC12c_assumed_pack_offset_does_not_outrank_set_settings);
     RUN_TEST(S16_AC12c_stated_pack_offset_outranks_settings);
