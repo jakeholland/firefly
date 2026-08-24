@@ -128,6 +128,29 @@ criteria-numbered per spec (`SNN_ACX_description`), per `AGENTS.md`.
   technique as `meshclient/tests/test_meshclient.c`).
 - `test_png_diff` (S14 slice b) — `tools/png_diff.h`'s pixel-diff core,
   including the exact 0.4%/0.5%/0.6% threshold boundary.
+- `test_wall` (S16 slice b0) — `core/ff_wall.h`'s wall-clock derivation:
+  the `FF_WALL_UNKNOWN` honesty discipline, the plausibility window's
+  four boundaries, offset-latch/re-latch, UTC-offset resolution order,
+  and the `unix -> local -> (day_doy, now_min)` festival-day mapping. The
+  date math additionally has an out-of-band cross-check against Python's
+  `datetime` — `tools/dev/wall_crosscheck.py`, not a ctest (it needs a
+  compiler and Python at once); run it after touching the civil-date
+  code.
+
+## Release checklist
+
+Things that must be done at a release and cannot be enforced by a test,
+because enforcing them in code would make a build's behaviour depend on
+the day it was built.
+
+- **Bump `FF_WALL_EPOCH_FLOOR`** (`core/include/ff_wall.h`) to the
+  release date. It is the wall clock's lower plausibility bound, and it
+  is a *decaying* guard: an uncorrected RTC's reported time drifts
+  forward with the calendar while a hardcoded constant does not, so every
+  year it is not bumped it catches less — silently, with no test failure
+  and no warning. `FF_WALL_EPOCH_CEILING` is derived from it and moves
+  along automatically. Forward only; never move either bound backwards.
+  (Recorded here per PR #37 review, D3.)
 
 ## e2e tests (S14 slice d)
 

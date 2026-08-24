@@ -357,6 +357,24 @@ typedef struct {
  * scr_nav.c) and — until real screens exist — which section of state the
  * S13 debug placeholder face highlights (see targets/sim/fixture_view.c). */
 typedef enum {
+    /* S16 slice a [api] — "no face". The zero value, per this header's
+     * "the enum's first member is deliberately the least-claiming
+     * state" convention (see now_state_t's comment above, and
+     * radar.mode's RADAR_NOSEL default).
+     *
+     * Its one real use is `ff_route_t.modal` (app/include/ff_route.h),
+     * where `modal == FF_APP_FACE_NONE` IS the entire "no modal is up"
+     * predicate — there is deliberately no separate has_modal flag.
+     *
+     * NOT a renderable `ff_app_state_t.active_face`: a projection names
+     * a real face (the sole exception is a failed fixture load, which
+     * zeroes the whole struct — see that field's own comment). Note
+     * that adding this member renumbered the
+     * enum, so `memset(0)` on an ff_app_state_t now leaves active_face
+     * as NONE where it previously landed on RADAR — every producer that
+     * relied on that coincidence sets RADAR explicitly now (see
+     * targets/sim/fixture.c and targets/sim/main.c). */
+    FF_APP_FACE_NONE = 0,
     FF_APP_FACE_RADAR,
     FF_APP_FACE_NOW,
     FF_APP_FACE_SIGNALS,
@@ -365,6 +383,19 @@ typedef enum {
      * own (scr_nav.c's tileview only ever has 3 tiles: Radar/Now/
      * Signals); rendered as its own full screen, see scr_compose.h. */
     FF_APP_FACE_COMPOSE,
+    /* S16 slice a [api] — ROUTING ONLY. This is `ff_route_visible()`'s
+     * answer for "a takeover is up, so the next intent goes to the
+     * takeover, not to whatever is underneath it" — an input-dispatch
+     * answer, not a render instruction.
+     *
+     * `ff_app_state_t.active_face` is NEVER FF_APP_FACE_FLARE, in any
+     * projection, including while a takeover is active (S16 AC13): the
+     * takeover stays `ff_flare_t.takeover_active`'s single fact, and
+     * targets/sim/face_dispatch.c keeps dispatching on that field
+     * directly. Writing FLARE in here as well would put one fact in two
+     * places and re-create, one layer down, exactly the desync that
+     * keeps `takeover` out of ff_route_t. */
+    FF_APP_FACE_FLARE,
 } ff_app_face_t;
 
 typedef struct {
@@ -374,6 +405,18 @@ typedef struct {
      * screen ignores this field entirely. */
     char fixture_name[FF_APP_FIXTURE_NAME_LEN];
 
+    /* In any RENDERABLE state: a real face — RADAR/NOW/SIGNALS/
+     * SETTINGS/COMPOSE — and never FF_APP_FACE_FLARE (S16 AC13, see
+     * that member's comment).
+     *
+     * The one exception, stated because the invariant is otherwise
+     * false rather than because it is a good idea (PR #36 review, D2):
+     * a FAILED ff_fixture_load_json leaves *out fully zeroed by its own
+     * documented contract, so active_face reads NONE. That is a state
+     * no caller may render — every call site today bails on a non-OK
+     * return before building anything, and one that logs-and-continues
+     * instead would get the S13 debug placeholder. Check the result
+     * code; do not check this field for NONE. */
     ff_app_face_t active_face;
 
     ff_radar_view_t   radar;

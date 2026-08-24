@@ -20,6 +20,36 @@ target_include_directories(ff-app INTERFACE include)
 # this header to propagate.
 target_link_libraries(ff-app INTERFACE ff-core)
 
+# S16a (app/ff_route.c — face routing; docs/specs/S16-app-shell.md slice a)
+# ---------------------------------------------------------------------------
+# A STATIC library rather than a header-only addition to ff-app: ff_route.c
+# is real (if small) state-machine logic that needs compiling. It lives in
+# app/ and NOT core/ deliberately — core has zero knowledge that screens
+# exist, and a face enum there would make core's contents change whenever a
+# face is added (see ff_route.h's header comment, and S16 §"App: routing").
+#
+# Zero LVGL dependency, same "pure C11, unit-testable without a display"
+# shape as ff-layout/ff-radar-layout/ff-now-layout/ff-flare-fmt above. It
+# links ff-app only for ff_app_state.h's ff_app_face_t, which routing
+# extends rather than mirroring in a second enum.
+# ---------------------------------------------------------------------------
+add_library(ff-route STATIC
+    ff_route.c
+)
+target_link_libraries(ff-route PUBLIC ff-app) # ff_app_state.h (-> ff-core's ff_radar.h)
+target_compile_features(ff-route PUBLIC c_std_11)
+ff_apply_warnings(ff-route)
+
+if(FF_BUILD_TESTS)
+    add_executable(test_route
+        tests/test_route.c
+    )
+    target_link_libraries(test_route PRIVATE ff-route unity)
+    ff_apply_warnings(test_route)
+
+    add_test(NAME test_route COMMAND test_route)
+endif()
+
 # S06b (app/theme, app/screens — shell/nav + radar-face rendering;
 # docs/specs/S06-radar-face.md slices b/c/d)
 # ---------------------------------------------------------------------------
