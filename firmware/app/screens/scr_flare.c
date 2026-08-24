@@ -60,7 +60,18 @@ static lv_point_precise_t s_flare_mark_ray_pts[FLARE_MARK_N_RAYS][2];
  * "GO must disclose what it costs"), whether or not it's actually shown
  * for a given fixture — keeping GO/DISMISS at a FIXED position regardless
  * of `flare->locked` means the two-button gap (finding #2) never has to
- * be re-verified per-fixture. */
+ * be re-verified per-fixture.
+ *
+ * Deliberately UNCHANGED by issue #27, which grew this chip's type from
+ * FF_THEME_FONT_CHIP (14px, line height 16) to FF_THEME_FONT_HEADLINE
+ * (20px, line height 22). The chip is LV_SIZE_CONTENT-tall with 6px of
+ * vertical padding, so it went from 28px to 34px — and because it is
+ * CENTER-aligned at this dy, those 6px split evenly, 3px onto each edge,
+ * rather than eating one neighbour's clearance. That leaves ~14px to the
+ * bearing line's ink above (the 36px line BOX bottom is closer, but its
+ * glyphs are not — caps are ~26px in a 40px box) and 15px to GO's top
+ * edge below, both verified against an actual headless render rather
+ * than this arithmetic alone. */
 #define FLARE_TAKEOVER_LOCK_LINE_DY 10.0f
 #define FLARE_TAKEOVER_GO_DY       70.0f
 #define FLARE_TAKEOVER_DISMISS_DY  140.0f
@@ -98,7 +109,12 @@ static lv_point_precise_t s_flare_mark_ray_pts[FLARE_MARK_N_RAYS][2];
  * already documents for this codebase).
  * ------------------------------------------------------------------- */
 
-static lv_obj_t *flare_make_chip(lv_obj_t *parent, char const *text, uint32_t bg_hex, uint32_t fg_hex, int32_t dy)
+/* `font` is a parameter rather than a hardcoded FF_THEME_FONT_CHIP
+ * (issue #27): the lock-disclosure chip is the one chip on this screen
+ * carrying a decision's cost rather than a status readout, and it earns a
+ * bigger step of the type scale than the countdown/lock chips do. */
+static lv_obj_t *flare_make_chip(lv_obj_t *parent, char const *text, uint32_t bg_hex, uint32_t fg_hex,
+                                  lv_font_t const *font, int32_t dy)
 {
     lv_obj_t *chip = lv_obj_create(parent);
     lv_obj_remove_style_all(chip);
@@ -117,7 +133,7 @@ static lv_obj_t *flare_make_chip(lv_obj_t *parent, char const *text, uint32_t bg
 
     lv_obj_t *label = lv_label_create(chip);
     lv_label_set_text(label, text);
-    lv_obj_set_style_text_font(label, FF_THEME_FONT_CHIP, 0);
+    lv_obj_set_style_text_font(label, font, 0);
     lv_obj_set_style_text_color(label, lv_color_hex(fg_hex), 0);
     lv_obj_center(label);
 
@@ -345,12 +361,41 @@ void ff_scr_flare_build_takeover(ff_app_flare_t const *flare, ff_flare_t *rt)
      * one screen) in a FIXED slot so GO/DISMISS never move based on
      * whether it's shown (keeps the button-gap math in one place). Only
      * shown when the lock would actually change (same sender re-flaring
-     * while already locked on them costs nothing to confirm again). */
+     * while already locked on them costs nothing to confirm again).
+     *
+     * ISSUE #27 — the same disclosure, re-worded for a glance instead of
+     * a read. It used to be a 36-character, two-clause sentence
+     * ("LOCKED ON DANA - GO SWITCHES TO KEV") set in 14px chip type; it
+     * is now "GO: DANA > KEV" in 20px, built by ff_flare_fmt_lock_trade()
+     * (see that function's doc comment for the three facts Amendment
+     * Ruling 2 requires and where each one lives in the short form —
+     * nothing disclosed was dropped to buy the brevity).
+     *
+     * FF_THEME_FONT_HEADLINE (20px), not FF_THEME_FONT_NAME (22px): the
+     * GO button's own label is 22px, and this chip is already an amber
+     * pill with dark text sitting 15px above an amber pill with dark
+     * text. Matching GO's type as well would have made an INERT
+     * indicator (the chip is not clickable) look like a second button —
+     * a mis-tap invitation, docs/review/ux-raver.md checklist item 2. One
+     * step down the scale, plus a 34px height against GO's 56px, keeps
+     * the two visually ranked.
+     *
+     * LV_SYMBOL_RIGHT as the arrow, per issue #27's constraint 1
+     * ("verify the arrow renders before designing around it"): U+2192 is
+     * NOT in the compiled Montserrat subset (its text range is
+     * 0x20-0x7F, 0xB0, 0x2022 — the same gap that turned U+00B7 MIDDLE
+     * DOT into a hyphen everywhere else in this file), but LVGL's
+     * built-in FontAwesome symbol range IS compiled into those same
+     * fonts, and 61524 == 0xF054 == LV_SYMBOL_RIGHT appears in the range
+     * list of every montserrat size this repo enables (see the
+     * `--font FontAwesome5-Solid+Brands+Regular.woff -r ...` line at the
+     * top of lvgl's lv_font_montserrat_20.c). Confirmed rendering as a
+     * chevron, not tofu, in the regenerated golden. */
     if (flare->locked && ff_flare_fmt_go_switches_lock(flare->locked_from_name, flare->takeover_from_name)) {
-        char lock_line[64];
-        snprintf(lock_line, sizeof(lock_line), "LOCKED ON %s - GO SWITCHES TO %s", flare->locked_from_name,
-                  flare->takeover_from_name);
-        flare_make_chip(puck, lock_line, FF_THEME_COLOR_AMBER, FF_THEME_COLOR_BG,
+        char lock_line[40];
+        ff_flare_fmt_lock_trade(lock_line, sizeof(lock_line), flare->locked_from_name, flare->takeover_from_name,
+                                 LV_SYMBOL_RIGHT);
+        flare_make_chip(puck, lock_line, FF_THEME_COLOR_AMBER, FF_THEME_COLOR_BG, FF_THEME_FONT_HEADLINE,
                          (int32_t)FLARE_TAKEOVER_LOCK_LINE_DY);
     }
 
@@ -412,7 +457,7 @@ void ff_scr_flare_build_sender_overlay(lv_obj_t *parent, ff_app_flare_t const *f
     ff_flare_fmt_countdown(countdown, sizeof(countdown), flare->send_expires_in_ms);
     char countdown_line[32];
     snprintf(countdown_line, sizeof(countdown_line), "ends in %s", countdown);
-    flare_make_chip(parent, countdown_line, FF_THEME_COLOR_SURFACE, FF_THEME_COLOR_MUTED,
+    flare_make_chip(parent, countdown_line, FF_THEME_COLOR_SURFACE, FF_THEME_COLOR_MUTED, FF_THEME_FONT_CHIP,
                      (int32_t)FLARE_SENDER_COUNTDOWN_DY);
 
     /* CANCEL button, on the puck edge below the status line — >=
@@ -432,7 +477,8 @@ void ff_scr_flare_build_lock_chip(lv_obj_t *parent, ff_app_flare_t const *flare)
     char const *name = (flare->locked_from_name[0] != '\0') ? flare->locked_from_name : "?";
     snprintf(text, sizeof(text), "LOCKED - %s", name); /* plain hyphen, not U+00B7 — see build_takeover's note */
 
-    flare_make_chip(parent, text, FF_THEME_COLOR_AMBER, FF_THEME_COLOR_BG, (int32_t)FLARE_LOCK_CHIP_DY);
+    flare_make_chip(parent, text, FF_THEME_COLOR_AMBER, FF_THEME_COLOR_BG, FF_THEME_FONT_CHIP,
+                     (int32_t)FLARE_LOCK_CHIP_DY);
 }
 
 bool ff_scr_flare_selection_locked(ff_flare_t const *rt)

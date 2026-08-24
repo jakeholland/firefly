@@ -45,4 +45,11 @@
 /* S06 (app/screens/scr_nav.c): three-face swipe shell. */
 #define LV_USE_TILEVIEW 1
 
+/* S06 (app/screens/scr_radar.c): the crew-colored wedge ring on a cluster
+ * marker (issue #18). LVGL's own default for this is already 1, but it is
+ * declared explicitly here because a rendering feature the radar face
+ * cannot draw without should fail at configure time in a stripped-down
+ * build, not silently render markers with no ring at all. */
+#define LV_USE_ARC 1
+
 #endif /* LV_CONF_H */

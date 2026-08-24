@@ -74,3 +74,37 @@ bool ff_flare_fmt_go_switches_lock(char const *locked_from_name, char const *tak
      * arrays, always NUL-terminated by the fixture loader / caller). */
     return strcmp(locked_from_name, takeover_from_name) != 0;
 }
+
+/* One name, truncated to FF_FLARE_FMT_TRADE_NAME_MAX printable characters
+ * (see that macro's doc comment for why truncation is the right failure
+ * mode on a round display), or "?" when there is no honest name to show.
+ * `dst` must have room for FF_FLARE_FMT_TRADE_NAME_MAX + 1 bytes. */
+static void flare_fmt_trade_name(char *dst, size_t dst_sz, char const *name)
+{
+    if (name == NULL || name[0] == '\0') {
+        snprintf(dst, dst_sz, "?");
+        return;
+    }
+    snprintf(dst, dst_sz, "%.*s", FF_FLARE_FMT_TRADE_NAME_MAX, name);
+}
+
+void ff_flare_fmt_lock_trade(char *out, size_t out_sz, char const *locked_from_name,
+                              char const *takeover_from_name, char const *arrow)
+{
+    if (out == NULL || out_sz == 0) {
+        return;
+    }
+
+    char from[FF_FLARE_FMT_TRADE_NAME_MAX + 1];
+    char to[FF_FLARE_FMT_TRADE_NAME_MAX + 1];
+    flare_fmt_trade_name(from, sizeof(from), locked_from_name);
+    flare_fmt_trade_name(to, sizeof(to), takeover_from_name);
+
+    /* ASCII ">" fallback: every font this repo compiles covers it, so a
+     * caller that has no glyph to offer still gets a directional
+     * separator rather than a bare space (which would read as two
+     * unrelated names). */
+    char const *sep = (arrow != NULL && arrow[0] != '\0') ? arrow : ">";
+
+    snprintf(out, out_sz, "GO: %s %s %s", from, sep, to);
+}

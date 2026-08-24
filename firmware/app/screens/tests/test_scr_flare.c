@@ -44,6 +44,8 @@
 #include "unity.h"
 
 #include "ff_flare.h"
+#include "ff_layout.h"
+#include "ff_theme.h"
 #include "ff_radar.h"
 #include "scr_flare.h"
 #include "scr_radar.h"
@@ -297,6 +299,84 @@ static void S10_ACn_go_click_with_null_rt_is_safe_noop(void)
      * safe"). */
 }
 
+/* ---------------------------------------------------------------------
+ * Issue #27 — the lock-disclosure chip stays on the ROUND GLASS.
+ *
+ * The chip grew from 14px to 20px type as part of shortening it from a
+ * sentence to a glance, and the puck is a CIRCLE: a chip that merely fits
+ * the 440px bounding box can still hang off the visible display, which is
+ * exactly how PR #25 shipped a back button 42px outside the round area.
+ * The existing sweep (targets/sim/tests/test_face_hit_targets.c) can't
+ * catch it — that one only examines CLICKABLE objects, and this chip is
+ * deliberately an inert indicator.
+ *
+ * Uses the worst case the formatter can produce: two names at the full
+ * FF_APP_NAME_LEN budget. If FF_FLARE_FMT_TRADE_NAME_MAX is ever raised
+ * (or the truncation removed) past what the glass can hold at this type
+ * size, this fails instead of shipping a name rendered past the bezel.
+ * ------------------------------------------------------------------- */
+
+static lv_obj_t *find_label_with_prefix(lv_obj_t *root, char const *prefix)
+{
+    uint32_t n = lv_obj_get_child_count(root);
+    for (uint32_t i = 0; i < n; i++) {
+        lv_obj_t *child = lv_obj_get_child(root, i);
+        if (lv_obj_check_type(child, &lv_label_class)) {
+            char const *txt = lv_label_get_text(child);
+            if (txt != NULL && strncmp(txt, prefix, strlen(prefix)) == 0) {
+                return child;
+            }
+        }
+        lv_obj_t *found = find_label_with_prefix(child, prefix);
+        if (found != NULL) {
+            return found;
+        }
+    }
+    return NULL;
+}
+
+static void S10_ACn_lock_disclosure_chip_stays_inside_the_round_glass(void)
+{
+    ff_app_flare_t disp;
+    memset(&disp, 0, sizeof(disp));
+    disp.takeover_active = true;
+    strncpy(disp.takeover_from_name, "MAXIMILIANOOOO", sizeof(disp.takeover_from_name) - 1);
+    disp.locked = true;
+    strncpy(disp.locked_from_name, "BARTHOLOMEWWWW", sizeof(disp.locked_from_name) - 1);
+
+    ff_scr_flare_build_takeover(&disp, NULL);
+
+    /* Force layout without rendering a frame — this file has no draw
+     * buffers (see setUp), and lv_obj_update_layout only runs the
+     * size/position pass, never the draw pass. */
+    lv_obj_update_layout(lv_screen_active());
+
+    lv_obj_t *label = find_label_with_prefix(lv_screen_active(), "GO: ");
+    TEST_ASSERT_NOT_NULL_MESSAGE(label, "the lock-disclosure chip must be built when GO would switch the lock");
+
+    /* The chip is the label's parent — assert on the PILL, not the text:
+     * the pill's padding is what actually reaches furthest toward the
+     * bezel. */
+    lv_obj_t *chip = lv_obj_get_parent(label);
+    TEST_ASSERT_NOT_NULL(chip);
+
+    lv_area_t area;
+    lv_obj_get_coords(chip, &area);
+
+    /* lv_area_t's x2/y2 are INCLUSIVE last-pixel coordinates; ff_layout's
+     * are exclusive far edges — hence the +1 (same conversion
+     * test_face_hit_targets.c documents). Circle center is the puck's
+     * center within the window, radius the puck's own radius. */
+    float margin = (float)((FF_THEME_WINDOW_PX - FF_THEME_PUCK_PX) / 2);
+    float cx = margin + (float)FF_THEME_PUCK_RADIUS_PX;
+    float cy = margin + (float)FF_THEME_PUCK_RADIUS_PX;
+
+    ff_layout_rect_t r = {(float)area.x1, (float)area.y1, (float)area.x2 + 1.0f, (float)area.y2 + 1.0f};
+    TEST_ASSERT_TRUE_MESSAGE(ff_layout_rect_in_circle(r, cx, cy, (float)FF_THEME_PUCK_RADIUS_PX),
+                              "the lock-disclosure chip must lie entirely within the round glass, "
+                              "even with two maximum-length crew names");
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -307,6 +387,7 @@ int main(void)
     RUN_TEST(S10_ACn_cancel_click_ends_send_exactly_once);
     RUN_TEST(S10_ACn_flare_button_click_begins_send);
     RUN_TEST(S10_ACn_go_click_with_null_rt_is_safe_noop);
+    RUN_TEST(S10_ACn_lock_disclosure_chip_stays_inside_the_round_glass);
 
     return UNITY_END();
 }

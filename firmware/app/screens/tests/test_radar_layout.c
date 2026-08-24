@@ -277,6 +277,229 @@ static void test_widely_spaced_dots_stay_distinct_not_clustered(void)
 }
 
 /* ---------------------------------------------------------------------
+ * Cluster marker wedge ring (issue #18 — "the cluster marker reads as a
+ * badge, not as friends"). radar_layout_cluster_wedges is the pure half
+ * of that fix: scr_radar.c only paints the angles it returns, so these
+ * assertions are on the actual geometry that reaches the glass.
+ *
+ * The invariant that matters most here is the same one the clustering
+ * ruling itself protects — EVERY member is represented. A wedge ring
+ * that silently dropped a member would be the same lie by omission as
+ * hiding the dot, just one layer further in.
+ * ------------------------------------------------------------------- */
+
+/* Angular width of a wedge, handling the one that crosses the 0/360
+ * seam (end_deg < start_deg — see radar_layout_wedge_t's doc comment). */
+static float wedge_span(radar_layout_wedge_t const *w)
+{
+    float span = w->end_deg - w->start_deg;
+    if (span < 0.0f) {
+        span += 360.0f;
+    }
+    return span;
+}
+
+static void test_cluster_wedges_one_per_member_in_index_order(void)
+{
+    /* A hand-built resolved[] — this function's contract is over the
+     * cluster_id/cluster_size fields alone, so it doesn't need a real
+     * resolve pass to exercise. Four dots, all one cluster rooted at 0. */
+    radar_layout_dot_result_t resolved[4];
+    for (int i = 0; i < 4; i++) {
+        resolved[i].dx = 0.0f;
+        resolved[i].dy = 0.0f;
+        resolved[i].cluster_id = 0;
+        resolved[i].cluster_size = 4;
+    }
+
+    radar_layout_wedge_t wedges[FF_CREW_MAX];
+    int n = radar_layout_cluster_wedges(resolved, 4, 0, wedges, FF_CREW_MAX);
+
+    TEST_ASSERT_EQUAL_INT_MESSAGE(4, n, "every clustered member must get a wedge — none dropped");
+    for (int k = 0; k < n; k++) {
+        TEST_ASSERT_EQUAL_INT_MESSAGE(k, wedges[k].index,
+                                        "wedges must be emitted in ascending original-dot-index order");
+    }
+}
+
+static void test_cluster_wedges_only_include_that_cluster(void)
+{
+    /* Two separate clusters in one resolved[]: {0,2} and {1,3}. Asking
+     * for one must never leak a member of the other into its ring —
+     * that would paint a crew color onto a marker standing somewhere
+     * else entirely. */
+    radar_layout_dot_result_t resolved[4];
+    int ids[4] = {0, 1, 0, 1};
+    for (int i = 0; i < 4; i++) {
+        resolved[i].dx = 0.0f;
+        resolved[i].dy = 0.0f;
+        resolved[i].cluster_id = ids[i];
+        resolved[i].cluster_size = 2;
+    }
+
+    radar_layout_wedge_t wedges[FF_CREW_MAX];
+
+    int n0 = radar_layout_cluster_wedges(resolved, 4, 0, wedges, FF_CREW_MAX);
+    TEST_ASSERT_EQUAL_INT(2, n0);
+    TEST_ASSERT_EQUAL_INT(0, wedges[0].index);
+    TEST_ASSERT_EQUAL_INT(2, wedges[1].index);
+
+    int n1 = radar_layout_cluster_wedges(resolved, 4, 1, wedges, FF_CREW_MAX);
+    TEST_ASSERT_EQUAL_INT(2, n1);
+    TEST_ASSERT_EQUAL_INT(1, wedges[0].index);
+    TEST_ASSERT_EQUAL_INT(3, wedges[1].index);
+}
+
+static void test_cluster_wedges_are_equal_gapped_and_cover_the_ring(void)
+{
+    /* Each wedge is an equal slice minus one full gap's worth of dark
+     * fill, and the wedges plus their gaps account for the whole 360 —
+     * i.e. no member silently gets a bigger or a zero-width share. Swept
+     * across every cluster size a real crew can produce (FF_CREW_MAX
+     * is 8). */
+    for (int size = 2; size <= FF_CREW_MAX; size++) {
+        radar_layout_dot_result_t resolved[FF_CREW_MAX];
+        for (int i = 0; i < size; i++) {
+            resolved[i].dx = 0.0f;
+            resolved[i].dy = 0.0f;
+            resolved[i].cluster_id = 0;
+            resolved[i].cluster_size = size;
+        }
+
+        radar_layout_wedge_t wedges[FF_CREW_MAX];
+        int n = radar_layout_cluster_wedges(resolved, size, 0, wedges, FF_CREW_MAX);
+        TEST_ASSERT_EQUAL_INT(size, n);
+
+        float expected_span = (360.0f / (float)size) - RADAR_LAYOUT_CLUSTER_WEDGE_GAP_DEG;
+        TEST_ASSERT_TRUE_MESSAGE(expected_span > 0.0f,
+                                  "the gap must never consume a whole wedge at any supported cluster size");
+
+        float total = 0.0f;
+        for (int k = 0; k < n; k++) {
+            float span = wedge_span(&wedges[k]);
+            TEST_ASSERT_FLOAT_WITHIN_MESSAGE(0.01f, expected_span, span, "wedges must be equal slices");
+            TEST_ASSERT_TRUE_MESSAGE(wedges[k].start_deg >= 0.0f && wedges[k].start_deg < 360.0f,
+                                      "start angle must be normalized into [0, 360) for LVGL");
+            TEST_ASSERT_TRUE_MESSAGE(wedges[k].end_deg >= 0.0f && wedges[k].end_deg < 360.0f,
+                                      "end angle must be normalized into [0, 360) for LVGL");
+            total += span;
+        }
+        TEST_ASSERT_FLOAT_WITHIN_MESSAGE(0.05f, 360.0f - (float)size * RADAR_LAYOUT_CLUSTER_WEDGE_GAP_DEG, total,
+                                          "wedges + gaps must account for the entire ring");
+    }
+}
+
+static void test_cluster_wedges_two_members_split_left_right(void)
+{
+    /* Two people standing together should split the marker vertically
+     * (side by side), not horizontally — the first wedge starts at 12
+     * o'clock, which in LVGL's arc convention (0 == 3 o'clock, clockwise)
+     * is 270 degrees, offset by half a gap. */
+    radar_layout_dot_result_t resolved[2];
+    for (int i = 0; i < 2; i++) {
+        resolved[i].dx = 0.0f;
+        resolved[i].dy = 0.0f;
+        resolved[i].cluster_id = 0;
+        resolved[i].cluster_size = 2;
+    }
+
+    radar_layout_wedge_t wedges[FF_CREW_MAX];
+    int n = radar_layout_cluster_wedges(resolved, 2, 0, wedges, FF_CREW_MAX);
+    TEST_ASSERT_EQUAL_INT(2, n);
+
+    TEST_ASSERT_FLOAT_WITHIN(0.01f, 270.0f + RADAR_LAYOUT_CLUSTER_WEDGE_GAP_DEG / 2.0f, wedges[0].start_deg);
+    /* First wedge runs 12 o'clock -> 6 o'clock (the right half) and so
+     * crosses the 0/360 seam: end_deg wraps BELOW start_deg, which is
+     * exactly what lv_arc expects and must not be "corrected". */
+    TEST_ASSERT_TRUE_MESSAGE(wedges[0].end_deg < wedges[0].start_deg,
+                              "the seam-crossing wedge must keep its wrapped form for lv_arc");
+    TEST_ASSERT_FLOAT_WITHIN(0.01f, 90.0f - RADAR_LAYOUT_CLUSTER_WEDGE_GAP_DEG / 2.0f, wedges[0].end_deg);
+}
+
+static void test_cluster_wedges_single_member_is_a_full_ring(void)
+{
+    /* Well-defined even though the renderer never takes this path (a
+     * lone dot draws its own initial): one member, no gap, whole circle,
+     * emitted as LVGL's own {0, 360} full-arc form — a normalized
+     * {270, 270} would be indistinguishable from a zero-width wedge, so
+     * this is the one case that deliberately isn't normalized. */
+    radar_layout_dot_result_t resolved[1] = {{0.0f, 0.0f, 0, 1}};
+    radar_layout_wedge_t wedges[FF_CREW_MAX];
+
+    int n = radar_layout_cluster_wedges(resolved, 1, 0, wedges, FF_CREW_MAX);
+    TEST_ASSERT_EQUAL_INT(1, n);
+    TEST_ASSERT_EQUAL_FLOAT(0.0f, wedges[0].start_deg);
+    TEST_ASSERT_EQUAL_FLOAT(360.0f, wedges[0].end_deg);
+    TEST_ASSERT_FLOAT_WITHIN(0.01f, 360.0f, wedge_span(&wedges[0]));
+}
+
+static void test_cluster_wedges_guard_paths_return_zero(void)
+{
+    radar_layout_dot_result_t resolved[2];
+    for (int i = 0; i < 2; i++) {
+        resolved[i].dx = 0.0f;
+        resolved[i].dy = 0.0f;
+        resolved[i].cluster_id = 0;
+        resolved[i].cluster_size = 2;
+    }
+    radar_layout_wedge_t wedges[FF_CREW_MAX];
+
+    TEST_ASSERT_EQUAL_INT(0, radar_layout_cluster_wedges(NULL, 2, 0, wedges, FF_CREW_MAX));
+    TEST_ASSERT_EQUAL_INT(0, radar_layout_cluster_wedges(resolved, 2, 0, NULL, FF_CREW_MAX));
+    TEST_ASSERT_EQUAL_INT(0, radar_layout_cluster_wedges(resolved, 0, 0, wedges, FF_CREW_MAX));
+    TEST_ASSERT_EQUAL_INT(0, radar_layout_cluster_wedges(resolved, 2, 0, wedges, 0));
+    /* A cluster_id no dot belongs to: nothing to draw, not a wedge of
+     * garbage. */
+    TEST_ASSERT_EQUAL_INT(0, radar_layout_cluster_wedges(resolved, 2, 7, wedges, FF_CREW_MAX));
+}
+
+static void test_cluster_wedges_respect_out_max(void)
+{
+    /* Never writes past the caller's buffer, and reports what it wrote. */
+    radar_layout_dot_result_t resolved[4];
+    for (int i = 0; i < 4; i++) {
+        resolved[i].dx = 0.0f;
+        resolved[i].dy = 0.0f;
+        resolved[i].cluster_id = 0;
+        resolved[i].cluster_size = 4;
+    }
+
+    radar_layout_wedge_t wedges[4];
+    memset(wedges, 0, sizeof(wedges));
+    int n = radar_layout_cluster_wedges(resolved, 4, 0, wedges, 2);
+    TEST_ASSERT_EQUAL_INT(2, n);
+    TEST_ASSERT_EQUAL_INT(0, wedges[2].index);
+    TEST_ASSERT_EQUAL_FLOAT(0.0f, wedges[2].start_deg);
+}
+
+static void test_cluster_wedges_match_a_real_resolve_pass(void)
+{
+    /* End-to-end against the real resolver rather than a hand-built
+     * array: whatever radar_layout_resolve_dots decides the clusters
+     * are, the wedge counts must add back up to every original dot —
+     * "cluster, never hide" all the way through to the ring. */
+    radar_layout_registry_t reg;
+    radar_layout_build_registry(RADAR_CLOSE, false, &reg);
+
+    float ring_deg[8] = {180.0f, 181.0f, 182.0f, 183.0f, 0.0f, 1.0f, 90.0f, 270.0f};
+    radar_layout_dot_result_t dots[8];
+    radar_layout_resolve_dots(&reg, ring_deg, 8, dots);
+
+    int total = 0;
+    for (int i = 0; i < 8; i++) {
+        if (dots[i].cluster_id != i) {
+            continue; /* only the anchor draws a marker */
+        }
+        radar_layout_wedge_t wedges[FF_CREW_MAX];
+        int n = radar_layout_cluster_wedges(dots, 8, i, wedges, FF_CREW_MAX);
+        TEST_ASSERT_EQUAL_INT_MESSAGE(dots[i].cluster_size, n,
+                                        "a marker's wedge count must equal its cluster_size");
+        total += n;
+    }
+    TEST_ASSERT_EQUAL_INT_MESSAGE(8, total, "every original dot must own exactly one wedge somewhere");
+}
+
+/* ---------------------------------------------------------------------
  * AC — termination. The resolver's loops are bounded by construction
  * (fixed step sizes, fixed iteration caps — see radar_layout.c); running
  * every sweep above to completion (25,200 dot resolutions + 10,800 arrow
@@ -303,6 +526,15 @@ int main(void)
 
     RUN_TEST(test_all_8_dots_same_bearing_close_mode_cluster_not_hidden);
     RUN_TEST(test_widely_spaced_dots_stay_distinct_not_clustered);
+
+    RUN_TEST(test_cluster_wedges_one_per_member_in_index_order);
+    RUN_TEST(test_cluster_wedges_only_include_that_cluster);
+    RUN_TEST(test_cluster_wedges_are_equal_gapped_and_cover_the_ring);
+    RUN_TEST(test_cluster_wedges_two_members_split_left_right);
+    RUN_TEST(test_cluster_wedges_single_member_is_a_full_ring);
+    RUN_TEST(test_cluster_wedges_guard_paths_return_zero);
+    RUN_TEST(test_cluster_wedges_respect_out_max);
+    RUN_TEST(test_cluster_wedges_match_a_real_resolve_pass);
 
     return UNITY_END();
 }

@@ -86,6 +86,66 @@ void ff_flare_fmt_countdown(char *out, size_t out_sz, int32_t expires_in_ms);
  */
 bool ff_flare_fmt_go_switches_lock(char const *locked_from_name, char const *takeover_from_name);
 
+/**
+ * FF_FLARE_FMT_TRADE_NAME_MAX — how many characters of each name
+ * ff_flare_fmt_lock_trade will print before truncating.
+ *
+ * `ff_app_flare_t`'s name fields are `char[FF_APP_NAME_LEN]` (16, i.e. up
+ * to 15 printable characters). Two names at full length, plus the "GO: "
+ * prefix and the arrow, is a ~37-character string that at the disclosure
+ * chip's type size is WIDER THAN THE ROUND GLASS — and the puck is a
+ * circle, so a chip that merely fits the 440px bounding box can still
+ * have its ends hanging off the visible display (the exact class of bug
+ * ff_layout.h exists because of: PR #25 shipped a back button 42px
+ * outside the round area). Truncating is the honest failure mode here:
+ * a clipped-but-on-glass name still identifies who you'd be dropping,
+ * where a name rendered past the bezel identifies nobody. 9 characters
+ * keeps the worst case ("GO: " + 9 + " > " + 9 = 25 chars) comfortably
+ * inside the chord available at the chip's y-offset, and crew short
+ * names in practice are 3-6 characters ("DANA", "KEV") — this truncation
+ * is a guard rail, not the normal path.
+ */
+#define FF_FLARE_FMT_TRADE_NAME_MAX 9
+
+/**
+ * ff_flare_fmt_lock_trade — the takeover screen's lock-disclosure chip
+ * text: `"GO: <locked> <arrow> <takeover>"` (e.g. `"GO: DANA > KEV"`).
+ *
+ * This is the glance-sized form of the disclosure S10's Amendment
+ * Ruling 2 requires ("an established LOCK is never silently replaced" —
+ * an informed choice must show its cost). It is a pure re-*wording*, not
+ * a reduction of what is disclosed: all three facts the ruling needs
+ * survive — that a lock exists (`<locked>` is named), that GO is what
+ * spends it (the `GO:` prefix names the button, so the chip is a caption
+ * for the control 60px below it rather than a free-floating status line),
+ * and what is traded for what (the arrow's direction). Issue #27: the
+ * sentence form it replaces ("LOCKED ON DANA - GO SWITCHES TO KEV") was
+ * legible and correct but was a *read* on the one screen that interrupts
+ * the user mid-panic at 2 AM.
+ *
+ * `arrow` is the separator glyph, supplied BY THE CALLER rather than
+ * baked in, because the only good arrow available on this device lives
+ * in LVGL's symbol range (`LV_SYMBOL_RIGHT`) and this module deliberately
+ * has no LVGL dependency (see this header's top comment — that is what
+ * makes it directly unit-testable). NULL or empty falls back to a plain
+ * ASCII `">"`, which every font in this repo covers; that fallback is
+ * what the unit tests assert against, so the tests never depend on which
+ * glyphs a particular compiled font subset happens to include.
+ *
+ * Either name being NULL/empty renders as `"?"` — the same explicit
+ * unknown marker `ff_scr_flare_build_lock_chip` already uses, never a
+ * fabricated identity (CLAUDE.md's honesty rule). In practice the caller
+ * gates on `ff_flare_fmt_go_switches_lock` first, which is already false
+ * for either name being empty, so `"?"` is a defensive path rather than
+ * a reachable one.
+ *
+ * Names longer than FF_FLARE_FMT_TRADE_NAME_MAX are truncated (see that
+ * macro for why). Truncates rather than overflowing if `out_sz` is too
+ * small; a NULL `out` or zero `out_sz` is a no-op.
+ */
+void ff_flare_fmt_lock_trade(char *out, size_t out_sz, char const *locked_from_name,
+                              char const *takeover_from_name, char const *arrow);
+
 #ifdef __cplusplus
 }
 #endif

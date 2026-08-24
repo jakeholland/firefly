@@ -190,6 +190,116 @@ static void S10_ACn_go_switches_lock_no_takeover_name_false(void)
     TEST_ASSERT_FALSE(ff_flare_fmt_go_switches_lock("DANA", NULL));
 }
 
+/* ------------------------------------------------------------------- */
+/* ff_flare_fmt_lock_trade (issue #27 — the glance-sized disclosure)     */
+/*                                                                       */
+/* Every assertion below uses the ASCII ">" fallback rather than         */
+/* LV_SYMBOL_RIGHT: this file has no LVGL dependency by design (see the  */
+/* header comment), and pinning the tests to a private FontAwesome       */
+/* codepoint would make them a font-subset test rather than a formatting */
+/* test. What the real caller passes is verified where it actually       */
+/* matters — the regenerated flare_takeover_locked.png golden, where a   */
+/* missing glyph would show as tofu.                                     */
+/* ------------------------------------------------------------------- */
+
+static void S10_ACn_lock_trade_names_both_sides_of_the_arrow(void)
+{
+    /* The whole point of the short form: the lock's CURRENT holder and
+     * what GO would trade it for, in that order, with the button that
+     * spends it named. Issue #27's "the information that must survive". */
+    char buf[40];
+    ff_flare_fmt_lock_trade(buf, sizeof(buf), "DANA", "KEV", NULL);
+    TEST_ASSERT_EQUAL_STRING("GO: DANA > KEV", buf);
+}
+
+static void S10_ACn_lock_trade_uses_callers_arrow_glyph(void)
+{
+    /* The separator is the caller's to choose (scr_flare.c passes
+     * LV_SYMBOL_RIGHT) — this module must not bake in a glyph it has no
+     * way to know renders. */
+    char buf[40];
+    ff_flare_fmt_lock_trade(buf, sizeof(buf), "DANA", "KEV", "=>");
+    TEST_ASSERT_EQUAL_STRING("GO: DANA => KEV", buf);
+}
+
+static void S10_ACn_lock_trade_empty_arrow_falls_back_to_ascii(void)
+{
+    /* An empty string is as unusable as NULL — both must still produce a
+     * DIRECTIONAL separator, never a bare space that would read as two
+     * unrelated names ("GO: DANA KEV" discloses nothing about which way
+     * the trade goes). */
+    char buf[40];
+    ff_flare_fmt_lock_trade(buf, sizeof(buf), "DANA", "KEV", "");
+    TEST_ASSERT_EQUAL_STRING("GO: DANA > KEV", buf);
+}
+
+static void S10_ACn_lock_trade_missing_name_is_explicitly_unknown(void)
+{
+    /* CLAUDE.md's honesty rule: "?" (the marker
+     * ff_scr_flare_build_lock_chip already uses), never an invented
+     * identity. Defensive — the caller gates on
+     * ff_flare_fmt_go_switches_lock, which is already false for either
+     * name being empty. */
+    char buf[40];
+    ff_flare_fmt_lock_trade(buf, sizeof(buf), "", "KEV", NULL);
+    TEST_ASSERT_EQUAL_STRING("GO: ? > KEV", buf);
+    ff_flare_fmt_lock_trade(buf, sizeof(buf), "DANA", NULL, NULL);
+    TEST_ASSERT_EQUAL_STRING("GO: DANA > ?", buf);
+}
+
+static void S10_ACn_lock_trade_truncates_long_names_to_stay_on_glass(void)
+{
+    /* FF_APP_NAME_LEN is 16, so a name can legitimately be 15 characters.
+     * Two of those plus the prefix and arrow is wider than the round
+     * glass at the chip's y-offset — truncation is the honest failure
+     * mode (a clipped name still identifies who you'd be dropping; a name
+     * rendered past the bezel identifies nobody). Pins the exact
+     * FF_FLARE_FMT_TRADE_NAME_MAX boundary: 9 kept, the 10th dropped. */
+    char buf[40];
+    ff_flare_fmt_lock_trade(buf, sizeof(buf), "ABCDEFGHIJKLMNO", "PQRSTUVWXYZ", NULL);
+    TEST_ASSERT_EQUAL_STRING("GO: ABCDEFGHI > PQRSTUVWX", buf);
+}
+
+static void S10_ACn_lock_trade_exact_max_length_name_is_not_truncated(void)
+{
+    /* The other side of the same boundary — a name EXACTLY
+     * FF_FLARE_FMT_TRADE_NAME_MAX long must survive whole. */
+    char buf[40];
+    ff_flare_fmt_lock_trade(buf, sizeof(buf), "ABCDEFGHI", "KEV", NULL);
+    TEST_ASSERT_EQUAL_STRING("GO: ABCDEFGHI > KEV", buf);
+}
+
+static void S10_ACn_lock_trade_worst_case_fits_the_callers_buffer(void)
+{
+    /* scr_flare.c declares char lock_line[40]; the longest string this
+     * function can ever produce with the 3-byte LV_SYMBOL_RIGHT is
+     * "GO: " + 9 + " " + 3 + " " + 9 = 27 bytes + NUL. Asserting it here
+     * means shrinking that call-site buffer, or growing
+     * FF_FLARE_FMT_TRADE_NAME_MAX past what it can hold, fails a test
+     * rather than silently truncating a disclosure on real hardware. */
+    char buf[40];
+    ff_flare_fmt_lock_trade(buf, sizeof(buf), "ABCDEFGHIJKLMNO", "PQRSTUVWXYZABCDE", "\xEF\x81\x94");
+    TEST_ASSERT_TRUE_MESSAGE(strlen(buf) < 40, "worst-case trade line must fit scr_flare.c's lock_line[40]");
+}
+
+static void S10_ACn_lock_trade_truncates_rather_than_overflowing(void)
+{
+    /* Same snprintf discipline as every other formatter here: a short
+     * buffer truncates, never overflows. */
+    char buf[8];
+    memset(buf, 'x', sizeof(buf));
+    ff_flare_fmt_lock_trade(buf, sizeof(buf), "DANA", "KEV", NULL);
+    TEST_ASSERT_EQUAL_STRING("GO: DAN", buf);
+}
+
+static void S10_ACn_lock_trade_null_out_is_noop(void)
+{
+    ff_flare_fmt_lock_trade(NULL, 16, "DANA", "KEV", NULL);
+    char buf[8] = "keep";
+    ff_flare_fmt_lock_trade(buf, 0, "DANA", "KEV", NULL);
+    TEST_ASSERT_EQUAL_STRING("keep", buf);
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -215,6 +325,16 @@ int main(void)
     RUN_TEST(S10_ACn_go_switches_lock_same_name_false);
     RUN_TEST(S10_ACn_go_switches_lock_not_locked_false);
     RUN_TEST(S10_ACn_go_switches_lock_no_takeover_name_false);
+
+    RUN_TEST(S10_ACn_lock_trade_names_both_sides_of_the_arrow);
+    RUN_TEST(S10_ACn_lock_trade_uses_callers_arrow_glyph);
+    RUN_TEST(S10_ACn_lock_trade_empty_arrow_falls_back_to_ascii);
+    RUN_TEST(S10_ACn_lock_trade_missing_name_is_explicitly_unknown);
+    RUN_TEST(S10_ACn_lock_trade_truncates_long_names_to_stay_on_glass);
+    RUN_TEST(S10_ACn_lock_trade_exact_max_length_name_is_not_truncated);
+    RUN_TEST(S10_ACn_lock_trade_worst_case_fits_the_callers_buffer);
+    RUN_TEST(S10_ACn_lock_trade_truncates_rather_than_overflowing);
+    RUN_TEST(S10_ACn_lock_trade_null_out_is_noop);
 
     return UNITY_END();
 }
