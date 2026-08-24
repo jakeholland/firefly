@@ -35,29 +35,107 @@ import argparse
 import sys
 import time
 
-try:
-    from meshtastic import BROADCAST_ADDR  # noqa: F401  (import probe)
-    from meshtastic.tcp_interface import TCPInterface
-    from meshtastic.serial_interface import SerialInterface
-    from pubsub import pub
-except ImportError:
-    sys.exit("pip install -r tests/e2e/requirements.txt")
+def _require_meshtastic():
+    """Imported lazily so --help and --selftest work without the library."""
+    try:
+        from meshtastic.tcp_interface import TCPInterface
+        from meshtastic.serial_interface import SerialInterface
+        from pubsub import pub
+    except ImportError:
+        sys.exit("pip install -r tests/e2e/requirements.txt")
+    return TCPInterface, SerialInterface, pub
 
-# meshtastic.protobuf.config_pb2.Config.PositionConfig / mesh_pb2 name these;
-# printed by name where we can resolve one, by number when we can't, because
-# an unknown number is data too — never silently mapped to a known value.
-LOC_SOURCE_NAMES = {
-    0: "LOC_UNSET",
-    1: "LOC_MANUAL",
-    2: "LOC_INTERNAL",
-    3: "LOC_EXTERNAL",
-}
+# The meshtastic library converts protobufs with a bare MessageToDict, which
+# has two consequences this tool has to respect or it reports nonsense:
+#
+#   1. Enums arrive as STRINGS ('LOC_MANUAL'), not ints. A number-keyed table
+#      would never match and every lookup would read as unresolvable.
+#   2. proto3 omits zero-valued fields entirely. So a Position with
+#      location_source == LOC_UNSET has NO locationSource key at all — and
+#      LOC_UNSET is one of the two answers we're here to obtain. Reading the
+#      missing key as "absent" would make that answer unprintable.
+#
+# (2) is the interesting one, and it's the opposite of this project's usual
+# rule. Normally absence must not carry meaning; here the wire format has
+# already decided that it does, and decoding it as anything else loses a real
+# reading. A key present on the parent object is what tells us we're looking
+# at a decoded Position at all.
+LOC_SOURCE_KNOWN = {"LOC_UNSET", "LOC_MANUAL", "LOC_INTERNAL", "LOC_EXTERNAL"}
 
 
-def _name(table, value):
-    if value is None:
-        return "absent"
-    return f"{table.get(value, '?')} ({value})"
+def _loc_source(pos):
+    """Read location_source from a position dict, honouring proto3 defaults.
+
+    `pos` must be a real decoded Position; pass None if there wasn't one.
+    """
+    if pos is None:
+        return "no position at all"
+    v = pos.get("locationSource")
+    if v is None:
+        return "LOC_UNSET (field omitted — proto3 drops the zero value)"
+    if isinstance(v, int):  # in case a future lib version stops stringifying
+        return f"{['LOC_UNSET', 'LOC_MANUAL', 'LOC_INTERNAL', 'LOC_EXTERNAL'][v]} ({v})" \
+            if 0 <= v < 4 else f"UNKNOWN VALUE ({v})"
+    return str(v) if v in LOC_SOURCE_KNOWN else f"UNKNOWN VALUE ({v!r})"
+
+
+def _rx_path(packet):
+    """Classify how a packet reached us. MUST mirror mc_rx_path_from_pkt()
+    in meshclient/src/mc_client.c — if the tool and the firmware disagree
+    about "direct", the tool validates the wrong thing, and RSSI is only a
+    distance proxy on a genuinely direct packet.
+
+    proto3 again: absent hopStart/hopLimit/viaMqtt all mean zero/false.
+    """
+    if bool(packet.get("viaMqtt", False)):
+        # Checked FIRST, as the firmware does. Whatever our radio measured,
+        # it was not this sender's transmission.
+        return "INDIRECT (via MQTT — arrived over the internet, not our radio)"
+    hs = packet.get("hopStart", 0)
+    hl = packet.get("hopLimit", 0)
+    if hs > 0:
+        if hl > hs:
+            return "UNKNOWN (malformed — hops travelled would be negative)"
+        if hl == hs:
+            return "DIRECT (rssi is this sender's own signal)"
+        return f"INDIRECT, {hs - hl} hop(s) — rssi is the RELAY's signal, not theirs"
+    # hop_start == 0: a real zero-hop packet, or pre-2.3.0 firmware that never
+    # set the field. Only the sender's Data.bitfield separates them, and the
+    # library doesn't surface it — so this tool cannot resolve what the
+    # firmware can. Say so rather than guessing.
+    return "UNKNOWN (hop_start 0: zero-hop, or a pre-2.3.0 sender — can't tell here)"
+
+
+def _selftest():
+    """Exercise the pure decoders against MessageToDict-shaped input.
+
+    Exists because the first version of this tool could not print either
+    answer it was built to obtain: it keyed the enum table by int when the
+    library yields strings, and read a proto3-omitted LOC_UNSET as "absent".
+    Both were invisible without hardware. These cases make them visible with
+    none. See PR #42's review.
+    """
+    cases = [
+        # (what, got, expected-substring)
+        ("manual position", _loc_source({"locationSource": "LOC_MANUAL"}), "LOC_MANUAL"),
+        ("unset is omitted, not absent", _loc_source({"latitude": 39.0}), "LOC_UNSET"),
+        ("int form still works", _loc_source({"locationSource": 2}), "LOC_INTERNAL"),
+        ("future value not folded", _loc_source({"locationSource": "LOC_NEW"}), "UNKNOWN VALUE"),
+        ("no position at all", _loc_source(None), "no position"),
+        ("mqtt beats hop match", _rx_path({"viaMqtt": True, "hopStart": 3, "hopLimit": 3}), "INDIRECT"),
+        ("direct", _rx_path({"hopStart": 3, "hopLimit": 3}), "DIRECT"),
+        ("relayed", _rx_path({"hopStart": 3, "hopLimit": 1}), "2 hop"),
+        ("malformed", _rx_path({"hopStart": 1, "hopLimit": 3}), "malformed"),
+        ("absent hops", _rx_path({}), "UNKNOWN"),
+    ]
+    bad = [(w, g, e) for w, g, e in cases if e not in g]
+    for what, got, _ in cases:
+        print(f"  {'FAIL' if any(w == what for w, _, _ in bad) else 'ok  '}  {what}: {got}")
+    if bad:
+        print(f"\n{len(bad)} case(s) failed")
+        return 1
+    print(f"\n{len(cases)} cases pass")
+    return 0
 
 
 def _fmt_unix(ts):
@@ -88,7 +166,7 @@ def dump_nodedb(iface):
             print("    position     : absent")
             continue
         print(f"    position     : lat={pos.get('latitude')} lon={pos.get('longitude')} alt={pos.get('altitude')}")
-        print(f"    ** location_source : {_name(LOC_SOURCE_NAMES, pos.get('locationSource'))}")
+        print(f"    ** location_source : {_loc_source(pos)}")
         print(f"    pos time     : {_fmt_unix(pos.get('time'))}")
         print(f"    precision    : {pos.get('precisionBits', 'absent')}")
 
@@ -109,28 +187,26 @@ def listen(iface, seconds):
         print(f"    rx_rssi      : {packet.get('rxRssi', 'ABSENT')}")
         print(f"    rx_snr       : {packet.get('rxSnr', 'ABSENT')}")
         print(f"    rx_time      : {_fmt_unix(packet.get('rxTime'))}")
-        # hop_start/hop_limit is how mc_rx_path_t decides direct vs relayed.
-        # A relayed packet's rssi measures the RELAY, not the originator.
-        hs, hl = packet.get("hopStart"), packet.get("hopLimit")
-        print(f"    hop_start    : {hs if hs is not None else 'ABSENT'}   hop_limit: {hl}")
-        if hs is None or hs == 0:
-            print("    -> path     : UNKNOWN (no hop_start; pre-2.3.0 firmware can't be told from direct)")
-        elif hs == hl:
-            print("    -> path     : DIRECT (rssi is this sender's own signal)")
-        else:
-            print(f"    -> path     : RELAYED {hs - hl} hop(s) — rssi is the RELAY's signal, not theirs")
+        hs = packet.get("hopStart", 0)
+        hl = packet.get("hopLimit", 0)
+        via_mqtt = bool(packet.get("viaMqtt", False))
+        print(f"    hop_start    : {hs}   hop_limit: {hl}   via_mqtt: {via_mqtt}")
+        print(f"    -> path     : {_rx_path(packet)}")
         if d.get("portnum") == "POSITION_APP":
-            p = d.get("position") or {}
-            print(f"    ** location_source : {_name(LOC_SOURCE_NAMES, p.get('locationSource'))}")
+            print(f"    ** location_source : {_loc_source(d.get('position'))}")
 
     pub.subscribe(on_receive, "meshtastic.receive")
     deadline = time.time() + seconds
-    while time.time() < deadline:
-        time.sleep(0.5)
-    print(f"\n  {seen['n']} packet(s) in {seconds}s.")
+    try:
+        while time.time() < deadline:
+            time.sleep(0.5)
+    except KeyboardInterrupt:
+        print("\n  (interrupted)")
+    print(f"\n  {seen['n']} packet(s) seen.")
     if seen["n"] == 0:
         print("  Nothing arrived. If the other board is on and in range, check both")
         print("  are on the same channel+PSK and the same region — a mismatch is silent.")
+    return seen["n"]
 
 
 def main():
@@ -138,26 +214,53 @@ def main():
     g = ap.add_mutually_exclusive_group(required=True)
     g.add_argument("--host", help="node's IP (WiFi, TCP 4403)")
     g.add_argument("--port", help="serial device path")
+    g.add_argument("--selftest", action="store_true",
+                   help="check the decoders against known field shapes; no hardware needed")
     ap.add_argument("--listen", type=int, default=0, metavar="SECONDS",
                     help="wait for live packets (the only way to see rx_rssi)")
     a = ap.parse_args()
 
-    iface = TCPInterface(hostname=a.host) if a.host else SerialInterface(devPath=a.port)
+    if a.selftest:
+        return _selftest()
+
+    TCPInterface, SerialInterface, pub = _require_meshtastic()
+    globals()["pub"] = pub  # listen() subscribes through it
+
+    target = a.host or a.port
+    try:
+        iface = TCPInterface(hostname=a.host) if a.host else SerialInterface(devPath=a.port)
+    except Exception as e:  # noqa: BLE001 — the library raises many types here
+        sys.exit(
+            f"could not connect to {target}: {type(e).__name__}: {e}\n"
+            "  --host wants the node's IP with WiFi enabled (TCP 4403).\n"
+            "  --port wants a serial device path (ls /dev/cu.* on macOS).\n"
+            "  A charge-only USB cable looks exactly like a missing device."
+        )
+
+    packets = 0
     try:
         mi = getattr(iface, "myInfo", None)
         if mi is not None:
             print(f"connected: my_node_num={getattr(mi, 'my_node_num', '?')}")
         dump_nodedb(iface)
         if a.listen:
-            listen(iface, a.listen)
+            packets = listen(iface, a.listen)
     finally:
         iface.close()
 
-    print("\n--- what to do with this ---")
+    # Only claim to have answered what was actually observed. Printing the
+    # rx_rssi verdict after a run with no --listen would be the tool making
+    # exactly the kind of unearned claim it exists to prevent.
+    print("\n--- what this run can and can't tell you ---")
     print("location_source LOC_MANUAL on a fixed-position node  -> #33's design holds")
     print("location_source LOC_UNSET  on a fixed-position node  -> #33 needs the protocol fallback")
-    print("rx_rssi present on live packets                      -> #35 unblocked, b1 can wire it")
     print("last_heard plausible                                 -> S16 b0's clock bootstrap works")
+    if not a.listen:
+        print("rx_rssi                                             -> NOT TESTED: re-run with --listen N")
+    elif packets == 0:
+        print("rx_rssi                                             -> NOT TESTED: no packets arrived")
+    else:
+        print("rx_rssi present above                                -> #35 unblocked, b1 can wire it")
     return 0
 
 
