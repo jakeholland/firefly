@@ -177,7 +177,11 @@ typedef struct {
      *    accompanies actual coordinates;
      *  - a value > 32, which is not a precision of a 32-bit coordinate —
      *    untrusted RF garbage, reported absent rather than clamped (same
-     *    policy as the RSSI/SNR range gates in mc_rx_meta_t).
+     *    policy as the RSSI/SNR range gates in mc_rx_meta_t). Wire varints
+     *    above UINT32_MAX never reach the gate at all: the vendored
+     *    decoder rejects the whole Position ("integer too large") — a
+     *    load-bearing, nonstandard strictness pinned by its own test; see
+     *    the note at the gate in mc_client.c.
      *
      * Absent must NOT be read as "full precision". Absent means the
      * sender did not say; the coordinates may still be truncated.
