@@ -21,23 +21,62 @@
  * comment) — this screen just reports the gesture and stays a pure
  * renderer. Unbound (goldens/headless), the emit is a no-op.
  *
- * TODO(S16 slice c3): A REAL FINGER CANNOT REACH THIS CALLBACK YET
- * (PR #54 review, HIGH). The full-size tileview created below covers
- * the puck; LVGL objects are CLICKABLE by default and nothing here sets
- * LV_OBJ_FLAG_EVENT_BUBBLE, so `lv_indev_search_obj` resolves every
- * on-puck press to the tileview/tiles and this handler only ever fires
- * from a directly-delivered event (as test_scr_intent.c does — that
- * test pins the callback body, not the gesture). Routing the physical
- * gesture belongs to c3, which owns the tileview's input handling (the
- * same work that disables its native swipe: whatever intercepts the
- * press must also decide when it is a swipe) — do NOT fix it here with
- * a bare EVENT_BUBBLE flag, which would also re-route the tile
- * content's own clicks. Until c3, the long-press is doubly inert:
- * unreachable at the input layer and rejected at the shell. */
+ * REACHABILITY (S16 slice c3, PR #54 review, HIGH — fixed here). A real
+ * finger's press still resolves to the tileview/tile beneath it, not to
+ * this object: `lv_indev_search_obj` walks to the deepest CLICKABLE hit
+ * under the point, and the full-size tileview built below still covers
+ * the puck. That half of the topology is unchanged, and
+ * test_scr_intent.c's reachability probe confirms it's still true rather
+ * than assuming it. What's fixed is what happens next: the tileview and
+ * its three tiles (container objects ONLY — see ff_scr_nav_build) now
+ * carry LV_OBJ_FLAG_EVENT_BUBBLE, so an unhandled LONG_PRESSED bubbles
+ * tile -> tileview -> here. Deliberately NOT a blanket flag on every
+ * clickable descendant: content buttons (FLARE, the reply chips, ...)
+ * never get it, so a long-press ON one of those stays confined to the
+ * button — the exact "would also re-route the tile content's own
+ * clicks" failure a bare EVENT_BUBBLE everywhere would cause. */
 static void nav_long_press_cb(lv_event_t *e)
 {
     (void)e;
     ff_intent_t in = {.kind = FF_INTENT_OPEN_SETTINGS, .u = {0}};
+    ff_intent_emit(&in);
+}
+
+/* A horizontal drag on the tileview, now that its own native
+ * drag-to-scroll is disabled (LV_DIR_NONE on every tile — S16 slice c3,
+ * see ff_scr_nav_build): LVGL resolves an unclaimed drag as a GESTURE
+ * instead of a scroll. Every LVGL object with a parent carries
+ * LV_OBJ_FLAG_GESTURE_BUBBLE by default (`lv_obj.c`'s constructor), so a
+ * gesture starting on a tile (there's nothing else to start it on — the
+ * tileview fills the puck) walks up and is delivered here, on the
+ * tileview itself — the tileview's OWN copy of that flag is explicitly
+ * cleared in `ff_scr_nav_build`, which is what actually stops the walk
+ * here instead of it continuing straight through the puck to the bare
+ * screen, where nothing would ever receive it.
+ *
+ * `ff_route`'s dir convention is a ROUTE direction, not a finger
+ * direction (ff_route.h's own warning): -1 toward RADAR, +1 toward
+ * SIGNALS, and a RIGHTWARD drag maps to -1. LVGL's gesture_dir names the
+ * direction the content was dragged, the same sense, so LV_DIR_RIGHT ->
+ * -1 and LV_DIR_LEFT -> +1. A vertical gesture (LV_DIR_TOP/_BOTTOM) is
+ * not a face swipe and is ignored. */
+static void nav_swipe_gesture_cb(lv_event_t *e)
+{
+    (void)e;
+    lv_indev_t *indev = lv_indev_active();
+    if (indev == NULL) {
+        return;
+    }
+
+    int8_t route_dir;
+    switch (lv_indev_get_gesture_dir(indev)) {
+    case LV_DIR_RIGHT: route_dir = -1; break;
+    case LV_DIR_LEFT: route_dir = 1; break;
+    default: return; /* vertical: not a face swipe */
+    }
+
+    ff_intent_t in = {.kind = FF_INTENT_SWIPE, .u = {0}};
+    in.u.swipe_dir = route_dir;
     ff_intent_emit(&in);
 }
 
@@ -114,10 +153,10 @@ void ff_scr_nav_build(ff_app_state_t const *state)
     lv_obj_clear_flag(puck, LV_OBJ_FLAG_SCROLLABLE);
 
     /* Long-press-anywhere -> Settings: emits an intent (S16c1); the shell
-     * decides (rejected until the S11b renderer exists). NOTE: the
-     * tileview built below covers this object, so the gesture does not
-     * physically reach it yet — see nav_long_press_cb's TODO(S16 slice
-     * c3). */
+     * decides (rejected until the S11b renderer exists). The tileview
+     * built below still covers this object — a real finger's press still
+     * resolves there, not here — but it and its tiles bubble an unhandled
+     * LONG_PRESSED up to here now; see nav_long_press_cb's doc comment. */
     lv_obj_add_flag(puck, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_add_event_cb(puck, nav_long_press_cb, LV_EVENT_LONG_PRESSED, NULL);
 
@@ -126,21 +165,42 @@ void ff_scr_nav_build(ff_app_state_t const *state)
     lv_obj_set_size(tileview, FF_THEME_PUCK_PX, FF_THEME_PUCK_PX);
     lv_obj_set_pos(tileview, 0, 0);
     lv_obj_set_style_bg_opa(tileview, LV_OPA_TRANSP, 0);
+    /* S16 slice c3: `ff_route` owns face navigation now, not the
+     * tileview's own native drag-to-scroll — EVENT_BUBBLE is long-press
+     * reachability (nav_long_press_cb's doc comment); the GESTURE handler
+     * is what a horizontal drag becomes instead of a scroll, now that
+     * every tile below passes LV_DIR_NONE (used to be LV_DIR_HOR).
+     *
+     * GESTURE_BUBBLE is explicitly CLEARED here, not set — `lv_obj.c`'s
+     * constructor already sets it on every object with a parent by
+     * default (a fact this file learned the hard way: adding it to the
+     * tiles below did nothing, since it was already there, and the walk
+     * kept bubbling straight through the tileview and the puck to the
+     * bare screen, which nothing listens on). Clearing it here is what
+     * actually stops the walk AT the tileview, where the handler below
+     * is registered — the tiles keep the default (no explicit flag
+     * needed) so a gesture starting on either one still reaches here. */
+    lv_obj_add_flag(tileview, LV_OBJ_FLAG_EVENT_BUBBLE);
+    lv_obj_clear_flag(tileview, LV_OBJ_FLAG_GESTURE_BUBBLE);
+    lv_obj_add_event_cb(tileview, nav_swipe_gesture_cb, LV_EVENT_GESTURE, NULL);
 
-    lv_obj_t *tile_radar = lv_tileview_add_tile(tileview, 0, 0, LV_DIR_HOR);
+    lv_obj_t *tile_radar = lv_tileview_add_tile(tileview, 0, 0, LV_DIR_NONE);
     lv_obj_set_style_pad_all(tile_radar, 0, 0);
     lv_obj_set_style_bg_opa(tile_radar, LV_OPA_TRANSP, 0);
     lv_obj_clear_flag(tile_radar, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(tile_radar, LV_OBJ_FLAG_EVENT_BUBBLE); /* GESTURE_BUBBLE: already on by default */
 
-    lv_obj_t *tile_now = lv_tileview_add_tile(tileview, 1, 0, LV_DIR_HOR);
+    lv_obj_t *tile_now = lv_tileview_add_tile(tileview, 1, 0, LV_DIR_NONE);
     lv_obj_set_style_pad_all(tile_now, 0, 0);
     lv_obj_set_style_bg_opa(tile_now, LV_OPA_TRANSP, 0);
     lv_obj_clear_flag(tile_now, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(tile_now, LV_OBJ_FLAG_EVENT_BUBBLE); /* GESTURE_BUBBLE: already on by default */
 
-    lv_obj_t *tile_signals = lv_tileview_add_tile(tileview, 2, 0, LV_DIR_HOR);
+    lv_obj_t *tile_signals = lv_tileview_add_tile(tileview, 2, 0, LV_DIR_NONE);
     lv_obj_set_style_pad_all(tile_signals, 0, 0);
     lv_obj_set_style_bg_opa(tile_signals, LV_OPA_TRANSP, 0);
     lv_obj_clear_flag(tile_signals, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(tile_signals, LV_OBJ_FLAG_EVENT_BUBBLE); /* GESTURE_BUBBLE: already on by default */
 
     ff_scr_radar_build(tile_radar, &state->radar);
     ff_scr_now_build(tile_now, &state->now); /* S07b — real content, replaces the placeholder pane */

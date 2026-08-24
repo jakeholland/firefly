@@ -48,11 +48,22 @@
 #include "scr_radar.h"
 #include "scr_signals.h"
 
-/* Frozen tick — same convention as test_scr_flare.c: nothing here
- * renders a frame. */
+/* Frozen-by-default tick — same convention as test_scr_flare.c: nothing
+ * here renders a frame, so every existing test in this file (all
+ * `lv_obj_send_event` direct injection, no `lv_timer_handler` loop) never
+ * observes it moving. `s_fake_tick_ms` exists for the drag() helper below
+ * (S16 slice c3's swipe-gesture tests) ONLY: LVGL's indev read timer is
+ * scheduled on real elapsed ticks (`LV_DEF_REFR_PERIOD`, 33 ms) even in a
+ * tight synchronous test loop, so a genuinely-frozen tick would let the
+ * FIRST `lv_timer_handler()` call read the press and then silently stop
+ * reading every subsequent position update — a drag that "moves" but is
+ * never actually seen moving, and no gesture accumulates. Reset to 0 in
+ * setUp() so every OTHER test keeps seeing a frozen 0, exactly as before. */
+static uint32_t s_fake_tick_ms;
+
 static uint32_t test_tick_cb(void)
 {
-    return 0;
+    return s_fake_tick_ms;
 }
 
 /* ------------------------------------------------------------------- */
@@ -75,6 +86,7 @@ static void spy_sink_cb(void *user, ff_intent_t const *in)
 
 void setUp(void)
 {
+    s_fake_tick_ms = 0;
     lv_init();
     lv_tick_set_cb(test_tick_cb);
     /* No buffers/flush callback: widget building + lv_obj_send_event
@@ -135,26 +147,15 @@ static void click(lv_obj_t *obj)
 
 /**
  * WHAT THIS PROVES — AND WHAT IT DELIBERATELY DOES NOT (PR #54 review,
- * HIGH finding, kept honest here rather than papered over).
+ * HIGH finding).
  *
  * `lv_obj_send_event` delivers LV_EVENT_LONG_PRESSED DIRECTLY to the
- * puck, so this test pins the CALLBACK: when the hook fires, it emits
- * OPEN_SETTINGS, exactly once. It does NOT prove a physical long-press
- * reaches that callback — and today one does not: the full-size
- * tileview sits over the puck, LVGL objects are CLICKABLE by default,
- * and nothing sets LV_OBJ_FLAG_EVENT_BUBBLE, so `lv_indev_search_obj`
- * resolves every on-puck press to the tileview/tiles and the puck
- * never sees the gesture (measured by the reviewer at three probe
- * points: zero intents emitted through the indev path).
- *
- * Making the gesture reach the seam is S16 slice c3's, deliberately:
- * c3 owns the tileview's input handling — the same work that disables
- * its native swipe scrolling — and the two interact (whatever routes
- * the press must also decide when it is a swipe). The indev-driven
- * press test belongs with that fix; writing it now would pin an input
- * topology c3 is about to replace. See scr_nav.c's TODO(S16 slice c3)
- * at the hook site and S06's Amendments entry, both corrected to say
- * exactly this.
+ * puck, so this test pins only the CALLBACK: when the hook fires, it
+ * emits OPEN_SETTINGS, exactly once. It does NOT prove a physical
+ * long-press reaches that callback — see
+ * `S16_c3_physical_long_press_on_empty_puck_space_reaches_open_settings`
+ * below for the probe that does, using the same technique the reviewer
+ * used (`lv_indev_search_obj`) rather than assuming the fix worked.
  */
 static void S16_c1_nav_long_press_callback_emits_open_settings(void)
 {
@@ -177,6 +178,150 @@ static void S16_c1_nav_long_press_callback_emits_open_settings(void)
 
     TEST_ASSERT_EQUAL_INT(1, s_spy.count);
     TEST_ASSERT_EQUAL(FF_INTENT_OPEN_SETTINGS, s_spy.last.kind);
+}
+
+/**
+ * The reachability probe itself (S16 slice c3, PR #54 review, HIGH —
+ * closed here). Uses `lv_indev_search_obj` — the same function LVGL's own
+ * indev processing calls to decide who a real touch's events go to, and
+ * the same one the reviewer used to MEASURE the original defect — rather
+ * than assuming a real finger behaves like `lv_obj_send_event` does.
+ *
+ * Two things are proven, not one:
+ *  1. The topology fact the reviewer measured is STILL true: a press over
+ *     empty puck space does not resolve to the puck itself (the tileview
+ *     still covers it). If a future refactor cleared CLICKABLE on the
+ *     tileview instead of fixing bubbling, this assertion would fail
+ *     loudly rather than the test quietly stopping to mean anything.
+ *  2. What LVGL would ACTUALLY deliver LONG_PRESSED to — the resolved
+ *     object, not the puck — still reaches OPEN_SETTINGS, via the
+ *     EVENT_BUBBLE chain `ff_scr_nav_build` now sets up (tile ->
+ *     tileview -> puck).
+ */
+static void S16_c3_physical_long_press_on_empty_puck_space_reaches_open_settings(void)
+{
+    ff_app_state_t state;
+    memset(&state, 0, sizeof(state)); /* RADAR_LIVE (mode 0): no clickable content at all */
+    state.active_face = FF_APP_FACE_RADAR;
+
+    ff_scr_nav_build(&state);
+
+    lv_obj_t *puck = lv_obj_get_child(lv_screen_active(), 0);
+    TEST_ASSERT_NOT_NULL(puck);
+
+    lv_point_t pt = {228, 228}; /* puck/window center; nothing clickable sits here in this state */
+    lv_obj_t *hit = lv_indev_search_obj(lv_screen_active(), &pt);
+    TEST_ASSERT_NOT_NULL(hit);
+    TEST_ASSERT_NOT_EQUAL(puck, hit); /* still the tileview/tile, not the puck — the topology is unchanged */
+
+    lv_result_t r = lv_obj_send_event(hit, LV_EVENT_LONG_PRESSED, NULL);
+    TEST_ASSERT_EQUAL(LV_RESULT_OK, r);
+
+    TEST_ASSERT_EQUAL_INT(1, s_spy.count);
+    TEST_ASSERT_EQUAL(FF_INTENT_OPEN_SETTINGS, s_spy.last.kind);
+}
+
+/**
+ * The other half of "don't fix it with a bare EVENT_BUBBLE flag" (the
+ * TODO this slice closed): a long-press ON a content button must NOT
+ * bubble up and misfire OPEN_SETTINGS. Only the tileview and its tiles
+ * (container objects) carry LV_OBJ_FLAG_EVENT_BUBBLE — content controls
+ * like FLARE never do — so this stays confined to the button.
+ */
+static void S16_c3_content_button_long_press_does_not_reach_open_settings(void)
+{
+    ff_app_state_t state;
+    memset(&state, 0, sizeof(state));
+    state.active_face = FF_APP_FACE_RADAR;
+    state.radar.mode = RADAR_CLOSE;
+    strncpy(state.radar.name, "DANA", sizeof(state.radar.name) - 1);
+    strncpy(state.radar.dist_str, "15 m", sizeof(state.radar.dist_str) - 1);
+
+    ff_scr_nav_build(&state);
+
+    lv_obj_t *flare_btn = find_button_with_label(lv_screen_active(), "FLARE");
+    TEST_ASSERT_NOT_NULL(flare_btn);
+
+    lv_result_t r = lv_obj_send_event(flare_btn, LV_EVENT_LONG_PRESSED, NULL);
+    TEST_ASSERT_EQUAL(LV_RESULT_OK, r);
+
+    TEST_ASSERT_EQUAL_INT(0, s_spy.count); /* did not bubble up to OPEN_SETTINGS */
+}
+
+/* =================================================================== */
+/* Physical swipe -> SWIPE (S16 slice c3: ff_route owns face nav now,   */
+/* not the tileview's own native drag-to-scroll)                        */
+/* =================================================================== */
+
+static lv_point_t s_probe_pt;
+static lv_indev_state_t s_probe_state;
+
+static void probe_read_cb(lv_indev_t *indev, lv_indev_data_t *data)
+{
+    (void)indev;
+    data->point = s_probe_pt;
+    data->state = s_probe_state;
+}
+
+/* A press -> several move steps -> release sequence through a REAL
+ * pointer indev, same shape as targets/sim/main.c's ff_loop_swipe (the
+ * production ctl-socket "swipe" command). */
+static void drag(int32_t from_x, int32_t to_x, int32_t y)
+{
+    lv_indev_t *indev = lv_indev_create();
+    lv_indev_set_type(indev, LV_INDEV_TYPE_POINTER);
+    lv_indev_set_read_cb(indev, probe_read_cb);
+
+    /* LVGL's indev read timer only re-fires on real elapsed ticks (see
+     * s_fake_tick_ms's comment above) — advance past LV_DEF_REFR_PERIOD
+     * (33 ms) before every handler call, not just the first, or every
+     * position update after the initial press is silently never read. */
+    s_probe_pt.x = (lv_coord_t)from_x;
+    s_probe_pt.y = (lv_coord_t)y;
+    s_probe_state = LV_INDEV_STATE_PRESSED;
+    s_fake_tick_ms += 40u;
+    lv_timer_handler();
+
+    enum { STEPS = 6 };
+    for (int i = 1; i <= STEPS; i++) {
+        s_probe_pt.x = (lv_coord_t)(from_x + (to_x - from_x) * i / STEPS);
+        s_fake_tick_ms += 40u;
+        lv_timer_handler();
+    }
+
+    s_probe_state = LV_INDEV_STATE_RELEASED;
+    s_fake_tick_ms += 40u;
+    lv_timer_handler();
+
+    lv_indev_delete(indev);
+}
+
+static void S16_c3_physical_leftward_drag_emits_swipe_toward_signals(void)
+{
+    ff_app_state_t state;
+    memset(&state, 0, sizeof(state));
+    state.active_face = FF_APP_FACE_RADAR;
+    ff_scr_nav_build(&state);
+
+    drag(380, 60, 228); /* finger moving LEFT */
+
+    TEST_ASSERT_EQUAL_INT(1, s_spy.count);
+    TEST_ASSERT_EQUAL(FF_INTENT_SWIPE, s_spy.last.kind);
+    TEST_ASSERT_EQUAL_INT8(1, s_spy.last.u.swipe_dir); /* toward SIGNALS */
+}
+
+static void S16_c3_physical_rightward_drag_emits_swipe_toward_radar(void)
+{
+    ff_app_state_t state;
+    memset(&state, 0, sizeof(state));
+    state.active_face = FF_APP_FACE_RADAR;
+    ff_scr_nav_build(&state);
+
+    drag(60, 380, 228); /* finger moving RIGHT */
+
+    TEST_ASSERT_EQUAL_INT(1, s_spy.count);
+    TEST_ASSERT_EQUAL(FF_INTENT_SWIPE, s_spy.last.kind);
+    TEST_ASSERT_EQUAL_INT8(-1, s_spy.last.u.swipe_dir); /* toward RADAR */
 }
 
 /* =================================================================== */
@@ -204,11 +349,10 @@ static void S16_c2_compose_send_emits_send_text(void)
 {
     /* SEND_TEXT carries no payload (ff_intent.h: "the draft is
      * shell-owned T9 state") — asserted by kind and count only, same
-     * shape as every other no-payload intent this file pins. The shell's
-     * OWN handling of FF_INTENT_SEND_TEXT stays a no-op until slice c3
-     * moves the draft in (test_intent.c's routing-rule-4 coverage is
-     * where that eventually gets pinned); this test's job is only that
-     * the button reaches the seam at all. */
+     * shape as every other no-payload intent this file pins. What the
+     * shell DOES with it once dispatched (actually sends, as of S16
+     * slice c3) is test_shell.c's job; this test's job is only that the
+     * button reaches the seam at all. */
     ff_app_compose_t compose;
     memset(&compose, 0, sizeof(compose));
 
@@ -218,6 +362,133 @@ static void S16_c2_compose_send_emits_send_text(void)
 
     TEST_ASSERT_EQUAL_INT(1, s_spy.count);
     TEST_ASSERT_EQUAL(FF_INTENT_SEND_TEXT, s_spy.last.kind);
+}
+
+/* =================================================================== */
+/* Compose keypad -> T9_KEY / T9_SPACE / T9_BACKSPACE / T9_MODE /       */
+/* T9_INSERT (S16 slice c3)                                             */
+/* =================================================================== */
+
+/**
+ * ABC mode (the build-time default): a letter key -> T9_KEY carrying the
+ * raw key number, and the bottom-row key -> T9_SPACE. Only `.kind`/
+ * `.u.t9_key` are asserted for T9_KEY (a scalar, safely copied by value);
+ * a T9_INSERT payload is a BORROWED pointer into a stack buffer that's
+ * already gone by the time `click()` returns (ff_intent.h, "Payload
+ * ownership") — dereferencing it here would be exactly the bug that
+ * contract forbids, so the 123/SYM tests below assert `.kind` only, and
+ * the actual bytes are pinned at the shell level instead
+ * (test_shell.c's S16_AC3b/S16_c3_send_text_* tests, which own the
+ * intent's payload for the whole call by construction).
+ */
+static void S16_c3_abc_letter_key_emits_t9_key(void)
+{
+    ff_app_compose_t compose;
+    memset(&compose, 0, sizeof(compose)); /* mode 0 = FF_APP_COMPOSE_ABC */
+
+    ff_scr_compose_build(&compose);
+
+    click(find_button_with_label(lv_screen_active(), "DEF")); /* key 3 */
+
+    TEST_ASSERT_EQUAL_INT(1, s_spy.count);
+    TEST_ASSERT_EQUAL(FF_INTENT_T9_KEY, s_spy.last.kind);
+    TEST_ASSERT_EQUAL_UINT8(3, s_spy.last.u.t9_key);
+}
+
+static void S16_c3_abc_space_key_emits_t9_space(void)
+{
+    ff_app_compose_t compose;
+    memset(&compose, 0, sizeof(compose));
+
+    ff_scr_compose_build(&compose);
+
+    click(find_button_with_label(lv_screen_active(), "SPACE"));
+
+    TEST_ASSERT_EQUAL_INT(1, s_spy.count);
+    TEST_ASSERT_EQUAL(FF_INTENT_T9_SPACE, s_spy.last.kind);
+}
+
+static void S16_c3_del_key_emits_t9_backspace(void)
+{
+    ff_app_compose_t compose;
+    memset(&compose, 0, sizeof(compose));
+
+    ff_scr_compose_build(&compose);
+
+    click(find_button_with_label(lv_screen_active(), "DEL"));
+
+    TEST_ASSERT_EQUAL_INT(1, s_spy.count);
+    TEST_ASSERT_EQUAL(FF_INTENT_T9_BACKSPACE, s_spy.last.kind);
+}
+
+/* 123 mode: every key (0-9 alike) is a literal digit insert. */
+static void S16_c3_123_digit_key_emits_t9_insert(void)
+{
+    ff_app_compose_t compose;
+    memset(&compose, 0, sizeof(compose));
+    compose.mode = FF_APP_COMPOSE_123;
+
+    ff_scr_compose_build(&compose);
+
+    click(find_button_with_label(lv_screen_active(), "7"));
+
+    TEST_ASSERT_EQUAL_INT(1, s_spy.count);
+    TEST_ASSERT_EQUAL(FF_INTENT_T9_INSERT, s_spy.last.kind);
+}
+
+/* SYM mode: a symbol key is a literal (multi-char) insert; key 0 is still
+ * SPACE (typed sentences with emoticons still need spaces — S08
+ * Amendments). */
+static void S16_c3_sym_symbol_key_emits_t9_insert(void)
+{
+    ff_app_compose_t compose;
+    memset(&compose, 0, sizeof(compose));
+    compose.mode = FF_APP_COMPOSE_SYM;
+
+    ff_scr_compose_build(&compose);
+
+    click(find_button_with_label(lv_screen_active(), ":)"));
+
+    TEST_ASSERT_EQUAL_INT(1, s_spy.count);
+    TEST_ASSERT_EQUAL(FF_INTENT_T9_INSERT, s_spy.last.kind);
+}
+
+static void S16_c3_sym_space_key_emits_t9_space(void)
+{
+    ff_app_compose_t compose;
+    memset(&compose, 0, sizeof(compose));
+    compose.mode = FF_APP_COMPOSE_SYM;
+
+    ff_scr_compose_build(&compose);
+
+    click(find_button_with_label(lv_screen_active(), "SPACE"));
+
+    TEST_ASSERT_EQUAL_INT(1, s_spy.count);
+    TEST_ASSERT_EQUAL(FF_INTENT_T9_SPACE, s_spy.last.kind);
+}
+
+/**
+ * Mode chip -> T9_MODE, no payload (the shell owns the cycle as of this
+ * slice — see ff_shell.c). Built in 123 mode specifically: the chip's
+ * OWN label is the current mode's name (`compose_update_mode_chip_label`),
+ * and in ABC mode that label ("ABC") COLLIDES with the ABC grid's own
+ * key-2 legend (also "ABC") — `find_button_with_label`'s depth-first
+ * search would find the mode chip first only by creation-order luck, so
+ * this test deliberately picks a mode ("123") whose current label text
+ * doesn't collide with any grid legend, rather than depend on that luck.
+ */
+static void S16_c3_mode_chip_emits_t9_mode(void)
+{
+    ff_app_compose_t compose;
+    memset(&compose, 0, sizeof(compose));
+    compose.mode = FF_APP_COMPOSE_123;
+
+    ff_scr_compose_build(&compose);
+
+    click(find_button_with_label(lv_screen_active(), "123"));
+
+    TEST_ASSERT_EQUAL_INT(1, s_spy.count);
+    TEST_ASSERT_EQUAL(FF_INTENT_T9_MODE, s_spy.last.kind);
 }
 
 /* =================================================================== */
@@ -449,8 +720,19 @@ int main(void)
     UNITY_BEGIN();
 
     RUN_TEST(S16_c1_nav_long_press_callback_emits_open_settings);
+    RUN_TEST(S16_c3_physical_long_press_on_empty_puck_space_reaches_open_settings);
+    RUN_TEST(S16_c3_content_button_long_press_does_not_reach_open_settings);
+    RUN_TEST(S16_c3_physical_leftward_drag_emits_swipe_toward_signals);
+    RUN_TEST(S16_c3_physical_rightward_drag_emits_swipe_toward_radar);
     RUN_TEST(S16_c1_compose_back_emits_back);
     RUN_TEST(S16_c2_compose_send_emits_send_text);
+    RUN_TEST(S16_c3_abc_letter_key_emits_t9_key);
+    RUN_TEST(S16_c3_abc_space_key_emits_t9_space);
+    RUN_TEST(S16_c3_del_key_emits_t9_backspace);
+    RUN_TEST(S16_c3_123_digit_key_emits_t9_insert);
+    RUN_TEST(S16_c3_sym_symbol_key_emits_t9_insert);
+    RUN_TEST(S16_c3_sym_space_key_emits_t9_space);
+    RUN_TEST(S16_c3_mode_chip_emits_t9_mode);
     RUN_TEST(S16_c1_signals_plus_emits_open_compose_with_no_destination);
     RUN_TEST(S16_c2_signals_rally_tap_emits_select_rally_with_its_index);
     RUN_TEST(S16_c2_signals_canned_reply_chips_emit_canned_reply);

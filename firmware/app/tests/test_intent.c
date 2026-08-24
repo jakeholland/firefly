@@ -531,16 +531,13 @@ static void S16_c1_intent_struct_and_pointer_payloads_are_borrowed_only(void)
     memset(&in, 0xA5, sizeof(in));
     TEST_ASSERT_EQUAL_STRING("DANA", view()->compose.to_name);
 
-    /* The pointer payloads. T9_INSERT and SETTING_SET are later slices'
-     * to ACT on, but the ownership contract ("not owned; copied" —
-     * ff_intent.h) is c1's to pin: dispatching them with a payload that
-     * dies immediately afterward must never leave the shell holding the
-     * pointer. Asserted as: the projection is bit-identical before and
-     * after, across clobbered-payload dispatches and further ticks —
-     * i.e. nothing retained, nothing read late. When c3/e wire these
-     * kinds up they inherit this test with real state assertions. */
-    ff_app_state_t const before = *view();
-
+    /* The pointer payloads. T9_INSERT went from a no-op (c1/c2) to a real
+     * mutation of the shell-owned draft (S16 slice c3) — the ownership
+     * contract ("not owned; copied" — ff_intent.h) is proven MORE
+     * strongly now than the old "nothing changed" shape could: clobber
+     * the source buffer the INSTANT dispatch returns, and the projection
+     * still shows the right text, which is only possible if the shell
+     * copied every byte it needed before returning. */
     char text_buf[16];
     strcpy(text_buf, ":)");
     ff_intent_t t9 = {.kind = FF_INTENT_T9_INSERT, .u = {0}};
@@ -548,6 +545,14 @@ static void S16_c1_intent_struct_and_pointer_payloads_are_borrowed_only(void)
     ff_shell_intent(&H.shell, &t9);
     memset(text_buf, 0xA5, sizeof(text_buf));
     memset(&t9, 0xA5, sizeof(t9));
+    TEST_ASSERT_EQUAL_STRING(":)", view()->compose.text);
+
+    /* SETTING_SET is still slice e's to ACT on, so this half keeps the
+     * test's original no-op shape: the projection is bit-identical before
+     * and after a clobbered-payload dispatch — nothing retained, nothing
+     * read late. When e wires it up it inherits this test with a real
+     * state assertion, the same way T9_INSERT's half just did for c3. */
+    ff_app_state_t const before = *view();
 
     char name_buf[16];
     strcpy(name_buf, "JAKE");

@@ -28,9 +28,19 @@
  * intent handling (SWIPE / BACK / OPEN_COMPOSE / OPEN_SETTINGS, plus the
  * takeover-decision trio GO / DISMISS / RELEASE_LOCK, which the S10
  * Ruling 3 distinctness test needs observable). Core-mutating intents
- * (canned replies, SEND, FLARE_START/END, selection) are slice c2; the
- * T9 draft and keypad intents are slice c3; SETTING_SET write-through is
- * slice e — all deliberate no-ops here until their slice lands.
+ * (canned replies, FLARE_START/END) are slice c2; SETTING_SET
+ * write-through is slice e — both remain deliberate no-ops here until
+ * their slice lands, alongside MARK_FEED_READ (already handled, just not
+ * through this intent — S08 AC3) and SELECT_CREW/SELECT_RALLY (the
+ * latter has no core entry point to call yet at all).
+ *
+ * Slice c3 moves the composer's DRAFT in (`compose_draft`, an `ff_t9_t`
+ * — `scr_compose.c` no longer holds one) and wires the five T9 intents
+ * (T9_KEY / T9_SPACE / T9_BACKSPACE / T9_MODE / T9_INSERT) plus
+ * SEND_TEXT, which actually sends now, via `ff_wiring_ctx_t.sender` — the
+ * same seam the canned replies use. All six are rejected while a
+ * takeover is up (AC3b), leaving the draft untouched rather than
+ * partially consumed.
  *
  * Deliberately NOT here yet, each with its own slice:
  *   - build-once/update-in-place render lifecycle (slice d),
@@ -496,8 +506,10 @@ bool ff_shell_pair(ff_shell_t *sh, uint32_t node_id, bool paired);
  *                       the route's own rules). Rejected while a
  *                       takeover is visible.
  *  - BACK            -> `ff_route_pop_modal`. Rejected while a takeover
- *                       is visible (AC3b's routing half; the draft half
- *                       lands with slice c3's shell-owned T9 state).
+ *                       is visible (AC3b: both halves, routing AND the
+ *                       draft, since the draft is shell-owned T9 state
+ *                       as of slice c3 and BACK never touches it either
+ *                       way — only SEND_TEXT does, on success).
  *  - OPEN_COMPOSE    -> `ff_route_push_modal(COMPOSE)`. The destination:
  *                       `u.node_id` names a paired roster member -> that
  *                       member; otherwise (0, or an id the trust policy
@@ -525,9 +537,22 @@ bool ff_shell_pair(ff_shell_t *sh, uint32_t node_id, bool paired);
  *                       exact bug the ruling split two core functions to
  *                       kill. RELEASE_LOCK and TAKEOVER_DISMISS are
  *                       distinct and never folded.
+ *  - T9_KEY / T9_SPACE / T9_BACKSPACE / T9_MODE / T9_INSERT (slice c3)
+ *                    -> mutate `compose_draft` / `compose_mode` directly
+ *                       (`ff_t9_key` et al. — the same calls
+ *                       scr_compose.c used to make locally). All five
+ *                       rejected while a takeover is visible.
+ *  - SEND_TEXT (slice c3) -> if `compose_draft`'s text is non-empty,
+ *                       sent via `ff_wiring_ctx_t.sender.send_text` to
+ *                       `compose_to_node` (or `MC_ADDR_BROADCAST`), then
+ *                       the draft resets and the modal pops. Rejected
+ *                       while a takeover is visible (AC3b) — the draft is
+ *                       left completely untouched, not partially sent.
+ *                       An empty draft is a silent no-op either way: SEND
+ *                       on an untouched composer must not broadcast "".
  *
  * Every other kind is a documented no-op until its owning slice (c2:
- * core-mutating; c3: T9/compose; e: SETTING_SET) — see ff_shell.c.
+ * remaining core-mutating intents; e: SETTING_SET) — see ff_shell.c.
  *
  * Pointer payloads (`u.text`, `u.setting.v.s`) are borrowed for this
  * call only; the shell copies what it keeps (ff_intent.h, "Payload

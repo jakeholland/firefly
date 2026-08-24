@@ -17,6 +17,7 @@
 #include "ff_radar.h"
 #include "ff_route.h"
 #include "ff_sched.h"
+#include "ff_t9.h" /* S16 slice c3 — the shell-owned compose draft */
 #include "ff_wiring.h"
 
 /* ---------------------------------------------------------------------
@@ -53,10 +54,21 @@ typedef struct {
 
     /* The composer's destination, resolved when FF_INTENT_OPEN_COMPOSE
      * pushed the modal (S16 slice c1). 0 = broadcast ("TO: EVERYONE").
-     * The DRAFT stays scr_compose.c's static ff_t9_t until slice c3
-     * moves it in here; this field is only the "who", which the intent
-     * seam owns as of c1. Cleared when BACK pops the composer. */
+     * Cleared when BACK pops the composer. */
     uint32_t compose_to_node;
+
+    /* The composer's DRAFT (S16 slice c3) — moved out of scr_compose.c's
+     * `static ff_t9_t s_t9`, which reset on every build and made AC3/AC10
+     * unimplementable (a draft could never survive anything, including a
+     * takeover interruption, because it lived one layer below the object
+     * that could observe one). T9_KEY/T9_SPACE/T9_BACKSPACE/T9_INSERT all
+     * mutate this; T9_MODE cycles `compose_mode`. Reset (fresh session) on
+     * a successful OPEN_COMPOSE, same "every build starts empty" behavior
+     * the old static had — but unlike the static, this one keeps its
+     * contents across a takeover, since nothing but the T9/SEND intents
+     * (all gated on `takeover_up`, routing rule 4) ever touches it. */
+    ff_t9_t compose_draft;
+    ff_app_compose_mode_t compose_mode;
 
     /* Feed pushes + the crew-paired-sender filter are ff_wiring's, not
      * reimplemented here. Holds interior pointers into this struct — see
@@ -941,9 +953,10 @@ static void shell_project(shell_t *sh, uint32_t now_ms)
     shell_project_flare(sh, now_ms, &sh->view.flare);
     shell_project_settings(sh, &sh->view.settings);
 
-    /* compose: the draft (text/mode/pending) is shell-owned T9 state
-     * from slice c3 onward (scr_compose.c still holds a `static ff_t9_t`
-     * today) — left zeroed. The DESTINATION is c1's (the intent seam
+    /* compose: the draft (text/mode/pending) is shell-owned T9 state as
+     * of slice c3 (`sh->compose_draft`) — projected verbatim from
+     * `ff_t9_text()`/`has_pending`, the exact mirror `ff_app_compose_t`'s
+     * own doc comment describes. The DESTINATION is c1's (the intent seam
      * resolved it when OPEN_COMPOSE pushed the modal): the name is
      * looked up at projection time, not captured at open time, so a
      * NodeInfo rename mid-compose is reflected — same "the view is a
@@ -954,10 +967,10 @@ static void shell_project(shell_t *sh, uint32_t now_ms)
      * Known edge, stated rather than hidden: a paired member whose name
      * has never arrived projects "" too, which renders as EVERYONE while
      * the stored destination is that member — dishonest for the one
-     * frame-sequence between pairing and the first named NodeInfo.
-     * Nothing renders this projection yet (scr_compose still runs off
-     * fixtures until c3); c3 owns making the render side honest here,
-     * flagged in its brief via the PR body. */
+     * frame-sequence between pairing and the first named NodeInfo. */
+    shell_copy_str(sh->view.compose.text, sizeof(sh->view.compose.text), ff_t9_text(&sh->compose_draft));
+    sh->view.compose.has_pending = sh->compose_draft.has_pending;
+    sh->view.compose.mode = sh->compose_mode;
     if (sh->compose_to_node != 0u) {
         shell_copy_str(sh->view.compose.to_name, sizeof(sh->view.compose.to_name),
                         shell_name_of(sh, sh->compose_to_node));
@@ -1029,6 +1042,8 @@ int ff_shell_init(ff_shell_t *sh_pub, ff_shell_cfg_t const *cfg)
     ff_wall_init(&sh->wall);
     ff_radar_smooth_reset(&sh->smooth);
     ff_route_init(&sh->route);
+    ff_t9_reset(&sh->compose_draft); /* S16 slice c3 */
+    sh->compose_mode = FF_APP_COMPOSE_ABC;
 
     /* Settings are loaded at init and never re-read per tick (S16
      * "Behavior"). A NULL store yields the exact defaults. */
@@ -1096,6 +1111,12 @@ bool ff_shell_tick(ff_shell_t *sh_pub, uint32_t now_ms)
      * here with no route involved, which is why ff_route_visible takes
      * takeover as a parameter rather than caching it. */
     (void)ff_flare_tick(&sh->flare, now_ms);
+
+    /* S16 slice c3: the injected clock, not lv_tick_get() (scr_compose.c
+     * no longer touches the clock at all — see ff_t9.h's "Deviations"
+     * note for why the multi-tap commit timeout needs an explicit poll).
+     * Safe to call every tick unconditionally, pending char or not. */
+    ff_t9_tick(&sh->compose_draft, now_ms);
 
     shell_project(sh, now_ms);
 
@@ -1252,6 +1273,13 @@ void ff_shell_intent(ff_shell_t *sh_pub, ff_intent_t const *in)
          * exactly what that rule protects) and over an off-axis base. */
         if (ff_route_push_modal(&sh->route, FF_APP_FACE_COMPOSE)) {
             sh->compose_to_node = shell_compose_dest(sh, in->u.node_id);
+            /* S16 slice c3: every OPEN_COMPOSE starts a FRESH session —
+             * the same "resets every build" behavior scr_compose.c's old
+             * `static ff_t9_t` had, now made explicit here since the
+             * draft survives everything else (in particular a takeover
+             * interruption, AC3b) rather than resetting on its own. */
+            ff_t9_reset(&sh->compose_draft);
+            sh->compose_mode = FF_APP_COMPOSE_ABC;
         }
         return;
 
@@ -1303,14 +1331,25 @@ void ff_shell_intent(ff_shell_t *sh_pub, ff_intent_t const *in)
 
     case FF_INTENT_FLARE_END:
         /* The sender overlay's CANCEL button (S16 slice c2). Deliberately
-         * UNGATED on takeover_up: the sender overlay is drawn on the puck
-         * itself, on top of whichever face/takeover is showing (scr_nav.c:
-         * "own screen pulses amber... regardless of current face"), and
-         * `sending` is independent of `takeover_active` by ff_flare_h's
-         * own "Independent state" design — I can be sending my own flare
-         * AND have a different crew member's takeover pending at once, so
-         * CANCEL must reach ff_flare_send_cancel even then. Same
-         * un-gated precedent as RELEASE_LOCK just above. */
+         * UNGATED on takeover_up — but NOT because the overlay renders
+         * during a takeover; it doesn't (corrected here, PR #58 review).
+         * `face_dispatch.c` dispatches the full-screen takeover INSTEAD
+         * of `ff_scr_nav_build` whenever `takeover_active` is set, so the
+         * sender overlay — built at the tail of `ff_scr_nav_build`, on
+         * the puck, on top of whichever BASE face is showing
+         * (scr_nav.c's "regardless of current face" note is about
+         * Radar/Now/Signals, not the takeover) — is simply absent from
+         * the screen for as long as a takeover owns it.
+         *
+         * The real reason to leave this ungated is the same race S10
+         * Ruling 3 exists for (RELEASE_LOCK, just above): `sending` and
+         * `takeover_active` are independent facts (ff_flare.h's
+         * "Independent state" design) — I can be sending my own flare AND
+         * have a different member's takeover arrive an instant later,
+         * between the CANCEL tap landing and this intent dispatching.
+         * Gate on takeover_up and that arrival silently swallows the
+         * cancel; ungated, CANCEL still reaches ff_flare_send_cancel and
+         * the new takeover is still shown — nothing lost either way. */
         (void)ff_flare_send_cancel(&sh->flare);
         return;
 
@@ -1330,15 +1369,88 @@ void ff_shell_intent(ff_shell_t *sh_pub, ff_intent_t const *in)
         }
         return;
 
+    case FF_INTENT_SEND_TEXT:
+        /* The composer's SEND button (S16 slice c3 — the seam has emitted
+         * this since c2, but there was nothing to send FROM until the
+         * draft moved in here). Rejected while a takeover is up (AC3b,
+         * routing rule 4: "a touch landing where SEND was does not
+         * send") — the draft is left completely untouched in that case,
+         * not partially consumed. */
+        if (takeover_up) return;
+        {
+            char const *text = ff_t9_text(&sh->compose_draft);
+            if (text != NULL && text[0] != '\0') {
+                /* The sender seam ff_wiring already owns (ff_wiring.h's
+                 * `ff_wiring_sender_t`) — same vtable the canned replies
+                 * send through, reused rather than a second `mc_send_text`
+                 * call site. `compose_to_node == 0` is "no explicit
+                 * destination", resolved to broadcast the same way every
+                 * other send in this file resolves it (MC_ADDR_BROADCAST,
+                 * not the literal 0 mc_send_text would misread). */
+                uint32_t const dest = (sh->compose_to_node != 0u) ? sh->compose_to_node : MC_ADDR_BROADCAST;
+                if (sh->wiring.sender.send_text != NULL) {
+                    (void)sh->wiring.sender.send_text(sh->wiring.sender.ctx, dest, text);
+                }
+                /* A sent message ends the compose session — S08's "sent
+                 * item appears in feed... " reads as returning to Signals
+                 * to see it, not staying on an emptied composer. Draft
+                 * and destination both reset, same as a fresh open. */
+                ff_t9_reset(&sh->compose_draft);
+                sh->compose_mode = FF_APP_COMPOSE_ABC;
+                (void)ff_route_pop_modal(&sh->route);
+                sh->compose_to_node = 0u;
+            }
+            /* An empty draft (nothing typed) is a no-op, not a broadcast
+             * of "" — SEND on an untouched composer must not fire. */
+        }
+        return;
+
+    case FF_INTENT_T9_KEY:
+        /* Multi-tap letter/punctuation key, 0-9 (S16 slice c3). Rejected
+         * during a takeover like every other Compose control (AC3b); the
+         * commit-window timing comes from the shell's own clock
+         * (`shell_now`), never `lv_tick_get()` — scr_compose.c no longer
+         * reads a clock at all. */
+        if (takeover_up) return;
+        ff_t9_key(&sh->compose_draft, in->u.t9_key, shell_now(sh));
+        return;
+
+    case FF_INTENT_T9_SPACE:
+        if (takeover_up) return;
+        ff_t9_space(&sh->compose_draft);
+        return;
+
+    case FF_INTENT_T9_BACKSPACE:
+        if (takeover_up) return;
+        ff_t9_backspace(&sh->compose_draft);
+        return;
+
+    case FF_INTENT_T9_MODE:
+        /* Cycles the keypad page ABC -> 123 -> SYM -> ABC (S08
+         * Amendments), mirroring the cycle scr_compose.c's mode chip used
+         * to run locally before this slice moved it here. */
+        if (takeover_up) return;
+        switch (sh->compose_mode) {
+        case FF_APP_COMPOSE_ABC: sh->compose_mode = FF_APP_COMPOSE_123; break;
+        case FF_APP_COMPOSE_123: sh->compose_mode = FF_APP_COMPOSE_SYM; break;
+        case FF_APP_COMPOSE_SYM: sh->compose_mode = FF_APP_COMPOSE_ABC; break;
+        }
+        return;
+
+    case FF_INTENT_T9_INSERT:
+        /* Atomic literal insert — the 123 page's digits and the SYM
+         * page's ASCII shortcuts both go through this one path (both
+         * used `ff_t9_insert_text` directly before this slice; see
+         * scr_compose.c's compose_key_pressed). `in->u.text` is borrowed
+         * for this call only (ff_intent.h, "Payload ownership") —
+         * `ff_t9_insert_text` copies every byte it keeps before
+         * returning, so nothing here retains the pointer past this
+         * statement. */
+        if (takeover_up) return;
+        (void)ff_t9_insert_text(&sh->compose_draft, in->u.text);
+        return;
+
     /* --- deliberate no-ops until their owning slice lands ------------ */
-    case FF_INTENT_SEND_TEXT:      /* c3 — needs the shell-owned draft; scr_compose.c's SEND
-                                     * emits this as of c2, but the draft itself is still
-                                     * scr_compose.c's file-static ff_t9_t until c3 moves it
-                                     * in here, so there is nothing to send FROM yet. Gating
-                                     * on takeover_up is moot while this is a no-op, but the
-                                     * spec's Rule 4 explicitly names this exact case ("a
-                                     * touch landing where SEND was does not send") — c3
-                                     * inherits that requirement when it wires the real send. */
     case FF_INTENT_MARK_FEED_READ: /* c2 — the shell already clears unread on face view (S08 AC3) */
     case FF_INTENT_SELECT_CREW:    /* c2 — radar tap-cycle */
     case FF_INTENT_SELECT_RALLY:   /* still unbuilt: ff_crew_select_rally does not exist yet
@@ -1349,11 +1461,6 @@ void ff_shell_intent(ff_shell_t *sh_pub, ff_intent_t const *in)
                                      * target"), and the shell has nothing to call yet — wiring
                                      * the emit site now means the eventual handler is the
                                      * only piece still missing, not a second UI change too. */
-    case FF_INTENT_T9_KEY:         /* c3 — shell-owned ff_t9_t */
-    case FF_INTENT_T9_SPACE:       /* c3 */
-    case FF_INTENT_T9_BACKSPACE:   /* c3 */
-    case FF_INTENT_T9_MODE:        /* c3 */
-    case FF_INTENT_T9_INSERT:      /* c3 — payload copied, never stored (ff_intent.h) */
     case FF_INTENT_SETTING_SET:    /* e — settings write-through + persistence */
         return;
     }
