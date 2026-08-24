@@ -198,13 +198,28 @@ typedef struct {
  * The library never invents a reading, and callers must check the flags:
  * a zeroed mc_rx_meta_t means "we know nothing", not "0 dBm, direct".
  */
+/* Plausibility bounds for the two radio readings below. Anything outside
+ * these is not a measurement — it is malformed or hostile wire data — and
+ * is reported as absent rather than clamped into range (clamping would
+ * hand the caller a fabricated reading that passes threshold tests).
+ *
+ * Deliberately far wider than any real radio: genuine RSSI lives near
+ * [-150, +20] dBm and LoRa SNR near [-30, +15] dB, so these can only ever
+ * reject garbage, never a real sample. They are not a statement about what
+ * a radio *should* report. */
+#define MC_RSSI_MIN_DBM (-512)
+#define MC_RSSI_MAX_DBM (512)
+#define MC_SNR_MIN_DB (-128.0f)
+#define MC_SNR_MAX_DB (128.0f)
+
 typedef struct {
     /* RSSI in dBm as measured by our radio. Presence-flagged because 0 is
      * a legitimate reading on some radios (SX126x reports exactly 0 dBm;
      * SX127x's formula can go positive), so no in-band sentinel could be
      * safely reserved — see the `rx_rssi` comment in the vendored
      * meshtastic/mesh.pb.h. Meaningful for `from` only when
-     * `rx_path == MC_RX_PATH_DIRECT`. */
+     * `rx_path == MC_RX_PATH_DIRECT`. A wire value outside
+     * [MC_RSSI_MIN_DBM, MC_RSSI_MAX_DBM] reads absent. */
     bool has_rssi;
     int16_t rssi_dbm;
 
@@ -220,7 +235,14 @@ typedef struct {
      * see a fabricated SNR; they occasionally lose a real one sitting
      * precisely on zero. Unlike RSSI, this could not be fixed by a
      * presence flag on our side — the information is already gone by the
-     * time the bytes reach us. */
+     * time the bytes reach us.
+     *
+     * NaN, infinities, and values outside [MC_SNR_MIN_DB, MC_SNR_MAX_DB]
+     * also read absent. NaN especially: it is a non-number arriving from
+     * untrusted RF, and it would otherwise pass an `!= 0.0f` presence test
+     * while silently failing every downstream comparison. When has_snr is
+     * false, snr_db is zeroed — never NaN — so a caller that ignores the
+     * flag gets the same benign 0 that rssi_dbm gives it. */
     bool has_snr;
     float snr_db;
 
@@ -262,6 +284,13 @@ typedef struct {
      * consumer can correlate the two by `from` within one dispatch
      * without buffering. Packets with `from == 0` (sender unknown) never
      * fire this — there would be nobody to attribute the reading to.
+     *
+     * Self-packets are NOT filtered: if the radio echoes back a packet
+     * this node originated, it arrives with `from == my_node_id` and will
+     * fire this callback like any other. Nothing is fabricated by that
+     * (an echo carries no rx_rssi, so `has_rssi` is false), but a caller
+     * maintaining a per-peer roster wants to skip its own id rather than
+     * create a slot for itself.
      *
      * Firing does not imply any field is present: check `m->has_rssi` /
      * `m->has_snr`, and check `m->rx_path == MC_RX_PATH_DIRECT` before

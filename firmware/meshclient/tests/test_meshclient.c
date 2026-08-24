@@ -1426,6 +1426,127 @@ static void S03_AC10_snr_of_exactly_zero_reports_unknown(void)
     TEST_ASSERT_FALSE(cap.rx_metas[0].meta.has_snr);
 }
 
+/* Builds a float from its IEEE-754 bits without type-punning UB, so the
+ * NaN/infinity cases below are exact rather than compiler-dependent. */
+static float float_from_bits(uint32_t bits)
+{
+    float f;
+    memcpy(&f, &bits, sizeof(f));
+    return f;
+}
+
+static void run_snr_case(float wire_snr, bool expect_present)
+{
+    pkt_spec_t s = {
+        .from = 0x0A0A0A0Au,
+        .portnum = (uint32_t)meshtastic_PortNum_TEXT_MESSAGE_APP,
+        .rx_snr = wire_snr,
+    };
+    events_capture_t cap;
+    run_spec(&s, &cap);
+
+    TEST_ASSERT_EQUAL_INT(1, cap.rx_meta_count);
+    if (expect_present) {
+        TEST_ASSERT_TRUE(cap.rx_metas[0].meta.has_snr);
+        TEST_ASSERT_EQUAL_FLOAT(wire_snr, cap.rx_metas[0].meta.snr_db);
+    } else {
+        TEST_ASSERT_FALSE(cap.rx_metas[0].meta.has_snr);
+        /* Absent must also mean benign: a caller that ignores the flag
+         * reads 0, never NaN. Equality here doubles as a NaN check —
+         * NaN == 0.0f is false. */
+        TEST_ASSERT_TRUE(cap.rx_metas[0].meta.snr_db == 0.0f);
+    }
+}
+
+/* PR #39 review finding F1. NaN compares unequal to everything, including
+ * 0.0f, so a bare `!= 0.0f` presence test admits it and the library ends up
+ * asserting "this is a measurement" for a non-number arriving from
+ * untrusted RF — which then fails silently downstream, since every
+ * comparison against NaN is false and any running mean is poisoned. */
+static void S03_AC10_nan_snr_reports_unknown(void)
+{
+    run_snr_case(float_from_bits(0x7FC00000u), false); /* quiet NaN */
+}
+
+static void S03_AC10_signalling_nan_snr_reports_unknown(void)
+{
+    run_snr_case(float_from_bits(0x7F800001u), false);
+}
+
+static void S03_AC10_positive_infinity_snr_reports_unknown(void)
+{
+    run_snr_case(float_from_bits(0x7F800000u), false);
+}
+
+static void S03_AC10_negative_infinity_snr_reports_unknown(void)
+{
+    run_snr_case(float_from_bits(0xFF800000u), false);
+}
+
+static void S03_AC10_out_of_range_snr_reports_unknown(void)
+{
+    run_snr_case(3.0e38f, false);
+}
+
+/* The other half of the guard: bounds are meant to exclude garbage, not to
+ * second-guess the radio. Readings at the edge of anything physically
+ * plausible must still come through as present. */
+static void S03_AC10_extreme_but_plausible_snr_is_still_present(void)
+{
+    run_snr_case(-30.0f, true);
+    run_snr_case(15.0f, true);
+    run_snr_case(MC_SNR_MIN_DB, true);
+    run_snr_case(MC_SNR_MAX_DB, true);
+}
+
+static void run_rssi_case(int32_t wire_rssi, bool expect_present)
+{
+    pkt_spec_t s = {
+        .from = 0x0A0A0A0Au,
+        .portnum = (uint32_t)meshtastic_PortNum_TEXT_MESSAGE_APP,
+        .has_rx_rssi = true,
+        .rx_rssi = wire_rssi,
+    };
+    events_capture_t cap;
+    run_spec(&s, &cap);
+
+    TEST_ASSERT_EQUAL_INT(1, cap.rx_meta_count);
+    if (expect_present) {
+        TEST_ASSERT_TRUE(cap.rx_metas[0].meta.has_rssi);
+        TEST_ASSERT_EQUAL_INT16((int16_t)wire_rssi, cap.rx_metas[0].meta.rssi_dbm);
+    } else {
+        TEST_ASSERT_FALSE(cap.rx_metas[0].meta.has_rssi);
+    }
+}
+
+/* PR #39 review finding F2: the out-of-range guard was correct but no test
+ * pinned it, so deleting it was an invisible regression.
+ *
+ * 65536 is the case that makes it matter — `(int16_t)65536 == 0`, so an
+ * unguarded truncation would surface malformed wire data as
+ * `has_rssi == true, rssi_dbm == 0`: precisely the "genuine 0 dBm" reading
+ * that S03_AC10_rssi_of_exactly_zero_dbm_is_a_present_reading exists to
+ * protect. Asserting *absence* rather than saturation also pins the
+ * stronger property — see the comment in mc_emit_rx_meta on why a clamped
+ * INT16_MAX would fabricate a CLOSE lock just as a truncated 0 would. */
+static void S03_AC10_out_of_range_rssi_reports_unknown_not_zero(void)
+{
+    run_rssi_case(65536, false);
+}
+
+static void S03_AC10_negative_out_of_range_rssi_reports_unknown(void)
+{
+    run_rssi_case(-100000, false);
+}
+
+static void S03_AC10_extreme_but_plausible_rssi_is_still_present(void)
+{
+    run_rssi_case(-150, true);
+    run_rssi_case(20, true);
+    run_rssi_case(MC_RSSI_MIN_DBM, true);
+    run_rssi_case(MC_RSSI_MAX_DBM, true);
+}
+
 static void run_rx_path_case(uint32_t hop_start, uint32_t hop_limit, bool via_mqtt, bool set_bitfield,
                               mc_rx_path_t expect)
 {
@@ -1640,6 +1761,15 @@ int main(void)
     RUN_TEST(S03_AC10_absent_rssi_is_flagged_absent_not_zero);
     RUN_TEST(S03_AC10_rssi_of_exactly_zero_dbm_is_a_present_reading);
     RUN_TEST(S03_AC10_snr_of_exactly_zero_reports_unknown);
+    RUN_TEST(S03_AC10_nan_snr_reports_unknown);
+    RUN_TEST(S03_AC10_signalling_nan_snr_reports_unknown);
+    RUN_TEST(S03_AC10_positive_infinity_snr_reports_unknown);
+    RUN_TEST(S03_AC10_negative_infinity_snr_reports_unknown);
+    RUN_TEST(S03_AC10_out_of_range_snr_reports_unknown);
+    RUN_TEST(S03_AC10_extreme_but_plausible_snr_is_still_present);
+    RUN_TEST(S03_AC10_out_of_range_rssi_reports_unknown_not_zero);
+    RUN_TEST(S03_AC10_negative_out_of_range_rssi_reports_unknown);
+    RUN_TEST(S03_AC10_extreme_but_plausible_rssi_is_still_present);
     RUN_TEST(S03_AC10_hops_travelled_zero_is_direct);
     RUN_TEST(S03_AC10_hops_travelled_nonzero_is_indirect);
     RUN_TEST(S03_AC10_hop_start_zero_without_bitfield_is_unknown);

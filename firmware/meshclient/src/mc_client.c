@@ -137,25 +137,43 @@ static void mc_emit_rx_meta(mc_client_t *c, meshtastic_MeshPacket const *pkt,
     mc_rx_meta_t m;
     memset(&m, 0, sizeof(m));
 
-    m.has_rssi = pkt->has_rx_rssi;
-    if (pkt->has_rx_rssi) {
-        /* int32 on the wire, int16 here: real RSSI lives in roughly
-         * [-150, +20] dBm, but clamp rather than let a bogus/huge value
-         * wrap into a plausible-looking reading. */
-        int32_t r = pkt->rx_rssi;
-        if (r > INT16_MAX) {
-            r = INT16_MAX;
-        } else if (r < INT16_MIN) {
-            r = INT16_MIN;
-        }
-        m.rssi_dbm = (int16_t)r;
+    /* Both readings below are decoded from unvalidated wire bytes, so both
+     * get the same treatment: a value that is not physically a radio
+     * reading is not a measurement, and is reported ABSENT rather than
+     * passed on — or squeezed into range — as though we had measured it.
+     * The bounds are deliberately far wider than any real radio (see
+     * MC_RSSI_MIN_DBM / MC_SNR_MIN_DB in mc_client.h): the job is
+     * excluding garbage, not second-guessing the radio.
+     *
+     * Reporting absent rather than saturating matters concretely for the
+     * consumer this exists to serve: ff_crew's close-range predicate is
+     * `rssi_dbm > -60dBm`, so a clamped INT16_MAX — like a truncated 0 —
+     * would sail straight through it and fabricate a CLOSE lock out of a
+     * malformed packet. `has_rssi == false` cannot. */
+    if (pkt->has_rx_rssi && pkt->rx_rssi >= MC_RSSI_MIN_DBM && pkt->rx_rssi <= MC_RSSI_MAX_DBM) {
+        m.has_rssi = true;
+        m.rssi_dbm = (int16_t)pkt->rx_rssi; /* in-range by the test above */
     }
 
     /* rx_snr has implicit presence: exactly 0.0 is indistinguishable from
      * absent, so we report it as unknown. See the mc_rx_meta_t doc comment
-     * — under-claim rather than fabricate. */
-    m.has_snr = (pkt->rx_snr != 0.0f);
-    m.snr_db = pkt->rx_snr;
+     * — under-claim rather than fabricate.
+     *
+     * NaN needs its own test and is the dangerous case: it compares
+     * unequal to *everything*, including 0.0f, so a bare `!= 0.0f` check
+     * admits it and the library ends up asserting "this is a measurement"
+     * for a non-number — untrusted RF input, silently poisoning every
+     * downstream comparison (all false against NaN) and any running mean
+     * over the trend window. `x == x` is false only for NaN and needs no
+     * <math.h>. The range test then excludes infinities and absurd
+     * magnitudes. NOTE: neither test survives -ffast-math/-Ofast, which
+     * this project does not use and must not adopt without revisiting
+     * this. */
+    m.has_snr = (pkt->rx_snr == pkt->rx_snr) && (pkt->rx_snr != 0.0f) &&
+                 (pkt->rx_snr >= MC_SNR_MIN_DB) && (pkt->rx_snr <= MC_SNR_MAX_DB);
+    /* Left zeroed when absent, so a caller that ignores the flag reads 0
+     * rather than NaN — the same way memset leaves rssi_dbm. */
+    m.snr_db = m.has_snr ? pkt->rx_snr : 0.0f;
 
     m.rx_path = mc_rx_path_from_pkt(pkt, has_decoded_bitfield);
 
