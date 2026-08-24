@@ -74,6 +74,65 @@ typedef enum {
     MC_STATE_READY = 2,
 } mc_state_t;
 
+/**
+ * How a reported position was obtained — the *provenance* of the fix, not
+ * its age. Translated at this boundary from Meshtastic's
+ * `Position.LocSource`; the protobuf enum's numeric values deliberately do
+ * not escape into core/ (see the note in issue #33 and ARCHITECTURE.md's
+ * "core is pure" principle). An unrecognized wire value maps to
+ * MC_LOC_UNKNOWN rather than being passed through, so a future firmware
+ * adding LOC_* members can never make us assert provenance we don't
+ * understand.
+ *
+ * The distinction that matters: MEASURED vs ASSERTED.
+ *  - INTERNAL/EXTERNAL are *measurements* — a GPS actually fixed this
+ *    location at some point, so "how recently" is a meaningful question.
+ *  - MANUAL is an *assertion* — an installer typed it in. It has no
+ *    measurement behind it at any age, so freshness is a category error
+ *    for it (a fixed-position landmark re-broadcasts the same asserted
+ *    point forever; see issue #33).
+ *  - UNKNOWN is neither: the node did not tell us.
+ *
+ * Note on UNKNOWN: `location_source` is a proto3 implicit-presence enum,
+ * so "field absent" and "explicitly LOC_UNSET" are literally the same
+ * bytes on the wire. Both mean "the sender did not state provenance", so
+ * a single UNKNOWN member loses no information and there is deliberately
+ * no separate `has_loc_source` flag — UNKNOWN *is* the explicit unknown,
+ * a distinct enum member rather than a sentinel smuggled into a value
+ * that could also be a real reading.
+ *
+ * Consumers must not treat UNKNOWN as measured. Most stock firmware does
+ * populate this field, but "didn't say" is not evidence of a GPS fix.
+ */
+typedef enum {
+    MC_LOC_UNKNOWN = 0,  /* sender stated no provenance */
+    MC_LOC_MANUAL = 1,   /* asserted by a human/config — no measurement */
+    MC_LOC_INTERNAL = 2, /* measured by the node's own GPS */
+    MC_LOC_EXTERNAL = 3, /* measured by an attached/EUD GPS */
+} mc_loc_source_t;
+
+/**
+ * Whether our own radio heard the sender itself, or only via a relay.
+ *
+ * This is the qualifier that makes `mc_rx_meta_t.rssi_dbm` meaningful.
+ * RSSI/SNR are measured by *our* radio against the signal that actually
+ * arrived — which, for a relayed packet, is the **relay's** transmission,
+ * not the originator's. Attributing that number to `from` would report a
+ * loud neighbouring relay as if the distant friend it forwarded for were
+ * standing next to you. Only MC_RX_PATH_DIRECT licenses attributing
+ * rssi/snr to `from`.
+ *
+ * UNKNOWN is not a soft DIRECT — it means we could not establish the hop
+ * count, and per the vendored protobuf's own guidance (mesh.pb.h, the
+ * `hop_start` comment) an unestablished hop count must be treated as
+ * unknown rather than optimistically as direct.
+ */
+typedef enum {
+    MC_RX_PATH_UNKNOWN = 0,  /* hop count not establishable — assume nothing */
+    MC_RX_PATH_DIRECT = 1,   /* our radio heard `from` itself, 0 hops, over LoRa */
+    MC_RX_PATH_INDIRECT = 2, /* relayed by another node, or arrived via MQTT */
+} mc_rx_path_t;
+
 /** A position fix. Unknown fields are explicitly flagged, never faked
  * (see CLAUDE.md "Honest data over pretty data"). */
 typedef struct {
@@ -84,6 +143,11 @@ typedef struct {
     uint32_t time;    /* GPS fix time, unix seconds (0 = unknown/not sent) */
     bool has_rx_time;
     uint32_t rx_time; /* when the local radio received this, unix seconds */
+
+    /* Provenance of the fix — measured, asserted, or unstated. Carries no
+     * age information; `time`/`rx_time` remain the only freshness inputs.
+     * See mc_loc_source_t. */
+    mc_loc_source_t loc_source;
 } mc_position_t;
 
 typedef struct {
@@ -105,7 +169,65 @@ typedef struct {
     uint32_t battery_level; /* 0-100, >100 conventionally means "powered" */
 
     uint32_t last_heard; /* unix seconds, 0 = unknown */
+
+    /* Whether the nodeDB believes this node is a direct neighbour. Derived
+     * from NodeInfo's explicit-presence `hops_away` (plus `via_mqtt`), so
+     * "the field wasn't populated" is reported as MC_RX_PATH_UNKNOWN and
+     * never silently as DIRECT.
+     *
+     * This is a nodeDB *summary*, not a per-packet fact: it describes how
+     * the node was last heard, with no timestamp attached, and it can go
+     * stale exactly like any other cached NodeInfo field. Use it to answer
+     * "could this node plausibly ever give us usable RSSI?", not "is this
+     * RSSI sample attributable?" — that question is per-packet and is
+     * answered by mc_rx_meta_t.rx_path. */
+    mc_rx_path_t rx_path;
 } mc_nodeinfo_t;
+
+/**
+ * Per-packet reception metadata, measured by our local radio.
+ *
+ * Delivered via `mc_events_t.on_rx_meta` for every inbound MeshPacket that
+ * names a sender — including packets whose payload is out of decode scope
+ * or encrypted, since the radio still measured the signal that carried
+ * them. That breadth is the point: position broadcasts alone arrive on a
+ * multi-minute interval, far too slow to feed a 5-second RSSI trend
+ * window, whereas telemetry/nodeinfo/text/routing traffic is frequent.
+ *
+ * Every field is explicitly presence-flagged rather than sentinel-coded.
+ * The library never invents a reading, and callers must check the flags:
+ * a zeroed mc_rx_meta_t means "we know nothing", not "0 dBm, direct".
+ */
+typedef struct {
+    /* RSSI in dBm as measured by our radio. Presence-flagged because 0 is
+     * a legitimate reading on some radios (SX126x reports exactly 0 dBm;
+     * SX127x's formula can go positive), so no in-band sentinel could be
+     * safely reserved — see the `rx_rssi` comment in the vendored
+     * meshtastic/mesh.pb.h. Meaningful for `from` only when
+     * `rx_path == MC_RX_PATH_DIRECT`. */
+    bool has_rssi;
+    int16_t rssi_dbm;
+
+    /* SNR in dB as measured by our radio.
+     *
+     * Honest-data caveat, deliberate and load-bearing: Meshtastic's
+     * `MeshPacket.rx_snr` is a proto3 *implicit-presence* float, so an
+     * absent field and a genuine 0.0 dB reading serialize to identical
+     * bytes. There is no way to distinguish them, so this library reports
+     * exactly 0.0 as `has_snr == false` — under-claiming (calling a real
+     * 0.0 dB reading "unknown") rather than over-claiming (inventing a
+     * reading for a field the sender never set). Callers therefore never
+     * see a fabricated SNR; they occasionally lose a real one sitting
+     * precisely on zero. Unlike RSSI, this could not be fixed by a
+     * presence flag on our side — the information is already gone by the
+     * time the bytes reach us. */
+    bool has_snr;
+    float snr_db;
+
+    /* Whether rssi/snr may be attributed to `from` at all. See
+     * mc_rx_path_t — this is the qualifier, not a nicety. */
+    mc_rx_path_t rx_path;
+} mc_rx_meta_t;
 
 /** Counts of frames/packets we saw but didn't fully decode, per spec
  * ("Everything else skipped silently but counted"). */
@@ -129,6 +251,24 @@ typedef struct {
     void (*on_private)(void *u, uint32_t from, uint32_t portnum, uint8_t const *payload,
                         size_t len); /* firefly protocol rides here */
     void (*on_my_info)(void *u, uint32_t my_node_id);
+
+    /**
+     * Per-packet radio metadata (RSSI/SNR/hop path) for any inbound
+     * MeshPacket carrying a nonzero `from`, including encrypted packets
+     * and portnums outside decode scope.
+     *
+     * Ordering guarantee: for a packet that also produces a payload event
+     * (on_position/on_text/on_private), on_rx_meta fires *first*, so a
+     * consumer can correlate the two by `from` within one dispatch
+     * without buffering. Packets with `from == 0` (sender unknown) never
+     * fire this — there would be nobody to attribute the reading to.
+     *
+     * Firing does not imply any field is present: check `m->has_rssi` /
+     * `m->has_snr`, and check `m->rx_path == MC_RX_PATH_DIRECT` before
+     * attributing either reading to `from`.
+     */
+    void (*on_rx_meta)(void *u, uint32_t from, mc_rx_meta_t const *m);
+
     void *user;
 } mc_events_t;
 

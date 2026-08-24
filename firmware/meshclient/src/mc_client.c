@@ -51,6 +51,29 @@ static void mc_copy_name(char *dst, char const *src)
     dst[n] = '\0';
 }
 
+/* Translate Meshtastic's LocSource into the firefly-side enum. Deliberately
+ * an explicit switch rather than a cast: the protobuf's numeric values must
+ * not leak past this boundary (issue #33), and an unrecognized value from a
+ * future firmware falls through to UNKNOWN instead of being asserted as
+ * provenance we don't understand. */
+static mc_loc_source_t mc_loc_source_from_pb(meshtastic_Position_LocSource src)
+{
+    switch (src) {
+    case meshtastic_Position_LocSource_LOC_MANUAL:
+        return MC_LOC_MANUAL;
+    case meshtastic_Position_LocSource_LOC_INTERNAL:
+        return MC_LOC_INTERNAL;
+    case meshtastic_Position_LocSource_LOC_EXTERNAL:
+        return MC_LOC_EXTERNAL;
+    case meshtastic_Position_LocSource_LOC_UNSET:
+    default:
+        /* LOC_UNSET and "field absent" are the same bytes on the wire
+         * (proto3 implicit presence), and both mean "sender stated no
+         * provenance". No information is lost by folding them. */
+        return MC_LOC_UNKNOWN;
+    }
+}
+
 static void mc_position_from_pb(meshtastic_Position const *pb, bool has_rx_time, uint32_t rx_time,
                                  mc_position_t *out)
 {
@@ -62,6 +85,81 @@ static void mc_position_from_pb(meshtastic_Position const *pb, bool has_rx_time,
     out->time = pb->time;
     out->has_rx_time = has_rx_time;
     out->rx_time = rx_time;
+    out->loc_source = mc_loc_source_from_pb(pb->location_source);
+}
+
+/**
+ * Decide whether our radio heard `pkt`'s sender directly.
+ *
+ * `has_decoded_bitfield` says whether the packet's decoded Data carried the
+ * explicit-presence `bitfield` member. That is the vendored protobuf's own
+ * documented tell for "this sender runs firmware new enough to populate
+ * hop_start" (mesh.pb.h, hop_start comment: firmware before 2.3.0 never set
+ * hop_start, so hop_start == 0 must be read as unknown rather than direct
+ * until the sender's bitfield — added in 2.5.0 — proves otherwise).
+ *
+ * Everything that isn't positively established lands on UNKNOWN. That
+ * asymmetry is deliberate: a false DIRECT silently mis-attributes a relay's
+ * signal strength to a distant friend, which is precisely the kind of
+ * confident-but-wrong reading this project refuses to render.
+ */
+static mc_rx_path_t mc_rx_path_from_pkt(meshtastic_MeshPacket const *pkt, bool has_decoded_bitfield)
+{
+    if (pkt->via_mqtt) {
+        /* Arrived over the internet. Whatever our radio did or didn't
+         * measure, it was not this sender's transmission. */
+        return MC_RX_PATH_INDIRECT;
+    }
+
+    if (pkt->hop_start > 0u) {
+        if (pkt->hop_limit > pkt->hop_start) {
+            return MC_RX_PATH_UNKNOWN; /* malformed — hops travelled is negative */
+        }
+        return (pkt->hop_limit == pkt->hop_start) ? MC_RX_PATH_DIRECT : MC_RX_PATH_INDIRECT;
+    }
+
+    /* hop_start == 0: genuinely a zero-hop-limit packet (which cannot have
+     * been relayed, hence direct), or an old sender that never populated
+     * the field. Only the sender's bitfield distinguishes them. */
+    if (has_decoded_bitfield && pkt->hop_limit == 0u) {
+        return MC_RX_PATH_DIRECT;
+    }
+    return MC_RX_PATH_UNKNOWN;
+}
+
+static void mc_emit_rx_meta(mc_client_t *c, meshtastic_MeshPacket const *pkt,
+                             bool has_decoded_bitfield)
+{
+    if (c->events.on_rx_meta == NULL || pkt->from == 0u) {
+        return;
+    }
+
+    mc_rx_meta_t m;
+    memset(&m, 0, sizeof(m));
+
+    m.has_rssi = pkt->has_rx_rssi;
+    if (pkt->has_rx_rssi) {
+        /* int32 on the wire, int16 here: real RSSI lives in roughly
+         * [-150, +20] dBm, but clamp rather than let a bogus/huge value
+         * wrap into a plausible-looking reading. */
+        int32_t r = pkt->rx_rssi;
+        if (r > INT16_MAX) {
+            r = INT16_MAX;
+        } else if (r < INT16_MIN) {
+            r = INT16_MIN;
+        }
+        m.rssi_dbm = (int16_t)r;
+    }
+
+    /* rx_snr has implicit presence: exactly 0.0 is indistinguishable from
+     * absent, so we report it as unknown. See the mc_rx_meta_t doc comment
+     * — under-claim rather than fabricate. */
+    m.has_snr = (pkt->rx_snr != 0.0f);
+    m.snr_db = pkt->rx_snr;
+
+    m.rx_path = mc_rx_path_from_pkt(pkt, has_decoded_bitfield);
+
+    c->events.on_rx_meta(c->events.user, pkt->from, &m);
 }
 
 static bool mc_write_bytes(mc_client_t *c, uint8_t const *buf, size_t len)
@@ -142,13 +240,23 @@ static void mc_process_mesh_packet(mc_client_t *c, meshtastic_MeshPacket const *
 {
     if (pkt->which_payload_variant != meshtastic_MeshPacket_decoded_tag) {
         /* Encrypted — we have no keys, and decode scope v1 doesn't cover
-         * it anyway. Counted, not an error. */
+         * it anyway. Counted, not an error. The radio still measured the
+         * signal that carried it, though, so the reception metadata is
+         * both valid and useful (see mc_events_t.on_rx_meta): an encrypted
+         * packet is a perfectly good RSSI sample even when its contents
+         * are not. Without the decoded Data we cannot inspect `bitfield`,
+         * so hop_start == 0 stays MC_RX_PATH_UNKNOWN here. */
+        mc_emit_rx_meta(c, pkt, false);
         c->stats.decode_skipped++;
         return;
     }
 
     meshtastic_Data const *d = &pkt->payload_variant.decoded;
     uint32_t portnum = (uint32_t)d->portnum;
+
+    /* Fires before any payload event, per the on_rx_meta ordering
+     * guarantee, and regardless of whether the portnum is in decode scope. */
+    mc_emit_rx_meta(c, pkt, d->has_bitfield);
 
     if (portnum == (uint32_t)meshtastic_PortNum_TEXT_MESSAGE_APP) {
         if (c->events.on_text != NULL) {
@@ -228,6 +336,28 @@ static void mc_process_from_radio(mc_client_t *c, meshtastic_FromRadio const *fr
         }
 
         out.last_heard = ni->last_heard;
+
+        /* NodeInfo carries its own hop summary with *explicit* presence
+         * (has_hops_away), so unlike MeshPacket.hop_start there is no
+         * old-firmware ambiguity to resolve — absent simply means the
+         * nodeDB never recorded one, which is UNKNOWN, not DIRECT.
+         *
+         * Deliberately NOT surfaced from this path: NodeInfo.snr. It is a
+         * cached "SNR of the last message we heard from this node" with
+         * implicit presence and no rx timestamp of its own — and this
+         * path already hardcodes has_rx_time = false precisely because a
+         * want_config replay carries no reception time. A signal reading
+         * that cannot be timestamped cannot feed a 5-second trend window,
+         * and exposing it would invite exactly the mistake this PR is
+         * about: treating replayed history as a live measurement. Live
+         * SNR arrives per-packet via on_rx_meta instead. */
+        if (ni->via_mqtt) {
+            out.rx_path = MC_RX_PATH_INDIRECT;
+        } else if (ni->has_hops_away) {
+            out.rx_path = (ni->hops_away == 0u) ? MC_RX_PATH_DIRECT : MC_RX_PATH_INDIRECT;
+        } else {
+            out.rx_path = MC_RX_PATH_UNKNOWN;
+        }
 
         if (c->events.on_node != NULL) {
             c->events.on_node(c->events.user, &out);

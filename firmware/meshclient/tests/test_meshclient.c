@@ -157,6 +157,20 @@ typedef struct {
 
     bool got_my_info;
     uint32_t my_node_id;
+
+    struct {
+        uint32_t from;
+        mc_rx_meta_t meta;
+        int seq; /* dispatch order, shared with positions/texts below */
+    } rx_metas[8];
+    int rx_meta_count;
+
+    /* Monotonic counter stamped by every callback that participates in the
+     * on_rx_meta ordering guarantee, so a test can assert "meta first". */
+    int seq_next;
+    int first_position_seq;
+    int first_text_seq;
+    int first_private_seq;
 } events_capture_t;
 
 static void cap_on_state(void *u, mc_state_t s)
@@ -178,6 +192,10 @@ static void cap_on_node(void *u, mc_nodeinfo_t const *n)
 static void cap_on_position(void *u, uint32_t node, mc_position_t const *p)
 {
     events_capture_t *c = (events_capture_t *)u;
+    if (c->position_count == 0) {
+        c->first_position_seq = c->seq_next;
+    }
+    c->seq_next++;
     if (c->position_count < (int)(sizeof(c->positions) / sizeof(c->positions[0]))) {
         c->positions[c->position_count].node = node;
         c->positions[c->position_count].pos = *p;
@@ -185,9 +203,25 @@ static void cap_on_position(void *u, uint32_t node, mc_position_t const *p)
     }
 }
 
+static void cap_on_rx_meta(void *u, uint32_t from, mc_rx_meta_t const *m)
+{
+    events_capture_t *c = (events_capture_t *)u;
+    int seq = c->seq_next++;
+    if (c->rx_meta_count < (int)(sizeof(c->rx_metas) / sizeof(c->rx_metas[0]))) {
+        c->rx_metas[c->rx_meta_count].from = from;
+        c->rx_metas[c->rx_meta_count].meta = *m;
+        c->rx_metas[c->rx_meta_count].seq = seq;
+        c->rx_meta_count++;
+    }
+}
+
 static void cap_on_text(void *u, uint32_t from, uint32_t to, char const *utf8, size_t len)
 {
     events_capture_t *c = (events_capture_t *)u;
+    if (c->text_count == 0) {
+        c->first_text_seq = c->seq_next;
+    }
+    c->seq_next++;
     if (c->text_count < (int)(sizeof(c->texts) / sizeof(c->texts[0]))) {
         c->texts[c->text_count].from = from;
         c->texts[c->text_count].to = to;
@@ -202,6 +236,10 @@ static void cap_on_text(void *u, uint32_t from, uint32_t to, char const *utf8, s
 static void cap_on_private(void *u, uint32_t from, uint32_t portnum, uint8_t const *payload, size_t len)
 {
     events_capture_t *c = (events_capture_t *)u;
+    if (c->private_count == 0) {
+        c->first_private_seq = c->seq_next;
+    }
+    c->seq_next++;
     if (c->private_count < (int)(sizeof(c->privates) / sizeof(c->privates[0]))) {
         c->privates[c->private_count].from = from;
         c->privates[c->private_count].portnum = portnum;
@@ -229,6 +267,7 @@ static mc_events_t make_events(events_capture_t *cap)
     ev.on_text = cap_on_text;
     ev.on_private = cap_on_private;
     ev.on_my_info = cap_on_my_info;
+    ev.on_rx_meta = cap_on_rx_meta;
     ev.user = cap;
     return ev;
 }
@@ -1016,6 +1055,543 @@ static void S03_AC8_fuzz_smoke_10k_random_frames_no_crash(void)
 }
 
 /* -------------------------------------------------------------------- */
+/* AC9/AC10 shared builder — a fully parameterized MeshPacket frame      */
+/* -------------------------------------------------------------------- */
+
+/* One knob per wire field the two new features read, so each test names
+ * exactly the packet shape it is pinning and nothing else. Zero-init gives
+ * "a bare packet that states nothing", which is itself the input for the
+ * absent-field cases. */
+typedef struct {
+    uint32_t from;
+    uint32_t portnum;
+    bool encrypted; /* which_payload_variant = encrypted rather than decoded */
+
+    bool has_rx_rssi;
+    int32_t rx_rssi;
+    float rx_snr;
+
+    uint32_t hop_start;
+    uint32_t hop_limit;
+    bool via_mqtt;
+    bool set_bitfield; /* Data.bitfield present (sender >= 2.5.0) */
+
+    /* POSITION_APP payload knobs (ignored for other portnums). */
+    bool set_loc_source;
+    uint32_t loc_source; /* raw wire value, so tests can inject unknown ones */
+    uint32_t rx_time;
+} pkt_spec_t;
+
+static bool encode_encrypted_blob(pb_ostream_t *stream, pb_field_t const *field, void *const *arg)
+{
+    static uint8_t const blob[4] = {0xDE, 0xAD, 0xBE, 0xEF};
+    (void)arg;
+    if (!pb_encode_tag_for_field(stream, field)) {
+        return false;
+    }
+    return pb_encode_string(stream, blob, sizeof(blob));
+}
+
+static uint16_t build_spec_frame(pkt_spec_t const *s, uint8_t *out, size_t out_cap)
+{
+    meshtastic_FromRadio fr = meshtastic_FromRadio_init_zero;
+    fr.which_payload_variant = meshtastic_FromRadio_packet_tag;
+
+    meshtastic_MeshPacket *pkt = &fr.payload_variant.packet;
+    pkt->from = s->from;
+    pkt->to = MC_ADDR_BROADCAST;
+    pkt->id = 4242u;
+    pkt->has_rx_rssi = s->has_rx_rssi;
+    pkt->rx_rssi = s->rx_rssi;
+    pkt->rx_snr = s->rx_snr;
+    pkt->hop_start = s->hop_start;
+    pkt->hop_limit = s->hop_limit;
+    pkt->via_mqtt = s->via_mqtt;
+    if (s->rx_time != 0u) {
+        pkt->has_rx_time = true;
+        pkt->rx_time = s->rx_time;
+    }
+
+    if (s->encrypted) {
+        /* MeshPacket.encrypted is deliberately left as an uninstalled
+         * pb_callback_t by mc_nanopb.options (encrypted payloads are out
+         * of decode scope v1), so the test has to supply an encode
+         * callback rather than filling a static byte array. */
+        pkt->which_payload_variant = meshtastic_MeshPacket_encrypted_tag;
+        pkt->payload_variant.encrypted.funcs.encode = encode_encrypted_blob;
+    } else {
+        pkt->which_payload_variant = meshtastic_MeshPacket_decoded_tag;
+        meshtastic_Data *d = &pkt->payload_variant.decoded;
+        d->portnum = (meshtastic_PortNum)s->portnum;
+        d->has_bitfield = s->set_bitfield;
+        d->bitfield = s->set_bitfield ? 1u : 0u;
+
+        if (s->portnum == (uint32_t)meshtastic_PortNum_POSITION_APP) {
+            meshtastic_Position pos = meshtastic_Position_init_zero;
+            pos.has_latitude_i = true;
+            pos.latitude_i = 407128000;
+            pos.has_longitude_i = true;
+            pos.longitude_i = -740060000;
+            if (s->set_loc_source) {
+                pos.location_source = (meshtastic_Position_LocSource)s->loc_source;
+            }
+            uint8_t pbuf[64];
+            pb_ostream_t pos_os = pb_ostream_from_buffer(pbuf, sizeof(pbuf));
+            if (!pb_encode(&pos_os, meshtastic_Position_fields, &pos)) {
+                return 0;
+            }
+            d->payload.size = (pb_size_t)pos_os.bytes_written;
+            memcpy(d->payload.bytes, pbuf, pos_os.bytes_written);
+        } else {
+            char const *txt = "hi";
+            d->payload.size = (pb_size_t)strlen(txt);
+            memcpy(d->payload.bytes, txt, strlen(txt));
+        }
+    }
+
+    uint8_t buf[400];
+    pb_ostream_t os = pb_ostream_from_buffer(buf, sizeof(buf));
+    if (!pb_encode(&os, meshtastic_FromRadio_fields, &fr)) {
+        return 0;
+    }
+    return mc_frame_encode(out, out_cap, buf, (uint16_t)os.bytes_written);
+}
+
+/* Runs one spec'd packet through a READY client and hands back the capture. */
+static void run_spec(pkt_spec_t const *s, events_capture_t *cap)
+{
+    uint8_t frame[512];
+    uint16_t flen = build_spec_frame(s, frame, sizeof(frame));
+    TEST_ASSERT_TRUE(flen > 0);
+
+    mock_io_t io;
+    mock_io_reset(&io);
+    io.rx_data = frame;
+    io.rx_len = flen;
+
+    mock_clock_t clk = {.t = 0};
+    ff_clock_t clock = {.now_ms = mock_now, .user = &clk};
+    memset(cap, 0, sizeof(*cap));
+
+    mc_client_t c;
+    mc_init(&c, (mc_transport_t){.write = mock_write, .read = mock_read, .io = &io}, make_events(cap),
+             &clock);
+    c.state = MC_STATE_READY;
+
+    mc_tick(&c, 5);
+}
+
+/* -------------------------------------------------------------------- */
+/* AC9 — position provenance (issue #33)                                 */
+/* -------------------------------------------------------------------- */
+
+static void run_loc_source_case(bool set_field, uint32_t wire_value, mc_loc_source_t expect)
+{
+    pkt_spec_t s = {
+        .from = 0x0A0A0A0Au,
+        .portnum = (uint32_t)meshtastic_PortNum_POSITION_APP,
+        .set_loc_source = set_field,
+        .loc_source = wire_value,
+    };
+    events_capture_t cap;
+    run_spec(&s, &cap);
+
+    TEST_ASSERT_EQUAL_INT(1, cap.position_count);
+    TEST_ASSERT_EQUAL_INT((int)expect, (int)cap.positions[0].pos.loc_source);
+}
+
+/* The landmark case from issue #33: a fixed-position beacon asserts its
+ * location rather than measuring it, and that must survive to the caller. */
+static void S03_AC9_position_loc_source_manual_is_carried_through(void)
+{
+    run_loc_source_case(true, (uint32_t)meshtastic_Position_LocSource_LOC_MANUAL, MC_LOC_MANUAL);
+}
+
+static void S03_AC9_position_loc_source_internal_is_carried_through(void)
+{
+    run_loc_source_case(true, (uint32_t)meshtastic_Position_LocSource_LOC_INTERNAL, MC_LOC_INTERNAL);
+}
+
+static void S03_AC9_position_loc_source_external_is_carried_through(void)
+{
+    run_loc_source_case(true, (uint32_t)meshtastic_Position_LocSource_LOC_EXTERNAL, MC_LOC_EXTERNAL);
+}
+
+/* The absent-field case, and the one that matters most for honesty: a
+ * sender that says nothing must NOT be reported as a GPS measurement. */
+static void S03_AC9_position_absent_loc_source_is_unknown_not_internal(void)
+{
+    run_loc_source_case(false, 0u, MC_LOC_UNKNOWN);
+}
+
+/* LOC_UNSET explicitly on the wire is indistinguishable from absent (proto3
+ * implicit presence) and must land on the same value — pinned so nobody
+ * "helpfully" adds a has_loc_source flag that claims to tell them apart. */
+static void S03_AC9_position_explicit_loc_unset_is_unknown(void)
+{
+    run_loc_source_case(true, (uint32_t)meshtastic_Position_LocSource_LOC_UNSET, MC_LOC_UNKNOWN);
+}
+
+/* Forward compatibility: a LocSource member added by future firmware must
+ * degrade to UNKNOWN, never leak through as a raw number that core would
+ * then compare against its own enum. */
+static void S03_AC9_unknown_wire_loc_source_folds_to_unknown(void)
+{
+    run_loc_source_case(true, 99u, MC_LOC_UNKNOWN);
+}
+
+/* Provenance must also survive the nodeDB replay path, not just live
+ * packets — a landmark beacon is typically first seen in the want_config
+ * dump, which is exactly where mc_client.c already drops rx_time. */
+static void S03_AC9_nodeinfo_position_carries_loc_source(void)
+{
+    meshtastic_FromRadio fr = meshtastic_FromRadio_init_zero;
+    fr.which_payload_variant = meshtastic_FromRadio_node_info_tag;
+    fr.payload_variant.node_info.num = 0x0C0C0C0Cu;
+    fr.payload_variant.node_info.has_position = true;
+    fr.payload_variant.node_info.position.has_latitude_i = true;
+    fr.payload_variant.node_info.position.latitude_i = 407128000;
+    fr.payload_variant.node_info.position.has_longitude_i = true;
+    fr.payload_variant.node_info.position.longitude_i = -740060000;
+    fr.payload_variant.node_info.position.location_source =
+        meshtastic_Position_LocSource_LOC_MANUAL;
+
+    uint8_t buf[300];
+    pb_ostream_t os = pb_ostream_from_buffer(buf, sizeof(buf));
+    TEST_ASSERT_TRUE(pb_encode(&os, meshtastic_FromRadio_fields, &fr));
+
+    uint8_t frame[400];
+    uint16_t flen = mc_frame_encode(frame, sizeof(frame), buf, (uint16_t)os.bytes_written);
+    TEST_ASSERT_TRUE(flen > 0);
+
+    mock_io_t io;
+    mock_io_reset(&io);
+    io.rx_data = frame;
+    io.rx_len = flen;
+
+    mock_clock_t clk = {.t = 0};
+    ff_clock_t clock = {.now_ms = mock_now, .user = &clk};
+    events_capture_t cap;
+    memset(&cap, 0, sizeof(cap));
+
+    mc_client_t c;
+    mc_init(&c, (mc_transport_t){.write = mock_write, .read = mock_read, .io = &io}, make_events(&cap),
+             &clock);
+    c.state = MC_STATE_READY;
+    mc_tick(&c, 5);
+
+    TEST_ASSERT_EQUAL_INT(1, cap.node_count);
+    TEST_ASSERT_TRUE(cap.nodes[0].has_position);
+    TEST_ASSERT_EQUAL_INT((int)MC_LOC_MANUAL, (int)cap.nodes[0].position.loc_source);
+    /* Unchanged pre-existing behavior, re-pinned here because #33's whole
+     * premise is that this replay has no reception time of its own. */
+    TEST_ASSERT_FALSE(cap.nodes[0].position.has_rx_time);
+}
+
+/* NodeInfo's own hop summary uses explicit presence, so absent must read
+ * UNKNOWN rather than being folded into "0 hops away = direct". */
+static void run_nodeinfo_hops_case(bool has_hops, uint32_t hops, bool via_mqtt, mc_rx_path_t expect)
+{
+    meshtastic_FromRadio fr = meshtastic_FromRadio_init_zero;
+    fr.which_payload_variant = meshtastic_FromRadio_node_info_tag;
+    fr.payload_variant.node_info.num = 0x0D0D0D0Du;
+    fr.payload_variant.node_info.has_hops_away = has_hops;
+    fr.payload_variant.node_info.hops_away = hops;
+    fr.payload_variant.node_info.via_mqtt = via_mqtt;
+
+    uint8_t buf[300];
+    pb_ostream_t os = pb_ostream_from_buffer(buf, sizeof(buf));
+    TEST_ASSERT_TRUE(pb_encode(&os, meshtastic_FromRadio_fields, &fr));
+
+    uint8_t frame[400];
+    uint16_t flen = mc_frame_encode(frame, sizeof(frame), buf, (uint16_t)os.bytes_written);
+    TEST_ASSERT_TRUE(flen > 0);
+
+    mock_io_t io;
+    mock_io_reset(&io);
+    io.rx_data = frame;
+    io.rx_len = flen;
+
+    mock_clock_t clk = {.t = 0};
+    ff_clock_t clock = {.now_ms = mock_now, .user = &clk};
+    events_capture_t cap;
+    memset(&cap, 0, sizeof(cap));
+
+    mc_client_t c;
+    mc_init(&c, (mc_transport_t){.write = mock_write, .read = mock_read, .io = &io}, make_events(&cap),
+             &clock);
+    c.state = MC_STATE_READY;
+    mc_tick(&c, 5);
+
+    TEST_ASSERT_EQUAL_INT(1, cap.node_count);
+    TEST_ASSERT_EQUAL_INT((int)expect, (int)cap.nodes[0].rx_path);
+}
+
+static void S03_AC9_nodeinfo_absent_hops_away_is_unknown_path(void)
+{
+    run_nodeinfo_hops_case(false, 0u, false, MC_RX_PATH_UNKNOWN);
+}
+
+static void S03_AC9_nodeinfo_zero_hops_away_is_direct_path(void)
+{
+    run_nodeinfo_hops_case(true, 0u, false, MC_RX_PATH_DIRECT);
+}
+
+static void S03_AC9_nodeinfo_nonzero_hops_away_is_indirect_path(void)
+{
+    run_nodeinfo_hops_case(true, 2u, false, MC_RX_PATH_INDIRECT);
+}
+
+static void S03_AC9_nodeinfo_via_mqtt_is_indirect_even_at_zero_hops(void)
+{
+    run_nodeinfo_hops_case(true, 0u, true, MC_RX_PATH_INDIRECT);
+}
+
+/* -------------------------------------------------------------------- */
+/* AC10 — per-packet RSSI/SNR + hop path (issue #35)                     */
+/* -------------------------------------------------------------------- */
+
+static void S03_AC10_rx_meta_carries_rssi_and_snr(void)
+{
+    pkt_spec_t s = {
+        .from = 0x0A0A0A0Au,
+        .portnum = (uint32_t)meshtastic_PortNum_TEXT_MESSAGE_APP,
+        .has_rx_rssi = true,
+        .rx_rssi = -47,
+        .rx_snr = 6.25f,
+        .hop_start = 3u,
+        .hop_limit = 3u,
+    };
+    events_capture_t cap;
+    run_spec(&s, &cap);
+
+    TEST_ASSERT_EQUAL_INT(1, cap.rx_meta_count);
+    TEST_ASSERT_EQUAL_UINT32(0x0A0A0A0Au, cap.rx_metas[0].from);
+    TEST_ASSERT_TRUE(cap.rx_metas[0].meta.has_rssi);
+    TEST_ASSERT_EQUAL_INT16(-47, cap.rx_metas[0].meta.rssi_dbm);
+    TEST_ASSERT_TRUE(cap.rx_metas[0].meta.has_snr);
+    TEST_ASSERT_EQUAL_FLOAT(6.25f, cap.rx_metas[0].meta.snr_db);
+    TEST_ASSERT_EQUAL_INT((int)MC_RX_PATH_DIRECT, (int)cap.rx_metas[0].meta.rx_path);
+}
+
+/* The absent-field case for RSSI: a packet with no rx_rssi must report
+ * has_rssi == false, NOT a plausible-looking 0 dBm. */
+static void S03_AC10_absent_rssi_is_flagged_absent_not_zero(void)
+{
+    pkt_spec_t s = {
+        .from = 0x0A0A0A0Au,
+        .portnum = (uint32_t)meshtastic_PortNum_TEXT_MESSAGE_APP,
+        .has_rx_rssi = false,
+    };
+    events_capture_t cap;
+    run_spec(&s, &cap);
+
+    TEST_ASSERT_EQUAL_INT(1, cap.rx_meta_count);
+    TEST_ASSERT_FALSE(cap.rx_metas[0].meta.has_rssi);
+}
+
+/* The reason has_rssi exists at all rather than an in-band sentinel: 0 dBm
+ * is a real reading some radios genuinely report, so it must survive as a
+ * present value. This is the test that would fail if someone "simplified"
+ * the flag away into a magic number. */
+static void S03_AC10_rssi_of_exactly_zero_dbm_is_a_present_reading(void)
+{
+    pkt_spec_t s = {
+        .from = 0x0A0A0A0Au,
+        .portnum = (uint32_t)meshtastic_PortNum_TEXT_MESSAGE_APP,
+        .has_rx_rssi = true,
+        .rx_rssi = 0,
+    };
+    events_capture_t cap;
+    run_spec(&s, &cap);
+
+    TEST_ASSERT_EQUAL_INT(1, cap.rx_meta_count);
+    TEST_ASSERT_TRUE(cap.rx_metas[0].meta.has_rssi);
+    TEST_ASSERT_EQUAL_INT16(0, cap.rx_metas[0].meta.rssi_dbm);
+}
+
+/* SNR has no presence flag on the wire, so 0.0 is unrecoverable. Pinning
+ * the documented under-claiming choice: report unknown, never fabricate. */
+static void S03_AC10_snr_of_exactly_zero_reports_unknown(void)
+{
+    pkt_spec_t s = {
+        .from = 0x0A0A0A0Au,
+        .portnum = (uint32_t)meshtastic_PortNum_TEXT_MESSAGE_APP,
+        .rx_snr = 0.0f,
+    };
+    events_capture_t cap;
+    run_spec(&s, &cap);
+
+    TEST_ASSERT_EQUAL_INT(1, cap.rx_meta_count);
+    TEST_ASSERT_FALSE(cap.rx_metas[0].meta.has_snr);
+}
+
+static void run_rx_path_case(uint32_t hop_start, uint32_t hop_limit, bool via_mqtt, bool set_bitfield,
+                              mc_rx_path_t expect)
+{
+    pkt_spec_t s = {
+        .from = 0x0A0A0A0Au,
+        .portnum = (uint32_t)meshtastic_PortNum_TEXT_MESSAGE_APP,
+        .hop_start = hop_start,
+        .hop_limit = hop_limit,
+        .via_mqtt = via_mqtt,
+        .set_bitfield = set_bitfield,
+    };
+    events_capture_t cap;
+    run_spec(&s, &cap);
+
+    TEST_ASSERT_EQUAL_INT(1, cap.rx_meta_count);
+    TEST_ASSERT_EQUAL_INT((int)expect, (int)cap.rx_metas[0].meta.rx_path);
+}
+
+static void S03_AC10_hops_travelled_zero_is_direct(void)
+{
+    run_rx_path_case(3u, 3u, false, false, MC_RX_PATH_DIRECT);
+}
+
+static void S03_AC10_hops_travelled_nonzero_is_indirect(void)
+{
+    run_rx_path_case(3u, 1u, false, false, MC_RX_PATH_INDIRECT);
+}
+
+/* The trap this qualifier exists for: pre-2.3.0 firmware never populated
+ * hop_start, so a bare hop_start == 0 must read UNKNOWN. Reading it as
+ * DIRECT would attribute a relay's signal strength to a distant friend. */
+static void S03_AC10_hop_start_zero_without_bitfield_is_unknown(void)
+{
+    run_rx_path_case(0u, 0u, false, false, MC_RX_PATH_UNKNOWN);
+}
+
+/* ...and the sender's bitfield (>= 2.5.0) is what licenses trusting it. */
+static void S03_AC10_hop_start_zero_with_bitfield_is_direct(void)
+{
+    run_rx_path_case(0u, 0u, false, true, MC_RX_PATH_DIRECT);
+}
+
+/* Malformed: more hop_limit than we started with. Refuse to guess. */
+static void S03_AC10_hop_limit_exceeding_hop_start_is_unknown(void)
+{
+    run_rx_path_case(2u, 5u, false, false, MC_RX_PATH_UNKNOWN);
+}
+
+/* Arrived over the internet — our radio never heard this sender at all,
+ * so no hop arithmetic can make it direct. */
+static void S03_AC10_via_mqtt_is_indirect_even_when_hops_say_direct(void)
+{
+    run_rx_path_case(3u, 3u, true, true, MC_RX_PATH_INDIRECT);
+}
+
+/* Breadth is the point: RSSI samples must not be limited to the position
+ * path, which broadcasts far too slowly to feed a 5 s trend window. */
+static void S03_AC10_rx_meta_fires_for_out_of_scope_portnum(void)
+{
+    pkt_spec_t s = {
+        .from = 0x0A0A0A0Au,
+        .portnum = (uint32_t)meshtastic_PortNum_TELEMETRY_APP,
+        .has_rx_rssi = true,
+        .rx_rssi = -80,
+    };
+    events_capture_t cap;
+    run_spec(&s, &cap);
+
+    TEST_ASSERT_EQUAL_INT(1, cap.rx_meta_count);
+    TEST_ASSERT_TRUE(cap.rx_metas[0].meta.has_rssi);
+    TEST_ASSERT_EQUAL_INT16(-80, cap.rx_metas[0].meta.rssi_dbm);
+    /* Still counted as out of decode scope — meta is additive, it does not
+     * change what "decoded" means. */
+    TEST_ASSERT_EQUAL_INT(0, cap.text_count);
+    TEST_ASSERT_EQUAL_INT(0, cap.position_count);
+}
+
+static void S03_AC10_rx_meta_fires_for_encrypted_packet(void)
+{
+    pkt_spec_t s = {
+        .from = 0x0A0A0A0Au,
+        .encrypted = true,
+        .has_rx_rssi = true,
+        .rx_rssi = -55,
+    };
+    events_capture_t cap;
+    run_spec(&s, &cap);
+
+    TEST_ASSERT_EQUAL_INT(1, cap.rx_meta_count);
+    TEST_ASSERT_TRUE(cap.rx_metas[0].meta.has_rssi);
+    TEST_ASSERT_EQUAL_INT16(-55, cap.rx_metas[0].meta.rssi_dbm);
+    /* No decoded Data means no bitfield to consult. */
+    TEST_ASSERT_EQUAL_INT((int)MC_RX_PATH_UNKNOWN, (int)cap.rx_metas[0].meta.rx_path);
+}
+
+/* Nobody to attribute the reading to. */
+static void S03_AC10_rx_meta_does_not_fire_when_sender_unknown(void)
+{
+    pkt_spec_t s = {
+        .from = 0u,
+        .portnum = (uint32_t)meshtastic_PortNum_TEXT_MESSAGE_APP,
+        .has_rx_rssi = true,
+        .rx_rssi = -55,
+    };
+    events_capture_t cap;
+    run_spec(&s, &cap);
+
+    TEST_ASSERT_EQUAL_INT(0, cap.rx_meta_count);
+}
+
+/* The documented ordering guarantee, so S16's wiring can correlate meta
+ * with the payload event by `from` without buffering. */
+static void S03_AC10_rx_meta_precedes_the_payload_event(void)
+{
+    pkt_spec_t s = {
+        .from = 0x0A0A0A0Au,
+        .portnum = (uint32_t)meshtastic_PortNum_POSITION_APP,
+        .has_rx_rssi = true,
+        .rx_rssi = -33,
+        .rx_time = 1700000101u,
+    };
+    events_capture_t cap;
+    run_spec(&s, &cap);
+
+    TEST_ASSERT_EQUAL_INT(1, cap.rx_meta_count);
+    TEST_ASSERT_EQUAL_INT(1, cap.position_count);
+    TEST_ASSERT_TRUE(cap.rx_metas[0].seq < cap.first_position_seq);
+}
+
+/* A client that never installs on_rx_meta must be entirely unaffected —
+ * the callback is additive, not a new requirement. */
+static void S03_AC10_null_rx_meta_callback_is_safe(void)
+{
+    pkt_spec_t s = {
+        .from = 0x0A0A0A0Au,
+        .portnum = (uint32_t)meshtastic_PortNum_POSITION_APP,
+        .has_rx_rssi = true,
+        .rx_rssi = -33,
+    };
+    uint8_t frame[512];
+    uint16_t flen = build_spec_frame(&s, frame, sizeof(frame));
+    TEST_ASSERT_TRUE(flen > 0);
+
+    mock_io_t io;
+    mock_io_reset(&io);
+    io.rx_data = frame;
+    io.rx_len = flen;
+
+    mock_clock_t clk = {.t = 0};
+    ff_clock_t clock = {.now_ms = mock_now, .user = &clk};
+    events_capture_t cap;
+    memset(&cap, 0, sizeof(cap));
+
+    mc_events_t ev = make_events(&cap);
+    ev.on_rx_meta = NULL;
+
+    mc_client_t c;
+    mc_init(&c, (mc_transport_t){.write = mock_write, .read = mock_read, .io = &io}, ev, &clock);
+    c.state = MC_STATE_READY;
+    mc_tick(&c, 5);
+
+    TEST_ASSERT_EQUAL_INT(0, cap.rx_meta_count);
+    TEST_ASSERT_EQUAL_INT(1, cap.position_count);
+}
+
+/* -------------------------------------------------------------------- */
 
 int main(void)
 {
@@ -1047,6 +1623,34 @@ int main(void)
     RUN_TEST(S03_AC7_zero_core_or_app_includes);
 
     RUN_TEST(S03_AC8_fuzz_smoke_10k_random_frames_no_crash);
+
+    RUN_TEST(S03_AC9_position_loc_source_manual_is_carried_through);
+    RUN_TEST(S03_AC9_position_loc_source_internal_is_carried_through);
+    RUN_TEST(S03_AC9_position_loc_source_external_is_carried_through);
+    RUN_TEST(S03_AC9_position_absent_loc_source_is_unknown_not_internal);
+    RUN_TEST(S03_AC9_position_explicit_loc_unset_is_unknown);
+    RUN_TEST(S03_AC9_unknown_wire_loc_source_folds_to_unknown);
+    RUN_TEST(S03_AC9_nodeinfo_position_carries_loc_source);
+    RUN_TEST(S03_AC9_nodeinfo_absent_hops_away_is_unknown_path);
+    RUN_TEST(S03_AC9_nodeinfo_zero_hops_away_is_direct_path);
+    RUN_TEST(S03_AC9_nodeinfo_nonzero_hops_away_is_indirect_path);
+    RUN_TEST(S03_AC9_nodeinfo_via_mqtt_is_indirect_even_at_zero_hops);
+
+    RUN_TEST(S03_AC10_rx_meta_carries_rssi_and_snr);
+    RUN_TEST(S03_AC10_absent_rssi_is_flagged_absent_not_zero);
+    RUN_TEST(S03_AC10_rssi_of_exactly_zero_dbm_is_a_present_reading);
+    RUN_TEST(S03_AC10_snr_of_exactly_zero_reports_unknown);
+    RUN_TEST(S03_AC10_hops_travelled_zero_is_direct);
+    RUN_TEST(S03_AC10_hops_travelled_nonzero_is_indirect);
+    RUN_TEST(S03_AC10_hop_start_zero_without_bitfield_is_unknown);
+    RUN_TEST(S03_AC10_hop_start_zero_with_bitfield_is_direct);
+    RUN_TEST(S03_AC10_hop_limit_exceeding_hop_start_is_unknown);
+    RUN_TEST(S03_AC10_via_mqtt_is_indirect_even_when_hops_say_direct);
+    RUN_TEST(S03_AC10_rx_meta_fires_for_out_of_scope_portnum);
+    RUN_TEST(S03_AC10_rx_meta_fires_for_encrypted_packet);
+    RUN_TEST(S03_AC10_rx_meta_does_not_fire_when_sender_unknown);
+    RUN_TEST(S03_AC10_rx_meta_precedes_the_payload_event);
+    RUN_TEST(S03_AC10_null_rx_meta_callback_is_safe);
 
     return UNITY_END();
 }
