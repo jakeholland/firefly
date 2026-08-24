@@ -235,28 +235,49 @@ static bool fx_bool(fx_ctx_t const *c, int i, bool dflt)
     return dflt;
 }
 
-/* String -> enum lookup over a {name, value} table. Returns `dflt` if the
- * token isn't a string or matches no table entry (unrecognized enum
- * strings are a fixture-authoring bug, not a parse failure — fixtures are
- * dev data, so this loader degrades to the documented default rather
- * than rejecting the whole file, matching festpack's "tolerant" style
- * for anything that isn't a hard structural error). */
+/* String -> enum lookup over a {name, value} table. Fail-loud (issue
+ * #28, orchestrator ruling — this used to silently return a default on
+ * anything unrecognized): fixtures aren't just dev convenience, they're
+ * the inputs to the golden suite, so a typo'd enum string ("mixxed",
+ * "no-pack") didn't fail, it silently rendered a DIFFERENT state and
+ * then committed that as the golden — a test green forever about the
+ * wrong screen. Dev data that's wrong now refuses to load, with a
+ * one-line stderr diagnostic naming the bad key and value, consistent
+ * with the loader's existing FF_FIXTURE_ERR_TOO_BIG treatment of
+ * over-cap arrays (tolerant enums were the inconsistent case within the
+ * same file, not a deliberate global stance).
+ *
+ * On a match, writes the mapped value to *out and returns FF_FIXTURE_OK;
+ * on an unmatched string OR a non-string token, prints the diagnostic
+ * and returns FF_FIXTURE_ERR_BAD_ENUM. An ABSENT key never reaches this
+ * function — callers only invoke it after fx_obj_get found the key — so
+ * every "field omitted -> documented default" behavior is unchanged
+ * (absent != malformed; see tests/fixtures/README.md). */
 typedef struct {
     char const *name;
     int value;
 } fx_enum_entry_t;
 
-static int fx_enum(fx_ctx_t const *c, int i, fx_enum_entry_t const *table, size_t n_entries, int dflt)
+static ff_fixture_result_t fx_enum(fx_ctx_t const *c, int i, fx_enum_entry_t const *table, size_t n_entries,
+                                   char const *key, int *out)
 {
-    if (i < 0 || i >= c->ntoks) return dflt;
-    jsmntok_t const *t = &c->toks[i];
-    if (t->type != JSMN_STRING) return dflt;
-    int n = t->end - t->start;
-    for (size_t k = 0; k < n_entries; k++) {
-        size_t slen = strlen(table[k].name);
-        if ((size_t)n == slen && memcmp(c->js + t->start, table[k].name, slen) == 0) return table[k].value;
+    if (i >= 0 && i < c->ntoks) {
+        jsmntok_t const *t = &c->toks[i];
+        if (t->type == JSMN_STRING) {
+            int n = t->end - t->start;
+            for (size_t k = 0; k < n_entries; k++) {
+                size_t slen = strlen(table[k].name);
+                if ((size_t)n == slen && memcmp(c->js + t->start, table[k].name, slen) == 0) {
+                    *out = table[k].value;
+                    return FF_FIXTURE_OK;
+                }
+            }
+            fprintf(stderr, "fixture: unrecognized value \"%.*s\" for key \"%s\"\n", n, c->js + t->start, key);
+            return FF_FIXTURE_ERR_BAD_ENUM;
+        }
     }
-    return dflt;
+    fprintf(stderr, "fixture: key \"%s\" must be a string enum, got a non-string value\n", key);
+    return FF_FIXTURE_ERR_BAD_ENUM;
 }
 
 static int fx_hex_nibble(char ch)
@@ -375,8 +396,12 @@ static ff_fixture_result_t fx_parse_radar(fx_ctx_t const *c, int obj_i, ff_radar
 {
     int t;
     if (fx_obj_get(c, obj_i, "mode", &t)) {
-        r->mode = (radar_mode_t)fx_enum(c, t, fx_radar_mode_table,
-                                         sizeof(fx_radar_mode_table) / sizeof(fx_radar_mode_table[0]), RADAR_NOSEL);
+        int v;
+        ff_fixture_result_t rc = fx_enum(c, t, fx_radar_mode_table,
+                                          sizeof(fx_radar_mode_table) / sizeof(fx_radar_mode_table[0]),
+                                          "radar.mode", &v);
+        if (rc != FF_FIXTURE_OK) return rc;
+        r->mode = (radar_mode_t)v;
     }
     if (fx_obj_get(c, obj_i, "arrow_deg", &t)) r->arrow_deg = (float)fx_num(c, t, 0.0);
     if (fx_obj_get(c, obj_i, "arrow_valid", &t)) r->arrow_valid = fx_bool(c, t, false);
@@ -424,10 +449,11 @@ static void fx_parse_lineup_item(fx_ctx_t const *c, int obj_i, ff_app_lineup_ite
 
 /* PR #21 code review finding #2/ruling: `now.state` replaces the earlier
  * `pack_loaded`+`tbd` bool pair, same string-enum convention as
- * fx_radar_mode_table above. Absent/unrecognized -> NOW_NO_PACK (the
- * enum's zero value — see now_state_t's own doc comment for why that's
- * the correct default, same reasoning as radar.mode's RADAR_NOSEL
- * default). */
+ * fx_radar_mode_table above. Absent -> NOW_NO_PACK (the enum's zero
+ * value — see now_state_t's own doc comment for why that's the correct
+ * default, same reasoning as radar.mode's RADAR_NOSEL default).
+ * Unrecognized -> FF_FIXTURE_ERR_BAD_ENUM as of issue #28 (it used to
+ * silently take the same default; see fx_enum's doc comment). */
 static const fx_enum_entry_t fx_now_state_table[] = {
     {"no_pack", NOW_NO_PACK},
     {"tbd", NOW_TBD},
@@ -444,8 +470,12 @@ static ff_fixture_result_t fx_parse_now(fx_ctx_t const *c, int obj_i, ff_app_now
 {
     int t;
     if (fx_obj_get(c, obj_i, "state", &t)) {
-        now->state = (now_state_t)fx_enum(c, t, fx_now_state_table,
-                                           sizeof(fx_now_state_table) / sizeof(fx_now_state_table[0]), NOW_NO_PACK);
+        int v;
+        ff_fixture_result_t rc = fx_enum(c, t, fx_now_state_table,
+                                          sizeof(fx_now_state_table) / sizeof(fx_now_state_table[0]),
+                                          "now.state", &v);
+        if (rc != FF_FIXTURE_OK) return rc;
+        now->state = (now_state_t)v;
     }
 
     int rows_i;
@@ -510,10 +540,14 @@ static ff_fixture_result_t fx_parse_signals(fx_ctx_t const *c, int obj_i, ff_app
             ff_app_feed_item_t *it = &sig->items[sig->n_items];
             memset(it, 0, sizeof(*it));
             int kt;
-            if (fx_obj_get(c, item_i, "kind", &kt))
-                it->kind = (ff_app_feed_kind_t)fx_enum(c, kt, fx_feed_kind_table,
-                                                        sizeof(fx_feed_kind_table) / sizeof(fx_feed_kind_table[0]),
-                                                        FF_APP_FEED_TEXT);
+            if (fx_obj_get(c, item_i, "kind", &kt)) {
+                int v;
+                ff_fixture_result_t rc = fx_enum(c, kt, fx_feed_kind_table,
+                                                  sizeof(fx_feed_kind_table) / sizeof(fx_feed_kind_table[0]),
+                                                  "signals.items[].kind", &v);
+                if (rc != FF_FIXTURE_OK) return rc;
+                it->kind = (ff_app_feed_kind_t)v;
+            }
             if (fx_obj_get(c, item_i, "from_name", &kt)) fx_copy_str(c, kt, it->from_name, sizeof(it->from_name));
             if (fx_obj_get(c, item_i, "text", &kt)) fx_copy_str(c, kt, it->text, sizeof(it->text));
             if (fx_obj_get(c, item_i, "age_str", &kt)) fx_copy_str(c, kt, it->age_str, sizeof(it->age_str));
@@ -532,16 +566,23 @@ static const fx_enum_entry_t fx_compose_mode_table[] = {
     {"sym", FF_APP_COMPOSE_SYM},
 };
 
-static void fx_parse_compose(fx_ctx_t const *c, int obj_i, ff_app_compose_t *cp)
+/* Returns non-OK only for a present-but-unrecognized `mode` (issue #28 —
+ * see fx_enum's doc comment); every other field stays tolerant. */
+static ff_fixture_result_t fx_parse_compose(fx_ctx_t const *c, int obj_i, ff_app_compose_t *cp)
 {
     int t;
     if (fx_obj_get(c, obj_i, "text", &t)) fx_copy_str(c, t, cp->text, sizeof(cp->text));
     if (fx_obj_get(c, obj_i, "to_name", &t)) fx_copy_str(c, t, cp->to_name, sizeof(cp->to_name));
     if (fx_obj_get(c, obj_i, "has_pending", &t)) cp->has_pending = fx_bool(c, t, false);
-    if (fx_obj_get(c, obj_i, "mode", &t))
-        cp->mode = (ff_app_compose_mode_t)fx_enum(c, t, fx_compose_mode_table,
-                                                    sizeof(fx_compose_mode_table) / sizeof(fx_compose_mode_table[0]),
-                                                    FF_APP_COMPOSE_ABC);
+    if (fx_obj_get(c, obj_i, "mode", &t)) {
+        int v;
+        ff_fixture_result_t rc = fx_enum(c, t, fx_compose_mode_table,
+                                          sizeof(fx_compose_mode_table) / sizeof(fx_compose_mode_table[0]),
+                                          "compose.mode", &v);
+        if (rc != FF_FIXTURE_OK) return rc;
+        cp->mode = (ff_app_compose_mode_t)v;
+    }
+    return FF_FIXTURE_OK;
 }
 
 /* fx_parse_flare — [api] S10 slice b: the three independent groups on
@@ -594,19 +635,27 @@ static const fx_enum_entry_t fx_share_mode_table[] = {
     {"live", 0}, {"zones", 1}, {"ghost", 2},
 };
 
-static void fx_parse_settings(fx_ctx_t const *c, int obj_i, ff_app_settings_t *s)
+/* Returns non-OK only for a present-but-unrecognized `share_mode`
+ * (issue #28 — see fx_enum's doc comment). */
+static ff_fixture_result_t fx_parse_settings(fx_ctx_t const *c, int obj_i, ff_app_settings_t *s)
 {
     int t;
     if (fx_obj_get(c, obj_i, "imperial", &t)) s->imperial = fx_bool(c, t, true);
-    if (fx_obj_get(c, obj_i, "share_mode", &t))
-        s->share_mode = (uint8_t)fx_enum(c, t, fx_share_mode_table,
-                                          sizeof(fx_share_mode_table) / sizeof(fx_share_mode_table[0]), 0);
+    if (fx_obj_get(c, obj_i, "share_mode", &t)) {
+        int v;
+        ff_fixture_result_t rc = fx_enum(c, t, fx_share_mode_table,
+                                          sizeof(fx_share_mode_table) / sizeof(fx_share_mode_table[0]),
+                                          "settings.share_mode", &v);
+        if (rc != FF_FIXTURE_OK) return rc;
+        s->share_mode = (uint8_t)v;
+    }
     if (fx_obj_get(c, obj_i, "haptics", &t)) s->haptics = fx_bool(c, t, true);
     if (fx_obj_get(c, obj_i, "night_glow", &t)) s->night_glow = fx_bool(c, t, true);
     if (fx_obj_get(c, obj_i, "water_min", &t)) s->water_min = (uint16_t)fx_num(c, t, 90.0);
     if (fx_obj_get(c, obj_i, "quiet_from_min", &t)) s->quiet_from_min = (uint16_t)fx_num(c, t, 240.0);
     if (fx_obj_get(c, obj_i, "quiet_to_min", &t)) s->quiet_to_min = (uint16_t)fx_num(c, t, 600.0);
     if (fx_obj_get(c, obj_i, "my_name", &t)) fx_copy_str(c, t, s->my_name, sizeof(s->my_name));
+    return FF_FIXTURE_OK;
 }
 
 static const fx_enum_entry_t fx_face_table[] = {
@@ -655,28 +704,31 @@ ff_fixture_result_t ff_fixture_load_json(char const *json, size_t len, ff_app_st
     /* S16 slice a: `face` defaults to RADAR — and it must STAY RADAR,
      * which runs deliberately AGAINST the "least-claiming first enum
      * member" convention this block otherwise applies (radar.mode above
-     * picks NOSEL over LIVE for exactly that reason). Two things
-     * changed underneath this line and neither would announce itself:
+     * picks NOSEL over LIVE for exactly that reason). Context that
+     * would not announce itself: FF_APP_FACE_NONE = 0 renumbered
+     * ff_app_face_t, so the memset(0) above no longer leaves
+     * active_face on RADAR by coincidence. Without this assignment, a
+     * fixture that omits `face` would silently start rendering as NONE
+     * — which face_dispatch.c routes to the S13 debug placeholder
+     * instead of the real nav shell.
      *
-     *   1. FF_APP_FACE_NONE = 0 renumbered ff_app_face_t, so the
-     *      memset(0) above no longer leaves active_face on RADAR by
-     *      coincidence. Without this assignment, a fixture that omits
-     *      `face` would silently start rendering as NONE — which
-     *      face_dispatch.c routes to the S13 debug placeholder instead
-     *      of the real nav shell.
-     *   2. fx_enum() below degrades silently on an unrecognised face
-     *      string (issue #28), so its RADAR fallback is the only thing
-     *      standing between a typo'd `"face": "radr"` and a blank face.
+     * This default covers ONLY the absent-key case (PR #36's deliberate
+     * exception: absent != malformed). A face string that is present
+     * but unrecognized — the typo'd `"face": "radr"` this fallback once
+     * silently absorbed — now fails the whole load with
+     * FF_FIXTURE_ERR_BAD_ENUM instead (issue #28; see fx_enum's doc
+     * comment and the `face` parse below).
      *
      * RADAR is right here because this is a FIXTURE default, not a
      * claim about live data: every committed fixture names its face
-     * explicitly (all 23 do), so this path is only reached by a
+     * explicitly (all 25 do), so this path is only reached by a
      * hand-written or truncated snapshot, where "show me the home face"
      * is more useful than "show me nothing". NONE would be the honest
      * answer if this field described the world; it describes which
      * screen to draw. Documented in tests/fixtures/README.md's field
      * table and asserted by test_fixture.c's
-     * absent_sections_default_to_zero. */
+     * absent_sections_default_to_zero /
+     * face_absent_still_defaults_to_radar. */
     out->active_face = FF_APP_FACE_RADAR;
     /* Three independent "n/a" defaults (S10 slice b) — see fx_parse_flare's
      * doc comment for why there are three now instead of one. Set here too
@@ -689,15 +741,26 @@ ff_fixture_result_t ff_fixture_load_json(char const *json, size_t len, ff_app_st
 
     int t;
     if (fx_obj_get(&ctx, 0, "fixture", &t)) fx_copy_str(&ctx, t, out->fixture_name, sizeof(out->fixture_name));
-    if (fx_obj_get(&ctx, 0, "face", &t))
-        out->active_face = (ff_app_face_t)fx_enum(&ctx, t, fx_face_table,
-                                                    sizeof(fx_face_table) / sizeof(fx_face_table[0]),
-                                                    FF_APP_FACE_RADAR);
+    if (fx_obj_get(&ctx, 0, "face", &t)) {
+        int v;
+        ff_fixture_result_t rc =
+            fx_enum(&ctx, t, fx_face_table, sizeof(fx_face_table) / sizeof(fx_face_table[0]), "face", &v);
+        if (rc != FF_FIXTURE_OK) {
+            memset(out, 0, sizeof(*out));
+            return rc;
+        }
+        out->active_face = (ff_app_face_t)v;
+    }
+    /* else: the RADAR default set above stands — absent is a documented
+     * default, not a parse failure (PR #36 / issue #28). */
 
     /* radar/now/signals can fail-loud on an oversized array (see their
-     * parsers' doc comments) — on any such failure, re-zero `out` before
-     * returning, matching this function's documented "non-OK return
-     * leaves *out fully zeroed" contract (same as fp_parse()'s). */
+     * parsers' doc comments), and every section with an enum key can
+     * fail-loud on an unrecognized enum string (issue #28 — see
+     * fx_enum's doc comment; compose/settings below get the same
+     * treatment). On any such failure, re-zero `out` before returning,
+     * matching this function's documented "non-OK return leaves *out
+     * fully zeroed" contract (same as fp_parse()'s). */
     int sec_i;
     if (fx_obj_get(&ctx, 0, "radar", &sec_i) && !fx_is_null(&ctx, sec_i)) {
         ff_fixture_result_t rc = fx_parse_radar(&ctx, sec_i, &out->radar);
@@ -720,12 +783,22 @@ ff_fixture_result_t ff_fixture_load_json(char const *json, size_t len, ff_app_st
             return rc;
         }
     }
-    if (fx_obj_get(&ctx, 0, "compose", &sec_i) && !fx_is_null(&ctx, sec_i))
-        fx_parse_compose(&ctx, sec_i, &out->compose);
+    if (fx_obj_get(&ctx, 0, "compose", &sec_i) && !fx_is_null(&ctx, sec_i)) {
+        ff_fixture_result_t rc = fx_parse_compose(&ctx, sec_i, &out->compose);
+        if (rc != FF_FIXTURE_OK) {
+            memset(out, 0, sizeof(*out));
+            return rc;
+        }
+    }
     if (fx_obj_get(&ctx, 0, "flare", &sec_i) && !fx_is_null(&ctx, sec_i)) fx_parse_flare(&ctx, sec_i, &out->flare);
     /* else: out->flare's three -1 "n/a" defaults (set above) stand. */
-    if (fx_obj_get(&ctx, 0, "settings", &sec_i) && !fx_is_null(&ctx, sec_i))
-        fx_parse_settings(&ctx, sec_i, &out->settings);
+    if (fx_obj_get(&ctx, 0, "settings", &sec_i) && !fx_is_null(&ctx, sec_i)) {
+        ff_fixture_result_t rc = fx_parse_settings(&ctx, sec_i, &out->settings);
+        if (rc != FF_FIXTURE_OK) {
+            memset(out, 0, sizeof(*out));
+            return rc;
+        }
+    }
 
     return FF_FIXTURE_OK;
 }

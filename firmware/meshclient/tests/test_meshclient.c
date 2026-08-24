@@ -1079,6 +1079,9 @@ typedef struct {
     /* POSITION_APP payload knobs (ignored for other portnums). */
     bool set_loc_source;
     uint32_t loc_source; /* raw wire value, so tests can inject unknown ones */
+    uint32_t precision_bits; /* raw wire value; 0 encodes to nothing (proto3
+                              * drops zeros), which IS the absent case — no
+                              * separate set-flag could change those bytes */
     uint32_t rx_time;
 } pkt_spec_t;
 
@@ -1135,6 +1138,7 @@ static uint16_t build_spec_frame(pkt_spec_t const *s, uint8_t *out, size_t out_c
             if (s->set_loc_source) {
                 pos.location_source = (meshtastic_Position_LocSource)s->loc_source;
             }
+            pos.precision_bits = s->precision_bits;
             uint8_t pbuf[64];
             pb_ostream_t pos_os = pb_ostream_from_buffer(pbuf, sizeof(pbuf));
             if (!pb_encode(&pos_os, meshtastic_Position_fields, &pos)) {
@@ -1713,6 +1717,231 @@ static void S03_AC10_null_rx_meta_callback_is_safe(void)
 }
 
 /* -------------------------------------------------------------------- */
+/* AC11 — coordinate precision (issue #47)                               */
+/* -------------------------------------------------------------------- */
+
+/* The 2.7 km measurement behind this: a position truncated to the default
+ * channel's 13 bits arrives as two ordinary-looking doubles with a fresh
+ * timestamp. precision_bits is the only wire-level tell, so losing it (or
+ * fabricating it) defeats the field's entire purpose. */
+
+static void run_precision_case(uint32_t wire_bits, bool expect_present)
+{
+    pkt_spec_t s = {
+        .from = 0x0A0A0A0Au,
+        .portnum = (uint32_t)meshtastic_PortNum_POSITION_APP,
+        .precision_bits = wire_bits,
+    };
+    events_capture_t cap;
+    run_spec(&s, &cap);
+
+    TEST_ASSERT_EQUAL_INT(1, cap.position_count);
+    if (expect_present) {
+        TEST_ASSERT_TRUE(cap.positions[0].pos.has_precision_bits);
+        TEST_ASSERT_EQUAL_UINT32(wire_bits, cap.positions[0].pos.precision_bits);
+    } else {
+        TEST_ASSERT_FALSE(cap.positions[0].pos.has_precision_bits);
+        /* Absent must also be benign: a caller that ignores the flag reads
+         * 0, not a leftover wire value that could pass a `>= 24` gate. */
+        TEST_ASSERT_EQUAL_UINT32(0u, cap.positions[0].pos.precision_bits);
+    }
+}
+
+/* The measured hardware case: the default public channel states 13 bits
+ * (~5.8 km grid). This is the value the Radar face must someday refuse to
+ * render a confident metre-level distance from. */
+static void S03_AC11_precision_13_bits_is_carried_through(void)
+{
+    run_precision_case(13u, true);
+}
+
+/* The value the Firefly channel will state (~3 m). */
+static void S03_AC11_precision_24_bits_is_carried_through(void)
+{
+    run_precision_case(24u, true);
+}
+
+/* Range boundaries. 1 is the least a sender can state; 32 is untruncated.
+ * Both are statements, not garbage, and must survive. */
+static void S03_AC11_precision_lower_boundary_1_is_present(void)
+{
+    run_precision_case(1u, true);
+}
+
+static void S03_AC11_precision_upper_boundary_32_is_present(void)
+{
+    run_precision_case(32u, true);
+}
+
+/* Wire 0 and an absent field are the same bytes (proto3 implicit presence),
+ * and 0 never legitimately accompanies coordinates ("position disabled" in
+ * channel config), so both read absent. This test IS the absent-field test:
+ * a 0 knob encodes to nothing, and no builder flag could make it encode
+ * differently — pinned so nobody adds a has_ flag claiming to tell apart
+ * two identical byte streams. */
+static void S03_AC11_precision_zero_or_absent_reads_absent(void)
+{
+    run_precision_case(0u, false);
+}
+
+/* Untrusted RF: >32 bits of a 32-bit coordinate is not a precision. Absent,
+ * not clamped — a clamp to 32 would assert "full precision" for a malformed
+ * packet, the exact confident-but-wrong reading this field exists to
+ * prevent. 33 is the first bad value; the huge one guards against a
+ * mod-32 "sanitizer" (0xFFFFFFFFu % 32 == 31, which would read present). */
+static void S03_AC11_precision_33_reads_absent_not_clamped(void)
+{
+    run_precision_case(33u, false);
+}
+
+static void S03_AC11_precision_huge_wire_value_reads_absent(void)
+{
+    run_precision_case(0xFFFFFFFFu, false);
+}
+
+/* The NodeInfo-replay path decodes the field identically when the wire
+ * carries it (stock firmware today does not replay it — see the path
+ * caveat on mc_position_t.precision_bits — but the wire format allows it
+ * and this library must not be the component that drops it). */
+static void run_nodeinfo_precision_case(uint32_t wire_bits, bool expect_present)
+{
+    meshtastic_FromRadio fr = meshtastic_FromRadio_init_zero;
+    fr.which_payload_variant = meshtastic_FromRadio_node_info_tag;
+    fr.payload_variant.node_info.num = 0x0E0E0E0Eu;
+    fr.payload_variant.node_info.has_position = true;
+    fr.payload_variant.node_info.position.has_latitude_i = true;
+    fr.payload_variant.node_info.position.latitude_i = 407128000;
+    fr.payload_variant.node_info.position.has_longitude_i = true;
+    fr.payload_variant.node_info.position.longitude_i = -740060000;
+    fr.payload_variant.node_info.position.precision_bits = wire_bits;
+
+    uint8_t buf[300];
+    pb_ostream_t os = pb_ostream_from_buffer(buf, sizeof(buf));
+    TEST_ASSERT_TRUE(pb_encode(&os, meshtastic_FromRadio_fields, &fr));
+
+    uint8_t frame[400];
+    uint16_t flen = mc_frame_encode(frame, sizeof(frame), buf, (uint16_t)os.bytes_written);
+    TEST_ASSERT_TRUE(flen > 0);
+
+    mock_io_t io;
+    mock_io_reset(&io);
+    io.rx_data = frame;
+    io.rx_len = flen;
+
+    mock_clock_t clk = {.t = 0};
+    ff_clock_t clock = {.now_ms = mock_now, .user = &clk};
+    events_capture_t cap;
+    memset(&cap, 0, sizeof(cap));
+
+    mc_client_t c;
+    mc_init(&c, (mc_transport_t){.write = mock_write, .read = mock_read, .io = &io}, make_events(&cap),
+             &clock);
+    c.state = MC_STATE_READY;
+    mc_tick(&c, 5);
+
+    TEST_ASSERT_EQUAL_INT(1, cap.node_count);
+    TEST_ASSERT_TRUE(cap.nodes[0].has_position);
+    if (expect_present) {
+        TEST_ASSERT_TRUE(cap.nodes[0].position.has_precision_bits);
+        TEST_ASSERT_EQUAL_UINT32(wire_bits, cap.nodes[0].position.precision_bits);
+    } else {
+        TEST_ASSERT_FALSE(cap.nodes[0].position.has_precision_bits);
+        TEST_ASSERT_EQUAL_UINT32(0u, cap.nodes[0].position.precision_bits);
+    }
+}
+
+static void S03_AC11_nodeinfo_position_carries_precision_bits(void)
+{
+    run_nodeinfo_precision_case(13u, true);
+}
+
+/* Today's stock-firmware reality: the replay omits the field. Absent must
+ * read absent — NOT be defaulted to "full precision" because a live packet
+ * from the same node once stated a value. (That correlation, if anyone
+ * wants it, is consumer policy; this library reports the wire.) */
+static void S03_AC11_nodeinfo_absent_precision_bits_reads_absent(void)
+{
+    run_nodeinfo_precision_case(0u, false);
+}
+
+/* PR #52 review finding F1: the pkt_spec_t knob is a uint32_t, but field 23
+ * on the wire is a varint that can state values a uint32_t cannot — so the
+ * ">32 never reads present" property, for that whole input class, rests on
+ * what the DECODER does with the overflow, and nothing above pins it. This
+ * test says the unsayable input with raw bytes.
+ *
+ * Why it exists / what it pins: vendored nanopb rejects the entire Position
+ * for an oversized uint32 varint ("integer too large", pb_decode.c) —
+ * decode_errors++, no event, honest. That rejection is LOAD-BEARING and
+ * NONSTANDARD: mainline protobuf C++ *truncates* oversized uint32 varints,
+ * under which 2^32+32 decodes to precision_bits == 32 — present, full
+ * precision, fabricated from untrusted RF — while every knob-driven AC11
+ * test stays green. If a nanopb upgrade or decoder swap makes this test
+ * fail, the right response is adding a pre-decode range guard in front of
+ * mc_position_from_pb(), NOT deleting the test.
+ *
+ * (Same shape as PR #39's NaN finding — a value class the presence test
+ * never met — one level down: a value class the test harness itself could
+ * never construct.)
+ *
+ * A wire varint wider than 32 bits in precision_bits — 2^32+32, which a
+ * truncating decoder would read as 32 = full precision. nanopb must keep
+ * rejecting the whole Position instead ("integer too large"); this pins
+ * that, since pkt_spec_t's uint32 knob cannot state the input. */
+static void S03_AC11_precision_overflow_varint_yields_no_position(void)
+{
+    meshtastic_FromRadio fr = meshtastic_FromRadio_init_zero;
+    fr.which_payload_variant = meshtastic_FromRadio_packet_tag;
+    meshtastic_MeshPacket *pkt = &fr.payload_variant.packet;
+    pkt->from = 0x0A0A0A0Au;
+    pkt->to = MC_ADDR_BROADCAST;
+    pkt->id = 4242u;
+    pkt->which_payload_variant = meshtastic_MeshPacket_decoded_tag;
+    meshtastic_Data *d = &pkt->payload_variant.decoded;
+    d->portnum = meshtastic_PortNum_POSITION_APP;
+
+    meshtastic_Position pos = meshtastic_Position_init_zero;
+    pos.has_latitude_i = true;
+    pos.latitude_i = 407128000;
+    pos.has_longitude_i = true;
+    pos.longitude_i = -740060000;
+    uint8_t pbuf[64];
+    pb_ostream_t pos_os = pb_ostream_from_buffer(pbuf, sizeof(pbuf));
+    TEST_ASSERT_TRUE(pb_encode(&pos_os, meshtastic_Position_fields, &pos));
+    size_t n = pos_os.bytes_written;
+    /* field 23, wiretype 0, value 2^32 + 32 */
+    uint8_t raw[7] = {0xB8, 0x01, 0xA0, 0x80, 0x80, 0x80, 0x10};
+    memcpy(pbuf + n, raw, sizeof(raw));
+    n += sizeof(raw);
+    d->payload.size = (pb_size_t)n;
+    memcpy(d->payload.bytes, pbuf, n);
+
+    uint8_t buf[400];
+    pb_ostream_t os = pb_ostream_from_buffer(buf, sizeof(buf));
+    TEST_ASSERT_TRUE(pb_encode(&os, meshtastic_FromRadio_fields, &fr));
+    uint8_t frame[512];
+    uint16_t flen = mc_frame_encode(frame, sizeof(frame), buf, (uint16_t)os.bytes_written);
+    TEST_ASSERT_TRUE(flen > 0);
+
+    mock_io_t io;
+    mock_io_reset(&io);
+    io.rx_data = frame;
+    io.rx_len = flen;
+    mock_clock_t clk = {.t = 0};
+    ff_clock_t clock = {.now_ms = mock_now, .user = &clk};
+    events_capture_t cap;
+    memset(&cap, 0, sizeof(cap));
+    mc_client_t c;
+    mc_init(&c, (mc_transport_t){.write = mock_write, .read = mock_read, .io = &io},
+            make_events(&cap), &clock);
+    c.state = MC_STATE_READY;
+    mc_tick(&c, 5);
+
+    TEST_ASSERT_EQUAL_INT(0, cap.position_count);
+    TEST_ASSERT_EQUAL_UINT32(1u, c.stats.decode_errors);
+}
+
+/* -------------------------------------------------------------------- */
 
 int main(void)
 {
@@ -1781,6 +2010,17 @@ int main(void)
     RUN_TEST(S03_AC10_rx_meta_does_not_fire_when_sender_unknown);
     RUN_TEST(S03_AC10_rx_meta_precedes_the_payload_event);
     RUN_TEST(S03_AC10_null_rx_meta_callback_is_safe);
+
+    RUN_TEST(S03_AC11_precision_13_bits_is_carried_through);
+    RUN_TEST(S03_AC11_precision_24_bits_is_carried_through);
+    RUN_TEST(S03_AC11_precision_lower_boundary_1_is_present);
+    RUN_TEST(S03_AC11_precision_upper_boundary_32_is_present);
+    RUN_TEST(S03_AC11_precision_zero_or_absent_reads_absent);
+    RUN_TEST(S03_AC11_precision_33_reads_absent_not_clamped);
+    RUN_TEST(S03_AC11_precision_huge_wire_value_reads_absent);
+    RUN_TEST(S03_AC11_nodeinfo_position_carries_precision_bits);
+    RUN_TEST(S03_AC11_nodeinfo_absent_precision_bits_reads_absent);
+    RUN_TEST(S03_AC11_precision_overflow_varint_yields_no_position);
 
     return UNITY_END();
 }

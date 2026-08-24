@@ -39,3 +39,26 @@ if(UNIX)
     target_link_libraries(compare_png PRIVATE m)
 endif()
 ff_apply_warnings(compare_png)
+
+# ---------------------------------------------------------------------------
+# probe_node.py --selftest — the hardware probe tool's library-free test
+# suite (12 cases pinning its meshtastic dict-shape classifiers; see PR
+# #42's review history — the tool shipped broken twice while CI ran no
+# Python at all, which is exactly why this is wired into ctest). It runs
+# deliberately under bare python3 with NO meshtastic installed: the tool
+# imports the library lazily, and library-free is the only Python
+# coverage CI can give this file (CI installs no Python dependencies).
+# ---------------------------------------------------------------------------
+if(FF_BUILD_TESTS)
+    find_program(FF_PYTHON3 python3)
+    if(NOT FF_PYTHON3)
+        # Still register the test, pointing at a bare `python3` — a
+        # machine without an interpreter should FAIL this test loudly at
+        # ctest time, not silently drop it from the suite (a skipped
+        # gate reading as green is the vacuous-test failure mode this
+        # repo keeps getting bitten by).
+        set(FF_PYTHON3 python3)
+    endif()
+    add_test(NAME probe_node_selftest
+             COMMAND ${FF_PYTHON3} ${CMAKE_CURRENT_SOURCE_DIR}/dev/probe_node.py --selftest)
+endif()
