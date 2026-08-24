@@ -344,6 +344,14 @@ typedef struct {
     mc_tcp_t    tcp;
     ff_clock_t  clock;   /* injected into the shell; must outlive it */
 
+    /* PR #56 review F1: true iff this process offered the HOST's clock
+     * to the wall latch (--dev-trust-all does, at startup). ff_wall_src_t
+     * only knows UNKNOWN vs MESH, so without this bit a host pre-latch
+     * would dump as "src":"mesh" — an honest time under a dishonest
+     * provenance label, in the one surface (#49) that exists to show
+     * provenance. The dump states it; see ff_loop_state_json. */
+    bool wall_host_observed;
+
     /* Review fixup (PR #19 finding #2): the ctl socket's "screenshot"
      * path is confined under this ALREADY-CANONICALIZED (realpath()'d at
      * startup — see ff_run_ctl_loop) root — see ctl_out_path.h. */
@@ -464,16 +472,29 @@ static int ff_loop_state_json(void *user, char *buf, size_t buf_sz)
      * would not fit, fail loudly (the caller reports "state unavailable")
      * instead of silently dropping the field. */
     ff_wall_t const w = ff_shell_wall(ctx->shell);
-    char wall[96];
+    char wall[160];
     int wn;
+    /* `host_observed` (review F1): whether THIS PROCESS offered the host
+     * clock to the latch (--dev-trust-all does at startup). ff_wall_src_t
+     * cannot carry that distinction — the host observation goes through
+     * the same ff_wall_observe as a mesh timestamp — so "src":"mesh"
+     * alone would mislabel a host pre-latch in exactly the surface #49's
+     * bench work reads for provenance. It claims exactly what is known:
+     * the host clock was offered. Whether a later mesh reading re-latched
+     * over it is NOT claimed — distinguishing that would need latch
+     * provenance inside ff_wall_state_t, a core [api] change #49 can
+     * request if the bench needs it. Dumped in both branches: "offered"
+     * is a fact about this process regardless of latch state. */
+    char const *host = ctx->wall_host_observed ? "true" : "false";
     if (w.src == FF_WALL_MESH) {
         wn = snprintf(wall, sizeof(wall),
-                      ",\"wall\":{\"src\":\"mesh\",\"day_doy\":%u,\"now_min\":%d,\"offset_assumed\":%s}}",
-                      (unsigned)w.day_doy, (int)w.now_min, w.offset_assumed ? "true" : "false");
+                      ",\"wall\":{\"src\":\"mesh\",\"host_observed\":%s,\"day_doy\":%u,\"now_min\":%d,"
+                      "\"offset_assumed\":%s}}",
+                      host, (unsigned)w.day_doy, (int)w.now_min, w.offset_assumed ? "true" : "false");
     } else {
         /* UNKNOWN: every other ff_wall_t field is meaningless and is
          * deliberately not dumped — absent, not zero (CLAUDE.md). */
-        wn = snprintf(wall, sizeof(wall), ",\"wall\":{\"src\":\"unknown\"}}");
+        wn = snprintf(wall, sizeof(wall), ",\"wall\":{\"src\":\"unknown\",\"host_observed\":%s}}", host);
     }
     if (wn < 0 || (size_t)wn >= sizeof(wall)) return -1;
     if ((size_t)n + (size_t)wn > buf_sz) return -1; /* n-1 kept + wn + NUL <= buf_sz */
@@ -758,6 +779,7 @@ static int ff_run_ctl_loop(uint16_t ctl_port, const char *fixture_path, bool moc
          * under --mock-clock, later `clock` commands advance the derived
          * wall time from here. */
         ff_shell_dev_wall_observe(&s_shell, (int64_t)time(NULL));
+        ctx.wall_host_observed = true; /* stated in the `state` dump's wall object (review F1) */
         printf("ffsim: --dev-trust-all: auto-pairing every NodeInfo sender, treating the daemon's "
                "own node as inbound, and latching the wall clock from the host clock "
                "(sim-only dev affordance, compiled out of device builds — S16 AC6)\n");
@@ -767,6 +789,7 @@ static int ff_run_ctl_loop(uint16_t ctl_port, const char *fixture_path, bool moc
     if (pack_path != NULL) {
         if (ff_sim_load_pack_file(&s_shell, pack_path) != 0) {
             fprintf(stderr, "ffsim: failed to load festpack %s\n", pack_path);
+            ff_shell_close(&s_shell); /* same teardown shape as every exit path below */
             if (ctx.tcp_open) mc_tcp_close(&ctx.tcp);
             free(ctx.xrgb_buf);
             lv_deinit();

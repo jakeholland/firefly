@@ -347,10 +347,11 @@ int ff_shell_init(ff_shell_t *sh, ff_shell_cfg_t const *cfg);
  * configured offset (see `ff_wall_offset_cfg_t`).
  *
  * Deliberately does NOT adopt the pack's venue origin as "my position",
- * which `targets/sim/live.c` does. That is a dev-harness affordance: the
- * venue centre is not where the wearer is standing, and asserting it as
- * a fix would fabricate a position (CLAUDE.md). A target that wants that
- * behaviour for development calls `ff_shell_set_my_pos` itself, visibly.
+ * as the retired `targets/sim/live.c` used to. That is a dev-harness
+ * affordance: the venue centre is not where the wearer is standing, and
+ * asserting it as a fix would fabricate a position (CLAUDE.md). A target
+ * that wants that behaviour for development calls `ff_shell_set_my_pos`
+ * itself, visibly — see `targets/sim/main.c`'s --pack block.
  */
 int ff_shell_load_pack(ff_shell_t *sh, char const *json, size_t len);
 

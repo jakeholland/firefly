@@ -1,13 +1,16 @@
 # Two Heltec V3 boards: bench mesh, landmark beacons, range data
 
-> **Status: written, not yet run.** Unlike [`firmware/tools/dev/README.md`](../../firmware/tools/dev/README.md),
-> nothing in this file has been executed against real hardware yet — the
+> **Status: written, mostly not yet run.** Unlike [`firmware/tools/dev/README.md`](../../firmware/tools/dev/README.md),
+> most of this file has not been executed against real hardware yet — the
 > boards exist, the procedure doesn't have results behind it. Claims below
 > were checked against primary sources (Heltec's datasheet, Meshtastic's docs
-> and firmware source) in PR #32's review, but checked ≠ run. **Correct this
-> file as you go**, the same way the dev README calls out where behaviour
-> surprised us. The range-test table at the end is deliberately empty; an
-> empty cell means we don't know, which is the whole point of this project.
+> and firmware source) in PR #32's review, but checked ≠ run. The exception
+> is marked **hardware-verified** inline (bring-up step 6, the channel
+> position-precision trap — measured on both boards, 2026-08-23).
+> **Correct this file as you go**, the same way the dev README calls out
+> where behaviour surprised us. The range-test table at the end is
+> deliberately empty; an empty cell means we don't know, which is the whole
+> point of this project.
 
 ## What the board is
 
@@ -51,6 +54,25 @@ and so do these.
 5. Set the same **channel and PSK** on both boards, and eventually on the
    pucks. Nodes on different channels are invisible to each other, not
    merely quiet — and this one *is* silent.
+6. **Make it Firefly's own channel, with `position_precision` set to 32
+   (or 24).** ⚠️ **Hardware-verified** — unlike most of this file, this
+   step has real measurements behind it (both V3s, firmware 2.7.26,
+   2026-08-23; raw numbers in
+   [issue #47](https://github.com/jakeholland/firefly/issues/47)): the
+   default public channel ships `positionPrecision: 13`, which truncates
+   every broadcast position to a **~5.8 km grid** — we set a fixed
+   position on one board and read it back **2673 m off** on the other.
+   It's a deliberate, sensible privacy feature of the public channel, and
+   it silently destroys Firefly's entire distance vocabulary: the
+   position arrives *fresh*, the freshness logic is satisfied, and the
+   arrow points confidently at a cell containing most of a festival.
+   Step 5's "same channel and PSK" is necessary but **not sufficient** —
+   if the shared channel is the default public one, everything appears
+   to work and every distance is quietly wrong at the kilometre scale.
+   A distinct PSK is needed for pairing anyway; `position_precision: 32`
+   is full precision, 24 is ~3 m (comfortably below GPS error). Detecting
+   and surfacing degraded precision on the puck side is follow-on
+   meshclient work tracked in #47.
 
 Record the firmware version you flashed in the range-test table — LoRa
 behaviour changes between releases, and a range number without a version

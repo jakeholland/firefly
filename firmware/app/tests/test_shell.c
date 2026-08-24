@@ -1072,12 +1072,13 @@ static void S16_b1_now_projection_needs_both_a_pack_and_a_known_clock(void)
 
 static void S16_b1_loading_a_pack_does_not_fabricate_my_position(void)
 {
-    /* targets/sim/live.c adopts the pack's venue origin as "my
-     * position". That is a dev-harness affordance: the venue centre is
-     * not where the wearer is standing, and asserting it as a fix would
-     * fabricate a position (CLAUDE.md: "never fake ... positions"). The
-     * shell must not inherit it — a target that wants it for development
-     * calls ff_shell_set_my_pos itself, visibly. */
+    /* The retired targets/sim/live.c adopted the pack's venue origin
+     * as "my position". That is a dev-harness affordance: the venue
+     * centre is not where the wearer is standing, and asserting it as a
+     * fix would fabricate a position (CLAUDE.md: "never fake ...
+     * positions"). The shell must not inherit it — a target that wants
+     * it for development calls ff_shell_set_my_pos itself, visibly,
+     * which is exactly what main.c's --pack block now does. */
     harness_init(100000u, false);
     inject_my_info(MY_ID);
     TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, true));
@@ -1230,7 +1231,10 @@ static int pipe_write(void *io, uint8_t const *buf, size_t len)
     size_t n = (len < room) ? len : room;
     memcpy(p->tx + p->tx_len, buf, n);
     p->tx_len += n;
-    return (int)len;
+    /* Report what was actually stored (review N4): a handshake that ever
+     * outgrew `tx` must surface as a short-write transport failure the
+     * client makes loud, not silently corrupt the nonce parse. */
+    return (int)n;
 }
 
 /** The want_config nonce from the FIRST frame mc_connect wrote. */

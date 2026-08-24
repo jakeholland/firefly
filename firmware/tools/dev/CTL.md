@@ -124,13 +124,22 @@ schema's fields, reporting what the wall clock thinks
 (`ff_shell_wall()`) — the hardware bench work (issue #49) needs to SEE
 what latched rather than infer it:
 
-- unlatched: `"wall":{"src":"unknown"}` — the puck does not know what
-  time it is, and the other fields would be meaningless, so they are
-  absent rather than zeroed (honest-data rule).
-- latched: `"wall":{"src":"mesh","day_doy":261,"now_min":900,
-  "offset_assumed":false}` — `ff_wall_t`'s fields verbatim (day-of-year
-  with the 06:00 festival-day roll, minutes in [360, 1800), and whether
-  the UTC offset was a stated value or a defaulted guess).
+- unlatched: `"wall":{"src":"unknown","host_observed":false}` — the puck
+  does not know what time it is, and `ff_wall_t`'s other fields would be
+  meaningless, so they are absent rather than zeroed (honest-data rule).
+- latched: `"wall":{"src":"mesh","host_observed":false,"day_doy":261,
+  "now_min":900,"offset_assumed":false}` — `ff_wall_t`'s fields verbatim
+  (day-of-year with the 06:00 festival-day roll, minutes in [360, 1800),
+  and whether the UTC offset was a stated value or a defaulted guess).
+
+`host_observed` is the provenance qualifier `ff_wall_src_t` cannot carry:
+`--dev-trust-all` offers the HOST's clock to the latch at startup, and
+that observation goes through the same core path as a mesh timestamp, so
+`"src":"mesh"` alone would mislabel a host pre-latch. `true` claims
+exactly what is known — this process offered the host clock — not
+whether a later mesh reading re-latched over it. Bench sessions that
+want to see what the *mesh* latches must therefore run without
+`--dev-trust-all` (issue #49's cross-check does).
 
 `wall` is NOT part of the fixture schema: the fixture loader ignores
 unknown keys, so a saved `state` dump still loads as a fixture; it is

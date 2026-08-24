@@ -59,7 +59,8 @@
  *     and any signed intermediate stay non-issues.
  *   - monotonic milliseconds (uint32_t): ff_clock_t.now_ms. Wraps about
  *     every 49.7 days; every delta here uses wraparound-safe unsigned
- *     subtraction (the idiom at targets/sim/live.c:245).
+ *     subtraction (the `now_ms - then_ms` idiom used repo-wide, e.g.
+ *     ff_shell.c's feed-age math).
  *   - local minutes (int16_t now_min + uint16_t day_doy): ff_sched.h's
  *     festival-day contract.
  *

@@ -420,9 +420,9 @@ static void shell_ev_my_info(void *u, uint32_t my_node_id)
      * our own id in ff_heard, where it would linger until LRU eviction
      * and be offered in S12's "add from heard nodes" list. The reviewer
      * suggested reading my_node_id from mc_client_t instead of this
-     * callback, but that closes nothing: mc_client.c sets its own copy
-     * and fires this callback at the same instant (mc_client.c:316-319),
-     * so the two records can never disagree — the residual window is
+     * callback, but that closes nothing: mc_client.c's `my_info_tag`
+     * case sets its own copy and fires this callback in adjacent
+     * statements, so the two records can never disagree — the residual window is
      * "own NodeInfo earlier in the STREAM than MyNodeInfo", which
      * defeats both reads equally. The honest closure is to purge the
      * entry the moment we learn who we are, which covers every ordering.

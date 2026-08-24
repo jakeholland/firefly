@@ -102,7 +102,7 @@ void ff_wall_init(ff_wall_state_t *st)
 /* Elapsed monotonic milliseconds since the latch, or false if the latch
  * is absent or has aged past the point where a uint32_t wrap could
  * masquerade as a small delta. Unsigned subtraction is wraparound-safe
- * (the idiom at targets/sim/live.c:245).
+ * (the `now_ms - then_ms` idiom used repo-wide).
  *
  * A `now_ms` that went backwards produces a 2^32 - step delta, which
  * trips this same limit and degrades to "unknown" rather than to a wrong

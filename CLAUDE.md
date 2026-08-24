@@ -16,5 +16,6 @@ Open-source festival friend-compass puck. Dual-brain: a Seeed XIAO+SX1262 comms 
 ## Build
 
 - Desktop sim + tests: `cmake -S firmware -B build -DFF_TARGET=sim && cmake --build build -j8 && ctest --test-dir build --output-on-failure`
-- Screenshots: `mkdir -p out && ./build/ffsim --headless --screenshot out/`
+- **The local gate above uses the host compiler — clang on macOS — while CI runs GCC, and CI is the authority** (#44, found the hard way in PR #41: GCC's `-Wstringop-truncation` has no clang equivalent, so the local gate was green and could never have been anything else). Read every local "clean under `-Wall -Wextra -Werror`" claim as "clean under clang's interpretation", and say which compiler you built with in the PR body. For changes touching string handling or arithmetic, run a second local build under Homebrew GCC before pushing — it must be **`gcc-14`** explicitly (`brew install gcc@14`), because plain `gcc` on macOS is Apple clang in disguise: `CC=gcc-14 cmake -S firmware -B build-gcc -DFF_TARGET=sim && cmake --build build-gcc -j8 && ctest --test-dir build-gcc --output-on-failure`
+- Screenshots: `./build/ffsim --headless --screenshot out/` (the sim creates the output dir itself — #3)
 - Device target (`FF_TARGET=esp32s3`) arrives with S15; keep core compiling under `-Wall -Wextra -Werror` both ways.
