@@ -103,6 +103,71 @@ endif()
 # self-documented spec-gap deviation. See docs/specs/S13-sim-target.md's
 # Amendments and docs/specs/S16-app-shell.md slice b2.
 
+# S16 slice d
+# ---------------------------------------------------------------------------
+# ff-sim-live-setup: the "bring a live ff_shell_t up" sequence (transport,
+# --dev-trust-all, --pack, heading) shared between ffsim's live window mode
+# and the --ctl loop (live_setup.h's top comment explains why one
+# implementation, not two). STATIC so both ffsim and test_ctl_flare_sequence
+# below link the exact same object.
+# ---------------------------------------------------------------------------
+add_library(ff-sim-live-setup STATIC
+    live_setup.c
+)
+target_include_directories(ff-sim-live-setup PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(ff-sim-live-setup PUBLIC ff-shell)
+ff_apply_warnings(ff-sim-live-setup)
+
+# ff-sim-ctl-loop: the --ctl session itself (ctl_loop.h/.c), extracted out
+# of main.c so it can be driven in-process by test_ctl_flare_sequence (AC10
+# — a full draft-typed/flare-injected/takeover/cleared sequence through the
+# ctl socket's REAL command-processing layer, no docker, no real TCP
+# client) as well as by ffsim's own main().
+# ---------------------------------------------------------------------------
+add_library(ff-sim-ctl-loop STATIC
+    ctl_loop.c
+)
+target_include_directories(ff-sim-ctl-loop PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(ff-sim-ctl-loop
+    PUBLIC
+        ff-sim-live-setup
+        ff-sim-ctl
+        ff-shell
+        lvgl::lvgl
+    PRIVATE
+        ff-sim-ctlout
+        ff-sim-face-dispatch
+        ff-sim-fixture
+)
+ff_apply_warnings(ff-sim-ctl-loop)
+
+if(FF_BUILD_TESTS)
+    # S16 slice d, AC10: draft typed -> flare injected -> takeover renders
+    # -> cleared -> composer returns with draft intact, driven through
+    # ff_ctl_process_line (the ctl socket's pure, socket-free command layer
+    # — ctl_server.h's own documented split) against a real ff-sim-ctl-loop
+    # session. screenshot.c is compiled directly into this test binary (a
+    # second independent executable, same shape as test_screenshot below)
+    # since ff-sim-ctl-loop's screenshot handler needs ff_screenshot_write
+    # but nothing else here links a copy of it.
+    add_executable(test_ctl_flare_sequence
+        tests/test_ctl_flare_sequence.c
+        screenshot.c
+    )
+    target_link_libraries(test_ctl_flare_sequence PRIVATE
+        ff-sim-ctl-loop
+        ff-sim-ctl
+        ff-shell
+        ff-app-ui
+        ff-stb-image-write
+        lvgl::lvgl
+        unity
+    )
+    ff_apply_warnings(test_ctl_flare_sequence)
+
+    add_test(NAME test_ctl_flare_sequence COMMAND test_ctl_flare_sequence)
+endif()
+
 # Issue #3 — ff_screenshot_write now creates its output directory itself
 # (`--headless --screenshot DIR` used to fail until the caller mkdir'd
 # DIR). screenshot.c is compiled directly into this test binary (a second
@@ -149,6 +214,9 @@ target_link_libraries(ffsim PRIVATE
     ff-sim-ctl           # S13c — ctl_server.h/.c (ctl_server.c above)
     ff-sim-ctlout        # S13c — ctl_out_path.h/.c: screenshot path confinement (review fixup)
     ff-sim-fixture       # S13b — fixture.h: --fixture load + the ctl `state` dump
+    ff-sim-live-setup    # S16 slice d — live_setup.h: the --connect/--pack/--dev-trust-all
+                         # sequence shared between live window mode and the ctl loop
+    ff-sim-ctl-loop      # S16 slice d — ctl_loop.h: the --ctl session itself
     ff-shell             # S16b2 — the app shell: --connect / --pack / --dev-trust-all
                          # (replaces ff-sim-live); transitive source of ff-core/ff-meshclient
     ff-app-ui            # S06b — scr_nav.h/scr_radar.h (app/CMakeLists.txt)

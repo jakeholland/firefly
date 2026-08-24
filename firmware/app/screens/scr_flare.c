@@ -49,7 +49,12 @@ static const float FLARE_MARK_RAY_FRAC[FLARE_MARK_N_RAYS] = {
 /* One lv_line point-pair PER ray, not a single reused buffer — lv_line
  * keeps a POINTER to whatever array it's given (same hazard scr_radar.c's
  * top comment documents for its own line-point pool), so each of the 8
- * simultaneously-alive lv_line objects below needs its own slot. */
+ * simultaneously-alive lv_line objects below needs its own slot. Safe
+ * under repeated rebuilds (S16 slice d) by the exact same caller-side
+ * invariant scr_radar.c's point pool now documents: the caller
+ * `lv_obj_clean()`s the screen before ever rebuilding it, so every
+ * `lv_line` from the PREVIOUS build is gone before this array is
+ * overwritten for the next one (issue #17, closed). */
 static lv_point_precise_t s_flare_mark_ray_pts[FLARE_MARK_N_RAYS][2];
 
 /* Avoid the POSIX-only M_PI (undefined under strict -std=c11 on some

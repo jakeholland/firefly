@@ -110,6 +110,23 @@ typedef struct {
      * failure sets `*err` to a short static reason string. */
     bool (*screenshot)(void *user, char const *path, char const **err);
 
+    /**
+     * Inject a synthetic inbound FLARE (S16 slice d, AC10) "from" node
+     * id `from`, lasting `dur_s` seconds. A dev/test affordance in the
+     * same class as `clock`'s mock-clock control or `tap`/`swipe`'s
+     * synthetic pointer injection: it reaches past the transport the way
+     * a real over-the-air FLARE never could, which is exactly what lets
+     * AC10's sequence test (draft typed -> flare injected -> takeover
+     * renders -> cleared -> composer returns with draft intact) run
+     * without a live meshtasticd. The sender is paired first if it
+     * wasn't already (the roster trust policy would otherwise drop an
+     * unpaired sender's flare entirely — ff_flare.h) — the same "make it
+     * reachable" affordance `--dev-trust-all` already grants the dev
+     * bench, scoped to one command instead of a whole session. Returns
+     * false (and sets `*err` to a short static reason string) if flare
+     * injection isn't available right now (e.g. no live shell). */
+    bool (*flare)(void *user, uint32_t from, uint16_t dur_s, char const **err);
+
     /** Called once, after "quit" is validated and just before the
      * `{"ok":true}` response is sent. May be NULL if the caller has
      * nothing to do here (ff_ctl_poll's caller learns about quit from its

@@ -24,44 +24,34 @@
  * off-glass, mode chip ~35px off-glass) shipped undetected by its own
  * goldens in the first place.
  *
- * ## The two deliberate exclusions, and why they aren't "special-casing
- * away" a finding
+ * ## The one deliberate exclusion, and why it isn't "special-casing away"
+ * a finding
  *
- * 1. A hit-rect exactly the size of the puck's own square bounding box
- *    (`FF_THEME_PUCK_PX` x `FF_THEME_PUCK_PX` — e.g. scr_nav.c's
- *    long-press-anywhere-on-the-puck Settings hook) is excluded from the
- *    circle-containment check (but NOT the size-floor check). This is a
- *    different category of control from a sized button a user aims at:
- *    its "excess" past the visible circle corresponds to no
- *    physically-touchable surface on the real round hardware at all
- *    (there's nothing to mis-tap — those corners simply don't exist on
- *    the device), so it can never make a VISIBLE, sized control
- *    unreachable the way an undersized-or-misplaced button can. The
- *    exclusion is intentionally narrow (an EXACT full-puck-square size
- *    match, not "large" or "near the edge") specifically so a genuinely
- *    mis-sized-but-still-a-bug element can't hide behind it.
+ * A hit-rect exactly the size of the puck's own square bounding box
+ * (`FF_THEME_PUCK_PX` x `FF_THEME_PUCK_PX` — e.g. scr_nav.c's
+ * long-press-anywhere-on-the-puck Settings hook) is excluded from the
+ * circle-containment check (but NOT the size-floor check). This is a
+ * different category of control from a sized button a user aims at:
+ * its "excess" past the visible circle corresponds to no
+ * physically-touchable surface on the real round hardware at all
+ * (there's nothing to mis-tap — those corners simply don't exist on
+ * the device), so it can never make a VISIBLE, sized control
+ * unreachable the way an undersized-or-misplaced button can. The
+ * exclusion is intentionally narrow (an EXACT full-puck-square size
+ * match, not "large" or "near the edge") specifically so a genuinely
+ * mis-sized-but-still-a-bug element can't hide behind it.
  *
- * 2. A hit-rect entirely outside the WINDOW (`FF_THEME_WINDOW_PX`
- *    square, not just the round glass — e.g. `x1 >= FF_THEME_WINDOW_PX`)
- *    is excluded from both checks, logged as INFO rather than a
- *    violation. **This is a real finding, not a test artifact**: it
- *    surfaces that `scr_nav.c`'s `ff_scr_nav_build` builds all THREE
- *    tileview tiles' full content on every render regardless of which
- *    one is active (`ff_scr_radar_build` + `nav_build_todo_pane` +
- *    `ff_scr_signals_build` all run unconditionally) — an inactive
- *    tile's controls (e.g. Signals' "+" button and reply row, when Radar
- *    is the active face) end up sitting at their un-scrolled tileview
- *    position, which can be hundreds of pixels outside the 456px window
- *    entirely, not merely outside the circle. Reported here, not fixed:
- *    on real hardware nothing at those coordinates is reachable (there
- *    is no display surface out there at all, an even stronger case than
- *    exclusion #1's "no touch surface in the corner"), and rearchitecting
- *    `scr_nav.c` to only build the active tile is a materially different,
- *    larger change (touching shared shell code three parallel face PRs
- *    depend on, and overlapping issue #17's already-tracked
- *    teardown/rebuild concerns) than "fit Compose inside the circle" —
- *    out of scope for this PR. Every OTHER finding this sweep produces,
- *    on every face, is reported and asserted on, not filtered.
+ * A SECOND exclusion used to live here: a hit-rect entirely outside the
+ * WINDOW (not just the round glass) was logged as INFO and excluded from
+ * both checks, because `scr_nav.c`'s `ff_scr_nav_build` built all THREE
+ * tileview tiles' full content on every render regardless of which one
+ * was active — an inactive tile's controls sat at their un-scrolled
+ * tileview position, hundreds of pixels outside the window. Issue #29
+ * closed that (S16 slice d): `ff_scr_nav_build` now builds content into
+ * the ACTIVE tile only, so there is no longer anything off-window to
+ * exclude, and this sweep asserts on it like any other finding — exactly
+ * the outcome issue #29 promised ("the sweep test's exception should
+ * disappear with it").
  */
 #include <dirent.h>
 #include <stdio.h>
@@ -110,7 +100,6 @@ static uint32_t sweep_tick_cb(void)
 typedef struct {
     int checked;
     int violations;
-    int off_window_inactive_tile; /* see this file's header comment, exclusion #2 */
 } sweep_result_t;
 
 /* Puck circle, in the SAME absolute display-pixel space lv_obj_get_click_area
@@ -142,22 +131,6 @@ static void sweep_walk(lv_obj_t *obj, char const *fixture_name, sweep_result_t *
              * call sites as of this PR — this is a forward-looking
              * correctness fix, not a regression fix). */
             lv_obj_get_click_area(child, &area);
-
-            /* Exclusion #2 (see header comment): an inactive tileview
-             * tile's content sits at its un-scrolled position, which can
-             * land entirely outside the window — not reachable by any
-             * real touch, and not what this sweep exists to catch.
-             * Logged as INFO (visible, not silently dropped), excluded
-             * from both checks below. */
-            bool is_off_window = (area.x2 < 0) || (area.x1 >= FF_THEME_WINDOW_PX) || (area.y2 < 0) ||
-                                  (area.y1 >= FF_THEME_WINDOW_PX);
-            if (is_off_window) {
-                out->off_window_inactive_tile++;
-                printf("  INFO off-window (inactive tile, unreachable) [%s]  rect=(%d,%d)-(%d,%d)\n", fixture_name,
-                       (int)area.x1, (int)area.y1, (int)area.x2, (int)area.y2);
-                sweep_walk(child, fixture_name, out);
-                continue;
-            }
 
             /* lv_area_t's x2/y2 are the INCLUSIVE last pixel; ff_layout_rect_t's
              * x2/y2 are the EXCLUSIVE far edge (ff_layout.h's documented
@@ -218,7 +191,7 @@ static sweep_result_t sweep_fixture(char const *path, char const *name)
     ff_build_face_screen(&state);
     lv_refr_now(disp);
 
-    sweep_result_t result = {0, 0, 0};
+    sweep_result_t result = {0, 0};
     sweep_walk(lv_screen_active(), name, &result);
 
     free(buf);
@@ -239,7 +212,6 @@ static void S08_hit_targets_every_committed_fixture_fits_the_glass(void)
 
     int total_checked = 0;
     int total_violations = 0;
-    int total_off_window = 0;
     int fixtures_swept = 0;
 
     struct dirent *entry;
@@ -260,14 +232,12 @@ static void S08_hit_targets_every_committed_fixture_fits_the_glass(void)
         sweep_result_t r = sweep_fixture(path, name);
         total_checked += r.checked;
         total_violations += r.violations;
-        total_off_window += r.off_window_inactive_tile;
         fixtures_swept++;
     }
     closedir(d);
 
-    printf("test_face_hit_targets: swept %d fixture(s), checked %d clickable element(s), %d violation(s), "
-           "%d off-window (inactive-tile, unreachable — see header comment exclusion #2)\n",
-           fixtures_swept, total_checked, total_violations, total_off_window);
+    printf("test_face_hit_targets: swept %d fixture(s), checked %d clickable element(s), %d violation(s)\n",
+           fixtures_swept, total_checked, total_violations);
 
     /* Sanity: the sweep must actually have found fixtures and clickable
      * elements to check — a silently-empty directory or an all-skipped

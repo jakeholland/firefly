@@ -1113,6 +1113,23 @@ int ff_fixture_dump_json(ff_app_state_t const *s, char *buf, size_t buf_sz)
     fw_json_str(&w, s->flare.locked_from_name);
     fw_fmt(&w, ",\"locked_expires_in_ms\":%d}", (int)s->flare.locked_expires_in_ms);
 
+    /* compose (S16 slice d: fx_parse_compose above has accepted this
+     * section on LOAD since S08, but nothing ever wrote it back out —
+     * the ctl `state` dump could never show the composer's own draft,
+     * which the S16 AC10 sequence test needs to observe surviving a
+     * flare takeover THROUGH THE SOCKET, not just by reading the C
+     * struct directly. Field-for-field mirror of fx_parse_compose so a
+     * dump still round-trips through the loader. */
+    fw_raw(&w, ",\"compose\":{\"text\":");
+    fw_json_str(&w, s->compose.text);
+    fw_raw(&w, ",\"to_name\":");
+    fw_json_str(&w, s->compose.to_name);
+    fw_raw(&w, s->compose.has_pending ? ",\"has_pending\":true" : ",\"has_pending\":false");
+    fw_raw(&w, ",\"mode\":\"");
+    fw_raw(&w, fx_enum_name(fx_compose_mode_table, sizeof(fx_compose_mode_table) / sizeof(fx_compose_mode_table[0]),
+                             s->compose.mode, "abc"));
+    fw_raw(&w, "\"}");
+
     /* settings */
     fw_raw(&w, ",\"settings\":{");
     fw_raw(&w, s->settings.imperial ? "\"imperial\":true" : "\"imperial\":false");

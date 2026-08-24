@@ -1,0 +1,279 @@
+/**
+ * test_ctl_flare_sequence.c — S16 slice d, AC10.
+ *
+ * "Sequence test via the ctl socket (not the single-frame golden
+ * harness): draft typed -> flare injected -> takeover renders ->
+ * takeover cleared -> composer returns with draft intact. Requires a new
+ * ctl `flare` command."
+ *
+ * Drives a REAL `ff-sim-ctl-loop` session (the same object main.c's
+ * `--headless --ctl PORT` uses) through `ff_ctl_process_line` — the ctl
+ * socket's pure, socket-free command-processing layer (ctl_server.h's
+ * own documented split; no real TCP client, no docker, no `ffsim`
+ * subprocess). What this proves that no other test in the suite does:
+ *
+ *  - the ctl `flare` command exists and actually reaches a live shell
+ *    (ctl_loop.c's ctl_loop_flare);
+ *  - the render lifecycle (S16 slice d: rebuild only on a dirty
+ *    ff_shell_tick, always lv_obj_clean() first) correctly swaps the
+ *    LVGL tree between the composer and the full-screen takeover and
+ *    back, through real ctl-driven ticks — not just a unit-level
+ *    ff_shell_intent call (test_shell.c's S16_AC3b_... already pins the
+ *    core-only half of this);
+ *  - a real `{"cmd":"tap"}` at real button coordinates, discovered from
+ *    the actual built tree, delivers a genuine LVGL click through the
+ *    synthetic pointer indev end to end (T9 key -> draft; DISMISS ->
+ *    takeover cleared) — not `lv_obj_send_event` shortcuts.
+ *
+ * WHY EVERY TAP IS WRAPPED IN ctl_settle() ON BOTH SIDES. LVGL's indev
+ * read timer only re-polls once its period (LV_DEF_REFR_PERIOD, 33 ms)
+ * has genuinely elapsed since it last ran (lv_timer.c's
+ * lv_timer_time_remaining) — the exact fact
+ * app/screens/tests/test_scr_intent.c's drag() helper documents and
+ * works around for its own physical-swipe tests. `ctl_loop_tap`'s press
+ * and release both happen inside ONE synchronous call with no elapsed
+ * time between them, so neither half is actually delivered to LVGL
+ * unless something else advances the clock and pumps the timer both
+ * BEFORE the tap (so the press half — the first of the pair to run —
+ * finds the timer's period already satisfied and fires) and AFTER it
+ * (so the release half, otherwise stranded until some later poll,
+ * fires too). `--mock-clock` plus the ctl `clock` command is exactly the
+ * documented, supported way to drive that by hand (see CTL.md).
+ *
+ * WHY THIS TEST NEVER USES ctl `swipe` TO REACH COMPOSE. Getting from
+ * Radar to Signals to Compose is scaffolding, not what AC10 is about —
+ * and it is already covered, more directly, by
+ * app/screens/tests/test_scr_intent.c's physical swipe tests and
+ * ff_route's own unit tests. This test instead calls `ff_shell_intent`
+ * directly with `FF_INTENT_OPEN_COMPOSE`, the exact same entry point
+ * `ff_shell_intent_sink` (bound to the ctl session by ff_ctl_loop_open)
+ * would forward a real tap to — legitimate scaffolding, not a shortcut
+ * around the seam under test.
+ */
+#include <string.h>
+
+#include "unity.h"
+
+#include "ctl_loop.h"
+#include "ctl_server.h"
+#include "ff_app_state.h"
+#include "ff_flare.h"
+#include "ff_intent.h"
+#include "ff_shell.h"
+
+#include "fp_pack.h"
+
+void setUp(void) {}
+void tearDown(void) {}
+
+/* Same recursive lookup as app/screens/tests/test_scr_intent.c's
+ * find_button_with_label — duplicated rather than shared (that file's
+ * own header comment explains why: no shared-header dependency for one
+ * small helper). */
+static lv_obj_t *find_button_with_label(lv_obj_t *root, char const *label_text)
+{
+    uint32_t n = lv_obj_get_child_count(root);
+    for (uint32_t i = 0; i < n; i++) {
+        lv_obj_t *child = lv_obj_get_child(root, i);
+        if (lv_obj_check_type(child, &lv_button_class)) {
+            uint32_t nc = lv_obj_get_child_count(child);
+            for (uint32_t j = 0; j < nc; j++) {
+                lv_obj_t *maybe_label = lv_obj_get_child(child, j);
+                if (lv_obj_check_type(maybe_label, &lv_label_class)) {
+                    char const *txt = lv_label_get_text(maybe_label);
+                    if (txt != NULL && strcmp(txt, label_text) == 0) {
+                        return child;
+                    }
+                }
+            }
+        }
+        lv_obj_t *found = find_button_with_label(child, label_text);
+        if (found != NULL) {
+            return found;
+        }
+    }
+    return NULL;
+}
+
+static void ctl_send(ff_ctl_handlers_t const *h, char const *cmd, char *resp, size_t resp_sz)
+{
+    (void)ff_ctl_process_line(cmd, h, resp, resp_sz);
+    TEST_ASSERT_NOT_NULL_MESSAGE(strstr(resp, "\"ok\":true"), resp);
+}
+
+static void ctl_clock_advance(ff_ctl_handlers_t const *h, uint32_t ms)
+{
+    char cmd[64], resp[128];
+    int n = snprintf(cmd, sizeof(cmd), "{\"cmd\":\"clock\",\"advance_ms\":%u}", (unsigned)ms);
+    TEST_ASSERT_TRUE(n > 0 && (size_t)n < sizeof(cmd));
+    ctl_send(h, cmd, resp, sizeof(resp));
+}
+
+/* Advances the mock clock and gives every due timer a chance to actually
+ * run, then pumps the shell (ff_ctl_loop_pump — tick, and rebuild only
+ * if dirty, the same step main.c's real loop runs every iteration).
+ * `lv_refr_now` forces the layout pass current production code only ever
+ * gets from the display's own refresh timer firing over real elapsed
+ * time (ctl_loop_screenshot's own `lv_refr_now` call exists for exactly
+ * this reason) — without it, a freshly-built object's `coords` stay at
+ * LVGL's zeroed default until SOME refresh happens to run, and
+ * `lv_obj_get_click_area` (unlike this test's coordinate-discovery
+ * helper below) never triggers layout itself. Used after something that
+ * changed shell state WITHOUT going through the synthetic pointer indev
+ * (a direct ff_shell_intent call, the `flare` command) — see ctl_tap
+ * below for why a real tap needs a different, more careful sequence. */
+static void ctl_settle(ff_ctl_loop_ctx_t *ctx, ff_ctl_handlers_t const *h)
+{
+    ctl_clock_advance(h, 50);
+    lv_timer_handler();
+    ff_ctl_loop_pump(ctx);
+    lv_timer_handler();
+    lv_refr_now(ctx->disp);
+}
+
+/**
+ * One real ctl "tap" at (x, y) that LVGL actually delivers as a
+ * press-then-release CLICKED event — not just a state change nothing
+ * ever polls. See this file's top comment for the full reasoning; the
+ * short version: `ctl_loop_tap` sets PRESSED, calls `lv_timer_handler()`,
+ * sets RELEASED, calls `lv_timer_handler()` again, all synchronously with
+ * NO elapsed time in between — so BOTH of those calls only do anything
+ * if LVGL's indev read timer's period (33 ms) has already elapsed since
+ * it last ran:
+ *
+ *  1. Advance the clock (no firing yet) BEFORE the tap, so the timer is
+ *     already stale when the tap's own first `lv_timer_handler()` call
+ *     (the press) runs — that call fires, registers the press, and
+ *     resets the timer's "last ran" mark to the current (just-advanced)
+ *     tick. The tap's SECOND call (the release) then has zero elapsed
+ *     time and does nothing — the release is set but not yet delivered.
+ *  2. Advance the clock again AFTER the tap and pump once — NOW the
+ *     timer is stale again, this call fires, reads the (already-set)
+ *     RELEASED state, and — since the indev's own internal state is
+ *     still "pressed" from step 1 — delivers a press-then-release
+ *     transition: a genuine click.
+ */
+static void ctl_tap(ff_ctl_loop_ctx_t *ctx, ff_ctl_handlers_t const *h, double x, double y)
+{
+    ctl_clock_advance(h, 50); /* stale on purpose — see step 1 above */
+
+    char cmd[128], resp[256];
+    int n = snprintf(cmd, sizeof(cmd), "{\"cmd\":\"tap\",\"x\":%.2f,\"y\":%.2f}", x, y);
+    TEST_ASSERT_TRUE(n > 0 && (size_t)n < sizeof(cmd));
+    ctl_send(h, cmd, resp, sizeof(resp)); /* press registers now; release is stranded until the next poll */
+
+    ctl_clock_advance(h, 50); /* step 2: let the stranded release actually reach LVGL */
+    lv_timer_handler();
+    ff_ctl_loop_pump(ctx);
+    lv_timer_handler();
+    lv_refr_now(ctx->disp);
+}
+
+/* Taps the center of a button already found in the live tree. */
+static void ctl_tap_button(ff_ctl_loop_ctx_t *ctx, ff_ctl_handlers_t const *h, lv_obj_t *btn)
+{
+    TEST_ASSERT_NOT_NULL(btn);
+    lv_area_t area;
+    lv_obj_get_click_area(btn, &area);
+    double x = ((double)area.x1 + (double)area.x2) / 2.0;
+    double y = ((double)area.y1 + (double)area.y2) / 2.0;
+    ctl_tap(ctx, h, x, y);
+}
+
+static void S16_AC10_draft_typed_flare_injected_takeover_clears_draft_survives(void)
+{
+    static ff_shell_t shell;
+    static fp_pack_t pack;
+    static ff_ctl_loop_ctx_t ctx;
+
+    ff_shell_cfg_t shell_cfg;
+    memset(&shell_cfg, 0, sizeof(shell_cfg));
+
+    ff_ctl_loop_cfg_t cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.mock_clock = true; /* the ctl `clock` command — CTL.md — is what makes this test deterministic */
+
+    TEST_ASSERT_EQUAL_INT(0, ff_ctl_loop_open(&ctx, &shell, &pack, &shell_cfg, &cfg));
+
+    bool quit_flag = false;
+    ff_ctl_handlers_t h = ff_ctl_loop_handlers(&ctx, &quit_flag);
+
+    /* Reach Compose directly through the intent seam's real entry point
+     * (see this file's top comment for why this isn't a shortcut around
+     * what AC10 tests) — the same call ff_shell_intent_sink (bound by
+     * ff_ctl_loop_open) would make for a real Signals "+" tap. */
+    ff_intent_t open_compose = {.kind = FF_INTENT_OPEN_COMPOSE, .u = {.node_id = 0u}};
+    ff_shell_intent(&shell, &open_compose);
+    ctl_settle(&ctx, &h);
+
+    TEST_ASSERT_EQUAL(FF_APP_FACE_COMPOSE, ctx.state.active_face);
+    TEST_ASSERT_EQUAL_STRING("", ctx.state.compose.text);
+
+    /* --- draft typed: a real ctl "tap" on the "DEF" key --------------- */
+    lv_obj_t *def_key = find_button_with_label(lv_screen_active(), "DEF");
+    TEST_ASSERT_NOT_NULL_MESSAGE(def_key, "compose keypad's DEF key not found — is Compose actually built?");
+    ctl_tap_button(&ctx, &h, def_key);
+
+    TEST_ASSERT_EQUAL(FF_APP_FACE_COMPOSE, ctx.state.active_face);
+    TEST_ASSERT_EQUAL_STRING("d", ctx.state.compose.text); /* ff_t9's key-3 table: "def", first press */
+
+    /* --- flare injected: the new ctl `flare` command ------------------ */
+    enum { FLARE_FROM = 0xDA1Au, FLARE_DUR_S = 300u };
+    char resp[FF_CTL_MAX_RESP]; /* the `state` dump at the bottom needs the full budget, not just a small reply */
+    char flare_cmd[128];
+    int fn = snprintf(flare_cmd, sizeof(flare_cmd), "{\"cmd\":\"flare\",\"from\":%u,\"dur_s\":%u}", (unsigned)FLARE_FROM,
+                       (unsigned)FLARE_DUR_S);
+    TEST_ASSERT_TRUE(fn > 0 && (size_t)fn < sizeof(flare_cmd));
+    ctl_send(&h, flare_cmd, resp, sizeof(resp));
+    ctl_settle(&ctx, &h);
+
+    /* --- takeover renders ---------------------------------------------
+     * AC13: active_face is never FLARE — the composer stays "the visible
+     * modal" per the route, and the takeover is ff_flare_t's own fact.
+     * What actually reaches the screen is checked structurally: the
+     * takeover's GO/DISMISS buttons exist and the composer's own SEND
+     * button does not (S16 slice d's rebuild REPLACED the tree, it did
+     * not merely draw on top of it). */
+    TEST_ASSERT_TRUE(ff_shell_flare(&shell)->takeover_active);
+    TEST_ASSERT_EQUAL(FF_APP_FACE_COMPOSE, ctx.state.active_face);
+    lv_obj_t *dismiss_btn = find_button_with_label(lv_screen_active(), "DISMISS");
+    TEST_ASSERT_NOT_NULL_MESSAGE(dismiss_btn, "takeover DISMISS button not found — did the screen actually rebuild?");
+    TEST_ASSERT_NULL_MESSAGE(find_button_with_label(lv_screen_active(), "SEND"),
+                              "composer's SEND button is still on screen during a takeover");
+
+    /* The draft survives UNDERNEATH, even though it is not what is
+     * currently rendered (AC3b, exercised here through the real ctl/LVGL
+     * stack rather than a direct ff_shell_intent call). */
+    TEST_ASSERT_EQUAL_STRING("d", ctx.state.compose.text);
+
+    /* --- takeover cleared: a real ctl "tap" on DISMISS ----------------- */
+    ctl_tap_button(&ctx, &h, dismiss_btn);
+
+    TEST_ASSERT_FALSE(ff_shell_flare(&shell)->takeover_active);
+
+    /* --- composer returns with draft intact ---------------------------- */
+    TEST_ASSERT_EQUAL(FF_APP_FACE_COMPOSE, ctx.state.active_face);
+    TEST_ASSERT_EQUAL_STRING("d", ctx.state.compose.text);
+    TEST_ASSERT_NOT_NULL_MESSAGE(find_button_with_label(lv_screen_active(), "SEND"),
+                                  "composer's SEND button did not come back after the takeover cleared");
+
+    /* One direct check that the ctl `state` dump — not just the C
+     * struct this test has been reading — surfaces the same facts
+     * (AC10's "through the ctl socket", read end to end). */
+    ctl_send(&h, "{\"cmd\":\"state\"}", resp, sizeof(resp));
+    TEST_ASSERT_NOT_NULL_MESSAGE(strstr(resp, "\"face\":\"compose\""), resp);
+    TEST_ASSERT_NOT_NULL_MESSAGE(strstr(resp, "\"text\":\"d\""), resp);
+
+    ff_ctl_loop_close(&ctx);
+    ff_shell_close(&shell);
+    lv_deinit();
+}
+
+int main(void)
+{
+    UNITY_BEGIN();
+
+    RUN_TEST(S16_AC10_draft_typed_flare_injected_takeover_clears_draft_survives);
+
+    return UNITY_END();
+}
