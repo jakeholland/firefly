@@ -411,6 +411,27 @@ static void S10_ACn_lock_disclosure_chip_stays_inside_the_round_glass(void)
     }
 }
 
+/* ---------------------------------------------------------------------
+ * DO NOT CONSOLIDATE THIS WITH THE SWEEP ABOVE. They look redundant —
+ * both build a takeover with an awkward name and look at the chip — and
+ * they are not. Each catches a bug the other passes.
+ *
+ * Proven by mutation, not by argument (PR #41 code review round 2, which
+ * found this by reverting the pin and watching which test moved):
+ *   - Remove the label's one-line height pin in flare_make_chip, so
+ *     LVGL's dots mode never fires and the text WRAPS to a second line
+ *     instead: the sweep above still PASSES (a taller two-line chip
+ *     happens to fit inside the circle) while this test FAILS (no
+ *     ellipsis). The chip silently stops being the single-line height
+ *     its slot is sized around, and only this test notices.
+ *   - Remove the width clamp entirely: both fail.
+ *
+ * That first case is itself an instance of the failure this whole PR
+ * kept hitting — the sweep uses NAMES as a proxy for "the chip fits its
+ * slot", and a two-line chip satisfies the proxy while violating the
+ * property.
+ * ------------------------------------------------------------------- */
+
 static void S10_ACn_lock_disclosure_only_truncates_names_that_dont_fit(void)
 {
     /* The other half of the guarantee. Clamping in pixels is only an

@@ -127,10 +127,6 @@ static lv_point_precise_t s_flare_mark_ray_pts[FLARE_MARK_N_RAYS][2];
 /* `font` is a parameter rather than a hardcoded FF_THEME_FONT_CHIP
  * (issue #27): the lock-disclosure chip is the one chip on this screen
  * carrying a decision's cost rather than a status readout, and it earns a
- * bigger step of the type scale than the countdown/lock chips do. */
-/* `font` is a parameter rather than a hardcoded FF_THEME_FONT_CHIP
- * (issue #27): the lock-disclosure chip is the one chip on this screen
- * carrying a decision's cost rather than a status readout, and it earns a
  * bigger step of the type scale than the countdown/lock chips do.
  *
  * ROUND-GLASS SIZING (PR #41 code review, blocking). Every chip built

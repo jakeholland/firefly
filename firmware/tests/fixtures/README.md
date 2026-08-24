@@ -336,6 +336,15 @@ test passes on both platforms, including under ASan/UBSan — but the
 exact pixel LVGL chooses for the ellipsis is not, so it must never be
 the subject of a byte comparison.
 
+**And a per-fixture threshold override would be the wrong escape hatch.**
+`run_goldens.sh` compares every fixture against ONE shared
+`THRESHOLD_PCT` (0.5%). Keeping a 2.27% fixture means raising that to
+~2.5% for all 25 others — blunting every golden gate five-fold to
+accommodate the single fixture that cannot hold to it. Adding a
+per-fixture override instead would keep the number but lose the
+property: the whole value of a shared threshold is that no fixture gets
+to negotiate its own standard. Neither trade is worth a picture.
+
 The rendered proof lives at `docs/screens/flare-takeover-wide-name.png`
 instead, where it is context rather than a gate, and the guarantee is
 enforced by assertions that hold on any platform:
@@ -344,6 +353,19 @@ width worst cases, checked against `ff_layout_rect_in_circle`) and
 `S10_ACn_lock_disclosure_only_truncates_names_that_dont_fit`. This is the
 same "assertion-level, not visual" discipline `test_radar_layout.c`'s
 header argues for, arrived at the hard way.
+
+**That PNG is an arm64 macOS render**, matching every other image in the
+repo, and it is *the shipped side of the 2.27% discrepancy this section
+describes* — so it is worth saying which side you are looking at. Render
+the same state on x86-64 Linux and roughly a third of the chip's pixels
+land differently, because the ellipsis falls on a different character.
+Neither render is more correct than the other; on real hardware there is
+exactly one platform and whatever it does is what users see. To check it
+yourself, recreate the fixture (the flare takeover with
+`locked_from_name` set to fifteen `W`s), render it, and diff against the
+committed PNG with `build/compare_png` — on arm64 you will get
+`0/207936 (0.0000%)`, and a non-zero result means you are on the other
+side of the discrepancy, not that the image is stale.
 
 ## Adding a fixture
 
