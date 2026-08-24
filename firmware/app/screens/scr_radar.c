@@ -17,6 +17,7 @@
 
 #include <stdio.h>
 
+#include "ff_intent.h" /* S16c2 — the emit seam; see radar_flare_cb */
 #include "ff_theme.h"
 #include "radar_layout.h"
 
@@ -629,30 +630,21 @@ static void radar_render_lost(lv_obj_t *parent, ff_radar_view_t const *r, radar_
     }
 }
 
-/* S10 slice b: wired to the real flare-send flow (docs/specs/
- * S06-radar-face.md slice d's reserved hook, "FLARE button... fires S10
- * callback"). Forwards straight into ff_flare_send_begin (core owns
- * everything about what "begin sending" means — default duration,
- * expiry, the SEND_FLARE intent the caller still has to act on by
- * encoding+broadcasting; no meshclient wiring exists yet to do that last
- * part, tracked the same as this file's other known gaps). `user_data`
- * is the `ff_flare_t *flare_rt` passed into ff_scr_radar_build — NULL in
- * golden/headless rendering, where this is a safe no-op (see
- * ff_scr_radar_build's doc comment). */
-static void radar_flare_stub_cb(lv_event_t *e)
+/* S16 slice c2: the CLOSE-mode FLARE button emits FF_INTENT_FLARE_START
+ * through the intent seam (replaces the S10-slice-b stub that took a live
+ * `ff_flare_t *flare_rt` and called `ff_flare_send_begin` directly — this
+ * file no longer includes ff_flare.h at all, see scr_radar.h's doc
+ * comment on this [api] change). No branching of its own: the shell
+ * decides what pressing FLARE means (`ff_shell_intent`'s
+ * FF_INTENT_FLARE_START case), including the default duration and the
+ * real clock reading — this file never touches either. Unbound
+ * (golden/headless rendering, which never fires a click), the emit is a
+ * safe no-op. */
+static void radar_flare_cb(lv_event_t *e)
 {
-    ff_flare_t *flare_rt = (ff_flare_t *)lv_event_get_user_data(e);
-    if (flare_rt != NULL) {
-        (void)ff_flare_send_begin(flare_rt, 0, lv_tick_get());
-        /* Diagnostic-only stdout, same rationale as scr_flare.c's
-         * GO/DISMISS/CANCEL callbacks (PR #20 code review, MEDIUM
-         * finding): this window has no live redraw (issue #17), so a
-         * click that mutates the real ff_flare_t produces no visible
-         * on-screen change — this is the minimum honest confirmation
-         * that the press was received and forwarded correctly. */
-        printf("ffsim: FLARE pressed -> ff_flare_send_begin() (sending now %s)\n",
-               flare_rt->sending ? "true" : "false");
-    }
+    (void)e;
+    ff_intent_t in = {.kind = FF_INTENT_FLARE_START, .u = {0}};
+    ff_intent_emit(&in);
 }
 
 /* lv_anim_exec_xcb_t is `void(*)(void*, int32_t)`; lv_obj_set_style_opa
@@ -664,7 +656,7 @@ static void radar_anim_set_opa_cb(void *obj, int32_t v)
     lv_obj_set_style_opa((lv_obj_t *)obj, (lv_opa_t)v, 0);
 }
 
-static void radar_render_close(lv_obj_t *parent, ff_radar_view_t const *r, ff_flare_t *flare_rt)
+static void radar_render_close(lv_obj_t *parent, ff_radar_view_t const *r)
 {
     /* Three pulsing rings (S06: "LVGL anim, 1.2 s period"). Headless
      * single-frame capture never runs the animation timer, so every
@@ -725,7 +717,7 @@ static void radar_render_close(lv_obj_t *parent, ff_radar_view_t const *r, ff_fl
     lv_obj_set_style_bg_opa(btn, LV_OPA_COVER, 0);
     lv_obj_set_style_radius(btn, LV_RADIUS_CIRCLE, 0);
     lv_obj_align(btn, LV_ALIGN_CENTER, 0, (int32_t)RADAR_LAYOUT_CLOSE_FLARE_DY);
-    lv_obj_add_event_cb(btn, radar_flare_stub_cb, LV_EVENT_CLICKED, flare_rt);
+    lv_obj_add_event_cb(btn, radar_flare_cb, LV_EVENT_CLICKED, NULL);
 
     lv_obj_t *btn_label = lv_label_create(btn);
     lv_label_set_text(btn_label, "FLARE");
@@ -793,7 +785,7 @@ static void radar_render_nosel(lv_obj_t *parent)
  * Entry point.
  * ------------------------------------------------------------------- */
 
-void ff_scr_radar_build(lv_obj_t *parent, ff_radar_view_t const *radar, ff_flare_t *flare_rt)
+void ff_scr_radar_build(lv_obj_t *parent, ff_radar_view_t const *radar)
 {
     if (parent == NULL || radar == NULL) {
         return;
@@ -825,7 +817,7 @@ void ff_scr_radar_build(lv_obj_t *parent, ff_radar_view_t const *radar, ff_flare
         radar_render_lost(parent, radar, &reg);
         break;
     case RADAR_CLOSE:
-        radar_render_close(parent, radar, flare_rt);
+        radar_render_close(parent, radar);
         break;
     case RADAR_NOFIX:
         radar_render_nofix(parent, radar);

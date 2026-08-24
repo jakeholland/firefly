@@ -1288,14 +1288,67 @@ void ff_shell_intent(ff_shell_t *sh_pub, ff_intent_t const *in)
         (void)ff_flare_release_lock(&sh->flare);
         return;
 
+    case FF_INTENT_FLARE_START:
+        /* The Radar-face CLOSE-mode FLARE button (S16 slice c2). Gated on
+         * the visible face like every other base-face control (routing
+         * rule 4): the button only exists on the Radar tile, which is not
+         * the visible face while a takeover is up. dur_s=0 -> core's own
+         * FF_FLARE_DEFAULT_DUR_S; now_ms is the shell's own clock reading,
+         * not lv_tick_get() — the screen no longer touches the clock at
+         * all (ff_scr_radar_build dropped ff_flare_t* in this same
+         * slice). */
+        if (takeover_up) return;
+        (void)ff_flare_send_begin(&sh->flare, 0, shell_now(sh));
+        return;
+
+    case FF_INTENT_FLARE_END:
+        /* The sender overlay's CANCEL button (S16 slice c2). Deliberately
+         * UNGATED on takeover_up: the sender overlay is drawn on the puck
+         * itself, on top of whichever face/takeover is showing (scr_nav.c:
+         * "own screen pulses amber... regardless of current face"), and
+         * `sending` is independent of `takeover_active` by ff_flare_h's
+         * own "Independent state" design — I can be sending my own flare
+         * AND have a different crew member's takeover pending at once, so
+         * CANCEL must reach ff_flare_send_cancel even then. Same
+         * un-gated precedent as RELEASE_LOCK just above. */
+        (void)ff_flare_send_cancel(&sh->flare);
+        return;
+
+    case FF_INTENT_CANNED_REPLY:
+        /* OMW / 5 MIN / PULSE (S16 slice c2, AC7). Reply context is the
+         * newest feed item — `ff_feed_at(feed, 0)`, per
+         * ff_wiring_send_canned_reply's documented contract — deliberately
+         * NOT the composer's destination rule (shell_compose_dest above):
+         * S16's Amendments (PR #54) draw this distinction explicitly.
+         * NULL when the feed is empty, which ff_wiring_send_canned_reply
+         * turns into MC_ADDR_BROADCAST itself. Gated on the visible face:
+         * the reply chips live on the Signals tile. */
+        if (takeover_up) return;
+        {
+            ff_feed_item_t const *ctx = (ff_feed_count(&sh->feed) > 0) ? ff_feed_at(&sh->feed, 0) : NULL;
+            (void)ff_wiring_send_canned_reply(&sh->wiring, in->u.reply, ctx);
+        }
+        return;
+
     /* --- deliberate no-ops until their owning slice lands ------------ */
-    case FF_INTENT_CANNED_REPLY:   /* c2 — ff_wiring_send_canned_reply, newest-feed-item context */
-    case FF_INTENT_SEND_TEXT:      /* c2/c3 — needs the shell-owned draft */
+    case FF_INTENT_SEND_TEXT:      /* c3 — needs the shell-owned draft; scr_compose.c's SEND
+                                     * emits this as of c2, but the draft itself is still
+                                     * scr_compose.c's file-static ff_t9_t until c3 moves it
+                                     * in here, so there is nothing to send FROM yet. Gating
+                                     * on takeover_up is moot while this is a no-op, but the
+                                     * spec's Rule 4 explicitly names this exact case ("a
+                                     * touch landing where SEND was does not send") — c3
+                                     * inherits that requirement when it wires the real send. */
     case FF_INTENT_MARK_FEED_READ: /* c2 — the shell already clears unread on face view (S08 AC3) */
     case FF_INTENT_SELECT_CREW:    /* c2 — radar tap-cycle */
-    case FF_INTENT_SELECT_RALLY:   /* c2 — ff_crew_select_rally, itself still unbuilt */
-    case FF_INTENT_FLARE_START:    /* c2 — radar FLARE button */
-    case FF_INTENT_FLARE_END:      /* c2 — sender-overlay CANCEL */
+    case FF_INTENT_SELECT_RALLY:   /* still unbuilt: ff_crew_select_rally does not exist yet
+                                     * (core/include/ff_crew.h's own documented deviation —
+                                     * a rally point doesn't fit ff_crew_member_t, deferred to
+                                     * S06/S08). signals_rally_tap_cb emits this intent as of
+                                     * c2 (S08 spec: "Rally row tap -> sets rally as radar/map
+                                     * target"), and the shell has nothing to call yet — wiring
+                                     * the emit site now means the eventual handler is the
+                                     * only piece still missing, not a second UI change too. */
     case FF_INTENT_T9_KEY:         /* c3 — shell-owned ff_t9_t */
     case FF_INTENT_T9_SPACE:       /* c3 */
     case FF_INTENT_T9_BACKSPACE:   /* c3 */

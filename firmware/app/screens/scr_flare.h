@@ -4,33 +4,26 @@
  *
  * Pure rendering (CLAUDE.md: "UI code only renders core state and
  * forwards input") of the flattened `ff_app_flare_t` (ff_app_state.h) —
- * the same "state in, pixels out" projection every other face uses. The
- * one exception, exactly like scr_radar.c's close-range FLARE button, is
- * the GO/DISMISS/CANCEL button callbacks: pressing them forwards straight
- * into the named core entry point (`ff_flare_go` / `ff_flare_dismiss_takeover`
- * / `ff_flare_send_cancel`) with zero branching of its own — the state
- * machine, not this file, owns what each button means (docs/specs/
- * S10-flare.md's Amendments, third entry: GO and DISMISS/CANCEL must call
- * the correctly-named split function each, never a shared "dismiss"
- * that has to guess intent).
+ * the same "state in, pixels out" projection every other face uses.
  *
- * `ff_flare_t *rt` (runtime) is the live flare engine these callbacks
- * mutate. It is deliberately SEPARATE from the `ff_app_flare_t const
- * *flare` display snapshot every build function also takes: `flare` is
- * what gets drawn (works from a standalone fixture with no live engine
- * at all — golden-screenshot rendering, `rt == NULL`); `rt` is what a
- * button PRESS acts on (only meaningful in interactive/window mode,
- * where targets/sim/main.c owns one real `ff_flare_t` for the process).
- * Passing NULL for `rt` is always safe — every callback below no-ops on
- * NULL rather than crashing, so headless single-frame golden rendering
- * (which never fires a click at all, but still builds the same button
- * objects) needs no special-casing.
+ * As of S16 slice c2's `[api]` change, the GO/DISMISS/CANCEL button
+ * callbacks no longer take a live `ff_flare_t *rt` to mutate directly —
+ * this header no longer includes `ff_flare.h` at all. Pressing a button
+ * now emits a semantic intent through the seam (`ff_intent_emit`,
+ * app/include/ff_intent.h): GO -> `FF_INTENT_TAKEOVER_GO`, DISMISS ->
+ * `FF_INTENT_TAKEOVER_DISMISS`, CANCEL -> `FF_INTENT_FLARE_END`. The
+ * shell decides what each means (`ff_shell_intent`'s cases, which still
+ * call the correctly-named split core function each — `ff_flare_go` /
+ * `ff_flare_dismiss_takeover` / `ff_flare_send_cancel`, never a shared
+ * "dismiss" that has to guess intent, per docs/specs/S10-flare.md's
+ * Amendments, third entry). Unbound (golden/headless rendering, which
+ * never fires a click), every emit here is a safe no-op — same contract
+ * every intent emit site in this codebase follows.
  */
 #ifndef FF_SCR_FLARE_H
 #define FF_SCR_FLARE_H
 
 #include "ff_app_state.h"
-#include "ff_flare.h"
 #include "lvgl.h"
 
 #ifdef __cplusplus
@@ -44,13 +37,12 @@ extern "C" {
  * whatever face would otherwise be shown, per spec "full-screen takeover
  * regardless of current face"). Draws: a pulsing amber burst mark, the
  * "<NAME> IS FLARING" headline (flare_fmt.h), a compass-bearing +
- * distance line, the explanatory line ("they lit their puck so you can
- * spot them — arrow's locked on"), and two buttons:
- *   - GO: switches the lock to this sender (`ff_flare_go(rt)`) — an
- *     explicit user decision, so (per the MEDIUM ruling) it's allowed to
- *     replace any PREVIOUS lock, unlike a passively-arriving takeover.
- *   - DISMISS: clears only this pending takeover (`ff_flare_dismiss_takeover(rt)`)
- *     — leaves any existing lock, and any OTHER field on `*rt`, untouched.
+ * distance line, and two buttons:
+ *   - GO: emits `FF_INTENT_TAKEOVER_GO` — an explicit user decision, so
+ *     (per the MEDIUM ruling) the shell is allowed to replace any
+ *     PREVIOUS lock with it, unlike a passively-arriving takeover.
+ *   - DISMISS: emits `FF_INTENT_TAKEOVER_DISMISS` — clears only this
+ *     pending takeover, leaves any existing lock untouched.
  * Both buttons are visually distinct filled shapes (not text-only — a
  * previous UX review flagged a grey text-only DISMISS as not looking
  * pressable) and >= FF_THEME_MIN_HIT_PX tall.
@@ -58,7 +50,7 @@ extern "C" {
  * exactly the state it's handed, no invented fallback" contract as every
  * other screen builder in this codebase.
  */
-void ff_scr_flare_build_takeover(ff_app_flare_t const *flare, ff_flare_t *rt);
+void ff_scr_flare_build_takeover(ff_app_flare_t const *flare);
 
 /**
  * ff_scr_flare_build_sender_overlay — draws on top of `parent` (expected
@@ -68,10 +60,10 @@ void ff_scr_flare_build_takeover(ff_app_flare_t const *flare, ff_flare_t *rt);
  * pulses amber" is not Radar-specific). Draws: a pulsing amber rim tint
  * around the puck edge, the status line "you are flaring — crew arrows
  * locked on you", a live countdown (flare_fmt.h), and a CANCEL button
- * (`ff_flare_send_cancel(rt)`) >= FF_THEME_MIN_HIT_PX tall.
+ * (emits `FF_INTENT_FLARE_END`) >= FF_THEME_MIN_HIT_PX tall.
  * No-op if `!flare->sending`.
  */
-void ff_scr_flare_build_sender_overlay(lv_obj_t *parent, ff_app_flare_t const *flare, ff_flare_t *rt);
+void ff_scr_flare_build_sender_overlay(lv_obj_t *parent, ff_app_flare_t const *flare);
 
 /**
  * ff_scr_flare_build_lock_chip — draws a small "LOCKED · <NAME>" chip
@@ -87,32 +79,37 @@ void ff_scr_flare_build_sender_overlay(lv_obj_t *parent, ff_app_flare_t const *f
  * where there's no actual collision risk to resolve.
  * No-op if `!flare->locked`.
  *
- * This function does not call `ff_flare_locked_node()` itself —
- * `flare->locked` is expected to already be true only when that accessor
- * (core/include/ff_flare.h) says so (see ff_scr_flare_selection_locked
- * below for the one call site that DOES consult it directly). This is
- * the same "screens render already-decided state, never re-derive
- * domain facts" split every other builder in this file follows.
+ * This function does not re-derive the lock fact itself — `flare->locked`
+ * is expected to already be true only when the shell's own consult of
+ * `ff_flare_locked_node()` (core/include/ff_flare.h) said so (see
+ * ff_scr_flare_selection_locked below, which reads the same flattened
+ * fact rather than the live core struct as of S16 slice c2). This is the
+ * same "screens render already-decided state, never re-derive domain
+ * facts" split every other builder in this file follows.
  */
 void ff_scr_flare_build_lock_chip(lv_obj_t *parent, ff_app_flare_t const *flare);
 
 /**
- * ff_scr_flare_selection_locked — true iff `rt`'s navigation lock should
- * suppress crew-selection cycling right now. A one-line wrapper around
- * `ff_flare_locked_node(rt) != 0` (core/include/ff_flare.h) — spec S10
- * AC3 / this PR's task brief: "consult ff_flare_locked_node(); do NOT
- * re-implement the rule — the state machine owns it." No crew-selection
- * CYCLING code exists anywhere in this repo yet (grepped: no
+ * ff_scr_flare_selection_locked — true iff the navigation lock should
+ * suppress crew-selection cycling right now.
+ *
+ * As of S16 slice c2's `[api]` change this reads the flattened
+ * `flare->locked` projection (the shell computes it from
+ * `ff_flare_locked_node(f) != 0` in `shell_project_flare`, ff_shell.c) —
+ * NOT the live `ff_flare_t` this function used to take a pointer to
+ * directly. Screens forward input and render already-decided state; they
+ * do not consult core structs, and this was the one place in this file
+ * that still did (flagged and closed in this slice's PR body). No crew-
+ * selection CYCLING code exists anywhere in this repo yet (grepped: no
  * `ff_crew_select_next` or touch/swipe selection handler exists in
  * app/screens as of this PR — S06's shell has no interaction wiring for
- * it), so there is no call site to wire this INTO yet either; this
- * accessor exists so that whichever future S06/crew-selection code adds
- * that handler has exactly one correct place to ask, rather than
- * re-deriving "is the lock active" from `ff_flare_t` fields itself.
- * Returns false for `rt == NULL` (no live engine — e.g. golden/headless
- * rendering — never counts as locked).
+ * it), so there is still no call site to wire this INTO; this accessor
+ * exists so that whichever future S06/crew-selection code adds that
+ * handler has exactly one correct place to ask.
+ * Returns false for `flare == NULL` (no state to read — e.g. a builder
+ * called before the first projection — never counts as locked).
  */
-bool ff_scr_flare_selection_locked(ff_flare_t const *rt);
+bool ff_scr_flare_selection_locked(ff_app_flare_t const *flare);
 
 #ifdef __cplusplus
 }

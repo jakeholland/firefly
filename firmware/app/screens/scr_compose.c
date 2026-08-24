@@ -300,13 +300,21 @@ static void compose_backspace_cb(lv_event_t *e)
     compose_refresh_bubble();
 }
 
-/* TODO(issue #23): actually send — mc_send_text to compose->to_name's
- * node (or app/ff_wiring.c's sender seam) — once this screen has a
- * wiring handle to call through. Pure render today (CLAUDE.md); reserved
- * hook, same convention as scr_radar.c's FLARE-button stub. */
-static void compose_send_stub_cb(lv_event_t *e)
+/* SEND -> emits FF_INTENT_SEND_TEXT through the intent seam (S16 slice
+ * c2 — this replaces the issue-#23 stub). No payload: the draft is
+ * shell-owned T9 state per the spec's Intents section ("scr_compose.c's
+ * `static ff_t9_t s_t9` currently holds it, reset on every build"), which
+ * has not moved yet — that is slice c3's job. So `ff_shell_intent`'s
+ * FF_INTENT_SEND_TEXT case stays a no-op for now (nothing to send FROM),
+ * but the routing rule this button must already respect is real: S16
+ * Rule 4 says explicitly "a touch landing where SEND was does not send"
+ * while a takeover is up, which the shell enforces once c3 wires the real
+ * send. Unbound (goldens/headless), the emit is a no-op. */
+static void compose_send_cb(lv_event_t *e)
 {
     (void)e;
+    ff_intent_t in = {.kind = FF_INTENT_SEND_TEXT, .u = {0}};
+    ff_intent_emit(&in);
 }
 
 /* Back "<" -> emits FF_INTENT_BACK through the intent seam (S16 slice
@@ -404,7 +412,7 @@ static void compose_build_bottom_row(lv_obj_t *container, ff_app_compose_mode_t 
     lv_obj_set_style_bg_color(send, lv_color_hex(FF_THEME_COLOR_AMBER), 0);
     lv_obj_set_style_bg_opa(send, LV_OPA_COVER, 0);
     lv_obj_set_style_radius(send, LV_RADIUS_CIRCLE, 0);
-    lv_obj_add_event_cb(send, compose_send_stub_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_add_event_cb(send, compose_send_cb, LV_EVENT_CLICKED, NULL);
     lv_obj_t *send_lbl = lv_label_create(send);
     lv_label_set_text(send_lbl, "SEND");
     lv_obj_set_style_text_font(send_lbl, FF_THEME_FONT_CHIP, 0);

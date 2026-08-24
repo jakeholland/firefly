@@ -12,9 +12,9 @@
  *
  * As of S16 slice c1 the "+" (open Compose) forwards through the intent
  * seam (`ff_intent_emit`, app/include/ff_intent.h) — still zero domain
- * logic here; the shell decides. The rally-row and canned-reply chips
- * remain clearly-marked stub callbacks until S16 slice c2 converts them
- * to intents, same convention as scr_radar.c's FLARE-button stub.
+ * logic here; the shell decides. Slice c2 converts the rally-row tap
+ * (`FF_INTENT_SELECT_RALLY`) and the OMW/5 MIN/PULSE chips
+ * (`FF_INTENT_CANNED_REPLY`) the same way.
  */
 #ifndef FF_SCR_SIGNALS_H
 #define FF_SCR_SIGNALS_H

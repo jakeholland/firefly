@@ -280,18 +280,30 @@ static void signals_build_icon(lv_obj_t *parent, ff_app_feed_kind_t kind)
  * Event rows.
  * ------------------------------------------------------------------- */
 
-/* TODO(issue #23): tapping a RALLY row should call
- * ff_crew_select_rally() (deferred — see core/include/ff_crew.h's own
- * documented deviation note: "S08's own wording puts the combined
- * crew+landmark selection cursor at S06... Deferred to S06/S08"). This
- * screen has no core/crew handle to call it with (pure render, per
- * CLAUDE.md), so the hook is reserved here rather than guessed at. */
-static void signals_rally_tap_stub_cb(lv_event_t *e)
+/* Rally row tap -> emits FF_INTENT_SELECT_RALLY through the intent seam
+ * (S16 slice c2 — this replaces the issue-#23 stub). `rally_idx` is this
+ * row's index into the `ff_app_signals_t` slice this screen was handed
+ * (the row's own position in the visible list, passed through
+ * `user_data` the same way `compose_key_click_cb` threads a key index) —
+ * not a crew/core handle, which a pure-render screen must not hold
+ * (CLAUDE.md). The shell still has nothing to DO with this yet:
+ * `ff_crew_select_rally()` is not implemented in core (deferred — see
+ * core/include/ff_crew.h's own documented deviation note: "S08's own
+ * wording puts the combined crew+landmark selection cursor at S06...
+ * Deferred to S06/S08"), so `ff_shell_intent`'s FF_INTENT_SELECT_RALLY
+ * case stays a no-op until that lands — wiring the emit site now means
+ * the eventual handler is the only piece still missing. Unbound
+ * (goldens/headless), the emit is a no-op. */
+static void signals_rally_tap_cb(lv_event_t *e)
 {
-    (void)e;
+    uintptr_t idx = (uintptr_t)lv_event_get_user_data(e);
+    ff_intent_t in = {.kind = FF_INTENT_SELECT_RALLY, .u = {0}};
+    in.u.rally_idx = (uint8_t)idx;
+    ff_intent_emit(&in);
 }
 
-static void signals_build_row(lv_obj_t *parent, ff_app_feed_item_t const *it, int32_t y, int32_t margin_x)
+static void signals_build_row(lv_obj_t *parent, ff_app_feed_item_t const *it, int32_t y, int32_t margin_x,
+                               uint8_t idx)
 {
     lv_obj_t *row = lv_obj_create(parent);
     lv_obj_remove_style_all(row);
@@ -316,7 +328,7 @@ static void signals_build_row(lv_obj_t *parent, ff_app_feed_item_t const *it, in
          * ff_scr_signals_build) keeps the whole row's width on-glass
          * regardless of which slot a RALLY item happens to scroll into. */
         lv_obj_add_flag(row, LV_OBJ_FLAG_CLICKABLE);
-        lv_obj_add_event_cb(row, signals_rally_tap_stub_cb, LV_EVENT_CLICKED, NULL);
+        lv_obj_add_event_cb(row, signals_rally_tap_cb, LV_EVENT_CLICKED, (void *)(uintptr_t)idx);
     }
 
     lv_obj_t *icon_parent = lv_obj_create(row);
@@ -388,24 +400,29 @@ static void signals_build_empty_state(lv_obj_t *parent)
  * Canned-reply chip row: OMW / 5 MIN / PULSE.
  * ------------------------------------------------------------------- */
 
-/* TODO(issue #23): actually send via app/ff_wiring.c's
- * ff_wiring_send_canned_reply() once this screen has a wiring handle to
- * call it through (pure render today, per CLAUDE.md — see this file's
- * header comment). Reply-context (which sender OMW/5 MIN/PULSE address)
- * is the newest feed item, per S08's "to the feed item's sender if a
- * reply-context exists" — that selection already happens correctly by
- * construction once this is wired (the caller passes the same
- * `ff_app_signals_t` this screen renders, whose `items[0]` is newest,
- * matching `ff_feed_at(feed, 0)` on the live core side). See
- * signals_build_target_label below for the ON-SCREEN half of this same
- * fact — PR #25 UX review (non-blocking finding): a code comment saying
- * "it's items[0]" is invisible to Bailey; the label makes it visible. */
-static void signals_canned_reply_stub_cb(lv_event_t *e)
+/* OMW / 5 MIN / PULSE -> emits FF_INTENT_CANNED_REPLY through the intent
+ * seam (S16 slice c2 — this replaces the issue-#23 stub). `which` (the
+ * chip's own ff_wiring_canned_reply_t) travels through `user_data`, same
+ * pattern as compose_key_click_cb's key index and signals_rally_tap_cb's
+ * row index. Reply-context (which sender OMW/5 MIN/PULSE address) is the
+ * shell's call, not this screen's: `ff_wiring_send_canned_reply`'s
+ * documented contract is the newest feed item, and this screen cannot
+ * resolve that itself (pure render, per CLAUDE.md) — it only reports
+ * which chip was pressed. See signals_build_target_label below for the
+ * ON-SCREEN half of the same fact — PR #25 UX review (non-blocking
+ * finding): a code comment saying "it's items[0]" is invisible to Bailey;
+ * the label makes it visible. Unbound (goldens/headless), the emit is a
+ * no-op. */
+static void signals_canned_reply_cb(lv_event_t *e)
 {
-    (void)e;
+    uintptr_t which = (uintptr_t)lv_event_get_user_data(e);
+    ff_intent_t in = {.kind = FF_INTENT_CANNED_REPLY, .u = {0}};
+    in.u.reply = (ff_wiring_canned_reply_t)which;
+    ff_intent_emit(&in);
 }
 
-static lv_obj_t *signals_make_reply_button(lv_obj_t *parent, char const *text, int32_t x, int32_t w)
+static lv_obj_t *signals_make_reply_button(lv_obj_t *parent, char const *text, int32_t x, int32_t w,
+                                            ff_wiring_canned_reply_t which)
 {
     lv_obj_t *btn = lv_button_create(parent);
     lv_obj_remove_style_all(btn);
@@ -414,7 +431,7 @@ static lv_obj_t *signals_make_reply_button(lv_obj_t *parent, char const *text, i
     lv_obj_set_style_bg_color(btn, lv_color_hex(FF_THEME_COLOR_SURFACE), 0);
     lv_obj_set_style_bg_opa(btn, LV_OPA_COVER, 0);
     lv_obj_set_style_radius(btn, LV_RADIUS_CIRCLE, 0);
-    lv_obj_add_event_cb(btn, signals_canned_reply_stub_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_add_event_cb(btn, signals_canned_reply_cb, LV_EVENT_CLICKED, (void *)(uintptr_t)which);
 
     lv_obj_t *label = lv_label_create(btn);
     lv_label_set_text(label, text);
@@ -463,9 +480,9 @@ static void signals_build_reply_row(lv_obj_t *parent)
     int32_t gap = 8;
     int32_t btn_w = (row_w - 2 * gap) / 3;
 
-    signals_make_reply_button(row, "OMW", 0, btn_w);
-    signals_make_reply_button(row, "5 MIN", btn_w + gap, btn_w);
-    signals_make_reply_button(row, "PULSE", 2 * (btn_w + gap), btn_w);
+    signals_make_reply_button(row, "OMW", 0, btn_w, FF_WIRING_REPLY_OMW);
+    signals_make_reply_button(row, "5 MIN", btn_w + gap, btn_w, FF_WIRING_REPLY_5MIN);
+    signals_make_reply_button(row, "PULSE", 2 * (btn_w + gap), btn_w, FF_WIRING_REPLY_PULSE);
 }
 
 /* ---------------------------------------------------------------------
@@ -511,7 +528,7 @@ void ff_scr_signals_build(lv_obj_t *parent, ff_app_signals_t const *signals)
 
         int32_t y = 0;
         for (uint8_t i = 0; i < signals->n_items && i < FF_APP_SIGNALS_MAX_ITEMS; i++) {
-            signals_build_row(list, &signals->items[i], y, list_margin);
+            signals_build_row(list, &signals->items[i], y, list_margin, i);
             y += FF_SIGNALS_ROW_H + FF_SIGNALS_ROW_GAP;
         }
     }

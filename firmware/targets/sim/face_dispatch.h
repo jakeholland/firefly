@@ -15,7 +15,6 @@
 #define FF_FACE_DISPATCH_H
 
 #include "ff_app_state.h"
-#include "ff_flare.h" /* S10 slice b — ff_flare_t, the flare_rt param below */
 
 #ifdef __cplusplus
 extern "C" {
@@ -38,13 +37,17 @@ extern "C" {
  * (Settings) still has no real screen and falls through to
  * fixture_view.h's S13 placeholder.
  *
- * `flare_rt` is forwarded to whichever screen builder needs it for its
- * button callbacks (NULL is a fully-defined, safe value — see
- * scr_flare.h's top comment — used by headless one-shot rendering, which
- * has no interactivity for a GO/DISMISS/CANCEL press to act on; a real
- * per-process `ff_flare_t` is threaded through in window mode).
+ * S16 slice c2's `[api]` change dropped the `ff_flare_t *flare_rt`
+ * parameter this function used to forward to `ff_scr_nav_build`/
+ * `ff_scr_flare_build_takeover`: every S10 button (GO/DISMISS/CANCEL/
+ * FLARE) now emits a semantic intent through the seam
+ * (`ff_intent_emit`, app/include/ff_intent.h) instead of mutating a live
+ * `ff_flare_t` handed down through this dispatch. A target that wants
+ * those presses to DO something binds the seam to a real `ff_shell_t`
+ * (`ff_intent_emit_bind(ff_shell_intent_sink, &shell)`) — this dispatch
+ * function no longer needs to know that engine exists at all.
  */
-void ff_build_face_screen(ff_app_state_t const *state, ff_flare_t *flare_rt);
+void ff_build_face_screen(ff_app_state_t const *state);
 
 #ifdef __cplusplus
 }

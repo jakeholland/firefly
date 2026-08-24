@@ -110,7 +110,6 @@
  * main.c (pre-extraction) had its own copy of this define/include; that
  * would now be a duplicate-symbol link error against ff-stb-image-write,
  * so it's intentionally dropped here rather than merged back in. */
-#include "ff_flare.h" /* S10 slice b — ff_flare_init/ff_flare_t, window mode's live engine */
 #include "ff_version.h"
 
 #include "ctl_out_path.h"
@@ -214,13 +213,12 @@ static int ff_run_headless_once(const char *screenshot_dir, const char *fixture_
             lv_deinit();
             return 1;
         }
-        /* flare_rt = NULL: a headless run renders exactly one frame and
-         * exits, so there is no interactivity for any GO/DISMISS/CANCEL
-         * button press to act on — see ff_build_face_screen's doc
-         * comment and scr_flare.h's top comment for why NULL is always a
-         * safe, fully-defined value here (buttons still render, just
-         * inertly). */
-        ff_build_face_screen(&state, NULL);
+        /* Every S10 button (GO/DISMISS/CANCEL/FLARE) emits a semantic
+         * intent through the seam (S16 slice c2) — a one-shot headless
+         * render never binds anything to it (see ff_intent.h's top
+         * comment: unbound is a safe no-op), so buttons still render,
+         * just inertly, with no special-casing needed here at all. */
+        ff_build_face_screen(&state);
 
         char stem[256];
         ff_fixture_stem(fixture_path, stem, sizeof(stem));
@@ -247,15 +245,6 @@ static int ff_run_window(const char *fixture_path, bool mock_clock)
     lv_sdl_window_set_title(disp, "Firefly (ffsim)");
     lv_sdl_mouse_create();
 
-    /* S10 slice b: window mode owns exactly ONE real `ff_flare_t` for the
-     * whole process — the live engine GO/DISMISS/CANCEL/FLARE button
-     * presses actually mutate (see ff_build_face_screen's doc comment).
-     * A local (not static) variable is fine here: ff_run_window never
-     * returns before the process exits (its event loop is `while(true)`
-     * below), so this outlives every screen built against its address. */
-    ff_flare_t flare_rt;
-    ff_flare_init(&flare_rt);
-
     if (fixture_path != NULL) {
         ff_app_state_t state;
         ff_fixture_result_t fr = ff_fixture_load_file(fixture_path, &state);
@@ -264,39 +253,28 @@ static int ff_run_window(const char *fixture_path, bool mock_clock)
             return 1;
         }
 
-        /* PR #20 independent code review, MEDIUM finding: this window is
-         * built ONCE from a static `ff_app_state_t` snapshot (`state`)
-         * that never changes after load, while `&flare_rt` above is a
-         * SEPARATE, real engine the GO/DISMISS/CANCEL/FLARE callbacks
-         * genuinely mutate. Nothing re-renders `state` from `flare_rt`
-         * (that would need a live crew/name/bearing lookup this
-         * fixture-driven sim target has no wiring for at all — out of
-         * scope here, and the underlying "nothing re-renders on state
-         * change" gap is already tracked as issue #17). The reviewer's
-         * concrete repro: load a takeover fixture in window mode and
-         * GO/DISMISS silently do nothing ON SCREEN — no visible
-         * feedback, no way to tell the click even registered, and (for a
-         * full-screen takeover specifically) no way to leave the screen
-         * at all short of closing the window. Per the reviewer's own
-         * fallback guidance ("if a full fix is out of scope, ensure the
-         * window-mode path... logs/labels clearly that it's a static
-         * preview" — do not ship a silent trap), this prints an
-         * unmissable, impossible-to-miss note up front for exactly the
-         * fixtures where that matters (a pending takeover has no other
-         * way to dismiss itself), rather than leaving a user to discover
-         * the limitation by confused clicking. */
+        /* S16 slice c2 retired the live per-process `ff_flare_t` this
+         * mode used to own (S10 slice b, PR #20 review): every S10 button
+         * (GO/DISMISS/CANCEL/FLARE) now emits a semantic intent through
+         * the seam instead of mutating a core struct directly, and this
+         * fixture-preview window never binds anything to that seam
+         * (`ff_intent_emit_bind` — see ff_intent.h's top comment for why
+         * unbound is a documented, safe no-op, the ctl loop's live shell
+         * being the one place a target does bind it). So where the old
+         * note said "GO/DISMISS mutate the engine but the window won't
+         * redraw", the honest statement now is stronger and simpler: a
+         * fixture window is a STATIC preview and every button on it is
+         * inert. Printed for takeover fixtures specifically because that
+         * screen has no other way to leave. */
         if (state.flare.takeover_active) {
             fprintf(stderr,
-                    "ffsim: NOTE — this is a STATIC single-frame preview. GO/DISMISS "
-                    "genuinely mutate the live ff_flare_t (check stdout/a debugger), "
-                    "but this window will NOT redraw to reflect it (tracked: issue "
-                    "#17 — no live crew/name/bearing wiring exists in this sim target "
-                    "to re-derive the display snapshot from). This takeover screen has "
-                    "NO on-screen way to leave until that lands — close the window or "
-                    "Ctrl+C to exit.\n");
+                    "ffsim: NOTE — this is a STATIC single-frame preview. GO/DISMISS/CANCEL/"
+                    "FLARE emit intents through the seam (S16), but this window binds nothing "
+                    "to it, so every button here is inert. This takeover screen has NO "
+                    "on-screen way to leave — close the window or Ctrl+C to exit.\n");
         }
 
-        ff_build_face_screen(&state, &flare_rt);
+        ff_build_face_screen(&state);
     } else {
         ff_build_boot_screen();
     }
@@ -356,17 +334,6 @@ typedef struct {
      * path is confined under this ALREADY-CANONICALIZED (realpath()'d at
      * startup — see ff_run_ctl_loop) root — see ctl_out_path.h. */
     char ctl_out_dir_real[PATH_MAX];
-
-    /* S10 slice b merge: the ctl loop is a real, persistent, interactive
-     * process too (tap/swipe are injected live, exactly like window
-     * mode) — not a one-shot render — so it gets its own real
-     * `ff_flare_t` engine, same as ff_run_window's `flare_rt`, rather
-     * than the headless one-shot path's NULL (see
-     * ff_build_face_screen's doc comment for that NULL/non-NULL
-     * distinction). This lets a live-received FLARE's takeover screen
-     * (`state->flare.takeover_active`) actually respond to injected
-     * tap/swipe input through the ctl socket. */
-    ff_flare_t flare_rt;
 } ff_loop_ctx_t;
 
 /* Wall-clock milliseconds (POSIX monotonic clock) — used whenever
@@ -676,8 +643,6 @@ static int ff_run_ctl_loop(uint16_t ctl_port, const char *fixture_path, bool moc
     lv_indev_set_read_cb(ctx.pointer_indev, ff_loop_pointer_read_cb);
     lv_indev_set_user_data(ctx.pointer_indev, &ctx);
 
-    ff_flare_init(&ctx.flare_rt); /* see ff_loop_ctx_t.flare_rt's doc comment */
-
     static ff_app_state_t state; /* static: outlives this function via ctx.state
                                      (screens built below hold no pointer, but the
                                      ctl handlers dump it between loop turns) */
@@ -703,7 +668,7 @@ static int ff_run_ctl_loop(uint16_t ctl_port, const char *fixture_path, bool moc
             lv_deinit();
             return 1;
         }
-        ff_build_face_screen(&state, &ctx.flare_rt);
+        ff_build_face_screen(&state);
     } else {
         ff_build_boot_screen();
     }

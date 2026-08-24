@@ -6,6 +6,7 @@
 #include <math.h>
 #include <stdio.h>
 
+#include "ff_intent.h" /* S16c2 — the emit seam; see flare_go_cb et al. */
 #include "ff_layout.h"
 #include "ff_theme.h"
 #include "flare_fmt.h"
@@ -296,57 +297,39 @@ static lv_obj_t *flare_make_button(lv_obj_t *parent, char const *text, uint32_t 
 }
 
 /* ---------------------------------------------------------------------
- * Button callbacks — each forwards to exactly one core entry point, no
- * branching (see this file's header comment).
- *
- * The `printf` in each is diagnostic-only (stdout, not a return value or
- * a rendered pixel) — PR #20 code review, MEDIUM finding: this window
- * has no live redraw (issue #17), so a click that mutates the real
- * `ff_flare_t` produces NO visible on-screen change at all, which reads
- * to a user driving `ffsim` interactively as "the button did nothing."
- * This is the minimum honest feedback that a press was actually received
- * and forwarded correctly, without pretending to solve the redraw gap
- * itself (targets/sim/main.c's window-mode load path prints the fuller
- * one-time explanation for takeover screens specifically, since those
- * have no other way to be dismissed). Harmless during the headless
- * golden path (no click ever fires there) and during
- * screens/tests/test_scr_flare.c's interaction tests (stdout noise, not
- * a test failure) — this module owns no other I/O.
+ * Button callbacks — each emits exactly one semantic intent, no
+ * branching (see this file's header comment). S16 slice c2's `[api]`
+ * change dropped the live `ff_flare_t *rt` these used to mutate directly
+ * (S10 slice b); the shell now owns the correctly-named split core call
+ * each intent maps to.
  * ------------------------------------------------------------------- */
 
 static void flare_go_cb(lv_event_t *e)
 {
-    ff_flare_t *rt = (ff_flare_t *)lv_event_get_user_data(e);
-    if (rt != NULL) {
-        (void)ff_flare_go(rt);
-        printf("ffsim: GO pressed -> ff_flare_go() (locked_node_id now %u)\n", (unsigned)rt->locked_node_id);
-    }
+    (void)e;
+    ff_intent_t in = {.kind = FF_INTENT_TAKEOVER_GO, .u = {0}};
+    ff_intent_emit(&in);
 }
 
 static void flare_dismiss_takeover_cb(lv_event_t *e)
 {
-    ff_flare_t *rt = (ff_flare_t *)lv_event_get_user_data(e);
-    if (rt != NULL) {
-        (void)ff_flare_dismiss_takeover(rt);
-        printf("ffsim: DISMISS pressed -> ff_flare_dismiss_takeover() (takeover_active now %s)\n",
-               rt->takeover_active ? "true" : "false");
-    }
+    (void)e;
+    ff_intent_t in = {.kind = FF_INTENT_TAKEOVER_DISMISS, .u = {0}};
+    ff_intent_emit(&in);
 }
 
 static void flare_cancel_send_cb(lv_event_t *e)
 {
-    ff_flare_t *rt = (ff_flare_t *)lv_event_get_user_data(e);
-    if (rt != NULL) {
-        (void)ff_flare_send_cancel(rt);
-        printf("ffsim: CANCEL pressed -> ff_flare_send_cancel() (sending now %s)\n", rt->sending ? "true" : "false");
-    }
+    (void)e;
+    ff_intent_t in = {.kind = FF_INTENT_FLARE_END, .u = {0}};
+    ff_intent_emit(&in);
 }
 
 /* ---------------------------------------------------------------------
  * Entry points.
  * ------------------------------------------------------------------- */
 
-void ff_scr_flare_build_takeover(ff_app_flare_t const *flare, ff_flare_t *rt)
+void ff_scr_flare_build_takeover(ff_app_flare_t const *flare)
 {
     if (flare == NULL || !flare->takeover_active) {
         return;
@@ -469,17 +452,17 @@ void ff_scr_flare_build_takeover(ff_app_flare_t const *flare, ff_flare_t *rt)
 
     /* GO: solid amber fill — the primary, unmistakably-pressable action. */
     flare_make_button(puck, "GO", FF_THEME_COLOR_AMBER, FF_THEME_COLOR_BG, true, FLARE_TAKEOVER_BTN_W,
-                       FLARE_TAKEOVER_GO_BTN_H, (int32_t)FLARE_TAKEOVER_GO_DY, flare_go_cb, rt);
+                       FLARE_TAKEOVER_GO_BTN_H, (int32_t)FLARE_TAKEOVER_GO_DY, flare_go_cb, NULL);
 
     /* DISMISS: a distinct, visually solid bordered pill (surface fill +
      * amber border), NOT plain text on the background — the previous UX
      * review's exact finding on this screen's earlier pass. */
     flare_make_button(puck, "DISMISS", FF_THEME_COLOR_AMBER, FF_THEME_COLOR_INK, false, FLARE_TAKEOVER_BTN_W,
                        FLARE_TAKEOVER_DISMISS_BTN_H, (int32_t)FLARE_TAKEOVER_DISMISS_DY, flare_dismiss_takeover_cb,
-                       rt);
+                       NULL);
 }
 
-void ff_scr_flare_build_sender_overlay(lv_obj_t *parent, ff_app_flare_t const *flare, ff_flare_t *rt)
+void ff_scr_flare_build_sender_overlay(lv_obj_t *parent, ff_app_flare_t const *flare)
 {
     if (parent == NULL || flare == NULL || !flare->sending) {
         return;
@@ -532,7 +515,7 @@ void ff_scr_flare_build_sender_overlay(lv_obj_t *parent, ff_app_flare_t const *f
      * FF_THEME_MIN_HIT_PX and visually distinct (outlined pill), matching
      * the takeover screen's DISMISS treatment. */
     flare_make_button(parent, "CANCEL", FF_THEME_COLOR_AMBER, FF_THEME_COLOR_AMBER, false, FLARE_SENDER_CANCEL_W,
-                       FLARE_SENDER_CANCEL_H, (int32_t)FLARE_SENDER_CANCEL_DY, flare_cancel_send_cb, rt);
+                       FLARE_SENDER_CANCEL_H, (int32_t)FLARE_SENDER_CANCEL_DY, flare_cancel_send_cb, NULL);
 }
 
 void ff_scr_flare_build_lock_chip(lv_obj_t *parent, ff_app_flare_t const *flare)
@@ -549,10 +532,7 @@ void ff_scr_flare_build_lock_chip(lv_obj_t *parent, ff_app_flare_t const *flare)
                      (int32_t)FLARE_LOCK_CHIP_DY);
 }
 
-bool ff_scr_flare_selection_locked(ff_flare_t const *rt)
+bool ff_scr_flare_selection_locked(ff_app_flare_t const *flare)
 {
-    if (rt == NULL) {
-        return false;
-    }
-    return ff_flare_locked_node(rt) != 0;
+    return flare != NULL && flare->locked;
 }

@@ -207,9 +207,12 @@ as `radar.dist_str` above. Similarly, `takeover_from_name`/
 node id core's `ff_flare_t` actually keys on (`takeover_node_id`/
 `locked_node_id`) — two crew members sharing a display name are
 indistinguishable in this flattened snapshot, which is fine for what it's
-for (pixels), but the one place a real lock DECISION gets made
-(`ff_scr_flare_selection_locked`) always consults the live `ff_flare_t`
-via `ff_flare_locked_node()` directly, never this struct.
+for (pixels). Until S16 slice c2, the one place a real lock DECISION gets
+made (`ff_scr_flare_selection_locked`) consulted the live `ff_flare_t` via
+`ff_flare_locked_node()` directly rather than this struct; that `[api]`
+change moved it onto `flare.locked` (the shell computes the same fact once,
+in `shell_project_flare`), so this struct is now the only thing every
+screen-layer read of the lock — display or decision — consults.
 
 `takeover_bearing_valid` (PR #20 code review, LOW finding) exists because
 a bearing genuinely can be unknown (no position fix on either end) and
