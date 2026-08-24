@@ -49,6 +49,22 @@ void ff_heard_note(ff_heard_t *h, uint32_t node_id, uint32_t now_ms)
     h->entries[lru_idx].last_heard_ms = now_ms;
 }
 
+bool ff_heard_remove(ff_heard_t *h, uint32_t node_id)
+{
+    if (h == NULL) return false;
+    for (uint8_t i = 0; i < h->count; i++) {
+        if (h->entries[i].node_id != node_id) continue;
+        /* Compact by moving the last entry down — ff_heard_at makes no
+         * ordering promise beyond "each tracked id appears exactly once",
+         * so a swap-remove is fine and keeps this O(1) past the find. */
+        h->count--;
+        h->entries[i] = h->entries[h->count];
+        memset(&h->entries[h->count], 0, sizeof(h->entries[h->count]));
+        return true;
+    }
+    return false;
+}
+
 uint8_t ff_heard_count(ff_heard_t const *h)
 {
     if (h == NULL) return 0;

@@ -11,7 +11,8 @@ firmware/
                 ff_route.h (S16a routing), ff_shell.h (S16b1 — the running app:
                 lifecycle, mc_events_t callbacks, core->view projection)
   targets/sim/  ffsim — desktop sim target (S13); fixture.h/fixture_view.h (S13b);
-                ctl_server.h/.c (S13c control socket), live.h/.c (S13c --connect/--pack)
+                ctl_server.h/.c (S13c control socket); --connect/--pack drive the
+                app shell (S16b2 — the interim live.h/.c wiring is retired)
   tools/        compare_png — golden-screenshot pixel diff (S14 slice b)
                 dev/         compose.yml + crew_sim.py + CTL.md — the live dev loop (S13d)
   tests/        tests/fixtures/*.json, tests/golden/*.png, run_goldens.sh (S13/S14 slice b)
@@ -75,10 +76,13 @@ Opens a newline-JSON control socket on `127.0.0.1:9000` (protocol:
 `tools/dev/CTL.md`) instead of rendering once and exiting — `tap`/
 `swipe`/`clock`/`state`/`screenshot`/`quit` commands, one JSON object per
 line in, one JSON line back. `--connect HOST:PORT` wires up a live
-Meshtastic connection (`targets/sim/live.h`) so `{"cmd":"state"}` dumps
-reflect real mesh traffic instead of a static fixture; `--pack FILE`
-anchors "my position" at a festpack's venue origin (the sim has no real
-GPS); `--ctl-out DIR` sets where the `screenshot` command may write
+Meshtastic connection driving the app shell (`app/include/ff_shell.h`,
+S16b2) so `{"cmd":"state"}` dumps reflect `ff_shell_view()` — real mesh
+traffic filtered by the roster trust policy — instead of a static
+fixture; add `--dev-trust-all` (sim-only, compiled out on device) to
+auto-pair the dev daemon's NodeInfo senders, see `tools/dev/CTL.md`;
+`--pack FILE` anchors "my position" at a festpack's venue origin (the
+sim has no real GPS); `--ctl-out DIR` sets where the `screenshot` command may write
 (`path` in that command is a relative name confined under this root —
 never an arbitrary filesystem path — see CTL.md). See `tools/dev/
 README.md` for the whole dev loop (dockerized meshtasticd + `crew_sim.py`
@@ -124,10 +128,6 @@ criteria-numbered per spec (`SNN_ACX_description`), per `AGENTS.md`.
   (exact `FF_CTL_MAX_LINE` boundary, oversized-line resync) and command
   dispatch (every command's success path and guard paths), plus a real
   loopback-socket end-to-end pass.
-- `test_live` (S13c) — `targets/sim/live.h`'s festpack-venue-origin
-  loading and a full synthetic mc_client -> crew -> radar/signals
-  pipeline test (mock transport, hand-encoded protobuf frames, same
-  technique as `meshclient/tests/test_meshclient.c`).
 - `test_shell` (S16 slice b1) — `app/ff_shell.h`, the running
   application: the roster trust policy across all seven `mc_events_t`
   callbacks (unknown senders reach `ff_heard`, never the paired roster),
@@ -138,6 +138,11 @@ criteria-numbered per spec (`SNN_ACX_description`), per `AGENTS.md`.
   `ff_shell_events()`, the same mock-injector seam `ff_wiring.h`
   documents. Two of its criteria are easy to pass for the wrong reason,
   so both carry an explicit measurement — see the file's header comment.
+  S16 slice b2 added the AC6 cutover tests: one drives the shell's own
+  `mc_client_t` through a scripted in-memory transport with hand-encoded
+  protobuf frames (the retired `test_live`'s technique, now proving the
+  exact pipeline `ffsim --connect` ships), plus the `--dev-trust-all`
+  dev-affordance semantics and the on_my_info heard-purge.
 - `test_png_diff` (S14 slice b) — `tools/png_diff.h`'s pixel-diff core,
   including the exact 0.4%/0.5%/0.6% threshold boundary.
 - `test_wall` (S16 slice b0) — `core/ff_wall.h`'s wall-clock derivation:

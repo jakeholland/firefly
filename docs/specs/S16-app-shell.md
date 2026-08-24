@@ -164,6 +164,47 @@ loop while also fighting unfamiliar hardware for the first time.
   footprints at the time of writing: `ff_shell_t` 12,240 B against a
   16 KB budget; `fp_pack_t` 23,696 B against its own 48 KB budget.
 
+- **2026-08-24, PR (slice b2) — `--dev-trust-all` does two things AC6's
+  row does not name, because the dev harness it exists for is a SINGLE
+  node that is also "us".**
+
+  AC6 says the flag "auto-pairs on NodeInfo only". Implemented, and the
+  only-NodeInfo restriction is pinned (a bare Position still never
+  pairs, even on the dev bench). But against the only dev harness this
+  repo has — one dockerized meshtasticd, whose one node identity is
+  ALSO what `on_my_info` reports as ffsim's own id
+  (`tools/dev/crew_sim.py`'s verified constraints: no spoofing, one
+  identity per instance) — auto-pair alone is a no-op: every packet the
+  harness can produce is "our own traffic" and b1's (correct, pinned)
+  self filter drops it before the auto-pair branch is reached. And even
+  past that, the single node's want_config replay can never age the one
+  position it carries: its `last_heard` is what bootstraps the wall
+  latch, and the cold-boot rule ("a timestamp may not age a fix if that
+  same timestamp defines the clock the age is measured against") then —
+  correctly — reads it `FF_FRESH_NEVER`. The e2e radar scenario would sit
+  at NO FIX forever, honestly.
+
+  So under the flag, and only under the flag:
+
+  - **the self filter is suspended** — the harness's one node plays
+    every role;
+  - **the sim offers the host's clock to the wall latch**
+    (`ff_shell_dev_wall_observe`), giving the replay an independent
+    clock to be aged against. This is not the `FF_WALL_USER` this spec
+    cut: that was an unfalsifiable number typed on a device keypad; this
+    is the desktop's NTP-synced clock — the same clock the dockerized
+    daemon stamps `last_heard` from — still gated by the plausibility
+    window, sim-only, and compiled out of device builds with the rest of
+    the affordance.
+
+  Both effects are named in the startup log line, documented in
+  `ff_shell.h`, and pinned at unit level
+  (`S16_AC6_dev_trust_all_lets_the_single_dev_node_play_a_crew_member`,
+  which also pins that WITHOUT the host observation the D1 rule refuses
+  the age — the observation is load-bearing, not decoration). Recorded
+  here because it widens the flag beyond the AC's sentence; the
+  device-build guarantee (absent, compile-time-asserted) is unchanged.
+
 ## Two defects this closes
 
 ### 1. Two inbound pipelines that disagree about trust

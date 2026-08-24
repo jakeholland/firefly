@@ -114,7 +114,29 @@ round-trips byte-for-byte through another `state` dump
 (`targets/sim/tests/test_fixture.c`'s `dump_then_reload_round_trips_*`
 tests pin this).
 
-Response: `{"ok": true, "state": {"fixture": "...", "face": "radar", "radar": {...}, ...}}`.
+In live mode (`--connect`) the dumped state IS the app shell's current
+projection, `ff_shell_view()` (S16 slice b2) — refreshed every loop tick,
+not a static fixture. If `--fixture` was also given, the fixture only
+seeds the initially-built screen; the dump reflects the live view.
+
+**`wall` (S16b2):** one extra top-level key, appended after the fixture
+schema's fields, reporting what the wall clock thinks
+(`ff_shell_wall()`) — the hardware bench work (issue #49) needs to SEE
+what latched rather than infer it:
+
+- unlatched: `"wall":{"src":"unknown"}` — the puck does not know what
+  time it is, and the other fields would be meaningless, so they are
+  absent rather than zeroed (honest-data rule).
+- latched: `"wall":{"src":"mesh","day_doy":261,"now_min":900,
+  "offset_assumed":false}` — `ff_wall_t`'s fields verbatim (day-of-year
+  with the 06:00 festival-day roll, minutes in [360, 1800), and whether
+  the UTC offset was a stated value or a defaulted guess).
+
+`wall` is NOT part of the fixture schema: the fixture loader ignores
+unknown keys, so a saved `state` dump still loads as a fixture; it is
+simply not renderable view state.
+
+Response: `{"ok": true, "state": {"fixture": "...", "face": "radar", "radar": {...}, ..., "wall": {...}}}`.
 
 ### `screenshot`
 
@@ -178,6 +200,17 @@ $ printf '{"cmd":"clock","advance_ms":1000}\n{"cmd":"state"}\n{"cmd":"quit"}\n' 
 
 Combine with `--connect HOST:PORT` (and optionally `--pack FILE.json`) to
 have `state` dumps reflect a real meshtasticd connection instead of a
-static fixture — see `targets/sim/live.h`'s top comment for exactly what
-that wires up (and its deliberately-scoped-down parts), and
-`firmware/tools/dev/README.md` for the full dev-loop walkthrough.
+static fixture. As of S16 slice b2 this drives the app shell
+(`firmware/app/include/ff_shell.h`) — the same object the device target
+will drive — over the mc TCP transport; the interim `targets/sim/live.h`
+wiring is retired (docs/specs/S13-sim-target.md's Amendments).
+
+The shell enforces the roster trust policy: unpaired senders produce no
+feed items and no crew slots. Against the single-node dev meshtasticd
+(whose one node is also ffsim's own id — see crew_sim.py's verified
+constraints) that means a bare `--connect` session shows nothing, by
+design. Pass **`--dev-trust-all`** for the dev loop: it auto-pairs every
+NodeInfo sender, suspends the self filter, and latches the wall clock
+from the host clock. Sim-only, logged at startup, compiled out of device
+builds (S16 AC6). See `firmware/tools/dev/README.md` for the full
+dev-loop walkthrough.

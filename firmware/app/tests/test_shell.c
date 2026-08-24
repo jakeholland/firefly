@@ -72,6 +72,20 @@
 #include "ff_settings.h"
 #include "ff_wall.h"
 
+/* S16 slice b2's transport-driven AC6 test is the ONE exception to this
+ * file's "no transport anywhere" rule, deliberately: AC6 is about the
+ * cutover — every inbound event routed through the same shell entry
+ * points via a real mc_client_t decode — so it hand-encodes synthetic
+ * Meshtastic frames over a scripted in-memory transport, the same
+ * technique the retired targets/sim/tests/test_live.c used (itself
+ * borrowed from meshclient/tests/test_meshclient.c). */
+#include "mc_framing.h"
+
+#include "pb_decode.h"
+#include "pb_encode.h"
+
+#include "meshtastic/mesh.pb.h"
+
 /* ------------------------------------------------------------------- */
 /* reference times                                                      */
 /* ------------------------------------------------------------------- */
@@ -1179,6 +1193,294 @@ static void S16_b1_failed_pack_load_does_not_outrank_the_settings_offset(void)
 
 /* =================================================================== */
 
+/* =================================================================== */
+/* S16 slice b2 — AC6: the sim cutover                                  */
+/* =================================================================== */
+
+/**
+ * Scripted in-memory transport: `rx` is the radio's reply stream, `tx`
+ * captures everything mc_client writes (so the test can echo back the
+ * REAL want_config nonce — it is randomly generated per connect and
+ * cannot be guessed; see mc_begin_handshake).
+ */
+typedef struct {
+    uint8_t rx[4096];
+    size_t rx_len, rx_pos;
+    uint8_t tx[1024];
+    size_t tx_len;
+} pipe_io_t;
+
+static pipe_io_t P;
+
+static int pipe_read(void *io, uint8_t *buf, size_t maxlen)
+{
+    pipe_io_t *p = (pipe_io_t *)io;
+    size_t remaining = p->rx_len - p->rx_pos;
+    if (remaining == 0) return 0;
+    size_t n = (remaining < maxlen) ? remaining : maxlen;
+    memcpy(buf, p->rx + p->rx_pos, n);
+    p->rx_pos += n;
+    return (int)n;
+}
+
+static int pipe_write(void *io, uint8_t const *buf, size_t len)
+{
+    pipe_io_t *p = (pipe_io_t *)io;
+    size_t room = sizeof(p->tx) - p->tx_len;
+    size_t n = (len < room) ? len : room;
+    memcpy(p->tx + p->tx_len, buf, n);
+    p->tx_len += n;
+    return (int)len;
+}
+
+/** The want_config nonce from the FIRST frame mc_connect wrote. */
+static uint32_t pipe_want_config_id(pipe_io_t const *p)
+{
+    TEST_ASSERT_GREATER_OR_EQUAL_size_t(5u, p->tx_len);
+    TEST_ASSERT_EQUAL_HEX8(MC_FRAME_MAGIC1, p->tx[0]);
+    TEST_ASSERT_EQUAL_HEX8(MC_FRAME_MAGIC2, p->tx[1]);
+    uint16_t len = (uint16_t)((p->tx[2] << 8) | p->tx[3]);
+    TEST_ASSERT_LESS_OR_EQUAL_size_t(p->tx_len - 4u, len);
+
+    meshtastic_ToRadio tr = meshtastic_ToRadio_init_zero;
+    pb_istream_t is = pb_istream_from_buffer(p->tx + 4, len);
+    TEST_ASSERT_TRUE(pb_decode(&is, meshtastic_ToRadio_fields, &tr));
+    TEST_ASSERT_EQUAL_INT(meshtastic_ToRadio_want_config_id_tag, tr.which_payload_variant);
+    return tr.payload_variant.want_config_id;
+}
+
+static uint16_t frame_from_radio(meshtastic_FromRadio const *fr, uint8_t *out, size_t out_cap)
+{
+    uint8_t payload[512];
+    pb_ostream_t os = pb_ostream_from_buffer(payload, sizeof(payload));
+    TEST_ASSERT_TRUE(pb_encode(&os, meshtastic_FromRadio_fields, fr));
+    uint16_t n = mc_frame_encode(out, out_cap, payload, (uint16_t)os.bytes_written);
+    TEST_ASSERT_GREATER_THAN_UINT16(0, n);
+    return n;
+}
+
+static size_t frame_my_info(uint8_t *out, size_t cap, uint32_t my_node_num)
+{
+    meshtastic_FromRadio fr = meshtastic_FromRadio_init_zero;
+    fr.which_payload_variant = meshtastic_FromRadio_my_info_tag;
+    fr.payload_variant.my_info.my_node_num = my_node_num;
+    return frame_from_radio(&fr, out, cap);
+}
+
+static size_t frame_nodeinfo_with_position(uint8_t *out, size_t cap, uint32_t node, char const *short_name,
+                                            uint32_t last_heard, double lat, double lon)
+{
+    meshtastic_FromRadio fr = meshtastic_FromRadio_init_zero;
+    fr.which_payload_variant = meshtastic_FromRadio_node_info_tag;
+    fr.payload_variant.node_info.num = node;
+    fr.payload_variant.node_info.has_user = true;
+    (void)snprintf(fr.payload_variant.node_info.user.short_name,
+                    sizeof(fr.payload_variant.node_info.user.short_name), "%s", short_name);
+    fr.payload_variant.node_info.has_position = true;
+    fr.payload_variant.node_info.position.has_latitude_i = true;
+    fr.payload_variant.node_info.position.latitude_i = (int32_t)(lat * 1e7);
+    fr.payload_variant.node_info.position.has_longitude_i = true;
+    fr.payload_variant.node_info.position.longitude_i = (int32_t)(lon * 1e7);
+    fr.payload_variant.node_info.last_heard = last_heard;
+    return frame_from_radio(&fr, out, cap);
+}
+
+static size_t frame_config_complete(uint8_t *out, size_t cap, uint32_t nonce)
+{
+    meshtastic_FromRadio fr = meshtastic_FromRadio_init_zero;
+    fr.which_payload_variant = meshtastic_FromRadio_config_complete_id_tag;
+    fr.payload_variant.config_complete_id = nonce;
+    return frame_from_radio(&fr, out, cap);
+}
+
+static size_t frame_position_packet(uint8_t *out, size_t cap, uint32_t from, uint32_t rx_time, double lat,
+                                     double lon)
+{
+    meshtastic_Position pos = meshtastic_Position_init_zero;
+    pos.has_latitude_i = true;
+    pos.latitude_i = (int32_t)(lat * 1e7);
+    pos.has_longitude_i = true;
+    pos.longitude_i = (int32_t)(lon * 1e7);
+
+    uint8_t pos_bytes[64];
+    pb_ostream_t os = pb_ostream_from_buffer(pos_bytes, sizeof(pos_bytes));
+    TEST_ASSERT_TRUE(pb_encode(&os, meshtastic_Position_fields, &pos));
+
+    meshtastic_FromRadio fr = meshtastic_FromRadio_init_zero;
+    fr.which_payload_variant = meshtastic_FromRadio_packet_tag;
+    fr.payload_variant.packet.from = from;
+    fr.payload_variant.packet.to = 0xFFFFFFFFu;
+    fr.payload_variant.packet.id = 77;
+    fr.payload_variant.packet.has_rx_time = true;
+    fr.payload_variant.packet.rx_time = rx_time;
+    fr.payload_variant.packet.which_payload_variant = meshtastic_MeshPacket_decoded_tag;
+    fr.payload_variant.packet.payload_variant.decoded.portnum = meshtastic_PortNum_POSITION_APP;
+    fr.payload_variant.packet.payload_variant.decoded.payload.size = (pb_size_t)os.bytes_written;
+    memcpy(fr.payload_variant.packet.payload_variant.decoded.payload.bytes, pos_bytes, os.bytes_written);
+    return frame_from_radio(&fr, out, cap);
+}
+
+/**
+ * AC6, the without-the-flag half, driven through the REAL pipeline the
+ * cutover ships: a scripted transport into the shell's own mc_client_t.
+ * A node that has only ever sent NodeInfo + Position produces zero feed
+ * items, zero roster slots, and exactly one heard entry — the same
+ * answer the injection-level AC5 tests give, now proven through the
+ * decode path `ffsim --connect` actually uses (main.c has no other
+ * path: live.c is gone).
+ */
+static void S16_AC6_nodeinfo_plus_position_via_real_transport_produce_zero_feed_items(void)
+{
+    memset(&P, 0, sizeof(P));
+    memset(&H, 0, sizeof(H));
+    H.clk.t = 100000u;
+    H.clock.now_ms = fake_now;
+    H.clock.user = &H.clk;
+
+    ff_shell_cfg_t cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.clock = &H.clock;
+    cfg.pack = &H.pack;
+    cfg.transport.read = pipe_read;
+    cfg.transport.write = pipe_write;
+    cfg.transport.io = &P;
+
+    TEST_ASSERT_EQUAL_INT(0, ff_shell_init(&H.shell, &cfg)); /* mc_connect -> want_config in P.tx */
+    uint32_t const nonce = pipe_want_config_id(&P);
+
+    size_t n = 0;
+    n += frame_my_info(P.rx + n, sizeof(P.rx) - n, MY_ID);
+    n += frame_nodeinfo_with_position(P.rx + n, sizeof(P.rx) - n, STRANGER, "STR", U_EVENING, 39.0, -82.0);
+    n += frame_config_complete(P.rx + n, sizeof(P.rx) - n, nonce);
+    n += frame_position_packet(P.rx + n, sizeof(P.rx) - n, STRANGER, U_EVENING + 5u, 39.0005, -82.0);
+    P.rx_len = n;
+
+    advance(20u);
+    (void)ff_shell_tick(&H.shell, H.clk.t);
+
+    /* The pipeline genuinely ran end to end... */
+    TEST_ASSERT_EQUAL_INT(FF_SHELL_LINK_CONNECTED, ff_shell_link(&H.shell));
+    TEST_ASSERT_EQUAL_UINT32(MY_ID, ff_shell_my_node_id(&H.shell));
+
+    /* ...and the trust policy held at every stage of it. */
+    TEST_ASSERT_EQUAL_UINT8(0, ff_feed_count(ff_shell_feed(&H.shell)));
+    TEST_ASSERT_EQUAL_UINT8(0, ff_shell_crew(&H.shell)->count);
+    TEST_ASSERT_TRUE(ff_heard_contains(ff_shell_heard(&H.shell), STRANGER));
+    TEST_ASSERT_EQUAL_UINT8(1, ff_heard_count(ff_shell_heard(&H.shell)));
+}
+
+/**
+ * AC6, the flag half: auto-pair on NodeInfo, and on NodeInfo ONLY. A
+ * bare Position from an unknown node must not pair even on the dev
+ * bench — pairing on the most untrusted packet on the mesh is this
+ * spec's headline defect, and the dev affordance does not get to
+ * reintroduce it.
+ */
+static void S16_AC6_dev_trust_all_auto_pairs_on_nodeinfo_only(void)
+{
+    harness_init(100000u, false);
+    ff_shell_dev_trust_all(&H.shell, true);
+    inject_my_info(MY_ID);
+
+    /* NodeInfo -> a real paired roster slot, name and all... */
+    inject_node(STRANGER, "STR", U_EVENING);
+    TEST_ASSERT_EQUAL_UINT8(1, ff_shell_crew(&H.shell)->count);
+    ff_crew_member_t const *m = member(STRANGER);
+    TEST_ASSERT_NOT_NULL(m);
+    TEST_ASSERT_TRUE(m->paired);
+    TEST_ASSERT_EQUAL_STRING("STR", m->name);
+    TEST_ASSERT_FALSE(ff_heard_contains(ff_shell_heard(&H.shell), STRANGER));
+
+    /* ...a bare Position does NOT pair; the sender goes to heard. */
+    inject_position(STRANGER2, U_EVENING + 10u, 39.0, -82.0);
+    TEST_ASSERT_EQUAL_UINT8(1, ff_shell_crew(&H.shell)->count);
+    TEST_ASSERT_TRUE(ff_heard_contains(ff_shell_heard(&H.shell), STRANGER2));
+
+    /* The pairing is real, not cosmetic: a PULSE from the paired node
+     * reaches the feed; one from the position-only node still does not. */
+    inject_pulse(STRANGER);
+    TEST_ASSERT_EQUAL_UINT8(1, ff_feed_count(ff_shell_feed(&H.shell)));
+    inject_pulse(STRANGER2);
+    TEST_ASSERT_EQUAL_UINT8(1, ff_feed_count(ff_shell_feed(&H.shell)));
+}
+
+/**
+ * AC6 amendment (recorded in S16's Amendments): the dockerized dev
+ * meshtasticd is a SINGLE node whose id is also what on_my_info reports
+ * as ours — the harness's one node plays every role. So under the flag
+ * the self filter is suspended, and the sim offers the HOST's clock to
+ * the wall latch so that single node's replayed position has an
+ * independent clock to be aged against (without one, its own
+ * `last_heard` defines the latch and the D1 rule — correctly — refuses
+ * to age it). This test is firmware/tests/e2e/test_position_reaches_radar's
+ * mechanism, pinned at unit level.
+ */
+static void S16_AC6_dev_trust_all_lets_the_single_dev_node_play_a_crew_member(void)
+{
+    /* Without the host-clock observation: the lone NodeInfo defines the
+     * latch, so its position is honestly unplaceable (D1) — pinning WHY
+     * ff_shell_dev_wall_observe is load-bearing, not decoration. */
+    harness_init(100000u, false);
+    ff_shell_dev_trust_all(&H.shell, true);
+    inject_my_info(MY_ID);
+    inject_node_with_position(MY_ID, U_EVENING - 30u, 39.002, -82.0);
+    ff_crew_member_t const *m = member(MY_ID);
+    TEST_ASSERT_NOT_NULL(m); /* paired (self filter suspended)... */
+    TEST_ASSERT_TRUE(m->paired);
+    TEST_ASSERT_FALSE(m->has_pos); /* ...but its fix defined the clock: not aged */
+
+    /* With it — the exact ffsim --dev-trust-all startup sequence — the
+     * same replay ages honestly against the host latch and reads LIVE. */
+    harness_init(100000u, false);
+    ff_shell_dev_trust_all(&H.shell, true);
+    ff_shell_dev_wall_observe(&H.shell, (int64_t)U_EVENING);
+    inject_my_info(MY_ID);
+    inject_node_with_position(MY_ID, U_EVENING - 30u, 39.002, -82.0);
+
+    m = member(MY_ID);
+    TEST_ASSERT_NOT_NULL(m);
+    TEST_ASSERT_TRUE(m->paired);
+    TEST_ASSERT_TRUE(m->has_pos);
+    TEST_ASSERT_EQUAL_INT(FF_FRESH_LIVE, ff_crew_freshness(m, H.clk.t)); /* 30 s < FF_CREW_LIVE_MS */
+
+    /* And the flag is opt-in: a fresh shell without it keeps the self
+     * filter up (S16_b1_own_traffic_is_not_treated_as_inbound pins the
+     * production path in full). */
+    harness_init(100000u, false);
+    inject_my_info(MY_ID);
+    inject_node_with_position(MY_ID, U_EVENING, 39.002, -82.0);
+    TEST_ASSERT_EQUAL_UINT8(0, ff_shell_crew(&H.shell)->count);
+}
+
+/**
+ * The b1 caveat (PR #46 review), closed: before on_my_info lands, our
+ * own NodeInfo cannot be recognised as ours and used to note our own id
+ * in ff_heard — where it lingered until LRU eviction, so S12's "add
+ * from heard nodes" list would have offered the user their own puck.
+ * on_my_info now purges it, which covers EVERY stream ordering (see
+ * shell_ev_my_info for why the suggested mc_client_t read closes
+ * nothing — the client's copy updates at the same instant this
+ * callback fires).
+ */
+static void S16_b2_my_info_purges_our_own_id_from_heard(void)
+{
+    harness_init(100000u, false);
+
+    /* The radio picked the caveat's ordering: our NodeInfo first. */
+    inject_node(MY_ID, "ME", U_EVENING);
+    TEST_ASSERT_TRUE(ff_heard_contains(ff_shell_heard(&H.shell), MY_ID)); /* the defect, reproduced */
+
+    inject_my_info(MY_ID);
+    TEST_ASSERT_FALSE(ff_heard_contains(ff_shell_heard(&H.shell), MY_ID)); /* purged on learning who we are */
+
+    /* And once named, later self traffic never re-notes it. */
+    inject_node(MY_ID, "ME", U_EVENING + 60u);
+    inject_position(MY_ID, U_EVENING + 61u, 39.0, -82.0);
+    TEST_ASSERT_FALSE(ff_heard_contains(ff_shell_heard(&H.shell), MY_ID));
+    TEST_ASSERT_EQUAL_UINT8(0, ff_heard_count(ff_shell_heard(&H.shell)));
+    TEST_ASSERT_EQUAL_UINT8(0, ff_shell_crew(&H.shell)->count);
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -1213,6 +1515,11 @@ int main(void)
     RUN_TEST(S16_b1_a_flare_on_a_foreign_portnum_raises_no_takeover);
     RUN_TEST(S16_b1_shell_footprint_excludes_the_pack);
     RUN_TEST(S16_b1_failed_pack_load_does_not_outrank_the_settings_offset);
+
+    RUN_TEST(S16_AC6_nodeinfo_plus_position_via_real_transport_produce_zero_feed_items);
+    RUN_TEST(S16_AC6_dev_trust_all_auto_pairs_on_nodeinfo_only);
+    RUN_TEST(S16_AC6_dev_trust_all_lets_the_single_dev_node_play_a_crew_member);
+    RUN_TEST(S16_b2_my_info_purges_our_own_id_from_heard);
 
     return UNITY_END();
 }

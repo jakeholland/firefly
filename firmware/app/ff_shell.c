@@ -61,6 +61,16 @@ typedef struct {
     bool my_pos_ok;
     float heading_deg; /* negative = unknown/unreliable (ff_geo_heading_deg's sentinel) */
 
+#if defined(FF_TARGET_SIM)
+    /* --dev-trust-all (S16 AC6). SIM ONLY, and deliberately inside the
+     * guard rather than an always-present field defaulted false: the
+     * spec demands the affordance be COMPILED OUT of device builds, and
+     * a field that exists is a field one stray write away from mattering.
+     * The shell's footprint differs by one bool between targets; the
+     * _Static_assert below bounds both. */
+    bool dev_trust_all;
+#endif
+
     /* --- tick bookkeeping -------------------------------------------- */
     uint32_t now_ms;         /* the last ff_shell_tick's clock reading */
     ff_app_face_t prev_face; /* to detect "Signals became visible" (S08 AC3) */
@@ -147,6 +157,36 @@ static bool shell_is_paired(shell_t const *sh, uint32_t node_id)
 static bool shell_is_self(shell_t const *sh, uint32_t node_id)
 {
     return sh->has_my_node_id && node_id == sh->my_node_id;
+}
+
+/**
+ * Should this inbound event be dropped as our own echo?
+ *
+ * Normally identical to shell_is_self. Under `--dev-trust-all` (sim
+ * only) the self filter is suspended: the dockerized dev meshtasticd is
+ * a single node whose id is ALSO what on_my_info reports as ours, so
+ * with the filter up the harness's every packet would be "our own
+ * traffic" and the dev loop could exercise nothing. The harness's one
+ * node plays every role — see ff_shell.h's dev-affordances section.
+ */
+static bool shell_drop_as_self(shell_t const *sh, uint32_t node_id)
+{
+#if defined(FF_TARGET_SIM)
+    if (sh->dev_trust_all) return false;
+#endif
+    return shell_is_self(sh, node_id);
+}
+
+/**
+ * The one internal path that may grow the roster — ff_shell_pair's body,
+ * shared with the sim-only auto-pair branch in shell_ev_node so both go
+ * through a single audited place.
+ */
+static bool shell_pair(shell_t *sh, uint32_t node_id, bool paired)
+{
+    if (ff_crew_upsert(&sh->crew, node_id) == NULL) return false; /* roster full, no eviction in v1 */
+    ff_crew_set_paired(&sh->crew, node_id, paired);
+    return true;
 }
 
 /* ---------------------------------------------------------------------
@@ -373,6 +413,21 @@ static void shell_ev_my_info(void *u, uint32_t my_node_id)
     if (sh == NULL) return;
     sh->my_node_id = my_node_id;
     sh->has_my_node_id = true;
+
+    /* PR #46 review caveat, closed here (slice b2): if our own NodeInfo
+     * arrived BEFORE this callback named us — whichever order the radio
+     * picked — shell_ev_node could not recognise it as ours and noted
+     * our own id in ff_heard, where it would linger until LRU eviction
+     * and be offered in S12's "add from heard nodes" list. The reviewer
+     * suggested reading my_node_id from mc_client_t instead of this
+     * callback, but that closes nothing: mc_client.c sets its own copy
+     * and fires this callback at the same instant (mc_client.c:316-319),
+     * so the two records can never disagree — the residual window is
+     * "own NodeInfo earlier in the STREAM than MyNodeInfo", which
+     * defeats both reads equally. The honest closure is to purge the
+     * entry the moment we learn who we are, which covers every ordering.
+     * Pinned by S16_b2_my_info_purges_our_own_id_from_heard. */
+    (void)ff_heard_remove(&sh->heard, my_node_id);
 }
 
 static void shell_ev_node(void *u, mc_nodeinfo_t const *n)
@@ -387,7 +442,20 @@ static void shell_ev_node(void *u, mc_nodeinfo_t const *n)
      * bootstrap most wants. */
     bool const defined_the_latch = shell_observe_wall_nodeinfo(sh, n->last_heard, now);
 
-    if (shell_is_self(sh, n->node_num)) return; /* never treat our own traffic as inbound */
+    if (shell_drop_as_self(sh, n->node_num)) return; /* never treat our own traffic as inbound */
+
+#if defined(FF_TARGET_SIM)
+    /* --dev-trust-all (S16 AC6): auto-pair on NodeInfo, and on NodeInfo
+     * ONLY — a bare Position must still not grow the roster, even on the
+     * dev bench (pairing on the most untrusted packet on the mesh is the
+     * exact defect S16 exists to close; the dev affordance does not get
+     * to reintroduce it). Routed through shell_pair, the same single
+     * audited growth path ff_shell_pair uses. Compiled out of device
+     * builds entirely; see ff_shell.h's dev-affordances section. */
+    if (sh->dev_trust_all) {
+        (void)shell_pair(sh, n->node_num, true); /* roster full -> falls through to heard, below */
+    }
+#endif
 
     /* ROSTER TRUST POLICY. Read-only first; a miss is noted in the
      * bounded heard list and dropped. Inbound radio traffic never grows
@@ -467,7 +535,7 @@ static void shell_ev_position(void *u, uint32_t node, mc_position_t const *p)
 {
     shell_t *sh = (shell_t *)u;
     if (sh == NULL || p == NULL) return;
-    if (shell_is_self(sh, node)) return;
+    if (shell_drop_as_self(sh, node)) return;
 
     uint32_t const now = shell_now(sh);
 
@@ -513,7 +581,7 @@ static void shell_ev_text(void *u, uint32_t from, uint32_t to, char const *utf8,
 {
     shell_t *sh = (shell_t *)u;
     if (sh == NULL) return;
-    if (shell_is_self(sh, from)) return;
+    if (shell_drop_as_self(sh, from)) return;
     /* ff_wiring owns the crew-paired filter, the heard-note on a miss,
      * the feed push and the (quiet-gated, via shell_haptic_feed) buzz. */
     ff_wiring_on_text(&sh->wiring, from, to, utf8, len);
@@ -524,7 +592,7 @@ static void shell_ev_private(void *u, uint32_t from, uint32_t portnum, uint8_t c
     shell_t *sh = (shell_t *)u;
     if (sh == NULL) return;
     if (portnum != FF_PORTNUM) return; /* not this app's protocol */
-    if (shell_is_self(sh, from)) return;
+    if (shell_drop_as_self(sh, from)) return;
 
     ff_proto_msg_t msg;
     memset(&msg, 0, sizeof(msg));
@@ -559,7 +627,7 @@ static void shell_ev_rx_meta(void *u, uint32_t from, mc_rx_meta_t const *m)
     /* mc_client.h warns explicitly: self-packets are NOT filtered by the
      * library, and a caller maintaining a per-peer roster wants to skip
      * its own id rather than create a slot for itself. */
-    if (shell_is_self(sh, from)) return;
+    if (shell_drop_as_self(sh, from)) return;
 
     uint32_t const now = shell_now(sh);
 
@@ -1062,13 +1130,12 @@ mc_events_t ff_shell_events(ff_shell_t *sh_pub)
 bool ff_shell_pair(ff_shell_t *sh_pub, uint32_t node_id, bool paired)
 {
     if (sh_pub == NULL) return false;
-    shell_t *sh = shell_of(sh_pub);
 
-    /* THE one place a roster slot may be created. Reachable only from a
-     * user action; nothing in the seven inbound callbacks calls it. */
-    if (ff_crew_upsert(&sh->crew, node_id) == NULL) return false; /* roster full, no eviction in v1 */
-    ff_crew_set_paired(&sh->crew, node_id, paired);
-    return true;
+    /* THE one place a roster slot may be created (shell_pair, shared —
+     * on sim only — with the opt-in --dev-trust-all NodeInfo branch).
+     * Reachable only from a user action on device; nothing in the seven
+     * inbound callbacks calls it there. */
+    return shell_pair(shell_of(sh_pub), node_id, paired);
 }
 
 void ff_shell_set_my_pos(ff_shell_t *sh_pub, ff_latlon_t pos)
@@ -1127,3 +1194,26 @@ ff_settings_t const *ff_shell_settings(ff_shell_t const *sh_pub)
 {
     return (sh_pub == NULL) ? NULL : &shell_of_const(sh_pub)->settings;
 }
+
+/* ---------------------------------------------------------------------
+ * Sim-only dev affordances (S16 AC6, slice b2) — see ff_shell.h
+ * ------------------------------------------------------------------- */
+#if defined(FF_TARGET_SIM)
+
+void ff_shell_dev_trust_all(ff_shell_t *sh_pub, bool enabled)
+{
+    if (sh_pub == NULL) return;
+    shell_of(sh_pub)->dev_trust_all = enabled;
+}
+
+void ff_shell_dev_wall_observe(ff_shell_t *sh_pub, int64_t unix_now_s)
+{
+    if (sh_pub == NULL) return;
+    shell_t *sh = shell_of(sh_pub);
+    /* Same shape as a live rx_time observation: unconditional in both
+     * directions, still gated by ff_wall_observe's plausibility window
+     * — a wildly wrong host clock is rejected, not latched. */
+    (void)ff_wall_observe(&sh->wall, unix_now_s, shell_now(sh));
+}
+
+#endif /* FF_TARGET_SIM */

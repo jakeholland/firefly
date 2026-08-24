@@ -16,6 +16,19 @@ if(NOT FF_TARGET STREQUAL "sim")
     message(FATAL_ERROR "FF_TARGET=${FF_TARGET} is not supported yet — only 'sim' exists until S15 adds esp32s3.")
 endif()
 
+# FF_TARGET_SIM gates the sim-only dev affordances (S16 AC6:
+# `--dev-trust-all` must be COMPILED OUT of a device build, not merely
+# defaulted off — a runtime flag still ships the auto-pair branch into
+# device firmware, one stray default change from being live). Defined
+# globally rather than per-target so app/ff_shell.c — which is built for
+# both targets — sees it too; the esp32s3 build (S15) must NOT define it,
+# and targets/sim/main.c carries an #error guard that fails the build if
+# this define ever goes missing from a sim build (the failure mode where
+# the flag parses but the affordance was silently compiled away).
+if(FF_TARGET STREQUAL "sim")
+    add_compile_definitions(FF_TARGET_SIM=1)
+endif()
+
 # ---------------------------------------------------------------------------
 # ff_apply_warnings(target) — -Wall -Wextra -Werror for OUR code only.
 # Never applied to FetchContent'd or vendored third-party targets.

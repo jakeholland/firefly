@@ -18,13 +18,15 @@
  *   - haptic / quiet-hours composition,
  *   - wall-clock accessor over `core/include/ff_wall.h` (slice b0).
  *
+ * Slice b2 retired `targets/sim/live.{c,h}` and repointed `--connect` at
+ * this object: `targets/sim/main.c` now drives an `ff_shell_t` over a
+ * `mc_tcp_t` transport, and added the sim-only dev affordances at the
+ * foot of this header (`ff_shell_dev_*`, compiled out of device builds).
+ *
  * Deliberately NOT here yet, each with its own slice:
  *   - `ff_shell_intent` and the intent enum (slice c1-c3),
  *   - build-once/update-in-place render lifecycle (slice d),
- *   - reconnect UI and settings write-through (slice e),
- *   - retiring `targets/sim/live.{c,h}` and repointing `--connect`
- *     (slice b2 — `main.c` and `targets/` are untouched by this slice,
- *     on purpose: it keeps a large change reviewable).
+ *   - reconnect UI and settings write-through (slice e).
  *
  * ---------------------------------------------------------------------
  * LAYERING — a correction, not an exception
@@ -56,7 +58,13 @@
  * when it is not already a roster member.
  *
  * `ff_shell_pair()` is the one entry point that may grow the roster, and
- * it is not reachable from the radio.
+ * it is not reachable from the radio — with ONE deliberate, sim-only,
+ * compile-gated exception: `ff_shell_dev_trust_all` (S16 AC6, slice b2)
+ * makes an inbound NodeInfo auto-pair its sender. That affordance does
+ * not exist in a device build at all (`#if FF_TARGET_SIM` — the branch,
+ * the field and the setter are compiled out, not defaulted off), so on
+ * device the sentence above holds without exception. See the "Sim-only
+ * dev affordances" section at the foot of this header.
  *
  * ---------------------------------------------------------------------
  * POSITION AGES — never "now"
@@ -318,8 +326,8 @@ typedef struct ff_shell {
  *
  * Returns 0 on success, negative on failure (`sh` or `cfg` NULL, or
  * `cfg->clock` NULL — the shell cannot honestly do anything without a
- * clock). Matches `ff_live_load_pack`'s 0/negative convention, as S16
- * specifies for every int return here.
+ * clock). 0/negative convention as S16 specifies for every int return
+ * here (inherited from the retired live.c's ff_live_load_pack).
  */
 int ff_shell_init(ff_shell_t *sh, ff_shell_cfg_t const *cfg);
 
@@ -438,10 +446,12 @@ mc_events_t ff_shell_events(ff_shell_t *sh);
  * point that may grow the paired roster**.
  *
  * Not reachable from the radio: nothing in `ff_shell.c`'s seven inbound
- * callbacks calls this, which is what makes the roster-trust policy a
- * property of the code rather than a comment. The pairing UI (S12) and
- * `--dev-trust-all` (slice b2, sim-only and compiled out on device) are
- * its callers.
+ * callbacks calls this — except, in a SIM BUILD ONLY, the
+ * `ff_shell_dev_trust_all` auto-pair branch, which is compiled out of
+ * device builds entirely (see the dev-affordances section below). On
+ * device that makes the roster-trust policy a property of the code
+ * rather than a comment. The pairing UI (S12) and `--dev-trust-all`
+ * are its callers.
  *
  * Returns true if `node_id` now has the requested paired state; false if
  * `sh` is NULL, or the roster is full (`FF_CREW_MAX`, no eviction in v1)
@@ -509,6 +519,70 @@ ff_flare_t const *ff_shell_flare(ff_shell_t const *sh);
  *  NULL. Write-through (`FF_INTENT_SETTING_SET` + persistence) is
  *  slice e. */
 ff_settings_t const *ff_shell_settings(ff_shell_t const *sh);
+
+/* ---------------------------------------------------------------------
+ * Sim-only dev affordances (S16 AC6, slice b2) — COMPILED OUT on device
+ * ---------------------------------------------------------------------
+ * These exist only when FF_TARGET_SIM is defined (firmware/CMakeLists.txt
+ * defines it iff FF_TARGET=sim). In a device build there is no
+ * declaration, no field, and no branch — a device-target caller fails to
+ * COMPILE, which is the spec's "compiled out, not defaulted off" demand:
+ * a runtime flag would ship the auto-pair branch into device firmware,
+ * one stray default change from being live. `targets/sim/main.c`
+ * additionally carries an #error guard so a sim build that loses the
+ * define fails loudly instead of silently parsing a flag that does
+ * nothing.
+ * ------------------------------------------------------------------- */
+#if defined(FF_TARGET_SIM)
+
+/**
+ * ff_shell_dev_trust_all — `ffsim --dev-trust-all`: treat the dev bench
+ * as trusted. Off by default; the sim target enables it only for that
+ * flag, and logs a line naming it at startup.
+ *
+ * Two effects, both needed because the dockerized dev meshtasticd is a
+ * SINGLE node that is also what `on_my_info` reports as our own id (see
+ * firmware/tools/dev/crew_sim.py's verified-constraints note — the
+ * harness's one node plays every role):
+ *
+ *  1. An inbound **NodeInfo** auto-pairs its sender into the roster —
+ *     NodeInfo ONLY, never a bare Position (pairing on the most
+ *     untrusted packet on the mesh is this spec's headline defect, and
+ *     the dev affordance does not get to reintroduce it).
+ *  2. The self filter is suspended: traffic from our own node id is
+ *     processed as inbound, so the daemon's node can play a crew member.
+ *
+ * Recorded as an S16 AC6 amendment (effect 2 goes beyond the AC's
+ * wording): without it the flag is useless against the only dev harness
+ * this repo has, since every packet the harness can produce is "ours".
+ */
+void ff_shell_dev_trust_all(ff_shell_t *sh, bool enabled);
+
+/**
+ * ff_shell_dev_wall_observe — offer the HOST's clock to the wall latch,
+ * exactly as a live packet's `rx_time` would be (unconditional, both
+ * directions, still subject to ff_wall's plausibility window).
+ *
+ * Why this exists (and why it is honest): the desktop the sim runs on
+ * genuinely knows what time it is — its clock is the same NTP-synced
+ * clock the dockerized meshtasticd stamps `last_heard` from. Without
+ * this, a single-node want_config replay can NEVER age the one position
+ * it carries: the lone NodeInfo's `last_heard` is what bootstraps the
+ * latch, and the D1 rule ("a timestamp may not age a fix if that same
+ * timestamp defines the clock the age is measured against") then —
+ * correctly — refuses to age its position, so the e2e radar scenario
+ * reads NO FIX forever. Pre-latching from the host clock gives that
+ * replay an independent clock to be measured against, and every age it
+ * produces is a real measurement.
+ *
+ * This is NOT the FF_WALL_USER the spec cut: that was an unfalsifiable
+ * number typed on a T9 keypad on the device. This is a machine clock,
+ * sim-only, gated by the same plausibility window as any mesh
+ * observation, and absent from device builds by construction.
+ */
+void ff_shell_dev_wall_observe(ff_shell_t *sh, int64_t unix_now_s);
+
+#endif /* FF_TARGET_SIM */
 
 #ifdef __cplusplus
 }
