@@ -1,0 +1,252 @@
+{
+  "fixture": "map_real_lost_lands",
+  "face": "map",
+  "map": {
+    "features": [
+      {
+        "kind": "poi",
+        "label": "Venue extent (approx.)",
+        "points": [
+          [
+            -477.437,
+            177.912
+          ],
+          [
+            -537.117,
+            366.943
+          ],
+          [
+            -281.347,
+            478.138
+          ],
+          [
+            59.6797,
+            478.138
+          ],
+          [
+            187.565,
+            255.748
+          ],
+          [
+            144.936,
+            -133.434
+          ],
+          [
+            59.6797,
+            -211.27
+          ],
+          [
+            -153.462,
+            -22.239
+          ],
+          [
+            -366.604,
+            88.9559
+          ]
+        ]
+      },
+      {
+        "kind": "entrance",
+        "label": "Tunnel entrance (Rt 13)",
+        "points": [
+          [
+            -443.335,
+            189.031
+          ]
+        ]
+      },
+      {
+        "kind": "stage",
+        "label": "The Crater",
+        "color_rgb": "#b08cff",
+        "points": [
+          [
+            -417.758,
+            222.39
+          ]
+        ]
+      },
+      {
+        "kind": "stage",
+        "label": "Prehistoric Stage",
+        "color_rgb": "#ffc66b",
+        "points": [
+          [
+            -298.398,
+            144.553
+          ]
+        ]
+      },
+      {
+        "kind": "water",
+        "label": "Pond",
+        "points": [
+          [
+            -42.6283,
+            -133.434
+          ],
+          [
+            0,
+            -144.553
+          ],
+          [
+            8.52567,
+            -189.031
+          ],
+          [
+            -34.1027,
+            -200.151
+          ],
+          [
+            -59.6797,
+            -177.912
+          ],
+          [
+            -51.154,
+            -144.553
+          ]
+        ]
+      },
+      {
+        "kind": "stage",
+        "label": "Wompy Woods",
+        "color_rgb": "#4fd8c4",
+        "points": [
+          [
+            76.731,
+            -22.239
+          ]
+        ]
+      },
+      {
+        "kind": "poi",
+        "label": "Wompy Woods treeline",
+        "points": [
+          [
+            42.6283,
+            478.138
+          ],
+          [
+            187.565,
+            366.943
+          ],
+          [
+            230.193,
+            33.3585
+          ],
+          [
+            127.885,
+            -166.792
+          ],
+          [
+            17.0513,
+            -55.5975
+          ],
+          [
+            -25.577,
+            255.748
+          ]
+        ]
+      },
+      {
+        "kind": "stage",
+        "label": "Subsidia Stage (approx.)",
+        "color_rgb": "#ff5ca8",
+        "points": [
+          [
+            -196.09,
+            88.9559
+          ]
+        ]
+      },
+      {
+        "kind": "stage",
+        "label": "Forest Stage (unplaced)",
+        "color_rgb": "#9be07b",
+        "points": []
+      },
+      {
+        "kind": "vendor",
+        "label": "Village Marketplace",
+        "points": [
+          [
+            17.0513,
+            333.585
+          ]
+        ]
+      },
+      {
+        "kind": "camping",
+        "label": "RV/tent camping",
+        "points": [
+          [
+            -110.834,
+            422.541
+          ],
+          [
+            127.885,
+            389.182
+          ],
+          [
+            161.988,
+            200.151
+          ],
+          [
+            59.6797,
+            -22.239
+          ],
+          [
+            -127.885,
+            33.3585
+          ],
+          [
+            -179.039,
+            255.748
+          ]
+        ]
+      },
+      {
+        "kind": "medical",
+        "label": "First aid (main gate)",
+        "points": [
+          [
+            -426.283,
+            211.27
+          ]
+        ]
+      },
+      {
+        "kind": "water",
+        "label": "Water refill (nests, unplaced)",
+        "points": []
+      }
+    ],
+    "crew": [
+      {
+        "initial": "D",
+        "color_idx": 0,
+        "east_m": -60.0,
+        "north_m": 40.0,
+        "stale": false,
+        "place": false,
+        "imprecise": false
+      },
+      {
+        "initial": "K",
+        "color_idx": 1,
+        "east_m": 100.0,
+        "north_m": -80.0,
+        "stale": true,
+        "place": false,
+        "imprecise": false
+      }
+    ],
+    "you": {
+      "has_pos": true,
+      "east_m": 0.0,
+      "north_m": 0.0,
+      "heading_valid": true,
+      "heading_deg": 60.0
+    }
+  }
+}

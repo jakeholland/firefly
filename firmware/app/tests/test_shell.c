@@ -1436,6 +1436,110 @@ static void S09_shell_map_stays_empty_without_a_known_venue(void)
     TEST_ASSERT_FALSE(m->you_has_pos);
 }
 
+/* PR #73 review finding #5 (LOW, mutation-uncaught): the paired-only
+ * crew gate in shell_project_map (`if (!m->paired || !m->has_pos)
+ * continue;`) had no test proving the PAIRED half of that condition
+ * does anything — mutating it to `if (!m->has_pos) continue;` still
+ * passed 100% before this test existed. STRANGER has a real position
+ * but is never paired; DANA is both. */
+static void S09_shell_map_excludes_unpaired_members_even_with_a_position(void)
+{
+    uint32_t const t0 = 100000u;
+    harness_init(t0, false);
+    inject_my_info(MY_ID);
+    TEST_ASSERT_EQUAL_INT(0, ff_shell_load_pack(&H.shell, PACK_JSON_MAP, sizeof(PACK_JSON_MAP) - 1u));
+
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, true));
+    inject_node(DANA, "DANA", U_EVENING);
+    inject_position(DANA, U_EVENING, 39.9365, -82.4135);
+
+    /* STRANGER gets a KNOWN-BUT-UNPAIRED roster slot FIRST (ff_shell_pair
+     * returns true — it succeeds at "set paired = false", which for a
+     * brand-new slot also means "create it unpaired"; roster growth only
+     * ever happens through this one audited path — shell_pair's doc
+     * comment). That slot has to exist BEFORE inject_node/inject_position
+     * can attach anything to it: shell_member (both callbacks' shared
+     * lookup) only MUTATES an existing slot, matching S16 AC5a/5b's
+     * roster-trust policy — an unknown sender's NodeInfo/Position both go
+     * to ff_heard instead, which would silently make this test assert
+     * nothing at all if the ordering were reversed. This exercises the
+     * `paired` flag specifically, not merely "unknown sender". */
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, STRANGER, false));
+    inject_node(STRANGER, "STRANGER", U_EVENING);
+    inject_position(STRANGER, U_EVENING, 39.937, -82.412);
+
+    ff_shell_tick(&H.shell, H.clk.t);
+    ff_app_map_t const *m = &ff_shell_view(&H.shell)->map;
+
+    TEST_ASSERT_EQUAL_UINT8(1, m->n_crew); /* DANA only */
+    TEST_ASSERT_EQUAL_CHAR('D', m->crew[0].initial);
+}
+
+/* PR #73 review finding #1 (BLOCKING): a synthetic pack with MORE
+ * features than FF_APP_MAP_MAX_FEATURES (20) — but still within
+ * fp_pack.h's own FP_MAX_FEATURES (24), so `fp_parse` itself accepts it
+ * cleanly — proving `shell_project_map` caps at exactly 20, keeps them
+ * in pack order, and sets `truncated`/`features_omitted` rather than
+ * silently dropping the rest. Built at runtime (22 near-identical
+ * one-point features) rather than hand-typed, since the point is the
+ * COUNT, not any individual feature's content. */
+static void build_pack_json_with_n_map_features(char *buf, size_t bufsz, int n_features)
+{
+    int off = snprintf(buf, bufsz,
+                        "{\"festpack\":\"0.1\",\"utc_offset_min\":0,"
+                        "\"festival\":{\"name\":\"Test Fest\",\"year\":2026,"
+                        "\"start\":\"2026-09-18\",\"end\":\"2026-09-20\","
+                        "\"venue\":{\"lat\":39.936,\"lon\":-82.414}},"
+                        "\"stages\":[{\"id\":\"a\",\"name\":\"A Stage\",\"color\":\"#00ff00\"}],"
+                        "\"schedule\":[{\"artist\":\"Solo Act\",\"stage\":\"a\",\"day\":\"2026-09-18\","
+                        "\"start\":\"20:00\",\"end\":\"21:00\"}],"
+                        "\"map\":{\"features\":[");
+    for (int i = 0; i < n_features && off > 0 && (size_t)off < bufsz; i++) {
+        off += snprintf(buf + off, bufsz - (size_t)off,
+                         "%s{\"kind\":\"poi\",\"label\":\"F%d\",\"polygon\":[[39.93%d,-82.41%d]]}", i > 0 ? "," : "",
+                         i, i % 10, i % 10);
+    }
+    if (off > 0 && (size_t)off < bufsz) {
+        snprintf(buf + off, bufsz - (size_t)off, "]}}");
+    }
+}
+
+static void S09_shell_caps_features_at_the_view_limit_and_surfaces_truncation(void)
+{
+    char pack_json[4096];
+    int const n_real_features = 22; /* > FF_APP_MAP_MAX_FEATURES(20), <= FP_MAX_FEATURES(24) */
+    build_pack_json_with_n_map_features(pack_json, sizeof(pack_json), n_real_features);
+
+    harness_init(100000u, false);
+    inject_my_info(MY_ID);
+    TEST_ASSERT_EQUAL_INT(0, ff_shell_load_pack(&H.shell, pack_json, strlen(pack_json)));
+
+    ff_shell_tick(&H.shell, H.clk.t);
+    ff_app_map_t const *m = &ff_shell_view(&H.shell)->map;
+
+    TEST_ASSERT_EQUAL_UINT8(FF_APP_MAP_MAX_FEATURES, m->n_features); /* capped, not silently fewer */
+    TEST_ASSERT_TRUE(m->truncated);
+    TEST_ASSERT_EQUAL_UINT8((uint8_t)(n_real_features - FF_APP_MAP_MAX_FEATURES), m->features_omitted);
+    /* Kept in pack order — the first FF_APP_MAP_MAX_FEATURES labels,
+     * not an arbitrary subset. */
+    TEST_ASSERT_EQUAL_STRING("F0", m->features[0].label);
+    TEST_ASSERT_EQUAL_STRING("F19", m->features[FF_APP_MAP_MAX_FEATURES - 1].label);
+}
+
+/* A pack within both caps must NOT claim truncation — the negative
+ * control for the test above (an always-true `truncated` would pass the
+ * positive test just as well). */
+static void S09_shell_does_not_claim_truncation_for_a_pack_within_caps(void)
+{
+    harness_init(100000u, false);
+    inject_my_info(MY_ID);
+    TEST_ASSERT_EQUAL_INT(0, ff_shell_load_pack(&H.shell, PACK_JSON_MAP, sizeof(PACK_JSON_MAP) - 1u));
+    ff_shell_tick(&H.shell, H.clk.t);
+    ff_app_map_t const *m = &ff_shell_view(&H.shell)->map;
+    TEST_ASSERT_FALSE(m->truncated);
+    TEST_ASSERT_EQUAL_UINT8(0, m->features_omitted);
+}
+
 static void S16_b1_now_projection_needs_both_a_pack_and_a_known_clock(void)
 {
     harness_init(100000u, false);
@@ -2357,6 +2461,9 @@ int main(void)
     RUN_TEST(S16_b1_now_projection_needs_both_a_pack_and_a_known_clock);
     RUN_TEST(S09_shell_projects_map_from_pack_crew_and_my_position);
     RUN_TEST(S09_shell_map_stays_empty_without_a_known_venue);
+    RUN_TEST(S09_shell_map_excludes_unpaired_members_even_with_a_position);
+    RUN_TEST(S09_shell_caps_features_at_the_view_limit_and_surfaces_truncation);
+    RUN_TEST(S09_shell_does_not_claim_truncation_for_a_pack_within_caps);
     RUN_TEST(S16_b1_loading_a_pack_does_not_fabricate_my_position);
     RUN_TEST(S16_b1_our_own_nodeinfo_can_bootstrap_the_wall_clock);
     RUN_TEST(S16_b1_a_flare_on_a_foreign_portnum_raises_no_takeover);

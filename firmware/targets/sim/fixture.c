@@ -807,6 +807,14 @@ static ff_fixture_result_t fx_parse_map(fx_ctx_t const *c, int obj_i, ff_app_map
         ff_fixture_result_t rc = fx_parse_map_features(c, feat_i, m);
         if (rc != FF_FIXTURE_OK) return rc;
     }
+    /* PR #73 review finding #1: authorable directly, so a golden can
+     * exercise scr_map.c's "+N MORE" render without needing an actual
+     * >cap pack (fixture.c's own array-cap check would reject that
+     * outright — see fx_parse_map_features — this is the intentional,
+     * pack-independent way to author the truncated STATE itself). */
+    int t0;
+    if (fx_obj_get(c, obj_i, "truncated", &t0)) m->truncated = fx_bool(c, t0, false);
+    if (fx_obj_get(c, obj_i, "features_omitted", &t0)) m->features_omitted = (uint8_t)fx_num(c, t0, 0.0);
     int crew_i;
     if (fx_obj_get(c, obj_i, "crew", &crew_i) && !fx_is_null(c, crew_i)) {
         ff_fixture_result_t rc = fx_parse_map_crew(c, crew_i, m);
@@ -1380,7 +1388,10 @@ int ff_fixture_dump_json(ff_app_state_t const *s, char *buf, size_t buf_sz)
         if (i > 0) fw_raw(&w, ",");
         fw_map_feature(&w, &s->map.features[i]);
     }
-    fw_raw(&w, "],\"crew\":[");
+    fw_raw(&w, "]");
+    fw_raw(&w, s->map.truncated ? ",\"truncated\":true" : ",\"truncated\":false");
+    fw_fmt(&w, ",\"features_omitted\":%u", (unsigned)s->map.features_omitted);
+    fw_raw(&w, ",\"crew\":[");
     for (uint8_t i = 0; i < s->map.n_crew; i++) {
         if (i > 0) fw_raw(&w, ",");
         fw_map_crew(&w, &s->map.crew[i]);

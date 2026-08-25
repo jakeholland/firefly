@@ -386,21 +386,38 @@ typedef struct {
  * FP_MAX_POLY_PTS(24) — same "view-level cap, independent of core's
  * storage cap" convention as ff_app_now_t.lineup (32) against
  * FP_MAX_SETS (256): fp_pack_t answers to a 48KB budget, this flattened
- * view answers to ff_app_state_t's much smaller 8KB one (see that
+ * view answers to ff_app_state_t's much smaller budget (see that
  * struct's own _Static_assert comment) — and `ff_shell_t` carries TWO
  * full `ff_app_state_t` copies (the rendered view plus the previous
  * frame's render key, `ff_shell.c`'s dirty-bit machinery), so this
- * struct's real cost to the shell's own 16KB budget
- * (`FF_SHELL_BYTES`, `ff_shell.h`) is doubled again. 8 features / 12
- * points each is still generous headroom over S09 AC4's 5-polygon
- * synthetic fixture and every stage/landmark count this repo's vendored
- * Lost Lands pack carries today; a pack that outgrows it is a real,
- * documented constraint of the FLATTENED VIEW (fail-loud at
- * fixture-load time, same "cap enforced, never silently truncated"
- * contract as every other capped array in this header), not of the core
- * pack itself. */
-#define FF_APP_MAP_MAX_FEATURES 8
-#define FF_APP_MAP_MAX_POLY_PTS 12
+ * struct's real cost to the shell's own budget (`FF_SHELL_BYTES`,
+ * `ff_shell.h`) is doubled again.
+ *
+ * PR #73 REVIEW FINDING #1 (BLOCKING, both tier-3 and Bailey,
+ * independently): the ORIGINAL 8/12 here was NOT generous headroom over
+ * real data — it was measured against this repo's own VENDORED test
+ * fixture (`firmware/festpack/tests/fixtures/lost-lands-2026.festpack.json`,
+ * every feature `n_pts: 0` at the time), not against the real,
+ * currently-merged `fest-almanac` pack, which has **13** `map.features`
+ * entries (9-point "Venue extent" the largest polygon) the moment
+ * anyone actually renders it — `shell_project_map` silently dropped
+ * RV/tent camping, Village Marketplace and First aid with zero
+ * indication anything was missing, on the exact face that's supposed to
+ * tell you where medical is. Raised to comfortably clear BOTH the real
+ * pack (13 features, 9 points) AND the fest-almanac schema's own stated
+ * guidance (~15 features): 20 features (~54% headroom over real, ~33%
+ * over the schema's own guidance) / 16 points (~78% headroom over the
+ * real pack's largest polygon). This is no longer a "never observed a
+ * pack this size" cap — it comfortably out-sizes every number anyone
+ * has actually named. Silent-truncation-if-still-exceeded is
+ * ALSO closed now: `shell_project_map` sets `ff_app_map_t.truncated`
+ * (+ `features_omitted`) instead of dropping data with no signal, and
+ * `scr_map.c` renders an honest "+N MORE" indicator when it's true —
+ * see that struct's own doc comment. A pack that outgrows even this is
+ * still a real, HONESTLY-SURFACED constraint of the flattened view, not
+ * a silent one. */
+#define FF_APP_MAP_MAX_FEATURES 20
+#define FF_APP_MAP_MAX_POLY_PTS 16
 #define FF_APP_MAP_LABEL_LEN    32 /* mirrors fp_pack.h's fp_feature_t.label */
 
 /* Mirrors fp_pack.h's fp_feature_kind_t exactly (name, order, members) —
@@ -464,21 +481,47 @@ typedef struct {
     /* Mirrors issue #47's dist_imprecise gate: this member's latest fix
      * has a known-degraded precision (`has_precision_bits &&
      * precision_bits < FF_CREW_POS_PRECISION_MIN_BITS`). This is the one
-     * flag with a MAP-SPECIFIC render, not a copy of Radar's: Radar can
-     * fall back to an honest AREA-estimate STRING because it has no
-     * pin-point geometry to begin with, but a map dot is exactly a
-     * pin-point claim by construction — the task brief's own honesty
-     * rule ("a degraded-precision friend should not render as a
-     * pin-point dot on a map either"). scr_map.c therefore does NOT draw
-     * the normal 18px initial ring for an imprecise member; see that
-     * file's doc comment for the fuzzy-circle treatment it draws
-     * instead. */
+     * flag with a MAP-SPECIFIC render, not a straight copy of Radar's
+     * treatment of the same fact — and PR #73 review finding #3
+     * corrected a wrong claim this comment used to make about WHY, so
+     * stated precisely now: Radar's crew RING DOTS (`ff_radar_dot_t`,
+     * `ff_radar_compute`'s `dots[]`) do NOT handle imprecision at all
+     * today — an imprecise member gets an ordinary, undegraded, crisp
+     * ring dot there, at a bearing computed from the raw (possibly
+     * kilometers-off) coordinate. (`ff_radar_view_t.dist_imprecise` is a
+     * different, narrower fact — it only degrades the *selected*
+     * member's distance TEXT, not any ring dot's geometry.) So this
+     * field's map-specific fuzzy-ring render (see below) is not
+     * "matching what Radar already does" — it is a deliberately MORE
+     * honest treatment than Radar's current status quo, motivated by
+     * the same principle Radar's own dist_imprecise gate uses elsewhere:
+     * a map dot IS a pin-point claim by construction (unlike a bare
+     * distance number, which can honestly degrade to an area string),
+     * so scr_map.c does NOT draw the normal 18px initial ring for an
+     * imprecise member — see that file's doc comment for the
+     * fuzzy-circle treatment it draws instead. Giving Radar's own ring
+     * dots the same treatment is a real, separate gap, tracked as
+     * issue #74 rather than folded into this PR. */
     bool    imprecise;
 } ff_app_map_crew_t;
 
 typedef struct {
     ff_app_map_feature_t features[FF_APP_MAP_MAX_FEATURES];
     uint8_t n_features;
+
+    /* PR #73 review finding #1: honest overflow surfacing, matching
+     * fixture.c's fail-loud convention on the same cap. `truncated` is
+     * true iff the source pack had MORE features than
+     * FF_APP_MAP_MAX_FEATURES could hold, OR any KEPT feature's own
+     * polygon had more points than FF_APP_MAP_MAX_POLY_PTS could hold —
+     * i.e. this view is KNOWN incomplete, not merely small.
+     * `features_omitted` is how many whole features were dropped (0 if
+     * every feature was kept, even when some kept feature's polygon was
+     * itself point-truncated). `scr_map.c` renders an honest "+N MORE"
+     * indicator whenever `truncated` is true, rather than silently
+     * presenting a truncated view as if it were the whole map. */
+    bool    truncated;
+    uint8_t features_omitted;
 
     ff_app_map_crew_t crew[FF_CREW_MAX];
     uint8_t n_crew;

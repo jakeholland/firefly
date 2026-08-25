@@ -972,7 +972,19 @@ static void shell_project_map(shell_t const *sh, ff_app_map_t *out)
 
     fp_pack_t const *p = sh->pack;
 
+    /* PR #73 review finding #1 (BLOCKING): the OLD code silently kept
+     * only the first FF_APP_MAP_MAX_FEATURES pack features in pack
+     * order and dropped the rest with zero indication anything was
+     * missing — verified against the real, currently-merged Lost Lands
+     * pack (13 features), which lost RV/tent camping, Village
+     * Marketplace and First aid this way. Both caps are now sized with
+     * real headroom (ff_app_state.h's own doc comment), AND any overflow
+     * that still happens is surfaced honestly rather than silently: */
     uint8_t const n_feat = (p->n_features < FF_APP_MAP_MAX_FEATURES) ? p->n_features : FF_APP_MAP_MAX_FEATURES;
+    if (p->n_features > FF_APP_MAP_MAX_FEATURES) {
+        out->truncated = true;
+        out->features_omitted = (uint8_t)(p->n_features - FF_APP_MAP_MAX_FEATURES);
+    }
     for (uint8_t i = 0; i < n_feat; i++) {
         fp_feature_t const *f = &p->features[i];
         ff_app_map_feature_t *o = &out->features[out->n_features];
@@ -980,6 +992,14 @@ static void shell_project_map(shell_t const *sh, ff_app_map_t *out)
         shell_copy_str(o->label, sizeof(o->label), f->label);
         o->color_valid = shell_stage_color(p, f->stage_idx, &o->color_rgb);
         uint8_t const n_pts = (f->n_pts < FF_APP_MAP_MAX_POLY_PTS) ? f->n_pts : FF_APP_MAP_MAX_POLY_PTS;
+        if (f->n_pts > FF_APP_MAP_MAX_POLY_PTS) {
+            /* Same overflow signal, for a KEPT feature's own polygon —
+             * the latent per-polygon half of finding #1 (not yet
+             * triggered by real data: the real pack's largest polygon is
+             * 9 points against this cap's 16, but the defect shape was
+             * identical and silent either way). */
+            out->truncated = true;
+        }
         o->n_pts = n_pts;
         for (uint8_t k = 0; k < n_pts; k++) {
             o->pts_en[k][0] = f->pts_en[k][0];

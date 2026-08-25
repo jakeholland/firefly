@@ -15,6 +15,8 @@
 #ifndef FF_MAP_H
 #define FF_MAP_H
 
+#include <stdint.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -90,6 +92,67 @@ void ff_map_xform_fit(ff_map_xform_t *out, float const pts_en[][2], int n, float
  * axis.
  */
 void ff_map_project(ff_map_xform_t const *x, float east_m, float north_m, float *out_x_px, float *out_y_px);
+
+/**
+ * ff_map_feature_render_kind_t — the untraced-feature render POLICY
+ * decision (S09 spec's Amendments: "n_pts 0/1/2/>=3"), as a pure
+ * function of `n_pts` and whether the feature is a stage — not
+ * "recomputed inline in scr_map.c" (CLAUDE.md: "if you're writing an
+ * `if` about domain behavior inside a screen file, it belongs in
+ * core"), and independently unit-testable without LVGL (PR #73 review
+ * finding #6 — this decision used to be reachable only through a loose
+ * pixel-diff golden threshold, which a mutation on the `n_pts==0`
+ * early-out slipped underneath).
+ */
+typedef enum {
+    FF_MAP_RENDER_OMIT,       /* n_pts == 0: no polygon, no point — nothing to honestly draw or label */
+    FF_MAP_RENDER_LABEL_ONLY, /* n_pts == 1, not a stage: a label anchored at the one point, no shape */
+    FF_MAP_RENDER_STAGE_STUB, /* n_pts == 1, a stage: the spec's named labeled 30m stub circle */
+    FF_MAP_RENDER_LINE,       /* n_pts == 2: a stroked line between the two points, no fill */
+    FF_MAP_RENDER_POLYGON,    /* n_pts >= 3: the normal filled+stroked polygon */
+} ff_map_render_kind_t;
+
+/** ff_map_feature_render_kind — see `ff_map_render_kind_t`'s doc comment. */
+ff_map_render_kind_t ff_map_feature_render_kind(uint8_t n_pts, int is_stage);
+
+/**
+ * ff_map_triangulate — ear-clipping triangulation of a SIMPLE polygon
+ * (`n` vertices, `n >= 3`) — correct for CONVEX or CONCAVE input, as
+ * long as it doesn't self-intersect. Fixes PR #73 review finding #2: the
+ * previous vertex-0 fan-triangulation this replaces is only correct for
+ * convex/star-shaped input, and the real, currently-merged Lost Lands
+ * pack's "Venue extent" feature (9 points) is concave — the fan mis-fills
+ * it, bleeding outside the true boundary at the reflex vertex.
+ *
+ * Writes up to `n - 2` triangles as VERTEX-INDEX triples (each entry
+ * indexes into `pts`) to `out_tris[0 .. return value)`, one triple per
+ * triangle. `out_max` must be at least `n - 2` or the call fails
+ * (returns -1) rather than writing a partial/truncated triangulation —
+ * same "never silently drop geometry" contract as this module's other
+ * functions.
+ *
+ * Returns the number of triangles written (always exactly `n - 2` for
+ * well-formed simple-polygon input), or -1 for:
+ *  - `n < 3`, `pts == NULL`, `out_tris == NULL`, or `out_max < n - 2`;
+ *  - `n` exceeding this function's bounded internal working set (32 —
+ *    comfortably above any cap this codebase's callers use);
+ *  - a degenerate input (zero polygon area — collinear/duplicate points);
+ *  - input pathological enough (self-intersecting) that no valid ear can
+ *    be found in a bounded search — this cannot happen for a real,
+ *    non-self-intersecting festival footprint, but is guarded rather
+ *    than looped on, so a malformed pack can never hang the renderer.
+ *
+ * Callers get a clean binary contract: a non-negative return is a
+ * complete, correct triangulation of the ENTIRE input polygon; a
+ * negative return means "do not trust this input for a fill" — the
+ * documented, spec-sanctioned fallback (S09-map-face.md's Amendments) is
+ * to draw the polygon's OUTLINE only, never a wrong fill (a mis-filled
+ * shape is worse than an unfilled one).
+ *
+ * Pure geometry: no allocation, no I/O, bounded iteration (a fixed
+ * O(n^2) worst-case ear search, `n <= 32`).
+ */
+int ff_map_triangulate(float const pts[][2], int n, uint8_t out_tris[][3], int out_max);
 
 #ifdef __cplusplus
 }

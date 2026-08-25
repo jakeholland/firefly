@@ -215,6 +215,165 @@ static void S09_AC2_crew_rally_you_share_transform_hand_computed_1px(void)
      * fields, which the hand computations above already pin. */
 }
 
+/* ------------------------------------------------------------------- */
+/* PR #73 review — ff_map_feature_render_kind (finding #6)              */
+/* ------------------------------------------------------------------- */
+
+static void S09_render_kind_zero_points_is_omit(void)
+{
+    TEST_ASSERT_EQUAL_INT(FF_MAP_RENDER_OMIT, ff_map_feature_render_kind(0, 0));
+    TEST_ASSERT_EQUAL_INT(FF_MAP_RENDER_OMIT, ff_map_feature_render_kind(0, 1)); /* even a stage: no point at all */
+}
+
+static void S09_render_kind_one_point_stage_is_stub(void)
+{
+    TEST_ASSERT_EQUAL_INT(FF_MAP_RENDER_STAGE_STUB, ff_map_feature_render_kind(1, 1));
+}
+
+static void S09_render_kind_one_point_non_stage_is_label_only(void)
+{
+    TEST_ASSERT_EQUAL_INT(FF_MAP_RENDER_LABEL_ONLY, ff_map_feature_render_kind(1, 0));
+}
+
+static void S09_render_kind_two_points_is_line(void)
+{
+    TEST_ASSERT_EQUAL_INT(FF_MAP_RENDER_LINE, ff_map_feature_render_kind(2, 0));
+    TEST_ASSERT_EQUAL_INT(FF_MAP_RENDER_LINE, ff_map_feature_render_kind(2, 1)); /* a 2-pt stage is still a line */
+}
+
+static void S09_render_kind_three_or_more_points_is_polygon(void)
+{
+    TEST_ASSERT_EQUAL_INT(FF_MAP_RENDER_POLYGON, ff_map_feature_render_kind(3, 0));
+    TEST_ASSERT_EQUAL_INT(FF_MAP_RENDER_POLYGON, ff_map_feature_render_kind(9, 0));
+    TEST_ASSERT_EQUAL_INT(FF_MAP_RENDER_POLYGON, ff_map_feature_render_kind(255, 0));
+}
+
+/* ------------------------------------------------------------------- */
+/* PR #73 review — ff_map_triangulate (finding #2: concave fill)        */
+/* ------------------------------------------------------------------- */
+
+/* Shoelace polygon area (unsigned) — the reference this file checks a
+ * triangulation's summed triangle area against. A correct triangulation
+ * of a simple polygon covers it EXACTLY once, so the two must match
+ * regardless of convexity — this is a much stronger property than "some
+ * triangles came out", the same "measure the property, not a proxy"
+ * discipline docs/review/code-review.md asks for. */
+static float polygon_area(float const pts[][2], int n)
+{
+    float area2 = 0.0f;
+    for (int i = 0; i < n; i++) {
+        int j = (i + 1) % n;
+        area2 += pts[i][0] * pts[j][1] - pts[j][0] * pts[i][1];
+    }
+    return (area2 < 0.0f ? -area2 : area2) * 0.5f;
+}
+
+static float triangle_area(float ax, float ay, float bx, float by, float cx, float cy)
+{
+    float area2 = (bx - ax) * (cy - ay) - (cx - ax) * (by - ay);
+    return (area2 < 0.0f ? -area2 : area2) * 0.5f;
+}
+
+static float triangulation_area(float const pts[][2], uint8_t const tris[][3], int n_tris)
+{
+    float sum = 0.0f;
+    for (int i = 0; i < n_tris; i++) {
+        uint8_t a = tris[i][0], b = tris[i][1], c = tris[i][2];
+        sum += triangle_area(pts[a][0], pts[a][1], pts[b][0], pts[b][1], pts[c][0], pts[c][1]);
+    }
+    return sum;
+}
+
+static void S09_triangulate_convex_square_covers_exact_area(void)
+{
+    float pts[][2] = {{0.0f, 0.0f}, {10.0f, 0.0f}, {10.0f, 10.0f}, {0.0f, 10.0f}};
+    uint8_t tris[2][3];
+    int n = ff_map_triangulate(pts, 4, tris, 2);
+    TEST_ASSERT_EQUAL_INT(2, n);
+    TEST_ASSERT_FLOAT_WITHIN(0.01f, polygon_area(pts, 4), triangulation_area(pts, tris, n));
+}
+
+/* The real, currently-merged Lost Lands festpack's "Venue extent"
+ * feature, projected through the actual ff_geo_project formula
+ * fp_parse uses (origin = festival.venue, 39.9387/-82.4027) — the exact
+ * concave polygon PR #73's tier-3 review found the old fan-fill
+ * mis-rendering (reflex turn at vertex 7). Hand-verified concave via a
+ * cross-product convexity sweep before this test was written (see the
+ * PR's fix-round reply for the numbers). This is the regression test:
+ * if triangulation ever regresses to a fan (or anything else that
+ * doesn't exactly tile a concave polygon), the area check below catches
+ * it — a fan over this exact shape overcounts the notch near vertex 7. */
+static void S09_triangulate_real_venue_extent_is_concave_and_covers_exact_area(void)
+{
+    float pts[][2] = {
+        {-477.44f, 177.91f}, {-537.12f, 366.94f}, {-281.35f, 478.14f}, {59.68f, 478.14f},
+        {187.56f, 255.75f},  {144.94f, -133.43f}, {59.68f, -211.27f},  {-153.46f, -22.24f},
+        {-366.60f, 88.96f},
+    };
+    int const n = 9;
+    uint8_t tris[7][3];
+    int const n_tris = ff_map_triangulate(pts, n, tris, 7);
+    TEST_ASSERT_EQUAL_INT(7, n_tris); /* n - 2 */
+    TEST_ASSERT_FLOAT_WITHIN(5.0f, polygon_area(pts, n), triangulation_area(pts, tris, n_tris));
+
+    /* Every emitted triangle must have a REAL (non-degenerate) area —
+     * the mutation-conscious half of this test: a fan-fill regression
+     * over this concave shape would still emit n-2 triangles and could
+     * still coincidentally sum close to the right total area while
+     * containing a triangle that folds back on itself; requiring every
+     * individual triangle to carry a meaningfully positive area rules
+     * that out. */
+    for (int i = 0; i < n_tris; i++) {
+        uint8_t a = tris[i][0], b = tris[i][1], c = tris[i][2];
+        float area = triangle_area(pts[a][0], pts[a][1], pts[b][0], pts[b][1], pts[c][0], pts[c][1]);
+        TEST_ASSERT_TRUE(area > 100.0f);
+    }
+}
+
+static void S09_triangulate_concave_l_shape_covers_exact_area(void)
+{
+    /* An "L": a 10x10 square with a 5x5 notch bitten out of one corner —
+     * the simplest genuinely concave polygon, independent of the
+     * real-data fixture above. */
+    float pts[][2] = {
+        {0.0f, 0.0f}, {10.0f, 0.0f}, {10.0f, 5.0f}, {5.0f, 5.0f}, {5.0f, 10.0f}, {0.0f, 10.0f},
+    };
+    uint8_t tris[4][3];
+    int n_tris = ff_map_triangulate(pts, 6, tris, 4);
+    TEST_ASSERT_EQUAL_INT(4, n_tris);
+    TEST_ASSERT_FLOAT_WITHIN(0.01f, polygon_area(pts, 6), triangulation_area(pts, tris, n_tris));
+    TEST_ASSERT_FLOAT_WITHIN(0.01f, 75.0f, polygon_area(pts, 6)); /* 100 - 25 */
+}
+
+static void S09_triangulate_rejects_too_few_points(void)
+{
+    float pts[][2] = {{0.0f, 0.0f}, {1.0f, 0.0f}};
+    uint8_t tris[1][3];
+    TEST_ASSERT_EQUAL_INT(-1, ff_map_triangulate(pts, 2, tris, 1));
+}
+
+static void S09_triangulate_rejects_insufficient_out_max(void)
+{
+    float pts[][2] = {{0.0f, 0.0f}, {10.0f, 0.0f}, {10.0f, 10.0f}, {0.0f, 10.0f}};
+    uint8_t tris[1][3]; /* needs 2, given 1 — never writes a partial triangulation */
+    TEST_ASSERT_EQUAL_INT(-1, ff_map_triangulate(pts, 4, tris, 1));
+}
+
+static void S09_triangulate_rejects_degenerate_collinear_input(void)
+{
+    float pts[][2] = {{0.0f, 0.0f}, {1.0f, 0.0f}, {2.0f, 0.0f}};
+    uint8_t tris[1][3];
+    TEST_ASSERT_EQUAL_INT(-1, ff_map_triangulate(pts, 3, tris, 1));
+}
+
+static void S09_triangulate_null_safe(void)
+{
+    uint8_t tris[1][3];
+    TEST_ASSERT_EQUAL_INT(-1, ff_map_triangulate(NULL, 3, tris, 1));
+    float pts[][2] = {{0.0f, 0.0f}, {1.0f, 0.0f}, {1.0f, 1.0f}};
+    TEST_ASSERT_EQUAL_INT(-1, ff_map_triangulate(pts, 3, NULL, 1));
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -230,6 +389,20 @@ int main(void)
     RUN_TEST(S09_AC1_null_xform_project_writes_zero_not_garbage);
 
     RUN_TEST(S09_AC2_crew_rally_you_share_transform_hand_computed_1px);
+
+    RUN_TEST(S09_render_kind_zero_points_is_omit);
+    RUN_TEST(S09_render_kind_one_point_stage_is_stub);
+    RUN_TEST(S09_render_kind_one_point_non_stage_is_label_only);
+    RUN_TEST(S09_render_kind_two_points_is_line);
+    RUN_TEST(S09_render_kind_three_or_more_points_is_polygon);
+
+    RUN_TEST(S09_triangulate_convex_square_covers_exact_area);
+    RUN_TEST(S09_triangulate_real_venue_extent_is_concave_and_covers_exact_area);
+    RUN_TEST(S09_triangulate_concave_l_shape_covers_exact_area);
+    RUN_TEST(S09_triangulate_rejects_too_few_points);
+    RUN_TEST(S09_triangulate_rejects_insufficient_out_max);
+    RUN_TEST(S09_triangulate_rejects_degenerate_collinear_input);
+    RUN_TEST(S09_triangulate_null_safe);
 
     return UNITY_END();
 }

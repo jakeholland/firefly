@@ -3,39 +3,77 @@
  * No domain logic (CLAUDE.md) — every branch below is "how to draw
  * feature/dot X", never "should this feature/dot exist" (that call was
  * already made upstream, by fixture.c on a golden or ff_shell.c's
- * shell_project_map on a live tick).
+ * shell_project_map on a live tick, or by core's
+ * `ff_map_feature_render_kind` for the untraced-feature policy below).
  *
  * ## Untraced-feature render policy (S09 spec, AC3)
- * A feature's `n_pts` drives what gets drawn, and nothing here invents a
- * shape past what the data states (CLAUDE.md: "never fake... positions"):
- *   - `n_pts >= 3`: a real polygon. Filled (13% alpha) + stroked, in the
- *     feature's kind/stage color, label centered at the centroid.
- *   - `n_pts == 2`: no fillable area — a plain stroked line segment
- *     between the two points, label at the midpoint. (Not in the spec's
- *     own worked examples; a defensible minimal-invention reading of "no
- *     invented geometry" for a 2-point path-like feature, flagged per
- *     AGENTS.md.)
- *   - `n_pts == 1`: untraced (no polygon), but a real point exists. A
- *     STAGE renders the spec's own named stub — a labeled 30m circle at
- *     that point. Any OTHER kind with just one point gets a label only,
- *     anchored at that point (no shape) — the spec's stub treatment is
- *     stated for stages specifically ("except stages... render as
- *     labeled 30m circles... only if they carry a point"), and drawing
- *     an invented shape for every other kind's lone point would be
- *     exactly the fabricated geometry CLAUDE.md rules out. Flagged as an
+ * A feature's `n_pts` (plus whether it's a stage) drives what gets
+ * drawn — the decision itself is `ff_map_feature_render_kind`
+ * (core/include/ff_map.h), a pure function unit-tested directly (PR #73
+ * review finding #6: this "if" used to live inline here, reachable only
+ * through a loose golden pixel-diff threshold that a mutation slipped
+ * under). Nothing here invents a shape past what the data states:
+ *   - `n_pts >= 3` (FF_MAP_RENDER_POLYGON): a real polygon. Filled (13%
+ *     alpha) + stroked, in the feature's kind/stage color, label
+ *     centered at the centroid.
+ *   - `n_pts == 2` (FF_MAP_RENDER_LINE): no fillable area — a plain
+ *     stroked line segment between the two points, label at the
+ *     midpoint. (Not in the spec's own worked examples; a defensible
+ *     minimal-invention reading of "no invented geometry" for a 2-point
+ *     path-like feature, flagged per AGENTS.md.)
+ *   - `n_pts == 1`, a STAGE (FF_MAP_RENDER_STAGE_STUB): the spec's own
+ *     named stub — a labeled 30m circle at that point.
+ *   - `n_pts == 1`, any OTHER kind (FF_MAP_RENDER_LABEL_ONLY): a label
+ *     only, anchored at that point, no shape — the spec's stub
+ *     treatment is stated for stages specifically, and drawing an
+ *     invented shape for every other kind's lone point would be exactly
+ *     the fabricated geometry CLAUDE.md rules out. Flagged as an
  *     interpretation call, same as the n_pts==2 case above.
- *   - `n_pts == 0`: no polygon AND no point — nothing to honestly anchor
- *     even a label to. Omitted entirely ("otherwise omitted", per spec).
+ *   - `n_pts == 0` (FF_MAP_RENDER_OMIT): no polygon AND no point —
+ *     nothing to honestly anchor even a label to. Omitted entirely
+ *     ("otherwise omitted", per spec).
  *
- * ## Polygon fill — no LVGL primitive, same technique scr_radar.c uses
+ * ## Polygon fill — ear-clipping (concave-safe), stroke-only fallback
  * LVGL has no filled-polygon widget (scr_radar.c's own header comment on
- * its arrowhead triangle). This file reuses the identical low-level
- * `lv_draw_triangle()` callback technique, fan-triangulated from each
- * polygon's own first vertex. That is an exact fill only for a CONVEX (or
- * star-shaped w.r.t. vertex 0) polygon; a genuinely concave festival
- * footprint could show a fan seam. Accepted for v1 — real traced
- * geometry is being surveyed in a separate, parallel effort (fest-almanac)
- * and this repo has no concave synthetic fixture to design against yet.
+ * its arrowhead triangle), so this file draws fills as triangles via the
+ * same low-level `lv_draw_triangle()` callback technique scr_radar.c
+ * uses for its arrowhead. PR #73 review finding #2 (BLOCKING): the
+ * ORIGINAL vertex-0 fan-triangulation here was only correct for
+ * convex/star-shaped input, and the real, currently-merged Lost Lands
+ * pack's "Venue extent" feature (9 points) is concave — the fan visibly
+ * mis-filled it, bleeding outside the true boundary at the reflex
+ * vertex. Replaced with `ff_map_triangulate` (core/include/ff_map.h), an
+ * ear-clipping triangulation correct for convex OR concave simple
+ * polygons. Per this slice's own Amendment (docs/specs/S09-map-face.md):
+ * a WRONG fill is worse than no fill, so if triangulation itself fails
+ * (returns negative — degenerate/self-intersecting input, which real
+ * simple festival geometry should never produce, but is guarded rather
+ * than assumed), `map_draw_polygon` falls back to STROKE-ONLY — the
+ * outline still draws, honestly, with no fill claim at all.
+ *
+ * ## Camera fit: feature ANCHOR POINTS, not full vertex extents
+ * PR #73 review finding #3 (Bailey, BLOCKING): fitting the bbox to EVERY
+ * vertex of every feature let one or two large boundary polygons (real
+ * data: "Venue extent", "Wompy Woods treeline") dominate the scale,
+ * crushing the actual cluster of things a rider cares about (stages,
+ * pond, camping, ...) into an unreadable smear — verified by rendering
+ * the real pack, not a hypothetical. `ff_scr_map_build` now feeds the
+ * fit exactly ONE anchor point per feature (`map_feature_anchor_en`
+ * below: the single point for a 1-point feature, the centroid for a
+ * 2-or-more-point one) rather than every vertex — see this slice's PR
+ * body / spec Amendment for why "bounding box of all features" reads as
+ * "of each feature's own representative point", not "of every vertex of
+ * every feature's full extent". A large polygon's own vertices can
+ * therefore now legitimately project outside the fitted circle.
+ * `lv_obj_set_style_clip_corner` was the obvious next step (clip the
+ * puck's children to its own circular shape, so an over-extent shape
+ * reads as "the boundary continues past the visible glass" instead of
+ * bleeding into the sim window's square corners) — but it reliably
+ * HANGS `ffsim --headless` at this file's draw-object count, so it is
+ * NOT applied here; see `ff_scr_map_build`'s own comment and issue #75.
+ * The consequence until that's fixed is sim-only cosmetic: a real,
+ * physically-round device cannot show anything past its own edge no
+ * matter what this file draws.
  *
  * ## Sub-pixel stroke width
  * The spec's "1.3px stroke" has no LVGL equivalent — `lv_obj_set_style_
@@ -47,9 +85,10 @@
 #include "scr_map.h"
 
 #include <math.h>
+#include <stdio.h> /* snprintf — the "+N MORE" truncation indicator */
 
 #include "ff_intent.h" /* the emit seam — see map_tap_back_cb */
-#include "ff_map.h"    /* core/include — the shared fixed-fit camera transform */
+#include "ff_map.h"    /* core/include — the shared fixed-fit camera transform + triangulation */
 #include "ff_theme.h"
 
 /* ---------------------------------------------------------------------
@@ -76,6 +115,68 @@
 #define FF_MAP_YOU_ARROW_LEN_PX 26.0f
 #define FF_MAP_YOU_ARROW_WIDTH_PX 20.0f
 #define FF_MAP_RALLY_R_PX 9.0f
+
+/* PR #73 review finding #3 (Bailey): a minimal FEATURE-LABEL collision
+ * nudge — "even a minimal collision nudge... beats raw overlap". The
+ * anchor-point camera fit (this file's header comment) fixes the
+ * DOMINANT crowding cause (one huge polygon crushing everyone else's
+ * scale), but real festival data can still land two features' anchor
+ * points close enough that their labels would sit on top of each other
+ * (verified on the real pack: "The Crater"/"Tunnel entrance" land within
+ * a few px of each other). This is deliberately NOT radar_layout.c's
+ * full reserved-region search (a much larger undertaking, and this
+ * screen has no fixed chrome to reserve against — every element here is
+ * data-driven) — just a simple, deterministic "if this label would
+ * collide with an already-placed one, nudge it straight down" pass,
+ * bounded and cheap (O(features^2) over at most FF_APP_MAP_MAX_FEATURES
+ * items). The SHAPE (polygon/stub/line) stays at its true geographic
+ * position; only the LABEL TEXT nudges — the same honest-cartography
+ * convention real maps use (a label's exact pixel is a legibility
+ * choice, not a claim about where the feature is). A full leader-line
+ * treatment for a heavily-nudged label is a reasonable follow-up, not
+ * this fix round's scope. */
+#define FF_MAP_LABEL_MIN_SEP_PX 48.0f
+#define FF_MAP_LABEL_MAX_NUDGE_TRIES 6
+
+static float s_label_placed_x[FF_APP_MAP_MAX_FEATURES];
+static float s_label_placed_y[FF_APP_MAP_MAX_FEATURES];
+static int s_label_placed_count;
+
+static void map_reset_label_declutter(void)
+{
+    s_label_placed_count = 0;
+}
+
+/* Nudges `*io_y` downward (deterministic, no randomness — same render
+ * always produces the same layout) until `(*io_x, *io_y)` clears every
+ * already-placed label center by FF_MAP_LABEL_MIN_SEP_PX, or the try
+ * budget runs out (a genuinely crowded real pack can still end up with
+ * some residual overlap after 6 nudges — better than none, not a claim
+ * of perfect separation). Records the final position so later calls see
+ * it too. */
+static void map_place_label_decluttered(float *io_x, float *io_y)
+{
+    for (int attempt = 0; attempt < FF_MAP_LABEL_MAX_NUDGE_TRIES; attempt++) {
+        bool collides = false;
+        for (int i = 0; i < s_label_placed_count; i++) {
+            float const dx = *io_x - s_label_placed_x[i];
+            float const dy = *io_y - s_label_placed_y[i];
+            if (dx * dx + dy * dy < FF_MAP_LABEL_MIN_SEP_PX * FF_MAP_LABEL_MIN_SEP_PX) {
+                collides = true;
+                break;
+            }
+        }
+        if (!collides) {
+            break;
+        }
+        *io_y += FF_MAP_LABEL_MIN_SEP_PX;
+    }
+    if (s_label_placed_count < FF_APP_MAP_MAX_FEATURES) {
+        s_label_placed_x[s_label_placed_count] = *io_x;
+        s_label_placed_y[s_label_placed_count] = *io_y;
+        s_label_placed_count++;
+    }
+}
 
 /* ---------------------------------------------------------------------
  * lv_line / triangle static storage pools — same "caller cleans before
@@ -261,13 +362,27 @@ static uint32_t map_kind_color(ff_app_map_feature_t const *f)
 
 static void map_draw_polygon(lv_obj_t *parent, float const pts_px[][2], int n, uint32_t color_hex)
 {
-    /* Fan fill from vertex 0 — see this file's header comment on why
-     * (no LVGL polygon primitive) and its limit (convex/star-shaped
-     * only). */
-    for (int i = 1; i + 1 < n; i++) {
-        map_draw_filled_triangle(parent, pts_px[0][0], pts_px[0][1], pts_px[i][0], pts_px[i][1], pts_px[i + 1][0],
-                                  pts_px[i + 1][1], color_hex, FF_MAP_FILL_OPA);
+    /* Concave-safe fill via ear clipping — see this file's header
+     * comment for the full rationale and the stroke-only fallback
+     * below. `n <= FF_APP_MAP_MAX_POLY_PTS` always (the only caller
+     * projects a feature's own points, already capped that way), so
+     * `n - 2` triangles always fit in a buffer sized to the same cap. */
+    uint8_t tris[FF_APP_MAP_MAX_POLY_PTS][3];
+    int const n_tris = ff_map_triangulate(pts_px, n, tris, FF_APP_MAP_MAX_POLY_PTS);
+
+    if (n_tris > 0) {
+        for (int i = 0; i < n_tris; i++) {
+            uint8_t const a = tris[i][0], b = tris[i][1], c = tris[i][2];
+            map_draw_filled_triangle(parent, pts_px[a][0], pts_px[a][1], pts_px[b][0], pts_px[b][1], pts_px[c][0],
+                                      pts_px[c][1], color_hex, FF_MAP_FILL_OPA);
+        }
     }
+    /* n_tris < 0: ff_map_triangulate couldn't safely fill this polygon
+     * (degenerate/self-intersecting input — never expected from real
+     * simple festival geometry, but guarded rather than assumed). A
+     * wrong fill is worse than no fill (S09-map-face.md's Amendments):
+     * the outline still draws below either way, honestly, with no fill
+     * claim at all when triangulation failed. */
     for (int i = 0; i < n; i++) {
         int const j = (i + 1) % n;
         map_draw_segment(parent, pts_px[i][0], pts_px[i][1], pts_px[j][0], pts_px[j][1], color_hex, LV_OPA_COVER,
@@ -275,57 +390,93 @@ static void map_draw_polygon(lv_obj_t *parent, float const pts_px[][2], int n, u
     }
 }
 
+/**
+ * map_feature_anchor_en — the ONE east/north point a feature contributes
+ * to the camera fit (see this file's header comment on why anchors, not
+ * full vertex extents) — and, doubling as the point its label centers
+ * on, since a feature's "representative point" is the same concept
+ * either way. The single point for a 1-point feature; the vertex
+ * CENTROID for 2-or-more (an affine map projects the centroid of a set
+ * to the centroid of the projected set, so computing this once in
+ * east/north meters and projecting it is exactly equivalent to
+ * projecting every point and averaging in px — just cheaper). Returns 0
+ * (writes nothing) for a 0-point feature — nothing to anchor.
+ */
+static int map_feature_anchor_en(ff_app_map_feature_t const *f, float *out_e, float *out_n)
+{
+    if (f->n_pts == 0) return 0;
+    if (f->n_pts == 1) {
+        *out_e = f->pts_en[0][0];
+        *out_n = f->pts_en[0][1];
+        return 1;
+    }
+    int const n = (f->n_pts < FF_APP_MAP_MAX_POLY_PTS) ? f->n_pts : FF_APP_MAP_MAX_POLY_PTS;
+    float sum_e = 0.0f, sum_n = 0.0f;
+    for (int i = 0; i < n; i++) {
+        sum_e += f->pts_en[i][0];
+        sum_n += f->pts_en[i][1];
+    }
+    *out_e = sum_e / (float)n;
+    *out_n = sum_n / (float)n;
+    return 1;
+}
+
 static void map_draw_feature(lv_obj_t *parent, ff_map_xform_t const *xform, ff_app_map_feature_t const *f)
 {
     uint32_t const color = map_kind_color(f);
+    ff_map_render_kind_t const render_kind =
+        ff_map_feature_render_kind(f->n_pts, f->kind == FF_APP_MAP_KIND_STAGE);
 
-    if (f->n_pts == 0) {
+    if (render_kind == FF_MAP_RENDER_OMIT) {
         return; /* no polygon, no point — nothing to honestly draw or label (spec: "otherwise omitted") */
     }
 
-    if (f->n_pts == 1) {
-        float cx, cy;
-        ff_map_project(xform, f->pts_en[0][0], f->pts_en[0][1], &cx, &cy);
+    float anchor_e = 0.0f, anchor_n = 0.0f;
+    (void)map_feature_anchor_en(f, &anchor_e, &anchor_n); /* always succeeds: render_kind != OMIT implies n_pts >= 1 */
+    float cx, cy;
+    ff_map_project(xform, anchor_e, anchor_n, &cx, &cy);
 
-        if (f->kind == FF_APP_MAP_KIND_STAGE) {
-            float const r_px = FF_MAP_STAGE_STUB_RADIUS_M * xform->scale_px_per_m;
-            lv_obj_t *stub = lv_obj_create(parent);
-            lv_obj_remove_style_all(stub);
-            lv_obj_set_size(stub, (int32_t)(r_px * 2.0f), (int32_t)(r_px * 2.0f));
-            lv_obj_set_style_radius(stub, LV_RADIUS_CIRCLE, 0);
-            lv_obj_set_style_bg_color(stub, lv_color_hex(color), 0);
-            lv_obj_set_style_bg_opa(stub, FF_MAP_FILL_OPA, 0);
-            lv_obj_set_style_border_width(stub, FF_MAP_STROKE_PX, 0);
-            lv_obj_set_style_border_color(stub, lv_color_hex(color), 0);
-            lv_obj_set_style_border_opa(stub, LV_OPA_COVER, 0);
-            lv_obj_clear_flag(stub, LV_OBJ_FLAG_SCROLLABLE);
-            lv_obj_clear_flag(stub, LV_OBJ_FLAG_CLICKABLE);
-            lv_obj_align(stub, LV_ALIGN_CENTER, (int32_t)cx, (int32_t)cy);
+    switch (render_kind) {
+    case FF_MAP_RENDER_STAGE_STUB: {
+        float const r_px = FF_MAP_STAGE_STUB_RADIUS_M * xform->scale_px_per_m;
+        lv_obj_t *stub = lv_obj_create(parent);
+        lv_obj_remove_style_all(stub);
+        lv_obj_set_size(stub, (int32_t)(r_px * 2.0f), (int32_t)(r_px * 2.0f));
+        lv_obj_set_style_radius(stub, LV_RADIUS_CIRCLE, 0);
+        lv_obj_set_style_bg_color(stub, lv_color_hex(color), 0);
+        lv_obj_set_style_bg_opa(stub, FF_MAP_FILL_OPA, 0);
+        lv_obj_set_style_border_width(stub, FF_MAP_STROKE_PX, 0);
+        lv_obj_set_style_border_color(stub, lv_color_hex(color), 0);
+        lv_obj_set_style_border_opa(stub, LV_OPA_COVER, 0);
+        lv_obj_clear_flag(stub, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_clear_flag(stub, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_align(stub, LV_ALIGN_CENTER, (int32_t)cx, (int32_t)cy);
+        break;
+    }
+    case FF_MAP_RENDER_LABEL_ONLY:
+        break; /* no shape — see this file's header comment; the label draws unconditionally below */
+    case FF_MAP_RENDER_LINE: {
+        float p0x, p0y, p1x, p1y;
+        ff_map_project(xform, f->pts_en[0][0], f->pts_en[0][1], &p0x, &p0y);
+        ff_map_project(xform, f->pts_en[1][0], f->pts_en[1][1], &p1x, &p1y);
+        map_draw_segment(parent, p0x, p0y, p1x, p1y, color, LV_OPA_COVER, FF_MAP_STROKE_PX);
+        break;
+    }
+    case FF_MAP_RENDER_POLYGON: {
+        float pts_px[FF_APP_MAP_MAX_POLY_PTS][2];
+        int const n = (f->n_pts < FF_APP_MAP_MAX_POLY_PTS) ? f->n_pts : FF_APP_MAP_MAX_POLY_PTS;
+        for (int i = 0; i < n; i++) {
+            ff_map_project(xform, f->pts_en[i][0], f->pts_en[i][1], &pts_px[i][0], &pts_px[i][1]);
         }
-        /* Non-stage single-point feature: label only, no invented shape
-         * — see this file's header comment. */
-        map_make_label(parent, f->label, FF_THEME_COLOR_INK, cx, cy);
-        return;
-    }
-
-    /* Project every point once. */
-    float pts_px[FF_APP_MAP_MAX_POLY_PTS][2];
-    int const n = (f->n_pts < FF_APP_MAP_MAX_POLY_PTS) ? f->n_pts : FF_APP_MAP_MAX_POLY_PTS;
-    float sum_x = 0.0f, sum_y = 0.0f;
-    for (int i = 0; i < n; i++) {
-        ff_map_project(xform, f->pts_en[i][0], f->pts_en[i][1], &pts_px[i][0], &pts_px[i][1]);
-        sum_x += pts_px[i][0];
-        sum_y += pts_px[i][1];
-    }
-    float const cx = sum_x / (float)n;
-    float const cy = sum_y / (float)n;
-
-    if (n == 2) {
-        map_draw_segment(parent, pts_px[0][0], pts_px[0][1], pts_px[1][0], pts_px[1][1], color, LV_OPA_COVER,
-                          FF_MAP_STROKE_PX);
-    } else {
         map_draw_polygon(parent, pts_px, n, color);
+        break;
     }
+    case FF_MAP_RENDER_OMIT:
+    default:
+        return; /* unreachable (handled above); kept so -Wswitch stays exhaustive */
+    }
+
+    map_place_label_decluttered(&cx, &cy);
     map_make_label(parent, f->label, FF_THEME_COLOR_INK, cx, cy);
 }
 
@@ -468,6 +619,39 @@ static void map_draw_you(lv_obj_t *parent, ff_map_xform_t const *xform, ff_app_m
 }
 
 /* ---------------------------------------------------------------------
+ * Truncation indicator (PR #73 review finding #1) — an honest "this
+ * view is known incomplete" signal, matching fixture.c's fail-loud
+ * convention on the same cap rather than silently presenting a
+ * truncated view as the whole map. Amber (FF_THEME_COLOR_STALE_AMBER),
+ * the same "something needs your attention" alert color scr_radar.c
+ * already uses for mesh-loss/low-battery — this is that same category
+ * of fact, not a neutral status line.
+ * ------------------------------------------------------------------- */
+
+static void map_draw_truncated_indicator(lv_obj_t *parent, ff_app_map_t const *map)
+{
+    if (!map->truncated) {
+        return;
+    }
+    char text[24];
+    if (map->features_omitted > 0) {
+        snprintf(text, sizeof(text), "+%u MORE", (unsigned)map->features_omitted);
+    } else {
+        /* Every feature was kept, but at least one kept feature's own
+         * polygon lost points (ff_shell.c's shell_project_map doc
+         * comment) — a real, distinct kind of incompleteness with
+         * nothing to count, so it gets its own honest wording rather
+         * than a fabricated "+0 MORE". */
+        snprintf(text, sizeof(text), "MAP INCOMPLETE");
+    }
+    /* Top of the puck — mirrors the "NO FIX" chip's bottom placement
+     * (map_draw_you) so the two honest-incompleteness signals never
+     * collide. */
+    map_make_chip(parent, text, FF_THEME_COLOR_SURFACE, FF_THEME_COLOR_STALE_AMBER, 0.0f,
+                  -(FF_MAP_CIRCLE_RADIUS_PX - FF_MAP_MARGIN_PX - 20.0f));
+}
+
+/* ---------------------------------------------------------------------
  * Tap anywhere -> back to Radar (S09 spec).
  * ------------------------------------------------------------------- */
 
@@ -489,6 +673,7 @@ void ff_scr_map_build(ff_app_map_t const *map)
     }
 
     map_reset_pools();
+    map_reset_label_declutter();
 
     lv_obj_t *scr = lv_screen_active();
     lv_obj_set_style_bg_color(scr, lv_color_hex(0x000000), 0);
@@ -503,6 +688,20 @@ void ff_scr_map_build(ff_app_map_t const *map)
     lv_obj_set_style_bg_opa(puck, LV_OPA_COVER, 0);
     lv_obj_set_style_border_width(puck, 0, 0);
     lv_obj_clear_flag(puck, LV_OBJ_FLAG_SCROLLABLE);
+    /* Circular clip — NOT applied, see issue #75. Now that the camera
+     * fits feature ANCHOR points rather than full vertex extents (this
+     * file's header comment), a large boundary polygon's own vertices
+     * can legitimately fall outside the fitted circle, and
+     * `lv_obj_set_style_clip_corner(puck, true, 0)` is the obvious fix
+     * — it reliably HANGS `ffsim --headless` when this many full-puck-
+     * sized draw objects (this file's triangle/segment technique, up to
+     * ~300 of them at this cap) are its children. Reverted rather than
+     * shipped hung; issue #75 tracks the real fix (likely: size each
+     * draw object to its own tight bounds instead of the whole puck).
+     * The visible consequence until then is SIM-ONLY — a real,
+     * physically-round device cannot show anything past its own edge
+     * regardless of what this file draws; only the sim's square window
+     * can leak an oversized shape into its corners. */
     /* Tap ANYWHERE -> back (S09 spec) — unlike every other full-screen
      * face in this codebase, the puck itself is the button; every child
      * this file draws clears LV_OBJ_FLAG_CLICKABLE so a tap always
@@ -511,15 +710,17 @@ void ff_scr_map_build(ff_app_map_t const *map)
     lv_obj_add_flag(puck, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_add_event_cb(puck, map_tap_back_cb, LV_EVENT_CLICKED, NULL);
 
-    /* Fixed-fit camera (S09 slice a): bbox of every feature point across
-     * the whole pack, fit into the circle with the spec's own margin. */
-    float bbox_pts[FF_APP_MAP_MAX_FEATURES * FF_APP_MAP_MAX_POLY_PTS][2];
+    /* Fixed-fit camera (S09 slice a, refined by PR #73 review finding
+     * #3): ONE anchor point per feature — not every vertex of every
+     * feature — fit into the circle with the spec's own margin. See
+     * this file's header comment for why. */
+    float bbox_pts[FF_APP_MAP_MAX_FEATURES][2];
     int n_bbox = 0;
     for (uint8_t i = 0; i < map->n_features; i++) {
-        ff_app_map_feature_t const *f = &map->features[i];
-        for (uint8_t k = 0; k < f->n_pts && k < FF_APP_MAP_MAX_POLY_PTS; k++) {
-            bbox_pts[n_bbox][0] = f->pts_en[k][0];
-            bbox_pts[n_bbox][1] = f->pts_en[k][1];
+        float e, n;
+        if (map_feature_anchor_en(&map->features[i], &e, &n)) {
+            bbox_pts[n_bbox][0] = e;
+            bbox_pts[n_bbox][1] = n;
             n_bbox++;
         }
     }
@@ -537,4 +738,5 @@ void ff_scr_map_build(ff_app_map_t const *map)
     }
 
     map_draw_you(puck, &xform, map);
+    map_draw_truncated_indicator(puck, map);
 }

@@ -298,6 +298,35 @@ static void drag(int32_t from_x, int32_t to_x, int32_t y)
     lv_indev_delete(indev);
 }
 
+/* Vertical counterpart to `drag` above — same real-indev press/move/
+ * release shape, varying y instead of x. S09 [api]: a swipe UP through
+ * this opens Map (nav_swipe_gesture_cb's LV_DIR_TOP case). */
+static void drag_v(int32_t from_y, int32_t to_y, int32_t x)
+{
+    lv_indev_t *indev = lv_indev_create();
+    lv_indev_set_type(indev, LV_INDEV_TYPE_POINTER);
+    lv_indev_set_read_cb(indev, probe_read_cb);
+
+    s_probe_pt.x = (lv_coord_t)x;
+    s_probe_pt.y = (lv_coord_t)from_y;
+    s_probe_state = LV_INDEV_STATE_PRESSED;
+    s_fake_tick_ms += 40u;
+    lv_timer_handler();
+
+    enum { STEPS = 6 };
+    for (int i = 1; i <= STEPS; i++) {
+        s_probe_pt.y = (lv_coord_t)(from_y + (to_y - from_y) * i / STEPS);
+        s_fake_tick_ms += 40u;
+        lv_timer_handler();
+    }
+
+    s_probe_state = LV_INDEV_STATE_RELEASED;
+    s_fake_tick_ms += 40u;
+    lv_timer_handler();
+
+    lv_indev_delete(indev);
+}
+
 static void S16_c3_physical_leftward_drag_emits_swipe_toward_signals(void)
 {
     ff_app_state_t state;
@@ -324,6 +353,59 @@ static void S16_c3_physical_rightward_drag_emits_swipe_toward_radar(void)
     TEST_ASSERT_EQUAL_INT(1, s_spy.count);
     TEST_ASSERT_EQUAL(FF_INTENT_SWIPE, s_spy.last.kind);
     TEST_ASSERT_EQUAL_INT8(-1, s_spy.last.u.swipe_dir); /* toward RADAR */
+}
+
+/* S09 [api], PR #73 review finding #4 — the Map entry point: a real
+ * upward drag on the (real) tileview reaches nav_swipe_gesture_cb's new
+ * LV_DIR_TOP case and emits FF_INTENT_OPEN_MAP, not FF_INTENT_SWIPE.
+ * Same "build the real screen, synthesize a real indev gesture" pattern
+ * as the horizontal-drag tests above — this is what actually resolves
+ * an unclaimed vertical drag through LVGL's own gesture machinery, not
+ * a synthetic shortcut that could pass while a real finger still
+ * reached nothing. */
+static void S09_physical_upward_drag_emits_open_map(void)
+{
+    ff_app_state_t state;
+    memset(&state, 0, sizeof(state));
+    state.active_face = FF_APP_FACE_RADAR;
+    ff_scr_nav_build(&state);
+
+    drag_v(380, 60, 228); /* finger moving UP */
+
+    TEST_ASSERT_EQUAL_INT(1, s_spy.count);
+    TEST_ASSERT_EQUAL(FF_INTENT_OPEN_MAP, s_spy.last.kind);
+}
+
+/* The gesture is NOT gated to the Radar tile — see nav_swipe_gesture_cb's
+ * own doc comment for why. Pinned from Now (tile index 1) so a future
+ * change that accidentally narrows this to "Radar only" fails loudly
+ * here rather than only being caught by inspection. */
+static void S09_physical_upward_drag_emits_open_map_from_now_too(void)
+{
+    ff_app_state_t state;
+    memset(&state, 0, sizeof(state));
+    state.active_face = FF_APP_FACE_NOW;
+    ff_scr_nav_build(&state);
+
+    drag_v(380, 60, 228);
+
+    TEST_ASSERT_EQUAL_INT(1, s_spy.count);
+    TEST_ASSERT_EQUAL(FF_INTENT_OPEN_MAP, s_spy.last.kind);
+}
+
+/* A DOWNWARD drag stays unclaimed (not a face swipe, not Map) — the
+ * negative control proving LV_DIR_TOP specifically is what's wired, not
+ * "any vertical gesture". */
+static void S09_physical_downward_drag_emits_nothing(void)
+{
+    ff_app_state_t state;
+    memset(&state, 0, sizeof(state));
+    state.active_face = FF_APP_FACE_RADAR;
+    ff_scr_nav_build(&state);
+
+    drag_v(60, 380, 228); /* finger moving DOWN */
+
+    TEST_ASSERT_EQUAL_INT(0, s_spy.count);
 }
 
 /* =================================================================== */
@@ -966,6 +1048,9 @@ int main(void)
     RUN_TEST(S16_c3_content_button_long_press_does_not_reach_open_settings);
     RUN_TEST(S16_c3_physical_leftward_drag_emits_swipe_toward_signals);
     RUN_TEST(S16_c3_physical_rightward_drag_emits_swipe_toward_radar);
+    RUN_TEST(S09_physical_upward_drag_emits_open_map);
+    RUN_TEST(S09_physical_upward_drag_emits_open_map_from_now_too);
+    RUN_TEST(S09_physical_downward_drag_emits_nothing);
     RUN_TEST(S16_c1_compose_back_emits_back);
     RUN_TEST(S16_c2_compose_send_emits_send_text);
     RUN_TEST(S16_c3_abc_letter_key_emits_t9_key);
