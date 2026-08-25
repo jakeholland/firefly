@@ -9,7 +9,7 @@ Firefly is a palm-sized round-screen puck for music festivals: a compass arrow t
 </p>
 
 <p align="center"><em>Not a mockup — that's the firmware rendering, frame by frame.<br>
-Four of the six v1 faces, running. The arrow finds your friend, the lineup admits which set times<br>aren't published yet, you can message without a network, and a flare takes over when someone needs finding.</em></p>
+Five of the six v1 faces, running. The arrow finds your friend, the lineup admits which set times<br>aren't published yet, you can message without a network, and a flare takes over when someone needs finding.</em></p>
 
 ## Status
 
