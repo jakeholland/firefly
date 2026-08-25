@@ -36,6 +36,28 @@ a) engine + tests · b) face render + goldens · c) alarm + haptic hook + star p
 
 ## Amendments
 
+- **2026-08-25, PR #65 independent review, finding 1 — duplicate `start_min`
+  on one stage must not double-render.** The 2026-08-24 derivation ruling
+  below (item 2) fixed WHAT a null `end_min` derives to, but not what
+  happens when two sets share the exact same `(stage_idx, day_doy,
+  start_min)` tuple — malformed or duplicate pack data (a copy/paste
+  error, a support-act slot re-announced before a drop). Both ties derive
+  the identical `effective_end` (the derivation already excludes a tied
+  sibling as its own source), so both were reported "now" for the
+  identical window on the same stage — a NEW failure mode this PR
+  introduced: before, such a starts-only duplicate silently vanished
+  (safe, if uninformative); after the 08-24 fix, it double-rendered,
+  violating `ff_sched_now_playing`'s own "one row per stage" contract.
+  Ruling: same "ties → lower set index" rule this module already applies
+  in `ff_sched_next_starred`/`ff_sched_alarm_tick` — the lower-index set
+  wins the slot outright, the higher-index one is suppressed from
+  `ff_sched_now_playing`'s output entirely (not merely deduped after the
+  fact). Implemented in `ff_sched_now_playing`; regression-tested by
+  `S07_2026_08_25_duplicate_start_same_stage_dedupes` (the reviewer's
+  exact repro shape) and `S07_2026_08_25_duplicate_start_different_stage_both_render`
+  (negative control: two different stages sharing a `start_min` is
+  ordinary concurrent scheduling, not a duplicate, and both still render).
+
 - **2026-08-24, end-to-end find against the first real festpack (`fix/s07-starts-only`)
   — "timed" means a known `start_min`; `end_min` is optional, not required.**
   Found running the actual product loop this project exists for: build, load

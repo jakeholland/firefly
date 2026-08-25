@@ -356,16 +356,32 @@ static void S07_2026_08_24_derivation_is_scoped_to_same_day_only(void)
 {
     /* A later start on the SAME stage but a DIFFERENT day must not
      * supply a derived end either — day_doy scoping applies to the
-     * derivation exactly like every other now_playing check. */
+     * derivation exactly like every other now_playing check.
+     *
+     * 2026-08-25 review fixup (PR #65 finding 2): the cross-day sibling
+     * MUST have a start_min LATER than the current set's — a smaller
+     * one (as this test originally used, 1290 < 1410) is already
+     * excluded by sched_next_stage_start's plain `start_min <=
+     * s->start_min` ordering check regardless of whether the day_doy
+     * filter exists, so the original fixture never actually exercised
+     * the filter (removing `if (o->day_doy != s->day_doy) continue;`
+     * left this test, and the whole suite, green — the exact
+     * proxy-vs-property gap docs/review/code-review.md item 6 warns
+     * about). 1420 is later than Excision's 1410, so this now actually
+     * distinguishes "day-scoped" from "day-scoping removed": mutate the
+     * day_doy filter away and this fails (pct_valid flips to true,
+     * mins_left flips from the day-boundary fallback to 5). */
     fp_pack_t p;
     pack_init(&p);
     pack_add(&p, mk_set("Excision", 0, DAY_A, 1410, -1, false));
-    pack_add(&p, mk_set("Tomorrow Headliner", 0, DAY_B, 1290, -1, false));
+    pack_add(&p, mk_set("Tomorrow Early Set", 0, DAY_B, 1420, -1, false));
 
     ff_now_row_t rows[4];
     uint8_t n = ff_sched_now_playing(&p, DAY_A, 1415, rows, 4);
     TEST_ASSERT_EQUAL_UINT8(1, n);
+    TEST_ASSERT_EQUAL_STRING("Excision", rows[0].set->artist);
     TEST_ASSERT_FALSE(rows[0].pct_valid);
+    TEST_ASSERT_EQUAL_INT16(385, rows[0].mins_left); /* day-boundary fallback: 1800-1415 */
 }
 
 static void S07_2026_08_24_next_starred_allows_a_null_end_set(void)
@@ -442,6 +458,56 @@ static void S07_2026_08_24_day_tbd_true_when_start_is_null_even_with_a_known_end
     pack_add(&p, mk_set("Mystery Opener", 0, DAY_A, -1, 660, false));
 
     TEST_ASSERT_TRUE(ff_sched_day_tbd(&p, DAY_A));
+}
+
+/* ======================================================================
+ * 2026-08-25 review fixup (PR #65, finding 1) — duplicate start_min on
+ * the same stage must not double-render. sched_next_stage_start already
+ * excludes a tied sibling as ITS OWN derivation source (so the derived
+ * effective_end value is the same regardless of which tied set you ask
+ * about), but that alone doesn't stop BOTH tied sets from being
+ * reported "now" for that identical window on the same stage, which
+ * violates ff_sched_now_playing's own "one row per stage" contract.
+ * ==================================================================== */
+
+static void S07_2026_08_25_duplicate_start_same_stage_dedupes(void)
+{
+    /* Reviewer's exact repro: two sets, same stage, same day_doy, both
+     * start_min=1200; a third set at 1260 supplies the derived end. */
+    fp_pack_t p;
+    pack_init(&p);
+    pack_add(&p, mk_set("Duplicate A", 0, DAY_A, 1200, -1, false));
+    pack_add(&p, mk_set("Duplicate B", 0, DAY_A, 1200, -1, false));
+    pack_add(&p, mk_set("Next Act", 0, DAY_A, 1260, -1, false));
+
+    ff_now_row_t rows[4];
+    uint8_t n = ff_sched_now_playing(&p, DAY_A, 1230, rows, 4);
+    /* Exactly one row for this stage — "Duplicate A" wins (lower set
+     * index), same "ties -> lower index" rule as next_starred/
+     * alarm_tick, not two rows for one stage. */
+    TEST_ASSERT_EQUAL_UINT8(1, n);
+    TEST_ASSERT_EQUAL_STRING("Duplicate A", rows[0].set->artist);
+    TEST_ASSERT_TRUE(rows[0].pct_valid);
+    TEST_ASSERT_EQUAL_UINT8(50, rows[0].pct_done);
+}
+
+static void S07_2026_08_25_duplicate_start_different_stage_both_render(void)
+{
+    /* Negative control for the fix above: the dedupe is scoped to
+     * (stage_idx, day_doy, start_min) together — two DIFFERENT stages
+     * sharing a start_min is ordinary concurrent scheduling, not a
+     * duplicate, and both must still render. Guards against an
+     * over-broad fix that drops the stage_idx comparison. */
+    fp_pack_t p;
+    pack_init(&p);
+    pack_add(&p, mk_set("Canyon Headliner", 0, DAY_A, 1200, -1, false));
+    pack_add(&p, mk_set("Hilltop Headliner", 1, DAY_A, 1200, -1, false));
+
+    ff_now_row_t rows[4];
+    uint8_t n = ff_sched_now_playing(&p, DAY_A, 1230, rows, 4);
+    TEST_ASSERT_EQUAL_UINT8(2, n);
+    TEST_ASSERT_EQUAL_STRING("Canyon Headliner", rows[0].set->artist);
+    TEST_ASSERT_EQUAL_STRING("Hilltop Headliner", rows[1].set->artist);
 }
 
 static void S07_2026_08_24_bass_canyon_shape_fixture_is_not_tbd(void)
@@ -1074,6 +1140,8 @@ int main(void)
     RUN_TEST(S07_2026_08_24_alarm_does_not_fire_stale_past_the_day_window_end);
     RUN_TEST(S07_2026_08_24_day_tbd_false_when_a_set_has_a_start_but_no_end);
     RUN_TEST(S07_2026_08_24_day_tbd_true_when_start_is_null_even_with_a_known_end);
+    RUN_TEST(S07_2026_08_25_duplicate_start_same_stage_dedupes);
+    RUN_TEST(S07_2026_08_25_duplicate_start_different_stage_both_render);
     RUN_TEST(S07_2026_08_24_bass_canyon_shape_fixture_is_not_tbd);
 
     RUN_TEST(S07_AC2_midnight_crossing_set_is_now_at_0030);

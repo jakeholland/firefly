@@ -45,7 +45,24 @@ static bool sched_has_start(fp_set_t const *s)
  * set chronologically". A tie (two different sets sharing the same
  * start_min, a data anomaly but not one this module should crash or
  * misbehave on) resolves to that shared start_min either way — which
- * set index supplied it doesn't change the derived effective_end. */
+ * set index supplied it doesn't change the derived effective_end.
+ *
+ * KNOWN GAP (PR #65 review, finding 3, non-blocking, not currently
+ * reachable): this compares two different sets' raw start_min values
+ * directly, with no midnight fold. fp_pack.c never folds a standalone
+ * set's start_min even when it represents "after local midnight, same
+ * festival day" — only sched_effective_end's SINGLE-set `end_min <
+ * start_min` fold handles that, and only within one set. If a real pack
+ * ever published two separate schedule entries on the same stage/day
+ * where a later, genuinely-standalone after-midnight entry has a
+ * numerically SMALLER raw start_min than an earlier evening entry, this
+ * function would miss it as "next" and fall back to the day-window
+ * boundary instead. Not confirmed reachable given the existing
+ * day-attribution convention (fp_doy_from_iso_date takes the pack's
+ * literal "day" field), and the real Bass Canyon pack has no entries in
+ * [0,360) at all — left as a documented gap rather than guessed at;
+ * worth a fixture/test if there's ever visibility into how fest-almanac
+ * actually dates a genuinely-standalone post-midnight set. */
 static int16_t sched_next_stage_start(fp_pack_t const *p, fp_set_t const *s)
 {
     int16_t best = -1;
@@ -121,6 +138,30 @@ uint8_t ff_sched_now_playing(fp_pack_t const *p, uint16_t day_doy, int16_t now_m
         fp_set_t const *s = &p->sets[i];
         if (s->day_doy != day_doy) continue;
         if (!sched_has_start(s)) continue;
+
+        /* 2026-08-25 review fixup (PR #65 finding 1): two sets sharing
+         * the exact same (stage_idx, day_doy, start_min) — malformed or
+         * duplicate pack data (a copy/paste error, a support-act slot
+         * re-announced) — always derive the SAME effective_end from each
+         * other's perspective (sched_next_stage_start already excludes a
+         * tied sibling as ITS OWN derivation source, so the derived
+         * value itself doesn't depend on which one you ask), which means
+         * both would otherwise report "now" for the identical window on
+         * the SAME stage — violating the one-row-per-stage contract this
+         * function's own doc comment promises. Same "ties -> lower set
+         * index" rule this file already uses in next_starred/alarm_tick:
+         * an earlier-index sibling with the identical tuple wins: this
+         * later one is suppressed entirely, not merely deduped in the
+         * output. Regression: S07_2026_08_25_duplicate_start_same_stage_dedupes. */
+        bool shadowed = false;
+        for (uint16_t j = 0; j < i; j++) {
+            fp_set_t const *o = &p->sets[j];
+            if (o->day_doy == s->day_doy && o->stage_idx == s->stage_idx && o->start_min == s->start_min) {
+                shadowed = true;
+                break;
+            }
+        }
+        if (shadowed) continue;
 
         int16_t end;
         bool pct_valid;

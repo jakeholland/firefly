@@ -231,6 +231,18 @@ typedef struct {
  * appear in ff_sched_day_sets()'s lineup. A set with a known start_min
  * and a null end_min IS returned (with a derived effective_end and,
  * possibly, `pct_valid=false` — see ff_now_row_t).
+ *
+ * 2026-08-25 review fixup (PR #65 finding 1): if two sets share the
+ * exact same (stage_idx, day_doy, start_min) — malformed or duplicate
+ * pack data, e.g. a copy/paste error or a support-act slot
+ * re-announced — only the LOWER-index one is ever returned as "now" for
+ * that stage; the other is suppressed entirely, not merely deduped in
+ * the output order. Both would otherwise derive the identical
+ * effective_end (sched_next_stage_start already excludes a tied sibling
+ * as its own derivation source) and so both would report "now" for the
+ * same window on the same stage — violating this function's own
+ * one-row-per-stage contract above. Same "ties -> lower set index" rule
+ * this module already uses in ff_sched_next_starred/ff_sched_alarm_tick.
  */
 uint8_t ff_sched_now_playing(fp_pack_t const *p, uint16_t day_doy, int16_t now_min,
                               ff_now_row_t out[], uint8_t max);
