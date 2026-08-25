@@ -97,6 +97,43 @@ move steps → release sequence through the same pointer indev as `tap`.
 
 Response: `{"ok": true}`, or `{"ok": false, "error": "swipe dir must be left or right"}`.
 
+### `hold`
+
+```json
+{"cmd": "hold", "x": 228, "y": 228, "ms": 600}
+```
+
+Injects a press-and-hold-then-release at screen coordinates `(x, y)` through
+the same synthetic pointer indev `tap`/`swipe` use, held for `ms`
+milliseconds before release — issue #70: `tap`'s press/release is a fixed
+~40ms, well under LVGL's `long_press_time` (`LV_INDEV_DEF_LONG_PRESS_TIME`,
+400ms — this repo doesn't override it), so it's the one gesture that can
+open Settings (a long-press anywhere on the nav tileview,
+`scr_nav.c`'s `nav_long_press_cb`) and, per S09, reach the Map face's
+swipe-up entry — neither was drivable through this socket before `hold`
+existed.
+
+`x`/`y` are validated exactly like `tap`'s (finite, within
+`[FF_CTL_TAP_COORD_MIN, FF_CTL_TAP_COORD_MAX]`, i.e. `[-32768, 32767]`).
+`ms` is optional — defaults to `FF_CTL_HOLD_DEFAULT_MS` (600, comfortably
+past the 400ms threshold) — and if given must be finite and within
+`[0, 65535]` (`FF_CTL_HOLD_MS_MAX`). A `ms` below the long-press threshold
+is a perfectly valid, ordinary short click-and-release — it just won't
+trigger `LONG_PRESSED` (`targets/sim/tests/test_ctl_flare_sequence.c`'s
+`ctl_hold_opens_settings_but_short_hold_does_not` pins both directions).
+
+Under `--mock-clock`, `hold` advances the mock clock in the same ~40ms
+steps `tap`/`swipe` already use (`ctl_loop_pointer_step_delay`), pumping
+LVGL's timer at each one, until at least `ms` has elapsed — the same "keep
+polling, don't jump" discipline `tap`/`swipe` needed (PR #62) to ever
+actually get a gesture recognized instead of replying `{"ok":true}` while
+nothing happened. Without `--mock-clock`, each step sleeps (`usleep`) the
+same ~40ms instead.
+
+Response: `{"ok": true}`, or `{"ok": false, "error": "hold requires numeric x,y"}`
+/ `"hold x,y must be finite and within [-32768, 32767]"` / `"hold ms must be numeric"`
+/ `"hold ms must be within [0, 65535]"` / `"hold unsupported"` (no handler bound).
+
 ### `clock`
 
 ```json
@@ -204,8 +241,8 @@ Response: `{"ok": true, "state": {"fixture": "...", "face": "radar", "radar": {.
 ```
 
 Renders the current frame (forces a fresh `lv_refr_now()` first, so this
-always reflects the latest `tap`/`swipe`/`clock`/live-mesh-driven state,
-not a stale cached frame) to a PNG at `path`.
+always reflects the latest `tap`/`swipe`/`hold`/`clock`/live-mesh-driven
+state, not a stale cached frame) to a PNG at `path`.
 
 **`path` is a RELATIVE name, confined to a single configured output
 root** — never an arbitrary filesystem path. The root is `--ctl-out DIR`

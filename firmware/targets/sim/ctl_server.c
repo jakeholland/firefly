@@ -269,6 +269,46 @@ bool ff_ctl_process_line(char const *line, ff_ctl_handlers_t const *h, char *res
         return false;
     }
 
+    if (strcmp(cmd, "hold") == 0) {
+        int xi, yi;
+        if (!ctl_obj_get(&ctx, 0, "x", &xi) || !ctl_obj_get(&ctx, 0, "y", &yi) ||
+            toks[xi].type != JSMN_PRIMITIVE || toks[yi].type != JSMN_PRIMITIVE) {
+            ctl_err(resp, resp_sz, "hold requires numeric x,y");
+            return false;
+        }
+        /* Same NAN-as-sentinel / finite-range discipline as "tap" above —
+         * see that handler's comment for the full reasoning. */
+        double x = ctl_num(&ctx, xi, NAN);
+        double y = ctl_num(&ctx, yi, NAN);
+        if (!isfinite(x) || !isfinite(y) || x < FF_CTL_TAP_COORD_MIN || x > FF_CTL_TAP_COORD_MAX ||
+            y < FF_CTL_TAP_COORD_MIN || y > FF_CTL_TAP_COORD_MAX) {
+            ctl_err(resp, resp_sz, "hold x,y must be finite and within [-32768, 32767]");
+            return false;
+        }
+
+        double ms = (double)FF_CTL_HOLD_DEFAULT_MS;
+        int mi;
+        if (ctl_obj_get(&ctx, 0, "ms", &mi)) {
+            if (toks[mi].type != JSMN_PRIMITIVE) {
+                ctl_err(resp, resp_sz, "hold ms must be numeric");
+                return false;
+            }
+            ms = ctl_num(&ctx, mi, NAN);
+            if (!isfinite(ms) || ms < 0.0 || ms > (double)FF_CTL_HOLD_MS_MAX) {
+                ctl_err(resp, resp_sz, "hold ms must be within [0, 65535]");
+                return false;
+            }
+        }
+
+        if (h->hold == NULL) {
+            ctl_err(resp, resp_sz, "hold unsupported");
+            return false;
+        }
+        h->hold(h->user, x, y, (uint32_t)ms);
+        ctl_ok(resp, resp_sz);
+        return false;
+    }
+
     if (strcmp(cmd, "clock") == 0) {
         int ai;
         if (!ctl_obj_get(&ctx, 0, "advance_ms", &ai) || toks[ai].type != JSMN_PRIMITIVE) {
