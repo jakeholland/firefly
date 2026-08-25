@@ -16,6 +16,7 @@
 #include "scr_radar.h"
 
 #include <stdio.h>
+#include <string.h>
 
 #include "ff_intent.h" /* S16c2 — the emit seam; see radar_flare_cb */
 #include "ff_theme.h"
@@ -326,7 +327,27 @@ static void radar_build_dots(lv_obj_t *parent, ff_radar_view_t const *r, radar_l
         } else {
             ff_radar_dot_t const *d = &r->dots[i];
             uint32_t crew_hex = ff_theme_crew_color(d->color_idx);
-            if (d->stale) {
+            if (d->place) {
+                /* issue #33 — KNOWN GAP: this treatment applies only to a
+                 * place standing alone (this branch); a place clustered
+                 * with live/stale friends (the `cluster_size > 1` branch
+                 * above) still draws as an ordinary crew wedge — needs its
+                 * own follow-up once a real mixed fixture exists to design
+                 * against (no golden today combines a landmark with
+                 * clustered crew).
+                 *
+                 * A SQUARE, not a circle — every other dot on this ring
+                 * (live, stale, cluster) is round; a place is a different
+                 * KIND of thing on the ring, not a differently-colored or
+                 * differently-opaque friend, so it gets a different
+                 * silhouette (same "kind, not degree" idiom RADAR_LOST's
+                 * ghost arrowhead already uses). Solid fill, full opacity —
+                 * unlike `stale`, a place isn't aging, so there is no
+                 * dashed/hollow "not current" signal to draw here. */
+                lv_obj_set_style_radius(dot, 6, 0);
+                lv_obj_set_style_bg_color(dot, lv_color_hex(crew_hex), 0);
+                lv_obj_set_style_bg_opa(dot, LV_OPA_COVER, 0);
+            } else if (d->stale) {
                 /* Outline-only "ghost" — readable as "not current"
                  * without needing to read any text (ux-raver honesty-read
                  * check). */
@@ -340,7 +361,7 @@ static void radar_build_dots(lv_obj_t *parent, ff_radar_view_t const *r, radar_l
             }
             char ch[2] = {d->initial, '\0'};
             lv_label_set_text(label, d->initial != '\0' ? ch : "");
-            lv_obj_set_style_text_color(label, lv_color_hex(d->stale ? crew_hex : FF_THEME_COLOR_BG), 0);
+            lv_obj_set_style_text_color(label, lv_color_hex(d->stale && !d->place ? crew_hex : FF_THEME_COLOR_BG), 0);
         }
         lv_obj_center(label);
 
@@ -518,14 +539,58 @@ static lv_obj_t *radar_build_name_label(lv_obj_t *parent, char const *name, int3
     return label;
 }
 
-static lv_obj_t *radar_build_distance_label(lv_obj_t *parent, char const *dist_str, int32_t dy)
+/* issue #47 — `imprecise` dims the distance text (INK -> MUTED) rather
+ * than changing its font/size: the number itself already carries the "~"
+ * prefix and is an area scale, not a point distance (ff_radar_compute);
+ * de-emphasizing it visually is the remaining, cheap signal that this
+ * reading is coarser than the ordinary case, without adding new chrome
+ * that risks a layout collision (radar_layout.h's registry is unchanged
+ * by this — same rect, same DY, just a different color at one call
+ * site). */
+static lv_obj_t *radar_build_distance_label_ex(lv_obj_t *parent, char const *dist_str, int32_t dy, bool imprecise)
 {
     lv_obj_t *label = lv_label_create(parent);
     lv_label_set_text(label, (dist_str != NULL && dist_str[0] != '\0') ? dist_str : "-- m");
     lv_obj_set_style_text_font(label, FF_THEME_FONT_DISTANCE, 0);
-    lv_obj_set_style_text_color(label, lv_color_hex(FF_THEME_COLOR_INK), 0);
+    lv_obj_set_style_text_color(label, lv_color_hex(imprecise ? FF_THEME_COLOR_MUTED : FF_THEME_COLOR_INK), 0);
     lv_obj_align(label, LV_ALIGN_CENTER, 0, dy);
     return label;
+}
+
+static lv_obj_t *radar_build_distance_label(lv_obj_t *parent, char const *dist_str, int32_t dy)
+{
+    return radar_build_distance_label_ex(parent, dist_str, dy, false);
+}
+
+/* issue #47 — appends " - AREA" to a mode chip's text when the selected
+ * member's distance is a precision-degraded area estimate rather than a
+ * point reading (r->dist_imprecise). A plain hyphen, not U+00B7 MIDDLE
+ * DOT — same LVGL built-in-font ASCII-only constraint documented at
+ * radar_render_nofix's headline text below. No-op (buffer already holds
+ * the caller's base text) when not imprecise. */
+static void radar_append_area_suffix(char *buf, size_t n, bool imprecise)
+{
+    if (!imprecise) {
+        return;
+    }
+    size_t len = strlen(buf);
+    if (len < n) {
+        snprintf(buf + len, n - len, " - AREA");
+    }
+}
+
+/* issue #47 — the shared "~" idiom LOST/CLOSE already use for imprecision
+ * (RADAR_LOST's real-fix distance, RADAR_CLOSE's big number) must not
+ * double up when the underlying dist_str is ALREADY an area-scale string
+ * carrying its own "~" (ff_radar_compute sets that prefix directly when
+ * r->dist_imprecise). `already_tilde` says which case this is. */
+static void radar_dist_with_tilde(char *out, size_t n, char const *dist_str, bool already_tilde)
+{
+    if (dist_str == NULL || dist_str[0] == '\0') {
+        snprintf(out, n, "~?");
+        return;
+    }
+    snprintf(out, n, already_tilde ? "%s" : "~%s", dist_str);
 }
 
 /* ---------------------------------------------------------------------
@@ -543,8 +608,13 @@ static void radar_render_live(lv_obj_t *parent, ff_radar_view_t const *r, radar_
     radar_draw_arrow(parent, &arrow, FF_THEME_COLOR_AMBER, LV_OPA_COVER, RADAR_ARROW_SOLID);
 
     radar_build_name_label(parent, r->name, (int32_t)RADAR_LAYOUT_STACK_NAME_DY);
-    radar_build_distance_label(parent, r->dist_str, (int32_t)RADAR_LAYOUT_STACK_DIST_DY);
-    radar_make_chip(parent, "LIVE", FF_THEME_COLOR_LIVE_GREEN, FF_THEME_COLOR_BG, (int32_t)RADAR_LAYOUT_STACK_CHIP_DY);
+    radar_build_distance_label_ex(parent, r->dist_str, (int32_t)RADAR_LAYOUT_STACK_DIST_DY, r->dist_imprecise);
+
+    char chip_text[24];
+    snprintf(chip_text, sizeof(chip_text), "LIVE");
+    radar_append_area_suffix(chip_text, sizeof(chip_text), r->dist_imprecise);
+    radar_make_chip(parent, chip_text, FF_THEME_COLOR_LIVE_GREEN, FF_THEME_COLOR_BG,
+                     (int32_t)RADAR_LAYOUT_STACK_CHIP_DY);
 }
 
 static void radar_render_stale(lv_obj_t *parent, ff_radar_view_t const *r, radar_layout_registry_t const *reg)
@@ -558,11 +628,47 @@ static void radar_render_stale(lv_obj_t *parent, ff_radar_view_t const *r, radar
     radar_draw_arrow(parent, &arrow, FF_THEME_COLOR_STALE_AMBER, 71, RADAR_ARROW_DASHED);
 
     radar_build_name_label(parent, r->name, (int32_t)RADAR_LAYOUT_STACK_NAME_DY);
-    radar_build_distance_label(parent, r->dist_str, (int32_t)RADAR_LAYOUT_STACK_DIST_DY);
+    radar_build_distance_label_ex(parent, r->dist_str, (int32_t)RADAR_LAYOUT_STACK_DIST_DY, r->dist_imprecise);
 
     char chip_text[40];
     snprintf(chip_text, sizeof(chip_text), "LAST SEEN %s", r->age_str);
+    radar_append_area_suffix(chip_text, sizeof(chip_text), r->dist_imprecise);
     radar_make_chip(parent, chip_text, FF_THEME_COLOR_STALE_AMBER, FF_THEME_COLOR_BG,
+                     (int32_t)RADAR_LAYOUT_STACK_CHIP_DY);
+}
+
+/* issue #33 — RADAR_PLACE: a landmark's asserted position, rendered as a
+ * place rather than a person whose whereabouts were just checked.
+ *
+ * Deliberately reuses LIVE's SOLID arrow style (not dashed/ghost): the
+ * arrow points at a real coordinate, and there is no "aging" fact to
+ * signal with a fading/outline treatment — an asserted position doesn't
+ * decay, it just was never measured in the first place. What sets this
+ * apart from LIVE is entirely in the CHIP and the color: no "LIVE" claim
+ * (that would assert a fresh measurement that never happened), no rim
+ * tint (that's STALE's aging cue), and a neutral/muted arrow color
+ * instead of LIVE's energetic amber — this reading carries no freshness
+ * signal to be energetic ABOUT. `age_str` is always "" here
+ * (ff_radar_compute), so no age ever reaches this function to render. */
+static void radar_render_place(lv_obj_t *parent, ff_radar_view_t const *r, radar_layout_registry_t const *reg)
+{
+    radar_layout_arrow_t arrow;
+    radar_layout_resolve_arrow(reg, r->arrow_deg, &arrow);
+    radar_draw_arrow(parent, &arrow, FF_THEME_COLOR_MUTED, LV_OPA_COVER, RADAR_ARROW_SOLID);
+
+    radar_build_name_label(parent, r->name, (int32_t)RADAR_LAYOUT_STACK_NAME_DY);
+    radar_build_distance_label_ex(parent, r->dist_str, (int32_t)RADAR_LAYOUT_STACK_DIST_DY, r->dist_imprecise);
+
+    /* "FIXED POSITION", never "PLACED" — issue #33's binding ruling:
+     * LOC_MANUAL means "not measured," it does NOT certify deliberate or
+     * recent placement. "PLACED" (or any past-tense verb) would imply a
+     * human action this data cannot honestly attest to; "FIXED POSITION"
+     * describes what the node IS (a landmark with a configured
+     * coordinate), not when or how it got that way. */
+    char chip_text[24];
+    snprintf(chip_text, sizeof(chip_text), "FIXED POSITION");
+    radar_append_area_suffix(chip_text, sizeof(chip_text), r->dist_imprecise);
+    radar_make_chip(parent, chip_text, FF_THEME_COLOR_SURFACE, FF_THEME_COLOR_INK,
                      (int32_t)RADAR_LAYOUT_STACK_CHIP_DY);
 }
 
@@ -604,12 +710,16 @@ static void radar_render_lost(lv_obj_t *parent, ff_radar_view_t const *r, radar_
 
         radar_build_name_label(parent, r->name, (int32_t)RADAR_LAYOUT_STACK_NAME_DY);
 
+        /* issue #47: `r->dist_str` already carries its OWN leading "~"
+         * when dist_imprecise (ff_radar_compute) — radar_dist_with_tilde
+         * avoids stacking a second one ("~~5.8 km"). */
         char lost_dist[24];
-        snprintf(lost_dist, sizeof(lost_dist), "~%s", (r->dist_str[0] != '\0') ? r->dist_str : "?");
+        radar_dist_with_tilde(lost_dist, sizeof(lost_dist), r->dist_str, r->dist_imprecise);
         radar_build_distance_label(parent, lost_dist, (int32_t)RADAR_LAYOUT_STACK_DIST_DY);
 
         char chip_text[40];
         snprintf(chip_text, sizeof(chip_text), "LAST SEEN %s", r->age_str);
+        radar_append_area_suffix(chip_text, sizeof(chip_text), r->dist_imprecise);
         radar_make_chip(parent, chip_text, FF_THEME_COLOR_DIM, FF_THEME_COLOR_INK,
                          (int32_t)RADAR_LAYOUT_STACK_CHIP_DY);
     } else {
@@ -695,8 +805,21 @@ static void radar_render_close(lv_obj_t *parent, ff_radar_view_t const *r)
         lv_anim_start(&a);
     }
 
+    /* issue #47: CLOSE is only reachable here via the RSSI leg when the
+     * position is imprecise (ff_radar_compute gates the DISTANCE leg off
+     * for a degraded fix) — a real signal-strength proximity reading
+     * alongside a coordinate that could be kilometers off. Showing that
+     * coordinate's own "~5.8 km area" text as CLOSE's big pulsing-ring
+     * headline would directly contradict the rings ("you are basically
+     * standing together" next to "5.8 km"), so this mode names the fact
+     * it actually has (RSSI says nearby) instead of a distance number it
+     * cannot honestly produce. */
     char big_dist[24];
-    snprintf(big_dist, sizeof(big_dist), "~%s", (r->dist_str[0] != '\0') ? r->dist_str : "?");
+    if (r->dist_imprecise) {
+        snprintf(big_dist, sizeof(big_dist), "NEARBY");
+    } else {
+        snprintf(big_dist, sizeof(big_dist), "~%s", (r->dist_str[0] != '\0') ? r->dist_str : "?");
+    }
     radar_build_distance_label(parent, big_dist, (int32_t)RADAR_LAYOUT_CLOSE_RING_CY);
 
     radar_build_name_label(parent, r->name, (int32_t)RADAR_LAYOUT_CLOSE_NAME_DY);
@@ -816,6 +939,9 @@ void ff_scr_radar_build(lv_obj_t *parent, ff_radar_view_t const *radar)
         break;
     case RADAR_STALE:
         radar_render_stale(parent, radar, &reg);
+        break;
+    case RADAR_PLACE:
+        radar_render_place(parent, radar, &reg);
         break;
     case RADAR_LOST:
         radar_render_lost(parent, radar, &reg);

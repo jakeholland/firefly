@@ -96,6 +96,51 @@ static void radar_close_parses_exact_values(void)
     TEST_ASSERT_FALSE(s.radar.arrow_valid); /* S06: "false in CLOSE/NOFIX/NOSEL" */
 }
 
+/* issue #33 — RADAR_PLACE: age_str always empty, one ring dot flagged
+ * `place: true` and mutually exclusive with `stale`. */
+static void radar_place_parses_exact_values(void)
+{
+    ff_app_state_t s;
+    TEST_ASSERT_EQUAL_INT(FF_FIXTURE_OK, ff_fixture_load_file(fixture_path("radar_place.json"), &s));
+
+    TEST_ASSERT_EQUAL_INT(RADAR_PLACE, s.radar.mode);
+    TEST_ASSERT_TRUE(s.radar.arrow_valid);
+    TEST_ASSERT_EQUAL_STRING("CAMP BASE", s.radar.name);
+    TEST_ASSERT_EQUAL_STRING("610 m", s.radar.dist_str);
+    TEST_ASSERT_EQUAL_STRING("", s.radar.age_str);
+
+    TEST_ASSERT_EQUAL_UINT8(3, s.radar.n_dots);
+    TEST_ASSERT_TRUE(s.radar.dots[1].place);
+    TEST_ASSERT_FALSE(s.radar.dots[1].stale);
+    TEST_ASSERT_FALSE(s.radar.dots[0].place);
+    TEST_ASSERT_FALSE(s.radar.dots[2].place);
+}
+
+/* issue #47 — dist_imprecise: an ordinary LIVE fix (freshness untouched)
+ * whose distance is an honest area estimate instead of a point reading. */
+static void radar_imprecise_parses_exact_values(void)
+{
+    ff_app_state_t s;
+    TEST_ASSERT_EQUAL_INT(FF_FIXTURE_OK, ff_fixture_load_file(fixture_path("radar_imprecise.json"), &s));
+
+    TEST_ASSERT_EQUAL_INT(RADAR_LIVE, s.radar.mode);
+    TEST_ASSERT_TRUE(s.radar.arrow_valid);
+    TEST_ASSERT_EQUAL_STRING("~5.8 km", s.radar.dist_str);
+    TEST_ASSERT_TRUE(s.radar.dist_imprecise);
+    TEST_ASSERT_EQUAL_STRING("8 SEC", s.radar.age_str); /* freshness is untouched by precision */
+}
+
+/* dist_imprecise absent (every OTHER committed radar fixture) must default
+ * false — the documented "absent key -> least-claiming default" convention,
+ * pinned explicitly for this new field so a future fixture that forgets it
+ * cannot silently render as imprecise. */
+static void radar_live_dist_imprecise_defaults_false(void)
+{
+    ff_app_state_t s;
+    TEST_ASSERT_EQUAL_INT(FF_FIXTURE_OK, ff_fixture_load_file(fixture_path("radar_live.json"), &s));
+    TEST_ASSERT_FALSE(s.radar.dist_imprecise);
+}
+
 /* ---------------------------------------------------------------------
  * Error paths.
  * ------------------------------------------------------------------- */
@@ -1014,6 +1059,9 @@ int main(void)
     RUN_TEST(radar_live_parses_exact_values);
     RUN_TEST(radar_stale_parses_exact_values);
     RUN_TEST(radar_close_parses_exact_values);
+    RUN_TEST(radar_place_parses_exact_values);
+    RUN_TEST(radar_imprecise_parses_exact_values);
+    RUN_TEST(radar_live_dist_imprecise_defaults_false);
 
     RUN_TEST(missing_file_returns_io_error);
     RUN_TEST(malformed_json_returns_json_error);

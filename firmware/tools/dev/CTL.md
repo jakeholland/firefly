@@ -165,7 +165,37 @@ to SEE (is a dropped connection actually redialing?) rather than infer
 from side effects. Also not part of the fixture schema, for the same
 reason `wall` isn't.
 
-Response: `{"ok": true, "state": {"fixture": "...", "face": "radar", "radar": {...}, ..., "wall": {...}, "link": "connected"}}`.
+**`crew` (#35 remainder):** one more top-level key, the paired roster's
+per-member RSSI as a JSON array, source `ff_shell_crew()`. Bench
+visibility for issue #35's still-open question — "across a real session,
+what fraction of packets from a paired peer are classifiably DIRECT?"
+can't be measured from a desk, but it can be measured the next time
+boards are driven if the field is observable here, same rationale as
+`wall`/`link`.
+
+Each entry:
+
+```json
+{"node_id": 3735928559, "paired": true, "has_rssi": true, "rssi_dbm": -50, "rssi_age_ms": 340}
+```
+
+- `has_rssi` mirrors `ff_crew_member_t`'s own `rssi_dbm == INT16_MIN`
+  sentinel-as-absence convention (`ff_crew.h`) — `rssi_dbm`/`rssi_age_ms`
+  are OMITTED (not zeroed) when `has_rssi` is `false`, so a reader that
+  forgets to check the flag gets a missing field rather than a
+  fabricated `0 dBm`/`0 ms` (same "absent key, not a placeholder"
+  contract `stage_color_rgb` uses elsewhere in this schema).
+- `rssi_age_ms` is the ELAPSED age at dump time, not the raw absolute
+  clock stamp `ff_crew_member_t` stores internally.
+- Includes merely-heard (unpaired) roster slots too, with `paired` set
+  accordingly — an unpaired entry's `has_rssi` is always `false`, since
+  `ff_shell.c`'s `shell_ev_rx_meta` never feeds RSSI through an unpaired
+  slot (the standing trust rule, same as feed pushes).
+
+Also not part of the fixture schema, for the same reason `wall`/`link`
+aren't.
+
+Response: `{"ok": true, "state": {"fixture": "...", "face": "radar", "radar": {...}, ..., "wall": {...}, "link": "connected", "crew": [...]}}`.
 
 ### `screenshot`
 

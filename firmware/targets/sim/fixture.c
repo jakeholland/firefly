@@ -351,6 +351,7 @@ static bool fx_color_rgb(fx_ctx_t const *c, int i, uint32_t *out)
 
 static const fx_enum_entry_t fx_radar_mode_table[] = {
     {"live", RADAR_LIVE}, {"stale", RADAR_STALE}, {"lost", RADAR_LOST},
+    {"place", RADAR_PLACE}, /* issue #33 */
     {"close", RADAR_CLOSE}, {"nofix", RADAR_NOFIX}, {"nosel", RADAR_NOSEL},
 };
 
@@ -386,6 +387,7 @@ static ff_fixture_result_t fx_parse_radar_dots(fx_ctx_t const *c, int arr_i, ff_
         }
         if (fx_obj_get(c, obj_i, "color_idx", &t)) d->color_idx = (uint8_t)fx_num(c, t, 0.0);
         if (fx_obj_get(c, obj_i, "stale", &t)) d->stale = fx_bool(c, t, false);
+        if (fx_obj_get(c, obj_i, "place", &t)) d->place = fx_bool(c, t, false); /* issue #33 */
         r->n_dots++;
         idx = fx_skip(c, obj_i);
     }
@@ -407,6 +409,7 @@ static ff_fixture_result_t fx_parse_radar(fx_ctx_t const *c, int obj_i, ff_radar
     if (fx_obj_get(c, obj_i, "arrow_valid", &t)) r->arrow_valid = fx_bool(c, t, false);
     if (fx_obj_get(c, obj_i, "name", &t)) fx_copy_str(c, t, r->name, sizeof(r->name));
     if (fx_obj_get(c, obj_i, "dist_str", &t)) fx_copy_str(c, t, r->dist_str, sizeof(r->dist_str));
+    if (fx_obj_get(c, obj_i, "dist_imprecise", &t)) r->dist_imprecise = fx_bool(c, t, false); /* issue #47 */
     if (fx_obj_get(c, obj_i, "age_str", &t)) fx_copy_str(c, t, r->age_str, sizeof(r->age_str));
     if (fx_obj_get(c, obj_i, "trend", &t)) r->trend = (int8_t)fx_num(c, t, 0.0);
     if (fx_obj_get(c, obj_i, "clock_str", &t)) fx_copy_str(c, t, r->clock_str, sizeof(r->clock_str));
@@ -972,7 +975,8 @@ static void fw_radar_dot(fw_cur_t *w, ff_radar_dot_t const *d)
     fw_raw(w, ",\"initial\":");
     fw_json_str(w, initial);
     fw_fmt(w, ",\"color_idx\":%u", (unsigned)d->color_idx);
-    fw_raw(w, d->stale ? ",\"stale\":true}" : ",\"stale\":false}");
+    fw_raw(w, d->stale ? ",\"stale\":true" : ",\"stale\":false");
+    fw_raw(w, d->place ? ",\"place\":true}" : ",\"place\":false}"); /* issue #33 */
 }
 
 static void fw_now_row(fw_cur_t *w, ff_app_now_row_t const *r)
@@ -1048,6 +1052,7 @@ int ff_fixture_dump_json(ff_app_state_t const *s, char *buf, size_t buf_sz)
     fw_json_str(&w, s->radar.name);
     fw_raw(&w, ",\"dist_str\":");
     fw_json_str(&w, s->radar.dist_str);
+    fw_raw(&w, s->radar.dist_imprecise ? ",\"dist_imprecise\":true" : ",\"dist_imprecise\":false"); /* issue #47 */
     fw_raw(&w, ",\"age_str\":");
     fw_json_str(&w, s->radar.age_str);
     fw_fmt(&w, ",\"trend\":%d", (int)s->radar.trend);

@@ -151,6 +151,36 @@ static void shell_copy_str(char *dst, size_t n, char const *src)
 }
 
 /**
+ * Translate `p`'s provenance/precision into core's own small vocabulary
+ * (`ff_crew_pos_meta_t`) — issue #33's "core never sees Meshtastic enums"
+ * boundary rule, applied at exactly one place shared by both position
+ * ingest paths (shell_ev_node's want_config replay and shell_ev_position's
+ * live packets) so the translation can't drift between them.
+ *
+ * `asserted` is true iff the wire value was exactly MC_LOC_MANUAL —
+ * MC_LOC_UNKNOWN (the sender didn't say) is explicitly NOT asserted, same
+ * as it is explicitly not a measurement either (mc_client.h's
+ * MC_LOC_UNKNOWN doc comment): "didn't say" carries no information in
+ * either direction.
+ *
+ * `has_precision_bits`/`precision_bits` are copied verbatim — this is a
+ * direct field mirror, not a decision, so there is nothing to interpret
+ * here; issue #47's asymmetry (replay-absent vs. live-absent) is already
+ * fully resolved by the time `p` reaches this function (mc_client.c's
+ * `mc_position_from_pb`, called identically on both paths — the replay
+ * path is absent here because stock firmware's NodeInfo replay genuinely
+ * never carries the field, not because this boundary drops it).
+ */
+static ff_crew_pos_meta_t shell_pos_meta(mc_position_t const *p)
+{
+    ff_crew_pos_meta_t meta;
+    meta.asserted = (p->loc_source == MC_LOC_MANUAL);
+    meta.has_precision_bits = p->has_precision_bits;
+    meta.precision_bits = p->has_precision_bits ? (uint8_t)p->precision_bits : 0u;
+    return meta;
+}
+
+/**
  * A MUTABLE handle to an EXISTING roster member, or NULL.
  *
  * Never creates. `ff_crew_upsert` is reached only after `ff_crew_find`
@@ -541,7 +571,7 @@ static void shell_ev_node(void *u, mc_nodeinfo_t const *n)
         uint32_t rx_ms = 0;
         if (!defined_the_latch && shell_rx_ms_from_unix(sh, n->last_heard, now, &rx_ms)) {
             ff_latlon_t const p = {n->position.lat, n->position.lon};
-            ff_crew_on_position(&sh->crew, n->node_num, p, rx_ms);
+            ff_crew_on_position(&sh->crew, n->node_num, p, rx_ms, shell_pos_meta(&n->position));
         }
     }
 
@@ -593,7 +623,7 @@ static void shell_ev_position(void *u, uint32_t node, mc_position_t const *p)
     if (!shell_rx_ms_from_unix(sh, p->rx_time, now, &rx_ms)) return;
 
     ff_latlon_t const pos = {p->lat, p->lon};
-    ff_crew_on_position(&sh->crew, node, pos, rx_ms);
+    ff_crew_on_position(&sh->crew, node, pos, rx_ms, shell_pos_meta(p));
 }
 
 static void shell_ev_text(void *u, uint32_t from, uint32_t to, char const *utf8, size_t len)
@@ -656,21 +686,31 @@ static void shell_ev_rx_meta(void *u, uint32_t from, mc_rx_meta_t const *m)
      * exactly what ff_heard is for (bounded, LRU-evictable, expected to
      * churn under real festival RF volume). It still never grows the
      * roster. */
-    if (ff_crew_find(&sh->crew, from) == NULL) {
+    ff_crew_member_t const *sender = ff_crew_find(&sh->crew, from);
+    if (sender == NULL) {
         ff_heard_note(&sh->heard, from, now);
         return;
     }
 
-    /* `ff_crew_on_rssi` find-or-creates too — same effect-not-name rule
-     * as ff_crew_on_position above; the find has already gated it.
+    /* PAIRED is required, not a nicety — same trust rule ff_wiring.c's
+     * wiring_push_if_paired applies to feed pushes (ff_wiring.c:42): a
+     * roster slot can exist and be unpaired (known-but-not-trusted, or
+     * paired-then-unpaired — ff_shell.h's ff_shell_pair). Feeding RSSI
+     * from an unpaired slot would let a merely-heard node's signal
+     * strength satisfy ff_crew_close_range's CLOSE predicate for
+     * someone the wearer never chose to trust.
      *
-     * DIRECT is required, not a nicety: RSSI is measured against the
-     * signal that actually arrived, which for a relayed packet is the
-     * RELAY's transmission. Attributing it to `from` reports a loud
+     * `ff_crew_on_rssi` find-or-creates too — same effect-not-name rule
+     * as ff_crew_on_position above; the find (and the paired check) has
+     * already gated it.
+     *
+     * DIRECT is required, not a nicety either: RSSI is measured against
+     * the signal that actually arrived, which for a relayed packet is
+     * the RELAY's transmission. Attributing it to `from` reports a loud
      * neighbouring relay as if the distant friend it forwarded for were
      * standing next to you — and ff_crew_close_range turns exactly that
      * number into a CLOSE lock. */
-    if (m->rx_path == MC_RX_PATH_DIRECT && m->has_rssi) {
+    if (sender->paired && m->rx_path == MC_RX_PATH_DIRECT && m->has_rssi) {
         ff_crew_on_rssi(&sh->crew, from, m->rssi_dbm);
     }
 

@@ -72,6 +72,7 @@ void radar_layout_build_registry(radar_mode_t mode, bool never_fixed, radar_layo
     switch (mode) {
     case RADAR_LIVE:
     case RADAR_STALE:
+    case RADAR_PLACE: /* issue #33: same name/dist/chip stack as LIVE/STALE */
         add_rect(out, -140.0f, RADAR_LAYOUT_STACK_NAME_DY - 20.0f, 140.0f, RADAR_LAYOUT_STACK_CHIP_DY + 24.0f);
         break;
     case RADAR_LOST:

@@ -101,7 +101,8 @@ void ff_crew_set_paired(ff_crew_t *c, uint32_t node_id, bool paired)
 /* position / rssi ingest                                               */
 /* ------------------------------------------------------------------- */
 
-void ff_crew_on_position(ff_crew_t *c, uint32_t node_id, ff_latlon_t p, uint32_t rx_time_ms)
+void ff_crew_on_position(ff_crew_t *c, uint32_t node_id, ff_latlon_t p, uint32_t rx_time_ms,
+                          ff_crew_pos_meta_t meta)
 {
     if (!c) {
         return;
@@ -113,6 +114,12 @@ void ff_crew_on_position(ff_crew_t *c, uint32_t node_id, ff_latlon_t p, uint32_t
     m->pos = p;
     m->pos_age_ms = rx_time_ms; /* absolute rx timestamp - see header note */
     m->has_pos = true;
+    /* Whole-fix overwrite, same "the latest fix wins" contract as
+     * pos/pos_age_ms above — an older fix's provenance/precision never
+     * lingers alongside a newer coordinate. */
+    m->pos_asserted = meta.asserted;
+    m->has_precision_bits = meta.has_precision_bits;
+    m->precision_bits = meta.has_precision_bits ? meta.precision_bits : 0u;
 }
 
 void ff_crew_on_rssi(ff_crew_t *c, uint32_t node_id, int16_t rssi_dbm)
@@ -149,6 +156,12 @@ ff_freshness_t ff_crew_freshness(ff_crew_member_t const *m, uint32_t now_ms)
     if (!m || !m->has_pos) {
         return FF_FRESH_NEVER;
     }
+    /* issue #33: checked BEFORE any age math, and `now_ms` never enters
+     * the answer for this branch — an asserted position is not a
+     * measurement, so no elapsed time can ever move it off this state. */
+    if (m->pos_asserted) {
+        return FF_FRESH_ASSERTED;
+    }
     uint32_t age = now_ms - m->pos_age_ms; /* wraparound-safe unsigned subtraction */
     if (age < FF_CREW_LIVE_MS) {
         return FF_FRESH_LIVE;
@@ -157,6 +170,19 @@ ff_freshness_t ff_crew_freshness(ff_crew_member_t const *m, uint32_t now_ms)
         return FF_FRESH_STALE;
     }
     return FF_FRESH_LOST;
+}
+
+float ff_crew_pos_precision_grid_m(uint8_t precision_bits)
+{
+    if (precision_bits == 0u || precision_bits > 32u) {
+        return 0.0f; /* not a real precision value; see header doc comment */
+    }
+    /* (2^32 >> bits) as a double first: at bits==1 the shifted value is
+     * 2^31, which does not fit int32_t but fits uint32_t/double cleanly. */
+    double cells = (double)(((uint64_t)1u << 32) >> precision_bits);
+    double const deg_per_cell = 1e-7;
+    double const m_per_deg_lat = 111320.0;
+    return (float)(cells * deg_per_cell * m_per_deg_lat);
 }
 
 bool ff_crew_close_range(ff_crew_member_t const *m, float distance_m, uint32_t now_ms)

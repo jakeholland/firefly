@@ -85,7 +85,14 @@ static void radar_compute_dots(ff_radar_view_t *v, ff_crew_t const *crew, float 
         d->ring_deg = ff_geo_arrow_deg(bearing, heading_deg);
         d->initial = m->initial;
         d->color_idx = m->color_idx;
-        d->stale = (ff_crew_freshness(m, now_ms) != FF_FRESH_LIVE);
+        ff_freshness_t const dot_fresh = ff_crew_freshness(m, now_ms);
+        /* issue #33: an asserted member is a place, not an aging friend —
+         * `place` and `stale` are mutually exclusive (ff_radar_dot_t's doc
+         * comment). ASSERTED can only ever be dot_fresh's value here since
+         * FF_FRESH_NEVER is impossible (this loop already required
+         * m->has_pos above). */
+        d->place = (dot_fresh == FF_FRESH_ASSERTED);
+        d->stale = !d->place && (dot_fresh != FF_FRESH_LIVE);
         v->n_dots++;
     }
 }
@@ -133,13 +140,51 @@ void ff_radar_compute(ff_radar_view_t *v, ff_radar_smooth_t *smooth, ff_crew_t *
     if (my_pos_ok && member->has_pos) {
         distance_m = ff_geo_distance_m(my_pos, member->pos);
     }
-    if (distance_m >= 0.0f) {
+
+    /* issue #47: known-degraded precision means `distance_m` above claims
+     * a confidence the wire data doesn't carry — the coordinate itself
+     * could be off by kilometers. Absent has_precision_bits is NOT
+     * degraded (see ff_radar.h's doc comment on this asymmetry); it
+     * renders exactly like an ordinary fix. */
+    bool imprecise = my_pos_ok && member->has_pos && member->has_precision_bits &&
+                      member->precision_bits < FF_CREW_POS_PRECISION_MIN_BITS;
+    v->dist_imprecise = imprecise;
+
+    /* The value CLOSE-by-distance is allowed to trust: a degraded fix's
+     * distance leg is treated as unknown (-1) here, same convention as
+     * "no my_pos"/"no member position" above — never let a coordinate
+     * that could be kilometers off silently produce a false "standing
+     * next to them" reading. The RSSI leg of ff_crew_close_range is
+     * untouched: it takes no distance argument and is measured by our own
+     * radio, carrying no coordinate-precision dependency at all. */
+    float distance_for_close = imprecise ? -1.0f : distance_m;
+
+    if (imprecise) {
+        /* An honest area statement, not a fabricated point distance — the
+         * grid size IS the whole claim: "your friend is somewhere in a
+         * cell this big," never a metre-looking number. Reuses the "~"
+         * prefix idiom RADAR_LOST/RADAR_CLOSE already use for imprecision
+         * elsewhere on this face. */
+        float grid_m = ff_crew_pos_precision_grid_m(member->precision_bits);
+        char grid_str[FF_RADAR_STR_LEN - 1];
+        ff_fmt_distance(grid_str, sizeof(grid_str), grid_m, imperial);
+        v->dist_str[0] = '~';
+        radar_copy_str(v->dist_str + 1, sizeof(v->dist_str) - 1, grid_str);
+    } else if (distance_m >= 0.0f) {
         ff_fmt_distance(v->dist_str, sizeof(v->dist_str), distance_m, imperial);
     } else {
         v->dist_str[0] = '\0';
     }
 
-    if (member->has_pos) {
+    /* issue #33: RADAR_PLACE's age is never honestly knowable (the
+     * receive timestamp is receive time, not placement time — see
+     * ff_radar.h's RADAR_PLACE paragraph), so it is withheld here
+     * regardless of `has_pos`, the same way `dist_str` is withheld above
+     * when its underlying fact is unknown. Checked directly on the
+     * member's own flag rather than waiting for the freshness switch
+     * below, so this holds no matter what mode the member ultimately
+     * resolves to (e.g. an asserted member that is also CLOSE by RSSI). */
+    if (member->has_pos && !member->pos_asserted) {
         uint32_t age_ms = now_ms - member->pos_age_ms; /* wraparound-safe */
         ff_fmt_age(v->age_str, sizeof(v->age_str), age_ms);
     } else {
@@ -163,7 +208,7 @@ void ff_radar_compute(ff_radar_view_t *v, ff_radar_smooth_t *smooth, ff_crew_t *
         return;
     }
 
-    if (ff_crew_close_range(member, distance_m, now_ms)) {
+    if (ff_crew_close_range(member, distance_for_close, now_ms)) {
         v->mode = RADAR_CLOSE;
         v->arrow_valid = false;
         return;
@@ -176,6 +221,10 @@ void ff_radar_compute(ff_radar_view_t *v, ff_radar_smooth_t *smooth, ff_crew_t *
         break;
     case FF_FRESH_STALE:
         v->mode = RADAR_STALE;
+        break;
+    case FF_FRESH_ASSERTED:
+        /* issue #33 — its own mode, never folded into LIVE/STALE/LOST. */
+        v->mode = RADAR_PLACE;
         break;
     case FF_FRESH_LOST:
     case FF_FRESH_NEVER:

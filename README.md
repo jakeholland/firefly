@@ -29,7 +29,7 @@ This table is meant to be accurate rather than flattering — if something rende
 | Meshtastic client library (`meshclient`) | ✅ on `main` |
 | festpack parser + the [Lost Lands 2026 pack](https://github.com/jakeholland/fest-almanac) | ✅ on `main` |
 | **Radar face** — live / stale / lost / no-fix / no-selection | ✅ on `main` |
-| Radar **close-range** mode — signal-strength rings under ~30 m | ⚠️ renders, no consumer yet ([#35](https://github.com/jakeholland/firefly/issues/35)) |
+| Radar **close-range** mode — signal-strength rings under ~30 m | ✅ triggerable live with direct-path packets ([#35](https://github.com/jakeholland/firefly/issues/35)) |
 | **Now face** — live set times, starred-set countdown, and honest "times not published yet" states | ✅ on `main` |
 | **Flare** — takeover screen, sender state, navigation lock | ✅ on `main` |
 | Dev harness — control socket, dockerised Meshtastic node, end-to-end tests | ✅ on `main` |
@@ -46,11 +46,11 @@ Every merged line went through an independent code review plus, for anything on 
 | Live | Lost | Close range |
 |---|---|---|
 | <img src="docs/screens/radar-live.png" width="200" alt="Radar face with a solid amber arrow, DANA, 320 m, and a green LIVE chip"> | <img src="docs/screens/radar-lost.png" width="200" alt="Radar face showing a faint outline arrow, ~1.1 km, and a grey LAST SEEN 42 MIN chip"> | <img src="docs/screens/radar-close.png" width="200" alt="Radar face at close range with pulsing rings, ~15 m, and a FLARE button"> |
-| A fresh fix. Solid arrow, exact distance. | The fix is old. Different in *kind*, not just dimmer — the screen stops claiming to know. | Under 30 m, GPS is useless in a crowd. Rings and a hot/cold trend take over. **Renders, but can't trigger on hardware yet** — see below. |
+| A fresh fix. Solid arrow, exact distance. | The fix is old. Different in *kind*, not just dimmer — the screen stops claiming to know. | Under 30 m, GPS is useless in a crowd. Rings and a hot/cold trend take over. **Triggerable live with direct-path packets** — see below. |
 
 The middle one is the point of the whole project: most trackers keep pointing confidently at data they no longer have.
 
-> **On close-range mode, honestly.** It renders, it has tests and golden screenshots — and it has never run on a radio. Signal strength now reaches the app, but nothing consumes it yet, so the mode can't trigger ([#35](https://github.com/jakeholland/firefly/issues/35)). A screenshot proves a thing draws, not that it works.
+> **On close-range mode, honestly.** It renders, it has tests and golden screenshots, and it is now wired end to end: a DIRECT-path packet from a paired peer feeds `ff_crew_on_rssi()`, and `ff_radar_compute()` turns that into `mode: close` — two Heltec V3s standing next to each other can produce exactly that. What's still unproven is how OFTEN it fires on a real mesh: hardware findings on [#35](https://github.com/jakeholland/firefly/issues/35) show `hop_start: 0` is common, which makes DIRECT often unprovable, and that fraction hasn't been measured on live radio traffic yet — the ctl `state` dump now exposes per-member `rssi_dbm`/age (same bench-visibility pattern as `wall`/`link`) so it can be, next time boards are driven. "Triggerable live" is not "proven to trigger often enough" — a screenshot proves a thing draws, not how often it will.
 
 | Set times, honestly | A flare arriving |
 |---|---|
@@ -75,7 +75,7 @@ No fork to maintain, no phone required, ~$80 in parts. Battery life is a design 
 
 | Face | What it does |
 |---|---|
-| **Radar** | Big honest arrow + distance to a crew member; whole-crew dots; live/stale states. Close-range rings render but can't trigger yet ([#35](https://github.com/jakeholland/firefly/issues/35)) |
+| **Radar** | Big honest arrow + distance to a crew member; whole-crew dots; live/stale states. Close-range rings are triggerable live via direct-path packets from a paired peer ([#35](https://github.com/jakeholland/firefly/issues/35)) |
 | **Now** | Lineup per stage, set progress, starred-set alarms |
 | **Signals** | Pulses, rally points, canned replies, T9 composer |
 | **Flare** | Press-and-hold "come find me" — crew pucks buzz and lock their arrows on you |

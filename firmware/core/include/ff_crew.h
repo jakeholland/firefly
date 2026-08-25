@@ -88,7 +88,44 @@ extern "C" {
  * before it naturally ages out of the 5s window. */
 #define FF_CREW_RSSI_HIST_CAP 16
 
-typedef enum { FF_FRESH_LIVE, FF_FRESH_STALE, FF_FRESH_LOST, FF_FRESH_NEVER } ff_freshness_t;
+/* issue #33 — asserted positions must not ride the freshness axis.
+ *
+ * FF_FRESH_ASSERTED is a category distinct from LIVE/STALE/LOST/NEVER, not
+ * a point on their scale: it means the latest position report for this
+ * member was an ASSERTION (Meshtastic LOC_MANUAL — an installer typed
+ * coordinates into a fixed-position node), not a MEASUREMENT. A fixed
+ * position re-broadcasts on the normal interval forever, so "how recently
+ * did this arrive" is always fresh and therefore meaningless as a trust
+ * signal for it — the one thing that would ever make the app stop
+ * trusting a live/stale/lost reading (elapsed time) cannot fire for a
+ * reading that was never time-stamped by a measurement in the first
+ * place. See ff_crew_on_position's `meta.asserted` and
+ * docs/specs/S06-radar-face.md's Amendments for the render-side
+ * consequence (radar_mode_t's RADAR_PLACE).
+ *
+ * Ruling from issue #33's comments, binding: LOC_MANUAL means "not
+ * measured" — it does NOT certify deliberate or recent placement (hardware
+ * showed a six-month-old position under an asserted flag on a node heard
+ * minutes earlier). So FF_FRESH_ASSERTED must not be read as "placed
+ * recently" either; it is silent on age, not falsely reassuring about it. */
+typedef enum { FF_FRESH_LIVE, FF_FRESH_STALE, FF_FRESH_LOST, FF_FRESH_NEVER, FF_FRESH_ASSERTED } ff_freshness_t;
+
+/* issue #47 — degraded precision must not render metre-level confidence.
+ *
+ * Threshold for "this coordinate is too coarse to treat as a point fix",
+ * derived from the grid-size formula in mc_client.h's precision_bits doc
+ * comment: cell edge (m) = (2^32 >> bits) * 1e-7 * ~111,320 m/deg.
+ *
+ * Anchored to this module's own FF_CREW_CLOSE_RANGE_M (30 m): a precision
+ * grid coarser than the close-range threshold cannot honestly support the
+ * same at-a-glance "you are basically standing together" vocabulary that
+ * threshold exists to draw. bits=20 -> grid ~45.6 m (already exceeds
+ * close range); bits=21 -> grid ~22.8 m (comfortably under it, and the
+ * same order of magnitude as ordinary consumer GPS error). So 21 is the
+ * lowest bit count this module still calls "precise", and anything below
+ * it is "degraded" — never rendered as an exact distance (see
+ * ff_radar_compute / docs/specs/S06-radar-face.md's Amendments). */
+#define FF_CREW_POS_PRECISION_MIN_BITS 21u
 
 typedef struct {
     uint32_t node_id;   /* Meshtastic node num */
@@ -101,12 +138,48 @@ typedef struct {
     uint32_t    pos_age_ms; /* absolute rx clock timestamp — see header note above */
     bool        has_pos;
 
+    /* Provenance/precision of `pos`, always overwritten together with it
+     * by ff_crew_on_position (never sticky across a newer fix — same "the
+     * latest fix wins" contract as pos/pos_age_ms/has_pos above). See
+     * ff_crew_pos_meta_t for what each field means and FF_FRESH_ASSERTED /
+     * FF_CREW_POS_PRECISION_MIN_BITS above for how they're consumed. */
+    bool     pos_asserted;       /* true: latest fix was LOC_MANUAL — never measured */
+    bool     has_precision_bits; /* false: sender didn't state precision (treat as unknown, not full) */
+    uint8_t  precision_bits;     /* 1..32, meaningful only if has_precision_bits */
+
     int8_t   battery_pct; /* -1 unknown */
     char     status[20];  /* free-text status ("RAGING"), "" if unset */
 
     int16_t  rssi_dbm;    /* last direct-packet RSSI, INT16_MIN if never direct */
     uint32_t rssi_age_ms; /* absolute rx clock timestamp — see header note above */
 } ff_crew_member_t;
+
+/**
+ * ff_crew_pos_meta_t — provenance/precision that accompanies one position
+ * report, passed to ff_crew_on_position alongside the coordinate itself.
+ *
+ * This is core's OWN small vocabulary, not Meshtastic's: the caller (the
+ * shell) translates `mc_loc_source_t`/`mc_position_t.precision_bits` into
+ * this at the boundary (issue #33's "core never sees Meshtastic enums"
+ * rule) — `asserted` is `true` iff the wire value was exactly
+ * MC_LOC_MANUAL, and false for every other value including MC_LOC_UNKNOWN
+ * ("didn't say" is not evidence of an assertion, any more than it is
+ * evidence of a measurement — see mc_client.h's MC_LOC_UNKNOWN doc
+ * comment). `has_precision_bits`/`precision_bits` mirror
+ * `mc_position_t`'s fields of the same name exactly, same "absent means
+ * unknown, not full" contract. */
+typedef struct {
+    bool    asserted;
+    bool    has_precision_bits;
+    uint8_t precision_bits;
+} ff_crew_pos_meta_t;
+
+/** The zero value of ff_crew_pos_meta_t: not asserted, precision unknown —
+ * the least-claiming meta for a caller (typically a test) that has no
+ * provenance/precision info to offer. Equivalent to `(ff_crew_pos_meta_t){0}`,
+ * provided as a named constant so call sites read as intentional rather
+ * than an unexplained zero-literal. */
+#define FF_CREW_POS_META_NONE ((ff_crew_pos_meta_t){.asserted = false, .has_precision_bits = false, .precision_bits = 0})
 
 /**
  * ff_crew_t — the whole crew roster. Fully-defined (not opaque) so callers
@@ -190,12 +263,41 @@ void ff_crew_set_paired(ff_crew_t *c, uint32_t node_id, bool paired);
 /**
  * ff_crew_on_position — record a position fix for `node_id`, received at
  * `rx_time_ms` (caller-supplied, e.g. read off the injected clock at the
- * moment the packet arrived). Find-or-creates the slot. Positions never
+ * moment the packet arrived), with `meta` describing its provenance/
+ * precision (see `ff_crew_pos_meta_t`; pass `FF_CREW_POS_META_NONE` when
+ * the caller has no such info). Find-or-creates the slot. Positions never
  * expire out of the model (CLAUDE.md: "honest data over pretty data") —
- * this always overwrites with the latest fix; staleness is a read-time
+ * this always overwrites with the latest fix (coordinate AND meta
+ * together — an asserted fix's provenance does not linger once a real
+ * measurement supersedes it, and vice versa); staleness is a read-time
  * computation (`ff_crew_freshness`), never a reason to hide or drop data.
+ *
+ * [api] `meta` was added for issue #33/#47 — every existing call site
+ * updates in the same change (grep for `ff_crew_on_position` before
+ * editing this signature again).
  */
-void ff_crew_on_position(ff_crew_t *c, uint32_t node_id, ff_latlon_t p, uint32_t rx_time_ms);
+void ff_crew_on_position(ff_crew_t *c, uint32_t node_id, ff_latlon_t p, uint32_t rx_time_ms,
+                          ff_crew_pos_meta_t meta);
+
+/**
+ * ff_crew_pos_precision_grid_m — approximate cell edge, in meters, of a
+ * coordinate truncated to `precision_bits` bits of a 32-bit Meshtastic
+ * lat/lon fixed-point value (see mc_client.h's `precision_bits` doc
+ * comment for the formula's derivation and hardware verification —
+ * issue #47 measured 2673 m of real error at 13 bits).
+ *
+ * `(2^32 >> bits) * 1e-7 deg * ~111,320 m/deg of latitude`. Treat the
+ * result as a SCALE, not a radius or a distance to anything in
+ * particular — longitude cells shrink by cos(latitude), which this
+ * function deliberately does not model (it has no latitude to work
+ * with); the caller wants "roughly how big is the box this coordinate
+ * could be anywhere inside", not a geodesic bound.
+ *
+ * `precision_bits == 0` or `> 32` returns 0.0f (not a real precision
+ * value — callers should have already gated on `has_precision_bits`
+ * and the 1..32 range; this is a defensive fallback, not a claim that
+ * 0 bits means "no error"). */
+float ff_crew_pos_precision_grid_m(uint8_t precision_bits);
 
 /**
  * ff_crew_on_rssi — record a direct-packet RSSI sample for `node_id`,
@@ -210,10 +312,20 @@ void ff_crew_on_rssi(ff_crew_t *c, uint32_t node_id, int16_t rssi_dbm);
  * `now_ms`.
  *
  * NEVER if no fix has ever arrived (`has_pos == false`) — the only path
- * out of NEVER is `ff_crew_on_position`, which always lands directly on
- * LIVE (age 0 at the instant of the fix). Otherwise LIVE/STALE/LOST per
- * the thresholds above, computed as `now_ms - m->pos_age_ms` (unsigned
- * subtraction, wraparound-safe).
+ * out of NEVER is `ff_crew_on_position`, which lands directly on either
+ * ASSERTED (if the fix's `meta.asserted` was true) or LIVE (age 0 at the
+ * instant of the fix) otherwise.
+ *
+ * ASSERTED unconditionally whenever `m->pos_asserted` is true — checked
+ * BEFORE the age math below, and `now_ms` plays no part in the answer.
+ * This is issue #33's whole point: an asserted position is not a
+ * measurement, so "how long ago did this arrive" is a category error for
+ * it, not a fact that could ever downgrade it to STALE/LOST. A member
+ * cannot be simultaneously ASSERTED and LIVE/STALE/LOST/NEVER — the
+ * states are mutually exclusive, same as every other member of this enum.
+ *
+ * Otherwise LIVE/STALE/LOST per the thresholds above, computed as
+ * `now_ms - m->pos_age_ms` (unsigned subtraction, wraparound-safe).
  */
 ff_freshness_t ff_crew_freshness(ff_crew_member_t const *m, uint32_t now_ms);
 

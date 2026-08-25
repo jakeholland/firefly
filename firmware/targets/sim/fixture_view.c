@@ -26,6 +26,7 @@ static char const *ffv_radar_mode_str(radar_mode_t m)
     case RADAR_LIVE: return "LIVE";
     case RADAR_STALE: return "STALE";
     case RADAR_LOST: return "LOST";
+    case RADAR_PLACE: return "PLACE"; /* issue #33 */
     case RADAR_CLOSE: return "CLOSE";
     case RADAR_NOFIX: return "NOFIX";
     case RADAR_NOSEL: return "NOSEL";

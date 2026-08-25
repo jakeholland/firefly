@@ -272,6 +272,25 @@ static void inject_node_with_position(uint32_t node, uint32_t last_heard, double
     H.ev.on_node(H.ev.user, &n);
 }
 
+/** Same shape as inject_node_with_position, plus loc_source/precision —
+ * issue #33/#47's shell-boundary translation. `has_precision_bits`
+ * false always leaves `precision_bits` at 0 (the "sender didn't say"
+ * shape mc_client.c itself produces — see mc_position_t's doc comment). */
+static void inject_node_with_position_ex(uint32_t node, uint32_t last_heard, double lat, double lon,
+                                          mc_loc_source_t loc_source, bool has_precision_bits,
+                                          uint8_t precision_bits)
+{
+    mc_nodeinfo_t n = nodeinfo(node, NULL, last_heard);
+    n.has_position = true;
+    n.position.lat = lat;
+    n.position.lon = lon;
+    n.position.has_rx_time = false; /* the whole point of AC9 */
+    n.position.loc_source = loc_source;
+    n.position.has_precision_bits = has_precision_bits;
+    n.position.precision_bits = has_precision_bits ? precision_bits : 0u;
+    H.ev.on_node(H.ev.user, &n);
+}
+
 static void inject_node(uint32_t node, char const *short_name, uint32_t last_heard)
 {
     mc_nodeinfo_t n = nodeinfo(node, short_name, last_heard);
@@ -287,6 +306,26 @@ static void inject_position(uint32_t node, uint32_t rx_time, double lat, double 
     p.lon = lon;
     p.has_rx_time = (rx_time != 0u);
     p.rx_time = rx_time;
+    H.ev.on_position(H.ev.user, node, &p);
+}
+
+/** Same shape as inject_position, plus loc_source/precision — issue
+ * #33/#47's shell-boundary translation, exercised on the LIVE-packet
+ * path (as opposed to inject_node_with_position_ex's NodeInfo replay
+ * path — the two are deliberately kept distinguishable in these tests,
+ * mirroring mc_client.h's documented path asymmetry). */
+static void inject_position_ex(uint32_t node, uint32_t rx_time, double lat, double lon, mc_loc_source_t loc_source,
+                                bool has_precision_bits, uint8_t precision_bits)
+{
+    mc_position_t p;
+    memset(&p, 0, sizeof(p));
+    p.lat = lat;
+    p.lon = lon;
+    p.has_rx_time = (rx_time != 0u);
+    p.rx_time = rx_time;
+    p.loc_source = loc_source;
+    p.has_precision_bits = has_precision_bits;
+    p.precision_bits = has_precision_bits ? precision_bits : 0u;
     H.ev.on_position(H.ev.user, node, &p);
 }
 
@@ -1074,6 +1113,118 @@ static void S16_b1_rssi_is_attributed_only_on_a_direct_path(void)
     TEST_ASSERT_EQUAL_INT16(-40, member(DANA)->rssi_dbm);
 }
 
+
+/**
+ * #35 remainder — the has_rssi gate, the third and previously UNPINNED
+ * condition (PR #67 review: mutating it out passed all 35 tests, because
+ * nothing ever injected meta without a reading). A DIRECT packet from a
+ * paired peer whose meta carries NO rssi (has_rssi=false, per #39's
+ * plausibility gate: NaN, out-of-range, or simply absent on the wire)
+ * must not record anything — rssi_dbm's INT16_MIN "never direct" state
+ * survives, and whatever garbage rides the value field is never read.
+ */
+static void S16_b1_rssi_absent_reading_records_nothing_even_direct_and_paired(void)
+{
+    harness_init(100000u, false);
+    inject_my_info(MY_ID);
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, true));
+
+    inject_rx_meta(DANA, MC_RX_PATH_DIRECT, false, -40);
+    TEST_ASSERT_EQUAL_INT16(INT16_MIN, member(DANA)->rssi_dbm);
+
+    /* Positive control: same call, flag true, records. */
+    inject_rx_meta(DANA, MC_RX_PATH_DIRECT, true, -40);
+    TEST_ASSERT_EQUAL_INT16(-40, member(DANA)->rssi_dbm);
+}
+
+/**
+ * #35 remainder — the paired gate. A roster slot can exist and be
+ * unpaired: known-but-never-trusted, or paired-then-unpaired
+ * (S16_AC5b above models exactly this with ff_shell_pair(..., false)).
+ * ff_wiring.c:42 applies the identical rule to feed pushes
+ * ("`if (!m->paired) return;` known ... but not trusted"); on_rx_meta
+ * must apply it too, or a merely-heard node's radio signal could satisfy
+ * ff_crew_close_range's CLOSE predicate for someone the wearer never
+ * chose to trust — the standing trust rule (CLAUDE.md / AGENTS.md
+ * "never create" via ff_crew_find), extended to the RSSI wire. */
+static void S16_b1_rssi_never_recorded_for_a_known_but_unpaired_sender(void)
+{
+    harness_init(100000u, false);
+    inject_my_info(MY_ID);
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, true));
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, false));
+    TEST_ASSERT_FALSE(member(DANA)->paired);
+
+    inject_rx_meta(DANA, MC_RX_PATH_DIRECT, true, -40);
+    TEST_ASSERT_EQUAL_INT16(INT16_MIN, member(DANA)->rssi_dbm);
+
+    /* Positive control: re-pairing the SAME id and re-sending the SAME
+     * DIRECT packet does record it, so the drop above is about the
+     * paired gate specifically, not about a path that never works. */
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, true));
+    inject_rx_meta(DANA, MC_RX_PATH_DIRECT, true, -40);
+    TEST_ASSERT_EQUAL_INT16(-40, member(DANA)->rssi_dbm);
+}
+
+
+/**
+ * #35 remainder — the full chain, end to end. Earlier tests in this
+ * file pin the two gates individually (DIRECT-only, paired-only) at the
+ * `ff_crew_member_t.rssi_dbm` level; this one drives the SAME
+ * `on_rx_meta` entry point all the way through `ff_radar_compute` to
+ * `radar.mode`, because "the field got set" and "CLOSE actually fires"
+ * are different claims (the proxy this project's standing brief warns
+ * about — an input could satisfy the first without the second, e.g. if
+ * ff_radar_compute's own NOFIX/CLOSE priority order ever regressed).
+ *
+ * DANA's own GPS fix is deliberately never sent: CLOSE must come from
+ * RSSI alone, matching the S06 spec's documented case ("a member can be
+ * RSSI-close even with a GPS-stale/lost/never position", ff_radar.h).
+ * My own position/heading ARE set, since RADAR_NOFIX outranks CLOSE
+ * (ff_radar.h's priority order) — without them CLOSE could never show
+ * regardless of RSSI, which would make this test meaningless.
+ */
+static void S16_b1_close_mode_triggers_live_via_direct_rssi_from_paired_peer(void)
+{
+    harness_init(100000u, false);
+    inject_my_info(MY_ID);
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, true));
+    ff_shell_set_heading(&H.shell, 0.0f);
+    ff_shell_set_my_pos(&H.shell, (ff_latlon_t){39.936, -82.414});
+
+    ff_shell_tick(&H.shell, H.clk.t);
+    /* Baseline: paired, my own fix known, DANA never sent a fix or an
+     * RSSI sample — FF_FRESH_NEVER folds into RADAR_LOST (ff_radar.h),
+     * distinguishable from a real stale fix by the empty age_str. Not
+     * CLOSE: nothing has told the radar DANA is close yet. */
+    TEST_ASSERT_EQUAL_INT(RADAR_LOST, ff_shell_view(&H.shell)->radar.mode);
+    TEST_ASSERT_EQUAL_STRING("", ff_shell_view(&H.shell)->radar.age_str);
+
+    /* Negative control: an INDIRECT packet, even a loud one, must not
+     * move the mode — a relay's signal is not a distance proxy for the
+     * originator (the whole reason mc_rx_path_t exists; issue #35's
+     * hardware findings caught exactly this on a live mesh). */
+    inject_rx_meta(DANA, MC_RX_PATH_INDIRECT, true, -40);
+    ff_shell_tick(&H.shell, H.clk.t);
+    TEST_ASSERT_EQUAL_INT(RADAR_LOST, ff_shell_view(&H.shell)->radar.mode);
+
+    /* The real thing: a live DIRECT packet from a paired peer, through
+     * the actual on_rx_meta callback — no test seam bypassing it. */
+    inject_rx_meta(DANA, MC_RX_PATH_DIRECT, true, -50);
+    ff_shell_tick(&H.shell, H.clk.t);
+    TEST_ASSERT_EQUAL_INT(RADAR_CLOSE, ff_shell_view(&H.shell)->radar.mode);
+    TEST_ASSERT_FALSE(ff_shell_view(&H.shell)->radar.arrow_valid);
+
+    /* Age-out: FF_CREW_CLOSE_RANGE_RSSI_AGE_MS later with no fresh
+     * sample, the RSSI leg of ff_crew_close_range goes stale and CLOSE
+     * must release — stale RSSI must not hold a CLOSE lock forever.
+     * Falls back to the same paired-but-never-fixed LOST reading as the
+     * baseline, since DANA still has no position fix of her own. */
+    advance(FF_CREW_CLOSE_RANGE_RSSI_AGE_MS);
+    ff_shell_tick(&H.shell, H.clk.t);
+    TEST_ASSERT_EQUAL_INT(RADAR_LOST, ff_shell_view(&H.shell)->radar.mode);
+}
+
 /* ------------------------------------------------------------------- */
 /* a tiny in-line festpack (S05 schema v0.1)                            */
 /* ------------------------------------------------------------------- */
@@ -1844,6 +1995,188 @@ static void S16_c3_send_text_sends_the_shell_owned_draft(void)
     TEST_ASSERT_EQUAL_UINT32(DANA, decode_packet_to(P.tx + tx_before, P.tx_len - tx_before));
 }
 
+/* =================================================================== */
+/* issue #33 — shell-boundary translation: LOC_MANUAL -> asserted        */
+/* =================================================================== */
+
+/* Full pipeline (mc_position_t -> shell -> crew -> radar view), the live-
+ * packet path: LOC_MANUAL renders RADAR_PLACE, not RADAR_LIVE — and never
+ * fabricates an age for it, even though `has_pos` is true. */
+static void S33_live_loc_manual_renders_radar_place(void)
+{
+    harness_init(100000u, false);
+    inject_my_info(MY_ID);
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, true));
+    inject_node(DANA, "DANA", U_EVENING); /* latches the wall clock */
+
+    inject_position_ex(DANA, U_EVENING, 39.0, -82.0, MC_LOC_MANUAL, false, 0);
+    TEST_ASSERT_TRUE(member(DANA)->pos_asserted);
+    TEST_ASSERT_EQUAL_INT(FF_FRESH_ASSERTED, ff_crew_freshness(member(DANA), H.clk.t));
+
+    ff_shell_set_heading(&H.shell, 0.0f);
+    ff_shell_set_my_pos(&H.shell, (ff_latlon_t){39.0, -82.01}); /* ~865 m away: outside 30 m close range */
+    ff_shell_tick(&H.shell, H.clk.t);
+
+    ff_radar_view_t const *r = &ff_shell_view(&H.shell)->radar;
+    TEST_ASSERT_EQUAL_INT(RADAR_PLACE, r->mode);
+    TEST_ASSERT_TRUE(r->arrow_valid); /* a real coordinate exists to point at */
+    TEST_ASSERT_EQUAL_STRING("", r->age_str); /* never a fabricated "LAST SEEN" */
+}
+
+/* Mutation-conscious: the whole point of #33 is the freshness-axis
+ * exclusion. Advance well past LOST (10 min) and re-tick — RADAR_PLACE
+ * must hold, not decay to RADAR_LOST the way an ordinary LIVE fix would. */
+static void S33_live_loc_manual_never_decays_to_lost(void)
+{
+    harness_init(100000u, false);
+    inject_my_info(MY_ID);
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, true));
+    inject_node(DANA, "DANA", U_EVENING);
+    inject_position_ex(DANA, U_EVENING, 39.0, -82.0, MC_LOC_MANUAL, false, 0);
+
+    ff_shell_set_heading(&H.shell, 0.0f);
+    ff_shell_set_my_pos(&H.shell, (ff_latlon_t){39.0, -82.01}); /* ~865 m away: outside 30 m close range */
+
+    advance(3600u * 1000u); /* +1 hour: comfortably past FF_CREW_LOST_MS (10 min) */
+    ff_shell_tick(&H.shell, H.clk.t);
+
+    TEST_ASSERT_EQUAL_INT(RADAR_PLACE, ff_shell_view(&H.shell)->radar.mode);
+    TEST_ASSERT_EQUAL_INT(FF_FRESH_ASSERTED, ff_crew_freshness(member(DANA), H.clk.t));
+}
+
+/* Regression/proxy guard: MC_LOC_UNKNOWN ("didn't say") must NOT be read
+ * as an assertion — only the exact MC_LOC_MANUAL value does. A mutant
+ * that defaulted `asserted` to true, or that folded UNKNOWN into
+ * "asserted" alongside MANUAL, would satisfy S33_live_loc_manual_* alone;
+ * this pins the other side. */
+static void S33_live_loc_unknown_is_not_asserted(void)
+{
+    harness_init(100000u, false);
+    inject_my_info(MY_ID);
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, true));
+    inject_node(DANA, "DANA", U_EVENING);
+
+    inject_position_ex(DANA, U_EVENING, 39.0, -82.0, MC_LOC_UNKNOWN, false, 0);
+    TEST_ASSERT_FALSE(member(DANA)->pos_asserted);
+    TEST_ASSERT_EQUAL_INT(FF_FRESH_LIVE, ff_crew_freshness(member(DANA), H.clk.t));
+
+    ff_shell_set_heading(&H.shell, 0.0f);
+    ff_shell_set_my_pos(&H.shell, (ff_latlon_t){39.0, -82.01}); /* ~865 m away: outside 30 m close range */
+    ff_shell_tick(&H.shell, H.clk.t);
+    TEST_ASSERT_EQUAL_INT(RADAR_LIVE, ff_shell_view(&H.shell)->radar.mode);
+}
+
+/* The want_config REPLAY path translates LOC_MANUAL identically to the
+ * live-packet path — same boundary function (shell_pos_meta), two call
+ * sites. Matches issue #33's hardware finding: a fixed-position landmark
+ * asserts LOC_MANUAL over the air, replay included. */
+static void S33_replay_loc_manual_also_translates_to_asserted(void)
+{
+    uint32_t const t0 = 100000u;
+    harness_init(t0, false);
+    inject_my_info(MY_ID);
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, true));
+    inject_node(DANA, "DANA", U_EVENING); /* latches the wall clock first (positionless) */
+
+    inject_node_with_position_ex(DANA, U_EVENING, 39.0, -82.0, MC_LOC_MANUAL, false, 0);
+    TEST_ASSERT_TRUE(member(DANA)->has_pos);
+    TEST_ASSERT_TRUE(member(DANA)->pos_asserted);
+    TEST_ASSERT_EQUAL_INT(FF_FRESH_ASSERTED, ff_crew_freshness(member(DANA), H.clk.t));
+}
+
+/* =================================================================== */
+/* issue #47 — shell-boundary translation: precision_bits                */
+/* =================================================================== */
+
+/* Live packet, KNOWN-DEGRADED precision (13 bits — issue #47's own
+ * hardware measurement, the default public channel): the full pipeline
+ * renders an area-scale distance, not a fabricated exact one, and
+ * freshness/mode are untouched (precision and freshness are orthogonal
+ * facts). */
+static void S47_live_degraded_precision_renders_area_distance(void)
+{
+    harness_init(100000u, false);
+    inject_my_info(MY_ID);
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, true));
+    inject_node(DANA, "DANA", U_EVENING);
+
+    inject_position_ex(DANA, U_EVENING, 39.0, -82.0, MC_LOC_UNKNOWN, true, 13);
+    TEST_ASSERT_TRUE(member(DANA)->has_precision_bits);
+    TEST_ASSERT_EQUAL_UINT8(13, member(DANA)->precision_bits);
+
+    ff_shell_set_heading(&H.shell, 0.0f);
+    ff_shell_set_my_pos(&H.shell, (ff_latlon_t){39.0, -82.01}); /* ~865 m away: outside 30 m close range */
+    ff_shell_tick(&H.shell, H.clk.t);
+
+    ff_radar_view_t const *r = &ff_shell_view(&H.shell)->radar;
+    TEST_ASSERT_EQUAL_INT(RADAR_LIVE, r->mode); /* freshness is untouched by precision */
+    TEST_ASSERT_TRUE(r->dist_imprecise);
+    TEST_ASSERT_EQUAL_CHAR('~', r->dist_str[0]); /* never a bare metre-looking number */
+}
+
+/* Positive control at the threshold: 24 bits (mc_client.h's own worked
+ * example, ~3 m grid) is precise enough — normal exact-distance
+ * rendering, no area caveat. */
+static void S47_live_fine_precision_renders_normally(void)
+{
+    harness_init(100000u, false);
+    inject_my_info(MY_ID);
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, true));
+    inject_node(DANA, "DANA", U_EVENING);
+
+    inject_position_ex(DANA, U_EVENING, 39.0, -82.0, MC_LOC_UNKNOWN, true, 24);
+
+    ff_shell_set_heading(&H.shell, 0.0f);
+    ff_shell_set_my_pos(&H.shell, (ff_latlon_t){39.0, -82.01}); /* ~865 m away: outside 30 m close range */
+    ff_shell_tick(&H.shell, H.clk.t);
+
+    TEST_ASSERT_FALSE(ff_shell_view(&H.shell)->radar.dist_imprecise);
+}
+
+/* issue #47's documented asymmetry, live side: absent precision on a
+ * live packet renders EXACTLY as it did before this issue's fix — never
+ * flagged degraded. "Didn't say" is not evidence of a coarse fix. */
+static void S47_live_absent_precision_renders_normally(void)
+{
+    harness_init(100000u, false);
+    inject_my_info(MY_ID);
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, true));
+    inject_node(DANA, "DANA", U_EVENING);
+
+    inject_position_ex(DANA, U_EVENING, 39.0, -82.0, MC_LOC_UNKNOWN, false, 0);
+    TEST_ASSERT_FALSE(member(DANA)->has_precision_bits);
+
+    ff_shell_set_heading(&H.shell, 0.0f);
+    ff_shell_set_my_pos(&H.shell, (ff_latlon_t){39.0, -82.01}); /* ~865 m away: outside 30 m close range */
+    ff_shell_tick(&H.shell, H.clk.t);
+    TEST_ASSERT_FALSE(ff_shell_view(&H.shell)->radar.dist_imprecise);
+}
+
+/* issue #47's documented asymmetry, REPLAY side — the mutation this test
+ * actually guards against: a "fix" that treats replay-path-absent as
+ * "must be degraded" (reasoning "the replay never carries it, so assume
+ * the worst") would regress every ordinary reconnect to a blanket
+ * "imprecise" label. Replay-absent and live-absent must behave
+ * IDENTICALLY (both "unknown", neither "degraded") — see
+ * mc_client.h's precision_bits doc comment. */
+static void S47_replay_absent_precision_renders_normally_not_degraded(void)
+{
+    uint32_t const t0 = 100000u;
+    harness_init(t0, false);
+    inject_my_info(MY_ID);
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, true));
+    inject_node(DANA, "DANA", U_EVENING); /* latches the wall clock first (positionless) */
+
+    inject_node_with_position_ex(DANA, U_EVENING, 39.0, -82.0, MC_LOC_UNKNOWN, false, 0);
+    TEST_ASSERT_TRUE(member(DANA)->has_pos);
+    TEST_ASSERT_FALSE(member(DANA)->has_precision_bits);
+
+    ff_shell_set_heading(&H.shell, 0.0f);
+    ff_shell_set_my_pos(&H.shell, (ff_latlon_t){39.0, -82.01}); /* ~865 m away: outside 30 m close range */
+    ff_shell_tick(&H.shell, H.clk.t);
+    TEST_ASSERT_FALSE(ff_shell_view(&H.shell)->radar.dist_imprecise);
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -1874,6 +2207,9 @@ int main(void)
     RUN_TEST(S16_b1_positions_are_never_stamped_from_the_local_clock);
     RUN_TEST(S16_b1_own_traffic_is_not_treated_as_inbound);
     RUN_TEST(S16_b1_rssi_is_attributed_only_on_a_direct_path);
+    RUN_TEST(S16_b1_rssi_never_recorded_for_a_known_but_unpaired_sender);
+    RUN_TEST(S16_b1_rssi_absent_reading_records_nothing_even_direct_and_paired);
+    RUN_TEST(S16_b1_close_mode_triggers_live_via_direct_rssi_from_paired_peer);
     RUN_TEST(S07_2026_08_24_starts_only_set_is_live_not_lineup);
     RUN_TEST(S16_b1_now_projection_needs_both_a_pack_and_a_known_clock);
     RUN_TEST(S16_b1_loading_a_pack_does_not_fabricate_my_position);
@@ -1889,6 +2225,16 @@ int main(void)
 
     RUN_TEST(S16_AC7_canned_reply_uses_newest_feed_item_or_broadcasts);
     RUN_TEST(S16_c3_send_text_sends_the_shell_owned_draft);
+
+    RUN_TEST(S33_live_loc_manual_renders_radar_place);
+    RUN_TEST(S33_live_loc_manual_never_decays_to_lost);
+    RUN_TEST(S33_live_loc_unknown_is_not_asserted);
+    RUN_TEST(S33_replay_loc_manual_also_translates_to_asserted);
+
+    RUN_TEST(S47_live_degraded_precision_renders_area_distance);
+    RUN_TEST(S47_live_fine_precision_renders_normally);
+    RUN_TEST(S47_live_absent_precision_renders_normally);
+    RUN_TEST(S47_replay_absent_precision_renders_normally_not_degraded);
 
     return UNITY_END();
 }
