@@ -943,6 +943,12 @@ static void shell_project_settings(shell_t const *sh, ff_app_settings_t *out)
      * C string anything renders. */
     memcpy(out->my_name, sh->settings.my_name, sizeof(out->my_name) - 1u);
     out->my_name[sizeof(out->my_name) - 1u] = '\0';
+    /* S11 slice b: the Settings face's UTC-offset row. Projected verbatim
+     * — `utc_offset_set` is the "prove you meant this" flag scr_settings.c
+     * must gate the render on, same as every other *_valid field in this
+     * projection. */
+    out->utc_offset_min = sh->settings.utc_offset_min;
+    out->utc_offset_set = sh->settings.utc_offset_set;
 }
 
 /** "HH:MM", or "" when the puck does not know what time it is.
@@ -1231,33 +1237,38 @@ mc_events_t ff_shell_events(ff_shell_t *sh_pub)
  * ------------------------------------------------------------------- */
 
 /**
- * THE SETTINGS JUDGMENT CALL (S16 slice c1, argued in the PR body).
+ * THE SETTINGS JUDGMENT CALL (S16 slice c1, argued in the PR body) —
+ * RESOLVED (S11 slice b): the renderer now exists (`ff_scr_settings_build`,
+ * app/screens/scr_settings.c), so the shell stops rejecting the intent and
+ * pushes the modal, same as OPEN_COMPOSE.
  *
- * FF_INTENT_OPEN_SETTINGS routes to a modal whose renderer does not
- * exist (S11 slice b was never built). Until it does, the shell REJECTS
- * the intent — the long-press stays the no-op it has been since S06
+ * The history, kept because it explains why this was ever a runtime `if`
+ * instead of a straight push: FF_INTENT_OPEN_SETTINGS used to route to a
+ * modal whose renderer did not exist. Until it did, the shell REJECTED
+ * the intent — the long-press stayed the no-op it had been since S06
  * reserved the hook — rather than pushing a modal:
  *
- *  - Pushing without a renderer creates a DEAD END, not a placeholder:
- *    any modal suppresses swipe (AC2), a placeholder has no BACK
- *    control, and nothing else on a placeholder emits — the user is
- *    wedged on a not-a-screen until reboot. The repo's own UX checklist
- *    treats a dead-end screen as a blocking finding (scr_compose.c's
- *    back button exists for exactly that item), and building an
- *    escapable placeholder is renderer work c1's scope excludes.
+ *  - Pushing without a renderer would have created a DEAD END, not a
+ *    placeholder: any modal suppresses swipe (AC2), a placeholder has no
+ *    BACK control, and nothing else on a placeholder emits — the user
+ *    would be wedged on a not-a-screen until reboot. The repo's own UX
+ *    checklist treats a dead-end screen as a blocking finding
+ *    (scr_compose.c's back button exists for exactly that item), and
+ *    building an escapable placeholder was renderer work c1's scope
+ *    excluded.
  *  - Honest-data: a screen claiming to be Settings, or the S13 debug
- *    fixture view standing in for one, asserts a feature the device
- *    does not have. A gesture that does nothing under-claims; a fake
- *    screen mis-claims — this repo consistently prefers the former.
+ *    fixture view standing in for one, would have asserted a feature the
+ *    device did not have. A gesture that does nothing under-claims; a
+ *    fake screen mis-claims — this repo consistently prefers the former.
  *
- * The routing itself is complete and stays compiled (`if`, not `#if`,
- * so -Werror and -Wswitch keep checking it): S11b flips this one
- * constant to true and the seam needs no other change. The push path it
- * enables is the same `ff_route_push_modal` machinery OPEN_COMPOSE
- * exercises below, and SETTINGS-as-modal is already covered at the
- * route layer by slice a's AC2 tests.
+ * The routing was complete and stayed compiled the whole time (`if`, not
+ * `#if`, so -Werror and -Wswitch kept checking it): this slice flips the
+ * one constant below to true, and the seam needed no other change. The
+ * push path it enables is the same `ff_route_push_modal` machinery
+ * OPEN_COMPOSE exercises below, and SETTINGS-as-modal was already covered
+ * at the route layer by slice a's AC2 tests.
  */
-static bool const k_settings_renderer_exists = false; /* S11 slice b flips this */
+static bool const k_settings_renderer_exists = true; /* S11 slice b — flipped */
 
 /**
  * The composer destination rule (S08 Behavior: "Composer: reached from
@@ -1620,12 +1631,15 @@ void ff_shell_intent(ff_shell_t *sh_pub, ff_intent_t const *in)
         return;
 
     case FF_INTENT_SETTING_SET:
-        /* Settings write-through + persistence (S16 slice e, AC8). Gated
-         * on the visible face like every other core-mutating intent
-         * (routing rule 4) — there is no Settings renderer yet
-         * (k_settings_renderer_exists above), so nothing legitimate can
-         * emit this while a takeover is up, but the seam still honors
-         * the same rule the future Settings screen's taps will need. */
+        /* Settings write-through + persistence (S16 slice e, AC8; the
+         * emit site is S11 slice b's scr_settings.c). Gated on the
+         * visible face like every other core-mutating intent (routing
+         * rule 4) — the Settings modal suppresses swipe like any other
+         * modal, so this can only legitimately fire while Settings is
+         * the visible face, and a takeover (which can only arrive while
+         * some OTHER face was visible, since opening the modal itself
+         * requires no takeover be up) preempts it exactly like it does
+         * every other control. */
         if (takeover_up) return;
         shell_setting_set(sh, in);
         return;

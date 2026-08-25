@@ -264,11 +264,19 @@ one, if any — the same value `scr_compose.c` renders.
 ```json
 "settings": {
   "imperial": true, "share_mode": "live", "haptics": true, "night_glow": true,
-  "water_min": 90, "quiet_from_min": 240, "quiet_to_min": 600, "my_name": "DANA"
+  "water_min": 90, "quiet_from_min": 240, "quiet_to_min": 600, "my_name": "DANA",
+  "utc_offset_set": true, "utc_offset_min": -420
 }
 ```
 
 `share_mode` is `live`\|`zones`\|`ghost` (maps to `FF_SHARE_LIVE`/`_ZONES`/`_GHOST`).
+
+`utc_offset_set`/`utc_offset_min` (S11 slice b addition, mirrors
+`ff_settings_t`'s S16-b0 amendment): `utc_offset_min` is MEANINGLESS unless
+`utc_offset_set` is true — read `utc_offset_set` first, same "prove you
+meant this" convention as `flare.takeover_bearing_valid`. Default (both
+keys absent) is `utc_offset_set: false`, which `scr_settings.c` renders as
+an honest "UNSET", not a fabricated "+0:00".
 
 ## Current fixtures
 
@@ -318,6 +326,16 @@ see `ff_scr_flare_build_takeover`'s doc comment),
 radar tile, whose own headline is dimmed while sending), and
 `radar_flare_locked.json` (`flare.locked` on an otherwise-ordinary LIVE
 radar render — the lock chip).
+
+Two S11 slice b fixtures cover the Settings face's two visually-opposite
+states, one apiece: `settings_default.json` (imperial, LIVE share,
+haptics + night glow both on, the 90-min water preset, the 4a-10a quiet
+preset, a set name and UTC offset — every chip/label in its "on"/named
+state) and `settings_ghost.json` (metric, GHOST share, both toggles off,
+water/quiet both OFF, an empty name, and an UNSET UTC offset — every
+honest-absence render this face has: `NAME: (unset)`, `UNSET`, `OFF`
+twice). Read side by side, the pair is the whole face's render surface at
+a glance.
 
 **Provenance note:** the specific numbers (DANA, 320 m, 8 s / 4 min / 15 m,
 and PR B's additions) came from the task briefs that commissioned these
