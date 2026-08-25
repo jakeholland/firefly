@@ -14,7 +14,7 @@ Specs are contracts. Acceptance criteria (AC) become test names (`S01_AC3_...`).
 | S08 | app/signals + T9 composer | S03,S04 | YES (T9 predictive: no) | ✅ merged (PR #14 engine, #25 feed+UI) |
 | S09 | app/map — vector map face | S05,S02 | YES (wanted for v1) | ☐ |
 | S10 | flare flow — send/receive/takeover | S04,S06 | YES | ✅ merged (PR #15 core, #20 UI) |
-| S11 | settings & persistence | — | YES | ◐ slice a merged (PR #4) |
+| S11 | settings & persistence | — | YES | ◐ a,b merged (PR #4, #68); c = ZONES backend |
 | S12 | first-run flow | S08(T9),S11 | stretch (device can ship pre-named) | ☐ |
 | S13 | sim target — SDL/headless + screenshots | — | YES (dev-critical, build FIRST) | ✅ merged (PR #2, #12, #19) |
 | S14 | testing & CI | S13 | YES (build FIRST) | ✅ merged (PR #2, #12, #19) |
