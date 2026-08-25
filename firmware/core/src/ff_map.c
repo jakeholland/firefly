@@ -4,6 +4,7 @@
  */
 #include "ff_map.h"
 
+#include <math.h> /* sqrtf — ff_map_clip_point_to_circle; documented in ff_map.h's own top comment */
 #include <stdbool.h>
 #include <stddef.h> /* NULL */
 
@@ -103,6 +104,28 @@ void ff_map_project(ff_map_xform_t const *x, float east_m, float north_m, float 
     if (out_y_px != NULL) *out_y_px = -dy;
 }
 
+/* ---------------------------------------------------------------------
+ * ff_map_clip_point_to_circle — see ff_map.h's doc comment for the full
+ * rationale (issue #75: this replaces lv_obj_set_style_clip_corner, which
+ * hangs ffsim --headless, with a pure-geometry clamp applied before LVGL
+ * ever sees the point).
+ * ------------------------------------------------------------------- */
+
+void ff_map_clip_point_to_circle(float x, float y, float radius_px, float *out_x, float *out_y)
+{
+    float rx = x, ry = y;
+    if (radius_px > 0.0f) {
+        float const d = sqrtf(x * x + y * y);
+        if (d > radius_px) {
+            float const scale = radius_px / d;
+            rx = x * scale;
+            ry = y * scale;
+        }
+    }
+    if (out_x != NULL) *out_x = rx;
+    if (out_y != NULL) *out_y = ry;
+}
+
 ff_map_render_kind_t ff_map_feature_render_kind(uint8_t n_pts, int is_stage)
 {
     if (n_pts == 0) return FF_MAP_RENDER_OMIT;
@@ -123,8 +146,54 @@ ff_map_label_priority_t ff_map_feature_label_priority(uint8_t n_pts, int is_stag
  * contract (caller-ordering requirement, HIGH-nudge/LOW-drop rules).
  * ------------------------------------------------------------------- */
 
+/* True iff a label's bounding box — centered at (x, y), half-extents
+ * (half_w, half_h) — could cross a circle of `radius_px` around the
+ * origin. Conservative on purpose: the exact farthest corner of an
+ * axis-aligned box from the origin is at (|x|+half_w, |y|+half_h), so
+ * this is not an approximation, it's the precise same per-corner
+ * reasoning ff_layout_rect_in_circle documents for the LVGL-side
+ * equivalent (app/screens/ff_layout.h) — just against a circle centered
+ * on the origin rather than an arbitrary center, which is exactly this
+ * module's center-relative convention. `radius_px <= 0` means the check
+ * is disabled (ff_map.h's documented escape hatch). */
+static bool ff_map_label_off_circle(float x, float y, float half_w, float half_h, float radius_px)
+{
+    if (radius_px <= 0.0f) return false;
+    float const fx = (x < 0.0f ? -x : x) + half_w;
+    float const fy = (y < 0.0f ? -y : y) + half_h;
+    return (fx * fx + fy * fy) > (radius_px * radius_px);
+}
+
+/* Pulls `(*x, *y)` radially inward so a box of half-extents (half_w,
+ * half_h) centered there sits inside `radius_px` — the shared "shrink the
+ * clamp target by this label's own half-extents" logic, factored out so
+ * it can run BOTH inside the HIGH-priority nudge loop below (every
+ * attempt, not just once) and once more, unconditionally, after that loop
+ * exits — see ff_map_place_labels's own comment on why it needs both.
+ * `radius_px <= 0` is the documented "check disabled" escape hatch: a
+ * no-op. */
+static void ff_map_label_pull_into_circle(float *x, float *y, float half_w, float half_h, float radius_px)
+{
+    if (radius_px <= 0.0f) return;
+    float const eff_radius = radius_px - (half_w + half_h);
+    if (eff_radius <= 0.0f) {
+        /* The label is wider than the circle itself — never real festival
+         * data (this label's own on-device 30-byte cap), but guarded
+         * rather than assumed (ff_map.h's doc comment). No position
+         * satisfies "fully inside", so center on the origin: the one
+         * point every positive radius still contains, the least-wrong
+         * honest fallback. */
+        *x = 0.0f;
+        *y = 0.0f;
+        return;
+    }
+    if (ff_map_label_off_circle(*x, *y, half_w, half_h, radius_px)) {
+        ff_map_clip_point_to_circle(*x, *y, eff_radius, x, y);
+    }
+}
+
 int ff_map_place_labels(ff_map_label_request_t const *in, int n, float min_sep_px, int max_nudge_tries,
-                         ff_map_label_result_t *out)
+                         float circle_radius_px, ff_map_label_result_t *out)
 {
     if (n < 0 || n > FF_MAP_LABEL_MAX_ITEMS) return -1;
     if (n > 0 && (in == NULL || out == NULL)) return -1; /* n == 0 needs neither pointer: nothing to dereference */
@@ -132,13 +201,33 @@ int ff_map_place_labels(ff_map_label_request_t const *in, int n, float min_sep_p
     for (int i = 0; i < n; i++) {
         float x = in[i].x;
         float y = in[i].y;
+        float const half_w = in[i].half_w;
+        float const half_h = in[i].half_h;
 
         /* Collision test against every EARLIER result that was actually
          * placed — dropped LOW entries contribute nothing, matching
          * ff_map.h's documented rule ("contributes nothing to later
          * entries' collision checks"). */
         if (in[i].priority == FF_MAP_LABEL_PRIORITY_HIGH) {
+            /* PR #82 review (BLOCKING): the circle-pull and the
+             * label-vs-label collision-nudge are NOT two independent
+             * one-shot passes — a pull that runs once, after the nudge
+             * loop, with no re-check, can silently land a label on top of
+             * an already-placed one (confirmed on the real pack:
+             * "Tunnel entrance (Rt 13)" pulled inward and overlapped
+             * "Prehistoric Stage", passing both the golden threshold and
+             * the circle-only containment test, because neither checks
+             * "cleared every other label AFTER the pull"). Folded into
+             * ONE loop instead: every attempt pulls inside the circle
+             * FIRST, THEN checks collision against every already-placed
+             * label at THAT (already-pulled) position — so the position
+             * this breaks out on on satisfies BOTH constraints
+             * simultaneously, never one at the silent expense of the
+             * other. Bounded by the same `max_nudge_tries` the plain
+             * collision-only case always used. */
             for (int attempt = 0; attempt < max_nudge_tries; attempt++) {
+                ff_map_label_pull_into_circle(&x, &y, half_w, half_h, circle_radius_px);
+
                 bool collides = false;
                 for (int j = 0; j < i; j++) {
                     if (!out[j].placed) continue;
@@ -152,6 +241,15 @@ int ff_map_place_labels(ff_map_label_request_t const *in, int n, float min_sep_p
                 if (!collides) break;
                 y += min_sep_px;
             }
+            /* Bounded-search fallback: if `max_nudge_tries` ran out still
+             * colliding, the loop's last statement was a y-nudge that was
+             * never re-pulled — guarantee the HARDER physical constraint
+             * (a real round device cannot show anything past its own
+             * edge, ever) holds even then, at the cost of the softer
+             * legibility constraint (label separation) in this rare,
+             * bounded, documented case. A no-op when the loop broke
+             * normally — that position was already pulled. */
+            ff_map_label_pull_into_circle(&x, &y, half_w, half_h, circle_radius_px);
             out[i].placed = true;
             out[i].x = x;
             out[i].y = y;
@@ -165,6 +263,13 @@ int ff_map_place_labels(ff_map_label_request_t const *in, int n, float min_sep_p
                     collides = true;
                     break;
                 }
+            }
+            /* Issue #77 fold-in: an off-circle placement is rejected the
+             * SAME way an ordinary label-label collision is — dropped,
+             * not nudged (the shape still draws either way; see
+             * ff_map.h's doc comment on why that's honest for LOW). */
+            if (!collides && ff_map_label_off_circle(x, y, half_w, half_h, circle_radius_px)) {
+                collides = true;
             }
             out[i].placed = !collides;
             out[i].x = x;

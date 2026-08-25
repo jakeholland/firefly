@@ -300,3 +300,34 @@ if(FF_BUILD_TESTS)
 
     add_test(NAME test_face_hit_targets COMMAND test_face_hit_targets)
 endif()
+
+# ---------------------------------------------------------------------------
+# Issue #75/#77 — the map face's circle-containment regression, targeted at
+# tests/fixtures/map_clip_stress.json. Same shape as test_face_hit_targets
+# above (in-process ff_build_face_screen + a headless display buffer, no
+# SDL) but checks LABEL objects specifically (not just CLICKABLE ones —
+# scr_map.c's labels are deliberately non-clickable, tap-anywhere-on-puck
+# chrome) and asserts the build completes fast, the actual issue #75
+# regression. See test_map_circle_containment.c's own header comment for
+# why the polygon/line vertex-clamp half of the fix is proven at the
+# geometry level instead (core/tests/test_map.c), not here.
+# ---------------------------------------------------------------------------
+if(FF_BUILD_TESTS)
+    add_executable(test_map_circle_containment
+        tests/test_map_circle_containment.c
+    )
+    target_link_libraries(test_map_circle_containment PRIVATE
+        ff-sim-fixture
+        ff-sim-face-dispatch
+        ff-app-ui
+        ff-layout
+        lvgl::lvgl
+        unity
+    )
+    target_compile_definitions(test_map_circle_containment PRIVATE
+        FF_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../../tests/fixtures/"
+    )
+    ff_apply_warnings(test_map_circle_containment)
+
+    add_test(NAME test_map_circle_containment COMMAND test_map_circle_containment)
+endif()
