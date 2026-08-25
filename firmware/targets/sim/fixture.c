@@ -388,6 +388,7 @@ static ff_fixture_result_t fx_parse_radar_dots(fx_ctx_t const *c, int arr_i, ff_
         if (fx_obj_get(c, obj_i, "color_idx", &t)) d->color_idx = (uint8_t)fx_num(c, t, 0.0);
         if (fx_obj_get(c, obj_i, "stale", &t)) d->stale = fx_bool(c, t, false);
         if (fx_obj_get(c, obj_i, "place", &t)) d->place = fx_bool(c, t, false); /* issue #33 */
+        if (fx_obj_get(c, obj_i, "imprecise", &t)) d->imprecise = fx_bool(c, t, false); /* issue #74 */
         r->n_dots++;
         idx = fx_skip(c, obj_i);
     }
@@ -672,6 +673,7 @@ static ff_fixture_result_t fx_parse_settings(fx_ctx_t const *c, int obj_i, ff_ap
      * ff_app_state.h's doc comment on this field). */
     if (fx_obj_get(c, obj_i, "utc_offset_set", &t)) s->utc_offset_set = fx_bool(c, t, false);
     if (fx_obj_get(c, obj_i, "utc_offset_min", &t)) s->utc_offset_min = (int16_t)fx_num(c, t, 0.0);
+    if (fx_obj_get(c, obj_i, "colorblind", &t)) s->colorblind = fx_bool(c, t, false); /* S17 slice a */
     return FF_FIXTURE_OK;
 }
 
@@ -1156,7 +1158,8 @@ static void fw_radar_dot(fw_cur_t *w, ff_radar_dot_t const *d)
     fw_json_str(w, initial);
     fw_fmt(w, ",\"color_idx\":%u", (unsigned)d->color_idx);
     fw_raw(w, d->stale ? ",\"stale\":true" : ",\"stale\":false");
-    fw_raw(w, d->place ? ",\"place\":true}" : ",\"place\":false}"); /* issue #33 */
+    fw_raw(w, d->place ? ",\"place\":true" : ",\"place\":false"); /* issue #33 */
+    fw_raw(w, d->imprecise ? ",\"imprecise\":true}" : ",\"imprecise\":false}"); /* issue #74 */
 }
 
 static void fw_now_row(fw_cur_t *w, ff_app_now_row_t const *r)
@@ -1379,6 +1382,7 @@ int ff_fixture_dump_json(ff_app_state_t const *s, char *buf, size_t buf_sz)
     fw_json_str(&w, s->settings.my_name);
     fw_raw(&w, s->settings.utc_offset_set ? ",\"utc_offset_set\":true" : ",\"utc_offset_set\":false");
     fw_fmt(&w, ",\"utc_offset_min\":%d", (int)s->settings.utc_offset_min);
+    fw_raw(&w, s->settings.colorblind ? ",\"colorblind\":true" : ",\"colorblind\":false"); /* S17 slice a */
     fw_raw(&w, "}");
 
     /* map (S09) — field-for-field mirror of fx_parse_map so a dump

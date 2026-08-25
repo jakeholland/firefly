@@ -585,14 +585,14 @@ static void map_collect_feature_label(map_label_collector_t *lc, ff_map_xform_t 
  * not an oversight.
  * ------------------------------------------------------------------- */
 
-static void map_draw_crew(lv_obj_t *parent, ff_map_xform_t const *xform, ff_app_map_crew_t const *c)
+static void map_draw_crew(lv_obj_t *parent, ff_map_xform_t const *xform, ff_app_map_crew_t const *c, bool colorblind)
 {
     if (!c->has_pos) {
         return;
     }
     float cx, cy;
     ff_map_project(xform, c->east_m, c->north_m, &cx, &cy);
-    uint32_t const color = ff_theme_crew_color(c->color_idx);
+    uint32_t const color = ff_theme_crew_color(c->color_idx, colorblind);
 
     if (c->imprecise) {
         /* Issue #47, applied to the map: a degraded-precision fix cannot
@@ -813,7 +813,7 @@ static void map_tap_back_cb(lv_event_t *e)
  * Entry point.
  * ------------------------------------------------------------------- */
 
-void ff_scr_map_build(ff_app_map_t const *map)
+void ff_scr_map_build(ff_app_map_t const *map, bool colorblind)
 {
     if (map == NULL) {
         return;
@@ -938,7 +938,7 @@ void ff_scr_map_build(ff_app_map_t const *map)
     map_label_collector_flush(&label_collector, puck);
 
     for (uint8_t i = 0; i < map->n_crew; i++) {
-        map_draw_crew(puck, &xform, &map->crew[i]);
+        map_draw_crew(puck, &xform, &map->crew[i], colorblind);
     }
 
     map_draw_truncated_indicator(puck, map);

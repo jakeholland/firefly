@@ -29,7 +29,7 @@ void ff_build_face_screen(ff_app_state_t const *state)
     } else if (state->active_face == FF_APP_FACE_SETTINGS) {
         ff_scr_settings_build(&state->settings);
     } else if (state->active_face == FF_APP_FACE_MAP) {
-        ff_scr_map_build(&state->map);
+        ff_scr_map_build(&state->map, state->settings.colorblind);
     } else {
         ff_fixture_view_build(state);
     }

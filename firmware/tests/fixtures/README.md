@@ -79,7 +79,7 @@ unrelated-looking golden diff.)
   "batt_pct": 78,
   "mesh_ok": true,
   "dots": [
-    {"ring_deg": 42.0, "initial": "D", "color_idx": 0, "stale": false, "place": false}
+    {"ring_deg": 42.0, "initial": "D", "color_idx": 0, "stale": false, "place": false, "imprecise": false}
   ]
 }
 ```
@@ -97,7 +97,7 @@ unrelated-looking golden diff.)
 | `clock_str` | string (≤5 chars) | `""` |
 | `batt_pct` | integer | `0` (note: `-1` is the documented "unknown" sentinel elsewhere in this codebase — pass it explicitly if that's what a fixture needs) |
 | `mesh_ok` | bool | `false` |
-| `dots` | array of `{ring_deg, initial, color_idx, stale, place}`, up to `FF_CREW_MAX` (8) — more than 8 fails the whole load (`FF_FIXTURE_ERR_TOO_BIG`) | `[]` |
+| `dots` | array of `{ring_deg, initial, color_idx, stale, place, imprecise}`, up to `FF_CREW_MAX` (8) — more than 8 fails the whole load (`FF_FIXTURE_ERR_TOO_BIG`) | `[]` |
 
 `mode: "place"` is issue #33's addition (2026-08-24): the selected member's
 latest position is an ASSERTION (Meshtastic `LOC_MANUAL`), not a
@@ -106,6 +106,13 @@ its age. `age_str` is always `""` for this mode (see `ff_radar.h`'s
 `RADAR_PLACE` doc comment for why an age can never be honestly shown for
 an asserted position). A dot's `place: true` marks the same fact on the
 crew ring — mutually exclusive with `stale`.
+
+A dot's `imprecise: true` (issue #74, S17 slice a) marks that member's
+latest fix as known-degraded precision — same gate as `dist_imprecise`
+above, applied per-dot instead of only to the selection. Rendered with
+the Map face's own fuzzy-ring idiom (hollow, no initial letter), never a
+crisp point. See `radar_dot_precise.json`/`radar_dot_imprecise.json`
+below for the golden pair.
 
 Field names/semantics are transcribed 1:1 from `docs/specs/S06-radar-face.md`'s
 `ff_radar_view_t` — as of S06, `ff_app_state_t.radar` *is* the real
@@ -265,7 +272,7 @@ one, if any — the same value `scr_compose.c` renders.
 "settings": {
   "imperial": true, "share_mode": "live", "haptics": true, "night_glow": true,
   "water_min": 90, "quiet_from_min": 240, "quiet_to_min": 600, "my_name": "DANA",
-  "utc_offset_set": true, "utc_offset_min": -420
+  "utc_offset_set": true, "utc_offset_min": -420, "colorblind": false
 }
 ```
 
@@ -277,6 +284,11 @@ one, if any — the same value `scr_compose.c` renders.
 meant this" convention as `flare.takeover_bearing_valid`. Default (both
 keys absent) is `utc_offset_set: false`, which `scr_settings.c` renders as
 an honest "UNSET", not a fabricated "+0:00".
+
+`colorblind` (S17 slice a addition, mirrors `ff_settings_t.colorblind`):
+default `false` (the brand crew palette). This key is read regardless of
+`face` — a `radar`/`map`-face fixture can set it too, since every screen
+that draws a crew dot reads it (see `radar_crew8_colorblind.json` below).
 
 ## `map` (S09)
 
@@ -349,7 +361,7 @@ and a worst-case crew-ring layout).
 | `radar_stale.json` | `stale` | `320 m` (last known) | `4 MIN` | no new fix since; distance is honestly stale, not re-measured (CLAUDE.md: "never fake freshness, positions, or times") |
 | `radar_lost.json` | `lost` (real fix) | `1.1 km` (rendered `~1.1 km`) | `42 MIN` | genuinely old fix — PR #16 UX review's top finding: this state had no fixture/golden at all in the first pass of this PR, so nobody had ever seen it rendered. Must read as a *different screen* from STALE, not a dimmer one (see `scr_radar.c`'s `radar_render_lost`) |
 | `radar_close.json` | `close` | `15 m` | `3 SEC` | close-range predicate tripped; `arrow_valid: false` per S06 ("false in CLOSE/NOFIX/NOSEL") |
-| `radar_cluster.json` | `live` | `320 m` | `8 SEC` | added for issue #18 (cluster marker styling). Four crew members 4 degrees apart on the ring, so all four resolve into ONE cluster marker — one wedge each, in all four **distinct** crew colors (pink/teal/violet/green), with the violet member stale so the mixed-freshness case is visible: three 6px wedges and one 2px one. `radar_close_collision.json` below only ever produces a 2-member cluster, which can't show whether the ring generalizes past a half-and-half split. **Not** the widest ring the marker can draw — `FF_CREW_MAX` is 8 while the palette has 4 colors, so a 5+ member cluster repeats colors; nothing above 4 members has a golden, and that gap is recorded in `docs/specs/S06-radar-face.md`'s Amendments |
+| `radar_cluster.json` | `live` | `320 m` | `8 SEC` | added for issue #18 (cluster marker styling). Four crew members 4 degrees apart on the ring, so all four resolve into ONE cluster marker — one wedge each, in all four **distinct** crew colors (pink/teal/violet/green), with the violet member stale so the mixed-freshness case is visible: three 6px wedges and one 2px one. `radar_close_collision.json` below only ever produces a 2-member cluster, which can't show whether the ring generalizes past a half-and-half split. **Not** the widest ring the marker can draw at the time this fixture was added — see `radar_cluster_8_samecolor.json` below (S17 slice a) for the 8-member case, closing the gap this note used to record |
 | `radar_cluster_stale.json` | `stale` | `320 m` (last known) | `4 MIN` | same four clustered members, but **every one of them stale** — added in PR #41's UX review round, which found that the first implementation expressed staleness by dimming a wedge's opacity, and dimming is *relative*: with no fresh wedge in frame for contrast, an all-stale marker rendered indistinguishably from a live one. This is the fixture that pins the fix (2px hollow wedges at full crew color, plus a `FF_THEME_COLOR_MUTED` count digit). Deliberately paired with `radar_cluster.json` — the pair only means something read side by side, since the whole finding was that one of them used to look like the other |
 | `radar_close_collision.json` | `close` | `15 m` | `3 SEC` | same scenario as `radar_close.json`, but with 4 crew-ring dots deliberately placed at worst-case bearings (one straight at the status bar, three clustered straight at the FLARE button / trend chip) to exercise `app/screens/radar_layout.c`'s layout resolver — the three southward dots resolve into a 1-dot + 1-cluster-of-2 outcome (a "2" marker, not a hidden member), and the northward dot lands clear of the status bar. Regressing the resolver will show up here even if it doesn't show up in the plain `radar_close` golden — though the authoritative regression coverage is `app/screens/tests/test_radar_layout.c`'s geometry-level sweep, not this golden (see that file's header comment for why) |
 | `radar_nofix.json` | `nofix` | `""` (unknown — my position invalid) | `6 MIN` (the *selected member's* last-known age is still honestly known even though mine isn't) | arrow hidden, "NO FIX - RADIO ONLY" |
@@ -357,6 +369,17 @@ and a worst-case crew-ring layout).
 | `radar_never.json` | `lost` (folded — see below) | `""` | `""` | selected member "JAMIE" is paired but has never sent a fix; `age_str[0] == '\0'` is what `scr_radar.c` keys off to show "NO FIX YET" instead of a "LAST SEEN" chip — NOT distinguishable from a genuinely-old fix by `mode` alone (both are `RADAR_LOST`; see `radar_lost.json` above for the other side of that same `mode`) |
 | `radar_place.json` | `place` | `610 m` | `""` (always empty — see `ff_radar.h`'s `RADAR_PLACE` doc comment) | issue #33 — a landmark's asserted (`LOC_MANUAL`) position, "CAMP BASE". Solid arrow (a real coordinate exists), neutral "FIXED POSITION" chip — never "LIVE", never a rim tint, never an invented age. One ring dot (`"C"`, `place: true`) also carries the honest treatment alongside two ordinary live dots |
 | `radar_imprecise.json` | `live` | `~5.8 km` | `8 SEC` | issue #47 — `dist_imprecise: true`; the selected member's precision is known-degraded (13 bits, the default-public-channel case measured on hardware). Freshness/mode are untouched (LIVE, fresh fix) — only the distance is an honest area estimate, dimmed in render and suffixed "- AREA" on the chip, never a metre-looking number |
+
+**S17 slice a additions** (issue #43's 8-colour palette, the colorblind
+toggle, and issue #74's radar-imprecise dot — `docs/specs/S17-usability-hardening.md`):
+
+| Fixture | mode | notes |
+|---|---|---|
+| `radar_crew8.json` | `live` | eight crew-ring dots, `color_idx` 0-7, spread 45 degrees apart (well clear of the resolver's ~10.5-degree merge threshold at `RADAR_LAYOUT_RING_RADIUS_PX`, so all eight render as separate lone dots, not a cluster) — every brand-palette color visible at once, indices 0-3 the original four, 4-7 the new ones (issue #43) |
+| `radar_crew8_colorblind.json` | `live` | byte-identical `radar` section to `radar_crew8.json` above, plus a top-level `"settings": {"colorblind": true}` — the SAME eight members rendered through the Okabe-Ito-derived safe palette instead. Meant to be diffed against `radar_crew8.json` directly: any pixel difference outside the eight dots is a bug |
+| `radar_cluster_8_samecolor.json` | `live` | eight members clustered into ONE marker (4 degrees apart, same spacing idiom as `radar_cluster.json`), with the first two (`color_idx: 0` on both) deliberately adjacent in wedge order — the same-color-adjacent-wedge case AC3 exists for. Proves the wedge gap (`RADAR_LAYOUT_CLUSTER_WEDGE_GAP_DEG`, pre-existing since issue #18) keeps a same-colour pair countable, not just visually-distinct pairs |
+| `radar_dot_precise.json` / `radar_dot_imprecise.json` | `live` | golden pair for issue #74 — identical except dot `"R"`'s `imprecise` flag (`false`/`true`). `"D"` stays an ordinary crisp dot in both; only `"R"` gains the fuzzy-ring treatment in the second fixture, isolating exactly the one thing that's supposed to change |
+| `settings_colorblind_on.json` | (Settings face) | `settings_default.json` with `colorblind: true` — the toggle's ON render (chip reads "ON" in live-green, matching the haptics/night-glow on-state color convention) |
 
 Four S10 slice b fixtures exist alongside the radar set, one per
 `ff_scr_flare_*` builder plus one for the takeover/lock interaction PR #20

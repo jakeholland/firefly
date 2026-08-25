@@ -102,6 +102,22 @@ typedef struct {
      * scr_radar.c's doc comment on the KNOWN GAP for clustered markers
      * that mix a place with live/stale friends. */
     bool    place;
+    /* issue #74 (S17 slice a): true when this member's latest fix has
+     * `has_precision_bits && precision_bits < FF_CREW_POS_PRECISION_MIN_BITS`
+     * — the SAME gate issue #47 already applies to the selected member's
+     * `dist_imprecise` distance text (see this header's doc comment),
+     * now applied per-dot so every ring member gets it, not just whoever
+     * is selected. A degraded fix can be off by kilometers; drawing it as
+     * an ordinary crisp dot at a precise bearing implies a confidence the
+     * wire data doesn't carry. `scr_radar.c` renders this with the Map
+     * face's own fuzzy-ring idiom (issue #47's map treatment) rather than
+     * inventing a third — see that file's doc comment for exactly how far
+     * the reuse goes (footprint size deliberately differs; see there for
+     * why). Independent of `place`/`stale`: an asserted or stale position
+     * can also be a degraded-precision one — precision and freshness are
+     * separate facts about the same fix, so this can be true alongside
+     * either (or neither) of them. */
+    bool    imprecise;
 } ff_radar_dot_t;
 
 /**
@@ -276,6 +292,10 @@ void ff_radar_smooth_reset(ff_radar_smooth_t *s);
  * own `ff_crew_freshness() == FF_FRESH_ASSERTED`; `dot.stale` is true
  * whenever that member's own freshness is STALE/LOST/NEVER — i.e. never
  * simultaneously with `place` (see `ff_radar_dot_t`'s doc comment).
+ * `dot.imprecise` (issue #74) is set independently of both, per member,
+ * with the exact same gate the selected member's `dist_imprecise` above
+ * uses (`has_precision_bits && precision_bits < FF_CREW_POS_PRECISION_MIN_BITS`)
+ * — see `ff_radar_dot_t`'s own doc comment for the render contract.
  *
 
  * Smoothing: whenever a bearing is computable for the selection (see

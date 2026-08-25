@@ -712,7 +712,7 @@ static void S16_c2_radar_flare_button_emits_flare_start(void)
     strncpy(r.dist_str, "15 m", sizeof(r.dist_str) - 1);
 
     lv_obj_t *parent = lv_obj_create(lv_screen_active());
-    ff_scr_radar_build(parent, &r);
+    ff_scr_radar_build(parent, &r, false);
 
     click(find_button_with_label(parent, "FLARE"));
 

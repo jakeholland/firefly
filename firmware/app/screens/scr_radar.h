@@ -9,6 +9,8 @@
 #ifndef FF_SCR_RADAR_H
 #define FF_SCR_RADAR_H
 
+#include <stdbool.h>
+
 #include "ff_radar.h"
 #include "lvgl.h"
 
@@ -41,8 +43,14 @@ extern "C" {
  * never fires a click), the emit is a safe no-op — same contract every
  * intent emit site in this codebase follows (see ff_intent.h's top
  * comment).
+ *
+ * `colorblind` (S17 slice a, [api]): selects the crew palette every dot/
+ * wedge on this face is drawn with — `ff_settings_t.colorblind` projected
+ * through as `ff_app_settings_t.colorblind` by the caller (scr_nav.c has
+ * the full `ff_app_state_t` in scope; see ff_theme.h's own doc comment
+ * for why this is an explicit parameter rather than a hidden global).
  */
-void ff_scr_radar_build(lv_obj_t *parent, ff_radar_view_t const *radar);
+void ff_scr_radar_build(lv_obj_t *parent, ff_radar_view_t const *radar, bool colorblind);
 
 #ifdef __cplusplus
 }

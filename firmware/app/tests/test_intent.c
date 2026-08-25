@@ -715,6 +715,32 @@ static void S16_AC8_setting_set_applies_and_persists_only_on_change(void)
     ff_shell_close(&h.shell);
 }
 
+/* S17 slice a: FF_SETTING_COLORBLIND — the exact same bool-backed,
+ * persist-on-change-only contract as IMPERIAL above, pinned separately
+ * per this repo's own "test names mirror the criteria" convention
+ * (AGENTS.md) rather than folded into the IMPERIAL test. */
+static void S17a_AC2_setting_set_colorblind_applies_and_persists_only_on_change(void)
+{
+    setting_harness_t h;
+    setting_harness_init(&h);
+
+    TEST_ASSERT_FALSE(ff_shell_settings(&h.shell)->colorblind); /* default */
+    TEST_ASSERT_EQUAL_INT(0, h.store_mem.set_calls);
+
+    setting_send(&h.shell, FF_SETTING_COLORBLIND, 1, NULL); /* true: a real change */
+    TEST_ASSERT_TRUE(ff_shell_settings(&h.shell)->colorblind);
+    TEST_ASSERT_EQUAL_INT(1, h.store_mem.set_calls);
+
+    setting_send(&h.shell, FF_SETTING_COLORBLIND, 1, NULL); /* same value again */
+    TEST_ASSERT_EQUAL_INT(1, h.store_mem.set_calls);        /* unchanged: no new write */
+
+    setting_send(&h.shell, FF_SETTING_COLORBLIND, 0, NULL); /* back to false: a change again */
+    TEST_ASSERT_FALSE(ff_shell_settings(&h.shell)->colorblind);
+    TEST_ASSERT_EQUAL_INT(2, h.store_mem.set_calls);
+
+    ff_shell_close(&h.shell);
+}
+
 static void S16_AC8_setting_set_out_of_range_is_rejected_not_clamped(void)
 {
     setting_harness_t h;
@@ -966,6 +992,7 @@ int main(void)
     RUN_TEST(S16_c2_flare_start_is_rejected_while_a_takeover_is_visible);
     RUN_TEST(S16_c2_flare_end_cancels_a_send_even_while_a_takeover_is_visible);
     RUN_TEST(S16_AC8_setting_set_applies_and_persists_only_on_change);
+    RUN_TEST(S17a_AC2_setting_set_colorblind_applies_and_persists_only_on_change);
     RUN_TEST(S16_AC8_setting_set_out_of_range_is_rejected_not_clamped);
     RUN_TEST(S16_AC8_setting_set_my_name_is_bounded_and_terminated);
     RUN_TEST(S16_AC8_setting_set_is_rejected_while_a_takeover_is_visible);

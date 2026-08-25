@@ -370,6 +370,15 @@ typedef struct {
      * "+0:00" (CLAUDE.md: "unknown = explicitly unknown"). */
     int16_t  utc_offset_min;
     bool     utc_offset_set;
+
+    /* [api] S17 slice a addition — mirrors ff_settings_t.colorblind
+     * field-for-field (core/include/ff_settings.h). The Settings face
+     * renders this row's ON/OFF state; every screen that draws a crew
+     * dot/wedge reads it (threaded as an explicit `bool colorblind`
+     * parameter into ff_scr_radar_build/ff_scr_map_build, NOT read from
+     * this struct directly by those two — see ff_theme.h's own doc
+     * comment for why an explicit parameter over a hidden global). */
+    bool     colorblind;
 } ff_app_settings_t;
 
 /* -------------------------------------------------------------------

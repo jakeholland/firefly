@@ -36,8 +36,13 @@ extern "C" {
  *
  * `map == NULL` draws nothing (same "no invented fallback" contract as
  * every other screen builder here).
+ *
+ * `colorblind` (S17 slice a, [api]): selects the crew palette every crew
+ * dot on this face is drawn with — see scr_radar.h's identical parameter
+ * for the full rationale (ff_theme.h's doc comment has the layering
+ * argument for why this is explicit, not a hidden global).
  */
-void ff_scr_map_build(ff_app_map_t const *map);
+void ff_scr_map_build(ff_app_map_t const *map, bool colorblind);
 
 #ifdef __cplusplus
 }

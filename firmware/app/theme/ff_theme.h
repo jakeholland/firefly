@@ -38,6 +38,8 @@
 #ifndef FF_THEME_H
 #define FF_THEME_H
 
+#include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #include "lvgl.h"
@@ -60,27 +62,124 @@ extern "C" {
 #define FF_THEME_COLOR_INK         0xF2EFE6 /* primary text on dark surfaces */
 
 /* Crew palette — indexed by ff_crew_member_t::color_idx / ff_radar_dot_t
- * ::color_idx ("index into the theme crew palette", ff_crew.h). */
-#define FF_THEME_CREW_PINK   0xFF5CA8
-#define FF_THEME_CREW_TEAL   0x4FD8C4
-#define FF_THEME_CREW_VIOLET 0xB08CFF
-#define FF_THEME_CREW_GREEN  0x9BE07B
+ * ::color_idx ("index into the theme crew palette", ff_crew.h).
+ *
+ * S17 slice a (issue #43): FF_CREW_MAX is 8 but this table used to hold
+ * only 4 entries, wrapping mod-4 — a full crew guaranteed two adjacent
+ * ring/wedge members shared a color. Extended to 8 real entries.
+ * Indices 0-3 are BYTE-IDENTICAL to the original 4 (same names, same
+ * hexes) — every scene with <=4 crew renders unchanged, no existing
+ * golden moves (S17a AC1/AC5). 4-7 are new.
+ *
+ * The four new hexes (and the colorblind-safe set below) were picked by
+ * a small script, not eyeballed: for each candidate, CIE76 ΔE*ab against
+ * every OTHER color this app already assigns meaning to (the crew four,
+ * the status colors below, and every FF_THEME_MAP_* kind color) was
+ * computed, together with WCAG contrast against FF_THEME_COLOR_BG, and
+ * the candidate with the largest worst-case margin was kept. This is the
+ * same trap issue #43 itself named — "half-solving it produces colours
+ * that are nominally distinct and practically identical" — measuring
+ * instead of reasoning-harder is this repo's own standing rule
+ * (AGENTS.md's "the proxy check"). Every one of the four clears >=25 ΔE
+ * from all fourteen other colors this file assigns meaning to (including
+ * each other) and >=6:1 contrast against FF_THEME_COLOR_BG, matching the
+ * brand four's own visibility. */
+#define FF_THEME_CREW_PINK    0xFF5CA8
+#define FF_THEME_CREW_TEAL    0x4FD8C4
+#define FF_THEME_CREW_VIOLET  0xB08CFF
+#define FF_THEME_CREW_GREEN   0x9BE07B
+#define FF_THEME_CREW_ORANGE  0xF96306 /* new: vivid orange-red, clear of MAP_MEDICAL(0xFF6B6B)/AMBER family */
+#define FF_THEME_CREW_GOLD    0xD3E05C /* new: yellow-green gold, clear of AMBER/STALE_AMBER and CREW_GREEN */
+#define FF_THEME_CREW_BLUE    0x7690E5 /* new: periwinkle blue, clear of MAP_POI's slate-blue and CREW_VIOLET */
+#define FF_THEME_CREW_MAGENTA 0xF906F9 /* new: hot magenta, clear of CREW_PINK and CREW_VIOLET */
+
+/**
+ * Colorblind-safe crew palette (S17 slice a, issue #43 + the toggle in
+ * docs/specs/S17-usability-hardening.md) — an Okabe-Ito-derived 8-colour
+ * qualitative set: Okabe, M. & Ito, K., "Color Universal Design (CUD) —
+ * How to make figures and presentations that are friendly to Colorblind
+ * people" (2002), as popularized/tabulated by Wong, B., "Points of view:
+ * Color blindness", Nature Methods 8, 441 (2011) — public-domain, the
+ * standard reference deutan/protan-safe qualitative 8-colour set (avoids
+ * red<->green and blue<->purple confusions; separated primarily by
+ * luminance/chroma, not hue alone, per that source's own design goal).
+ *
+ * "-derived", not verbatim, in exactly one place: the canonical set's
+ * 8th entry is black (#000000), chosen for a white page — invisible
+ * against this app's near-black FF_THEME_COLOR_BG (a filled black dot on
+ * a near-black puck is the one failure this whole slice exists to avoid).
+ * Substituted with a pale, low-saturation mauve, which keeps the same
+ * "achromatic-leaning, separated mainly by luminance" role the original
+ * black played (a near-neutral is trivially hue-safe for any dichromacy)
+ * while staying clearly visible on this display. The other seven are the
+ * cited hexes UNCHANGED — see the two known-close calls recorded in this
+ * slice's PR body (Okabe-Ito's own "orange" sits moderately close to this
+ * app's FF_THEME_COLOR_STALE_AMBER chip, and its "sky blue"/"blue" sit
+ * moderately close to FF_THEME_MAP_POI) rather than silently retuned,
+ * because retuning a cited, externally-verified safe set is exactly the
+ * kind of well-meant edit that can quietly undo the verification the
+ * citation is for.
+ */
+#define FF_THEME_CREW_CB_ORANGE  0xE69F00
+#define FF_THEME_CREW_CB_SKYBLUE 0x56B4E9
+#define FF_THEME_CREW_CB_GREEN   0x009E73 /* "bluish green" */
+#define FF_THEME_CREW_CB_YELLOW  0xF0E442
+#define FF_THEME_CREW_CB_BLUE    0x0072B2
+#define FF_THEME_CREW_CB_VERMILLION 0xD55E00
+#define FF_THEME_CREW_CB_PURPLE  0xCC79A7 /* "reddish purple" */
+#define FF_THEME_CREW_CB_MAUVE   0xD3B3DB /* substitute for the canonical set's black — see comment above */
 
 /**
  * ff_theme_crew_color — 0xRRGGBB for a dot/member's color_idx, wrapping
  * (modulo) so an out-of-range index degrades to a valid color instead of
  * reading out of bounds — honest-but-safe, never a crash over a display
  * nicety.
+ *
+ * `colorblind` selects which 8-entry table backs the lookup: the brand
+ * palette (false, default) or the colorblind-safe one (true) — S17 slice
+ * a's toggle, `ff_settings_t.colorblind`. An EXPLICIT parameter, not a
+ * hidden static/global this header flips elsewhere: this header is
+ * app-layer (theme/, not core/) but is still included from several
+ * independent translation units (scr_radar.c, scr_map.c, scr_settings.c)
+ * as a plain header-only inline function with no .c file of its own (see
+ * this header's top comment). A file-static "current mode" variable
+ * would NOT be shared across those TUs — each would get its own copy,
+ * silently desyncing whichever screen last got flipped from whichever
+ * screen renders next. A real cross-TU global would need this header to
+ * grow a .c file, which is a bigger structural change than a settings
+ * toggle warrants. An explicit parameter has neither problem, costs
+ * nothing (every call site already has `ff_app_settings_t`/the shell's
+ * settings in scope one frame away — see ff_scr_radar_build/
+ * ff_scr_map_build's own signatures), and matches this repo's own
+ * standing preference for explicit state over hidden globals (ff_radar.h's
+ * ff_radar_smooth_t is caller-owned for the identical reason).
  */
-static inline uint32_t ff_theme_crew_color(uint8_t color_idx)
+static inline uint32_t ff_theme_crew_color(uint8_t color_idx, bool colorblind)
 {
-    static const uint32_t palette[] = {
+    static const uint32_t brand_palette[] = {
         FF_THEME_CREW_PINK,
         FF_THEME_CREW_TEAL,
         FF_THEME_CREW_VIOLET,
         FF_THEME_CREW_GREEN,
+        FF_THEME_CREW_ORANGE,
+        FF_THEME_CREW_GOLD,
+        FF_THEME_CREW_BLUE,
+        FF_THEME_CREW_MAGENTA,
     };
-    return palette[color_idx % (sizeof(palette) / sizeof(palette[0]))];
+    static const uint32_t colorblind_palette[] = {
+        FF_THEME_CREW_CB_ORANGE,
+        FF_THEME_CREW_CB_SKYBLUE,
+        FF_THEME_CREW_CB_GREEN,
+        FF_THEME_CREW_CB_YELLOW,
+        FF_THEME_CREW_CB_BLUE,
+        FF_THEME_CREW_CB_VERMILLION,
+        FF_THEME_CREW_CB_PURPLE,
+        FF_THEME_CREW_CB_MAUVE,
+    };
+    uint32_t const *palette = colorblind ? colorblind_palette : brand_palette;
+    size_t const n = colorblind ? (sizeof(colorblind_palette) / sizeof(colorblind_palette[0]))
+                                 : (sizeof(brand_palette) / sizeof(brand_palette[0]));
+    return palette[color_idx % n];
 }
 
 /* -------------------------------------------------------------------

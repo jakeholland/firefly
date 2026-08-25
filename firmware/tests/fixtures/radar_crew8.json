@@ -1,0 +1,26 @@
+{
+  "fixture": "radar_crew8",
+  "face": "radar",
+  "radar": {
+    "mode": "live",
+    "arrow_deg": 42.0,
+    "arrow_valid": true,
+    "name": "DANA",
+    "dist_str": "320 m",
+    "age_str": "8 SEC",
+    "trend": 0,
+    "clock_str": "9:41",
+    "batt_pct": 78,
+    "mesh_ok": true,
+    "dots": [
+      {"ring_deg": 30.0, "initial": "A", "color_idx": 0, "stale": false},
+      {"ring_deg": 60.0, "initial": "B", "color_idx": 1, "stale": false},
+      {"ring_deg": 90.0, "initial": "C", "color_idx": 2, "stale": false},
+      {"ring_deg": 120.0, "initial": "D", "color_idx": 3, "stale": false},
+      {"ring_deg": 240.0, "initial": "E", "color_idx": 4, "stale": false},
+      {"ring_deg": 270.0, "initial": "F", "color_idx": 5, "stale": false},
+      {"ring_deg": 300.0, "initial": "G", "color_idx": 6, "stale": false},
+      {"ring_deg": 330.0, "initial": "H", "color_idx": 7, "stale": false}
+    ]
+  }
+}

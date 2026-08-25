@@ -272,7 +272,7 @@ void ff_scr_nav_build(ff_app_state_t const *state)
 
     switch (tile_idx) {
     case 0:
-        ff_scr_radar_build(tile_radar, &state->radar);
+        ff_scr_radar_build(tile_radar, &state->radar, state->settings.colorblind);
         /* S10 slice b: the Radar face's lock chip. Added as a child of
          * tile_radar specifically (not the puck) — spec: "the Radar face
          * shows a lock indicator" — so it only ever appears alongside the

@@ -16,14 +16,16 @@
  * checked against on every build.
  *
  * ## Row budget: why every control is "label + one cycling value chip"
- * Seven settings (units, share mode, haptics, night glow, water-nudge,
- * quiet hours, UTC offset) plus a name caption and a back button do not
- * fit the 440px puck as seven full editors (a segmented FT/M control, a
- * three-way share selector, two on/off switches, ...) without either
- * shrinking rows under the 44px hit-target floor or pushing the bottom
- * rows out into the pole, where the circle narrows to almost nothing
- * (see FF_SETTINGS_ROW4_Y's own margin at the bottom of this file's
- * layout constants). Every row instead follows the ONE pattern the spec
+ * Eight settings (units, share mode, haptics, night glow, water-nudge,
+ * quiet hours, UTC offset, colorblind — S17 slice a added the last one)
+ * plus a name caption and a back button do not fit the 440px puck as
+ * eight full editors (a segmented FT/M control, a three-way share
+ * selector, on/off switches, ...) without either shrinking rows under
+ * the 44px hit-target floor or pushing the bottom rows out into the
+ * pole, where the circle narrows to almost nothing (see
+ * FF_SETTINGS_ROW5_Y's own margin at the bottom of this file's layout
+ * constants — re-checked, not assumed, when the colorblind row was
+ * added; see that constant's own comment). Every row instead follows the ONE pattern the spec
  * itself already prescribes for water/quiet ("tap cycles presets") —
  * extended uniformly to every setting, including the two booleans and
  * share mode: a dim label names the setting, a single value chip on the
@@ -104,8 +106,17 @@
 #define FF_SETTINGS_ROW2_Y (FF_SETTINGS_ROW1_Y + FF_SETTINGS_ROW_STEP)  /* water nudge          */
 #define FF_SETTINGS_ROW3_Y (FF_SETTINGS_ROW2_Y + FF_SETTINGS_ROW_STEP)  /* quiet hours          */
 #define FF_SETTINGS_ROW4_Y (FF_SETTINGS_ROW3_Y + FF_SETTINGS_ROW_STEP)  /* UTC offset stepper   */
+/* S17 slice a: the colorblind toggle. Row budget re-checked, not assumed
+ * — this header's own comment above measured seven rows too tight for
+ * full-width editors, but a one-line "label + chip" row (row2/row3's own
+ * shape) is the same 54px step every other row already costs, and
+ * FF_SETTINGS_ROW4_Y (322) + its own 44px height (366) left 74px of
+ * square-bound slack before this addition — comfortably enough for one
+ * more row (see the _Static_assert immediately below, which is the real
+ * proof, not this comment). */
+#define FF_SETTINGS_ROW5_Y (FF_SETTINGS_ROW4_Y + FF_SETTINGS_ROW_STEP)  /* colorblind toggle    */
 
-_Static_assert(FF_SETTINGS_ROW4_Y + FF_SETTINGS_ROW_H <= FF_THEME_PUCK_PX,
+_Static_assert(FF_SETTINGS_ROW5_Y + FF_SETTINGS_ROW_H <= FF_THEME_PUCK_PX,
                "settings' last row must stay inside the puck's own square, let alone its circle");
 
 /**
@@ -450,6 +461,32 @@ static void settings_utc_label(char *buf, size_t n, bool set, int16_t off_min)
 }
 
 /* ---------------------------------------------------------------------
+ * Row 5: COLORBLIND — S17 slice a. A single boolean with a SINGLE
+ * full-width, self-describing chip ("COLORBLIND ON"/"COLORBLIND OFF"),
+ * matching HAPTICS/NIGHT GLOW's self-describing-chip-text idiom (row 1)
+ * rather than WATER NUDGE/QUIET HOURS' separate-label-plus-chip shape
+ * (rows 2/3) — NOT a stylistic choice, a geometry one: this is the
+ * LOWEST row on the face, close enough to the puck's pole that
+ * `settings_safe_margin_x` returns a much larger margin here than at any
+ * row above it (verified: ~139px at this row's y, vs. ~54px at row 2's),
+ * which left a rows-2/3-shaped fixed-110px chip only ~28px of label
+ * width to work with — under the 44px hit-target floor
+ * (`test_face_hit_targets.c` caught this in review; see AGENTS.md's
+ * standing brief on why that sweep exists). A single chip spanning the
+ * row's own margin-to-margin width scales WITH the available space
+ * instead of fighting it, the same way row 1's half-width chips already
+ * do. Same green-on/dim-off color convention as haptics/night-glow — a
+ * plain toggle, not an "amber means configured" value like water/quiet's
+ * presets.
+ * ------------------------------------------------------------------- */
+
+static void settings_colorblind_cb(lv_event_t *e)
+{
+    (void)e;
+    settings_emit_int(FF_SETTING_COLORBLIND, s_settings.colorblind ? 0 : 1);
+}
+
+/* ---------------------------------------------------------------------
  * Entry point.
  * ------------------------------------------------------------------- */
 
@@ -580,5 +617,18 @@ void ff_scr_settings_build(ff_app_settings_t const *settings)
         lv_obj_set_style_text_font(val, FF_THEME_FONT_LABEL, 0);
         lv_obj_set_style_text_color(val, lv_color_hex(FF_THEME_COLOR_INK), 0);
         lv_obj_align(val, LV_ALIGN_TOP_MID, 0, FF_SETTINGS_ROW4_Y + (FF_SETTINGS_ROW_H - 16) / 2);
+    }
+
+    /* --- Row 5: COLORBLIND. Same OFF-color convention as haptics/glow
+     * (row 1): dim grey off, live-green on — a plain toggle. Single
+     * full-width chip — see this file's row-5 comment above for why. --- */
+    {
+        int32_t margin = settings_safe_margin_x(FF_SETTINGS_ROW5_Y, FF_SETTINGS_ROW_H);
+        int32_t row_w = FF_THEME_PUCK_PX - 2 * margin;
+
+        uint32_t const fg = s_settings.colorblind ? FF_THEME_COLOR_LIVE_GREEN : FF_THEME_COLOR_DIM;
+        settings_make_chip(puck, s_settings.colorblind ? "COLORBLIND ON" : "COLORBLIND OFF", margin,
+                            FF_SETTINGS_ROW5_Y, row_w, FF_SETTINGS_ROW_H, FF_THEME_COLOR_SURFACE, fg,
+                            settings_colorblind_cb, NULL);
     }
 }
