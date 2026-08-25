@@ -50,6 +50,8 @@
 #include "scr_settings.h"
 #include "scr_signals.h"
 
+#include "radar_layout.h" /* RADAR_LAYOUT_DOT_PX — S17a AC4 render tests, see that section below */
+
 /* Frozen-by-default tick — same convention as test_scr_flare.c: nothing
  * here renders a frame, so every existing test in this file (all
  * `lv_obj_send_event` direct injection, no `lv_timer_handler` loop) never
@@ -721,6 +723,134 @@ static void S16_c2_radar_flare_button_emits_flare_start(void)
 }
 
 /* =================================================================== */
+/* Radar imprecise-dot RENDER styling (S17 slice a, issue #74)          */
+/*                                                                       */
+/* Code review finding on PR #83: the flag computation (ff_radar_dot_t  */
+/* .imprecise, core/ff_radar.c) was assertion-tested                    */
+/* (test_radar.c's S17a_AC4_dot_imprecise_flag_is_set_per_member...),   */
+/* but the RENDER branch that actually satisfies AC4's wording           */
+/* ("renders with the fuzzy treatment... not a crisp dot",               */
+/* scr_radar.c:332-364) had NO assertion coverage — only the             */
+/* radar_dot_precise.json/radar_dot_imprecise.json golden pair, whose    */
+/* shared 0.5% pixel-diff threshold does not reliably catch a disabled   */
+/* render branch on an element this small (measured: disabling the whole */
+/* `if (d->imprecise)` block moves radar_dot_imprecise.png by 0.4506% —  */
+/* under threshold, so the golden alone PASSES a real regression). Same  */
+/* proxy-check class this PR already found and fixed for AC3's wedge-gap */
+/* mutation (test_radar_layout.c's geometry assertions, not the golden). */
+/* Closing the equivalent gap for AC4 here, per                          */
+/* docs/review/code-review.md item 6 / AGENTS.md's standing brief:       */
+/* measure the actual rendered style state, don't trust a shared         */
+/* threshold to catch every behavior it happens to touch.                */
+/* =================================================================== */
+
+/* find_obj_by_size — recursive walk for the one crew-ring dot object in
+ * a single-dot scene: radar_build_dots (scr_radar.c) sizes the dot's OWN
+ * lv_obj_t (not its child label) to exactly RADAR_LAYOUT_DOT_PX square,
+ * and checks it's a plain lv_obj (not a button/label/line/arc — every
+ * other sized element on this face is one of those, or the whole-puck
+ * gesture region, or a custom-drawn triangle). With n_dots == 1 there is
+ * exactly one object this predicate can match, by construction. */
+static lv_obj_t *find_obj_by_size(lv_obj_t *root, int32_t size)
+{
+    uint32_t n = lv_obj_get_child_count(root);
+    for (uint32_t i = 0; i < n; i++) {
+        lv_obj_t *child = lv_obj_get_child(root, i);
+        if (lv_obj_check_type(child, &lv_obj_class) && lv_obj_get_width(child) == size &&
+            lv_obj_get_height(child) == size) {
+            return child;
+        }
+        lv_obj_t *found = find_obj_by_size(child, size);
+        if (found != NULL) {
+            return found;
+        }
+    }
+    return NULL;
+}
+
+/* first_label_text — the dot's own child label (its initial letter, or
+ * "" for the imprecise case) — every dot object radar_build_dots creates
+ * has exactly one label child, added first, so index 0 is always it. */
+static char const *first_label_text(lv_obj_t *dot)
+{
+    TEST_ASSERT_TRUE(lv_obj_get_child_count(dot) >= 1);
+    lv_obj_t *label = lv_obj_get_child(dot, 0);
+    TEST_ASSERT_TRUE(lv_obj_check_type(label, &lv_label_class));
+    return lv_label_get_text(label);
+}
+
+/* Positive control for the imprecise test below: a full-precision dot
+ * must NOT carry the fuzzy styling (AC4's own wording: "a full-precision
+ * member is unchanged"). Solid fill, no border, its initial shown. */
+static void S17a_AC4_radar_precise_dot_renders_filled_with_its_initial(void)
+{
+    ff_radar_view_t r;
+    memset(&r, 0, sizeof(r));
+    r.mode = RADAR_LIVE;
+    r.arrow_valid = true;
+    strncpy(r.name, "DANA", sizeof(r.name) - 1);
+    strncpy(r.dist_str, "320 m", sizeof(r.dist_str) - 1);
+    r.n_dots = 1;
+    r.dots[0].ring_deg = 42.0f; /* clear of every reserved chrome rect — see radar_layout.h */
+    r.dots[0].initial = 'R';
+    r.dots[0].color_idx = 1;
+    r.dots[0].stale = false;
+    r.dots[0].imprecise = false;
+
+    lv_obj_t *parent = lv_obj_create(lv_screen_active());
+    ff_scr_radar_build(parent, &r, false);
+    /* lv_obj_set_size only records the SPEC; actual lv_obj_get_width/
+     * height() (what find_obj_by_size below reads) aren't resolved until
+     * a layout pass runs — same requirement test_scr_flare.c's own
+     * geometry assertions document and rely on. */
+    lv_obj_update_layout(lv_screen_active());
+
+    lv_obj_t *dot = find_obj_by_size(parent, (int32_t)RADAR_LAYOUT_DOT_PX);
+    TEST_ASSERT_NOT_NULL(dot);
+
+    TEST_ASSERT_EQUAL(LV_OPA_COVER, lv_obj_get_style_bg_opa(dot, LV_PART_MAIN));
+    TEST_ASSERT_EQUAL_INT32(0, lv_obj_get_style_border_width(dot, LV_PART_MAIN));
+    TEST_ASSERT_EQUAL_STRING("R", first_label_text(dot));
+}
+
+/* The finding's own assertion: hollow (transparent fill), a markedly
+ * thicker/softer border than the crisp `stale` ghost ring's 2px/70% (see
+ * scr_radar.c's comment on the exact values), and NO initial letter —
+ * the three style facts the `d->imprecise` branch sets, checked directly
+ * against the rendered lv_obj_t rather than inferred from a pixel diff. */
+static void S17a_AC4_radar_imprecise_dot_renders_as_hollow_ring_with_no_initial(void)
+{
+    ff_radar_view_t r;
+    memset(&r, 0, sizeof(r));
+    r.mode = RADAR_LIVE;
+    r.arrow_valid = true;
+    strncpy(r.name, "DANA", sizeof(r.name) - 1);
+    strncpy(r.dist_str, "320 m", sizeof(r.dist_str) - 1);
+    r.n_dots = 1;
+    r.dots[0].ring_deg = 42.0f;
+    r.dots[0].initial = 'R';
+    r.dots[0].color_idx = 1;
+    r.dots[0].stale = false;
+    r.dots[0].imprecise = true;
+
+    lv_obj_t *parent = lv_obj_create(lv_screen_active());
+    ff_scr_radar_build(parent, &r, false);
+    /* lv_obj_set_size only records the SPEC; actual lv_obj_get_width/
+     * height() (what find_obj_by_size below reads) aren't resolved until
+     * a layout pass runs — same requirement test_scr_flare.c's own
+     * geometry assertions document and rely on. */
+    lv_obj_update_layout(lv_screen_active());
+
+    lv_obj_t *dot = find_obj_by_size(parent, (int32_t)RADAR_LAYOUT_DOT_PX);
+    TEST_ASSERT_NOT_NULL(dot);
+
+    TEST_ASSERT_EQUAL(LV_OPA_TRANSP, lv_obj_get_style_bg_opa(dot, LV_PART_MAIN));
+    TEST_ASSERT_EQUAL_INT32(6, lv_obj_get_style_border_width(dot, LV_PART_MAIN));
+    TEST_ASSERT_EQUAL(LV_OPA_40, lv_obj_get_style_border_opa(dot, LV_PART_MAIN));
+    TEST_ASSERT_EQUAL_STRING("", first_label_text(dot));
+}
+
+/* =================================================================== */
 /* Flare takeover GO / DISMISS -> TAKEOVER_GO / TAKEOVER_DISMISS        */
 /* (S16 slice c2 — moved from test_scr_flare.c, which used to build      */
 /* against a live ff_flare_t and assert on the CORE struct; the button   */
@@ -1064,6 +1194,8 @@ int main(void)
     RUN_TEST(S16_c2_signals_rally_tap_emits_select_rally_with_its_index);
     RUN_TEST(S16_c2_signals_canned_reply_chips_emit_canned_reply);
     RUN_TEST(S16_c2_radar_flare_button_emits_flare_start);
+    RUN_TEST(S17a_AC4_radar_precise_dot_renders_filled_with_its_initial);
+    RUN_TEST(S17a_AC4_radar_imprecise_dot_renders_as_hollow_ring_with_no_initial);
     RUN_TEST(S16_c2_flare_takeover_go_emits_takeover_go);
     RUN_TEST(S16_c2_flare_takeover_dismiss_emits_takeover_dismiss);
     RUN_TEST(S16_c2_sender_overlay_cancel_emits_flare_end);
