@@ -9,7 +9,7 @@ Firefly is a palm-sized round-screen puck for music festivals: a compass arrow t
 </p>
 
 <p align="center"><em>Not a mockup — that's the firmware rendering, frame by frame.<br>
-Five of the six v1 faces, running. The arrow finds your friend, the lineup admits which set times<br>aren't published yet, you can message without a network, and a flare takes over when someone needs finding.</em></p>
+All six v1 faces, running. The arrow finds your friend, the lineup admits which set times<br>aren't published yet, you can message without a network, and a flare takes over when someone needs finding.</em></p>
 
 ## Status
 
@@ -34,7 +34,7 @@ This table is meant to be accurate rather than flattering — if something rende
 | **Flare** — takeover screen, sender state, navigation lock | ✅ on `main` |
 | Dev harness — control socket, dockerised Meshtastic node, end-to-end tests | ✅ on `main` |
 | **Signals + Compose** — pulses, rally points, canned replies, and a T9 keypad with ABC/123/SYM pages | ✅ on `main` |
-| **Map face** — vector festival grounds with crew dots | ⏳ not started (S09) |
+| **Map face** — vector grounds, crew dots, YOU arrow, priority-decluttered labels | ✅ on `main` (S09) |
 | **Settings face** — units, quiet hours, share mode, name | ✅ on `main` (S11 slice b — long-press-anywhere; renaming is display-only, see below) |
 | **App shell** — event loop, face routing, input dispatch, wall clock, link state, settings persistence | ✅ complete (S16, 9 slices) |
 | ESP32-S3 device target, enclosure | ⏳ when boards arrive |
@@ -79,7 +79,7 @@ No fork to maintain, no phone required, ~$80 in parts. Battery life is a design 
 | **Now** | Lineup per stage, set progress, starred-set alarms |
 | **Signals** | Pulses, rally points, canned replies, T9 composer |
 | **Flare** | Press-and-hold "come find me" — crew pucks buzz and lock their arrows on you |
-| **Map** *(not built yet)* | Vector festival grounds from a festival pack, crew dots included — specced as S09, wanted for v1, no code yet |
+| **Map** | Vector grounds from a festpack — real Legend Valley geometry — with crew dots, rally pin, and a YOU arrow; labels declutter by priority so stages never overprint |
 | **Settings** | Units, quiet hours, share mode, UTC offset — long-press anywhere to open it. Your name is shown but not yet editable: renaming needs its own T9 draft seam (the shell's only typed-input state today is the composer's), tracked as a follow-up rather than force-fit onto it |
 
 Festival data (map polygons + lineup + set times) loads as a **festpack** — see [fest-almanac](https://github.com/jakeholland/fest-almanac), the open per-festival data repo.
