@@ -1074,6 +1074,30 @@ static void S16_b1_rssi_is_attributed_only_on_a_direct_path(void)
     TEST_ASSERT_EQUAL_INT16(-40, member(DANA)->rssi_dbm);
 }
 
+
+/**
+ * #35 remainder — the has_rssi gate, the third and previously UNPINNED
+ * condition (PR #67 review: mutating it out passed all 35 tests, because
+ * nothing ever injected meta without a reading). A DIRECT packet from a
+ * paired peer whose meta carries NO rssi (has_rssi=false, per #39's
+ * plausibility gate: NaN, out-of-range, or simply absent on the wire)
+ * must not record anything — rssi_dbm's INT16_MIN "never direct" state
+ * survives, and whatever garbage rides the value field is never read.
+ */
+static void S16_b1_rssi_absent_reading_records_nothing_even_direct_and_paired(void)
+{
+    harness_init(100000u, false);
+    inject_my_info(MY_ID);
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, true));
+
+    inject_rx_meta(DANA, MC_RX_PATH_DIRECT, false, -40);
+    TEST_ASSERT_EQUAL_INT16(INT16_MIN, member(DANA)->rssi_dbm);
+
+    /* Positive control: same call, flag true, records. */
+    inject_rx_meta(DANA, MC_RX_PATH_DIRECT, true, -40);
+    TEST_ASSERT_EQUAL_INT16(-40, member(DANA)->rssi_dbm);
+}
+
 /**
  * #35 remainder — the paired gate. A roster slot can exist and be
  * unpaired: known-but-never-trusted, or paired-then-unpaired
@@ -1102,6 +1126,7 @@ static void S16_b1_rssi_never_recorded_for_a_known_but_unpaired_sender(void)
     inject_rx_meta(DANA, MC_RX_PATH_DIRECT, true, -40);
     TEST_ASSERT_EQUAL_INT16(-40, member(DANA)->rssi_dbm);
 }
+
 
 /**
  * #35 remainder — the full chain, end to end. Earlier tests in this
@@ -1962,6 +1987,7 @@ int main(void)
     RUN_TEST(S16_b1_own_traffic_is_not_treated_as_inbound);
     RUN_TEST(S16_b1_rssi_is_attributed_only_on_a_direct_path);
     RUN_TEST(S16_b1_rssi_never_recorded_for_a_known_but_unpaired_sender);
+    RUN_TEST(S16_b1_rssi_absent_reading_records_nothing_even_direct_and_paired);
     RUN_TEST(S16_b1_close_mode_triggers_live_via_direct_rssi_from_paired_peer);
     RUN_TEST(S07_2026_08_24_starts_only_set_is_live_not_lineup);
     RUN_TEST(S16_b1_now_projection_needs_both_a_pack_and_a_known_clock);
