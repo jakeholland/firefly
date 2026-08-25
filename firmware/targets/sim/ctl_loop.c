@@ -428,6 +428,34 @@ static bool ctl_loop_flare(void *user, uint32_t from, uint16_t dur_s, char const
     return true;
 }
 
+/* Bench time-travel: hand an arbitrary unix time to the sim-only dev wall
+ * observation (the same entry --dev-trust-all's host pre-latch uses, so it
+ * carries the same honest provenance — the ctl state dump's
+ * host_observed:true). Exists so real festpacks whose dates are not "now"
+ * (a past Bass Canyon, a future Lost Lands) can be tested live end to end:
+ * the wall latch itself only moves forward from genuine observations, so
+ * without this a finished festival's schedule is unreachable on the bench.
+ * The plausibility gate still applies — an out-of-window time is rejected
+ * by ff_wall, not silently accepted here, and the reply says so. */
+static bool ctl_loop_wall(void *user, int64_t unix_s, char const **err)
+{
+    ff_ctl_loop_ctx_t *ctx = (ff_ctl_loop_ctx_t *)user;
+    if (!ff_shell_dev_wall_observe(ctx->shell, unix_s)) {
+        /* The gate's verdict, from the observe's own return — NOT from
+         * "is the wall resolvable afterwards", which stays true off any
+         * earlier latch and would read ok for exactly the values the
+         * gate refused. */
+        *err = "wall time rejected by ff_wall's plausibility window";
+        return false;
+    }
+    if (ff_shell_wall(ctx->shell).src == FF_WALL_UNKNOWN) {
+        *err = "wall latched but unresolvable: no UTC offset (load a pack or set settings utc_offset)";
+        return false;
+    }
+    ctx->live.wall_host_observed = true;
+    return true;
+}
+
 static bool *g_ctl_loop_quit_flag = NULL;
 
 static void ctl_loop_quit(void *user)
@@ -455,6 +483,7 @@ ff_ctl_handlers_t ff_ctl_loop_handlers(ff_ctl_loop_ctx_t *ctx, bool *quit_flag)
     h.state_json = ctl_loop_state_json;
     h.screenshot = ctl_loop_screenshot;
     h.flare = ctl_loop_flare;
+    h.wall = ctl_loop_wall;
     h.quit = ctl_loop_quit;
     return h;
 }

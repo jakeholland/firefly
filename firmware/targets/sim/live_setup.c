@@ -126,7 +126,7 @@ int ff_live_setup(ff_shell_t *shell, ff_shell_cfg_t *shell_cfg, ff_live_setup_cf
          * observation is paired with the CURRENT tick source reading —
          * under --mock-clock, later `clock` commands advance the derived
          * wall time from here. */
-        ff_shell_dev_wall_observe(shell, (int64_t)time(NULL));
+        (void)ff_shell_dev_wall_observe(shell, (int64_t)time(NULL)); /* a rejected HOST clock leaves wall UNKNOWN — honest */
         out->wall_host_observed = true; /* stated in the ctl `state` dump's wall object */
         printf("ffsim: --dev-trust-all: auto-pairing every NodeInfo sender, treating the daemon's "
                "own node as inbound, and latching the wall clock from the host clock "

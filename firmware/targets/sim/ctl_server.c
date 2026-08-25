@@ -387,6 +387,34 @@ bool ff_ctl_process_line(char const *line, ff_ctl_handlers_t const *h, char *res
         return false;
     }
 
+    if (strcmp(cmd, "wall") == 0) {
+        int ui;
+        if (!ctl_obj_get(&ctx, 0, "unix_s", &ui) || toks[ui].type != JSMN_PRIMITIVE) {
+            ctl_err(resp, resp_sz, "wall requires numeric unix_s");
+            return false;
+        }
+        double unix_s = ctl_num(&ctx, ui, NAN);
+        /* Bound to the same era ff_wall's own plausibility window can ever
+         * accept (a doubled margin around it, so the gate itself — not this
+         * parse — is what rejects an implausible-but-representable time and
+         * the reply can say so). 4e9 ~ year 2096. */
+        if (!isfinite(unix_s) || unix_s < 0.0 || unix_s > 4.0e9) {
+            ctl_err(resp, resp_sz, "wall unix_s must be within [0, 4e9]");
+            return false;
+        }
+        if (h->wall == NULL) {
+            ctl_err(resp, resp_sz, "wall unsupported");
+            return false;
+        }
+        char const *err = NULL;
+        if (!h->wall(h->user, (int64_t)unix_s, &err)) {
+            ctl_err(resp, resp_sz, (err != NULL) ? err : "wall failed");
+            return false;
+        }
+        ctl_ok(resp, resp_sz);
+        return false;
+    }
+
     if (strcmp(cmd, "quit") == 0) {
         if (h->quit != NULL) h->quit(h->user);
         ctl_ok(resp, resp_sz);

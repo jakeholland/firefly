@@ -126,6 +126,11 @@ typedef struct {
      * false (and sets `*err` to a short static reason string) if flare
      * injection isn't available right now (e.g. no live shell). */
     bool (*flare)(void *user, uint32_t from, uint16_t dur_s, char const **err);
+    /* Set the wall clock to an arbitrary unix time (bench time-travel for
+     * testing schedules against real festpacks whose dates aren't "now").
+     * Sim-gated at the loop layer — see ctl_loop.c's handler. NULL =>
+     * "wall unsupported". */
+    bool (*wall)(void *user, int64_t unix_s, char const **err);
 
     /** Called once, after "quit" is validated and just before the
      * `{"ok":true}` response is sent. May be NULL if the caller has
