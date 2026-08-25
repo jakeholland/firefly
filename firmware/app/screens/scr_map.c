@@ -69,11 +69,33 @@
  * puck's children to its own circular shape, so an over-extent shape
  * reads as "the boundary continues past the visible glass" instead of
  * bleeding into the sim window's square corners) — but it reliably
- * HANGS `ffsim --headless` at this file's draw-object count, so it is
- * NOT applied here; see `ff_scr_map_build`'s own comment and issue #75.
- * The consequence until that's fixed is sim-only cosmetic: a real,
- * physically-round device cannot show anything past its own edge no
- * matter what this file draws.
+ * HANGS `ffsim --headless` at this file's draw-object count (issue #75:
+ * up to ~300 full-puck-sized triangle/segment proxy objects, and the
+ * hang tracks with that count, not with clip_corner alone — Radar's own
+ * one or two such objects never hang). Rather than chase that interaction
+ * further, issue #75's fix moves containment out of LVGL entirely and
+ * into pure geometry, applied once at the SAME place every vertex/label
+ * already passes through on its way from meters to pixels:
+ *   - Every projected polygon/line vertex is radially clamped to
+ *     `FF_MAP_CIRCLE_RADIUS_PX` via `ff_map_clip_point_to_circle`
+ *     (core/include/ff_map.h) before it ever reaches
+ *     `map_draw_segment`/`map_draw_filled_triangle` — a disk is convex,
+ *     so clamping every vertex independently is provably sufficient: no
+ *     straight edge between two clamped-or-already-inside points can
+ *     bulge back outside. An over-extent boundary polygon now reads as
+ *     "flattened against the glass" rather than "bleeding past it",
+ *     honestly showing where the glass actually ends.
+ *   - `ff_map_place_labels` (same header) takes each label's own
+ *     half-width/half-height and rejects (LOW) or radially pulls inward
+ *     (HIGH, which can never be dropped) any placement whose bounding
+ *     box would cross the same circle — this is also issue #77's
+ *     "ultra-long labels run off the circle edge uncropped" half, folded
+ *     in here rather than left as a separate follow-up, since it's the
+ *     exact same "keep this inside the round silhouette" mechanism.
+ * No pixel clip, no LVGL draw-order dependency, no hang — see
+ * `map_draw_feature_shape` and `map_label_collector_flush` below for
+ * where each is applied, and `ff_map.h`'s doc comments for the full
+ * geometric argument.
  *
  * ## Sub-pixel stroke width
  * The spec's "1.3px stroke" has no LVGL equivalent — `lv_obj_set_style_
@@ -205,6 +227,26 @@ static void map_label_collector_reset(map_label_collector_t *lc)
 }
 
 /**
+ * map_label_half_extents — the one LVGL-dependent measurement
+ * `ff_map_place_labels`'s circle-bounds check (core/include/ff_map.h,
+ * issue #77's fold-in) needs but can't take itself (core stays LVGL-free
+ * — CLAUDE.md). Single-line, unwrapped (`LV_TEXT_FLAG_EXPAND` ignores
+ * `max_width`) at `FF_THEME_FONT_LABEL` with no extra letter/line
+ * spacing — exactly what `map_make_label` below actually draws (a plain
+ * `lv_label_create` with only that font set), so this is a measurement of
+ * the REAL rendered size, not an estimate. Returns half-width/half-height
+ * in px, matching `lv_obj_align(..., LV_ALIGN_CENTER, dx, dy)`'s own
+ * "centered on (dx, dy)" convention.
+ */
+static void map_label_half_extents(char const *text, float *out_half_w, float *out_half_h)
+{
+    lv_point_t size;
+    lv_text_get_size(&size, text, FF_THEME_FONT_LABEL, 0, 0, LV_COORD_MAX, LV_TEXT_FLAG_EXPAND);
+    *out_half_w = (float)size.x / 2.0f;
+    *out_half_h = (float)size.y / 2.0f;
+}
+
+/**
  * map_label_collector_add — queues one label request. `text` is NOT
  * copied (same "borrowed for the call" convention `ff_intent_t` uses) —
  * every caller in this file passes either a string literal ("YOU") or a
@@ -223,9 +265,13 @@ static void map_label_collector_add(map_label_collector_t *lc, float x, float y,
     if (lc->count >= FF_MAP_LABEL_MAX_ITEMS) {
         return;
     }
+    float half_w, half_h;
+    map_label_half_extents(text, &half_w, &half_h);
     lc->req[lc->count].x = x;
     lc->req[lc->count].y = y;
     lc->req[lc->count].priority = priority;
+    lc->req[lc->count].half_w = half_w;
+    lc->req[lc->count].half_h = half_h;
     lc->text[lc->count] = text;
     lc->color[lc->count] = color;
     lc->count++;
@@ -236,12 +282,18 @@ static void map_label_collector_add(map_label_collector_t *lc, float x, float y,
  * Requests MUST already be queued with every HIGH-priority one before
  * every LOW-priority one — `ff_map_place_labels`'s own documented caller
  * contract — which this file's single call site in `ff_scr_map_build`
- * satisfies by queuing order (see that function's own comment). */
+ * satisfies by queuing order (see that function's own comment).
+ *
+ * `FF_MAP_CIRCLE_RADIUS_PX` is passed as the circle-bounds radius (issue
+ * #77's fold-in — see this file's header comment): every result is
+ * either dropped (LOW) or pulled inward (HIGH) before it ever reaches
+ * `map_make_label`, so nothing drawn here can render past the round
+ * glass uncropped. */
 static void map_label_collector_flush(map_label_collector_t const *lc, lv_obj_t *parent)
 {
     ff_map_label_result_t results[FF_MAP_LABEL_MAX_ITEMS];
     int const n = ff_map_place_labels(lc->req, lc->count, FF_MAP_LABEL_MIN_SEP_PX, FF_MAP_LABEL_MAX_NUDGE_TRIES,
-                                       results);
+                                       FF_MAP_CIRCLE_RADIUS_PX, results);
     for (int i = 0; i < n; i++) {
         if (!results[i].placed) {
             continue;
@@ -532,17 +584,29 @@ static void map_draw_feature_shape(lv_obj_t *parent, ff_map_xform_t const *xform
     case FF_MAP_RENDER_LABEL_ONLY:
         return; /* no shape — see this file's header comment */
     case FF_MAP_RENDER_LINE: {
+        /* Issue #75: clamp each projected endpoint to the round glass
+         * BEFORE drawing — see this file's header comment and
+         * ff_map_clip_point_to_circle's own doc comment for why this
+         * replaces lv_obj_set_style_clip_corner without the hang. */
         float p0x, p0y, p1x, p1y;
         ff_map_project(xform, f->pts_en[0][0], f->pts_en[0][1], &p0x, &p0y);
         ff_map_project(xform, f->pts_en[1][0], f->pts_en[1][1], &p1x, &p1y);
+        ff_map_clip_point_to_circle(p0x, p0y, FF_MAP_CIRCLE_RADIUS_PX, &p0x, &p0y);
+        ff_map_clip_point_to_circle(p1x, p1y, FF_MAP_CIRCLE_RADIUS_PX, &p1x, &p1y);
         map_draw_segment(parent, p0x, p0y, p1x, p1y, color, LV_OPA_COVER, FF_MAP_STROKE_PX);
         return;
     }
     case FF_MAP_RENDER_POLYGON: {
+        /* Issue #75: clamp every projected vertex to the round glass
+         * before triangulating/stroking — a disk is convex, so this
+         * alone keeps the WHOLE fill and outline inside it (see this
+         * file's header comment). */
         float pts_px[FF_APP_MAP_MAX_POLY_PTS][2];
         int const n = (f->n_pts < FF_APP_MAP_MAX_POLY_PTS) ? f->n_pts : FF_APP_MAP_MAX_POLY_PTS;
         for (int i = 0; i < n; i++) {
-            ff_map_project(xform, f->pts_en[i][0], f->pts_en[i][1], &pts_px[i][0], &pts_px[i][1]);
+            float px, py;
+            ff_map_project(xform, f->pts_en[i][0], f->pts_en[i][1], &px, &py);
+            ff_map_clip_point_to_circle(px, py, FF_MAP_CIRCLE_RADIUS_PX, &pts_px[i][0], &pts_px[i][1]);
         }
         map_draw_polygon(parent, pts_px, n, color);
         return;
@@ -836,20 +900,14 @@ void ff_scr_map_build(ff_app_map_t const *map, bool colorblind)
     lv_obj_set_style_bg_opa(puck, LV_OPA_COVER, 0);
     lv_obj_set_style_border_width(puck, 0, 0);
     lv_obj_clear_flag(puck, LV_OBJ_FLAG_SCROLLABLE);
-    /* Circular clip — NOT applied, see issue #75. Now that the camera
-     * fits feature ANCHOR points rather than full vertex extents (this
-     * file's header comment), a large boundary polygon's own vertices
-     * can legitimately fall outside the fitted circle, and
-     * `lv_obj_set_style_clip_corner(puck, true, 0)` is the obvious fix
-     * — it reliably HANGS `ffsim --headless` when this many full-puck-
-     * sized draw objects (this file's triangle/segment technique, up to
-     * ~300 of them at this cap) are its children. Reverted rather than
-     * shipped hung; issue #75 tracks the real fix (likely: size each
-     * draw object to its own tight bounds instead of the whole puck).
-     * The visible consequence until then is SIM-ONLY — a real,
-     * physically-round device cannot show anything past its own edge
-     * regardless of what this file draws; only the sim's square window
-     * can leak an oversized shape into its corners. */
+    /* No `lv_obj_set_style_clip_corner` here — deliberately (issue #75:
+     * it reliably hangs `ffsim --headless` at this file's draw-object
+     * count). Containment is geometric instead: every projected
+     * polygon/line vertex is clamped to `FF_MAP_CIRCLE_RADIUS_PX` in
+     * `map_draw_feature_shape`, and every label's bounding box is kept
+     * inside the same circle by `ff_map_place_labels` (dropped if LOW,
+     * pulled inward if HIGH) in `map_label_collector_flush` — see this
+     * file's header comment for the full rationale. */
     /* Tap ANYWHERE -> back (S09 spec) — unlike every other full-screen
      * face in this codebase, the puck itself is the button; every child
      * this file draws clears LV_OBJ_FLAG_CLICKABLE so a tap always

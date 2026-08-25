@@ -60,6 +60,19 @@ extern "C" {
 #define FF_CTL_TAP_COORD_MIN (-32768.0)
 #define FF_CTL_TAP_COORD_MAX (32767.0)
 
+/* hold's `ms` bounds (issue #70). Default comfortably exceeds LVGL's
+ * long_press_time (LV_INDEV_DEF_LONG_PRESS_TIME, 400ms in this repo's
+ * lv_conf.h — unmodified from LVGL's own default) so a bare
+ * `{"cmd":"hold","x":..,"y":..}` reliably opens Settings without the
+ * caller having to know that threshold. The upper bound mirrors flare's
+ * `dur_s` convention (this module deliberately has no core dependency —
+ * see this header's design note — so it's a restated literal, not a
+ * shared #include) — generous headroom over any plausible dev/test hold,
+ * while still bounding the worst case (ctl_loop.c turns `ms` into a
+ * pointer-step loop; unbounded input would mean unbounded looping). */
+#define FF_CTL_HOLD_DEFAULT_MS (600u)
+#define FF_CTL_HOLD_MS_MAX (65535u)
+
 /* Idle-connection timeout (review fix, PR #19 finding #3): a client that
  * connects and never completes a command holds the single client slot
  * forever otherwise (listen backlog is 1 — this is a single-client dev
@@ -91,6 +104,20 @@ typedef struct {
     /** Inject a swipe gesture. `dir` is exactly "left" or "right"
      * (ff_ctl_process_line has already validated this before calling). */
     void (*swipe)(void *user, char const *dir);
+
+    /**
+     * Inject a press-and-hold at (x, y) (screen pixels) lasting `ms`
+     * before release — issue #70: `tap`'s press/release is a fixed
+     * ~40ms, well under LVGL's ~400ms long-press threshold, so the ONE
+     * gesture that opens Settings (scr_nav.c's nav_long_press_cb) could
+     * not be driven through this socket at all. `ff_ctl_process_line`
+     * has already validated `x`/`y` the same way it does for `tap`
+     * (finite, within [FF_CTL_TAP_COORD_MIN, FF_CTL_TAP_COORD_MAX]) and
+     * `ms` (finite, within [0, FF_CTL_HOLD_MS_MAX], defaulted to
+     * FF_CTL_HOLD_DEFAULT_MS when omitted) before this is called — same
+     * "safe to narrow, no further range checks needed here" contract
+     * `tap` documents. */
+    void (*hold)(void *user, double x, double y, uint32_t ms);
 
     /** Advance the mock clock by `advance_ms`. Returns false (and sets
      * `*err` to a short static reason string) if clock control isn't

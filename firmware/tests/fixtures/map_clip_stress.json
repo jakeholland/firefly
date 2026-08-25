@@ -1,0 +1,16 @@
+{
+  "fixture": "map_clip_stress",
+  "face": "map",
+  "map": {
+    "features": [
+      {"kind": "stage", "label": "Home Stage", "color_rgb": "#ffc66b", "points": [[-150.0, -90.0]]},
+      {"kind": "poi", "label": "Info Booth", "points": [[150.0, 90.0]]},
+      {"kind": "vendor", "label": "Wildly Over-The-Top Vendor Name", "points": [[150.0, -90.0]]},
+      {"kind": "camping", "label": "Absolutely Enormous Campground",
+       "points": [[-180.0, 60.0], [-120.0, 60.0], [-120.0, 110.0], [-180.0, 110.0]]},
+      {"kind": "poi", "label": "Venue Boundary",
+       "points": [[-500.0, -500.0], [500.0, -500.0], [500.0, 500.0], [-500.0, 500.0]]}
+    ],
+    "crew": []
+  }
+}

@@ -309,11 +309,11 @@ static void S09_place_labels_you_nudges_off_real_wompy_woods_collision(void)
      * review round found: YOU never joined the collision system, so it
      * silently landed on top of a stage label. */
     ff_map_label_request_t in[2] = {
-        {119.21074552754379f, 50.79579360612669f, FF_MAP_LABEL_PRIORITY_HIGH},
-        {82.63474245710869f, 64.59494476689082f, FF_MAP_LABEL_PRIORITY_HIGH},
+        {119.21074552754379f, 50.79579360612669f, FF_MAP_LABEL_PRIORITY_HIGH, 0.0f, 0.0f},
+        {82.63474245710869f, 64.59494476689082f, FF_MAP_LABEL_PRIORITY_HIGH, 0.0f, 0.0f},
     };
     ff_map_label_result_t out[2];
-    TEST_ASSERT_EQUAL_INT(2, ff_map_place_labels(in, 2, 48.0f, 6, out));
+    TEST_ASSERT_EQUAL_INT(2, ff_map_place_labels(in, 2, 48.0f, 6, FF_TEST_RADIUS_PX, out));
 
     /* Wompy Woods (placed first) never moves. */
     TEST_ASSERT_TRUE(out[0].placed);
@@ -341,11 +341,11 @@ static void S09_place_labels_venue_extent_drops_on_real_subsidia_collision(void)
      * centroid label position (10.39, -38.13), LOW — ~41.7px apart,
      * under the 48px threshold. */
     ff_map_label_request_t in[2] = {
-        {-10.837106496790302f, -2.208402922222037f, FF_MAP_LABEL_PRIORITY_HIGH},
-        {10.38585103411318f, -38.13346469131977f, FF_MAP_LABEL_PRIORITY_LOW},
+        {-10.837106496790302f, -2.208402922222037f, FF_MAP_LABEL_PRIORITY_HIGH, 0.0f, 0.0f},
+        {10.38585103411318f, -38.13346469131977f, FF_MAP_LABEL_PRIORITY_LOW, 0.0f, 0.0f},
     };
     ff_map_label_result_t out[2];
-    TEST_ASSERT_EQUAL_INT(2, ff_map_place_labels(in, 2, 48.0f, 6, out));
+    TEST_ASSERT_EQUAL_INT(2, ff_map_place_labels(in, 2, 48.0f, 6, FF_TEST_RADIUS_PX, out));
 
     TEST_ASSERT_TRUE(out[0].placed); /* Subsidia (HIGH): always placed, unmoved */
     TEST_ASSERT_EQUAL_FLOAT(in[0].x, out[0].x);
@@ -364,11 +364,11 @@ static void S09_place_labels_high_priority_pair_far_apart_neither_moves(void)
      * Negative control: the algorithm must not nudge when there is no
      * real collision. */
     ff_map_label_request_t in[2] = {
-        {-120.56511570809566f, -60.512880866697f, FF_MAP_LABEL_PRIORITY_HIGH},
-        {90.76272725015073f, -118.81778782164704f, FF_MAP_LABEL_PRIORITY_HIGH},
+        {-120.56511570809566f, -60.512880866697f, FF_MAP_LABEL_PRIORITY_HIGH, 0.0f, 0.0f},
+        {90.76272725015073f, -118.81778782164704f, FF_MAP_LABEL_PRIORITY_HIGH, 0.0f, 0.0f},
     };
     ff_map_label_result_t out[2];
-    TEST_ASSERT_EQUAL_INT(2, ff_map_place_labels(in, 2, 48.0f, 6, out));
+    TEST_ASSERT_EQUAL_INT(2, ff_map_place_labels(in, 2, 48.0f, 6, FF_TEST_RADIUS_PX, out));
 
     TEST_ASSERT_TRUE(out[0].placed);
     TEST_ASSERT_TRUE(out[1].placed);
@@ -382,11 +382,11 @@ static void S09_place_labels_low_priority_not_dropped_when_far_enough(void)
      * — proves LOW isn't unconditionally dropped, only on an actual
      * collision. */
     ff_map_label_request_t in[2] = {
-        {-120.56511570809566f, -60.512880866697f, FF_MAP_LABEL_PRIORITY_HIGH},
-        {77.21607798377555f, -61.396443829401875f, FF_MAP_LABEL_PRIORITY_LOW},
+        {-120.56511570809566f, -60.512880866697f, FF_MAP_LABEL_PRIORITY_HIGH, 0.0f, 0.0f},
+        {77.21607798377555f, -61.396443829401875f, FF_MAP_LABEL_PRIORITY_LOW, 0.0f, 0.0f},
     };
     ff_map_label_result_t out[2];
-    TEST_ASSERT_EQUAL_INT(2, ff_map_place_labels(in, 2, 48.0f, 6, out));
+    TEST_ASSERT_EQUAL_INT(2, ff_map_place_labels(in, 2, 48.0f, 6, FF_TEST_RADIUS_PX, out));
 
     TEST_ASSERT_TRUE(out[0].placed);
     TEST_ASSERT_TRUE(out[1].placed);
@@ -396,18 +396,167 @@ static void S09_place_labels_low_priority_not_dropped_when_far_enough(void)
 
 static void S09_place_labels_rejects_bad_args(void)
 {
-    ff_map_label_request_t in[1] = {{0.0f, 0.0f, FF_MAP_LABEL_PRIORITY_HIGH}};
+    ff_map_label_request_t in[1] = {{0.0f, 0.0f, FF_MAP_LABEL_PRIORITY_HIGH, 0.0f, 0.0f}};
     ff_map_label_result_t out[1];
-    TEST_ASSERT_EQUAL_INT(-1, ff_map_place_labels(NULL, 1, 48.0f, 6, out));
-    TEST_ASSERT_EQUAL_INT(-1, ff_map_place_labels(in, 1, 48.0f, 6, NULL));
-    TEST_ASSERT_EQUAL_INT(-1, ff_map_place_labels(in, -1, 48.0f, 6, out));
-    TEST_ASSERT_EQUAL_INT(-1, ff_map_place_labels(in, FF_MAP_LABEL_MAX_ITEMS + 1, 48.0f, 6, out));
+    TEST_ASSERT_EQUAL_INT(-1, ff_map_place_labels(NULL, 1, 48.0f, 6, FF_TEST_RADIUS_PX, out));
+    TEST_ASSERT_EQUAL_INT(-1, ff_map_place_labels(in, 1, 48.0f, 6, FF_TEST_RADIUS_PX, NULL));
+    TEST_ASSERT_EQUAL_INT(-1, ff_map_place_labels(in, -1, 48.0f, 6, FF_TEST_RADIUS_PX, out));
+    TEST_ASSERT_EQUAL_INT(-1, ff_map_place_labels(in, FF_MAP_LABEL_MAX_ITEMS + 1, 48.0f, 6, FF_TEST_RADIUS_PX, out));
 }
 
 static void S09_place_labels_zero_items_is_a_safe_noop(void)
 {
     ff_map_label_result_t out[1];
-    TEST_ASSERT_EQUAL_INT(0, ff_map_place_labels(NULL, 0, 48.0f, 6, out));
+    TEST_ASSERT_EQUAL_INT(0, ff_map_place_labels(NULL, 0, 48.0f, 6, FF_TEST_RADIUS_PX, out));
+}
+
+/* ------------------------------------------------------------------- */
+/* Issue #75/#77 — ff_map_clip_point_to_circle and the circle-bounds     */
+/* half of ff_map_place_labels (folding in #77's "ultra-long labels run  */
+/* off the circle edge uncropped").                                      */
+/* ------------------------------------------------------------------- */
+
+static void S75_clip_point_inside_circle_is_unchanged(void)
+{
+    float ox, oy;
+    ff_map_clip_point_to_circle(30.0f, -40.0f, FF_TEST_RADIUS_PX, &ox, &oy);
+    TEST_ASSERT_EQUAL_FLOAT(30.0f, ox);
+    TEST_ASSERT_EQUAL_FLOAT(-40.0f, oy);
+}
+
+static void S75_clip_point_outside_circle_lands_exactly_on_radius(void)
+{
+    /* (300, 400): distance 500, well outside a 100px radius. Scaled by
+     * 100/500 = 0.2 along the SAME direction -> (60, 80), distance
+     * exactly 100. */
+    float ox, oy;
+    ff_map_clip_point_to_circle(300.0f, 400.0f, 100.0f, &ox, &oy);
+    TEST_ASSERT_FLOAT_WITHIN(0.01f, 60.0f, ox);
+    TEST_ASSERT_FLOAT_WITHIN(0.01f, 80.0f, oy);
+    float const d = sqrtf(ox * ox + oy * oy);
+    TEST_ASSERT_FLOAT_WITHIN(0.01f, 100.0f, d);
+}
+
+static void S75_clip_point_zero_or_negative_radius_passes_through(void)
+{
+    float ox, oy;
+    ff_map_clip_point_to_circle(300.0f, 400.0f, 0.0f, &ox, &oy);
+    TEST_ASSERT_EQUAL_FLOAT(300.0f, ox);
+    TEST_ASSERT_EQUAL_FLOAT(400.0f, oy);
+
+    ff_map_clip_point_to_circle(300.0f, 400.0f, -10.0f, &ox, &oy);
+    TEST_ASSERT_EQUAL_FLOAT(300.0f, ox);
+    TEST_ASSERT_EQUAL_FLOAT(400.0f, oy);
+}
+
+static void S75_clip_point_at_origin_stays_at_origin(void)
+{
+    float ox, oy;
+    ff_map_clip_point_to_circle(0.0f, 0.0f, FF_TEST_RADIUS_PX, &ox, &oy);
+    TEST_ASSERT_EQUAL_FLOAT(0.0f, ox);
+    TEST_ASSERT_EQUAL_FLOAT(0.0f, oy);
+}
+
+/* #77's actual repro shape: a LOW-priority (non-stage polygon) label,
+ * far enough from every other label to rule out an ordinary collision,
+ * whose own text half-width pushes its bounding box past the circle —
+ * must be DROPPED (shape still draws — this test only exercises the
+ * label decision), not silently drawn off-glass uncropped. */
+static void S77_place_labels_low_priority_ultra_long_label_drops_off_circle(void)
+{
+    /* Anchor at (150, 0), 154px from center — inside FF_TEST_RADIUS_PX
+     * (206) on its own, but half_w=120 (a "made-up ~30-char label",
+     * #77's own words) pushes the far corner to 270px, well past 206. */
+    ff_map_label_request_t in[1] = {{150.0f, 0.0f, FF_MAP_LABEL_PRIORITY_LOW, 120.0f, 8.0f}};
+    ff_map_label_result_t out[1];
+    TEST_ASSERT_EQUAL_INT(1, ff_map_place_labels(in, 1, 48.0f, 6, FF_TEST_RADIUS_PX, out));
+    TEST_ASSERT_FALSE_MESSAGE(out[0].placed, "ultra-long LOW label must be dropped, not drawn past the circle");
+}
+
+/* The HIGH-priority counterpart: never dropped (it has no other visual
+ * representation), so an off-circle result must be pulled radially
+ * inward until its own bounding box is honestly contained. */
+static void S77_place_labels_high_priority_ultra_long_label_clamped_not_dropped(void)
+{
+    ff_map_label_request_t in[1] = {{150.0f, 0.0f, FF_MAP_LABEL_PRIORITY_HIGH, 120.0f, 8.0f}};
+    ff_map_label_result_t out[1];
+    TEST_ASSERT_EQUAL_INT(1, ff_map_place_labels(in, 1, 48.0f, 6, FF_TEST_RADIUS_PX, out));
+    TEST_ASSERT_TRUE_MESSAGE(out[0].placed, "HIGH labels are never dropped");
+
+    /* The RESULT's own bounding box (half_w/half_h unchanged by a
+     * position clamp) must fit inside the circle — same per-corner check
+     * ff_map_place_labels itself uses internally. */
+    float const fx = (out[0].x < 0.0f ? -out[0].x : out[0].x) + in[0].half_w;
+    float const fy = (out[0].y < 0.0f ? -out[0].y : out[0].y) + in[0].half_h;
+    float const far_corner = sqrtf(fx * fx + fy * fy);
+    TEST_ASSERT_TRUE_MESSAGE(far_corner <= FF_TEST_RADIUS_PX + 0.01f,
+                              "HIGH label's bounding box must be pulled inside the circle, not left hanging off it");
+    /* And it actually moved (wasn't left at its original off-circle spot). */
+    TEST_ASSERT_TRUE(out[0].x != in[0].x || out[0].y != in[0].y);
+}
+
+/* circle_radius_px <= 0 disables the bounds check entirely — a caller
+ * that doesn't care about circle containment (or hasn't been updated to
+ * supply half_w/half_h) gets exactly the pre-#77 behavior back. */
+static void S77_place_labels_zero_radius_disables_bounds_check(void)
+{
+    ff_map_label_request_t in[1] = {{150.0f, 0.0f, FF_MAP_LABEL_PRIORITY_LOW, 120.0f, 8.0f}};
+    ff_map_label_result_t out[1];
+    TEST_ASSERT_EQUAL_INT(1, ff_map_place_labels(in, 1, 48.0f, 6, 0.0f, out));
+    TEST_ASSERT_TRUE(out[0].placed);
+    TEST_ASSERT_EQUAL_FLOAT(in[0].x, out[0].x);
+    TEST_ASSERT_EQUAL_FLOAT(in[0].y, out[0].y);
+}
+
+/* PR #82 review (BLOCKING): a HIGH label's circle-pull must not silently
+ * re-introduce a label-label collision it never re-checks. This is the
+ * exact real-pack failure the review caught in map_real_lost_lands —
+ * "Tunnel entrance (Rt 13)" pulled radially inward and landed on top of
+ * "Prehistoric Stage", passing both the golden pixel-diff threshold AND
+ * test_map_circle_containment.c's circle-only containment check, because
+ * neither one checks "still clear of every other label AFTER the pull".
+ *
+ * Reproduced directly here, independent of any real pack: A is placed
+ * first, safely inside the circle. B's RAW anchor sits far outside the
+ * circle in the exact SAME angular direction as A — a radial pull always
+ * moves a point straight toward the origin along its own direction, so
+ * B's naive circle-pull lands close to A by construction, the precise
+ * geometry that broke the old two-independent-passes version.
+ *
+ * Mutation check (confirmed against the actual code, not asserted from
+ * reasoning): reverting `ff_map_place_labels` to pull ONCE after the
+ * nudge loop, with no per-attempt re-pull/re-check (this function's
+ * pre-#82-review shape), makes `sep_ok` below false — B lands within
+ * `min_sep` of A and stays there, because the one-shot pull is never
+ * re-validated against the labels already placed. */
+static void S82_place_labels_high_priority_circle_pull_still_respects_separation(void)
+{
+    float const radius = 200.0f;
+    float const min_sep = 40.0f;
+
+    ff_map_label_request_t in[2] = {
+        {190.0f, 0.0f, FF_MAP_LABEL_PRIORITY_HIGH, 0.0f, 0.0f},  /* A: already safely inside the circle */
+        {1000.0f, 0.0f, FF_MAP_LABEL_PRIORITY_HIGH, 0.0f, 0.0f}, /* B: raw anchor far outside, same direction as A */
+    };
+    ff_map_label_result_t out[2];
+    TEST_ASSERT_EQUAL_INT(2, ff_map_place_labels(in, 2, min_sep, 6, radius, out));
+
+    TEST_ASSERT_TRUE(out[0].placed);
+    TEST_ASSERT_TRUE(out[1].placed);
+
+    /* Both HIGH labels must land inside the circle... */
+    float const d0 = sqrtf(out[0].x * out[0].x + out[0].y * out[0].y);
+    float const d1 = sqrtf(out[1].x * out[1].x + out[1].y * out[1].y);
+    TEST_ASSERT_TRUE_MESSAGE(d0 <= radius + 0.01f, "A must stay inside the circle");
+    TEST_ASSERT_TRUE_MESSAGE(d1 <= radius + 0.01f, "B's circle-pull must land inside the circle");
+
+    /* ...AND B must still clear A by min_sep_px — the property a
+     * one-shot, never-re-checked pull silently violates. */
+    float const dx = out[1].x - out[0].x;
+    float const dy = out[1].y - out[0].y;
+    float const sep = sqrtf(dx * dx + dy * dy);
+    bool const sep_ok = sep >= min_sep - 0.01f;
+    TEST_ASSERT_TRUE_MESSAGE(sep_ok, "B's circle-pull re-introduced a collision with A that was never re-checked");
 }
 
 /* ------------------------------------------------------------------- */
@@ -569,6 +718,16 @@ int main(void)
     RUN_TEST(S09_place_labels_low_priority_not_dropped_when_far_enough);
     RUN_TEST(S09_place_labels_rejects_bad_args);
     RUN_TEST(S09_place_labels_zero_items_is_a_safe_noop);
+
+    RUN_TEST(S75_clip_point_inside_circle_is_unchanged);
+    RUN_TEST(S75_clip_point_outside_circle_lands_exactly_on_radius);
+    RUN_TEST(S75_clip_point_zero_or_negative_radius_passes_through);
+    RUN_TEST(S75_clip_point_at_origin_stays_at_origin);
+
+    RUN_TEST(S77_place_labels_low_priority_ultra_long_label_drops_off_circle);
+    RUN_TEST(S77_place_labels_high_priority_ultra_long_label_clamped_not_dropped);
+    RUN_TEST(S77_place_labels_zero_radius_disables_bounds_check);
+    RUN_TEST(S82_place_labels_high_priority_circle_pull_still_respects_separation);
 
     RUN_TEST(S09_triangulate_convex_square_covers_exact_area);
     RUN_TEST(S09_triangulate_real_venue_extent_is_concave_and_covers_exact_area);

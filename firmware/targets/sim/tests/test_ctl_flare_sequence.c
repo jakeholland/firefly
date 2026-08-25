@@ -392,6 +392,87 @@ static void ctl_swipe_actually_changes_the_face(void)
     lv_deinit();
 }
 
+/* ctl `hold` (issue #70): press-and-hold at (x, y) for `ms`, then
+ * release. Unlike ctl_tap, ctl_loop_hold's own internal step loop
+ * already advances the mock clock and pumps lv_timer_handler enough
+ * times to deliver the whole press->hold->release sequence — including,
+ * for a long enough `ms`, the LONG_PRESSED event itself — before the
+ * ctl command even replies. No stranded-release choreography needed
+ * here the way ctl_tap needs (see that helper's comment): only
+ * ctl_settle afterward, to let ff_shell_tick project whatever the
+ * gesture did into ctx->state and rebuild the screen. */
+static void ctl_hold(ff_ctl_handlers_t const *h, double x, double y, uint32_t ms, char *resp, size_t resp_sz)
+{
+    char cmd[128];
+    int n = snprintf(cmd, sizeof(cmd), "{\"cmd\":\"hold\",\"x\":%.2f,\"y\":%.2f,\"ms\":%u}", x, y, (unsigned)ms);
+    TEST_ASSERT_TRUE(n > 0 && (size_t)n < sizeof(cmd));
+    ctl_send(h, cmd, resp, resp_sz);
+}
+
+/* issue #70: tap's press/release is a fixed ~40ms, well under LVGL's
+ * ~400ms long_press_time, so the ONE gesture that opens Settings
+ * (scr_nav.c's nav_long_press_cb, reached by a long-press anywhere on
+ * the tileview) could not be driven through the ctl socket at all —
+ * blocking the Settings/Map UX reviews (PR #68) from driving those
+ * faces live. Drives a REAL long-press through ff_ctl_process_line and
+ * asserts the face actually reaches Settings, the same way
+ * ctl_swipe_actually_changes_the_face asserts the face actually moved.
+ *
+ * Mutation-conscious (standing brief: "what input satisfies the proxy
+ * and violates the property?"): a `hold` implementation that always
+ * held "long enough" regardless of `ms` (e.g. one that hardcoded enough
+ * steps and ignored the caller's value) would still pass a test that
+ * only checked the positive case. The negative case below — an 80ms
+ * hold, well under the 400ms threshold — pins the other direction: it
+ * must NOT open Settings. (228, 228) is the puck/window center — the
+ * exact reachability point app/screens/tests/test_scr_intent.c's own
+ * `S16_c3_physical_long_press_on_empty_puck_space_reaches_open_settings`
+ * documents as "nothing clickable sits here in this state" on Radar. */
+static void ctl_hold_opens_settings_but_short_hold_does_not(void)
+{
+    static ff_shell_t shell;
+    static fp_pack_t pack;
+    static ff_ctl_loop_ctx_t ctx;
+
+    ff_shell_cfg_t shell_cfg;
+    memset(&shell_cfg, 0, sizeof(shell_cfg));
+
+    ff_ctl_loop_cfg_t cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.mock_clock = true;
+
+    TEST_ASSERT_EQUAL_INT(0, ff_ctl_loop_open(&ctx, &shell, &pack, &shell_cfg, &cfg));
+
+    bool quit_flag = false;
+    ff_ctl_handlers_t h = ff_ctl_loop_handlers(&ctx, &quit_flag);
+
+    ctl_settle(&ctx, &h);
+    TEST_ASSERT_EQUAL(FF_APP_FACE_RADAR, ctx.state.active_face);
+
+    char resp[256];
+
+    /* --- negative control: below threshold, Settings must NOT open --- */
+    ctl_hold(&h, 228.0, 228.0, 80, resp, sizeof(resp));
+    ctl_settle(&ctx, &h);
+    TEST_ASSERT_EQUAL_MESSAGE(FF_APP_FACE_RADAR, ctx.state.active_face,
+                              "an 80ms ctl hold (well under LVGL's 400ms long_press_time) opened Settings");
+
+    /* --- positive: FF_CTL_HOLD_DEFAULT_MS (600ms) opens Settings ------ */
+    ctl_hold(&h, 228.0, 228.0, 600, resp, sizeof(resp));
+    ctl_settle(&ctx, &h);
+    TEST_ASSERT_EQUAL_MESSAGE(FF_APP_FACE_SETTINGS, ctx.state.active_face, "ctl hold did not open Settings");
+
+    /* Read end to end through the `state` dump too, same "not just the C
+     * struct" check AC10 makes at its own finish line. */
+    char state_resp[FF_CTL_MAX_RESP];
+    ctl_send(&h, "{\"cmd\":\"state\"}", state_resp, sizeof(state_resp));
+    TEST_ASSERT_NOT_NULL_MESSAGE(strstr(state_resp, "\"face\":\"settings\""), state_resp);
+
+    ff_ctl_loop_close(&ctx);
+    ff_shell_close(&shell);
+    lv_deinit();
+}
+
 /* ctl `wall`: bench time-travel so real festpacks whose dates are not
  * "now" can be tested live (a finished Bass Canyon, a future Lost
  * Lands). Expected values computed independently (Python datetime):
@@ -459,6 +540,7 @@ int main(void)
     RUN_TEST(S16_AC10_draft_typed_flare_injected_takeover_clears_draft_survives);
     RUN_TEST(S16_d_idle_ticks_never_rebuild_the_screen);
     RUN_TEST(ctl_swipe_actually_changes_the_face);
+    RUN_TEST(ctl_hold_opens_settings_but_short_hold_does_not);
     RUN_TEST(ctl_wall_sets_bench_time_honestly);
 
     return UNITY_END();
