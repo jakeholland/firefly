@@ -342,36 +342,102 @@ static char const *ctl_loop_link_str(ff_shell_link_t link)
     }
 }
 
+/**
+ * The paired roster's per-member RSSI, as a JSON array — bench
+ * visibility for #35's still-unmeasured question (see the PR body):
+ * "across a real session, what fraction of packets from a paired peer
+ * are classifiably DIRECT?" can't be answered from this desk, but it
+ * can be answered the next time boards are driven IF the field is
+ * observable over the ctl socket, same as `wall`/`link` already are
+ * for the questions issue #49 raised. `has_rssi` mirrors
+ * ff_crew_member_t's own `rssi_dbm == INT16_MIN` sentinel-as-absence
+ * convention (ff_crew.h) rather than exposing the sentinel value
+ * itself; `rssi_dbm`/`rssi_age_ms` are omitted entirely when absent —
+ * same "absent key, not a placeholder value" contract
+ * ff_fixture_dump_json's stage_color_rgb uses (fixture.c) — so a
+ * consumer that reads the key without checking `has_rssi` first gets a
+ * missing-field error, not a silently fabricated 0 dBm / 0 ms.
+ * `rssi_age_ms` is the ELAPSED age at `now_ms` (this function's `now`
+ * parameter), not the raw absolute clock stamp `ff_crew_member_t`
+ * stores internally (see ff_crew.h's header note on that field) —
+ * dumping the raw stamp would make every entry's number depend on
+ * when the process booted, which is useless to a human reading the
+ * dump live. Unpaired (merely-heard) roster slots are included too —
+ * `paired` is dumped alongside so a reader can tell a merely-heard
+ * node's RSSI (never fed to ff_crew_on_rssi — the standing trust rule,
+ * ff_shell.c's shell_ev_rx_meta) from a trusted one apart; an unpaired
+ * entry's `has_rssi` is therefore always false. */
+static int ctl_loop_crew_json(ff_crew_t const *crew, uint32_t now_ms, char *buf, size_t buf_sz)
+{
+    if (buf == NULL || buf_sz == 0) return -1;
+    size_t off = 0;
+    int n = snprintf(buf + off, buf_sz - off, "[");
+    if (n < 0 || (size_t)n >= buf_sz - off) return -1;
+    off += (size_t)n;
+
+    uint8_t count = (crew != NULL) ? crew->count : 0;
+    for (uint8_t i = 0; i < count; i++) {
+        ff_crew_member_t const *m = &crew->members[i];
+        bool has_rssi = (m->rssi_dbm != INT16_MIN);
+        if (has_rssi) {
+            uint32_t const age_ms = now_ms - m->rssi_age_ms; /* wraparound-safe, ff_clock_t convention */
+            n = snprintf(buf + off, buf_sz - off,
+                         "%s{\"node_id\":%u,\"paired\":%s,\"has_rssi\":true,\"rssi_dbm\":%d,"
+                         "\"rssi_age_ms\":%u}",
+                         (i == 0) ? "" : ",", (unsigned)m->node_id, m->paired ? "true" : "false", (int)m->rssi_dbm,
+                         (unsigned)age_ms);
+        } else {
+            n = snprintf(buf + off, buf_sz - off, "%s{\"node_id\":%u,\"paired\":%s,\"has_rssi\":false}",
+                         (i == 0) ? "" : ",", (unsigned)m->node_id, m->paired ? "true" : "false");
+        }
+        if (n < 0 || (size_t)n >= buf_sz - off) return -1;
+        off += (size_t)n;
+    }
+
+    n = snprintf(buf + off, buf_sz - off, "]");
+    if (n < 0 || (size_t)n >= buf_sz - off) return -1;
+    off += (size_t)n;
+    return (int)off;
+}
+
 static int ctl_loop_state_json(void *user, char *buf, size_t buf_sz)
 {
     ff_ctl_loop_ctx_t *ctx = (ff_ctl_loop_ctx_t *)user;
     int n = ff_fixture_dump_json(&ctx->state, buf, buf_sz);
     if (n <= 0) return n;
 
-    /* Append what the wall clock thinks as a "wall" object, and the mesh
-     * link state as a "link" string (S16 slice e) — ff_shell_wall() /
-     * ff_shell_link() are the only honest sources, and the hardware
-     * bench work (issue #49) needs to SEE both rather than infer them
-     * (same rationale for "link" as for "wall"). Spliced over the dump's
-     * closing '}' rather than added to the fixture schema: both are
-     * derived live state, not renderable view state, and the fixture
-     * loader ignores unknown keys, so a saved state dump still loads as
-     * a fixture (see CTL.md). */
+    /* Append what the wall clock thinks as a "wall" object, the mesh
+     * link state as a "link" string (S16 slice e), and the paired
+     * roster's per-member RSSI as a "crew" array (#35 remainder) —
+     * ff_shell_wall() / ff_shell_link() / ff_shell_crew() are the only
+     * honest sources, and the hardware bench work (issues #49, #35)
+     * needs to SEE all three rather than infer them. Spliced over the
+     * dump's closing '}' rather than added to the fixture schema: all
+     * three are derived live state, not renderable view state, and the
+     * fixture loader ignores unknown keys, so a saved state dump still
+     * loads as a fixture (see CTL.md). */
     ff_wall_t const w = ff_shell_wall(ctx->shell);
     char const *link = ctl_loop_link_str(ff_shell_link(ctx->shell));
-    char extra[200];
+    uint32_t const now_ms = ff_ctl_loop_tick_cb();
+    char crew_buf[8 /* FF_CREW_MAX */ * 96 + 16];
+    int cn = ctl_loop_crew_json(ff_shell_crew(ctx->shell), now_ms, crew_buf, sizeof(crew_buf));
+    if (cn < 0) return -1;
+
+    char extra[sizeof(crew_buf) + 200];
     int en;
     char const *host = ctx->live.wall_host_observed ? "true" : "false";
     if (w.src == FF_WALL_MESH) {
         en = snprintf(extra, sizeof(extra),
                       ",\"wall\":{\"src\":\"mesh\",\"host_observed\":%s,\"day_doy\":%u,\"now_min\":%d,"
-                      "\"offset_assumed\":%s},\"link\":\"%s\"}",
-                      host, (unsigned)w.day_doy, (int)w.now_min, w.offset_assumed ? "true" : "false", link);
+                      "\"offset_assumed\":%s},\"link\":\"%s\",\"crew\":%s}",
+                      host, (unsigned)w.day_doy, (int)w.now_min, w.offset_assumed ? "true" : "false", link,
+                      crew_buf);
     } else {
         /* UNKNOWN: every other ff_wall_t field is meaningless and is
          * deliberately not dumped — absent, not zero (CLAUDE.md). */
-        en = snprintf(extra, sizeof(extra), ",\"wall\":{\"src\":\"unknown\",\"host_observed\":%s},\"link\":\"%s\"}",
-                      host, link);
+        en = snprintf(extra, sizeof(extra),
+                      ",\"wall\":{\"src\":\"unknown\",\"host_observed\":%s},\"link\":\"%s\",\"crew\":%s}", host,
+                      link, crew_buf);
     }
     if (en < 0 || (size_t)en >= sizeof(extra)) return -1;
     if ((size_t)n + (size_t)en > buf_sz) return -1; /* n-1 kept + en + NUL <= buf_sz */

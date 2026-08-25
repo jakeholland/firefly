@@ -1074,6 +1074,93 @@ static void S16_b1_rssi_is_attributed_only_on_a_direct_path(void)
     TEST_ASSERT_EQUAL_INT16(-40, member(DANA)->rssi_dbm);
 }
 
+/**
+ * #35 remainder — the paired gate. A roster slot can exist and be
+ * unpaired: known-but-never-trusted, or paired-then-unpaired
+ * (S16_AC5b above models exactly this with ff_shell_pair(..., false)).
+ * ff_wiring.c:42 applies the identical rule to feed pushes
+ * ("`if (!m->paired) return;` known ... but not trusted"); on_rx_meta
+ * must apply it too, or a merely-heard node's radio signal could satisfy
+ * ff_crew_close_range's CLOSE predicate for someone the wearer never
+ * chose to trust — the standing trust rule (CLAUDE.md / AGENTS.md
+ * "never create" via ff_crew_find), extended to the RSSI wire. */
+static void S16_b1_rssi_never_recorded_for_a_known_but_unpaired_sender(void)
+{
+    harness_init(100000u, false);
+    inject_my_info(MY_ID);
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, true));
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, false));
+    TEST_ASSERT_FALSE(member(DANA)->paired);
+
+    inject_rx_meta(DANA, MC_RX_PATH_DIRECT, true, -40);
+    TEST_ASSERT_EQUAL_INT16(INT16_MIN, member(DANA)->rssi_dbm);
+
+    /* Positive control: re-pairing the SAME id and re-sending the SAME
+     * DIRECT packet does record it, so the drop above is about the
+     * paired gate specifically, not about a path that never works. */
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, true));
+    inject_rx_meta(DANA, MC_RX_PATH_DIRECT, true, -40);
+    TEST_ASSERT_EQUAL_INT16(-40, member(DANA)->rssi_dbm);
+}
+
+/**
+ * #35 remainder — the full chain, end to end. Earlier tests in this
+ * file pin the two gates individually (DIRECT-only, paired-only) at the
+ * `ff_crew_member_t.rssi_dbm` level; this one drives the SAME
+ * `on_rx_meta` entry point all the way through `ff_radar_compute` to
+ * `radar.mode`, because "the field got set" and "CLOSE actually fires"
+ * are different claims (the proxy this project's standing brief warns
+ * about — an input could satisfy the first without the second, e.g. if
+ * ff_radar_compute's own NOFIX/CLOSE priority order ever regressed).
+ *
+ * DANA's own GPS fix is deliberately never sent: CLOSE must come from
+ * RSSI alone, matching the S06 spec's documented case ("a member can be
+ * RSSI-close even with a GPS-stale/lost/never position", ff_radar.h).
+ * My own position/heading ARE set, since RADAR_NOFIX outranks CLOSE
+ * (ff_radar.h's priority order) — without them CLOSE could never show
+ * regardless of RSSI, which would make this test meaningless.
+ */
+static void S16_b1_close_mode_triggers_live_via_direct_rssi_from_paired_peer(void)
+{
+    harness_init(100000u, false);
+    inject_my_info(MY_ID);
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, true));
+    ff_shell_set_heading(&H.shell, 0.0f);
+    ff_shell_set_my_pos(&H.shell, (ff_latlon_t){39.936, -82.414});
+
+    ff_shell_tick(&H.shell, H.clk.t);
+    /* Baseline: paired, my own fix known, DANA never sent a fix or an
+     * RSSI sample — FF_FRESH_NEVER folds into RADAR_LOST (ff_radar.h),
+     * distinguishable from a real stale fix by the empty age_str. Not
+     * CLOSE: nothing has told the radar DANA is close yet. */
+    TEST_ASSERT_EQUAL_INT(RADAR_LOST, ff_shell_view(&H.shell)->radar.mode);
+    TEST_ASSERT_EQUAL_STRING("", ff_shell_view(&H.shell)->radar.age_str);
+
+    /* Negative control: an INDIRECT packet, even a loud one, must not
+     * move the mode — a relay's signal is not a distance proxy for the
+     * originator (the whole reason mc_rx_path_t exists; issue #35's
+     * hardware findings caught exactly this on a live mesh). */
+    inject_rx_meta(DANA, MC_RX_PATH_INDIRECT, true, -40);
+    ff_shell_tick(&H.shell, H.clk.t);
+    TEST_ASSERT_EQUAL_INT(RADAR_LOST, ff_shell_view(&H.shell)->radar.mode);
+
+    /* The real thing: a live DIRECT packet from a paired peer, through
+     * the actual on_rx_meta callback — no test seam bypassing it. */
+    inject_rx_meta(DANA, MC_RX_PATH_DIRECT, true, -50);
+    ff_shell_tick(&H.shell, H.clk.t);
+    TEST_ASSERT_EQUAL_INT(RADAR_CLOSE, ff_shell_view(&H.shell)->radar.mode);
+    TEST_ASSERT_FALSE(ff_shell_view(&H.shell)->radar.arrow_valid);
+
+    /* Age-out: FF_CREW_CLOSE_RANGE_RSSI_AGE_MS later with no fresh
+     * sample, the RSSI leg of ff_crew_close_range goes stale and CLOSE
+     * must release — stale RSSI must not hold a CLOSE lock forever.
+     * Falls back to the same paired-but-never-fixed LOST reading as the
+     * baseline, since DANA still has no position fix of her own. */
+    advance(FF_CREW_CLOSE_RANGE_RSSI_AGE_MS);
+    ff_shell_tick(&H.shell, H.clk.t);
+    TEST_ASSERT_EQUAL_INT(RADAR_LOST, ff_shell_view(&H.shell)->radar.mode);
+}
+
 /* ------------------------------------------------------------------- */
 /* a tiny in-line festpack (S05 schema v0.1)                            */
 /* ------------------------------------------------------------------- */
@@ -1874,6 +1961,8 @@ int main(void)
     RUN_TEST(S16_b1_positions_are_never_stamped_from_the_local_clock);
     RUN_TEST(S16_b1_own_traffic_is_not_treated_as_inbound);
     RUN_TEST(S16_b1_rssi_is_attributed_only_on_a_direct_path);
+    RUN_TEST(S16_b1_rssi_never_recorded_for_a_known_but_unpaired_sender);
+    RUN_TEST(S16_b1_close_mode_triggers_live_via_direct_rssi_from_paired_peer);
     RUN_TEST(S07_2026_08_24_starts_only_set_is_live_not_lineup);
     RUN_TEST(S16_b1_now_projection_needs_both_a_pack_and_a_known_clock);
     RUN_TEST(S16_b1_loading_a_pack_does_not_fabricate_my_position);
