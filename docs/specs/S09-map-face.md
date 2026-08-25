@@ -184,3 +184,50 @@ a) xform + tests · b) render + goldens.
      omit branch (`ff_map_feature_render_kind`, now a pure core function
      unit-tested directly rather than reachable only through a loose
      golden-pixel-diff threshold).
+- **2026-08-25, PR #73 SECOND review round — finding #3 (label
+  crowding) was not actually closed by the anchor-point camera fit
+  above, and needed a real fix, not a bigger nudge.** The coordinator
+  re-rendered the real pack after the first fix round landed: the
+  anchor-point fit corrected the geometry SCALE, but real labels were
+  still colliding — "Wompy Woods treeline" over "RV/tent camping",
+  "Venue extent (approx.)" over "Subsidia Stage (approx.)", and stage
+  names (the primary navigation aid) buried under area-polygon labels.
+  A flat "nudge on collision" pass (the first round's fix) has no
+  notion of which label matters more, so it protects all of them
+  equally badly — it just relocates a collision rather than resolving
+  legibility.
+  **Ruling, implemented as `ff_map_label_priority_t` (core/include/
+  ff_map.h) + a priority-ordered, two-tier placement pass
+  (`scr_map.c`):**
+  - **HIGH priority, never dropped:** stages (any render form — a
+    stub today, but a future traced stage polygon must stay labeled
+    too), every single-point non-polygon feature (a landmark like
+    Tunnel entrance, First Aid, Village Marketplace — dropping the
+    ONLY representation a point-feature has would be a real omission,
+    not a legibility trim), and YOU. Placed FIRST, in pack order, still
+    using the nudge-on-collision mechanism from round one (rare among
+    precise points, and the only honest option when a HIGH label can't
+    be dropped).
+  - **LOW priority, droppable:** a NON-STAGE feature whose render form
+    is a real traced polygon (`FF_MAP_RENDER_POLYGON`) — a boundary or
+    area shape (venue extent, a treeline, a campground). Placed SECOND,
+    checked against every already-placed label (both tiers); a
+    collision means the label is DROPPED — not nudged into a new
+    collision elsewhere. The polygon's SHAPE always still draws
+    (`map_draw_feature_shape` is unconditional, independent of any
+    label decision) — only the redundant TEXT disappears, which is
+    honest specifically because the shape remains the feature's visual
+    representation. The coordinator's own example: "Venue extent
+    (approx.)" arguably needs no label at all — nobody navigates to
+    the venue outline, the polygon carries the meaning by itself.
+  This is deliberately NOT `radar_layout.h`'s full reserved-region
+  search — this screen has no FIXED chrome to build a registry from,
+  every element is data-driven, and a two-tier priority-ordered pass is
+  proportionate to the actual failure mode (a handful of large-polygon
+  labels crowding out point labels), not a general N-body layout
+  problem. Verified on the real pack (`map_real_lost_lands.json`/
+  `.png`, regenerated): every one of the 4 real stages with a fix and
+  all 3 real single-point landmarks render their label, legibly, with
+  no two labels overlapping; exactly one area-polygon label ("Venue
+  extent (approx.)") is honestly dropped for colliding, its shape still
+  visible.

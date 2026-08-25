@@ -116,6 +116,45 @@ typedef enum {
 ff_map_render_kind_t ff_map_feature_render_kind(uint8_t n_pts, int is_stage);
 
 /**
+ * ff_map_label_priority_t — the LABEL priority tier a feature's text
+ * gets when two labels would collide (PR #73's second review round,
+ * coordinator ruling: the anchor-point camera fit alone fixed the
+ * geometry SCALE but not real-pack label crowding — "Wompy Woods
+ * treeline" overprinting "RV/tent camping", stage names buried under
+ * area-polygon labels). Distinct from `ff_map_render_kind_t`, which
+ * decides whether a SHAPE draws at all: every feature's shape (stub/
+ * line/polygon) still draws unconditionally regardless of this tier —
+ * only its TEXT can be dropped, and only for the LOW tier, and only
+ * when it would otherwise collide.
+ *
+ * `FF_MAP_LABEL_PRIORITY_HIGH` — never dropped: a STAGE (any render
+ * form — a stub today, but a future traced stage polygon must stay
+ * labeled too, since "the stage labels... the things people actually
+ * navigate by" is the whole point), or any single-point non-polygon
+ * feature (`FF_MAP_RENDER_STAGE_STUB`/`_LABEL_ONLY`/`_LINE`) — dropping
+ * one of THOSE would erase the feature entirely, since it has no other
+ * visual representation to fall back on.
+ *
+ * `FF_MAP_LABEL_PRIORITY_LOW` — droppable: a non-stage feature whose
+ * render kind is `FF_MAP_RENDER_POLYGON` (a real traced area/boundary
+ * shape — venue extent, a treeline, a campground). The polygon itself
+ * still draws either way; dropping only its TEXT is honest (the shape
+ * carries the meaning) precisely because — unlike the HIGH tier — the
+ * feature remains visually represented with its label gone.
+ */
+typedef enum {
+    FF_MAP_LABEL_PRIORITY_HIGH,
+    FF_MAP_LABEL_PRIORITY_LOW,
+} ff_map_label_priority_t;
+
+/** ff_map_feature_label_priority — see `ff_map_label_priority_t`'s doc
+ * comment. Same two inputs as `ff_map_feature_render_kind` (this is a
+ * refinement of that decision, not an independent one) — meaningless
+ * for `FF_MAP_RENDER_OMIT` (n_pts == 0), which never reaches the label
+ * placement pass at all. */
+ff_map_label_priority_t ff_map_feature_label_priority(uint8_t n_pts, int is_stage);
+
+/**
  * ff_map_triangulate — ear-clipping triangulation of a SIMPLE polygon
  * (`n` vertices, `n >= 3`) — correct for CONVEX or CONCAVE input, as
  * long as it doesn't self-intersect. Fixes PR #73 review finding #2: the

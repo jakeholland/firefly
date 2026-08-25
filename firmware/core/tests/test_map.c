@@ -249,6 +249,37 @@ static void S09_render_kind_three_or_more_points_is_polygon(void)
 }
 
 /* ------------------------------------------------------------------- */
+/* PR #73, second review round — ff_map_feature_label_priority          */
+/* (coordinator ruling: stages/landmarks/YOU are top priority and never */
+/* dropped; a non-stage area polygon's label is droppable).             */
+/* ------------------------------------------------------------------- */
+
+static void S09_label_priority_stage_is_always_high_regardless_of_shape(void)
+{
+    TEST_ASSERT_EQUAL_INT(FF_MAP_LABEL_PRIORITY_HIGH, ff_map_feature_label_priority(1, 1)); /* stub */
+    TEST_ASSERT_EQUAL_INT(FF_MAP_LABEL_PRIORITY_HIGH, ff_map_feature_label_priority(2, 1)); /* a 2-pt "stage" */
+    TEST_ASSERT_EQUAL_INT(FF_MAP_LABEL_PRIORITY_HIGH,
+                           ff_map_feature_label_priority(9, 1)); /* a real traced stage polygon */
+}
+
+static void S09_label_priority_single_point_landmark_is_high(void)
+{
+    TEST_ASSERT_EQUAL_INT(FF_MAP_LABEL_PRIORITY_HIGH, ff_map_feature_label_priority(1, 0));
+}
+
+static void S09_label_priority_line_is_high(void)
+{
+    TEST_ASSERT_EQUAL_INT(FF_MAP_LABEL_PRIORITY_HIGH, ff_map_feature_label_priority(2, 0));
+}
+
+static void S09_label_priority_non_stage_polygon_is_low(void)
+{
+    TEST_ASSERT_EQUAL_INT(FF_MAP_LABEL_PRIORITY_LOW, ff_map_feature_label_priority(3, 0));
+    TEST_ASSERT_EQUAL_INT(FF_MAP_LABEL_PRIORITY_LOW, ff_map_feature_label_priority(9, 0)); /* e.g. venue extent */
+    TEST_ASSERT_EQUAL_INT(FF_MAP_LABEL_PRIORITY_LOW, ff_map_feature_label_priority(255, 0));
+}
+
+/* ------------------------------------------------------------------- */
 /* PR #73 review — ff_map_triangulate (finding #2: concave fill)        */
 /* ------------------------------------------------------------------- */
 
@@ -395,6 +426,11 @@ int main(void)
     RUN_TEST(S09_render_kind_one_point_non_stage_is_label_only);
     RUN_TEST(S09_render_kind_two_points_is_line);
     RUN_TEST(S09_render_kind_three_or_more_points_is_polygon);
+
+    RUN_TEST(S09_label_priority_stage_is_always_high_regardless_of_shape);
+    RUN_TEST(S09_label_priority_single_point_landmark_is_high);
+    RUN_TEST(S09_label_priority_line_is_high);
+    RUN_TEST(S09_label_priority_non_stage_polygon_is_low);
 
     RUN_TEST(S09_triangulate_convex_square_covers_exact_area);
     RUN_TEST(S09_triangulate_real_venue_extent_is_concave_and_covers_exact_area);

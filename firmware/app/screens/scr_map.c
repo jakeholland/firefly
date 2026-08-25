@@ -116,25 +116,47 @@
 #define FF_MAP_YOU_ARROW_WIDTH_PX 20.0f
 #define FF_MAP_RALLY_R_PX 9.0f
 
-/* PR #73 review finding #3 (Bailey): a minimal FEATURE-LABEL collision
- * nudge — "even a minimal collision nudge... beats raw overlap". The
- * anchor-point camera fit (this file's header comment) fixes the
- * DOMINANT crowding cause (one huge polygon crushing everyone else's
- * scale), but real festival data can still land two features' anchor
- * points close enough that their labels would sit on top of each other
- * (verified on the real pack: "The Crater"/"Tunnel entrance" land within
- * a few px of each other). This is deliberately NOT radar_layout.c's
- * full reserved-region search (a much larger undertaking, and this
- * screen has no fixed chrome to reserve against — every element here is
- * data-driven) — just a simple, deterministic "if this label would
- * collide with an already-placed one, nudge it straight down" pass,
- * bounded and cheap (O(features^2) over at most FF_APP_MAP_MAX_FEATURES
- * items). The SHAPE (polygon/stub/line) stays at its true geographic
- * position; only the LABEL TEXT nudges — the same honest-cartography
- * convention real maps use (a label's exact pixel is a legibility
- * choice, not a claim about where the feature is). A full leader-line
- * treatment for a heavily-nudged label is a reasonable follow-up, not
- * this fix round's scope. */
+/* PR #73, TWO review rounds on label legibility.
+ *
+ * Round 1 (Bailey finding #3) added a plain nudge-on-collision pass.
+ * Round 2 (coordinator, re-rendering the real pack after round 1
+ * landed) found that wasn't enough: nudging every colliding label
+ * straight down just piles them into a different collision further
+ * down, and on the real pack the STAGE names — "the things people
+ * actually navigate by" — were landing buried under large area-polygon
+ * labels ("Wompy Woods treeline" over "RV/tent camping", "Venue extent
+ * (approx.)" over "Subsidia Stage (approx.)"). A flat nudge has no
+ * notion of which label matters more, so it protects all of them
+ * equally badly.
+ *
+ * Round 2's fix is PRIORITY-BASED collision resolution, per the
+ * coordinator's ruling and `ff_map_feature_label_priority`
+ * (core/include/ff_map.h) — see that header for the full tier
+ * definition:
+ *   - HIGH-priority labels (stages, single-point landmarks, YOU) are
+ *     placed FIRST, in pack order, and still use the round-1 nudge —
+ *     they can never be dropped, so if two of them land close together
+ *     (rare — these are precise points, not sprawling boundaries) the
+ *     only honest option is to move one, not hide it.
+ *   - LOW-priority labels (non-stage area/boundary polygons) are placed
+ *     SECOND, checked against EVERY already-placed label (both tiers),
+ *     and DROPPED — not nudged — on collision. A dropped label's SHAPE
+ *     still draws (`map_draw_feature_shape`, unconditional); only the
+ *     redundant text disappears, which is honest precisely because the
+ *     polygon itself still carries the meaning (the coordinator's own
+ *     example: "Venue extent (approx.)" arguably needs no label at all
+ *     — nobody navigates to the venue outline).
+ *
+ * Still deliberately NOT radar_layout.c's full reserved-region search
+ * (a much larger undertaking, and this screen has no FIXED chrome to
+ * reserve against — every element here is data-driven, so there's
+ * nothing to precompute a registry from). Bounded and cheap either way:
+ * O(features^2) over at most FF_APP_MAP_MAX_FEATURES items. The SHAPE
+ * (polygon/stub/line) always stays at its true geographic position;
+ * only LABEL TEXT ever moves or disappears — the same honest-cartography
+ * convention real maps use (a label's exact pixel, or its presence at
+ * all past some density, is a legibility choice, not a claim about
+ * where the feature is). */
 #define FF_MAP_LABEL_MIN_SEP_PX 48.0f
 #define FF_MAP_LABEL_MAX_NUDGE_TRIES 6
 
@@ -147,35 +169,43 @@ static void map_reset_label_declutter(void)
     s_label_placed_count = 0;
 }
 
-/* Nudges `*io_y` downward (deterministic, no randomness — same render
- * always produces the same layout) until `(*io_x, *io_y)` clears every
- * already-placed label center by FF_MAP_LABEL_MIN_SEP_PX, or the try
- * budget runs out (a genuinely crowded real pack can still end up with
- * some residual overlap after 6 nudges — better than none, not a claim
- * of perfect separation). Records the final position so later calls see
- * it too. */
+/* True iff `(x, y)` lands within FF_MAP_LABEL_MIN_SEP_PX of any label
+ * already recorded via `map_label_record`. Pure query — never mutates. */
+static bool map_label_collides(float x, float y)
+{
+    for (int i = 0; i < s_label_placed_count; i++) {
+        float const dx = x - s_label_placed_x[i];
+        float const dy = y - s_label_placed_y[i];
+        if (dx * dx + dy * dy < FF_MAP_LABEL_MIN_SEP_PX * FF_MAP_LABEL_MIN_SEP_PX) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static void map_label_record(float x, float y)
+{
+    if (s_label_placed_count < FF_APP_MAP_MAX_FEATURES) {
+        s_label_placed_x[s_label_placed_count] = x;
+        s_label_placed_y[s_label_placed_count] = y;
+        s_label_placed_count++;
+    }
+}
+
+/* HIGH-priority placement: nudges `*io_y` downward (deterministic, no
+ * randomness) until `(*io_x, *io_y)` clears every already-placed label,
+ * or the try budget runs out (better than none, not a claim of perfect
+ * separation for a pathological input). Always draws — a HIGH-priority
+ * label is never dropped. Records the final position either way. */
 static void map_place_label_decluttered(float *io_x, float *io_y)
 {
     for (int attempt = 0; attempt < FF_MAP_LABEL_MAX_NUDGE_TRIES; attempt++) {
-        bool collides = false;
-        for (int i = 0; i < s_label_placed_count; i++) {
-            float const dx = *io_x - s_label_placed_x[i];
-            float const dy = *io_y - s_label_placed_y[i];
-            if (dx * dx + dy * dy < FF_MAP_LABEL_MIN_SEP_PX * FF_MAP_LABEL_MIN_SEP_PX) {
-                collides = true;
-                break;
-            }
-        }
-        if (!collides) {
+        if (!map_label_collides(*io_x, *io_y)) {
             break;
         }
         *io_y += FF_MAP_LABEL_MIN_SEP_PX;
     }
-    if (s_label_placed_count < FF_APP_MAP_MAX_FEATURES) {
-        s_label_placed_x[s_label_placed_count] = *io_x;
-        s_label_placed_y[s_label_placed_count] = *io_y;
-        s_label_placed_count++;
-    }
+    map_label_record(*io_x, *io_y);
 }
 
 /* ---------------------------------------------------------------------
@@ -421,23 +451,27 @@ static int map_feature_anchor_en(ff_app_map_feature_t const *f, float *out_e, fl
     return 1;
 }
 
-static void map_draw_feature(lv_obj_t *parent, ff_map_xform_t const *xform, ff_app_map_feature_t const *f)
+/**
+ * map_draw_feature_shape — draws ONLY the shape (stub circle / stroked
+ * line / filled+stroked polygon) for one feature, per `render_kind`.
+ * NEVER draws or touches a label — label placement is a separate pass
+ * over every feature (see `ff_scr_map_build`), because whether a LABEL
+ * draws depends on priority + what ELSE has already been placed, which
+ * this function has no visibility into and shouldn't need. A feature's
+ * shape, by contrast, is unconditional: it never depends on anything
+ * else on the map (PR #73 second review round — labels can be dropped
+ * on collision, shapes never are).
+ */
+static void map_draw_feature_shape(lv_obj_t *parent, ff_map_xform_t const *xform, ff_app_map_feature_t const *f,
+                                    ff_map_render_kind_t render_kind)
 {
     uint32_t const color = map_kind_color(f);
-    ff_map_render_kind_t const render_kind =
-        ff_map_feature_render_kind(f->n_pts, f->kind == FF_APP_MAP_KIND_STAGE);
-
-    if (render_kind == FF_MAP_RENDER_OMIT) {
-        return; /* no polygon, no point — nothing to honestly draw or label (spec: "otherwise omitted") */
-    }
-
-    float anchor_e = 0.0f, anchor_n = 0.0f;
-    (void)map_feature_anchor_en(f, &anchor_e, &anchor_n); /* always succeeds: render_kind != OMIT implies n_pts >= 1 */
-    float cx, cy;
-    ff_map_project(xform, anchor_e, anchor_n, &cx, &cy);
 
     switch (render_kind) {
     case FF_MAP_RENDER_STAGE_STUB: {
+        float anchor_e, anchor_n, cx, cy;
+        (void)map_feature_anchor_en(f, &anchor_e, &anchor_n);
+        ff_map_project(xform, anchor_e, anchor_n, &cx, &cy);
         float const r_px = FF_MAP_STAGE_STUB_RADIUS_M * xform->scale_px_per_m;
         lv_obj_t *stub = lv_obj_create(parent);
         lv_obj_remove_style_all(stub);
@@ -451,16 +485,16 @@ static void map_draw_feature(lv_obj_t *parent, ff_map_xform_t const *xform, ff_a
         lv_obj_clear_flag(stub, LV_OBJ_FLAG_SCROLLABLE);
         lv_obj_clear_flag(stub, LV_OBJ_FLAG_CLICKABLE);
         lv_obj_align(stub, LV_ALIGN_CENTER, (int32_t)cx, (int32_t)cy);
-        break;
+        return;
     }
     case FF_MAP_RENDER_LABEL_ONLY:
-        break; /* no shape — see this file's header comment; the label draws unconditionally below */
+        return; /* no shape — see this file's header comment */
     case FF_MAP_RENDER_LINE: {
         float p0x, p0y, p1x, p1y;
         ff_map_project(xform, f->pts_en[0][0], f->pts_en[0][1], &p0x, &p0y);
         ff_map_project(xform, f->pts_en[1][0], f->pts_en[1][1], &p1x, &p1y);
         map_draw_segment(parent, p0x, p0y, p1x, p1y, color, LV_OPA_COVER, FF_MAP_STROKE_PX);
-        break;
+        return;
     }
     case FF_MAP_RENDER_POLYGON: {
         float pts_px[FF_APP_MAP_MAX_POLY_PTS][2];
@@ -469,14 +503,48 @@ static void map_draw_feature(lv_obj_t *parent, ff_map_xform_t const *xform, ff_a
             ff_map_project(xform, f->pts_en[i][0], f->pts_en[i][1], &pts_px[i][0], &pts_px[i][1]);
         }
         map_draw_polygon(parent, pts_px, n, color);
-        break;
+        return;
     }
     case FF_MAP_RENDER_OMIT:
     default:
-        return; /* unreachable (handled above); kept so -Wswitch stays exhaustive */
+        return; /* nothing to draw; kept so -Wswitch stays exhaustive */
+    }
+}
+
+/**
+ * map_draw_feature_label — the label-placement pass for ONE feature,
+ * called twice per map (see `ff_scr_map_build`): once for every
+ * HIGH-priority feature (always draws, nudges on collision), once for
+ * every LOW-priority feature (drops — does not draw — on collision with
+ * anything already placed in either pass). No-op for `FF_MAP_RENDER_OMIT`
+ * (nothing to anchor a label to).
+ */
+static void map_draw_feature_label(lv_obj_t *parent, ff_map_xform_t const *xform, ff_app_map_feature_t const *f,
+                                    ff_map_render_kind_t render_kind, ff_map_label_priority_t priority)
+{
+    if (render_kind == FF_MAP_RENDER_OMIT) {
+        return;
     }
 
-    map_place_label_decluttered(&cx, &cy);
+    float anchor_e = 0.0f, anchor_n = 0.0f;
+    (void)map_feature_anchor_en(f, &anchor_e, &anchor_n); /* always succeeds: render_kind != OMIT implies n_pts >= 1 */
+    float cx, cy;
+    ff_map_project(xform, anchor_e, anchor_n, &cx, &cy);
+
+    if (priority == FF_MAP_LABEL_PRIORITY_HIGH) {
+        map_place_label_decluttered(&cx, &cy);
+        map_make_label(parent, f->label, FF_THEME_COLOR_INK, cx, cy);
+        return;
+    }
+
+    /* LOW priority: dropped, not nudged, on collision with ANYTHING
+     * already placed (both tiers) — see this file's header comment on
+     * why that's the honest choice here (the shape already drew, in
+     * map_draw_feature_shape, unconditionally). */
+    if (map_label_collides(cx, cy)) {
+        return;
+    }
+    map_label_record(cx, cy);
     map_make_label(parent, f->label, FF_THEME_COLOR_INK, cx, cy);
 }
 
@@ -727,8 +795,38 @@ void ff_scr_map_build(ff_app_map_t const *map)
     ff_map_xform_t xform;
     ff_map_xform_fit(&xform, bbox_pts, n_bbox, FF_MAP_CIRCLE_RADIUS_PX, FF_MAP_MARGIN_PX);
 
+    /* Three passes, deliberately in this order (PR #73 second review
+     * round — priority-based label collision resolution, see this
+     * file's header comment on FF_MAP_LABEL_MIN_SEP_PX):
+     *   1. every feature's SHAPE, unconditionally — never dropped, and
+     *      drawing every shape before any label means a later feature's
+     *      polygon fill can never paint over an earlier feature's text
+     *      (LVGL draws children in creation order).
+     *   2. every HIGH-priority feature's LABEL (stages, single-point
+     *      landmarks) — always drawn, nudged on collision.
+     *   3. every LOW-priority feature's LABEL (non-stage area polygons)
+     *      — drawn only if it doesn't collide with anything from pass 2
+     *      or an earlier pass-3 label; dropped, not nudged, otherwise. */
     for (uint8_t i = 0; i < map->n_features; i++) {
-        map_draw_feature(puck, &xform, &map->features[i]);
+        ff_app_map_feature_t const *f = &map->features[i];
+        ff_map_render_kind_t const rk = ff_map_feature_render_kind(f->n_pts, f->kind == FF_APP_MAP_KIND_STAGE);
+        map_draw_feature_shape(puck, &xform, f, rk);
+    }
+    for (uint8_t i = 0; i < map->n_features; i++) {
+        ff_app_map_feature_t const *f = &map->features[i];
+        ff_map_render_kind_t const rk = ff_map_feature_render_kind(f->n_pts, f->kind == FF_APP_MAP_KIND_STAGE);
+        ff_map_label_priority_t const pr = ff_map_feature_label_priority(f->n_pts, f->kind == FF_APP_MAP_KIND_STAGE);
+        if (pr == FF_MAP_LABEL_PRIORITY_HIGH) {
+            map_draw_feature_label(puck, &xform, f, rk, pr);
+        }
+    }
+    for (uint8_t i = 0; i < map->n_features; i++) {
+        ff_app_map_feature_t const *f = &map->features[i];
+        ff_map_render_kind_t const rk = ff_map_feature_render_kind(f->n_pts, f->kind == FF_APP_MAP_KIND_STAGE);
+        ff_map_label_priority_t const pr = ff_map_feature_label_priority(f->n_pts, f->kind == FF_APP_MAP_KIND_STAGE);
+        if (pr == FF_MAP_LABEL_PRIORITY_LOW) {
+            map_draw_feature_label(puck, &xform, f, rk, pr);
+        }
     }
 
     map_draw_rally(puck, &xform, map);

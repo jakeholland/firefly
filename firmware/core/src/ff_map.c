@@ -111,6 +111,13 @@ ff_map_render_kind_t ff_map_feature_render_kind(uint8_t n_pts, int is_stage)
     return FF_MAP_RENDER_POLYGON;
 }
 
+ff_map_label_priority_t ff_map_feature_label_priority(uint8_t n_pts, int is_stage)
+{
+    ff_map_render_kind_t const rk = ff_map_feature_render_kind(n_pts, is_stage);
+    if (rk == FF_MAP_RENDER_POLYGON && !is_stage) return FF_MAP_LABEL_PRIORITY_LOW;
+    return FF_MAP_LABEL_PRIORITY_HIGH;
+}
+
 /* ---------------------------------------------------------------------
  * ff_map_triangulate — ear clipping. See ff_map.h's doc comment for the
  * full contract; this is the standard textbook algorithm (repeatedly
