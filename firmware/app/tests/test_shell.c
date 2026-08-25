@@ -1095,6 +1095,53 @@ static char const PACK_JSON[] =
     "{\"artist\":\"TBA Act\",\"stage\":\"a\",\"day\":\"2026-09-18\","
     "\"start\":null,\"end\":null}]}";
 
+/* 2026-08-24 amendment (S07-now-face.md ## Amendments, "starts-only set
+ * grids") — same shape as PACK_JSON above except the headliner's `end`
+ * is null, matching the real Bass Canyon 2026 pack's actual publishing
+ * convention (82 starts, zero ends). Before this amendment,
+ * shell_project_now's lineup filter required BOTH start_min and
+ * end_min before excluding a set from the unknown-time lineup, so this
+ * exact shape put the headliner in `lineup` even though its start time
+ * IS known — the bug this test locks in the fix for. */
+static char const PACK_JSON_STARTS_ONLY[] =
+    "{\"festpack\":\"0.1\",\"utc_offset_min\":0,"
+    "\"festival\":{\"name\":\"Test Fest\",\"year\":2026,"
+    "\"start\":\"2026-09-18\",\"end\":\"2026-09-20\","
+    "\"venue\":{\"lat\":39.936,\"lon\":-82.414}},"
+    "\"stages\":[{\"id\":\"a\",\"name\":\"A Stage\",\"color\":\"#00ff00\"}],"
+    "\"schedule\":["
+    "{\"artist\":\"Headliner\",\"stage\":\"a\",\"day\":\"2026-09-18\","
+    "\"start\":\"21:00\",\"end\":null},"
+    "{\"artist\":\"TBA Act\",\"stage\":\"a\",\"day\":\"2026-09-18\","
+    "\"start\":null,\"end\":null}]}";
+
+static void S07_2026_08_24_starts_only_set_is_live_not_lineup(void)
+{
+    harness_init(100000u, false);
+    inject_my_info(MY_ID);
+
+    TEST_ASSERT_EQUAL_INT(0, ff_shell_load_pack(&H.shell, PACK_JSON_STARTS_ONLY, sizeof(PACK_JSON_STARTS_ONLY) - 1u));
+
+    /* 22:00 local on day-of-year 261 — same clock latch as the sibling
+     * PACK_JSON test above. */
+    inject_node(DANA, "DANA", U_EVENING);
+    ff_shell_tick(&H.shell, H.clk.t);
+    ff_app_now_t const *n = &ff_shell_view(&H.shell)->now;
+
+    /* Headliner has a real, known start_min: it belongs in `rows`, live,
+     * NOT in the unknown-time lineup — even though its end_min is null.
+     * No other set shares its stage/day, so its true end is genuinely
+     * unknowable: pct_valid must be false, not silently 0-and-claimed. */
+    TEST_ASSERT_EQUAL_INT(NOW_MIXED, n->state);
+    TEST_ASSERT_EQUAL_UINT8(1, n->n_rows);
+    TEST_ASSERT_EQUAL_STRING("Headliner", n->rows[0].artist);
+    TEST_ASSERT_FALSE(n->rows[0].pct_valid);
+
+    /* Only the genuinely timeless act is in the lineup. */
+    TEST_ASSERT_EQUAL_UINT8(1, n->n_lineup);
+    TEST_ASSERT_EQUAL_STRING("TBA Act", n->lineup[0].artist);
+}
+
 static void S16_b1_now_projection_needs_both_a_pack_and_a_known_clock(void)
 {
     harness_init(100000u, false);
@@ -1827,6 +1874,7 @@ int main(void)
     RUN_TEST(S16_b1_positions_are_never_stamped_from_the_local_clock);
     RUN_TEST(S16_b1_own_traffic_is_not_treated_as_inbound);
     RUN_TEST(S16_b1_rssi_is_attributed_only_on_a_direct_path);
+    RUN_TEST(S07_2026_08_24_starts_only_set_is_live_not_lineup);
     RUN_TEST(S16_b1_now_projection_needs_both_a_pack_and_a_known_clock);
     RUN_TEST(S16_b1_loading_a_pack_does_not_fabricate_my_position);
     RUN_TEST(S16_b1_our_own_nodeinfo_can_bootstrap_the_wall_clock);

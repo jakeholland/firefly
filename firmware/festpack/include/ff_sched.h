@@ -113,6 +113,49 @@
  * changeover minute, A's `now_min >= effective_end` excludes it the
  * same instant B's `now_min >= start_min` includes it — the starting
  * set always wins, with no explicit per-stage dedup needed.
+ *
+ * ---------------------------------------------------------------------
+ * "Timed" means a known start_min — end_min is optional
+ * ---------------------------------------------------------------------
+ * 2026-08-24 amendment (see docs/specs/S07-now-face.md's ## Amendments,
+ * "starts-only set grids" — found end-to-end against the first real
+ * festpack, Bass Canyon 2026, whose 82 published set times are all
+ * starts-only: every end_min is null). A set with `start_min >= 0` is
+ * TIMED, full stop, regardless of end_min. This module used to require
+ * BOTH fields before treating a set as anything other than TBD — that
+ * was never a real festival's publishing convention (a set-time grid
+ * publishes starts; the end is implied by the next act on the same
+ * stage) and made a pack with real, published start times render as
+ * "SET TIMES TBD", which is a straightforward lie about data this
+ * module has.
+ *
+ * A null end_min is DERIVED, not treated as absent:
+ *   1. If another set shares this set's stage_idx AND day_doy and has a
+ *      known start_min strictly greater than this set's start_min, the
+ *      SMALLEST such start_min is this set's derived effective_end —
+ *      the published semantics of a set-time grid (your set ends when
+ *      the next one on your stage begins). This composes with the
+ *      half-open "now" window above exactly the way two sets with
+ *      explicit times already do: at the derived boundary minute, the
+ *      starting set wins, the ending set does not linger.
+ *   2. If no such set exists (this is the LAST known set on this stage
+ *      this day), the set is live once started but its true end is
+ *      genuinely UNKNOWABLE — this module does NOT invent a duration.
+ *      It stops counting as "now" at the festival day window's own
+ *      end (FF_SCHED_FESTIVAL_DAY_START_MIN + FF_SCHED_DAY_SPAN_MIN =
+ *      1800), the one boundary this module actually knows, and
+ *      ff_now_row_t.pct_valid is false for the entire time it's live —
+ *      see that field's own doc comment. mins_left in that case counts
+ *      down to the day window's end, not to the set's real (unknown)
+ *      end; it is honest about what it measures, not a duration guess.
+ *
+ * This derivation is a within-`p->sets[]` SCAN by (stage_idx, day_doy,
+ * start_min), not a `p->sets[]` array-order lookup: real festpack.json
+ * schedules are not guaranteed sorted (the vendored Bass Canyon pack
+ * lists each stage's sets HEADLINER-FIRST, i.e. descending by
+ * start_min), so "the next element in the array" is not "the next set
+ * chronologically". ff_sched_now_playing()/ff_sched_alarm_tick() must
+ * never assume otherwise.
  */
 #ifndef FF_SCHED_H
 #define FF_SCHED_H
@@ -138,8 +181,25 @@ extern "C" {
 /** One row of ff_sched_now_playing() output: a live set on some stage. */
 typedef struct {
     fp_set_t const *set; /* points into the caller's fp_pack_t; valid as long as it is */
-    int16_t mins_left;   /* effective_end - now_min; > 0 while "now" (half-open end — see above) */
-    uint8_t pct_done;    /* 0 at start_min, monotonically increasing, never reaches 100 while "now" */
+    int16_t mins_left;   /* effective_end - now_min; > 0 while "now" (half-open end — see above).
+                           * When !pct_valid, effective_end is the festival day window's end
+                           * (1800), NOT this set's real end — see pct_valid below — so
+                           * mins_left counts down to the day boundary, not to when the set
+                           * actually stops, which is genuinely unknown. */
+    uint8_t pct_done;    /* 0 at start_min, monotonically increasing, never reaches 100 while
+                           * "now". MEANINGLESS when !pct_valid (still 0 in that case, but that
+                           * is a placeholder, not a claim — see pct_valid). */
+    bool    pct_valid;   /* false iff this set's end_min is null AND it is the last known-start
+                           * set on its stage this day (no later same-stage/same-day start_min
+                           * exists to derive an end from) — see ff_sched.h's "Timed means a
+                           * known start_min" section above. The set is still genuinely LIVE
+                           * (that's why it's a row at all) but its duration/progress is
+                           * unknowable, not merely unrendered; the house "never let absence
+                           * carry meaning" convention (ff_app_now_row_t mirrors this field for
+                           * the same reason stage_color_valid exists) — callers must gate any
+                           * progress-bar/percentage UI on this, not on pct_done alone. True in
+                           * every other case: an explicit end_min, OR a null end_min derived
+                           * from a later same-stage/same-day set's start_min. */
 } ff_now_row_t;
 
 /** Output of ff_sched_next_starred(): the next upcoming starred set. */
@@ -150,11 +210,16 @@ typedef struct {
 
 /**
  * ff_sched_now_playing — every set on `day_doy` currently live at
- * `now_min` (start_min <= now_min < effective_end, half-open, both
- * times known — see the "Now window" note above), one row per matching
- * set, written in pack order (firmware/festpack sets[] order, which is
- * schedule order within a day). At a zero-gap same-stage changeover the
- * starting set alone is "now" — see the half-open note.
+ * `now_min` (start_min <= now_min < effective_end, half-open — see the
+ * "Now window" note above; a null end_min is DERIVED per the "Timed
+ * means a known start_min" section above, not treated as absent), one
+ * row per matching set, written in pack order (firmware/festpack
+ * sets[] order — NOTE this is NOT guaranteed schedule order within a
+ * day; see that section for why the derivation itself does not rely on
+ * array order even though this function's OUTPUT order does). At a
+ * zero-gap same-stage changeover the starting set alone is "now" — see
+ * the half-open note; this holds whether the gap is zero because of an
+ * explicit end_min or a derived one.
  *
  * Writes up to `max` rows to `out` and returns the number written.
  * Rows beyond `max` are silently dropped in pack order — size `max` to
@@ -162,24 +227,39 @@ typedef struct {
  * covers any real festival) rather than treating it as a hard limit on
  * how many sets a day can have.
  *
- * Sets with a null start_min or end_min are never returned here — they
- * only ever appear in ff_sched_day_sets()'s lineup.
+ * Sets with a null start_min are never returned here — they only ever
+ * appear in ff_sched_day_sets()'s lineup. A set with a known start_min
+ * and a null end_min IS returned (with a derived effective_end and,
+ * possibly, `pct_valid=false` — see ff_now_row_t).
+ *
+ * 2026-08-25 review fixup (PR #65 finding 1): if two sets share the
+ * exact same (stage_idx, day_doy, start_min) — malformed or duplicate
+ * pack data, e.g. a copy/paste error or a support-act slot
+ * re-announced — only the LOWER-index one is ever returned as "now" for
+ * that stage; the other is suppressed entirely, not merely deduped in
+ * the output order. Both would otherwise derive the identical
+ * effective_end (sched_next_stage_start already excludes a tied sibling
+ * as its own derivation source) and so both would report "now" for the
+ * same window on the same stage — violating this function's own
+ * one-row-per-stage contract above. Same "ties -> lower set index" rule
+ * this module already uses in ff_sched_next_starred/ff_sched_alarm_tick.
  */
 uint8_t ff_sched_now_playing(fp_pack_t const *p, uint16_t day_doy, int16_t now_min,
                               ff_now_row_t out[], uint8_t max);
 
 /**
  * ff_sched_next_starred — the earliest-starting starred set on
- * `day_doy` that has not started yet (start_min > now_min, both times
- * known). Ties (identical start_min) resolve to the lower set index
+ * `day_doy` that has not started yet (start_min > now_min, start_min
+ * known — end_min is irrelevant here, "next" is purely a start-time
+ * question). Ties (identical start_min) resolve to the lower set index
  * (pack order). A set that is already playing or already over is never
  * "next" here even if starred (see ff_sched_now_playing for "currently
- * live").
+ * live", which DOES need end_min, explicit or derived, to decide "over").
  *
  * Returns true and fills `*out` if such a set exists. Returns false and
  * zeroes `*out` (set=NULL, mins_until=0) if nothing is starred, nothing
  * starred falls on this day, or every starred set on this day has
- * already started, already finished, or has a null start/end time.
+ * already started, already finished, or has a null start_min.
  */
 bool ff_sched_next_starred(fp_pack_t const *p, uint16_t day_doy, int16_t now_min, ff_next_t *out);
 
@@ -247,14 +327,21 @@ uint16_t ff_sched_day_sets(fp_pack_t const *p, uint16_t day_doy,
                             fp_set_t const *out[], uint16_t max);
 
 /**
- * ff_sched_day_tbd — true iff `day_doy` has at least one set AND none
- * of them have both start_min and end_min known. This is the "SET TIMES
- * TBD" banner condition (spec: "When all times are null (current Lost
- * Lands state) the face shows the day lineup + 'SET TIMES TBD'
- * banner").
+ * ff_sched_day_tbd — true iff `day_doy` has at least one set AND NONE
+ * of them have a known start_min. This is the "SET TIMES TBD" banner
+ * condition (spec: "When all times are null (current Lost Lands state)
+ * the face shows the day lineup + 'SET TIMES TBD' banner").
+ *
+ * 2026-08-24 amendment: end_min does NOT factor into this at all — see
+ * ff_sched.h's "Timed means a known start_min" section. A day with some
+ * sets carrying a real start_min and others fully null (Bass Canyon
+ * 2026's actual shape: 82 starts-only sets plus a handful of fully-null
+ * early-entry slots) is NOT this state; it is NOW_MIXED
+ * (app/include/ff_app_state.h), same as a day with some known-BOTH-
+ * times sets and some fully-null ones always was.
  *
  * False if `day_doy` has zero sets (nothing to flag as TBD) or if at
- * least one set on the day has known times.
+ * least one set on the day has a known start_min.
  */
 bool ff_sched_day_tbd(fp_pack_t const *p, uint16_t day_doy);
 
@@ -262,11 +349,15 @@ bool ff_sched_day_tbd(fp_pack_t const *p, uint16_t day_doy);
  * ff_sched_alarm_tick — advance the alarm state and report at most one
  * newly-due starred-set alert.
  *
- * A starred set on `day_doy` (both times known) is "due" once
- * start_min - now_min <= 15 (the T-15 crossing) AND the set has not
- * already ended (now_min <= effective_end, so a long gap between ticks
- * can still "catch up" a missed crossing, but never fires a stale alert
- * for a set that's fully over) AND it has not already fired under `st`.
+ * A starred set on `day_doy` (start_min known — end_min may be null; a
+ * null end_min is derived the same way ff_sched_now_playing derives it,
+ * see ff_sched.h's "Timed means a known start_min" section) is "due"
+ * once start_min - now_min <= 15 (the T-15 crossing) AND the set has
+ * not already ended (now_min <= effective_end, so a long gap between
+ * ticks can still "catch up" a missed crossing, but never fires a stale
+ * alert for a set that's fully over — including a last-set-of-day whose
+ * derived effective_end is the festival day window's own end) AND it
+ * has not already fired under `st`.
  *
  * Among every due-and-unfired set this call finds, only the one with
  * the smallest start_min fires (ties -> lower set index); at most one

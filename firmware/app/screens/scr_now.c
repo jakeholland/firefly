@@ -177,27 +177,38 @@ static void now_build_row(lv_obj_t *parent, ff_app_now_row_t const *row, int32_t
     lv_obj_set_style_text_color(artist_lbl, lv_color_hex(FF_THEME_COLOR_INK), 0);
     lv_obj_align(artist_lbl, LV_ALIGN_CENTER, 0, row_dy + (int32_t)NOW_LAYOUT_ROW_ARTIST_OFFSET_DY);
 
-    lv_obj_t *track = lv_obj_create(parent);
-    lv_obj_remove_style_all(track);
-    lv_obj_set_size(track, NOW_LAYOUT_ROW_BAR_TRACK_W_PX, NOW_LAYOUT_ROW_BAR_H_PX);
-    lv_obj_set_style_bg_color(track, lv_color_hex(FF_THEME_COLOR_SURFACE), 0);
-    lv_obj_set_style_bg_opa(track, LV_OPA_COVER, 0);
-    lv_obj_set_style_radius(track, LV_RADIUS_CIRCLE, 0);
-    lv_obj_clear_flag(track, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_clear_flag(track, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_align(track, LV_ALIGN_CENTER, 0, row_dy + (int32_t)NOW_LAYOUT_ROW_BAR_OFFSET_DY);
+    /* 2026-08-24 amendment (S07 ## Amendments, "starts-only set grids"):
+     * pct_valid false means this set's duration/progress is genuinely
+     * unknowable (last known-start set on its stage this day, no end
+     * published, no later same-stage set to derive one from) — NOT
+     * "0% done". Rendering an empty or full-looking track either way
+     * would claim knowledge this face doesn't have, so the whole
+     * progress-bar element (track + fill) is omitted rather than shown
+     * with a fabricated fill. See ff_app_now_row_t.pct_valid's doc
+     * comment (ff_app_state.h) for the full contract. */
+    if (row->pct_valid) {
+        lv_obj_t *track = lv_obj_create(parent);
+        lv_obj_remove_style_all(track);
+        lv_obj_set_size(track, NOW_LAYOUT_ROW_BAR_TRACK_W_PX, NOW_LAYOUT_ROW_BAR_H_PX);
+        lv_obj_set_style_bg_color(track, lv_color_hex(FF_THEME_COLOR_SURFACE), 0);
+        lv_obj_set_style_bg_opa(track, LV_OPA_COVER, 0);
+        lv_obj_set_style_radius(track, LV_RADIUS_CIRCLE, 0);
+        lv_obj_clear_flag(track, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_clear_flag(track, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_align(track, LV_ALIGN_CENTER, 0, row_dy + (int32_t)NOW_LAYOUT_ROW_BAR_OFFSET_DY);
 
-    int32_t fill_w = now_layout_bar_fill_px(row->pct_done, NOW_LAYOUT_ROW_BAR_TRACK_W_PX);
-    if (fill_w > 0) {
-        lv_obj_t *fill = lv_obj_create(track);
-        lv_obj_remove_style_all(fill);
-        lv_obj_set_size(fill, fill_w, NOW_LAYOUT_ROW_BAR_H_PX);
-        lv_obj_set_style_bg_color(fill, lv_color_hex(stage_color), 0);
-        lv_obj_set_style_bg_opa(fill, LV_OPA_COVER, 0);
-        lv_obj_set_style_radius(fill, LV_RADIUS_CIRCLE, 0);
-        lv_obj_clear_flag(fill, LV_OBJ_FLAG_SCROLLABLE);
-        lv_obj_clear_flag(fill, LV_OBJ_FLAG_CLICKABLE);
-        lv_obj_align(fill, LV_ALIGN_LEFT_MID, 0, 0);
+        int32_t fill_w = now_layout_bar_fill_px(row->pct_done, NOW_LAYOUT_ROW_BAR_TRACK_W_PX);
+        if (fill_w > 0) {
+            lv_obj_t *fill = lv_obj_create(track);
+            lv_obj_remove_style_all(fill);
+            lv_obj_set_size(fill, fill_w, NOW_LAYOUT_ROW_BAR_H_PX);
+            lv_obj_set_style_bg_color(fill, lv_color_hex(stage_color), 0);
+            lv_obj_set_style_bg_opa(fill, LV_OPA_COVER, 0);
+            lv_obj_set_style_radius(fill, LV_RADIUS_CIRCLE, 0);
+            lv_obj_clear_flag(fill, LV_OBJ_FLAG_SCROLLABLE);
+            lv_obj_clear_flag(fill, LV_OBJ_FLAG_CLICKABLE);
+            lv_obj_align(fill, LV_ALIGN_LEFT_MID, 0, 0);
+        }
     }
 }
 

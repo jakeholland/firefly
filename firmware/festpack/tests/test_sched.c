@@ -166,17 +166,43 @@ static void S07_AC1_pct_done_midpoint(void)
     TEST_ASSERT_EQUAL_INT16(50, rows[0].mins_left);
 }
 
-static void S07_AC1_null_time_sets_never_appear(void)
+static void S07_AC1_null_start_sets_never_appear(void)
 {
+    /* 2026-08-24 amendment: only a NULL start_min excludes a set from
+     * now_playing. This used to be named
+     * "S07_AC1_null_time_sets_never_appear" and included a "TBD End" set
+     * (known start, null end) among the ones asserted to never appear —
+     * that assumption is now WRONG (a known-start/null-end set is timed
+     * and, if live, DOES appear — see
+     * S07_2026_08_24_null_end_derives_from_next_same_stage_start and
+     * S07_AC1_a_known_start_with_null_end_still_appears_now below). Only
+     * genuinely null-START sets are covered here. */
     fp_pack_t p;
     pack_init(&p);
     pack_add(&p, mk_set("TBD Start", 0, DAY_A, -1, 660, false));
-    pack_add(&p, mk_set("TBD End", 1, DAY_A, 600, -1, false));
     pack_add(&p, mk_set("All TBD", 2, DAY_A, -1, -1, false));
 
     ff_now_row_t rows[8];
     uint8_t n = ff_sched_now_playing(&p, DAY_A, 620, rows, 8);
     TEST_ASSERT_EQUAL_UINT8(0, n);
+}
+
+static void S07_AC1_a_known_start_with_null_end_still_appears_now(void)
+{
+    /* The exact case the old (now-removed) "TBD End" assertion above got
+     * backwards: a known start_min with a null end_min is TIMED per the
+     * 2026-08-24 amendment. With no other set sharing its stage/day, its
+     * end is unknowable (pct_valid=false) — but it must still appear as
+     * a live row, not silently vanish. */
+    fp_pack_t p;
+    pack_init(&p);
+    pack_add(&p, mk_set("Starts-Only", 1, DAY_A, 600, -1, false));
+
+    ff_now_row_t rows[8];
+    uint8_t n = ff_sched_now_playing(&p, DAY_A, 620, rows, 8);
+    TEST_ASSERT_EQUAL_UINT8(1, n);
+    TEST_ASSERT_EQUAL_STRING("Starts-Only", rows[0].set->artist);
+    TEST_ASSERT_FALSE(rows[0].pct_valid);
 }
 
 static void S07_AC1_max_cap_truncates_in_pack_order(void)
@@ -205,6 +231,339 @@ static void S07_AC1_day_scoping_excludes_other_days(void)
     uint8_t n = ff_sched_now_playing(&p, DAY_A, 650, rows, 4);
     TEST_ASSERT_EQUAL_UINT8(1, n);
     TEST_ASSERT_EQUAL_STRING("Day A set", rows[0].set->artist);
+}
+
+/* ======================================================================
+ * 2026-08-24 amendment — "starts-only set grids" (S07-now-face.md
+ * ## Amendments). Found end-to-end against the first real festpack
+ * (Bass Canyon 2026: 82 published start times, every end_min null).
+ * A set with a known start_min is "timed" regardless of end_min; a null
+ * end_min derives from the next known start_min on the SAME stage, SAME
+ * day (searched by (stage_idx, day_doy, start_min), NOT by p->sets[]
+ * array order — the real Bass Canyon pack lists each stage's sets
+ * headliner-first, i.e. DESCENDING by start_min). The last known-start
+ * set on a stage/day, with no later same-stage start to derive from, is
+ * live but pct_valid=false — no invented duration.
+ * ==================================================================== */
+
+static void S07_2026_08_24_null_end_derives_from_next_same_stage_start(void)
+{
+    fp_pack_t p;
+    pack_init(&p);
+    /* Deliberately added in DESCENDING start order (mirrors the real
+     * Bass Canyon pack's headliner-first array order) to prove the
+     * derivation is a scan, not an array-order lookup. */
+    pack_add(&p, mk_set("Excision", 0, DAY_A, 1410, -1, false));       /* 23:30, last of night */
+    pack_add(&p, mk_set("Sullivan King", 0, DAY_A, 1350, -1, false));  /* 22:30 */
+    pack_add(&p, mk_set("NGHTMRE", 0, DAY_A, 1290, -1, false));        /* 21:30 */
+
+    ff_now_row_t rows[4];
+    /* NGHTMRE mid-set: derived end is Sullivan King's 1350, a 60-minute
+     * derived duration, so 1320 (30 min in) is 50%. */
+    uint8_t n = ff_sched_now_playing(&p, DAY_A, 1320, rows, 4);
+    TEST_ASSERT_EQUAL_UINT8(1, n);
+    TEST_ASSERT_EQUAL_STRING("NGHTMRE", rows[0].set->artist);
+    TEST_ASSERT_TRUE(rows[0].pct_valid);
+    TEST_ASSERT_EQUAL_UINT8(50, rows[0].pct_done);
+    TEST_ASSERT_EQUAL_INT16(30, rows[0].mins_left);
+}
+
+static void S07_2026_08_24_derived_end_is_half_open_at_the_changeover_minute(void)
+{
+    /* The exact mutation-conscious case: a `<` -> `<=` (or vice versa)
+     * slip in the derived-end comparison would let both NGHTMRE and
+     * Sullivan King show up as "now" at the changeover minute, or
+     * neither. Same half-open contract as an explicit end_min (PR #9's
+     * ruling) — this proves it composes with the derivation. */
+    fp_pack_t p;
+    pack_init(&p);
+    pack_add(&p, mk_set("NGHTMRE", 0, DAY_A, 1290, -1, false));
+    /* A third set after Sullivan King so ITS derived end is also a real
+     * next-set derivation (1410), not the last-of-day day-boundary
+     * fallback — keeps this test purely about the half-open boundary,
+     * not conflated with the separate last-set/pct_valid case. */
+    pack_add(&p, mk_set("Sullivan King", 0, DAY_A, 1350, -1, false));
+    pack_add(&p, mk_set("Excision", 0, DAY_A, 1410, -1, false));
+
+    ff_now_row_t rows[4];
+
+    /* One minute before the derived boundary: NGHTMRE still "now". */
+    uint8_t n = ff_sched_now_playing(&p, DAY_A, 1349, rows, 4);
+    TEST_ASSERT_EQUAL_UINT8(1, n);
+    TEST_ASSERT_EQUAL_STRING("NGHTMRE", rows[0].set->artist);
+
+    /* Exactly at the derived boundary (1350): NGHTMRE is gone, Sullivan
+     * King alone is "now" at pct 0 — the starting set wins, same as the
+     * explicit-end zero-gap changeover. */
+    n = ff_sched_now_playing(&p, DAY_A, 1350, rows, 4);
+    TEST_ASSERT_EQUAL_UINT8(1, n);
+    TEST_ASSERT_EQUAL_STRING("Sullivan King", rows[0].set->artist);
+    TEST_ASSERT_TRUE(rows[0].pct_valid);
+    TEST_ASSERT_EQUAL_UINT8(0, rows[0].pct_done);
+}
+
+static void S07_2026_08_24_last_set_of_day_is_live_with_pct_invalid(void)
+{
+    fp_pack_t p;
+    pack_init(&p);
+    /* Only set on this stage/day with a known start: nothing to derive
+     * an end from. */
+    pack_add(&p, mk_set("Excision", 0, DAY_A, 1410, -1, false)); /* 23:30 */
+
+    ff_now_row_t rows[4];
+
+    /* Shortly after starting: live, pct genuinely unknown. */
+    uint8_t n = ff_sched_now_playing(&p, DAY_A, 1420, rows, 4);
+    TEST_ASSERT_EQUAL_UINT8(1, n);
+    TEST_ASSERT_EQUAL_STRING("Excision", rows[0].set->artist);
+    TEST_ASSERT_FALSE(rows[0].pct_valid);
+    /* mins_left counts down to the festival day window's own end
+     * (1800), the one boundary this module actually knows — NOT to a
+     * fabricated set duration. */
+    TEST_ASSERT_EQUAL_INT16(380, rows[0].mins_left);
+
+    /* Last live minute of the day window (1799): still "now". */
+    n = ff_sched_now_playing(&p, DAY_A, 1799, rows, 4);
+    TEST_ASSERT_EQUAL_UINT8(1, n);
+    TEST_ASSERT_FALSE(rows[0].pct_valid);
+
+    /* At the day window's own end (1800, FF_SCHED_FESTIVAL_DAY_START_MIN
+     * + FF_SCHED_DAY_SPAN_MIN): stops counting as "now" — half-open,
+     * same as every other boundary in this module. Do NOT invent a
+     * duration past this point either. */
+    n = ff_sched_now_playing(&p, DAY_A, (int16_t)(FF_SCHED_FESTIVAL_DAY_START_MIN + FF_SCHED_DAY_SPAN_MIN), rows, 4);
+    TEST_ASSERT_EQUAL_UINT8(0, n);
+}
+
+static void S07_2026_08_24_derivation_is_scoped_to_same_stage_only(void)
+{
+    /* A later start on a DIFFERENT stage, same day, must never supply a
+     * derived end for this stage's last set — that would silently
+     * borrow another stage's schedule. */
+    fp_pack_t p;
+    pack_init(&p);
+    pack_add(&p, mk_set("Excision", 0, DAY_A, 1410, -1, false));   /* canyon, 23:30, last of night */
+    pack_add(&p, mk_set("Later Elsewhere", 1, DAY_A, 1420, -1, false)); /* hilltop, 23:40 */
+
+    ff_now_row_t rows[4];
+    uint8_t n = ff_sched_now_playing(&p, DAY_A, 1425, rows, 4);
+    TEST_ASSERT_EQUAL_UINT8(2, n); /* both stages concurrently live */
+    TEST_ASSERT_EQUAL_STRING("Excision", rows[0].set->artist);
+    TEST_ASSERT_FALSE(rows[0].pct_valid); /* still unknown — "Later Elsewhere" is a different stage */
+}
+
+static void S07_2026_08_24_derivation_is_scoped_to_same_day_only(void)
+{
+    /* A later start on the SAME stage but a DIFFERENT day must not
+     * supply a derived end either — day_doy scoping applies to the
+     * derivation exactly like every other now_playing check.
+     *
+     * 2026-08-25 review fixup (PR #65 finding 2): the cross-day sibling
+     * MUST have a start_min LATER than the current set's — a smaller
+     * one (as this test originally used, 1290 < 1410) is already
+     * excluded by sched_next_stage_start's plain `start_min <=
+     * s->start_min` ordering check regardless of whether the day_doy
+     * filter exists, so the original fixture never actually exercised
+     * the filter (removing `if (o->day_doy != s->day_doy) continue;`
+     * left this test, and the whole suite, green — the exact
+     * proxy-vs-property gap docs/review/code-review.md item 6 warns
+     * about). 1420 is later than Excision's 1410, so this now actually
+     * distinguishes "day-scoped" from "day-scoping removed": mutate the
+     * day_doy filter away and this fails (pct_valid flips to true,
+     * mins_left flips from the day-boundary fallback to 5). */
+    fp_pack_t p;
+    pack_init(&p);
+    pack_add(&p, mk_set("Excision", 0, DAY_A, 1410, -1, false));
+    pack_add(&p, mk_set("Tomorrow Early Set", 0, DAY_B, 1420, -1, false));
+
+    ff_now_row_t rows[4];
+    uint8_t n = ff_sched_now_playing(&p, DAY_A, 1415, rows, 4);
+    TEST_ASSERT_EQUAL_UINT8(1, n);
+    TEST_ASSERT_EQUAL_STRING("Excision", rows[0].set->artist);
+    TEST_ASSERT_FALSE(rows[0].pct_valid);
+    TEST_ASSERT_EQUAL_INT16(385, rows[0].mins_left); /* day-boundary fallback: 1800-1415 */
+}
+
+static void S07_2026_08_24_next_starred_allows_a_null_end_set(void)
+{
+    /* Before this amendment, next_starred required BOTH times known —
+     * a starred set with a real start but no published end used to
+     * never show up as "next" at all, even though "next" only needs a
+     * start time. */
+    fp_pack_t p;
+    pack_init(&p);
+    pack_add(&p, mk_set("Excision", 0, DAY_A, 1410, -1, true)); /* starred, starts-only */
+
+    ff_next_t next;
+    bool found = ff_sched_next_starred(&p, DAY_A, 1300, &next);
+    TEST_ASSERT_TRUE(found);
+    TEST_ASSERT_EQUAL_STRING("Excision", next.set->artist);
+    TEST_ASSERT_EQUAL_INT16(110, next.mins_until);
+}
+
+static void S07_2026_08_24_alarm_fires_for_a_null_end_starred_set(void)
+{
+    fp_pack_t p;
+    pack_init(&p);
+    pack_add(&p, mk_set("Excision", 0, DAY_A, 1410, -1, true)); /* T-15 at 1395 */
+
+    ff_sched_alarm_t st;
+    ff_sched_alarm_init(&st);
+
+    TEST_ASSERT_NULL(ff_sched_alarm_tick(&st, &p, DAY_A, 1394));
+    fp_set_t const *fired = ff_sched_alarm_tick(&st, &p, DAY_A, 1395);
+    TEST_ASSERT_NOT_NULL(fired);
+    TEST_ASSERT_EQUAL_STRING("Excision", fired->artist);
+}
+
+static void S07_2026_08_24_alarm_does_not_fire_stale_past_the_day_window_end(void)
+{
+    /* A null-end, last-of-day starred set whose T-15 crossing was
+     * missed entirely: the "already over" check must use the derived
+     * (day-window) end, not treat a null end_min as "never over". */
+    fp_pack_t p;
+    pack_init(&p);
+    pack_add(&p, mk_set("Excision", 0, DAY_A, 1410, -1, true));
+
+    ff_sched_alarm_t st;
+    ff_sched_alarm_init(&st);
+
+    /* First tick lands well past the festival day window's own end
+     * (1800) — the set is unambiguously over by then even with no
+     * explicit end_min. */
+    TEST_ASSERT_NULL(ff_sched_alarm_tick(&st, &p, DAY_A, 1850));
+}
+
+static void S07_2026_08_24_day_tbd_false_when_a_set_has_a_start_but_no_end(void)
+{
+    /* The exact predicate this amendment fixes: a day where every set
+     * has a PUBLISHED start but no published end must NOT read as
+     * "SET TIMES TBD" — that was the literal bug (Bass Canyon 2026
+     * rendered as TBD despite 82 real start times). */
+    fp_pack_t p;
+    pack_init(&p);
+    pack_add(&p, mk_set("Excision", 0, DAY_A, 1410, -1, false));
+    pack_add(&p, mk_set("Sullivan King", 0, DAY_A, 1350, -1, false));
+
+    TEST_ASSERT_FALSE(ff_sched_day_tbd(&p, DAY_A));
+}
+
+static void S07_2026_08_24_day_tbd_true_when_start_is_null_even_with_a_known_end(void)
+{
+    /* Converse mutation check: end_min plays NO part in the TBD
+     * predicate at all, in either direction — a set with a known end
+     * but no known start still counts as untimed. */
+    fp_pack_t p;
+    pack_init(&p);
+    pack_add(&p, mk_set("Mystery Opener", 0, DAY_A, -1, 660, false));
+
+    TEST_ASSERT_TRUE(ff_sched_day_tbd(&p, DAY_A));
+}
+
+/* ======================================================================
+ * 2026-08-25 review fixup (PR #65, finding 1) — duplicate start_min on
+ * the same stage must not double-render. sched_next_stage_start already
+ * excludes a tied sibling as ITS OWN derivation source (so the derived
+ * effective_end value is the same regardless of which tied set you ask
+ * about), but that alone doesn't stop BOTH tied sets from being
+ * reported "now" for that identical window on the same stage, which
+ * violates ff_sched_now_playing's own "one row per stage" contract.
+ * ==================================================================== */
+
+static void S07_2026_08_25_duplicate_start_same_stage_dedupes(void)
+{
+    /* Reviewer's exact repro: two sets, same stage, same day_doy, both
+     * start_min=1200; a third set at 1260 supplies the derived end. */
+    fp_pack_t p;
+    pack_init(&p);
+    pack_add(&p, mk_set("Duplicate A", 0, DAY_A, 1200, -1, false));
+    pack_add(&p, mk_set("Duplicate B", 0, DAY_A, 1200, -1, false));
+    pack_add(&p, mk_set("Next Act", 0, DAY_A, 1260, -1, false));
+
+    ff_now_row_t rows[4];
+    uint8_t n = ff_sched_now_playing(&p, DAY_A, 1230, rows, 4);
+    /* Exactly one row for this stage — "Duplicate A" wins (lower set
+     * index), same "ties -> lower index" rule as next_starred/
+     * alarm_tick, not two rows for one stage. */
+    TEST_ASSERT_EQUAL_UINT8(1, n);
+    TEST_ASSERT_EQUAL_STRING("Duplicate A", rows[0].set->artist);
+    TEST_ASSERT_TRUE(rows[0].pct_valid);
+    TEST_ASSERT_EQUAL_UINT8(50, rows[0].pct_done);
+}
+
+static void S07_2026_08_25_duplicate_start_different_stage_both_render(void)
+{
+    /* Negative control for the fix above: the dedupe is scoped to
+     * (stage_idx, day_doy, start_min) together — two DIFFERENT stages
+     * sharing a start_min is ordinary concurrent scheduling, not a
+     * duplicate, and both must still render. Guards against an
+     * over-broad fix that drops the stage_idx comparison. */
+    fp_pack_t p;
+    pack_init(&p);
+    pack_add(&p, mk_set("Canyon Headliner", 0, DAY_A, 1200, -1, false));
+    pack_add(&p, mk_set("Hilltop Headliner", 1, DAY_A, 1200, -1, false));
+
+    ff_now_row_t rows[4];
+    uint8_t n = ff_sched_now_playing(&p, DAY_A, 1230, rows, 4);
+    TEST_ASSERT_EQUAL_UINT8(2, n);
+    TEST_ASSERT_EQUAL_STRING("Canyon Headliner", rows[0].set->artist);
+    TEST_ASSERT_EQUAL_STRING("Hilltop Headliner", rows[1].set->artist);
+}
+
+static void S07_2026_08_24_bass_canyon_shape_fixture_is_not_tbd(void)
+{
+    char buf[256u * 1024u];
+    char path[512];
+    snprintf(path, sizeof(path), "%sbass-canyon-shape.festpack.json", FP_FIXTURE_DIR);
+    FILE *f = fopen(path, "rb");
+    TEST_ASSERT_NOT_NULL_MESSAGE(f, path);
+    size_t len = fread(buf, 1, sizeof(buf), f);
+    fclose(f);
+    TEST_ASSERT_TRUE(len > 0);
+
+    fp_pack_t pack;
+    fp_result_t r = fp_parse(buf, len, &pack);
+    TEST_ASSERT_EQUAL_INT(FP_OK, r);
+    TEST_ASSERT_EQUAL_UINT16(6, pack.n_sets);
+
+    uint16_t day = pack.start_doy;
+
+    /* The exact bug: real published start times, every end_min null —
+     * must NOT read as SET TIMES TBD. */
+    TEST_ASSERT_FALSE_MESSAGE(ff_sched_day_tbd(&pack, day),
+                               "starts-only real festpack shape must not render as SET TIMES TBD");
+
+    /* 22:00 (1320): NGHTMRE mid-set on canyon (derived end from Sullivan
+     * King's 22:30), Big Gigantic just starting on hilltop (derived end
+     * from Dodge & Fuski's 23:00) — two stages, independently derived. */
+    ff_now_row_t rows[8];
+    uint8_t n = ff_sched_now_playing(&pack, day, 1320, rows, 8);
+    TEST_ASSERT_EQUAL_UINT8(2, n);
+    TEST_ASSERT_EQUAL_STRING("NGHTMRE", rows[0].set->artist);
+    TEST_ASSERT_TRUE(rows[0].pct_valid);
+    TEST_ASSERT_EQUAL_STRING("Big Gigantic", rows[1].set->artist);
+    TEST_ASSERT_TRUE(rows[1].pct_valid);
+    TEST_ASSERT_EQUAL_UINT8(0, rows[1].pct_done);
+
+    /* 23:45 (1425): Excision live on canyon (last set of the night on
+     * that stage), pct genuinely unknown. */
+    n = ff_sched_now_playing(&pack, day, 1425, rows, 8);
+    TEST_ASSERT_EQUAL_UINT8(2, n);
+    TEST_ASSERT_EQUAL_STRING("Excision", rows[0].set->artist);
+    TEST_ASSERT_FALSE(rows[0].pct_valid);
+    TEST_ASSERT_EQUAL_STRING("Dodge & Fuski", rows[1].set->artist);
+    TEST_ASSERT_FALSE(rows[1].pct_valid);
+
+    /* The one fully-null set is still in the day's lineup (unaffected by
+     * this amendment — ff_sched_day_sets lists regardless of times). */
+    fp_set_t const *day_sets[16];
+    uint16_t n_day = ff_sched_day_sets(&pack, day, day_sets, 16);
+    TEST_ASSERT_EQUAL_UINT16(6, n_day);
+    bool found_brainrack = false;
+    for (uint16_t i = 0; i < n_day; i++) {
+        if (strcmp(day_sets[i]->artist, "Brainrack B2B Wiley") == 0) found_brainrack = true;
+    }
+    TEST_ASSERT_TRUE(found_brainrack);
 }
 
 /* ======================================================================
@@ -766,9 +1125,24 @@ int main(void)
     RUN_TEST(S07_AC1_pct_done_leaves_now_exactly_at_end_half_open);
     RUN_TEST(S07_AC1_zero_gap_changeover_single_row);
     RUN_TEST(S07_AC1_pct_done_midpoint);
-    RUN_TEST(S07_AC1_null_time_sets_never_appear);
+    RUN_TEST(S07_AC1_null_start_sets_never_appear);
+    RUN_TEST(S07_AC1_a_known_start_with_null_end_still_appears_now);
     RUN_TEST(S07_AC1_max_cap_truncates_in_pack_order);
     RUN_TEST(S07_AC1_day_scoping_excludes_other_days);
+
+    RUN_TEST(S07_2026_08_24_null_end_derives_from_next_same_stage_start);
+    RUN_TEST(S07_2026_08_24_derived_end_is_half_open_at_the_changeover_minute);
+    RUN_TEST(S07_2026_08_24_last_set_of_day_is_live_with_pct_invalid);
+    RUN_TEST(S07_2026_08_24_derivation_is_scoped_to_same_stage_only);
+    RUN_TEST(S07_2026_08_24_derivation_is_scoped_to_same_day_only);
+    RUN_TEST(S07_2026_08_24_next_starred_allows_a_null_end_set);
+    RUN_TEST(S07_2026_08_24_alarm_fires_for_a_null_end_starred_set);
+    RUN_TEST(S07_2026_08_24_alarm_does_not_fire_stale_past_the_day_window_end);
+    RUN_TEST(S07_2026_08_24_day_tbd_false_when_a_set_has_a_start_but_no_end);
+    RUN_TEST(S07_2026_08_24_day_tbd_true_when_start_is_null_even_with_a_known_end);
+    RUN_TEST(S07_2026_08_25_duplicate_start_same_stage_dedupes);
+    RUN_TEST(S07_2026_08_25_duplicate_start_different_stage_both_render);
+    RUN_TEST(S07_2026_08_24_bass_canyon_shape_fixture_is_not_tbd);
 
     RUN_TEST(S07_AC2_midnight_crossing_set_is_now_at_0030);
     RUN_TEST(S07_AC2_midnight_crossing_pct_done_across_midnight);

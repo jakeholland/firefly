@@ -111,6 +111,16 @@ typedef struct {
      * targets/sim/tests/test_fixture.c's now_stage_color_rgb_* cases. */
     bool     stage_color_valid;
     uint8_t pct_done;
+    /* 2026-08-24 amendment (S07-now-face.md ## Amendments, "starts-only
+     * set grids"): mirrors ff_sched.h's ff_now_row_t.pct_valid exactly —
+     * false iff this set's real end is unknowable (the last known-start
+     * set on its stage this day, with a null end_min and no later
+     * same-stage/same-day start to derive one from). The set IS live
+     * (that's why it's a row at all); only its progress fraction isn't
+     * knowable. Same "never let absence carry meaning" convention as
+     * stage_color_valid above: scr_now.c must gate the progress-bar
+     * render on this flag, not on pct_done being merely 0. */
+    bool     pct_valid;
 } ff_app_now_row_t;
 
 typedef struct {

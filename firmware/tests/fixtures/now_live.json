@@ -8,19 +8,22 @@
         "artist": "GRiZ",
         "stage_name": "Prehistoric Stage",
         "stage_color_rgb": "#ffc66b",
-        "pct_done": 40
+        "pct_done": 40,
+        "pct_valid": true
       },
       {
         "artist": "Wooli",
         "stage_name": "Subsidia Stage",
         "stage_color_rgb": "#ff5ca8",
-        "pct_done": 85
+        "pct_done": 85,
+        "pct_valid": true
       },
       {
         "artist": "Kompany",
         "stage_name": "Forest Stage",
         "stage_color_rgb": "#9be07b",
-        "pct_done": 10
+        "pct_done": 10,
+        "pct_valid": true
       }
     ],
     "next": {
