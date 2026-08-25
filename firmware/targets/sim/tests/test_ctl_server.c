@@ -156,6 +156,10 @@ typedef struct {
     int  swipe_calls;
     char swipe_dir[8];
 
+    int      hold_calls;
+    double   hold_x, hold_y;
+    uint32_t hold_ms;
+
     int      clock_calls;
     uint32_t clock_advance_ms;
     bool     clock_advance_ok;   /* what clock_advance() should return */
@@ -185,6 +189,15 @@ static void spy_swipe(void *u, char const *dir)
     spy_t *s = (spy_t *)u;
     s->swipe_calls++;
     (void)snprintf(s->swipe_dir, sizeof(s->swipe_dir), "%s", dir);
+}
+
+static void spy_hold(void *u, double x, double y, uint32_t ms)
+{
+    spy_t *s = (spy_t *)u;
+    s->hold_calls++;
+    s->hold_x = x;
+    s->hold_y = y;
+    s->hold_ms = ms;
 }
 
 static bool spy_clock_advance(void *u, uint32_t advance_ms, char const **err)
@@ -233,6 +246,7 @@ static ff_ctl_handlers_t spy_handlers(spy_t *s)
     h.user = s;
     h.tap = spy_tap;
     h.swipe = spy_swipe;
+    h.hold = spy_hold;
     h.clock_advance = spy_clock_advance;
     h.state_json = spy_state_json;
     h.screenshot = spy_screenshot;
@@ -399,6 +413,151 @@ static void S13c_ctl_process_line_swipe_invalid_dir_is_error(void)
      * response (not just "ok:false somewhere in there") so that class of
      * bug can't creep back in unnoticed. */
     TEST_ASSERT_EQUAL_STRING("{\"ok\":false,\"error\":\"swipe dir must be left or right\"}", resp);
+}
+
+/* --- issue #70: `hold` --- */
+
+static void S70_ctl_process_line_hold_explicit_ms(void)
+{
+    spy_t s = {0};
+    ff_ctl_handlers_t h = spy_handlers(&s);
+    char resp[512];
+
+    ff_ctl_process_line("{\"cmd\":\"hold\",\"x\":120,\"y\":340,\"ms\":900}", &h, resp, sizeof(resp));
+
+    TEST_ASSERT_TRUE(resp_ok(resp));
+    TEST_ASSERT_EQUAL_INT(1, s.hold_calls);
+    TEST_ASSERT_EQUAL_DOUBLE(120.0, s.hold_x);
+    TEST_ASSERT_EQUAL_DOUBLE(340.0, s.hold_y);
+    TEST_ASSERT_EQUAL_UINT32(900, s.hold_ms);
+}
+
+/* `ms` omitted entirely: FF_CTL_HOLD_DEFAULT_MS (600 — comfortably past
+ * LVGL's 400ms long_press_time), not 0/unset. */
+static void S70_ctl_process_line_hold_defaults_ms(void)
+{
+    spy_t s = {0};
+    ff_ctl_handlers_t h = spy_handlers(&s);
+    char resp[512];
+
+    ff_ctl_process_line("{\"cmd\":\"hold\",\"x\":1,\"y\":2}", &h, resp, sizeof(resp));
+
+    TEST_ASSERT_TRUE(resp_ok(resp));
+    TEST_ASSERT_EQUAL_UINT32(FF_CTL_HOLD_DEFAULT_MS, s.hold_ms);
+}
+
+static void S70_ctl_process_line_hold_missing_y_is_error(void)
+{
+    spy_t s = {0};
+    ff_ctl_handlers_t h = spy_handlers(&s);
+    char resp[512];
+
+    ff_ctl_process_line("{\"cmd\":\"hold\",\"x\":12}", &h, resp, sizeof(resp));
+
+    TEST_ASSERT_FALSE(resp_ok(resp));
+    TEST_ASSERT_EQUAL_INT(0, s.hold_calls); /* guard path: handler must not fire */
+}
+
+/* Same coordinate bounds as `tap` (FF_CTL_TAP_COORD_MIN/MAX, reused —
+ * see ctl_server.c's hold handler). Exact boundary per the standing
+ * "exact boundary tests" convention: max accepted, one past rejected. */
+static void S70_ctl_process_line_hold_at_coord_max_accepted(void)
+{
+    spy_t s = {0};
+    ff_ctl_handlers_t h = spy_handlers(&s);
+    char resp[512];
+
+    ff_ctl_process_line("{\"cmd\":\"hold\",\"x\":32767,\"y\":-32768}", &h, resp, sizeof(resp));
+
+    TEST_ASSERT_TRUE(resp_ok(resp));
+    TEST_ASSERT_EQUAL_INT(1, s.hold_calls);
+}
+
+static void S70_ctl_process_line_hold_one_past_coord_max_is_error(void)
+{
+    spy_t s = {0};
+    ff_ctl_handlers_t h = spy_handlers(&s);
+    char resp[512];
+
+    ff_ctl_process_line("{\"cmd\":\"hold\",\"x\":32768,\"y\":0}", &h, resp, sizeof(resp));
+
+    TEST_ASSERT_FALSE(resp_ok(resp));
+    TEST_ASSERT_EQUAL_INT(0, s.hold_calls);
+}
+
+static void S70_ctl_process_line_hold_non_finite_x_is_error(void)
+{
+    spy_t s = {0};
+    ff_ctl_handlers_t h = spy_handlers(&s);
+    char resp[512];
+
+    ff_ctl_process_line("{\"cmd\":\"hold\",\"x\":1e999,\"y\":0}", &h, resp, sizeof(resp)); /* strtod overflow -> +inf */
+
+    TEST_ASSERT_FALSE(resp_ok(resp));
+    TEST_ASSERT_EQUAL_INT(0, s.hold_calls);
+}
+
+/* Exact boundary on `ms`: FF_CTL_HOLD_MS_MAX (65535) accepted, one past
+ * it rejected — same shape as tap's coordinate boundary tests. */
+static void S70_ctl_process_line_hold_ms_at_max_accepted(void)
+{
+    spy_t s = {0};
+    ff_ctl_handlers_t h = spy_handlers(&s);
+    char resp[512];
+
+    ff_ctl_process_line("{\"cmd\":\"hold\",\"x\":0,\"y\":0,\"ms\":65535}", &h, resp, sizeof(resp));
+
+    TEST_ASSERT_TRUE(resp_ok(resp));
+    TEST_ASSERT_EQUAL_UINT32(65535, s.hold_ms);
+}
+
+static void S70_ctl_process_line_hold_ms_one_past_max_is_error(void)
+{
+    spy_t s = {0};
+    ff_ctl_handlers_t h = spy_handlers(&s);
+    char resp[512];
+
+    ff_ctl_process_line("{\"cmd\":\"hold\",\"x\":0,\"y\":0,\"ms\":65536}", &h, resp, sizeof(resp));
+
+    TEST_ASSERT_FALSE(resp_ok(resp));
+    TEST_ASSERT_EQUAL_INT(0, s.hold_calls);
+}
+
+static void S70_ctl_process_line_hold_negative_ms_is_error(void)
+{
+    spy_t s = {0};
+    ff_ctl_handlers_t h = spy_handlers(&s);
+    char resp[512];
+
+    ff_ctl_process_line("{\"cmd\":\"hold\",\"x\":0,\"y\":0,\"ms\":-1}", &h, resp, sizeof(resp));
+
+    TEST_ASSERT_FALSE(resp_ok(resp));
+    TEST_ASSERT_EQUAL_INT(0, s.hold_calls);
+}
+
+static void S70_ctl_process_line_hold_non_numeric_ms_is_error(void)
+{
+    spy_t s = {0};
+    ff_ctl_handlers_t h = spy_handlers(&s);
+    char resp[512];
+
+    ff_ctl_process_line("{\"cmd\":\"hold\",\"x\":0,\"y\":0,\"ms\":\"long\"}", &h, resp, sizeof(resp));
+
+    TEST_ASSERT_FALSE(resp_ok(resp));
+    TEST_ASSERT_EQUAL_INT(0, s.hold_calls);
+}
+
+static void S70_ctl_process_line_hold_unsupported_callback_is_error(void)
+{
+    spy_t s = {0};
+    ff_ctl_handlers_t h = spy_handlers(&s);
+    h.hold = NULL; /* simulate a caller that didn't wire hold support */
+    char resp[512];
+
+    ff_ctl_process_line("{\"cmd\":\"hold\",\"x\":1,\"y\":2}", &h, resp, sizeof(resp));
+
+    TEST_ASSERT_FALSE(resp_ok(resp));
+    TEST_ASSERT_NOT_NULL(strstr(resp, "unsupported"));
 }
 
 static void S13c_ctl_process_line_clock_advance(void)
@@ -865,6 +1024,17 @@ int main(void)
     RUN_TEST(S13c_ctl_process_line_tap_unparseable_number_is_error);
     RUN_TEST(S13c_ctl_process_line_swipe_left_and_right);
     RUN_TEST(S13c_ctl_process_line_swipe_invalid_dir_is_error);
+    RUN_TEST(S70_ctl_process_line_hold_explicit_ms);
+    RUN_TEST(S70_ctl_process_line_hold_defaults_ms);
+    RUN_TEST(S70_ctl_process_line_hold_missing_y_is_error);
+    RUN_TEST(S70_ctl_process_line_hold_at_coord_max_accepted);
+    RUN_TEST(S70_ctl_process_line_hold_one_past_coord_max_is_error);
+    RUN_TEST(S70_ctl_process_line_hold_non_finite_x_is_error);
+    RUN_TEST(S70_ctl_process_line_hold_ms_at_max_accepted);
+    RUN_TEST(S70_ctl_process_line_hold_ms_one_past_max_is_error);
+    RUN_TEST(S70_ctl_process_line_hold_negative_ms_is_error);
+    RUN_TEST(S70_ctl_process_line_hold_non_numeric_ms_is_error);
+    RUN_TEST(S70_ctl_process_line_hold_unsupported_callback_is_error);
     RUN_TEST(S13c_ctl_process_line_clock_advance);
     RUN_TEST(S13c_ctl_process_line_clock_negative_advance_is_error);
     RUN_TEST(S13c_ctl_process_line_clock_unavailable_without_mock_clock);
