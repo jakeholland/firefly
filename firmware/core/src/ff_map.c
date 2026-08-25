@@ -4,6 +4,7 @@
  */
 #include "ff_map.h"
 
+#include <math.h> /* sqrtf — ff_map_clip_point_to_circle; documented in ff_map.h's own top comment */
 #include <stdbool.h>
 #include <stddef.h> /* NULL */
 
@@ -103,6 +104,28 @@ void ff_map_project(ff_map_xform_t const *x, float east_m, float north_m, float 
     if (out_y_px != NULL) *out_y_px = -dy;
 }
 
+/* ---------------------------------------------------------------------
+ * ff_map_clip_point_to_circle — see ff_map.h's doc comment for the full
+ * rationale (issue #75: this replaces lv_obj_set_style_clip_corner, which
+ * hangs ffsim --headless, with a pure-geometry clamp applied before LVGL
+ * ever sees the point).
+ * ------------------------------------------------------------------- */
+
+void ff_map_clip_point_to_circle(float x, float y, float radius_px, float *out_x, float *out_y)
+{
+    float rx = x, ry = y;
+    if (radius_px > 0.0f) {
+        float const d = sqrtf(x * x + y * y);
+        if (d > radius_px) {
+            float const scale = radius_px / d;
+            rx = x * scale;
+            ry = y * scale;
+        }
+    }
+    if (out_x != NULL) *out_x = rx;
+    if (out_y != NULL) *out_y = ry;
+}
+
 ff_map_render_kind_t ff_map_feature_render_kind(uint8_t n_pts, int is_stage)
 {
     if (n_pts == 0) return FF_MAP_RENDER_OMIT;
@@ -123,8 +146,26 @@ ff_map_label_priority_t ff_map_feature_label_priority(uint8_t n_pts, int is_stag
  * contract (caller-ordering requirement, HIGH-nudge/LOW-drop rules).
  * ------------------------------------------------------------------- */
 
+/* True iff a label's bounding box — centered at (x, y), half-extents
+ * (half_w, half_h) — could cross a circle of `radius_px` around the
+ * origin. Conservative on purpose: the exact farthest corner of an
+ * axis-aligned box from the origin is at (|x|+half_w, |y|+half_h), so
+ * this is not an approximation, it's the precise same per-corner
+ * reasoning ff_layout_rect_in_circle documents for the LVGL-side
+ * equivalent (app/screens/ff_layout.h) — just against a circle centered
+ * on the origin rather than an arbitrary center, which is exactly this
+ * module's center-relative convention. `radius_px <= 0` means the check
+ * is disabled (ff_map.h's documented escape hatch). */
+static bool ff_map_label_off_circle(float x, float y, float half_w, float half_h, float radius_px)
+{
+    if (radius_px <= 0.0f) return false;
+    float const fx = (x < 0.0f ? -x : x) + half_w;
+    float const fy = (y < 0.0f ? -y : y) + half_h;
+    return (fx * fx + fy * fy) > (radius_px * radius_px);
+}
+
 int ff_map_place_labels(ff_map_label_request_t const *in, int n, float min_sep_px, int max_nudge_tries,
-                         ff_map_label_result_t *out)
+                         float circle_radius_px, ff_map_label_result_t *out)
 {
     if (n < 0 || n > FF_MAP_LABEL_MAX_ITEMS) return -1;
     if (n > 0 && (in == NULL || out == NULL)) return -1; /* n == 0 needs neither pointer: nothing to dereference */
@@ -132,6 +173,8 @@ int ff_map_place_labels(ff_map_label_request_t const *in, int n, float min_sep_p
     for (int i = 0; i < n; i++) {
         float x = in[i].x;
         float y = in[i].y;
+        float const half_w = in[i].half_w;
+        float const half_h = in[i].half_h;
 
         /* Collision test against every EARLIER result that was actually
          * placed — dropped LOW entries contribute nothing, matching
@@ -152,6 +195,29 @@ int ff_map_place_labels(ff_map_label_request_t const *in, int n, float min_sep_p
                 if (!collides) break;
                 y += min_sep_px;
             }
+            /* Issue #77 fold-in: a HIGH label can never be DROPPED (see
+             * ff_map.h's doc comment — it has no other visual
+             * representation), so an off-circle result is pulled radially
+             * inward instead. `eff_radius` shrinks the clamp target by
+             * this label's own half-extents (a conservative upper bound
+             * on how far its own bounding box reaches past its center
+             * point in the worst-case axis) so the CLAMPED center still
+             * leaves the whole box inside `circle_radius_px`, not just
+             * the center point. A label wider than the circle itself
+             * (eff_radius <= 0 — never real festival data, per this
+             * label's own on-device 30-byte cap, but guarded rather than
+             * assumed) has no position that satisfies that, so it centers
+             * on the origin as the least-wrong honest fallback — the one
+             * point every positive radius still contains. */
+            if (circle_radius_px > 0.0f) {
+                float const eff_radius = circle_radius_px - (half_w + half_h);
+                if (eff_radius <= 0.0f) {
+                    x = 0.0f;
+                    y = 0.0f;
+                } else if (ff_map_label_off_circle(x, y, half_w, half_h, circle_radius_px)) {
+                    ff_map_clip_point_to_circle(x, y, eff_radius, &x, &y);
+                }
+            }
             out[i].placed = true;
             out[i].x = x;
             out[i].y = y;
@@ -165,6 +231,13 @@ int ff_map_place_labels(ff_map_label_request_t const *in, int n, float min_sep_p
                     collides = true;
                     break;
                 }
+            }
+            /* Issue #77 fold-in: an off-circle placement is rejected the
+             * SAME way an ordinary label-label collision is — dropped,
+             * not nudged (the shape still draws either way; see
+             * ff_map.h's doc comment on why that's honest for LOW). */
+            if (!collides && ff_map_label_off_circle(x, y, half_w, half_h, circle_radius_px)) {
+                collides = true;
             }
             out[i].placed = !collides;
             out[i].x = x;
