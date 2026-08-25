@@ -91,6 +91,13 @@
 #include "ff_map.h"    /* core/include — the shared fixed-fit camera transform + triangulation */
 #include "ff_theme.h"
 
+/* Forward declaration: map_label_collector_flush (below) draws through
+ * map_make_label, defined later in this file among the other draw
+ * primitives — declared here so the collector, which conceptually
+ * belongs with the layout constants near the top, doesn't have to move
+ * below them. */
+static lv_obj_t *map_make_label(lv_obj_t *parent, char const *text, uint32_t color_hex, float dx, float dy);
+
 /* ---------------------------------------------------------------------
  * Layout constants.
  *
@@ -160,52 +167,87 @@
 #define FF_MAP_LABEL_MIN_SEP_PX 48.0f
 #define FF_MAP_LABEL_MAX_NUDGE_TRIES 6
 
-static float s_label_placed_x[FF_APP_MAP_MAX_FEATURES];
-static float s_label_placed_y[FF_APP_MAP_MAX_FEATURES];
-static int s_label_placed_count;
+/**
+ * map_label_collector_t — gathers every label this render wants to draw
+ * (feature labels, YOU, rally) as plain requests, THEN resolves all of
+ * them in one call to `ff_map_place_labels` (core/include/ff_map.h) and
+ * draws whatever came back placed.
+ *
+ * PR #73 THIRD review round, non-blocking finding #2: the priority/
+ * collision ALGORITHM itself now lives in core (`ff_map_place_labels`),
+ * unit-tested directly against real Lost Lands coordinates — this
+ * collector is the thin LVGL-side glue that builds its input and draws
+ * its output, so this file has exactly ONE implementation of the
+ * algorithm to keep in sync with, not two. (The previous version of
+ * this file kept its own static nudge/collide/record state here,
+ * duplicating what became `ff_map_place_labels` — replaced outright
+ * rather than left as a second, drift-prone copy.)
+ *
+ * Sized to `FF_APP_MAP_MAX_FEATURES` feature labels + YOU + rally, which
+ * is exactly `FF_MAP_LABEL_MAX_ITEMS`'s own justification
+ * (core/include/ff_map.h) — a static_assert below pins that relationship
+ * so a future cap change on either side fails the build instead of
+ * silently truncating.
+ */
+typedef struct {
+    ff_map_label_request_t req[FF_MAP_LABEL_MAX_ITEMS];
+    char const *text[FF_MAP_LABEL_MAX_ITEMS];
+    uint32_t color[FF_MAP_LABEL_MAX_ITEMS];
+    int count;
+} map_label_collector_t;
 
-static void map_reset_label_declutter(void)
+_Static_assert(FF_APP_MAP_MAX_FEATURES + 2 <= FF_MAP_LABEL_MAX_ITEMS,
+               "map_label_collector_t: every feature + YOU + rally must fit FF_MAP_LABEL_MAX_ITEMS");
+
+static void map_label_collector_reset(map_label_collector_t *lc)
 {
-    s_label_placed_count = 0;
+    lc->count = 0;
 }
 
-/* True iff `(x, y)` lands within FF_MAP_LABEL_MIN_SEP_PX of any label
- * already recorded via `map_label_record`. Pure query — never mutates. */
-static bool map_label_collides(float x, float y)
+/**
+ * map_label_collector_add — queues one label request. `text` is NOT
+ * copied (same "borrowed for the call" convention `ff_intent_t` uses) —
+ * every caller in this file passes either a string literal ("YOU") or a
+ * pointer into the `ff_app_map_t const *map` this whole render is
+ * building from, which outlives `map_label_collector_flush` below (both
+ * are only ever read within the same `ff_scr_map_build` call).
+ *
+ * Silently drops the request past `FF_MAP_LABEL_MAX_ITEMS` rather than
+ * overflowing — defensive only: the `_Static_assert` above guarantees
+ * this file's own call sites (at most `FF_APP_MAP_MAX_FEATURES` feature
+ * labels + YOU + rally) never reach it.
+ */
+static void map_label_collector_add(map_label_collector_t *lc, float x, float y, ff_map_label_priority_t priority,
+                                     char const *text, uint32_t color)
 {
-    for (int i = 0; i < s_label_placed_count; i++) {
-        float const dx = x - s_label_placed_x[i];
-        float const dy = y - s_label_placed_y[i];
-        if (dx * dx + dy * dy < FF_MAP_LABEL_MIN_SEP_PX * FF_MAP_LABEL_MIN_SEP_PX) {
-            return true;
+    if (lc->count >= FF_MAP_LABEL_MAX_ITEMS) {
+        return;
+    }
+    lc->req[lc->count].x = x;
+    lc->req[lc->count].y = y;
+    lc->req[lc->count].priority = priority;
+    lc->text[lc->count] = text;
+    lc->color[lc->count] = color;
+    lc->count++;
+}
+
+/** map_label_collector_flush — resolves every queued request through
+ * `ff_map_place_labels` and draws whichever ones came back placed.
+ * Requests MUST already be queued with every HIGH-priority one before
+ * every LOW-priority one — `ff_map_place_labels`'s own documented caller
+ * contract — which this file's single call site in `ff_scr_map_build`
+ * satisfies by queuing order (see that function's own comment). */
+static void map_label_collector_flush(map_label_collector_t const *lc, lv_obj_t *parent)
+{
+    ff_map_label_result_t results[FF_MAP_LABEL_MAX_ITEMS];
+    int const n = ff_map_place_labels(lc->req, lc->count, FF_MAP_LABEL_MIN_SEP_PX, FF_MAP_LABEL_MAX_NUDGE_TRIES,
+                                       results);
+    for (int i = 0; i < n; i++) {
+        if (!results[i].placed) {
+            continue;
         }
+        map_make_label(parent, lc->text[i], lc->color[i], results[i].x, results[i].y);
     }
-    return false;
-}
-
-static void map_label_record(float x, float y)
-{
-    if (s_label_placed_count < FF_APP_MAP_MAX_FEATURES) {
-        s_label_placed_x[s_label_placed_count] = x;
-        s_label_placed_y[s_label_placed_count] = y;
-        s_label_placed_count++;
-    }
-}
-
-/* HIGH-priority placement: nudges `*io_y` downward (deterministic, no
- * randomness) until `(*io_x, *io_y)` clears every already-placed label,
- * or the try budget runs out (better than none, not a claim of perfect
- * separation for a pathological input). Always draws — a HIGH-priority
- * label is never dropped. Records the final position either way. */
-static void map_place_label_decluttered(float *io_x, float *io_y)
-{
-    for (int attempt = 0; attempt < FF_MAP_LABEL_MAX_NUDGE_TRIES; attempt++) {
-        if (!map_label_collides(*io_x, *io_y)) {
-            break;
-        }
-        *io_y += FF_MAP_LABEL_MIN_SEP_PX;
-    }
-    map_label_record(*io_x, *io_y);
 }
 
 /* ---------------------------------------------------------------------
@@ -512,15 +554,15 @@ static void map_draw_feature_shape(lv_obj_t *parent, ff_map_xform_t const *xform
 }
 
 /**
- * map_draw_feature_label — the label-placement pass for ONE feature,
- * called twice per map (see `ff_scr_map_build`): once for every
- * HIGH-priority feature (always draws, nudges on collision), once for
- * every LOW-priority feature (drops — does not draw — on collision with
- * anything already placed in either pass). No-op for `FF_MAP_RENDER_OMIT`
- * (nothing to anchor a label to).
+ * map_collect_feature_label — queues ONE feature's label request (never
+ * draws directly — see `map_label_collector_t`'s doc comment for why
+ * every label on this map is resolved together, in one
+ * `ff_map_place_labels` call, not feature-by-feature). No-op for
+ * `FF_MAP_RENDER_OMIT` (nothing to anchor a label to).
  */
-static void map_draw_feature_label(lv_obj_t *parent, ff_map_xform_t const *xform, ff_app_map_feature_t const *f,
-                                    ff_map_render_kind_t render_kind, ff_map_label_priority_t priority)
+static void map_collect_feature_label(map_label_collector_t *lc, ff_map_xform_t const *xform,
+                                       ff_app_map_feature_t const *f, ff_map_render_kind_t render_kind,
+                                       ff_map_label_priority_t priority)
 {
     if (render_kind == FF_MAP_RENDER_OMIT) {
         return;
@@ -530,22 +572,7 @@ static void map_draw_feature_label(lv_obj_t *parent, ff_map_xform_t const *xform
     (void)map_feature_anchor_en(f, &anchor_e, &anchor_n); /* always succeeds: render_kind != OMIT implies n_pts >= 1 */
     float cx, cy;
     ff_map_project(xform, anchor_e, anchor_n, &cx, &cy);
-
-    if (priority == FF_MAP_LABEL_PRIORITY_HIGH) {
-        map_place_label_decluttered(&cx, &cy);
-        map_make_label(parent, f->label, FF_THEME_COLOR_INK, cx, cy);
-        return;
-    }
-
-    /* LOW priority: dropped, not nudged, on collision with ANYTHING
-     * already placed (both tiers) — see this file's header comment on
-     * why that's the honest choice here (the shape already drew, in
-     * map_draw_feature_shape, unconditionally). */
-    if (map_label_collides(cx, cy)) {
-        return;
-    }
-    map_label_record(cx, cy);
-    map_make_label(parent, f->label, FF_THEME_COLOR_INK, cx, cy);
+    map_label_collector_add(lc, cx, cy, priority, f->label, FF_THEME_COLOR_INK);
 }
 
 /* ---------------------------------------------------------------------
@@ -618,6 +645,20 @@ static void map_draw_crew(lv_obj_t *parent, ff_map_xform_t const *xform, ff_app_
  * Rally pin — amber, per spec.
  * ------------------------------------------------------------------- */
 
+/**
+ * map_draw_rally / map_collect_rally_label — split in two (PR #73 THIRD
+ * review round, BLOCKING finding #1): the pin always draws unconditionally
+ * (a marker, like any feature shape, is never dropped), but the LABEL
+ * must join the SAME priority/collision system every feature label uses
+ * — rally is documented HIGH priority (spec Amendment, this file's own
+ * header comment on the declutter mechanism) but a bare `map_make_label`
+ * call never actually entered the collision system, so it could neither
+ * be nudged off a real collision nor be seen by anything placed after
+ * it. `ff_scr_map_build` calls `map_draw_rally` for the pin unconditionally
+ * and `map_collect_rally_label` SEPARATELY to QUEUE the label (drawn
+ * later, by `map_label_collector_flush`, alongside every other label) —
+ * see that function's own comment for the exact ordering and why.
+ */
 static void map_draw_rally(lv_obj_t *parent, ff_map_xform_t const *xform, ff_app_map_t const *map)
 {
     if (!map->has_rally) {
@@ -635,8 +676,17 @@ static void map_draw_rally(lv_obj_t *parent, ff_map_xform_t const *xform, ff_app
     lv_obj_clear_flag(pin, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_clear_flag(pin, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_align(pin, LV_ALIGN_CENTER, (int32_t)cx, (int32_t)cy);
+}
 
-    map_make_label(parent, map->rally_label, FF_THEME_COLOR_AMBER, cx, cy - FF_MAP_RALLY_R_PX - 12.0f);
+static void map_collect_rally_label(map_label_collector_t *lc, ff_map_xform_t const *xform, ff_app_map_t const *map)
+{
+    if (!map->has_rally) {
+        return;
+    }
+    float cx, cy;
+    ff_map_project(xform, map->rally_east_m, map->rally_north_m, &cx, &cy);
+    float const lx = cx, ly = cy - FF_MAP_RALLY_R_PX - 12.0f;
+    map_label_collector_add(lc, lx, ly, FF_MAP_LABEL_PRIORITY_HIGH, map->rally_label, FF_THEME_COLOR_AMBER);
 }
 
 /* ---------------------------------------------------------------------
@@ -660,12 +710,31 @@ static void map_rotate(float x, float y, float heading_deg, float *out_x, float 
     *out_y = x * s + y * c;
 }
 
+/**
+ * map_draw_you / map_collect_you_label — split in two (PR #73 THIRD
+ * review round, BLOCKING finding #1): same bug and same fix as
+ * `map_draw_rally`/`map_collect_rally_label` above. The arrow (or "NO
+ * FIX" chip) always draws unconditionally; the "YOU" label — documented
+ * HIGH priority — must join the SAME collision system every feature
+ * label uses, so it can be nudged off a real collision and so later
+ * labels see it as already placed. Verified failing before this split:
+ * on the real pack (`map_real_lost_lands.json`, YOU at heading 60°),
+ * YOU's label landed ~39px from the "Wompy Woods" stage label — under
+ * this file's own 48px `FF_MAP_LABEL_MIN_SEP_PX` — because neither one
+ * knew the other existed (pinned for regression as
+ * `S09_place_labels_you_nudges_off_real_wompy_woods_collision`,
+ * core/tests/test_map.c, against these exact real coordinates).
+ * `ff_scr_map_build` calls `map_draw_you` for the arrow/chip and
+ * `map_collect_you_label` SEPARATELY to QUEUE the label.
+ */
 static void map_draw_you(lv_obj_t *parent, ff_map_xform_t const *xform, ff_app_map_t const *map)
 {
     bool const show_arrow = map->you_has_pos && map->you_heading_valid;
     if (!show_arrow) {
         /* Hidden + "NO FIX" chip (AC5) — a fixed chip, not tied to any
-         * position (there may be none to anchor it to). */
+         * position (there may be none to anchor it to), and not part of
+         * the label-collision system either: it's fixed-position status
+         * chrome, not a feature/YOU label competing for map space. */
         map_make_chip(parent, "NO FIX", FF_THEME_COLOR_SURFACE, FF_THEME_COLOR_MUTED, 0.0f,
                        FF_MAP_CIRCLE_RADIUS_PX - FF_MAP_MARGIN_PX - 20.0f);
         return;
@@ -683,7 +752,17 @@ static void map_draw_you(lv_obj_t *parent, ff_map_xform_t const *xform, ff_app_m
 
     map_draw_filled_triangle(parent, cx + tip_x, cy + tip_y, cx + left_x, cy + left_y, cx + right_x, cy + right_y,
                               FF_THEME_COLOR_INK, LV_OPA_COVER);
-    map_make_label(parent, "YOU", FF_THEME_COLOR_INK, cx, cy + FF_MAP_YOU_ARROW_LEN_PX * 0.4f + 14.0f);
+}
+
+static void map_collect_you_label(map_label_collector_t *lc, ff_map_xform_t const *xform, ff_app_map_t const *map)
+{
+    if (!(map->you_has_pos && map->you_heading_valid)) {
+        return; /* no arrow drawn (NO FIX chip instead) -> no "YOU" label either */
+    }
+    float cx, cy;
+    ff_map_project(xform, map->you_east_m, map->you_north_m, &cx, &cy);
+    float const lx = cx, ly = cy + FF_MAP_YOU_ARROW_LEN_PX * 0.4f + 14.0f;
+    map_label_collector_add(lc, lx, ly, FF_MAP_LABEL_PRIORITY_HIGH, "YOU", FF_THEME_COLOR_INK);
 }
 
 /* ---------------------------------------------------------------------
@@ -741,7 +820,8 @@ void ff_scr_map_build(ff_app_map_t const *map)
     }
 
     map_reset_pools();
-    map_reset_label_declutter();
+    map_label_collector_t label_collector;
+    map_label_collector_reset(&label_collector);
 
     lv_obj_t *scr = lv_screen_active();
     lv_obj_set_style_bg_color(scr, lv_color_hex(0x000000), 0);
@@ -795,46 +875,71 @@ void ff_scr_map_build(ff_app_map_t const *map)
     ff_map_xform_t xform;
     ff_map_xform_fit(&xform, bbox_pts, n_bbox, FF_MAP_CIRCLE_RADIUS_PX, FF_MAP_MARGIN_PX);
 
-    /* Three passes, deliberately in this order (PR #73 second review
-     * round — priority-based label collision resolution, see this
-     * file's header comment on FF_MAP_LABEL_MIN_SEP_PX):
+    /* Shapes/markers, then ONE batched label resolution, then crew/
+     * chrome — deliberately in this order (PR #73 second AND third
+     * review rounds — priority-based label collision resolution, see
+     * this file's header comment on `map_label_collector_t` and
+     * `core/include/ff_map.h`'s `ff_map_place_labels`):
      *   1. every feature's SHAPE, unconditionally — never dropped, and
      *      drawing every shape before any label means a later feature's
      *      polygon fill can never paint over an earlier feature's text
-     *      (LVGL draws children in creation order).
-     *   2. every HIGH-priority feature's LABEL (stages, single-point
-     *      landmarks) — always drawn, nudged on collision.
-     *   3. every LOW-priority feature's LABEL (non-stage area polygons)
-     *      — drawn only if it doesn't collide with anything from pass 2
-     *      or an earlier pass-3 label; dropped, not nudged, otherwise. */
+     *      (LVGL draws children in creation order). Rally's pin and
+     *      YOU's arrow (or "NO FIX" chip) are markers in the same sense
+     *      — always drawn, never part of the collision system — so they
+     *      join this same early "never dropped" group.
+     *   2. QUEUE every label this render wants, in ONE collector, HIGH
+     *      priority first: every HIGH-priority feature label (stages,
+     *      single-point landmarks), then YOU's and rally's labels —
+     *      third review round, BLOCKING: both are documented HIGH
+     *      priority ("stages …, every single-point … feature …, and
+     *      YOU" / the spec Amendment) but a bare `map_make_label` call
+     *      never actually joined the collision system, so YOU could
+     *      (and did, on the real pack) land directly on top of a stage
+     *      label with neither one aware of the other — then every
+     *      LOW-priority feature label (non-stage area polygons). This
+     *      exact ordering is `ff_map_place_labels`'s own documented
+     *      caller contract (every HIGH entry before every LOW one).
+     *   3. ONE call to `ff_map_place_labels` resolves the whole queue —
+     *      HIGH entries nudge off collisions and are always drawn, LOW
+     *      entries drop (no draw) on collision with anything already
+     *      placed — and `map_label_collector_flush` draws whichever
+     *      results came back placed.
+     *   4. crew dots and the truncation indicator — outside the label
+     *      collision system entirely (crew uses small initials, not
+     *      full-word labels; the indicator is fixed-position chrome). */
     for (uint8_t i = 0; i < map->n_features; i++) {
         ff_app_map_feature_t const *f = &map->features[i];
         ff_map_render_kind_t const rk = ff_map_feature_render_kind(f->n_pts, f->kind == FF_APP_MAP_KIND_STAGE);
         map_draw_feature_shape(puck, &xform, f, rk);
     }
+    map_draw_rally(puck, &xform, map);
+    map_draw_you(puck, &xform, map);
+
     for (uint8_t i = 0; i < map->n_features; i++) {
         ff_app_map_feature_t const *f = &map->features[i];
         ff_map_render_kind_t const rk = ff_map_feature_render_kind(f->n_pts, f->kind == FF_APP_MAP_KIND_STAGE);
         ff_map_label_priority_t const pr = ff_map_feature_label_priority(f->n_pts, f->kind == FF_APP_MAP_KIND_STAGE);
         if (pr == FF_MAP_LABEL_PRIORITY_HIGH) {
-            map_draw_feature_label(puck, &xform, f, rk, pr);
+            map_collect_feature_label(&label_collector, &xform, f, rk, pr);
         }
     }
+    map_collect_you_label(&label_collector, &xform, map);
+    map_collect_rally_label(&label_collector, &xform, map);
+
     for (uint8_t i = 0; i < map->n_features; i++) {
         ff_app_map_feature_t const *f = &map->features[i];
         ff_map_render_kind_t const rk = ff_map_feature_render_kind(f->n_pts, f->kind == FF_APP_MAP_KIND_STAGE);
         ff_map_label_priority_t const pr = ff_map_feature_label_priority(f->n_pts, f->kind == FF_APP_MAP_KIND_STAGE);
         if (pr == FF_MAP_LABEL_PRIORITY_LOW) {
-            map_draw_feature_label(puck, &xform, f, rk, pr);
+            map_collect_feature_label(&label_collector, &xform, f, rk, pr);
         }
     }
 
-    map_draw_rally(puck, &xform, map);
+    map_label_collector_flush(&label_collector, puck);
 
     for (uint8_t i = 0; i < map->n_crew; i++) {
         map_draw_crew(puck, &xform, &map->crew[i]);
     }
 
-    map_draw_you(puck, &xform, map);
     map_draw_truncated_indicator(puck, map);
 }

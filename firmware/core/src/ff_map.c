@@ -119,6 +119,63 @@ ff_map_label_priority_t ff_map_feature_label_priority(uint8_t n_pts, int is_stag
 }
 
 /* ---------------------------------------------------------------------
+ * ff_map_place_labels — see ff_map.h's doc comment for the full
+ * contract (caller-ordering requirement, HIGH-nudge/LOW-drop rules).
+ * ------------------------------------------------------------------- */
+
+int ff_map_place_labels(ff_map_label_request_t const *in, int n, float min_sep_px, int max_nudge_tries,
+                         ff_map_label_result_t *out)
+{
+    if (n < 0 || n > FF_MAP_LABEL_MAX_ITEMS) return -1;
+    if (n > 0 && (in == NULL || out == NULL)) return -1; /* n == 0 needs neither pointer: nothing to dereference */
+
+    for (int i = 0; i < n; i++) {
+        float x = in[i].x;
+        float y = in[i].y;
+
+        /* Collision test against every EARLIER result that was actually
+         * placed — dropped LOW entries contribute nothing, matching
+         * ff_map.h's documented rule ("contributes nothing to later
+         * entries' collision checks"). */
+        if (in[i].priority == FF_MAP_LABEL_PRIORITY_HIGH) {
+            for (int attempt = 0; attempt < max_nudge_tries; attempt++) {
+                bool collides = false;
+                for (int j = 0; j < i; j++) {
+                    if (!out[j].placed) continue;
+                    float const dx = x - out[j].x;
+                    float const dy = y - out[j].y;
+                    if (dx * dx + dy * dy < min_sep_px * min_sep_px) {
+                        collides = true;
+                        break;
+                    }
+                }
+                if (!collides) break;
+                y += min_sep_px;
+            }
+            out[i].placed = true;
+            out[i].x = x;
+            out[i].y = y;
+        } else {
+            bool collides = false;
+            for (int j = 0; j < i; j++) {
+                if (!out[j].placed) continue;
+                float const dx = x - out[j].x;
+                float const dy = y - out[j].y;
+                if (dx * dx + dy * dy < min_sep_px * min_sep_px) {
+                    collides = true;
+                    break;
+                }
+            }
+            out[i].placed = !collides;
+            out[i].x = x;
+            out[i].y = y;
+        }
+    }
+
+    return n;
+}
+
+/* ---------------------------------------------------------------------
  * ff_map_triangulate — ear clipping. See ff_map.h's doc comment for the
  * full contract; this is the standard textbook algorithm (repeatedly
  * clip a convex vertex none of the remaining polygon covers), bounded so

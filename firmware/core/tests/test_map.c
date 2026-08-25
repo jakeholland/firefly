@@ -280,6 +280,137 @@ static void S09_label_priority_non_stage_polygon_is_low(void)
 }
 
 /* ------------------------------------------------------------------- */
+/* PR #73 THIRD review round — ff_map_place_labels, tested directly     */
+/* against REAL Lost Lands label positions (finding #2, non-blocking    */
+/* but closed anyway: a golden pixel-diff was proven NOT to catch a     */
+/* mutation that fully undoes the drop-on-collision behavior — 780px    */
+/* out of 207936 is comfortably under the 0.5% threshold. These assert  */
+/* on the actual placement decision directly, the same "pull it into    */
+/* core and test the real coordinates" fix ff_map_triangulate already   */
+/* got for finding #2 of the first round).                              */
+/*                                                                       */
+/* Every position below is the REAL projected screen px (center-        */
+/* relative) computed by feeding the actual, currently-merged Lost      */
+/* Lands pack's real feature anchor points through the exact fit        */
+/* ff_scr_map_build uses (bbox of all 11 real anchor points -> the      */
+/* inscribed-square fit, radius 206/margin 24) — reproduced by hand      */
+/* once (see the PR's fix-round reply for the derivation) and pinned    */
+/* here as literals so this test has no dependency on scr_map.c/LVGL    */
+/* at all. Two of these pairs are the review's own findings:            */
+/* YOU-vs-Wompy-Woods (~39px, blocking finding #1) and Venue-extent-vs- */
+/* Subsidia (~42px, the drop this whole mechanism exists to produce).   */
+/* ------------------------------------------------------------------- */
+
+static void S09_place_labels_you_nudges_off_real_wompy_woods_collision(void)
+{
+    /* Real px: Wompy Woods stage label (119.21, 50.80); YOU's label
+     * before any nudge (82.63, 64.59) — ~39.09px apart, under the 48px
+     * threshold. This is the exact real-pack collision PR #73's third
+     * review round found: YOU never joined the collision system, so it
+     * silently landed on top of a stage label. */
+    ff_map_label_request_t in[2] = {
+        {119.21074552754379f, 50.79579360612669f, FF_MAP_LABEL_PRIORITY_HIGH},
+        {82.63474245710869f, 64.59494476689082f, FF_MAP_LABEL_PRIORITY_HIGH},
+    };
+    ff_map_label_result_t out[2];
+    TEST_ASSERT_EQUAL_INT(2, ff_map_place_labels(in, 2, 48.0f, 6, out));
+
+    /* Wompy Woods (placed first) never moves. */
+    TEST_ASSERT_TRUE(out[0].placed);
+    TEST_ASSERT_EQUAL_FLOAT(in[0].x, out[0].x);
+    TEST_ASSERT_EQUAL_FLOAT(in[0].y, out[0].y);
+
+    /* YOU is placed (HIGH priority: never dropped) and nudged — the
+     * fix's whole point — to a position that ACTUALLY clears Wompy
+     * Woods by the separation threshold, not merely "closer than
+     * before". */
+    TEST_ASSERT_TRUE(out[1].placed);
+    float const dx = out[1].x - out[0].x;
+    float const dy = out[1].y - out[0].y;
+    float const dist = sqrtf(dx * dx + dy * dy);
+    TEST_ASSERT_TRUE_MESSAGE(dist >= 48.0f, "YOU's label still collides with Wompy Woods after placement");
+    /* Nudging only ever moves y (map_place_label_decluttered's own
+     * documented mechanism) — x must be untouched. */
+    TEST_ASSERT_EQUAL_FLOAT(in[1].x, out[1].x);
+    TEST_ASSERT_TRUE(out[1].y > in[1].y); /* moved, not left in place */
+}
+
+static void S09_place_labels_venue_extent_drops_on_real_subsidia_collision(void)
+{
+    /* Real px: Subsidia Stage label (-10.84, -2.21), HIGH; Venue extent's
+     * centroid label position (10.39, -38.13), LOW — ~41.7px apart,
+     * under the 48px threshold. */
+    ff_map_label_request_t in[2] = {
+        {-10.837106496790302f, -2.208402922222037f, FF_MAP_LABEL_PRIORITY_HIGH},
+        {10.38585103411318f, -38.13346469131977f, FF_MAP_LABEL_PRIORITY_LOW},
+    };
+    ff_map_label_result_t out[2];
+    TEST_ASSERT_EQUAL_INT(2, ff_map_place_labels(in, 2, 48.0f, 6, out));
+
+    TEST_ASSERT_TRUE(out[0].placed); /* Subsidia (HIGH): always placed, unmoved */
+    TEST_ASSERT_EQUAL_FLOAT(in[0].x, out[0].x);
+    TEST_ASSERT_EQUAL_FLOAT(in[0].y, out[0].y);
+
+    /* Venue extent (LOW) collides -> DROPPED, not nudged: placed must
+     * read false, and (documented contract) a dropped entry's x/y are
+     * meaningless, so this test does not assert on them. */
+    TEST_ASSERT_FALSE(out[1].placed);
+}
+
+static void S09_place_labels_high_priority_pair_far_apart_neither_moves(void)
+{
+    /* Real px: First aid (-120.57, -60.51) vs Village Marketplace
+     * (90.76, -118.82) — ~219px apart, nowhere near the 48px threshold.
+     * Negative control: the algorithm must not nudge when there is no
+     * real collision. */
+    ff_map_label_request_t in[2] = {
+        {-120.56511570809566f, -60.512880866697f, FF_MAP_LABEL_PRIORITY_HIGH},
+        {90.76272725015073f, -118.81778782164704f, FF_MAP_LABEL_PRIORITY_HIGH},
+    };
+    ff_map_label_result_t out[2];
+    TEST_ASSERT_EQUAL_INT(2, ff_map_place_labels(in, 2, 48.0f, 6, out));
+
+    TEST_ASSERT_TRUE(out[0].placed);
+    TEST_ASSERT_TRUE(out[1].placed);
+    TEST_ASSERT_EQUAL_FLOAT(in[1].x, out[1].x);
+    TEST_ASSERT_EQUAL_FLOAT(in[1].y, out[1].y); /* unmoved: no collision to nudge away from */
+}
+
+static void S09_place_labels_low_priority_not_dropped_when_far_enough(void)
+{
+    /* Real px: First aid (HIGH) vs RV/tent camping (LOW), ~198px apart
+     * — proves LOW isn't unconditionally dropped, only on an actual
+     * collision. */
+    ff_map_label_request_t in[2] = {
+        {-120.56511570809566f, -60.512880866697f, FF_MAP_LABEL_PRIORITY_HIGH},
+        {77.21607798377555f, -61.396443829401875f, FF_MAP_LABEL_PRIORITY_LOW},
+    };
+    ff_map_label_result_t out[2];
+    TEST_ASSERT_EQUAL_INT(2, ff_map_place_labels(in, 2, 48.0f, 6, out));
+
+    TEST_ASSERT_TRUE(out[0].placed);
+    TEST_ASSERT_TRUE(out[1].placed);
+    TEST_ASSERT_EQUAL_FLOAT(in[1].x, out[1].x);
+    TEST_ASSERT_EQUAL_FLOAT(in[1].y, out[1].y);
+}
+
+static void S09_place_labels_rejects_bad_args(void)
+{
+    ff_map_label_request_t in[1] = {{0.0f, 0.0f, FF_MAP_LABEL_PRIORITY_HIGH}};
+    ff_map_label_result_t out[1];
+    TEST_ASSERT_EQUAL_INT(-1, ff_map_place_labels(NULL, 1, 48.0f, 6, out));
+    TEST_ASSERT_EQUAL_INT(-1, ff_map_place_labels(in, 1, 48.0f, 6, NULL));
+    TEST_ASSERT_EQUAL_INT(-1, ff_map_place_labels(in, -1, 48.0f, 6, out));
+    TEST_ASSERT_EQUAL_INT(-1, ff_map_place_labels(in, FF_MAP_LABEL_MAX_ITEMS + 1, 48.0f, 6, out));
+}
+
+static void S09_place_labels_zero_items_is_a_safe_noop(void)
+{
+    ff_map_label_result_t out[1];
+    TEST_ASSERT_EQUAL_INT(0, ff_map_place_labels(NULL, 0, 48.0f, 6, out));
+}
+
+/* ------------------------------------------------------------------- */
 /* PR #73 review — ff_map_triangulate (finding #2: concave fill)        */
 /* ------------------------------------------------------------------- */
 
@@ -431,6 +562,13 @@ int main(void)
     RUN_TEST(S09_label_priority_single_point_landmark_is_high);
     RUN_TEST(S09_label_priority_line_is_high);
     RUN_TEST(S09_label_priority_non_stage_polygon_is_low);
+
+    RUN_TEST(S09_place_labels_you_nudges_off_real_wompy_woods_collision);
+    RUN_TEST(S09_place_labels_venue_extent_drops_on_real_subsidia_collision);
+    RUN_TEST(S09_place_labels_high_priority_pair_far_apart_neither_moves);
+    RUN_TEST(S09_place_labels_low_priority_not_dropped_when_far_enough);
+    RUN_TEST(S09_place_labels_rejects_bad_args);
+    RUN_TEST(S09_place_labels_zero_items_is_a_safe_noop);
 
     RUN_TEST(S09_triangulate_convex_square_covers_exact_area);
     RUN_TEST(S09_triangulate_real_venue_extent_is_concave_and_covers_exact_area);

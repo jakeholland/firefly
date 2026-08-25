@@ -15,6 +15,7 @@
 #ifndef FF_MAP_H
 #define FF_MAP_H
 
+#include <stdbool.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -153,6 +154,64 @@ typedef enum {
  * for `FF_MAP_RENDER_OMIT` (n_pts == 0), which never reaches the label
  * placement pass at all. */
 ff_map_label_priority_t ff_map_feature_label_priority(uint8_t n_pts, int is_stage);
+
+/**
+ * ff_map_place_labels — the WHOLE priority-based label collision
+ * resolution algorithm, pulled out of `scr_map.c` and into core (PR #73
+ * THIRD review round, non-blocking finding #2: the round-2 mechanism
+ * lived only as static state + LVGL-adjacent calls in `scr_map.c`, so
+ * the only way to prove "LOW labels actually get dropped on collision"
+ * was a golden pixel-diff — which the round's own mutation test showed
+ * absorbs a full regression of this PR's headline fix (780/207936px,
+ * comfortably under the 0.5% threshold). This function is the same
+ * "pull the geometry into core, unit-test it directly against real
+ * coordinates" fix `ff_map_triangulate` already got for finding #2).
+ *
+ * `in[0..n)` MUST be ordered with every `FF_MAP_LABEL_PRIORITY_HIGH`
+ * entry before every `FF_MAP_LABEL_PRIORITY_LOW` one — this function
+ * does not sort or reorder. That is a caller contract, not a runtime
+ * check: mixing tiers out of order silently defeats the "stages/
+ * landmarks/YOU always win" guarantee this whole mechanism exists for,
+ * because a LOW item processed before some HIGH item can't yet see it
+ * as occupied space. `scr_map.c`'s own doc comment on its single call
+ * site states how it satisfies this.
+ *
+ * For each `in[i]` in order:
+ *   - `FF_MAP_LABEL_PRIORITY_HIGH`: nudges `y` downward (deterministic,
+ *     bounded by `max_nudge_tries`) until it clears every
+ *     ALREADY-PLACED result (from earlier `in[]` entries) by
+ *     `min_sep_px`, or the try budget runs out. ALWAYS placed —
+ *     `out[i].placed` is unconditionally true.
+ *   - `FF_MAP_LABEL_PRIORITY_LOW`: checked once, at its original
+ *     position, against every already-placed result. A collision means
+ *     `out[i].placed = false` (dropped, NOT nudged) and it contributes
+ *     nothing to later entries' collision checks; otherwise placed at
+ *     its original position.
+ *
+ * `out[0..n)` mirrors `in[]` index-for-index — `out[i]` is always the
+ * answer for `in[i]`, whether placed or dropped, so callers can recover
+ * which SOURCE item (feature/YOU/rally) each result belongs to via the
+ * same index they used to build `in[]`.
+ *
+ * Returns `n` on success (including `n == 0`, a safe no-op — `in`/`out`
+ * may both be NULL in that case, since nothing is ever dereferenced), or
+ * -1 for `n < 0`, `n > FF_MAP_LABEL_MAX_ITEMS`, or (whenever `n > 0`)
+ * either pointer NULL — never a partial result.
+ */
+#define FF_MAP_LABEL_MAX_ITEMS 24
+
+typedef struct {
+    float x, y; /* desired anchor position, px, center-relative */
+    ff_map_label_priority_t priority;
+} ff_map_label_request_t;
+
+typedef struct {
+    bool placed; /* false: dropped (LOW priority, collided) */
+    float x, y;  /* final position — may be nudged from the request for HIGH priority; meaningless if !placed */
+} ff_map_label_result_t;
+
+int ff_map_place_labels(ff_map_label_request_t const *in, int n, float min_sep_px, int max_nudge_tries,
+                         ff_map_label_result_t *out);
 
 /**
  * ff_map_triangulate — ear-clipping triangulation of a SIMPLE polygon

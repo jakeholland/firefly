@@ -231,3 +231,37 @@ a) xform + tests · b) render + goldens.
   no two labels overlapping; exactly one area-polygon label ("Venue
   extent (approx.)") is honestly dropped for colliding, its shape still
   visible.
+- **2026-08-25, PR #73 THIRD review round — YOU's (and rally's) label
+  was documented HIGH priority but never actually entered the
+  priority/collision system, and it showed on the real pack.** The
+  round-2 entry above states YOU is HIGH priority, and `scr_map.c`'s own
+  header comment said the same — but `map_draw_you` wrote the "YOU"
+  label with a bare LVGL call, never through the nudge/collision
+  mechanism, and `map_draw_you`/`map_draw_rally` both ran AFTER every
+  feature label pass finished, so neither the collision system nor
+  anything placed after them ever knew YOU or rally existed. On the real
+  pack (YOU at heading 60°) this landed YOU's label ~39px from the
+  "Wompy Woods" stage label — under the 48px separation threshold —
+  stacked directly under the arrow, invisible as a bug because it
+  rendered as a plausible-looking "honest cluster".
+  **Fix:** the priority/collision ALGORITHM moved into core entirely —
+  `ff_map_place_labels` (core/include/ff_map.h), unit-tested directly
+  against the real Wompy-Woods/YOU and Subsidia/Venue-extent
+  coordinates (`core/tests/test_map.c`) rather than only reachable
+  through a golden pixel-diff. `scr_map.c` now QUEUES every label
+  (feature, YOU, rally) into one `map_label_collector_t`, in the
+  contract order `ff_map_place_labels` requires (every HIGH entry before
+  every LOW one — HIGH feature labels, then YOU, then rally, then LOW
+  feature labels), and resolves the whole queue in ONE call before
+  drawing anything. YOU and rally now nudge off a real collision exactly
+  like any other HIGH-priority label, and are visible to every label
+  placed after them.
+  **Also closed (non-blocking, folded in): the golden-pixel-diff
+  proxy gap.** A mutation that made the LOW-priority branch never drop
+  (fully undoing this whole PR's headline fix) still passed
+  `map_real_lost_lands`'s golden at 0.3751% — comfortably under the
+  0.5% threshold. `ff_map_place_labels`'s own direct unit tests
+  (assertion-level, not pixel-diff) catch that exact mutation
+  immediately — confirmed by re-applying it locally and watching
+  `S09_place_labels_venue_extent_drops_on_real_subsidia_collision` fail,
+  then reverting.
