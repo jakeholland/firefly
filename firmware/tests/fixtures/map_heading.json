@@ -1,0 +1,12 @@
+{
+  "fixture": "map_heading",
+  "face": "map",
+  "map": {
+    "features": [
+      {"kind": "stage", "label": "Prehistoric Stage", "color_rgb": "#ffc66b", "points": [[-100.0, 60.0]]},
+      {"kind": "camping", "label": "Camping A", "points": [[50.0, -60.0], [150.0, -60.0], [150.0, 20.0], [50.0, 20.0]]}
+    ],
+    "crew": [],
+    "you": {"has_pos": true, "east_m": 0.0, "north_m": 0.0, "heading_valid": true, "heading_deg": 225.0}
+  }
+}

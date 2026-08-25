@@ -35,8 +35,12 @@ extern "C" {
  * as of S08c); COMPOSE is its own full-screen face (`ff_scr_compose_build`,
  * reached from Signals' "+", not a swipe tile); SETTINGS is its own
  * full-screen modal face (`ff_scr_settings_build`, S11 slice b — reached
- * by long-press, not a swipe tile either). Every other face still has no
- * real screen and falls through to fixture_view.h's S13 placeholder.
+ * by long-press, not a swipe tile either); MAP is its own full-screen
+ * modal face (`ff_scr_map_build`, S09 — Radar's alternate view, reached
+ * via `FF_INTENT_OPEN_MAP`, not a swipe tile — see ff_app_state.h's
+ * FF_APP_FACE_MAP comment for the routing rationale). Every other face
+ * still has no real screen and falls through to fixture_view.h's S13
+ * placeholder.
  *
  * S16 slice c2's `[api]` change dropped the `ff_flare_t *flare_rt`
  * parameter this function used to forward to `ff_scr_nav_build`/

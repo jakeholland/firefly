@@ -373,6 +373,136 @@ typedef struct {
 } ff_app_settings_t;
 
 /* -------------------------------------------------------------------
+ * map (S09) — flattened festpack features + crew/rally/YOU, all already
+ * expressed in the SAME east/north-meters frame `ff_map_xform_t`
+ * (core/include/ff_map.h) fits. `fixture.c` intentionally has zero
+ * festpack dependency (see its own header comment) — same as `now`
+ * above, this is a flattened, JSON-fixture-friendly mirror of
+ * `fp_feature_t`, NOT `radar`'s "the real core struct" drift-guard
+ * exception, and NOT a live `fp_pack_t` pointer.
+ * ------------------------------------------------------------------- */
+
+/* Deliberately SMALLER than fp_pack.h's FP_MAX_FEATURES(24)/
+ * FP_MAX_POLY_PTS(24) — same "view-level cap, independent of core's
+ * storage cap" convention as ff_app_now_t.lineup (32) against
+ * FP_MAX_SETS (256): fp_pack_t answers to a 48KB budget, this flattened
+ * view answers to ff_app_state_t's much smaller 8KB one (see that
+ * struct's own _Static_assert comment) — and `ff_shell_t` carries TWO
+ * full `ff_app_state_t` copies (the rendered view plus the previous
+ * frame's render key, `ff_shell.c`'s dirty-bit machinery), so this
+ * struct's real cost to the shell's own 16KB budget
+ * (`FF_SHELL_BYTES`, `ff_shell.h`) is doubled again. 8 features / 12
+ * points each is still generous headroom over S09 AC4's 5-polygon
+ * synthetic fixture and every stage/landmark count this repo's vendored
+ * Lost Lands pack carries today; a pack that outgrows it is a real,
+ * documented constraint of the FLATTENED VIEW (fail-loud at
+ * fixture-load time, same "cap enforced, never silently truncated"
+ * contract as every other capped array in this header), not of the core
+ * pack itself. */
+#define FF_APP_MAP_MAX_FEATURES 8
+#define FF_APP_MAP_MAX_POLY_PTS 12
+#define FF_APP_MAP_LABEL_LEN    32 /* mirrors fp_pack.h's fp_feature_t.label */
+
+/* Mirrors fp_pack.h's fp_feature_kind_t exactly (name, order, members) —
+ * same "mirrors S08's ff_feed_kind_t exactly" convention as
+ * ff_app_feed_kind_t above. */
+typedef enum {
+    FF_APP_MAP_KIND_UNKNOWN,
+    FF_APP_MAP_KIND_STAGE,
+    FF_APP_MAP_KIND_CAMPING,
+    FF_APP_MAP_KIND_WATER,
+    FF_APP_MAP_KIND_PATH,
+    FF_APP_MAP_KIND_ENTRANCE,
+    FF_APP_MAP_KIND_VENDOR,
+    FF_APP_MAP_KIND_MEDICAL,
+    FF_APP_MAP_KIND_POI,
+} ff_app_map_kind_t;
+
+typedef struct {
+    ff_app_map_kind_t kind;
+    char    label[FF_APP_MAP_LABEL_LEN];
+    uint32_t color_rgb;   /* meaningful only if color_valid — same "prove you meant this" convention as ff_app_now_row_t.stage_color_valid */
+    bool    color_valid;
+    /* n_pts == 0: UNTRACED — S09's exact honesty policy: rendered as a
+     * label only (never an invented shape), except a stage, which gets a
+     * labeled stub circle IF it carries at least one point (n_pts >= 1
+     * with a single entry) — see scr_map.c. A feature with no polygon
+     * and no policy-covered stub is never drawn as a shape, full stop. */
+    uint8_t n_pts;
+    float   pts_en[FF_APP_MAP_MAX_POLY_PTS][2]; /* [east_m, north_m] */
+} ff_app_map_feature_t;
+
+/**
+ * ff_app_map_crew_t — one crew member's dot on the map. Reuses the
+ * freshness/asserted/precision vocabulary PR #69 (issue #33/#47) gave
+ * Radar's ring dots, where it maps onto a map dot the same way it maps
+ * onto a radar dot — see `stale`/`place`/`imprecise` below for exactly
+ * how far that reuse goes and where it stops, per this slice's PR body
+ * (the task brief's own instruction: "where it doesn't map naturally,
+ * say so... rather than inventing policy").
+ */
+typedef struct {
+    char    initial;
+    uint8_t color_idx;   /* theme crew palette index, same convention as ff_radar_dot_t.color_idx */
+    bool    has_pos;
+    float   east_m, north_m;
+    /* Mirrors ff_radar_dot_t.stale exactly: this member's OWN freshness
+     * is STALE/LOST/NEVER. Renders as a dashed ring per S09's own spec
+     * text ("stale ⇒ dashed"). */
+    bool    stale;
+    /* Mirrors ff_radar_dot_t.place: this member's latest position is an
+     * ASSERTION (issue #33), not a measurement. Carried through so the
+     * fact is available, but S09's spec text does not itself define a
+     * distinct map render for it the way it defines "stale ⇒ dashed" —
+     * scr_map.c renders a `place` dot as an ordinary solid ring (a real
+     * coordinate exists; only the AGE claim `stale` would carry is what
+     * `place` withholds, same as Radar's PLACE mode keeping a solid
+     * arrow). A visually distinct map treatment for `place` (Radar's
+     * "FIXED POSITION" chip has no map equivalent yet) is a real gap,
+     * left unfixed here rather than invented — see the PR body. */
+    bool    place;
+    /* Mirrors issue #47's dist_imprecise gate: this member's latest fix
+     * has a known-degraded precision (`has_precision_bits &&
+     * precision_bits < FF_CREW_POS_PRECISION_MIN_BITS`). This is the one
+     * flag with a MAP-SPECIFIC render, not a copy of Radar's: Radar can
+     * fall back to an honest AREA-estimate STRING because it has no
+     * pin-point geometry to begin with, but a map dot is exactly a
+     * pin-point claim by construction — the task brief's own honesty
+     * rule ("a degraded-precision friend should not render as a
+     * pin-point dot on a map either"). scr_map.c therefore does NOT draw
+     * the normal 18px initial ring for an imprecise member; see that
+     * file's doc comment for the fuzzy-circle treatment it draws
+     * instead. */
+    bool    imprecise;
+} ff_app_map_crew_t;
+
+typedef struct {
+    ff_app_map_feature_t features[FF_APP_MAP_MAX_FEATURES];
+    uint8_t n_features;
+
+    ff_app_map_crew_t crew[FF_CREW_MAX];
+    uint8_t n_crew;
+
+    /* Rally: core has no rally-selection state yet (`ff_crew.h`'s own
+     * documented gap — "ff_crew_select_rally() is not implemented here
+     * ... deferred to S06/S08") — so `has_rally` is honestly `false` on
+     * every LIVE projection today; this section exists so scr_map.c and
+     * its fixtures/goldens can render the pin once that gap closes,
+     * without another `[api]` change to this struct. */
+    bool    has_rally;
+    char    rally_label[FF_APP_MAP_LABEL_LEN];
+    float   rally_east_m, rally_north_m;
+
+    /* YOU. */
+    bool    you_has_pos;
+    float   you_east_m, you_north_m;
+    /* false -> arrow hidden + "NO FIX" chip (S09 AC5) — same "prove you
+     * meant this" convention as radar.arrow_valid / flare.takeover_bearing_valid. */
+    bool    you_heading_valid;
+    float   you_heading_deg;
+} ff_app_map_t;
+
+/* -------------------------------------------------------------------
  * ff_app_state_t — the whole snapshot.
  * ------------------------------------------------------------------- */
 
@@ -406,6 +536,21 @@ typedef enum {
      * own (scr_nav.c's tileview only ever has 3 tiles: Radar/Now/
      * Signals); rendered as its own full screen, see scr_compose.h. */
     FF_APP_FACE_COMPOSE,
+    /* S09 [api] — Radar's alternate view (docs/specs/S09-map-face.md:
+     * "Purpose: Radar's alternate view"). NOT a fourth swipe tile:
+     * `scr_nav.c`'s tileview stays RADAR/NOW/SIGNALS exactly as S16's own
+     * "App: routing" section fixes it, and the spec's own render rule —
+     * "tap anywhere -> back to Radar" — is the modal-dismiss idiom
+     * (`FF_INTENT_BACK` popping a route modal) this codebase already uses
+     * for COMPOSE/SETTINGS, not the bounded swipe axis's rule (which has
+     * no "tap anywhere" exit at all, and would need a page-dot/AC1 change
+     * to every existing swipe-face golden to add a tile). So Map is a
+     * THIRD modal face, alongside them: `ff_route_push_modal` accepts it,
+     * reached via `FF_INTENT_OPEN_MAP`. Recorded per CLAUDE.md/AGENTS.md's
+     * "note the interpretation" rule — see this slice's PR body for the
+     * full reasoning and the one thing this choice deliberately leaves
+     * unwired (a real on-Radar tap target to reach it). */
+    FF_APP_FACE_MAP,
     /* S16 slice a [api] — ROUTING ONLY. This is `ff_route_visible()`'s
      * answer for "a takeover is up, so the next intent goes to the
      * takeover, not to whatever is underneath it" — an input-dispatch
@@ -429,7 +574,7 @@ typedef struct {
     char fixture_name[FF_APP_FIXTURE_NAME_LEN];
 
     /* In any RENDERABLE state: a real face — RADAR/NOW/SIGNALS/
-     * SETTINGS/COMPOSE — and never FF_APP_FACE_FLARE (S16 AC13, see
+     * SETTINGS/COMPOSE/MAP — and never FF_APP_FACE_FLARE (S16 AC13, see
      * that member's comment).
      *
      * The one exception, stated because the invariant is otherwise
@@ -448,6 +593,7 @@ typedef struct {
     ff_app_compose_t  compose;
     ff_app_flare_t    flare;
     ff_app_settings_t settings;
+    ff_app_map_t      map;
 } ff_app_state_t;
 
 /* PR #21 code review finding #4: ff_app_state_t grew ~2.5x in this PR

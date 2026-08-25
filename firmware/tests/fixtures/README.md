@@ -278,6 +278,53 @@ meant this" convention as `flare.takeover_bearing_valid`. Default (both
 keys absent) is `utc_offset_set: false`, which `scr_settings.c` renders as
 an honest "UNSET", not a fabricated "+0:00".
 
+## `map` (S09)
+
+```json
+"map": {
+  "features": [
+    {"kind": "stage", "label": "Prehistoric Stage", "color_rgb": "#ffc66b",
+     "points": [[-100.0, -50.0], [100.0, -50.0], [100.0, 50.0], [-100.0, 50.0]]}
+  ],
+  "crew": [
+    {"initial": "D", "color_idx": 0, "east_m": 20.0, "north_m": 35.0,
+     "stale": false, "place": false, "imprecise": false}
+  ],
+  "rally": {"label": "MEETUP", "east_m": 0.0, "north_m": 0.0},
+  "you": {"has_pos": true, "east_m": 0.0, "north_m": 0.0, "heading_valid": true, "heading_deg": 42.0}
+}
+```
+
+Mirrors `ff_app_map_t` (`ff_app_state.h`) field-for-field — see that
+struct's own doc comments for the full semantics. Same "fixture.c has
+zero festpack dependency" convention as `now` above: `features[]` is a
+flat `{kind, label, color_rgb, points}` list, never a live `fp_pack_t`.
+
+| Key | Type | Default | Notes |
+|---|---|---|---|
+| `features` | array, up to `FF_APP_MAP_MAX_FEATURES` (8) | `[]` | `kind` is one of `unknown`\|`stage`\|`camping`\|`water`\|`path`\|`entrance`\|`vendor`\|`medical`\|`poi`. `points` is `[[east_m, north_m], ...]`, up to `FF_APP_MAP_MAX_POLY_PTS` (12) — a 13th point, or a malformed `[e, n]` pair, fails the whole load (`FF_FIXTURE_ERR_TOO_BIG`/`FF_FIXTURE_ERR_JSON`). `n_pts` drives the render policy (`scr_map.c`'s doc comment: `>= 3` a filled+stroked polygon, `2` a stroked line, `1` a stage's labeled 30 m stub circle or a label-only point for any other kind, `0` omitted entirely — never an invented shape). `color_rgb` (accepts `"#rrggbb"` or a bare integer, same convention as `now.rows[].stage_color_rgb`) is OMITTED, not a placeholder, when absent/malformed — `color_valid` then reads false and `scr_map.c` falls back to the kind's own theme color. |
+| `crew` | array, up to `FF_CREW_MAX` (8) | `[]` | Presence of either `east_m`/`north_m` sets `has_pos`. `stale`/`place`/`imprecise` reuse Radar's own freshness/asserted/precision vocabulary (issue #33/#47) where it maps onto a map dot — see `ff_app_map_crew_t`'s doc comment for exactly how far that reuse goes (in particular: `imprecise` gets a MAP-SPECIFIC render, a larger fuzzy ring instead of the normal 18px pin-point dot, never a crisp point claim a degraded fix can't honestly support). |
+| `rally` | object or omitted | omitted (`has_rally: false`) | Same "presence of the section is the flag" idiom as `now.next`. No live source exists yet (`ff_crew.h`'s own documented rally-selection gap) — fixtures/goldens are how this section is exercised until it does. |
+| `you` | object or omitted | omitted (`you_has_pos: false`, `you_heading_valid: false`) | `has_pos` defaults to `true` when the section is present, overridable explicitly. `heading_valid` defaults `false` even with the section present (S09 AC5's least-claiming default, same convention as `radar.arrow_valid`) — omitted or `heading_valid: false` renders the arrow hidden with a "NO FIX" chip. |
+
+### Map face fixtures (S09)
+
+Four fixtures: `map_untraced.json` (AC3 — the real Lost Lands pack's
+current shape: every stage feature carries just its known point, no
+traced polygon, so the render is the honest "labels-only stub" state;
+one non-stage feature with zero points to exercise the "otherwise
+omitted" branch too), `map_traced.json` (AC4 — five synthetic polygons
+across five different kinds, three crew dots covering live/stale/
+imprecise, a rally pin, and a YOU arrow at a non-cardinal heading),
+`map_heading.json` (AC5's positive half — YOU present with a distinct
+heading, proving the arrow actually rotates rather than only ever
+rendering north-up), and `map_nofix.json` (AC5's negative half — no
+`you` section at all, so the arrow is hidden and the "NO FIX" chip
+renders instead). All four are synthetic (no mockup artboards in-tree
+for this agent to consult — see `ff_theme.h`'s top comment); real traced
+geometry for Lost Lands is being surveyed in a separate, parallel effort
+(fest-almanac) and was deliberately not blocked on here.
+
 ## Current fixtures
 
 Ten radar fixtures exist as of S06 (compute in slice a, `scr_radar.c` +

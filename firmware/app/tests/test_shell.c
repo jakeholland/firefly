@@ -1293,6 +1293,149 @@ static void S07_2026_08_24_starts_only_set_is_live_not_lineup(void)
     TEST_ASSERT_EQUAL_STRING("TBA Act", n->lineup[0].artist);
 }
 
+/* S09 — a pack whose map.features carries one traced polygon, for
+ * shell_project_map's live-projection coverage below. Venue matches
+ * PACK_JSON's (39.936, -82.414) so the two share an origin story. */
+static char const PACK_JSON_MAP[] =
+    "{\"festpack\":\"0.1\",\"utc_offset_min\":0,"
+    "\"festival\":{\"name\":\"Test Fest\",\"year\":2026,"
+    "\"start\":\"2026-09-18\",\"end\":\"2026-09-20\","
+    "\"venue\":{\"lat\":39.936,\"lon\":-82.414}},"
+    "\"stages\":[{\"id\":\"a\",\"name\":\"A Stage\",\"color\":\"#00ff00\"}],"
+    "\"schedule\":["
+    "{\"artist\":\"Solo Act\",\"stage\":\"a\",\"day\":\"2026-09-18\","
+    "\"start\":\"20:00\",\"end\":\"21:00\"}],"
+    "\"map\":{\"features\":["
+    "{\"kind\":\"water\",\"label\":\"Pond\",\"polygon\":["
+    "[39.937,-82.414],"
+    "[39.937,-82.413],"
+    "[39.936,-82.413]]}"
+    "]}}";
+
+/**
+ * S09 — shell_project_map's live projection: a pack's own feature
+ * (already carrying its projected east/north from fp_parse), a paired
+ * crew member's position (projected here against the SAME origin), and
+ * my own position/heading, all reaching `ff_app_state_t.map` through one
+ * tick. Pins that Map is wired into the live shell, not only the
+ * fixture-driven golden path — the honesty-mapped freshness/imprecision
+ * flags (issue #33/#47's vocabulary reused per the task brief) are
+ * covered by the `stale`/`imprecise` assertions below.
+ */
+static void S09_shell_projects_map_from_pack_crew_and_my_position(void)
+{
+    uint32_t const t0 = 100000u;
+    harness_init(t0, false);
+    inject_my_info(MY_ID);
+
+    /* No pack yet: the map is honestly empty, not a guessed origin. */
+    ff_shell_tick(&H.shell, H.clk.t);
+    TEST_ASSERT_EQUAL_UINT8(0, ff_shell_view(&H.shell)->map.n_features);
+    TEST_ASSERT_EQUAL_UINT8(0, ff_shell_view(&H.shell)->map.n_crew);
+    TEST_ASSERT_FALSE(ff_shell_view(&H.shell)->map.you_has_pos);
+
+    TEST_ASSERT_EQUAL_INT(0, ff_shell_load_pack(&H.shell, PACK_JSON_MAP, sizeof(PACK_JSON_MAP) - 1u));
+
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, true));
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, KEV_ID, true));
+    inject_node(DANA, "DANA", U_EVENING); /* latches the wall clock too */
+    inject_position(DANA, U_EVENING, 39.9365, -82.4135); /* LIVE — fresh fix near the venue */
+    inject_node(KEV_ID, "KEV", U_EVENING); /* name only — latch already set, this doesn't move it */
+    /* A want_config REPLAY (not another on_position) for KEV's stale fix,
+     * deliberately: on_position's rx_time re-latches the wall
+     * UNCONDITIONALLY in both directions (S16's own documented rule —
+     * "the authoritative re-latch source... offered unconditionally"),
+     * so a second inject_position() with an OLDER rx_time here would
+     * drag the just-latched wall clock backward with it instead of
+     * producing an honestly-older KEV fix. The NodeInfo replay path is
+     * guarded the other way (an EARLIER-than-latched reading is ignored,
+     * not relatched), which is exactly the cached/replayed-position
+     * shape this assertion wants. */
+    inject_node_with_position(KEV_ID, U_EVENING - 300u, 39.935, -82.415); /* STALE — 5 min older than the latch */
+
+    ff_shell_set_my_pos(&H.shell, (ff_latlon_t){39.936, -82.414}); /* exactly the venue */
+    ff_shell_set_heading(&H.shell, 90.0f);
+
+    ff_shell_tick(&H.shell, H.clk.t);
+    ff_app_map_t const *m = &ff_shell_view(&H.shell)->map;
+
+    /* The feature: copied straight through from the pack, already
+     * projected at parse time. */
+    TEST_ASSERT_EQUAL_UINT8(1, m->n_features);
+    TEST_ASSERT_EQUAL_INT(FF_APP_MAP_KIND_WATER, m->features[0].kind);
+    TEST_ASSERT_EQUAL_STRING("Pond", m->features[0].label);
+    TEST_ASSERT_EQUAL_UINT8(3, m->features[0].n_pts);
+
+    /* Crew: only PAIRED members with a position reach the map, same gate
+     * ff_radar_compute's dots[] uses. Both DANA and KEV have one. */
+    TEST_ASSERT_EQUAL_UINT8(2, m->n_crew);
+    bool saw_dana = false, saw_kev = false;
+    for (uint8_t i = 0; i < m->n_crew; i++) {
+        TEST_ASSERT_TRUE(m->crew[i].has_pos);
+        if (m->crew[i].initial == 'D') {
+            saw_dana = true;
+            TEST_ASSERT_FALSE(m->crew[i].stale); /* fresh fix, same tick as the latch */
+        } else if (m->crew[i].initial == 'K') {
+            saw_kev = true;
+            TEST_ASSERT_TRUE(m->crew[i].stale); /* 5 min old at freshness-check time */
+        }
+    }
+    TEST_ASSERT_TRUE(saw_dana);
+    TEST_ASSERT_TRUE(saw_kev);
+
+    /* YOU: my own position/heading, projected against the same origin —
+     * exactly at the venue, so east/north read ~0. */
+    TEST_ASSERT_TRUE(m->you_has_pos);
+    TEST_ASSERT_FLOAT_WITHIN(1.0f, 0.0f, m->you_east_m);
+    TEST_ASSERT_FLOAT_WITHIN(1.0f, 0.0f, m->you_north_m);
+    TEST_ASSERT_TRUE(m->you_heading_valid);
+    TEST_ASSERT_EQUAL_FLOAT(90.0f, m->you_heading_deg);
+
+    /* AC5's negative half: clearing my position drops the fix and the
+     * heading claim together — "no fix" is the honest state, not a
+     * stale arrow pointed at a stale spot. */
+    ff_shell_clear_my_pos(&H.shell);
+    ff_shell_tick(&H.shell, H.clk.t);
+    TEST_ASSERT_FALSE(ff_shell_view(&H.shell)->map.you_has_pos);
+}
+
+/* S09 — a pack whose venue is UNKNOWN (S05's own honesty rule: any
+ * projected east_m/north_m is meaningless without one). Every feature
+ * still parses, but the map must render nothing rather than trust a
+ * (0,0)-origin guess. */
+static char const PACK_JSON_MAP_NO_VENUE[] =
+    "{\"festpack\":\"0.1\",\"utc_offset_min\":0,"
+    "\"festival\":{\"name\":\"Test Fest\",\"year\":2026,"
+    "\"start\":\"2026-09-18\",\"end\":\"2026-09-20\","
+    "\"venue\":{\"lat\":null,\"lon\":null}},"
+    "\"stages\":[{\"id\":\"a\",\"name\":\"A Stage\",\"color\":\"#00ff00\"}],"
+    "\"schedule\":["
+    "{\"artist\":\"Solo Act\",\"stage\":\"a\",\"day\":\"2026-09-18\","
+    "\"start\":\"20:00\",\"end\":\"21:00\"}],"
+    "\"map\":{\"features\":["
+    "{\"kind\":\"water\",\"label\":\"Pond\",\"polygon\":["
+    "[39.937,-82.414],"
+    "[39.937,-82.413],"
+    "[39.936,-82.413]]}"
+    "]}}";
+
+static void S09_shell_map_stays_empty_without_a_known_venue(void)
+{
+    harness_init(100000u, false);
+    inject_my_info(MY_ID);
+    TEST_ASSERT_EQUAL_INT(0, ff_shell_load_pack(&H.shell, PACK_JSON_MAP_NO_VENUE, sizeof(PACK_JSON_MAP_NO_VENUE) - 1u));
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, true));
+    inject_node(DANA, "DANA", U_EVENING);
+    inject_position(DANA, U_EVENING, 39.9365, -82.4135);
+    ff_shell_set_my_pos(&H.shell, (ff_latlon_t){39.936, -82.414});
+
+    ff_shell_tick(&H.shell, H.clk.t);
+    ff_app_map_t const *m = &ff_shell_view(&H.shell)->map;
+    TEST_ASSERT_EQUAL_UINT8(0, m->n_features);
+    TEST_ASSERT_EQUAL_UINT8(0, m->n_crew);
+    TEST_ASSERT_FALSE(m->you_has_pos);
+}
+
 static void S16_b1_now_projection_needs_both_a_pack_and_a_known_clock(void)
 {
     harness_init(100000u, false);
@@ -2212,6 +2355,8 @@ int main(void)
     RUN_TEST(S16_b1_close_mode_triggers_live_via_direct_rssi_from_paired_peer);
     RUN_TEST(S07_2026_08_24_starts_only_set_is_live_not_lineup);
     RUN_TEST(S16_b1_now_projection_needs_both_a_pack_and_a_known_clock);
+    RUN_TEST(S09_shell_projects_map_from_pack_crew_and_my_position);
+    RUN_TEST(S09_shell_map_stays_empty_without_a_known_venue);
     RUN_TEST(S16_b1_loading_a_pack_does_not_fabricate_my_position);
     RUN_TEST(S16_b1_our_own_nodeinfo_can_bootstrap_the_wall_clock);
     RUN_TEST(S16_b1_a_flare_on_a_foreign_portnum_raises_no_takeover);

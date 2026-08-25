@@ -84,6 +84,30 @@ static inline uint32_t ff_theme_crew_color(uint8_t color_idx)
 }
 
 /* -------------------------------------------------------------------
+ * Map-face (S09) feature-kind colors. Stage features use their OWN
+ * `fp_stage_t` color when valid (`ff_app_map_feature_t.color_valid`) —
+ * these are the fallback/other-kind palette only, one color per
+ * `fp_feature_kind_t` (mirrored app-side as `ff_app_map_kind_t`). No
+ * mockup artboards are in-tree for this agent to consult (see this
+ * header's top comment) — a good-faith, internally-consistent palette
+ * distinct from the crew/status colors above, flagged per AGENTS.md's
+ * "note the interpretation" rule. `scr_map.c` owns the kind->color
+ * switch itself (not hoisted here as a helper, unlike
+ * ff_theme_crew_color) so this header's own dependency footprint stays
+ * just lvgl.h/stdint.h rather than pulling in ff_app_state.h for every
+ * other screen that includes this file.
+ * ------------------------------------------------------------------- */
+
+#define FF_THEME_MAP_CAMPING  0xB08CFF /* violet — same family as the crew palette's VIOLET, distinct context */
+#define FF_THEME_MAP_WATER    0x4FD8C4 /* teal — matches CREW_TEAL, intuitively "water" */
+#define FF_THEME_MAP_PATH     0x8B8A97 /* == FF_THEME_COLOR_MUTED — paths are neutral chrome, not a destination */
+#define FF_THEME_MAP_ENTRANCE 0x9BE07B /* == FF_THEME_COLOR_LIVE_GREEN — "go" */
+#define FF_THEME_MAP_VENDOR   0xFFC66B /* == FF_THEME_COLOR_AMBER — warm, food/shop */
+#define FF_THEME_MAP_MEDICAL  0xFF6B6B /* new: soft red, the one kind that benefits from standing apart from every other color on this screen */
+#define FF_THEME_MAP_POI      0xF2EFE6 /* == FF_THEME_COLOR_INK — generic point of interest */
+#define FF_THEME_MAP_UNKNOWN  0x8B8A97 /* == FF_THEME_COLOR_MUTED — an honest "kind not recognized", never a guessed color */
+
+/* -------------------------------------------------------------------
  * Status-bar alert thresholds (PR #16 code review finding: this cutoff
  * used to live as a bare `<= 15` literal inline in scr_radar.c, an
  * undocumented domain decision hiding in a renderer — CLAUDE.md: "if

@@ -82,12 +82,19 @@ bool ff_route_push_modal(ff_route_t *r, ff_app_face_t f)
     if (r == NULL) {
         return false;
     }
-    /* Compose and Settings are the only modal faces. Rejecting FLARE
-     * here is load-bearing, not defensive tidiness: the takeover is not
-     * something the route holds (see ff_route_visible), so accepting it
-     * as a modal would put the same fact in two places — the desync
-     * this module's whole shape exists to prevent. */
-    if (f != FF_APP_FACE_COMPOSE && f != FF_APP_FACE_SETTINGS) {
+    /* Compose, Settings and Map are the only modal faces. Rejecting
+     * FLARE here is load-bearing, not defensive tidiness: the takeover
+     * is not something the route holds (see ff_route_visible), so
+     * accepting it as a modal would put the same fact in two places —
+     * the desync this module's whole shape exists to prevent.
+     *
+     * Map (S09 [api], `ff_app_state.h`'s FF_APP_FACE_MAP comment has the
+     * full reasoning) joins here rather than the swipe axis above: the
+     * spec frames it as "Radar's alternate view" with a "tap anywhere ->
+     * back to Radar" exit, which is this codebase's existing
+     * modal-dismiss idiom (FF_INTENT_BACK popping the route), not the
+     * bounded swipe axis's rule. */
+    if (f != FF_APP_FACE_COMPOSE && f != FF_APP_FACE_SETTINGS && f != FF_APP_FACE_MAP) {
         return false;
     }
     /* Same base-validity rule as ff_route_swipe, and for a sharper

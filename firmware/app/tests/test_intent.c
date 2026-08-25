@@ -370,6 +370,38 @@ static void S16_c1_open_settings_and_back_round_trip(void)
 }
 
 /**
+ * S09 [api] — FF_INTENT_OPEN_MAP/BACK round trip, same shape as
+ * OPEN_SETTINGS above: `ff_route_push_modal`/`ff_route_pop_modal`
+ * machinery, no Map-specific handling to independently break. Pins the
+ * routing choice recorded in ff_app_state.h's FF_APP_FACE_MAP comment —
+ * Map is a modal reached by an explicit open intent, not a swipe tile.
+ */
+static void S09_open_map_and_back_round_trip(void)
+{
+    harness_init(100000u);
+    TEST_ASSERT_EQUAL(FF_APP_FACE_RADAR, view()->active_face); /* the spec's own framing: opened from Radar */
+
+    send_kind(FF_INTENT_OPEN_MAP);
+    TEST_ASSERT_EQUAL(FF_APP_FACE_MAP, view()->active_face);
+
+    /* Any modal suppresses swipe (AC2 at the seam) — same protection
+     * Compose/Settings get, applied here so a horizontal drag can never
+     * be mistaken for the spec's own "tap anywhere -> back" exit. */
+    send_swipe(-1);
+    send_swipe(+1);
+    TEST_ASSERT_EQUAL(FF_APP_FACE_MAP, view()->active_face);
+
+    /* A second OPEN_MAP over the modal is rejected, not a replace — one
+     * modal slot, same rule every other push_modal caller follows. */
+    send_kind(FF_INTENT_OPEN_MAP);
+    TEST_ASSERT_EQUAL(FF_APP_FACE_MAP, view()->active_face);
+
+    /* Tap-anywhere-back IS FF_INTENT_BACK — no Map-specific intent. */
+    send_kind(FF_INTENT_BACK);
+    TEST_ASSERT_EQUAL(FF_APP_FACE_RADAR, view()->active_face);
+}
+
+/**
  * A pending compose draft survives a visit to Settings (PR #68 code
  * review: "genuinely untested" ad hoc probe, adopted here as a real
  * test per the coordinator's suggestion). Settings has no seam onto
@@ -435,6 +467,7 @@ static void S16_c1_route_intents_are_rejected_while_a_takeover_is_visible(void)
     send_swipe(-1);
     send_open_compose(0u);
     send_kind(FF_INTENT_OPEN_SETTINGS);
+    send_kind(FF_INTENT_OPEN_MAP); /* S09 — same routing-rule-4 gate as every other route intent */
     TEST_ASSERT_TRUE(ff_shell_flare(&H.shell)->takeover_active); /* nothing consumed it */
 
     /* Clearing the takeover restores the EXACT prior route: Compose,
@@ -924,6 +957,7 @@ int main(void)
     RUN_TEST(S16_c1_a_rejected_open_compose_does_not_retarget_the_composer);
     RUN_TEST(S16_c1_back_clears_the_compose_destination);
     RUN_TEST(S16_c1_open_settings_and_back_round_trip);
+    RUN_TEST(S09_open_map_and_back_round_trip);
     RUN_TEST(S11b_a_compose_draft_survives_a_settings_visit);
     RUN_TEST(S16_c1_route_intents_are_rejected_while_a_takeover_is_visible);
     RUN_TEST(S16_c1_takeover_decisions_require_a_visible_takeover);

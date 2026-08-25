@@ -951,6 +951,70 @@ static void shell_project_settings(shell_t const *sh, ff_app_settings_t *out)
     out->utc_offset_set = sh->settings.utc_offset_set;
 }
 
+/**
+ * The Map face (S09).
+ *
+ * Honest-empty unless a pack is loaded with a KNOWN origin: every
+ * projected east_m/north_m below — features' own (already projected by
+ * `fp_parse` at load time) and crew/rally/YOU's (projected here, against
+ * the SAME origin) — is meaningless without one (`fp_pack_t.origin_known`'s
+ * own doc comment: "Meaningless... unless origin_known is true"). A
+ * missing pack, or a pack whose venue is unknown, therefore leaves
+ * `sh->view.map` at its whole-view memset zero — the same honestly-empty
+ * stub S09 AC3's untraced-pack fixture exercises, never an invented
+ * (0,0)-origin guess.
+ */
+static void shell_project_map(shell_t const *sh, ff_app_map_t *out)
+{
+    if (!sh->pack_loaded || sh->pack == NULL || !sh->pack->origin_known) {
+        return;
+    }
+
+    fp_pack_t const *p = sh->pack;
+
+    uint8_t const n_feat = (p->n_features < FF_APP_MAP_MAX_FEATURES) ? p->n_features : FF_APP_MAP_MAX_FEATURES;
+    for (uint8_t i = 0; i < n_feat; i++) {
+        fp_feature_t const *f = &p->features[i];
+        ff_app_map_feature_t *o = &out->features[out->n_features];
+        o->kind = (ff_app_map_kind_t)f->kind; /* mirrors fp_feature_kind_t exactly — ff_app_state.h's doc comment */
+        shell_copy_str(o->label, sizeof(o->label), f->label);
+        o->color_valid = shell_stage_color(p, f->stage_idx, &o->color_rgb);
+        uint8_t const n_pts = (f->n_pts < FF_APP_MAP_MAX_POLY_PTS) ? f->n_pts : FF_APP_MAP_MAX_POLY_PTS;
+        o->n_pts = n_pts;
+        for (uint8_t k = 0; k < n_pts; k++) {
+            o->pts_en[k][0] = f->pts_en[k][0];
+            o->pts_en[k][1] = f->pts_en[k][1];
+        }
+        out->n_features++;
+    }
+
+    for (uint8_t i = 0; i < sh->crew.count && out->n_crew < FF_CREW_MAX; i++) {
+        ff_crew_member_t const *m = &sh->crew.members[i];
+        if (!m->paired || !m->has_pos) continue; /* same "only known positions get a ring dot" gate as ff_radar_compute's dots[] */
+        ff_app_map_crew_t *o = &out->crew[out->n_crew];
+        o->initial = m->initial;
+        o->color_idx = m->color_idx;
+        o->has_pos = true;
+        ff_geo_project(p->origin, m->pos, &o->east_m, &o->north_m);
+        ff_freshness_t const fr = ff_crew_freshness(m, shell_now(sh));
+        o->stale = (fr == FF_FRESH_STALE || fr == FF_FRESH_LOST || fr == FF_FRESH_NEVER);
+        o->place = (fr == FF_FRESH_ASSERTED); /* issue #33 */
+        o->imprecise = m->has_precision_bits && m->precision_bits < FF_CREW_POS_PRECISION_MIN_BITS; /* issue #47 */
+        out->n_crew++;
+    }
+
+    /* Rally: no core rally-selection state exists yet — ff_app_state.h's
+     * has_rally doc comment (`ff_crew.h`'s own documented gap). Always
+     * false until that lands; not invented here. */
+
+    out->you_has_pos = sh->my_pos_ok;
+    if (sh->my_pos_ok) {
+        ff_geo_project(p->origin, sh->my_pos, &out->you_east_m, &out->you_north_m);
+    }
+    out->you_heading_valid = (sh->heading_deg >= 0.0f); /* ff_geo_heading_deg's "unreliable" sentinel */
+    out->you_heading_deg = out->you_heading_valid ? sh->heading_deg : 0.0f;
+}
+
 /** "HH:MM", or "" when the puck does not know what time it is.
  *  scr_radar renders an empty clock_str as "--:--" — an explicit
  *  unknown, never an invented time. */
@@ -1011,6 +1075,7 @@ static void shell_project(shell_t *sh, uint32_t now_ms)
     shell_project_signals(sh, now_ms, &sh->view.signals);
     shell_project_flare(sh, now_ms, &sh->view.flare);
     shell_project_settings(sh, &sh->view.settings);
+    shell_project_map(sh, &sh->view.map);
 
     /* compose: the draft (text/mode/pending) is shell-owned T9 state as
      * of slice c3 (`sh->compose_draft`) — projected verbatim from
@@ -1467,6 +1532,17 @@ void ff_shell_intent(ff_shell_t *sh_pub, ff_intent_t const *in)
         if (takeover_up) return;
         if (!k_settings_renderer_exists) return; /* the judgment call — see the constant's comment */
         (void)ff_route_push_modal(&sh->route, FF_APP_FACE_SETTINGS);
+        return;
+
+    case FF_INTENT_OPEN_MAP:
+        /* S09 [api]. Same push_modal machinery as OPEN_COMPOSE/
+         * OPEN_SETTINGS above (rejected over an existing modal or an
+         * off-axis base); no per-open state to reset (unlike Compose's
+         * draft) since Map has none of its own — the view it renders
+         * comes from `sh->view.map`'s projection, populated fresh every
+         * tick like `now`/`radar`. */
+        if (takeover_up) return;
+        (void)ff_route_push_modal(&sh->route, FF_APP_FACE_MAP);
         return;
 
     case FF_INTENT_TAKEOVER_GO:

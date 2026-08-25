@@ -75,9 +75,10 @@ typedef struct {
      *  `_SIGNALS`. Never NONE, SETTINGS, COMPOSE or FLARE after init. */
     ff_app_face_t base;
     /** The modal covering `base`: `FF_APP_FACE_COMPOSE`,
-     *  `FF_APP_FACE_SETTINGS`, or `FF_APP_FACE_NONE` for "no modal".
-     *  Neither is a swipe tile of its own — Compose is reached from
-     *  Signals' "+", Settings from a nav long-press. */
+     *  `FF_APP_FACE_SETTINGS`, `FF_APP_FACE_MAP`, or `FF_APP_FACE_NONE`
+     *  for "no modal". None of these is a swipe tile of its own —
+     *  Compose is reached from Signals' "+", Settings from a nav
+     *  long-press, Map (S09 [api]) from Radar. */
     ff_app_face_t modal;
 } ff_route_t;
 
@@ -127,10 +128,10 @@ bool ff_route_swipe(ff_route_t *r, int8_t dir);
  * Raises `f` as the modal over the current `base`. Returns true iff the
  * route changed.
  *
- * `f` must be `FF_APP_FACE_COMPOSE` or `FF_APP_FACE_SETTINGS`; anything
- * else (a swipe face, NONE, FLARE) is rejected. FLARE in particular is
- * never a modal: the takeover is not routed, it overrides — see
- * `ff_route_visible()`.
+ * `f` must be `FF_APP_FACE_COMPOSE`, `FF_APP_FACE_SETTINGS` or
+ * `FF_APP_FACE_MAP` (S09 [api]); anything else (a swipe face, NONE,
+ * FLARE) is rejected. FLARE in particular is never a modal: the
+ * takeover is not routed, it overrides — see `ff_route_visible()`.
  *
  * **Pushing while a modal is already up is rejected**, rather than
  * replacing it. There is one modal slot, not a stack, so "replace" would
