@@ -124,6 +124,13 @@ static void test_dot_sweep_close(void)
      * single dot to have to dodge. */
     sweep_single_dot_never_overlaps_registry(RADAR_CLOSE, false, "CLOSE");
 }
+static void test_dot_sweep_place(void)
+{
+    /* issue #33 — RADAR_PLACE reuses the LIVE/STALE name/dist/chip stack
+     * (radar_layout.c); this pins that the reuse is geometrically sound,
+     * not just that the switch statement compiles. */
+    sweep_single_dot_never_overlaps_registry(RADAR_PLACE, false, "PLACE");
+}
 static void test_dot_sweep_nofix(void)
 {
     sweep_single_dot_never_overlaps_registry(RADAR_NOFIX, false, "NOFIX");
@@ -190,6 +197,14 @@ static void test_arrow_sweep_lost(void)
      * drawn through the "~1.1 km" distance text (PR #16 UX review round
      * 3, finding #2). */
     sweep_arrow_never_overlaps_registry_or_changes_bearing(RADAR_LOST, "LOST (real fix)");
+}
+
+static void test_arrow_sweep_place(void)
+{
+    /* issue #33 — RADAR_PLACE's arrow is drawn whenever a bearing exists
+     * (ff_radar.h's RADAR_PLACE paragraph), through the same LIVE/STALE
+     * registry rect. */
+    sweep_arrow_never_overlaps_registry_or_changes_bearing(RADAR_PLACE, "PLACE");
 }
 
 static void test_arrow_not_shortened_when_clear(void)
@@ -529,10 +544,12 @@ int main(void)
     RUN_TEST(test_dot_sweep_close);
     RUN_TEST(test_dot_sweep_nofix);
     RUN_TEST(test_dot_sweep_nosel);
+    RUN_TEST(test_dot_sweep_place);
 
     RUN_TEST(test_arrow_sweep_live);
     RUN_TEST(test_arrow_sweep_stale);
     RUN_TEST(test_arrow_sweep_lost);
+    RUN_TEST(test_arrow_sweep_place);
     RUN_TEST(test_arrow_not_shortened_when_clear);
 
     RUN_TEST(test_all_8_dots_same_bearing_close_mode_cluster_not_hidden);

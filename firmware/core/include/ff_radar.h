@@ -60,11 +60,20 @@ extern "C" {
 #endif
 
 /* Mirrors docs/specs/S06-radar-face.md's radar_mode_t exactly (name,
- * member names, member order). */
+ * member names, member order) — AS AMENDED 2026-08-24 for issue #33
+ * (see that spec's Amendments section): RADAR_PLACE is not in the
+ * original sketch, added between RADAR_LOST and RADAR_CLOSE. */
 typedef enum {
     RADAR_LIVE,
     RADAR_STALE,
     RADAR_LOST,
+    /* issue #33: the selected member's latest position is an ASSERTION
+     * (Meshtastic LOC_MANUAL), not a measurement — neither LIVE, STALE,
+     * nor LOST (ff_crew_freshness's FF_FRESH_ASSERTED). A place, not a
+     * person whose whereabouts were just checked. See ff_radar_compute's
+     * doc comment for exactly where this sits in mode-resolution priority
+     * and what it does/doesn't claim about age. */
+    RADAR_PLACE,
     RADAR_CLOSE,
     RADAR_NOFIX,
     RADAR_NOSEL,
@@ -81,7 +90,18 @@ typedef struct {
     float   ring_deg;  /* heading-relative bearing, [0, 360) */
     char    initial;   /* display letter, '\0' if unknown */
     uint8_t color_idx;  /* index into the theme crew palette */
-    bool    stale;      /* true when that member's own freshness != LIVE */
+    /* true when that member's own freshness is STALE/LOST/NEVER — i.e.
+     * "aging", in the sense the dashed/ghost ring-dot treatment means.
+     * NEVER true for an asserted member (see `place` below): an asserted
+     * position isn't aging, it's a different KIND of fact, and marking it
+     * "stale" would falsely imply decay it never had (issue #33). */
+    bool    stale;
+    /* issue #33: true when that member's latest position is asserted
+     * (FF_FRESH_ASSERTED) — mutually exclusive with `stale`. The ring
+     * renders this member as a place marker, not a friend dot; see
+     * scr_radar.c's doc comment on the KNOWN GAP for clustered markers
+     * that mix a place with live/stale friends. */
+    bool    place;
 } ff_radar_dot_t;
 
 /**
@@ -98,6 +118,17 @@ typedef struct {
                          * (see ff_radar_compute's doc comment) */
     char  name[FF_RADAR_NAME_LEN];
     char  dist_str[FF_RADAR_STR_LEN];
+    /* issue #47: true when `dist_str` is an approximate-area statement
+     * (e.g. "~5.8 km area") rather than a point-to-point distance,
+     * because the selected member's latest fix arrived with
+     * has_precision_bits && precision_bits < FF_CREW_POS_PRECISION_MIN_BITS.
+     * Always false when dist_str is "" (nothing to caveat) or when
+     * precision is UNKNOWN (absent has_precision_bits renders like today
+     * — see ff_radar_compute's doc comment for why that asymmetry is
+     * honest, not a regression). Renderer contract: scr_radar.c must not
+     * pair this distance with any UI element that implies point precision
+     * (no "exact-looking" mono digits without the area framing). */
+    bool  dist_imprecise;
     char  age_str[FF_RADAR_STR_LEN];
     int8_t trend; /* -1/0/+1, meaningful in CLOSE mode (hot/cold) */
     ff_radar_dot_t dots[FF_CREW_MAX];
@@ -139,15 +170,43 @@ void ff_radar_smooth_reset(ff_radar_smooth_t *s);
  *     `ff_geo_heading_deg` returns).
  *  3. RADAR_CLOSE — `ff_crew_close_range()` is true for the selected
  *     member (checked before freshness: a member can be RSSI-close even
- *     with a GPS-stale/lost/never position).
+ *     with a GPS-stale/lost/never/asserted position — proximity by real
+ *     signal strength is a fact independent of the position's provenance,
+ *     and by distance to an ASSERTED position CLOSE can still fire
+ *     honestly: an asserted coordinate is a real place, just not a fresh
+ *     measurement, so "you are standing next to this spot" is a true
+ *     statement about geometry, not a false one about currency).
  *  4. Otherwise, `ff_crew_freshness()` of the selected member's position:
  *     FF_FRESH_LIVE -> RADAR_LIVE, FF_FRESH_STALE -> RADAR_STALE,
- *     FF_FRESH_LOST -> RADAR_LOST. FF_FRESH_NEVER (selected member is
- *     paired but has never sent a position fix at all) also maps to
- *     RADAR_LOST — the spec's mode enum has no dedicated "never" state,
- *     and NEVER is a strict subset of what LOST already means ("don't
- *     trust this position"); this is flagged as an interpretation call in
- *     the PR body per AGENTS.md.
+ *     FF_FRESH_ASSERTED -> RADAR_PLACE (issue #33 — checked as its own
+ *     freshness value, so it can never also be LIVE/STALE/LOST no matter
+ *     what `now_ms` is). FF_FRESH_LOST -> RADAR_LOST. FF_FRESH_NEVER
+ *     (selected member is paired but has never sent a position fix at
+ *     all) also maps to RADAR_LOST — the spec's mode enum has no
+ *     dedicated "never" state, and NEVER is a strict subset of what LOST
+ *     already means ("don't trust this position"); this is flagged as an
+ *     interpretation call in the PR body per AGENTS.md.
+ *
+ * RADAR_PLACE's own fields, stated because they deliberately DIFFER from
+ * every other freshness-derived mode (issue #33's binding ruling: LOC_MANUAL
+ * means "not measured," not "placed deliberately or recently" — a
+ * six-month-old asserted fix looks bit-for-bit identical to a fresh one, so
+ * nothing here may claim otherwise):
+ *   - `age_str` is always "" in RADAR_PLACE, even though `has_pos` is true
+ *     and a real `pos_age_ms` exists. That timestamp is receive time (when
+ *     THIS broadcast arrived), not placement time — for an asserted fixed
+ *     position it resets every re-broadcast interval regardless of how long
+ *     ago the coordinate was actually set, so displaying it would claim
+ *     "placed N seconds/minutes ago", exactly the false recency the ruling
+ *     forbids. This is a deliberate departure from `arrow_valid`'s pattern
+ *     of surfacing every honestly-known fact — here the fact age_str would
+ *     normally carry is not honestly knowable, so the field stays empty
+ *     rather than reporting a number that means something else entirely.
+ *   - `dist_str`/`arrow_valid`/`arrow_deg` behave exactly as they do for
+ *     LIVE/STALE/LOST when a position exists: distance and bearing are
+ *     geometric facts about the coordinate itself, which an assertion does
+ *     not make dishonest — only the coordinate's AGE is unknowable, not the
+ *     coordinate.
  *
  * RENDERER CONTRACT (PR #13 review finding #2 — read this before writing
  * scr_radar.c): because of the FF_FRESH_NEVER folding above, `mode ==
@@ -179,16 +238,46 @@ void ff_radar_smooth_reset(ff_radar_smooth_t *s);
  * age) rather than reusing/fabricating a stale value — this can differ
  * per-field from what `mode` alone would suggest (e.g. RADAR_NOFIX still
  * reports a true `age_str` for the selected member's last fix, since that
- * fact doesn't depend on *my* position/heading being known).
+ * fact doesn't depend on *my* position/heading being known). RADAR_PLACE
+ * is the one further exception: `age_str` stays "" even though a fix
+ * exists — see RADAR_PLACE's own paragraph above for why.
+ *
+ * issue #47 — `dist_str`/`dist_imprecise`: when the selected member's
+ * latest fix has `has_precision_bits && precision_bits <
+ * FF_CREW_POS_PRECISION_MIN_BITS` (ff_crew.h), the position is
+ * known-degraded — the received coordinate can be off by kilometers (a
+ * channel setting, not a bug; see issue #47's hardware measurement).
+ * `dist_str` is then an approximate-AREA statement built from
+ * `ff_crew_pos_precision_grid_m()` (e.g. "~5.8 km area"), never the raw
+ * point-to-point distance, and `dist_imprecise` is set true so the
+ * renderer can mark it distinctly. The same gate also excludes this
+ * member from `ff_crew_close_range()`'s DISTANCE leg (a degraded
+ * coordinate cannot honestly support "you are standing next to them" —
+ * the RSSI leg is untouched, since it is measured by our own radio and
+ * carries no coordinate-precision dependency at all). Absent
+ * `has_precision_bits` renders exactly as before this issue's fix
+ * (`dist_imprecise` stays false, normal point distance): "the sender
+ * didn't say" is not evidence the fix is degraded, and this asymmetry vs.
+ * a *known*-degraded fix is deliberate, not a gap — see mc_client.h's
+ * `precision_bits` doc comment for the hardware-verified reason (live
+ * packets stamp it affirmatively on current firmware; the want_config
+ * NodeInfo replay never does, replay-absent and live-absent are the same
+ * bytes on the wire and cannot be told apart, and treating "didn't say"
+ * as "must be degraded" would regress every ordinary live position on
+ * every replay-derived reading to a blanket "imprecise" label that is
+ * itself dishonest).
  *
  * The crew ring (`dots[]`/`n_dots`) is independent of the current
  * selection and mode: every *paired* member with a known position fix
  * gets a dot (heading-relative bearing), skipped entirely when
  * `!my_pos_ok` or heading is invalid (no bearing is computable for
  * anyone, not just the selection) or when that particular member has
- * never had a position fix. `dot.stale` is true whenever that member's own
- * `ff_crew_freshness() != FF_FRESH_LIVE`.
+ * never had a position fix. `dot.place` is true whenever that member's
+ * own `ff_crew_freshness() == FF_FRESH_ASSERTED`; `dot.stale` is true
+ * whenever that member's own freshness is STALE/LOST/NEVER — i.e. never
+ * simultaneously with `place` (see `ff_radar_dot_t`'s doc comment).
  *
+
  * Smoothing: whenever a bearing is computable for the selection (see
  * `arrow_valid`'s condition, minus the mode-gating), the target angle
  * (`ff_geo_arrow_deg(bearing, heading_deg)`) is folded into `*smooth` via
