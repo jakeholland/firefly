@@ -166,6 +166,20 @@ endif()
 # its zero-dependency, no-festpack posture. Full rationale in ff_wall.h.
 target_sources(ff-core PRIVATE src/ff_wall.c)
 
+# S09 (core/map — the map-face fixed-fit camera transform;
+# docs/specs/S09-map-face.md, slice a)
+target_sources(ff-core PRIVATE src/ff_map.c)
+
+if(FF_BUILD_TESTS)
+    add_executable(test_map
+        tests/test_map.c
+    )
+    target_link_libraries(test_map PRIVATE ff-core unity)
+    ff_apply_warnings(test_map)
+
+    add_test(NAME test_map COMMAND test_map)
+endif()
+
 if(FF_BUILD_TESTS)
     add_executable(test_wall
         tests/test_wall.c

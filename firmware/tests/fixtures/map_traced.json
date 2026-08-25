@@ -1,0 +1,21 @@
+{
+  "fixture": "map_traced",
+  "face": "map",
+  "map": {
+    "features": [
+      {"kind": "stage", "label": "Prehistoric Stage", "color_rgb": "#ffc66b",
+       "points": [[-180.0, -80.0], [-100.0, -80.0], [-100.0, -20.0], [-180.0, -20.0]]},
+      {"kind": "camping", "label": "Camping A", "points": [[50.0, 60.0], [180.0, 60.0], [180.0, 140.0], [50.0, 140.0]]},
+      {"kind": "water", "label": "Water Refill", "points": [[-40.0, 100.0], [10.0, 100.0], [10.0, 140.0], [-40.0, 140.0]]},
+      {"kind": "path", "label": "Main Path", "points": [[-150.0, -15.0], [150.0, -25.0], [150.0, -5.0], [-150.0, 5.0]]},
+      {"kind": "entrance", "label": "Main Gate", "points": [[0.0, -150.0], [30.0, -120.0], [-30.0, -120.0]]}
+    ],
+    "crew": [
+      {"initial": "D", "color_idx": 0, "east_m": -60.0, "north_m": -40.0, "stale": false, "place": false, "imprecise": false},
+      {"initial": "K", "color_idx": 1, "east_m": 90.0, "north_m": 30.0, "stale": true, "place": false, "imprecise": false},
+      {"initial": "M", "color_idx": 2, "east_m": -20.0, "north_m": 70.0, "stale": false, "place": false, "imprecise": true}
+    ],
+    "rally": {"label": "MEETUP", "east_m": 0.0, "north_m": 0.0},
+    "you": {"has_pos": true, "east_m": -100.0, "north_m": -110.0, "heading_valid": true, "heading_deg": 42.0}
+  }
+}

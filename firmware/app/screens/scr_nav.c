@@ -59,8 +59,31 @@ static void nav_long_press_cb(lv_event_t *e)
  * direction (ff_route.h's own warning): -1 toward RADAR, +1 toward
  * SIGNALS, and a RIGHTWARD drag maps to -1. LVGL's gesture_dir names the
  * direction the content was dragged, the same sense, so LV_DIR_RIGHT ->
- * -1 and LV_DIR_LEFT -> +1. A vertical gesture (LV_DIR_TOP/_BOTTOM) is
- * not a face swipe and is ignored. */
+ * -1 and LV_DIR_LEFT -> +1.
+ *
+ * LV_DIR_TOP (S09 [api], PR #73 review finding #4 — the Map face shipped
+ * with a complete renderer and no way to reach it, which both
+ * independent reviewers correctly refused to wave through as "under-
+ * claiming honestly": a screen nobody can open is not a v1 face, it's
+ * dead code) opens Map instead of moving `base` — see
+ * `ff_app_state.h`'s `FF_APP_FACE_MAP` comment and this slice's spec
+ * Amendment for the full routing rationale. Deliberately the LEAST
+ * invasive entry point available: this handler is the ONLY thing that
+ * changes, so it adds ZERO drawn pixels to any existing radar/now/
+ * signals golden (verified: all 30 pre-existing goldens stayed
+ * byte-identical through this fix round) — a visible tap-target
+ * affordance was considered and deferred, see issue #76 and the PR
+ * reply for why. Works from any of the three tiles, not gated to Radar
+ * specifically: the shell's own routing already treats Map uniformly as
+ * a modal over whatever base is current (`ff_route_push_modal`), so
+ * restricting the gesture to one tile would be an arbitrary limitation
+ * this handler has no principled reason to add — and it means one swipe
+ * reaches Map regardless of which face you're already on, not "swipe
+ * back to Radar first, then swipe up".
+ *
+ * LV_DIR_BOTTOM remains unclaimed (not a face swipe, not Map) — no
+ * product need for it yet, and claiming it speculatively would be
+ * exactly the kind of invented behavior CLAUDE.md rules out. */
 static void nav_swipe_gesture_cb(lv_event_t *e)
 {
     (void)e;
@@ -69,11 +92,19 @@ static void nav_swipe_gesture_cb(lv_event_t *e)
         return;
     }
 
+    lv_dir_t const dir = lv_indev_get_gesture_dir(indev);
+
+    if (dir == LV_DIR_TOP) {
+        ff_intent_t open_map = {.kind = FF_INTENT_OPEN_MAP, .u = {0}};
+        ff_intent_emit(&open_map);
+        return;
+    }
+
     int8_t route_dir;
-    switch (lv_indev_get_gesture_dir(indev)) {
+    switch (dir) {
     case LV_DIR_RIGHT: route_dir = -1; break;
     case LV_DIR_LEFT: route_dir = 1; break;
-    default: return; /* vertical: not a face swipe */
+    default: return; /* LV_DIR_BOTTOM / none: not a face swipe, not Map */
     }
 
     ff_intent_t in = {.kind = FF_INTENT_SWIPE, .u = {0}};

@@ -276,7 +276,7 @@ static void visible_of_null_is_none(void)
 /* modal lifecycle                                                      */
 /* ------------------------------------------------------------------- */
 
-static void push_modal_accepts_only_compose_and_settings(void)
+static void push_modal_accepts_only_compose_settings_and_map(void)
 {
     /* FLARE is rejected on purpose: the takeover is not routed, it
      * overrides — accepting it as a modal would put ff_flare_t's single
@@ -290,6 +290,61 @@ static void push_modal_accepts_only_compose_and_settings(void)
         TEST_ASSERT_FALSE(ff_route_push_modal(&r, rejected[i]));
         TEST_ASSERT_EQUAL_INT(FF_APP_FACE_NONE, r.modal);
     }
+}
+
+/* S09 [api] — Map joins Compose/Settings as a third modal face (see
+ * ff_app_state.h's FF_APP_FACE_MAP comment and ff_route.c's push_modal
+ * comment for the full routing rationale: "Radar's alternate view" with
+ * a tap-anywhere-back exit is this codebase's existing modal-dismiss
+ * idiom, not the bounded swipe axis). Named separately from the
+ * accepted-vs-rejected sweep above so a regression here reads as "Map
+ * routing broke", not folded into a generic list assertion. */
+static void S09_push_modal_accepts_map_from_radar(void)
+{
+    ff_route_t r = route_at(FF_APP_FACE_RADAR);
+    TEST_ASSERT_TRUE(ff_route_push_modal(&r, FF_APP_FACE_MAP));
+    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_MAP, r.modal);
+    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_RADAR, r.base);
+}
+
+/* Map is reached from Radar per the spec's own "Radar's alternate view"
+ * framing, but push_modal's own contract is base-axis-general (same rule
+ * Compose/Settings already get) — pin that Map is not silently
+ * Radar-only, so a future base-validity refactor can't quietly narrow it
+ * without a test noticing. */
+static void S09_push_modal_accepts_map_from_any_swipe_face(void)
+{
+    ff_app_face_t const bases[] = {FF_APP_FACE_RADAR, FF_APP_FACE_NOW, FF_APP_FACE_SIGNALS};
+    for (size_t i = 0; i < sizeof(bases) / sizeof(bases[0]); i++) {
+        ff_route_t r = route_at(bases[i]);
+        TEST_ASSERT_TRUE(ff_route_push_modal(&r, FF_APP_FACE_MAP));
+        TEST_ASSERT_EQUAL_INT(FF_APP_FACE_MAP, r.modal);
+    }
+}
+
+/* Tap-anywhere-back (S09 spec) is FF_INTENT_BACK popping the modal —
+ * exactly ff_route_pop_modal, no Map-specific code path. Pins that a Map
+ * modal behaves identically to Compose/Settings on the way out: the same
+ * generic pop restores base untouched. */
+static void S09_pop_modal_from_map_restores_base(void)
+{
+    ff_route_t r = route_at(FF_APP_FACE_RADAR);
+    TEST_ASSERT_TRUE(ff_route_push_modal(&r, FF_APP_FACE_MAP));
+    TEST_ASSERT_TRUE(ff_route_pop_modal(&r));
+    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_NONE, r.modal);
+    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_RADAR, r.base);
+}
+
+/* Same AC2 protection Compose/Settings already get: a Map modal must
+ * suppress swipe too — "tap anywhere -> back" must never race a
+ * horizontal drag that slides Radar out from underneath it. */
+static void S09_map_modal_suppresses_swipe(void)
+{
+    ff_route_t r = route_at(FF_APP_FACE_RADAR);
+    TEST_ASSERT_TRUE(ff_route_push_modal(&r, FF_APP_FACE_MAP));
+    TEST_ASSERT_FALSE(ff_route_swipe(&r, 1));
+    TEST_ASSERT_FALSE(ff_route_swipe(&r, -1));
+    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_RADAR, r.base);
 }
 
 static void push_modal_leaves_base_untouched(void)
@@ -405,7 +460,11 @@ int main(void)
     RUN_TEST(visible_is_the_modal_when_one_is_up);
     RUN_TEST(visible_of_null_is_none);
 
-    RUN_TEST(push_modal_accepts_only_compose_and_settings);
+    RUN_TEST(push_modal_accepts_only_compose_settings_and_map);
+    RUN_TEST(S09_push_modal_accepts_map_from_radar);
+    RUN_TEST(S09_push_modal_accepts_map_from_any_swipe_face);
+    RUN_TEST(S09_pop_modal_from_map_restores_base);
+    RUN_TEST(S09_map_modal_suppresses_swipe);
     RUN_TEST(push_modal_leaves_base_untouched);
     RUN_TEST(push_modal_over_a_live_modal_is_rejected);
     RUN_TEST(push_modal_on_a_base_off_the_axis_is_a_no_op);

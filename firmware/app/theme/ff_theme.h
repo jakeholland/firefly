@@ -84,6 +84,52 @@ static inline uint32_t ff_theme_crew_color(uint8_t color_idx)
 }
 
 /* -------------------------------------------------------------------
+ * Map-face (S09) feature-kind colors. Stage features use their OWN
+ * `fp_stage_t` color when valid (`ff_app_map_feature_t.color_valid`) —
+ * these are the fallback/other-kind palette only, one color per
+ * `fp_feature_kind_t` (mirrored app-side as `ff_app_map_kind_t`). No
+ * mockup artboards are in-tree for this agent to consult (see this
+ * header's top comment) — a good-faith, internally-consistent palette
+ * distinct from the crew/status colors above, flagged per AGENTS.md's
+ * "note the interpretation" rule. `scr_map.c` owns the kind->color
+ * switch itself (not hoisted here as a helper, unlike
+ * ff_theme_crew_color) so this header's own dependency footprint stays
+ * just lvgl.h/stdint.h rather than pulling in ff_app_state.h for every
+ * other screen that includes this file.
+ * ------------------------------------------------------------------- */
+
+/* PR #73 review finding #5 (Bailey): the ORIGINAL FF_THEME_MAP_CAMPING
+ * (0xB08CFF) was bit-for-bit `FF_THEME_CREW_VIOLET` AND — verified
+ * against the real, currently-merged Lost Lands pack — the real
+ * festpack's own color for "The Crater" stage (`#b08cff`). Camping,
+ * a violet crew dot, and a real stage could all read as the same
+ * color on the same small screen the moment camping actually rendered
+ * (it didn't before this PR's finding #1 fix — that's how this sat
+ * unnoticed). Changed to a warm tan distinct from every other color in
+ * this file. The residual, evidenced-but-not-structural collision this
+ * does NOT close — a festival's own stage color (pack-authored data,
+ * `ff_app_map_feature_t.color_rgb`, not a theme constant) landing on
+ * the same hue as a crew member's assigned palette slot — is a
+ * genuinely different class of problem (this file has no control over
+ * what color a festival picks for its stages) and is exactly the
+ * "broader palette rework" Bailey's own finding flags as a follow-up,
+ * not a same-PR fix. */
+#define FF_THEME_MAP_CAMPING  0xC49A6C /* warm tan/khaki — distinct from crew violet AND the real pack's "Crater" stage color */
+#define FF_THEME_MAP_WATER    0x4FD8C4 /* teal — matches CREW_TEAL, intuitively "water" */
+#define FF_THEME_MAP_PATH     0x8B8A97 /* == FF_THEME_COLOR_MUTED — paths are neutral chrome, not a destination */
+#define FF_THEME_MAP_ENTRANCE 0x9BE07B /* == FF_THEME_COLOR_LIVE_GREEN — "go" */
+#define FF_THEME_MAP_VENDOR   0xFFC66B /* == FF_THEME_COLOR_AMBER — warm, food/shop */
+#define FF_THEME_MAP_MEDICAL  0xFF6B6B /* new: soft red, the one kind that benefits from standing apart from every other color on this screen */
+/* PR #73 review finding #3 (Bailey): the ORIGINAL FF_THEME_MAP_POI was
+ * bit-for-bit FF_THEME_COLOR_INK — the same color as every label's own
+ * TEXT — so a POI-kind polygon's outline visually merged with the words
+ * sitting on top of it (verified on the real pack's "Venue extent" and
+ * "Wompy Woods treeline", both kind `poi`). A distinct, muted slate-blue
+ * instead — legible as a shape, never confusable with text. */
+#define FF_THEME_MAP_POI      0x6B8CAE /* muted slate-blue — generic point of interest, distinct from label text */
+#define FF_THEME_MAP_UNKNOWN  0x8B8A97 /* == FF_THEME_COLOR_MUTED — an honest "kind not recognized", never a guessed color */
+
+/* -------------------------------------------------------------------
  * Status-bar alert thresholds (PR #16 code review finding: this cutoff
  * used to live as a bare `<= 15` literal inline in scr_radar.c, an
  * undocumented domain decision hiding in a renderer — CLAUDE.md: "if

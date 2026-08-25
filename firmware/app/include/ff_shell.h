@@ -308,14 +308,27 @@ typedef struct {
  * same discipline `ff_app_state.h` and `fp_pack.h` apply to their own
  * structs.
  *
- * 16 KB against 12,240 bytes actually used today, measured, not
- * estimated: two `ff_app_state_t` projections at 3,448 B each — the view
- * and the previous frame's render key — plus `ff_feed_t`, `ff_crew_t`,
- * `mc_client_t` and small change. Headroom is deliberate but modest:
- * c1-c3 add an `ff_t9_t` draft, and d adds render bookkeeping. Note that
- * `fp_pack_t` is NOT in here — see `ff_shell_cfg_t.pack`.
+ * RAISED 16 KB -> 22 KB in S09's PR #73 fix round, deliberately, per
+ * this comment's own instruction above ("raise the budget deliberately
+ * and say why"): `ff_app_state_t.map`'s two feature-array caps
+ * (`FF_APP_MAP_MAX_FEATURES`/`FF_APP_MAP_MAX_POLY_PTS`, `ff_app_state.h`)
+ * grew from 8/12 to 20/16 to close a real silent-truncation defect found
+ * rendering the actual, currently-merged Lost Lands pack — see that
+ * header's own doc comment for the full story. Two `ff_app_state_t`
+ * copies (the view + the previous frame's render key) means that growth
+ * lands here TWICE. Measured, not estimated: `sizeof(shell_t)` is
+ * 19,936 B against the OLD 16,384 B budget (a hard compile failure, not
+ * a close call). 22 KB (22,528 B) is the smallest round-KB number that
+ * (a) clears 19,936 with real headroom (~2.6 KB) for the next slice's
+ * own small change, and (b) stays UNDER `sizeof(fp_pack_t)` (23,696 B
+ * measured) — `test_shell.c`'s `S16_b1_shell_footprint_excludes_the_pack`
+ * pins the shell staying meaningfully smaller than the pack as a
+ * red-flag check against accidentally folding a pack in, and this
+ * growth has nothing to do with that, so it's kept true rather than
+ * loosened. Note that `fp_pack_t` is NOT in here — see
+ * `ff_shell_cfg_t.pack`.
  */
-#define FF_SHELL_BYTES 16384u
+#define FF_SHELL_BYTES 22528u
 
 /** Alignment of the opaque payload. 8 covers every member the shell
  *  holds today (the widest are `double` inside `ff_latlon_t` and

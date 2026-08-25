@@ -675,12 +675,185 @@ static ff_fixture_result_t fx_parse_settings(fx_ctx_t const *c, int obj_i, ff_ap
     return FF_FIXTURE_OK;
 }
 
+/* ---------------------------------------------------------------------
+ * map (S09) — mirrors ff_app_map_t field-for-field. Same "fixture.c has
+ * zero festpack dependency" convention as `now` above: features are
+ * plain {kind, label, color, points} objects, never a live fp_pack_t.
+ * ------------------------------------------------------------------- */
+
+static const fx_enum_entry_t fx_map_kind_table[] = {
+    {"unknown", FF_APP_MAP_KIND_UNKNOWN},   {"stage", FF_APP_MAP_KIND_STAGE},
+    {"camping", FF_APP_MAP_KIND_CAMPING},   {"water", FF_APP_MAP_KIND_WATER},
+    {"path", FF_APP_MAP_KIND_PATH},         {"entrance", FF_APP_MAP_KIND_ENTRANCE},
+    {"vendor", FF_APP_MAP_KIND_VENDOR},     {"medical", FF_APP_MAP_KIND_MEDICAL},
+    {"poi", FF_APP_MAP_KIND_POI},
+};
+
+/* fx_parse_map_points — `[[east_m, north_m], ...]`, fail-loud on an
+ * oversized array (same convention as fx_parse_radar_dots/fx_parse_now).
+ * Each element must itself be a 2-element JSON array; anything else is a
+ * malformed fixture (FF_FIXTURE_ERR_JSON), not a silently-skipped point —
+ * a point silently dropped here is exactly the "no invented geometry"
+ * rule's opposite failure (inventing an OMISSION nobody asked for). */
+static ff_fixture_result_t fx_parse_map_points(fx_ctx_t const *c, int arr_i, ff_app_map_feature_t *f)
+{
+    jsmntok_t const *at = &c->toks[arr_i];
+    if (at->type != JSMN_ARRAY) return FF_FIXTURE_ERR_JSON;
+    if (at->size > FF_APP_MAP_MAX_POLY_PTS) return FF_FIXTURE_ERR_TOO_BIG;
+    int idx = arr_i + 1;
+    for (int i = 0; i < at->size; i++) {
+        int pair_i = idx;
+        jsmntok_t const *pt = &c->toks[pair_i];
+        if (pt->type != JSMN_ARRAY || pt->size != 2) return FF_FIXTURE_ERR_JSON;
+        int e_i = pair_i + 1;
+        int n_i = fx_skip(c, e_i);
+        f->pts_en[f->n_pts][0] = (float)fx_num(c, e_i, 0.0);
+        f->pts_en[f->n_pts][1] = (float)fx_num(c, n_i, 0.0);
+        f->n_pts++;
+        idx = fx_skip(c, pair_i);
+    }
+    return FF_FIXTURE_OK;
+}
+
+static ff_fixture_result_t fx_parse_map_feature(fx_ctx_t const *c, int obj_i, ff_app_map_feature_t *f)
+{
+    memset(f, 0, sizeof(*f));
+    int t;
+    if (fx_obj_get(c, obj_i, "kind", &t)) {
+        int v;
+        ff_fixture_result_t rc = fx_enum(c, t, fx_map_kind_table,
+                                          sizeof(fx_map_kind_table) / sizeof(fx_map_kind_table[0]),
+                                          "map.features[].kind", &v);
+        if (rc != FF_FIXTURE_OK) return rc;
+        f->kind = (ff_app_map_kind_t)v;
+    }
+    if (fx_obj_get(c, obj_i, "label", &t)) fx_copy_str(c, t, f->label, sizeof(f->label));
+    if (fx_obj_get(c, obj_i, "color_rgb", &t)) {
+        uint32_t rgb;
+        if (fx_color_rgb(c, t, &rgb)) {
+            f->color_rgb = rgb;
+            f->color_valid = true;
+        }
+        /* A present-but-malformed color, same as fx_color_rgb's other
+         * callers: leaves color_valid false rather than guessing. */
+    }
+    int pts_i;
+    if (fx_obj_get(c, obj_i, "points", &pts_i) && !fx_is_null(c, pts_i)) {
+        ff_fixture_result_t rc = fx_parse_map_points(c, pts_i, f);
+        if (rc != FF_FIXTURE_OK) return rc;
+    }
+    return FF_FIXTURE_OK;
+}
+
+static ff_fixture_result_t fx_parse_map_features(fx_ctx_t const *c, int arr_i, ff_app_map_t *m)
+{
+    jsmntok_t const *at = &c->toks[arr_i];
+    if (at->type != JSMN_ARRAY) return FF_FIXTURE_ERR_JSON;
+    if (at->size > FF_APP_MAP_MAX_FEATURES) return FF_FIXTURE_ERR_TOO_BIG;
+    int idx = arr_i + 1;
+    for (int i = 0; i < at->size; i++) {
+        int obj_i2 = idx;
+        ff_fixture_result_t rc = fx_parse_map_feature(c, obj_i2, &m->features[m->n_features]);
+        if (rc != FF_FIXTURE_OK) return rc;
+        m->n_features++;
+        idx = fx_skip(c, obj_i2);
+    }
+    return FF_FIXTURE_OK;
+}
+
+static ff_fixture_result_t fx_parse_map_crew(fx_ctx_t const *c, int arr_i, ff_app_map_t *m)
+{
+    jsmntok_t const *at = &c->toks[arr_i];
+    if (at->type != JSMN_ARRAY) return FF_FIXTURE_ERR_JSON;
+    if (at->size > FF_CREW_MAX) return FF_FIXTURE_ERR_TOO_BIG;
+    int idx = arr_i + 1;
+    for (int i = 0; i < at->size; i++) {
+        int obj_i2 = idx;
+        ff_app_map_crew_t *o = &m->crew[m->n_crew];
+        memset(o, 0, sizeof(*o));
+        int t;
+        if (fx_obj_get(c, obj_i2, "initial", &t)) {
+            char buf[2];
+            fx_copy_str(c, t, buf, sizeof(buf));
+            o->initial = buf[0];
+        }
+        if (fx_obj_get(c, obj_i2, "color_idx", &t)) o->color_idx = (uint8_t)fx_num(c, t, 0.0);
+        /* Presence of EITHER coordinate is the has_pos signal — same
+         * "prove you meant this" idiom used throughout this loader (see
+         * e.g. flare.takeover_bearing_valid); a crew entry with no
+         * coordinates at all is a malformed fixture, not a silent
+         * (0,0) placement. */
+        if (fx_obj_get(c, obj_i2, "east_m", &t)) {
+            o->east_m = (float)fx_num(c, t, 0.0);
+            o->has_pos = true;
+        }
+        if (fx_obj_get(c, obj_i2, "north_m", &t)) {
+            o->north_m = (float)fx_num(c, t, 0.0);
+            o->has_pos = true;
+        }
+        if (fx_obj_get(c, obj_i2, "stale", &t)) o->stale = fx_bool(c, t, false);
+        if (fx_obj_get(c, obj_i2, "place", &t)) o->place = fx_bool(c, t, false);
+        if (fx_obj_get(c, obj_i2, "imprecise", &t)) o->imprecise = fx_bool(c, t, false);
+        m->n_crew++;
+        idx = fx_skip(c, obj_i2);
+    }
+    return FF_FIXTURE_OK;
+}
+
+static ff_fixture_result_t fx_parse_map(fx_ctx_t const *c, int obj_i, ff_app_map_t *m)
+{
+    int feat_i;
+    if (fx_obj_get(c, obj_i, "features", &feat_i) && !fx_is_null(c, feat_i)) {
+        ff_fixture_result_t rc = fx_parse_map_features(c, feat_i, m);
+        if (rc != FF_FIXTURE_OK) return rc;
+    }
+    /* PR #73 review finding #1: authorable directly, so a golden can
+     * exercise scr_map.c's "+N MORE" render without needing an actual
+     * >cap pack (fixture.c's own array-cap check would reject that
+     * outright — see fx_parse_map_features — this is the intentional,
+     * pack-independent way to author the truncated STATE itself). */
+    int t0;
+    if (fx_obj_get(c, obj_i, "truncated", &t0)) m->truncated = fx_bool(c, t0, false);
+    if (fx_obj_get(c, obj_i, "features_omitted", &t0)) m->features_omitted = (uint8_t)fx_num(c, t0, 0.0);
+    int crew_i;
+    if (fx_obj_get(c, obj_i, "crew", &crew_i) && !fx_is_null(c, crew_i)) {
+        ff_fixture_result_t rc = fx_parse_map_crew(c, crew_i, m);
+        if (rc != FF_FIXTURE_OK) return rc;
+    }
+    int rally_i;
+    if (fx_obj_get(c, obj_i, "rally", &rally_i) && !fx_is_null(c, rally_i)) {
+        m->has_rally = true; /* presence of the section IS the flag — same "next" idiom as ff_app_now_t */
+        int t;
+        if (fx_obj_get(c, rally_i, "label", &t)) fx_copy_str(c, t, m->rally_label, sizeof(m->rally_label));
+        if (fx_obj_get(c, rally_i, "east_m", &t)) m->rally_east_m = (float)fx_num(c, t, 0.0);
+        if (fx_obj_get(c, rally_i, "north_m", &t)) m->rally_north_m = (float)fx_num(c, t, 0.0);
+    }
+    int you_i;
+    if (fx_obj_get(c, obj_i, "you", &you_i) && !fx_is_null(c, you_i)) {
+        m->you_has_pos = true; /* presence of the section defaults has_pos true, overridable below */
+        int t;
+        if (fx_obj_get(c, you_i, "has_pos", &t)) m->you_has_pos = fx_bool(c, t, true);
+        if (fx_obj_get(c, you_i, "east_m", &t)) m->you_east_m = (float)fx_num(c, t, 0.0);
+        if (fx_obj_get(c, you_i, "north_m", &t)) m->you_north_m = (float)fx_num(c, t, 0.0);
+        /* heading_valid defaults false even with the section present —
+         * S09 AC5's "hidden + NO FIX chip" is the least-claiming default,
+         * same convention as radar.arrow_valid. */
+        if (fx_obj_get(c, you_i, "heading_valid", &t)) m->you_heading_valid = fx_bool(c, t, false);
+        if (fx_obj_get(c, you_i, "heading_deg", &t)) m->you_heading_deg = (float)fx_num(c, t, 0.0);
+    }
+    /* else: `you` absent entirely -> you_has_pos/you_heading_valid stay
+     * false (the whole-struct zeroing at load start) — the honest "no
+     * fix at all" case AC5 also covers. */
+    return FF_FIXTURE_OK;
+}
+
 static const fx_enum_entry_t fx_face_table[] = {
     {"radar", FF_APP_FACE_RADAR},
     {"now", FF_APP_FACE_NOW},
     {"signals", FF_APP_FACE_SIGNALS},
     {"settings", FF_APP_FACE_SETTINGS},
     {"compose", FF_APP_FACE_COMPOSE},
+    {"map", FF_APP_FACE_MAP},
 };
 
 ff_fixture_result_t ff_fixture_load_json(char const *json, size_t len, ff_app_state_t *out)
@@ -811,6 +984,13 @@ ff_fixture_result_t ff_fixture_load_json(char const *json, size_t len, ff_app_st
     /* else: out->flare's three -1 "n/a" defaults (set above) stand. */
     if (fx_obj_get(&ctx, 0, "settings", &sec_i) && !fx_is_null(&ctx, sec_i)) {
         ff_fixture_result_t rc = fx_parse_settings(&ctx, sec_i, &out->settings);
+        if (rc != FF_FIXTURE_OK) {
+            memset(out, 0, sizeof(*out));
+            return rc;
+        }
+    }
+    if (fx_obj_get(&ctx, 0, "map", &sec_i) && !fx_is_null(&ctx, sec_i)) {
+        ff_fixture_result_t rc = fx_parse_map(&ctx, sec_i, &out->map);
         if (rc != FF_FIXTURE_OK) {
             memset(out, 0, sizeof(*out));
             return rc;
@@ -1013,6 +1193,39 @@ static void fw_lineup_item(fw_cur_t *w, ff_app_lineup_item_t const *item)
     fw_raw(w, "}");
 }
 
+static void fw_map_feature(fw_cur_t *w, ff_app_map_feature_t const *f)
+{
+    fw_raw(w, "{\"kind\":\"");
+    fw_raw(w, fx_enum_name(fx_map_kind_table, sizeof(fx_map_kind_table) / sizeof(fx_map_kind_table[0]), f->kind,
+                            "unknown"));
+    fw_raw(w, "\",\"label\":");
+    fw_json_str(w, f->label);
+    /* color_rgb OMITTED entirely when invalid — same round-trip-safe
+     * contract fw_now_row already gives stage_color_rgb (writing a
+     * placeholder would silently flip color_valid true on reload). */
+    if (f->color_valid) {
+        fw_fmt(w, ",\"color_rgb\":\"#%06x\"", (unsigned)(f->color_rgb & 0xFFFFFFu));
+    }
+    fw_raw(w, ",\"points\":[");
+    for (uint8_t i = 0; i < f->n_pts; i++) {
+        if (i > 0) fw_raw(w, ",");
+        fw_fmt(w, "[%g,%g]", (double)f->pts_en[i][0], (double)f->pts_en[i][1]);
+    }
+    fw_raw(w, "]}");
+}
+
+static void fw_map_crew(fw_cur_t *w, ff_app_map_crew_t const *c)
+{
+    char initial[2] = {c->initial, '\0'};
+    fw_raw(w, "{\"initial\":");
+    fw_json_str(w, initial);
+    fw_fmt(w, ",\"color_idx\":%u", (unsigned)c->color_idx);
+    fw_fmt(w, ",\"east_m\":%g,\"north_m\":%g", (double)c->east_m, (double)c->north_m);
+    fw_raw(w, c->stale ? ",\"stale\":true" : ",\"stale\":false");
+    fw_raw(w, c->place ? ",\"place\":true" : ",\"place\":false");
+    fw_raw(w, c->imprecise ? ",\"imprecise\":true}" : ",\"imprecise\":false}");
+}
+
 static void fw_feed_item(fw_cur_t *w, ff_app_feed_item_t const *it)
 {
     fw_raw(w, "{\"kind\":\"");
@@ -1166,6 +1379,39 @@ int ff_fixture_dump_json(ff_app_state_t const *s, char *buf, size_t buf_sz)
     fw_json_str(&w, s->settings.my_name);
     fw_raw(&w, s->settings.utc_offset_set ? ",\"utc_offset_set\":true" : ",\"utc_offset_set\":false");
     fw_fmt(&w, ",\"utc_offset_min\":%d", (int)s->settings.utc_offset_min);
+    fw_raw(&w, "}");
+
+    /* map (S09) — field-for-field mirror of fx_parse_map so a dump
+     * round-trips through the loader. */
+    fw_raw(&w, ",\"map\":{\"features\":[");
+    for (uint8_t i = 0; i < s->map.n_features; i++) {
+        if (i > 0) fw_raw(&w, ",");
+        fw_map_feature(&w, &s->map.features[i]);
+    }
+    fw_raw(&w, "]");
+    fw_raw(&w, s->map.truncated ? ",\"truncated\":true" : ",\"truncated\":false");
+    fw_fmt(&w, ",\"features_omitted\":%u", (unsigned)s->map.features_omitted);
+    fw_raw(&w, ",\"crew\":[");
+    for (uint8_t i = 0; i < s->map.n_crew; i++) {
+        if (i > 0) fw_raw(&w, ",");
+        fw_map_crew(&w, &s->map.crew[i]);
+    }
+    fw_raw(&w, "]");
+    if (s->map.has_rally) {
+        fw_raw(&w, ",\"rally\":{\"label\":");
+        fw_json_str(&w, s->map.rally_label);
+        fw_fmt(&w, ",\"east_m\":%g,\"north_m\":%g}", (double)s->map.rally_east_m, (double)s->map.rally_north_m);
+    }
+    /* `you` OMITTED entirely when there's no position at all — same
+     * round-trip-safe "absent key -> honest default" contract as
+     * flare's optional groups (mirrors fx_parse_map's own "you absent ->
+     * has_pos/heading_valid stay false" default exactly). */
+    if (s->map.you_has_pos) {
+        fw_fmt(&w, ",\"you\":{\"has_pos\":true,\"east_m\":%g,\"north_m\":%g", (double)s->map.you_east_m,
+               (double)s->map.you_north_m);
+        fw_raw(&w, s->map.you_heading_valid ? ",\"heading_valid\":true" : ",\"heading_valid\":false");
+        fw_fmt(&w, ",\"heading_deg\":%g}", (double)s->map.you_heading_deg);
+    }
     fw_raw(&w, "}");
 
     fw_raw(&w, "}"); /* close root */

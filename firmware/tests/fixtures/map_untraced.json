@@ -1,0 +1,14 @@
+{
+  "fixture": "map_untraced",
+  "face": "map",
+  "map": {
+    "features": [
+      {"kind": "stage", "label": "Prehistoric Stage", "color_rgb": "#ffc66b", "points": [[-120.0, 40.0]]},
+      {"kind": "stage", "label": "Subsidia Stage", "color_rgb": "#ff5ca8", "points": [[80.0, -60.0]]},
+      {"kind": "stage", "label": "Forest Stage", "color_rgb": "#9be07b", "points": [[20.0, 150.0]]},
+      {"kind": "water", "label": "Water Refill", "points": []}
+    ],
+    "crew": [],
+    "you": {"has_pos": true, "east_m": 0.0, "north_m": 0.0, "heading_valid": true, "heading_deg": 0.0}
+  }
+}

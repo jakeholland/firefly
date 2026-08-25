@@ -1,0 +1,26 @@
+{
+  "fixture": "map_concave",
+  "face": "map",
+  "map": {
+    "features": [
+      {
+        "kind": "poi",
+        "label": "Venue extent (approx.)",
+        "polygon_note": "real, currently-merged Lost Lands 'Venue extent' polygon, projected via ff_geo_project against the real festival.venue origin (39.9387,-82.4027) — see PR #73 review finding #2 and core/tests/test_map.c's S09_triangulate_real_venue_extent_is_concave_and_covers_exact_area for the same numbers. Reflex vertex at index 7 (hand-verified via a cross-product convexity sweep) is exactly the shape the old vertex-0 fan-fill mis-rendered.",
+        "points": [
+          [-477.437, 177.912],
+          [-537.117, 366.943],
+          [-281.347, 478.138],
+          [59.676, 478.138],
+          [187.556, 255.752],
+          [144.940, -133.434],
+          [59.676, -211.269],
+          [-153.464, -22.243],
+          [-366.604, 88.958]
+        ]
+      }
+    ],
+    "crew": [],
+    "you": {"has_pos": true, "east_m": 0.0, "north_m": 0.0, "heading_valid": true, "heading_deg": 0.0}
+  }
+}

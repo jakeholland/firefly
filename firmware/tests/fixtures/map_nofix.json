@@ -1,0 +1,11 @@
+{
+  "fixture": "map_nofix",
+  "face": "map",
+  "map": {
+    "features": [
+      {"kind": "stage", "label": "Prehistoric Stage", "color_rgb": "#ffc66b", "points": [[-100.0, 60.0]]},
+      {"kind": "camping", "label": "Camping A", "points": [[50.0, -60.0], [150.0, -60.0], [150.0, 20.0], [50.0, 20.0]]}
+    ],
+    "crew": []
+  }
+}
