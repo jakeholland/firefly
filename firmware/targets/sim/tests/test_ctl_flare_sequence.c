@@ -392,6 +392,66 @@ static void ctl_swipe_actually_changes_the_face(void)
     lv_deinit();
 }
 
+/* ctl `wall`: bench time-travel so real festpacks whose dates are not
+ * "now" can be tested live (a finished Bass Canyon, a future Lost
+ * Lands). Expected values computed independently (Python datetime):
+ * 2026-09-19 21:30 EDT = unix 1789867800, day_doy 262, now_min 1290. */
+static void ctl_wall_sets_bench_time_honestly(void)
+{
+    static ff_shell_t shell;
+    static fp_pack_t pack;
+    static ff_ctl_loop_ctx_t ctx;
+
+    ff_shell_cfg_t shell_cfg;
+    memset(&shell_cfg, 0, sizeof(shell_cfg));
+
+    ff_ctl_loop_cfg_t cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.mock_clock = true;
+
+    TEST_ASSERT_EQUAL_INT(0, ff_ctl_loop_open(&ctx, &shell, &pack, &shell_cfg, &cfg));
+
+    bool quit_flag = false;
+    ff_ctl_handlers_t h = ff_ctl_loop_handlers(&ctx, &quit_flag);
+    ctl_settle(&ctx, &h);
+
+    char resp[FF_CTL_MAX_RESP];
+
+    /* No pack, no settings offset: a plausible time still cannot resolve
+     * to local time, and the reply must say so rather than "ok". */
+    (void)ff_ctl_process_line("{\"cmd\":\"wall\",\"unix_s\":1789867800}", &h, resp, sizeof(resp));
+    TEST_ASSERT_NOT_NULL_MESSAGE(strstr(resp, "\"ok\":false"), resp);
+    TEST_ASSERT_NOT_NULL_MESSAGE(strstr(resp, "offset"), resp);
+
+    /* Supply the offset through the real settings intent (EDT, -240). */
+    ff_intent_t set = {.kind = FF_INTENT_SETTING_SET, .u = {.setting = {.id = FF_SETTING_UTC_OFFSET_MIN, .v = {.i = -240}}}};
+    ff_shell_intent(&shell, &set);
+    ctl_settle(&ctx, &h);
+
+    ctl_send(&h, "{\"cmd\":\"wall\",\"unix_s\":1789867800}", resp, sizeof(resp));
+    ctl_settle(&ctx, &h);
+
+    ff_wall_t w = ff_shell_wall(&shell);
+    TEST_ASSERT_NOT_EQUAL(FF_WALL_UNKNOWN, w.src);
+    TEST_ASSERT_EQUAL_UINT16(262u, w.day_doy);
+    TEST_ASSERT_EQUAL_INT16(1290, w.now_min);
+
+    /* Beyond ff_wall's ceiling (2031): the gate, not this command,
+     * rejects it — the reply says REJECTED (from the observe's own
+     * return; "resolvable afterwards" stays true off the earlier latch
+     * and was exactly the wrong proxy) — and the previously-set time
+     * survives untouched. */
+    (void)ff_ctl_process_line("{\"cmd\":\"wall\",\"unix_s\":1924992000}", &h, resp, sizeof(resp));
+    TEST_ASSERT_NOT_NULL_MESSAGE(strstr(resp, "\"ok\":false"), resp);
+    TEST_ASSERT_NOT_NULL_MESSAGE(strstr(resp, "rejected"), resp);
+    w = ff_shell_wall(&shell);
+    TEST_ASSERT_EQUAL_UINT16(262u, w.day_doy);
+
+    ff_ctl_loop_close(&ctx);
+    ff_shell_close(&shell);
+    lv_deinit();
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -399,6 +459,7 @@ int main(void)
     RUN_TEST(S16_AC10_draft_typed_flare_injected_takeover_clears_draft_survives);
     RUN_TEST(S16_d_idle_ticks_never_rebuild_the_screen);
     RUN_TEST(ctl_swipe_actually_changes_the_face);
+    RUN_TEST(ctl_wall_sets_bench_time_honestly);
 
     return UNITY_END();
 }

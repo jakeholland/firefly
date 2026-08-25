@@ -108,6 +108,10 @@ Advances the mock clock by `advance_ms` (must be `>= 0`). **Requires
 notion of "now" is real wall-clock time and can't be driven by hand;
 you'll get `{"ok": false, "error": "clock control requires --mock-clock"}`.
 
+Parse-level errors (before the handler runs): `wall requires numeric
+unix_s` · `wall unix_s must be within [0, 4e9]` · `wall unsupported`
+(no handler bound).
+
 Response: `{"ok": true}` on success.
 
 ### `state`
@@ -222,6 +226,34 @@ be within `[0, 65535]`.
 Response: `{"ok": true}`, or `{"ok": false, "error": "flare requires numeric from"}`
 / `"flare dur_s must be within [0, 65535]"` / `"flare unsupported"` (no
 live shell behind this session).
+
+### `wall`
+
+```json
+{"cmd": "wall", "unix_s": 1789867800}
+```
+
+Bench time-travel (sim-only, like `flare`): hands the given unix time to the
+same dev wall observation `--dev-trust-all`'s host pre-latch uses, so the
+`state` dump shows it with the same honest provenance (`host_observed:true`).
+Exists so real festpacks whose dates are not "now" — a finished Bass Canyon,
+a future Lost Lands — can be tested live end to end; the wall latch only
+moves off genuine observations, so without this a past festival's schedule
+is unreachable on the bench.
+
+Two distinct failures, distinguished in the reply:
+- `wall time rejected by ff_wall's plausibility window` — the gate refused
+  the value (outside `[2026-08-01, 2030-08-01)`); any earlier latch is
+  untouched.
+- `wall latched but unresolvable: no UTC offset ...` — the time was
+  accepted but nothing supplies a UTC offset (no pack loaded, settings
+  offset unset), so local time cannot be derived.
+
+Parse-level errors (before the handler runs): `wall requires numeric
+unix_s` · `wall unix_s must be within [0, 4e9]` · `wall unsupported`
+(no handler bound).
+
+Response: `{"ok": true}` on success.
 
 ### `quit`
 

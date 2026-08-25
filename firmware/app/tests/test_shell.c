@@ -1571,7 +1571,7 @@ static void S16_AC6_dev_trust_all_lets_the_single_dev_node_play_a_crew_member(vo
      * same replay ages honestly against the host latch and reads LIVE. */
     harness_init(100000u, false);
     ff_shell_dev_trust_all(&H.shell, true);
-    ff_shell_dev_wall_observe(&H.shell, (int64_t)U_EVENING);
+    (void)ff_shell_dev_wall_observe(&H.shell, (int64_t)U_EVENING);
     inject_my_info(MY_ID);
     inject_node_with_position(MY_ID, U_EVENING - 30u, 39.002, -82.0);
 

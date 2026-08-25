@@ -727,7 +727,13 @@ void ff_shell_dev_trust_all(ff_shell_t *sh, bool enabled);
  * sim-only, gated by the same plausibility window as any mesh
  * observation, and absent from device builds by construction.
  */
-void ff_shell_dev_wall_observe(ff_shell_t *sh, int64_t unix_now_s);
+/* Returns true iff the observation was ACCEPTED (latched, re-latched, or
+ * agreed-within-tolerance) — false means the plausibility gate rejected
+ * it and the latch is untouched. Callers reporting success must use this
+ * return, not "is the wall resolvable afterwards": once ANY latch exists,
+ * resolvability survives a rejected value, so that proxy reads ok for
+ * exactly the inputs the gate refused (found by PR #64's own test). */
+bool ff_shell_dev_wall_observe(ff_shell_t *sh, int64_t unix_now_s);
 
 #endif /* FF_TARGET_SIM */
 

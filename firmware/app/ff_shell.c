@@ -1684,14 +1684,14 @@ void ff_shell_dev_trust_all(ff_shell_t *sh_pub, bool enabled)
     shell_of(sh_pub)->dev_trust_all = enabled;
 }
 
-void ff_shell_dev_wall_observe(ff_shell_t *sh_pub, int64_t unix_now_s)
+bool ff_shell_dev_wall_observe(ff_shell_t *sh_pub, int64_t unix_now_s)
 {
-    if (sh_pub == NULL) return;
+    if (sh_pub == NULL) return false;
     shell_t *sh = shell_of(sh_pub);
     /* Same shape as a live rx_time observation: unconditional in both
      * directions, still gated by ff_wall_observe's plausibility window
      * — a wildly wrong host clock is rejected, not latched. */
-    (void)ff_wall_observe(&sh->wall, unix_now_s, shell_now(sh));
+    return ff_wall_observe(&sh->wall, unix_now_s, shell_now(sh)) != FF_WALL_OBS_REJECTED;
 }
 
 #endif /* FF_TARGET_SIM */
