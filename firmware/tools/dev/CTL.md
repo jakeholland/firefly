@@ -108,6 +108,10 @@ Advances the mock clock by `advance_ms` (must be `>= 0`). **Requires
 notion of "now" is real wall-clock time and can't be driven by hand;
 you'll get `{"ok": false, "error": "clock control requires --mock-clock"}`.
 
+Parse-level errors (before the handler runs): `wall requires numeric
+unix_s` · `wall unix_s must be within [0, 4e9]` · `wall unsupported`
+(no handler bound).
+
 Response: `{"ok": true}` on success.
 
 ### `state`
@@ -244,6 +248,10 @@ Two distinct failures, distinguished in the reply:
 - `wall latched but unresolvable: no UTC offset ...` — the time was
   accepted but nothing supplies a UTC offset (no pack loaded, settings
   offset unset), so local time cannot be derived.
+
+Parse-level errors (before the handler runs): `wall requires numeric
+unix_s` · `wall unix_s must be within [0, 4e9]` · `wall unsupported`
+(no handler bound).
 
 Response: `{"ok": true}` on success.
 
