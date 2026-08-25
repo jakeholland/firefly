@@ -24,7 +24,23 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 FIXTURES_DIR="$ROOT/tests/fixtures"
 GOLDEN_DIR="$ROOT/tests/golden"
 DIFF_OUT_DIR="$GOLDEN_DIR/_diff_out"
-BUILD_DIR="$ROOT/build"
+# Build-tree location (#55): CLAUDE.md's documented configure line puts it
+# at the REPO root (../build from firmware/); older callers used
+# firmware/build. Honor an explicit $BUILD_DIR, else prefer whichever
+# exists — repo root first, since that's what the project's own docs
+# produce. Fail with a message naming both candidates, not a bare ENOENT.
+if [[ -z "${BUILD_DIR:-}" ]]; then
+    if [[ -x "$ROOT/../build/ffsim" ]]; then
+        BUILD_DIR="$ROOT/../build"
+    elif [[ -x "$ROOT/build/ffsim" ]]; then
+        BUILD_DIR="$ROOT/build"
+    else
+        echo "run_goldens.sh: no build found at $ROOT/../build or $ROOT/build" >&2
+        echo "  build first: cmake -S firmware -B build -DFF_TARGET=sim && cmake --build build -j8" >&2
+        echo "  (or set BUILD_DIR explicitly)" >&2
+        exit 2
+    fi
+fi
 FFSIM="$BUILD_DIR/ffsim"
 COMPARE_PNG="$BUILD_DIR/compare_png"
 THRESHOLD_PCT="0.5"
