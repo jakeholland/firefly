@@ -93,6 +93,13 @@ static void radar_compute_dots(ff_radar_view_t *v, ff_crew_t const *crew, float 
          * m->has_pos above). */
         d->place = (dot_fresh == FF_FRESH_ASSERTED);
         d->stale = !d->place && (dot_fresh != FF_FRESH_LIVE);
+        /* issue #74: same gate ff_radar_compute applies to the SELECTED
+         * member's dist_imprecise below, applied per-member here so every
+         * ring dot carries its own honest precision fact instead of only
+         * whoever happens to be selected. my_pos_ok is already guaranteed
+         * true at this point (checked at this function's top); m->has_pos
+         * is already guaranteed true (checked just above). */
+        d->imprecise = m->has_precision_bits && m->precision_bits < FF_CREW_POS_PRECISION_MIN_BITS;
         v->n_dots++;
     }
 }

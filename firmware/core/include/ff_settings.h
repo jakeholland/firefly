@@ -67,6 +67,17 @@ typedef struct {
     int16_t utc_offset_min;
     bool utc_offset_set;
 
+    /* [api] S17 slice a (docs/specs/S17-usability-hardening.md) — the
+     * colorblind toggle. Read by app/theme/ff_theme.h's
+     * ff_theme_crew_color at render time (threaded through as an
+     * explicit parameter, not a hidden global — see that header's own
+     * doc comment for why): true selects the Okabe-Ito-derived
+     * colorblind-safe 8-colour crew palette instead of the brand one.
+     * Default false — "not colorblind by default, keep the brand
+     * colours" (S17's own scoping note). Purely a render-time selector;
+     * it changes no other behavior and nothing here depends on it. */
+    bool colorblind;
+
     /* Not guaranteed NUL-terminated by this layer — load/save round-trip
      * the raw bytes as-is. Slice b (name-entry UI) must NUL-terminate
      * (or otherwise bound) whatever it writes here before this layer or

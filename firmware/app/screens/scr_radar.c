@@ -248,7 +248,8 @@ static void radar_build_status_bar(lv_obj_t *parent, ff_radar_view_t const *r)
  *     SHAPE says "crew" before the digit is read. Wedge geometry comes
  *     from radar_layout_cluster_wedges (pure, unit-tested); this file
  *     only draws it. */
-static void radar_build_dots(lv_obj_t *parent, ff_radar_view_t const *r, radar_layout_registry_t const *reg)
+static void radar_build_dots(lv_obj_t *parent, ff_radar_view_t const *r, radar_layout_registry_t const *reg,
+                              bool colorblind)
 {
     if (r->n_dots == 0) {
         return;
@@ -304,7 +305,8 @@ static void radar_build_dots(lv_obj_t *parent, ff_radar_view_t const *r, radar_l
             }
             for (int w = 0; w < n_wedges; w++) {
                 ff_radar_dot_t const *member = &r->dots[wedges[w].index];
-                radar_make_cluster_wedge(dot, &wedges[w], ff_theme_crew_color(member->color_idx), member->stale);
+                radar_make_cluster_wedge(dot, &wedges[w], ff_theme_crew_color(member->color_idx, colorblind),
+                                          member->stale);
             }
 
             char count_buf[4];
@@ -326,7 +328,38 @@ static void radar_build_dots(lv_obj_t *parent, ff_radar_view_t const *r, radar_l
             lv_obj_move_foreground(label);
         } else {
             ff_radar_dot_t const *d = &r->dots[i];
-            uint32_t crew_hex = ff_theme_crew_color(d->color_idx);
+            uint32_t crew_hex = ff_theme_crew_color(d->color_idx, colorblind);
+            if (d->imprecise) {
+                /* issue #74: reuses the Map face's fuzzy-ring idiom
+                 * (scr_map.c's map_draw_crew — hollow, no-initial ring
+                 * standing in for "somewhere around here", checked FIRST
+                 * and drawn INSTEAD of the place/stale/live treatments
+                 * below, same priority order that function uses) rather
+                 * than inventing a third. Deliberately does NOT reuse
+                 * that function's literal enlarged footprint
+                 * (FF_MAP_IMPRECISE_RING_PX, ~2.2x the normal dot): this
+                 * ring's placement is resolved by radar_layout_resolve_dots
+                 * (this file's top comment), whose collision-free
+                 * guarantee is only ever "adjacent MARKERS are >=
+                 * RADAR_LAYOUT_DOT_PX apart" — a visually larger circle at
+                 * that same resolved position could overlap a neighbor
+                 * placed right at that boundary. Kept at the SAME
+                 * footprint every other lone dot on this ring uses, and
+                 * made to read as "fuzzy" instead through style alone: no
+                 * initial letter (an unknowable-precision fix has no
+                 * business looking like a crisply identified point), a
+                 * markedly thicker border than the crisp `stale` ghost
+                 * ring's 2px, and a softer opacity than its 70% — flagged
+                 * per AGENTS.md's interpretation-call rule. */
+                lv_obj_set_style_bg_opa(dot, LV_OPA_TRANSP, 0);
+                lv_obj_set_style_border_width(dot, 6, 0);
+                lv_obj_set_style_border_color(dot, lv_color_hex(crew_hex), 0);
+                lv_obj_set_style_border_opa(dot, LV_OPA_40, 0);
+                lv_label_set_text(label, ""); /* no initial letter — see comment above */
+                lv_obj_center(label);
+                lv_obj_align(dot, LV_ALIGN_CENTER, (int32_t)resolved[i].dx, (int32_t)resolved[i].dy);
+                continue; /* skip place/stale styling and the shared align below */
+            }
             if (d->place) {
                 /* issue #33 — KNOWN GAP: this treatment applies only to a
                  * place standing alone (this branch); a place clustered
@@ -912,7 +945,7 @@ static void radar_render_nosel(lv_obj_t *parent)
  * Entry point.
  * ------------------------------------------------------------------- */
 
-void ff_scr_radar_build(lv_obj_t *parent, ff_radar_view_t const *radar)
+void ff_scr_radar_build(lv_obj_t *parent, ff_radar_view_t const *radar, bool colorblind)
 {
     if (parent == NULL || radar == NULL) {
         return;
@@ -931,7 +964,7 @@ void ff_scr_radar_build(lv_obj_t *parent, ff_radar_view_t const *radar)
     radar_layout_registry_t reg;
     radar_layout_build_registry(radar->mode, never_fixed, &reg);
 
-    radar_build_dots(parent, radar, &reg);
+    radar_build_dots(parent, radar, &reg, colorblind);
 
     switch (radar->mode) {
     case RADAR_LIVE:

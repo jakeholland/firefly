@@ -132,6 +132,10 @@ typedef enum {
     FF_SETTING_QUIET_FROM_MIN, FF_SETTING_QUIET_TO_MIN,
     FF_SETTING_UTC_OFFSET_MIN,   /* the field S16's wall-clock section added to S11 */
     FF_SETTING_MY_NAME,          /* string payload */
+    /* [api] S17 slice a — the colorblind toggle (docs/specs/S17-usability-hardening.md).
+     * bool-backed, same "nonzero is true" int payload convention as
+     * IMPERIAL/HAPTICS/NIGHT_GLOW above. */
+    FF_SETTING_COLORBLIND,
 } ff_setting_id_t;
 
 typedef struct {

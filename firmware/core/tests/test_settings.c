@@ -106,6 +106,9 @@ static void ff_assert_defaults(ff_settings_t const *s)
     TEST_ASSERT_EQUAL_INT16(0, s->utc_offset_min);
     TEST_ASSERT_EQUAL_STRING("", s->my_name);
     TEST_ASSERT_FALSE(s->cal_valid);
+    /* S17 slice a: default false — "not colorblind by default, keep the
+     * brand colours" (docs/specs/S17-usability-hardening.md's scoping note). */
+    TEST_ASSERT_FALSE(s->colorblind);
 
     ff_geo_cal_t zero_cal;
     memset(&zero_cal, 0, sizeof(zero_cal));
@@ -233,6 +236,38 @@ static void S11_AC1_load_with_v2_blob_yields_defaults_not_a_migration(void)
     TEST_ASSERT_FALSE(s.cal_valid); /* discarded, not carried across */
 }
 
+/* S17 slice a: the transition this build actually performs, same "pin it,
+ * don't rely on the generic 0xFFFF case" reasoning as the v2 test above —
+ * v3 -> v4 added ff_settings_t.colorblind (docs/specs/S17-usability-hardening.md),
+ * again with NO migration: a v3 blob is discarded whole and the full
+ * defaults stand (colorblind included — it lands false, which is honest:
+ * a v3 puck never had this field at all). */
+static void S11_AC1_load_with_v3_blob_yields_defaults_not_a_migration(void)
+{
+    mock_store_io_t m;
+    mock_store_reset(&m);
+    ff_store_t st = mock_store_vtable(&m);
+
+    ff_settings_t saved;
+    memset(&saved, 0, sizeof(saved));
+    saved.imperial = false;
+    saved.water_min = 45;
+    saved.cal_valid = true; /* the field whose loss actually costs a user */
+    ff_settings_save(&saved, &st);
+    TEST_ASSERT_TRUE(m.has_value);
+
+    uint16_t v3 = 3;
+    memcpy(m.data + 4, &v3, sizeof(v3));
+
+    ff_settings_t s;
+    memset(&s, 0xAA, sizeof(s));
+    ff_settings_load(&s, &st);
+
+    ff_assert_defaults(&s);
+    TEST_ASSERT_FALSE(s.cal_valid);   /* discarded, not carried across */
+    TEST_ASSERT_FALSE(s.colorblind); /* the new field: false is the honest default, not a guess */
+}
+
 /* ---------------------------------------------------------------------
  * AC2 — round-trip save/load equality, including calibration.
  * ------------------------------------------------------------------- */
@@ -254,6 +289,7 @@ static void S11_AC2_round_trip_save_load_is_exact_including_calibration(void)
     out.quiet_to_min = 120;    /* 02:00 */
     out.utc_offset_min = -420; /* MDT (S16 slice b0) */
     out.utc_offset_set = true;
+    out.colorblind = true; /* S17 slice a: a real change from the default, not left at its zero value */
     strncpy(out.my_name, "Dana", sizeof(out.my_name) - 1);
     out.cal_valid = true;
     out.compass_cal.hard_offset = (ff_vec3_t){12.5f, -3.25f, 0.75f};
@@ -491,6 +527,7 @@ int main(void)
     RUN_TEST(S11_AC1_load_with_bad_magic_yields_defaults);
     RUN_TEST(S11_AC1_load_with_wrong_version_yields_defaults);
     RUN_TEST(S11_AC1_load_with_v2_blob_yields_defaults_not_a_migration);
+    RUN_TEST(S11_AC1_load_with_v3_blob_yields_defaults_not_a_migration);
 
     RUN_TEST(S11_AC2_round_trip_save_load_is_exact_including_calibration);
     RUN_TEST(S11_AC2_round_trip_preserves_exact_defaults);

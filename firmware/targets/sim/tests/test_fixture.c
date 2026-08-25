@@ -141,6 +141,46 @@ static void radar_live_dist_imprecise_defaults_false(void)
     TEST_ASSERT_FALSE(s.radar.dist_imprecise);
 }
 
+/* issue #74 (S17 slice a) — dot-level imprecise, the golden pair. Both
+ * fixtures are otherwise identical (see tests/fixtures/README.md's own
+ * note on this pair); only dot "R"'s `imprecise` flag differs. */
+static void radar_dot_imprecise_parses_true_only_on_the_flagged_dot(void)
+{
+    ff_app_state_t s;
+    TEST_ASSERT_EQUAL_INT(FF_FIXTURE_OK, ff_fixture_load_file(fixture_path("radar_dot_imprecise.json"), &s));
+
+    TEST_ASSERT_EQUAL_UINT8(2, s.radar.n_dots);
+    TEST_ASSERT_EQUAL_CHAR('D', s.radar.dots[0].initial);
+    TEST_ASSERT_FALSE(s.radar.dots[0].imprecise);
+    TEST_ASSERT_EQUAL_CHAR('R', s.radar.dots[1].initial);
+    TEST_ASSERT_TRUE(s.radar.dots[1].imprecise);
+}
+
+static void radar_dot_precise_parses_imprecise_false_on_every_dot(void)
+{
+    ff_app_state_t s;
+    TEST_ASSERT_EQUAL_INT(FF_FIXTURE_OK, ff_fixture_load_file(fixture_path("radar_dot_precise.json"), &s));
+
+    TEST_ASSERT_EQUAL_UINT8(2, s.radar.n_dots);
+    TEST_ASSERT_FALSE(s.radar.dots[0].imprecise);
+    TEST_ASSERT_FALSE(s.radar.dots[1].imprecise);
+}
+
+/* dots[].imprecise absent (every OTHER committed radar fixture) must
+ * default false — the same "absent key -> least-claiming default"
+ * convention `radar_live_dist_imprecise_defaults_false` above pins for
+ * the sibling field, pinned here too so a future fixture that forgets
+ * this key cannot silently render a crisp dot as fuzzy or vice versa. */
+static void radar_live_dot_imprecise_defaults_false(void)
+{
+    ff_app_state_t s;
+    TEST_ASSERT_EQUAL_INT(FF_FIXTURE_OK, ff_fixture_load_file(fixture_path("radar_live.json"), &s));
+    TEST_ASSERT_EQUAL_UINT8(4, s.radar.n_dots);
+    for (uint8_t i = 0; i < s.radar.n_dots; i++) {
+        TEST_ASSERT_FALSE(s.radar.dots[i].imprecise);
+    }
+}
+
 /* ---------------------------------------------------------------------
  * Error paths.
  * ------------------------------------------------------------------- */
@@ -599,7 +639,8 @@ static void settings_section_parses_every_field(void)
                         "  \"imperial\": false, \"share_mode\": \"ghost\", \"haptics\": false, "
                         "  \"night_glow\": false, \"water_min\": 120, \"quiet_from_min\": 0, "
                         "  \"quiet_to_min\": 480, \"my_name\": \"DANA\", "
-                        "  \"utc_offset_set\": true, \"utc_offset_min\": -420"
+                        "  \"utc_offset_set\": true, \"utc_offset_min\": -420, "
+                        "  \"colorblind\": true"
                         "}}";
     TEST_ASSERT_EQUAL_INT(FF_FIXTURE_OK, ff_fixture_load_json(json, strlen(json), &s));
 
@@ -616,6 +657,7 @@ static void settings_section_parses_every_field(void)
      * updated for these two, so a load bug in either was invisible here. */
     TEST_ASSERT_TRUE(s.settings.utc_offset_set);
     TEST_ASSERT_EQUAL_INT16(-420, s.settings.utc_offset_min);
+    TEST_ASSERT_TRUE(s.settings.colorblind); /* S17 slice a */
 }
 
 static void compose_section_parses_every_field(void)
@@ -970,6 +1012,7 @@ static void dump_maximally_populated_state_fits_budget(void)
     memset(&s, 0, sizeof(s));
     (void)snprintf(s.fixture_name, sizeof(s.fixture_name), "%s", "0123456789012345678901234567890");
     s.active_face = FF_APP_FACE_SIGNALS;
+    s.settings.colorblind = true; /* S17 slice a: stress the writer for this new field too */
 
     s.radar.mode = RADAR_CLOSE;
     s.radar.n_dots = FF_CREW_MAX;
@@ -978,6 +1021,7 @@ static void dump_maximally_populated_state_fits_budget(void)
         s.radar.dots[i].initial = 'A' + (char)i;
         s.radar.dots[i].color_idx = i;
         s.radar.dots[i].stale = (i % 2) == 0;
+        s.radar.dots[i].imprecise = (i % 2) == 1; /* S17 slice a: stress the writer for this new field too */
     }
 
     /* S07 slice b round 2 merge fixup: `mins_left` no longer exists
@@ -1062,6 +1106,9 @@ int main(void)
     RUN_TEST(radar_place_parses_exact_values);
     RUN_TEST(radar_imprecise_parses_exact_values);
     RUN_TEST(radar_live_dist_imprecise_defaults_false);
+    RUN_TEST(radar_dot_imprecise_parses_true_only_on_the_flagged_dot);
+    RUN_TEST(radar_dot_precise_parses_imprecise_false_on_every_dot);
+    RUN_TEST(radar_live_dot_imprecise_defaults_false);
 
     RUN_TEST(missing_file_returns_io_error);
     RUN_TEST(malformed_json_returns_json_error);

@@ -525,21 +525,88 @@ static void S06_AC3_dots_bearings_colors_stale_flags_unpaired_excluded(void)
     TEST_ASSERT_EQUAL_CHAR('A', v.dots[0].initial);
     TEST_ASSERT_EQUAL_UINT8(0, v.dots[0].color_idx);
     TEST_ASSERT_FALSE(v.dots[0].stale);
+    TEST_ASSERT_FALSE(v.dots[0].imprecise); /* issue #74: no precision bits set anywhere in this fixture */
 
     TEST_ASSERT_FLOAT_WITHIN(0.5f, 90.0f, v.dots[1].ring_deg);
     TEST_ASSERT_EQUAL_CHAR('B', v.dots[1].initial);
     TEST_ASSERT_EQUAL_UINT8(1, v.dots[1].color_idx);
     TEST_ASSERT_TRUE(v.dots[1].stale);
+    TEST_ASSERT_FALSE(v.dots[1].imprecise);
 
     TEST_ASSERT_FLOAT_WITHIN(0.5f, 180.0f, v.dots[2].ring_deg);
     TEST_ASSERT_EQUAL_CHAR('C', v.dots[2].initial);
     TEST_ASSERT_EQUAL_UINT8(2, v.dots[2].color_idx);
     TEST_ASSERT_TRUE(v.dots[2].stale);
+    TEST_ASSERT_FALSE(v.dots[2].imprecise);
 
     TEST_ASSERT_FLOAT_WITHIN(0.5f, 270.0f, v.dots[3].ring_deg);
     TEST_ASSERT_EQUAL_CHAR('D', v.dots[3].initial);
     TEST_ASSERT_EQUAL_UINT8(3, v.dots[3].color_idx);
     TEST_ASSERT_FALSE(v.dots[3].stale);
+    TEST_ASSERT_FALSE(v.dots[3].imprecise);
+}
+
+/* issue #74 (S17 slice a): dot.imprecise is set PER MEMBER, independent of
+ * stale/place — a mutation that folds this into "always false" or "copies
+ * .stale" would still pass every other dots test in this file (none of
+ * them set precision bits), so this is a dedicated, from-scratch fixture
+ * rather than an addition to the test above. */
+static void S17a_AC4_dot_imprecise_flag_is_set_per_member_independent_of_stale(void)
+{
+    ff_crew_t c;
+    ff_crew_init(&c, NULL);
+    ff_latlon_t my_pos = {0.0, 0.0};
+
+    /* A: paired, LIVE, precise fix (no precision_bits stated at all —
+     * issue #47's documented "didn't say is not evidence of degraded"
+     * asymmetry: this must NOT read as imprecise). */
+    ff_crew_member_t *a = ff_crew_upsert(&c, 1u);
+    a->initial = 'A';
+    a->color_idx = 0;
+    a->has_pos = true;
+    a->pos = (ff_latlon_t){1.0, 0.0};
+    a->pos_age_ms = 700000u;
+    ff_crew_set_paired(&c, 1u, true);
+
+    /* B: paired, LIVE, degraded precision — the one dot that must render
+     * imprecise. */
+    ff_crew_member_t *b = ff_crew_upsert(&c, 2u);
+    b->initial = 'B';
+    b->color_idx = 1;
+    b->has_pos = true;
+    b->pos = (ff_latlon_t){0.0, 1.0};
+    b->pos_age_ms = 700000u;
+    b->has_precision_bits = true;
+    b->precision_bits = (uint8_t)(FF_CREW_POS_PRECISION_MIN_BITS - 1u); /* below threshold: degraded */
+    ff_crew_set_paired(&c, 2u, true);
+
+    /* C: paired, LIVE, precision stated but AT the threshold — the
+     * documented boundary (S47's own "< MIN_BITS", strict) must NOT flip
+     * this one imprecise either. */
+    ff_crew_member_t *cc = ff_crew_upsert(&c, 3u);
+    cc->initial = 'C';
+    cc->color_idx = 2;
+    cc->has_pos = true;
+    cc->pos = (ff_latlon_t){-1.0, 0.0};
+    cc->pos_age_ms = 700000u;
+    cc->has_precision_bits = true;
+    cc->precision_bits = (uint8_t)FF_CREW_POS_PRECISION_MIN_BITS;
+    ff_crew_set_paired(&c, 3u, true);
+
+    ff_radar_view_t v;
+    memset(&v, 0, sizeof(v));
+    ff_radar_smooth_t sm;
+    ff_radar_smooth_reset(&sm);
+
+    ff_radar_compute(&v, &sm, &c, 0.0f, my_pos, true, false, 700000u);
+
+    TEST_ASSERT_EQUAL_UINT8(3, v.n_dots);
+    TEST_ASSERT_EQUAL_CHAR('A', v.dots[0].initial);
+    TEST_ASSERT_FALSE(v.dots[0].imprecise);
+    TEST_ASSERT_EQUAL_CHAR('B', v.dots[1].initial);
+    TEST_ASSERT_TRUE(v.dots[1].imprecise);
+    TEST_ASSERT_EQUAL_CHAR('C', v.dots[2].initial);
+    TEST_ASSERT_FALSE(v.dots[2].imprecise);
 }
 
 static void S06_AC3_dots_empty_when_my_pos_or_heading_invalid(void)
@@ -882,6 +949,7 @@ int main(void)
 
     RUN_TEST(S06_AC3_dots_bearings_colors_stale_flags_unpaired_excluded);
     RUN_TEST(S06_AC3_dots_empty_when_my_pos_or_heading_invalid);
+    RUN_TEST(S17a_AC4_dot_imprecise_flag_is_set_per_member_independent_of_stale);
 
     RUN_TEST(S33_mode_place_for_asserted_position);
     RUN_TEST(S33_mode_place_never_ages_at_any_boundary);

@@ -949,6 +949,8 @@ static void shell_project_settings(shell_t const *sh, ff_app_settings_t *out)
      * projection. */
     out->utc_offset_min = sh->settings.utc_offset_min;
     out->utc_offset_set = sh->settings.utc_offset_set;
+    /* S17 slice a: the colorblind toggle, projected verbatim. */
+    out->colorblind = sh->settings.colorblind;
 }
 
 /**
@@ -1411,6 +1413,8 @@ static uint32_t shell_compose_dest(shell_t *sh, uint32_t requested)
  *     rejected — ff_settings.h already documents this layer's own
  *     bytes-as-given contract; slice e is the first writer through this
  *     seam and chooses to bound rather than refuse an overlong name).
+ *   - FF_SETTING_COLORBLIND (S17 slice a): bool-backed, same "nonzero is
+ *     true" convention as IMPERIAL/HAPTICS/NIGHT_GLOW — no range to reject.
  *
  * Persisted on CHANGE ONLY (S16 "Behavior": "saved on change, never
  * every tick") — every branch below compares the OLD value before
@@ -1449,6 +1453,12 @@ static void shell_setting_set(shell_t *sh, ff_intent_t const *in)
         bool const v = (in->u.setting.v.i != 0);
         changed = (s->night_glow != v);
         s->night_glow = v;
+        break;
+    }
+    case FF_SETTING_COLORBLIND: {
+        bool const v = (in->u.setting.v.i != 0);
+        changed = (s->colorblind != v);
+        s->colorblind = v;
         break;
     }
     case FF_SETTING_WATER_MIN: {

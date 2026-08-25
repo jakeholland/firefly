@@ -161,6 +161,29 @@ if(FF_BUILD_TESTS)
 endif()
 # ---------------------------------------------------------------------------
 
+# S17 slice a (app/theme/ff_theme.h — the crew palette; docs/specs/S17-usability-hardening.md)
+# ---------------------------------------------------------------------------
+# ff_theme.h is header-only (no .c file — see its own top comment), so
+# there is no ff-theme library to link; this test #includes the header
+# directly and needs only its own include path plus lvgl (the header
+# pulls in lvgl.h for its font/color macros elsewhere in the file, even
+# though the palette function under test here touches none of them —
+# same reasoning ff-app-ui's own lvgl::lvgl link comment gives). No LVGL
+# runtime state is touched (no lv_init(), no widgets), matching this
+# repo's "pure C11, unit-tested directly" convention for anything
+# testable without a display.
+if(FF_BUILD_TESTS)
+    add_executable(test_theme
+        theme/tests/test_theme.c
+    )
+    target_include_directories(test_theme PRIVATE theme)
+    target_link_libraries(test_theme PRIVATE lvgl::lvgl unity)
+    ff_apply_warnings(test_theme)
+
+    add_test(NAME test_theme COMMAND test_theme)
+endif()
+# ---------------------------------------------------------------------------
+
 add_library(ff-app-ui STATIC
     screens/scr_radar.c
     screens/scr_nav.c

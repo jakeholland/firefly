@@ -84,6 +84,17 @@ static void S16_AC8_setting_set_survives_shell_close_and_reinit_against_the_same
         ff_shell_intent(&shell, &name_in);
         TEST_ASSERT_EQUAL_STRING("RILEY", ff_shell_settings(&shell)->my_name);
 
+        /* S17 slice a — the colorblind toggle round-trips through the
+         * SAME real on-disk store as the two settings above, not a
+         * separate test file, so a single close+reinit boundary proves
+         * all three survive it together. */
+        TEST_ASSERT_FALSE(ff_shell_settings(&shell)->colorblind); /* default, before the change */
+        ff_intent_t cb_in = {.kind = FF_INTENT_SETTING_SET, .u = {0}};
+        cb_in.u.setting.id = FF_SETTING_COLORBLIND;
+        cb_in.u.setting.v.i = 1;
+        ff_shell_intent(&shell, &cb_in);
+        TEST_ASSERT_TRUE(ff_shell_settings(&shell)->colorblind);
+
         ff_shell_close(&shell);
     }
 
@@ -101,6 +112,7 @@ static void S16_AC8_setting_set_survives_shell_close_and_reinit_against_the_same
 
         TEST_ASSERT_FALSE(ff_shell_settings(&shell2)->imperial);
         TEST_ASSERT_EQUAL_STRING("RILEY", ff_shell_settings(&shell2)->my_name);
+        TEST_ASSERT_TRUE(ff_shell_settings(&shell2)->colorblind); /* S17 slice a */
 
         ff_shell_close(&shell2);
     }
@@ -142,6 +154,7 @@ static void S16_AC8_a_setting_never_sent_does_not_appear_after_reinit(void)
 
         TEST_ASSERT_TRUE(ff_shell_settings(&shell2)->imperial); /* still the default */
         TEST_ASSERT_EQUAL_STRING("", ff_shell_settings(&shell2)->my_name);
+        TEST_ASSERT_FALSE(ff_shell_settings(&shell2)->colorblind); /* still the default */
 
         ff_shell_close(&shell2);
     }
