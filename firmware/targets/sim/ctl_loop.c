@@ -265,6 +265,55 @@ static void ctl_loop_pointer_step_delay(ff_ctl_loop_ctx_t *ctx)
     }
 }
 
+/**
+ * ctl_loop_pointer_gesture — the shared press -> N-step -> release
+ * primitive `tap`/`swipe`/`hold` all reduce to. Issue #70's own larger
+ * point: every ctl pointer command (tap and swipe, PR #62; hold, here)
+ * has needed the exact same time choreography rediscovered —
+ * ctl_loop_pointer_step_delay between every step so LVGL's indev read
+ * timer (33ms period) actually polls at each one, matching the ordering
+ * ctl_loop_tap's original fix established: point set, THEN step_delay,
+ * THEN the state transition + lv_timer_handler, on both the press end
+ * and the release end.
+ *
+ * `n_steps` intermediate steps run between press and release, calling
+ * `step_cb(ctx, step_user, i, n_steps)` (if non-NULL) before each one's
+ * own step_delay+lv_timer_handler to update ctx->pointer_point:
+ *   - tap:   n_steps = 0, step_cb = NULL — nothing moves, nothing runs
+ *            between the press call and the release call, exactly
+ *            ctl_loop_tap's original two-call shape.
+ *   - swipe: n_steps = STEPS (6), step_cb interpolates x from start to
+ *            end — exactly ctl_loop_swipe's original press+6+release
+ *            shape.
+ *   - hold:  n_steps = ceil(ms/40), step_cb = NULL — the point never
+ *            moves; the steps exist purely to keep pumping
+ *            lv_timer_handler while enough mock-clock/wall time passes
+ *            for LVGL's long_press_time to elapse, the same "at most one
+ *            poll, gesture never recognized" failure mode PR #62 already
+ *            found and fixed for tap/swipe, now avoided here too.
+ */
+typedef void (*ctl_loop_gesture_step_fn)(ff_ctl_loop_ctx_t *ctx, void *step_user, int step_i, int n_steps);
+
+static void ctl_loop_pointer_gesture(ff_ctl_loop_ctx_t *ctx, int32_t x0, int32_t y0, int n_steps,
+                                      ctl_loop_gesture_step_fn step_cb, void *step_user)
+{
+    ctx->pointer_point.x = (lv_coord_t)x0;
+    ctx->pointer_point.y = (lv_coord_t)y0;
+    ctl_loop_pointer_step_delay(ctx);
+    ctx->pointer_state = LV_INDEV_STATE_PRESSED;
+    lv_timer_handler();
+
+    for (int i = 1; i <= n_steps; i++) {
+        if (step_cb != NULL) step_cb(ctx, step_user, i, n_steps);
+        ctl_loop_pointer_step_delay(ctx);
+        lv_timer_handler();
+    }
+
+    ctx->pointer_state = LV_INDEV_STATE_RELEASED;
+    ctl_loop_pointer_step_delay(ctx);
+    lv_timer_handler();
+}
+
 static void ctl_loop_tap(void *user, double x, double y)
 {
     ff_ctl_loop_ctx_t *ctx = (ff_ctl_loop_ctx_t *)user;
@@ -272,22 +321,18 @@ static void ctl_loop_tap(void *user, double x, double y)
      * rejected non-finite values and anything outside
      * [FF_CTL_TAP_COORD_MIN, FF_CTL_TAP_COORD_MAX] — see ctl_server.h's
      * tap handler doc comment for the contract this relies on. */
-    ctx->pointer_point.x = (lv_coord_t)x;
-    ctx->pointer_point.y = (lv_coord_t)y;
-    /* Same time-advance discipline as ctl_loop_swipe (see the comment on
-     * ctl_loop_pointer_step_delay): without it, both lv_timer_handler calls
-     * below run with zero elapsed time and the indev timer polls at most
-     * once — over the REAL socket loop (which pumps after every command,
-     * consuming any staleness a prior `clock` command left) that meant a
-     * tap could be lost entirely while still replying ok. AC10's test
-     * never saw this because it drives the handlers directly with manual
-     * clock choreography and no pump in between. */
-    ctl_loop_pointer_step_delay(ctx);
-    ctx->pointer_state = LV_INDEV_STATE_PRESSED;
-    lv_timer_handler();
-    ctl_loop_pointer_step_delay(ctx);
-    ctx->pointer_state = LV_INDEV_STATE_RELEASED;
-    lv_timer_handler();
+    ctl_loop_pointer_gesture(ctx, (int32_t)x, (int32_t)y, 0, NULL, NULL);
+}
+
+typedef struct {
+    int32_t start_x, end_x, y;
+} ctl_loop_swipe_step_ctx_t;
+
+static void ctl_loop_swipe_step_cb(ff_ctl_loop_ctx_t *ctx, void *step_user, int step_i, int n_steps)
+{
+    ctl_loop_swipe_step_ctx_t const *s = (ctl_loop_swipe_step_ctx_t const *)step_user;
+    ctx->pointer_point.x = (lv_coord_t)(s->start_x + (s->end_x - s->start_x) * step_i / n_steps);
+    ctx->pointer_point.y = (lv_coord_t)s->y;
 }
 
 static void ctl_loop_swipe(void *user, char const *dir)
@@ -298,22 +343,29 @@ static void ctl_loop_swipe(void *user, char const *dir)
     int32_t end_x = left ? 60 : (ctx->w - 60);
     int32_t y = ctx->h / 2;
 
-    ctl_loop_pointer_step_delay(ctx); /* make the indev timer stale BEFORE the press */
-    ctx->pointer_point.x = (lv_coord_t)start_x;
-    ctx->pointer_point.y = (lv_coord_t)y;
-    ctx->pointer_state = LV_INDEV_STATE_PRESSED;
-    lv_timer_handler();
-
     enum { STEPS = 6 };
-    for (int i = 1; i <= STEPS; i++) {
-        ctx->pointer_point.x = (lv_coord_t)(start_x + (end_x - start_x) * i / STEPS);
-        ctl_loop_pointer_step_delay(ctx);
-        lv_timer_handler();
-    }
+    ctl_loop_swipe_step_ctx_t step_ctx = {start_x, end_x, y};
+    ctl_loop_pointer_gesture(ctx, start_x, y, STEPS, ctl_loop_swipe_step_cb, &step_ctx);
+}
 
-    ctx->pointer_state = LV_INDEV_STATE_RELEASED;
-    ctl_loop_pointer_step_delay(ctx);
-    lv_timer_handler();
+/**
+ * ctl_loop_hold — issue #70: press at (x, y), hold in place (no
+ * movement — step_cb is NULL) for at least `ms`, then release. `ms` is
+ * turned into ceil(ms / 40) steps of ctl_loop_pointer_gesture, 40 being
+ * the exact per-call advance ctl_loop_pointer_step_delay itself makes
+ * (see that function's comment) — so the total elapsed time the press
+ * has been held by the time release runs is always >= `ms`, comfortably
+ * past LVGL's long_press_time (LV_INDEV_DEF_LONG_PRESS_TIME, 400ms) for
+ * ctl_server.c's default `ms` (FF_CTL_HOLD_DEFAULT_MS, 600). A short
+ * `ms` (below the threshold) intentionally does NOT open Settings —
+ * that's what test_ctl_flare_sequence.c's negative case pins. `x`/`y`/
+ * `ms` are already validated by ctl_server.c before this is called (see
+ * ctl_server.h's `hold` doc comment) — safe to narrow/use directly. */
+static void ctl_loop_hold(void *user, double x, double y, uint32_t ms)
+{
+    ff_ctl_loop_ctx_t *ctx = (ff_ctl_loop_ctx_t *)user;
+    int n_steps = (int)((ms + 39u) / 40u); /* ceil(ms/40), matching step_delay's own 40ms advance */
+    ctl_loop_pointer_gesture(ctx, (int32_t)x, (int32_t)y, n_steps, NULL, NULL);
 }
 
 static bool ctl_loop_clock_advance(void *user, uint32_t advance_ms, char const **err)
@@ -545,6 +597,7 @@ ff_ctl_handlers_t ff_ctl_loop_handlers(ff_ctl_loop_ctx_t *ctx, bool *quit_flag)
     h.user = ctx;
     h.tap = ctl_loop_tap;
     h.swipe = ctl_loop_swipe;
+    h.hold = ctl_loop_hold;
     h.clock_advance = ctl_loop_clock_advance;
     h.state_json = ctl_loop_state_json;
     h.screenshot = ctl_loop_screenshot;
