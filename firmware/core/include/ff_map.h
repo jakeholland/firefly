@@ -213,16 +213,24 @@ ff_map_label_priority_t ff_map_feature_label_priority(uint8_t n_pts, int is_stag
  * site states how it satisfies this.
  *
  * For each `in[i]` in order:
- *   - `FF_MAP_LABEL_PRIORITY_HIGH`: nudges `y` downward (deterministic,
- *     bounded by `max_nudge_tries`) until it clears every
- *     ALREADY-PLACED result (from earlier `in[]` entries) by
- *     `min_sep_px`, or the try budget runs out. ALWAYS placed —
- *     `out[i].placed` is unconditionally true. If, after nudging, the
- *     label's own bounds (see `half_w`/`half_h` below) would still cross
- *     `circle_radius_px`, the position is pulled radially inward via
- *     `ff_map_clip_point_to_circle` instead of dropped — a HIGH label can
- *     never be dropped (it has no other visual representation), so the
- *     honest response to "too far out" is "move it in", not "hide it".
+ *   - `FF_MAP_LABEL_PRIORITY_HIGH`: solves TWO constraints TOGETHER, not
+ *     as two independent passes — every attempt (deterministic, bounded
+ *     by `max_nudge_tries`) first pulls the position radially inward so
+ *     it's inside `circle_radius_px` (see `half_w`/`half_h` below), THEN
+ *     checks THAT position against every ALREADY-PLACED result (from
+ *     earlier `in[]` entries) by `min_sep_px`; a collision nudges `y`
+ *     downward and the next attempt re-pulls before re-checking. PR #82
+ *     review: an earlier version of this function pulled ONCE, after a
+ *     separate nudge-only loop, with no re-check — which could (and did,
+ *     on the real Lost Lands pack) silently land a pulled-inward label on
+ *     top of an already-placed one. ALWAYS placed — `out[i].placed` is
+ *     unconditionally true. In the rare case both constraints can't be
+ *     satisfied within `max_nudge_tries` (e.g. a circle small enough that
+ *     no point clears every other label), the position is still
+ *     guaranteed inside the circle (one final unconditional pull) even if
+ *     separation from another label could not also be achieved — the
+ *     harder physical constraint (never draw past the round glass) wins
+ *     over the softer legibility one in that documented, bounded fallback.
  *   - `FF_MAP_LABEL_PRIORITY_LOW`: checked once, at its original
  *     position, against every already-placed result AND against
  *     `circle_radius_px` (issue #77's "ultra-long labels run off the

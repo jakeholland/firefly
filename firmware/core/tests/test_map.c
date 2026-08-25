@@ -508,6 +508,57 @@ static void S77_place_labels_zero_radius_disables_bounds_check(void)
     TEST_ASSERT_EQUAL_FLOAT(in[0].y, out[0].y);
 }
 
+/* PR #82 review (BLOCKING): a HIGH label's circle-pull must not silently
+ * re-introduce a label-label collision it never re-checks. This is the
+ * exact real-pack failure the review caught in map_real_lost_lands —
+ * "Tunnel entrance (Rt 13)" pulled radially inward and landed on top of
+ * "Prehistoric Stage", passing both the golden pixel-diff threshold AND
+ * test_map_circle_containment.c's circle-only containment check, because
+ * neither one checks "still clear of every other label AFTER the pull".
+ *
+ * Reproduced directly here, independent of any real pack: A is placed
+ * first, safely inside the circle. B's RAW anchor sits far outside the
+ * circle in the exact SAME angular direction as A — a radial pull always
+ * moves a point straight toward the origin along its own direction, so
+ * B's naive circle-pull lands close to A by construction, the precise
+ * geometry that broke the old two-independent-passes version.
+ *
+ * Mutation check (confirmed against the actual code, not asserted from
+ * reasoning): reverting `ff_map_place_labels` to pull ONCE after the
+ * nudge loop, with no per-attempt re-pull/re-check (this function's
+ * pre-#82-review shape), makes `sep_ok` below false — B lands within
+ * `min_sep` of A and stays there, because the one-shot pull is never
+ * re-validated against the labels already placed. */
+static void S82_place_labels_high_priority_circle_pull_still_respects_separation(void)
+{
+    float const radius = 200.0f;
+    float const min_sep = 40.0f;
+
+    ff_map_label_request_t in[2] = {
+        {190.0f, 0.0f, FF_MAP_LABEL_PRIORITY_HIGH, 0.0f, 0.0f},  /* A: already safely inside the circle */
+        {1000.0f, 0.0f, FF_MAP_LABEL_PRIORITY_HIGH, 0.0f, 0.0f}, /* B: raw anchor far outside, same direction as A */
+    };
+    ff_map_label_result_t out[2];
+    TEST_ASSERT_EQUAL_INT(2, ff_map_place_labels(in, 2, min_sep, 6, radius, out));
+
+    TEST_ASSERT_TRUE(out[0].placed);
+    TEST_ASSERT_TRUE(out[1].placed);
+
+    /* Both HIGH labels must land inside the circle... */
+    float const d0 = sqrtf(out[0].x * out[0].x + out[0].y * out[0].y);
+    float const d1 = sqrtf(out[1].x * out[1].x + out[1].y * out[1].y);
+    TEST_ASSERT_TRUE_MESSAGE(d0 <= radius + 0.01f, "A must stay inside the circle");
+    TEST_ASSERT_TRUE_MESSAGE(d1 <= radius + 0.01f, "B's circle-pull must land inside the circle");
+
+    /* ...AND B must still clear A by min_sep_px — the property a
+     * one-shot, never-re-checked pull silently violates. */
+    float const dx = out[1].x - out[0].x;
+    float const dy = out[1].y - out[0].y;
+    float const sep = sqrtf(dx * dx + dy * dy);
+    bool const sep_ok = sep >= min_sep - 0.01f;
+    TEST_ASSERT_TRUE_MESSAGE(sep_ok, "B's circle-pull re-introduced a collision with A that was never re-checked");
+}
+
 /* ------------------------------------------------------------------- */
 /* PR #73 review — ff_map_triangulate (finding #2: concave fill)        */
 /* ------------------------------------------------------------------- */
@@ -676,6 +727,7 @@ int main(void)
     RUN_TEST(S77_place_labels_low_priority_ultra_long_label_drops_off_circle);
     RUN_TEST(S77_place_labels_high_priority_ultra_long_label_clamped_not_dropped);
     RUN_TEST(S77_place_labels_zero_radius_disables_bounds_check);
+    RUN_TEST(S82_place_labels_high_priority_circle_pull_still_respects_separation);
 
     RUN_TEST(S09_triangulate_convex_square_covers_exact_area);
     RUN_TEST(S09_triangulate_real_venue_extent_is_concave_and_covers_exact_area);

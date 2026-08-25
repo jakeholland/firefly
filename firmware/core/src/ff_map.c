@@ -164,6 +164,34 @@ static bool ff_map_label_off_circle(float x, float y, float half_w, float half_h
     return (fx * fx + fy * fy) > (radius_px * radius_px);
 }
 
+/* Pulls `(*x, *y)` radially inward so a box of half-extents (half_w,
+ * half_h) centered there sits inside `radius_px` — the shared "shrink the
+ * clamp target by this label's own half-extents" logic, factored out so
+ * it can run BOTH inside the HIGH-priority nudge loop below (every
+ * attempt, not just once) and once more, unconditionally, after that loop
+ * exits — see ff_map_place_labels's own comment on why it needs both.
+ * `radius_px <= 0` is the documented "check disabled" escape hatch: a
+ * no-op. */
+static void ff_map_label_pull_into_circle(float *x, float *y, float half_w, float half_h, float radius_px)
+{
+    if (radius_px <= 0.0f) return;
+    float const eff_radius = radius_px - (half_w + half_h);
+    if (eff_radius <= 0.0f) {
+        /* The label is wider than the circle itself — never real festival
+         * data (this label's own on-device 30-byte cap), but guarded
+         * rather than assumed (ff_map.h's doc comment). No position
+         * satisfies "fully inside", so center on the origin: the one
+         * point every positive radius still contains, the least-wrong
+         * honest fallback. */
+        *x = 0.0f;
+        *y = 0.0f;
+        return;
+    }
+    if (ff_map_label_off_circle(*x, *y, half_w, half_h, radius_px)) {
+        ff_map_clip_point_to_circle(*x, *y, eff_radius, x, y);
+    }
+}
+
 int ff_map_place_labels(ff_map_label_request_t const *in, int n, float min_sep_px, int max_nudge_tries,
                          float circle_radius_px, ff_map_label_result_t *out)
 {
@@ -181,7 +209,25 @@ int ff_map_place_labels(ff_map_label_request_t const *in, int n, float min_sep_p
          * ff_map.h's documented rule ("contributes nothing to later
          * entries' collision checks"). */
         if (in[i].priority == FF_MAP_LABEL_PRIORITY_HIGH) {
+            /* PR #82 review (BLOCKING): the circle-pull and the
+             * label-vs-label collision-nudge are NOT two independent
+             * one-shot passes — a pull that runs once, after the nudge
+             * loop, with no re-check, can silently land a label on top of
+             * an already-placed one (confirmed on the real pack:
+             * "Tunnel entrance (Rt 13)" pulled inward and overlapped
+             * "Prehistoric Stage", passing both the golden threshold and
+             * the circle-only containment test, because neither checks
+             * "cleared every other label AFTER the pull"). Folded into
+             * ONE loop instead: every attempt pulls inside the circle
+             * FIRST, THEN checks collision against every already-placed
+             * label at THAT (already-pulled) position — so the position
+             * this breaks out on on satisfies BOTH constraints
+             * simultaneously, never one at the silent expense of the
+             * other. Bounded by the same `max_nudge_tries` the plain
+             * collision-only case always used. */
             for (int attempt = 0; attempt < max_nudge_tries; attempt++) {
+                ff_map_label_pull_into_circle(&x, &y, half_w, half_h, circle_radius_px);
+
                 bool collides = false;
                 for (int j = 0; j < i; j++) {
                     if (!out[j].placed) continue;
@@ -195,29 +241,15 @@ int ff_map_place_labels(ff_map_label_request_t const *in, int n, float min_sep_p
                 if (!collides) break;
                 y += min_sep_px;
             }
-            /* Issue #77 fold-in: a HIGH label can never be DROPPED (see
-             * ff_map.h's doc comment — it has no other visual
-             * representation), so an off-circle result is pulled radially
-             * inward instead. `eff_radius` shrinks the clamp target by
-             * this label's own half-extents (a conservative upper bound
-             * on how far its own bounding box reaches past its center
-             * point in the worst-case axis) so the CLAMPED center still
-             * leaves the whole box inside `circle_radius_px`, not just
-             * the center point. A label wider than the circle itself
-             * (eff_radius <= 0 — never real festival data, per this
-             * label's own on-device 30-byte cap, but guarded rather than
-             * assumed) has no position that satisfies that, so it centers
-             * on the origin as the least-wrong honest fallback — the one
-             * point every positive radius still contains. */
-            if (circle_radius_px > 0.0f) {
-                float const eff_radius = circle_radius_px - (half_w + half_h);
-                if (eff_radius <= 0.0f) {
-                    x = 0.0f;
-                    y = 0.0f;
-                } else if (ff_map_label_off_circle(x, y, half_w, half_h, circle_radius_px)) {
-                    ff_map_clip_point_to_circle(x, y, eff_radius, &x, &y);
-                }
-            }
+            /* Bounded-search fallback: if `max_nudge_tries` ran out still
+             * colliding, the loop's last statement was a y-nudge that was
+             * never re-pulled — guarantee the HARDER physical constraint
+             * (a real round device cannot show anything past its own
+             * edge, ever) holds even then, at the cost of the softer
+             * legibility constraint (label separation) in this rare,
+             * bounded, documented case. A no-op when the loop broke
+             * normally — that position was already pulled. */
+            ff_map_label_pull_into_circle(&x, &y, half_w, half_h, circle_radius_px);
             out[i].placed = true;
             out[i].x = x;
             out[i].y = y;
