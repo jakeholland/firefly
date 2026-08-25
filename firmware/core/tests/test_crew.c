@@ -228,7 +228,7 @@ static void S02_AC3_on_position_first_fix_is_never_to_live(void)
     TEST_ASSERT_EQUAL(FF_FRESH_NEVER, ff_crew_freshness(m, 1000u));
 
     ff_latlon_t p = {39.9, -82.4};
-    ff_crew_on_position(&c, 7u, p, 1000u);
+    ff_crew_on_position(&c, 7u, p, 1000u, FF_CREW_POS_META_NONE);
 
     TEST_ASSERT_TRUE(m->has_pos);
     TEST_ASSERT_EQUAL(FF_FRESH_LIVE, ff_crew_freshness(m, 1000u));
@@ -243,7 +243,7 @@ static void S02_AC3_on_position_age_advances_with_now_ms(void)
 
     ff_latlon_t p = {39.9, -82.4};
     ff_crew_member_t *m = ff_crew_upsert(&c, 7u);
-    ff_crew_on_position(&c, 7u, p, 10000u);
+    ff_crew_on_position(&c, 7u, p, 10000u, FF_CREW_POS_META_NONE);
 
     TEST_ASSERT_EQUAL(FF_FRESH_LIVE, ff_crew_freshness(m, 10000u));
     TEST_ASSERT_EQUAL(FF_FRESH_LIVE, ff_crew_freshness(m, 54999u));
@@ -764,6 +764,128 @@ static void S02_find_null_crew_is_safe(void)
     TEST_ASSERT_NULL(ff_crew_find(NULL, 1u));
 }
 
+/* ------------------------------------------------------------------- */
+/* issue #33 — asserted positions never ride the freshness axis         */
+/* ------------------------------------------------------------------- */
+
+static void S33_asserted_fix_is_never_live(void)
+{
+    ff_crew_t c;
+    ff_crew_init(&c, NULL);
+    ff_crew_pos_meta_t meta = {.asserted = true, .has_precision_bits = false, .precision_bits = 0};
+    ff_crew_on_position(&c, 1u, (ff_latlon_t){39.9, -82.4}, 1000u, meta);
+    ff_crew_member_t const *m = ff_crew_find(&c, 1u);
+
+    /* age 0 at the instant of the fix — the exact case that lands on LIVE
+     * for a measured position (S02_AC3_on_position_first_fix_is_never_to_live).
+     * The proxy this pins against: a broken implementation that only
+     * special-cases "old" asserted fixes (age > some threshold) would still
+     * pass a test that only checked an aged reading — this checks age 0. */
+    TEST_ASSERT_EQUAL(FF_FRESH_ASSERTED, ff_crew_freshness(m, 1000u));
+}
+
+/* Mutation-conscious: the whole point of #33 is that elapsed time must
+ * NEVER move an asserted fix off ASSERTED — not into STALE, not into
+ * LOST, no matter how large `now_ms - pos_age_ms` grows. Checked at both
+ * named boundaries (S02's own 45s/600s thresholds) plus a value far past
+ * LOST, so a mutant that deletes the `pos_asserted` early-return (letting
+ * the age math underneath run unconditionally) fails at every one of
+ * them, not just one. */
+static void S33_asserted_fix_never_ages_into_stale_or_lost(void)
+{
+    ff_crew_t c;
+    ff_crew_init(&c, NULL);
+    ff_crew_pos_meta_t meta = {.asserted = true, .has_precision_bits = false, .precision_bits = 0};
+    ff_crew_on_position(&c, 1u, (ff_latlon_t){39.9, -82.4}, 0u, meta);
+    ff_crew_member_t const *m = ff_crew_find(&c, 1u);
+
+    TEST_ASSERT_EQUAL(FF_FRESH_ASSERTED, ff_crew_freshness(m, 0u));
+    TEST_ASSERT_EQUAL(FF_FRESH_ASSERTED, ff_crew_freshness(m, FF_CREW_LIVE_MS));       /* the LIVE->STALE boundary */
+    TEST_ASSERT_EQUAL(FF_FRESH_ASSERTED, ff_crew_freshness(m, FF_CREW_LOST_MS));       /* the STALE->LOST boundary */
+    TEST_ASSERT_EQUAL(FF_FRESH_ASSERTED, ff_crew_freshness(m, FF_CREW_LOST_MS * 100)); /* absurdly old */
+}
+
+/* A measured fix (asserted == false) is completely unaffected — this is
+ * the regression guard for the new early-return: it must be gated on
+ * `pos_asserted`, not unconditional. */
+static void S33_unasserted_fix_still_ages_normally(void)
+{
+    ff_crew_t c;
+    ff_crew_init(&c, NULL);
+    ff_crew_on_position(&c, 1u, (ff_latlon_t){39.9, -82.4}, 0u, FF_CREW_POS_META_NONE);
+    ff_crew_member_t const *m = ff_crew_find(&c, 1u);
+
+    TEST_ASSERT_EQUAL(FF_FRESH_LIVE, ff_crew_freshness(m, 0u));
+    TEST_ASSERT_EQUAL(FF_FRESH_STALE, ff_crew_freshness(m, FF_CREW_LIVE_MS));
+    TEST_ASSERT_EQUAL(FF_FRESH_LOST, ff_crew_freshness(m, FF_CREW_LOST_MS + 1u));
+}
+
+/* A later MEASURED fix must overwrite an earlier ASSERTED one (and vice
+ * versa) — meta is not sticky. Pins the "whole-fix overwrite" contract
+ * ff_crew_on_position's doc comment states explicitly. */
+static void S33_newer_fix_overwrites_asserted_flag_in_both_directions(void)
+{
+    ff_crew_t c;
+    ff_crew_init(&c, NULL);
+    ff_crew_pos_meta_t asserted = {.asserted = true, .has_precision_bits = false, .precision_bits = 0};
+
+    ff_crew_on_position(&c, 1u, (ff_latlon_t){1.0, 1.0}, 0u, asserted);
+    ff_crew_member_t const *m = ff_crew_find(&c, 1u);
+    TEST_ASSERT_EQUAL(FF_FRESH_ASSERTED, ff_crew_freshness(m, 0u));
+
+    /* A real GPS fix arrives later for the same node id (e.g. a landmark
+     * decommissioned and its slot reused, or simply a bug on the sender's
+     * side) — asserted must clear, not linger. */
+    ff_crew_on_position(&c, 1u, (ff_latlon_t){1.0, 1.0}, 1000u, FF_CREW_POS_META_NONE);
+    TEST_ASSERT_EQUAL(FF_FRESH_LIVE, ff_crew_freshness(m, 1000u));
+
+    /* And back the other way. */
+    ff_crew_on_position(&c, 1u, (ff_latlon_t){1.0, 1.0}, 2000u, asserted);
+    TEST_ASSERT_EQUAL(FF_FRESH_ASSERTED, ff_crew_freshness(m, 2000u));
+}
+
+/* ------------------------------------------------------------------- */
+/* issue #47 — precision grid formula + threshold                       */
+/* ------------------------------------------------------------------- */
+
+/* Named values transcribed from mc_client.h's own worked examples and
+ * issue #47's hardware measurement (13 bits on the default public
+ * channel), so this test doubles as a regression guard on that doc
+ * comment's own math, not just this function's implementation. */
+static void S47_precision_grid_matches_documented_examples(void)
+{
+    TEST_ASSERT_FLOAT_WITHIN(1.0f, 5836.0f, ff_crew_pos_precision_grid_m(13));
+    TEST_ASSERT_FLOAT_WITHIN(1.0f, 730.0f, ff_crew_pos_precision_grid_m(16));
+    TEST_ASSERT_FLOAT_WITHIN(0.5f, 2.9f, ff_crew_pos_precision_grid_m(24));
+    /* bits=32 is "untruncated" in the practical sense (no channel
+     * quantization applied), but the formula's own cell size at the full
+     * bit width is 2^32>>32 = 1 raw unit, i.e. one 1e-7-degree LSB of the
+     * fixed-point coordinate (~1.1 cm) — not literally 0. */
+    TEST_ASSERT_FLOAT_WITHIN(0.02f, 0.011132f, ff_crew_pos_precision_grid_m(32));
+}
+
+static void S47_precision_grid_out_of_range_bits_is_zero(void)
+{
+    TEST_ASSERT_EQUAL_FLOAT(0.0f, ff_crew_pos_precision_grid_m(0));
+    TEST_ASSERT_EQUAL_FLOAT(0.0f, ff_crew_pos_precision_grid_m(33));
+    TEST_ASSERT_EQUAL_FLOAT(0.0f, ff_crew_pos_precision_grid_m(255));
+}
+
+/* The FF_CREW_POS_PRECISION_MIN_BITS threshold boundary, from both sides:
+ * one bit below is degraded (grid exceeds close range), one bit at/above
+ * is precise (grid comfortably under it). This is the exact row a
+ * fencepost mutant (< vs <=) would flip. */
+static void S47_precision_threshold_boundary(void)
+{
+    float const grid_below = ff_crew_pos_precision_grid_m(FF_CREW_POS_PRECISION_MIN_BITS - 1u);
+    float const grid_at = ff_crew_pos_precision_grid_m(FF_CREW_POS_PRECISION_MIN_BITS);
+
+    TEST_ASSERT_TRUE_MESSAGE(grid_below > FF_CREW_CLOSE_RANGE_M,
+                              "one bit below the threshold should exceed close range");
+    TEST_ASSERT_TRUE_MESSAGE(grid_at <= FF_CREW_CLOSE_RANGE_M,
+                              "the threshold's own bit count should be at/under close range");
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -817,6 +939,15 @@ int main(void)
     RUN_TEST(S02_find_unknown_id_returns_null);
     RUN_TEST(S02_find_never_creates_a_slot);
     RUN_TEST(S02_find_null_crew_is_safe);
+
+    RUN_TEST(S33_asserted_fix_is_never_live);
+    RUN_TEST(S33_asserted_fix_never_ages_into_stale_or_lost);
+    RUN_TEST(S33_unasserted_fix_still_ages_normally);
+    RUN_TEST(S33_newer_fix_overwrites_asserted_flag_in_both_directions);
+
+    RUN_TEST(S47_precision_grid_matches_documented_examples);
+    RUN_TEST(S47_precision_grid_out_of_range_bits_is_zero);
+    RUN_TEST(S47_precision_threshold_boundary);
 
     return UNITY_END();
 }

@@ -566,6 +566,268 @@ static void S06_AC3_dots_empty_when_my_pos_or_heading_invalid(void)
 }
 
 /* ------------------------------------------------------------------- */
+/* issue #33 — RADAR_PLACE: mode, age_str, and the freshness-axis        */
+/* exclusion measured through ff_radar_compute (not just ff_crew_freshness) */
+/* ------------------------------------------------------------------- */
+
+static void S33_mode_place_for_asserted_position(void)
+{
+    ff_crew_t c;
+    ff_crew_member_t *m = setup_selected_member(&c);
+    m->has_pos = true;
+    m->pos = (ff_latlon_t){0.01, 0.0}; /* far enough not to be CLOSE by distance */
+    m->pos_age_ms = 0u;
+    m->pos_asserted = true;
+
+    ff_radar_view_t v;
+    memset(&v, 0, sizeof(v));
+    ff_radar_smooth_t sm;
+    ff_radar_smooth_reset(&sm);
+    ff_latlon_t my_pos = {0.0, 0.0};
+
+    ff_radar_compute(&v, &sm, &c, 0.0f, my_pos, true, false, 0u);
+
+    TEST_ASSERT_EQUAL_INT(RADAR_PLACE, v.mode);
+    TEST_ASSERT_TRUE(v.arrow_valid); /* a real coordinate exists to point at */
+    TEST_ASSERT_EQUAL_STRING("", v.age_str); /* never a fabricated "LAST SEEN" */
+    TEST_ASSERT_NOT_EQUAL_INT(0, strcmp("", v.dist_str)); /* the coordinate itself is honest */
+}
+
+/* Mutation-conscious: elapsed time must NEVER move an asserted member off
+ * RADAR_PLACE, at every named freshness boundary and far beyond. A
+ * mutant that deleted the ASSERTED check ahead of the freshness switch
+ * would pass S33_mode_place_for_asserted_position (age 0) but fail every
+ * row here. */
+static void S33_mode_place_never_ages_at_any_boundary(void)
+{
+    ff_crew_t c;
+    ff_crew_member_t *m = setup_selected_member(&c);
+    m->has_pos = true;
+    m->pos = (ff_latlon_t){0.01, 0.0};
+    m->pos_age_ms = 0u;
+    m->pos_asserted = true;
+
+    ff_radar_view_t v;
+    ff_radar_smooth_t sm;
+    ff_latlon_t my_pos = {0.0, 0.0};
+    uint32_t const ages[] = {0u, FF_CREW_LIVE_MS, FF_CREW_LOST_MS, FF_CREW_LOST_MS * 100u};
+
+    for (size_t i = 0; i < sizeof(ages) / sizeof(ages[0]); i++) {
+        memset(&v, 0, sizeof(v));
+        ff_radar_smooth_reset(&sm);
+        ff_radar_compute(&v, &sm, &c, 0.0f, my_pos, true, false, ages[i]);
+        TEST_ASSERT_EQUAL_INT(RADAR_PLACE, v.mode);
+        TEST_ASSERT_EQUAL_STRING("", v.age_str);
+    }
+}
+
+/* A precise asserted position is still a real coordinate: CLOSE-by-
+ * distance can fire honestly for it (ff_radar.h's RADAR_CLOSE priority
+ * paragraph) — proximity is a geometric fact an assertion doesn't taint,
+ * only the position's AGE is unknowable. */
+static void S33_close_by_distance_still_wins_over_place(void)
+{
+    ff_crew_t c;
+    ff_crew_member_t *m = setup_selected_member(&c);
+    m->has_pos = true;
+    m->pos = (ff_latlon_t){0.0001, 0.0}; /* ~11.1 m: inside 30 m close range */
+    m->pos_age_ms = 0u;
+    m->pos_asserted = true;
+
+    ff_radar_view_t v;
+    memset(&v, 0, sizeof(v));
+    ff_radar_smooth_t sm;
+    ff_radar_smooth_reset(&sm);
+    ff_latlon_t my_pos = {0.0, 0.0};
+
+    ff_radar_compute(&v, &sm, &c, 0.0f, my_pos, true, false, 0u);
+
+    TEST_ASSERT_EQUAL_INT(RADAR_CLOSE, v.mode);
+}
+
+/* ------------------------------------------------------------------- */
+/* issue #47 — degraded precision: area-scale dist_str, threshold        */
+/* boundary, and the CLOSE-by-distance gate                             */
+/* ------------------------------------------------------------------- */
+
+static void S47_degraded_precision_sets_dist_imprecise_and_area_string(void)
+{
+    ff_crew_t c;
+    ff_crew_member_t *m = setup_selected_member(&c);
+    m->has_pos = true;
+    m->pos = (ff_latlon_t){0.01, 0.0}; /* far enough not to be CLOSE by distance */
+    m->pos_age_ms = 0u;
+    m->has_precision_bits = true;
+    m->precision_bits = 13; /* issue #47's own hardware measurement */
+
+    ff_radar_view_t v;
+    memset(&v, 0, sizeof(v));
+    ff_radar_smooth_t sm;
+    ff_radar_smooth_reset(&sm);
+    ff_latlon_t my_pos = {0.0, 0.0};
+
+    ff_radar_compute(&v, &sm, &c, 0.0f, my_pos, true, false, 0u);
+
+    TEST_ASSERT_EQUAL_INT(RADAR_LIVE, v.mode); /* freshness is untouched by precision */
+    TEST_ASSERT_TRUE(v.dist_imprecise);
+    TEST_ASSERT_EQUAL_CHAR('~', v.dist_str[0]); /* never a bare metre-looking number */
+}
+
+/* Absent precision (has_precision_bits == false) renders exactly as the
+ * ordinary case — the documented asymmetry (mc_client.h): "didn't say"
+ * is not evidence of a degraded fix. */
+static void S47_absent_precision_is_not_treated_as_degraded(void)
+{
+    ff_crew_t c;
+    ff_crew_member_t *m = setup_selected_member(&c);
+    m->has_pos = true;
+    m->pos = (ff_latlon_t){0.01, 0.0};
+    m->pos_age_ms = 0u;
+    /* has_precision_bits left false by setup_selected_member's zeroed slot */
+
+    ff_radar_view_t v;
+    memset(&v, 0, sizeof(v));
+    ff_radar_smooth_t sm;
+    ff_radar_smooth_reset(&sm);
+    ff_latlon_t my_pos = {0.0, 0.0};
+
+    ff_radar_compute(&v, &sm, &c, 0.0f, my_pos, true, false, 0u);
+
+    TEST_ASSERT_FALSE(v.dist_imprecise);
+    TEST_ASSERT_NOT_EQUAL('~', v.dist_str[0]);
+}
+
+/* The exact FF_CREW_POS_PRECISION_MIN_BITS fencepost, driven through
+ * ff_radar_compute (test_crew.c pins the same boundary against the raw
+ * grid-size formula; this pins it against the actual consuming code
+ * path, which is the thing a `<` vs `<=` mutation in ff_radar.c itself
+ * would actually break). */
+static void S47_precision_threshold_boundary_through_compute(void)
+{
+    ff_crew_t c;
+    ff_crew_member_t *m = setup_selected_member(&c);
+    m->has_pos = true;
+    m->pos = (ff_latlon_t){0.01, 0.0};
+    m->pos_age_ms = 0u;
+    m->has_precision_bits = true;
+
+    ff_radar_view_t v;
+    ff_radar_smooth_t sm;
+    ff_latlon_t my_pos = {0.0, 0.0};
+
+    m->precision_bits = (uint8_t)(FF_CREW_POS_PRECISION_MIN_BITS - 1u);
+    memset(&v, 0, sizeof(v));
+    ff_radar_smooth_reset(&sm);
+    ff_radar_compute(&v, &sm, &c, 0.0f, my_pos, true, false, 0u);
+    TEST_ASSERT_TRUE_MESSAGE(v.dist_imprecise, "one bit below threshold must be imprecise");
+
+    m->precision_bits = (uint8_t)FF_CREW_POS_PRECISION_MIN_BITS;
+    memset(&v, 0, sizeof(v));
+    ff_radar_smooth_reset(&sm);
+    ff_radar_compute(&v, &sm, &c, 0.0f, my_pos, true, false, 0u);
+    TEST_ASSERT_FALSE_MESSAGE(v.dist_imprecise, "the threshold's own bit count must be precise");
+}
+
+/* The gate this issue exists for: a degraded fix that WOULD be inside the
+ * 30 m close-range distance leg must not trigger RADAR_CLOSE off that
+ * leg — a coordinate that could be kilometers off cannot honestly support
+ * "you are standing next to them". No RSSI sample exists here (rssi_dbm
+ * stays INT16_MIN, the "never direct" sentinel — setup_selected_member's
+ * zeroed slot), so if the distance leg fires, CLOSE is entirely on the
+ * back of the untrustworthy coordinate. */
+static void S47_close_by_distance_gated_off_when_imprecise(void)
+{
+    ff_crew_t c;
+    ff_crew_member_t *m = setup_selected_member(&c);
+    m->has_pos = true;
+    m->pos = (ff_latlon_t){0.0001, 0.0}; /* ~11.1 m: inside 30 m close range */
+    m->pos_age_ms = 0u;
+    m->has_precision_bits = true;
+    m->precision_bits = 13;
+
+    ff_radar_view_t v;
+    memset(&v, 0, sizeof(v));
+    ff_radar_smooth_t sm;
+    ff_radar_smooth_reset(&sm);
+    ff_latlon_t my_pos = {0.0, 0.0};
+
+    ff_radar_compute(&v, &sm, &c, 0.0f, my_pos, true, false, 0u);
+
+    TEST_ASSERT_NOT_EQUAL_INT(RADAR_CLOSE, v.mode);
+    TEST_ASSERT_EQUAL_INT(RADAR_LIVE, v.mode); /* falls through to ordinary freshness */
+}
+
+/* The RSSI leg is untouched by precision — it is measured by our own
+ * radio and carries no coordinate dependency at all, so CLOSE can still
+ * fire through it even while the position itself is degraded. */
+static void S47_close_by_rssi_unaffected_by_imprecise_position(void)
+{
+    ff_crew_t c;
+    ff_crew_member_t *m = setup_selected_member(&c);
+    m->has_pos = true;
+    m->pos = (ff_latlon_t){0.01, 0.0}; /* ~1112 m: outside 30 m, distance leg false */
+    m->pos_age_ms = 0u;
+    m->has_precision_bits = true;
+    m->precision_bits = 13;
+    m->rssi_dbm = -50; /* > -60 dBm threshold */
+    m->rssi_age_ms = 5000u - 500u; /* age 500ms at now_ms=5000: inside 10s */
+
+    ff_radar_view_t v;
+    memset(&v, 0, sizeof(v));
+    ff_radar_smooth_t sm;
+    ff_radar_smooth_reset(&sm);
+    ff_latlon_t my_pos = {0.0, 0.0};
+
+    ff_radar_compute(&v, &sm, &c, 0.0f, my_pos, true, false, 5000u);
+
+    TEST_ASSERT_EQUAL_INT(RADAR_CLOSE, v.mode);
+}
+
+/* ------------------------------------------------------------------- */
+/* AC3 extension — ring dots: place vs stale (issue #33)                */
+/* ------------------------------------------------------------------- */
+
+static void S33_AC3_dot_place_flag_set_and_mutually_exclusive_with_stale(void)
+{
+    ff_crew_t c;
+    ff_crew_init(&c, NULL);
+    ff_latlon_t my_pos = {0.0, 0.0};
+
+    /* A: paired, asserted, due north. */
+    ff_crew_member_t *a = ff_crew_upsert(&c, 1u);
+    a->initial = 'A';
+    a->color_idx = 0;
+    a->has_pos = true;
+    a->pos = (ff_latlon_t){1.0, 0.0};
+    a->pos_age_ms = 0u;
+    a->pos_asserted = true;
+    ff_crew_set_paired(&c, 1u, true);
+
+    /* B: paired, ordinary LIVE, due east — the regression guard: an
+     * unrelated live member must not pick up `place` by accident. */
+    ff_crew_member_t *b = ff_crew_upsert(&c, 2u);
+    b->initial = 'B';
+    b->color_idx = 1;
+    b->has_pos = true;
+    b->pos = (ff_latlon_t){0.0, 1.0};
+    b->pos_age_ms = 0u;
+    ff_crew_set_paired(&c, 2u, true);
+
+    ff_radar_view_t v;
+    memset(&v, 0, sizeof(v));
+    ff_radar_smooth_t sm;
+    ff_radar_smooth_reset(&sm);
+
+    ff_radar_compute(&v, &sm, &c, 0.0f, my_pos, true, false, 0u);
+
+    TEST_ASSERT_EQUAL_UINT8(2, v.n_dots);
+    TEST_ASSERT_TRUE(v.dots[0].place);
+    TEST_ASSERT_FALSE(v.dots[0].stale); /* mutually exclusive with place */
+    TEST_ASSERT_FALSE(v.dots[1].place);
+    TEST_ASSERT_FALSE(v.dots[1].stale);
+}
+
+/* ------------------------------------------------------------------- */
 /* AC6 — allocation-free (by construction, see file header) and fast    */
 /* ------------------------------------------------------------------- */
 
@@ -620,6 +882,17 @@ int main(void)
 
     RUN_TEST(S06_AC3_dots_bearings_colors_stale_flags_unpaired_excluded);
     RUN_TEST(S06_AC3_dots_empty_when_my_pos_or_heading_invalid);
+
+    RUN_TEST(S33_mode_place_for_asserted_position);
+    RUN_TEST(S33_mode_place_never_ages_at_any_boundary);
+    RUN_TEST(S33_close_by_distance_still_wins_over_place);
+    RUN_TEST(S33_AC3_dot_place_flag_set_and_mutually_exclusive_with_stale);
+
+    RUN_TEST(S47_degraded_precision_sets_dist_imprecise_and_area_string);
+    RUN_TEST(S47_absent_precision_is_not_treated_as_degraded);
+    RUN_TEST(S47_precision_threshold_boundary_through_compute);
+    RUN_TEST(S47_close_by_distance_gated_off_when_imprecise);
+    RUN_TEST(S47_close_by_rssi_unaffected_by_imprecise_position);
 
     RUN_TEST(S06_AC6_compute_runs_well_under_1ms);
 

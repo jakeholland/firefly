@@ -1,0 +1,21 @@
+{
+  "fixture": "radar_place",
+  "face": "radar",
+  "radar": {
+    "mode": "place",
+    "arrow_deg": 118.0,
+    "arrow_valid": true,
+    "name": "CAMP BASE",
+    "dist_str": "610 m",
+    "age_str": "",
+    "trend": 0,
+    "clock_str": "11:05",
+    "batt_pct": 61,
+    "mesh_ok": true,
+    "dots": [
+      {"ring_deg": 42.0, "initial": "D", "color_idx": 0, "stale": false, "place": false},
+      {"ring_deg": 118.0, "initial": "C", "color_idx": 2, "stale": false, "place": true},
+      {"ring_deg": 301.0, "initial": "J", "color_idx": 3, "stale": false, "place": false}
+    ]
+  }
+}

@@ -72,30 +72,40 @@ unrelated-looking golden diff.)
   "arrow_valid": true,
   "name": "DANA",
   "dist_str": "320 m",
+  "dist_imprecise": false,
   "age_str": "8 SEC",
   "trend": 0,
   "clock_str": "9:41",
   "batt_pct": 78,
   "mesh_ok": true,
   "dots": [
-    {"ring_deg": 42.0, "initial": "D", "color_idx": 0, "stale": false}
+    {"ring_deg": 42.0, "initial": "D", "color_idx": 0, "stale": false, "place": false}
   ]
 }
 ```
 
 | Key | Type | Default |
 |---|---|---|
-| `mode` | string enum: `live`\|`stale`\|`lost`\|`close`\|`nofix`\|`nosel` | `nosel` |
+| `mode` | string enum: `live`\|`stale`\|`lost`\|`place`\|`close`\|`nofix`\|`nosel` | `nosel` |
 | `arrow_deg` | number | `0` |
 | `arrow_valid` | bool | `false` |
 | `name` | string (≤15 chars, `FF_APP_NAME_LEN`) | `""` |
 | `dist_str` | string (≤11 chars) | `""` |
+| `dist_imprecise` | bool | `false` | issue #47 — true when `dist_str` is a precision-degraded area estimate (e.g. `"~5.8 km"`), not a point-to-point distance. See `radar_imprecise.json` below. |
 | `age_str` | string (≤11 chars) | `""` |
 | `trend` | integer, -1/0/+1 | `0` |
 | `clock_str` | string (≤5 chars) | `""` |
 | `batt_pct` | integer | `0` (note: `-1` is the documented "unknown" sentinel elsewhere in this codebase — pass it explicitly if that's what a fixture needs) |
 | `mesh_ok` | bool | `false` |
-| `dots` | array of `{ring_deg, initial, color_idx, stale}`, up to `FF_CREW_MAX` (8) — more than 8 fails the whole load (`FF_FIXTURE_ERR_TOO_BIG`) | `[]` |
+| `dots` | array of `{ring_deg, initial, color_idx, stale, place}`, up to `FF_CREW_MAX` (8) — more than 8 fails the whole load (`FF_FIXTURE_ERR_TOO_BIG`) | `[]` |
+
+`mode: "place"` is issue #33's addition (2026-08-24): the selected member's
+latest position is an ASSERTION (Meshtastic `LOC_MANUAL`), not a
+measurement — rendered as a landmark, never as LIVE/STALE/LOST no matter
+its age. `age_str` is always `""` for this mode (see `ff_radar.h`'s
+`RADAR_PLACE` doc comment for why an age can never be honestly shown for
+an asserted position). A dot's `place: true` marks the same fact on the
+crew ring — mutually exclusive with `stale`.
 
 Field names/semantics are transcribed 1:1 from `docs/specs/S06-radar-face.md`'s
 `ff_radar_view_t` — as of S06, `ff_app_state_t.radar` *is* the real
@@ -290,6 +300,8 @@ and a worst-case crew-ring layout).
 | `radar_nofix.json` | `nofix` | `""` (unknown — my position invalid) | `6 MIN` (the *selected member's* last-known age is still honestly known even though mine isn't) | arrow hidden, "NO FIX - RADIO ONLY" |
 | `radar_nosel.json` | `nosel` | `""` | `""` | no paired crew member at all — empty-crew state, `mesh_ok: false` for variety |
 | `radar_never.json` | `lost` (folded — see below) | `""` | `""` | selected member "JAMIE" is paired but has never sent a fix; `age_str[0] == '\0'` is what `scr_radar.c` keys off to show "NO FIX YET" instead of a "LAST SEEN" chip — NOT distinguishable from a genuinely-old fix by `mode` alone (both are `RADAR_LOST`; see `radar_lost.json` above for the other side of that same `mode`) |
+| `radar_place.json` | `place` | `610 m` | `""` (always empty — see `ff_radar.h`'s `RADAR_PLACE` doc comment) | issue #33 — a landmark's asserted (`LOC_MANUAL`) position, "CAMP BASE". Solid arrow (a real coordinate exists), neutral "FIXED POSITION" chip — never "LIVE", never a rim tint, never an invented age. One ring dot (`"C"`, `place: true`) also carries the honest treatment alongside two ordinary live dots |
+| `radar_imprecise.json` | `live` | `~5.8 km` | `8 SEC` | issue #47 — `dist_imprecise: true`; the selected member's precision is known-degraded (13 bits, the default-public-channel case measured on hardware). Freshness/mode are untouched (LIVE, fresh fix) — only the distance is an honest area estimate, dimmed in render and suffixed "- AREA" on the chip, never a metre-looking number |
 
 Four S10 slice b fixtures exist alongside the radar set, one per
 `ff_scr_flare_*` builder plus one for the takeover/lock interaction PR #20

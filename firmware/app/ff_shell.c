@@ -151,6 +151,36 @@ static void shell_copy_str(char *dst, size_t n, char const *src)
 }
 
 /**
+ * Translate `p`'s provenance/precision into core's own small vocabulary
+ * (`ff_crew_pos_meta_t`) — issue #33's "core never sees Meshtastic enums"
+ * boundary rule, applied at exactly one place shared by both position
+ * ingest paths (shell_ev_node's want_config replay and shell_ev_position's
+ * live packets) so the translation can't drift between them.
+ *
+ * `asserted` is true iff the wire value was exactly MC_LOC_MANUAL —
+ * MC_LOC_UNKNOWN (the sender didn't say) is explicitly NOT asserted, same
+ * as it is explicitly not a measurement either (mc_client.h's
+ * MC_LOC_UNKNOWN doc comment): "didn't say" carries no information in
+ * either direction.
+ *
+ * `has_precision_bits`/`precision_bits` are copied verbatim — this is a
+ * direct field mirror, not a decision, so there is nothing to interpret
+ * here; issue #47's asymmetry (replay-absent vs. live-absent) is already
+ * fully resolved by the time `p` reaches this function (mc_client.c's
+ * `mc_position_from_pb`, called identically on both paths — the replay
+ * path is absent here because stock firmware's NodeInfo replay genuinely
+ * never carries the field, not because this boundary drops it).
+ */
+static ff_crew_pos_meta_t shell_pos_meta(mc_position_t const *p)
+{
+    ff_crew_pos_meta_t meta;
+    meta.asserted = (p->loc_source == MC_LOC_MANUAL);
+    meta.has_precision_bits = p->has_precision_bits;
+    meta.precision_bits = p->has_precision_bits ? (uint8_t)p->precision_bits : 0u;
+    return meta;
+}
+
+/**
  * A MUTABLE handle to an EXISTING roster member, or NULL.
  *
  * Never creates. `ff_crew_upsert` is reached only after `ff_crew_find`
@@ -541,7 +571,7 @@ static void shell_ev_node(void *u, mc_nodeinfo_t const *n)
         uint32_t rx_ms = 0;
         if (!defined_the_latch && shell_rx_ms_from_unix(sh, n->last_heard, now, &rx_ms)) {
             ff_latlon_t const p = {n->position.lat, n->position.lon};
-            ff_crew_on_position(&sh->crew, n->node_num, p, rx_ms);
+            ff_crew_on_position(&sh->crew, n->node_num, p, rx_ms, shell_pos_meta(&n->position));
         }
     }
 
@@ -593,7 +623,7 @@ static void shell_ev_position(void *u, uint32_t node, mc_position_t const *p)
     if (!shell_rx_ms_from_unix(sh, p->rx_time, now, &rx_ms)) return;
 
     ff_latlon_t const pos = {p->lat, p->lon};
-    ff_crew_on_position(&sh->crew, node, pos, rx_ms);
+    ff_crew_on_position(&sh->crew, node, pos, rx_ms, shell_pos_meta(p));
 }
 
 static void shell_ev_text(void *u, uint32_t from, uint32_t to, char const *utf8, size_t len)
