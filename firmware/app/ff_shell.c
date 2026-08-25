@@ -656,21 +656,31 @@ static void shell_ev_rx_meta(void *u, uint32_t from, mc_rx_meta_t const *m)
      * exactly what ff_heard is for (bounded, LRU-evictable, expected to
      * churn under real festival RF volume). It still never grows the
      * roster. */
-    if (ff_crew_find(&sh->crew, from) == NULL) {
+    ff_crew_member_t const *sender = ff_crew_find(&sh->crew, from);
+    if (sender == NULL) {
         ff_heard_note(&sh->heard, from, now);
         return;
     }
 
-    /* `ff_crew_on_rssi` find-or-creates too — same effect-not-name rule
-     * as ff_crew_on_position above; the find has already gated it.
+    /* PAIRED is required, not a nicety — same trust rule ff_wiring.c's
+     * wiring_push_if_paired applies to feed pushes (ff_wiring.c:42): a
+     * roster slot can exist and be unpaired (known-but-not-trusted, or
+     * paired-then-unpaired — ff_shell.h's ff_shell_pair). Feeding RSSI
+     * from an unpaired slot would let a merely-heard node's signal
+     * strength satisfy ff_crew_close_range's CLOSE predicate for
+     * someone the wearer never chose to trust.
      *
-     * DIRECT is required, not a nicety: RSSI is measured against the
-     * signal that actually arrived, which for a relayed packet is the
-     * RELAY's transmission. Attributing it to `from` reports a loud
+     * `ff_crew_on_rssi` find-or-creates too — same effect-not-name rule
+     * as ff_crew_on_position above; the find (and the paired check) has
+     * already gated it.
+     *
+     * DIRECT is required, not a nicety either: RSSI is measured against
+     * the signal that actually arrived, which for a relayed packet is
+     * the RELAY's transmission. Attributing it to `from` reports a loud
      * neighbouring relay as if the distant friend it forwarded for were
      * standing next to you — and ff_crew_close_range turns exactly that
      * number into a CLOSE lock. */
-    if (m->rx_path == MC_RX_PATH_DIRECT && m->has_rssi) {
+    if (sender->paired && m->rx_path == MC_RX_PATH_DIRECT && m->has_rssi) {
         ff_crew_on_rssi(&sh->crew, from, m->rssi_dbm);
     }
 
