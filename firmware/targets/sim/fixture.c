@@ -662,6 +662,13 @@ static ff_fixture_result_t fx_parse_settings(fx_ctx_t const *c, int obj_i, ff_ap
     if (fx_obj_get(c, obj_i, "quiet_from_min", &t)) s->quiet_from_min = (uint16_t)fx_num(c, t, 240.0);
     if (fx_obj_get(c, obj_i, "quiet_to_min", &t)) s->quiet_to_min = (uint16_t)fx_num(c, t, 600.0);
     if (fx_obj_get(c, obj_i, "my_name", &t)) fx_copy_str(c, t, s->my_name, sizeof(s->my_name));
+    /* utc_offset_set read BEFORE utc_offset_min, same "prove you meant
+     * this" ordering as fx_parse_flare's takeover_bearing_valid — a
+     * fixture author who sets the minutes but forgets the flag gets an
+     * honest UNSET render rather than a fabricated offset (S11 slice b,
+     * ff_app_state.h's doc comment on this field). */
+    if (fx_obj_get(c, obj_i, "utc_offset_set", &t)) s->utc_offset_set = fx_bool(c, t, false);
+    if (fx_obj_get(c, obj_i, "utc_offset_min", &t)) s->utc_offset_min = (int16_t)fx_num(c, t, 0.0);
     return FF_FIXTURE_OK;
 }
 
@@ -1152,6 +1159,8 @@ int ff_fixture_dump_json(ff_app_state_t const *s, char *buf, size_t buf_sz)
     fw_fmt(&w, ",\"quiet_to_min\":%u", (unsigned)s->settings.quiet_to_min);
     fw_raw(&w, ",\"my_name\":");
     fw_json_str(&w, s->settings.my_name);
+    fw_raw(&w, s->settings.utc_offset_set ? ",\"utc_offset_set\":true" : ",\"utc_offset_set\":false");
+    fw_fmt(&w, ",\"utc_offset_min\":%d", (int)s->settings.utc_offset_min);
     fw_raw(&w, "}");
 
     fw_raw(&w, "}"); /* close root */

@@ -167,6 +167,7 @@ add_library(ff-app-ui STATIC
     screens/scr_signals.c # S08c
     screens/scr_compose.c # S08d
     screens/scr_flare.c # S10b
+    screens/scr_settings.c # S11b — the Settings modal face
 )
 target_include_directories(ff-app-ui PUBLIC theme screens)
 # ff-intent (S16c1): scr_nav/scr_signals/scr_compose emit navigation

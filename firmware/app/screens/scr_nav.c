@@ -15,11 +15,12 @@
 
 /* Long-press-anywhere -> Settings: emits FF_INTENT_OPEN_SETTINGS through
  * the intent seam (S16 slice c1 — this replaces the stub S06 reserved).
- * Whether anything HAPPENS is the shell's decision, not this file's:
- * today `ff_shell_intent` rejects it, deliberately, because the S11b
- * Settings renderer does not exist yet (see ff_shell.c's judgment-call
- * comment) — this screen just reports the gesture and stays a pure
- * renderer. Unbound (goldens/headless), the emit is a no-op.
+ * Whether anything HAPPENS is the shell's decision, not this file's: as
+ * of S11 slice b the Settings renderer exists and `ff_shell_intent`
+ * pushes the modal (see ff_shell.c's `k_settings_renderer_exists`,
+ * flipped in that slice) — this screen just reports the gesture and
+ * stays a pure renderer, unchanged by that flip. Unbound (goldens/
+ * headless), the emit is a no-op.
  *
  * REACHABILITY (S16 slice c3, PR #54 review, HIGH — fixed here). A real
  * finger's press still resolves to the tileview/tile beneath it, not to

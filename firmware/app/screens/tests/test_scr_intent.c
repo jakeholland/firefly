@@ -46,6 +46,7 @@
 #include "scr_flare.h"
 #include "scr_nav.h"
 #include "scr_radar.h"
+#include "scr_settings.h"
 #include "scr_signals.h"
 
 /* Frozen-by-default tick — same convention as test_scr_flare.c: nothing
@@ -695,6 +696,190 @@ static void S16_c2_sender_overlay_cancel_emits_flare_end(void)
 }
 
 /* =================================================================== */
+/* Settings face (S11 slice b) — every control emits FF_INTENT_SETTING_SET */
+/* except BACK, which is the same FF_INTENT_BACK every other modal uses.  */
+/* =================================================================== */
+
+static void S11b_settings_back_emits_back(void)
+{
+    ff_app_settings_t s;
+    memset(&s, 0, sizeof(s));
+
+    ff_scr_settings_build(&s);
+
+    click(find_button_with_label(lv_screen_active(), "<"));
+
+    TEST_ASSERT_EQUAL_INT(1, s_spy.count);
+    TEST_ASSERT_EQUAL(FF_INTENT_BACK, s_spy.last.kind);
+}
+
+static void S11b_settings_units_chip_toggles_imperial(void)
+{
+    ff_app_settings_t s;
+    memset(&s, 0, sizeof(s));
+    s.imperial = true; /* renders "FT" */
+
+    ff_scr_settings_build(&s);
+
+    click(find_button_with_label(lv_screen_active(), "FT"));
+
+    TEST_ASSERT_EQUAL_INT(1, s_spy.count);
+    TEST_ASSERT_EQUAL(FF_INTENT_SETTING_SET, s_spy.last.kind);
+    TEST_ASSERT_EQUAL(FF_SETTING_IMPERIAL, s_spy.last.u.setting.id);
+    TEST_ASSERT_EQUAL_INT32(0, s_spy.last.u.setting.v.i); /* FT -> M */
+}
+
+static void S11b_settings_share_chip_cycles_live_to_zones(void)
+{
+    ff_app_settings_t s;
+    memset(&s, 0, sizeof(s)); /* share_mode 0 = FF_SHARE_LIVE, renders "LIVE" */
+
+    ff_scr_settings_build(&s);
+
+    click(find_button_with_label(lv_screen_active(), "LIVE"));
+
+    TEST_ASSERT_EQUAL_INT(1, s_spy.count);
+    TEST_ASSERT_EQUAL(FF_INTENT_SETTING_SET, s_spy.last.kind);
+    TEST_ASSERT_EQUAL(FF_SETTING_SHARE_MODE, s_spy.last.u.setting.id);
+    TEST_ASSERT_EQUAL_INT32(1, s_spy.last.u.setting.v.i); /* LIVE -> ZONES */
+}
+
+static void S11b_settings_haptics_chip_toggles(void)
+{
+    ff_app_settings_t s;
+    memset(&s, 0, sizeof(s));
+    s.haptics = false; /* renders "BUZZ OFF" */
+
+    ff_scr_settings_build(&s);
+
+    click(find_button_with_label(lv_screen_active(), "BUZZ OFF"));
+
+    TEST_ASSERT_EQUAL_INT(1, s_spy.count);
+    TEST_ASSERT_EQUAL(FF_INTENT_SETTING_SET, s_spy.last.kind);
+    TEST_ASSERT_EQUAL(FF_SETTING_HAPTICS, s_spy.last.u.setting.id);
+    TEST_ASSERT_EQUAL_INT32(1, s_spy.last.u.setting.v.i); /* OFF -> ON */
+}
+
+static void S11b_settings_night_glow_chip_toggles(void)
+{
+    ff_app_settings_t s;
+    memset(&s, 0, sizeof(s));
+    s.night_glow = true; /* renders "GLOW ON" */
+
+    ff_scr_settings_build(&s);
+
+    click(find_button_with_label(lv_screen_active(), "GLOW ON"));
+
+    TEST_ASSERT_EQUAL_INT(1, s_spy.count);
+    TEST_ASSERT_EQUAL(FF_INTENT_SETTING_SET, s_spy.last.kind);
+    TEST_ASSERT_EQUAL(FF_SETTING_NIGHT_GLOW, s_spy.last.u.setting.id);
+    TEST_ASSERT_EQUAL_INT32(0, s_spy.last.u.setting.v.i); /* ON -> OFF */
+}
+
+static void S11b_settings_water_chip_cycles_presets(void)
+{
+    ff_app_settings_t s;
+    memset(&s, 0, sizeof(s));
+    s.water_min = 90; /* renders "90 MIN" */
+
+    ff_scr_settings_build(&s);
+
+    click(find_button_with_label(lv_screen_active(), "90 MIN"));
+
+    TEST_ASSERT_EQUAL_INT(1, s_spy.count);
+    TEST_ASSERT_EQUAL(FF_INTENT_SETTING_SET, s_spy.last.kind);
+    TEST_ASSERT_EQUAL(FF_SETTING_WATER_MIN, s_spy.last.u.setting.id);
+    TEST_ASSERT_EQUAL_INT32(120, s_spy.last.u.setting.v.i); /* 90 -> 120, spec's v1 cycle */
+}
+
+/* A quiet-hours tap sets TWO fields (quiet_from_min AND quiet_to_min) —
+ * two separate FF_INTENT_SETTING_SET emits per click. The shared s_spy
+ * only remembers the LAST intent, which is enough for every other test in
+ * this file (one control, one emit) but not this one, so this test binds
+ * its own small history spy for the duration of the click. */
+typedef struct {
+    int count;
+    ff_intent_t items[4];
+} history_spy_t;
+
+static void history_spy_cb(void *user, ff_intent_t const *in)
+{
+    history_spy_t *h = (history_spy_t *)user;
+    if (h->count < (int)(sizeof(h->items) / sizeof(h->items[0]))) {
+        h->items[h->count] = *in;
+    }
+    h->count++;
+}
+
+static void S11b_settings_quiet_chip_sets_both_from_and_to(void)
+{
+    ff_app_settings_t s;
+    memset(&s, 0, sizeof(s));
+    s.quiet_from_min = 240;
+    s.quiet_to_min = 600; /* the "4A-10A" preset */
+
+    ff_scr_settings_build(&s);
+
+    history_spy_t hist;
+    memset(&hist, 0, sizeof(hist));
+    ff_intent_emit_bind(history_spy_cb, &hist);
+
+    click(find_button_with_label(lv_screen_active(), "4A-10A"));
+
+    /* Cycle order per docs/specs/S11-settings.md: off -> 2a-8a -> 4a-10a
+     * -> off. From 4A-10A, the next preset is OFF (0, 0). */
+    TEST_ASSERT_EQUAL_INT(2, hist.count);
+    TEST_ASSERT_EQUAL(FF_INTENT_SETTING_SET, hist.items[0].kind);
+    TEST_ASSERT_EQUAL(FF_SETTING_QUIET_FROM_MIN, hist.items[0].u.setting.id);
+    TEST_ASSERT_EQUAL_INT32(0, hist.items[0].u.setting.v.i);
+    TEST_ASSERT_EQUAL(FF_INTENT_SETTING_SET, hist.items[1].kind);
+    TEST_ASSERT_EQUAL(FF_SETTING_QUIET_TO_MIN, hist.items[1].u.setting.id);
+    TEST_ASSERT_EQUAL_INT32(0, hist.items[1].u.setting.v.i);
+
+    /* Restore the shared spy for tearDown's unbind + any later test. */
+    ff_intent_emit_bind(spy_sink_cb, &s_spy);
+}
+
+static void S11b_settings_utc_offset_stepper_minus_and_plus(void)
+{
+    ff_app_settings_t s;
+    memset(&s, 0, sizeof(s));
+    s.utc_offset_set = true;
+    s.utc_offset_min = -300; /* renders "UTC-5:00" */
+
+    ff_scr_settings_build(&s);
+
+    click(find_button_with_label(lv_screen_active(), "-"));
+    TEST_ASSERT_EQUAL_INT(1, s_spy.count);
+    TEST_ASSERT_EQUAL(FF_INTENT_SETTING_SET, s_spy.last.kind);
+    TEST_ASSERT_EQUAL(FF_SETTING_UTC_OFFSET_MIN, s_spy.last.u.setting.id);
+    TEST_ASSERT_EQUAL_INT32(-360, s_spy.last.u.setting.v.i);
+
+    click(find_button_with_label(lv_screen_active(), "+"));
+    TEST_ASSERT_EQUAL_INT(2, s_spy.count);
+    TEST_ASSERT_EQUAL(FF_SETTING_UTC_OFFSET_MIN, s_spy.last.u.setting.id);
+    TEST_ASSERT_EQUAL_INT32(-240, s_spy.last.u.setting.v.i);
+}
+
+/* Unset (never configured) starts stepping from 0 (UTC), not from garbage
+ * or a rejected/no-op tap — there is no honest "current" numeric value to
+ * step from otherwise (scr_settings.c's settings_utc_base). */
+static void S11b_settings_utc_offset_stepper_starts_from_utc_when_unset(void)
+{
+    ff_app_settings_t s;
+    memset(&s, 0, sizeof(s)); /* utc_offset_set false: renders "UNSET" */
+
+    ff_scr_settings_build(&s);
+
+    click(find_button_with_label(lv_screen_active(), "+"));
+
+    TEST_ASSERT_EQUAL_INT(1, s_spy.count);
+    TEST_ASSERT_EQUAL(FF_INTENT_SETTING_SET, s_spy.last.kind);
+    TEST_ASSERT_EQUAL(FF_SETTING_UTC_OFFSET_MIN, s_spy.last.u.setting.id);
+    TEST_ASSERT_EQUAL_INT32(60, s_spy.last.u.setting.v.i);
+}
+
+/* =================================================================== */
 /* Unbound seam (goldens/headless) — every wired site is a safe no-op   */
 /* =================================================================== */
 
@@ -740,6 +925,15 @@ int main(void)
     RUN_TEST(S16_c2_flare_takeover_go_emits_takeover_go);
     RUN_TEST(S16_c2_flare_takeover_dismiss_emits_takeover_dismiss);
     RUN_TEST(S16_c2_sender_overlay_cancel_emits_flare_end);
+    RUN_TEST(S11b_settings_back_emits_back);
+    RUN_TEST(S11b_settings_units_chip_toggles_imperial);
+    RUN_TEST(S11b_settings_share_chip_cycles_live_to_zones);
+    RUN_TEST(S11b_settings_haptics_chip_toggles);
+    RUN_TEST(S11b_settings_night_glow_chip_toggles);
+    RUN_TEST(S11b_settings_water_chip_cycles_presets);
+    RUN_TEST(S11b_settings_quiet_chip_sets_both_from_and_to);
+    RUN_TEST(S11b_settings_utc_offset_stepper_minus_and_plus);
+    RUN_TEST(S11b_settings_utc_offset_stepper_starts_from_utc_when_unset);
     RUN_TEST(S16_c1_wired_sites_are_noops_while_the_seam_is_unbound);
 
     return UNITY_END();

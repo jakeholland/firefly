@@ -13,7 +13,7 @@ Four of the six v1 faces, running. The arrow finds your friend, the lineup admit
 
 ## Status
 
-**The app runs.** As of 2026-08-24 the shell (S16) is complete: swipe between faces, type on the T9, get interrupted by a flare and keep your draft, reconnect when the link drops, and settings persist across restarts — live, against a real Meshtastic node, on the desktop simulator. Four of the six v1 faces are built (Radar, Now, Signals with its composer, Flare); Map and Settings aren't started. What's left is those two faces and the device target itself — display driver, the link to the comms brain, sensors — which needs the hardware in hand. First field test: **Lost Lands, Sep 18–20 2026**.
+**The app runs.** As of 2026-08-24 the shell (S16) is complete: swipe between faces, type on the T9, get interrupted by a flare and keep your draft, reconnect when the link drops, and settings persist across restarts — live, against a real Meshtastic node, on the desktop simulator. Five of the six v1 faces are built (Radar, Now, Signals with its composer, Flare, Settings); only Map isn't started. What's left is that face and the device target itself — display driver, the link to the comms brain, sensors — which needs the hardware in hand. First field test: **Lost Lands, Sep 18–20 2026**.
 
 <p align="center">
   <img src="docs/screens/s16-alive.gif" width="300" alt="A live driven session: swiping from the radar's honest empty state through the Lost Lands lineup to Signals, typing omw on the T9 keypad, a flare takeover interrupting mid-draft with a live countdown, and the composer returning with the draft intact after DISMISS.">
@@ -35,7 +35,7 @@ This table is meant to be accurate rather than flattering — if something rende
 | Dev harness — control socket, dockerised Meshtastic node, end-to-end tests | ✅ on `main` |
 | **Signals + Compose** — pulses, rally points, canned replies, and a T9 keypad with ABC/123/SYM pages | ✅ on `main` |
 | **Map face** — vector festival grounds with crew dots | ⏳ not started (S09) |
-| **Settings face** — units, quiet hours, share mode, name | ⏳ model on `main`, no screen yet (S11 slice b) |
+| **Settings face** — units, quiet hours, share mode, name | ✅ on `main` (S11 slice b — long-press-anywhere; renaming is display-only, see below) |
 | **App shell** — event loop, face routing, input dispatch, wall clock, link state, settings persistence | ✅ complete (S16, 9 slices) |
 | ESP32-S3 device target, enclosure | ⏳ when boards arrive |
 
@@ -80,7 +80,7 @@ No fork to maintain, no phone required, ~$80 in parts. Battery life is a design 
 | **Signals** | Pulses, rally points, canned replies, T9 composer |
 | **Flare** | Press-and-hold "come find me" — crew pucks buzz and lock their arrows on you |
 | **Map** *(not built yet)* | Vector festival grounds from a festival pack, crew dots included — specced as S09, wanted for v1, no code yet |
-| **Settings** *(not built yet)* | Units, quiet hours, share mode, your name — the model is on `main`, the screen isn't (S11 slice b) |
+| **Settings** | Units, quiet hours, share mode, UTC offset — long-press anywhere to open it. Your name is shown but not yet editable: renaming needs its own T9 draft seam (the shell's only typed-input state today is the composer's), tracked as a follow-up rather than force-fit onto it |
 
 Festival data (map polygons + lineup + set times) loads as a **festpack** — see [fest-almanac](https://github.com/jakeholland/fest-almanac), the open per-festival data repo.
 

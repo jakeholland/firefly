@@ -357,6 +357,19 @@ typedef struct {
     uint16_t quiet_from_min;
     uint16_t quiet_to_min;
     char     my_name[FF_APP_NAME_LEN];
+
+    /* [api] S11 slice b addition: the Settings face's UTC-offset row needs
+     * a current value to render and step from — omitted until now because
+     * nothing rendered this section at all (S11b is the first real
+     * consumer). Mirrors ff_settings_t's own utc_offset_min/utc_offset_set
+     * pair field-for-field (core/include/ff_settings.h, S16 slice b0's
+     * amendment to S11) — same "0 is legitimately UTC, so the flag is not
+     * redundant" reasoning applies here: a bare int16_t cannot distinguish
+     * "never configured" from "configured to UTC+0", and scr_settings.c
+     * must render the former as an honest "UNSET", never a fabricated
+     * "+0:00" (CLAUDE.md: "unknown = explicitly unknown"). */
+    int16_t  utc_offset_min;
+    bool     utc_offset_set;
 } ff_app_settings_t;
 
 /* -------------------------------------------------------------------

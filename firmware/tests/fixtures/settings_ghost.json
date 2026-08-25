@@ -1,0 +1,16 @@
+{
+  "fixture": "settings_ghost",
+  "face": "settings",
+  "settings": {
+    "imperial": false,
+    "share_mode": "ghost",
+    "haptics": false,
+    "night_glow": false,
+    "water_min": 0,
+    "quiet_from_min": 0,
+    "quiet_to_min": 0,
+    "my_name": "",
+    "utc_offset_set": false,
+    "utc_offset_min": 0
+  }
+}

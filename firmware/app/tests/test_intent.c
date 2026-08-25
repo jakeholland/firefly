@@ -336,20 +336,36 @@ static void S16_c1_back_clears_the_compose_destination(void)
 }
 
 /* =================================================================== */
-/* OPEN_SETTINGS — the judgment call: rejected until S11b's renderer    */
+/* OPEN_SETTINGS — round trip (S11 slice b: the renderer now exists,    */
+/* resolving the judgment call ff_shell.c's k_settings_renderer_exists  */
+/* comment records — see that comment's history for the prior-rejected  */
+/* behavior this test used to pin, up through PR #54).                  */
 /* =================================================================== */
 
-static void S16_c1_open_settings_is_rejected_until_a_renderer_exists(void)
+static void S16_c1_open_settings_and_back_round_trip(void)
 {
     harness_init(100000u);
+    send_swipe(+1); /* Now — prove the modal opens over a non-Radar base too */
+    TEST_ASSERT_EQUAL(FF_APP_FACE_NOW, view()->active_face);
 
     send_kind(FF_INTENT_OPEN_SETTINGS);
-    TEST_ASSERT_EQUAL(FF_APP_FACE_RADAR, view()->active_face); /* no modal pushed */
+    TEST_ASSERT_EQUAL(FF_APP_FACE_SETTINGS, view()->active_face);
 
-    /* And crucially NOT wedged: no invisible modal is suppressing swipe
-     * (the dead-end this judgment call exists to avoid — see
-     * ff_shell.c's k_settings_renderer_exists comment). */
-    send_swipe(+1);
+    /* Any modal suppresses swipe (AC2 at the seam): a horizontal drag
+     * must never slide the settings face away. */
+    send_swipe(-1);
+    TEST_ASSERT_EQUAL(FF_APP_FACE_SETTINGS, view()->active_face);
+
+    /* A second OPEN_SETTINGS over the modal is rejected, not a replace —
+     * one modal slot, same rule OPEN_COMPOSE follows. */
+    send_kind(FF_INTENT_OPEN_SETTINGS);
+    TEST_ASSERT_EQUAL(FF_APP_FACE_SETTINGS, view()->active_face);
+
+    send_kind(FF_INTENT_BACK);
+    TEST_ASSERT_EQUAL(FF_APP_FACE_NOW, view()->active_face); /* base intact underneath */
+
+    /* BACK on a bare face is a no-op, not a face change. */
+    send_kind(FF_INTENT_BACK);
     TEST_ASSERT_EQUAL(FF_APP_FACE_NOW, view()->active_face);
 }
 
@@ -834,7 +850,7 @@ int main(void)
     RUN_TEST(S16_c1_open_compose_never_retargets_an_unhonorable_destination);
     RUN_TEST(S16_c1_a_rejected_open_compose_does_not_retarget_the_composer);
     RUN_TEST(S16_c1_back_clears_the_compose_destination);
-    RUN_TEST(S16_c1_open_settings_is_rejected_until_a_renderer_exists);
+    RUN_TEST(S16_c1_open_settings_and_back_round_trip);
     RUN_TEST(S16_c1_route_intents_are_rejected_while_a_takeover_is_visible);
     RUN_TEST(S16_c1_takeover_decisions_require_a_visible_takeover);
     RUN_TEST(S16_c1_release_lock_and_takeover_dismiss_are_never_folded);
