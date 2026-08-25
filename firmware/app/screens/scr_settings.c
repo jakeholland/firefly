@@ -85,6 +85,17 @@
 
 #define FF_SETTINGS_ROW_H   FF_THEME_MIN_HIT_PX
 #define FF_SETTINGS_ROW_GAP 10
+
+/* Separation between the two chips sharing a row (units+share,
+ * haptics+night-glow). PR #68 UX review (Bailey, blocking finding 2):
+ * the original 10px was under 1mm of dead space at this puck's ~12px/mm
+ * scale (37mm face, per docs/review/ux-raver.md) — "a mis-tap trap ...
+ * not just a vibe". 24px (~2mm) gives each 44px-tall pill a real gap a
+ * kandi'd or gloved thumb can land in without ambiguity which chip it
+ * hit; re-checked against `test_face_hit_targets.c`'s sweep afterward
+ * (each chip individually still clears the 44px floor and stays inside
+ * the round glass at the widened width). */
+#define FF_SETTINGS_CHIP_GAP 24
 #define FF_SETTINGS_ROW_STEP (FF_SETTINGS_ROW_H + FF_SETTINGS_ROW_GAP)
 #define FF_SETTINGS_ROWS_Y0 (FF_SETTINGS_NAME_Y + FF_SETTINGS_NAME_H + 12)
 
@@ -175,13 +186,39 @@ static lv_obj_t *settings_make_chip(lv_obj_t *parent, char const *text, int32_t 
     return btn;
 }
 
-static void settings_build_row_label(lv_obj_t *parent, char const *text, int32_t x, int32_t y)
+/**
+ * settings_build_row_label — the dim row caption (e.g. "WATER NUDGE"),
+ * now itself a tap target forwarding to `cb` (PR #68 UX review, Bailey,
+ * non-blocking finding: tapping the label half of a row used to be dead
+ * air — no ripple, no state change — which at 2 a.m. reads as "is this
+ * thing frozen" rather than "I tapped the wrong half"). The label sits
+ * inside a `w`x`h` hit container spanning the row's own height (so it
+ * clears the 44px floor by construction, same technique
+ * `signals_build_row`'s icon+text rows already use) rather than the bare
+ * label growing an `ext_click_area` of its own — a container gives the
+ * label a real, checkable box `test_face_hit_targets.c`'s sweep can
+ * assert on directly.
+ */
+static void settings_build_row_label(lv_obj_t *parent, char const *text, int32_t x, int32_t y, int32_t w, int32_t h,
+                                      lv_event_cb_t cb)
 {
-    lv_obj_t *lbl = lv_label_create(parent);
+    lv_obj_t *hit = lv_obj_create(parent);
+    lv_obj_remove_style_all(hit);
+    lv_obj_set_size(hit, w, h);
+    lv_obj_set_pos(hit, x, y);
+    lv_obj_clear_flag(hit, LV_OBJ_FLAG_SCROLLABLE);
+    if (cb != NULL) {
+        lv_obj_add_flag(hit, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_add_event_cb(hit, cb, LV_EVENT_CLICKED, NULL);
+    } else {
+        lv_obj_clear_flag(hit, LV_OBJ_FLAG_CLICKABLE);
+    }
+
+    lv_obj_t *lbl = lv_label_create(hit);
     lv_label_set_text(lbl, text);
     lv_obj_set_style_text_font(lbl, FF_THEME_FONT_LABEL, 0);
     lv_obj_set_style_text_color(lbl, lv_color_hex(FF_THEME_COLOR_DIM), 0);
-    lv_obj_set_pos(lbl, x, y);
+    lv_obj_align(lbl, LV_ALIGN_LEFT_MID, 0, 0);
 }
 
 /* ---------------------------------------------------------------------
@@ -194,16 +231,31 @@ static void settings_units_cb(lv_event_t *e)
     settings_emit_int(FF_SETTING_IMPERIAL, s_settings.imperial ? 0 : 1);
 }
 
+/**
+ * ZONES is deliberately NOT cycled into (PR #68 UX review, Bailey,
+ * blocking finding 1). Per docs/specs/S11-settings.md's Behavior section
+ * ("v1: LIVE/GHOST honored; ZONES=LIVE + issue"), selecting ZONES in this
+ * build does not change sharing behavior from LIVE at all — cycling it in
+ * as a third, equally-confident amber option would let someone pick
+ * "zones only" believing they've restricted their share radius when they
+ * haven't, which for a location-privacy control is the worst possible
+ * place for a silent no-op (the checklist's "would I ever follow wrong
+ * data confidently" item, and yes, here). Fixed as reviewed: LIVE<->GHOST
+ * only, a plain two-stop loop, until the ZONES backend (spec slice c)
+ * ships and this comment comes out — NOT grayed out or marked
+ * "(soon)": an unexplained disabled option at 2 a.m. reads as broken,
+ * and absence is cleaner than a control that announces its own
+ * incompleteness (per the review's own instruction).
+ *
+ * If `share_mode` somehow already reads FF_SHARE_ZONES (e.g. a value
+ * persisted by some future build that finishes the backend and is then
+ * downgraded), one tap moves it to GHOST — same two-stop loop, never
+ * back into ZONES from a tap either way.
+ */
 static void settings_share_cb(lv_event_t *e)
 {
     (void)e;
-    uint8_t next;
-    switch (s_settings.share_mode) {
-    case FF_SHARE_LIVE: next = FF_SHARE_ZONES; break;
-    case FF_SHARE_ZONES: next = FF_SHARE_GHOST; break;
-    case FF_SHARE_GHOST:
-    default: next = FF_SHARE_LIVE; break;
-    }
+    uint8_t const next = (s_settings.share_mode == FF_SHARE_GHOST) ? FF_SHARE_LIVE : FF_SHARE_GHOST;
     settings_emit_int(FF_SETTING_SHARE_MODE, next);
 }
 
@@ -221,7 +273,7 @@ static void settings_build_row0(lv_obj_t *parent)
 {
     int32_t margin = settings_safe_margin_x(FF_SETTINGS_ROW0_Y, FF_SETTINGS_ROW_H);
     int32_t row_w = FF_THEME_PUCK_PX - 2 * margin;
-    int32_t gap = 10;
+    int32_t gap = FF_SETTINGS_CHIP_GAP;
     int32_t units_w = (row_w - gap) * 2 / 5;
     int32_t share_w = row_w - gap - units_w;
 
@@ -252,7 +304,7 @@ static void settings_build_row1(lv_obj_t *parent)
 {
     int32_t margin = settings_safe_margin_x(FF_SETTINGS_ROW1_Y, FF_SETTINGS_ROW_H);
     int32_t row_w = FF_THEME_PUCK_PX - 2 * margin;
-    int32_t gap = 10;
+    int32_t gap = FF_SETTINGS_CHIP_GAP;
     int32_t half_w = (row_w - gap) / 2;
 
     settings_make_chip(parent, s_settings.haptics ? "BUZZ ON" : "BUZZ OFF", margin, FF_SETTINGS_ROW1_Y, half_w,
@@ -427,11 +479,20 @@ void ff_scr_settings_build(ff_app_settings_t const *settings)
     /* --- Header: back (dead-end escape, ux-raver checklist item 6) + title. --- */
     int32_t header_margin = settings_safe_margin_x(FF_SETTINGS_HEADER_Y, FF_SETTINGS_HEADER_H);
 
+    /* Filled chip background (PR #68 UX review, Bailey, non-blocking):
+     * every other tappable thing on this screen is a solid rounded-rect
+     * pill; a transparent BACK button was the one control with the
+     * LEAST affordance despite being the escape hatch someone most needs
+     * in a hurry. Same FF_THEME_COLOR_SURFACE fill as every other chip,
+     * matching this screen's own visual grammar instead of standing out
+     * as an exception to it. */
     lv_obj_t *back = lv_button_create(puck);
     lv_obj_remove_style_all(back);
     lv_obj_set_size(back, FF_THEME_MIN_HIT_PX, FF_THEME_MIN_HIT_PX);
     lv_obj_set_pos(back, header_margin, FF_SETTINGS_HEADER_Y);
-    lv_obj_set_style_bg_opa(back, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_bg_color(back, lv_color_hex(FF_THEME_COLOR_SURFACE), 0);
+    lv_obj_set_style_bg_opa(back, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(back, LV_RADIUS_CIRCLE, 0);
     lv_obj_add_event_cb(back, settings_back_cb, LV_EVENT_CLICKED, NULL);
     lv_obj_t *back_lbl = lv_label_create(back);
     lv_label_set_text(back_lbl, "<");
@@ -464,28 +525,42 @@ void ff_scr_settings_build(ff_app_settings_t const *settings)
     settings_build_row0(puck);
     settings_build_row1(puck);
 
-    /* --- Row 2: WATER NUDGE. --- */
+    /* --- Row 2: WATER NUDGE. ---
+     * OFF-color convention (PR #68 UX review, Bailey, non-blocking):
+     * dim grey for the off state, matching haptics/night-glow's
+     * green-on/grey-off row exactly for the "off" half — amber stays
+     * reserved for an actively configured value (this chip isn't a
+     * plain boolean like haptics/glow, so it doesn't borrow green for
+     * "on"), but OFF now reads the same dim grey everywhere on this
+     * screen instead of amber in some rows and grey in others. */
     {
         int32_t margin = settings_safe_margin_x(FF_SETTINGS_ROW2_Y, FF_SETTINGS_ROW_H);
-        settings_build_row_label(puck, "WATER NUDGE", margin, FF_SETTINGS_ROW2_Y + (FF_SETTINGS_ROW_H - 16) / 2);
+        int32_t chip_w = 110;
+        int32_t label_w = FF_THEME_PUCK_PX - margin - chip_w - FF_SETTINGS_CHIP_GAP - margin;
+        settings_build_row_label(puck, "WATER NUDGE", margin, FF_SETTINGS_ROW2_Y, label_w, FF_SETTINGS_ROW_H,
+                                  settings_water_cb);
 
         char buf[16];
         settings_water_label(buf, sizeof(buf), s_settings.water_min);
-        int32_t chip_w = 110;
+        uint32_t const fg = (s_settings.water_min == 0) ? FF_THEME_COLOR_DIM : FF_THEME_COLOR_AMBER;
         settings_make_chip(puck, buf, FF_THEME_PUCK_PX - margin - chip_w, FF_SETTINGS_ROW2_Y, chip_w,
-                            FF_SETTINGS_ROW_H, FF_THEME_COLOR_SURFACE, FF_THEME_COLOR_AMBER, settings_water_cb, NULL);
+                            FF_SETTINGS_ROW_H, FF_THEME_COLOR_SURFACE, fg, settings_water_cb, NULL);
     }
 
-    /* --- Row 3: QUIET HOURS. --- */
+    /* --- Row 3: QUIET HOURS. Same OFF-color convention as row 2. --- */
     {
         int32_t margin = settings_safe_margin_x(FF_SETTINGS_ROW3_Y, FF_SETTINGS_ROW_H);
-        settings_build_row_label(puck, "QUIET HOURS", margin, FF_SETTINGS_ROW3_Y + (FF_SETTINGS_ROW_H - 16) / 2);
+        int32_t chip_w = 110;
+        int32_t label_w = FF_THEME_PUCK_PX - margin - chip_w - FF_SETTINGS_CHIP_GAP - margin;
+        settings_build_row_label(puck, "QUIET HOURS", margin, FF_SETTINGS_ROW3_Y, label_w, FF_SETTINGS_ROW_H,
+                                  settings_quiet_cb);
 
         settings_quiet_preset_t const *cur = settings_current_quiet(s_settings.quiet_from_min, s_settings.quiet_to_min);
-        int32_t chip_w = 110;
+        bool const is_off = (cur != NULL) && (cur->from_min == 0) && (cur->to_min == 0);
+        uint32_t const fg = is_off ? FF_THEME_COLOR_DIM : FF_THEME_COLOR_AMBER;
         settings_make_chip(puck, (cur != NULL) ? cur->label : "CUSTOM", FF_THEME_PUCK_PX - margin - chip_w,
-                            FF_SETTINGS_ROW3_Y, chip_w, FF_SETTINGS_ROW_H, FF_THEME_COLOR_SURFACE,
-                            FF_THEME_COLOR_AMBER, settings_quiet_cb, NULL);
+                            FF_SETTINGS_ROW3_Y, chip_w, FF_SETTINGS_ROW_H, FF_THEME_COLOR_SURFACE, fg,
+                            settings_quiet_cb, NULL);
     }
 
     /* --- Row 4: UTC OFFSET stepper. --- */

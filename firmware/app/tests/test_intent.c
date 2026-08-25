@@ -369,6 +369,45 @@ static void S16_c1_open_settings_and_back_round_trip(void)
     TEST_ASSERT_EQUAL(FF_APP_FACE_NOW, view()->active_face);
 }
 
+/**
+ * A pending compose draft survives a visit to Settings (PR #68 code
+ * review: "genuinely untested" ad hoc probe, adopted here as a real
+ * test per the coordinator's suggestion). Settings has no seam onto
+ * `compose_draft` at all — every `T9_*`/`SEND_TEXT` intent is Compose's,
+ * and nothing `scr_settings.c` emits touches it — so this is provable
+ * directly: type into Compose, leave for Settings, come back, the draft
+ * is untouched.
+ */
+static void S11b_a_compose_draft_survives_a_settings_visit(void)
+{
+    harness_init(100000u);
+    pair_named(DANA, "DANA");
+
+    send_open_compose(DANA);
+    TEST_ASSERT_EQUAL(FF_APP_FACE_COMPOSE, view()->active_face);
+
+    char text_buf[8];
+    strcpy(text_buf, "omw");
+    ff_intent_t t9 = {.kind = FF_INTENT_T9_INSERT, .u = {0}};
+    t9.u.text = text_buf;
+    ff_shell_intent(&H.shell, &t9);
+    TEST_ASSERT_EQUAL_STRING("omw", view()->compose.text);
+
+    send_kind(FF_INTENT_BACK);
+    TEST_ASSERT_EQUAL(FF_APP_FACE_RADAR, view()->active_face);
+
+    send_kind(FF_INTENT_OPEN_SETTINGS);
+    TEST_ASSERT_EQUAL(FF_APP_FACE_SETTINGS, view()->active_face);
+    /* The draft is still projected — unconditionally, every tick,
+     * regardless of active_face (ff_shell.c's shell_project) — even
+     * while it isn't the visible face. */
+    TEST_ASSERT_EQUAL_STRING("omw", view()->compose.text);
+
+    send_kind(FF_INTENT_BACK);
+    TEST_ASSERT_EQUAL(FF_APP_FACE_RADAR, view()->active_face);
+    TEST_ASSERT_EQUAL_STRING("omw", view()->compose.text); /* still there, untouched */
+}
+
 /* =================================================================== */
 /* Routing rule 4 — dispatch targets the VISIBLE face                   */
 /* =================================================================== */
@@ -720,6 +759,40 @@ static void S16_AC8_setting_set_is_rejected_while_a_takeover_is_visible(void)
     ff_shell_close(&h.shell);
 }
 
+/**
+ * PR #68 code review, HIGH finding 1: `shell_project_settings`'s two
+ * lines projecting `utc_offset_min`/`utc_offset_set` into the VIEW
+ * (`ff_app_state_t.settings` — what `scr_settings.c` actually renders
+ * from) had no test — every existing UTC-offset assertion above reads
+ * `ff_shell_settings()`, the raw internal `ff_settings_t`
+ * `shell_setting_set` writes, which proves the validation gate but not
+ * the projection step. Deleting those two lines left the whole suite
+ * green (verified by the reviewer, and re-verified here after adding
+ * this test — see the mutation note below). This test closes that gap at
+ * the seam every OTHER field of this same projection is already checked
+ * at (S16_c1_open_compose_defaults_to_the_selected_crew_member and
+ * friends all assert on `view()`, never the raw internal state, for
+ * exactly this reason).
+ */
+static void S11b_setting_set_utc_offset_reaches_the_view_projection(void)
+{
+    setting_harness_t h;
+    setting_harness_init(&h);
+
+    (void)ff_shell_tick(&h.shell, h.clk.t);
+    ff_app_state_t const *before = ff_shell_view(&h.shell);
+    TEST_ASSERT_FALSE(before->settings.utc_offset_set); /* default: never configured */
+
+    setting_send(&h.shell, FF_SETTING_UTC_OFFSET_MIN, -420, NULL); /* UTC-7:00 */
+
+    (void)ff_shell_tick(&h.shell, h.clk.t);
+    ff_app_state_t const *after = ff_shell_view(&h.shell);
+    TEST_ASSERT_TRUE(after->settings.utc_offset_set);
+    TEST_ASSERT_EQUAL_INT16(-420, after->settings.utc_offset_min);
+
+    ff_shell_close(&h.shell);
+}
+
 /* =================================================================== */
 /* Payload ownership — NOT owned; copied                                */
 /* =================================================================== */
@@ -851,6 +924,7 @@ int main(void)
     RUN_TEST(S16_c1_a_rejected_open_compose_does_not_retarget_the_composer);
     RUN_TEST(S16_c1_back_clears_the_compose_destination);
     RUN_TEST(S16_c1_open_settings_and_back_round_trip);
+    RUN_TEST(S11b_a_compose_draft_survives_a_settings_visit);
     RUN_TEST(S16_c1_route_intents_are_rejected_while_a_takeover_is_visible);
     RUN_TEST(S16_c1_takeover_decisions_require_a_visible_takeover);
     RUN_TEST(S16_c1_release_lock_and_takeover_dismiss_are_never_folded);
@@ -861,6 +935,7 @@ int main(void)
     RUN_TEST(S16_AC8_setting_set_out_of_range_is_rejected_not_clamped);
     RUN_TEST(S16_AC8_setting_set_my_name_is_bounded_and_terminated);
     RUN_TEST(S16_AC8_setting_set_is_rejected_while_a_takeover_is_visible);
+    RUN_TEST(S11b_setting_set_utc_offset_reaches_the_view_projection);
     RUN_TEST(S16_c1_intent_struct_and_pointer_payloads_are_borrowed_only);
     RUN_TEST(S16_c1_emit_seam_forwards_when_bound_and_noops_unbound);
     RUN_TEST(S16_c1_null_and_garbage_dispatch_is_safe);

@@ -42,6 +42,7 @@
 #include "ff_app_state.h"
 #include "ff_intent.h"
 #include "ff_radar.h"
+#include "ff_settings.h" /* FF_SHARE_LIVE/_ZONES/_GHOST, for the settings-face share-mode tests */
 #include "scr_compose.h"
 #include "scr_flare.h"
 #include "scr_nav.h"
@@ -729,7 +730,11 @@ static void S11b_settings_units_chip_toggles_imperial(void)
     TEST_ASSERT_EQUAL_INT32(0, s_spy.last.u.setting.v.i); /* FT -> M */
 }
 
-static void S11b_settings_share_chip_cycles_live_to_zones(void)
+/* PR #68 UX review (Bailey, blocking finding 1): ZONES is functionally
+ * LIVE in this build (docs/specs/S11-settings.md's own "v1: LIVE/GHOST
+ * honored; ZONES=LIVE + issue"), so the chip must never cycle a tap onto
+ * it — LIVE and GHOST only, a plain two-stop loop. */
+static void S11b_settings_share_chip_cycles_live_to_ghost_skipping_zones(void)
 {
     ff_app_settings_t s;
     memset(&s, 0, sizeof(s)); /* share_mode 0 = FF_SHARE_LIVE, renders "LIVE" */
@@ -741,7 +746,34 @@ static void S11b_settings_share_chip_cycles_live_to_zones(void)
     TEST_ASSERT_EQUAL_INT(1, s_spy.count);
     TEST_ASSERT_EQUAL(FF_INTENT_SETTING_SET, s_spy.last.kind);
     TEST_ASSERT_EQUAL(FF_SETTING_SHARE_MODE, s_spy.last.u.setting.id);
-    TEST_ASSERT_EQUAL_INT32(1, s_spy.last.u.setting.v.i); /* LIVE -> ZONES */
+    TEST_ASSERT_EQUAL_INT32(FF_SHARE_GHOST, s_spy.last.u.setting.v.i); /* LIVE -> GHOST, never ZONES */
+}
+
+/* The other direction, and the persisted-ZONES edge case: even if
+ * `share_mode` somehow already reads ZONES, a tap moves it to GHOST —
+ * never back into ZONES, and never stuck. */
+static void S11b_settings_share_chip_from_ghost_and_from_zones_both_avoid_zones(void)
+{
+    ff_app_settings_t s;
+    memset(&s, 0, sizeof(s));
+    s.share_mode = FF_SHARE_GHOST;
+
+    ff_scr_settings_build(&s);
+    click(find_button_with_label(lv_screen_active(), "GHOST"));
+    TEST_ASSERT_EQUAL_INT(1, s_spy.count);
+    TEST_ASSERT_EQUAL(FF_SETTING_SHARE_MODE, s_spy.last.u.setting.id);
+    TEST_ASSERT_EQUAL_INT32(FF_SHARE_LIVE, s_spy.last.u.setting.v.i); /* GHOST -> LIVE */
+
+    memset(&s_spy, 0, sizeof(s_spy));
+    lv_obj_clean(lv_screen_active());
+    memset(&s, 0, sizeof(s));
+    s.share_mode = FF_SHARE_ZONES; /* the persisted-ZONES edge case */
+
+    ff_scr_settings_build(&s);
+    click(find_button_with_label(lv_screen_active(), "ZONES")); /* renders honestly if it's the stored value */
+    TEST_ASSERT_EQUAL_INT(1, s_spy.count);
+    TEST_ASSERT_EQUAL(FF_SETTING_SHARE_MODE, s_spy.last.u.setting.id);
+    TEST_ASSERT_EQUAL_INT32(FF_SHARE_GHOST, s_spy.last.u.setting.v.i); /* ZONES -> GHOST, not back to ZONES */
 }
 
 static void S11b_settings_haptics_chip_toggles(void)
@@ -790,6 +822,31 @@ static void S11b_settings_water_chip_cycles_presets(void)
     TEST_ASSERT_EQUAL(FF_INTENT_SETTING_SET, s_spy.last.kind);
     TEST_ASSERT_EQUAL(FF_SETTING_WATER_MIN, s_spy.last.u.setting.id);
     TEST_ASSERT_EQUAL_INT32(120, s_spy.last.u.setting.v.i); /* 90 -> 120, spec's v1 cycle */
+}
+
+/* PR #68 UX review (Bailey, non-blocking finding, fixed here): the row
+ * LABEL, not just the value chip, now forwards to the same intent — no
+ * more silent dead zone on the left half of the row. */
+static void S11b_settings_water_label_tap_also_cycles(void)
+{
+    ff_app_settings_t s;
+    memset(&s, 0, sizeof(s));
+    s.water_min = 90;
+
+    ff_scr_settings_build(&s);
+
+    lv_obj_t *label = find_label_exact(lv_screen_active(), "WATER NUDGE");
+    TEST_ASSERT_NOT_NULL(label);
+    lv_obj_t *hit = lv_obj_get_parent(label);
+    TEST_ASSERT_NOT_NULL(hit);
+    TEST_ASSERT_TRUE(lv_obj_has_flag(hit, LV_OBJ_FLAG_CLICKABLE));
+
+    click(hit);
+
+    TEST_ASSERT_EQUAL_INT(1, s_spy.count);
+    TEST_ASSERT_EQUAL(FF_INTENT_SETTING_SET, s_spy.last.kind);
+    TEST_ASSERT_EQUAL(FF_SETTING_WATER_MIN, s_spy.last.u.setting.id);
+    TEST_ASSERT_EQUAL_INT32(120, s_spy.last.u.setting.v.i);
 }
 
 /* A quiet-hours tap sets TWO fields (quiet_from_min AND quiet_to_min) —
@@ -927,10 +984,12 @@ int main(void)
     RUN_TEST(S16_c2_sender_overlay_cancel_emits_flare_end);
     RUN_TEST(S11b_settings_back_emits_back);
     RUN_TEST(S11b_settings_units_chip_toggles_imperial);
-    RUN_TEST(S11b_settings_share_chip_cycles_live_to_zones);
+    RUN_TEST(S11b_settings_share_chip_cycles_live_to_ghost_skipping_zones);
+    RUN_TEST(S11b_settings_share_chip_from_ghost_and_from_zones_both_avoid_zones);
     RUN_TEST(S11b_settings_haptics_chip_toggles);
     RUN_TEST(S11b_settings_night_glow_chip_toggles);
     RUN_TEST(S11b_settings_water_chip_cycles_presets);
+    RUN_TEST(S11b_settings_water_label_tap_also_cycles);
     RUN_TEST(S11b_settings_quiet_chip_sets_both_from_and_to);
     RUN_TEST(S11b_settings_utc_offset_stepper_minus_and_plus);
     RUN_TEST(S11b_settings_utc_offset_stepper_starts_from_utc_when_unset);

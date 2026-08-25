@@ -553,7 +553,8 @@ static void settings_section_parses_every_field(void)
     char const *json = "{\"settings\": {"
                         "  \"imperial\": false, \"share_mode\": \"ghost\", \"haptics\": false, "
                         "  \"night_glow\": false, \"water_min\": 120, \"quiet_from_min\": 0, "
-                        "  \"quiet_to_min\": 480, \"my_name\": \"DANA\""
+                        "  \"quiet_to_min\": 480, \"my_name\": \"DANA\", "
+                        "  \"utc_offset_set\": true, \"utc_offset_min\": -420"
                         "}}";
     TEST_ASSERT_EQUAL_INT(FF_FIXTURE_OK, ff_fixture_load_json(json, strlen(json), &s));
 
@@ -565,6 +566,11 @@ static void settings_section_parses_every_field(void)
     TEST_ASSERT_EQUAL_UINT16(0, s.settings.quiet_from_min);
     TEST_ASSERT_EQUAL_UINT16(480, s.settings.quiet_to_min);
     TEST_ASSERT_EQUAL_STRING("DANA", s.settings.my_name);
+    /* [api] S11 slice b fields — PR #68 code review, HIGH finding 2: this
+     * test's own name promises exhaustive field coverage but wasn't
+     * updated for these two, so a load bug in either was invisible here. */
+    TEST_ASSERT_TRUE(s.settings.utc_offset_set);
+    TEST_ASSERT_EQUAL_INT16(-420, s.settings.utc_offset_min);
 }
 
 static void compose_section_parses_every_field(void)
@@ -814,6 +820,34 @@ static void dump_then_reload_round_trips_flare_takeover_locked_fixture(void)
  * exact "dump -> reload -> whole-struct memory compare" pattern the
  * flare section's own merge fixup used, so the dumper and loader can't
  * silently drift apart again the same way they just did here. */
+/**
+ * PR #68 code review, HIGH finding 2: `ff_fixture_dump_json`'s two new
+ * `settings.utc_offset_set`/`utc_offset_min` lines were unverified by
+ * VALUE — every existing settings round-trip used a fixture whose UTC
+ * offset was the zeroed default, so a dump bug that still nets to
+ * `0`/`false` (the reviewer's own mutation: dumping `quiet_from_min` in
+ * `utc_offset_min`'s place) passed the whole gate undetected.
+ * `settings_default.json` carries a genuinely nonzero, `set:true` value
+ * (-420, UTC-7:00) specifically so this dump gets a distinguishing value
+ * to lose. Same whole-struct-memcmp round-trip shape as every other
+ * `dump_then_reload_*` test in this file.
+ */
+static void dump_then_reload_round_trips_settings_default_fixture(void)
+{
+    ff_app_state_t original;
+    TEST_ASSERT_EQUAL_INT(FF_FIXTURE_OK, ff_fixture_load_file(fixture_path("settings_default.json"), &original));
+    TEST_ASSERT_TRUE(original.settings.utc_offset_set);
+    TEST_ASSERT_EQUAL_INT16(-420, original.settings.utc_offset_min);
+
+    char json[FF_FIXTURE_DUMP_MAX];
+    int n = ff_fixture_dump_json(&original, json, sizeof(json));
+    TEST_ASSERT_GREATER_THAN_INT(0, n);
+
+    ff_app_state_t reloaded;
+    TEST_ASSERT_EQUAL_INT(FF_FIXTURE_OK, ff_fixture_load_json(json, (size_t)n, &reloaded));
+    TEST_ASSERT_EQUAL_MEMORY(&original, &reloaded, sizeof(original));
+}
+
 static void dump_then_reload_round_trips_now_mixed_fixture(void)
 {
     ff_app_state_t original;
@@ -1027,6 +1061,7 @@ int main(void)
     RUN_TEST(stem_handles_null_path);
 
     RUN_TEST(dump_then_reload_round_trips_committed_fixture);
+    RUN_TEST(dump_then_reload_round_trips_settings_default_fixture);
     RUN_TEST(dump_then_reload_round_trips_flare_takeover_locked_fixture);
     RUN_TEST(dump_then_reload_round_trips_now_mixed_fixture);
     RUN_TEST(dump_then_reload_round_trips_now_tbd_fixture);
