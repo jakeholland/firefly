@@ -1,0 +1,63 @@
+{
+  "festpack": "0.1",
+  "festival": {
+    "name": "Bass Canyon Shape Fixture",
+    "slug": "bass-canyon-shape",
+    "year": 2026,
+    "start": "2026-08-14",
+    "end": "2026-08-16",
+    "venue": {
+      "lat": 47.093,
+      "lon": -119.554
+    }
+  },
+  "stages": [
+    { "id": "canyon", "name": "Canyon Stage", "color": "#ffc66b" },
+    { "id": "hilltop", "name": "Hilltop Stage", "color": "#4fd8c4" }
+  ],
+  "schedule": [
+    {
+      "artist": "Excision",
+      "stage": "canyon",
+      "day": "2026-08-14",
+      "start": "23:30",
+      "end": null
+    },
+    {
+      "artist": "Sullivan King",
+      "stage": "canyon",
+      "day": "2026-08-14",
+      "start": "22:30",
+      "end": null
+    },
+    {
+      "artist": "NGHTMRE",
+      "stage": "canyon",
+      "day": "2026-08-14",
+      "start": "21:30",
+      "end": null
+    },
+    {
+      "artist": "Brainrack B2B Wiley",
+      "stage": "canyon",
+      "day": "2026-08-14",
+      "start": null,
+      "end": null,
+      "note": "early entry, time TBA"
+    },
+    {
+      "artist": "Dodge & Fuski",
+      "stage": "hilltop",
+      "day": "2026-08-14",
+      "start": "23:00",
+      "end": null
+    },
+    {
+      "artist": "Big Gigantic",
+      "stage": "hilltop",
+      "day": "2026-08-14",
+      "start": "22:00",
+      "end": null
+    }
+  ]
+}

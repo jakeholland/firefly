@@ -438,6 +438,13 @@ static void fx_parse_now_row(fx_ctx_t const *c, int obj_i, ff_app_now_row_t *row
         row->stage_color_rgb = row->stage_color_valid ? color : 0;
     }
     if (fx_obj_get(c, obj_i, "pct_done", &t)) row->pct_done = (uint8_t)fx_num(c, t, 0.0);
+    /* 2026-08-24: pct_valid absent -> stays false (the zeroed default
+     * from fx_parse_now's memset before this call) — same "absent ->
+     * least-claiming" convention as stage_color_valid/arrow_valid. A
+     * fixture authored before this field existed (now_live.json,
+     * now_mixed.json) must set this explicitly to keep rendering its bar
+     * — see ff_app_now_row_t's doc comment. */
+    if (fx_obj_get(c, obj_i, "pct_valid", &t)) row->pct_valid = fx_bool(c, t, false);
 }
 
 static void fx_parse_lineup_item(fx_ctx_t const *c, int obj_i, ff_app_lineup_item_t *item)
@@ -979,7 +986,8 @@ static void fw_now_row(fw_cur_t *w, ff_app_now_row_t const *r)
     if (r->stage_color_valid) {
         fw_fmt(w, ",\"stage_color_rgb\":\"#%06x\"", (unsigned)(r->stage_color_rgb & 0xFFFFFFu));
     }
-    fw_fmt(w, ",\"pct_done\":%u}", (unsigned)r->pct_done);
+    fw_fmt(w, ",\"pct_done\":%u", (unsigned)r->pct_done);
+    fw_raw(w, r->pct_valid ? ",\"pct_valid\":true}" : ",\"pct_valid\":false}");
 }
 
 /* fw_lineup_item — one entry of ff_app_now_t.lineup (the day's

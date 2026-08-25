@@ -231,6 +231,10 @@ static void now_section_parses_every_field(void)
     TEST_ASSERT_TRUE(s.now.rows[0].stage_color_valid);
     TEST_ASSERT_EQUAL_HEX32(0xffc66bu, s.now.rows[0].stage_color_rgb);
     TEST_ASSERT_EQUAL_UINT8(60, s.now.rows[0].pct_done);
+    /* pct_valid absent from the fixture -> stays false, the zeroed
+     * least-claiming default (same convention as stage_color_valid) —
+     * see ff_app_now_row_t's doc comment. */
+    TEST_ASSERT_FALSE(s.now.rows[0].pct_valid);
 
     TEST_ASSERT_TRUE(s.now.next.valid);
     TEST_ASSERT_EQUAL_STRING("Subtronics", s.now.next.artist);
@@ -238,6 +242,27 @@ static void now_section_parses_every_field(void)
     TEST_ASSERT_EQUAL_INT(45, s.now.next.mins_until);
 
     TEST_ASSERT_EQUAL_UINT8(0, s.now.n_lineup);
+}
+
+/* 2026-08-24 amendment (S07-now-face.md ## Amendments, "starts-only set
+ * grids"): pct_valid parses as true when explicitly present, and as
+ * false when the set's real end is genuinely unknown — the shape a
+ * starts-only real festpack (Bass Canyon 2026) actually produces. */
+static void now_row_pct_valid_parses_explicit_true_and_false(void)
+{
+    ff_app_state_t s;
+    char const *json = "{\"now\": {"
+                        "  \"state\": \"live\","
+                        "  \"rows\": ["
+                        "    {\"artist\": \"Known Duration\", \"pct_done\": 40, \"pct_valid\": true},"
+                        "    {\"artist\": \"Excision\", \"pct_done\": 0, \"pct_valid\": false}"
+                        "  ]"
+                        "}}";
+    TEST_ASSERT_EQUAL_INT(FF_FIXTURE_OK, ff_fixture_load_json(json, strlen(json), &s));
+
+    TEST_ASSERT_EQUAL_UINT8(2, s.now.n_rows);
+    TEST_ASSERT_TRUE(s.now.rows[0].pct_valid);
+    TEST_ASSERT_FALSE(s.now.rows[1].pct_valid);
 }
 
 /* PR #21 code review finding #2/ruling: `now.state` (now_state_t)
@@ -894,6 +919,7 @@ static void dump_maximally_populated_state_fits_budget(void)
         s.now.rows[i].stage_color_rgb = 0x00FFC66B;
         s.now.rows[i].stage_color_valid = true;
         s.now.rows[i].pct_done = 100;
+        s.now.rows[i].pct_valid = true;
     }
     s.now.next.valid = true;
     (void)snprintf(s.now.next.artist, sizeof(s.now.next.artist), "%s", "Exactly Thirty One Chars Long!!");
@@ -970,6 +996,7 @@ int main(void)
     RUN_TEST(now_stage_color_rgb_absent_key_marks_invalid);
 
     RUN_TEST(now_section_parses_every_field);
+    RUN_TEST(now_row_pct_valid_parses_explicit_true_and_false);
     RUN_TEST(now_state_defaults_no_pack);
     RUN_TEST(now_state_unrecognized_string_fails_loud);
     RUN_TEST(every_enum_key_fails_loud_on_unrecognized_string);

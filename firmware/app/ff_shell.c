@@ -836,6 +836,7 @@ static void shell_project_now(shell_t const *sh, ff_wall_t wall, ff_app_now_t *o
         shell_copy_str(o->stage_name, sizeof(o->stage_name), shell_stage_name(p, rows[i].set->stage_idx));
         o->stage_color_valid = shell_stage_color(p, rows[i].set->stage_idx, &o->stage_color_rgb);
         o->pct_done = rows[i].pct_done;
+        o->pct_valid = rows[i].pct_valid;
     }
     out->n_rows = n_rows;
 
@@ -852,12 +853,24 @@ static void shell_project_now(shell_t const *sh, ff_wall_t wall, ff_app_now_t *o
      * day (by definition of the state); under NOW_MIXED it is the subset
      * that still lacks a time, listed ALONGSIDE rows/next rather than
      * disappearing the moment one set on the day gets a real time — the
-     * expected near-term Lost Lands state. */
+     * expected near-term Lost Lands state.
+     *
+     * 2026-08-24 amendment: "lacks a time" means "lacks a start_min",
+     * full stop — end_min plays no part. A set with a known start_min
+     * belongs in `rows`/`next` (via ff_sched_now_playing/next_starred,
+     * which now derive a null end_min themselves — see ff_sched.h's
+     * "Timed means a known start_min" section) or in neither if it has
+     * already finished; either way it does NOT belong here just because
+     * its end_min happens to be null. Before this amendment the check
+     * below required BOTH fields, so a starts-only real festpack (Bass
+     * Canyon 2026: 82 published start times, every end_min null) put
+     * every one of those 82 sets in this unknown-time lineup — the exact
+     * "SET TIMES TBD" lie this amendment fixes. */
     fp_set_t const *day_sets[SHELL_DAY_SETS_MAX];
     uint16_t const n_day = ff_sched_day_sets(p, day, day_sets, (uint16_t)SHELL_DAY_SETS_MAX);
     uint8_t n_lineup = 0;
     for (uint16_t i = 0; i < n_day && n_lineup < FF_APP_NOW_MAX_LINEUP; i++) {
-        if (day_sets[i]->start_min >= 0 && day_sets[i]->end_min >= 0) continue;
+        if (day_sets[i]->start_min >= 0) continue;
         ff_app_lineup_item_t *o = &out->lineup[n_lineup];
         shell_copy_str(o->artist, sizeof(o->artist), day_sets[i]->artist);
         shell_copy_str(o->stage_name, sizeof(o->stage_name), shell_stage_name(p, day_sets[i]->stage_idx));

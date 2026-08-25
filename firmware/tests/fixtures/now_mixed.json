@@ -8,7 +8,8 @@
         "artist": "Excision",
         "stage_name": "Prehistoric Stage",
         "stage_color_rgb": "#ffc66b",
-        "pct_done": 22
+        "pct_done": 22,
+        "pct_valid": true
       }
     ],
     "next": {

@@ -36,6 +36,66 @@ a) engine + tests · b) face render + goldens · c) alarm + haptic hook + star p
 
 ## Amendments
 
+- **2026-08-24, end-to-end find against the first real festpack (`fix/s07-starts-only`)
+  — "timed" means a known `start_min`; `end_min` is optional, not required.**
+  Found running the actual product loop this project exists for: build, load
+  a real festival's pack, look at the Now face. The Bass Canyon 2026 pack
+  (`fest-almanac/packs/bass-canyon/2026/festpack.json`) publishes 82 real
+  set-time starts and zero ends (`end` is `null` on every entry — that is
+  simply how a set-time grid is published: the end is implied by the next
+  act on the same stage). `ff_sched.c`'s `sched_times_known()` required
+  BOTH `start_min` AND `end_min` before treating a set as anything but TBD,
+  so this real pack — with real, published start times — rendered "SET
+  TIMES TBD". That is not a missing-data edge case; it is a straightforward
+  lie about data the puck has. The bug was invisible to every prior test
+  because the only real-world fixture on hand (Lost Lands) is currently
+  ALL-null (`now_tbd.json`'s case): a fixture with no start times at all
+  can never exercise "start known, end not," so the AC5 acceptance
+  criterion's "all-null-times pack" case was satisfied while the actual
+  starts-only shape was never tested.
+
+  **Ruling:**
+  1. A set with `start_min >= 0` IS timed, regardless of `end_min`.
+     `ff_sched_day_tbd`'s predicate becomes "no set on the day has a
+     start_min" — end_min plays no part in it, in either direction. AC5's
+     "all-null-times pack" text is unchanged (still correct), but no longer
+     the only shape that must resolve away from TBD; a starts-only day now
+     also correctly resolves to NOW_LIVE/NOW_MIXED rather than NOW_TBD.
+  2. A null `end_min` is DERIVED from the next known `start_min` on the
+     SAME stage, SAME day — that is the published semantics of a set-time
+     grid, and it composes with this spec's existing half-open now-window /
+     zero-gap-changeover ruling above (PR #9 review) exactly the way two
+     sets with explicit times already do: at the derived boundary minute,
+     the starting set wins. The derivation is a scan by
+     (stage_idx, day_doy, start_min), never a `p->sets[]` array-order
+     lookup — the real Bass Canyon pack lists each stage's sets
+     HEADLINER-FIRST (descending by start_min), so array order is not
+     schedule order.
+  3. The last known-start set on a stage/day, with no later same-stage
+     start to derive an end from: it is LIVE once started, but `pct_done`
+     is UNKNOWABLE. Per this project's never-let-absence-carry-meaning
+     convention, `ff_now_row_t`/`ff_app_now_row_t` gain an explicit
+     `pct_valid` flag (`[api]`); the renderer (`scr_now.c`) omits the
+     progress-bar element entirely when false, rather than showing an
+     empty or fabricated fill. No default duration is invented. It stops
+     counting as "now" at the festival day window's own end (`now_min`
+     reaching 1800, per `ff_sched.h`'s festival-day contract) — the one
+     boundary this module actually knows.
+
+  Implemented in `firmware/festpack/src/ff_sched.c` (`ff_sched_now_playing`,
+  `ff_sched_next_starred`, `ff_sched_day_tbd`, `ff_sched_alarm_tick`) and
+  `firmware/app/ff_shell.c` (`shell_project_now`'s unknown-time lineup
+  filter, which used to require both fields before excluding a set —
+  the same bug, one layer up: a starts-only set used to land in the
+  "still unknown" lineup instead of `rows`). Regression-tested by
+  `firmware/festpack/tests/test_sched.c`'s `S07_2026_08_24_*` cases
+  (including a fixture-level case built from
+  `firmware/festpack/tests/fixtures/bass-canyon-shape.festpack.json`,
+  modeled on the real pack's shape) and `firmware/app/tests/test_shell.c`'s
+  `S07_2026_08_24_starts_only_set_is_live_not_lineup`. Verified against the
+  real Bass Canyon pack end-to-end via the sim's ctl interface (mid-Excision,
+  Friday night, Canyon Stage) — see the PR body for the screenshot.
+
 - **2026-08-23, PR #46 review (S16 slice b1), finding D3 — `now_state_t` is
   missing a state, and the substitute mis-states the cause.** There is no
   member for *"a festpack is loaded, but the puck does not know what time it

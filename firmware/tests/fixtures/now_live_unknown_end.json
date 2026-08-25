@@ -1,0 +1,16 @@
+{
+  "fixture": "now_live_unknown_end",
+  "face": "now",
+  "now": {
+    "state": "live",
+    "rows": [
+      {
+        "artist": "Excision",
+        "stage_name": "Canyon Stage",
+        "stage_color_rgb": "#ffc66b",
+        "pct_done": 0,
+        "pct_valid": false
+      }
+    ]
+  }
+}
