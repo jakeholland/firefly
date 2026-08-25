@@ -47,8 +47,6 @@
 #include "scr_map.h"
 
 #include <math.h>
-#include <stdio.h>
-#include <string.h>
 
 #include "ff_intent.h" /* the emit seam — see map_tap_back_cb */
 #include "ff_map.h"    /* core/include — the shared fixed-fit camera transform */
