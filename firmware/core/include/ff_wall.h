@@ -240,6 +240,36 @@ typedef enum {
 } ff_wall_src_t;
 
 /**
+ * ff_wall_trust_t — the trust tier of an observation offered to
+ * `ff_wall_observe` (S18 slice a, docs/specs/S18-wall-clock-trust.md).
+ * Set at the SHELL boundary, never here: this module stays pure and does
+ * not know who is paired (see ff_wall.c's placement note). The shell
+ * classifies the source and passes the tier in.
+ *
+ * - FF_WALL_TRUST_BOOTSTRAP — any plausible reading, including from an
+ *   unpaired/never-heard node. Sufficient to ESTABLISH a latch (a cold
+ *   start must begin somewhere) but never sufficient, alone, to move one
+ *   that disagrees.
+ * - FF_WALL_TRUST_TRUSTED — attributable to a paired crew member, or the
+ *   local comms-brain's own GPS-disciplined receive clock (that node *is*
+ *   you). Sufficient to move an existing latch.
+ * - FF_WALL_TRUST_CORROBORATED — DEFERRED FROM v1 (design-review PR #88).
+ *   Two or more *independent* sources agreeing would in principle give a
+ *   stronger guarantee than TRUSTED-only, but this signature carries no
+ *   source identity, so "two independent sources" cannot be distinguished
+ *   from one node repeating itself — as it would ship today it gives no
+ *   real margin over TRUSTED-only against the actual threat (a single
+ *   broken/hostile node). The value exists so the tier space has room for
+ *   it later; slice a defines it but wires NO logic against it — do not
+ *   special-case it anywhere in ff_wall.c.
+ */
+typedef enum {
+    FF_WALL_TRUST_BOOTSTRAP = 0,
+    FF_WALL_TRUST_TRUSTED,
+    FF_WALL_TRUST_CORROBORATED, /* reserved, unwired — see doc comment above */
+} ff_wall_trust_t;
+
+/**
  * ff_wall_t — the resolved wall clock.
  *
  * When `src == FF_WALL_UNKNOWN`, EVERY other field is meaningless and is
@@ -266,6 +296,14 @@ typedef struct {
     bool latched;         /* false = nothing plausible has ever been observed */
     int64_t latch_unix_s; /* the observed unix time at the latch instant */
     uint32_t latch_ms;    /* the monotonic ms at the latch instant */
+    /* S18 slice a, AC5: count of disagreeing re-latches the trust gate has
+     * refused — a BOOTSTRAP-tier observation that disagreed with a fresh
+     * latch by more than FF_WALL_RELATCH_DELTA_S. Deliberately does NOT
+     * count plausibility-window rejections (a different, orthogonal gate
+     * that has nothing to do with trust) or a NULL `st`. Read via
+     * ff_wall_trust_rejected_count; exists so a stranger trying to move
+     * the clock is bench-visible, not a silent no-op. */
+    uint32_t trust_rejected_count;
 } ff_wall_state_t;
 
 /**
@@ -300,7 +338,8 @@ typedef enum {
 void ff_wall_init(ff_wall_state_t *st);
 
 /**
- * ff_wall_observe — offer a mesh timestamp to the latch.
+ * ff_wall_observe — offer a mesh timestamp to the latch. [api] (S18
+ * slice a added `tier`.)
  *
  * `unix_s` is unix seconds as carried on the wire, and BOTH sources the
  * shell will have are expressible here as plain values:
@@ -311,26 +350,57 @@ void ff_wall_init(ff_wall_state_t *st);
  *     over-the-air packets only, and therefore never able to bootstrap:
  *     mc_client.c:222 hardcodes has_rx_time = false on the NodeInfo path
  *     because rx_time is a MeshPacket field.
- * `rx_ms` is the monotonic clock at the moment of receipt.
+ * `rx_ms` is the monotonic clock at the moment of receipt. `tier` is the
+ * SHELL's classification of the source (this module stays pure and does
+ * not itself know who is paired — see ff_wall_trust_t).
  *
  * Gate: `unix_s` outside [FF_WALL_EPOCH_FLOOR, FF_WALL_EPOCH_CEILING) is
- * rejected and the latch is left exactly as it was. The lower bound
- * covers `last_heard == 0` ("unknown", per mc_client.h:107) for free and
- * is the uncorrected-pre-GPS-lock RTC case; the upper bound stops an
- * untrusted node from latching — or overwriting a good latch with — an
- * arbitrary future time. Rejection can never un-latch a good latch, in
- * either direction.
+ * rejected and the latch is left exactly as it was, at ANY tier — the
+ * plausibility window is trust-blind, applied before the trust gate below
+ * even runs. The lower bound covers `last_heard == 0` ("unknown", per
+ * mc_client.h:107) for free and is the uncorrected-pre-GPS-lock RTC case;
+ * the upper bound stops an untrusted node from latching — or overwriting a
+ * good latch with — an arbitrary future time. Rejection can never un-latch
+ * a good latch, in either direction.
  *
- * Re-latch, don't latch once: once latched, a reading is compared
- * against what the latch predicts for `rx_ms`, and re-latches when they
- * differ by more than FF_WALL_RELATCH_DELTA_S in EITHER direction (the
- * GPS step can go either way). An agreeing reading deliberately does not
- * move the latch — chasing every agreeing sample would only add jitter,
- * and drift is immaterial at minute granularity.
+ * Re-latch, don't latch once: once latched, a plausible reading is
+ * compared against what the latch predicts for `rx_ms`.
+ *   - Differ by <= FF_WALL_RELATCH_DELTA_S: FF_WALL_OBS_AGREED at ANY
+ *     tier. Agreement moves nothing — chasing every agreeing sample would
+ *     only add jitter, and drift is immaterial at minute granularity.
+ *   - Differ by > FF_WALL_RELATCH_DELTA_S (the GPS-lock-step case, either
+ *     direction): re-latches ONLY when `tier == FF_WALL_TRUST_TRUSTED`
+ *     (S18/#49's fix — a BOOTSTRAP-tier disagreement can never move an
+ *     established latch, no matter what tier established it in the first
+ *     place: the gate conditions on the INCOMING observation's tier, not
+ *     on latch provenance, which this state deliberately does not track —
+ *     see the S18 spec's trust model for why an upgrade path is a hole,
+ *     not a feature). A BOOTSTRAP-tier disagreement is
+ *     FF_WALL_OBS_REJECTED, the latch untouched, and
+ *     `st->trust_rejected_count` increments (AC5 — bench-visible, not a
+ *     silent no-op).
  *
- * Returns what happened; a NULL `st` returns FF_WALL_OBS_REJECTED.
+ * ONE EXCEPTION, deliberately trust-blind (S18 slice a, design-review
+ * PR #88 — see ff_wall.c for the exact branch): when the existing latch
+ * has EXPIRED (older than FF_WALL_LATCH_MAX_AGE_MS) or the monotonic
+ * clock has jumped backwards, ANY plausible reading re-latches
+ * unconditionally regardless of `tier`. A latch stale enough to hit that
+ * branch is not something worth protecting with a trust check — any
+ * plausible re-anchor is an improvement over a week-stale time. Do not
+ * "fix" this into a gated branch; it is intentional.
+ *
+ * Returns what happened; a NULL `st` returns FF_WALL_OBS_REJECTED (and
+ * does not touch any counter, there being no state to touch).
  */
-ff_wall_obs_t ff_wall_observe(ff_wall_state_t *st, int64_t unix_s, uint32_t rx_ms);
+ff_wall_obs_t ff_wall_observe(ff_wall_state_t *st, int64_t unix_s, uint32_t rx_ms, ff_wall_trust_t tier);
+
+/**
+ * ff_wall_trust_rejected_count — S18 slice a, AC5: how many disagreeing
+ * re-latches the trust gate has refused over this state's lifetime (reset
+ * by ff_wall_init). 0 for a NULL `st`. See ff_wall_state_t's field doc for
+ * exactly what does and does not count.
+ */
+uint32_t ff_wall_trust_rejected_count(ff_wall_state_t const *st);
 
 /**
  * ff_wall_unix_now — absolute unix seconds at monotonic time `now_ms`.

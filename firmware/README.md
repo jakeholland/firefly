@@ -175,14 +175,18 @@ criteria-numbered per spec (`SNN_ACX_description`), per `AGENTS.md`.
   dev-affordance semantics and the on_my_info heard-purge.
 - `test_png_diff` (S14 slice b) — `tools/png_diff.h`'s pixel-diff core,
   including the exact 0.4%/0.5%/0.6% threshold boundary.
-- `test_wall` (S16 slice b0) — `core/ff_wall.h`'s wall-clock derivation:
-  the `FF_WALL_UNKNOWN` honesty discipline, the plausibility window's
-  four boundaries, offset-latch/re-latch, UTC-offset resolution order,
-  and the `unix -> local -> (day_doy, now_min)` festival-day mapping. The
-  date math additionally has an out-of-band cross-check against Python's
-  `datetime` — `tools/dev/wall_crosscheck.py`, not a ctest (it needs a
-  compiler and Python at once); run it after touching the civil-date
-  code.
+- `test_wall` (S16 slice b0; trust gate S18 slice a) — `core/ff_wall.h`'s
+  wall-clock derivation: the `FF_WALL_UNKNOWN` honesty discipline, the
+  plausibility window's four boundaries, offset-latch/re-latch, UTC-offset
+  resolution order, and the `unix -> local -> (day_doy, now_min)`
+  festival-day mapping. Also `ff_wall_observe`'s trust tier (issue #49):
+  a BOOTSTRAP-tier disagreement can never move an established latch (the
+  second-stranger scenario), only TRUSTED can, and the pre-existing
+  expired-latch/backwards-monotonic branch stays deliberately trust-blind.
+  The date math additionally has an out-of-band cross-check against
+  Python's `datetime` — `tools/dev/wall_crosscheck.py`, not a ctest (it
+  needs a compiler and Python at once); run it after touching the
+  civil-date code.
 
 ## Release checklist
 

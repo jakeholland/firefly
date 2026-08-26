@@ -458,6 +458,23 @@ ff_app_state_t const *ff_shell_view(ff_shell_t const *sh);
  */
 ff_wall_t ff_shell_wall(ff_shell_t const *sh);
 
+/**
+ * ff_shell_wall_rejected_relatches — S18 slice a, AC5: how many
+ * disagreeing wall-clock re-latches the trust gate has refused over this
+ * shell's lifetime — a source below TRUSTED (an unpaired/unknown node)
+ * tried to move an already-established latch by more than
+ * FF_WALL_RELATCH_DELTA_S and was refused (`ff_wall_observe` returned
+ * FF_WALL_OBS_REJECTED for that reason specifically; plausibility-window
+ * rejections do not count — see ff_wall_state_t's field doc). 0 if `sh`
+ * is NULL. Monotonically increasing; there is no reset short of
+ * `ff_shell_init`.
+ *
+ * Exists so a stranger attempting to move the clock is bench-visible —
+ * `targets/sim/ctl_loop.c`'s `state` dump surfaces this in the `"wall"`
+ * object — rather than a silent no-op (issue #49).
+ */
+uint32_t ff_shell_wall_rejected_relatches(ff_shell_t const *sh);
+
 /** ff_shell_close — tear down: stops driving the client and marks the
  *  shell detached. Does NOT close the transport — the target opened it
  *  and owns it (the shell was handed a vtable, not a socket). Safe on a
@@ -739,6 +756,13 @@ void ff_shell_dev_trust_all(ff_shell_t *sh, bool enabled);
  * number typed on a T9 keypad on the device. This is a machine clock,
  * sim-only, gated by the same plausibility window as any mesh
  * observation, and absent from device builds by construction.
+ *
+ * S18 slice a: offered to the latch as FF_WALL_TRUST_TRUSTED, not
+ * BOOTSTRAP — consistent with the rationale above (an NTP-synced desktop
+ * clock is exactly the TRUSTED case) and preserving this affordance's
+ * pre-existing "unconditional both directions" behavior against the new
+ * trust gate (a BOOTSTRAP-tier disagreement with an established latch
+ * would otherwise be silently refused).
  */
 /* Returns true iff the observation was ACCEPTED (latched, re-latched, or
  * agreed-within-tolerance) — false means the plausibility gate rejected
