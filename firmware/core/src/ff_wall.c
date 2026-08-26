@@ -97,6 +97,7 @@ void ff_wall_init(ff_wall_state_t *st)
     st->latched = false;
     st->latch_unix_s = 0;
     st->latch_ms = 0;
+    st->trust_rejected_count = 0;
 }
 
 /* Elapsed monotonic milliseconds since the latch, or false if the latch
@@ -123,7 +124,7 @@ static bool ff_wall_elapsed_ms(ff_wall_state_t const *st, uint32_t now_ms, uint3
     return true;
 }
 
-ff_wall_obs_t ff_wall_observe(ff_wall_state_t *st, int64_t unix_s, uint32_t rx_ms)
+ff_wall_obs_t ff_wall_observe(ff_wall_state_t *st, int64_t unix_s, uint32_t rx_ms, ff_wall_trust_t tier)
 {
     if (st == NULL) {
         return FF_WALL_OBS_REJECTED;
@@ -132,12 +133,17 @@ ff_wall_obs_t ff_wall_observe(ff_wall_state_t *st, int64_t unix_s, uint32_t rx_m
     /* The plausibility window. Needs no pack and no festival data —
      * which is what lets this run during the want_config handshake. A
      * rejection returns before touching `st`, so no implausible reading
-     * can disturb an existing good latch from either direction. */
+     * can disturb an existing good latch from either direction. Trust-
+     * blind: an implausible reading is refused at ANY tier, including
+     * TRUSTED — plausibility and trust are orthogonal gates. */
     if (!ff_wall_plausible(unix_s)) {
         return FF_WALL_OBS_REJECTED;
     }
 
     if (!st->latched) {
+        /* Establishing a latch accepts ANY tier, BOOTSTRAP included — a
+         * cold start must begin somewhere and a fresh puck has an empty
+         * roster (S18 spec's trust model). */
         st->latched = true;
         st->latch_unix_s = unix_s;
         st->latch_ms = rx_ms;
@@ -146,9 +152,17 @@ ff_wall_obs_t ff_wall_observe(ff_wall_state_t *st, int64_t unix_s, uint32_t rx_m
 
     uint32_t elapsed_ms = 0;
     if (!ff_wall_elapsed_ms(st, rx_ms, &elapsed_ms)) {
-        /* The latch expired (or the monotonic clock moved backwards):
-         * the old reference can no longer be compared against, so this
-         * plausible reading becomes the new one. */
+        /* DELIBERATELY TRUST-BLIND (S18 slice a, design-review PR #88):
+         * the latch expired (older than FF_WALL_LATCH_MAX_AGE_MS) or the
+         * monotonic clock moved backwards, so the old reference can no
+         * longer be compared against. ANY plausible reading re-latches
+         * here regardless of `tier` — a latch stale enough to hit this
+         * branch is not something worth protecting with a trust check
+         * (ff_wall.h's own docs: "not something to keep trusting
+         * anyway"), and any plausible re-anchor is an improvement over a
+         * week-stale time. Do NOT gate this branch on `tier` — the S18
+         * spec is explicit that this stays as-is; only the
+         * disagreement-within-a-fresh-latch branch below is trust-gated. */
         st->latch_unix_s = unix_s;
         st->latch_ms = rx_ms;
         return FF_WALL_OBS_RELATCHED;
@@ -161,17 +175,35 @@ ff_wall_obs_t ff_wall_observe(ff_wall_state_t *st, int64_t unix_s, uint32_t rx_m
     }
 
     if (delta > FF_WALL_RELATCH_DELTA_S) {
-        /* The comms brain's clock stepped — almost always GPS lock
-         * correcting an uncorrected RTC. Take the new reading; keeping
-         * the old one would mean asserting FF_WALL_MESH over a time we
-         * now have direct evidence is wrong. */
+        /* The #49 fix: moving a FRESH, still-agreeing-window latch to a
+         * disagreeing time requires the incoming observation be TRUSTED.
+         * A BOOTSTRAP-tier (unpaired/never-heard) reading can never move
+         * an established latch, regardless of what tier established it —
+         * the gate conditions on THIS observation's tier, not on latch
+         * provenance (ff_wall_state_t deliberately carries none; see the
+         * S18 spec for why an upgrade path is a hole, not a feature). */
+        if (tier != FF_WALL_TRUST_TRUSTED) {
+            st->trust_rejected_count++;
+            return FF_WALL_OBS_REJECTED;
+        }
+        /* TRUSTED: the comms brain's clock stepped — almost always GPS
+         * lock correcting an uncorrected RTC, or a paired member's
+         * genuine backwards correction. Take the new reading; keeping the
+         * old one would mean asserting FF_WALL_MESH over a time we now
+         * have direct, trusted evidence is wrong. */
         st->latch_unix_s = unix_s;
         st->latch_ms = rx_ms;
         return FF_WALL_OBS_RELATCHED;
     }
 
-    /* Within tolerance: deliberately leave the latch alone. */
+    /* Within tolerance: deliberately leave the latch alone, at ANY tier —
+     * agreement is trust-blind because it moves nothing. */
     return FF_WALL_OBS_AGREED;
+}
+
+uint32_t ff_wall_trust_rejected_count(ff_wall_state_t const *st)
+{
+    return (st == NULL) ? 0u : st->trust_rejected_count;
 }
 
 bool ff_wall_unix_now(ff_wall_state_t const *st, uint32_t now_ms, int64_t *out_unix_s)

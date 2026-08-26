@@ -209,6 +209,24 @@ static bool shell_is_self(shell_t const *sh, uint32_t node_id)
 }
 
 /**
+ * shell_wall_trust_for — S18 slice a, AC2: classify a source's trust tier
+ * for `ff_wall_observe`. A paired crew member (via `ff_crew_find` inside
+ * `shell_is_paired` — never creates) or our own node id is TRUSTED;
+ * everything else (unknown, merely-heard, or explicitly unpaired) is
+ * BOOTSTRAP. Deliberately uses `shell_is_self`, NOT `shell_drop_as_self`:
+ * whether a packet is treated as our own echo (and suspended under
+ * `--dev-trust-all`) is an orthogonal question from whether this node's
+ * clock is genuinely ours — the trust classification must not change
+ * under the sim-only bench flag.
+ */
+static ff_wall_trust_t shell_wall_trust_for(shell_t const *sh, uint32_t node_id)
+{
+    if (shell_is_self(sh, node_id)) return FF_WALL_TRUST_TRUSTED;
+    if (shell_is_paired(sh, node_id)) return FF_WALL_TRUST_TRUSTED;
+    return FF_WALL_TRUST_BOOTSTRAP;
+}
+
+/**
  * Should this inbound event be dropped as our own echo?
  *
  * Normally identical to shell_is_self. Under `--dev-trust-all` (sim
@@ -379,14 +397,25 @@ static void shell_haptic_alert(shell_t *sh)
  * re-latched from NodeInfo. `on_position`'s `rx_time` is a genuine
  * per-packet local receive time rather than a cached summary, so it is
  * offered unconditionally and re-latches in both directions.
+ *
+ * **UNCONDITIONAL of trust (S18 slice a):** this rule is the #46
+ * forward-only NodeInfo rule and it stays exactly as it was — a backward
+ * NodeInfo reading is discarded here, before `ff_wall_observe` even runs,
+ * regardless of who sent it. Trust does not change it. A paired member's
+ * genuine backward correction flows through the live `on_position` path
+ * (`shell_ev_position`), not this one. What IS new here is the tier
+ * `ff_wall_observe` receives for the forward readings this function does
+ * offer: `shell_wall_trust_for` classifies `node_id` (self or paired ->
+ * TRUSTED, else BOOTSTRAP) exactly like every other call site.
  */
-static bool shell_observe_wall_nodeinfo(shell_t *sh, uint32_t last_heard, uint32_t now_ms)
+static bool shell_observe_wall_nodeinfo(shell_t *sh, uint32_t node_id, uint32_t last_heard, uint32_t now_ms)
 {
     int64_t predicted = 0;
     if (ff_wall_unix_now(&sh->wall, now_ms, &predicted) && (int64_t)last_heard <= predicted) {
         return false; /* told us nothing new about the clock */
     }
-    ff_wall_obs_t const obs = ff_wall_observe(&sh->wall, (int64_t)last_heard, now_ms);
+    ff_wall_trust_t const tier = shell_wall_trust_for(sh, node_id);
+    ff_wall_obs_t const obs = ff_wall_observe(&sh->wall, (int64_t)last_heard, now_ms, tier);
     return obs == FF_WALL_OBS_LATCHED || obs == FF_WALL_OBS_RELATCHED;
 }
 
@@ -489,7 +518,7 @@ static void shell_ev_node(void *u, mc_nodeinfo_t const *n)
     /* Before the self-check: our own NodeInfo carries the freshest
      * `last_heard` of any node in the dump, and it is the one the
      * bootstrap most wants. */
-    bool const defined_the_latch = shell_observe_wall_nodeinfo(sh, n->last_heard, now);
+    bool const defined_the_latch = shell_observe_wall_nodeinfo(sh, n->node_num, n->last_heard, now);
 
     if (shell_drop_as_self(sh, n->node_num)) return; /* never treat our own traffic as inbound */
 
@@ -584,14 +613,30 @@ static void shell_ev_position(void *u, uint32_t node, mc_position_t const *p)
 {
     shell_t *sh = (shell_t *)u;
     if (sh == NULL || p == NULL) return;
-    if (shell_drop_as_self(sh, node)) return;
 
     uint32_t const now = shell_now(sh);
 
-    /* A live per-packet local receive time: the authoritative re-latch
+    /* WALL OBSERVATION BEFORE THE SELF-DROP (S18 slice a, AC3/AC4 — the
+     * spec's "wiring the TRUSTED sources" note). Self's own position is
+     * still dropped for crew/feed purposes below — ff_crew_find,
+     * ff_heard_note and ff_crew_on_position all stay gated behind
+     * shell_drop_as_self, unchanged — but its GPS-disciplined receive
+     * time is exactly the gold-anchor TRUSTED source the trust model
+     * names ("the local comms-brain's own GPS-disciplined receive clock
+     * — that node *is* you"), and before this reorder it could never
+     * reach ff_wall_observe at all: the old `if (shell_drop_as_self...)
+     * return;` sat above this block and returned first. shell_ev_node
+     * already observed the wall before its own self-check (D1's own
+     * comment) — this brings shell_ev_position into that same shape
+     * rather than leaving the two inconsistent.
+     *
+     * A live per-packet local receive time is the authoritative re-latch
      * source, offered unconditionally in both directions (unlike a
      * NodeInfo's cached `last_heard` — see shell_observe_wall_nodeinfo).
-     * The plausibility window in ff_wall_observe is the guard.
+     * The plausibility window in ff_wall_observe is the guard, and
+     * shell_wall_trust_for classifies the tier: self or a paired member
+     * is TRUSTED and can move a disagreeing fresh latch (#49's fix);
+     * anyone else is BOOTSTRAP and cannot.
      *
      * Note this path deliberately does NOT carry shell_ev_node's
      * "don't age from the reading that defined the latch" guard (D1).
@@ -600,8 +645,11 @@ static void shell_ev_position(void *u, uint32_t node, mc_position_t const *p)
      * ~0 is a measurement, not a construction. See ff_shell.h for the
      * assumption that rests on. */
     if (p->has_rx_time) {
-        (void)ff_wall_observe(&sh->wall, (int64_t)p->rx_time, now);
+        ff_wall_trust_t const tier = shell_wall_trust_for(sh, node);
+        (void)ff_wall_observe(&sh->wall, (int64_t)p->rx_time, now, tier);
     }
+
+    if (shell_drop_as_self(sh, node)) return; /* never treat our own traffic as inbound crew/feed */
 
     /* AC5c. `ff_crew_on_position` calls crew_find_or_create internally,
      * so calling it here on an unknown sender would satisfy "we never
@@ -1846,6 +1894,11 @@ uint32_t ff_shell_compose_to_node(ff_shell_t const *sh_pub)
     return (sh_pub == NULL) ? 0u : shell_of_const(sh_pub)->compose_to_node;
 }
 
+uint32_t ff_shell_wall_rejected_relatches(ff_shell_t const *sh_pub)
+{
+    return (sh_pub == NULL) ? 0u : ff_wall_trust_rejected_count(&shell_of_const(sh_pub)->wall);
+}
+
 /* ---------------------------------------------------------------------
  * Sim-only dev affordances (S16 AC6, slice b2) — see ff_shell.h
  * ------------------------------------------------------------------- */
@@ -1863,8 +1916,15 @@ bool ff_shell_dev_wall_observe(ff_shell_t *sh_pub, int64_t unix_now_s)
     shell_t *sh = shell_of(sh_pub);
     /* Same shape as a live rx_time observation: unconditional in both
      * directions, still gated by ff_wall_observe's plausibility window
-     * — a wildly wrong host clock is rejected, not latched. */
-    return ff_wall_observe(&sh->wall, unix_now_s, shell_now(sh)) != FF_WALL_OBS_REJECTED;
+     * — a wildly wrong host clock is rejected, not latched. S18 slice a:
+     * offered as TRUSTED, not BOOTSTRAP — the header comment's own
+     * rationale ("the desktop the sim runs on genuinely knows what time
+     * it is") is exactly the TRUSTED case, and this preserves the
+     * pre-existing "unconditional both directions" bench behavior; at
+     * BOOTSTRAP tier a second `wall` ctl call disagreeing with the first
+     * would now be silently refused by the trust gate, breaking the bench
+     * time-travel affordance this exists for. */
+    return ff_wall_observe(&sh->wall, unix_now_s, shell_now(sh), FF_WALL_TRUST_TRUSTED) != FF_WALL_OBS_REJECTED;
 }
 
 #endif /* FF_TARGET_SIM */

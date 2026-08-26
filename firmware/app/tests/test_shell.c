@@ -1652,6 +1652,192 @@ static void S16_b1_our_own_nodeinfo_can_bootstrap_the_wall_clock(void)
     TEST_ASSERT_EQUAL_UINT8(0, ff_heard_count(ff_shell_heard(&H.shell)));
 }
 
+/* =================================================================== */
+/* S18 slice a — trust-gated wall-clock re-latch (issue #49)            */
+/* =================================================================== */
+
+static void S18_AC1_shell_bootstrap_from_unpaired_stranger_still_works(void)
+{
+    /* Cold start through the real shell entry points: STRANGER has never
+     * been heard from, is not in the roster, and its live Position still
+     * bootstraps the wall — establishing accepts any tier. */
+    harness_seed_settings(0);
+    harness_init(100000u, true);
+    inject_my_info(MY_ID);
+
+    TEST_ASSERT_EQUAL_INT(FF_WALL_UNKNOWN, ff_shell_wall(&H.shell).src);
+
+    inject_position(STRANGER, U_EVENING, 39.0, -82.0);
+
+    ff_wall_t const w = ff_shell_wall(&H.shell);
+    TEST_ASSERT_EQUAL_INT(FF_WALL_MESH, w.src);
+    TEST_ASSERT_EQUAL_INT16(1320, w.now_min); /* 22:00 */
+    TEST_ASSERT_EQUAL_UINT32(0, ff_shell_wall_rejected_relatches(&H.shell));
+}
+
+static void S18_AC2_second_unpaired_stranger_cannot_move_the_wall_clock(void)
+{
+    /* The exact #49 repro, end to end through the real shell entry
+     * points: a first unpaired stranger's live Position bootstraps the
+     * latch (necessarily BOOTSTRAP-tier — that is what a cold start is),
+     * and a SECOND, entirely different unpaired stranger's Position then
+     * disagrees by more than FF_WALL_RELATCH_DELTA_S. shell_wall_trust_for
+     * classifies BOTH as BOOTSTRAP via ff_crew_find (which never
+     * creates — neither is ever in the roster). The headline fix: the
+     * second stranger's disagreeing reading is REJECTED, now_min is
+     * UNCHANGED, and the rejection is counted (AC5). This must hold
+     * specifically because the ORIGINATING latch was itself
+     * stranger-bootstrapped — the gate does not care what tier
+     * established the latch, only the tier of the incoming reading. */
+    harness_seed_settings(0);
+    harness_init(100000u, true);
+    inject_my_info(MY_ID);
+
+    TEST_ASSERT_EQUAL_UINT32(0, ff_shell_wall_rejected_relatches(&H.shell));
+
+    /* Stranger #1 bootstraps: 22:00 UTC == 22:00 local at offset 0. */
+    inject_position(STRANGER, U_EVENING, 39.0, -82.0);
+    ff_wall_t const w0 = ff_shell_wall(&H.shell);
+    TEST_ASSERT_EQUAL_INT(FF_WALL_MESH, w0.src);
+    TEST_ASSERT_EQUAL_INT16(1320, w0.now_min);
+
+    /* Stranger #2 — a completely different, never-heard node — reports a
+     * time TWO HOURS behind: issue #49's exact measured shape ("now_min
+     * shifted back", a two-hour backward step from an unpaired sender). */
+    inject_position(STRANGER2, U_AWAKE, 39.1, -82.1);
+
+    ff_wall_t const w1 = ff_shell_wall(&H.shell);
+    TEST_ASSERT_EQUAL_INT(FF_WALL_MESH, w1.src);
+    TEST_ASSERT_EQUAL_INT16(1320, w1.now_min); /* UNCHANGED — the whole point */
+
+    /* AC5: bench-visible, not a silent no-op. */
+    TEST_ASSERT_EQUAL_UINT32(1, ff_shell_wall_rejected_relatches(&H.shell));
+
+    /* Neither stranger was paired or promoted by any of this. */
+    TEST_ASSERT_NULL(member(STRANGER));
+    TEST_ASSERT_NULL(member(STRANGER2));
+}
+
+static void S18_AC3_a_paired_members_backward_correction_relatches(void)
+{
+    /* AC3 + the spec's "wiring the TRUSTED sources" note: a paired member
+     * is TRUSTED, so a live on_position disagreeing BACKWARD by more than
+     * the delta DOES move an established latch — the backwards-GPS-step
+     * correction case the trust gate must not close off. Deliberately via
+     * on_position, not NodeInfo: see
+     * S18_paired_members_backward_nodeinfo_reading_is_still_ignored below
+     * for why the same reading through NodeInfo stays ignored regardless
+     * of trust (the #46 rule). */
+    harness_seed_settings(0);
+    harness_init(100000u, true);
+    inject_my_info(MY_ID);
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, true));
+
+    inject_position(DANA, U_EVENING, 39.0, -82.0); /* bootstraps, 22:00 */
+    TEST_ASSERT_EQUAL_INT16(1320, ff_shell_wall(&H.shell).now_min);
+
+    /* DANA, PAIRED, reports a time two hours behind — a genuine backwards
+     * GPS correction from a trusted source. */
+    inject_position(DANA, U_AWAKE, 39.0, -82.0);
+
+    ff_wall_t const w = ff_shell_wall(&H.shell);
+    TEST_ASSERT_EQUAL_INT(FF_WALL_MESH, w.src);
+    TEST_ASSERT_EQUAL_INT16(1200, w.now_min); /* 20:00 — moved */
+    TEST_ASSERT_EQUAL_UINT32(0, ff_shell_wall_rejected_relatches(&H.shell));
+}
+
+static void S18_AC4_self_position_latches_the_wall_but_stays_dropped_for_crew(void)
+{
+    /* The headline reorder: shell_ev_position now offers self's own
+     * rx_time to ff_wall_observe BEFORE the self-drop returns, exactly
+     * like shell_ev_node already did for NodeInfo (D1) — bringing the two
+     * into the same shape. Self is TRUSTED (shell_wall_trust_for), so its
+     * own GPS-disciplined reading both bootstraps AND can move an
+     * existing latch, while ff_crew_find/ff_heard_note/ff_crew_on_position
+     * stay gated behind shell_drop_as_self exactly as
+     * S16_b1_own_traffic_is_not_treated_as_inbound already pins for the
+     * non-wall side of this same event. */
+    harness_seed_settings(0);
+    harness_init(100000u, true);
+    inject_my_info(MY_ID);
+
+    TEST_ASSERT_EQUAL_INT(FF_WALL_UNKNOWN, ff_shell_wall(&H.shell).src);
+
+    /* Only our own live Position arrives — no NodeInfo, no peer. */
+    inject_position(MY_ID, U_EVENING, 39.0, -82.0);
+
+    ff_wall_t const w0 = ff_shell_wall(&H.shell);
+    TEST_ASSERT_EQUAL_INT(FF_WALL_MESH, w0.src);
+    TEST_ASSERT_EQUAL_INT16(1320, w0.now_min);
+
+    /* And it moves an EXISTING latch too, not just a bootstrap — self is
+     * TRUSTED, so a later disagreeing self-reading re-latches. */
+    inject_position(MY_ID, U_AWAKE, 39.0, -82.0);
+    TEST_ASSERT_EQUAL_INT16(1200, ff_shell_wall(&H.shell).now_min);
+
+    /* Still never treated as inbound crew/feed traffic. */
+    TEST_ASSERT_EQUAL_UINT8(0, ff_shell_crew(&H.shell)->count);
+    TEST_ASSERT_EQUAL_UINT8(0, ff_heard_count(ff_shell_heard(&H.shell)));
+    TEST_ASSERT_EQUAL_UINT8(0, ff_feed_count(ff_shell_feed(&H.shell)));
+    TEST_ASSERT_EQUAL_UINT32(0, ff_shell_wall_rejected_relatches(&H.shell));
+}
+
+static void S18_paired_members_backward_nodeinfo_reading_is_still_ignored(void)
+{
+    /* The layering note the S18 spec insists on stating: a paired
+     * member's backward correction flows through live on_position
+     * (S18_AC3 above), NEVER through NodeInfo — trust does not change the
+     * #46 forward-only rule (shell_observe_wall_nodeinfo). If trust ever
+     * overrode "forward-only", a paired member's stale cached last_heard
+     * on a reconnect replay would drag the wall clock backward by the
+     * node's staleness — AC9's exact defect, reintroduced one layer up. */
+    harness_seed_settings(0);
+    harness_init(100000u, true);
+    inject_my_info(MY_ID);
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, true));
+
+    inject_node(DANA, "DANA", U_EVENING); /* bootstraps, 22:00 */
+    TEST_ASSERT_EQUAL_INT16(1320, ff_shell_wall(&H.shell).now_min);
+
+    /* DANA, PAIRED and therefore TRUSTED, sends a NodeInfo with a
+     * last_heard two hours EARLIER. Forward-only wins regardless of
+     * trust: this tells us nothing new about the clock and is ignored
+     * before ff_wall_observe even runs. */
+    inject_node(DANA, "DANA", (uint32_t)U_AWAKE);
+
+    TEST_ASSERT_EQUAL_INT16(1320, ff_shell_wall(&H.shell).now_min); /* unmoved */
+    /* Ignored, not "rejected" — the forward-only guard never calls
+     * ff_wall_observe at all, so it cannot be counted as a trust-gate
+     * rejection either. */
+    TEST_ASSERT_EQUAL_UINT32(0, ff_shell_wall_rejected_relatches(&H.shell));
+}
+
+static void S18_expired_latch_relatches_trust_blind_through_the_shell(void)
+{
+    /* The one branch S18 slice a deliberately does not gate, pinned at
+     * the shell layer too, not just inside ff_wall_observe: once the
+     * latch has expired, a fresh BOOTSTRAP-tier reading from a totally
+     * unpaired stranger still re-latches it. */
+    harness_seed_settings(0);
+    harness_init(100000u, true);
+    inject_my_info(MY_ID);
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, true));
+
+    inject_position(DANA, U_EVENING, 39.0, -82.0); /* TRUSTED bootstrap, 22:00 */
+    TEST_ASSERT_EQUAL_INT16(1320, ff_shell_wall(&H.shell).now_min);
+
+    advance(FF_WALL_LATCH_MAX_AGE_MS + 1u);
+    TEST_ASSERT_EQUAL_INT(FF_WALL_UNKNOWN, ff_shell_wall(&H.shell).src);
+
+    /* A totally unpaired stranger re-latches it anyway. */
+    inject_position(STRANGER, U_AWAKE, 39.0, -82.0);
+
+    ff_wall_t const w = ff_shell_wall(&H.shell);
+    TEST_ASSERT_EQUAL_INT(FF_WALL_MESH, w.src);
+    TEST_ASSERT_EQUAL_INT16(1200, w.now_min);
+    TEST_ASSERT_EQUAL_UINT32(0, ff_shell_wall_rejected_relatches(&H.shell));
+}
+
 static void S16_b1_a_flare_on_a_foreign_portnum_raises_no_takeover(void)
 {
     /* The shell's own flare branch does not go through ff_wiring, so
@@ -2466,6 +2652,13 @@ int main(void)
     RUN_TEST(S09_shell_does_not_claim_truncation_for_a_pack_within_caps);
     RUN_TEST(S16_b1_loading_a_pack_does_not_fabricate_my_position);
     RUN_TEST(S16_b1_our_own_nodeinfo_can_bootstrap_the_wall_clock);
+
+    RUN_TEST(S18_AC1_shell_bootstrap_from_unpaired_stranger_still_works);
+    RUN_TEST(S18_AC2_second_unpaired_stranger_cannot_move_the_wall_clock);
+    RUN_TEST(S18_AC3_a_paired_members_backward_correction_relatches);
+    RUN_TEST(S18_AC4_self_position_latches_the_wall_but_stays_dropped_for_crew);
+    RUN_TEST(S18_paired_members_backward_nodeinfo_reading_is_still_ignored);
+    RUN_TEST(S18_expired_latch_relatches_trust_blind_through_the_shell);
     RUN_TEST(S16_b1_a_flare_on_a_foreign_portnum_raises_no_takeover);
     RUN_TEST(S16_b1_shell_footprint_excludes_the_pack);
     RUN_TEST(S16_b1_failed_pack_load_does_not_outrank_the_settings_offset);

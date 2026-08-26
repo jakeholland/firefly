@@ -173,7 +173,7 @@ static void S16_AC12_unknown_time_gates_quiet_hours_and_water_nudge(void)
 
     /* And the same loop, once a timestamp has latched, does run — so the
      * gate above is the UNKNOWN state, not a broken loop. */
-    TEST_ASSERT_EQUAL_INT(FF_WALL_OBS_LATCHED, ff_wall_observe(&st, T_SEP19_1430_EDT, 0u));
+    TEST_ASSERT_EQUAL_INT(FF_WALL_OBS_LATCHED, ff_wall_observe(&st, T_SEP19_1430_EDT, 0u, FF_WALL_TRUST_BOOTSTRAP));
     ff_wall_t w = ff_wall_now(&st, 60000u, &cfg);
     TEST_ASSERT_EQUAL_INT(FF_WALL_MESH, w.src);
     (void)ff_quiet_now(&s, w.now_min);
@@ -198,7 +198,7 @@ static void S16_AC12_nodeinfo_last_heard_latches_the_offset(void)
      * here, so both are expressible through this one entry point. */
     uint32_t last_heard = (uint32_t)T_SEP19_1430_EDT;
 
-    TEST_ASSERT_EQUAL_INT(FF_WALL_OBS_LATCHED, ff_wall_observe(&st, (int64_t)last_heard, 8000u));
+    TEST_ASSERT_EQUAL_INT(FF_WALL_OBS_LATCHED, ff_wall_observe(&st, (int64_t)last_heard, 8000u, FF_WALL_TRUST_BOOTSTRAP));
 
     ff_wall_t w = ff_wall_now(&st, 8000u, &cfg);
     TEST_ASSERT_EQUAL_INT(FF_WALL_MESH, w.src);
@@ -213,7 +213,7 @@ static void S16_AC12_wall_advances_with_the_monotonic_clock(void)
     ff_wall_init(&st);
     ff_wall_offset_cfg_t cfg = cfg_pack_stated(EDT);
 
-    ff_wall_observe(&st, T_SEP19_1430_EDT, 1000u);
+    ff_wall_observe(&st, T_SEP19_1430_EDT, 1000u, FF_WALL_TRUST_BOOTSTRAP);
 
     /* 90 monotonic minutes later -> 16:00 local, same festival day. */
     ff_wall_t w = ff_wall_now(&st, 1000u + 90u * 60u * 1000u, &cfg);
@@ -235,7 +235,7 @@ static void S16_AC12_monotonic_wraparound_is_handled(void)
     uint32_t query_ms = latch_ms + 60000u; /* wraps deliberately */
     TEST_ASSERT_TRUE(query_ms < latch_ms); /* the wrap really happened */
 
-    ff_wall_observe(&st, T_SEP19_1430_EDT, latch_ms);
+    ff_wall_observe(&st, T_SEP19_1430_EDT, latch_ms, FF_WALL_TRUST_BOOTSTRAP);
 
     ff_wall_t w = ff_wall_now(&st, query_ms, &cfg);
     TEST_ASSERT_EQUAL_INT(FF_WALL_MESH, w.src);
@@ -345,12 +345,12 @@ static void S16_AC12b_timestamp_before_epoch_floor_is_rejected(void)
     int64_t const rtc_lies[] = {0, 1, 1451606400 /* 2016-01-01 */, FF_WALL_EPOCH_FLOOR - 1};
 
     for (size_t i = 0; i < sizeof(rtc_lies) / sizeof(rtc_lies[0]); i++) {
-        TEST_ASSERT_EQUAL_INT(FF_WALL_OBS_REJECTED, ff_wall_observe(&st, rtc_lies[i], 1000u));
+        TEST_ASSERT_EQUAL_INT(FF_WALL_OBS_REJECTED, ff_wall_observe(&st, rtc_lies[i], 1000u, FF_WALL_TRUST_BOOTSTRAP));
         TEST_ASSERT_EQUAL_INT(FF_WALL_UNKNOWN, ff_wall_now(&st, 1000u, &cfg).src);
     }
 
     /* The floor itself is a time ("any timestamp BEFORE it" is not). */
-    TEST_ASSERT_EQUAL_INT(FF_WALL_OBS_LATCHED, ff_wall_observe(&st, FF_WALL_EPOCH_FLOOR, 1000u));
+    TEST_ASSERT_EQUAL_INT(FF_WALL_OBS_LATCHED, ff_wall_observe(&st, FF_WALL_EPOCH_FLOOR, 1000u, FF_WALL_TRUST_BOOTSTRAP));
     TEST_ASSERT_EQUAL_INT(FF_WALL_MESH, ff_wall_now(&st, 1000u, &cfg).src);
 }
 
@@ -371,12 +371,12 @@ static void S16_AC12b_timestamp_at_or_after_epoch_ceiling_is_rejected(void)
     int64_t const impossible[] = {4102444800LL /* 2100-01-01 */, 2147483647LL, FF_WALL_EPOCH_CEILING};
 
     for (size_t i = 0; i < sizeof(impossible) / sizeof(impossible[0]); i++) {
-        TEST_ASSERT_EQUAL_INT(FF_WALL_OBS_REJECTED, ff_wall_observe(&st, impossible[i], 1000u));
+        TEST_ASSERT_EQUAL_INT(FF_WALL_OBS_REJECTED, ff_wall_observe(&st, impossible[i], 1000u, FF_WALL_TRUST_BOOTSTRAP));
         TEST_ASSERT_EQUAL_INT(FF_WALL_UNKNOWN, ff_wall_now(&st, 1000u, &cfg).src);
     }
 
     /* Half-open, so the last second below the ceiling is still a time. */
-    TEST_ASSERT_EQUAL_INT(FF_WALL_OBS_LATCHED, ff_wall_observe(&st, FF_WALL_EPOCH_CEILING - 1, 1000u));
+    TEST_ASSERT_EQUAL_INT(FF_WALL_OBS_LATCHED, ff_wall_observe(&st, FF_WALL_EPOCH_CEILING - 1, 1000u, FF_WALL_TRUST_BOOTSTRAP));
     TEST_ASSERT_EQUAL_INT(FF_WALL_MESH, ff_wall_now(&st, 1000u, &cfg).src);
 }
 
@@ -393,12 +393,12 @@ static void S16_AC12b_far_future_reading_cannot_overwrite_a_good_latch(void)
     ff_wall_init(&st);
     ff_wall_offset_cfg_t cfg = cfg_pack_stated(EDT);
 
-    TEST_ASSERT_EQUAL_INT(FF_WALL_OBS_LATCHED, ff_wall_observe(&st, T_SEP19_1430_EDT, 1000u));
+    TEST_ASSERT_EQUAL_INT(FF_WALL_OBS_LATCHED, ff_wall_observe(&st, T_SEP19_1430_EDT, 1000u, FF_WALL_TRUST_BOOTSTRAP));
 
     int64_t const hostile[] = {4102444800LL /* 2100 */, FF_WALL_EPOCH_CEILING, 0, 1451606400LL};
 
     for (size_t i = 0; i < sizeof(hostile) / sizeof(hostile[0]); i++) {
-        TEST_ASSERT_EQUAL_INT(FF_WALL_OBS_REJECTED, ff_wall_observe(&st, hostile[i], 2000u));
+        TEST_ASSERT_EQUAL_INT(FF_WALL_OBS_REJECTED, ff_wall_observe(&st, hostile[i], 2000u, FF_WALL_TRUST_BOOTSTRAP));
 
         /* The good latch is byte-for-byte intact and still answers. */
         ff_wall_t w = ff_wall_now(&st, 2000u, &cfg);
@@ -433,11 +433,11 @@ static void S16_AC12b_rejection_never_disturbs_a_good_latch(void)
     ff_wall_init(&st);
     ff_wall_offset_cfg_t cfg = cfg_pack_stated(EDT);
 
-    ff_wall_observe(&st, T_SEP19_1430_EDT, 1000u);
+    ff_wall_observe(&st, T_SEP19_1430_EDT, 1000u, FF_WALL_TRUST_BOOTSTRAP);
 
     /* A node with no last_heard (0 = unknown, mc_client.h:107) must not
      * be able to knock the puck back into UNKNOWN. */
-    TEST_ASSERT_EQUAL_INT(FF_WALL_OBS_REJECTED, ff_wall_observe(&st, 0, 2000u));
+    TEST_ASSERT_EQUAL_INT(FF_WALL_OBS_REJECTED, ff_wall_observe(&st, 0, 2000u, FF_WALL_TRUST_BOOTSTRAP));
 
     ff_wall_t w = ff_wall_now(&st, 2000u, &cfg);
     TEST_ASSERT_EQUAL_INT(FF_WALL_MESH, w.src);
@@ -449,13 +449,13 @@ static void S16_AC12b_disagreement_over_30s_relatches(void)
     ff_wall_state_t st;
     ff_wall_init(&st);
 
-    TEST_ASSERT_EQUAL_INT(FF_WALL_OBS_LATCHED, ff_wall_observe(&st, T_SEP19_1430_EDT, 1000u));
+    TEST_ASSERT_EQUAL_INT(FF_WALL_OBS_LATCHED, ff_wall_observe(&st, T_SEP19_1430_EDT, 1000u, FF_WALL_TRUST_BOOTSTRAP));
 
     /* 10 monotonic seconds later the mesh reports a time 31 s further on
      * than the latch predicts — a step, not jitter. */
     uint32_t later_ms = 1000u + 10000u;
     TEST_ASSERT_EQUAL_INT(FF_WALL_OBS_RELATCHED,
-                          ff_wall_observe(&st, T_SEP19_1430_EDT + 10 + 31, later_ms));
+                          ff_wall_observe(&st, T_SEP19_1430_EDT + 10 + 31, later_ms, FF_WALL_TRUST_TRUSTED));
 
     int64_t unix_s = 0;
     TEST_ASSERT_TRUE(ff_wall_unix_now(&st, later_ms, &unix_s));
@@ -464,7 +464,7 @@ static void S16_AC12b_disagreement_over_30s_relatches(void)
     /* Backwards steps too — GPS lock can correct in either direction. */
     uint32_t later2_ms = later_ms + 10000u;
     TEST_ASSERT_EQUAL_INT(FF_WALL_OBS_RELATCHED,
-                          ff_wall_observe(&st, T_SEP19_1430_EDT + 41 + 10 - 31, later2_ms));
+                          ff_wall_observe(&st, T_SEP19_1430_EDT + 41 + 10 - 31, later2_ms, FF_WALL_TRUST_TRUSTED));
     TEST_ASSERT_TRUE(ff_wall_unix_now(&st, later2_ms, &unix_s));
     TEST_ASSERT_EQUAL_INT64(T_SEP19_1430_EDT + 20, unix_s);
 }
@@ -474,18 +474,18 @@ static void S16_AC12b_disagreement_within_30s_does_not_relatch(void)
     ff_wall_state_t st;
     ff_wall_init(&st);
 
-    TEST_ASSERT_EQUAL_INT(FF_WALL_OBS_LATCHED, ff_wall_observe(&st, T_SEP19_1430_EDT, 1000u));
+    TEST_ASSERT_EQUAL_INT(FF_WALL_OBS_LATCHED, ff_wall_observe(&st, T_SEP19_1430_EDT, 1000u, FF_WALL_TRUST_BOOTSTRAP));
 
     uint32_t later_ms = 1000u + 10000u;
 
     /* Exactly at the tolerance, both directions: agreement, and the
      * latch is deliberately left alone rather than chasing the sample. */
     TEST_ASSERT_EQUAL_INT(FF_WALL_OBS_AGREED,
-                          ff_wall_observe(&st, T_SEP19_1430_EDT + 10 + 30, later_ms));
+                          ff_wall_observe(&st, T_SEP19_1430_EDT + 10 + 30, later_ms, FF_WALL_TRUST_BOOTSTRAP));
     TEST_ASSERT_EQUAL_INT(FF_WALL_OBS_AGREED,
-                          ff_wall_observe(&st, T_SEP19_1430_EDT + 10 - 30, later_ms));
+                          ff_wall_observe(&st, T_SEP19_1430_EDT + 10 - 30, later_ms, FF_WALL_TRUST_BOOTSTRAP));
     /* And ordinary transport jitter. */
-    TEST_ASSERT_EQUAL_INT(FF_WALL_OBS_AGREED, ff_wall_observe(&st, T_SEP19_1430_EDT + 10 + 2, later_ms));
+    TEST_ASSERT_EQUAL_INT(FF_WALL_OBS_AGREED, ff_wall_observe(&st, T_SEP19_1430_EDT + 10 + 2, later_ms, FF_WALL_TRUST_BOOTSTRAP));
 
     int64_t unix_s = 0;
     TEST_ASSERT_TRUE(ff_wall_unix_now(&st, later_ms, &unix_s));
@@ -504,13 +504,13 @@ static void S16_AC12b_pre_gps_lock_offset_is_corrected_by_relatch(void)
     ff_wall_offset_cfg_t cfg = cfg_pack_stated(EDT);
 
     int64_t rtc_slow = T_SEP19_1430_EDT - 3600; /* reports 13:30 local */
-    TEST_ASSERT_EQUAL_INT(FF_WALL_OBS_LATCHED, ff_wall_observe(&st, rtc_slow, 5000u));
+    TEST_ASSERT_EQUAL_INT(FF_WALL_OBS_LATCHED, ff_wall_observe(&st, rtc_slow, 5000u, FF_WALL_TRUST_BOOTSTRAP));
     TEST_ASSERT_EQUAL_INT16(810, ff_wall_now(&st, 5000u, &cfg).now_min); /* 13:30 — wrong */
 
     /* 20 s later, GPS locks and the reported time jumps forward an hour. */
     uint32_t after_lock_ms = 5000u + 20000u;
     TEST_ASSERT_EQUAL_INT(FF_WALL_OBS_RELATCHED,
-                          ff_wall_observe(&st, T_SEP19_1430_EDT + 20, after_lock_ms));
+                          ff_wall_observe(&st, T_SEP19_1430_EDT + 20, after_lock_ms, FF_WALL_TRUST_TRUSTED));
 
     ff_wall_t w = ff_wall_now(&st, after_lock_ms, &cfg);
     TEST_ASSERT_EQUAL_INT(FF_WALL_MESH, w.src);
@@ -524,7 +524,7 @@ static void S16_AC12b_expired_latch_reads_unknown_not_a_wrapped_time(void)
     ff_wall_init(&st);
     ff_wall_offset_cfg_t cfg = cfg_pack_stated(EDT);
 
-    ff_wall_observe(&st, T_SEP19_1430_EDT, 0u);
+    ff_wall_observe(&st, T_SEP19_1430_EDT, 0u, FF_WALL_TRUST_BOOTSTRAP);
 
     /* Inside the window the answer stands. */
     TEST_ASSERT_EQUAL_INT(FF_WALL_MESH, ff_wall_now(&st, FF_WALL_LATCH_MAX_AGE_MS, &cfg).src);
@@ -537,11 +537,12 @@ static void S16_AC12b_expired_latch_reads_unknown_not_a_wrapped_time(void)
     /* A backwards-moving monotonic clock lands in the same place rather
      * than producing a far-future time. */
     ff_wall_init(&st);
-    ff_wall_observe(&st, T_SEP19_1430_EDT, 1000000u);
+    ff_wall_observe(&st, T_SEP19_1430_EDT, 1000000u, FF_WALL_TRUST_BOOTSTRAP);
     TEST_ASSERT_EQUAL_INT(FF_WALL_UNKNOWN, ff_wall_now(&st, 500000u, &cfg).src);
 
     /* And a fresh plausible reading re-latches out of that state. */
-    TEST_ASSERT_EQUAL_INT(FF_WALL_OBS_RELATCHED, ff_wall_observe(&st, T_SEP19_1430_EDT, 500000u));
+    TEST_ASSERT_EQUAL_INT(FF_WALL_OBS_RELATCHED,
+                          ff_wall_observe(&st, T_SEP19_1430_EDT, 500000u, FF_WALL_TRUST_BOOTSTRAP));
     TEST_ASSERT_EQUAL_INT(FF_WALL_MESH, ff_wall_now(&st, 500000u, &cfg).src);
 }
 
@@ -566,7 +567,7 @@ static void S16_AC12b_backwards_clock_detection_bound_is_exactly_as_documented(v
     {
         ff_wall_state_t st;
         ff_wall_init(&st);
-        ff_wall_observe(&st, T_SEP19_1430_EDT, latch_ms);
+        ff_wall_observe(&st, T_SEP19_1430_EDT, latch_ms, FF_WALL_TRUST_BOOTSTRAP);
         uint32_t back = latch_ms - (FF_WALL_BACKWARD_DETECT_LIMIT_MS - 1u);
         TEST_ASSERT_EQUAL_INT(FF_WALL_UNKNOWN, ff_wall_now(&st, back, &cfg).src);
     }
@@ -577,7 +578,7 @@ static void S16_AC12b_backwards_clock_detection_bound_is_exactly_as_documented(v
     {
         ff_wall_state_t st;
         ff_wall_init(&st);
-        ff_wall_observe(&st, T_SEP19_1430_EDT, latch_ms);
+        ff_wall_observe(&st, T_SEP19_1430_EDT, latch_ms, FF_WALL_TRUST_BOOTSTRAP);
         uint32_t back = latch_ms - FF_WALL_BACKWARD_DETECT_LIMIT_MS;
         TEST_ASSERT_EQUAL_INT(FF_WALL_MESH, ff_wall_now(&st, back, &cfg).src);
     }
@@ -587,6 +588,180 @@ static void S16_AC12b_backwards_clock_detection_bound_is_exactly_as_documented(v
      * one uint32_t lap. Neither can be retuned without the other. */
     TEST_ASSERT_EQUAL_UINT64((uint64_t)0x100000000ULL,
                              (uint64_t)FF_WALL_LATCH_MAX_AGE_MS + (uint64_t)FF_WALL_BACKWARD_DETECT_LIMIT_MS);
+}
+
+/* ---------------------------------------------------------------------
+ * S18 slice a — trust-gated re-latch (docs/specs/S18-wall-clock-trust.md,
+ * issue #49). `ff_wall_observe` grows a trust tier: establishing accepts
+ * any tier, a disagreeing re-latch of a FRESH latch requires TRUSTED,
+ * AGREED and the expired-latch branch both stay trust-blind.
+ * ------------------------------------------------------------------- */
+
+static void S18_AC1_bootstrap_from_unpaired_still_works(void)
+{
+    /* Cold start: an empty state, a BOOTSTRAP-tier reading (exactly what
+     * an unpaired/never-heard node offers), and nothing else has ever
+     * latched. Establishing must accept it regardless of tier. */
+    ff_wall_state_t st;
+    ff_wall_init(&st);
+    ff_wall_offset_cfg_t cfg = cfg_pack_stated(EDT);
+
+    TEST_ASSERT_EQUAL_INT(FF_WALL_OBS_LATCHED,
+                          ff_wall_observe(&st, T_SEP19_1430_EDT, 1000u, FF_WALL_TRUST_BOOTSTRAP));
+
+    ff_wall_t const w = ff_wall_now(&st, 1000u, &cfg);
+    TEST_ASSERT_EQUAL_INT(FF_WALL_MESH, w.src);
+    TEST_ASSERT_EQUAL_INT16(870, w.now_min); /* 14:30 */
+    TEST_ASSERT_EQUAL_UINT32(0u, ff_wall_trust_rejected_count(&st)); /* nothing was ever refused */
+}
+
+static void S18_AC2_second_stranger_cannot_move_an_already_latched_clock(void)
+{
+    /* The exact #49 scenario, at the core layer: a first unpaired
+     * stranger bootstraps the latch (necessarily — that is what
+     * BOOTSTRAP is for), and a SECOND unpaired stranger then disagrees by
+     * more than the delta. The headline fix: REJECTED, and the latch —
+     * established off a stranger in the first place — is untouched. This
+     * must hold specifically because the ORIGINATING latch was itself
+     * BOOTSTRAP-tier: the gate conditions on the incoming observation's
+     * tier, never on what tier established the latch (ff_wall_state_t
+     * tracks no provenance — the S18 spec is explicit that an upgrade
+     * path here is a hole, not a feature). */
+    ff_wall_state_t st;
+    ff_wall_init(&st);
+    ff_wall_offset_cfg_t cfg = cfg_pack_stated(EDT);
+
+    /* Stranger #1 bootstraps. */
+    TEST_ASSERT_EQUAL_INT(FF_WALL_OBS_LATCHED,
+                          ff_wall_observe(&st, T_SEP19_1430_EDT, 1000u, FF_WALL_TRUST_BOOTSTRAP));
+    int16_t const now_min_before = ff_wall_now(&st, 11000u, &cfg).now_min;
+
+    /* Stranger #2, ten monotonic seconds later, reports a time two hours
+     * behind the latch — issue #49's measured repro shape (rx_time two
+     * hours behind, now_min shifted from 1200 to 1080). Comfortably past
+     * FF_WALL_RELATCH_DELTA_S (30 s), and still BOOTSTRAP tier: unpaired,
+     * never heard from before. */
+    int64_t const stranger2_unix = T_SEP19_1430_EDT + 10 - 7200;
+    TEST_ASSERT_EQUAL_INT(FF_WALL_OBS_REJECTED,
+                          ff_wall_observe(&st, stranger2_unix, 11000u, FF_WALL_TRUST_BOOTSTRAP));
+
+    /* now_min is UNCHANGED — the whole point. Every crew member's
+     * freshness on the Radar face is measured against this same value. */
+    ff_wall_t const w = ff_wall_now(&st, 11000u, &cfg);
+    TEST_ASSERT_EQUAL_INT(FF_WALL_MESH, w.src);
+    TEST_ASSERT_EQUAL_INT16(now_min_before, w.now_min);
+
+    int64_t unix_s = 0;
+    TEST_ASSERT_TRUE(ff_wall_unix_now(&st, 11000u, &unix_s));
+    TEST_ASSERT_EQUAL_INT64(T_SEP19_1430_EDT + 10, unix_s); /* stranger #1's prediction, untouched */
+
+    /* AC5: the rejection is counted, not a silent no-op. */
+    TEST_ASSERT_EQUAL_UINT32(1u, ff_wall_trust_rejected_count(&st));
+}
+
+static void S18_AC3_a_trusted_source_disagreeing_relatches(void)
+{
+    /* Mirror of AC2, with the SAME shape of disagreement, but from a
+     * TRUSTED source (shell-classified: a paired member, or self's own
+     * GPS-disciplined clock) — the backwards-GPS-step correction case
+     * must stay reachable. */
+    ff_wall_state_t st;
+    ff_wall_init(&st);
+    ff_wall_offset_cfg_t cfg = cfg_pack_stated(EDT);
+
+    TEST_ASSERT_EQUAL_INT(FF_WALL_OBS_LATCHED,
+                          ff_wall_observe(&st, T_SEP19_1430_EDT, 1000u, FF_WALL_TRUST_BOOTSTRAP));
+
+    int64_t const trusted_unix = T_SEP19_1430_EDT + 10 - 7200;
+    TEST_ASSERT_EQUAL_INT(FF_WALL_OBS_RELATCHED,
+                          ff_wall_observe(&st, trusted_unix, 11000u, FF_WALL_TRUST_TRUSTED));
+
+    ff_wall_t const w = ff_wall_now(&st, 11000u, &cfg);
+    TEST_ASSERT_EQUAL_INT(FF_WALL_MESH, w.src);
+    TEST_ASSERT_EQUAL_INT16(750, w.now_min); /* 12:30 — the corrected, two-hours-back time */
+
+    /* A TRUSTED relatch is not a "rejection" by any name. */
+    TEST_ASSERT_EQUAL_UINT32(0u, ff_wall_trust_rejected_count(&st));
+}
+
+static void S18_AC5_trust_rejected_count_counts_only_the_trust_gate(void)
+{
+    /* The proxy risk named in the standing brief: a counter that
+     * increments on EVERY rejection (including plausibility-window
+     * rejections, which have nothing to do with trust and fire during
+     * ordinary handshake noise) would be useless for "is a stranger
+     * trying to move my clock" and would also false-alarm constantly.
+     * Pin that it increments ONLY for the disagreeing-fresh-latch/
+     * insufficient-tier case. */
+    ff_wall_state_t st;
+    ff_wall_init(&st);
+    TEST_ASSERT_EQUAL_UINT32(0u, ff_wall_trust_rejected_count(&st));
+
+    /* A plausibility-window rejection before anything has latched: not
+     * counted — this is a different gate entirely. */
+    TEST_ASSERT_EQUAL_INT(FF_WALL_OBS_REJECTED,
+                          ff_wall_observe(&st, 0 /* unknown */, 1000u, FF_WALL_TRUST_BOOTSTRAP));
+    TEST_ASSERT_EQUAL_UINT32(0u, ff_wall_trust_rejected_count(&st));
+
+    TEST_ASSERT_EQUAL_INT(FF_WALL_OBS_LATCHED,
+                          ff_wall_observe(&st, T_SEP19_1430_EDT, 1000u, FF_WALL_TRUST_BOOTSTRAP));
+
+    /* An AGREED observation, even from a BOOTSTRAP source: not counted —
+     * nothing was refused, nothing moved. */
+    TEST_ASSERT_EQUAL_INT(FF_WALL_OBS_AGREED,
+                          ff_wall_observe(&st, T_SEP19_1430_EDT + 10, 11000u, FF_WALL_TRUST_BOOTSTRAP));
+    TEST_ASSERT_EQUAL_UINT32(0u, ff_wall_trust_rejected_count(&st));
+
+    /* A plausibility-window rejection against an EXISTING good latch:
+     * still not counted — implausible input, not a trust failure. */
+    TEST_ASSERT_EQUAL_INT(FF_WALL_OBS_REJECTED,
+                          ff_wall_observe(&st, FF_WALL_EPOCH_CEILING, 12000u, FF_WALL_TRUST_BOOTSTRAP));
+    TEST_ASSERT_EQUAL_UINT32(0u, ff_wall_trust_rejected_count(&st));
+
+    /* The actual trust-gate rejection: counted, exactly once. */
+    TEST_ASSERT_EQUAL_INT(FF_WALL_OBS_REJECTED,
+                          ff_wall_observe(&st, T_SEP19_1430_EDT + 10 + 7200, 13000u, FF_WALL_TRUST_BOOTSTRAP));
+    TEST_ASSERT_EQUAL_UINT32(1u, ff_wall_trust_rejected_count(&st));
+
+    /* And a second one accumulates rather than saturating or resetting. */
+    TEST_ASSERT_EQUAL_INT(FF_WALL_OBS_REJECTED,
+                          ff_wall_observe(&st, T_SEP19_1430_EDT + 10 - 7200, 14000u, FF_WALL_TRUST_BOOTSTRAP));
+    TEST_ASSERT_EQUAL_UINT32(2u, ff_wall_trust_rejected_count(&st));
+
+    /* NULL `st` reads as 0, not a crash. */
+    TEST_ASSERT_EQUAL_UINT32(0u, ff_wall_trust_rejected_count(NULL));
+}
+
+static void S18_expired_latch_relatch_stays_trust_blind(void)
+{
+    /* The one branch S18 slice a deliberately does NOT gate (design-
+     * review PR #88): once the latch has expired (or the monotonic clock
+     * moved backwards), ANY plausible reading re-latches — including a
+     * bare BOOTSTRAP-tier one overwriting a latch that was previously
+     * TRUSTED. If a future change "fixes" this into a gated branch, this
+     * test is the regression pin: it would start returning REJECTED
+     * instead of RELATCHED. */
+    ff_wall_state_t st;
+    ff_wall_init(&st);
+    ff_wall_offset_cfg_t cfg = cfg_pack_stated(EDT);
+
+    /* A TRUSTED source establishes and holds the latch. */
+    TEST_ASSERT_EQUAL_INT(FF_WALL_OBS_LATCHED,
+                          ff_wall_observe(&st, T_SEP19_1430_EDT, 1000u, FF_WALL_TRUST_TRUSTED));
+
+    /* Let it expire (past FF_WALL_LATCH_MAX_AGE_MS). */
+    uint32_t const expired_ms = 1000u + FF_WALL_LATCH_MAX_AGE_MS + 1u;
+    TEST_ASSERT_EQUAL_INT(FF_WALL_UNKNOWN, ff_wall_now(&st, expired_ms, &cfg).src);
+
+    /* A disagreeing BOOTSTRAP reading still re-latches — the expired
+     * branch never reaches the trust gate at all. */
+    TEST_ASSERT_EQUAL_INT(FF_WALL_OBS_RELATCHED,
+                          ff_wall_observe(&st, T_SEP19_1430_EDT + 3600, expired_ms, FF_WALL_TRUST_BOOTSTRAP));
+
+    ff_wall_t const w = ff_wall_now(&st, expired_ms, &cfg);
+    TEST_ASSERT_EQUAL_INT(FF_WALL_MESH, w.src);
+    TEST_ASSERT_EQUAL_INT16(930, w.now_min); /* 15:30 — the new BOOTSTRAP value took effect */
+    TEST_ASSERT_EQUAL_UINT32(0u, ff_wall_trust_rejected_count(&st)); /* never touched the gate */
 }
 
 /* ---------------------------------------------------------------------
@@ -609,7 +784,7 @@ static void S16_AC12c_assumed_pack_offset_does_not_outrank_set_settings(void)
      * able to silently move the puck two time zones east. */
     ff_wall_state_t st;
     ff_wall_init(&st);
-    ff_wall_observe(&st, T_SEP19_1430_EDT, 0u);
+    ff_wall_observe(&st, T_SEP19_1430_EDT, 0u, FF_WALL_TRUST_BOOTSTRAP);
 
     ff_wall_t w = ff_wall_now(&st, 0u, &cfg);
     TEST_ASSERT_EQUAL_INT(FF_WALL_MESH, w.src);
@@ -642,7 +817,7 @@ static void S16_AC12c_assumed_pack_offset_is_used_when_settings_unset(void)
 
     ff_wall_state_t st;
     ff_wall_init(&st);
-    ff_wall_observe(&st, T_SEP19_1430_EDT, 0u);
+    ff_wall_observe(&st, T_SEP19_1430_EDT, 0u, FF_WALL_TRUST_BOOTSTRAP);
     ff_wall_t w = ff_wall_now(&st, 0u, &cfg);
     TEST_ASSERT_EQUAL_INT(FF_WALL_MESH, w.src);
     TEST_ASSERT_TRUE(w.offset_assumed);
@@ -662,7 +837,7 @@ static void S16_AC12c_no_pack_and_no_settings_is_unknown(void)
      * guess and not UTC. */
     ff_wall_state_t st;
     ff_wall_init(&st);
-    TEST_ASSERT_EQUAL_INT(FF_WALL_OBS_LATCHED, ff_wall_observe(&st, T_SEP19_1430_EDT, 0u));
+    TEST_ASSERT_EQUAL_INT(FF_WALL_OBS_LATCHED, ff_wall_observe(&st, T_SEP19_1430_EDT, 0u, FF_WALL_TRUST_BOOTSTRAP));
 
     int64_t unix_s = 0;
     TEST_ASSERT_TRUE(ff_wall_unix_now(&st, 0u, &unix_s)); /* the instant IS known */
@@ -825,12 +1000,12 @@ static void S16_AC12_null_inputs_read_as_unknown(void)
 {
     ff_wall_state_t st;
     ff_wall_init(&st);
-    ff_wall_observe(&st, T_SEP19_1430_EDT, 0u);
+    ff_wall_observe(&st, T_SEP19_1430_EDT, 0u, FF_WALL_TRUST_BOOTSTRAP);
     ff_wall_offset_cfg_t cfg = cfg_pack_stated(EDT);
 
     TEST_ASSERT_EQUAL_INT(FF_WALL_UNKNOWN, ff_wall_now(NULL, 0u, &cfg).src);
     TEST_ASSERT_EQUAL_INT(FF_WALL_UNKNOWN, ff_wall_now(&st, 0u, NULL).src);
-    TEST_ASSERT_EQUAL_INT(FF_WALL_OBS_REJECTED, ff_wall_observe(NULL, T_SEP19_1430_EDT, 0u));
+    TEST_ASSERT_EQUAL_INT(FF_WALL_OBS_REJECTED, ff_wall_observe(NULL, T_SEP19_1430_EDT, 0u, FF_WALL_TRUST_BOOTSTRAP));
 
     int64_t unix_s = 0;
     TEST_ASSERT_FALSE(ff_wall_unix_now(NULL, 0u, &unix_s));
@@ -863,6 +1038,12 @@ int main(void)
     RUN_TEST(S16_AC12b_pre_gps_lock_offset_is_corrected_by_relatch);
     RUN_TEST(S16_AC12b_expired_latch_reads_unknown_not_a_wrapped_time);
     RUN_TEST(S16_AC12b_backwards_clock_detection_bound_is_exactly_as_documented);
+
+    RUN_TEST(S18_AC1_bootstrap_from_unpaired_still_works);
+    RUN_TEST(S18_AC2_second_stranger_cannot_move_an_already_latched_clock);
+    RUN_TEST(S18_AC3_a_trusted_source_disagreeing_relatches);
+    RUN_TEST(S18_AC5_trust_rejected_count_counts_only_the_trust_gate);
+    RUN_TEST(S18_expired_latch_relatch_stays_trust_blind);
 
     RUN_TEST(S16_AC12c_assumed_pack_offset_does_not_outrank_set_settings);
     RUN_TEST(S16_AC12c_stated_pack_offset_outranks_settings);
