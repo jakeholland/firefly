@@ -21,6 +21,7 @@ Specs are contracts. Acceptance criteria (AC) become test names (`S01_AC3_...`).
 | S15 | esp32s3 target — ESP-IDF build + UART + sensors | most | YES (when boards arrive) | ☐ |
 | S16 | app/shell — event loop, routing, input dispatch, wall clock | S02,S03,S06,S08,S10,S11,S13 | YES | ✅ merged (PR #36,#37,#46,#54,#56,#58,#59,#60,#61) |
 | S17 | usability hardening — colorblind toggle, tap-target floor | S06,S08,S11 | YES | ✅ a+b merged (PR #83, #86) — #43,#74 closed |
+| S18 | wall-clock trust — what may change the puck's mind about the time | S16 | YES | ☐ a trust-relatch (#49); b settle-then-age (#50); c pack window (#40) |
 
 **Wave plan:** Wave 0 = S13+S14 (the loop itself). Wave 1 = S01,S03,S05,S11 (parallel, no deps). Wave 2 = S02,S04,S07. Wave 3 = S06,S08,S10. Wave 4 = S16, then S09,S12,S15.
 
