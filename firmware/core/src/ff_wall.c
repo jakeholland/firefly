@@ -86,8 +86,22 @@ static bool ff_wall_offset_valid(int16_t off_min)
  * S18 slice c (#40): the window is now a parameter, not the fixed epoch
  * constants, so ff_wall_observe can enforce a pack-tightened EFFECTIVE
  * window (st->win_floor/win_ceiling) while ff_wall_split_local stays on
- * the fixed absolute bounds (it is stateless, and its check is a
- * redundant sanity net over an already-admitted value — see the header). */
+ * the fixed absolute bounds (it is stateless — it has no access to st's
+ * effective window).
+ *
+ * KNOWN GAP (#95, review of PR #93): the two windows are NOT
+ * interchangeable on the FLOOR side. A pack whose festival falls earlier
+ * in the epoch-floor year than FF_WALL_EPOCH_FLOOR (e.g. a Feb 2026 pack,
+ * deriving [2026-01-18, 2026-02-17)) has an effective floor BELOW the
+ * fixed floor. ff_wall_observe then LATCHES a genuine in-festival reading
+ * that ff_wall_split_local — re-checking the higher fixed floor — reports
+ * as UNKNOWN. The failure is honest-safe (UNKNOWN, never a fabricated
+ * time) and unreachable for every in-scope festival (Lost Lands is Sep;
+ * all 2027+ packs sit above their year's floor), so it does NOT block,
+ * but the "redundant sanity net" framing is only true on the CEILING
+ * side. Do not lean on split_local and observe agreeing about the floor.
+ * Fix tracked in #95: give split_local the effective window, or drop its
+ * floor re-check now that observe is the authoritative gate. */
 static bool ff_wall_plausible_win(int64_t unix_s, int64_t floor_s, int64_t ceiling_s)
 {
     return unix_s >= floor_s && unix_s < ceiling_s;
