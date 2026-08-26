@@ -288,6 +288,57 @@ static inline uint32_t ff_theme_crew_color(uint8_t color_idx, bool colorblind)
  * checked against one constant instead of a repeated magic number. */
 #define FF_THEME_MIN_HIT_PX 44
 
+/**
+ * FF_HIT_MIN_GAP_PX — S17 slice b (docs/specs/S17-usability-hardening.md,
+ * AC2): the minimum clearance required between two INDEPENDENT interactive
+ * elements' hit-rects, so a fat/gloved/kandi'd thumb can't straddle both
+ * and trigger the wrong one. Enforced by
+ * targets/sim/tests/test_face_hit_targets.c's sweep, the same build-gate
+ * home as FF_THEME_MIN_HIT_PX above.
+ *
+ * ## Edge-to-edge, not centre-to-centre
+ * The sweep measures the shortest distance between the two rects'
+ * BOUNDARIES (0 if they overlap on an axis), not the distance between
+ * their centers. Centre-to-centre is the wrong quantity for this
+ * question: it's biased by each control's own SIZE, not by the dead space
+ * between them — a huge chip sitting right next to a tiny icon can have a
+ * large center-to-center distance while their edges nearly touch (a real
+ * mis-tap risk hidden by size), and conversely two same-size controls
+ * read consistently under centre-to-centre only because they happen to
+ * match. Edge-to-edge instead measures exactly the physical no-man's-land
+ * a thumb would need to land inside of to miss BOTH controls — the literal
+ * quantity "can a thumb hit both" is asking about — independent of either
+ * control's own footprint.
+ *
+ * ## Why 8, not 24
+ * 8px matches the widely-cited minimum (Google's Material Design touch-
+ * target accessibility guidance: "at least 8dp of spacing between two
+ * adjacent touch targets") for the smallest gap that reliably avoids an
+ * ambiguous double-hit — this is a FLOOR, not a comfort target. It is
+ * deliberately smaller than `FF_SETTINGS_CHIP_GAP` (24px, scr_settings.c)
+ * — PR #68's fix for the specific double-chip mis-tap Bailey caught by
+ * eye — because that 24px was chosen as a GENEROUS separation for two
+ * chips sitting directly side by side on the same row, not re-derived as
+ * the universal minimum every control everywhere must clear. Call sites
+ * remain free (and, per #68, encouraged) to use more than the floor;
+ * this constant only draws the line below which a gap is a genuine
+ * mis-tap trap the sweep must fail on, at ~0.7mm on this display's own
+ * ~11px/mm scale (docs/review/ux-raver.md: "412 px ~= 11 px/mm").
+ *
+ * ## Scope: independent SIBLING controls only
+ * The sweep only compares two clickable elements that (a) share the same
+ * immediate LVGL parent and (b) are not the SAME logical control wearing
+ * two hit-rects — e.g. scr_settings.c's WATER NUDGE/QUIET HOURS rows,
+ * where the dim row LABEL and its own value CHIP are two separate LVGL
+ * objects that both forward to the identical callback+argument (one
+ * setting, one action, two places to tap it). Two hit-rects for the same
+ * action are not a mis-tap risk the way two hit-rects for two DIFFERENT
+ * actions are — see test_face_hit_targets.c's own comment for exactly how
+ * that's detected (matching registered click-callback + user_data, not a
+ * per-screen exception list), so a legitimately tight label/chip pairing
+ * can't false-positive this sweep. */
+#define FF_HIT_MIN_GAP_PX 8
+
 #ifdef __cplusplus
 }
 #endif

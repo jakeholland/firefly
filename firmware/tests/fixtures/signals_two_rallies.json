@@ -1,0 +1,12 @@
+{
+  "fixture": "signals_two_rallies",
+  "face": "signals",
+  "signals": {
+    "items": [
+      {"kind": "rally", "from_name": "RILEY", "text": "MAIN STAGE", "age_str": "2 MIN", "unread": true},
+      {"kind": "rally", "from_name": "DANA", "text": "WATER REFILL", "age_str": "9 MIN", "unread": false},
+      {"kind": "text", "from_name": "MAX", "text": "on my way!", "age_str": "14 MIN", "unread": false}
+    ],
+    "unread_count": 1
+  }
+}

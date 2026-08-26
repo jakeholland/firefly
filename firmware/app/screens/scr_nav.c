@@ -216,22 +216,55 @@ void ff_scr_nav_build(ff_app_state_t const *state)
     lv_obj_clear_flag(tileview, LV_OBJ_FLAG_GESTURE_BUBBLE);
     lv_obj_add_event_cb(tileview, nav_swipe_gesture_cb, LV_EVENT_GESTURE, NULL);
 
+    /* S17 slice b (AC2), PR #86 code review, should-fix: each tile is a
+     * plain lv_obj (lv_tileview_add_tile), which defaults CLICKABLE like
+     * every LVGL base object — never explicitly cleared here before, the
+     * identical class of bug scr_signals.c's own header comment already
+     * documents fixing for its container primitives ("several purely
+     * decorative containers... were left CLICKABLE by omission"). Harmless
+     * on its own (no LV_EVENT_CLICKED handler was ever attached to a
+     * tile), but it meant all THREE tiles — the two currently scrolled
+     * OFF-screen at their native, un-scrolled tileview-grid positions,
+     * hundreds of px outside the window, plus the one currently in view —
+     * were live entries in the AC2 adjacency sweep once that check went
+     * global (this slice's own cousins-blind-spot fix): three
+     * puck-sized, edge-touching rects that used to be silently exempted
+     * by the OLD sibling-scoped check's whole-puck-size heuristic,
+     * surfacing as spurious HIT-TARGETS-TOO-CLOSE findings between tiles
+     * that were never independently reachable by a real touch in the
+     * first place (only one tile is ever visible at a time; the other two
+     * sit off the physical display entirely). These are pure layout/swap
+     * surfaces — "the tileview's three tiles stay purely as the swap
+     * surface `lv_tileview_set_tile_by_index` jumps between" (ISSUE #29's
+     * own comment, right below) — never controls a thumb aims at, so
+     * CLICKABLE is cleared on all three explicitly rather than relying on
+     * a size-shaped exemption to paper over it. Long-press-to-Settings
+     * reachability (nav_long_press_cb's own doc comment; verified, not
+     * assumed, by test_scr_intent.c's `S16_c3_physical_long_press_on_
+     * empty_puck_space_reaches_open_settings`) is unaffected: a touch
+     * over empty tile space now resolves one level up, at the still-
+     * CLICKABLE `tileview` (which still carries LV_OBJ_FLAG_EVENT_BUBBLE),
+     * and bubbles to `puck` exactly as before — one hop shorter, same
+     * destination. */
     lv_obj_t *tile_radar = lv_tileview_add_tile(tileview, 0, 0, LV_DIR_NONE);
     lv_obj_set_style_pad_all(tile_radar, 0, 0);
     lv_obj_set_style_bg_opa(tile_radar, LV_OPA_TRANSP, 0);
     lv_obj_clear_flag(tile_radar, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_clear_flag(tile_radar, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_add_flag(tile_radar, LV_OBJ_FLAG_EVENT_BUBBLE); /* GESTURE_BUBBLE: already on by default */
 
     lv_obj_t *tile_now = lv_tileview_add_tile(tileview, 1, 0, LV_DIR_NONE);
     lv_obj_set_style_pad_all(tile_now, 0, 0);
     lv_obj_set_style_bg_opa(tile_now, LV_OPA_TRANSP, 0);
     lv_obj_clear_flag(tile_now, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_clear_flag(tile_now, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_add_flag(tile_now, LV_OBJ_FLAG_EVENT_BUBBLE); /* GESTURE_BUBBLE: already on by default */
 
     lv_obj_t *tile_signals = lv_tileview_add_tile(tileview, 2, 0, LV_DIR_NONE);
     lv_obj_set_style_pad_all(tile_signals, 0, 0);
     lv_obj_set_style_bg_opa(tile_signals, LV_OPA_TRANSP, 0);
     lv_obj_clear_flag(tile_signals, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_clear_flag(tile_signals, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_add_flag(tile_signals, LV_OBJ_FLAG_EVENT_BUBBLE); /* GESTURE_BUBBLE: already on by default */
 
     /* ISSUE #29, closed: build content into the ACTIVE tile ONLY. Before

@@ -97,7 +97,24 @@
 #define FF_COMPOSE_BUBBLE_H 84
 
 #define FF_COMPOSE_GRID_Y (FF_COMPOSE_BUBBLE_Y + FF_COMPOSE_BUBBLE_H + 8)
-#define FF_COMPOSE_KEY_GAP 6
+/* S17 slice b (AC2, docs/specs/S17-usability-hardening.md): was 6px — the
+ * dense T9 grid is exactly the stress case that slice's task brief named,
+ * and 6px measured under `FF_HIT_MIN_GAP_PX` (8px, ff_theme.h) on every
+ * adjacent key pair, both within a row and between rows (this constant
+ * doubles as both — see compose_build_keys below). Caught by
+ * targets/sim/tests/test_face_hit_targets.c's new adjacency pass (72
+ * violations, every compose_*.json fixture, all at gap=6.0px) before this
+ * fix; bumped to 10px — comfortably above the floor, matching this
+ * codebase's own other "modest gap" precedent (scr_settings.c's
+ * FF_SETTINGS_ROW_GAP). Every key's own width/height stays well clear of
+ * FF_THEME_MIN_HIT_PX at the new gap (verified against the real rendered
+ * click-area, not hand math — PR #86 code review caught an earlier draft
+ * of this comment quoting 64x46, a stale pre-fix number that never
+ * accounted for the Y-position cascade the gap bump causes: the narrowest
+ * row, bottom DEL/0/SEND, actually measures 50x46; row2 (7/8/9) is
+ * 100x46, row1 (4/5/6) is 122x46, row0 (1/2/3) is 132x46 — see this
+ * file's PR body for the full before/after). */
+#define FF_COMPOSE_KEY_GAP 10
 #define FF_COMPOSE_KEY_H   46 /* >= FF_THEME_MIN_HIT_PX; see the _Static_assert below */
 #define FF_COMPOSE_BOTTOM_ROW_GAP_EXTRA 4
 #define FF_COMPOSE_BOTTOM_ROW_H 46 /* >= FF_THEME_MIN_HIT_PX; see the _Static_assert below */
@@ -105,6 +122,8 @@
 _Static_assert(FF_COMPOSE_KEY_H >= FF_THEME_MIN_HIT_PX, "compose grid keys must clear the 44px hit-target floor");
 _Static_assert(FF_COMPOSE_BOTTOM_ROW_H >= FF_THEME_MIN_HIT_PX,
                "compose bottom row must clear the 44px hit-target floor");
+_Static_assert(FF_COMPOSE_KEY_GAP >= FF_HIT_MIN_GAP_PX,
+               "compose grid key gap (both within-row and between-row) must clear the adjacency floor");
 
 /* Row 0 (keys 1-3), row 1 (keys 4-6), row 2 (keys 7-9), then the DEL/0/SEND row. */
 #define FF_COMPOSE_ROW0_Y (FF_COMPOSE_GRID_Y)
