@@ -857,7 +857,13 @@ static void scan_dir_for_forbidden_includes(char const *dir_path, int *violation
         }
 
         char path[1024];
-        (void)snprintf(path, sizeof(path), "%s/%s", dir_path, entry->d_name);
+        /* Check for truncation rather than (void)-ing it: a truncated path
+         * would fopen the wrong file and the test would silently scan the
+         * wrong source. Also what gcc-14's -Wformat-truncation flags (#81) —
+         * dir_path is a runtime arg it can't bound. A real repo path is far
+         * short of 1024; assert that rather than suppress. */
+        int pn = snprintf(path, sizeof(path), "%s/%s", dir_path, entry->d_name);
+        TEST_ASSERT_TRUE_MESSAGE(pn > 0 && (size_t)pn < sizeof(path), entry->d_name);
         FILE *f = fopen(path, "r");
         TEST_ASSERT_NOT_NULL_MESSAGE(f, path);
 

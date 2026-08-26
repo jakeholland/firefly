@@ -13,6 +13,11 @@ firmware/
   targets/sim/  ffsim — desktop sim target (S13); fixture.h/fixture_view.h (S13b);
                 ctl_server.h/.c (S13c control socket); --connect/--pack drive the
                 app shell (S16b2 — the interim live.h/.c wiring is retired)
+  targets/esp32s3/  ESP-IDF project, real ESP32-S3 hardware (S15). Slice a
+                (this one): the project skeleton — components/ wrap
+                core/festpack/meshclient/app UNCHANGED, main/app_main.c
+                boots the shell against stub HALs, no peripherals touched.
+                See "Build — ESP32-S3 (device)" below.
   tools/        compare_png — golden-screenshot pixel diff (S14 slice b)
                 dev/         compose.yml + crew_sim.py + CTL.md — the live dev loop (S13d)
   tests/        tests/fixtures/*.json, tests/golden/*.png, run_goldens.sh (S13/S14 slice b)
@@ -43,6 +48,31 @@ cmake -B build -DFF_TARGET=sim
 cmake --build build
 ctest --test-dir build --output-on-failure
 ```
+
+## Build — ESP32-S3 (device, S15 slice a)
+
+```sh
+source ~/esp/esp-idf/export.sh   # or: . ~/esp/esp-idf/export.sh
+# first time only, if the xtensa toolchain isn't installed yet:
+#   ~/esp/esp-idf/install.sh esp32s3
+cd firmware/targets/esp32s3
+idf.py set-target esp32s3   # only needed once, or after deleting build/
+idf.py build
+idf.py -p <PORT> flash monitor   # once the board is on the bench
+```
+
+This is a SEPARATE build entry point from the `cmake -S firmware ...`
+sim build above — `idf.py`, not `cmake --build`. It does not
+`add_subdirectory()` the sim tree; every component under
+`targets/esp32s3/components/` points its `SRCS`/`INCLUDE_DIRS` straight
+at the existing `firmware/{core,festpack,meshclient,app}` sources, so
+those compile for xtensa UNCHANGED — literally the same `.c` files the
+sim target builds. `main/app_main.c` boots `ff_shell_t` against stub
+HALs (`esp_timer`-backed clock, a no-op store, no transport) and never
+touches a peripheral — the display/touch/UART/sensor drivers are slices
+b/c/d. See `docs/specs/S15-esp32s3-target.md` and the S15a PR body for
+the full slice breakdown and every host-portability finding this port
+surfaced.
 
 ## Run the sim
 
