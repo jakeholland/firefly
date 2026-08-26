@@ -1782,6 +1782,40 @@ static void S18_AC4_self_position_latches_the_wall_but_stays_dropped_for_crew(vo
     TEST_ASSERT_EQUAL_UINT32(0, ff_shell_wall_rejected_relatches(&H.shell));
 }
 
+static void S18_self_trust_is_independent_of_dev_trust_all(void)
+{
+    /* Pins the independence the S18a PR body calls load-bearing and no
+     * other test caught (review of PR #90): shell_wall_trust_for
+     * classifies self via shell_is_self, NOT shell_drop_as_self. The two
+     * diverge only under --dev-trust-all (sim-only), where
+     * shell_drop_as_self is suspended and returns false for every node.
+     * If the classifier used shell_drop_as_self, self would fall through
+     * to BOOTSTRAP under the flag and could no longer MOVE an established
+     * latch — silently demoting self's own GPS-disciplined anchor exactly
+     * when the bench harness is driving. So: with the flag ON, self must
+     * still be TRUSTED enough to re-latch. This is S18_AC4 with
+     * --dev-trust-all set; AC4 alone (flag off) can't catch the swap
+     * because the two helpers are identical when the flag is off. */
+    harness_seed_settings(0);
+    harness_init(100000u, true);
+    ff_shell_dev_trust_all(&H.shell, true);
+    inject_my_info(MY_ID);
+
+    /* Self bootstraps the latch at 22:00 (any tier establishes a latch,
+     * so the bootstrap alone does not distinguish the mutation). */
+    inject_position(MY_ID, U_EVENING, 39.0, -82.0);
+    TEST_ASSERT_EQUAL_INT16(1320, ff_shell_wall(&H.shell).now_min);
+
+    /* Self, still TRUSTED despite the flag, moves the established latch
+     * two hours backward. The swap-to-drop_as_self mutation demotes self
+     * to BOOTSTRAP here and would REJECT this instead (now_min stays 1320,
+     * rejected count ticks to 1) — so this assertion, and the counter one,
+     * both fail under the swap. */
+    inject_position(MY_ID, U_AWAKE, 39.0, -82.0);
+    TEST_ASSERT_EQUAL_INT16(1200, ff_shell_wall(&H.shell).now_min);
+    TEST_ASSERT_EQUAL_UINT32(0, ff_shell_wall_rejected_relatches(&H.shell));
+}
+
 static void S18_paired_members_backward_nodeinfo_reading_is_still_ignored(void)
 {
     /* The layering note the S18 spec insists on stating: a paired
@@ -2657,6 +2691,7 @@ int main(void)
     RUN_TEST(S18_AC2_second_unpaired_stranger_cannot_move_the_wall_clock);
     RUN_TEST(S18_AC3_a_paired_members_backward_correction_relatches);
     RUN_TEST(S18_AC4_self_position_latches_the_wall_but_stays_dropped_for_crew);
+    RUN_TEST(S18_self_trust_is_independent_of_dev_trust_all);
     RUN_TEST(S18_paired_members_backward_nodeinfo_reading_is_still_ignored);
     RUN_TEST(S18_expired_latch_relatches_trust_blind_through_the_shell);
     RUN_TEST(S16_b1_a_flare_on_a_foreign_portnum_raises_no_takeover);
