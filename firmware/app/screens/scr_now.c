@@ -446,6 +446,40 @@ static void now_render_no_pack(lv_obj_t *parent)
 }
 
 /* ---------------------------------------------------------------------
+ * NOW_TIME_UNKNOWN state (issue #48).
+ * ------------------------------------------------------------------- */
+
+/* A festpack IS loaded — the missing fact is the CLOCK, not the pack, so
+ * the copy names the clock ("WAITING FOR TIME FIX", echoing the radar
+ * face's own NOFIX vocabulary for the same "we're honestly waiting on a
+ * signal" shape — see scr_radar.c's radar_render_nofix) and never
+ * mentions loading a festpack (that would repeat the exact mis-claim
+ * this state exists to fix) or a schedule/TBD (that would be a claim
+ * about DATA the projection never checked, since it bailed before
+ * touching the pack's schedule at all — see ff_shell.c's
+ * shell_project_now). No countdown, no lineup, no invented time: this
+ * state's whole job is to say "I don't know what time it is" and stop
+ * there. */
+static void now_render_time_unknown(lv_obj_t *parent)
+{
+    lv_obj_t *headline = lv_label_create(parent);
+    lv_label_set_text(headline, "WAITING FOR TIME FIX");
+    lv_obj_set_style_text_font(headline, FF_THEME_FONT_HEADLINE, 0);
+    lv_obj_set_style_text_color(headline, lv_color_hex(FF_THEME_COLOR_MUTED), 0);
+    lv_obj_set_width(headline, 320);
+    lv_obj_set_style_text_align(headline, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_align(headline, LV_ALIGN_CENTER, 0, (int32_t)NOW_LAYOUT_TIME_UNKNOWN_HEADLINE_DY);
+
+    lv_obj_t *sub = lv_label_create(parent);
+    lv_label_set_text(sub, "Clock hasn't synced from the mesh yet");
+    lv_obj_set_style_text_font(sub, FF_THEME_FONT_LABEL, 0);
+    lv_obj_set_style_text_color(sub, lv_color_hex(FF_THEME_COLOR_DIM), 0);
+    lv_obj_set_width(sub, 280);
+    lv_obj_set_style_text_align(sub, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_align(sub, LV_ALIGN_CENTER, 0, (int32_t)NOW_LAYOUT_TIME_UNKNOWN_SUB_DY);
+}
+
+/* ---------------------------------------------------------------------
  * Entry point.
  * ------------------------------------------------------------------- */
 
@@ -467,6 +501,9 @@ void ff_scr_now_build(lv_obj_t *parent, ff_app_now_t const *now)
         break;
     case NOW_NOTHING_PLAYING:
         now_render_nothing_playing(parent);
+        break;
+    case NOW_TIME_UNKNOWN:
+        now_render_time_unknown(parent);
         break;
     case NOW_NO_PACK:
     default:

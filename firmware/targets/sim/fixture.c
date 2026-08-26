@@ -471,6 +471,7 @@ static const fx_enum_entry_t fx_now_state_table[] = {
     {"mixed", NOW_MIXED},
     {"live", NOW_LIVE},
     {"nothing_playing", NOW_NOTHING_PLAYING},
+    {"time_unknown", NOW_TIME_UNKNOWN}, /* issue #48 */
 };
 
 /* fx_parse_now — same fail-loud-on-oversized-array treatment as

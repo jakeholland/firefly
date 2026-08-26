@@ -138,7 +138,7 @@ Field names/semantics are transcribed 1:1 from `docs/specs/S06-radar-face.md`'s
 
 | Key | Type | Default | Notes |
 |---|---|---|---|
-| `state` | string enum: `no_pack`\|`tbd`\|`mixed`\|`live`\|`nothing_playing` | `no_pack` | **[api], PR #21 code review finding #2/ruling.** Replaces an earlier `pack_loaded`+`tbd` bool pair — see `now_state_t`'s doc comment in `ff_app_state.h` for why an explicit, mutually-exclusive-by-construction enum (same convention as `radar.mode`) replaced two independent bools. An absent key defaults to `no_pack`, the least-claiming state — same convention as `radar.mode`'s `nosel` default. An unrecognized string fails the load (`FF_FIXTURE_ERR_BAD_ENUM`, issue #28 — it used to silently take the same default). |
+| `state` | string enum: `no_pack`\|`tbd`\|`mixed`\|`live`\|`nothing_playing`\|`time_unknown` | `no_pack` | **[api], PR #21 code review finding #2/ruling; `time_unknown` added by issue #48.** Replaces an earlier `pack_loaded`+`tbd` bool pair — see `now_state_t`'s doc comment in `ff_app_state.h` for why an explicit, mutually-exclusive-by-construction enum (same convention as `radar.mode`) replaced two independent bools. An absent key defaults to `no_pack`, the least-claiming state — same convention as `radar.mode`'s `nosel` default. An unrecognized string fails the load (`FF_FIXTURE_ERR_BAD_ENUM`, issue #28 — it used to silently take the same default). `time_unknown` (issue #48): a pack IS loaded but the clock is not — distinct from `no_pack` on purpose, see that member's own doc comment. |
 | `rows` | array, up to `FF_APP_NOW_MAX_ROWS` (3) | `[]` | Populated for `state: "live"` and `state: "mixed"` (the day's known-time sets). A 4th entry fails the whole load with `FF_FIXTURE_ERR_TOO_BIG`. `stage_color_rgb` accepts a `"#rrggbb"` string (leading `#` optional) or a bare integer — both forms are exercised in `test_fixture.c` (`now_stage_color_rgb_hex_string_parses`, `now_stage_color_rgb_numeric_form_parses`). **`mins_left` was removed** (PR #21 code review finding #5a) — it was parsed and fixture-populated but never rendered (the row's progress bar is driven by `pct_done` alone; the spec's row requirement is a bar, not per-row minutes text). |
 | `next` | object or omitted | omitted (`ff_app_next_t.valid = false`) | Populated for `state: "live"` and `state: "mixed"`. Omit entirely (not `null`) when there's no upcoming starred set — presence of the `next` object sets `valid = true`. Renders differently by state: `state: "live"` gives it the full next-card treatment (label/artist/stage/36px countdown); `state: "mixed"` (UX review round 2 finding #2) gives it a more compact but still countdown-LED block (22px amber countdown first, artist/stage below) — same field, deliberately still the visually prominent element in its own block, just scaled to share the screen with the mixed state's other sections. |
 | `lineup` | array, up to `FF_APP_NOW_MAX_LINEUP` (32) | `[]` | The day's sets whose time is **not** known. For `state: "tbd"`, this is every set on the day (all of them lack a time, by definition). For `state: "mixed"` (PR #21 code review finding #1/ruling), this is just the still-unknown SUBSET — the known-time sets render via `rows`/`next` at the same time, so an unknown-time set is never silently dropped just because some other set on the same day got a real time. `stage_name: ""` means the set's stage is genuinely unknown in the source pack (`fp_set_t.stage_idx == -1`); rendered honestly (`"STAGE UNKNOWN"`), never guessed. A 33rd entry fails the whole load with `FF_FIXTURE_ERR_TOO_BIG`. |
@@ -422,13 +422,14 @@ interpretation" — noted here and in the PR body.
 
 ### Now face fixtures (S07 slice b)
 
-Five fixtures cover the Now face's five honestly-distinct `now_state_t`
+Six fixtures cover the Now face's six honestly-distinct `now_state_t`
 values — one apiece. `now_nothing_live.json` was added in PR #21 UX
 review round 1 (reachable in code from the first pass, no golden yet);
 `now_mixed.json` was added in PR #21 code review round 2, alongside the
 `now_state_t` enum itself replacing an earlier `pack_loaded`+`tbd` bool
 pair that could only represent 3 of these states cleanly (see the
-schema section above).
+schema section above); `now_time_unknown.json` was added by issue #48
+(PR #46 review, D3) for the sixth member, `NOW_TIME_UNKNOWN`.
 
 | Fixture | `state` | What it exercises |
 |---|---|---|
@@ -437,6 +438,7 @@ schema section above).
 | `now_tbd.json` | `tbd` | The real 2026 Lost Lands pack's actual state today: every set's start/end is null. `lineup` is transcribed verbatim (artist + stage, in pack order) from day 1 (2026-09-18) of `firmware/festpack/tests/fixtures/lost-lands-2026.festpack.json` — 7 sets, most with `stage: null` (rendered as the explicit "STAGE UNKNOWN" fallback, not silently omitted — see the provenance note) except Excision (`prehistoric` → "Prehistoric Stage"). This is the pack-update story CLAUDE.md's honesty rule exists for: don't invent set times the source data doesn't have. |
 | `now_nothing_live.json` | `nothing_playing` | Pack loaded, schedule known, but nothing is currently playing and nothing is starred upcoming — a genuinely reachable state (early morning between sets) distinct from every other state in this table. `rows`/`next`/`lineup` are all absent. |
 | `now_empty.json` | `no_pack` (omitted — the default) | No festpack loaded at all — `now` is entirely absent from the fixture. Deliberately distinct from `now_tbd.json`/`now_mixed.json`: a puck with nothing loaded must never show schedule chrome (a "SET TIMES TBD" banner) that implies a pack exists. |
+| `now_time_unknown.json` | `time_unknown` | Issue #48: a pack IS loaded but the wall clock is not (the normal cold-boot path, before a mesh timestamp latches) — distinct from `now_empty.json`'s true "nothing loaded" and from every TBD-flavored state (this isn't a claim about the DATA at all; the projection never got far enough to look at the schedule). `rows`/`next`/`lineup` are all absent, same as `now_nothing_live.json`'s shape, but the copy names the CLOCK as the missing fact, not the pack or the schedule. |
 
 **Provenance note (`now_live.json`/`now_mixed.json`):** artist names and
 set times/percentages are mocked test data (GRiZ, Wooli, Kompany, and

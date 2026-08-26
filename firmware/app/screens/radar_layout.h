@@ -83,6 +83,25 @@ extern "C" {
 #define RADAR_LAYOUT_STATUS_BAR_DY (-195.0f)
 #define RADAR_LAYOUT_PAGE_DOT_DY 186.0f
 
+/* Map entry hint (issue #76) — a small, non-interactive "swipe up for
+ * Map" glyph, present on every mode exactly like the status bar and page
+ * dots above. Sits just below the page-dot row (whose own dots occupy
+ * y=[181,191] at their actual 10px footprint, RADAR_LAYOUT_DOT_PX) rather
+ * than overlapping it, and stays inside the round glass — center (0, 201)
+ * with a ±40/±12 reserved footprint whose farthest corner (40, 213) is
+ * sqrt(40^2 + 213^2) = 216.7 px from center, i.e. only ~3.3 px inside
+ * FF_THEME_PUCK_RADIUS_PX (220). That is tight but genuinely inside; it is
+ * acceptable here precisely because this is non-interactive chrome with no
+ * tap-target floor to honor, and the visible glyph is narrower than the
+ * reservation. Do NOT read this as spare clearance — nudging the footprint
+ * outward or downward pushes the corner off the glass. Not itself a tap target (the
+ * real entry point is the swipe-up gesture scr_nav.c's
+ * nav_swipe_gesture_cb already wires up — see that function's own doc
+ * comment and issue #76's own text: this is discoverability chrome, not
+ * a second way to trigger the same intent, so it carries no CLICKABLE
+ * flag and needs no hit-target-floor accommodation). */
+#define RADAR_LAYOUT_MAP_HINT_DY 201.0f
+
 /* LIVE / STALE / LOST-with-a-real-fix shared vertical stack. */
 #define RADAR_LAYOUT_STACK_NAME_DY 60.0f
 #define RADAR_LAYOUT_STACK_DIST_DY 100.0f

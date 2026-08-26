@@ -23,12 +23,18 @@ extern "C" {
  * tile sized to the puck, same as scr_radar.h's contract). Builds fresh
  * children every call; does not clear `parent` itself.
  *
- * Dispatches on `now->state` (`now_state_t`, ff_app_state.h) — five
+ * Dispatches on `now->state` (`now_state_t`, ff_app_state.h) — six
  * mutually-exclusive-by-construction states, per docs/specs/S07-now-face.md
- * and PR #21's review rounds:
+ * and PR #21's review rounds (plus issue #48's NOW_TIME_UNKNOWN addition):
  *   - `NOW_NO_PACK`: no festpack loaded at all — an honest empty state,
  *     distinct from every TBD-flavored state below (see now_state_t's doc
  *     comment for why conflating them would be dishonest).
+ *   - `NOW_TIME_UNKNOWN` (issue #48): a festpack IS loaded, but the puck
+ *     does not yet know what time it is (the normal cold-boot path,
+ *     before a mesh timestamp latches). Distinct from `NOW_NO_PACK` on
+ *     purpose — the missing fact is the CLOCK, not the pack, and the
+ *     copy says so instead of telling the user to redo something they
+ *     already did.
  *   - `NOW_TBD`: every set on the day lacks a known time (today's real
  *     Lost Lands state) — the full day lineup plus a "SET TIMES TBD"
  *     banner, never an invented time.

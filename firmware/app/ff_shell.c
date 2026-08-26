@@ -886,29 +886,31 @@ static bool shell_stage_color(fp_pack_t const *p, int8_t stage_idx, uint32_t *ou
 /**
  * The Now face.
  *
- * KNOWN DEFECT, tracked as
- * https://github.com/jakeholland/firefly/issues/48 — do not let this
- * harden into intended behaviour by default.
+ * Issue #48 (S07-now-face.md Amendments, "PR #46 review, D3"), resolved:
+ * a pack loaded with the clock still unknown (FF_WALL_UNKNOWN — the
+ * NORMAL boot path, since the wall clock only latches once a plausible
+ * mesh timestamp arrives during the want_config handshake, and a pack
+ * can load before that) now projects NOW_TIME_UNKNOWN, not NOW_NO_PACK.
+ * The old fallback named the wrong missing fact — "no pack" when a pack
+ * WAS loaded — and scr_now.c rendered it as "NO FESTIVAL LOADED / Load a
+ * festpack...", which mis-claims rather than under-claims: it tells the
+ * user to redo something they already did. NOW_TBD would have been
+ * equally wrong the other way (a claim about the DATA, not the clock).
+ * The honest unknown here is the TIME, so it gets its own member —
+ * see now_state_t's own doc comment (ff_app_state.h) for the full
+ * reasoning and the never-let-absence-carry-meaning framing.
  *
- * `now_state_t` has no member for "a pack is loaded but the puck does not
- * know what time it is", which is not exotic: it is the NORMAL BOOT PATH,
- * since FF_WALL_UNKNOWN holds until a plausible mesh timestamp latches
- * during the handshake. NOW_NO_PACK is used as the least-bad of the five
- * existing members, and it never invents a clock — but calling it an
- * under-claim (as this PR first did) is wrong: scr_now.c:419-433 renders
- * it as "NO FESTIVAL LOADED / Load a festpack to see what's playing",
- * which MIS-claims. It names the wrong missing fact and tells the user to
- * redo something they already did. The honest unknown here is the TIME.
- *
- * NOW_TBD is not the answer either — that would assert the day's set
- * times are unknown, a statement about the DATA rather than about our
- * clock, and a straightforward lie. The fix is a new state; see #48.
- * (PR #46 review, D3.)
+ * NOW_NO_PACK is reserved again for its original, narrower meaning: no
+ * festpack loaded at all, regardless of clock state.
  */
 static void shell_project_now(shell_t const *sh, ff_wall_t wall, ff_app_now_t *out)
 {
-    if (!sh->pack_loaded || sh->pack == NULL || wall.src == FF_WALL_UNKNOWN) {
+    if (!sh->pack_loaded || sh->pack == NULL) {
         out->state = NOW_NO_PACK;
+        return;
+    }
+    if (wall.src == FF_WALL_UNKNOWN) {
+        out->state = NOW_TIME_UNKNOWN;
         return;
     }
 

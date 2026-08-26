@@ -141,6 +141,29 @@ a) engine + tests · b) face render + goldens · c) alarm + haptic hook + star p
   `ff_shell.c` carries the issue link so it cannot harden into intended
   behaviour by default.
 
+  **Implemented, closing #48.** `now_state_t` (`ff_app_state.h`) gains
+  `NOW_TIME_UNKNOWN` as its sixth, last member (appended, per the
+  renumbering caution both this Amendment and S16 slice a's
+  `ff_app_face_t` work give — every already-committed fixture/golden's
+  numeric encoding stays stable). `ff_shell.c`'s `shell_project_now`
+  now checks pack-loaded and clock-known as two SEPARATE early returns —
+  no pack at all -> `NOW_NO_PACK` (narrowed back to its original,
+  literal meaning); pack loaded but `wall.src == FF_WALL_UNKNOWN` ->
+  `NOW_TIME_UNKNOWN`. `scr_now.c` gets a `now_render_time_unknown` arm:
+  "WAITING FOR TIME FIX" / "Clock hasn't synced from the mesh yet" —
+  echoing the radar face's own NOFIX vocabulary for the same "honestly
+  waiting on a signal" shape, never mentioning a festpack or a schedule.
+  New fixture `tests/fixtures/now_time_unknown.json` + golden
+  `tests/golden/now_time_unknown.png`. Regression-tested by
+  `firmware/app/tests/test_shell.c`'s
+  `S16_b1_now_projection_needs_both_a_pack_and_a_known_clock` (now pins
+  `NOW_TIME_UNKNOWN`, not the old `NOW_NO_PACK` workaround) and the new
+  `S48_now_no_pack_holds_regardless_of_clock_state` (pins that
+  `NOW_NO_PACK` stays reachable, and means literally no pack, even once
+  the clock later latches — the mutation this guards against is the two
+  early-return checks in `shell_project_now` being collapsed back into
+  one or reordered).
+
 
 - **2026-08-22, PR #9 review (AC1 "now" window: half-open, not inclusive-both-ends).** Ruling from the spec owner during independent review of the slice (a)+(c) implementation. Original text read "pct_done correct at boundaries (start=0%, end=100%)", which an inclusive-both-ends window (`start_min <= now_min <= effective_end`) satisfied literally — but at a zero-gap same-stage changeover (set A ends the same minute set B starts on the same stage, ordinary festival scheduling) that window made **both** A and B "now" simultaneously, contradicting the Interface's own "one per stage w/ live set" contract and the Now face's one-row-per-stage layout. Ruling: the window is **half-open**, `start_min <= now_min < effective_end`. At the changeover minute the *starting* set wins; the ending set is no longer "now". Consequence: `pct_done` never displays a literal 100 while a set is still live (it caps at the last minute's value) — this is correct UI behavior, not a bug: a set showing "100% done" while its progress bar is still on screen reads as finished, not playing. AC1's text above is updated to match. Implemented in `firmware/festpack/src/ff_sched.c` (`ff_sched_now_playing`); regression-tested by `S07_AC1_zero_gap_changeover_single_row` and the rewritten boundary tests in `firmware/festpack/tests/test_sched.c`.
 - **2026-08-22, PR #9 review (`ff_sched_toggle_star` signature: adds an optional alarm-state parameter).** Same review. `ff_sched_toggle_star(fp_pack_t *p, uint16_t set_idx)` from the Interface block above is now `ff_sched_toggle_star(fp_pack_t *p, uint16_t set_idx, ff_sched_alarm_t *alarm)` (`alarm` may be NULL). Un-starring an already-fired starred set now clears that set's alarm fired-bit (immediately when `alarm` is passed through here; otherwise self-healing on the next `ff_sched_alarm_tick` call, since that function also clears any currently-unstarred set's fired-bit as it scans) — so a later re-star re-arms the T-15 alert instead of silently never firing again. This is deliberate "fat-finger recovery": per-field testing expectation is that a user who accidentally un-stars a set they're about to see, then re-stars it, still gets alerted. See `firmware/festpack/include/ff_sched.h` for the full contract; regression-tested by `S07_AC4_unstar_restar_rearms`.
