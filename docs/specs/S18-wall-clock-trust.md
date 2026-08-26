@@ -97,6 +97,16 @@ Shell boundary: `shell_observe_wall` classifies the source — paired member (vi
 `ff_crew_find`, never create) or self → TRUSTED; unknown/unpaired → BOOTSTRAP.
 Never let an unpaired node's disagreeing time reach an established latch.
 
+**One pre-existing branch is deliberately left ungated (design-review PR #88):**
+`ff_wall_observe`'s expired-latch / monotonic-clock-went-backwards path
+(`ff_wall.c` ~147–155) re-latches unconditionally, *before* the trust check, when
+the current latch is older than the max-age bound (~7 days) or the monotonic
+clock jumped backward. This stays trust-blind on purpose — a latch stale that
+long is, per `ff_wall.h`'s own docs, "not something to keep trusting anyway," so
+any plausible reading re-anchoring it is an improvement over a week-stale time.
+Slice a must NOT gate this branch; only the *disagreement-within-a-fresh-latch*
+re-latch is trust-gated. State it in the code so it isn't "fixed" into a bug.
+
 ### Slice a acceptance criteria
 1. Empty-latch bootstrap from an unpaired node (BOOTSTRAP tier) succeeds — cold
    start works.
@@ -168,8 +178,11 @@ pre-pack bootstrap it exists for.
 
 Layering: the pack-derived bound is computed at the shell/app boundary (`ff_wall`
 core takes the effective window as input — it must not include festpack). The
-pack→window derivation is a pure function over `fp_pack_t` dates, unit-testable
-with no shell.
+pack→window derivation is a pure function over `fp_pack_t`'s `year`/`start_doy`/
+`end_doy` (confirmed present — design-review PR #88), unit-testable with no shell.
+Note the civil-date→unix math it needs is currently `static` inside `ff_wall.c`;
+expose it (or a documented equivalent) rather than duplicating a second copy that
+can drift.
 
 ### Slice c acceptance criteria
 1. With no pack, the fixed bootstrap window applies (unchanged behavior).
