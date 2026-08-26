@@ -158,6 +158,34 @@ typedef enum {
     NOW_MIXED,            /* pack loaded; day.mixed, ROUND 2 fix — see NOW_MIXED's own note below */
     NOW_LIVE,             /* pack loaded; every set on the day has a known time; something's now/next */
     NOW_NOTHING_PLAYING,  /* pack loaded; every set on the day has a known time; nothing now/next right now */
+
+    /* [api] Issue #48 / S07-now-face.md Amendments ("PR #46 review, D3") —
+     * added LAST per the renumbering caution both that Amendment and S16
+     * slice a's ff_app_face_t precedent give: appending, not inserting,
+     * keeps every already-committed fixture/golden's numeric encoding
+     * stable, and targets/sim/fixture_view.c's own `default:` label means
+     * `-Wswitch` under `-Werror` cannot flag an existing consumer over the
+     * addition.
+     *
+     * A festpack IS loaded but the puck does not know what time it is yet
+     * (ff_wall_t.src == FF_WALL_UNKNOWN) — the NORMAL boot path, since the
+     * wall clock only latches once a plausible mesh timestamp arrives
+     * during the want_config handshake, and a pack can load before that.
+     * Before this member existed, `ff_shell.c`'s projection fell back to
+     * NOW_NO_PACK, which `scr_now.c` rendered as "NO FESTIVAL LOADED /
+     * Load a festpack..." — that MIS-claims: it names the wrong missing
+     * fact (a pack the user already loaded) rather than the actual one
+     * (the clock). NOW_TBD would be equally wrong the other way — it
+     * asserts something about the DATA (the day's set times) when the gap
+     * is entirely about the CLOCK. This member exists so the honest
+     * unknown — "I have the schedule, I just don't know what time it is"
+     * — is never forced to borrow a state that claims a different fact.
+     * See `now_state_t`'s own "mutually exclusive by construction" doc
+     * comment above: this is a distinct member, not an overload of
+     * NOW_NO_PACK — never-let-absence-carry-meaning applies here exactly
+     * as it does to `stage_color_valid`/`pct_valid` elsewhere in this
+     * header. Render arm: scr_now.c's now_render_time_unknown. */
+    NOW_TIME_UNKNOWN,
 } now_state_t;
 
 typedef struct {

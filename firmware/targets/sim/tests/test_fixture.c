@@ -444,6 +444,7 @@ static void now_state_every_enum_value_round_trips(void)
         {"no_pack", NOW_NO_PACK},         {"tbd", NOW_TBD},
         {"mixed", NOW_MIXED},             {"live", NOW_LIVE},
         {"nothing_playing", NOW_NOTHING_PLAYING},
+        {"time_unknown", NOW_TIME_UNKNOWN}, /* issue #48 */
     };
     for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
         char json[64];
@@ -902,7 +903,7 @@ static void dump_then_reload_round_trips_flare_takeover_locked_fixture(void)
  * `pack_loaded`+`tbd` bool pair) — this fixture is the richest real-world
  * exercise of that rewrite, per the coordinator's request: NOW_MIXED
  * populates `rows` (with a stage_color_valid row), `next`, AND `lineup`
- * all at once, the only one of the five now_state_t fixtures that
+ * all at once, the only one of the now_state_t fixtures that
  * exercises every one of `now`'s fields in a single load. Mirrors the
  * exact "dump -> reload -> whole-struct memory compare" pattern the
  * flare section's own merge fixup used, so the dumper and loader can't

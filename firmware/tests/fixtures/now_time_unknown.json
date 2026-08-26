@@ -1,0 +1,7 @@
+{
+  "fixture": "now_time_unknown",
+  "face": "now",
+  "now": {
+    "state": "time_unknown"
+  }
+}

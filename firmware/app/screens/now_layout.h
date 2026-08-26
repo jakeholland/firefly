@@ -165,6 +165,14 @@ extern "C" {
 #define NOW_LAYOUT_NO_PACK_HEADLINE_DY (-10.0f)
 #define NOW_LAYOUT_NO_PACK_SUB_DY 30.0f
 
+/* NOW_TIME_UNKNOWN state (issue #48): a pack IS loaded, only the clock is
+ * unknown. Same two-line vertical rhythm as NOW_NO_PACK (headline + sub,
+ * identical DYs) — this is a sibling "honest empty" state, not a visually
+ * distinct one; the words carry the distinction, the layout doesn't need
+ * to. */
+#define NOW_LAYOUT_TIME_UNKNOWN_HEADLINE_DY (-10.0f)
+#define NOW_LAYOUT_TIME_UNKNOWN_SUB_DY 30.0f
+
 /**
  * now_layout_format_countdown — formats `mins_until` as the spec's
  * literal countdown text ("IN N MIN", docs/specs/S07-now-face.md's

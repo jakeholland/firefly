@@ -1547,16 +1547,16 @@ static void S16_b1_now_projection_needs_both_a_pack_and_a_known_clock(void)
 
     TEST_ASSERT_EQUAL_INT(0, ff_shell_load_pack(&H.shell, PACK_JSON, sizeof(PACK_JSON) - 1u));
 
-    /* A pack is loaded, but the puck does not know what time it is yet.
-     * INTERPRETATION (flagged in the PR): now_state_t has no member for
-     * that, so the projection uses NOW_NO_PACK — the least-claiming
-     * member, which scr_now renders as "nothing loaded". It under-claims
-     * (we do have a pack) rather than over-claiming: NOW_TBD would
-     * assert the day's set times are unknown, which is a statement about
-     * the DATA and would be a lie. */
+    /* A pack is loaded, but the puck does not know what time it is yet —
+     * the normal cold-boot path. Issue #48 (resolved): the projection
+     * uses NOW_TIME_UNKNOWN, a distinct member naming the actual missing
+     * fact (the clock), not NOW_NO_PACK (which would mis-claim there's no
+     * pack) or NOW_TBD (which would be a claim about the DATA the
+     * projection never even looked at). See shell_project_now's doc
+     * comment and now_state_t's own (ff_app_state.h). */
     ff_shell_tick(&H.shell, H.clk.t);
     TEST_ASSERT_EQUAL_INT(FF_WALL_UNKNOWN, ff_shell_wall(&H.shell).src);
-    TEST_ASSERT_EQUAL_INT(NOW_NO_PACK, ff_shell_view(&H.shell)->now.state);
+    TEST_ASSERT_EQUAL_INT(NOW_TIME_UNKNOWN, ff_shell_view(&H.shell)->now.state);
 
     /* Latch the clock. The pack's STATED offset resolves it with no
      * settings involvement at all. 22:00Z at UTC+0 is 22:00 local on
@@ -1589,6 +1589,42 @@ static void S16_b1_now_projection_needs_both_a_pack_and_a_known_clock(void)
 
     /* And the clock now renders. */
     TEST_ASSERT_EQUAL_STRING("22:00", ff_shell_view(&H.shell)->radar.clock_str);
+}
+
+/* Issue #48 — the narrowed-back-down half of the ruling: with NO pack
+ * loaded at all, the projection is NOW_NO_PACK regardless of clock
+ * state, even once the clock DOES latch. Pins that NOW_TIME_UNKNOWN is
+ * never reachable without a pack (it means "pack loaded, clock not" —
+ * not "clock not", full stop) and that NOW_NO_PACK's meaning is back to
+ * literally "no pack loaded". Mutation check: swapping
+ * shell_project_now's two early-return checks (clock check before the
+ * pack check) would make this fail the moment the clock latches below,
+ * since a swapped order falls through past the pack-missing return once
+ * wall.src != FF_WALL_UNKNOWN.
+ *
+ * The clock needs a resolvable UTC offset to ever report FF_WALL_MESH
+ * (ff_wall_now bails to UNKNOWN if ff_wall_resolve_offset fails — see
+ * that function in ff_wall.c), and with no pack loaded the only source
+ * left is settings — same seed-then-load pattern
+ * S16_b1_failed_pack_load_does_not_outrank_the_settings_offset uses just
+ * above. */
+static void S48_now_no_pack_holds_regardless_of_clock_state(void)
+{
+    harness_seed_settings(-300); /* UTC-5, arbitrary but non-zero */
+    harness_init(100000u, true);
+    inject_my_info(MY_ID);
+
+    /* No ff_shell_load_pack call at all — clock still unknown too. */
+    ff_shell_tick(&H.shell, H.clk.t);
+    TEST_ASSERT_EQUAL_INT(FF_WALL_UNKNOWN, ff_shell_wall(&H.shell).src);
+    TEST_ASSERT_EQUAL_INT(NOW_NO_PACK, ff_shell_view(&H.shell)->now.state);
+
+    /* Latch the clock via a mesh NodeInfo. Still no pack loaded. */
+    inject_node(DANA, "DANA", U_EVENING);
+    TEST_ASSERT_EQUAL_INT(FF_WALL_MESH, ff_shell_wall(&H.shell).src);
+
+    ff_shell_tick(&H.shell, H.clk.t);
+    TEST_ASSERT_EQUAL_INT(NOW_NO_PACK, ff_shell_view(&H.shell)->now.state);
 }
 
 static void S16_b1_loading_a_pack_does_not_fabricate_my_position(void)
@@ -2459,6 +2495,7 @@ int main(void)
     RUN_TEST(S16_b1_close_mode_triggers_live_via_direct_rssi_from_paired_peer);
     RUN_TEST(S07_2026_08_24_starts_only_set_is_live_not_lineup);
     RUN_TEST(S16_b1_now_projection_needs_both_a_pack_and_a_known_clock);
+    RUN_TEST(S48_now_no_pack_holds_regardless_of_clock_state);
     RUN_TEST(S09_shell_projects_map_from_pack_crew_and_my_position);
     RUN_TEST(S09_shell_map_stays_empty_without_a_known_venue);
     RUN_TEST(S09_shell_map_excludes_unpaired_members_even_with_a_position);
