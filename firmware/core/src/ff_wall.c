@@ -47,6 +47,18 @@ static int64_t ff_wall_year_from_days(int64_t z)
     return y + (m <= 2 ? 1 : 0);
 }
 
+/* ff_wall_unix_from_doy — [api], S18 slice c. Unix seconds at 00:00:00
+ * UTC of day-of-year `doy` (1-based) in `year`. Built on the same
+ * days_from_civil primitive the local-time split uses, so the pack->window
+ * derivation cannot drift from it. doy past the year's length extends
+ * linearly (doy 366 of a common year lands on the next Jan 1), which is
+ * what a "day after end_doy" ceiling wants with no rollover branch. */
+int64_t ff_wall_unix_from_doy(int64_t year, int64_t doy)
+{
+    int64_t days = ff_wall_days_from_civil(year, 1, 1) + (doy - 1);
+    return days * FF_WALL_SECS_PER_DAY;
+}
+
 /* Floor division / modulo — C's / and % truncate toward zero, which is
  * wrong for negative day numbers (pre-1970, or a local time pushed
  * before the epoch by a westward offset). Never reachable given
@@ -66,19 +78,43 @@ static bool ff_wall_offset_valid(int16_t off_min)
     return off_min >= FF_WALL_OFFSET_MIN_LO && off_min <= FF_WALL_OFFSET_MIN_HI;
 }
 
-/* The plausibility window, half-open: [FLOOR, CEILING). The single
- * definition both entry points (ff_wall_observe and ff_wall_split_local)
- * call, so they cannot drift into disagreeing about what counts as a
- * time. Below the floor is an uncorrected RTC; at or above the ceiling
- * is a corrupt or hostile clock. See ff_wall.h for why the upper bound
- * cannot be deferred to a downstream pack check. */
+/* The plausibility window, half-open: [floor, ceiling). Below the floor
+ * is an uncorrected RTC; at or above the ceiling is a corrupt or hostile
+ * clock. See ff_wall.h for why the upper bound cannot be deferred to a
+ * downstream pack check.
+ *
+ * S18 slice c (#40): the window is now a parameter, not the fixed epoch
+ * constants, so ff_wall_observe can enforce a pack-tightened EFFECTIVE
+ * window (st->win_floor/win_ceiling) while ff_wall_split_local stays on
+ * the fixed absolute bounds (it is stateless, and its check is a
+ * redundant sanity net over an already-admitted value — see the header). */
+static bool ff_wall_plausible_win(int64_t unix_s, int64_t floor_s, int64_t ceiling_s)
+{
+    return unix_s >= floor_s && unix_s < ceiling_s;
+}
+
+/* The FIXED absolute window, for ff_wall_split_local's stateless sanity
+ * check. ff_wall_observe uses the effective window instead. */
 static bool ff_wall_plausible(int64_t unix_s)
 {
-    return unix_s >= FF_WALL_EPOCH_FLOOR && unix_s < FF_WALL_EPOCH_CEILING;
+    return ff_wall_plausible_win(unix_s, FF_WALL_EPOCH_FLOOR, FF_WALL_EPOCH_CEILING);
 }
 
 _Static_assert(FF_WALL_EPOCH_CEILING > FF_WALL_EPOCH_FLOOR,
                "the wall-clock plausibility window is empty or inverted");
+
+/* S18 slice c (#40): the no-pack bootstrap window's decay backstop. True
+ * when the build date has crept within FF_WALL_CEILING_WARN_LEAD_S of the
+ * ceiling. Pure predicate over an EXPLICIT build date so it is
+ * deterministic under test (a synthetic date, never the real clock — the
+ * warning must not be a calendar-flaky verdict). The lead constant is a
+ * full year, comfortably longer than one release cadence, so a firing
+ * guard is actionable well before the fixed window it guards actually
+ * weakens. */
+bool ff_wall_ceiling_deadline_near(int64_t build_unix_s)
+{
+    return build_unix_s >= FF_WALL_EPOCH_CEILING - FF_WALL_CEILING_WARN_LEAD_S;
+}
 /* The age limit and the backwards-step detection limit are complements
  * within the uint32_t millisecond lap; neither may be set independently
  * of the other. See FF_WALL_BACKWARD_DETECT_LIMIT_MS in ff_wall.h. */
@@ -97,7 +133,31 @@ void ff_wall_init(ff_wall_state_t *st)
     st->latched = false;
     st->latch_unix_s = 0;
     st->latch_ms = 0;
+    /* S18 slice c: the effective plausibility window starts as the fixed
+     * bootstrap window. It MUST be this until a pack loads — the
+     * want_config handshake latches the offset before any pack exists. */
+    st->win_floor = FF_WALL_EPOCH_FLOOR;
+    st->win_ceiling = FF_WALL_EPOCH_CEILING;
     st->trust_rejected_count = 0;
+}
+
+bool ff_wall_set_window(ff_wall_state_t *st, int64_t floor_s, int64_t ceiling_s)
+{
+    if (st == NULL) {
+        return false;
+    }
+    /* Refuse a degenerate/inverted window rather than install it: an empty
+     * window would reject EVERY reading, silently freezing the wall at
+     * whatever it last latched — the opposite of the honest fallback. A
+     * caller handed bad pack dates must fall back to the fixed bootstrap
+     * window (which ff_wall_window_from_pack signals by returning false, so
+     * the shell never even calls this with garbage), not to a dead gate. */
+    if (floor_s >= ceiling_s) {
+        return false;
+    }
+    st->win_floor = floor_s;
+    st->win_ceiling = ceiling_s;
+    return true;
 }
 
 /* Elapsed monotonic milliseconds since the latch, or false if the latch
@@ -130,13 +190,16 @@ ff_wall_obs_t ff_wall_observe(ff_wall_state_t *st, int64_t unix_s, uint32_t rx_m
         return FF_WALL_OBS_REJECTED;
     }
 
-    /* The plausibility window. Needs no pack and no festival data —
-     * which is what lets this run during the want_config handshake. A
-     * rejection returns before touching `st`, so no implausible reading
-     * can disturb an existing good latch from either direction. Trust-
-     * blind: an implausible reading is refused at ANY tier, including
-     * TRUSTED — plausibility and trust are orthogonal gates. */
-    if (!ff_wall_plausible(unix_s)) {
+    /* The EFFECTIVE plausibility window (S18 slice c, #40). Defaults to
+     * the fixed bootstrap bounds — which needs no pack and no festival
+     * data, and is what lets this run during the want_config handshake —
+     * and tightens to the loaded pack's festival dates once the shell
+     * calls ff_wall_set_window. A rejection returns before touching the
+     * latch fields, so no implausible reading can disturb an existing good
+     * latch from either direction. Trust-blind: an implausible reading is
+     * refused at ANY tier, including TRUSTED — plausibility and trust are
+     * orthogonal gates. */
+    if (!ff_wall_plausible_win(unix_s, st->win_floor, st->win_ceiling)) {
         return FF_WALL_OBS_REJECTED;
     }
 

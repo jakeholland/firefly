@@ -201,6 +201,16 @@ add_executable(ffsim
 # path CLAUDE.md/AGENTS.md and CI both invoke.
 set_target_properties(ffsim PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
 
+# S18 slice c (#40) — this build's date, for main.c's no-pack-window decay
+# backstop (ffsim_warn_if_epoch_ceiling_near). Computed at configure time
+# as unix seconds; the actual threshold and predicate live in core
+# (ff_wall_ceiling_deadline_near / FF_WALL_EPOCH_CEILING), so nothing here
+# duplicates the constant and it cannot drift from the gate. A stale
+# cached configure only makes the date older (a MORE conservative warning),
+# never a false negative near the real deadline.
+string(TIMESTAMP FF_WALL_BUILD_UNIX_S "%s" UTC)
+target_compile_definitions(ffsim PRIVATE FF_WALL_BUILD_UNIX_S=${FF_WALL_BUILD_UNIX_S})
+
 target_link_libraries(ffsim PRIVATE
     # ff-core and ff-meshclient are NOT listed explicitly, even though
     # main.c uses both directly (ff_version.h, mc_transport_tcp.h) —

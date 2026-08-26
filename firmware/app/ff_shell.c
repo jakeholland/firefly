@@ -18,6 +18,7 @@
 #include "ff_route.h"
 #include "ff_sched.h"
 #include "ff_t9.h" /* S16 slice c3 — the shell-owned compose draft */
+#include "ff_wall_window.h" /* S18 slice c — pack -> plausibility window */
 #include "ff_wiring.h"
 
 /* ---------------------------------------------------------------------
@@ -1289,6 +1290,26 @@ int ff_shell_load_pack(ff_shell_t *sh_pub, char const *json, size_t len)
     if (fp_parse(json, len, sh->pack) != FP_OK) return -1;
 
     sh->pack_loaded = true;
+
+    /* S18 slice c (#40): tighten the wall-clock plausibility window to
+     * THIS pack's festival dates. The honest bound on "is this a plausible
+     * time" is "is it near the festival we're at", and a pack carries its
+     * own year, so the window moves with the data — a 2030 pack pins a
+     * 2030 window and the fixed bootstrap window's slow decay stops
+     * mattering here. A pack with no usable dates (null/absent/corrupt)
+     * makes ff_wall_window_from_pack return false; we then explicitly
+     * RESET to the fixed bootstrap window rather than leave whatever a
+     * previously-loaded pack installed — the honest fallback is the wide
+     * fixed window, never an invented tight one, and never a stale one
+     * from a different pack. The latch itself is untouched either way;
+     * only future observations are gated by the new window. */
+    int64_t win_floor = 0;
+    int64_t win_ceiling = 0;
+    if (ff_wall_window_from_pack(sh->pack, &win_floor, &win_ceiling)) {
+        (void)ff_wall_set_window(&sh->wall, win_floor, win_ceiling);
+    } else {
+        (void)ff_wall_set_window(&sh->wall, FF_WALL_EPOCH_FLOOR, FF_WALL_EPOCH_CEILING);
+    }
     return 0;
 }
 
