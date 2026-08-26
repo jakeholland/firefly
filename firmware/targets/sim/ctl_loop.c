@@ -482,21 +482,28 @@ static int ctl_loop_state_json(void *user, char *buf, size_t buf_sz)
      * trying to move the clock is bench-visible from the bare ctl socket,
      * not something only a unit test can see (issue #49). */
     unsigned const rejected = (unsigned)ff_shell_wall_rejected_relatches(ctx->shell);
+    /* S18 slice b, AC4: the cold-boot replay settle buffer's overflow-drop
+     * count, surfaced next to rejected_relatches so a dropped freshness
+     * recovery is visible from the bare ctl socket, not only a unit test
+     * (issue #50). Like rejected_relatches it is not an ff_wall_t field and
+     * survives an UNKNOWN latch, so it is dumped in both branches. */
+    unsigned const replay_overflow = (unsigned)ff_shell_replay_overflow_count(ctx->shell);
     if (w.src == FF_WALL_MESH) {
         en = snprintf(extra, sizeof(extra),
                       ",\"wall\":{\"src\":\"mesh\",\"host_observed\":%s,\"day_doy\":%u,\"now_min\":%d,"
-                      "\"offset_assumed\":%s,\"rejected_relatches\":%u},\"link\":\"%s\",\"crew\":%s}",
-                      host, (unsigned)w.day_doy, (int)w.now_min, w.offset_assumed ? "true" : "false", rejected, link,
-                      crew_buf);
+                      "\"offset_assumed\":%s,\"rejected_relatches\":%u,\"replay_overflow\":%u},"
+                      "\"link\":\"%s\",\"crew\":%s}",
+                      host, (unsigned)w.day_doy, (int)w.now_min, w.offset_assumed ? "true" : "false", rejected,
+                      replay_overflow, link, crew_buf);
     } else {
         /* UNKNOWN: every other ff_wall_t field is meaningless and is
          * deliberately not dumped — absent, not zero (CLAUDE.md).
          * rejected_relatches is not an ff_wall_t field (it survives even
          * an expired/UNKNOWN latch) so it is dumped in both branches. */
         en = snprintf(extra, sizeof(extra),
-                      ",\"wall\":{\"src\":\"unknown\",\"host_observed\":%s,\"rejected_relatches\":%u},"
-                      "\"link\":\"%s\",\"crew\":%s}",
-                      host, rejected, link, crew_buf);
+                      ",\"wall\":{\"src\":\"unknown\",\"host_observed\":%s,\"rejected_relatches\":%u,"
+                      "\"replay_overflow\":%u},\"link\":\"%s\",\"crew\":%s}",
+                      host, rejected, replay_overflow, link, crew_buf);
     }
     if (en < 0 || (size_t)en >= sizeof(extra)) return -1;
     if ((size_t)n + (size_t)en > buf_sz) return -1; /* n-1 kept + en + NUL <= buf_sz */

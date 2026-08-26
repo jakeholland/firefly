@@ -682,6 +682,169 @@ static void S16_AC9_cold_boot_burst_ages_against_the_running_maximum(void)
 }
 
 /* =================================================================== */
+/* S18 slice b — settle-then-age the cold-boot replay burst (#50)        */
+/* =================================================================== */
+
+/** Drive the replay burst to its settle: the link reaches READY, then the
+ *  first tick re-ages the buffer against the settled latch. Mirrors the
+ *  want_config handshake completing, which is the burst-end signal. */
+static void reach_ready_then_settle(void)
+{
+    H.ev.on_state(H.ev.user, MC_STATE_READY);
+    ff_shell_tick(&H.shell, H.clk.t);
+}
+
+/**
+ * AC1 (the headline #50 fix): ascending and descending replay of the SAME
+ * node set produce the SAME freshness after the settle pass. Before slice b
+ * the ascending order left every node NEVER (each in turn moved the latch
+ * and was dropped) while descending read correctly — the ordering-dependent
+ * pessimism this closes.
+ */
+static void S18b_AC1_ascending_and_descending_replay_agree_after_settle(void)
+{
+    uint32_t const t0 = 100000u;
+
+    /* Descending burst — freshest first (the order that already read right). */
+    harness_init(t0, false);
+    inject_my_info(MY_ID);
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, STRANGER, true));
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, KEV_ID, true));
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, true));
+    inject_node_with_position(STRANGER, U_EVENING, 39.2, -82.2);        /* newest: settles the latch */
+    inject_node_with_position(KEV_ID, U_EVENING - 3600u, 39.1, -82.1);  /* 1 h behind */
+    inject_node_with_position(DANA, U_EVENING - 10800u, 39.0, -82.0);   /* 3 h behind */
+    reach_ready_then_settle();
+    ff_freshness_t const desc_str = ff_crew_freshness(member(STRANGER), H.clk.t);
+    ff_freshness_t const desc_kev = ff_crew_freshness(member(KEV_ID), H.clk.t);
+    ff_freshness_t const desc_dana = ff_crew_freshness(member(DANA), H.clk.t);
+
+    /* Ascending burst — oldest first (the #50-pessimistic order). Same nodes,
+     * same last_heard, roster paired in the opposite order too. */
+    harness_init(t0, false);
+    inject_my_info(MY_ID);
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, true));
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, KEV_ID, true));
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, STRANGER, true));
+    inject_node_with_position(DANA, U_EVENING - 10800u, 39.0, -82.0);
+    inject_node_with_position(KEV_ID, U_EVENING - 3600u, 39.1, -82.1);
+    inject_node_with_position(STRANGER, U_EVENING, 39.2, -82.2);
+    reach_ready_then_settle();
+
+    /* Order-independence: identical freshness for every node. */
+    TEST_ASSERT_EQUAL_INT(desc_str, ff_crew_freshness(member(STRANGER), H.clk.t));
+    TEST_ASSERT_EQUAL_INT(desc_kev, ff_crew_freshness(member(KEV_ID), H.clk.t));
+    TEST_ASSERT_EQUAL_INT(desc_dana, ff_crew_freshness(member(DANA), H.clk.t));
+
+    /* Pin the actual values so "agree" cannot be satisfied by both orders
+     * being wrong the same way (the proxy check): the latch-definer stays
+     * NEVER (we learned the time FROM it — D1), the two older nodes age
+     * honestly against the settled clock. */
+    TEST_ASSERT_EQUAL_INT(FF_FRESH_NEVER, desc_str);
+    TEST_ASSERT_EQUAL_INT(FF_FRESH_LOST, desc_kev);  /* 1 h old */
+    TEST_ASSERT_EQUAL_INT(FF_FRESH_LOST, desc_dana); /* 3 h old */
+}
+
+/**
+ * AC2: a 3-hour-cached node in a burst whose maximum last_heard is "now"
+ * reads LOST after the settle pass — not the pre-slice-b NEVER. The stronger
+ * outcome the reviewer's PROBE_cold_boot_replay_stamps_cached_positions
+ * asked for: precision recovered without ever claiming LIVE.
+ */
+static void S18b_AC2_three_hour_cached_node_reads_lost_after_settle(void)
+{
+    harness_init(100000u, false);
+    inject_my_info(MY_ID);
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, true));
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, KEV_ID, true));
+
+    /* Ascending: the 3-hour node arrives first and momentarily defines the
+     * latch (so pre-slice-b it stayed NEVER), then "now" supersedes it. */
+    inject_node_with_position(DANA, U_EVENING - 10800u, 39.0, -82.0); /* 3 h cached */
+    inject_node_with_position(KEV_ID, U_EVENING, 39.1, -82.1);        /* max last_heard = "now" */
+
+    /* Pre-settle: the pessimistic NEVER, proving the defect is present to
+     * be fixed (measure, don't assume). */
+    TEST_ASSERT_EQUAL_INT(FF_FRESH_NEVER, ff_crew_freshness(member(DANA), H.clk.t));
+    TEST_ASSERT_FALSE(member(DANA)->has_pos);
+
+    reach_ready_then_settle();
+
+    /* After settle: LOST (3 h > FF_CREW_LOST_MS), aged against the node that
+     * settled the latch at "now" — recovered, and honest. */
+    TEST_ASSERT_TRUE(member(DANA)->has_pos);
+    TEST_ASSERT_EQUAL_INT(FF_FRESH_LOST, ff_crew_freshness(member(DANA), H.clk.t));
+
+    /* KEV defined the settled latch, so its own fix is still unplaceable. */
+    TEST_ASSERT_EQUAL_INT(FF_FRESH_NEVER, ff_crew_freshness(member(KEV_ID), H.clk.t));
+    TEST_ASSERT_FALSE(member(KEV_ID)->has_pos);
+}
+
+/**
+ * AC3: a node genuinely older than the window still reads NEVER after the
+ * settle pass — precision recovery must never over-claim. Eight days is past
+ * FF_WALL_LATCH_MAX_AGE_MS, where the monotonic delta stops being
+ * unambiguous, so shell_rx_ms_from_unix refuses it and the fix is not
+ * recorded at all (an honest under-claim, the direction this repo errs in).
+ */
+static void S18b_AC3_node_older_than_the_window_stays_never_after_settle(void)
+{
+    harness_init(100000u, false);
+    inject_my_info(MY_ID);
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, true));
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, KEV_ID, true));
+
+    uint32_t const eight_days_s = 8u * 24u * 3600u; /* > FF_WALL_LATCH_MAX_AGE_MS (7 d) */
+    inject_node_with_position(DANA, U_EVENING - eight_days_s, 39.0, -82.0);
+    inject_node_with_position(KEV_ID, U_EVENING, 39.1, -82.1); /* settles the latch at "now" */
+
+    reach_ready_then_settle();
+
+    /* DANA is younger than the settled latch base, so it is NOT excluded as a
+     * definer — it reaches shell_rx_ms_from_unix and is refused there for
+     * being past the window. Stays NEVER, no fabricated fix. */
+    TEST_ASSERT_FALSE(member(DANA)->has_pos);
+    TEST_ASSERT_EQUAL_INT(FF_FRESH_NEVER, ff_crew_freshness(member(DANA), H.clk.t));
+}
+
+/**
+ * AC4: the settle buffer is FF_CREW_MAX-bounded and allocation-free, and an
+ * overflow drops the oldest entry while bumping a bench-visible counter (the
+ * same one `targets/sim/ctl_loop.c`'s `state` dump surfaces) — never a silent
+ * discard.
+ */
+static void S18b_AC4_replay_buffer_is_bounded_and_surfaces_overflow(void)
+{
+    harness_init(100000u, false);
+    inject_my_info(MY_ID);
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, true));
+
+    TEST_ASSERT_EQUAL_UINT32(0, ff_shell_replay_overflow_count(&H.shell));
+
+    /* One roster node re-sent FF_CREW_MAX + 1 times in a single burst, each
+     * with a strictly newer last_heard so each moves the still-settling latch
+     * and is buffered. Inbound traffic never grows the roster past
+     * FF_CREW_MAX and only roster members are buffered, so a re-send storm on
+     * one node is the way to exceed the bound. The fixed buffer allocates
+     * nothing, so the (FF_CREW_MAX+1)th arrival drops the OLDEST and bumps
+     * the counter. Spaced an hour apart so no surviving duplicate reads
+     * fresh. */
+    for (int i = 0; i <= FF_CREW_MAX; i++) {
+        uint32_t const back_s = (uint32_t)(FF_CREW_MAX + 1 - i) * 3600u;
+        inject_node_with_position(DANA, U_EVENING - back_s, 39.0, -82.0);
+    }
+
+    /* Bounded + visible: exactly one drop, surfaced, not silent. */
+    TEST_ASSERT_EQUAL_UINT32(1, ff_shell_replay_overflow_count(&H.shell));
+
+    /* And the truncated buffer still settles into a consistent, non-fabricated
+     * state — DANA is at best hours stale here, never LIVE. */
+    reach_ready_then_settle();
+    TEST_ASSERT_NOT_NULL(member(DANA));
+    TEST_ASSERT_NOT_EQUAL_INT(FF_FRESH_LIVE, ff_crew_freshness(member(DANA), H.clk.t));
+}
+
+/* =================================================================== */
 /* AC11 — haptics vs quiet hours                                        */
 /* =================================================================== */
 
@@ -2732,6 +2895,11 @@ int main(void)
     RUN_TEST(S16_AC9_replayed_position_with_no_last_heard_reads_never);
     RUN_TEST(S16_AC9_cold_boot_replay_is_never_stamped_fresh);
     RUN_TEST(S16_AC9_cold_boot_burst_ages_against_the_running_maximum);
+
+    RUN_TEST(S18b_AC1_ascending_and_descending_replay_agree_after_settle);
+    RUN_TEST(S18b_AC2_three_hour_cached_node_reads_lost_after_settle);
+    RUN_TEST(S18b_AC3_node_older_than_the_window_stays_never_after_settle);
+    RUN_TEST(S18b_AC4_replay_buffer_is_bounded_and_surfaces_overflow);
 
     RUN_TEST(S16_AC11_should_alert_fires_during_quiet_hours_feed_push_does_not);
     RUN_TEST(S16_AC11_feed_push_haptic_does_fire_outside_quiet_hours);

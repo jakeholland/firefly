@@ -91,6 +91,32 @@ typedef struct {
     bool dev_trust_all;
 #endif
 
+    /* --- S18 slice b: settle-then-age the cold-boot replay burst (#50) --
+     * The want_config replay streams cached positions while the wall latch
+     * is still settling. A reading that MOVES the latch cannot be aged from
+     * (its own value defines the clock — the D1 lie), so it is buffered here
+     * and re-aged against the SETTLED latch on the first tick after the link
+     * reaches READY. FIXED, FF_CREW_MAX-bounded, zero-allocation.
+     *
+     * `burst_latch_base` is the greatest last_heard that has latched during
+     * the current burst — the value the latch will settle to. At settle, a
+     * buffered entry whose last_heard equals it defined the final latch and
+     * stays NEVER (D1 preserved); older ones are honestly ageable against it.
+     *
+     * `was_ready` makes the re-age pass fire EXACTLY on the not-ready->ready
+     * edge — once per handshake, not every ready tick (the spec's "first
+     * tick after READY"). */
+    struct {
+        ff_latlon_t pos;
+        uint32_t node_id;
+        uint32_t last_heard;
+        ff_crew_pos_meta_t meta;
+    } replay_buf[FF_CREW_MAX];
+    uint8_t replay_count;
+    uint32_t replay_overflow;  /* buffer-overflow drops — bench-visible (AC4), never silent */
+    uint32_t burst_latch_base; /* settling latch's base last_heard, unix seconds */
+    bool was_ready;            /* READY-edge detection for the once-per-handshake settle pass */
+
     /* --- tick bookkeeping -------------------------------------------- */
     uint32_t now_ms;         /* the last ff_shell_tick's clock reading */
     ff_app_face_t prev_face; /* to detect "Signals became visible" (S08 AC3) */
@@ -460,6 +486,76 @@ static bool shell_rx_ms_from_unix(shell_t const *sh, uint32_t unix_s, uint32_t n
 }
 
 /* ---------------------------------------------------------------------
+ * S18 slice b — the deferred cold-boot replay buffer (#50)
+ * ------------------------------------------------------------------- */
+
+/**
+ * Stash one replayed position for a settle-time re-age.
+ *
+ * FIXED FF_CREW_MAX-bounded array, no allocation (AC4). On overflow the
+ * OLDEST entry is dropped to make room and `replay_overflow` is bumped so
+ * the loss is bench-visible (surfaced in the ctl `state` dump alongside
+ * `rejected_relatches`) — a silently-dropped fix would be a freshness lie
+ * by omission, which honest-data forbids. Only ever fed roster members
+ * (the call site is inside shell_ev_node's roster-member block), so a
+ * stranger flood cannot evict a crew entry; overflow is reachable only by
+ * a single roster the burst re-sends more than FF_CREW_MAX times.
+ */
+static void shell_replay_buffer(shell_t *sh, uint32_t node_id, ff_latlon_t pos, uint32_t last_heard,
+                                 ff_crew_pos_meta_t meta)
+{
+    if (sh->replay_count >= FF_CREW_MAX) {
+        memmove(&sh->replay_buf[0], &sh->replay_buf[1], (size_t)(FF_CREW_MAX - 1) * sizeof(sh->replay_buf[0]));
+        sh->replay_count = (uint8_t)(FF_CREW_MAX - 1);
+        sh->replay_overflow++;
+    }
+    sh->replay_buf[sh->replay_count].pos = pos;
+    sh->replay_buf[sh->replay_count].node_id = node_id;
+    sh->replay_buf[sh->replay_count].last_heard = last_heard;
+    sh->replay_buf[sh->replay_count].meta = meta;
+    sh->replay_count++;
+}
+
+/**
+ * Re-age every buffered replay position against the now-settled latch.
+ *
+ * Run EXACTLY once per handshake, on the not-ready->ready edge (see
+ * ff_shell_tick). This recovers the precision the running-maximum aging
+ * threw away: an ascending-`last_heard` burst buffered every reading (each
+ * moved the latch in turn), and here each is finally aged against the
+ * burst's settled clock — so ascending and descending replay of the same
+ * node set land on the SAME freshness (#50, AC1).
+ *
+ * Honest-data is preserved in three places, none of which may over-claim:
+ *  - An entry whose last_heard defined the settled latch (== burst_latch_base)
+ *    is skipped and stays NEVER — we learned the time FROM it, so its own
+ *    fix cannot be placed in time (the D1 rule, applied to the settled
+ *    latch instead of the mid-burst one).
+ *  - An entry the roster no longer holds (unpaired/evicted since it was
+ *    buffered) is dropped.
+ *  - An entry still older than the window (shell_rx_ms_from_unix fails —
+ *    e.g. genuinely older than FF_WALL_LATCH_MAX_AGE_MS) stays NEVER (AC3).
+ */
+static void shell_settle_replay(shell_t *sh, uint32_t now_ms)
+{
+    for (uint8_t i = 0; i < sh->replay_count; i++) {
+        uint32_t const node_id = sh->replay_buf[i].node_id;
+        uint32_t const last_heard = sh->replay_buf[i].last_heard;
+
+        if (last_heard >= sh->burst_latch_base) continue;        /* defined the settled latch (D1) -> NEVER */
+        if (ff_crew_find(&sh->crew, node_id) == NULL) continue;  /* roster no longer holds it */
+
+        uint32_t rx_ms = 0;
+        if (shell_rx_ms_from_unix(sh, last_heard, now_ms, &rx_ms)) {
+            ff_crew_on_position(&sh->crew, node_id, sh->replay_buf[i].pos, rx_ms, sh->replay_buf[i].meta);
+        }
+        /* else: older than the window -> stays NEVER (AC3). */
+    }
+    sh->replay_count = 0;
+    sh->burst_latch_base = 0;
+}
+
+/* ---------------------------------------------------------------------
  * mc_events_t callbacks — all seven
  * ------------------------------------------------------------------- */
 
@@ -520,6 +616,18 @@ static void shell_ev_node(void *u, mc_nodeinfo_t const *n)
      * `last_heard` of any node in the dump, and it is the one the
      * bootstrap most wants. */
     bool const defined_the_latch = shell_observe_wall_nodeinfo(sh, n->node_num, n->last_heard, now);
+
+    /* S18 slice b (#50): while the replay burst is still settling the latch
+     * (link not yet READY), remember the greatest last_heard that has
+     * latched — the value the latch will settle to. Tracked BEFORE the
+     * self-drop so a positionless or self NodeInfo that pins the clock
+     * higher than any buffered position still raises the base, keeping the
+     * settle pass's D1 exclusion correct. `defined_the_latch` implies this
+     * reading is the new forward maximum, so a straight assignment suffices;
+     * the > guard is belt-and-braces. */
+    if (defined_the_latch && sh->link != FF_SHELL_LINK_CONNECTED && n->last_heard > sh->burst_latch_base) {
+        sh->burst_latch_base = n->last_heard;
+    }
 
     if (shell_drop_as_self(sh, n->node_num)) return; /* never treat our own traffic as inbound */
 
@@ -585,23 +693,36 @@ static void shell_ev_node(void *u, mc_nodeinfo_t const *n)
          * the running maximum, which is the best estimate of "now" the
          * puck has.
          *
-         * That makes the OUTCOME ordering-dependent: a descending burst
-         * leaves only its freshest node unplaceable, an ascending one
-         * leaves everything NEVER. Honest either way — never fresher than
-         * reality — but the ascending case is needlessly pessimistic, and
-         * recovering that precision needs deferred re-aging against the
-         * burst's final clock:
-         * https://github.com/jakeholland/firefly/issues/50.
+         * That made the OUTCOME ordering-dependent: a descending burst
+         * left only its freshest node unplaceable, an ascending one left
+         * everything NEVER. Honest either way — never fresher than reality
+         * — but the ascending case was needlessly pessimistic. S18 slice b
+         * (#50) recovers that precision by DEFERRING the aging of any
+         * reading that moved the still-settling latch: instead of dropping
+         * it, buffer it and re-age it against the burst's SETTLED clock on
+         * the first tick after READY (shell_settle_replay). A reading that
+         * did NOT move the latch is still aged immediately, against the best
+         * current estimate of "now" — unchanged, and for a purely ascending
+         * or descending burst that estimate already equals the settled
+         * clock, so this changes only the mid-burst-moving-latch entries.
          *
          * `n->position.has_rx_time` is deliberately not consulted: it is
          * hardcoded false on this path today, so a branch on it would be
          * dead code that reads as if it were handling a case. If
          * meshclient ever populates it here, it becomes the better
          * source and this is where to prefer it. */
+        ff_latlon_t const p = {n->position.lat, n->position.lon};
         uint32_t rx_ms = 0;
         if (!defined_the_latch && shell_rx_ms_from_unix(sh, n->last_heard, now, &rx_ms)) {
-            ff_latlon_t const p = {n->position.lat, n->position.lon};
             ff_crew_on_position(&sh->crew, n->node_num, p, rx_ms, shell_pos_meta(&n->position));
+        } else if (defined_the_latch && sh->link != FF_SHELL_LINK_CONNECTED) {
+            /* This reading moved a still-settling latch, so aging it now
+             * would age it against a clock its own value defines (D1). Defer
+             * to the settle pass (#50). In steady state (link CONNECTED) the
+             * latch has already settled, so a forward-moving NodeInfo there
+             * is a genuine GPS-step re-latch whose own fix still cannot be
+             * aged (D1) — left NEVER exactly as before, not buffered. */
+            shell_replay_buffer(sh, n->node_num, p, n->last_heard, shell_pos_meta(&n->position));
         }
     }
 
@@ -1324,6 +1445,19 @@ bool ff_shell_tick(ff_shell_t *sh_pub, uint32_t now_ms)
         mc_tick(&sh->mc, now_ms);
     }
 
+    /* S18 slice b (#50): the cold-boot want_config replay buffered its
+     * cached positions while the wall latch was still settling. Re-age the
+     * whole buffer against the now-settled latch EXACTLY on the link's
+     * not-ready->ready edge — the burst-end signal, needing no mc_client
+     * change. `was_ready` makes it the edge, so the pass runs once per
+     * handshake rather than every ready tick. Placed before the projection
+     * below so this tick already renders the recovered freshness. */
+    bool const ready = (sh->link == FF_SHELL_LINK_CONNECTED);
+    if (ready && !sh->was_ready) {
+        shell_settle_replay(sh, now_ms);
+    }
+    sh->was_ready = ready;
+
     /* All three flare deadlines in one call; takeover_active can clear
      * here with no route involved, which is why ff_route_visible takes
      * takeover as a parameter rather than caching it. */
@@ -1920,6 +2054,11 @@ uint32_t ff_shell_compose_to_node(ff_shell_t const *sh_pub)
 uint32_t ff_shell_wall_rejected_relatches(ff_shell_t const *sh_pub)
 {
     return (sh_pub == NULL) ? 0u : ff_wall_trust_rejected_count(&shell_of_const(sh_pub)->wall);
+}
+
+uint32_t ff_shell_replay_overflow_count(ff_shell_t const *sh_pub)
+{
+    return (sh_pub == NULL) ? 0u : shell_of_const(sh_pub)->replay_overflow;
 }
 
 /* ---------------------------------------------------------------------
