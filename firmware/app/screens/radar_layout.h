@@ -87,10 +87,14 @@ extern "C" {
  * Map" glyph, present on every mode exactly like the status bar and page
  * dots above. Sits just below the page-dot row (whose own dots occupy
  * y=[181,191] at their actual 10px footprint, RADAR_LAYOUT_DOT_PX) rather
- * than overlapping it, and stays comfortably inside the round glass —
- * center (0, 201) with a generous ±40/±12 reserved footprint keeps every
- * corner well under FF_THEME_PUCK_RADIUS_PX (220): the farthest corner
- * (40, 213) is ~48.8 px inside the circle. Not itself a tap target (the
+ * than overlapping it, and stays inside the round glass — center (0, 201)
+ * with a ±40/±12 reserved footprint whose farthest corner (40, 213) is
+ * sqrt(40^2 + 213^2) = 216.7 px from center, i.e. only ~3.3 px inside
+ * FF_THEME_PUCK_RADIUS_PX (220). That is tight but genuinely inside; it is
+ * acceptable here precisely because this is non-interactive chrome with no
+ * tap-target floor to honor, and the visible glyph is narrower than the
+ * reservation. Do NOT read this as spare clearance — nudging the footprint
+ * outward or downward pushes the corner off the glass. Not itself a tap target (the
  * real entry point is the swipe-up gesture scr_nav.c's
  * nav_swipe_gesture_cb already wires up — see that function's own doc
  * comment and issue #76's own text: this is discoverability chrome, not
