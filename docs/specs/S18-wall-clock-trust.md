@@ -34,20 +34,52 @@ stays pure; the shell knows who's paired):
   must start somewhere.
 - **TRUSTED** — a reading attributable to a paired crew member, or the local
   comms-brain's own GPS-disciplined receive clock (that node *is* you).
-- **CORROBORATED** — two or more independent sources agreeing within
-  `FF_WALL_RELATCH_DELTA_S`. Strongest; a hostile node can't fake it without
-  colluding peers.
+- **CORROBORATED** — two or more *independent* sources agreeing. **Deferred from
+  v1** (design-review PR #88): the `ff_wall_observe(st, unix_s, rx_ms, tier)`
+  signature carries no source identity, so "two independent sources" cannot be
+  distinguished from one node repeating itself — corroboration as it would ship
+  gives no real margin over TRUSTED-only against the actual threat (a single
+  broken/hostile node). TRUSTED-only fully closes #49. Corroboration (defending
+  against *colluding* nodes) needs source identity threaded to the observe and is
+  its own follow-up; noted, not silently dropped.
 
-**Re-latch rule (the #49 fix).** Moving an *established* latch to a disagreeing
-time requires a source at least TRUSTED, or CORROBORATION. A single BOOTSTRAP-tier
-(unpaired) reading can **establish** a clock but can never **move** one that a
-trusted source set. A genuine backwards GPS step stays correctable because the
-comms brain's own GPS reading is TRUSTED — the case the current unconditional
-re-latch exists to preserve is preserved, just gated by trust instead of open to
-everyone.
+**Re-latch rule (the #49 fix) — source-gated, not provenance-gated.** The gate
+conditions on the *incoming* observation's tier, NOT on what tier established the
+current latch (design-review PR #88: `ff_wall_state_t` has no latch-provenance
+field, and adding one creates an upgrade-path hole — a stranger-bootstrapped
+latch that never gets promoted stays forever movable). The simpler, sufficient
+rule:
 
-Bootstrap-tier readings that merely *agree* with the current latch still count
-toward corroboration (agreement is cheap trust); only *disagreement* is gated.
+- **Establishing** a latch (none exists yet) accepts any tier, BOOTSTRAP included
+  — a cold start must begin somewhere.
+- **Moving** an existing latch to a *disagreeing* time (> `FF_WALL_RELATCH_DELTA_S`)
+  requires the *incoming* observation be TRUSTED. A BOOTSTRAP-tier (unpaired)
+  reading can never move an existing latch, regardless of how that latch was set.
+
+This closes #49 with **no new latch state and no upgrade path**: a fresh puck
+bootstrapped off a stranger cannot then be dragged by a *second* stranger (the
+exact scenario), and it is still corrected the moment a TRUSTED source disagrees.
+A backwards GPS step stays correctable because self's GPS-disciplined reading is
+TRUSTED (see the wiring note below). Agreeing observations are always accepted
+(AGREED) regardless of tier — agreement moves nothing.
+
+**Wiring the TRUSTED sources (design-review holes 3 & 4 — the spec must state
+these or slice a will look buggy):**
+- **Self/GPS is the gold anchor, but is currently unreachable from the wall.**
+  `shell_ev_position` calls `shell_drop_as_self` and returns *before* the
+  `ff_wall_observe` call, so the comms brain's own GPS-disciplined time never
+  latches the wall today. Slice a must reorder so **self's own position/receive
+  time reaches `ff_wall_observe` as TRUSTED** (dropped for crew/feed purposes,
+  but its clock is exactly the trustworthy anchor). This is the primary time
+  source; a puck paired to its own GPS brain should trust that over any peer.
+- **Backward correction is via live Position `rx_time` only, never NodeInfo.**
+  The shipped #46 rule (`shell_observe_wall_nodeinfo`) discards any backward-
+  moving NodeInfo reading before it reaches `ff_wall_observe`, and that rule
+  **stays, unconditional of trust** — it exists to stop stale replay dragging the
+  clock back, which trust doesn't change. So AC3's "a paired member corrects the
+  clock backward" is satisfied through the live `on_position` path (real-time
+  receipt, trustworthy), not the NodeInfo replay path. State this so the layering
+  isn't rediscovered as a slice-a "bug."
 
 ## Slice a — trust-gated re-latch (#49)
 
@@ -65,17 +97,21 @@ Shell boundary: `shell_observe_wall` classifies the source — paired member (vi
 Never let an unpaired node's disagreeing time reach an established latch.
 
 ### Slice a acceptance criteria
-1. Empty-latch bootstrap from an unpaired node succeeds (cold start works).
-2. An established TRUSTED latch is NOT moved by a lone unpaired node disagreeing
-   by > delta (the exact #49 probe: `now_min` unchanged; the observe returns
-   REJECTED). This is the headline fix.
-3. An established latch IS moved by a paired member (or self/GPS) disagreeing by
-   > delta (backwards GPS step stays correctable).
-4. Corroboration: two independent unpaired nodes agreeing on a disagreeing time
-   within delta re-latch; one alone does not. (If corroboration is judged too
-   complex for v1, an implementer may ship TRUSTED-only and record the deferral
-   with a follow-up — but say so; don't silently drop it.)
-5. The rejection is observable (ctl `wall` dump or a counter), not a silent no-op.
+1. Empty-latch bootstrap from an unpaired node (BOOTSTRAP tier) succeeds — cold
+   start works.
+2. An **established** latch (established at *any* tier, including a
+   stranger-bootstrapped one) is NOT moved by a lone unpaired node disagreeing by
+   > delta: `ff_wall_observe` returns REJECTED, `now_min` unchanged. This is the
+   headline #49 fix, and it must hold specifically for a latch that was itself
+   bootstrapped off an unpaired node (the second-stranger scenario).
+3. An established latch IS moved by a TRUSTED source (a paired member, or self)
+   disagreeing by > delta — a backwards GPS step stays correctable — via the live
+   `on_position` path (NOT NodeInfo, which stays forward-only per #46).
+4. Self's own GPS-disciplined reading reaches `ff_wall_observe` as TRUSTED
+   (verify the `shell_ev_position` reorder: self is still dropped for crew/feed,
+   but its clock latches the wall).
+5. The rejection is observable (ctl `wall` dump or a counter), not a silent
+   no-op — a stranger attempting to move the clock is visible at the bench.
 
 ## Slice b — settle-then-age the replay burst (#50)
 
@@ -92,7 +128,11 @@ reads correctly. Fix: **defer aging until the latch settles.**
   `ff_crew_on_position`. Drop entries the roster no longer holds; any entry still
   older than the window stays `NEVER`.
 
-No `mc_client` change required — "first tick after READY" is the burst-end signal.
+No `mc_client` change required — "first tick after READY" is the burst-end
+signal. This needs a small **READY-edge-detection field** in the shell (a
+`was_ready` bool, or equivalent) so the re-age pass runs exactly on the
+link's not-ready→ready transition, once per handshake — the spec's "first
+tick after READY" is that edge, not every ready tick.
 
 ### Slice b acceptance criteria
 1. Ascending and descending replay of the same node set produce the **same**
