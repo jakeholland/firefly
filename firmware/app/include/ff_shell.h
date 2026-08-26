@@ -475,6 +475,21 @@ ff_wall_t ff_shell_wall(ff_shell_t const *sh);
  */
 uint32_t ff_shell_wall_rejected_relatches(ff_shell_t const *sh);
 
+/**
+ * ff_shell_replay_overflow_count — S18 slice b, AC4: how many buffered
+ * cold-boot replay positions this shell has had to DROP because the
+ * fixed FF_CREW_MAX-bounded settle buffer was full when another arrived.
+ *
+ * The buffer defers aging of the want_config replay's cached positions
+ * until the wall latch settles (issue #50); it is bounded and allocates
+ * nothing, so an overrun drops the oldest entry rather than growing. That
+ * drop is a lost freshness recovery, so it is surfaced here (and in
+ * `targets/sim/ctl_loop.c`'s `state` dump, beside `rejected_relatches`)
+ * rather than being silent. 0 if `sh` is NULL. Monotonically increasing;
+ * no reset short of `ff_shell_init`.
+ */
+uint32_t ff_shell_replay_overflow_count(ff_shell_t const *sh);
+
 /** ff_shell_close — tear down: stops driving the client and marks the
  *  shell detached. Does NOT close the transport — the target opened it
  *  and owns it (the shell was handed a vtable, not a socket). Safe on a
