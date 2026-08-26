@@ -86,11 +86,12 @@ these or slice a will look buggy):**
 `ff_wall_observe` grows a trust parameter (`[api]`): `ff_wall_observe(st, unix_s,
 rx_ms, tier)`. The gate:
 - No latch yet → accept any tier that clears the plausibility window (LATCHED).
-- Latch exists, observation AGREES (within delta) → AGREED, and record the
-  agreement (feeds corroboration).
-- Latch exists, observation DISAGREES → re-latch **only** if `tier >= TRUSTED`
-  or corroboration is met; else REJECTED, latch untouched, and the rejection is
-  observable (a stranger tried to move the clock — bench-visible, not silent).
+- Latch exists, observation AGREES (within delta) → AGREED. Agreement moves
+  nothing and is accepted at any tier.
+- Latch exists, observation DISAGREES → re-latch **only** if `tier == TRUSTED`;
+  else REJECTED, latch untouched, and the rejection is observable (a stranger
+  tried to move the clock — bench-visible, not silent). (Corroboration deferred,
+  see the trust-model note above.)
 
 Shell boundary: `shell_observe_wall` classifies the source — paired member (via
 `ff_crew_find`, never create) or self → TRUSTED; unknown/unpaired → BOOTSTRAP.
