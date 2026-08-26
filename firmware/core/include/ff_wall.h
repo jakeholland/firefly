@@ -154,6 +154,25 @@ extern "C" {
 #define FF_WALL_EPOCH_CEILING (FF_WALL_EPOCH_FLOOR + FF_WALL_PLAUSIBLE_SPAN_S)
 
 /**
+ * FF_WALL_CEILING_WARN_LEAD_S — S18 slice c (#40): how far ahead of
+ * FF_WALL_EPOCH_CEILING the build-date proximity guard starts firing.
+ *
+ * 12 months (365 days). The fixed bootstrap window decays silently — no
+ * test breaks as real time creeps toward the ceiling (see
+ * FF_WALL_EPOCH_FLOOR's MAINTENANCE note and firmware/README.md's release
+ * checklist). Once a real pack is loaded the window moves with the data
+ * and this decay stops mattering, but the NO-pack bootstrap path (the
+ * want_config handshake) still rides the fixed window, so the decay needs
+ * a backstop there. `ff_wall_ceiling_deadline_near` turns that silent
+ * decay into a LOUD, DATED warning with a full year of runway to bump the
+ * epoch — deliberately a proximity alarm, not a pass/fail: a test whose
+ * verdict flips on the day CI runs is worse than the hazard it guards
+ * (#40's own distinction). A year of lead is comfortably more than one
+ * release cadence, so the warning is actionable long before the guard it
+ * warns about actually weakens. */
+#define FF_WALL_CEILING_WARN_LEAD_S ((int64_t)31536000) /* 365 days */
+
+/**
  * FF_WALL_RELATCH_DELTA_S — a fresh reading disagreeing with the latched
  * offset by MORE than this many seconds re-latches; one disagreeing by
  * this much or less is accepted as agreement and changes nothing.
@@ -296,6 +315,18 @@ typedef struct {
     bool latched;         /* false = nothing plausible has ever been observed */
     int64_t latch_unix_s; /* the observed unix time at the latch instant */
     uint32_t latch_ms;    /* the monotonic ms at the latch instant */
+    /* S18 slice c (#40): the EFFECTIVE plausibility window the observe gate
+     * enforces, half-open [win_floor, win_ceiling). ff_wall_init defaults
+     * it to the fixed [FF_WALL_EPOCH_FLOOR, FF_WALL_EPOCH_CEILING) bootstrap
+     * window — which is what MUST apply during the want_config handshake,
+     * before any pack loads. Once a pack loads, the shell tightens it to
+     * the festival's own dates via ff_wall_set_window, so the window moves
+     * with the data and the fixed window's slow decay stops mattering.
+     * ff_wall_observe reads these; ff_wall_split_local deliberately does
+     * NOT (see its doc comment) — it stays on the fixed absolute window,
+     * a redundant sanity net over an already-latched value. */
+    int64_t win_floor;
+    int64_t win_ceiling;
     /* S18 slice a, AC5: count of disagreeing re-latches the trust gate has
      * refused — a BOOTSTRAP-tier observation that disagreed with a fresh
      * latch by more than FF_WALL_RELATCH_DELTA_S. Deliberately does NOT
@@ -334,8 +365,68 @@ typedef enum {
     FF_WALL_OBS_AGREED,       /* within tolerance — latch deliberately left as-is */
 } ff_wall_obs_t;
 
-/** ff_wall_init — reset to the unlatched (UNKNOWN) state. */
+/** ff_wall_init — reset to the unlatched (UNKNOWN) state. Also resets the
+ *  effective plausibility window to the fixed bootstrap window
+ *  [FF_WALL_EPOCH_FLOOR, FF_WALL_EPOCH_CEILING) — see ff_wall_state_t and
+ *  ff_wall_set_window (S18 slice c). */
 void ff_wall_init(ff_wall_state_t *st);
+
+/**
+ * ff_wall_set_window — S18 slice c (#40): install the EFFECTIVE
+ * plausibility window `ff_wall_observe` enforces, half-open
+ * [floor_s, ceiling_s).
+ *
+ * The pack-derived bound is computed at the SHELL/APP boundary (core must
+ * not include festpack — see ff_wall.c's placement note); this is the
+ * pure-value seam it hands the result to. `ff_wall_window_from_pack`
+ * (app/include/ff_wall_window.h) derives (floor, ceiling) from a loaded
+ * pack's dates; the shell then calls this. To return to the fixed
+ * bootstrap window (a pack that failed to load, or a pack with no usable
+ * dates — the HONEST fallback, never an invented tight window), call with
+ * (FF_WALL_EPOCH_FLOOR, FF_WALL_EPOCH_CEILING).
+ *
+ * Refuses a degenerate window: if `floor_s >= ceiling_s` the state is
+ * left EXACTLY as it was and false is returned — a garbage window can
+ * never be installed, so the gate never silently rejects every reading.
+ * `st` NULL returns false. On success returns true.
+ *
+ * Only the plausibility WINDOW moves; the latch itself is untouched. An
+ * already-established latch is never re-validated against a newly-tightened
+ * window (tightening gates only FUTURE observations), so narrowing can
+ * never retroactively un-latch a good, genuinely-plausible time.
+ */
+bool ff_wall_set_window(ff_wall_state_t *st, int64_t floor_s, int64_t ceiling_s);
+
+/**
+ * ff_wall_unix_from_doy — [api] (S18 slice c): unix seconds at
+ * 00:00:00 UTC of day-of-year `doy` (1-based) in Gregorian `year`.
+ *
+ * The proleptic-Gregorian civil-date arithmetic ff_wall_split_local uses
+ * internally, exposed so the pack->window derivation
+ * (ff_wall_window_from_pack) computes its bounds against the SAME integer
+ * date math rather than a second copy that can drift (the S18 spec's
+ * explicit instruction). Integer only, no libc time functions.
+ *
+ * `doy` is 1-based (doy == 1 is Jan 1). Values past the year's length are
+ * handled by linear extension — doy 366 of a common year is Jan 1 of the
+ * following year — which is exactly what a window ceiling of "the day
+ * after end_doy" needs, with no month table and no year-rollover branch.
+ */
+int64_t ff_wall_unix_from_doy(int64_t year, int64_t doy);
+
+/**
+ * ff_wall_ceiling_deadline_near — S18 slice c (#40): true iff `build_unix_s`
+ * is within FF_WALL_CEILING_WARN_LEAD_S (12 months) of FF_WALL_EPOCH_CEILING,
+ * i.e. `build_unix_s >= FF_WALL_EPOCH_CEILING - FF_WALL_CEILING_WARN_LEAD_S`.
+ *
+ * The pure predicate behind the no-pack bootstrap window's decay backstop.
+ * Takes the build date as an EXPLICIT argument rather than reading the real
+ * clock, so a caller can drive it with a synthetic date and the result is
+ * deterministic (no calendar-flaky CI). The sim target feeds its actual
+ * build timestamp and emits a loud, dated warning when this fires; the unit
+ * test feeds synthetic dates on both sides of the threshold.
+ */
+bool ff_wall_ceiling_deadline_near(int64_t build_unix_s);
 
 /**
  * ff_wall_observe — offer a mesh timestamp to the latch. [api] (S18
@@ -354,10 +445,15 @@ void ff_wall_init(ff_wall_state_t *st);
  * SHELL's classification of the source (this module stays pure and does
  * not itself know who is paired — see ff_wall_trust_t).
  *
- * Gate: `unix_s` outside [FF_WALL_EPOCH_FLOOR, FF_WALL_EPOCH_CEILING) is
- * rejected and the latch is left exactly as it was, at ANY tier — the
- * plausibility window is trust-blind, applied before the trust gate below
- * even runs. The lower bound covers `last_heard == 0` ("unknown", per
+ * Gate: `unix_s` outside the EFFECTIVE plausibility window
+ * [st->win_floor, st->win_ceiling) is rejected and the latch is left
+ * exactly as it was, at ANY tier — the plausibility window is trust-blind,
+ * applied before the trust gate below even runs. That window defaults to
+ * the fixed [FF_WALL_EPOCH_FLOOR, FF_WALL_EPOCH_CEILING) bootstrap bounds
+ * and tightens to the loaded pack's festival dates once the shell calls
+ * ff_wall_set_window (S18 slice c, #40) — so a 2030 pack carries a 2030
+ * window and the fixed bounds' slow decay stops mattering. The lower bound
+ * covers `last_heard == 0` ("unknown", per
  * mc_client.h:107) for free and is the uncorrected-pre-GPS-lock RTC case;
  * the upper bound stops an untrusted node from latching — or overwriting a
  * good latch with — an arbitrary future time. Rejection can never un-latch
@@ -445,10 +541,16 @@ bool ff_wall_resolve_offset(ff_wall_offset_cfg_t const *cfg, int16_t *out_offset
  * not carry — the offset is an explicit input instead).
  *
  * Returns false without writing anything when `unix_s` falls outside the
- * plausibility window [FF_WALL_EPOCH_FLOOR, FF_WALL_EPOCH_CEILING) or
- * `utc_offset_min` is out of range — the same window ff_wall_observe
- * enforces, so the two entry points cannot disagree about what counts as
- * a time.
+ * FIXED plausibility window [FF_WALL_EPOCH_FLOOR, FF_WALL_EPOCH_CEILING)
+ * or `utc_offset_min` is out of range. This is deliberately the fixed
+ * window, NOT the pack-tightened effective window ff_wall_observe uses
+ * (S18 slice c, #40): this entry point is stateless (no ff_wall_state_t,
+ * hence no effective window to read) and runs only on a value that has
+ * ALREADY passed the observe gate and latched, so its window check is a
+ * redundant sanity net. Keeping it on the wider fixed bounds means it can
+ * only ever be MORE permissive than the gate that admitted the value — it
+ * can never reject a genuinely-plausible festival time the observe gate
+ * accepted, which is the honest-data direction to err.
  *
  * Note this takes a FIXED offset: there is no DST rule anywhere in this
  * project. A pack states one offset for the whole event, which is

@@ -1790,6 +1790,45 @@ static void S48_now_no_pack_holds_regardless_of_clock_state(void)
     TEST_ASSERT_EQUAL_INT(NOW_NO_PACK, ff_shell_view(&H.shell)->now.state);
 }
 
+/* S18 slice c (#40) — the shell wires ff_shell_load_pack to tighten the
+ * wall-clock plausibility window to the loaded pack's festival dates. The
+ * derivation and the core seam are unit-tested in test_wall_window.c /
+ * test_wall.c; this pins that the SHELL actually calls ff_wall_set_window
+ * on load, using the real load_pack path and the dev-clock observe hook
+ * (the same hook, and the same plausibility gate, a live rx_time hits).
+ *
+ * Discriminator: 2029-09-18 22:00 UTC (1884463200) is INSIDE the fixed
+ * [FLOOR, CEILING) window (< 2030-08-01) but OUTSIDE the Lost Lands 2026
+ * window. So its acceptance flips on whether the window tightened. */
+#define U_SEP2029 ((int64_t)1884463200) /* 2029-09-18 22:00 UTC */
+
+static void S18c_no_pack_keeps_the_fixed_window(void)
+{
+    /* AC1: with no pack loaded the fixed bootstrap window is in force, so a
+     * 2029 stamp (inside it) is accepted. This is the control that proves
+     * the 2029 rejection below is the tightening, not some other gate. */
+    harness_init(100000u, false);
+    inject_my_info(MY_ID);
+    TEST_ASSERT_TRUE(ff_shell_dev_wall_observe(&H.shell, U_SEP2029));
+}
+
+static void S18c_loading_lost_lands_tightens_the_window(void)
+{
+    /* AC2: PACK_JSON carries Lost Lands' Sep 18-20 2026 dates. After load,
+     * the window is [Sep 4, Oct 5 2026]-ish: a Sep 2026 stamp is plausible,
+     * a Sep 2029 stamp is rejected — even though 2029 cleared the fixed
+     * window in S18c_no_pack_keeps_the_fixed_window above. */
+    harness_init(100000u, false);
+    inject_my_info(MY_ID);
+    TEST_ASSERT_EQUAL_INT(0, ff_shell_load_pack(&H.shell, PACK_JSON, sizeof(PACK_JSON) - 1u));
+
+    /* 2029 is now outside the tightened window: the gate refuses it. */
+    TEST_ASSERT_FALSE(ff_shell_dev_wall_observe(&H.shell, U_SEP2029));
+    /* A genuine Sep 2026 festival time is still accepted — narrowing never
+     * rejects a real festival-time reading (S18 honest-data brief). */
+    TEST_ASSERT_TRUE(ff_shell_dev_wall_observe(&H.shell, (int64_t)U_EVENING));
+}
+
 static void S16_b1_loading_a_pack_does_not_fabricate_my_position(void)
 {
     /* The retired targets/sim/live.c adopted the pack's venue origin
@@ -2884,6 +2923,8 @@ int main(void)
     RUN_TEST(S07_2026_08_24_starts_only_set_is_live_not_lineup);
     RUN_TEST(S16_b1_now_projection_needs_both_a_pack_and_a_known_clock);
     RUN_TEST(S48_now_no_pack_holds_regardless_of_clock_state);
+    RUN_TEST(S18c_no_pack_keeps_the_fixed_window);
+    RUN_TEST(S18c_loading_lost_lands_tightens_the_window);
     RUN_TEST(S09_shell_projects_map_from_pack_crew_and_my_position);
     RUN_TEST(S09_shell_map_stays_empty_without_a_known_venue);
     RUN_TEST(S09_shell_map_excludes_unpaired_members_even_with_a_position);

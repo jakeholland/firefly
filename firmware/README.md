@@ -183,6 +183,16 @@ criteria-numbered per spec (`SNN_ACX_description`), per `AGENTS.md`.
   a BOOTSTRAP-tier disagreement can never move an established latch (the
   second-stranger scenario), only TRUSTED can, and the pre-existing
   expired-latch/backwards-monotonic branch stays deliberately trust-blind.
+  S18 slice c (#40) adds the pack-derived plausibility window: the effective
+  gate window defaults to the fixed bootstrap bounds and tightens to a
+  loaded pack's dates via `ff_wall_set_window`; `ff_wall_unix_from_doy` is
+  the exposed civil-date primitive the derivation shares; and
+  `ff_wall_ceiling_deadline_near` is the build-date proximity guard
+  (synthetic-date tested, never the real clock). The festpack->window
+  derivation itself (`ff_wall_window_from_pack`, honest fallback for a
+  null-dated pack) is `test_wall_window` (app), and the shell wiring
+  (load_pack tightens the window; a Sep 2029 stamp inside the fixed window
+  is rejected once Lost Lands loads) is in `test_shell`.
   The date math additionally has an out-of-band cross-check against
   Python's `datetime` — `tools/dev/wall_crosscheck.py`, not a ctest (it
   needs a compiler and Python at once); run it after touching the
@@ -202,6 +212,17 @@ the day it was built.
   and no warning. `FF_WALL_EPOCH_CEILING` is derived from it and moves
   along automatically. Forward only; never move either bound backwards.
   (Recorded here per PR #37 review, D3.)
+  - S18 slice c (#40) narrowed *when* this matters and added a backstop.
+    Once a pack loads, the plausibility window tightens to the festival's
+    own dates (`ff_wall_window_from_pack` -> `ff_wall_set_window`), so the
+    fixed window's decay only affects the **no-pack bootstrap** path (the
+    want_config handshake). And that decay is no longer fully silent:
+    `ffsim` prints a loud, dated warning at startup once the **build date**
+    is within 12 months of the ceiling (`ff_wall_ceiling_deadline_near`,
+    surfaced by CI's headless-screenshot step). It is still a *warning*,
+    not a pass/fail — a build's verdict must not depend on the day it ran
+    — so this bump remains a human release step, now with a year of
+    tracked runway instead of nothing.
 
 ## e2e tests (S14 slice d)
 
