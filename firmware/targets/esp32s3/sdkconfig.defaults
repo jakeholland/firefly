@@ -1,0 +1,43 @@
+# sdkconfig.defaults — ESP32-S3 target defaults (S15 slice a).
+#
+# Board: Waveshare ESP32-S3-Touch-LCD-1.46 (arrives the day after this
+# slice lands — these values are Waveshare's published module spec,
+# NOT yet confirmed against the physical board). Waveshare's product page
+# for this SKU specifies an ESP32-S3R8 module: 16 MB flash, 8 MB **octal**
+# PSRAM (the "R8" suffix in Espressif's own naming is octal SPI PSRAM,
+# distinct from "R2"/quad). If the board that arrives reports otherwise
+# (`idf.py build` fails to boot / `esp_psram` init fails, or `esptool.py
+# flash_id` shows a different flash size), flip CONFIG_SPIRAM_MODE_* and
+# CONFIG_ESPTOOLPY_FLASHSIZE_* below and re-flash — nothing else in this
+# slice depends on the exact size.
+#
+# PSRAM is required, not optional: fp_pack_t (festpack/include/fp_pack.h)
+# budgets ~48 KB and ff_shell_t (app/include/ff_shell.h) budgets 22 KB —
+# comfortably inside ESP32-S3's ~512 KB internal SRAM on their own, but
+# S15 slices b-e add the LVGL v9 display driver, its frame buffer(s) at
+# 412x412, and the SPD2010 QSPI panel/touch driver on top, which is the
+# actual reason PSRAM has to be on from this slice onward rather than
+# added later — turning it on after buffers are already sized against
+# internal SRAM would mean re-tuning those buffers too.
+
+CONFIG_IDF_TARGET="esp32s3"
+
+# --- PSRAM -------------------------------------------------------------
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_MODE_OCT=y
+CONFIG_SPIRAM_SPEED_80M=y
+# Map PSRAM into the regular malloc() pool too, not just the explicit
+# EXT_RAM_BSS_ATTR placement fp_pack.h's header comment mentions — belt
+# and suspenders until slice b/d actually need to place bytes deliberately.
+CONFIG_SPIRAM_USE_MALLOC=y
+
+# --- Flash ---------------------------------------------------------------
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+CONFIG_PARTITION_TABLE_SINGLE_APP_LARGE=y
+
+# --- Misc ------------------------------------------------------------------
+# This slice boots to Radar's no-fix state with no peripherals touched —
+# no display, no UART, no sensors (those are slices b/c/d). Leave the
+# console on the default UART so `idf.py monitor` shows app_main's boot
+# log tomorrow.
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192

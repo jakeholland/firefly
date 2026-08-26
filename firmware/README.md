@@ -13,6 +13,11 @@ firmware/
   targets/sim/  ffsim — desktop sim target (S13); fixture.h/fixture_view.h (S13b);
                 ctl_server.h/.c (S13c control socket); --connect/--pack drive the
                 app shell (S16b2 — the interim live.h/.c wiring is retired)
+  targets/esp32s3/  ESP-IDF project, real ESP32-S3 hardware (S15). Slice a
+                (this one): the project skeleton — components/ wrap
+                core/festpack/meshclient/app UNCHANGED, main/app_main.c
+                boots the shell against stub HALs, no peripherals touched.
+                See "Build — ESP32-S3 (device)" below.
   tools/        compare_png — golden-screenshot pixel diff (S14 slice b)
                 dev/         compose.yml + crew_sim.py + CTL.md — the live dev loop (S13d)
   tests/        tests/fixtures/*.json, tests/golden/*.png, run_goldens.sh (S13/S14 slice b)
@@ -43,6 +48,31 @@ cmake -B build -DFF_TARGET=sim
 cmake --build build
 ctest --test-dir build --output-on-failure
 ```
+
+## Build — ESP32-S3 (device, S15 slice a)
+
+```sh
+source ~/esp/esp-idf/export.sh   # or: . ~/esp/esp-idf/export.sh
+# first time only, if the xtensa toolchain isn't installed yet:
+#   ~/esp/esp-idf/install.sh esp32s3
+cd firmware/targets/esp32s3
+idf.py set-target esp32s3   # only needed once, or after deleting build/
+idf.py build
+idf.py -p <PORT> flash monitor   # once the board is on the bench
+```
+
+This is a SEPARATE build entry point from the `cmake -S firmware ...`
+sim build above — `idf.py`, not `cmake --build`. It does not
+`add_subdirectory()` the sim tree; every component under
+`targets/esp32s3/components/` points its `SRCS`/`INCLUDE_DIRS` straight
+at the existing `firmware/{core,festpack,meshclient,app}` sources, so
+those compile for xtensa UNCHANGED — literally the same `.c` files the
+sim target builds. `main/app_main.c` boots `ff_shell_t` against stub
+HALs (`esp_timer`-backed clock, a no-op store, no transport) and never
+touches a peripheral — the display/touch/UART/sensor drivers are slices
+b/c/d. See `docs/specs/S15-esp32s3-target.md` and the S15a PR body for
+the full slice breakdown and every host-portability finding this port
+surfaced.
 
 ## Run the sim
 
@@ -145,14 +175,18 @@ criteria-numbered per spec (`SNN_ACX_description`), per `AGENTS.md`.
   dev-affordance semantics and the on_my_info heard-purge.
 - `test_png_diff` (S14 slice b) — `tools/png_diff.h`'s pixel-diff core,
   including the exact 0.4%/0.5%/0.6% threshold boundary.
-- `test_wall` (S16 slice b0) — `core/ff_wall.h`'s wall-clock derivation:
-  the `FF_WALL_UNKNOWN` honesty discipline, the plausibility window's
-  four boundaries, offset-latch/re-latch, UTC-offset resolution order,
-  and the `unix -> local -> (day_doy, now_min)` festival-day mapping. The
-  date math additionally has an out-of-band cross-check against Python's
-  `datetime` — `tools/dev/wall_crosscheck.py`, not a ctest (it needs a
-  compiler and Python at once); run it after touching the civil-date
-  code.
+- `test_wall` (S16 slice b0; trust gate S18 slice a) — `core/ff_wall.h`'s
+  wall-clock derivation: the `FF_WALL_UNKNOWN` honesty discipline, the
+  plausibility window's four boundaries, offset-latch/re-latch, UTC-offset
+  resolution order, and the `unix -> local -> (day_doy, now_min)`
+  festival-day mapping. Also `ff_wall_observe`'s trust tier (issue #49):
+  a BOOTSTRAP-tier disagreement can never move an established latch (the
+  second-stranger scenario), only TRUSTED can, and the pre-existing
+  expired-latch/backwards-monotonic branch stays deliberately trust-blind.
+  The date math additionally has an out-of-band cross-check against
+  Python's `datetime` — `tools/dev/wall_crosscheck.py`, not a ctest (it
+  needs a compiler and Python at once); run it after touching the
+  civil-date code.
 
 ## Release checklist
 

@@ -174,13 +174,24 @@ schema's fields, reporting what the wall clock thinks
 (`ff_shell_wall()`) — the hardware bench work (issue #49) needs to SEE
 what latched rather than infer it:
 
-- unlatched: `"wall":{"src":"unknown","host_observed":false}` — the puck
-  does not know what time it is, and `ff_wall_t`'s other fields would be
-  meaningless, so they are absent rather than zeroed (honest-data rule).
+- unlatched: `"wall":{"src":"unknown","host_observed":false,
+  "rejected_relatches":0}` — the puck does not know what time it is, and
+  `ff_wall_t`'s other fields would be meaningless, so they are absent
+  rather than zeroed (honest-data rule).
 - latched: `"wall":{"src":"mesh","host_observed":false,"day_doy":261,
-  "now_min":900,"offset_assumed":false}` — `ff_wall_t`'s fields verbatim
-  (day-of-year with the 06:00 festival-day roll, minutes in [360, 1800),
-  and whether the UTC offset was a stated value or a defaulted guess).
+  "now_min":900,"offset_assumed":false,"rejected_relatches":0}` —
+  `ff_wall_t`'s fields verbatim (day-of-year with the 06:00 festival-day
+  roll, minutes in [360, 1800), and whether the UTC offset was a stated
+  value or a defaulted guess).
+
+`rejected_relatches` (S18 slice a, issue #49): the count of disagreeing
+wall-clock re-latches the trust gate has refused — a source below TRUSTED
+(unpaired/unknown) tried to move an already-established latch by more
+than 30 s and was refused, `ff_shell_wall_rejected_relatches()` verbatim.
+Not an `ff_wall_t` field (it survives an expired/UNKNOWN latch), so it
+appears in both branches above. Monotonically increasing for the session;
+exists so a stranger trying to move the clock is bench-visible rather
+than a silent no-op.
 
 `host_observed` is the provenance qualifier `ff_wall_src_t` cannot carry:
 `--dev-trust-all` offers the HOST's clock to the latch at startup, and
