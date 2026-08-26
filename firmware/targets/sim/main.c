@@ -152,6 +152,7 @@
                              * instead of defined locally in this file. */
 #include "ff_intent.h"     /* S16 slice d — binding the seam for live window mode */
 #include "ff_shell.h"      /* S16b2 — live mode is the app shell now (live.{c,h} retired) */
+#include "ff_wall.h"       /* S18c — the no-pack-window decay backstop (build-date proximity guard) */
 #include "fixture.h"
 #include "live_setup.h"    /* S16 slice d — the setup sequence shared with ctl_loop.c */
 #include "screenshot.h"    /* ff_screenshot_write — the one-shot headless render path */
@@ -412,8 +413,41 @@ static int ff_run_window(const char *fixture_path, bool mock_clock, const char *
     }
 }
 
+/* S18 slice c (#40): the no-pack bootstrap window's decay backstop. The
+ * fixed [FLOOR, CEILING) plausibility window decays silently as real time
+ * creeps toward the ceiling, and the no-pack handshake path still rides
+ * it. FF_WALL_BUILD_UNIX_S is this build's date, injected by CMake
+ * (string(TIMESTAMP)); when it lands within 12 months of the ceiling we
+ * print a LOUD, DATED warning to stderr on every startup — so a CI run
+ * (the headless-screenshot step invokes ffsim and shows its output)
+ * surfaces the deadline with a full year of runway to bump the epoch.
+ * Deliberately a warning, never an exit code: a build's pass/fail must not
+ * depend on the day it ran (#40's calendar-flakiness rule). The predicate
+ * and the threshold live in core (ff_wall_ceiling_deadline_near /
+ * FF_WALL_CEILING_WARN_LEAD_S), so this cannot drift from the gate. */
+static void ffsim_warn_if_epoch_ceiling_near(void)
+{
+#ifdef FF_WALL_BUILD_UNIX_S
+    int64_t const build_unix = (int64_t)FF_WALL_BUILD_UNIX_S;
+    if (ff_wall_ceiling_deadline_near(build_unix)) {
+        fprintf(stderr,
+                "\n"
+                "================================================================\n"
+                "  WARNING (S18c/#40): the wall-clock plausibility ceiling is\n"
+                "  near. This build's date (unix %lld) is within 12 months of\n"
+                "  FF_WALL_EPOCH_CEILING (unix %lld). The no-pack bootstrap\n"
+                "  window is DECAYING — bump FF_WALL_EPOCH_FLOOR per the\n"
+                "  Release checklist in firmware/README.md.\n"
+                "================================================================\n\n",
+                (long long)build_unix, (long long)FF_WALL_EPOCH_CEILING);
+    }
+#endif
+}
+
 int main(int argc, char **argv)
 {
+    ffsim_warn_if_epoch_ceiling_near();
+
     bool headless = false;
     bool mock_clock = false;
     const char *screenshot_dir = NULL;

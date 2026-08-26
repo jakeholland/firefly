@@ -765,6 +765,127 @@ static void S18_expired_latch_relatch_stays_trust_blind(void)
 }
 
 /* ---------------------------------------------------------------------
+ * S18 slice c (#40) — pack-derived plausibility window. Here: the core
+ * seam (the default window, the ff_wall_set_window setter, the exposed
+ * ff_wall_unix_from_doy civil-date math, and the build-date proximity
+ * guard). The festpack->window derivation itself is app-layer and lives
+ * in test_wall_window.c; the shell wiring is in test_shell.c.
+ * ------------------------------------------------------------------- */
+
+static void S18c_AC1_default_window_is_the_fixed_bootstrap_window(void)
+{
+    /* A fresh state gates on the FIXED window — this is what MUST hold
+     * during the want_config handshake before any pack loads (AC1). A
+     * timestamp just inside each fixed bound is accepted; the bounds
+     * themselves behave exactly as the pre-slice-c gate did. */
+    ff_wall_state_t st;
+    ff_wall_init(&st);
+    TEST_ASSERT_EQUAL_INT64(FF_WALL_EPOCH_FLOOR, st.win_floor);
+    TEST_ASSERT_EQUAL_INT64(FF_WALL_EPOCH_CEILING, st.win_ceiling);
+
+    TEST_ASSERT_EQUAL_INT(FF_WALL_OBS_LATCHED,
+                          ff_wall_observe(&st, FF_WALL_EPOCH_FLOOR, 1000u, FF_WALL_TRUST_BOOTSTRAP));
+
+    ff_wall_state_t below;
+    ff_wall_init(&below);
+    TEST_ASSERT_EQUAL_INT(FF_WALL_OBS_REJECTED,
+                          ff_wall_observe(&below, FF_WALL_EPOCH_FLOOR - 1, 1000u, FF_WALL_TRUST_BOOTSTRAP));
+
+    ff_wall_state_t at_ceiling;
+    ff_wall_init(&at_ceiling);
+    TEST_ASSERT_EQUAL_INT(FF_WALL_OBS_REJECTED,
+                          ff_wall_observe(&at_ceiling, FF_WALL_EPOCH_CEILING, 1000u, FF_WALL_TRUST_BOOTSTRAP));
+}
+
+static void S18c_set_window_tightens_and_refuses_degenerate(void)
+{
+    ff_wall_state_t st;
+    ff_wall_init(&st);
+
+    /* Install a tight window well inside the fixed one. */
+    int64_t const floor_s = FF_WALL_EPOCH_FLOOR + 1000000;
+    int64_t const ceiling_s = floor_s + 5000000;
+    TEST_ASSERT_TRUE(ff_wall_set_window(&st, floor_s, ceiling_s));
+    TEST_ASSERT_EQUAL_INT64(floor_s, st.win_floor);
+    TEST_ASSERT_EQUAL_INT64(ceiling_s, st.win_ceiling);
+
+    /* A value inside the fixed window but below the tightened floor is now
+     * rejected — the tighten took effect. */
+    TEST_ASSERT_EQUAL_INT(FF_WALL_OBS_REJECTED,
+                          ff_wall_observe(&st, FF_WALL_EPOCH_FLOOR + 1, 1000u, FF_WALL_TRUST_BOOTSTRAP));
+    TEST_ASSERT_EQUAL_INT(FF_WALL_OBS_LATCHED,
+                          ff_wall_observe(&st, floor_s + 1, 1000u, FF_WALL_TRUST_BOOTSTRAP));
+
+    /* A degenerate (empty/inverted) window is REFUSED and leaves the
+     * window exactly as it was — never install a gate that rejects every
+     * reading. */
+    TEST_ASSERT_FALSE(ff_wall_set_window(&st, ceiling_s, floor_s)); /* inverted */
+    TEST_ASSERT_FALSE(ff_wall_set_window(&st, floor_s, floor_s));   /* empty */
+    TEST_ASSERT_EQUAL_INT64(floor_s, st.win_floor);   /* unchanged */
+    TEST_ASSERT_EQUAL_INT64(ceiling_s, st.win_ceiling);
+    TEST_ASSERT_FALSE(ff_wall_set_window(NULL, floor_s, ceiling_s)); /* NULL st */
+
+    /* Resetting to the fixed bounds is an ordinary valid set. */
+    TEST_ASSERT_TRUE(ff_wall_set_window(&st, FF_WALL_EPOCH_FLOOR, FF_WALL_EPOCH_CEILING));
+    TEST_ASSERT_EQUAL_INT64(FF_WALL_EPOCH_FLOOR, st.win_floor);
+    TEST_ASSERT_EQUAL_INT64(FF_WALL_EPOCH_CEILING, st.win_ceiling);
+}
+
+static void S18c_set_window_moves_only_the_window_not_the_latch(void)
+{
+    /* Narrowing the window must never retroactively un-latch a good time:
+     * only FUTURE observations are gated. Latch on the fixed window, then
+     * tighten to a window that EXCLUDES the already-latched value; the
+     * derived time is unchanged. */
+    ff_wall_state_t st;
+    ff_wall_init(&st);
+    TEST_ASSERT_EQUAL_INT(FF_WALL_OBS_LATCHED,
+                          ff_wall_observe(&st, FF_WALL_EPOCH_FLOOR + 100, 1000u, FF_WALL_TRUST_BOOTSTRAP));
+
+    int64_t before = 0, after = 0;
+    TEST_ASSERT_TRUE(ff_wall_unix_now(&st, 1000u, &before));
+
+    /* A window that starts well above the latched value. */
+    TEST_ASSERT_TRUE(ff_wall_set_window(&st, FF_WALL_EPOCH_FLOOR + 1000000, FF_WALL_EPOCH_CEILING));
+    TEST_ASSERT_TRUE(ff_wall_unix_now(&st, 1000u, &after));
+    TEST_ASSERT_EQUAL_INT64(before, after); /* latch untouched */
+}
+
+static void S18c_unix_from_doy_is_the_shared_civil_date_math(void)
+{
+    /* doy 1 of 1970 is the epoch; doy is linear so +1 doy is +86400 s. The
+     * pack->window derivation is computed against exactly this, so the two
+     * cannot drift. (Fuller anchor coverage is in test_wall_window.c.) */
+    TEST_ASSERT_EQUAL_INT64(0, ff_wall_unix_from_doy(1970, 1));
+    TEST_ASSERT_EQUAL_INT64(86400, ff_wall_unix_from_doy(1970, 2));
+    /* 2026-09-18 00:00 UTC (doy 261) — the frozen Lost Lands start anchor,
+     * = U_EVENING-style refs minus their time-of-day. */
+    TEST_ASSERT_EQUAL_INT64((int64_t)1789689600, ff_wall_unix_from_doy(2026, 261));
+}
+
+static void S18c_AC4_build_date_proximity_guard_fires_within_12_months(void)
+{
+    /* AC4: the guard is a proximity alarm driven by a SYNTHETIC build date,
+     * not the real clock — deterministic, never calendar-flaky. It fires
+     * once the build date is within FF_WALL_CEILING_WARN_LEAD_S (12 months)
+     * of the ceiling, and is off before that. */
+    int64_t const lead = FF_WALL_CEILING_WARN_LEAD_S;
+
+    /* Comfortably clear: two years out — off. */
+    TEST_ASSERT_FALSE(ff_wall_ceiling_deadline_near(FF_WALL_EPOCH_CEILING - 2 * lead));
+    /* Six months out — inside the 12-month lead, fires. */
+    TEST_ASSERT_TRUE(ff_wall_ceiling_deadline_near(FF_WALL_EPOCH_CEILING - lead / 2));
+
+    /* The threshold is inclusive at exactly 12 months before the ceiling. */
+    TEST_ASSERT_TRUE(ff_wall_ceiling_deadline_near(FF_WALL_EPOCH_CEILING - lead));
+    /* One second before the threshold — still off. */
+    TEST_ASSERT_FALSE(ff_wall_ceiling_deadline_near(FF_WALL_EPOCH_CEILING - lead - 1));
+
+    /* Past the ceiling entirely — very much on. */
+    TEST_ASSERT_TRUE(ff_wall_ceiling_deadline_near(FF_WALL_EPOCH_CEILING + 1));
+}
+
+/* ---------------------------------------------------------------------
  * AC12c — offset resolution order.
  * ------------------------------------------------------------------- */
 
@@ -1044,6 +1165,12 @@ int main(void)
     RUN_TEST(S18_AC3_a_trusted_source_disagreeing_relatches);
     RUN_TEST(S18_AC5_trust_rejected_count_counts_only_the_trust_gate);
     RUN_TEST(S18_expired_latch_relatch_stays_trust_blind);
+
+    RUN_TEST(S18c_AC1_default_window_is_the_fixed_bootstrap_window);
+    RUN_TEST(S18c_set_window_tightens_and_refuses_degenerate);
+    RUN_TEST(S18c_set_window_moves_only_the_window_not_the_latch);
+    RUN_TEST(S18c_unix_from_doy_is_the_shared_civil_date_math);
+    RUN_TEST(S18c_AC4_build_date_proximity_guard_fires_within_12_months);
 
     RUN_TEST(S16_AC12c_assumed_pack_offset_does_not_outrank_set_settings);
     RUN_TEST(S16_AC12c_stated_pack_offset_outranks_settings);

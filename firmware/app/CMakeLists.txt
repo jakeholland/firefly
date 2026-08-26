@@ -70,6 +70,37 @@ target_link_libraries(ff-intent PUBLIC ff-app) # app/include/ff_intent.h's inclu
 target_compile_features(ff-intent PUBLIC c_std_11)
 ff_apply_warnings(ff-intent)
 
+# S18c (app/ff_wall_window.c — pack -> wall-clock plausibility window;
+# docs/specs/S18-wall-clock-trust.md slice c)
+# ---------------------------------------------------------------------------
+# The festpack->window derivation seam. Pure C11, zero LVGL. Lives in app/
+# (not core/) because it needs fp_pack_t, and core deliberately does not
+# depend on festpack (docs/ARCHITECTURE.md's one-way edge; ff_wall.h's
+# placement note). It links ff-core (for ff_wall_unix_from_doy, the shared
+# civil-date math the window is computed against) and ff-festpack (for
+# fp_pack_t). The shell calls it on pack load and hands the result to
+# ff_wall_set_window; core takes the window as plain values and never sees
+# the pack. Unit-testable with a plain fp_pack_t and no shell — see
+# tests/test_wall_window.c.
+# ---------------------------------------------------------------------------
+add_library(ff-wall-window STATIC
+    ff_wall_window.c
+)
+target_include_directories(ff-wall-window PUBLIC include)
+target_link_libraries(ff-wall-window PUBLIC ff-core ff-festpack)
+target_compile_features(ff-wall-window PUBLIC c_std_11)
+ff_apply_warnings(ff-wall-window)
+
+if(FF_BUILD_TESTS)
+    add_executable(test_wall_window
+        tests/test_wall_window.c
+    )
+    target_link_libraries(test_wall_window PRIVATE ff-wall-window unity)
+    ff_apply_warnings(test_wall_window)
+
+    add_test(NAME test_wall_window COMMAND test_wall_window)
+endif()
+
 # S06b (app/theme, app/screens — shell/nav + radar-face rendering;
 # docs/specs/S06-radar-face.md slices b/c/d)
 # ---------------------------------------------------------------------------
@@ -321,7 +352,7 @@ add_library(ff-shell STATIC
     ff_shell.c
 )
 target_include_directories(ff-shell PUBLIC include)
-target_link_libraries(ff-shell PUBLIC ff-app ff-route ff-wiring ff-core ff-meshclient ff-festpack)
+target_link_libraries(ff-shell PUBLIC ff-app ff-route ff-wiring ff-core ff-meshclient ff-festpack ff-wall-window)
 target_compile_features(ff-shell PUBLIC c_std_11)
 ff_apply_warnings(ff-shell)
 
