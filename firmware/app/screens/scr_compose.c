@@ -107,9 +107,13 @@
  * fix; bumped to 10px — comfortably above the floor, matching this
  * codebase's own other "modest gap" precedent (scr_settings.c's
  * FF_SETTINGS_ROW_GAP). Every key's own width/height stays well clear of
- * FF_THEME_MIN_HIT_PX at the new gap (verified: the narrowest row, the
- * bottom DEL/0/SEND row, still measures 64x46 — see this file's PR body
- * for the full before/after). */
+ * FF_THEME_MIN_HIT_PX at the new gap (verified against the real rendered
+ * click-area, not hand math — PR #86 code review caught an earlier draft
+ * of this comment quoting 64x46, a stale pre-fix number that never
+ * accounted for the Y-position cascade the gap bump causes: the narrowest
+ * row, bottom DEL/0/SEND, actually measures 50x46; row2 (7/8/9) is
+ * 100x46, row1 (4/5/6) is 122x46, row0 (1/2/3) is 132x46 — see this
+ * file's PR body for the full before/after). */
 #define FF_COMPOSE_KEY_GAP 10
 #define FF_COMPOSE_KEY_H   46 /* >= FF_THEME_MIN_HIT_PX; see the _Static_assert below */
 #define FF_COMPOSE_BOTTOM_ROW_GAP_EXTRA 4

@@ -61,7 +61,23 @@
 #define FF_SIGNALS_REPLY_ROW_H FF_THEME_MIN_HIT_PX
 
 #define FF_SIGNALS_ROW_H       58
-#define FF_SIGNALS_ROW_GAP     6
+/* S17 slice b (AC2) — PR #86 code review, BLOCKING: was 6px. Every feed
+ * row is a clickable-sibling CANDIDATE (only RALLY kind opts into
+ * LV_OBJ_FLAG_CLICKABLE — see signals_build_row below — but which items
+ * are RALLY is live data, not a layout-time fact this constant can see),
+ * so two adjacent RALLY rows would sit 6px apart — under
+ * `FF_HIT_MIN_GAP_PX` (8px, ff_theme.h), the same magnitude mis-tap trap
+ * `FF_COMPOSE_KEY_GAP` had. The committed `signals_feed.json` fixture
+ * happened to carry only one RALLY item, so the AC2 sweep never exercised
+ * this path when this constant was first landed — closed by both the fix
+ * here AND `tests/fixtures/signals_two_rallies.json` (two adjacent RALLY
+ * rows), so the gate now actually covers this case rather than merely
+ * happening to pass it. Bumped to 10px, matching this codebase's other
+ * "modest gap" precedent (scr_settings.c's FF_SETTINGS_ROW_GAP,
+ * scr_compose.c's FF_COMPOSE_KEY_GAP). */
+#define FF_SIGNALS_ROW_GAP     10
+_Static_assert(FF_SIGNALS_ROW_GAP >= FF_HIT_MIN_GAP_PX,
+               "signals feed row gap must clear the adjacency floor — two adjacent RALLY rows are both clickable");
 #define FF_SIGNALS_ICON_PX     30
 
 /**
