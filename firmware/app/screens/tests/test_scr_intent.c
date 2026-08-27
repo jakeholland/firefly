@@ -933,6 +933,29 @@ static void S16_c2_sender_overlay_cancel_emits_flare_end(void)
 /* except BACK, which is the same FF_INTENT_BACK every other modal uses.  */
 /* =================================================================== */
 
+/* The Settings back button draws its caret as an lv_line chevron (not a "<"
+ * glyph), so it is found as the button containing a line child. */
+static lv_obj_t *find_settings_back(lv_obj_t *root)
+{
+    uint32_t n = lv_obj_get_child_count(root);
+    for (uint32_t i = 0; i < n; i++) {
+        lv_obj_t *child = lv_obj_get_child(root, i);
+        if (lv_obj_check_type(child, &lv_button_class)) {
+            uint32_t nc = lv_obj_get_child_count(child);
+            for (uint32_t j = 0; j < nc; j++) {
+                if (lv_obj_check_type(lv_obj_get_child(child, j), &lv_line_class)) {
+                    return child;
+                }
+            }
+        }
+        lv_obj_t *found = find_settings_back(child);
+        if (found != NULL) {
+            return found;
+        }
+    }
+    return NULL;
+}
+
 static void S11b_settings_back_emits_back(void)
 {
     ff_app_settings_t s;
@@ -940,7 +963,7 @@ static void S11b_settings_back_emits_back(void)
 
     ff_scr_settings_build(&s);
 
-    click(find_button_with_label(lv_screen_active(), "<"));
+    click(find_settings_back(lv_screen_active()));
 
     TEST_ASSERT_EQUAL_INT(1, s_spy.count);
     TEST_ASSERT_EQUAL(FF_INTENT_BACK, s_spy.last.kind);
@@ -1140,30 +1163,14 @@ static void S11b_settings_quiet_chip_sets_both_from_and_to(void)
  * longer a screen control to emit it, so the two screen-level stepper tests
  * that used to live here are gone. */
 
-/* #100/#bug1 — the brightness slider emits FF_SETTING_BRIGHTNESS. During a
- * drag it emits TRANSIENT values on every VALUE_CHANGED (so the backlight
- * follows live; the shell applies but does not persist them), and the
- * settled RELEASED value as a COMMITTED (non-transient) emit the shell
- * persists once — see scr_settings.c's settings_brightness_changed_cb /
- * settings_brightness_released_cb. The slider carries no label, so it's
- * found by widget class rather than by text. */
-static lv_obj_t *find_slider(lv_obj_t *root)
-{
-    uint32_t n = lv_obj_get_child_count(root);
-    for (uint32_t i = 0; i < n; i++) {
-        lv_obj_t *child = lv_obj_get_child(root, i);
-        if (lv_obj_check_type(child, &lv_slider_class)) {
-            return child;
-        }
-        lv_obj_t *found = find_slider(child);
-        if (found != NULL) {
-            return found;
-        }
-    }
-    return NULL;
-}
-
-static void S100_settings_brightness_slider_emits_brightness_on_release(void)
+/* #100/#bug2 — brightness is a −/+ STEPPER (two lv_button pills), not a slider:
+ * a draggable control inside a vertical scroll list fought the list's scroll on
+ * device with no reliable disambiguation, so brightness is discrete taps and a
+ * drag always scrolls. Each −/+ tap steps by FF_SETTINGS_BRIGHT_STEP and COMMITS
+ * (persisted; no transient/commit split for discrete taps — that split, and the
+ * NVS-coalescing, is covered at the shell level by test_intent.c's bug1 tests).
+ * Found by the pill's "-"/"+" label like every other pill test. */
+static void S100_settings_brightness_stepper_steps_and_clamps(void)
 {
     ff_app_settings_t s;
     memset(&s, 0, sizeof(s));
@@ -1171,59 +1178,26 @@ static void S100_settings_brightness_slider_emits_brightness_on_release(void)
 
     ff_scr_settings_build(&s);
 
-    lv_obj_t *slider = find_slider(lv_screen_active());
-    TEST_ASSERT_NOT_NULL(slider);
+    lv_obj_t *minus = find_button_with_label(lv_screen_active(), "-");
+    lv_obj_t *plus = find_button_with_label(lv_screen_active(), "+");
+    TEST_ASSERT_NOT_NULL(minus);
+    TEST_ASSERT_NOT_NULL(plus);
 
-    /* #bug2 — brightness only moves once the drag is confirmed HORIZONTAL (so a
-     * vertical drag scrolls and a left-half tap doesn't yank brightness). The
-     * axis-lock reads the live input device, absent in a headless test, so we
-     * force the axis to simulate a confirmed horizontal drag. */
-    ff_scr_settings_force_drag_axis(1 /* horizontal: adjusting brightness */);
-
-    /* #bug1 — a mid-drag VALUE_CHANGED emits a TRANSIENT (live-preview)
-     * brightness. (lv_slider_set_value with LV_ANIM_OFF is programmatic and
-     * fires no event, so we drive the events by hand.) */
-    lv_slider_set_value(slider, 55, LV_ANIM_OFF);
-    lv_result_t rc = lv_obj_send_event(slider, LV_EVENT_VALUE_CHANGED, NULL);
-    TEST_ASSERT_EQUAL(LV_RESULT_OK, rc);
+    click(minus);
     TEST_ASSERT_EQUAL_INT(1, s_spy.count);
     TEST_ASSERT_EQUAL(FF_INTENT_SETTING_SET, s_spy.last.kind);
     TEST_ASSERT_EQUAL(FF_SETTING_BRIGHTNESS, s_spy.last.u.setting.id);
-    TEST_ASSERT_EQUAL_INT32(55, s_spy.last.u.setting.v.i);
-    TEST_ASSERT_TRUE(s_spy.last.u.setting.transient); /* live: not persisted */
+    TEST_ASSERT_EQUAL_INT32(60, s_spy.last.u.setting.v.i); /* 70 - 10% step */
+    TEST_ASSERT_FALSE(s_spy.last.u.setting.transient); /* committed, not a live preview */
 
-    /* And the settled RELEASED value is a COMMITTED (non-transient) emit. */
-    ff_scr_settings_force_drag_axis(1);
-    lv_slider_set_value(slider, 40, LV_ANIM_OFF);
-    lv_result_t r = lv_obj_send_event(slider, LV_EVENT_RELEASED, NULL);
-    TEST_ASSERT_EQUAL(LV_RESULT_OK, r);
-    TEST_ASSERT_EQUAL_INT(2, s_spy.count);
-    TEST_ASSERT_EQUAL(FF_INTENT_SETTING_SET, s_spy.last.kind);
-    TEST_ASSERT_EQUAL(FF_SETTING_BRIGHTNESS, s_spy.last.u.setting.id);
-    TEST_ASSERT_EQUAL_INT32(40, s_spy.last.u.setting.v.i);
-    TEST_ASSERT_FALSE(s_spy.last.u.setting.transient); /* commit: persisted */
-}
+    click(plus);
+    TEST_ASSERT_EQUAL_INT32(70, s_spy.last.u.setting.v.i);
 
-/* #bug2 — a VERTICAL drag (axis-locked to scroll) must NOT change brightness:
- * neither the mid-drag VALUE_CHANGED nor the RELEASED emits anything. This is
- * what stops a left-half vertical scroll from yanking brightness. */
-static void S100b_settings_brightness_vertical_drag_emits_nothing(void)
-{
-    ff_app_settings_t s;
-    memset(&s, 0, sizeof(s));
-    s.brightness_pct = 70;
-
-    ff_scr_settings_build(&s);
-
-    lv_obj_t *slider = find_slider(lv_screen_active());
-    TEST_ASSERT_NOT_NULL(slider);
-
-    ff_scr_settings_force_drag_axis(2 /* vertical: scrolling, not adjusting */);
-
-    lv_slider_set_value(slider, 55, LV_ANIM_OFF);
-    (void)lv_obj_send_event(slider, LV_EVENT_VALUE_CHANGED, NULL);
-    (void)lv_obj_send_event(slider, LV_EVENT_RELEASED, NULL);
-    TEST_ASSERT_EQUAL_INT(0, s_spy.count); /* a scroll gesture changed no brightness */
+    /* Clamps at the floor: many − taps settle at MIN and never below. */
+    for (int i = 0; i < 20; i++) {
+        click(minus);
+    }
+    TEST_ASSERT_EQUAL_INT32((int32_t)FF_BRIGHTNESS_MIN_PCT, s_spy.last.u.setting.v.i);
 }
 
 /* S21 §3 — the "CALIBRATE TOUCH" row emits the shell-owned
@@ -1304,8 +1278,7 @@ int main(void)
     RUN_TEST(S11b_settings_water_chip_cycles_presets);
     RUN_TEST(S11b_settings_water_label_tap_also_cycles);
     RUN_TEST(S11b_settings_quiet_chip_sets_both_from_and_to);
-    RUN_TEST(S100_settings_brightness_slider_emits_brightness_on_release);
-    RUN_TEST(S100b_settings_brightness_vertical_drag_emits_nothing);
+    RUN_TEST(S100_settings_brightness_stepper_steps_and_clamps);
     RUN_TEST(S21_settings_calibrate_touch_row_emits_calibrate_intent);
     RUN_TEST(S16_c1_wired_sites_are_noops_while_the_seam_is_unbound);
 

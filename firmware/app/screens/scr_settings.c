@@ -223,51 +223,51 @@ static lv_obj_t *s_list;      /* the live scroll list (NULL before first build /
 static int32_t s_scroll_y;    /* last observed vertical scroll offset, restored on rebuild */
 
 /* ---------------------------------------------------------------------
- * Live-tracking brightness decorations (#bug1). The visible amber knob,
- * amber fill, and "%" label are non-clickable deco objects the interactive
- * (transparent) slider drives: on LV_EVENT_VALUE_CHANGED we move them to
- * follow the finger, so the knob/fill/percent track the drag live instead
- * of only snapping on release. References captured at build time so the
- * value-changed handler can move them; the geometry constants it needs
- * (row width, knob size) are captured alongside.
+ * Brightness stepper (#bug2). Brightness is a −/+ stepper, NOT a slider: a
+ * draggable control inside a vertical scroll list fights the list's own scroll
+ * gesture (the slider captured the press, so a vertical drag starting on it
+ * could not scroll — many device rounds confirmed no reliable way to
+ * disambiguate). Two discrete tap targets (lv_button CLICKED) have no drag
+ * semantics at all, so every drag scrolls the list and only a tap steps
+ * brightness — the conflict cannot exist. A non-interactive amber level bar +
+ * "%" label show the value; both are updated on each step.
  * ------------------------------------------------------------------- */
-static lv_obj_t *s_bright_fill;  /* amber fill box, left edge fixed at x=0, width = knob center */
-static lv_obj_t *s_bright_knob;  /* round amber knob */
-static lv_obj_t *s_bright_pct;   /* the "NN%" label */
-static int32_t s_bright_row_w;   /* row width the knob travel is computed against */
-static int32_t s_bright_knob_sz; /* knob diameter (for the knob_r / travel math) */
+static lv_obj_t *s_bright_fill; /* amber level-bar fill (width ∝ pct); non-interactive */
+static lv_obj_t *s_bright_pct;  /* the "NN%" label */
+static int32_t s_bright_bar_w;  /* the level bar's full width (the fill spans a fraction of it) */
+#define FF_SETTINGS_BRIGHT_STEP 10 /* percent added/removed per −/+ tap */
+#define FF_SETTINGS_DRAG_LOCK_PX 8     /* horizontal travel before a drag counts as a brightness adjust */
 
-/* #bug2 — press-direction axis-lock for the brightness slider. A full-width
- * lv_slider in a vertical scroll list consumes the press, so SCROLL_CHAIN_VER
- * alone never fires (nothing is left to chain) and a vertical drag that starts
- * on the slider is eaten as a brightness change. We instead watch the first
- * few px of travel: a horizontal-dominant drag adjusts brightness (the slider's
- * native behavior); a vertical-dominant drag is handed to the list — we scroll
- * it to follow the finger and pin the slider value so brightness never moves. */
-static lv_obj_t *s_bright_list;   /* the scroll list the slider lives in (for manual scroll) */
-static int32_t s_drag_x0, s_drag_y0;   /* press origin (screen px) */
-static int32_t s_drag_val0;            /* slider value at press (to pin during a vertical drag) */
-static int32_t s_drag_scroll0;         /* list scroll_y at press (to follow the finger from) */
-static int s_drag_axis;                /* 0 = undecided, 1 = horizontal (brightness), 2 = vertical (scroll) */
-#define FF_SETTINGS_DRAG_LOCK_PX 8     /* travel before the axis is decided */
-
-/* LV_EVENT_SCROLL — remember where the user scrolled to, so the next
- * in-place rebuild (a settings-change intent tears down and rebuilds the
- * whole screen) can restore it instead of snapping to the top (#bug4).
- *
- * #bug5 — also force the whole screen to repaint on each scroll step. On the
- * device the panel flushes in partial strips, and LVGL's per-scroll dirty
- * region left a stale 1-px column at the left edge (x=0) where the amber
- * brightness fill had been — it scrolled off but was never overpainted, so a
- * thin amber sliver ghosted onto the rows below. Invalidating the active
- * screen marks the full visible area dirty, so every scrolled frame (the last,
- * settled one included) repaints cleanly over any residue. The settings screen
- * is small, so the extra redraw is cheap. Sim-invisible (its goldens render at
- * a fixed offset with no live scroll), so this is device-motivated. */
+/* LV_EVENT_SCROLL — remember where the user scrolled to, so the next in-place
+ * rebuild (a settings-change intent tears down and rebuilds the whole screen)
+ * can restore it instead of snapping to the top (#bug4). Kept light: no repaint
+ * here, so scrolling stays smooth (an every-frame full-screen invalidate made
+ * scrolling laggy). */
 static void settings_scroll_cb(lv_event_t *e)
 {
     lv_obj_t *list = lv_event_get_target(e);
     s_scroll_y = lv_obj_get_scroll_y(list);
+    /* #bug5 — repaint each scroll frame so the moving amber elements (brightness
+     * fill, an active pill, the Calibrate border) leave no partial-strip-flush
+     * residue during an active scroll. A LIST-only repaint left residue in the
+     * round-glass margins BESIDE the list (the amber bleeds past the row edges),
+     * and a whole-SCREEN repaint per frame was laggy — so repaint a FULL-WIDTH
+     * band at just the list's height: it covers the sideways bleed but skips the
+     * header, staying smooth. */
+    lv_area_t band = {.x1 = 0,
+                      .y1 = FF_SETTINGS_LIST_Y,
+                      .x2 = FF_THEME_PUCK_PX - 1,
+                      .y2 = FF_SETTINGS_LIST_Y + FF_SETTINGS_LIST_H - 1};
+    lv_obj_invalidate_area(lv_screen_active(), &band);
+}
+
+/* LV_EVENT_SCROLL_END — the scroll has settled. Repaint the whole screen ONCE
+ * so any partial-strip-flush residue on the device is overpainted, without the
+ * per-frame cost that made scrolling laggy (#bug5). Sim-invisible (goldens
+ * render at a fixed offset with no live scroll). */
+static void settings_scroll_end_cb(lv_event_t *e)
+{
+    (void)e;
     lv_obj_invalidate(lv_screen_active());
 }
 
@@ -560,136 +560,51 @@ static void settings_emit_brightness(int32_t v, bool transient)
     ff_intent_emit(&in);
 }
 
-/* Move the deco fill/knob and update the "%" label to `pct` (#bug1) — pure
- * screen work. Recomputes the knob center from the value with the SAME math
- * settings_build_brightness uses at build time, so a live drag and a fresh
- * build agree pixel-for-pixel. */
-static void settings_brightness_move_deco(uint8_t pct)
+/* Update the amber level-bar fill width and the "%" label to `pct`. Pure screen
+ * work; the fill spans frac(pct) of the bar's full width. */
+static void settings_brightness_update_level(uint8_t pct)
 {
-    if (s_bright_fill == NULL || s_bright_knob == NULL || s_bright_pct == NULL) {
-        return;
+    if (s_bright_pct != NULL) {
+        char pctbuf[8];
+        snprintf(pctbuf, sizeof(pctbuf), "%u%%", (unsigned)pct);
+        lv_label_set_text(s_bright_pct, pctbuf);
     }
-    int32_t const knob_r = s_bright_knob_sz / 2;
-    float const frac = (float)(pct - FF_BRIGHTNESS_MIN_PCT) / (float)(FF_BRIGHTNESS_MAX_PCT - FF_BRIGHTNESS_MIN_PCT);
-    int32_t const knob_cx = knob_r + (int32_t)lroundf(frac * (float)(s_bright_row_w - s_bright_knob_sz));
-
-    lv_obj_set_width(s_bright_fill, (knob_cx > 0) ? knob_cx : 1);
-    lv_obj_set_x(s_bright_knob, knob_cx - knob_r);
-
-    char pctbuf[8];
-    snprintf(pctbuf, sizeof(pctbuf), "%u%%", (unsigned)pct);
-    lv_label_set_text(s_bright_pct, pctbuf);
-}
-
-/* LV_EVENT_PRESSED — record the press origin so the axis-lock can decide
- * direction from the first travel (#bug2). */
-static void settings_brightness_pressed_cb(lv_event_t *e)
-{
-    lv_obj_t *slider = lv_event_get_target(e);
-    lv_indev_t *indev = lv_indev_active();
-    lv_point_t p = {0, 0};
-    if (indev != NULL) {
-        lv_indev_get_point(indev, &p);
-    }
-    s_drag_x0 = p.x;
-    s_drag_y0 = p.y;
-    s_drag_val0 = lv_slider_get_value(slider);
-    s_drag_scroll0 = (s_bright_list != NULL) ? lv_obj_get_scroll_y(s_bright_list) : 0;
-    s_drag_axis = 0; /* undecided until the finger travels FF_SETTINGS_DRAG_LOCK_PX */
-}
-
-/* Decide the drag axis from the current finger position, once it has travelled
- * FF_SETTINGS_DRAG_LOCK_PX. Called from BOTH the PRESSING and VALUE_CHANGED
- * handlers so the decision is consistent no matter which LVGL fires first for a
- * given move (the slider's own class handler sends VALUE_CHANGED from within
- * its PRESSING processing). */
-static void settings_brightness_decide_axis(void)
-{
-    if (s_drag_axis != 0) {
-        return;
-    }
-    lv_indev_t *indev = lv_indev_active();
-    lv_point_t p = {0, 0};
-    if (indev != NULL) {
-        lv_indev_get_point(indev, &p);
-    }
-    int32_t const dx = p.x - s_drag_x0;
-    int32_t const dy = p.y - s_drag_y0;
-    int32_t const adx = (dx < 0) ? -dx : dx;
-    int32_t const ady = (dy < 0) ? -dy : dy;
-    if (adx >= FF_SETTINGS_DRAG_LOCK_PX || ady >= FF_SETTINGS_DRAG_LOCK_PX) {
-        s_drag_axis = (ady > adx) ? 2 : 1; /* 2 = vertical scroll, 1 = horizontal brightness */
+    if (s_bright_fill != NULL) {
+        float const frac =
+            (float)(pct - FF_BRIGHTNESS_MIN_PCT) / (float)(FF_BRIGHTNESS_MAX_PCT - FF_BRIGHTNESS_MIN_PCT);
+        int32_t w = (int32_t)lroundf(frac * (float)s_bright_bar_w);
+        if (w < 1) w = 1;
+        lv_obj_set_width(s_bright_fill, w);
     }
 }
 
-/* LV_EVENT_PRESSING — the finger is moving. On a vertical drag, scroll the list
- * to follow the finger and keep the slider pinned (#bug2). */
-static void settings_brightness_pressing_cb(lv_event_t *e)
+/* A −/+ tap steps brightness by `delta`, clamped to [MIN, MAX]. Each tap is a
+ * committed change (persisted once); discrete taps can't thrash NVS the way a
+ * drag would, so there is no transient/commit split here. Brightness stays out
+ * of the shell render key (#bug1), so this updates the level in place rather
+ * than rebuilding — and repaints once so the shrinking fill leaves no residue
+ * (#bug5). */
+static void settings_brightness_step(int32_t delta)
 {
-    lv_obj_t *slider = lv_event_get_target(e);
-    settings_brightness_decide_axis();
-    if (s_drag_axis != 2 || s_bright_list == NULL) {
-        return;
-    }
-    lv_indev_t *indev = lv_indev_active();
-    lv_point_t p = {0, 0};
-    if (indev != NULL) {
-        lv_indev_get_point(indev, &p);
-    }
-    int32_t const dy = p.y - s_drag_y0;
-    /* Dragging down (dy>0) reveals content above -> a smaller scroll_y. LVGL
-     * clamps to the scrollable range. */
-    lv_obj_scroll_to_y(s_bright_list, s_drag_scroll0 - dy, LV_ANIM_OFF);
-    lv_slider_set_value(slider, s_drag_val0, LV_ANIM_OFF); /* pin: a vertical drag never moves brightness */
-    settings_brightness_move_deco((uint8_t)s_drag_val0);
-}
-
-/* LV_EVENT_VALUE_CHANGED — brightness only actually moves once the drag is
- * confirmed HORIZONTAL. A tap or a vertical/undecided drag is pinned to the
- * press value (#bug2 — this kills the slider's jump-to-press, so touching the
- * left half no longer yanks brightness low and a vertical drag anywhere scrolls
- * instead). On a real horizontal drag, track the deco + emit a transient value
- * (#bug1), and repaint the screen so the moved amber fill/knob leaves no
- * residue on the panel's partial-strip flush (#bug5). */
-static void settings_brightness_changed_cb(lv_event_t *e)
-{
-    lv_obj_t *slider = lv_event_get_target(e);
-    settings_brightness_decide_axis();
-    if (s_drag_axis != 1) {
-        lv_slider_set_value(slider, s_drag_val0, LV_ANIM_OFF); /* pin until a horizontal drag is confirmed */
-        settings_brightness_move_deco((uint8_t)s_drag_val0);
-        return;
-    }
-    int32_t v = lv_slider_get_value(slider);
-    settings_brightness_move_deco((uint8_t)v);
-    settings_emit_brightness(v, true /* transient: live preview, not persisted */);
-    lv_obj_invalidate(lv_screen_active()); /* #bug5 — overpaint the amber residue the moving fill/knob leaves */
-}
-
-/* LV_EVENT_RELEASED — the gesture settled. Only a confirmed horizontal drag
- * commits (the shell persists once, #bug1); a tap or vertical drag restores the
- * press value and changes nothing. Repaint either way so no slider residue
- * survives (#bug5). */
-static void settings_brightness_released_cb(lv_event_t *e)
-{
-    lv_obj_t *slider = lv_event_get_target(e);
-    int const axis = s_drag_axis;
-    s_drag_axis = 0;
-    if (axis != 1) {
-        lv_slider_set_value(slider, s_drag_val0, LV_ANIM_OFF);
-        settings_brightness_move_deco((uint8_t)s_drag_val0);
-        lv_obj_invalidate(lv_screen_active());
-        return;
-    }
-    int32_t v = lv_slider_get_value(slider);
-    settings_emit_brightness(v, false /* commit: settled value, persisted */);
+    int32_t v = (int32_t)settings_brightness_clamped() + delta;
+    if (v < (int32_t)FF_BRIGHTNESS_MIN_PCT) v = (int32_t)FF_BRIGHTNESS_MIN_PCT;
+    if (v > (int32_t)FF_BRIGHTNESS_MAX_PCT) v = (int32_t)FF_BRIGHTNESS_MAX_PCT;
+    s_settings.brightness_pct = (uint8_t)v; /* keep the local copy in step for the next tap */
+    settings_brightness_update_level((uint8_t)v);
+    settings_emit_brightness(v, false /* committed: each step persists once */);
     lv_obj_invalidate(lv_screen_active());
 }
 
-/* Test-only seam — see scr_settings.h. */
-void ff_scr_settings_force_drag_axis(int axis)
+static void settings_brightness_minus_cb(lv_event_t *e)
 {
-    s_drag_axis = axis;
+    (void)e;
+    settings_brightness_step(-FF_SETTINGS_BRIGHT_STEP);
+}
+
+static void settings_brightness_plus_cb(lv_event_t *e)
+{
+    (void)e;
+    settings_brightness_step(+FF_SETTINGS_BRIGHT_STEP);
 }
 
 /* A bare non-clickable decoration box. */
@@ -712,7 +627,22 @@ static void settings_build_brightness(lv_obj_t *list, int32_t row_w)
 {
     uint8_t const pct = settings_brightness_clamped();
 
-    lv_obj_t *cap = lv_label_create(list);
+    /* A full-width base covering the whole brightness block, exactly like the
+     * toggle rows' settings_make_row (#bug2). Its SCROLL_CHAIN (default, not
+     * cleared) means a press ANYWHERE on the block chains to the list scroll —
+     * without it, the block's only objects are a 6px level bar and some labels,
+     * so a drag on the empty space around them landed on nothing scrollable and
+     * the list would not scroll while the brightness row was on screen. The −/+
+     * pills sit on top and still take their taps. */
+    lv_obj_t *base = lv_obj_create(list);
+    lv_obj_remove_style_all(base);
+    lv_obj_set_size(base, row_w, FF_SETTINGS_BRIGHT_BLOCK_H);
+    lv_obj_set_pos(base, 0, FF_SETTINGS_REL_BRIGHT_CAP_Y);
+    lv_obj_set_style_pad_all(base, 0, 0);
+    lv_obj_clear_flag(base, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_clear_flag(base, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t *cap = lv_label_create(base);
     lv_label_set_text(cap, "BRIGHTNESS");
     lv_obj_set_style_text_font(cap, FF_THEME_FONT_LABEL, 0);
     lv_obj_set_style_text_color(cap, lv_color_hex(FF_THEME_COLOR_MUTED), 0);
@@ -721,72 +651,49 @@ static void settings_build_brightness(lv_obj_t *list, int32_t row_w)
 
     char pctbuf[8];
     snprintf(pctbuf, sizeof(pctbuf), "%u%%", (unsigned)pct);
-    lv_obj_t *pctlbl = lv_label_create(list);
+    lv_obj_t *pctlbl = lv_label_create(base);
     lv_label_set_text(pctlbl, pctbuf);
     lv_obj_set_style_text_font(pctlbl, FF_THEME_FONT_LABEL, 0);
     lv_obj_set_style_text_color(pctlbl, lv_color_hex(FF_THEME_COLOR_INK), 0);
     lv_obj_align(pctlbl, LV_ALIGN_TOP_RIGHT, 0, FF_SETTINGS_REL_BRIGHT_CAP_Y);
-    s_bright_pct = pctlbl; /* #bug1 — the live drag updates this label */
+    s_bright_pct = pctlbl; /* a step updates this label */
 
-    /* --- Decorative thin track + amber fill + round amber knob. The knob's
-     * center travels [knob_r, row_w - knob_r] over [MIN, MAX]%. --- */
+    /* --- Control row: a non-interactive amber level bar (left) + a −/+ stepper
+     * group (right). The stepper is two lv_button pills — CLICKED fires only on
+     * a tap, so a drag anywhere scrolls the list natively and the brightness
+     * control never fights the scroll (#bug2). --- */
+    int32_t const ctrl_h = FF_SETTINGS_SLIDER_H; /* control-area height */
+    /* −/+ are DISTINCT controls (unlike a toggle's paired pills, which share a
+     * callback and are excluded from the adjacency sweep as one composite), so
+     * they need the full 8px hit-target adjacency floor between them. */
+    int32_t const step_gap = 8;
+    int32_t const grp_w = 2 * FF_SETTINGS_TOGGLE_PILL_W + step_gap;
+    int32_t const grp_x = row_w - grp_w;
+    int32_t const pill_h = FF_SETTINGS_ROW_H;
+    int32_t const pill_y = FF_SETTINGS_REL_SLIDER_Y + (ctrl_h - pill_h) / 2;
+
+    /* Level bar: a thin surface track with an amber fill spanning frac(pct). */
     int32_t const track_h = 6;
-    int32_t const track_y = FF_SETTINGS_REL_SLIDER_Y + (FF_SETTINGS_SLIDER_H - track_h) / 2;
-    int32_t const knob_sz = 19;
-    int32_t const knob_r = knob_sz / 2;
-
+    int32_t const track_y = FF_SETTINGS_REL_SLIDER_Y + (ctrl_h - track_h) / 2;
+    int32_t const bar_w = grp_x - 16; /* stop short of the stepper group */
+    s_bright_bar_w = (bar_w > 0) ? bar_w : 1;
+    settings_deco_box(base, 0, track_y, s_bright_bar_w, track_h, FF_THEME_COLOR_SURFACE, 3); /* track */
     float const frac = (float)(pct - FF_BRIGHTNESS_MIN_PCT) / (float)(FF_BRIGHTNESS_MAX_PCT - FF_BRIGHTNESS_MIN_PCT);
-    int32_t const knob_cx = knob_r + (int32_t)lroundf(frac * (float)(row_w - knob_sz));
+    int32_t fill_w = (int32_t)lroundf(frac * (float)s_bright_bar_w);
+    if (fill_w < 1) fill_w = 1;
+    s_bright_fill = settings_deco_box(base, 0, track_y, fill_w, track_h, FF_THEME_COLOR_AMBER, 3);
 
-    settings_deco_box(list, 0, track_y, row_w, track_h, FF_THEME_COLOR_SURFACE, 3); /* track */
-    /* Amber fill from the left edge to the knob center. Always created (the
-     * clamped pct is >= MIN, so knob_cx >= knob_r > 0) so the live drag has a
-     * stable object to widen — see settings_brightness_move_deco. */
-    s_bright_fill = settings_deco_box(list, 0, track_y, (knob_cx > 0) ? knob_cx : 1, track_h, FF_THEME_COLOR_AMBER, 3);
-
-    int32_t const knob_y = FF_SETTINGS_REL_SLIDER_Y + (FF_SETTINGS_SLIDER_H - knob_sz) / 2;
-    lv_obj_t *knob = settings_deco_box(list, knob_cx - knob_r, knob_y, knob_sz, knob_sz, FF_THEME_COLOR_AMBER,
-                                       LV_RADIUS_CIRCLE);
-    lv_obj_set_style_border_width(knob, 5, 0); /* ~5px dark ring so the knob reads over the track */
-    lv_obj_set_style_border_color(knob, lv_color_hex(FF_THEME_COLOR_BG), 0);
-    lv_obj_set_style_border_opa(knob, LV_OPA_COVER, 0);
-    s_bright_knob = knob;            /* #bug1 — the live drag moves this knob */
-    s_bright_row_w = row_w;          /* #bug1 — knob-travel geometry for the live handler */
-    s_bright_knob_sz = knob_sz;
-
-    /* --- The interactive, transparent full-width hit strip. --- */
-    lv_obj_t *slider = lv_slider_create(list);
-    lv_obj_remove_style_all(slider);
-    lv_obj_set_size(slider, row_w, FF_SETTINGS_SLIDER_H);
-    lv_obj_set_pos(slider, 0, FF_SETTINGS_REL_SLIDER_Y);
-    /* lv_slider's constructor sets an ~8px knob-grab ext_click_area (LV_DPX(8),
-     * see lv_slider.c); reset it so the hit strip is exactly its 44px box —
-     * the visible knob is our own decoration, and the extension would eat into
-     * the adjacency gap to the row below (and the on-glass margin sideways). */
-    lv_obj_set_ext_click_area(slider, 0);
-    lv_slider_set_range(slider, FF_BRIGHTNESS_MIN_PCT, FF_BRIGHTNESS_MAX_PCT);
-    lv_slider_set_value(slider, pct, LV_ANIM_OFF);
-    lv_obj_set_style_bg_opa(slider, LV_OPA_TRANSP, LV_PART_MAIN);
-    lv_obj_set_style_bg_opa(slider, LV_OPA_TRANSP, LV_PART_INDICATOR);
-    lv_obj_set_style_bg_opa(slider, LV_OPA_TRANSP, LV_PART_KNOB);
-    lv_obj_set_style_pad_all(slider, 0, LV_PART_KNOB);
-
-    /* #bug2 — a full-width slider in a vertical scroll list consumes the press,
-     * so LV_OBJ_FLAG_SCROLL_CHAIN_VER never fires (nothing is left to chain) and
-     * a vertical drag starting on the slider was eaten as a brightness change
-     * (confirmed on device). Instead we axis-lock by hand: PRESSED records the
-     * origin, PRESSING decides horizontal (brightness) vs vertical (scroll the
-     * list, pin the slider). s_bright_list is the scroll parent the vertical
-     * branch drives. Gesture feel is device-only — not sim-verifiable. */
-    s_bright_list = list;
-    lv_obj_add_event_cb(slider, settings_brightness_pressed_cb, LV_EVENT_PRESSED, NULL);
-    lv_obj_add_event_cb(slider, settings_brightness_pressing_cb, LV_EVENT_PRESSING, NULL);
-
-    /* #bug1 — live: VALUE_CHANGED tracks the deco + emits a transient
-     * brightness (backlight follows the finger); RELEASED commits the settled
-     * value (the shell persists once). */
-    lv_obj_add_event_cb(slider, settings_brightness_changed_cb, LV_EVENT_VALUE_CHANGED, NULL);
-    lv_obj_add_event_cb(slider, settings_brightness_released_cb, LV_EVENT_RELEASED, NULL);
+    /* −/+ stepper pills. */
+    lv_obj_t *minus = settings_make_pill(base, "-", grp_x, pill_y, FF_SETTINGS_TOGGLE_PILL_W, pill_h,
+                                         FF_THEME_COLOR_SURFACE, FF_THEME_COLOR_INK, 0, settings_brightness_minus_cb,
+                                         NULL);
+    lv_obj_t *plus = settings_make_pill(base, "+", grp_x + FF_SETTINGS_TOGGLE_PILL_W + step_gap, pill_y,
+                                        FF_SETTINGS_TOGGLE_PILL_W, pill_h, FF_THEME_COLOR_SURFACE, FF_THEME_COLOR_INK,
+                                        0, settings_brightness_plus_cb, NULL);
+    /* Bump the −/+ glyphs up from the small CHIP font so they read as real
+     * buttons, not tiny marks. */
+    lv_obj_set_style_text_font(lv_obj_get_child(minus, 0), FF_THEME_FONT_HEADLINE, 0);
+    lv_obj_set_style_text_font(lv_obj_get_child(plus, 0), FF_THEME_FONT_HEADLINE, 0);
 }
 
 /* ---------------------------------------------------------------------
@@ -891,11 +798,16 @@ void ff_scr_settings_build(ff_app_settings_t const *settings)
     lv_obj_set_style_bg_opa(back, LV_OPA_COVER, 0);
     lv_obj_set_style_radius(back, 14, 0);
     lv_obj_add_event_cb(back, settings_back_cb, LV_EVENT_CLICKED, NULL);
-    lv_obj_t *back_lbl = lv_label_create(back);
-    lv_label_set_text(back_lbl, "<");
-    lv_obj_set_style_text_font(back_lbl, FF_THEME_FONT_NAME, 0);
-    lv_obj_set_style_text_color(back_lbl, lv_color_hex(FF_THEME_COLOR_AMBER), 0);
-    lv_obj_center(back_lbl);
+    /* A drawn left-chevron rather than a "<" glyph — a real stroked caret reads
+     * as a deliberate control, not placeholder text. Points persist (static)
+     * because lv_line borrows the array. */
+    static const lv_point_precise_t back_chevron[] = {{9, 0}, {0, 9}, {9, 18}};
+    lv_obj_t *chev = lv_line_create(back);
+    lv_line_set_points(chev, back_chevron, 3);
+    lv_obj_set_style_line_width(chev, 3, 0);
+    lv_obj_set_style_line_color(chev, lv_color_hex(FF_THEME_COLOR_AMBER), 0);
+    lv_obj_set_style_line_rounded(chev, true, 0);
+    lv_obj_center(chev);
 
     lv_obj_t *title = lv_label_create(puck);
     lv_label_set_text(title, "SETTINGS");
@@ -913,10 +825,8 @@ void ff_scr_settings_build(ff_app_settings_t const *settings)
     lv_obj_set_style_text_letter_space(name_lbl, 1, 0);
     lv_obj_set_pos(name_lbl, FF_SETTINGS_HDR_TEXT_X, FF_SETTINGS_NAME_Y);
 
-    /* --- The scroll list: an inscribed rectangle in the round glass across
-     * its whole height, vertical-only user scroll, scrollbar AUTO. Not
-     * clickable itself — the clickable rows inside take the press and LVGL
-     * scrolls this parent. (list_margin / row_w computed above.) --- */
+    /* --- The scroll list: an inscribed rectangle in the round glass, vertical-
+     * only user scroll. --- */
     lv_obj_t *list = lv_obj_create(puck);
     lv_obj_remove_style_all(list);
     lv_obj_set_size(list, row_w, FF_SETTINGS_LIST_H);
@@ -924,14 +834,25 @@ void ff_scr_settings_build(ff_app_settings_t const *settings)
     lv_obj_set_style_bg_opa(list, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(list, 0, 0);
     lv_obj_set_style_pad_all(list, 0, 0);
-    lv_obj_clear_flag(list, LV_OBJ_FLAG_CLICKABLE); /* a plain scroll region, not a tap target */
+    /* #bug2 — the list MUST stay CLICKABLE. LVGL only begins a scroll from a
+     * press that lands on a hit-testable (clickable) object and then walks up to
+     * the scrollable ancestor; a non-clickable object is skipped by hit-test, so
+     * a press on empty/caption space would find no target and never scroll. With
+     * the list clickable, ANY press inside it (the plain toggle-row captions and
+     * the gaps included) initiates the scroll. It carries no CLICKED handler, so
+     * a tap on empty space is a harmless no-op; the rows/pills on top still take
+     * their own taps. (Previously cleared here as "a plain scroll region" — that
+     * was the left-side dead-scroll bug: only the rows with a clickable control
+     * on the left, the value rows, would scroll.) */
+    lv_obj_add_flag(list, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_add_flag(list, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_scroll_dir(list, LV_DIR_VER);
-    lv_obj_set_scrollbar_mode(list, LV_SCROLLBAR_MODE_AUTO);
+    lv_obj_set_scrollbar_mode(list, LV_SCROLLBAR_MODE_OFF); /* no bar on the round glass */
     /* #bug4 — remember this list and observe its scroll so a rebuild after a
      * settings-change intent restores the offset instead of jumping to top. */
     s_list = list;
     lv_obj_add_event_cb(list, settings_scroll_cb, LV_EVENT_SCROLL, NULL);
+    lv_obj_add_event_cb(list, settings_scroll_end_cb, LV_EVENT_SCROLL_END, NULL);
 
     settings_build_brightness(list, row_w);
     settings_build_toggle_row(list, FF_SETTINGS_REL_UNITS_Y, row_w, "UNITS", "FT", "M",

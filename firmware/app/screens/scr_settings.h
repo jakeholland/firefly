@@ -71,16 +71,6 @@ void ff_scr_settings_reset_scroll(void);
  */
 void ff_scr_settings_apply_scroll_hint(int32_t y);
 
-/**
- * ff_scr_settings_force_drag_axis — [api] test-only seam. The brightness
- * slider's scroll-vs-adjust axis-lock (#bug2) reads the live input device,
- * which is only valid during LVGL's own input processing — a headless unit
- * test sending events by hand has no active indev. This forces the drag axis
- * (0 = undecided, 1 = horizontal/brightness, 2 = vertical/scroll) so a test can
- * exercise the emit contract for each branch. Not used on the live path.
- */
-void ff_scr_settings_force_drag_axis(int axis);
-
 #ifdef __cplusplus
 }
 #endif
