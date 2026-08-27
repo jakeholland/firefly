@@ -111,6 +111,29 @@ if(FF_BUILD_TESTS)
     add_test(NAME test_t9 COMMAND test_t9)
 endif()
 
+# S08 predictive-T9 addendum (core/t9pred — dictionary + ranking engine;
+# docs/specs/S08-signals-t9.md's reserved "Predictive + pack dictionary =
+# v1.5"). Pure groundwork ALONGSIDE the multi-tap ff_t9 (which is untouched);
+# NOT wired into the composer here. The dictionary table ff_t9dict_data.c is
+# GENERATED from core/tools/t9dict_words.txt by core/tools/gen_t9dict.py
+# (frequency ranking of public-domain Project Gutenberg text — see
+# core/tools/NOTICE-t9dict.md). Regenerate with:
+#   (cd core/tools && python3 gen_t9dict.py emit)
+target_sources(ff-core PRIVATE
+    src/ff_t9pred.c
+    src/ff_t9dict_data.c
+)
+
+if(FF_BUILD_TESTS)
+    add_executable(test_t9pred
+        tests/test_t9pred.c
+    )
+    target_link_libraries(test_t9pred PRIVATE ff-core unity)
+    ff_apply_warnings(test_t9pred)
+
+    add_test(NAME test_t9pred COMMAND test_t9pred)
+endif()
+
 # S10a (flare state machine — IDLE/SENDING/RECEIVED/LOCKED;
 # docs/specs/S10-flare.md, slice a. Slice b — takeover + sender UI +
 # goldens — needs the S06 app shell and is not part of this slice.)
