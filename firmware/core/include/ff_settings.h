@@ -32,6 +32,19 @@ extern "C" {
 /* my_name capacity, including NUL terminator, per spec (`char my_name[16]`). */
 #define FF_SETTINGS_NAME_LEN 16
 
+/* Display brightness (S15/#100). A percentage, clamped to
+ * [FF_BRIGHTNESS_MIN_PCT, FF_BRIGHTNESS_MAX_PCT] — the floor is NON-zero on
+ * purpose: 0% is a black backlight the user cannot see to recover from (the
+ * "never a black screen you can't get out of" note in issue #100), so the
+ * lowest the setting can reach is a dim-but-legible floor, not off. The
+ * value is a pure stored number here; the physical LEDC PWM apply is a
+ * device-HAL concern (targets/esp32s3/components/ff_display), a no-op in the
+ * sim — core stays logic-only, honest value everywhere, physical effect
+ * device-only (#100's "keep the setting honest"). */
+#define FF_BRIGHTNESS_MIN_PCT     10u
+#define FF_BRIGHTNESS_MAX_PCT     100u
+#define FF_BRIGHTNESS_DEFAULT_PCT 70u
+
 /* Persisted-layout budget for the compass-calibration field, bytes. Kept
  * as a named constant (rather than just sizeof(ff_geo_cal_t)) so growth in
  * ff_geo_cal_t is a deliberate, reviewed budget decision — see the
@@ -77,6 +90,15 @@ typedef struct {
      * colours" (S17's own scoping note). Purely a render-time selector;
      * it changes no other behavior and nothing here depends on it. */
     bool colorblind;
+
+    /* [api] #100 — display brightness percent, clamped to
+     * [FF_BRIGHTNESS_MIN_PCT, FF_BRIGHTNESS_MAX_PCT] (see those constants
+     * above). Default FF_BRIGHTNESS_DEFAULT_PCT (~70%). Persisted like every
+     * other pref; applied on boot and on change by the app forwarding it to
+     * the display HAL (ff_display_set_brightness) — core never touches IO.
+     * A real stored value in the sim too; only the physical backlight effect
+     * is device-only (#100). */
+    uint8_t brightness_pct;
 
     /* Not guaranteed NUL-terminated by this layer — load/save round-trip
      * the raw bytes as-is. Slice b (name-entry UI) must NUL-terminate
