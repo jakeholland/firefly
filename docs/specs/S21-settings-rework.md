@@ -68,17 +68,22 @@ Implement a real `ff_store` on device backed by ESP-IDF **NVS** (the S15 spec's
   (de)serializer it already is.
 This makes Calibrate Touch (and brightness, name, quiet hours) survive reboot.
 
-## 5 — Sensible default touch cal (representative, NVS-refined)
+## 5 — Default touch cal is identity (honest-uncalibrated, NVS-refined)
 
-Set the default `ff_settings` touch cal to the values measured on board 2
-(`ax=0.885060 bx=15.5352 ay=0.902172 by=8.2439`, `touch_calibrated=true`) as a
-**representative Waveshare-1.46 default** — so a freshly-flashed panel of this
-model is roughly right out of the box, and a per-device NVS calibration (via #3)
-refines it. Comment it clearly as a measured-default (its provenance + that NVS
-overrides it), not a fabricated number, and keep the honesty note: this is a
-reasonable panel-model default, not a per-unit truth. (If you'd rather keep the
-default identity and rely purely on NVS + one calibration, that's acceptable too
-— but state which you chose and why.)
+Keep the default `ff_settings` touch cal as **identity** (`ax=1 bx=0 ay=1 by=0`,
+`touch_calibrated=false`). A freshly-flashed puck genuinely has not been
+calibrated, so "uncalibrated / correct nothing" is the honest default — raw
+coordinates are close enough to operate the UI (the observed panel skew is a
+~15px offset, well inside a 44px hit target), and the owner runs the in-app
+Calibrate Touch flow (#3) if/when they want a refined per-unit fit, which NVS
+then persists. Do NOT bake a specific unit's measured affine in as everyone's
+default: `touch_calibrated=true` on a fresh unit would be a lie, and applying
+one panel's correction to a possibly-different panel is worse than honest raw
+passthrough. The reject-not-migrate policy falls back to this identity default
+(honest raw), never to a foreign measured transform.
+
+(Decision: Jake, 2026-08-27, reversing the earlier "representative board-2
+default" direction on the honest-data value.)
 
 ## Acceptance criteria
 1. Settings is a single scrolling list (no page chip); the back button is pinned

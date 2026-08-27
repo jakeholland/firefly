@@ -80,33 +80,27 @@ static void ff_settings_apply_defaults(ff_settings_t *s)
     /* colorblind: left zeroed -> false (brand palette). S17's own scoping
      * note: "not colorblind by default — keep the brand colours". */
 
-    /* Touch calibration (S21 §5) — a REPRESENTATIVE Waveshare-1.46 default,
-     * not an identity. These four params are the per-axis affine MEASURED on
-     * board 2's SPD2010 panel (docs/specs/S21-settings-rework.md; the
-     * bring-up notes for that unit), and they are set as the default because
-     * the offset+scale error is a characteristic of the panel MODEL, near-
-     * identical across units of it — so a freshly-flashed puck of this panel
-     * is roughly right out of the box rather than using raw, systematically-
-     * skewed coordinates until its owner runs the crosshair flow.
+    /* Touch calibration (S21 §5) — the default is IDENTITY (correct nothing),
+     * and touch_calibrated is false, because a freshly-flashed puck genuinely
+     * has NOT been calibrated: "uncalibrated / correct nothing" is the honest
+     * reading, not a guess. We deliberately do NOT bake a specific unit's
+     * measured affine (e.g. board 2's) in as everyone's default — that would
+     * make touch_calibrated=true a lie ("a usable transform is installed" is
+     * not "THIS unit was calibrated"), and would apply one panel's correction
+     * to a possibly-different panel, which is worse than honest raw passthrough.
      *
-     * HONESTY NOTE (this is the deliberate part): touch_calibrated=true here
-     * means "a usable transform is installed", NOT "THIS unit was calibrated
-     * by its owner." It is a real measurement (board 2), documented as a
-     * panel-MODEL prior — not a fabricated number and not a per-unit truth.
-     * A per-device calibration refines it: the S21 in-app CALIBRATE TOUCH row
-     * (FF_INTENT_CALIBRATE_TOUCH) overwrites these with that unit's own fit,
-     * and NVS persists it, so the default only governs the very first boot
-     * before anyone calibrates. The reject-not-migrate policy still applies —
-     * a stale/foreign blob falls back to THIS documented prior, never to a
-     * migrated guess from an incompatible layout. (The identity default was
-     * the acceptable alternative the spec offered; the measured panel-model
-     * prior was chosen for out-of-box usability, since NVS + one calibration
-     * make it a per-unit truth the moment the owner taps CALIBRATE TOUCH.) */
-    s->touch_ax = 0.885060f;
-    s->touch_bx = 15.5352f;
-    s->touch_ay = 0.902172f;
-    s->touch_by = 8.2439f;
-    s->touch_calibrated = true;
+     * Raw coordinates are close enough to operate the UI (the observed panel
+     * skew is a ~15px offset, well inside a 44px hit target), so the owner can
+     * reach the S21 in-app CALIBRATE TOUCH row (FF_INTENT_CALIBRATE_TOUCH) and
+     * run the crosshair flow if/when they want a refined fit; NVS then persists
+     * that unit's own transform. The reject-not-migrate policy still applies —
+     * a stale/foreign blob falls back to THIS identity default (honest raw),
+     * never to a migrated guess from an incompatible layout. */
+    s->touch_ax = 1.0f;
+    s->touch_bx = 0.0f;
+    s->touch_ay = 1.0f;
+    s->touch_by = 0.0f;
+    s->touch_calibrated = false;
 }
 
 void ff_settings_load(ff_settings_t *s, ff_store_t const *st)
