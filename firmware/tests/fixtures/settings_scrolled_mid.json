@@ -1,0 +1,18 @@
+{
+  "fixture": "settings_scrolled_mid",
+  "face": "settings",
+  "ui_settings_scroll_y": 160,
+  "settings": {
+    "imperial": true,
+    "share_mode": "live",
+    "haptics": true,
+    "night_glow": true,
+    "water_min": 90,
+    "quiet_from_min": 240,
+    "quiet_to_min": 600,
+    "my_name": "DANA",
+    "utc_offset_set": true,
+    "utc_offset_min": -420,
+    "brightness_pct": 30
+  }
+}
