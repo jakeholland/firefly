@@ -33,6 +33,19 @@ if(FF_BUILD_TESTS)
     ff_apply_warnings(test_festpack)
 
     add_test(NAME test_festpack COMMAND test_festpack)
+
+    # S20 — the authored demo festpack (firmware/assets/demo/) parses to
+    # the v0.1 schema. Read from the assets dir at test time.
+    add_executable(test_demo_pack
+        tests/test_demo_pack.c
+    )
+    target_link_libraries(test_demo_pack PRIVATE ff-festpack unity)
+    target_compile_definitions(test_demo_pack PRIVATE
+        FF_DEMO_PACK_PATH="${CMAKE_CURRENT_SOURCE_DIR}/../assets/demo/firefly-fields.festpack.json"
+    )
+    ff_apply_warnings(test_demo_pack)
+
+    add_test(NAME test_demo_pack COMMAND test_demo_pack)
 endif()
 
 # S07 — schedule engine (now-playing/next-starred/day-lineup/alarm), slices
