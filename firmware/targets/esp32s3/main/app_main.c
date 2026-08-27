@@ -40,13 +40,53 @@
 #include "ff_intent.h"
 #include "ff_shell.h"
 
+#if CONFIG_FF_DEMO_MODE
+#include "ff_demo.h" /* S20 — demo-mode seeding */
+#endif
+
 static const char *TAG = "firefly";
 
-/* ff_clock_t — monotonic ms over esp_timer_get_time() (see slice a). */
+#if !CONFIG_FF_DEMO_MODE
+/* ff_clock_t — monotonic ms over esp_timer_get_time() (see slice a).
+ * Compiled out under CONFIG_FF_DEMO_MODE, which drives a frozen demo clock
+ * instead (below) and never reads real time. */
 static uint32_t ff_esp_clock_now_ms(void *user)
 {
     (void)user;
     return (uint32_t)(esp_timer_get_time() / 1000);
+}
+#endif
+
+#if CONFIG_FF_DEMO_MODE
+/* S20 demo mode pins the shell's clock at a fixed instant (Sat 21:30) so
+ * the seeded world stays frozen and honest — freshness/countdowns read the
+ * seeded moment rather than drifting with real boot time. ff_demo_seed sets
+ * this counter; both the injected ff_clock_t AND every ff_shell_tick read
+ * it (see ff_bringup_now_ms), so the projection ages against the same
+ * clock the seed used. The demo festpack is EMBED_FILES'd (main/CMakeLists). */
+static uint32_t s_demo_clock_ms;
+static fp_pack_t s_demo_pack;
+extern const uint8_t firefly_pack_start[] asm("_binary_firefly_fields_festpack_json_start");
+extern const uint8_t firefly_pack_end[] asm("_binary_firefly_fields_festpack_json_end");
+
+static uint32_t ff_demo_clock_now_ms(void *user)
+{
+    (void)user;
+    return s_demo_clock_ms;
+}
+#endif
+
+/* The monotonic "now" every ff_shell_tick in this file uses: the demo's
+ * frozen clock under CONFIG_FF_DEMO_MODE, otherwise real esp_timer time.
+ * Keeping tick and the injected clock on the SAME source is what makes the
+ * demo's seeded freshness render correctly. */
+static uint32_t ff_bringup_now_ms(void)
+{
+#if CONFIG_FF_DEMO_MODE
+    return s_demo_clock_ms;
+#else
+    return ff_esp_clock_now_ms(NULL);
+#endif
 }
 
 /* ff_store_t — no-op stub (real NVS store is a later slice; see slice a). */
@@ -102,7 +142,11 @@ void app_main(void)
     const int stage = CONFIG_FF_BRINGUP_STAGE;
     ESP_LOGI(TAG, "firefly esp32s3 target booting (S15 slice b: display+touch, STAGE %d)", stage);
 
+#if CONFIG_FF_DEMO_MODE
+    s_clock.now_ms = ff_demo_clock_now_ms; /* frozen demo clock (Sat 21:30) */
+#else
     s_clock.now_ms = ff_esp_clock_now_ms;
+#endif
     s_clock.user = NULL;
     s_store.get = ff_stub_store_get;
     s_store.set = ff_stub_store_set;
@@ -112,7 +156,10 @@ void app_main(void)
     memset(&cfg, 0, sizeof(cfg));
     cfg.clock = &s_clock;
     cfg.store = &s_store;
-    /* cfg.transport / cfg.pack / cfg.haptic left zeroed — see slice a. */
+#if CONFIG_FF_DEMO_MODE
+    cfg.pack = &s_demo_pack; /* ff_demo_seed parses the embedded festpack into this */
+#endif
+    /* cfg.transport / cfg.haptic left zeroed — see slice a. */
 
     int rc = ff_shell_init(&s_shell, &cfg);
     if (rc != 0) {
@@ -120,7 +167,20 @@ void app_main(void)
         return;
     }
 
-    (void)ff_shell_tick(&s_shell, ff_esp_clock_now_ms(NULL));
+#if CONFIG_FF_DEMO_MODE
+    {
+        size_t const pack_len = (size_t)(firefly_pack_end - firefly_pack_start);
+        int const drc = ff_demo_seed(&s_shell, (char const *)firefly_pack_start, pack_len, &s_demo_clock_ms, 0);
+        if (drc != 0) {
+            ESP_LOGE(TAG, "S20 demo seed failed (%d) — festpack parse or wall latch", drc);
+        } else {
+            ESP_LOGI(TAG, "S20 DEMO MODE: seeded Firefly Fields (Sat 21:30) — %u byte festpack, no mesh",
+                     (unsigned)pack_len);
+        }
+    }
+#endif
+
+    (void)ff_shell_tick(&s_shell, ff_bringup_now_ms());
     ff_app_state_t const *view = ff_shell_view(&s_shell);
     ESP_LOGI(TAG, "shell up: active_face=%d radar_mode=%d link=%d", (int)view->active_face,
              (int)view->radar.mode, (int)ff_shell_link(&s_shell));
@@ -141,7 +201,7 @@ void app_main(void)
         /* Keep ticking the shell (proves it survives under FreeRTOS) while
          * the static test pattern stays on the panel. No LVGL, no redraw. */
         while (true) {
-            (void)ff_shell_tick(&s_shell, ff_esp_clock_now_ms(NULL));
+            (void)ff_shell_tick(&s_shell, ff_bringup_now_ms());
             vTaskDelay(pdMS_TO_TICKS(20));
         }
     }
@@ -177,7 +237,7 @@ void app_main(void)
      * shell every frame, rebuild the LVGL tree ONLY on a dirty tick. The
      * esp_lvgl_port task does the actual flushing; we just own the model. */
     while (true) {
-        bool const dirty = ff_shell_tick(&s_shell, ff_esp_clock_now_ms(NULL));
+        bool const dirty = ff_shell_tick(&s_shell, ff_bringup_now_ms());
         if (dirty) {
             if (ff_display_lock(100 /* ms */)) {
                 lv_obj_clean(lv_screen_active());

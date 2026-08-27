@@ -20,6 +20,10 @@ idf_component_register(
         "${FF_APP_DIR}/ff_wiring.c"
         "${FF_APP_DIR}/ff_intent.c"
         "${FF_APP_DIR}/ff_shell.c"
+        "${FF_APP_DIR}/ff_wall_window.c" # S18c — ff_shell_load_pack -> ff_wall_window_from_pack.
+                                         # Was dead-stripped on device until S20's demo mode became
+                                         # the first caller of ff_shell_load_pack; now genuinely needed.
+        "${FF_APP_DIR}/ff_demo.c"   # S20 — demo-mode seeding (CONFIG_FF_DEMO_MODE)
     INCLUDE_DIRS
         "${FF_APP_DIR}"         # ff_wiring.h lives here, not under include/
         "${FF_APP_DIR}/include" # ff_app_state.h, ff_route.h, ff_intent.h, ff_shell.h

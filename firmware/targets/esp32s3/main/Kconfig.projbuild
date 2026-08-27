@@ -42,4 +42,23 @@ menu "Firefly bring-up (S15 slice b)"
         default 2 if FF_BRINGUP_STAGE_2
         default 3 if FF_BRINGUP_STAGE_3
 
+    config FF_DEMO_MODE
+        bool "Demo mode — boot into the fictional Firefly Fields world"
+        default n
+        help
+            S20 demo mode (docs/specs/S20-demo-mode.md). When enabled, the
+            firmware EMBED_FILES the demo festpack
+            (firmware/assets/demo/firefly-fields.festpack.json) and, on
+            boot, seeds the shell into "Firefly Fields" via ff_demo_seed:
+            a fictional festival lineup, five seeded crew members
+            (live / close-range / stale / no-fix) and a Signals feed, with
+            the wall clock latched to Saturday 21:30 — so every face shows
+            real-looking data with NO mesh, comms brain or real festival.
+
+            The seeded state is genuinely computed through the real core
+            APIs (honest freshness/close-range/no-fix), but the mode is a
+            DEMO: it does not connect to a radio and shows a fixed,
+            frozen world. Leave OFF for field builds. Meaningful at
+            bring-up STAGE 2 or 3 (a face must render to see it).
+
 endmenu
