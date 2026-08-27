@@ -109,6 +109,19 @@ static void ff_assert_defaults(ff_settings_t const *s)
     /* S17 slice a: default false — "not colorblind by default, keep the
      * brand colours" (docs/specs/S17-usability-hardening.md's scoping note). */
     TEST_ASSERT_FALSE(s->colorblind);
+    /* #100: brightness defaults to a sensible mid-bright ~70% (never 0). */
+    TEST_ASSERT_EQUAL_UINT8(FF_BRIGHTNESS_DEFAULT_PCT, s->brightness_pct);
+    /* S21 §5: the default touch cal is IDENTITY (correct nothing) with
+     * touch_calibrated=false — a fresh puck genuinely has NOT been calibrated,
+     * so "uncalibrated / correct nothing" is the honest default. We do NOT bake
+     * any specific unit's measured affine in as everyone's default; the owner
+     * runs the in-app CALIBRATE TOUCH row to install a per-unit fit (persisted
+     * to NVS). See ff_settings.c's ff_settings_apply_defaults for the rationale. */
+    TEST_ASSERT_FALSE(s->touch_calibrated);
+    TEST_ASSERT_EQUAL_FLOAT(1.0f, s->touch_ax);
+    TEST_ASSERT_EQUAL_FLOAT(0.0f, s->touch_bx);
+    TEST_ASSERT_EQUAL_FLOAT(1.0f, s->touch_ay);
+    TEST_ASSERT_EQUAL_FLOAT(0.0f, s->touch_by);
 
     ff_geo_cal_t zero_cal;
     memset(&zero_cal, 0, sizeof(zero_cal));
@@ -268,6 +281,40 @@ static void S11_AC1_load_with_v3_blob_yields_defaults_not_a_migration(void)
     TEST_ASSERT_FALSE(s.colorblind); /* the new field: false is the honest default, not a guess */
 }
 
+/* Same policy for v4 -> v5 (S15 slice d added the touch-cal fields): a v4
+ * blob is discarded whole and the full defaults stand — the saved value is
+ * NOT migrated across an incompatible layout. The touch-cal default is
+ * identity (1·raw+0), so "reject, don't migrate" shows as: the loaded touch_ax
+ * is the identity DEFAULT, never the v4 blob's own saved value. */
+static void S11_AC1_load_with_v4_blob_yields_defaults_not_a_migration(void)
+{
+    mock_store_io_t m;
+    mock_store_reset(&m);
+    ff_store_t st = mock_store_vtable(&m);
+
+    ff_settings_t saved;
+    memset(&saved, 0, sizeof(saved));
+    saved.imperial = false;
+    saved.water_min = 45;
+    saved.touch_calibrated = true;
+    saved.touch_ax = 1.0123f; /* a value distinct from the identity default, to prove it's not carried across */
+    ff_settings_save(&saved, &st);
+    TEST_ASSERT_TRUE(m.has_value);
+
+    uint16_t v4 = 4;
+    memcpy(m.data + 4, &v4, sizeof(v4));
+
+    ff_settings_t s;
+    memset(&s, 0xAA, sizeof(s));
+    ff_settings_load(&s, &st);
+
+    ff_assert_defaults(&s);
+    /* Reject-not-migrate: the v4 blob's saved 1.0123 is discarded; the
+     * identity default stands instead (asserted by ff_assert_defaults above,
+     * which now checks touch_ax == 1.0). */
+    TEST_ASSERT_EQUAL_FLOAT(1.0f, s.touch_ax);
+}
+
 /* ---------------------------------------------------------------------
  * AC2 — round-trip save/load equality, including calibration.
  * ------------------------------------------------------------------- */
@@ -290,6 +337,7 @@ static void S11_AC2_round_trip_save_load_is_exact_including_calibration(void)
     out.utc_offset_min = -420; /* MDT (S16 slice b0) */
     out.utc_offset_set = true;
     out.colorblind = true; /* S17 slice a: a real change from the default, not left at its zero value */
+    out.brightness_pct = 55; /* #100: a real change from the default, so the round-trip actually proves it persists */
     strncpy(out.my_name, "Dana", sizeof(out.my_name) - 1);
     out.cal_valid = true;
     out.compass_cal.hard_offset = (ff_vec3_t){12.5f, -3.25f, 0.75f};
@@ -297,6 +345,12 @@ static void S11_AC2_round_trip_save_load_is_exact_including_calibration(void)
     out.compass_cal.soft_scale[1] = 0.97f;
     out.compass_cal.soft_scale[2] = 1.11f;
     out.compass_cal.declination_deg = -6.5f; /* e.g. Columbus, OH */
+    /* S15 slice d: real touch-cal params, a change from the zero default. */
+    out.touch_calibrated = true;
+    out.touch_ax = 1.0123f;
+    out.touch_bx = -14.0f;
+    out.touch_ay = 1.0123f;
+    out.touch_by = -18.0f;
 
     ff_settings_save(&out, &st);
 
@@ -528,6 +582,7 @@ int main(void)
     RUN_TEST(S11_AC1_load_with_wrong_version_yields_defaults);
     RUN_TEST(S11_AC1_load_with_v2_blob_yields_defaults_not_a_migration);
     RUN_TEST(S11_AC1_load_with_v3_blob_yields_defaults_not_a_migration);
+    RUN_TEST(S11_AC1_load_with_v4_blob_yields_defaults_not_a_migration);
 
     RUN_TEST(S11_AC2_round_trip_save_load_is_exact_including_calibration);
     RUN_TEST(S11_AC2_round_trip_preserves_exact_defaults);

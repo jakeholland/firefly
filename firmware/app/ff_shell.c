@@ -18,6 +18,7 @@
 #include "ff_route.h"
 #include "ff_sched.h"
 #include "ff_t9.h" /* S16 slice c3 — the shell-owned compose draft */
+#include "ff_touchcal.h" /* S21 §3 — the touch-calibration transform the calibrate hook returns */
 #include "ff_wall_window.h" /* S18 slice c — pack -> plausibility window */
 #include "ff_wiring.h"
 
@@ -32,6 +33,13 @@ typedef struct {
     ff_store_t const *store;
     void (*haptic)(void *user);
     void *haptic_user;
+    /* S21 §3 — device touch-calibration hook. NULL on targets with no touch
+     * panel (the sim): FF_INTENT_CALIBRATE_TOUCH is then a no-op. On device
+     * app_main supplies a fn that runs the crosshair capture and applies the
+     * solved transform to the live touch path, returning it (and true) so the
+     * shell persists it into ff_settings. */
+    bool (*calibrate_touch)(void *user, ff_touchcal_t *out_cal);
+    void *calibrate_touch_user;
     fp_pack_t *pack; /* caller-owned storage; NULL = this target has no pack */
     bool pack_loaded;
 
@@ -70,6 +78,12 @@ typedef struct {
      * (all gated on `takeover_up`, routing rule 4) ever touches it. */
     ff_t9_t compose_draft;
     ff_app_compose_mode_t compose_mode;
+
+    /* S21 removed `settings_page` (#105's pagination view state): the
+     * Settings face is now one scrolling list, so there is no page for the
+     * shell to own — scrolling is a live LVGL concern in scr_settings.c's
+     * list container, not projected shell state. FF_INTENT_CALIBRATE_TOUCH
+     * (new) is handled below via the injected calibrate hook. */
 
     /* Feed pushes + the crew-paired-sender filter are ff_wiring's, not
      * reimplemented here. Holds interior pointers into this struct — see
@@ -1123,6 +1137,9 @@ static void shell_project_settings(shell_t const *sh, ff_app_settings_t *out)
     out->utc_offset_set = sh->settings.utc_offset_set;
     /* S17 slice a: the colorblind toggle, projected verbatim. */
     out->colorblind = sh->settings.colorblind;
+    /* #100: brightness percent, projected verbatim (already clamped on write
+     * — see shell_setting_set). */
+    out->brightness_pct = sh->settings.brightness_pct;
 }
 
 /**
@@ -1333,6 +1350,19 @@ static void shell_render_key(ff_app_state_t const *v, ff_app_state_t *key)
      * which is exactly the whole-struct-memcmp failure S16 warns about.
      * 0.1 degrees is LVGL's own rotation unit: below it, no pixel moves. */
     key->radar.arrow_deg = (float)(int32_t)(v->radar.arrow_deg * 10.0f);
+
+    /* #bug1 — brightness is kept OUT of the render key (coarsened to a
+     * constant). A live brightness drag emits a value change every frame;
+     * were it in the key, each would mark the view dirty and force a full
+     * face teardown+rebuild, destroying the very slider being dragged. It
+     * needs no rebuild anyway: brightness changes no rendered pixel except
+     * the Settings slider, which scr_settings.c already tracks live in its
+     * own deco, and the device backlight, which app_main applies every tick
+     * from the projected brightness_pct independently of the dirty bit. So a
+     * brightness change never repaints a face; only a genuine face/content
+     * change does. (The committed value still reaches a fresh build via the
+     * projection on the next real repaint / on re-entry to Settings.) */
+    key->settings.brightness_pct = 0;
 }
 
 /* ---------------------------------------------------------------------
@@ -1350,6 +1380,8 @@ int ff_shell_init(ff_shell_t *sh_pub, ff_shell_cfg_t const *cfg)
     sh->store = cfg->store;
     sh->haptic = cfg->haptic;
     sh->haptic_user = cfg->haptic_user;
+    sh->calibrate_touch = cfg->calibrate_touch;
+    sh->calibrate_touch_user = cfg->calibrate_touch_user;
     sh->pack = cfg->pack;
     sh->pack_loaded = false;
 
@@ -1666,6 +1698,33 @@ static void shell_setting_set(shell_t *sh, ff_intent_t const *in)
         s->colorblind = v;
         break;
     }
+    case FF_SETTING_BRIGHTNESS: {
+        /* #100 — CLAMPED, not rejected: a slider that drags past either end
+         * should pin to the floor/ceiling, not silently drop the change (the
+         * UTC stepper clamps for the same "no dead control" reason). The
+         * floor is non-zero on purpose — never a black, unrecoverable
+         * backlight (ff_settings.h). */
+        int32_t v = in->u.setting.v.i;
+        if (v < (int32_t)FF_BRIGHTNESS_MIN_PCT) v = (int32_t)FF_BRIGHTNESS_MIN_PCT;
+        if (v > (int32_t)FF_BRIGHTNESS_MAX_PCT) v = (int32_t)FF_BRIGHTNESS_MAX_PCT;
+        /* #bug1 — always apply the value to in-memory state so a projection
+         * consumer (the device backlight, driven every tick from the
+         * projected brightness_pct — see targets/esp32s3/main/app_main.c)
+         * tracks a live drag. But COALESCE the NVS write: a TRANSIENT value
+         * is a mid-drag preview and must NOT hit flash (a drag fires dozens
+         * of them; persisting each would thrash the NVS wear-levelling for no
+         * benefit — the intermediate values are never the settled setting).
+         * Only the committed (non-transient) RELEASED value persists, and it
+         * persists unconditionally: the live drag has already moved
+         * brightness_pct, so the usual "changed?" guard would see no delta at
+         * release and skip the one write that matters. */
+        s->brightness_pct = (uint8_t)v;
+        if (in->u.setting.transient) {
+            return; /* live preview: applied, deliberately not persisted */
+        }
+        changed = true; /* committed: persist the settled value once */
+        break;
+    }
     case FF_SETTING_WATER_MIN: {
         int32_t const v = in->u.setting.v.i;
         if (v < 0 || v > (int32_t)UINT16_MAX) return;
@@ -1766,6 +1825,9 @@ void ff_shell_intent(ff_shell_t *sh_pub, ff_intent_t const *in)
     case FF_INTENT_OPEN_SETTINGS:
         if (takeover_up) return;
         if (!k_settings_renderer_exists) return; /* the judgment call — see the constant's comment */
+        /* S21: the Settings face is one scrolling list with no page state to
+         * reset — a fresh open always renders scrolled to the top (the list
+         * container's own default scroll offset), no shell bookkeeping. */
         (void)ff_route_push_modal(&sh->route, FF_APP_FACE_SETTINGS);
         return;
 
@@ -1953,6 +2015,36 @@ void ff_shell_intent(ff_shell_t *sh_pub, ff_intent_t const *in)
          * every other control. */
         if (takeover_up) return;
         shell_setting_set(sh, in);
+        return;
+
+    case FF_INTENT_CALIBRATE_TOUCH:
+        /* S21 §3 — the Settings "CALIBRATE TOUCH" row. Gated on the takeover
+         * exactly like SETTING_SET above: the row only exists on the Settings
+         * modal, so this can only fire while Settings is visible. Runs the
+         * injected device calibrate hook (NULL on the sim / any target with
+         * no touch panel -> a safe no-op, tests stay green). On device the
+         * hook runs the crosshair capture and applies the solved transform to
+         * the live touch path; here the shell writes it into ff_settings and
+         * persists on change, so calibration survives reboot via NVS (S21 §4)
+         * the same way every other setting does. */
+        if (takeover_up) return;
+        if (sh->calibrate_touch != NULL) {
+            ff_touchcal_t cal;
+            memset(&cal, 0, sizeof(cal));
+            if (sh->calibrate_touch(sh->calibrate_touch_user, &cal) && cal.valid) {
+                ff_settings_t *s = &sh->settings;
+                bool const changed = (!s->touch_calibrated) || (s->touch_ax != cal.ax) || (s->touch_bx != cal.bx) ||
+                                     (s->touch_ay != cal.ay) || (s->touch_by != cal.by);
+                s->touch_ax = cal.ax;
+                s->touch_bx = cal.bx;
+                s->touch_ay = cal.ay;
+                s->touch_by = cal.by;
+                s->touch_calibrated = true;
+                if (changed && sh->store != NULL) {
+                    ff_settings_save(s, sh->store);
+                }
+            }
+        }
         return;
 
     /* --- deliberate no-ops until their owning slice lands ------------ */

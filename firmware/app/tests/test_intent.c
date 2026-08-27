@@ -686,6 +686,76 @@ static void setting_send(ff_shell_t *shell, ff_setting_id_t id, int32_t i, char 
     ff_shell_intent(shell, &in);
 }
 
+/* #bug1 — a brightness intent carrying the transient/commit flag. */
+static void setting_send_brightness(ff_shell_t *shell, int32_t v, bool transient)
+{
+    ff_intent_t in = {.kind = FF_INTENT_SETTING_SET, .u = {0}};
+    in.u.setting.id = FF_SETTING_BRIGHTNESS;
+    in.u.setting.v.i = v;
+    in.u.setting.transient = transient;
+    ff_shell_intent(shell, &in);
+}
+
+/* #bug1 — the brightness slider's TRANSIENT (live-preview) vs COMMITTED
+ * distinction. A drag fires many VALUE_CHANGED intents; each must apply to
+ * in-memory state (so the projected brightness the backlight follows tracks
+ * the finger) but must NOT write NVS. Only the settled, non-transient
+ * RELEASED value persists, coalescing a whole drag's flash writes into one.
+ * The proxy this kills: a naive "emit live" that persisted every step would
+ * pass a value-applied check while thrashing the store, so the store-write
+ * COUNT is asserted, not just the final value. */
+static void bug1_transient_brightness_applies_live_but_persists_only_on_commit(void)
+{
+    setting_harness_t h;
+    setting_harness_init(&h);
+
+    uint8_t const start = ff_shell_settings(&h.shell)->brightness_pct;
+    TEST_ASSERT_EQUAL_INT(0, h.store_mem.set_calls);
+
+    /* A drag: a run of transient values, each applied to live state... */
+    int32_t const drag[] = {40, 55, 70, 85, 90};
+    for (size_t i = 0; i < sizeof(drag) / sizeof(drag[0]); i++) {
+        setting_send_brightness(&h.shell, drag[i], true /* transient */);
+        TEST_ASSERT_EQUAL_UINT8((uint8_t)drag[i], ff_shell_settings(&h.shell)->brightness_pct);
+    }
+    /* ...but NOT ONE of them wrote the store (the whole NVS-wear point). */
+    TEST_ASSERT_EQUAL_INT(0, h.store_mem.set_calls);
+    TEST_ASSERT_TRUE(ff_shell_settings(&h.shell)->brightness_pct != start); /* it did move live */
+
+    /* Release: the settled value commits, exactly once. */
+    setting_send_brightness(&h.shell, 90, false /* commit */);
+    TEST_ASSERT_EQUAL_UINT8(90u, ff_shell_settings(&h.shell)->brightness_pct);
+    TEST_ASSERT_EQUAL_INT(1, h.store_mem.set_calls);
+
+    ff_shell_close(&h.shell);
+}
+
+/* #bug1 — a brightness change must NOT mark the render dirty: it is kept out
+ * of the shell's render key so a live drag never forces a face rebuild that
+ * would destroy the slider under the finger. The projected value still
+ * changes (the device backlight is applied every tick regardless of the
+ * dirty bit, so it follows the drag). */
+static void bug1_brightness_change_does_not_mark_the_render_dirty(void)
+{
+    setting_harness_t h;
+    setting_harness_init(&h);
+
+    (void)ff_shell_tick(&h.shell, h.clk.t);              /* first frame is always dirty; settle it */
+    TEST_ASSERT_FALSE(ff_shell_tick(&h.shell, h.clk.t)); /* frozen clock, idle -> not dirty (baseline) */
+
+    setting_send_brightness(&h.shell, 33, false /* even a committed change */);
+    TEST_ASSERT_FALSE(ff_shell_tick(&h.shell, h.clk.t)); /* NOT dirty: brightness is excluded from the key */
+    /* Yet the projection the backlight reads DID update. */
+    TEST_ASSERT_EQUAL_UINT8(33u, ff_shell_view(&h.shell)->settings.brightness_pct);
+
+    /* Control: a genuinely rendered setting (units) DOES mark dirty, so the
+     * exclusion above is specific to brightness, not a broken dirty bit. */
+    setting_send(&h.shell, FF_SETTING_IMPERIAL, ff_shell_settings(&h.shell)->imperial ? 0 : 1, NULL);
+    TEST_ASSERT_TRUE(ff_shell_tick(&h.shell, h.clk.t));
+
+    ff_shell_close(&h.shell);
+}
+
 static void S16_AC8_setting_set_applies_and_persists_only_on_change(void)
 {
     setting_harness_t h;
@@ -711,6 +781,139 @@ static void S16_AC8_setting_set_applies_and_persists_only_on_change(void)
     setting_send(&h.shell, FF_SETTING_IMPERIAL, 1, NULL); /* back to true: a change again */
     TEST_ASSERT_TRUE(ff_shell_settings(&h.shell)->imperial);
     TEST_ASSERT_EQUAL_INT(2, h.store_mem.set_calls);
+
+    ff_shell_close(&h.shell);
+}
+
+/* =================================================================== */
+/* S21 §3 — FF_INTENT_CALIBRATE_TOUCH (the Settings "CALIBRATE TOUCH" row) */
+/* =================================================================== */
+
+/* The injected device calibrate hook (ff_shell_cfg_t.calibrate_touch): a spy
+ * that hands back a scripted fit + return value and counts calls — the same
+ * injected-seam shape as the haptic spy in test_shell. On device the real hook
+ * runs the crosshair capture; the shell writes the solved transform into
+ * ff_settings and persists it so calibration survives reboot (S21 §4). */
+typedef struct {
+    ff_touchcal_t cal; /* what the hook writes into *out_cal */
+    bool ret;          /* what the hook returns */
+    int calls;
+} calib_spy_t;
+
+static bool calib_spy_hook(void *user, ff_touchcal_t *out_cal)
+{
+    calib_spy_t *sp = (calib_spy_t *)user;
+    sp->calls++;
+    *out_cal = sp->cal;
+    return sp->ret;
+}
+
+/* setting_harness_init, plus the calibrate hook wired to `spy` (the hook must
+ * be set at ff_shell_init time, so this can't reuse setting_harness_init). */
+static void calib_harness_init(setting_harness_t *sh, calib_spy_t *spy)
+{
+    memset(sh, 0, sizeof(*sh));
+    sh->clk.t = 100000u;
+    sh->clock.now_ms = fake_now;
+    sh->clock.user = &sh->clk;
+    sh->store = setting_store(&sh->store_mem);
+
+    ff_shell_cfg_t cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.clock = &sh->clock;
+    cfg.store = &sh->store;
+    cfg.pack = &sh->pack;
+    cfg.calibrate_touch = calib_spy_hook;
+    cfg.calibrate_touch_user = spy;
+
+    TEST_ASSERT_EQUAL_INT(0, ff_shell_init(&sh->shell, &cfg));
+}
+
+static void send_calibrate(ff_shell_t *shell)
+{
+    ff_intent_t in = {.kind = FF_INTENT_CALIBRATE_TOUCH, .u = {0}};
+    ff_shell_intent(shell, &in);
+}
+
+/* A valid fit overwrites the (honest-uncalibrated identity) default and
+ * persists exactly once. */
+static void S21_calibrate_valid_fit_applies_and_persists(void)
+{
+    calib_spy_t spy = {0};
+    spy.cal = (ff_touchcal_t){.ax = 1.10f, .bx = -3.0f, .ay = 0.90f, .by = 4.0f, .valid = true};
+    spy.ret = true;
+
+    setting_harness_t h;
+    calib_harness_init(&h, &spy);
+
+    TEST_ASSERT_FALSE(ff_shell_settings(&h.shell)->touch_calibrated); /* identity default */
+    TEST_ASSERT_EQUAL_INT(0, h.store_mem.set_calls);
+
+    send_calibrate(&h.shell);
+
+    TEST_ASSERT_EQUAL_INT(1, spy.calls);
+    ff_settings_t const *s = ff_shell_settings(&h.shell);
+    TEST_ASSERT_TRUE(s->touch_calibrated);
+    TEST_ASSERT_EQUAL_FLOAT(1.10f, s->touch_ax);
+    TEST_ASSERT_EQUAL_FLOAT(-3.0f, s->touch_bx);
+    TEST_ASSERT_EQUAL_FLOAT(0.90f, s->touch_ay);
+    TEST_ASSERT_EQUAL_FLOAT(4.0f, s->touch_by);
+    TEST_ASSERT_EQUAL_INT(1, h.store_mem.set_calls); /* persisted once */
+
+    ff_shell_close(&h.shell);
+}
+
+/* A failed capture (hook returns false) or a degenerate solve (cal.valid ==
+ * false) leaves settings untouched and writes nothing — honest-uncalibrated
+ * stays uncalibrated, never a half-applied transform. */
+static void S21_calibrate_failed_or_invalid_fit_is_a_clean_no_op(void)
+{
+    calib_spy_t spy = {0};
+    spy.cal = (ff_touchcal_t){.ax = 2.0f, .bx = 9.0f, .ay = 2.0f, .by = 9.0f, .valid = true};
+    spy.ret = false; /* capture reported failure */
+
+    setting_harness_t h;
+    calib_harness_init(&h, &spy);
+    send_calibrate(&h.shell);
+
+    TEST_ASSERT_EQUAL_INT(1, spy.calls);
+    ff_settings_t const *s = ff_shell_settings(&h.shell);
+    TEST_ASSERT_FALSE(s->touch_calibrated);     /* still uncalibrated */
+    TEST_ASSERT_EQUAL_FLOAT(1.0f, s->touch_ax); /* still identity */
+    TEST_ASSERT_EQUAL_INT(0, h.store_mem.set_calls);
+    ff_shell_close(&h.shell);
+
+    calib_spy_t spy2 = {0};
+    spy2.cal = (ff_touchcal_t){.ax = 2.0f, .bx = 9.0f, .ay = 2.0f, .by = 9.0f, .valid = false /* degenerate */};
+    spy2.ret = true;
+
+    setting_harness_t h2;
+    calib_harness_init(&h2, &spy2);
+    send_calibrate(&h2.shell);
+
+    TEST_ASSERT_EQUAL_INT(1, spy2.calls);
+    TEST_ASSERT_FALSE(ff_shell_settings(&h2.shell)->touch_calibrated);
+    TEST_ASSERT_EQUAL_INT(0, h2.store_mem.set_calls);
+    ff_shell_close(&h2.shell);
+}
+
+/* Re-running the SAME fit does not write NVS again — "persist on change,
+ * never every tick", the same contract every other setting keeps. */
+static void S21_calibrate_unchanged_refit_skips_the_write(void)
+{
+    calib_spy_t spy = {0};
+    spy.cal = (ff_touchcal_t){.ax = 1.10f, .bx = -3.0f, .ay = 0.90f, .by = 4.0f, .valid = true};
+    spy.ret = true;
+
+    setting_harness_t h;
+    calib_harness_init(&h, &spy);
+
+    send_calibrate(&h.shell);
+    TEST_ASSERT_EQUAL_INT(1, h.store_mem.set_calls); /* first fit: a change, persisted */
+
+    send_calibrate(&h.shell);                        /* same fit again */
+    TEST_ASSERT_EQUAL_INT(2, spy.calls);             /* the hook still ran */
+    TEST_ASSERT_EQUAL_INT(1, h.store_mem.set_calls); /* but nothing new was written */
 
     ff_shell_close(&h.shell);
 }
@@ -993,6 +1196,11 @@ int main(void)
     RUN_TEST(S16_c2_flare_end_cancels_a_send_even_while_a_takeover_is_visible);
     RUN_TEST(S16_AC8_setting_set_applies_and_persists_only_on_change);
     RUN_TEST(S17a_AC2_setting_set_colorblind_applies_and_persists_only_on_change);
+    RUN_TEST(bug1_transient_brightness_applies_live_but_persists_only_on_commit);
+    RUN_TEST(bug1_brightness_change_does_not_mark_the_render_dirty);
+    RUN_TEST(S21_calibrate_valid_fit_applies_and_persists);
+    RUN_TEST(S21_calibrate_failed_or_invalid_fit_is_a_clean_no_op);
+    RUN_TEST(S21_calibrate_unchanged_refit_skips_the_write);
     RUN_TEST(S16_AC8_setting_set_out_of_range_is_rejected_not_clamped);
     RUN_TEST(S16_AC8_setting_set_my_name_is_bounded_and_terminated);
     RUN_TEST(S16_AC8_setting_set_is_rejected_while_a_takeover_is_visible);

@@ -20,8 +20,11 @@
 
 #include <string.h>
 
+#include "ff_touchcal.h"
+
 #include "driver/gpio.h"
 #include "driver/i2c_master.h"
+#include "driver/ledc.h"
 #include "driver/spi_master.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
@@ -77,8 +80,30 @@ static const char *TAG = "ff_display";
 #define FF_PIN_LCD_D3 41
 #define FF_PIN_LCD_CS 21
 #define FF_PIN_LCD_TE 18 /* tearing-effect; wired but unused this slice (see note) */
-#define FF_PIN_LCD_BL 5  /* backlight, active-high (demo drives via LEDC; we drive GPIO) */
+#define FF_PIN_LCD_BL 5  /* backlight, active-high — driven via LEDC PWM (#100), matching Waveshare's demo */
 #define FF_LCD_PCLK_HZ (80 * 1000 * 1000)
+
+/* ---- Backlight LEDC PWM (#100) --------------------------------------
+ * Waveshare's own ESP-IDF-5.3.2 demo drives BL (GPIO5) through the LEDC
+ * peripheral (LCD_Backlight / Set_Backlight in its Backlight.c), NOT a bare
+ * GPIO level — so brightness is a duty cycle, not on/off. We mirror that:
+ * a low-speed-mode timer + one channel on GPIO5. 10-bit resolution (duty
+ * 0..1023) is ample for a smooth 10..100% range; 5 kHz is well above the
+ * flicker floor and below any audible-whine range. The MIN/MAX below mirror
+ * core's FF_BRIGHTNESS_MIN_PCT / _MAX_PCT (ff_settings.h) — kept as local
+ * literals so this device HAL stays free of any core/ include (its header
+ * comment: "NONE of this touches core/ or app/"). The floor is a DEFENSIVE
+ * second clamp: the shell already clamps the setting to the same range, but
+ * the HAL never trusts a caller to have done so — a 0% duty is a black,
+ * unrecoverable backlight, so ff_display_set_brightness can never program
+ * one. */
+#define FF_BL_LEDC_MODE    LEDC_LOW_SPEED_MODE
+#define FF_BL_LEDC_TIMER   LEDC_TIMER_0
+#define FF_BL_LEDC_CHANNEL LEDC_CHANNEL_0
+#define FF_BL_LEDC_RES     LEDC_TIMER_10_BIT
+#define FF_BL_LEDC_FREQ_HZ 5000
+#define FF_BL_MIN_PCT      10  /* mirrors core FF_BRIGHTNESS_MIN_PCT — never 0/black-unrecoverable */
+#define FF_BL_MAX_PCT      100 /* mirrors core FF_BRIGHTNESS_MAX_PCT */
 
 /* ---- Shared I2C bus: touch (0x53) + TCA9554 (0x20) (I2C_Driver.h) ----- */
 #define FF_I2C_PORT I2C_NUM_0
@@ -101,6 +126,87 @@ static esp_lcd_panel_io_handle_t s_panel_io;
 static esp_lcd_panel_handle_t s_panel;
 static esp_lcd_touch_handle_t s_touch;
 static lv_display_t *s_lv_disp;
+static bool s_bl_ready; /* true once the LEDC backlight timer+channel are configured */
+
+/* =====================================================================
+ * Backlight PWM (#100). LEDC timer + one channel on GPIO5, mirroring the
+ * Waveshare demo. ff_display_set_brightness maps a clamped percent onto the
+ * duty range; the initial duty is full-on so the first-light stages (b1) are
+ * bright before the shell's stored brightness is ever applied.
+ * ===================================================================== */
+static esp_err_t ff_display_backlight_init(void)
+{
+    const ledc_timer_config_t timer_cfg = {
+        .speed_mode = FF_BL_LEDC_MODE,
+        .timer_num = FF_BL_LEDC_TIMER,
+        .duty_resolution = FF_BL_LEDC_RES,
+        .freq_hz = FF_BL_LEDC_FREQ_HZ,
+        .clk_cfg = LEDC_AUTO_CLK,
+    };
+    esp_err_t err = ledc_timer_config(&timer_cfg);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "backlight ledc_timer_config failed: %s", esp_err_to_name(err));
+        return err;
+    }
+
+    const uint32_t full_duty = (1u << FF_BL_LEDC_RES) - 1u; /* start full-on for bring-up */
+    const ledc_channel_config_t ch_cfg = {
+        .gpio_num = FF_PIN_LCD_BL,
+        .speed_mode = FF_BL_LEDC_MODE,
+        .channel = FF_BL_LEDC_CHANNEL,
+        .timer_sel = FF_BL_LEDC_TIMER,
+        .intr_type = LEDC_INTR_DISABLE,
+        .duty = full_duty,
+        .hpoint = 0,
+    };
+    err = ledc_channel_config(&ch_cfg);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "backlight ledc_channel_config failed: %s", esp_err_to_name(err));
+        return err;
+    }
+
+    s_bl_ready = true;
+    ESP_LOGI(TAG, "backlight LEDC up (GPIO%d, %d-bit @ %d Hz, full-on)", FF_PIN_LCD_BL, (int)FF_BL_LEDC_RES,
+             FF_BL_LEDC_FREQ_HZ);
+    return ESP_OK;
+}
+
+esp_err_t ff_display_set_brightness(uint8_t pct)
+{
+    if (!s_bl_ready) {
+        ESP_LOGE(TAG, "set_brightness called before panel_init (backlight LEDC not up)");
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    /* Defensive clamp — never a 0% (black, unrecoverable) backlight, even if
+     * a caller forgets the shell's own clamp (ff_settings.h / shell_setting_set). */
+    if (pct < FF_BL_MIN_PCT) pct = FF_BL_MIN_PCT;
+    if (pct > FF_BL_MAX_PCT) pct = FF_BL_MAX_PCT;
+
+    const uint32_t full_duty = (1u << FF_BL_LEDC_RES) - 1u;
+    const uint32_t duty = (full_duty * (uint32_t)pct) / 100u;
+
+    esp_err_t err = ledc_set_duty(FF_BL_LEDC_MODE, FF_BL_LEDC_CHANNEL, duty);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "backlight ledc_set_duty failed: %s", esp_err_to_name(err));
+        return err;
+    }
+    err = ledc_update_duty(FF_BL_LEDC_MODE, FF_BL_LEDC_CHANNEL);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "backlight ledc_update_duty failed: %s", esp_err_to_name(err));
+        return err;
+    }
+    ESP_LOGI(TAG, "backlight set to %u%% (duty %u/%u)", (unsigned)pct, (unsigned)duty, (unsigned)full_duty);
+    return ESP_OK;
+}
+
+/* Active touch-calibration transform (S15 slice d). Identity until
+ * ff_display_touch_set_cal installs a fit — so an uncalibrated device (and
+ * the calibration capture itself) sees raw coords pass through. Read by
+ * ff_touchcal_process_cb on every touch poll (LVGL port task); written by
+ * ff_display_touch_set_cal. A torn read across the write is harmless — the
+ * fields are independent floats and the next poll reads the settled value. */
+static ff_touchcal_t s_active_cal = {.ax = 1.0f, .bx = 0.0f, .ay = 1.0f, .by = 0.0f, .valid = false};
 
 /* =====================================================================
  * b1 step 1 — I2C bus + TCA9554 up, both resets released through it.
@@ -246,19 +352,14 @@ esp_err_t ff_display_panel_init(void)
     }
     ESP_LOGI(TAG, "SPD2010 panel init done (%dx%d RGB565 QSPI)", FF_LCD_H_RES, FF_LCD_V_RES);
 
-    /* Backlight on (GPIO5, active-high). The demo ramps it via LEDC PWM;
-     * a plain push-pull high is enough for bring-up and provably ON. */
-    const gpio_config_t bl_cfg = {
-        .pin_bit_mask = 1ULL << FF_PIN_LCD_BL,
-        .mode = GPIO_MODE_OUTPUT,
-    };
-    err = gpio_config(&bl_cfg);
+    /* Backlight via LEDC PWM (#100), full-on at init so first light is
+     * bright before the shell's stored brightness is applied. The app forwards
+     * the persisted percent via ff_display_set_brightness once the shell is
+     * up (app_main), and on every later change. */
+    err = ff_display_backlight_init();
     if (err != ESP_OK) {
-        ESP_LOGE(TAG, "backlight gpio_config failed: %s", esp_err_to_name(err));
-        return err;
+        return err; /* already logged */
     }
-    gpio_set_level(FF_PIN_LCD_BL, 1);
-    ESP_LOGI(TAG, "backlight ON (GPIO%d high)", FF_PIN_LCD_BL);
 
     return ESP_OK;
 }
@@ -416,9 +517,44 @@ static void ff_touch_press_log_cb(lv_event_t *e)
     lv_indev_t *indev = lv_event_get_indev(e);
     lv_point_t p;
     lv_indev_get_point(indev, &p);
-    /* Honest raw coords: uncalibrated, logged as the controller reports
-     * them (S15b: "don't fake positions; log raw coords and say so"). */
-    ESP_LOGI(TAG, "touch @ (%d, %d) [raw, uncalibrated]", (int)p.x, (int)p.y);
+    /* Post-calibration coords: this is what LVGL and the shell act on. When
+     * uncalibrated (identity), it equals the raw controller report. */
+    ESP_LOGI(TAG, "touch @ (%d, %d) [%s]", (int)p.x, (int)p.y,
+             s_active_cal.valid ? "calibrated" : "raw, uncalibrated");
+}
+
+/* process_coordinates: the ONE seam every physical touch passes through
+ * before esp_lvgl_port hands it to LVGL (esp_lcd_touch_get_coordinates
+ * calls this after the controller read). Correcting here fixes gestures,
+ * long-press, and buttons alike — no second input path. Identity when
+ * uncalibrated, so raw passes through (still clamped to the panel). */
+static void ff_touchcal_process_cb(esp_lcd_touch_handle_t tp, uint16_t *x, uint16_t *y,
+                                   uint16_t *strength, uint8_t *point_num, uint8_t max_point_num)
+{
+    (void)tp;
+    (void)strength;
+    (void)max_point_num;
+    if (x == NULL || y == NULL || point_num == NULL) {
+        return;
+    }
+    for (uint8_t i = 0; i < *point_num; i++) {
+        int sx, sy;
+        ff_touchcal_apply(&s_active_cal, (int)x[i], (int)y[i], &sx, &sy);
+        x[i] = (uint16_t)sx;
+        y[i] = (uint16_t)sy;
+    }
+}
+
+void ff_display_touch_set_cal(const ff_touchcal_t *c)
+{
+    if (c == NULL || !c->valid) {
+        ff_touchcal_identity(&s_active_cal);
+        ESP_LOGI(TAG, "touch cal: identity (uncalibrated — raw passes through)");
+        return;
+    }
+    s_active_cal = *c;
+    ESP_LOGI(TAG, "touch cal active: sx=%.4f*rawx%+.2f  sy=%.4f*rawy%+.2f", (double)c->ax,
+             (double)c->bx, (double)c->ay, (double)c->by);
 }
 
 esp_err_t ff_display_touch_start(lv_display_t *disp)
@@ -460,6 +596,9 @@ esp_err_t ff_display_touch_start(lv_display_t *disp)
         .int_gpio_num = GPIO_NUM_NC,
         .levels = {.reset = 0, .interrupt = 0},
         .flags = {.swap_xy = 0, .mirror_x = 0, .mirror_y = 0},
+        /* S15 slice d: correct every touch in-place here, the single seam
+         * esp_lvgl_port reads through. Identity until a cal is installed. */
+        .process_coordinates = ff_touchcal_process_cb,
     };
     err = esp_lcd_touch_new_i2c_spd2010(tp_io, &tp_cfg, &s_touch);
     if (err != ESP_OK) {
@@ -485,6 +624,182 @@ esp_err_t ff_display_touch_start(lv_display_t *disp)
      * maintainer where the controller thinks the finger landed. */
     lv_indev_add_event_cb(indev, ff_touch_press_log_cb, LV_EVENT_PRESSED, NULL);
     ESP_LOGI(TAG, "touch indev added -> shell input seam (LVGL pointer)");
+    return ESP_OK;
+}
+
+/* =====================================================================
+ * S15 slice d — crosshair capture calibration flow.
+ *
+ * Five targets (screen space): center first, then the four insets — all
+ * comfortably inside the round glass, giving 3 distinct x and 3 distinct y
+ * for a well-conditioned per-axis fit (docs/specs/S15d). One raw tap is
+ * captured per target on a full press+release (debounce), then the pairs
+ * feed ff_touchcal_solve. The capture runs with the active cal at identity
+ * so the taps recorded are raw; the caller installs the solved transform.
+ * ===================================================================== */
+enum { FF_CAL_TARGET_COUNT = 5 };
+static const int s_cal_tx[FF_CAL_TARGET_COUNT] = {206, 90, 322, 90, 322};
+static const int s_cal_ty[FF_CAL_TARGET_COUNT] = {206, 90, 90, 322, 322};
+
+static struct {
+    volatile int captured; /* number of targets captured so far          */
+    volatile bool done;    /* set true once all FF_CAL_TARGET_COUNT taken */
+    ff_cal_point_t pts[FF_CAL_TARGET_COUNT];
+    lv_obj_t *label;
+    lv_obj_t *ring;
+    lv_obj_t *bar_h;
+    lv_obj_t *bar_v;
+    lv_obj_t *dot;
+} s_cal;
+
+/* Move the crosshair to target `idx` and update the progress text. Runs
+ * under the LVGL lock (from the setup path or the LVGL-task event cb). */
+static void ff_cal_place_crosshair(int idx)
+{
+    int tx = s_cal_tx[idx];
+    int ty = s_cal_ty[idx];
+    lv_obj_set_pos(s_cal.ring, tx - 20, ty - 20);
+    lv_obj_set_pos(s_cal.bar_h, tx - 20, ty - 1);
+    lv_obj_set_pos(s_cal.bar_v, tx - 1, ty - 20);
+    lv_obj_set_pos(s_cal.dot, tx - 3, ty - 3);
+    lv_label_set_text_fmt(s_cal.label, "Tap the target\n%d / %d", idx + 1, FF_CAL_TARGET_COUNT);
+}
+
+/* One capture per target, on release (a deliberate, completed tap). */
+static void ff_cal_release_cb(lv_event_t *e)
+{
+    if (s_cal.done) {
+        return;
+    }
+    int idx = s_cal.captured;
+    if (idx >= FF_CAL_TARGET_COUNT) {
+        return;
+    }
+    lv_indev_t *indev = lv_event_get_indev(e);
+    lv_point_t p;
+    lv_indev_get_point(indev, &p);
+
+    s_cal.pts[idx].raw_x = (int)p.x;
+    s_cal.pts[idx].raw_y = (int)p.y;
+    s_cal.pts[idx].screen_x = s_cal_tx[idx];
+    s_cal.pts[idx].screen_y = s_cal_ty[idx];
+    ESP_LOGI(TAG, "cal capture %d/%d: raw (%d,%d) -> target (%d,%d)", idx + 1, FF_CAL_TARGET_COUNT,
+             (int)p.x, (int)p.y, s_cal_tx[idx], s_cal_ty[idx]);
+
+    s_cal.captured = idx + 1;
+    if (s_cal.captured >= FF_CAL_TARGET_COUNT) {
+        lv_label_set_text(s_cal.label, "Calibrating...");
+        s_cal.done = true; /* published last, after pts[] is written */
+    } else {
+        ff_cal_place_crosshair(s_cal.captured);
+    }
+}
+
+static lv_obj_t *ff_cal_make_bar(lv_obj_t *parent, int w, int h, lv_color_t col)
+{
+    lv_obj_t *o = lv_obj_create(parent);
+    lv_obj_remove_style_all(o);
+    lv_obj_set_size(o, w, h);
+    lv_obj_set_style_bg_color(o, col, 0);
+    lv_obj_set_style_bg_opa(o, LV_OPA_COVER, 0);
+    lv_obj_remove_flag(o, LV_OBJ_FLAG_CLICKABLE); /* clicks pass to root */
+    return o;
+}
+
+esp_err_t ff_display_run_calibration(ff_touchcal_t *out_cal)
+{
+    if (out_cal == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    ff_touchcal_identity(out_cal);
+
+    if (s_lv_disp == NULL || s_touch == NULL) {
+        ESP_LOGE(TAG, "run_calibration needs lvgl_start + touch_start first");
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    /* Capture RAW: the active transform must be identity while we record. */
+    ff_touchcal_identity(&s_active_cal);
+    memset(&s_cal, 0, sizeof(s_cal));
+
+    const lv_color_t accent = lv_color_hex(0xFFC66B); /* Firefly amber */
+
+    if (!ff_display_lock(1000)) {
+        ESP_LOGE(TAG, "run_calibration: LVGL lock timeout");
+        return ESP_ERR_TIMEOUT;
+    }
+    lv_obj_t *scr = lv_screen_active();
+    lv_obj_clean(scr);
+
+    /* Full-screen black backdrop that catches every tap. */
+    lv_obj_t *root = lv_obj_create(scr);
+    lv_obj_remove_style_all(root);
+    lv_obj_set_size(root, LV_PCT(100), LV_PCT(100));
+    lv_obj_set_style_bg_color(root, lv_color_black(), 0);
+    lv_obj_set_style_bg_opa(root, LV_OPA_COVER, 0);
+    lv_obj_add_flag(root, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_remove_flag(root, LV_OBJ_FLAG_SCROLLABLE);
+
+    s_cal.label = lv_label_create(root);
+    lv_obj_set_style_text_color(s_cal.label, lv_color_white(), 0);
+    lv_obj_set_style_text_align(s_cal.label, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_align(s_cal.label, LV_ALIGN_TOP_MID, 0, 96);
+    lv_obj_remove_flag(s_cal.label, LV_OBJ_FLAG_CLICKABLE);
+
+    /* Crosshair: an open ring + a thin cross + a centre dot, all in accent
+     * and all click-through so the tap always reaches `root`. */
+    s_cal.ring = lv_obj_create(root);
+    lv_obj_remove_style_all(s_cal.ring);
+    lv_obj_set_size(s_cal.ring, 40, 40);
+    lv_obj_set_style_radius(s_cal.ring, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_border_width(s_cal.ring, 3, 0);
+    lv_obj_set_style_border_color(s_cal.ring, accent, 0);
+    lv_obj_set_style_bg_opa(s_cal.ring, LV_OPA_TRANSP, 0);
+    lv_obj_remove_flag(s_cal.ring, LV_OBJ_FLAG_CLICKABLE);
+
+    s_cal.bar_h = ff_cal_make_bar(root, 40, 2, accent);
+    s_cal.bar_v = ff_cal_make_bar(root, 2, 40, accent);
+    s_cal.dot = ff_cal_make_bar(root, 6, 6, accent);
+    lv_obj_set_style_radius(s_cal.dot, LV_RADIUS_CIRCLE, 0);
+
+    lv_obj_add_event_cb(root, ff_cal_release_cb, LV_EVENT_RELEASED, NULL);
+    ff_cal_place_crosshair(0);
+    ff_display_unlock();
+
+    ESP_LOGI(TAG, "S15d calibration started: tap each of %d crosshairs on the glass",
+             FF_CAL_TARGET_COUNT);
+
+    /* Block this task until the LVGL-task event cb has captured all five. */
+    while (!s_cal.done) {
+        vTaskDelay(pdMS_TO_TICKS(20));
+    }
+
+    bool ok = ff_touchcal_solve(s_cal.pts, FF_CAL_TARGET_COUNT, out_cal);
+
+    ESP_LOGI(TAG, "=== S15d touch calibration result ===");
+    for (int i = 0; i < FF_CAL_TARGET_COUNT; i++) {
+        ESP_LOGI(TAG, "  pair %d/%d: raw (%d,%d) -> screen (%d,%d)", i + 1, FF_CAL_TARGET_COUNT,
+                 s_cal.pts[i].raw_x, s_cal.pts[i].raw_y, s_cal.pts[i].screen_x, s_cal.pts[i].screen_y);
+    }
+    if (ok) {
+        ESP_LOGI(TAG, "  params: ax=%.6f bx=%.4f ay=%.6f by=%.4f", (double)out_cal->ax,
+                 (double)out_cal->bx, (double)out_cal->ay, (double)out_cal->by);
+        ESP_LOGI(TAG, "  transform: sx = %.6f*rawx %+.4f   sy = %.6f*rawy %+.4f", (double)out_cal->ax,
+                 (double)out_cal->bx, (double)out_cal->ay, (double)out_cal->by);
+    } else {
+        ESP_LOGE(TAG, "  DEGENERATE capture (no x- or y-spread) — identity kept, no correction. "
+                      "Re-run calibration and tap the distinct targets.");
+    }
+    ESP_LOGI(TAG, "=====================================");
+
+    /* Tear the calibration screen down; the caller rebuilds the real face. */
+    if (ff_display_lock(1000)) {
+        lv_obj_clean(lv_screen_active());
+        ff_display_unlock();
+    }
+    /* Drop the now-dangling object pointers (screen was cleaned). */
+    memset(&s_cal, 0, sizeof(s_cal));
+
     return ESP_OK;
 }
 

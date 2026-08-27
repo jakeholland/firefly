@@ -23,6 +23,7 @@
 
 #include "esp_err.h"
 #include "esp_lcd_types.h"
+#include "ff_touchcal.h"
 #include "lvgl.h"
 
 #ifdef __cplusplus
@@ -86,6 +87,49 @@ lv_display_t *ff_display_lvgl_start(void);
  * Returns ESP_OK on success; a logged esp_err_t otherwise.
  */
 esp_err_t ff_display_touch_start(lv_display_t *disp);
+
+/**
+ * ff_display_set_brightness — set the backlight to `pct` percent via LEDC
+ * PWM (#100). Clamped to [10, 100]: 0 would be a black, unrecoverable
+ * screen, so the floor is non-zero (this mirrors, and defensively
+ * re-applies, the same clamp the shell puts on the stored setting). The app
+ * forwards ff_settings_t.brightness_pct here on boot and on every change;
+ * core never touches this. Requires ff_display_panel_init() to have run
+ * (that brings the LEDC timer/channel up) — returns ESP_ERR_INVALID_STATE
+ * otherwise, and a logged esp_err_t on any LEDC failure.
+ */
+esp_err_t ff_display_set_brightness(uint8_t pct);
+
+/**
+ * ff_display_touch_set_cal — install the active touch-calibration
+ * transform (S15 slice d). Every subsequent physical touch is run through
+ * ff_touchcal_apply in the SAME seam that feeds LVGL (the esp_lcd_touch
+ * process_coordinates callback), BEFORE the coord reaches LVGL/the shell —
+ * so gestures, long-press, and buttons are all corrected via one path, no
+ * second input route. Passing an invalid (`!valid`) or NULL cal restores
+ * identity (raw passes through, still clamped to the panel). Safe to call
+ * before ff_display_touch_start (the value is simply stored until the
+ * indev exists) or at any time after. `c` is copied; the caller need not
+ * keep it alive.
+ */
+void ff_display_touch_set_cal(const ff_touchcal_t *c);
+
+/**
+ * ff_display_run_calibration — S15 slice d: the crosshair capture flow.
+ * Renders a crosshair at each of the five spec targets in turn (center
+ * 206,206 + the four insets), with "tap the target (N/5)" text, and
+ * captures ONE raw tap per target (one capture per stable press/release).
+ * The five (raw -> screen) pairs are fed to ff_touchcal_solve; the result
+ * (and every captured pair) is ESP_LOGI'd. Returns the solved transform in
+ * `*out_cal` (identity/!valid if the capture was degenerate).
+ *
+ * MUST run after ff_display_lvgl_start() and ff_display_touch_start(), and
+ * with the active cal at identity (so the captured taps are raw) — the
+ * caller installs the solved cal via ff_display_touch_set_cal afterward.
+ * Blocks the calling task until all five targets are captured. Returns
+ * ESP_OK on a completed capture; a logged error otherwise.
+ */
+esp_err_t ff_display_run_calibration(ff_touchcal_t *out_cal);
 
 /**
  * ff_display_lock / ff_display_unlock — take/release the LVGL API mutex.

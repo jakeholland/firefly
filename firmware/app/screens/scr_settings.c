@@ -1,171 +1,194 @@
 /**
  * scr_settings.c — see scr_settings.h.
  *
- * ## Round-glass layout, from the start (not retrofitted)
- * Every position below is derived from `ff_layout_safe_margin_x`
- * (app/screens/ff_layout.h), the same shared primitive `scr_compose.c`/
- * `scr_signals.c` use — computed from each row's own worst-case
- * (farthest-from-center) y, not eyeballed pixel offsets. This file learns
- * from those two files' history rather than repeating it: PR #25's UX
- * review caught Compose's chrome sitting tens of pixels off the round
- * glass because it was positioned against the puck's SQUARE bounding box.
- * `targets/sim/tests/test_face_hit_targets.c` sweeps every committed
- * fixture (including this face's, once fixtures exist for it) and fails
- * the build if any hit-rect ever drifts outside the circle or under the
- * 44px hit-target floor — see that file for the assertion this is
- * checked against on every build.
+ * ## One scrolling list, pinned centered header (S21 restyle)
+ * A settings screen is a single vertically-scrolling list of rows, with the
+ * header (back button + "SETTINGS" + name) PINNED at the top so "back" is
+ * always reachable no matter how far the rows are scrolled. #105 paginated
+ * instead, purely because the tap-target sweep
+ * (`targets/sim/tests/test_face_hit_targets.c`) read each clickable's
+ * ABSOLUTE, scroll-shifted rect and failed any row scrolled off-glass; S21
+ * makes that sweep scroll-aware (checks a scroll row against the scroll
+ * VIEWPORT, not its momentary absolute position), which removes the only
+ * reason pagination existed.
  *
- * ## Row budget: why every control is "label + one cycling value chip"
- * Eight settings (units, share mode, haptics, night glow, water-nudge,
- * quiet hours, UTC offset, colorblind — S17 slice a added the last one)
- * plus a name caption and a back button do not fit the 440px puck as
- * eight full editors (a segmented FT/M control, a three-way share
- * selector, on/off switches, ...) without either shrinking rows under
- * the 44px hit-target floor or pushing the bottom rows out into the
- * pole, where the circle narrows to almost nothing (see
- * FF_SETTINGS_ROW5_Y's own margin at the bottom of this file's layout
- * constants — re-checked, not assumed, when the colorblind row was
- * added; see that constant's own comment). Every row instead follows the ONE pattern the spec
- * itself already prescribes for water/quiet ("tap cycles presets") —
- * extended uniformly to every setting, including the two booleans and
- * share mode: a dim label names the setting, a single value chip on the
- * right shows the CURRENT value in text (so the 2-second glance test
- * still passes — "FT" or "GHOST" reads instantly, same as "90 MIN"
- * would), and a tap advances to the next value in a small fixed cycle.
- * Units and share mode also SHARE one row (two half-width chips) rather
- * than each claiming a full row, since both are short single-word values
- * — same economy applied to haptics/night-glow. This is a judgment call
- * (flagged per AGENTS.md), not dictated by the spec's own "FT/M
- * segmented, share row, two toggles" line, which reads as a description
- * of WHAT settings exist rather than a literal widget-shape mandate — the
- * mockup (this repo's actual layout authority, per CLAUDE.md) is not
- * in-tree for this agent to consult (ff_theme.h's header comment records
- * the same access gap).
+ * ## Round-safe framing — the key constraint on a 412 ROUND puck
+ * NOTHING may cross the round glass edge. Two devices enforce that here:
+ *   - The header group (back button + title + name) is CENTERED in the top
+ *     band, not tucked in a top-left corner — the corners of the square are
+ *     off-glass on the physical circle, so a corner-anchored control is
+ *     clipped by the bezel. The group is a fixed-width block centered
+ *     horizontally (`FF_SETTINGS_HDR_W`, start x computed once), placed low
+ *     enough that the back button's own corners clear the r=206 circle.
+ *   - The scroll rows live in ONE `lv_obj` list container positioned as a
+ *     rectangle INSCRIBED in the round glass across its whole height (its
+ *     x-inset is `ff_layout_safe_margin_x` evaluated over the container's
+ *     full vertical span, i.e. bound by its lower edge — the point nearest
+ *     the bottom pole). Every row is a child placed in container-relative
+ *     coordinates with a uniform inner width, so any row shown at any scroll
+ *     position is on-glass by construction, with no per-row margin math.
+ * An OPAQUE BG band behind the header (settings_build_header_band, #bug5)
+ * occludes the region above the list viewport with solid ink; the list
+ * clips its own children, so a row scrolling to the top ends cleanly at the
+ * viewport edge. (It REPLACES the former BG->transparent edge-fade scrims,
+ * whose gradient left a hard amber banding edge on the RGB565 panel.) The
+ * band is non-clickable chrome and never affects the sweep.
+ *
+ * ## Scroll position survives an in-place rebuild (#bug4)
+ * A settings-change intent tears down and rebuilds the whole screen. The
+ * list's scroll offset is remembered (LV_EVENT_SCROLL) and restored after
+ * each rebuild, so toggling a row does not jump back to the top. A FRESH
+ * entry from another face resets it (ff_scr_settings_reset_scroll, called by
+ * the face dispatcher on the not-Settings -> Settings transition).
+ *
+ * ## One consistent row language
+ * Every row reads label LEFT (muted, uppercase), control RIGHT. Controls are
+ * PILLS (rounded ~12px):
+ *   - Toggle pairs (UNITS FT|MI, SHARE LIVE|GHOST, HAPTICS ON|OFF,
+ *     GLOW ON|OFF, COLORBLIND ON|OFF) render two pills; the ACTIVE one is
+ *     amber-on-ink, the inactive one surface-on-muted. Both pills of a pair
+ *     forward to the SAME toggle callback with no user_data, so (a) tapping
+ *     either flips the two-state setting and (b) the hit-target sweep treats
+ *     them as ONE logical control (its composite-control exclusion keys off
+ *     matching cb+user_data), letting the pair sit at a tight ~6px gap
+ *     without tripping the 8px adjacency floor two INDEPENDENT controls owe.
+ *   - Value rows (WATER NUDGE, QUIET HOURS) render one surface/ink value
+ *     pill; the row LABEL is itself a tap target forwarding to the same
+ *     callback (no dead left half — PR #68), again composite with its pill.
+ *   - CALIBRATE TOUCH is a full-width surface pill with a thin amber border,
+ *     an ACTION (amber text), not a stored value.
+ * Every control is a bare `FF_INTENT_*` emitter — range validation and
+ * persistence are the shell's (`ff_shell.c`), same "screens stay pure
+ * renderers" split every face uses.
+ *
+ * ## Brightness is its own taller row (a −/+ STEPPER, not a slider)
+ * A "BRIGHTNESS" caption + "%" value, a non-interactive amber level bar, and a
+ * −/+ stepper group (two lv_button pills). #bug2: brightness is NOT a slider —
+ * a draggable control inside a vertical scroll list cannot reliably tell a
+ * scroll gesture from an adjust one on this touch panel (the slider captured
+ * the press so a vertical drag could not scroll; jump-to-press yanked the
+ * value). Two discrete tap targets have no drag semantics, so every drag
+ * scrolls the list and only a tap steps brightness (settings_brightness_step,
+ * 10%/tap, clamped, committed once per real step — see ff_shell.c's brightness
+ * handler; brightness stays out of the shell render key so a step updates the
+ * level bar in place instead of rebuilding the face).
+ *
+ * ## UTC offset is NOT a row here
+ * The festpack supplies the timezone (`fp_pack_t.utc_offset_min`), so the
+ * manual UTC stepper is gone. `ff_settings.utc_offset_min` / `_set` and the
+ * wall-clock logic that reads them are untouched — only the Settings UI for
+ * it was removed.
  *
  * ## `my_name` is NOT editable in this slice
- * Renaming needs its own live text-entry session — the shell has exactly
- * one such seam today (`ff_shell_t.compose_draft`, S16 slice c3), and it
- * is Compose's, not a generic "any screen can borrow the T9 engine"
- * facility: it resets on every `OPEN_COMPOSE`, its projection
- * (`ff_app_state_t.compose`) is the Compose face's own render slot, and
- * `FF_INTENT_T9_KEY`/`_INSERT`/`_BACKSPACE` write into it unconditionally
- * whenever a takeover isn't up — reusing it here would mean typing a new
- * name while a half-composed message is pending SILENTLY clobbers that
- * draft (or vice versa: opening Settings mid-compose and tapping "back"
- * leaves stray keystrokes sitting in the compose draft), with no shared
- * face to notice or prevent the collision. That is exactly "shell state
- * the seam doesn't carry" — a real rename flow needs its own draft field
- * in `shell_t` (mirroring `compose_draft`) plus a new open/commit intent
- * pair, which is `[api]` shell-seam work beyond a screen-only slice.
- * Flagged per the task brief's own escape hatch rather than forced: this
- * file renders the current `my_name` as a plain caption under the header
- * and ships everything else. Tracked as a follow-up, not silently
- * dropped.
+ * Renaming needs its own live text-entry session and shell-seam draft field;
+ * this file renders the current `my_name` as a caption under the title.
  */
 #include "scr_settings.h"
 
 #include <math.h>
 #include <stdio.h>
 
-#include "ff_intent.h" /* S16c1/S11b — the emit seam */
+#include "ff_intent.h" /* the emit seam; FF_INTENT_CALIBRATE_TOUCH */
 #include "ff_layout.h"
-#include "ff_settings.h" /* FF_SHARE_LIVE/_ZONES/_GHOST (core/include/ff_settings.h) */
+#include "ff_settings.h" /* FF_SHARE_LIVE/_ZONES/_GHOST, FF_BRIGHTNESS_*_PCT */
 #include "ff_theme.h"
-#include "ff_wall.h" /* FF_WALL_OFFSET_MIN_LO/_HI — the UTC-offset stepper's own bounds */
 
 /* ---------------------------------------------------------------------
- * Layout constants — see this file's header comment for the row budget.
+ * Palette roles (redesign spec).
+ * ------------------------------------------------------------------- */
+#define FF_SETTINGS_PILL_RADIUS 12
+
+/* Active/selected toggle pill: amber fill, near-black ink. */
+#define FF_SETTINGS_PILL_ON_BG  FF_THEME_COLOR_AMBER
+#define FF_SETTINGS_PILL_ON_FG  FF_THEME_COLOR_BG
+/* Inactive toggle pill: surface fill, muted text. */
+#define FF_SETTINGS_PILL_OFF_BG FF_THEME_COLOR_SURFACE
+#define FF_SETTINGS_PILL_OFF_FG FF_THEME_COLOR_MUTED
+/* Value pill: surface fill, primary ink. */
+#define FF_SETTINGS_PILL_VAL_BG FF_THEME_COLOR_SURFACE
+#define FF_SETTINGS_PILL_VAL_FG FF_THEME_COLOR_INK
+
+/* ---------------------------------------------------------------------
+ * Layout constants.
  * ------------------------------------------------------------------- */
 
 #define FF_SETTINGS_SAFETY_PX 10.0f /* see scr_compose.c's FF_COMPOSE_SAFETY_PX — same rationale */
 
-#define FF_SETTINGS_HEADER_Y 16
+/* --- Pinned, horizontally-centered header. A fixed-width block so the back
+ * button's absolute position is deterministic regardless of the (variable-
+ * length, clipped) name: back button on the left, a title/name text column
+ * to its right, the whole block centered in the top band. Placed at
+ * FF_SETTINGS_HDR_Y (low enough that the 46px button's top corners clear the
+ * r=206 circle even at the block's leftmost x). --- */
+#define FF_SETTINGS_BACK_SZ   46
+#define FF_SETTINGS_HDR_GAP   10
+#define FF_SETTINGS_HDR_TEXT_W 140
+#define FF_SETTINGS_HDR_W     (FF_SETTINGS_BACK_SZ + FF_SETTINGS_HDR_GAP + FF_SETTINGS_HDR_TEXT_W) /* 196 */
+#define FF_SETTINGS_HDR_X     ((FF_THEME_PUCK_PX - FF_SETTINGS_HDR_W) / 2)                          /* 108 */
+#define FF_SETTINGS_HDR_Y     34
+#define FF_SETTINGS_HDR_TEXT_X (FF_SETTINGS_HDR_X + FF_SETTINGS_BACK_SZ + FF_SETTINGS_HDR_GAP)      /* 164 */
+#define FF_SETTINGS_TITLE_Y   (FF_SETTINGS_HDR_Y + 4)  /* 38 — vertically nestled against the button */
+#define FF_SETTINGS_NAME_Y    (FF_SETTINGS_TITLE_Y + 22) /* 60 */
 
-/* Back button — S15 slice c enlarged it past the 44px floor (maintainer
- * field feedback: the Settings back button was hard to hit even sober; the
- * escape hatch someone most needs in a hurry must be an obvious, comfortable
- * 2am/gloves target). 44x44 -> FF_SETTINGS_BACK_W x FF_SETTINGS_BACK_H
- * (64x46). The enlargement is WIDTH-led (64, +45%): the 412 round glass
- * (radius 206) is materially tighter at the top pole than the old 440 puck,
- * and here the button competes for vertical space with a six-row settings
- * stack that must ALL clear the hit floor and stay inside a smaller circle —
- * so height grows only to 46 (past the floor with margin) while width, which
- * costs no vertical budget, carries the rest. A left-anchored button near
- * the top is pushed toward centre-x by the narrowing circle, so rather than a
- * small pill tucked left of a puck-centred title (which no longer fits beside
- * a bigger button), the back button and the SETTINGS title/name form one
- * left-to-right header GROUP whose top corners stay inside the circle.
- * Hit-target-sweep margins are in the PR body; the _Static_assert below
- * proves the 6-row stack still fits the puck square. (A materially BIGGER
- * back button at 412 would mean dropping a settings row — flagged for the
- * maintainer to judge on glass.) */
-#define FF_SETTINGS_BACK_W 64
-#define FF_SETTINGS_BACK_H 46
-#define FF_SETTINGS_HEADER_H FF_SETTINGS_BACK_H
+/* The scroll viewport: an inscribed rectangle spanning the MIDDLE band, well
+ * clear of the header above and the bottom curve below. Its x-inset is the
+ * round-safe margin over its whole span (bound by the lower edge, nearest the
+ * bottom pole) so a row shown anywhere in the viewport is on-glass. At the
+ * lower edge (y=356) the circle half-width is ~141px -> inner width ~262px
+ * after the safety inset — ample for the rows; lower rows simply scroll. */
+#define FF_SETTINGS_LIST_Y 100
+#define FF_SETTINGS_LIST_H 256 /* 100..356 */
 
-/* Left edge of the back button, and the x the title/name column hangs off
- * (to the right of the button). 127 keeps the button's top-left corner
- * inside the r=206 circle at FF_SETTINGS_HEADER_Y=16 ((127,16) is 42.34k <=
- * 206^2=42.44k from centre (206,206)) while placing the [back | SETTINGS]
- * group so it reads roughly centred on the puck's own x. */
-#define FF_SETTINGS_BACK_X 127
-#define FF_SETTINGS_HEADER_TEXT_X (FF_SETTINGS_BACK_X + FF_SETTINGS_BACK_W + 10) /* 201 */
-#define FF_SETTINGS_TITLE_Y (FF_SETTINGS_HEADER_Y + 2)
-#define FF_SETTINGS_NAME_Y  (FF_SETTINGS_HEADER_Y + 26)
-#define FF_SETTINGS_NAME_H 12 /* caption, not a control — no hit-target floor applies */
+/* Rows — 48px tall clears the 44 floor with margin; 14px inter-row gap clears
+ * the 8px adjacency floor with real slack. */
+#define FF_SETTINGS_ROW_H   48
+#define FF_SETTINGS_ROW_GAP 14
+#define FF_SETTINGS_ROW_STEP (FF_SETTINGS_ROW_H + FF_SETTINGS_ROW_GAP) /* 62 */
 
-/* Rows enlarged from the 44px floor to FF_SETTINGS_ROW_H (S15c). At 412 the
- * six-row stack is vertically budget-bound — the last row sits close to the
- * bottom pole where the circle has all but closed — so the rows grow as far
- * as the assert and the bottom row's own in-circle width allow (its
- * full-width chip must stay wide enough for "COLORBLIND OFF" at 412), not to
- * an arbitrary large size. Folding the name caption INTO the header group
- * (beside the title, not on its own line above the rows) is what buys the
- * rows the vertical room to clear the floor at all. */
-#define FF_SETTINGS_ROW_H   46
-#define FF_SETTINGS_ROW_GAP 10
+/* Toggle-pair pills: two >=44px pills at a tight 6px gap (safe because a
+ * pair shares one callback — see sweep composite-control exclusion). */
+#define FF_SETTINGS_TOGGLE_PILL_W 58
+#define FF_SETTINGS_TOGGLE_GAP    6
+#define FF_SETTINGS_TOGGLE_GRP_W  (2 * FF_SETTINGS_TOGGLE_PILL_W + FF_SETTINGS_TOGGLE_GAP) /* 122 */
 
-/* Separation between the two chips sharing a row (units+share,
- * haptics+night-glow). PR #68 UX review (Bailey, blocking finding 2):
- * the original 10px was under 1mm of dead space at this puck's ~12px/mm
- * scale (37mm face, per docs/review/ux-raver.md) — "a mis-tap trap ...
- * not just a vibe". 24px (~2mm) gives each 44px-tall pill a real gap a
- * kandi'd or gloved thumb can land in without ambiguity which chip it
- * hit; re-checked against `test_face_hit_targets.c`'s sweep afterward
- * (each chip individually still clears the 44px floor and stays inside
- * the round glass at the widened width). */
-#define FF_SETTINGS_CHIP_GAP 24
-#define FF_SETTINGS_ROW_STEP (FF_SETTINGS_ROW_H + FF_SETTINGS_ROW_GAP)
-/* +8 (not a smaller pad): the enlarged back button's bottom edge sits at
- * HEADER_Y + BACK_H = 62, and row 0's chips span the full width directly
- * below it, so this pad IS the header->row0 hit-target GAP — it must clear
- * FF_HIT_MIN_GAP_PX (8). At 412 this stack is packed tight enough that 8 is
- * the value, not a comfort margin; flagged in the PR body. */
-#define FF_SETTINGS_ROWS_Y0 (FF_SETTINGS_HEADER_Y + FF_SETTINGS_HEADER_H + 8)
+/* Value pill (WATER/QUIET): one pill wide enough for "120 MIN"/"4A-10A". */
+#define FF_SETTINGS_VALUE_PILL_W 96
+#define FF_SETTINGS_VALUE_GAP    12
 
-#define FF_SETTINGS_ROW0_Y (FF_SETTINGS_ROWS_Y0)                        /* units + share       */
-#define FF_SETTINGS_ROW1_Y (FF_SETTINGS_ROW0_Y + FF_SETTINGS_ROW_STEP)  /* haptics + night glow */
-#define FF_SETTINGS_ROW2_Y (FF_SETTINGS_ROW1_Y + FF_SETTINGS_ROW_STEP)  /* water nudge          */
-#define FF_SETTINGS_ROW3_Y (FF_SETTINGS_ROW2_Y + FF_SETTINGS_ROW_STEP)  /* quiet hours          */
-#define FF_SETTINGS_ROW4_Y (FF_SETTINGS_ROW3_Y + FF_SETTINGS_ROW_STEP)  /* UTC offset stepper   */
-/* S17 slice a: the colorblind toggle, the lowest row. S15c re-fit the whole
- * stack to the 412 puck: with FF_SETTINGS_ROWS_Y0=70, ROW_STEP=56 and
- * ROW_H=46, this row spans y=350..396, leaving 16px of square-bound slack
- * below it (the _Static_assert is the real proof) and — more bindingly — a
- * ~138px in-circle width for its full-width chip at y=396, which is what
- * keeps "COLORBLIND OFF" from overflowing at 412 (verified in the golden). */
-#define FF_SETTINGS_ROW5_Y (FF_SETTINGS_ROW4_Y + FF_SETTINGS_ROW_STEP)  /* colorblind toggle    */
+/* --- Container-relative row y-positions (0 = top of the scroll content). ---
+ * BRIGHTNESS leads (its own taller block: caption over a slider), then the
+ * uniform-step rows. */
+#define FF_SETTINGS_REL_BRIGHT_CAP_Y 0
+#define FF_SETTINGS_BRIGHT_CAP_H     22
+#define FF_SETTINGS_REL_SLIDER_Y     30
+/* Transparent hit strip. Raised from the 44 floor to 56 after field-test:
+ * the minimum-size strip was hard to land a drag on. 56 keeps a comfortable
+ * >=6px (in fact the full FF_SETTINGS_ROW_GAP, 14px) gap to the UNITS row
+ * below — every REL_*_Y position downstream is derived from
+ * FF_SETTINGS_BRIGHT_BLOCK_H, so growing this constant slides the whole list
+ * down uniformly and the slider->UNITS gap stays exactly ROW_GAP (the
+ * scroll-aware tap-target sweep re-verifies 0 adjacency violations). The
+ * list simply scrolls a little further, which is fine (S21's whole point). */
+#define FF_SETTINGS_SLIDER_H         56
+#define FF_SETTINGS_BRIGHT_BLOCK_H   (FF_SETTINGS_REL_SLIDER_Y + FF_SETTINGS_SLIDER_H) /* 74 */
 
-_Static_assert(FF_SETTINGS_ROW5_Y + FF_SETTINGS_ROW_H <= FF_THEME_PUCK_PX,
-               "settings' last row must stay inside the puck's own square, let alone its circle");
+#define FF_SETTINGS_REL_UNITS_Y (FF_SETTINGS_BRIGHT_BLOCK_H + FF_SETTINGS_ROW_GAP)     /* 88  */
+#define FF_SETTINGS_REL_SHARE_Y (FF_SETTINGS_REL_UNITS_Y + FF_SETTINGS_ROW_STEP)       /* 150 */
+#define FF_SETTINGS_REL_HAPTICS_Y (FF_SETTINGS_REL_SHARE_Y + FF_SETTINGS_ROW_STEP)     /* 212 */
+#define FF_SETTINGS_REL_GLOW_Y  (FF_SETTINGS_REL_HAPTICS_Y + FF_SETTINGS_ROW_STEP)     /* 274 */
+#define FF_SETTINGS_REL_WATER_Y (FF_SETTINGS_REL_GLOW_Y + FF_SETTINGS_ROW_STEP)        /* 336 */
+#define FF_SETTINGS_REL_QUIET_Y (FF_SETTINGS_REL_WATER_Y + FF_SETTINGS_ROW_STEP)       /* 398 */
+#define FF_SETTINGS_REL_CB_Y    (FF_SETTINGS_REL_QUIET_Y + FF_SETTINGS_ROW_STEP)       /* 460 */
+#define FF_SETTINGS_REL_CAL_Y   (FF_SETTINGS_REL_CB_Y + FF_SETTINGS_ROW_STEP)          /* 522 */
+#define FF_SETTINGS_CONTENT_H   (FF_SETTINGS_REL_CAL_Y + FF_SETTINGS_ROW_H)            /* 570 */
 
 /**
  * settings_safe_margin_x — thin int32_t/ceil wrapper around
- * ff_layout_safe_margin_x, bound to this puck's own center/radius
- * (ff_theme.h) and this file's safety buffer — identical shape to
- * scr_compose.c's compose_safe_margin_x / scr_signals.c's
- * signals_safe_margin_x (both wrap the same shared primitive around the
- * same puck geometry).
+ * ff_layout_safe_margin_x, bound to this puck's own center/radius and this
+ * file's safety buffer — identical shape to scr_compose.c's
+ * compose_safe_margin_x. Called ONCE, over the scroll container's whole
+ * vertical span, to inset the viewport rectangle inside the round glass (its
+ * lower edge, nearest the bottom pole, binds).
  */
 static int32_t settings_safe_margin_x(int32_t top_y, int32_t h)
 {
@@ -175,19 +198,76 @@ static int32_t settings_safe_margin_x(int32_t top_y, int32_t h)
 }
 
 /* ---------------------------------------------------------------------
- * Static build-time snapshot — same convention as scr_compose.c's
- * `s_mode`: every callback below needs to compute "current -> next" from
- * the settings this screen was built with, and LVGL event callbacks carry
- * no argument beyond `user_data`. A snapshot, not live state: nothing
- * here mutates it, and a tap only ever reports through the intent seam
- * (ff_scr_settings_build resets this at entry, so repeated calls within
- * one process — not currently done anywhere, see scr_compose.c's own note
- * on this hazard — start from a clean slate).
+ * Static build-time snapshot — same convention as scr_compose.c's `s_mode`:
+ * every callback computes "current -> next" from the settings this screen was
+ * built with; a tap only ever reports through the intent seam.
  * ------------------------------------------------------------------- */
 static ff_app_settings_t s_settings;
 
 /* ---------------------------------------------------------------------
- * Back "<" -> FF_INTENT_BACK (already routed — S16 pops the modal route).
+ * Scroll-position preservation across the in-place rebuild every
+ * settings-change intent triggers (#bug4). `ff_scr_settings_build` fully
+ * tears down and rebuilds at scroll 0, so without this a toggle jumped the
+ * list back to the top. We remember the live list's scroll offset (updated
+ * on every LV_EVENT_SCROLL) and restore it after each rebuild. A FRESH
+ * entry into Settings from another face resets it to 0 via
+ * ff_scr_settings_reset_scroll (called by the face dispatcher on the
+ * not-Settings -> Settings transition) — see this file's callers.
+ * ------------------------------------------------------------------- */
+static lv_obj_t *s_list;      /* the live scroll list (NULL before first build / after teardown) */
+static int32_t s_scroll_y;    /* last observed vertical scroll offset, restored on rebuild */
+
+/* ---------------------------------------------------------------------
+ * Brightness stepper (#bug2). Brightness is a −/+ stepper, NOT a slider: a
+ * draggable control inside a vertical scroll list fights the list's own scroll
+ * gesture (the slider captured the press, so a vertical drag starting on it
+ * could not scroll — many device rounds confirmed no reliable way to
+ * disambiguate). Two discrete tap targets (lv_button CLICKED) have no drag
+ * semantics at all, so every drag scrolls the list and only a tap steps
+ * brightness — the conflict cannot exist. A non-interactive amber level bar +
+ * "%" label show the value; both are updated on each step.
+ * ------------------------------------------------------------------- */
+static lv_obj_t *s_bright_fill; /* amber level-bar fill (width ∝ pct); non-interactive */
+static lv_obj_t *s_bright_pct;  /* the "NN%" label */
+static int32_t s_bright_bar_w;  /* the level bar's full width (the fill spans a fraction of it) */
+#define FF_SETTINGS_BRIGHT_STEP 10 /* percent added/removed per −/+ tap */
+#define FF_SETTINGS_DRAG_LOCK_PX 8     /* horizontal travel before a drag counts as a brightness adjust */
+
+/* LV_EVENT_SCROLL — remember where the user scrolled to, so the next in-place
+ * rebuild (a settings-change intent tears down and rebuilds the whole screen)
+ * can restore it instead of snapping to the top (#bug4). Kept light: no repaint
+ * here, so scrolling stays smooth (an every-frame full-screen invalidate made
+ * scrolling laggy). */
+static void settings_scroll_cb(lv_event_t *e)
+{
+    lv_obj_t *list = lv_event_get_target(e);
+    s_scroll_y = lv_obj_get_scroll_y(list);
+    /* #bug5 — repaint each scroll frame so the moving amber elements (brightness
+     * fill, an active pill, the Calibrate border) leave no partial-strip-flush
+     * residue during an active scroll. A LIST-only repaint left residue in the
+     * round-glass margins BESIDE the list (the amber bleeds past the row edges),
+     * and a whole-SCREEN repaint per frame was laggy — so repaint a FULL-WIDTH
+     * band at just the list's height: it covers the sideways bleed but skips the
+     * header, staying smooth. */
+    lv_area_t band = {.x1 = 0,
+                      .y1 = FF_SETTINGS_LIST_Y,
+                      .x2 = FF_THEME_PUCK_PX - 1,
+                      .y2 = FF_SETTINGS_LIST_Y + FF_SETTINGS_LIST_H - 1};
+    lv_obj_invalidate_area(lv_screen_active(), &band);
+}
+
+/* LV_EVENT_SCROLL_END — the scroll has settled. Repaint the whole screen ONCE
+ * so any partial-strip-flush residue on the device is overpainted, without the
+ * per-frame cost that made scrolling laggy (#bug5). Sim-invisible (goldens
+ * render at a fixed offset with no live scroll). */
+static void settings_scroll_end_cb(lv_event_t *e)
+{
+    (void)e;
+    lv_obj_invalidate(lv_screen_active());
+}
+
+/* ---------------------------------------------------------------------
+ * Back "<" -> FF_INTENT_BACK.
  * ------------------------------------------------------------------- */
 static void settings_back_cb(lv_event_t *e)
 {
@@ -197,7 +277,7 @@ static void settings_back_cb(lv_event_t *e)
 }
 
 /* ---------------------------------------------------------------------
- * Generic int-setting emitter — every chip below funnels through this.
+ * Generic int-setting emitter — every control below funnels through this.
  * ------------------------------------------------------------------- */
 static void settings_emit_int(ff_setting_id_t id, int32_t v)
 {
@@ -208,17 +288,12 @@ static void settings_emit_int(ff_setting_id_t id, int32_t v)
 }
 
 /* ---------------------------------------------------------------------
- * Chip widget: a pill button with a centered label, used for every
- * cycling value in this screen (units, share mode, haptics, night glow,
- * water, quiet). Deliberately the SAME shape scr_compose.c's
- * compose_make_key and scr_signals.c's signals_make_reply_button already
- * use — one more widget-shape convention this codebase repeats rather
- * than inventing a fourth (issue #24 tracks the eventual shared-widget
- * extraction; this file follows the existing pattern in the meantime,
- * same as those two did).
+ * Pill widget: a rounded button with a centered label. bg/fg carry the pill
+ * role (active / inactive / value). `letter_space` is applied to the label.
  * ------------------------------------------------------------------- */
-static lv_obj_t *settings_make_chip(lv_obj_t *parent, char const *text, int32_t x, int32_t y, int32_t w, int32_t h,
-                                     uint32_t bg_hex, uint32_t fg_hex, lv_event_cb_t cb, void *user_data)
+static lv_obj_t *settings_make_pill(lv_obj_t *parent, char const *text, int32_t x, int32_t y, int32_t w, int32_t h,
+                                     uint32_t bg_hex, uint32_t fg_hex, int32_t letter_space, lv_event_cb_t cb,
+                                     void *user_data)
 {
     lv_obj_t *btn = lv_button_create(parent);
     lv_obj_remove_style_all(btn);
@@ -226,83 +301,123 @@ static lv_obj_t *settings_make_chip(lv_obj_t *parent, char const *text, int32_t 
     lv_obj_set_pos(btn, x, y);
     lv_obj_set_style_bg_color(btn, lv_color_hex(bg_hex), 0);
     lv_obj_set_style_bg_opa(btn, LV_OPA_COVER, 0);
-    lv_obj_set_style_radius(btn, LV_RADIUS_CIRCLE, 0);
-    lv_obj_add_event_cb(btn, cb, LV_EVENT_CLICKED, user_data);
+    lv_obj_set_style_radius(btn, FF_SETTINGS_PILL_RADIUS, 0);
+    if (cb != NULL) {
+        lv_obj_add_event_cb(btn, cb, LV_EVENT_CLICKED, user_data);
+    }
 
     lv_obj_t *label = lv_label_create(btn);
     lv_label_set_text(label, text);
     lv_obj_set_style_text_font(label, FF_THEME_FONT_CHIP, 0);
     lv_obj_set_style_text_color(label, lv_color_hex(fg_hex), 0);
+    if (letter_space != 0) {
+        lv_obj_set_style_text_letter_space(label, letter_space, 0);
+    }
     lv_obj_center(label);
     return btn;
 }
 
-/**
- * settings_build_row_label — the dim row caption (e.g. "WATER NUDGE"),
- * now itself a tap target forwarding to `cb` (PR #68 UX review, Bailey,
- * non-blocking finding: tapping the label half of a row used to be dead
- * air — no ripple, no state change — which at 2 a.m. reads as "is this
- * thing frozen" rather than "I tapped the wrong half"). The label sits
- * inside a `w`x`h` hit container spanning the row's own height (so it
- * clears the 44px floor by construction, same technique
- * `signals_build_row`'s icon+text rows already use) rather than the bare
- * label growing an `ext_click_area` of its own — a container gives the
- * label a real, checkable box `test_face_hit_targets.c`'s sweep can
- * assert on directly.
- */
-static void settings_build_row_label(lv_obj_t *parent, char const *text, int32_t x, int32_t y, int32_t w, int32_t h,
-                                      lv_event_cb_t cb)
+/* ---------------------------------------------------------------------
+ * Row container — a transparent, non-clickable, non-scrolling box the row's
+ * label + control(s) live inside, positioned in list-relative coords.
+ * ------------------------------------------------------------------- */
+static lv_obj_t *settings_make_row(lv_obj_t *list, int32_t rel_y, int32_t row_w)
 {
-    lv_obj_t *hit = lv_obj_create(parent);
-    lv_obj_remove_style_all(hit);
-    lv_obj_set_size(hit, w, h);
-    lv_obj_set_pos(hit, x, y);
-    lv_obj_clear_flag(hit, LV_OBJ_FLAG_SCROLLABLE);
-    if (cb != NULL) {
-        lv_obj_add_flag(hit, LV_OBJ_FLAG_CLICKABLE);
-        lv_obj_add_event_cb(hit, cb, LV_EVENT_CLICKED, NULL);
-    } else {
-        lv_obj_clear_flag(hit, LV_OBJ_FLAG_CLICKABLE);
-    }
+    lv_obj_t *row = lv_obj_create(list);
+    lv_obj_remove_style_all(row);
+    lv_obj_set_size(row, row_w, FF_SETTINGS_ROW_H);
+    lv_obj_set_pos(row, 0, rel_y);
+    lv_obj_set_style_pad_all(row, 0, 0);
+    lv_obj_clear_flag(row, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+    return row;
+}
 
-    lv_obj_t *lbl = lv_label_create(hit);
+/* A plain left caption (uppercase, muted), vertically centered in the row. */
+static void settings_row_caption(lv_obj_t *row, char const *text)
+{
+    lv_obj_t *lbl = lv_label_create(row);
     lv_label_set_text(lbl, text);
     lv_obj_set_style_text_font(lbl, FF_THEME_FONT_LABEL, 0);
-    lv_obj_set_style_text_color(lbl, lv_color_hex(FF_THEME_COLOR_DIM), 0);
+    lv_obj_set_style_text_color(lbl, lv_color_hex(FF_THEME_COLOR_MUTED), 0);
+    lv_obj_set_style_text_letter_space(lbl, 2, 0);
     lv_obj_align(lbl, LV_ALIGN_LEFT_MID, 0, 0);
 }
 
 /* ---------------------------------------------------------------------
- * Row 0: UNITS (FT/M) + SHARE (LIVE/ZONES/GHOST). Two half-width chips.
+ * Toggle-pair row: label + two pills [left|right], the active one amber.
+ * BOTH pills share `cb` with NULL user_data — one logical two-state control
+ * (tap either to flip) and one composite pair to the adjacency sweep.
+ * active_side: 0 = left pill active, 1 = right, -1 = neither (honest render
+ * of a persisted value that maps to neither shown option).
  * ------------------------------------------------------------------- */
+static void settings_build_toggle_row(lv_obj_t *list, int32_t rel_y, int32_t row_w, char const *label,
+                                      char const *left_text, char const *right_text, int active_side,
+                                      lv_event_cb_t cb)
+{
+    lv_obj_t *row = settings_make_row(list, rel_y, row_w);
+    settings_row_caption(row, label);
 
+    int32_t const grp_x = row_w - FF_SETTINGS_TOGGLE_GRP_W;
+    uint32_t const l_bg = (active_side == 0) ? FF_SETTINGS_PILL_ON_BG : FF_SETTINGS_PILL_OFF_BG;
+    uint32_t const l_fg = (active_side == 0) ? FF_SETTINGS_PILL_ON_FG : FF_SETTINGS_PILL_OFF_FG;
+    uint32_t const r_bg = (active_side == 1) ? FF_SETTINGS_PILL_ON_BG : FF_SETTINGS_PILL_OFF_BG;
+    uint32_t const r_fg = (active_side == 1) ? FF_SETTINGS_PILL_ON_FG : FF_SETTINGS_PILL_OFF_FG;
+
+    settings_make_pill(row, left_text, grp_x, 0, FF_SETTINGS_TOGGLE_PILL_W, FF_SETTINGS_ROW_H, l_bg, l_fg, 0, cb, NULL);
+    settings_make_pill(row, right_text, grp_x + FF_SETTINGS_TOGGLE_PILL_W + FF_SETTINGS_TOGGLE_GAP, 0,
+                       FF_SETTINGS_TOGGLE_PILL_W, FF_SETTINGS_ROW_H, r_bg, r_fg, 0, cb, NULL);
+}
+
+/* ---------------------------------------------------------------------
+ * Value row: a clickable label (no dead left half) + one value pill, both
+ * wired to the same `cb` (composite to the sweep). `dim` renders the pill
+ * muted instead of ink (an honest "off"/unset value).
+ * ------------------------------------------------------------------- */
+static void settings_build_value_row(lv_obj_t *list, int32_t rel_y, int32_t row_w, char const *label,
+                                     char const *value, bool dim, lv_event_cb_t cb)
+{
+    lv_obj_t *row = settings_make_row(list, rel_y, row_w);
+
+    int32_t const label_w = row_w - FF_SETTINGS_VALUE_PILL_W - FF_SETTINGS_VALUE_GAP;
+
+    /* Clickable hit box wrapping the caption (its DIRECT child is the label —
+     * the label-tap test keys off parent(label) being clickable). */
+    lv_obj_t *hit = lv_obj_create(row);
+    lv_obj_remove_style_all(hit);
+    lv_obj_set_size(hit, label_w, FF_SETTINGS_ROW_H);
+    lv_obj_set_pos(hit, 0, 0);
+    lv_obj_clear_flag(hit, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(hit, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(hit, cb, LV_EVENT_CLICKED, NULL);
+
+    lv_obj_t *lbl = lv_label_create(hit);
+    lv_label_set_text(lbl, label);
+    lv_obj_set_style_text_font(lbl, FF_THEME_FONT_LABEL, 0);
+    lv_obj_set_style_text_color(lbl, lv_color_hex(FF_THEME_COLOR_MUTED), 0);
+    lv_obj_set_style_text_letter_space(lbl, 2, 0);
+    lv_obj_align(lbl, LV_ALIGN_LEFT_MID, 0, 0);
+
+    uint32_t const fg = dim ? FF_THEME_COLOR_MUTED : FF_SETTINGS_PILL_VAL_FG;
+    settings_make_pill(row, value, row_w - FF_SETTINGS_VALUE_PILL_W, 0, FF_SETTINGS_VALUE_PILL_W, FF_SETTINGS_ROW_H,
+                       FF_SETTINGS_PILL_VAL_BG, fg, 0, cb, NULL);
+}
+
+/* ---------------------------------------------------------------------
+ * UNITS (FT|MI).
+ * ------------------------------------------------------------------- */
 static void settings_units_cb(lv_event_t *e)
 {
     (void)e;
     settings_emit_int(FF_SETTING_IMPERIAL, s_settings.imperial ? 0 : 1);
 }
 
-/**
- * ZONES is deliberately NOT cycled into (PR #68 UX review, Bailey,
- * blocking finding 1). Per docs/specs/S11-settings.md's Behavior section
- * ("v1: LIVE/GHOST honored; ZONES=LIVE + issue"), selecting ZONES in this
- * build does not change sharing behavior from LIVE at all — cycling it in
- * as a third, equally-confident amber option would let someone pick
- * "zones only" believing they've restricted their share radius when they
- * haven't, which for a location-privacy control is the worst possible
- * place for a silent no-op (the checklist's "would I ever follow wrong
- * data confidently" item, and yes, here). Fixed as reviewed: LIVE<->GHOST
- * only, a plain two-stop loop, until the ZONES backend (spec slice c)
- * ships and this comment comes out — NOT grayed out or marked
- * "(soon)": an unexplained disabled option at 2 a.m. reads as broken,
- * and absence is cleaner than a control that announces its own
- * incompleteness (per the review's own instruction).
- *
- * If `share_mode` somehow already reads FF_SHARE_ZONES (e.g. a value
- * persisted by some future build that finishes the backend and is then
- * downgraded), one tap moves it to GHOST — same two-stop loop, never
- * back into ZONES from a tap either way.
- */
+/* ---------------------------------------------------------------------
+ * SHARE (LIVE|GHOST). ZONES is deliberately NOT cycled into (PR #68 UX
+ * review, blocking finding 1): selecting ZONES does not change sharing
+ * behavior from LIVE in v1, so a tap moves LIVE<->GHOST only. A persisted
+ * ZONES renders as neither pill active and one tap moves it to GHOST.
+ * ------------------------------------------------------------------- */
 static void settings_share_cb(lv_event_t *e)
 {
     (void)e;
@@ -310,35 +425,9 @@ static void settings_share_cb(lv_event_t *e)
     settings_emit_int(FF_SETTING_SHARE_MODE, next);
 }
 
-static char const *settings_share_name(uint8_t mode)
-{
-    switch (mode) {
-    case FF_SHARE_LIVE: return "LIVE";
-    case FF_SHARE_ZONES: return "ZONES";
-    case FF_SHARE_GHOST: return "GHOST";
-    default: return "?";
-    }
-}
-
-static void settings_build_row0(lv_obj_t *parent)
-{
-    int32_t margin = settings_safe_margin_x(FF_SETTINGS_ROW0_Y, FF_SETTINGS_ROW_H);
-    int32_t row_w = FF_THEME_PUCK_PX - 2 * margin;
-    int32_t gap = FF_SETTINGS_CHIP_GAP;
-    int32_t units_w = (row_w - gap) * 2 / 5;
-    int32_t share_w = row_w - gap - units_w;
-
-    settings_make_chip(parent, s_settings.imperial ? "FT" : "M", margin, FF_SETTINGS_ROW0_Y, units_w,
-                        FF_SETTINGS_ROW_H, FF_THEME_COLOR_SURFACE, FF_THEME_COLOR_INK, settings_units_cb, NULL);
-    settings_make_chip(parent, settings_share_name(s_settings.share_mode), margin + units_w + gap,
-                        FF_SETTINGS_ROW0_Y, share_w, FF_SETTINGS_ROW_H, FF_THEME_COLOR_SURFACE, FF_THEME_COLOR_AMBER,
-                        settings_share_cb, NULL);
-}
-
 /* ---------------------------------------------------------------------
- * Row 1: HAPTICS + NIGHT GLOW. Two half-width on/off chips.
+ * HAPTICS / GLOW / COLORBLIND — plain booleans.
  * ------------------------------------------------------------------- */
-
 static void settings_haptics_cb(lv_event_t *e)
 {
     (void)e;
@@ -351,28 +440,15 @@ static void settings_night_glow_cb(lv_event_t *e)
     settings_emit_int(FF_SETTING_NIGHT_GLOW, s_settings.night_glow ? 0 : 1);
 }
 
-static void settings_build_row1(lv_obj_t *parent)
+static void settings_colorblind_cb(lv_event_t *e)
 {
-    int32_t margin = settings_safe_margin_x(FF_SETTINGS_ROW1_Y, FF_SETTINGS_ROW_H);
-    int32_t row_w = FF_THEME_PUCK_PX - 2 * margin;
-    int32_t gap = FF_SETTINGS_CHIP_GAP;
-    int32_t half_w = (row_w - gap) / 2;
-
-    settings_make_chip(parent, s_settings.haptics ? "BUZZ ON" : "BUZZ OFF", margin, FF_SETTINGS_ROW1_Y, half_w,
-                        FF_SETTINGS_ROW_H, FF_THEME_COLOR_SURFACE,
-                        s_settings.haptics ? FF_THEME_COLOR_LIVE_GREEN : FF_THEME_COLOR_DIM, settings_haptics_cb,
-                        NULL);
-    settings_make_chip(parent, s_settings.night_glow ? "GLOW ON" : "GLOW OFF", margin + half_w + gap,
-                        FF_SETTINGS_ROW1_Y, half_w, FF_SETTINGS_ROW_H, FF_THEME_COLOR_SURFACE,
-                        s_settings.night_glow ? FF_THEME_COLOR_LIVE_GREEN : FF_THEME_COLOR_DIM,
-                        settings_night_glow_cb, NULL);
+    (void)e;
+    settings_emit_int(FF_SETTING_COLORBLIND, s_settings.colorblind ? 0 : 1);
 }
 
 /* ---------------------------------------------------------------------
- * Row 2: WATER NUDGE — label + a chip cycling the spec's v1 presets
- * (off/45/90/120, docs/specs/S11-settings.md's Behavior section).
+ * WATER NUDGE — label + value pill cycling the spec's v1 presets.
  * ------------------------------------------------------------------- */
-
 static uint16_t const kWaterPresets[] = {0, 45, 90, 120};
 enum { N_WATER_PRESETS = sizeof(kWaterPresets) / sizeof(kWaterPresets[0]) };
 
@@ -400,16 +476,10 @@ static void settings_water_label(char *buf, size_t n, uint16_t water_min)
 }
 
 /* ---------------------------------------------------------------------
- * Row 3: QUIET HOURS — label + a chip cycling the spec's v1 presets
- * (off/2a-8a/4a-10a). Each preset sets BOTH quiet_from_min/quiet_to_min,
- * which are two separate ff_settings_t fields (core/include/ff_settings.h)
- * and so two separate FF_INTENT_SETTING_SET emits per tap — the shell
- * persists once per changed field (shell_setting_set's own "changed only"
- * gate), not once per tap, so a tap that changes both fields still only
- * ever writes twice, never in a torn state a reader could observe between
- * them (both dispatch synchronously, same call stack).
+ * QUIET HOURS — label + value pill cycling the spec's v1 presets. Each
+ * preset sets BOTH quiet_from_min/quiet_to_min, so a tap emits two
+ * FF_INTENT_SETTING_SET; the shell persists once per changed field.
  * ------------------------------------------------------------------- */
-
 typedef struct {
     uint16_t from_min;
     uint16_t to_min;
@@ -452,84 +522,232 @@ static void settings_quiet_cb(lv_event_t *e)
 }
 
 /* ---------------------------------------------------------------------
- * Row 4: UTC OFFSET — "-" / value / "+" stepper, 60-minute steps, clamped
- * to the same [FF_WALL_OFFSET_MIN_LO, FF_WALL_OFFSET_MIN_HI] range
- * ff_shell.c's shell_setting_set validates against (core/include/ff_wall.h)
- * — clamped here too so a tap at either end of the real-world range is a
- * harmless no-op rather than a dead button silently rejected one layer up
- * (CLAUDE.md's "honest data" cuts against a control that looks live but
- * never visibly does anything). Unset (`utc_offset_set == false`) starts
- * from 0 (UTC) on the first tap — there is no "current" numeric value to
- * step from otherwise.
+ * BRIGHTNESS — a "BRIGHTNESS" caption + "%" value, a non-interactive amber
+ * level bar, and a −/+ stepper (two lv_button pills). Each −/+ tap steps the
+ * value and emits it committed; see settings_brightness_step (#bug2).
  * ------------------------------------------------------------------- */
-
-static int32_t settings_utc_base(void)
+static uint8_t settings_brightness_clamped(void)
 {
-    return s_settings.utc_offset_set ? (int32_t)s_settings.utc_offset_min : 0;
+    uint32_t v = s_settings.brightness_pct;
+    if (v < FF_BRIGHTNESS_MIN_PCT) v = FF_BRIGHTNESS_MIN_PCT;
+    if (v > FF_BRIGHTNESS_MAX_PCT) v = FF_BRIGHTNESS_MAX_PCT;
+    return (uint8_t)v;
 }
 
-static void settings_utc_step(int32_t delta)
+/* Emit a brightness setting. The `transient` flag (#bug1) distinguishes a live
+ * preview (the shell applies it to the projected value so the backlight follows,
+ * but does NOT write NVS) from a committed value (persisted once). The −/+
+ * stepper always emits COMMITTED (discrete taps can't thrash NVS the way a live
+ * drag would); the transient path is retained on the intent for a possible
+ * future live control. Either way brightness is kept OUT of the shell render key
+ * (see ff_shell.c's FF_SETTING_BRIGHTNESS handler + shell_render_key note) so a
+ * value change reprograms the backlight without forcing a face rebuild. */
+static void settings_emit_brightness(int32_t v, bool transient)
 {
-    int32_t v = settings_utc_base() + delta;
-    if (v < FF_WALL_OFFSET_MIN_LO) v = FF_WALL_OFFSET_MIN_LO;
-    if (v > FF_WALL_OFFSET_MIN_HI) v = FF_WALL_OFFSET_MIN_HI;
-    settings_emit_int(FF_SETTING_UTC_OFFSET_MIN, v);
+    ff_intent_t in = {.kind = FF_INTENT_SETTING_SET, .u = {0}};
+    in.u.setting.id = FF_SETTING_BRIGHTNESS;
+    in.u.setting.v.i = v;
+    in.u.setting.transient = transient;
+    ff_intent_emit(&in);
 }
 
-static void settings_utc_minus_cb(lv_event_t *e)
+/* Update the amber level-bar fill width and the "%" label to `pct`. Pure screen
+ * work; the fill spans frac(pct) of the bar's full width. */
+static void settings_brightness_update_level(uint8_t pct)
 {
-    (void)e;
-    settings_utc_step(-60);
-}
-
-static void settings_utc_plus_cb(lv_event_t *e)
-{
-    (void)e;
-    settings_utc_step(60);
-}
-
-static void settings_utc_label(char *buf, size_t n, bool set, int16_t off_min)
-{
-    if (!set) {
-        snprintf(buf, n, "UNSET");
-        return;
+    if (s_bright_pct != NULL) {
+        char pctbuf[8];
+        snprintf(pctbuf, sizeof(pctbuf), "%u%%", (unsigned)pct);
+        lv_label_set_text(s_bright_pct, pctbuf);
     }
-    int32_t a = off_min;
-    char sign = (a < 0) ? '-' : '+';
-    if (a < 0) a = -a;
-    snprintf(buf, n, "UTC%c%d:%02d", sign, (int)(a / 60), (int)(a % 60));
+    if (s_bright_fill != NULL) {
+        float const frac =
+            (float)(pct - FF_BRIGHTNESS_MIN_PCT) / (float)(FF_BRIGHTNESS_MAX_PCT - FF_BRIGHTNESS_MIN_PCT);
+        int32_t w = (int32_t)lroundf(frac * (float)s_bright_bar_w);
+        if (w < 1) w = 1;
+        lv_obj_set_width(s_bright_fill, w);
+    }
+}
+
+/* A −/+ tap steps brightness by `delta`, clamped to [MIN, MAX]. Each tap is a
+ * committed change (persisted once); discrete taps can't thrash NVS the way a
+ * drag would, so there is no transient/commit split here. Brightness stays out
+ * of the shell render key (#bug1), so this updates the level in place rather
+ * than rebuilding — and repaints once so the shrinking fill leaves no residue
+ * (#bug5). */
+static void settings_brightness_step(int32_t delta)
+{
+    uint8_t const cur = settings_brightness_clamped();
+    int32_t v = (int32_t)cur + delta;
+    if (v < (int32_t)FF_BRIGHTNESS_MIN_PCT) v = (int32_t)FF_BRIGHTNESS_MIN_PCT;
+    if (v > (int32_t)FF_BRIGHTNESS_MAX_PCT) v = (int32_t)FF_BRIGHTNESS_MAX_PCT;
+    if ((uint8_t)v == cur) {
+        return; /* boundary no-op (− at MIN, + at MAX): nothing changed, don't emit/persist */
+    }
+    s_settings.brightness_pct = (uint8_t)v; /* keep the local copy in step for the next tap */
+    settings_brightness_update_level((uint8_t)v);
+    settings_emit_brightness(v, false /* committed: each step persists once */);
+    lv_obj_invalidate(lv_screen_active());
+}
+
+static void settings_brightness_minus_cb(lv_event_t *e)
+{
+    (void)e;
+    settings_brightness_step(-FF_SETTINGS_BRIGHT_STEP);
+}
+
+static void settings_brightness_plus_cb(lv_event_t *e)
+{
+    (void)e;
+    settings_brightness_step(+FF_SETTINGS_BRIGHT_STEP);
+}
+
+/* A bare non-clickable decoration box. */
+static lv_obj_t *settings_deco_box(lv_obj_t *parent, int32_t x, int32_t y, int32_t w, int32_t h, uint32_t bg_hex,
+                                   int32_t radius)
+{
+    lv_obj_t *o = lv_obj_create(parent);
+    lv_obj_remove_style_all(o);
+    lv_obj_set_size(o, w, h);
+    lv_obj_set_pos(o, x, y);
+    lv_obj_set_style_bg_color(o, lv_color_hex(bg_hex), 0);
+    lv_obj_set_style_bg_opa(o, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(o, radius, 0);
+    lv_obj_clear_flag(o, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_clear_flag(o, LV_OBJ_FLAG_SCROLLABLE);
+    return o;
+}
+
+static void settings_build_brightness(lv_obj_t *list, int32_t row_w)
+{
+    uint8_t const pct = settings_brightness_clamped();
+
+    /* A full-width base covering the whole brightness block, exactly like the
+     * toggle rows' settings_make_row (#bug2). Its SCROLL_CHAIN (default, not
+     * cleared) means a press ANYWHERE on the block chains to the list scroll —
+     * without it, the block's only objects are a 6px level bar and some labels,
+     * so a drag on the empty space around them landed on nothing scrollable and
+     * the list would not scroll while the brightness row was on screen. The −/+
+     * pills sit on top and still take their taps. */
+    lv_obj_t *base = lv_obj_create(list);
+    lv_obj_remove_style_all(base);
+    lv_obj_set_size(base, row_w, FF_SETTINGS_BRIGHT_BLOCK_H);
+    lv_obj_set_pos(base, 0, FF_SETTINGS_REL_BRIGHT_CAP_Y);
+    lv_obj_set_style_pad_all(base, 0, 0);
+    lv_obj_clear_flag(base, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_clear_flag(base, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t *cap = lv_label_create(base);
+    lv_label_set_text(cap, "BRIGHTNESS");
+    lv_obj_set_style_text_font(cap, FF_THEME_FONT_LABEL, 0);
+    lv_obj_set_style_text_color(cap, lv_color_hex(FF_THEME_COLOR_MUTED), 0);
+    lv_obj_set_style_text_letter_space(cap, 2, 0);
+    lv_obj_set_pos(cap, 0, FF_SETTINGS_REL_BRIGHT_CAP_Y);
+
+    char pctbuf[8];
+    snprintf(pctbuf, sizeof(pctbuf), "%u%%", (unsigned)pct);
+    lv_obj_t *pctlbl = lv_label_create(base);
+    lv_label_set_text(pctlbl, pctbuf);
+    lv_obj_set_style_text_font(pctlbl, FF_THEME_FONT_LABEL, 0);
+    lv_obj_set_style_text_color(pctlbl, lv_color_hex(FF_THEME_COLOR_INK), 0);
+    lv_obj_align(pctlbl, LV_ALIGN_TOP_RIGHT, 0, FF_SETTINGS_REL_BRIGHT_CAP_Y);
+    s_bright_pct = pctlbl; /* a step updates this label */
+
+    /* --- Control row: a non-interactive amber level bar (left) + a −/+ stepper
+     * group (right). The stepper is two lv_button pills — CLICKED fires only on
+     * a tap, so a drag anywhere scrolls the list natively and the brightness
+     * control never fights the scroll (#bug2). --- */
+    int32_t const ctrl_h = FF_SETTINGS_SLIDER_H; /* control-area height */
+    /* −/+ are DISTINCT controls (unlike a toggle's paired pills, which share a
+     * callback and are excluded from the adjacency sweep as one composite), so
+     * they need the full 8px hit-target adjacency floor between them. */
+    int32_t const step_gap = 8;
+    int32_t const grp_w = 2 * FF_SETTINGS_TOGGLE_PILL_W + step_gap;
+    int32_t const grp_x = row_w - grp_w;
+    int32_t const pill_h = FF_SETTINGS_ROW_H;
+    int32_t const pill_y = FF_SETTINGS_REL_SLIDER_Y + (ctrl_h - pill_h) / 2;
+
+    /* Level bar: a thin surface track with an amber fill spanning frac(pct). */
+    int32_t const track_h = 6;
+    int32_t const track_y = FF_SETTINGS_REL_SLIDER_Y + (ctrl_h - track_h) / 2;
+    int32_t const bar_w = grp_x - 16; /* stop short of the stepper group */
+    s_bright_bar_w = (bar_w > 0) ? bar_w : 1;
+    settings_deco_box(base, 0, track_y, s_bright_bar_w, track_h, FF_THEME_COLOR_SURFACE, 3); /* track */
+    float const frac = (float)(pct - FF_BRIGHTNESS_MIN_PCT) / (float)(FF_BRIGHTNESS_MAX_PCT - FF_BRIGHTNESS_MIN_PCT);
+    int32_t fill_w = (int32_t)lroundf(frac * (float)s_bright_bar_w);
+    if (fill_w < 1) fill_w = 1;
+    s_bright_fill = settings_deco_box(base, 0, track_y, fill_w, track_h, FF_THEME_COLOR_AMBER, 3);
+
+    /* −/+ stepper pills. */
+    lv_obj_t *minus = settings_make_pill(base, "-", grp_x, pill_y, FF_SETTINGS_TOGGLE_PILL_W, pill_h,
+                                         FF_THEME_COLOR_SURFACE, FF_THEME_COLOR_INK, 0, settings_brightness_minus_cb,
+                                         NULL);
+    lv_obj_t *plus = settings_make_pill(base, "+", grp_x + FF_SETTINGS_TOGGLE_PILL_W + step_gap, pill_y,
+                                        FF_SETTINGS_TOGGLE_PILL_W, pill_h, FF_THEME_COLOR_SURFACE, FF_THEME_COLOR_INK,
+                                        0, settings_brightness_plus_cb, NULL);
+    /* Bump the −/+ glyphs up from the small CHIP font so they read as real
+     * buttons, not tiny marks. */
+    lv_obj_set_style_text_font(lv_obj_get_child(minus, 0), FF_THEME_FONT_HEADLINE, 0);
+    lv_obj_set_style_text_font(lv_obj_get_child(plus, 0), FF_THEME_FONT_HEADLINE, 0);
 }
 
 /* ---------------------------------------------------------------------
- * Row 5: COLORBLIND — S17 slice a. A single boolean with a SINGLE
- * full-width, self-describing chip ("COLORBLIND ON"/"COLORBLIND OFF"),
- * matching HAPTICS/NIGHT GLOW's self-describing-chip-text idiom (row 1)
- * rather than WATER NUDGE/QUIET HOURS' separate-label-plus-chip shape
- * (rows 2/3) — NOT a stylistic choice, a geometry one: this is the
- * LOWEST row on the face, close enough to the puck's pole that
- * `settings_safe_margin_x` returns a much larger margin here than at any
- * row above it (verified: ~139px at this row's y, vs. ~54px at row 2's),
- * which left a rows-2/3-shaped fixed-110px chip only ~28px of label
- * width to work with — under the 44px hit-target floor
- * (`test_face_hit_targets.c` caught this in review; see AGENTS.md's
- * standing brief on why that sweep exists). A single chip spanning the
- * row's own margin-to-margin width scales WITH the available space
- * instead of fighting it, the same way row 1's half-width chips already
- * do. Same green-on/dim-off color convention as haptics/night-glow — a
- * plain toggle, not an "amber means configured" value like water/quiet's
- * presets.
+ * CALIBRATE TOUCH — full-width surface pill, thin amber border, amber text.
+ * On tap emits the shell-owned FF_INTENT_CALIBRATE_TOUCH (the shell runs the
+ * device crosshair flow; a no-op in the sim). An action, not a stored value.
  * ------------------------------------------------------------------- */
-
-static void settings_colorblind_cb(lv_event_t *e)
+static void settings_calibrate_cb(lv_event_t *e)
 {
     (void)e;
-    settings_emit_int(FF_SETTING_COLORBLIND, s_settings.colorblind ? 0 : 1);
+    ff_intent_t in = {.kind = FF_INTENT_CALIBRATE_TOUCH, .u = {0}};
+    ff_intent_emit(&in);
+}
+
+static void settings_build_calibrate_row(lv_obj_t *list, int32_t rel_y, int32_t row_w)
+{
+    lv_obj_t *pill = settings_make_pill(list, "CALIBRATE TOUCH", 0, rel_y, row_w, FF_SETTINGS_ROW_H,
+                                        FF_THEME_COLOR_SURFACE, FF_THEME_COLOR_AMBER, 2, settings_calibrate_cb, NULL);
+    lv_obj_set_style_border_width(pill, 2, 0); /* ~1.5px, rounded up to a device pixel */
+    lv_obj_set_style_border_color(pill, lv_color_hex(FF_THEME_COLOR_AMBER), 0);
+    lv_obj_set_style_border_opa(pill, LV_OPA_40 + LV_OPA_10 / 2 /* ~45% */, 0);
+}
+
+/* ---------------------------------------------------------------------
+ * Opaque header band (#bug5). REPLACES the former BG->transparent edge-fade
+ * scrims. On the RGB565 round panel a gradient scrim leaves a HARD amber
+ * edge (colour-step banding) instead of hiding a row that has scrolled to
+ * the viewport top — the maintainer's device photo showed a stray amber
+ * pill fragment bleeding in just below the pinned header. A SOLID BG band
+ * behind the header occludes that region outright with no gradient to band.
+ *
+ * Spanning the whole top region ABOVE the list viewport (y=0 .. LIST_Y), it
+ * paints solid ink behind the header while leaving the list's first row
+ * (at the viewport top, y=LIST_Y) fully visible — the list clips its own
+ * children to its rectangle (LVGL default; the list never sets
+ * LV_OBJ_FLAG_OVERFLOW_VISIBLE), so a row scrolling up ends cleanly at the
+ * viewport top with the opaque band above it, no translucent overlap. Drawn
+ * on the puck BEFORE the header controls so they render on top of it.
+ *
+ * NOTE: the sim renders XRGB8888 (8-bit/channel), so it cannot reproduce
+ * the device's RGB565 gradient banding — the scrolled sim golden renders
+ * clean either way. This band is nonetheless the correct DEVICE fix (no
+ * gradient => no banding); the on-glass result is verified on hardware.
+ * ------------------------------------------------------------------- */
+static void settings_build_header_band(lv_obj_t *puck, int32_t x, int32_t w, int32_t h)
+{
+    lv_obj_t *band = lv_obj_create(puck);
+    lv_obj_remove_style_all(band);
+    lv_obj_set_size(band, w, h);
+    lv_obj_set_pos(band, x, 0);
+    lv_obj_clear_flag(band, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_clear_flag(band, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_style_bg_color(band, lv_color_hex(FF_THEME_COLOR_BG), 0);
+    lv_obj_set_style_bg_opa(band, LV_OPA_COVER, 0); /* fully opaque: occlude, don't fade */
 }
 
 /* ---------------------------------------------------------------------
  * Entry point.
  * ------------------------------------------------------------------- */
-
 void ff_scr_settings_build(ff_app_settings_t const *settings)
 {
     if (settings == NULL) {
@@ -553,125 +771,138 @@ void ff_scr_settings_build(ff_app_settings_t const *settings)
     lv_obj_clear_flag(puck, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_clear_flag(puck, LV_OBJ_FLAG_CLICKABLE); /* base lv_obj defaults clickable; this one is a plain backdrop */
 
-    /* --- Header GROUP: enlarged back button (dead-end escape, ux-raver
-     * checklist item 6) on the left, with the SETTINGS title and the name
-     * caption stacked in a column to its right. S15c: the back button is now
-     * big enough that it no longer tucks left of a puck-centred title, so the
-     * three read as one left-to-right group centred near puck-x (see the
-     * FF_SETTINGS_BACK_X / _HEADER_TEXT_X comments). Positioned by fixed
-     * puck-local coordinates (not settings_safe_margin_x) precisely because
-     * this group is placed as a whole rather than inset row-by-row. --- */
+    /* The scroll list's inscribed rectangle — computed here (before the
+     * header) so the opaque header band can share its horizontal extent. */
+    int32_t list_margin = settings_safe_margin_x(FF_SETTINGS_LIST_Y, FF_SETTINGS_LIST_H);
+    int32_t row_w = FF_THEME_PUCK_PX - 2 * list_margin;
 
-    /* Filled chip background (PR #68 UX review, Bailey, non-blocking):
-     * every other tappable thing on this screen is a solid rounded-rect
-     * pill; a transparent BACK button was the one control with the
-     * LEAST affordance despite being the escape hatch someone most needs
-     * in a hurry. Same FF_THEME_COLOR_SURFACE fill as every other chip,
-     * matching this screen's own visual grammar instead of standing out
-     * as an exception to it. */
+    /* --- Opaque header band FIRST (#bug5), so the header controls below draw
+     * on top of it. Occludes everything above the list viewport with solid
+     * ink — no gradient, so no RGB565 edge banding on device. --- */
+    settings_build_header_band(puck, list_margin, row_w, FF_SETTINGS_LIST_Y);
+
+    /* --- PINNED, centered header: back button + SETTINGS title + name.
+     * Built directly on the puck (never inside the scroll list) so it never
+     * scrolls away and the sweep checks the back button at its absolute
+     * position. --- */
     lv_obj_t *back = lv_button_create(puck);
     lv_obj_remove_style_all(back);
-    lv_obj_set_size(back, FF_SETTINGS_BACK_W, FF_SETTINGS_BACK_H);
-    lv_obj_set_pos(back, FF_SETTINGS_BACK_X, FF_SETTINGS_HEADER_Y);
+    lv_obj_set_size(back, FF_SETTINGS_BACK_SZ, FF_SETTINGS_BACK_SZ);
+    lv_obj_set_pos(back, FF_SETTINGS_HDR_X, FF_SETTINGS_HDR_Y);
     lv_obj_set_style_bg_color(back, lv_color_hex(FF_THEME_COLOR_SURFACE), 0);
     lv_obj_set_style_bg_opa(back, LV_OPA_COVER, 0);
-    lv_obj_set_style_radius(back, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_radius(back, 14, 0);
     lv_obj_add_event_cb(back, settings_back_cb, LV_EVENT_CLICKED, NULL);
-    lv_obj_t *back_lbl = lv_label_create(back);
-    lv_label_set_text(back_lbl, "<");
-    lv_obj_set_style_text_font(back_lbl, FF_THEME_FONT_NAME, 0);
-    lv_obj_set_style_text_color(back_lbl, lv_color_hex(FF_THEME_COLOR_DIM), 0);
-    lv_obj_center(back_lbl);
+    /* A drawn left-chevron rather than a "<" glyph — a real stroked caret reads
+     * as a deliberate control, not placeholder text. Points persist (static)
+     * because lv_line borrows the array. */
+    static const lv_point_precise_t back_chevron[] = {{9, 0}, {0, 9}, {9, 18}};
+    lv_obj_t *chev = lv_line_create(back);
+    lv_line_set_points(chev, back_chevron, 3);
+    lv_obj_set_style_line_width(chev, 3, 0);
+    lv_obj_set_style_line_color(chev, lv_color_hex(FF_THEME_COLOR_AMBER), 0);
+    lv_obj_set_style_line_rounded(chev, true, 0);
+    lv_obj_center(chev);
 
     lv_obj_t *title = lv_label_create(puck);
     lv_label_set_text(title, "SETTINGS");
     lv_obj_set_style_text_font(title, FF_THEME_FONT_HEADLINE, 0);
-    lv_obj_set_style_text_color(title, lv_color_hex(FF_THEME_COLOR_INK), 0);
-    lv_obj_align(title, LV_ALIGN_TOP_LEFT, FF_SETTINGS_HEADER_TEXT_X, FF_SETTINGS_TITLE_Y);
+    lv_obj_set_style_text_color(title, lv_color_hex(FF_THEME_COLOR_AMBER), 0);
+    lv_obj_set_style_text_letter_space(title, 3, 0);
+    lv_obj_set_pos(title, FF_SETTINGS_HDR_TEXT_X, FF_SETTINGS_TITLE_Y);
 
-    /* --- Name caption (display-only, this slice — see header comment).
-     * Left-aligned under the title, in the header group's right-hand column
-     * (S15c: folded into the header band rather than a dedicated row above
-     * the settings, to buy the six rows the vertical budget to clear the
-     * hit-target floor at 412). --- */
     lv_obj_t *name_lbl = lv_label_create(puck);
-    char name_buf[FF_APP_NAME_LEN + 8];
-    snprintf(name_buf, sizeof(name_buf), "NAME: %s", (s_settings.my_name[0] != '\0') ? s_settings.my_name : "(unset)");
-    lv_label_set_text(name_lbl, name_buf);
+    lv_obj_set_width(name_lbl, FF_SETTINGS_HDR_TEXT_W);
+    lv_label_set_long_mode(name_lbl, LV_LABEL_LONG_DOT);
+    lv_label_set_text(name_lbl, (s_settings.my_name[0] != '\0') ? s_settings.my_name : "(unset)");
     lv_obj_set_style_text_font(name_lbl, FF_THEME_FONT_LABEL, 0);
-    lv_obj_set_style_text_color(name_lbl, lv_color_hex(FF_THEME_COLOR_DIM), 0);
-    lv_obj_align(name_lbl, LV_ALIGN_TOP_LEFT, FF_SETTINGS_HEADER_TEXT_X, FF_SETTINGS_NAME_Y);
+    lv_obj_set_style_text_color(name_lbl, lv_color_hex(FF_THEME_COLOR_MUTED), 0);
+    lv_obj_set_style_text_letter_space(name_lbl, 1, 0);
+    lv_obj_set_pos(name_lbl, FF_SETTINGS_HDR_TEXT_X, FF_SETTINGS_NAME_Y);
 
-    settings_build_row0(puck);
-    settings_build_row1(puck);
+    /* --- The scroll list: an inscribed rectangle in the round glass, vertical-
+     * only user scroll. --- */
+    lv_obj_t *list = lv_obj_create(puck);
+    lv_obj_remove_style_all(list);
+    lv_obj_set_size(list, row_w, FF_SETTINGS_LIST_H);
+    lv_obj_set_pos(list, list_margin, FF_SETTINGS_LIST_Y);
+    lv_obj_set_style_bg_opa(list, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(list, 0, 0);
+    lv_obj_set_style_pad_all(list, 0, 0);
+    /* #bug2 — the list MUST stay CLICKABLE. LVGL only begins a scroll from a
+     * press that lands on a hit-testable (clickable) object and then walks up to
+     * the scrollable ancestor; a non-clickable object is skipped by hit-test, so
+     * a press on empty/caption space would find no target and never scroll. With
+     * the list clickable, ANY press inside it (the plain toggle-row captions and
+     * the gaps included) initiates the scroll. It carries no CLICKED handler, so
+     * a tap on empty space is a harmless no-op; the rows/pills on top still take
+     * their own taps. (Previously cleared here as "a plain scroll region" — that
+     * was the left-side dead-scroll bug: only the rows with a clickable control
+     * on the left, the value rows, would scroll.) */
+    lv_obj_add_flag(list, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_flag(list, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scroll_dir(list, LV_DIR_VER);
+    lv_obj_set_scrollbar_mode(list, LV_SCROLLBAR_MODE_OFF); /* no bar on the round glass */
+    /* #bug4 — remember this list and observe its scroll so a rebuild after a
+     * settings-change intent restores the offset instead of jumping to top. */
+    s_list = list;
+    lv_obj_add_event_cb(list, settings_scroll_cb, LV_EVENT_SCROLL, NULL);
+    lv_obj_add_event_cb(list, settings_scroll_end_cb, LV_EVENT_SCROLL_END, NULL);
 
-    /* --- Row 2: WATER NUDGE. ---
-     * OFF-color convention (PR #68 UX review, Bailey, non-blocking):
-     * dim grey for the off state, matching haptics/night-glow's
-     * green-on/grey-off row exactly for the "off" half — amber stays
-     * reserved for an actively configured value (this chip isn't a
-     * plain boolean like haptics/glow, so it doesn't borrow green for
-     * "on"), but OFF now reads the same dim grey everywhere on this
-     * screen instead of amber in some rows and grey in others. */
-    {
-        int32_t margin = settings_safe_margin_x(FF_SETTINGS_ROW2_Y, FF_SETTINGS_ROW_H);
-        int32_t chip_w = 110;
-        int32_t label_w = FF_THEME_PUCK_PX - margin - chip_w - FF_SETTINGS_CHIP_GAP - margin;
-        settings_build_row_label(puck, "WATER NUDGE", margin, FF_SETTINGS_ROW2_Y, label_w, FF_SETTINGS_ROW_H,
-                                  settings_water_cb);
+    settings_build_brightness(list, row_w);
+    settings_build_toggle_row(list, FF_SETTINGS_REL_UNITS_Y, row_w, "UNITS", "FT", "M",
+                              s_settings.imperial ? 0 : 1, settings_units_cb);
+    settings_build_toggle_row(list, FF_SETTINGS_REL_SHARE_Y, row_w, "SHARE", "LIVE", "GHOST",
+                              (s_settings.share_mode == FF_SHARE_LIVE)    ? 0
+                              : (s_settings.share_mode == FF_SHARE_GHOST) ? 1
+                                                                          : -1,
+                              settings_share_cb);
+    settings_build_toggle_row(list, FF_SETTINGS_REL_HAPTICS_Y, row_w, "HAPTICS", "ON", "OFF",
+                              s_settings.haptics ? 0 : 1, settings_haptics_cb);
+    settings_build_toggle_row(list, FF_SETTINGS_REL_GLOW_Y, row_w, "GLOW", "ON", "OFF",
+                              s_settings.night_glow ? 0 : 1, settings_night_glow_cb);
 
-        char buf[16];
-        settings_water_label(buf, sizeof(buf), s_settings.water_min);
-        uint32_t const fg = (s_settings.water_min == 0) ? FF_THEME_COLOR_DIM : FF_THEME_COLOR_AMBER;
-        settings_make_chip(puck, buf, FF_THEME_PUCK_PX - margin - chip_w, FF_SETTINGS_ROW2_Y, chip_w,
-                            FF_SETTINGS_ROW_H, FF_THEME_COLOR_SURFACE, fg, settings_water_cb, NULL);
+    char water_buf[16];
+    settings_water_label(water_buf, sizeof(water_buf), s_settings.water_min);
+    settings_build_value_row(list, FF_SETTINGS_REL_WATER_Y, row_w, "WATER NUDGE", water_buf,
+                             s_settings.water_min == 0, settings_water_cb);
+
+    settings_quiet_preset_t const *quiet = settings_current_quiet(s_settings.quiet_from_min, s_settings.quiet_to_min);
+    bool const quiet_off = (quiet != NULL) && (quiet->from_min == 0) && (quiet->to_min == 0);
+    settings_build_value_row(list, FF_SETTINGS_REL_QUIET_Y, row_w, "QUIET HOURS",
+                             (quiet != NULL) ? quiet->label : "CUSTOM", quiet_off, settings_quiet_cb);
+
+    settings_build_toggle_row(list, FF_SETTINGS_REL_CB_Y, row_w, "COLORBLIND", "ON", "OFF",
+                              s_settings.colorblind ? 0 : 1, settings_colorblind_cb);
+    settings_build_calibrate_row(list, FF_SETTINGS_REL_CAL_Y, row_w);
+
+    /* #bug4 — restore the scroll offset the previous build left (0 on a fresh
+     * entry, cleared by ff_scr_settings_reset_scroll). The layout must be
+     * resolved first so LVGL knows the scrollable range to clamp against. */
+    lv_obj_update_layout(list);
+    lv_obj_scroll_to_y(list, s_scroll_y, LV_ANIM_OFF);
+}
+
+/* #bug4 — see scr_settings.h. Clear the remembered offset so the next build
+ * renders from the top; the face dispatcher calls this on a FRESH entry into
+ * Settings (a not-Settings -> Settings face transition). */
+void ff_scr_settings_reset_scroll(void)
+{
+    s_scroll_y = 0;
+}
+
+/* Sim golden-harness hook — see scr_settings.h. Scrolls the live list to
+ * `y` so a golden can capture a non-zero offset; a no-op for y<=0 or when no
+ * list is built, so the live shell path (which always passes 0) never moves.
+ * This writes back s_scroll_y (harness scaffolding): the golden runner renders
+ * each fixture in a fresh process, so the offset never leaks into a following
+ * Settings render; on the live path this function is never called. */
+void ff_scr_settings_apply_scroll_hint(int32_t y)
+{
+    if (y <= 0 || s_list == NULL) {
+        return;
     }
-
-    /* --- Row 3: QUIET HOURS. Same OFF-color convention as row 2. --- */
-    {
-        int32_t margin = settings_safe_margin_x(FF_SETTINGS_ROW3_Y, FF_SETTINGS_ROW_H);
-        int32_t chip_w = 110;
-        int32_t label_w = FF_THEME_PUCK_PX - margin - chip_w - FF_SETTINGS_CHIP_GAP - margin;
-        settings_build_row_label(puck, "QUIET HOURS", margin, FF_SETTINGS_ROW3_Y, label_w, FF_SETTINGS_ROW_H,
-                                  settings_quiet_cb);
-
-        settings_quiet_preset_t const *cur = settings_current_quiet(s_settings.quiet_from_min, s_settings.quiet_to_min);
-        bool const is_off = (cur != NULL) && (cur->from_min == 0) && (cur->to_min == 0);
-        uint32_t const fg = is_off ? FF_THEME_COLOR_DIM : FF_THEME_COLOR_AMBER;
-        settings_make_chip(puck, (cur != NULL) ? cur->label : "CUSTOM", FF_THEME_PUCK_PX - margin - chip_w,
-                            FF_SETTINGS_ROW3_Y, chip_w, FF_SETTINGS_ROW_H, FF_THEME_COLOR_SURFACE, fg,
-                            settings_quiet_cb, NULL);
-    }
-
-    /* --- Row 4: UTC OFFSET stepper. --- */
-    {
-        int32_t margin = settings_safe_margin_x(FF_SETTINGS_ROW4_Y, FF_SETTINGS_ROW_H);
-        int32_t btn_w = FF_THEME_MIN_HIT_PX;
-
-        settings_make_chip(puck, "-", margin, FF_SETTINGS_ROW4_Y, btn_w, FF_SETTINGS_ROW_H, FF_THEME_COLOR_SURFACE,
-                            FF_THEME_COLOR_INK, settings_utc_minus_cb, NULL);
-        settings_make_chip(puck, "+", FF_THEME_PUCK_PX - margin - btn_w, FF_SETTINGS_ROW4_Y, btn_w,
-                            FF_SETTINGS_ROW_H, FF_THEME_COLOR_SURFACE, FF_THEME_COLOR_INK, settings_utc_plus_cb, NULL);
-
-        char buf[16];
-        settings_utc_label(buf, sizeof(buf), s_settings.utc_offset_set, s_settings.utc_offset_min);
-        lv_obj_t *val = lv_label_create(puck);
-        lv_label_set_text(val, buf);
-        lv_obj_set_style_text_font(val, FF_THEME_FONT_LABEL, 0);
-        lv_obj_set_style_text_color(val, lv_color_hex(FF_THEME_COLOR_INK), 0);
-        lv_obj_align(val, LV_ALIGN_TOP_MID, 0, FF_SETTINGS_ROW4_Y + (FF_SETTINGS_ROW_H - 16) / 2);
-    }
-
-    /* --- Row 5: COLORBLIND. Same OFF-color convention as haptics/glow
-     * (row 1): dim grey off, live-green on — a plain toggle. Single
-     * full-width chip — see this file's row-5 comment above for why. --- */
-    {
-        int32_t margin = settings_safe_margin_x(FF_SETTINGS_ROW5_Y, FF_SETTINGS_ROW_H);
-        int32_t row_w = FF_THEME_PUCK_PX - 2 * margin;
-
-        uint32_t const fg = s_settings.colorblind ? FF_THEME_COLOR_LIVE_GREEN : FF_THEME_COLOR_DIM;
-        settings_make_chip(puck, s_settings.colorblind ? "COLORBLIND ON" : "COLORBLIND OFF", margin,
-                            FF_SETTINGS_ROW5_Y, row_w, FF_SETTINGS_ROW_H, FF_THEME_COLOR_SURFACE, fg,
-                            settings_colorblind_cb, NULL);
-    }
+    lv_obj_update_layout(s_list);
+    lv_obj_scroll_to_y(s_list, y, LV_ANIM_OFF); /* LVGL clamps to the scrollable range */
+    s_scroll_y = lv_obj_get_scroll_y(s_list);
 }
