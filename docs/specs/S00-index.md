@@ -18,7 +18,7 @@ Specs are contracts. Acceptance criteria (AC) become test names (`S01_AC3_...`).
 | S12 | first-run flow | S08(T9),S11 | stretch (device can ship pre-named) | ☐ |
 | S13 | sim target — SDL/headless + screenshots | — | YES (dev-critical, build FIRST) | ✅ merged (PR #2, #12, #19) |
 | S14 | testing & CI | S13 | YES (build FIRST) | ✅ merged (PR #2, #12, #19) |
-| S15 | esp32s3 target — ESP-IDF build + UART + sensors | most | YES (when boards arrive) | ◑ a merged (PR #91 — core cross-builds); b(display)/c(UART)/d(sensors)/e(assets) pending hardware |
+| S15 | esp32s3 target — ESP-IDF build + UART + sensors | most | YES (boards on hand) | ◑ a+b merged (PR #91 skeleton, #98 display/touch + 412 UI-fit — hardware-verified on board 2); UART(#blocked: Seeed)/sensors(mag boards on hand)/assets pending. Touch calibration #99, brightness #100, IRAM #101 |
 | S16 | app/shell — event loop, routing, input dispatch, wall clock | S02,S03,S06,S08,S10,S11,S13 | YES | ✅ merged (PR #36,#37,#46,#54,#56,#58,#59,#60,#61) |
 | S17 | usability hardening — colorblind toggle, tap-target floor | S06,S08,S11 | YES | ✅ a+b merged (PR #83, #86) — #43,#74 closed |
 | S18 | wall-clock trust — what may change the puck's mind about the time | S16 | YES | ✅ a+b+c merged (PR #90,#94,#93 — #49,#50,#40 closed); follow-ups #95,#96 |
