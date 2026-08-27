@@ -111,13 +111,18 @@ static void ff_assert_defaults(ff_settings_t const *s)
     TEST_ASSERT_FALSE(s->colorblind);
     /* #100: brightness defaults to a sensible mid-bright ~70% (never 0). */
     TEST_ASSERT_EQUAL_UINT8(FF_BRIGHTNESS_DEFAULT_PCT, s->brightness_pct);
-    /* S15 slice d: default uncalibrated -> identity applied by the device
-     * (params zeroed; the flag, not the values, encodes absence). */
-    TEST_ASSERT_FALSE(s->touch_calibrated);
-    TEST_ASSERT_EQUAL_FLOAT(0.0f, s->touch_ax);
-    TEST_ASSERT_EQUAL_FLOAT(0.0f, s->touch_bx);
-    TEST_ASSERT_EQUAL_FLOAT(0.0f, s->touch_ay);
-    TEST_ASSERT_EQUAL_FLOAT(0.0f, s->touch_by);
+    /* S21 §5: the default touch cal is now a representative Waveshare-1.46
+     * panel prior (the affine measured on board 2), not identity — a fresh
+     * puck of this panel model is roughly right out of the box, refined
+     * per-device by the in-app CALIBRATE TOUCH row + NVS. touch_calibrated is
+     * true (a usable transform is installed), and the four params are the
+     * documented board-2 measurement. See ff_settings.c's
+     * ff_settings_apply_defaults for the provenance + honesty note. */
+    TEST_ASSERT_TRUE(s->touch_calibrated);
+    TEST_ASSERT_EQUAL_FLOAT(0.885060f, s->touch_ax);
+    TEST_ASSERT_EQUAL_FLOAT(15.5352f, s->touch_bx);
+    TEST_ASSERT_EQUAL_FLOAT(0.902172f, s->touch_ay);
+    TEST_ASSERT_EQUAL_FLOAT(8.2439f, s->touch_by);
 
     ff_geo_cal_t zero_cal;
     memset(&zero_cal, 0, sizeof(zero_cal));
@@ -278,9 +283,11 @@ static void S11_AC1_load_with_v3_blob_yields_defaults_not_a_migration(void)
 }
 
 /* Same policy for v4 -> v5 (S15 slice d added the touch-cal fields): a v4
- * blob is discarded whole and the full defaults stand, touch_calibrated
- * included — false is the honest reading (a v4 puck had no touch
- * calibration at all), never a migrated guess. */
+ * blob is discarded whole and the full defaults stand — the saved value is
+ * NOT migrated across an incompatible layout. Post-S21 the touch-cal default
+ * is the documented board-2 panel prior (not identity), so "reject, don't
+ * migrate" now shows as: the loaded touch_ax is the DEFAULT prior, never the
+ * v4 blob's own saved value. */
 static void S11_AC1_load_with_v4_blob_yields_defaults_not_a_migration(void)
 {
     mock_store_io_t m;
@@ -291,8 +298,8 @@ static void S11_AC1_load_with_v4_blob_yields_defaults_not_a_migration(void)
     memset(&saved, 0, sizeof(saved));
     saved.imperial = false;
     saved.water_min = 45;
-    saved.touch_calibrated = true; /* the field whose loss actually costs a user */
-    saved.touch_ax = 1.0123f;
+    saved.touch_calibrated = true;
+    saved.touch_ax = 1.0123f; /* a value distinct from the default prior, to prove it's not carried across */
     ff_settings_save(&saved, &st);
     TEST_ASSERT_TRUE(m.has_value);
 
@@ -304,7 +311,10 @@ static void S11_AC1_load_with_v4_blob_yields_defaults_not_a_migration(void)
     ff_settings_load(&s, &st);
 
     ff_assert_defaults(&s);
-    TEST_ASSERT_FALSE(s.touch_calibrated); /* discarded, not carried across */
+    /* Reject-not-migrate: the v4 blob's saved 1.0123 is discarded; the
+     * default board-2 prior stands instead (asserted by ff_assert_defaults
+     * above, which now checks touch_ax == 0.885060). */
+    TEST_ASSERT_EQUAL_FLOAT(0.885060f, s.touch_ax);
 }
 
 /* ---------------------------------------------------------------------

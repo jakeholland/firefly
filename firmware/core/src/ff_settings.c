@@ -79,10 +79,34 @@ static void ff_settings_apply_defaults(ff_settings_t *s)
     /* compass_cal: left zeroed -> identity ff_geo_cal_t; cal_valid stays false. */
     /* colorblind: left zeroed -> false (brand palette). S17's own scoping
      * note: "not colorblind by default — keep the brand colours". */
-    /* touch_ax/bx/ay/by: left zeroed; touch_calibrated stays false ->
-     * the device applies IDENTITY (raw touch passes through). S15d: a puck
-     * that has never been calibrated corrects touch to nothing, not to a
-     * garbage transform. */
+
+    /* Touch calibration (S21 §5) — a REPRESENTATIVE Waveshare-1.46 default,
+     * not an identity. These four params are the per-axis affine MEASURED on
+     * board 2's SPD2010 panel (docs/specs/S21-settings-rework.md; the
+     * bring-up notes for that unit), and they are set as the default because
+     * the offset+scale error is a characteristic of the panel MODEL, near-
+     * identical across units of it — so a freshly-flashed puck of this panel
+     * is roughly right out of the box rather than using raw, systematically-
+     * skewed coordinates until its owner runs the crosshair flow.
+     *
+     * HONESTY NOTE (this is the deliberate part): touch_calibrated=true here
+     * means "a usable transform is installed", NOT "THIS unit was calibrated
+     * by its owner." It is a real measurement (board 2), documented as a
+     * panel-MODEL prior — not a fabricated number and not a per-unit truth.
+     * A per-device calibration refines it: the S21 in-app CALIBRATE TOUCH row
+     * (FF_INTENT_CALIBRATE_TOUCH) overwrites these with that unit's own fit,
+     * and NVS persists it, so the default only governs the very first boot
+     * before anyone calibrates. The reject-not-migrate policy still applies —
+     * a stale/foreign blob falls back to THIS documented prior, never to a
+     * migrated guess from an incompatible layout. (The identity default was
+     * the acceptable alternative the spec offered; the measured panel-model
+     * prior was chosen for out-of-box usability, since NVS + one calibration
+     * make it a per-unit truth the moment the owner taps CALIBRATE TOUCH.) */
+    s->touch_ax = 0.885060f;
+    s->touch_bx = 15.5352f;
+    s->touch_ay = 0.902172f;
+    s->touch_by = 8.2439f;
+    s->touch_calibrated = true;
 }
 
 void ff_settings_load(ff_settings_t *s, ff_store_t const *st)
