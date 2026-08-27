@@ -1113,6 +1113,7 @@ static void S11b_settings_utc_offset_stepper_minus_and_plus(void)
 {
     ff_app_settings_t s;
     memset(&s, 0, sizeof(s));
+    s.page = 1; /* #99/#100: the UTC stepper lives on Settings page 1 now */
     s.utc_offset_set = true;
     s.utc_offset_min = -300; /* renders "UTC-5:00" */
 
@@ -1137,6 +1138,7 @@ static void S11b_settings_utc_offset_stepper_starts_from_utc_when_unset(void)
 {
     ff_app_settings_t s;
     memset(&s, 0, sizeof(s)); /* utc_offset_set false: renders "UNSET" */
+    s.page = 1;               /* #99/#100: the UTC stepper lives on Settings page 1 now */
 
     ff_scr_settings_build(&s);
 
@@ -1146,6 +1148,66 @@ static void S11b_settings_utc_offset_stepper_starts_from_utc_when_unset(void)
     TEST_ASSERT_EQUAL(FF_INTENT_SETTING_SET, s_spy.last.kind);
     TEST_ASSERT_EQUAL(FF_SETTING_UTC_OFFSET_MIN, s_spy.last.u.setting.id);
     TEST_ASSERT_EQUAL_INT32(60, s_spy.last.u.setting.v.i);
+}
+
+/* #100 — the brightness slider (Settings page 1) emits FF_SETTING_BRIGHTNESS
+ * with the slider's value on RELEASE (one persisted value per touch, not one
+ * per drag frame — see scr_settings.c's settings_brightness_cb). The slider
+ * carries no label, so it's found by widget class rather than by text. */
+static lv_obj_t *find_slider(lv_obj_t *root)
+{
+    uint32_t n = lv_obj_get_child_count(root);
+    for (uint32_t i = 0; i < n; i++) {
+        lv_obj_t *child = lv_obj_get_child(root, i);
+        if (lv_obj_check_type(child, &lv_slider_class)) {
+            return child;
+        }
+        lv_obj_t *found = find_slider(child);
+        if (found != NULL) {
+            return found;
+        }
+    }
+    return NULL;
+}
+
+static void S100_settings_brightness_slider_emits_brightness_on_release(void)
+{
+    ff_app_settings_t s;
+    memset(&s, 0, sizeof(s));
+    s.page = 1;
+    s.brightness_pct = 70;
+
+    ff_scr_settings_build(&s);
+
+    lv_obj_t *slider = find_slider(lv_screen_active());
+    TEST_ASSERT_NOT_NULL(slider);
+
+    /* Simulate the user having dragged the knob to 40% and let go. The cb
+     * reads lv_slider_get_value at RELEASE, so set the value first. */
+    lv_slider_set_value(slider, 40, LV_ANIM_OFF);
+    lv_result_t r = lv_obj_send_event(slider, LV_EVENT_RELEASED, NULL);
+    TEST_ASSERT_EQUAL(LV_RESULT_OK, r);
+
+    TEST_ASSERT_EQUAL_INT(1, s_spy.count);
+    TEST_ASSERT_EQUAL(FF_INTENT_SETTING_SET, s_spy.last.kind);
+    TEST_ASSERT_EQUAL(FF_SETTING_BRIGHTNESS, s_spy.last.u.setting.id);
+    TEST_ASSERT_EQUAL_INT32(40, s_spy.last.u.setting.v.i);
+}
+
+/* #99/#100 — the "PAGE 1/2" chip emits FF_INTENT_SETTINGS_PAGE (the shell
+ * owns which page; the chip only reports the tap, same shape as Compose's
+ * mode chip). On page 0 the chip reads "PAGE 1/2 >". */
+static void S99_settings_page_chip_emits_settings_page(void)
+{
+    ff_app_settings_t s;
+    memset(&s, 0, sizeof(s)); /* page 0 */
+
+    ff_scr_settings_build(&s);
+
+    click(find_button_with_label(lv_screen_active(), "PAGE 1/2 >"));
+
+    TEST_ASSERT_EQUAL_INT(1, s_spy.count);
+    TEST_ASSERT_EQUAL(FF_INTENT_SETTINGS_PAGE, s_spy.last.kind);
 }
 
 /* =================================================================== */
@@ -1210,6 +1272,8 @@ int main(void)
     RUN_TEST(S11b_settings_quiet_chip_sets_both_from_and_to);
     RUN_TEST(S11b_settings_utc_offset_stepper_minus_and_plus);
     RUN_TEST(S11b_settings_utc_offset_stepper_starts_from_utc_when_unset);
+    RUN_TEST(S100_settings_brightness_slider_emits_brightness_on_release);
+    RUN_TEST(S99_settings_page_chip_emits_settings_page);
     RUN_TEST(S16_c1_wired_sites_are_noops_while_the_seam_is_unbound);
 
     return UNITY_END();
