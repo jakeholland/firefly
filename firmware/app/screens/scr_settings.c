@@ -61,22 +61,17 @@
  * persistence are the shell's (`ff_shell.c`), same "screens stay pure
  * renderers" split every face uses.
  *
- * ## Brightness is its own taller row
- * A "BRIGHTNESS" caption + "%" value over a full-width THIN track. To keep a
- * full-width thin track that still clears the 44px tap floor AND stays
- * on-glass, the interactive `lv_slider` is a transparent full-width, 56px
- * hit strip (#bug3 raised it from the 44 floor for an easier target; a thin
- * styled track cannot be both 6px tall for the look and >=44px tall for the
- * floor, and widening its hit area with ext_click_area
- * would push it off the round glass horizontally). The visible thin track,
- * amber fill, and round amber knob are drawn as non-clickable decorations
- * beneath/over it. #bug1: the fill/knob/percent now track the drag LIVE
- * (LV_EVENT_VALUE_CHANGED moves the deco), and brightness is emitted live as
- * a TRANSIENT setting so the backlight follows the finger; only the settled
- * RELEASED value is committed (the shell persists once — see
- * settings_emit_brightness and ff_shell.c's brightness handler for the
- * NVS-wear reasoning). #bug2: LV_OBJ_FLAG_SCROLL_CHAIN_VER lets a vertical
- * drag chain to the scroll list instead of being eaten by the slider.
+ * ## Brightness is its own taller row (a −/+ STEPPER, not a slider)
+ * A "BRIGHTNESS" caption + "%" value, a non-interactive amber level bar, and a
+ * −/+ stepper group (two lv_button pills). #bug2: brightness is NOT a slider —
+ * a draggable control inside a vertical scroll list cannot reliably tell a
+ * scroll gesture from an adjust one on this touch panel (the slider captured
+ * the press so a vertical drag could not scroll; jump-to-press yanked the
+ * value). Two discrete tap targets have no drag semantics, so every drag
+ * scrolls the list and only a tap steps brightness (settings_brightness_step,
+ * 10%/tap, clamped, committed once per real step — see ff_shell.c's brightness
+ * handler; brightness stays out of the shell render key so a step updates the
+ * level bar in place instead of rebuilding the face).
  *
  * ## UTC offset is NOT a row here
  * The festpack supplies the timezone (`fp_pack_t.utc_offset_min`), so the
@@ -527,10 +522,9 @@ static void settings_quiet_cb(lv_event_t *e)
 }
 
 /* ---------------------------------------------------------------------
- * BRIGHTNESS — caption + "%" over a full-width thin track. The interactive
- * lv_slider is a transparent 44px hit strip (clears the tap floor, stays
- * on-glass at full width); the visible track/fill/knob are non-clickable
- * decorations. Emits on RELEASED (one persisted value per touch).
+ * BRIGHTNESS — a "BRIGHTNESS" caption + "%" value, a non-interactive amber
+ * level bar, and a −/+ stepper (two lv_button pills). Each −/+ tap steps the
+ * value and emits it committed; see settings_brightness_step (#bug2).
  * ------------------------------------------------------------------- */
 static uint8_t settings_brightness_clamped(void)
 {
@@ -540,17 +534,14 @@ static uint8_t settings_brightness_clamped(void)
     return (uint8_t)v;
 }
 
-/* Emit a brightness setting carrying the transient/commit distinction
- * (#bug1). `transient` true = a live preview mid-drag: the shell tracks it
- * (so the device backlight follows the finger) but does NOT write NVS.
- * false = the settled value on release: the shell persists it ONCE. This
- * coalescing is the whole NVS-wear story — a drag can fire dozens of
- * VALUE_CHANGED events, and persisting each would thrash flash; only the
- * one RELEASED value is committed. See ff_shell.c's FF_SETTING_BRIGHTNESS
- * handler and its shell_render_key note (brightness is kept OUT of the
- * render key so a live value change reprograms the backlight every tick
- * without forcing a full face rebuild that would destroy the slider
- * mid-drag). */
+/* Emit a brightness setting. The `transient` flag (#bug1) distinguishes a live
+ * preview (the shell applies it to the projected value so the backlight follows,
+ * but does NOT write NVS) from a committed value (persisted once). The −/+
+ * stepper always emits COMMITTED (discrete taps can't thrash NVS the way a live
+ * drag would); the transient path is retained on the intent for a possible
+ * future live control. Either way brightness is kept OUT of the shell render key
+ * (see ff_shell.c's FF_SETTING_BRIGHTNESS handler + shell_render_key note) so a
+ * value change reprograms the backlight without forcing a face rebuild. */
 static void settings_emit_brightness(int32_t v, bool transient)
 {
     ff_intent_t in = {.kind = FF_INTENT_SETTING_SET, .u = {0}};
@@ -586,9 +577,13 @@ static void settings_brightness_update_level(uint8_t pct)
  * (#bug5). */
 static void settings_brightness_step(int32_t delta)
 {
-    int32_t v = (int32_t)settings_brightness_clamped() + delta;
+    uint8_t const cur = settings_brightness_clamped();
+    int32_t v = (int32_t)cur + delta;
     if (v < (int32_t)FF_BRIGHTNESS_MIN_PCT) v = (int32_t)FF_BRIGHTNESS_MIN_PCT;
     if (v > (int32_t)FF_BRIGHTNESS_MAX_PCT) v = (int32_t)FF_BRIGHTNESS_MAX_PCT;
+    if ((uint8_t)v == cur) {
+        return; /* boundary no-op (− at MIN, + at MAX): nothing changed, don't emit/persist */
+    }
     s_settings.brightness_pct = (uint8_t)v; /* keep the local copy in step for the next tap */
     settings_brightness_update_level((uint8_t)v);
     settings_emit_brightness(v, false /* committed: each step persists once */);
