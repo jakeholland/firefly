@@ -9,33 +9,49 @@ Two reproducible stages, both committed so the whole chain can be re-run:
                 frequent first, ties broken alphabetically for determinism).
                 Requires network; run only when regenerating the wordlist.
 
-  2. emit     — read `t9dict_words.txt` (committed) and generate the C source
-                `../src/ff_t9dict_data.c`: a NUL-terminated, frequency-ordered
-                word blob placed in rodata (flash), no heap, no I/O. This is
-                the step the build depends on; it needs no network.
+  2. emit     — MERGE two layers into the C source `../src/ff_t9dict_data.c`:
+                a NUL-terminated word blob placed in rodata (flash), no heap,
+                no I/O. This is the step the build depends on; needs no network.
+
+                  layer 1 (HIGH rank): `t9dict-curated.txt` — the hand-curated
+                    festival/texting vocabulary, project-authored (GPL-3.0).
+                    Emitted FIRST so these words surface first in T9.
+                  layer 2 (long tail): `t9dict_words.txt` — the committed
+                    Gutenberg frequency list, for general-English coverage.
+
+                A curated word that also appears in the Gutenberg tail keeps its
+                high (curated) rank and is dropped from the tail (dedup).
 
 Usage:
     python3 gen_t9dict.py harvest [t9dict_words.txt]
     python3 gen_t9dict.py emit    [t9dict_words.txt] [../src/ff_t9dict_data.c]
+                                  [t9dict-curated.txt]
 
 ## Dictionary source + license (see also core/tools/NOTICE-t9dict.md)
 
-The wordlist is a frequency ranking derived from public-domain works
-distributed by Project Gutenberg (US works whose copyright has expired — the
-texts themselves carry no usage restrictions). A frequency ranking of
-public-domain text is itself free to redistribute, which is why this source
-was chosen over popular lists such as `google-10000-english`: that list's own
-LICENSE states its data derives from the Google Trillion Word Corpus under the
-Linguistic Data Consortium license and is NOT recommended for commercial use —
-incompatible with vendoring into GPL-3.0 Firefly. Project Gutenberg PD text
-has no such encumbrance.
+The compiled dictionary is now TWO layers:
 
-The pinned book IDs below span 19th/early-20th-century fiction, adventure,
-science fiction and philosophy to reduce single-author vocabulary skew. Being
-a pre-modern literary corpus, it honestly under-represents modern colloquial
-vocabulary (e.g. "hello", "okay", "phone" do not make the top slice); the
-engine returns an explicit no-match for such sequences rather than inventing a
-word (see ff_t9pred.h).
+  * Curated layer (`t9dict-curated.txt`): a hand-authored list of modern
+    festival-messenger vocabulary — greetings, texting abbreviations,
+    raver/EDM slang, coordination/logistics terms. Authored by the Firefly
+    project (GPL-3.0); plain common words + public slang, no third-party
+    corpus, no licensing encumbrance. Ranked ABOVE the Gutenberg tail so the
+    words people actually text at a festival ("hello", "okay", "tbh", "wtf",
+    "lol", "rave", "kandi") surface first — the pre-modern gaps are closed.
+
+  * Gutenberg tail (`t9dict_words.txt`): a frequency ranking derived from
+    public-domain works distributed by Project Gutenberg (US works whose
+    copyright has expired — the texts carry no usage restrictions). A
+    frequency ranking of public-domain text is itself free to redistribute,
+    which is why this source was chosen over popular lists such as
+    `google-10000-english`: that list's own LICENSE states its data derives
+    from the Google Trillion Word Corpus under the Linguistic Data Consortium
+    license and is NOT recommended for commercial use — incompatible with
+    vendoring into GPL-3.0 Firefly. Project Gutenberg PD text has no such
+    encumbrance. The pinned book IDs below span 19th/early-20th-century
+    fiction, adventure, science fiction and philosophy to reduce single-author
+    vocabulary skew; the curated layer above supplies the modern colloquial
+    vocabulary the pre-modern corpus honestly under-represents.
 """
 import collections
 import re
@@ -50,8 +66,9 @@ BOOKS = [
     64317, 2542, 1497, 4517, 2814, 3207, 2680, 244, 100, 863, 1727,
 ]
 
-TOP_N = 3200          # size of the compiled dictionary
+TOP_N = 3200          # size of the Gutenberg tail slice
 MAX_WORD_LEN = 24     # must equal FF_T9PRED_MAX_DIGITS in ff_t9pred.h
+CURATED = "t9dict-curated.txt"  # high-priority curated layer (see module doc)
 
 
 def fetch(bid):
@@ -124,8 +141,48 @@ def read_wordlist(path):
     return uniq
 
 
-def emit(words_path, out_path):
-    words = read_wordlist(words_path)
+def read_curated(path):
+    """Read the curated layer: strip `#` comments + blank lines, lowercase, one
+    token per line, de-dup preserving order. Tokens must be typeable on a
+    letter-only T9 keypad — anything not [a-z] (e.g. "b2b", which carries a
+    digit) is skipped, since the engine maps only letter keys 2..9 and such a
+    token could never be produced. Order is authoritative: the curated file is
+    hand-ranked, and that order becomes the high-priority head of the table."""
+    words = []
+    skipped = []
+    with open(path) as f:
+        for line in f:
+            line = line.split("#", 1)[0].strip().lower()  # drop comments + ws
+            if not line:
+                continue
+            tok = line.split()[0]  # defensive: first whitespace-delimited token
+            if len(tok) > MAX_WORD_LEN:
+                skipped.append(tok)
+                continue
+            if not re.fullmatch(r"[a-z]+", tok):
+                skipped.append(tok)  # untypeable on a letter-only keypad
+                continue
+            words.append(tok)
+    seen = set()
+    uniq = []
+    for w in words:
+        if w not in seen:
+            seen.add(w)
+            uniq.append(w)
+    if skipped:
+        print(f"curated: skipped {len(skipped)} non-[a-z]/overlong token(s): "
+              f"{', '.join(sorted(set(skipped)))}", file=sys.stderr)
+    return uniq
+
+
+def emit(words_path, out_path, curated_path=CURATED):
+    # Layer 1 (high rank): curated festival/texting vocabulary, in file order.
+    curated = read_curated(curated_path)
+    curated_set = set(curated)
+    # Layer 2 (long tail): Gutenberg frequency list, minus anything already in
+    # the curated layer (dedup — the curated word keeps its higher rank).
+    tail = [w for w in read_wordlist(words_path) if w not in curated_set]
+    words = curated + tail
     blob = bytearray()
     for w in words:
         blob += w.encode("ascii")
@@ -136,13 +193,18 @@ def emit(words_path, out_path):
     lines = []
     lines.append("/* GENERATED by core/tools/gen_t9dict.py — DO NOT EDIT BY HAND.")
     lines.append(" *")
-    lines.append(" * Predictive-T9 dictionary: a frequency-ranked English wordlist")
-    lines.append(" * derived from public-domain Project Gutenberg texts. Source, license")
-    lines.append(" * and reproduction steps: core/tools/gen_t9dict.py + NOTICE-t9dict.md.")
+    lines.append(" * Predictive-T9 dictionary: two ranked layers merged into one blob —")
+    lines.append(" *   1. curated festival/texting vocabulary (core/tools/t9dict-curated.txt,")
+    lines.append(" *      project-authored, GPL-3.0) — ranked FIRST so it surfaces first;")
+    lines.append(" *   2. a frequency-ranked English tail derived from public-domain Project")
+    lines.append(" *      Gutenberg texts (core/tools/t9dict_words.txt).")
+    lines.append(" * Source, license and reproduction steps: gen_t9dict.py + NOTICE-t9dict.md.")
     lines.append(" *")
-    lines.append(f" * {len(words)} words, most-frequent-first (ties broken alphabetically).")
-    lines.append(" * Stored as one NUL-terminated ASCII blob in rodata (flash), so the")
-    lines.append(" * engine can walk it in rank order with no heap and no offset table.")
+    lines.append(f" * {len(curated)} curated + {len(tail)} Gutenberg-tail = {len(words)} words.")
+    lines.append(" * Curated words come first (hand-ranked); the tail is most-frequent-first")
+    lines.append(" * (ties broken alphabetically). Stored as one NUL-terminated ASCII blob in")
+    lines.append(" * rodata (flash), so the engine walks it in rank order with no heap and no")
+    lines.append(" * offset table.")
     lines.append(" */")
     lines.append('#include "ff_t9dict.h"')
     lines.append("")
@@ -171,8 +233,8 @@ def emit(words_path, out_path):
 
     with open(out_path, "w") as f:
         f.write("\n".join(lines))
-    print(f"emit {len(words)} words, blob={len(blob)} bytes -> {out_path}",
-          file=sys.stderr)
+    print(f"emit {len(curated)} curated + {len(tail)} tail = {len(words)} words, "
+          f"blob={len(blob)} bytes -> {out_path}", file=sys.stderr)
 
 
 def main(argv):
@@ -183,7 +245,8 @@ def main(argv):
     elif cmd == "emit":
         words_path = argv[2] if len(argv) > 2 else "t9dict_words.txt"
         out_path = argv[3] if len(argv) > 3 else "../src/ff_t9dict_data.c"
-        emit(words_path, out_path)
+        curated_path = argv[4] if len(argv) > 4 else CURATED
+        emit(words_path, out_path, curated_path)
     else:
         raise SystemExit(f"unknown command {cmd!r}; use 'harvest' or 'emit'")
 

@@ -250,8 +250,8 @@ gate
 gates
 entrance
 exit
-meetup
 meet
+meetup
 meeting
 rally
 spot
