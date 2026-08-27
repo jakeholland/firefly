@@ -11,8 +11,15 @@
 #   esp_lcd_spd2010        SPD2010 QSPI round-panel driver (vendors the
 #                          init sequence — we do NOT hand-roll register
 #                          writes; see ff_display.c).
-#   esp_lcd_touch_spd2010  SPD2010 I2C capacitive-touch driver (pulls in
-#                          esp_lcd_touch as a transitive dep).
+#   esp_lcd_touch_spd2010  SPD2010 I2C capacitive-touch driver. NOT listed
+#                          below: it is VENDORED (patched) at
+#                          components/esp_lcd_touch_spd2010 because the
+#                          registry v2.0.1 issues a zero-length-write read
+#                          that ESP-IDF 5.3's new i2c_master driver rejects
+#                          (touch init fails at read_fw_version). The local
+#                          copy fixes the read (lcd_cmd -1) and pulls in
+#                          esp_lcd_touch itself via its own manifest. See
+#                          that file's header for the full root cause.
 #   esp_io_expander_tca9554 TCA9554-class IO expander that owns LCD_RST
 #                          (EXIO2) and TP_RST (EXIO1) — bring this up
 #                          FIRST or the panel stays dark (S15b "#1 failure
@@ -39,8 +46,11 @@ dependencies:
   espressif/esp_lcd_spd2010:
     version: "^2.0.0"
 
-  espressif/esp_lcd_touch_spd2010:
-    version: "^2.0.1"
+  # esp_lcd_touch_spd2010 is vendored+patched at
+  # components/esp_lcd_touch_spd2010 (see the provenance block above and
+  # that file's header) — a project component of the same name shadows the
+  # registry one, so it must NOT be requested here too. Its esp_lcd_touch
+  # dependency is declared in the vendored component's own idf_component.yml.
 
   espressif/esp_io_expander_tca9554:
     version: "^2.0.3"
