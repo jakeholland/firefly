@@ -444,8 +444,20 @@ esp_err_t ff_display_touch_start(lv_display_t *disp)
     const esp_lcd_touch_config_t tp_cfg = {
         .x_max = FF_LCD_H_RES,
         .y_max = FF_LCD_V_RES,
-        .rst_gpio_num = -1,             /* TP_RST is on EXIO1, already released */
-        .int_gpio_num = FF_PIN_TP_INT,  /* INT on GPIO4 — the controller's ready line */
+        .rst_gpio_num = -1,               /* TP_RST is on EXIO1, already released */
+        /* POLLING, not INT (S15b touch-read fix). Waveshare's OWN
+         * ESP-IDF-5.3.2 demo (ESP32-S3-Touch-LCD-1.46) never configures a
+         * GPIO interrupt for the touch: its LVGL indev read_cb
+         * (LVGL_Driver.c) POLLS Touch_Get_xy -> tp_read_data every cycle,
+         * and EXAMPLE_PIN_NUM_TOUCH_INT (GPIO4) is only a #define it never
+         * wires to gpio_isr. On this board the INT line never asserts on
+         * touch, so INT-driven reads (int_gpio_num = GPIO4) starved
+         * esp_lvgl_port's reader and no press ever reached LVGL. With
+         * int_gpio_num = GPIO_NUM_NC, esp_lvgl_port's indev timer polls
+         * esp_lcd_touch_read_data() every cycle — matching the demo — and
+         * the vendored driver's read path now reports 0 points (not an
+         * error) on an empty poll, so ESP_ERROR_CHECK never trips. */
+        .int_gpio_num = GPIO_NUM_NC,
         .levels = {.reset = 0, .interrupt = 0},
         .flags = {.swap_xy = 0, .mirror_x = 0, .mirror_y = 0},
     };
@@ -454,7 +466,7 @@ esp_err_t ff_display_touch_start(lv_display_t *disp)
         ESP_LOGE(TAG, "esp_lcd_touch_new_i2c_spd2010 failed: %s", esp_err_to_name(err));
         return err;
     }
-    ESP_LOGI(TAG, "SPD2010 touch up (I2C 0x53, INT=GPIO%d)", FF_PIN_TP_INT);
+    ESP_LOGI(TAG, "SPD2010 touch up (I2C 0x53, polling — INT/GPIO%d unused)", FF_PIN_TP_INT);
 
     /* The device's ONLY input path: this pointer indev drives LVGL
      * hit-testing against the screens, whose existing intent emits reach

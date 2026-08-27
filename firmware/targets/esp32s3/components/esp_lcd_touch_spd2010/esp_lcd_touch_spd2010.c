@@ -182,7 +182,20 @@ static esp_err_t read_data(esp_lcd_touch_handle_t tp)
     uint8_t touch_cnt = 0;
 
     tp_touch_t touch = {0};
-    ESP_RETURN_ON_ERROR(tp_read_data(tp, &touch), TAG, "read data failed");
+    /* FIREFLY PATCH (S15b polling read path): Waveshare's OWN ESP-IDF-5.3.2
+     * demo (ESP32-S3-Touch-LCD-1.46, Touch_Driver/Touch_SPD2010.c,
+     * Touch_Read_Data) POLLS this exact chain from LVGL's indev read_cb and
+     * IGNORES tp_read_data's return entirely — a poll with no finger down
+     * simply yields touch_num == 0, never an error. esp_lvgl_port wraps
+     * esp_lcd_touch_read_data() in ESP_ERROR_CHECK (managed_components/
+     * espressif__esp_lvgl_port/src/lvgl9/esp_lvgl_port_touch.c:127), so a
+     * propagated error here PANIC-LOOPS the device on every empty poll in
+     * polling mode (int_gpio_num = -1). Match the demo: a failed / no-data
+     * read reports zero points and returns ESP_OK — 0 points is the honest
+     * "no touch". A real press still fills touch.touch_num below. */
+    if (tp_read_data(tp, &touch) != ESP_OK) {
+        touch.touch_num = 0;
+    }
 
     portENTER_CRITICAL(&tp->data.lock);
     /* Expect Number of touched points */
@@ -346,6 +359,20 @@ static esp_err_t read_tp_hdp(esp_lcd_touch_handle_t tp, tp_status_t *tp_status, 
     uint8_t i, offset;
     uint8_t check_id;
 
+    /* FIREFLY PATCH (S15b): read_len is the HDP byte count the status
+     * register (0x2000) just reported. Under ESP-IDF 5.3.x's new i2c_master
+     * a zero-length i2c_master_receive() returns ESP_ERR_INVALID_ARG (the
+     * read-side twin of the zero-length-write bug documented in this file's
+     * header) — which, propagated up, panic-loops esp_lvgl_port's
+     * ESP_ERROR_CHECK when the chip flags a point but has no HDP payload
+     * ready yet (e.g. the release edge). No bytes to read == no touch:
+     * report zero points instead of issuing the zero-length read. */
+    if (tp_status->read_len == 0) {
+        touch->touch_num = 0x00;
+        touch->gesture = 0x00;
+        return ESP_OK;
+    }
+
     sample_data[0] = 0x00;
     sample_data[1] = 0x03;
 
@@ -422,6 +449,14 @@ static esp_err_t read_tp_hdp_status(esp_lcd_touch_handle_t tp, tp_hdp_status_t *
 static esp_err_t Read_HDP_REMAIN_DATA(esp_lcd_touch_handle_t tp, tp_hdp_status_t *tp_hdp_status)
 {
     uint8_t sample_data[32];
+
+    /* FIREFLY PATCH (S15b): same zero-length-read guard as read_tp_hdp —
+     * next_packet_len == 0 means the HDP drain is done, so there is nothing
+     * left to fetch; issuing a zero-length i2c_master_receive() would fail
+     * under the new i2c_master driver and abort the poll. */
+    if (tp_hdp_status->next_packet_len == 0) {
+        return ESP_OK;
+    }
 
     sample_data[0] = 0x00;
     sample_data[1] = 0x03;
