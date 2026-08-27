@@ -100,6 +100,52 @@ size_t ff_t9pred_match_str(char const *digits,
 size_t ff_t9pred_count(uint8_t const *digits, size_t n);
 
 /* ------------------------------------------------------------------ */
+/* Supplementary word list — caller-supplied, ranked ABOVE the dict    */
+/* ------------------------------------------------------------------ */
+/*
+ * The engine stays PURE: it knows nothing about festpacks, artists, or any
+ * app concept. It only accepts an OPTIONAL array of extra NUL-terminated words
+ * the CALLER supplies, and ranks any that match the digit sequence ABOVE its
+ * own static dictionary. The caller owns the memory (the pointers and the
+ * bytes they point at must outlive the call); the engine copies nothing.
+ *
+ * This is how the composer will fold festival vocabulary (artist / stage /
+ * landmark names) in without core/t9pred depending on the festpack layer — the
+ * festpack->words bridge lives OUTSIDE core (see firmware/festpack/
+ * fp_t9words.h), collects the names, and hands them here as plain strings.
+ *
+ * Matching of extra words is the same prefix rule as the dictionary, and is
+ * CASE-INSENSITIVE for ASCII letters, so real-world names ("Excision",
+ * "NGHTMRE") match their lowercase digit sequence. A non-letter byte (space,
+ * '&', digit, punctuation) is not a keypad letter, so it simply cannot be
+ * matched: a query can predict a multi-word name only up to its first
+ * non-letter ("Sullivan King" is a candidate for the keys of "sullivan").
+ *
+ * De-dup: extra words are de-duplicated against each other (case-insensitively,
+ * first occurrence wins) and a dictionary word equal to a supplied extra word
+ * is suppressed (the extra copy, at its higher rank, represents it once).
+ */
+
+/**
+ * ff_t9pred_match_ex — like ff_t9pred_match, but ranks the `n_extra` words in
+ * `extra` (each NUL-terminated) ABOVE the static dictionary. `extra` may be
+ * NULL / `n_extra` <= 0, in which case this is byte-for-byte `ff_t9pred_match`.
+ * Extra matches are emitted in supplied order, then dictionary matches in
+ * frequency order, both subject to `max_out`. Returns the number written.
+ */
+size_t ff_t9pred_match_ex(uint8_t const *digits, size_t n,
+                          char const **out, size_t max_out,
+                          char const *const *extra, int n_extra);
+
+/**
+ * ff_t9pred_count_ex — total matches counting the supplementary list, with the
+ * same de-dup semantics as `ff_t9pred_match_ex`. `extra` NULL / `n_extra` <= 0
+ * degenerates to `ff_t9pred_count`.
+ */
+size_t ff_t9pred_count_ex(uint8_t const *digits, size_t n,
+                          char const *const *extra, int n_extra);
+
+/* ------------------------------------------------------------------ */
 /* Optional stateful session — as-you-type entry + candidate cycling   */
 /* ------------------------------------------------------------------ */
 
@@ -112,10 +158,29 @@ typedef struct {
     uint8_t  digits[FF_T9PRED_MAX_DIGITS];
     uint8_t  n;    /* number of valid digits (0..FF_T9PRED_MAX_DIGITS) */
     uint16_t sel;  /* selected candidate index among current matches   */
+
+    /* Optional supplementary word list (see ff_t9pred_match_ex). NULL / 0 when
+     * none, in which case the session behaves exactly as the dictionary-only
+     * engine. Caller-owned: the pointer and the words it references must
+     * outlive the session. Bound via ff_t9pred_session_set_extra. */
+    char const *const *extra;
+    int                n_extra;
 } ff_t9pred_session_t;
 
-/** Clear a session to empty (no digits, selection 0). */
+/** Clear a session to empty: no digits, selection 0, AND no supplementary list
+ *  (extra unbound). Re-bind with ff_t9pred_session_set_extra after a reset if a
+ *  supplementary list should persist across it. */
 void ff_t9pred_session_reset(ff_t9pred_session_t *s);
+
+/**
+ * Bind (or clear, with `extra` NULL / `n_extra` <= 0) the session's optional
+ * supplementary word list. The list is ranked above the static dictionary for
+ * all subsequent session queries (current / candidates / cycle). No-op if `s`
+ * is NULL. Does not change the typed digits or selection; a fresh key press or
+ * backspace re-anchors the selection as usual.
+ */
+void ff_t9pred_session_set_extra(ff_t9pred_session_t *s,
+                                 char const *const *extra, int n_extra);
 
 /**
  * Append one letter key (2..9) to the session and reset the selection to the
@@ -142,14 +207,16 @@ void ff_t9pred_session_cycle(ff_t9pred_session_t *s);
 /**
  * The currently-selected candidate word for the session, or NULL when there
  * is no match (honest no-match) or `s` is NULL / empty. Pointer into the const
- * dictionary; valid for the life of the program.
+ * dictionary OR into the caller's supplementary list (whichever the selection
+ * lands on); valid as long as that backing storage lives.
  */
 char const *ff_t9pred_session_current(ff_t9pred_session_t const *s);
 
 /**
  * Fill `out` with up to `max_out` candidates for the session's current
- * sequence, frequency-best-first (same as calling `ff_t9pred_match` with the
- * session's digits). Returns the number written; 0 on no-match / empty / NULL.
+ * sequence, best-first (same as calling `ff_t9pred_match_ex` with the
+ * session's digits and its bound supplementary list). Returns the number
+ * written; 0 on no-match / empty / NULL.
  */
 size_t ff_t9pred_session_candidates(ff_t9pred_session_t const *s,
                                     char const **out, size_t max_out);
