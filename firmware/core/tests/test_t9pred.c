@@ -32,8 +32,11 @@ static void dict_is_present_and_frequency_ordered(void)
 {
     TEST_ASSERT_TRUE(ff_t9dict_count > 1000u);          /* a real dictionary */
     TEST_ASSERT_TRUE(ff_t9dict_blob_len > ff_t9dict_count); /* words + terminators */
-    /* Most-frequent-first: "the" is rank 0 in any English corpus. */
-    TEST_ASSERT_EQUAL_STRING("the", ff_t9dict_blob);
+    /* The dictionary now has a CURATED head ranked above the Gutenberg tail
+     * (see gen_t9dict.py). Index 0 is therefore the first curated word ("hi"),
+     * not the corpus's most-frequent "the". "the" still leads the tail — it is
+     * the top candidate for its own keys, verified in tail_still_ranks_the. */
+    TEST_ASSERT_EQUAL_STRING("hi", ff_t9dict_blob);
 }
 
 /* ------------------------------------------------------------------ */
@@ -95,7 +98,7 @@ static void prefix_grows_as_digits_are_added(void)
 
     size_t n2 = ff_t9pred_match_str("96", out, 4);
     TEST_ASSERT_TRUE(n2 > 0);
-    TEST_ASSERT_EQUAL_STRING("you", out[0]); /* most frequent w/x/y/z + m/n/o word */
+    TEST_ASSERT_EQUAL_STRING("yo", out[0]); /* curated "yo" now leads 9-6 */
 
     size_t n3 = ff_t9pred_match_str("9673", out, 4);
     TEST_ASSERT_EQUAL_UINT(3, (unsigned)n3);
@@ -105,20 +108,115 @@ static void prefix_grows_as_digits_are_added(void)
 static void prefix_match_includes_longer_completions(void)
 {
     /* "843" matches the 3-letter "the" AND longer completions like "there",
-     * "their" — the same call serves full-word and prefix cases. */
+     * "their" — the same call serves full-word and prefix cases. "there" is a
+     * CURATED word (festival coordination vocab) so it now leads over the
+     * corpus "the"; both are present, which is what this case pins. */
     char const *out[8] = {0};
     size_t n = ff_t9pred_match_str("843", out, 8);
 
     TEST_ASSERT_EQUAL_UINT(8, (unsigned)n);
-    TEST_ASSERT_EQUAL_STRING("the", out[0]);   /* exact length 3 */
-    /* a longer completion is present in the ranked set */
-    bool saw_there = false;
+    TEST_ASSERT_EQUAL_STRING("there", out[0]); /* curated, ranked above tail */
+    /* both a 3-letter word and a longer completion are present in the set */
+    bool saw_there = false, saw_the = false;
     for (size_t i = 0; i < n; i++) {
-        if (strcmp(out[i], "there") == 0) {
-            saw_there = true;
-        }
+        if (strcmp(out[i], "there") == 0) saw_there = true;
+        if (strcmp(out[i], "the") == 0) saw_the = true;
     }
     TEST_ASSERT_TRUE(saw_there);
+    TEST_ASSERT_TRUE(saw_the);
+}
+
+/* ------------------------------------------------------------------ */
+/* Curated festival/texting vocabulary (Task 1 — the high-priority layer) */
+/* ------------------------------------------------------------------ */
+
+/* Keypad digits ('2'..'9' string) for a lowercase word. */
+static void digits_for(char const *w, char *ds)
+{
+    static const char *rows[8] = {
+        "abc", "def", "ghi", "jkl", "mno", "pqrs", "tuv", "wxyz"
+    };
+    size_t k = 0;
+    for (size_t i = 0; w[i] != '\0'; i++) {
+        for (int r = 0; r < 8; r++) {
+            if (strchr(rows[r], w[i])) { ds[k++] = (char)('2' + r); break; }
+        }
+    }
+    ds[k] = '\0';
+}
+
+/* A word "resolves to itself" when: typing its full keys is no longer a
+ * no-match, the word is in the ranked set, and it is the TOP candidate of its
+ * own length — i.e. the best dictionary word of that exact length for those
+ * keys (the completed-word guarantee). For all but one of the required words
+ * that is also out[0]; the exception (idk) is pinned separately below. */
+static void assert_resolves_to_self(char const *word)
+{
+    char ds[FF_T9PRED_MAX_DIGITS + 1];
+    digits_for(word, ds);
+    char const *out[16] = {0};
+    size_t n = ff_t9pred_match_str(ds, out, 16);
+
+    TEST_ASSERT_TRUE_MESSAGE(n > 0, word);       /* the prior gap is gone */
+    bool present = false;
+    for (size_t i = 0; i < n; i++) {
+        if (strcmp(out[i], word) == 0) present = true;
+    }
+    TEST_ASSERT_TRUE_MESSAGE(present, word);
+
+    size_t wl = strlen(word);
+    for (size_t i = 0; i < n; i++) {
+        if (strlen(out[i]) == wl) {               /* first same-length match */
+            TEST_ASSERT_EQUAL_STRING_MESSAGE(word, out[i], word);
+            break;
+        }
+    }
+}
+
+static char const *const kTargets[] = {
+    "hello", "hey", "okay", "yeah", "tbh", "wtf", "lol", "idk",
+    "omw", "rave", "kandi", "camp", "water", "meet", "lost", "crew",
+};
+#define N_TARGETS ((int)(sizeof(kTargets) / sizeof(kTargets[0])))
+
+static void curated_targets_each_resolve_to_themselves(void)
+{
+    for (int i = 0; i < N_TARGETS; i++) {
+        assert_resolves_to_self(kTargets[i]);
+    }
+}
+
+static void curated_targets_are_the_single_top_candidate(void)
+{
+    /* Every required word is out[0] for its own keys — EXCEPT "idk", whose
+     * 3-key sequence (4-3-5) is also the prefix of the longer curated greeting
+     * "hello" (4-3-5-5-6), so hello leads and idk is second (still the top
+     * 3-letter completion). That is the one awkward digit collision in the
+     * curated set; it is pinned explicitly rather than hidden. */
+    for (int i = 0; i < N_TARGETS; i++) {
+        char ds[FF_T9PRED_MAX_DIGITS + 1];
+        digits_for(kTargets[i], ds);
+        char const *out[4] = {0};
+        size_t n = ff_t9pred_match_str(ds, out, 4);
+        TEST_ASSERT_TRUE(n > 0);
+        if (strcmp(kTargets[i], "idk") == 0) {
+            TEST_ASSERT_EQUAL_STRING("hello", out[0]);
+            TEST_ASSERT_EQUAL_STRING("idk", out[1]);
+        } else {
+            TEST_ASSERT_EQUAL_STRING_MESSAGE(kTargets[i], out[0], kTargets[i]);
+        }
+    }
+}
+
+static void prior_nomatch_gaps_are_closed(void)
+{
+    /* These exact sequences were an honest no-match before the curated layer
+     * (documented in NOTICE-t9dict.md); they must resolve now. */
+    char const *out[2] = {0};
+    TEST_ASSERT_TRUE(ff_t9pred_match_str("43556", out, 2) > 0); /* hello */
+    TEST_ASSERT_EQUAL_STRING("hello", out[0]);
+    TEST_ASSERT_TRUE(ff_t9pred_match_str("6529", out, 2) > 0);  /* okay */
+    TEST_ASSERT_EQUAL_STRING("okay", out[0]);
 }
 
 /* ------------------------------------------------------------------ */
@@ -219,6 +317,63 @@ static void key_and_backspace_reset_selection_to_top(void)
     ff_t9pred_session_key(&s, 3); /* back to "9673" */
     TEST_ASSERT_EQUAL_UINT(0, s.sel);
     TEST_ASSERT_EQUAL_STRING("words", ff_t9pred_session_current(&s));
+}
+
+/* ------------------------------------------------------------------ */
+/* Supplementary word list (Task 2 — pure engine API, no festpack here)  */
+/* ------------------------------------------------------------------ */
+
+static void match_ex_ranks_supplied_words_above_dictionary(void)
+{
+    /* A caller-supplied word is ranked above the static dictionary and matched
+     * case-insensitively (real-world names carry capitals). "Gooders" shares
+     * the keys 4-6-6-3 with "good"/"home"/... and leads when supplied. */
+    char const *extra[] = { "Gooders" };
+    char const *out[6] = {0};
+    size_t n = ff_t9pred_match_ex(SEQ(4, 6, 6, 3), 4, out, 6, extra, 1);
+
+    TEST_ASSERT_TRUE(n >= 2);
+    TEST_ASSERT_EQUAL_STRING("Gooders", out[0]); /* supplied word first */
+    TEST_ASSERT_EQUAL_STRING("good", out[1]);    /* then the dictionary order */
+
+    /* count_ex sees the extra match on top of the dictionary total. */
+    size_t base = ff_t9pred_count(SEQ(4, 6, 6, 3), 4);
+    TEST_ASSERT_EQUAL_UINT((unsigned)(base + 1), (unsigned)ff_t9pred_count_ex(
+                               SEQ(4, 6, 6, 3), 4, extra, 1));
+}
+
+static void match_ex_dedups_supplied_against_dictionary(void)
+{
+    /* A supplied word equal (case-insensitively) to a dictionary word appears
+     * once, and count is unchanged from the dictionary-only total. */
+    char const *extra[] = { "GOOD" };
+    char const *out[16] = {0};
+    size_t n = ff_t9pred_match_ex(SEQ(4, 6, 6, 3), 4, out, 16, extra, 1);
+
+    TEST_ASSERT_EQUAL_STRING("GOOD", out[0]); /* the supplied casing wins */
+    int seen = 0;
+    for (size_t i = 0; i < n; i++) {
+        if (strcmp(out[i], "good") == 0) seen++; /* dictionary copy suppressed */
+    }
+    TEST_ASSERT_EQUAL_INT(0, seen);
+    TEST_ASSERT_EQUAL_UINT((unsigned)ff_t9pred_count(SEQ(4, 6, 6, 3), 4),
+                           (unsigned)ff_t9pred_count_ex(SEQ(4, 6, 6, 3), 4, extra, 1));
+}
+
+static void match_ex_with_null_extra_equals_plain_match(void)
+{
+    char const *a[8] = {0};
+    char const *b[8] = {0};
+    size_t na = ff_t9pred_match_ex(SEQ(4, 6, 6, 3), 4, a, 8, NULL, 0);
+    size_t nb = ff_t9pred_match(SEQ(4, 6, 6, 3), 4, b, 8);
+    TEST_ASSERT_EQUAL_UINT((unsigned)nb, (unsigned)na);
+    for (size_t i = 0; i < nb; i++) {
+        TEST_ASSERT_EQUAL_STRING(b[i], a[i]);
+    }
+    /* An extra word that does not match is simply ignored. */
+    char const *nomatch[] = { "zzzz" };
+    size_t nc = ff_t9pred_match_ex(SEQ(4, 6, 6, 3), 4, a, 8, nomatch, 1);
+    TEST_ASSERT_EQUAL_UINT((unsigned)nb, (unsigned)nc);
 }
 
 /* ------------------------------------------------------------------ */
@@ -337,6 +492,14 @@ int main(void)
 
     RUN_TEST(prefix_grows_as_digits_are_added);
     RUN_TEST(prefix_match_includes_longer_completions);
+
+    RUN_TEST(curated_targets_each_resolve_to_themselves);
+    RUN_TEST(curated_targets_are_the_single_top_candidate);
+    RUN_TEST(prior_nomatch_gaps_are_closed);
+
+    RUN_TEST(match_ex_ranks_supplied_words_above_dictionary);
+    RUN_TEST(match_ex_dedups_supplied_against_dictionary);
+    RUN_TEST(match_ex_with_null_extra_equals_plain_match);
 
     RUN_TEST(no_match_is_explicit_zero_and_leaves_out_untouched);
     RUN_TEST(no_match_session_current_is_null);
