@@ -15,17 +15,30 @@
  * 44px hit-target floor — see that file for the assertion this is
  * checked against on every build.
  *
- * ## Row budget: why every control is "label + one cycling value chip"
- * Eight settings (units, share mode, haptics, night glow, water-nudge,
- * quiet hours, UTC offset, colorblind — S17 slice a added the last one)
- * plus a name caption and a back button do not fit the 440px puck as
- * eight full editors (a segmented FT/M control, a three-way share
- * selector, on/off switches, ...) without either shrinking rows under
- * the 44px hit-target floor or pushing the bottom rows out into the
- * pole, where the circle narrows to almost nothing (see
- * FF_SETTINGS_ROW5_Y's own margin at the bottom of this file's layout
- * constants — re-checked, not assumed, when the colorblind row was
- * added; see that constant's own comment). Every row instead follows the ONE pattern the spec
+ * ## Two pages, not one saturated stack (#99/#100)
+ * The face now PAGINATES. Adding the #100 brightness slider to the old
+ * single-page stack was the row that broke the camel's back: eight settings
+ * (units, share, haptics, night glow, water, quiet, UTC, colorblind) plus a
+ * brightness slider, a name caption, and a back button cannot all clear the
+ * 44px hit floor AND stay inside the 412 round glass on one page — the last
+ * rows land in the bottom pole where the circle has all but closed. The two
+ * sanctioned fixes for that are a scrollable list or pagination; this face
+ * PAGINATES, because a scrollable list is the higher-risk of the two against
+ * this repo's own hardest gate. `test_face_hit_targets.c` walks every
+ * CLICKABLE element and checks its ABSOLUTE hit-rect (lv_obj_get_click_area,
+ * which returns scroll-shifted coords) against the circle — so a scrollable
+ * list would put its off-viewport rows at off-glass coordinates and FAIL the
+ * sweep, exactly the class of bug scr_nav.c's "build the active tile only"
+ * fix (issue #29) closed. Pagination sidesteps it entirely: `ff_scr_settings_
+ * build` builds ONLY the active page's controls (page 0: units/share,
+ * haptics/glow, water, quiet · page 1: brightness slider, UTC, colorblind),
+ * so every built control is always in the wide middle band, on-glass, clear
+ * of the floor with margin. The page is shell-owned view state (like
+ * Compose's ABC/123/SYM mode), cycled by a "PAGE n/2" chip via
+ * FF_INTENT_SETTINGS_PAGE. Halving the per-page row count is also what buys
+ * the enlarged back button its extra HEIGHT (#99) — see FF_SETTINGS_BACK_H.
+ *
+ * Each row still follows the ONE pattern the spec
  * itself already prescribes for water/quiet ("tap cycles presets") —
  * extended uniformly to every setting, including the two booleans and
  * share mode: a dim label names the setting, a single value chip on the
@@ -81,26 +94,24 @@
 
 #define FF_SETTINGS_HEADER_Y 16
 
-/* Back button — S15 slice c enlarged it past the 44px floor (maintainer
- * field feedback: the Settings back button was hard to hit even sober; the
- * escape hatch someone most needs in a hurry must be an obvious, comfortable
- * 2am/gloves target). 44x44 -> FF_SETTINGS_BACK_W x FF_SETTINGS_BACK_H
- * (64x46). The enlargement is WIDTH-led (64, +45%): the 412 round glass
- * (radius 206) is materially tighter at the top pole than the old 440 puck,
- * and here the button competes for vertical space with a six-row settings
- * stack that must ALL clear the hit floor and stay inside a smaller circle —
- * so height grows only to 46 (past the floor with margin) while width, which
- * costs no vertical budget, carries the rest. A left-anchored button near
- * the top is pushed toward centre-x by the narrowing circle, so rather than a
- * small pill tucked left of a puck-centred title (which no longer fits beside
- * a bigger button), the back button and the SETTINGS title/name form one
- * left-to-right header GROUP whose top corners stay inside the circle.
- * Hit-target-sweep margins are in the PR body; the _Static_assert below
- * proves the 6-row stack still fits the puck square. (A materially BIGGER
- * back button at 412 would mean dropping a settings row — flagged for the
- * maintainer to judge on glass.) */
+/* Back button — GROWN for #99 (maintainer field feedback: still "pretty
+ * tight" even sober after S15c's width-only bump; the escape hatch someone
+ * most needs in a hurry must be an obvious, comfortable 2am/gloves target).
+ * 64x46 -> 64x76 (+65% height, +65% area). The growth is HEIGHT-led, which
+ * is exactly what #99's own note asks for ("if [pagination] frees vertical
+ * budget, use it to grow the back button's HEIGHT too"): paginating this
+ * face (see this file's header) means each page carries at most four control
+ * rows instead of six, so row 0 starts far enough down the glass to leave
+ * the header band a full 76px tall. WIDTH stays 64 on purpose: at the top
+ * pole (y=16) the circle is only ~159px wide, and the button shares that
+ * band with the SETTINGS title + name to its right (HEADER_TEXT_X=201) —
+ * widening the button would push the title off the round glass. So height
+ * carries the growth; the width is pinned by the title beside it, flagged
+ * for the maintainer to judge on glass. The top corners are unchanged from
+ * S15c (same BACK_X/HEADER_Y), so they clear the circle exactly as before;
+ * the taller bottom edge sits at y=92, deep in the wide part of the glass. */
 #define FF_SETTINGS_BACK_W 64
-#define FF_SETTINGS_BACK_H 46
+#define FF_SETTINGS_BACK_H 76
 #define FF_SETTINGS_HEADER_H FF_SETTINGS_BACK_H
 
 /* Left edge of the back button, and the x the title/name column hangs off
@@ -114,50 +125,62 @@
 #define FF_SETTINGS_NAME_Y  (FF_SETTINGS_HEADER_Y + 26)
 #define FF_SETTINGS_NAME_H 12 /* caption, not a control — no hit-target floor applies */
 
-/* Rows enlarged from the 44px floor to FF_SETTINGS_ROW_H (S15c). At 412 the
- * six-row stack is vertically budget-bound — the last row sits close to the
- * bottom pole where the circle has all but closed — so the rows grow as far
- * as the assert and the bottom row's own in-circle width allow (its
- * full-width chip must stay wide enough for "COLORBLIND OFF" at 412), not to
- * an arbitrary large size. Folding the name caption INTO the header group
- * (beside the title, not on its own line above the rows) is what buys the
- * rows the vertical room to clear the floor at all. */
-#define FF_SETTINGS_ROW_H   46
-#define FF_SETTINGS_ROW_GAP 10
+/* Rows — grown from the S15c 46px to 48 (past the 44 floor with real
+ * margin now that pagination halved the per-page row count, so the sweep
+ * clears with slack rather than scraping). */
+#define FF_SETTINGS_ROW_H   48
+#define FF_SETTINGS_ROW_GAP 12
 
 /* Separation between the two chips sharing a row (units+share,
  * haptics+night-glow). PR #68 UX review (Bailey, blocking finding 2):
  * the original 10px was under 1mm of dead space at this puck's ~12px/mm
  * scale (37mm face, per docs/review/ux-raver.md) — "a mis-tap trap ...
- * not just a vibe". 24px (~2mm) gives each 44px-tall pill a real gap a
- * kandi'd or gloved thumb can land in without ambiguity which chip it
- * hit; re-checked against `test_face_hit_targets.c`'s sweep afterward
- * (each chip individually still clears the 44px floor and stays inside
- * the round glass at the widened width). */
+ * not just a vibe". 24px (~2mm) gives each pill a real gap a kandi'd or
+ * gloved thumb can land in without ambiguity which chip it hit; re-checked
+ * against `test_face_hit_targets.c`'s sweep afterward. */
 #define FF_SETTINGS_CHIP_GAP 24
-#define FF_SETTINGS_ROW_STEP (FF_SETTINGS_ROW_H + FF_SETTINGS_ROW_GAP)
-/* +8 (not a smaller pad): the enlarged back button's bottom edge sits at
- * HEADER_Y + BACK_H = 62, and row 0's chips span the full width directly
- * below it, so this pad IS the header->row0 hit-target GAP — it must clear
- * FF_HIT_MIN_GAP_PX (8). At 412 this stack is packed tight enough that 8 is
- * the value, not a comfort margin; flagged in the PR body. */
-#define FF_SETTINGS_ROWS_Y0 (FF_SETTINGS_HEADER_Y + FF_SETTINGS_HEADER_H + 8)
+#define FF_SETTINGS_ROW_STEP (FF_SETTINGS_ROW_H + FF_SETTINGS_ROW_GAP) /* 60 */
+/* Row 0 begins 8px below the taller back button (bottom at y=92) — this pad
+ * IS the header->row0 hit-target GAP, so it must clear FF_HIT_MIN_GAP_PX
+ * (8). Only the LEFT half of row 0 sits directly under the button anyway;
+ * 8 is the floor, and pagination leaves plenty of room below. */
+#define FF_SETTINGS_ROWS_Y0 (FF_SETTINGS_HEADER_Y + FF_SETTINGS_HEADER_H + 8) /* 100 */
 
-#define FF_SETTINGS_ROW0_Y (FF_SETTINGS_ROWS_Y0)                        /* units + share       */
-#define FF_SETTINGS_ROW1_Y (FF_SETTINGS_ROW0_Y + FF_SETTINGS_ROW_STEP)  /* haptics + night glow */
-#define FF_SETTINGS_ROW2_Y (FF_SETTINGS_ROW1_Y + FF_SETTINGS_ROW_STEP)  /* water nudge          */
-#define FF_SETTINGS_ROW3_Y (FF_SETTINGS_ROW2_Y + FF_SETTINGS_ROW_STEP)  /* quiet hours          */
-#define FF_SETTINGS_ROW4_Y (FF_SETTINGS_ROW3_Y + FF_SETTINGS_ROW_STEP)  /* UTC offset stepper   */
-/* S17 slice a: the colorblind toggle, the lowest row. S15c re-fit the whole
- * stack to the 412 puck: with FF_SETTINGS_ROWS_Y0=70, ROW_STEP=56 and
- * ROW_H=46, this row spans y=350..396, leaving 16px of square-bound slack
- * below it (the _Static_assert is the real proof) and — more bindingly — a
- * ~138px in-circle width for its full-width chip at y=396, which is what
- * keeps "COLORBLIND OFF" from overflowing at 412 (verified in the golden). */
-#define FF_SETTINGS_ROW5_Y (FF_SETTINGS_ROW4_Y + FF_SETTINGS_ROW_STEP)  /* colorblind toggle    */
+/* --- Page 0 stack: units/share, haptics/glow, water, quiet (4 rows). --- */
+#define FF_SETTINGS_ROW0_Y (FF_SETTINGS_ROWS_Y0)                        /* 100: units + share       */
+#define FF_SETTINGS_ROW1_Y (FF_SETTINGS_ROW0_Y + FF_SETTINGS_ROW_STEP)  /* 160: haptics + night glow */
+#define FF_SETTINGS_ROW2_Y (FF_SETTINGS_ROW1_Y + FF_SETTINGS_ROW_STEP)  /* 220: water nudge          */
+#define FF_SETTINGS_ROW3_Y (FF_SETTINGS_ROW2_Y + FF_SETTINGS_ROW_STEP)  /* 280: quiet hours (ends 328) */
 
-_Static_assert(FF_SETTINGS_ROW5_Y + FF_SETTINGS_ROW_H <= FF_THEME_PUCK_PX,
-               "settings' last row must stay inside the puck's own square, let alone its circle");
+/* --- Page 1 stack: brightness slider (#100), UTC stepper, colorblind. --- */
+#define FF_SETTINGS_BRIGHT_CAP_Y (FF_SETTINGS_ROWS_Y0)                    /* 100: "BRIGHTNESS  70%" caption */
+#define FF_SETTINGS_BRIGHT_CAP_H 24
+#define FF_SETTINGS_SLIDER_Y (FF_SETTINGS_BRIGHT_CAP_Y + FF_SETTINGS_BRIGHT_CAP_H + 6) /* 130 */
+#define FF_SETTINGS_SLIDER_H 48                                            /* clears the 44 floor with margin */
+/* The UTC row sits +20 below the slider TRACK, not the usual +12: an
+ * lv_slider's KNOB overhangs its track by ~7px top and bottom, so the
+ * slider's real hit-rect (what test_face_hit_targets.c's adjacency pass
+ * measures via lv_obj_get_click_area) is ~62px tall, not 48. A +12 track gap
+ * left only 5px of clickable clearance to the "-" button — under the 8px
+ * adjacency floor. +20 restores a real ~13px gap (verified by the sweep,
+ * clang AND gcc-14). */
+#define FF_SETTINGS_P1_UTC_Y (FF_SETTINGS_SLIDER_Y + FF_SETTINGS_SLIDER_H + 20) /* 198: UTC stepper */
+#define FF_SETTINGS_P1_CB_Y  (FF_SETTINGS_P1_UTC_Y + FF_SETTINGS_ROW_STEP)      /* 250: colorblind (ends 298) */
+
+/* --- Page-nav chip, shared by both pages: cycles FF_INTENT_SETTINGS_PAGE.
+ * Sits below each page's controls in the wide lower-middle band, centred on
+ * puck-x. A single full-hit-target chip ("PAGE 1/2" / "PAGE 2/2 >"), same
+ * pill grammar as every other control. --- */
+#define FF_SETTINGS_NAV_H FF_SETTINGS_ROW_H  /* 48 */
+#define FF_SETTINGS_NAV_W 168
+#define FF_SETTINGS_NAV_Y 340                /* 340..388 */
+
+_Static_assert(FF_SETTINGS_ROW3_Y + FF_SETTINGS_ROW_H <= FF_THEME_PUCK_PX,
+               "settings page-0 last row must stay inside the puck's own square");
+_Static_assert(FF_SETTINGS_P1_CB_Y + FF_SETTINGS_ROW_H <= FF_THEME_PUCK_PX,
+               "settings page-1 last row must stay inside the puck's own square");
+_Static_assert(FF_SETTINGS_NAV_Y + FF_SETTINGS_NAV_H <= FF_THEME_PUCK_PX,
+               "settings page-nav chip must stay inside the puck's own square");
 
 /**
  * settings_safe_margin_x — thin int32_t/ceil wrapper around
@@ -500,30 +523,183 @@ static void settings_utc_label(char *buf, size_t n, bool set, int16_t off_min)
     snprintf(buf, n, "UTC%c%d:%02d", sign, (int)(a / 60), (int)(a % 60));
 }
 
+/* --- WATER NUDGE row (page 0). Label + preset chip; dim OFF / amber set. --- */
+static void settings_build_water_row(lv_obj_t *parent, int32_t y)
+{
+    int32_t margin = settings_safe_margin_x(y, FF_SETTINGS_ROW_H);
+    int32_t chip_w = 110;
+    int32_t label_w = FF_THEME_PUCK_PX - margin - chip_w - FF_SETTINGS_CHIP_GAP - margin;
+    settings_build_row_label(parent, "WATER NUDGE", margin, y, label_w, FF_SETTINGS_ROW_H, settings_water_cb);
+
+    char buf[16];
+    settings_water_label(buf, sizeof(buf), s_settings.water_min);
+    uint32_t const fg = (s_settings.water_min == 0) ? FF_THEME_COLOR_DIM : FF_THEME_COLOR_AMBER;
+    settings_make_chip(parent, buf, FF_THEME_PUCK_PX - margin - chip_w, y, chip_w, FF_SETTINGS_ROW_H,
+                        FF_THEME_COLOR_SURFACE, fg, settings_water_cb, NULL);
+}
+
+/* --- QUIET HOURS row (page 0). Same OFF-color convention as water. --- */
+static void settings_build_quiet_row(lv_obj_t *parent, int32_t y)
+{
+    int32_t margin = settings_safe_margin_x(y, FF_SETTINGS_ROW_H);
+    int32_t chip_w = 110;
+    int32_t label_w = FF_THEME_PUCK_PX - margin - chip_w - FF_SETTINGS_CHIP_GAP - margin;
+    settings_build_row_label(parent, "QUIET HOURS", margin, y, label_w, FF_SETTINGS_ROW_H, settings_quiet_cb);
+
+    settings_quiet_preset_t const *cur = settings_current_quiet(s_settings.quiet_from_min, s_settings.quiet_to_min);
+    bool const is_off = (cur != NULL) && (cur->from_min == 0) && (cur->to_min == 0);
+    uint32_t const fg = is_off ? FF_THEME_COLOR_DIM : FF_THEME_COLOR_AMBER;
+    settings_make_chip(parent, (cur != NULL) ? cur->label : "CUSTOM", FF_THEME_PUCK_PX - margin - chip_w, y, chip_w,
+                        FF_SETTINGS_ROW_H, FF_THEME_COLOR_SURFACE, fg, settings_quiet_cb, NULL);
+}
+
+/* --- UTC OFFSET stepper row (page 1). "-" / value / "+", 60-min steps. --- */
+static void settings_build_utc_row(lv_obj_t *parent, int32_t y)
+{
+    int32_t margin = settings_safe_margin_x(y, FF_SETTINGS_ROW_H);
+    int32_t btn_w = FF_THEME_MIN_HIT_PX + 8; /* 52 — past the floor with margin (the sweep wants slack, #99) */
+
+    settings_make_chip(parent, "-", margin, y, btn_w, FF_SETTINGS_ROW_H, FF_THEME_COLOR_SURFACE, FF_THEME_COLOR_INK,
+                        settings_utc_minus_cb, NULL);
+    settings_make_chip(parent, "+", FF_THEME_PUCK_PX - margin - btn_w, y, btn_w, FF_SETTINGS_ROW_H,
+                        FF_THEME_COLOR_SURFACE, FF_THEME_COLOR_INK, settings_utc_plus_cb, NULL);
+
+    char buf[16];
+    settings_utc_label(buf, sizeof(buf), s_settings.utc_offset_set, s_settings.utc_offset_min);
+    lv_obj_t *val = lv_label_create(parent);
+    lv_label_set_text(val, buf);
+    lv_obj_set_style_text_font(val, FF_THEME_FONT_LABEL, 0);
+    lv_obj_set_style_text_color(val, lv_color_hex(FF_THEME_COLOR_INK), 0);
+    lv_obj_align(val, LV_ALIGN_TOP_MID, 0, y + (FF_SETTINGS_ROW_H - 16) / 2);
+}
+
 /* ---------------------------------------------------------------------
- * Row 5: COLORBLIND — S17 slice a. A single boolean with a SINGLE
+ * COLORBLIND (page 1) — S17 slice a. A single boolean with a SINGLE
  * full-width, self-describing chip ("COLORBLIND ON"/"COLORBLIND OFF"),
- * matching HAPTICS/NIGHT GLOW's self-describing-chip-text idiom (row 1)
- * rather than WATER NUDGE/QUIET HOURS' separate-label-plus-chip shape
- * (rows 2/3) — NOT a stylistic choice, a geometry one: this is the
- * LOWEST row on the face, close enough to the puck's pole that
- * `settings_safe_margin_x` returns a much larger margin here than at any
- * row above it (verified: ~139px at this row's y, vs. ~54px at row 2's),
- * which left a rows-2/3-shaped fixed-110px chip only ~28px of label
- * width to work with — under the 44px hit-target floor
- * (`test_face_hit_targets.c` caught this in review; see AGENTS.md's
- * standing brief on why that sweep exists). A single chip spanning the
- * row's own margin-to-margin width scales WITH the available space
- * instead of fighting it, the same way row 1's half-width chips already
- * do. Same green-on/dim-off color convention as haptics/night-glow — a
- * plain toggle, not an "amber means configured" value like water/quiet's
- * presets.
+ * matching HAPTICS/NIGHT GLOW's self-describing-chip-text idiom. Same
+ * green-on/dim-off convention — a plain toggle, not an "amber means
+ * configured" value like water/quiet's presets.
  * ------------------------------------------------------------------- */
 
 static void settings_colorblind_cb(lv_event_t *e)
 {
     (void)e;
     settings_emit_int(FF_SETTING_COLORBLIND, s_settings.colorblind ? 0 : 1);
+}
+
+static void settings_build_colorblind_row(lv_obj_t *parent, int32_t y)
+{
+    int32_t margin = settings_safe_margin_x(y, FF_SETTINGS_ROW_H);
+    int32_t row_w = FF_THEME_PUCK_PX - 2 * margin;
+    uint32_t const fg = s_settings.colorblind ? FF_THEME_COLOR_LIVE_GREEN : FF_THEME_COLOR_DIM;
+    settings_make_chip(parent, s_settings.colorblind ? "COLORBLIND ON" : "COLORBLIND OFF", margin, y, row_w,
+                        FF_SETTINGS_ROW_H, FF_THEME_COLOR_SURFACE, fg, settings_colorblind_cb, NULL);
+}
+
+/* ---------------------------------------------------------------------
+ * BRIGHTNESS (page 1, #100) — a caption ("BRIGHTNESS  70%") over an
+ * lv_slider spanning the row's in-circle width. The slider's range is the
+ * setting's own honest bounds [FF_BRIGHTNESS_MIN_PCT, FF_BRIGHTNESS_MAX_PCT]
+ * (ff_settings.h) — the floor is non-zero so the knob can never reach a
+ * black, unrecoverable screen. The emit fires on LV_EVENT_RELEASED (once
+ * per touch, tap-to-position included), not on every VALUE_CHANGED frame of
+ * a drag, so a drag persists a single final value rather than spamming the
+ * store; the shell clamps + persists and the next projection repaints the
+ * knob + caption. On the sim this is a pure render (goldens are single-frame
+ * and never fire a touch) — the knob simply sits at the stored percent,
+ * which is why the slider needs no interaction to be golden-testable.
+ * ------------------------------------------------------------------- */
+
+static uint8_t settings_brightness_clamped(void)
+{
+    uint32_t v = s_settings.brightness_pct;
+    if (v < FF_BRIGHTNESS_MIN_PCT) v = FF_BRIGHTNESS_MIN_PCT;
+    if (v > FF_BRIGHTNESS_MAX_PCT) v = FF_BRIGHTNESS_MAX_PCT;
+    return (uint8_t)v;
+}
+
+static void settings_brightness_cb(lv_event_t *e)
+{
+    lv_obj_t *slider = lv_event_get_target(e);
+    int32_t v = lv_slider_get_value(slider);
+    settings_emit_int(FF_SETTING_BRIGHTNESS, v);
+}
+
+static void settings_build_brightness(lv_obj_t *parent)
+{
+    uint8_t const pct = settings_brightness_clamped();
+
+    /* Caption: "BRIGHTNESS" left, "NN%" right — a plain label pair (not a
+     * control), inset to the slider's own margin so the three read as one
+     * block. */
+    int32_t cap_margin = settings_safe_margin_x(FF_SETTINGS_BRIGHT_CAP_Y, FF_SETTINGS_BRIGHT_CAP_H);
+    lv_obj_t *cap = lv_label_create(parent);
+    lv_label_set_text(cap, "BRIGHTNESS");
+    lv_obj_set_style_text_font(cap, FF_THEME_FONT_LABEL, 0);
+    lv_obj_set_style_text_color(cap, lv_color_hex(FF_THEME_COLOR_DIM), 0);
+    lv_obj_align(cap, LV_ALIGN_TOP_LEFT, cap_margin, FF_SETTINGS_BRIGHT_CAP_Y);
+
+    char pctbuf[8];
+    snprintf(pctbuf, sizeof(pctbuf), "%u%%", (unsigned)pct);
+    lv_obj_t *pctlbl = lv_label_create(parent);
+    lv_label_set_text(pctlbl, pctbuf);
+    lv_obj_set_style_text_font(pctlbl, FF_THEME_FONT_LABEL, 0);
+    lv_obj_set_style_text_color(pctlbl, lv_color_hex(FF_THEME_COLOR_AMBER), 0);
+    lv_obj_align(pctlbl, LV_ALIGN_TOP_RIGHT, -cap_margin, FF_SETTINGS_BRIGHT_CAP_Y);
+
+    /* The slider itself — the row's full in-circle width, SLIDER_H tall so
+     * its click box clears the 44 floor with margin. */
+    int32_t margin = settings_safe_margin_x(FF_SETTINGS_SLIDER_Y, FF_SETTINGS_SLIDER_H);
+    int32_t track_w = FF_THEME_PUCK_PX - 2 * margin;
+
+    lv_obj_t *slider = lv_slider_create(parent);
+    lv_obj_set_size(slider, track_w, FF_SETTINGS_SLIDER_H);
+    lv_obj_set_pos(slider, margin, FF_SETTINGS_SLIDER_Y);
+    lv_slider_set_range(slider, FF_BRIGHTNESS_MIN_PCT, FF_BRIGHTNESS_MAX_PCT);
+    lv_slider_set_value(slider, pct, LV_ANIM_OFF);
+    /* Explicit palette so it reads on the dark puck (the default theme
+     * styles would fight FF_THEME_COLOR_BG): SURFACE track, amber filled
+     * indicator + knob, matching the "amber = the live value" grammar the
+     * water/quiet chips already use. */
+    lv_obj_set_style_bg_color(slider, lv_color_hex(FF_THEME_COLOR_SURFACE), LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(slider, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_set_style_radius(slider, LV_RADIUS_CIRCLE, LV_PART_MAIN);
+    lv_obj_set_style_bg_color(slider, lv_color_hex(FF_THEME_COLOR_AMBER), LV_PART_INDICATOR);
+    lv_obj_set_style_bg_opa(slider, LV_OPA_COVER, LV_PART_INDICATOR);
+    lv_obj_set_style_radius(slider, LV_RADIUS_CIRCLE, LV_PART_INDICATOR);
+    lv_obj_set_style_bg_color(slider, lv_color_hex(FF_THEME_COLOR_AMBER), LV_PART_KNOB);
+    lv_obj_set_style_bg_opa(slider, LV_OPA_COVER, LV_PART_KNOB);
+    lv_obj_add_event_cb(slider, settings_brightness_cb, LV_EVENT_RELEASED, NULL);
+}
+
+/* ---------------------------------------------------------------------
+ * Page-nav chip — cycles FF_INTENT_SETTINGS_PAGE. Shared by both pages,
+ * centred in the wide lower-middle band. Text shows the CURRENT page
+ * (never a mystery toggle, same rule Compose's mode chip follows).
+ * ------------------------------------------------------------------- */
+
+static void settings_page_cb(lv_event_t *e)
+{
+    (void)e;
+    ff_intent_t in = {.kind = FF_INTENT_SETTINGS_PAGE, .u = {0}};
+    ff_intent_emit(&in);
+}
+
+static void settings_build_nav(lv_obj_t *parent)
+{
+    char buf[16];
+    unsigned const page1 = (unsigned)s_settings.page + 1u; /* 1-based for the human */
+    /* A trailing ">" on every page but the last hints "there's more"; the
+     * cycle still wraps (last page -> page 0), so the chip is never a dead
+     * end. */
+    if (s_settings.page + 1 < FF_SETTINGS_PAGE_COUNT) {
+        snprintf(buf, sizeof(buf), "PAGE %u/%u >", page1, (unsigned)FF_SETTINGS_PAGE_COUNT);
+    } else {
+        snprintf(buf, sizeof(buf), "PAGE %u/%u", page1, (unsigned)FF_SETTINGS_PAGE_COUNT);
+    }
+    int32_t x = (FF_THEME_PUCK_PX - FF_SETTINGS_NAV_W) / 2;
+    settings_make_chip(parent, buf, x, FF_SETTINGS_NAV_Y, FF_SETTINGS_NAV_W, FF_SETTINGS_NAV_H,
+                        FF_THEME_COLOR_SURFACE, FF_THEME_COLOR_INK, settings_page_cb, NULL);
 }
 
 /* ---------------------------------------------------------------------
@@ -555,20 +731,7 @@ void ff_scr_settings_build(ff_app_settings_t const *settings)
 
     /* --- Header GROUP: enlarged back button (dead-end escape, ux-raver
      * checklist item 6) on the left, with the SETTINGS title and the name
-     * caption stacked in a column to its right. S15c: the back button is now
-     * big enough that it no longer tucks left of a puck-centred title, so the
-     * three read as one left-to-right group centred near puck-x (see the
-     * FF_SETTINGS_BACK_X / _HEADER_TEXT_X comments). Positioned by fixed
-     * puck-local coordinates (not settings_safe_margin_x) precisely because
-     * this group is placed as a whole rather than inset row-by-row. --- */
-
-    /* Filled chip background (PR #68 UX review, Bailey, non-blocking):
-     * every other tappable thing on this screen is a solid rounded-rect
-     * pill; a transparent BACK button was the one control with the
-     * LEAST affordance despite being the escape hatch someone most needs
-     * in a hurry. Same FF_THEME_COLOR_SURFACE fill as every other chip,
-     * matching this screen's own visual grammar instead of standing out
-     * as an exception to it. */
+     * caption stacked in a column to its right. Shared by every page. --- */
     lv_obj_t *back = lv_button_create(puck);
     lv_obj_remove_style_all(back);
     lv_obj_set_size(back, FF_SETTINGS_BACK_W, FF_SETTINGS_BACK_H);
@@ -589,11 +752,6 @@ void ff_scr_settings_build(ff_app_settings_t const *settings)
     lv_obj_set_style_text_color(title, lv_color_hex(FF_THEME_COLOR_INK), 0);
     lv_obj_align(title, LV_ALIGN_TOP_LEFT, FF_SETTINGS_HEADER_TEXT_X, FF_SETTINGS_TITLE_Y);
 
-    /* --- Name caption (display-only, this slice — see header comment).
-     * Left-aligned under the title, in the header group's right-hand column
-     * (S15c: folded into the header band rather than a dedicated row above
-     * the settings, to buy the six rows the vertical budget to clear the
-     * hit-target floor at 412). --- */
     lv_obj_t *name_lbl = lv_label_create(puck);
     char name_buf[FF_APP_NAME_LEN + 8];
     snprintf(name_buf, sizeof(name_buf), "NAME: %s", (s_settings.my_name[0] != '\0') ? s_settings.my_name : "(unset)");
@@ -602,76 +760,25 @@ void ff_scr_settings_build(ff_app_settings_t const *settings)
     lv_obj_set_style_text_color(name_lbl, lv_color_hex(FF_THEME_COLOR_DIM), 0);
     lv_obj_align(name_lbl, LV_ALIGN_TOP_LEFT, FF_SETTINGS_HEADER_TEXT_X, FF_SETTINGS_NAME_Y);
 
-    settings_build_row0(puck);
-    settings_build_row1(puck);
-
-    /* --- Row 2: WATER NUDGE. ---
-     * OFF-color convention (PR #68 UX review, Bailey, non-blocking):
-     * dim grey for the off state, matching haptics/night-glow's
-     * green-on/grey-off row exactly for the "off" half — amber stays
-     * reserved for an actively configured value (this chip isn't a
-     * plain boolean like haptics/glow, so it doesn't borrow green for
-     * "on"), but OFF now reads the same dim grey everywhere on this
-     * screen instead of amber in some rows and grey in others. */
-    {
-        int32_t margin = settings_safe_margin_x(FF_SETTINGS_ROW2_Y, FF_SETTINGS_ROW_H);
-        int32_t chip_w = 110;
-        int32_t label_w = FF_THEME_PUCK_PX - margin - chip_w - FF_SETTINGS_CHIP_GAP - margin;
-        settings_build_row_label(puck, "WATER NUDGE", margin, FF_SETTINGS_ROW2_Y, label_w, FF_SETTINGS_ROW_H,
-                                  settings_water_cb);
-
-        char buf[16];
-        settings_water_label(buf, sizeof(buf), s_settings.water_min);
-        uint32_t const fg = (s_settings.water_min == 0) ? FF_THEME_COLOR_DIM : FF_THEME_COLOR_AMBER;
-        settings_make_chip(puck, buf, FF_THEME_PUCK_PX - margin - chip_w, FF_SETTINGS_ROW2_Y, chip_w,
-                            FF_SETTINGS_ROW_H, FF_THEME_COLOR_SURFACE, fg, settings_water_cb, NULL);
+    /* --- Only the ACTIVE page's controls are built (#99/#100). This is what
+     * keeps every clickable on-glass for test_face_hit_targets.c's sweep: a
+     * scrollable list would leave off-viewport rows at off-glass absolute
+     * coords the sweep reads verbatim. Same "build the active tile only"
+     * shape scr_nav.c uses (issue #29). --- */
+    switch (s_settings.page) {
+    default: /* out-of-range page (shouldn't happen — shell wraps) falls to page 0 */
+    case 0:
+        settings_build_row0(puck);
+        settings_build_row1(puck);
+        settings_build_water_row(puck, FF_SETTINGS_ROW2_Y);
+        settings_build_quiet_row(puck, FF_SETTINGS_ROW3_Y);
+        break;
+    case 1:
+        settings_build_brightness(puck);
+        settings_build_utc_row(puck, FF_SETTINGS_P1_UTC_Y);
+        settings_build_colorblind_row(puck, FF_SETTINGS_P1_CB_Y);
+        break;
     }
 
-    /* --- Row 3: QUIET HOURS. Same OFF-color convention as row 2. --- */
-    {
-        int32_t margin = settings_safe_margin_x(FF_SETTINGS_ROW3_Y, FF_SETTINGS_ROW_H);
-        int32_t chip_w = 110;
-        int32_t label_w = FF_THEME_PUCK_PX - margin - chip_w - FF_SETTINGS_CHIP_GAP - margin;
-        settings_build_row_label(puck, "QUIET HOURS", margin, FF_SETTINGS_ROW3_Y, label_w, FF_SETTINGS_ROW_H,
-                                  settings_quiet_cb);
-
-        settings_quiet_preset_t const *cur = settings_current_quiet(s_settings.quiet_from_min, s_settings.quiet_to_min);
-        bool const is_off = (cur != NULL) && (cur->from_min == 0) && (cur->to_min == 0);
-        uint32_t const fg = is_off ? FF_THEME_COLOR_DIM : FF_THEME_COLOR_AMBER;
-        settings_make_chip(puck, (cur != NULL) ? cur->label : "CUSTOM", FF_THEME_PUCK_PX - margin - chip_w,
-                            FF_SETTINGS_ROW3_Y, chip_w, FF_SETTINGS_ROW_H, FF_THEME_COLOR_SURFACE, fg,
-                            settings_quiet_cb, NULL);
-    }
-
-    /* --- Row 4: UTC OFFSET stepper. --- */
-    {
-        int32_t margin = settings_safe_margin_x(FF_SETTINGS_ROW4_Y, FF_SETTINGS_ROW_H);
-        int32_t btn_w = FF_THEME_MIN_HIT_PX;
-
-        settings_make_chip(puck, "-", margin, FF_SETTINGS_ROW4_Y, btn_w, FF_SETTINGS_ROW_H, FF_THEME_COLOR_SURFACE,
-                            FF_THEME_COLOR_INK, settings_utc_minus_cb, NULL);
-        settings_make_chip(puck, "+", FF_THEME_PUCK_PX - margin - btn_w, FF_SETTINGS_ROW4_Y, btn_w,
-                            FF_SETTINGS_ROW_H, FF_THEME_COLOR_SURFACE, FF_THEME_COLOR_INK, settings_utc_plus_cb, NULL);
-
-        char buf[16];
-        settings_utc_label(buf, sizeof(buf), s_settings.utc_offset_set, s_settings.utc_offset_min);
-        lv_obj_t *val = lv_label_create(puck);
-        lv_label_set_text(val, buf);
-        lv_obj_set_style_text_font(val, FF_THEME_FONT_LABEL, 0);
-        lv_obj_set_style_text_color(val, lv_color_hex(FF_THEME_COLOR_INK), 0);
-        lv_obj_align(val, LV_ALIGN_TOP_MID, 0, FF_SETTINGS_ROW4_Y + (FF_SETTINGS_ROW_H - 16) / 2);
-    }
-
-    /* --- Row 5: COLORBLIND. Same OFF-color convention as haptics/glow
-     * (row 1): dim grey off, live-green on — a plain toggle. Single
-     * full-width chip — see this file's row-5 comment above for why. --- */
-    {
-        int32_t margin = settings_safe_margin_x(FF_SETTINGS_ROW5_Y, FF_SETTINGS_ROW_H);
-        int32_t row_w = FF_THEME_PUCK_PX - 2 * margin;
-
-        uint32_t const fg = s_settings.colorblind ? FF_THEME_COLOR_LIVE_GREEN : FF_THEME_COLOR_DIM;
-        settings_make_chip(puck, s_settings.colorblind ? "COLORBLIND ON" : "COLORBLIND OFF", margin,
-                            FF_SETTINGS_ROW5_Y, row_w, FF_SETTINGS_ROW_H, FF_THEME_COLOR_SURFACE, fg,
-                            settings_colorblind_cb, NULL);
-    }
+    settings_build_nav(puck);
 }

@@ -95,6 +95,18 @@ static void S16_AC8_setting_set_survives_shell_close_and_reinit_against_the_same
         ff_shell_intent(&shell, &cb_in);
         TEST_ASSERT_TRUE(ff_shell_settings(&shell)->colorblind);
 
+        /* #100 — brightness write-through, clamp, and persistence. A value
+         * below the floor clamps to FF_BRIGHTNESS_MIN_PCT (never 0/black),
+         * and the clamped-then-reset value survives the close+reinit below. */
+        ff_intent_t br_in = {.kind = FF_INTENT_SETTING_SET, .u = {0}};
+        br_in.u.setting.id = FF_SETTING_BRIGHTNESS;
+        br_in.u.setting.v.i = 3; /* below the 10% floor */
+        ff_shell_intent(&shell, &br_in);
+        TEST_ASSERT_EQUAL_UINT8(FF_BRIGHTNESS_MIN_PCT, ff_shell_settings(&shell)->brightness_pct);
+        br_in.u.setting.v.i = 45; /* a valid mid value — this is the one that must persist */
+        ff_shell_intent(&shell, &br_in);
+        TEST_ASSERT_EQUAL_UINT8(45, ff_shell_settings(&shell)->brightness_pct);
+
         ff_shell_close(&shell);
     }
 
@@ -113,6 +125,7 @@ static void S16_AC8_setting_set_survives_shell_close_and_reinit_against_the_same
         TEST_ASSERT_FALSE(ff_shell_settings(&shell2)->imperial);
         TEST_ASSERT_EQUAL_STRING("RILEY", ff_shell_settings(&shell2)->my_name);
         TEST_ASSERT_TRUE(ff_shell_settings(&shell2)->colorblind); /* S17 slice a */
+        TEST_ASSERT_EQUAL_UINT8(45, ff_shell_settings(&shell2)->brightness_pct); /* #100 */
 
         ff_shell_close(&shell2);
     }

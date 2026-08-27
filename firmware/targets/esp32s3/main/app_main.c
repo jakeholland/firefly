@@ -225,15 +225,31 @@ void app_main(void)
     }
     ESP_LOGI(TAG, "STAGE %d complete: first face flushed to glass", stage);
 
+    /* Apply the persisted display brightness on boot (#100). The setting
+     * lives in ff_settings (core, projected into the view); the app forwards
+     * it to the LEDC backlight HAL — core never touches IO. Track the last
+     * applied value so the render loop below only re-programs the PWM when it
+     * actually changes (a brightness change marks the view dirty, since it is
+     * part of the projected settings the render key memcmp's). */
+    uint8_t last_brightness = ff_shell_view(&s_shell)->settings.brightness_pct;
+    (void)ff_display_set_brightness(last_brightness);
+
     /* Render lifecycle mirrors the sim (targets/sim/ctl_loop.c): tick the
      * shell every frame, rebuild the LVGL tree ONLY on a dirty tick. The
      * esp_lvgl_port task does the actual flushing; we just own the model. */
     while (true) {
         bool const dirty = ff_shell_tick(&s_shell, ff_esp_clock_now_ms(NULL));
         if (dirty) {
+            ff_app_state_t const *v = ff_shell_view(&s_shell);
+            /* Re-program the backlight only when the stored percent actually
+             * moved (#100) — e.g. the Settings brightness slider was dragged. */
+            if (v->settings.brightness_pct != last_brightness) {
+                last_brightness = v->settings.brightness_pct;
+                (void)ff_display_set_brightness(last_brightness);
+            }
             if (ff_display_lock(100 /* ms */)) {
                 lv_obj_clean(lv_screen_active());
-                ff_face_build(ff_shell_view(&s_shell));
+                ff_face_build(v);
                 ff_display_unlock();
             }
         }

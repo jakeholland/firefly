@@ -114,6 +114,17 @@ typedef enum {
     FF_INTENT_FLARE_START, FF_INTENT_FLARE_END,
     FF_INTENT_TAKEOVER_GO, FF_INTENT_TAKEOVER_DISMISS, FF_INTENT_RELEASE_LOCK,
     FF_INTENT_SETTING_SET,
+    /* [api] #99/#100 — cycle the Settings face's page. The 412 six-row
+     * Settings budget is saturated (see scr_settings.c), so the brightness
+     * slider (#100) lands by PAGINATING the face rather than scrolling: a
+     * scrollable list would put its off-viewport rows at off-glass absolute
+     * coordinates, which test_face_hit_targets.c's sweep reads verbatim
+     * (lv_obj_get_click_area returns scrolled coords) and would fail — so
+     * only the ACTIVE page's controls are ever built, exactly like scr_nav.c
+     * builds only the active tile (issue #29). This intent is the page's
+     * "which page" selector, mirroring FF_INTENT_T9_MODE's compose-page
+     * cycle: no payload, the shell owns `settings_page` and cycles it. */
+    FF_INTENT_SETTINGS_PAGE,
 } ff_intent_kind_t;
 
 /**
@@ -136,6 +147,11 @@ typedef enum {
      * bool-backed, same "nonzero is true" int payload convention as
      * IMPERIAL/HAPTICS/NIGHT_GLOW above. */
     FF_SETTING_COLORBLIND,
+    /* [api] #100 — display brightness percent. Int payload, clamped by the
+     * shell to [FF_BRIGHTNESS_MIN_PCT, FF_BRIGHTNESS_MAX_PCT] (ff_settings.h)
+     * — the floor is non-zero on purpose (never a black, unrecoverable
+     * screen). */
+    FF_SETTING_BRIGHTNESS,
 } ff_setting_id_t;
 
 typedef struct {

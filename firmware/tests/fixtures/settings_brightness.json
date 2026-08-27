@@ -1,5 +1,5 @@
 {
-  "fixture": "settings_colorblind_on",
+  "fixture": "settings_brightness",
   "face": "settings",
   "settings": {
     "imperial": true,
@@ -12,7 +12,8 @@
     "my_name": "DANA",
     "utc_offset_set": true,
     "utc_offset_min": -420,
-    "colorblind": true,
+    "colorblind": false,
+    "brightness_pct": 30,
     "page": 1
   }
 }

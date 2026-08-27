@@ -95,15 +95,25 @@
  * y=372..418 — past the 412 panel's own bottom edge, so on the real glass
  * that row fell off the display AND, well before that, the narrowing circle
  * crushed its keys below the 44px hit floor. Lifting the header to y=38 and
- * trimming the bubble to 76px raises the whole stack ~26px so the bottom row
- * lands at y=346..392, where the circle is still wide enough for three
- * >=44px keys (the sweep is the proof). The keypad geometry below is
- * otherwise unchanged and stays theme-relative. */
-#define FF_COMPOSE_HEADER_Y 38
+ * trimming the bubble to 76px raised the whole stack so the bottom row
+ * landed at y=346..392.
+ *
+ * #99 (bigger T9 keys — the maintainer's on-glass feedback: the keypad is
+ * the tightest thing to hit even sober): reclaim another 24px off the top of
+ * the stack (header 38->30, bubble 76->60) and spend it on TALLER keys
+ * (46->50) that also start HIGHER. Both moves help: taller keys are a bigger
+ * vertical target everywhere, and starting the grid higher (GRID_Y 174->150)
+ * lifts the bottom DEL/0/SEND row out of the narrowest part of the pole
+ * (346..392 -> 334..384), where the widening circle gives its three keys
+ * real extra WIDTH — the one row that was scraping the floor. Every key's
+ * final width/height is verified against the rendered click-area by
+ * test_face_hit_targets.c's sweep, not hand math (PR #86's lesson); the
+ * before/after measurements are in this file's PR body. */
+#define FF_COMPOSE_HEADER_Y 30
 #define FF_COMPOSE_HEADER_H FF_THEME_MIN_HIT_PX /* back button / mode chip */
 
 #define FF_COMPOSE_BUBBLE_Y (FF_COMPOSE_HEADER_Y + FF_COMPOSE_HEADER_H + 8)
-#define FF_COMPOSE_BUBBLE_H 76
+#define FF_COMPOSE_BUBBLE_H 60
 
 #define FF_COMPOSE_GRID_Y (FF_COMPOSE_BUBBLE_Y + FF_COMPOSE_BUBBLE_H + 8)
 /* S17 slice b (AC2, docs/specs/S17-usability-hardening.md): was 6px — the
@@ -124,9 +134,9 @@
  * 100x46, row1 (4/5/6) is 122x46, row0 (1/2/3) is 132x46 — see this
  * file's PR body for the full before/after). */
 #define FF_COMPOSE_KEY_GAP 10
-#define FF_COMPOSE_KEY_H   46 /* >= FF_THEME_MIN_HIT_PX; see the _Static_assert below */
+#define FF_COMPOSE_KEY_H   50 /* #99: 46 -> 50, a bigger vertical target; >= FF_THEME_MIN_HIT_PX (assert below) */
 #define FF_COMPOSE_BOTTOM_ROW_GAP_EXTRA 4
-#define FF_COMPOSE_BOTTOM_ROW_H 46 /* >= FF_THEME_MIN_HIT_PX; see the _Static_assert below */
+#define FF_COMPOSE_BOTTOM_ROW_H 50 /* #99: 46 -> 50; >= FF_THEME_MIN_HIT_PX (assert below) */
 
 _Static_assert(FF_COMPOSE_KEY_H >= FF_THEME_MIN_HIT_PX, "compose grid keys must clear the 44px hit-target floor");
 _Static_assert(FF_COMPOSE_BOTTOM_ROW_H >= FF_THEME_MIN_HIT_PX,

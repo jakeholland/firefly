@@ -26,6 +26,7 @@
 #include <stdlib.h>
 
 #include "ff_crew.h" /* FF_CREW_MAX — radar.dots[] cap, see fx_parse_radar_dots below */
+#include "ff_settings.h" /* FF_BRIGHTNESS_DEFAULT_PCT — settings.brightness_pct default (#100) */
 
 /* Input-size / token-arena budget. Fixtures are small, hand-authored
  * dev/test data (not attacker-controlled RF bytes like festpack's input),
@@ -675,6 +676,15 @@ static ff_fixture_result_t fx_parse_settings(fx_ctx_t const *c, int obj_i, ff_ap
     if (fx_obj_get(c, obj_i, "utc_offset_set", &t)) s->utc_offset_set = fx_bool(c, t, false);
     if (fx_obj_get(c, obj_i, "utc_offset_min", &t)) s->utc_offset_min = (int16_t)fx_num(c, t, 0.0);
     if (fx_obj_get(c, obj_i, "colorblind", &t)) s->colorblind = fx_bool(c, t, false); /* S17 slice a */
+    /* #100: brightness percent; #99/#100: which Settings page renders. The
+     * ff_app_state_t is memset(0) before parse, so an omitted brightness
+     * would render as 0 (below the floor) — default it to the shell's own
+     * FF_BRIGHTNESS_DEFAULT_PCT here so a fixture that doesn't care renders
+     * the same as a fresh puck. `page` legitimately defaults to 0. */
+    s->brightness_pct = FF_BRIGHTNESS_DEFAULT_PCT;
+    if (fx_obj_get(c, obj_i, "brightness_pct", &t))
+        s->brightness_pct = (uint8_t)fx_num(c, t, (double)FF_BRIGHTNESS_DEFAULT_PCT);
+    if (fx_obj_get(c, obj_i, "page", &t)) s->page = (uint8_t)fx_num(c, t, 0.0);
     return FF_FIXTURE_OK;
 }
 
@@ -1384,6 +1394,8 @@ int ff_fixture_dump_json(ff_app_state_t const *s, char *buf, size_t buf_sz)
     fw_raw(&w, s->settings.utc_offset_set ? ",\"utc_offset_set\":true" : ",\"utc_offset_set\":false");
     fw_fmt(&w, ",\"utc_offset_min\":%d", (int)s->settings.utc_offset_min);
     fw_raw(&w, s->settings.colorblind ? ",\"colorblind\":true" : ",\"colorblind\":false"); /* S17 slice a */
+    fw_fmt(&w, ",\"brightness_pct\":%u", (unsigned)s->settings.brightness_pct); /* #100 */
+    fw_fmt(&w, ",\"page\":%u", (unsigned)s->settings.page);                     /* #99/#100 */
     fw_raw(&w, "}");
 
     /* map (S09) — field-for-field mirror of fx_parse_map so a dump

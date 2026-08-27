@@ -89,6 +89,18 @@ lv_display_t *ff_display_lvgl_start(void);
 esp_err_t ff_display_touch_start(lv_display_t *disp);
 
 /**
+ * ff_display_set_brightness — set the backlight to `pct` percent via LEDC
+ * PWM (#100). Clamped to [10, 100]: 0 would be a black, unrecoverable
+ * screen, so the floor is non-zero (this mirrors, and defensively
+ * re-applies, the same clamp the shell puts on the stored setting). The app
+ * forwards ff_settings_t.brightness_pct here on boot and on every change;
+ * core never touches this. Requires ff_display_panel_init() to have run
+ * (that brings the LEDC timer/channel up) — returns ESP_ERR_INVALID_STATE
+ * otherwise, and a logged esp_err_t on any LEDC failure.
+ */
+esp_err_t ff_display_set_brightness(uint8_t pct);
+
+/**
  * ff_display_touch_set_cal — install the active touch-calibration
  * transform (S15 slice d). Every subsequent physical touch is run through
  * ff_touchcal_apply in the SAME seam that feeds LVGL (the esp_lcd_touch

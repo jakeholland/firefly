@@ -13,7 +13,7 @@
  * below only catches size mismatches; two different layouts can share the
  * same sizeof() (e.g. a reordering, or swapping a bool+uint8_t pair) and
  * would otherwise pass validation with silently corrupted semantics. */
-#define FF_SETTINGS_FORMAT_VERSION ((uint16_t)5u)
+#define FF_SETTINGS_FORMAT_VERSION ((uint16_t)6u)
 /* v2: compass_cal_blob (opaque uint8_t[32]) -> compass_cal (ff_geo_cal_t),
  * per TODO(S01) in ff_settings.h. Same sizeof() risk the header comment
  * warns about (a reordering/retype can share sizeof() with the old
@@ -41,6 +41,15 @@
  * puck's real state was — it had no touch calibration at all, so
  * "uncalibrated / correct nothing" is the honest reading, not a guess).
  * Still pre-v1 firmware, no fielded devices to migrate. */
+/* v6: + brightness_pct (#100 — the PWM-backlight brightness setting; see
+ * ff_settings.h). Merges with v5 above: the combined-layout bump is required
+ * because v5 (touch cal, already on main) and this brightness field are a
+ * different struct layout — same version number would let a v5 blob be
+ * misread, so v6 rejects it. brightness_pct defaults to
+ * FF_BRIGHTNESS_DEFAULT_PCT (~70%), a sensible mid-bright start — a pre-#100
+ * puck had a fixed full-on backlight and no brightness concept, so there is
+ * no honest legacy value to migrate. Still pre-v1 firmware, no fielded
+ * devices. */
 
 typedef struct {
     uint32_t magic;
@@ -60,6 +69,7 @@ static void ff_settings_apply_defaults(ff_settings_t *s)
     s->water_min = 90;
     s->quiet_from_min = 240; /* 4:00a */
     s->quiet_to_min = 600;   /* 10:00a */
+    s->brightness_pct = FF_BRIGHTNESS_DEFAULT_PCT; /* #100: ~70%, a sensible mid-bright default */
     /* utc_offset_min / utc_offset_set: left zeroed -> UNSET. Deliberately
      * not defaulted to any real zone: an unset offset makes the wall
      * clock read FF_WALL_UNKNOWN (honest), while a defaulted one would

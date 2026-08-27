@@ -24,6 +24,7 @@
 
 #include "driver/gpio.h"
 #include "driver/i2c_master.h"
+#include "driver/ledc.h"
 #include "driver/spi_master.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
@@ -79,8 +80,30 @@ static const char *TAG = "ff_display";
 #define FF_PIN_LCD_D3 41
 #define FF_PIN_LCD_CS 21
 #define FF_PIN_LCD_TE 18 /* tearing-effect; wired but unused this slice (see note) */
-#define FF_PIN_LCD_BL 5  /* backlight, active-high (demo drives via LEDC; we drive GPIO) */
+#define FF_PIN_LCD_BL 5  /* backlight, active-high — driven via LEDC PWM (#100), matching Waveshare's demo */
 #define FF_LCD_PCLK_HZ (80 * 1000 * 1000)
+
+/* ---- Backlight LEDC PWM (#100) --------------------------------------
+ * Waveshare's own ESP-IDF-5.3.2 demo drives BL (GPIO5) through the LEDC
+ * peripheral (LCD_Backlight / Set_Backlight in its Backlight.c), NOT a bare
+ * GPIO level — so brightness is a duty cycle, not on/off. We mirror that:
+ * a low-speed-mode timer + one channel on GPIO5. 10-bit resolution (duty
+ * 0..1023) is ample for a smooth 10..100% range; 5 kHz is well above the
+ * flicker floor and below any audible-whine range. The MIN/MAX below mirror
+ * core's FF_BRIGHTNESS_MIN_PCT / _MAX_PCT (ff_settings.h) — kept as local
+ * literals so this device HAL stays free of any core/ include (its header
+ * comment: "NONE of this touches core/ or app/"). The floor is a DEFENSIVE
+ * second clamp: the shell already clamps the setting to the same range, but
+ * the HAL never trusts a caller to have done so — a 0% duty is a black,
+ * unrecoverable backlight, so ff_display_set_brightness can never program
+ * one. */
+#define FF_BL_LEDC_MODE    LEDC_LOW_SPEED_MODE
+#define FF_BL_LEDC_TIMER   LEDC_TIMER_0
+#define FF_BL_LEDC_CHANNEL LEDC_CHANNEL_0
+#define FF_BL_LEDC_RES     LEDC_TIMER_10_BIT
+#define FF_BL_LEDC_FREQ_HZ 5000
+#define FF_BL_MIN_PCT      10  /* mirrors core FF_BRIGHTNESS_MIN_PCT — never 0/black-unrecoverable */
+#define FF_BL_MAX_PCT      100 /* mirrors core FF_BRIGHTNESS_MAX_PCT */
 
 /* ---- Shared I2C bus: touch (0x53) + TCA9554 (0x20) (I2C_Driver.h) ----- */
 #define FF_I2C_PORT I2C_NUM_0
@@ -103,6 +126,79 @@ static esp_lcd_panel_io_handle_t s_panel_io;
 static esp_lcd_panel_handle_t s_panel;
 static esp_lcd_touch_handle_t s_touch;
 static lv_display_t *s_lv_disp;
+static bool s_bl_ready; /* true once the LEDC backlight timer+channel are configured */
+
+/* =====================================================================
+ * Backlight PWM (#100). LEDC timer + one channel on GPIO5, mirroring the
+ * Waveshare demo. ff_display_set_brightness maps a clamped percent onto the
+ * duty range; the initial duty is full-on so the first-light stages (b1) are
+ * bright before the shell's stored brightness is ever applied.
+ * ===================================================================== */
+static esp_err_t ff_display_backlight_init(void)
+{
+    const ledc_timer_config_t timer_cfg = {
+        .speed_mode = FF_BL_LEDC_MODE,
+        .timer_num = FF_BL_LEDC_TIMER,
+        .duty_resolution = FF_BL_LEDC_RES,
+        .freq_hz = FF_BL_LEDC_FREQ_HZ,
+        .clk_cfg = LEDC_AUTO_CLK,
+    };
+    esp_err_t err = ledc_timer_config(&timer_cfg);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "backlight ledc_timer_config failed: %s", esp_err_to_name(err));
+        return err;
+    }
+
+    const uint32_t full_duty = (1u << FF_BL_LEDC_RES) - 1u; /* start full-on for bring-up */
+    const ledc_channel_config_t ch_cfg = {
+        .gpio_num = FF_PIN_LCD_BL,
+        .speed_mode = FF_BL_LEDC_MODE,
+        .channel = FF_BL_LEDC_CHANNEL,
+        .timer_sel = FF_BL_LEDC_TIMER,
+        .intr_type = LEDC_INTR_DISABLE,
+        .duty = full_duty,
+        .hpoint = 0,
+    };
+    err = ledc_channel_config(&ch_cfg);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "backlight ledc_channel_config failed: %s", esp_err_to_name(err));
+        return err;
+    }
+
+    s_bl_ready = true;
+    ESP_LOGI(TAG, "backlight LEDC up (GPIO%d, %d-bit @ %d Hz, full-on)", FF_PIN_LCD_BL, (int)FF_BL_LEDC_RES,
+             FF_BL_LEDC_FREQ_HZ);
+    return ESP_OK;
+}
+
+esp_err_t ff_display_set_brightness(uint8_t pct)
+{
+    if (!s_bl_ready) {
+        ESP_LOGE(TAG, "set_brightness called before panel_init (backlight LEDC not up)");
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    /* Defensive clamp — never a 0% (black, unrecoverable) backlight, even if
+     * a caller forgets the shell's own clamp (ff_settings.h / shell_setting_set). */
+    if (pct < FF_BL_MIN_PCT) pct = FF_BL_MIN_PCT;
+    if (pct > FF_BL_MAX_PCT) pct = FF_BL_MAX_PCT;
+
+    const uint32_t full_duty = (1u << FF_BL_LEDC_RES) - 1u;
+    const uint32_t duty = (full_duty * (uint32_t)pct) / 100u;
+
+    esp_err_t err = ledc_set_duty(FF_BL_LEDC_MODE, FF_BL_LEDC_CHANNEL, duty);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "backlight ledc_set_duty failed: %s", esp_err_to_name(err));
+        return err;
+    }
+    err = ledc_update_duty(FF_BL_LEDC_MODE, FF_BL_LEDC_CHANNEL);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "backlight ledc_update_duty failed: %s", esp_err_to_name(err));
+        return err;
+    }
+    ESP_LOGI(TAG, "backlight set to %u%% (duty %u/%u)", (unsigned)pct, (unsigned)duty, (unsigned)full_duty);
+    return ESP_OK;
+}
 
 /* Active touch-calibration transform (S15 slice d). Identity until
  * ff_display_touch_set_cal installs a fit — so an uncalibrated device (and
@@ -256,19 +352,14 @@ esp_err_t ff_display_panel_init(void)
     }
     ESP_LOGI(TAG, "SPD2010 panel init done (%dx%d RGB565 QSPI)", FF_LCD_H_RES, FF_LCD_V_RES);
 
-    /* Backlight on (GPIO5, active-high). The demo ramps it via LEDC PWM;
-     * a plain push-pull high is enough for bring-up and provably ON. */
-    const gpio_config_t bl_cfg = {
-        .pin_bit_mask = 1ULL << FF_PIN_LCD_BL,
-        .mode = GPIO_MODE_OUTPUT,
-    };
-    err = gpio_config(&bl_cfg);
+    /* Backlight via LEDC PWM (#100), full-on at init so first light is
+     * bright before the shell's stored brightness is applied. The app forwards
+     * the persisted percent via ff_display_set_brightness once the shell is
+     * up (app_main), and on every later change. */
+    err = ff_display_backlight_init();
     if (err != ESP_OK) {
-        ESP_LOGE(TAG, "backlight gpio_config failed: %s", esp_err_to_name(err));
-        return err;
+        return err; /* already logged */
     }
-    gpio_set_level(FF_PIN_LCD_BL, 1);
-    ESP_LOGI(TAG, "backlight ON (GPIO%d high)", FF_PIN_LCD_BL);
 
     return ESP_OK;
 }

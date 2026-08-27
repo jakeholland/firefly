@@ -109,6 +109,8 @@ static void ff_assert_defaults(ff_settings_t const *s)
     /* S17 slice a: default false — "not colorblind by default, keep the
      * brand colours" (docs/specs/S17-usability-hardening.md's scoping note). */
     TEST_ASSERT_FALSE(s->colorblind);
+    /* #100: brightness defaults to a sensible mid-bright ~70% (never 0). */
+    TEST_ASSERT_EQUAL_UINT8(FF_BRIGHTNESS_DEFAULT_PCT, s->brightness_pct);
     /* S15 slice d: default uncalibrated -> identity applied by the device
      * (params zeroed; the flag, not the values, encodes absence). */
     TEST_ASSERT_FALSE(s->touch_calibrated);
@@ -327,6 +329,7 @@ static void S11_AC2_round_trip_save_load_is_exact_including_calibration(void)
     out.utc_offset_min = -420; /* MDT (S16 slice b0) */
     out.utc_offset_set = true;
     out.colorblind = true; /* S17 slice a: a real change from the default, not left at its zero value */
+    out.brightness_pct = 55; /* #100: a real change from the default, so the round-trip actually proves it persists */
     strncpy(out.my_name, "Dana", sizeof(out.my_name) - 1);
     out.cal_valid = true;
     out.compass_cal.hard_offset = (ff_vec3_t){12.5f, -3.25f, 0.75f};

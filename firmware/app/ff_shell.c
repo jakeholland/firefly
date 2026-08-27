@@ -71,6 +71,15 @@ typedef struct {
     ff_t9_t compose_draft;
     ff_app_compose_mode_t compose_mode;
 
+    /* Which Settings page is showing (#99/#100). Pure Settings-face view
+     * state, exactly like `compose_mode` above is Compose's: FF_INTENT_
+     * SETTINGS_PAGE cycles it, a successful OPEN_SETTINGS resets it to 0
+     * (a fresh entry always starts on page 0), and shell_project_settings
+     * copies it into `view.settings.page`. The face paginates rather than
+     * scrolls so every built control stays on-glass for the hit-target
+     * sweep — see FF_INTENT_SETTINGS_PAGE (ff_intent.h). */
+    uint8_t settings_page;
+
     /* Feed pushes + the crew-paired-sender filter are ff_wiring's, not
      * reimplemented here. Holds interior pointers into this struct — see
      * ff_shell.h's "NOT RELOCATABLE" note. */
@@ -1123,6 +1132,11 @@ static void shell_project_settings(shell_t const *sh, ff_app_settings_t *out)
     out->utc_offset_set = sh->settings.utc_offset_set;
     /* S17 slice a: the colorblind toggle, projected verbatim. */
     out->colorblind = sh->settings.colorblind;
+    /* #100: brightness percent, projected verbatim (already clamped on write
+     * — see shell_setting_set). #99/#100: the current Settings page, shell-
+     * owned view state (like compose.mode), so a page change repaints. */
+    out->brightness_pct = sh->settings.brightness_pct;
+    out->page = sh->settings_page;
 }
 
 /**
@@ -1666,6 +1680,19 @@ static void shell_setting_set(shell_t *sh, ff_intent_t const *in)
         s->colorblind = v;
         break;
     }
+    case FF_SETTING_BRIGHTNESS: {
+        /* #100 — CLAMPED, not rejected: a slider that drags past either end
+         * should pin to the floor/ceiling, not silently drop the change (the
+         * UTC stepper clamps for the same "no dead control" reason). The
+         * floor is non-zero on purpose — never a black, unrecoverable
+         * backlight (ff_settings.h). */
+        int32_t v = in->u.setting.v.i;
+        if (v < (int32_t)FF_BRIGHTNESS_MIN_PCT) v = (int32_t)FF_BRIGHTNESS_MIN_PCT;
+        if (v > (int32_t)FF_BRIGHTNESS_MAX_PCT) v = (int32_t)FF_BRIGHTNESS_MAX_PCT;
+        changed = (s->brightness_pct != (uint8_t)v);
+        s->brightness_pct = (uint8_t)v;
+        break;
+    }
     case FF_SETTING_WATER_MIN: {
         int32_t const v = in->u.setting.v.i;
         if (v < 0 || v > (int32_t)UINT16_MAX) return;
@@ -1766,7 +1793,11 @@ void ff_shell_intent(ff_shell_t *sh_pub, ff_intent_t const *in)
     case FF_INTENT_OPEN_SETTINGS:
         if (takeover_up) return;
         if (!k_settings_renderer_exists) return; /* the judgment call — see the constant's comment */
-        (void)ff_route_push_modal(&sh->route, FF_APP_FACE_SETTINGS);
+        /* Every entry starts on page 0 (#99/#100), same "fresh session"
+         * reset OPEN_COMPOSE does for the compose draft/mode just below. */
+        if (ff_route_push_modal(&sh->route, FF_APP_FACE_SETTINGS)) {
+            sh->settings_page = 0u;
+        }
         return;
 
     case FF_INTENT_OPEN_MAP:
@@ -1953,6 +1984,17 @@ void ff_shell_intent(ff_shell_t *sh_pub, ff_intent_t const *in)
          * every other control. */
         if (takeover_up) return;
         shell_setting_set(sh, in);
+        return;
+
+    case FF_INTENT_SETTINGS_PAGE:
+        /* #99/#100 — advance the Settings page, wrapping (the page chip is
+         * a plain cycle, same shape as Compose's ABC->123->SYM mode chip).
+         * Gated on the takeover exactly like SETTING_SET above: the page
+         * chip only exists on the Settings modal, so this can only fire
+         * while Settings is visible, and a takeover preempts it. Pure view
+         * state — not persisted (nothing in the store to write). */
+        if (takeover_up) return;
+        sh->settings_page = (uint8_t)((sh->settings_page + 1u) % FF_SETTINGS_PAGE_COUNT);
         return;
 
     /* --- deliberate no-ops until their owning slice lands ------------ */
