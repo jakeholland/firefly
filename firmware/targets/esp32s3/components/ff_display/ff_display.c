@@ -41,6 +41,33 @@ static const char *TAG = "ff_display";
 #define FF_LCD_V_RES 412
 #define FF_LCD_BITS_PER_PIXEL 16
 
+/* ---- Panel column/row offset (esp_lcd_panel_set_gap) ------------------
+ * The esp_lcd_spd2010 driver adds x_gap/y_gap to the CASET/RASET start it
+ * programs for every draw_bitmap, i.e. a POSITIVE gap shifts what we write
+ * further into the panel's GRAM. If the visible window starts a few px into
+ * GRAM, a gap of 0 leaves the rightmost/bottommost few px pointing at
+ * unwritten GRAM — showing stale/wrapped content on the right & bottom
+ * edges (the artifact seen faintly at STAGE 1/2). A matching positive gap
+ * pulls the image back so edge N maps to visible edge N.
+ *
+ * RESEARCHED VALUE = 0,0: BOTH official sources for this exact 412x412
+ * SPD2010 glass ship NO gap — Waveshare's own ESP-IDF-5.3.2 demo
+ * (Display_SPD2010.c draws 0-origin, never calls set_gap) and Espressif's
+ * esp_lcd_spd2010 test app (test_esp_lcd_spd2010.c, 412x412, no set_gap).
+ * No non-zero offset is documented anywhere I could find. So 0,0 is the
+ * only grounded value and — importantly — it is a NO-OP that cannot regress
+ * the hardware-verified render.
+ *
+ * TUNING (maintainer, on glass): if the few-px right/bottom wrap persists,
+ * nudge these UP by the number of stale pixels (they are small, "a few px";
+ * try 2, then 4). X is the SPD2010's 4-px-aligned axis, so an x value that
+ * is a multiple of 4 is the safe first guess. Increasing the gap moves the
+ * image toward the top-left; if the wrap instead appears on the LEFT/TOP,
+ * the value is too high. Leave the drawn resolution (412) and orientation
+ * untouched — only these two numbers change. */
+#define FF_LCD_X_GAP 0
+#define FF_LCD_Y_GAP 0
+
 /* ---- Display QSPI pins (Display_SPD2010.h) --------------------------- */
 #define FF_LCD_HOST SPI2_HOST
 #define FF_PIN_LCD_SCK 40
@@ -201,7 +228,17 @@ esp_err_t ff_display_panel_init(void)
         ESP_LOGE(TAG, "esp_lcd_panel_init failed: %s", esp_err_to_name(err));
         return err;
     }
-    /* Native orientation: the demo sets no mirror/swap/gap for this glass. */
+    /* Column/row offset for the round 412x412 glass. Default 0,0 (both
+     * official demos use no gap — see the FF_LCD_*_GAP note above); this is
+     * the tuning knob for the faint right/bottom edge wrap, a no-op at 0. */
+    err = esp_lcd_panel_set_gap(s_panel, FF_LCD_X_GAP, FF_LCD_Y_GAP);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "esp_lcd_panel_set_gap failed: %s", esp_err_to_name(err));
+        return err;
+    }
+    ESP_LOGI(TAG, "panel gap set (x=%d, y=%d)", FF_LCD_X_GAP, FF_LCD_Y_GAP);
+
+    /* Native orientation: the demo sets no mirror/swap for this glass. */
     err = esp_lcd_panel_disp_on_off(s_panel, true);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "esp_lcd_panel_disp_on_off failed: %s", esp_err_to_name(err));
@@ -343,6 +380,15 @@ lv_display_t *ff_display_lvgl_start(void)
         .hres = FF_LCD_H_RES,
         .vres = FF_LCD_V_RES,
         .monochrome = false,
+        /* Rotation 0, no swap/mirror — the verified-correct orientation.
+         * NOTE: at add_disp time esp_lvgl_port unconditionally calls
+         * esp_lcd_panel_swap_xy(panel, false) for ROTATION_0, and the
+         * SPD2010 panel driver logs `E spd2010: swap_xy is not supported by
+         * this panel` for ANY swap_xy call. That one line is BENIGN — the
+         * call is a no-op (false) and orientation is unaffected. The only
+         * ways to suppress it (sw_rotate, or vendoring the panel driver)
+         * would risk the hardware-verified strip-flush/orientation, so we
+         * leave it per S15b FIX 3's "leave it if silencing risks orientation". */
         .rotation = {.swap_xy = false, .mirror_x = false, .mirror_y = false},
         .color_format = LV_COLOR_FORMAT_RGB565,
         .flags = {
