@@ -24,9 +24,20 @@
  * i2c_master_receive(). The registry has no newer version fixing this
  * (2.0.1 is latest as of 2026-08-26), so the one-line fix lives here.
  *
- * THE ONLY functional change from upstream is the `i2c_read` macro below
- * (0 -> -1). Everything else is byte-for-byte upstream so re-syncing to a
- * future fixed release is a trivial diff.
+ * FUNCTIONAL CHANGES FROM UPSTREAM v2.0.1 (FOUR sites — a future re-sync to a
+ * fixed release must account for ALL of them; each is marked "FIREFLY PATCH"
+ * inline):
+ *   1. `i2c_read` macro: lcd_cmd 0 -> -1 (the init-read fix described above).
+ *   2. `read_data`: a failed/no-data read reports 0 points + ESP_OK instead of
+ *      propagating an error, so polling mode (int_gpio_num = -1) doesn't
+ *      panic-loop via esp_lvgl_port's ESP_ERROR_CHECK — matches Waveshare's
+ *      demo, which polls and ignores the return.
+ *   3. `read_tp_hdp`: guard the zero-length i2c read (read_len == 0).
+ *   4. `read_tp_hdp` remain-data path: guard the zero-length i2c read
+ *      (next_packet_len == 0).
+ * (2)-(4) are the read-side twins of the same new-i2c_master zero-length-
+ * transfer rejection that (1) fixes on the init path. Everything else is
+ * byte-for-byte upstream.
  */
 
 #include <inttypes.h>
