@@ -79,8 +79,16 @@ extern "C" {
 #define RADAR_LAYOUT_ANGLE_STEP_DEG 2.0f
 #define RADAR_LAYOUT_MAX_ANGLE_OFFSET_DEG 180.0f
 
-/* Cross-mode chrome, present on every render. */
-#define RADAR_LAYOUT_STATUS_BAR_DY (-195.0f)
+/* Cross-mode chrome, present on every render.
+ * STATUS_BAR_DY: center-relative Y of the clock/mesh/battery bar. This was
+ * -195 (tuned for the old radius-220 puck: 25px below the top edge). At the
+ * 412 panel's radius 206 that put it 11px from the top, where the ROUND
+ * bezel clips it — the ~200px-wide bar sits in the narrow top of the circle.
+ * Pulled up-inset to 46px below the circle's top (dy -160): the visible
+ * chord there is ~246px, wide enough for the whole bar. (These radar-chrome
+ * DYs are hardcoded offsets, not radius-relative — a systemic tidy tracked
+ * for the tap-target polish pass; only the clipped one is moved here.) */
+#define RADAR_LAYOUT_STATUS_BAR_DY (-160.0f)
 #define RADAR_LAYOUT_PAGE_DOT_DY 186.0f
 
 /* Map entry hint (issue #76) — a small, non-interactive "swipe up for

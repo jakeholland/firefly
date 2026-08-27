@@ -126,11 +126,11 @@ static lv_obj_t *map_make_label(lv_obj_t *parent, char const *text, uint32_t col
  * FF_MAP_CIRCLE_RADIUS_PX/FF_MAP_MARGIN_PX are the spec's OWN literal
  * numbers ("the 412 circle... 24 px margin") taken verbatim, the same
  * convention docs/specs/S06-radar-face.md's arrow/ring numbers (140px,
- * 185px) were transcribed under even though the sim's actual round glass
- * is FF_THEME_PUCK_PX (440px), not literally 412 — see
- * app/screens/radar_layout.h's own constants for the precedent. The
- * fitted content therefore sits with a bit of extra clearance inside the
- * sim's slightly larger puck, never clipped by it.
+ * 185px) were transcribed under. As of S15 slice c the puck IS 412
+ * (FF_THEME_PUCK_PX == 412, radius 206 == FF_MAP_CIRCLE_RADIUS_PX), so this
+ * map circle now coincides exactly with the puck's own glass rather than
+ * sitting inside a slightly larger one — the FF_MAP_MARGIN_PX inset keeps
+ * fitted content clear of the bezel, never clipped by it.
  * ------------------------------------------------------------------- */
 #define FF_MAP_CIRCLE_RADIUS_PX 206.0f
 #define FF_MAP_MARGIN_PX 24.0f

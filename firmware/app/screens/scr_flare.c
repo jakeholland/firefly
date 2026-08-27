@@ -97,12 +97,20 @@ static lv_point_precise_t s_flare_mark_ray_pts[FLARE_MARK_N_RAYS][2];
 
 /* Kept clear of both NOSEL's "Pair a friend in Settings" sub-line
  * (RADAR_LAYOUT_NOSEL_SUB_DY == 40) above and the puck's own bottom edge
- * (FF_THEME_PUCK_RADIUS_PX == 220) below — verified against an actual
- * headless render, not just arithmetic, per this repo's screenshot-review
- * habit (see radar_layout.h's whole reason for existing). */
-#define FLARE_SENDER_STATUS_DY    95.0f
-#define FLARE_SENDER_COUNTDOWN_DY 135.0f
-#define FLARE_SENDER_CANCEL_DY    178.0f
+ * below — verified against an actual headless render, not just arithmetic,
+ * per this repo's screenshot-review habit (see radar_layout.h's whole reason
+ * for existing).
+ *
+ * S15 slice c: FF_THEME_PUCK_RADIUS_PX shrank 220 -> 206, so the old
+ * CANCEL_DY=178 (a centre-relative offset) put this 140x48 button's bottom
+ * corners at ~201px from centre — outside the 206 circle, off the bottom of
+ * the real glass. Lowered to 158 (bottom corners ~182px from centre, back
+ * inside the circle with margin) and the status/countdown lines lifted in
+ * step so the sending stack still reads status -> countdown -> CANCEL without
+ * overlap. */
+#define FLARE_SENDER_STATUS_DY    78.0f
+#define FLARE_SENDER_COUNTDOWN_DY 118.0f
+#define FLARE_SENDER_CANCEL_DY    158.0f
 #define FLARE_SENDER_CANCEL_W     140
 #define FLARE_SENDER_CANCEL_H     48
 

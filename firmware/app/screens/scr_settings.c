@@ -79,13 +79,50 @@
 
 #define FF_SETTINGS_SAFETY_PX 10.0f /* see scr_compose.c's FF_COMPOSE_SAFETY_PX — same rationale */
 
-#define FF_SETTINGS_HEADER_Y 30
-#define FF_SETTINGS_HEADER_H FF_THEME_MIN_HIT_PX /* back button's row */
+#define FF_SETTINGS_HEADER_Y 16
 
-#define FF_SETTINGS_NAME_Y (FF_SETTINGS_HEADER_Y + FF_SETTINGS_HEADER_H + 4)
-#define FF_SETTINGS_NAME_H 16 /* caption, not a control — no hit-target floor applies */
+/* Back button — S15 slice c enlarged it past the 44px floor (maintainer
+ * field feedback: the Settings back button was hard to hit even sober; the
+ * escape hatch someone most needs in a hurry must be an obvious, comfortable
+ * 2am/gloves target). 44x44 -> FF_SETTINGS_BACK_W x FF_SETTINGS_BACK_H
+ * (64x46). The enlargement is WIDTH-led (64, +45%): the 412 round glass
+ * (radius 206) is materially tighter at the top pole than the old 440 puck,
+ * and here the button competes for vertical space with a six-row settings
+ * stack that must ALL clear the hit floor and stay inside a smaller circle —
+ * so height grows only to 46 (past the floor with margin) while width, which
+ * costs no vertical budget, carries the rest. A left-anchored button near
+ * the top is pushed toward centre-x by the narrowing circle, so rather than a
+ * small pill tucked left of a puck-centred title (which no longer fits beside
+ * a bigger button), the back button and the SETTINGS title/name form one
+ * left-to-right header GROUP whose top corners stay inside the circle.
+ * Hit-target-sweep margins are in the PR body; the _Static_assert below
+ * proves the 6-row stack still fits the puck square. (A materially BIGGER
+ * back button at 412 would mean dropping a settings row — flagged for the
+ * maintainer to judge on glass.) */
+#define FF_SETTINGS_BACK_W 64
+#define FF_SETTINGS_BACK_H 46
+#define FF_SETTINGS_HEADER_H FF_SETTINGS_BACK_H
 
-#define FF_SETTINGS_ROW_H   FF_THEME_MIN_HIT_PX
+/* Left edge of the back button, and the x the title/name column hangs off
+ * (to the right of the button). 127 keeps the button's top-left corner
+ * inside the r=206 circle at FF_SETTINGS_HEADER_Y=16 ((127,16) is 42.34k <=
+ * 206^2=42.44k from centre (206,206)) while placing the [back | SETTINGS]
+ * group so it reads roughly centred on the puck's own x. */
+#define FF_SETTINGS_BACK_X 127
+#define FF_SETTINGS_HEADER_TEXT_X (FF_SETTINGS_BACK_X + FF_SETTINGS_BACK_W + 10) /* 201 */
+#define FF_SETTINGS_TITLE_Y (FF_SETTINGS_HEADER_Y + 2)
+#define FF_SETTINGS_NAME_Y  (FF_SETTINGS_HEADER_Y + 26)
+#define FF_SETTINGS_NAME_H 12 /* caption, not a control — no hit-target floor applies */
+
+/* Rows enlarged from the 44px floor to FF_SETTINGS_ROW_H (S15c). At 412 the
+ * six-row stack is vertically budget-bound — the last row sits close to the
+ * bottom pole where the circle has all but closed — so the rows grow as far
+ * as the assert and the bottom row's own in-circle width allow (its
+ * full-width chip must stay wide enough for "COLORBLIND OFF" at 412), not to
+ * an arbitrary large size. Folding the name caption INTO the header group
+ * (beside the title, not on its own line above the rows) is what buys the
+ * rows the vertical room to clear the floor at all. */
+#define FF_SETTINGS_ROW_H   46
 #define FF_SETTINGS_ROW_GAP 10
 
 /* Separation between the two chips sharing a row (units+share,
@@ -99,21 +136,24 @@
  * the round glass at the widened width). */
 #define FF_SETTINGS_CHIP_GAP 24
 #define FF_SETTINGS_ROW_STEP (FF_SETTINGS_ROW_H + FF_SETTINGS_ROW_GAP)
-#define FF_SETTINGS_ROWS_Y0 (FF_SETTINGS_NAME_Y + FF_SETTINGS_NAME_H + 12)
+/* +8 (not a smaller pad): the enlarged back button's bottom edge sits at
+ * HEADER_Y + BACK_H = 62, and row 0's chips span the full width directly
+ * below it, so this pad IS the header->row0 hit-target GAP — it must clear
+ * FF_HIT_MIN_GAP_PX (8). At 412 this stack is packed tight enough that 8 is
+ * the value, not a comfort margin; flagged in the PR body. */
+#define FF_SETTINGS_ROWS_Y0 (FF_SETTINGS_HEADER_Y + FF_SETTINGS_HEADER_H + 8)
 
 #define FF_SETTINGS_ROW0_Y (FF_SETTINGS_ROWS_Y0)                        /* units + share       */
 #define FF_SETTINGS_ROW1_Y (FF_SETTINGS_ROW0_Y + FF_SETTINGS_ROW_STEP)  /* haptics + night glow */
 #define FF_SETTINGS_ROW2_Y (FF_SETTINGS_ROW1_Y + FF_SETTINGS_ROW_STEP)  /* water nudge          */
 #define FF_SETTINGS_ROW3_Y (FF_SETTINGS_ROW2_Y + FF_SETTINGS_ROW_STEP)  /* quiet hours          */
 #define FF_SETTINGS_ROW4_Y (FF_SETTINGS_ROW3_Y + FF_SETTINGS_ROW_STEP)  /* UTC offset stepper   */
-/* S17 slice a: the colorblind toggle. Row budget re-checked, not assumed
- * — this header's own comment above measured seven rows too tight for
- * full-width editors, but a one-line "label + chip" row (row2/row3's own
- * shape) is the same 54px step every other row already costs, and
- * FF_SETTINGS_ROW4_Y (322) + its own 44px height (366) left 74px of
- * square-bound slack before this addition — comfortably enough for one
- * more row (see the _Static_assert immediately below, which is the real
- * proof, not this comment). */
+/* S17 slice a: the colorblind toggle, the lowest row. S15c re-fit the whole
+ * stack to the 412 puck: with FF_SETTINGS_ROWS_Y0=70, ROW_STEP=56 and
+ * ROW_H=46, this row spans y=350..396, leaving 16px of square-bound slack
+ * below it (the _Static_assert is the real proof) and — more bindingly — a
+ * ~138px in-circle width for its full-width chip at y=396, which is what
+ * keeps "COLORBLIND OFF" from overflowing at 412 (verified in the golden). */
 #define FF_SETTINGS_ROW5_Y (FF_SETTINGS_ROW4_Y + FF_SETTINGS_ROW_STEP)  /* colorblind toggle    */
 
 _Static_assert(FF_SETTINGS_ROW5_Y + FF_SETTINGS_ROW_H <= FF_THEME_PUCK_PX,
@@ -513,8 +553,14 @@ void ff_scr_settings_build(ff_app_settings_t const *settings)
     lv_obj_clear_flag(puck, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_clear_flag(puck, LV_OBJ_FLAG_CLICKABLE); /* base lv_obj defaults clickable; this one is a plain backdrop */
 
-    /* --- Header: back (dead-end escape, ux-raver checklist item 6) + title. --- */
-    int32_t header_margin = settings_safe_margin_x(FF_SETTINGS_HEADER_Y, FF_SETTINGS_HEADER_H);
+    /* --- Header GROUP: enlarged back button (dead-end escape, ux-raver
+     * checklist item 6) on the left, with the SETTINGS title and the name
+     * caption stacked in a column to its right. S15c: the back button is now
+     * big enough that it no longer tucks left of a puck-centred title, so the
+     * three read as one left-to-right group centred near puck-x (see the
+     * FF_SETTINGS_BACK_X / _HEADER_TEXT_X comments). Positioned by fixed
+     * puck-local coordinates (not settings_safe_margin_x) precisely because
+     * this group is placed as a whole rather than inset row-by-row. --- */
 
     /* Filled chip background (PR #68 UX review, Bailey, non-blocking):
      * every other tappable thing on this screen is a solid rounded-rect
@@ -525,8 +571,8 @@ void ff_scr_settings_build(ff_app_settings_t const *settings)
      * as an exception to it. */
     lv_obj_t *back = lv_button_create(puck);
     lv_obj_remove_style_all(back);
-    lv_obj_set_size(back, FF_THEME_MIN_HIT_PX, FF_THEME_MIN_HIT_PX);
-    lv_obj_set_pos(back, header_margin, FF_SETTINGS_HEADER_Y);
+    lv_obj_set_size(back, FF_SETTINGS_BACK_W, FF_SETTINGS_BACK_H);
+    lv_obj_set_pos(back, FF_SETTINGS_BACK_X, FF_SETTINGS_HEADER_Y);
     lv_obj_set_style_bg_color(back, lv_color_hex(FF_THEME_COLOR_SURFACE), 0);
     lv_obj_set_style_bg_opa(back, LV_OPA_COVER, 0);
     lv_obj_set_style_radius(back, LV_RADIUS_CIRCLE, 0);
@@ -541,23 +587,20 @@ void ff_scr_settings_build(ff_app_settings_t const *settings)
     lv_label_set_text(title, "SETTINGS");
     lv_obj_set_style_text_font(title, FF_THEME_FONT_HEADLINE, 0);
     lv_obj_set_style_text_color(title, lv_color_hex(FF_THEME_COLOR_INK), 0);
-    lv_obj_align(title, LV_ALIGN_TOP_MID, 0, FF_SETTINGS_HEADER_Y + 10);
+    lv_obj_align(title, LV_ALIGN_TOP_LEFT, FF_SETTINGS_HEADER_TEXT_X, FF_SETTINGS_TITLE_Y);
 
     /* --- Name caption (display-only, this slice — see header comment).
-     * Centered, not margin-positioned: FF_SETTINGS_NAME_H's own row is
-     * close enough to the puck's vertical center that a short caption
-     * never approaches the glass edge (ff_layout_safe_margin_x's own
-     * "never negative... a band entirely within safety_px of the
-     * circle's own vertical center needs no margin at all" case), so
-     * this one row skips the explicit margin call every other row below
-     * makes. --- */
+     * Left-aligned under the title, in the header group's right-hand column
+     * (S15c: folded into the header band rather than a dedicated row above
+     * the settings, to buy the six rows the vertical budget to clear the
+     * hit-target floor at 412). --- */
     lv_obj_t *name_lbl = lv_label_create(puck);
     char name_buf[FF_APP_NAME_LEN + 8];
     snprintf(name_buf, sizeof(name_buf), "NAME: %s", (s_settings.my_name[0] != '\0') ? s_settings.my_name : "(unset)");
     lv_label_set_text(name_lbl, name_buf);
     lv_obj_set_style_text_font(name_lbl, FF_THEME_FONT_LABEL, 0);
     lv_obj_set_style_text_color(name_lbl, lv_color_hex(FF_THEME_COLOR_DIM), 0);
-    lv_obj_align(name_lbl, LV_ALIGN_TOP_MID, 0, FF_SETTINGS_NAME_Y);
+    lv_obj_align(name_lbl, LV_ALIGN_TOP_LEFT, FF_SETTINGS_HEADER_TEXT_X, FF_SETTINGS_NAME_Y);
 
     settings_build_row0(puck);
     settings_build_row1(puck);

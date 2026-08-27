@@ -1,0 +1,12 @@
+# Firefly vendored esp_lcd_touch_spd2010 (patched — see esp_lcd_touch_spd2010.c
+# header). This local component provides "esp_lcd_touch_spd2010" so it is
+# resolved from here, NOT downloaded from the registry. It still declares the
+# esp_lcd_touch dependency so the component manager fetches that transitive
+# managed dep (pinned like the rest). cmake_utilities is intentionally NOT a
+# dependency here — the version macros are defined in CMakeLists.txt instead.
+dependencies:
+  idf:
+    version: ">=5.3"
+  espressif/esp_lcd_touch:
+    version: "^1"
+    public: true

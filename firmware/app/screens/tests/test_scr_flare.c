@@ -38,7 +38,7 @@ void setUp(void)
     /* No buffers/flush callback: this file never calls lv_refr_now() or
      * lv_timer_handler(), only lv_obj_create()-family widget building and
      * lv_obj_update_layout() — neither touches the flush path. */
-    lv_display_t *disp = lv_display_create(456, 456);
+    lv_display_t *disp = lv_display_create(FF_THEME_WINDOW_PX, FF_THEME_WINDOW_PX);
     lv_display_set_default(disp);
 }
 

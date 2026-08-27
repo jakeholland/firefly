@@ -261,14 +261,25 @@ static inline uint32_t ff_theme_crew_color(uint8_t color_idx, bool colorblind)
 #define FF_THEME_FONT_HEADLINE (&lv_font_montserrat_20) /* NOFIX/NOSEL primary message */
 
 /* -------------------------------------------------------------------
- * Layout — matches targets/sim/main.c's window/puck sizing exactly (the
- * puck is the round physical display's stand-in: 456px sim window, 440px
- * puck circle centered in it, same convention main.c's boot screen and
- * fixture_view.c's debug face already use).
+ * Layout — the puck IS the physical round panel: the Waveshare
+ * ESP32-S3-Touch-LCD-1.46 glass is 412x412 (CLAUDE.md's authoritative
+ * "mockup geometry (412x412 circle)"). S15 slice c (docs/specs/S15c-fit-412.md)
+ * corrected the earlier 440/456 drift that overflowed the panel by ~28px and
+ * made the display free-scroll on real hardware.
+ *
+ * FF_THEME_WINDOW_PX == FF_THEME_PUCK_PX == 412: the sim renders the puck at
+ * the panel's exact size with NO surrounding window margin, so the sim
+ * framebuffer and the device framebuffer are the same 412x412 pixels — sim
+ * and glass match pixel-for-pixel (the spec's stated goal). The
+ * hit-target sweep derives its circle from these two constants
+ * (test_face_hit_targets.c: margin = (WINDOW_PX - PUCK_PX) / 2 == 0, center
+ * (206,206), radius 206), and targets/sim/main.c sizes its SDL window /
+ * headless framebuffer to FF_THEME_WINDOW_PX so the goldens are that same
+ * 412x412 frame.
  * ------------------------------------------------------------------- */
 
-#define FF_THEME_WINDOW_PX 456
-#define FF_THEME_PUCK_PX   440 /* window - 16 */
+#define FF_THEME_WINDOW_PX 412
+#define FF_THEME_PUCK_PX   412 /* the device panel is 412x412; the puck fills it */
 #define FF_THEME_PUCK_RADIUS_PX (FF_THEME_PUCK_PX / 2)
 
 /* Arrow/ring/dot placement geometry (arrow length & taper, ring radius,

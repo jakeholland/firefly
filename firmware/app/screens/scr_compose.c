@@ -90,11 +90,20 @@
                                      * same "generous inset" spirit as radar_layout.h's
                                      * RING_RADIUS_PX (185) vs the puck's own 220px radius */
 
-#define FF_COMPOSE_HEADER_Y 56
+/* S15 slice c: the header sat at y=56 with an 84px bubble on the old 440
+ * puck, which put the four-row T9 keypad's bottom (DEL/0/SEND) row at
+ * y=372..418 — past the 412 panel's own bottom edge, so on the real glass
+ * that row fell off the display AND, well before that, the narrowing circle
+ * crushed its keys below the 44px hit floor. Lifting the header to y=38 and
+ * trimming the bubble to 76px raises the whole stack ~26px so the bottom row
+ * lands at y=346..392, where the circle is still wide enough for three
+ * >=44px keys (the sweep is the proof). The keypad geometry below is
+ * otherwise unchanged and stays theme-relative. */
+#define FF_COMPOSE_HEADER_Y 38
 #define FF_COMPOSE_HEADER_H FF_THEME_MIN_HIT_PX /* back button / mode chip */
 
 #define FF_COMPOSE_BUBBLE_Y (FF_COMPOSE_HEADER_Y + FF_COMPOSE_HEADER_H + 8)
-#define FF_COMPOSE_BUBBLE_H 84
+#define FF_COMPOSE_BUBBLE_H 76
 
 #define FF_COMPOSE_GRID_Y (FF_COMPOSE_BUBBLE_Y + FF_COMPOSE_BUBBLE_H + 8)
 /* S17 slice b (AC2, docs/specs/S17-usability-hardening.md): was 6px — the
@@ -130,6 +139,14 @@ _Static_assert(FF_COMPOSE_KEY_GAP >= FF_HIT_MIN_GAP_PX,
 #define FF_COMPOSE_ROW1_Y (FF_COMPOSE_ROW0_Y + FF_COMPOSE_KEY_H + FF_COMPOSE_KEY_GAP)
 #define FF_COMPOSE_ROW2_Y (FF_COMPOSE_ROW1_Y + FF_COMPOSE_KEY_H + FF_COMPOSE_KEY_GAP)
 #define FF_COMPOSE_BOTTOM_ROW_Y (FF_COMPOSE_ROW2_Y + FF_COMPOSE_KEY_H + FF_COMPOSE_KEY_GAP + FF_COMPOSE_BOTTOM_ROW_GAP_EXTRA)
+
+/* S15c guard: the whole T9 stack must stay inside the 412 puck square (the
+ * bottom DEL/0/SEND row is the lowest thing on this face). Square-fit
+ * backstop only; the tighter in-circle key-width check the narrowing pole
+ * imposes is enforced by test_face_hit_targets.c's sweep (it needs the chord
+ * math, so it can't be a static assert). */
+_Static_assert(FF_COMPOSE_BOTTOM_ROW_Y + FF_COMPOSE_BOTTOM_ROW_H <= FF_THEME_PUCK_PX,
+               "compose T9 keypad's bottom row must stay inside the puck square");
 
 /* ---------------------------------------------------------------------
  * Chord-aware horizontal margin — see this file's header comment and

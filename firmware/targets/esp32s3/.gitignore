@@ -1,3 +1,7 @@
 build/
 sdkconfig
 sdkconfig.old
+# Managed components are fetched on build from the registry (pinned by
+# idf_component.yml + committed dependencies.lock) — never vendor the
+# downloaded sources into git.
+managed_components/

@@ -157,8 +157,12 @@
 #include "live_setup.h"    /* S16 slice d — the setup sequence shared with ctl_loop.c */
 #include "screenshot.h"    /* ff_screenshot_write — the one-shot headless render path */
 
-#define FF_SIM_WINDOW_W 456
-#define FF_SIM_WINDOW_H 456
+/* The sim window/framebuffer IS the device panel: 412x412 (S15 slice c,
+ * ff_theme.h's FF_THEME_WINDOW_PX). The puck fills it with no margin, so a
+ * sim golden PNG is the same 412x412 frame the device draws — sim and glass
+ * match pixel-for-pixel. */
+#define FF_SIM_WINDOW_W 412
+#define FF_SIM_WINDOW_H 412
 
 #define FF_COLOR_BG_DARK 0x0b0b10
 #define FF_COLOR_AMBER   0xffc66b

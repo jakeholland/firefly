@@ -1,40 +1,30 @@
 /**
- * app_main.c — ESP32-S3 target entry point (S15 slice a — IDF skeleton).
+ * app_main.c — ESP32-S3 target entry point (S15 slice b — display + touch).
  *
- * Scope, per docs/specs/S15-esp32s3-target.md slice (a) and the S15a task
- * brief: prove core+festpack+meshclient+app link and boot for xtensa.
- * NO peripheral is touched — no display, no touch, no sensors, no UART.
- * The Waveshare screen board hasn't arrived and the Seeed comms boards
- * haven't shipped, so this target brings the shell up against three
- * stub/no-op HALs and sits on Radar's honest no-fix state. Slices b/c/d
- * replace each stub with the real hardware driver.
+ * Slice a booted ff_shell against three stub HALs with the screen dark.
+ * Slice b keeps that boot EXACTLY (same clock stub, same no-op store, same
+ * no-transport shell) and adds the real display + touch HAL on top, staged
+ * so the maintainer can flash one gate at a time and watch the glass:
  *
- * Mirrors targets/sim/main.c's shell setup shape (ff_shell_cfg_t, static
- * storage, ff_shell_init/tick) with every I/O source swapped for a stub:
+ *   STAGE 1 (first light): expander up -> release resets -> backlight ->
+ *            SPD2010 QSPI panel init -> a solid fill + two-colour split via
+ *            esp_lcd_panel_draw_bitmap. NO LVGL. Proves the panel path.
+ *   STAGE 2 (app on glass): + LVGL v9 via esp_lvgl_port, render one real
+ *            ff_shell face (Radar, no selection) — the same projection the
+ *            sim renders for that state.
+ *   STAGE 3 (touch drives it): + SPD2010 touch -> an LVGL pointer indev
+ *            wired to the SAME abstract input seam the sim ctl socket
+ *            drives (ff_intent_emit -> ff_shell_intent_sink). A physical
+ *            tap/swipe changes shell state.
  *
- *   ff_clock    -> esp_timer_get_time() (monotonic, matches the sim's
- *                  SDL_GetTicks()-backed clock in spirit: milliseconds
- *                  since an arbitrary epoch, never negative).
- *   ff_store    -> a no-op stub (see below) — NOT the real NVS-backed
- *                  store S15's spec eventually wants; that lands with a
- *                  later slice once settings actually need to survive a
- *                  reboot. Until then `ff_shell_load` reads "not found"
- *                  for everything and runs on defaults, which is the
- *                  honest behavior for a store that persists nothing.
- *   mc_transport -> left zeroed. ff_shell.h documents a transport whose
- *                  `read`/`write` are both NULL as "no transport": init
- *                  skips `mc_connect` entirely and the link stays
- *                  FF_SHELL_LINK_NONE. That is a MORE honest no-op than a
- *                  transport that "connects" and then never delivers
- *                  bytes — there is no handshake to fake here. Real UART
- *                  (GPIO43/44 -> comms brain D6/D7) is slice c.
+ * The stage is chosen by CONFIG_FF_BRINGUP_STAGE (menuconfig ->
+ * "Firefly bring-up", default 1). core/ and app/ are UNCHANGED; every new
+ * line is under targets/esp32s3/. Every init step logs so a dark screen
+ * still says how far it got.
  *
- * No festpack is loaded this slice either (`cfg.pack` stays NULL) — see
- * the S15a PR body for why the Lost Lands embed was deferred rather than
- * done "if trivial" per the brief. `ff_route_init`'s default base face is
- * `FF_APP_FACE_RADAR` regardless of pack state (app/ff_route.c), so the
- * shell reaches Radar's no-fix view without one; that view IS this
- * slice's success criterion, not a placeholder on the way to it.
+ * The clock / store / no-transport rationale is unchanged from slice a —
+ * see the git history of this file / the S15a PR body. NVS store and UART
+ * transport remain later slices (c/d/e).
  */
 #include <stdbool.h>
 #include <stddef.h>
@@ -45,40 +35,28 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
+#include "ff_display.h"
+#include "ff_face.h"
+#include "ff_intent.h"
 #include "ff_shell.h"
 
 static const char *TAG = "firefly";
 
-/* ---------------------------------------------------------------------
- * ff_clock_t — monotonic milliseconds over esp_timer_get_time()
- * ------------------------------------------------------------------- */
+/* ff_clock_t — monotonic ms over esp_timer_get_time() (see slice a). */
 static uint32_t ff_esp_clock_now_ms(void *user)
 {
     (void)user;
-    /* esp_timer_get_time() returns microseconds since boot as an int64_t
-     * that only wraps after ~292,000 years — truncating to uint32_t ms
-     * wraps every ~49.7 days, same as any embedded tick counter.
-     * ff_clock_t's contract (platform/include/ff_clock.h) is exactly
-     * that: callers compare with subtraction, not '<', so this is safe. */
     return (uint32_t)(esp_timer_get_time() / 1000);
 }
 
-/* ---------------------------------------------------------------------
- * ff_store_t — no-op stub (S15a). Every get() misses, every set()
- * silently discards. This is deliberately NOT the NVS-backed store the
- * full S15 spec eventually wants (see this file's top comment) — nothing
- * peristed here survives a reboot, and ff_shell_init's settings load
- * therefore always falls back to defaults, which is the honest outcome
- * for a store that keeps nothing. A later slice swaps this for real NVS
- * without touching ff_shell_cfg_t's shape at all.
- * ------------------------------------------------------------------- */
+/* ff_store_t — no-op stub (real NVS store is a later slice; see slice a). */
 static int ff_stub_store_get(void *io, char const *key, void *buf, size_t n)
 {
     (void)io;
     (void)key;
     (void)buf;
     (void)n;
-    return -1; /* "not found", per ff_store_t's documented contract */
+    return -1; /* "not found" */
 }
 
 static int ff_stub_store_set(void *io, char const *key, void const *buf, size_t n)
@@ -86,20 +64,46 @@ static int ff_stub_store_set(void *io, char const *key, void const *buf, size_t 
     (void)io;
     (void)key;
     (void)buf;
-    return (int)n; /* pretend success; bytes go nowhere — see the doc above */
+    return (int)n; /* discards; bytes go nowhere */
 }
 
 static ff_shell_t s_shell;
 static ff_clock_t s_clock;
 static ff_store_t s_store;
 
+/* Bring the panel up through the QSPI init (shared by every stage). Returns
+ * true on success; logs and returns false so app_main can park rather than
+ * spin a half-initialised peripheral. */
+static bool ff_bringup_panel(void)
+{
+    if (ff_display_expander_init() != ESP_OK) {
+        ESP_LOGE(TAG, "expander init failed — LCD/TP resets not released; screen will stay dark");
+        return false;
+    }
+    if (ff_display_panel_init() != ESP_OK) {
+        ESP_LOGE(TAG, "panel init failed");
+        return false;
+    }
+    return true;
+}
+
+/* Park forever (still logging a heartbeat) after a fatal bring-up error, so
+ * the serial log stays readable instead of scrolling a reset loop. */
+static void ff_park(const char *why)
+{
+    ESP_LOGE(TAG, "parked: %s", why);
+    while (true) {
+        vTaskDelay(pdMS_TO_TICKS(5000));
+    }
+}
+
 void app_main(void)
 {
-    ESP_LOGI(TAG, "firefly esp32s3 target booting (S15 slice a: IDF skeleton, no peripherals touched)");
+    const int stage = CONFIG_FF_BRINGUP_STAGE;
+    ESP_LOGI(TAG, "firefly esp32s3 target booting (S15 slice b: display+touch, STAGE %d)", stage);
 
     s_clock.now_ms = ff_esp_clock_now_ms;
     s_clock.user = NULL;
-
     s_store.get = ff_stub_store_get;
     s_store.set = ff_stub_store_set;
     s_store.io = NULL;
@@ -108,32 +112,79 @@ void app_main(void)
     memset(&cfg, 0, sizeof(cfg));
     cfg.clock = &s_clock;
     cfg.store = &s_store;
-    /* cfg.transport left zeroed (both write and read NULL) — "no
-     * transport", see this file's top comment. */
-    /* cfg.pack left NULL — no festpack this slice. */
-    /* cfg.haptic left NULL — no haptics HAL this slice. */
+    /* cfg.transport / cfg.pack / cfg.haptic left zeroed — see slice a. */
 
     int rc = ff_shell_init(&s_shell, &cfg);
     if (rc != 0) {
-        ESP_LOGE(TAG, "ff_shell_init failed (rc=%d) — halting", rc);
+        ff_park("ff_shell_init failed");
         return;
     }
 
-    /* First tick always reports dirty (ff_shell.h's ff_shell_tick doc) —
-     * pull the view after it so the logged face reflects the real
-     * projection, not the pre-tick zeroed struct. */
     (void)ff_shell_tick(&s_shell, ff_esp_clock_now_ms(NULL));
     ff_app_state_t const *view = ff_shell_view(&s_shell);
     ESP_LOGI(TAG, "shell up: active_face=%d radar_mode=%d link=%d", (int)view->active_face,
              (int)view->radar.mode, (int)ff_shell_link(&s_shell));
 
-    /* Pump at ~50 Hz, matching mc_client.h's guidance (ff_shell.h's
-     * ff_shell_tick doc). With no transport attached mc_client never has
-     * bytes to process, so every tick after the first is inert — this
-     * loop exists to prove the shell keeps running under FreeRTOS, not to
-     * do anything more yet. */
+    /* ---- Display bring-up (all stages) ---- */
+    if (!ff_bringup_panel()) {
+        ff_park("panel bring-up failed");
+        return;
+    }
+
+    /* ---- STAGE 1: first light, no LVGL ---- */
+    if (stage <= 1) {
+        if (ff_display_draw_test_pattern() != ESP_OK) {
+            ff_park("test pattern draw failed");
+            return;
+        }
+        ESP_LOGI(TAG, "STAGE 1 complete: first-light pattern on glass. Keeping shell alive.");
+        /* Keep ticking the shell (proves it survives under FreeRTOS) while
+         * the static test pattern stays on the panel. No LVGL, no redraw. */
+        while (true) {
+            (void)ff_shell_tick(&s_shell, ff_esp_clock_now_ms(NULL));
+            vTaskDelay(pdMS_TO_TICKS(20));
+        }
+    }
+
+    /* ---- STAGE 2+: LVGL v9 up, render a real face ---- */
+    lv_display_t *disp = ff_display_lvgl_start();
+    if (disp == NULL) {
+        ff_park("LVGL display bring-up failed");
+        return;
+    }
+
+    /* ---- STAGE 3: touch + bind the input seam ---- */
+    if (stage >= 3) {
+        if (ff_display_touch_start(disp) != ESP_OK) {
+            ff_park("touch bring-up failed");
+            return;
+        }
+        /* Bind the SAME seam the sim binds (targets/sim/ctl_loop.c): every
+         * screen emit now reaches this shell. Unbind is unnecessary — the
+         * shell lives for the process lifetime. */
+        ff_intent_emit_bind(ff_shell_intent_sink, &s_shell);
+        ESP_LOGI(TAG, "input seam bound: touch -> ff_shell_intent");
+    }
+
+    /* First face build (under the LVGL lock — the port owns the LVGL task). */
+    if (ff_display_lock(0)) {
+        ff_face_build(ff_shell_view(&s_shell));
+        ff_display_unlock();
+    }
+    ESP_LOGI(TAG, "STAGE %d complete: first face flushed to glass", stage);
+
+    /* Render lifecycle mirrors the sim (targets/sim/ctl_loop.c): tick the
+     * shell every frame, rebuild the LVGL tree ONLY on a dirty tick. The
+     * esp_lvgl_port task does the actual flushing; we just own the model. */
     while (true) {
-        (void)ff_shell_tick(&s_shell, ff_esp_clock_now_ms(NULL));
+        bool const dirty = ff_shell_tick(&s_shell, ff_esp_clock_now_ms(NULL));
+        if (dirty) {
+            if (ff_display_lock(100 /* ms */)) {
+                lv_obj_clean(lv_screen_active());
+                ff_face_build(ff_shell_view(&s_shell));
+                ff_display_unlock();
+            }
+        }
         vTaskDelay(pdMS_TO_TICKS(20));
     }
 }
