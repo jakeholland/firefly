@@ -686,6 +686,76 @@ static void setting_send(ff_shell_t *shell, ff_setting_id_t id, int32_t i, char 
     ff_shell_intent(shell, &in);
 }
 
+/* #bug1 — a brightness intent carrying the transient/commit flag. */
+static void setting_send_brightness(ff_shell_t *shell, int32_t v, bool transient)
+{
+    ff_intent_t in = {.kind = FF_INTENT_SETTING_SET, .u = {0}};
+    in.u.setting.id = FF_SETTING_BRIGHTNESS;
+    in.u.setting.v.i = v;
+    in.u.setting.transient = transient;
+    ff_shell_intent(shell, &in);
+}
+
+/* #bug1 — the brightness slider's TRANSIENT (live-preview) vs COMMITTED
+ * distinction. A drag fires many VALUE_CHANGED intents; each must apply to
+ * in-memory state (so the projected brightness the backlight follows tracks
+ * the finger) but must NOT write NVS. Only the settled, non-transient
+ * RELEASED value persists, coalescing a whole drag's flash writes into one.
+ * The proxy this kills: a naive "emit live" that persisted every step would
+ * pass a value-applied check while thrashing the store, so the store-write
+ * COUNT is asserted, not just the final value. */
+static void bug1_transient_brightness_applies_live_but_persists_only_on_commit(void)
+{
+    setting_harness_t h;
+    setting_harness_init(&h);
+
+    uint8_t const start = ff_shell_settings(&h.shell)->brightness_pct;
+    TEST_ASSERT_EQUAL_INT(0, h.store_mem.set_calls);
+
+    /* A drag: a run of transient values, each applied to live state... */
+    int32_t const drag[] = {40, 55, 70, 85, 90};
+    for (size_t i = 0; i < sizeof(drag) / sizeof(drag[0]); i++) {
+        setting_send_brightness(&h.shell, drag[i], true /* transient */);
+        TEST_ASSERT_EQUAL_UINT8((uint8_t)drag[i], ff_shell_settings(&h.shell)->brightness_pct);
+    }
+    /* ...but NOT ONE of them wrote the store (the whole NVS-wear point). */
+    TEST_ASSERT_EQUAL_INT(0, h.store_mem.set_calls);
+    TEST_ASSERT_TRUE(ff_shell_settings(&h.shell)->brightness_pct != start); /* it did move live */
+
+    /* Release: the settled value commits, exactly once. */
+    setting_send_brightness(&h.shell, 90, false /* commit */);
+    TEST_ASSERT_EQUAL_UINT8(90u, ff_shell_settings(&h.shell)->brightness_pct);
+    TEST_ASSERT_EQUAL_INT(1, h.store_mem.set_calls);
+
+    ff_shell_close(&h.shell);
+}
+
+/* #bug1 — a brightness change must NOT mark the render dirty: it is kept out
+ * of the shell's render key so a live drag never forces a face rebuild that
+ * would destroy the slider under the finger. The projected value still
+ * changes (the device backlight is applied every tick regardless of the
+ * dirty bit, so it follows the drag). */
+static void bug1_brightness_change_does_not_mark_the_render_dirty(void)
+{
+    setting_harness_t h;
+    setting_harness_init(&h);
+
+    (void)ff_shell_tick(&h.shell, h.clk.t);              /* first frame is always dirty; settle it */
+    TEST_ASSERT_FALSE(ff_shell_tick(&h.shell, h.clk.t)); /* frozen clock, idle -> not dirty (baseline) */
+
+    setting_send_brightness(&h.shell, 33, false /* even a committed change */);
+    TEST_ASSERT_FALSE(ff_shell_tick(&h.shell, h.clk.t)); /* NOT dirty: brightness is excluded from the key */
+    /* Yet the projection the backlight reads DID update. */
+    TEST_ASSERT_EQUAL_UINT8(33u, ff_shell_view(&h.shell)->settings.brightness_pct);
+
+    /* Control: a genuinely rendered setting (units) DOES mark dirty, so the
+     * exclusion above is specific to brightness, not a broken dirty bit. */
+    setting_send(&h.shell, FF_SETTING_IMPERIAL, ff_shell_settings(&h.shell)->imperial ? 0 : 1, NULL);
+    TEST_ASSERT_TRUE(ff_shell_tick(&h.shell, h.clk.t));
+
+    ff_shell_close(&h.shell);
+}
+
 static void S16_AC8_setting_set_applies_and_persists_only_on_change(void)
 {
     setting_harness_t h;
@@ -993,6 +1063,8 @@ int main(void)
     RUN_TEST(S16_c2_flare_end_cancels_a_send_even_while_a_takeover_is_visible);
     RUN_TEST(S16_AC8_setting_set_applies_and_persists_only_on_change);
     RUN_TEST(S17a_AC2_setting_set_colorblind_applies_and_persists_only_on_change);
+    RUN_TEST(bug1_transient_brightness_applies_live_but_persists_only_on_commit);
+    RUN_TEST(bug1_brightness_change_does_not_mark_the_render_dirty);
     RUN_TEST(S16_AC8_setting_set_out_of_range_is_rejected_not_clamped);
     RUN_TEST(S16_AC8_setting_set_my_name_is_bounded_and_terminated);
     RUN_TEST(S16_AC8_setting_set_is_rejected_while_a_takeover_is_visible);

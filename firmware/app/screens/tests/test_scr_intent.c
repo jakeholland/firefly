@@ -1140,10 +1140,13 @@ static void S11b_settings_quiet_chip_sets_both_from_and_to(void)
  * longer a screen control to emit it, so the two screen-level stepper tests
  * that used to live here are gone. */
 
-/* #100 — the brightness slider (Settings page 1) emits FF_SETTING_BRIGHTNESS
- * with the slider's value on RELEASE (one persisted value per touch, not one
- * per drag frame — see scr_settings.c's settings_brightness_cb). The slider
- * carries no label, so it's found by widget class rather than by text. */
+/* #100/#bug1 — the brightness slider emits FF_SETTING_BRIGHTNESS. During a
+ * drag it emits TRANSIENT values on every VALUE_CHANGED (so the backlight
+ * follows live; the shell applies but does not persist them), and the
+ * settled RELEASED value as a COMMITTED (non-transient) emit the shell
+ * persists once — see scr_settings.c's settings_brightness_changed_cb /
+ * settings_brightness_released_cb. The slider carries no label, so it's
+ * found by widget class rather than by text. */
 static lv_obj_t *find_slider(lv_obj_t *root)
 {
     uint32_t n = lv_obj_get_child_count(root);
@@ -1171,16 +1174,27 @@ static void S100_settings_brightness_slider_emits_brightness_on_release(void)
     lv_obj_t *slider = find_slider(lv_screen_active());
     TEST_ASSERT_NOT_NULL(slider);
 
-    /* Simulate the user having dragged the knob to 40% and let go. The cb
-     * reads lv_slider_get_value at RELEASE, so set the value first. */
-    lv_slider_set_value(slider, 40, LV_ANIM_OFF);
-    lv_result_t r = lv_obj_send_event(slider, LV_EVENT_RELEASED, NULL);
-    TEST_ASSERT_EQUAL(LV_RESULT_OK, r);
-
+    /* #bug1 — a mid-drag VALUE_CHANGED emits a TRANSIENT (live-preview)
+     * brightness. (lv_slider_set_value with LV_ANIM_OFF is programmatic and
+     * fires no event, so we drive the events by hand.) */
+    lv_slider_set_value(slider, 55, LV_ANIM_OFF);
+    lv_result_t rc = lv_obj_send_event(slider, LV_EVENT_VALUE_CHANGED, NULL);
+    TEST_ASSERT_EQUAL(LV_RESULT_OK, rc);
     TEST_ASSERT_EQUAL_INT(1, s_spy.count);
     TEST_ASSERT_EQUAL(FF_INTENT_SETTING_SET, s_spy.last.kind);
     TEST_ASSERT_EQUAL(FF_SETTING_BRIGHTNESS, s_spy.last.u.setting.id);
+    TEST_ASSERT_EQUAL_INT32(55, s_spy.last.u.setting.v.i);
+    TEST_ASSERT_TRUE(s_spy.last.u.setting.transient); /* live: not persisted */
+
+    /* And the settled RELEASED value is a COMMITTED (non-transient) emit. */
+    lv_slider_set_value(slider, 40, LV_ANIM_OFF);
+    lv_result_t r = lv_obj_send_event(slider, LV_EVENT_RELEASED, NULL);
+    TEST_ASSERT_EQUAL(LV_RESULT_OK, r);
+    TEST_ASSERT_EQUAL_INT(2, s_spy.count);
+    TEST_ASSERT_EQUAL(FF_INTENT_SETTING_SET, s_spy.last.kind);
+    TEST_ASSERT_EQUAL(FF_SETTING_BRIGHTNESS, s_spy.last.u.setting.id);
     TEST_ASSERT_EQUAL_INT32(40, s_spy.last.u.setting.v.i);
+    TEST_ASSERT_FALSE(s_spy.last.u.setting.transient); /* commit: persisted */
 }
 
 /* S21 §3 — the "CALIBRATE TOUCH" row emits the shell-owned
