@@ -44,6 +44,7 @@
 #include "ff_display.h"
 #include "ff_face.h"
 #include "ff_intent.h"
+#include "ff_nvs_store.h" /* S21 §4 — the real NVS-backed store */
 #include "ff_settings.h"
 #include "ff_shell.h"
 #include "ff_touchcal.h"
@@ -57,27 +58,43 @@ static uint32_t ff_esp_clock_now_ms(void *user)
     return (uint32_t)(esp_timer_get_time() / 1000);
 }
 
-/* ff_store_t — no-op stub (real NVS store is a later slice; see slice a). */
-static int ff_stub_store_get(void *io, char const *key, void *buf, size_t n)
-{
-    (void)io;
-    (void)key;
-    (void)buf;
-    (void)n;
-    return -1; /* "not found" */
-}
-
-static int ff_stub_store_set(void *io, char const *key, void const *buf, size_t n)
-{
-    (void)io;
-    (void)key;
-    (void)buf;
-    return (int)n; /* discards; bytes go nowhere */
-}
-
 static ff_shell_t s_shell;
 static ff_clock_t s_clock;
 static ff_store_t s_store;
+static ff_nvs_store_t s_nvs; /* S21 §4 — backing state for the NVS store */
+
+/* S21 §3 — the shell's injected touch-calibration hook (ff_shell_cfg_t.
+ * calibrate_touch), fired by FF_INTENT_CALIBRATE_TOUCH (the Settings
+ * "CALIBRATE TOUCH" row). Runs the crosshair capture, applies the solved
+ * transform to the LIVE touch path immediately (so the correction is felt
+ * without a reflash), and hands it back so the shell persists it into
+ * ff_settings (which now lands in NVS, §4). Returns true only on a valid
+ * fit; a failed/aborted capture leaves the existing calibration untouched.
+ *
+ * DEVICE NOTE (for the maintainer's flash-verify): this runs synchronously
+ * from the Settings row's LVGL click callback, i.e. inside the esp_lvgl_port
+ * UI task. ff_display_run_calibration owns the panel + touch for the duration
+ * of the crosshair flow; verify on glass that it does not contend the LVGL
+ * lock with the port task (the boot-time STAGE 4 path already calls the same
+ * function successfully, outside the render loop). If contention shows up,
+ * the fix is to defer the flow to the main loop rather than run it in the
+ * callback — but that is a device-runtime detail this sim-only build cannot
+ * exercise. */
+static bool ff_calibrate_touch_cb(void *user, ff_touchcal_t *out_cal)
+{
+    (void)user;
+    if (out_cal == NULL) {
+        return false;
+    }
+    ESP_LOGI(TAG, "CALIBRATE TOUCH: running crosshair capture from Settings");
+    if (ff_display_run_calibration(out_cal) != ESP_OK) {
+        ESP_LOGE(TAG, "in-app touch calibration failed — keeping the existing calibration");
+        return false;
+    }
+    ff_display_touch_set_cal(out_cal); /* apply LIVE immediately */
+    ESP_LOGI(TAG, "touch cal applied live + returned to shell for NVS persist: valid=%d", (int)out_cal->valid);
+    return out_cal->valid;
+}
 
 /* Bring the panel up through the QSPI init (shared by every stage). Returns
  * true on success; logs and returns false so app_main can park rather than
@@ -112,14 +129,22 @@ void app_main(void)
 
     s_clock.now_ms = ff_esp_clock_now_ms;
     s_clock.user = NULL;
-    s_store.get = ff_stub_store_get;
-    s_store.set = ff_stub_store_set;
-    s_store.io = NULL;
+
+    /* S21 §4 — real NVS store, replacing the no-op stub. ff_shell_init loads
+     * settings from it below (persisted values on a returning puck, exact
+     * defaults on a fresh/empty partition), and saves on every change; on an
+     * NVS failure the store degrades to no-op and the puck runs on defaults
+     * (ff_nvs_store_init logs which). */
+    s_store = ff_nvs_store_init(&s_nvs);
 
     ff_shell_cfg_t cfg;
     memset(&cfg, 0, sizeof(cfg));
     cfg.clock = &s_clock;
     cfg.store = &s_store;
+    /* S21 §3 — the touch-calibration hook the Settings CALIBRATE TOUCH row
+     * drives through FF_INTENT_CALIBRATE_TOUCH. */
+    cfg.calibrate_touch = ff_calibrate_touch_cb;
+    cfg.calibrate_touch_user = NULL;
     /* cfg.transport / cfg.pack / cfg.haptic left zeroed — see slice a. */
 
     int rc = ff_shell_init(&s_shell, &cfg);
@@ -181,7 +206,7 @@ void app_main(void)
          * one touch seam (ff_display process_coordinates) so gestures,
          * long-press and buttons are all corrected. */
         ff_settings_t settings;
-        ff_settings_load(&settings, &s_store); /* stub store -> defaults (uncalibrated) */
+        ff_settings_load(&settings, &s_store); /* NVS (S21 §4): persisted cal, else the board-2 panel default */
 
         ff_touchcal_t cal;
         if (stage >= 4) {
@@ -190,21 +215,19 @@ void app_main(void)
                 return;
             }
             /* Store into settings so persistence rides the existing seam.
-             * HONEST LIMIT: s_store is the no-op stub, so this save goes
-             * nowhere — the fit is session-live only (applied below and it
-             * lasts until reboot). The params are logged by
-             * ff_display_run_calibration so the maintainer can bake them as
-             * a compile-time default. A real NVS-backed ff_store (persist
-             * across reboot) is the tracked follow-up. */
+             * S21 §4: s_store is now the real NVS store, so this save PERSISTS
+             * across reboot (no longer the no-op stub S15d shipped with). The
+             * params are still logged by ff_display_run_calibration. Note the
+             * in-app CALIBRATE TOUCH row (S21 §3) is now the primary way to
+             * (re)calibrate without a reflash; this boot-time STAGE 4 path
+             * remains for bring-up. */
             settings.touch_calibrated = cal.valid;
             settings.touch_ax = cal.ax;
             settings.touch_bx = cal.bx;
             settings.touch_ay = cal.ay;
             settings.touch_by = cal.by;
             ff_settings_save(&settings, &s_store);
-            ESP_LOGW(TAG, "touch cal saved to ff_settings, but the store is the no-op STUB: "
-                          "session-live only (survives until reboot). Bake the logged params or "
-                          "wire an NVS store to persist. See S15d 'Persistence'.");
+            ESP_LOGI(TAG, "touch cal saved to ff_settings via NVS — persists across reboot (S21 §4)");
         } else {
             /* STAGE 3: reconstruct the transform from stored settings. */
             cal.ax = settings.touch_ax;
