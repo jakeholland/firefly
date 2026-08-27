@@ -44,6 +44,7 @@
 #include "ff_display.h"
 #include "ff_face.h"
 #include "ff_intent.h"
+#include "ff_nvs_store.h" /* S21 §4 — the real NVS-backed store */
 #include "ff_settings.h"
 #include "ff_shell.h"
 #include "ff_touchcal.h"
@@ -57,27 +58,51 @@ static uint32_t ff_esp_clock_now_ms(void *user)
     return (uint32_t)(esp_timer_get_time() / 1000);
 }
 
-/* ff_store_t — no-op stub (real NVS store is a later slice; see slice a). */
-static int ff_stub_store_get(void *io, char const *key, void *buf, size_t n)
-{
-    (void)io;
-    (void)key;
-    (void)buf;
-    (void)n;
-    return -1; /* "not found" */
-}
-
-static int ff_stub_store_set(void *io, char const *key, void const *buf, size_t n)
-{
-    (void)io;
-    (void)key;
-    (void)buf;
-    return (int)n; /* discards; bytes go nowhere */
-}
-
 static ff_shell_t s_shell;
 static ff_clock_t s_clock;
 static ff_store_t s_store;
+static ff_nvs_store_t s_nvs; /* S21 §4 — backing state for the NVS store */
+
+/* S21 §3 — the shell's injected touch-calibration hook (ff_shell_cfg_t.
+ * calibrate_touch), fired by FF_INTENT_CALIBRATE_TOUCH (the Settings
+ * "CALIBRATE TOUCH" row). Runs the crosshair capture, applies the solved
+ * transform to the LIVE touch path immediately (so the correction is felt
+ * without a reflash), and hands it back so the shell persists it into
+ * ff_settings (which now lands in NVS, §4). Returns true only on a valid
+ * fit; a failed/aborted capture leaves the existing calibration untouched.
+ *
+ * DEVICE-RUNTIME (the deadlock the sim-only build can't exercise, fixed
+ * here): ff_display_run_calibration BLOCKS the calling task in a vTaskDelay
+ * loop waiting for the LVGL *task's* release-event cb to capture the five
+ * crosshair taps. This hook fires SYNCHRONOUSLY from the Settings row's LVGL
+ * click callback (ff_shell_intent_sink -> ff_shell_intent has no queue) —
+ * i.e. from inside the esp_lvgl_port UI task — so running the flow here would
+ * block that very task and starve the tap-capture -> permanent hang.
+ * So it is DEFERRED, two-phase: the first call (from the UI task) only
+ * REQUESTS the flow and returns false (the shell does nothing); the main
+ * loop (a separate task) runs the crosshair flow off the UI task, then
+ * re-emits FF_INTENT_CALIBRATE_TOUCH, and this second call returns the ready
+ * result so the SHELL writes it into ff_settings and persists (-> NVS, §4) —
+ * keeping the shell the single persistence owner so a later settings save
+ * cannot clobber the cal. */
+static volatile bool s_calib_requested = false;
+static bool s_calib_ready = false;
+static ff_touchcal_t s_calib_result;
+
+static bool ff_calibrate_touch_cb(void *user, ff_touchcal_t *out_cal)
+{
+    (void)user;
+    if (out_cal == NULL) {
+        return false;
+    }
+    if (s_calib_ready) { /* second call: the main loop's re-emit — hand back the result */
+        *out_cal = s_calib_result;
+        s_calib_ready = false;
+        return out_cal->valid;
+    }
+    s_calib_requested = true; /* first call, from the UI task — defer, don't block */
+    return false;
+}
 
 /* Bring the panel up through the QSPI init (shared by every stage). Returns
  * true on success; logs and returns false so app_main can park rather than
@@ -112,14 +137,22 @@ void app_main(void)
 
     s_clock.now_ms = ff_esp_clock_now_ms;
     s_clock.user = NULL;
-    s_store.get = ff_stub_store_get;
-    s_store.set = ff_stub_store_set;
-    s_store.io = NULL;
+
+    /* S21 §4 — real NVS store, replacing the no-op stub. ff_shell_init loads
+     * settings from it below (persisted values on a returning puck, exact
+     * defaults on a fresh/empty partition), and saves on every change; on an
+     * NVS failure the store degrades to no-op and the puck runs on defaults
+     * (ff_nvs_store_init logs which). */
+    s_store = ff_nvs_store_init(&s_nvs);
 
     ff_shell_cfg_t cfg;
     memset(&cfg, 0, sizeof(cfg));
     cfg.clock = &s_clock;
     cfg.store = &s_store;
+    /* S21 §3 — the touch-calibration hook the Settings CALIBRATE TOUCH row
+     * drives through FF_INTENT_CALIBRATE_TOUCH. */
+    cfg.calibrate_touch = ff_calibrate_touch_cb;
+    cfg.calibrate_touch_user = NULL;
     /* cfg.transport / cfg.pack / cfg.haptic left zeroed — see slice a. */
 
     int rc = ff_shell_init(&s_shell, &cfg);
@@ -181,7 +214,7 @@ void app_main(void)
          * one touch seam (ff_display process_coordinates) so gestures,
          * long-press and buttons are all corrected. */
         ff_settings_t settings;
-        ff_settings_load(&settings, &s_store); /* stub store -> defaults (uncalibrated) */
+        ff_settings_load(&settings, &s_store); /* NVS (S21 §4): persisted cal, else the identity (uncalibrated) default */
 
         ff_touchcal_t cal;
         if (stage >= 4) {
@@ -190,21 +223,19 @@ void app_main(void)
                 return;
             }
             /* Store into settings so persistence rides the existing seam.
-             * HONEST LIMIT: s_store is the no-op stub, so this save goes
-             * nowhere — the fit is session-live only (applied below and it
-             * lasts until reboot). The params are logged by
-             * ff_display_run_calibration so the maintainer can bake them as
-             * a compile-time default. A real NVS-backed ff_store (persist
-             * across reboot) is the tracked follow-up. */
+             * S21 §4: s_store is now the real NVS store, so this save PERSISTS
+             * across reboot (no longer the no-op stub S15d shipped with). The
+             * params are still logged by ff_display_run_calibration. Note the
+             * in-app CALIBRATE TOUCH row (S21 §3) is now the primary way to
+             * (re)calibrate without a reflash; this boot-time STAGE 4 path
+             * remains for bring-up. */
             settings.touch_calibrated = cal.valid;
             settings.touch_ax = cal.ax;
             settings.touch_bx = cal.bx;
             settings.touch_ay = cal.ay;
             settings.touch_by = cal.by;
             ff_settings_save(&settings, &s_store);
-            ESP_LOGW(TAG, "touch cal saved to ff_settings, but the store is the no-op STUB: "
-                          "session-live only (survives until reboot). Bake the logged params or "
-                          "wire an NVS store to persist. See S15d 'Persistence'.");
+            ESP_LOGI(TAG, "touch cal saved to ff_settings via NVS — persists across reboot (S21 §4)");
         } else {
             /* STAGE 3: reconstruct the transform from stored settings. */
             cal.ax = settings.touch_ax;
@@ -229,8 +260,10 @@ void app_main(void)
      * lives in ff_settings (core, projected into the view); the app forwards
      * it to the LEDC backlight HAL — core never touches IO. Track the last
      * applied value so the render loop below only re-programs the PWM when it
-     * actually changes (a brightness change marks the view dirty, since it is
-     * part of the projected settings the render key memcmp's). */
+     * actually changes. Note (#bug1): brightness is deliberately EXCLUDED from
+     * the shell's render key, so a change does NOT mark the view dirty — the
+     * LEDC apply below runs every tick (not only on a dirty one) precisely so a
+     * live brightness drag tracks the finger without rebuilding the face. */
     uint8_t last_brightness = ff_shell_view(&s_shell)->settings.brightness_pct;
     (void)ff_display_set_brightness(last_brightness);
 
@@ -238,15 +271,48 @@ void app_main(void)
      * shell every frame, rebuild the LVGL tree ONLY on a dirty tick. The
      * esp_lvgl_port task does the actual flushing; we just own the model. */
     while (true) {
-        bool const dirty = ff_shell_tick(&s_shell, ff_esp_clock_now_ms(NULL));
-        if (dirty) {
-            ff_app_state_t const *v = ff_shell_view(&s_shell);
-            /* Re-program the backlight only when the stored percent actually
-             * moved (#100) — e.g. the Settings brightness slider was dragged. */
-            if (v->settings.brightness_pct != last_brightness) {
-                last_brightness = v->settings.brightness_pct;
-                (void)ff_display_set_brightness(last_brightness);
+        /* S21 §3 (device-runtime): drain a deferred CALIBRATE-TOUCH request in
+         * THIS (main) task. ff_display_run_calibration blocks waiting for the
+         * LVGL task to capture the taps, so it must not run from the click
+         * callback (see ff_calibrate_touch_cb). Re-emitting the intent from
+         * here lets the shell persist the result via NVS. */
+        if (s_calib_requested) {
+            s_calib_requested = false;
+            ff_touchcal_t cal;
+            if (ff_display_run_calibration(&cal) == ESP_OK) {
+                ff_display_touch_set_cal(&cal); /* apply live */
+                s_calib_result = cal;
+                s_calib_ready = true;
+                ff_intent_t calin = {.kind = FF_INTENT_CALIBRATE_TOUCH, .u = {0}};
+                ff_shell_intent(&s_shell, &calin); /* shell writes cal -> ff_settings -> NVS */
+            } else {
+                ESP_LOGE(TAG, "in-app calibration failed — keeping existing cal");
             }
+            /* run_calibration cleaned the screen — rebuild the real face. */
+            if (ff_display_lock(100)) {
+                lv_obj_clean(lv_screen_active());
+                ff_face_build(ff_shell_view(&s_shell));
+                ff_display_unlock();
+            }
+        }
+
+        bool const dirty = ff_shell_tick(&s_shell, ff_esp_clock_now_ms(NULL));
+        ff_app_state_t const *v = ff_shell_view(&s_shell);
+
+        /* Re-program the backlight whenever the projected percent moved
+         * (#100/#bug1) — EVERY tick, NOT only on a dirty one. A live
+         * brightness drag is deliberately kept out of the shell's render key
+         * (ff_shell.c shell_render_key) so it does not force a face rebuild
+         * that would destroy the slider mid-drag; that means a brightness-only
+         * change no longer sets the dirty bit, so the backlight apply must run
+         * outside the dirty gate to follow the finger live. Cheap: a percent
+         * compare and, only on an actual change, one LEDC re-program. */
+        if (v->settings.brightness_pct != last_brightness) {
+            last_brightness = v->settings.brightness_pct;
+            (void)ff_display_set_brightness(last_brightness);
+        }
+
+        if (dirty) {
             if (ff_display_lock(100 /* ms */)) {
                 lv_obj_clean(lv_screen_active());
                 ff_face_build(v);

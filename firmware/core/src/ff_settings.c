@@ -79,10 +79,28 @@ static void ff_settings_apply_defaults(ff_settings_t *s)
     /* compass_cal: left zeroed -> identity ff_geo_cal_t; cal_valid stays false. */
     /* colorblind: left zeroed -> false (brand palette). S17's own scoping
      * note: "not colorblind by default — keep the brand colours". */
-    /* touch_ax/bx/ay/by: left zeroed; touch_calibrated stays false ->
-     * the device applies IDENTITY (raw touch passes through). S15d: a puck
-     * that has never been calibrated corrects touch to nothing, not to a
-     * garbage transform. */
+
+    /* Touch calibration (S21 §5) — the default is IDENTITY (correct nothing),
+     * and touch_calibrated is false, because a freshly-flashed puck genuinely
+     * has NOT been calibrated: "uncalibrated / correct nothing" is the honest
+     * reading, not a guess. We deliberately do NOT bake a specific unit's
+     * measured affine (e.g. board 2's) in as everyone's default — that would
+     * make touch_calibrated=true a lie ("a usable transform is installed" is
+     * not "THIS unit was calibrated"), and would apply one panel's correction
+     * to a possibly-different panel, which is worse than honest raw passthrough.
+     *
+     * Raw coordinates are close enough to operate the UI (the observed panel
+     * skew is a ~15px offset, well inside a 44px hit target), so the owner can
+     * reach the S21 in-app CALIBRATE TOUCH row (FF_INTENT_CALIBRATE_TOUCH) and
+     * run the crosshair flow if/when they want a refined fit; NVS then persists
+     * that unit's own transform. The reject-not-migrate policy still applies —
+     * a stale/foreign blob falls back to THIS identity default (honest raw),
+     * never to a migrated guess from an incompatible layout. */
+    s->touch_ax = 1.0f;
+    s->touch_bx = 0.0f;
+    s->touch_ay = 1.0f;
+    s->touch_by = 0.0f;
+    s->touch_calibrated = false;
 }
 
 void ff_settings_load(ff_settings_t *s, ff_store_t const *st)

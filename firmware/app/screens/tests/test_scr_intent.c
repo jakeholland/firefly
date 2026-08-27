@@ -629,6 +629,26 @@ static lv_obj_t *find_label_exact(lv_obj_t *root, char const *text)
     return NULL;
 }
 
+/* find_pill_in_row — the settings-face toggle rows (HAPTICS/GLOW/COLORBLIND)
+ * all render generic "ON"/"OFF" pills, so a bare find_button_with_label would
+ * ambiguously match the first such pill in the tree. This scopes the pill
+ * lookup to the ROW that owns a given caption: find the caption label, step up
+ * to its row container (the caption is a direct child of the row), then find
+ * the pill by text within that subtree. Matches scr_settings.c's row shape
+ * (row container -> [caption label, pill, pill]). */
+static lv_obj_t *find_pill_in_row(lv_obj_t *root, char const *row_caption, char const *pill_text)
+{
+    lv_obj_t *cap = find_label_exact(root, row_caption);
+    if (cap == NULL) {
+        return NULL;
+    }
+    lv_obj_t *row = lv_obj_get_parent(cap);
+    if (row == NULL) {
+        return NULL;
+    }
+    return find_button_with_label(row, pill_text);
+}
+
 static void S16_c2_signals_rally_tap_emits_select_rally_with_its_index(void)
 {
     ff_app_signals_t signals;
@@ -913,6 +933,29 @@ static void S16_c2_sender_overlay_cancel_emits_flare_end(void)
 /* except BACK, which is the same FF_INTENT_BACK every other modal uses.  */
 /* =================================================================== */
 
+/* The Settings back button draws its caret as an lv_line chevron (not a "<"
+ * glyph), so it is found as the button containing a line child. */
+static lv_obj_t *find_settings_back(lv_obj_t *root)
+{
+    uint32_t n = lv_obj_get_child_count(root);
+    for (uint32_t i = 0; i < n; i++) {
+        lv_obj_t *child = lv_obj_get_child(root, i);
+        if (lv_obj_check_type(child, &lv_button_class)) {
+            uint32_t nc = lv_obj_get_child_count(child);
+            for (uint32_t j = 0; j < nc; j++) {
+                if (lv_obj_check_type(lv_obj_get_child(child, j), &lv_line_class)) {
+                    return child;
+                }
+            }
+        }
+        lv_obj_t *found = find_settings_back(child);
+        if (found != NULL) {
+            return found;
+        }
+    }
+    return NULL;
+}
+
 static void S11b_settings_back_emits_back(void)
 {
     ff_app_settings_t s;
@@ -920,7 +963,7 @@ static void S11b_settings_back_emits_back(void)
 
     ff_scr_settings_build(&s);
 
-    click(find_button_with_label(lv_screen_active(), "<"));
+    click(find_settings_back(lv_screen_active()));
 
     TEST_ASSERT_EQUAL_INT(1, s_spy.count);
     TEST_ASSERT_EQUAL(FF_INTENT_BACK, s_spy.last.kind);
@@ -982,7 +1025,9 @@ static void S11b_settings_share_chip_from_ghost_and_from_zones_both_avoid_zones(
     s.share_mode = FF_SHARE_ZONES; /* the persisted-ZONES edge case */
 
     ff_scr_settings_build(&s);
-    click(find_button_with_label(lv_screen_active(), "ZONES")); /* renders honestly if it's the stored value */
+    /* The [LIVE|GHOST] pair shows neither pill active for a persisted ZONES,
+     * but tapping either still moves it to GHOST (never back to ZONES). */
+    click(find_pill_in_row(lv_screen_active(), "SHARE", "LIVE"));
     TEST_ASSERT_EQUAL_INT(1, s_spy.count);
     TEST_ASSERT_EQUAL(FF_SETTING_SHARE_MODE, s_spy.last.u.setting.id);
     TEST_ASSERT_EQUAL_INT32(FF_SHARE_GHOST, s_spy.last.u.setting.v.i); /* ZONES -> GHOST, not back to ZONES */
@@ -992,11 +1037,12 @@ static void S11b_settings_haptics_chip_toggles(void)
 {
     ff_app_settings_t s;
     memset(&s, 0, sizeof(s));
-    s.haptics = false; /* renders "BUZZ OFF" */
+    s.haptics = false; /* OFF pill active */
 
     ff_scr_settings_build(&s);
 
-    click(find_button_with_label(lv_screen_active(), "BUZZ OFF"));
+    /* Tapping either pill of the two-state pair flips it. */
+    click(find_pill_in_row(lv_screen_active(), "HAPTICS", "OFF"));
 
     TEST_ASSERT_EQUAL_INT(1, s_spy.count);
     TEST_ASSERT_EQUAL(FF_INTENT_SETTING_SET, s_spy.last.kind);
@@ -1008,11 +1054,11 @@ static void S11b_settings_night_glow_chip_toggles(void)
 {
     ff_app_settings_t s;
     memset(&s, 0, sizeof(s));
-    s.night_glow = true; /* renders "GLOW ON" */
+    s.night_glow = true; /* ON pill active */
 
     ff_scr_settings_build(&s);
 
-    click(find_button_with_label(lv_screen_active(), "GLOW ON"));
+    click(find_pill_in_row(lv_screen_active(), "GLOW", "ON"));
 
     TEST_ASSERT_EQUAL_INT(1, s_spy.count);
     TEST_ASSERT_EQUAL(FF_INTENT_SETTING_SET, s_spy.last.kind);
@@ -1109,105 +1155,67 @@ static void S11b_settings_quiet_chip_sets_both_from_and_to(void)
     ff_intent_emit_bind(spy_sink_cb, &s_spy);
 }
 
-static void S11b_settings_utc_offset_stepper_minus_and_plus(void)
+/* The manual UTC-offset stepper was dropped from the Settings face (the
+ * festpack supplies the timezone via fp_pack_t.utc_offset_min). The
+ * FF_SETTING_UTC_OFFSET_MIN intent + its shell validation/clamp remain the
+ * seam the wall clock reads, and are still covered by the shell-level
+ * test_intent.c / test_ctl_flare_sequence.c cases — there is simply no
+ * longer a screen control to emit it, so the two screen-level stepper tests
+ * that used to live here are gone. */
+
+/* #100/#bug2 — brightness is a −/+ STEPPER (two lv_button pills), not a slider:
+ * a draggable control inside a vertical scroll list fought the list's scroll on
+ * device with no reliable disambiguation, so brightness is discrete taps and a
+ * drag always scrolls. Each −/+ tap steps by FF_SETTINGS_BRIGHT_STEP and COMMITS
+ * (persisted; no transient/commit split for discrete taps — that split, and the
+ * NVS-coalescing, is covered at the shell level by test_intent.c's bug1 tests).
+ * Found by the pill's "-"/"+" label like every other pill test. */
+static void S100_settings_brightness_stepper_steps_and_clamps(void)
 {
     ff_app_settings_t s;
     memset(&s, 0, sizeof(s));
-    s.page = 1; /* #99/#100: the UTC stepper lives on Settings page 1 now */
-    s.utc_offset_set = true;
-    s.utc_offset_min = -300; /* renders "UTC-5:00" */
-
-    ff_scr_settings_build(&s);
-
-    click(find_button_with_label(lv_screen_active(), "-"));
-    TEST_ASSERT_EQUAL_INT(1, s_spy.count);
-    TEST_ASSERT_EQUAL(FF_INTENT_SETTING_SET, s_spy.last.kind);
-    TEST_ASSERT_EQUAL(FF_SETTING_UTC_OFFSET_MIN, s_spy.last.u.setting.id);
-    TEST_ASSERT_EQUAL_INT32(-360, s_spy.last.u.setting.v.i);
-
-    click(find_button_with_label(lv_screen_active(), "+"));
-    TEST_ASSERT_EQUAL_INT(2, s_spy.count);
-    TEST_ASSERT_EQUAL(FF_SETTING_UTC_OFFSET_MIN, s_spy.last.u.setting.id);
-    TEST_ASSERT_EQUAL_INT32(-240, s_spy.last.u.setting.v.i);
-}
-
-/* Unset (never configured) starts stepping from 0 (UTC), not from garbage
- * or a rejected/no-op tap — there is no honest "current" numeric value to
- * step from otherwise (scr_settings.c's settings_utc_base). */
-static void S11b_settings_utc_offset_stepper_starts_from_utc_when_unset(void)
-{
-    ff_app_settings_t s;
-    memset(&s, 0, sizeof(s)); /* utc_offset_set false: renders "UNSET" */
-    s.page = 1;               /* #99/#100: the UTC stepper lives on Settings page 1 now */
-
-    ff_scr_settings_build(&s);
-
-    click(find_button_with_label(lv_screen_active(), "+"));
-
-    TEST_ASSERT_EQUAL_INT(1, s_spy.count);
-    TEST_ASSERT_EQUAL(FF_INTENT_SETTING_SET, s_spy.last.kind);
-    TEST_ASSERT_EQUAL(FF_SETTING_UTC_OFFSET_MIN, s_spy.last.u.setting.id);
-    TEST_ASSERT_EQUAL_INT32(60, s_spy.last.u.setting.v.i);
-}
-
-/* #100 — the brightness slider (Settings page 1) emits FF_SETTING_BRIGHTNESS
- * with the slider's value on RELEASE (one persisted value per touch, not one
- * per drag frame — see scr_settings.c's settings_brightness_cb). The slider
- * carries no label, so it's found by widget class rather than by text. */
-static lv_obj_t *find_slider(lv_obj_t *root)
-{
-    uint32_t n = lv_obj_get_child_count(root);
-    for (uint32_t i = 0; i < n; i++) {
-        lv_obj_t *child = lv_obj_get_child(root, i);
-        if (lv_obj_check_type(child, &lv_slider_class)) {
-            return child;
-        }
-        lv_obj_t *found = find_slider(child);
-        if (found != NULL) {
-            return found;
-        }
-    }
-    return NULL;
-}
-
-static void S100_settings_brightness_slider_emits_brightness_on_release(void)
-{
-    ff_app_settings_t s;
-    memset(&s, 0, sizeof(s));
-    s.page = 1;
     s.brightness_pct = 70;
 
     ff_scr_settings_build(&s);
 
-    lv_obj_t *slider = find_slider(lv_screen_active());
-    TEST_ASSERT_NOT_NULL(slider);
+    lv_obj_t *minus = find_button_with_label(lv_screen_active(), "-");
+    lv_obj_t *plus = find_button_with_label(lv_screen_active(), "+");
+    TEST_ASSERT_NOT_NULL(minus);
+    TEST_ASSERT_NOT_NULL(plus);
 
-    /* Simulate the user having dragged the knob to 40% and let go. The cb
-     * reads lv_slider_get_value at RELEASE, so set the value first. */
-    lv_slider_set_value(slider, 40, LV_ANIM_OFF);
-    lv_result_t r = lv_obj_send_event(slider, LV_EVENT_RELEASED, NULL);
-    TEST_ASSERT_EQUAL(LV_RESULT_OK, r);
-
+    click(minus);
     TEST_ASSERT_EQUAL_INT(1, s_spy.count);
     TEST_ASSERT_EQUAL(FF_INTENT_SETTING_SET, s_spy.last.kind);
     TEST_ASSERT_EQUAL(FF_SETTING_BRIGHTNESS, s_spy.last.u.setting.id);
-    TEST_ASSERT_EQUAL_INT32(40, s_spy.last.u.setting.v.i);
+    TEST_ASSERT_EQUAL_INT32(60, s_spy.last.u.setting.v.i); /* 70 - 10% step */
+    TEST_ASSERT_FALSE(s_spy.last.u.setting.transient); /* committed, not a live preview */
+
+    click(plus);
+    TEST_ASSERT_EQUAL_INT32(70, s_spy.last.u.setting.v.i);
+
+    /* Clamps at the floor: many − taps settle at MIN and never below. */
+    for (int i = 0; i < 20; i++) {
+        click(minus);
+    }
+    TEST_ASSERT_EQUAL_INT32((int32_t)FF_BRIGHTNESS_MIN_PCT, s_spy.last.u.setting.v.i);
 }
 
-/* #99/#100 — the "PAGE 1/2" chip emits FF_INTENT_SETTINGS_PAGE (the shell
- * owns which page; the chip only reports the tap, same shape as Compose's
- * mode chip). On page 0 the chip reads "PAGE 1/2 >". */
-static void S99_settings_page_chip_emits_settings_page(void)
+/* S21 §3 — the "CALIBRATE TOUCH" row emits the shell-owned
+ * FF_INTENT_CALIBRATE_TOUCH (the screen only reports the tap; the shell runs
+ * the device crosshair flow via its injected hook, a no-op on the sim). The
+ * row is far down the scrolling list, but click() injects the event
+ * directly, so its scroll position is irrelevant to this seam test. */
+static void S21_settings_calibrate_touch_row_emits_calibrate_intent(void)
 {
     ff_app_settings_t s;
-    memset(&s, 0, sizeof(s)); /* page 0 */
+    memset(&s, 0, sizeof(s));
 
     ff_scr_settings_build(&s);
 
-    click(find_button_with_label(lv_screen_active(), "PAGE 1/2 >"));
+    click(find_button_with_label(lv_screen_active(), "CALIBRATE TOUCH"));
 
     TEST_ASSERT_EQUAL_INT(1, s_spy.count);
-    TEST_ASSERT_EQUAL(FF_INTENT_SETTINGS_PAGE, s_spy.last.kind);
+    TEST_ASSERT_EQUAL(FF_INTENT_CALIBRATE_TOUCH, s_spy.last.kind);
 }
 
 /* =================================================================== */
@@ -1270,10 +1278,8 @@ int main(void)
     RUN_TEST(S11b_settings_water_chip_cycles_presets);
     RUN_TEST(S11b_settings_water_label_tap_also_cycles);
     RUN_TEST(S11b_settings_quiet_chip_sets_both_from_and_to);
-    RUN_TEST(S11b_settings_utc_offset_stepper_minus_and_plus);
-    RUN_TEST(S11b_settings_utc_offset_stepper_starts_from_utc_when_unset);
-    RUN_TEST(S100_settings_brightness_slider_emits_brightness_on_release);
-    RUN_TEST(S99_settings_page_chip_emits_settings_page);
+    RUN_TEST(S100_settings_brightness_stepper_steps_and_clamps);
+    RUN_TEST(S21_settings_calibrate_touch_row_emits_calibrate_intent);
     RUN_TEST(S16_c1_wired_sites_are_noops_while_the_seam_is_unbound);
 
     return UNITY_END();

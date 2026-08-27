@@ -119,15 +119,19 @@ typedef struct {
      * These are the four fitted params from ff_touchcal_solve, persisted
      * here so calibration rides the existing settings mechanism.
      *
-     * MEANINGLESS unless touch_calibrated is true. Like utc_offset_set and
-     * cal_valid above, the flag — not the values — encodes absence: a
-     * scale of 0 is not a free sentinel (it is a real, if useless, value),
-     * and defaults leave these zeroed with touch_calibrated=false, which
-     * the device applies as IDENTITY (raw passes through). A puck that has
-     * never been calibrated therefore corrects touch to exactly nothing,
-     * not to a garbage transform. Read by the device touch path
-     * (targets/esp32s3/ff_display) via ff_touchcal_apply; the sim never
-     * consults these (its input is already screen-space). */
+     * MEANINGLESS unless touch_calibrated is true (the device applies
+     * IDENTITY — raw passes through — when false). A scale of 0 is not a
+     * free sentinel (it is a real, if useless, value), so the flag, not the
+     * values, is what gates application.
+     *
+     * The DEFAULT is identity with touch_calibrated=false — a fresh puck has
+     * genuinely not been calibrated, so touch_calibrated=true always and only
+     * means "this unit was calibrated by its owner" (via the in-app CALIBRATE
+     * TOUCH row, NVS-persisted). We deliberately do NOT bake a specific board's
+     * measured affine in as the default; see ff_settings.c's
+     * ff_settings_apply_defaults for the honest-data rationale. Read by the
+     * device touch path (targets/esp32s3/ff_display) via ff_touchcal_apply;
+     * the sim never consults these (its input is already screen-space). */
     float touch_ax;
     float touch_bx;
     float touch_ay;

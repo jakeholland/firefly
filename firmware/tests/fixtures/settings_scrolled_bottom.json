@@ -1,6 +1,7 @@
 {
-  "fixture": "settings_brightness",
+  "fixture": "settings_scrolled_bottom",
   "face": "settings",
+  "ui_settings_scroll_y": 1000,
   "settings": {
     "imperial": true,
     "share_mode": "live",
@@ -12,7 +13,6 @@
     "my_name": "DANA",
     "utc_offset_set": true,
     "utc_offset_min": -420,
-    "colorblind": false,
     "brightness_pct": 30
   }
 }

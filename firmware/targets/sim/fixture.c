@@ -676,15 +676,14 @@ static ff_fixture_result_t fx_parse_settings(fx_ctx_t const *c, int obj_i, ff_ap
     if (fx_obj_get(c, obj_i, "utc_offset_set", &t)) s->utc_offset_set = fx_bool(c, t, false);
     if (fx_obj_get(c, obj_i, "utc_offset_min", &t)) s->utc_offset_min = (int16_t)fx_num(c, t, 0.0);
     if (fx_obj_get(c, obj_i, "colorblind", &t)) s->colorblind = fx_bool(c, t, false); /* S17 slice a */
-    /* #100: brightness percent; #99/#100: which Settings page renders. The
-     * ff_app_state_t is memset(0) before parse, so an omitted brightness
-     * would render as 0 (below the floor) — default it to the shell's own
-     * FF_BRIGHTNESS_DEFAULT_PCT here so a fixture that doesn't care renders
-     * the same as a fresh puck. `page` legitimately defaults to 0. */
+    /* #100: brightness percent. The ff_app_state_t is memset(0) before
+     * parse, so an omitted brightness would render as 0 (below the floor) —
+     * default it to the shell's own FF_BRIGHTNESS_DEFAULT_PCT here so a
+     * fixture that doesn't care renders the same as a fresh puck. (S21
+     * removed the `page` field: Settings is one scrolling list now.) */
     s->brightness_pct = FF_BRIGHTNESS_DEFAULT_PCT;
     if (fx_obj_get(c, obj_i, "brightness_pct", &t))
         s->brightness_pct = (uint8_t)fx_num(c, t, (double)FF_BRIGHTNESS_DEFAULT_PCT);
-    if (fx_obj_get(c, obj_i, "page", &t)) s->page = (uint8_t)fx_num(c, t, 0.0);
     return FF_FIXTURE_OK;
 }
 
@@ -944,6 +943,12 @@ ff_fixture_result_t ff_fixture_load_json(char const *json, size_t len, ff_app_st
 
     int t;
     if (fx_obj_get(&ctx, 0, "fixture", &t)) fx_copy_str(&ctx, t, out->fixture_name, sizeof(out->fixture_name));
+    /* #bug5a — sim-only Settings scroll render hint (see ff_app_state.h's
+     * ui_settings_scroll_y). Top-level, like `fixture`/`face`; absent -> 0
+     * (no scroll), the ordinary case for every fixture but the scrolled
+     * Settings goldens. */
+    if (fx_obj_get(&ctx, 0, "ui_settings_scroll_y", &t))
+        out->ui_settings_scroll_y = (int32_t)fx_num(&ctx, t, 0.0);
     if (fx_obj_get(&ctx, 0, "face", &t)) {
         int v;
         ff_fixture_result_t rc =
@@ -1267,6 +1272,10 @@ int ff_fixture_dump_json(ff_app_state_t const *s, char *buf, size_t buf_sz)
     fw_raw(&w, fx_enum_name(fx_face_table, sizeof(fx_face_table) / sizeof(fx_face_table[0]), s->active_face,
                              "radar"));
     fw_raw(&w, "\"");
+    /* #bug5a — mirror the sim-only scroll hint so a dump round-trips through
+     * the loader (see ff_fixture_dump_json's contract). Always 0 for a live
+     * shell dump; carried for the scrolled Settings fixtures. */
+    fw_fmt(&w, ",\"ui_settings_scroll_y\":%d", (int)s->ui_settings_scroll_y);
 
     /* radar */
     fw_raw(&w, ",\"radar\":{\"mode\":\"");
@@ -1395,7 +1404,6 @@ int ff_fixture_dump_json(ff_app_state_t const *s, char *buf, size_t buf_sz)
     fw_fmt(&w, ",\"utc_offset_min\":%d", (int)s->settings.utc_offset_min);
     fw_raw(&w, s->settings.colorblind ? ",\"colorblind\":true" : ",\"colorblind\":false"); /* S17 slice a */
     fw_fmt(&w, ",\"brightness_pct\":%u", (unsigned)s->settings.brightness_pct); /* #100 */
-    fw_fmt(&w, ",\"page\":%u", (unsigned)s->settings.page);                     /* #99/#100 */
     fw_raw(&w, "}");
 
     /* map (S09) — field-for-field mirror of fx_parse_map so a dump

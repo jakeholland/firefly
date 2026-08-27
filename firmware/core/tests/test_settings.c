@@ -111,12 +111,16 @@ static void ff_assert_defaults(ff_settings_t const *s)
     TEST_ASSERT_FALSE(s->colorblind);
     /* #100: brightness defaults to a sensible mid-bright ~70% (never 0). */
     TEST_ASSERT_EQUAL_UINT8(FF_BRIGHTNESS_DEFAULT_PCT, s->brightness_pct);
-    /* S15 slice d: default uncalibrated -> identity applied by the device
-     * (params zeroed; the flag, not the values, encodes absence). */
+    /* S21 §5: the default touch cal is IDENTITY (correct nothing) with
+     * touch_calibrated=false — a fresh puck genuinely has NOT been calibrated,
+     * so "uncalibrated / correct nothing" is the honest default. We do NOT bake
+     * any specific unit's measured affine in as everyone's default; the owner
+     * runs the in-app CALIBRATE TOUCH row to install a per-unit fit (persisted
+     * to NVS). See ff_settings.c's ff_settings_apply_defaults for the rationale. */
     TEST_ASSERT_FALSE(s->touch_calibrated);
-    TEST_ASSERT_EQUAL_FLOAT(0.0f, s->touch_ax);
+    TEST_ASSERT_EQUAL_FLOAT(1.0f, s->touch_ax);
     TEST_ASSERT_EQUAL_FLOAT(0.0f, s->touch_bx);
-    TEST_ASSERT_EQUAL_FLOAT(0.0f, s->touch_ay);
+    TEST_ASSERT_EQUAL_FLOAT(1.0f, s->touch_ay);
     TEST_ASSERT_EQUAL_FLOAT(0.0f, s->touch_by);
 
     ff_geo_cal_t zero_cal;
@@ -278,9 +282,10 @@ static void S11_AC1_load_with_v3_blob_yields_defaults_not_a_migration(void)
 }
 
 /* Same policy for v4 -> v5 (S15 slice d added the touch-cal fields): a v4
- * blob is discarded whole and the full defaults stand, touch_calibrated
- * included — false is the honest reading (a v4 puck had no touch
- * calibration at all), never a migrated guess. */
+ * blob is discarded whole and the full defaults stand — the saved value is
+ * NOT migrated across an incompatible layout. The touch-cal default is
+ * identity (1·raw+0), so "reject, don't migrate" shows as: the loaded touch_ax
+ * is the identity DEFAULT, never the v4 blob's own saved value. */
 static void S11_AC1_load_with_v4_blob_yields_defaults_not_a_migration(void)
 {
     mock_store_io_t m;
@@ -291,8 +296,8 @@ static void S11_AC1_load_with_v4_blob_yields_defaults_not_a_migration(void)
     memset(&saved, 0, sizeof(saved));
     saved.imperial = false;
     saved.water_min = 45;
-    saved.touch_calibrated = true; /* the field whose loss actually costs a user */
-    saved.touch_ax = 1.0123f;
+    saved.touch_calibrated = true;
+    saved.touch_ax = 1.0123f; /* a value distinct from the identity default, to prove it's not carried across */
     ff_settings_save(&saved, &st);
     TEST_ASSERT_TRUE(m.has_value);
 
@@ -304,7 +309,10 @@ static void S11_AC1_load_with_v4_blob_yields_defaults_not_a_migration(void)
     ff_settings_load(&s, &st);
 
     ff_assert_defaults(&s);
-    TEST_ASSERT_FALSE(s.touch_calibrated); /* discarded, not carried across */
+    /* Reject-not-migrate: the v4 blob's saved 1.0123 is discarded; the
+     * identity default stands instead (asserted by ff_assert_defaults above,
+     * which now checks touch_ax == 1.0). */
+    TEST_ASSERT_EQUAL_FLOAT(1.0f, s.touch_ax);
 }
 
 /* ---------------------------------------------------------------------
