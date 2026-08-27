@@ -109,6 +109,13 @@ static void ff_assert_defaults(ff_settings_t const *s)
     /* S17 slice a: default false — "not colorblind by default, keep the
      * brand colours" (docs/specs/S17-usability-hardening.md's scoping note). */
     TEST_ASSERT_FALSE(s->colorblind);
+    /* S15 slice d: default uncalibrated -> identity applied by the device
+     * (params zeroed; the flag, not the values, encodes absence). */
+    TEST_ASSERT_FALSE(s->touch_calibrated);
+    TEST_ASSERT_EQUAL_FLOAT(0.0f, s->touch_ax);
+    TEST_ASSERT_EQUAL_FLOAT(0.0f, s->touch_bx);
+    TEST_ASSERT_EQUAL_FLOAT(0.0f, s->touch_ay);
+    TEST_ASSERT_EQUAL_FLOAT(0.0f, s->touch_by);
 
     ff_geo_cal_t zero_cal;
     memset(&zero_cal, 0, sizeof(zero_cal));
@@ -268,6 +275,36 @@ static void S11_AC1_load_with_v3_blob_yields_defaults_not_a_migration(void)
     TEST_ASSERT_FALSE(s.colorblind); /* the new field: false is the honest default, not a guess */
 }
 
+/* Same policy for v4 -> v5 (S15 slice d added the touch-cal fields): a v4
+ * blob is discarded whole and the full defaults stand, touch_calibrated
+ * included — false is the honest reading (a v4 puck had no touch
+ * calibration at all), never a migrated guess. */
+static void S11_AC1_load_with_v4_blob_yields_defaults_not_a_migration(void)
+{
+    mock_store_io_t m;
+    mock_store_reset(&m);
+    ff_store_t st = mock_store_vtable(&m);
+
+    ff_settings_t saved;
+    memset(&saved, 0, sizeof(saved));
+    saved.imperial = false;
+    saved.water_min = 45;
+    saved.touch_calibrated = true; /* the field whose loss actually costs a user */
+    saved.touch_ax = 1.0123f;
+    ff_settings_save(&saved, &st);
+    TEST_ASSERT_TRUE(m.has_value);
+
+    uint16_t v4 = 4;
+    memcpy(m.data + 4, &v4, sizeof(v4));
+
+    ff_settings_t s;
+    memset(&s, 0xAA, sizeof(s));
+    ff_settings_load(&s, &st);
+
+    ff_assert_defaults(&s);
+    TEST_ASSERT_FALSE(s.touch_calibrated); /* discarded, not carried across */
+}
+
 /* ---------------------------------------------------------------------
  * AC2 — round-trip save/load equality, including calibration.
  * ------------------------------------------------------------------- */
@@ -297,6 +334,12 @@ static void S11_AC2_round_trip_save_load_is_exact_including_calibration(void)
     out.compass_cal.soft_scale[1] = 0.97f;
     out.compass_cal.soft_scale[2] = 1.11f;
     out.compass_cal.declination_deg = -6.5f; /* e.g. Columbus, OH */
+    /* S15 slice d: real touch-cal params, a change from the zero default. */
+    out.touch_calibrated = true;
+    out.touch_ax = 1.0123f;
+    out.touch_bx = -14.0f;
+    out.touch_ay = 1.0123f;
+    out.touch_by = -18.0f;
 
     ff_settings_save(&out, &st);
 
@@ -528,6 +571,7 @@ int main(void)
     RUN_TEST(S11_AC1_load_with_wrong_version_yields_defaults);
     RUN_TEST(S11_AC1_load_with_v2_blob_yields_defaults_not_a_migration);
     RUN_TEST(S11_AC1_load_with_v3_blob_yields_defaults_not_a_migration);
+    RUN_TEST(S11_AC1_load_with_v4_blob_yields_defaults_not_a_migration);
 
     RUN_TEST(S11_AC2_round_trip_save_load_is_exact_including_calibration);
     RUN_TEST(S11_AC2_round_trip_preserves_exact_defaults);
