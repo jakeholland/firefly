@@ -1,0 +1,45 @@
+menu "Firefly bring-up (S15 slice b)"
+
+    choice FF_BRINGUP_STAGE
+        prompt "Display/touch bring-up stage"
+        default FF_BRINGUP_STAGE_1
+        help
+            S15 slice b is bring-up-in-the-loop: the maintainer flashes one
+            stage, looks at the glass, then advances. Each stage is a strict
+            superset of the previous one's init, so a dark screen at stage N
+            still tells you exactly how far the earlier stages got from the
+            serial log. Switch with `idf.py menuconfig` (this menu) or set
+            CONFIG_FF_BRINGUP_STAGE=N in sdkconfig before building.
+
+        config FF_BRINGUP_STAGE_1
+            bool "Stage 1 - first light (panel only, no LVGL)"
+            help
+                IO expander up, release LCD_RST + TP_RST, backlight on,
+                SPD2010 QSPI panel init, then esp_lcd_panel_draw_bitmap a
+                solid fill and a two-colour split. Proves the expander,
+                reset release, QSPI wiring, init sequence, RGB565 byte order
+                and orientation with no GUI stack in the way.
+
+        config FF_BRINGUP_STAGE_2
+            bool "Stage 2 - the app on glass (LVGL v9, one face)"
+            help
+                Everything in stage 1, then LVGL v9 up via esp_lvgl_port and
+                one real ff_shell face rendered (Radar, no selection) — the
+                same projection the sim renders for that state.
+
+        config FF_BRINGUP_STAGE_3
+            bool "Stage 3 - touch drives it (SPD2010 -> shell input)"
+            help
+                Everything in stage 2, then the SPD2010 touch controller is
+                wired to an LVGL pointer indev so a physical tap/swipe feeds
+                the SAME abstract input events the sim ctl socket injects,
+                changing shell state.
+    endchoice
+
+    config FF_BRINGUP_STAGE
+        int
+        default 1 if FF_BRINGUP_STAGE_1
+        default 2 if FF_BRINGUP_STAGE_2
+        default 3 if FF_BRINGUP_STAGE_3
+
+endmenu

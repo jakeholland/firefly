@@ -1,0 +1,46 @@
+# Managed-component manifest for the ESP32-S3 UI-brain target (S15 slice b).
+#
+# The component manager fetches these on `idf.py build` (expected — the
+# first build downloads LVGL + the esp_lcd/touch/io_expander drivers into
+# managed_components/, which is gitignored). Versions are PINNED here per
+# the S15b brief ("Pin all added components in idf_component.yml") so a
+# rebuild resolves the same driver set that was bring-up-tested, not
+# whatever floats latest.
+#
+# Provenance (all from components.espressif.com, confirmed 2026-08-26):
+#   esp_lcd_spd2010        SPD2010 QSPI round-panel driver (vendors the
+#                          init sequence — we do NOT hand-roll register
+#                          writes; see ff_display.c).
+#   esp_lcd_touch_spd2010  SPD2010 I2C capacitive-touch driver (pulls in
+#                          esp_lcd_touch as a transitive dep).
+#   esp_io_expander_tca9554 TCA9554-class IO expander that owns LCD_RST
+#                          (EXIO2) and TP_RST (EXIO1) — bring this up
+#                          FIRST or the panel stays dark (S15b "#1 failure
+#                          mode"). Pulls in esp_io_expander transitively.
+#   esp_lvgl_port          Espressif's LVGL v9 lv_display/lv_indev glue
+#                          (supports LVGL v9; see its display/touch cfg use
+#                          in ff_display.c).
+#   lvgl                   LVGL itself. Pinned to v9 to MATCH THE SIM's
+#                          major version (the sim FetchContents v9.5.0) so
+#                          the same app/screens/*.c render the same pixels
+#                          on glass. public: true — screens (ff_app_ui) and
+#                          ff_display both include lvgl.h.
+dependencies:
+  idf:
+    version: ">=5.3"
+
+  lvgl/lvgl:
+    version: "^9.2.0"
+    public: true
+
+  espressif/esp_lvgl_port:
+    version: "^2.9.0"
+
+  espressif/esp_lcd_spd2010:
+    version: "^2.0.0"
+
+  espressif/esp_lcd_touch_spd2010:
+    version: "^2.0.1"
+
+  espressif/esp_io_expander_tca9554:
+    version: "^2.0.3"

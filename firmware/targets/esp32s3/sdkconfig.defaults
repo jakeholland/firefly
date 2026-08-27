@@ -41,3 +41,45 @@ CONFIG_PARTITION_TABLE_SINGLE_APP_LARGE=y
 # console on the default UART so `idf.py monitor` shows app_main's boot
 # log tomorrow.
 CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
+
+# --- LVGL v9 (S15 slice b) -------------------------------------------------
+# The device's LVGL config comes from Kconfig (the esp registry lvgl
+# component reads CONFIG_LV_* rather than firmware/lv_conf.h, which is the
+# SIM's config). These values mirror the non-default settings the sim's
+# lv_conf.h sets, so the SAME app/screens/*.c render the same pixels:
+#   - RGB565 (16-bit) to match the SPD2010 panel (the sim renders 32-bit
+#     ARGB for SDL, but pixel *layout* the screens produce is identical;
+#     the panel just wants 16bpp — esp_lvgl_port swap_bytes handles the
+#     big-endian wire order, so LV_COLOR_16_SWAP stays OFF to avoid a
+#     double swap).
+#   - the exact Montserrat sizes ff_theme.h references (14/20/22/24/36),
+#     default 24, matching lv_conf.h lines 32-43.
+#   - TILEVIEW (scr_nav's three-face swipe shell) + ARC (radar rings).
+CONFIG_LV_COLOR_DEPTH_16=y
+CONFIG_LV_FONT_MONTSERRAT_14=y
+CONFIG_LV_FONT_MONTSERRAT_20=y
+CONFIG_LV_FONT_MONTSERRAT_22=y
+CONFIG_LV_FONT_MONTSERRAT_24=y
+CONFIG_LV_FONT_MONTSERRAT_36=y
+CONFIG_LV_FONT_DEFAULT_MONTSERRAT_24=y
+CONFIG_LV_USE_TILEVIEW=y
+CONFIG_LV_USE_ARC=y
+# LVGL object heap — the radar face's static point pools are light, but
+# give the widget tree comfortable headroom (default is smaller).
+CONFIG_LV_MEM_SIZE_KILOBYTES=64
+
+# --- RAM headroom (S15 slice b) --------------------------------------------
+# On the IRAM "99.99%" concern S15a raised: measured, that 16 KB IRAM region
+# holds IDF's forced-IRAM interrupt/panic/vector code and is a FIXED baseline
+# — it read 16383/16384 in S15a with zero drivers, and reads exactly the same
+# now with the SPD2010 panel + LVGL + touch linked, because ALL of that driver
+# code lands in Flash Code + DIRAM, none in IRAM. So the driver does not, and
+# cannot, push that region; it is not a real constraint for this slice.
+# The RAM that DOES matter (DIRAM / internal SRAM, shared with LVGL objects,
+# task stacks, .bss/.data) has ~240 KB free. This option moves non-ISR
+# FreeRTOS functions from DIRAM .text to flash (~9 KB reclaimed) for extra
+# DIRAM headroom before slices c/d/e pile on. Behaviourally transparent in
+# normal operation (only affects code that runs with the flash cache
+# disabled, which this app does not do).
+CONFIG_FREERTOS_PLACE_FUNCTIONS_INTO_FLASH=y
+
