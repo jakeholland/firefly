@@ -581,8 +581,8 @@ static void settings_brightness_move_deco(uint8_t pct)
     lv_label_set_text(s_bright_pct, pctbuf);
 }
 
-/* LV_EVENT_PRESSED — record the press origin so PRESSING can decide the axis
- * (#bug2). */
+/* LV_EVENT_PRESSED — record the press origin so the axis-lock can decide
+ * direction from the first travel (#bug2). */
 static void settings_brightness_pressed_cb(lv_event_t *e)
 {
     lv_obj_t *slider = lv_event_get_target(e);
@@ -598,12 +598,16 @@ static void settings_brightness_pressed_cb(lv_event_t *e)
     s_drag_axis = 0; /* undecided until the finger travels FF_SETTINGS_DRAG_LOCK_PX */
 }
 
-/* LV_EVENT_PRESSING — the finger is moving. Decide the axis once, then on a
- * vertical drag scroll the list to follow the finger and pin the slider so
- * brightness does not move (#bug2). */
-static void settings_brightness_pressing_cb(lv_event_t *e)
+/* Decide the drag axis from the current finger position, once it has travelled
+ * FF_SETTINGS_DRAG_LOCK_PX. Called from BOTH the PRESSING and VALUE_CHANGED
+ * handlers so the decision is consistent no matter which LVGL fires first for a
+ * given move (the slider's own class handler sends VALUE_CHANGED from within
+ * its PRESSING processing). */
+static void settings_brightness_decide_axis(void)
 {
-    lv_obj_t *slider = lv_event_get_target(e);
+    if (s_drag_axis != 0) {
+        return;
+    }
     lv_indev_t *indev = lv_indev_active();
     lv_point_t p = {0, 0};
     if (indev != NULL) {
@@ -613,50 +617,79 @@ static void settings_brightness_pressing_cb(lv_event_t *e)
     int32_t const dy = p.y - s_drag_y0;
     int32_t const adx = (dx < 0) ? -dx : dx;
     int32_t const ady = (dy < 0) ? -dy : dy;
-
-    if (s_drag_axis == 0 && (adx >= FF_SETTINGS_DRAG_LOCK_PX || ady >= FF_SETTINGS_DRAG_LOCK_PX)) {
-        s_drag_axis = (ady > adx) ? 2 : 1;
-    }
-
-    if (s_drag_axis == 2 && s_bright_list != NULL) {
-        /* Follow the finger: dragging down (dy>0) reveals content above, i.e.
-         * a smaller scroll_y. LVGL clamps to the scrollable range. */
-        lv_obj_scroll_to_y(s_bright_list, s_drag_scroll0 - dy, LV_ANIM_OFF);
-        /* Pin the slider + deco so a vertical drag never nudges brightness. */
-        lv_slider_set_value(slider, s_drag_val0, LV_ANIM_OFF);
-        settings_brightness_move_deco((uint8_t)s_drag_val0);
+    if (adx >= FF_SETTINGS_DRAG_LOCK_PX || ady >= FF_SETTINGS_DRAG_LOCK_PX) {
+        s_drag_axis = (ady > adx) ? 2 : 1; /* 2 = vertical scroll, 1 = horizontal brightness */
     }
 }
 
-/* LV_EVENT_VALUE_CHANGED — a horizontal drag adjusting brightness: track the
- * deco live and emit a TRANSIENT value so the backlight follows without
- * persisting every intermediate value (#bug1). Ignored while the axis-lock has
- * claimed the gesture for vertical scrolling (#bug2). */
+/* LV_EVENT_PRESSING — the finger is moving. On a vertical drag, scroll the list
+ * to follow the finger and keep the slider pinned (#bug2). */
+static void settings_brightness_pressing_cb(lv_event_t *e)
+{
+    lv_obj_t *slider = lv_event_get_target(e);
+    settings_brightness_decide_axis();
+    if (s_drag_axis != 2 || s_bright_list == NULL) {
+        return;
+    }
+    lv_indev_t *indev = lv_indev_active();
+    lv_point_t p = {0, 0};
+    if (indev != NULL) {
+        lv_indev_get_point(indev, &p);
+    }
+    int32_t const dy = p.y - s_drag_y0;
+    /* Dragging down (dy>0) reveals content above -> a smaller scroll_y. LVGL
+     * clamps to the scrollable range. */
+    lv_obj_scroll_to_y(s_bright_list, s_drag_scroll0 - dy, LV_ANIM_OFF);
+    lv_slider_set_value(slider, s_drag_val0, LV_ANIM_OFF); /* pin: a vertical drag never moves brightness */
+    settings_brightness_move_deco((uint8_t)s_drag_val0);
+}
+
+/* LV_EVENT_VALUE_CHANGED — brightness only actually moves once the drag is
+ * confirmed HORIZONTAL. A tap or a vertical/undecided drag is pinned to the
+ * press value (#bug2 — this kills the slider's jump-to-press, so touching the
+ * left half no longer yanks brightness low and a vertical drag anywhere scrolls
+ * instead). On a real horizontal drag, track the deco + emit a transient value
+ * (#bug1), and repaint the screen so the moved amber fill/knob leaves no
+ * residue on the panel's partial-strip flush (#bug5). */
 static void settings_brightness_changed_cb(lv_event_t *e)
 {
     lv_obj_t *slider = lv_event_get_target(e);
-    if (s_drag_axis == 2) {
-        lv_slider_set_value(slider, s_drag_val0, LV_ANIM_OFF); /* undo any value the slider took from x */
+    settings_brightness_decide_axis();
+    if (s_drag_axis != 1) {
+        lv_slider_set_value(slider, s_drag_val0, LV_ANIM_OFF); /* pin until a horizontal drag is confirmed */
+        settings_brightness_move_deco((uint8_t)s_drag_val0);
         return;
     }
     int32_t v = lv_slider_get_value(slider);
     settings_brightness_move_deco((uint8_t)v);
     settings_emit_brightness(v, true /* transient: live preview, not persisted */);
+    lv_obj_invalidate(lv_screen_active()); /* #bug5 — overpaint the amber residue the moving fill/knob leaves */
 }
 
-/* LV_EVENT_RELEASED — the drag settled: emit the COMMITTED value so the shell
- * persists it once (#bug1). A vertical drag (axis-locked to scroll) committed
- * nothing, so it emits nothing. */
+/* LV_EVENT_RELEASED — the gesture settled. Only a confirmed horizontal drag
+ * commits (the shell persists once, #bug1); a tap or vertical drag restores the
+ * press value and changes nothing. Repaint either way so no slider residue
+ * survives (#bug5). */
 static void settings_brightness_released_cb(lv_event_t *e)
 {
     lv_obj_t *slider = lv_event_get_target(e);
     int const axis = s_drag_axis;
     s_drag_axis = 0;
-    if (axis == 2) {
-        return; /* was a scroll, not a brightness change */
+    if (axis != 1) {
+        lv_slider_set_value(slider, s_drag_val0, LV_ANIM_OFF);
+        settings_brightness_move_deco((uint8_t)s_drag_val0);
+        lv_obj_invalidate(lv_screen_active());
+        return;
     }
     int32_t v = lv_slider_get_value(slider);
     settings_emit_brightness(v, false /* commit: settled value, persisted */);
+    lv_obj_invalidate(lv_screen_active());
+}
+
+/* Test-only seam — see scr_settings.h. */
+void ff_scr_settings_force_drag_axis(int axis)
+{
+    s_drag_axis = axis;
 }
 
 /* A bare non-clickable decoration box. */

@@ -1174,6 +1174,12 @@ static void S100_settings_brightness_slider_emits_brightness_on_release(void)
     lv_obj_t *slider = find_slider(lv_screen_active());
     TEST_ASSERT_NOT_NULL(slider);
 
+    /* #bug2 — brightness only moves once the drag is confirmed HORIZONTAL (so a
+     * vertical drag scrolls and a left-half tap doesn't yank brightness). The
+     * axis-lock reads the live input device, absent in a headless test, so we
+     * force the axis to simulate a confirmed horizontal drag. */
+    ff_scr_settings_force_drag_axis(1 /* horizontal: adjusting brightness */);
+
     /* #bug1 — a mid-drag VALUE_CHANGED emits a TRANSIENT (live-preview)
      * brightness. (lv_slider_set_value with LV_ANIM_OFF is programmatic and
      * fires no event, so we drive the events by hand.) */
@@ -1187,6 +1193,7 @@ static void S100_settings_brightness_slider_emits_brightness_on_release(void)
     TEST_ASSERT_TRUE(s_spy.last.u.setting.transient); /* live: not persisted */
 
     /* And the settled RELEASED value is a COMMITTED (non-transient) emit. */
+    ff_scr_settings_force_drag_axis(1);
     lv_slider_set_value(slider, 40, LV_ANIM_OFF);
     lv_result_t r = lv_obj_send_event(slider, LV_EVENT_RELEASED, NULL);
     TEST_ASSERT_EQUAL(LV_RESULT_OK, r);
@@ -1195,6 +1202,28 @@ static void S100_settings_brightness_slider_emits_brightness_on_release(void)
     TEST_ASSERT_EQUAL(FF_SETTING_BRIGHTNESS, s_spy.last.u.setting.id);
     TEST_ASSERT_EQUAL_INT32(40, s_spy.last.u.setting.v.i);
     TEST_ASSERT_FALSE(s_spy.last.u.setting.transient); /* commit: persisted */
+}
+
+/* #bug2 — a VERTICAL drag (axis-locked to scroll) must NOT change brightness:
+ * neither the mid-drag VALUE_CHANGED nor the RELEASED emits anything. This is
+ * what stops a left-half vertical scroll from yanking brightness. */
+static void S100b_settings_brightness_vertical_drag_emits_nothing(void)
+{
+    ff_app_settings_t s;
+    memset(&s, 0, sizeof(s));
+    s.brightness_pct = 70;
+
+    ff_scr_settings_build(&s);
+
+    lv_obj_t *slider = find_slider(lv_screen_active());
+    TEST_ASSERT_NOT_NULL(slider);
+
+    ff_scr_settings_force_drag_axis(2 /* vertical: scrolling, not adjusting */);
+
+    lv_slider_set_value(slider, 55, LV_ANIM_OFF);
+    (void)lv_obj_send_event(slider, LV_EVENT_VALUE_CHANGED, NULL);
+    (void)lv_obj_send_event(slider, LV_EVENT_RELEASED, NULL);
+    TEST_ASSERT_EQUAL_INT(0, s_spy.count); /* a scroll gesture changed no brightness */
 }
 
 /* S21 §3 — the "CALIBRATE TOUCH" row emits the shell-owned
@@ -1276,6 +1305,7 @@ int main(void)
     RUN_TEST(S11b_settings_water_label_tap_also_cycles);
     RUN_TEST(S11b_settings_quiet_chip_sets_both_from_and_to);
     RUN_TEST(S100_settings_brightness_slider_emits_brightness_on_release);
+    RUN_TEST(S100b_settings_brightness_vertical_drag_emits_nothing);
     RUN_TEST(S21_settings_calibrate_touch_row_emits_calibrate_intent);
     RUN_TEST(S16_c1_wired_sites_are_noops_while_the_seam_is_unbound);
 
