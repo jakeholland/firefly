@@ -785,6 +785,139 @@ static void S16_AC8_setting_set_applies_and_persists_only_on_change(void)
     ff_shell_close(&h.shell);
 }
 
+/* =================================================================== */
+/* S21 §3 — FF_INTENT_CALIBRATE_TOUCH (the Settings "CALIBRATE TOUCH" row) */
+/* =================================================================== */
+
+/* The injected device calibrate hook (ff_shell_cfg_t.calibrate_touch): a spy
+ * that hands back a scripted fit + return value and counts calls — the same
+ * injected-seam shape as the haptic spy in test_shell. On device the real hook
+ * runs the crosshair capture; the shell writes the solved transform into
+ * ff_settings and persists it so calibration survives reboot (S21 §4). */
+typedef struct {
+    ff_touchcal_t cal; /* what the hook writes into *out_cal */
+    bool ret;          /* what the hook returns */
+    int calls;
+} calib_spy_t;
+
+static bool calib_spy_hook(void *user, ff_touchcal_t *out_cal)
+{
+    calib_spy_t *sp = (calib_spy_t *)user;
+    sp->calls++;
+    *out_cal = sp->cal;
+    return sp->ret;
+}
+
+/* setting_harness_init, plus the calibrate hook wired to `spy` (the hook must
+ * be set at ff_shell_init time, so this can't reuse setting_harness_init). */
+static void calib_harness_init(setting_harness_t *sh, calib_spy_t *spy)
+{
+    memset(sh, 0, sizeof(*sh));
+    sh->clk.t = 100000u;
+    sh->clock.now_ms = fake_now;
+    sh->clock.user = &sh->clk;
+    sh->store = setting_store(&sh->store_mem);
+
+    ff_shell_cfg_t cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.clock = &sh->clock;
+    cfg.store = &sh->store;
+    cfg.pack = &sh->pack;
+    cfg.calibrate_touch = calib_spy_hook;
+    cfg.calibrate_touch_user = spy;
+
+    TEST_ASSERT_EQUAL_INT(0, ff_shell_init(&sh->shell, &cfg));
+}
+
+static void send_calibrate(ff_shell_t *shell)
+{
+    ff_intent_t in = {.kind = FF_INTENT_CALIBRATE_TOUCH, .u = {0}};
+    ff_shell_intent(shell, &in);
+}
+
+/* A valid fit overwrites the (honest-uncalibrated identity) default and
+ * persists exactly once. */
+static void S21_calibrate_valid_fit_applies_and_persists(void)
+{
+    calib_spy_t spy = {0};
+    spy.cal = (ff_touchcal_t){.ax = 1.10f, .bx = -3.0f, .ay = 0.90f, .by = 4.0f, .valid = true};
+    spy.ret = true;
+
+    setting_harness_t h;
+    calib_harness_init(&h, &spy);
+
+    TEST_ASSERT_FALSE(ff_shell_settings(&h.shell)->touch_calibrated); /* identity default */
+    TEST_ASSERT_EQUAL_INT(0, h.store_mem.set_calls);
+
+    send_calibrate(&h.shell);
+
+    TEST_ASSERT_EQUAL_INT(1, spy.calls);
+    ff_settings_t const *s = ff_shell_settings(&h.shell);
+    TEST_ASSERT_TRUE(s->touch_calibrated);
+    TEST_ASSERT_EQUAL_FLOAT(1.10f, s->touch_ax);
+    TEST_ASSERT_EQUAL_FLOAT(-3.0f, s->touch_bx);
+    TEST_ASSERT_EQUAL_FLOAT(0.90f, s->touch_ay);
+    TEST_ASSERT_EQUAL_FLOAT(4.0f, s->touch_by);
+    TEST_ASSERT_EQUAL_INT(1, h.store_mem.set_calls); /* persisted once */
+
+    ff_shell_close(&h.shell);
+}
+
+/* A failed capture (hook returns false) or a degenerate solve (cal.valid ==
+ * false) leaves settings untouched and writes nothing — honest-uncalibrated
+ * stays uncalibrated, never a half-applied transform. */
+static void S21_calibrate_failed_or_invalid_fit_is_a_clean_no_op(void)
+{
+    calib_spy_t spy = {0};
+    spy.cal = (ff_touchcal_t){.ax = 2.0f, .bx = 9.0f, .ay = 2.0f, .by = 9.0f, .valid = true};
+    spy.ret = false; /* capture reported failure */
+
+    setting_harness_t h;
+    calib_harness_init(&h, &spy);
+    send_calibrate(&h.shell);
+
+    TEST_ASSERT_EQUAL_INT(1, spy.calls);
+    ff_settings_t const *s = ff_shell_settings(&h.shell);
+    TEST_ASSERT_FALSE(s->touch_calibrated);     /* still uncalibrated */
+    TEST_ASSERT_EQUAL_FLOAT(1.0f, s->touch_ax); /* still identity */
+    TEST_ASSERT_EQUAL_INT(0, h.store_mem.set_calls);
+    ff_shell_close(&h.shell);
+
+    calib_spy_t spy2 = {0};
+    spy2.cal = (ff_touchcal_t){.ax = 2.0f, .bx = 9.0f, .ay = 2.0f, .by = 9.0f, .valid = false /* degenerate */};
+    spy2.ret = true;
+
+    setting_harness_t h2;
+    calib_harness_init(&h2, &spy2);
+    send_calibrate(&h2.shell);
+
+    TEST_ASSERT_EQUAL_INT(1, spy2.calls);
+    TEST_ASSERT_FALSE(ff_shell_settings(&h2.shell)->touch_calibrated);
+    TEST_ASSERT_EQUAL_INT(0, h2.store_mem.set_calls);
+    ff_shell_close(&h2.shell);
+}
+
+/* Re-running the SAME fit does not write NVS again — "persist on change,
+ * never every tick", the same contract every other setting keeps. */
+static void S21_calibrate_unchanged_refit_skips_the_write(void)
+{
+    calib_spy_t spy = {0};
+    spy.cal = (ff_touchcal_t){.ax = 1.10f, .bx = -3.0f, .ay = 0.90f, .by = 4.0f, .valid = true};
+    spy.ret = true;
+
+    setting_harness_t h;
+    calib_harness_init(&h, &spy);
+
+    send_calibrate(&h.shell);
+    TEST_ASSERT_EQUAL_INT(1, h.store_mem.set_calls); /* first fit: a change, persisted */
+
+    send_calibrate(&h.shell);                        /* same fit again */
+    TEST_ASSERT_EQUAL_INT(2, spy.calls);             /* the hook still ran */
+    TEST_ASSERT_EQUAL_INT(1, h.store_mem.set_calls); /* but nothing new was written */
+
+    ff_shell_close(&h.shell);
+}
+
 /* S17 slice a: FF_SETTING_COLORBLIND — the exact same bool-backed,
  * persist-on-change-only contract as IMPERIAL above, pinned separately
  * per this repo's own "test names mirror the criteria" convention
@@ -1065,6 +1198,9 @@ int main(void)
     RUN_TEST(S17a_AC2_setting_set_colorblind_applies_and_persists_only_on_change);
     RUN_TEST(bug1_transient_brightness_applies_live_but_persists_only_on_commit);
     RUN_TEST(bug1_brightness_change_does_not_mark_the_render_dirty);
+    RUN_TEST(S21_calibrate_valid_fit_applies_and_persists);
+    RUN_TEST(S21_calibrate_failed_or_invalid_fit_is_a_clean_no_op);
+    RUN_TEST(S21_calibrate_unchanged_refit_skips_the_write);
     RUN_TEST(S16_AC8_setting_set_out_of_range_is_rejected_not_clamped);
     RUN_TEST(S16_AC8_setting_set_my_name_is_bounded_and_terminated);
     RUN_TEST(S16_AC8_setting_set_is_rejected_while_a_takeover_is_visible);
