@@ -237,13 +237,38 @@ static lv_obj_t *s_bright_pct;   /* the "NN%" label */
 static int32_t s_bright_row_w;   /* row width the knob travel is computed against */
 static int32_t s_bright_knob_sz; /* knob diameter (for the knob_r / travel math) */
 
+/* #bug2 — press-direction axis-lock for the brightness slider. A full-width
+ * lv_slider in a vertical scroll list consumes the press, so SCROLL_CHAIN_VER
+ * alone never fires (nothing is left to chain) and a vertical drag that starts
+ * on the slider is eaten as a brightness change. We instead watch the first
+ * few px of travel: a horizontal-dominant drag adjusts brightness (the slider's
+ * native behavior); a vertical-dominant drag is handed to the list — we scroll
+ * it to follow the finger and pin the slider value so brightness never moves. */
+static lv_obj_t *s_bright_list;   /* the scroll list the slider lives in (for manual scroll) */
+static int32_t s_drag_x0, s_drag_y0;   /* press origin (screen px) */
+static int32_t s_drag_val0;            /* slider value at press (to pin during a vertical drag) */
+static int32_t s_drag_scroll0;         /* list scroll_y at press (to follow the finger from) */
+static int s_drag_axis;                /* 0 = undecided, 1 = horizontal (brightness), 2 = vertical (scroll) */
+#define FF_SETTINGS_DRAG_LOCK_PX 8     /* travel before the axis is decided */
+
 /* LV_EVENT_SCROLL — remember where the user scrolled to, so the next
  * in-place rebuild (a settings-change intent tears down and rebuilds the
- * whole screen) can restore it instead of snapping to the top (#bug4). */
+ * whole screen) can restore it instead of snapping to the top (#bug4).
+ *
+ * #bug5 — also force the whole screen to repaint on each scroll step. On the
+ * device the panel flushes in partial strips, and LVGL's per-scroll dirty
+ * region left a stale 1-px column at the left edge (x=0) where the amber
+ * brightness fill had been — it scrolled off but was never overpainted, so a
+ * thin amber sliver ghosted onto the rows below. Invalidating the active
+ * screen marks the full visible area dirty, so every scrolled frame (the last,
+ * settled one included) repaints cleanly over any residue. The settings screen
+ * is small, so the extra redraw is cheap. Sim-invisible (its goldens render at
+ * a fixed offset with no live scroll), so this is device-motivated. */
 static void settings_scroll_cb(lv_event_t *e)
 {
     lv_obj_t *list = lv_event_get_target(e);
     s_scroll_y = lv_obj_get_scroll_y(list);
+    lv_obj_invalidate(lv_screen_active());
 }
 
 /* ---------------------------------------------------------------------
@@ -556,22 +581,80 @@ static void settings_brightness_move_deco(uint8_t pct)
     lv_label_set_text(s_bright_pct, pctbuf);
 }
 
-/* LV_EVENT_VALUE_CHANGED — the finger is dragging: track the deco live and
- * emit a TRANSIENT brightness so the backlight follows without persisting
- * every intermediate value (#bug1). */
+/* LV_EVENT_PRESSED — record the press origin so PRESSING can decide the axis
+ * (#bug2). */
+static void settings_brightness_pressed_cb(lv_event_t *e)
+{
+    lv_obj_t *slider = lv_event_get_target(e);
+    lv_indev_t *indev = lv_indev_active();
+    lv_point_t p = {0, 0};
+    if (indev != NULL) {
+        lv_indev_get_point(indev, &p);
+    }
+    s_drag_x0 = p.x;
+    s_drag_y0 = p.y;
+    s_drag_val0 = lv_slider_get_value(slider);
+    s_drag_scroll0 = (s_bright_list != NULL) ? lv_obj_get_scroll_y(s_bright_list) : 0;
+    s_drag_axis = 0; /* undecided until the finger travels FF_SETTINGS_DRAG_LOCK_PX */
+}
+
+/* LV_EVENT_PRESSING — the finger is moving. Decide the axis once, then on a
+ * vertical drag scroll the list to follow the finger and pin the slider so
+ * brightness does not move (#bug2). */
+static void settings_brightness_pressing_cb(lv_event_t *e)
+{
+    lv_obj_t *slider = lv_event_get_target(e);
+    lv_indev_t *indev = lv_indev_active();
+    lv_point_t p = {0, 0};
+    if (indev != NULL) {
+        lv_indev_get_point(indev, &p);
+    }
+    int32_t const dx = p.x - s_drag_x0;
+    int32_t const dy = p.y - s_drag_y0;
+    int32_t const adx = (dx < 0) ? -dx : dx;
+    int32_t const ady = (dy < 0) ? -dy : dy;
+
+    if (s_drag_axis == 0 && (adx >= FF_SETTINGS_DRAG_LOCK_PX || ady >= FF_SETTINGS_DRAG_LOCK_PX)) {
+        s_drag_axis = (ady > adx) ? 2 : 1;
+    }
+
+    if (s_drag_axis == 2 && s_bright_list != NULL) {
+        /* Follow the finger: dragging down (dy>0) reveals content above, i.e.
+         * a smaller scroll_y. LVGL clamps to the scrollable range. */
+        lv_obj_scroll_to_y(s_bright_list, s_drag_scroll0 - dy, LV_ANIM_OFF);
+        /* Pin the slider + deco so a vertical drag never nudges brightness. */
+        lv_slider_set_value(slider, s_drag_val0, LV_ANIM_OFF);
+        settings_brightness_move_deco((uint8_t)s_drag_val0);
+    }
+}
+
+/* LV_EVENT_VALUE_CHANGED — a horizontal drag adjusting brightness: track the
+ * deco live and emit a TRANSIENT value so the backlight follows without
+ * persisting every intermediate value (#bug1). Ignored while the axis-lock has
+ * claimed the gesture for vertical scrolling (#bug2). */
 static void settings_brightness_changed_cb(lv_event_t *e)
 {
     lv_obj_t *slider = lv_event_get_target(e);
+    if (s_drag_axis == 2) {
+        lv_slider_set_value(slider, s_drag_val0, LV_ANIM_OFF); /* undo any value the slider took from x */
+        return;
+    }
     int32_t v = lv_slider_get_value(slider);
     settings_brightness_move_deco((uint8_t)v);
     settings_emit_brightness(v, true /* transient: live preview, not persisted */);
 }
 
-/* LV_EVENT_RELEASED — the drag settled: emit the COMMITTED value so the
- * shell persists it once (#bug1). */
+/* LV_EVENT_RELEASED — the drag settled: emit the COMMITTED value so the shell
+ * persists it once (#bug1). A vertical drag (axis-locked to scroll) committed
+ * nothing, so it emits nothing. */
 static void settings_brightness_released_cb(lv_event_t *e)
 {
     lv_obj_t *slider = lv_event_get_target(e);
+    int const axis = s_drag_axis;
+    s_drag_axis = 0;
+    if (axis == 2) {
+        return; /* was a scroll, not a brightness change */
+    }
     int32_t v = lv_slider_get_value(slider);
     settings_emit_brightness(v, false /* commit: settled value, persisted */);
 }
@@ -655,19 +738,16 @@ static void settings_build_brightness(lv_obj_t *list, int32_t row_w)
     lv_obj_set_style_bg_opa(slider, LV_OPA_TRANSP, LV_PART_KNOB);
     lv_obj_set_style_pad_all(slider, 0, LV_PART_KNOB);
 
-    /* #bug2 — a full-width slider sitting in a vertical scroll list steals
-     * the press, so a vertical drag that started on the slider could not
-     * scroll the list (only a drag that began on the very bottom row could).
-     * SCROLL_CHAIN_VER lets a vertical drag the slider doesn't consume chain
-     * up to the scrollable ancestor (the list) and scroll it; the slider is
-     * horizontal, so a horizontal drag still adjusts brightness. This is the
-     * standard LVGL mechanism for a horizontal control inside a vertical
-     * scroller — but touch gesture disambiguation cannot be verified in the
-     * headless sim (no real finger, no momentum), so the ON-GLASS FEEL MUST
-     * BE VERIFIED ON DEVICE. If flags alone prove insufficient there, the
-     * documented fallback is a press-direction axis-lock on the first
-     * LV_EVENT_PRESSING (hand the gesture to the parent when |dy| dominates). */
-    lv_obj_add_flag(slider, LV_OBJ_FLAG_SCROLL_CHAIN_VER);
+    /* #bug2 — a full-width slider in a vertical scroll list consumes the press,
+     * so LV_OBJ_FLAG_SCROLL_CHAIN_VER never fires (nothing is left to chain) and
+     * a vertical drag starting on the slider was eaten as a brightness change
+     * (confirmed on device). Instead we axis-lock by hand: PRESSED records the
+     * origin, PRESSING decides horizontal (brightness) vs vertical (scroll the
+     * list, pin the slider). s_bright_list is the scroll parent the vertical
+     * branch drives. Gesture feel is device-only — not sim-verifiable. */
+    s_bright_list = list;
+    lv_obj_add_event_cb(slider, settings_brightness_pressed_cb, LV_EVENT_PRESSED, NULL);
+    lv_obj_add_event_cb(slider, settings_brightness_pressing_cb, LV_EVENT_PRESSING, NULL);
 
     /* #bug1 — live: VALUE_CHANGED tracks the deco + emits a transient
      * brightness (backlight follows the finger); RELEASED commits the settled
@@ -821,7 +901,7 @@ void ff_scr_settings_build(ff_app_settings_t const *settings)
     lv_obj_add_event_cb(list, settings_scroll_cb, LV_EVENT_SCROLL, NULL);
 
     settings_build_brightness(list, row_w);
-    settings_build_toggle_row(list, FF_SETTINGS_REL_UNITS_Y, row_w, "UNITS", "FT", "MI",
+    settings_build_toggle_row(list, FF_SETTINGS_REL_UNITS_Y, row_w, "UNITS", "FT", "M",
                               s_settings.imperial ? 0 : 1, settings_units_cb);
     settings_build_toggle_row(list, FF_SETTINGS_REL_SHARE_Y, row_w, "SHARE", "LIVE", "GHOST",
                               (s_settings.share_mode == FF_SHARE_LIVE)    ? 0
