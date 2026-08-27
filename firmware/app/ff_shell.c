@@ -18,6 +18,7 @@
 #include "ff_route.h"
 #include "ff_sched.h"
 #include "ff_t9.h" /* S16 slice c3 — the shell-owned compose draft */
+#include "ff_touchcal.h" /* S21 §3 — the touch-calibration transform the calibrate hook returns */
 #include "ff_wall_window.h" /* S18 slice c — pack -> plausibility window */
 #include "ff_wiring.h"
 
@@ -32,6 +33,13 @@ typedef struct {
     ff_store_t const *store;
     void (*haptic)(void *user);
     void *haptic_user;
+    /* S21 §3 — device touch-calibration hook. NULL on targets with no touch
+     * panel (the sim): FF_INTENT_CALIBRATE_TOUCH is then a no-op. On device
+     * app_main supplies a fn that runs the crosshair capture and applies the
+     * solved transform to the live touch path, returning it (and true) so the
+     * shell persists it into ff_settings. */
+    bool (*calibrate_touch)(void *user, ff_touchcal_t *out_cal);
+    void *calibrate_touch_user;
     fp_pack_t *pack; /* caller-owned storage; NULL = this target has no pack */
     bool pack_loaded;
 
@@ -71,14 +79,11 @@ typedef struct {
     ff_t9_t compose_draft;
     ff_app_compose_mode_t compose_mode;
 
-    /* Which Settings page is showing (#99/#100). Pure Settings-face view
-     * state, exactly like `compose_mode` above is Compose's: FF_INTENT_
-     * SETTINGS_PAGE cycles it, a successful OPEN_SETTINGS resets it to 0
-     * (a fresh entry always starts on page 0), and shell_project_settings
-     * copies it into `view.settings.page`. The face paginates rather than
-     * scrolls so every built control stays on-glass for the hit-target
-     * sweep — see FF_INTENT_SETTINGS_PAGE (ff_intent.h). */
-    uint8_t settings_page;
+    /* S21 removed `settings_page` (#105's pagination view state): the
+     * Settings face is now one scrolling list, so there is no page for the
+     * shell to own — scrolling is a live LVGL concern in scr_settings.c's
+     * list container, not projected shell state. FF_INTENT_CALIBRATE_TOUCH
+     * (new) is handled below via the injected calibrate hook. */
 
     /* Feed pushes + the crew-paired-sender filter are ff_wiring's, not
      * reimplemented here. Holds interior pointers into this struct — see
@@ -1133,10 +1138,8 @@ static void shell_project_settings(shell_t const *sh, ff_app_settings_t *out)
     /* S17 slice a: the colorblind toggle, projected verbatim. */
     out->colorblind = sh->settings.colorblind;
     /* #100: brightness percent, projected verbatim (already clamped on write
-     * — see shell_setting_set). #99/#100: the current Settings page, shell-
-     * owned view state (like compose.mode), so a page change repaints. */
+     * — see shell_setting_set). */
     out->brightness_pct = sh->settings.brightness_pct;
-    out->page = sh->settings_page;
 }
 
 /**
@@ -1364,6 +1367,8 @@ int ff_shell_init(ff_shell_t *sh_pub, ff_shell_cfg_t const *cfg)
     sh->store = cfg->store;
     sh->haptic = cfg->haptic;
     sh->haptic_user = cfg->haptic_user;
+    sh->calibrate_touch = cfg->calibrate_touch;
+    sh->calibrate_touch_user = cfg->calibrate_touch_user;
     sh->pack = cfg->pack;
     sh->pack_loaded = false;
 
@@ -1793,11 +1798,10 @@ void ff_shell_intent(ff_shell_t *sh_pub, ff_intent_t const *in)
     case FF_INTENT_OPEN_SETTINGS:
         if (takeover_up) return;
         if (!k_settings_renderer_exists) return; /* the judgment call — see the constant's comment */
-        /* Every entry starts on page 0 (#99/#100), same "fresh session"
-         * reset OPEN_COMPOSE does for the compose draft/mode just below. */
-        if (ff_route_push_modal(&sh->route, FF_APP_FACE_SETTINGS)) {
-            sh->settings_page = 0u;
-        }
+        /* S21: the Settings face is one scrolling list with no page state to
+         * reset — a fresh open always renders scrolled to the top (the list
+         * container's own default scroll offset), no shell bookkeeping. */
+        (void)ff_route_push_modal(&sh->route, FF_APP_FACE_SETTINGS);
         return;
 
     case FF_INTENT_OPEN_MAP:
@@ -1986,15 +1990,34 @@ void ff_shell_intent(ff_shell_t *sh_pub, ff_intent_t const *in)
         shell_setting_set(sh, in);
         return;
 
-    case FF_INTENT_SETTINGS_PAGE:
-        /* #99/#100 — advance the Settings page, wrapping (the page chip is
-         * a plain cycle, same shape as Compose's ABC->123->SYM mode chip).
-         * Gated on the takeover exactly like SETTING_SET above: the page
-         * chip only exists on the Settings modal, so this can only fire
-         * while Settings is visible, and a takeover preempts it. Pure view
-         * state — not persisted (nothing in the store to write). */
+    case FF_INTENT_CALIBRATE_TOUCH:
+        /* S21 §3 — the Settings "CALIBRATE TOUCH" row. Gated on the takeover
+         * exactly like SETTING_SET above: the row only exists on the Settings
+         * modal, so this can only fire while Settings is visible. Runs the
+         * injected device calibrate hook (NULL on the sim / any target with
+         * no touch panel -> a safe no-op, tests stay green). On device the
+         * hook runs the crosshair capture and applies the solved transform to
+         * the live touch path; here the shell writes it into ff_settings and
+         * persists on change, so calibration survives reboot via NVS (S21 §4)
+         * the same way every other setting does. */
         if (takeover_up) return;
-        sh->settings_page = (uint8_t)((sh->settings_page + 1u) % FF_SETTINGS_PAGE_COUNT);
+        if (sh->calibrate_touch != NULL) {
+            ff_touchcal_t cal;
+            memset(&cal, 0, sizeof(cal));
+            if (sh->calibrate_touch(sh->calibrate_touch_user, &cal) && cal.valid) {
+                ff_settings_t *s = &sh->settings;
+                bool const changed = (!s->touch_calibrated) || (s->touch_ax != cal.ax) || (s->touch_bx != cal.bx) ||
+                                     (s->touch_ay != cal.ay) || (s->touch_by != cal.by);
+                s->touch_ax = cal.ax;
+                s->touch_bx = cal.bx;
+                s->touch_ay = cal.ay;
+                s->touch_by = cal.by;
+                s->touch_calibrated = true;
+                if (changed && sh->store != NULL) {
+                    ff_settings_save(s, sh->store);
+                }
+            }
+        }
         return;
 
     /* --- deliberate no-ops until their owning slice lands ------------ */

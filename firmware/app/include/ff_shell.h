@@ -195,6 +195,7 @@
 #include "ff_latlon.h"
 #include "ff_settings.h"
 #include "ff_store.h"
+#include "ff_touchcal.h" /* S21 §3 — ff_touchcal_t, returned by the calibrate hook */
 #include "ff_wall.h"
 
 #include "fp_pack.h"
@@ -252,6 +253,18 @@ typedef struct {
      *  (unconditional). NULL = no haptics. */
     void (*haptic)(void *user);
     void *haptic_user;
+
+    /** S21 §3 — device touch-calibration hook, invoked by
+     *  FF_INTENT_CALIBRATE_TOUCH (the Settings "CALIBRATE TOUCH" row). On a
+     *  target with a touch panel (esp32s3) this runs the crosshair capture,
+     *  applies the solved transform to the live touch path, and writes it to
+     *  `*out_cal` returning true; the shell then persists it into
+     *  ff_settings so the calibration survives reboot via the store. NULL on
+     *  targets with no touch panel (the sim), where the intent is a safe
+     *  no-op. Like `haptic`, a device-IO seam the pure shell never performs
+     *  itself. */
+    bool (*calibrate_touch)(void *user, ff_touchcal_t *out_cal);
+    void *calibrate_touch_user;
 
     /**
      * WHERE `fp_pack_t` LIVES — the decision S16 leaves to the

@@ -13,7 +13,6 @@
     "utc_offset_set": true,
     "utc_offset_min": -420,
     "colorblind": false,
-    "brightness_pct": 30,
-    "page": 1
+    "brightness_pct": 30
   }
 }

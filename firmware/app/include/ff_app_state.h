@@ -414,20 +414,12 @@ typedef struct {
      * the backlight HAL. Clamped to [FF_BRIGHTNESS_MIN_PCT,
      * FF_BRIGHTNESS_MAX_PCT] by the shell before it ever reaches here. */
     uint8_t  brightness_pct;
-
-    /* [api] #99/#100 — which Settings page is showing (0-based). NOT a
-     * mirror of any ff_settings_t field: pure Settings-face view state,
-     * shell-owned like ff_app_compose_t.mode, projected here so the render
-     * key (shell_render_key memcpy's the whole view) repaints on a page
-     * change. The 412 six-row budget can't fit the brightness slider AND the
-     * existing rows, so the face paginates and builds only THIS page's
-     * controls — see FF_INTENT_SETTINGS_PAGE (ff_intent.h) for why paginate,
-     * not scroll. */
-    uint8_t  page;
 } ff_app_settings_t;
-
-/* Number of Settings-face pages (see ff_app_settings_t.page / scr_settings.c). */
-#define FF_SETTINGS_PAGE_COUNT 2
+/* S21 removed ff_app_settings_t.page / FF_SETTINGS_PAGE_COUNT (#105's
+ * pagination): the Settings face is now one scrolling list, so there is no
+ * page state to project. Scrolling is a live LVGL concern owned by
+ * scr_settings.c's list container, not projected shell state — see that
+ * file and the scroll-aware sweep in test_face_hit_targets.c. */
 
 /* -------------------------------------------------------------------
  * map (S09) — flattened festpack features + crew/rally/YOU, all already

@@ -1113,7 +1113,6 @@ static void S11b_settings_utc_offset_stepper_minus_and_plus(void)
 {
     ff_app_settings_t s;
     memset(&s, 0, sizeof(s));
-    s.page = 1; /* #99/#100: the UTC stepper lives on Settings page 1 now */
     s.utc_offset_set = true;
     s.utc_offset_min = -300; /* renders "UTC-5:00" */
 
@@ -1138,7 +1137,6 @@ static void S11b_settings_utc_offset_stepper_starts_from_utc_when_unset(void)
 {
     ff_app_settings_t s;
     memset(&s, 0, sizeof(s)); /* utc_offset_set false: renders "UNSET" */
-    s.page = 1;               /* #99/#100: the UTC stepper lives on Settings page 1 now */
 
     ff_scr_settings_build(&s);
 
@@ -1174,7 +1172,6 @@ static void S100_settings_brightness_slider_emits_brightness_on_release(void)
 {
     ff_app_settings_t s;
     memset(&s, 0, sizeof(s));
-    s.page = 1;
     s.brightness_pct = 70;
 
     ff_scr_settings_build(&s);
@@ -1194,20 +1191,22 @@ static void S100_settings_brightness_slider_emits_brightness_on_release(void)
     TEST_ASSERT_EQUAL_INT32(40, s_spy.last.u.setting.v.i);
 }
 
-/* #99/#100 — the "PAGE 1/2" chip emits FF_INTENT_SETTINGS_PAGE (the shell
- * owns which page; the chip only reports the tap, same shape as Compose's
- * mode chip). On page 0 the chip reads "PAGE 1/2 >". */
-static void S99_settings_page_chip_emits_settings_page(void)
+/* S21 §3 — the "CALIBRATE TOUCH" row emits the shell-owned
+ * FF_INTENT_CALIBRATE_TOUCH (the screen only reports the tap; the shell runs
+ * the device crosshair flow via its injected hook, a no-op on the sim). The
+ * row is far down the scrolling list, but click() injects the event
+ * directly, so its scroll position is irrelevant to this seam test. */
+static void S21_settings_calibrate_touch_row_emits_calibrate_intent(void)
 {
     ff_app_settings_t s;
-    memset(&s, 0, sizeof(s)); /* page 0 */
+    memset(&s, 0, sizeof(s));
 
     ff_scr_settings_build(&s);
 
-    click(find_button_with_label(lv_screen_active(), "PAGE 1/2 >"));
+    click(find_button_with_label(lv_screen_active(), "CALIBRATE TOUCH"));
 
     TEST_ASSERT_EQUAL_INT(1, s_spy.count);
-    TEST_ASSERT_EQUAL(FF_INTENT_SETTINGS_PAGE, s_spy.last.kind);
+    TEST_ASSERT_EQUAL(FF_INTENT_CALIBRATE_TOUCH, s_spy.last.kind);
 }
 
 /* =================================================================== */
@@ -1273,7 +1272,7 @@ int main(void)
     RUN_TEST(S11b_settings_utc_offset_stepper_minus_and_plus);
     RUN_TEST(S11b_settings_utc_offset_stepper_starts_from_utc_when_unset);
     RUN_TEST(S100_settings_brightness_slider_emits_brightness_on_release);
-    RUN_TEST(S99_settings_page_chip_emits_settings_page);
+    RUN_TEST(S21_settings_calibrate_touch_row_emits_calibrate_intent);
     RUN_TEST(S16_c1_wired_sites_are_noops_while_the_seam_is_unbound);
 
     return UNITY_END();

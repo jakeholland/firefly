@@ -114,17 +114,21 @@ typedef enum {
     FF_INTENT_FLARE_START, FF_INTENT_FLARE_END,
     FF_INTENT_TAKEOVER_GO, FF_INTENT_TAKEOVER_DISMISS, FF_INTENT_RELEASE_LOCK,
     FF_INTENT_SETTING_SET,
-    /* [api] #99/#100 — cycle the Settings face's page. The 412 six-row
-     * Settings budget is saturated (see scr_settings.c), so the brightness
-     * slider (#100) lands by PAGINATING the face rather than scrolling: a
-     * scrollable list would put its off-viewport rows at off-glass absolute
-     * coordinates, which test_face_hit_targets.c's sweep reads verbatim
-     * (lv_obj_get_click_area returns scrolled coords) and would fail — so
-     * only the ACTIVE page's controls are ever built, exactly like scr_nav.c
-     * builds only the active tile (issue #29). This intent is the page's
-     * "which page" selector, mirroring FF_INTENT_T9_MODE's compose-page
-     * cycle: no payload, the shell owns `settings_page` and cycles it. */
-    FF_INTENT_SETTINGS_PAGE,
+    /* [api] S21 §3 — run the touch-calibration crosshair flow from the
+     * Settings "CALIBRATE TOUCH" row. Shell-owned, one seam, mirroring the
+     * other setting intents: no payload. The shell invokes its injected
+     * device calibrate hook (ff_shell_cfg_t.calibrate_touch), which on
+     * device runs ff_display_run_calibration -> ff_display_touch_set_cal and
+     * returns the solved transform; the shell writes it into ff_settings and
+     * persists. On a target with no touch panel (the sim) the hook is NULL
+     * and this intent is a safe no-op — the row renders, nothing happens,
+     * goldens/tests stay green.
+     *
+     * (#105's FF_INTENT_SETTINGS_PAGE was removed here: S21 replaced the
+     * paginated Settings with one scrolling list, so there is no page to
+     * cycle — see scr_settings.c and the scroll-aware sweep in
+     * test_face_hit_targets.c.) */
+    FF_INTENT_CALIBRATE_TOUCH,
 } ff_intent_kind_t;
 
 /**
