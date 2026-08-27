@@ -95,7 +95,7 @@ void setUp(void)
     lv_tick_set_cb(test_tick_cb);
     /* No buffers/flush callback: widget building + lv_obj_send_event
      * never touch the flush path (see test_scr_flare.c's setUp note). */
-    lv_display_t *disp = lv_display_create(456, 456);
+    lv_display_t *disp = lv_display_create(412, 412);
     lv_display_set_default(disp);
 
     memset(&s_spy, 0, sizeof(s_spy));

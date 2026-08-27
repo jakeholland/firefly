@@ -273,7 +273,7 @@ void ff_scr_nav_build(ff_app_state_t const *state)
      * three faces' worth of LVGL objects on every dirty-driven rebuild is
      * real, unbounded-per-tick cost, and the two inactive tiles' controls
      * sat at their un-scrolled tileview position: hundreds of pixels
-     * outside the 456px window, not merely outside the round glass —
+     * outside the 412px window, not merely outside the round glass —
      * unreachable by any real touch, and the hit-target sweep
      * (test_face_hit_targets.c) had to carve out an exception for
      * exactly that. `ff_route` already drives face navigation and native

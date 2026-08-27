@@ -18,8 +18,13 @@
 #include "fixture.h"
 #include "screenshot.h"
 
-#define FF_CTL_LOOP_WINDOW_W 456
-#define FF_CTL_LOOP_WINDOW_H 456
+/* Matches the device panel / sim window (412x412, S15c — ff_theme.h's
+ * FF_THEME_WINDOW_PX). Every ctl pointer command discovers its target's real
+ * on-screen coordinates from the live LVGL tree (see
+ * test_ctl_flare_sequence.c's ctl_tap_button), so this size only sets where
+ * the puck renders, not any hard-coded tap coordinate. */
+#define FF_CTL_LOOP_WINDOW_W 412
+#define FF_CTL_LOOP_WINDOW_H 412
 
 /* Full-frame render mode: the whole buffer is the flushed frame, so the
  * flush callback only needs to signal completion. */

@@ -14,8 +14,10 @@
  * (not shared via a header) rather than introducing a cross-file
  * coupling for two constants that both go away once S06's real theme
  * (app/theme/ff_theme.h) lands and this whole file is deleted. */
-#define FFV_WINDOW_W 456
-#define FFV_WINDOW_H 456
+/* S15c: the sim window/panel is 412x412 (ff_theme.h's FF_THEME_WINDOW_PX);
+ * this debug-face puck must fit inside it, not the old 456. */
+#define FFV_WINDOW_W 412
+#define FFV_WINDOW_H 412
 #define FFV_COLOR_BG_DARK 0x0b0b10
 #define FFV_COLOR_AMBER   0xffc66b
 #define FFV_COLOR_DIM     0xaaaaaa

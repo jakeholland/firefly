@@ -49,7 +49,7 @@ extern "C" {
  * whenever x is outside the target integer type's representable range —
  * reproduced with `{"cmd":"tap","x":1e300,"y":0}` under
  * -fsanitize=undefined. INT16 is generous headroom over any real screen
- * coordinate (the sim window is 456x456) while staying comfortably inside
+ * coordinate (the sim window is 412x412, S15c) while staying comfortably inside
  * every integer width `lv_coord_t` could plausibly be (int16_t or
  * int32_t, depending on LVGL build config) — this module intentionally
  * doesn't know the sim's actual window size (see the handler vtable's
