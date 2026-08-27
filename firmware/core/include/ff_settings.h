@@ -124,14 +124,12 @@ typedef struct {
      * free sentinel (it is a real, if useless, value), so the flag, not the
      * values, is what gates application.
      *
-     * S21 §5 changed the DEFAULT from identity/false to a representative
-     * Waveshare-1.46 panel prior (the affine measured on board 2, with
-     * touch_calibrated=true) — see ff_settings.c's ff_settings_apply_defaults
-     * for the full provenance + honesty note. That default means
-     * touch_calibrated=true no longer implies "this unit was calibrated by
-     * its owner"; it means "a usable transform is installed" (a documented
-     * panel-model measurement out of the box, this unit's own fit after the
-     * in-app CALIBRATE TOUCH row runs, NVS-persisted either way). Read by the
+     * The DEFAULT is identity with touch_calibrated=false — a fresh puck has
+     * genuinely not been calibrated, so touch_calibrated=true always and only
+     * means "this unit was calibrated by its owner" (via the in-app CALIBRATE
+     * TOUCH row, NVS-persisted). We deliberately do NOT bake a specific board's
+     * measured affine in as the default; see ff_settings.c's
+     * ff_settings_apply_defaults for the honest-data rationale. Read by the
      * device touch path (targets/esp32s3/ff_display) via ff_touchcal_apply;
      * the sim never consults these (its input is already screen-space). */
     float touch_ax;

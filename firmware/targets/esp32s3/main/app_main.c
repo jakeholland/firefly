@@ -214,7 +214,7 @@ void app_main(void)
          * one touch seam (ff_display process_coordinates) so gestures,
          * long-press and buttons are all corrected. */
         ff_settings_t settings;
-        ff_settings_load(&settings, &s_store); /* NVS (S21 §4): persisted cal, else the board-2 panel default */
+        ff_settings_load(&settings, &s_store); /* NVS (S21 §4): persisted cal, else the identity (uncalibrated) default */
 
         ff_touchcal_t cal;
         if (stage >= 4) {
@@ -260,8 +260,10 @@ void app_main(void)
      * lives in ff_settings (core, projected into the view); the app forwards
      * it to the LEDC backlight HAL — core never touches IO. Track the last
      * applied value so the render loop below only re-programs the PWM when it
-     * actually changes (a brightness change marks the view dirty, since it is
-     * part of the projected settings the render key memcmp's). */
+     * actually changes. Note (#bug1): brightness is deliberately EXCLUDED from
+     * the shell's render key, so a change does NOT mark the view dirty — the
+     * LEDC apply below runs every tick (not only on a dirty one) precisely so a
+     * live brightness drag tracks the finger without rebuilding the face. */
     uint8_t last_brightness = ff_shell_view(&s_shell)->settings.brightness_pct;
     (void)ff_display_set_brightness(last_brightness);
 

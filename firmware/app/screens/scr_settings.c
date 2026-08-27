@@ -864,7 +864,10 @@ void ff_scr_settings_reset_scroll(void)
 
 /* Sim golden-harness hook — see scr_settings.h. Scrolls the live list to
  * `y` so a golden can capture a non-zero offset; a no-op for y<=0 or when no
- * list is built, so the live shell path (which always passes 0) never moves. */
+ * list is built, so the live shell path (which always passes 0) never moves.
+ * This writes back s_scroll_y (harness scaffolding): the golden runner renders
+ * each fixture in a fresh process, so the offset never leaks into a following
+ * Settings render; on the live path this function is never called. */
 void ff_scr_settings_apply_scroll_hint(int32_t y)
 {
     if (y <= 0 || s_list == NULL) {
