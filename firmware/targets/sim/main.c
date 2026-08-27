@@ -147,6 +147,7 @@
 
 #include "ctl_loop.h"      /* S16 slice d — the --ctl session, extracted out of this file */
 #include "ctl_server.h"
+#include "ff_demo_run.h"   /* S20 — the --demo render driver (Firefly Fields) */
 #include "face_dispatch.h" /* PR #25 UX review follow-up — ff_build_face_screen extracted
                              * here (shared with targets/sim/tests/test_face_hit_targets.c)
                              * instead of defined locally in this file. */
@@ -461,6 +462,7 @@ int main(int argc, char **argv)
     const char *pack_path = NULL;
     const char *ctl_out_arg = NULL;
     bool dev_trust_all = false;
+    bool demo = false;
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--headless") == 0) {
@@ -481,6 +483,8 @@ int main(int argc, char **argv)
             pack_path = argv[++i];
         } else if (strcmp(argv[i], "--dev-trust-all") == 0) {
             dev_trust_all = true; /* sim-only by construction — see live_setup.c */
+        } else if (strcmp(argv[i], "--demo") == 0) {
+            demo = true; /* S20 — seed the fictional Firefly Fields world, no mesh */
         }
     }
 
@@ -547,6 +551,23 @@ int main(int argc, char **argv)
         ff_shell_close(&s_shell);
         lv_deinit();
         return 0;
+    }
+
+    if (demo) {
+        /* S20 demo mode: seed Firefly Fields (fictional festival + crew +
+         * feed) into a real no-transport shell and render it. This is a
+         * self-contained world — --connect/--pack/--fixture don't apply. */
+        if (connect_hostport != NULL || pack_path != NULL || fixture_path != NULL) {
+            fprintf(stderr, "ffsim: --demo is self-contained; ignoring --connect/--pack/--fixture\n");
+        }
+        if (headless) {
+            if (screenshot_dir == NULL) {
+                fprintf(stderr, "ffsim: --demo --headless requires --screenshot DIR\n");
+                return 1;
+            }
+            return ff_run_demo_headless(screenshot_dir);
+        }
+        return ff_run_demo_window();
     }
 
     if (dev_trust_all && connect_hostport == NULL) {

@@ -406,3 +406,39 @@ if(FF_BUILD_TESTS)
 
     add_test(NAME test_scr_intent COMMAND test_scr_intent)
 endif()
+
+# S20 (app/ff_demo.c — demo-mode seeding; docs/specs/S20-demo-mode.md)
+# ---------------------------------------------------------------------------
+# Seeds the shell into the fictional "Firefly Fields" festival through the
+# real shell entry points (ff_shell_events/pair/load_pack/set_my_pos), so
+# every face shows honest, real-looking data with no mesh. A THIRD file
+# that legitimately links core + meshclient + app together (alongside
+# ff-wiring and ff-shell — see ff_demo.h's Layering note): it constructs
+# mc_nodeinfo_t/mc_position_t/mc_rx_meta_t to drive the shell's inbound
+# seam. No LVGL. Target-agnostic — both targets/sim and targets/esp32s3
+# link it. The festpack BYTES are provided by the target (a generated C
+# array in the sim, EMBED_FILES on device); ff_demo_seed only parses them.
+add_library(ff-demo STATIC
+    ff_demo.c
+)
+target_include_directories(ff-demo PUBLIC include)
+target_link_libraries(ff-demo PUBLIC ff-shell ff-core ff-meshclient)
+target_compile_features(ff-demo PUBLIC c_std_11)
+ff_apply_warnings(ff-demo)
+
+if(FF_BUILD_TESTS)
+    # Seeds a real (no-transport) shell and asserts the four Radar states,
+    # the feed, and the latched wall clock — the demo world computed
+    # honestly through core, not asserted by hand.
+    add_executable(test_demo
+        tests/test_demo.c
+    )
+    target_link_libraries(test_demo PRIVATE ff-demo unity)
+    # The demo festpack asset, read from the source tree at test time.
+    target_compile_definitions(test_demo PRIVATE
+        FF_DEMO_PACK_PATH="${CMAKE_CURRENT_SOURCE_DIR}/../assets/demo/firefly-fields.festpack.json"
+    )
+    ff_apply_warnings(test_demo)
+
+    add_test(NAME test_demo COMMAND test_demo)
+endif()
