@@ -27,9 +27,19 @@
  *     the bottom pole). Every row is a child placed in container-relative
  *     coordinates with a uniform inner width, so any row shown at any scroll
  *     position is on-glass by construction, with no per-row margin math.
- * Top and bottom edge-fade scrims (BG->transparent gradients over the
- * viewport edges) soften rows scrolling in/out; they are non-clickable
- * chrome and never affect the sweep.
+ * An OPAQUE BG band behind the header (settings_build_header_band, #bug5)
+ * occludes the region above the list viewport with solid ink; the list
+ * clips its own children, so a row scrolling to the top ends cleanly at the
+ * viewport edge. (It REPLACES the former BG->transparent edge-fade scrims,
+ * whose gradient left a hard amber banding edge on the RGB565 panel.) The
+ * band is non-clickable chrome and never affects the sweep.
+ *
+ * ## Scroll position survives an in-place rebuild (#bug4)
+ * A settings-change intent tears down and rebuilds the whole screen. The
+ * list's scroll offset is remembered (LV_EVENT_SCROLL) and restored after
+ * each rebuild, so toggling a row does not jump back to the top. A FRESH
+ * entry from another face resets it (ff_scr_settings_reset_scroll, called by
+ * the face dispatcher on the not-Settings -> Settings transition).
  *
  * ## One consistent row language
  * Every row reads label LEFT (muted, uppercase), control RIGHT. Controls are
@@ -54,12 +64,19 @@
  * ## Brightness is its own taller row
  * A "BRIGHTNESS" caption + "%" value over a full-width THIN track. To keep a
  * full-width thin track that still clears the 44px tap floor AND stays
- * on-glass, the interactive `lv_slider` is a transparent full-width, 44px
- * hit strip (a thin styled track cannot be both 6px tall for the look and
- * 44px tall for the floor, and widening its hit area with ext_click_area
+ * on-glass, the interactive `lv_slider` is a transparent full-width, 56px
+ * hit strip (#bug3 raised it from the 44 floor for an easier target; a thin
+ * styled track cannot be both 6px tall for the look and >=44px tall for the
+ * floor, and widening its hit area with ext_click_area
  * would push it off the round glass horizontally). The visible thin track,
  * amber fill, and round amber knob are drawn as non-clickable decorations
- * beneath/over it — the slider still emits FF_SETTING_BRIGHTNESS on release.
+ * beneath/over it. #bug1: the fill/knob/percent now track the drag LIVE
+ * (LV_EVENT_VALUE_CHANGED moves the deco), and brightness is emitted live as
+ * a TRANSIENT setting so the backlight follows the finger; only the settled
+ * RELEASED value is committed (the shell persists once — see
+ * settings_emit_brightness and ff_shell.c's brightness handler for the
+ * NVS-wear reasoning). #bug2: LV_OBJ_FLAG_SCROLL_CHAIN_VER lets a vertical
+ * drag chain to the scroll list instead of being eaten by the slider.
  *
  * ## UTC offset is NOT a row here
  * The festpack supplies the timezone (`fp_pack_t.utc_offset_min`), so the
@@ -149,7 +166,15 @@
 #define FF_SETTINGS_REL_BRIGHT_CAP_Y 0
 #define FF_SETTINGS_BRIGHT_CAP_H     22
 #define FF_SETTINGS_REL_SLIDER_Y     30
-#define FF_SETTINGS_SLIDER_H         44 /* transparent hit strip: clears the 44 floor; the visible track is thin chrome */
+/* Transparent hit strip. Raised from the 44 floor to 56 after field-test:
+ * the minimum-size strip was hard to land a drag on. 56 keeps a comfortable
+ * >=6px (in fact the full FF_SETTINGS_ROW_GAP, 14px) gap to the UNITS row
+ * below — every REL_*_Y position downstream is derived from
+ * FF_SETTINGS_BRIGHT_BLOCK_H, so growing this constant slides the whole list
+ * down uniformly and the slider->UNITS gap stays exactly ROW_GAP (the
+ * scroll-aware tap-target sweep re-verifies 0 adjacency violations). The
+ * list simply scrolls a little further, which is fine (S21's whole point). */
+#define FF_SETTINGS_SLIDER_H         56
 #define FF_SETTINGS_BRIGHT_BLOCK_H   (FF_SETTINGS_REL_SLIDER_Y + FF_SETTINGS_SLIDER_H) /* 74 */
 
 #define FF_SETTINGS_REL_UNITS_Y (FF_SETTINGS_BRIGHT_BLOCK_H + FF_SETTINGS_ROW_GAP)     /* 88  */
@@ -161,9 +186,6 @@
 #define FF_SETTINGS_REL_CB_Y    (FF_SETTINGS_REL_QUIET_Y + FF_SETTINGS_ROW_STEP)       /* 460 */
 #define FF_SETTINGS_REL_CAL_Y   (FF_SETTINGS_REL_CB_Y + FF_SETTINGS_ROW_STEP)          /* 522 */
 #define FF_SETTINGS_CONTENT_H   (FF_SETTINGS_REL_CAL_Y + FF_SETTINGS_ROW_H)            /* 570 */
-
-/* Edge-fade scrims over the viewport top/bottom. */
-#define FF_SETTINGS_SCRIM_H 28
 
 /**
  * settings_safe_margin_x — thin int32_t/ceil wrapper around
@@ -186,6 +208,43 @@ static int32_t settings_safe_margin_x(int32_t top_y, int32_t h)
  * built with; a tap only ever reports through the intent seam.
  * ------------------------------------------------------------------- */
 static ff_app_settings_t s_settings;
+
+/* ---------------------------------------------------------------------
+ * Scroll-position preservation across the in-place rebuild every
+ * settings-change intent triggers (#bug4). `ff_scr_settings_build` fully
+ * tears down and rebuilds at scroll 0, so without this a toggle jumped the
+ * list back to the top. We remember the live list's scroll offset (updated
+ * on every LV_EVENT_SCROLL) and restore it after each rebuild. A FRESH
+ * entry into Settings from another face resets it to 0 via
+ * ff_scr_settings_reset_scroll (called by the face dispatcher on the
+ * not-Settings -> Settings transition) — see this file's callers.
+ * ------------------------------------------------------------------- */
+static lv_obj_t *s_list;      /* the live scroll list (NULL before first build / after teardown) */
+static int32_t s_scroll_y;    /* last observed vertical scroll offset, restored on rebuild */
+
+/* ---------------------------------------------------------------------
+ * Live-tracking brightness decorations (#bug1). The visible amber knob,
+ * amber fill, and "%" label are non-clickable deco objects the interactive
+ * (transparent) slider drives: on LV_EVENT_VALUE_CHANGED we move them to
+ * follow the finger, so the knob/fill/percent track the drag live instead
+ * of only snapping on release. References captured at build time so the
+ * value-changed handler can move them; the geometry constants it needs
+ * (row width, knob size) are captured alongside.
+ * ------------------------------------------------------------------- */
+static lv_obj_t *s_bright_fill;  /* amber fill box, left edge fixed at x=0, width = knob center */
+static lv_obj_t *s_bright_knob;  /* round amber knob */
+static lv_obj_t *s_bright_pct;   /* the "NN%" label */
+static int32_t s_bright_row_w;   /* row width the knob travel is computed against */
+static int32_t s_bright_knob_sz; /* knob diameter (for the knob_r / travel math) */
+
+/* LV_EVENT_SCROLL — remember where the user scrolled to, so the next
+ * in-place rebuild (a settings-change intent tears down and rebuilds the
+ * whole screen) can restore it instead of snapping to the top (#bug4). */
+static void settings_scroll_cb(lv_event_t *e)
+{
+    lv_obj_t *list = lv_event_get_target(e);
+    s_scroll_y = lv_obj_get_scroll_y(list);
+}
 
 /* ---------------------------------------------------------------------
  * Back "<" -> FF_INTENT_BACK.
@@ -456,11 +515,65 @@ static uint8_t settings_brightness_clamped(void)
     return (uint8_t)v;
 }
 
-static void settings_brightness_cb(lv_event_t *e)
+/* Emit a brightness setting carrying the transient/commit distinction
+ * (#bug1). `transient` true = a live preview mid-drag: the shell tracks it
+ * (so the device backlight follows the finger) but does NOT write NVS.
+ * false = the settled value on release: the shell persists it ONCE. This
+ * coalescing is the whole NVS-wear story — a drag can fire dozens of
+ * VALUE_CHANGED events, and persisting each would thrash flash; only the
+ * one RELEASED value is committed. See ff_shell.c's FF_SETTING_BRIGHTNESS
+ * handler and its shell_render_key note (brightness is kept OUT of the
+ * render key so a live value change reprograms the backlight every tick
+ * without forcing a full face rebuild that would destroy the slider
+ * mid-drag). */
+static void settings_emit_brightness(int32_t v, bool transient)
+{
+    ff_intent_t in = {.kind = FF_INTENT_SETTING_SET, .u = {0}};
+    in.u.setting.id = FF_SETTING_BRIGHTNESS;
+    in.u.setting.v.i = v;
+    in.u.setting.transient = transient;
+    ff_intent_emit(&in);
+}
+
+/* Move the deco fill/knob and update the "%" label to `pct` (#bug1) — pure
+ * screen work. Recomputes the knob center from the value with the SAME math
+ * settings_build_brightness uses at build time, so a live drag and a fresh
+ * build agree pixel-for-pixel. */
+static void settings_brightness_move_deco(uint8_t pct)
+{
+    if (s_bright_fill == NULL || s_bright_knob == NULL || s_bright_pct == NULL) {
+        return;
+    }
+    int32_t const knob_r = s_bright_knob_sz / 2;
+    float const frac = (float)(pct - FF_BRIGHTNESS_MIN_PCT) / (float)(FF_BRIGHTNESS_MAX_PCT - FF_BRIGHTNESS_MIN_PCT);
+    int32_t const knob_cx = knob_r + (int32_t)lroundf(frac * (float)(s_bright_row_w - s_bright_knob_sz));
+
+    lv_obj_set_width(s_bright_fill, (knob_cx > 0) ? knob_cx : 1);
+    lv_obj_set_x(s_bright_knob, knob_cx - knob_r);
+
+    char pctbuf[8];
+    snprintf(pctbuf, sizeof(pctbuf), "%u%%", (unsigned)pct);
+    lv_label_set_text(s_bright_pct, pctbuf);
+}
+
+/* LV_EVENT_VALUE_CHANGED — the finger is dragging: track the deco live and
+ * emit a TRANSIENT brightness so the backlight follows without persisting
+ * every intermediate value (#bug1). */
+static void settings_brightness_changed_cb(lv_event_t *e)
 {
     lv_obj_t *slider = lv_event_get_target(e);
     int32_t v = lv_slider_get_value(slider);
-    settings_emit_int(FF_SETTING_BRIGHTNESS, v);
+    settings_brightness_move_deco((uint8_t)v);
+    settings_emit_brightness(v, true /* transient: live preview, not persisted */);
+}
+
+/* LV_EVENT_RELEASED — the drag settled: emit the COMMITTED value so the
+ * shell persists it once (#bug1). */
+static void settings_brightness_released_cb(lv_event_t *e)
+{
+    lv_obj_t *slider = lv_event_get_target(e);
+    int32_t v = lv_slider_get_value(slider);
+    settings_emit_brightness(v, false /* commit: settled value, persisted */);
 }
 
 /* A bare non-clickable decoration box. */
@@ -497,6 +610,7 @@ static void settings_build_brightness(lv_obj_t *list, int32_t row_w)
     lv_obj_set_style_text_font(pctlbl, FF_THEME_FONT_LABEL, 0);
     lv_obj_set_style_text_color(pctlbl, lv_color_hex(FF_THEME_COLOR_INK), 0);
     lv_obj_align(pctlbl, LV_ALIGN_TOP_RIGHT, 0, FF_SETTINGS_REL_BRIGHT_CAP_Y);
+    s_bright_pct = pctlbl; /* #bug1 — the live drag updates this label */
 
     /* --- Decorative thin track + amber fill + round amber knob. The knob's
      * center travels [knob_r, row_w - knob_r] over [MIN, MAX]%. --- */
@@ -509,9 +623,10 @@ static void settings_build_brightness(lv_obj_t *list, int32_t row_w)
     int32_t const knob_cx = knob_r + (int32_t)lroundf(frac * (float)(row_w - knob_sz));
 
     settings_deco_box(list, 0, track_y, row_w, track_h, FF_THEME_COLOR_SURFACE, 3); /* track */
-    if (knob_cx > 0) {
-        settings_deco_box(list, 0, track_y, knob_cx, track_h, FF_THEME_COLOR_AMBER, 3); /* amber fill to knob center */
-    }
+    /* Amber fill from the left edge to the knob center. Always created (the
+     * clamped pct is >= MIN, so knob_cx >= knob_r > 0) so the live drag has a
+     * stable object to widen — see settings_brightness_move_deco. */
+    s_bright_fill = settings_deco_box(list, 0, track_y, (knob_cx > 0) ? knob_cx : 1, track_h, FF_THEME_COLOR_AMBER, 3);
 
     int32_t const knob_y = FF_SETTINGS_REL_SLIDER_Y + (FF_SETTINGS_SLIDER_H - knob_sz) / 2;
     lv_obj_t *knob = settings_deco_box(list, knob_cx - knob_r, knob_y, knob_sz, knob_sz, FF_THEME_COLOR_AMBER,
@@ -519,6 +634,9 @@ static void settings_build_brightness(lv_obj_t *list, int32_t row_w)
     lv_obj_set_style_border_width(knob, 5, 0); /* ~5px dark ring so the knob reads over the track */
     lv_obj_set_style_border_color(knob, lv_color_hex(FF_THEME_COLOR_BG), 0);
     lv_obj_set_style_border_opa(knob, LV_OPA_COVER, 0);
+    s_bright_knob = knob;            /* #bug1 — the live drag moves this knob */
+    s_bright_row_w = row_w;          /* #bug1 — knob-travel geometry for the live handler */
+    s_bright_knob_sz = knob_sz;
 
     /* --- The interactive, transparent full-width hit strip. --- */
     lv_obj_t *slider = lv_slider_create(list);
@@ -536,7 +654,26 @@ static void settings_build_brightness(lv_obj_t *list, int32_t row_w)
     lv_obj_set_style_bg_opa(slider, LV_OPA_TRANSP, LV_PART_INDICATOR);
     lv_obj_set_style_bg_opa(slider, LV_OPA_TRANSP, LV_PART_KNOB);
     lv_obj_set_style_pad_all(slider, 0, LV_PART_KNOB);
-    lv_obj_add_event_cb(slider, settings_brightness_cb, LV_EVENT_RELEASED, NULL);
+
+    /* #bug2 — a full-width slider sitting in a vertical scroll list steals
+     * the press, so a vertical drag that started on the slider could not
+     * scroll the list (only a drag that began on the very bottom row could).
+     * SCROLL_CHAIN_VER lets a vertical drag the slider doesn't consume chain
+     * up to the scrollable ancestor (the list) and scroll it; the slider is
+     * horizontal, so a horizontal drag still adjusts brightness. This is the
+     * standard LVGL mechanism for a horizontal control inside a vertical
+     * scroller — but touch gesture disambiguation cannot be verified in the
+     * headless sim (no real finger, no momentum), so the ON-GLASS FEEL MUST
+     * BE VERIFIED ON DEVICE. If flags alone prove insufficient there, the
+     * documented fallback is a press-direction axis-lock on the first
+     * LV_EVENT_PRESSING (hand the gesture to the parent when |dy| dominates). */
+    lv_obj_add_flag(slider, LV_OBJ_FLAG_SCROLL_CHAIN_VER);
+
+    /* #bug1 — live: VALUE_CHANGED tracks the deco + emits a transient
+     * brightness (backlight follows the finger); RELEASED commits the settled
+     * value (the shell persists once). */
+    lv_obj_add_event_cb(slider, settings_brightness_changed_cb, LV_EVENT_VALUE_CHANGED, NULL);
+    lv_obj_add_event_cb(slider, settings_brightness_released_cb, LV_EVENT_RELEASED, NULL);
 }
 
 /* ---------------------------------------------------------------------
@@ -561,23 +698,36 @@ static void settings_build_calibrate_row(lv_obj_t *list, int32_t rel_y, int32_t 
 }
 
 /* ---------------------------------------------------------------------
- * Edge-fade scrim: a non-clickable BG->transparent vertical gradient over a
- * viewport edge. `top` picks which edge is solid.
+ * Opaque header band (#bug5). REPLACES the former BG->transparent edge-fade
+ * scrims. On the RGB565 round panel a gradient scrim leaves a HARD amber
+ * edge (colour-step banding) instead of hiding a row that has scrolled to
+ * the viewport top — the maintainer's device photo showed a stray amber
+ * pill fragment bleeding in just below the pinned header. A SOLID BG band
+ * behind the header occludes that region outright with no gradient to band.
+ *
+ * Spanning the whole top region ABOVE the list viewport (y=0 .. LIST_Y), it
+ * paints solid ink behind the header while leaving the list's first row
+ * (at the viewport top, y=LIST_Y) fully visible — the list clips its own
+ * children to its rectangle (LVGL default; the list never sets
+ * LV_OBJ_FLAG_OVERFLOW_VISIBLE), so a row scrolling up ends cleanly at the
+ * viewport top with the opaque band above it, no translucent overlap. Drawn
+ * on the puck BEFORE the header controls so they render on top of it.
+ *
+ * NOTE: the sim renders XRGB8888 (8-bit/channel), so it cannot reproduce
+ * the device's RGB565 gradient banding — the scrolled sim golden renders
+ * clean either way. This band is nonetheless the correct DEVICE fix (no
+ * gradient => no banding); the on-glass result is verified on hardware.
  * ------------------------------------------------------------------- */
-static void settings_build_scrim(lv_obj_t *puck, int32_t x, int32_t y, int32_t w, bool top)
+static void settings_build_header_band(lv_obj_t *puck, int32_t x, int32_t w, int32_t h)
 {
-    lv_obj_t *scrim = lv_obj_create(puck);
-    lv_obj_remove_style_all(scrim);
-    lv_obj_set_size(scrim, w, FF_SETTINGS_SCRIM_H);
-    lv_obj_set_pos(scrim, x, y);
-    lv_obj_clear_flag(scrim, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_clear_flag(scrim, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_set_style_bg_color(scrim, lv_color_hex(FF_THEME_COLOR_BG), 0);
-    lv_obj_set_style_bg_grad_color(scrim, lv_color_hex(FF_THEME_COLOR_BG), 0);
-    lv_obj_set_style_bg_grad_dir(scrim, LV_GRAD_DIR_VER, 0);
-    /* Solid edge opaque, inner edge transparent. */
-    lv_obj_set_style_bg_main_opa(scrim, top ? LV_OPA_COVER : LV_OPA_TRANSP, 0);
-    lv_obj_set_style_bg_grad_opa(scrim, top ? LV_OPA_TRANSP : LV_OPA_COVER, 0);
+    lv_obj_t *band = lv_obj_create(puck);
+    lv_obj_remove_style_all(band);
+    lv_obj_set_size(band, w, h);
+    lv_obj_set_pos(band, x, 0);
+    lv_obj_clear_flag(band, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_clear_flag(band, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_style_bg_color(band, lv_color_hex(FF_THEME_COLOR_BG), 0);
+    lv_obj_set_style_bg_opa(band, LV_OPA_COVER, 0); /* fully opaque: occlude, don't fade */
 }
 
 /* ---------------------------------------------------------------------
@@ -605,6 +755,16 @@ void ff_scr_settings_build(ff_app_settings_t const *settings)
     lv_obj_set_style_border_width(puck, 0, 0);
     lv_obj_clear_flag(puck, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_clear_flag(puck, LV_OBJ_FLAG_CLICKABLE); /* base lv_obj defaults clickable; this one is a plain backdrop */
+
+    /* The scroll list's inscribed rectangle — computed here (before the
+     * header) so the opaque header band can share its horizontal extent. */
+    int32_t list_margin = settings_safe_margin_x(FF_SETTINGS_LIST_Y, FF_SETTINGS_LIST_H);
+    int32_t row_w = FF_THEME_PUCK_PX - 2 * list_margin;
+
+    /* --- Opaque header band FIRST (#bug5), so the header controls below draw
+     * on top of it. Occludes everything above the list viewport with solid
+     * ink — no gradient, so no RGB565 edge banding on device. --- */
+    settings_build_header_band(puck, list_margin, row_w, FF_SETTINGS_LIST_Y);
 
     /* --- PINNED, centered header: back button + SETTINGS title + name.
      * Built directly on the puck (never inside the scroll list) so it never
@@ -643,10 +803,7 @@ void ff_scr_settings_build(ff_app_settings_t const *settings)
     /* --- The scroll list: an inscribed rectangle in the round glass across
      * its whole height, vertical-only user scroll, scrollbar AUTO. Not
      * clickable itself — the clickable rows inside take the press and LVGL
-     * scrolls this parent. --- */
-    int32_t list_margin = settings_safe_margin_x(FF_SETTINGS_LIST_Y, FF_SETTINGS_LIST_H);
-    int32_t row_w = FF_THEME_PUCK_PX - 2 * list_margin;
-
+     * scrolls this parent. (list_margin / row_w computed above.) --- */
     lv_obj_t *list = lv_obj_create(puck);
     lv_obj_remove_style_all(list);
     lv_obj_set_size(list, row_w, FF_SETTINGS_LIST_H);
@@ -658,6 +815,10 @@ void ff_scr_settings_build(ff_app_settings_t const *settings)
     lv_obj_add_flag(list, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_scroll_dir(list, LV_DIR_VER);
     lv_obj_set_scrollbar_mode(list, LV_SCROLLBAR_MODE_AUTO);
+    /* #bug4 — remember this list and observe its scroll so a rebuild after a
+     * settings-change intent restores the offset instead of jumping to top. */
+    s_list = list;
+    lv_obj_add_event_cb(list, settings_scroll_cb, LV_EVENT_SCROLL, NULL);
 
     settings_build_brightness(list, row_w);
     settings_build_toggle_row(list, FF_SETTINGS_REL_UNITS_Y, row_w, "UNITS", "FT", "MI",
@@ -686,9 +847,30 @@ void ff_scr_settings_build(ff_app_settings_t const *settings)
                               s_settings.colorblind ? 0 : 1, settings_colorblind_cb);
     settings_build_calibrate_row(list, FF_SETTINGS_REL_CAL_Y, row_w);
 
-    /* --- Edge-fade scrims over the viewport top/bottom (chrome; drawn on the
-     * puck, above the list, non-clickable). --- */
-    settings_build_scrim(puck, list_margin, FF_SETTINGS_LIST_Y, row_w, true);
-    settings_build_scrim(puck, list_margin, FF_SETTINGS_LIST_Y + FF_SETTINGS_LIST_H - FF_SETTINGS_SCRIM_H, row_w,
-                         false);
+    /* #bug4 — restore the scroll offset the previous build left (0 on a fresh
+     * entry, cleared by ff_scr_settings_reset_scroll). The layout must be
+     * resolved first so LVGL knows the scrollable range to clamp against. */
+    lv_obj_update_layout(list);
+    lv_obj_scroll_to_y(list, s_scroll_y, LV_ANIM_OFF);
+}
+
+/* #bug4 — see scr_settings.h. Clear the remembered offset so the next build
+ * renders from the top; the face dispatcher calls this on a FRESH entry into
+ * Settings (a not-Settings -> Settings face transition). */
+void ff_scr_settings_reset_scroll(void)
+{
+    s_scroll_y = 0;
+}
+
+/* Sim golden-harness hook — see scr_settings.h. Scrolls the live list to
+ * `y` so a golden can capture a non-zero offset; a no-op for y<=0 or when no
+ * list is built, so the live shell path (which always passes 0) never moves. */
+void ff_scr_settings_apply_scroll_hint(int32_t y)
+{
+    if (y <= 0 || s_list == NULL) {
+        return;
+    }
+    lv_obj_update_layout(s_list);
+    lv_obj_scroll_to_y(s_list, y, LV_ANIM_OFF); /* LVGL clamps to the scrollable range */
+    s_scroll_y = lv_obj_get_scroll_y(s_list);
 }

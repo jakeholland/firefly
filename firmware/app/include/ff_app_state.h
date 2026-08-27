@@ -665,6 +665,18 @@ typedef struct {
      * screen ignores this field entirely. */
     char fixture_name[FF_APP_FIXTURE_NAME_LEN];
 
+    /* Sim/golden render hint only (#bug5a), same category as fixture_name
+     * above: a fixture may request the Settings list be scrolled to this
+     * vertical offset (device points) before the screenshot, so a golden can
+     * capture a NON-zero scroll position (goldens otherwise only ever see
+     * scroll 0). The sim dispatcher (targets/sim/face_dispatch.c) applies it
+     * via ff_scr_settings_apply_scroll_hint after building Settings; LVGL
+     * clamps it to the scrollable range, and 0 (the default, and the only
+     * value the live shell ever carries) is a no-op. No real screen or shell
+     * logic reads this — it is authoring scaffolding for the scrolled
+     * goldens, not projected state. Parsed by targets/sim/fixture.c. */
+    int32_t ui_settings_scroll_y;
+
     /* In any RENDERABLE state: a real face — RADAR/NOW/SIGNALS/
      * SETTINGS/COMPOSE/MAP — and never FF_APP_FACE_FLARE (S16 AC13, see
      * that member's comment).

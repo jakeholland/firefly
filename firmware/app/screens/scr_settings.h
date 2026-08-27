@@ -42,6 +42,35 @@ extern "C" {
  */
 void ff_scr_settings_build(ff_app_settings_t const *settings);
 
+/**
+ * ff_scr_settings_reset_scroll — [api] discard the remembered scroll
+ * offset so the NEXT ff_scr_settings_build() renders from the top.
+ *
+ * The Settings list preserves its scroll position across the in-place
+ * rebuild a settings-change intent triggers (toggling a row must not jump
+ * the list back to the top). That preservation is WRONG on a FRESH entry
+ * into Settings from another face — arriving from Radar must always land
+ * at the top, not wherever a previous visit left the list. The face
+ * dispatcher (targets/sim/face_dispatch.c, targets/esp32s3/main/ff_face.c)
+ * calls this on the not-Settings -> Settings transition, so a fresh entry
+ * resets while a same-face rebuild preserves. A no-op cost when called
+ * redundantly (it only clears a file-static int).
+ */
+void ff_scr_settings_reset_scroll(void);
+
+/**
+ * ff_scr_settings_apply_scroll_hint — [api] sim golden-harness hook: scroll
+ * the live Settings list to `y` (device points, clamped by LVGL to the
+ * scrollable range) so a golden can capture a NON-zero scroll offset. A
+ * no-op when `y <= 0` or no Settings list is currently built — so the live
+ * shell path (which always passes 0) is completely unaffected and only a
+ * fixture that explicitly asks for a scrolled render moves the list. See
+ * ff_app_state_t.ui_settings_scroll_y (a sim-only render hint, parsed by
+ * targets/sim/fixture.c) and the scrolled goldens in
+ * firmware/tests/run_goldens.sh.
+ */
+void ff_scr_settings_apply_scroll_hint(int32_t y);
+
 #ifdef __cplusplus
 }
 #endif

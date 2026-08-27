@@ -10,7 +10,9 @@
  * state directly.
  *
  * ## Layering — why this header depends on nothing
- * This file includes only <stdint.h>. That is load-bearing, not tidiness:
+ * This file includes only the freestanding C standard headers <stdint.h>
+ * and <stdbool.h> (fixed-width ints and `bool`). That is load-bearing, not
+ * tidiness:
  * screen files (app/screens/) include it to *build* intents, and pulling
  * ff_wiring.h in here would transitively hand every screen mc_client.h —
  * exactly the core+meshclient+app inclusion that only `ff_wiring.c` and
@@ -76,6 +78,7 @@
 #ifndef FF_INTENT_H
 #define FF_INTENT_H
 
+#include <stdbool.h> /* #bug1 — the setting payload's `transient` flag */
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -176,7 +179,18 @@ typedef struct {
         uint8_t t9_key;                         /* T9_KEY: 0-9 */
         char const *text;                       /* T9_INSERT (NOT owned; copied — see top comment) */
         struct { ff_setting_id_t id;            /* SETTING_SET */
-                 union { int32_t i; char const *s; } v; } setting;
+                 union { int32_t i; char const *s; } v;
+                 /* [api] #bug1 — a TRANSIENT setting is a live preview the
+                  * shell applies to its in-memory state (so a projection
+                  * consumer like the device backlight follows it) but does
+                  * NOT persist. Only the brightness slider uses it, emitting
+                  * transient on every VALUE_CHANGED during a drag and a final
+                  * NON-transient (committed) value on RELEASED, so a drag
+                  * writes NVS exactly once instead of on every step. Defaults
+                  * to false via every emit site's `{...}`/`.u = {0}`
+                  * zero-init, so every existing emitter persists unchanged;
+                  * handlers that do not opt in ignore it. */
+                 bool transient; } setting;
     } u; /* validity per kind, ff_flare_result_t convention */
 } ff_intent_t;
 

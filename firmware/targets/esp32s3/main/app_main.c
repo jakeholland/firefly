@@ -295,14 +295,22 @@ void app_main(void)
         }
 
         bool const dirty = ff_shell_tick(&s_shell, ff_esp_clock_now_ms(NULL));
+        ff_app_state_t const *v = ff_shell_view(&s_shell);
+
+        /* Re-program the backlight whenever the projected percent moved
+         * (#100/#bug1) — EVERY tick, NOT only on a dirty one. A live
+         * brightness drag is deliberately kept out of the shell's render key
+         * (ff_shell.c shell_render_key) so it does not force a face rebuild
+         * that would destroy the slider mid-drag; that means a brightness-only
+         * change no longer sets the dirty bit, so the backlight apply must run
+         * outside the dirty gate to follow the finger live. Cheap: a percent
+         * compare and, only on an actual change, one LEDC re-program. */
+        if (v->settings.brightness_pct != last_brightness) {
+            last_brightness = v->settings.brightness_pct;
+            (void)ff_display_set_brightness(last_brightness);
+        }
+
         if (dirty) {
-            ff_app_state_t const *v = ff_shell_view(&s_shell);
-            /* Re-program the backlight only when the stored percent actually
-             * moved (#100) — e.g. the Settings brightness slider was dragged. */
-            if (v->settings.brightness_pct != last_brightness) {
-                last_brightness = v->settings.brightness_pct;
-                (void)ff_display_set_brightness(last_brightness);
-            }
             if (ff_display_lock(100 /* ms */)) {
                 lv_obj_clean(lv_screen_active());
                 ff_face_build(v);

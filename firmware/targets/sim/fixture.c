@@ -943,6 +943,12 @@ ff_fixture_result_t ff_fixture_load_json(char const *json, size_t len, ff_app_st
 
     int t;
     if (fx_obj_get(&ctx, 0, "fixture", &t)) fx_copy_str(&ctx, t, out->fixture_name, sizeof(out->fixture_name));
+    /* #bug5a — sim-only Settings scroll render hint (see ff_app_state.h's
+     * ui_settings_scroll_y). Top-level, like `fixture`/`face`; absent -> 0
+     * (no scroll), the ordinary case for every fixture but the scrolled
+     * Settings goldens. */
+    if (fx_obj_get(&ctx, 0, "ui_settings_scroll_y", &t))
+        out->ui_settings_scroll_y = (int32_t)fx_num(&ctx, t, 0.0);
     if (fx_obj_get(&ctx, 0, "face", &t)) {
         int v;
         ff_fixture_result_t rc =
@@ -1266,6 +1272,10 @@ int ff_fixture_dump_json(ff_app_state_t const *s, char *buf, size_t buf_sz)
     fw_raw(&w, fx_enum_name(fx_face_table, sizeof(fx_face_table) / sizeof(fx_face_table[0]), s->active_face,
                              "radar"));
     fw_raw(&w, "\"");
+    /* #bug5a — mirror the sim-only scroll hint so a dump round-trips through
+     * the loader (see ff_fixture_dump_json's contract). Always 0 for a live
+     * shell dump; carried for the scrolled Settings fixtures. */
+    fw_fmt(&w, ",\"ui_settings_scroll_y\":%d", (int)s->ui_settings_scroll_y);
 
     /* radar */
     fw_raw(&w, ",\"radar\":{\"mode\":\"");

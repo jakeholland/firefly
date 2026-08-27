@@ -1350,6 +1350,19 @@ static void shell_render_key(ff_app_state_t const *v, ff_app_state_t *key)
      * which is exactly the whole-struct-memcmp failure S16 warns about.
      * 0.1 degrees is LVGL's own rotation unit: below it, no pixel moves. */
     key->radar.arrow_deg = (float)(int32_t)(v->radar.arrow_deg * 10.0f);
+
+    /* #bug1 — brightness is kept OUT of the render key (coarsened to a
+     * constant). A live brightness drag emits a value change every frame;
+     * were it in the key, each would mark the view dirty and force a full
+     * face teardown+rebuild, destroying the very slider being dragged. It
+     * needs no rebuild anyway: brightness changes no rendered pixel except
+     * the Settings slider, which scr_settings.c already tracks live in its
+     * own deco, and the device backlight, which app_main applies every tick
+     * from the projected brightness_pct independently of the dirty bit. So a
+     * brightness change never repaints a face; only a genuine face/content
+     * change does. (The committed value still reaches a fresh build via the
+     * projection on the next real repaint / on re-entry to Settings.) */
+    key->settings.brightness_pct = 0;
 }
 
 /* ---------------------------------------------------------------------
@@ -1694,8 +1707,22 @@ static void shell_setting_set(shell_t *sh, ff_intent_t const *in)
         int32_t v = in->u.setting.v.i;
         if (v < (int32_t)FF_BRIGHTNESS_MIN_PCT) v = (int32_t)FF_BRIGHTNESS_MIN_PCT;
         if (v > (int32_t)FF_BRIGHTNESS_MAX_PCT) v = (int32_t)FF_BRIGHTNESS_MAX_PCT;
-        changed = (s->brightness_pct != (uint8_t)v);
+        /* #bug1 — always apply the value to in-memory state so a projection
+         * consumer (the device backlight, driven every tick from the
+         * projected brightness_pct — see targets/esp32s3/main/app_main.c)
+         * tracks a live drag. But COALESCE the NVS write: a TRANSIENT value
+         * is a mid-drag preview and must NOT hit flash (a drag fires dozens
+         * of them; persisting each would thrash the NVS wear-levelling for no
+         * benefit — the intermediate values are never the settled setting).
+         * Only the committed (non-transient) RELEASED value persists, and it
+         * persists unconditionally: the live drag has already moved
+         * brightness_pct, so the usual "changed?" guard would see no delta at
+         * release and skip the one write that matters. */
         s->brightness_pct = (uint8_t)v;
+        if (in->u.setting.transient) {
+            return; /* live preview: applied, deliberately not persisted */
+        }
+        changed = true; /* committed: persist the settled value once */
         break;
     }
     case FF_SETTING_WATER_MIN: {
