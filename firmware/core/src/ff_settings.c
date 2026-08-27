@@ -13,7 +13,7 @@
  * below only catches size mismatches; two different layouts can share the
  * same sizeof() (e.g. a reordering, or swapping a bool+uint8_t pair) and
  * would otherwise pass validation with silently corrupted semantics. */
-#define FF_SETTINGS_FORMAT_VERSION ((uint16_t)4u)
+#define FF_SETTINGS_FORMAT_VERSION ((uint16_t)5u)
 /* v2: compass_cal_blob (opaque uint8_t[32]) -> compass_cal (ff_geo_cal_t),
  * per TODO(S01) in ff_settings.h. Same sizeof() risk the header comment
  * warns about (a reordering/retype can share sizeof() with the old
@@ -33,6 +33,14 @@
  * false, which is exactly what a pre-S17 puck's real state was — it had
  * no colorblind toggle at all, so "off" is the honest reading, not a
  * guess). Still pre-v1 firmware, no fielded devices to migrate. */
+/* v5: + touch_ax/bx/ay/by + touch_calibrated (S15 slice d's [api]
+ * amendment to S11 — the touch-calibration affine, see ff_settings.h and
+ * ff_touchcal.h). Same rejection-not-migration policy as v3/v4: a v4 blob
+ * is refused outright and the full defaults apply (touch_calibrated
+ * defaults false -> identity transform, which is exactly what a pre-S15d
+ * puck's real state was — it had no touch calibration at all, so
+ * "uncalibrated / correct nothing" is the honest reading, not a guess).
+ * Still pre-v1 firmware, no fielded devices to migrate. */
 
 typedef struct {
     uint32_t magic;
@@ -61,6 +69,10 @@ static void ff_settings_apply_defaults(ff_settings_t *s)
     /* compass_cal: left zeroed -> identity ff_geo_cal_t; cal_valid stays false. */
     /* colorblind: left zeroed -> false (brand palette). S17's own scoping
      * note: "not colorblind by default — keep the brand colours". */
+    /* touch_ax/bx/ay/by: left zeroed; touch_calibrated stays false ->
+     * the device applies IDENTITY (raw touch passes through). S15d: a puck
+     * that has never been calibrated corrects touch to nothing, not to a
+     * garbage transform. */
 }
 
 void ff_settings_load(ff_settings_t *s, ff_store_t const *st)

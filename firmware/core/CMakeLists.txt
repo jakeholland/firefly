@@ -3,6 +3,7 @@
 add_library(ff-core STATIC
     src/ff_version.c
     src/ff_settings.c # S11
+    src/ff_touchcal.c # S15d
 )
 
 target_include_directories(ff-core PUBLIC include)
@@ -39,6 +40,15 @@ if(FF_BUILD_TESTS)
     ff_apply_warnings(test_settings)
 
     add_test(NAME test_settings COMMAND test_settings)
+
+    # S15d — touch calibration (per-axis affine solve/apply; pure core).
+    add_executable(test_touchcal
+        tests/test_touchcal.c
+    )
+    target_link_libraries(test_touchcal PRIVATE ff-core unity)
+    ff_apply_warnings(test_touchcal)
+
+    add_test(NAME test_touchcal COMMAND test_touchcal)
 endif()
 
 # S01 (core/geo — bearing, distance, heading fusion; docs/specs/S01-core-geo.md)
