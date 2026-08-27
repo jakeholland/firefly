@@ -250,48 +250,58 @@ esp_err_t ff_display_draw_test_pattern(void)
         return ESP_ERR_INVALID_STATE;
     }
 
-    const size_t px = (size_t)FF_LCD_H_RES * FF_LCD_V_RES;
-    uint16_t *fb = heap_caps_malloc(px * sizeof(uint16_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_DMA);
-    if (fb == NULL) {
-        /* PSRAM+DMA may be unavailable; fall back to plain PSRAM. */
-        fb = heap_caps_malloc(px * sizeof(uint16_t), MALLOC_CAP_SPIRAM);
-    }
-    if (fb == NULL) {
-        ESP_LOGE(TAG, "test pattern: OOM allocating %u byte framebuffer", (unsigned)(px * 2));
+    /* Draw in horizontal bands from a small INTERNAL-DMA buffer. A full
+     * 412x412 frame (~331 KB) cannot be pushed in one draw_bitmap: sending
+     * that from PSRAM in a single SPI transaction returns ESP_ERR_NO_MEM
+     * (the SPI/esp_lcd layer can't get enough internal DMA for a transfer
+     * that large), and a full-frame INTERNAL buffer will not fit (~240 KB
+     * free). BAND_LINES divides 412 evenly (412 = 4*103) so every band is
+     * 4-line aligned on the y axis, matching the SPD2010's documented
+     * draw-alignment rule; the band buffer is a few KB of internal DMA RAM. */
+    enum { BAND_LINES = 4 };
+    const size_t band_px = (size_t)FF_LCD_H_RES * BAND_LINES;
+    uint16_t *band = heap_caps_malloc(band_px * sizeof(uint16_t), MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
+    if (band == NULL) {
+        ESP_LOGE(TAG, "test pattern: OOM allocating %u byte band buffer", (unsigned)(band_px * 2));
         return ESP_ERR_NO_MEM;
     }
 
-    /* Solid fill: amber (#FFC66B -> RGB565 0xFE2D). */
+    /* Solid fill: amber (#FFC66B -> RGB565 0xFE2D). Every band is identical. */
     const uint16_t amber = ff_rgb565_swap(0xFE2D);
-    for (size_t i = 0; i < px; i++) fb[i] = amber;
-    esp_err_t err = esp_lcd_panel_draw_bitmap(s_panel, 0, 0, FF_LCD_H_RES, FF_LCD_V_RES, fb);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "solid-fill draw_bitmap failed: %s", esp_err_to_name(err));
-        heap_caps_free(fb);
-        return err;
+    for (size_t i = 0; i < band_px; i++) band[i] = amber;
+    for (int y = 0; y < FF_LCD_V_RES; y += BAND_LINES) {
+        esp_err_t err = esp_lcd_panel_draw_bitmap(s_panel, 0, y, FF_LCD_H_RES, y + BAND_LINES, band);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "solid-fill band y=%d draw_bitmap failed: %s", y, esp_err_to_name(err));
+            heap_caps_free(band);
+            return err;
+        }
     }
-    ESP_LOGI(TAG, "first light: solid amber fill drawn");
+    ESP_LOGI(TAG, "first light: solid amber fill drawn (%d bands)", FF_LCD_V_RES / BAND_LINES);
     vTaskDelay(pdMS_TO_TICKS(1500));
 
     /* Two-colour split: left half green (#9BE07B->0x9F6F), right half red
-     * (#FF0000->0xF800). Boundary at x=206 lives in pixel data. */
+     * (#FF0000->0xF800). Boundary at x=206 lives in pixel data; every band
+     * is identical, so fill the band once and repeat it down the screen. */
     const uint16_t green = ff_rgb565_swap(0x9F6F);
     const uint16_t red = ff_rgb565_swap(0xF800);
-    for (int y = 0; y < FF_LCD_V_RES; y++) {
-        uint16_t *row = fb + (size_t)y * FF_LCD_H_RES;
+    for (int ly = 0; ly < BAND_LINES; ly++) {
+        uint16_t *row = band + (size_t)ly * FF_LCD_H_RES;
         for (int x = 0; x < FF_LCD_H_RES; x++) {
             row[x] = (x < FF_LCD_H_RES / 2) ? green : red;
         }
     }
-    err = esp_lcd_panel_draw_bitmap(s_panel, 0, 0, FF_LCD_H_RES, FF_LCD_V_RES, fb);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "split draw_bitmap failed: %s", esp_err_to_name(err));
-        heap_caps_free(fb);
-        return err;
+    for (int y = 0; y < FF_LCD_V_RES; y += BAND_LINES) {
+        esp_err_t err = esp_lcd_panel_draw_bitmap(s_panel, 0, y, FF_LCD_H_RES, y + BAND_LINES, band);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "split band y=%d draw_bitmap failed: %s", y, esp_err_to_name(err));
+            heap_caps_free(band);
+            return err;
+        }
     }
     ESP_LOGI(TAG, "first light: two-colour split drawn (left=green right=red)");
 
-    heap_caps_free(fb);
+    heap_caps_free(band);
     return ESP_OK;
 }
 
