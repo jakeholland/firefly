@@ -325,14 +325,20 @@ lv_display_t *ff_display_lvgl_start(void)
     }
     ESP_LOGI(TAG, "LVGL v9 port init (task started)");
 
-    /* Full-frame double buffer in PSRAM. full_refresh keeps every flush
-     * full-width (0..412), sidestepping the SPD2010 x%4 partial-area
-     * alignment rule. swap_bytes handles the RGB565 big-endian wire order
-     * (same swap b1 applies by hand). */
+    /* Partial FULL-WIDTH strip buffers in internal DMA RAM. A full-frame
+     * PSRAM buffer with full_refresh flushes all ~331 KB in ONE
+     * draw_bitmap, which fails at panel_io_spi_tx_color with ESP_ERR_NO_MEM
+     * (the SPI/esp_lcd layer can't get enough internal DMA for a transfer
+     * that large — the same wall b1's raw fill hit). Instead flush in
+     * FF_LVGL_STRIP_LINES-row full-width strips: x is always 0..411 (the
+     * SPD2010 x%4 alignment rule holds — 412 is a multiple of 4), the strip
+     * height is a multiple of 4 too, and each transfer is a few tens of KB.
+     * The two strip buffers fit internal DMA RAM (~240 KB free). */
+    enum { FF_LVGL_STRIP_LINES = 40 };
     const lvgl_port_display_cfg_t disp_cfg = {
         .io_handle = s_panel_io,
         .panel_handle = s_panel,
-        .buffer_size = (uint32_t)FF_LCD_H_RES * FF_LCD_V_RES,
+        .buffer_size = (uint32_t)FF_LCD_H_RES * FF_LVGL_STRIP_LINES,
         .double_buffer = true,
         .hres = FF_LCD_H_RES,
         .vres = FF_LCD_V_RES,
@@ -340,10 +346,10 @@ lv_display_t *ff_display_lvgl_start(void)
         .rotation = {.swap_xy = false, .mirror_x = false, .mirror_y = false},
         .color_format = LV_COLOR_FORMAT_RGB565,
         .flags = {
-            .buff_dma = false,
-            .buff_spiram = true,
+            .buff_dma = true,
+            .buff_spiram = false,
             .swap_bytes = true,
-            .full_refresh = true,
+            .full_refresh = false,
         },
     };
     s_lv_disp = lvgl_port_add_disp(&disp_cfg);
@@ -351,8 +357,8 @@ lv_display_t *ff_display_lvgl_start(void)
         ESP_LOGE(TAG, "lvgl_port_add_disp failed");
         return NULL;
     }
-    ESP_LOGI(TAG, "lv_display added (%dx%d RGB565, PSRAM double buffer, full_refresh)",
-             FF_LCD_H_RES, FF_LCD_V_RES);
+    ESP_LOGI(TAG, "lv_display added (%dx%d RGB565, %d-line full-width strips, internal DMA)",
+             FF_LCD_H_RES, FF_LCD_V_RES, FF_LVGL_STRIP_LINES);
     return s_lv_disp;
 }
 
