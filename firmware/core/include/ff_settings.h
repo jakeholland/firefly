@@ -112,6 +112,27 @@ typedef struct {
      * (S12) populates it and sets cal_valid. */
     ff_geo_cal_t compass_cal;
     bool cal_valid;
+
+    /* [api] S15 slice d (docs/specs/S15d-touch-calibration.md) — touch
+     * calibration: the per-axis affine that corrects the SPD2010's
+     * offset+scale error (screen = a*raw + b per axis; see ff_touchcal.h).
+     * These are the four fitted params from ff_touchcal_solve, persisted
+     * here so calibration rides the existing settings mechanism.
+     *
+     * MEANINGLESS unless touch_calibrated is true. Like utc_offset_set and
+     * cal_valid above, the flag — not the values — encodes absence: a
+     * scale of 0 is not a free sentinel (it is a real, if useless, value),
+     * and defaults leave these zeroed with touch_calibrated=false, which
+     * the device applies as IDENTITY (raw passes through). A puck that has
+     * never been calibrated therefore corrects touch to exactly nothing,
+     * not to a garbage transform. Read by the device touch path
+     * (targets/esp32s3/ff_display) via ff_touchcal_apply; the sim never
+     * consults these (its input is already screen-space). */
+    float touch_ax;
+    float touch_bx;
+    float touch_ay;
+    float touch_by;
+    bool touch_calibrated;
 } ff_settings_t;
 
 /* ff_geo_cal_t must fit the persisted-layout budget above — a layout

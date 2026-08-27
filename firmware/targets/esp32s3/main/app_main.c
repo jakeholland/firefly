@@ -15,7 +15,13 @@
  *   STAGE 3 (touch drives it): + SPD2010 touch -> an LVGL pointer indev
  *            wired to the SAME abstract input seam the sim ctl socket
  *            drives (ff_intent_emit -> ff_shell_intent_sink). A physical
- *            tap/swipe changes shell state.
+ *            tap/swipe changes shell state. The stored touch calibration
+ *            (if any) is loaded from ff_settings and applied.
+ *   STAGE 4 (calibrate touch, S15d): + the crosshair capture flow — tap 5
+ *            targets -> ff_touchcal_solve -> store to ff_settings -> apply
+ *            LIVE and continue straight into the normal UI in the same
+ *            boot (no reflash to feel the correction). Params + pairs are
+ *            logged. See docs/specs/S15d-touch-calibration.md.
  *
  * The stage is chosen by CONFIG_FF_BRINGUP_STAGE (menuconfig ->
  * "Firefly bring-up", default 1). core/ and app/ are UNCHANGED; every new
@@ -38,7 +44,9 @@
 #include "ff_display.h"
 #include "ff_face.h"
 #include "ff_intent.h"
+#include "ff_settings.h"
 #include "ff_shell.h"
+#include "ff_touchcal.h"
 
 static const char *TAG = "firefly";
 
@@ -153,7 +161,7 @@ void app_main(void)
         return;
     }
 
-    /* ---- STAGE 3: touch + bind the input seam ---- */
+    /* ---- STAGE 3+: touch + bind the input seam ---- */
     if (stage >= 3) {
         if (ff_display_touch_start(disp) != ESP_OK) {
             ff_park("touch bring-up failed");
@@ -164,6 +172,50 @@ void app_main(void)
          * shell lives for the process lifetime. */
         ff_intent_emit_bind(ff_shell_intent_sink, &s_shell);
         ESP_LOGI(TAG, "input seam bound: touch -> ff_shell_intent");
+
+        /* ---- Touch calibration (S15 slice d) ----
+         * STAGE 4 (CAL): run the crosshair capture -> solve -> store ->
+         * apply LIVE, then fall through into the normal UI in the SAME boot
+         * (no reflash to feel it). STAGE 3: load whatever cal ff_settings
+         * holds and apply it. Either way the transform is installed in the
+         * one touch seam (ff_display process_coordinates) so gestures,
+         * long-press and buttons are all corrected. */
+        ff_settings_t settings;
+        ff_settings_load(&settings, &s_store); /* stub store -> defaults (uncalibrated) */
+
+        ff_touchcal_t cal;
+        if (stage >= 4) {
+            if (ff_display_run_calibration(&cal) != ESP_OK) {
+                ff_park("touch calibration flow failed");
+                return;
+            }
+            /* Store into settings so persistence rides the existing seam.
+             * HONEST LIMIT: s_store is the no-op stub, so this save goes
+             * nowhere — the fit is session-live only (applied below and it
+             * lasts until reboot). The params are logged by
+             * ff_display_run_calibration so the maintainer can bake them as
+             * a compile-time default. A real NVS-backed ff_store (persist
+             * across reboot) is the tracked follow-up. */
+            settings.touch_calibrated = cal.valid;
+            settings.touch_ax = cal.ax;
+            settings.touch_bx = cal.bx;
+            settings.touch_ay = cal.ay;
+            settings.touch_by = cal.by;
+            ff_settings_save(&settings, &s_store);
+            ESP_LOGW(TAG, "touch cal saved to ff_settings, but the store is the no-op STUB: "
+                          "session-live only (survives until reboot). Bake the logged params or "
+                          "wire an NVS store to persist. See S15d 'Persistence'.");
+        } else {
+            /* STAGE 3: reconstruct the transform from stored settings. */
+            cal.ax = settings.touch_ax;
+            cal.bx = settings.touch_bx;
+            cal.ay = settings.touch_ay;
+            cal.by = settings.touch_by;
+            cal.valid = settings.touch_calibrated;
+            ESP_LOGI(TAG, "touch cal loaded from ff_settings: calibrated=%d",
+                     (int)settings.touch_calibrated);
+        }
+        ff_display_touch_set_cal(&cal);
     }
 
     /* First face build (under the LVGL lock — the port owns the LVGL task). */

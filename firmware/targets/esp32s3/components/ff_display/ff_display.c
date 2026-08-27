@@ -20,6 +20,8 @@
 
 #include <string.h>
 
+#include "ff_touchcal.h"
+
 #include "driver/gpio.h"
 #include "driver/i2c_master.h"
 #include "driver/ledc.h"
@@ -197,6 +199,14 @@ esp_err_t ff_display_set_brightness(uint8_t pct)
     ESP_LOGI(TAG, "backlight set to %u%% (duty %u/%u)", (unsigned)pct, (unsigned)duty, (unsigned)full_duty);
     return ESP_OK;
 }
+
+/* Active touch-calibration transform (S15 slice d). Identity until
+ * ff_display_touch_set_cal installs a fit — so an uncalibrated device (and
+ * the calibration capture itself) sees raw coords pass through. Read by
+ * ff_touchcal_process_cb on every touch poll (LVGL port task); written by
+ * ff_display_touch_set_cal. A torn read across the write is harmless — the
+ * fields are independent floats and the next poll reads the settled value. */
+static ff_touchcal_t s_active_cal = {.ax = 1.0f, .bx = 0.0f, .ay = 1.0f, .by = 0.0f, .valid = false};
 
 /* =====================================================================
  * b1 step 1 — I2C bus + TCA9554 up, both resets released through it.
@@ -507,9 +517,44 @@ static void ff_touch_press_log_cb(lv_event_t *e)
     lv_indev_t *indev = lv_event_get_indev(e);
     lv_point_t p;
     lv_indev_get_point(indev, &p);
-    /* Honest raw coords: uncalibrated, logged as the controller reports
-     * them (S15b: "don't fake positions; log raw coords and say so"). */
-    ESP_LOGI(TAG, "touch @ (%d, %d) [raw, uncalibrated]", (int)p.x, (int)p.y);
+    /* Post-calibration coords: this is what LVGL and the shell act on. When
+     * uncalibrated (identity), it equals the raw controller report. */
+    ESP_LOGI(TAG, "touch @ (%d, %d) [%s]", (int)p.x, (int)p.y,
+             s_active_cal.valid ? "calibrated" : "raw, uncalibrated");
+}
+
+/* process_coordinates: the ONE seam every physical touch passes through
+ * before esp_lvgl_port hands it to LVGL (esp_lcd_touch_get_coordinates
+ * calls this after the controller read). Correcting here fixes gestures,
+ * long-press, and buttons alike — no second input path. Identity when
+ * uncalibrated, so raw passes through (still clamped to the panel). */
+static void ff_touchcal_process_cb(esp_lcd_touch_handle_t tp, uint16_t *x, uint16_t *y,
+                                   uint16_t *strength, uint8_t *point_num, uint8_t max_point_num)
+{
+    (void)tp;
+    (void)strength;
+    (void)max_point_num;
+    if (x == NULL || y == NULL || point_num == NULL) {
+        return;
+    }
+    for (uint8_t i = 0; i < *point_num; i++) {
+        int sx, sy;
+        ff_touchcal_apply(&s_active_cal, (int)x[i], (int)y[i], &sx, &sy);
+        x[i] = (uint16_t)sx;
+        y[i] = (uint16_t)sy;
+    }
+}
+
+void ff_display_touch_set_cal(const ff_touchcal_t *c)
+{
+    if (c == NULL || !c->valid) {
+        ff_touchcal_identity(&s_active_cal);
+        ESP_LOGI(TAG, "touch cal: identity (uncalibrated — raw passes through)");
+        return;
+    }
+    s_active_cal = *c;
+    ESP_LOGI(TAG, "touch cal active: sx=%.4f*rawx%+.2f  sy=%.4f*rawy%+.2f", (double)c->ax,
+             (double)c->bx, (double)c->ay, (double)c->by);
 }
 
 esp_err_t ff_display_touch_start(lv_display_t *disp)
@@ -551,6 +596,9 @@ esp_err_t ff_display_touch_start(lv_display_t *disp)
         .int_gpio_num = GPIO_NUM_NC,
         .levels = {.reset = 0, .interrupt = 0},
         .flags = {.swap_xy = 0, .mirror_x = 0, .mirror_y = 0},
+        /* S15 slice d: correct every touch in-place here, the single seam
+         * esp_lvgl_port reads through. Identity until a cal is installed. */
+        .process_coordinates = ff_touchcal_process_cb,
     };
     err = esp_lcd_touch_new_i2c_spd2010(tp_io, &tp_cfg, &s_touch);
     if (err != ESP_OK) {
@@ -576,6 +624,182 @@ esp_err_t ff_display_touch_start(lv_display_t *disp)
      * maintainer where the controller thinks the finger landed. */
     lv_indev_add_event_cb(indev, ff_touch_press_log_cb, LV_EVENT_PRESSED, NULL);
     ESP_LOGI(TAG, "touch indev added -> shell input seam (LVGL pointer)");
+    return ESP_OK;
+}
+
+/* =====================================================================
+ * S15 slice d — crosshair capture calibration flow.
+ *
+ * Five targets (screen space): center first, then the four insets — all
+ * comfortably inside the round glass, giving 3 distinct x and 3 distinct y
+ * for a well-conditioned per-axis fit (docs/specs/S15d). One raw tap is
+ * captured per target on a full press+release (debounce), then the pairs
+ * feed ff_touchcal_solve. The capture runs with the active cal at identity
+ * so the taps recorded are raw; the caller installs the solved transform.
+ * ===================================================================== */
+enum { FF_CAL_TARGET_COUNT = 5 };
+static const int s_cal_tx[FF_CAL_TARGET_COUNT] = {206, 90, 322, 90, 322};
+static const int s_cal_ty[FF_CAL_TARGET_COUNT] = {206, 90, 90, 322, 322};
+
+static struct {
+    volatile int captured; /* number of targets captured so far          */
+    volatile bool done;    /* set true once all FF_CAL_TARGET_COUNT taken */
+    ff_cal_point_t pts[FF_CAL_TARGET_COUNT];
+    lv_obj_t *label;
+    lv_obj_t *ring;
+    lv_obj_t *bar_h;
+    lv_obj_t *bar_v;
+    lv_obj_t *dot;
+} s_cal;
+
+/* Move the crosshair to target `idx` and update the progress text. Runs
+ * under the LVGL lock (from the setup path or the LVGL-task event cb). */
+static void ff_cal_place_crosshair(int idx)
+{
+    int tx = s_cal_tx[idx];
+    int ty = s_cal_ty[idx];
+    lv_obj_set_pos(s_cal.ring, tx - 20, ty - 20);
+    lv_obj_set_pos(s_cal.bar_h, tx - 20, ty - 1);
+    lv_obj_set_pos(s_cal.bar_v, tx - 1, ty - 20);
+    lv_obj_set_pos(s_cal.dot, tx - 3, ty - 3);
+    lv_label_set_text_fmt(s_cal.label, "Tap the target\n%d / %d", idx + 1, FF_CAL_TARGET_COUNT);
+}
+
+/* One capture per target, on release (a deliberate, completed tap). */
+static void ff_cal_release_cb(lv_event_t *e)
+{
+    if (s_cal.done) {
+        return;
+    }
+    int idx = s_cal.captured;
+    if (idx >= FF_CAL_TARGET_COUNT) {
+        return;
+    }
+    lv_indev_t *indev = lv_event_get_indev(e);
+    lv_point_t p;
+    lv_indev_get_point(indev, &p);
+
+    s_cal.pts[idx].raw_x = (int)p.x;
+    s_cal.pts[idx].raw_y = (int)p.y;
+    s_cal.pts[idx].screen_x = s_cal_tx[idx];
+    s_cal.pts[idx].screen_y = s_cal_ty[idx];
+    ESP_LOGI(TAG, "cal capture %d/%d: raw (%d,%d) -> target (%d,%d)", idx + 1, FF_CAL_TARGET_COUNT,
+             (int)p.x, (int)p.y, s_cal_tx[idx], s_cal_ty[idx]);
+
+    s_cal.captured = idx + 1;
+    if (s_cal.captured >= FF_CAL_TARGET_COUNT) {
+        lv_label_set_text(s_cal.label, "Calibrating...");
+        s_cal.done = true; /* published last, after pts[] is written */
+    } else {
+        ff_cal_place_crosshair(s_cal.captured);
+    }
+}
+
+static lv_obj_t *ff_cal_make_bar(lv_obj_t *parent, int w, int h, lv_color_t col)
+{
+    lv_obj_t *o = lv_obj_create(parent);
+    lv_obj_remove_style_all(o);
+    lv_obj_set_size(o, w, h);
+    lv_obj_set_style_bg_color(o, col, 0);
+    lv_obj_set_style_bg_opa(o, LV_OPA_COVER, 0);
+    lv_obj_remove_flag(o, LV_OBJ_FLAG_CLICKABLE); /* clicks pass to root */
+    return o;
+}
+
+esp_err_t ff_display_run_calibration(ff_touchcal_t *out_cal)
+{
+    if (out_cal == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    ff_touchcal_identity(out_cal);
+
+    if (s_lv_disp == NULL || s_touch == NULL) {
+        ESP_LOGE(TAG, "run_calibration needs lvgl_start + touch_start first");
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    /* Capture RAW: the active transform must be identity while we record. */
+    ff_touchcal_identity(&s_active_cal);
+    memset(&s_cal, 0, sizeof(s_cal));
+
+    const lv_color_t accent = lv_color_hex(0xFFC66B); /* Firefly amber */
+
+    if (!ff_display_lock(1000)) {
+        ESP_LOGE(TAG, "run_calibration: LVGL lock timeout");
+        return ESP_ERR_TIMEOUT;
+    }
+    lv_obj_t *scr = lv_screen_active();
+    lv_obj_clean(scr);
+
+    /* Full-screen black backdrop that catches every tap. */
+    lv_obj_t *root = lv_obj_create(scr);
+    lv_obj_remove_style_all(root);
+    lv_obj_set_size(root, LV_PCT(100), LV_PCT(100));
+    lv_obj_set_style_bg_color(root, lv_color_black(), 0);
+    lv_obj_set_style_bg_opa(root, LV_OPA_COVER, 0);
+    lv_obj_add_flag(root, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_remove_flag(root, LV_OBJ_FLAG_SCROLLABLE);
+
+    s_cal.label = lv_label_create(root);
+    lv_obj_set_style_text_color(s_cal.label, lv_color_white(), 0);
+    lv_obj_set_style_text_align(s_cal.label, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_align(s_cal.label, LV_ALIGN_TOP_MID, 0, 96);
+    lv_obj_remove_flag(s_cal.label, LV_OBJ_FLAG_CLICKABLE);
+
+    /* Crosshair: an open ring + a thin cross + a centre dot, all in accent
+     * and all click-through so the tap always reaches `root`. */
+    s_cal.ring = lv_obj_create(root);
+    lv_obj_remove_style_all(s_cal.ring);
+    lv_obj_set_size(s_cal.ring, 40, 40);
+    lv_obj_set_style_radius(s_cal.ring, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_border_width(s_cal.ring, 3, 0);
+    lv_obj_set_style_border_color(s_cal.ring, accent, 0);
+    lv_obj_set_style_bg_opa(s_cal.ring, LV_OPA_TRANSP, 0);
+    lv_obj_remove_flag(s_cal.ring, LV_OBJ_FLAG_CLICKABLE);
+
+    s_cal.bar_h = ff_cal_make_bar(root, 40, 2, accent);
+    s_cal.bar_v = ff_cal_make_bar(root, 2, 40, accent);
+    s_cal.dot = ff_cal_make_bar(root, 6, 6, accent);
+    lv_obj_set_style_radius(s_cal.dot, LV_RADIUS_CIRCLE, 0);
+
+    lv_obj_add_event_cb(root, ff_cal_release_cb, LV_EVENT_RELEASED, NULL);
+    ff_cal_place_crosshair(0);
+    ff_display_unlock();
+
+    ESP_LOGI(TAG, "S15d calibration started: tap each of %d crosshairs on the glass",
+             FF_CAL_TARGET_COUNT);
+
+    /* Block this task until the LVGL-task event cb has captured all five. */
+    while (!s_cal.done) {
+        vTaskDelay(pdMS_TO_TICKS(20));
+    }
+
+    bool ok = ff_touchcal_solve(s_cal.pts, FF_CAL_TARGET_COUNT, out_cal);
+
+    ESP_LOGI(TAG, "=== S15d touch calibration result ===");
+    for (int i = 0; i < FF_CAL_TARGET_COUNT; i++) {
+        ESP_LOGI(TAG, "  pair %d/%d: raw (%d,%d) -> screen (%d,%d)", i + 1, FF_CAL_TARGET_COUNT,
+                 s_cal.pts[i].raw_x, s_cal.pts[i].raw_y, s_cal.pts[i].screen_x, s_cal.pts[i].screen_y);
+    }
+    if (ok) {
+        ESP_LOGI(TAG, "  params: ax=%.6f bx=%.4f ay=%.6f by=%.4f", (double)out_cal->ax,
+                 (double)out_cal->bx, (double)out_cal->ay, (double)out_cal->by);
+        ESP_LOGI(TAG, "  transform: sx = %.6f*rawx %+.4f   sy = %.6f*rawy %+.4f", (double)out_cal->ax,
+                 (double)out_cal->bx, (double)out_cal->ay, (double)out_cal->by);
+    } else {
+        ESP_LOGE(TAG, "  DEGENERATE capture (no x- or y-spread) — identity kept, no correction. "
+                      "Re-run calibration and tap the distinct targets.");
+    }
+    ESP_LOGI(TAG, "=====================================");
+
+    /* Tear the calibration screen down; the caller rebuilds the real face. */
+    if (ff_display_lock(1000)) {
+        lv_obj_clean(lv_screen_active());
+        ff_display_unlock();
+    }
+    /* Drop the now-dangling object pointers (screen was cleaned). */
+    memset(&s_cal, 0, sizeof(s_cal));
+
     return ESP_OK;
 }
 

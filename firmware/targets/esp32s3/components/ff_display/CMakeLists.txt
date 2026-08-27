@@ -12,6 +12,7 @@ idf_component_register(
     SRCS "ff_display.c"
     INCLUDE_DIRS "include"
     REQUIRES
+        ff_core
         log
         lvgl
         esp_lvgl_port
