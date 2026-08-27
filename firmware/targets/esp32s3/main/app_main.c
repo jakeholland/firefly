@@ -71,29 +71,37 @@ static ff_nvs_store_t s_nvs; /* S21 §4 — backing state for the NVS store */
  * ff_settings (which now lands in NVS, §4). Returns true only on a valid
  * fit; a failed/aborted capture leaves the existing calibration untouched.
  *
- * DEVICE NOTE (for the maintainer's flash-verify): this runs synchronously
- * from the Settings row's LVGL click callback, i.e. inside the esp_lvgl_port
- * UI task. ff_display_run_calibration owns the panel + touch for the duration
- * of the crosshair flow; verify on glass that it does not contend the LVGL
- * lock with the port task (the boot-time STAGE 4 path already calls the same
- * function successfully, outside the render loop). If contention shows up,
- * the fix is to defer the flow to the main loop rather than run it in the
- * callback — but that is a device-runtime detail this sim-only build cannot
- * exercise. */
+ * DEVICE-RUNTIME (the deadlock the sim-only build can't exercise, fixed
+ * here): ff_display_run_calibration BLOCKS the calling task in a vTaskDelay
+ * loop waiting for the LVGL *task's* release-event cb to capture the five
+ * crosshair taps. This hook fires SYNCHRONOUSLY from the Settings row's LVGL
+ * click callback (ff_shell_intent_sink -> ff_shell_intent has no queue) —
+ * i.e. from inside the esp_lvgl_port UI task — so running the flow here would
+ * block that very task and starve the tap-capture -> permanent hang.
+ * So it is DEFERRED, two-phase: the first call (from the UI task) only
+ * REQUESTS the flow and returns false (the shell does nothing); the main
+ * loop (a separate task) runs the crosshair flow off the UI task, then
+ * re-emits FF_INTENT_CALIBRATE_TOUCH, and this second call returns the ready
+ * result so the SHELL writes it into ff_settings and persists (-> NVS, §4) —
+ * keeping the shell the single persistence owner so a later settings save
+ * cannot clobber the cal. */
+static volatile bool s_calib_requested = false;
+static bool s_calib_ready = false;
+static ff_touchcal_t s_calib_result;
+
 static bool ff_calibrate_touch_cb(void *user, ff_touchcal_t *out_cal)
 {
     (void)user;
     if (out_cal == NULL) {
         return false;
     }
-    ESP_LOGI(TAG, "CALIBRATE TOUCH: running crosshair capture from Settings");
-    if (ff_display_run_calibration(out_cal) != ESP_OK) {
-        ESP_LOGE(TAG, "in-app touch calibration failed — keeping the existing calibration");
-        return false;
+    if (s_calib_ready) { /* second call: the main loop's re-emit — hand back the result */
+        *out_cal = s_calib_result;
+        s_calib_ready = false;
+        return out_cal->valid;
     }
-    ff_display_touch_set_cal(out_cal); /* apply LIVE immediately */
-    ESP_LOGI(TAG, "touch cal applied live + returned to shell for NVS persist: valid=%d", (int)out_cal->valid);
-    return out_cal->valid;
+    s_calib_requested = true; /* first call, from the UI task — defer, don't block */
+    return false;
 }
 
 /* Bring the panel up through the QSPI init (shared by every stage). Returns
@@ -261,6 +269,31 @@ void app_main(void)
      * shell every frame, rebuild the LVGL tree ONLY on a dirty tick. The
      * esp_lvgl_port task does the actual flushing; we just own the model. */
     while (true) {
+        /* S21 §3 (device-runtime): drain a deferred CALIBRATE-TOUCH request in
+         * THIS (main) task. ff_display_run_calibration blocks waiting for the
+         * LVGL task to capture the taps, so it must not run from the click
+         * callback (see ff_calibrate_touch_cb). Re-emitting the intent from
+         * here lets the shell persist the result via NVS. */
+        if (s_calib_requested) {
+            s_calib_requested = false;
+            ff_touchcal_t cal;
+            if (ff_display_run_calibration(&cal) == ESP_OK) {
+                ff_display_touch_set_cal(&cal); /* apply live */
+                s_calib_result = cal;
+                s_calib_ready = true;
+                ff_intent_t calin = {.kind = FF_INTENT_CALIBRATE_TOUCH, .u = {0}};
+                ff_shell_intent(&s_shell, &calin); /* shell writes cal -> ff_settings -> NVS */
+            } else {
+                ESP_LOGE(TAG, "in-app calibration failed — keeping existing cal");
+            }
+            /* run_calibration cleaned the screen — rebuild the real face. */
+            if (ff_display_lock(100)) {
+                lv_obj_clean(lv_screen_active());
+                ff_face_build(ff_shell_view(&s_shell));
+                ff_display_unlock();
+            }
+        }
+
         bool const dirty = ff_shell_tick(&s_shell, ff_esp_clock_now_ms(NULL));
         if (dirty) {
             ff_app_state_t const *v = ff_shell_view(&s_shell);
