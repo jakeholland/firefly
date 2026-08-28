@@ -39,6 +39,22 @@
 _Static_assert(FF_COMPOSE_EXTRA_MAX == 280,
                "FF_COMPOSE_EXTRA_MAX drifted from FP_MAX_SETS+FP_MAX_STAGES+FP_MAX_LANDMARKS");
 
+/* S22 slice d — how long a RALLY-to-WHOLE_CREW confirm stays armed after
+ * the first tap (AC4). A second RALLY tap within this window sends; past
+ * it the arm has lapsed and the next tap re-arms (a stale confirm never
+ * silently fires the one loud broadcast). Four seconds: long enough to be
+ * a deliberate double-tap, short enough that a forgotten arm cannot lurk. */
+#define FF_SIG_RALLY_CONFIRM_MS 4000u
+
+/* S22 slice d, SPEC GAP (see docs/specs/S22-signals-rework.md "Questions"):
+ * a quick RALLY gathers the crew to the SENDER's own current location, and
+ * names the place after the nearest festpack landmark within this radius
+ * (else the honest constant "MY SPOT"). Naming a rally after a landmark the
+ * sender is nowhere near would be dishonest, so the match is gated on real
+ * proximity; 120 m ~ "you are effectively at it" at festival scale. */
+#define FF_SIG_RALLY_LANDMARK_NEAR_M 120.0f
+#define FF_SIG_RALLY_DEFAULT_NAME "MY SPOT"
+
 typedef struct {
     /* --- injected config --------------------------------------------- */
     ff_clock_t const *clock;
@@ -86,6 +102,20 @@ typedef struct {
      * WHOLE_CREW. SELECT/CLEAR intents mutate this holder. */
     ff_target_kind_t sig_target_kind;
     uint32_t         sig_target_node;
+
+    /* S22 slice d — the RALLY-to-WHOLE_CREW confirm state machine (AC4:
+     * "the one loud broadcast requires a confirm"). A first RALLY tap while
+     * the target is WHOLE_CREW ARMS the confirm (`sig_rally_armed`, stamped
+     * `sig_rally_armed_ms`) and renders the button armed instead of
+     * sending; a second RALLY tap within FF_SIG_RALLY_CONFIRM_MS sends and
+     * disarms; a timeout or ANY intervening Signals action (pulse, compose,
+     * select, clear) disarms. Only WHOLE_CREW arms — a rally to one member,
+     * and every pulse/compose, sends on the first tap. This lives in the
+     * shell, not core, because it is time-based (needs the injected clock);
+     * the shell reflects `sig_rally_armed` into the view's display flag
+     * (`ff_sigview_set_rally_confirm_armed`) each tick. */
+    bool     sig_rally_armed;
+    uint32_t sig_rally_armed_ms;
 
     /* The composer's destination, resolved when FF_INTENT_OPEN_COMPOSE
      * pushed the modal (S16 slice c1). 0 = broadcast ("TO: EVERYONE").
@@ -1028,6 +1058,16 @@ static void shell_project_signals(shell_t *sh, uint32_t now_ms, ff_sigview_t *ou
         sh->sig_target_kind = FF_TARGET_WHOLE_CREW;
         sh->sig_target_node = 0u;
     }
+
+    /* S22 slice d — expire a lapsed RALLY-to-WHOLE_CREW confirm (AC4: a
+     * forgotten first tap must not lurk armed forever), then reflect the
+     * live armed flag into the view the screen renders. The state machine
+     * itself is driven by the RALLY/PULSE/COMPOSE/SELECT/CLEAR handlers;
+     * this is only the time-based lapse + the per-tick projection of it. */
+    if (sh->sig_rally_armed && (now_ms - sh->sig_rally_armed_ms) > FF_SIG_RALLY_CONFIRM_MS) {
+        sh->sig_rally_armed = false;
+    }
+    ff_sigview_set_rally_confirm_armed(out, sh->sig_rally_armed);
 }
 
 /**
@@ -1766,6 +1806,103 @@ static uint32_t shell_compose_dest(shell_t *sh, uint32_t requested)
     return (sel != NULL) ? sel->node_id : 0u;
 }
 
+/* ---------------------------------------------------------------------
+ * S22 slice d — Signals action SEND wiring.
+ * ------------------------------------------------------------------- */
+
+/**
+ * shell_sig_dest — resolve the current Signals send target to the address
+ * a send goes to, RE-VALIDATED against the live roster (S22 honest-data,
+ * Tier 3): a member target is honoured only if that node is still a paired
+ * roster member. Writes `*out_dest` and returns true on success:
+ *   - WHOLE_CREW  -> MC_ADDR_BROADCAST (the broadcast the user saw on the
+ *                    target line).
+ *   - MEMBER      -> that member's node id.
+ * Returns false (and writes nothing) if the target is a member who is no
+ * longer paired/known — the caller then sends NOTHING rather than either
+ * addressing a node the roster does not hold OR silently falling back to a
+ * broadcast the user never asked for. (The per-tick projection already
+ * downgrades such a stale target to WHOLE_CREW; this is the belt-and-braces
+ * check at the exact instant of a send.) */
+static bool shell_sig_dest(shell_t const *sh, uint32_t *out_dest)
+{
+    if (sh->sig_target_kind == FF_TARGET_MEMBER) {
+        ff_crew_member_t const *m = ff_crew_find(&sh->crew, sh->sig_target_node);
+        if (sh->sig_target_node == 0u || m == NULL || !m->paired) {
+            return false;
+        }
+        *out_dest = sh->sig_target_node;
+        return true;
+    }
+    *out_dest = MC_ADDR_BROADCAST;
+    return true;
+}
+
+/**
+ * shell_sig_reset_target — S22 AC3: after a successful PULSE/RALLY send the
+ * target returns to WHOLE_CREW. Resets both the shell's persistent holder
+ * (the source of truth, which survives the per-tick view rebuild) and the
+ * live view via the named `ff_sigview_target_reset_after_send`, and drops
+ * any armed rally confirm. */
+static void shell_sig_reset_target(shell_t *sh)
+{
+    sh->sig_target_kind = FF_TARGET_WHOLE_CREW;
+    sh->sig_target_node = 0u;
+    sh->sig_rally_armed = false;
+    ff_sigview_target_reset_after_send(&sh->view.signals);
+}
+
+/**
+ * shell_rally_place — S22 slice d SPEC-GAP MVP (see the spec "Questions"):
+ * derive the (position, name) a quick RALLY gathers the crew to. The point
+ * is the SENDER's own current location (`my_pos`); the name is the nearest
+ * festpack landmark within FF_SIG_RALLY_LANDMARK_NEAR_M, else the honest
+ * constant "MY SPOT".
+ *
+ * Returns false — and the caller sends NOTHING — when `my_pos` is unknown:
+ * a RALLY carries a lat/lon in its wire body, and encoding {0,0} for "I do
+ * not know where I am" would be exactly the fabricated-position dishonesty
+ * this repo forbids (CLAUDE.md, [[firefly-touch-cal-default]]). A rally to
+ * one's own location is only meaningful once that location is known.
+ *
+ * `*out_name` aliases either the string literal above or a landmark name
+ * INSIDE `sh->pack` (no copy); it is consumed immediately by the encode at
+ * the call site, well within the pack's lifetime. A landmark whose name
+ * would exceed the protocol's FF_PROTO_RALLY_NAME_MAX budget is skipped
+ * (the encoder would reject it), leaving the honest default. */
+static bool shell_rally_place(shell_t const *sh, ff_latlon_t *out_pos, char const **out_name)
+{
+    if (!sh->my_pos_ok) {
+        return false;
+    }
+    *out_pos = sh->my_pos;
+    *out_name = FF_SIG_RALLY_DEFAULT_NAME;
+
+    if (sh->pack_loaded && sh->pack != NULL && sh->pack->origin_known) {
+        float my_e = 0.0f, my_n = 0.0f;
+        ff_geo_project(sh->pack->origin, sh->my_pos, &my_e, &my_n);
+        /* Compare squared distances — no sqrt, no <math.h>. */
+        float best2 = FF_SIG_RALLY_LANDMARK_NEAR_M * FF_SIG_RALLY_LANDMARK_NEAR_M;
+        for (uint8_t i = 0; i < sh->pack->n_landmarks; ++i) {
+            fp_landmark_t const *lm = &sh->pack->landmarks[i];
+            if (!lm->has_pos || lm->name[0] == '\0') {
+                continue;
+            }
+            if (strlen(lm->name) > FF_PROTO_RALLY_NAME_MAX) {
+                continue;
+            }
+            float const de = lm->east_m - my_e;
+            float const dn = lm->north_m - my_n;
+            float const d2 = de * de + dn * dn;
+            if (d2 < best2) {
+                best2 = d2;
+                *out_name = lm->name;
+            }
+        }
+    }
+    return true;
+}
+
 /**
  * FF_INTENT_SETTING_SET write-through (S16 slice e, AC8).
  *
@@ -2282,6 +2419,9 @@ void ff_shell_intent(ff_shell_t *sh_pub, ff_intent_t const *in)
          * Takeover-gated like every face intent: the Signals face is not
          * visible under a takeover, so a stray tap there must not retarget. */
         if (takeover_up) return;
+        /* Changing the target disarms any pending rally-to-WHOLE_CREW
+         * confirm (S22 AC4 "anything else disarms"). */
+        sh->sig_rally_armed = false;
         if (ff_sigview_target_select(&sh->view.signals, &sh->crew, in->u.node_id)) {
             sh->sig_target_kind = FF_TARGET_MEMBER;
             sh->sig_target_node = in->u.node_id;
@@ -2291,26 +2431,94 @@ void ff_shell_intent(ff_shell_t *sh_pub, ff_intent_t const *in)
     case FF_INTENT_SIG_CLEAR_TARGET:
         /* S22 slice b — the target line's ✕: back to WHOLE_CREW. */
         if (takeover_up) return;
+        sh->sig_rally_armed = false; /* AC4 — an intervening action disarms */
         ff_sigview_target_clear(&sh->view.signals);
         sh->sig_target_kind = FF_TARGET_WHOLE_CREW;
         sh->sig_target_node = 0u;
         return;
 
-    case FF_INTENT_SIG_RALLY:
     case FF_INTENT_SIG_PULSE:
-    case FF_INTENT_SIG_COMPOSE:
-        /* S22 slice b — the three action buttons are ROUTED here but do not
-         * SEND yet. The real work is slice (d): encode via ff_proto and
-         * dispatch to the current target (the shell's `sig_target_kind` /
-         * `sig_target_node` holder), the rally-to-WHOLE_CREW confirm
-         * (S22 AC4 — `ff_sigview_rally_needs_confirm`), COMPOSE opening the
-         * composer targeted at the current target, and the AC3 "target
-         * resets to WHOLE_CREW after any send" (clear the holder). Nothing is
-         * sent here, so nothing is reset here — a no-op is the honest
-         * slice-b behavior,
-         * and this case is the clean seam (d) fills in. Takeover-gated for
-         * the same reason as the two above. */
+        /* S22 slice d — PULSE (empty-body ping) to the current target. Sends
+         * on the first tap for both WHOLE_CREW and a member (only RALLY-to-
+         * WHOLE_CREW confirms). Any action other than a second RALLY tap
+         * disarms a pending rally confirm. */
         if (takeover_up) return;
+        sh->sig_rally_armed = false;
+        {
+            uint32_t dest = MC_ADDR_BROADCAST;
+            if (!shell_sig_dest(sh, &dest)) return; /* stale member target: send nothing */
+            uint8_t buf[FF_PROTO_MAX_PAYLOAD];
+            int const n = ff_proto_encode_pulse(buf, sizeof buf);
+            if (n > 0 && sh->wiring.sender.send_private != NULL) {
+                (void)sh->wiring.sender.send_private(sh->wiring.sender.ctx, dest, buf, (size_t)n);
+                shell_sig_reset_target(sh); /* AC3 */
+            }
+        }
+        return;
+
+    case FF_INTENT_SIG_RALLY:
+        /* S22 slice d — RALLY (gather + place) to the current target.
+         *
+         * Confirm gate (AC4): a rally to WHOLE_CREW is the one loud
+         * broadcast, so the FIRST tap ARMS a confirm (rendered on the
+         * button) instead of sending; only a SECOND tap within
+         * FF_SIG_RALLY_CONFIRM_MS sends. A rally to a single member sends on
+         * the first tap (no confirm). The place is the sender's own location
+         * (`shell_rally_place`, SPEC-GAP MVP — see the spec Questions). */
+        if (takeover_up) return;
+        {
+            bool const whole_crew = (sh->sig_target_kind == FF_TARGET_WHOLE_CREW);
+            if (whole_crew) {
+                bool const armed_live =
+                    sh->sig_rally_armed && (shell_now(sh) - sh->sig_rally_armed_ms) <= FF_SIG_RALLY_CONFIRM_MS;
+                if (!armed_live) {
+                    /* First tap (or a lapsed arm): ARM, do not send. */
+                    sh->sig_rally_armed = true;
+                    sh->sig_rally_armed_ms = shell_now(sh);
+                    return;
+                }
+                /* Second tap within the window: fall through and send. */
+            }
+            sh->sig_rally_armed = false;
+
+            uint32_t dest = MC_ADDR_BROADCAST;
+            if (!shell_sig_dest(sh, &dest)) return; /* stale member target: send nothing */
+            ff_latlon_t pos;
+            char const *name = FF_SIG_RALLY_DEFAULT_NAME;
+            if (!shell_rally_place(sh, &pos, &name)) return; /* location unknown: send nothing */
+            uint8_t buf[FF_PROTO_MAX_PAYLOAD];
+            int const n = ff_proto_encode_rally(buf, sizeof buf, pos, name);
+            if (n > 0 && sh->wiring.sender.send_private != NULL) {
+                (void)sh->wiring.sender.send_private(sh->wiring.sender.ctx, dest, buf, (size_t)n);
+                shell_sig_reset_target(sh); /* AC3 */
+            }
+        }
+        return;
+
+    case FF_INTENT_SIG_COMPOSE:
+        /* S22 slice d — COMPOSE opens the composer with its TO set to the
+         * current Signals target, then switches to the compose face. The
+         * composer's OWN SEND (existing T9 SEND_TEXT path) does the text
+         * send; this intent only navigates + sets the destination the
+         * composer already reads (`compose_to_node`), so it deliberately
+         * does NOT reset the Signals target (that is the AC3 reset for a
+         * direct PULSE/RALLY send, not for opening a modal). WHOLE_CREW maps
+         * to broadcast (0); a member target maps to that member, re-checked
+         * paired. Mirrors FF_INTENT_OPEN_COMPOSE's fresh-session setup. */
+        if (takeover_up) return;
+        sh->sig_rally_armed = false;
+        if (ff_route_push_modal(&sh->route, FF_APP_FACE_COMPOSE)) {
+            uint32_t to = 0u;
+            if (sh->sig_target_kind == FF_TARGET_MEMBER) {
+                ff_crew_member_t const *m = ff_crew_find(&sh->crew, sh->sig_target_node);
+                to = (m != NULL && m->paired) ? sh->sig_target_node : 0u;
+            }
+            sh->compose_to_node = to;
+            ff_t9_reset(&sh->compose_draft);
+            ff_t9pred_session_reset(&sh->compose_pred);
+            ff_t9pred_session_set_extra(&sh->compose_pred, sh->compose_extra, sh->compose_extra_n);
+            sh->compose_mode = FF_APP_COMPOSE_PRED;
+        }
         return;
 
     /* --- deliberate no-ops until their owning slice lands ------------ */
