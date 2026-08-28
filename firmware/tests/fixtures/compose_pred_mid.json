@@ -1,0 +1,18 @@
+{
+  "fixture": "compose_pred_mid",
+  "face": "compose",
+  "compose": {
+    "to_name": "DANA",
+    "text": "omw to ",
+    "has_pending": false,
+    "mode": "pred",
+    "word": "the",
+    "cand": [
+      { "text": "the" },
+      { "text": "tie" },
+      { "text": "vie" }
+    ],
+    "sel": 0,
+    "total_cand": 8
+  }
+}

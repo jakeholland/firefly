@@ -1,0 +1,13 @@
+{
+  "fixture": "compose_pred_empty",
+  "face": "compose",
+  "compose": {
+    "to_name": "DANA",
+    "text": "",
+    "has_pending": false,
+    "mode": "pred",
+    "word": "",
+    "word_nomatch": false,
+    "total_cand": 0
+  }
+}

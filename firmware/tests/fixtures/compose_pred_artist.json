@@ -1,0 +1,17 @@
+{
+  "fixture": "compose_pred_artist",
+  "face": "compose",
+  "compose": {
+    "to_name": "DANA",
+    "text": "see you at ",
+    "has_pending": false,
+    "mode": "pred",
+    "word": "firefly",
+    "cand": [
+      { "text": "FIREFLY", "from_pack": true },
+      { "text": "field", "from_pack": false }
+    ],
+    "sel": 0,
+    "total_cand": 5
+  }
+}

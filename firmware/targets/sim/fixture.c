@@ -577,10 +577,37 @@ static const fx_enum_entry_t fx_compose_mode_table[] = {
     {"abc", FF_APP_COMPOSE_ABC},
     {"123", FF_APP_COMPOSE_123},
     {"sym", FF_APP_COMPOSE_SYM},
+    {"pred", FF_APP_COMPOSE_PRED}, /* S08 predictive addendum (PR2) */
 };
 
+/* fx_parse_compose_cand — the predictive candidate array (S08 addendum):
+ * `[{"text": "the", "from_pack": false}, ...]`, best-first, cap
+ * FF_APP_COMPOSE_MAX_CAND. Same fail-loud-on-oversized-array treatment as
+ * fx_parse_radar_dots/fx_parse_now above. `from_pack` defaults false (a
+ * dictionary word, not festpack vocabulary) when the key is absent. This is
+ * hand-authored golden data: on the live path the shell fills these fields
+ * from the engine by pointer identity (see ff_app_state.h), never here. */
+static ff_fixture_result_t fx_parse_compose_cand(fx_ctx_t const *c, int arr_i, ff_app_compose_t *cp)
+{
+    jsmntok_t const *at = &c->toks[arr_i];
+    if (at->type != JSMN_ARRAY) return FF_FIXTURE_ERR_JSON;
+    if (at->size > FF_APP_COMPOSE_MAX_CAND) return FF_FIXTURE_ERR_TOO_BIG;
+    int idx = arr_i + 1;
+    for (int i = 0; i < at->size; i++) {
+        int obj_i = idx;
+        int t;
+        if (fx_obj_get(c, obj_i, "text", &t))
+            fx_copy_str(c, t, cp->cand[cp->n_cand].text, sizeof(cp->cand[cp->n_cand].text));
+        if (fx_obj_get(c, obj_i, "from_pack", &t)) cp->cand[cp->n_cand].from_pack = fx_bool(c, t, false);
+        cp->n_cand++;
+        idx = fx_skip(c, obj_i);
+    }
+    return FF_FIXTURE_OK;
+}
+
 /* Returns non-OK only for a present-but-unrecognized `mode` (issue #28 —
- * see fx_enum's doc comment); every other field stays tolerant. */
+ * see fx_enum's doc comment) or an oversized `cand` array; every other
+ * field stays tolerant. */
 static ff_fixture_result_t fx_parse_compose(fx_ctx_t const *c, int obj_i, ff_app_compose_t *cp)
 {
     int t;
@@ -595,6 +622,21 @@ static ff_fixture_result_t fx_parse_compose(fx_ctx_t const *c, int obj_i, ff_app
         if (rc != FF_FIXTURE_OK) return rc;
         cp->mode = (ff_app_compose_mode_t)v;
     }
+
+    /* Predictive-T9 projection (S08 addendum, PR2). Meaningful only in PRED
+     * mode; a fixture in another mode simply omits these (they stay zeroed,
+     * exactly as the shell leaves them). */
+    if (fx_obj_get(c, obj_i, "word", &t)) fx_copy_str(c, t, cp->word, sizeof(cp->word));
+    if (fx_obj_get(c, obj_i, "word_nomatch", &t)) cp->word_nomatch = fx_bool(c, t, false);
+    int cand_i;
+    if (fx_obj_get(c, obj_i, "cand", &cand_i) && !fx_is_null(c, cand_i)) {
+        ff_fixture_result_t rc = fx_parse_compose_cand(c, cand_i, cp);
+        if (rc != FF_FIXTURE_OK) return rc;
+    }
+    /* Selection index: accept both `sel` and `sel_cand` spellings. */
+    if (fx_obj_get(c, obj_i, "sel", &t)) cp->sel_cand = (uint8_t)fx_num(c, t, 0.0);
+    if (fx_obj_get(c, obj_i, "sel_cand", &t)) cp->sel_cand = (uint8_t)fx_num(c, t, 0.0);
+    if (fx_obj_get(c, obj_i, "total_cand", &t)) cp->total_cand = (uint16_t)fx_num(c, t, 0.0);
     return FF_FIXTURE_OK;
 }
 

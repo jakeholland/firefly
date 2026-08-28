@@ -159,6 +159,33 @@ _Static_assert(FF_COMPOSE_BOTTOM_ROW_Y + FF_COMPOSE_BOTTOM_ROW_H <= FF_THEME_PUC
                "compose T9 keypad's bottom row must stay inside the puck square");
 
 /* ---------------------------------------------------------------------
+ * Predictive-T9 (PRED) draft line + candidate strip geometry (S08
+ * addendum, PR2). These REPLACE the surface message bubble in PRED mode
+ * only — the design (firefly-design/composer/Main.dc.html, Artist.dc.html)
+ * puts a compact one-line draft (committed ink + amber underlined
+ * in-progress word + caret) above a horizontal candidate strip, sitting in
+ * the same header-to-keypad band the bubble otherwise fills. ABC/123/SYM
+ * keep the bubble untouched (byte-identical goldens).
+ *
+ * The strip's chips are NEW tap targets high on the face where the circle
+ * is wide; each is sized to the FF_THEME_MIN_HIT_PX floor and the whole
+ * strip clears the top keypad row by at least the adjacency floor — both
+ * asserted below and swept by test_face_hit_targets.c against the real
+ * rendered rects (the design's own ~30px pill height is below the 44px hit
+ * floor, so the honest tappable chip is taller than the mockup pill; see
+ * this PR's body). The draft line itself is a plain label — not clickable —
+ * so it is exempt from the sweep and free to sit closer. */
+#define FF_COMPOSE_PRED_DRAFT_Y  76                  /* one-line draft label, just under the header band */
+#define FF_COMPOSE_PRED_STRIP_Y  96                  /* candidate chip strip top */
+#define FF_COMPOSE_PRED_CHIP_H   FF_THEME_MIN_HIT_PX /* 44px — the hit-target floor, taller than the mockup pill */
+#define FF_COMPOSE_PRED_CHIP_GAP 10                  /* >= FF_HIT_MIN_GAP_PX; matches the keypad's own gap */
+
+_Static_assert(FF_COMPOSE_PRED_CHIP_GAP >= FF_HIT_MIN_GAP_PX,
+               "compose PRED candidate chip gap must clear the adjacency floor");
+_Static_assert(FF_COMPOSE_PRED_STRIP_Y + FF_COMPOSE_PRED_CHIP_H + FF_HIT_MIN_GAP_PX <= FF_COMPOSE_GRID_Y,
+               "compose PRED candidate strip must clear the top keypad row by the adjacency floor");
+
+/* ---------------------------------------------------------------------
  * Chord-aware horizontal margin — see this file's header comment and
  * ff_layout.h's own doc comment for ff_layout_chord_half_width.
  * ------------------------------------------------------------------- */
@@ -223,6 +250,16 @@ static char const *const k123Legends[10] = {
 static char const *const kSymLegends[10] = {
     "SPACE", "!", "?", ":)", ";)", "<3", ":o", ":/", "\\o/", "...",
 };
+/* PRED (predictive T9) legends — once-per-letter, same letter groupings as
+ * ABC but pressed a single time each (the engine ranks whole words). Key 1
+ * is the punctuation key; the design's "·,?" uses a middle dot (U+00B7),
+ * which LVGL's built-in Montserrat subset does not carry (it would render
+ * as a missing-glyph box), so this substitutes an ASCII period — noted as a
+ * judgment call in this PR's body, same "no mockup font vendored" spirit as
+ * ff_theme.h's own size substitutions. Key 0 is SPACE, same as ABC/SYM. */
+static char const *const kPredLegends[10] = {
+    "SPACE", ".,?", "ABC", "DEF", "GHI", "JKL", "MNO", "PQRS", "TUV", "WXYZ",
+};
 
 static char const *compose_legend_for(ff_app_compose_mode_t mode, uint8_t key)
 {
@@ -230,7 +267,7 @@ static char const *compose_legend_for(ff_app_compose_mode_t mode, uint8_t key)
     case FF_APP_COMPOSE_ABC: return kAbcLegends[key];
     case FF_APP_COMPOSE_123: return k123Legends[key];
     case FF_APP_COMPOSE_SYM: return kSymLegends[key];
-    case FF_APP_COMPOSE_PRED: break; /* S08 addendum — predictive legends are PR2; placeholder "?" */
+    case FF_APP_COMPOSE_PRED: return kPredLegends[key]; /* S08 predictive addendum (PR2) */
     }
     return "?";
 }
@@ -241,7 +278,7 @@ static char const *compose_mode_name(ff_app_compose_mode_t m)
     case FF_APP_COMPOSE_ABC: return "ABC";
     case FF_APP_COMPOSE_123: return "123";
     case FF_APP_COMPOSE_SYM: return "SYM";
-    case FF_APP_COMPOSE_PRED: break; /* S08 addendum — the mode chip's PRED label is PR2; placeholder "?" */
+    case FF_APP_COMPOSE_PRED: return "T9"; /* maintainer decision 1: PRED chip label is "T9" */
     }
     return "?";
 }
@@ -331,14 +368,42 @@ static void compose_key_pressed(uint8_t key)
         }
         break;
     case FF_APP_COMPOSE_PRED:
-        /* S08 addendum — the predictive keypad (T9_KEY per-letter, the ›
-         * cycle and tap-to-select chips) is wired in PR2 with the screen.
-         * Until then this file emits nothing in PRED mode rather than a
-         * spurious space; the shell's PRED handling is exercised directly
-         * through the intent seam in the PR1 tests. */
-        return;
+        /* S08 predictive addendum (PR2): once-per-letter. Same emit shape as
+         * ABC — key 0 is SPACE, keys 1-9 are a single T9_KEY press each; the
+         * shell interprets T9_KEY mode-polymorphically (predictive ranking in
+         * PRED vs. multi-tap in ABC). The › cycle and per-chip tap-to-select
+         * are separate controls (compose_cycle_click_cb / compose_cand_click_cb),
+         * not keypad keys. */
+        if (key == 0) {
+            in.kind = FF_INTENT_T9_SPACE;
+        } else {
+            in.kind = FF_INTENT_T9_KEY;
+            in.u.t9_key = key;
+        }
+        break;
     }
 
+    ff_intent_emit(&in);
+}
+
+/* Candidate chip tap (PRED) -> FF_INTENT_T9_SELECT, carrying the tapped
+ * candidate's index in u.t9_key (the maintainer's "reuse the t9 int field"
+ * choice — see ff_intent.h). The index is stashed in the button's LVGL
+ * user_data at build time, same pattern as compose_key_click_cb's key. */
+static void compose_cand_click_cb(lv_event_t *e)
+{
+    uintptr_t idx = (uintptr_t)lv_event_get_user_data(e);
+    ff_intent_t in = {.kind = FF_INTENT_T9_SELECT, .u = {0}};
+    in.u.t9_key = (uint8_t)idx;
+    ff_intent_emit(&in);
+}
+
+/* › chip tap (PRED) -> FF_INTENT_T9_CYCLE: advance the engine's candidate
+ * selection. No payload. */
+static void compose_cycle_click_cb(lv_event_t *e)
+{
+    (void)e;
+    ff_intent_t in = {.kind = FF_INTENT_T9_CYCLE, .u = {0}};
     ff_intent_emit(&in);
 }
 
@@ -519,6 +584,167 @@ static void compose_build_keys(lv_obj_t *container, ff_app_compose_mode_t mode)
 }
 
 /* ---------------------------------------------------------------------
+ * Predictive-T9 (PRED) draft line + candidate strip. HONEST-DATA
+ * (CLAUDE.md): this renders ONLY what `*compose` carries — the amber word
+ * is `compose->word` verbatim (never a fabricated word, never a key
+ * string), the ★ badge comes straight from `cand[i].from_pack`, the ›
+ * chip appears only when `total_cand > n_cand` (real extra matches exist),
+ * and on an honest no-match nothing is invented. See scr_compose.c's split
+ * comment: the initial paint is a pure function of the snapshot.
+ * ------------------------------------------------------------------- */
+
+/* The draft line: committed text (ink) + the in-progress predicted word
+ * (amber, underlined) + a caret. On word_nomatch: committed text + a
+ * neutral caret and NO amber word (never show a fabricated in-progress
+ * word). Cold open (nothing committed, no word, not a no-match): the same
+ * dim "Type a message..." placeholder the bubble uses, so the empty state
+ * reads identically across modes. Built as a centered flex row of separate
+ * labels rather than one recolored string specifically so the in-progress
+ * word can carry a real underline decoration (recolor changes color only);
+ * the amber color still comes from the same FF_THEME_COLOR_AMBER accent the
+ * bubble's pending-char treatment uses. */
+static void compose_build_pred_draft(lv_obj_t *puck, ff_app_compose_t const *compose)
+{
+    lv_obj_t *cont = lv_obj_create(puck);
+    lv_obj_remove_style_all(cont);
+    lv_obj_set_style_pad_all(cont, 0, 0);
+    lv_obj_set_style_pad_column(cont, 0, 0);
+    lv_obj_set_size(cont, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(cont, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(cont, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_align(cont, LV_ALIGN_TOP_MID, 0, FF_COMPOSE_PRED_DRAFT_Y);
+    lv_obj_clear_flag(cont, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_clear_flag(cont, LV_OBJ_FLAG_CLICKABLE); /* a display line, not a control */
+
+    bool cold_open = (compose->text[0] == '\0' && compose->word[0] == '\0' && !compose->word_nomatch);
+    if (cold_open) {
+        lv_obj_t *ph = lv_label_create(cont);
+        lv_label_set_text(ph, "Type a message...");
+        lv_obj_set_style_text_font(ph, FF_THEME_FONT_LABEL, 0);
+        lv_obj_set_style_text_color(ph, lv_color_hex(FF_THEME_COLOR_DIM), 0);
+        return;
+    }
+
+    if (compose->text[0] != '\0') {
+        lv_obj_t *committed = lv_label_create(cont);
+        lv_label_set_text(committed, compose->text);
+        lv_obj_set_style_text_font(committed, FF_THEME_FONT_LABEL, 0);
+        lv_obj_set_style_text_color(committed, lv_color_hex(FF_THEME_COLOR_INK), 0);
+    }
+
+    if (!compose->word_nomatch && compose->word[0] != '\0') {
+        lv_obj_t *word = lv_label_create(cont);
+        lv_label_set_text(word, compose->word);
+        lv_obj_set_style_text_font(word, FF_THEME_FONT_LABEL, 0);
+        lv_obj_set_style_text_color(word, lv_color_hex(FF_THEME_COLOR_AMBER), 0);
+        lv_obj_set_style_text_decor(word, LV_TEXT_DECOR_UNDERLINE, 0);
+    }
+
+    lv_obj_t *caret = lv_label_create(cont);
+    lv_label_set_text(caret, "|");
+    lv_obj_set_style_text_font(caret, FF_THEME_FONT_LABEL, 0);
+    /* Amber caret while a prediction is live; a neutral (ink) caret on an
+     * honest no-match, so the caret never lends the amber "in progress"
+     * signal to a state that has no predicted word. */
+    lv_obj_set_style_text_color(caret, lv_color_hex(compose->word_nomatch ? FF_THEME_COLOR_INK : FF_THEME_COLOR_AMBER),
+                                 0);
+}
+
+/* One candidate chip. `selected` gets the amber filled treatment; the rest
+ * are surface chips. `from_pack` prefixes a ★ (festpack vocabulary badge —
+ * an ASCII '*' stand-in, since LVGL's built-in Montserrat carries no star
+ * glyph; noted as a judgment call in the PR body). Sized to the hit-target
+ * floor in BOTH axes (height fixed at the floor; a min-width floor covers
+ * short words like "vie") so a real thumb always has a 44px target even
+ * though the mockup pill is visually smaller. */
+static void compose_make_cand_chip(lv_obj_t *strip, char const *text, bool from_pack, bool selected, uint8_t index)
+{
+    lv_obj_t *chip = lv_button_create(strip);
+    lv_obj_remove_style_all(chip);
+    lv_obj_set_height(chip, FF_COMPOSE_PRED_CHIP_H);
+    lv_obj_set_width(chip, LV_SIZE_CONTENT);
+    lv_obj_set_style_min_width(chip, FF_THEME_MIN_HIT_PX, 0);
+    lv_obj_set_style_pad_hor(chip, 14, 0);
+    lv_obj_set_style_radius(chip, 12, 0);
+    lv_obj_set_style_bg_opa(chip, LV_OPA_COVER, 0);
+    lv_obj_set_style_bg_color(chip, lv_color_hex(selected ? FF_THEME_COLOR_AMBER : FF_THEME_COLOR_SURFACE), 0);
+    lv_obj_add_event_cb(chip, compose_cand_click_cb, LV_EVENT_CLICKED, (void *)(uintptr_t)index);
+
+    char buf[FF_APP_COMPOSE_WORD_LEN + 4];
+    if (from_pack) {
+        snprintf(buf, sizeof(buf), "* %s", text);
+    } else {
+        snprintf(buf, sizeof(buf), "%s", text);
+    }
+    lv_obj_t *lbl = lv_label_create(chip);
+    lv_label_set_text(lbl, buf);
+    lv_obj_set_style_text_font(lbl, FF_THEME_FONT_CHIP, 0);
+    lv_obj_set_style_text_color(lbl, lv_color_hex(selected ? FF_THEME_COLOR_BG : FF_THEME_COLOR_INK), 0);
+    lv_obj_center(lbl);
+}
+
+/* The candidate strip: a centered horizontal row of chips from
+ * `cand[0..n_cand)`, plus a trailing › chip when more matches exist than
+ * are shown. On a no-match, a single dim "no match" affordance (not a chip,
+ * not clickable) — never fabricated candidates. On the cold open
+ * (n_cand==0, not a no-match), nothing at all. */
+static void compose_build_pred_strip(lv_obj_t *puck, ff_app_compose_t const *compose)
+{
+    if (compose->word_nomatch) {
+        lv_obj_t *nm = lv_label_create(puck);
+        lv_label_set_text(nm, "no match");
+        lv_obj_set_style_text_font(nm, FF_THEME_FONT_CHIP, 0);
+        lv_obj_set_style_text_color(nm, lv_color_hex(FF_THEME_COLOR_DIM), 0);
+        lv_obj_align(nm, LV_ALIGN_TOP_MID, 0, FF_COMPOSE_PRED_STRIP_Y + (FF_COMPOSE_PRED_CHIP_H - 16) / 2);
+        return;
+    }
+    if (compose->n_cand == 0) {
+        return; /* cold open — no strip, never an invented chip */
+    }
+
+    lv_obj_t *strip = lv_obj_create(puck);
+    lv_obj_remove_style_all(strip);
+    lv_obj_set_style_pad_all(strip, 0, 0);
+    lv_obj_set_style_pad_column(strip, FF_COMPOSE_PRED_CHIP_GAP, 0);
+    lv_obj_set_size(strip, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(strip, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(strip, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_align(strip, LV_ALIGN_TOP_MID, 0, FF_COMPOSE_PRED_STRIP_Y);
+    lv_obj_clear_flag(strip, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_clear_flag(strip, LV_OBJ_FLAG_CLICKABLE); /* a layout row; its chips are the controls */
+
+    /* PR1 review nit: sel_cand is a uint8 that can exceed the shown chips
+     * (the selection cycled past the window). Guard it — highlight none
+     * when sel_cand >= n_cand, and let `word` (rendered in the draft above)
+     * stand as the authoritative selection. */
+    bool highlight = (compose->sel_cand < compose->n_cand);
+    for (uint8_t i = 0; i < compose->n_cand; i++) {
+        compose_make_cand_chip(strip, compose->cand[i].text, compose->cand[i].from_pack,
+                                highlight && (i == compose->sel_cand), i);
+    }
+
+    /* › chip: only when the engine really has more matches than are shown
+     * (honest `total_cand`). Emits T9_CYCLE. */
+    if (compose->total_cand > compose->n_cand) {
+        lv_obj_t *more = lv_button_create(strip);
+        lv_obj_remove_style_all(more);
+        lv_obj_set_height(more, FF_COMPOSE_PRED_CHIP_H);
+        lv_obj_set_width(more, LV_SIZE_CONTENT);
+        lv_obj_set_style_min_width(more, FF_THEME_MIN_HIT_PX, 0);
+        lv_obj_set_style_pad_hor(more, 14, 0);
+        lv_obj_set_style_radius(more, 12, 0);
+        lv_obj_set_style_bg_opa(more, LV_OPA_COVER, 0);
+        lv_obj_set_style_bg_color(more, lv_color_hex(FF_THEME_COLOR_SURFACE), 0);
+        lv_obj_add_event_cb(more, compose_cycle_click_cb, LV_EVENT_CLICKED, NULL);
+        lv_obj_t *lbl = lv_label_create(more);
+        lv_label_set_text(lbl, ">");
+        lv_obj_set_style_text_font(lbl, FF_THEME_FONT_CHIP, 0);
+        lv_obj_set_style_text_color(lbl, lv_color_hex(FF_THEME_COLOR_DIM), 0);
+        lv_obj_center(lbl);
+    }
+}
+
+/* ---------------------------------------------------------------------
  * Entry point.
  * ------------------------------------------------------------------- */
 
@@ -589,25 +815,35 @@ void ff_scr_compose_build(ff_app_compose_t const *compose)
     lv_obj_center(s_mode_chip_label);
     compose_update_mode_chip_label();
 
-    /* --- Message bubble. --- */
-    int32_t bubble_margin = compose_safe_margin_x(FF_COMPOSE_BUBBLE_Y, FF_COMPOSE_BUBBLE_H);
-    lv_obj_t *bubble = lv_obj_create(puck);
-    lv_obj_remove_style_all(bubble);
-    lv_obj_set_size(bubble, FF_THEME_PUCK_PX - 2 * bubble_margin, FF_COMPOSE_BUBBLE_H);
-    lv_obj_set_pos(bubble, bubble_margin, FF_COMPOSE_BUBBLE_Y);
-    lv_obj_set_style_bg_color(bubble, lv_color_hex(FF_THEME_COLOR_SURFACE), 0);
-    lv_obj_set_style_bg_opa(bubble, LV_OPA_COVER, 0);
-    lv_obj_set_style_radius(bubble, 14, 0);
-    lv_obj_set_style_pad_all(bubble, 12, 0);
-    lv_obj_clear_flag(bubble, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_clear_flag(bubble, LV_OBJ_FLAG_CLICKABLE); /* a display box, not a control */
+    /* --- Draft area. ---
+     * PRED replaces the surface bubble with the compact predictive draft
+     * line + candidate strip (S08 addendum, PR2). ABC/123/SYM keep the
+     * bubble byte-for-byte — the block below is unchanged from before this
+     * addendum, only guarded by the mode branch. */
+    if (s_mode == FF_APP_COMPOSE_PRED) {
+        compose_build_pred_draft(puck, compose);
+        compose_build_pred_strip(puck, compose);
+    } else {
+        /* --- Message bubble (ABC/123/SYM). --- */
+        int32_t bubble_margin = compose_safe_margin_x(FF_COMPOSE_BUBBLE_Y, FF_COMPOSE_BUBBLE_H);
+        lv_obj_t *bubble = lv_obj_create(puck);
+        lv_obj_remove_style_all(bubble);
+        lv_obj_set_size(bubble, FF_THEME_PUCK_PX - 2 * bubble_margin, FF_COMPOSE_BUBBLE_H);
+        lv_obj_set_pos(bubble, bubble_margin, FF_COMPOSE_BUBBLE_Y);
+        lv_obj_set_style_bg_color(bubble, lv_color_hex(FF_THEME_COLOR_SURFACE), 0);
+        lv_obj_set_style_bg_opa(bubble, LV_OPA_COVER, 0);
+        lv_obj_set_style_radius(bubble, 14, 0);
+        lv_obj_set_style_pad_all(bubble, 12, 0);
+        lv_obj_clear_flag(bubble, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_clear_flag(bubble, LV_OBJ_FLAG_CLICKABLE); /* a display box, not a control */
 
-    s_bubble_label = lv_label_create(bubble);
-    lv_label_set_long_mode(s_bubble_label, LV_LABEL_LONG_MODE_WRAP);
-    lv_obj_set_width(s_bubble_label, FF_THEME_PUCK_PX - 2 * bubble_margin - 24);
-    lv_obj_set_style_text_font(s_bubble_label, FF_THEME_FONT_LABEL, 0);
-    lv_obj_align(s_bubble_label, LV_ALIGN_TOP_LEFT, 0, 0);
-    compose_render_bubble_text(s_bubble_label, compose->text, compose->has_pending);
+        s_bubble_label = lv_label_create(bubble);
+        lv_label_set_long_mode(s_bubble_label, LV_LABEL_LONG_MODE_WRAP);
+        lv_obj_set_width(s_bubble_label, FF_THEME_PUCK_PX - 2 * bubble_margin - 24);
+        lv_obj_set_style_text_font(s_bubble_label, FF_THEME_FONT_LABEL, 0);
+        lv_obj_align(s_bubble_label, LV_ALIGN_TOP_LEFT, 0, 0);
+        compose_render_bubble_text(s_bubble_label, compose->text, compose->has_pending);
+    }
 
     /* --- Keypad. --- */
     s_keys_container = lv_obj_create(puck);
