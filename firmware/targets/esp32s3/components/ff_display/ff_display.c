@@ -472,7 +472,15 @@ lv_display_t *ff_display_lvgl_start(void)
      * SPD2010 x%4 alignment rule holds — 412 is a multiple of 4), the strip
      * height is a multiple of 4 too, and each transfer is a few tens of KB.
      * The two strip buffers fit internal DMA RAM (~240 KB free). */
+#if CONFIG_FF_DEMO_MODE
+    /* The demo build carries the seeded festpack + a fuller projection, leaving
+     * less contiguous internal DMA RAM; 20-line strips (~16 KB/buffer) allocate
+     * where the field build's 40-line (~32 KB) buffers would not. Field builds
+     * keep 40 lines (fewer flushes, unchanged hardware-verified path). */
+    enum { FF_LVGL_STRIP_LINES = 20 };
+#else
     enum { FF_LVGL_STRIP_LINES = 40 };
+#endif
     const lvgl_port_display_cfg_t disp_cfg = {
         .io_handle = s_panel_io,
         .panel_handle = s_panel,

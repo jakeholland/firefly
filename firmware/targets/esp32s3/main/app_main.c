@@ -50,7 +50,8 @@
 #include "ff_touchcal.h"
 
 #if CONFIG_FF_DEMO_MODE
-#include "ff_demo.h" /* S20 — demo-mode seeding */
+#include "esp_heap_caps.h" /* S20 — the festpack is allocated in PSRAM (see s_demo_pack) */
+#include "ff_demo.h"       /* S20 — demo-mode seeding */
 #endif
 
 static const char *TAG = "firefly";
@@ -74,7 +75,10 @@ static uint32_t ff_esp_clock_now_ms(void *user)
  * it (see ff_bringup_now_ms), so the projection ages against the same
  * clock the seed used. The demo festpack is EMBED_FILES'd (main/CMakeLists). */
 static uint32_t s_demo_clock_ms;
-static fp_pack_t s_demo_pack;
+/* The parsed festpack is ~23 KB. It lives in PSRAM, not internal .bss: internal
+ * RAM is scarce and must be left for LVGL's DMA strip buffers, and only the demo
+ * build allocates it at all. Populated by ff_demo_seed via the shell's cfg.pack. */
+static fp_pack_t *s_demo_pack;
 extern const uint8_t firefly_pack_start[] asm("_binary_firefly_fields_festpack_json_start");
 extern const uint8_t firefly_pack_end[] asm("_binary_firefly_fields_festpack_json_end");
 
@@ -198,7 +202,12 @@ void app_main(void)
     cfg.calibrate_touch = ff_calibrate_touch_cb;
     cfg.calibrate_touch_user = NULL;
 #if CONFIG_FF_DEMO_MODE
-    cfg.pack = &s_demo_pack; /* ff_demo_seed parses the embedded festpack into this */
+    s_demo_pack = heap_caps_malloc(sizeof(*s_demo_pack), MALLOC_CAP_SPIRAM);
+    if (s_demo_pack == NULL) {
+        ff_park("demo festpack PSRAM alloc failed");
+        return;
+    }
+    cfg.pack = s_demo_pack; /* ff_demo_seed parses the embedded festpack into this */
 #endif
     /* cfg.transport / cfg.haptic left zeroed — see slice a. (cfg.pack set above
      * only under CONFIG_FF_DEMO_MODE.) */

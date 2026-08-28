@@ -1503,7 +1503,15 @@ bool ff_shell_tick(ff_shell_t *sh_pub, uint32_t now_ms)
 
     shell_project(sh, now_ms);
 
-    ff_app_state_t key;
+    /* Dirty-detection key: a masked copy of the view. Held as a function-static
+     * (~7 KB) rather than a stack local — a full ff_app_state_t spilled onto the
+     * stack every tick, and on the ESP32-S3 (8 KB main-task stack) a populated
+     * projection (demo mode's seeded festpack + crew, or a busy field session)
+     * tipped it into a stack overflow. .bss instead of stack; the shell is
+     * single-threaded, and this is pure scratch (recomputed every call, no state
+     * carried between calls), so a shared static is safe. The desktop sim never
+     * hit this — its stack is megabytes. */
+    static ff_app_state_t key;
     shell_render_key(&sh->view, &key);
 
     bool const changed = (!sh->has_prev_key) || (memcmp(&key, &sh->prev_key, sizeof(key)) != 0);
