@@ -179,7 +179,13 @@ void test_S20_feed_seeded(void)
     ff_app_state_t const *v = seed(0);
     ff_feed_t const *feed = ff_shell_feed(&s_shell);
     TEST_ASSERT_EQUAL_UINT8(5, ff_feed_count(feed));   /* status, pulse, rally, omw, message */
-    TEST_ASSERT_GREATER_THAN_UINT8(0, v->signals.n_items);
+    /* S22 — the Signals view-model projects those into RECENT rows. Count
+     * RECENT rows (row_count also includes the CREW divider + quiet crew). */
+    unsigned recent = 0;
+    for (uint16_t i = 0; i < v->signals.row_count; i++) {
+        if (v->signals.rows[i].kind == FF_SIGROW_RECENT) recent++;
+    }
+    TEST_ASSERT_GREATER_THAN_UINT(0, recent);
     ff_shell_close(&s_shell);
 }
 

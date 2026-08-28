@@ -75,19 +75,28 @@ static void ffv_build_radar_body(char *buf, size_t n, ff_radar_view_t const *r)
  * for FF_APP_FACE_NOW now, which is the honest answer for this file: it
  * no longer has (or needs) a Now-specific rendering, by design. */
 
-static void ffv_build_signals_body(char *buf, size_t n, ff_app_signals_t const *sig)
+static void ffv_build_signals_body(char *buf, size_t n, ff_sigview_t const *sig)
 {
-    if (sig->n_items > 0) {
-        ff_app_feed_item_t const *it = &sig->items[0];
-        snprintf(buf, n,
-                 "FACE: SIGNALS\n"
-                 "ITEMS: %u UNREAD: %u\n"
-                 "LATEST FROM: %s\n"
-                 "TEXT: %s",
-                 (unsigned)sig->n_items, (unsigned)sig->unread_count, it->from_name, it->text);
-    } else {
-        snprintf(buf, n, "FACE: SIGNALS\nITEMS: 0 UNREAD: %u", (unsigned)sig->unread_count);
+    /* S22 — the debug/text summary of the ff_sigview_t view-model. (The
+     * real Signals face renders through scr_signals.c; this is only the
+     * S13 fallback text view.) */
+    unsigned recent = 0, quiet = 0, unread = 0;
+    for (uint16_t i = 0; i < sig->row_count; i++) {
+        ff_sigrow_t const *r = &sig->rows[i];
+        if (r->kind == FF_SIGROW_RECENT) {
+            recent++;
+            if (r->unread) unread++;
+        } else if (r->kind == FF_SIGROW_CREW_QUIET) {
+            quiet++;
+        }
     }
+    char const *target = (sig->target_kind == FF_TARGET_MEMBER) ? "MEMBER" : "WHOLE CREW";
+    snprintf(buf, n,
+             "FACE: SIGNALS\n"
+             "RECENT: %u  CREW: %u\n"
+             "UNREAD: %u\n"
+             "TARGET: %s",
+             recent, quiet, unread, target);
 }
 
 static char const *ffv_compose_mode_str(ff_app_compose_mode_t m)

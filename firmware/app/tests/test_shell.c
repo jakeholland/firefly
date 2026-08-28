@@ -2147,9 +2147,90 @@ static void S16_b1_shell_footprint_excludes_the_pack(void)
 {
     /* The fp_pack_t decision, pinned rather than described: the pack is
      * beside the shell, so the shell's stated budget is about the shell.
-     * If a later slice folds a pack in, this fails loudly. */
+     * If a later slice folds a pack in, this fails loudly.
+     *
+     * S22 update: the old proxy was "shell < pack" (a folded pack would
+     * blow past the pack's own size). That stopped holding when the
+     * reworked Signals face made ff_app_state_t embed the 1,816-byte
+     * ff_sigview_t view-model — the shell holds TWO copies of that state
+     * (view + prev_key render key; the persistent send target is only an
+     * 8-byte holder, not a third copy) and so legitimately grew PAST
+     * sizeof(fp_pack_t) on those two view copies alone, with no pack
+     * anywhere near it (see ff_shell.h's FF_SHELL_BYTES comment). The guard
+     * is kept, just expressed correctly: the shell's size is explained by a
+     * small number of ff_app_state_t-sized view copies plus bookkeeping, NOT
+     * a pack. A folded fp_pack_t would add ~23.7 KB — far past this bound —
+     * so it is still caught loudly. */
     TEST_ASSERT_LESS_OR_EQUAL_UINT(FF_SHELL_BYTES, sizeof(ff_shell_t));
-    TEST_ASSERT_LESS_THAN_UINT(sizeof(fp_pack_t), sizeof(ff_shell_t));
+    /* A few view-copies' worth, not a pack: the real shell is ~3x an
+     * ff_app_state_t; a folded pack would push it past 6x. */
+    TEST_ASSERT_LESS_THAN_UINT(4u * sizeof(ff_app_state_t), sizeof(ff_shell_t));
+}
+
+/* S22 slice b — the Signals send target is the ONLY persistent Signals state,
+ * held in an 8-byte shell holder because view.signals is memset + rebuilt from
+ * scratch every tick. This pins the whole reason that holder exists: a target
+ * set by a SELECT intent must SURVIVE the per-tick rebuild, a CLEAR returns to
+ * WHOLE_CREW, and a tap that can't legitimately target (unpaired node, or the
+ * Signals face not visible under a takeover) leaves it unchanged.
+ *
+ * This also guards the shell_project_signals refactor's key step: the "survives
+ * a rebuild" assertion FAILS if the projection stops re-applying the holder
+ * after ff_sigview_build (mutation — the target would reset to WHOLE_CREW every
+ * tick). */
+static void S22b_signals_target_survives_rebuild_and_is_gated(void)
+{
+    harness_init(100000u, false);
+    inject_my_info(MY_ID);
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, true));
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, KEV_ID, true));
+
+    /* Default after a build: WHOLE_CREW. */
+    ff_shell_tick(&H.shell, H.clk.t);
+    TEST_ASSERT_EQUAL_INT(FF_TARGET_WHOLE_CREW, ff_shell_view(&H.shell)->signals.target_kind);
+
+    /* SELECT a paired member, then rebuild TWICE — the target must still hold.
+     * (Mutation guard: without the holder re-apply in shell_project_signals it
+     * resets to WHOLE_CREW on the very next tick.) */
+    ff_intent_t sel = {.kind = FF_INTENT_SIG_SELECT_MEMBER, .u = {0}};
+    sel.u.node_id = DANA;
+    ff_shell_intent(&H.shell, &sel);
+    ff_shell_tick(&H.shell, H.clk.t);
+    ff_shell_tick(&H.shell, H.clk.t);
+    TEST_ASSERT_EQUAL_INT(FF_TARGET_MEMBER, ff_shell_view(&H.shell)->signals.target_kind);
+    TEST_ASSERT_EQUAL_UINT32(DANA, ff_shell_view(&H.shell)->signals.target_node);
+
+    /* CLEAR returns to WHOLE_CREW. */
+    ff_intent_t clr = {.kind = FF_INTENT_SIG_CLEAR_TARGET, .u = {0}};
+    ff_shell_intent(&H.shell, &clr);
+    ff_shell_tick(&H.shell, H.clk.t);
+    TEST_ASSERT_EQUAL_INT(FF_TARGET_WHOLE_CREW, ff_shell_view(&H.shell)->signals.target_kind);
+
+    /* Re-target KEV, then an UNPAIRED node's SELECT is rejected (roster
+     * validation in ff_sigview_target_select) — target unchanged. */
+    sel.u.node_id = KEV_ID;
+    ff_shell_intent(&H.shell, &sel);
+    ff_intent_t bad = {.kind = FF_INTENT_SIG_SELECT_MEMBER, .u = {0}};
+    bad.u.node_id = STRANGER; /* never paired */
+    ff_shell_intent(&H.shell, &bad);
+    ff_shell_tick(&H.shell, H.clk.t);
+    TEST_ASSERT_EQUAL_INT(FF_TARGET_MEMBER, ff_shell_view(&H.shell)->signals.target_kind);
+    TEST_ASSERT_EQUAL_UINT32(KEV_ID, ff_shell_view(&H.shell)->signals.target_node);
+
+    /* A stray SELECT while a TAKEOVER is up is gated (the Signals face is not
+     * the visible face) — target stays KEV, does not jump to DANA. */
+    uint8_t buf[FF_PROTO_MAX_PAYLOAD];
+    int const n = ff_proto_encode_flare(buf, sizeof(buf), 300);
+    TEST_ASSERT_GREATER_THAN_INT(0, n);
+    H.ev.on_private(H.ev.user, KEV_ID, FF_PORTNUM, buf, (size_t)n);
+    TEST_ASSERT_TRUE(ff_shell_flare(&H.shell)->takeover_active);
+
+    ff_intent_t stray = {.kind = FF_INTENT_SIG_SELECT_MEMBER, .u = {0}};
+    stray.u.node_id = DANA;
+    ff_shell_intent(&H.shell, &stray);
+    ff_shell_tick(&H.shell, H.clk.t);
+    TEST_ASSERT_EQUAL_INT(FF_TARGET_MEMBER, ff_shell_view(&H.shell)->signals.target_kind);
+    TEST_ASSERT_EQUAL_UINT32(KEV_ID, ff_shell_view(&H.shell)->signals.target_node);
 }
 
 static void S16_b1_failed_pack_load_does_not_outrank_the_settings_offset(void)
@@ -3087,6 +3168,7 @@ int main(void)
     RUN_TEST(S18_expired_latch_relatches_trust_blind_through_the_shell);
     RUN_TEST(S16_b1_a_flare_on_a_foreign_portnum_raises_no_takeover);
     RUN_TEST(S16_b1_shell_footprint_excludes_the_pack);
+    RUN_TEST(S22b_signals_target_survives_rebuild_and_is_gated);
     RUN_TEST(S16_b1_failed_pack_load_does_not_outrank_the_settings_offset);
 
     RUN_TEST(S16_AC6_nodeinfo_plus_position_via_real_transport_produce_zero_feed_items);

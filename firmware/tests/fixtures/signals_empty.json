@@ -2,7 +2,10 @@
   "fixture": "signals_empty",
   "face": "signals",
   "signals": {
-    "items": [],
-    "unread_count": 0
+    "target_kind": "whole_crew",
+    "target_node": 0,
+    "rows": [
+      {"row": "divider"}
+    ]
   }
 }

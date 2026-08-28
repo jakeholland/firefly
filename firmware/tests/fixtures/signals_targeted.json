@@ -1,0 +1,15 @@
+{
+  "fixture": "signals_targeted",
+  "face": "signals",
+  "signals": {
+    "target_kind": "member",
+    "target_node": 111,
+    "rows": [
+      {"row": "recent", "feed_kind": "pulse", "node_id": 111, "name": "DANA", "initial": "D", "color_idx": 0, "unread": true, "age_ms": 45000},
+      {"row": "recent", "feed_kind": "text", "node_id": 113, "name": "MAX", "initial": "M", "color_idx": 2, "unread": false, "age_ms": 600000},
+      {"row": "divider"},
+      {"row": "crew_quiet", "node_id": 114, "name": "KEV", "initial": "K", "color_idx": 3, "presence": "seen", "age_ms": 180000},
+      {"row": "crew_quiet", "node_id": 115, "name": "JO", "initial": "J", "color_idx": 4, "presence": "linked", "age_ms": 0}
+    ]
+  }
+}
