@@ -166,7 +166,9 @@ static void ff_demo_live_pump(uint32_t now_ms)
     ff_demo_event_t evs[8];
     uint8_t k = ff_demofeed_tick(&s_demofeed, now_ms, evs, (uint8_t)(sizeof(evs) / sizeof(evs[0])));
     for (uint8_t i = 0; i < k; i++) {
-        ff_demo_apply_event(&ev, &evs[i], node_ids, member_count);
+        /* s_demo_pack is the parsed demo festpack (ff_demo_seed filled it via
+         * cfg.pack) — a RALLY sources its place name + position from it. */
+        ff_demo_apply_event(&ev, &evs[i], node_ids, member_count, s_demo_pack);
     }
 }
 #endif

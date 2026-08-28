@@ -88,8 +88,24 @@ The whole layer is fabricated data and must read as demo, never as real:
 - **AC4** Fully gated: `CONFIG_FF_DEMO_MODE` off compiles the entire layer out
   (link check: no `ff_demofeed_*` in a field build); the S20 static snapshot
   remains the default demo behavior when the live switch is off.
-- **AC5** Text/content come from the demo festpack, never hardcoded outside
-  `tests/fixtures`.
+- **AC5** Demo content divides into two honestly-distinct classes, and the
+  line between them is the AC5 contract (CLAUDE.md: "never hardcode festival
+  content outside fixtures"):
+  - **Festival content** — anything referencing the real (fictional)
+    festival's geography or places: a rally's place name and its lat/lon,
+    stage/landmark names, etc. This is **sourced from the demo festpack** at
+    apply time (e.g. `ff_demo_rally_point` reads the loaded `fp_pack_t`'s
+    venue origin + landmark name), never a literal. If the festpack yields no
+    honest place, no such content is emitted — never a fabricated one.
+  - **Synthetic demo chatter** — conversational crew filler ("who's got
+    water?", "5 min out"): a stand-in for the message traffic a radio would
+    carry, invented for the demo. This is **not** festival data and is exempt
+    from festpack-sourcing; it is demo-gated (compiled out of any field build)
+    and lives in C, not the festpack. It is deliberately **not** forced into
+    the general `fp_pack` schema (which carries no chatter field) nor a
+    bespoke demo-JSON parser: they are fake strings either way, and a schema
+    change to hold them would buy no honesty (S23(d) resolution). The gating
+    that keeps it out of a field build (AC4) is what makes the exemption safe.
 - **AC6** Goldens stay deterministic: they use fixed snapshots (or a fixed
   seed + fixed tick count), never wall-clock-driven live generation.
 
@@ -101,8 +117,26 @@ The whole layer is fabricated data and must read as demo, never as real:
   switch in `app_main.c`, leaving S20 static as default.
 - **(c) app apply loop** — drive `ff_demofeed_tick` from the demo clock each
   tick and apply events through `ff_wiring`; presence pokes.
-- **(d) content + polish** — demo festpack string table for canned signals;
-  optional position/status jitter for the other faces.
+- **(d) content + polish** — demo string table for canned signals; festival
+  content (a rally's place name + lat/lon) sourced from the demo festpack per
+  AC5 (`ff_demo_rally_point`); the two nit fixes from #117 review. Jitter for
+  the other faces:
+  - **Presence drift** — shipped in (c): seeded presence pokes refresh
+    `rssi_age`, so a member drifts LIVE→STALE→LOST and recovers over live
+    demo time, moving on Radar/Now/Map/Signals (AC3).
+  - **Status drift** — shipped: STATUS signals arrive over time on the
+    generator's jittered cadence and land in the feed (Signals/Now).
+  - **Position drift** — **deferred** (no fabricated position path invented,
+    per the honest-data guardrail). Making crew *move* honestly needs either a
+    new `ff_demofeed` event type (changing the merged S23(a) determinism
+    contract + its goldens) or app-side machinery — a fresh-`rx_time`
+    `on_position` on its own seeded schedule, plus curation so SAM stays
+    no-fix and members keep their spatial spread. None is *small*, and the
+    honest options all exceed this polish slice, so position movement is left
+    to a follow-up. Presence + status drift already give the other faces
+    live motion "beyond Signals"; positions stay at their seeded points until
+    then. A future slice adds the seeded `on_position` schedule (waypoints
+    anchored to the festpack venue origin, honest receive times).
 
 ## Sequencing (with S22)
 
