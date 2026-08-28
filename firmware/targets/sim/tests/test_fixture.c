@@ -687,6 +687,65 @@ static void compose_mode_defaults_to_abc_when_omitted(void)
     TEST_ASSERT_FALSE(s.compose.has_pending);
 }
 
+/* S08 predictive addendum (PR2): the PRED mode string and every predictive
+ * field parse into ff_app_compose_t. `from_pack` defaults false when the
+ * candidate omits it; `sel`/`total_cand` land as authored. */
+static void compose_pred_fields_parse(void)
+{
+    ff_app_state_t s;
+    char const *json = "{\"face\": \"compose\", \"compose\": {"
+                       "  \"mode\": \"pred\", \"text\": \"omw to \", \"word\": \"the\", "
+                       "  \"cand\": [{\"text\": \"the\"}, {\"text\": \"tie\", \"from_pack\": true}], "
+                       "  \"sel\": 1, \"total_cand\": 8"
+                       "}}";
+    TEST_ASSERT_EQUAL_INT(FF_FIXTURE_OK, ff_fixture_load_json(json, strlen(json), &s));
+
+    TEST_ASSERT_EQUAL_INT(FF_APP_COMPOSE_PRED, s.compose.mode);
+    TEST_ASSERT_EQUAL_STRING("omw to ", s.compose.text);
+    TEST_ASSERT_EQUAL_STRING("the", s.compose.word);
+    TEST_ASSERT_FALSE(s.compose.word_nomatch);
+    TEST_ASSERT_EQUAL_UINT8(2, s.compose.n_cand);
+    TEST_ASSERT_EQUAL_STRING("the", s.compose.cand[0].text);
+    TEST_ASSERT_FALSE(s.compose.cand[0].from_pack);
+    TEST_ASSERT_EQUAL_STRING("tie", s.compose.cand[1].text);
+    TEST_ASSERT_TRUE(s.compose.cand[1].from_pack);
+    TEST_ASSERT_EQUAL_UINT8(1, s.compose.sel_cand);
+    TEST_ASSERT_EQUAL_UINT16(8, s.compose.total_cand);
+}
+
+/* Honest no-match: word_nomatch true, word empty, no candidates — the
+ * screen must never fabricate a word from this (mirrors the loader half). */
+static void compose_pred_nomatch_parses(void)
+{
+    ff_app_state_t s;
+    char const *json = "{\"compose\": {\"mode\": \"pred\", \"text\": \"brb \", \"word_nomatch\": true}}";
+    TEST_ASSERT_EQUAL_INT(FF_FIXTURE_OK, ff_fixture_load_json(json, strlen(json), &s));
+
+    TEST_ASSERT_EQUAL_INT(FF_APP_COMPOSE_PRED, s.compose.mode);
+    TEST_ASSERT_TRUE(s.compose.word_nomatch);
+    TEST_ASSERT_EQUAL_STRING("", s.compose.word);
+    TEST_ASSERT_EQUAL_UINT8(0, s.compose.n_cand);
+}
+
+/* Same fail-loud-on-oversized-array contract as radar.dots/now.rows: a
+ * `cand` array past FF_APP_COMPOSE_MAX_CAND (6) rejects the whole load with
+ * FF_FIXTURE_ERR_TOO_BIG and leaves *out zeroed (never a silent truncation
+ * that would drop a real candidate). Mutation guard: delete the cap check
+ * in fx_parse_compose_cand and this returns OK again. */
+static void compose_pred_cand_over_cap_fails_loud(void)
+{
+    ff_app_state_t s;
+    memset(&s, 0xAA, sizeof(s));
+    char const *json = "{\"compose\": {\"mode\": \"pred\", \"cand\": ["
+                       "{\"text\":\"a\"},{\"text\":\"b\"},{\"text\":\"c\"},{\"text\":\"d\"},"
+                       "{\"text\":\"e\"},{\"text\":\"f\"},{\"text\":\"g\"}]}}";
+    TEST_ASSERT_EQUAL_INT(FF_FIXTURE_ERR_TOO_BIG, ff_fixture_load_json(json, strlen(json), &s));
+
+    ff_app_state_t zero;
+    memset(&zero, 0, sizeof(zero));
+    TEST_ASSERT_EQUAL_MEMORY(&zero, &s, sizeof(s));
+}
+
 /* ---------------------------------------------------------------------
  * Fail-loud on oversized arrays (PR #12 review finding #3, orchestrator
  * ruling on deviation #6): a section array beyond its documented cap
@@ -1169,6 +1228,9 @@ int main(void)
     RUN_TEST(settings_section_parses_every_field);
     RUN_TEST(compose_section_parses_every_field);
     RUN_TEST(compose_mode_defaults_to_abc_when_omitted);
+    RUN_TEST(compose_pred_fields_parse);
+    RUN_TEST(compose_pred_nomatch_parses);
+    RUN_TEST(compose_pred_cand_over_cap_fails_loud);
 
     RUN_TEST(radar_dots_over_cap_fails_loud);
     RUN_TEST(radar_dots_at_cap_still_loads_ok);

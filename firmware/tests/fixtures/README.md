@@ -255,7 +255,33 @@ convention `radar.arrow_valid` already uses.
 | `text` | string (≤160 chars) | `""` |
 | `to_name` | string (≤15 chars) | `""` ("" = broadcast, "TO: EVERYONE") |
 | `has_pending` | bool | `false` |
-| `mode` | string enum: `abc` \| `123` \| `sym` | `abc` |
+| `mode` | string enum: `abc` \| `123` \| `sym` \| `pred` | `abc` |
+
+### Predictive-T9 fields (`mode: "pred"`, S08 addendum)
+
+Meaningful only in `pred` mode; the shell leaves them zeroed in the other
+modes, so an `abc`/`123`/`sym` fixture simply omits them. This is
+hand-authored golden data — on the live path the shell fills these from the
+`core/ff_t9pred` engine (`from_pack` by pointer identity against the
+festpack word table, `total_cand` the real engine count), never a
+fabricated value. The screen renders exactly what is here: it never shows a
+word the engine did not return.
+
+```json
+"compose": {
+  "mode": "pred", "text": "omw to ", "word": "the",
+  "cand": [ {"text": "the"}, {"text": "tie"}, {"text": "vie"} ],
+  "sel": 0, "total_cand": 8
+}
+```
+
+| Key | Type | Default |
+|---|---|---|
+| `word` | string (≤31 chars) | `""` — the in-progress predicted word (amber, underlined, with a caret). `""` = nothing predicted yet, or an honest no-match (see `word_nomatch`) |
+| `word_nomatch` | bool | `false` — digits typed but the engine honestly returned NO word. The draft shows committed text + a neutral caret and NO amber word; the strip shows a dim "no match" affordance, never a fabricated chip |
+| `cand` | array of `{ "text": string, "from_pack": bool }`, cap `FF_APP_COMPOSE_MAX_CAND` (6), fail-loud on over-cap | `[]`. Best-first candidate chips. `from_pack` (default `false`) badges festpack vocabulary with a ★ |
+| `sel` / `sel_cand` | int | `0` — selection index among ALL candidates. Highlights `cand[sel]` amber-filled only when `sel < n_cand`; otherwise no chip is highlighted and `word` is the authoritative selection |
+| `total_cand` | int | `0` — the real total match count. When it exceeds the shown chips, a trailing `›` cycle chip appears |
 
 The LOADER has accepted this section since S08 (`fx_parse_compose`), but
 `ff_fixture_dump_json` never wrote it back out until S16 slice d — a real

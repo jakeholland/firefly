@@ -1,0 +1,17 @@
+{
+  "fixture": "compose_pred_nomatch",
+  "face": "compose",
+  "compose": {
+    "to_name": "DANA",
+    "text": "brb ",
+    "has_pending": false,
+    "mode": "pred",
+    "word": "ghosted",
+    "word_nomatch": true,
+    "cand": [
+      { "text": "ghosted", "from_pack": false }
+    ],
+    "sel": 0,
+    "total_cand": 5
+  }
+}
