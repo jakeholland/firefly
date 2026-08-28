@@ -577,6 +577,8 @@ static ff_fixture_result_t fx_parse_signals(fx_ctx_t const *c, int obj_i, ff_sig
         sig->target_kind = (ff_target_kind_t)v;
     }
     if (fx_obj_get(c, obj_i, "target_node", &t)) sig->target_node = (uint32_t)fx_num(c, t, 0.0);
+    /* S22 slice d — the RALLY-to-WHOLE_CREW confirm display flag (AC4). */
+    if (fx_obj_get(c, obj_i, "rally_confirm_armed", &t)) sig->rally_confirm_armed = fx_bool(c, t, false);
 
     int rows_i;
     if (fx_obj_get(c, obj_i, "rows", &rows_i) && !fx_is_null(c, rows_i)) {

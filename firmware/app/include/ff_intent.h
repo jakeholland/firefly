@@ -150,14 +150,19 @@ typedef enum {
      * node id in `u.node_id` (a paired-crew node by construction — every
      * selectable row has a known identity); CLEAR has no payload.
      *
-     * SIG_RALLY / SIG_PULSE / SIG_COMPOSE are the three action buttons. This
-     * slice EMITS and ROUTES them but does not send: the real `ff_proto`
-     * encode + dispatch and the rally-to-WHOLE_CREW confirm (S22 AC4) are
-     * slice (d). Until then the shell logs them and resets the target
-     * (the AC3 "target resets after any send" seam), leaving a clean place
-     * for (d) to add the actual send. No payload — each acts on the current
-     * target, which the shell reads from its own `ff_sigview_t`, never from
-     * the screen (a pure renderer must not carry the target itself). */
+     * SIG_RALLY / SIG_PULSE / SIG_COMPOSE are the three action buttons, wired
+     * to real sends in slice (d): PULSE encodes an `ff_proto` PULSE and RALLY
+     * an `ff_proto` RALLY, dispatched over FF_PORTNUM to the current target
+     * (WHOLE_CREW broadcast vs a member's addressed send), then the target
+     * resets to WHOLE_CREW (S22 AC3). RALLY to WHOLE_CREW is the one loud
+     * broadcast, so its first tap ARMS a confirm (rendered on the button via
+     * `ff_sigview_rally_confirm_armed`) and only a second tap within a short
+     * window sends (S22 AC4); a member rally and every pulse send on the first
+     * tap. COMPOSE opens the composer with its TO set to the current target
+     * and switches face — the composer's own SEND does the text send. No
+     * payload — each acts on the current target, which the shell reads from
+     * its own `ff_sigview_t` / target holder, never from the screen (a pure
+     * renderer must not carry the target itself). */
     FF_INTENT_SIG_SELECT_MEMBER, FF_INTENT_SIG_CLEAR_TARGET,
     FF_INTENT_SIG_RALLY, FF_INTENT_SIG_PULSE, FF_INTENT_SIG_COMPOSE,
 } ff_intent_kind_t;
