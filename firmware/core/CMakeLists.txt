@@ -231,3 +231,19 @@ if(FF_BUILD_TESTS)
 
     add_test(NAME test_wall COMMAND test_wall)
 endif()
+
+# S23a (core/demofeed — deterministic seeded demo-feed generator;
+# docs/specs/S23-demo-feed.md, slice a). Pure C11 event SOURCE only: the live
+# demo clock, the CONFIG_FF_DEMO_LIVE switch, the app apply-loop through
+# ff_wiring, and the demo festpack string table are slices b/c/d — not here.
+target_sources(ff-core PRIVATE src/ff_demofeed.c)
+
+if(FF_BUILD_TESTS)
+    add_executable(test_demofeed
+        tests/test_demofeed.c
+    )
+    target_link_libraries(test_demofeed PRIVATE ff-core unity)
+    ff_apply_warnings(test_demofeed)
+
+    add_test(NAME test_demofeed COMMAND test_demofeed)
+endif()
