@@ -42,6 +42,27 @@ endif()
 # built into ff-festpack itself rather than as a separate library.
 target_sources(ff-festpack PRIVATE src/ff_sched.c)
 
+# S08 predictive-T9 addendum — festpack->words bridge (fp_t9words). Turns a
+# loaded fp_pack_t's artist/stage/landmark names into the caller-supplied
+# supplementary word array that core/t9pred's ff_t9pred_match_ex ranks above
+# its static dictionary. Lives HERE (not core/t9pred) so the engine stays
+# festpack-free — see fp_t9words.h's placement note. Depends only on fp_pack.h;
+# it does NOT link or include the engine (it just produces C strings).
+target_sources(ff-festpack PRIVATE src/fp_t9words.c)
+
+if(FF_BUILD_TESTS)
+    # test_t9words exercises the bridge AND the pure engine together: it links
+    # ff-core directly (ff-festpack links ff-core PRIVATE, so its include dir
+    # is not propagated) to reach ff_t9pred.h / the dictionary.
+    add_executable(test_t9words
+        tests/test_t9words.c
+    )
+    target_link_libraries(test_t9words PRIVATE ff-festpack ff-core unity)
+    ff_apply_warnings(test_t9words)
+
+    add_test(NAME test_t9words COMMAND test_t9words)
+endif()
+
 if(FF_BUILD_TESTS)
     add_executable(test_sched
         tests/test_sched.c
