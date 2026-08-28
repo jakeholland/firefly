@@ -2545,6 +2545,40 @@ static void S22_AC4_pulse_addresses_member_vs_whole_crew(void)
     TEST_ASSERT_EQUAL_INT(FF_PROTO_TYPE_PULSE, decode_packet_private(P.tx + tx_before, P.tx_len - tx_before, NULL));
 }
 
+/* AC4 / honest-data (Tier 3) — a send to a member who was JUST unpaired,
+ * with NO intervening tick, is REFUSED. `ff_shell_pair(node, false)` clears
+ * `paired` but leaves the node in the roster, so `ff_crew_find` still returns
+ * it; between SELECT and this PULSE the per-tick projection that normally
+ * downgrades a stale member target has not run, so the send-time `!m->paired`
+ * re-validation in `shell_sig_dest` is the ONLY thing standing between the
+ * user's drop and a directed send to a node they just removed. This is the
+ * mutation guard for that guard: it PASSES with the check present and FAILS
+ * (a PULSE goes to the dropped node) when `!m->paired` is dropped from
+ * `shell_sig_dest`. */
+static void S22_AC4_send_to_just_unpaired_member_is_refused(void)
+{
+    s22_connect_shell();
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, true));
+
+    /* SELECT DANA as the target while she is still paired. */
+    ff_intent_t sel = {.kind = FF_INTENT_SIG_SELECT_MEMBER, .u = {0}};
+    sel.u.node_id = DANA;
+    ff_shell_intent(&H.shell, &sel);
+    TEST_ASSERT_EQUAL_INT(FF_TARGET_MEMBER, ff_shell_view(&H.shell)->signals.target_kind);
+    TEST_ASSERT_EQUAL_UINT32(DANA, ff_shell_view(&H.shell)->signals.target_node);
+
+    /* Drop DANA — cleared `paired`, still in the roster — and do NOT tick, so
+     * the projection's stale-target downgrade cannot run first. */
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, false));
+
+    /* A PULSE now must send NOTHING: shell_sig_dest refuses a member target
+     * that is no longer paired rather than addressing the dropped node. */
+    size_t const tx_before = P.tx_len;
+    ff_intent_t pulse = {.kind = FF_INTENT_SIG_PULSE, .u = {0}};
+    ff_shell_intent(&H.shell, &pulse);
+    TEST_ASSERT_EQUAL_size_t(tx_before, P.tx_len); /* refused — nothing on the wire */
+}
+
 /* AC4 — RALLY to a single member sends on the FIRST tap (no confirm), is
  * addressed to that member, and encodes TYPE RALLY carrying a place name. */
 static void S22_AC4_rally_to_member_sends_first_tap(void)
@@ -3413,6 +3447,7 @@ int main(void)
     RUN_TEST(S16_b1_shell_footprint_excludes_the_pack);
     RUN_TEST(S22b_signals_target_survives_rebuild_and_is_gated);
     RUN_TEST(S22_AC4_pulse_addresses_member_vs_whole_crew);
+    RUN_TEST(S22_AC4_send_to_just_unpaired_member_is_refused);
     RUN_TEST(S22_AC4_rally_to_member_sends_first_tap);
     RUN_TEST(S22_AC4_rally_without_my_pos_sends_nothing);
     RUN_TEST(S22_AC4_rally_whole_crew_confirm);
