@@ -231,9 +231,39 @@ static void flare_anim_set_opa_cb(void *obj, int32_t v)
  * scr_radar.c's radar_draw_segment documents (lv_line draws each point at
  * object_top_left + point, no auto-centering of arbitrary/negative
  * points). `cy` is the mark's center, puck-center-relative. */
+/* The attention pulse (S10 "flare to grab attention"). The whole mark —
+ * all eight rays and the center dot — breathes its opacity between full
+ * and this floor, and back, forever. Amber-only, no scale/geometry change,
+ * so it never risks the round-glass clamp the rays are sized against.
+ *
+ * GOLDEN-SAFE BY CONSTRUCTION. The start value is LV_OPA_COVER — the exact
+ * resting appearance the goldens capture — and the headless render freezes
+ * lv_tick at 0 and does a single lv_refr_now(), so the pulse's elapsed
+ * time is 0 and it renders at that start value (the same property S06's
+ * CLOSE-mode radar animation relies on to keep its own goldens stable —
+ * see targets/sim/main.c's header note on lv_refr_now/lv_anim_refr_now).
+ * The animation is visible only where lv_tick actually advances: the
+ * device and the live/ctl sim loops. */
+#define FLARE_MARK_PULSE_FLOOR_OPA LV_OPA_40
+#define FLARE_MARK_PULSE_MS        750u
+
 static void flare_build_mark(lv_obj_t *parent, float cy)
 {
     const int32_t half = FF_THEME_PUCK_PX / 2;
+
+    /* All rays + dot go under one full-puck-size, styleless, transparent
+     * container pinned at the parent's origin — identical geometry to
+     * parenting them straight on `parent` (same size, same (0,0) origin,
+     * no padding), so no pixel moves — whose OPACITY the pulse animates as
+     * a single layer. Animating the container (not `parent`) keeps the
+     * headline/bearing/buttons at full opacity. */
+    lv_obj_t *mark = lv_obj_create(parent);
+    lv_obj_remove_style_all(mark);
+    lv_obj_set_size(mark, FF_THEME_PUCK_PX, FF_THEME_PUCK_PX);
+    lv_obj_set_pos(mark, 0, 0);
+    lv_obj_clear_flag(mark, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_clear_flag(mark, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_style_opa(mark, LV_OPA_COVER, 0); /* resting = golden */
 
     for (int i = 0; i < FLARE_MARK_N_RAYS; i++) {
         float angle_deg = (float)i * (360.0f / (float)FLARE_MARK_N_RAYS);
@@ -249,7 +279,7 @@ static void flare_build_mark(lv_obj_t *parent, float cy)
         pts[1].x = half + (int32_t)dx;
         pts[1].y = half + (int32_t)cy + (int32_t)dy;
 
-        lv_obj_t *line = lv_line_create(parent);
+        lv_obj_t *line = lv_line_create(mark);
         lv_obj_remove_style_all(line);
         lv_obj_set_size(line, FF_THEME_PUCK_PX, FF_THEME_PUCK_PX);
         lv_obj_set_pos(line, 0, 0);
@@ -262,7 +292,7 @@ static void flare_build_mark(lv_obj_t *parent, float cy)
     }
 
     /* Center dot, built last so it sits on top of the 8 ray origins. */
-    lv_obj_t *dot = lv_obj_create(parent);
+    lv_obj_t *dot = lv_obj_create(mark);
     lv_obj_remove_style_all(dot);
     lv_obj_set_size(dot, (int32_t)(FLARE_MARK_CENTER_R * 2), (int32_t)(FLARE_MARK_CENTER_R * 2));
     lv_obj_set_style_radius(dot, LV_RADIUS_CIRCLE, 0);
@@ -271,6 +301,20 @@ static void flare_build_mark(lv_obj_t *parent, float cy)
     lv_obj_clear_flag(dot, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_clear_flag(dot, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_align(dot, LV_ALIGN_CENTER, 0, (int32_t)cy);
+
+    /* Start the pulse LAST, once the whole mark exists. Start value ==
+     * LV_OPA_COVER (the resting/golden opacity) so the first frame is the
+     * golden; from there it eases down to the floor and back, forever. */
+    lv_anim_t a;
+    lv_anim_init(&a);
+    lv_anim_set_var(&a, mark);
+    lv_anim_set_exec_cb(&a, flare_anim_set_opa_cb);
+    lv_anim_set_values(&a, LV_OPA_COVER, FLARE_MARK_PULSE_FLOOR_OPA);
+    lv_anim_set_duration(&a, FLARE_MARK_PULSE_MS);
+    lv_anim_set_reverse_duration(&a, FLARE_MARK_PULSE_MS);
+    lv_anim_set_repeat_count(&a, LV_ANIM_REPEAT_INFINITE);
+    lv_anim_set_path_cb(&a, lv_anim_path_ease_in_out);
+    lv_anim_start(&a);
 }
 
 /* A visually solid, distinctly-shaped pill button (never text-only — see
