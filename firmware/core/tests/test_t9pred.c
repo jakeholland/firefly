@@ -292,6 +292,45 @@ static void cycle_is_noop_with_fewer_than_two_candidates(void)
      * sel is always a valid index into the candidate set. */
 }
 
+static void select_jumps_to_an_index_and_clamps_past_the_end(void)
+{
+    /* "9673" has exactly 3 candidates: words, word, wore. select() jumps
+     * straight to any of them (tap-to-select), and a past-the-end index
+     * clamps to the last rather than pointing at a phantom. */
+    ff_t9pred_session_t s;
+    ff_t9pred_session_reset(&s);
+    ff_t9pred_session_key(&s, 9);
+    ff_t9pred_session_key(&s, 6);
+    ff_t9pred_session_key(&s, 7);
+    ff_t9pred_session_key(&s, 3);
+
+    ff_t9pred_session_select(&s, 2);
+    TEST_ASSERT_EQUAL_UINT(2, s.sel);
+    TEST_ASSERT_EQUAL_STRING("wore", ff_t9pred_session_current(&s));
+
+    ff_t9pred_session_select(&s, 0);
+    TEST_ASSERT_EQUAL_UINT(0, s.sel);
+    TEST_ASSERT_EQUAL_STRING("words", ff_t9pred_session_current(&s));
+
+    /* Past the end (only 3 candidates): clamps to the last, index 2. */
+    ff_t9pred_session_select(&s, 99);
+    TEST_ASSERT_EQUAL_UINT(2, s.sel);
+    TEST_ASSERT_EQUAL_STRING("wore", ff_t9pred_session_current(&s));
+
+    /* Honest no-match ("249"): select is a no-op, selection stays 0 and
+     * current stays NULL — never a fabricated pick. */
+    ff_t9pred_session_reset(&s);
+    ff_t9pred_session_key(&s, 2);
+    ff_t9pred_session_key(&s, 4);
+    ff_t9pred_session_key(&s, 9);
+    ff_t9pred_session_select(&s, 3);
+    TEST_ASSERT_EQUAL_UINT(0, s.sel);
+    TEST_ASSERT_NULL(ff_t9pred_session_current(&s));
+
+    /* NULL session is safe. */
+    ff_t9pred_session_select(NULL, 1);
+}
+
 static void key_and_backspace_reset_selection_to_top(void)
 {
     ff_t9pred_session_t s;
@@ -539,6 +578,7 @@ int main(void)
 
     RUN_TEST(cycle_advances_through_candidates_and_wraps);
     RUN_TEST(cycle_is_noop_with_fewer_than_two_candidates);
+    RUN_TEST(select_jumps_to_an_index_and_clamps_past_the_end);
     RUN_TEST(key_and_backspace_reset_selection_to_top);
     RUN_TEST(session_set_extra_rebind_reanchors_selection);
 

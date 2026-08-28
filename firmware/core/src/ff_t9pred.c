@@ -327,6 +327,23 @@ void ff_t9pred_session_cycle(ff_t9pred_session_t *s)
     s->sel = (uint16_t)((s->sel + 1u) % total);
 }
 
+void ff_t9pred_session_select(ff_t9pred_session_t *s, uint16_t idx)
+{
+    if (!s) {
+        return;
+    }
+    size_t total = ff_t9pred_count_ex(s->digits, s->n, s->extra, s->n_extra);
+    if (total == 0) {
+        s->sel = 0; /* honest no-match: no candidate to select */
+        return;
+    }
+    /* Clamp past-the-end to the last candidate: a tap on a chip that a
+     * newer keypress has since shrunk out of existence must not select a
+     * phantom (same "sel can't point past the set" invariant reset/cycle
+     * keep). total <= dictionary size, so it fits a uint16_t index. */
+    s->sel = (uint16_t)((idx < total) ? idx : (total - 1u));
+}
+
 char const *ff_t9pred_session_current(ff_t9pred_session_t const *s)
 {
     if (!s || s->n == 0) {

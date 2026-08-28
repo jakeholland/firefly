@@ -216,6 +216,16 @@ static void S16_AC10_draft_typed_flare_injected_takeover_clears_draft_survives(v
     TEST_ASSERT_EQUAL(FF_APP_FACE_COMPOSE, ctx.state.active_face);
     TEST_ASSERT_EQUAL_STRING("", ctx.state.compose.text);
 
+    /* S08 addendum: the composer now opens in predictive mode
+     * (FF_APP_COMPOSE_PRED), whose keypad is PR2. This AC10 test is about
+     * the MULTITAP draft surviving a takeover, so switch to the ABC page
+     * first (one T9_MODE press: PRED -> ABC), where the "DEF" key lives, and
+     * let the screen rebuild. */
+    ff_intent_t to_abc = {.kind = FF_INTENT_T9_MODE, .u = {0}};
+    ff_shell_intent(&shell, &to_abc);
+    ctl_settle(&ctx, &h);
+    TEST_ASSERT_EQUAL(FF_APP_COMPOSE_ABC, ctx.state.compose.mode);
+
     /* --- draft typed: a real ctl "tap" on the "DEF" key --------------- */
     lv_obj_t *def_key = find_button_with_label(lv_screen_active(), "DEF");
     TEST_ASSERT_NOT_NULL_MESSAGE(def_key, "compose keypad's DEF key not found — is Compose actually built?");

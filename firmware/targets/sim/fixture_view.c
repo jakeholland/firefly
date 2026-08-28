@@ -96,6 +96,7 @@ static char const *ffv_compose_mode_str(ff_app_compose_mode_t m)
     case FF_APP_COMPOSE_ABC: return "ABC";
     case FF_APP_COMPOSE_123: return "123";
     case FF_APP_COMPOSE_SYM: return "SYM";
+    case FF_APP_COMPOSE_PRED: return "PRED"; /* S08 addendum — exhaustiveness for -Wswitch */
     }
     return "?";
 }

@@ -340,8 +340,22 @@ typedef struct {
  * growth has nothing to do with that, so it's kept true rather than
  * loosened. Note that `fp_pack_t` is NOT in here — see
  * `ff_shell_cfg_t.pack`.
+ *
+ * RAISED 22 KB -> 23 KB in the S08 predictive-composer PR, deliberately,
+ * per this comment's own instruction: the predictive composer adds the
+ * shell's FESTPACK WORD TABLE — `compose_extra[FF_COMPOSE_EXTRA_MAX]`, 280
+ * `char const *` (all of a pack's set/stage/landmark names, the maintainer's
+ * "all names" budget) = 2,240 B — plus the predictive session and the two
+ * `ff_app_state_t` copies' grown `compose` section. Measured, not estimated:
+ * `sizeof(shell_t)` is 23,104 B against the old 22,528 B budget (a hard
+ * compile failure). 23 KB (23,552 B) is the smallest round-KB number that
+ * clears 23,104 with headroom (~448 B) AND stays UNDER `sizeof(fp_pack_t)`
+ * (23,696 B measured) so `test_shell.c`'s
+ * `S16_b1_shell_footprint_excludes_the_pack` red-flag check stays true —
+ * the festpack word table ALIASES into the pack (fp_t9words_collect copies
+ * nothing), so this growth is 280 pointers, not a folded-in pack.
  */
-#define FF_SHELL_BYTES 22528u
+#define FF_SHELL_BYTES 23552u
 
 /** Alignment of the opaque payload. 8 covers every member the shell
  *  holds today (the widest are `double` inside `ff_latlon_t` and

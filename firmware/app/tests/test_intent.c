@@ -441,6 +441,253 @@ static void S11b_a_compose_draft_survives_a_settings_visit(void)
 }
 
 /* =================================================================== */
+/* S08 predictive addendum — predictive-T9 composer at the shell         */
+/* =================================================================== */
+
+/* A predictive pack the composer's session ranks above its dictionary.
+ * "Gooders" deliberately shares the keys 4-6-6-3 with the dictionary word
+ * "good" (the exact overlap test_t9pred.c uses) so one sequence proves both
+ * the pack-word ranking AND the pointer-identity from_pack flag; the stage
+ * name "A Stage" starts with 'a'=2 so it never collides with these keys. */
+static char const PACK_JSON_T9[] =
+    "{\"festpack\":\"0.1\",\"utc_offset_min\":0,"
+    "\"festival\":{\"name\":\"Test Fest\",\"year\":2026,"
+    "\"start\":\"2026-09-18\",\"end\":\"2026-09-20\","
+    "\"venue\":{\"lat\":39.936,\"lon\":-82.414}},"
+    "\"stages\":[{\"id\":\"a\",\"name\":\"A Stage\",\"color\":\"#00ff00\"}],"
+    "\"schedule\":["
+    "{\"artist\":\"Gooders\",\"stage\":\"a\",\"day\":\"2026-09-18\","
+    "\"start\":\"21:00\",\"end\":\"23:00\"}]}";
+
+/* Emit one predictive letter key (2..9) into the open PRED composer. */
+static void pred_key(uint8_t k)
+{
+    ff_intent_t in = {.kind = FF_INTENT_T9_KEY, .u = {0}};
+    in.u.t9_key = k;
+    ff_shell_intent(&H.shell, &in);
+}
+
+/* The predicted word "4663" resolves to (dictionary top): "good". */
+static void S08_pred_defaults_on_open_and_projects_the_top_candidate(void)
+{
+    harness_init(100000u);
+
+    send_open_compose(0u);
+    /* Defaults to the predictive mode (no T9_MODE needed). */
+    TEST_ASSERT_EQUAL(FF_APP_COMPOSE_PRED, view()->compose.mode);
+    /* Nothing typed yet: empty word, and NOT a no-match. */
+    TEST_ASSERT_EQUAL_STRING("", view()->compose.word);
+    TEST_ASSERT_FALSE(view()->compose.word_nomatch);
+
+    pred_key(4);
+    pred_key(6);
+    pred_key(6);
+    pred_key(3);
+
+    ff_app_state_t const *v = view();
+    TEST_ASSERT_EQUAL_STRING("good", v->compose.word);         /* the engine's real top word */
+    TEST_ASSERT_FALSE(v->compose.word_nomatch);
+    TEST_ASSERT_GREATER_THAN_UINT8(0, v->compose.n_cand);
+    TEST_ASSERT_EQUAL_STRING("good", v->compose.cand[0].text);
+    TEST_ASSERT_FALSE(v->compose.cand[0].from_pack);           /* dictionary word, no pack loaded */
+    TEST_ASSERT_EQUAL_UINT16(11, v->compose.total_cand);       /* the REAL engine count for 4663 */
+    TEST_ASSERT_EQUAL_UINT8(0, v->compose.sel_cand);
+    /* The committed draft is still empty — the predicted word is not
+     * committed until accepted. */
+    TEST_ASSERT_EQUAL_STRING("", v->compose.text);
+}
+
+/* CYCLE advances the selection and `word`/`sel_cand` follow; "9673" has
+ * exactly three candidates (words, word, wore) and cycling wraps. */
+static void S08_pred_cycle_advances_selection_and_word_follows(void)
+{
+    harness_init(100000u);
+    send_open_compose(0u);
+    pred_key(9);
+    pred_key(6);
+    pred_key(7);
+    pred_key(3);
+
+    TEST_ASSERT_EQUAL_STRING("words", view()->compose.word);
+    TEST_ASSERT_EQUAL_UINT8(0, view()->compose.sel_cand);
+    TEST_ASSERT_EQUAL_UINT16(3, view()->compose.total_cand);
+
+    send_kind(FF_INTENT_T9_CYCLE);
+    TEST_ASSERT_EQUAL_STRING("word", view()->compose.word);
+    TEST_ASSERT_EQUAL_UINT8(1, view()->compose.sel_cand);
+
+    send_kind(FF_INTENT_T9_CYCLE);
+    TEST_ASSERT_EQUAL_STRING("wore", view()->compose.word);
+    TEST_ASSERT_EQUAL_UINT8(2, view()->compose.sel_cand);
+
+    send_kind(FF_INTENT_T9_CYCLE); /* wraps back to the top */
+    TEST_ASSERT_EQUAL_STRING("words", view()->compose.word);
+    TEST_ASSERT_EQUAL_UINT8(0, view()->compose.sel_cand);
+}
+
+/* SELECT jumps straight to an index (tap-to-select). */
+static void S08_pred_select_jumps_to_an_index(void)
+{
+    harness_init(100000u);
+    send_open_compose(0u);
+    pred_key(9);
+    pred_key(6);
+    pred_key(7);
+    pred_key(3);
+
+    ff_intent_t sel = {.kind = FF_INTENT_T9_SELECT, .u = {0}};
+    sel.u.t9_key = 2; /* the third candidate */
+    ff_shell_intent(&H.shell, &sel);
+    TEST_ASSERT_EQUAL_STRING("wore", view()->compose.word);
+    TEST_ASSERT_EQUAL_UINT8(2, view()->compose.sel_cand);
+
+    sel.u.t9_key = 0;
+    ff_shell_intent(&H.shell, &sel);
+    TEST_ASSERT_EQUAL_STRING("words", view()->compose.word);
+    TEST_ASSERT_EQUAL_UINT8(0, view()->compose.sel_cand);
+}
+
+/* SPACE accepts the current candidate: it commits into the draft (+space)
+ * and the session resets AND re-binds its festpack words — proven by the
+ * pack word predicting again after the accept. */
+static void S08_pred_space_accepts_commits_and_rebinds_the_session(void)
+{
+    harness_init(100000u);
+    TEST_ASSERT_EQUAL_INT(0, ff_shell_load_pack(&H.shell, PACK_JSON_T9, sizeof(PACK_JSON_T9) - 1u));
+    send_open_compose(0u);
+
+    pred_key(4);
+    pred_key(6);
+    pred_key(6);
+    pred_key(3);
+    /* The pack word outranks the dictionary and is flagged from_pack by
+     * pointer identity. */
+    TEST_ASSERT_EQUAL_STRING("Gooders", view()->compose.word);
+    TEST_ASSERT_TRUE(view()->compose.cand[0].from_pack);
+
+    send_kind(FF_INTENT_T9_SPACE); /* accept */
+    ff_app_state_t const *v = view();
+    TEST_ASSERT_EQUAL_STRING("Gooders ", v->compose.text); /* committed + space */
+    TEST_ASSERT_EQUAL_STRING("", v->compose.word);          /* session reset: nothing in progress */
+    TEST_ASSERT_FALSE(v->compose.word_nomatch);
+
+    /* Re-bind proof: type the same keys again. If SPACE had reset WITHOUT
+     * re-binding the extras, the top word would drop to the dictionary
+     * "good"; because the extras are re-bound, it is "Gooders" again. */
+    pred_key(4);
+    pred_key(6);
+    pred_key(6);
+    pred_key(3);
+    TEST_ASSERT_EQUAL_STRING("Gooders", view()->compose.word);
+    TEST_ASSERT_TRUE(view()->compose.cand[0].from_pack);
+}
+
+/* BACKSPACE removes from the predicted word first; only when the session is
+ * empty does it eat into the committed draft. */
+static void S08_pred_backspace_removes_from_session_then_draft(void)
+{
+    harness_init(100000u);
+    send_open_compose(0u);
+
+    /* Commit "good " first (type + accept). */
+    pred_key(4);
+    pred_key(6);
+    pred_key(6);
+    pred_key(3);
+    send_kind(FF_INTENT_T9_SPACE);
+    TEST_ASSERT_EQUAL_STRING("good ", view()->compose.text);
+
+    /* Start a new predicted word: "9673" -> "words". */
+    pred_key(9);
+    pred_key(6);
+    pred_key(7);
+    pred_key(3);
+    TEST_ASSERT_EQUAL_STRING("words", view()->compose.word);
+    TEST_ASSERT_EQUAL_STRING("good ", view()->compose.text); /* draft untouched so far */
+
+    /* Backspaces peel digits off the SESSION first; the committed draft
+     * stays put until the session is empty. */
+    send_kind(FF_INTENT_T9_BACKSPACE); /* "967" */
+    send_kind(FF_INTENT_T9_BACKSPACE); /* "96" */
+    send_kind(FF_INTENT_T9_BACKSPACE); /* "9" */
+    TEST_ASSERT_EQUAL_STRING("good ", view()->compose.text); /* still untouched */
+
+    send_kind(FF_INTENT_T9_BACKSPACE); /* session now empty */
+    TEST_ASSERT_EQUAL_STRING("", view()->compose.word);
+    TEST_ASSERT_EQUAL_STRING("good ", view()->compose.text); /* the empties-the-session press does not also cut the draft */
+
+    send_kind(FF_INTENT_T9_BACKSPACE); /* now the draft: "good " -> "good" */
+    TEST_ASSERT_EQUAL_STRING("good", view()->compose.text);
+}
+
+/* Honest no-match: "249" maps to no dictionary word (and no pack loaded) —
+ * word_nomatch true, word empty, nothing fabricated. */
+static void S08_pred_honest_no_match_projects_empty_word(void)
+{
+    harness_init(100000u);
+    send_open_compose(0u);
+    pred_key(2);
+    pred_key(4);
+    pred_key(9);
+
+    ff_app_state_t const *v = view();
+    TEST_ASSERT_TRUE(v->compose.word_nomatch);
+    TEST_ASSERT_EQUAL_STRING("", v->compose.word);
+    TEST_ASSERT_EQUAL_UINT8(0, v->compose.n_cand);
+    TEST_ASSERT_EQUAL_UINT16(0, v->compose.total_cand);
+}
+
+/* The mode cycle now includes PRED, in order PRED -> ABC -> 123 -> SYM ->
+ * PRED, and multitap still works once ABC is reached (behavior unchanged). */
+static void S08_mode_cycle_includes_pred_and_multitap_still_works(void)
+{
+    harness_init(100000u);
+    send_open_compose(0u);
+    TEST_ASSERT_EQUAL(FF_APP_COMPOSE_PRED, view()->compose.mode);
+
+    send_kind(FF_INTENT_T9_MODE);
+    TEST_ASSERT_EQUAL(FF_APP_COMPOSE_ABC, view()->compose.mode);
+
+    /* In ABC, a key is multi-tap into the committed draft, exactly as before
+     * the addendum: key 3 once -> pending 'd'. */
+    pred_key(3);
+    TEST_ASSERT_EQUAL_STRING("d", view()->compose.text);
+    TEST_ASSERT_TRUE(view()->compose.has_pending);
+
+    send_kind(FF_INTENT_T9_MODE);
+    TEST_ASSERT_EQUAL(FF_APP_COMPOSE_123, view()->compose.mode);
+    send_kind(FF_INTENT_T9_MODE);
+    TEST_ASSERT_EQUAL(FF_APP_COMPOSE_SYM, view()->compose.mode);
+    send_kind(FF_INTENT_T9_MODE);
+    TEST_ASSERT_EQUAL(FF_APP_COMPOSE_PRED, view()->compose.mode); /* wraps back to PRED */
+}
+
+/* CYCLE/SELECT are gated on a visible takeover like every other Compose
+ * control (routing rule 4). */
+static void S08_pred_controls_rejected_during_a_takeover(void)
+{
+    harness_init(100000u);
+    pair_named(DANA, "DANA");
+    send_open_compose(0u);
+    pred_key(9);
+    pred_key(6);
+    pred_key(7);
+    pred_key(3);
+    TEST_ASSERT_EQUAL_STRING("words", view()->compose.word);
+
+    inject_flare(DANA, 300u);
+    TEST_ASSERT_TRUE(ff_shell_flare(&H.shell)->takeover_active);
+
+    /* CYCLE and a predictive key are both swallowed while the takeover owns
+     * the screen — the selection and digits are untouched. */
+    send_kind(FF_INTENT_T9_CYCLE);
+    pred_key(3);
+    send_kind(FF_INTENT_TAKEOVER_DISMISS);
+    TEST_ASSERT_EQUAL_STRING("words", view()->compose.word); /* unchanged: nothing reached the session */
+    TEST_ASSERT_EQUAL_UINT8(0, view()->compose.sel_cand);
+}
+
+/* =================================================================== */
 /* Routing rule 4 — dispatch targets the VISIBLE face                   */
 /* =================================================================== */
 
@@ -1188,6 +1435,14 @@ int main(void)
     RUN_TEST(S16_c1_open_settings_and_back_round_trip);
     RUN_TEST(S09_open_map_and_back_round_trip);
     RUN_TEST(S11b_a_compose_draft_survives_a_settings_visit);
+    RUN_TEST(S08_pred_defaults_on_open_and_projects_the_top_candidate);
+    RUN_TEST(S08_pred_cycle_advances_selection_and_word_follows);
+    RUN_TEST(S08_pred_select_jumps_to_an_index);
+    RUN_TEST(S08_pred_space_accepts_commits_and_rebinds_the_session);
+    RUN_TEST(S08_pred_backspace_removes_from_session_then_draft);
+    RUN_TEST(S08_pred_honest_no_match_projects_empty_word);
+    RUN_TEST(S08_mode_cycle_includes_pred_and_multitap_still_works);
+    RUN_TEST(S08_pred_controls_rejected_during_a_takeover);
     RUN_TEST(S16_c1_route_intents_are_rejected_while_a_takeover_is_visible);
     RUN_TEST(S16_c1_takeover_decisions_require_a_visible_takeover);
     RUN_TEST(S16_c1_release_lock_and_takeover_dismiss_are_never_folded);
