@@ -22,6 +22,18 @@ void ff_face_build(ff_app_state_t const *state)
         return;
     }
 
+    /* #bug4 — reset the Settings scroll only on a fresh entry (a
+     * not-Settings -> Settings transition), so navigating in lands at the top
+     * while an in-place rebuild after a toggle preserves the offset. Mirrors
+     * targets/sim/face_dispatch.c; a receive-takeover renders FLARE, so it
+     * counts as a not-Settings face here too. */
+    static ff_app_face_t s_prev_face = FF_APP_FACE_NONE;
+    ff_app_face_t const eff = state->flare.takeover_active ? FF_APP_FACE_FLARE : state->active_face;
+    if (eff == FF_APP_FACE_SETTINGS && s_prev_face != FF_APP_FACE_SETTINGS) {
+        ff_scr_settings_reset_scroll();
+    }
+    s_prev_face = eff;
+
     /* Full-screen receive takeover interrupts any face (S10). */
     if (state->flare.takeover_active) {
         ff_scr_flare_build_takeover(&state->flare);

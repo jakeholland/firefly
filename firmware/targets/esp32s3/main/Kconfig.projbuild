@@ -33,7 +33,21 @@ menu "Firefly bring-up (S15 slice b)"
                 Everything in stage 2, then the SPD2010 touch controller is
                 wired to an LVGL pointer indev so a physical tap/swipe feeds
                 the SAME abstract input events the sim ctl socket injects,
-                changing shell state.
+                changing shell state. On boot the stored touch calibration
+                (if any) is loaded from ff_settings and applied.
+
+        config FF_BRINGUP_STAGE_4
+            bool "Stage 4 - calibrate touch (crosshair capture, then run)"
+            help
+                Everything in stage 3, then the S15d touch-calibration flow:
+                tap five on-screen crosshairs, the per-axis affine is fitted
+                (ff_touchcal_solve), the four params + all five raw->screen
+                pairs are logged, and the transform is applied LIVE — boot
+                continues straight into the normal UI so the corrected touch
+                can be felt immediately, no reflash. NOTE: app_main still
+                boots against the stub (no-op) store, so the fit is
+                session-live only; bake the logged params as a compile-time
+                default (or wire an NVS store) to persist across reboot.
     endchoice
 
     config FF_BRINGUP_STAGE
@@ -41,6 +55,7 @@ menu "Firefly bring-up (S15 slice b)"
         default 1 if FF_BRINGUP_STAGE_1
         default 2 if FF_BRINGUP_STAGE_2
         default 3 if FF_BRINGUP_STAGE_3
+        default 4 if FF_BRINGUP_STAGE_4
 
     config FF_DEMO_MODE
         bool "Demo mode — boot into the fictional Firefly Fields world"

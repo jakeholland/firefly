@@ -137,6 +137,73 @@
  * Switched to the global form above specifically to close that hole —
  * "we enforce a tap-target floor" should mean what it says, not "unless
  * the two controls happen to nest under different parents".
+ *
+ * ## S21: the sweep goes scroll-aware (the model)
+ *
+ * #105 could not put the brightness slider on Settings without either
+ * paginating or scrolling, and it paginated *specifically because this
+ * sweep read each clickable's ABSOLUTE, scroll-shifted rect* (via
+ * `lv_obj_get_click_area`) and failed any row scrolled off-glass — a
+ * scrollable list leaves its off-viewport rows at off-glass absolute
+ * coordinates the sweep read verbatim. S21 makes the sweep understand a
+ * scroll list so a scroll list is a sanctioned layout, and the model is
+ * this:
+ *
+ * A control inside a live VERTICAL scroll list (an ancestor with
+ * `LV_OBJ_FLAG_SCROLLABLE` AND a nonzero vertical scroll range — content
+ * that actually overflows and can be scrolled) is on-glass *when scrolled
+ * to*, not at its momentary absolute y. So for the CIRCLE-CONTAINMENT
+ * check only, such a control is checked against the scroll VIEWPORT: its
+ * fixed x-extent (horizontal position does not scroll) is required to lie
+ * inside the round glass across the WHOLE vertical span of the viewport
+ * `[vp.y1, vp.y2]` — i.e. `ff_layout_rect_in_circle({x1, vp.y1, x2,
+ * vp.y2})`. That single tall rect is exactly the union of every position
+ * the row can occupy as it scrolls through the viewport (the viewport is
+ * itself an inscribed rectangle, so a row whose x-slot fits the glass at
+ * both viewport edges fits at every scroll offset in between), so passing
+ * it proves the row is reachable and on-glass at some scroll position and
+ * never pokes off the glass at any of them. The narrowest point of the
+ * viewport (its edge nearest a pole) binds — which is the honest worst
+ * case for a row that can be scrolled to sit there.
+ *
+ * Three deliberate consequences, each matching the spec's model:
+ *  - The SIZE floor is unchanged: a control's width/height are intrinsic,
+ *    identical at every scroll offset, so the 44px floor is checked on the
+ *    raw rect exactly as before (scroll cannot rescue a too-small button).
+ *  - The pinned header (the back button) is NOT inside a scroll list, so
+ *    it keeps the absolute circle check — "back" is always on-glass, not
+ *    "on-glass once you scroll to it".
+ *  - ADJACENCY is unchanged, and that is correct rather than an omission:
+ *    a vertical scroll shifts every row in the list by the same amount, so
+ *    the edge-to-edge GAP between any two rows is scroll-invariant, and the
+ *    raw rects already encode each pair's true gap. Two rows far apart in
+ *    scroll are never simultaneously in the viewport, and their raw rects
+ *    are correspondingly far apart, so they pass the floor on their real
+ *    geometry — they are not exempted by size or by a co-visibility
+ *    special case, they simply are not close. Two rows near each other in
+ *    the list are near each other on glass at every scroll offset, and are
+ *    caught. The header-to-first-row gap (the one cross-boundary pair that
+ *    matters) is a fixed quantity checked at scroll 0, where the first row
+ *    sits at the viewport top; no scrolled row can get nearer the header
+ *    than the viewport top, so that one check covers it.
+ *
+ * The face tileview is deliberately NOT a scroll viewport under this rule:
+ * its user-scroll is (correctly) disabled and it pages HORIZONTALLY, so it
+ * has no vertical scroll range and its active-tile controls keep the
+ * absolute check. `sweep_scroll_viewport` keys off the vertical scroll
+ * range precisely so a horizontal/disabled scroller can never be mistaken
+ * for a settings list.
+ *
+ * The sweep MUST stay meaningful under this relaxation, not become a rubber
+ * stamp for anything nested in a scroller: `S21_sweep_still_catches_bad_
+ * controls_in_a_scroll_list` builds a scroll list containing a genuinely
+ * too-wide row (pokes off the glass even normalized to the viewport), a
+ * too-small row, and a too-close pair, and asserts the sweep flags each —
+ * while `S21_sweep_scroll_aware_passes_an_offscreen_but_in_band_row`
+ * proves a well-sized in-band row that is scrolled OFF the current viewport
+ * (and so fails the old absolute check) now passes. Together they pin that
+ * the relaxation is exactly "check it where it can be scrolled to", no
+ * wider.
  */
 #include <dirent.h>
 #include <math.h> /* sqrtf — AC2's edge-to-edge gap distance */
@@ -286,6 +353,35 @@ static bool sweep_is_ancestor(lv_obj_t *maybe_ancestor, lv_obj_t *obj)
     return false;
 }
 
+/* sweep_scroll_viewport — if `obj` lives inside a live VERTICAL scroll
+ * list, return that list's VIEWPORT rect (exclusive far edge, ff_layout.h
+ * convention) via *out_vp and true; else false. "Live vertical scroll list"
+ * = the nearest ancestor with LV_OBJ_FLAG_SCROLLABLE AND a nonzero vertical
+ * scroll range (lv_obj_get_scroll_top + lv_obj_get_scroll_bottom > 0, i.e.
+ * content that actually overflows and can be scrolled). Keying off the
+ * VERTICAL scroll range is what excludes the face tileview (horizontal /
+ * user-scroll-disabled, so zero vertical range) while including a real
+ * settings/feed list — see this file's header ("S21: the sweep goes
+ * scroll-aware"). */
+static bool sweep_scroll_viewport(lv_obj_t *obj, ff_layout_rect_t *out_vp)
+{
+    lv_obj_t *p = lv_obj_get_parent(obj);
+    while (p != NULL) {
+        if (lv_obj_has_flag(p, LV_OBJ_FLAG_SCROLLABLE) &&
+            (lv_obj_get_scroll_top(p) + lv_obj_get_scroll_bottom(p) > 0)) {
+            lv_area_t a;
+            lv_obj_get_coords(p, &a);
+            out_vp->x1 = (float)a.x1;
+            out_vp->y1 = (float)a.y1;
+            out_vp->x2 = (float)a.x2 + 1.0f; /* lv_area_t x2/y2 inclusive -> exclusive far edge */
+            out_vp->y2 = (float)a.y2 + 1.0f;
+            return true;
+        }
+        p = lv_obj_get_parent(p);
+    }
+    return false;
+}
+
 static void sweep_walk(lv_obj_t *obj, char const *fixture_name, sweep_result_t *out, sweep_clickable_list_t *list)
 {
     uint32_t n = lv_obj_get_child_count(obj);
@@ -326,12 +422,30 @@ static void sweep_walk(lv_obj_t *obj, char const *fixture_name, sweep_result_t *
 
             ff_layout_rect_t r = {(float)area.x1, (float)area.y1, (float)area.x2 + 1.0f, (float)area.y2 + 1.0f};
 
+            /* S21 scroll-aware circle check: a control inside a live vertical
+             * scroll list is checked against the scroll VIEWPORT, not its
+             * momentary absolute y. Its fixed x-extent must stay on-glass
+             * across the whole viewport span [vp.y1, vp.y2] — the union of
+             * every position it can be scrolled to. A control NOT in such a
+             * list (the pinned header, a non-scrolling face) keeps the
+             * absolute check (circle_rect == r). See this file's header. The
+             * SIZE floor above is intrinsic and already used the raw rect, so
+             * scroll cannot rescue a too-small control. */
+            ff_layout_rect_t circle_rect = r;
+            ff_layout_rect_t vp;
+            if (sweep_scroll_viewport(child, &vp)) {
+                circle_rect.y1 = vp.y1;
+                circle_rect.y2 = vp.y2;
+            }
+
             if (!is_whole_puck_gesture_region) {
-                if (!ff_layout_rect_in_circle(r, SWEEP_CX, SWEEP_CY, SWEEP_RADIUS)) {
+                if (!ff_layout_rect_in_circle(circle_rect, SWEEP_CX, SWEEP_CY, SWEEP_RADIUS)) {
                     out->violations++;
-                    printf("  HIT-RECT-OFF-GLASS    [%s]  rect=(%d,%d)-(%d,%d)  circle center=(%.1f,%.1f) r=%.1f\n",
-                           fixture_name, (int)area.x1, (int)area.y1, (int)area.x2, (int)area.y2, (double)SWEEP_CX,
-                           (double)SWEEP_CY, (double)SWEEP_RADIUS);
+                    printf("  HIT-RECT-OFF-GLASS    [%s]  rect=(%d,%d)-(%d,%d)  check-y=[%.0f,%.0f]  "
+                           "circle center=(%.1f,%.1f) r=%.1f\n",
+                           fixture_name, (int)area.x1, (int)area.y1, (int)area.x2, (int)area.y2,
+                           (double)circle_rect.y1, (double)circle_rect.y2, (double)SWEEP_CX, (double)SWEEP_CY,
+                           (double)SWEEP_RADIUS);
                 }
             }
 
@@ -591,12 +705,154 @@ static void S17b_AC2_composite_control_detection(void)
     lv_deinit();
 }
 
+/* ---------------------------------------------------------------------
+ * S21 — the scroll-aware sweep, proven meaningful.
+ *
+ * These build a SYNTHETIC scroll list (not a committed fixture — no
+ * fixture may carry a deliberately-broken control, by construction) whose
+ * geometry mirrors scr_settings.c's real list: an inscribed viewport at
+ * puck-relative (75, 100), 262x256, inside a centered puck, so the same
+ * SWEEP_CX/CY/RADIUS circle applies. A child placed below the viewport
+ * forces a nonzero vertical scroll range, which is what marks the list as a
+ * scroll viewport to sweep_scroll_viewport.
+ * ------------------------------------------------------------------- */
+
+static uint8_t *sweep_test_display_up(void)
+{
+    lv_init();
+    lv_tick_set_cb(sweep_tick_cb);
+    const int32_t w = FF_THEME_WINDOW_PX;
+    const int32_t h = FF_THEME_WINDOW_PX;
+    const uint32_t buf_size = (uint32_t)(w * h * 4);
+    uint8_t *buf = (uint8_t *)malloc(buf_size);
+    TEST_ASSERT_NOT_NULL(buf);
+    lv_display_t *disp = lv_display_create(w, h);
+    lv_display_set_buffers(disp, buf, NULL, buf_size, LV_DISPLAY_RENDER_MODE_FULL);
+    lv_display_set_flush_cb(disp, sweep_flush_cb);
+    lv_display_set_default(disp);
+    return buf;
+}
+
+/* Build a centered puck + an inscribed vertical scroll list matching
+ * scr_settings.c's geometry, and return the list (rows are added as its
+ * children by the caller, in list-relative coords). */
+static lv_obj_t *sweep_build_inscribed_list(void)
+{
+    lv_obj_t *scr = lv_screen_active();
+    lv_obj_t *puck = lv_obj_create(scr);
+    lv_obj_remove_style_all(puck);
+    lv_obj_set_size(puck, FF_THEME_PUCK_PX, FF_THEME_PUCK_PX);
+    lv_obj_align(puck, LV_ALIGN_CENTER, 0, 0);
+    lv_obj_clear_flag(puck, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_clear_flag(puck, LV_OBJ_FLAG_CLICKABLE);
+
+    lv_obj_t *list = lv_obj_create(puck);
+    lv_obj_remove_style_all(list);
+    lv_obj_set_size(list, 262, 256);
+    lv_obj_set_pos(list, 75, 100);
+    lv_obj_set_style_pad_all(list, 0, 0);
+    lv_obj_clear_flag(list, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_flag(list, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scroll_dir(list, LV_DIR_VER);
+    return list;
+}
+
+/* Add a plain clickable row (a bare button, no event cb — so the adjacency
+ * pass never mistakes two of them for one composite control) to `list` at
+ * list-relative (x, y) with size w x h. */
+static lv_obj_t *sweep_add_row(lv_obj_t *list, int32_t x, int32_t y, int32_t w, int32_t h)
+{
+    lv_obj_t *btn = lv_button_create(list);
+    lv_obj_remove_style_all(btn);
+    lv_obj_set_size(btn, w, h);
+    lv_obj_set_pos(btn, x, y);
+    return btn;
+}
+
+static sweep_result_t sweep_run_current_screen(char const *name)
+{
+    lv_refr_now(lv_display_get_default());
+    sweep_result_t result = {0, 0, 0};
+    sweep_clickable_list_t clickables = {.n = 0};
+    sweep_walk(lv_screen_active(), name, &result, &clickables);
+    sweep_check_adjacency(&clickables, name, &result);
+    return result;
+}
+
+/* A well-sized (100x48) row placed BELOW the viewport — scrolled off-glass
+ * at its raw absolute y (abs y ~400, which the OLD absolute check failed),
+ * but on-glass at every scroll position within the inscribed viewport. The
+ * scroll-aware sweep must PASS it: this is the case #105 had to paginate
+ * around, and the whole point of the relaxation. */
+static void S21_sweep_scroll_aware_passes_an_offscreen_but_in_band_row(void)
+{
+    uint8_t *buf = sweep_test_display_up();
+
+    lv_obj_t *list = sweep_build_inscribed_list();
+    (void)sweep_add_row(list, 80, 300, 100, 48); /* rel y 300 -> below the 256-tall viewport */
+
+    sweep_result_t r = sweep_run_current_screen("s21_offscreen_in_band");
+    TEST_ASSERT_GREATER_THAN_INT_MESSAGE(0, r.checked, "the synthetic scroll row was not even swept");
+    TEST_ASSERT_EQUAL_INT_MESSAGE(0, r.violations,
+                                  "a well-sized in-band row scrolled off the current viewport must PASS the "
+                                  "scroll-aware check (it is on-glass wherever it scrolls to)");
+
+    free(buf);
+    lv_deinit();
+}
+
+/* The relaxation must not neuter the sweep: each of the three checks still
+ * bites on a genuinely bad control inside a scroll list. Rebuilds the list
+ * between cases (lv_obj_clean) so each bad control is measured in isolation. */
+static void S21_sweep_still_catches_bad_controls_in_a_scroll_list(void)
+{
+    uint8_t *buf = sweep_test_display_up();
+
+    /* (1) Too WIDE: a 380px row is off-glass even normalized to the viewport
+     * (its x-slot pokes past the round glass at the viewport band). If the
+     * scroll-aware relaxation simply skipped scroll-contained elements'
+     * circle check, this would slip through — it must not. */
+    lv_obj_t *list = sweep_build_inscribed_list();
+    (void)sweep_add_row(list, (262 - 380) / 2, 300, 380, 48);
+    sweep_result_t wide = sweep_run_current_screen("s21_too_wide");
+    TEST_ASSERT_GREATER_THAN_INT_MESSAGE(0, wide.violations,
+                                         "a too-wide scroll row that pokes off the glass at the viewport band "
+                                         "must still be flagged off-glass");
+
+    /* (2) Too SMALL: the size floor is intrinsic and scroll cannot rescue
+     * it — a 100x20 row is under the 44px floor at every scroll offset. */
+    lv_obj_clean(lv_screen_active());
+    list = sweep_build_inscribed_list();
+    (void)sweep_add_row(list, 80, 300, 100, 20);
+    sweep_result_t small = sweep_run_current_screen("s21_too_small");
+    TEST_ASSERT_GREATER_THAN_INT_MESSAGE(0, small.violations,
+                                         "a too-small scroll row must still be flagged under the 44px floor");
+
+    /* (3) Too CLOSE: adjacency is scroll-invariant (both rows shift
+     * together), so two well-sized rows 4px apart in the list are 4px apart
+     * on glass at every scroll offset and must still be flagged. */
+    lv_obj_clean(lv_screen_active());
+    list = sweep_build_inscribed_list();
+    (void)sweep_add_row(list, 80, 300, 100, 48);
+    (void)sweep_add_row(list, 80, 300 + 48 + 4, 100, 48); /* 4px edge-to-edge gap, under the 8px floor */
+    sweep_result_t close = sweep_run_current_screen("s21_too_close");
+    TEST_ASSERT_GREATER_THAN_INT_MESSAGE(0, close.gap_checked,
+                                         "the adjacency pass must actually have checked the pair");
+    TEST_ASSERT_GREATER_THAN_INT_MESSAGE(0, close.violations,
+                                         "two scroll rows closer than the adjacency floor must still be flagged");
+
+    free(buf);
+    lv_deinit();
+}
+
 int main(void)
 {
     UNITY_BEGIN();
 
     RUN_TEST(S08_hit_targets_every_committed_fixture_fits_the_glass);
     RUN_TEST(S17b_AC2_composite_control_detection);
+    RUN_TEST(S21_sweep_scroll_aware_passes_an_offscreen_but_in_band_row);
+    RUN_TEST(S21_sweep_still_catches_bad_controls_in_a_scroll_list);
 
     return UNITY_END();
 }

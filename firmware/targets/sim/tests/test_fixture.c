@@ -936,6 +936,33 @@ static void dump_then_reload_round_trips_settings_default_fixture(void)
     TEST_ASSERT_EQUAL_MEMORY(&original, &reloaded, sizeof(original));
 }
 
+/* #bug5a — the sim-only Settings scroll render hint parses from the
+ * top-level `ui_settings_scroll_y` key, defaults to 0 when absent, and
+ * survives a dump->reload round-trip (the dumper must mirror it, or a dumped
+ * scrolled fixture would silently reload at scroll 0). */
+static void bug5a_ui_settings_scroll_y_parses_and_round_trips(void)
+{
+    ff_app_state_t s;
+    /* Absent -> 0 (settings_default.json has no scroll hint). */
+    TEST_ASSERT_EQUAL_INT(FF_FIXTURE_OK, ff_fixture_load_file(fixture_path("settings_default.json"), &s));
+    TEST_ASSERT_EQUAL_INT32(0, s.ui_settings_scroll_y);
+
+    /* Present -> parsed verbatim. */
+    ff_app_state_t scrolled;
+    TEST_ASSERT_EQUAL_INT(FF_FIXTURE_OK,
+                          ff_fixture_load_file(fixture_path("settings_scrolled_bottom.json"), &scrolled));
+    TEST_ASSERT_EQUAL_INT32(1000, scrolled.ui_settings_scroll_y);
+
+    char json[FF_FIXTURE_DUMP_MAX];
+    int n = ff_fixture_dump_json(&scrolled, json, sizeof(json));
+    TEST_ASSERT_GREATER_THAN_INT(0, n);
+
+    ff_app_state_t reloaded;
+    TEST_ASSERT_EQUAL_INT(FF_FIXTURE_OK, ff_fixture_load_json(json, (size_t)n, &reloaded));
+    TEST_ASSERT_EQUAL_INT32(1000, reloaded.ui_settings_scroll_y);
+    TEST_ASSERT_EQUAL_MEMORY(&scrolled, &reloaded, sizeof(scrolled));
+}
+
 static void dump_then_reload_round_trips_now_mixed_fixture(void)
 {
     ff_app_state_t original;
@@ -1158,6 +1185,7 @@ int main(void)
 
     RUN_TEST(dump_then_reload_round_trips_committed_fixture);
     RUN_TEST(dump_then_reload_round_trips_settings_default_fixture);
+    RUN_TEST(bug5a_ui_settings_scroll_y_parses_and_round_trips);
     RUN_TEST(dump_then_reload_round_trips_flare_takeover_locked_fixture);
     RUN_TEST(dump_then_reload_round_trips_now_mixed_fixture);
     RUN_TEST(dump_then_reload_round_trips_now_tbd_fixture);

@@ -32,6 +32,19 @@ extern "C" {
 /* my_name capacity, including NUL terminator, per spec (`char my_name[16]`). */
 #define FF_SETTINGS_NAME_LEN 16
 
+/* Display brightness (S15/#100). A percentage, clamped to
+ * [FF_BRIGHTNESS_MIN_PCT, FF_BRIGHTNESS_MAX_PCT] — the floor is NON-zero on
+ * purpose: 0% is a black backlight the user cannot see to recover from (the
+ * "never a black screen you can't get out of" note in issue #100), so the
+ * lowest the setting can reach is a dim-but-legible floor, not off. The
+ * value is a pure stored number here; the physical LEDC PWM apply is a
+ * device-HAL concern (targets/esp32s3/components/ff_display), a no-op in the
+ * sim — core stays logic-only, honest value everywhere, physical effect
+ * device-only (#100's "keep the setting honest"). */
+#define FF_BRIGHTNESS_MIN_PCT     10u
+#define FF_BRIGHTNESS_MAX_PCT     100u
+#define FF_BRIGHTNESS_DEFAULT_PCT 70u
+
 /* Persisted-layout budget for the compass-calibration field, bytes. Kept
  * as a named constant (rather than just sizeof(ff_geo_cal_t)) so growth in
  * ff_geo_cal_t is a deliberate, reviewed budget decision — see the
@@ -78,6 +91,15 @@ typedef struct {
      * it changes no other behavior and nothing here depends on it. */
     bool colorblind;
 
+    /* [api] #100 — display brightness percent, clamped to
+     * [FF_BRIGHTNESS_MIN_PCT, FF_BRIGHTNESS_MAX_PCT] (see those constants
+     * above). Default FF_BRIGHTNESS_DEFAULT_PCT (~70%). Persisted like every
+     * other pref; applied on boot and on change by the app forwarding it to
+     * the display HAL (ff_display_set_brightness) — core never touches IO.
+     * A real stored value in the sim too; only the physical backlight effect
+     * is device-only (#100). */
+    uint8_t brightness_pct;
+
     /* Not guaranteed NUL-terminated by this layer — load/save round-trip
      * the raw bytes as-is. Slice b (name-entry UI) must NUL-terminate
      * (or otherwise bound) whatever it writes here before this layer or
@@ -90,6 +112,31 @@ typedef struct {
      * (S12) populates it and sets cal_valid. */
     ff_geo_cal_t compass_cal;
     bool cal_valid;
+
+    /* [api] S15 slice d (docs/specs/S15d-touch-calibration.md) — touch
+     * calibration: the per-axis affine that corrects the SPD2010's
+     * offset+scale error (screen = a*raw + b per axis; see ff_touchcal.h).
+     * These are the four fitted params from ff_touchcal_solve, persisted
+     * here so calibration rides the existing settings mechanism.
+     *
+     * MEANINGLESS unless touch_calibrated is true (the device applies
+     * IDENTITY — raw passes through — when false). A scale of 0 is not a
+     * free sentinel (it is a real, if useless, value), so the flag, not the
+     * values, is what gates application.
+     *
+     * The DEFAULT is identity with touch_calibrated=false — a fresh puck has
+     * genuinely not been calibrated, so touch_calibrated=true always and only
+     * means "this unit was calibrated by its owner" (via the in-app CALIBRATE
+     * TOUCH row, NVS-persisted). We deliberately do NOT bake a specific board's
+     * measured affine in as the default; see ff_settings.c's
+     * ff_settings_apply_defaults for the honest-data rationale. Read by the
+     * device touch path (targets/esp32s3/ff_display) via ff_touchcal_apply;
+     * the sim never consults these (its input is already screen-space). */
+    float touch_ax;
+    float touch_bx;
+    float touch_ay;
+    float touch_by;
+    bool touch_calibrated;
 } ff_settings_t;
 
 /* ff_geo_cal_t must fit the persisted-layout budget above — a layout

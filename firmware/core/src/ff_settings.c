@@ -13,7 +13,7 @@
  * below only catches size mismatches; two different layouts can share the
  * same sizeof() (e.g. a reordering, or swapping a bool+uint8_t pair) and
  * would otherwise pass validation with silently corrupted semantics. */
-#define FF_SETTINGS_FORMAT_VERSION ((uint16_t)4u)
+#define FF_SETTINGS_FORMAT_VERSION ((uint16_t)6u)
 /* v2: compass_cal_blob (opaque uint8_t[32]) -> compass_cal (ff_geo_cal_t),
  * per TODO(S01) in ff_settings.h. Same sizeof() risk the header comment
  * warns about (a reordering/retype can share sizeof() with the old
@@ -33,6 +33,23 @@
  * false, which is exactly what a pre-S17 puck's real state was — it had
  * no colorblind toggle at all, so "off" is the honest reading, not a
  * guess). Still pre-v1 firmware, no fielded devices to migrate. */
+/* v5: + touch_ax/bx/ay/by + touch_calibrated (S15 slice d's [api]
+ * amendment to S11 — the touch-calibration affine, see ff_settings.h and
+ * ff_touchcal.h). Same rejection-not-migration policy as v3/v4: a v4 blob
+ * is refused outright and the full defaults apply (touch_calibrated
+ * defaults false -> identity transform, which is exactly what a pre-S15d
+ * puck's real state was — it had no touch calibration at all, so
+ * "uncalibrated / correct nothing" is the honest reading, not a guess).
+ * Still pre-v1 firmware, no fielded devices to migrate. */
+/* v6: + brightness_pct (#100 — the PWM-backlight brightness setting; see
+ * ff_settings.h). Merges with v5 above: the combined-layout bump is required
+ * because v5 (touch cal, already on main) and this brightness field are a
+ * different struct layout — same version number would let a v5 blob be
+ * misread, so v6 rejects it. brightness_pct defaults to
+ * FF_BRIGHTNESS_DEFAULT_PCT (~70%), a sensible mid-bright start — a pre-#100
+ * puck had a fixed full-on backlight and no brightness concept, so there is
+ * no honest legacy value to migrate. Still pre-v1 firmware, no fielded
+ * devices. */
 
 typedef struct {
     uint32_t magic;
@@ -52,6 +69,7 @@ static void ff_settings_apply_defaults(ff_settings_t *s)
     s->water_min = 90;
     s->quiet_from_min = 240; /* 4:00a */
     s->quiet_to_min = 600;   /* 10:00a */
+    s->brightness_pct = FF_BRIGHTNESS_DEFAULT_PCT; /* #100: ~70%, a sensible mid-bright default */
     /* utc_offset_min / utc_offset_set: left zeroed -> UNSET. Deliberately
      * not defaulted to any real zone: an unset offset makes the wall
      * clock read FF_WALL_UNKNOWN (honest), while a defaulted one would
@@ -61,6 +79,28 @@ static void ff_settings_apply_defaults(ff_settings_t *s)
     /* compass_cal: left zeroed -> identity ff_geo_cal_t; cal_valid stays false. */
     /* colorblind: left zeroed -> false (brand palette). S17's own scoping
      * note: "not colorblind by default — keep the brand colours". */
+
+    /* Touch calibration (S21 §5) — the default is IDENTITY (correct nothing),
+     * and touch_calibrated is false, because a freshly-flashed puck genuinely
+     * has NOT been calibrated: "uncalibrated / correct nothing" is the honest
+     * reading, not a guess. We deliberately do NOT bake a specific unit's
+     * measured affine (e.g. board 2's) in as everyone's default — that would
+     * make touch_calibrated=true a lie ("a usable transform is installed" is
+     * not "THIS unit was calibrated"), and would apply one panel's correction
+     * to a possibly-different panel, which is worse than honest raw passthrough.
+     *
+     * Raw coordinates are close enough to operate the UI (the observed panel
+     * skew is a ~15px offset, well inside a 44px hit target), so the owner can
+     * reach the S21 in-app CALIBRATE TOUCH row (FF_INTENT_CALIBRATE_TOUCH) and
+     * run the crosshair flow if/when they want a refined fit; NVS then persists
+     * that unit's own transform. The reject-not-migrate policy still applies —
+     * a stale/foreign blob falls back to THIS identity default (honest raw),
+     * never to a migrated guess from an incompatible layout. */
+    s->touch_ax = 1.0f;
+    s->touch_bx = 0.0f;
+    s->touch_ay = 1.0f;
+    s->touch_by = 0.0f;
+    s->touch_calibrated = false;
 }
 
 void ff_settings_load(ff_settings_t *s, ff_store_t const *st)

@@ -10,6 +10,7 @@ idf_component_register(
     SRCS
         "${FF_CORE_DIR}/src/ff_version.c"
         "${FF_CORE_DIR}/src/ff_settings.c"
+        "${FF_CORE_DIR}/src/ff_touchcal.c"
         "${FF_CORE_DIR}/src/ff_geo.c"
         "${FF_CORE_DIR}/src/ff_proto.c"
         "${FF_CORE_DIR}/src/ff_crew.c"

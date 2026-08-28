@@ -3,6 +3,7 @@
 add_library(ff-core STATIC
     src/ff_version.c
     src/ff_settings.c # S11
+    src/ff_touchcal.c # S15d
 )
 
 target_include_directories(ff-core PUBLIC include)
@@ -39,6 +40,15 @@ if(FF_BUILD_TESTS)
     ff_apply_warnings(test_settings)
 
     add_test(NAME test_settings COMMAND test_settings)
+
+    # S15d — touch calibration (per-axis affine solve/apply; pure core).
+    add_executable(test_touchcal
+        tests/test_touchcal.c
+    )
+    target_link_libraries(test_touchcal PRIVATE ff-core unity)
+    ff_apply_warnings(test_touchcal)
+
+    add_test(NAME test_touchcal COMMAND test_touchcal)
 endif()
 
 # S01 (core/geo — bearing, distance, heading fusion; docs/specs/S01-core-geo.md)
@@ -109,6 +119,29 @@ if(FF_BUILD_TESTS)
     ff_apply_warnings(test_t9)
 
     add_test(NAME test_t9 COMMAND test_t9)
+endif()
+
+# S08 predictive-T9 addendum (core/t9pred — dictionary + ranking engine;
+# docs/specs/S08-signals-t9.md's reserved "Predictive + pack dictionary =
+# v1.5"). Pure groundwork ALONGSIDE the multi-tap ff_t9 (which is untouched);
+# NOT wired into the composer here. The dictionary table ff_t9dict_data.c is
+# GENERATED from core/tools/t9dict_words.txt by core/tools/gen_t9dict.py
+# (frequency ranking of public-domain Project Gutenberg text — see
+# core/tools/NOTICE-t9dict.md). Regenerate with:
+#   (cd core/tools && python3 gen_t9dict.py emit)
+target_sources(ff-core PRIVATE
+    src/ff_t9pred.c
+    src/ff_t9dict_data.c
+)
+
+if(FF_BUILD_TESTS)
+    add_executable(test_t9pred
+        tests/test_t9pred.c
+    )
+    target_link_libraries(test_t9pred PRIVATE ff-core unity)
+    ff_apply_warnings(test_t9pred)
+
+    add_test(NAME test_t9pred COMMAND test_t9pred)
 endif()
 
 # S10a (flare state machine — IDLE/SENDING/RECEIVED/LOCKED;

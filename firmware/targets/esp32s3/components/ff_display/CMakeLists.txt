@@ -12,6 +12,7 @@ idf_component_register(
     SRCS "ff_display.c"
     INCLUDE_DIRS "include"
     REQUIRES
+        ff_core
         log
         lvgl
         esp_lvgl_port
@@ -22,6 +23,7 @@ idf_component_register(
         esp_driver_i2c
         esp_driver_spi
         esp_driver_gpio
+        esp_driver_ledc
         driver
 )
 
