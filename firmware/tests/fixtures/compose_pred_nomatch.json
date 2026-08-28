@@ -6,8 +6,12 @@
     "text": "brb ",
     "has_pending": false,
     "mode": "pred",
-    "word": "",
+    "word": "ghosted",
     "word_nomatch": true,
-    "total_cand": 0
+    "cand": [
+      { "text": "ghosted", "from_pack": false }
+    ],
+    "sel": 0,
+    "total_cand": 5
   }
 }

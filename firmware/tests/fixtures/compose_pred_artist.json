@@ -6,7 +6,7 @@
     "text": "see you at ",
     "has_pending": false,
     "mode": "pred",
-    "word": "firefly",
+    "word": "FIREFLY",
     "cand": [
       { "text": "FIREFLY", "from_pack": true },
       { "text": "field", "from_pack": false }
