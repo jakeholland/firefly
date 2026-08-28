@@ -1552,11 +1552,29 @@ static void shell_render_key(ff_app_state_t const *v, ff_app_state_t *key)
         char dist[sizeof(key->flare.takeover_dist_str)];
         char locked_from[sizeof(key->flare.locked_from_name)];
         bool const b_valid = v->flare.takeover_bearing_valid;
-        /* Same 0.1-degree quantization the radar arrow gets above: the
-         * bearing is a float derived from live positions, so a raw compare
-         * would churn sub-degree; below LVGL's own rotation unit no glyph
-         * of the compass read moves. */
-        float const b_deg = (float)(int32_t)(v->flare.takeover_bearing_deg * 10.0f);
+        /* Key bearing on the RENDERED octant, not the raw float. The
+         * takeover draws bearing ONLY as ff_flare_fmt_compass8's 1-of-8
+         * compass point (scr_flare.c) — a 45-degree bucket — while the
+         * projected takeover_bearing_deg is recomputed every tick from live
+         * positions (ff_geo_bearing_deg), so keying the raw float (even
+         * quantized to 0.1 degree) repainted on sub-octant jitter that
+         * moves no glyph: on device that repaint is an lv_obj_clean+rebuild
+         * that destroys the DISMISS button mid-tap — the same clobber this
+         * change exists to stop, from a second live source. So fold the
+         * bearing to its octant index exactly the way ff_flare_fmt_compass8
+         * does (that formatter is the rendered authority; this mirrors its
+         * [0,360) normalization + half-bucket-shift floor divide), and use
+         * a -1 sentinel when the bearing is not valid so a valid<->unknown
+         * transition — which DOES change the drawn line — still dirties.
+         * (takeover_dist_str is already the formatted string, so it keys
+         * itself; this gives bearing the same rendered-projection footing.) */
+        float b_octant;
+        if (b_valid) {
+            float const a = ff_geo_wrap_deg(v->flare.takeover_bearing_deg);
+            b_octant = (float)((int)((a + 22.5f) / 45.0f) % 8); /* 0..7, mirrors ff_flare_fmt_compass8 */
+        } else {
+            b_octant = -1.0f; /* sentinel distinct from every 0..7 octant */
+        }
         bool const locked = v->flare.locked;
         memcpy(from, v->flare.takeover_from_name, sizeof(from));
         memcpy(dist, v->flare.takeover_dist_str, sizeof(dist));
@@ -1566,7 +1584,7 @@ static void shell_render_key(ff_app_state_t const *v, ff_app_state_t *key)
         key->flare.takeover_active = true;
         memcpy(key->flare.takeover_from_name, from, sizeof(from));
         key->flare.takeover_bearing_valid = b_valid;
-        key->flare.takeover_bearing_deg = b_deg;
+        key->flare.takeover_bearing_deg = b_octant;
         memcpy(key->flare.takeover_dist_str, dist, sizeof(dist));
         key->flare.locked = locked;
         memcpy(key->flare.locked_from_name, locked_from, sizeof(locked_from));

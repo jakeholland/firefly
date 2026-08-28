@@ -1282,6 +1282,84 @@ static void flare_takeover_is_opaque_to_underlying_churn(void)
                              "an inbound signal did not dirty the frame even with NO takeover up — dead dirty bit");
 }
 
+/* The bearing half of the same defect (PR #120 review, BLOCKING). The
+ * takeover draws bearing ONLY as ff_flare_fmt_compass8's 1-of-8 compass
+ * point (a 45-degree bucket), but takeover_bearing_deg is recomputed every
+ * tick from live positions — so keying the raw float (even at 0.1 degree)
+ * repaints on sub-octant jitter that moves no glyph, and on device that
+ * repaint destroys the DISMISS button mid-tap: the exact clobber, from a
+ * second live source. So the render key must fold bearing to its RENDERED
+ * octant.
+ *
+ * A SUB-OCTANT sender move (bearing changes but the drawn compass point
+ * does not) must NOT dirty; a CROSS-OCTANT move (the drawn point changes)
+ * MUST. All three positions sit on the same 400 m radius so the rendered
+ * distance string is identical across them — isolating bearing as the only
+ * thing that could move. This bites the old raw-float keying: 308->332 deg
+ * is a 24-degree swing that a 0.1-degree key reports dirty (FAIL); the
+ * octant key keeps it clean (PASS). */
+static void flare_takeover_bearing_keys_the_rendered_octant(void)
+{
+    harness_init(100000u, false);
+    inject_my_info(MY_ID);
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, true));
+    inject_node(DANA, "DANA", U_EVENING);
+
+    ff_latlon_t const me = {39.0, -82.0};
+    ff_shell_set_my_pos(&H.shell, me);
+
+    ff_intent_t const dismiss = {.kind = FF_INTENT_TAKEOVER_DISMISS, .u = {0}};
+
+    /* DANA at P1: bearing ~308 deg (NW), 400 m out. Flare -> takeover with a
+     * valid bearing. */
+    inject_position(DANA, U_EVENING, 39.002215, -82.003648);
+    inject_flare(DANA, 300);
+    TEST_ASSERT_TRUE(ff_shell_tick(&H.shell, H.clk.t)); /* takeover built */
+    TEST_ASSERT_TRUE(ff_shell_flare(&H.shell)->takeover_active);
+    TEST_ASSERT_TRUE_MESSAGE(ff_shell_view(&H.shell)->flare.takeover_bearing_valid,
+                             "bearing did not resolve — test needs both positions to compute a bearing");
+
+    /* Capture the rendered distance; P2 keeps DANA on the same radius so
+     * this string does not change — the guard that a NOT-dirty result below
+     * is the octant holding, not the distance masking a real bearing move. */
+    char dist_p1[sizeof(ff_shell_view(&H.shell)->flare.takeover_dist_str)];
+    strncpy(dist_p1, ff_shell_view(&H.shell)->flare.takeover_dist_str, sizeof(dist_p1) - 1u);
+    dist_p1[sizeof(dist_p1) - 1u] = '\0';
+    float const bearing_p1 = ff_shell_view(&H.shell)->flare.takeover_bearing_deg;
+    TEST_ASSERT_TRUE(bearing_p1 >= 292.5f && bearing_p1 < 337.5f); /* NW bucket */
+
+    advance(20u);
+    TEST_ASSERT_FALSE(ff_shell_tick(&H.shell, H.clk.t)); /* settle: stable takeover */
+
+    /* SUB-OCTANT move -> P2: bearing ~332 deg, still NW, still 400 m. */
+    advance(1000u);
+    inject_position(DANA, U_EVENING + 1u, 39.003176, -82.002173);
+    bool const dirty_sub = ff_shell_tick(&H.shell, H.clk.t);
+    float const bearing_p2 = ff_shell_view(&H.shell)->flare.takeover_bearing_deg;
+    /* Preconditions: the bearing really did move (a real sub-octant swing)
+     * but stayed in the NW bucket, and the distance string held. */
+    TEST_ASSERT_TRUE(bearing_p2 >= 292.5f && bearing_p2 < 337.5f);   /* still NW */
+    TEST_ASSERT_TRUE((bearing_p2 - bearing_p1) > 10.0f);             /* a genuine swing, not a no-op */
+    TEST_ASSERT_EQUAL_STRING(dist_p1, ff_shell_view(&H.shell)->flare.takeover_dist_str);
+    TEST_ASSERT_FALSE_MESSAGE(dirty_sub,
+                              "a sub-octant bearing move rebuilt the takeover — DISMISS would be clobbered mid-tap");
+
+    /* CROSS-OCTANT move -> P3: bearing ~349 deg = N. The drawn compass point
+     * changes NW -> N, so this MUST repaint. */
+    advance(1000u);
+    inject_position(DANA, U_EVENING + 2u, 39.003531, -82.000883);
+    bool const dirty_cross = ff_shell_tick(&H.shell, H.clk.t);
+    float const bearing_p3 = ff_shell_view(&H.shell)->flare.takeover_bearing_deg;
+    TEST_ASSERT_TRUE(bearing_p3 >= 337.5f || bearing_p3 < 22.5f); /* N bucket */
+    TEST_ASSERT_TRUE_MESSAGE(dirty_cross,
+                             "a cross-octant bearing move did not repaint — the drawn compass point is stale");
+
+    /* And it still dismisses. */
+    ff_shell_intent(&H.shell, &dismiss);
+    TEST_ASSERT_TRUE(ff_shell_tick(&H.shell, H.clk.t));
+    TEST_ASSERT_FALSE(ff_shell_flare(&H.shell)->takeover_active);
+}
+
 /* =================================================================== */
 /* AC4(a) — the dirty bit over the RENDERED projection                  */
 /* =================================================================== */
@@ -3610,6 +3688,7 @@ int main(void)
     RUN_TEST(flare_second_takeover_dismisses);
     RUN_TEST(flare_rearm_after_dismiss_is_dirty);
     RUN_TEST(flare_takeover_is_opaque_to_underlying_churn);
+    RUN_TEST(flare_takeover_bearing_keys_the_rendered_octant);
 
     RUN_TEST(S16_AC4a_idle_shell_is_not_dirty_for_1000_ticks);
     RUN_TEST(S16_AC4a_dirty_is_the_rendered_projection_not_the_raw_struct);
