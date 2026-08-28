@@ -111,11 +111,14 @@ void ff_sigview_build(ff_sigview_t *v, ff_feed_t const *feed, ff_crew_t const *c
         row->unread    = it->unread;
         row->age_ms    = now_ms - it->at_ms; /* unsigned; wraparound-safe */
 
-        /* Join by from_node -> crew identity. A self-originated item
-         * (from_node == 0) carries no node id, and a from_node with no
-         * roster match is an explicitly-unknown sender — never fabricated. */
-        ff_crew_member_t const *m =
+        /* Join by from_node -> crew identity. Only a PAIRED roster member
+         * lends its identity to a row (the header contract). A
+         * self-originated item (from_node == 0, no node id), a sender with
+         * no roster match, and a merely-heard UNPAIRED in-roster node are
+         * all explicitly-unknown senders — never rendered as crew. */
+        ff_crew_member_t const *found =
             (crew != NULL && it->from_node != 0) ? ff_crew_find(crew, it->from_node) : NULL;
+        ff_crew_member_t const *m = (found != NULL && found->paired) ? found : NULL;
         if (m != NULL) {
             row->identity_known = true;
             row->node_id        = m->node_id;

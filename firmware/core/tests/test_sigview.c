@@ -189,6 +189,33 @@ static void S22_AC1_recent_unknown_from_node_is_honest_unknown(void)
     TEST_ASSERT_EQUAL_STRING("", r_stranger->name);
 }
 
+static void S22_AC1_recent_unpaired_sender_is_honest_unknown(void)
+{
+    /* An in-roster but UNPAIRED (merely-heard) sender must NOT lend its
+     * identity to a recent row — a stranger rendered as crew is the B1
+     * honesty bug. Only paired members join. */
+    ff_feed_t f;
+    ff_feed_init(&f);
+    ff_crew_t c;
+    memset(&c, 0, sizeof(c));
+    add_member(&c, 7010, "Stranger", 'S', 4, false /* NOT paired */);
+
+    ff_feed_item_t it = make_item(FEED_TEXT, 7010, 500, "hey", false);
+    ff_feed_push(&f, &it);
+
+    ff_sigview_t v;
+    ff_sigview_init(&v);
+    ff_sigview_build(&v, &f, &c, NOW);
+
+    ff_sigrow_t const *r = ff_sigview_row_at(&v, 0);
+    TEST_ASSERT_EQUAL(FF_SIGROW_RECENT, r->kind);
+    TEST_ASSERT_FALSE(r->identity_known); /* no name/initial/color leaked */
+    TEST_ASSERT_EQUAL_UINT32(0, r->node_id);
+    TEST_ASSERT_EQUAL_STRING("", r->name);
+    TEST_ASSERT_EQUAL_CHAR('\0', r->initial);
+    TEST_ASSERT_EQUAL_UINT8(0, r->color_idx);
+}
+
 static void S22_AC1_single_divider_between_recent_and_quiet(void)
 {
     ff_feed_t f;
@@ -654,6 +681,7 @@ int main(void)
     RUN_TEST(S22_AC1_recent_rows_are_newest_first);
     RUN_TEST(S22_AC1_recent_joins_from_node_to_correct_identity);
     RUN_TEST(S22_AC1_recent_unknown_from_node_is_honest_unknown);
+    RUN_TEST(S22_AC1_recent_unpaired_sender_is_honest_unknown);
     RUN_TEST(S22_AC1_single_divider_between_recent_and_quiet);
     RUN_TEST(S22_AC1_paired_member_with_recent_item_is_not_in_quiet);
     RUN_TEST(S22_AC1_unpaired_member_never_in_quiet);
