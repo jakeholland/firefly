@@ -1510,7 +1510,10 @@ bool ff_shell_tick(ff_shell_t *sh_pub, uint32_t now_ms)
      * tipped it into a stack overflow. .bss instead of stack; the shell is
      * single-threaded, and this is pure scratch (recomputed every call, no state
      * carried between calls), so a shared static is safe. The desktop sim never
-     * hit this — its stack is megabytes. */
+     * hit this — its stack is megabytes. Cost: ~7 KB permanent .bss in EVERY
+     * build (the fixed main-task stack doesn't shrink in return) — the
+     * RAM-comfortable field build absorbs it; the demo build, which is the one
+     * that was starved, is the beneficiary. */
     static ff_app_state_t key;
     shell_render_key(&sh->view, &key);
 
