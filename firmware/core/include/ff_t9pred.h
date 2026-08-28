@@ -176,8 +176,9 @@ void ff_t9pred_session_reset(ff_t9pred_session_t *s);
  * Bind (or clear, with `extra` NULL / `n_extra` <= 0) the session's optional
  * supplementary word list. The list is ranked above the static dictionary for
  * all subsequent session queries (current / candidates / cycle). No-op if `s`
- * is NULL. Does not change the typed digits or selection; a fresh key press or
- * backspace re-anchors the selection as usual.
+ * is NULL. Does not change the typed digits, but re-anchors the selection to
+ * the top candidate (rebinding changes the candidate set, so a stale selection
+ * index could otherwise point past a now-smaller list until the next keypress).
  */
 void ff_t9pred_session_set_extra(ff_t9pred_session_t *s,
                                  char const *const *extra, int n_extra);

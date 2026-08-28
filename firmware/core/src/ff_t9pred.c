@@ -290,6 +290,8 @@ void ff_t9pred_session_set_extra(ff_t9pred_session_t *s,
     }
     s->extra = extra;
     s->n_extra = n_extra;
+    s->sel = 0; /* rebinding changes the candidate set — re-anchor to the top so
+                 * session_current can't point past a now-smaller list */
 }
 
 bool ff_t9pred_session_key(ff_t9pred_session_t *s, uint8_t key)

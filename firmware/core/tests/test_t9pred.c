@@ -319,6 +319,39 @@ static void key_and_backspace_reset_selection_to_top(void)
     TEST_ASSERT_EQUAL_STRING("words", ff_t9pred_session_current(&s));
 }
 
+/* Binding (or clearing) a session's supplementary list re-anchors the selection
+ * to the top, so session_current can't point past a now-smaller candidate set. */
+static void session_set_extra_rebind_reanchors_selection(void)
+{
+    ff_t9pred_session_t s;
+    ff_t9pred_session_reset(&s);
+
+    /* Two supplied names that share keys 4-6-6-3 with "good". */
+    char const *ex1[] = { "Gooders", "Goodest" };
+    ff_t9pred_session_set_extra(&s, ex1, 2);
+    ff_t9pred_session_key(&s, 4);
+    ff_t9pred_session_key(&s, 6);
+    ff_t9pred_session_key(&s, 6);
+    ff_t9pred_session_key(&s, 3);
+    TEST_ASSERT_EQUAL_STRING("Gooders", ff_t9pred_session_current(&s)); /* top extra */
+    ff_t9pred_session_cycle(&s);
+    ff_t9pred_session_cycle(&s);
+    TEST_ASSERT_TRUE(s.sel > 0); /* moved into the list */
+
+    /* Rebind to a different (smaller) list: selection re-anchors to the new top. */
+    char const *ex2[] = { "Goodwin" };
+    ff_t9pred_session_set_extra(&s, ex2, 1);
+    TEST_ASSERT_EQUAL_UINT(0, s.sel);
+    TEST_ASSERT_EQUAL_STRING("Goodwin", ff_t9pred_session_current(&s));
+
+    /* Clearing the list also re-anchors; current is now the dictionary top. */
+    ff_t9pred_session_set_extra(&s, NULL, 0);
+    TEST_ASSERT_EQUAL_UINT(0, s.sel);
+    char const *dict_top[1] = {0};
+    ff_t9pred_match_str("4663", dict_top, 1);
+    TEST_ASSERT_EQUAL_STRING(dict_top[0], ff_t9pred_session_current(&s));
+}
+
 /* ------------------------------------------------------------------ */
 /* Supplementary word list (Task 2 — pure engine API, no festpack here)  */
 /* ------------------------------------------------------------------ */
@@ -507,6 +540,7 @@ int main(void)
     RUN_TEST(cycle_advances_through_candidates_and_wraps);
     RUN_TEST(cycle_is_noop_with_fewer_than_two_candidates);
     RUN_TEST(key_and_backspace_reset_selection_to_top);
+    RUN_TEST(session_set_extra_rebind_reanchors_selection);
 
     RUN_TEST(repeated_queries_are_identical);
 
