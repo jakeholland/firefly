@@ -117,7 +117,7 @@ void test_S23c_kind_dispatch(void)
     TEST_ASSERT_TRUE(ff_demo_apply_plan(&r, ids, n, &p));
     TEST_ASSERT_EQUAL_INT(FF_DEMO_DISPATCH_PRIVATE, p.dispatch);
     TEST_ASSERT_EQUAL_INT(FF_PROTO_TYPE_RALLY, p.proto_type);
-    TEST_ASSERT_EQUAL_STRING(ff_demo_text_ref(4), p.text);
+    TEST_ASSERT_NULL(p.text); /* a rally's place name is festpack-sourced (S23 AC5), not text_ref */
 
     ff_demo_event_t pl = mk_signal(3, FEED_PULSE, 0);
     TEST_ASSERT_TRUE(ff_demo_apply_plan(&pl, ids, n, &p));
@@ -220,7 +220,7 @@ void test_S23c_signal_lands_in_feed(void)
     uint32_t const *ids = ff_demo_live_node_ids(&n);
 
     ff_demo_event_t t = mk_signal(0 /* DANA, paired */, FEED_TEXT, 9);
-    ff_demo_apply_event(&ev, &t, ids, n);
+    ff_demo_apply_event(&ev, &t, ids, n, &s_pack);
 
     feed = ff_shell_feed(&s_shell);
     TEST_ASSERT_EQUAL_UINT8(before + 1, ff_feed_count(feed));
@@ -243,7 +243,7 @@ void test_S23c_private_signal_lands(void)
     uint32_t const *ids = ff_demo_live_node_ids(&n);
 
     ff_demo_event_t s = mk_signal(1 /* KEV */, FEED_STATUS, 3);
-    ff_demo_apply_event(&ev, &s, ids, n);
+    ff_demo_apply_event(&ev, &s, ids, n, &s_pack);
 
     ff_feed_t const *feed = ff_shell_feed(&s_shell);
     ff_feed_item_t const *it = ff_feed_at(feed, 0);
@@ -251,6 +251,87 @@ void test_S23c_private_signal_lands(void)
     TEST_ASSERT_EQUAL_INT(FEED_STATUS, it->kind);
     TEST_ASSERT_EQUAL_UINT32(FF_DEMO_NODE_KEV, it->from_node);
     TEST_ASSERT_EQUAL_STRING(ff_demo_text_ref(3), it->text);
+    ff_shell_close(&s_shell);
+}
+
+/* S23d_AC5_rally_point_from_festpack — the meetup rally point is SOURCED from
+ * the demo festpack: position = venue origin, name = the "firefly-tower"
+ * landmark. Never a literal. NULL/unknown-origin packs resolve to false so no
+ * rally is ever pointed at a fabricated place. */
+void test_S23d_rally_point_from_festpack(void)
+{
+    load_pack();
+    static fp_pack_t pack;
+    TEST_ASSERT_EQUAL_INT(FP_OK, fp_parse(s_json, s_json_len, &pack));
+    TEST_ASSERT_TRUE(pack.origin_known);
+
+    ff_latlon_t at = {0};
+    char const *name = NULL;
+    TEST_ASSERT_TRUE(ff_demo_rally_point(&pack, &at, &name));
+    /* Position is the festpack's venue origin (not a hardcoded literal). */
+    TEST_ASSERT_EQUAL_DOUBLE(pack.origin.lat, at.lat);
+    TEST_ASSERT_EQUAL_DOUBLE(pack.origin.lon, at.lon);
+    /* Name is the festpack's meetup landmark. */
+    TEST_ASSERT_NOT_NULL(name);
+    TEST_ASSERT_EQUAL_STRING("The Firefly Tower", name);
+
+    /* NULL pack / NULL outs => false, no fabricated place. */
+    TEST_ASSERT_FALSE(ff_demo_rally_point(NULL, &at, &name));
+    TEST_ASSERT_FALSE(ff_demo_rally_point(&pack, NULL, &name));
+    TEST_ASSERT_FALSE(ff_demo_rally_point(&pack, &at, NULL));
+
+    /* An unknown-origin pack (venue lat/lon absent) => false. */
+    static fp_pack_t no_origin;
+    memset(&no_origin, 0, sizeof(no_origin));
+    no_origin.origin_known = false;
+    TEST_ASSERT_FALSE(ff_demo_rally_point(&no_origin, &at, &name));
+}
+
+/* S23d_AC5_rally_signal_festpack_sourced — a RALLY applied via
+ * ff_demo_apply_event lands as FEED_RALLY from the mapped node carrying the
+ * festpack landmark NAME (not a demo chatter string), proving festival
+ * content is festpack-sourced end-to-end through the real feed path. */
+void test_S23d_rally_signal_festpack_sourced(void)
+{
+    seed_shell();
+    mc_events_t ev = ff_shell_events(&s_shell);
+    uint8_t n = 0;
+    uint32_t const *ids = ff_demo_live_node_ids(&n);
+
+    /* The name the feed item should carry, resolved from the same pack. */
+    ff_latlon_t at = {0};
+    char const *expect_name = NULL;
+    TEST_ASSERT_TRUE(ff_demo_rally_point(&s_pack, &at, &expect_name));
+
+    ff_demo_event_t r = mk_signal(0 /* DANA, paired */, FEED_RALLY, 4);
+    ff_demo_apply_event(&ev, &r, ids, n, &s_pack);
+
+    ff_feed_t const *feed = ff_shell_feed(&s_shell);
+    ff_feed_item_t const *it = ff_feed_at(feed, 0);
+    TEST_ASSERT_NOT_NULL(it);
+    TEST_ASSERT_EQUAL_INT(FEED_RALLY, it->kind);
+    TEST_ASSERT_EQUAL_UINT32(FF_DEMO_NODE_DANA, it->from_node);
+    TEST_ASSERT_EQUAL_STRING(expect_name, it->text); /* festpack landmark name */
+    ff_shell_close(&s_shell);
+}
+
+/* S23d_rally_no_pack_sends_nothing — with no pack (nothing to source a place
+ * from), a RALLY is simply not sent: no feed item, no fabricated location. */
+void test_S23d_rally_no_pack_sends_nothing(void)
+{
+    seed_shell();
+    ff_feed_t const *feed = ff_shell_feed(&s_shell);
+    uint8_t const before = ff_feed_count(feed);
+
+    mc_events_t ev = ff_shell_events(&s_shell);
+    uint8_t n = 0;
+    uint32_t const *ids = ff_demo_live_node_ids(&n);
+
+    ff_demo_event_t r = mk_signal(0, FEED_RALLY, 4);
+    ff_demo_apply_event(&ev, &r, ids, n, NULL); /* no pack */
+
+    feed = ff_shell_feed(&s_shell);
+    TEST_ASSERT_EQUAL_UINT8(before, ff_feed_count(feed)); /* unchanged */
     ff_shell_close(&s_shell);
 }
 
@@ -284,7 +365,7 @@ void test_S23c_poke_refreshes_presence(void)
      * s_clock_ms), so his freshest sighting is now ~0ms old => SEEN. */
     s_clock_ms = now0 + FF_CREW_LOST_MS + 60u * 1000u;
     ff_demo_event_t pk = mk_poke(4 /* SAM */);
-    ff_demo_apply_event(&ev, &pk, ids, n);
+    ff_demo_apply_event(&ev, &pk, ids, n, &s_pack);
 
     crew = ff_shell_crew(&s_shell);
     sam = ff_crew_find(crew, FF_DEMO_NODE_SAM);
@@ -307,9 +388,12 @@ int main(void)
     RUN_TEST(test_S23c_idx_out_of_range_invalid);
     RUN_TEST(test_S23c_kind_dispatch);
     RUN_TEST(test_S23c_text_ref_bounds);
+    RUN_TEST(test_S23d_rally_point_from_festpack);
     RUN_TEST(test_S23c_null_args);
     RUN_TEST(test_S23c_signal_lands_in_feed);
     RUN_TEST(test_S23c_private_signal_lands);
+    RUN_TEST(test_S23d_rally_signal_festpack_sourced);
+    RUN_TEST(test_S23d_rally_no_pack_sends_nothing);
     RUN_TEST(test_S23c_poke_refreshes_presence);
     return UNITY_END();
 }

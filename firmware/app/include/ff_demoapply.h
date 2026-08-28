@@ -17,9 +17,14 @@
  *                      from the demo festpack — ff_demo.h's FF_DEMO_NODE_*).
  *   - `text_ref`    -> a demo string (the small, demo-gated table below).
  *   - `kind`        -> which mesh-inbound callback to drive:
- *                        TEXT   -> mc_events_t.on_text
- *                        PULSE/RALLY/STATUS/FLARE -> mc_events_t.on_private
- *                                                    (ff_proto payload)
+ *                        TEXT        -> mc_events_t.on_text
+ *                        PULSE/STATUS/FLARE -> mc_events_t.on_private
+ *                                             (ff_proto payload)
+ *                        RALLY       -> mc_events_t.on_private, but its place
+ *                                       name AND lat/lon are sourced from the
+ *                                       loaded demo festpack (ff_demo_rally_point),
+ *                                       NOT from a demo string — a rally point
+ *                                       is festival content (S23 AC5, see below).
  *   - PRESENCE_POKE -> mc_events_t.on_rx_meta (a DIRECT RSSI sample that
  *                      refreshes the member's rssi_age, so presence drifts
  *                      LIVE->STALE->LOST and recovers — S23 AC3).
@@ -31,14 +36,36 @@
  * module writes NO core state directly and fabricates no freshness: it only
  * hands honest-looking inbound events to the real inbound path.
  *
- * ## Honest-data gating (S23 AC4/AC5, [[firefly-touch-cal-default]])
+ * ## Honest-data: two kinds of demo content (S23 AC5, [[firefly-touch-cal-default]])
+ * S23 AC5 draws a line CLAUDE.md's "never hardcode festival content outside
+ * fixtures" makes real, and this module holds one of each side:
+ *
+ *   1. FESTIVAL CONTENT — anything that references the real (fictional)
+ *      festival's geography or places: a rally's place name and its lat/lon.
+ *      These are SOURCED FROM THE DEMO FESTPACK at apply time
+ *      (`ff_demo_rally_point` reads the loaded `fp_pack_t`'s venue origin +
+ *      landmark name), never hardcoded here. That is the AC5 rule.
+ *
+ *   2. SYNTHETIC DEMO CHATTER — the conversational one-liners in the string
+ *      table below ("who's got water?", "5 min out"). This is NOT festival
+ *      data; it is invented crew filler, the same category as a seeded RSSI
+ *      value — a stand-in for message traffic the radio would carry. It is
+ *      demo-gated exempt content: it exists only to make the demo look alive
+ *      and, like everything in this file, is compiled out of a field build
+ *      (see gating below). It is deliberately kept in C rather than forced
+ *      into the general `fp_pack` schema (which carries no chatter field) or
+ *      a bespoke demo-JSON parser, since it is fake strings either way and a
+ *      schema change to hold them would buy no honesty. See S23 AC5 in the
+ *      spec, which states this split explicitly.
+ *
+ * ## Gating
  * This whole file is demo content and lives in the `ff-demo` library /
  * `ff_app` component alongside ff_demo.c. On device it is reachable ONLY
  * from app_main.c's `CONFIG_FF_DEMO_MODE` (+ `CONFIG_FF_DEMO_LIVE`) block;
  * with demo mode off nothing references it and `-Wl,--gc-sections` strips
- * the object — strings and all — exactly as it already does ff_demo.c
- * (verified by the field-build link check in the S23(b+c) PR). The demo
- * string table therefore never reaches a path a field build compiles in.
+ * the object — chatter strings and all — exactly as it already does
+ * ff_demo.c (verified by the field-build link check in the S23 PRs). The
+ * demo string table therefore never reaches a path a field build compiles in.
  *
  * ## Testability
  * The DECISION — idx->node_id, text_ref bounds, kind->dispatch — is the
@@ -54,7 +81,9 @@
 
 #include "ff_demofeed.h" /* ff_demo_event_t */
 #include "ff_feed.h"     /* ff_feed_kind_t */
+#include "ff_latlon.h"   /* ff_latlon_t — a festpack-sourced rally point */
 #include "ff_proto.h"    /* ff_proto_type_t */
+#include "fp_pack.h"     /* fp_pack_t — the loaded demo festpack a rally is sourced from */
 
 #include "mc_client.h" /* mc_events_t — the inbound seam events are applied through */
 
@@ -98,6 +127,25 @@ uint32_t const *ff_demo_live_node_ids(uint8_t *out_count);
  */
 char const *ff_demo_text_ref(uint8_t text_ref);
 
+/**
+ * ff_demo_rally_point — resolve the demo meetup rally point (place name +
+ * position) FROM A LOADED DEMO FESTPACK, so a synthetic RALLY carries real
+ * festival geography rather than a hardcoded literal (S23 AC5).
+ *
+ * The position is the festpack's venue origin (`fp_pack_t.origin` — the
+ * central meetup landmark / The Firefly Tower sits at the origin); the name
+ * is a festpack landmark's name (the "firefly-tower" landmark, else the first
+ * landmark, else the festival name). PURE: reads `pack`, no I/O.
+ *
+ * Returns true and fills `*out_at` / `*out_name` on success. Returns false —
+ * leaving the outputs untouched — if `pack` is NULL, its origin is unknown
+ * (`!origin_known`), or `out_at`/`out_name` is NULL. A caller that gets false
+ * must NOT send a rally (there is no honest place to point at); it never
+ * fabricates a location. The returned name points into `pack`'s storage and
+ * is valid as long as the pack is.
+ */
+bool ff_demo_rally_point(fp_pack_t const *pack, ff_latlon_t *out_at, char const **out_name);
+
 /** How an event is dispatched into the mesh-inbound seam. */
 typedef enum {
     FF_DEMO_DISPATCH_NONE = 0, /* invalid event (out-of-range idx) — do nothing */
@@ -132,7 +180,9 @@ typedef struct {
  *  - SIGNAL => dispatch by kind:
  *      FEED_TEXT   -> TEXT,    text = ff_demo_text_ref(text_ref)
  *      FEED_STATUS -> PRIVATE, proto STATUS, text = ff_demo_text_ref(...)
- *      FEED_RALLY  -> PRIVATE, proto RALLY,  text = ff_demo_text_ref(...)
+ *      FEED_RALLY  -> PRIVATE, proto RALLY,  text = NULL (the rally's place
+ *                    name is festpack-sourced by ff_demo_apply_event via
+ *                    ff_demo_rally_point, not a demo string — S23 AC5)
  *      FEED_PULSE  -> PRIVATE, proto PULSE,  text = NULL
  *      FEED_FLARE  -> PRIVATE, proto FLARE,  text = NULL
  *
@@ -150,13 +200,18 @@ bool ff_demo_apply_plan(ff_demo_event_t const *ev, uint32_t const *node_ids, uin
  * NULL. Best-effort (void): a signal whose text won't encode is simply not
  * pushed, never faked.
  *
+ * `pack` is the loaded demo festpack (may be NULL). A RALLY signal sources
+ * its place name + position from it (ff_demo_rally_point); if `pack` is NULL
+ * or has no known origin the rally is simply not sent — never pointed at a
+ * fabricated place. `pack` is unused for every other event kind.
+ *
  * This is the one call the device apply loop makes per emitted event; it is
  * also driven directly from the sim integration test against a real seeded
  * shell (so "a synthetic signal lands in the feed / a poke refreshes
  * presence" is asserted through the real projection, S23 AC2/AC3).
  */
 void ff_demo_apply_event(mc_events_t const *ev, ff_demo_event_t const *event, uint32_t const *node_ids,
-                         uint8_t member_count);
+                         uint8_t member_count, fp_pack_t const *pack);
 
 #ifdef __cplusplus
 }
