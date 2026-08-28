@@ -206,6 +206,17 @@ bool ff_t9pred_session_backspace(ff_t9pred_session_t *s);
 void ff_t9pred_session_cycle(ff_t9pred_session_t *s);
 
 /**
+ * Set the session's selection directly to candidate `idx` (0-based, in the
+ * same best-first order `ff_t9pred_session_candidates` emits) — the tap-to-
+ * select complement to `ff_t9pred_session_cycle`'s step-by-one. `idx` past
+ * the last candidate is CLAMPED to the last one (so a stale tap can never
+ * point the selection past the current match set); when there are no matches,
+ * or `s` is NULL, this is a no-op leaving the selection at 0. After this,
+ * `ff_t9pred_session_current` reflects the new selection.
+ */
+void ff_t9pred_session_select(ff_t9pred_session_t *s, uint16_t idx);
+
+/**
  * The currently-selected candidate word for the session, or NULL when there
  * is no match (honest no-match) or `s` is NULL / empty. Pointer into the const
  * dictionary OR into the caller's supplementary list (whichever the selection

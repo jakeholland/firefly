@@ -283,7 +283,28 @@ typedef enum {
     FF_APP_COMPOSE_ABC,
     FF_APP_COMPOSE_123,
     FF_APP_COMPOSE_SYM,
+    /* [api] S08 predictive addendum — the PRIMARY predictive-T9 mode
+     * (docs/specs/S08-signals-t9.md, "Predictive + pack dictionary =
+     * v1.5"): press each key ONCE per letter and the engine
+     * (core/ff_t9pred) ranks whole words. The composer defaults to this
+     * on open (ff_shell.c). APPENDED last, not inserted, per this header's
+     * own renumbering caution (see now_state_t's NOW_TIME_UNKNOWN and
+     * ff_app_face_t's FLARE additions): ABC/123/SYM keep their numeric
+     * encoding, so every already-committed compose fixture/golden (which
+     * encodes `mode` as an int, default "abc") is byte-stable and the
+     * predictive fields below stay zeroed there. */
+    FF_APP_COMPOSE_PRED,
 } ff_app_compose_mode_t;
+
+/* Predictive projection budgets (S08 addendum). WORD_LEN mirrors the pack
+ * artist cap (fp_set_t.artist[32] == FF_APP_ARTIST_LEN) so any word the
+ * engine can return — a supplied festival name being the longest — always
+ * fits; a dictionary word is far shorter. MAX_CAND is how many candidate
+ * chips a snapshot carries for the "› cycle / tap-to-select" row; 6 is the
+ * mockup's chip budget (the honest `total_cand` below still reports the real
+ * engine count when it exceeds this). */
+#define FF_APP_COMPOSE_WORD_LEN 32
+#define FF_APP_COMPOSE_MAX_CAND 6
 
 typedef struct {
     char text[FF_APP_COMPOSE_TEXT_LEN]; /* mirrors ff_t9_text(): committed + live pending char */
@@ -297,6 +318,46 @@ typedef struct {
      * same reasoning as `ff_t9_t.has_pending` in core/include/ff_t9.h. */
     bool                    has_pending;
     ff_app_compose_mode_t   mode;
+
+    /* -----------------------------------------------------------------
+     * Predictive-T9 projection (S08 addendum). Meaningful ONLY when
+     * `mode == FF_APP_COMPOSE_PRED`; the shell leaves every field below
+     * zeroed in the other modes, so multitap/123/SYM project exactly as
+     * they did before this addendum. HONEST-DATA (CLAUDE.md): none of
+     * these is ever a fabricated value — `word` is verbatim from the
+     * engine's current candidate (never a literal key string), `from_pack`
+     * is set by POINTER IDENTITY against the shell's festpack word table
+     * (not name-matching), and `total_cand` is the real engine count, not
+     * the shown-chip count.
+     * ----------------------------------------------------------------- */
+
+    /* The in-progress predicted word: the engine's currently-selected
+     * candidate for the digits typed so far. "" when nothing is predicted
+     * yet (no digits) OR on an honest no-match (see `word_nomatch`). */
+    char     word[FF_APP_COMPOSE_WORD_LEN];
+
+    /* True iff the user has typed digits AND the engine honestly returned
+     * NO word for them (dictionary and festpack both). Distinct from the
+     * empty-word "nothing typed yet" state so the screen can say "no match"
+     * without ever inventing one — the whole honest-no-match contract. */
+    bool     word_nomatch;
+
+    /* The top candidates for the current digits, best-first, up to
+     * FF_APP_COMPOSE_MAX_CAND of them. `from_pack` is true iff this
+     * candidate pointer is one of the shell's festpack-supplied names
+     * (pointer identity), so the screen can badge festival vocabulary
+     * distinctly from dictionary words. */
+    struct {
+        char text[FF_APP_COMPOSE_WORD_LEN];
+        bool from_pack;
+    } cand[FF_APP_COMPOSE_MAX_CAND];
+    uint8_t  n_cand;      /* number of populated `cand[]` entries (0..MAX_CAND) */
+    uint8_t  sel_cand;    /* the engine's selection index among ALL candidates
+                           * (highlights cand[sel_cand] when < n_cand; `word`
+                           * is authoritative when the selection has cycled
+                           * past the shown window) */
+    uint16_t total_cand;  /* the REAL total matches from the engine — may
+                           * exceed n_cand; drives a "3 of 12" indicator */
 } ff_app_compose_t;
 
 /* -------------------------------------------------------------------

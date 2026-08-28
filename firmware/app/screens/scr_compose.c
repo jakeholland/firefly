@@ -230,6 +230,7 @@ static char const *compose_legend_for(ff_app_compose_mode_t mode, uint8_t key)
     case FF_APP_COMPOSE_ABC: return kAbcLegends[key];
     case FF_APP_COMPOSE_123: return k123Legends[key];
     case FF_APP_COMPOSE_SYM: return kSymLegends[key];
+    case FF_APP_COMPOSE_PRED: break; /* S08 addendum — predictive legends are PR2; placeholder "?" */
     }
     return "?";
 }
@@ -240,6 +241,7 @@ static char const *compose_mode_name(ff_app_compose_mode_t m)
     case FF_APP_COMPOSE_ABC: return "ABC";
     case FF_APP_COMPOSE_123: return "123";
     case FF_APP_COMPOSE_SYM: return "SYM";
+    case FF_APP_COMPOSE_PRED: break; /* S08 addendum — the mode chip's PRED label is PR2; placeholder "?" */
     }
     return "?";
 }
@@ -328,6 +330,13 @@ static void compose_key_pressed(uint8_t key)
             in.u.text = kSymLegends[key];
         }
         break;
+    case FF_APP_COMPOSE_PRED:
+        /* S08 addendum — the predictive keypad (T9_KEY per-letter, the ›
+         * cycle and tap-to-select chips) is wired in PR2 with the screen.
+         * Until then this file emits nothing in PRED mode rather than a
+         * spurious space; the shell's PRED handling is exercised directly
+         * through the intent seam in the PR1 tests. */
+        return;
     }
 
     ff_intent_emit(&in);

@@ -114,6 +114,12 @@ typedef enum {
     FF_INTENT_SELECT_CREW, FF_INTENT_SELECT_RALLY,
     FF_INTENT_T9_KEY, FF_INTENT_T9_SPACE, FF_INTENT_T9_BACKSPACE,
     FF_INTENT_T9_MODE, FF_INTENT_T9_INSERT,     /* SYM shortcuts, ff_t9_insert_text */
+    /* [api] S08 predictive addendum — the two predictive-T9 controls the
+     * maintainer chose (cycle + tap-to-select). Both are handled only in
+     * FF_APP_COMPOSE_PRED mode; a no-op otherwise. Appended, so no existing
+     * intent's numeric value moves. */
+    FF_INTENT_T9_CYCLE,                         /* advance the candidate selection (the › chip) */
+    FF_INTENT_T9_SELECT,                        /* select a candidate by index — reuses u.t9_key as that index */
     FF_INTENT_FLARE_START, FF_INTENT_FLARE_END,
     FF_INTENT_TAKEOVER_GO, FF_INTENT_TAKEOVER_DISMISS, FF_INTENT_RELEASE_LOCK,
     FF_INTENT_SETTING_SET,
@@ -176,7 +182,11 @@ typedef struct {
          *  ff_shell_intent's doc in ff_shell.h for the exact rule. */
         uint32_t node_id;
         uint8_t rally_idx;                      /* SELECT_RALLY */
-        uint8_t t9_key;                         /* T9_KEY: 0-9 */
+        uint8_t t9_key;                         /* T9_KEY: 0-9. REUSED by T9_SELECT
+                                                 * as the candidate index to select
+                                                 * (0-based, into the shown chips) —
+                                                 * the maintainer's "reuse the t9 int
+                                                 * field" choice, no new union member. */
         char const *text;                       /* T9_INSERT (NOT owned; copied — see top comment) */
         struct { ff_setting_id_t id;            /* SETTING_SET */
                  union { int32_t i; char const *s; } v;

@@ -18,6 +18,8 @@
 #include "ff_route.h"
 #include "ff_sched.h"
 #include "ff_t9.h" /* S16 slice c3 — the shell-owned compose draft */
+#include "ff_t9pred.h" /* S08 addendum — the predictive-T9 session */
+#include "fp_t9words.h" /* S08 addendum — festpack -> predictive supplementary words */
 #include "ff_touchcal.h" /* S21 §3 — the touch-calibration transform the calibrate hook returns */
 #include "ff_wall_window.h" /* S18 slice c — pack -> plausibility window */
 #include "ff_wiring.h"
@@ -26,6 +28,16 @@
  * The real shell. Opaque to everyone else — see ff_shell.h's
  * ff_shell_t / FF_SHELL_BYTES comments.
  * ------------------------------------------------------------------- */
+
+/* S08 predictive addendum — capacity of the shell's festpack word table
+ * (`compose_extra`). ALL of a pack's names: every set artist, every stage
+ * name and every landmark name, so `fp_t9words_collect` can never be capped
+ * before the pack is (the maintainer chose all names). Pinned to the
+ * festpack caps so a future FP_MAX_* bump surfaces here as a build failure
+ * rather than a silent truncation. */
+#define FF_COMPOSE_EXTRA_MAX (FP_MAX_SETS + FP_MAX_STAGES + FP_MAX_LANDMARKS)
+_Static_assert(FF_COMPOSE_EXTRA_MAX == 280,
+               "FF_COMPOSE_EXTRA_MAX drifted from FP_MAX_SETS+FP_MAX_STAGES+FP_MAX_LANDMARKS");
 
 typedef struct {
     /* --- injected config --------------------------------------------- */
@@ -78,6 +90,21 @@ typedef struct {
      * (all gated on `takeover_up`, routing rule 4) ever touches it. */
     ff_t9_t compose_draft;
     ff_app_compose_mode_t compose_mode;
+
+    /* S08 predictive addendum — the in-progress PREDICTED word (the digits
+     * typed since the last accept, plus the selected candidate). Lives
+     * beside `compose_draft`: committed text stays in the ff_t9 draft, the
+     * word being typed lives here, exactly the split ff_t9pred.h's own
+     * integration sketch describes. `compose_extra` is the festpack word
+     * table the session ranks above its static dictionary — the pointers
+     * ALIAS into `sh->pack` (fp_t9words_collect never copies), so the pack
+     * must outlive them (it does: it is cfg->pack, caller-owned). A session
+     * reset clears the extra binding (ff_t9pred.h), so `set_extra` follows
+     * every reset — the THREE reset sites are init/open, SPACE-accept and
+     * SEND. */
+    ff_t9pred_session_t compose_pred;
+    char const *compose_extra[FF_COMPOSE_EXTRA_MAX];
+    int compose_extra_n;
 
     /* S21 removed `settings_page` (#105's pagination view state): the
      * Settings face is now one scrolling list, so there is no page for the
@@ -1310,6 +1337,46 @@ static void shell_project(shell_t *sh, uint32_t now_ms)
         shell_copy_str(sh->view.compose.to_name, sizeof(sh->view.compose.to_name),
                         shell_name_of(sh, sh->compose_to_node));
     }
+
+    /* S08 addendum — predictive projection. ONLY in PRED mode; the
+     * whole-view memset at the top of this function leaves every field
+     * below zeroed in the other modes, so multitap/123/SYM project exactly
+     * as they did before. HONEST-DATA throughout (see ff_app_compose_t's
+     * doc comment): `word` is verbatim from the engine, never a fabricated
+     * key string; `from_pack` is POINTER IDENTITY against the shell's
+     * festpack table; `total_cand` is the real engine count. */
+    if (sh->compose_mode == FF_APP_COMPOSE_PRED) {
+        ff_t9pred_session_t const *ps = &sh->compose_pred;
+        char const *cur = ff_t9pred_session_current(ps);
+        if (cur != NULL) {
+            shell_copy_str(sh->view.compose.word, sizeof(sh->view.compose.word), cur);
+        }
+        /* Honest no-match: digits typed AND the engine returned nothing.
+         * Distinct from "no digits yet" (word "" but not a no-match). */
+        sh->view.compose.word_nomatch = (ps->n > 0u && cur == NULL);
+
+        char const *cands[FF_APP_COMPOSE_MAX_CAND] = {0};
+        size_t const nc = ff_t9pred_session_candidates(ps, cands, FF_APP_COMPOSE_MAX_CAND);
+        for (size_t i = 0; i < nc; i++) {
+            shell_copy_str(sh->view.compose.cand[i].text, sizeof(sh->view.compose.cand[i].text),
+                            cands[i]);
+            /* Pointer identity, not a name match: the engine hands back the
+             * very pointer the shell supplied for a festpack word. */
+            bool from_pack = false;
+            for (int e = 0; e < sh->compose_extra_n; e++) {
+                if (cands[i] == sh->compose_extra[e]) {
+                    from_pack = true;
+                    break;
+                }
+            }
+            sh->view.compose.cand[i].from_pack = from_pack;
+        }
+        sh->view.compose.n_cand = (uint8_t)nc;
+        sh->view.compose.sel_cand = (uint8_t)ps->sel;
+
+        size_t const total = ff_t9pred_count_ex(ps->digits, ps->n, ps->extra, ps->n_extra);
+        sh->view.compose.total_cand = (total > UINT16_MAX) ? UINT16_MAX : (uint16_t)total;
+    }
 }
 
 /* ---------------------------------------------------------------------
@@ -1393,7 +1460,12 @@ int ff_shell_init(ff_shell_t *sh_pub, ff_shell_cfg_t const *cfg)
     ff_radar_smooth_reset(&sh->smooth);
     ff_route_init(&sh->route);
     ff_t9_reset(&sh->compose_draft); /* S16 slice c3 */
-    sh->compose_mode = FF_APP_COMPOSE_ABC;
+    /* S08 addendum — reset site #1 (init). memset zeroed compose_extra_n,
+     * so no pack words are bound yet; a later ff_shell_load_pack collects
+     * them and OPEN_COMPOSE re-binds. Default to the predictive mode. */
+    ff_t9pred_session_reset(&sh->compose_pred);
+    ff_t9pred_session_set_extra(&sh->compose_pred, sh->compose_extra, sh->compose_extra_n);
+    sh->compose_mode = FF_APP_COMPOSE_PRED;
 
     /* Settings are loaded at init and never re-read per tick (S16
      * "Behavior"). A NULL store yields the exact defaults. */
@@ -1438,11 +1510,24 @@ int ff_shell_load_pack(ff_shell_t *sh_pub, char const *json, size_t len)
      * ff_wall_offset_cfg_t comment). A failed load must leave "no pack",
      * not "a pack that says London". */
     sh->pack_loaded = false;
+    /* And no festpack words: fp_parse zeroes *out on failure, so keeping a
+     * previous pack's collected count would leave the table pointing at
+     * now-empty names. Cleared here so a failed load honestly supplies no
+     * supplement (the next successful load re-collects). */
+    sh->compose_extra_n = 0;
 
     if (sh->pack == NULL || json == NULL || len == 0u) return -1;
     if (fp_parse(json, len, sh->pack) != FP_OK) return -1;
 
     sh->pack_loaded = true;
+
+    /* S08 addendum — collect the pack's names (set artists, stage names,
+     * landmark names) into the shell's festpack word table. The pointers
+     * ALIAS into `sh->pack` (no copy), which outlives them. The bound
+     * predictive session picks these up on the next OPEN_COMPOSE (which
+     * re-binds against the fresh count); a pack rarely loads mid-compose,
+     * and even then the next reset re-binds. */
+    sh->compose_extra_n = fp_t9words_collect(sh->pack, sh->compose_extra, FF_COMPOSE_EXTRA_MAX);
 
     /* S18 slice c (#40): tighten the wall-clock plausibility window to
      * THIS pack's festival dates. The honest bound on "is this a plausible
@@ -1829,7 +1914,13 @@ void ff_shell_intent(ff_shell_t *sh_pub, ff_intent_t const *in)
              * draft survives everything else (in particular a takeover
              * interruption, AC3b) rather than resetting on its own. */
             ff_t9_reset(&sh->compose_draft);
-            sh->compose_mode = FF_APP_COMPOSE_ABC;
+            /* S08 addendum — reset site #2 (open). A fresh predictive
+             * session, re-bound to the current festpack words (reset clears
+             * the binding, per ff_t9pred.h), and the predictive mode is the
+             * default the composer opens in. */
+            ff_t9pred_session_reset(&sh->compose_pred);
+            ff_t9pred_session_set_extra(&sh->compose_pred, sh->compose_extra, sh->compose_extra_n);
+            sh->compose_mode = FF_APP_COMPOSE_PRED;
         }
         return;
 
@@ -1942,6 +2033,20 @@ void ff_shell_intent(ff_shell_t *sh_pub, ff_intent_t const *in)
          * not partially consumed. */
         if (takeover_up) return;
         {
+            /* S08 addendum — LOAD-BEARING EDGE: in predictive mode a live
+             * candidate the user typed but has NOT accepted (no space, no
+             * tap) must still be sent — hitting SEND on a predicted word
+             * must not silently drop it. Fold the current candidate into
+             * the draft first, so `ff_t9_text` below already contains it.
+             * Honest-data: only a real engine candidate (`session_current`
+             * != NULL) is inserted — never a fabricated key string, and
+             * nothing at all on an honest no-match. */
+            if (sh->compose_mode == FF_APP_COMPOSE_PRED) {
+                char const *cur = ff_t9pred_session_current(&sh->compose_pred);
+                if (cur != NULL) {
+                    (void)ff_t9_insert_text(&sh->compose_draft, cur);
+                }
+            }
             char const *text = ff_t9_text(&sh->compose_draft);
             if (text != NULL && text[0] != '\0') {
                 /* The sender seam ff_wiring already owns (ff_wiring.h's
@@ -1960,7 +2065,13 @@ void ff_shell_intent(ff_shell_t *sh_pub, ff_intent_t const *in)
                  * to see it, not staying on an emptied composer. Draft
                  * and destination both reset, same as a fresh open. */
                 ff_t9_reset(&sh->compose_draft);
-                sh->compose_mode = FF_APP_COMPOSE_ABC;
+                /* S08 addendum — reset site #3 (send): fresh predictive
+                 * session, re-bound to the festpack words, back to the
+                 * predictive default. (Moot for the popped modal, but keeps
+                 * the three reset sites uniform.) */
+                ff_t9pred_session_reset(&sh->compose_pred);
+                ff_t9pred_session_set_extra(&sh->compose_pred, sh->compose_extra, sh->compose_extra_n);
+                sh->compose_mode = FF_APP_COMPOSE_PRED;
                 (void)ff_route_pop_modal(&sh->route);
                 sh->compose_to_node = 0u;
             }
@@ -1970,34 +2081,89 @@ void ff_shell_intent(ff_shell_t *sh_pub, ff_intent_t const *in)
         return;
 
     case FF_INTENT_T9_KEY:
-        /* Multi-tap letter/punctuation key, 0-9 (S16 slice c3). Rejected
-         * during a takeover like every other Compose control (AC3b); the
-         * commit-window timing comes from the shell's own clock
-         * (`shell_now`), never `lv_tick_get()` — scr_compose.c no longer
-         * reads a clock at all. */
+        /* Mode-polymorphic (S08 addendum). PRED: one keypress = one letter,
+         * fed to the predictive session (which rejects 0/1 itself). Every
+         * other mode: multi-tap letter/punctuation key, 0-9 (S16 slice c3),
+         * with the commit-window timing from the shell's own clock
+         * (`shell_now`), never `lv_tick_get()`. Rejected during a takeover
+         * like every other Compose control (AC3b). */
         if (takeover_up) return;
-        ff_t9_key(&sh->compose_draft, in->u.t9_key, shell_now(sh));
+        if (sh->compose_mode == FF_APP_COMPOSE_PRED) {
+            (void)ff_t9pred_session_key(&sh->compose_pred, in->u.t9_key);
+        } else {
+            ff_t9_key(&sh->compose_draft, in->u.t9_key, shell_now(sh));
+        }
         return;
 
     case FF_INTENT_T9_SPACE:
+        /* PRED: SPACE ACCEPTS the current candidate — insert the predicted
+         * word into the committed draft, then a space, then reset+rebind the
+         * session for the next word (reset site #2's twin). On an honest
+         * no-match (no current candidate) it falls to the existing behavior:
+         * just commit a space. Other modes: the existing behavior. */
         if (takeover_up) return;
-        ff_t9_space(&sh->compose_draft);
+        if (sh->compose_mode == FF_APP_COMPOSE_PRED) {
+            char const *cur = ff_t9pred_session_current(&sh->compose_pred);
+            if (cur != NULL) {
+                (void)ff_t9_insert_text(&sh->compose_draft, cur);
+                ff_t9_space(&sh->compose_draft);
+                ff_t9pred_session_reset(&sh->compose_pred);
+                ff_t9pred_session_set_extra(&sh->compose_pred, sh->compose_extra, sh->compose_extra_n);
+            } else {
+                ff_t9_space(&sh->compose_draft);
+            }
+        } else {
+            ff_t9_space(&sh->compose_draft);
+        }
         return;
 
     case FF_INTENT_T9_BACKSPACE:
+        /* PRED: remove from the in-progress predicted word FIRST; only when
+         * that word is already empty (session has no digits) does backspace
+         * fall through to the committed draft. `session_backspace` returns
+         * false exactly when the session is empty, which is the clean seam
+         * for that fallthrough. Other modes: backspace the draft directly. */
         if (takeover_up) return;
-        ff_t9_backspace(&sh->compose_draft);
+        if (sh->compose_mode == FF_APP_COMPOSE_PRED) {
+            if (!ff_t9pred_session_backspace(&sh->compose_pred)) {
+                ff_t9_backspace(&sh->compose_draft);
+            }
+        } else {
+            ff_t9_backspace(&sh->compose_draft);
+        }
+        return;
+
+    case FF_INTENT_T9_CYCLE:
+        /* S08 addendum — advance the predicted-word selection (the › chip).
+         * PRED-only; a well-defined no-op with <2 candidates (the engine's
+         * own contract). */
+        if (takeover_up) return;
+        if (sh->compose_mode == FF_APP_COMPOSE_PRED) {
+            ff_t9pred_session_cycle(&sh->compose_pred);
+        }
+        return;
+
+    case FF_INTENT_T9_SELECT:
+        /* S08 addendum — tap a specific candidate chip: jump the selection
+         * to that index (carried in u.t9_key, per ff_intent.h). PRED-only;
+         * the engine clamps a past-the-end index and no-ops on no-match. */
+        if (takeover_up) return;
+        if (sh->compose_mode == FF_APP_COMPOSE_PRED) {
+            ff_t9pred_session_select(&sh->compose_pred, in->u.t9_key);
+        }
         return;
 
     case FF_INTENT_T9_MODE:
-        /* Cycles the keypad page ABC -> 123 -> SYM -> ABC (S08
-         * Amendments), mirroring the cycle scr_compose.c's mode chip used
-         * to run locally before this slice moved it here. */
+        /* Cycles the keypad page PRED -> ABC -> 123 -> SYM -> PRED (S08
+         * predictive addendum extends the old ABC/123/SYM cycle; PRED is
+         * the default the composer opens in). No `default:` so a future
+         * mode addition trips -Wswitch here, this file's standing rule. */
         if (takeover_up) return;
         switch (sh->compose_mode) {
+        case FF_APP_COMPOSE_PRED: sh->compose_mode = FF_APP_COMPOSE_ABC; break;
         case FF_APP_COMPOSE_ABC: sh->compose_mode = FF_APP_COMPOSE_123; break;
         case FF_APP_COMPOSE_123: sh->compose_mode = FF_APP_COMPOSE_SYM; break;
-        case FF_APP_COMPOSE_SYM: sh->compose_mode = FF_APP_COMPOSE_ABC; break;
+        case FF_APP_COMPOSE_SYM: sh->compose_mode = FF_APP_COMPOSE_PRED; break;
         }
         return;
 

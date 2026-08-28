@@ -1042,6 +1042,11 @@ static void S16_AC3b_send_text_and_back_rejected_during_takeover_draft_survives(
 
     ff_intent_t open = {.kind = FF_INTENT_OPEN_COMPOSE, .u = {0}};
     ff_shell_intent(&H.shell, &open);
+    /* S08 addendum: the composer now opens in predictive mode; this test is
+     * about the MULTITAP draft surviving a takeover, so switch to ABC first
+     * (one T9_MODE press: PRED -> ABC). */
+    ff_intent_t mode = {.kind = FF_INTENT_T9_MODE, .u = {0}};
+    ff_shell_intent(&H.shell, &mode);
 
     /* Type "a " via the real keypad intents: key 2 once (pending 'a'),
      * then space (commits the pending char, appends the space). */
@@ -2661,6 +2666,10 @@ static void S16_c3_send_text_sends_the_shell_owned_draft(void)
 
     ff_intent_t open = {.kind = FF_INTENT_OPEN_COMPOSE, .u = {0}};
     ff_shell_intent(&H.shell, &open); /* node_id 0: broadcast (no selection, no explicit id) */
+    /* S08 addendum: opens in predictive mode; this test drives the MULTITAP
+     * path, so switch to ABC (one T9_MODE press: PRED -> ABC). */
+    ff_intent_t to_abc = {.kind = FF_INTENT_T9_MODE, .u = {0}};
+    ff_shell_intent(&H.shell, &to_abc);
 
     ff_intent_t k5 = {.kind = FF_INTENT_T9_KEY, .u = {0}};
     k5.u.t9_key = 5; /* 'j' */
@@ -2689,6 +2698,7 @@ static void S16_c3_send_text_sends_the_shell_owned_draft(void)
     ff_intent_t open_dana = {.kind = FF_INTENT_OPEN_COMPOSE, .u = {0}};
     open_dana.u.node_id = DANA;
     ff_shell_intent(&H.shell, &open_dana);
+    ff_shell_intent(&H.shell, &to_abc); /* S08 addendum: PRED -> ABC for the multitap path */
     ff_intent_t k2 = {.kind = FF_INTENT_T9_KEY, .u = {0}};
     k2.u.t9_key = 2;
     ff_shell_intent(&H.shell, &k2);
@@ -2698,6 +2708,141 @@ static void S16_c3_send_text_sends_the_shell_owned_draft(void)
     ff_shell_intent(&H.shell, &send);
     TEST_ASSERT_GREATER_THAN_size_t(tx_before, P.tx_len);
     TEST_ASSERT_EQUAL_UINT32(DANA, decode_packet_to(P.tx + tx_before, P.tx_len - tx_before));
+}
+
+/* =================================================================== */
+/* S08 predictive addendum — SEND edge + festpack honesty at the shell   */
+/* =================================================================== */
+
+/* A predictive pack: artist "Gooders" deliberately shares keys 4-6-6-3
+ * with the dictionary word "good" (test_t9pred.c's own overlap), so one
+ * sequence proves BOTH pack-word ranking and the pointer-identity
+ * from_pack flag. The stage "A Stage" (keys start 'a'=2) never collides. */
+static char const PACK_JSON_T9[] =
+    "{\"festpack\":\"0.1\",\"utc_offset_min\":0,"
+    "\"festival\":{\"name\":\"Test Fest\",\"year\":2026,"
+    "\"start\":\"2026-09-18\",\"end\":\"2026-09-20\","
+    "\"venue\":{\"lat\":39.936,\"lon\":-82.414}},"
+    "\"stages\":[{\"id\":\"a\",\"name\":\"A Stage\",\"color\":\"#00ff00\"}],"
+    "\"schedule\":["
+    "{\"artist\":\"Gooders\",\"stage\":\"a\",\"day\":\"2026-09-18\","
+    "\"start\":\"21:00\",\"end\":\"23:00\"}]}";
+
+/**
+ * THE LOAD-BEARING EDGE: a user types a predicted word and hits SEND
+ * WITHOUT first accepting it (no space, no tap). The visible word must be
+ * sent, not lost. Driven through the same real transport pipeline as
+ * S16_c3 (decoding the outbound frame's actual text).
+ */
+static void S08_pred_send_with_unaccepted_candidate_sends_the_visible_word(void)
+{
+    memset(&P, 0, sizeof(P));
+    memset(&H, 0, sizeof(H));
+    H.clk.t = 100000u;
+    H.clock.now_ms = fake_now;
+    H.clock.user = &H.clk;
+
+    ff_shell_cfg_t cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.clock = &H.clock;
+    cfg.pack = &H.pack;
+    cfg.transport.read = pipe_read;
+    cfg.transport.write = pipe_write;
+    cfg.transport.io = &P;
+
+    TEST_ASSERT_EQUAL_INT(0, ff_shell_init(&H.shell, &cfg));
+    uint32_t const nonce = pipe_want_config_id(&P);
+
+    size_t n = 0;
+    n += frame_my_info(P.rx + n, sizeof(P.rx) - n, MY_ID);
+    n += frame_config_complete(P.rx + n, sizeof(P.rx) - n, nonce);
+    P.rx_len = n;
+    advance(20u);
+    (void)ff_shell_tick(&H.shell, H.clk.t);
+    TEST_ASSERT_EQUAL_INT(FF_SHELL_LINK_CONNECTED, ff_shell_link(&H.shell));
+
+    ff_intent_t open = {.kind = FF_INTENT_OPEN_COMPOSE, .u = {0}}; /* opens in PRED */
+    ff_shell_intent(&H.shell, &open);
+
+    /* Type 4-6-6-3 -> predicted "good". Deliberately NO space/select: the
+     * word is live and un-accepted. */
+    ff_intent_t key = {.kind = FF_INTENT_T9_KEY, .u = {0}};
+    uint8_t const seq[] = {4, 6, 6, 3};
+    for (size_t i = 0; i < sizeof(seq); i++) {
+        key.u.t9_key = seq[i];
+        ff_shell_intent(&H.shell, &key);
+    }
+    (void)ff_shell_tick(&H.shell, H.clk.t);
+    TEST_ASSERT_EQUAL_STRING("good", ff_shell_view(&H.shell)->compose.word);
+    TEST_ASSERT_EQUAL_STRING("", ff_shell_view(&H.shell)->compose.text); /* not committed yet */
+
+    /* SEND without accepting: the visible predicted word is folded in and
+     * sent, not dropped. */
+    size_t const tx_before = P.tx_len;
+    ff_intent_t send = {.kind = FF_INTENT_SEND_TEXT, .u = {0}};
+    ff_shell_intent(&H.shell, &send);
+    TEST_ASSERT_GREATER_THAN_size_t(tx_before, P.tx_len);
+    TEST_ASSERT_EQUAL_UINT32(MC_ADDR_BROADCAST, decode_packet_to(P.tx + tx_before, P.tx_len - tx_before));
+    char text[32];
+    decode_packet_text(P.tx + tx_before, P.tx_len - tx_before, text, sizeof(text));
+    TEST_ASSERT_EQUAL_STRING("good", text); /* the whole point: the word survived */
+
+    /* Sending closed the composer and reset draft + predictive session. */
+    (void)ff_shell_tick(&H.shell, H.clk.t);
+    TEST_ASSERT_EQUAL(FF_APP_FACE_RADAR, ff_shell_view(&H.shell)->active_face);
+    TEST_ASSERT_EQUAL_STRING("", ff_shell_view(&H.shell)->compose.text);
+    TEST_ASSERT_EQUAL_STRING("", ff_shell_view(&H.shell)->compose.word);
+}
+
+/**
+ * A loaded pack's headliner is a predictive candidate flagged from_pack by
+ * POINTER IDENTITY (not name-matching), ranked above a same-keys dictionary
+ * word which is honestly NOT from_pack — and honest no-match still holds for
+ * a sequence in neither dictionary nor pack.
+ */
+static void S08_pred_festpack_from_pack_by_pointer_identity_and_honest_no_match(void)
+{
+    harness_init(100000u, false);
+    TEST_ASSERT_EQUAL_INT(0, ff_shell_load_pack(&H.shell, PACK_JSON_T9, sizeof(PACK_JSON_T9) - 1u));
+
+    ff_intent_t open = {.kind = FF_INTENT_OPEN_COMPOSE, .u = {0}};
+    ff_shell_intent(&H.shell, &open);
+
+    ff_intent_t key = {.kind = FF_INTENT_T9_KEY, .u = {0}};
+    uint8_t const good[] = {4, 6, 6, 3};
+    for (size_t i = 0; i < sizeof(good); i++) {
+        key.u.t9_key = good[i];
+        ff_shell_intent(&H.shell, &key);
+    }
+    (void)ff_shell_tick(&H.shell, H.clk.t);
+
+    ff_app_compose_t const *c = &ff_shell_view(&H.shell)->compose;
+    TEST_ASSERT_EQUAL_STRING("Gooders", c->word);
+    TEST_ASSERT_EQUAL_STRING("Gooders", c->cand[0].text);
+    TEST_ASSERT_TRUE(c->cand[0].from_pack);       /* pack name, by pointer identity */
+    TEST_ASSERT_EQUAL_STRING("good", c->cand[1].text);
+    TEST_ASSERT_FALSE(c->cand[1].from_pack);      /* dictionary word, honestly not from pack */
+    TEST_ASSERT_EQUAL_UINT16(12, c->total_cand);  /* dict 11 + the one pack word */
+
+    /* Clear the session (four backspaces) and type "249": a sequence that
+     * matches no dictionary word AND no pack name (Gooders starts 'g'=4).
+     * Honest no-match must still hold — the pack does not rescue it, and
+     * nothing is fabricated. */
+    for (int i = 0; i < 4; i++) {
+        ff_intent_t bs = {.kind = FF_INTENT_T9_BACKSPACE, .u = {0}};
+        ff_shell_intent(&H.shell, &bs);
+    }
+    uint8_t const none[] = {2, 4, 9};
+    for (size_t i = 0; i < sizeof(none); i++) {
+        key.u.t9_key = none[i];
+        ff_shell_intent(&H.shell, &key);
+    }
+    (void)ff_shell_tick(&H.shell, H.clk.t);
+    c = &ff_shell_view(&H.shell)->compose;
+    TEST_ASSERT_TRUE(c->word_nomatch);
+    TEST_ASSERT_EQUAL_STRING("", c->word);
+    TEST_ASSERT_EQUAL_UINT8(0, c->n_cand);
+    TEST_ASSERT_EQUAL_UINT16(0, c->total_cand);
 }
 
 /* =================================================================== */
@@ -2951,6 +3096,8 @@ int main(void)
 
     RUN_TEST(S16_AC7_canned_reply_uses_newest_feed_item_or_broadcasts);
     RUN_TEST(S16_c3_send_text_sends_the_shell_owned_draft);
+    RUN_TEST(S08_pred_send_with_unaccepted_candidate_sends_the_visible_word);
+    RUN_TEST(S08_pred_festpack_from_pack_by_pointer_identity_and_honest_no_match);
 
     RUN_TEST(S33_live_loc_manual_renders_radar_place);
     RUN_TEST(S33_live_loc_manual_never_decays_to_lost);
