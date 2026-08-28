@@ -57,6 +57,46 @@ static bool events_equal(const ff_demo_event_t *a, const ff_demo_event_t *b)
            a->at_ms == b->at_ms;
 }
 
+/* --- White-box seam for the gap-endpoint tests (below) ---------------
+ *
+ * `ff_demofeed_gap` is (correctly) a private static in ff_demofeed.c and is
+ * NOT widened into the public API just for testing. Instead we reach the
+ * exact endpoints deterministically: we replicate the generator's xorshift32
+ * (its PRNG is not under test here — only the gap FORMULA is) purely to SEARCH
+ * for a seed whose draw lands on a chosen residue, then feed that seed to the
+ * real ff_demofeed_init and assert the IMPL's resulting gap. Because the seed
+ * is fixed by this reference PRNG (independent of any mutation to the gap
+ * formula), a ±1 off-by-one in ff_demofeed_gap moves the impl's gap off the
+ * pinned endpoint and the assert fires.
+ *
+ * xorshift32 is a bijection over the 2^32-1 non-zero states, so every residue
+ * class mod `span` is reachable; the linear search always terminates. */
+static uint32_t ref_xs32(uint32_t x)
+{
+    x ^= x << 13;
+    x ^= x >> 17;
+    x ^= x << 5;
+    return x;
+}
+
+/* Smallest non-zero seed whose `draw_index`-th draw (1-based; init draws the
+ * signal gap 1st, the poke gap 2nd) has value % span == target. Returns 0 if
+ * somehow unreachable (asserted by callers, never expected). */
+static uint32_t seed_for_residue(uint32_t draw_index, uint32_t span,
+                                 uint32_t target)
+{
+    for (uint32_t s = 1u; s != 0u; s++) {
+        uint32_t x = s;
+        for (uint32_t d = 0u; d < draw_index; d++) {
+            x = ref_xs32(x);
+        }
+        if ((x % span) == target) {
+            return s;
+        }
+    }
+    return 0u;
+}
+
 /* ------------------------------------------------------------------- */
 /* AC1 — seeded PRNG, deterministic stream                             */
 /* ------------------------------------------------------------------- */
@@ -227,6 +267,87 @@ static void S23_bounds_signal_and_poke_gaps_within_documented_range(void)
     }
     TEST_ASSERT_TRUE_MESSAGE(sig_gaps > 50u, "too few signal gaps measured");
     TEST_ASSERT_TRUE_MESSAGE(poke_gaps > 50u, "too few poke gaps measured");
+}
+
+/* WHITE-BOX endpoint pinning (PR #115 review, Medium finding). The observed-
+ * range test above only proves gaps land INSIDE [MIN,MAX]; over the seeded run
+ * the exact endpoints are essentially never sampled (~26-51ms slack), so a ±1
+ * off-by-one in the gap formula survives it. These two tests drive the formula
+ * to residue 0 (must give MIN exactly) and residue span-1 (must give MAX
+ * exactly), and confirm MIN-1 / MAX+1 are never the result — pinning both
+ * inclusive endpoints. See the seed_for_residue seam comment above.
+ *
+ * The signal gap is init's 1st draw, so seed_for_residue(1, ...) targets it
+ * directly. member_count is irrelevant to the init-time gap (it's only used
+ * when emitting), so use 1. */
+static void S23_bounds_signal_gap_endpoints_inclusive(void)
+{
+    const uint32_t span =
+        (FF_DEMOFEED_SIGNAL_MAX_MS - FF_DEMOFEED_SIGNAL_MIN_MS) + 1u;
+    const uint32_t epoch = 500000u;
+
+    /* residue 0 => gap == MIN exactly. (Catches "+1" / lo-shift mutations:
+     * they would yield MIN+1.) */
+    uint32_t seed_lo = seed_for_residue(1u, span, 0u);
+    TEST_ASSERT_TRUE_MESSAGE(seed_lo != 0u, "no seed for signal residue 0");
+    ff_demofeed_t a;
+    ff_demofeed_init(&a, seed_lo, epoch, 1u);
+    uint32_t gap_lo = a.next_signal_ms - epoch;
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(FF_DEMOFEED_SIGNAL_MIN_MS, gap_lo,
+                                     "residue 0 must map to SIGNAL_MIN exactly");
+    TEST_ASSERT_TRUE_MESSAGE(gap_lo >= FF_DEMOFEED_SIGNAL_MIN_MS,
+                             "signal gap below documented MIN is producible");
+
+    /* residue span-1 => gap == MAX exactly. (Catches "(hi-lo)" span-shrink:
+     * it can no longer reach MAX; and "+1": it overshoots to MAX+1.) */
+    uint32_t seed_hi = seed_for_residue(1u, span, span - 1u);
+    TEST_ASSERT_TRUE_MESSAGE(seed_hi != 0u, "no seed for signal residue span-1");
+    ff_demofeed_t b;
+    ff_demofeed_init(&b, seed_hi, epoch, 1u);
+    uint32_t gap_hi = b.next_signal_ms - epoch;
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(FF_DEMOFEED_SIGNAL_MAX_MS, gap_hi,
+                                     "residue span-1 must map to SIGNAL_MAX exactly");
+    TEST_ASSERT_TRUE_MESSAGE(gap_hi <= FF_DEMOFEED_SIGNAL_MAX_MS,
+                             "signal gap above documented MAX is producible");
+}
+
+/* The poke gap is init's 2nd draw, so seed_for_residue(2, ...) targets it. */
+static void S23_bounds_poke_gap_endpoints_inclusive(void)
+{
+    const uint32_t span =
+        (FF_DEMOFEED_POKE_MAX_MS - FF_DEMOFEED_POKE_MIN_MS) + 1u;
+    const uint32_t epoch = 500000u;
+
+    uint32_t seed_lo = seed_for_residue(2u, span, 0u);
+    TEST_ASSERT_TRUE_MESSAGE(seed_lo != 0u, "no seed for poke residue 0");
+    ff_demofeed_t a;
+    ff_demofeed_init(&a, seed_lo, epoch, 1u);
+    uint32_t gap_lo = a.next_poke_ms - epoch;
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(FF_DEMOFEED_POKE_MIN_MS, gap_lo,
+                                     "residue 0 must map to POKE_MIN exactly");
+    TEST_ASSERT_TRUE_MESSAGE(gap_lo >= FF_DEMOFEED_POKE_MIN_MS,
+                             "poke gap below documented MIN is producible");
+
+    uint32_t seed_hi = seed_for_residue(2u, span, span - 1u);
+    TEST_ASSERT_TRUE_MESSAGE(seed_hi != 0u, "no seed for poke residue span-1");
+    ff_demofeed_t b;
+    ff_demofeed_init(&b, seed_hi, epoch, 1u);
+    uint32_t gap_hi = b.next_poke_ms - epoch;
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(FF_DEMOFEED_POKE_MAX_MS, gap_hi,
+                                     "residue span-1 must map to POKE_MAX exactly");
+    TEST_ASSERT_TRUE_MESSAGE(gap_hi <= FF_DEMOFEED_POKE_MAX_MS,
+                             "poke gap above documented MAX is producible");
+}
+
+/* The observed-range test compares gaps against the SAME macros the impl
+ * uses, so a macro drift from the spec would go uncaught there. Pin the
+ * macros to the spec's literal bounds (docs/specs/S23-demo-feed.md). */
+static void S23_bounds_interval_macros_match_spec_literals(void)
+{
+    TEST_ASSERT_EQUAL_UINT32(20000u, FF_DEMOFEED_SIGNAL_MIN_MS);
+    TEST_ASSERT_EQUAL_UINT32(90000u, FF_DEMOFEED_SIGNAL_MAX_MS);
+    TEST_ASSERT_EQUAL_UINT32(10000u, FF_DEMOFEED_POKE_MIN_MS);
+    TEST_ASSERT_EQUAL_UINT32(45000u, FF_DEMOFEED_POKE_MAX_MS);
 }
 
 /* member_idx never exceeds the roster. */
@@ -473,6 +594,9 @@ int main(void)
     RUN_TEST(S23_AC1_stream_is_chronological);
 
     RUN_TEST(S23_bounds_signal_and_poke_gaps_within_documented_range);
+    RUN_TEST(S23_bounds_signal_gap_endpoints_inclusive);
+    RUN_TEST(S23_bounds_poke_gap_endpoints_inclusive);
+    RUN_TEST(S23_bounds_interval_macros_match_spec_literals);
     RUN_TEST(S23_bounds_member_idx_within_roster);
     RUN_TEST(S23_bounds_signal_fields_and_poke_content_free);
 
