@@ -189,6 +189,22 @@ if(FF_BUILD_TESTS)
     add_test(NAME test_heard COMMAND test_heard)
 endif()
 
+# S22a (core/sigview — Signals-face view-model: merges ff_feed + ff_crew
+# into one ordered row list, honest presence, and the send-target state
+# machine; docs/specs/S22-signals-rework.md, slice a. Pure C11, no UI —
+# scr_signals.c, slice b, only renders this.)
+target_sources(ff-core PRIVATE src/ff_sigview.c)
+
+if(FF_BUILD_TESTS)
+    add_executable(test_sigview
+        tests/test_sigview.c
+    )
+    target_link_libraries(test_sigview PRIVATE ff-core unity)
+    ff_apply_warnings(test_sigview)
+
+    add_test(NAME test_sigview COMMAND test_sigview)
+endif()
+
 # S16 slice b0 (core/wall — wall-clock derivation: mesh-timestamp offset
 # latch/re-latch, the plausibility gate, and unix -> local ->
 # (day_doy, now_min). docs/specs/S16-app-shell.md's "Wall clock" section.)
