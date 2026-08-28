@@ -23,3 +23,6 @@ __pycache__/
 build-gcc/
 firmware/build
 firmware/build
+
+# Local design working files (Claude Design canvases live as artifacts, not in-repo)
+firefly-design/
