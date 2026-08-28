@@ -531,45 +531,106 @@ static ff_fixture_result_t fx_parse_now(fx_ctx_t const *c, int obj_i, ff_app_now
     return FF_FIXTURE_OK;
 }
 
+/* S22: the `signals` fixture section describes an `ff_sigview_t` directly
+ * (row list + target), the same "fixture is a view snapshot" convention the
+ * `radar` section uses — see ff_app_state.h's signals doc comment. The three
+ * enum tables below map the view-model's enums; `fx_sigrow_kind_table`'s
+ * values are FF_SIGROW_*, `fx_feed_kind_table`'s are ff_feed_kind_t (S08's
+ * FEED_*), `fx_presence_table`'s are FF_PRESENCE_*, and `fx_target_kind_table`'s
+ * are FF_TARGET_*. */
+static const fx_enum_entry_t fx_sigrow_kind_table[] = {
+    {"recent", FF_SIGROW_RECENT},
+    {"divider", FF_SIGROW_DIVIDER},
+    {"crew_quiet", FF_SIGROW_CREW_QUIET},
+};
+
 static const fx_enum_entry_t fx_feed_kind_table[] = {
-    {"pulse", FF_APP_FEED_PULSE}, {"text", FF_APP_FEED_TEXT}, {"rally", FF_APP_FEED_RALLY},
-    {"status", FF_APP_FEED_STATUS}, {"flare", FF_APP_FEED_FLARE},
+    {"pulse", FEED_PULSE}, {"text", FEED_TEXT}, {"rally", FEED_RALLY},
+    {"status", FEED_STATUS}, {"flare", FEED_FLARE},
+};
+
+static const fx_enum_entry_t fx_presence_table[] = {
+    {"seen", FF_PRESENCE_SEEN},
+    {"lost", FF_PRESENCE_LOST},
+    {"linked", FF_PRESENCE_LINKED},
+};
+
+static const fx_enum_entry_t fx_target_kind_table[] = {
+    {"whole_crew", FF_TARGET_WHOLE_CREW},
+    {"member", FF_TARGET_MEMBER},
 };
 
 /* fx_parse_signals — same fail-loud-on-oversized-array treatment as
- * fx_parse_radar_dots above, for the `items` array (cap
- * FF_APP_SIGNALS_MAX_ITEMS). */
-static ff_fixture_result_t fx_parse_signals(fx_ctx_t const *c, int obj_i, ff_app_signals_t *sig)
+ * fx_parse_radar_dots above, for the `rows` array (cap FF_SIGVIEW_MAX_ROWS).
+ * `identity_known` defaults TRUE (a fixture usually lists real people); set
+ * it false for the explicitly-unknown-sender case. */
+static ff_fixture_result_t fx_parse_signals(fx_ctx_t const *c, int obj_i, ff_sigview_t *sig)
 {
     int t;
-    int items_i;
-    if (fx_obj_get(c, obj_i, "items", &items_i) && !fx_is_null(c, items_i)) {
-        jsmntok_t const *at = &c->toks[items_i];
+
+    if (fx_obj_get(c, obj_i, "target_kind", &t)) {
+        int v;
+        ff_fixture_result_t rc = fx_enum(c, t, fx_target_kind_table,
+                                          sizeof(fx_target_kind_table) / sizeof(fx_target_kind_table[0]),
+                                          "signals.target_kind", &v);
+        if (rc != FF_FIXTURE_OK) return rc;
+        sig->target_kind = (ff_target_kind_t)v;
+    }
+    if (fx_obj_get(c, obj_i, "target_node", &t)) sig->target_node = (uint32_t)fx_num(c, t, 0.0);
+
+    int rows_i;
+    if (fx_obj_get(c, obj_i, "rows", &rows_i) && !fx_is_null(c, rows_i)) {
+        jsmntok_t const *at = &c->toks[rows_i];
         if (at->type != JSMN_ARRAY) return FF_FIXTURE_ERR_JSON;
-        if (at->size > FF_APP_SIGNALS_MAX_ITEMS) return FF_FIXTURE_ERR_TOO_BIG;
-        int idx = items_i + 1;
+        if (at->size > FF_SIGVIEW_MAX_ROWS) return FF_FIXTURE_ERR_TOO_BIG;
+        int idx = rows_i + 1;
         for (int i = 0; i < at->size; i++) {
-            int item_i = idx;
-            ff_app_feed_item_t *it = &sig->items[sig->n_items];
-            memset(it, 0, sizeof(*it));
+            int row_i = idx;
+            ff_sigrow_t *row = &sig->rows[sig->row_count];
+            memset(row, 0, sizeof(*row));
+            row->identity_known = true; /* default; overridden below */
+
             int kt;
-            if (fx_obj_get(c, item_i, "kind", &kt)) {
+            if (fx_obj_get(c, row_i, "row", &kt)) {
+                int v;
+                ff_fixture_result_t rc = fx_enum(c, kt, fx_sigrow_kind_table,
+                                                  sizeof(fx_sigrow_kind_table) / sizeof(fx_sigrow_kind_table[0]),
+                                                  "signals.rows[].row", &v);
+                if (rc != FF_FIXTURE_OK) return rc;
+                row->kind = (ff_sigrow_kind_t)v;
+            }
+            if (fx_obj_get(c, row_i, "feed_kind", &kt)) {
                 int v;
                 ff_fixture_result_t rc = fx_enum(c, kt, fx_feed_kind_table,
                                                   sizeof(fx_feed_kind_table) / sizeof(fx_feed_kind_table[0]),
-                                                  "signals.items[].kind", &v);
+                                                  "signals.rows[].feed_kind", &v);
                 if (rc != FF_FIXTURE_OK) return rc;
-                it->kind = (ff_app_feed_kind_t)v;
+                row->feed_kind = (ff_feed_kind_t)v;
             }
-            if (fx_obj_get(c, item_i, "from_name", &kt)) fx_copy_str(c, kt, it->from_name, sizeof(it->from_name));
-            if (fx_obj_get(c, item_i, "text", &kt)) fx_copy_str(c, kt, it->text, sizeof(it->text));
-            if (fx_obj_get(c, item_i, "age_str", &kt)) fx_copy_str(c, kt, it->age_str, sizeof(it->age_str));
-            if (fx_obj_get(c, item_i, "unread", &kt)) it->unread = fx_bool(c, kt, false);
-            sig->n_items++;
-            idx = fx_skip(c, item_i);
+            if (fx_obj_get(c, row_i, "presence", &kt)) {
+                int v;
+                ff_fixture_result_t rc = fx_enum(c, kt, fx_presence_table,
+                                                  sizeof(fx_presence_table) / sizeof(fx_presence_table[0]),
+                                                  "signals.rows[].presence", &v);
+                if (rc != FF_FIXTURE_OK) return rc;
+                row->presence = (ff_sigview_presence_t)v;
+            }
+            if (fx_obj_get(c, row_i, "identity_known", &kt)) row->identity_known = fx_bool(c, kt, true);
+            if (fx_obj_get(c, row_i, "node_id", &kt)) row->node_id = (uint32_t)fx_num(c, kt, 0.0);
+            if (fx_obj_get(c, row_i, "name", &kt)) fx_copy_str(c, kt, row->name, sizeof(row->name));
+            if (fx_obj_get(c, row_i, "initial", &kt)) {
+                char buf[2];
+                fx_copy_str(c, kt, buf, sizeof(buf));
+                row->initial = buf[0];
+            }
+            if (fx_obj_get(c, row_i, "color_idx", &kt)) row->color_idx = (uint8_t)fx_num(c, kt, 0.0);
+            if (fx_obj_get(c, row_i, "unread", &kt)) row->unread = fx_bool(c, kt, false);
+            if (fx_obj_get(c, row_i, "age_ms", &kt)) row->age_ms = (uint32_t)fx_num(c, kt, 0.0);
+
+            sig->row_count++;
+            idx = fx_skip(c, row_i);
         }
     }
-    if (fx_obj_get(c, obj_i, "unread_count", &t)) sig->unread_count = (uint8_t)fx_num(c, t, 0.0);
     return FF_FIXTURE_OK;
 }
 
@@ -1287,18 +1348,47 @@ static void fw_map_crew(fw_cur_t *w, ff_app_map_crew_t const *c)
     fw_raw(w, c->imprecise ? ",\"imprecise\":true}" : ",\"imprecise\":false}");
 }
 
-static void fw_feed_item(fw_cur_t *w, ff_app_feed_item_t const *it)
+/* S22: serialize one ff_sigrow_t. Mirrors fx_parse_signals field-for-field
+ * so a dump round-trips through the loader. A DIVIDER row carries only its
+ * kind; the identity/feed/presence fields below are meaningless for it but
+ * are written uniformly (and read back into a memset-zero row) so the writer
+ * needs no per-kind branch — the same "write every field, absent==zeroed"
+ * shape the other section writers use. */
+/* One-char-or-empty string for an `initial`: '\0' -> "" so it round-trips
+ * back to '\0' through fx_copy_str (a written space would reload as ' '). */
+static char const *fw_char1(char ch, char *buf)
 {
-    fw_raw(w, "{\"kind\":\"");
-    fw_raw(w, fx_enum_name(fx_feed_kind_table, sizeof(fx_feed_kind_table) / sizeof(fx_feed_kind_table[0]), it->kind,
-                            "text"));
-    fw_raw(w, "\",\"from_name\":");
-    fw_json_str(w, it->from_name);
-    fw_raw(w, ",\"text\":");
-    fw_json_str(w, it->text);
-    fw_raw(w, ",\"age_str\":");
-    fw_json_str(w, it->age_str);
-    fw_raw(w, it->unread ? ",\"unread\":true}" : ",\"unread\":false}");
+    if (ch == '\0') {
+        buf[0] = '\0';
+        return buf;
+    }
+    buf[0] = ch;
+    buf[1] = '\0';
+    return buf;
+}
+
+static void fw_sigrow(fw_cur_t *w, ff_sigrow_t const *r)
+{
+    char cbuf[2];
+    fw_raw(w, "{\"row\":\"");
+    fw_raw(w, fx_enum_name(fx_sigrow_kind_table, sizeof(fx_sigrow_kind_table) / sizeof(fx_sigrow_kind_table[0]),
+                            r->kind, "recent"));
+    fw_raw(w, "\",\"feed_kind\":\"");
+    fw_raw(w, fx_enum_name(fx_feed_kind_table, sizeof(fx_feed_kind_table) / sizeof(fx_feed_kind_table[0]),
+                            r->feed_kind, "text"));
+    fw_raw(w, "\",\"presence\":\"");
+    fw_raw(w, fx_enum_name(fx_presence_table, sizeof(fx_presence_table) / sizeof(fx_presence_table[0]),
+                            r->presence, "seen"));
+    fw_raw(w, "\"");
+    fw_raw(w, r->identity_known ? ",\"identity_known\":true" : ",\"identity_known\":false");
+    fw_fmt(w, ",\"node_id\":%u", (unsigned)r->node_id);
+    fw_raw(w, ",\"name\":");
+    fw_json_str(w, r->name);
+    fw_raw(w, ",\"initial\":");
+    fw_json_str(w, fw_char1(r->initial, cbuf));
+    fw_fmt(w, ",\"color_idx\":%u", (unsigned)r->color_idx);
+    fw_raw(w, r->unread ? ",\"unread\":true" : ",\"unread\":false");
+    fw_fmt(w, ",\"age_ms\":%u}", (unsigned)r->age_ms);
 }
 
 int ff_fixture_dump_json(ff_app_state_t const *s, char *buf, size_t buf_sz)
@@ -1378,13 +1468,18 @@ int ff_fixture_dump_json(ff_app_state_t const *s, char *buf, size_t buf_sz)
     }
     fw_raw(&w, "]}");
 
-    /* signals */
-    fw_raw(&w, ",\"signals\":{\"items\":[");
-    for (uint8_t i = 0; i < s->signals.n_items; i++) {
+    /* signals (S22 — the ff_sigview_t view-model: target + row list) */
+    fw_raw(&w, ",\"signals\":{\"target_kind\":\"");
+    fw_raw(&w, fx_enum_name(fx_target_kind_table, sizeof(fx_target_kind_table) / sizeof(fx_target_kind_table[0]),
+                             s->signals.target_kind, "whole_crew"));
+    fw_raw(&w, "\"");
+    fw_fmt(&w, ",\"target_node\":%u", (unsigned)s->signals.target_node);
+    fw_raw(&w, ",\"rows\":[");
+    for (uint16_t i = 0; i < s->signals.row_count; i++) {
         if (i > 0) fw_raw(&w, ",");
-        fw_feed_item(&w, &s->signals.items[i]);
+        fw_sigrow(&w, &s->signals.rows[i]);
     }
-    fw_fmt(&w, "],\"unread_count\":%u}", (unsigned)s->signals.unread_count);
+    fw_raw(&w, "]}");
 
     /* flare (S10 slice b's three-independent-groups shape — see
      * ff_app_state.h's doc comment and fx_parse_flare above, which this

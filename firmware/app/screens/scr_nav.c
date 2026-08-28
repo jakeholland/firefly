@@ -316,7 +316,7 @@ void ff_scr_nav_build(ff_app_state_t const *state)
         ff_scr_now_build(tile_now, &state->now); /* S07b */
         break;
     default:
-        ff_scr_signals_build(tile_signals, &state->signals); /* S08c */
+        ff_scr_signals_build(tile_signals, &state->signals, state->settings.colorblind); /* S22b */
         break;
     }
 
@@ -341,7 +341,7 @@ void ff_scr_nav_build(ff_app_state_t const *state)
         lv_obj_set_style_opa(tileview, LV_OPA_30, 0);
     }
 
-    nav_build_page_dots(puck, tile_idx, state->signals.unread_count);
+    nav_build_page_dots(puck, tile_idx, ff_scr_signals_unread_count(&state->signals)); /* S22b */
 
     /* S10 slice b: the sender overlay, built LAST (on the puck itself,
      * not any one tile) so it paints on top of whichever tile/page-dots

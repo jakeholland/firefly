@@ -41,8 +41,9 @@ extern "C" {
 
 /* Response buffer budget. The largest response is `{"cmd":"state"}`'s
  * dump (see fixture.h's FF_FIXTURE_DUMP_MAX) plus a small JSON wrapper
- * (`{"ok":true,"state":...}`) — sized with headroom above that. */
-#define FF_CTL_MAX_RESP (10u * 1024u)
+ * (`{"ok":true,"state":...}`) — sized with headroom above that. Tracks
+ * FF_FIXTURE_DUMP_MAX (grew 8K->20K with S22's Signals view-model dump). */
+#define FF_CTL_MAX_RESP (22u * 1024u)
 
 /* tap's x/y bounds (review fix, PR #19 finding #1): a bare `(lv_coord_t)x`
  * cast of a client-supplied double is undefined behavior per C11 6.3.1.4

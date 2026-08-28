@@ -73,6 +73,20 @@ typedef struct {
     ff_radar_smooth_t smooth;
     ff_route_t route;
 
+    /* The Signals send TARGET (S22 slice b) — the ONLY persistent Signals
+     * state, held on the RADAR precedent: `ff_radar_compute` builds straight
+     * into `sh->view.radar` and the shell keeps only a tiny `ff_radar_smooth_t`
+     * beside it, never a second full view-model. So here the shell keeps just
+     * the target (WHOLE_CREW or one member node, ~8 B) and `shell_project_signals`
+     * builds the rows straight into `sh->view.signals` each tick, re-applying
+     * this holder afterward (the whole view is memset each tick, so the target
+     * cannot live in the view itself). Re-applying through
+     * `ff_sigview_target_select` RE-VALIDATES the member against the current
+     * roster every tick, so a member who unpaired/left honestly falls back to
+     * WHOLE_CREW. SELECT/CLEAR intents mutate this holder. */
+    ff_target_kind_t sig_target_kind;
+    uint32_t         sig_target_node;
+
     /* The composer's destination, resolved when FF_INTENT_OPEN_COMPOSE
      * pushed the modal (S16 slice c1). 0 = broadcast ("TO: EVERYONE").
      * Cleared when BACK pops the composer. */
@@ -991,29 +1005,29 @@ static void shell_project_flare(shell_t const *sh, uint32_t now_ms, ff_app_flare
     }
 }
 
-static void shell_project_signals(shell_t const *sh, uint32_t now_ms, ff_app_signals_t *out)
+/* S22 slice b: the Signals face renders the core view-model directly, so the
+ * projection builds it straight into the view (the RADAR precedent —
+ * `ff_radar_compute(&sh->view.radar, ...)`) and then re-applies the shell's
+ * tiny persistent target. `ff_sigview_build` seeds a fresh WHOLE_CREW target,
+ * so the re-apply is what carries the send target across the per-tick view
+ * memset. Routing it through `ff_sigview_target_select` RE-VALIDATES the
+ * member against the current roster every tick — a member who unpaired/left
+ * cleanly falls back to WHOLE_CREW rather than lingering as a stale target.
+ * Age formatting and identity/presence rendering all live in the screen
+ * (ff_fmt_age, ff_theme_crew_color), off the raw fields the view carries —
+ * deliberately, so there is one age-formatter in the tree (the S22-a honesty
+ * note). `sh` is non-const here (it may downgrade its own target holder on a
+ * failed re-validation) unlike the other projectors — see its caller. */
+static void shell_project_signals(shell_t *sh, uint32_t now_ms, ff_sigview_t *out)
 {
-    uint8_t const have = ff_feed_count(&sh->feed);
-    uint8_t const n = (have < FF_APP_SIGNALS_MAX_ITEMS) ? have : (uint8_t)FF_APP_SIGNALS_MAX_ITEMS;
-
-    for (uint8_t i = 0; i < n; i++) {
-        ff_feed_item_t const *it = ff_feed_at(&sh->feed, i); /* 0 = newest */
-        if (it == NULL) break;
-        ff_app_feed_item_t *o = &out->items[i];
-
-        /* ff_app_feed_kind_t "mirrors S08's ff_feed_kind_t exactly (name,
-         * order, members)" per ff_app_state.h, so the cast is the
-         * documented contract rather than a coincidence. */
-        o->kind = (ff_app_feed_kind_t)it->kind;
-        shell_copy_str(o->from_name, sizeof(o->from_name), shell_name_of(sh, it->from_node));
-        shell_copy_str(o->text, sizeof(o->text), it->text);
-        ff_fmt_age(o->age_str, sizeof(o->age_str), now_ms - it->at_ms); /* unsigned: wraparound-safe */
-        o->unread = it->unread;
-        out->n_items = (uint8_t)(i + 1);
+    ff_sigview_build(out, &sh->feed, &sh->crew, now_ms);
+    if (sh->sig_target_kind == FF_TARGET_MEMBER &&
+        !ff_sigview_target_select(out, &sh->crew, sh->sig_target_node)) {
+        /* The targeted member is no longer paired/known — fall back honestly,
+         * and remember it so the target line stops showing a gone member. */
+        sh->sig_target_kind = FF_TARGET_WHOLE_CREW;
+        sh->sig_target_node = 0u;
     }
-
-    uint16_t const unread = ff_feed_unread_count(&sh->feed);
-    out->unread_count = (uint8_t)(unread > 0xFFu ? 0xFFu : unread);
 }
 
 /**
@@ -1391,6 +1405,21 @@ static int32_t shell_coarsen_ms(int32_t ms)
     return (ms < 0) ? -1 : (ms / 1000);
 }
 
+/* Signals rows carry a RAW `age_ms` that advances every tick; the screen
+ * renders it through `ff_fmt_age`, which only changes at coarse boundaries
+ * (whole SEC under a minute, whole MIN under an hour, whole HR beyond). Key
+ * on the same buckets so a still Signals face does not rebuild — and lose
+ * its scroll position — sub-second, exactly the arrow_deg problem one field
+ * over. This mirrors ff_fmt_age's own thresholds so two ages that format
+ * identically key identically (and no finer). */
+static uint32_t shell_coarsen_age_ms(uint32_t age_ms)
+{
+    uint32_t s = age_ms / 1000u;
+    if (s < 60u) return s;              /* "N SEC" — per-second */
+    if (s < 3600u) return 60u + s / 60u; /* "N MIN" — per-minute (offset so buckets never alias SEC) */
+    return 3660u + s / 3600u;            /* "N HR"  — per-hour  (offset past the MIN range) */
+}
+
 /**
  * Build the render key: the projection, with exactly the fields that are
  * pure functions of elapsed time coarsened to what actually reaches the
@@ -1430,6 +1459,23 @@ static void shell_render_key(ff_app_state_t const *v, ff_app_state_t *key)
      * change does. (The committed value still reaches a fresh build via the
      * projection on the next real repaint / on re-entry to Settings.) */
     key->settings.brightness_pct = 0;
+
+    /* S22 signals: two normalizations so a still Signals face is stable.
+     * (1) Coarsen every row's raw age_ms to the ff_fmt_age bucket the
+     *     screen actually renders (see shell_coarsen_age_ms) — otherwise
+     *     the ever-advancing age churns the key every tick.
+     * (2) Zero the rows BEYOND row_count. ff_sigview_build fills only the
+     *     first row_count rows and leaves the tail as whatever a previous,
+     *     longer build wrote; that stale tail never renders (the screen
+     *     loops 0..row_count) but WOULD make the memcmp key non-
+     *     deterministic. Normalizing it here keeps the key a pure function
+     *     of what is shown, the same role the coarsening above plays. */
+    for (uint16_t i = 0; i < key->signals.row_count && i < FF_SIGVIEW_MAX_ROWS; i++) {
+        key->signals.rows[i].age_ms = shell_coarsen_age_ms(v->signals.rows[i].age_ms);
+    }
+    for (uint16_t i = key->signals.row_count; i < FF_SIGVIEW_MAX_ROWS; i++) {
+        memset(&key->signals.rows[i], 0, sizeof(key->signals.rows[i]));
+    }
 }
 
 /* ---------------------------------------------------------------------
@@ -1459,6 +1505,8 @@ int ff_shell_init(ff_shell_t *sh_pub, ff_shell_cfg_t const *cfg)
     ff_wall_init(&sh->wall);
     ff_radar_smooth_reset(&sh->smooth);
     ff_route_init(&sh->route);
+    sh->sig_target_kind = FF_TARGET_WHOLE_CREW; /* S22 slice b — default target */
+    sh->sig_target_node = 0u;
     ff_t9_reset(&sh->compose_draft); /* S16 slice c3 */
     /* S08 addendum — reset site #1 (init). memset zeroed compose_extra_n,
      * so no pack words are bound yet; a later ff_shell_load_pack collects
@@ -2222,6 +2270,47 @@ void ff_shell_intent(ff_shell_t *sh_pub, ff_intent_t const *in)
                 }
             }
         }
+        return;
+
+    case FF_INTENT_SIG_SELECT_MEMBER:
+        /* S22 slice b — a Signals row tap. Set the send target to that
+         * member. `ff_sigview_target_select` VALIDATES node_id against the
+         * roster (paired only; rejects 0 / unknown / unpaired) — so the shell
+         * trusts the roster, not the tap. On success mirror it into the
+         * persistent holder (the live `view.signals` is rebuilt each tick, so
+         * the holder is what survives); on rejection both stay unchanged.
+         * Takeover-gated like every face intent: the Signals face is not
+         * visible under a takeover, so a stray tap there must not retarget. */
+        if (takeover_up) return;
+        if (ff_sigview_target_select(&sh->view.signals, &sh->crew, in->u.node_id)) {
+            sh->sig_target_kind = FF_TARGET_MEMBER;
+            sh->sig_target_node = in->u.node_id;
+        }
+        return;
+
+    case FF_INTENT_SIG_CLEAR_TARGET:
+        /* S22 slice b — the target line's ✕: back to WHOLE_CREW. */
+        if (takeover_up) return;
+        ff_sigview_target_clear(&sh->view.signals);
+        sh->sig_target_kind = FF_TARGET_WHOLE_CREW;
+        sh->sig_target_node = 0u;
+        return;
+
+    case FF_INTENT_SIG_RALLY:
+    case FF_INTENT_SIG_PULSE:
+    case FF_INTENT_SIG_COMPOSE:
+        /* S22 slice b — the three action buttons are ROUTED here but do not
+         * SEND yet. The real work is slice (d): encode via ff_proto and
+         * dispatch to the current target (the shell's `sig_target_kind` /
+         * `sig_target_node` holder), the rally-to-WHOLE_CREW confirm
+         * (S22 AC4 — `ff_sigview_rally_needs_confirm`), COMPOSE opening the
+         * composer targeted at the current target, and the AC3 "target
+         * resets to WHOLE_CREW after any send" (clear the holder). Nothing is
+         * sent here, so nothing is reset here — a no-op is the honest
+         * slice-b behavior,
+         * and this case is the clean seam (d) fills in. Takeover-gated for
+         * the same reason as the two above. */
+        if (takeover_up) return;
         return;
 
     /* --- deliberate no-ops until their owning slice lands ------------ */

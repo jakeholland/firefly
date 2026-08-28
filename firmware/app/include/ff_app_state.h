@@ -42,7 +42,8 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-#include "ff_radar.h" /* S06 — ff_radar_view_t, the real `radar` field type */
+#include "ff_radar.h"   /* S06 — ff_radar_view_t, the real `radar` field type */
+#include "ff_sigview.h" /* S22 — ff_sigview_t, the real `signals` field type */
 
 #ifdef __cplusplus
 extern "C" {
@@ -220,36 +221,27 @@ typedef struct {
 } ff_app_now_t;
 
 /* -------------------------------------------------------------------
- * signals (S08) — flattened feed slice. Core's ff_feed_t is a 32-deep
- * ring buffer with node ids and raw timestamps; the debug/fixture view
- * only needs a short, already-formatted slice to prove the pipeline —
- * full feed semantics (eviction, unread badge math) are S08's job.
+ * signals (S22) — the reworked Signals face renders the core view-model
+ * DIRECTLY, the same DRIFT-GUARD resolution `radar` took (see that
+ * section above): the `signals` field below is the genuine
+ * `ff_sigview_t` (core/include/ff_sigview.h, S22 slice a), computed by
+ * `ff_sigview_build`, not a second app-layer mirror of it. It carries the
+ * unified recent+crew row list AND the persistent send target; the screen
+ * (scr_signals.c) is a pure projection of it and forwards intents.
+ *
+ * This is why the header now takes a second `core/` dependency
+ * (`#include "ff_sigview.h"`, which transitively brings ff_crew.h +
+ * ff_feed.h): the S08-era flattened `ff_app_signals_t`/`ff_app_feed_item_t`
+ * scaffolding it replaced could not express presence categories, the CREW
+ * divider, unknown-identity senders, or the target — all first-class in
+ * the view-model — so mirroring it here would have re-opened exactly the
+ * name-drift hazard the radar note above records paying for once.
+ *
+ * A fixture (tests/fixtures/signals_*.json) describes an `ff_sigview_t`
+ * row list + target directly, the same "fixture is a view snapshot, not
+ * live wiring" convention the radar fixtures use — see fx_parse_signals in
+ * targets/sim/fixture.c and tests/fixtures/README.md.
  * ------------------------------------------------------------------- */
-
-/* Mirrors S08's ff_feed_kind_t exactly (name, order, members). */
-typedef enum {
-    FF_APP_FEED_PULSE,
-    FF_APP_FEED_TEXT,
-    FF_APP_FEED_RALLY,
-    FF_APP_FEED_STATUS,
-    FF_APP_FEED_FLARE,
-} ff_app_feed_kind_t;
-
-#define FF_APP_SIGNALS_MAX_ITEMS 8 /* debug-view slice, not the full 32-cap ring */
-
-typedef struct {
-    ff_app_feed_kind_t kind;
-    char from_name[FF_APP_NAME_LEN];
-    char text[FF_APP_TEXT_LEN];
-    char age_str[FF_APP_STR_SHORT];
-    bool unread;
-} ff_app_feed_item_t;
-
-typedef struct {
-    ff_app_feed_item_t items[FF_APP_SIGNALS_MAX_ITEMS]; /* newest first */
-    uint8_t n_items;
-    uint8_t unread_count;
-} ff_app_signals_t;
 
 /* -------------------------------------------------------------------
  * compose (S08 slice d) — the T9 composer screen. Flattened, same
@@ -754,7 +746,7 @@ typedef struct {
 
     ff_radar_view_t   radar;
     ff_app_now_t      now;
-    ff_app_signals_t  signals;
+    ff_sigview_t      signals; /* S22 — the core view-model, rendered directly */
     ff_app_compose_t  compose;
     ff_app_flare_t    flare;
     ff_app_settings_t settings;
@@ -772,9 +764,14 @@ typedef struct {
  * unbounded or needlessly large array) rather than nuisance-tripping on
  * ordinary per-slice growth as S08/S10/S11 add their own sections to
  * this same struct. Revisit the number if a future slice has a real
- * reason to grow past it. */
-_Static_assert(sizeof(ff_app_state_t) <= 8 * 1024,
-               "ff_app_state_t exceeds its 8KB view-state budget (see this assert's comment)");
+ * reason to grow past it. S22 is such a reason: embedding the real
+ * `ff_sigview_t` view-model (its FF_SIGVIEW_MAX_ROWS=41 fixed row array +
+ * target) in place of the small flattened `ff_app_signals_t` added ~1.2KB,
+ * pushing past the old 8KB — bumped to 12KB, still generous headroom over
+ * the ~8.2KB actual, and still a runaway-growth tripwire rather than a hard
+ * hardware limit. */
+_Static_assert(sizeof(ff_app_state_t) <= 12 * 1024,
+               "ff_app_state_t exceeds its 12KB view-state budget (see this assert's comment)");
 
 #ifdef __cplusplus
 }

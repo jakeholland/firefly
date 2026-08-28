@@ -354,8 +354,31 @@ typedef struct {
  * `S16_b1_shell_footprint_excludes_the_pack` red-flag check stays true —
  * the festpack word table ALIASES into the pack (fp_t9words_collect copies
  * nothing), so this growth is 280 pointers, not a folded-in pack.
+ *
+ * RAISED 23 KB -> 25 KB in S22 slice b, deliberately, per this comment's
+ * own instruction — and this one crosses a line the earlier raises did not:
+ * the shell now exceeds `sizeof(fp_pack_t)`. The reworked Signals face
+ * renders the core view-model `ff_sigview_t` DIRECTLY (docs/specs/S22, and
+ * ff_app_state.h's signals doc), so `ff_app_state_t` embeds it by value, and
+ * the shell holds TWO of it — `view` and the `prev_key` render-key copy —
+ * plus a tiny 8-byte send-target HOLDER (sig_target_kind/node) rather than a
+ * third full view-model: the rows are built straight into `view.signals`
+ * each tick (the RADAR precedent, `ff_radar_compute(&sh->view.radar, ...)`
+ * beside a small `ff_radar_smooth_t`), and only the target survives the
+ * per-tick view memset. `ff_sigview_t` is 1,816 B (FF_SIGVIEW_MAX_ROWS=41
+ * fixed rows), so the two embedded copies add ~2 KB. Measured, not
+ * estimated: sizeof(shell_t) is 25,136 B against the old 23,552 budget (a
+ * hard compile failure). 25 KB (25,600 B) clears it with ~464 B headroom,
+ * the same tight round-KB headroom the earlier raises used. This growth is
+ * REAL view-model state, not a folded-in pack — but it does mean the old
+ * "shell < pack" red-flag proxy (test_shell.c's
+ * S16_b1_shell_footprint_excludes_the_pack) no longer holds and was updated
+ * there to a check that still catches a pack-embed (a pack would add ~23.7 KB
+ * more, far past any view-copy count). On the S3's 512 KB SRAM a ~25 KB
+ * static shell object is comfortable; the budget stays a runaway-growth
+ * tripwire, not a hardware limit.
  */
-#define FF_SHELL_BYTES 23552u
+#define FF_SHELL_BYTES 25600u
 
 /** Alignment of the opaque payload. 8 covers every member the shell
  *  holds today (the widest are `double` inside `ff_latlon_t` and

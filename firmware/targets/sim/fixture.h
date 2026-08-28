@@ -109,14 +109,19 @@ void ff_fixture_stem(char const *path, char *out, size_t out_sz);
  * --------------------------------------------------------------------- */
 
 /* Output budget for ff_fixture_dump_json: generous enough for a
- * maximally-populated state (8 radar dots, 3 now rows, 8 signal items,
- * every string field at its cap) with headroom — see test_fixture.c's
- * `dump_max_populated_state_fits_budget` for the actual worst-case size
- * check. Matches the same "fixed arena, no allocation surprises" budget
- * discipline as FIX_MAX_JSON_LEN in fixture.c (kept here, not there,
- * because callers sizing a response/scratch buffer need it without
+ * maximally-populated state (8 radar dots, 3 now rows, a 32-deep now
+ * lineup, and — the worst-case contributor since S22 — a full
+ * FF_SIGVIEW_MAX_ROWS (41) Signals view-model, every string field at its
+ * cap) with headroom — see test_fixture.c's
+ * `dump_maximally_populated_state_fits_budget` for the actual worst-case
+ * size check. Grew 8K -> 20K with S22: the signals section went from 8
+ * flattened feed items (~1.2K) to up to 41 view-model rows (~8K), each
+ * carrying identity + presence + a target, so the old 8K no longer bounds
+ * a real max dump. Matches the same "fixed arena, no allocation surprises"
+ * budget discipline as FIX_MAX_JSON_LEN in fixture.c (kept here, not
+ * there, because callers sizing a response/scratch buffer need it without
  * pulling in fixture.c's internals). */
-#define FF_FIXTURE_DUMP_MAX (8u * 1024u)
+#define FF_FIXTURE_DUMP_MAX (20u * 1024u)
 
 /**
  * ff_fixture_dump_json — serialize `*s` into `buf` as a single JSON
