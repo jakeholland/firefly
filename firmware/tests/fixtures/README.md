@@ -19,7 +19,7 @@ keys anywhere are silently skipped, not errors.
 
 **But a PRESENT enum key must carry one of its documented strings**
 (issue #28, orchestrator ruling). `face`, `radar.mode`, `now.state`,
-`signals.items[].kind`, `compose.mode`, and `settings.share_mode` fail
+`signals.rows[].{row,feed_kind,presence}`, `signals.target_kind`, `compose.mode`, and `settings.share_mode` fail
 the whole load with `FF_FIXTURE_ERR_BAD_ENUM` — `*out` fully zeroed, and
 a stderr line naming the bad key and value — when the key is present but
 its value isn't one of that key's documented strings (or isn't a JSON
@@ -35,7 +35,7 @@ truncated snapshot gets the home face, not a blank screen). See
 `face_absent_still_defaults_to_radar`.
 
 **Array caps are enforced fail-loud, not by silent truncation.** A section
-array (`radar.dots`, `now.rows`, `signals.items`) that exceeds its
+array (`radar.dots`, `now.rows`, `signals.rows`) that exceeds its
 documented cap makes the whole load fail with `FF_FIXTURE_ERR_TOO_BIG` —
 `*out` comes back fully zeroed, same as any other load failure — rather
 than quietly keeping only the first N entries. (Ruled on during PR #12
@@ -160,20 +160,40 @@ proving some times AREN'T unknown read as a self-contradiction at a
 glance. Not a fixture field — `scr_now.c` picks the text from `state`
 itself.
 
-## `signals` (flattened `ff_feed_item_t`, S08)
+## `signals` (the `ff_sigview_t` view-model, S22)
+
+The reworked Signals face renders the core view-model directly, so this
+section describes an `ff_sigview_t` — a `target` plus an ordered `rows`
+list — the same "fixture is a view snapshot" convention `radar` uses (not
+the old flattened `ff_feed_item_t` slice it replaced):
 
 ```json
 "signals": {
-  "items": [
-    {"kind": "pulse", "from_name": "RILEY", "text": "omw", "age_str": "2 MIN", "unread": true}
-  ],
-  "unread_count": 1
+  "target_kind": "whole_crew",
+  "target_node": 0,
+  "rows": [
+    {"row": "recent", "feed_kind": "pulse", "identity_known": true,
+     "node_id": 111, "name": "DANA", "initial": "D", "color_idx": 0,
+     "unread": true, "age_ms": 60000},
+    {"row": "divider"},
+    {"row": "crew_quiet", "node_id": 114, "name": "KEV", "initial": "K",
+     "color_idx": 3, "presence": "seen", "age_ms": 300000}
+  ]
 }
 ```
 
-`kind` is one of `pulse`\|`text`\|`rally`\|`status`\|`flare`. `items` holds
-up to `FF_APP_SIGNALS_MAX_ITEMS` (8), newest first — a 9th fails the whole
-load with `FF_FIXTURE_ERR_TOO_BIG`.
+| Field | Values / cap | Default | Notes |
+|---|---|---|---|
+| `target_kind` | `whole_crew` \| `member` | `whole_crew` | The send target. `member` renders the crew-color dot + name + a clear (✕); `whole_crew` renders the cluster glyph and no ✕. |
+| `target_node` | integer | `0` | The targeted member's node id (meaningful iff `target_kind` is `member`). |
+| `rows` | array, up to `FF_SIGVIEW_MAX_ROWS` (41) | `[]` | The unified list, top to bottom — a 42nd entry fails the whole load with `FF_FIXTURE_ERR_TOO_BIG`. |
+| `rows[].row` | `recent` \| `divider` \| `crew_quiet` | `recent` | The row kind. Exactly one `divider` normally separates the two groups; the screen draws it only when quiet crew follow. |
+| `rows[].feed_kind` | `pulse` \| `text` \| `rally` \| `status` \| `flare` | `pulse` | RECENT rows only — selects the kind badge. |
+| `rows[].presence` | `seen` \| `lost` \| `linked` | `seen` | CREW_QUIET rows only — the honest presence category. `seen` renders `SEEN <age>` (age from `age_ms` via `ff_fmt_age`), `lost` renders `LOST` in the stale tint, `linked` renders `LINKED` (no age). |
+| `rows[].identity_known` | bool | `true` | A RECENT row with `false` (and `node_id` 0) is an explicitly-unknown sender — shown but NOT a selectable recipient. CREW_QUIET is always a known, paired member. |
+| `rows[].node_id` / `name` / `initial` / `color_idx` | int / string / 1-char / int | `0` / `""` / `''` / `0` | Joined crew identity; `node_id` 0 makes a RECENT row non-selectable. |
+| `rows[].unread` | bool | `false` | RECENT rows — drives the amber accent bar + dot and the header unread count. |
+| `rows[].age_ms` | integer (ms) | `0` | RECENT: age of the feed item. CREW_QUIET: the presence sighting age (meaningful for `seen`/`lost`). Formatted at render time by `ff_fmt_age`. |
 
 ## `flare` (S10 slice b)
 

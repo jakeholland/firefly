@@ -578,38 +578,41 @@ static void S16_c3_mode_chip_emits_t9_mode(void)
 }
 
 /* =================================================================== */
-/* Signals "+" -> OPEN_COMPOSE, no explicit destination                 */
+/* Signals (S22 slice b): the reworked face's five intents                */
 /* =================================================================== */
 
-static void S16_c1_signals_plus_emits_open_compose_with_no_destination(void)
+/* Small helpers to hand-build an ff_sigview_t the screen renders — the
+ * unit-test analog of the fixtures, so a test names exactly the rows it
+ * needs. */
+static ff_sigrow_t *sv_add_recent(ff_sigview_t *v, uint32_t node_id, char const *name, bool unread)
 {
-    ff_app_signals_t signals;
-    memset(&signals, 0, sizeof(signals)); /* empty feed — the "+" is header chrome, always present */
-
-    lv_obj_t *parent = lv_obj_create(lv_screen_active());
-    ff_scr_signals_build(parent, &signals);
-
-    click(find_button_with_label(parent, "+"));
-
-    TEST_ASSERT_EQUAL_INT(1, s_spy.count);
-    TEST_ASSERT_EQUAL(FF_INTENT_OPEN_COMPOSE, s_spy.last.kind);
-    /* node_id 0 = no explicit destination: the shell resolves S08's
-     * "TO = selected crew member" rule — a pure-render screen cannot
-     * know the selection, and must not guess one (scr_signals.c's
-     * signals_open_compose_cb comment). */
-    TEST_ASSERT_EQUAL_UINT32(0u, s_spy.last.u.node_id);
+    ff_sigrow_t *r = &v->rows[v->row_count++];
+    memset(r, 0, sizeof(*r));
+    r->kind = FF_SIGROW_RECENT;
+    r->feed_kind = FEED_TEXT;
+    r->unread = unread;
+    r->identity_known = (node_id != 0);
+    r->node_id = node_id;
+    if (name != NULL) strncpy(r->name, name, sizeof(r->name) - 1);
+    return r;
 }
 
-/* =================================================================== */
-/* Signals rally row tap -> SELECT_RALLY (S16 slice c2)                 */
-/* =================================================================== */
+static ff_sigrow_t *sv_add_quiet(ff_sigview_t *v, uint32_t node_id, char const *name)
+{
+    ff_sigrow_t *r = &v->rows[v->row_count++];
+    memset(r, 0, sizeof(*r));
+    r->kind = FF_SIGROW_CREW_QUIET;
+    r->identity_known = true;
+    r->node_id = node_id;
+    r->presence = FF_PRESENCE_LINKED;
+    if (name != NULL) strncpy(r->name, name, sizeof(r->name) - 1);
+    return r;
+}
 
-/* Rally rows are plain lv_obj_t containers, not lv_button_t (unlike every
- * other click site this file tests), so this file's own
- * find_button_with_label can't locate one. Rows have no unique on-screen
- * text of their own — `it->from_name` is the only per-row label — so the
- * lookup goes by that name label and steps one level up to the row it
- * belongs to. */
+/* Rows are plain lv_obj_t containers, not lv_button_t, so find_button_with_label
+ * can't locate one. A row's only unique on-screen text is its name label, so the
+ * lookup goes by that and steps one level up to the row it belongs to. (Shared
+ * with the settings-face tests below.) */
 static lv_obj_t *find_label_exact(lv_obj_t *root, char const *text)
 {
     uint32_t n = lv_obj_get_child_count(root);
@@ -627,6 +630,123 @@ static lv_obj_t *find_label_exact(lv_obj_t *root, char const *text)
         }
     }
     return NULL;
+}
+
+/* A RECENT row with a known identity is a SELECT tap target. */
+static void S22b_signals_recent_row_tap_emits_select_member(void)
+{
+    ff_sigview_t v;
+    ff_sigview_init(&v);
+    sv_add_recent(&v, 111u, "DANA", true);
+
+    lv_obj_t *parent = lv_obj_create(lv_screen_active());
+    ff_scr_signals_build(parent, &v, false);
+
+    lv_obj_t *name = find_label_exact(parent, "DANA");
+    TEST_ASSERT_NOT_NULL(name);
+    lv_obj_t *row = lv_obj_get_parent(name);
+    TEST_ASSERT_NOT_NULL(row);
+    TEST_ASSERT_TRUE(lv_obj_has_flag(row, LV_OBJ_FLAG_CLICKABLE));
+
+    click(row);
+    TEST_ASSERT_EQUAL_INT(1, s_spy.count);
+    TEST_ASSERT_EQUAL(FF_INTENT_SIG_SELECT_MEMBER, s_spy.last.kind);
+    TEST_ASSERT_EQUAL_UINT32(111u, s_spy.last.u.node_id);
+}
+
+/* An unknown-identity RECENT row (node_id 0) is shown but NOT selectable —
+ * a pure-render screen must not offer an unknown sender as a recipient. */
+static void S22b_signals_unknown_recent_row_not_clickable(void)
+{
+    ff_sigview_t v;
+    ff_sigview_init(&v);
+    sv_add_recent(&v, 0u, NULL, false); /* identity unknown */
+
+    lv_obj_t *parent = lv_obj_create(lv_screen_active());
+    ff_scr_signals_build(parent, &v, false);
+
+    lv_obj_t *name = find_label_exact(parent, "UNKNOWN");
+    TEST_ASSERT_NOT_NULL(name);
+    lv_obj_t *row = lv_obj_get_parent(name);
+    TEST_ASSERT_NOT_NULL(row);
+    TEST_ASSERT_FALSE(lv_obj_has_flag(row, LV_OBJ_FLAG_CLICKABLE));
+}
+
+/* A CREW_QUIET row is a SELECT tap target too (always a paired member). */
+static void S22b_signals_quiet_row_tap_emits_select_member(void)
+{
+    ff_sigview_t v;
+    ff_sigview_init(&v);
+    v.rows[v.row_count++] = (ff_sigrow_t){.kind = FF_SIGROW_DIVIDER};
+    sv_add_quiet(&v, 222u, "MAX");
+
+    lv_obj_t *parent = lv_obj_create(lv_screen_active());
+    ff_scr_signals_build(parent, &v, false);
+
+    lv_obj_t *name = find_label_exact(parent, "MAX");
+    TEST_ASSERT_NOT_NULL(name);
+    lv_obj_t *row = lv_obj_get_parent(name);
+    TEST_ASSERT_NOT_NULL(row);
+
+    click(row);
+    TEST_ASSERT_EQUAL_INT(1, s_spy.count);
+    TEST_ASSERT_EQUAL(FF_INTENT_SIG_SELECT_MEMBER, s_spy.last.kind);
+    TEST_ASSERT_EQUAL_UINT32(222u, s_spy.last.u.node_id);
+}
+
+/* The target line's ✕ clears the target back to WHOLE CREW. It only exists
+ * when a member is targeted. */
+static void S22b_signals_target_clear_emits_clear_target(void)
+{
+    ff_sigview_t v;
+    ff_sigview_init(&v);
+    sv_add_recent(&v, 111u, "DANA", false);
+    v.target_kind = FF_TARGET_MEMBER;
+    v.target_node = 111u;
+
+    lv_obj_t *parent = lv_obj_create(lv_screen_active());
+    ff_scr_signals_build(parent, &v, false);
+
+    lv_obj_t *x = find_button_with_label(parent, LV_SYMBOL_CLOSE);
+    TEST_ASSERT_NOT_NULL(x);
+    click(x);
+    TEST_ASSERT_EQUAL_INT(1, s_spy.count);
+    TEST_ASSERT_EQUAL(FF_INTENT_SIG_CLEAR_TARGET, s_spy.last.kind);
+}
+
+/* WHOLE CREW (the default) shows no ✕ — it IS the cleared state. */
+static void S22b_signals_whole_crew_target_has_no_clear(void)
+{
+    ff_sigview_t v;
+    ff_sigview_init(&v); /* default target = WHOLE_CREW */
+    sv_add_recent(&v, 111u, "DANA", false);
+
+    lv_obj_t *parent = lv_obj_create(lv_screen_active());
+    ff_scr_signals_build(parent, &v, false);
+
+    TEST_ASSERT_NULL(find_button_with_label(parent, LV_SYMBOL_CLOSE));
+}
+
+/* The three action buttons emit their (payload-free) action intents. */
+static void S22b_signals_action_buttons_emit_actions(void)
+{
+    ff_sigview_t v;
+    ff_sigview_init(&v);
+
+    lv_obj_t *parent = lv_obj_create(lv_screen_active());
+    ff_scr_signals_build(parent, &v, false);
+
+    click(find_button_with_label(parent, "RALLY"));
+    TEST_ASSERT_EQUAL_INT(1, s_spy.count);
+    TEST_ASSERT_EQUAL(FF_INTENT_SIG_RALLY, s_spy.last.kind);
+
+    click(find_button_with_label(parent, "PULSE"));
+    TEST_ASSERT_EQUAL_INT(2, s_spy.count);
+    TEST_ASSERT_EQUAL(FF_INTENT_SIG_PULSE, s_spy.last.kind);
+
+    click(find_button_with_label(parent, "COMPOSE"));
+    TEST_ASSERT_EQUAL_INT(3, s_spy.count);
+    TEST_ASSERT_EQUAL(FF_INTENT_SIG_COMPOSE, s_spy.last.kind);
 }
 
 /* find_pill_in_row — the settings-face toggle rows (HAPTICS/GLOW/COLORBLIND)
@@ -647,78 +767,6 @@ static lv_obj_t *find_pill_in_row(lv_obj_t *root, char const *row_caption, char 
         return NULL;
     }
     return find_button_with_label(row, pill_text);
-}
-
-static void S16_c2_signals_rally_tap_emits_select_rally_with_its_index(void)
-{
-    ff_app_signals_t signals;
-    memset(&signals, 0, sizeof(signals));
-    signals.n_items = 2;
-    signals.items[0].kind = FF_APP_FEED_TEXT; /* not tappable — see the negative half below */
-    strncpy(signals.items[0].from_name, "DANA", sizeof(signals.items[0].from_name) - 1);
-    signals.items[1].kind = FF_APP_FEED_RALLY; /* index 1 — the one this test taps */
-    strncpy(signals.items[1].from_name, "KEV", sizeof(signals.items[1].from_name) - 1);
-
-    lv_obj_t *parent = lv_obj_create(lv_screen_active());
-    ff_scr_signals_build(parent, &signals);
-
-    lv_obj_t *name_label = find_label_exact(parent, "KEV");
-    TEST_ASSERT_NOT_NULL(name_label);
-    lv_obj_t *row = lv_obj_get_parent(name_label); /* the row: name/text/age/icon are all direct row children */
-    TEST_ASSERT_NOT_NULL(row);
-    TEST_ASSERT_TRUE(lv_obj_has_flag(row, LV_OBJ_FLAG_CLICKABLE));
-
-    click(row);
-
-    TEST_ASSERT_EQUAL_INT(1, s_spy.count);
-    TEST_ASSERT_EQUAL(FF_INTENT_SELECT_RALLY, s_spy.last.kind);
-    /* rally_idx is this row's own index into the ff_app_signals_t slice
-     * this screen was handed, not some crew/core identity — the row at
-     * items[1] must report 1. */
-    TEST_ASSERT_EQUAL_UINT8(1, s_spy.last.u.rally_idx);
-
-    /* Negative half: a non-RALLY row (DANA, items[0]) is not clickable at
-     * all — S08 spec: only rally rows are tappable — so it can never
-     * reach this seam by construction, not merely by this test not
-     * trying it. */
-    lv_obj_t *other_label = find_label_exact(parent, "DANA");
-    TEST_ASSERT_NOT_NULL(other_label);
-    lv_obj_t *other_row = lv_obj_get_parent(other_label);
-    TEST_ASSERT_NOT_NULL(other_row);
-    TEST_ASSERT_FALSE(lv_obj_has_flag(other_row, LV_OBJ_FLAG_CLICKABLE));
-}
-
-/* =================================================================== */
-/* Signals OMW / 5 MIN / PULSE -> CANNED_REPLY (S16 slice c2)           */
-/* =================================================================== */
-
-static void S16_c2_signals_canned_reply_chips_emit_canned_reply(void)
-{
-    /* Reply-context resolution (which sender OMW/5 MIN/PULSE address) is
-     * the SHELL's job, per ff_wiring_send_canned_reply's documented
-     * contract (AC7, pinned at the shell level in test_shell.c) — this
-     * screen only reports which chip was pressed, so an empty feed is
-     * fine here: the chips render unconditionally as header chrome. */
-    ff_app_signals_t signals;
-    memset(&signals, 0, sizeof(signals));
-
-    lv_obj_t *parent = lv_obj_create(lv_screen_active());
-    ff_scr_signals_build(parent, &signals);
-
-    click(find_button_with_label(parent, "OMW"));
-    TEST_ASSERT_EQUAL_INT(1, s_spy.count);
-    TEST_ASSERT_EQUAL(FF_INTENT_CANNED_REPLY, s_spy.last.kind);
-    TEST_ASSERT_EQUAL(FF_WIRING_REPLY_OMW, s_spy.last.u.reply);
-
-    click(find_button_with_label(parent, "5 MIN"));
-    TEST_ASSERT_EQUAL_INT(2, s_spy.count);
-    TEST_ASSERT_EQUAL(FF_INTENT_CANNED_REPLY, s_spy.last.kind);
-    TEST_ASSERT_EQUAL(FF_WIRING_REPLY_5MIN, s_spy.last.u.reply);
-
-    click(find_button_with_label(parent, "PULSE"));
-    TEST_ASSERT_EQUAL_INT(3, s_spy.count);
-    TEST_ASSERT_EQUAL(FF_INTENT_CANNED_REPLY, s_spy.last.kind);
-    TEST_ASSERT_EQUAL(FF_WIRING_REPLY_PULSE, s_spy.last.u.reply);
 }
 
 /* =================================================================== */
@@ -1234,7 +1282,9 @@ static void S16_c1_wired_sites_are_noops_while_the_seam_is_unbound(void)
     lv_obj_t *puck = lv_obj_get_child(lv_screen_active(), 0);
     TEST_ASSERT_NOT_NULL(puck);
     (void)lv_obj_send_event(puck, LV_EVENT_LONG_PRESSED, NULL);
-    click(find_button_with_label(lv_screen_active(), "+"));
+    /* A Signals action button (RALLY) is a wired emit site, always present
+     * on the face (the old "+" it replaced is gone as of S22). */
+    click(find_button_with_label(lv_screen_active(), "RALLY"));
 
     TEST_ASSERT_EQUAL_INT(0, s_spy.count); /* nothing reached the (unbound) spy — and nothing crashed */
 }
@@ -1260,9 +1310,12 @@ int main(void)
     RUN_TEST(S16_c3_sym_symbol_key_emits_t9_insert);
     RUN_TEST(S16_c3_sym_space_key_emits_t9_space);
     RUN_TEST(S16_c3_mode_chip_emits_t9_mode);
-    RUN_TEST(S16_c1_signals_plus_emits_open_compose_with_no_destination);
-    RUN_TEST(S16_c2_signals_rally_tap_emits_select_rally_with_its_index);
-    RUN_TEST(S16_c2_signals_canned_reply_chips_emit_canned_reply);
+    RUN_TEST(S22b_signals_recent_row_tap_emits_select_member);
+    RUN_TEST(S22b_signals_unknown_recent_row_not_clickable);
+    RUN_TEST(S22b_signals_quiet_row_tap_emits_select_member);
+    RUN_TEST(S22b_signals_target_clear_emits_clear_target);
+    RUN_TEST(S22b_signals_whole_crew_target_has_no_clear);
+    RUN_TEST(S22b_signals_action_buttons_emit_actions);
     RUN_TEST(S16_c2_radar_flare_button_emits_flare_start);
     RUN_TEST(S17a_AC4_radar_precise_dot_renders_filled_with_its_initial);
     RUN_TEST(S17a_AC4_radar_imprecise_dot_renders_as_hollow_ring_with_no_initial);

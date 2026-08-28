@@ -138,6 +138,28 @@ typedef enum {
      * cycle — see scr_settings.c and the scroll-aware sweep in
      * test_face_hit_targets.c.) */
     FF_INTENT_CALIBRATE_TOUCH,
+    /* [api] S22 slice b — the reworked Signals face (docs/specs/S22-signals-rework.md).
+     * The screen is a pure projection of the shell-owned `ff_sigview_t`; these
+     * five intents are the whole seam between it and the shell. Appended, so no
+     * existing intent's numeric value moves.
+     *
+     * SIG_SELECT_MEMBER / SIG_CLEAR_TARGET mutate the view-model's persistent
+     * target NOW (S22 AC3), via `ff_sigview_target_select` / `_clear` — the
+     * shell owns the one `ff_sigview_t` and is the only place the roster is
+     * consulted to validate a selection. SELECT carries the tapped member's
+     * node id in `u.node_id` (a paired-crew node by construction — every
+     * selectable row has a known identity); CLEAR has no payload.
+     *
+     * SIG_RALLY / SIG_PULSE / SIG_COMPOSE are the three action buttons. This
+     * slice EMITS and ROUTES them but does not send: the real `ff_proto`
+     * encode + dispatch and the rally-to-WHOLE_CREW confirm (S22 AC4) are
+     * slice (d). Until then the shell logs them and resets the target
+     * (the AC3 "target resets after any send" seam), leaving a clean place
+     * for (d) to add the actual send. No payload — each acts on the current
+     * target, which the shell reads from its own `ff_sigview_t`, never from
+     * the screen (a pure renderer must not carry the target itself). */
+    FF_INTENT_SIG_SELECT_MEMBER, FF_INTENT_SIG_CLEAR_TARGET,
+    FF_INTENT_SIG_RALLY, FF_INTENT_SIG_PULSE, FF_INTENT_SIG_COMPOSE,
 } ff_intent_kind_t;
 
 /**
@@ -175,11 +197,14 @@ typedef struct {
          *  (ff_route.h's `ff_route_swipe` doc has the full warning). */
         int8_t swipe_dir;
         ff_wiring_canned_reply_t reply;         /* CANNED_REPLY */
-        /** SELECT_CREW, OPEN_COMPOSE. For OPEN_COMPOSE: an explicit
-         *  destination, or 0 = none given, which the shell resolves per
-         *  S08's Behavior ("TO = selected crew member") — the currently
-         *  selected paired member if there is one, else broadcast. See
-         *  ff_shell_intent's doc in ff_shell.h for the exact rule. */
+        /** SELECT_CREW, OPEN_COMPOSE, SIG_SELECT_MEMBER. For OPEN_COMPOSE:
+         *  an explicit destination, or 0 = none given, which the shell
+         *  resolves per S08's Behavior ("TO = selected crew member") — the
+         *  currently selected paired member if there is one, else broadcast.
+         *  See ff_shell_intent's doc in ff_shell.h for the exact rule. For
+         *  SIG_SELECT_MEMBER (S22): the tapped Signals row's crew node id,
+         *  which the shell validates against the roster before it becomes
+         *  the send target (`ff_sigview_target_select`). */
         uint32_t node_id;
         uint8_t rally_idx;                      /* SELECT_RALLY */
         uint8_t t9_key;                         /* T9_KEY: 0-9. REUSED by T9_SELECT

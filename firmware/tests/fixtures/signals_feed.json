@@ -2,11 +2,16 @@
   "fixture": "signals_feed",
   "face": "signals",
   "signals": {
-    "items": [
-      {"kind": "pulse", "from_name": "DANA", "text": "", "age_str": "1 MIN", "unread": true},
-      {"kind": "rally", "from_name": "RILEY", "text": "MAIN STAGE", "age_str": "6 MIN", "unread": false},
-      {"kind": "text", "from_name": "MAX", "text": "on my way!", "age_str": "14 MIN", "unread": false}
-    ],
-    "unread_count": 1
+    "target_kind": "whole_crew",
+    "target_node": 0,
+    "rows": [
+      {"row": "recent", "feed_kind": "pulse", "node_id": 111, "name": "DANA", "initial": "D", "color_idx": 0, "unread": true, "age_ms": 60000},
+      {"row": "recent", "feed_kind": "rally", "node_id": 112, "name": "RILEY", "initial": "R", "color_idx": 1, "unread": false, "age_ms": 360000},
+      {"row": "recent", "feed_kind": "text", "node_id": 113, "name": "MAX", "initial": "M", "color_idx": 2, "unread": false, "age_ms": 840000},
+      {"row": "divider"},
+      {"row": "crew_quiet", "node_id": 114, "name": "KEV", "initial": "K", "color_idx": 3, "presence": "seen", "age_ms": 300000},
+      {"row": "crew_quiet", "node_id": 115, "name": "JO", "initial": "J", "color_idx": 4, "presence": "lost", "age_ms": 1200000},
+      {"row": "crew_quiet", "node_id": 116, "name": "SAM", "initial": "S", "color_idx": 5, "presence": "linked", "age_ms": 0}
+    ]
   }
 }

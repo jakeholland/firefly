@@ -1,92 +1,95 @@
 /**
- * scr_signals.c — see scr_signals.h.
+ * scr_signals.c — see scr_signals.h. The reworked Signals face (S22 b):
+ * a pure projection of the core view-model `ff_sigview_t`.
  *
- * ## Round-glass layout (PR #25 UX review follow-up)
- * The first pass of this file placed the "+" button and the OMW/5 MIN/
- * PULSE reply row with flat pixel offsets against the puck's SQUARE
- * corners/edges — `targets/sim/tests/test_face_hit_targets.c`'s sweep
- * (added for this same review) caught the "+" button, the feed list, the
- * RALLY row, and the outer two reply buttons all sitting partly off the
- * round glass. Every position below is now derived from
- * `ff_layout_safe_margin_x` (app/screens/ff_layout.h — the same shared
- * helper `scr_compose.c` uses for its own round-glass fix), computed
- * from each block's own worst-case (farthest-from-center) y, not
- * eyeballed against the square bounding box. See that test file for the
- * assertion this is checked against on every build.
+ * ## Round-glass layout — chrome ABOVE a bottom-anchored scroll list
+ * The header, the send-target line, and the three action buttons are all
+ * PINNED, above one bottom-anchored vertically-scrolling list. That order
+ * (chrome on top, scroll list last) is not the canvas mockup's — it drew
+ * the target line + actions docked BELOW the list — but it is the only
+ * order `targets/sim/tests/test_face_hit_targets.c` accepts once every
+ * list row is a tap target, and it is the exact shape S21's Settings face
+ * already uses for the same reason:
  *
- * A second, unrelated class of bug the same sweep surfaced: several
- * purely decorative containers (the "+" button aside, which IS meant to
- * be a control) were left CLICKABLE by omission — `lv_obj_create`
- * defaults to clickable in LVGL, and this file cleared that flag on every
- * icon-badge primitive but missed the feed-item rows themselves, the
- * scrollable list container, and the reply-row container. Fixed by
- * explicitly clearing LV_OBJ_FLAG_CLICKABLE on every container that
- * isn't meant to be a tap target, rather than relying on "nothing calls
- * add_flag on it so it must not be clickable" (false — the default is
- * the opposite).
+ *   The sweep's adjacency pass reads each clickable's raw, scroll-0
+ *   absolute rect (a vertical scroll shifts every row equally, so a
+ *   pair's edge-to-edge gap is scroll-invariant and the raw rects encode
+ *   it). A list taller than its viewport therefore leaves its overflow
+ *   rows at raw y BELOW the viewport at scroll 0. If a clickable control
+ *   were docked there (a footer), those overflow rows would sit right on
+ *   top of it and trip the 8px adjacency floor — a real geometric fact,
+ *   not a false positive the sweep should be taught to ignore. Putting the
+ *   list last makes its overflow spill into the empty space by the bottom
+ *   pole, next to nothing clickable (the nav page-dots are not tap
+ *   targets), so it collides with nothing.
+ *
+ * Every band's horizontal inset is derived from its own worst-case
+ * (farthest-from-center) y through `ff_layout_safe_margin_x`
+ * (app/screens/ff_layout.h) — the same shared primitive scr_compose.c /
+ * scr_settings.c use — never a flat offset against the square bounding
+ * box (PR #25's shipped-once bug). The scroll list is checked against its
+ * VIEWPORT by the S21 scroll-aware sweep, so its inset is taken at the
+ * viewport's lower edge (nearest the pole), where the chord is narrowest.
+ *
+ * ## Clickable-by-omission (PR #86 lesson)
+ * `lv_obj_create` defaults CLICKABLE, so every decorative container below
+ * explicitly clears the flag, and only the genuine tap targets (selectable
+ * rows, the target-line ✕, the three action buttons) keep it. The
+ * relevant rows opt IN; nothing relies on "no one add_flag'd it".
  */
 #include "scr_signals.h"
 
 #include <math.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 
-#include "ff_intent.h" /* S16c1 — the emit seam; see signals_open_compose_cb */
+#include "ff_crew.h"   /* ff_fmt_age — the one shared age formatter (S22 honesty note) */
+#include "ff_intent.h" /* the emit seam */
 #include "ff_layout.h"
 #include "ff_theme.h"
 
 /* ---------------------------------------------------------------------
- * Layout constants — local to this file (no cross-file geometry-testing
- * need like radar_layout.h's collision-tested numbers, so these don't
- * warrant their own header/module — the geometry MATH they're checked
- * against, ff_layout.h, is shared; these specific Y/height choices are
- * this face's own design, same split as scr_compose.c).
+ * Layout constants — local to this face (its own design; the geometry
+ * MATH they feed, ff_layout.h, is the shared/tested part — same split as
+ * scr_compose.c / scr_settings.c).
  * ------------------------------------------------------------------- */
 
 #define FF_SIGNALS_SAFETY_PX 10.0f /* see scr_compose.c's FF_COMPOSE_SAFETY_PX — same rationale */
 
-#define FF_SIGNALS_HEADER_Y 56
-#define FF_SIGNALS_HEADER_H FF_THEME_MIN_HIT_PX /* the "+" button's row */
+/* Header: "SIGNALS" title + an unread-count badge to its right. */
+#define FF_SIGNALS_HEADER_Y 34
+#define FF_SIGNALS_HEADER_H 30
 
-#define FF_SIGNALS_LIST_TOP_Y 108 /* header + gap */
-#define FF_SIGNALS_LIST_H     192
+/* Docked target line: "who does a send go to". */
+#define FF_SIGNALS_TARGET_Y 78
+#define FF_SIGNALS_TARGET_H FF_THEME_MIN_HIT_PX /* 44 — its ✕ must be a real hit target */
+
+/* Docked action row: RALLY / PULSE / COMPOSE. */
+#define FF_SIGNALS_ACTIONS_Y 132
+#define FF_SIGNALS_ACTIONS_H 58
+#define FF_SIGNALS_ACTIONS_GAP 12
+
+/* Bottom-anchored scroll list. 200..356 mirrors scr_settings.c's viewport
+ * lower edge (356) — where the chord is ~262px wide after the safety
+ * inset, ample for a row — with its overflow spilling below into the empty
+ * space by the bottom pole (the nav page-dots at center-dy 186 ≈ y392 are
+ * not clickable, so nothing there is an adjacency partner). */
+#define FF_SIGNALS_LIST_TOP_Y 200
+#define FF_SIGNALS_LIST_H     156
 #define FF_SIGNALS_LIST_BOT_Y (FF_SIGNALS_LIST_TOP_Y + FF_SIGNALS_LIST_H)
 
-#define FF_SIGNALS_TARGET_LABEL_Y 306
-#define FF_SIGNALS_TARGET_LABEL_H 18
+#define FF_SIGNALS_ROW_H   54 /* > FF_THEME_MIN_HIT_PX (44) */
+#define FF_SIGNALS_ROW_GAP 10 /* > FF_HIT_MIN_GAP_PX (8) */
+_Static_assert(FF_SIGNALS_ROW_H >= FF_THEME_MIN_HIT_PX, "signals row must clear the hit floor");
+_Static_assert(FF_SIGNALS_ROW_GAP >= FF_HIT_MIN_GAP_PX, "signals row gap must clear the adjacency floor");
+#define FF_SIGNALS_DIVIDER_H 28 /* non-clickable separator */
+#define FF_SIGNALS_ICON_PX   30
+#define FF_SIGNALS_DOT_PX    14
 
-#define FF_SIGNALS_REPLY_ROW_Y 332 /* well clear of scr_nav.c's shared page-dot chrome,
-                                     * which sits at puck-center-relative dy=186 ->
-                                     * absolute y~406-411 at this puck size */
-#define FF_SIGNALS_REPLY_ROW_H FF_THEME_MIN_HIT_PX
-
-#define FF_SIGNALS_ROW_H       58
-/* S17 slice b (AC2) — PR #86 code review, BLOCKING: was 6px. Every feed
- * row is a clickable-sibling CANDIDATE (only RALLY kind opts into
- * LV_OBJ_FLAG_CLICKABLE — see signals_build_row below — but which items
- * are RALLY is live data, not a layout-time fact this constant can see),
- * so two adjacent RALLY rows would sit 6px apart — under
- * `FF_HIT_MIN_GAP_PX` (8px, ff_theme.h), the same magnitude mis-tap trap
- * `FF_COMPOSE_KEY_GAP` had. The committed `signals_feed.json` fixture
- * happened to carry only one RALLY item, so the AC2 sweep never exercised
- * this path when this constant was first landed — closed by both the fix
- * here AND `tests/fixtures/signals_two_rallies.json` (two adjacent RALLY
- * rows), so the gate now actually covers this case rather than merely
- * happening to pass it. Bumped to 10px, matching this codebase's other
- * "modest gap" precedent (scr_settings.c's FF_SETTINGS_ROW_GAP,
- * scr_compose.c's FF_COMPOSE_KEY_GAP). */
-#define FF_SIGNALS_ROW_GAP     10
-_Static_assert(FF_SIGNALS_ROW_GAP >= FF_HIT_MIN_GAP_PX,
-               "signals feed row gap must clear the adjacency floor — two adjacent RALLY rows are both clickable");
-#define FF_SIGNALS_ICON_PX     30
-
-/**
- * signals_safe_margin_x — thin int32_t/ceil wrapper around
- * ff_layout_safe_margin_x, bound to this puck's own center/radius
- * (ff_theme.h) and this file's safety buffer — see scr_compose.c's
- * `compose_safe_margin_x` (identical shape, deliberately: both wrap the
- * same shared primitive around the same puck geometry).
- */
+/* signals_safe_margin_x — int32/ceil wrapper around ff_layout_safe_margin_x,
+ * bound to this puck's center/radius and this file's safety buffer (twin of
+ * scr_compose.c's compose_safe_margin_x / scr_settings.c's own). */
 static int32_t signals_safe_margin_x(int32_t top_y, int32_t h)
 {
     float margin = ff_layout_safe_margin_x((float)top_y, (float)h, (float)FF_THEME_PUCK_RADIUS_PX,
@@ -95,65 +98,44 @@ static int32_t signals_safe_margin_x(int32_t top_y, int32_t h)
 }
 
 /* ---------------------------------------------------------------------
- * Header: "SIGNALS" title + "+" (open Compose) button.
+ * Intent emitters (the whole seam between this screen and the shell).
  * ------------------------------------------------------------------- */
 
-/* "+" -> emits FF_INTENT_OPEN_COMPOSE through the intent seam (S16
- * slice c1 — this replaces the issue-#23 stub). node_id = 0: NO explicit
- * destination. This screen is a pure renderer and cannot know the crew
- * selection, and S08's Behavior section says the composer's TO is the
- * SELECTED CREW MEMBER — so resolving it is the shell's job
- * (`shell_compose_dest` in ff_shell.c: selection if any, else
- * broadcast). Deliberately NOT the newest feed item: that context rule
- * belongs to the canned-reply chips (`ff_wiring_send_canned_reply`),
- * and S08 gives the composer its own, different rule. Unbound
- * (goldens/headless), the emit is a no-op. */
-static void signals_open_compose_cb(lv_event_t *e)
+/* A selectable row -> FF_INTENT_SIG_SELECT_MEMBER carrying the row's crew
+ * node id (threaded through user_data, the same pattern compose_key_click_cb
+ * uses for a key index). The shell validates it against the roster before it
+ * becomes the target (a pure-render screen must not decide targeting). */
+static void signals_select_member_cb(lv_event_t *e)
 {
-    (void)e;
-    ff_intent_t in = {.kind = FF_INTENT_OPEN_COMPOSE, .u = {0}};
-    in.u.node_id = 0u;
+    uintptr_t node = (uintptr_t)lv_event_get_user_data(e);
+    ff_intent_t in = {.kind = FF_INTENT_SIG_SELECT_MEMBER, .u = {0}};
+    in.u.node_id = (uint32_t)node;
     ff_intent_emit(&in);
 }
 
-static void signals_build_header(lv_obj_t *parent)
+/* Target-line ✕ -> FF_INTENT_SIG_CLEAR_TARGET (back to WHOLE CREW). */
+static void signals_clear_target_cb(lv_event_t *e)
 {
-    int32_t margin = signals_safe_margin_x(FF_SIGNALS_HEADER_Y, FF_SIGNALS_HEADER_H);
+    (void)e;
+    ff_intent_t in = {.kind = FF_INTENT_SIG_CLEAR_TARGET, .u = {0}};
+    ff_intent_emit(&in);
+}
 
-    lv_obj_t *title = lv_label_create(parent);
-    lv_label_set_text(title, "SIGNALS");
-    lv_obj_set_style_text_font(title, FF_THEME_FONT_LABEL, 0);
-    lv_obj_set_style_text_color(title, lv_color_hex(FF_THEME_COLOR_DIM), 0);
-    lv_obj_set_pos(title, margin, FF_SIGNALS_HEADER_Y + 12);
-
-    /* "+" open-Compose button — FF_THEME_MIN_HIT_PX square, clears the
-     * ux-raver fat-thumb floor with room to spare, and (per the margin
-     * above) sits entirely on the round glass rather than the square
-     * corner the first pass placed it against. */
-    lv_obj_t *btn = lv_button_create(parent);
-    lv_obj_remove_style_all(btn);
-    lv_obj_set_size(btn, FF_THEME_MIN_HIT_PX, FF_THEME_MIN_HIT_PX);
-    lv_obj_set_pos(btn, FF_THEME_PUCK_PX - margin - FF_THEME_MIN_HIT_PX, FF_SIGNALS_HEADER_Y);
-    lv_obj_set_style_bg_color(btn, lv_color_hex(FF_THEME_COLOR_SURFACE), 0);
-    lv_obj_set_style_bg_opa(btn, LV_OPA_COVER, 0);
-    lv_obj_set_style_radius(btn, LV_RADIUS_CIRCLE, 0);
-    lv_obj_add_event_cb(btn, signals_open_compose_cb, LV_EVENT_CLICKED, NULL);
-
-    lv_obj_t *plus = lv_label_create(btn);
-    lv_label_set_text(plus, "+");
-    lv_obj_set_style_text_font(plus, FF_THEME_FONT_NAME, 0);
-    lv_obj_set_style_text_color(plus, lv_color_hex(FF_THEME_COLOR_AMBER), 0);
-    lv_obj_center(plus);
+/* The three action buttons -> their intents. The action kind travels
+ * through user_data as an ff_intent_kind_t (each of RALLY/PULSE/COMPOSE is
+ * payload-free — it acts on the shell's current target). */
+static void signals_action_cb(lv_event_t *e)
+{
+    uintptr_t kind = (uintptr_t)lv_event_get_user_data(e);
+    ff_intent_t in = {.kind = (ff_intent_kind_t)kind, .u = {0}};
+    ff_intent_emit(&in);
 }
 
 /* ---------------------------------------------------------------------
- * Per-kind icon badge: a colored circle with a small pictograph inside,
- * built from plain LVGL primitives only (no custom draw callback, unlike
- * scr_radar.c's arrowhead triangles) — every shape below is either a
- * circle (lv_obj + LV_RADIUS_CIRCLE) or a plain rectangle, so there's no
- * static point-storage pool / re-render hazard to inherit from that file
- * (see scr_radar.c's top comment for what that hazard is and why it
- * doesn't apply here).
+ * Per-kind icon badge — a colored circle with a small pictograph inside,
+ * built from plain LVGL primitives (circles + rects), no custom draw
+ * callback (so no static point-storage / re-render hazard — see
+ * scr_radar.c's top comment for the hazard that does NOT apply here).
  * ------------------------------------------------------------------- */
 
 static lv_obj_t *signals_icon_badge(lv_obj_t *parent, uint32_t bg_hex)
@@ -169,58 +151,57 @@ static lv_obj_t *signals_icon_badge(lv_obj_t *parent, uint32_t bg_hex)
     return badge;
 }
 
-/* PULSE — concentric rings ("thinking of you" ping), literally the
- * mockup's "pulse rings" description: an outer ring outline plus a small
- * filled inner dot, both centered on the badge. */
+static void signals_child_deco(lv_obj_t *o)
+{
+    lv_obj_remove_style_all(o);
+    lv_obj_clear_flag(o, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_clear_flag(o, LV_OBJ_FLAG_CLICKABLE);
+}
+
+/* PULSE — concentric rings ("thinking of you" ping): outer ring outline +
+ * a small filled inner dot. */
 static void signals_icon_pulse(lv_obj_t *parent)
 {
     lv_obj_t *badge = signals_icon_badge(parent, FF_THEME_COLOR_SURFACE);
 
     lv_obj_t *ring = lv_obj_create(badge);
-    lv_obj_remove_style_all(ring);
+    signals_child_deco(ring);
     lv_obj_set_size(ring, FF_SIGNALS_ICON_PX - 6, FF_SIGNALS_ICON_PX - 6);
     lv_obj_set_style_radius(ring, LV_RADIUS_CIRCLE, 0);
     lv_obj_set_style_bg_opa(ring, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(ring, 2, 0);
     lv_obj_set_style_border_color(ring, lv_color_hex(FF_THEME_COLOR_AMBER), 0);
-    lv_obj_clear_flag(ring, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_clear_flag(ring, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_center(ring);
 
     lv_obj_t *dot = lv_obj_create(badge);
-    lv_obj_remove_style_all(dot);
+    signals_child_deco(dot);
     lv_obj_set_size(dot, 8, 8);
     lv_obj_set_style_radius(dot, LV_RADIUS_CIRCLE, 0);
     lv_obj_set_style_bg_color(dot, lv_color_hex(FF_THEME_COLOR_AMBER), 0);
     lv_obj_set_style_bg_opa(dot, LV_OPA_COVER, 0);
-    lv_obj_clear_flag(dot, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_clear_flag(dot, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_center(dot);
 }
 
-/* RALLY — a map-pin silhouette: a filled "head" dot above a thin stem. */
+/* RALLY — a small flag: a thin pole with a filled pennant near its top
+ * (the mockup's "rally flag"). */
 static void signals_icon_rally(lv_obj_t *parent)
 {
     lv_obj_t *badge = signals_icon_badge(parent, FF_THEME_COLOR_SURFACE);
 
-    lv_obj_t *head = lv_obj_create(badge);
-    lv_obj_remove_style_all(head);
-    lv_obj_set_size(head, 12, 12);
-    lv_obj_set_style_radius(head, LV_RADIUS_CIRCLE, 0);
-    lv_obj_set_style_bg_color(head, lv_color_hex(FF_THEME_CREW_VIOLET), 0);
-    lv_obj_set_style_bg_opa(head, LV_OPA_COVER, 0);
-    lv_obj_clear_flag(head, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_clear_flag(head, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_align(head, LV_ALIGN_TOP_MID, 0, 3);
+    lv_obj_t *pole = lv_obj_create(badge);
+    signals_child_deco(pole);
+    lv_obj_set_size(pole, 3, 18);
+    lv_obj_set_style_bg_color(pole, lv_color_hex(FF_THEME_CREW_VIOLET), 0);
+    lv_obj_set_style_bg_opa(pole, LV_OPA_COVER, 0);
+    lv_obj_align(pole, LV_ALIGN_CENTER, -5, 0);
 
-    lv_obj_t *stem = lv_obj_create(badge);
-    lv_obj_remove_style_all(stem);
-    lv_obj_set_size(stem, 3, 10);
-    lv_obj_set_style_bg_color(stem, lv_color_hex(FF_THEME_CREW_VIOLET), 0);
-    lv_obj_set_style_bg_opa(stem, LV_OPA_COVER, 0);
-    lv_obj_clear_flag(stem, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_clear_flag(stem, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_align(stem, LV_ALIGN_BOTTOM_MID, 0, -3);
+    lv_obj_t *flag = lv_obj_create(badge);
+    signals_child_deco(flag);
+    lv_obj_set_size(flag, 11, 8);
+    lv_obj_set_style_radius(flag, 1, 0);
+    lv_obj_set_style_bg_color(flag, lv_color_hex(FF_THEME_CREW_VIOLET), 0);
+    lv_obj_set_style_bg_opa(flag, LV_OPA_COVER, 0);
+    lv_obj_align(flag, LV_ALIGN_CENTER, 2, -5);
 }
 
 /* TEXT — a rounded-rect message bubble. */
@@ -229,179 +210,258 @@ static void signals_icon_text(lv_obj_t *parent)
     lv_obj_t *badge = signals_icon_badge(parent, FF_THEME_COLOR_SURFACE);
 
     lv_obj_t *bubble = lv_obj_create(badge);
-    lv_obj_remove_style_all(bubble);
+    signals_child_deco(bubble);
     lv_obj_set_size(bubble, 18, 13);
     lv_obj_set_style_radius(bubble, 4, 0);
     lv_obj_set_style_bg_color(bubble, lv_color_hex(FF_THEME_CREW_TEAL), 0);
     lv_obj_set_style_bg_opa(bubble, LV_OPA_COVER, 0);
-    lv_obj_clear_flag(bubble, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_clear_flag(bubble, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_center(bubble);
 }
 
-/* STATUS — a plain solid dot (a status update, nothing fancier implied). */
+/* STATUS — a plain solid dot. */
 static void signals_icon_status(lv_obj_t *parent)
 {
     lv_obj_t *badge = signals_icon_badge(parent, FF_THEME_COLOR_SURFACE);
 
     lv_obj_t *dot = lv_obj_create(badge);
-    lv_obj_remove_style_all(dot);
+    signals_child_deco(dot);
     lv_obj_set_size(dot, 12, 12);
     lv_obj_set_style_radius(dot, LV_RADIUS_CIRCLE, 0);
     lv_obj_set_style_bg_color(dot, lv_color_hex(FF_THEME_COLOR_LIVE_GREEN), 0);
     lv_obj_set_style_bg_opa(dot, LV_OPA_COVER, 0);
-    lv_obj_clear_flag(dot, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_clear_flag(dot, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_center(dot);
 }
 
-/* FLARE — a small "+" spark/burst, alert-colored (same alert amber as
- * low-battery/mesh-loss chrome, ff_theme.h's FF_THEME_COLOR_STALE_AMBER). */
+/* FLARE — a small "+" spark/burst, alert-colored. */
 static void signals_icon_flare(lv_obj_t *parent)
 {
     lv_obj_t *badge = signals_icon_badge(parent, FF_THEME_COLOR_SURFACE);
 
     lv_obj_t *bar_h = lv_obj_create(badge);
-    lv_obj_remove_style_all(bar_h);
+    signals_child_deco(bar_h);
     lv_obj_set_size(bar_h, 16, 3);
     lv_obj_set_style_bg_color(bar_h, lv_color_hex(FF_THEME_COLOR_STALE_AMBER), 0);
     lv_obj_set_style_bg_opa(bar_h, LV_OPA_COVER, 0);
-    lv_obj_clear_flag(bar_h, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_clear_flag(bar_h, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_center(bar_h);
 
     lv_obj_t *bar_v = lv_obj_create(badge);
-    lv_obj_remove_style_all(bar_v);
+    signals_child_deco(bar_v);
     lv_obj_set_size(bar_v, 3, 16);
     lv_obj_set_style_bg_color(bar_v, lv_color_hex(FF_THEME_COLOR_STALE_AMBER), 0);
     lv_obj_set_style_bg_opa(bar_v, LV_OPA_COVER, 0);
-    lv_obj_clear_flag(bar_v, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_clear_flag(bar_v, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_center(bar_v);
 }
 
-static void signals_build_icon(lv_obj_t *parent, ff_app_feed_kind_t kind)
+static void signals_build_icon(lv_obj_t *parent, ff_feed_kind_t kind)
 {
     switch (kind) {
-    case FF_APP_FEED_PULSE: signals_icon_pulse(parent); break;
-    case FF_APP_FEED_RALLY: signals_icon_rally(parent); break;
-    case FF_APP_FEED_TEXT: signals_icon_text(parent); break;
-    case FF_APP_FEED_STATUS: signals_icon_status(parent); break;
-    case FF_APP_FEED_FLARE: signals_icon_flare(parent); break;
+    case FEED_PULSE: signals_icon_pulse(parent); break;
+    case FEED_RALLY: signals_icon_rally(parent); break;
+    case FEED_TEXT: signals_icon_text(parent); break;
+    case FEED_STATUS: signals_icon_status(parent); break;
+    case FEED_FLARE: signals_icon_flare(parent); break;
     default: signals_icon_status(parent); break;
     }
 }
 
-/* ---------------------------------------------------------------------
- * Event rows.
- * ------------------------------------------------------------------- */
-
-/* Rally row tap -> emits FF_INTENT_SELECT_RALLY through the intent seam
- * (S16 slice c2 — this replaces the issue-#23 stub). `rally_idx` is this
- * row's index into the `ff_app_signals_t` slice this screen was handed
- * (the row's own position in the visible list, passed through
- * `user_data` the same way `compose_key_click_cb` threads a key index) —
- * not a crew/core handle, which a pure-render screen must not hold
- * (CLAUDE.md). The shell still has nothing to DO with this yet:
- * `ff_crew_select_rally()` is not implemented in core (deferred — see
- * core/include/ff_crew.h's own documented deviation note: "S08's own
- * wording puts the combined crew+landmark selection cursor at S06...
- * Deferred to S06/S08"), so `ff_shell_intent`'s FF_INTENT_SELECT_RALLY
- * case stays a no-op until that lands — wiring the emit site now means
- * the eventual handler is the only piece still missing. Unbound
- * (goldens/headless), the emit is a no-op. */
-static void signals_rally_tap_cb(lv_event_t *e)
+static char const *signals_feed_kind_label(ff_feed_kind_t kind)
 {
-    uintptr_t idx = (uintptr_t)lv_event_get_user_data(e);
-    ff_intent_t in = {.kind = FF_INTENT_SELECT_RALLY, .u = {0}};
-    in.u.rally_idx = (uint8_t)idx;
-    ff_intent_emit(&in);
+    switch (kind) {
+    case FEED_PULSE: return "PULSE";
+    case FEED_RALLY: return "RALLY";
+    case FEED_TEXT: return "TEXT";
+    case FEED_STATUS: return "STATUS";
+    case FEED_FLARE: return "FLARE";
+    default: return "SIGNAL";
+    }
 }
 
-static void signals_build_row(lv_obj_t *parent, ff_app_feed_item_t const *it, int32_t y, int32_t margin_x,
-                               uint8_t idx)
+/* ---------------------------------------------------------------------
+ * Rows.
+ * ------------------------------------------------------------------- */
+
+/* A row container of `h`, inset to `margin_x`, non-scrollable. `node_id`
+ * != 0 makes it a SELECT tap target; 0 (an unknown-identity RECENT row)
+ * leaves it inert — an explicitly-unknown sender is shown but not a
+ * selectable recipient. */
+static lv_obj_t *signals_row_container(lv_obj_t *parent, int32_t y, int32_t margin_x, int32_t h, uint32_t node_id)
 {
     lv_obj_t *row = lv_obj_create(parent);
     lv_obj_remove_style_all(row);
-    lv_obj_set_size(row, FF_THEME_PUCK_PX - 2 * margin_x, FF_SIGNALS_ROW_H);
+    lv_obj_set_size(row, FF_THEME_PUCK_PX - 2 * margin_x, h);
     lv_obj_set_pos(row, margin_x, y);
     lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
-    /* lv_obj_create defaults CLICKABLE — explicitly clear it first so
-     * every kind starts non-interactive, then opt RALLY back in below.
-     * A prior pass relied on "nothing add_flag's it" to mean
-     * non-clickable, which is backwards (see this file's header
-     * comment) and is exactly why test_face_hit_targets.c flagged every
-     * non-RALLY row as an unchecked (and off-glass) hit-rect. */
-    lv_obj_clear_flag(row, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_clear_flag(row, LV_OBJ_FLAG_CLICKABLE); /* default is clickable — start inert */
 
-    if (it->kind == FF_APP_FEED_RALLY) {
-        /* Only RALLY rows are documented as tappable (S08 spec: "Rally row
-         * tap -> sets rally as radar/map target") — everything else is
-         * informational, so leaving them non-clickable avoids a "what does
-         * tapping this do?" dead end (ux-raver checklist item 6). Height
-         * already clears FF_THEME_MIN_HIT_PX (58 > 44); `margin_x` (the
-         * list's own, computed against its worst-case row slot — see
-         * ff_scr_signals_build) keeps the whole row's width on-glass
-         * regardless of which slot a RALLY item happens to scroll into. */
+    if (node_id != 0) {
         lv_obj_add_flag(row, LV_OBJ_FLAG_CLICKABLE);
-        lv_obj_add_event_cb(row, signals_rally_tap_cb, LV_EVENT_CLICKED, (void *)(uintptr_t)idx);
+        lv_obj_add_event_cb(row, signals_select_member_cb, LV_EVENT_CLICKED, (void *)(uintptr_t)node_id);
+    }
+    return row;
+}
+
+/* RECENT row: icon badge · name · kind subtitle · mono age · (unread) an
+ * amber accent bar on the left edge + an amber dot at the right. */
+static void signals_build_recent_row(lv_obj_t *parent, ff_sigrow_t const *r, int32_t y, int32_t margin_x)
+{
+    lv_obj_t *row = signals_row_container(parent, y, margin_x, FF_SIGNALS_ROW_H, r->node_id);
+    int32_t row_w = FF_THEME_PUCK_PX - 2 * margin_x;
+
+    if (r->unread) {
+        /* Amber accent bar down the left edge — an at-a-glance unread cue
+         * that needs no reading (ux-raver checklist item 4). */
+        lv_obj_t *bar = lv_obj_create(row);
+        signals_child_deco(bar);
+        lv_obj_set_size(bar, 3, FF_SIGNALS_ROW_H - 12);
+        lv_obj_set_style_radius(bar, 2, 0);
+        lv_obj_set_style_bg_color(bar, lv_color_hex(FF_THEME_COLOR_AMBER), 0);
+        lv_obj_set_style_bg_opa(bar, LV_OPA_COVER, 0);
+        lv_obj_align(bar, LV_ALIGN_LEFT_MID, 0, 0);
     }
 
     lv_obj_t *icon_parent = lv_obj_create(row);
-    lv_obj_remove_style_all(icon_parent);
+    signals_child_deco(icon_parent);
     lv_obj_set_size(icon_parent, FF_SIGNALS_ICON_PX, FF_SIGNALS_ICON_PX);
-    lv_obj_clear_flag(icon_parent, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_clear_flag(icon_parent, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_align(icon_parent, LV_ALIGN_LEFT_MID, 0, 0);
-    signals_build_icon(icon_parent, it->kind);
+    lv_obj_align(icon_parent, LV_ALIGN_LEFT_MID, 10, 0);
+    signals_build_icon(icon_parent, r->feed_kind);
 
-    int32_t text_x = FF_SIGNALS_ICON_PX + 12;
+    int32_t text_x = 10 + FF_SIGNALS_ICON_PX + 12;
 
     lv_obj_t *name = lv_label_create(row);
-    lv_label_set_text(name, (it->from_name[0] != '\0') ? it->from_name : "(unknown)");
+    lv_label_set_long_mode(name, LV_LABEL_LONG_MODE_DOTS);
+    lv_obj_set_width(name, row_w - text_x - 56);
+    lv_label_set_text(name, (r->identity_known && r->name[0] != '\0') ? r->name : "UNKNOWN");
     lv_obj_set_style_text_font(name, FF_THEME_FONT_LABEL, 0);
     lv_obj_set_style_text_color(name, lv_color_hex(FF_THEME_COLOR_INK), 0);
-    lv_obj_set_pos(name, text_x, 4);
+    lv_obj_set_pos(name, text_x, 8);
 
-    lv_obj_t *text = lv_label_create(row);
-    lv_label_set_long_mode(text, LV_LABEL_LONG_MODE_DOTS);
-    lv_obj_set_width(text, FF_THEME_PUCK_PX - 2 * margin_x - text_x - 56);
-    lv_label_set_text(text, (it->text[0] != '\0') ? it->text : "-");
-    lv_obj_set_style_text_font(text, FF_THEME_FONT_LABEL, 0);
-    lv_obj_set_style_text_color(text, lv_color_hex(FF_THEME_COLOR_DIM), 0);
-    lv_obj_set_pos(text, text_x, 26);
+    lv_obj_t *sub = lv_label_create(row);
+    lv_label_set_text(sub, signals_feed_kind_label(r->feed_kind));
+    lv_obj_set_style_text_font(sub, FF_THEME_FONT_CHIP, 0);
+    lv_obj_set_style_text_color(sub, lv_color_hex(FF_THEME_COLOR_DIM), 0);
+    lv_obj_set_pos(sub, text_x, 30);
 
+    char age_buf[FF_APP_STR_SHORT];
+    ff_fmt_age(age_buf, sizeof(age_buf), r->age_ms);
     lv_obj_t *age = lv_label_create(row);
-    lv_label_set_text(age, (it->age_str[0] != '\0') ? it->age_str : "--");
+    lv_label_set_text(age, age_buf);
     lv_obj_set_style_text_font(age, FF_THEME_FONT_CHIP, 0);
-    lv_obj_set_style_text_color(age, lv_color_hex(FF_THEME_COLOR_DIM), 0);
-    lv_obj_align(age, LV_ALIGN_RIGHT_MID, 0, -12);
+    lv_obj_set_style_text_color(age, lv_color_hex(FF_THEME_COLOR_MUTED), 0);
+    lv_obj_align(age, LV_ALIGN_RIGHT_MID, -4, r->unread ? -8 : 0);
 
-    if (it->unread) {
-        /* Unread dot: small amber dot above the age string — honesty read
-         * (ux-raver checklist item 4): unread state must be visible at a
-         * glance without reading any text. */
+    if (r->unread) {
         lv_obj_t *dot = lv_obj_create(row);
-        lv_obj_remove_style_all(dot);
+        signals_child_deco(dot);
         lv_obj_set_size(dot, 8, 8);
         lv_obj_set_style_radius(dot, LV_RADIUS_CIRCLE, 0);
         lv_obj_set_style_bg_color(dot, lv_color_hex(FF_THEME_COLOR_AMBER), 0);
         lv_obj_set_style_bg_opa(dot, LV_OPA_COVER, 0);
-        lv_obj_clear_flag(dot, LV_OBJ_FLAG_SCROLLABLE);
-        lv_obj_clear_flag(dot, LV_OBJ_FLAG_CLICKABLE);
-        lv_obj_align(dot, LV_ALIGN_RIGHT_MID, 0, 10);
+        lv_obj_align(dot, LV_ALIGN_RIGHT_MID, -4, 12);
+    }
+}
+
+/* Presence label text + tint (S22 AC2) — the honest last-heard read.
+ * SEEN -> "SEEN <age>"; LOST -> "LOST" (stale tint); LINKED -> "LINKED".
+ * The age is formatted only for SEEN, via the one shared `ff_fmt_age`. */
+static void signals_presence_text(ff_sigrow_t const *r, char *buf, size_t n, uint32_t *out_color)
+{
+    switch (r->presence) {
+    case FF_PRESENCE_SEEN: {
+        char age_buf[FF_APP_STR_SHORT];
+        ff_fmt_age(age_buf, sizeof(age_buf), r->age_ms);
+        snprintf(buf, n, "SEEN %s", age_buf);
+        *out_color = FF_THEME_COLOR_MUTED;
+        break;
+    }
+    case FF_PRESENCE_LOST:
+        snprintf(buf, n, "LOST");
+        *out_color = FF_THEME_COLOR_STALE_AMBER;
+        break;
+    case FF_PRESENCE_LINKED:
+    default:
+        snprintf(buf, n, "LINKED");
+        *out_color = FF_THEME_COLOR_DIM;
+        break;
+    }
+}
+
+/* CREW_QUIET row: dimmed, a crew-color dot + name + honest presence label.
+ * Always a paired member (identity_known) -> always selectable. */
+static void signals_build_quiet_row(lv_obj_t *parent, ff_sigrow_t const *r, int32_t y, int32_t margin_x,
+                                     bool colorblind)
+{
+    lv_obj_t *row = signals_row_container(parent, y, margin_x, FF_SIGNALS_ROW_H, r->node_id);
+    int32_t row_w = FF_THEME_PUCK_PX - 2 * margin_x;
+    lv_obj_set_style_opa(row, LV_OPA_70, 0); /* quiet crew read dimmer than recent */
+
+    lv_obj_t *dot = lv_obj_create(row);
+    signals_child_deco(dot);
+    lv_obj_set_size(dot, FF_SIGNALS_DOT_PX, FF_SIGNALS_DOT_PX);
+    lv_obj_set_style_radius(dot, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_bg_color(dot, lv_color_hex(ff_theme_crew_color(r->color_idx, colorblind)), 0);
+    lv_obj_set_style_bg_opa(dot, LV_OPA_COVER, 0);
+    lv_obj_align(dot, LV_ALIGN_LEFT_MID, 10 + (FF_SIGNALS_ICON_PX - FF_SIGNALS_DOT_PX) / 2, 0);
+
+    int32_t text_x = 10 + FF_SIGNALS_ICON_PX + 12;
+
+    lv_obj_t *name = lv_label_create(row);
+    lv_label_set_long_mode(name, LV_LABEL_LONG_MODE_DOTS);
+    lv_obj_set_width(name, row_w - text_x - 12);
+    lv_label_set_text(name, (r->name[0] != '\0') ? r->name : "CREW");
+    lv_obj_set_style_text_font(name, FF_THEME_FONT_LABEL, 0);
+    lv_obj_set_style_text_color(name, lv_color_hex(FF_THEME_COLOR_MUTED), 0);
+    lv_obj_set_pos(name, text_x, 8);
+
+    char pres_buf[FF_APP_STR_SHORT + 8];
+    uint32_t pres_color = FF_THEME_COLOR_DIM;
+    signals_presence_text(r, pres_buf, sizeof(pres_buf), &pres_color);
+    lv_obj_t *pres = lv_label_create(row);
+    lv_label_set_text(pres, pres_buf);
+    lv_obj_set_style_text_font(pres, FF_THEME_FONT_CHIP, 0);
+    lv_obj_set_style_text_color(pres, lv_color_hex(pres_color), 0);
+    lv_obj_set_pos(pres, text_x, 30);
+}
+
+/* The "· CREW ·" divider — a centered "CREW" caption flanked by two thin
+ * rules (drawn with rects, not a middot glyph the vendored Montserrat
+ * subset lacks — that rendered as tofu). Drawn only when quiet crew follow. */
+static void signals_build_divider(lv_obj_t *parent, int32_t y, int32_t margin_x)
+{
+    int32_t row_w = FF_THEME_PUCK_PX - 2 * margin_x;
+
+    lv_obj_t *row = lv_obj_create(parent);
+    signals_child_deco(row);
+    lv_obj_set_size(row, row_w, FF_SIGNALS_DIVIDER_H);
+    lv_obj_set_pos(row, margin_x, y);
+
+    lv_obj_t *label = lv_label_create(row);
+    lv_label_set_text(label, "CREW");
+    lv_obj_set_style_text_font(label, FF_THEME_FONT_CHIP, 0);
+    lv_obj_set_style_text_color(label, lv_color_hex(FF_THEME_COLOR_DIM), 0);
+    lv_obj_center(label);
+
+    int32_t rule_w = (row_w - 60) / 2; /* leave ~60px in the middle for "CREW" */
+    if (rule_w > 8) {
+        for (int side = 0; side < 2; side++) {
+            lv_obj_t *rule = lv_obj_create(row);
+            signals_child_deco(rule);
+            lv_obj_set_size(rule, rule_w, 1);
+            lv_obj_set_style_bg_color(rule, lv_color_hex(FF_THEME_COLOR_DIM), 0);
+            lv_obj_set_style_bg_opa(rule, LV_OPA_50, 0);
+            lv_obj_align(rule, side == 0 ? LV_ALIGN_LEFT_MID : LV_ALIGN_RIGHT_MID, 0, 0);
+        }
     }
 }
 
 static void signals_build_empty_state(lv_obj_t *parent)
 {
-    /* Honest empty state (CLAUDE.md: "honest data over pretty data") —
-     * nothing has happened yet, said plainly, not a fake sample row. */
+    /* Honest empty state (CLAUDE.md) — nothing has happened yet, said
+     * plainly, never a fake sample row. Placed in the list band. */
     lv_obj_t *headline = lv_label_create(parent);
     lv_label_set_text(headline, "NO SIGNALS YET");
     lv_obj_set_style_text_font(headline, FF_THEME_FONT_HEADLINE, 0);
     lv_obj_set_style_text_color(headline, lv_color_hex(FF_THEME_COLOR_MUTED), 0);
-    lv_obj_align(headline, LV_ALIGN_CENTER, 0, -30);
+    lv_obj_align(headline, LV_ALIGN_TOP_MID, 0, FF_SIGNALS_LIST_TOP_Y + 30);
 
     lv_obj_t *sub = lv_label_create(parent);
     lv_label_set_text(sub, "Pulses, rallies, and texts show up here");
@@ -409,147 +469,275 @@ static void signals_build_empty_state(lv_obj_t *parent)
     lv_obj_set_style_text_color(sub, lv_color_hex(FF_THEME_COLOR_DIM), 0);
     lv_obj_set_width(sub, 260);
     lv_obj_set_style_text_align(sub, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_align(sub, LV_ALIGN_CENTER, 0, 4);
+    lv_obj_align(sub, LV_ALIGN_TOP_MID, 0, FF_SIGNALS_LIST_TOP_Y + 64);
 }
 
 /* ---------------------------------------------------------------------
- * Canned-reply chip row: OMW / 5 MIN / PULSE.
+ * Header: "SIGNALS" + unread-count badge.
  * ------------------------------------------------------------------- */
 
-/* OMW / 5 MIN / PULSE -> emits FF_INTENT_CANNED_REPLY through the intent
- * seam (S16 slice c2 — this replaces the issue-#23 stub). `which` (the
- * chip's own ff_wiring_canned_reply_t) travels through `user_data`, same
- * pattern as compose_key_click_cb's key index and signals_rally_tap_cb's
- * row index. Reply-context (which sender OMW/5 MIN/PULSE address) is the
- * shell's call, not this screen's: `ff_wiring_send_canned_reply`'s
- * documented contract is the newest feed item, and this screen cannot
- * resolve that itself (pure render, per CLAUDE.md) — it only reports
- * which chip was pressed. See signals_build_target_label below for the
- * ON-SCREEN half of the same fact — PR #25 UX review (non-blocking
- * finding): a code comment saying "it's items[0]" is invisible to Bailey;
- * the label makes it visible. Unbound (goldens/headless), the emit is a
- * no-op. */
-static void signals_canned_reply_cb(lv_event_t *e)
+static void signals_build_header(lv_obj_t *parent, uint16_t unread)
 {
-    uintptr_t which = (uintptr_t)lv_event_get_user_data(e);
-    ff_intent_t in = {.kind = FF_INTENT_CANNED_REPLY, .u = {0}};
-    in.u.reply = (ff_wiring_canned_reply_t)which;
-    ff_intent_emit(&in);
-}
+    int32_t margin = signals_safe_margin_x(FF_SIGNALS_HEADER_Y, FF_SIGNALS_HEADER_H);
 
-static lv_obj_t *signals_make_reply_button(lv_obj_t *parent, char const *text, int32_t x, int32_t w,
-                                            ff_wiring_canned_reply_t which)
-{
-    lv_obj_t *btn = lv_button_create(parent);
-    lv_obj_remove_style_all(btn);
-    lv_obj_set_size(btn, w, FF_SIGNALS_REPLY_ROW_H);
-    lv_obj_set_pos(btn, x, 0);
-    lv_obj_set_style_bg_color(btn, lv_color_hex(FF_THEME_COLOR_SURFACE), 0);
-    lv_obj_set_style_bg_opa(btn, LV_OPA_COVER, 0);
-    lv_obj_set_style_radius(btn, LV_RADIUS_CIRCLE, 0);
-    lv_obj_add_event_cb(btn, signals_canned_reply_cb, LV_EVENT_CLICKED, (void *)(uintptr_t)which);
+    lv_obj_t *title = lv_label_create(parent);
+    lv_label_set_text(title, "SIGNALS");
+    lv_obj_set_style_text_font(title, FF_THEME_FONT_NAME, 0);
+    lv_obj_set_style_text_color(title, lv_color_hex(FF_THEME_COLOR_INK), 0);
+    lv_obj_set_pos(title, margin, FF_SIGNALS_HEADER_Y);
 
-    lv_obj_t *label = lv_label_create(btn);
-    lv_label_set_text(label, text);
-    lv_obj_set_style_text_font(label, FF_THEME_FONT_CHIP, 0);
-    lv_obj_set_style_text_color(label, lv_color_hex(FF_THEME_COLOR_AMBER), 0);
-    lv_obj_center(label);
+    if (unread > 0) {
+        /* Small amber pill just right of the title — the unread count. Not
+         * a control (an indicator), so non-clickable. */
+        lv_obj_t *badge = lv_obj_create(parent);
+        signals_child_deco(badge);
+        lv_obj_set_size(badge, 24, 20);
+        lv_obj_set_style_radius(badge, 10, 0);
+        lv_obj_set_style_bg_color(badge, lv_color_hex(FF_THEME_COLOR_AMBER), 0);
+        lv_obj_set_style_bg_opa(badge, LV_OPA_COVER, 0);
+        /* Title width is font-dependent; anchor the badge a fixed step in
+         * from the title's left rather than measuring the label. */
+        lv_obj_set_pos(badge, margin + 120, FF_SIGNALS_HEADER_Y + 2);
 
-    return btn;
-}
-
-/* PR #25 UX review (non-blocking finding): "nothing on screen says which
- * row a canned reply targets... at 2am I'd genuinely wonder 'did OMW
- * just go to Dana, or to everyone?'". Renders "-> <name>" (the newest
- * feed item's sender, matching the reply-context this row will actually
- * use once wired — see signals_canned_reply_stub_cb's comment) or
- * "-> EVERYONE" when there's no feed item to reply to (broadcast, per
- * S08's "...else broadcast"). */
-static void signals_build_target_label(lv_obj_t *parent, ff_app_signals_t const *signals, int32_t margin_x)
-{
-    char buf[FF_APP_NAME_LEN + 8];
-    if (signals->n_items > 0 && signals->items[0].from_name[0] != '\0') {
-        snprintf(buf, sizeof(buf), "-> %s", signals->items[0].from_name);
-    } else {
-        snprintf(buf, sizeof(buf), "-> EVERYONE");
+        char buf[8];
+        snprintf(buf, sizeof(buf), "%u", (unsigned)(unread > 99 ? 99 : unread));
+        lv_obj_t *num = lv_label_create(badge);
+        lv_label_set_text(num, buf);
+        lv_obj_set_style_text_font(num, FF_THEME_FONT_CHIP, 0);
+        lv_obj_set_style_text_color(num, lv_color_hex(0x14141C), 0); /* dark ink on amber */
+        lv_obj_center(num);
     }
-
-    lv_obj_t *label = lv_label_create(parent);
-    lv_label_set_text(label, buf);
-    lv_obj_set_style_text_font(label, FF_THEME_FONT_CHIP, 0);
-    lv_obj_set_style_text_color(label, lv_color_hex(FF_THEME_COLOR_DIM), 0);
-    lv_obj_set_pos(label, margin_x, FF_SIGNALS_TARGET_LABEL_Y);
-}
-
-static void signals_build_reply_row(lv_obj_t *parent)
-{
-    int32_t margin_x = signals_safe_margin_x(FF_SIGNALS_REPLY_ROW_Y, FF_SIGNALS_REPLY_ROW_H);
-    int32_t row_w = FF_THEME_PUCK_PX - 2 * margin_x;
-
-    lv_obj_t *row = lv_obj_create(parent);
-    lv_obj_remove_style_all(row);
-    lv_obj_set_size(row, row_w, FF_SIGNALS_REPLY_ROW_H);
-    lv_obj_set_pos(row, margin_x, FF_SIGNALS_REPLY_ROW_Y);
-    lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_clear_flag(row, LV_OBJ_FLAG_CLICKABLE); /* a layout container, not a control itself */
-
-    int32_t gap = 8;
-    int32_t btn_w = (row_w - 2 * gap) / 3;
-
-    signals_make_reply_button(row, "OMW", 0, btn_w, FF_WIRING_REPLY_OMW);
-    signals_make_reply_button(row, "5 MIN", btn_w + gap, btn_w, FF_WIRING_REPLY_5MIN);
-    signals_make_reply_button(row, "PULSE", 2 * (btn_w + gap), btn_w, FF_WIRING_REPLY_PULSE);
 }
 
 /* ---------------------------------------------------------------------
- * Entry point.
+ * Target line: the always-visible "who a send goes to".
  * ------------------------------------------------------------------- */
 
-void ff_scr_signals_build(lv_obj_t *parent, ff_app_signals_t const *signals)
+/* Find the row carrying `node_id` so the target line can render that
+ * member's name + crew color WITHOUT a second data source — a selected
+ * member is paired, so it is always present as a RECENT or CREW_QUIET row.
+ * Returns NULL only in the transient window before its row exists. */
+static ff_sigrow_t const *signals_find_member_row(ff_sigview_t const *v, uint32_t node_id)
 {
-    if (parent == NULL || signals == NULL) {
+    uint16_t n = ff_sigview_row_count(v);
+    for (uint16_t i = 0; i < n; i++) {
+        ff_sigrow_t const *r = ff_sigview_row_at(v, i);
+        if (r != NULL && r->identity_known && r->node_id == node_id) {
+            return r;
+        }
+    }
+    return NULL;
+}
+
+static void signals_build_target_line(lv_obj_t *parent, ff_sigview_t const *v, bool colorblind)
+{
+    int32_t margin = signals_safe_margin_x(FF_SIGNALS_TARGET_Y, FF_SIGNALS_TARGET_H);
+    int32_t row_w = FF_THEME_PUCK_PX - 2 * margin;
+
+    lv_obj_t *line = lv_obj_create(parent);
+    signals_child_deco(line);
+    lv_obj_set_size(line, row_w, FF_SIGNALS_TARGET_H);
+    lv_obj_set_pos(line, margin, FF_SIGNALS_TARGET_Y);
+    lv_obj_set_style_radius(line, FF_SIGNALS_TARGET_H / 2, 0);
+    lv_obj_set_style_bg_color(line, lv_color_hex(FF_THEME_COLOR_SURFACE), 0);
+    lv_obj_set_style_bg_opa(line, LV_OPA_COVER, 0);
+
+    /* "TO" caption so a send never fires blind (the target line's whole job). */
+    lv_obj_t *cap = lv_label_create(line);
+    lv_label_set_text(cap, "TO");
+    lv_obj_set_style_text_font(cap, FF_THEME_FONT_CHIP, 0);
+    lv_obj_set_style_text_color(cap, lv_color_hex(FF_THEME_COLOR_DIM), 0);
+    lv_obj_align(cap, LV_ALIGN_LEFT_MID, 16, 0);
+
+    if (ff_sigview_target_kind(v) == FF_TARGET_WHOLE_CREW) {
+        /* WHOLE CREW: a small cluster glyph (three overlapping dots) + label.
+         * No ✕ — whole crew IS the cleared state. */
+        lv_obj_t *cluster = lv_obj_create(line);
+        signals_child_deco(cluster);
+        lv_obj_set_size(cluster, 22, FF_SIGNALS_DOT_PX);
+        lv_obj_set_style_bg_opa(cluster, LV_OPA_TRANSP, 0);
+        lv_obj_align(cluster, LV_ALIGN_LEFT_MID, 48, 0);
+        for (int i = 0; i < 3; i++) {
+            lv_obj_t *d = lv_obj_create(cluster);
+            signals_child_deco(d);
+            lv_obj_set_size(d, 10, 10);
+            lv_obj_set_style_radius(d, LV_RADIUS_CIRCLE, 0);
+            lv_obj_set_style_bg_color(d, lv_color_hex(FF_THEME_COLOR_MUTED), 0);
+            lv_obj_set_style_bg_opa(d, LV_OPA_COVER, 0);
+            lv_obj_align(d, LV_ALIGN_LEFT_MID, i * 6, 0);
+        }
+
+        lv_obj_t *name = lv_label_create(line);
+        lv_label_set_text(name, "WHOLE CREW");
+        lv_obj_set_style_text_font(name, FF_THEME_FONT_LABEL, 0);
+        lv_obj_set_style_text_color(name, lv_color_hex(FF_THEME_COLOR_INK), 0);
+        lv_obj_align(name, LV_ALIGN_LEFT_MID, 80, 0);
         return;
     }
 
-    signals_build_header(parent);
+    /* A single member: crew-color dot + name + a clear (✕) affordance. */
+    uint32_t                node = ff_sigview_target_node(v);
+    ff_sigrow_t const *member = signals_find_member_row(v, node);
 
-    if (signals->n_items == 0) {
-        signals_build_empty_state(parent);
-    } else {
-        /* Scrollable list container so more items than fit on screen are
-         * reachable (S08's fixture cap is 8; the row math above fits
-         * about 3 before needing to scroll) without ever clipping/hiding
-         * an item outright — CLAUDE.md's honesty rule applies to
-         * visibility too, not just values.
-         *
-         * The list container itself is NOT clickable (a scroll viewport,
-         * not a control — lv_obj_create defaults clickable, cleared
-         * explicitly below per this file's header comment); it stays
-         * full puck width so scrolling isn't accidentally narrowed, and
-         * each ROW is individually positioned at `list_margin` — the
-         * list's own chord-derived margin, computed once against its
-         * worst-case (farthest-from-center) edge so it's correct
-         * regardless of which item scrolls into which visible slot. */
-        int32_t list_margin = signals_safe_margin_x(FF_SIGNALS_LIST_TOP_Y, FF_SIGNALS_LIST_H);
+    lv_obj_t *dot = lv_obj_create(line);
+    signals_child_deco(dot);
+    lv_obj_set_size(dot, FF_SIGNALS_DOT_PX, FF_SIGNALS_DOT_PX);
+    lv_obj_set_style_radius(dot, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_bg_color(
+        dot, lv_color_hex(ff_theme_crew_color(member != NULL ? member->color_idx : 0, colorblind)), 0);
+    lv_obj_set_style_bg_opa(dot, LV_OPA_COVER, 0);
+    lv_obj_align(dot, LV_ALIGN_LEFT_MID, 48, 0);
 
-        lv_obj_t *list = lv_obj_create(parent);
-        lv_obj_remove_style_all(list);
-        lv_obj_set_pos(list, 0, FF_SIGNALS_LIST_TOP_Y);
-        lv_obj_set_size(list, FF_THEME_PUCK_PX, FF_SIGNALS_LIST_H);
-        lv_obj_set_style_bg_opa(list, LV_OPA_TRANSP, 0);
-        lv_obj_add_flag(list, LV_OBJ_FLAG_SCROLLABLE);
-        lv_obj_clear_flag(list, LV_OBJ_FLAG_CLICKABLE);
-        lv_obj_set_scroll_dir(list, LV_DIR_VER);
-        lv_obj_set_scrollbar_mode(list, LV_SCROLLBAR_MODE_OFF);
+    lv_obj_t *name = lv_label_create(line);
+    lv_label_set_long_mode(name, LV_LABEL_LONG_MODE_DOTS);
+    lv_obj_set_width(name, row_w - 72 - FF_THEME_MIN_HIT_PX);
+    lv_label_set_text(name, (member != NULL && member->name[0] != '\0') ? member->name : "MEMBER");
+    lv_obj_set_style_text_font(name, FF_THEME_FONT_LABEL, 0);
+    lv_obj_set_style_text_color(name, lv_color_hex(FF_THEME_COLOR_INK), 0);
+    lv_obj_align(name, LV_ALIGN_LEFT_MID, 72, 0);
 
-        int32_t y = 0;
-        for (uint8_t i = 0; i < signals->n_items && i < FF_APP_SIGNALS_MAX_ITEMS; i++) {
-            signals_build_row(list, &signals->items[i], y, list_margin, i);
-            y += FF_SIGNALS_ROW_H + FF_SIGNALS_ROW_GAP;
+    /* ✕ clear button — a real FF_THEME_MIN_HIT_PX hit target on the right. */
+    lv_obj_t *clear = lv_button_create(line);
+    lv_obj_remove_style_all(clear);
+    lv_obj_set_size(clear, FF_THEME_MIN_HIT_PX, FF_THEME_MIN_HIT_PX);
+    lv_obj_align(clear, LV_ALIGN_RIGHT_MID, 0, 0);
+    lv_obj_set_style_radius(clear, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_bg_opa(clear, LV_OPA_TRANSP, 0);
+    lv_obj_add_event_cb(clear, signals_clear_target_cb, LV_EVENT_CLICKED, NULL);
+
+    lv_obj_t *x = lv_label_create(clear);
+    lv_label_set_text(x, LV_SYMBOL_CLOSE);
+    lv_obj_set_style_text_font(x, FF_THEME_FONT_CHIP, 0);
+    lv_obj_set_style_text_color(x, lv_color_hex(FF_THEME_COLOR_MUTED), 0);
+    lv_obj_center(x);
+}
+
+/* ---------------------------------------------------------------------
+ * Action buttons: RALLY (violet) · PULSE (amber) · COMPOSE (green).
+ * ------------------------------------------------------------------- */
+
+static void signals_make_action(lv_obj_t *parent, char const *text, uint32_t color_hex, int32_t x, int32_t w,
+                                 ff_intent_kind_t intent)
+{
+    lv_obj_t *btn = lv_button_create(parent);
+    lv_obj_remove_style_all(btn);
+    lv_obj_set_size(btn, w, FF_SIGNALS_ACTIONS_H);
+    lv_obj_set_pos(btn, x, 0);
+    lv_obj_set_style_radius(btn, 14, 0);
+    lv_obj_set_style_bg_color(btn, lv_color_hex(color_hex), 0);
+    lv_obj_set_style_bg_opa(btn, LV_OPA_COVER, 0);
+    lv_obj_add_event_cb(btn, signals_action_cb, LV_EVENT_CLICKED, (void *)(uintptr_t)intent);
+
+    lv_obj_t *label = lv_label_create(btn);
+    lv_label_set_text(label, text);
+    lv_obj_set_style_text_font(label, FF_THEME_FONT_LABEL, 0);
+    lv_obj_set_style_text_color(label, lv_color_hex(0x14141C), 0); /* dark ink on the color fill */
+    lv_obj_center(label);
+}
+
+static void signals_build_actions(lv_obj_t *parent)
+{
+    int32_t margin = signals_safe_margin_x(FF_SIGNALS_ACTIONS_Y, FF_SIGNALS_ACTIONS_H);
+    int32_t row_w = FF_THEME_PUCK_PX - 2 * margin;
+
+    lv_obj_t *row = lv_obj_create(parent);
+    signals_child_deco(row);
+    lv_obj_set_size(row, row_w, FF_SIGNALS_ACTIONS_H);
+    lv_obj_set_pos(row, margin, FF_SIGNALS_ACTIONS_Y);
+
+    int32_t btn_w = (row_w - 2 * FF_SIGNALS_ACTIONS_GAP) / 3;
+    signals_make_action(row, "RALLY", FF_THEME_CREW_VIOLET, 0, btn_w, FF_INTENT_SIG_RALLY);
+    signals_make_action(row, "PULSE", FF_THEME_COLOR_AMBER, btn_w + FF_SIGNALS_ACTIONS_GAP, btn_w,
+                        FF_INTENT_SIG_PULSE);
+    signals_make_action(row, "COMPOSE", FF_THEME_COLOR_LIVE_GREEN, 2 * (btn_w + FF_SIGNALS_ACTIONS_GAP), btn_w,
+                        FF_INTENT_SIG_COMPOSE);
+}
+
+/* ---------------------------------------------------------------------
+ * Public helpers + entry point.
+ * ------------------------------------------------------------------- */
+
+uint16_t ff_scr_signals_unread_count(ff_sigview_t const *v)
+{
+    uint16_t n = ff_sigview_row_count(v);
+    uint16_t unread = 0;
+    for (uint16_t i = 0; i < n; i++) {
+        ff_sigrow_t const *r = ff_sigview_row_at(v, i);
+        if (r != NULL && r->kind == FF_SIGROW_RECENT && r->unread) {
+            unread++;
         }
     }
+    return unread;
+}
 
-    int32_t target_margin = signals_safe_margin_x(FF_SIGNALS_TARGET_LABEL_Y, FF_SIGNALS_TARGET_LABEL_H);
-    signals_build_target_label(parent, signals, target_margin);
-    signals_build_reply_row(parent);
+void ff_scr_signals_build(lv_obj_t *parent, ff_sigview_t const *v, bool colorblind)
+{
+    if (parent == NULL || v == NULL) {
+        return;
+    }
+
+    signals_build_header(parent, ff_scr_signals_unread_count(v));
+    signals_build_target_line(parent, v, colorblind);
+    signals_build_actions(parent);
+
+    uint16_t n = ff_sigview_row_count(v);
+
+    /* Anything to list? (recent rows or quiet-crew rows — the divider alone
+     * is not content.) */
+    bool has_content = false;
+    for (uint16_t i = 0; i < n; i++) {
+        ff_sigrow_t const *r = ff_sigview_row_at(v, i);
+        if (r != NULL && (r->kind == FF_SIGROW_RECENT || r->kind == FF_SIGROW_CREW_QUIET)) {
+            has_content = true;
+            break;
+        }
+    }
+    if (!has_content) {
+        signals_build_empty_state(parent);
+        return;
+    }
+
+    /* Bottom-anchored scroll list — full puck width so the scroll gesture
+     * isn't narrowed; each ROW is inset to the list's own chord-derived
+     * margin (computed once against the viewport's lower edge, its
+     * worst-case). Clips its own children, so overflow rows are reachable
+     * by scroll and never render past the viewport. */
+    int32_t list_margin = signals_safe_margin_x(FF_SIGNALS_LIST_TOP_Y, FF_SIGNALS_LIST_H);
+
+    lv_obj_t *list = lv_obj_create(parent);
+    lv_obj_remove_style_all(list);
+    lv_obj_set_pos(list, 0, FF_SIGNALS_LIST_TOP_Y);
+    lv_obj_set_size(list, FF_THEME_PUCK_PX, FF_SIGNALS_LIST_H);
+    lv_obj_set_style_bg_opa(list, LV_OPA_TRANSP, 0);
+    lv_obj_add_flag(list, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_clear_flag(list, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_scroll_dir(list, LV_DIR_VER);
+    lv_obj_set_scrollbar_mode(list, LV_SCROLLBAR_MODE_OFF);
+
+    int32_t y = 0;
+    for (uint16_t i = 0; i < n; i++) {
+        ff_sigrow_t const *r = ff_sigview_row_at(v, i);
+        if (r == NULL) {
+            continue;
+        }
+        switch (r->kind) {
+        case FF_SIGROW_RECENT:
+            signals_build_recent_row(list, r, y, list_margin);
+            y += FF_SIGNALS_ROW_H + FF_SIGNALS_ROW_GAP;
+            break;
+        case FF_SIGROW_CREW_QUIET:
+            signals_build_quiet_row(list, r, y, list_margin, colorblind);
+            y += FF_SIGNALS_ROW_H + FF_SIGNALS_ROW_GAP;
+            break;
+        case FF_SIGROW_DIVIDER:
+            /* Draw the divider only when quiet crew actually follow it. */
+            if (i + 1 < n) {
+                signals_build_divider(list, y, list_margin);
+                y += FF_SIGNALS_DIVIDER_H + FF_SIGNALS_ROW_GAP;
+            }
+            break;
+        default:
+            break;
+        }
+    }
 }

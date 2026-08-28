@@ -354,8 +354,26 @@ typedef struct {
  * `S16_b1_shell_footprint_excludes_the_pack` red-flag check stays true —
  * the festpack word table ALIASES into the pack (fp_t9words_collect copies
  * nothing), so this growth is 280 pointers, not a folded-in pack.
+ *
+ * RAISED 23 KB -> 28 KB in S22 slice b, deliberately, per this comment's
+ * own instruction — and this one crosses a line the earlier raises did not:
+ * the shell now exceeds `sizeof(fp_pack_t)`. The reworked Signals face
+ * renders the core view-model `ff_sigview_t` DIRECTLY (docs/specs/S22, and
+ * ff_app_state.h's signals doc), so `ff_app_state_t` embeds it by value,
+ * and the shell holds THREE of it: `view`, the `prev_key` render-key copy,
+ * and the persistent shell-owned `sigview` the screen's copy is projected
+ * from. `ff_sigview_t` is 1,816 B (FF_SIGVIEW_MAX_ROWS=41 fixed rows), so
+ * that is ~3.8 KB of new shell state. Measured, not estimated: sizeof(shell_t)
+ * is ~26,944 B against the old 23,552 budget (a hard compile failure). 28 KB
+ * (28,672 B) clears it with ~1.7 KB headroom. This growth is REAL view-model
+ * state, not a folded-in pack — but it does mean the old "shell < pack"
+ * red-flag proxy (test_shell.c's S16_b1_shell_footprint_excludes_the_pack)
+ * no longer holds and was updated there to a check that still catches a
+ * pack-embed (a pack would add ~23.7 KB more, far past any view-copy count).
+ * On the S3's 512 KB SRAM a ~27 KB static shell object is comfortable; the
+ * budget stays a runaway-growth tripwire, not a hardware limit.
  */
-#define FF_SHELL_BYTES 23552u
+#define FF_SHELL_BYTES 28672u
 
 /** Alignment of the opaque payload. 8 covers every member the shell
  *  holds today (the widest are `double` inside `ff_latlon_t` and

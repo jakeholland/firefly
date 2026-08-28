@@ -2147,9 +2147,23 @@ static void S16_b1_shell_footprint_excludes_the_pack(void)
 {
     /* The fp_pack_t decision, pinned rather than described: the pack is
      * beside the shell, so the shell's stated budget is about the shell.
-     * If a later slice folds a pack in, this fails loudly. */
+     * If a later slice folds a pack in, this fails loudly.
+     *
+     * S22 update: the old proxy was "shell < pack" (a folded pack would
+     * blow past the pack's own size). That stopped holding when the
+     * reworked Signals face made ff_app_state_t embed the 1,816-byte
+     * ff_sigview_t view-model — the shell now holds THREE copies of that
+     * state (view + prev_key render key + the shell-owned sigview) and so
+     * legitimately grew PAST sizeof(fp_pack_t) on view copies alone, with
+     * no pack anywhere near it (see ff_shell.h's FF_SHELL_BYTES comment).
+     * The guard is kept, just expressed correctly: the shell's size is
+     * explained by a small number of ff_app_state_t-sized view copies plus
+     * bookkeeping, NOT a pack. A folded fp_pack_t would add ~23.7 KB — far
+     * past this bound — so it is still caught loudly. */
     TEST_ASSERT_LESS_OR_EQUAL_UINT(FF_SHELL_BYTES, sizeof(ff_shell_t));
-    TEST_ASSERT_LESS_THAN_UINT(sizeof(fp_pack_t), sizeof(ff_shell_t));
+    /* A few view-copies' worth, not a pack: the real shell is ~3.2x an
+     * ff_app_state_t; a folded pack would push it past 6x. */
+    TEST_ASSERT_LESS_THAN_UINT(4u * sizeof(ff_app_state_t), sizeof(ff_shell_t));
 }
 
 static void S16_b1_failed_pack_load_does_not_outrank_the_settings_offset(void)
