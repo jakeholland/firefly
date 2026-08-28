@@ -73,15 +73,19 @@ typedef struct {
     ff_radar_smooth_t smooth;
     ff_route_t route;
 
-    /* The Signals view-model (S22 slice b). Shell-owned like `compose_draft`
-     * below, and for the same reason: it holds PERSISTENT state — the send
-     * TARGET (WHOLE_CREW or one member) — that must survive rebuilds. Each
-     * tick `shell_project_signals` calls `ff_sigview_build(&sigview, feed,
-     * crew, now_ms)`, which refreshes the row list while leaving the target
-     * untouched; the SELECT/CLEAR intents mutate the target on it. The
-     * per-tick view copy the screen renders is `sh->view.signals` (the whole
-     * view is memset each tick, so the persistent target cannot live there). */
-    ff_sigview_t sigview;
+    /* The Signals send TARGET (S22 slice b) — the ONLY persistent Signals
+     * state, held on the RADAR precedent: `ff_radar_compute` builds straight
+     * into `sh->view.radar` and the shell keeps only a tiny `ff_radar_smooth_t`
+     * beside it, never a second full view-model. So here the shell keeps just
+     * the target (WHOLE_CREW or one member node, ~8 B) and `shell_project_signals`
+     * builds the rows straight into `sh->view.signals` each tick, re-applying
+     * this holder afterward (the whole view is memset each tick, so the target
+     * cannot live in the view itself). Re-applying through
+     * `ff_sigview_target_select` RE-VALIDATES the member against the current
+     * roster every tick, so a member who unpaired/left honestly falls back to
+     * WHOLE_CREW. SELECT/CLEAR intents mutate this holder. */
+    ff_target_kind_t sig_target_kind;
+    uint32_t         sig_target_node;
 
     /* The composer's destination, resolved when FF_INTENT_OPEN_COMPOSE
      * pushed the modal (S16 slice c1). 0 = broadcast ("TO: EVERYONE").
@@ -1001,20 +1005,29 @@ static void shell_project_flare(shell_t const *sh, uint32_t now_ms, ff_app_flare
     }
 }
 
-/* S22 slice b: the Signals face renders the core view-model directly, so
- * the projection is just "(re)build the shell-owned `ff_sigview_t` and copy
- * it into the view". `ff_sigview_build` PRESERVES the persistent target
- * (SELECT/CLEAR mutate it via the intents), so a copy-out is a pure
- * re-projection — the same "the UI is a projection" rule everything else in
- * shell_project follows. Age formatting and identity/presence rendering all
- * live in the screen now (ff_fmt_age, ff_theme_crew_color), off the raw
- * fields this copy carries — deliberately, so there is one age-formatter in
- * the tree (the S22-a honesty note). `sh` is non-const here (build mutates
- * the shell-owned sigview) unlike the other projectors — see its caller. */
+/* S22 slice b: the Signals face renders the core view-model directly, so the
+ * projection builds it straight into the view (the RADAR precedent —
+ * `ff_radar_compute(&sh->view.radar, ...)`) and then re-applies the shell's
+ * tiny persistent target. `ff_sigview_build` seeds a fresh WHOLE_CREW target,
+ * so the re-apply is what carries the send target across the per-tick view
+ * memset. Routing it through `ff_sigview_target_select` RE-VALIDATES the
+ * member against the current roster every tick — a member who unpaired/left
+ * cleanly falls back to WHOLE_CREW rather than lingering as a stale target.
+ * Age formatting and identity/presence rendering all live in the screen
+ * (ff_fmt_age, ff_theme_crew_color), off the raw fields the view carries —
+ * deliberately, so there is one age-formatter in the tree (the S22-a honesty
+ * note). `sh` is non-const here (it may downgrade its own target holder on a
+ * failed re-validation) unlike the other projectors — see its caller. */
 static void shell_project_signals(shell_t *sh, uint32_t now_ms, ff_sigview_t *out)
 {
-    ff_sigview_build(&sh->sigview, &sh->feed, &sh->crew, now_ms);
-    *out = sh->sigview;
+    ff_sigview_build(out, &sh->feed, &sh->crew, now_ms);
+    if (sh->sig_target_kind == FF_TARGET_MEMBER &&
+        !ff_sigview_target_select(out, &sh->crew, sh->sig_target_node)) {
+        /* The targeted member is no longer paired/known — fall back honestly,
+         * and remember it so the target line stops showing a gone member. */
+        sh->sig_target_kind = FF_TARGET_WHOLE_CREW;
+        sh->sig_target_node = 0u;
+    }
 }
 
 /**
@@ -1492,7 +1505,8 @@ int ff_shell_init(ff_shell_t *sh_pub, ff_shell_cfg_t const *cfg)
     ff_wall_init(&sh->wall);
     ff_radar_smooth_reset(&sh->smooth);
     ff_route_init(&sh->route);
-    ff_sigview_init(&sh->sigview); /* S22 slice b — default target WHOLE_CREW */
+    sh->sig_target_kind = FF_TARGET_WHOLE_CREW; /* S22 slice b — default target */
+    sh->sig_target_node = 0u;
     ff_t9_reset(&sh->compose_draft); /* S16 slice c3 */
     /* S08 addendum — reset site #1 (init). memset zeroed compose_extra_n,
      * so no pack words are bound yet; a later ff_shell_load_pack collects
@@ -2260,20 +2274,26 @@ void ff_shell_intent(ff_shell_t *sh_pub, ff_intent_t const *in)
 
     case FF_INTENT_SIG_SELECT_MEMBER:
         /* S22 slice b — a Signals row tap. Set the send target to that
-         * member on the shell-owned view-model. `ff_sigview_target_select`
-         * VALIDATES node_id against the roster (paired only; rejects 0 /
-         * unknown / unpaired) and leaves the target unchanged on rejection
-         * — so the shell trusts the roster, not the tap. Takeover-gated
-         * like every face intent: the Signals face is not visible under a
-         * takeover, so a stray tap there must not retarget a send. */
+         * member. `ff_sigview_target_select` VALIDATES node_id against the
+         * roster (paired only; rejects 0 / unknown / unpaired) — so the shell
+         * trusts the roster, not the tap. On success mirror it into the
+         * persistent holder (the live `view.signals` is rebuilt each tick, so
+         * the holder is what survives); on rejection both stay unchanged.
+         * Takeover-gated like every face intent: the Signals face is not
+         * visible under a takeover, so a stray tap there must not retarget. */
         if (takeover_up) return;
-        (void)ff_sigview_target_select(&sh->sigview, &sh->crew, in->u.node_id);
+        if (ff_sigview_target_select(&sh->view.signals, &sh->crew, in->u.node_id)) {
+            sh->sig_target_kind = FF_TARGET_MEMBER;
+            sh->sig_target_node = in->u.node_id;
+        }
         return;
 
     case FF_INTENT_SIG_CLEAR_TARGET:
         /* S22 slice b — the target line's ✕: back to WHOLE_CREW. */
         if (takeover_up) return;
-        ff_sigview_target_clear(&sh->sigview);
+        ff_sigview_target_clear(&sh->view.signals);
+        sh->sig_target_kind = FF_TARGET_WHOLE_CREW;
+        sh->sig_target_node = 0u;
         return;
 
     case FF_INTENT_SIG_RALLY:
@@ -2281,13 +2301,13 @@ void ff_shell_intent(ff_shell_t *sh_pub, ff_intent_t const *in)
     case FF_INTENT_SIG_COMPOSE:
         /* S22 slice b — the three action buttons are ROUTED here but do not
          * SEND yet. The real work is slice (d): encode via ff_proto and
-         * dispatch to the current target (`ff_sigview_target_kind` /
-         * `_target_node` on sh->sigview), the rally-to-WHOLE_CREW confirm
+         * dispatch to the current target (the shell's `sig_target_kind` /
+         * `sig_target_node` holder), the rally-to-WHOLE_CREW confirm
          * (S22 AC4 — `ff_sigview_rally_needs_confirm`), COMPOSE opening the
          * composer targeted at the current target, and the AC3 "target
-         * resets to WHOLE_CREW after any send"
-         * (`ff_sigview_target_reset_after_send`). Nothing is sent here, so
-         * nothing is reset here — a no-op is the honest slice-b behavior,
+         * resets to WHOLE_CREW after any send" (clear the holder). Nothing is
+         * sent here, so nothing is reset here — a no-op is the honest
+         * slice-b behavior,
          * and this case is the clean seam (d) fills in. Takeover-gated for
          * the same reason as the two above. */
         if (takeover_up) return;
