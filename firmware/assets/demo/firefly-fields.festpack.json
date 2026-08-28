@@ -1,0 +1,84 @@
+{
+  "festpack": "0.1",
+  "festival": {
+    "name": "Firefly Fields",
+    "slug": "firefly-fields",
+    "year": 2026,
+    "start": "2026-09-04",
+    "end": "2026-09-06",
+    "timezone": "America/Los_Angeles",
+    "utc_offset_min": -420,
+    "venue": {
+      "name": "The High Meadow (fictional)",
+      "lat": 43.7000,
+      "lon": -121.5000,
+      "approximate": true
+    }
+  },
+  "stages": [
+    { "id": "beacon", "name": "The Beacon", "color": "#ffc66b" },
+    { "id": "hollow", "name": "Bass Hollow", "color": "#b08cff" },
+    { "id": "grove", "name": "Sunrise Grove", "color": "#4fd8c4" },
+    { "id": "lantern", "name": "The Lantern", "color": "#ff5ca8" },
+    { "id": "glowworm", "name": "Glowworm", "color": "#9be07b" }
+  ],
+  "schedule": [
+    { "artist": "DJ COMPASS", "stage": "beacon", "day": "2026-09-04", "start": "22:00", "end": "23:30", "note": "Fri headliner" },
+    { "artist": "LOST + FOUND", "stage": "beacon", "day": "2026-09-04", "start": "23:30", "end": "01:00", "note": "b2b" },
+    { "artist": "BASS FAUNA", "stage": "hollow", "day": "2026-09-04", "start": "21:00", "end": "22:00" },
+    { "artist": "LUMEN", "stage": "grove", "day": "2026-09-04", "start": "22:00", "end": "23:30" },
+    { "artist": "VOLTAGE", "stage": "lantern", "day": "2026-09-04", "start": "23:00", "end": "00:30" },
+    { "artist": "WISP", "stage": "glowworm", "day": "2026-09-04", "start": "21:30", "end": "22:30" },
+
+    { "artist": "SUBWOOFER SAM", "stage": "hollow", "day": "2026-09-05", "start": "20:00", "end": "21:15" },
+    { "artist": "MEADOWLARK", "stage": "grove", "day": "2026-09-05", "start": "19:30", "end": "20:45" },
+    { "artist": "KANDI KART", "stage": "lantern", "day": "2026-09-05", "start": "20:00", "end": "21:00" },
+    { "artist": "EMBER", "stage": "glowworm", "day": "2026-09-05", "start": "20:15", "end": "21:00" },
+    { "artist": "FIREFLY", "stage": "beacon", "day": "2026-09-05", "start": "21:00", "end": "22:30", "note": "Sat headliner", "starred": true },
+    { "artist": "NEON YETI", "stage": "hollow", "day": "2026-09-05", "start": "21:15", "end": "22:30" },
+    { "artist": "DEEP FIELD", "stage": "grove", "day": "2026-09-05", "start": "20:45", "end": "22:00" },
+    { "artist": "BIOLUMA", "stage": "lantern", "day": "2026-09-05", "start": "21:00", "end": "22:15" },
+    { "artist": "PIXIE DUST", "stage": "glowworm", "day": "2026-09-05", "start": "21:00", "end": "21:45" },
+    { "artist": "PHOTON", "stage": "beacon", "day": "2026-09-05", "start": "22:30", "end": "00:00" },
+    { "artist": "GRIMEWORM", "stage": "hollow", "day": "2026-09-05", "start": "22:30", "end": "23:45" },
+    { "artist": "GLOW COYOTE", "stage": "grove", "day": "2026-09-05", "start": "22:00", "end": "23:30" },
+    { "artist": "MOTH + FLAME", "stage": "lantern", "day": "2026-09-05", "start": "22:15", "end": "23:30" },
+    { "artist": "DJ GLOWSTICK", "stage": "glowworm", "day": "2026-09-05", "start": "21:45", "end": "22:45" },
+    { "artist": "TWILIGHT FUNCTION", "stage": "grove", "day": "2026-09-05", "start": "23:30", "end": "01:00", "note": "sunrise-set warm-up", "starred": true },
+    { "artist": "FEN", "stage": "glowworm", "day": "2026-09-05", "start": "22:45", "end": "23:45" },
+
+    { "artist": "NITE OWL", "stage": "beacon", "day": "2026-09-06", "start": "21:30", "end": "23:00", "note": "Sun headliner" },
+    { "artist": "THE GRID", "stage": "hollow", "day": "2026-09-06", "start": "21:00", "end": "22:30" },
+    { "artist": "STROBE CAT", "stage": "lantern", "day": "2026-09-06", "start": "22:00", "end": "23:30" }
+  ],
+  "map": {
+    "features": [
+      { "kind": "stage", "stage": "beacon", "label": "The Beacon", "polygon": [[43.700269, -121.500000]] },
+      { "kind": "stage", "stage": "hollow", "label": "Bass Hollow", "polygon": [[43.699281, -121.498882]] },
+      { "kind": "stage", "stage": "grove", "label": "Sunrise Grove", "polygon": [[43.700090, -121.498758]] },
+      { "kind": "stage", "stage": "lantern", "label": "The Lantern", "polygon": [[43.700090, -121.501305]] },
+      { "kind": "stage", "stage": "glowworm", "label": "Glowworm", "polygon": [[43.699461, -121.500870]] },
+      { "kind": "poi", "label": "The Firefly Tower", "polygon": [[43.700000, -121.500000]] },
+      { "kind": "entrance", "label": "Main Gate", "polygon": [[43.699506, -121.500000]] },
+      { "kind": "medical", "label": "Medical", "polygon": [[43.699641, -121.500497]] },
+      { "kind": "water", "label": "Water Refill", "polygon": [[43.700359, -121.499689]] },
+      { "kind": "water", "label": "Water Refill", "polygon": [[43.699551, -121.499751]] },
+      { "kind": "vendor", "label": "Food Row", "polygon": [[43.700314, -121.500559]] },
+      { "kind": "poi", "label": "Silent Disco", "polygon": [[43.699731, -121.499254]] },
+      { "kind": "poi", "label": "The Art Car", "polygon": [[43.700449, -121.499627]] },
+      { "kind": "poi", "label": "Ferris Wheel", "polygon": [[43.700108, -121.500124]] },
+      { "kind": "camping", "label": "Camp Glow", "polygon": [[43.700988, -121.501368], [43.700988, -121.500868], [43.700628, -121.500868], [43.700628, -121.501368]] },
+      { "kind": "camping", "label": "Camp Ember", "polygon": [[43.699372, -121.499132], [43.699372, -121.498632], [43.699012, -121.498632], [43.699012, -121.499132]] }
+    ],
+    "landmarks": [
+      { "id": "firefly-tower", "name": "The Firefly Tower", "lat": 43.700000, "lon": -121.500000 },
+      { "id": "ferris-wheel", "name": "Ferris Wheel", "lat": 43.700108, "lon": -121.500124 }
+    ]
+  },
+  "meta": {
+    "sources": ["FICTIONAL — invented for S20 demo mode (docs/specs/S20-demo-mode.md)"],
+    "updated": "2026-08-27",
+    "note": "DEMO / fixture data. Firefly Fields is a made-up festival; all artists, stages and landmarks are fictional. Lives in the firefly repo, NOT fest-almanac (real festivals only).",
+    "license": "CC0-1.0 (intended)"
+  }
+}

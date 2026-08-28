@@ -186,8 +186,26 @@ if(FF_BUILD_TESTS)
     add_test(NAME test_screenshot COMMAND test_screenshot)
 endif()
 
+# S20 — embed the Firefly Fields demo festpack as a C byte array for
+# --demo, GENERATED from the JSON asset at configure time (the JSON under
+# firmware/assets/demo/ is the single source of truth; the array is never
+# hand-edited). A stale cached configure would only miss a JSON edit until
+# the next `cmake` reconfigure — CI configures fresh, and the demo asset is
+# stable. On device the same bytes come from ESP-IDF EMBED_FILES instead.
+set(FF_DEMO_ASSET ${CMAKE_CURRENT_SOURCE_DIR}/../../assets/demo/firefly-fields.festpack.json)
+set(FF_DEMO_GEN ${CMAKE_CURRENT_BINARY_DIR}/ff_demo_festpack_gen.c)
+file(READ ${FF_DEMO_ASSET} _ff_demo_hex HEX)
+string(REGEX REPLACE "([0-9a-f][0-9a-f])" "0x\\1," _ff_demo_bytes "${_ff_demo_hex}")
+file(WRITE ${FF_DEMO_GEN}
+    "/* GENERATED from ${FF_DEMO_ASSET} at configure time — do not edit. */\n"
+    "#include \"ff_demo_festpack.h\"\n"
+    "const unsigned char ff_demo_festpack_json[] = { ${_ff_demo_bytes} };\n"
+    "const unsigned int ff_demo_festpack_json_len = sizeof(ff_demo_festpack_json);\n")
+
 add_executable(ffsim
     main.c
+    ff_demo_run.c    # S20 — the --demo render driver (Firefly Fields)
+    ${FF_DEMO_GEN}   # S20 — generated demo festpack bytes (above)
     screenshot.c     # S13c — shared XRGB8888->PNG writer (extracted out of
                      # main.c so the ctl socket's "screenshot" command and
                      # the one-shot --headless --screenshot path share one
@@ -229,10 +247,15 @@ target_link_libraries(ffsim PRIVATE
     ff-sim-ctl-loop      # S16 slice d — ctl_loop.h: the --ctl session itself
     ff-shell             # S16b2 — the app shell: --connect / --pack / --dev-trust-all
                          # (replaces ff-sim-live); transitive source of ff-core/ff-meshclient
+    ff-demo              # S20 — ff_demo_seed: the Firefly Fields demo world (--demo)
     ff-app-ui            # S06b — scr_nav.h/scr_radar.h (app/CMakeLists.txt)
     lvgl::lvgl
     ff-stb-image-write
 )
+
+# S20 — the generated ff_demo_festpack_gen.c #includes "ff_demo_festpack.h"
+# from this source dir; the generated file itself lives in the binary dir.
+target_include_directories(ffsim PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_BINARY_DIR})
 
 if(TARGET SDL2::SDL2)
     target_link_libraries(ffsim PRIVATE SDL2::SDL2)
