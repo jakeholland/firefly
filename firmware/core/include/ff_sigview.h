@@ -147,6 +147,18 @@ typedef struct {
     ff_target_kind_t target_kind;
     uint32_t         target_node; /* meaningful iff target_kind == FF_TARGET_MEMBER */
 
+    /* Persistent RALLY-to-WHOLE_CREW confirm DISPLAY state (S22 slice d,
+     * AC4). True when a first RALLY tap on a WHOLE_CREW target has ARMED
+     * the one-loud-broadcast confirm and the screen should render the
+     * RALLY button in its armed "tap again to send" state. This is purely
+     * a display flag: the arming / timeout / disarm STATE MACHINE lives in
+     * the shell (it needs a clock, which core has no business owning),
+     * which reflects its live value into this field each tick the same way
+     * it re-applies the target. Survives `ff_sigview_build` (a rebuild is a
+     * pure re-projection of the sources and must not clear a pending
+     * confirm). */
+    bool rally_confirm_armed;
+
     /* Derived rows (rebuilt by ff_sigview_build). */
     ff_sigrow_t rows[FF_SIGVIEW_MAX_ROWS];
     uint16_t    row_count;
@@ -265,6 +277,24 @@ uint32_t ff_sigview_target_node(ff_sigview_t const *v);
  * is NULL (the safe default is "treat it as the loud case").
  */
 bool ff_sigview_rally_needs_confirm(ff_sigview_t const *v);
+
+/**
+ * ff_sigview_rally_confirm_armed — read the RALLY-to-WHOLE_CREW confirm
+ * DISPLAY flag (S22 slice d): true iff the screen should render the RALLY
+ * action button in its armed "tap again to send" state. False when `v` is
+ * NULL. The flag is owned and driven by the shell's confirm state machine
+ * (arm on the first WHOLE_CREW rally tap, disarm on send / timeout / any
+ * intervening action); this accessor is the screen's read-only view of it.
+ */
+bool ff_sigview_rally_confirm_armed(ff_sigview_t const *v);
+
+/**
+ * ff_sigview_set_rally_confirm_armed — set the confirm display flag. Used
+ * by the shell to reflect its live confirm-state-machine value into the
+ * (per-tick rebuilt) view; no-op if `v` is NULL. Not part of the arming
+ * logic itself — that lives in the shell.
+ */
+void ff_sigview_set_rally_confirm_armed(ff_sigview_t *v, bool armed);
 
 #ifdef __cplusplus
 }

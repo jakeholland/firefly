@@ -616,8 +616,12 @@ static void signals_build_target_line(lv_obj_t *parent, ff_sigview_t const *v, b
  * Action buttons: RALLY (violet) · PULSE (amber) · COMPOSE (green).
  * ------------------------------------------------------------------- */
 
+/* `armed` (S22 slice d, AC4) draws the RALLY button in its armed
+ * "tap again to send the loud broadcast" state: a bright ink ring plus the
+ * "RALLY?" caption the caller passes. Only ever true for the RALLY button
+ * on a WHOLE_CREW target; false renders the plain filled button. */
 static void signals_make_action(lv_obj_t *parent, char const *text, uint32_t color_hex, int32_t x, int32_t w,
-                                 ff_intent_kind_t intent)
+                                 ff_intent_kind_t intent, bool armed)
 {
     lv_obj_t *btn = lv_button_create(parent);
     lv_obj_remove_style_all(btn);
@@ -626,6 +630,14 @@ static void signals_make_action(lv_obj_t *parent, char const *text, uint32_t col
     lv_obj_set_style_radius(btn, 14, 0);
     lv_obj_set_style_bg_color(btn, lv_color_hex(color_hex), 0);
     lv_obj_set_style_bg_opa(btn, LV_OPA_COVER, 0);
+    if (armed) {
+        /* A bright ink ring around the fill — an unmistakable "armed, tap
+         * again" cue that also answers the earlier review note that the
+         * action buttons gave no feedback. */
+        lv_obj_set_style_border_color(btn, lv_color_hex(FF_THEME_COLOR_INK), 0);
+        lv_obj_set_style_border_width(btn, 3, 0);
+        lv_obj_set_style_border_opa(btn, LV_OPA_COVER, 0);
+    }
     lv_obj_add_event_cb(btn, signals_action_cb, LV_EVENT_CLICKED, (void *)(uintptr_t)intent);
 
     lv_obj_t *label = lv_label_create(btn);
@@ -635,7 +647,7 @@ static void signals_make_action(lv_obj_t *parent, char const *text, uint32_t col
     lv_obj_center(label);
 }
 
-static void signals_build_actions(lv_obj_t *parent)
+static void signals_build_actions(lv_obj_t *parent, ff_sigview_t const *v)
 {
     int32_t margin = signals_safe_margin_x(FF_SIGNALS_ACTIONS_Y, FF_SIGNALS_ACTIONS_H);
     int32_t row_w = FF_THEME_PUCK_PX - 2 * margin;
@@ -645,12 +657,14 @@ static void signals_build_actions(lv_obj_t *parent)
     lv_obj_set_size(row, row_w, FF_SIGNALS_ACTIONS_H);
     lv_obj_set_pos(row, margin, FF_SIGNALS_ACTIONS_Y);
 
+    bool const rally_armed = ff_sigview_rally_confirm_armed(v);
     int32_t btn_w = (row_w - 2 * FF_SIGNALS_ACTIONS_GAP) / 3;
-    signals_make_action(row, "RALLY", FF_THEME_CREW_VIOLET, 0, btn_w, FF_INTENT_SIG_RALLY);
+    signals_make_action(row, rally_armed ? "RALLY?" : "RALLY", FF_THEME_CREW_VIOLET, 0, btn_w,
+                        FF_INTENT_SIG_RALLY, rally_armed);
     signals_make_action(row, "PULSE", FF_THEME_COLOR_AMBER, btn_w + FF_SIGNALS_ACTIONS_GAP, btn_w,
-                        FF_INTENT_SIG_PULSE);
+                        FF_INTENT_SIG_PULSE, false);
     signals_make_action(row, "COMPOSE", FF_THEME_COLOR_LIVE_GREEN, 2 * (btn_w + FF_SIGNALS_ACTIONS_GAP), btn_w,
-                        FF_INTENT_SIG_COMPOSE);
+                        FF_INTENT_SIG_COMPOSE, false);
 }
 
 /* ---------------------------------------------------------------------
@@ -678,7 +692,7 @@ void ff_scr_signals_build(lv_obj_t *parent, ff_sigview_t const *v, bool colorbli
 
     signals_build_header(parent, ff_scr_signals_unread_count(v));
     signals_build_target_line(parent, v, colorblind);
-    signals_build_actions(parent);
+    signals_build_actions(parent, v);
 
     uint16_t n = ff_sigview_row_count(v);
 

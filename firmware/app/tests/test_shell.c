@@ -2447,6 +2447,249 @@ static void decode_packet_text(uint8_t const *buf, size_t len, char *out, size_t
     out[n] = '\0';
 }
 
+/** Decode a single outbound ToRadio frame's PRIVATE (ff_proto) payload: it
+ *  MUST be on FF_PORTNUM, and its bytes are run through ff_proto_decode so
+ *  the S22 AC4 tests can assert the encoded TYPE (PULSE vs RALLY), not just
+ *  that "a send happened" — the proxy trap the brief warns about. Returns
+ *  the ff_proto type (positive) and, for RALLY, fills *out_msg. */
+static int decode_packet_private(uint8_t const *buf, size_t len, ff_proto_msg_t *out_msg)
+{
+    TEST_ASSERT_GREATER_OR_EQUAL_size_t(5u, len);
+    uint16_t flen = (uint16_t)((buf[2] << 8) | buf[3]);
+    TEST_ASSERT_LESS_OR_EQUAL_size_t(len - 4u, flen);
+
+    meshtastic_ToRadio tr = meshtastic_ToRadio_init_zero;
+    pb_istream_t is = pb_istream_from_buffer(buf + 4, flen);
+    TEST_ASSERT_TRUE(pb_decode(&is, meshtastic_ToRadio_fields, &tr));
+    TEST_ASSERT_EQUAL_INT(meshtastic_ToRadio_packet_tag, tr.which_payload_variant);
+
+    meshtastic_MeshPacket const *pkt = &tr.payload_variant.packet;
+    TEST_ASSERT_EQUAL_INT(meshtastic_MeshPacket_decoded_tag, pkt->which_payload_variant);
+    /* Honest-data: a Signals action is an ff_proto packet — it must ride the
+     * private portnum, never masquerade as a TEXT/POSITION app message. */
+    TEST_ASSERT_EQUAL_UINT32(FF_PORTNUM, (uint32_t)pkt->payload_variant.decoded.portnum);
+
+    ff_proto_msg_t msg;
+    memset(&msg, 0, sizeof(msg));
+    int const type = ff_proto_decode(pkt->payload_variant.decoded.payload.bytes,
+                                     (size_t)pkt->payload_variant.decoded.payload.size, &msg);
+    TEST_ASSERT_GREATER_THAN_INT(0, type);
+    if (out_msg != NULL) *out_msg = msg;
+    return type;
+}
+
+/** Stand a shell up on the scripted P-pipe transport and drive it to
+ *  CONNECTED — the shared preamble every S22 AC4 send test needs (the
+ *  same handshake S16_c3's send test open-codes). MY_ID becomes our node. */
+static void s22_connect_shell(void)
+{
+    memset(&P, 0, sizeof(P));
+    memset(&H, 0, sizeof(H));
+    H.clk.t = 100000u;
+    H.clock.now_ms = fake_now;
+    H.clock.user = &H.clk;
+
+    ff_shell_cfg_t cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.clock = &H.clock;
+    cfg.pack = &H.pack;
+    cfg.transport.read = pipe_read;
+    cfg.transport.write = pipe_write;
+    cfg.transport.io = &P;
+
+    TEST_ASSERT_EQUAL_INT(0, ff_shell_init(&H.shell, &cfg));
+    uint32_t const nonce = pipe_want_config_id(&P);
+
+    size_t n = 0;
+    n += frame_my_info(P.rx + n, sizeof(P.rx) - n, MY_ID);
+    n += frame_config_complete(P.rx + n, sizeof(P.rx) - n, nonce);
+    P.rx_len = n;
+
+    advance(20u);
+    (void)ff_shell_tick(&H.shell, H.clk.t);
+    TEST_ASSERT_EQUAL_INT(FF_SHELL_LINK_CONNECTED, ff_shell_link(&H.shell));
+}
+
+/* =================================================================== */
+/* S22 slice d — AC4: action send wiring + rally-to-crew confirm        */
+/* =================================================================== */
+
+/* AC4 — PULSE addresses a member vs the whole crew, and encodes TYPE PULSE.
+ * The proxy the brief names ("a send happened" without asserting node+type)
+ * is refused here: every send asserts BOTH the destination NODE and the
+ * decoded ff_proto TYPE. */
+static void S22_AC4_pulse_addresses_member_vs_whole_crew(void)
+{
+    s22_connect_shell();
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, true));
+
+    /* Member: SELECT DANA, then PULSE -> addressed to DANA, type PULSE. */
+    ff_intent_t sel = {.kind = FF_INTENT_SIG_SELECT_MEMBER, .u = {0}};
+    sel.u.node_id = DANA;
+    ff_shell_intent(&H.shell, &sel);
+
+    size_t tx_before = P.tx_len;
+    ff_intent_t pulse = {.kind = FF_INTENT_SIG_PULSE, .u = {0}};
+    ff_shell_intent(&H.shell, &pulse);
+    TEST_ASSERT_GREATER_THAN_size_t(tx_before, P.tx_len);
+    TEST_ASSERT_EQUAL_UINT32(DANA, decode_packet_to(P.tx + tx_before, P.tx_len - tx_before));
+    TEST_ASSERT_EQUAL_INT(FF_PROTO_TYPE_PULSE, decode_packet_private(P.tx + tx_before, P.tx_len - tx_before, NULL));
+
+    /* The send reset the target to WHOLE_CREW (AC3). A second PULSE now
+     * broadcasts. */
+    TEST_ASSERT_EQUAL_INT(FF_TARGET_WHOLE_CREW, ff_shell_view(&H.shell)->signals.target_kind);
+    tx_before = P.tx_len;
+    ff_shell_intent(&H.shell, &pulse);
+    TEST_ASSERT_GREATER_THAN_size_t(tx_before, P.tx_len);
+    TEST_ASSERT_EQUAL_UINT32(MC_ADDR_BROADCAST, decode_packet_to(P.tx + tx_before, P.tx_len - tx_before));
+    TEST_ASSERT_EQUAL_INT(FF_PROTO_TYPE_PULSE, decode_packet_private(P.tx + tx_before, P.tx_len - tx_before, NULL));
+}
+
+/* AC4 — RALLY to a single member sends on the FIRST tap (no confirm), is
+ * addressed to that member, and encodes TYPE RALLY carrying a place name. */
+static void S22_AC4_rally_to_member_sends_first_tap(void)
+{
+    s22_connect_shell();
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, true));
+    ff_latlon_t const here = {.lat = 39.7392, .lon = -104.9903};
+    ff_shell_set_my_pos(&H.shell, here);
+
+    ff_intent_t sel = {.kind = FF_INTENT_SIG_SELECT_MEMBER, .u = {0}};
+    sel.u.node_id = DANA;
+    ff_shell_intent(&H.shell, &sel);
+
+    size_t tx_before = P.tx_len;
+    ff_intent_t rally = {.kind = FF_INTENT_SIG_RALLY, .u = {0}};
+    ff_shell_intent(&H.shell, &rally); /* first tap: a member rally sends immediately */
+    TEST_ASSERT_GREATER_THAN_size_t(tx_before, P.tx_len);
+    TEST_ASSERT_EQUAL_UINT32(DANA, decode_packet_to(P.tx + tx_before, P.tx_len - tx_before));
+
+    ff_proto_msg_t msg;
+    TEST_ASSERT_EQUAL_INT(FF_PROTO_TYPE_RALLY,
+                          decode_packet_private(P.tx + tx_before, P.tx_len - tx_before, &msg));
+    /* No pack loaded -> the honest default place name, never a fabricated
+     * landmark. */
+    TEST_ASSERT_EQUAL_STRING("MY SPOT", msg.body.rally.name);
+
+    /* Reset-after-send (AC3). */
+    TEST_ASSERT_EQUAL_INT(FF_TARGET_WHOLE_CREW, ff_shell_view(&H.shell)->signals.target_kind);
+}
+
+/* AC4 — RALLY with an UNKNOWN own position sends NOTHING: a rally carries a
+ * lat/lon, and fabricating {0,0} is the honesty violation the repo forbids. */
+static void S22_AC4_rally_without_my_pos_sends_nothing(void)
+{
+    s22_connect_shell();
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, true));
+    /* my_pos deliberately unset. */
+    ff_intent_t sel = {.kind = FF_INTENT_SIG_SELECT_MEMBER, .u = {0}};
+    sel.u.node_id = DANA;
+    ff_shell_intent(&H.shell, &sel);
+
+    size_t const tx_before = P.tx_len;
+    ff_intent_t rally = {.kind = FF_INTENT_SIG_RALLY, .u = {0}};
+    ff_shell_intent(&H.shell, &rally);
+    TEST_ASSERT_EQUAL_size_t(tx_before, P.tx_len); /* nothing sent */
+    /* Target unchanged (no send, so no AC3 reset) — still DANA. */
+    TEST_ASSERT_EQUAL_INT(FF_TARGET_MEMBER, ff_shell_view(&H.shell)->signals.target_kind);
+}
+
+/* AC4 — RALLY to WHOLE_CREW is the one loud broadcast: the first tap ARMS
+ * (no send, button shows armed), a second tap within the window SENDS to
+ * broadcast and disarms, and an intervening action disarms instead. */
+static void S22_AC4_rally_whole_crew_confirm(void)
+{
+    s22_connect_shell();
+    ff_latlon_t const here = {.lat = 39.7392, .lon = -104.9903};
+    ff_shell_set_my_pos(&H.shell, here);
+    /* Default target is WHOLE_CREW. */
+    TEST_ASSERT_EQUAL_INT(FF_TARGET_WHOLE_CREW, ff_shell_view(&H.shell)->signals.target_kind);
+
+    /* First tap: ARMS, sends nothing. */
+    size_t tx_before = P.tx_len;
+    ff_intent_t rally = {.kind = FF_INTENT_SIG_RALLY, .u = {0}};
+    ff_shell_intent(&H.shell, &rally);
+    TEST_ASSERT_EQUAL_size_t(tx_before, P.tx_len); /* no send on first whole-crew tap */
+    (void)ff_shell_tick(&H.shell, H.clk.t);
+    TEST_ASSERT_TRUE(ff_shell_view(&H.shell)->signals.rally_confirm_armed); /* button shows armed */
+
+    /* Second tap within the window: SENDS to broadcast, type RALLY, disarms. */
+    tx_before = P.tx_len;
+    ff_shell_intent(&H.shell, &rally);
+    TEST_ASSERT_GREATER_THAN_size_t(tx_before, P.tx_len);
+    TEST_ASSERT_EQUAL_UINT32(MC_ADDR_BROADCAST, decode_packet_to(P.tx + tx_before, P.tx_len - tx_before));
+    TEST_ASSERT_EQUAL_INT(FF_PROTO_TYPE_RALLY, decode_packet_private(P.tx + tx_before, P.tx_len - tx_before, NULL));
+    (void)ff_shell_tick(&H.shell, H.clk.t);
+    TEST_ASSERT_FALSE(ff_shell_view(&H.shell)->signals.rally_confirm_armed);
+
+    /* Arm again, then an intervening PULSE DISARMS: the next rally tap must
+     * arm afresh, not send. */
+    ff_shell_intent(&H.shell, &rally); /* arm */
+    ff_intent_t pulse = {.kind = FF_INTENT_SIG_PULSE, .u = {0}};
+    ff_shell_intent(&H.shell, &pulse); /* intervening action disarms (and itself sends a pulse) */
+    (void)ff_shell_tick(&H.shell, H.clk.t);
+    TEST_ASSERT_FALSE(ff_shell_view(&H.shell)->signals.rally_confirm_armed);
+
+    tx_before = P.tx_len;
+    ff_shell_intent(&H.shell, &rally); /* this is a fresh FIRST tap: arms, no send */
+    TEST_ASSERT_EQUAL_size_t(tx_before, P.tx_len);
+}
+
+/* AC4 — the confirm arms on the first tap but LAPSES after the window: a
+ * tap past FF_SIG_RALLY_CONFIRM_MS is a fresh first tap (arms), never a
+ * silent send of the loud broadcast. */
+static void S22_AC4_rally_confirm_lapses_after_window(void)
+{
+    s22_connect_shell();
+    ff_latlon_t const here = {.lat = 39.7392, .lon = -104.9903};
+    ff_shell_set_my_pos(&H.shell, here);
+
+    ff_intent_t rally = {.kind = FF_INTENT_SIG_RALLY, .u = {0}};
+    ff_shell_intent(&H.shell, &rally); /* arm at t0 */
+    (void)ff_shell_tick(&H.shell, H.clk.t);
+    TEST_ASSERT_TRUE(ff_shell_view(&H.shell)->signals.rally_confirm_armed);
+
+    /* Let the window lapse, then tick: the arm expires (button clears). */
+    advance(5000u); /* > FF_SIG_RALLY_CONFIRM_MS (4000) */
+    (void)ff_shell_tick(&H.shell, H.clk.t);
+    TEST_ASSERT_FALSE(ff_shell_view(&H.shell)->signals.rally_confirm_armed);
+
+    /* A tap now is a fresh first tap: arms, sends nothing. */
+    size_t const tx_before = P.tx_len;
+    ff_shell_intent(&H.shell, &rally);
+    TEST_ASSERT_EQUAL_size_t(tx_before, P.tx_len);
+}
+
+/* AC4 — COMPOSE opens the composer with its TO set to the current target
+ * and switches to the compose face; the Signals target is NOT reset (only
+ * a direct PULSE/RALLY send resets it). */
+static void S22_AC4_compose_sets_dest_and_switches_face(void)
+{
+    s22_connect_shell();
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, true));
+
+    /* WHOLE_CREW target: COMPOSE opens broadcast (dest 0). */
+    ff_intent_t compose = {.kind = FF_INTENT_SIG_COMPOSE, .u = {0}};
+    ff_shell_intent(&H.shell, &compose);
+    (void)ff_shell_tick(&H.shell, H.clk.t);
+    TEST_ASSERT_EQUAL(FF_APP_FACE_COMPOSE, ff_shell_view(&H.shell)->active_face);
+    TEST_ASSERT_EQUAL_UINT32(0u, ff_shell_compose_to_node(&H.shell));
+
+    /* Back out, target a member, COMPOSE: TO is that member. */
+    ff_intent_t back = {.kind = FF_INTENT_BACK, .u = {0}};
+    ff_shell_intent(&H.shell, &back);
+    ff_intent_t sel = {.kind = FF_INTENT_SIG_SELECT_MEMBER, .u = {0}};
+    sel.u.node_id = DANA;
+    ff_shell_intent(&H.shell, &sel);
+    ff_shell_intent(&H.shell, &compose);
+    (void)ff_shell_tick(&H.shell, H.clk.t);
+    TEST_ASSERT_EQUAL(FF_APP_FACE_COMPOSE, ff_shell_view(&H.shell)->active_face);
+    TEST_ASSERT_EQUAL_UINT32(DANA, ff_shell_compose_to_node(&H.shell));
+    /* COMPOSE did not reset the Signals target (it is a navigation, not a
+     * direct send). */
+    TEST_ASSERT_EQUAL_INT(FF_TARGET_MEMBER, ff_shell_view(&H.shell)->signals.target_kind);
+}
+
 /**
  * AC6, the without-the-flag half, driven through the REAL pipeline the
  * cutover ships: a scripted transport into the shell's own mc_client_t.
@@ -3169,6 +3412,12 @@ int main(void)
     RUN_TEST(S16_b1_a_flare_on_a_foreign_portnum_raises_no_takeover);
     RUN_TEST(S16_b1_shell_footprint_excludes_the_pack);
     RUN_TEST(S22b_signals_target_survives_rebuild_and_is_gated);
+    RUN_TEST(S22_AC4_pulse_addresses_member_vs_whole_crew);
+    RUN_TEST(S22_AC4_rally_to_member_sends_first_tap);
+    RUN_TEST(S22_AC4_rally_without_my_pos_sends_nothing);
+    RUN_TEST(S22_AC4_rally_whole_crew_confirm);
+    RUN_TEST(S22_AC4_rally_confirm_lapses_after_window);
+    RUN_TEST(S22_AC4_compose_sets_dest_and_switches_face);
     RUN_TEST(S16_b1_failed_pack_load_does_not_outrank_the_settings_offset);
 
     RUN_TEST(S16_AC6_nodeinfo_plus_position_via_real_transport_produce_zero_feed_items);

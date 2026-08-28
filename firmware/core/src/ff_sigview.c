@@ -250,3 +250,16 @@ bool ff_sigview_rally_needs_confirm(ff_sigview_t const *v)
 {
     return ff_sigview_target_kind(v) == FF_TARGET_WHOLE_CREW;
 }
+
+bool ff_sigview_rally_confirm_armed(ff_sigview_t const *v)
+{
+    return (v != NULL) && v->rally_confirm_armed;
+}
+
+void ff_sigview_set_rally_confirm_armed(ff_sigview_t *v, bool armed)
+{
+    if (v == NULL) {
+        return;
+    }
+    v->rally_confirm_armed = armed;
+}

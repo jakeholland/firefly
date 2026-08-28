@@ -113,3 +113,40 @@ nav page-dots. Every band's width derived from its worst-case y, verified by
   [S09](S09-map-face.md)); revisit if we want a compass Signals variant.
 - Pairing UI (adding heard nodes to crew) stays out — `ff_heard_t` exists but
   the pairing screen is separate, unbuilt.
+
+## Questions
+
+Raised during slice (d) implementation (PR: S22(d) send wiring). These are
+interpretation calls made to ship a defensible MVP; the maintainer can
+redirect and the code will follow.
+
+- **Where does a quick RALLY's place come from?** (SPEC GAP.) The Actions
+  section defines RALLY as `FF_PROTO_TYPE_RALLY` ("gather + place") but does
+  not say what "place" a one-tap rally from the Signals face encodes — unlike
+  FLARE, which is already "come-find-me at my live location". The RALLY wire
+  body (`ff_proto.h`) *requires* a lat/lon plus a name, so a rally cannot be
+  sent without some place.
+
+  **Interpretation shipped in (d):** a quick RALLY gathers the crew to the
+  **sender's own current location** (`my_pos`), and names the place after the
+  **nearest festpack landmark within 120 m**, falling back to the honest
+  constant **"MY SPOT"** when there is no pack, no near landmark, or the
+  landmark name would overflow `FF_PROTO_RALLY_NAME_MAX`. If `my_pos` is
+  unknown, RALLY **sends nothing** (encoding `{0,0}` for an unknown position
+  would violate the honest-data rule — never fabricate a position). Rally to a
+  single member behaves the same, addressed to that member.
+
+  **Question for the maintainer:** is "rally to my current location" the right
+  model for a quick rally, or should the RALLY button instead open a
+  **place/landmark picker** (pick a stage/landmark to gather at, the way the
+  radar/map already know landmarks)? If a picker is wanted, `shell_rally_place`
+  in `ff_shell.c` and the RALLY handler are the seam to replace, and the
+  proximity-naming heuristic (and its 120 m constant) goes away entirely.
+
+- **Should a COMPOSE launched from a target reset that target after its text
+  send?** (d) resets the Signals target to WHOLE_CREW only after a *direct*
+  PULSE/RALLY send (AC3, scoped to those in the (d) brief); COMPOSE merely
+  navigates to the composer with `TO` preset, and the composer's own SEND
+  operates on its `compose_to_node`, leaving the Signals target as-is. If AC3's
+  "after any send" is meant to include the composer's send too, the composer's
+  SEND_TEXT handler would also clear the Signals target.

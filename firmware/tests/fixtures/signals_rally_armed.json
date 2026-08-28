@@ -1,0 +1,13 @@
+{
+  "fixture": "signals_rally_armed",
+  "face": "signals",
+  "signals": {
+    "target_kind": "whole_crew",
+    "rally_confirm_armed": true,
+    "rows": [
+      {"row": "recent", "feed_kind": "pulse", "node_id": 111, "name": "DANA", "initial": "D", "color_idx": 0, "unread": true, "age_ms": 45000},
+      {"row": "divider"},
+      {"row": "crew_quiet", "node_id": 114, "name": "KEV", "initial": "K", "color_idx": 3, "presence": "seen", "age_ms": 180000}
+    ]
+  }
+}
