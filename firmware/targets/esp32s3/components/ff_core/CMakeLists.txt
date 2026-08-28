@@ -16,6 +16,8 @@ idf_component_register(
         "${FF_CORE_DIR}/src/ff_crew.c"
         "${FF_CORE_DIR}/src/ff_radar.c"
         "${FF_CORE_DIR}/src/ff_t9.c"
+        "${FF_CORE_DIR}/src/ff_t9pred.c"
+        "${FF_CORE_DIR}/src/ff_t9dict_data.c"
         "${FF_CORE_DIR}/src/ff_flare.c"
         "${FF_CORE_DIR}/src/ff_feed.c"
         "${FF_CORE_DIR}/src/ff_heard.c"

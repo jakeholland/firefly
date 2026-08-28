@@ -8,6 +8,7 @@ idf_component_register(
     SRCS
         "${FF_FP_DIR}/src/fp_pack.c"
         "${FF_FP_DIR}/src/ff_sched.c"
+        "${FF_FP_DIR}/src/fp_t9words.c"
     INCLUDE_DIRS "${FF_FP_DIR}/include"
     REQUIRES ff_platform
     PRIV_REQUIRES ff_jsmn ff_core
