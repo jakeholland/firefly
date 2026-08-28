@@ -23,6 +23,8 @@ idf_component_register(
         "${FF_CORE_DIR}/src/ff_heard.c"
         "${FF_CORE_DIR}/src/ff_wall.c"
         "${FF_CORE_DIR}/src/ff_map.c"
+        "${FF_CORE_DIR}/src/ff_sigview.c"  # S22a — Signals-face view-model (was missing on device)
+        "${FF_CORE_DIR}/src/ff_demofeed.c" # S23a — deterministic demo-feed generator
     INCLUDE_DIRS "${FF_CORE_DIR}/include"
     REQUIRES ff_platform
 )

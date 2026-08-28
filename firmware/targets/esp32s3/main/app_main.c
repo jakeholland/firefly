@@ -52,6 +52,10 @@
 #if CONFIG_FF_DEMO_MODE
 #include "esp_heap_caps.h" /* S20 — the festpack is allocated in PSRAM (see s_demo_pack) */
 #include "ff_demo.h"       /* S20 — demo-mode seeding */
+#if CONFIG_FF_DEMO_LIVE
+#include "ff_demoapply.h" /* S23c — apply an emitted event through the real inbound seam */
+#include "ff_demofeed.h"  /* S23a — the deterministic synthetic event generator */
+#endif
 #endif
 
 static const char *TAG = "firefly";
@@ -82,10 +86,45 @@ static fp_pack_t *s_demo_pack;
 extern const uint8_t firefly_pack_start[] asm("_binary_firefly_fields_festpack_json_start");
 extern const uint8_t firefly_pack_end[] asm("_binary_firefly_fields_festpack_json_end");
 
+#if CONFIG_FF_DEMO_LIVE
+/* S23 (slice b) — LIVE demo clock. When live, the demo clock ADVANCES from
+ * the seeded epoch (s_demo_clock_ms, pinned by ff_demo_seed) by real
+ * esp_timer elapsed, so ages tick and the ff_demofeed schedule fires.
+ * s_demo_epoch_us is esp_timer's value latched the instant live mode
+ * STARTS — deliberately AFTER ff_demo_seed returns, so seeding itself runs
+ * against the frozen epoch (MAYA's 25-min-old fix etc. age honestly against
+ * the seeded wall, exactly as S20). Until then s_demo_live_started is false
+ * and the clock reads the frozen epoch. */
+static int64_t s_demo_epoch_us;
+static bool s_demo_live_started;
+
+static void ff_demo_live_start(void)
+{
+    s_demo_epoch_us = esp_timer_get_time();
+    s_demo_live_started = true;
+}
+#endif
+
+/* The demo clock's current value in ms. S20 static: frozen at the seeded
+ * epoch. S23 live: epoch + real elapsed since live start. Both the injected
+ * ff_clock_t and every ff_shell_tick read THIS, so the projection ages
+ * against one clock (the invariant S20 established). */
+static uint32_t ff_demo_now_ms(void)
+{
+#if CONFIG_FF_DEMO_LIVE
+    if (s_demo_live_started) {
+        int64_t d_us = esp_timer_get_time() - s_demo_epoch_us;
+        if (d_us < 0) d_us = 0; /* monotonic, but never age backwards on a fluke */
+        return s_demo_clock_ms + (uint32_t)(d_us / 1000);
+    }
+#endif
+    return s_demo_clock_ms; /* frozen epoch (S20 static, and pre-live-start under LIVE) */
+}
+
 static uint32_t ff_demo_clock_now_ms(void *user)
 {
     (void)user;
-    return s_demo_clock_ms;
+    return ff_demo_now_ms();
 }
 #endif
 
@@ -96,7 +135,7 @@ static uint32_t ff_demo_clock_now_ms(void *user)
 static uint32_t ff_bringup_now_ms(void)
 {
 #if CONFIG_FF_DEMO_MODE
-    return s_demo_clock_ms;
+    return ff_demo_now_ms(); /* frozen epoch (S20 static) or advancing (S23 live) */
 #else
     return ff_esp_clock_now_ms(NULL);
 #endif
@@ -106,6 +145,31 @@ static ff_shell_t s_shell;
 static ff_clock_t s_clock;
 static ff_store_t s_store;
 static ff_nvs_store_t s_nvs; /* S21 §4 — backing state for the NVS store */
+
+#if CONFIG_FF_DEMO_MODE && CONFIG_FF_DEMO_LIVE
+/* S23 (slice c) — the live demo's synthetic event source. Held across the
+ * whole run; ff_demofeed_tick is drained each frame in the render loop and
+ * every event is applied through the shell's real inbound seam (see the
+ * apply loop). The idx->node_id map + string table live in ff_demoapply. */
+static ff_demofeed_t s_demofeed;
+
+/* Drain the generator up to `now_ms` and apply each due event through the
+ * shell's mesh-inbound callbacks, so a synthetic signal/poke is
+ * indistinguishable from a mesh one (S23 AC2/AC3). Called every frame,
+ * before ff_shell_tick, so new feed items surface in the same projection. */
+static void ff_demo_live_pump(uint32_t now_ms)
+{
+    mc_events_t ev = ff_shell_events(&s_shell);
+    uint8_t member_count = 0;
+    uint32_t const *node_ids = ff_demo_live_node_ids(&member_count);
+
+    ff_demo_event_t evs[8];
+    uint8_t k = ff_demofeed_tick(&s_demofeed, now_ms, evs, (uint8_t)(sizeof(evs) / sizeof(evs[0])));
+    for (uint8_t i = 0; i < k; i++) {
+        ff_demo_apply_event(&ev, &evs[i], node_ids, member_count);
+    }
+}
+#endif
 
 /* S21 §3 — the shell's injected touch-calibration hook (ff_shell_cfg_t.
  * calibrate_touch), fired by FF_INTENT_CALIBRATE_TOUCH (the Settings
@@ -227,6 +291,17 @@ void app_main(void)
         } else {
             ESP_LOGI(TAG, "S20 DEMO MODE: seeded Firefly Fields (Sat 21:30) — %u byte festpack, no mesh",
                      (unsigned)pack_len);
+#if CONFIG_FF_DEMO_LIVE
+            /* S23: seeding done against the frozen epoch — now let the demo
+             * clock advance, and arm the generator (fixed seed + demo epoch +
+             * demo crew size => a reproducible synthetic event stream). */
+            uint8_t member_count = 0;
+            (void)ff_demo_live_node_ids(&member_count);
+            ff_demofeed_init(&s_demofeed, FF_DEMO_LIVE_SEED, s_demo_clock_ms, member_count);
+            ff_demo_live_start();
+            ESP_LOGI(TAG, "S23 LIVE DEMO: clock advancing from epoch, ff_demofeed armed (seed=0x%08x, crew=%u)",
+                     (unsigned)FF_DEMO_LIVE_SEED, (unsigned)member_count);
+#endif
         }
     }
 #endif
@@ -366,10 +441,20 @@ void app_main(void)
             }
         }
 
-        /* ff_bringup_now_ms() is the frozen demo clock under CONFIG_FF_DEMO_MODE
-         * (so the seeded projection ages against demo time), real esp_timer time
-         * otherwise (S20). */
-        bool const dirty = ff_shell_tick(&s_shell, ff_bringup_now_ms());
+        /* ff_bringup_now_ms() is the demo clock under CONFIG_FF_DEMO_MODE —
+         * frozen at the seeded epoch (S20 static) or advancing from it (S23
+         * live) — so the seeded projection ages against demo time; real
+         * esp_timer time otherwise. */
+        uint32_t const now_ms = ff_bringup_now_ms();
+
+#if CONFIG_FF_DEMO_MODE && CONFIG_FF_DEMO_LIVE
+        /* S23 (slice c): drain the synthetic event source and apply due
+         * events through the real inbound seam BEFORE the tick, so a new
+         * signal is already in the feed when this frame's view is rebuilt. */
+        ff_demo_live_pump(now_ms);
+#endif
+
+        bool const dirty = ff_shell_tick(&s_shell, now_ms);
         ff_app_state_t const *v = ff_shell_view(&s_shell);
 
         /* Re-program the backlight whenever the projected percent moved

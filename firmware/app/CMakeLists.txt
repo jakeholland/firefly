@@ -418,8 +418,15 @@ endif()
 # seam. No LVGL. Target-agnostic — both targets/sim and targets/esp32s3
 # link it. The festpack BYTES are provided by the target (a generated C
 # array in the sim, EMBED_FILES on device); ff_demo_seed only parses them.
+#
+# S23c (app/ff_demoapply.c) joins ff_demo.c here: the live demo's per-event
+# apply glue + the pure idx->node_id / text_ref->string / kind->dispatch
+# mapping (ff_demoapply.h). Same demo-content gating as ff_demo.c — on
+# device reachable only from app_main.c's CONFIG_FF_DEMO_MODE/_LIVE block,
+# dead-stripped from a field build.
 add_library(ff-demo STATIC
     ff_demo.c
+    ff_demoapply.c
 )
 target_include_directories(ff-demo PUBLIC include)
 target_link_libraries(ff-demo PUBLIC ff-shell ff-core ff-meshclient)
@@ -441,4 +448,20 @@ if(FF_BUILD_TESTS)
     ff_apply_warnings(test_demo)
 
     add_test(NAME test_demo COMMAND test_demo)
+
+    # S23c — the pure apply-mapping helper (idx->node_id, text_ref bounds,
+    # kind->dispatch) unit-tested with no shell/clock/radio, plus an
+    # integration pass that drives ff_demo_apply_event into a real seeded
+    # shell and asserts a synthetic signal lands in the feed and a poke
+    # refreshes presence — through the real projection, not hand-poked.
+    add_executable(test_demoapply
+        tests/test_demoapply.c
+    )
+    target_link_libraries(test_demoapply PRIVATE ff-demo unity)
+    target_compile_definitions(test_demoapply PRIVATE
+        FF_DEMO_PACK_PATH="${CMAKE_CURRENT_SOURCE_DIR}/../assets/demo/firefly-fields.festpack.json"
+    )
+    ff_apply_warnings(test_demoapply)
+
+    add_test(NAME test_demoapply COMMAND test_demoapply)
 endif()

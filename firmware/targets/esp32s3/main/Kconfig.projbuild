@@ -76,4 +76,27 @@ menu "Firefly bring-up (S15 slice b)"
             frozen world. Leave OFF for field builds. Meaningful at
             bring-up STAGE 2 or 3 (a face must render to see it).
 
+    config FF_DEMO_LIVE
+        bool "Live demo — advancing clock + synthetic event feed (S23)"
+        depends on FF_DEMO_MODE
+        default n
+        help
+            S23 demo-feed (docs/specs/S23-demo-feed.md). Extends S20's
+            static snapshot into a LIVE world: after seeding, the demo
+            clock ADVANCES from the seeded epoch by real elapsed time (so
+            ages tick and scheduled events fire), and the pure-core
+            ff_demofeed generator drives a reproducible stream of synthetic
+            crew signals and presence pokes into the SAME ff_wiring feed
+            path a real mesh uses. Incoming signals accumulate in the
+            Signals feed and crew presence drifts LIVE -> STALE -> LOST and
+            recovers, so the new faces have something live to build against.
+
+            Requires FF_DEMO_MODE. When OFF (the default), FF_DEMO_MODE
+            keeps S20's EXACT frozen-clock static snapshot — no generator,
+            no advancing clock. Everything this switch adds is demo content,
+            gated with FF_DEMO_MODE and stripped from a field build. LIVE is
+            reproducible: a fixed seed + the demo epoch make the same run
+            produce the same event stream (goldens use fixed snapshots, not
+            wall-clock live generation — S23 AC6).
+
 endmenu
