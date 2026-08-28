@@ -1516,6 +1516,61 @@ static void shell_render_key(ff_app_state_t const *v, ff_app_state_t *key)
     for (uint16_t i = key->signals.row_count; i < FF_SIGVIEW_MAX_ROWS; i++) {
         memset(&key->signals.rows[i], 0, sizeof(key->signals.rows[i]));
     }
+
+    /* #flare-repeat-dismiss — the takeover is OPAQUE in the render key.
+     *
+     * While a takeover is up it is the ONLY thing rendered: both
+     * targets/esp32s3/main/ff_face.c and targets/sim/face_dispatch.c build
+     * the full-screen takeover and return before touching any face beneath
+     * it. So the rendered screen is a pure function of the takeover's own
+     * fields — a moving radar arrow, an aging signals row, or a fresh feed
+     * item from the busy live demo (ff_sigview_build reads the feed every
+     * tick) changes no pixel.
+     *
+     * Keying on the whole projection there made every such underlying
+     * change a dirty frame, and the device answers a dirty frame with
+     * lv_obj_clean()+rebuild — which destroys and recreates the takeover's
+     * DISMISS button. Under the live demo's steady feed/presence churn that
+     * ran many times a second, and any DISMISS tap whose press and release
+     * straddled a rebuild was dropped by LVGL (its pressed object had been
+     * deleted): the "second flare won't dismiss" report. (It also restarted
+     * the takeover's attention animation every frame, so it never played.)
+     *
+     * So reduce the key, while takeover_active, to exactly the fields
+     * ff_scr_flare_build_takeover renders (headline sender name, the
+     * bearing/distance read, and the GO-drops-lock disclosure) — NOT the
+     * countdown, which that screen does not draw. The takeover tree, and
+     * its live DISMISS button, is then rebuilt only when the takeover
+     * itself changes, never from anything beneath it. Kept stack-cheap
+     * (small locals, not a second ff_app_state_t — see ff_shell_tick's note
+     * on why a full copy is unsafe on this stack) and in the same
+     * normalize-the-key spirit as the coarsening above. This changes only
+     * the dirty comparison; the alert haptic (shell_ev_private's
+     * should_alert path) is independent of the key and is untouched. */
+    if (v->flare.takeover_active) {
+        char from[sizeof(key->flare.takeover_from_name)];
+        char dist[sizeof(key->flare.takeover_dist_str)];
+        char locked_from[sizeof(key->flare.locked_from_name)];
+        bool const b_valid = v->flare.takeover_bearing_valid;
+        /* Same 0.1-degree quantization the radar arrow gets above: the
+         * bearing is a float derived from live positions, so a raw compare
+         * would churn sub-degree; below LVGL's own rotation unit no glyph
+         * of the compass read moves. */
+        float const b_deg = (float)(int32_t)(v->flare.takeover_bearing_deg * 10.0f);
+        bool const locked = v->flare.locked;
+        memcpy(from, v->flare.takeover_from_name, sizeof(from));
+        memcpy(dist, v->flare.takeover_dist_str, sizeof(dist));
+        memcpy(locked_from, v->flare.locked_from_name, sizeof(locked_from));
+
+        memset(key, 0, sizeof(*key));
+        key->flare.takeover_active = true;
+        memcpy(key->flare.takeover_from_name, from, sizeof(from));
+        key->flare.takeover_bearing_valid = b_valid;
+        key->flare.takeover_bearing_deg = b_deg;
+        memcpy(key->flare.takeover_dist_str, dist, sizeof(dist));
+        key->flare.locked = locked;
+        memcpy(key->flare.locked_from_name, locked_from, sizeof(locked_from));
+    }
 }
 
 /* ---------------------------------------------------------------------
