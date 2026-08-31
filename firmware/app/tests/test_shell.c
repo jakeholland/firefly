@@ -3884,6 +3884,202 @@ static void S24_AC1_composer_send_refused_pushes_no_item(void)
     TEST_ASSERT_EQUAL_UINT16(0, ff_feed_unread_count(ff_shell_feed(&H.shell)));
 }
 
+/* =================================================================== */
+/* S24 slice b — the inbox screen's navigation + mark-read + render key */
+/* =================================================================== */
+
+/* Find one conversation in the projected inbox by its key (0 = CREW). */
+static ff_inbox_conv_t const *view_conv(uint32_t node)
+{
+    ff_app_signals_t const *sig = &ff_shell_view(&H.shell)->signals;
+    for (uint8_t i = 0; i < sig->inbox.conv_count; i++) {
+        ff_inbox_conv_t const *cv = &sig->inbox.convs[i];
+        bool const is_crew = (cv->kind == FF_CONV_CREW);
+        if ((node == 0u && is_crew) || (node != 0u && !is_crew && cv->node_id == node)) {
+            return cv;
+        }
+    }
+    return NULL;
+}
+
+/* AC4 (the mark-read-on-open half): opening ONE thread clears exactly
+ * that conversation's unread items — the other conversations' badges,
+ * and the feed's own remaining unread count, survive item-by-item. Also
+ * pins "the open thread IS the send scope": the S22(d) target holders
+ * follow the open. */
+static void S24_AC4_open_thread_marks_only_that_thread_read(void)
+{
+    harness_init(100000u, false);
+    inject_my_info(MY_ID);
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, true));
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, KEV_ID, true));
+
+    inject_text(DANA, "you close?");                              /* DIRECT -> DANA thread, unread */
+    H.ev.on_text(H.ev.user, KEV_ID, MC_ADDR_BROADCAST, "hi all", 6); /* BROADCAST -> CREW, unread */
+    inject_text(KEV_ID, "just you");                              /* DIRECT -> KEV thread, unread */
+
+    (void)ff_shell_tick(&H.shell, H.clk.t);
+    TEST_ASSERT_EQUAL_UINT16(1, view_conv(DANA)->unread);
+    TEST_ASSERT_EQUAL_UINT16(1, view_conv(KEV_ID)->unread);
+    TEST_ASSERT_EQUAL_UINT16(1, view_conv(0)->unread);
+    TEST_ASSERT_EQUAL_UINT16(3, ff_feed_unread_count(ff_shell_feed(&H.shell)));
+
+    ff_intent_t open = {.kind = FF_INTENT_INBOX_OPEN_THREAD, .u = {0}};
+    open.u.node_id = DANA;
+    ff_shell_intent(&H.shell, &open);
+    (void)ff_shell_tick(&H.shell, H.clk.t);
+
+    TEST_ASSERT_EQUAL_INT(FF_SIG_SUB_THREAD, ff_shell_view(&H.shell)->signals.subview);
+    TEST_ASSERT_EQUAL_UINT32(DANA, ff_shell_view(&H.shell)->signals.thread_node);
+    TEST_ASSERT_EQUAL_STRING("", ff_shell_view(&H.shell)->signals.thread_name); /* no NodeInfo yet: honest "" */
+    TEST_ASSERT_EQUAL_UINT16(0, view_conv(DANA)->unread);   /* opened thread cleared */
+    TEST_ASSERT_EQUAL_UINT16(1, view_conv(KEV_ID)->unread); /* other threads survive */
+    TEST_ASSERT_EQUAL_UINT16(1, view_conv(0)->unread);
+    TEST_ASSERT_EQUAL_UINT16(2, ff_feed_unread_count(ff_shell_feed(&H.shell)));
+
+    /* The open thread IS the send scope (S22(d) holders follow). */
+    TEST_ASSERT_EQUAL_INT(FF_TARGET_MEMBER, ff_shell_view(&H.shell)->signals.target_kind);
+    TEST_ASSERT_EQUAL_UINT32(DANA, ff_shell_view(&H.shell)->signals.target_node);
+
+    /* Opening the CREW thread clears the broadcast item only. */
+    ff_intent_t open_crew = {.kind = FF_INTENT_INBOX_OPEN_THREAD, .u = {0}};
+    ff_shell_intent(&H.shell, &open_crew);
+    (void)ff_shell_tick(&H.shell, H.clk.t);
+    TEST_ASSERT_EQUAL_UINT16(0, view_conv(0)->unread);
+    TEST_ASSERT_EQUAL_UINT16(1, view_conv(KEV_ID)->unread);
+    TEST_ASSERT_EQUAL_UINT16(1, ff_feed_unread_count(ff_shell_feed(&H.shell)));
+    TEST_ASSERT_EQUAL_INT(FF_TARGET_WHOLE_CREW, ff_shell_view(&H.shell)->signals.target_kind);
+}
+
+/* AC3 (navigation): the FAB opens the picker; a pick routes to the
+ * thread for that scope (the pre-slice-d routing) and marks it read;
+ * BACK pops thread/picker to the inbox; a pick naming an unknown node is
+ * rejected whole (no navigation, no mark-read, no scope change). */
+static void S24_AC3_fab_pick_and_back_navigate_subviews(void)
+{
+    harness_init(100000u, false);
+    inject_my_info(MY_ID);
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, KEV_ID, true));
+    inject_text(KEV_ID, "oi");
+
+    /* Navigate to the Signals face first — these controls only exist
+     * there, and BACK's sub-view pop is (correctly) gated on the
+     * Signals base face. */
+    ff_intent_t to_signals = {.kind = FF_INTENT_SWIPE, .u = {0}};
+    to_signals.u.swipe_dir = 1;
+    ff_shell_intent(&H.shell, &to_signals); /* RADAR -> NOW */
+    ff_shell_intent(&H.shell, &to_signals); /* NOW -> SIGNALS */
+
+    ff_intent_t fab = {.kind = FF_INTENT_INBOX_NEW, .u = {0}};
+    ff_intent_t back = {.kind = FF_INTENT_BACK, .u = {0}};
+
+    ff_shell_intent(&H.shell, &fab);
+    (void)ff_shell_tick(&H.shell, H.clk.t);
+    TEST_ASSERT_EQUAL_INT(FF_SIG_SUB_PICKER, ff_shell_view(&H.shell)->signals.subview);
+
+    ff_shell_intent(&H.shell, &back);
+    (void)ff_shell_tick(&H.shell, H.clk.t);
+    TEST_ASSERT_EQUAL_INT(FF_SIG_SUB_INBOX, ff_shell_view(&H.shell)->signals.subview);
+
+    ff_shell_intent(&H.shell, &fab);
+    ff_intent_t pick = {.kind = FF_INTENT_INBOX_PICK, .u = {0}};
+    pick.u.node_id = KEV_ID;
+    ff_shell_intent(&H.shell, &pick);
+    (void)ff_shell_tick(&H.shell, H.clk.t);
+    TEST_ASSERT_EQUAL_INT(FF_SIG_SUB_THREAD, ff_shell_view(&H.shell)->signals.subview);
+    TEST_ASSERT_EQUAL_UINT32(KEV_ID, ff_shell_view(&H.shell)->signals.thread_node);
+    TEST_ASSERT_EQUAL_UINT16(0, view_conv(KEV_ID)->unread); /* pick routes through the open transition */
+    TEST_ASSERT_EQUAL_INT(FF_TARGET_MEMBER, ff_shell_view(&H.shell)->signals.target_kind);
+
+    ff_shell_intent(&H.shell, &back);
+    (void)ff_shell_tick(&H.shell, H.clk.t);
+    TEST_ASSERT_EQUAL_INT(FF_SIG_SUB_INBOX, ff_shell_view(&H.shell)->signals.subview);
+
+    /* Unknown recipient: rejected whole. */
+    inject_text(KEV_ID, "again");
+    ff_intent_t bad = {.kind = FF_INTENT_INBOX_OPEN_THREAD, .u = {0}};
+    bad.u.node_id = 0xBADBEEFu;
+    ff_shell_intent(&H.shell, &bad);
+    (void)ff_shell_tick(&H.shell, H.clk.t);
+    TEST_ASSERT_EQUAL_INT(FF_SIG_SUB_INBOX, ff_shell_view(&H.shell)->signals.subview);
+    TEST_ASSERT_EQUAL_UINT16(1, view_conv(KEV_ID)->unread); /* nothing was marked read */
+}
+
+/* Leaving the Signals face resets the sub-view: a fresh entry always
+ * lands on the inbox, never a stale thread. (Signals is base index 2;
+ * the route starts on RADAR.) */
+static void S24_AC3_leaving_signals_face_resets_subview_to_inbox(void)
+{
+    harness_init(100000u, false);
+    inject_my_info(MY_ID);
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, true));
+
+    ff_intent_t swipe = {.kind = FF_INTENT_SWIPE, .u = {0}};
+    swipe.u.swipe_dir = 1;
+    ff_shell_intent(&H.shell, &swipe); /* RADAR -> NOW */
+    ff_shell_intent(&H.shell, &swipe); /* NOW -> SIGNALS */
+    (void)ff_shell_tick(&H.shell, H.clk.t);
+    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_SIGNALS, ff_shell_view(&H.shell)->active_face);
+
+    ff_intent_t open = {.kind = FF_INTENT_INBOX_OPEN_THREAD, .u = {0}};
+    open.u.node_id = DANA;
+    ff_shell_intent(&H.shell, &open);
+    (void)ff_shell_tick(&H.shell, H.clk.t);
+    TEST_ASSERT_EQUAL_INT(FF_SIG_SUB_THREAD, ff_shell_view(&H.shell)->signals.subview);
+
+    ff_intent_t away = {.kind = FF_INTENT_SWIPE, .u = {0}};
+    away.u.swipe_dir = -1;
+    ff_shell_intent(&H.shell, &away); /* SIGNALS -> NOW */
+    (void)ff_shell_tick(&H.shell, H.clk.t);
+
+    ff_shell_intent(&H.shell, &swipe); /* back to SIGNALS */
+    (void)ff_shell_tick(&H.shell, H.clk.t);
+    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_SIGNALS, ff_shell_view(&H.shell)->active_face);
+    TEST_ASSERT_EQUAL_INT(FF_SIG_SUB_INBOX, ff_shell_view(&H.shell)->signals.subview);
+    TEST_ASSERT_EQUAL_UINT32(0u, ff_shell_view(&H.shell)->signals.thread_node);
+}
+
+/* AC8 — the inbox's render key covers exactly its rendered projection
+ * (the flare-octant churn mold): a same-bucket age tick is CLEAN (no
+ * rebuild to destroy the row under a finger); a cross-bucket tick, a new
+ * item, and a badge change are each DIRTY (the positive controls that
+ * keep the clean assertions honest — the AC4a proxy discipline). */
+static void S24_AC8_inbox_key_same_bucket_age_tick_is_clean(void)
+{
+    harness_init(100000u, false);
+    inject_my_info(MY_ID);
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, true));
+
+    inject_text(DANA, "yo");
+    TEST_ASSERT_TRUE(ff_shell_tick(&H.shell, H.clk.t)); /* new item: dirty (control) */
+    TEST_ASSERT_FALSE(ff_shell_tick(&H.shell, H.clk.t)); /* settled */
+
+    /* Same-bucket age tick: 400 ms leaves the item's rendered age in the
+     * same whole-second ff_fmt_age bucket ("0 SEC"). MUST be clean. */
+    advance(400u);
+    TEST_ASSERT_FALSE_MESSAGE(ff_shell_tick(&H.shell, H.clk.t),
+                              "a sub-bucket age tick rebuilt the inbox - the row under a finger would be destroyed");
+
+    /* Cross-bucket tick: +700 ms crosses into the next whole second, so
+     * the rendered age string changes -> MUST be dirty (positive control
+     * proving the clean result above is bucketing, not a dead key). */
+    advance(700u);
+    TEST_ASSERT_TRUE_MESSAGE(ff_shell_tick(&H.shell, H.clk.t),
+                             "a rendered-age bucket change did not repaint - the age on glass would go stale");
+    TEST_ASSERT_FALSE(ff_shell_tick(&H.shell, H.clk.t)); /* settled again */
+
+    /* A new item is dirty. */
+    inject_pulse(DANA);
+    TEST_ASSERT_TRUE(ff_shell_tick(&H.shell, H.clk.t));
+    TEST_ASSERT_FALSE(ff_shell_tick(&H.shell, H.clk.t));
+
+    /* A badge change (mark-read via the open transition) is dirty. */
+    ff_intent_t open = {.kind = FF_INTENT_INBOX_OPEN_THREAD, .u = {0}};
+    open.u.node_id = DANA;
+    ff_shell_intent(&H.shell, &open);
+    TEST_ASSERT_TRUE(ff_shell_tick(&H.shell, H.clk.t));
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -3986,6 +4182,11 @@ int main(void)
     RUN_TEST(S24_AC1_reply_context_skips_my_own_outgoing_item);
     RUN_TEST(S24_AC1_composer_send_pushes_outgoing_item);
     RUN_TEST(S24_AC1_composer_send_refused_pushes_no_item);
+
+    RUN_TEST(S24_AC4_open_thread_marks_only_that_thread_read);
+    RUN_TEST(S24_AC3_fab_pick_and_back_navigate_subviews);
+    RUN_TEST(S24_AC3_leaving_signals_face_resets_subview_to_inbox);
+    RUN_TEST(S24_AC8_inbox_key_same_bucket_age_tick_is_clean);
 
     return UNITY_END();
 }

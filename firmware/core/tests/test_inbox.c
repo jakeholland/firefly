@@ -278,6 +278,48 @@ static void S24_AC2_preview_is_newest_item_even_when_outgoing(void)
     TEST_ASSERT_EQUAL_UINT32(NOW - 2000, dana->preview_age_ms);
 }
 
+/* [api] S24 slice (b) — the preview's SENDER join (preview_from_*): a
+ * paired inbound sender's name is joined (the CREW row's "KEV: ..."
+ * prefix); an OUTGOING newest item and an UNPAIRED sender both yield
+ * preview_from_known == false — never a fabricated name. Node ids never
+ * equal roster slot indices (the join must be by id, not position). */
+static void S24_AC3_preview_sender_joined_paired_only(void)
+{
+    ff_feed_t f;
+    ff_feed_init(&f);
+    ff_crew_t c;
+    memset(&c, 0, sizeof(c));
+    add_member(&c, KEV, "kev", 'K', 2, true);
+    add_member(&c, DANA, "dana", 'D', 1, true);
+
+    /* CREW's newest is a broadcast from paired KEV -> joined name. */
+    push(&f, FEED_RALLY, FEED_DIR_BROADCAST, KEV, 0, 3000, "main stage", true);
+    ff_inbox_t ib;
+    ff_inbox_build(&ib, &f, &c, NOW);
+    ff_inbox_conv_t const *crew_conv = find_conv(&ib, FF_CONV_CREW, 0);
+    TEST_ASSERT_TRUE(crew_conv->preview_from_known);
+    TEST_ASSERT_EQUAL_STRING("kev", crew_conv->preview_from_name);
+
+    /* Newest becomes MY OWN whole-crew send: no sender to join (the
+     * screen's honest cue is preview_dir == OUT, not a name). */
+    push(&f, FEED_TEXT, FEED_DIR_OUT, 0, 0, 4000, "omw all", false);
+    ff_inbox_build(&ib, &f, &c, NOW);
+    crew_conv = find_conv(&ib, FF_CONV_CREW, 0);
+    TEST_ASSERT_EQUAL(FEED_DIR_OUT, crew_conv->preview_dir);
+    TEST_ASSERT_FALSE(crew_conv->preview_from_known);
+    TEST_ASSERT_EQUAL_STRING("", crew_conv->preview_from_name);
+
+    /* Newest becomes a broadcast from an UNPAIRED (merely-heard) node:
+     * shown in CREW (it is broadcast traffic) but its identity is
+     * honestly unknown. */
+    push(&f, FEED_TEXT, FEED_DIR_BROADCAST, 777001u, 0, 5000, "who dis", true);
+    ff_inbox_build(&ib, &f, &c, NOW);
+    crew_conv = find_conv(&ib, FF_CONV_CREW, 0);
+    TEST_ASSERT_TRUE(crew_conv->has_preview);
+    TEST_ASSERT_FALSE(crew_conv->preview_from_known);
+    TEST_ASSERT_EQUAL_STRING("", crew_conv->preview_from_name);
+}
+
 /* ------------------------------------------------------------------- */
 /* AC2 — ordering                                                       */
 /* ------------------------------------------------------------------- */
@@ -548,6 +590,7 @@ int main(void)
 
     RUN_TEST(S24_AC2_unread_counts_are_per_conversation);
     RUN_TEST(S24_AC2_preview_is_newest_item_even_when_outgoing);
+    RUN_TEST(S24_AC3_preview_sender_joined_paired_only);
 
     RUN_TEST(S24_AC2_ordering_unread_then_traffic_then_quiet);
     RUN_TEST(S24_AC2_quiet_ties_break_by_ascending_node_id_linked_last);

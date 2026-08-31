@@ -531,22 +531,35 @@ static ff_fixture_result_t fx_parse_now(fx_ctx_t const *c, int obj_i, ff_app_now
     return FF_FIXTURE_OK;
 }
 
-/* S22: the `signals` fixture section describes an `ff_sigview_t` directly
- * (row list + target), the same "fixture is a view snapshot" convention the
- * `radar` section uses — see ff_app_state.h's signals doc comment. The three
- * enum tables below map the view-model's enums; `fx_sigrow_kind_table`'s
- * values are FF_SIGROW_*, `fx_feed_kind_table`'s are ff_feed_kind_t (S08's
- * FEED_*), `fx_presence_table`'s are FF_PRESENCE_*, and `fx_target_kind_table`'s
- * are FF_TARGET_*. */
-static const fx_enum_entry_t fx_sigrow_kind_table[] = {
-    {"recent", FF_SIGROW_RECENT},
-    {"divider", FF_SIGROW_DIVIDER},
-    {"crew_quiet", FF_SIGROW_CREW_QUIET},
+/* S24: the `signals` fixture section describes an `ff_app_signals_t`
+ * directly — the sub-view selector + the core `ff_inbox_t` conversation
+ * list + the kept S22(d) target fields — the same "fixture is a view
+ * snapshot" convention the `radar` section uses; see ff_app_state.h's
+ * signals doc comment. Tables: `fx_subview_table`'s values are
+ * FF_SIG_SUB_*, `fx_conv_kind_table`'s FF_CONV_*, `fx_feed_kind_table`'s
+ * ff_feed_kind_t (S08's FEED_*), `fx_feed_dir_table`'s ff_feed_dir_t
+ * (S24 slice a's FEED_DIR_*), `fx_presence_table`'s FF_PRESENCE_*, and
+ * `fx_target_kind_table`'s FF_TARGET_*. */
+static const fx_enum_entry_t fx_subview_table[] = {
+    {"inbox", FF_SIG_SUB_INBOX},   {"picker", FF_SIG_SUB_PICKER}, {"thread", FF_SIG_SUB_THREAD},
+    {"popup", FF_SIG_SUB_POPUP},   {"rally", FF_SIG_SUB_RALLY},
+};
+
+static const fx_enum_entry_t fx_conv_kind_table[] = {
+    {"crew", FF_CONV_CREW},
+    {"member", FF_CONV_MEMBER},
 };
 
 static const fx_enum_entry_t fx_feed_kind_table[] = {
     {"pulse", FEED_PULSE}, {"text", FEED_TEXT}, {"rally", FEED_RALLY},
     {"status", FEED_STATUS}, {"flare", FEED_FLARE},
+};
+
+static const fx_enum_entry_t fx_feed_dir_table[] = {
+    {"unknown", FEED_DIR_UNKNOWN},
+    {"broadcast", FEED_DIR_BROADCAST},
+    {"direct", FEED_DIR_DIRECT},
+    {"out", FEED_DIR_OUT},
 };
 
 static const fx_enum_entry_t fx_presence_table[] = {
@@ -561,12 +574,29 @@ static const fx_enum_entry_t fx_target_kind_table[] = {
 };
 
 /* fx_parse_signals — same fail-loud-on-oversized-array treatment as
- * fx_parse_radar_dots above, for the `rows` array (cap FF_SIGVIEW_MAX_ROWS).
- * `identity_known` defaults TRUE (a fixture usually lists real people); set
- * it false for the explicitly-unknown-sender case. */
-static ff_fixture_result_t fx_parse_signals(fx_ctx_t const *c, int obj_i, ff_sigview_t *sig)
+ * fx_parse_radar_dots above, for the `convs` array (cap
+ * FF_INBOX_MAX_CONVS). Derived-but-not-independent facts follow the
+ * model's own invariants rather than being separately authorable:
+ * `has_preview` is implied by `item_count > 0` (ff_inbox.h's contract),
+ * `presence_valid` by the conversation being a member, and
+ * `preview_from_known` by a `preview_from` key being present (a fixture
+ * that writes an empty `preview_from` still means "known but unnamed" —
+ * a paired member whose NodeInfo never arrived). */
+static ff_fixture_result_t fx_parse_signals(fx_ctx_t const *c, int obj_i, ff_app_signals_t *sig)
 {
     int t;
+
+    if (fx_obj_get(c, obj_i, "subview", &t)) {
+        int v;
+        ff_fixture_result_t rc = fx_enum(c, t, fx_subview_table,
+                                          sizeof(fx_subview_table) / sizeof(fx_subview_table[0]),
+                                          "signals.subview", &v);
+        if (rc != FF_FIXTURE_OK) return rc;
+        sig->subview = (ff_sig_subview_t)v;
+    }
+    if (fx_obj_get(c, obj_i, "thread_node", &t)) sig->thread_node = (uint32_t)fx_num(c, t, 0.0);
+    if (fx_obj_get(c, obj_i, "thread_name", &t)) fx_copy_str(c, t, sig->thread_name, sizeof(sig->thread_name));
+    if (fx_obj_get(c, obj_i, "thread_color_idx", &t)) sig->thread_color_idx = (uint8_t)fx_num(c, t, 0.0);
 
     if (fx_obj_get(c, obj_i, "target_kind", &t)) {
         int v;
@@ -580,57 +610,79 @@ static ff_fixture_result_t fx_parse_signals(fx_ctx_t const *c, int obj_i, ff_sig
     /* S22 slice d — the RALLY-to-WHOLE_CREW confirm display flag (AC4). */
     if (fx_obj_get(c, obj_i, "rally_confirm_armed", &t)) sig->rally_confirm_armed = fx_bool(c, t, false);
 
-    int rows_i;
-    if (fx_obj_get(c, obj_i, "rows", &rows_i) && !fx_is_null(c, rows_i)) {
-        jsmntok_t const *at = &c->toks[rows_i];
+    int convs_i;
+    if (fx_obj_get(c, obj_i, "convs", &convs_i) && !fx_is_null(c, convs_i)) {
+        jsmntok_t const *at = &c->toks[convs_i];
         if (at->type != JSMN_ARRAY) return FF_FIXTURE_ERR_JSON;
-        if (at->size > FF_SIGVIEW_MAX_ROWS) return FF_FIXTURE_ERR_TOO_BIG;
-        int idx = rows_i + 1;
+        if (at->size > FF_INBOX_MAX_CONVS) return FF_FIXTURE_ERR_TOO_BIG;
+        int idx = convs_i + 1;
         for (int i = 0; i < at->size; i++) {
-            int row_i = idx;
-            ff_sigrow_t *row = &sig->rows[sig->row_count];
-            memset(row, 0, sizeof(*row));
-            row->identity_known = true; /* default; overridden below */
+            int conv_i = idx;
+            ff_inbox_conv_t *cv = &sig->inbox.convs[sig->inbox.conv_count];
+            memset(cv, 0, sizeof(*cv));
 
             int kt;
-            if (fx_obj_get(c, row_i, "row", &kt)) {
+            if (fx_obj_get(c, conv_i, "conv", &kt)) {
                 int v;
-                ff_fixture_result_t rc = fx_enum(c, kt, fx_sigrow_kind_table,
-                                                  sizeof(fx_sigrow_kind_table) / sizeof(fx_sigrow_kind_table[0]),
-                                                  "signals.rows[].row", &v);
+                ff_fixture_result_t rc = fx_enum(c, kt, fx_conv_kind_table,
+                                                  sizeof(fx_conv_kind_table) / sizeof(fx_conv_kind_table[0]),
+                                                  "signals.convs[].conv", &v);
                 if (rc != FF_FIXTURE_OK) return rc;
-                row->kind = (ff_sigrow_kind_t)v;
+                cv->kind = (ff_conv_kind_t)v;
             }
-            if (fx_obj_get(c, row_i, "feed_kind", &kt)) {
+            if (fx_obj_get(c, conv_i, "node_id", &kt)) cv->node_id = (uint32_t)fx_num(c, kt, 0.0);
+            if (fx_obj_get(c, conv_i, "name", &kt)) fx_copy_str(c, kt, cv->name, sizeof(cv->name));
+            if (fx_obj_get(c, conv_i, "initial", &kt)) {
+                char buf[2];
+                fx_copy_str(c, kt, buf, sizeof(buf));
+                cv->initial = buf[0];
+            }
+            if (fx_obj_get(c, conv_i, "color_idx", &kt)) cv->color_idx = (uint8_t)fx_num(c, kt, 0.0);
+            if (fx_obj_get(c, conv_i, "unread", &kt)) cv->unread = (uint16_t)fx_num(c, kt, 0.0);
+            if (fx_obj_get(c, conv_i, "item_count", &kt)) cv->item_count = (uint8_t)fx_num(c, kt, 0.0);
+
+            if (fx_obj_get(c, conv_i, "preview_kind", &kt)) {
                 int v;
                 ff_fixture_result_t rc = fx_enum(c, kt, fx_feed_kind_table,
                                                   sizeof(fx_feed_kind_table) / sizeof(fx_feed_kind_table[0]),
-                                                  "signals.rows[].feed_kind", &v);
+                                                  "signals.convs[].preview_kind", &v);
                 if (rc != FF_FIXTURE_OK) return rc;
-                row->feed_kind = (ff_feed_kind_t)v;
+                cv->preview_kind = (ff_feed_kind_t)v;
             }
-            if (fx_obj_get(c, row_i, "presence", &kt)) {
+            if (fx_obj_get(c, conv_i, "preview_dir", &kt)) {
+                int v;
+                ff_fixture_result_t rc = fx_enum(c, kt, fx_feed_dir_table,
+                                                  sizeof(fx_feed_dir_table) / sizeof(fx_feed_dir_table[0]),
+                                                  "signals.convs[].preview_dir", &v);
+                if (rc != FF_FIXTURE_OK) return rc;
+                cv->preview_dir = (ff_feed_dir_t)v;
+            }
+            if (fx_obj_get(c, conv_i, "preview_text", &kt))
+                fx_copy_str(c, kt, cv->preview_text, sizeof(cv->preview_text));
+            if (fx_obj_get(c, conv_i, "preview_age_ms", &kt))
+                cv->preview_age_ms = (uint32_t)fx_num(c, kt, 0.0);
+            if (fx_obj_get(c, conv_i, "preview_from", &kt)) {
+                cv->preview_from_known = true;
+                fx_copy_str(c, kt, cv->preview_from_name, sizeof(cv->preview_from_name));
+            }
+
+            if (fx_obj_get(c, conv_i, "presence", &kt)) {
                 int v;
                 ff_fixture_result_t rc = fx_enum(c, kt, fx_presence_table,
                                                   sizeof(fx_presence_table) / sizeof(fx_presence_table[0]),
-                                                  "signals.rows[].presence", &v);
+                                                  "signals.convs[].presence", &v);
                 if (rc != FF_FIXTURE_OK) return rc;
-                row->presence = (ff_sigview_presence_t)v;
+                cv->presence = (ff_sigview_presence_t)v;
             }
-            if (fx_obj_get(c, row_i, "identity_known", &kt)) row->identity_known = fx_bool(c, kt, true);
-            if (fx_obj_get(c, row_i, "node_id", &kt)) row->node_id = (uint32_t)fx_num(c, kt, 0.0);
-            if (fx_obj_get(c, row_i, "name", &kt)) fx_copy_str(c, kt, row->name, sizeof(row->name));
-            if (fx_obj_get(c, row_i, "initial", &kt)) {
-                char buf[2];
-                fx_copy_str(c, kt, buf, sizeof(buf));
-                row->initial = buf[0];
-            }
-            if (fx_obj_get(c, row_i, "color_idx", &kt)) row->color_idx = (uint8_t)fx_num(c, kt, 0.0);
-            if (fx_obj_get(c, row_i, "unread", &kt)) row->unread = fx_bool(c, kt, false);
-            if (fx_obj_get(c, row_i, "age_ms", &kt)) row->age_ms = (uint32_t)fx_num(c, kt, 0.0);
+            if (fx_obj_get(c, conv_i, "presence_age_ms", &kt))
+                cv->presence_age_ms = (uint32_t)fx_num(c, kt, 0.0);
 
-            sig->row_count++;
-            idx = fx_skip(c, row_i);
+            /* Model invariants, not independent fixture facts. */
+            cv->has_preview    = (cv->item_count > 0);
+            cv->presence_valid = (cv->kind == FF_CONV_MEMBER);
+
+            sig->inbox.conv_count++;
+            idx = fx_skip(c, conv_i);
         }
     }
     return FF_FIXTURE_OK;
@@ -1350,12 +1402,14 @@ static void fw_map_crew(fw_cur_t *w, ff_app_map_crew_t const *c)
     fw_raw(w, c->imprecise ? ",\"imprecise\":true}" : ",\"imprecise\":false}");
 }
 
-/* S22: serialize one ff_sigrow_t. Mirrors fx_parse_signals field-for-field
- * so a dump round-trips through the loader. A DIVIDER row carries only its
- * kind; the identity/feed/presence fields below are meaningless for it but
- * are written uniformly (and read back into a memset-zero row) so the writer
- * needs no per-kind branch — the same "write every field, absent==zeroed"
- * shape the other section writers use. */
+/* S24: serialize one ff_inbox_conv_t. Mirrors fx_parse_signals
+ * field-for-field so a dump round-trips through the loader. Fields the
+ * loader DERIVES (has_preview, presence_valid, preview_from_known) are
+ * not written as independent facts: `preview_from` is written only when
+ * known (its presence IS the flag), and has_preview/presence_valid
+ * re-derive from item_count / conv kind on reload — writing them too
+ * would let a hand-edited fixture desync an invariant the model itself
+ * cannot express. */
 /* One-char-or-empty string for an `initial`: '\0' -> "" so it round-trips
  * back to '\0' through fx_copy_str (a written space would reload as ' '). */
 static char const *fw_char1(char ch, char *buf)
@@ -1369,28 +1423,39 @@ static char const *fw_char1(char ch, char *buf)
     return buf;
 }
 
-static void fw_sigrow(fw_cur_t *w, ff_sigrow_t const *r)
+static void fw_conv(fw_cur_t *w, ff_inbox_conv_t const *cv)
 {
     char cbuf[2];
-    fw_raw(w, "{\"row\":\"");
-    fw_raw(w, fx_enum_name(fx_sigrow_kind_table, sizeof(fx_sigrow_kind_table) / sizeof(fx_sigrow_kind_table[0]),
-                            r->kind, "recent"));
-    fw_raw(w, "\",\"feed_kind\":\"");
-    fw_raw(w, fx_enum_name(fx_feed_kind_table, sizeof(fx_feed_kind_table) / sizeof(fx_feed_kind_table[0]),
-                            r->feed_kind, "text"));
-    fw_raw(w, "\",\"presence\":\"");
-    fw_raw(w, fx_enum_name(fx_presence_table, sizeof(fx_presence_table) / sizeof(fx_presence_table[0]),
-                            r->presence, "seen"));
+    fw_raw(w, "{\"conv\":\"");
+    fw_raw(w, fx_enum_name(fx_conv_kind_table, sizeof(fx_conv_kind_table) / sizeof(fx_conv_kind_table[0]),
+                            cv->kind, "crew"));
     fw_raw(w, "\"");
-    fw_raw(w, r->identity_known ? ",\"identity_known\":true" : ",\"identity_known\":false");
-    fw_fmt(w, ",\"node_id\":%u", (unsigned)r->node_id);
+    fw_fmt(w, ",\"node_id\":%u", (unsigned)cv->node_id);
     fw_raw(w, ",\"name\":");
-    fw_json_str(w, r->name);
+    fw_json_str(w, cv->name);
     fw_raw(w, ",\"initial\":");
-    fw_json_str(w, fw_char1(r->initial, cbuf));
-    fw_fmt(w, ",\"color_idx\":%u", (unsigned)r->color_idx);
-    fw_raw(w, r->unread ? ",\"unread\":true" : ",\"unread\":false");
-    fw_fmt(w, ",\"age_ms\":%u}", (unsigned)r->age_ms);
+    fw_json_str(w, fw_char1(cv->initial, cbuf));
+    fw_fmt(w, ",\"color_idx\":%u", (unsigned)cv->color_idx);
+    fw_fmt(w, ",\"unread\":%u", (unsigned)cv->unread);
+    fw_fmt(w, ",\"item_count\":%u", (unsigned)cv->item_count);
+    fw_raw(w, ",\"preview_kind\":\"");
+    fw_raw(w, fx_enum_name(fx_feed_kind_table, sizeof(fx_feed_kind_table) / sizeof(fx_feed_kind_table[0]),
+                            cv->preview_kind, "text"));
+    fw_raw(w, "\",\"preview_dir\":\"");
+    fw_raw(w, fx_enum_name(fx_feed_dir_table, sizeof(fx_feed_dir_table) / sizeof(fx_feed_dir_table[0]),
+                            cv->preview_dir, "unknown"));
+    fw_raw(w, "\",\"preview_text\":");
+    fw_json_str(w, cv->preview_text);
+    fw_fmt(w, ",\"preview_age_ms\":%u", (unsigned)cv->preview_age_ms);
+    if (cv->preview_from_known) {
+        fw_raw(w, ",\"preview_from\":");
+        fw_json_str(w, cv->preview_from_name);
+    }
+    fw_raw(w, ",\"presence\":\"");
+    fw_raw(w, fx_enum_name(fx_presence_table, sizeof(fx_presence_table) / sizeof(fx_presence_table[0]),
+                            cv->presence, "seen"));
+    fw_raw(w, "\"");
+    fw_fmt(w, ",\"presence_age_ms\":%u}", (unsigned)cv->presence_age_ms);
 }
 
 int ff_fixture_dump_json(ff_app_state_t const *s, char *buf, size_t buf_sz)
@@ -1470,16 +1535,26 @@ int ff_fixture_dump_json(ff_app_state_t const *s, char *buf, size_t buf_sz)
     }
     fw_raw(&w, "]}");
 
-    /* signals (S22 — the ff_sigview_t view-model: target + row list) */
-    fw_raw(&w, ",\"signals\":{\"target_kind\":\"");
+    /* signals (S24 — ff_app_signals_t: sub-view + the ff_inbox_t
+     * conversation list + the kept S22(d) target fields) */
+    fw_raw(&w, ",\"signals\":{\"subview\":\"");
+    fw_raw(&w, fx_enum_name(fx_subview_table, sizeof(fx_subview_table) / sizeof(fx_subview_table[0]),
+                             s->signals.subview, "inbox"));
+    fw_raw(&w, "\"");
+    fw_fmt(&w, ",\"thread_node\":%u", (unsigned)s->signals.thread_node);
+    fw_raw(&w, ",\"thread_name\":");
+    fw_json_str(&w, s->signals.thread_name);
+    fw_fmt(&w, ",\"thread_color_idx\":%u", (unsigned)s->signals.thread_color_idx);
+    fw_raw(&w, ",\"target_kind\":\"");
     fw_raw(&w, fx_enum_name(fx_target_kind_table, sizeof(fx_target_kind_table) / sizeof(fx_target_kind_table[0]),
                              s->signals.target_kind, "whole_crew"));
     fw_raw(&w, "\"");
     fw_fmt(&w, ",\"target_node\":%u", (unsigned)s->signals.target_node);
-    fw_raw(&w, ",\"rows\":[");
-    for (uint16_t i = 0; i < s->signals.row_count; i++) {
+    fw_raw(&w, s->signals.rally_confirm_armed ? ",\"rally_confirm_armed\":true" : ",\"rally_confirm_armed\":false");
+    fw_raw(&w, ",\"convs\":[");
+    for (uint8_t i = 0; i < s->signals.inbox.conv_count; i++) {
         if (i > 0) fw_raw(&w, ",");
-        fw_sigrow(&w, &s->signals.rows[i]);
+        fw_conv(&w, &s->signals.inbox.convs[i]);
     }
     fw_raw(&w, "]}");
 
