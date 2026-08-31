@@ -277,6 +277,91 @@ static void S08_AC3_unread_count_never_underflows_past_zero(void)
 }
 
 /* ------------------------------------------------------------------- */
+/* S24 AC1 — direction fact + per-item mark-read seam                   */
+/* ------------------------------------------------------------------- */
+
+/* A zero-initialized item's direction is UNKNOWN (the honest default is
+ * "not recorded", never "broadcast"), and a pushed item's direction +
+ * to_node survive the ring verbatim. */
+static void S24_AC1_direction_defaults_unknown_and_round_trips(void)
+{
+    ff_feed_item_t zeroed;
+    memset(&zeroed, 0, sizeof(zeroed));
+    TEST_ASSERT_EQUAL(FEED_DIR_UNKNOWN, zeroed.dir);
+
+    ff_feed_t f;
+    ff_feed_init(&f);
+
+    ff_feed_item_t out = make_item(FEED_TEXT, 0, 100, "omw", false);
+    out.dir = FEED_DIR_OUT;
+    out.to_node = 0xDA1Au;
+    ff_feed_push(&f, &out);
+
+    ff_feed_item_t in = make_item(FEED_TEXT, 0xBEEFu, 200, "where", true);
+    in.dir = FEED_DIR_DIRECT;
+    ff_feed_push(&f, &in);
+
+    TEST_ASSERT_EQUAL(FEED_DIR_DIRECT, ff_feed_at(&f, 0)->dir);
+    TEST_ASSERT_EQUAL(FEED_DIR_OUT, ff_feed_at(&f, 1)->dir);
+    TEST_ASSERT_EQUAL_UINT32(0xDA1Au, ff_feed_at(&f, 1)->to_node);
+}
+
+/* mark_read_at marks exactly the idx-th NEWEST item and decrements the
+ * running count by exactly one — the OTHER unread items keep their flags
+ * (the per-thread mark-read property this seam exists for). */
+static void S24_AC1_mark_read_at_marks_only_that_item(void)
+{
+    ff_feed_t f;
+    ff_feed_init(&f);
+    for (uint32_t i = 0; i < 3; ++i) {
+        ff_feed_item_t it = make_item(FEED_TEXT, 0x100u + i, 100u * (i + 1u), "m", true);
+        ff_feed_push(&f, &it);
+    }
+    TEST_ASSERT_EQUAL_UINT16(3, ff_feed_unread_count(&f));
+
+    ff_feed_mark_read_at(&f, 1); /* the MIDDLE item (from_node 0x101) */
+
+    TEST_ASSERT_EQUAL_UINT16(2, ff_feed_unread_count(&f));
+    TEST_ASSERT_TRUE(ff_feed_at(&f, 0)->unread);  /* newest untouched */
+    TEST_ASSERT_FALSE(ff_feed_at(&f, 1)->unread); /* marked */
+    TEST_ASSERT_TRUE(ff_feed_at(&f, 2)->unread);  /* oldest untouched */
+    /* And it hit the item we asked for, not a same-index physical slot. */
+    TEST_ASSERT_EQUAL_UINT32(0x101u, ff_feed_at(&f, 1)->from_node);
+
+    /* Marking an already-read item is a no-op, not a double decrement. */
+    ff_feed_mark_read_at(&f, 1);
+    TEST_ASSERT_EQUAL_UINT16(2, ff_feed_unread_count(&f));
+
+    /* Out-of-range and NULL are no-ops. */
+    ff_feed_mark_read_at(&f, 200);
+    ff_feed_mark_read_at(NULL, 0);
+    TEST_ASSERT_EQUAL_UINT16(2, ff_feed_unread_count(&f));
+}
+
+/* Proxy check: after the ring has WRAPPED, logical index 0 is not
+ * physical slot 0 — mark_read_at must use the same idx-th-newest mapping
+ * ff_feed_at uses. Push CAP+2 items so head has lapped, then mark the
+ * newest and verify by CONTENT (from_node), not just by count. */
+static void S24_AC1_mark_read_at_maps_through_a_wrapped_ring(void)
+{
+    ff_feed_t f;
+    ff_feed_init(&f);
+    for (uint32_t i = 0; i < (uint32_t)FF_FEED_CAP + 2u; ++i) {
+        ff_feed_item_t it = make_item(FEED_TEXT, 0x1000u + i, i, "m", true);
+        ff_feed_push(&f, &it);
+    }
+    TEST_ASSERT_EQUAL_UINT16(FF_FEED_CAP, ff_feed_unread_count(&f));
+
+    ff_feed_mark_read_at(&f, 0);
+
+    TEST_ASSERT_EQUAL_UINT16(FF_FEED_CAP - 1u, ff_feed_unread_count(&f));
+    ff_feed_item_t const *newest = ff_feed_at(&f, 0);
+    TEST_ASSERT_EQUAL_UINT32(0x1000u + (uint32_t)FF_FEED_CAP + 1u, newest->from_node);
+    TEST_ASSERT_FALSE(newest->unread);
+    TEST_ASSERT_TRUE(ff_feed_at(&f, 1)->unread); /* neighbor untouched */
+}
+
+/* ------------------------------------------------------------------- */
 /* NULL-argument guards                                                 */
 /* ------------------------------------------------------------------- */
 
@@ -314,6 +399,10 @@ int main(void)
     RUN_TEST(S08_AC3_evicting_a_read_item_leaves_unread_count_unchanged);
     RUN_TEST(S08_AC3_mark_all_read_zeroes_count_and_clears_flags);
     RUN_TEST(S08_AC3_unread_count_never_underflows_past_zero);
+
+    RUN_TEST(S24_AC1_direction_defaults_unknown_and_round_trips);
+    RUN_TEST(S24_AC1_mark_read_at_marks_only_that_item);
+    RUN_TEST(S24_AC1_mark_read_at_maps_through_a_wrapped_ring);
 
     RUN_TEST(S08_AC3_null_guards_are_no_ops_not_crashes);
 

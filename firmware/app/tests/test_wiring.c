@@ -136,6 +136,7 @@ static void rig_pair(test_rig_t *r, uint32_t node_id)
 
 #define PAIRED_NODE   0x1001u
 #define UNPAIRED_NODE 0x2002u
+#define SELF_NODE     0x5E1Fu /* our own node id, for S24 direction tests */
 
 /* ------------------------------------------------------------------- */
 /* AC4 — PULSE from paired node -> feed item + haptic; unpaired -> drop */
@@ -476,6 +477,145 @@ static void S08_AC6_canned_reply_without_context_broadcasts(void)
     TEST_ASSERT_EQUAL_UINT32(MC_ADDR_BROADCAST, r.sender_state.last_dest);
 }
 
+/* ------------------------------------------------------------------- */
+/* S24 AC1 — direction recorded truthfully at every wiring push site.   */
+/* ------------------------------------------------------------------- */
+
+static void S24_AC1_broadcast_text_records_dir_broadcast(void)
+{
+    test_rig_t r;
+    rig_init(&r);
+    rig_pair(&r, PAIRED_NODE);
+
+    ff_wiring_on_text(&r.w, PAIRED_NODE, MC_ADDR_BROADCAST, "yo", 2);
+
+    TEST_ASSERT_EQUAL_UINT8(1, ff_feed_count(&r.feed));
+    TEST_ASSERT_EQUAL(FEED_DIR_BROADCAST, ff_feed_at(&r.feed, 0)->dir);
+}
+
+static void S24_AC1_text_addressed_to_me_records_dir_direct(void)
+{
+    test_rig_t r;
+    rig_init(&r);
+    rig_pair(&r, PAIRED_NODE);
+    ff_wiring_set_self_node(&r.w, SELF_NODE);
+
+    ff_wiring_on_text(&r.w, PAIRED_NODE, SELF_NODE, "yo", 2);
+
+    TEST_ASSERT_EQUAL_UINT8(1, ff_feed_count(&r.feed));
+    TEST_ASSERT_EQUAL(FEED_DIR_DIRECT, ff_feed_at(&r.feed, 0)->dir);
+}
+
+/* The honest boundary of DIRECT: a specifically-addressed text is only
+ * "addressed to ME" if we know who "me" is AND it names us. Both a
+ * before-my_info arrival and a third-party address stay UNKNOWN — never
+ * guessed DIRECT (and never guessed BROADCAST either). */
+static void S24_AC1_specific_address_without_self_match_stays_unknown(void)
+{
+    /* Self not yet known. */
+    test_rig_t r;
+    rig_init(&r);
+    rig_pair(&r, PAIRED_NODE);
+    ff_wiring_on_text(&r.w, PAIRED_NODE, SELF_NODE, "early", 5);
+    TEST_ASSERT_EQUAL_UINT8(1, ff_feed_count(&r.feed));
+    TEST_ASSERT_EQUAL(FEED_DIR_UNKNOWN, ff_feed_at(&r.feed, 0)->dir);
+
+    /* Self known, but the text is addressed to some OTHER node. */
+    ff_wiring_set_self_node(&r.w, SELF_NODE);
+    ff_wiring_on_text(&r.w, PAIRED_NODE, 0x333u, "not for me", 10);
+    TEST_ASSERT_EQUAL_UINT8(2, ff_feed_count(&r.feed));
+    TEST_ASSERT_EQUAL(FEED_DIR_UNKNOWN, ff_feed_at(&r.feed, 0)->dir);
+}
+
+/* The private inbound path (PULSE et al) carries no addressing to this
+ * layer (mc_events_t.on_private has no `to`) — its direction is UNKNOWN,
+ * honestly, not a guessed BROADCAST. */
+static void S24_AC1_private_path_direction_is_unknown_not_guessed(void)
+{
+    test_rig_t r;
+    rig_init(&r);
+    rig_pair(&r, PAIRED_NODE);
+    ff_wiring_set_self_node(&r.w, SELF_NODE); /* knowing self must not change this */
+
+    uint8_t buf[FF_PROTO_ENVELOPE_LEN];
+    int n = ff_proto_encode_pulse(buf, sizeof(buf));
+    TEST_ASSERT_TRUE(n > 0);
+    ff_wiring_on_private(&r.w, PAIRED_NODE, FF_PORTNUM, buf, (size_t)n);
+
+    TEST_ASSERT_EQUAL_UINT8(1, ff_feed_count(&r.feed));
+    TEST_ASSERT_EQUAL(FEED_DIR_UNKNOWN, ff_feed_at(&r.feed, 0)->dir);
+}
+
+/* Direction does not bypass the trust gate: a direct-to-me text from an
+ * UNPAIRED sender is still dropped entirely. */
+static void S24_AC1_direct_text_from_unpaired_sender_still_dropped(void)
+{
+    test_rig_t r;
+    rig_init(&r);
+    ff_wiring_set_self_node(&r.w, SELF_NODE);
+
+    ff_wiring_on_text(&r.w, UNPAIRED_NODE, SELF_NODE, "let me in", 9);
+
+    TEST_ASSERT_EQUAL_UINT8(0, ff_feed_count(&r.feed));
+    TEST_ASSERT_EQUAL_INT(0, r.haptic.count);
+}
+
+/* A successful canned reply pushes its own OUTGOING feed item: dir OUT,
+ * to_node = the reply destination, unread false (no badge), no haptic. */
+static void S24_AC1_canned_reply_pushes_outgoing_item(void)
+{
+    test_rig_t r;
+    rig_init(&r);
+
+    ff_feed_item_t reply_ctx;
+    memset(&reply_ctx, 0, sizeof(reply_ctx));
+    reply_ctx.kind = FEED_TEXT;
+    reply_ctx.from_node = 0x777u;
+
+    r.fc.t = 42000;
+    TEST_ASSERT_EQUAL_INT(0, ff_wiring_send_canned_reply(&r.w, FF_WIRING_REPLY_OMW, &reply_ctx));
+
+    TEST_ASSERT_EQUAL_UINT8(1, ff_feed_count(&r.feed));
+    ff_feed_item_t const *it = ff_feed_at(&r.feed, 0);
+    TEST_ASSERT_EQUAL(FEED_TEXT, it->kind);
+    TEST_ASSERT_EQUAL(FEED_DIR_OUT, it->dir);
+    TEST_ASSERT_EQUAL_UINT32(0x777u, it->to_node);
+    TEST_ASSERT_EQUAL_UINT32(0u, it->from_node); /* self-originated sentinel */
+    TEST_ASSERT_EQUAL_STRING("omw", it->text);
+    TEST_ASSERT_EQUAL_UINT32(42000u, it->at_ms);
+    TEST_ASSERT_FALSE(it->unread);
+    TEST_ASSERT_EQUAL_UINT16(0, ff_feed_unread_count(&r.feed)); /* my send is no badge */
+    TEST_ASSERT_EQUAL_INT(0, r.haptic.count);                   /* ...and no buzz */
+
+    /* A broadcast reply (no context) maps to the core-side whole-crew
+     * sentinel to_node == 0, and a PULSE reply records kind PULSE. */
+    TEST_ASSERT_EQUAL_INT(0, ff_wiring_send_canned_reply(&r.w, FF_WIRING_REPLY_PULSE, NULL));
+    it = ff_feed_at(&r.feed, 0);
+    TEST_ASSERT_EQUAL(FEED_PULSE, it->kind);
+    TEST_ASSERT_EQUAL(FEED_DIR_OUT, it->dir);
+    TEST_ASSERT_EQUAL_UINT32(0u, it->to_node);
+}
+
+/* A REFUSED send (sender returns nonzero) fabricates nothing: no
+ * outgoing feed item for a message that never went anywhere. */
+static int refusing_send_text(void *ctx, uint32_t dest, char const *utf8)
+{
+    (void)ctx;
+    (void)dest;
+    (void)utf8;
+    return -1;
+}
+
+static void S24_AC1_refused_send_pushes_no_outgoing_item(void)
+{
+    test_rig_t r;
+    rig_init(&r);
+    r.w.sender.send_text = refusing_send_text;
+
+    TEST_ASSERT_EQUAL_INT(-1, ff_wiring_send_canned_reply(&r.w, FF_WIRING_REPLY_OMW, NULL));
+    TEST_ASSERT_EQUAL_UINT8(0, ff_feed_count(&r.feed));
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -500,6 +640,14 @@ int main(void)
     RUN_TEST(S08_AC6_canned_5min_sends_correct_text_to_that_sender);
     RUN_TEST(S08_AC6_canned_pulse_sends_encoded_pulse_packet);
     RUN_TEST(S08_AC6_canned_reply_without_context_broadcasts);
+
+    RUN_TEST(S24_AC1_broadcast_text_records_dir_broadcast);
+    RUN_TEST(S24_AC1_text_addressed_to_me_records_dir_direct);
+    RUN_TEST(S24_AC1_specific_address_without_self_match_stays_unknown);
+    RUN_TEST(S24_AC1_private_path_direction_is_unknown_not_guessed);
+    RUN_TEST(S24_AC1_direct_text_from_unpaired_sender_still_dropped);
+    RUN_TEST(S24_AC1_canned_reply_pushes_outgoing_item);
+    RUN_TEST(S24_AC1_refused_send_pushes_no_outgoing_item);
 
     return UNITY_END();
 }

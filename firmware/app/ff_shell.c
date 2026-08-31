@@ -674,6 +674,10 @@ static void shell_ev_my_info(void *u, uint32_t my_node_id)
     sh->my_node_id = my_node_id;
     sh->has_my_node_id = true;
 
+    /* S24 AC1 — the wiring needs to know who "me" is to classify an
+     * inbound text addressed to a specific node as DIRECT vs UNKNOWN. */
+    ff_wiring_set_self_node(&sh->wiring, my_node_id);
+
     /* PR #46 review caveat, closed here (slice b2): if our own NodeInfo
      * arrived BEFORE this callback named us — whichever order the radio
      * picked — shell_ev_node could not recognise it as ours and noted
@@ -2277,7 +2281,22 @@ void ff_shell_intent(ff_shell_t *sh_pub, ff_intent_t const *in)
          * the reply chips live on the Signals tile. */
         if (takeover_up) return;
         {
-            ff_feed_item_t const *ctx = (ff_feed_count(&sh->feed) > 0) ? ff_feed_at(&sh->feed, 0) : NULL;
+            /* S24 amendment to the "newest feed item" rule: outgoing
+             * items (FEED_DIR_OUT, from_node 0) now live in the feed too,
+             * and a reply's context must stay the newest thing RECEIVED —
+             * replying to my own just-sent "omw" would resolve its
+             * from_node of 0 to a broadcast the user never chose. Skip
+             * OUT items; the newest inbound item is the same item the
+             * pre-S24 rule picked. */
+            ff_feed_item_t const *ctx = NULL;
+            uint8_t const fn = ff_feed_count(&sh->feed);
+            for (uint8_t i = 0; i < fn; ++i) {
+                ff_feed_item_t const *it = ff_feed_at(&sh->feed, i);
+                if (it != NULL && it->dir != FEED_DIR_OUT) {
+                    ctx = it;
+                    break;
+                }
+            }
             (void)ff_wiring_send_canned_reply(&sh->wiring, in->u.reply, ctx);
         }
         return;
@@ -2316,7 +2335,14 @@ void ff_shell_intent(ff_shell_t *sh_pub, ff_intent_t const *in)
                  * not the literal 0 mc_send_text would misread). */
                 uint32_t const dest = (sh->compose_to_node != 0u) ? sh->compose_to_node : MC_ADDR_BROADCAST;
                 if (sh->wiring.sender.send_text != NULL) {
-                    (void)sh->wiring.sender.send_text(sh->wiring.sender.ctx, dest, text);
+                    int const rc = sh->wiring.sender.send_text(sh->wiring.sender.ctx, dest, text);
+                    if (rc == 0) {
+                        /* S24 — the composer's sent text lands in the feed
+                         * as FEED_DIR_OUT (S08's long-promised "sent item
+                         * appears in feed", now with an honest direction so
+                         * ff_inbox can side it). Accepted sends only. */
+                        ff_wiring_push_outgoing(&sh->wiring, FEED_TEXT, dest, text);
+                    }
                 }
                 /* A sent message ends the compose session — S08's "sent
                  * item appears in feed... " reads as returning to Signals
@@ -2523,7 +2549,13 @@ void ff_shell_intent(ff_shell_t *sh_pub, ff_intent_t const *in)
             uint8_t buf[FF_PROTO_MAX_PAYLOAD];
             int const n = ff_proto_encode_pulse(buf, sizeof buf);
             if (n > 0 && sh->wiring.sender.send_private != NULL) {
-                (void)sh->wiring.sender.send_private(sh->wiring.sender.ctx, dest, buf, (size_t)n);
+                int const rc = sh->wiring.sender.send_private(sh->wiring.sender.ctx, dest, buf, (size_t)n);
+                if (rc == 0) {
+                    /* S24 — my own send lands in the feed (FEED_DIR_OUT)
+                     * so the thread shows both sides. Only an ACCEPTED
+                     * send; a refused one fabricates nothing. */
+                    ff_wiring_push_outgoing(&sh->wiring, FEED_PULSE, dest, NULL);
+                }
                 shell_sig_reset_target(sh); /* AC3 */
             }
         }
@@ -2562,7 +2594,13 @@ void ff_shell_intent(ff_shell_t *sh_pub, ff_intent_t const *in)
             uint8_t buf[FF_PROTO_MAX_PAYLOAD];
             int const n = ff_proto_encode_rally(buf, sizeof buf, pos, name);
             if (n > 0 && sh->wiring.sender.send_private != NULL) {
-                (void)sh->wiring.sender.send_private(sh->wiring.sender.ctx, dest, buf, (size_t)n);
+                int const rc = sh->wiring.sender.send_private(sh->wiring.sender.ctx, dest, buf, (size_t)n);
+                if (rc == 0) {
+                    /* S24 — outgoing rally in the feed, carrying the same
+                     * place name that went on the wire (both sides of the
+                     * thread; accepted sends only). */
+                    ff_wiring_push_outgoing(&sh->wiring, FEED_RALLY, dest, name);
+                }
                 shell_sig_reset_target(sh); /* AC3 */
             }
         }
