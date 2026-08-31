@@ -205,6 +205,23 @@ if(FF_BUILD_TESTS)
     add_test(NAME test_sigview COMMAND test_sigview)
 endif()
 
+# S24a (core/inbox — Signals inbox -> thread view-model: conversations
+# (CREW + one per paired member) with honest unread/preview/presence,
+# thread extraction with direction preserved, per-thread mark-read;
+# docs/specs/S24-signals-inbox.md, slice a. Pure C11, no UI — the S24
+# inbox/thread screens, slices b/c, only render this.)
+target_sources(ff-core PRIVATE src/ff_inbox.c)
+
+if(FF_BUILD_TESTS)
+    add_executable(test_inbox
+        tests/test_inbox.c
+    )
+    target_link_libraries(test_inbox PRIVATE ff-core unity)
+    ff_apply_warnings(test_inbox)
+
+    add_test(NAME test_inbox COMMAND test_inbox)
+endif()
+
 # S16 slice b0 (core/wall — wall-clock derivation: mesh-timestamp offset
 # latch/re-latch, the plausibility gate, and unix -> local ->
 # (day_doy, now_min). docs/specs/S16-app-shell.md's "Wall clock" section.)

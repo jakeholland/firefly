@@ -64,6 +64,22 @@ uint16_t ff_feed_unread_count(ff_feed_t const *f)
     return f->unread_count;
 }
 
+void ff_feed_mark_read_at(ff_feed_t *f, uint8_t idx)
+{
+    if (f == NULL || idx >= f->count) return;
+
+    /* Same idx-th-newest -> physical-slot math as ff_feed_at (see its
+     * comment for the +2*CAP trick), applied to the mutable item. */
+    uint32_t phys = ((uint32_t)f->head + (2u * FF_FEED_CAP) - 1u - idx) % FF_FEED_CAP;
+    ff_feed_item_t *it = &f->items[phys];
+    if (it->unread) {
+        it->unread = false;
+        if (f->unread_count > 0) {
+            f->unread_count--;
+        }
+    }
+}
+
 void ff_feed_mark_all_read(ff_feed_t *f)
 {
     if (f == NULL) return;

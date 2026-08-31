@@ -3220,7 +3220,12 @@ static void S16_AC7_canned_reply_uses_newest_feed_item_or_broadcasts(void)
     P.rx_len = n;
     P.rx_pos = 0;
     (void)ff_shell_tick(&H.shell, H.clk.t);
-    TEST_ASSERT_EQUAL_UINT8(1, ff_feed_count(ff_shell_feed(&H.shell)));
+    /* 2 items as of S24: the broadcast OMW above pushed its own OUTGOING
+     * feed item (FEED_DIR_OUT — threads show both sides), plus DANA's
+     * "hey". The newest INBOUND item is what the next reply must target —
+     * the OUT item is context-skipped (see the CANNED_REPLY handler). */
+    TEST_ASSERT_EQUAL_UINT8(2, ff_feed_count(ff_shell_feed(&H.shell)));
+    TEST_ASSERT_EQUAL(FEED_DIR_OUT, ff_feed_at(ff_shell_feed(&H.shell), 1)->dir);
 
     tx_before = P.tx_len;
     ff_shell_intent(&H.shell, &in); /* the identical OMW intent */
@@ -3657,6 +3662,228 @@ static void S47_replay_absent_precision_renders_normally_not_degraded(void)
     TEST_ASSERT_FALSE(ff_shell_view(&H.shell)->radar.dist_imprecise);
 }
 
+/* =================================================================== */
+/* S24 slice a — AC1: direction at the shell's push sites               */
+/* =================================================================== */
+
+/* An accepted PULSE send pushes its own OUTGOING feed item — dir OUT,
+ * to_node = the resolved destination (member id, or 0 for the whole-crew
+ * broadcast), unread false (my own send is never a badge). */
+static void S24_AC1_sig_pulse_send_pushes_outgoing_item(void)
+{
+    s22_connect_shell();
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, true));
+
+    ff_intent_t sel = {.kind = FF_INTENT_SIG_SELECT_MEMBER, .u = {0}};
+    sel.u.node_id = DANA;
+    ff_shell_intent(&H.shell, &sel);
+
+    ff_intent_t pulse = {.kind = FF_INTENT_SIG_PULSE, .u = {0}};
+    ff_shell_intent(&H.shell, &pulse);
+
+    ff_feed_t const *feed = ff_shell_feed(&H.shell);
+    TEST_ASSERT_EQUAL_UINT8(1, ff_feed_count(feed));
+    ff_feed_item_t const *it = ff_feed_at(feed, 0);
+    TEST_ASSERT_EQUAL(FEED_PULSE, it->kind);
+    TEST_ASSERT_EQUAL(FEED_DIR_OUT, it->dir);
+    TEST_ASSERT_EQUAL_UINT32(DANA, it->to_node);
+    TEST_ASSERT_EQUAL_UINT32(0u, it->from_node);
+    TEST_ASSERT_FALSE(it->unread);
+    TEST_ASSERT_EQUAL_UINT16(0, ff_feed_unread_count(feed));
+
+    /* The target reset to WHOLE_CREW (AC3) — a second PULSE broadcasts,
+     * and its outgoing item records the whole-crew sentinel to_node 0. */
+    ff_shell_intent(&H.shell, &pulse);
+    TEST_ASSERT_EQUAL_UINT8(2, ff_feed_count(ff_shell_feed(&H.shell)));
+    it = ff_feed_at(ff_shell_feed(&H.shell), 0);
+    TEST_ASSERT_EQUAL(FEED_DIR_OUT, it->dir);
+    TEST_ASSERT_EQUAL_UINT32(0u, it->to_node);
+}
+
+/* An accepted RALLY send pushes an outgoing FEED_RALLY carrying the SAME
+ * place name that went on the wire. */
+static void S24_AC1_rally_send_pushes_outgoing_item_with_place_name(void)
+{
+    s22_connect_shell();
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, true));
+    ff_shell_set_my_pos(&H.shell, (ff_latlon_t){39.7392, -104.9903});
+
+    ff_intent_t sel = {.kind = FF_INTENT_SIG_SELECT_MEMBER, .u = {0}};
+    sel.u.node_id = DANA;
+    ff_shell_intent(&H.shell, &sel);
+
+    ff_intent_t rally = {.kind = FF_INTENT_SIG_RALLY, .u = {0}};
+    ff_shell_intent(&H.shell, &rally); /* member rally: first tap sends */
+
+    ff_feed_t const *feed = ff_shell_feed(&H.shell);
+    TEST_ASSERT_EQUAL_UINT8(1, ff_feed_count(feed));
+    ff_feed_item_t const *it = ff_feed_at(feed, 0);
+    TEST_ASSERT_EQUAL(FEED_RALLY, it->kind);
+    TEST_ASSERT_EQUAL(FEED_DIR_OUT, it->dir);
+    TEST_ASSERT_EQUAL_UINT32(DANA, it->to_node);
+    /* No pack loaded -> the honest default name, same as the wire body
+     * (S22_AC4_rally_to_member_sends_first_tap decodes the packet). */
+    TEST_ASSERT_EQUAL_STRING("MY SPOT", it->text);
+    TEST_ASSERT_FALSE(it->unread);
+}
+
+/* A REFUSED send (rally with unknown own position) pushes nothing —
+ * the outgoing item exists only for a message that was actually
+ * accepted for transmission. */
+static void S24_AC1_refused_rally_pushes_no_outgoing_item(void)
+{
+    s22_connect_shell();
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, true));
+    /* my_pos deliberately unset. */
+    ff_intent_t sel = {.kind = FF_INTENT_SIG_SELECT_MEMBER, .u = {0}};
+    sel.u.node_id = DANA;
+    ff_shell_intent(&H.shell, &sel);
+
+    ff_intent_t rally = {.kind = FF_INTENT_SIG_RALLY, .u = {0}};
+    ff_shell_intent(&H.shell, &rally);
+
+    TEST_ASSERT_EQUAL_UINT8(0, ff_feed_count(ff_shell_feed(&H.shell)));
+}
+
+/* The shell hands its my_info node id to the wiring, so an inbound text
+ * addressed to US classifies as DIRECT — and one addressed to a THIRD
+ * party stays honestly UNKNOWN (never guessed DIRECT or BROADCAST). */
+static void S24_AC1_shell_classifies_inbound_text_direction_via_my_info(void)
+{
+    harness_init(100000u, false);
+    inject_my_info(MY_ID);
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, true));
+
+    H.ev.on_text(H.ev.user, DANA, MY_ID, "for you", 7);
+    H.ev.on_text(H.ev.user, DANA, MC_ADDR_BROADCAST, "for all", 7);
+    H.ev.on_text(H.ev.user, DANA, KEV_ID, "for kev", 7);
+
+    ff_feed_t const *feed = ff_shell_feed(&H.shell);
+    TEST_ASSERT_EQUAL_UINT8(3, ff_feed_count(feed));
+    TEST_ASSERT_EQUAL(FEED_DIR_UNKNOWN, ff_feed_at(feed, 0)->dir);   /* third party */
+    TEST_ASSERT_EQUAL(FEED_DIR_BROADCAST, ff_feed_at(feed, 1)->dir);
+    TEST_ASSERT_EQUAL(FEED_DIR_DIRECT, ff_feed_at(feed, 2)->dir);    /* addressed to me */
+}
+
+/* Proxy check on the reply-context amendment: after replying once (which
+ * pushes MY outgoing "omw" as the newest feed item), replying AGAIN must
+ * still target the newest INBOUND sender — under the old ff_feed_at(0)
+ * rule the context would be my own OUT item (from_node 0) and the reply
+ * would be misaddressed to node 0. */
+static void S24_AC1_reply_context_skips_my_own_outgoing_item(void)
+{
+    s22_connect_shell();
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, true));
+
+    size_t n = frame_text_packet(P.rx, sizeof(P.rx), DANA, "hey");
+    P.rx_len = n;
+    P.rx_pos = 0;
+    (void)ff_shell_tick(&H.shell, H.clk.t);
+    TEST_ASSERT_EQUAL_UINT8(1, ff_feed_count(ff_shell_feed(&H.shell)));
+
+    ff_intent_t in = {.kind = FF_INTENT_CANNED_REPLY, .u = {0}};
+    in.u.reply = FF_WIRING_REPLY_OMW;
+
+    size_t tx_before = P.tx_len;
+    ff_shell_intent(&H.shell, &in);
+    TEST_ASSERT_GREATER_THAN_size_t(tx_before, P.tx_len);
+    TEST_ASSERT_EQUAL_UINT32(DANA, decode_packet_to(P.tx + tx_before, P.tx_len - tx_before));
+    /* The reply pushed an outgoing item — it is now the newest. */
+    TEST_ASSERT_EQUAL_UINT8(2, ff_feed_count(ff_shell_feed(&H.shell)));
+    TEST_ASSERT_EQUAL(FEED_DIR_OUT, ff_feed_at(ff_shell_feed(&H.shell), 0)->dir);
+
+    /* Reply again: still DANA, not node 0 / broadcast. */
+    tx_before = P.tx_len;
+    ff_shell_intent(&H.shell, &in);
+    TEST_ASSERT_GREATER_THAN_size_t(tx_before, P.tx_len);
+    TEST_ASSERT_EQUAL_UINT32(DANA, decode_packet_to(P.tx + tx_before, P.tx_len - tx_before));
+}
+
+/* An accepted composer SEND pushes its own OUTGOING feed item — the
+ * fourth and last send site (PR #122 review: this one had no coverage,
+ * and deleting its push left the whole suite green — the exact hole
+ * where slice (c)'s 1:1 thread would show quick-chip replies while
+ * composed texts silently vanish). Same S16_c3 real-pipeline drive:
+ * OPEN_COMPOSE -> type via T9 intents -> SEND, for BOTH destinations —
+ * broadcast (to_node 0) and an explicit member (to_node DANA). */
+static void S24_AC1_composer_send_pushes_outgoing_item(void)
+{
+    s22_connect_shell();
+
+    /* Broadcast half FIRST, before anyone is paired — S16_c3's own
+     * ordering, for the same reason (a paired DANA would become the
+     * crew's self-healing selection and this half would pass for the
+     * wrong reason). */
+    ff_intent_t open = {.kind = FF_INTENT_OPEN_COMPOSE, .u = {0}};
+    ff_shell_intent(&H.shell, &open);
+    ff_intent_t to_abc = {.kind = FF_INTENT_T9_MODE, .u = {0}};
+    ff_shell_intent(&H.shell, &to_abc); /* S08 addendum: PRED -> ABC multitap */
+    ff_intent_t k5 = {.kind = FF_INTENT_T9_KEY, .u = {0}};
+    k5.u.t9_key = 5; /* 'j' */
+    ff_shell_intent(&H.shell, &k5);
+    ff_intent_t space = {.kind = FF_INTENT_T9_SPACE, .u = {0}};
+    ff_shell_intent(&H.shell, &space); /* commits -> "j " */
+    ff_intent_t send = {.kind = FF_INTENT_SEND_TEXT, .u = {0}};
+    ff_shell_intent(&H.shell, &send);
+
+    ff_feed_t const *feed = ff_shell_feed(&H.shell);
+    TEST_ASSERT_EQUAL_UINT8(1, ff_feed_count(feed));
+    ff_feed_item_t const *it = ff_feed_at(feed, 0);
+    TEST_ASSERT_EQUAL(FEED_TEXT, it->kind);
+    TEST_ASSERT_EQUAL(FEED_DIR_OUT, it->dir);
+    TEST_ASSERT_EQUAL_UINT32(0u, it->to_node); /* broadcast -> whole-crew sentinel */
+    TEST_ASSERT_EQUAL_UINT32(0u, it->from_node);
+    TEST_ASSERT_EQUAL_STRING("j ", it->text); /* the exact draft that went on the wire */
+    TEST_ASSERT_FALSE(it->unread);
+    TEST_ASSERT_EQUAL_UINT16(0, ff_feed_unread_count(feed)); /* my send is no badge */
+
+    /* Explicit-destination half: OPEN_COMPOSE(DANA) -> to_node == DANA. */
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, true));
+    ff_intent_t open_dana = {.kind = FF_INTENT_OPEN_COMPOSE, .u = {0}};
+    open_dana.u.node_id = DANA;
+    ff_shell_intent(&H.shell, &open_dana);
+    ff_shell_intent(&H.shell, &to_abc);
+    ff_intent_t k2 = {.kind = FF_INTENT_T9_KEY, .u = {0}};
+    k2.u.t9_key = 2; /* 'a' */
+    ff_shell_intent(&H.shell, &k2);
+    ff_shell_intent(&H.shell, &space); /* commits -> "a " */
+    ff_shell_intent(&H.shell, &send);
+
+    TEST_ASSERT_EQUAL_UINT8(2, ff_feed_count(ff_shell_feed(&H.shell)));
+    it = ff_feed_at(ff_shell_feed(&H.shell), 0);
+    TEST_ASSERT_EQUAL(FEED_TEXT, it->kind);
+    TEST_ASSERT_EQUAL(FEED_DIR_OUT, it->dir);
+    TEST_ASSERT_EQUAL_UINT32(DANA, it->to_node);
+    TEST_ASSERT_EQUAL_STRING("a ", it->text);
+    TEST_ASSERT_FALSE(it->unread);
+}
+
+/* A REFUSED composer send pushes nothing: with no transport the shell's
+ * mc_client is never READY, so send_text returns negative — the rc == 0
+ * gate at the SEND_TEXT site must fabricate no "sent" item. (The other
+ * send-site rc gates are pinned by S24_AC1_refused_rally_pushes_no_
+ * outgoing_item and test_wiring's refusing-sender test; this closes the
+ * composer's.) */
+static void S24_AC1_composer_send_refused_pushes_no_item(void)
+{
+    harness_init(100000u, false); /* documented no-transport shell: sends refuse */
+
+    ff_intent_t open = {.kind = FF_INTENT_OPEN_COMPOSE, .u = {0}};
+    ff_shell_intent(&H.shell, &open);
+    ff_intent_t to_abc = {.kind = FF_INTENT_T9_MODE, .u = {0}};
+    ff_shell_intent(&H.shell, &to_abc);
+    ff_intent_t k5 = {.kind = FF_INTENT_T9_KEY, .u = {0}};
+    k5.u.t9_key = 5;
+    ff_shell_intent(&H.shell, &k5);
+    ff_intent_t space = {.kind = FF_INTENT_T9_SPACE, .u = {0}};
+    ff_shell_intent(&H.shell, &space);
+    ff_intent_t send = {.kind = FF_INTENT_SEND_TEXT, .u = {0}};
+    ff_shell_intent(&H.shell, &send); /* draft non-empty: the send IS attempted */
+
+    TEST_ASSERT_EQUAL_UINT8(0, ff_feed_count(ff_shell_feed(&H.shell)));
+    TEST_ASSERT_EQUAL_UINT16(0, ff_feed_unread_count(ff_shell_feed(&H.shell)));
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -3751,6 +3978,14 @@ int main(void)
     RUN_TEST(S47_live_fine_precision_renders_normally);
     RUN_TEST(S47_live_absent_precision_renders_normally);
     RUN_TEST(S47_replay_absent_precision_renders_normally_not_degraded);
+
+    RUN_TEST(S24_AC1_sig_pulse_send_pushes_outgoing_item);
+    RUN_TEST(S24_AC1_rally_send_pushes_outgoing_item_with_place_name);
+    RUN_TEST(S24_AC1_refused_rally_pushes_no_outgoing_item);
+    RUN_TEST(S24_AC1_shell_classifies_inbound_text_direction_via_my_info);
+    RUN_TEST(S24_AC1_reply_context_skips_my_own_outgoing_item);
+    RUN_TEST(S24_AC1_composer_send_pushes_outgoing_item);
+    RUN_TEST(S24_AC1_composer_send_refused_pushes_no_item);
 
     return UNITY_END();
 }

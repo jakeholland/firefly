@@ -126,6 +126,15 @@ typedef struct {
     void (*haptic_cb)(void *user); /* NULL = no-op */
     void                *haptic_user;
     ff_clock_t const    *clock;
+
+    /* S24 AC1 — our own node id, when known (set via
+     * ff_wiring_set_self_node from the my_info event). Needed to record
+     * an inbound text's direction honestly: DIRECT is the claim
+     * "addressed to ME", which requires knowing who "me" is. Until it is
+     * known, a specifically-addressed text records FEED_DIR_UNKNOWN
+     * (never guessed DIRECT). */
+    uint32_t self_node;
+    bool     has_self_node;
 } ff_wiring_ctx_t;
 
 /**
@@ -166,6 +175,26 @@ void ff_wiring_on_private(void *user, uint32_t from, uint32_t portnum, uint8_t c
  * `ff_wiring_on_private`, pushing a FEED_TEXT item on a paired sender.
  */
 void ff_wiring_on_text(void *user, uint32_t from, uint32_t to, char const *utf8, size_t len);
+
+/**
+ * ff_wiring_set_self_node — S24 AC1: tell the wiring our own node id (the
+ * my_info event's value) so `ff_wiring_on_text` can honestly classify a
+ * specifically-addressed inbound text as DIRECT ("addressed to me") vs
+ * UNKNOWN. No-op if `w` is NULL.
+ */
+void ff_wiring_set_self_node(ff_wiring_ctx_t *w, uint32_t self_node);
+
+/**
+ * ff_wiring_push_outgoing — S24: push OUR OWN send into the feed
+ * (dir == FEED_DIR_OUT, from_node 0, unread false — a send is never a
+ * badge or a buzz) so threads show both sides. `dest` is the MESH
+ * destination the send was addressed to; MC_ADDR_BROADCAST maps to the
+ * core-side "whole crew" to_node sentinel 0 (ff_feed.h). `text` may be
+ * NULL/empty for textless kinds (PULSE). Callers push AFTER the sender
+ * accepted the message — never fabricate a "sent" item for a refused
+ * send. No-op if `w` or `w->feed` is NULL.
+ */
+void ff_wiring_push_outgoing(ff_wiring_ctx_t *w, ff_feed_kind_t kind, uint32_t dest, char const *text);
 
 /* `ff_wiring_canned_reply_t` (OMW / 5MIN / PULSE) is still this module's
  * vocabulary, but its DEFINITION lives in app/include/ff_intent.h as of

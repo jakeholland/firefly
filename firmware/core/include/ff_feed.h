@@ -67,12 +67,60 @@ typedef enum {
     FEED_FLARE,
 } ff_feed_kind_t;
 
+/**
+ * ff_feed_dir_t — [api] S24 slice (a): the item's DIRECTION fact, an
+ * honest record of how the item travelled, set by the push site (the
+ * wiring / the shell's send paths) which is the only place that ever
+ * knew it. This is what splits the CREW thread (broadcast traffic) from
+ * 1:1 threads (direct traffic) in `ff_inbox` (ff_inbox.h).
+ *
+ * Honesty rule (S24 AC1): a push site records only what it actually
+ * knows. UNKNOWN is a first-class value, not an error — today the whole
+ * private-portnum inbound path (PULSE/RALLY/STATUS/FLARE) is UNKNOWN,
+ * because `mc_events_t.on_private` does not carry the mesh packet's
+ * `to` address to the wiring layer (mc_client.h; plumbing it through is
+ * issue #123 — an `[api]` meshclient change that should land before or
+ * with S24 slice (c), out of this core slice's scope). UNKNOWN is
+ * deliberately the zero value so a
+ * zero-initialized / legacy item is honestly "direction not recorded",
+ * never accidentally "broadcast".
+ *
+ *  - FEED_DIR_UNKNOWN   — direction was not established at push time.
+ *                         Never guessed into one of the other values.
+ *  - FEED_DIR_BROADCAST — arrived addressed to everyone (mesh broadcast).
+ *  - FEED_DIR_DIRECT    — arrived addressed specifically to THIS node
+ *                         (to == our own node id, known at receipt). A
+ *                         packet addressed to some OTHER specific node —
+ *                         or one that arrived before we learned our own
+ *                         id — is UNKNOWN, not DIRECT: "addressed to me"
+ *                         is a claim this device must be able to attest.
+ *  - FEED_DIR_OUT       — our OWN send, pushed at send time so threads
+ *                         show both sides (S24). `to_node` below carries
+ *                         the destination.
+ */
+typedef enum {
+    FEED_DIR_UNKNOWN = 0,
+    FEED_DIR_BROADCAST,
+    FEED_DIR_DIRECT,
+    FEED_DIR_OUT,
+} ff_feed_dir_t;
+
 typedef struct {
     ff_feed_kind_t kind;
     uint32_t       from_node; /* Meshtastic node num; 0 for self-originated (no node id) */
     uint32_t       at_ms;     /* caller's clock at receipt/creation */
     char           text[FF_FEED_TEXT_LEN];
     bool           unread;
+
+    /* [api] S24 slice (a) — direction fact (see ff_feed_dir_t above). */
+    ff_feed_dir_t dir;
+    /* Destination of an outgoing item: meaningful iff dir == FEED_DIR_OUT.
+     * A specific node id, or 0 for a whole-crew broadcast (0 is never a
+     * valid member id — ff_sigview/ff_crew's own sentinel convention —
+     * and core stays mesh-agnostic: mapping MC_ADDR_BROADCAST -> 0 is the
+     * push site's job). Zeroed and meaningless for inbound items (their
+     * addressing lives in `dir` itself; `from_node` names the peer). */
+    uint32_t to_node;
 } ff_feed_item_t;
 
 /**
@@ -128,6 +176,21 @@ uint16_t ff_feed_unread_count(ff_feed_t const *f);
  * "nothing calls this yet" disclosure and issue #23.
  */
 void ff_feed_mark_all_read(ff_feed_t *f);
+
+/**
+ * ff_feed_mark_read_at — [api] S24 slice (a): clear the `unread` flag of
+ * the `idx`-th NEWEST item (same indexing as `ff_feed_at`: 0 = most
+ * recently pushed), decrementing the running unread count iff that item
+ * was actually unread — the same incremental O(1) bookkeeping the push/
+ * evict paths keep, never a rescan. No-op if `f` is NULL, `idx` is out
+ * of range, or the item is already read.
+ *
+ * This is the per-item seam `ff_inbox_mark_thread_read` (ff_inbox.h)
+ * marks ONE conversation's items through, so opening a thread drives its
+ * badge honestly without touching other threads' unread items — unlike
+ * `ff_feed_mark_all_read`, which is the whole-feed "face viewed" clear.
+ */
+void ff_feed_mark_read_at(ff_feed_t *f, uint8_t idx);
 
 #ifdef __cplusplus
 }
