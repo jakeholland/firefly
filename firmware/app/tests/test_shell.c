@@ -3799,6 +3799,91 @@ static void S24_AC1_reply_context_skips_my_own_outgoing_item(void)
     TEST_ASSERT_EQUAL_UINT32(DANA, decode_packet_to(P.tx + tx_before, P.tx_len - tx_before));
 }
 
+/* An accepted composer SEND pushes its own OUTGOING feed item — the
+ * fourth and last send site (PR #122 review: this one had no coverage,
+ * and deleting its push left the whole suite green — the exact hole
+ * where slice (c)'s 1:1 thread would show quick-chip replies while
+ * composed texts silently vanish). Same S16_c3 real-pipeline drive:
+ * OPEN_COMPOSE -> type via T9 intents -> SEND, for BOTH destinations —
+ * broadcast (to_node 0) and an explicit member (to_node DANA). */
+static void S24_AC1_composer_send_pushes_outgoing_item(void)
+{
+    s22_connect_shell();
+
+    /* Broadcast half FIRST, before anyone is paired — S16_c3's own
+     * ordering, for the same reason (a paired DANA would become the
+     * crew's self-healing selection and this half would pass for the
+     * wrong reason). */
+    ff_intent_t open = {.kind = FF_INTENT_OPEN_COMPOSE, .u = {0}};
+    ff_shell_intent(&H.shell, &open);
+    ff_intent_t to_abc = {.kind = FF_INTENT_T9_MODE, .u = {0}};
+    ff_shell_intent(&H.shell, &to_abc); /* S08 addendum: PRED -> ABC multitap */
+    ff_intent_t k5 = {.kind = FF_INTENT_T9_KEY, .u = {0}};
+    k5.u.t9_key = 5; /* 'j' */
+    ff_shell_intent(&H.shell, &k5);
+    ff_intent_t space = {.kind = FF_INTENT_T9_SPACE, .u = {0}};
+    ff_shell_intent(&H.shell, &space); /* commits -> "j " */
+    ff_intent_t send = {.kind = FF_INTENT_SEND_TEXT, .u = {0}};
+    ff_shell_intent(&H.shell, &send);
+
+    ff_feed_t const *feed = ff_shell_feed(&H.shell);
+    TEST_ASSERT_EQUAL_UINT8(1, ff_feed_count(feed));
+    ff_feed_item_t const *it = ff_feed_at(feed, 0);
+    TEST_ASSERT_EQUAL(FEED_TEXT, it->kind);
+    TEST_ASSERT_EQUAL(FEED_DIR_OUT, it->dir);
+    TEST_ASSERT_EQUAL_UINT32(0u, it->to_node); /* broadcast -> whole-crew sentinel */
+    TEST_ASSERT_EQUAL_UINT32(0u, it->from_node);
+    TEST_ASSERT_EQUAL_STRING("j ", it->text); /* the exact draft that went on the wire */
+    TEST_ASSERT_FALSE(it->unread);
+    TEST_ASSERT_EQUAL_UINT16(0, ff_feed_unread_count(feed)); /* my send is no badge */
+
+    /* Explicit-destination half: OPEN_COMPOSE(DANA) -> to_node == DANA. */
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, true));
+    ff_intent_t open_dana = {.kind = FF_INTENT_OPEN_COMPOSE, .u = {0}};
+    open_dana.u.node_id = DANA;
+    ff_shell_intent(&H.shell, &open_dana);
+    ff_shell_intent(&H.shell, &to_abc);
+    ff_intent_t k2 = {.kind = FF_INTENT_T9_KEY, .u = {0}};
+    k2.u.t9_key = 2; /* 'a' */
+    ff_shell_intent(&H.shell, &k2);
+    ff_shell_intent(&H.shell, &space); /* commits -> "a " */
+    ff_shell_intent(&H.shell, &send);
+
+    TEST_ASSERT_EQUAL_UINT8(2, ff_feed_count(ff_shell_feed(&H.shell)));
+    it = ff_feed_at(ff_shell_feed(&H.shell), 0);
+    TEST_ASSERT_EQUAL(FEED_TEXT, it->kind);
+    TEST_ASSERT_EQUAL(FEED_DIR_OUT, it->dir);
+    TEST_ASSERT_EQUAL_UINT32(DANA, it->to_node);
+    TEST_ASSERT_EQUAL_STRING("a ", it->text);
+    TEST_ASSERT_FALSE(it->unread);
+}
+
+/* A REFUSED composer send pushes nothing: with no transport the shell's
+ * mc_client is never READY, so send_text returns negative — the rc == 0
+ * gate at the SEND_TEXT site must fabricate no "sent" item. (The other
+ * send-site rc gates are pinned by S24_AC1_refused_rally_pushes_no_
+ * outgoing_item and test_wiring's refusing-sender test; this closes the
+ * composer's.) */
+static void S24_AC1_composer_send_refused_pushes_no_item(void)
+{
+    harness_init(100000u, false); /* documented no-transport shell: sends refuse */
+
+    ff_intent_t open = {.kind = FF_INTENT_OPEN_COMPOSE, .u = {0}};
+    ff_shell_intent(&H.shell, &open);
+    ff_intent_t to_abc = {.kind = FF_INTENT_T9_MODE, .u = {0}};
+    ff_shell_intent(&H.shell, &to_abc);
+    ff_intent_t k5 = {.kind = FF_INTENT_T9_KEY, .u = {0}};
+    k5.u.t9_key = 5;
+    ff_shell_intent(&H.shell, &k5);
+    ff_intent_t space = {.kind = FF_INTENT_T9_SPACE, .u = {0}};
+    ff_shell_intent(&H.shell, &space);
+    ff_intent_t send = {.kind = FF_INTENT_SEND_TEXT, .u = {0}};
+    ff_shell_intent(&H.shell, &send); /* draft non-empty: the send IS attempted */
+
+    TEST_ASSERT_EQUAL_UINT8(0, ff_feed_count(ff_shell_feed(&H.shell)));
+    TEST_ASSERT_EQUAL_UINT16(0, ff_feed_unread_count(ff_shell_feed(&H.shell)));
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -3899,6 +3984,8 @@ int main(void)
     RUN_TEST(S24_AC1_refused_rally_pushes_no_outgoing_item);
     RUN_TEST(S24_AC1_shell_classifies_inbound_text_direction_via_my_info);
     RUN_TEST(S24_AC1_reply_context_skips_my_own_outgoing_item);
+    RUN_TEST(S24_AC1_composer_send_pushes_outgoing_item);
+    RUN_TEST(S24_AC1_composer_send_refused_pushes_no_item);
 
     return UNITY_END();
 }

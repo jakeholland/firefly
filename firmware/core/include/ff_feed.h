@@ -79,8 +79,9 @@ typedef enum {
  * private-portnum inbound path (PULSE/RALLY/STATUS/FLARE) is UNKNOWN,
  * because `mc_events_t.on_private` does not carry the mesh packet's
  * `to` address to the wiring layer (mc_client.h; plumbing it through is
- * a possible follow-up `[api]` meshclient change, out of this core
- * slice's scope). UNKNOWN is deliberately the zero value so a
+ * issue #123 — an `[api]` meshclient change that should land before or
+ * with S24 slice (c), out of this core slice's scope). UNKNOWN is
+ * deliberately the zero value so a
  * zero-initialized / legacy item is honestly "direction not recorded",
  * never accidentally "broadcast".
  *

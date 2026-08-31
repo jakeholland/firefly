@@ -80,8 +80,8 @@ void ff_wiring_on_private(void *user, uint32_t from, uint32_t portnum, uint8_t c
      * address (mc_client.h), so this layer never learns whether a
      * PULSE/RALLY/STATUS/FLARE was broadcast or addressed to us. Unknown
      * is stored as unknown — never guessed into BROADCAST/DIRECT.
-     * (Plumbing `to` through on_private is a possible follow-up [api]
-     * meshclient change; see ff_feed_dir_t's doc comment.) */
+     * (Plumbing `to` through on_private is issue #123; see
+     * ff_feed_dir_t's doc comment.) */
     switch (type) {
     case FF_PROTO_TYPE_PULSE:
         wiring_push_if_paired(w, from, FEED_PULSE, FEED_DIR_UNKNOWN, NULL, 0);
