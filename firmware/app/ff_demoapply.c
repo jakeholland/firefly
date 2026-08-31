@@ -1,12 +1,18 @@
 /**
- * ff_demoapply.c — see ff_demoapply.h. S23 slice (c): map a content-free
- * ff_demofeed event onto a demo crew node id + demo string, and apply it
- * through the shell's real mesh-inbound seam.
+ * ff_demoapply.c — see ff_demoapply.h. S23 slice (c)/(d): map a content-free
+ * ff_demofeed event onto a demo crew node id, resolve its content, and apply
+ * it through the shell's real mesh-inbound seam.
  *
- * Everything here is CONFIG_FF_DEMO_MODE demo content (ff_demoapply.h's
- * honest-data note): reachable on device only from app_main.c's demo block,
- * dead-stripped from a field build, and it writes no core state directly —
- * it hands honest inbound events to the same path a radio drives.
+ * Content splits two ways (ff_demoapply.h's honest-data note, S23 AC5):
+ *  - FESTIVAL content — a RALLY's place name + lat/lon — is sourced from the
+ *    loaded demo festpack (ff_demo_rally_point), never hardcoded.
+ *  - SYNTHETIC chatter — the conversational string table below — is invented
+ *    demo filler (crew traffic), not festival data, and demo-gated.
+ *
+ * Everything here is CONFIG_FF_DEMO_MODE demo content: reachable on device
+ * only from app_main.c's demo block, dead-stripped from a field build, and it
+ * writes no core state directly — it hands honest inbound events to the same
+ * path a radio drives.
  */
 #include "ff_demoapply.h"
 
@@ -34,13 +40,20 @@ uint32_t const *ff_demo_live_node_ids(uint8_t *out_count)
 }
 
 /* ---------------------------------------------------------------------
- * Demo string table (text_ref -> string).
+ * Demo chatter table (text_ref -> string).
  *
- * FF_DEMOFEED_TEXT_REF_COUNT (16) fictional festival chatter lines, each
- * <= FF_PROTO_STATUS_MAX (20) bytes so the SAME string is valid whether it
- * is used as a TEXT body, a STATUS, or a RALLY name (the encoders truncate,
- * but keeping them short means no line is silently clipped). Fictional
- * only — never real festival content (S23 AC5 / S05).
+ * FF_DEMOFEED_TEXT_REF_COUNT (16) SYNTHETIC conversational one-liners used as
+ * a TEXT body or a STATUS. Each is <= FF_PROTO_STATUS_MAX (20) bytes so it is
+ * valid as either without being silently clipped.
+ *
+ * This is demo-gated crew FILLER, NOT festival content: it invents no place,
+ * stage, or landmark name (those come from the festpack — see
+ * ff_demo_rally_point). So S23 AC5's "festival content is festpack-sourced"
+ * rule doesn't bite here; this is the demo-gated exempt category the spec's
+ * AC5 calls out (compiled out of any field build via the gating in
+ * ff_demoapply.h). Keeping it in C, not the festpack, is deliberate: the
+ * general fp_pack schema has no chatter field and these are fake strings
+ * either way.
  * ------------------------------------------------------------------- */
 static char const *const FF_DEMO_TEXTS[FF_DEMOFEED_TEXT_REF_COUNT] = {
     "on my way!",         /* 0  */
@@ -105,7 +118,8 @@ bool ff_demo_apply_plan(ff_demo_event_t const *ev, uint32_t const *node_ids, uin
     case FEED_RALLY:
         out->dispatch = FF_DEMO_DISPATCH_PRIVATE;
         out->proto_type = FF_PROTO_TYPE_RALLY;
-        out->text = ff_demo_text_ref(ev->text_ref);
+        out->text = NULL; /* a rally's place name is festpack-sourced (S23 AC5),
+                             resolved in ff_demo_apply_event, not from text_ref */
         break;
     case FEED_PULSE:
         out->dispatch = FF_DEMO_DISPATCH_PRIVATE;
@@ -129,16 +143,41 @@ bool ff_demo_apply_plan(ff_demo_event_t const *ev, uint32_t const *node_ids, uin
 }
 
 /* ---------------------------------------------------------------------
+ * Festpack-sourced rally point (festival content — S23 AC5).
+ * ------------------------------------------------------------------- */
+
+/* The demo festpack's meetup landmark id. The demo layer legitimately knows
+ * its OWN pack's landmark ids (as it knows FF_DEMO_NODE_*); the NAME and
+ * POSITION it resolves still come from the pack, not a literal here. */
+#define FF_DEMO_RALLY_LANDMARK_ID "firefly-tower"
+
+bool ff_demo_rally_point(fp_pack_t const *pack, ff_latlon_t *out_at, char const **out_name)
+{
+    if (pack == NULL || out_at == NULL || out_name == NULL) return false;
+    if (!pack->origin_known) return false; /* no honest place to point at */
+
+    /* Position: the venue origin (the meetup landmark sits at the origin). */
+    *out_at = pack->origin;
+
+    /* Name: the meetup landmark by id, else the first landmark, else the
+     * festival name — every candidate is festpack data. */
+    char const *name = (pack->n_landmarks > 0) ? pack->landmarks[0].name : pack->name;
+    for (uint8_t i = 0; i < pack->n_landmarks; i++) {
+        if (strcmp(pack->landmarks[i].id, FF_DEMO_RALLY_LANDMARK_ID) == 0) {
+            name = pack->landmarks[i].name;
+            break;
+        }
+    }
+    *out_name = name;
+    return true;
+}
+
+/* ---------------------------------------------------------------------
  * Apply (glue) — encode + drive the mesh-inbound seam.
  * ------------------------------------------------------------------- */
 
-/* Rally point for a synthetic RALLY signal — The Firefly Tower, the demo
- * venue origin / meetup landmark (matches ff_demo.c's origin). */
-#define FF_DEMO_LIVE_RALLY_LAT 43.7000
-#define FF_DEMO_LIVE_RALLY_LON (-121.5000)
-
 void ff_demo_apply_event(mc_events_t const *ev, ff_demo_event_t const *event, uint32_t const *node_ids,
-                         uint8_t member_count)
+                         uint8_t member_count, fp_pack_t const *pack)
 {
     if (ev == NULL) return;
 
@@ -164,8 +203,12 @@ void ff_demo_apply_event(mc_events_t const *ev, ff_demo_event_t const *event, ui
             n = ff_proto_encode_flare(buf, sizeof(buf), FF_DEMO_LIVE_FLARE_DUR_S);
             break;
         case FF_PROTO_TYPE_RALLY: {
-            ff_latlon_t const at = {FF_DEMO_LIVE_RALLY_LAT, FF_DEMO_LIVE_RALLY_LON};
-            n = ff_proto_encode_rally(buf, sizeof(buf), at, (plan.text != NULL) ? plan.text : "");
+            /* Place name AND position from the demo festpack (S23 AC5). No
+             * honest place (no pack / unknown origin) => send no rally. */
+            ff_latlon_t at;
+            char const *name = NULL;
+            if (!ff_demo_rally_point(pack, &at, &name)) return;
+            n = ff_proto_encode_rally(buf, sizeof(buf), at, (name != NULL) ? name : "");
             break;
         }
         case FF_PROTO_TYPE_STATUS:

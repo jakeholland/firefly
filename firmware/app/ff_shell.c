@@ -674,6 +674,10 @@ static void shell_ev_my_info(void *u, uint32_t my_node_id)
     sh->my_node_id = my_node_id;
     sh->has_my_node_id = true;
 
+    /* S24 AC1 — the wiring needs to know who "me" is to classify an
+     * inbound text addressed to a specific node as DIRECT vs UNKNOWN. */
+    ff_wiring_set_self_node(&sh->wiring, my_node_id);
+
     /* PR #46 review caveat, closed here (slice b2): if our own NodeInfo
      * arrived BEFORE this callback named us — whichever order the radio
      * picked — shell_ev_node could not recognise it as ours and noted
@@ -1516,6 +1520,79 @@ static void shell_render_key(ff_app_state_t const *v, ff_app_state_t *key)
     for (uint16_t i = key->signals.row_count; i < FF_SIGVIEW_MAX_ROWS; i++) {
         memset(&key->signals.rows[i], 0, sizeof(key->signals.rows[i]));
     }
+
+    /* #flare-repeat-dismiss — the takeover is OPAQUE in the render key.
+     *
+     * While a takeover is up it is the ONLY thing rendered: both
+     * targets/esp32s3/main/ff_face.c and targets/sim/face_dispatch.c build
+     * the full-screen takeover and return before touching any face beneath
+     * it. So the rendered screen is a pure function of the takeover's own
+     * fields — a moving radar arrow, an aging signals row, or a fresh feed
+     * item from the busy live demo (ff_sigview_build reads the feed every
+     * tick) changes no pixel.
+     *
+     * Keying on the whole projection there made every such underlying
+     * change a dirty frame, and the device answers a dirty frame with
+     * lv_obj_clean()+rebuild — which destroys and recreates the takeover's
+     * DISMISS button. Under the live demo's steady feed/presence churn that
+     * ran many times a second, and any DISMISS tap whose press and release
+     * straddled a rebuild was dropped by LVGL (its pressed object had been
+     * deleted): the "second flare won't dismiss" report. (It also restarted
+     * the takeover's attention animation every frame, so it never played.)
+     *
+     * So reduce the key, while takeover_active, to exactly the fields
+     * ff_scr_flare_build_takeover renders (headline sender name, the
+     * bearing/distance read, and the GO-drops-lock disclosure) — NOT the
+     * countdown, which that screen does not draw. The takeover tree, and
+     * its live DISMISS button, is then rebuilt only when the takeover
+     * itself changes, never from anything beneath it. Kept stack-cheap
+     * (small locals, not a second ff_app_state_t — see ff_shell_tick's note
+     * on why a full copy is unsafe on this stack) and in the same
+     * normalize-the-key spirit as the coarsening above. This changes only
+     * the dirty comparison; the alert haptic (shell_ev_private's
+     * should_alert path) is independent of the key and is untouched. */
+    if (v->flare.takeover_active) {
+        char from[sizeof(key->flare.takeover_from_name)];
+        char dist[sizeof(key->flare.takeover_dist_str)];
+        char locked_from[sizeof(key->flare.locked_from_name)];
+        bool const b_valid = v->flare.takeover_bearing_valid;
+        /* Key bearing on the RENDERED octant, not the raw float. The
+         * takeover draws bearing ONLY as ff_flare_fmt_compass8's 1-of-8
+         * compass point (scr_flare.c) — a 45-degree bucket — while the
+         * projected takeover_bearing_deg is recomputed every tick from live
+         * positions (ff_geo_bearing_deg), so keying the raw float (even
+         * quantized to 0.1 degree) repainted on sub-octant jitter that
+         * moves no glyph: on device that repaint is an lv_obj_clean+rebuild
+         * that destroys the DISMISS button mid-tap — the same clobber this
+         * change exists to stop, from a second live source. So fold the
+         * bearing to its octant index exactly the way ff_flare_fmt_compass8
+         * does (that formatter is the rendered authority; this mirrors its
+         * [0,360) normalization + half-bucket-shift floor divide), and use
+         * a -1 sentinel when the bearing is not valid so a valid<->unknown
+         * transition — which DOES change the drawn line — still dirties.
+         * (takeover_dist_str is already the formatted string, so it keys
+         * itself; this gives bearing the same rendered-projection footing.) */
+        float b_octant;
+        if (b_valid) {
+            float const a = ff_geo_wrap_deg(v->flare.takeover_bearing_deg);
+            b_octant = (float)((int)((a + 22.5f) / 45.0f) % 8); /* 0..7, mirrors ff_flare_fmt_compass8 */
+        } else {
+            b_octant = -1.0f; /* sentinel distinct from every 0..7 octant */
+        }
+        bool const locked = v->flare.locked;
+        memcpy(from, v->flare.takeover_from_name, sizeof(from));
+        memcpy(dist, v->flare.takeover_dist_str, sizeof(dist));
+        memcpy(locked_from, v->flare.locked_from_name, sizeof(locked_from));
+
+        memset(key, 0, sizeof(*key));
+        key->flare.takeover_active = true;
+        memcpy(key->flare.takeover_from_name, from, sizeof(from));
+        key->flare.takeover_bearing_valid = b_valid;
+        key->flare.takeover_bearing_deg = b_octant;
+        memcpy(key->flare.takeover_dist_str, dist, sizeof(dist));
+        key->flare.locked = locked;
+        memcpy(key->flare.locked_from_name, locked_from, sizeof(locked_from));
+    }
 }
 
 /* ---------------------------------------------------------------------
@@ -2204,7 +2281,22 @@ void ff_shell_intent(ff_shell_t *sh_pub, ff_intent_t const *in)
          * the reply chips live on the Signals tile. */
         if (takeover_up) return;
         {
-            ff_feed_item_t const *ctx = (ff_feed_count(&sh->feed) > 0) ? ff_feed_at(&sh->feed, 0) : NULL;
+            /* S24 amendment to the "newest feed item" rule: outgoing
+             * items (FEED_DIR_OUT, from_node 0) now live in the feed too,
+             * and a reply's context must stay the newest thing RECEIVED —
+             * replying to my own just-sent "omw" would resolve its
+             * from_node of 0 to a broadcast the user never chose. Skip
+             * OUT items; the newest inbound item is the same item the
+             * pre-S24 rule picked. */
+            ff_feed_item_t const *ctx = NULL;
+            uint8_t const fn = ff_feed_count(&sh->feed);
+            for (uint8_t i = 0; i < fn; ++i) {
+                ff_feed_item_t const *it = ff_feed_at(&sh->feed, i);
+                if (it != NULL && it->dir != FEED_DIR_OUT) {
+                    ctx = it;
+                    break;
+                }
+            }
             (void)ff_wiring_send_canned_reply(&sh->wiring, in->u.reply, ctx);
         }
         return;
@@ -2243,7 +2335,14 @@ void ff_shell_intent(ff_shell_t *sh_pub, ff_intent_t const *in)
                  * not the literal 0 mc_send_text would misread). */
                 uint32_t const dest = (sh->compose_to_node != 0u) ? sh->compose_to_node : MC_ADDR_BROADCAST;
                 if (sh->wiring.sender.send_text != NULL) {
-                    (void)sh->wiring.sender.send_text(sh->wiring.sender.ctx, dest, text);
+                    int const rc = sh->wiring.sender.send_text(sh->wiring.sender.ctx, dest, text);
+                    if (rc == 0) {
+                        /* S24 — the composer's sent text lands in the feed
+                         * as FEED_DIR_OUT (S08's long-promised "sent item
+                         * appears in feed", now with an honest direction so
+                         * ff_inbox can side it). Accepted sends only. */
+                        ff_wiring_push_outgoing(&sh->wiring, FEED_TEXT, dest, text);
+                    }
                 }
                 /* A sent message ends the compose session — S08's "sent
                  * item appears in feed... " reads as returning to Signals
@@ -2450,7 +2549,13 @@ void ff_shell_intent(ff_shell_t *sh_pub, ff_intent_t const *in)
             uint8_t buf[FF_PROTO_MAX_PAYLOAD];
             int const n = ff_proto_encode_pulse(buf, sizeof buf);
             if (n > 0 && sh->wiring.sender.send_private != NULL) {
-                (void)sh->wiring.sender.send_private(sh->wiring.sender.ctx, dest, buf, (size_t)n);
+                int const rc = sh->wiring.sender.send_private(sh->wiring.sender.ctx, dest, buf, (size_t)n);
+                if (rc == 0) {
+                    /* S24 — my own send lands in the feed (FEED_DIR_OUT)
+                     * so the thread shows both sides. Only an ACCEPTED
+                     * send; a refused one fabricates nothing. */
+                    ff_wiring_push_outgoing(&sh->wiring, FEED_PULSE, dest, NULL);
+                }
                 shell_sig_reset_target(sh); /* AC3 */
             }
         }
@@ -2489,7 +2594,13 @@ void ff_shell_intent(ff_shell_t *sh_pub, ff_intent_t const *in)
             uint8_t buf[FF_PROTO_MAX_PAYLOAD];
             int const n = ff_proto_encode_rally(buf, sizeof buf, pos, name);
             if (n > 0 && sh->wiring.sender.send_private != NULL) {
-                (void)sh->wiring.sender.send_private(sh->wiring.sender.ctx, dest, buf, (size_t)n);
+                int const rc = sh->wiring.sender.send_private(sh->wiring.sender.ctx, dest, buf, (size_t)n);
+                if (rc == 0) {
+                    /* S24 — outgoing rally in the feed, carrying the same
+                     * place name that went on the wire (both sides of the
+                     * thread; accepted sends only). */
+                    ff_wiring_push_outgoing(&sh->wiring, FEED_RALLY, dest, name);
+                }
                 shell_sig_reset_target(sh); /* AC3 */
             }
         }

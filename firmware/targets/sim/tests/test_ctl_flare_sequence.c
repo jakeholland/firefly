@@ -543,11 +543,137 @@ static void ctl_wall_sets_bench_time_honestly(void)
     lv_deinit();
 }
 
+/* The live-demo report: inbound flares arrive repeatedly; the FIRST
+ * takeover's DISMISS works, a SECOND one will not dismiss. Drives it the
+ * only way that can catch a render-lifecycle / stale-object / stale-hit-
+ * target bug the pure ff_shell_intent path (test_shell.c's
+ * flare_second_takeover_dismisses) cannot: TWO flares in a row, each
+ * DISMISSed with a REAL ctl tap whose coordinates are discovered from the
+ * actually-built LVGL tree, through the same rebuild-on-dirty loop the
+ * device runs. If the second takeover's DISMISS button is missing, stale,
+ * or covered by a leftover object, ctl_tap_button either fails to find it
+ * or the tap lands on nothing and takeover_active stays true. */
+static void flare_second_takeover_dismisses_via_real_tap(void)
+{
+    static ff_shell_t shell;
+    static fp_pack_t pack;
+    static ff_ctl_loop_ctx_t ctx;
+
+    ff_shell_cfg_t shell_cfg;
+    memset(&shell_cfg, 0, sizeof(shell_cfg));
+
+    ff_ctl_loop_cfg_t cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.mock_clock = true;
+
+    TEST_ASSERT_EQUAL_INT(0, ff_ctl_loop_open(&ctx, &shell, &pack, &shell_cfg, &cfg));
+
+    bool quit_flag = false;
+    ff_ctl_handlers_t h = ff_ctl_loop_handlers(&ctx, &quit_flag);
+    ctl_settle(&ctx, &h);
+
+    char resp[FF_CTL_MAX_RESP];
+
+    /* --- FIRST flare (member A) -> takeover -> real DISMISS tap -------- */
+    ctl_send(&h, "{\"cmd\":\"flare\",\"from\":55834,\"dur_s\":300}", resp, sizeof(resp)); /* 0xDA1A */
+    ctl_settle(&ctx, &h);
+    TEST_ASSERT_TRUE(ff_shell_flare(&shell)->takeover_active);
+
+    lv_obj_t *dismiss1 = find_button_with_label(lv_screen_active(), "DISMISS");
+    TEST_ASSERT_NOT_NULL_MESSAGE(dismiss1, "first takeover DISMISS button not found");
+    ctl_tap_button(&ctx, &h, dismiss1);
+    TEST_ASSERT_FALSE_MESSAGE(ff_shell_flare(&shell)->takeover_active, "first DISMISS did not clear the takeover");
+
+    /* --- SECOND flare (a DIFFERENT member B) -> takeover -> DISMISS ---- */
+    ctl_send(&h, "{\"cmd\":\"flare\",\"from\":52960,\"dur_s\":300}", resp, sizeof(resp)); /* 0xCEE0 */
+    ctl_settle(&ctx, &h);
+    TEST_ASSERT_TRUE_MESSAGE(ff_shell_flare(&shell)->takeover_active, "second flare did not raise a takeover");
+
+    lv_obj_t *dismiss2 = find_button_with_label(lv_screen_active(), "DISMISS");
+    TEST_ASSERT_NOT_NULL_MESSAGE(dismiss2,
+                                 "second takeover DISMISS button not found — screen did not rebuild the takeover");
+    ctl_tap_button(&ctx, &h, dismiss2);
+    TEST_ASSERT_FALSE_MESSAGE(ff_shell_flare(&shell)->takeover_active,
+                              "SECOND DISMISS did not clear the takeover (the on-glass report)");
+
+    /* --- THIRD flare, the SAME member A again (the demo repeats) ------- */
+    ctl_send(&h, "{\"cmd\":\"flare\",\"from\":55834,\"dur_s\":300}", resp, sizeof(resp));
+    ctl_settle(&ctx, &h);
+    TEST_ASSERT_TRUE_MESSAGE(ff_shell_flare(&shell)->takeover_active, "repeat flare from member A did not take over");
+
+    lv_obj_t *dismiss3 = find_button_with_label(lv_screen_active(), "DISMISS");
+    TEST_ASSERT_NOT_NULL_MESSAGE(dismiss3, "repeat-member takeover DISMISS button not found");
+    ctl_tap_button(&ctx, &h, dismiss3);
+    TEST_ASSERT_FALSE_MESSAGE(ff_shell_flare(&shell)->takeover_active, "repeat-member DISMISS did not clear");
+
+    ff_ctl_loop_close(&ctx);
+    ff_shell_close(&shell);
+    lv_deinit();
+}
+
+/* The takeover's attention pulse (S10 "flare to grab attention") actually
+ * animates — guarded, not trusted. The mark is a full-puck container whose
+ * opacity breathes from LV_OPA_COVER down to a floor and back; here we
+ * build the takeover, advance the mock clock into the down-ramp, and assert
+ * the mark's opacity has dropped below full. A no-op animation (or a future
+ * refactor that drops lv_anim_start) leaves it pinned at COVER and fails.
+ * The resting frame staying == golden is covered separately by the golden
+ * suite (flare_takeover.png), which renders at frozen tick 0. */
+static void flare_takeover_mark_pulse_animates(void)
+{
+    static ff_shell_t shell;
+    static fp_pack_t pack;
+    static ff_ctl_loop_ctx_t ctx;
+
+    ff_shell_cfg_t shell_cfg;
+    memset(&shell_cfg, 0, sizeof(shell_cfg));
+
+    ff_ctl_loop_cfg_t cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.mock_clock = true;
+
+    TEST_ASSERT_EQUAL_INT(0, ff_ctl_loop_open(&ctx, &shell, &pack, &shell_cfg, &cfg));
+
+    bool quit_flag = false;
+    ff_ctl_handlers_t h = ff_ctl_loop_handlers(&ctx, &quit_flag);
+    ctl_settle(&ctx, &h);
+
+    char resp[FF_CTL_MAX_RESP];
+    ctl_send(&h, "{\"cmd\":\"flare\",\"from\":55834,\"dur_s\":300}", resp, sizeof(resp));
+    ctl_settle(&ctx, &h);
+    TEST_ASSERT_TRUE(ff_shell_flare(&shell)->takeover_active);
+
+    /* The takeover puck is the screen's child; the animated mark container
+     * is that puck's first child (built before the headline/buttons). */
+    lv_obj_t *puck = lv_obj_get_child(lv_screen_active(), 0);
+    TEST_ASSERT_NOT_NULL_MESSAGE(puck, "takeover puck not found");
+    lv_obj_t *mark = lv_obj_get_child(puck, 0);
+    TEST_ASSERT_NOT_NULL_MESSAGE(mark, "takeover mark container not found");
+
+    /* Advance ~400 ms — comfortably into the 750 ms down-ramp — pumping the
+     * LVGL timers so the animation actually steps. */
+    for (int i = 0; i < 8; i++) {
+        ctl_clock_advance(&h, 50);
+        lv_timer_handler();
+    }
+    lv_refr_now(ctx.disp);
+
+    lv_opa_t const opa = lv_obj_get_style_opa(mark, 0);
+    TEST_ASSERT_LESS_THAN_UINT_MESSAGE(LV_OPA_COVER, opa,
+                                       "takeover mark opacity never dropped — the attention pulse is not animating");
+
+    ff_ctl_loop_close(&ctx);
+    ff_shell_close(&shell);
+    lv_deinit();
+}
+
 int main(void)
 {
     UNITY_BEGIN();
 
     RUN_TEST(S16_AC10_draft_typed_flare_injected_takeover_clears_draft_survives);
+    RUN_TEST(flare_second_takeover_dismisses_via_real_tap);
+    RUN_TEST(flare_takeover_mark_pulse_animates);
     RUN_TEST(S16_d_idle_ticks_never_rebuild_the_screen);
     RUN_TEST(ctl_swipe_actually_changes_the_face);
     RUN_TEST(ctl_hold_opens_settings_but_short_hold_does_not);

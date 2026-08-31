@@ -1097,6 +1097,270 @@ static void S16_AC3b_send_text_and_back_rejected_during_takeover_draft_survives(
 }
 
 /* =================================================================== */
+/* Repeat-flare dismiss (the live-demo report): a SECOND takeover must  */
+/* be dismissable, and — the render-lifecycle half — arming a second    */
+/* takeover after dismissing the first must mark the frame DIRTY so the */
+/* device tears down the resting face and rebuilds the takeover (with a */
+/* live DISMISS button). app_main only calls lv_obj_clean + rebuild on  */
+/* a dirty tick; if the render key does not distinguish "resting face"  */
+/* from "a fresh takeover", the takeover LVGL tree is never (re)built    */
+/* and its DISMISS never becomes live — the on-glass symptom.           */
+/* =================================================================== */
+
+/* The shell's render key is file-private, so re-derive the device's
+ * rebuild decision the way app_main does: capture the view, and treat a
+ * tick whose dirty bit is true as "the device rebuilt this frame". These
+ * tests assert on ff_shell_tick's own return value (the dirty bit) plus
+ * the projected takeover state — exactly the two inputs app_main's
+ * lv_obj_clean+ff_face_build path consumes. */
+static void flare_second_takeover_dismisses(void)
+{
+    harness_init(100000u, false);
+    inject_my_info(MY_ID);
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, true));
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, KEV_ID, true));
+
+    ff_intent_t const dismiss = {.kind = FF_INTENT_TAKEOVER_DISMISS, .u = {0}};
+
+    /* First flare (member A) -> takeover, and the frame is dirty so the
+     * device builds the takeover face. */
+    inject_flare(DANA, 300);
+    TEST_ASSERT_TRUE(ff_shell_tick(&H.shell, H.clk.t));
+    TEST_ASSERT_TRUE(ff_shell_flare(&H.shell)->takeover_active);
+
+    /* First dismiss clears it, and the frame is dirty (takeover -> resting
+     * face rebuild). The report says this one works. */
+    ff_shell_intent(&H.shell, &dismiss);
+    TEST_ASSERT_TRUE(ff_shell_tick(&H.shell, H.clk.t));
+    TEST_ASSERT_FALSE(ff_shell_flare(&H.shell)->takeover_active);
+
+    /* Second flare, a DIFFERENT member (B). This is the frame that must be
+     * dirty: the device has to tear down the resting face and rebuild the
+     * takeover so its DISMISS button exists and is wired. */
+    advance(1000u);
+    inject_flare(KEV_ID, 300);
+    TEST_ASSERT_TRUE(ff_shell_tick(&H.shell, H.clk.t));       /* dirty: a new takeover is on screen */
+    TEST_ASSERT_TRUE(ff_shell_flare(&H.shell)->takeover_active);
+
+    /* Second dismiss — the reported failure. */
+    ff_shell_intent(&H.shell, &dismiss);
+    TEST_ASSERT_TRUE(ff_shell_tick(&H.shell, H.clk.t));
+    TEST_ASSERT_FALSE(ff_shell_flare(&H.shell)->takeover_active);
+
+    /* The demo repeats members: the SAME member A flares again. Still a
+     * distinct dirty takeover, still dismissable. */
+    advance(1000u);
+    inject_flare(DANA, 300);
+    TEST_ASSERT_TRUE(ff_shell_tick(&H.shell, H.clk.t));
+    TEST_ASSERT_TRUE(ff_shell_flare(&H.shell)->takeover_active);
+
+    ff_shell_intent(&H.shell, &dismiss);
+    TEST_ASSERT_TRUE(ff_shell_tick(&H.shell, H.clk.t));
+    TEST_ASSERT_FALSE(ff_shell_flare(&H.shell)->takeover_active);
+}
+
+/* The render-lifecycle guard, stated as its own property so a regression
+ * that reintroduces the on-glass bug fails HERE even if the pure-state
+ * test above still passes: dismissing a takeover and IMMEDIATELY arming a
+ * new one (same member, identical 300 s duration — the coarsened
+ * takeover countdown is byte-identical between the two) MUST still make
+ * BOTH the dismiss frame and the re-arm frame dirty. If the render key
+ * failed to distinguish the two takeover instances, the re-arm frame
+ * would be clean and the device would keep showing the resting face with
+ * no live DISMISS. */
+static void flare_rearm_after_dismiss_is_dirty(void)
+{
+    harness_init(100000u, false);
+    inject_my_info(MY_ID);
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, true));
+
+    ff_intent_t const dismiss = {.kind = FF_INTENT_TAKEOVER_DISMISS, .u = {0}};
+
+    inject_flare(DANA, 300);
+    TEST_ASSERT_TRUE(ff_shell_tick(&H.shell, H.clk.t)); /* first takeover built */
+
+    ff_shell_intent(&H.shell, &dismiss);
+    TEST_ASSERT_TRUE(ff_shell_tick(&H.shell, H.clk.t)); /* torn down to resting face */
+    TEST_ASSERT_FALSE(ff_shell_flare(&H.shell)->takeover_active);
+
+    /* Re-arm with the SAME sender and SAME duration, no clock advance: the
+     * takeover countdown coarsens to the identical whole-second value the
+     * first takeover had. The ONLY honest difference is "a takeover is up
+     * now, and a moment ago it was not" — which the render key must carry
+     * as a dirty frame. */
+    inject_flare(DANA, 300);
+    TEST_ASSERT_TRUE(ff_shell_tick(&H.shell, H.clk.t)); /* MUST be dirty: rebuild the takeover */
+    TEST_ASSERT_TRUE(ff_shell_flare(&H.shell)->takeover_active);
+
+    ff_shell_intent(&H.shell, &dismiss);
+    TEST_ASSERT_TRUE(ff_shell_tick(&H.shell, H.clk.t));
+    TEST_ASSERT_FALSE(ff_shell_flare(&H.shell)->takeover_active);
+}
+
+/* THE ROOT CAUSE, isolated (the on-glass "second dismiss won't work").
+ *
+ * When a takeover is up it is the ONLY thing rendered — both the device
+ * (targets/esp32s3/main/ff_face.c) and the sim (targets/sim/
+ * face_dispatch.c) build the full-screen takeover and NOTHING beneath it.
+ * So the rendered screen is a pure function of the takeover's own fields;
+ * a changing radar arrow, an aging signals row, or a fresh feed item from
+ * the busy live demo changes no pixel.
+ *
+ * The render key, though, keyed on the WHOLE projection. So all that
+ * underlying churn (the live demo pushes feed items and jitters presence
+ * continuously — ff_sigview_build reads the feed every tick) marked every
+ * frame dirty. The device answers a dirty frame by lv_obj_clean() +
+ * rebuild, which DESTROYS and recreates the takeover's DISMISS button. Run
+ * that many times a second and any DISMISS tap whose press and release
+ * straddle a rebuild is dropped by LVGL (its pressed object was deleted) —
+ * the dismiss is lost. The first takeover often lands in a quiet moment;
+ * by the second the demo's feed is churning steadily, so the takeover is
+ * torn down continuously and the tap can't survive: "the second one won't
+ * dismiss."
+ *
+ * The fix makes the takeover OPAQUE in the render key: while it is up, the
+ * key depends only on the takeover-rendered fields, so the takeover tree —
+ * and its live DISMISS button — is rebuilt only when the takeover ITSELF
+ * changes, never from anything beneath it. This test pins that property,
+ * with the AC4a-style positive control that keeps it honest. */
+static void flare_takeover_is_opaque_to_underlying_churn(void)
+{
+    harness_init(100000u, false);
+    inject_my_info(MY_ID);
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, true));
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, KEV_ID, true));
+    /* Distinct projected names so the takeover headline actually differs
+     * between the two senders (positive control A below leans on that). */
+    inject_node(DANA, "DANA", U_EVENING);
+    inject_node(KEV_ID, "KEV", U_EVENING);
+
+    ff_intent_t const dismiss = {.kind = FF_INTENT_TAKEOVER_DISMISS, .u = {0}};
+
+    /* Raise a takeover from DANA and let it settle to a stable frame. */
+    inject_flare(DANA, 300);
+    TEST_ASSERT_TRUE(ff_shell_tick(&H.shell, H.clk.t)); /* dirty: takeover built */
+    TEST_ASSERT_TRUE(ff_shell_flare(&H.shell)->takeover_active);
+    advance(20u);
+    TEST_ASSERT_FALSE(ff_shell_tick(&H.shell, H.clk.t)); /* stable takeover: nothing to redraw */
+
+    /* Underlying churn while the takeover covers the screen: a fresh
+     * inbound signal from KEV (grows the feed, moves the signals view) and
+     * time advancing (ages move). None of it is rendered. The frame MUST
+     * NOT be dirty — a rebuild here is exactly what clobbers the live
+     * DISMISS button mid-press. */
+    advance(1000u);
+    inject_text(KEV_ID, "where you at");
+    TEST_ASSERT_FALSE_MESSAGE(ff_shell_tick(&H.shell, H.clk.t),
+                              "underlying activity rebuilt the takeover — its DISMISS button would be clobbered");
+    advance(1000u);
+    inject_pulse(KEV_ID);
+    TEST_ASSERT_FALSE_MESSAGE(ff_shell_tick(&H.shell, H.clk.t),
+                              "a second underlying signal rebuilt the takeover");
+
+    /* Positive control A: a change to the TAKEOVER's OWN appearance — a
+     * new flare from a DIFFERENT sender (headline name changes) — IS
+     * dirty, so the reduction has not disabled genuine takeover repaints. */
+    advance(1000u);
+    inject_flare(KEV_ID, 300);
+    TEST_ASSERT_TRUE_MESSAGE(ff_shell_tick(&H.shell, H.clk.t),
+                             "a new sender's takeover did not repaint — DISMISS would show the wrong person");
+    TEST_ASSERT_TRUE(ff_shell_flare(&H.shell)->takeover_active);
+
+    /* Positive control B: dismissing (takeover -> underlying face) IS
+     * dirty — the screen must rebuild back to what was beneath. */
+    ff_shell_intent(&H.shell, &dismiss);
+    TEST_ASSERT_TRUE(ff_shell_tick(&H.shell, H.clk.t));
+    TEST_ASSERT_FALSE(ff_shell_flare(&H.shell)->takeover_active);
+
+    /* Positive control C: the SAME underlying activity that was inert
+     * under the takeover DOES dirty the frame with no takeover up — proving
+     * the assertions above are the takeover's opacity, not a dead dirty
+     * bit (the AC4a proxy discipline). */
+    advance(1000u);
+    inject_text(KEV_ID, "still here");
+    TEST_ASSERT_TRUE_MESSAGE(ff_shell_tick(&H.shell, H.clk.t),
+                             "an inbound signal did not dirty the frame even with NO takeover up — dead dirty bit");
+}
+
+/* The bearing half of the same defect (PR #120 review, BLOCKING). The
+ * takeover draws bearing ONLY as ff_flare_fmt_compass8's 1-of-8 compass
+ * point (a 45-degree bucket), but takeover_bearing_deg is recomputed every
+ * tick from live positions — so keying the raw float (even at 0.1 degree)
+ * repaints on sub-octant jitter that moves no glyph, and on device that
+ * repaint destroys the DISMISS button mid-tap: the exact clobber, from a
+ * second live source. So the render key must fold bearing to its RENDERED
+ * octant.
+ *
+ * A SUB-OCTANT sender move (bearing changes but the drawn compass point
+ * does not) must NOT dirty; a CROSS-OCTANT move (the drawn point changes)
+ * MUST. All three positions sit on the same 400 m radius so the rendered
+ * distance string is identical across them — isolating bearing as the only
+ * thing that could move. This bites the old raw-float keying: 308->332 deg
+ * is a 24-degree swing that a 0.1-degree key reports dirty (FAIL); the
+ * octant key keeps it clean (PASS). */
+static void flare_takeover_bearing_keys_the_rendered_octant(void)
+{
+    harness_init(100000u, false);
+    inject_my_info(MY_ID);
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, true));
+    inject_node(DANA, "DANA", U_EVENING);
+
+    ff_latlon_t const me = {39.0, -82.0};
+    ff_shell_set_my_pos(&H.shell, me);
+
+    ff_intent_t const dismiss = {.kind = FF_INTENT_TAKEOVER_DISMISS, .u = {0}};
+
+    /* DANA at P1: bearing ~308 deg (NW), 400 m out. Flare -> takeover with a
+     * valid bearing. */
+    inject_position(DANA, U_EVENING, 39.002215, -82.003648);
+    inject_flare(DANA, 300);
+    TEST_ASSERT_TRUE(ff_shell_tick(&H.shell, H.clk.t)); /* takeover built */
+    TEST_ASSERT_TRUE(ff_shell_flare(&H.shell)->takeover_active);
+    TEST_ASSERT_TRUE_MESSAGE(ff_shell_view(&H.shell)->flare.takeover_bearing_valid,
+                             "bearing did not resolve — test needs both positions to compute a bearing");
+
+    /* Capture the rendered distance; P2 keeps DANA on the same radius so
+     * this string does not change — the guard that a NOT-dirty result below
+     * is the octant holding, not the distance masking a real bearing move. */
+    char dist_p1[sizeof(ff_shell_view(&H.shell)->flare.takeover_dist_str)];
+    strncpy(dist_p1, ff_shell_view(&H.shell)->flare.takeover_dist_str, sizeof(dist_p1) - 1u);
+    dist_p1[sizeof(dist_p1) - 1u] = '\0';
+    float const bearing_p1 = ff_shell_view(&H.shell)->flare.takeover_bearing_deg;
+    TEST_ASSERT_TRUE(bearing_p1 >= 292.5f && bearing_p1 < 337.5f); /* NW bucket */
+
+    advance(20u);
+    TEST_ASSERT_FALSE(ff_shell_tick(&H.shell, H.clk.t)); /* settle: stable takeover */
+
+    /* SUB-OCTANT move -> P2: bearing ~332 deg, still NW, still 400 m. */
+    advance(1000u);
+    inject_position(DANA, U_EVENING + 1u, 39.003176, -82.002173);
+    bool const dirty_sub = ff_shell_tick(&H.shell, H.clk.t);
+    float const bearing_p2 = ff_shell_view(&H.shell)->flare.takeover_bearing_deg;
+    /* Preconditions: the bearing really did move (a real sub-octant swing)
+     * but stayed in the NW bucket, and the distance string held. */
+    TEST_ASSERT_TRUE(bearing_p2 >= 292.5f && bearing_p2 < 337.5f);   /* still NW */
+    TEST_ASSERT_TRUE((bearing_p2 - bearing_p1) > 10.0f);             /* a genuine swing, not a no-op */
+    TEST_ASSERT_EQUAL_STRING(dist_p1, ff_shell_view(&H.shell)->flare.takeover_dist_str);
+    TEST_ASSERT_FALSE_MESSAGE(dirty_sub,
+                              "a sub-octant bearing move rebuilt the takeover — DISMISS would be clobbered mid-tap");
+
+    /* CROSS-OCTANT move -> P3: bearing ~349 deg = N. The drawn compass point
+     * changes NW -> N, so this MUST repaint. */
+    advance(1000u);
+    inject_position(DANA, U_EVENING + 2u, 39.003531, -82.000883);
+    bool const dirty_cross = ff_shell_tick(&H.shell, H.clk.t);
+    float const bearing_p3 = ff_shell_view(&H.shell)->flare.takeover_bearing_deg;
+    TEST_ASSERT_TRUE(bearing_p3 >= 337.5f || bearing_p3 < 22.5f); /* N bucket */
+    TEST_ASSERT_TRUE_MESSAGE(dirty_cross,
+                             "a cross-octant bearing move did not repaint — the drawn compass point is stale");
+
+    /* And it still dismisses. */
+    ff_shell_intent(&H.shell, &dismiss);
+    TEST_ASSERT_TRUE(ff_shell_tick(&H.shell, H.clk.t));
+    TEST_ASSERT_FALSE(ff_shell_flare(&H.shell)->takeover_active);
+}
+
+/* =================================================================== */
 /* AC4(a) — the dirty bit over the RENDERED projection                  */
 /* =================================================================== */
 
@@ -1126,16 +1390,24 @@ static void S16_AC4a_dirty_is_the_rendered_projection_not_the_raw_struct(void)
      * against what a raw whole-struct comparison would have said, on the
      * same frames.
      *
-     * The scene has exactly two rendered quantities that move with time:
-     * the takeover countdown (whole seconds, what flare_fmt prints) and
-     * the feed item's age_str. Each crosses at most once per second, so
-     * over N seconds at 50 Hz the shell may report at most 2N changes —
-     * while the raw struct differs on every single tick, because
-     * takeover_expires_in_ms drops by 20 every time. */
+     * The scene has exactly one rendered quantity that moves with time:
+     * a paired member's feed item age_str (whole seconds, what ff_fmt_age
+     * prints on the Signals face). It crosses at most once per second, so
+     * over N seconds at 50 Hz the shell may report at most N changes —
+     * while the raw struct differs on every single tick, because the
+     * signals row's raw age_ms advances by 20 every time.
+     *
+     * (Earlier this scene used an inbound flare and keyed on the takeover
+     * countdown — but the receive takeover screen renders no countdown at
+     * all, so that was a change to a NON-rendered field: exactly the
+     * over-keying #flare-repeat-dismiss removed. A flare here now also
+     * makes the takeover opaque, freezing the very per-second change this
+     * measurement needs, so the scene uses a plain rendered feed age.) */
     harness_init(100000u, false);
     inject_my_info(MY_ID);
     TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, true));
-    inject_flare(DANA, 300);
+    inject_node(DANA, "DANA", U_EVENING);
+    inject_text(DANA, "omw"); /* a feed item whose age_str the Signals face renders */
 
     ff_shell_tick(&H.shell, H.clk.t); /* first frame: always dirty */
 
@@ -1160,8 +1432,8 @@ static void S16_AC4a_dirty_is_the_rendered_projection_not_the_raw_struct(void)
     TEST_ASSERT_EQUAL_INT(ticks, raw_dirty);
 
     /* The shell repainted only when something rendered actually changed:
-     * at most one crossing per second per moving string. */
-    TEST_ASSERT_LESS_OR_EQUAL_INT(2 * seconds, shell_dirty);
+     * at most one crossing per second for the single moving string. */
+    TEST_ASSERT_LESS_OR_EQUAL_INT(seconds, shell_dirty);
     /* ...and it did not go silent either — the countdown really is
      * ticking, so at least one change per second must be reported or the
      * screen would freeze with a stale number on it. */
@@ -2948,7 +3220,12 @@ static void S16_AC7_canned_reply_uses_newest_feed_item_or_broadcasts(void)
     P.rx_len = n;
     P.rx_pos = 0;
     (void)ff_shell_tick(&H.shell, H.clk.t);
-    TEST_ASSERT_EQUAL_UINT8(1, ff_feed_count(ff_shell_feed(&H.shell)));
+    /* 2 items as of S24: the broadcast OMW above pushed its own OUTGOING
+     * feed item (FEED_DIR_OUT — threads show both sides), plus DANA's
+     * "hey". The newest INBOUND item is what the next reply must target —
+     * the OUT item is context-skipped (see the CANNED_REPLY handler). */
+    TEST_ASSERT_EQUAL_UINT8(2, ff_feed_count(ff_shell_feed(&H.shell)));
+    TEST_ASSERT_EQUAL(FEED_DIR_OUT, ff_feed_at(ff_shell_feed(&H.shell), 1)->dir);
 
     tx_before = P.tx_len;
     ff_shell_intent(&H.shell, &in); /* the identical OMW intent */
@@ -3385,6 +3662,228 @@ static void S47_replay_absent_precision_renders_normally_not_degraded(void)
     TEST_ASSERT_FALSE(ff_shell_view(&H.shell)->radar.dist_imprecise);
 }
 
+/* =================================================================== */
+/* S24 slice a — AC1: direction at the shell's push sites               */
+/* =================================================================== */
+
+/* An accepted PULSE send pushes its own OUTGOING feed item — dir OUT,
+ * to_node = the resolved destination (member id, or 0 for the whole-crew
+ * broadcast), unread false (my own send is never a badge). */
+static void S24_AC1_sig_pulse_send_pushes_outgoing_item(void)
+{
+    s22_connect_shell();
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, true));
+
+    ff_intent_t sel = {.kind = FF_INTENT_SIG_SELECT_MEMBER, .u = {0}};
+    sel.u.node_id = DANA;
+    ff_shell_intent(&H.shell, &sel);
+
+    ff_intent_t pulse = {.kind = FF_INTENT_SIG_PULSE, .u = {0}};
+    ff_shell_intent(&H.shell, &pulse);
+
+    ff_feed_t const *feed = ff_shell_feed(&H.shell);
+    TEST_ASSERT_EQUAL_UINT8(1, ff_feed_count(feed));
+    ff_feed_item_t const *it = ff_feed_at(feed, 0);
+    TEST_ASSERT_EQUAL(FEED_PULSE, it->kind);
+    TEST_ASSERT_EQUAL(FEED_DIR_OUT, it->dir);
+    TEST_ASSERT_EQUAL_UINT32(DANA, it->to_node);
+    TEST_ASSERT_EQUAL_UINT32(0u, it->from_node);
+    TEST_ASSERT_FALSE(it->unread);
+    TEST_ASSERT_EQUAL_UINT16(0, ff_feed_unread_count(feed));
+
+    /* The target reset to WHOLE_CREW (AC3) — a second PULSE broadcasts,
+     * and its outgoing item records the whole-crew sentinel to_node 0. */
+    ff_shell_intent(&H.shell, &pulse);
+    TEST_ASSERT_EQUAL_UINT8(2, ff_feed_count(ff_shell_feed(&H.shell)));
+    it = ff_feed_at(ff_shell_feed(&H.shell), 0);
+    TEST_ASSERT_EQUAL(FEED_DIR_OUT, it->dir);
+    TEST_ASSERT_EQUAL_UINT32(0u, it->to_node);
+}
+
+/* An accepted RALLY send pushes an outgoing FEED_RALLY carrying the SAME
+ * place name that went on the wire. */
+static void S24_AC1_rally_send_pushes_outgoing_item_with_place_name(void)
+{
+    s22_connect_shell();
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, true));
+    ff_shell_set_my_pos(&H.shell, (ff_latlon_t){39.7392, -104.9903});
+
+    ff_intent_t sel = {.kind = FF_INTENT_SIG_SELECT_MEMBER, .u = {0}};
+    sel.u.node_id = DANA;
+    ff_shell_intent(&H.shell, &sel);
+
+    ff_intent_t rally = {.kind = FF_INTENT_SIG_RALLY, .u = {0}};
+    ff_shell_intent(&H.shell, &rally); /* member rally: first tap sends */
+
+    ff_feed_t const *feed = ff_shell_feed(&H.shell);
+    TEST_ASSERT_EQUAL_UINT8(1, ff_feed_count(feed));
+    ff_feed_item_t const *it = ff_feed_at(feed, 0);
+    TEST_ASSERT_EQUAL(FEED_RALLY, it->kind);
+    TEST_ASSERT_EQUAL(FEED_DIR_OUT, it->dir);
+    TEST_ASSERT_EQUAL_UINT32(DANA, it->to_node);
+    /* No pack loaded -> the honest default name, same as the wire body
+     * (S22_AC4_rally_to_member_sends_first_tap decodes the packet). */
+    TEST_ASSERT_EQUAL_STRING("MY SPOT", it->text);
+    TEST_ASSERT_FALSE(it->unread);
+}
+
+/* A REFUSED send (rally with unknown own position) pushes nothing —
+ * the outgoing item exists only for a message that was actually
+ * accepted for transmission. */
+static void S24_AC1_refused_rally_pushes_no_outgoing_item(void)
+{
+    s22_connect_shell();
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, true));
+    /* my_pos deliberately unset. */
+    ff_intent_t sel = {.kind = FF_INTENT_SIG_SELECT_MEMBER, .u = {0}};
+    sel.u.node_id = DANA;
+    ff_shell_intent(&H.shell, &sel);
+
+    ff_intent_t rally = {.kind = FF_INTENT_SIG_RALLY, .u = {0}};
+    ff_shell_intent(&H.shell, &rally);
+
+    TEST_ASSERT_EQUAL_UINT8(0, ff_feed_count(ff_shell_feed(&H.shell)));
+}
+
+/* The shell hands its my_info node id to the wiring, so an inbound text
+ * addressed to US classifies as DIRECT — and one addressed to a THIRD
+ * party stays honestly UNKNOWN (never guessed DIRECT or BROADCAST). */
+static void S24_AC1_shell_classifies_inbound_text_direction_via_my_info(void)
+{
+    harness_init(100000u, false);
+    inject_my_info(MY_ID);
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, true));
+
+    H.ev.on_text(H.ev.user, DANA, MY_ID, "for you", 7);
+    H.ev.on_text(H.ev.user, DANA, MC_ADDR_BROADCAST, "for all", 7);
+    H.ev.on_text(H.ev.user, DANA, KEV_ID, "for kev", 7);
+
+    ff_feed_t const *feed = ff_shell_feed(&H.shell);
+    TEST_ASSERT_EQUAL_UINT8(3, ff_feed_count(feed));
+    TEST_ASSERT_EQUAL(FEED_DIR_UNKNOWN, ff_feed_at(feed, 0)->dir);   /* third party */
+    TEST_ASSERT_EQUAL(FEED_DIR_BROADCAST, ff_feed_at(feed, 1)->dir);
+    TEST_ASSERT_EQUAL(FEED_DIR_DIRECT, ff_feed_at(feed, 2)->dir);    /* addressed to me */
+}
+
+/* Proxy check on the reply-context amendment: after replying once (which
+ * pushes MY outgoing "omw" as the newest feed item), replying AGAIN must
+ * still target the newest INBOUND sender — under the old ff_feed_at(0)
+ * rule the context would be my own OUT item (from_node 0) and the reply
+ * would be misaddressed to node 0. */
+static void S24_AC1_reply_context_skips_my_own_outgoing_item(void)
+{
+    s22_connect_shell();
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, true));
+
+    size_t n = frame_text_packet(P.rx, sizeof(P.rx), DANA, "hey");
+    P.rx_len = n;
+    P.rx_pos = 0;
+    (void)ff_shell_tick(&H.shell, H.clk.t);
+    TEST_ASSERT_EQUAL_UINT8(1, ff_feed_count(ff_shell_feed(&H.shell)));
+
+    ff_intent_t in = {.kind = FF_INTENT_CANNED_REPLY, .u = {0}};
+    in.u.reply = FF_WIRING_REPLY_OMW;
+
+    size_t tx_before = P.tx_len;
+    ff_shell_intent(&H.shell, &in);
+    TEST_ASSERT_GREATER_THAN_size_t(tx_before, P.tx_len);
+    TEST_ASSERT_EQUAL_UINT32(DANA, decode_packet_to(P.tx + tx_before, P.tx_len - tx_before));
+    /* The reply pushed an outgoing item — it is now the newest. */
+    TEST_ASSERT_EQUAL_UINT8(2, ff_feed_count(ff_shell_feed(&H.shell)));
+    TEST_ASSERT_EQUAL(FEED_DIR_OUT, ff_feed_at(ff_shell_feed(&H.shell), 0)->dir);
+
+    /* Reply again: still DANA, not node 0 / broadcast. */
+    tx_before = P.tx_len;
+    ff_shell_intent(&H.shell, &in);
+    TEST_ASSERT_GREATER_THAN_size_t(tx_before, P.tx_len);
+    TEST_ASSERT_EQUAL_UINT32(DANA, decode_packet_to(P.tx + tx_before, P.tx_len - tx_before));
+}
+
+/* An accepted composer SEND pushes its own OUTGOING feed item — the
+ * fourth and last send site (PR #122 review: this one had no coverage,
+ * and deleting its push left the whole suite green — the exact hole
+ * where slice (c)'s 1:1 thread would show quick-chip replies while
+ * composed texts silently vanish). Same S16_c3 real-pipeline drive:
+ * OPEN_COMPOSE -> type via T9 intents -> SEND, for BOTH destinations —
+ * broadcast (to_node 0) and an explicit member (to_node DANA). */
+static void S24_AC1_composer_send_pushes_outgoing_item(void)
+{
+    s22_connect_shell();
+
+    /* Broadcast half FIRST, before anyone is paired — S16_c3's own
+     * ordering, for the same reason (a paired DANA would become the
+     * crew's self-healing selection and this half would pass for the
+     * wrong reason). */
+    ff_intent_t open = {.kind = FF_INTENT_OPEN_COMPOSE, .u = {0}};
+    ff_shell_intent(&H.shell, &open);
+    ff_intent_t to_abc = {.kind = FF_INTENT_T9_MODE, .u = {0}};
+    ff_shell_intent(&H.shell, &to_abc); /* S08 addendum: PRED -> ABC multitap */
+    ff_intent_t k5 = {.kind = FF_INTENT_T9_KEY, .u = {0}};
+    k5.u.t9_key = 5; /* 'j' */
+    ff_shell_intent(&H.shell, &k5);
+    ff_intent_t space = {.kind = FF_INTENT_T9_SPACE, .u = {0}};
+    ff_shell_intent(&H.shell, &space); /* commits -> "j " */
+    ff_intent_t send = {.kind = FF_INTENT_SEND_TEXT, .u = {0}};
+    ff_shell_intent(&H.shell, &send);
+
+    ff_feed_t const *feed = ff_shell_feed(&H.shell);
+    TEST_ASSERT_EQUAL_UINT8(1, ff_feed_count(feed));
+    ff_feed_item_t const *it = ff_feed_at(feed, 0);
+    TEST_ASSERT_EQUAL(FEED_TEXT, it->kind);
+    TEST_ASSERT_EQUAL(FEED_DIR_OUT, it->dir);
+    TEST_ASSERT_EQUAL_UINT32(0u, it->to_node); /* broadcast -> whole-crew sentinel */
+    TEST_ASSERT_EQUAL_UINT32(0u, it->from_node);
+    TEST_ASSERT_EQUAL_STRING("j ", it->text); /* the exact draft that went on the wire */
+    TEST_ASSERT_FALSE(it->unread);
+    TEST_ASSERT_EQUAL_UINT16(0, ff_feed_unread_count(feed)); /* my send is no badge */
+
+    /* Explicit-destination half: OPEN_COMPOSE(DANA) -> to_node == DANA. */
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, true));
+    ff_intent_t open_dana = {.kind = FF_INTENT_OPEN_COMPOSE, .u = {0}};
+    open_dana.u.node_id = DANA;
+    ff_shell_intent(&H.shell, &open_dana);
+    ff_shell_intent(&H.shell, &to_abc);
+    ff_intent_t k2 = {.kind = FF_INTENT_T9_KEY, .u = {0}};
+    k2.u.t9_key = 2; /* 'a' */
+    ff_shell_intent(&H.shell, &k2);
+    ff_shell_intent(&H.shell, &space); /* commits -> "a " */
+    ff_shell_intent(&H.shell, &send);
+
+    TEST_ASSERT_EQUAL_UINT8(2, ff_feed_count(ff_shell_feed(&H.shell)));
+    it = ff_feed_at(ff_shell_feed(&H.shell), 0);
+    TEST_ASSERT_EQUAL(FEED_TEXT, it->kind);
+    TEST_ASSERT_EQUAL(FEED_DIR_OUT, it->dir);
+    TEST_ASSERT_EQUAL_UINT32(DANA, it->to_node);
+    TEST_ASSERT_EQUAL_STRING("a ", it->text);
+    TEST_ASSERT_FALSE(it->unread);
+}
+
+/* A REFUSED composer send pushes nothing: with no transport the shell's
+ * mc_client is never READY, so send_text returns negative — the rc == 0
+ * gate at the SEND_TEXT site must fabricate no "sent" item. (The other
+ * send-site rc gates are pinned by S24_AC1_refused_rally_pushes_no_
+ * outgoing_item and test_wiring's refusing-sender test; this closes the
+ * composer's.) */
+static void S24_AC1_composer_send_refused_pushes_no_item(void)
+{
+    harness_init(100000u, false); /* documented no-transport shell: sends refuse */
+
+    ff_intent_t open = {.kind = FF_INTENT_OPEN_COMPOSE, .u = {0}};
+    ff_shell_intent(&H.shell, &open);
+    ff_intent_t to_abc = {.kind = FF_INTENT_T9_MODE, .u = {0}};
+    ff_shell_intent(&H.shell, &to_abc);
+    ff_intent_t k5 = {.kind = FF_INTENT_T9_KEY, .u = {0}};
+    k5.u.t9_key = 5;
+    ff_shell_intent(&H.shell, &k5);
+    ff_intent_t space = {.kind = FF_INTENT_T9_SPACE, .u = {0}};
+    ff_shell_intent(&H.shell, &space);
+    ff_intent_t send = {.kind = FF_INTENT_SEND_TEXT, .u = {0}};
+    ff_shell_intent(&H.shell, &send); /* draft non-empty: the send IS attempted */
+
+    TEST_ASSERT_EQUAL_UINT8(0, ff_feed_count(ff_shell_feed(&H.shell)));
+    TEST_ASSERT_EQUAL_UINT16(0, ff_feed_unread_count(ff_shell_feed(&H.shell)));
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -3412,6 +3911,11 @@ int main(void)
     RUN_TEST(S16_AC13_active_face_is_never_flare_even_during_a_takeover);
 
     RUN_TEST(S16_AC3b_send_text_and_back_rejected_during_takeover_draft_survives);
+
+    RUN_TEST(flare_second_takeover_dismisses);
+    RUN_TEST(flare_rearm_after_dismiss_is_dirty);
+    RUN_TEST(flare_takeover_is_opaque_to_underlying_churn);
+    RUN_TEST(flare_takeover_bearing_keys_the_rendered_octant);
 
     RUN_TEST(S16_AC4a_idle_shell_is_not_dirty_for_1000_ticks);
     RUN_TEST(S16_AC4a_dirty_is_the_rendered_projection_not_the_raw_struct);
@@ -3474,6 +3978,14 @@ int main(void)
     RUN_TEST(S47_live_fine_precision_renders_normally);
     RUN_TEST(S47_live_absent_precision_renders_normally);
     RUN_TEST(S47_replay_absent_precision_renders_normally_not_degraded);
+
+    RUN_TEST(S24_AC1_sig_pulse_send_pushes_outgoing_item);
+    RUN_TEST(S24_AC1_rally_send_pushes_outgoing_item_with_place_name);
+    RUN_TEST(S24_AC1_refused_rally_pushes_no_outgoing_item);
+    RUN_TEST(S24_AC1_shell_classifies_inbound_text_direction_via_my_info);
+    RUN_TEST(S24_AC1_reply_context_skips_my_own_outgoing_item);
+    RUN_TEST(S24_AC1_composer_send_pushes_outgoing_item);
+    RUN_TEST(S24_AC1_composer_send_refused_pushes_no_item);
 
     return UNITY_END();
 }
