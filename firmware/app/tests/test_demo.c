@@ -179,13 +179,15 @@ void test_S20_feed_seeded(void)
     ff_app_state_t const *v = seed(0);
     ff_feed_t const *feed = ff_shell_feed(&s_shell);
     TEST_ASSERT_EQUAL_UINT8(5, ff_feed_count(feed));   /* status, pulse, rally, omw, message */
-    /* S22 — the Signals view-model projects those into RECENT rows. Count
-     * RECENT rows (row_count also includes the CREW divider + quiet crew). */
-    unsigned recent = 0;
-    for (uint16_t i = 0; i < v->signals.row_count; i++) {
-        if (v->signals.rows[i].kind == FF_SIGROW_RECENT) recent++;
+    /* S24 — the Signals inbox model projects those into conversation
+     * traffic. Sum item_count across conversations (the seeded chatter
+     * must actually reach the model the screen renders, not only the raw
+     * feed). */
+    unsigned items = 0;
+    for (uint8_t i = 0; i < v->signals.inbox.conv_count; i++) {
+        items += v->signals.inbox.convs[i].item_count;
     }
-    TEST_ASSERT_GREATER_THAN_UINT(0, recent);
+    TEST_ASSERT_GREATER_THAN_UINT(0, items);
     ff_shell_close(&s_shell);
 }
 

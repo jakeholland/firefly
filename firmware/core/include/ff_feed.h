@@ -164,7 +164,14 @@ uint8_t ff_feed_count(ff_feed_t const *f);
  */
 ff_feed_item_t const *ff_feed_at(ff_feed_t const *f, uint8_t idx);
 
-/** ff_feed_unread_count — current unread count (drives the Signals page-dot badge). */
+/** ff_feed_unread_count — the feed's own running unread count. S24 note:
+ * this no longer drives anything on-glass — both the Signals header
+ * badge and the nav page-dot badge sum PER-CONVERSATION unread counts
+ * (`ff_scr_signals_unread_count` over the ff_inbox model) instead,
+ * because this total also counts direct items from non-paired senders
+ * that honestly belong to no conversation, and a badge the rows can't
+ * explain would read as a lie. Still the internal bookkeeping the
+ * push/evict/mark-read paths maintain, and still bench/test-visible. */
 uint16_t ff_feed_unread_count(ff_feed_t const *f);
 
 /**

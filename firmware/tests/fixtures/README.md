@@ -19,7 +19,7 @@ keys anywhere are silently skipped, not errors.
 
 **But a PRESENT enum key must carry one of its documented strings**
 (issue #28, orchestrator ruling). `face`, `radar.mode`, `now.state`,
-`signals.rows[].{row,feed_kind,presence}`, `signals.target_kind`, `compose.mode`, and `settings.share_mode` fail
+`signals.subview`, `signals.convs[].{conv,preview_kind,preview_dir,presence}`, `signals.target_kind`, `compose.mode`, and `settings.share_mode` fail
 the whole load with `FF_FIXTURE_ERR_BAD_ENUM` — `*out` fully zeroed, and
 a stderr line naming the bad key and value — when the key is present but
 its value isn't one of that key's documented strings (or isn't a JSON
@@ -35,7 +35,7 @@ truncated snapshot gets the home face, not a blank screen). See
 `face_absent_still_defaults_to_radar`.
 
 **Array caps are enforced fail-loud, not by silent truncation.** A section
-array (`radar.dots`, `now.rows`, `signals.rows`) that exceeds its
+array (`radar.dots`, `now.rows`, `signals.convs`) that exceeds its
 documented cap makes the whole load fail with `FF_FIXTURE_ERR_TOO_BIG` —
 `*out` comes back fully zeroed, same as any other load failure — rather
 than quietly keeping only the first N entries. (Ruled on during PR #12
@@ -160,40 +160,46 @@ proving some times AREN'T unknown read as a self-contradiction at a
 glance. Not a fixture field — `scr_now.c` picks the text from `state`
 itself.
 
-## `signals` (the `ff_sigview_t` view-model, S22)
+## `signals` (the S24 inbox view, `ff_app_signals_t`)
 
-The reworked Signals face renders the core view-model directly, so this
-section describes an `ff_sigview_t` — a `target` plus an ordered `rows`
-list — the same "fixture is a view snapshot" convention `radar` uses (not
-the old flattened `ff_feed_item_t` slice it replaced):
+The Signals face is the S24 INBOX (docs/specs/S24-signals-inbox.md), so
+this section describes an `ff_app_signals_t` — the sub-view selector,
+the core `ff_inbox_t` conversation list, and the kept S22(d) target
+fields — the same "fixture is a view snapshot" convention `radar` uses.
+Conversations are authored in the order the screen shows them (the
+model's own AC2 ordering; a fixture is a snapshot, it does not re-sort):
 
 ```json
 "signals": {
-  "target_kind": "whole_crew",
-  "target_node": 0,
-  "rows": [
-    {"row": "recent", "feed_kind": "pulse", "identity_known": true,
-     "node_id": 111, "name": "DANA", "initial": "D", "color_idx": 0,
-     "unread": true, "age_ms": 60000},
-    {"row": "divider"},
-    {"row": "crew_quiet", "node_id": 114, "name": "KEV", "initial": "K",
-     "color_idx": 3, "presence": "seen", "age_ms": 300000}
+  "subview": "inbox",
+  "convs": [
+    {"conv": "crew", "unread": 2, "item_count": 5,
+     "preview_kind": "rally", "preview_dir": "broadcast",
+     "preview_text": "Main Stage", "preview_age_ms": 360000,
+     "preview_from": "RILEY"},
+    {"conv": "member", "node_id": 111, "name": "DANA", "initial": "D",
+     "color_idx": 0, "unread": 1, "item_count": 2,
+     "preview_kind": "pulse", "preview_dir": "direct",
+     "preview_age_ms": 60000, "presence": "seen", "presence_age_ms": 60000},
+    {"conv": "member", "node_id": 116, "name": "SAM", "initial": "S",
+     "color_idx": 5, "presence": "linked"}
   ]
 }
 ```
 
 | Field | Values / cap | Default | Notes |
 |---|---|---|---|
-| `target_kind` | `whole_crew` \| `member` | `whole_crew` | The send target. `member` renders the crew-color dot + name + a clear (✕); `whole_crew` renders the cluster glyph and no ✕. |
-| `target_node` | integer | `0` | The targeted member's node id (meaningful iff `target_kind` is `member`). |
-| `rows` | array, up to `FF_SIGVIEW_MAX_ROWS` (41) | `[]` | The unified list, top to bottom — a 42nd entry fails the whole load with `FF_FIXTURE_ERR_TOO_BIG`. |
-| `rows[].row` | `recent` \| `divider` \| `crew_quiet` | `recent` | The row kind. Exactly one `divider` normally separates the two groups; the screen draws it only when quiet crew follow. |
-| `rows[].feed_kind` | `pulse` \| `text` \| `rally` \| `status` \| `flare` | `pulse` | RECENT rows only — selects the kind badge. |
-| `rows[].presence` | `seen` \| `lost` \| `linked` | `seen` | CREW_QUIET rows only — the honest presence category. `seen` renders `SEEN <age>` (age from `age_ms` via `ff_fmt_age`), `lost` renders `LOST` in the stale tint, `linked` renders `LINKED` (no age). |
-| `rows[].identity_known` | bool | `true` | A RECENT row with `false` (and `node_id` 0) is an explicitly-unknown sender — shown but NOT a selectable recipient. CREW_QUIET is always a known, paired member. |
-| `rows[].node_id` / `name` / `initial` / `color_idx` | int / string / 1-char / int | `0` / `""` / `''` / `0` | Joined crew identity; `node_id` 0 makes a RECENT row non-selectable. |
-| `rows[].unread` | bool | `false` | RECENT rows — drives the amber accent bar + dot and the header unread count. |
-| `rows[].age_ms` | integer (ms) | `0` | RECENT: age of the feed item. CREW_QUIET: the presence sighting age (meaningful for `seen`/`lost`). Formatted at render time by `ff_fmt_age`. |
+| `subview` | `inbox` \| `picker` \| `thread` \| `popup` \| `rally` | `inbox` | Which Signals sub-screen renders. `thread` is a slice-(b) stub; `popup`/`rally` are declared slice-(d) placeholders that fall back to the inbox render. |
+| `thread_node` / `thread_name` / `thread_color_idx` | int / string / int | `0` / `""` / `0` | The open thread's scope (meaningful for `subview: "thread"`); node 0 = the CREW conversation. |
+| `target_kind` / `target_node` / `rally_confirm_armed` | enum / int / bool | `whole_crew` / `0` / `false` | The kept S22(d) send-machinery state (not rendered by slice b; slice d's popup/rally surfaces read it). |
+| `convs` | array, up to `FF_INBOX_MAX_CONVS` (9) | `[]` | The conversation list, top to bottom — a 10th entry fails the whole load with `FF_FIXTURE_ERR_TOO_BIG`. |
+| `convs[].conv` | `crew` \| `member` | `crew` | The conversation kind. The CREW row is always present in a live projection. |
+| `convs[].node_id` / `name` / `initial` / `color_idx` | int / string / 1-char / int | `0` / `""` / `''` / `0` | Member identity (from the paired roster). CREW carries none. |
+| `convs[].unread` | integer | `0` | This conversation's unread count — drives its numbered amber badge and the header/page-dot sums. |
+| `convs[].item_count` | integer | `0` | Total items in the conversation. **Derives `has_preview`** (`item_count > 0`) — the model's own invariant, not separately authorable. |
+| `convs[].preview_kind` / `preview_dir` / `preview_text` / `preview_age_ms` | enum / enum / string / int | `pulse` / `unknown` / `""` / `0` | The newest item. `preview_dir` is `unknown` \| `broadcast` \| `direct` \| `out` — `out` renders the honest `YOU:` prefix. Age formatted at render time by `ff_fmt_age`. |
+| `convs[].preview_from` | string | *(absent)* | The newest item's joined sender name. **Its presence derives `preview_from_known`** — the CREW row's sender prefix; omit it for an unknown/outgoing sender (never fabricate one). |
+| `convs[].presence` / `presence_age_ms` | enum / int | `seen` / `0` | Member rows only (**`presence_valid` derives from `conv: "member"`**): `seen` renders `SEEN <age>` in stale-amber, `lost` renders `LOST` in stale-amber, `linked` renders `LINKED` (no age) — the legible tier (S24 AC3). |
 
 ## `flare` (S10 slice b)
 

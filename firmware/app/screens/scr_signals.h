@@ -1,42 +1,55 @@
 /**
- * scr_signals.h — app/screens: the Signals face (S22 rework).
+ * scr_signals.h — app/screens: the Signals face (S24 inbox rework).
  *
- * Pure rendering of the core Signals view-model
- * (`ff_sigview_t`, core/include/ff_sigview.h): a unified, scrolling list
- * of RECENT feed rows + a `· CREW ·` divider + quiet crew rows (each with
- * an honest presence label), an always-visible send-target line, and the
- * three kind-colored action buttons RALLY / PULSE / COMPOSE. No domain
- * logic here (CLAUDE.md: "UI code only renders core state and forwards
- * input"): the view-model — ordering, identity joins, presence categories,
- * and the persistent target — is all computed in core and owned by the
- * shell (app/ff_shell.c builds one `ff_sigview_t` per tick); this screen
- * only projects it and forwards intents (app/include/ff_intent.h):
+ * Pure rendering of the S24 Signals view (`ff_app_signals_t`,
+ * app/include/ff_app_state.h): the shell owns the sub-view state and
+ * builds the core conversation model (`ff_inbox_t`, core/include/
+ * ff_inbox.h) into the view each tick; this file only projects whichever
+ * sub-view is named and forwards intents (app/include/ff_intent.h). No
+ * domain logic here (CLAUDE.md: "UI code only renders core state and
+ * forwards input") — ordering, membership, unread counts, identity joins
+ * and presence categories are all core's (`ff_inbox_build`).
  *
- *   - every selectable row emits `FF_INTENT_SIG_SELECT_MEMBER` (its crew
- *     node id) — the shell validates it against the roster and updates the
- *     view-model's target;
- *   - the target line's clear (✕) emits `FF_INTENT_SIG_CLEAR_TARGET`;
- *   - RALLY / PULSE / COMPOSE emit `FF_INTENT_SIG_RALLY` / `_PULSE` /
- *     `_COMPOSE`. This slice (b) only EMITS/ROUTES them; the real
- *     `ff_proto` send + rally-to-crew confirm are slice (d).
+ * Sub-views rendered by this slice (b):
+ *   - INBOX  — the conversation list (spec screen 1): big full-bleed
+ *     rows (CREW + one per paired member), numbered unread badges, honest
+ *     presence for quiet members, and the solid-amber `+` FAB bleeding
+ *     off the bottom-right rim. A row tap emits
+ *     `FF_INTENT_INBOX_OPEN_THREAD` (u.node_id: 0 = CREW); the FAB emits
+ *     `FF_INTENT_INBOX_NEW`.
+ *   - PICKER — the recipient picker (the FAB's scope step): CREW pinned
+ *     + each paired member in the same big-row style; a row emits
+ *     `FF_INTENT_INBOX_PICK`; back emits `FF_INTENT_BACK`.
+ *   - THREAD — a minimal, honest STUB (scope name + real signal count +
+ *     back); the full message-list render is slice (c)'s. POPUP/RALLY
+ *     are slice (d) placeholders — nothing routes to them yet and they
+ *     fall back to the inbox render (see ff_app_state.h's
+ *     ff_sig_subview_t).
  *
- * ## Round-glass layout (the repeated lesson — PR #25/#86, S21)
- * Chrome is pinned ABOVE a bottom-anchored scroll list, the shape S21
- * settled on for Settings and the ONLY shape the `test_face_hit_targets.c`
- * sweep accepts for a list whose every row is a tap target: a clickable
- * control docked BELOW an overflowing clickable-row list collides, in the
- * sweep's scroll-invariant raw-rect adjacency pass, with the rows that
- * overflow past the viewport at scroll 0. So the send target line + the
- * three action buttons sit between the header and the list (not below it,
- * as the canvas mockup drew them), and the list is the bottom-most
- * clickable band — its overflow extends into the empty space by the bottom
- * pole, colliding with nothing. Every band's x-inset is derived from its
- * worst-case y via `ff_layout_safe_margin_x`, never flat offsets.
+ * ## Round-glass layout notes (the repeated lessons — PR #25/#86, S21/S22)
+ * Chrome (the non-clickable header / the pinned back button) sits above a
+ * bottom-anchored scroll list; every band's x-inset derives from its own
+ * worst-case y via `ff_layout_safe_margin_x`, never flat offsets. Two
+ * S24-specific reconciliations between the design canvas and the
+ * `test_face_hit_targets.c` sweep, both documented at the constants that
+ * implement them:
+ *   - rows are VISUALLY touching (the canvas's 68px full-bleed pitch) but
+ *     each row's actual tap target is inset 4px top/bottom, so adjacent
+ *     hit-rects keep the 8px adjacency floor;
+ *   - the FAB's decorative amber disc bleeds off the rim; its off-glass
+ *     spill is masked back to letterbox black by a border-only RIM RING
+ *     drawn over it — NOT by `style_clip_corner`, which hangs this
+ *     project's software renderer (measured by bisect; see
+ *     scr_signals.c's signals_build_fab section comment) — so nothing
+ *     paints outside the glass silhouette. Its 48px TAP TARGET sits
+ *     fully on-glass, and every row's hit-rect stops 8px short of the
+ *     FAB's column so the two can never violate the adjacency floor at
+ *     any scroll offset.
  */
 #ifndef FF_SCR_SIGNALS_H
 #define FF_SCR_SIGNALS_H
 
-#include "ff_app_state.h" /* ff_app_state_t -> ff_sigview_t (the field type) */
+#include "ff_app_state.h" /* ff_app_signals_t — the S24 view this projects */
 #include "lvgl.h"
 
 #ifdef __cplusplus
@@ -47,23 +60,27 @@ extern "C" {
  * ff_scr_signals_build — render `*v` into `parent` (expected to be
  * `FF_THEME_PUCK_PX` square — the shell, scr_nav.c, hands it a tileview
  * tile sized to the puck, same convention as `ff_scr_radar_build`).
- * `colorblind` selects the crew-color palette (member dots / target dot),
- * threaded through the same way `ff_scr_radar_build` takes it.
+ * `colorblind` selects the crew-color palette (avatars / the CREW
+ * cluster), threaded the same way `ff_scr_radar_build` takes it.
  *
- * A NULL `v` renders nothing. An otherwise-empty view (no recent rows and
- * no quiet crew — only the structural divider) renders an honest empty
- * state in the list band, never a fabricated sample row (CLAUDE.md).
+ * A NULL `v` renders nothing. Edge states render honestly (S24 AC9):
+ * no paired crew -> the CREW row plus a "no crew linked yet" hint; crew
+ * with no traffic -> quiet rows with presence and a CREW "no signals
+ * yet" preview; everyone stale -> the legible stale treatment (presence
+ * text in the stale-amber tier, never the dimmest gray).
  */
-void ff_scr_signals_build(lv_obj_t *parent, ff_sigview_t const *v, bool colorblind);
+void ff_scr_signals_build(lv_obj_t *parent, ff_app_signals_t const *v, bool colorblind);
 
 /**
- * ff_scr_signals_unread_count — how many RECENT rows in `v` are unread.
- * A presentational tally over the already-computed rows (each row's
- * `unread` is core's decision, not this function's) — exposed so the nav
- * chrome's Signals page-dot badge (scr_nav.c) and this face's own header
- * badge count the same thing from the one source. 0 when `v` is NULL.
+ * ff_scr_signals_unread_count — the sum of every conversation's unread
+ * count in `v`'s inbox model. A presentational tally over the
+ * already-computed model (each conversation's `unread` is core's
+ * decision, not this function's) — exposed so the nav chrome's Signals
+ * page-dot badge (scr_nav.c) and this face's own header badge count the
+ * same thing from the one source. 0 when `v` is NULL. Saturates at
+ * UINT16_MAX.
  */
-uint16_t ff_scr_signals_unread_count(ff_sigview_t const *v);
+uint16_t ff_scr_signals_unread_count(ff_app_signals_t const *v);
 
 #ifdef __cplusplus
 }

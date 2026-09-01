@@ -165,6 +165,33 @@ typedef enum {
      * renderer must not carry the target itself). */
     FF_INTENT_SIG_SELECT_MEMBER, FF_INTENT_SIG_CLEAR_TARGET,
     FF_INTENT_SIG_RALLY, FF_INTENT_SIG_PULSE, FF_INTENT_SIG_COMPOSE,
+    /* [api] S24 slice b — the Signals inbox -> thread navigation seam
+     * (docs/specs/S24-signals-inbox.md). The Signals face is now the S24
+     * INBOX (a projection of `ff_inbox_t`); these three intents are its
+     * whole navigation seam. Appended, so no existing intent's numeric
+     * value moves. All three carry a conversation key in `u.node_id`
+     * where noted: 0 = the CREW conversation, nonzero = that member's
+     * node id — the ff_inbox convention (a member conversation never has
+     * node 0), so no second enum crosses this layering-free header.
+     *
+     * INBOX_OPEN_THREAD — a conversation row tap. The shell switches the
+     * Signals sub-view to THREAD scoped to that conversation, marks that
+     * conversation's items read (`ff_inbox_mark_thread_read` — S24 AC4's
+     * mark-read-on-open lives on this transition), and sets the S22(d)
+     * send target to the thread's scope ("the open thread IS the send
+     * scope"). Payload: u.node_id.
+     *
+     * INBOX_NEW — the inbox's `+` FAB. Opens the RECIPIENT PICKER
+     * sub-view (the spec's "inbox + first opens a scope step"). No
+     * payload.
+     *
+     * INBOX_PICK — a recipient-picker row tap (CREW or one member).
+     * Payload: u.node_id. In slice (d) this routes to the action popup
+     * scoped to the pick; until then the shell routes it to the thread
+     * for that scope (same handling as OPEN_THREAD), so the picker is a
+     * real, honest navigation today and only the shell-side routing
+     * changes when the popup lands — the emit site does not. */
+    FF_INTENT_INBOX_OPEN_THREAD, FF_INTENT_INBOX_NEW, FF_INTENT_INBOX_PICK,
 } ff_intent_kind_t;
 
 /**
@@ -202,7 +229,9 @@ typedef struct {
          *  (ff_route.h's `ff_route_swipe` doc has the full warning). */
         int8_t swipe_dir;
         ff_wiring_canned_reply_t reply;         /* CANNED_REPLY */
-        /** SELECT_CREW, OPEN_COMPOSE, SIG_SELECT_MEMBER. For OPEN_COMPOSE:
+        /** SELECT_CREW, OPEN_COMPOSE, SIG_SELECT_MEMBER,
+         *  INBOX_OPEN_THREAD, INBOX_PICK (S24: a conversation key —
+         *  0 = CREW, nonzero = that member's node id). For OPEN_COMPOSE:
          *  an explicit destination, or 0 = none given, which the shell
          *  resolves per S08's Behavior ("TO = selected crew member") — the
          *  currently selected paired member if there is one, else broadcast.

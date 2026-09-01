@@ -103,6 +103,18 @@ typedef struct {
     ff_target_kind_t sig_target_kind;
     uint32_t         sig_target_node;
 
+    /* S24 slice b — the Signals SUB-VIEW state (inbox / picker / thread;
+     * popup + rally arrive in slices c/d): which sub-screen the Signals
+     * face shows, plus the open thread's conversation key (0 = CREW —
+     * the ff_inbox convention). Persistent for the same reason the
+     * target holder above is (the view is memset per tick); mutated only
+     * by the INBOX_* / BACK intent handlers and re-validated against the
+     * roster each projection (a thread of a member who unpaired falls
+     * back to the inbox honestly). Leaving the Signals face resets to
+     * INBOX — a fresh entry always lands on the inbox. */
+    ff_sig_subview_t sig_subview;
+    uint32_t         sig_thread_node;
+
     /* S22 slice d — the RALLY-to-WHOLE_CREW confirm state machine (AC4:
      * "the one loud broadcast requires a confirm"). A first RALLY tap while
      * the target is WHOLE_CREW ARMS the confirm (`sig_rally_armed`, stamped
@@ -1039,39 +1051,65 @@ static void shell_project_flare(shell_t const *sh, uint32_t now_ms, ff_app_flare
     }
 }
 
-/* S22 slice b: the Signals face renders the core view-model directly, so the
- * projection builds it straight into the view (the RADAR precedent —
- * `ff_radar_compute(&sh->view.radar, ...)`) and then re-applies the shell's
- * tiny persistent target. `ff_sigview_build` seeds a fresh WHOLE_CREW target,
- * so the re-apply is what carries the send target across the per-tick view
- * memset. Routing it through `ff_sigview_target_select` RE-VALIDATES the
- * member against the current roster every tick — a member who unpaired/left
- * cleanly falls back to WHOLE_CREW rather than lingering as a stale target.
- * Age formatting and identity/presence rendering all live in the screen
- * (ff_fmt_age, ff_theme_crew_color), off the raw fields the view carries —
- * deliberately, so there is one age-formatter in the tree (the S22-a honesty
- * note). `sh` is non-const here (it may downgrade its own target holder on a
- * failed re-validation) unlike the other projectors — see its caller. */
-static void shell_project_signals(shell_t *sh, uint32_t now_ms, ff_sigview_t *out)
+/* shell_member_paired — the one roster predicate the Signals projection and
+ * intent handlers share: does `node_id` name a currently-PAIRED member? */
+static bool shell_member_paired(shell_t const *sh, uint32_t node_id)
 {
-    ff_sigview_build(out, &sh->feed, &sh->crew, now_ms);
-    if (sh->sig_target_kind == FF_TARGET_MEMBER &&
-        !ff_sigview_target_select(out, &sh->crew, sh->sig_target_node)) {
-        /* The targeted member is no longer paired/known — fall back honestly,
-         * and remember it so the target line stops showing a gone member. */
+    ff_crew_member_t const *m = ff_crew_find(&sh->crew, node_id);
+    return node_id != 0u && m != NULL && m->paired;
+}
+
+/* S24 slice b: the Signals face is the INBOX now, so the projection builds
+ * the core conversation model straight into the view (the RADAR / S22(b)
+ * precedent — build into the view, tiny persistent state only) and then
+ * projects the shell's persistent sub-view + thread scope + S22(d) target
+ * holders. Everything is RE-VALIDATED against the current roster each tick:
+ * a thread (or a send target) naming a member who unpaired/left falls back
+ * honestly rather than lingering. Age/presence FORMATTING lives in the
+ * screen (ff_fmt_age — one age-formatter in the tree, the S22-a honesty
+ * note); this only carries the raw model. `sh` is non-const (it may
+ * downgrade its own holders on a failed re-validation) unlike the other
+ * projectors — see its caller. */
+static void shell_project_signals(shell_t *sh, uint32_t now_ms, ff_app_signals_t *out)
+{
+    ff_inbox_build(&out->inbox, &sh->feed, &sh->crew, now_ms);
+
+    /* Re-validate an open MEMBER thread (node 0 = CREW, always valid). */
+    if (sh->sig_subview == FF_SIG_SUB_THREAD && sh->sig_thread_node != 0u &&
+        !shell_member_paired(sh, sh->sig_thread_node)) {
+        sh->sig_subview     = FF_SIG_SUB_INBOX;
+        sh->sig_thread_node = 0u;
+    }
+    out->subview     = sh->sig_subview;
+    out->thread_node = sh->sig_thread_node;
+    if (sh->sig_subview == FF_SIG_SUB_THREAD) {
+        if (sh->sig_thread_node == 0u) {
+            shell_copy_str(out->thread_name, sizeof(out->thread_name), "CREW");
+        } else {
+            /* Looked up at projection time (the compose to_name precedent)
+             * so a NodeInfo rename mid-thread is reflected; a paired member
+             * whose name never arrived projects "" and renders honestly. */
+            ff_crew_member_t const *m = ff_crew_find(&sh->crew, sh->sig_thread_node);
+            shell_copy_str(out->thread_name, sizeof(out->thread_name), (m != NULL) ? m->name : "");
+            out->thread_color_idx = (m != NULL) ? m->color_idx : 0u;
+        }
+    }
+
+    /* S22(d) send machinery, kept for slice (d): re-validate the member
+     * target against the roster (a gone member falls back to WHOLE_CREW),
+     * expire a lapsed RALLY-to-WHOLE_CREW confirm (S22 AC4: a forgotten
+     * first tap must not lurk armed forever), and project both. */
+    if (sh->sig_target_kind == FF_TARGET_MEMBER && !shell_member_paired(sh, sh->sig_target_node)) {
         sh->sig_target_kind = FF_TARGET_WHOLE_CREW;
         sh->sig_target_node = 0u;
     }
+    out->target_kind = sh->sig_target_kind;
+    out->target_node = sh->sig_target_node;
 
-    /* S22 slice d — expire a lapsed RALLY-to-WHOLE_CREW confirm (AC4: a
-     * forgotten first tap must not lurk armed forever), then reflect the
-     * live armed flag into the view the screen renders. The state machine
-     * itself is driven by the RALLY/PULSE/COMPOSE/SELECT/CLEAR handlers;
-     * this is only the time-based lapse + the per-tick projection of it. */
     if (sh->sig_rally_armed && (now_ms - sh->sig_rally_armed_ms) > FF_SIG_RALLY_CONFIRM_MS) {
         sh->sig_rally_armed = false;
     }
-    ff_sigview_set_rally_confirm_armed(out, sh->sig_rally_armed);
+    out->rally_confirm_armed = sh->sig_rally_armed;
 }
 
 /**
@@ -1351,10 +1389,17 @@ static void shell_project(shell_t *sh, uint32_t now_ms)
      * face_dispatch.c already reads. */
     sh->view.active_face = (sh->route.modal != FF_APP_FACE_NONE) ? sh->route.modal : sh->route.base;
 
-    /* S08 AC3, "unread clears on face view" — the shell's call, not the
-     * screen's, and on the TRANSITION rather than every render. */
-    if (sh->view.active_face == FF_APP_FACE_SIGNALS && sh->prev_face != FF_APP_FACE_SIGNALS) {
-        ff_feed_mark_all_read(&sh->feed);
+    /* S24 supersedes S08 AC3's "unread clears on face view": merely
+     * LOOKING at the inbox no longer marks anything read — that would
+     * zero every conversation badge the inbox exists to show. Unread now
+     * clears PER THREAD, on the open transition (`ff_inbox_mark_thread_
+     * read` in the INBOX_OPEN_THREAD/PICK handlers — S24 AC4), which is
+     * what makes the badges honest. What the face transition still does:
+     * leaving Signals resets the sub-view, so a fresh entry always lands
+     * on the inbox rather than a stale thread/picker. */
+    if (sh->view.active_face != FF_APP_FACE_SIGNALS && sh->prev_face == FF_APP_FACE_SIGNALS) {
+        sh->sig_subview     = FF_SIG_SUB_INBOX;
+        sh->sig_thread_node = 0u;
     }
     sh->prev_face = sh->view.active_face;
 
@@ -1504,21 +1549,32 @@ static void shell_render_key(ff_app_state_t const *v, ff_app_state_t *key)
      * projection on the next real repaint / on re-entry to Settings.) */
     key->settings.brightness_pct = 0;
 
-    /* S22 signals: two normalizations so a still Signals face is stable.
-     * (1) Coarsen every row's raw age_ms to the ff_fmt_age bucket the
-     *     screen actually renders (see shell_coarsen_age_ms) — otherwise
-     *     the ever-advancing age churns the key every tick.
-     * (2) Zero the rows BEYOND row_count. ff_sigview_build fills only the
-     *     first row_count rows and leaves the tail as whatever a previous,
-     *     longer build wrote; that stale tail never renders (the screen
-     *     loops 0..row_count) but WOULD make the memcmp key non-
-     *     deterministic. Normalizing it here keeps the key a pure function
-     *     of what is shown, the same role the coarsening above plays. */
-    for (uint16_t i = 0; i < key->signals.row_count && i < FF_SIGVIEW_MAX_ROWS; i++) {
-        key->signals.rows[i].age_ms = shell_coarsen_age_ms(v->signals.rows[i].age_ms);
+    /* S24 signals (the flare-octant lesson, applied at birth rather than
+     * as a fix): the inbox's key covers exactly its RENDERED projection.
+     * (1) Coarsen every conversation's raw ages to the ff_fmt_age BUCKET
+     *     the screen actually renders (see shell_coarsen_age_ms) — the
+     *     preview age ("6 MIN") and the presence age ("SEEN 2 HR") both
+     *     reach the glass only through ff_fmt_age, so sub-bucket ticking
+     *     must not churn the key (and destroy the row under a finger).
+     *     Presence CATEGORY changes (SEEN->LOST) live in `presence`
+     *     itself, already in the key uncoarsened.
+     * (2) Zero the convs BEYOND conv_count — ff_inbox_build memsets the
+     *     whole struct each build, so today the tail is already zero;
+     *     normalizing anyway keeps the key a pure function of what is
+     *     shown even if a future build stops clearing the tail (the
+     *     ff_sigview stale-tail hazard, pre-empted). */
+    for (uint8_t i = 0; i < key->signals.inbox.conv_count && i < FF_INBOX_MAX_CONVS; i++) {
+        ff_inbox_conv_t *kc = &key->signals.inbox.convs[i];
+        kc->preview_age_ms = shell_coarsen_age_ms(v->signals.inbox.convs[i].preview_age_ms);
+        /* The presence AGE is only ever drawn for SEEN ("SEEN 2 HR");
+         * LOST/LINKED render as bare words, so their age is not part of
+         * the rendered projection at all — keyed as 0, not a bucket. */
+        kc->presence_age_ms = (v->signals.inbox.convs[i].presence == FF_PRESENCE_SEEN)
+                                  ? shell_coarsen_age_ms(v->signals.inbox.convs[i].presence_age_ms)
+                                  : 0u;
     }
-    for (uint16_t i = key->signals.row_count; i < FF_SIGVIEW_MAX_ROWS; i++) {
-        memset(&key->signals.rows[i], 0, sizeof(key->signals.rows[i]));
+    for (uint8_t i = key->signals.inbox.conv_count; i < FF_INBOX_MAX_CONVS; i++) {
+        memset(&key->signals.inbox.convs[i], 0, sizeof(key->signals.inbox.convs[i]));
     }
 
     /* #flare-repeat-dismiss — the takeover is OPAQUE in the render key.
@@ -1919,14 +1975,16 @@ static bool shell_sig_dest(shell_t const *sh, uint32_t *out_dest)
  * shell_sig_reset_target — S22 AC3: after a successful PULSE/RALLY send the
  * target returns to WHOLE_CREW. Resets both the shell's persistent holder
  * (the source of truth, which survives the per-tick view rebuild) and the
- * live view via the named `ff_sigview_target_reset_after_send`, and drops
+ * live view's mirror of it (so a same-frame read sees the reset, the same
+ * immediacy the old ff_sigview_target_reset_after_send call had), and drops
  * any armed rally confirm. */
 static void shell_sig_reset_target(shell_t *sh)
 {
     sh->sig_target_kind = FF_TARGET_WHOLE_CREW;
     sh->sig_target_node = 0u;
     sh->sig_rally_armed = false;
-    ff_sigview_target_reset_after_send(&sh->view.signals);
+    sh->view.signals.target_kind = FF_TARGET_WHOLE_CREW;
+    sh->view.signals.target_node = 0u;
 }
 
 /**
@@ -2160,6 +2218,18 @@ void ff_shell_intent(ff_shell_t *sh_pub, ff_intent_t const *in)
              * c3's; this only keeps the "who" from leaking across two
              * unrelated compose sessions.) */
             sh->compose_to_node = 0u;
+            return;
+        }
+        /* S24 slice b — no modal to pop: BACK steps the Signals sub-view
+         * stack instead (thread/picker -> inbox; the spec's "44px
+         * escapes"). One flat step, not a history: the thread was
+         * reached FROM the inbox (directly or via the picker), and the
+         * inbox is the only honest place either escape lands. A BACK on
+         * the inbox itself — or on any other base face — stays a no-op,
+         * exactly as before. */
+        if (sh->route.base == FF_APP_FACE_SIGNALS && sh->sig_subview != FF_SIG_SUB_INBOX) {
+            sh->sig_subview     = FF_SIG_SUB_INBOX;
+            sh->sig_thread_node = 0u;
         }
         return;
 
@@ -2509,31 +2579,89 @@ void ff_shell_intent(ff_shell_t *sh_pub, ff_intent_t const *in)
         return;
 
     case FF_INTENT_SIG_SELECT_MEMBER:
-        /* S22 slice b — a Signals row tap. Set the send target to that
-         * member. `ff_sigview_target_select` VALIDATES node_id against the
-         * roster (paired only; rejects 0 / unknown / unpaired) — so the shell
-         * trusts the roster, not the tap. On success mirror it into the
-         * persistent holder (the live `view.signals` is rebuilt each tick, so
-         * the holder is what survives); on rejection both stay unchanged.
-         * Takeover-gated like every face intent: the Signals face is not
-         * visible under a takeover, so a stray tap there must not retarget. */
+        /* S22 slice b (S24 note: the S22 screen that emitted this is
+         * retired — nothing emits it today — but the handler stays as
+         * the S22(d) send machinery's programmatic "set the send scope"
+         * seam, VALIDATED against the roster exactly as before: paired
+         * members only, never a trusted tap). Mirrored into the live
+         * view immediately so a same-frame read sees it, matching the
+         * old ff_sigview_target_select behavior. Takeover-gated like
+         * every face intent. */
         if (takeover_up) return;
         /* Changing the target disarms any pending rally-to-WHOLE_CREW
          * confirm (S22 AC4 "anything else disarms"). */
         sh->sig_rally_armed = false;
-        if (ff_sigview_target_select(&sh->view.signals, &sh->crew, in->u.node_id)) {
+        if (shell_member_paired(sh, in->u.node_id)) {
             sh->sig_target_kind = FF_TARGET_MEMBER;
             sh->sig_target_node = in->u.node_id;
+            sh->view.signals.target_kind = FF_TARGET_MEMBER;
+            sh->view.signals.target_node = in->u.node_id;
         }
         return;
 
     case FF_INTENT_SIG_CLEAR_TARGET:
-        /* S22 slice b — the target line's ✕: back to WHOLE_CREW. */
+        /* S22 slice b — back to WHOLE_CREW (see the S24 note above: kept
+         * as the programmatic clear for the S22(d) machinery). */
         if (takeover_up) return;
         sh->sig_rally_armed = false; /* AC4 — an intervening action disarms */
-        ff_sigview_target_clear(&sh->view.signals);
         sh->sig_target_kind = FF_TARGET_WHOLE_CREW;
         sh->sig_target_node = 0u;
+        sh->view.signals.target_kind = FF_TARGET_WHOLE_CREW;
+        sh->view.signals.target_node = 0u;
+        return;
+
+    case FF_INTENT_INBOX_OPEN_THREAD:
+    case FF_INTENT_INBOX_PICK:
+        /* S24 slice b — a conversation row tap (OPEN_THREAD) or a
+         * recipient-picker row tap (PICK). u.node_id is the conversation
+         * key: 0 = CREW, nonzero = that member. Both route to the THREAD
+         * sub-view today; they are DISTINCT intents so slice (d) can
+         * re-route PICK to the action popup by changing only this
+         * handler, never the picker screen (the seam note in
+         * ff_intent.h).
+         *
+         * Three things happen on the open transition, in order:
+         *  1. the send scope becomes the thread ("the open thread IS the
+         *     send scope" — S24's no-desync rule), through the S22(d)
+         *     holders the send machinery already reads;
+         *  2. the thread's items are marked read (S24 AC4's
+         *     mark-read-on-open half — ff_inbox_mark_thread_read touches
+         *     ONLY this conversation's items, so other badges survive);
+         *  3. the sub-view switches to THREAD (a stub render in this
+         *     slice; slice (c) fills it in).
+         * A tap naming an unknown/unpaired member is rejected whole — no
+         * scope change, no mark-read, no navigation (the roster, not the
+         * tap, is trusted — the SIG_SELECT precedent). */
+        if (takeover_up) return;
+        sh->sig_rally_armed = false; /* an intervening action disarms (S22 AC4) */
+        if (in->u.node_id != 0u && !shell_member_paired(sh, in->u.node_id)) {
+            return;
+        }
+        if (in->u.node_id == 0u) {
+            sh->sig_target_kind = FF_TARGET_WHOLE_CREW;
+            sh->sig_target_node = 0u;
+            (void)ff_inbox_mark_thread_read(&sh->feed, FF_CONV_CREW, 0u);
+        } else {
+            sh->sig_target_kind = FF_TARGET_MEMBER;
+            sh->sig_target_node = in->u.node_id;
+            (void)ff_inbox_mark_thread_read(&sh->feed, FF_CONV_MEMBER, in->u.node_id);
+        }
+        sh->view.signals.target_kind = sh->sig_target_kind;
+        sh->view.signals.target_node = sh->sig_target_node;
+        sh->sig_subview     = FF_SIG_SUB_THREAD;
+        sh->sig_thread_node = in->u.node_id;
+        return;
+
+    case FF_INTENT_INBOX_NEW:
+        /* S24 slice b — the inbox's `+` FAB: open the recipient picker
+         * (the spec's "the inbox FAB first opens a scope step"). Only
+         * meaningful from the inbox; from any other sub-view it is a
+         * stray tap and ignored (the FAB only renders on the inbox). */
+        if (takeover_up) return;
+        if (sh->sig_subview == FF_SIG_SUB_INBOX) {
+            sh->sig_rally_armed = false;
+            sh->sig_subview = FF_SIG_SUB_PICKER;
+        }
         return;
 
     case FF_INTENT_SIG_PULSE:
@@ -2633,7 +2761,9 @@ void ff_shell_intent(ff_shell_t *sh_pub, ff_intent_t const *in)
         return;
 
     /* --- deliberate no-ops until their owning slice lands ------------ */
-    case FF_INTENT_MARK_FEED_READ: /* c2 — the shell already clears unread on face view (S08 AC3) */
+    case FF_INTENT_MARK_FEED_READ: /* c2 relic — S24 replaced the face-view clear with per-thread
+                                     * mark-read on open (INBOX_OPEN_THREAD/PICK above); nothing
+                                     * emits this and a whole-feed clear would zero every badge. */
     case FF_INTENT_SELECT_CREW:    /* c2 — radar tap-cycle */
     case FF_INTENT_SELECT_RALLY:   /* still unbuilt: ff_crew_select_rally does not exist yet
                                      * (core/include/ff_crew.h's own documented deviation —

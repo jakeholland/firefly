@@ -1,0 +1,10 @@
+{
+  "fixture": "signals_no_crew",
+  "face": "signals",
+  "signals": {
+    "subview": "inbox",
+    "convs": [
+      {"conv": "crew"}
+    ]
+  }
+}
