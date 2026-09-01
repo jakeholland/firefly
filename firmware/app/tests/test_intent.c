@@ -60,6 +60,7 @@ typedef struct {
     fake_clock_t clk;
     ff_clock_t clock;
     fp_pack_t pack;
+    jsmntok_t toks[FP_MAX_TOKENS];
     ff_shell_t shell;
     mc_events_t ev;
 } harness_t;
@@ -82,6 +83,8 @@ static void harness_init(uint32_t t0_ms)
     memset(&cfg, 0, sizeof(cfg));
     cfg.clock = &H.clock;
     cfg.pack = &H.pack;
+    cfg.toks = H.toks;
+    cfg.ntoks = FP_MAX_TOKENS;
     /* store/haptic NULL, transport zeroed: the documented no-transport,
      * no-persistence, no-buzz test bring-up. */
 

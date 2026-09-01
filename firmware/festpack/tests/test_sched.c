@@ -45,6 +45,13 @@
 void setUp(void) {}
 void tearDown(void) {}
 
+/* S26 slice (a) - shared file-scope jsmn scratch: fp_parse no longer owns
+ * a static token arena (fp_pack.h), so every test in this file supplies
+ * one. Unity runs tests sequentially in one thread, so sharing this
+ * across test functions is safe - each call fully consumes and
+ * re-tokenizes it. */
+static jsmntok_t s_toks[FP_MAX_TOKENS];
+
 /* ---------------------------------------------------------------------
  * Fixture helpers
  * ------------------------------------------------------------------- */
@@ -522,7 +529,7 @@ static void S07_2026_08_24_bass_canyon_shape_fixture_is_not_tbd(void)
     TEST_ASSERT_TRUE(len > 0);
 
     fp_pack_t pack;
-    fp_result_t r = fp_parse(buf, len, &pack);
+    fp_result_t r = fp_parse(buf, len, &pack, s_toks, FP_MAX_TOKENS);
     TEST_ASSERT_EQUAL_INT(FP_OK, r);
     TEST_ASSERT_EQUAL_UINT16(6, pack.n_sets);
 
@@ -1085,7 +1092,7 @@ static void S07_AC5_real_lost_lands_fixture_is_all_null_tbd(void)
     TEST_ASSERT_TRUE(len > 0);
 
     fp_pack_t pack;
-    fp_result_t r = fp_parse(buf, len, &pack);
+    fp_result_t r = fp_parse(buf, len, &pack, s_toks, FP_MAX_TOKENS);
     TEST_ASSERT_EQUAL_INT(FP_OK, r);
     TEST_ASSERT_TRUE_MESSAGE(pack.n_sets > 0, "fixture unexpectedly has no sets");
 

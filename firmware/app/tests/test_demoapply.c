@@ -173,6 +173,7 @@ static size_t s_json_len;
 static uint32_t s_clock_ms;
 static ff_shell_t s_shell;
 static fp_pack_t s_pack;
+static jsmntok_t s_toks[FP_MAX_TOKENS];
 static ff_clock_t s_clock;
 
 static uint32_t clock_now_ms(void *user)
@@ -201,6 +202,8 @@ static void seed_shell(void)
     cfg.clock = &s_clock;
     cfg.store = NULL;
     cfg.pack = &s_pack;
+    cfg.toks = s_toks;
+    cfg.ntoks = FP_MAX_TOKENS;
     TEST_ASSERT_EQUAL_INT(0, ff_shell_init(&s_shell, &cfg));
     TEST_ASSERT_EQUAL_INT(0, ff_demo_seed(&s_shell, s_json, s_json_len, &s_clock_ms, 0));
     (void)ff_shell_tick(&s_shell, s_clock_ms);
@@ -266,7 +269,8 @@ void test_S23d_rally_point_from_festpack(void)
 {
     load_pack();
     static fp_pack_t pack;
-    TEST_ASSERT_EQUAL_INT(FP_OK, fp_parse(s_json, s_json_len, &pack));
+    static jsmntok_t toks[FP_MAX_TOKENS];
+    TEST_ASSERT_EQUAL_INT(FP_OK, fp_parse(s_json, s_json_len, &pack, toks, FP_MAX_TOKENS));
     TEST_ASSERT_TRUE(pack.origin_known);
 
     ff_latlon_t at = {0};

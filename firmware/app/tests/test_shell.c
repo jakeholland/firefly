@@ -179,6 +179,7 @@ typedef struct {
     mem_store_t store_mem;
     ff_store_t store;
     fp_pack_t pack;
+    jsmntok_t toks[FP_MAX_TOKENS];
     ff_shell_t shell;
     mc_events_t ev;
 } harness_t;
@@ -215,6 +216,8 @@ static void harness_init(uint32_t t0_ms, bool with_store)
     cfg.haptic = spy_haptic;
     cfg.haptic_user = &H.haptic;
     cfg.pack = &H.pack;
+    cfg.toks = H.toks;
+    cfg.ntoks = FP_MAX_TOKENS;
     /* cfg.transport left zeroed: the documented "no transport" case. */
 
     TEST_ASSERT_EQUAL_INT(0, ff_shell_init(&H.shell, &cfg));
@@ -2768,6 +2771,8 @@ static void s22_connect_shell(void)
     memset(&cfg, 0, sizeof(cfg));
     cfg.clock = &H.clock;
     cfg.pack = &H.pack;
+    cfg.toks = H.toks;
+    cfg.ntoks = FP_MAX_TOKENS;
     cfg.transport.read = pipe_read;
     cfg.transport.write = pipe_write;
     cfg.transport.io = &P;
@@ -3065,6 +3070,8 @@ static void S16_AC6_nodeinfo_plus_position_via_real_transport_produce_zero_feed_
     memset(&cfg, 0, sizeof(cfg));
     cfg.clock = &H.clock;
     cfg.pack = &H.pack;
+    cfg.toks = H.toks;
+    cfg.ntoks = FP_MAX_TOKENS;
     cfg.transport.read = pipe_read;
     cfg.transport.write = pipe_write;
     cfg.transport.io = &P;
@@ -3234,6 +3241,8 @@ static void S16_AC7_canned_reply_uses_newest_feed_item_or_broadcasts(void)
     memset(&cfg, 0, sizeof(cfg));
     cfg.clock = &H.clock;
     cfg.pack = &H.pack;
+    cfg.toks = H.toks;
+    cfg.ntoks = FP_MAX_TOKENS;
     cfg.transport.read = pipe_read;
     cfg.transport.write = pipe_write;
     cfg.transport.io = &P;
@@ -3320,6 +3329,8 @@ static void S16_c3_send_text_sends_the_shell_owned_draft(void)
     memset(&cfg, 0, sizeof(cfg));
     cfg.clock = &H.clock;
     cfg.pack = &H.pack;
+    cfg.toks = H.toks;
+    cfg.ntoks = FP_MAX_TOKENS;
     cfg.transport.read = pipe_read;
     cfg.transport.write = pipe_write;
     cfg.transport.io = &P;
@@ -3429,6 +3440,8 @@ static void S08_pred_send_with_unaccepted_candidate_sends_the_visible_word(void)
     memset(&cfg, 0, sizeof(cfg));
     cfg.clock = &H.clock;
     cfg.pack = &H.pack;
+    cfg.toks = H.toks;
+    cfg.ntoks = FP_MAX_TOKENS;
     cfg.transport.read = pipe_read;
     cfg.transport.write = pipe_write;
     cfg.transport.io = &P;

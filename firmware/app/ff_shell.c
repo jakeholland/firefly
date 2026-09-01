@@ -76,6 +76,8 @@ typedef struct {
     void *calibrate_touch_user;
     fp_pack_t *pack; /* caller-owned storage; NULL = this target has no pack */
     bool pack_loaded;
+    jsmntok_t *toks; /* caller-owned jsmn scratch for fp_parse (S26 slice a) */
+    int ntoks;
 
     /* --- mesh link --------------------------------------------------- */
     mc_client_t mc;
@@ -1817,6 +1819,8 @@ int ff_shell_init(ff_shell_t *sh_pub, ff_shell_cfg_t const *cfg)
     sh->calibrate_touch_user = cfg->calibrate_touch_user;
     sh->pack = cfg->pack;
     sh->pack_loaded = false;
+    sh->toks = cfg->toks;
+    sh->ntoks = cfg->ntoks;
 
     ff_crew_init(&sh->crew, sh->clock);
     ff_heard_init(&sh->heard);
@@ -1886,8 +1890,8 @@ int ff_shell_load_pack(ff_shell_t *sh_pub, char const *json, size_t len)
      * supplement (the next successful load re-collects). */
     sh->compose_extra_n = 0;
 
-    if (sh->pack == NULL || json == NULL || len == 0u) return -1;
-    if (fp_parse(json, len, sh->pack) != FP_OK) return -1;
+    if (sh->pack == NULL || sh->toks == NULL || sh->ntoks <= 0 || json == NULL || len == 0u) return -1;
+    if (fp_parse(json, len, sh->pack, sh->toks, sh->ntoks) != FP_OK) return -1;
 
     sh->pack_loaded = true;
 

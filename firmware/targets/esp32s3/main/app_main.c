@@ -84,6 +84,13 @@ static uint32_t s_demo_clock_ms;
  * RAM is scarce and must be left for LVGL's DMA strip buffers, and only the demo
  * build allocates it at all. Populated by ff_demo_seed via the shell's cfg.pack. */
 static fp_pack_t *s_demo_pack;
+/* S26 slice (a) — the jsmn token scratch fp_parse tokenizes into while
+ * parsing the demo festpack above. FP_MAX_TOKENS * sizeof(jsmntok_t) is
+ * 128KB: PSRAM, and — unlike s_demo_pack, which the shell keeps reading
+ * all boot long — freed right after the one parse that needs it (see the
+ * CONFIG_FF_DEMO_MODE block below). Never internal DIRAM; that reclaim
+ * is the whole point of this slice (docs/specs/S26-device-lifecycle.md). */
+static jsmntok_t *s_demo_toks;
 extern const uint8_t firefly_pack_start[] asm("_binary_firefly_fields_festpack_json_start");
 extern const uint8_t firefly_pack_end[] asm("_binary_firefly_fields_festpack_json_end");
 
@@ -316,6 +323,17 @@ void app_main(void)
         return;
     }
     cfg.pack = s_demo_pack; /* ff_demo_seed parses the embedded festpack into this */
+
+    /* S26 slice (a) — transient jsmn scratch for that one parse: PSRAM,
+     * freed right after ff_demo_seed returns below (whichever way),
+     * never internal DIRAM. See s_demo_toks's declaration comment. */
+    s_demo_toks = heap_caps_malloc((size_t)FP_MAX_TOKENS * sizeof(jsmntok_t), MALLOC_CAP_SPIRAM);
+    if (s_demo_toks == NULL) {
+        ff_park("demo festpack token-scratch PSRAM alloc failed");
+        return;
+    }
+    cfg.toks = s_demo_toks;
+    cfg.ntoks = FP_MAX_TOKENS;
 #endif
     /* cfg.transport / cfg.haptic left zeroed — see slice a. (cfg.pack set above
      * only under CONFIG_FF_DEMO_MODE.) */
@@ -330,6 +348,14 @@ void app_main(void)
     {
         size_t const pack_len = (size_t)(firefly_pack_end - firefly_pack_start);
         int const drc = ff_demo_seed(&s_shell, (char const *)firefly_pack_start, pack_len, &s_demo_clock_ms, 0);
+        /* S26 slice (a) — the token scratch was only ever needed for that
+         * one parse inside ff_demo_seed (-> ff_shell_load_pack -> fp_parse).
+         * Free the 128KB PSRAM block now rather than holding it for the
+         * rest of the boot; this target loads exactly one pack, at boot,
+         * so nothing dereferences the shell's now-stale toks pointer
+         * again. */
+        heap_caps_free(s_demo_toks);
+        s_demo_toks = NULL;
         if (drc != 0) {
             ESP_LOGE(TAG, "S20 demo seed failed (%d) — festpack parse or wall latch", drc);
         } else {

@@ -64,11 +64,17 @@ static uint32_t demo_win_tick(void)
  * Radar selection. Returns 0 on success. */
 static int demo_seed_shell(ff_shell_t *shell, fp_pack_t *pack, ff_clock_t *clk, uint32_t primary)
 {
+    /* Static, not stack: same "fixed arena, sim/host don't care" call as
+     * everything else in this file — see fp_pack.h's FP_MAX_TOKENS. */
+    static jsmntok_t s_toks[FP_MAX_TOKENS];
+
     ff_shell_cfg_t cfg;
     memset(&cfg, 0, sizeof(cfg));
     cfg.clock = clk;
     cfg.store = NULL;
     cfg.pack = pack;
+    cfg.toks = s_toks;
+    cfg.ntoks = FP_MAX_TOKENS;
     /* cfg.transport zeroed => no transport; events injected by ff_demo_seed. */
 
     if (ff_shell_init(shell, &cfg) != 0) {

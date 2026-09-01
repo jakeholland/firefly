@@ -300,6 +300,25 @@ typedef struct {
      * allocate one. Noted in the PR body as a deviation.
      */
     fp_pack_t *pack;
+
+    /**
+     * S26 slice (a) — the jsmn token scratch `ff_shell_load_pack` hands
+     * to `fp_parse` (fp_pack.h). Same "beside the shell, not inside it"
+     * reasoning as `pack` above, for the same reason `fp_parse` stopped
+     * owning a static arena: this is ~128KB at FP_MAX_TOKENS, parse-time
+     * only, and the target is the one that knows whether it can afford
+     * that in internal RAM or should put it in PSRAM (or even free it
+     * right after `ff_shell_load_pack` returns — the shell only borrows
+     * it for the duration of that one call, never retains the pointer).
+     *
+     * `toks` must point to at least `ntoks` writable `jsmntok_t` slots;
+     * pass `FP_MAX_TOKENS` (fp_pack.h) for `ntoks` unless sizing smaller
+     * deliberately. NULL `toks` (or `ntoks <= 0`) means this target has
+     * no pack-parsing support, matching `pack == NULL` above —
+     * `ff_shell_load_pack` fails cleanly rather than crashing.
+     */
+    jsmntok_t *toks;
+    int ntoks;
 } ff_shell_cfg_t;
 
 /* ---------------------------------------------------------------------
@@ -449,18 +468,20 @@ int ff_shell_init(ff_shell_t *sh, ff_shell_cfg_t const *cfg);
 
 /**
  * ff_shell_load_pack — parse `len` bytes of festpack JSON into the
- * caller-provided `cfg->pack`.
+ * caller-provided `cfg->pack`, using the caller-provided `cfg->toks`
+ * scratch (S26 slice a — see `ff_shell_cfg_t.toks` above).
  *
  * Bytes, not a path: the device has no filesystem the way the sim does,
  * and `fp_parse` is already bytes-based. The target reads the file under
  * its own documented budget; the shell parses.
  *
- * Returns 0 on success, negative on failure (no pack storage was
- * configured, NULL/empty input, or `fp_parse` rejected it). On failure
- * the shell's "a pack is loaded" flag is cleared — `fp_parse` zeroes
- * `*out` on any error, and a zeroed `fp_pack_t` reads as a deliberately
- * STATED UTC offset of 0, which would silently outrank the user's
- * configured offset (see `ff_wall_offset_cfg_t`).
+ * Returns 0 on success, negative on failure (no pack storage or no
+ * token scratch was configured, NULL/empty input, or `fp_parse`
+ * rejected it — including a too-small `cfg->ntoks`). On failure the
+ * shell's "a pack is loaded" flag is cleared — `fp_parse` zeroes `*out`
+ * on any error, and a zeroed `fp_pack_t` reads as a deliberately STATED
+ * UTC offset of 0, which would silently outrank the user's configured
+ * offset (see `ff_wall_offset_cfg_t`).
  *
  * Deliberately does NOT adopt the pack's venue origin as "my position",
  * as the retired `targets/sim/live.c` used to. That is a dev-harness

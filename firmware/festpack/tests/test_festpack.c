@@ -4,6 +4,7 @@
  */
 #include <math.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "unity.h"
@@ -18,6 +19,13 @@
 
 void setUp(void) {}
 void tearDown(void) {}
+
+/* S26 slice (a) - shared file-scope jsmn scratch: fp_parse no longer owns
+ * a static token arena (fp_pack.h), so every test in this file supplies
+ * one. Unity runs tests sequentially in one thread, so sharing this
+ * across test functions is safe - each call fully consumes and
+ * re-tokenizes it. */
+static jsmntok_t s_toks[FP_MAX_TOKENS];
 
 /* Reads a fixture file fully into `buf` (must be <= bufsz bytes) and
  * returns its length. Fails the test loudly if the file is missing —
@@ -44,7 +52,7 @@ static void S05_AC1_lost_lands_has_7_stages_exact_names_and_colors(void)
     char buf[FIXTURE_BUF_SZ];
     size_t len = load_fixture("lost-lands-2026.festpack.json", buf, sizeof(buf));
     fp_pack_t pack;
-    fp_result_t r = fp_parse(buf, len, &pack);
+    fp_result_t r = fp_parse(buf, len, &pack, s_toks, FP_MAX_TOKENS);
     TEST_ASSERT_EQUAL_INT(FP_OK, r);
     TEST_ASSERT_EQUAL_UINT8(7, pack.n_stages);
 
@@ -69,7 +77,7 @@ static void S05_AC1_lost_lands_has_at_least_27_sets_all_times_null(void)
     char buf[FIXTURE_BUF_SZ];
     size_t len = load_fixture("lost-lands-2026.festpack.json", buf, sizeof(buf));
     fp_pack_t pack;
-    fp_result_t r = fp_parse(buf, len, &pack);
+    fp_result_t r = fp_parse(buf, len, &pack, s_toks, FP_MAX_TOKENS);
     TEST_ASSERT_EQUAL_INT(FP_OK, r);
     TEST_ASSERT_GREATER_OR_EQUAL_UINT16(27, pack.n_sets);
     TEST_ASSERT_EQUAL_UINT16(27, pack.n_sets); /* exact count of the real fixture, today */
@@ -94,7 +102,7 @@ static void S05_AC1_lost_lands_festival_meta_and_utc_offset_default(void)
     char buf[FIXTURE_BUF_SZ];
     size_t len = load_fixture("lost-lands-2026.festpack.json", buf, sizeof(buf));
     fp_pack_t pack;
-    fp_result_t r = fp_parse(buf, len, &pack);
+    fp_result_t r = fp_parse(buf, len, &pack, s_toks, FP_MAX_TOKENS);
     TEST_ASSERT_EQUAL_INT(FP_OK, r);
 
     TEST_ASSERT_EQUAL_STRING("Lost Lands", pack.name);
@@ -131,7 +139,7 @@ static void S05_AC2_nulls_in_every_nullable_slot_parse(void)
     char buf[FIXTURE_BUF_SZ];
     size_t len = load_fixture("nulls.festpack.json", buf, sizeof(buf));
     fp_pack_t pack;
-    fp_result_t r = fp_parse(buf, len, &pack);
+    fp_result_t r = fp_parse(buf, len, &pack, s_toks, FP_MAX_TOKENS);
     TEST_ASSERT_EQUAL_INT(FP_OK, r);
 
     TEST_ASSERT_EQUAL_UINT8(1, pack.n_stages);
@@ -166,7 +174,7 @@ static void S05_AC2_absent_optional_sections_parse(void)
     char buf[FIXTURE_BUF_SZ];
     size_t len = load_fixture("minimal.festpack.json", buf, sizeof(buf));
     fp_pack_t pack;
-    fp_result_t r = fp_parse(buf, len, &pack);
+    fp_result_t r = fp_parse(buf, len, &pack, s_toks, FP_MAX_TOKENS);
     TEST_ASSERT_EQUAL_INT(FP_OK, r); /* no "map" key, no utc_offset_min, no approximate */
 
     TEST_ASSERT_EQUAL_UINT8(1, pack.n_stages);
@@ -194,7 +202,7 @@ static void S05_AC3_wrong_version_returns_err_version(void)
     char buf[FIXTURE_BUF_SZ];
     size_t len = load_fixture("wrong_version.festpack.json", buf, sizeof(buf));
     fp_pack_t pack;
-    fp_result_t r = fp_parse(buf, len, &pack);
+    fp_result_t r = fp_parse(buf, len, &pack, s_toks, FP_MAX_TOKENS);
     TEST_ASSERT_EQUAL_INT(FP_ERR_VERSION, r);
     TEST_ASSERT_EQUAL_UINT8(0, pack.n_stages); /* out left zeroed on error */
 }
@@ -204,7 +212,7 @@ static void S05_AC3_missing_version_returns_err_version(void)
     char buf[FIXTURE_BUF_SZ];
     size_t len = load_fixture("missing_version.festpack.json", buf, sizeof(buf));
     fp_pack_t pack;
-    fp_result_t r = fp_parse(buf, len, &pack);
+    fp_result_t r = fp_parse(buf, len, &pack, s_toks, FP_MAX_TOKENS);
     TEST_ASSERT_EQUAL_INT(FP_ERR_VERSION, r);
 }
 
@@ -213,7 +221,7 @@ static void S05_AC3_truncated_json_returns_err_json(void)
     char buf[FIXTURE_BUF_SZ];
     size_t len = load_fixture("truncated.festpack.json", buf, sizeof(buf));
     fp_pack_t pack;
-    fp_result_t r = fp_parse(buf, len, &pack);
+    fp_result_t r = fp_parse(buf, len, &pack, s_toks, FP_MAX_TOKENS);
     TEST_ASSERT_EQUAL_INT(FP_ERR_JSON, r);
 }
 
@@ -222,17 +230,17 @@ static void S05_AC3_non_json_returns_err_json(void)
     char buf[FIXTURE_BUF_SZ];
     size_t len = load_fixture("non_json.txt", buf, sizeof(buf));
     fp_pack_t pack;
-    fp_result_t r = fp_parse(buf, len, &pack);
+    fp_result_t r = fp_parse(buf, len, &pack, s_toks, FP_MAX_TOKENS);
     TEST_ASSERT_EQUAL_INT(FP_ERR_JSON, r);
 }
 
 static void S05_AC3_null_and_empty_input_return_err_json_no_crash(void)
 {
     fp_pack_t pack;
-    TEST_ASSERT_EQUAL_INT(FP_ERR_JSON, fp_parse(NULL, 0, &pack));
-    TEST_ASSERT_EQUAL_INT(FP_ERR_JSON, fp_parse("", 0, &pack));
-    TEST_ASSERT_EQUAL_INT(FP_ERR_JSON, fp_parse("{", 1, &pack));
-    TEST_ASSERT_EQUAL_INT(FP_ERR_JSON, fp_parse("not json", 8, &pack));
+    TEST_ASSERT_EQUAL_INT(FP_ERR_JSON, fp_parse(NULL, 0, &pack, s_toks, FP_MAX_TOKENS));
+    TEST_ASSERT_EQUAL_INT(FP_ERR_JSON, fp_parse("", 0, &pack, s_toks, FP_MAX_TOKENS));
+    TEST_ASSERT_EQUAL_INT(FP_ERR_JSON, fp_parse("{", 1, &pack, s_toks, FP_MAX_TOKENS));
+    TEST_ASSERT_EQUAL_INT(FP_ERR_JSON, fp_parse("not json", 8, &pack, s_toks, FP_MAX_TOKENS));
 }
 
 static uint32_t g_rng_state;
@@ -273,7 +281,7 @@ static void S05_AC3_fuzz_smoke_10000_iterations_no_crash(void)
             }
         }
         fp_pack_t pack;
-        fp_result_t r = fp_parse(buf, len, &pack);
+        fp_result_t r = fp_parse(buf, len, &pack, s_toks, FP_MAX_TOKENS);
         TEST_ASSERT_TRUE(r == FP_OK || r == FP_ERR_JSON || r == FP_ERR_VERSION || r == FP_ERR_TOO_BIG);
     }
 }
@@ -287,7 +295,7 @@ static void S05_AC3_deeply_nested_input_returns_err_json_no_crash(void)
     char buf[FIXTURE_BUF_SZ];
     size_t len = load_fixture("deep_nesting.festpack.json", buf, sizeof(buf));
     fp_pack_t pack;
-    fp_result_t r = fp_parse(buf, len, &pack);
+    fp_result_t r = fp_parse(buf, len, &pack, s_toks, FP_MAX_TOKENS);
     TEST_ASSERT_EQUAL_INT(FP_ERR_JSON, r);
     TEST_ASSERT_EQUAL_UINT8(0, pack.n_stages); /* left zeroed */
 }
@@ -303,7 +311,7 @@ static void S05_review_object_format_polygon_point_returns_err_json(void)
     char buf[FIXTURE_BUF_SZ];
     size_t len = load_fixture("object_format_polygon.festpack.json", buf, sizeof(buf));
     fp_pack_t pack;
-    fp_result_t r = fp_parse(buf, len, &pack);
+    fp_result_t r = fp_parse(buf, len, &pack, s_toks, FP_MAX_TOKENS);
     TEST_ASSERT_EQUAL_INT(FP_ERR_JSON, r);
 }
 
@@ -317,7 +325,7 @@ static void S05_AC4_13_stages_returns_err_too_big(void)
     size_t len = load_fixture("overflow_stages.festpack.json", buf, sizeof(buf));
     fp_pack_t pack;
     memset(&pack, 0xAA, sizeof(pack)); /* poison, to prove fp_parse re-zeros on error */
-    fp_result_t r = fp_parse(buf, len, &pack);
+    fp_result_t r = fp_parse(buf, len, &pack, s_toks, FP_MAX_TOKENS);
     TEST_ASSERT_EQUAL_INT(FP_ERR_TOO_BIG, r);
     TEST_ASSERT_EQUAL_UINT8(0, pack.n_stages);
     TEST_ASSERT_EQUAL_UINT16(0, pack.n_sets);
@@ -328,7 +336,7 @@ static void S05_AC4_257_sets_returns_err_too_big(void)
     char buf[FIXTURE_BUF_SZ];
     size_t len = load_fixture("overflow_sets.festpack.json", buf, sizeof(buf));
     fp_pack_t pack;
-    fp_result_t r = fp_parse(buf, len, &pack);
+    fp_result_t r = fp_parse(buf, len, &pack, s_toks, FP_MAX_TOKENS);
     TEST_ASSERT_EQUAL_INT(FP_ERR_TOO_BIG, r);
 }
 
@@ -337,7 +345,7 @@ static void S05_AC4_25_features_returns_err_too_big(void)
     char buf[FIXTURE_BUF_SZ];
     size_t len = load_fixture("overflow_features.festpack.json", buf, sizeof(buf));
     fp_pack_t pack;
-    fp_result_t r = fp_parse(buf, len, &pack);
+    fp_result_t r = fp_parse(buf, len, &pack, s_toks, FP_MAX_TOKENS);
     TEST_ASSERT_EQUAL_INT(FP_ERR_TOO_BIG, r);
 }
 
@@ -346,7 +354,7 @@ static void S05_AC4_13_landmarks_returns_err_too_big(void)
     char buf[FIXTURE_BUF_SZ];
     size_t len = load_fixture("overflow_landmarks.festpack.json", buf, sizeof(buf));
     fp_pack_t pack;
-    fp_result_t r = fp_parse(buf, len, &pack);
+    fp_result_t r = fp_parse(buf, len, &pack, s_toks, FP_MAX_TOKENS);
     TEST_ASSERT_EQUAL_INT(FP_ERR_TOO_BIG, r);
 }
 
@@ -355,7 +363,7 @@ static void S05_AC4_25_polygon_points_returns_err_too_big(void)
     char buf[FIXTURE_BUF_SZ];
     size_t len = load_fixture("overflow_polygon.festpack.json", buf, sizeof(buf));
     fp_pack_t pack;
-    fp_result_t r = fp_parse(buf, len, &pack);
+    fp_result_t r = fp_parse(buf, len, &pack, s_toks, FP_MAX_TOKENS);
     TEST_ASSERT_EQUAL_INT(FP_ERR_TOO_BIG, r);
 }
 
@@ -368,7 +376,7 @@ static void S05_AC4_at_cap_12_stages_returns_ok(void)
     char buf[FIXTURE_BUF_SZ];
     size_t len = load_fixture("at_cap_stages.festpack.json", buf, sizeof(buf));
     fp_pack_t pack;
-    fp_result_t r = fp_parse(buf, len, &pack);
+    fp_result_t r = fp_parse(buf, len, &pack, s_toks, FP_MAX_TOKENS);
     TEST_ASSERT_EQUAL_INT(FP_OK, r);
     TEST_ASSERT_EQUAL_UINT8(FP_MAX_STAGES, pack.n_stages);
 }
@@ -378,7 +386,7 @@ static void S05_AC4_at_cap_256_sets_returns_ok(void)
     char buf[FIXTURE_BUF_SZ];
     size_t len = load_fixture("at_cap_sets.festpack.json", buf, sizeof(buf));
     fp_pack_t pack;
-    fp_result_t r = fp_parse(buf, len, &pack);
+    fp_result_t r = fp_parse(buf, len, &pack, s_toks, FP_MAX_TOKENS);
     TEST_ASSERT_EQUAL_INT(FP_OK, r);
     TEST_ASSERT_EQUAL_UINT16(FP_MAX_SETS, pack.n_sets);
 }
@@ -388,7 +396,7 @@ static void S05_AC4_at_cap_24_features_returns_ok(void)
     char buf[FIXTURE_BUF_SZ];
     size_t len = load_fixture("at_cap_features.festpack.json", buf, sizeof(buf));
     fp_pack_t pack;
-    fp_result_t r = fp_parse(buf, len, &pack);
+    fp_result_t r = fp_parse(buf, len, &pack, s_toks, FP_MAX_TOKENS);
     TEST_ASSERT_EQUAL_INT(FP_OK, r);
     TEST_ASSERT_EQUAL_UINT8(FP_MAX_FEATURES, pack.n_features);
 }
@@ -398,7 +406,7 @@ static void S05_AC4_at_cap_12_landmarks_returns_ok(void)
     char buf[FIXTURE_BUF_SZ];
     size_t len = load_fixture("at_cap_landmarks.festpack.json", buf, sizeof(buf));
     fp_pack_t pack;
-    fp_result_t r = fp_parse(buf, len, &pack);
+    fp_result_t r = fp_parse(buf, len, &pack, s_toks, FP_MAX_TOKENS);
     TEST_ASSERT_EQUAL_INT(FP_OK, r);
     TEST_ASSERT_EQUAL_UINT8(FP_MAX_LANDMARKS, pack.n_landmarks);
 }
@@ -408,7 +416,7 @@ static void S05_AC4_at_cap_24_polygon_points_returns_ok(void)
     char buf[FIXTURE_BUF_SZ];
     size_t len = load_fixture("at_cap_polygon.festpack.json", buf, sizeof(buf));
     fp_pack_t pack;
-    fp_result_t r = fp_parse(buf, len, &pack);
+    fp_result_t r = fp_parse(buf, len, &pack, s_toks, FP_MAX_TOKENS);
     TEST_ASSERT_EQUAL_INT(FP_OK, r);
     TEST_ASSERT_EQUAL_UINT8(1, pack.n_features);
     TEST_ASSERT_EQUAL_UINT8(FP_MAX_POLY_PTS, pack.features[0].n_pts);
@@ -423,7 +431,7 @@ static void S05_AC5_feature_polygon_projects_known_square_within_1m(void)
     char buf[FIXTURE_BUF_SZ];
     size_t len = load_fixture("square.festpack.json", buf, sizeof(buf));
     fp_pack_t pack;
-    fp_result_t r = fp_parse(buf, len, &pack);
+    fp_result_t r = fp_parse(buf, len, &pack, s_toks, FP_MAX_TOKENS);
     TEST_ASSERT_EQUAL_INT(FP_OK, r);
     TEST_ASSERT_EQUAL_UINT8(1, pack.n_features);
     TEST_ASSERT_EQUAL_UINT8(4, pack.features[0].n_pts);
@@ -456,7 +464,7 @@ static void S05_review_null_venue_position_sets_origin_known_false(void)
     char buf[FIXTURE_BUF_SZ];
     size_t len = load_fixture("null_venue.festpack.json", buf, sizeof(buf));
     fp_pack_t pack;
-    fp_result_t r = fp_parse(buf, len, &pack);
+    fp_result_t r = fp_parse(buf, len, &pack, s_toks, FP_MAX_TOKENS);
     TEST_ASSERT_EQUAL_INT(FP_OK, r);
     TEST_ASSERT_FALSE(pack.origin_known);
     TEST_ASSERT_EQUAL_FLOAT(0.0f, (float)pack.origin.lat);
@@ -470,6 +478,75 @@ static void S05_review_null_venue_position_sets_origin_known_false(void)
 static void S05_AC6_pack_struct_fits_48kb_budget(void)
 {
     TEST_ASSERT_LESS_OR_EQUAL_UINT32(48u * 1024u, (uint32_t)sizeof(fp_pack_t));
+}
+
+/* ======================================================================
+ * S26 slice (a) — AC2: a too-small caller-supplied `ntoks` returns the
+ * existing FP_ERR_TOO_BIG error, exactly like an oversized document
+ * running out of arena — never an overrun. docs/specs/S26-device-
+ * lifecycle.md.
+ * ==================================================================== */
+
+/* The real fixture below tokenizes into far more than 2 jsmntok_t
+ * elements. `tiny` is malloc'd to EXACTLY 2 elements — no slack — so if
+ * fp_parse ever wrote past what `ntoks` promised it could use, that
+ * write lands past the allocation and address-sanitizer (or a debug
+ * malloc) catches it immediately rather than silently landing in
+ * adjacent heap memory. This is the actual proxy check for "never
+ * overrun": a buffer sized loosely could pass while still overrunning
+ * its *stated* capacity, so the buffer here is sized to prove the real
+ * property. */
+static void S26_AC2_too_small_ntoks_returns_err_too_big_no_overrun(void)
+{
+    char buf[FIXTURE_BUF_SZ];
+    size_t len = load_fixture("lost-lands-2026.festpack.json", buf, sizeof(buf));
+
+    jsmntok_t *tiny = malloc(2 * sizeof(jsmntok_t));
+    TEST_ASSERT_NOT_NULL(tiny);
+
+    fp_pack_t pack;
+    memset(&pack, 0xAA, sizeof(pack)); /* poison, to prove fp_parse re-zeros on error */
+    fp_result_t r = fp_parse(buf, len, &pack, tiny, 2);
+    TEST_ASSERT_EQUAL_INT(FP_ERR_TOO_BIG, r);
+    TEST_ASSERT_EQUAL_UINT8(0, pack.n_stages);
+    TEST_ASSERT_EQUAL_UINT16(0, pack.n_sets);
+
+    free(tiny);
+}
+
+/* NULL toks / ntoks<=0 are the same "no usable scratch" case as running
+ * out mid-parse — FP_ERR_TOO_BIG, not a NULL-deref crash. */
+static void S26_AC2_null_or_nonpositive_toks_returns_err_too_big_no_crash(void)
+{
+    char buf[FIXTURE_BUF_SZ];
+    size_t len = load_fixture("lost-lands-2026.festpack.json", buf, sizeof(buf));
+    fp_pack_t pack;
+
+    TEST_ASSERT_EQUAL_INT(FP_ERR_TOO_BIG, fp_parse(buf, len, &pack, NULL, FP_MAX_TOKENS));
+    TEST_ASSERT_EQUAL_INT(FP_ERR_TOO_BIG, fp_parse(buf, len, &pack, s_toks, 0));
+    TEST_ASSERT_EQUAL_INT(FP_ERR_TOO_BIG, fp_parse(buf, len, &pack, s_toks, -1));
+}
+
+/* AC1 — the static array is gone (this is a compile-time/structural fact
+ * checked by review + `nm`/`idf.py size`, not a runtime assertion), but
+ * the flip side IS runtime-checkable: fp_parse is now reentrant-capable
+ * because distinct calls can use distinct buffers with no shared state.
+ * Parsing the same fixture through two different caller-owned buffers
+ * back to back, with no crash and identical results, is the behavioral
+ * proof that nothing static survives between calls. */
+static void S26_AC1_distinct_caller_buffers_parse_independently(void)
+{
+    char buf[FIXTURE_BUF_SZ];
+    size_t len = load_fixture("lost-lands-2026.festpack.json", buf, sizeof(buf));
+
+    static jsmntok_t toks_a[FP_MAX_TOKENS];
+    static jsmntok_t toks_b[FP_MAX_TOKENS];
+    fp_pack_t pack_a, pack_b;
+
+    TEST_ASSERT_EQUAL_INT(FP_OK, fp_parse(buf, len, &pack_a, toks_a, FP_MAX_TOKENS));
+    TEST_ASSERT_EQUAL_INT(FP_OK, fp_parse(buf, len, &pack_b, toks_b, FP_MAX_TOKENS));
+    TEST_ASSERT_EQUAL_UINT8(pack_a.n_stages, pack_b.n_stages);
+    TEST_ASSERT_EQUAL_UINT16(pack_a.n_sets, pack_b.n_sets);
 }
 
 int main(void)
@@ -509,6 +586,10 @@ int main(void)
     RUN_TEST(S05_review_null_venue_position_sets_origin_known_false);
 
     RUN_TEST(S05_AC6_pack_struct_fits_48kb_budget);
+
+    RUN_TEST(S26_AC2_too_small_ntoks_returns_err_too_big_no_overrun);
+    RUN_TEST(S26_AC2_null_or_nonpositive_toks_returns_err_too_big_no_crash);
+    RUN_TEST(S26_AC1_distinct_caller_buffers_parse_independently);
 
     return UNITY_END();
 }
