@@ -24,8 +24,19 @@
  * off-glass, mode chip ~35px off-glass) shipped undetected by its own
  * goldens in the first place.
  *
- * ## The one deliberate exclusion, and why it isn't "special-casing away"
- * a finding
+ * ## The deliberate circle-containment exclusions, and why they aren't
+ * "special-casing away" a finding
+ *
+ * TWO categories of hit-rect are excluded from the circle-containment check
+ * (never the size floor), for the same underlying reason: their excess past
+ * the round glass corresponds to no physically-touchable surface on the real
+ * round hardware, so neither can make a VISIBLE, sized control unreachable
+ * the way an undersized-or-misplaced button can. (1) the whole-puck gesture
+ * region, described next; (2) a CORNER-BLEED control — its hit-rect's far
+ * corner is the window's bottom-right corner and its near corner is on glass
+ * (scr_signals.c's `+` FAB, whose tap target covers the visible amber lens
+ * and bleeds off the rim) — see the inline `is_corner_bleed` comment in
+ * sweep_walk. Both stay subject to the adjacency floor below.
  *
  * A hit-rect exactly the size of the puck's own square bounding box
  * (`FF_THEME_PUCK_PX` x `FF_THEME_PUCK_PX` — e.g. scr_nav.c's
@@ -411,6 +422,26 @@ static void sweep_walk(lv_obj_t *obj, char const *fixture_name, sweep_result_t *
 
             bool is_whole_puck_gesture_region = (w == (float)FF_THEME_PUCK_PX) && (h == (float)FF_THEME_PUCK_PX);
 
+            /* Corner-bleed exclusion (scr_signals.c's `+` FAB). A control
+             * that bleeds off the bottom-right rim — its hit-rect's far
+             * corner IS the window's bottom-right corner, its near corner on
+             * glass, and it is not the whole puck — is excluded from the
+             * CIRCLE-CONTAINMENT check for the SAME reason the whole-puck
+             * gesture region is: its excess past the round glass corresponds
+             * to no physically-touchable surface on the round hardware (the
+             * masked letterbox corner), so it can never make a visible, sized
+             * control unreachable. Deliberately narrow (an EXACT window-corner
+             * anchor, near corner on glass) so a genuinely mis-placed button
+             * can't hide behind it. The SIZE floor and — unlike the whole-puck
+             * region — the ADJACENCY floor still apply: the FAB keeps its 8px
+             * clearance from the rows/chips the ordinary way. */
+            float const win_far = (float)(SWEEP_MARGIN_PX + FF_THEME_PUCK_PX);
+            float const near_dx = (float)area.x1 - SWEEP_CX;
+            float const near_dy = (float)area.y1 - SWEEP_CY;
+            bool const near_on_glass = (near_dx * near_dx + near_dy * near_dy) <= (SWEEP_RADIUS * SWEEP_RADIUS);
+            bool is_corner_bleed = !is_whole_puck_gesture_region && near_on_glass &&
+                                   ((float)(area.x2 + 1) >= win_far) && ((float)(area.y2 + 1) >= win_far);
+
             out->checked++;
 
             if (w < (float)FF_THEME_MIN_HIT_PX || h < (float)FF_THEME_MIN_HIT_PX) {
@@ -438,7 +469,7 @@ static void sweep_walk(lv_obj_t *obj, char const *fixture_name, sweep_result_t *
                 circle_rect.y2 = vp.y2;
             }
 
-            if (!is_whole_puck_gesture_region) {
+            if (!is_whole_puck_gesture_region && !is_corner_bleed) {
                 if (!ff_layout_rect_in_circle(circle_rect, SWEEP_CX, SWEEP_CY, SWEEP_RADIUS)) {
                     out->violations++;
                     printf("  HIT-RECT-OFF-GLASS    [%s]  rect=(%d,%d)-(%d,%d)  check-y=[%.0f,%.0f]  "
