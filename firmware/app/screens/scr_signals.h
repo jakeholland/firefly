@@ -36,11 +36,15 @@
  *   - rows are VISUALLY touching (the canvas's 68px full-bleed pitch) but
  *     each row's actual tap target is inset 4px top/bottom, so adjacent
  *     hit-rects keep the 8px adjacency floor;
- *   - the FAB's decorative amber disc bleeds off the rim (clipped by a
- *     round `clip_corner` container so nothing paints outside the glass),
- *     while its 48px TAP TARGET sits fully on-glass, and every row's
- *     hit-rect stops 8px short of the FAB's column so the two can never
- *     violate the adjacency floor at any scroll offset.
+ *   - the FAB's decorative amber disc bleeds off the rim; its off-glass
+ *     spill is masked back to letterbox black by a border-only RIM RING
+ *     drawn over it — NOT by `style_clip_corner`, which hangs this
+ *     project's software renderer (measured by bisect; see
+ *     scr_signals.c's signals_build_fab section comment) — so nothing
+ *     paints outside the glass silhouette. Its 48px TAP TARGET sits
+ *     fully on-glass, and every row's hit-rect stops 8px short of the
+ *     FAB's column so the two can never violate the adjacency floor at
+ *     any scroll offset.
  */
 #ifndef FF_SCR_SIGNALS_H
 #define FF_SCR_SIGNALS_H

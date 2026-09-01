@@ -3995,11 +3995,19 @@ static void S24_AC3_fab_pick_and_back_navigate_subviews(void)
     (void)ff_shell_tick(&H.shell, H.clk.t);
     TEST_ASSERT_EQUAL_INT(FF_SIG_SUB_INBOX, ff_shell_view(&H.shell)->signals.subview);
 
-    /* Unknown recipient: rejected whole. */
+    /* Unknown recipient: rejected whole. Asserted BEFORE the next tick
+     * (review Finding 4): the projection re-validates holders every tick
+     * and would self-heal a handler that mutated first and checked
+     * later, so the immediate view state is what pins the HANDLER's own
+     * reject-before-mutate order. The target was MEMBER/KEV from the
+     * pick above; a bad key must leave it exactly there. */
     inject_text(KEV_ID, "again");
     ff_intent_t bad = {.kind = FF_INTENT_INBOX_OPEN_THREAD, .u = {0}};
     bad.u.node_id = 0xBADBEEFu;
     ff_shell_intent(&H.shell, &bad);
+    TEST_ASSERT_EQUAL_INT(FF_TARGET_MEMBER, ff_shell_view(&H.shell)->signals.target_kind);
+    TEST_ASSERT_EQUAL_UINT32(KEV_ID, ff_shell_view(&H.shell)->signals.target_node);
+    TEST_ASSERT_EQUAL_UINT16(1, ff_feed_unread_count(ff_shell_feed(&H.shell))); /* no mark-read fired */
     (void)ff_shell_tick(&H.shell, H.clk.t);
     TEST_ASSERT_EQUAL_INT(FF_SIG_SUB_INBOX, ff_shell_view(&H.shell)->signals.subview);
     TEST_ASSERT_EQUAL_UINT16(1, view_conv(KEV_ID)->unread); /* nothing was marked read */
@@ -4078,6 +4086,109 @@ static void S24_AC8_inbox_key_same_bucket_age_tick_is_clean(void)
     open.u.node_id = DANA;
     ff_shell_intent(&H.shell, &open);
     TEST_ASSERT_TRUE(ff_shell_tick(&H.shell, H.clk.t));
+}
+
+/* Routing rule 4 for the INBOX_* intents (review Finding 3, the
+ * S16_AC3b pattern): while a takeover owns the screen, a tap landing
+ * where a conversation row was must NOT navigate, NOT mark anything
+ * read, and NOT move the send scope. Dismissing the takeover restores
+ * the intent (positive control). */
+static void S24_AC3_inbox_intents_are_inert_under_a_takeover(void)
+{
+    harness_init(100000u, false);
+    inject_my_info(MY_ID);
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, true));
+    inject_text(DANA, "you close?"); /* DIRECT -> DANA thread, unread */
+    (void)ff_shell_tick(&H.shell, H.clk.t);
+    TEST_ASSERT_EQUAL_UINT16(1, view_conv(DANA)->unread);
+
+    inject_flare(DANA, 300); /* takeover up */
+    (void)ff_shell_tick(&H.shell, H.clk.t);
+    TEST_ASSERT_TRUE(ff_shell_flare(&H.shell)->takeover_active);
+
+    ff_intent_t open = {.kind = FF_INTENT_INBOX_OPEN_THREAD, .u = {0}};
+    open.u.node_id = DANA;
+    ff_shell_intent(&H.shell, &open);
+    (void)ff_shell_tick(&H.shell, H.clk.t);
+    TEST_ASSERT_EQUAL_INT(FF_SIG_SUB_INBOX, ff_shell_view(&H.shell)->signals.subview);
+    TEST_ASSERT_EQUAL_UINT16(1, view_conv(DANA)->unread); /* nothing marked read */
+    /* 2: DANA's text + the inbound FLARE's own feed item (dir UNKNOWN ->
+     * the CREW conversation) — both still unread. */
+    TEST_ASSERT_EQUAL_UINT16(2, ff_feed_unread_count(ff_shell_feed(&H.shell)));
+    TEST_ASSERT_EQUAL_INT(FF_TARGET_WHOLE_CREW, ff_shell_view(&H.shell)->signals.target_kind);
+
+    /* Same for the FAB and a picker pick. */
+    ff_intent_t fab = {.kind = FF_INTENT_INBOX_NEW, .u = {0}};
+    ff_shell_intent(&H.shell, &fab);
+    ff_intent_t pick = {.kind = FF_INTENT_INBOX_PICK, .u = {0}};
+    pick.u.node_id = DANA;
+    ff_shell_intent(&H.shell, &pick);
+    (void)ff_shell_tick(&H.shell, H.clk.t);
+    TEST_ASSERT_EQUAL_INT(FF_SIG_SUB_INBOX, ff_shell_view(&H.shell)->signals.subview);
+    TEST_ASSERT_EQUAL_UINT16(1, view_conv(DANA)->unread);
+
+    /* Positive control: dismissed, the same intent works. */
+    ff_intent_t dismiss = {.kind = FF_INTENT_TAKEOVER_DISMISS, .u = {0}};
+    ff_shell_intent(&H.shell, &dismiss);
+    (void)ff_shell_tick(&H.shell, H.clk.t);
+    ff_shell_intent(&H.shell, &open);
+    (void)ff_shell_tick(&H.shell, H.clk.t);
+    TEST_ASSERT_EQUAL_INT(FF_SIG_SUB_THREAD, ff_shell_view(&H.shell)->signals.subview);
+    TEST_ASSERT_EQUAL_UINT16(0, view_conv(DANA)->unread);
+}
+
+/* AC8, the PRESENCE leg (review Finding 1 — the flare-lesson risk the
+ * first churn test could not see because its member never reached SEEN
+ * with a ticking age): a QUIET member's rendered second line IS the
+ * presence text, so its key must follow exactly what ff_fmt_age puts on
+ * glass and nothing rawer.
+ *   - SEEN, same rendered bucket        => CLEAN  (bites "key the raw
+ *     presence_age_ms": the raw value advances every tick);
+ *   - SEEN, rendered bucket crossed     => DIRTY  (positive control);
+ *   - LOST, any bucket crossed          => CLEAN  (bites "drop the
+ *     SEEN-only gate": LOST renders the bare word, no age — a LOST
+ *     member's ticking age must not repaint anything). */
+static void S24_AC8_presence_age_keys_rendered_bucket_only(void)
+{
+    harness_init(100000u, false);
+    inject_my_info(MY_ID);
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, true));
+
+    /* Real SEEN evidence: a DIRECT packet's RSSI sighting (the honest
+     * presence leg ff_sigview_presence reads). No feed items — DANA is a
+     * quiet row, so presence is the rendered line. */
+    inject_rx_meta(DANA, MC_RX_PATH_DIRECT, true, -55);
+    TEST_ASSERT_TRUE(ff_shell_tick(&H.shell, H.clk.t)); /* row appears: dirty */
+    TEST_ASSERT_FALSE(ff_shell_tick(&H.shell, H.clk.t)); /* settled */
+    TEST_ASSERT_EQUAL_INT(FF_PRESENCE_SEEN, view_conv(DANA)->presence);
+
+    /* SEEN, same whole-second bucket ("SEEN 0 SEC"): MUST be clean. */
+    advance(400u);
+    TEST_ASSERT_FALSE_MESSAGE(ff_shell_tick(&H.shell, H.clk.t),
+                              "a sub-bucket SEEN-age tick rebuilt the inbox - raw presence_age_ms leaked "
+                              "into the render key (the flare-octant lesson, presence leg)");
+
+    /* SEEN, bucket crossed (0.4s -> 1.1s): the rendered text changes. */
+    advance(700u);
+    TEST_ASSERT_TRUE_MESSAGE(ff_shell_tick(&H.shell, H.clk.t),
+                             "a rendered SEEN-bucket change did not repaint - the presence age on glass "
+                             "would go stale");
+    TEST_ASSERT_FALSE(ff_shell_tick(&H.shell, H.clk.t)); /* settled */
+
+    /* Cross into LOST (sighting age > FF_CREW_LOST_MS): a CATEGORY
+     * change, rendered ("SEEN ..." -> "LOST") — dirty, then settle. */
+    advance(FF_CREW_LOST_MS);
+    TEST_ASSERT_TRUE(ff_shell_tick(&H.shell, H.clk.t));
+    TEST_ASSERT_EQUAL_INT(FF_PRESENCE_LOST, view_conv(DANA)->presence);
+    TEST_ASSERT_FALSE(ff_shell_tick(&H.shell, H.clk.t)); /* settled */
+
+    /* LOST renders the bare word — no age — so a full minute-bucket
+     * crossing while LOST must stay CLEAN. */
+    advance(60000u);
+    TEST_ASSERT_EQUAL_INT(FF_PRESENCE_LOST, view_conv(DANA)->presence); /* still LOST (precondition) */
+    TEST_ASSERT_FALSE_MESSAGE(ff_shell_tick(&H.shell, H.clk.t),
+                              "a LOST member's un-rendered age bucket dirtied the frame - the key must "
+                              "carry presence age ONLY when it is drawn (SEEN)");
 }
 
 int main(void)
@@ -4187,6 +4298,8 @@ int main(void)
     RUN_TEST(S24_AC3_fab_pick_and_back_navigate_subviews);
     RUN_TEST(S24_AC3_leaving_signals_face_resets_subview_to_inbox);
     RUN_TEST(S24_AC8_inbox_key_same_bucket_age_tick_is_clean);
+    RUN_TEST(S24_AC8_presence_age_keys_rendered_bucket_only);
+    RUN_TEST(S24_AC3_inbox_intents_are_inert_under_a_takeover);
 
     return UNITY_END();
 }

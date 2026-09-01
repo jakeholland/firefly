@@ -309,7 +309,7 @@ static void S24_AC3_preview_sender_joined_paired_only(void)
     TEST_ASSERT_FALSE(crew_conv->preview_from_known);
     TEST_ASSERT_EQUAL_STRING("", crew_conv->preview_from_name);
 
-    /* Newest becomes a broadcast from an UNPAIRED (merely-heard) node:
+    /* Newest becomes a broadcast from a node NOT in the roster at all:
      * shown in CREW (it is broadcast traffic) but its identity is
      * honestly unknown. */
     push(&f, FEED_TEXT, FEED_DIR_BROADCAST, 777001u, 0, 5000, "who dis", true);
@@ -317,6 +317,19 @@ static void S24_AC3_preview_sender_joined_paired_only(void)
     crew_conv = find_conv(&ib, FF_CONV_CREW, 0);
     TEST_ASSERT_TRUE(crew_conv->has_preview);
     TEST_ASSERT_FALSE(crew_conv->preview_from_known);
+    TEST_ASSERT_EQUAL_STRING("", crew_conv->preview_from_name);
+
+    /* Review Finding 2 (the cardinal-sin class): a sender who IS in the
+     * roster but is NOT paired — ff_crew_find succeeds for this node, so
+     * only the `paired` gate stands between it and a leaked name. The
+     * join must refuse: known == false, and MAYA's name never appears. */
+    add_member(&c, MAYA, "maya", 'M', 3, false /* NOT paired */);
+    push(&f, FEED_TEXT, FEED_DIR_BROADCAST, MAYA, 0, 6000, "let me in", true);
+    ff_inbox_build(&ib, &f, &c, NOW);
+    crew_conv = find_conv(&ib, FF_CONV_CREW, 0);
+    TEST_ASSERT_TRUE(crew_conv->has_preview);
+    TEST_ASSERT_FALSE_MESSAGE(crew_conv->preview_from_known,
+                              "an in-roster but UNPAIRED sender was joined - the paired identity gate leaked");
     TEST_ASSERT_EQUAL_STRING("", crew_conv->preview_from_name);
 }
 
