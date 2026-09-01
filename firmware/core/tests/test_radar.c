@@ -147,7 +147,9 @@ static void S06_AC1_nofix_age_str_known_but_dist_str_unknown(void)
     ff_radar_compute(&v, &sm, &c, 0.0f, my_pos, /*my_pos_ok=*/false, false, 8000u);
 
     TEST_ASSERT_EQUAL_INT(RADAR_NOFIX, v.mode);
-    TEST_ASSERT_EQUAL_STRING("8 SEC", v.age_str);
+    /* age is KNOWN (non-empty) while dist is unknown — an 8s age reads the
+     * steady sub-minute "now" (ff_fmt_age), not a per-second "8 SEC". */
+    TEST_ASSERT_EQUAL_STRING("now", v.age_str);
     TEST_ASSERT_EQUAL_STRING("", v.dist_str);
 }
 

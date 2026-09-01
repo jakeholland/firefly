@@ -499,11 +499,13 @@ static void S02_AC7_age_formatting_exact_strings(void)
 {
     char buf[32];
 
+    /* Under a minute reads the steady "now" (honest "less than a minute
+     * ago"), never a per-second counter — see ff_fmt_age. */
     ff_fmt_age(buf, sizeof(buf), 8000u);
-    TEST_ASSERT_EQUAL_STRING("8 SEC", buf);
+    TEST_ASSERT_EQUAL_STRING("now", buf);
 
     ff_fmt_age(buf, sizeof(buf), 45000u);
-    TEST_ASSERT_EQUAL_STRING("45 SEC", buf);
+    TEST_ASSERT_EQUAL_STRING("now", buf);
 
     ff_fmt_age(buf, sizeof(buf), 59u * 60u * 1000u);
     TEST_ASSERT_EQUAL_STRING("59 MIN", buf);
@@ -515,11 +517,16 @@ static void S02_AC7_age_formatting_exact_strings(void)
 static void S02_AC7_age_formatting_60s_boundary_rolls_to_minutes(void)
 {
     char buf[32];
+    /* The under-a-minute boundary: 59s is still "now"; 60s is the first
+     * minute ("1 MIN", never "60 SEC" / never a lingering "now"). */
+    ff_fmt_age(buf, sizeof(buf), 59000u);
+    TEST_ASSERT_EQUAL_STRING("now", buf);
+
     ff_fmt_age(buf, sizeof(buf), 59999u);
-    TEST_ASSERT_EQUAL_STRING("59 SEC", buf);
+    TEST_ASSERT_EQUAL_STRING("now", buf);
 
     ff_fmt_age(buf, sizeof(buf), 60000u);
-    TEST_ASSERT_EQUAL_STRING("1 MIN", buf); /* not "60 SEC" */
+    TEST_ASSERT_EQUAL_STRING("1 MIN", buf); /* not "60 SEC", not "now" */
 }
 
 static void S02_AC7_age_formatting_60min_boundary_rolls_to_hours(void)

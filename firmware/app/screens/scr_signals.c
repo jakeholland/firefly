@@ -35,9 +35,12 @@
  * `style_clip_corner`, which hangs this project's software renderer —
  * see signals_build_fab's section comment for the measured bisect), so
  * the sim golden shows exactly what the round panel shows. Its TAP
- * TARGET is a separate 48px transparent button placed fully on-glass
- * over the disc's inner edge — the sweep's circle-containment check
- * applies to the tap target, and the visible disc is deco.
+ * TARGET is a separate transparent button covering the WHOLE visible
+ * amber lens (corner-anchored to the window's bottom-right corner); its
+ * off-glass excess is the masked letterbox corner, so the sweep excludes
+ * it from circle-containment (the corner-bleed exclusion, alongside the
+ * whole-puck one) while still enforcing the size and adjacency floors.
+ * The visible disc is deco; the tap target doubles as the press overlay.
  *
  * ## Clickable-by-omission (PR #86 lesson)
  * `lv_obj_create` defaults CLICKABLE, so every decorative container
@@ -97,15 +100,26 @@ _Static_assert(2 * FF_SIGNALS_ROW_HIT_INSET_Y >= FF_HIT_MIN_GAP_PX,
 
 /* The FAB. Deco disc geometry is the design canvas's (a 240px amber
  * circle whose center sits off-glass past the bottom-right rim); the TAP
- * TARGET is a 48px square placed fully on-glass — its far corner
- * (350,350) sits 203.6px from the puck center, inside the 206px radius,
- * verified by the sweep, not only by this math. */
+ * TARGET now covers the WHOLE visible amber lens (the maintainer's "the
+ * add button is hard to tap / misaligned"): a corner-anchored square from
+ * (300,300) to the window corner (412,412), so every point on the visible
+ * amber is tappable — not the old tiny 48px patch over the disc's inner
+ * edge. Its off-glass excess (past the round rim, toward 412,412) is the
+ * masked letterbox corner — no physically-touchable surface on the round
+ * device — so the hit-target sweep excludes it from the circle-containment
+ * check the way it excludes the whole-puck gesture region (a NEW, narrow
+ * corner-bleed exclusion in test_face_hit_targets.c; the size floor and the
+ * adjacency floor still apply, and the FAB keeps its 8px clearance from the
+ * rows/chips via FF_SIGNALS_ROW_HIT_CLEAR_X below). The already-transparent
+ * hit doubles as the press overlay: its LV_STATE_PRESSED dark wash now
+ * spans the whole lens, so the ENTIRE visible amber dims on press (the
+ * maintainer's "the touchdown should fill the entire shape"). */
 #define FF_SIGNALS_FAB_DECO_D  240
 #define FF_SIGNALS_FAB_DECO_X  278
 #define FF_SIGNALS_FAB_DECO_Y  280
-#define FF_SIGNALS_FAB_HIT_PX  48
-#define FF_SIGNALS_FAB_HIT_X   302
-#define FF_SIGNALS_FAB_HIT_Y   302
+#define FF_SIGNALS_FAB_HIT_X   300
+#define FF_SIGNALS_FAB_HIT_Y   300
+#define FF_SIGNALS_FAB_HIT_PX  (FF_THEME_PUCK_PX - FF_SIGNALS_FAB_HIT_X) /* -> 112: reaches the window corner */
 _Static_assert(FF_SIGNALS_FAB_HIT_PX >= FF_THEME_MIN_HIT_PX, "FAB tap target must clear the hit floor");
 
 /* Every inbox row's hit-rect stops this far left of the FAB's tap
@@ -116,11 +130,16 @@ _Static_assert(FF_SIGNALS_FAB_HIT_PX >= FF_THEME_MIN_HIT_PX, "FAB tap target mus
  * target; the row is generously tappable everywhere else. */
 #define FF_SIGNALS_ROW_HIT_CLEAR_X (FF_SIGNALS_FAB_HIT_X - FF_HIT_MIN_GAP_PX)
 
-/* The FAB's `+` glyph center — the CENTER of the 48px tap target
- * (302..350 -> 326), not the deco disc's own centroid: the glyph is the
- * user's aim point, so it must mark where the tap actually registers
- * (slice-b UX review nit, fixed here in slice c). */
-#define FF_SIGNALS_FAB_GLYPH_C (FF_SIGNALS_FAB_HIT_X + FF_SIGNALS_FAB_HIT_PX / 2)
+/* The FAB's `+` glyph center — the centroid of the VISIBLE amber lens
+ * (the deco disc ∩ the round glass), on the 45-degree diagonal by
+ * symmetry (both circle centers lie on it). Measured, not the tap
+ * target's own center: the enlarged hit deliberately runs off-glass to
+ * the window corner, so its geometric center (356,356) is past the rim —
+ * the glyph must sit on the amber the user actually sees and aims at
+ * (the maintainer's "the + reads misaligned"). ~334 is the on-diagonal
+ * midpoint between the disc's innermost on-glass arc point (~314) and the
+ * glass rim (~352). */
+#define FF_SIGNALS_FAB_GLYPH_C 334
 
 /* Row internals. */
 #define FF_SIGNALS_AVATAR_PX 46
@@ -456,14 +475,35 @@ static void signals_presence_text(ff_inbox_conv_t const *cv, char *buf, size_t n
  * Rows.
  * ------------------------------------------------------------------- */
 
+/* The full-row press HIGHLIGHT (fix: "the touch-down state is not over all
+ * the row — should be across the full thing"). A row's tap target must stay
+ * inset 4px top/bottom to keep the 8px adjacency floor between neighbouring
+ * rows (a full-height clickable would put two thread targets 0px apart), so
+ * the pressed state can't just be the tap target's own bg — that leaves the
+ * old 4px-short, right-capped pill the maintainer saw. Instead a deco
+ * highlight spans the FULL row (full height, full width) BEHIND the content,
+ * and press/release events on the (inset) tap target toggle it. */
+static void signals_row_press_ev(lv_event_t *e)
+{
+    lv_obj_t *hl = (lv_obj_t *)lv_event_get_user_data(e);
+    if (hl == NULL) return;
+    lv_opa_t const opa = (lv_event_get_code(e) == LV_EVENT_PRESSED) ? LV_OPA_40 : LV_OPA_TRANSP;
+    lv_obj_set_style_bg_opa(hl, opa, 0);
+}
+
 /**
  * One big conversation/picker row at list-relative `y`, visually
- * full-bleed (touching its neighbors) with an inset transparent tap
- * target wired to `cb` carrying `node` (see this file's header for the
- * touching-vs-adjacency reconciliation). `hit_clear_right` caps the tap
- * target's absolute right edge (the inbox passes the FAB clearance;
- * the picker, with no FAB, passes 0 = no cap). Returns the row container
- * (deco); the tap overlay is its last child.
+ * full-bleed (touching its neighbors). A full-row deco highlight (lit on
+ * press by signals_row_press_ev) sits behind the content, and an inset
+ * transparent tap target wired to `cb` carrying `node` sits on top (see
+ * this file's header for the touching-vs-adjacency reconciliation). The tap
+ * target keeps the 4px vertical inset for the row-to-row adjacency floor;
+ * the highlight does not (it is deco, never a hit rect the sweep pairs).
+ * `hit_clear_right` caps the tap target's AND the highlight's absolute right
+ * edge — the inbox passes the FAB clearance ONLY for rows whose scroll-0
+ * band actually reaches the FAB (signals_row_overlaps_fab); every other row,
+ * and every picker row (no FAB), passes 0 = full width. Returns the row
+ * container (deco).
  */
 static lv_obj_t *signals_row_container(lv_obj_t *parent, int32_t y, int32_t margin_x, uint32_t node,
                                        lv_event_cb_t cb, int32_t hit_clear_right)
@@ -475,33 +515,76 @@ static lv_obj_t *signals_row_container(lv_obj_t *parent, int32_t y, int32_t marg
     lv_obj_set_size(row, row_w, FF_SIGNALS_ROW_H);
     lv_obj_set_pos(row, margin_x, y);
 
-    /* The tap target: inset vertically for the adjacency floor, capped
-     * on the right when a clearance is given. Added as the FIRST child
-     * so row content (all non-clickable) paints above it; LVGL's hit
-     * test doesn't care about paint order, only the CLICKABLE flag. */
     int32_t hit_w = row_w;
     if (hit_clear_right > 0) {
         int32_t max_w = hit_clear_right - margin_x;
         if (hit_w > max_w) hit_w = max_w;
     }
+
+    /* The tap target — created as the row's FIRST child (index 0): a stable
+     * contract the touch tests locate it by (test_scr_intent.c's
+     * find_row_hit_by_name). Inset vertically for the row-to-row adjacency
+     * floor, capped on the right only when a clearance is given. The
+     * CLICKABLE flag alone drives hit-testing (paint order is irrelevant),
+     * so it paints at the bottom, under the highlight and content. CLICKED
+     * carries the intent; the PRESSED/RELEASED/PRESS_LOST trio lights the
+     * full-row highlight (wired below, once `hl` exists). */
     lv_obj_t *hit = lv_button_create(row);
     lv_obj_remove_style_all(hit);
     lv_obj_set_size(hit, hit_w, FF_SIGNALS_ROW_H - 2 * FF_SIGNALS_ROW_HIT_INSET_Y);
     lv_obj_set_pos(hit, 0, FF_SIGNALS_ROW_HIT_INSET_Y);
-    lv_obj_set_style_radius(hit, 14, 0);
     lv_obj_set_style_bg_opa(hit, LV_OPA_TRANSP, 0);
+
+    /* The full-row highlight, above the (transparent) tap target and BELOW
+     * the row content added by the caller. Amber, transparent until pressed.
+     * Full ROW height (no inset) and hit_w wide (so on a FAB-overlapping row
+     * it stops at the FAB clearance, never painting under the FAB — "only
+     * clip the rows the FAB overlaps"). */
+    lv_obj_t *hl = lv_obj_create(row);
+    signals_child_deco(hl);
+    lv_obj_set_size(hl, hit_w, FF_SIGNALS_ROW_H);
+    lv_obj_set_pos(hl, 0, 0);
+    lv_obj_set_style_radius(hl, 12, 0);
+    lv_obj_set_style_bg_color(hl, lv_color_hex(FF_THEME_COLOR_AMBER), 0);
+    lv_obj_set_style_bg_opa(hl, LV_OPA_TRANSP, 0);
+
     lv_obj_add_event_cb(hit, cb, LV_EVENT_CLICKED, (void *)(uintptr_t)node);
-    signals_press_feedback(hit);
+    lv_obj_add_event_cb(hit, signals_row_press_ev, LV_EVENT_PRESSED, hl);
+    lv_obj_add_event_cb(hit, signals_row_press_ev, LV_EVENT_RELEASED, hl);
+    lv_obj_add_event_cb(hit, signals_row_press_ev, LV_EVENT_PRESS_LOST, hl);
 
     return row;
+}
+
+/* Does a row at list-relative `y` sit close enough to the FAB (at scroll 0,
+ * the position the hit-target sweep measures) that its tap target must be
+ * clipped to keep the 8px clearance from the FAB? Conservative: uses the
+ * whole ROW band (a superset of the inset hit) expanded by the adjacency
+ * floor, so a row is clipped whenever it comes within 8px of the FAB's
+ * y-range — and left FULL WIDTH otherwise. On glass a row scrolled up into
+ * the FAB band is still safe: the FAB is a later sibling (drawn on top), so
+ * a touch in the overlap resolves to the FAB, never ambiguously to the row
+ * beneath it (LVGL's deepest/topmost-hit-wins — the same fact the sweep's
+ * ancestor/whole-puck exclusions rest on). */
+static bool signals_row_overlaps_fab(int32_t y)
+{
+    int32_t const abs_top = FF_SIGNALS_LIST_TOP_Y + y; /* scroll 0 */
+    int32_t const abs_bot = abs_top + FF_SIGNALS_ROW_H;
+    int32_t const fab_top = FF_SIGNALS_FAB_HIT_Y - FF_HIT_MIN_GAP_PX;
+    int32_t const fab_bot = FF_SIGNALS_FAB_HIT_Y + FF_SIGNALS_FAB_HIT_PX + FF_HIT_MIN_GAP_PX;
+    return abs_bot > fab_top && abs_top < fab_bot;
 }
 
 /* One INBOX conversation row, rendered from the model row alone. */
 static void signals_build_conv_row(lv_obj_t *parent, ff_inbox_conv_t const *cv, int32_t y, int32_t margin_x,
                                    bool colorblind)
 {
-    lv_obj_t *row = signals_row_container(parent, y, margin_x, cv->node_id, signals_open_thread_cb,
-                                          FF_SIGNALS_ROW_HIT_CLEAR_X);
+    /* Clip the tap target on the right ONLY when this row's scroll-0 band
+     * actually reaches the FAB (fix 2: "clip the rows the FAB overlaps, not
+     * all rows"); every other row is full width so taps anywhere on it
+     * register and its press highlight spans the whole row. */
+    int32_t const clear = signals_row_overlaps_fab(y) ? FF_SIGNALS_ROW_HIT_CLEAR_X : 0;
+    lv_obj_t *row = signals_row_container(parent, y, margin_x, cv->node_id, signals_open_thread_cb, clear);
     int32_t row_w = FF_THEME_PUCK_PX - 2 * margin_x;
 
     if (cv->unread > 0) {
@@ -682,14 +765,20 @@ static void signals_build_fab(lv_obj_t *parent)
     lv_obj_set_style_bg_color(bar_v, lv_color_hex(FF_THEME_COLOR_BG), 0);
     lv_obj_set_style_bg_opa(bar_v, LV_OPA_COVER, 0);
 
-    /* The tap target — on-glass, 48px, over the disc's inner edge. The
-     * already-amber control dims on press (the composer SEND precedent)
-     * rather than lighting amber-on-amber. */
+    /* The tap target — corner-anchored, covering the whole visible amber
+     * lens (see the FAB constants). Drawn AFTER the deco stack (later
+     * sibling = on top), so it doubles as the full-slice PRESS OVERLAY: a
+     * dark LV_STATE_PRESSED wash (the composer SEND precedent — dim an
+     * already-amber control rather than light amber-on-amber) that now
+     * spans the ENTIRE visible amber, not a 48px patch of it. Square (no
+     * radius): the wash is transparent except where it overlaps amber, so
+     * only the lens visibly dims; the off-glass corner it also covers is
+     * the masked letterbox black and stays black. */
     lv_obj_t *hit = lv_button_create(parent);
     lv_obj_remove_style_all(hit);
     lv_obj_set_size(hit, FF_SIGNALS_FAB_HIT_PX, FF_SIGNALS_FAB_HIT_PX);
     lv_obj_set_pos(hit, FF_SIGNALS_FAB_HIT_X, FF_SIGNALS_FAB_HIT_Y);
-    lv_obj_set_style_radius(hit, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_radius(hit, 0, 0);
     lv_obj_set_style_bg_opa(hit, LV_OPA_TRANSP, 0);
     lv_obj_set_style_bg_color(hit, lv_color_hex(FF_THEME_COLOR_BG), LV_STATE_PRESSED);
     lv_obj_set_style_bg_opa(hit, LV_OPA_40, LV_STATE_PRESSED);

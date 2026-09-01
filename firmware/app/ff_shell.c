@@ -375,7 +375,24 @@ static bool shell_drop_as_self(shell_t const *sh, uint32_t node_id)
  */
 static bool shell_pair(shell_t *sh, uint32_t node_id, bool paired)
 {
-    if (ff_crew_upsert(&sh->crew, node_id) == NULL) return false; /* roster full, no eviction in v1 */
+    bool const existed = ff_crew_find(&sh->crew, node_id) != NULL;
+    ff_crew_member_t *m = ff_crew_upsert(&sh->crew, node_id);
+    if (m == NULL) return false; /* roster full, no eviction in v1 */
+
+    /* App-assigned identity color (ff_crew.h: `color_idx` is "app-assigned"
+     * — core creates the slot memset to 0 and never fills it). Assigned ONCE,
+     * when a member first enters the roster, to its roster slot index: stable
+     * because v1 never evicts (crew_find_or_create), so every paired friend
+     * keeps one distinct crew-palette color across radar / signals / map. The
+     * shell is the ONLY roster-growth path (every inbound radio path is gated
+     * behind a read-only ff_crew_find), so this one site colors every member.
+     * ff_theme_crew_color wraps mod-8, so a 9th member reuses a color rather
+     * than reading out of range. Without this, m->color_idx stayed 0 for all
+     * members and every 1:1 (and every radar dot) rendered palette[0]. */
+    if (!existed) {
+        uint8_t const slot = (sh->crew.count > 0u) ? (uint8_t)(sh->crew.count - 1u) : 0u;
+        m->color_idx = slot;
+    }
     ff_crew_set_paired(&sh->crew, node_id, paired);
     return true;
 }
@@ -1529,8 +1546,12 @@ static int32_t shell_coarsen_ms(int32_t ms)
 static uint32_t shell_coarsen_age_ms(uint32_t age_ms)
 {
     uint32_t s = age_ms / 1000u;
-    if (s < 60u) return s;              /* "N SEC" — per-second */
-    if (s < 3600u) return 60u + s / 60u; /* "N MIN" — per-minute (offset so buckets never alias SEC) */
+    if (s < 60u) return 0u;              /* "now" — ONE bucket for the whole sub-minute span (ff_fmt_age
+                                          * renders every <60s age identically), so a ticking sub-minute
+                                          * age never changes the render key and never rebuilds a screen
+                                          * (the row/chip under a finger survives). This is the dominant
+                                          * demo-LIVE churn source, killed at the source. */
+    if (s < 3600u) return 60u + s / 60u; /* "N MIN" — per-minute (offset so buckets never alias the now/SEC bucket) */
     return 3660u + s / 3600u;            /* "N HR"  — per-hour  (offset past the MIN range) */
 }
 

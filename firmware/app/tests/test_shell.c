@@ -1391,28 +1391,31 @@ static void S16_AC4a_dirty_is_the_rendered_projection_not_the_raw_struct(void)
      * same frames.
      *
      * The scene has exactly one rendered quantity that moves with time:
-     * a paired member's feed item age_str (whole seconds, what ff_fmt_age
-     * prints on the Signals face). It crosses at most once per second, so
-     * over N seconds at 50 Hz the shell may report at most N changes —
-     * while the raw struct differs on every single tick, because the
-     * signals row's raw age_ms advances by 20 every time.
+     * a paired member's feed item age_str, what ff_fmt_age prints on the
+     * Signals face. Sub-minute it reads the steady "now" (ONE render-key
+     * bucket — the churn fix), so the string changes only when the age
+     * crosses a MINUTE boundary ("now"->"1 MIN"->"2 MIN"...): at most once
+     * per minute. Over M minutes at 50 Hz the shell may report ~M changes,
+     * while the raw struct differs on EVERY single tick, because the
+     * signals row's raw age_ms advances by 20 every time. That gap — a few
+     * repaints against thousands of raw ticks — is the whole point.
      *
      * (Earlier this scene used an inbound flare and keyed on the takeover
      * countdown — but the receive takeover screen renders no countdown at
      * all, so that was a change to a NON-rendered field: exactly the
      * over-keying #flare-repeat-dismiss removed. A flare here now also
-     * makes the takeover opaque, freezing the very per-second change this
-     * measurement needs, so the scene uses a plain rendered feed age.) */
+     * makes the takeover opaque, freezing the very change this measurement
+     * needs, so the scene uses a plain rendered feed age.) */
     harness_init(100000u, false);
     inject_my_info(MY_ID);
     TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, true));
-    inject_node(DANA, "DANA", U_EVENING);
+    inject_node(DANA, "DANA", U_EVENING); /* NodeInfo only, no position -> DANA is LINKED, no presence age churn */
     inject_text(DANA, "omw"); /* a feed item whose age_str the Signals face renders */
 
     ff_shell_tick(&H.shell, H.clk.t); /* first frame: always dirty */
 
-    int const seconds = 4;
-    int const ticks = seconds * 50;
+    int const minutes = 3;
+    int const ticks = minutes * 60 * 50; /* 9000 ticks of genuinely elapsing time */
     int shell_dirty = 0;
     int raw_dirty = 0;
 
@@ -1431,13 +1434,13 @@ static void S16_AC4a_dirty_is_the_rendered_projection_not_the_raw_struct(void)
     /* A whole-struct memcmp would have repainted every single frame. */
     TEST_ASSERT_EQUAL_INT(ticks, raw_dirty);
 
-    /* The shell repainted only when something rendered actually changed:
-     * at most one crossing per second for the single moving string. */
-    TEST_ASSERT_LESS_OR_EQUAL_INT(seconds, shell_dirty);
-    /* ...and it did not go silent either — the countdown really is
-     * ticking, so at least one change per second must be reported or the
-     * screen would freeze with a stale number on it. */
-    TEST_ASSERT_GREATER_OR_EQUAL_INT(seconds, shell_dirty);
+    /* The shell repainted only when the rendered string actually changed —
+     * one crossing per minute boundary, a tiny fraction of the raw ticks. */
+    TEST_ASSERT_LESS_OR_EQUAL_INT(minutes + 1, shell_dirty);
+    /* ...and it did not go silent either — the age really is advancing
+     * across minute boundaries, so at least one repaint must be reported or
+     * the screen would freeze with a stale age on it. */
+    TEST_ASSERT_GREATER_OR_EQUAL_INT(1, shell_dirty);
 }
 
 /* =================================================================== */
@@ -4063,17 +4066,28 @@ static void S24_AC8_inbox_key_same_bucket_age_tick_is_clean(void)
     TEST_ASSERT_FALSE(ff_shell_tick(&H.shell, H.clk.t)); /* settled */
 
     /* Same-bucket age tick: 400 ms leaves the item's rendered age in the
-     * same whole-second ff_fmt_age bucket ("0 SEC"). MUST be clean. */
+     * same ff_fmt_age bucket (sub-minute "now"). MUST be clean. */
     advance(400u);
     TEST_ASSERT_FALSE_MESSAGE(ff_shell_tick(&H.shell, H.clk.t),
                               "a sub-bucket age tick rebuilt the inbox - the row under a finger would be destroyed");
 
-    /* Cross-bucket tick: +700 ms crosses into the next whole second, so
-     * the rendered age string changes -> MUST be dirty (positive control
-     * proving the clean result above is bucketing, not a dead key). */
-    advance(700u);
+    /* The churn fix's core: the WHOLE sub-minute span is ONE "now" bucket,
+     * so an age ticking second-by-second under a minute must stay CLEAN.
+     * Advance well into the sub-minute range a second at a time. */
+    for (int s = 0; s < 40; s++) {
+        advance(1000u);
+        TEST_ASSERT_FALSE_MESSAGE(ff_shell_tick(&H.shell, H.clk.t),
+                                  "a sub-minute per-second age tick rebuilt the inbox - the \"now\" bucket leaked "
+                                  "the raw second into the render key (the demo-LIVE churn source)");
+    }
+
+    /* Cross-bucket tick: crossing the 60 s boundary changes the rendered
+     * string "now"->"1 MIN" -> MUST be dirty (positive control proving the
+     * clean results above are bucketing, not a dead key). Age is ~40.4 s;
+     * +20 s crosses 60 s. */
+    advance(20000u);
     TEST_ASSERT_TRUE_MESSAGE(ff_shell_tick(&H.shell, H.clk.t),
-                             "a rendered-age bucket change did not repaint - the age on glass would go stale");
+                             "the now->1 MIN boundary did not repaint - the age on glass would go stale");
     TEST_ASSERT_FALSE(ff_shell_tick(&H.shell, H.clk.t)); /* settled again */
 
     /* A new item is dirty. */
@@ -4162,17 +4176,20 @@ static void S24_AC8_presence_age_keys_rendered_bucket_only(void)
     TEST_ASSERT_FALSE(ff_shell_tick(&H.shell, H.clk.t)); /* settled */
     TEST_ASSERT_EQUAL_INT(FF_PRESENCE_SEEN, view_conv(DANA)->presence);
 
-    /* SEEN, same whole-second bucket ("SEEN 0 SEC"): MUST be clean. */
+    /* SEEN, same sub-minute bucket ("SEEN now"): MUST be clean. */
     advance(400u);
     TEST_ASSERT_FALSE_MESSAGE(ff_shell_tick(&H.shell, H.clk.t),
                               "a sub-bucket SEEN-age tick rebuilt the inbox - raw presence_age_ms leaked "
                               "into the render key (the flare-octant lesson, presence leg)");
 
-    /* SEEN, bucket crossed (0.4s -> 1.1s): the rendered text changes. */
-    advance(700u);
+    /* SEEN, bucket crossed (~0.4s -> ~60.4s): the rendered text changes
+     * "SEEN now" -> "SEEN 1 MIN" (still well inside the SEEN window, which
+     * only ends at FF_CREW_LOST_MS). */
+    advance(60000u);
     TEST_ASSERT_TRUE_MESSAGE(ff_shell_tick(&H.shell, H.clk.t),
                              "a rendered SEEN-bucket change did not repaint - the presence age on glass "
                              "would go stale");
+    TEST_ASSERT_EQUAL_INT(FF_PRESENCE_SEEN, view_conv(DANA)->presence); /* still SEEN (precondition for below) */
     TEST_ASSERT_FALSE(ff_shell_tick(&H.shell, H.clk.t)); /* settled */
 
     /* Cross into LOST (sighting age > FF_CREW_LOST_MS): a CATEGORY
@@ -4403,17 +4420,22 @@ static void S24c_AC8_thread_key_opaque_to_other_conversations_churn(void)
     TEST_ASSERT_TRUE(ff_shell_tick(&H.shell, H.clk.t));  /* thread opened: dirty */
     TEST_ASSERT_FALSE(ff_shell_tick(&H.shell, H.clk.t)); /* settled */
 
-    /* Same-bucket age tick: clean. */
-    advance(400u);
-    TEST_ASSERT_FALSE_MESSAGE(ff_shell_tick(&H.shell, H.clk.t),
-                              "a sub-bucket age tick rebuilt the open thread - the chip under a finger "
-                              "would be destroyed");
+    /* Sub-minute age ticks (the whole "now" span is ONE bucket): a message
+     * age ticking second-by-second under a minute must NOT rebuild the open
+     * thread and destroy the chip under a finger. */
+    for (int s = 0; s < 40; s++) {
+        advance(1000u);
+        TEST_ASSERT_FALSE_MESSAGE(ff_shell_tick(&H.shell, H.clk.t),
+                                  "a sub-minute per-second message-age tick rebuilt the open thread - the "
+                                  "\"now\" bucket leaked the raw second into the render key");
+    }
 
-    /* Cross-bucket: the rendered age string changes -> dirty (positive
-     * control), then settle. */
-    advance(700u);
+    /* Cross-bucket: crossing 60 s changes "now"->"1 MIN" -> dirty (positive
+     * control proving the clean results above are bucketing), then settle.
+     * Age is ~40 s; +21 s crosses 60 s. */
+    advance(21000u);
     TEST_ASSERT_TRUE_MESSAGE(ff_shell_tick(&H.shell, H.clk.t),
-                             "a rendered message-age bucket change did not repaint - the age on glass "
+                             "the now->1 MIN message-age boundary did not repaint - the age on glass "
                              "would go stale");
     TEST_ASSERT_FALSE(ff_shell_tick(&H.shell, H.clk.t));
 
@@ -4459,9 +4481,46 @@ static void S24c_AC8_thread_header_presence_keys_rendered_bucket(void)
     TEST_ASSERT_FALSE_MESSAGE(ff_shell_tick(&H.shell, H.clk.t),
                               "a sub-bucket SEEN-age tick rebuilt the thread - raw presence_age_ms leaked "
                               "into the thread key");
-    advance(700u);
+    /* Crossing 60 s changes the header's "SEEN now" -> "SEEN 1 MIN" -> dirty
+     * (positive control; still SEEN — the window ends only at LOST_MS). */
+    advance(60000u);
     TEST_ASSERT_TRUE_MESSAGE(ff_shell_tick(&H.shell, H.clk.t),
-                             "a rendered SEEN-bucket change did not repaint the thread header");
+                             "the SEEN now->1 MIN boundary did not repaint the thread header");
+}
+
+/* Fix: a Signals 1:1 must render the MEMBER's own identity color, not a
+ * default. color_idx is app-assigned (ff_crew.h); the shell assigns each
+ * roster member its slot index when it first pairs (shell_pair), so paired
+ * members get DISTINCT palette colors and the 1:1 thread header projects the
+ * open member's real color_idx — before this, every member kept color_idx 0
+ * and every 1:1 (and radar dot) rendered palette[0]. */
+static void S24_signals_1to1_projects_the_members_own_color(void)
+{
+    harness_init(100000u, false);
+    inject_my_info(MY_ID);
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, true));   /* roster slot 0 -> color 0 */
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, KEV_ID, true)); /* roster slot 1 -> color 1 */
+
+    /* Distinct, non-default identity colors (the bug was all-zero). */
+    TEST_ASSERT_NOT_EQUAL_INT(member(DANA)->color_idx, member(KEV_ID)->color_idx);
+    TEST_ASSERT_NOT_EQUAL_INT(0, member(KEV_ID)->color_idx);
+
+    s24c_swipe_to_signals();
+    ff_intent_t open = {.kind = FF_INTENT_INBOX_OPEN_THREAD, .u = {0}};
+    open.u.node_id = KEV_ID;
+    ff_shell_intent(&H.shell, &open);
+    (void)ff_shell_tick(&H.shell, H.clk.t);
+
+    ff_app_signals_t const *sig = &ff_shell_view(&H.shell)->signals;
+    TEST_ASSERT_EQUAL_INT(FF_SIG_SUB_THREAD, sig->subview);
+    TEST_ASSERT_EQUAL_UINT32(KEV_ID, sig->thread_node);
+    /* The 1:1 header dot/accent (scr_signals.c reads sig->thread_color_idx)
+     * carries KEV's real color, not the palette[0] default. */
+    TEST_ASSERT_EQUAL_UINT8(member(KEV_ID)->color_idx, sig->thread_color_idx);
+    TEST_ASSERT_NOT_EQUAL_INT(0, sig->thread_color_idx);
+
+    /* And the inbox conversation row projects the same per-member color. */
+    TEST_ASSERT_EQUAL_UINT8(member(KEV_ID)->color_idx, view_conv(KEV_ID)->color_idx);
 }
 
 int main(void)
@@ -4580,6 +4639,7 @@ int main(void)
     RUN_TEST(S24c_AC4_pulse_chip_sends_to_thread_scope_and_keeps_scope);
     RUN_TEST(S24c_AC8_thread_key_opaque_to_other_conversations_churn);
     RUN_TEST(S24c_AC8_thread_header_presence_keys_rendered_bucket);
+    RUN_TEST(S24_signals_1to1_projects_the_members_own_color);
 
     return UNITY_END();
 }

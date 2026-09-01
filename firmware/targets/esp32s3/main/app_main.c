@@ -414,6 +414,18 @@ void app_main(void)
     uint8_t last_brightness = ff_shell_view(&s_shell)->settings.brightness_pct;
     (void)ff_display_set_brightness(last_brightness);
 
+    /* Defer-rebuild-mid-tap latch (the on-glass "just highlights, won't open"
+     * report). A dirty tick that lands while a finger is down is NOT rebuilt
+     * this frame — a rebuild (lv_obj_clean + ff_face_build) between a tap's
+     * press and release destroys the button under the finger, so its
+     * LV_EVENT_CLICKED never fires. Instead the dirty state is REMEMBERED here
+     * and the rebuild runs on the first frame after the finger lifts. This
+     * cannot deadlock: a finger held down over churning content just delays
+     * the visual refresh until release (correct — nothing on glass should
+     * change under a stationary finger anyway), and a real device touch is
+     * transient, so the pending rebuild always drains. */
+    bool rebuild_pending = false;
+
     /* Render lifecycle mirrors the sim (targets/sim/ctl_loop.c): tick the
      * shell every frame, rebuild the LVGL tree ONLY on a dirty tick. The
      * esp_lvgl_port task does the actual flushing; we just own the model. */
@@ -472,11 +484,23 @@ void app_main(void)
             (void)ff_display_set_brightness(last_brightness);
         }
 
+        /* Accumulate the dirty bit into the pending latch — NEVER cleared by
+         * skipping, only by an actual rebuild below — so a change that arrives
+         * mid-tap is not lost when we defer it (fix: rebuild-mid-tap). */
         if (dirty) {
+            rebuild_pending = true;
+        }
+
+        /* Rebuild only when something is pending AND no finger is down. While
+         * a finger is down we hold off so the button under it survives to emit
+         * its CLICKED on release; the pending flag stays set and drains on the
+         * first frame after the finger lifts. */
+        if (rebuild_pending && !ff_display_touch_is_down()) {
             if (ff_display_lock(100 /* ms */)) {
                 lv_obj_clean(lv_screen_active());
                 ff_face_build(v);
                 ff_display_unlock();
+                rebuild_pending = false;
             }
         }
         vTaskDelay(pdMS_TO_TICKS(20));

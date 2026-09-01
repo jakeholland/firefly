@@ -637,8 +637,9 @@ static lv_obj_t *find_row_hit_by_name(lv_obj_t *root, char const *name_text)
 }
 
 /* The FAB's tap target carries no label (the + glyph is deco); find it
- * as the one clickable button sized exactly 48x48 (scr_signals.c's
- * FF_SIGNALS_FAB_HIT_PX). */
+ * as the one clickable button sized exactly 112x112 (scr_signals.c's
+ * FF_SIGNALS_FAB_HIT_PX = PUCK_PX - 300 — the corner-anchored hit that
+ * covers the whole visible amber lens). */
 static lv_obj_t *find_clickable_by_size(lv_obj_t *root, int32_t w, int32_t h)
 {
     uint32_t n = lv_obj_get_child_count(root);
@@ -717,7 +718,7 @@ static void S24b_inbox_fab_emits_inbox_new(void)
     lv_obj_t *parent = lv_obj_create(lv_screen_active());
     ff_scr_signals_build(parent, &v, false);
 
-    click(find_clickable_by_size(parent, 48, 48));
+    click(find_clickable_by_size(parent, 112, 112));
     TEST_ASSERT_EQUAL_INT(1, s_spy.count);
     TEST_ASSERT_EQUAL(FF_INTENT_INBOX_NEW, s_spy.last.kind);
 }
@@ -852,7 +853,7 @@ static void S24c_thread_fab_emits_inbox_new(void)
 
     lv_obj_t *parent = lv_obj_create(lv_screen_active());
     ff_scr_signals_build(parent, &v, false);
-    click(find_clickable_by_size(parent, 48, 48));
+    click(find_clickable_by_size(parent, 112, 112));
     TEST_ASSERT_EQUAL_INT(1, s_spy.count);
     TEST_ASSERT_EQUAL(FF_INTENT_INBOX_NEW, s_spy.last.kind);
 
@@ -864,7 +865,7 @@ static void S24c_thread_fab_emits_inbox_new(void)
     strncpy(v.thread_name, "CREW", sizeof(v.thread_name) - 1);
     sig_add_conv(&v, FF_CONV_CREW, 0u, NULL, 0, 0);
     ff_scr_signals_build(parent, &v, false);
-    click(find_clickable_by_size(parent, 48, 48));
+    click(find_clickable_by_size(parent, 112, 112));
     TEST_ASSERT_EQUAL_INT(2, s_spy.count);
     TEST_ASSERT_EQUAL(FF_INTENT_INBOX_NEW, s_spy.last.kind);
 }
@@ -1421,9 +1422,9 @@ static void S16_c1_wired_sites_are_noops_while_the_seam_is_unbound(void)
     (void)lv_obj_send_event(puck, LV_EVENT_LONG_PRESSED, NULL);
     /* The inbox's `+` FAB is a wired emit site, always present on the
      * face (S24 — the S22 RALLY action button this used to click is gone
-     * with its screen). Found by its 48px tap-target size; the FAB's
-     * glyph is deco, not a button label. */
-    click(find_clickable_by_size(lv_screen_active(), 48, 48));
+     * with its screen). Found by its 112px corner-bleed tap-target size;
+     * the FAB's glyph is deco, not a button label. */
+    click(find_clickable_by_size(lv_screen_active(), 112, 112));
 
     TEST_ASSERT_EQUAL_INT(0, s_spy.count); /* nothing reached the (unbound) spy — and nothing crashed */
 }

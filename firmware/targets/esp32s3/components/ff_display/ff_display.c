@@ -125,6 +125,7 @@ static esp_io_expander_handle_t s_io_exp;
 static esp_lcd_panel_io_handle_t s_panel_io;
 static esp_lcd_panel_handle_t s_panel;
 static esp_lcd_touch_handle_t s_touch;
+static lv_indev_t *s_touch_indev; /* the LVGL pointer indev the panel's touch drives (see ff_display_touch_indev) */
 static lv_display_t *s_lv_disp;
 static bool s_bl_ready; /* true once the LEDC backlight timer+channel are configured */
 
@@ -628,11 +629,23 @@ esp_err_t ff_display_touch_start(lv_display_t *disp)
         ESP_LOGE(TAG, "lvgl_port_add_touch failed");
         return ESP_FAIL;
     }
+    s_touch_indev = indev; /* remembered so app_main can poll finger-down state (defer-rebuild-mid-tap) */
     /* Log raw coords on every press so an uncalibrated tap still tells the
      * maintainer where the controller thinks the finger landed. */
     lv_indev_add_event_cb(indev, ff_touch_press_log_cb, LV_EVENT_PRESSED, NULL);
     ESP_LOGI(TAG, "touch indev added -> shell input seam (LVGL pointer)");
     return ESP_OK;
+}
+
+bool ff_display_touch_is_down(void)
+{
+    /* True while a finger is physically on the panel. app_main uses this to
+     * DEFER a face teardown+rebuild until the finger lifts: a rebuild
+     * (lv_obj_clean + ff_face_build) between a tap's press and release
+     * destroys the very button being pressed, so its LV_EVENT_CLICKED never
+     * fires — the "just highlights, won't open" report. No indev yet (touch
+     * not started) reads as "not down", so the caller never blocks. */
+    return s_touch_indev != NULL && lv_indev_get_state(s_touch_indev) == LV_INDEV_STATE_PRESSED;
 }
 
 /* =====================================================================
