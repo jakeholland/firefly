@@ -15,7 +15,7 @@ idf_component_register(
     # scr_*.h builders ff_face.c calls. ff_core: core headers used directly.
     # ff_display: the S15b display/touch HAL. lvgl: app_main touches
     # lv_screen_active/lv_obj_clean directly on the dirty-rebuild.
-    REQUIRES ff_app ff_app_ui ff_core ff_display lvgl
+    REQUIRES ff_app ff_app_ui ff_core ff_display ff_power lvgl
     # nvs_flash: the real settings store (S21 §4). esp_timer/freertos: clock
     # + task delays.
     PRIV_REQUIRES esp_timer freertos nvs_flash

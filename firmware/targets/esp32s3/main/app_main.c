@@ -45,6 +45,7 @@
 #include "ff_face.h"
 #include "ff_intent.h"
 #include "ff_nvs_store.h" /* S21 §4 — the real NVS-backed store */
+#include "ff_power.h"     /* S25 — battery keep-alive latch (must fire first) */
 #include "ff_settings.h"
 #include "ff_shell.h"
 #include "ff_touchcal.h"
@@ -273,6 +274,14 @@ static void ff_park(const char *why)
 
 void app_main(void)
 {
+    /* S25 — latch battery power ON before anything else. On battery the board
+     * only stays alive while PWR is physically held; this drives the SYS_EN
+     * hold line high so it survives the button release. Must beat the display
+     * bring-up's reset delays, hence the very first line. Non-fatal on failure
+     * (USB boots run regardless; battery was going to drop either way, and a
+     * live-but-unlatched puck is more debuggable than a park loop). */
+    (void)ff_power_latch_on();
+
     s_shell_p = heap_caps_calloc(1, sizeof(ff_shell_t), MALLOC_CAP_SPIRAM);
     if (s_shell_p == NULL) { ESP_LOGE(TAG, "shell PSRAM alloc failed"); return; }
     const int stage = CONFIG_FF_BRINGUP_STAGE;
