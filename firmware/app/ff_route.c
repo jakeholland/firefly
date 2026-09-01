@@ -116,15 +116,16 @@ bool ff_route_push_modal(ff_route_t *r, ff_app_face_t f)
     if (r == NULL) {
         return false;
     }
-    /* Compose is now the ONLY modal face (Map and Settings joined the
-     * swipe axis in the horizontal-carousel rework). Rejecting FLARE
-     * here is load-bearing, not defensive tidiness: the takeover is not
-     * something the route holds (see ff_route_visible), so accepting it
-     * as a modal would put the same fact in two places — the desync this
-     * module's whole shape exists to prevent. A swipe face (RADAR..
-     * SETTINGS), NONE, and everything else are rejected too — Compose is
-     * the one value that is a modal and nothing else. */
-    if (f != FF_APP_FACE_COMPOSE) {
+    /* Compose and, as of S26 slice b, POWER_MENU are the only two modal
+     * faces (Map and Settings joined the swipe axis in the
+     * horizontal-carousel rework). Rejecting FLARE here is load-bearing,
+     * not defensive tidiness: the takeover is not something the route
+     * holds (see ff_route_visible), so accepting it as a modal would put
+     * the same fact in two places — the desync this module's whole shape
+     * exists to prevent. A swipe face (RADAR..SETTINGS), NONE, and
+     * everything else are rejected too — these two are the only values
+     * that are a modal and nothing else. */
+    if (f != FF_APP_FACE_COMPOSE && f != FF_APP_FACE_POWER_MENU) {
         return false;
     }
     /* Same base-validity rule as ff_route_swipe, and for a sharper

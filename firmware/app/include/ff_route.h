@@ -21,6 +21,15 @@
  * modal. `[api]` — this changes `base`'s and `modal`'s value ranges and
  * `ff_route_push_modal`'s accepted set, and adds `ff_route_goto`.
  *
+ * ## S26 slice b [api] — a second modal face
+ * `FF_APP_FACE_POWER_MENU` (docs/specs/S26-device-lifecycle.md "(b) Power
+ * button -> power menu -> soft power-off") joins Compose as a value
+ * `ff_route_push_modal` accepts — the PWR-button long-press menu. It is
+ * NOT reached by swipe (it never joins the axis below), and it does not
+ * change `base`'s value range; only `modal`'s and `ff_route_push_modal`'s
+ * accepted set move. Every "Compose is the sole modal face" statement
+ * elsewhere in this file predates this slice.
+ *
  * ## Why app/, not core/
  * The obvious argument ("routing must be testable without LVGL") does
  * NOT select core/: `app/screens/` already holds four pure, LVGL-free,
@@ -87,8 +96,9 @@ typedef struct {
      *  `FF_APP_FACE_RADAR`, `_NOW`, `_SIGNALS`, `_MAP` or `_SETTINGS`.
      *  Never NONE, COMPOSE or FLARE after init. */
     ff_app_face_t base;
-    /** The modal covering `base`: `FF_APP_FACE_COMPOSE` (the sole modal
-     *  face — reached from Signals' "+"), or `FF_APP_FACE_NONE` for "no
+    /** The modal covering `base`: `FF_APP_FACE_COMPOSE` (reached from
+     *  Signals' "+") or, as of S26 slice b [api], `FF_APP_FACE_POWER_MENU`
+     *  (the PWR-button long-press menu) — or `FF_APP_FACE_NONE` for "no
      *  modal". Map and Settings are NOT modals any more — they are swipe
      *  tiles on the axis above (the horizontal-carousel rework). */
     ff_app_face_t modal;
@@ -168,7 +178,8 @@ bool ff_route_goto(ff_route_t *r, ff_app_face_t f);
  * Raises `f` as the modal over the current `base`. Returns true iff the
  * route changed.
  *
- * `f` must be `FF_APP_FACE_COMPOSE` — the sole modal face since the
+ * `f` must be `FF_APP_FACE_COMPOSE` or, as of S26 slice b [api],
+ * `FF_APP_FACE_POWER_MENU` — the two modal faces since the
  * horizontal-carousel rework moved Map and Settings onto the swipe axis;
  * anything else (a swipe face, NONE, FLARE) is rejected. FLARE in
  * particular is never a modal: the takeover is not routed, it overrides
@@ -178,8 +189,11 @@ bool ff_route_goto(ff_route_t *r, ff_app_face_t f);
  * replacing it. There is one modal slot, not a stack, so "replace" would
  * silently discard a half-typed Compose draft — the loss AC2 exists to
  * prevent, through a different door. (S16 does not state this case;
- * interpretation noted in the PR body.) No real flow reaches it today:
- * Compose is the only modal, and it has no nav bar to open another from.
+ * interpretation noted in the PR body.) This now has a real caller on
+ * both sides: a PWR long-press while Compose is open is rejected outright
+ * (the draft survives, same as any other modal-suppression), and
+ * `ff_shell.c`'s FF_INTENT_POWER_MENU_OPEN handler relies on exactly this
+ * rejection rather than re-deriving "is a modal already up" itself.
  *
  * **Pushing over an off-axis `base` is also rejected**, the same rule
  * `ff_route_swipe()` applies — because a modal is the one operation

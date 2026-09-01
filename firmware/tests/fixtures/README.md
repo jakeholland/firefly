@@ -61,7 +61,7 @@ unrelated-looking golden diff.)
 | Key | Type | Default | Notes |
 |---|---|---|---|
 | `fixture` | string | `""` | Debug-only provenance name. The S13 placeholder debug face renders this verbatim as its title — real S06+ screens ignore it. Conventionally matches the filename stem. |
-| `face` | string enum: `radar` \| `now` \| `signals` \| `settings` \| `compose` | `radar` (when the key is **absent** — an unrecognized string fails the load, see the fail-loud note above) | Which `ff_app_state_t.active_face` this snapshot represents; selects which section the S13 placeholder debug face's body renders. |
+| `face` | string enum: `radar` \| `now` \| `signals` \| `settings` \| `compose` \| `map` \| `power_menu` | `radar` (when the key is **absent** — an unrecognized string fails the load, see the fail-loud note above) | Which `ff_app_state_t.active_face` this snapshot represents; selects which section the S13 placeholder debug face's body renders. `power_menu` (S26 slice b) has no section of its own below — the face renders fixed content, so `"face": "power_menu"` is the entire fixture (see `power_menu.json`). |
 | `ui_settings_scroll_y` | integer | `0` | **Sim/golden render hint only (#bug5a), same category as `fixture`.** Scrolls the Settings list to this vertical offset (device points, clamped by LVGL to the scrollable range) before the screenshot, so a golden can capture a non-zero scroll position. Applied only to the `settings` face; `0` (the default, and the only value the live shell carries) is a no-op. See `settings_scrolled_bottom.json` / `settings_scrolled_mid.json`. |
 
 ## `radar` (mirrors `ff_radar_view_t`, `core/include/ff_radar.h`)

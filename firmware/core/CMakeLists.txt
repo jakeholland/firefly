@@ -280,3 +280,20 @@ if(FF_BUILD_TESTS)
 
     add_test(NAME test_demofeed COMMAND test_demofeed)
 endif()
+
+# S26 slice b / S25 slice b (core/power_fsm — the PWR-button press-timing
+# FSM + the reboot BOOT-release guard; docs/specs/S26-device-lifecycle.md
+# "(b) Power button -> power menu -> soft power-off"). Pure C11, no I/O:
+# the esp32s3 target only samples GPIO6/GPIO0 and drives GPIO7 — the
+# press-timing DECISION lives here per the house rule.
+target_sources(ff-core PRIVATE src/ff_power_fsm.c)
+
+if(FF_BUILD_TESTS)
+    add_executable(test_power_fsm
+        tests/test_power_fsm.c
+    )
+    target_link_libraries(test_power_fsm PRIVATE ff-core unity)
+    ff_apply_warnings(test_power_fsm)
+
+    add_test(NAME test_power_fsm COMMAND test_power_fsm)
+endif()

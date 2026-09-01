@@ -26,6 +26,7 @@ idf_component_register(
         "${FF_CORE_DIR}/src/ff_sigview.c"  # S22a — Signals-face view-model (was missing on device)
         "${FF_CORE_DIR}/src/ff_demofeed.c" # S23a — deterministic demo-feed generator
         "${FF_CORE_DIR}/src/ff_inbox.c"    # S24a — Signals inbox -> thread view-model
+        "${FF_CORE_DIR}/src/ff_power_fsm.c" # S26 slice b — PWR-button press FSM + reboot BOOT-release guard
     INCLUDE_DIRS "${FF_CORE_DIR}/include"
     REQUIRES ff_platform
 )

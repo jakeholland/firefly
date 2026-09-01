@@ -347,15 +347,16 @@ static void visible_of_null_is_none(void)
 }
 
 /* ------------------------------------------------------------------- */
-/* modal lifecycle — Compose is the sole modal face                     */
+/* modal lifecycle — Compose and (S26 slice b) Power menu are the two    */
+/* modal faces                                                          */
 /* ------------------------------------------------------------------- */
 
-static void push_modal_accepts_only_compose(void)
+static void push_modal_accepts_only_compose_and_power_menu(void)
 {
-    /* Everything but Compose is rejected. Map and Settings in particular
-     * are swipe faces now — accepting either as a modal would put a fact
-     * that lives on the swipe axis in a second place. FLARE is rejected
-     * because the takeover overrides, it is not routed. */
+    /* Everything but Compose/Power menu is rejected. Map and Settings in
+     * particular are swipe faces now — accepting either as a modal would
+     * put a fact that lives on the swipe axis in a second place. FLARE
+     * is rejected because the takeover overrides, it is not routed. */
     ff_app_face_t const rejected[] = {
         FF_APP_FACE_NONE,     FF_APP_FACE_RADAR, FF_APP_FACE_NOW, FF_APP_FACE_SIGNALS,
         FF_APP_FACE_SETTINGS, FF_APP_FACE_MAP,   FF_APP_FACE_FLARE,
@@ -369,6 +370,48 @@ static void push_modal_accepts_only_compose(void)
     ff_route_t r = route_at(FF_APP_FACE_RADAR);
     TEST_ASSERT_TRUE(ff_route_push_modal(&r, FF_APP_FACE_COMPOSE));
     TEST_ASSERT_EQUAL_INT(FF_APP_FACE_COMPOSE, r.modal);
+
+    ff_route_t r2 = route_at(FF_APP_FACE_RADAR);
+    TEST_ASSERT_TRUE(ff_route_push_modal(&r2, FF_APP_FACE_POWER_MENU));
+    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_POWER_MENU, r2.modal);
+}
+
+/* S26 slice b: the PWR long-press must not be able to open a second
+ * modal over a live one either — a long-press while Compose is open (a
+ * draft in progress) must leave the draft exactly as untouched as any
+ * other modal-suppressed action does, and the reverse (Compose reached
+ * while the power menu is up) is equally rejected — one slot, either
+ * direction. */
+static void push_modal_power_menu_over_compose_is_rejected_and_vice_versa(void)
+{
+    ff_route_t r = route_at(FF_APP_FACE_SIGNALS);
+    TEST_ASSERT_TRUE(ff_route_push_modal(&r, FF_APP_FACE_COMPOSE));
+    TEST_ASSERT_FALSE(ff_route_push_modal(&r, FF_APP_FACE_POWER_MENU));
+    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_COMPOSE, r.modal);
+
+    ff_route_t r2 = route_at(FF_APP_FACE_SIGNALS);
+    TEST_ASSERT_TRUE(ff_route_push_modal(&r2, FF_APP_FACE_POWER_MENU));
+    TEST_ASSERT_FALSE(ff_route_push_modal(&r2, FF_APP_FACE_COMPOSE));
+    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_POWER_MENU, r2.modal);
+}
+
+/* Same swipe-suppression and visible() rules Compose already has,
+ * pinned for Power menu too — a future change that special-cased Compose
+ * in either function would leave Power menu wrongly swipeable/invisible
+ * without this failing. */
+static void power_menu_modal_suppresses_swipe_and_is_the_visible_face(void)
+{
+    ff_route_t r = route_at(FF_APP_FACE_RADAR);
+    TEST_ASSERT_TRUE(ff_route_push_modal(&r, FF_APP_FACE_POWER_MENU));
+
+    TEST_ASSERT_FALSE(ff_route_swipe(&r, 1));
+    TEST_ASSERT_FALSE(ff_route_swipe(&r, -1));
+    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_RADAR, r.base);
+
+    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_POWER_MENU, ff_route_visible(&r, false));
+
+    TEST_ASSERT_TRUE(ff_route_pop_modal(&r));
+    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_RADAR, ff_route_visible(&r, false));
 }
 
 /* Map and Settings are no longer modals — pin that push_modal refuses
@@ -499,7 +542,9 @@ int main(void)
     RUN_TEST(visible_is_the_modal_when_one_is_up);
     RUN_TEST(visible_of_null_is_none);
 
-    RUN_TEST(push_modal_accepts_only_compose);
+    RUN_TEST(push_modal_accepts_only_compose_and_power_menu);
+    RUN_TEST(push_modal_power_menu_over_compose_is_rejected_and_vice_versa);
+    RUN_TEST(power_menu_modal_suppresses_swipe_and_is_the_visible_face);
     RUN_TEST(push_modal_rejects_map_and_settings);
     RUN_TEST(push_modal_leaves_base_untouched);
     RUN_TEST(push_modal_over_a_live_modal_is_rejected);

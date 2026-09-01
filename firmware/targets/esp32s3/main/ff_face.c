@@ -11,6 +11,7 @@
 #include "scr_compose.h"
 #include "scr_flare.h"
 #include "scr_nav.h"      /* the 5-face carousel — Radar/Now/Signals/Map/Settings all render through here */
+#include "scr_power_menu.h" /* S26 slice b — the PWR-button power menu modal */
 #include "scr_settings.h" /* the Settings scroll-reset hook (the tile itself is built by scr_nav) */
 
 static const char *TAG = "ff_face";
@@ -50,6 +51,8 @@ void ff_face_build(ff_app_state_t const *state)
         ff_scr_nav_build(state);
     } else if (state->active_face == FF_APP_FACE_COMPOSE) {
         ff_scr_compose_build(&state->compose);
+    } else if (state->active_face == FF_APP_FACE_POWER_MENU) {
+        ff_scr_power_menu_build();
     } else {
         ESP_LOGW(TAG, "no device screen for face %d — nothing built", (int)state->active_face);
     }

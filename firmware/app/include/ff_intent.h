@@ -239,6 +239,38 @@ typedef enum {
      * kind, the "DANA pulsed you" wording, the demo generator) is untouched —
      * other pucks may still pulse; only this outbound action changed. */
     FF_INTENT_SIG_FLARE, FF_INTENT_INBOX_POPUP_FLARE,
+    /* [api] S26 slice b — PWR button -> power menu -> soft power-off
+     * (docs/specs/S26-device-lifecycle.md). Appended, so no existing
+     * intent's numeric value moves. No payload on any of the four — each
+     * acts on state the shell already owns (the route's modal, the
+     * injected power_off/power_reboot hooks), never on anything the
+     * screen or the hardware sampler carries.
+     *
+     * POWER_MENU_OPEN — NOT emitted by a screen. The esp32s3 target's
+     *   app_main calls `ff_shell_intent()` with this directly (the same
+     *   pattern FF_INTENT_CALIBRATE_TOUCH's in-app re-emit already uses,
+     *   ff_shell.c) when its `ff_power_fsm_t` reports LONG_PRESS —
+     *   app_main forwards the FSM's decision; it makes none of its own
+     *   (CLAUDE.md's "no `if` about behavior in app_main"). Pushes the
+     *   FF_APP_FACE_POWER_MENU modal (rejected, silently, exactly like
+     *   any other push_modal call, if a takeover is up or another modal
+     *   is already open — Compose's draft is never interrupted by a
+     *   PWR long-press).
+     * POWER_OFF — the menu's "Power off" button: calls the injected
+     *   `ff_shell_cfg_t.power_off` hook (NULL on a target with no power
+     *   latch — the sim — a safe no-op) and pops the modal. On device the
+     *   hook drives GPIO7 low (`ff_power_off`) and the backlight to 0
+     *   (`ff_display_set_brightness(0)`, called from app_main's hook —
+     *   NOT from inside `ff_power`, which stays a pure two-pin GPIO HAL).
+     * POWER_REBOOT — the menu's "Reboot" button: calls the injected
+     *   `power_reboot` hook (arms the target's own `ff_power_fsm_t`
+     *   reboot-BOOT-release guard; app_main's tick loop is what actually
+     *   calls `esp_restart()` once that guard reports ready) and pops the
+     *   modal.
+     * POWER_CANCEL — the menu's "Cancel" button: pops the modal. The same
+     *   10 s auto-dismiss the shell applies on a timeout uses this exact
+     *   pop, not a fourth intent. */
+    FF_INTENT_POWER_MENU_OPEN, FF_INTENT_POWER_OFF, FF_INTENT_POWER_REBOOT, FF_INTENT_POWER_CANCEL,
 } ff_intent_kind_t;
 
 /**

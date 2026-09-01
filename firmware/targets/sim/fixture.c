@@ -1120,6 +1120,11 @@ static const fx_enum_entry_t fx_face_table[] = {
     {"settings", FF_APP_FACE_SETTINGS},
     {"compose", FF_APP_FACE_COMPOSE},
     {"map", FF_APP_FACE_MAP},
+    /* S26 slice b — the PWR-button power menu modal. No JSON section of
+     * its own (unlike compose/flare/map): the face renders fixed content
+     * (scr_power_menu.h's top comment), so `"face": "power_menu"` is the
+     * entire fixture. */
+    {"power_menu", FF_APP_FACE_POWER_MENU},
 };
 
 ff_fixture_result_t ff_fixture_load_json(char const *json, size_t len, ff_app_state_t *out)
