@@ -89,6 +89,18 @@ lv_display_t *ff_display_lvgl_start(void);
 esp_err_t ff_display_touch_start(lv_display_t *disp);
 
 /**
+ * ff_display_touch_is_down — true while a finger is physically on the panel
+ * (the touch indev is in LV_INDEV_STATE_PRESSED). The render loop uses it to
+ * DEFER a face teardown+rebuild until the finger lifts: rebuilding
+ * (lv_obj_clean + ff_face_build) between a tap's press and release destroys
+ * the button under the finger, so its LV_EVENT_CLICKED never fires — the
+ * on-glass "just highlights, won't open / missed tap" report. Returns false
+ * when touch has not been started (no indev yet), so the caller never blocks
+ * on a device without a live touch panel.
+ */
+bool ff_display_touch_is_down(void);
+
+/**
  * ff_display_set_brightness — set the backlight to `pct` percent via LEDC
  * PWM (#100). Clamped to [10, 100]: 0 would be a black, unrecoverable
  * screen, so the floor is non-zero (this mirrors, and defensively
