@@ -346,7 +346,13 @@ void ff_fmt_age(char *buf, size_t n, uint32_t age_ms)
 
     uint32_t age_s = age_ms / 1000u;
     if (age_s < 60u) {
-        snprintf(buf, n, "%u SEC", (unsigned)age_s);
+        /* Under a minute reads "now" — honest ("less than a minute ago")
+         * and steady: a sighting a few seconds old is, for a festival
+         * friend-compass, indistinguishable from "just now", and rendering
+         * a per-second counter here churned the render key every second
+         * (destroying rows/chips under a finger — see shell_coarsen_age_ms,
+         * which buckets this same <60s span to ONE value to match). */
+        snprintf(buf, n, "now");
     } else if (age_s < 3600u) {
         snprintf(buf, n, "%u MIN", (unsigned)(age_s / 60u));
     } else {
