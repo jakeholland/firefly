@@ -109,7 +109,16 @@
  * final width/height is verified against the rendered click-area by
  * test_face_hit_targets.c's sweep, not hand math (PR #86's lesson); the
  * before/after measurements are in this file's PR body. */
-#define FF_COMPOSE_HEADER_Y 30
+/* Device-feedback follow-up (Jake, on-glass: "difficult to press ... buttons
+ * as large as possible"): reclaim the ~16px of slack that sat above the grid
+ * (header 30->24, and the PRED draft/strip lifted to match) and spend it on
+ * TALLER keys (50->54) without pushing the bottom DEL/0/SEND row any deeper
+ * into the narrow pole; also drop the key gap to the 8px adjacency floor
+ * (10->8), which both frees a little more vertical AND widens every key by a
+ * couple px — the one move that helps the tight bottom row's WIDTH, not just
+ * height. Final rendered sizes are verified by test_face_hit_targets.c's
+ * sweep, never this hand-math (PR #86's lesson). */
+#define FF_COMPOSE_HEADER_Y 24
 #define FF_COMPOSE_HEADER_H FF_THEME_MIN_HIT_PX /* back button / mode chip */
 
 #define FF_COMPOSE_BUBBLE_Y (FF_COMPOSE_HEADER_Y + FF_COMPOSE_HEADER_H + 8)
@@ -133,10 +142,10 @@
  * row, bottom DEL/0/SEND, actually measures 50x46; row2 (7/8/9) is
  * 100x46, row1 (4/5/6) is 122x46, row0 (1/2/3) is 132x46 — see this
  * file's PR body for the full before/after). */
-#define FF_COMPOSE_KEY_GAP 10
-#define FF_COMPOSE_KEY_H   50 /* #99: 46 -> 50, a bigger vertical target; >= FF_THEME_MIN_HIT_PX (assert below) */
+#define FF_COMPOSE_KEY_GAP 8  /* device follow-up: 10 -> 8 (the FF_HIT_MIN_GAP_PX floor); wider keys, tighter stack */
+#define FF_COMPOSE_KEY_H   54 /* device follow-up: 50 -> 54, a bigger vertical target; >= FF_THEME_MIN_HIT_PX (assert below) */
 #define FF_COMPOSE_BOTTOM_ROW_GAP_EXTRA 4
-#define FF_COMPOSE_BOTTOM_ROW_H 50 /* #99: 46 -> 50; >= FF_THEME_MIN_HIT_PX (assert below) */
+#define FF_COMPOSE_BOTTOM_ROW_H 54 /* device follow-up: 50 -> 54; >= FF_THEME_MIN_HIT_PX (assert below) */
 
 _Static_assert(FF_COMPOSE_KEY_H >= FF_THEME_MIN_HIT_PX, "compose grid keys must clear the 44px hit-target floor");
 _Static_assert(FF_COMPOSE_BOTTOM_ROW_H >= FF_THEME_MIN_HIT_PX,
@@ -175,8 +184,8 @@ _Static_assert(FF_COMPOSE_BOTTOM_ROW_Y + FF_COMPOSE_BOTTOM_ROW_H <= FF_THEME_PUC
  * floor, so the honest tappable chip is taller than the mockup pill; see
  * this PR's body). The draft line itself is a plain label — not clickable —
  * so it is exempt from the sweep and free to sit closer. */
-#define FF_COMPOSE_PRED_DRAFT_Y  76                  /* one-line draft label, just under the header band */
-#define FF_COMPOSE_PRED_STRIP_Y  96                  /* candidate chip strip top */
+#define FF_COMPOSE_PRED_DRAFT_Y  70                  /* one-line draft label, just under the header band (lifted with header 30->24) */
+#define FF_COMPOSE_PRED_STRIP_Y  90                  /* candidate chip strip top (lifted to keep 8px clearance above the taller grid) */
 #define FF_COMPOSE_PRED_CHIP_H   FF_THEME_MIN_HIT_PX /* 44px — the hit-target floor, taller than the mockup pill */
 #define FF_COMPOSE_PRED_CHIP_GAP 10                  /* >= FF_HIT_MIN_GAP_PX; matches the keypad's own gap */
 
@@ -477,6 +486,20 @@ static void compose_mode_chip_click_cb(lv_event_t *e)
  * else the shell owns.
  * ------------------------------------------------------------------- */
 
+/* Light a key up on touch-DOWN so a press is unmistakable — the keypad felt
+ * unresponsive without it (no on-press feedback made it hard to tell a tap
+ * landed). A press brightens the key: an amber fill (the theme's "lit" colour)
+ * with dark ink, applied to LV_STATE_PRESSED so LVGL shows it the instant the
+ * finger is down and clears it on release. Works on any base colour. */
+static void compose_key_press_feedback(lv_obj_t *btn, lv_obj_t *label)
+{
+    lv_obj_set_style_bg_color(btn, lv_color_hex(FF_THEME_COLOR_AMBER), LV_STATE_PRESSED);
+    lv_obj_set_style_bg_opa(btn, LV_OPA_COVER, LV_STATE_PRESSED);
+    if (label != NULL) {
+        lv_obj_set_style_text_color(label, lv_color_hex(FF_THEME_COLOR_BG), LV_STATE_PRESSED);
+    }
+}
+
 static lv_obj_t *compose_make_key(lv_obj_t *parent, char const *legend, int32_t x, int32_t y, int32_t w, int32_t h,
                                    uint8_t key, uint32_t bg_hex, uint32_t fg_hex)
 {
@@ -494,6 +517,7 @@ static lv_obj_t *compose_make_key(lv_obj_t *parent, char const *legend, int32_t 
     lv_obj_set_style_text_font(label, FF_THEME_FONT_CHIP, 0);
     lv_obj_set_style_text_color(label, lv_color_hex(fg_hex), 0);
     lv_obj_center(label);
+    compose_key_press_feedback(btn, label);
     return btn;
 }
 
@@ -538,6 +562,7 @@ static void compose_build_bottom_row(lv_obj_t *container, ff_app_compose_mode_t 
     lv_obj_set_style_text_font(del_lbl, FF_THEME_FONT_CHIP, 0);
     lv_obj_set_style_text_color(del_lbl, lv_color_hex(FF_THEME_COLOR_STALE_AMBER), 0);
     lv_obj_center(del_lbl);
+    compose_key_press_feedback(del, del_lbl);
 
     compose_make_key(container, compose_legend_for(mode, 0), margin_x + btn_w + FF_COMPOSE_KEY_GAP, y, btn_w,
                       FF_COMPOSE_BOTTOM_ROW_H, 0, FF_THEME_COLOR_SURFACE, FF_THEME_COLOR_INK);
@@ -555,6 +580,8 @@ static void compose_build_bottom_row(lv_obj_t *container, ff_app_compose_mode_t 
     lv_obj_set_style_text_font(send_lbl, FF_THEME_FONT_CHIP, 0);
     lv_obj_set_style_text_color(send_lbl, lv_color_hex(FF_THEME_COLOR_BG), 0);
     lv_obj_center(send_lbl);
+    /* SEND is already amber, so it dims on press instead of lighting up. */
+    lv_obj_set_style_bg_opa(send, LV_OPA_60, LV_STATE_PRESSED);
 }
 
 /* Builds the 3x3 letter/digit/symbol grid (keys 1-9) plus the DEL / 0 /
@@ -681,6 +708,11 @@ static void compose_make_cand_chip(lv_obj_t *strip, char const *text, bool from_
     lv_obj_set_style_text_font(lbl, FF_THEME_FONT_CHIP, 0);
     lv_obj_set_style_text_color(lbl, lv_color_hex(selected ? FF_THEME_COLOR_BG : FF_THEME_COLOR_INK), 0);
     lv_obj_center(lbl);
+    if (selected) {
+        lv_obj_set_style_bg_opa(chip, LV_OPA_60, LV_STATE_PRESSED); /* already amber — dim on press */
+    } else {
+        compose_key_press_feedback(chip, lbl);
+    }
 }
 
 /* The candidate strip: a centered horizontal row of chips from
@@ -741,6 +773,7 @@ static void compose_build_pred_strip(lv_obj_t *puck, ff_app_compose_t const *com
         lv_obj_set_style_text_font(lbl, FF_THEME_FONT_CHIP, 0);
         lv_obj_set_style_text_color(lbl, lv_color_hex(FF_THEME_COLOR_DIM), 0);
         lv_obj_center(lbl);
+        compose_key_press_feedback(more, lbl);
     }
 }
 
@@ -791,6 +824,7 @@ void ff_scr_compose_build(ff_app_compose_t const *compose)
     lv_obj_set_style_text_font(back_lbl, FF_THEME_FONT_NAME, 0);
     lv_obj_set_style_text_color(back_lbl, lv_color_hex(FF_THEME_COLOR_DIM), 0);
     lv_obj_center(back_lbl);
+    compose_key_press_feedback(back, back_lbl); /* transparent normally; amber fill on press */
 
     lv_obj_t *to_lbl = lv_label_create(puck);
     char to_buf[FF_APP_NAME_LEN + 8];
@@ -813,6 +847,7 @@ void ff_scr_compose_build(ff_app_compose_t const *compose)
     lv_obj_set_style_text_font(s_mode_chip_label, FF_THEME_FONT_CHIP, 0);
     lv_obj_set_style_text_color(s_mode_chip_label, lv_color_hex(FF_THEME_COLOR_AMBER), 0);
     lv_obj_center(s_mode_chip_label);
+    compose_key_press_feedback(mode_chip, s_mode_chip_label);
     compose_update_mode_chip_label();
 
     /* --- Draft area. ---

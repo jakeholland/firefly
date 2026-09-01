@@ -444,6 +444,23 @@ esp_err_t ff_display_draw_test_pattern(void)
     return ESP_OK;
 }
 
+/* The SPD2010 addresses its GRAM in 4-px-aligned windows on BOTH axes: our
+ * strip flushes are full-width (x 0..411) and 4-line tall, so they always land
+ * aligned. A PARTIAL redraw at an arbitrary rect — e.g. a single key lighting
+ * up on press — does not, and the panel then flushes a misaligned window and
+ * ghosts a mirrored slice off the right edge. Snap every invalidated area out
+ * to the 4-px grid so partial redraws stay aligned like the strips do. */
+static void ff_display_invalidate_align_cb(lv_event_t *e)
+{
+    lv_area_t *a = lv_event_get_invalidated_area(e);
+    a->x1 &= ~3;          /* round start down to x % 4 == 0 */
+    a->y1 &= ~3;
+    a->x2 |= 3;           /* round inclusive end up to == 3 (mod 4) */
+    a->y2 |= 3;
+    if (a->x2 > FF_LCD_H_RES - 1) { a->x2 = FF_LCD_H_RES - 1; }
+    if (a->y2 > FF_LCD_V_RES - 1) { a->y2 = FF_LCD_V_RES - 1; }
+}
+
 /* =====================================================================
  * b2 — LVGL v9 via esp_lvgl_port, lv_display backed by the panel.
  * ===================================================================== */
@@ -456,7 +473,15 @@ lv_display_t *ff_display_lvgl_start(void)
 
     /* lvgl_port_init() calls lv_init() and spawns the LVGL task/timer —
      * do NOT call lv_init() elsewhere. */
-    const lvgl_port_cfg_t port_cfg = ESP_LVGL_PORT_INIT_CONFIG();
+    lvgl_port_cfg_t port_cfg = ESP_LVGL_PORT_INIT_CONFIG();
+    /* The default LVGL-task stack (7168 B) overflows rendering the Signals feed
+     * — a scrollable list of message rows with per-row text is a deeper layout +
+     * glyph-render than the Radar face, and it blew taskLVGL's stack (detected
+     * at a context switch). Give it headroom. This stack is internal RAM
+     * (task_stack_caps = MALLOC_CAP_INTERNAL), the same scarce pool as the DMA
+     * strip buffers, so keep the bump modest; verified both configs still
+     * allocate their LVGL buffers (demo 20-line, field 40-line). */
+    port_cfg.task_stack = 12288;
     esp_err_t err = lvgl_port_init(&port_cfg);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "lvgl_port_init failed: %s", esp_err_to_name(err));
@@ -513,6 +538,8 @@ lv_display_t *ff_display_lvgl_start(void)
         ESP_LOGE(TAG, "lvgl_port_add_disp failed");
         return NULL;
     }
+    lv_display_add_event_cb(s_lv_disp, ff_display_invalidate_align_cb,
+                            LV_EVENT_INVALIDATE_AREA, NULL);
     ESP_LOGI(TAG, "lv_display added (%dx%d RGB565, %d-line full-width strips, internal DMA)",
              FF_LCD_H_RES, FF_LCD_V_RES, FF_LVGL_STRIP_LINES);
     return s_lv_disp;

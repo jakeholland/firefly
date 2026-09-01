@@ -49,8 +49,8 @@
 #include "ff_shell.h"
 #include "ff_touchcal.h"
 
-#if CONFIG_FF_DEMO_MODE
-#include "esp_heap_caps.h" /* S20 — the festpack is allocated in PSRAM (see s_demo_pack) */
+#include "esp_heap_caps.h" /* PSRAM allocs: shell + demo festpack */
+#if CONFIG_FF_DEMO_MODE /* S20 — the festpack is allocated in PSRAM (see s_demo_pack) */
 #include "ff_demo.h"       /* S20 — demo-mode seeding */
 #if CONFIG_FF_DEMO_LIVE
 #include "ff_demoapply.h" /* S23c — apply an emitted event through the real inbound seam */
@@ -171,7 +171,8 @@ static uint32_t ff_bringup_now_ms(void)
 #endif
 }
 
-static ff_shell_t s_shell;
+static ff_shell_t *s_shell_p; /* PSRAM since S24(c/d); internal DRAM stays for LVGL DMA + stacks (#109) */
+#define s_shell (*s_shell_p)
 static ff_clock_t s_clock;
 static ff_store_t s_store;
 static ff_nvs_store_t s_nvs; /* S21 §4 — backing state for the NVS store */
@@ -272,6 +273,8 @@ static void ff_park(const char *why)
 
 void app_main(void)
 {
+    s_shell_p = heap_caps_calloc(1, sizeof(ff_shell_t), MALLOC_CAP_SPIRAM);
+    if (s_shell_p == NULL) { ESP_LOGE(TAG, "shell PSRAM alloc failed"); return; }
     const int stage = CONFIG_FF_BRINGUP_STAGE;
     ESP_LOGI(TAG, "firefly esp32s3 target booting (S15 slice b: display+touch, STAGE %d)", stage);
 
