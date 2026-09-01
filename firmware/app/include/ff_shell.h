@@ -869,6 +869,46 @@ ff_settings_t const *ff_shell_settings(ff_shell_t const *sh);
  */
 uint32_t ff_shell_compose_to_node(ff_shell_t const *sh);
 
+/**
+ * ff_shell_keep_awake — S26 slice (c)'s combined "keep awake" predicate
+ * (docs/specs/S26-device-lifecycle.md, "(c) Inactivity -> dim -> screen
+ * off", AC1: "no transition while an FSM-declared keep awake holds
+ * (flare takeover pending, power menu open, calibration running)").
+ * Feed the result straight into `ff_idle_tick`'s (core/include/ff_idle.h)
+ * `keep_awake` parameter every tick.
+ *
+ * A pure function of already-public facts, deliberately NOT a method on
+ * `ff_shell_t` — it takes the PROJECTED view (`ff_shell_view`'s return)
+ * plus the one fact the view does not carry, so it is unit-testable with
+ * a bare `ff_app_state_t` (no shell instance, no clock, no store) the
+ * same way `ff_shell.c`'s render-key reduction is exercised. Two of the
+ * three sources are already-public view fields:
+ *
+ *  - `view->flare.takeover_active` — a pending flare takeover (the
+ *    existing S07 field; this slice adds no new one).
+ *  - `view->active_face == FF_APP_FACE_POWER_MENU` — the power menu is a
+ *    real, renderable modal face (S26 slice b), unlike FLARE's
+ *    routing-only sentinel — see `ff_app_state_t`'s doc comment on
+ *    `FF_APP_FACE_POWER_MENU` for why that distinction matters here:
+ *    this is the same fact `face_dispatch.c` renders from, not a
+ *    reach-into-private-route check.
+ *
+ * `touch_cal_running` is the one source the view cannot carry: the S21
+ * §3 crosshair capture is a blocking device-runtime flow
+ * (targets/esp32s3/main/app_main.c's `ff_display_run_calibration`) that
+ * lives entirely outside `ff_shell_tick`'s projection, so the caller
+ * (app_main) tracks it itself (set true immediately before the blocking
+ * call, false immediately after) and passes it through here — this
+ * function only combines it, per the house rule that the DECISION (the
+ * OR, and what it feeds) lives in core/shell, never a scattered `if` in
+ * app_main.
+ *
+ * Returns true if ANY of the three hold. `view == NULL` is treated as
+ * "nothing to hold awake for" (false), same safe-default convention as
+ * `ff_shell_link` etc.
+ */
+bool ff_shell_keep_awake(ff_app_state_t const *view, bool touch_cal_running);
+
 /* ---------------------------------------------------------------------
  * Sim-only dev affordances (S16 AC6, slice b2) — COMPILED OUT on device
  * ---------------------------------------------------------------------

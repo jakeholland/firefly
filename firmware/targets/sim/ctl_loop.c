@@ -198,6 +198,9 @@ int ff_ctl_loop_open(ff_ctl_loop_ctx_t *ctx, ff_shell_t *shell, fp_pack_t *pack,
     ff_build_face_screen(&ctx->state);
     ctx->has_screen = true;
 
+    /* S26 slice c — see ctl_loop.h's ff_ctl_loop_ctx_t doc comment. */
+    ff_idle_init(&ctx->idle);
+
     /* The intent seam: every wired button (FLARE, GO/DISMISS, the T9
      * keypad, ...) now reaches this shell. Unbind happens in
      * ff_ctl_loop_close, before the shell can go away — see
@@ -211,13 +214,28 @@ void ff_ctl_loop_pump(ff_ctl_loop_ctx_t *ctx)
 {
     if (ctx == NULL) return;
 
-    bool const dirty = ff_shell_tick(ctx->shell, ff_ctl_loop_tick_cb());
+    uint32_t const now_ms = ff_ctl_loop_tick_cb();
+    bool const dirty = ff_shell_tick(ctx->shell, now_ms);
     ctx->state = *ff_shell_view(ctx->shell);
+
+    /* S26 slice c — the sim's own AC3 harness mirrors app_main.c's
+     * keep_awake source (the sim has no blocking calibration flow, so
+     * that third source is always false here) and idle tick, ticked
+     * every pump regardless of dirty (same "always tick" contract every
+     * FSM in this codebase follows). */
+    bool const keep_awake = ff_shell_keep_awake(&ctx->state, false);
+    ff_idle_state_t const idle_state = ff_idle_tick(&ctx->idle, now_ms, keep_awake);
 
     /* S16 slice d: rebuild ONLY on a dirty tick — this is the whole
      * point (closes #17/#29's "rebuild every frame regardless" cost, and
      * AC4(b)'s dirty bit is what drives it end to end, not just at the
-     * ff_shell_tick unit level).
+     * ff_shell_tick unit level). S26 slice c ADDS a second gate: OFF
+     * skips the rebuild entirely (no face rebuilds while the screen is
+     * off), latching a dirty tick that lands during OFF into
+     * `rebuild_pending` so it drains on the first non-OFF pump after a
+     * wake — "a dirty view is rebuilt on wake" (never lost, only
+     * deferred, mirroring app_main.c's finger-down defer latch in
+     * spirit).
      *
      * lv_obj_clean() BEFORE rebuilding is what makes issue #17's static
      * point pools (scr_radar.c, scr_flare.c) safe under repeated builds:
@@ -227,9 +245,14 @@ void ff_ctl_loop_pump(ff_ctl_loop_ctx_t *ctx)
      * be overwritten. It also closes #17's OTHER half (unbounded object
      * growth): the same screen object is reused forever, its children
      * torn down and rebuilt, never accumulated. */
-    if (dirty && ctx->has_screen) {
+    if (dirty) {
+        ctx->rebuild_pending = true;
+    }
+    if (ctx->rebuild_pending && ctx->has_screen && idle_state != FF_IDLE_STATE_OFF) {
         lv_obj_clean(lv_screen_active());
         ff_build_face_screen(&ctx->state);
+        ctx->rebuild_pending = false;
+        ctx->rebuild_count++;
     }
 }
 
@@ -307,6 +330,11 @@ typedef void (*ctl_loop_gesture_step_fn)(ff_ctl_loop_ctx_t *ctx, void *step_user
 static void ctl_loop_pointer_gesture(ff_ctl_loop_ctx_t *ctx, int32_t x0, int32_t y0, int n_steps,
                                       ctl_loop_gesture_step_fn step_cb, void *step_user)
 {
+    /* S26 slice c — every real pointer gesture (tap/swipe/hold) is a
+     * touch, so it wakes the idle FSM exactly as the device's touch
+     * indev does (app_main.c). */
+    ff_idle_input(&ctx->idle, ff_ctl_loop_tick_cb());
+
     ctx->pointer_point.x = (lv_coord_t)x0;
     ctx->pointer_point.y = (lv_coord_t)y0;
     ctl_loop_pointer_step_delay(ctx);

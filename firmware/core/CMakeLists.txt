@@ -297,3 +297,20 @@ if(FF_BUILD_TESTS)
 
     add_test(NAME test_power_fsm COMMAND test_power_fsm)
 endif()
+
+# S26 slice c (core/idle — inactivity -> dim -> screen off;
+# docs/specs/S26-device-lifecycle.md "(c) Inactivity -> dim -> screen
+# off"). Pure C11, no I/O: the esp32s3 target (and the sim's ctl loop,
+# for its own AC3 test) only enact the DIM/OFF backlight + rebuild-skip
+# decision this FSM makes — see ff_idle.h.
+target_sources(ff-core PRIVATE src/ff_idle.c)
+
+if(FF_BUILD_TESTS)
+    add_executable(test_idle
+        tests/test_idle.c
+    )
+    target_link_libraries(test_idle PRIVATE ff-core unity)
+    ff_apply_warnings(test_idle)
+
+    add_test(NAME test_idle COMMAND test_idle)
+endif()
