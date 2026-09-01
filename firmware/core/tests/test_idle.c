@@ -26,6 +26,7 @@
 #include "unity.h"
 
 #include "ff_idle.h"
+#include "ff_settings.h" /* FF_BRIGHTNESS_MIN_PCT — ff_idle_brightness_pct DIM expectation */
 
 void setUp(void) {}
 void tearDown(void) {}
@@ -231,6 +232,136 @@ static void S26c_AC1_force_off_then_input_wakes(void)
 }
 
 /* ------------------------------------------------------------------- */
+/* Threshold literals (review finding: every existing boundary test     */
+/* referenced FF_IDLE_T_DIM_MS/_OFF_MS symbolically, so a mutation that  */
+/* changes the MACRO's value slides the test's own expectation right    */
+/* along with it and still passes — pin the spec's actual numbers here, */
+/* independent of the macros, as a second, redundant check).            */
+/* ------------------------------------------------------------------- */
+
+static void S26c_AC1_thresholds_pinned_to_spec_literals(void)
+{
+    /* The macros themselves must equal the spec's numbers... */
+    TEST_ASSERT_EQUAL_UINT32(15000u, FF_IDLE_T_DIM_MS);
+    TEST_ASSERT_EQUAL_UINT32(30000u, FF_IDLE_T_OFF_MS);
+
+    /* ...and the boundary behaviour is asserted against those SAME
+     * literal numbers written directly into this test, not the macros —
+     * so a mutation to either macro's value is caught twice: once by
+     * the two asserts above, and independently again here (a version
+     * that mutated the macro AND somehow kept these literals in sync
+     * would still be a real spec violation the two asserts above
+     * catch). */
+    ff_idle_t idle;
+    ff_idle_init(&idle);
+    ff_idle_input(&idle, 0);
+
+    TEST_ASSERT_EQUAL(FF_IDLE_STATE_ACTIVE, ff_idle_tick(&idle, 14999, false));
+    TEST_ASSERT_EQUAL(FF_IDLE_STATE_DIM, ff_idle_tick(&idle, 15000, false));
+    TEST_ASSERT_EQUAL(FF_IDLE_STATE_DIM, ff_idle_tick(&idle, 29999, false));
+    TEST_ASSERT_EQUAL(FF_IDLE_STATE_OFF, ff_idle_tick(&idle, 30000, false));
+}
+
+/* ------------------------------------------------------------------- */
+/* ff_idle_short_press — the whole PWR SHORT_PRESS decision             */
+/* ------------------------------------------------------------------- */
+
+static void S26c_AC1_short_press_from_active_forces_off(void)
+{
+    ff_idle_t idle;
+    ff_idle_init(&idle);
+    ff_idle_input(&idle, 0);
+    TEST_ASSERT_EQUAL(FF_IDLE_STATE_ACTIVE, ff_idle_tick(&idle, 100, false));
+
+    ff_idle_short_press(&idle, 100, false);
+    TEST_ASSERT_EQUAL(FF_IDLE_STATE_OFF, ff_idle_state(&idle));
+}
+
+static void S26c_AC1_short_press_from_dim_wakes(void)
+{
+    ff_idle_t idle;
+    ff_idle_init(&idle);
+    ff_idle_input(&idle, 0);
+    TEST_ASSERT_EQUAL(FF_IDLE_STATE_DIM, ff_idle_tick(&idle, FF_IDLE_T_DIM_MS, false));
+
+    ff_idle_short_press(&idle, FF_IDLE_T_DIM_MS + 10, false);
+    TEST_ASSERT_EQUAL(FF_IDLE_STATE_ACTIVE, ff_idle_state(&idle));
+}
+
+static void S26c_AC1_short_press_from_off_wakes(void)
+{
+    ff_idle_t idle;
+    ff_idle_init(&idle);
+    ff_idle_input(&idle, 0);
+    ff_idle_force_off(&idle);
+    TEST_ASSERT_EQUAL(FF_IDLE_STATE_OFF, ff_idle_state(&idle));
+
+    ff_idle_short_press(&idle, 500, false);
+    TEST_ASSERT_EQUAL(FF_IDLE_STATE_ACTIVE, ff_idle_state(&idle));
+}
+
+/* keep_awake dominates: a no-op regardless of the current state (would
+ * be re-forced to ACTIVE by the very next ff_idle_tick anyway — see
+ * ff_idle.h's doc comment on this function). Checked from all three
+ * starting states so a version that only special-cased ACTIVE (or only
+ * OFF) is still caught. */
+static void S26c_AC1_short_press_noop_while_keep_awake(void)
+{
+    ff_idle_t idle;
+
+    ff_idle_init(&idle);
+    ff_idle_input(&idle, 0);
+    ff_idle_short_press(&idle, 100, true);
+    TEST_ASSERT_EQUAL_MESSAGE(FF_IDLE_STATE_ACTIVE, ff_idle_state(&idle), "keep_awake short_press acted from ACTIVE");
+
+    ff_idle_init(&idle);
+    ff_idle_input(&idle, 0);
+    TEST_ASSERT_EQUAL(FF_IDLE_STATE_DIM, ff_idle_tick(&idle, FF_IDLE_T_DIM_MS, false));
+    ff_idle_short_press(&idle, FF_IDLE_T_DIM_MS + 10, true);
+    TEST_ASSERT_EQUAL_MESSAGE(FF_IDLE_STATE_DIM, ff_idle_state(&idle), "keep_awake short_press acted from DIM");
+
+    ff_idle_init(&idle);
+    ff_idle_input(&idle, 0);
+    ff_idle_force_off(&idle);
+    ff_idle_short_press(&idle, 500, true);
+    TEST_ASSERT_EQUAL_MESSAGE(FF_IDLE_STATE_OFF, ff_idle_state(&idle), "keep_awake short_press acted from OFF");
+}
+
+/* ------------------------------------------------------------------- */
+/* ff_idle_brightness_pct — the whole brightness-enact decision (AC2)   */
+/* ------------------------------------------------------------------- */
+
+static void S26c_AC2_brightness_active_returns_stored_pct_unchanged(void)
+{
+    TEST_ASSERT_EQUAL_UINT8(10, ff_idle_brightness_pct(FF_IDLE_STATE_ACTIVE, 10));
+    TEST_ASSERT_EQUAL_UINT8(70, ff_idle_brightness_pct(FF_IDLE_STATE_ACTIVE, 70));
+    TEST_ASSERT_EQUAL_UINT8(100, ff_idle_brightness_pct(FF_IDLE_STATE_ACTIVE, 100));
+}
+
+static void S26c_AC2_brightness_dim_returns_core_brightness_min(void)
+{
+    TEST_ASSERT_EQUAL_UINT8((uint8_t)FF_BRIGHTNESS_MIN_PCT, ff_idle_brightness_pct(FF_IDLE_STATE_DIM, 70));
+    /* stored_pct must not leak through DIM regardless of its value. */
+    TEST_ASSERT_EQUAL_UINT8((uint8_t)FF_BRIGHTNESS_MIN_PCT, ff_idle_brightness_pct(FF_IDLE_STATE_DIM, 100));
+}
+
+static void S26c_AC2_brightness_off_returns_true_zero(void)
+{
+    TEST_ASSERT_EQUAL_UINT8(0, ff_idle_brightness_pct(FF_IDLE_STATE_OFF, 70));
+    TEST_ASSERT_EQUAL_UINT8(0, ff_idle_brightness_pct(FF_IDLE_STATE_OFF, 10));
+}
+
+/* The round-trip AC2 is actually about: dim, then wake, restores the
+ * EXACT pre-dim stored percent — never a hardcoded value. */
+static void S26c_AC2_brightness_round_trip_active_dim_active(void)
+{
+    uint8_t const stored = 42;
+    TEST_ASSERT_EQUAL_UINT8(stored, ff_idle_brightness_pct(FF_IDLE_STATE_ACTIVE, stored));
+    TEST_ASSERT_EQUAL_UINT8((uint8_t)FF_BRIGHTNESS_MIN_PCT, ff_idle_brightness_pct(FF_IDLE_STATE_DIM, stored));
+    TEST_ASSERT_EQUAL_UINT8(stored, ff_idle_brightness_pct(FF_IDLE_STATE_ACTIVE, stored));
+}
+
+/* ------------------------------------------------------------------- */
 /* NULL-safety                                                          */
 /* ------------------------------------------------------------------- */
 
@@ -266,6 +397,18 @@ int main(void)
     RUN_TEST(S26c_AC1_force_off_from_active_ignores_elapsed_time);
     RUN_TEST(S26c_AC1_force_off_sticks_under_natural_ticking);
     RUN_TEST(S26c_AC1_force_off_then_input_wakes);
+
+    RUN_TEST(S26c_AC1_thresholds_pinned_to_spec_literals);
+
+    RUN_TEST(S26c_AC1_short_press_from_active_forces_off);
+    RUN_TEST(S26c_AC1_short_press_from_dim_wakes);
+    RUN_TEST(S26c_AC1_short_press_from_off_wakes);
+    RUN_TEST(S26c_AC1_short_press_noop_while_keep_awake);
+
+    RUN_TEST(S26c_AC2_brightness_active_returns_stored_pct_unchanged);
+    RUN_TEST(S26c_AC2_brightness_dim_returns_core_brightness_min);
+    RUN_TEST(S26c_AC2_brightness_off_returns_true_zero);
+    RUN_TEST(S26c_AC2_brightness_round_trip_active_dim_active);
 
     RUN_TEST(S26c_AC1_null_safe);
 

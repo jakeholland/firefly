@@ -691,25 +691,21 @@ void app_main(void)
             ff_idle_input(&s_idle, now_ms);
         }
 
-        /* PWR SHORT_PRESS (S26 AC: "while OFF = wake; while ACTIVE = go
-         * OFF immediately" — this is where slice (b)'s reserved
-         * SHORT_PRESS lands). Reads the view from the PREVIOUS frame
-         * (ff_shell_tick for THIS frame has not run yet, same one-frame
-         * lag the LONG_PRESS/reboot-guard handling above already
-         * accepts) — a keep-awake source holding (the power menu that
-         * SAME LONG_PRESS opens, or a flare takeover) makes this a
-         * no-op rather than fight ff_idle_tick's own keep_awake override
-         * moments later: an interpretation call, PR body. Otherwise:
-         * ACTIVE -> force OFF; DIM -> wake (extending the spec's
-         * explicit OFF case to DIM too — "not fully off yet" reads as a
-         * wake, not a no-op — also an interpretation call). */
-        if (pwr_ev == FF_POWER_FSM_EVENT_SHORT_PRESS &&
-            !ff_shell_keep_awake(ff_shell_view(&s_shell), false)) {
-            if (ff_idle_state(&s_idle) == FF_IDLE_STATE_ACTIVE) {
-                ff_idle_force_off(&s_idle);
-            } else {
-                ff_idle_input(&s_idle, now_ms);
-            }
+        /* PWR SHORT_PRESS — the WHOLE decision (keep_awake no-op /
+         * ACTIVE->force-off / DIM,OFF->wake) is core's
+         * ff_idle_short_press (S26 AC: "while OFF = wake; while ACTIVE =
+         * go OFF immediately" — this is where slice (b)'s reserved
+         * SHORT_PRESS lands; DIM extended to "wake" too and the
+         * keep_awake no-op are both documented interpretation calls in
+         * ff_idle.h's doc comment on that function, PR body). This file
+         * only samples the FSM event and the keep-awake predicate and
+         * hands both to core — no `if` about idle behavior here
+         * (CLAUDE.md's house rule). Reads the view from the PREVIOUS
+         * frame (ff_shell_tick for THIS frame has not run yet), same
+         * one-frame lag the LONG_PRESS/reboot-guard handling above
+         * already accepts. */
+        if (pwr_ev == FF_POWER_FSM_EVENT_SHORT_PRESS) {
+            ff_idle_short_press(&s_idle, now_ms, ff_shell_keep_awake(ff_shell_view(&s_shell), false));
         }
 
         bool const dirty = ff_shell_tick(&s_shell, now_ms);
@@ -721,36 +717,32 @@ void app_main(void)
         bool const keep_awake = ff_shell_keep_awake(v, false);
         ff_idle_state_t const idle_state = ff_idle_tick(&s_idle, now_ms, keep_awake);
 
-        /* Backlight enact — ACTIVE/DIM/OFF, S26 slice c. Re-programs the
-         * LEDC duty only on an actual idle-state transition, OR (while
-         * ACTIVE) whenever the projected brightness percent itself moved
-         * — #100/#bug1's original reasoning: brightness is deliberately
-         * EXCLUDED from the shell's render key (ff_shell.c
-         * shell_render_key) so a live Settings brightness drag does not
-         * force a face rebuild mid-drag, which means that comparison
-         * must keep running every ACTIVE frame, not only on a dirty one,
-         * to follow the finger live. DIM uses FF_BL_MIN_PCT (ff_display.h)
-         * — the SAME constant ff_display_set_brightness's own floor is
-         * built from, not a second literal. OFF drives a TRUE zero via
-         * ff_display_backlight_off (bypassing that floor — see its doc
-         * comment). Waking (DIM/OFF -> ACTIVE) always reprograms even if
-         * `brightness_pct` itself never changed, because the LEDC duty
-         * was overridden away from it while dimmed/off — restoring
-         * EXACTLY the stored `settings.brightness_pct`, never a
-         * hardcoded value (AC2). */
-        bool const woke_this_tick = (idle_state == FF_IDLE_STATE_ACTIVE) && (last_idle_state != FF_IDLE_STATE_ACTIVE);
-        if (idle_state == FF_IDLE_STATE_ACTIVE) {
-            if (v->settings.brightness_pct != last_brightness || woke_this_tick) {
-                last_brightness = v->settings.brightness_pct;
-                (void)ff_display_backlight_on(last_brightness);
-            }
-        } else if (idle_state == FF_IDLE_STATE_DIM) {
-            if (last_idle_state != FF_IDLE_STATE_DIM) {
-                (void)ff_display_set_brightness(FF_BL_MIN_PCT);
-            }
-        } else { /* FF_IDLE_STATE_OFF */
-            if (last_idle_state != FF_IDLE_STATE_OFF) {
+        /* Backlight enact — the VALUE is core's decision
+         * (ff_idle_brightness_pct: stored_pct unchanged for ACTIVE —
+         * AC2's "wake restores exactly the pre-dim brightness_pct" —
+         * FF_BRIGHTNESS_MIN_PCT for DIM, a true 0 for OFF); this file
+         * only decides WHEN to re-program the LEDC duty (an actual
+         * idle-state transition, or — while ACTIVE — the projected
+         * brightness percent itself moving, #100/#bug1's original
+         * reasoning: brightness is deliberately EXCLUDED from the
+         * shell's render key so a live Settings drag does not force a
+         * face rebuild mid-drag, so that comparison must keep running
+         * every ACTIVE frame, not only a dirty one) and which HAL call a
+         * `0` result means (ff_display_backlight_off — a true zero,
+         * bypassing ff_display_set_brightness's non-zero floor) versus
+         * a nonzero one (ff_display_backlight_on, the alias for
+         * ff_display_set_brightness) — never which idle STATE maps to
+         * which percent; that mapping lives in core, unit-tested there
+         * (S26c_AC2_brightness_* in core/tests/test_idle.c). */
+        uint8_t const pct = ff_idle_brightness_pct(idle_state, v->settings.brightness_pct);
+        bool const live_brightness_drag =
+            (idle_state == FF_IDLE_STATE_ACTIVE) && (v->settings.brightness_pct != last_brightness);
+        if (idle_state != last_idle_state || live_brightness_drag) {
+            last_brightness = v->settings.brightness_pct;
+            if (pct == 0u) {
                 (void)ff_display_backlight_off();
+            } else {
+                (void)ff_display_backlight_on(pct);
             }
         }
         last_idle_state = idle_state;

@@ -5,6 +5,8 @@
 
 #include <string.h>
 
+#include "ff_settings.h" /* FF_BRIGHTNESS_MIN_PCT — ff_idle_brightness_pct's DIM value */
+
 /* Wraparound-safe "has now_ms reached deadline_ms yet" — the same
  * convention ff_flare.c / ff_power_fsm.c document: INCLUSIVE at the
  * boundary, so now_ms == deadline_ms already fires. */
@@ -76,10 +78,43 @@ void ff_idle_force_off(ff_idle_t *idle)
     idle->state = FF_IDLE_STATE_OFF;
 }
 
+void ff_idle_short_press(ff_idle_t *idle, uint32_t now_ms, bool keep_awake)
+{
+    if (idle == NULL) {
+        return;
+    }
+    if (keep_awake) {
+        /* A no-op — see this function's doc comment in ff_idle.h for
+         * why (a keep_awake source dominates the next ff_idle_tick call
+         * regardless, so acting here would only produce a one-tick
+         * flicker with no spec guidance either way). */
+        return;
+    }
+    if (idle->state == FF_IDLE_STATE_ACTIVE) {
+        ff_idle_force_off(idle);
+    } else {
+        /* DIM or OFF: a wake. */
+        ff_idle_input(idle, now_ms);
+    }
+}
+
 ff_idle_state_t ff_idle_state(ff_idle_t const *idle)
 {
     if (idle == NULL) {
         return FF_IDLE_STATE_ACTIVE;
     }
     return idle->state;
+}
+
+uint8_t ff_idle_brightness_pct(ff_idle_state_t state, uint8_t stored_pct)
+{
+    switch (state) {
+    case FF_IDLE_STATE_DIM:
+        return (uint8_t)FF_BRIGHTNESS_MIN_PCT;
+    case FF_IDLE_STATE_OFF:
+        return 0u;
+    case FF_IDLE_STATE_ACTIVE:
+    default:
+        return stored_pct;
+    }
 }

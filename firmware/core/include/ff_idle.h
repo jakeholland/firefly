@@ -36,7 +36,8 @@
  * pending, power menu open, touch calibration running) are combined
  * into one bool by the shell-level predicate `ff_shell_keep_awake`
  * (app/include/ff_shell.h) — this header takes the already-combined
- * bool so it stays free of any app/UI type.
+ * bool so it stays free of any app/UI type. `ff_idle_short_press` below
+ * takes the same already-combined bool for the identical reason.
  *
  * ## OFF is sticky
  *
@@ -125,9 +126,56 @@ void ff_idle_input(ff_idle_t *idle, uint32_t now_ms);
  */
 void ff_idle_force_off(ff_idle_t *idle);
 
+/**
+ * ff_idle_short_press — the WHOLE PWR SHORT_PRESS decision
+ * (docs/specs/S26-device-lifecycle.md slice c: "PWR SHORT_PRESS while
+ * OFF = wake; while ACTIVE = go OFF immediately — this is where (b)'s
+ * reserved SHORT_PRESS lands"), so the caller (app_main.c /
+ * ff_power_fsm_event handling) never itself branches on `ff_idle_state`
+ * — CLAUDE.md's "no `if` about domain behavior outside core" house
+ * rule:
+ *
+ *  - `keep_awake` true (the same already-combined predicate `ff_idle_tick`
+ *    takes): a no-op. A `keep_awake` source dominates ff_idle_tick's own
+ *    next call regardless (it forces ACTIVE), so acting here would only
+ *    produce a one-tick OFF-then-ACTIVE flicker with no spec guidance
+ *    either way — an explicit no-op is simpler and avoids it.
+ *  - ACTIVE: `ff_idle_force_off` — go OFF immediately, per the spec.
+ *  - DIM or OFF: `ff_idle_input` — a wake. The spec's AC only names OFF
+ *    explicitly; DIM is extended to the same "wake" behaviour here
+ *    (interpretation call, PR body) since "not fully off yet" reads as
+ *    a wake, not a no-op.
+ *
+ * NULL-safe (no-op, mirrors ff_idle_input/ff_idle_force_off).
+ */
+void ff_idle_short_press(ff_idle_t *idle, uint32_t now_ms, bool keep_awake);
+
 /** ff_idle_state — the current state. Returns `FF_IDLE_STATE_ACTIVE` for
  * a NULL `idle` (same safe-default convention as `ff_idle_tick`). */
 ff_idle_state_t ff_idle_state(ff_idle_t const *idle);
+
+/**
+ * ff_idle_brightness_pct — the WHOLE brightness-enact decision (S26
+ * slice c, AC2: "wake restores exactly the pre-dim brightness_pct"), so
+ * the caller (app_main.c) never itself branches on `ff_idle_state` to
+ * pick a percent — the same house-rule reasoning as
+ * `ff_idle_short_press` above. `stored_pct` is the shell's projected
+ * `settings.brightness_pct` (the persisted setting — never touched by
+ * dimming/off); the return value is what the target should actually
+ * drive the backlight to:
+ *
+ *  - ACTIVE: `stored_pct`, UNCHANGED — so a wake restores the EXACT
+ *    pre-dim value, never a hardcoded one.
+ *  - DIM: `FF_BRIGHTNESS_MIN_PCT` (core/ff_settings.h — the same
+ *    constant the stored setting itself is floored to, NOT a
+ *    display-layer macro: this file has no display/ include).
+ *  - OFF: `0` — a TRUE zero. The caller is expected to route a `0`
+ *    result to a true-off backlight call (e.g. esp32s3's
+ *    `ff_display_backlight_off()`) and any nonzero result to a normal
+ *    percent-set call — this function never needs to know which
+ *    concrete HAL calls those are (no display/ include here either).
+ */
+uint8_t ff_idle_brightness_pct(ff_idle_state_t state, uint8_t stored_pct);
 
 #ifdef __cplusplus
 }
