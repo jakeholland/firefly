@@ -305,11 +305,24 @@ typedef struct {
      * S26 slice (a) — the jsmn token scratch `ff_shell_load_pack` hands
      * to `fp_parse` (fp_pack.h). Same "beside the shell, not inside it"
      * reasoning as `pack` above, for the same reason `fp_parse` stopped
-     * owning a static arena: this is ~128KB at FP_MAX_TOKENS, parse-time
-     * only, and the target is the one that knows whether it can afford
-     * that in internal RAM or should put it in PSRAM (or even free it
-     * right after `ff_shell_load_pack` returns — the shell only borrows
-     * it for the duration of that one call, never retains the pointer).
+     * owning a static arena: this is ~128KB at FP_MAX_TOKENS, and the
+     * target is the one that knows whether it can afford that in
+     * internal RAM or should put it in PSRAM.
+     *
+     * RETAINED, not borrowed: `ff_shell_init` copies `toks`/`ntoks` into
+     * the shell (`sh->toks`/`sh->ntoks`), and EVERY subsequent
+     * `ff_shell_load_pack` call reuses that same stored pointer —
+     * `ff_shell_load_pack` is the shell's real pack-load path (used
+     * whenever a fresh/updated festpack arrives, not a one-shot
+     * boot-time helper), so it is called more than once over a shell's
+     * life. The caller must keep this buffer valid for as long as the
+     * shell itself lives, exactly like `pack` above. On the esp32s3
+     * target this is a PSRAM allocation that is deliberately never
+     * freed (see `app_main.c`); on host/sim, a static or heap buffer
+     * that outlives the shell. Freeing it after only the first
+     * `ff_shell_load_pack` call is a use-after-free on every call after
+     * that — see `S26_ff_shell_load_pack_twice_same_shell_same_toks_buffer`
+     * (`test_shell.c`) for the test that guards this.
      *
      * `toks` must point to at least `ntoks` writable `jsmntok_t` slots;
      * pass `FP_MAX_TOKENS` (fp_pack.h) for `ntoks` unless sizing smaller
