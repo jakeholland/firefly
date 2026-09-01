@@ -64,7 +64,7 @@ static void radar_live_parses_exact_values(void)
      * documented flare "n/a" sentinel. */
     TEST_ASSERT_EQUAL_UINT8(0, s.now.n_rows);
     TEST_ASSERT_FALSE(s.now.next.valid);
-    TEST_ASSERT_EQUAL_UINT16(0, s.signals.row_count);
+    TEST_ASSERT_EQUAL_UINT8(0, s.signals.inbox.conv_count);
     TEST_ASSERT_FALSE(s.flare.sending);
     TEST_ASSERT_EQUAL_INT32(-1, s.flare.send_expires_in_ms);
     TEST_ASSERT_FALSE(s.flare.takeover_active);
@@ -396,7 +396,8 @@ static void every_enum_key_fails_loud_on_unrecognized_string(void)
         "{\"face\": \"radr\"}",
         "{\"radar\": {\"mode\": \"livee\"}}",
         "{\"now\": {\"state\": \"no-pack\"}}",
-        "{\"signals\": {\"rows\": [{\"row\": \"recent\", \"feed_kind\": \"pluse\"}]}}",
+        "{\"signals\": {\"convs\": [{\"conv\": \"crew\", \"preview_kind\": \"pluse\"}]}}",
+        "{\"signals\": {\"subview\": \"inbx\"}}",
         "{\"compose\": {\"mode\": \"ABC\"}}",
         "{\"settings\": {\"share_mode\": \"ghosts\"}}",
     };
@@ -547,38 +548,64 @@ static void signals_section_parses_every_field(void)
 {
     ff_app_state_t s;
     char const *json = "{\"signals\": {"
-                        "  \"target_kind\": \"member\", \"target_node\": 4242,"
-                        "  \"rows\": ["
-                        "    {\"row\": \"recent\", \"feed_kind\": \"pulse\", \"identity_known\": true,"
-                        "     \"node_id\": 4242, \"name\": \"RILEY\", \"initial\": \"R\", \"color_idx\": 1,"
-                        "     \"unread\": true, \"age_ms\": 120000},"
-                        "    {\"row\": \"divider\"},"
-                        "    {\"row\": \"crew_quiet\", \"node_id\": 77, \"name\": \"JO\", \"initial\": \"J\","
-                        "     \"color_idx\": 4, \"presence\": \"lost\", \"age_ms\": 900000}"
+                        "  \"subview\": \"thread\", \"thread_node\": 4242, \"thread_name\": \"RILEY\","
+                        "  \"thread_color_idx\": 3,"
+                        "  \"target_kind\": \"member\", \"target_node\": 4242, \"rally_confirm_armed\": true,"
+                        "  \"convs\": ["
+                        "    {\"conv\": \"crew\", \"unread\": 2, \"item_count\": 5,"
+                        "     \"preview_kind\": \"rally\", \"preview_dir\": \"broadcast\","
+                        "     \"preview_text\": \"main stage\", \"preview_age_ms\": 360000,"
+                        "     \"preview_from\": \"RILEY\"},"
+                        "    {\"conv\": \"member\", \"node_id\": 4242, \"name\": \"RILEY\","
+                        "     \"initial\": \"R\", \"color_idx\": 1, \"unread\": 1, \"item_count\": 3,"
+                        "     \"preview_kind\": \"pulse\", \"preview_dir\": \"direct\","
+                        "     \"preview_age_ms\": 60000, \"presence\": \"seen\","
+                        "     \"presence_age_ms\": 120000},"
+                        "    {\"conv\": \"member\", \"node_id\": 77, \"name\": \"JO\", \"initial\": \"J\","
+                        "     \"color_idx\": 4, \"presence\": \"lost\", \"presence_age_ms\": 900000}"
                         "  ]"
                         "}}";
     TEST_ASSERT_EQUAL_INT(FF_FIXTURE_OK, ff_fixture_load_json(json, strlen(json), &s));
 
+    TEST_ASSERT_EQUAL_INT(FF_SIG_SUB_THREAD, s.signals.subview);
+    TEST_ASSERT_EQUAL_UINT32(4242u, s.signals.thread_node);
+    TEST_ASSERT_EQUAL_STRING("RILEY", s.signals.thread_name);
+    TEST_ASSERT_EQUAL_UINT8(3, s.signals.thread_color_idx);
     TEST_ASSERT_EQUAL_INT(FF_TARGET_MEMBER, s.signals.target_kind);
     TEST_ASSERT_EQUAL_UINT32(4242u, s.signals.target_node);
-    TEST_ASSERT_EQUAL_UINT16(3, s.signals.row_count);
+    TEST_ASSERT_TRUE(s.signals.rally_confirm_armed);
+    TEST_ASSERT_EQUAL_UINT8(3, s.signals.inbox.conv_count);
 
-    TEST_ASSERT_EQUAL_INT(FF_SIGROW_RECENT, s.signals.rows[0].kind);
-    TEST_ASSERT_EQUAL_INT(FEED_PULSE, s.signals.rows[0].feed_kind);
-    TEST_ASSERT_TRUE(s.signals.rows[0].identity_known);
-    TEST_ASSERT_EQUAL_UINT32(4242u, s.signals.rows[0].node_id);
-    TEST_ASSERT_EQUAL_STRING("RILEY", s.signals.rows[0].name);
-    TEST_ASSERT_EQUAL_INT('R', s.signals.rows[0].initial);
-    TEST_ASSERT_EQUAL_UINT8(1, s.signals.rows[0].color_idx);
-    TEST_ASSERT_TRUE(s.signals.rows[0].unread);
-    TEST_ASSERT_EQUAL_UINT32(120000u, s.signals.rows[0].age_ms);
+    ff_inbox_conv_t const *crew = &s.signals.inbox.convs[0];
+    TEST_ASSERT_EQUAL_INT(FF_CONV_CREW, crew->kind);
+    TEST_ASSERT_EQUAL_UINT16(2, crew->unread);
+    TEST_ASSERT_EQUAL_UINT8(5, crew->item_count);
+    TEST_ASSERT_TRUE(crew->has_preview); /* derived: item_count > 0 */
+    TEST_ASSERT_FALSE(crew->presence_valid); /* derived: CREW has no presence */
+    TEST_ASSERT_EQUAL_INT(FEED_RALLY, crew->preview_kind);
+    TEST_ASSERT_EQUAL_INT(FEED_DIR_BROADCAST, crew->preview_dir);
+    TEST_ASSERT_EQUAL_STRING("main stage", crew->preview_text);
+    TEST_ASSERT_EQUAL_UINT32(360000u, crew->preview_age_ms);
+    TEST_ASSERT_TRUE(crew->preview_from_known); /* derived: preview_from present */
+    TEST_ASSERT_EQUAL_STRING("RILEY", crew->preview_from_name);
 
-    TEST_ASSERT_EQUAL_INT(FF_SIGROW_DIVIDER, s.signals.rows[1].kind);
+    ff_inbox_conv_t const *riley = &s.signals.inbox.convs[1];
+    TEST_ASSERT_EQUAL_INT(FF_CONV_MEMBER, riley->kind);
+    TEST_ASSERT_EQUAL_UINT32(4242u, riley->node_id);
+    TEST_ASSERT_EQUAL_STRING("RILEY", riley->name);
+    TEST_ASSERT_EQUAL_INT('R', riley->initial);
+    TEST_ASSERT_EQUAL_UINT8(1, riley->color_idx);
+    TEST_ASSERT_EQUAL_INT(FEED_DIR_DIRECT, riley->preview_dir);
+    TEST_ASSERT_TRUE(riley->presence_valid); /* derived: member */
+    TEST_ASSERT_EQUAL_INT(FF_PRESENCE_SEEN, riley->presence);
+    TEST_ASSERT_EQUAL_UINT32(120000u, riley->presence_age_ms);
+    TEST_ASSERT_FALSE(riley->preview_from_known); /* no preview_from key */
 
-    TEST_ASSERT_EQUAL_INT(FF_SIGROW_CREW_QUIET, s.signals.rows[2].kind);
-    TEST_ASSERT_EQUAL_STRING("JO", s.signals.rows[2].name);
-    TEST_ASSERT_EQUAL_INT(FF_PRESENCE_LOST, s.signals.rows[2].presence);
-    TEST_ASSERT_EQUAL_UINT32(900000u, s.signals.rows[2].age_ms);
+    ff_inbox_conv_t const *jo = &s.signals.inbox.convs[2];
+    TEST_ASSERT_EQUAL_STRING("JO", jo->name);
+    TEST_ASSERT_FALSE(jo->has_preview); /* derived: item_count 0 */
+    TEST_ASSERT_EQUAL_INT(FF_PRESENCE_LOST, jo->presence);
+    TEST_ASSERT_EQUAL_UINT32(900000u, jo->presence_age_ms);
 }
 
 /* [api] S10 slice b — ff_app_flare_t's three independent groups (see
@@ -857,7 +884,7 @@ static void now_lineup_at_cap_still_loads_ok(void)
 static void signals_items_over_cap_fails_loud(void)
 {
     char json[1024];
-    build_n_element_array_json(json, sizeof(json), "signals", "rows", FF_SIGVIEW_MAX_ROWS + 1);
+    build_n_element_array_json(json, sizeof(json), "signals", "convs", FF_INBOX_MAX_CONVS + 1);
 
     ff_app_state_t s;
     memset(&s, 0xAA, sizeof(s));
@@ -1094,12 +1121,12 @@ static void dump_escapes_quotes_and_backslashes_in_names(void)
     memset(&original, 0, sizeof(original));
     original.radar.mode = RADAR_LIVE;
     (void)snprintf(original.radar.name, sizeof(original.radar.name), "\"Q\\R\"");
-    original.signals.row_count = 1;
-    original.signals.rows[0].kind = FF_SIGROW_RECENT;
-    original.signals.rows[0].feed_kind = FEED_TEXT;
-    original.signals.rows[0].identity_known = true;
-    original.signals.rows[0].node_id = 9u;
-    (void)snprintf(original.signals.rows[0].name, sizeof(original.signals.rows[0].name), "A\"B\\C");
+    original.signals.inbox.conv_count = 1;
+    original.signals.inbox.convs[0].kind = FF_CONV_MEMBER;
+    original.signals.inbox.convs[0].node_id = 9u;
+    original.signals.inbox.convs[0].presence_valid = true; /* the loader re-derives this for a member */
+    (void)snprintf(original.signals.inbox.convs[0].name, sizeof(original.signals.inbox.convs[0].name),
+                   "A\"B\\C");
 
     char json[FF_FIXTURE_DUMP_MAX];
     int n = ff_fixture_dump_json(&original, json, sizeof(json));
@@ -1109,7 +1136,7 @@ static void dump_escapes_quotes_and_backslashes_in_names(void)
     TEST_ASSERT_EQUAL_INT(FF_FIXTURE_OK, ff_fixture_load_json(json, (size_t)n, &reloaded));
 
     TEST_ASSERT_EQUAL_STRING("\"Q\\R\"", reloaded.radar.name);
-    TEST_ASSERT_EQUAL_STRING("A\"B\\C", reloaded.signals.rows[0].name);
+    TEST_ASSERT_EQUAL_STRING("A\"B\\C", reloaded.signals.inbox.convs[0].name);
 }
 
 static void dump_maximally_populated_state_fits_budget(void)
@@ -1163,25 +1190,42 @@ static void dump_maximally_populated_state_fits_budget(void)
                         "Exactly Twenty Seven Chars!");
     }
 
-    /* S22 — the Signals view-model at its FF_SIGVIEW_MAX_ROWS cap (41 rows),
-     * every dumped field non-zero and every string at its cap, so this bounds
-     * the real worst-case dump (the biggest single contributor since S22). */
+    /* S24 — the inbox model at its FF_INBOX_MAX_CONVS cap, every dumped
+     * field non-zero and every string at its cap (the 63-char preview
+     * text is the big one), so this bounds the real worst-case dump.
+     * Fields the LOADER derives (has_preview / presence_valid /
+     * preview_from_known) are set to exactly what re-derivation yields,
+     * since the round-trip below compares whole-struct memory. */
+    s.signals.subview = FF_SIG_SUB_THREAD;
+    s.signals.thread_node = 0xFFFFFFFFu;
+    (void)snprintf(s.signals.thread_name, sizeof(s.signals.thread_name), "%s", "ABCDEFGHIJKLMNO");
+    s.signals.thread_color_idx = 255;
     s.signals.target_kind = FF_TARGET_MEMBER;
     s.signals.target_node = 0xFFFFFFFFu;
-    s.signals.row_count = FF_SIGVIEW_MAX_ROWS;
-    for (uint16_t i = 0; i < FF_SIGVIEW_MAX_ROWS; i++) {
-        ff_sigrow_t *r = &s.signals.rows[i];
-        r->kind = FF_SIGROW_CREW_QUIET;
-        r->feed_kind = FEED_STATUS;
-        r->presence = FF_PRESENCE_LINKED;
-        r->identity_known = true;
-        r->node_id = 0xFFFFFFFFu;
+    s.signals.rally_confirm_armed = true;
+    s.signals.inbox.conv_count = FF_INBOX_MAX_CONVS;
+    for (uint8_t i = 0; i < FF_INBOX_MAX_CONVS; i++) {
+        ff_inbox_conv_t *cv = &s.signals.inbox.convs[i];
+        cv->kind = FF_CONV_MEMBER;
+        cv->node_id = 0xFFFFFFFFu;
         /* 15 chars: sizeof(name) (16) - 1 for the NUL. */
-        (void)snprintf(r->name, sizeof(r->name), "%s", "ABCDEFGHIJKLMNO");
-        r->initial = 'Z';
-        r->color_idx = 255;
-        r->unread = true;
-        r->age_ms = 0xFFFFFFFFu;
+        (void)snprintf(cv->name, sizeof(cv->name), "%s", "ABCDEFGHIJKLMNO");
+        cv->initial = 'Z';
+        cv->color_idx = 255;
+        cv->unread = 0xFFFFu;
+        cv->item_count = 255;
+        cv->has_preview = true; /* derived: item_count > 0 */
+        cv->preview_kind = FEED_STATUS;
+        cv->preview_dir = FEED_DIR_OUT;
+        /* 63 chars: FF_FEED_TEXT_LEN (64) - 1 for the NUL. */
+        (void)snprintf(cv->preview_text, sizeof(cv->preview_text), "%s",
+                       "Exactly sixty three characters of preview text stress ballast!!");
+        cv->preview_age_ms = 0xFFFFFFFFu;
+        cv->preview_from_known = true;
+        (void)snprintf(cv->preview_from_name, sizeof(cv->preview_from_name), "%s", "ABCDEFGHIJKLMNO");
+        cv->presence = FF_PRESENCE_LOST;
+        cv->presence_valid = true; /* derived: member */
+        cv->presence_age_ms = 0xFFFFFFFFu;
     }
 
     char json[FF_FIXTURE_DUMP_MAX];

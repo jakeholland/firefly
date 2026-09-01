@@ -1,0 +1,18 @@
+{
+  "fixture": "signals_all_stale",
+  "face": "signals",
+  "signals": {
+    "subview": "inbox",
+    "convs": [
+      {"conv": "crew", "item_count": 1,
+       "preview_kind": "text", "preview_dir": "broadcast", "preview_text": "anyone out there",
+       "preview_age_ms": 9000000, "preview_from": "DANA"},
+      {"conv": "member", "node_id": 111, "name": "DANA", "initial": "D", "color_idx": 0,
+       "presence": "lost", "presence_age_ms": 9000000},
+      {"conv": "member", "node_id": 113, "name": "MAX", "initial": "M", "color_idx": 2,
+       "presence": "lost", "presence_age_ms": 12600000},
+      {"conv": "member", "node_id": 115, "name": "KEV", "initial": "K", "color_idx": 4,
+       "presence": "lost", "presence_age_ms": 18000000}
+    ]
+  }
+}

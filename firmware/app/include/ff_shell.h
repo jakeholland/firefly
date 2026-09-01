@@ -377,6 +377,13 @@ typedef struct {
  * more, far past any view-copy count). On the S3's 512 KB SRAM a ~25 KB
  * static shell object is comfortable; the budget stays a runaway-growth
  * tripwire, not a hardware limit.
+ *
+ * S24 slice b (no raise needed): the view's `signals` section became
+ * `ff_app_signals_t` — the embedded `ff_inbox_t` conversation model plus
+ * sub-view/thread/target fields — which is a little SMALLER than the
+ * `ff_sigview_t` it replaced (9 conversations vs 41 rows), and the shell
+ * gained only two small persistent holders (sig_subview/sig_thread_node)
+ * on the S22 target-holder precedent. The budget stands unchanged.
  */
 #define FF_SHELL_BYTES 25600u
 

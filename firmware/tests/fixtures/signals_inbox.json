@@ -1,0 +1,27 @@
+{
+  "fixture": "signals_inbox",
+  "face": "signals",
+  "signals": {
+    "subview": "inbox",
+    "convs": [
+      {"conv": "member", "node_id": 111, "name": "DANA", "initial": "D", "color_idx": 0,
+       "unread": 1, "item_count": 2,
+       "preview_kind": "pulse", "preview_dir": "direct", "preview_age_ms": 60000,
+       "presence": "seen", "presence_age_ms": 60000},
+      {"conv": "crew", "unread": 2, "item_count": 5,
+       "preview_kind": "rally", "preview_dir": "broadcast", "preview_text": "Main Stage",
+       "preview_age_ms": 360000, "preview_from": "RILEY"},
+      {"conv": "member", "node_id": 113, "name": "MAX", "initial": "M", "color_idx": 2,
+       "unread": 0, "item_count": 3,
+       "preview_kind": "text", "preview_dir": "direct", "preview_text": "on my way!",
+       "preview_age_ms": 840000,
+       "presence": "seen", "presence_age_ms": 840000},
+      {"conv": "member", "node_id": 114, "name": "JAMIE", "initial": "J", "color_idx": 3,
+       "presence": "seen", "presence_age_ms": 7200000},
+      {"conv": "member", "node_id": 115, "name": "KEV", "initial": "K", "color_idx": 4,
+       "presence": "lost", "presence_age_ms": 10800000},
+      {"conv": "member", "node_id": 116, "name": "SAM", "initial": "S", "color_idx": 5,
+       "presence": "linked"}
+    ]
+  }
+}

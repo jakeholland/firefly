@@ -1,0 +1,16 @@
+{
+  "fixture": "signals_quiet",
+  "face": "signals",
+  "signals": {
+    "subview": "inbox",
+    "convs": [
+      {"conv": "crew"},
+      {"conv": "member", "node_id": 111, "name": "DANA", "initial": "D", "color_idx": 0,
+       "presence": "seen", "presence_age_ms": 300000},
+      {"conv": "member", "node_id": 113, "name": "MAX", "initial": "M", "color_idx": 2,
+       "presence": "lost", "presence_age_ms": 5400000},
+      {"conv": "member", "node_id": 116, "name": "SAM", "initial": "S", "color_idx": 5,
+       "presence": "linked"}
+    ]
+  }
+}

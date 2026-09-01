@@ -42,8 +42,9 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "ff_inbox.h"   /* S24 — ff_inbox_t, the inbox half of the `signals` field */
 #include "ff_radar.h"   /* S06 — ff_radar_view_t, the real `radar` field type */
-#include "ff_sigview.h" /* S22 — ff_sigview_t, the real `signals` field type */
+#include "ff_sigview.h" /* S22/S24 — ff_target_kind_t (the send-scope vocabulary the S22(d) send machinery keeps) */
 
 #ifdef __cplusplus
 extern "C" {
@@ -221,27 +222,79 @@ typedef struct {
 } ff_app_now_t;
 
 /* -------------------------------------------------------------------
- * signals (S22) — the reworked Signals face renders the core view-model
- * DIRECTLY, the same DRIFT-GUARD resolution `radar` took (see that
- * section above): the `signals` field below is the genuine
- * `ff_sigview_t` (core/include/ff_sigview.h, S22 slice a), computed by
- * `ff_sigview_build`, not a second app-layer mirror of it. It carries the
- * unified recent+crew row list AND the persistent send target; the screen
- * (scr_signals.c) is a pure projection of it and forwards intents.
+ * signals (S24, [api]) — the Signals face is now the S24 INBOX
+ * (docs/specs/S24-signals-inbox.md, superseding the S22 unified-list
+ * screen): `ff_app_signals_t` below embeds the genuine core `ff_inbox_t`
+ * (core/include/ff_inbox.h, S24 slice a) by value — the same DRIFT-GUARD
+ * resolution `radar` took (see that section above) and the S22(b)
+ * precedent this replaces: the shell builds the conversation model
+ * straight into the view each tick (`ff_inbox_build`), and the screen
+ * (scr_signals.c) is a pure projection of it plus this struct's
+ * navigation fields.
  *
- * This is why the header now takes a second `core/` dependency
- * (`#include "ff_sigview.h"`, which transitively brings ff_crew.h +
- * ff_feed.h): the S08-era flattened `ff_app_signals_t`/`ff_app_feed_item_t`
- * scaffolding it replaced could not express presence categories, the CREW
- * divider, unknown-identity senders, or the target — all first-class in
- * the view-model — so mirroring it here would have re-opened exactly the
- * name-drift hazard the radar note above records paying for once.
+ * What of S22 carries over ([api] note): the S22 target-line/action-
+ * button RENDERING retires with its screen, but the S22(d) SEND
+ * machinery stays for slice (d) — so `target_kind`/`target_node`/
+ * `rally_confirm_armed` remain projected here (from the shell's own
+ * persistent holders) even though slice (b) renders none of them; the
+ * open thread IS the send scope, and opening one sets the target.
+ * `ff_sigview_t` itself is no longer embedded anywhere in this struct
+ * (the sigview module stays in core — ff_inbox reuses its presence
+ * classifier and this header its `ff_target_kind_t` vocabulary).
  *
- * A fixture (tests/fixtures/signals_*.json) describes an `ff_sigview_t`
- * row list + target directly, the same "fixture is a view snapshot, not
- * live wiring" convention the radar fixtures use — see fx_parse_signals in
- * targets/sim/fixture.c and tests/fixtures/README.md.
+ * A fixture (tests/fixtures/signals_*.json) describes an
+ * `ff_app_signals_t` directly — sub-view + conversation list — the same
+ * "fixture is a view snapshot, not live wiring" convention the radar
+ * fixtures use; see fx_parse_signals in targets/sim/fixture.c and
+ * tests/fixtures/README.md.
  * ------------------------------------------------------------------- */
+
+/**
+ * ff_sig_subview_t — which Signals sub-screen is showing (S24's "more
+ * screens that are easier to tap"; the shell owns the transitions, the
+ * screen only renders whichever this names). INBOX is the zero value —
+ * the least-claiming resting state, this header's standing convention.
+ *
+ * THREAD renders as a minimal honest stub in slice (b) — the navigation,
+ * scope and mark-read-on-open are real; the full message-list render is
+ * slice (c)'s. POPUP and RALLY are DECLARED here so the sub-view seam is
+ * complete for slices (c)/(d), but nothing routes to them yet and the
+ * screen's `default:` arm falls back to the inbox render — a clearly
+ * commented slice-c/d surface, not reachable dead behavior.
+ */
+typedef enum {
+    FF_SIG_SUB_INBOX = 0,
+    FF_SIG_SUB_PICKER, /* recipient picker — the inbox FAB's scope step */
+    FF_SIG_SUB_THREAD, /* stub in (b); slice (c) renders the real thread */
+    FF_SIG_SUB_POPUP,  /* slice (d) — action popup; unrouted placeholder */
+    FF_SIG_SUB_RALLY,  /* slice (d) — rally screen; unrouted placeholder */
+} ff_sig_subview_t;
+
+typedef struct {
+    ff_sig_subview_t subview;
+
+    /* The conversation model (rebuilt per tick by the shell; the picker
+     * renders from the same list — CREW pinned + each paired member). */
+    ff_inbox_t inbox;
+
+    /* Open-thread scope — meaningful iff subview is THREAD (or, in
+     * slices c/d, POPUP/RALLY over it). Node 0 = the CREW conversation
+     * (the ff_inbox convention). `thread_name` is the scope's display
+     * name, "CREW" for the communal thread, looked up at projection time
+     * (so a NodeInfo rename mid-thread is reflected — the compose
+     * to_name precedent); "" for a paired member whose name never
+     * arrived, rendered honestly as such. */
+    uint32_t thread_node;
+    char     thread_name[FF_APP_NAME_LEN];
+    uint8_t  thread_color_idx;
+
+    /* S22(d) send-machinery state, kept for slice (d) (see the section
+     * comment): the current send scope + the rally-to-crew confirm
+     * display flag, projected each tick from the shell's holders. */
+    ff_target_kind_t target_kind;
+    uint32_t         target_node;
+    bool             rally_confirm_armed;
+} ff_app_signals_t;
 
 /* -------------------------------------------------------------------
  * compose (S08 slice d) — the T9 composer screen. Flattened, same
@@ -746,7 +799,7 @@ typedef struct {
 
     ff_radar_view_t   radar;
     ff_app_now_t      now;
-    ff_sigview_t      signals; /* S22 — the core view-model, rendered directly */
+    ff_app_signals_t  signals; /* S24 — sub-view + the core ff_inbox_t, rendered directly */
     ff_app_compose_t  compose;
     ff_app_flare_t    flare;
     ff_app_settings_t settings;

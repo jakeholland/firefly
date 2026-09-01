@@ -125,6 +125,19 @@ typedef struct {
     char           preview_text[FF_FEED_TEXT_LEN];
     uint32_t       preview_age_ms; /* now_ms - newest item's at_ms */
 
+    /* [api] S24 slice (b) — the newest item's SENDER identity, joined by
+     * `from_node` to a PAIRED roster member exactly like a thread
+     * message's join (never fabricated). This exists for the CREW row's
+     * sender-prefixed preview ("RILEY: rally at main stage" — the design
+     * canvas / spec screen 1); a 1:1 row's sender is already the row's own
+     * identity, but the fields are filled uniformly for any conversation.
+     * False (empty name) for an outgoing newest item (its sender is this
+     * device — `preview_dir == FEED_DIR_OUT` is the honest "You:" cue),
+     * for a self-originated item (from_node 0), and for a sender who is
+     * not (or no longer) a paired member. */
+    bool preview_from_known;
+    char preview_from_name[16];
+
     /* Presence — MEMBER only (`presence_valid`), via ff_sigview_presence.
      * `presence_age_ms` is meaningful iff presence is SEEN or LOST;
      * LINKED has no honest age (ff_sigview.h). */

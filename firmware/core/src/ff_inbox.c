@@ -50,8 +50,12 @@ void ff_inbox_init(ff_inbox_t *ib)
 }
 
 /* Fill one conversation's traffic fields (unread / item_count / newest-
- * item preview) by scanning the feed newest-first once. */
-static void conv_fill_traffic(ff_inbox_conv_t *cv, ff_feed_t const *feed, uint32_t now_ms)
+ * item preview) by scanning the feed newest-first once. `crew` is only
+ * consulted for the preview's SENDER join (paired members only, the
+ * ff_sigview identity gate — S24 slice (b)'s preview_from_* fields); a
+ * NULL crew honestly yields preview_from_known == false. */
+static void conv_fill_traffic(ff_inbox_conv_t *cv, ff_feed_t const *feed, ff_crew_t const *crew,
+                              uint32_t now_ms)
 {
     uint8_t n = ff_feed_count(feed);
     for (uint8_t i = 0; i < n; ++i) {
@@ -72,6 +76,18 @@ static void conv_fill_traffic(ff_inbox_conv_t *cv, ff_feed_t const *feed, uint32
             cv->preview_dir     = it->dir;
             cv->preview_age_ms  = now_ms - it->at_ms; /* unsigned; wraparound-safe */
             memcpy(cv->preview_text, it->text, sizeof(cv->preview_text));
+
+            /* Sender join — the same paired-only gate the thread join
+             * uses (never a guessed name); outgoing items have no sender
+             * to join (they are this device's own). */
+            ff_crew_member_t const *from =
+                (crew != NULL && it->dir != FEED_DIR_OUT && it->from_node != 0u)
+                    ? ff_crew_find(crew, it->from_node)
+                    : NULL;
+            if (from != NULL && from->paired) {
+                cv->preview_from_known = true;
+                memcpy(cv->preview_from_name, from->name, sizeof(cv->preview_from_name));
+            }
         }
     }
 }
@@ -135,7 +151,7 @@ void ff_inbox_build(ff_inbox_t *ib, ff_feed_t const *feed, ff_crew_t const *crew
         ff_inbox_conv_t *cv = &ib->convs[ib->conv_count++];
         cv->kind    = FF_CONV_CREW;
         cv->node_id = 0u;
-        conv_fill_traffic(cv, feed, now_ms);
+        conv_fill_traffic(cv, feed, crew, now_ms);
     }
 
     /* One conversation per PAIRED roster member (the identity gate —
@@ -167,7 +183,7 @@ void ff_inbox_build(ff_inbox_t *ib, ff_feed_t const *feed, ff_crew_t const *crew
         cv->presence_valid = true;
         cv->presence_age_ms = (cv->presence == FF_PRESENCE_LINKED) ? 0u : age;
 
-        conv_fill_traffic(cv, feed, now_ms);
+        conv_fill_traffic(cv, feed, crew, now_ms);
     }
 
     /* Order (S24 AC2): unread first (newest traffic first within), then
