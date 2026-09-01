@@ -86,10 +86,17 @@ static uint32_t s_demo_clock_ms;
 static fp_pack_t *s_demo_pack;
 /* S26 slice (a) — the jsmn token scratch fp_parse tokenizes into while
  * parsing the demo festpack above. FP_MAX_TOKENS * sizeof(jsmntok_t) is
- * 128KB: PSRAM, and — unlike s_demo_pack, which the shell keeps reading
- * all boot long — freed right after the one parse that needs it (see the
- * CONFIG_FF_DEMO_MODE block below). Never internal DIRAM; that reclaim
- * is the whole point of this slice (docs/specs/S26-device-lifecycle.md). */
+ * 128KB: PSRAM, never internal DIRAM — reclaiming THAT is the whole point
+ * of this slice (docs/specs/S26-device-lifecycle.md). Intentionally
+ * NEVER FREED: ff_shell_cfg_t.toks is stored by the shell and reused by
+ * every ff_shell_load_pack call for the shell's whole lifetime (same
+ * contract as cfg.pack/s_demo_pack above), not just the one boot-time
+ * demo parse — ff_shell_load_pack is the shell's real production
+ * pack-load path (already used off-device by the sim's --pack/--connect
+ * flow), so a future on-device reload would parse into freed memory if
+ * this were freed after ff_demo_seed. 128KB out of 8MB PSRAM is a
+ * trade worth making to keep that pointer valid for as long as the
+ * shell might call ff_shell_load_pack again. */
 static jsmntok_t *s_demo_toks;
 extern const uint8_t firefly_pack_start[] asm("_binary_firefly_fields_festpack_json_start");
 extern const uint8_t firefly_pack_end[] asm("_binary_firefly_fields_festpack_json_end");
@@ -324,9 +331,10 @@ void app_main(void)
     }
     cfg.pack = s_demo_pack; /* ff_demo_seed parses the embedded festpack into this */
 
-    /* S26 slice (a) — transient jsmn scratch for that one parse: PSRAM,
-     * freed right after ff_demo_seed returns below (whichever way),
-     * never internal DIRAM. See s_demo_toks's declaration comment. */
+    /* S26 slice (a) — jsmn scratch for ff_shell_load_pack, allocated once
+     * and kept alive for the process lifetime (never freed) — see
+     * s_demo_toks's declaration comment for why. PSRAM, never internal
+     * DIRAM. */
     s_demo_toks = heap_caps_malloc((size_t)FP_MAX_TOKENS * sizeof(jsmntok_t), MALLOC_CAP_SPIRAM);
     if (s_demo_toks == NULL) {
         ff_park("demo festpack token-scratch PSRAM alloc failed");
@@ -348,14 +356,11 @@ void app_main(void)
     {
         size_t const pack_len = (size_t)(firefly_pack_end - firefly_pack_start);
         int const drc = ff_demo_seed(&s_shell, (char const *)firefly_pack_start, pack_len, &s_demo_clock_ms, 0);
-        /* S26 slice (a) — the token scratch was only ever needed for that
-         * one parse inside ff_demo_seed (-> ff_shell_load_pack -> fp_parse).
-         * Free the 128KB PSRAM block now rather than holding it for the
-         * rest of the boot; this target loads exactly one pack, at boot,
-         * so nothing dereferences the shell's now-stale toks pointer
-         * again. */
-        heap_caps_free(s_demo_toks);
-        s_demo_toks = NULL;
+        /* S26 slice (a) — s_demo_toks is deliberately NOT freed here: the
+         * shell stores cfg.toks (ff_shell_cfg_t.toks) and ff_shell_load_pack
+         * is the shell's real production pack-load path, not a one-shot
+         * boot helper — a future on-device reload must find the pointer
+         * still valid. See s_demo_toks's declaration comment above. */
         if (drc != 0) {
             ESP_LOGE(TAG, "S20 demo seed failed (%d) — festpack parse or wall latch", drc);
         } else {
