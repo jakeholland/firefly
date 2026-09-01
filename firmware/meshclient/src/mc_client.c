@@ -319,7 +319,8 @@ static void mc_process_mesh_packet(mc_client_t *c, meshtastic_MeshPacket const *
         }
     } else if (portnum >= MC_PORTNUM_PRIVATE_MIN && portnum <= MC_PORTNUM_PRIVATE_MAX) {
         if (c->events.on_private != NULL) {
-            c->events.on_private(c->events.user, pkt->from, portnum, d->payload.bytes, d->payload.size);
+            c->events.on_private(c->events.user, pkt->from, pkt->to, portnum, d->payload.bytes,
+                                  d->payload.size);
         }
     } else {
         c->stats.decode_skipped++;

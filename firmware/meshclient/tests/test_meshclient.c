@@ -149,7 +149,7 @@ typedef struct {
     int text_count;
 
     struct {
-        uint32_t from, portnum;
+        uint32_t from, to, portnum;
         uint8_t payload[300];
         size_t len;
     } privates[8];
@@ -233,7 +233,8 @@ static void cap_on_text(void *u, uint32_t from, uint32_t to, char const *utf8, s
     }
 }
 
-static void cap_on_private(void *u, uint32_t from, uint32_t portnum, uint8_t const *payload, size_t len)
+static void cap_on_private(void *u, uint32_t from, uint32_t to, uint32_t portnum, uint8_t const *payload,
+                            size_t len)
 {
     events_capture_t *c = (events_capture_t *)u;
     if (c->private_count == 0) {
@@ -242,6 +243,7 @@ static void cap_on_private(void *u, uint32_t from, uint32_t portnum, uint8_t con
     c->seq_next++;
     if (c->private_count < (int)(sizeof(c->privates) / sizeof(c->privates[0]))) {
         c->privates[c->private_count].from = from;
+        c->privates[c->private_count].to = to;
         c->privates[c->private_count].portnum = portnum;
         size_t n = len < sizeof(c->privates[0].payload) ? len : sizeof(c->privates[0].payload);
         memcpy(c->privates[c->private_count].payload, payload, n);
@@ -649,6 +651,7 @@ static void S03_AC5_on_private_fires_for_portnum_256_511_untouched(void)
 
     TEST_ASSERT_EQUAL_INT(1, cap.private_count);
     TEST_ASSERT_EQUAL_UINT32(0x0B0B0B0Bu, cap.privates[0].from);
+    TEST_ASSERT_EQUAL_UINT32(MC_ADDR_BROADCAST, cap.privates[0].to); /* fixture is a broadcast (#123) */
     TEST_ASSERT_EQUAL_UINT32(257u, cap.privates[0].portnum);
     uint8_t const expected[] = {0xDE, 0xAD, 0xBE, 0xEF, 0x01};
     TEST_ASSERT_EQUAL_UINT(sizeof(expected), cap.privates[0].len);
@@ -741,6 +744,44 @@ static void S03_AC5_private_portnum_boundary_511_is_private(void)
 static void S03_AC5_private_portnum_boundary_512_is_not_private(void)
 {
     run_private_portnum_boundary_case(512u, false);
+}
+
+/* Issue #123 — on_private delivers the MeshPacket's `to` address verbatim,
+ * exactly as on_text already does. Two packets with DIFFERENT destinations
+ * (a directed one, then a broadcast) must arrive with different captured
+ * `to` values matching the wire — a dispatch that hardcodes either address
+ * (or drops `to` again) fails on one of the two. */
+static void I123_on_private_carries_to_address_verbatim(void)
+{
+    uint8_t const payload[2] = {0x01, 0x02};
+    uint8_t frames[128];
+    uint16_t f1 = build_data_packet_frame(0x0A0A0A0Au, 0x42424242u /* directed */, 300u, payload,
+                                           sizeof(payload), frames, sizeof(frames));
+    TEST_ASSERT_TRUE(f1 > 0);
+    uint16_t f2 = build_data_packet_frame(0x0B0B0B0Bu, MC_ADDR_BROADCAST, 300u, payload, sizeof(payload),
+                                           frames + f1, sizeof(frames) - f1);
+    TEST_ASSERT_TRUE(f2 > 0);
+
+    mock_io_t io;
+    mock_io_reset(&io);
+    io.rx_data = frames;
+    io.rx_len = (size_t)f1 + (size_t)f2;
+
+    mock_clock_t clk = {.t = 0};
+    ff_clock_t clock = {.now_ms = mock_now, .user = &clk};
+    events_capture_t cap;
+    memset(&cap, 0, sizeof(cap));
+
+    mc_client_t c;
+    mc_init(&c, (mc_transport_t){.write = mock_write, .read = mock_read, .io = &io}, make_events(&cap),
+             &clock);
+    c.state = MC_STATE_READY;
+
+    mc_tick(&c, 5);
+
+    TEST_ASSERT_EQUAL_INT(2, cap.private_count);
+    TEST_ASSERT_EQUAL_UINT32(0x42424242u, cap.privates[0].to);
+    TEST_ASSERT_EQUAL_UINT32(MC_ADDR_BROADCAST, cap.privates[1].to);
 }
 
 /* -------------------------------------------------------------------- */
@@ -1972,6 +2013,7 @@ int main(void)
     RUN_TEST(S03_AC5_private_portnum_boundary_256_is_private);
     RUN_TEST(S03_AC5_private_portnum_boundary_511_is_private);
     RUN_TEST(S03_AC5_private_portnum_boundary_512_is_not_private);
+    RUN_TEST(I123_on_private_carries_to_address_verbatim);
 
     RUN_TEST(S03_AC6_silence_30s_reconnects_ready_disconnected_handshake);
     RUN_TEST(S03_AC6_transport_error_triggers_reconnect);

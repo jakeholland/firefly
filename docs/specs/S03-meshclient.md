@@ -33,8 +33,11 @@ typedef struct {
   void (*on_node)(void *u, mc_nodeinfo_t const *n);            // id, names, hw, battery, rx_path
   void (*on_position)(void *u, uint32_t node, mc_position_t const *p);  // p.loc_source, p.precision_bits
   void (*on_text)(void *u, uint32_t from, uint32_t to, char const *utf8, size_t len);
-  void (*on_private)(void *u, uint32_t from, uint32_t portnum,
+  void (*on_private)(void *u, uint32_t from, uint32_t to, uint32_t portnum,
                      uint8_t const *payload, size_t len);      // firefly protocol rides here
+                     // `to` added by issue #123 ([api]): the MeshPacket's destination,
+                     // delivered exactly as on_text delivers it (broadcast / node id /
+                     // MC_ADDR_UNKNOWN), so 1:1 private traffic classifies DIRECT.
   void (*on_my_info)(void *u, uint32_t my_node_id);
   void (*on_rx_meta)(void *u, uint32_t from, mc_rx_meta_t const *m);  // every packet w/ a sender
   void *user;

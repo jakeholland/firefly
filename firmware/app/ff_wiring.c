@@ -66,7 +66,29 @@ static void wiring_push_if_paired(ff_wiring_ctx_t *w, uint32_t from, ff_feed_kin
  * mc_events_t-shaped handlers.
  * ------------------------------------------------------------------- */
 
-void ff_wiring_on_private(void *user, uint32_t from, uint32_t portnum, uint8_t const *payload, size_t len)
+/* S24 AC1 — classify the direction fact `to` carries, honestly:
+ *  - the mesh broadcast address        -> BROADCAST;
+ *  - our own node id (when we know it) -> DIRECT (addressed to me);
+ *  - anything else                     -> UNKNOWN. That covers "we have
+ *    not learned our own id yet", "addressed to some OTHER specific
+ *    node" (a channel-decodable third-party DM the radio surfaced), and
+ *    a producer's explicit MC_ADDR_UNKNOWN — in none of those cases can
+ *    this device attest "addressed to me", and DIRECT is exactly that
+ *    claim.
+ * One classifier shared by the text and private paths (issue #123
+ * resolved: mc_events_t.on_private now carries `to`, so a 1:1 pulse or
+ * rally classifies DIRECT the same way a 1:1 text does — and a
+ * whole-crew pulse stays BROADCAST, because that is what its `to`
+ * says). */
+static ff_feed_dir_t wiring_classify_dir(ff_wiring_ctx_t const *w, uint32_t to)
+{
+    if (to == MC_ADDR_BROADCAST) return FEED_DIR_BROADCAST;
+    if (w->has_self_node && to == w->self_node) return FEED_DIR_DIRECT;
+    return FEED_DIR_UNKNOWN;
+}
+
+void ff_wiring_on_private(void *user, uint32_t from, uint32_t to, uint32_t portnum, uint8_t const *payload,
+                           size_t len)
 {
     ff_wiring_ctx_t *w = (ff_wiring_ctx_t *)user;
     if (w == NULL || portnum != FF_PORTNUM) return;
@@ -75,26 +97,21 @@ void ff_wiring_on_private(void *user, uint32_t from, uint32_t portnum, uint8_t c
     memset(&msg, 0, sizeof(msg));
     int type = ff_proto_decode(payload, len, &msg);
 
-    /* S24 AC1 — direction on the private path is UNKNOWN, honestly:
-     * mc_events_t.on_private does not carry the mesh packet's `to`
-     * address (mc_client.h), so this layer never learns whether a
-     * PULSE/RALLY/STATUS/FLARE was broadcast or addressed to us. Unknown
-     * is stored as unknown — never guessed into BROADCAST/DIRECT.
-     * (Plumbing `to` through on_private is issue #123; see
-     * ff_feed_dir_t's doc comment.) */
+    ff_feed_dir_t const dir = wiring_classify_dir(w, to);
+
     switch (type) {
     case FF_PROTO_TYPE_PULSE:
-        wiring_push_if_paired(w, from, FEED_PULSE, FEED_DIR_UNKNOWN, NULL, 0);
+        wiring_push_if_paired(w, from, FEED_PULSE, dir, NULL, 0);
         break;
     case FF_PROTO_TYPE_FLARE:
-        wiring_push_if_paired(w, from, FEED_FLARE, FEED_DIR_UNKNOWN, NULL, 0);
+        wiring_push_if_paired(w, from, FEED_FLARE, dir, NULL, 0);
         break;
     case FF_PROTO_TYPE_RALLY:
-        wiring_push_if_paired(w, from, FEED_RALLY, FEED_DIR_UNKNOWN, msg.body.rally.name,
+        wiring_push_if_paired(w, from, FEED_RALLY, dir, msg.body.rally.name,
                               strlen(msg.body.rally.name));
         break;
     case FF_PROTO_TYPE_STATUS:
-        wiring_push_if_paired(w, from, FEED_STATUS, FEED_DIR_UNKNOWN, msg.body.status.text,
+        wiring_push_if_paired(w, from, FEED_STATUS, dir, msg.body.status.text,
                               strlen(msg.body.status.text));
         break;
     case FF_PROTO_TYPE_FLARE_END:
@@ -112,21 +129,7 @@ void ff_wiring_on_text(void *user, uint32_t from, uint32_t to, char const *utf8,
     ff_wiring_ctx_t *w = (ff_wiring_ctx_t *)user;
     if (w == NULL) return;
 
-    /* S24 AC1 — record the direction fact `to` carries, honestly:
-     *  - the mesh broadcast address        -> BROADCAST;
-     *  - our own node id (when we know it) -> DIRECT (addressed to me);
-     *  - anything else                     -> UNKNOWN. That covers both
-     *    "we have not learned our own id yet" and "addressed to some
-     *    OTHER specific node" (a channel-decodable third-party DM the
-     *    radio surfaced) — in neither case can this device attest
-     *    "addressed to me", and DIRECT is exactly that claim. */
-    ff_feed_dir_t dir = FEED_DIR_UNKNOWN;
-    if (to == MC_ADDR_BROADCAST) {
-        dir = FEED_DIR_BROADCAST;
-    } else if (w->has_self_node && to == w->self_node) {
-        dir = FEED_DIR_DIRECT;
-    }
-    wiring_push_if_paired(w, from, FEED_TEXT, dir, utf8, len);
+    wiring_push_if_paired(w, from, FEED_TEXT, wiring_classify_dir(w, to), utf8, len);
 }
 
 void ff_wiring_set_self_node(ff_wiring_ctx_t *w, uint32_t self_node)

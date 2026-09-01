@@ -31,6 +31,18 @@ extern "C" {
 /* Broadcast destination address, per the Meshtastic wire protocol. */
 #define MC_ADDR_BROADCAST 0xFFFFFFFFu
 
+/* Explicit "destination not known" sentinel for the `to` parameter of the
+ * addressed inbound events (on_text/on_private). 0 is never a valid
+ * Meshtastic node id (the wire protocol reserves it as "unset" — the same
+ * reason rx-meta dispatch skips `from == 0`), so a producer that
+ * genuinely lacks a packet's destination passes this rather than
+ * guessing. It is neither MC_ADDR_BROADCAST nor any real node id, so
+ * downstream direction classification reads it as unknown — never as
+ * broadcast, never as addressed-to-me (issue #123's honesty rule). The
+ * live decode path never needs it: a decoded MeshPacket always carries
+ * `to`. */
+#define MC_ADDR_UNKNOWN 0u
+
 /* Meshtastic "private/experimental" portnum range (spec S04 rides here). */
 #define MC_PORTNUM_PRIVATE_MIN 256u
 #define MC_PORTNUM_PRIVATE_MAX 511u
@@ -331,8 +343,20 @@ typedef struct {
     void (*on_node)(void *u, mc_nodeinfo_t const *n); /* id, names, hw, battery */
     void (*on_position)(void *u, uint32_t node, mc_position_t const *p);
     void (*on_text)(void *u, uint32_t from, uint32_t to, char const *utf8, size_t len);
-    void (*on_private)(void *u, uint32_t from, uint32_t portnum, uint8_t const *payload,
-                        size_t len); /* firefly protocol rides here */
+
+    /**
+     * Firefly protocol rides here (private/experimental portnums 256-511).
+     *
+     * `to` is the MeshPacket's destination address, delivered exactly as
+     * on_text already delivers it (issue #123): MC_ADDR_BROADCAST for a
+     * broadcast, a specific node id for a directed packet, or
+     * MC_ADDR_UNKNOWN from a producer that genuinely lacks the address.
+     * The client itself always has it (`pkt->to`), so 1:1 private
+     * traffic (a pulse sent to one member) is classifiable downstream
+     * as addressed-to-me instead of collapsing to unknown.
+     */
+    void (*on_private)(void *u, uint32_t from, uint32_t to, uint32_t portnum,
+                        uint8_t const *payload, size_t len);
     void (*on_my_info)(void *u, uint32_t my_node_id);
 
     /**

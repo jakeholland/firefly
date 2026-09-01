@@ -349,7 +349,7 @@ static void inject_pulse(uint32_t from)
     uint8_t buf[FF_PROTO_ENVELOPE_LEN];
     int n = ff_proto_encode_pulse(buf, sizeof(buf));
     TEST_ASSERT_GREATER_THAN_INT(0, n);
-    H.ev.on_private(H.ev.user, from, FF_PORTNUM, buf, (size_t)n);
+    H.ev.on_private(H.ev.user, from, MC_ADDR_BROADCAST, FF_PORTNUM, buf, (size_t)n);
 }
 
 static void inject_flare(uint32_t from, uint16_t dur_s)
@@ -357,7 +357,7 @@ static void inject_flare(uint32_t from, uint16_t dur_s)
     uint8_t buf[FF_PROTO_MAX_PAYLOAD];
     int n = ff_proto_encode_flare(buf, sizeof(buf), dur_s);
     TEST_ASSERT_GREATER_THAN_INT(0, n);
-    H.ev.on_private(H.ev.user, from, FF_PORTNUM, buf, (size_t)n);
+    H.ev.on_private(H.ev.user, from, MC_ADDR_BROADCAST, FF_PORTNUM, buf, (size_t)n);
 }
 
 static ff_crew_member_t const *member(uint32_t node)
@@ -2404,14 +2404,14 @@ static void S16_b1_a_flare_on_a_foreign_portnum_raises_no_takeover(void)
     TEST_ASSERT_GREATER_THAN_INT(0, n);
 
     H.haptic.count = 0;
-    H.ev.on_private(H.ev.user, DANA, FF_PORTNUM + 1u, buf, (size_t)n);
+    H.ev.on_private(H.ev.user, DANA, MC_ADDR_BROADCAST, FF_PORTNUM + 1u, buf, (size_t)n);
 
     TEST_ASSERT_FALSE(ff_shell_flare(&H.shell)->takeover_active);
     TEST_ASSERT_EQUAL_INT(0, H.haptic.count);
     TEST_ASSERT_EQUAL_UINT8(0, ff_feed_count(ff_shell_feed(&H.shell)));
 
     /* Positive control: the same bytes on the right portnum do. */
-    H.ev.on_private(H.ev.user, DANA, FF_PORTNUM, buf, (size_t)n);
+    H.ev.on_private(H.ev.user, DANA, MC_ADDR_BROADCAST, FF_PORTNUM, buf, (size_t)n);
     TEST_ASSERT_TRUE(ff_shell_flare(&H.shell)->takeover_active);
 }
 
@@ -2494,7 +2494,7 @@ static void S22b_signals_target_survives_rebuild_and_is_gated(void)
     uint8_t buf[FF_PROTO_MAX_PAYLOAD];
     int const n = ff_proto_encode_flare(buf, sizeof(buf), 300);
     TEST_ASSERT_GREATER_THAN_INT(0, n);
-    H.ev.on_private(H.ev.user, KEV_ID, FF_PORTNUM, buf, (size_t)n);
+    H.ev.on_private(H.ev.user, KEV_ID, MC_ADDR_BROADCAST, FF_PORTNUM, buf, (size_t)n);
     TEST_ASSERT_TRUE(ff_shell_flare(&H.shell)->takeover_active);
 
     ff_intent_t stray = {.kind = FF_INTENT_SIG_SELECT_MEMBER, .u = {0}};

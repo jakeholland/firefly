@@ -115,7 +115,7 @@ static void inject_flare(uint32_t from, uint16_t dur_s)
     uint8_t buf[FF_PROTO_MAX_PAYLOAD];
     int n = ff_proto_encode_flare(buf, sizeof(buf), dur_s);
     TEST_ASSERT_GREATER_THAN_INT(0, n);
-    H.ev.on_private(H.ev.user, from, FF_PORTNUM, buf, (size_t)n);
+    H.ev.on_private(H.ev.user, from, MC_ADDR_BROADCAST, FF_PORTNUM, buf, (size_t)n);
 }
 
 /* --- intent shorthands ---------------------------------------------- */
@@ -1257,7 +1257,7 @@ static void S16_AC8_setting_set_is_rejected_while_a_takeover_is_visible(void)
     uint8_t buf[FF_PROTO_MAX_PAYLOAD];
     int n = ff_proto_encode_flare(buf, sizeof(buf), 300u);
     TEST_ASSERT_GREATER_THAN_INT(0, n);
-    ev.on_private(ev.user, DANA, FF_PORTNUM, buf, (size_t)n);
+    ev.on_private(ev.user, DANA, MC_ADDR_BROADCAST, FF_PORTNUM, buf, (size_t)n);
     TEST_ASSERT_TRUE(ff_shell_flare(&h.shell)->takeover_active);
 
     bool const before = ff_shell_settings(&h.shell)->imperial;

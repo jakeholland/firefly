@@ -561,7 +561,10 @@ static bool ctl_loop_flare(void *user, uint32_t from, uint16_t dur_s, char const
         *err = "flare injection unavailable";
         return false;
     }
-    ev.on_private(ev.user, from, FF_PORTNUM, buf, (size_t)n);
+    /* `to` = broadcast: a flare is the crew-wide SOS, and that is the
+     * packet this seam simulates (the ctl protocol carries no destination
+     * of its own — issue #123). */
+    ev.on_private(ev.user, from, MC_ADDR_BROADCAST, FF_PORTNUM, buf, (size_t)n);
     return true;
 }
 

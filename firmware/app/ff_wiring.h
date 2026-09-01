@@ -165,9 +165,14 @@ void ff_wiring_init_with_sender(ff_wiring_ctx_t *w, ff_feed_t *feed, ff_crew_t *
  * feed-representable type (PULSE/RALLY/STATUS — FLARE is decoded but not
  * currently fed, see header note on FLARE_END/RALLY_CLEAR/ACK_PING),
  * applies the crew-paired-sender filter and pushes a feed item timestamped
- * at `w->clock`'s current `now_ms`.
+ * at `w->clock`'s current `now_ms`. `to` (issue #123) is the packet's
+ * destination address, classified into the item's direction exactly like
+ * `ff_wiring_on_text`: MC_ADDR_BROADCAST -> BROADCAST, our own node id
+ * (when known via `ff_wiring_set_self_node`) -> DIRECT, anything else
+ * (including MC_ADDR_UNKNOWN) -> UNKNOWN.
  */
-void ff_wiring_on_private(void *user, uint32_t from, uint32_t portnum, uint8_t const *payload, size_t len);
+void ff_wiring_on_private(void *user, uint32_t from, uint32_t to, uint32_t portnum, uint8_t const *payload,
+                           size_t len);
 
 /**
  * ff_wiring_on_text — `mc_events_t.on_text`-shaped handler. `user` must be
@@ -178,9 +183,9 @@ void ff_wiring_on_text(void *user, uint32_t from, uint32_t to, char const *utf8,
 
 /**
  * ff_wiring_set_self_node — S24 AC1: tell the wiring our own node id (the
- * my_info event's value) so `ff_wiring_on_text` can honestly classify a
- * specifically-addressed inbound text as DIRECT ("addressed to me") vs
- * UNKNOWN. No-op if `w` is NULL.
+ * my_info event's value) so `ff_wiring_on_text` / `ff_wiring_on_private`
+ * can honestly classify a specifically-addressed inbound item as DIRECT
+ * ("addressed to me") vs UNKNOWN. No-op if `w` is NULL.
  */
 void ff_wiring_set_self_node(ff_wiring_ctx_t *w, uint32_t self_node);
 

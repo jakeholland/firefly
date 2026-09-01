@@ -75,12 +75,14 @@ typedef enum {
  * 1:1 threads (direct traffic) in `ff_inbox` (ff_inbox.h).
  *
  * Honesty rule (S24 AC1): a push site records only what it actually
- * knows. UNKNOWN is a first-class value, not an error — today the whole
- * private-portnum inbound path (PULSE/RALLY/STATUS/FLARE) is UNKNOWN,
- * because `mc_events_t.on_private` does not carry the mesh packet's
- * `to` address to the wiring layer (mc_client.h; plumbing it through is
- * issue #123 — an `[api]` meshclient change that should land before or
- * with S24 slice (c), out of this core slice's scope). UNKNOWN is
+ * knows. UNKNOWN is a first-class value, not an error. Both inbound
+ * paths — text AND the private portnum (PULSE/RALLY/STATUS/FLARE) —
+ * now classify from the packet's `to` address (issue #123 resolved:
+ * `mc_events_t.on_private` carries `to` just like `.on_text`), so a
+ * 1:1 pulse lands DIRECT and a whole-crew pulse lands BROADCAST.
+ * UNKNOWN remains what it always was: the honest record for an address
+ * this device could not attest (third-party destination, self id not
+ * yet learned, or a producer's explicit MC_ADDR_UNKNOWN). UNKNOWN is
  * deliberately the zero value so a
  * zero-initialized / legacy item is honestly "direction not recorded",
  * never accidentally "broadcast".
