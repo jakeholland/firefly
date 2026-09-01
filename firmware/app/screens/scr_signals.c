@@ -158,7 +158,7 @@ _Static_assert(FF_SIGNALS_FAB_HIT_PX >= FF_THEME_MIN_HIT_PX, "FAB tap target mus
 #define FF_SIGNALS_THREAD_LIST_H_CREW  190 /* -> y 274; fade + FAB own the pole */
 #define FF_SIGNALS_THREAD_LIST_H_1TO1  172 /* -> y 256; the chip strip sits below */
 
-/* Quick-reply chips (1:1 only): OMW / IN 5 MIN / PULSE, one row, capped
+/* Quick-reply chips (1:1 only): OMW / IN 5 MIN / FLARE, one row, capped
  * on the right so the strip and the FAB's tap target keep the adjacency
  * floor (the same clearance rule as FF_SIGNALS_ROW_HIT_CLEAR_X). */
 #define FF_SIGNALS_CHIP_Y         264
@@ -319,12 +319,13 @@ static void signals_chip_reply_cb(lv_event_t *e)
     ff_intent_emit(&in);
 }
 
-/* The 1:1 PULSE chip -> FF_INTENT_SIG_PULSE (the S22(d) send intent; the
- * shell aims it at the open thread's scope). */
-static void signals_chip_pulse_cb(lv_event_t *e)
+/* The 1:1 FLARE chip -> FF_INTENT_SIG_FLARE (the outbound quick signal is a
+ * flare, "come find me", not a pulse; the shell aims it at the open thread's
+ * scope through the S22(d) send seam). */
+static void signals_chip_flare_cb(lv_event_t *e)
 {
     (void)e;
-    ff_intent_t in = {.kind = FF_INTENT_SIG_PULSE, .u = {0}};
+    ff_intent_t in = {.kind = FF_INTENT_SIG_FLARE, .u = {0}};
     ff_intent_emit(&in);
 }
 
@@ -345,10 +346,10 @@ static void signals_popup_rally_cb(lv_event_t *e)
     ff_intent_t in = {.kind = FF_INTENT_INBOX_POPUP_RALLY, .u = {0}};
     ff_intent_emit(&in);
 }
-static void signals_popup_pulse_cb(lv_event_t *e)
+static void signals_popup_flare_cb(lv_event_t *e)
 {
     (void)e;
-    ff_intent_t in = {.kind = FF_INTENT_INBOX_POPUP_PULSE, .u = {0}};
+    ff_intent_t in = {.kind = FF_INTENT_INBOX_POPUP_FLARE, .u = {0}};
     ff_intent_emit(&in);
 }
 
@@ -1477,7 +1478,7 @@ static void signals_build_thread_header(lv_obj_t *parent, ff_app_signals_t const
 }
 
 /* One quick chip. `which` rides user_data for the canned replies;
- * `amber_text` marks the PULSE chip's accent. */
+ * `amber_text` marks the FLARE chip's accent. */
 static void signals_build_chip(lv_obj_t *parent, int32_t x, int32_t w, char const *text,
                                bool amber_text, lv_event_cb_t cb, uintptr_t which)
 {
@@ -1496,13 +1497,13 @@ static void signals_build_chip(lv_obj_t *parent, int32_t x, int32_t w, char cons
     lv_obj_center(l);
 }
 
-/* The 1:1 quick-chip strip: OMW / IN 5 MIN / PULSE, centered in the band
+/* The 1:1 quick-chip strip: OMW / IN 5 MIN / FLARE, centered in the band
  * left of the FAB clearance (FF_SIGNALS_CHIP_MAX_RIGHT). */
 static void signals_build_chips(lv_obj_t *parent)
 {
-    static const int32_t w_omw = 66, w_5min = 96, w_pulse = 74;
+    static const int32_t w_omw = 66, w_5min = 96, w_flare = 74;
     int32_t const margin = signals_safe_margin_x(FF_SIGNALS_CHIP_Y, FF_SIGNALS_CHIP_H);
-    int32_t const strip_w = w_omw + w_5min + w_pulse + 2 * FF_SIGNALS_CHIP_GAP;
+    int32_t const strip_w = w_omw + w_5min + w_flare + 2 * FF_SIGNALS_CHIP_GAP;
     int32_t const avail = FF_SIGNALS_CHIP_MAX_RIGHT - margin;
     int32_t x = margin + (avail > strip_w ? (avail - strip_w) / 2 : 0);
 
@@ -1512,7 +1513,7 @@ static void signals_build_chips(lv_obj_t *parent)
     signals_build_chip(parent, x, w_5min, "IN 5 MIN", false, signals_chip_reply_cb,
                        (uintptr_t)FF_WIRING_REPLY_5MIN);
     x += w_5min + FF_SIGNALS_CHIP_GAP;
-    signals_build_chip(parent, x, w_pulse, "PULSE", true, signals_chip_pulse_cb, 0u);
+    signals_build_chip(parent, x, w_flare, "FLARE", true, signals_chip_flare_cb, 0u);
 }
 
 static void signals_build_thread(lv_obj_t *parent, ff_app_signals_t const *v, bool colorblind)
@@ -1651,13 +1652,18 @@ static void signals_build_popup(lv_obj_t *parent, ff_app_signals_t const *v, boo
     lv_obj_set_style_text_letter_space(title, 2, 0);
     lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 60);
 
-    /* Compose (green) / Rally (violet) / Pulse (amber), color-coded. */
+    /* Compose (green) / Rally (violet) / Flare (amber), color-coded. The
+     * third row is a FLARE ("come find me"), not a pulse — the maintainer's
+     * "in send to crew we should have flare not pulse". No dedicated flare
+     * glyph exists (the 8-ray flare mark is custom-drawn in scr_flare.c, not
+     * a font glyph), so the come-find-me row takes LV_SYMBOL_EYE_OPEN ("spot
+     * me") — distinct from Compose's EDIT and Rally's GPS. */
     signals_build_popup_row(parent, FF_SIGNALS_POPUP_ROW1_Y, FF_THEME_CREW_GREEN, "Compose",
                             "write a message", signals_popup_compose_cb, LV_SYMBOL_EDIT);
     signals_build_popup_row(parent, FF_SIGNALS_POPUP_ROW2_Y, FF_THEME_CREW_VIOLET, "Rally",
                             "meet somewhere", signals_popup_rally_cb, LV_SYMBOL_GPS);
-    signals_build_popup_row(parent, FF_SIGNALS_POPUP_ROW3_Y, FF_THEME_COLOR_AMBER, "Pulse",
-                            "ping - I'm here", signals_popup_pulse_cb, LV_SYMBOL_BELL);
+    signals_build_popup_row(parent, FF_SIGNALS_POPUP_ROW3_Y, FF_THEME_COLOR_AMBER, "Flare",
+                            "come find me", signals_popup_flare_cb, LV_SYMBOL_EYE_OPEN);
 
     signals_build_popup_close(parent);
 }

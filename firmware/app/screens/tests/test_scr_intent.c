@@ -829,8 +829,9 @@ static void S24c_thread_in5min_chip_emits_canned_reply_5min(void)
     TEST_ASSERT_EQUAL(FF_WIRING_REPLY_5MIN, s_spy.last.u.reply);
 }
 
-/* The PULSE chip emits the S22(d) send intent, no payload. */
-static void S24c_thread_pulse_chip_emits_sig_pulse(void)
+/* The FLARE chip emits the outbound send intent, no payload (the outbound
+ * quick signal is a flare, not a pulse). */
+static void S24c_thread_flare_chip_emits_sig_flare(void)
 {
     ff_app_signals_t v;
     s24c_make_direct_thread(&v);
@@ -838,9 +839,9 @@ static void S24c_thread_pulse_chip_emits_sig_pulse(void)
     lv_obj_t *parent = lv_obj_create(lv_screen_active());
     ff_scr_signals_build(parent, &v, false);
 
-    click(find_button_with_label(parent, "PULSE"));
+    click(find_button_with_label(parent, "FLARE"));
     TEST_ASSERT_EQUAL_INT(1, s_spy.count);
-    TEST_ASSERT_EQUAL(FF_INTENT_SIG_PULSE, s_spy.last.kind);
+    TEST_ASSERT_EQUAL(FF_INTENT_SIG_FLARE, s_spy.last.kind);
 }
 
 /* The thread FAB emits INBOX_NEW (slice (d) routes it to the scoped
@@ -884,7 +885,7 @@ static void S24c_crew_thread_has_no_quick_chips(void)
     lv_obj_t *parent = lv_obj_create(lv_screen_active());
     ff_scr_signals_build(parent, &v, false);
     TEST_ASSERT_NULL(find_button_with_label(parent, "OMW"));
-    TEST_ASSERT_NULL(find_button_with_label(parent, "PULSE"));
+    TEST_ASSERT_NULL(find_button_with_label(parent, "FLARE"));
 }
 
 /* =================================================================== */
@@ -923,13 +924,13 @@ static void S24d_popup_rally_row_emits_popup_rally(void)
     TEST_ASSERT_EQUAL(FF_INTENT_INBOX_POPUP_RALLY, s_spy.last.kind);
 }
 
-static void S24d_popup_pulse_row_emits_popup_pulse(void)
+static void S24d_popup_flare_row_emits_popup_flare(void)
 {
     ff_app_signals_t v;
     lv_obj_t *parent = build_popup(&v);
-    click(find_button_with_label(parent, "Pulse"));
+    click(find_button_with_label(parent, "Flare"));
     TEST_ASSERT_EQUAL_INT(1, s_spy.count);
-    TEST_ASSERT_EQUAL(FF_INTENT_INBOX_POPUP_PULSE, s_spy.last.kind);
+    TEST_ASSERT_EQUAL(FF_INTENT_INBOX_POPUP_FLARE, s_spy.last.kind);
 }
 
 static void S24d_popup_close_emits_back(void)
@@ -1593,12 +1594,12 @@ int main(void)
     RUN_TEST(S24b_picker_and_thread_back_emit_back);
     RUN_TEST(S24c_thread_omw_chip_emits_canned_reply_omw);
     RUN_TEST(S24c_thread_in5min_chip_emits_canned_reply_5min);
-    RUN_TEST(S24c_thread_pulse_chip_emits_sig_pulse);
+    RUN_TEST(S24c_thread_flare_chip_emits_sig_flare);
     RUN_TEST(S24c_thread_fab_emits_inbox_new);
     RUN_TEST(S24c_crew_thread_has_no_quick_chips);
     RUN_TEST(S24d_popup_compose_row_emits_popup_compose);
     RUN_TEST(S24d_popup_rally_row_emits_popup_rally);
-    RUN_TEST(S24d_popup_pulse_row_emits_popup_pulse);
+    RUN_TEST(S24d_popup_flare_row_emits_popup_flare);
     RUN_TEST(S24d_popup_close_emits_back);
     RUN_TEST(S24d_rally_on_me_row_emits_select_place_zero);
     RUN_TEST(S24d_rally_landmark_row_emits_select_place_index);

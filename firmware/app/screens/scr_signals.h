@@ -30,7 +30,7 @@
  *     the model joined one. CREW header carries the `N CREW` roster
  *     fact; a 1:1 header carries the honest presence line and the
  *     quick-chip strip (OMW / IN 5 MIN emit FF_INTENT_CANNED_REPLY;
- *     PULSE emits FF_INTENT_SIG_PULSE — the shell aims all three at the
+ *     FLARE emits FF_INTENT_SIG_FLARE — the shell aims all three at the
  *     open thread's scope). Both carry the FAB (FF_INTENT_INBOX_NEW —
  *     routed to the scoped action popup in slice d). POPUP/RALLY remain
  *     slice (d) placeholders falling back to the inbox render (see

@@ -2321,6 +2321,36 @@ static void shell_pulse_to_scope(shell_t *sh)
     }
 }
 
+/* Encode + send a FLARE ("come find me") to the CURRENT resolved scope,
+ * pushing the OUT feed item on an accepted send. The outbound quick signal
+ * is a flare, not a pulse (the maintainer's "in send to crew we should have
+ * flare not pulse") — but it rides the SAME S22(d) scope+send seam PULSE
+ * used: shell_sig_dest resolves WHOLE_CREW -> broadcast and a member -> its
+ * addressed id, and the wire body is `ff_proto_encode_flare` at
+ * FF_FLARE_DEFAULT_DUR_S (the S10 default duration; the quick chip/row has
+ * no duration picker). This does NOT touch the S10 self-flare "sending"
+ * state (ff_flare_send_begin / the sender overlay) — that is the Radar
+ * face's own "light my puck up" flare; this is an addressed come-find-me
+ * signal into a conversation, exactly parallel to shell_pulse_to_scope.
+ * No-op on a stale member scope (shell_sig_dest false) or a missing sender.
+ * Does NOT touch the target/arm state — the caller owns that. */
+static void shell_flare_to_scope(shell_t *sh)
+{
+    uint32_t dest = MC_ADDR_BROADCAST;
+    if (!shell_sig_dest(sh, &dest)) return; /* stale member scope: send nothing */
+    uint8_t buf[FF_PROTO_MAX_PAYLOAD];
+    int const n = ff_proto_encode_flare(buf, sizeof buf, FF_FLARE_DEFAULT_DUR_S);
+    if (n > 0 && sh->wiring.sender.send_private != NULL) {
+        int const rc = sh->wiring.sender.send_private(sh->wiring.sender.ctx, dest, buf, (size_t)n);
+        if (rc == 0) {
+            /* My own send lands in the feed (FEED_DIR_OUT) so the thread
+             * shows both sides. Accepted sends only; a refused one
+             * fabricates nothing. */
+            ff_wiring_push_outgoing(&sh->wiring, FEED_FLARE, dest, NULL);
+        }
+    }
+}
+
 /* Re-assert the S22(d) send holders from the open thread's scope (used
  * where "the open thread IS the send scope" applies — the thread chips and
  * the popup rows). Node 0 = whole crew, else that member. */
@@ -3061,14 +3091,29 @@ void ff_shell_intent(ff_shell_t *sh_pub, ff_intent_t const *in)
         return;
 
     case FF_INTENT_INBOX_POPUP_PULSE:
-        /* S24 AC5 — the popup's Pulse row: pulse the scope immediately,
-         * then close the popup back to the thread (the OUT pulse shows
-         * there). Only from the popup. */
+        /* S24 AC5 — the popup's (retired) Pulse row: pulse the scope
+         * immediately, then close the popup back to the thread (the OUT
+         * pulse shows there). Only from the popup. No screen emits this now
+         * (the row sends a FLARE — see FF_INTENT_INBOX_POPUP_FLARE below);
+         * kept as the outbound-pulse programmatic seam. */
         if (takeover_up) return;
         if (sh->sig_subview != FF_SIG_SUB_POPUP) return;
         sh->sig_rally_armed = false;
         shell_scope_from_thread(sh);
         shell_pulse_to_scope(sh);
+        sh->sig_subview = FF_SIG_SUB_THREAD;
+        return;
+
+    case FF_INTENT_INBOX_POPUP_FLARE:
+        /* The popup's third row: FLARE ("come find me") to the scope
+         * immediately, then close the popup back to the thread (the OUT
+         * flare shows there). Same shape as POPUP_PULSE above, only the wire
+         * body differs (a flare, not a pulse). Only from the popup. */
+        if (takeover_up) return;
+        if (sh->sig_subview != FF_SIG_SUB_POPUP) return;
+        sh->sig_rally_armed = false;
+        shell_scope_from_thread(sh);
+        shell_flare_to_scope(sh);
         sh->sig_subview = FF_SIG_SUB_THREAD;
         return;
 
@@ -3161,7 +3206,9 @@ void ff_shell_intent(ff_shell_t *sh_pub, ff_intent_t const *in)
         /* S22 slice d — PULSE (empty-body ping) to the current target. Sends
          * on the first tap for both WHOLE_CREW and a member (only RALLY-to-
          * WHOLE_CREW confirms). Any action other than a second RALLY tap
-         * disarms a pending rally confirm. */
+         * disarms a pending rally confirm. No screen emits this now (the 1:1
+         * quick chip sends a FLARE — see FF_INTENT_SIG_FLARE below); kept as
+         * the outbound-pulse programmatic seam. */
         if (takeover_up) return;
         sh->sig_rally_armed = false;
         {
@@ -3178,6 +3225,26 @@ void ff_shell_intent(ff_shell_t *sh_pub, ff_intent_t const *in)
              * line screen. With a thread open the open thread IS the scope
              * (S24's no-desync rule) — resetting would silently re-aim the
              * chips still under the user's thumb, so the scope stays. */
+            if (!thread_open) {
+                shell_sig_reset_target(sh); /* AC3 (no thread open) */
+            }
+        }
+        return;
+
+    case FF_INTENT_SIG_FLARE:
+        /* The 1:1 thread's quick chip: FLARE ("come find me") to the current
+         * target. Same scope/target handling as SIG_PULSE above (send on the
+         * first tap; the open thread IS the scope when one is open; reset to
+         * WHOLE_CREW only with no thread open) — only the wire body differs
+         * (a flare, not a pulse). */
+        if (takeover_up) return;
+        sh->sig_rally_armed = false;
+        {
+            bool const thread_open = shell_scope_thread_open(sh);
+            if (thread_open) {
+                shell_scope_from_thread(sh);
+            }
+            shell_flare_to_scope(sh);
             if (!thread_open) {
                 shell_sig_reset_target(sh); /* AC3 (no thread open) */
             }
