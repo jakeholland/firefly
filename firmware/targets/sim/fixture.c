@@ -685,6 +685,60 @@ static ff_fixture_result_t fx_parse_signals(fx_ctx_t const *c, int obj_i, ff_app
             idx = fx_skip(c, conv_i);
         }
     }
+
+    /* S24 slice (c) — the open thread's messages (`ff_inbox_msg_t`),
+     * oldest first, same fail-loud over-cap treatment as `convs`. The
+     * loader DERIVES `identity_known` from the presence of a `from` key
+     * (mirroring `preview_from`: writing `"from": ""` still means "known
+     * but unnamed" — a paired member whose NodeInfo never arrived; no
+     * key at all is an honest unjoined sender). */
+    int msgs_i;
+    if (fx_obj_get(c, obj_i, "msgs", &msgs_i) && !fx_is_null(c, msgs_i)) {
+        jsmntok_t const *at = &c->toks[msgs_i];
+        if (at->type != JSMN_ARRAY) return FF_FIXTURE_ERR_JSON;
+        if (at->size > FF_INBOX_MAX_MSGS) return FF_FIXTURE_ERR_TOO_BIG;
+        int idx = msgs_i + 1;
+        for (int i = 0; i < at->size; i++) {
+            int msg_i = idx;
+            ff_inbox_msg_t *m = &sig->thread.msgs[sig->thread.msg_count];
+            memset(m, 0, sizeof(*m));
+
+            int kt;
+            if (fx_obj_get(c, msg_i, "kind", &kt)) {
+                int v;
+                ff_fixture_result_t rc = fx_enum(c, kt, fx_feed_kind_table,
+                                                  sizeof(fx_feed_kind_table) / sizeof(fx_feed_kind_table[0]),
+                                                  "signals.msgs[].kind", &v);
+                if (rc != FF_FIXTURE_OK) return rc;
+                m->kind = (ff_feed_kind_t)v;
+            }
+            if (fx_obj_get(c, msg_i, "dir", &kt)) {
+                int v;
+                ff_fixture_result_t rc = fx_enum(c, kt, fx_feed_dir_table,
+                                                  sizeof(fx_feed_dir_table) / sizeof(fx_feed_dir_table[0]),
+                                                  "signals.msgs[].dir", &v);
+                if (rc != FF_FIXTURE_OK) return rc;
+                m->dir = (ff_feed_dir_t)v;
+            }
+            if (fx_obj_get(c, msg_i, "node_id", &kt)) m->node_id = (uint32_t)fx_num(c, kt, 0.0);
+            if (fx_obj_get(c, msg_i, "from", &kt)) {
+                m->identity_known = true;
+                fx_copy_str(c, kt, m->name, sizeof(m->name));
+            }
+            if (fx_obj_get(c, msg_i, "initial", &kt)) {
+                char buf[2];
+                fx_copy_str(c, kt, buf, sizeof(buf));
+                m->initial = buf[0];
+            }
+            if (fx_obj_get(c, msg_i, "color_idx", &kt)) m->color_idx = (uint8_t)fx_num(c, kt, 0.0);
+            if (fx_obj_get(c, msg_i, "text", &kt)) fx_copy_str(c, kt, m->text, sizeof(m->text));
+            if (fx_obj_get(c, msg_i, "age_ms", &kt)) m->age_ms = (uint32_t)fx_num(c, kt, 0.0);
+            if (fx_obj_get(c, msg_i, "unread", &kt)) m->unread = fx_bool(c, kt, false);
+
+            sig->thread.msg_count++;
+            idx = fx_skip(c, msg_i);
+        }
+    }
     return FF_FIXTURE_OK;
 }
 
@@ -1458,6 +1512,34 @@ static void fw_conv(fw_cur_t *w, ff_inbox_conv_t const *cv)
     fw_fmt(w, ",\"presence_age_ms\":%u}", (unsigned)cv->presence_age_ms);
 }
 
+/* S24 slice (c): serialize one ff_inbox_msg_t. Mirrors the `msgs` loader
+ * field-for-field; `from` is written only when the identity is known
+ * (its presence IS the identity_known flag on reload, the preview_from
+ * convention). */
+static void fw_msg(fw_cur_t *w, ff_inbox_msg_t const *m)
+{
+    char cbuf[2];
+    fw_raw(w, "{\"kind\":\"");
+    fw_raw(w, fx_enum_name(fx_feed_kind_table, sizeof(fx_feed_kind_table) / sizeof(fx_feed_kind_table[0]),
+                            m->kind, "text"));
+    fw_raw(w, "\",\"dir\":\"");
+    fw_raw(w, fx_enum_name(fx_feed_dir_table, sizeof(fx_feed_dir_table) / sizeof(fx_feed_dir_table[0]),
+                            m->dir, "unknown"));
+    fw_raw(w, "\"");
+    fw_fmt(w, ",\"node_id\":%u", (unsigned)m->node_id);
+    if (m->identity_known) {
+        fw_raw(w, ",\"from\":");
+        fw_json_str(w, m->name);
+    }
+    fw_raw(w, ",\"initial\":");
+    fw_json_str(w, fw_char1(m->initial, cbuf));
+    fw_fmt(w, ",\"color_idx\":%u", (unsigned)m->color_idx);
+    fw_raw(w, ",\"text\":");
+    fw_json_str(w, m->text);
+    fw_fmt(w, ",\"age_ms\":%u", (unsigned)m->age_ms);
+    fw_raw(w, m->unread ? ",\"unread\":true}" : ",\"unread\":false}");
+}
+
 int ff_fixture_dump_json(ff_app_state_t const *s, char *buf, size_t buf_sz)
 {
     if (s == NULL || buf == NULL || buf_sz == 0) return -1;
@@ -1555,6 +1637,13 @@ int ff_fixture_dump_json(ff_app_state_t const *s, char *buf, size_t buf_sz)
     for (uint8_t i = 0; i < s->signals.inbox.conv_count; i++) {
         if (i > 0) fw_raw(&w, ",");
         fw_conv(&w, &s->signals.inbox.convs[i]);
+    }
+    fw_raw(&w, "]");
+    /* S24 slice (c): the open thread's messages. */
+    fw_raw(&w, ",\"msgs\":[");
+    for (uint8_t i = 0; i < s->signals.thread.msg_count; i++) {
+        if (i > 0) fw_raw(&w, ",");
+        fw_msg(&w, &s->signals.thread.msgs[i]);
     }
     fw_raw(&w, "]}");
 

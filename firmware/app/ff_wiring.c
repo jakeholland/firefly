@@ -209,9 +209,16 @@ void ff_wiring_push_outgoing(ff_wiring_ctx_t *w, ff_feed_kind_t kind, uint32_t d
 
 int ff_wiring_send_canned_reply(ff_wiring_ctx_t *w, ff_wiring_canned_reply_t which, ff_feed_item_t const *reply_ctx)
 {
-    if (w == NULL || w->sender.send_text == NULL || w->sender.send_private == NULL) return -1;
+    /* Context -> destination resolution only; the sends themselves live
+     * in ff_wiring_send_canned_reply_to (S24 slice c), so the reply-
+     * context path and the thread-scope path can never drift. */
+    return ff_wiring_send_canned_reply_to(w, which,
+                                           (reply_ctx != NULL) ? reply_ctx->from_node : MC_ADDR_BROADCAST);
+}
 
-    uint32_t dest = (reply_ctx != NULL) ? reply_ctx->from_node : MC_ADDR_BROADCAST;
+int ff_wiring_send_canned_reply_to(ff_wiring_ctx_t *w, ff_wiring_canned_reply_t which, uint32_t dest)
+{
+    if (w == NULL || w->sender.send_text == NULL || w->sender.send_private == NULL) return -1;
 
     int rc = -1;
     ff_feed_kind_t kind = FEED_TEXT;

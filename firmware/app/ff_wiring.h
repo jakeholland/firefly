@@ -219,6 +219,23 @@ void ff_wiring_push_outgoing(ff_wiring_ctx_t *w, ff_feed_kind_t kind, uint32_t d
  */
 int ff_wiring_send_canned_reply(ff_wiring_ctx_t *w, ff_wiring_canned_reply_t which, ff_feed_item_t const *reply_ctx);
 
+/**
+ * ff_wiring_send_canned_reply_to — S24 slice (c): the same canned sends
+ * (identical strings/encodes — OMW "omw" text, 5 MIN "5 min" text, PULSE
+ * the encoded PULSE packet), addressed to an EXPLICIT mesh destination
+ * instead of a reply-context item. This is the seam the thread quick
+ * chips send through: the open thread IS the send scope (S24), so the
+ * shell resolves the scope (member node id, or MC_ADDR_BROADCAST for the
+ * CREW thread) and hands it here — no feed-item context involved.
+ * `ff_wiring_send_canned_reply` above is a thin wrapper over this
+ * (context -> destination resolution only), so the two paths cannot
+ * drift. A successful send pushes its own FEED_DIR_OUT feed item exactly
+ * like the wrapper (accepted sends only — a refused send fabricates
+ * nothing). Returns the sender's return value (0 success, negative
+ * failure); -1 if `w`/its sender is unset or `which` is unrecognized.
+ */
+int ff_wiring_send_canned_reply_to(ff_wiring_ctx_t *w, ff_wiring_canned_reply_t which, uint32_t dest);
+
 #ifdef __cplusplus
 }
 #endif

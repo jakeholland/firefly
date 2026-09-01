@@ -20,11 +20,21 @@
  *   - PICKER — the recipient picker (the FAB's scope step): CREW pinned
  *     + each paired member in the same big-row style; a row emits
  *     `FF_INTENT_INBOX_PICK`; back emits `FF_INTENT_BACK`.
- *   - THREAD — a minimal, honest STUB (scope name + real signal count +
- *     back); the full message-list render is slice (c)'s. POPUP/RALLY
- *     are slice (d) placeholders — nothing routes to them yet and they
- *     fall back to the inbox render (see ff_app_state.h's
- *     ff_sig_subview_t).
+ *   - THREAD — the S24 slice (c) message screens (spec screens 2/3):
+ *     one scrollable list of `v->thread` messages (oldest at the top,
+ *     scrolled to the NEWEST), bubbles sided by the model's direction
+ *     fact (FEED_DIR_OUT = mine, amber, right; everything else theirs,
+ *     dark, left; UNKNOWN renders like inbound but never claims an
+ *     address), kind-specific rows (text/status bubbles, rally callout
+ *     with place, pulse/flare one-liners), sender identity only where
+ *     the model joined one. CREW header carries the `N CREW` roster
+ *     fact; a 1:1 header carries the honest presence line and the
+ *     quick-chip strip (OMW / IN 5 MIN emit FF_INTENT_CANNED_REPLY;
+ *     PULSE emits FF_INTENT_SIG_PULSE — the shell aims all three at the
+ *     open thread's scope). Both carry the FAB (FF_INTENT_INBOX_NEW —
+ *     routed to the scoped action popup in slice d). POPUP/RALLY remain
+ *     slice (d) placeholders falling back to the inbox render (see
+ *     ff_app_state.h's ff_sig_subview_t).
  *
  * ## Round-glass layout notes (the repeated lessons — PR #25/#86, S21/S22)
  * Chrome (the non-clickable header / the pinned back button) sits above a

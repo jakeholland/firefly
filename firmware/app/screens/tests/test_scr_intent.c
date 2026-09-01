@@ -771,6 +771,121 @@ static void S24b_picker_and_thread_back_emit_back(void)
     TEST_ASSERT_EQUAL(FF_INTENT_BACK, s_spy.last.kind);
 }
 
+/* S24 slice (c) — a rendered 1:1 thread view for the chip tests: the
+ * DANA scope, one inbound and one outgoing message. */
+static void s24c_make_direct_thread(ff_app_signals_t *v)
+{
+    memset(v, 0, sizeof(*v));
+    v->subview = FF_SIG_SUB_THREAD;
+    v->thread_node = 111u;
+    strncpy(v->thread_name, "DANA", sizeof(v->thread_name) - 1);
+    sig_add_conv(v, FF_CONV_CREW, 0u, NULL, 0, 0);
+    ff_inbox_conv_t *dana = sig_add_conv(v, FF_CONV_MEMBER, 111u, "DANA", 0, 2);
+    dana->presence = FF_PRESENCE_SEEN;
+    dana->presence_age_ms = 60000u;
+
+    ff_inbox_msg_t *out = &v->thread.msgs[v->thread.msg_count++];
+    memset(out, 0, sizeof(*out));
+    out->kind = FEED_TEXT;
+    out->dir = FEED_DIR_OUT;
+    strncpy(out->text, "at the tower", sizeof(out->text) - 1);
+    ff_inbox_msg_t *in_m = &v->thread.msgs[v->thread.msg_count++];
+    memset(in_m, 0, sizeof(*in_m));
+    in_m->kind = FEED_PULSE;
+    in_m->dir = FEED_DIR_DIRECT;
+    in_m->identity_known = true;
+    in_m->node_id = 111u;
+    strncpy(in_m->name, "DANA", sizeof(in_m->name) - 1);
+}
+
+/* The 1:1 quick chips: OMW and IN 5 MIN emit CANNED_REPLY with the right
+ * canned id (the shell aims them at the thread scope — its own test). */
+static void S24c_thread_omw_chip_emits_canned_reply_omw(void)
+{
+    ff_app_signals_t v;
+    s24c_make_direct_thread(&v);
+
+    lv_obj_t *parent = lv_obj_create(lv_screen_active());
+    ff_scr_signals_build(parent, &v, false);
+
+    click(find_button_with_label(parent, "OMW"));
+    TEST_ASSERT_EQUAL_INT(1, s_spy.count);
+    TEST_ASSERT_EQUAL(FF_INTENT_CANNED_REPLY, s_spy.last.kind);
+    TEST_ASSERT_EQUAL(FF_WIRING_REPLY_OMW, s_spy.last.u.reply);
+}
+
+static void S24c_thread_in5min_chip_emits_canned_reply_5min(void)
+{
+    ff_app_signals_t v;
+    s24c_make_direct_thread(&v);
+
+    lv_obj_t *parent = lv_obj_create(lv_screen_active());
+    ff_scr_signals_build(parent, &v, false);
+
+    click(find_button_with_label(parent, "IN 5 MIN"));
+    TEST_ASSERT_EQUAL_INT(1, s_spy.count);
+    TEST_ASSERT_EQUAL(FF_INTENT_CANNED_REPLY, s_spy.last.kind);
+    TEST_ASSERT_EQUAL(FF_WIRING_REPLY_5MIN, s_spy.last.u.reply);
+}
+
+/* The PULSE chip emits the S22(d) send intent, no payload. */
+static void S24c_thread_pulse_chip_emits_sig_pulse(void)
+{
+    ff_app_signals_t v;
+    s24c_make_direct_thread(&v);
+
+    lv_obj_t *parent = lv_obj_create(lv_screen_active());
+    ff_scr_signals_build(parent, &v, false);
+
+    click(find_button_with_label(parent, "PULSE"));
+    TEST_ASSERT_EQUAL_INT(1, s_spy.count);
+    TEST_ASSERT_EQUAL(FF_INTENT_SIG_PULSE, s_spy.last.kind);
+}
+
+/* The thread FAB emits INBOX_NEW (slice (d) routes it to the scoped
+ * action popup; until then the shell's INBOX_NEW handler is a documented
+ * no-op outside the inbox). Both thread shapes carry the FAB. */
+static void S24c_thread_fab_emits_inbox_new(void)
+{
+    ff_app_signals_t v;
+    s24c_make_direct_thread(&v);
+
+    lv_obj_t *parent = lv_obj_create(lv_screen_active());
+    ff_scr_signals_build(parent, &v, false);
+    click(find_clickable_by_size(parent, 48, 48));
+    TEST_ASSERT_EQUAL_INT(1, s_spy.count);
+    TEST_ASSERT_EQUAL(FF_INTENT_INBOX_NEW, s_spy.last.kind);
+
+    /* CREW thread too. */
+    lv_obj_clean(parent);
+    memset(&v, 0, sizeof(v));
+    v.subview = FF_SIG_SUB_THREAD;
+    v.thread_node = 0u;
+    strncpy(v.thread_name, "CREW", sizeof(v.thread_name) - 1);
+    sig_add_conv(&v, FF_CONV_CREW, 0u, NULL, 0, 0);
+    ff_scr_signals_build(parent, &v, false);
+    click(find_clickable_by_size(parent, 48, 48));
+    TEST_ASSERT_EQUAL_INT(2, s_spy.count);
+    TEST_ASSERT_EQUAL(FF_INTENT_INBOX_NEW, s_spy.last.kind);
+}
+
+/* The CREW thread renders NO quick chips (they are the 1:1 screen's) —
+ * a chip label must not be findable there. */
+static void S24c_crew_thread_has_no_quick_chips(void)
+{
+    ff_app_signals_t v;
+    memset(&v, 0, sizeof(v));
+    v.subview = FF_SIG_SUB_THREAD;
+    v.thread_node = 0u;
+    strncpy(v.thread_name, "CREW", sizeof(v.thread_name) - 1);
+    sig_add_conv(&v, FF_CONV_CREW, 0u, NULL, 0, 0);
+
+    lv_obj_t *parent = lv_obj_create(lv_screen_active());
+    ff_scr_signals_build(parent, &v, false);
+    TEST_ASSERT_NULL(find_button_with_label(parent, "OMW"));
+    TEST_ASSERT_NULL(find_button_with_label(parent, "PULSE"));
+}
+
 /* find_pill_in_row — the settings-face toggle rows (HAPTICS/GLOW/COLORBLIND)
  * all render generic "ON"/"OFF" pills, so a bare find_button_with_label would
  * ambiguously match the first such pill in the tree. This scopes the pill
@@ -1340,6 +1455,11 @@ int main(void)
     RUN_TEST(S24b_inbox_fab_emits_inbox_new);
     RUN_TEST(S24b_picker_rows_emit_pick);
     RUN_TEST(S24b_picker_and_thread_back_emit_back);
+    RUN_TEST(S24c_thread_omw_chip_emits_canned_reply_omw);
+    RUN_TEST(S24c_thread_in5min_chip_emits_canned_reply_5min);
+    RUN_TEST(S24c_thread_pulse_chip_emits_sig_pulse);
+    RUN_TEST(S24c_thread_fab_emits_inbox_new);
+    RUN_TEST(S24c_crew_thread_has_no_quick_chips);
     RUN_TEST(S16_c2_radar_flare_button_emits_flare_start);
     RUN_TEST(S17a_AC4_radar_precise_dot_renders_filled_with_its_initial);
     RUN_TEST(S17a_AC4_radar_imprecise_dot_renders_as_hollow_ring_with_no_initial);

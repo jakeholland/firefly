@@ -341,7 +341,18 @@ void ff_scr_nav_build(ff_app_state_t const *state)
         lv_obj_set_style_opa(tileview, LV_OPA_30, 0);
     }
 
-    nav_build_page_dots(puck, tile_idx, ff_scr_signals_unread_count(&state->signals)); /* S22b */
+    /* S24 slice (c): the page dots (and the Signals unread badge riding
+     * dot 2) are INBOX-level chrome — the design's thread artboards carry
+     * none, and a thread screen deliberately renders nothing about OTHER
+     * conversations (its render key is opaque to their churn —
+     * ff_shell.c's THREAD key reduction; drawing the whole-face unread
+     * badge here would put a pixel on screen that key correctly refuses
+     * to track). The picker keeps them (slice-b behavior, unchanged). */
+    bool const sig_thread_up =
+        (state->active_face == FF_APP_FACE_SIGNALS && state->signals.subview == FF_SIG_SUB_THREAD);
+    if (!sig_thread_up) {
+        nav_build_page_dots(puck, tile_idx, ff_scr_signals_unread_count(&state->signals)); /* S22b */
+    }
 
     /* S10 slice b: the sender overlay, built LAST (on the puck itself,
      * not any one tile) so it paints on top of whichever tile/page-dots

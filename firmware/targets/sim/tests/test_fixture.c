@@ -563,6 +563,12 @@ static void signals_section_parses_every_field(void)
                         "     \"presence_age_ms\": 120000},"
                         "    {\"conv\": \"member\", \"node_id\": 77, \"name\": \"JO\", \"initial\": \"J\","
                         "     \"color_idx\": 4, \"presence\": \"lost\", \"presence_age_ms\": 900000}"
+                        "  ],"
+                        "  \"msgs\": ["
+                        "    {\"kind\": \"rally\", \"dir\": \"direct\", \"node_id\": 4242,"
+                        "     \"from\": \"RILEY\", \"initial\": \"R\", \"color_idx\": 1,"
+                        "     \"text\": \"Main Stage\", \"age_ms\": 360000, \"unread\": true},"
+                        "    {\"kind\": \"text\", \"dir\": \"out\", \"text\": \"omw\", \"age_ms\": 60000}"
                         "  ]"
                         "}}";
     TEST_ASSERT_EQUAL_INT(FF_FIXTURE_OK, ff_fixture_load_json(json, strlen(json), &s));
@@ -606,6 +612,26 @@ static void signals_section_parses_every_field(void)
     TEST_ASSERT_FALSE(jo->has_preview); /* derived: item_count 0 */
     TEST_ASSERT_EQUAL_INT(FF_PRESENCE_LOST, jo->presence);
     TEST_ASSERT_EQUAL_UINT32(900000u, jo->presence_age_ms);
+
+    /* S24 slice (c): the thread messages. */
+    TEST_ASSERT_EQUAL_UINT8(2, s.signals.thread.msg_count);
+    ff_inbox_msg_t const *m0 = &s.signals.thread.msgs[0];
+    TEST_ASSERT_EQUAL_INT(FEED_RALLY, m0->kind);
+    TEST_ASSERT_EQUAL_INT(FEED_DIR_DIRECT, m0->dir);
+    TEST_ASSERT_EQUAL_UINT32(4242u, m0->node_id);
+    TEST_ASSERT_TRUE(m0->identity_known); /* derived: `from` present */
+    TEST_ASSERT_EQUAL_STRING("RILEY", m0->name);
+    TEST_ASSERT_EQUAL_INT('R', m0->initial);
+    TEST_ASSERT_EQUAL_UINT8(1, m0->color_idx);
+    TEST_ASSERT_EQUAL_STRING("Main Stage", m0->text);
+    TEST_ASSERT_EQUAL_UINT32(360000u, m0->age_ms);
+    TEST_ASSERT_TRUE(m0->unread);
+    ff_inbox_msg_t const *m1 = &s.signals.thread.msgs[1];
+    TEST_ASSERT_EQUAL_INT(FEED_TEXT, m1->kind);
+    TEST_ASSERT_EQUAL_INT(FEED_DIR_OUT, m1->dir);
+    TEST_ASSERT_FALSE(m1->identity_known); /* derived: no `from` key — never a guessed sender */
+    TEST_ASSERT_EQUAL_STRING("omw", m1->text);
+    TEST_ASSERT_FALSE(m1->unread);
 }
 
 /* [api] S10 slice b — ff_app_flare_t's three independent groups (see
@@ -885,6 +911,20 @@ static void signals_items_over_cap_fails_loud(void)
 {
     char json[1024];
     build_n_element_array_json(json, sizeof(json), "signals", "convs", FF_INBOX_MAX_CONVS + 1);
+
+    ff_app_state_t s;
+    memset(&s, 0xAA, sizeof(s));
+    TEST_ASSERT_EQUAL_INT(FF_FIXTURE_ERR_TOO_BIG, ff_fixture_load_json(json, strlen(json), &s));
+
+    ff_app_state_t zero;
+    memset(&zero, 0, sizeof(zero));
+    TEST_ASSERT_EQUAL_MEMORY(&zero, &s, sizeof(s));
+}
+
+static void signals_msgs_over_cap_fails_loud(void)
+{
+    char json[4096];
+    build_n_element_array_json(json, sizeof(json), "signals", "msgs", FF_INBOX_MAX_MSGS + 1);
 
     ff_app_state_t s;
     memset(&s, 0xAA, sizeof(s));
@@ -1227,6 +1267,24 @@ static void dump_maximally_populated_state_fits_budget(void)
         cv->presence_valid = true; /* derived: member */
         cv->presence_age_ms = 0xFFFFFFFFu;
     }
+    /* S24 slice (c) — the thread messages at their FF_INBOX_MAX_MSGS cap,
+     * every dumped field non-zero and every string at its budget, so the
+     * worst-case bound covers the msgs array too. */
+    s.signals.thread.msg_count = FF_INBOX_MAX_MSGS;
+    for (uint8_t i = 0; i < FF_INBOX_MAX_MSGS; i++) {
+        ff_inbox_msg_t *m = &s.signals.thread.msgs[i];
+        m->kind = FEED_STATUS;
+        m->dir = FEED_DIR_DIRECT;
+        m->identity_known = true;
+        m->node_id = 0xFFFFFFFFu;
+        (void)snprintf(m->name, sizeof(m->name), "%s", "ABCDEFGHIJKLMNO");
+        m->initial = 'Z';
+        m->color_idx = 255;
+        (void)snprintf(m->text, sizeof(m->text), "%s",
+                       "Exactly sixty three characters of preview text stress ballast!!");
+        m->age_ms = 0xFFFFFFFFu;
+        m->unread = true;
+    }
 
     char json[FF_FIXTURE_DUMP_MAX];
     int n = ff_fixture_dump_json(&s, json, sizeof(json));
@@ -1313,6 +1371,7 @@ int main(void)
     RUN_TEST(now_lineup_over_cap_fails_loud);
     RUN_TEST(now_lineup_at_cap_still_loads_ok);
     RUN_TEST(signals_items_over_cap_fails_loud);
+    RUN_TEST(signals_msgs_over_cap_fails_loud);
     RUN_TEST(oversized_array_zeroes_entire_state_including_other_sections);
 
     RUN_TEST(stem_strips_dir_and_json_extension);

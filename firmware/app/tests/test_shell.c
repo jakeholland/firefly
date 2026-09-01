@@ -4191,6 +4191,279 @@ static void S24_AC8_presence_age_keys_rendered_bucket_only(void)
                               "carry presence age ONLY when it is drawn (SEEN)");
 }
 
+/* =================================================================== */
+/* S24 slice c — thread screens: projection, quick chips, churn key     */
+/* =================================================================== */
+
+/* Swipe the route RADAR -> NOW -> SIGNALS (the thread chip paths are
+ * gated on the Signals base face, like every other base-face control). */
+static void s24c_swipe_to_signals(void)
+{
+    ff_intent_t swipe = {.kind = FF_INTENT_SWIPE, .u = {0}};
+    swipe.u.swipe_dir = 1;
+    ff_shell_intent(&H.shell, &swipe); /* RADAR -> NOW */
+    ff_shell_intent(&H.shell, &swipe); /* NOW -> SIGNALS */
+}
+
+/* AC4 — the thread PROJECTION: opening a thread builds `view.signals.
+ * thread` from the feed, oldest first, direction preserved (in vs out),
+ * identity joined only for paired senders, and read on open. */
+static void S24c_AC4_thread_projection_builds_messages_both_ways(void)
+{
+    s22_connect_shell();
+    H.ev = ff_shell_events(&H.shell);
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, true));
+
+    inject_text(DANA, "you close?");                 /* DIRECT -> DANA thread */
+    advance(1000u);
+
+    s24c_swipe_to_signals();
+    ff_intent_t open = {.kind = FF_INTENT_INBOX_OPEN_THREAD, .u = {0}};
+    open.u.node_id = DANA;
+    ff_shell_intent(&H.shell, &open);
+    /* My own send, through the REAL chip path (thread scope = DANA), so
+     * the thread has an OUT side pushed exactly the way the device does. */
+    ff_intent_t omw = {.kind = FF_INTENT_CANNED_REPLY, .u = {0}};
+    omw.u.reply = FF_WIRING_REPLY_OMW;
+    ff_shell_intent(&H.shell, &omw);
+    (void)ff_shell_tick(&H.shell, H.clk.t);
+
+    ff_app_signals_t const *sig = &ff_shell_view(&H.shell)->signals;
+    TEST_ASSERT_EQUAL_INT(FF_SIG_SUB_THREAD, sig->subview);
+    TEST_ASSERT_EQUAL_UINT8(2, sig->thread.msg_count);
+
+    /* Oldest first: DANA's inbound text, then my outgoing reply. */
+    ff_inbox_msg_t const *in_msg = &sig->thread.msgs[0];
+    TEST_ASSERT_EQUAL(FEED_TEXT, in_msg->kind);
+    TEST_ASSERT_EQUAL(FEED_DIR_DIRECT, in_msg->dir);
+    TEST_ASSERT_TRUE(in_msg->identity_known); /* paired sender, joined */
+    TEST_ASSERT_EQUAL_UINT32(DANA, in_msg->node_id);
+    TEST_ASSERT_EQUAL_STRING("you close?", in_msg->text);
+    TEST_ASSERT_FALSE(in_msg->unread); /* read on open (AC4) */
+
+    ff_inbox_msg_t const *out_msg = &sig->thread.msgs[1];
+    TEST_ASSERT_EQUAL(FEED_TEXT, out_msg->kind);
+    TEST_ASSERT_EQUAL(FEED_DIR_OUT, out_msg->dir);
+    TEST_ASSERT_FALSE(out_msg->identity_known); /* my own send claims no joined identity */
+    TEST_ASSERT_EQUAL_STRING("omw", out_msg->text);
+}
+
+/* AC4 — a signal arriving INTO the open, visible thread is on glass the
+ * moment it is projected, so it is marked read then (the live-arrival
+ * half of mark-read); under a takeover nothing is on glass and nothing
+ * is marked. */
+static void S24c_AC4_live_arrival_into_open_thread_marks_read_only_when_visible(void)
+{
+    harness_init(100000u, false);
+    inject_my_info(MY_ID);
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, true));
+
+    s24c_swipe_to_signals();
+    ff_intent_t open = {.kind = FF_INTENT_INBOX_OPEN_THREAD, .u = {0}};
+    open.u.node_id = DANA;
+    ff_shell_intent(&H.shell, &open);
+    (void)ff_shell_tick(&H.shell, H.clk.t);
+
+    inject_text(DANA, "here now");
+    (void)ff_shell_tick(&H.shell, H.clk.t);
+    TEST_ASSERT_EQUAL_UINT16(0, ff_feed_unread_count(ff_shell_feed(&H.shell)));
+    TEST_ASSERT_EQUAL_UINT8(1, ff_shell_view(&H.shell)->signals.thread.msg_count);
+
+    /* Takeover up: an arrival is NOT silently marked read (the user
+     * cannot see it), and it surfaces as unread once the takeover ends. */
+    inject_flare(KEV_ID, 300); /* unpaired sender's flare is dropped from feed... */
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, KEV_ID, true));
+    inject_flare(KEV_ID, 300);
+    (void)ff_shell_tick(&H.shell, H.clk.t);
+    TEST_ASSERT_TRUE(ff_shell_flare(&H.shell)->takeover_active);
+    inject_text(DANA, "u see this?");
+    (void)ff_shell_tick(&H.shell, H.clk.t);
+    TEST_ASSERT_GREATER_THAN_UINT16(0, ff_feed_unread_count(ff_shell_feed(&H.shell)));
+
+    ff_intent_t dismiss = {.kind = FF_INTENT_TAKEOVER_DISMISS, .u = {0}};
+    ff_shell_intent(&H.shell, &dismiss);
+    (void)ff_shell_tick(&H.shell, H.clk.t);
+    /* Visible again: the open thread's items clear on this projection. */
+    TEST_ASSERT_EQUAL_UINT16(0, view_conv(DANA) != NULL ? view_conv(DANA)->unread : 999);
+}
+
+/* AC4 — the OMW / IN 5 MIN quick chips send to the THREAD's scope, not
+ * to the newest feed item's sender (the S16 rule the thread supersedes),
+ * and the accepted send lands in the thread as an OUT item end-to-end. */
+static void S24c_AC4_quick_chip_canned_reply_targets_thread_scope(void)
+{
+    s22_connect_shell();
+    H.ev = ff_shell_events(&H.shell);
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, true));
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, KEV_ID, true));
+
+    /* The proxy-killer: the NEWEST inbound item is from KEV — the old
+     * reply-context rule would aim there. The open thread is DANA's. */
+    inject_text(DANA, "you close?");
+    inject_text(KEV_ID, "unrelated");
+    s24c_swipe_to_signals();
+    ff_intent_t open = {.kind = FF_INTENT_INBOX_OPEN_THREAD, .u = {0}};
+    open.u.node_id = DANA;
+    ff_shell_intent(&H.shell, &open);
+    (void)ff_shell_tick(&H.shell, H.clk.t);
+
+    size_t tx_before = P.tx_len;
+    ff_intent_t omw = {.kind = FF_INTENT_CANNED_REPLY, .u = {0}};
+    omw.u.reply = FF_WIRING_REPLY_OMW;
+    ff_shell_intent(&H.shell, &omw);
+    TEST_ASSERT_GREATER_THAN_size_t(tx_before, P.tx_len);
+    TEST_ASSERT_EQUAL_UINT32(DANA, decode_packet_to(P.tx + tx_before, P.tx_len - tx_before));
+
+    /* End-to-end: the accepted send appears in the OPEN thread as the
+     * newest message, sided OUT. */
+    (void)ff_shell_tick(&H.shell, H.clk.t);
+    ff_app_signals_t const *sig = &ff_shell_view(&H.shell)->signals;
+    TEST_ASSERT_GREATER_THAN_UINT8(0, sig->thread.msg_count);
+    ff_inbox_msg_t const *last = &sig->thread.msgs[sig->thread.msg_count - 1];
+    TEST_ASSERT_EQUAL(FEED_TEXT, last->kind);
+    TEST_ASSERT_EQUAL(FEED_DIR_OUT, last->dir);
+    TEST_ASSERT_EQUAL_STRING("omw", last->text);
+
+    /* The scope survives the send (no S22 AC3 reset while a thread is
+     * open — the chips must keep aiming at the thread). */
+    TEST_ASSERT_EQUAL_INT(FF_TARGET_MEMBER, sig->target_kind);
+    TEST_ASSERT_EQUAL_UINT32(DANA, sig->target_node);
+
+    /* CREW thread scope -> broadcast. */
+    ff_intent_t back = {.kind = FF_INTENT_BACK, .u = {0}};
+    ff_shell_intent(&H.shell, &back);
+    ff_intent_t open_crew = {.kind = FF_INTENT_INBOX_OPEN_THREAD, .u = {0}};
+    ff_shell_intent(&H.shell, &open_crew);
+    (void)ff_shell_tick(&H.shell, H.clk.t);
+    tx_before = P.tx_len;
+    ff_intent_t fivemin = {.kind = FF_INTENT_CANNED_REPLY, .u = {0}};
+    fivemin.u.reply = FF_WIRING_REPLY_5MIN;
+    ff_shell_intent(&H.shell, &fivemin);
+    TEST_ASSERT_GREATER_THAN_size_t(tx_before, P.tx_len);
+    TEST_ASSERT_EQUAL_UINT32(MC_ADDR_BROADCAST, decode_packet_to(P.tx + tx_before, P.tx_len - tx_before));
+}
+
+/* AC4 — the PULSE chip: FF_INTENT_SIG_PULSE with a thread open sends to
+ * the THREAD's scope, keeps the scope (no reset-to-WHOLE_CREW while the
+ * thread is open — a second pulse must not silently broadcast), and the
+ * OUT pulse lands in the thread. */
+static void S24c_AC4_pulse_chip_sends_to_thread_scope_and_keeps_scope(void)
+{
+    s22_connect_shell();
+    H.ev = ff_shell_events(&H.shell);
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, true));
+
+    s24c_swipe_to_signals();
+    ff_intent_t open = {.kind = FF_INTENT_INBOX_OPEN_THREAD, .u = {0}};
+    open.u.node_id = DANA;
+    ff_shell_intent(&H.shell, &open);
+    (void)ff_shell_tick(&H.shell, H.clk.t);
+
+    size_t tx_before = P.tx_len;
+    ff_intent_t pulse = {.kind = FF_INTENT_SIG_PULSE, .u = {0}};
+    ff_shell_intent(&H.shell, &pulse);
+    TEST_ASSERT_GREATER_THAN_size_t(tx_before, P.tx_len);
+    TEST_ASSERT_EQUAL_UINT32(DANA, decode_packet_to(P.tx + tx_before, P.tx_len - tx_before));
+
+    /* The scope stays the thread; a SECOND pulse still goes to DANA (the
+     * mutation this pins: shell_sig_reset_target here would make this
+     * one a broadcast the user never chose). */
+    tx_before = P.tx_len;
+    ff_shell_intent(&H.shell, &pulse);
+    TEST_ASSERT_GREATER_THAN_size_t(tx_before, P.tx_len);
+    TEST_ASSERT_EQUAL_UINT32(DANA, decode_packet_to(P.tx + tx_before, P.tx_len - tx_before));
+
+    (void)ff_shell_tick(&H.shell, H.clk.t);
+    ff_app_signals_t const *sig = &ff_shell_view(&H.shell)->signals;
+    TEST_ASSERT_EQUAL_UINT8(2, sig->thread.msg_count);
+    TEST_ASSERT_EQUAL(FEED_PULSE, sig->thread.msgs[1].kind);
+    TEST_ASSERT_EQUAL(FEED_DIR_OUT, sig->thread.msgs[1].dir);
+    TEST_ASSERT_EQUAL_INT(FF_TARGET_MEMBER, sig->target_kind);
+    TEST_ASSERT_EQUAL_UINT32(DANA, sig->target_node);
+}
+
+/* AC8 — the THREAD render key covers exactly the thread's rendered
+ * projection (the slice-b churn mold): a same-bucket age tick is CLEAN;
+ * a cross-bucket tick is DIRTY (positive control); a new item in THIS
+ * thread is DIRTY; a new item in ANOTHER thread is CLEAN (the thread
+ * renders nothing about other conversations — their churn must not
+ * destroy the chip under a finger). */
+static void S24c_AC8_thread_key_opaque_to_other_conversations_churn(void)
+{
+    harness_init(100000u, false);
+    inject_my_info(MY_ID);
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, true));
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, KEV_ID, true));
+
+    s24c_swipe_to_signals();
+    inject_text(DANA, "yo");
+    ff_intent_t open = {.kind = FF_INTENT_INBOX_OPEN_THREAD, .u = {0}};
+    open.u.node_id = DANA;
+    ff_shell_intent(&H.shell, &open);
+    TEST_ASSERT_TRUE(ff_shell_tick(&H.shell, H.clk.t));  /* thread opened: dirty */
+    TEST_ASSERT_FALSE(ff_shell_tick(&H.shell, H.clk.t)); /* settled */
+
+    /* Same-bucket age tick: clean. */
+    advance(400u);
+    TEST_ASSERT_FALSE_MESSAGE(ff_shell_tick(&H.shell, H.clk.t),
+                              "a sub-bucket age tick rebuilt the open thread - the chip under a finger "
+                              "would be destroyed");
+
+    /* Cross-bucket: the rendered age string changes -> dirty (positive
+     * control), then settle. */
+    advance(700u);
+    TEST_ASSERT_TRUE_MESSAGE(ff_shell_tick(&H.shell, H.clk.t),
+                             "a rendered message-age bucket change did not repaint - the age on glass "
+                             "would go stale");
+    TEST_ASSERT_FALSE(ff_shell_tick(&H.shell, H.clk.t));
+
+    /* A new item in ANOTHER thread (KEV's 1:1): CLEAN — nothing this
+     * screen renders changed (no page-dot badge on a thread screen; the
+     * inbox rows are not on glass). */
+    inject_text(KEV_ID, "elsewhere");
+    TEST_ASSERT_FALSE_MESSAGE(ff_shell_tick(&H.shell, H.clk.t),
+                              "another conversation's new item rebuilt the open thread - the key must be "
+                              "opaque to other threads' churn");
+
+    /* Positive control: a new item in THIS thread is dirty. */
+    inject_text(DANA, "same thread");
+    TEST_ASSERT_TRUE_MESSAGE(ff_shell_tick(&H.shell, H.clk.t),
+                             "a new message in the OPEN thread did not repaint - the conversation on "
+                             "glass would go stale");
+    TEST_ASSERT_FALSE(ff_shell_tick(&H.shell, H.clk.t));
+}
+
+/* AC8, the 1:1 header-presence leg: the header's "SEEN <age>" keys on
+ * its rendered ff_fmt_age bucket — same-bucket ticks clean, bucket
+ * crossings dirty. */
+static void S24c_AC8_thread_header_presence_keys_rendered_bucket(void)
+{
+    harness_init(100000u, false);
+    inject_my_info(MY_ID);
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, true));
+
+    s24c_swipe_to_signals();
+    ff_intent_t open = {.kind = FF_INTENT_INBOX_OPEN_THREAD, .u = {0}};
+    open.u.node_id = DANA;
+    ff_shell_intent(&H.shell, &open);
+    (void)ff_shell_tick(&H.shell, H.clk.t);
+    (void)ff_shell_tick(&H.shell, H.clk.t);
+
+    /* Real SEEN evidence (a DIRECT packet's RSSI sighting): the header
+     * line appears -> dirty, then settles. */
+    inject_rx_meta(DANA, MC_RX_PATH_DIRECT, true, -55);
+    TEST_ASSERT_TRUE(ff_shell_tick(&H.shell, H.clk.t));
+    TEST_ASSERT_FALSE(ff_shell_tick(&H.shell, H.clk.t));
+
+    advance(400u);
+    TEST_ASSERT_FALSE_MESSAGE(ff_shell_tick(&H.shell, H.clk.t),
+                              "a sub-bucket SEEN-age tick rebuilt the thread - raw presence_age_ms leaked "
+                              "into the thread key");
+    advance(700u);
+    TEST_ASSERT_TRUE_MESSAGE(ff_shell_tick(&H.shell, H.clk.t),
+                             "a rendered SEEN-bucket change did not repaint the thread header");
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -4300,6 +4573,13 @@ int main(void)
     RUN_TEST(S24_AC8_inbox_key_same_bucket_age_tick_is_clean);
     RUN_TEST(S24_AC8_presence_age_keys_rendered_bucket_only);
     RUN_TEST(S24_AC3_inbox_intents_are_inert_under_a_takeover);
+
+    RUN_TEST(S24c_AC4_thread_projection_builds_messages_both_ways);
+    RUN_TEST(S24c_AC4_live_arrival_into_open_thread_marks_read_only_when_visible);
+    RUN_TEST(S24c_AC4_quick_chip_canned_reply_targets_thread_scope);
+    RUN_TEST(S24c_AC4_pulse_chip_sends_to_thread_scope_and_keeps_scope);
+    RUN_TEST(S24c_AC8_thread_key_opaque_to_other_conversations_churn);
+    RUN_TEST(S24c_AC8_thread_header_presence_keys_rendered_bucket);
 
     return UNITY_END();
 }

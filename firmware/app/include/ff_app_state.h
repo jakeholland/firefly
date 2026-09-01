@@ -255,17 +255,17 @@ typedef struct {
  * screen only renders whichever this names). INBOX is the zero value —
  * the least-claiming resting state, this header's standing convention.
  *
- * THREAD renders as a minimal honest stub in slice (b) — the navigation,
- * scope and mark-read-on-open are real; the full message-list render is
- * slice (c)'s. POPUP and RALLY are DECLARED here so the sub-view seam is
- * complete for slices (c)/(d), but nothing routes to them yet and the
- * screen's `default:` arm falls back to the inbox render — a clearly
- * commented slice-c/d surface, not reachable dead behavior.
+ * THREAD is the slice-(c) message screen (CREW + 1:1), rendered from
+ * the embedded `thread` view below. POPUP and RALLY are DECLARED here so
+ * the sub-view seam is complete for slice (d), but nothing routes to
+ * them yet and the screen's `default:` arm falls back to the inbox
+ * render — a clearly commented slice-d surface, not reachable dead
+ * behavior.
  */
 typedef enum {
     FF_SIG_SUB_INBOX = 0,
     FF_SIG_SUB_PICKER, /* recipient picker — the inbox FAB's scope step */
-    FF_SIG_SUB_THREAD, /* stub in (b); slice (c) renders the real thread */
+    FF_SIG_SUB_THREAD, /* the slice-(c) CREW / 1:1 message screen */
     FF_SIG_SUB_POPUP,  /* slice (d) — action popup; unrouted placeholder */
     FF_SIG_SUB_RALLY,  /* slice (d) — rally screen; unrouted placeholder */
 } ff_sig_subview_t;
@@ -287,6 +287,16 @@ typedef struct {
     uint32_t thread_node;
     char     thread_name[FF_APP_NAME_LEN];
     uint8_t  thread_color_idx;
+
+    /* [api] S24 slice (c) — the OPEN thread's messages: the genuine core
+     * `ff_inbox_thread_t` (core/include/ff_inbox.h), embedded by value —
+     * the same drift-guard resolution as `inbox` above. Built per tick by
+     * the shell (`ff_inbox_thread_build`) iff `subview == FF_SIG_SUB_
+     * THREAD`; left zeroed (msg_count 0) for every other sub-view, so a
+     * fixture that names a thread sub-view but authors no `msgs` renders
+     * an honest empty thread, never a stale one. Fixtures author it as
+     * `signals.msgs` (targets/sim/fixture.c). */
+    ff_inbox_thread_t thread;
 
     /* S22(d) send-machinery state, kept for slice (d) (see the section
      * comment): the current send scope + the rally-to-crew confirm
