@@ -86,6 +86,36 @@ static fp_pack_t *s_demo_pack;
 extern const uint8_t firefly_pack_start[] asm("_binary_firefly_fields_festpack_json_start");
 extern const uint8_t firefly_pack_end[] asm("_binary_firefly_fields_festpack_json_end");
 
+/* S24d — the demo LOOPBACK sender. The demo build has no mesh transport, so
+ * the real mc_send_* path refuses every send; this accepts them (returns 0)
+ * so the shell pushes the OUT feed item and the user's own outbound shows in
+ * the thread. Kept INSIDE this CONFIG_FF_DEMO_MODE block precisely so a field
+ * build never compiles it (see the install site + ff_demo.h note). It echoes
+ * the user's REAL outbound and reaches no radio; it fabricates nothing. */
+static int demo_loopback_send_text(void *ctx, uint32_t dest, const char *utf8)
+{
+    (void)ctx;
+    (void)dest;
+    (void)utf8;
+    return 0;
+}
+static int demo_loopback_send_private(void *ctx, uint32_t dest, const uint8_t *payload, size_t len)
+{
+    (void)ctx;
+    (void)dest;
+    (void)payload;
+    (void)len;
+    return 0;
+}
+static ff_wiring_sender_t ff_demo_loopback_sender(void)
+{
+    ff_wiring_sender_t s;
+    s.send_text = demo_loopback_send_text;
+    s.send_private = demo_loopback_send_private;
+    s.ctx = NULL;
+    return s;
+}
+
 #if CONFIG_FF_DEMO_LIVE
 /* S23 (slice b) — LIVE demo clock. When live, the demo clock ADVANCES from
  * the seeded epoch (s_demo_clock_ms, pinned by ff_demo_seed) by real
@@ -305,6 +335,22 @@ void app_main(void)
                      (unsigned)FF_DEMO_LIVE_SEED, (unsigned)member_count);
 #endif
         }
+        /* S24d — install the demo LOOPBACK sender: the demo build has no
+         * mesh transport, so the real mc_send_* path refuses every send and
+         * the thread's whole send half is mute. The loopback accepts each
+         * send (returns 0) so the shell pushes the OUT feed item and the
+         * user's own pulse/rally/message shows in the thread. This echoes
+         * the user's REAL outbound as an OUT item in a clearly-demo build;
+         * it fabricates no incoming content and reaches no radio.
+         *
+         * Defined right here, inside the CONFIG_FF_DEMO_MODE block, NOT in
+         * ff_demo.c: ff_demo.c is linked into the device image regardless of
+         * the config and ESP-IDF does not dead-strip it (verified with nm),
+         * so a loopback symbol in ff_demo.c would survive into a FIELD
+         * build. #if-gated here it is simply not compiled when demo mode is
+         * off — a field image carries no loopback symbol and keeps the real
+         * mc_send path. */
+        ff_shell_set_sender(&s_shell, ff_demo_loopback_sender());
     }
 #endif
 

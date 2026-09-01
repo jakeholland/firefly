@@ -156,6 +156,20 @@ bool ff_geo_cal_finish(ff_geo_cal_state_t const *st, ff_geo_cal_t *out);
  */
 void ff_geo_project(ff_latlon_t origin, ff_latlon_t p, float *east_m, float *north_m);
 
+/**
+ * ff_geo_unproject — the exact inverse of `ff_geo_project`: given a point
+ * `east_m`/`north_m` meters east/north of `origin` (the local flat
+ * equirectangular frame), recover its lat/lon. Valid at festival scale
+ * (<10 km); `ff_geo_project(origin, ff_geo_unproject(origin, e, n), ...)`
+ * round-trips to within float precision.
+ *
+ * Added S24 slice (d): a festpack landmark carries its position as
+ * projected east/north meters (fp_pack.h), but a RALLY packet carries a
+ * lat/lon (ff_proto.h) — sending a rally TO a landmark needs this inverse
+ * to recover the wire position. Writes nothing if `out` is NULL.
+ */
+void ff_geo_unproject(ff_latlon_t origin, float east_m, float north_m, ff_latlon_t *out);
+
 #ifdef __cplusplus
 }
 #endif

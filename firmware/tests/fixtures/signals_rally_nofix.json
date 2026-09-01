@@ -1,0 +1,26 @@
+{
+  "fixture": "signals_rally_nofix",
+  "face": "signals",
+  "signals": {
+    "subview": "rally",
+    "thread_node": 111,
+    "thread_name": "DANA",
+    "target_kind": "member",
+    "target_node": 111,
+    "convs": [
+      {"conv": "crew", "unread": 0, "item_count": 0},
+      {"conv": "member", "node_id": 111, "name": "DANA", "initial": "D", "color_idx": 0,
+       "presence": "seen", "presence_age_ms": 60000}
+    ],
+    "rally": {
+      "on_me_ok": false,
+      "sel": 0,
+      "when": "now",
+      "places": [],
+      "echo_place": "",
+      "echo_when": "Now",
+      "can_send": false,
+      "confirm_armed": false
+    }
+  }
+}

@@ -3984,16 +3984,24 @@ static void S24_AC3_fab_pick_and_back_navigate_subviews(void)
     (void)ff_shell_tick(&H.shell, H.clk.t);
     TEST_ASSERT_EQUAL_INT(FF_SIG_SUB_INBOX, ff_shell_view(&H.shell)->signals.subview);
 
+    /* S24 slice (d): PICK now routes to the action POPUP scoped to the
+     * pick (over the thread), not straight to the thread — it still
+     * establishes the full open-thread scope (target + mark-read +
+     * thread_node) so closing the popup reveals the real thread. */
     ff_shell_intent(&H.shell, &fab);
     ff_intent_t pick = {.kind = FF_INTENT_INBOX_PICK, .u = {0}};
     pick.u.node_id = KEV_ID;
     ff_shell_intent(&H.shell, &pick);
     (void)ff_shell_tick(&H.shell, H.clk.t);
-    TEST_ASSERT_EQUAL_INT(FF_SIG_SUB_THREAD, ff_shell_view(&H.shell)->signals.subview);
+    TEST_ASSERT_EQUAL_INT(FF_SIG_SUB_POPUP, ff_shell_view(&H.shell)->signals.subview);
     TEST_ASSERT_EQUAL_UINT32(KEV_ID, ff_shell_view(&H.shell)->signals.thread_node);
     TEST_ASSERT_EQUAL_UINT16(0, view_conv(KEV_ID)->unread); /* pick routes through the open transition */
     TEST_ASSERT_EQUAL_INT(FF_TARGET_MEMBER, ff_shell_view(&H.shell)->signals.target_kind);
 
+    /* BACK steps the stack one level at a time: POPUP -> THREAD -> INBOX. */
+    ff_shell_intent(&H.shell, &back);
+    (void)ff_shell_tick(&H.shell, H.clk.t);
+    TEST_ASSERT_EQUAL_INT(FF_SIG_SUB_THREAD, ff_shell_view(&H.shell)->signals.subview);
     ff_shell_intent(&H.shell, &back);
     (void)ff_shell_tick(&H.shell, H.clk.t);
     TEST_ASSERT_EQUAL_INT(FF_SIG_SUB_INBOX, ff_shell_view(&H.shell)->signals.subview);
@@ -4523,6 +4531,313 @@ static void S24_signals_1to1_projects_the_members_own_color(void)
     TEST_ASSERT_EQUAL_UINT8(member(KEV_ID)->color_idx, view_conv(KEV_ID)->color_idx);
 }
 
+/* =================================================================== */
+/* S24 slice d — action popup (AC5) + Rally screen (AC6) + opacity (AC8) */
+/*  + the demo-loopback send seam.                                       */
+/* =================================================================== */
+
+/* A pack with landmarks: one short-named ("Main Stage") and one whose
+ * name (26 chars, no spaces) is too long to survive the WHEN suffix
+ * intact — the proxy-killer for the truncate rule. Venue at (39,-82) so
+ * the landmarks project/unproject at festival scale. */
+static char const PACK_JSON_RALLY[] =
+    "{\"festpack\":\"0.1\",\"utc_offset_min\":0,"
+    "\"festival\":{\"name\":\"Rally Fest\",\"year\":2026,"
+    "\"start\":\"2026-09-18\",\"end\":\"2026-09-20\","
+    "\"venue\":{\"lat\":39.0,\"lon\":-82.0}},"
+    "\"stages\":[{\"id\":\"a\",\"name\":\"A Stage\",\"color\":\"#00ff00\"}],"
+    "\"schedule\":[{\"artist\":\"Solo\",\"stage\":\"a\",\"day\":\"2026-09-18\","
+    "\"start\":\"20:00\",\"end\":\"21:00\"}],"
+    "\"map\":{\"landmarks\":["
+    "{\"id\":\"ms\",\"name\":\"Main Stage\",\"lat\":39.001,\"lon\":-82.001},"
+    "{\"id\":\"bg\",\"name\":\"RallyPointAtTheBigOpenField\",\"lat\":39.002,\"lon\":-82.0}"
+    "]}}";
+
+/* Swipe RADAR -> NOW -> SIGNALS so the Signals sub-views are the visible
+ * face (the popup/rally are then really rendered, and mark-read runs). */
+static void s24d_to_signals(void)
+{
+    ff_intent_t sw = {.kind = FF_INTENT_SWIPE, .u = {0}};
+    sw.u.swipe_dir = 1;
+    ff_shell_intent(&H.shell, &sw);
+    ff_shell_intent(&H.shell, &sw);
+}
+
+/* Open a thread on `conv_node` (0 = crew) then its FAB -> the action
+ * popup scoped to that thread. */
+static void s24d_open_popup(uint32_t conv_node)
+{
+    s24d_to_signals();
+    ff_intent_t open = {.kind = FF_INTENT_INBOX_OPEN_THREAD, .u = {0}};
+    open.u.node_id = conv_node;
+    ff_shell_intent(&H.shell, &open);
+    ff_intent_t fab = {.kind = FF_INTENT_INBOX_NEW, .u = {0}};
+    ff_shell_intent(&H.shell, &fab);
+    (void)ff_shell_tick(&H.shell, H.clk.t);
+    TEST_ASSERT_EQUAL_INT(FF_SIG_SUB_POPUP, ff_shell_view(&H.shell)->signals.subview);
+}
+
+static void s24d_open_rally(void)
+{
+    ff_intent_t pr = {.kind = FF_INTENT_INBOX_POPUP_RALLY, .u = {0}};
+    ff_shell_intent(&H.shell, &pr);
+    (void)ff_shell_tick(&H.shell, H.clk.t);
+    TEST_ASSERT_EQUAL_INT(FF_SIG_SUB_RALLY, ff_shell_view(&H.shell)->signals.subview);
+}
+
+/* AC5 — the popup Pulse row sends a PULSE to the scope (decoded TYPE + dest
+ * NODE, not "a send happened"), pushes the OUT feed item, and pops back to
+ * the thread. */
+static void S24_AC5_popup_pulse_sends_to_scope_and_closes(void)
+{
+    s22_connect_shell();
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, true));
+    s24d_open_popup(DANA);
+
+    size_t const tx_before = P.tx_len;
+    ff_intent_t pp = {.kind = FF_INTENT_INBOX_POPUP_PULSE, .u = {0}};
+    ff_shell_intent(&H.shell, &pp);
+    TEST_ASSERT_GREATER_THAN_size_t(tx_before, P.tx_len);
+    TEST_ASSERT_EQUAL_UINT32(DANA, decode_packet_to(P.tx + tx_before, P.tx_len - tx_before));
+    TEST_ASSERT_EQUAL_INT(FF_PROTO_TYPE_PULSE, decode_packet_private(P.tx + tx_before, P.tx_len - tx_before, NULL));
+
+    (void)ff_shell_tick(&H.shell, H.clk.t);
+    TEST_ASSERT_EQUAL_INT(FF_SIG_SUB_THREAD, ff_shell_view(&H.shell)->signals.subview);
+    ff_feed_item_t const *it = ff_feed_at(ff_shell_feed(&H.shell), 0);
+    TEST_ASSERT_EQUAL(FEED_PULSE, it->kind);
+    TEST_ASSERT_EQUAL(FEED_DIR_OUT, it->dir);
+    TEST_ASSERT_EQUAL_UINT32(DANA, it->to_node);
+}
+
+/* AC5 — the popup Compose row opens the composer with TO = the scope and
+ * drops the sub-view to THREAD (under the modal). */
+static void S24_AC5_popup_compose_opens_composer_at_scope(void)
+{
+    s22_connect_shell();
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, true));
+    s24d_open_popup(DANA);
+
+    ff_intent_t pc = {.kind = FF_INTENT_INBOX_POPUP_COMPOSE, .u = {0}};
+    ff_shell_intent(&H.shell, &pc);
+    (void)ff_shell_tick(&H.shell, H.clk.t);
+    TEST_ASSERT_EQUAL(FF_APP_FACE_COMPOSE, ff_shell_view(&H.shell)->active_face);
+    TEST_ASSERT_EQUAL_UINT32(DANA, ff_shell_compose_to_node(&H.shell));
+    /* Opening the composer LEAVES the Signals face, which resets the
+     * sub-view to INBOX (the standing "a fresh entry to Signals lands on
+     * the inbox" rule — the same behavior SIG_COMPOSE has): backing out of
+     * the composer returns to the inbox, not a stale thread. */
+    TEST_ASSERT_EQUAL_INT(FF_SIG_SUB_INBOX, ff_shell_view(&H.shell)->signals.subview);
+}
+
+/* AC5 — the popup Rally row opens the Rally sub-view. */
+static void S24_AC5_popup_rally_opens_rally_screen(void)
+{
+    s22_connect_shell();
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, true));
+    s24d_open_popup(DANA);
+    s24d_open_rally();
+}
+
+/* AC6 — the WHERE list is the pack's landmarks (real names, in pack order),
+ * On Me enabled iff my position is known. */
+static void S24_AC6_rally_places_from_pack(void)
+{
+    s22_connect_shell();
+    TEST_ASSERT_EQUAL_INT(0, ff_shell_load_pack(&H.shell, PACK_JSON_RALLY, sizeof(PACK_JSON_RALLY) - 1u));
+    ff_shell_set_my_pos(&H.shell, (ff_latlon_t){39.0, -82.0});
+    s24d_open_popup(0u); /* crew scope */
+    s24d_open_rally();
+
+    ff_app_rally_t const *r = &ff_shell_view(&H.shell)->signals.rally;
+    TEST_ASSERT_TRUE(r->on_me_ok);
+    TEST_ASSERT_EQUAL_UINT8(2, r->place_count);
+    TEST_ASSERT_EQUAL_STRING("Main Stage", r->place_names[0]);
+}
+
+/* AC6 — On Me disabled without a fix encodes NOTHING: with no pack and no
+ * my_pos, the only "place" is a disabled On Me. Selecting it is refused and
+ * Send transmits nothing (never a fabricated {0,0}). Member scope so a
+ * first tap WOULD send if anything were resolvable. */
+static void S24_AC6_on_me_disabled_encodes_nothing(void)
+{
+    s22_connect_shell();
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, true));
+    /* No pack, no my_pos. */
+    s24d_open_popup(DANA);
+    s24d_open_rally();
+
+    ff_app_rally_t const *r = &ff_shell_view(&H.shell)->signals.rally;
+    TEST_ASSERT_FALSE(r->on_me_ok);
+    TEST_ASSERT_EQUAL_UINT8(0, r->place_count);
+    TEST_ASSERT_FALSE(r->can_send);
+
+    ff_intent_t selp = {.kind = FF_INTENT_RALLY_SELECT_PLACE, .u = {0}};
+    selp.u.rally_idx = 0u; /* On Me */
+    ff_shell_intent(&H.shell, &selp); /* rejected — row disabled */
+
+    size_t const tx_before = P.tx_len;
+    ff_intent_t send = {.kind = FF_INTENT_RALLY_SEND, .u = {0}};
+    ff_shell_intent(&H.shell, &send);
+    TEST_ASSERT_EQUAL_size_t(tx_before, P.tx_len); /* nothing encoded */
+}
+
+/* AC6 — the WHEN rides in the rally NAME. A member rally to "Main Stage"
+ * with WHEN +15m sends TYPE RALLY, addressed to the member, whose wire
+ * name is exactly "Main Stage +15m" and whose position unprojects back to
+ * the landmark's own lat/lon. */
+static void S24_AC6_when_rides_in_the_name(void)
+{
+    s22_connect_shell();
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, true));
+    TEST_ASSERT_EQUAL_INT(0, ff_shell_load_pack(&H.shell, PACK_JSON_RALLY, sizeof(PACK_JSON_RALLY) - 1u));
+    s24d_open_popup(DANA);
+    s24d_open_rally();
+
+    ff_intent_t sp = {.kind = FF_INTENT_RALLY_SELECT_PLACE, .u = {0}};
+    sp.u.rally_idx = 1u; /* first landmark = Main Stage */
+    ff_shell_intent(&H.shell, &sp);
+    ff_intent_t cw = {.kind = FF_INTENT_RALLY_CYCLE_WHEN, .u = {0}};
+    ff_shell_intent(&H.shell, &cw); /* Now -> +15m */
+
+    size_t const tx_before = P.tx_len;
+    ff_intent_t send = {.kind = FF_INTENT_RALLY_SEND, .u = {0}};
+    ff_shell_intent(&H.shell, &send); /* member: first tap sends */
+    TEST_ASSERT_GREATER_THAN_size_t(tx_before, P.tx_len);
+    TEST_ASSERT_EQUAL_UINT32(DANA, decode_packet_to(P.tx + tx_before, P.tx_len - tx_before));
+    ff_proto_msg_t msg;
+    TEST_ASSERT_EQUAL_INT(FF_PROTO_TYPE_RALLY, decode_packet_private(P.tx + tx_before, P.tx_len - tx_before, &msg));
+    TEST_ASSERT_EQUAL_STRING("Main Stage +15m", msg.body.rally.name);
+    /* The landmark's position round-trips through unproject. */
+    TEST_ASSERT_DOUBLE_WITHIN(0.001, 39.001, msg.body.rally.pos.lat);
+    TEST_ASSERT_DOUBLE_WITHIN(0.001, -82.001, msg.body.rally.pos.lon);
+
+    (void)ff_shell_tick(&H.shell, H.clk.t);
+    TEST_ASSERT_EQUAL_INT(FF_SIG_SUB_THREAD, ff_shell_view(&H.shell)->signals.subview);
+}
+
+/* AC6 — the truncate rule: a place name too long to fit alongside the WHEN
+ * suffix is truncated on the PLACE, never the suffix. The proxy this kills:
+ * a naive truncate of the whole "<place> +30m" string to 24 bytes would
+ * clip the "+30m" tag; here the sent name must be <= 24 bytes, END with
+ * " +30m" intact, and begin with the (truncated) landmark prefix. */
+static void S24_AC6_when_truncates_place_never_suffix(void)
+{
+    s22_connect_shell();
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, true));
+    TEST_ASSERT_EQUAL_INT(0, ff_shell_load_pack(&H.shell, PACK_JSON_RALLY, sizeof(PACK_JSON_RALLY) - 1u));
+    s24d_open_popup(DANA);
+    s24d_open_rally();
+
+    ff_intent_t sp = {.kind = FF_INTENT_RALLY_SELECT_PLACE, .u = {0}};
+    sp.u.rally_idx = 2u; /* the long-named landmark */
+    ff_shell_intent(&H.shell, &sp);
+    ff_intent_t cw = {.kind = FF_INTENT_RALLY_CYCLE_WHEN, .u = {0}};
+    ff_shell_intent(&H.shell, &cw); /* Now -> +15m */
+    ff_shell_intent(&H.shell, &cw); /* +15m -> +30m */
+
+    size_t const tx_before = P.tx_len;
+    ff_intent_t send = {.kind = FF_INTENT_RALLY_SEND, .u = {0}};
+    ff_shell_intent(&H.shell, &send);
+    TEST_ASSERT_GREATER_THAN_size_t(tx_before, P.tx_len);
+    ff_proto_msg_t msg;
+    TEST_ASSERT_EQUAL_INT(FF_PROTO_TYPE_RALLY, decode_packet_private(P.tx + tx_before, P.tx_len - tx_before, &msg));
+    size_t const nl = strlen(msg.body.rally.name);
+    TEST_ASSERT_LESS_OR_EQUAL_UINT((unsigned)FF_PROTO_RALLY_NAME_MAX, (unsigned)nl); /* fits the wire */
+    TEST_ASSERT_EQUAL_STRING(" +30m", msg.body.rally.name + (nl - 5u));             /* suffix intact */
+    TEST_ASSERT_EQUAL_INT(0, strncmp(msg.body.rally.name, "RallyPoint", 10));       /* place, truncated */
+}
+
+/* AC6 — a crew-wide rally ARMS on the first Send tap and sends on the
+ * second (S22 AC4 armed-confirm precedent); the confirm is visible; the
+ * send pops back to the thread. */
+static void S24_AC6_crew_rally_arms_then_sends(void)
+{
+    s22_connect_shell();
+    ff_shell_set_my_pos(&H.shell, (ff_latlon_t){39.0, -82.0});
+    s24d_open_popup(0u); /* crew scope */
+    s24d_open_rally();
+
+    size_t const tx_before = P.tx_len;
+    ff_intent_t send = {.kind = FF_INTENT_RALLY_SEND, .u = {0}};
+    ff_shell_intent(&H.shell, &send); /* first tap: arms, no send */
+    TEST_ASSERT_EQUAL_size_t(tx_before, P.tx_len);
+    (void)ff_shell_tick(&H.shell, H.clk.t);
+    TEST_ASSERT_TRUE(ff_shell_view(&H.shell)->signals.rally.confirm_armed);
+
+    ff_shell_intent(&H.shell, &send); /* second tap within the window: sends */
+    TEST_ASSERT_GREATER_THAN_size_t(tx_before, P.tx_len);
+    TEST_ASSERT_EQUAL_UINT32(MC_ADDR_BROADCAST, decode_packet_to(P.tx + tx_before, P.tx_len - tx_before));
+    TEST_ASSERT_EQUAL_INT(FF_PROTO_TYPE_RALLY, decode_packet_private(P.tx + tx_before, P.tx_len - tx_before, NULL));
+    (void)ff_shell_tick(&H.shell, H.clk.t);
+    TEST_ASSERT_EQUAL_INT(FF_SIG_SUB_THREAD, ff_shell_view(&H.shell)->signals.subview);
+}
+
+/* AC8 — the popup and Rally screen are OPAQUE in the render key: churn in
+ * the conversations beneath them (a fresh inbound feed item) does NOT dirty
+ * the frame, so the overlay's controls are never rebuilt/destroyed under a
+ * finger. A genuine change (opening the Rally screen) still dirties. */
+static void S24_AC8_popup_and_rally_opaque_to_feed_churn(void)
+{
+    s22_connect_shell();
+    H.ev = ff_shell_events(&H.shell); /* s22_connect_shell does not bind the inject seam */
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, true));
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, KEV_ID, true)); /* a paired sender so its traffic reaches the feed */
+    s24d_open_popup(DANA);
+
+    /* A settled popup: a no-op tick is clean. */
+    TEST_ASSERT_FALSE(ff_shell_tick(&H.shell, H.clk.t));
+    /* A fresh inbound (broadcast) item in the CREW conversation beneath —
+     * a genuine inbox change — must not dirty the OPAQUE popup. */
+    inject_text(KEV_ID, "beneath");
+    TEST_ASSERT_FALSE(ff_shell_tick(&H.shell, H.clk.t));
+
+    /* Opening the Rally screen is a real change (dirties). */
+    ff_intent_t pr = {.kind = FF_INTENT_INBOX_POPUP_RALLY, .u = {0}};
+    ff_shell_intent(&H.shell, &pr);
+    TEST_ASSERT_TRUE(ff_shell_tick(&H.shell, H.clk.t));
+    /* The Rally screen is opaque to the same churn. */
+    inject_text(KEV_ID, "again");
+    TEST_ASSERT_FALSE(ff_shell_tick(&H.shell, H.clk.t));
+}
+
+/* The demo-loopback SEND SEAM (the mechanism the device demo build wires):
+ * with no accepting sender a broadcast pulse is refused and no OUT item
+ * appears; installing an accept-every-send sender via ff_shell_set_sender
+ * makes the OUT item appear — exactly what the CONFIG_FF_DEMO_MODE loopback
+ * does on device. */
+static int s24d_loop_send_text(void *c, uint32_t d, char const *u)
+{
+    (void)c;
+    (void)d;
+    (void)u;
+    return 0;
+}
+static int s24d_loop_send_private(void *c, uint32_t d, uint8_t const *p, size_t n)
+{
+    (void)c;
+    (void)d;
+    (void)p;
+    (void)n;
+    return 0;
+}
+static void S24_demo_loopback_seam_makes_out_items_appear(void)
+{
+    harness_init(100000u, false); /* NO transport: the default sender refuses */
+    inject_my_info(MY_ID);
+
+    ff_intent_t pulse = {.kind = FF_INTENT_SIG_PULSE, .u = {0}};
+    ff_shell_intent(&H.shell, &pulse);
+    TEST_ASSERT_EQUAL_UINT8(0, ff_feed_count(ff_shell_feed(&H.shell))); /* refused -> no OUT item */
+
+    ff_wiring_sender_t loop = {s24d_loop_send_text, s24d_loop_send_private, NULL};
+    ff_shell_set_sender(&H.shell, loop);
+    ff_shell_intent(&H.shell, &pulse);
+    TEST_ASSERT_EQUAL_UINT8(1, ff_feed_count(ff_shell_feed(&H.shell))); /* accepted -> OUT item appears */
+    ff_feed_item_t const *it = ff_feed_at(ff_shell_feed(&H.shell), 0);
+    TEST_ASSERT_EQUAL(FEED_PULSE, it->kind);
+    TEST_ASSERT_EQUAL(FEED_DIR_OUT, it->dir);
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -4632,6 +4947,17 @@ int main(void)
     RUN_TEST(S24_AC8_inbox_key_same_bucket_age_tick_is_clean);
     RUN_TEST(S24_AC8_presence_age_keys_rendered_bucket_only);
     RUN_TEST(S24_AC3_inbox_intents_are_inert_under_a_takeover);
+    /* S24 slice d — popup / rally / opacity / demo-loopback seam. */
+    RUN_TEST(S24_AC5_popup_pulse_sends_to_scope_and_closes);
+    RUN_TEST(S24_AC5_popup_compose_opens_composer_at_scope);
+    RUN_TEST(S24_AC5_popup_rally_opens_rally_screen);
+    RUN_TEST(S24_AC6_rally_places_from_pack);
+    RUN_TEST(S24_AC6_on_me_disabled_encodes_nothing);
+    RUN_TEST(S24_AC6_when_rides_in_the_name);
+    RUN_TEST(S24_AC6_when_truncates_place_never_suffix);
+    RUN_TEST(S24_AC6_crew_rally_arms_then_sends);
+    RUN_TEST(S24_AC8_popup_and_rally_opaque_to_feed_churn);
+    RUN_TEST(S24_demo_loopback_seam_makes_out_items_appear);
 
     RUN_TEST(S24c_AC4_thread_projection_builds_messages_both_ways);
     RUN_TEST(S24c_AC4_live_arrival_into_open_thread_marks_read_only_when_visible);

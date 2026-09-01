@@ -348,9 +348,11 @@ void ff_scr_nav_build(ff_app_state_t const *state)
      * ff_shell.c's THREAD key reduction; drawing the whole-face unread
      * badge here would put a pixel on screen that key correctly refuses
      * to track). The picker keeps them (slice-b behavior, unchanged). */
-    bool const sig_thread_up =
-        (state->active_face == FF_APP_FACE_SIGNALS && state->signals.subview == FF_SIG_SUB_THREAD);
-    if (!sig_thread_up) {
+    bool const sig_overlay_up =
+        (state->active_face == FF_APP_FACE_SIGNALS &&
+         (state->signals.subview == FF_SIG_SUB_THREAD || state->signals.subview == FF_SIG_SUB_POPUP ||
+          state->signals.subview == FF_SIG_SUB_RALLY));
+    if (!sig_overlay_up) {
         nav_build_page_dots(puck, tile_idx, ff_scr_signals_unread_count(&state->signals)); /* S22b */
     }
 

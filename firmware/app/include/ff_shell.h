@@ -200,6 +200,8 @@
 
 #include "fp_pack.h"
 
+#include "ff_wiring.h" /* ff_wiring_sender_t — the outbound send vtable ff_shell_set_sender overrides */
+
 #include "mc_client.h"
 
 #ifdef __cplusplus
@@ -726,6 +728,28 @@ void ff_shell_set_my_pos(ff_shell_t *sh, ff_latlon_t pos);
 
 /** ff_shell_clear_my_pos — go back to "I do not know where I am". */
 void ff_shell_clear_my_pos(ff_shell_t *sh);
+
+/**
+ * ff_shell_set_sender — override the shell's outbound `ff_wiring_sender_t`
+ * (the vtable every send — canned reply, pulse, rally, composed text —
+ * goes through). No-op if `sh` is NULL.
+ *
+ * `ff_shell_init` binds this to the real `mc_client_t` by default (the
+ * mc_send_text/mc_send_private wrappers `ff_wiring_init` supplies), which
+ * is what a field build keeps. It exists for two callers:
+ *  - a target with no mesh transport that still wants sends to be VISIBLE
+ *    — the CONFIG_FF_DEMO_MODE loopback sender (ff_demo.h), whose
+ *    send_text/send_private accept (return 0) so the OUT feed item is
+ *    pushed and the user's own message/pulse/rally shows in the thread.
+ *    This echoes the user's REAL outbound as an OUT item; it fabricates no
+ *    incoming content, and is wired only in clearly-labelled demo mode.
+ *  - a test injecting a recording mock (the ff_wiring_init_with_sender
+ *    seam, reached at the shell layer).
+ *
+ * The sender's `ctx` and function pointers must outlive the shell (they
+ * are stored by value into the shell's wiring context).
+ */
+void ff_shell_set_sender(ff_shell_t *sh, ff_wiring_sender_t sender);
 
 /**
  * ff_shell_set_heading — compass heading, degrees [0, 360), 0 = north.

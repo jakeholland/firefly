@@ -55,6 +55,12 @@ _Static_assert(FF_COMPOSE_EXTRA_MAX == 280,
 #define FF_SIG_RALLY_LANDMARK_NEAR_M 120.0f
 #define FF_SIG_RALLY_DEFAULT_NAME "MY SPOT"
 
+/* S24 slice d — the Rally WHERE list projects at most this many festpack
+ * landmark rows. Pinned to FP_MAX_LANDMARKS so a festpack cap bump fails
+ * the build here rather than silently truncating the view's array. */
+_Static_assert(FF_APP_RALLY_MAX_PLACES >= FP_MAX_LANDMARKS,
+               "FF_APP_RALLY_MAX_PLACES must hold every festpack landmark");
+
 typedef struct {
     /* --- injected config --------------------------------------------- */
     ff_clock_t const *clock;
@@ -128,6 +134,14 @@ typedef struct {
      * (`ff_sigview_set_rally_confirm_armed`) each tick. */
     bool     sig_rally_armed;
     uint32_t sig_rally_armed_ms;
+
+    /* S24 slice d — the Rally sub-view's persistent WHERE/WHEN selection
+     * (the view is memset each tick, so like sig_subview these live in the
+     * shell). `sig_rally_sel`: 0 = On Me, 1..N = the (sel-1)-th displayable
+     * landmark. Reset to a selectable default when the Rally screen opens
+     * (FF_INTENT_INBOX_POPUP_RALLY). */
+    uint8_t         sig_rally_sel;
+    ff_rally_when_t sig_rally_when;
 
     /* The composer's destination, resolved when FF_INTENT_OPEN_COMPOSE
      * pushed the modal (S16 slice c1). 0 = broadcast ("TO: EVERYONE").
@@ -1088,11 +1102,20 @@ static bool shell_member_paired(shell_t const *sh, uint32_t node_id)
  * note); this only carries the raw model. `sh` is non-const (it may
  * downgrade its own holders on a failed re-validation) unlike the other
  * projectors — see its caller. */
+/* Defined alongside the Rally send helpers below (it uses them); forward-
+ * declared here for shell_project_signals. */
+static void shell_project_rally(shell_t *sh, ff_app_rally_t *out);
+
 static void shell_project_signals(shell_t *sh, uint32_t now_ms, ff_app_signals_t *out)
 {
-    /* Re-validate an open MEMBER thread (node 0 = CREW, always valid). */
-    if (sh->sig_subview == FF_SIG_SUB_THREAD && sh->sig_thread_node != 0u &&
-        !shell_member_paired(sh, sh->sig_thread_node)) {
+    /* Re-validate an open MEMBER scope (node 0 = CREW, always valid). The
+     * thread, and the popup / rally screens layered over it, all scope to
+     * `sig_thread_node`; a member who unpaired drops the whole stack back
+     * to the inbox honestly. */
+    bool const scoped_subview = (sh->sig_subview == FF_SIG_SUB_THREAD ||
+                                 sh->sig_subview == FF_SIG_SUB_POPUP ||
+                                 sh->sig_subview == FF_SIG_SUB_RALLY);
+    if (scoped_subview && sh->sig_thread_node != 0u && !shell_member_paired(sh, sh->sig_thread_node)) {
         sh->sig_subview     = FF_SIG_SUB_INBOX;
         sh->sig_thread_node = 0u;
     }
@@ -1106,8 +1129,11 @@ static void shell_project_signals(shell_t *sh, uint32_t now_ms, ff_app_signals_t
      * tick's badges coherent with it). Gated on the thread actually
      * being VISIBLE: under a modal (compose/settings/map) or a flare
      * takeover nothing here is on glass and nothing is marked read. */
-    if (sh->sig_subview == FF_SIG_SUB_THREAD && sh->view.active_face == FF_APP_FACE_SIGNALS &&
-        !sh->flare.takeover_active) {
+    /* THREAD and the POPUP over it both render the thread (the popup dims
+     * it behind the action rows), so arrivals into either clear their badge
+     * debt; the RALLY screen does not show the thread, so it does not. */
+    bool const thread_visible = (sh->sig_subview == FF_SIG_SUB_THREAD || sh->sig_subview == FF_SIG_SUB_POPUP);
+    if (thread_visible && sh->view.active_face == FF_APP_FACE_SIGNALS && !sh->flare.takeover_active) {
         (void)ff_inbox_mark_thread_read(&sh->feed,
                                         (sh->sig_thread_node == 0u) ? FF_CONV_CREW : FF_CONV_MEMBER,
                                         sh->sig_thread_node);
@@ -1117,24 +1143,32 @@ static void shell_project_signals(shell_t *sh, uint32_t now_ms, ff_app_signals_t
 
     out->subview     = sh->sig_subview;
     out->thread_node = sh->sig_thread_node;
-    if (sh->sig_subview == FF_SIG_SUB_THREAD) {
+    /* Scope display name — needed by THREAD (header), POPUP (the "SEND TO
+     * <scope>" line) and kept uniform for RALLY (harmless). Looked up at
+     * projection time (the compose to_name precedent) so a rename mid-scope
+     * is reflected; a paired member whose name never arrived projects "". */
+    if (scoped_subview) {
         if (sh->sig_thread_node == 0u) {
             shell_copy_str(out->thread_name, sizeof(out->thread_name), "CREW");
         } else {
-            /* Looked up at projection time (the compose to_name precedent)
-             * so a NodeInfo rename mid-thread is reflected; a paired member
-             * whose name never arrived projects "" and renders honestly. */
             ff_crew_member_t const *m = ff_crew_find(&sh->crew, sh->sig_thread_node);
             shell_copy_str(out->thread_name, sizeof(out->thread_name), (m != NULL) ? m->name : "");
             out->thread_color_idx = (m != NULL) ? m->color_idx : 0u;
         }
-
-        /* S24 slice (c) — the open thread's messages, built from the same
-         * sources as the conversation list (mark-read of live arrivals
-         * already ran above, before the inbox build). */
+    }
+    if (thread_visible) {
+        /* The open thread's messages (mark-read of live arrivals already
+         * ran above, before the inbox build). */
         ff_inbox_thread_build(&out->thread, &sh->feed, &sh->crew,
                               (sh->sig_thread_node == 0u) ? FF_CONV_CREW : FF_CONV_MEMBER,
                               sh->sig_thread_node, now_ms);
+    }
+
+    /* S24 slice (d) — the Rally sub-view's projected WHERE/WHEN/Send state.
+     * Built only while the Rally screen is up (like the thread above); the
+     * `out->rally` struct is otherwise the memset-zeroed default. */
+    if (sh->sig_subview == FF_SIG_SUB_RALLY) {
+        shell_project_rally(sh, &out->rally);
     }
 
     /* S22(d) send machinery, kept for slice (d): re-validate the member
@@ -1673,6 +1707,23 @@ static void shell_render_key(ff_app_state_t const *v, ff_app_state_t *key)
         }
     }
 
+    /* S24 slice (d) — the action POPUP and the Rally screen are OPAQUE
+     * overlays in the key (AC8, the flare/thread precedent). While either
+     * is up it IS the interactive surface, and the (dimmed) thread or
+     * inbox beneath it changes no pixel the overlay's own controls sit on
+     * — so a live feed item, an aging row or a presence flip beneath must
+     * not dirty the key, rebuild the tree, and destroy a popup row / Send
+     * button under the finger. Mask those churny sources; the overlay's
+     * OWN rendered facts survive in the key verbatim (the memcpy above):
+     * the popup's scope label reads signals.thread_name/thread_node/
+     * thread_color_idx (top-level, untouched here), and the Rally screen
+     * its projected `signals.rally` struct (untouched). The subview itself
+     * is in the key too, so opening/closing the overlay still dirties. */
+    if (v->signals.subview == FF_SIG_SUB_POPUP || v->signals.subview == FF_SIG_SUB_RALLY) {
+        memset(&key->signals.inbox, 0, sizeof(key->signals.inbox));
+        memset(&key->signals.thread, 0, sizeof(key->signals.thread));
+    }
+
     /* #flare-repeat-dismiss — the takeover is OPAQUE in the render key.
      *
      * While a takeover is up it is the ONLY thing rendered: both
@@ -1776,6 +1827,8 @@ int ff_shell_init(ff_shell_t *sh_pub, ff_shell_cfg_t const *cfg)
     ff_route_init(&sh->route);
     sh->sig_target_kind = FF_TARGET_WHOLE_CREW; /* S22 slice b — default target */
     sh->sig_target_node = 0u;
+    sh->sig_rally_sel   = 0u; /* S24 slice d — On Me by default (projection re-validates) */
+    sh->sig_rally_when  = FF_RALLY_WHEN_NOW;
     ff_t9_reset(&sh->compose_draft); /* S16 slice c3 */
     /* S08 addendum — reset site #1 (init). memset zeroed compose_extra_n,
      * so no pack words are bound yet; a later ff_shell_load_pack collects
@@ -2134,6 +2187,205 @@ static bool shell_rally_place(shell_t const *sh, ff_latlon_t *out_pos, char cons
     return true;
 }
 
+/* ---------------------------------------------------------------------
+ * S24 slice d — the Rally screen's WHERE list + WHEN-in-name send.
+ * ------------------------------------------------------------------- */
+
+/* A landmark is a Rally WHERE row iff it has a known position AND a name —
+ * the same displayable/sendable filter used for BOTH the projected row
+ * list and the send-time resolution, so a `sel` index can never diverge
+ * between what the screen shows and what the shell sends. */
+static bool shell_rally_landmark_displayable(fp_landmark_t const *lm)
+{
+    return lm != NULL && lm->has_pos && lm->name[0] != '\0';
+}
+
+/* Resolve the `idx`-th displayable landmark (0-based) to its wire position
+ * (unprojected from the pack origin) and name. Returns false if there is
+ * no pack, no known origin, or fewer than idx+1 displayable landmarks. */
+static bool shell_rally_landmark_at(shell_t const *sh, uint8_t idx, ff_latlon_t *out_pos,
+                                    char const **out_name)
+{
+    if (!sh->pack_loaded || sh->pack == NULL || !sh->pack->origin_known) {
+        return false;
+    }
+    uint8_t seen = 0;
+    for (uint8_t i = 0; i < sh->pack->n_landmarks; ++i) {
+        fp_landmark_t const *lm = &sh->pack->landmarks[i];
+        if (!shell_rally_landmark_displayable(lm)) {
+            continue;
+        }
+        if (seen == idx) {
+            ff_geo_unproject(sh->pack->origin, lm->east_m, lm->north_m, out_pos);
+            *out_name = lm->name;
+            return true;
+        }
+        seen++;
+    }
+    return false;
+}
+
+/* The WHEN suffix that rides in the rally NAME (S24 AC6): NOW appends
+ * nothing; +15m/+30m append a fixed short tag. Kept well under
+ * FF_PROTO_RALLY_NAME_MAX so a place name always has room. */
+static char const *shell_rally_when_suffix(ff_rally_when_t when)
+{
+    switch (when) {
+    case FF_RALLY_WHEN_15: return " +15m";
+    case FF_RALLY_WHEN_30: return " +30m";
+    case FF_RALLY_WHEN_NOW:
+    default: return "";
+    }
+}
+
+/* The WHEN chip's echo word ("Now" / "+15m" / "+30m"). */
+static char const *shell_rally_when_echo(ff_rally_when_t when)
+{
+    switch (when) {
+    case FF_RALLY_WHEN_15: return "+15m";
+    case FF_RALLY_WHEN_30: return "+30m";
+    case FF_RALLY_WHEN_NOW:
+    default: return "Now";
+    }
+}
+
+/* Compose the wire rally NAME from a base place name + the WHEN suffix,
+ * into `out` (capacity FF_PROTO_RALLY_NAME_MAX + 1). The PLACE is truncated
+ * to fit, the SUFFIX never (S24 AC6: "truncate the PLACE, never the time
+ * suffix"). Returns false — the caller sends NOTHING — if the base place is
+ * empty, or the budget cannot hold the suffix plus at least one place byte
+ * (a misleading name is never sent). */
+static bool shell_rally_compose_name(char const *place, ff_rally_when_t when, char *out, size_t out_cap)
+{
+    if (place == NULL || place[0] == '\0' || out_cap < (size_t)FF_PROTO_RALLY_NAME_MAX + 1u) {
+        return false;
+    }
+    char const *suffix = shell_rally_when_suffix(when);
+    size_t const suffix_len = strlen(suffix);
+    /* The suffix must leave room for at least one place byte. */
+    if (suffix_len + 1u > (size_t)FF_PROTO_RALLY_NAME_MAX) {
+        return false;
+    }
+    size_t const place_budget = (size_t)FF_PROTO_RALLY_NAME_MAX - suffix_len;
+    size_t place_len = strlen(place);
+    if (place_len > place_budget) {
+        place_len = place_budget; /* truncate the PLACE only */
+    }
+    memcpy(out, place, place_len);
+    memcpy(out + place_len, suffix, suffix_len + 1u); /* includes the NUL */
+    return true;
+}
+
+/* Resolve the CURRENT Rally selection to its (position, base name) — On Me
+ * via shell_rally_place, else the selected landmark. Returns false (nothing
+ * sendable) when On Me is picked with an unknown position, or a landmark
+ * index no longer resolves. */
+static bool shell_rally_resolve_sel(shell_t const *sh, ff_latlon_t *out_pos, char const **out_name)
+{
+    if (sh->sig_rally_sel == 0u) {
+        return shell_rally_place(sh, out_pos, out_name); /* On Me */
+    }
+    return shell_rally_landmark_at(sh, (uint8_t)(sh->sig_rally_sel - 1u), out_pos, out_name);
+}
+
+/* Is a thread (or the popup / rally screen OVER it) the visible Signals
+ * scope? The open thread IS the send scope (S24), and the popup and rally
+ * sub-views sit over that same thread, so all three re-assert the scope
+ * from `sig_thread_node`. */
+static bool shell_scope_thread_open(shell_t const *sh)
+{
+    return sh->route.base == FF_APP_FACE_SIGNALS && sh->route.modal == FF_APP_FACE_NONE &&
+           (sh->sig_subview == FF_SIG_SUB_THREAD || sh->sig_subview == FF_SIG_SUB_POPUP ||
+            sh->sig_subview == FF_SIG_SUB_RALLY);
+}
+
+/* Encode + send a PULSE to the CURRENT resolved scope, pushing the OUT
+ * feed item on an accepted send (S22(d) pulse, factored so the 1:1 chip and
+ * the popup Pulse row share one send path). No-op on a stale member scope
+ * (shell_sig_dest false) or a missing sender. Does NOT touch the target/
+ * arm state — the caller owns that. */
+static void shell_pulse_to_scope(shell_t *sh)
+{
+    uint32_t dest = MC_ADDR_BROADCAST;
+    if (!shell_sig_dest(sh, &dest)) return; /* stale member scope: send nothing */
+    uint8_t buf[FF_PROTO_MAX_PAYLOAD];
+    int const n = ff_proto_encode_pulse(buf, sizeof buf);
+    if (n > 0 && sh->wiring.sender.send_private != NULL) {
+        int const rc = sh->wiring.sender.send_private(sh->wiring.sender.ctx, dest, buf, (size_t)n);
+        if (rc == 0) {
+            /* My own send lands in the feed (FEED_DIR_OUT) so the thread
+             * shows both sides. Accepted sends only; a refused one
+             * fabricates nothing. */
+            ff_wiring_push_outgoing(&sh->wiring, FEED_PULSE, dest, NULL);
+        }
+    }
+}
+
+/* Re-assert the S22(d) send holders from the open thread's scope (used
+ * where "the open thread IS the send scope" applies — the thread chips and
+ * the popup rows). Node 0 = whole crew, else that member. */
+static void shell_scope_from_thread(shell_t *sh)
+{
+    sh->sig_target_kind = (sh->sig_thread_node == 0u) ? FF_TARGET_WHOLE_CREW : FF_TARGET_MEMBER;
+    sh->sig_target_node = sh->sig_thread_node;
+}
+
+/* Project the Rally sub-view's WHERE/WHEN/Send state (S24 AC6). Re-derives
+ * the SAME displayable-landmark list the send resolves against, so the rows
+ * the screen shows and the place a `sel` sends to can never diverge. Also
+ * re-validates `sig_rally_sel` (a place list that shrank, or On Me becoming
+ * unusable, must not leave a stale/dangling selection) and composes the
+ * Send echo from the same resolution the send uses. */
+static void shell_project_rally(shell_t *sh, ff_app_rally_t *out)
+{
+    out->on_me_ok = sh->my_pos_ok;
+
+    /* The displayable landmark rows, in pack order. */
+    uint8_t n = 0;
+    if (sh->pack_loaded && sh->pack != NULL && sh->pack->origin_known) {
+        for (uint8_t i = 0; i < sh->pack->n_landmarks && n < FF_APP_RALLY_MAX_PLACES; ++i) {
+            fp_landmark_t const *lm = &sh->pack->landmarks[i];
+            if (!shell_rally_landmark_displayable(lm)) {
+                continue;
+            }
+            shell_copy_str(out->place_names[n], sizeof(out->place_names[n]), lm->name);
+            n++;
+        }
+    }
+    out->place_count = n;
+
+    /* Re-validate the selection against what is actually selectable now:
+     * a landmark index past the list, or On Me while my position is
+     * unknown, falls back to the first usable option (On Me if usable,
+     * else the first landmark, else 0 with nothing sendable). */
+    uint8_t sel = sh->sig_rally_sel;
+    if (sel > n) {
+        sel = 0u;
+    }
+    if (sel == 0u && !out->on_me_ok) {
+        sel = (n > 0u) ? 1u : 0u;
+    }
+    sh->sig_rally_sel = sel;
+    out->sel = sel;
+    out->when = sh->sig_rally_when;
+
+    /* The Send echo — composed from the SAME resolution the send uses, so
+     * the payload preview cannot disagree with the wire. */
+    ff_latlon_t pos;
+    char const *base = NULL;
+    out->can_send = shell_rally_resolve_sel(sh, &pos, &base);
+    if (out->can_send && base != NULL) {
+        shell_copy_str(out->echo_place, sizeof(out->echo_place), base);
+    } else {
+        out->echo_place[0] = '\0';
+    }
+    shell_copy_str(out->echo_when, sizeof(out->echo_when), shell_rally_when_echo(sh->sig_rally_when));
+
+    /* Crew-wide confirm display: mirror the shell's armed flag while the
+     * scope is the whole crew (a member rally sends on the first tap). */
+    out->confirm_armed = sh->sig_rally_armed && (sh->sig_target_kind == FF_TARGET_WHOLE_CREW);
+}
+
 /**
  * FF_INTENT_SETTING_SET write-through (S16 slice e, AC8).
  *
@@ -2316,16 +2568,30 @@ void ff_shell_intent(ff_shell_t *sh_pub, ff_intent_t const *in)
             sh->compose_to_node = 0u;
             return;
         }
-        /* S24 slice b — no modal to pop: BACK steps the Signals sub-view
-         * stack instead (thread/picker -> inbox; the spec's "44px
-         * escapes"). One flat step, not a history: the thread was
-         * reached FROM the inbox (directly or via the picker), and the
-         * inbox is the only honest place either escape lands. A BACK on
-         * the inbox itself — or on any other base face — stays a no-op,
-         * exactly as before. */
+        /* S24 — no modal to pop: BACK steps the Signals sub-view stack by
+         * exactly ONE level (the spec's "44px escapes"), following the
+         * open chain so each close lands where it was reached from:
+         *   RALLY  -> POPUP  (the popup it was opened from)
+         *   POPUP  -> THREAD (the dimmed thread it sits over)
+         *   THREAD -> INBOX
+         *   PICKER -> INBOX
+         * A BACK on the inbox itself — or on any other base face — stays a
+         * no-op. `sig_thread_node` is only cleared on the return to INBOX
+         * (POPUP/RALLY keep the scope so the thread underneath is intact).
+         * Any pending rally-to-crew confirm disarms on a back step (an
+         * intervening action, S22 AC4). */
         if (sh->route.base == FF_APP_FACE_SIGNALS && sh->sig_subview != FF_SIG_SUB_INBOX) {
-            sh->sig_subview     = FF_SIG_SUB_INBOX;
-            sh->sig_thread_node = 0u;
+            sh->sig_rally_armed = false;
+            switch (sh->sig_subview) {
+            case FF_SIG_SUB_RALLY:  sh->sig_subview = FF_SIG_SUB_POPUP; break;
+            case FF_SIG_SUB_POPUP:  sh->sig_subview = FF_SIG_SUB_THREAD; break;
+            case FF_SIG_SUB_THREAD:
+            case FF_SIG_SUB_PICKER:
+            default:
+                sh->sig_subview     = FF_SIG_SUB_INBOX;
+                sh->sig_thread_node = 0u;
+                break;
+            }
         }
         return;
 
@@ -2725,23 +2991,16 @@ void ff_shell_intent(ff_shell_t *sh_pub, ff_intent_t const *in)
 
     case FF_INTENT_INBOX_OPEN_THREAD:
     case FF_INTENT_INBOX_PICK:
-        /* S24 slice b — a conversation row tap (OPEN_THREAD) or a
-         * recipient-picker row tap (PICK). u.node_id is the conversation
-         * key: 0 = CREW, nonzero = that member. Both route to the THREAD
-         * sub-view today; they are DISTINCT intents so slice (d) can
-         * re-route PICK to the action popup by changing only this
-         * handler, never the picker screen (the seam note in
-         * ff_intent.h).
-         *
-         * Three things happen on the open transition, in order:
-         *  1. the send scope becomes the thread ("the open thread IS the
-         *     send scope" — S24's no-desync rule), through the S22(d)
-         *     holders the send machinery already reads;
-         *  2. the thread's items are marked read (S24 AC4's
-         *     mark-read-on-open half — ff_inbox_mark_thread_read touches
-         *     ONLY this conversation's items, so other badges survive);
-         *  3. the sub-view switches to THREAD (a stub render in this
-         *     slice; slice (c) fills it in).
+        /* S24 — a conversation row tap (OPEN_THREAD) or a recipient-picker
+         * row tap (PICK). u.node_id is the conversation key: 0 = CREW,
+         * nonzero = that member. Both establish the SAME open-thread scope
+         * (set the S22(d) send holders, mark that conversation read, set
+         * sig_thread_node), and differ ONLY in the sub-view they land on:
+         *  - OPEN_THREAD -> the THREAD screen (read the conversation).
+         *  - PICK        -> the action POPUP over that thread (the spec's
+         *    "then the action popup scoped to the pick" — slice d). The
+         *    thread scope is fully established either way, so closing the
+         *    popup reveals the real thread underneath.
          * A tap naming an unknown/unpaired member is rejected whole — no
          * scope change, no mark-read, no navigation (the roster, not the
          * tap, is trusted — the SIG_SELECT precedent). */
@@ -2750,30 +3009,151 @@ void ff_shell_intent(ff_shell_t *sh_pub, ff_intent_t const *in)
         if (in->u.node_id != 0u && !shell_member_paired(sh, in->u.node_id)) {
             return;
         }
-        if (in->u.node_id == 0u) {
-            sh->sig_target_kind = FF_TARGET_WHOLE_CREW;
-            sh->sig_target_node = 0u;
-            (void)ff_inbox_mark_thread_read(&sh->feed, FF_CONV_CREW, 0u);
-        } else {
-            sh->sig_target_kind = FF_TARGET_MEMBER;
-            sh->sig_target_node = in->u.node_id;
-            (void)ff_inbox_mark_thread_read(&sh->feed, FF_CONV_MEMBER, in->u.node_id);
-        }
+        sh->sig_thread_node = in->u.node_id;
+        shell_scope_from_thread(sh);
+        (void)ff_inbox_mark_thread_read(&sh->feed,
+                                        (in->u.node_id == 0u) ? FF_CONV_CREW : FF_CONV_MEMBER,
+                                        in->u.node_id);
         sh->view.signals.target_kind = sh->sig_target_kind;
         sh->view.signals.target_node = sh->sig_target_node;
-        sh->sig_subview     = FF_SIG_SUB_THREAD;
-        sh->sig_thread_node = in->u.node_id;
+        sh->sig_subview = (in->kind == FF_INTENT_INBOX_PICK) ? FF_SIG_SUB_POPUP : FF_SIG_SUB_THREAD;
         return;
 
     case FF_INTENT_INBOX_NEW:
-        /* S24 slice b — the inbox's `+` FAB: open the recipient picker
-         * (the spec's "the inbox FAB first opens a scope step"). Only
-         * meaningful from the inbox; from any other sub-view it is a
-         * stray tap and ignored (the FAB only renders on the inbox). */
+        /* S24 — the `+` FAB. From the INBOX it opens the recipient picker
+         * (the "first opens a scope step" flow); from an OPEN THREAD it
+         * skips straight to the action POPUP scoped to that thread (the
+         * spec's "a thread's FAB skips straight to the popup"). Any other
+         * sub-view is a stray tap (the FAB only renders on inbox/thread). */
         if (takeover_up) return;
         if (sh->sig_subview == FF_SIG_SUB_INBOX) {
             sh->sig_rally_armed = false;
             sh->sig_subview = FF_SIG_SUB_PICKER;
+        } else if (sh->sig_subview == FF_SIG_SUB_THREAD) {
+            sh->sig_rally_armed = false;
+            shell_scope_from_thread(sh); /* the popup acts on the thread's scope */
+            sh->view.signals.target_kind = sh->sig_target_kind;
+            sh->view.signals.target_node = sh->sig_target_node;
+            sh->sig_subview = FF_SIG_SUB_POPUP;
+        }
+        return;
+
+    case FF_INTENT_INBOX_POPUP_COMPOSE:
+        /* S24 AC5 — the popup's Compose row: open the S08 composer at the
+         * scope, dropping the sub-view back to THREAD so the composer sits
+         * over the real thread (SEND/BACK then land there). Mirrors
+         * SIG_COMPOSE's fresh-session setup. Only from the popup. */
+        if (takeover_up) return;
+        if (sh->sig_subview != FF_SIG_SUB_POPUP) return;
+        sh->sig_rally_armed = false;
+        if (ff_route_push_modal(&sh->route, FF_APP_FACE_COMPOSE)) {
+            uint32_t to = 0u;
+            if (sh->sig_thread_node != 0u && shell_member_paired(sh, sh->sig_thread_node)) {
+                to = sh->sig_thread_node;
+            }
+            sh->compose_to_node = to;
+            ff_t9_reset(&sh->compose_draft);
+            ff_t9pred_session_reset(&sh->compose_pred);
+            ff_t9pred_session_set_extra(&sh->compose_pred, sh->compose_extra, sh->compose_extra_n);
+            sh->compose_mode = FF_APP_COMPOSE_PRED;
+            sh->sig_subview = FF_SIG_SUB_THREAD; /* under the modal */
+        }
+        return;
+
+    case FF_INTENT_INBOX_POPUP_PULSE:
+        /* S24 AC5 — the popup's Pulse row: pulse the scope immediately,
+         * then close the popup back to the thread (the OUT pulse shows
+         * there). Only from the popup. */
+        if (takeover_up) return;
+        if (sh->sig_subview != FF_SIG_SUB_POPUP) return;
+        sh->sig_rally_armed = false;
+        shell_scope_from_thread(sh);
+        shell_pulse_to_scope(sh);
+        sh->sig_subview = FF_SIG_SUB_THREAD;
+        return;
+
+    case FF_INTENT_INBOX_POPUP_RALLY:
+        /* S24 AC5 — the popup's Rally row: open the Rally sub-view. Reset
+         * the Rally selection to a selectable default (On Me if my position
+         * is known, else the first landmark; WHEN back to Now). Only from
+         * the popup. */
+        if (takeover_up) return;
+        if (sh->sig_subview != FF_SIG_SUB_POPUP) return;
+        sh->sig_rally_armed = false;
+        shell_scope_from_thread(sh);
+        sh->sig_rally_sel  = sh->my_pos_ok ? 0u : 1u; /* projection re-validates against the real place list */
+        sh->sig_rally_when = FF_RALLY_WHEN_NOW;
+        sh->sig_subview = FF_SIG_SUB_RALLY;
+        return;
+
+    case FF_INTENT_RALLY_SELECT_PLACE:
+        /* S24 AC6 — a WHERE radio-row tap. u.rally_idx: 0 = On Me,
+         * 1..place_count = landmark. An On Me pick with my position
+         * unknown is rejected (the row is disabled — never a fabricated
+         * position). The projection re-validates the index against the
+         * live place list, so an out-of-range index self-corrects. */
+        if (takeover_up) return;
+        if (sh->sig_subview != FF_SIG_SUB_RALLY) return;
+        sh->sig_rally_armed = false; /* changing the place disarms a crew confirm (S22 AC4) */
+        if (in->u.rally_idx == 0u && !sh->my_pos_ok) return; /* On Me disabled */
+        sh->sig_rally_sel = in->u.rally_idx;
+        return;
+
+    case FF_INTENT_RALLY_CYCLE_WHEN:
+        /* S24 AC6 — the WHEN chip: Now -> +15m -> +30m -> Now. */
+        if (takeover_up) return;
+        if (sh->sig_subview != FF_SIG_SUB_RALLY) return;
+        sh->sig_rally_armed = false; /* changing WHEN disarms a crew confirm */
+        switch (sh->sig_rally_when) {
+        case FF_RALLY_WHEN_NOW: sh->sig_rally_when = FF_RALLY_WHEN_15; break;
+        case FF_RALLY_WHEN_15:  sh->sig_rally_when = FF_RALLY_WHEN_30; break;
+        case FF_RALLY_WHEN_30:
+        default:                sh->sig_rally_when = FF_RALLY_WHEN_NOW; break;
+        }
+        return;
+
+    case FF_INTENT_RALLY_SEND:
+        /* S24 AC6 — the Send button. Encodes the rally to the scope at the
+         * selected place + WHEN (the WHEN rides in the NAME), then pops to
+         * the thread. A crew-wide rally arms on the first tap and sends on
+         * the second (S22 AC4, the flare-armed precedent); a member rally
+         * sends on the first tap. Sends NOTHING (and does not navigate) if
+         * the place cannot be resolved (On Me with unknown position, or a
+         * name that cannot fit the wire with its WHEN suffix). */
+        if (takeover_up) return;
+        if (sh->sig_subview != FF_SIG_SUB_RALLY) return;
+        shell_scope_from_thread(sh);
+        {
+            bool const whole_crew = (sh->sig_target_kind == FF_TARGET_WHOLE_CREW);
+            if (whole_crew) {
+                bool const armed_live =
+                    sh->sig_rally_armed && (shell_now(sh) - sh->sig_rally_armed_ms) <= FF_SIG_RALLY_CONFIRM_MS;
+                if (!armed_live) {
+                    sh->sig_rally_armed = true; /* first tap: arm, do not send */
+                    sh->sig_rally_armed_ms = shell_now(sh);
+                    return;
+                }
+            }
+            uint32_t dest = MC_ADDR_BROADCAST;
+            if (!shell_sig_dest(sh, &dest)) return; /* stale member scope: send nothing */
+            ff_latlon_t pos;
+            char const *base = NULL;
+            if (!shell_rally_resolve_sel(sh, &pos, &base)) return; /* place unresolvable: send nothing */
+            char name[FF_PROTO_RALLY_NAME_MAX + 1];
+            if (!shell_rally_compose_name(base, sh->sig_rally_when, name, sizeof name)) return;
+            uint8_t buf[FF_PROTO_MAX_PAYLOAD];
+            int const n = ff_proto_encode_rally(buf, sizeof buf, pos, name);
+            if (n > 0 && sh->wiring.sender.send_private != NULL) {
+                int const rc = sh->wiring.sender.send_private(sh->wiring.sender.ctx, dest, buf, (size_t)n);
+                if (rc == 0) {
+                    /* Outgoing rally in the feed, carrying the SAME name that
+                     * went on the wire (both sides of the thread; accepted
+                     * sends only). */
+                    ff_wiring_push_outgoing(&sh->wiring, FEED_RALLY, dest, name);
+                }
+            }
+            sh->sig_rally_armed = false;
+            sh->sig_subview = FF_SIG_SUB_THREAD; /* pop to the thread to see the sent rally */
         }
         return;
 
@@ -2785,36 +3165,21 @@ void ff_shell_intent(ff_shell_t *sh_pub, ff_intent_t const *in)
         if (takeover_up) return;
         sh->sig_rally_armed = false;
         {
-            /* S24 slice (c) — with a thread open (the 1:1 PULSE chip; the
-             * slice-d popup later), the scope IS the thread: re-assert the
-             * S22(d) holders from the thread key at the send instant, so a
-             * pulse can never chase a target the user is not looking at. */
-            bool const thread_open =
-                (sh->route.base == FF_APP_FACE_SIGNALS && sh->sig_subview == FF_SIG_SUB_THREAD);
+            /* S24 — with a thread (or the popup/rally over it) open, the
+             * scope IS the thread: re-assert the S22(d) holders from the
+             * thread key at the send instant, so a pulse can never chase a
+             * target the user is not looking at. */
+            bool const thread_open = shell_scope_thread_open(sh);
             if (thread_open) {
-                sh->sig_target_kind = (sh->sig_thread_node == 0u) ? FF_TARGET_WHOLE_CREW : FF_TARGET_MEMBER;
-                sh->sig_target_node = sh->sig_thread_node;
+                shell_scope_from_thread(sh);
             }
-            uint32_t dest = MC_ADDR_BROADCAST;
-            if (!shell_sig_dest(sh, &dest)) return; /* stale member target: send nothing */
-            uint8_t buf[FF_PROTO_MAX_PAYLOAD];
-            int const n = ff_proto_encode_pulse(buf, sizeof buf);
-            if (n > 0 && sh->wiring.sender.send_private != NULL) {
-                int const rc = sh->wiring.sender.send_private(sh->wiring.sender.ctx, dest, buf, (size_t)n);
-                if (rc == 0) {
-                    /* S24 — my own send lands in the feed (FEED_DIR_OUT)
-                     * so the thread shows both sides. Only an ACCEPTED
-                     * send; a refused one fabricates nothing. */
-                    ff_wiring_push_outgoing(&sh->wiring, FEED_PULSE, dest, NULL);
-                }
-                /* S22 AC3's reset-to-WHOLE_CREW belonged to the retired
-                 * target-line screen. With a thread open the open thread
-                 * IS the scope (S24's no-desync rule) — resetting here
-                 * would silently re-aim the very chips still under the
-                 * user's thumb, so the scope stays the thread. */
-                if (!thread_open) {
-                    shell_sig_reset_target(sh); /* AC3 (no thread open) */
-                }
+            shell_pulse_to_scope(sh);
+            /* S22 AC3's reset-to-WHOLE_CREW belonged to the retired target-
+             * line screen. With a thread open the open thread IS the scope
+             * (S24's no-desync rule) — resetting would silently re-aim the
+             * chips still under the user's thumb, so the scope stays. */
+            if (!thread_open) {
+                shell_sig_reset_target(sh); /* AC3 (no thread open) */
             }
         }
         return;
@@ -2938,6 +3303,12 @@ void ff_shell_clear_my_pos(ff_shell_t *sh_pub)
 {
     if (sh_pub == NULL) return;
     shell_of(sh_pub)->my_pos_ok = false;
+}
+
+void ff_shell_set_sender(ff_shell_t *sh_pub, ff_wiring_sender_t sender)
+{
+    if (sh_pub == NULL) return;
+    shell_of(sh_pub)->wiring.sender = sender;
 }
 
 void ff_shell_set_heading(ff_shell_t *sh_pub, float heading_deg)
