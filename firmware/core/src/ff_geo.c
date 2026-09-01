@@ -1,6 +1,7 @@
 #include "ff_geo.h"
 
 #include <math.h>
+#include <stddef.h> /* NULL */
 
 /* Mean earth radius, meters. Spherical-earth approximation (haversine),
  * good to within 0.5% for terrestrial distances — see spec AC1. */
@@ -243,4 +244,20 @@ void ff_geo_project(ff_latlon_t origin, ff_latlon_t p, float *east_m, float *nor
     if (north_m) {
         *north_m = (float)north;
     }
+}
+
+void ff_geo_unproject(ff_latlon_t origin, float east_m, float north_m, ff_latlon_t *out)
+{
+    if (out == NULL) {
+        return;
+    }
+    /* Exact inverse of ff_geo_project above: north = dlat_rad * R,
+     * east = dlon_rad * R * cos(lat0). */
+    double lat0_rad = FF_GEO_DEG2RAD(origin.lat);
+    double dlat = (double)north_m / FF_GEO_EARTH_RADIUS_M;
+    double coslat0 = cos(lat0_rad);
+    double dlon = (coslat0 != 0.0) ? ((double)east_m / (FF_GEO_EARTH_RADIUS_M * coslat0)) : 0.0;
+
+    out->lat = origin.lat + FF_GEO_RAD2DEG(dlat);
+    out->lon = origin.lon + FF_GEO_RAD2DEG(dlon);
 }

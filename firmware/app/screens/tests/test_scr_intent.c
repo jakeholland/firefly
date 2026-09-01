@@ -887,6 +887,141 @@ static void S24c_crew_thread_has_no_quick_chips(void)
     TEST_ASSERT_NULL(find_button_with_label(parent, "PULSE"));
 }
 
+/* =================================================================== */
+/* S24 slice d — action popup + Rally screen emitters                  */
+/* =================================================================== */
+
+/* Build the action popup sub-view scoped to a member (DANA). */
+static lv_obj_t *build_popup(ff_app_signals_t *v)
+{
+    memset(v, 0, sizeof(*v));
+    v->subview = FF_SIG_SUB_POPUP;
+    v->thread_node = 111u;
+    strncpy(v->thread_name, "DANA", sizeof(v->thread_name) - 1);
+    sig_add_conv(v, FF_CONV_CREW, 0u, NULL, 0, 0);
+    sig_add_conv(v, FF_CONV_MEMBER, 111u, "DANA", 0, 0);
+    lv_obj_t *parent = lv_obj_create(lv_screen_active());
+    ff_scr_signals_build(parent, v, false);
+    return parent;
+}
+
+static void S24d_popup_compose_row_emits_popup_compose(void)
+{
+    ff_app_signals_t v;
+    lv_obj_t *parent = build_popup(&v);
+    click(find_button_with_label(parent, "Compose"));
+    TEST_ASSERT_EQUAL_INT(1, s_spy.count);
+    TEST_ASSERT_EQUAL(FF_INTENT_INBOX_POPUP_COMPOSE, s_spy.last.kind);
+}
+
+static void S24d_popup_rally_row_emits_popup_rally(void)
+{
+    ff_app_signals_t v;
+    lv_obj_t *parent = build_popup(&v);
+    click(find_button_with_label(parent, "Rally"));
+    TEST_ASSERT_EQUAL_INT(1, s_spy.count);
+    TEST_ASSERT_EQUAL(FF_INTENT_INBOX_POPUP_RALLY, s_spy.last.kind);
+}
+
+static void S24d_popup_pulse_row_emits_popup_pulse(void)
+{
+    ff_app_signals_t v;
+    lv_obj_t *parent = build_popup(&v);
+    click(find_button_with_label(parent, "Pulse"));
+    TEST_ASSERT_EQUAL_INT(1, s_spy.count);
+    TEST_ASSERT_EQUAL(FF_INTENT_INBOX_POPUP_PULSE, s_spy.last.kind);
+}
+
+static void S24d_popup_close_emits_back(void)
+{
+    ff_app_signals_t v;
+    lv_obj_t *parent = build_popup(&v);
+    click(find_button_with_label(parent, LV_SYMBOL_CLOSE));
+    TEST_ASSERT_EQUAL_INT(1, s_spy.count);
+    TEST_ASSERT_EQUAL(FF_INTENT_BACK, s_spy.last.kind);
+}
+
+/* Build the Rally sub-view with On Me + one landmark, the landmark
+ * selected, WHEN=Now, Send enabled. */
+static lv_obj_t *build_rally(ff_app_signals_t *v)
+{
+    memset(v, 0, sizeof(*v));
+    v->subview = FF_SIG_SUB_RALLY;
+    v->thread_node = 111u;
+    strncpy(v->thread_name, "DANA", sizeof(v->thread_name) - 1);
+    sig_add_conv(v, FF_CONV_CREW, 0u, NULL, 0, 0);
+    sig_add_conv(v, FF_CONV_MEMBER, 111u, "DANA", 0, 0);
+    v->rally.on_me_ok = true;
+    v->rally.place_count = 1;
+    strncpy(v->rally.place_names[0], "Main Stage", sizeof(v->rally.place_names[0]) - 1);
+    v->rally.sel = 1; /* the landmark */
+    v->rally.when = FF_RALLY_WHEN_NOW;
+    strncpy(v->rally.echo_place, "Main Stage", sizeof(v->rally.echo_place) - 1);
+    strncpy(v->rally.echo_when, "Now", sizeof(v->rally.echo_when) - 1);
+    v->rally.can_send = true;
+    lv_obj_t *parent = lv_obj_create(lv_screen_active());
+    ff_scr_signals_build(parent, v, false);
+    return parent;
+}
+
+static void S24d_rally_on_me_row_emits_select_place_zero(void)
+{
+    ff_app_signals_t v;
+    lv_obj_t *parent = build_rally(&v);
+    click(find_row_hit_by_name(parent, "On Me"));
+    TEST_ASSERT_EQUAL_INT(1, s_spy.count);
+    TEST_ASSERT_EQUAL(FF_INTENT_RALLY_SELECT_PLACE, s_spy.last.kind);
+    TEST_ASSERT_EQUAL_UINT8(0u, s_spy.last.u.rally_idx);
+}
+
+static void S24d_rally_landmark_row_emits_select_place_index(void)
+{
+    ff_app_signals_t v;
+    lv_obj_t *parent = build_rally(&v);
+    click(find_row_hit_by_name(parent, "Main Stage"));
+    TEST_ASSERT_EQUAL_INT(1, s_spy.count);
+    TEST_ASSERT_EQUAL(FF_INTENT_RALLY_SELECT_PLACE, s_spy.last.kind);
+    TEST_ASSERT_EQUAL_UINT8(1u, s_spy.last.u.rally_idx); /* 0 = On Me, 1 = first landmark */
+}
+
+static void S24d_rally_when_chip_emits_cycle_when(void)
+{
+    ff_app_signals_t v;
+    lv_obj_t *parent = build_rally(&v);
+    click(find_button_with_label(parent, "WHEN"));
+    TEST_ASSERT_EQUAL_INT(1, s_spy.count);
+    TEST_ASSERT_EQUAL(FF_INTENT_RALLY_CYCLE_WHEN, s_spy.last.kind);
+}
+
+static void S24d_rally_send_button_emits_rally_send(void)
+{
+    ff_app_signals_t v;
+    lv_obj_t *parent = build_rally(&v);
+    click(find_button_with_label(parent, "Send Rally"));
+    TEST_ASSERT_EQUAL_INT(1, s_spy.count);
+    TEST_ASSERT_EQUAL(FF_INTENT_RALLY_SEND, s_spy.last.kind);
+}
+
+/* A disabled On Me (no fix) is NOT a tap target — the honest reason shows
+ * but the row cannot be picked (never a fabricated position). */
+static void S24d_rally_disabled_on_me_is_not_tappable(void)
+{
+    ff_app_signals_t v;
+    memset(&v, 0, sizeof(v));
+    v.subview = FF_SIG_SUB_RALLY;
+    sig_add_conv(&v, FF_CONV_CREW, 0u, NULL, 0, 0);
+    v.rally.on_me_ok = false; /* no fix */
+    v.rally.place_count = 0;
+    v.rally.can_send = false;
+    lv_obj_t *parent = lv_obj_create(lv_screen_active());
+    ff_scr_signals_build(parent, &v, false);
+    /* The On Me row renders (its label is present) but has no clickable
+     * tap target, and Send is a dead (non-button) control. */
+    TEST_ASSERT_NOT_NULL(find_label_exact(parent, "On Me"));
+    TEST_ASSERT_NULL(find_row_hit_by_name(parent, "On Me"));
+    TEST_ASSERT_NULL(find_button_with_label(parent, "Send Rally"));
+}
+
 /* find_pill_in_row — the settings-face toggle rows (HAPTICS/GLOW/COLORBLIND)
  * all render generic "ON"/"OFF" pills, so a bare find_button_with_label would
  * ambiguously match the first such pill in the tree. This scopes the pill
@@ -1461,6 +1596,15 @@ int main(void)
     RUN_TEST(S24c_thread_pulse_chip_emits_sig_pulse);
     RUN_TEST(S24c_thread_fab_emits_inbox_new);
     RUN_TEST(S24c_crew_thread_has_no_quick_chips);
+    RUN_TEST(S24d_popup_compose_row_emits_popup_compose);
+    RUN_TEST(S24d_popup_rally_row_emits_popup_rally);
+    RUN_TEST(S24d_popup_pulse_row_emits_popup_pulse);
+    RUN_TEST(S24d_popup_close_emits_back);
+    RUN_TEST(S24d_rally_on_me_row_emits_select_place_zero);
+    RUN_TEST(S24d_rally_landmark_row_emits_select_place_index);
+    RUN_TEST(S24d_rally_when_chip_emits_cycle_when);
+    RUN_TEST(S24d_rally_send_button_emits_rally_send);
+    RUN_TEST(S24d_rally_disabled_on_me_is_not_tappable);
     RUN_TEST(S16_c2_radar_flare_button_emits_flare_start);
     RUN_TEST(S17a_AC4_radar_precise_dot_renders_filled_with_its_initial);
     RUN_TEST(S17a_AC4_radar_imprecise_dot_renders_as_hollow_ring_with_no_initial);

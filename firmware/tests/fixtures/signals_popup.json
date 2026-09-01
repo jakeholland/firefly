@@ -1,0 +1,21 @@
+{
+  "fixture": "signals_popup",
+  "face": "signals",
+  "signals": {
+    "subview": "popup",
+    "thread_node": 111,
+    "thread_name": "DANA",
+    "thread_color_idx": 0,
+    "target_kind": "member",
+    "target_node": 111,
+    "convs": [
+      {"conv": "crew", "unread": 0, "item_count": 4,
+       "preview_kind": "pulse", "preview_dir": "broadcast", "preview_age_ms": 60000,
+       "preview_from": "DANA"},
+      {"conv": "member", "node_id": 111, "name": "DANA", "initial": "D", "color_idx": 0,
+       "presence": "seen", "presence_age_ms": 60000},
+      {"conv": "member", "node_id": 112, "name": "RILEY", "initial": "R", "color_idx": 6,
+       "presence": "seen", "presence_age_ms": 360000}
+    ]
+  }
+}

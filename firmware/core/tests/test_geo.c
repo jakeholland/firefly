@@ -437,6 +437,29 @@ static void S01_AC7_projection_round_trips_within_1m_at_2km(void)
     TEST_ASSERT_FLOAT_WITHIN(1.0f, 0.0f, err_m);
 }
 
+/* S24 slice d — ff_geo_unproject is the exact inverse of ff_geo_project:
+ * project to meters then unproject recovers lat/lon within a meter at
+ * festival scale (the rally landmark position round-trip). */
+static void S24_AC6_unproject_inverts_project(void)
+{
+    ff_latlon_t origin = {39.9012, -82.4562};
+    ff_latlon_t p = {39.91593362263924, -82.44275208167251}; /* ~2km from origin */
+
+    float east_m = 0.0f, north_m = 0.0f;
+    ff_geo_project(origin, p, &east_m, &north_m);
+
+    ff_latlon_t recovered = {0.0, 0.0};
+    ff_geo_unproject(origin, east_m, north_m, &recovered);
+    TEST_ASSERT_FLOAT_WITHIN(1.0f, 0.0f, ff_geo_distance_m(p, recovered));
+
+    /* Origin unprojects to itself; a NULL out is a safe no-op. */
+    ff_latlon_t at_origin = {1.0, 1.0};
+    ff_geo_unproject(origin, 0.0f, 0.0f, &at_origin);
+    TEST_ASSERT_DOUBLE_WITHIN(1e-9, origin.lat, at_origin.lat);
+    TEST_ASSERT_DOUBLE_WITHIN(1e-9, origin.lon, at_origin.lon);
+    ff_geo_unproject(origin, 10.0f, 10.0f, NULL); /* must not crash */
+}
+
 /* ------------------------------------------------------------------- */
 /* AC8 — math.h only, warnings-clean C11 build (enforced by the CMake   */
 /* gate; this is a light end-to-end smoke check).                       */
@@ -483,6 +506,7 @@ int main(void)
 
     RUN_TEST(S01_AC7_projection_matches_equirect_reference);
     RUN_TEST(S01_AC7_projection_round_trips_within_1m_at_2km);
+    RUN_TEST(S24_AC6_unproject_inverts_project);
 
     RUN_TEST(S01_AC8_module_is_usable_end_to_end);
 

@@ -192,6 +192,30 @@ typedef enum {
      * real, honest navigation today and only the shell-side routing
      * changes when the popup lands — the emit site does not. */
     FF_INTENT_INBOX_OPEN_THREAD, FF_INTENT_INBOX_NEW, FF_INTENT_INBOX_PICK,
+    /* [api] S24 slice (d) — the action popup + Rally screen seam
+     * (docs/specs/S24-signals-inbox.md, AC5/AC6). Appended, so no existing
+     * intent's numeric value moves. The popup + Rally are shell-owned
+     * sub-views over the open thread's scope ("the open thread IS the send
+     * scope"); these intents carry NO payload except RALLY_SELECT_PLACE —
+     * each acts on the scope the shell already holds, never one the screen
+     * claims (a pure renderer must not carry the scope).
+     *
+     * POPUP_COMPOSE — the popup's Compose row: opens the S08 composer with
+     *   its TO set to the scope, dropping back to the thread underneath so
+     *   SEND/BACK land there.
+     * POPUP_PULSE — the popup's Pulse row: sends a PULSE to the scope
+     *   immediately, then pops the popup back to the thread (the OUT pulse
+     *   shows there).
+     * POPUP_RALLY — the popup's Rally row: opens the Rally sub-view.
+     * RALLY_SELECT_PLACE — a WHERE radio-row tap. `u.rally_idx` is the
+     *   selection: 0 = On Me, 1..place_count = landmark (idx - 1). An On Me
+     *   pick while my position is unknown is rejected (the row is disabled).
+     * RALLY_CYCLE_WHEN — the WHEN chip: Now -> +15m -> +30m -> Now.
+     * RALLY_SEND — the Send button: encodes+sends the rally to the scope at
+     *   the selected place/when, then pops to the thread. A crew-wide rally
+     *   arms on the first tap and sends on the second (S22 AC4). */
+    FF_INTENT_INBOX_POPUP_COMPOSE, FF_INTENT_INBOX_POPUP_PULSE, FF_INTENT_INBOX_POPUP_RALLY,
+    FF_INTENT_RALLY_SELECT_PLACE, FF_INTENT_RALLY_CYCLE_WHEN, FF_INTENT_RALLY_SEND,
 } ff_intent_kind_t;
 
 /**
@@ -240,7 +264,8 @@ typedef struct {
          *  which the shell validates against the roster before it becomes
          *  the send target (`ff_sigview_target_select`). */
         uint32_t node_id;
-        uint8_t rally_idx;                      /* SELECT_RALLY */
+        uint8_t rally_idx;                      /* SELECT_RALLY; RALLY_SELECT_PLACE
+                                                 * (S24 d: 0 = On Me, 1.. = landmark) */
         uint8_t t9_key;                         /* T9_KEY: 0-9. REUSED by T9_SELECT
                                                  * as the candidate index to select
                                                  * (0-based, into the shown chips) —

@@ -266,9 +266,71 @@ typedef enum {
     FF_SIG_SUB_INBOX = 0,
     FF_SIG_SUB_PICKER, /* recipient picker — the inbox FAB's scope step */
     FF_SIG_SUB_THREAD, /* the slice-(c) CREW / 1:1 message screen */
-    FF_SIG_SUB_POPUP,  /* slice (d) — action popup; unrouted placeholder */
-    FF_SIG_SUB_RALLY,  /* slice (d) — rally screen; unrouted placeholder */
+    FF_SIG_SUB_POPUP,  /* slice (d) — action popup over the (dimmed) thread */
+    FF_SIG_SUB_RALLY,  /* slice (d) — the Rally WHERE/WHEN/Send screen */
 } ff_sig_subview_t;
+
+/**
+ * ff_rally_when_t — the Rally screen's WHEN chip (S24 AC6): the rally time
+ * relative to now. NOW is the zero value (the least-claiming default) and
+ * appends nothing to the wire name; +15m / +30m ride in the rally NAME
+ * suffix (ff_proto_rally_t has no time field — S24's WHEN-in-name, see the
+ * shell's rally send). */
+typedef enum {
+    FF_RALLY_WHEN_NOW = 0,
+    FF_RALLY_WHEN_15,
+    FF_RALLY_WHEN_30,
+} ff_rally_when_t;
+
+/**
+ * FF_APP_RALLY_MAX_PLACES — the Rally WHERE list's landmark-row cap. Held
+ * as a literal here (this header stays free of fp_pack.h — the flattened-
+ * struct convention), pinned to FP_MAX_LANDMARKS by a _Static_assert in
+ * ff_shell.c so a festpack cap bump surfaces as a build failure, never a
+ * silent truncation. */
+#define FF_APP_RALLY_MAX_PLACES 12
+
+/**
+ * ff_app_rally_t — the Rally sub-view's projected state (S24 slice d,
+ * AC6). Built by the shell each tick ONLY while `subview == FF_SIG_SUB_
+ * RALLY` (like `thread` for THREAD); zeroed otherwise. The screen is a
+ * pure renderer of this: it draws the WHERE radio list (On Me + the
+ * landmark rows), the WHEN chip and the payload-echoing Send, and emits
+ * the RALLY_SELECT_PLACE / RALLY_CYCLE_WHEN / RALLY_SEND intents by index
+ * — it never touches the festpack or resolves a position itself.
+ */
+typedef struct {
+    /* On Me (rally to my live location) — pinned first, index 0 of the
+     * selection space. DISABLED with an honest reason when my position is
+     * unknown (`on_me_ok` false); never a fabricated {0,0} (CLAUDE.md). */
+    bool on_me_ok;
+
+    /* The festpack landmark rows (real names, in pack order, only those
+     * with a known position). Scales to the pack; 0 when no pack. */
+    uint8_t place_count;
+    char    place_names[FF_APP_RALLY_MAX_PLACES][FF_APP_NAME_LEN];
+
+    /* The current selection: 0 = On Me, 1..place_count = landmark
+     * (sel - 1). The shell keeps a selectable default (On Me if usable,
+     * else the first landmark, else 0 with nothing sendable). */
+    uint8_t sel;
+
+    /* The WHEN chip's current value. */
+    ff_rally_when_t when;
+
+    /* The Send button's payload echo — "<place> · <when>" — composed by
+     * the shell from the SAME resolution the send uses, so the echo can
+     * never disagree with what goes on the wire. Empty when nothing is
+     * sendable (On Me disabled and no places). */
+    char echo_place[FF_APP_NAME_LEN];
+    char echo_when[8]; /* "Now" / "+15m" / "+30m" */
+    bool can_send;
+
+    /* Crew-wide confirm (S22 AC4 precedent, reused): a rally to the whole
+     * crew arms on the first Send tap and sends on the second. Mirrors the
+     * shell's sig_rally_armed while the Rally screen is up. */
+    bool confirm_armed;
+} ff_app_rally_t;
 
 typedef struct {
     ff_sig_subview_t subview;
@@ -304,6 +366,11 @@ typedef struct {
     ff_target_kind_t target_kind;
     uint32_t         target_node;
     bool             rally_confirm_armed;
+
+    /* [api] S24 slice (d) — the Rally sub-view's projected WHERE/WHEN/Send
+     * state, built by the shell only while `subview == FF_SIG_SUB_RALLY`
+     * (zeroed otherwise). See ff_app_rally_t. */
+    ff_app_rally_t rally;
 } ff_app_signals_t;
 
 /* -------------------------------------------------------------------

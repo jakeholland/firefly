@@ -550,6 +550,13 @@ static const fx_enum_entry_t fx_conv_kind_table[] = {
     {"member", FF_CONV_MEMBER},
 };
 
+/* S24 slice d — the Rally WHEN chip. */
+static const fx_enum_entry_t fx_rally_when_table[] = {
+    {"now", FF_RALLY_WHEN_NOW},
+    {"15", FF_RALLY_WHEN_15},
+    {"30", FF_RALLY_WHEN_30},
+};
+
 static const fx_enum_entry_t fx_feed_kind_table[] = {
     {"pulse", FEED_PULSE}, {"text", FEED_TEXT}, {"rally", FEED_RALLY},
     {"status", FEED_STATUS}, {"flare", FEED_FLARE},
@@ -737,6 +744,42 @@ static ff_fixture_result_t fx_parse_signals(fx_ctx_t const *c, int obj_i, ff_app
 
             sig->thread.msg_count++;
             idx = fx_skip(c, msg_i);
+        }
+    }
+
+    /* S24 slice d — the Rally sub-view's projected WHERE/WHEN/Send state
+     * (a view snapshot: the shell derives these from the pack live, but a
+     * fixture authors them directly, same convention as convs/msgs). */
+    int rally_i;
+    if (fx_obj_get(c, obj_i, "rally", &rally_i) && !fx_is_null(c, rally_i)) {
+        ff_app_rally_t *r = &sig->rally;
+        int rt;
+        if (fx_obj_get(c, rally_i, "on_me_ok", &rt)) r->on_me_ok = fx_bool(c, rt, false);
+        if (fx_obj_get(c, rally_i, "sel", &rt)) r->sel = (uint8_t)fx_num(c, rt, 0.0);
+        if (fx_obj_get(c, rally_i, "when", &rt)) {
+            int v;
+            ff_fixture_result_t rc = fx_enum(c, rt, fx_rally_when_table,
+                                              sizeof(fx_rally_when_table) / sizeof(fx_rally_when_table[0]),
+                                              "signals.rally.when", &v);
+            if (rc != FF_FIXTURE_OK) return rc;
+            r->when = (ff_rally_when_t)v;
+        }
+        if (fx_obj_get(c, rally_i, "echo_place", &rt)) fx_copy_str(c, rt, r->echo_place, sizeof(r->echo_place));
+        if (fx_obj_get(c, rally_i, "echo_when", &rt)) fx_copy_str(c, rt, r->echo_when, sizeof(r->echo_when));
+        if (fx_obj_get(c, rally_i, "can_send", &rt)) r->can_send = fx_bool(c, rt, false);
+        if (fx_obj_get(c, rally_i, "confirm_armed", &rt)) r->confirm_armed = fx_bool(c, rt, false);
+
+        int places_i;
+        if (fx_obj_get(c, rally_i, "places", &places_i) && !fx_is_null(c, places_i)) {
+            jsmntok_t const *at = &c->toks[places_i];
+            if (at->type != JSMN_ARRAY) return FF_FIXTURE_ERR_JSON;
+            if (at->size > FF_APP_RALLY_MAX_PLACES) return FF_FIXTURE_ERR_TOO_BIG;
+            int pidx = places_i + 1;
+            for (int i = 0; i < at->size; i++) {
+                fx_copy_str(c, pidx, r->place_names[r->place_count], sizeof(r->place_names[0]));
+                r->place_count++;
+                pidx = fx_skip(c, pidx);
+            }
         }
     }
     return FF_FIXTURE_OK;

@@ -115,6 +115,17 @@ extern "C" {
 int ff_demo_seed(ff_shell_t *sh, char const *festpack_json, size_t festpack_len, uint32_t *clock_ms,
                  uint32_t primary_node);
 
+/* NOTE (S24 slice d): the demo LOOPBACK sender — the accept-every-send
+ * `ff_wiring_sender_t` that makes outbound VISIBLE in the transport-less
+ * demo build — deliberately lives in the device target's app_main.c under
+ * `#if CONFIG_FF_DEMO_MODE`, NOT here. ff_demo.c is compiled into the
+ * device image unconditionally (ESP-IDF does not dead-strip it — verified),
+ * so a loopback symbol placed here would survive into a FIELD build; keeping
+ * it #if-gated in app_main is the only way to guarantee a field build
+ * contains zero loopback symbols. It is installed via ff_shell_set_sender
+ * (ff_shell.h) after ff_demo_seed. The generic seam ff_shell_set_sender is
+ * unit-tested on host (test_shell.c) with an equivalent accepting mock. */
+
 #ifdef __cplusplus
 }
 #endif
