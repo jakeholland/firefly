@@ -907,7 +907,8 @@ static void shell_ev_text(void *u, uint32_t from, uint32_t to, char const *utf8,
     ff_wiring_on_text(&sh->wiring, from, to, utf8, len);
 }
 
-static void shell_ev_private(void *u, uint32_t from, uint32_t portnum, uint8_t const *payload, size_t len)
+static void shell_ev_private(void *u, uint32_t from, uint32_t to, uint32_t portnum,
+                              uint8_t const *payload, size_t len)
 {
     shell_t *sh = (shell_t *)u;
     if (sh == NULL) return;
@@ -922,7 +923,7 @@ static void shell_ev_private(void *u, uint32_t from, uint32_t portnum, uint8_t c
      * that references it. For a FLARE the feed haptic is suppressed —
      * one inbound flare, one buzz, and it is the alert one. */
     sh->in_flare_dispatch = (type == FF_PROTO_TYPE_FLARE);
-    ff_wiring_on_private(&sh->wiring, from, portnum, payload, len);
+    ff_wiring_on_private(&sh->wiring, from, to, portnum, payload, len);
     sh->in_flare_dispatch = false;
 
     if (type == FF_PROTO_TYPE_FLARE) {

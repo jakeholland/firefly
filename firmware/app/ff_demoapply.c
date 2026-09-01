@@ -217,7 +217,10 @@ void ff_demo_apply_event(mc_events_t const *ev, ff_demo_event_t const *event, ui
         default:
             return; /* plan never yields another proto type */
         }
-        if (n > 0) ev->on_private(ev->user, plan.node_id, FF_PORTNUM, buf, (size_t)n);
+        /* Demo-generated crew signals are crew-wide broadcasts (the plan
+         * carries no per-member destination — mirrors the TEXT dispatch's
+         * MC_ADDR_BROADCAST above; honest + deterministic, issue #123). */
+        if (n > 0) ev->on_private(ev->user, plan.node_id, MC_ADDR_BROADCAST, FF_PORTNUM, buf, (size_t)n);
         break;
     }
     case FF_DEMO_DISPATCH_POKE: {

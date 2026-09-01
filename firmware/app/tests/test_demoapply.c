@@ -251,6 +251,10 @@ void test_S23c_private_signal_lands(void)
     TEST_ASSERT_EQUAL_INT(FEED_STATUS, it->kind);
     TEST_ASSERT_EQUAL_UINT32(FF_DEMO_NODE_KEV, it->from_node);
     TEST_ASSERT_EQUAL_STRING(ff_demo_text_ref(3), it->text);
+    /* Issue #123 — demo private dispatch passes honest crew-wide
+     * addressing, so the item classifies BROADCAST (CREW thread), never a
+     * fabricated 1:1 and never a stale UNKNOWN. */
+    TEST_ASSERT_EQUAL_INT(FEED_DIR_BROADCAST, it->dir);
     ff_shell_close(&s_shell);
 }
 

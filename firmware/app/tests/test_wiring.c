@@ -5,7 +5,7 @@
  * Test names follow docs/specs/S08-signals-t9.md's numbered acceptance
  * criteria: S08_ACn_description. No live mc_client_t/transport/radio
  * anywhere in this file — `ff_wiring_on_private`/`ff_wiring_on_text` are
- * called directly with synthetic (from, payload, len) values (the "mock
+ * called directly with synthetic (from, to, payload, len) values (the "mock
  * event injector" AC4 asks for), and canned-reply sends go through a
  * trivial mock `ff_wiring_sender_t` (the "mock mc" AC6 asks for) that just
  * records what was sent — see ff_wiring.h's header comment for why this
@@ -153,7 +153,7 @@ static void S08_AC4_pulse_from_paired_node_pushes_feed_item_and_fires_haptic(voi
     int n = ff_proto_encode_pulse(buf, sizeof(buf));
     TEST_ASSERT_TRUE(n > 0);
 
-    ff_wiring_on_private(&r.w, PAIRED_NODE, FF_PORTNUM, buf, (size_t)n);
+    ff_wiring_on_private(&r.w, PAIRED_NODE, MC_ADDR_BROADCAST, FF_PORTNUM, buf, (size_t)n);
 
     TEST_ASSERT_EQUAL_UINT8(1, ff_feed_count(&r.feed));
     ff_feed_item_t const *it = ff_feed_at(&r.feed, 0);
@@ -175,7 +175,7 @@ static void S08_AC4_pulse_from_unpaired_node_is_dropped(void)
     uint8_t buf[FF_PROTO_ENVELOPE_LEN];
     int n = ff_proto_encode_pulse(buf, sizeof(buf));
 
-    ff_wiring_on_private(&r.w, UNPAIRED_NODE, FF_PORTNUM, buf, (size_t)n);
+    ff_wiring_on_private(&r.w, UNPAIRED_NODE, MC_ADDR_BROADCAST, FF_PORTNUM, buf, (size_t)n);
 
     TEST_ASSERT_EQUAL_UINT8(0, ff_feed_count(&r.feed));
     TEST_ASSERT_EQUAL_INT(0, r.haptic.count); /* mutation-check: no buzz on a dropped event either */
@@ -208,7 +208,7 @@ static void S08_AC4_pulse_from_node_with_no_roster_room_is_dropped(void)
     uint8_t buf[FF_PROTO_ENVELOPE_LEN];
     int n = ff_proto_encode_pulse(buf, sizeof(buf));
 
-    ff_wiring_on_private(&r.w, 0xABCDu, FF_PORTNUM, buf, (size_t)n);
+    ff_wiring_on_private(&r.w, 0xABCDu, MC_ADDR_BROADCAST, FF_PORTNUM, buf, (size_t)n);
 
     TEST_ASSERT_EQUAL_UINT8(0, ff_feed_count(&r.feed));
     TEST_ASSERT_EQUAL_INT(0, r.haptic.count);
@@ -240,7 +240,7 @@ static void S08_AC4_flood_of_unknown_senders_does_not_exhaust_roster_or_block_pa
     enum { FLOOD_N = FF_HEARD_MAX + 5 };
     for (int i = 0; i < FLOOD_N; i++) {
         r.fc.t = (uint32_t)(1000 + i);
-        ff_wiring_on_private(&r.w, 0xF0000u + (uint32_t)i, FF_PORTNUM, buf, (size_t)n);
+        ff_wiring_on_private(&r.w, 0xF0000u + (uint32_t)i, MC_ADDR_BROADCAST, FF_PORTNUM, buf, (size_t)n);
     }
 
     /* Nothing got fed (all unpaired) and — the actual fix — the roster
@@ -280,7 +280,7 @@ static void S08_AC4_wrong_portnum_is_ignored(void)
     uint8_t buf[FF_PROTO_ENVELOPE_LEN];
     int n = ff_proto_encode_pulse(buf, sizeof(buf));
 
-    ff_wiring_on_private(&r.w, PAIRED_NODE, FF_PORTNUM + 1, buf, (size_t)n);
+    ff_wiring_on_private(&r.w, PAIRED_NODE, MC_ADDR_BROADCAST, FF_PORTNUM + 1, buf, (size_t)n);
 
     TEST_ASSERT_EQUAL_UINT8(0, ff_feed_count(&r.feed));
 }
@@ -292,7 +292,7 @@ static void S08_AC4_malformed_payload_is_ignored(void)
     rig_pair(&r, PAIRED_NODE);
 
     uint8_t garbage[4] = {0xFF, 0xFF, 0xFF, 0xFF};
-    ff_wiring_on_private(&r.w, PAIRED_NODE, FF_PORTNUM, garbage, sizeof(garbage));
+    ff_wiring_on_private(&r.w, PAIRED_NODE, MC_ADDR_BROADCAST, FF_PORTNUM, garbage, sizeof(garbage));
 
     TEST_ASSERT_EQUAL_UINT8(0, ff_feed_count(&r.feed));
 }
@@ -313,7 +313,7 @@ static void S08_AC4_rally_from_paired_node_pushes_feed_item_with_name(void)
     int n = ff_proto_encode_rally(buf, sizeof(buf), pos, "MAIN STAGE");
     TEST_ASSERT_TRUE(n > 0);
 
-    ff_wiring_on_private(&r.w, PAIRED_NODE, FF_PORTNUM, buf, (size_t)n);
+    ff_wiring_on_private(&r.w, PAIRED_NODE, MC_ADDR_BROADCAST, FF_PORTNUM, buf, (size_t)n);
 
     TEST_ASSERT_EQUAL_UINT8(1, ff_feed_count(&r.feed));
     ff_feed_item_t const *it = ff_feed_at(&r.feed, 0);
@@ -331,7 +331,7 @@ static void S08_AC4_status_from_paired_node_pushes_feed_item_with_text(void)
     int n = ff_proto_encode_status(buf, sizeof(buf), "RAGING");
     TEST_ASSERT_TRUE(n > 0);
 
-    ff_wiring_on_private(&r.w, PAIRED_NODE, FF_PORTNUM, buf, (size_t)n);
+    ff_wiring_on_private(&r.w, PAIRED_NODE, MC_ADDR_BROADCAST, FF_PORTNUM, buf, (size_t)n);
 
     TEST_ASSERT_EQUAL_UINT8(1, ff_feed_count(&r.feed));
     ff_feed_item_t const *it = ff_feed_at(&r.feed, 0);
@@ -349,7 +349,7 @@ static void S08_AC4_flare_end_is_not_fed(void)
     int n = ff_proto_encode_flare_end(buf, sizeof(buf));
     TEST_ASSERT_TRUE(n > 0);
 
-    ff_wiring_on_private(&r.w, PAIRED_NODE, FF_PORTNUM, buf, (size_t)n);
+    ff_wiring_on_private(&r.w, PAIRED_NODE, MC_ADDR_BROADCAST, FF_PORTNUM, buf, (size_t)n);
 
     TEST_ASSERT_EQUAL_UINT8(0, ff_feed_count(&r.feed));
 }
@@ -364,7 +364,7 @@ static void S08_AC4_rally_clear_is_not_fed(void)
     int n = ff_proto_encode_rally_clear(buf, sizeof(buf));
     TEST_ASSERT_TRUE(n > 0);
 
-    ff_wiring_on_private(&r.w, PAIRED_NODE, FF_PORTNUM, buf, (size_t)n);
+    ff_wiring_on_private(&r.w, PAIRED_NODE, MC_ADDR_BROADCAST, FF_PORTNUM, buf, (size_t)n);
 
     TEST_ASSERT_EQUAL_UINT8(0, ff_feed_count(&r.feed));
 }
@@ -527,20 +527,87 @@ static void S24_AC1_specific_address_without_self_match_stays_unknown(void)
     TEST_ASSERT_EQUAL(FEED_DIR_UNKNOWN, ff_feed_at(&r.feed, 0)->dir);
 }
 
-/* The private inbound path (PULSE et al) carries no addressing to this
- * layer (mc_events_t.on_private has no `to`) — its direction is UNKNOWN,
- * honestly, not a guessed BROADCAST. */
-static void S24_AC1_private_path_direction_is_unknown_not_guessed(void)
+/* Issue #123 — the private inbound path (PULSE et al) now carries `to`
+ * and classifies EXACTLY like on_text. The four truth-table rows follow;
+ * they replace the pre-#123 pin `..._private_path_direction_is_unknown_
+ * not_guessed` (which asserted the whole path was UNKNOWN back when
+ * mc_events_t.on_private had no `to`). */
+
+static int encode_pulse_checked(uint8_t *buf, size_t cap)
+{
+    int n = ff_proto_encode_pulse(buf, cap);
+    TEST_ASSERT_TRUE(n > 0);
+    return n;
+}
+
+/* Row 1: a whole-crew pulse is a broadcast on the wire and MUST stay
+ * BROADCAST (the issue's core caution — 1:1 support must not steal
+ * crew-wide traffic into a 1:1 thread). */
+static void S24_AC1_broadcast_pulse_records_dir_broadcast(void)
 {
     test_rig_t r;
     rig_init(&r);
     rig_pair(&r, PAIRED_NODE);
-    ff_wiring_set_self_node(&r.w, SELF_NODE); /* knowing self must not change this */
+    ff_wiring_set_self_node(&r.w, SELF_NODE);
 
     uint8_t buf[FF_PROTO_ENVELOPE_LEN];
-    int n = ff_proto_encode_pulse(buf, sizeof(buf));
-    TEST_ASSERT_TRUE(n > 0);
-    ff_wiring_on_private(&r.w, PAIRED_NODE, FF_PORTNUM, buf, (size_t)n);
+    int n = encode_pulse_checked(buf, sizeof(buf));
+    ff_wiring_on_private(&r.w, PAIRED_NODE, MC_ADDR_BROADCAST, FF_PORTNUM, buf, (size_t)n);
+
+    TEST_ASSERT_EQUAL_UINT8(1, ff_feed_count(&r.feed));
+    TEST_ASSERT_EQUAL(FEED_DIR_BROADCAST, ff_feed_at(&r.feed, 0)->dir);
+}
+
+/* Row 2: a pulse addressed to OUR OWN id (self known) is DIRECT.
+ * Proxy-check: SELF_NODE is a specific address, not the broadcast one,
+ * so a classifier that ignores self-id entirely (returns UNKNOWN for
+ * every non-broadcast, or never consults w->self_node) fails here —
+ * DIRECT is only reachable through the self-id comparison. */
+static void S24_AC1_pulse_addressed_to_me_records_dir_direct(void)
+{
+    test_rig_t r;
+    rig_init(&r);
+    rig_pair(&r, PAIRED_NODE);
+    ff_wiring_set_self_node(&r.w, SELF_NODE);
+
+    uint8_t buf[FF_PROTO_ENVELOPE_LEN];
+    int n = encode_pulse_checked(buf, sizeof(buf));
+    ff_wiring_on_private(&r.w, PAIRED_NODE, SELF_NODE, FF_PORTNUM, buf, (size_t)n);
+
+    TEST_ASSERT_EQUAL_UINT8(1, ff_feed_count(&r.feed));
+    TEST_ASSERT_EQUAL(FEED_DIR_DIRECT, ff_feed_at(&r.feed, 0)->dir);
+}
+
+/* Row 3: addressed to some OTHER node — we cannot attest "addressed to
+ * me", so UNKNOWN (never guessed DIRECT, never guessed BROADCAST). */
+static void S24_AC1_pulse_addressed_to_other_node_stays_unknown(void)
+{
+    test_rig_t r;
+    rig_init(&r);
+    rig_pair(&r, PAIRED_NODE);
+    ff_wiring_set_self_node(&r.w, SELF_NODE);
+
+    uint8_t buf[FF_PROTO_ENVELOPE_LEN];
+    int n = encode_pulse_checked(buf, sizeof(buf));
+    ff_wiring_on_private(&r.w, PAIRED_NODE, 0x333u, FF_PORTNUM, buf, (size_t)n);
+
+    TEST_ASSERT_EQUAL_UINT8(1, ff_feed_count(&r.feed));
+    TEST_ASSERT_EQUAL(FEED_DIR_UNKNOWN, ff_feed_at(&r.feed, 0)->dir);
+}
+
+/* Row 4: addressed to what will turn out to be our id, but BEFORE
+ * my_info taught us who we are — UNKNOWN, because at receipt this
+ * device could not attest the match. */
+static void S24_AC1_pulse_before_my_info_stays_unknown(void)
+{
+    test_rig_t r;
+    rig_init(&r);
+    rig_pair(&r, PAIRED_NODE);
+    /* deliberately NO ff_wiring_set_self_node */
+
+    uint8_t buf[FF_PROTO_ENVELOPE_LEN];
+    int n = encode_pulse_checked(buf, sizeof(buf));
+    ff_wiring_on_private(&r.w, PAIRED_NODE, SELF_NODE, FF_PORTNUM, buf, (size_t)n);
 
     TEST_ASSERT_EQUAL_UINT8(1, ff_feed_count(&r.feed));
     TEST_ASSERT_EQUAL(FEED_DIR_UNKNOWN, ff_feed_at(&r.feed, 0)->dir);
@@ -644,7 +711,10 @@ int main(void)
     RUN_TEST(S24_AC1_broadcast_text_records_dir_broadcast);
     RUN_TEST(S24_AC1_text_addressed_to_me_records_dir_direct);
     RUN_TEST(S24_AC1_specific_address_without_self_match_stays_unknown);
-    RUN_TEST(S24_AC1_private_path_direction_is_unknown_not_guessed);
+    RUN_TEST(S24_AC1_broadcast_pulse_records_dir_broadcast);
+    RUN_TEST(S24_AC1_pulse_addressed_to_me_records_dir_direct);
+    RUN_TEST(S24_AC1_pulse_addressed_to_other_node_stays_unknown);
+    RUN_TEST(S24_AC1_pulse_before_my_info_stays_unknown);
     RUN_TEST(S24_AC1_direct_text_from_unpaired_sender_still_dropped);
     RUN_TEST(S24_AC1_canned_reply_pushes_outgoing_item);
     RUN_TEST(S24_AC1_refused_send_pushes_no_outgoing_item);

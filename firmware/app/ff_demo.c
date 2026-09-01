@@ -99,10 +99,13 @@ static void demo_position(mc_events_t const *ev, uint32_t node_id, double lat, d
     ev->on_position(ev->user, node_id, &p);
 }
 
-/* Push one firefly-protocol private packet from `from` into the feed. */
+/* Push one firefly-protocol private packet from `from` into the feed.
+ * Demo crew signals are crew-wide by construction, so their `to` is the
+ * broadcast address — the same addressing the seed's on_text calls carry
+ * (honest and deterministic, issue #123: never a fabricated 1:1). */
 static void demo_private(mc_events_t const *ev, uint32_t from, uint8_t const *buf, int n)
 {
-    if (n > 0) ev->on_private(ev->user, from, FF_PORTNUM, buf, (size_t)n);
+    if (n > 0) ev->on_private(ev->user, from, MC_ADDR_BROADCAST, FF_PORTNUM, buf, (size_t)n);
 }
 
 static void demo_seed_feed(mc_events_t const *ev)
