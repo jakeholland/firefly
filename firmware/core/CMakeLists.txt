@@ -314,3 +314,19 @@ if(FF_BUILD_TESTS)
 
     add_test(NAME test_idle COMMAND test_idle)
 endif()
+
+# S26 slice d (core/notify — the notification queue: fixed-depth FIFO,
+# coalescing, expiry; docs/specs/S26-device-lifecycle.md "(d) ff_notify +
+# message banner"). Pure C11, no I/O — the shell wires events -> enqueue;
+# `scr_banner.c` only renders.
+target_sources(ff-core PRIVATE src/ff_notify.c)
+
+if(FF_BUILD_TESTS)
+    add_executable(test_notify
+        tests/test_notify.c
+    )
+    target_link_libraries(test_notify PRIVATE ff-core unity)
+    ff_apply_warnings(test_notify)
+
+    add_test(NAME test_notify COMMAND test_notify)
+endif()

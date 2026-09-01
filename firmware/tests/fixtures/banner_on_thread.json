@@ -1,0 +1,35 @@
+{
+  "fixture": "banner_on_thread",
+  "face": "signals",
+  "signals": {
+    "subview": "thread",
+    "thread_node": 111,
+    "thread_name": "DANA",
+    "thread_color_idx": 0,
+    "target_kind": "member",
+    "target_node": 111,
+    "convs": [
+      {"conv": "crew", "unread": 0, "item_count": 5,
+       "preview_kind": "rally", "preview_dir": "broadcast", "preview_text": "Main Stage",
+       "preview_age_ms": 360000, "preview_from": "RILEY"},
+      {"conv": "member", "node_id": 111, "name": "DANA", "initial": "D", "color_idx": 0,
+       "unread": 0, "item_count": 2,
+       "preview_kind": "pulse", "preview_dir": "direct", "preview_age_ms": 60000,
+       "presence": "seen", "presence_age_ms": 60000}
+    ],
+    "msgs": [
+      {"kind": "text", "dir": "out", "text": "at the tower, come find us", "age_ms": 240000},
+      {"kind": "pulse", "dir": "direct", "node_id": 111, "from": "DANA", "initial": "D",
+       "color_idx": 0, "age_ms": 60000}
+    ]
+  },
+  "banner": {
+    "active": true,
+    "kind": "rally",
+    "node_id": 222,
+    "name": "KEV",
+    "color_idx": 1,
+    "text": "Main Stage",
+    "age_ms": 1000
+  }
+}

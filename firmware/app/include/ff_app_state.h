@@ -43,6 +43,7 @@
 #include <stdint.h>
 
 #include "ff_inbox.h"   /* S24 — ff_inbox_t, the inbox half of the `signals` field */
+#include "ff_notify.h"  /* S26(d) — ff_notify_kind_t, the real `banner` field's kind vocabulary */
 #include "ff_radar.h"   /* S06 — ff_radar_view_t, the real `radar` field type */
 #include "ff_sigview.h" /* S22/S24 — ff_target_kind_t (the send-scope vocabulary the S22(d) send machinery keeps) */
 
@@ -875,6 +876,39 @@ typedef enum {
     FF_APP_FACE_POWER_MENU,
 } ff_app_face_t;
 
+/* -------------------------------------------------------------------
+ * banner (S26 slice d, docs/specs/S26-device-lifecycle.md "(d) ff_notify
+ * + message banner") — the shell's `ff_notify` queue's HEAD, projected
+ * for `scr_banner.c` to render as an overlay strip. `active == false`:
+ * nothing to show (the queue is empty), the least-claiming default —
+ * this header's standing zero-value convention.
+ *
+ * Reuses the real core `ff_notify_kind_t` directly for `kind` — the same
+ * DRIFT GUARD resolution `radar`/`signals.inbox` take above (a real core
+ * enum, not a hand-mirrored second one) — but is otherwise FLATTENED like
+ * `flare`: `ff_notify_entry_t` deliberately has no crew dependency (core
+ * stays dependency-light, the `ff_flare_t` precedent — see
+ * `core/include/ff_notify.h`), so the sender's display NAME and crew
+ * palette COLOR are this struct's own app-layer additions, looked up at
+ * projection time (a NodeInfo rename mid-banner is reflected, same as
+ * every other name lookup in this header).
+ */
+typedef struct {
+    bool active; /* a BANNER is currently showing (ff_notify_head() != NULL) */
+
+    ff_notify_kind_t kind;
+    uint32_t         node_id; /* the sender's node id, verbatim from the queue entry */
+    char             name[FF_APP_NAME_LEN]; /* sender display name at projection time; "" honestly unknown */
+    uint8_t          color_idx;             /* the sender's crew palette index */
+    char             text[FF_NOTIFY_TEXT_MAX]; /* the preview text, verbatim from the queue entry */
+
+    /* now_ms - the entry's at_ms, REAL (CLAUDE.md: never a fabricated
+     * "now" — S26 spec: "a banner shows the real at_ms age via
+     * ff_fmt_age"). Rendered through that one shared formatter, same as
+     * every other age in this app. */
+    uint32_t age_ms;
+} ff_app_banner_t;
+
 typedef struct {
     /* Debug/provenance only: which fixture produced this state, e.g.
      * "radar_live". Not part of any mockup — the S13 placeholder face
@@ -915,6 +949,7 @@ typedef struct {
     ff_app_flare_t    flare;
     ff_app_settings_t settings;
     ff_app_map_t      map;
+    ff_app_banner_t   banner; /* S26(d) — the ff_notify queue's head; scr_banner.c's whole input */
 } ff_app_state_t;
 
 /* PR #21 code review finding #4: ff_app_state_t grew ~2.5x in this PR

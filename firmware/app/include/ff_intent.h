@@ -271,6 +271,16 @@ typedef enum {
      *   10 s auto-dismiss the shell applies on a timeout uses this exact
      *   pop, not a fourth intent. */
     FF_INTENT_POWER_MENU_OPEN, FF_INTENT_POWER_OFF, FF_INTENT_POWER_REBOOT, FF_INTENT_POWER_CANCEL,
+    /* [api] S26 slice d — the message banner's tap (docs/specs/
+     * S26-device-lifecycle.md "(d) ff_notify + message banner"). Appended,
+     * so no existing intent's numeric value moves. No payload: `scr_banner.c`
+     * is a pure renderer of `ff_app_state_t.banner` (the projected HEAD of
+     * the shell's own `ff_notify` queue) and must not carry the scope
+     * itself — same "acts on state the shell already owns" convention as
+     * the popup/power-menu intents above. The shell routes to the banner's
+     * sender's thread (S24 `ff_inbox` thread), marks it read, and dismisses
+     * the head banner — see `ff_shell_intent`'s case for the exact steps. */
+    FF_INTENT_BANNER_OPEN,
 } ff_intent_kind_t;
 
 /**
