@@ -333,6 +333,7 @@ static int ff_run_window(const char *fixture_path, bool mock_clock, const char *
     if (connect_hostport != NULL) {
         static ff_shell_t s_win_shell;
         static fp_pack_t s_win_pack;
+        static jsmntok_t s_win_toks[FP_MAX_TOKENS];
         static ff_clock_t s_win_clock;
 
         s_win_clock.now_ms = ff_win_clock_now_ms;
@@ -343,6 +344,8 @@ static int ff_run_window(const char *fixture_path, bool mock_clock, const char *
         shell_cfg.clock = &s_win_clock;
         shell_cfg.store = NULL; /* settings persistence is S16 slice e */
         shell_cfg.pack = &s_win_pack;
+        shell_cfg.toks = s_win_toks;
+        shell_cfg.ntoks = FP_MAX_TOKENS;
 
         ff_live_setup_cfg_t live_cfg = {
             .connect_hostport = connect_hostport,

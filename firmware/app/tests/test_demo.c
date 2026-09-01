@@ -32,6 +32,7 @@ static size_t s_json_len;
 
 static ff_shell_t s_shell;
 static fp_pack_t s_pack;
+static jsmntok_t s_toks[FP_MAX_TOKENS];
 static ff_clock_t s_clock;
 
 void setUp(void) {}
@@ -60,6 +61,8 @@ static ff_app_state_t const *seed(uint32_t primary)
     cfg.clock = &s_clock;
     cfg.store = NULL;
     cfg.pack = &s_pack;
+    cfg.toks = s_toks;
+    cfg.ntoks = FP_MAX_TOKENS;
     /* cfg.transport zeroed => no transport, the documented test seam. */
 
     TEST_ASSERT_EQUAL_INT(0, ff_shell_init(&s_shell, &cfg));

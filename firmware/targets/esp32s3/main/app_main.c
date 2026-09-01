@@ -84,6 +84,20 @@ static uint32_t s_demo_clock_ms;
  * RAM is scarce and must be left for LVGL's DMA strip buffers, and only the demo
  * build allocates it at all. Populated by ff_demo_seed via the shell's cfg.pack. */
 static fp_pack_t *s_demo_pack;
+/* S26 slice (a) — the jsmn token scratch fp_parse tokenizes into while
+ * parsing the demo festpack above. FP_MAX_TOKENS * sizeof(jsmntok_t) is
+ * 128KB: PSRAM, never internal DIRAM — reclaiming THAT is the whole point
+ * of this slice (docs/specs/S26-device-lifecycle.md). Intentionally
+ * NEVER FREED: ff_shell_cfg_t.toks is stored by the shell and reused by
+ * every ff_shell_load_pack call for the shell's whole lifetime (same
+ * contract as cfg.pack/s_demo_pack above), not just the one boot-time
+ * demo parse — ff_shell_load_pack is the shell's real production
+ * pack-load path (already used off-device by the sim's --pack/--connect
+ * flow), so a future on-device reload would parse into freed memory if
+ * this were freed after ff_demo_seed. 128KB out of 8MB PSRAM is a
+ * trade worth making to keep that pointer valid for as long as the
+ * shell might call ff_shell_load_pack again. */
+static jsmntok_t *s_demo_toks;
 extern const uint8_t firefly_pack_start[] asm("_binary_firefly_fields_festpack_json_start");
 extern const uint8_t firefly_pack_end[] asm("_binary_firefly_fields_festpack_json_end");
 
@@ -316,6 +330,18 @@ void app_main(void)
         return;
     }
     cfg.pack = s_demo_pack; /* ff_demo_seed parses the embedded festpack into this */
+
+    /* S26 slice (a) — jsmn scratch for ff_shell_load_pack, allocated once
+     * and kept alive for the process lifetime (never freed) — see
+     * s_demo_toks's declaration comment for why. PSRAM, never internal
+     * DIRAM. */
+    s_demo_toks = heap_caps_malloc((size_t)FP_MAX_TOKENS * sizeof(jsmntok_t), MALLOC_CAP_SPIRAM);
+    if (s_demo_toks == NULL) {
+        ff_park("demo festpack token-scratch PSRAM alloc failed");
+        return;
+    }
+    cfg.toks = s_demo_toks;
+    cfg.ntoks = FP_MAX_TOKENS;
 #endif
     /* cfg.transport / cfg.haptic left zeroed — see slice a. (cfg.pack set above
      * only under CONFIG_FF_DEMO_MODE.) */
@@ -330,6 +356,11 @@ void app_main(void)
     {
         size_t const pack_len = (size_t)(firefly_pack_end - firefly_pack_start);
         int const drc = ff_demo_seed(&s_shell, (char const *)firefly_pack_start, pack_len, &s_demo_clock_ms, 0);
+        /* S26 slice (a) — s_demo_toks is deliberately NOT freed here: the
+         * shell stores cfg.toks (ff_shell_cfg_t.toks) and ff_shell_load_pack
+         * is the shell's real production pack-load path, not a one-shot
+         * boot helper — a future on-device reload must find the pointer
+         * still valid. See s_demo_toks's declaration comment above. */
         if (drc != 0) {
             ESP_LOGE(TAG, "S20 demo seed failed (%d) — festpack parse or wall latch", drc);
         } else {

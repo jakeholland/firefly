@@ -10,13 +10,18 @@ target_compile_features(ff-festpack PUBLIC c_std_11)
 # fp_pack.h's ff_latlon_t comes from platform/ (see
 # firmware/platform/include/ff_latlon.h) — PUBLIC so consumers of
 # fp_pack.h resolve that include without also pulling in core/.
+# ff-jsmn is PUBLIC too (S26 slice a): fp_pack.h now exposes jsmntok_t
+# (JSMN_HEADER — declarations only, no compiled tokenizer) so callers can
+# declare the token scratch fp_parse() takes; that only resolves for
+# fp_pack.h's own consumers if jsmn.h's include dir propagates the same
+# way ff-platform's does.
 # ff-core is PRIVATE: fp_pack.c calls ff_geo_project() (ff_geo.h) to do
 # the lat/lon -> east/north projection (was a local TODO(S01) stub, now
 # the real thing — see docs/specs/S01-core-geo.md), but that dependency
 # is an implementation detail, not part of fp_pack.h's public surface.
 target_link_libraries(ff-festpack
-    PUBLIC ff-platform
-    PRIVATE ff-jsmn ff-core
+    PUBLIC ff-platform ff-jsmn
+    PRIVATE ff-core
 )
 ff_apply_warnings(ff-festpack)
 

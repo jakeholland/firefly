@@ -21,6 +21,13 @@
 void setUp(void) {}
 void tearDown(void) {}
 
+/* S26 slice (a) - shared file-scope jsmn scratch: fp_parse no longer owns
+ * a static token arena (fp_pack.h), so every test in this file supplies
+ * one. Unity runs tests sequentially in one thread, so sharing this
+ * across test functions is safe - each call fully consumes and
+ * re-tokenizes it. */
+static jsmntok_t s_toks[FP_MAX_TOKENS];
+
 static size_t load(char *buf, size_t bufsz)
 {
     FILE *f = fopen(FF_DEMO_PACK_PATH, "rb");
@@ -37,7 +44,7 @@ static void test_S20_demo_pack_parses(void)
     static char buf[BUF_SZ];
     size_t len = load(buf, sizeof(buf));
     fp_pack_t pack;
-    fp_result_t r = fp_parse(buf, len, &pack);
+    fp_result_t r = fp_parse(buf, len, &pack, s_toks, FP_MAX_TOKENS);
     TEST_ASSERT_EQUAL_INT(FP_OK, r);
 
     /* Festival identity + a KNOWN, non-assumed offset (America/Los_Angeles,
@@ -69,7 +76,7 @@ static void test_S20_firefly_starred_and_timed(void)
     static char buf[BUF_SZ];
     size_t len = load(buf, sizeof(buf));
     fp_pack_t pack;
-    TEST_ASSERT_EQUAL_INT(FP_OK, fp_parse(buf, len, &pack));
+    TEST_ASSERT_EQUAL_INT(FP_OK, fp_parse(buf, len, &pack, s_toks, FP_MAX_TOKENS));
 
     int firefly = -1;
     int n_starred = 0;

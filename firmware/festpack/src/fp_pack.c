@@ -21,13 +21,14 @@
 
 /* ---------------------------------------------------------------------
  * Parser budget. Independent of the fp_pack_t struct's 48KB output
- * budget (S05 AC6) — this bounds the *input* JSON text and the transient
- * jsmn token arena used only during fp_parse(). A too-large input or a
- * token count that overruns the arena both map to FP_ERR_TOO_BIG (never
- * a crash) — see fp_parse().
+ * budget (S05 AC6) — this bounds the *input* JSON text and the caller-
+ * supplied jsmn token scratch used only during fp_parse(). A too-large
+ * input or a token count that overruns the caller's buffer both map to
+ * FP_ERR_TOO_BIG (never an overrun) — see fp_parse(). FP_MAX_TOKENS
+ * (the recommended scratch capacity) lives in fp_pack.h now — callers
+ * need it to size their own buffer.
  * ------------------------------------------------------------------- */
 #define FP_MAX_JSON_LEN (64u * 1024u)
-#define FP_MAX_TOKENS 8192
 
 /* Real festpacks nest ~7-8 levels deep at most (root -> map -> features ->
  * [i] -> polygon -> [k] -> [lat,lon] -> number). 16 is generous headroom;
@@ -545,23 +546,22 @@ static fp_result_t fp_parse_inner(fp_ctx_t const *c, fp_pack_t *out)
     return FP_OK;
 }
 
-fp_result_t fp_parse(char const *json, size_t len, fp_pack_t *out)
+fp_result_t fp_parse(char const *json, size_t len, fp_pack_t *out, jsmntok_t *toks, int ntoks)
 {
     if (out == NULL) return FP_ERR_JSON;
     memset(out, 0, sizeof(*out));
 
     if (json == NULL || len == 0) return FP_ERR_JSON;
     if (len > FP_MAX_JSON_LEN) return FP_ERR_TOO_BIG;
+    /* Caller-supplied scratch (S26 slice a — see fp_pack.h). A NULL
+     * buffer or non-positive capacity is treated the same as jsmn
+     * running out of tokens mid-parse: FP_ERR_TOO_BIG, never a deref of
+     * a null/undersized array. */
+    if (toks == NULL || ntoks <= 0) return FP_ERR_TOO_BIG;
 
-    /* Static, not stack: the token arena is a "fixed arena" per
-     * docs/ARCHITECTURE.md's no-allocation-surprises rule, sized well
-     * beyond real festpacks (see FP_MAX_TOKENS above). This makes
-     * fp_parse() non-reentrant — callers load one pack at a time, which
-     * matches the device's actual usage pattern. */
-    static jsmntok_t toks[FP_MAX_TOKENS];
     jsmn_parser p;
     jsmn_init(&p);
-    int r = jsmn_parse(&p, json, len, toks, FP_MAX_TOKENS);
+    int r = jsmn_parse(&p, json, len, toks, (unsigned int)ntoks);
     if (r == JSMN_ERROR_NOMEM) return FP_ERR_TOO_BIG;
     if (r < 0 || r == 0) return FP_ERR_JSON; /* INVAL / PART / empty */
 

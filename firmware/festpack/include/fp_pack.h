@@ -7,7 +7,13 @@
  * (schema will grow); strict about the types it does read.
  *
  * Pure C11, no I/O — the caller supplies the JSON buffer (e.g. read from
- * flash/SD/network) and a caller-owned fp_pack_t to fill in.
+ * flash/SD/network), a caller-owned fp_pack_t to fill in, AND (S26 slice
+ * a) the jsmn token scratch fp_parse() tokenizes into. That scratch used
+ * to be a static 131,072-byte array living forever in this module's
+ * .bss; reclaiming that internal-RAM cost onto the caller (who can put
+ * it in PSRAM, or a transient stack/heap allocation, or freed after use)
+ * is the whole point of the caller-supplied-buffer signature below — see
+ * docs/specs/S26-device-lifecycle.md slice (a).
  *
  * Spec: docs/specs/S05-festpack.md
  */
@@ -20,6 +26,14 @@
 
 #include "ff_latlon.h"
 
+/* jsmntok_t only — JSMN_HEADER suppresses jsmn.h's implementation section
+ * so every TU that includes fp_pack.h (and therefore this) gets just the
+ * type and the extern declarations, not a compiled copy of the tokenizer.
+ * The one real implementation lives in fp_pack.c, compiled separately
+ * with JSMN_STATIC before its own (guard-deduped) include of jsmn.h. */
+#define JSMN_HEADER
+#include "jsmn.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -29,6 +43,14 @@ extern "C" {
 #define FP_MAX_FEATURES 24
 #define FP_MAX_LANDMARKS 12
 #define FP_MAX_POLY_PTS 24
+
+/** Recommended jsmn token-scratch capacity for fp_parse() — sized well
+ *  beyond any real festpack (see fp_pack.c). Callers that have no
+ *  specific reason to size differently should allocate
+ *  `FP_MAX_TOKENS * sizeof(jsmntok_t)` and pass it as `ntoks`. A smaller
+ *  buffer is legal — fp_parse() returns FP_ERR_TOO_BIG rather than
+ *  overrunning it, never a crash. */
+#define FP_MAX_TOKENS 8192
 
 /** Result of fp_parse(). */
 typedef enum {
@@ -137,14 +159,24 @@ _Static_assert(sizeof(fp_pack_t) <= 48 * 1024,
 /**
  * fp_parse — parse `json[0..len)` into `*out`.
  *
- * Zero dynamic allocation. Not reentrant (uses an internal static token
- * arena) — call from a single context at a time, matching the "one pack
- * loaded at a time" device usage pattern.
+ * Zero dynamic allocation *inside this module* — the caller supplies the
+ * jsmn token scratch: `toks` must point to at least `ntoks` writable
+ * `jsmntok_t` slots (see FP_MAX_TOKENS above for the recommended size).
+ * This makes fp_parse() reentrant (unlike the old static-arena version):
+ * concurrent calls are safe as long as they pass distinct `toks` buffers.
+ * `toks`/`out` may otherwise live anywhere the caller likes — static,
+ * stack, heap, PSRAM (S26 slice a's whole point is that a device target
+ * can put this 128KB-class scratch in PSRAM and free it right after the
+ * call, instead of it sitting in internal RAM forever).
+ *
+ * A too-small `ntoks` (including 0 or a NULL `toks`) is not a crash: it
+ * hits the same token-budget check as an oversized document and returns
+ * FP_ERR_TOO_BIG, exactly like the old fixed-size arena running out.
  *
  * On any return other than FP_OK, `*out` is left zeroed (memset), not
  * partially populated.
  */
-fp_result_t fp_parse(char const *json, size_t len, fp_pack_t *out);
+fp_result_t fp_parse(char const *json, size_t len, fp_pack_t *out, jsmntok_t *toks, int ntoks);
 
 #ifdef __cplusplus
 }

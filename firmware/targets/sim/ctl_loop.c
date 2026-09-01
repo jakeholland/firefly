@@ -148,6 +148,11 @@ int ff_ctl_loop_open(ff_ctl_loop_ctx_t *ctx, ff_shell_t *shell, fp_pack_t *pack,
     ctx->clock.user = NULL;
     shell_cfg->clock = &ctx->clock;
     shell_cfg->pack = pack;
+    /* Static, singleton like g_ctl_loop_ctx above — this loop only ever
+     * runs one shell at a time. See fp_pack.h's FP_MAX_TOKENS. */
+    static jsmntok_t s_toks[FP_MAX_TOKENS];
+    shell_cfg->toks = s_toks;
+    shell_cfg->ntoks = FP_MAX_TOKENS;
 
     ff_live_setup_cfg_t live_cfg = {
         .connect_hostport = cfg->connect_hostport,

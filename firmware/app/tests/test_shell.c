@@ -179,6 +179,7 @@ typedef struct {
     mem_store_t store_mem;
     ff_store_t store;
     fp_pack_t pack;
+    jsmntok_t toks[FP_MAX_TOKENS];
     ff_shell_t shell;
     mc_events_t ev;
 } harness_t;
@@ -215,6 +216,8 @@ static void harness_init(uint32_t t0_ms, bool with_store)
     cfg.haptic = spy_haptic;
     cfg.haptic_user = &H.haptic;
     cfg.pack = &H.pack;
+    cfg.toks = H.toks;
+    cfg.ntoks = FP_MAX_TOKENS;
     /* cfg.transport left zeroed: the documented "no transport" case. */
 
     TEST_ASSERT_EQUAL_INT(0, ff_shell_init(&H.shell, &cfg));
@@ -1879,6 +1882,44 @@ static void S09_shell_map_stays_empty_without_a_known_venue(void)
     TEST_ASSERT_FALSE(m->you_has_pos);
 }
 
+/* S26 slice (a) — ff_shell_load_pack is the shell's real production
+ * pack-load path (not a one-shot boot helper), so the token scratch
+ * `cfg.toks` points at (ff_shell_cfg_t.toks, stored as sh->toks at
+ * ff_shell_init) must stay valid and correctly reusable across MORE
+ * THAN ONE load on the same shell — the exact contract the esp32s3
+ * target leans on by never freeing its PSRAM toks allocation (see
+ * app_main.c). H.toks (the harness's fixed-size buffer) is the SAME
+ * buffer both calls below go through; if fp_parse left any state
+ * behind in it, or if a real bug ever reintroduced a stale/freed
+ * pointer, the SECOND load — of a DIFFERENT pack, so a copy-paste
+ * "first result cached" bug would also be caught — would be the one
+ * to fail. */
+static void S26_ff_shell_load_pack_twice_same_shell_same_toks_buffer(void)
+{
+    harness_init(100000u, false);
+    inject_my_info(MY_ID);
+
+    TEST_ASSERT_EQUAL_INT(0, ff_shell_load_pack(&H.shell, PACK_JSON, sizeof(PACK_JSON) - 1u));
+    TEST_ASSERT_EQUAL_UINT8(1, H.pack.n_stages);
+    TEST_ASSERT_EQUAL_STRING("Headliner", H.pack.sets[0].artist);
+    TEST_ASSERT_EQUAL_UINT8(0, H.pack.n_features);
+
+    /* Second load, same shell, same H.toks buffer, a DIFFERENT pack
+     * (one with a map.features section the first pack didn't have) —
+     * proves H.toks (fp_parse's caller-supplied scratch, stored once at
+     * harness_init and reused by every ff_shell_load_pack call on this
+     * shell) parses correctly again rather than returning stale/garbage
+     * tokens from the first call. */
+    TEST_ASSERT_EQUAL_INT(0, ff_shell_load_pack(&H.shell, PACK_JSON_MAP, sizeof(PACK_JSON_MAP) - 1u));
+    TEST_ASSERT_EQUAL_STRING("Solo Act", H.pack.sets[0].artist);
+    TEST_ASSERT_EQUAL_UINT8(1, H.pack.n_features);
+
+    /* And the shell still functions normally after the reload — the
+     * whole point of proving the buffer isn't stale/corrupted. */
+    ff_shell_tick(&H.shell, H.clk.t);
+    TEST_ASSERT_TRUE(ff_shell_view(&H.shell) != NULL);
+}
+
 /* PR #73 review finding #5 (LOW, mutation-uncaught): the paired-only
  * crew gate in shell_project_map (`if (!m->paired || !m->has_pos)
  * continue;`) had no test proving the PAIRED half of that condition
@@ -2768,6 +2809,8 @@ static void s22_connect_shell(void)
     memset(&cfg, 0, sizeof(cfg));
     cfg.clock = &H.clock;
     cfg.pack = &H.pack;
+    cfg.toks = H.toks;
+    cfg.ntoks = FP_MAX_TOKENS;
     cfg.transport.read = pipe_read;
     cfg.transport.write = pipe_write;
     cfg.transport.io = &P;
@@ -3065,6 +3108,8 @@ static void S16_AC6_nodeinfo_plus_position_via_real_transport_produce_zero_feed_
     memset(&cfg, 0, sizeof(cfg));
     cfg.clock = &H.clock;
     cfg.pack = &H.pack;
+    cfg.toks = H.toks;
+    cfg.ntoks = FP_MAX_TOKENS;
     cfg.transport.read = pipe_read;
     cfg.transport.write = pipe_write;
     cfg.transport.io = &P;
@@ -3234,6 +3279,8 @@ static void S16_AC7_canned_reply_uses_newest_feed_item_or_broadcasts(void)
     memset(&cfg, 0, sizeof(cfg));
     cfg.clock = &H.clock;
     cfg.pack = &H.pack;
+    cfg.toks = H.toks;
+    cfg.ntoks = FP_MAX_TOKENS;
     cfg.transport.read = pipe_read;
     cfg.transport.write = pipe_write;
     cfg.transport.io = &P;
@@ -3320,6 +3367,8 @@ static void S16_c3_send_text_sends_the_shell_owned_draft(void)
     memset(&cfg, 0, sizeof(cfg));
     cfg.clock = &H.clock;
     cfg.pack = &H.pack;
+    cfg.toks = H.toks;
+    cfg.ntoks = FP_MAX_TOKENS;
     cfg.transport.read = pipe_read;
     cfg.transport.write = pipe_write;
     cfg.transport.io = &P;
@@ -3429,6 +3478,8 @@ static void S08_pred_send_with_unaccepted_candidate_sends_the_visible_word(void)
     memset(&cfg, 0, sizeof(cfg));
     cfg.clock = &H.clock;
     cfg.pack = &H.pack;
+    cfg.toks = H.toks;
+    cfg.ntoks = FP_MAX_TOKENS;
     cfg.transport.read = pipe_read;
     cfg.transport.write = pipe_write;
     cfg.transport.io = &P;
@@ -4958,6 +5009,8 @@ int main(void)
     RUN_TEST(S09_shell_projects_map_from_pack_crew_and_my_position);
     RUN_TEST(S09_shell_map_stays_empty_without_a_known_venue);
     RUN_TEST(S09_shell_map_excludes_unpaired_members_even_with_a_position);
+
+    RUN_TEST(S26_ff_shell_load_pack_twice_same_shell_same_toks_buffer);
     RUN_TEST(S09_shell_caps_features_at_the_view_limit_and_surfaces_truncation);
     RUN_TEST(S09_shell_does_not_claim_truncation_for_a_pack_within_caps);
     RUN_TEST(S16_b1_loading_a_pack_does_not_fabricate_my_position);
