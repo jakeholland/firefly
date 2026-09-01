@@ -2820,6 +2820,51 @@ static void S22_AC4_pulse_addresses_member_vs_whole_crew(void)
     TEST_ASSERT_EQUAL_INT(FF_PROTO_TYPE_PULSE, decode_packet_private(P.tx + tx_before, P.tx_len - tx_before, NULL));
 }
 
+/* The OUTBOUND quick signal is a FLARE, not a pulse (the maintainer's "in
+ * send to crew we should have flare not pulse"). The 1:1 FLARE chip
+ * (FF_INTENT_SIG_FLARE) addresses a member vs broadcasts to the whole crew
+ * through the SAME S22(d) seam, and the wire body is a FLARE at the S10
+ * default duration. Every send asserts the destination NODE, the decoded
+ * ff_proto TYPE, AND the duration — refusing the proxy the brief names ("a
+ * flare send happened" while the wire still carries a PULSE would slip past
+ * a feed-only check; the wire-type + dur assertions are what catch it). */
+static void S24_flare_chip_addresses_member_vs_whole_crew_as_flare(void)
+{
+    s22_connect_shell();
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, true));
+
+    /* Member: SELECT DANA, then FLARE -> addressed to DANA, type FLARE at
+     * the default duration. */
+    ff_intent_t sel = {.kind = FF_INTENT_SIG_SELECT_MEMBER, .u = {0}};
+    sel.u.node_id = DANA;
+    ff_shell_intent(&H.shell, &sel);
+
+    size_t tx_before = P.tx_len;
+    ff_intent_t flare = {.kind = FF_INTENT_SIG_FLARE, .u = {0}};
+    ff_shell_intent(&H.shell, &flare);
+    TEST_ASSERT_GREATER_THAN_size_t(tx_before, P.tx_len);
+    TEST_ASSERT_EQUAL_UINT32(DANA, decode_packet_to(P.tx + tx_before, P.tx_len - tx_before));
+    ff_proto_msg_t msg;
+    TEST_ASSERT_EQUAL_INT(FF_PROTO_TYPE_FLARE,
+                          decode_packet_private(P.tx + tx_before, P.tx_len - tx_before, &msg));
+    TEST_ASSERT_EQUAL_UINT16(FF_FLARE_DEFAULT_DUR_S, msg.body.flare.dur_s);
+
+    /* The send reset the target to WHOLE_CREW (AC3, no thread open). A second
+     * FLARE now broadcasts, still as a FLARE. */
+    TEST_ASSERT_EQUAL_INT(FF_TARGET_WHOLE_CREW, ff_shell_view(&H.shell)->signals.target_kind);
+    tx_before = P.tx_len;
+    ff_shell_intent(&H.shell, &flare);
+    TEST_ASSERT_GREATER_THAN_size_t(tx_before, P.tx_len);
+    TEST_ASSERT_EQUAL_UINT32(MC_ADDR_BROADCAST, decode_packet_to(P.tx + tx_before, P.tx_len - tx_before));
+    TEST_ASSERT_EQUAL_INT(FF_PROTO_TYPE_FLARE,
+                          decode_packet_private(P.tx + tx_before, P.tx_len - tx_before, NULL));
+
+    /* The OUT item lands in the feed as a FLARE (not a pulse). */
+    ff_feed_item_t const *it = ff_feed_at(ff_shell_feed(&H.shell), 0);
+    TEST_ASSERT_EQUAL(FEED_FLARE, it->kind);
+    TEST_ASSERT_EQUAL(FEED_DIR_OUT, it->dir);
+}
+
 /* AC4 / honest-data (Tier 3) — a send to a member who was JUST unpaired,
  * with NO intervening tick, is REFUSED. `ff_shell_pair(node, false)` clears
  * `paired` but leaves the node in the roster, so `ff_crew_find` still returns
@@ -4609,6 +4654,30 @@ static void S24_AC5_popup_pulse_sends_to_scope_and_closes(void)
     TEST_ASSERT_EQUAL_UINT32(DANA, it->to_node);
 }
 
+/* The popup's third row is a FLARE, not a pulse: FF_INTENT_INBOX_POPUP_FLARE
+ * sends a FLARE to the scope (decoded TYPE + dest NODE, not "a send
+ * happened"), pushes the OUT FEED_FLARE item, and pops back to the thread. */
+static void S24_popup_flare_sends_flare_to_scope_and_closes(void)
+{
+    s22_connect_shell();
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, true));
+    s24d_open_popup(DANA);
+
+    size_t const tx_before = P.tx_len;
+    ff_intent_t pf = {.kind = FF_INTENT_INBOX_POPUP_FLARE, .u = {0}};
+    ff_shell_intent(&H.shell, &pf);
+    TEST_ASSERT_GREATER_THAN_size_t(tx_before, P.tx_len);
+    TEST_ASSERT_EQUAL_UINT32(DANA, decode_packet_to(P.tx + tx_before, P.tx_len - tx_before));
+    TEST_ASSERT_EQUAL_INT(FF_PROTO_TYPE_FLARE, decode_packet_private(P.tx + tx_before, P.tx_len - tx_before, NULL));
+
+    (void)ff_shell_tick(&H.shell, H.clk.t);
+    TEST_ASSERT_EQUAL_INT(FF_SIG_SUB_THREAD, ff_shell_view(&H.shell)->signals.subview);
+    ff_feed_item_t const *it = ff_feed_at(ff_shell_feed(&H.shell), 0);
+    TEST_ASSERT_EQUAL(FEED_FLARE, it->kind);
+    TEST_ASSERT_EQUAL(FEED_DIR_OUT, it->dir);
+    TEST_ASSERT_EQUAL_UINT32(DANA, it->to_node);
+}
+
 /* AC5 — the popup Compose row opens the composer with TO = the scope and
  * drops the sub-view to THREAD (under the modal). */
 static void S24_AC5_popup_compose_opens_composer_at_scope(void)
@@ -4905,6 +4974,7 @@ int main(void)
     RUN_TEST(S16_b1_shell_footprint_excludes_the_pack);
     RUN_TEST(S22b_signals_target_survives_rebuild_and_is_gated);
     RUN_TEST(S22_AC4_pulse_addresses_member_vs_whole_crew);
+    RUN_TEST(S24_flare_chip_addresses_member_vs_whole_crew_as_flare);
     RUN_TEST(S22_AC4_send_to_just_unpaired_member_is_refused);
     RUN_TEST(S22_AC4_rally_to_member_sends_first_tap);
     RUN_TEST(S22_AC4_rally_without_my_pos_sends_nothing);
@@ -4949,6 +5019,7 @@ int main(void)
     RUN_TEST(S24_AC3_inbox_intents_are_inert_under_a_takeover);
     /* S24 slice d — popup / rally / opacity / demo-loopback seam. */
     RUN_TEST(S24_AC5_popup_pulse_sends_to_scope_and_closes);
+    RUN_TEST(S24_popup_flare_sends_flare_to_scope_and_closes);
     RUN_TEST(S24_AC5_popup_compose_opens_composer_at_scope);
     RUN_TEST(S24_AC5_popup_rally_opens_rally_screen);
     RUN_TEST(S24_AC6_rally_places_from_pack);

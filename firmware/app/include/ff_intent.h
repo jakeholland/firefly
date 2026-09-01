@@ -216,6 +216,29 @@ typedef enum {
      *   arms on the first tap and sends on the second (S22 AC4). */
     FF_INTENT_INBOX_POPUP_COMPOSE, FF_INTENT_INBOX_POPUP_PULSE, FF_INTENT_INBOX_POPUP_RALLY,
     FF_INTENT_RALLY_SELECT_PLACE, FF_INTENT_RALLY_CYCLE_WHEN, FF_INTENT_RALLY_SEND,
+    /* The OUTBOUND quick signal is a FLARE ("come find me"), not a PULSE
+     * (empty ping) — the maintainer's "in send to crew we should have flare
+     * not pulse". Both intents encode an `ff_proto` FLARE
+     * (`ff_proto_encode_flare`, FF_FLARE_DEFAULT_DUR_S) and dispatch it over
+     * FF_PORTNUM to the current scope through the SAME S22(d)/S24(d) send
+     * seam PULSE used (WHOLE_CREW broadcast vs a member's addressed send) —
+     * no new transport path. Appended, so no existing intent's numeric value
+     * moves.
+     *
+     * SIG_FLARE — the 1:1 thread's quick chip (was the PULSE chip): flares
+     *   the open thread's scope, then (no thread open) resets the target to
+     *   WHOLE_CREW, exactly as SIG_PULSE did.
+     * INBOX_POPUP_FLARE — the action popup's third row (was the Pulse row):
+     *   flares the scope immediately, then pops the popup back to the thread
+     *   (the OUT flare shows there).
+     *
+     * FF_INTENT_SIG_PULSE / FF_INTENT_INBOX_POPUP_PULSE are DELIBERATELY kept
+     * (no screen emits them now — the outbound-pulse SEND path stays a
+     * programmatic seam, still exercised by the shell's unit tests): removing
+     * them would renumber the intents above. The INCOMING pulse (the feed
+     * kind, the "DANA pulsed you" wording, the demo generator) is untouched —
+     * other pucks may still pulse; only this outbound action changed. */
+    FF_INTENT_SIG_FLARE, FF_INTENT_INBOX_POPUP_FLARE,
 } ff_intent_kind_t;
 
 /**

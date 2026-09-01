@@ -332,12 +332,29 @@ static lv_obj_t *flare_make_button(lv_obj_t *parent, char const *text, uint32_t 
     if (filled) {
         lv_obj_set_style_bg_color(btn, lv_color_hex(bg_hex), 0);
         lv_obj_set_style_bg_opa(btn, LV_OPA_COVER, 0);
+        /* Press feedback (issue: "missing touchdown state for the flaring
+         * notification screen"). A solid-amber primary is already amber, so
+         * it DIMS on touch-down rather than flashing amber-on-amber — the
+         * composer SEND / Signals FAB precedent (scr_signals.c's SEND button
+         * and press_dim: a dark ink wash darkens the fill the instant the
+         * finger is down; LVGL clears it on release). LV_STATE_PRESSED-only,
+         * so the resting render the goldens capture is untouched. */
+        lv_obj_set_style_bg_color(btn, lv_color_hex(FF_THEME_COLOR_INK), LV_STATE_PRESSED);
+        lv_obj_set_style_bg_opa(btn, LV_OPA_20, LV_STATE_PRESSED);
     } else {
         lv_obj_set_style_bg_color(btn, lv_color_hex(FF_THEME_COLOR_SURFACE), 0);
         lv_obj_set_style_bg_opa(btn, LV_OPA_COVER, 0);
         lv_obj_set_style_border_width(btn, 3, 0);
         lv_obj_set_style_border_color(btn, lv_color_hex(bg_hex), 0);
         lv_obj_set_style_border_opa(btn, LV_OPA_COVER, 0);
+        /* Press feedback for the outlined pill (DISMISS/CANCEL): its surface
+         * fill is NOT amber, so it TINTS amber on touch-down — the
+         * signals_press_feedback / compose_key_press_feedback amber-flash
+         * idiom (light the control amber at a translucent opa while pressed).
+         * LV_STATE_PRESSED-only; the resting outlined look, and the goldens,
+         * stay byte-identical. */
+        lv_obj_set_style_bg_color(btn, lv_color_hex(FF_THEME_COLOR_AMBER), LV_STATE_PRESSED);
+        lv_obj_set_style_bg_opa(btn, LV_OPA_40, LV_STATE_PRESSED);
     }
     lv_obj_align(btn, LV_ALIGN_CENTER, 0, (int32_t)dy);
     if (cb != NULL) {
