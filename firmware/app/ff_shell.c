@@ -46,6 +46,11 @@ _Static_assert(FF_COMPOSE_EXTRA_MAX == 280,
  * a deliberate double-tap, short enough that a forgotten arm cannot lurk. */
 #define FF_SIG_RALLY_CONFIRM_MS 4000u
 
+/* S26 slice b — the power menu's auto-dismiss timeout ("Cancel or a 10 s
+ * timeout -> dismiss", docs/specs/S26-device-lifecycle.md). Checked once
+ * per ff_shell_tick against power_menu_opened_ms. */
+#define FF_POWER_MENU_TIMEOUT_MS 10000u
+
 /* S22 slice d, SPEC GAP (see docs/specs/S22-signals-rework.md "Questions"):
  * a quick RALLY gathers the crew to the SENDER's own current location, and
  * names the place after the nearest festpack landmark within this radius
@@ -74,6 +79,15 @@ typedef struct {
      * shell persists it into ff_settings. */
     bool (*calibrate_touch)(void *user, ff_touchcal_t *out_cal);
     void *calibrate_touch_user;
+    /* S26 slice b — power-menu action hooks. NULL on the sim (safe no-ops:
+     * the modal still pops, nothing fires below the shell). See
+     * ff_shell.h's ff_shell_cfg_t doc comments for the full device
+     * behaviour (power_off: ff_power_off + backlight 0 from app_main;
+     * power_reboot: arms the target's ff_power_fsm_t reboot guard). */
+    void (*power_off)(void *user);
+    void *power_off_user;
+    void (*power_reboot)(void *user);
+    void *power_reboot_user;
     fp_pack_t *pack; /* caller-owned storage; NULL = this target has no pack */
     bool pack_loaded;
     jsmntok_t *toks; /* caller-owned jsmn scratch for fp_parse (S26 slice a) */
@@ -136,6 +150,15 @@ typedef struct {
      * (`ff_sigview_set_rally_confirm_armed`) each tick. */
     bool     sig_rally_armed;
     uint32_t sig_rally_armed_ms;
+
+    /* S26 slice b — when the power menu was opened (FF_INTENT_POWER_MENU_OPEN
+     * successfully pushed the modal), for the spec's 10 s auto-dismiss
+     * timeout. Same "time-based state lives in the shell, needs the
+     * injected clock" reasoning as sig_rally_armed_ms above; checked once
+     * per ff_shell_tick. Meaningful only while route.modal ==
+     * FF_APP_FACE_POWER_MENU — cleared (well, simply not read) once the
+     * modal pops by any other means (Power off / Reboot / Cancel). */
+    uint32_t power_menu_opened_ms;
 
     /* S24 slice d — the Rally sub-view's persistent WHERE/WHEN selection
      * (the view is memset each tick, so like sig_subview these live in the
@@ -1797,6 +1820,28 @@ static void shell_render_key(ff_app_state_t const *v, ff_app_state_t *key)
         memcpy(key->flare.takeover_dist_str, dist, sizeof(dist));
         key->flare.locked = locked;
         memcpy(key->flare.locked_from_name, locked_from, sizeof(locked_from));
+    } else if (v->active_face == FF_APP_FACE_POWER_MENU) {
+        /* S26 slice b — the power menu is OPAQUE in the render key, same
+         * discipline as the flare takeover above and the Signals popup/
+         * Rally masking further up. Unlike either of those, the power
+         * menu renders NO dynamic content at all (three static buttons —
+         * see scr_power_menu.c), so the mask is total: every section is
+         * reduced to zero except `active_face` itself, which is what a
+         * pop (Power off / Reboot / Cancel / the 10 s timeout) actually
+         * changes. Without this, a live radar arrow, an aging Signals
+         * row, or a fresh demo feed item ticking underneath would dirty
+         * the key every frame the menu is open, and the device answers a
+         * dirty frame with lv_obj_clean()+rebuild — destroying whichever
+         * button a thumb is mid-press on, the exact "second flare won't
+         * dismiss" clobber class this file's flare-key comment documents.
+         * `else if`, not a second unconditional `if`: a flare takeover
+         * arriving while the power menu is open is dispatched INSTEAD of
+         * the menu (face_dispatch.c checks takeover_active first,
+         * unconditionally of active_face), so the takeover branch above
+         * must win the key too, not be overwritten by this one. */
+        ff_app_face_t const af = key->active_face;
+        memset(key, 0, sizeof(*key));
+        key->active_face = af;
     }
 }
 
@@ -1817,6 +1862,10 @@ int ff_shell_init(ff_shell_t *sh_pub, ff_shell_cfg_t const *cfg)
     sh->haptic_user = cfg->haptic_user;
     sh->calibrate_touch = cfg->calibrate_touch;
     sh->calibrate_touch_user = cfg->calibrate_touch_user;
+    sh->power_off = cfg->power_off;
+    sh->power_off_user = cfg->power_off_user;
+    sh->power_reboot = cfg->power_reboot;
+    sh->power_reboot_user = cfg->power_reboot_user;
     sh->pack = cfg->pack;
     sh->pack_loaded = false;
     sh->toks = cfg->toks;
@@ -1953,6 +2002,18 @@ bool ff_shell_tick(ff_shell_t *sh_pub, uint32_t now_ms)
      * here with no route involved, which is why ff_route_visible takes
      * takeover as a parameter rather than caching it. */
     (void)ff_flare_tick(&sh->flare, now_ms);
+
+    /* S26 slice b — the power menu's 10 s auto-dismiss timeout ("Cancel or
+     * a 10 s timeout -> dismiss"). Same wraparound-safe unsigned-subtraction
+     * idiom the rally-confirm timeout above uses (sig_rally_armed_ms).
+     * Popping here (not through FF_INTENT_POWER_CANCEL) is deliberate: a
+     * timeout is not a user action, so it goes straight to the route the
+     * same way ff_flare_tick's own expiries do, rather than synthesizing a
+     * fake intent. */
+    if (sh->route.modal == FF_APP_FACE_POWER_MENU &&
+        (now_ms - sh->power_menu_opened_ms) >= FF_POWER_MENU_TIMEOUT_MS) {
+        (void)ff_route_pop_modal(&sh->route);
+    }
 
     /* S16 slice c3: the injected clock, not lv_tick_get() (scr_compose.c
      * no longer touches the clock at all — see ff_t9.h's "Deviations"
@@ -3317,6 +3378,48 @@ void ff_shell_intent(ff_shell_t *sh_pub, ff_intent_t const *in)
             ff_t9pred_session_set_extra(&sh->compose_pred, sh->compose_extra, sh->compose_extra_n);
             sh->compose_mode = FF_APP_COMPOSE_PRED;
         }
+        return;
+
+    /* --- S26 slice b — PWR button -> power menu -> soft power-off ---- */
+
+    case FF_INTENT_POWER_MENU_OPEN:
+        /* NOT screen-originated (see ff_intent.h's doc comment on this
+         * kind) — the esp32s3 target's app_main dispatches this directly
+         * when its ff_power_fsm_t reports LONG_PRESS. Gated on the
+         * takeover exactly like OPEN_COMPOSE/OPEN_SETTINGS above
+         * (routing rule 4): a PWR long-press must not steal input from a
+         * live takeover. push_modal's own rules do the rest — rejected,
+         * silently, over an already-open modal (Compose's draft is never
+         * interrupted) or an off-axis base. */
+        if (takeover_up) return;
+        if (ff_route_push_modal(&sh->route, FF_APP_FACE_POWER_MENU)) {
+            sh->power_menu_opened_ms = shell_now(sh);
+        }
+        return;
+
+    case FF_INTENT_POWER_OFF:
+        /* Reachable only while the power menu is the visible face (its
+         * button is the only emitter), so this gate matches SETTING_SET's
+         * own reasoning above — stated for the same "keep the routing
+         * statement true, not just the outcome" reason. */
+        if (takeover_up) return;
+        if (sh->power_off != NULL) {
+            sh->power_off(sh->power_off_user);
+        }
+        (void)ff_route_pop_modal(&sh->route);
+        return;
+
+    case FF_INTENT_POWER_REBOOT:
+        if (takeover_up) return;
+        if (sh->power_reboot != NULL) {
+            sh->power_reboot(sh->power_reboot_user);
+        }
+        (void)ff_route_pop_modal(&sh->route);
+        return;
+
+    case FF_INTENT_POWER_CANCEL:
+        if (takeover_up) return;
+        (void)ff_route_pop_modal(&sh->route);
         return;
 
     /* --- deliberate no-ops until their owning slice lands ------------ */

@@ -268,6 +268,30 @@ typedef struct {
     bool (*calibrate_touch)(void *user, ff_touchcal_t *out_cal);
     void *calibrate_touch_user;
 
+    /** S26 slice b — the power-menu "Power off" hook, invoked by
+     *  FF_INTENT_POWER_OFF (docs/specs/S26-device-lifecycle.md). Same
+     *  injected-device-IO shape as `calibrate_touch`/`haptic`: NULL on a
+     *  target with no power latch (the sim) is a safe no-op — the modal
+     *  still pops, nothing fires below the shell. On device this calls
+     *  `ff_power_off()` (GPIO7 low) AND `ff_display_set_brightness(0)`
+     *  from app_main's own callback — deliberately NOT from inside
+     *  `ff_power`, which stays a pure two-pin GPIO HAL with no display
+     *  dependency (S25/S26 hardware contract). */
+    void (*power_off)(void *user);
+    void *power_off_user;
+
+    /** S26 slice b — the power-menu "Reboot" hook, invoked by
+     *  FF_INTENT_POWER_REBOOT. NULL on the sim (safe no-op — the modal
+     *  still pops). On device this arms the target's OWN `ff_power_fsm_t`
+     *  reboot-BOOT-release guard (`ff_power_fsm_request_reboot`) and
+     *  returns immediately — it does NOT call `esp_restart()` itself.
+     *  app_main's tick loop is what polls `ff_power_fsm_reboot_ready()`
+     *  every tick and calls `esp_restart()` once BOOT (GPIO0) reads
+     *  released, so a reboot requested while BOOT happens to be held
+     *  never risks entering the ROM bootloader (S26 AC4). */
+    void (*power_reboot)(void *user);
+    void *power_reboot_user;
+
     /**
      * WHERE `fp_pack_t` LIVES — the decision S16 leaves to the
      * implementer, made here explicitly rather than left implied.

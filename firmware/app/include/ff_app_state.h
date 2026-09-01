@@ -851,6 +851,28 @@ typedef enum {
      * places and re-create, one layer down, exactly the desync that
      * keeps `takeover` out of ff_route_t. */
     FF_APP_FACE_FLARE,
+    /* S26 slice b [api] (docs/specs/S26-device-lifecycle.md "(b) Power
+     * button -> power menu -> soft power-off"). Appended after FLARE, so
+     * no existing face's numeric value moves (this repo's standing
+     * append-only convention for enums with call sites already keyed on
+     * a specific member — e.g. ff_intent_kind_t's own "Appended, so no
+     * existing intent's numeric value moves" notes). The PWR-button
+     * LONG_PRESS modal: three big round-glass buttons (Power off /
+     * Reboot / Cancel), see app/screens/scr_power_menu.h. The SECOND (and,
+     * for now, last) value `ff_route_push_modal` accepts — Compose was
+     * "the sole modal face" before this slice; see that function's
+     * updated doc comment. Fully static content (no dynamic view-state),
+     * so — unlike `compose`/`flare`/`map` above — this face has no
+     * `ff_app_state_t` section of its own: `active_face ==
+     * FF_APP_FACE_POWER_MENU` is the entire "render the power menu" fact
+     * (scr_power_menu.c's build function takes no argument), and
+     * `ff_shell.c`'s render key masks every OTHER section while this is
+     * the active face (same "opaque overlay" discipline the flare
+     * takeover / Signals popup already use — see shell_render_key's
+     * comment there) so churn underneath cannot rebuild this modal
+     * mid-press. Unlike FLARE, this IS a renderable `active_face` value
+     * (it is a real modal, not a routing-only sentinel). */
+    FF_APP_FACE_POWER_MENU,
 } ff_app_face_t;
 
 typedef struct {

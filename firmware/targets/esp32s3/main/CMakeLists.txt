@@ -17,8 +17,8 @@ idf_component_register(
     # lv_screen_active/lv_obj_clean directly on the dirty-rebuild.
     REQUIRES ff_app ff_app_ui ff_core ff_display ff_power lvgl
     # nvs_flash: the real settings store (S21 §4). esp_timer/freertos: clock
-    # + task delays.
-    PRIV_REQUIRES esp_timer freertos nvs_flash
+    # + task delays. esp_system: esp_restart() (S26 slice b's reboot action).
+    PRIV_REQUIRES esp_timer freertos nvs_flash esp_system
     EMBED_FILES "${FF_DEMO_EMBED}"
 )
 

@@ -7,6 +7,7 @@
 #include "scr_compose.h"
 #include "scr_flare.h" /* S10 slice b — full-screen receive takeover */
 #include "scr_nav.h"   /* the 5-face carousel — Radar/Now/Signals/Map/Settings all render through here now */
+#include "scr_power_menu.h" /* S26 slice b — the PWR-button power menu modal */
 #include "scr_settings.h" /* the Settings scroll reset/hint hooks (the tile itself is built by scr_nav) */
 
 /* The face actually built for `state` — a receive-takeover overrides the
@@ -64,6 +65,11 @@ void ff_build_face_screen(ff_app_state_t const *state)
         }
     } else if (state->active_face == FF_APP_FACE_COMPOSE) {
         ff_scr_compose_build(&state->compose);
+    } else if (state->active_face == FF_APP_FACE_POWER_MENU) {
+        /* S26 slice b — the second (and, for now, last) modal face. No
+         * state parameter: ff_scr_power_menu_build renders fixed content
+         * (see scr_power_menu.h's top comment for why). */
+        ff_scr_power_menu_build();
     } else {
         ff_fixture_view_build(state);
     }

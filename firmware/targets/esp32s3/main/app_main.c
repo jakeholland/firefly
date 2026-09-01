@@ -37,6 +37,7 @@
 #include <string.h>
 
 #include "esp_log.h"
+#include "esp_system.h" /* esp_restart() — S26 slice b's reboot action */
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -45,7 +46,8 @@
 #include "ff_face.h"
 #include "ff_intent.h"
 #include "ff_nvs_store.h" /* S21 §4 — the real NVS-backed store */
-#include "ff_power.h"     /* S25 — battery keep-alive latch (must fire first) */
+#include "ff_power.h"      /* S25 — battery keep-alive latch (must fire first) + S26b PWR/BOOT sampling */
+#include "ff_power_fsm.h"  /* S26 slice b — core: the press-timing FSM + reboot BOOT-release guard */
 #include "ff_settings.h"
 #include "ff_shell.h"
 #include "ff_touchcal.h"
@@ -260,6 +262,43 @@ static bool ff_calibrate_touch_cb(void *user, ff_touchcal_t *out_cal)
     return false;
 }
 
+/* ---------------------------------------------------------------------
+ * S26 slice b — PWR button -> power menu -> soft power-off.
+ *
+ * `s_power_fsm` is core/ff_power_fsm.h's whole state (debounce, press
+ * timing, the reboot BOOT-release guard) — this file only samples GPIO6/
+ * GPIO0 (ff_power.h) and ticks the FSM every main-loop frame (below, next
+ * to ff_shell_tick — "look at how ff_shell_tick is driven"); the FSM
+ * makes every decision, so nothing here is an `if` about behavior
+ * (CLAUDE.md's house rule).
+ * ------------------------------------------------------------------- */
+static ff_power_fsm_t s_power_fsm;
+
+/* ff_shell_cfg_t.power_off: called by the shell's FF_INTENT_POWER_OFF
+ * handler. Composes the two device-IO calls the spec's slice (b) section
+ * names — GPIO7 low (ff_power.h; a pure two-pin HAL with no display
+ * dependency) and the backlight to 0 (ff_display.h) — deliberately HERE,
+ * in app_main, not inside ff_power. */
+static void ff_power_off_cb(void *user)
+{
+    (void)user;
+    (void)ff_power_off();
+    (void)ff_display_set_brightness(0);
+}
+
+/* ff_shell_cfg_t.power_reboot: called by the shell's FF_INTENT_POWER_REBOOT
+ * handler. Only ARMS the FSM's reboot-BOOT-release guard and returns —
+ * esp_restart() is NOT called here. The main loop's tick (below) is the
+ * only place that calls esp_restart(), once ff_power_fsm_reboot_ready()
+ * reports the guard satisfied (BOOT released), so a reboot requested
+ * while a thumb happens to be resting on BOOT (S26's home button) never
+ * risks the ROM bootloader (S26 AC4). */
+static void ff_power_reboot_cb(void *user)
+{
+    (void)user;
+    ff_power_fsm_request_reboot(&s_power_fsm);
+}
+
 /* Bring the panel up through the QSPI init (shared by every stage). Returns
  * true on success; logs and returns false so app_main can park rather than
  * spin a half-initialised peripheral. */
@@ -296,6 +335,10 @@ void app_main(void)
      * live-but-unlatched puck is more debuggable than a park loop). */
     (void)ff_power_latch_on();
 
+    /* S26 slice b — zero the PWR-button FSM before anything can tick it
+     * (the main loop below is the only tick site). */
+    ff_power_fsm_init(&s_power_fsm);
+
     s_shell_p = heap_caps_calloc(1, sizeof(ff_shell_t), MALLOC_CAP_SPIRAM);
     if (s_shell_p == NULL) { ESP_LOGE(TAG, "shell PSRAM alloc failed"); return; }
     const int stage = CONFIG_FF_BRINGUP_STAGE;
@@ -323,6 +366,13 @@ void app_main(void)
      * drives through FF_INTENT_CALIBRATE_TOUCH. */
     cfg.calibrate_touch = ff_calibrate_touch_cb;
     cfg.calibrate_touch_user = NULL;
+    /* S26 slice b — the power-menu action hooks (FF_INTENT_POWER_OFF /
+     * FF_INTENT_POWER_REBOOT). See ff_power_off_cb/ff_power_reboot_cb
+     * above. */
+    cfg.power_off = ff_power_off_cb;
+    cfg.power_off_user = NULL;
+    cfg.power_reboot = ff_power_reboot_cb;
+    cfg.power_reboot_user = NULL;
 #if CONFIG_FF_DEMO_MODE
     s_demo_pack = heap_caps_malloc(sizeof(*s_demo_pack), MALLOC_CAP_SPIRAM);
     if (s_demo_pack == NULL) {
@@ -556,6 +606,28 @@ void app_main(void)
          * signal is already in the feed when this frame's view is rebuilt. */
         ff_demo_live_pump(now_ms);
 #endif
+
+        /* S26 slice b — tick the PWR-button FSM every frame, same spot as
+         * the demo pump above: BEFORE ff_shell_tick, so a LONG_PRESS this
+         * frame already opens the power menu in the view ff_shell_tick is
+         * about to (re)project, rather than lagging one frame behind. The
+         * FSM makes the decision (short/long/release, debounced); this file
+         * only samples GPIO6 and forwards the decision as an intent — no
+         * `if` about behavior here (CLAUDE.md's house rule). */
+        ff_power_fsm_event_t const pwr_ev = ff_power_fsm_tick(&s_power_fsm, now_ms, ff_power_pwr_pressed());
+        if (pwr_ev == FF_POWER_FSM_EVENT_LONG_PRESS) {
+            ff_intent_t const open_power_menu = {.kind = FF_INTENT_POWER_MENU_OPEN, .u = {0}};
+            ff_shell_intent(&s_shell, &open_power_menu);
+        }
+        /* The reboot BOOT-release guard (S26 AC4): polled every frame
+         * regardless of pwr_ev — a reboot armed by ff_power_reboot_cb (via
+         * FF_INTENT_POWER_REBOOT, dispatched through the same ff_shell_intent
+         * seam as above) becomes ready on the first frame BOOT reads
+         * released, and esp_restart() is called from exactly ONE place: here. */
+        if (ff_power_fsm_reboot_ready(&s_power_fsm, ff_power_boot_pressed())) {
+            ESP_LOGI(TAG, "S26b reboot guard ready (BOOT released) — esp_restart()");
+            esp_restart();
+        }
 
         bool const dirty = ff_shell_tick(&s_shell, now_ms);
         ff_app_state_t const *v = ff_shell_view(&s_shell);

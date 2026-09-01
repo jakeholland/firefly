@@ -1172,6 +1172,279 @@ static void S21_calibrate_unchanged_refit_skips_the_write(void)
     ff_shell_close(&h.shell);
 }
 
+/* =================================================================== */
+/* S26 slice b — PWR button -> power menu -> soft power-off             */
+/* =================================================================== */
+
+/* The injected power_off/power_reboot hooks (ff_shell_cfg_t): a spy that
+ * just counts calls — the same injected-device-IO shape as calib_spy_t
+ * above. Two independent counters, not one shared spy, so a test can
+ * assert POWER_OFF never also rings the reboot hook and vice versa. */
+typedef struct {
+    int off_calls;
+    int reboot_calls;
+} power_spy_t;
+
+static void power_off_spy_hook(void *user)
+{
+    ((power_spy_t *)user)->off_calls++;
+}
+
+static void power_reboot_spy_hook(void *user)
+{
+    ((power_spy_t *)user)->reboot_calls++;
+}
+
+/* setting_harness_init, plus both power hooks wired to `spy` (like
+ * calib_harness_init, the hooks must be set at ff_shell_init time). */
+static void power_harness_init(setting_harness_t *sh, power_spy_t *spy)
+{
+    memset(sh, 0, sizeof(*sh));
+    sh->clk.t = 100000u;
+    sh->clock.now_ms = fake_now;
+    sh->clock.user = &sh->clk;
+    sh->store = setting_store(&sh->store_mem);
+
+    ff_shell_cfg_t cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.clock = &sh->clock;
+    cfg.store = &sh->store;
+    cfg.pack = &sh->pack;
+    cfg.power_off = power_off_spy_hook;
+    cfg.power_off_user = spy;
+    cfg.power_reboot = power_reboot_spy_hook;
+    cfg.power_reboot_user = spy;
+
+    TEST_ASSERT_EQUAL_INT(0, ff_shell_init(&sh->shell, &cfg));
+}
+
+static void send_power(ff_shell_t *shell, ff_intent_kind_t kind)
+{
+    ff_intent_t in = {.kind = kind, .u = {0}};
+    ff_shell_intent(shell, &in);
+}
+
+/* Deliver a paired FLARE so `ff_shell_flare(shell)->takeover_active`
+ * becomes true — the exact technique
+ * S16_AC8_setting_set_is_rejected_while_a_takeover_is_visible uses. */
+static void deliver_takeover(ff_shell_t *shell)
+{
+    TEST_ASSERT_TRUE(ff_shell_pair(shell, DANA, true));
+    mc_events_t const ev = ff_shell_events(shell);
+    uint8_t buf[FF_PROTO_MAX_PAYLOAD];
+    int n = ff_proto_encode_flare(buf, sizeof(buf), 300u);
+    TEST_ASSERT_GREATER_THAN_INT(0, n);
+    ev.on_private(ev.user, DANA, MC_ADDR_BROADCAST, FF_PORTNUM, buf, (size_t)n);
+    TEST_ASSERT_TRUE(ff_shell_flare(shell)->takeover_active);
+}
+
+/* `ff_shell_view()->active_face` is only populated by `shell_project`
+ * (inside `ff_shell_tick`) — unlike `ff_shell_settings()`/`ff_shell_flare()`,
+ * which read live core state directly, a freshly-dispatched intent is
+ * NOT yet reflected in the view until the next tick. Every assertion
+ * below that reads `active_face` therefore ticks first through this
+ * helper (the global-harness tests elsewhere in this file get the same
+ * thing from their own `view()` helper) — skipping it would make
+ * `TEST_ASSERT_NOT_EQUAL(FF_APP_FACE_POWER_MENU, ...)` pass against the
+ * untouched zero-value FF_APP_FACE_NONE regardless of what push_modal
+ * actually did, exactly the proxy AGENTS.md's item 6 warns about. */
+static ff_app_state_t const *power_view(setting_harness_t *h)
+{
+    (void)ff_shell_tick(&h->shell, h->clk.t);
+    return ff_shell_view(&h->shell);
+}
+
+static void S26b_power_menu_open_pushes_the_modal_and_becomes_visible(void)
+{
+    setting_harness_t h;
+    power_spy_t spy = {0};
+    power_harness_init(&h, &spy);
+
+    send_power(&h.shell, FF_INTENT_POWER_MENU_OPEN);
+
+    TEST_ASSERT_EQUAL(FF_APP_FACE_POWER_MENU, power_view(&h)->active_face);
+    TEST_ASSERT_EQUAL_INT(0, spy.off_calls);
+    TEST_ASSERT_EQUAL_INT(0, spy.reboot_calls);
+
+    ff_shell_close(&h.shell);
+}
+
+/* Routing rule 4, same as every other c1/c2 intent: a live takeover
+ * outranks a PWR long-press. The proxy this guards against is "the menu
+ * silently opens behind the takeover and steals the next tap" — asserted
+ * here, not just reasoned about. */
+static void S26b_power_menu_open_is_rejected_while_a_takeover_is_visible(void)
+{
+    setting_harness_t h;
+    power_spy_t spy = {0};
+    power_harness_init(&h, &spy);
+    deliver_takeover(&h.shell);
+
+    send_power(&h.shell, FF_INTENT_POWER_MENU_OPEN);
+
+    TEST_ASSERT_NOT_EQUAL(FF_APP_FACE_POWER_MENU, power_view(&h)->active_face);
+
+    ff_shell_close(&h.shell);
+}
+
+/* One modal slot: a PWR long-press while Compose is open must not steal
+ * the half-typed draft — ff_route_push_modal's own "one slot, not a
+ * stack" rule, exercised end to end through the intent seam. */
+static void S26b_power_menu_open_is_rejected_over_an_open_compose(void)
+{
+    setting_harness_t h;
+    power_spy_t spy = {0};
+    power_harness_init(&h, &spy);
+
+    ff_intent_t open_compose = {.kind = FF_INTENT_OPEN_COMPOSE, .u = {0}};
+    ff_shell_intent(&h.shell, &open_compose);
+    TEST_ASSERT_EQUAL(FF_APP_FACE_COMPOSE, power_view(&h)->active_face);
+
+    send_power(&h.shell, FF_INTENT_POWER_MENU_OPEN);
+    TEST_ASSERT_EQUAL(FF_APP_FACE_COMPOSE, power_view(&h)->active_face); /* draft untouched */
+
+    ff_shell_close(&h.shell);
+}
+
+static void S26b_power_off_calls_the_hook_and_closes_the_menu(void)
+{
+    setting_harness_t h;
+    power_spy_t spy = {0};
+    power_harness_init(&h, &spy);
+
+    send_power(&h.shell, FF_INTENT_POWER_MENU_OPEN);
+    send_power(&h.shell, FF_INTENT_POWER_OFF);
+
+    TEST_ASSERT_EQUAL_INT(1, spy.off_calls);
+    TEST_ASSERT_EQUAL_INT(0, spy.reboot_calls);
+    TEST_ASSERT_EQUAL(FF_APP_FACE_RADAR, power_view(&h)->active_face); /* popped back to base */
+
+    ff_shell_close(&h.shell);
+}
+
+/* NULL hook (the sim's honest shape) is a safe no-op — the menu still
+ * closes, nothing crashes. */
+static void S26b_power_off_with_no_hook_still_closes_the_menu(void)
+{
+    setting_harness_t h;
+    memset(&h, 0, sizeof(h));
+    h.clk.t = 100000u;
+    h.clock.now_ms = fake_now;
+    h.clock.user = &h.clk;
+    h.store = setting_store(&h.store_mem);
+
+    ff_shell_cfg_t cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.clock = &h.clock;
+    cfg.store = &h.store;
+    cfg.pack = &h.pack; /* power_off/power_reboot left NULL */
+    TEST_ASSERT_EQUAL_INT(0, ff_shell_init(&h.shell, &cfg));
+
+    send_power(&h.shell, FF_INTENT_POWER_MENU_OPEN);
+    send_power(&h.shell, FF_INTENT_POWER_OFF);
+    TEST_ASSERT_EQUAL(FF_APP_FACE_RADAR, power_view(&h)->active_face);
+
+    ff_shell_close(&h.shell);
+}
+
+static void S26b_power_reboot_calls_the_hook_and_closes_the_menu(void)
+{
+    setting_harness_t h;
+    power_spy_t spy = {0};
+    power_harness_init(&h, &spy);
+
+    send_power(&h.shell, FF_INTENT_POWER_MENU_OPEN);
+    send_power(&h.shell, FF_INTENT_POWER_REBOOT);
+
+    TEST_ASSERT_EQUAL_INT(0, spy.off_calls);
+    TEST_ASSERT_EQUAL_INT(1, spy.reboot_calls);
+    TEST_ASSERT_EQUAL(FF_APP_FACE_RADAR, power_view(&h)->active_face);
+
+    ff_shell_close(&h.shell);
+}
+
+static void S26b_power_cancel_closes_the_menu_without_calling_either_hook(void)
+{
+    setting_harness_t h;
+    power_spy_t spy = {0};
+    power_harness_init(&h, &spy);
+
+    send_power(&h.shell, FF_INTENT_POWER_MENU_OPEN);
+    send_power(&h.shell, FF_INTENT_POWER_CANCEL);
+
+    TEST_ASSERT_EQUAL_INT(0, spy.off_calls);
+    TEST_ASSERT_EQUAL_INT(0, spy.reboot_calls);
+    TEST_ASSERT_EQUAL(FF_APP_FACE_RADAR, power_view(&h)->active_face); /* base untouched */
+
+    ff_shell_close(&h.shell);
+}
+
+/* The spec's "Cancel or a 10 s timeout -> dismiss". Boundary pinned at
+ * the exact millisecond, same inclusive-boundary discipline the core FSM
+ * tests use — 9999 ms held open, 10000 ms auto-dismissed. */
+static void S26b_power_menu_stays_open_just_before_the_10s_timeout(void)
+{
+    setting_harness_t h;
+    power_spy_t spy = {0};
+    power_harness_init(&h, &spy);
+
+    send_power(&h.shell, FF_INTENT_POWER_MENU_OPEN);
+    uint32_t const opened_at = h.clk.t;
+
+    h.clk.t = opened_at + 9999u;
+    TEST_ASSERT_EQUAL(FF_APP_FACE_POWER_MENU, power_view(&h)->active_face);
+
+    ff_shell_close(&h.shell);
+}
+
+static void S26b_power_menu_auto_dismisses_at_exactly_the_10s_timeout(void)
+{
+    setting_harness_t h;
+    power_spy_t spy = {0};
+    power_harness_init(&h, &spy);
+
+    send_power(&h.shell, FF_INTENT_POWER_MENU_OPEN);
+    uint32_t const opened_at = h.clk.t;
+
+    h.clk.t = opened_at + 10000u;
+    TEST_ASSERT_EQUAL(FF_APP_FACE_RADAR, power_view(&h)->active_face);
+    TEST_ASSERT_EQUAL_INT(0, spy.off_calls); /* a timeout is a dismiss, not a Power off */
+    TEST_ASSERT_EQUAL_INT(0, spy.reboot_calls);
+
+    ff_shell_close(&h.shell);
+}
+
+/* Defensive gating: POWER_OFF/POWER_REBOOT/POWER_CANCEL are only ever
+ * emitted by the menu's own buttons, so this can only happen via the
+ * unlikely race an app_main-originated POWER_MENU_OPEN could also hit —
+ * pinned anyway, same "keep the routing statement true" reasoning
+ * SETTING_SET's takeover gate documents. */
+static void S26b_power_actions_are_rejected_while_a_takeover_is_visible(void)
+{
+    setting_harness_t h;
+    power_spy_t spy = {0};
+    power_harness_init(&h, &spy);
+
+    send_power(&h.shell, FF_INTENT_POWER_MENU_OPEN);
+    deliver_takeover(&h.shell);
+
+    send_power(&h.shell, FF_INTENT_POWER_OFF);
+    send_power(&h.shell, FF_INTENT_POWER_REBOOT);
+    send_power(&h.shell, FF_INTENT_POWER_CANCEL);
+
+    TEST_ASSERT_EQUAL_INT(0, spy.off_calls);
+    TEST_ASSERT_EQUAL_INT(0, spy.reboot_calls);
+    /* None of the three actions were allowed to pop the modal — the
+     * ROUTE still shows POWER_MENU underneath the takeover (S16 AC13:
+     * `ff_app_state_t.active_face` never reflects the takeover itself,
+     * only `flare.takeover_active` does — see ff_shell.c's shell_project
+     * comment on that exact point). */
+    TEST_ASSERT_EQUAL(FF_APP_FACE_POWER_MENU, power_view(&h)->active_face);
+    TEST_ASSERT_TRUE(ff_shell_flare(&h.shell)->takeover_active);
+
+    ff_shell_close(&h.shell);
+}
+
 /* S17 slice a: FF_SETTING_COLORBLIND — the exact same bool-backed,
  * persist-on-change-only contract as IMPERIAL above, pinned separately
  * per this repo's own "test names mirror the criteria" convention
@@ -1463,6 +1736,17 @@ int main(void)
     RUN_TEST(S21_calibrate_valid_fit_applies_and_persists);
     RUN_TEST(S21_calibrate_failed_or_invalid_fit_is_a_clean_no_op);
     RUN_TEST(S21_calibrate_unchanged_refit_skips_the_write);
+
+    RUN_TEST(S26b_power_menu_open_pushes_the_modal_and_becomes_visible);
+    RUN_TEST(S26b_power_menu_open_is_rejected_while_a_takeover_is_visible);
+    RUN_TEST(S26b_power_menu_open_is_rejected_over_an_open_compose);
+    RUN_TEST(S26b_power_off_calls_the_hook_and_closes_the_menu);
+    RUN_TEST(S26b_power_off_with_no_hook_still_closes_the_menu);
+    RUN_TEST(S26b_power_reboot_calls_the_hook_and_closes_the_menu);
+    RUN_TEST(S26b_power_cancel_closes_the_menu_without_calling_either_hook);
+    RUN_TEST(S26b_power_menu_stays_open_just_before_the_10s_timeout);
+    RUN_TEST(S26b_power_menu_auto_dismisses_at_exactly_the_10s_timeout);
+    RUN_TEST(S26b_power_actions_are_rejected_while_a_takeover_is_visible);
     RUN_TEST(S16_AC8_setting_set_out_of_range_is_rejected_not_clamped);
     RUN_TEST(S16_AC8_setting_set_my_name_is_bounded_and_terminated);
     RUN_TEST(S16_AC8_setting_set_is_rejected_while_a_takeover_is_visible);
