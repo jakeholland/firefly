@@ -267,16 +267,6 @@ static void settings_scroll_end_cb(lv_event_t *e)
 }
 
 /* ---------------------------------------------------------------------
- * Back "<" -> FF_INTENT_BACK.
- * ------------------------------------------------------------------- */
-static void settings_back_cb(lv_event_t *e)
-{
-    (void)e;
-    ff_intent_t in = {.kind = FF_INTENT_BACK, .u = {0}};
-    ff_intent_emit(&in);
-}
-
-/* ---------------------------------------------------------------------
  * Generic int-setting emitter — every control below funnels through this.
  * ------------------------------------------------------------------- */
 static void settings_emit_int(ff_setting_id_t id, int32_t v)
@@ -748,19 +738,15 @@ static void settings_build_header_band(lv_obj_t *puck, int32_t x, int32_t w, int
 /* ---------------------------------------------------------------------
  * Entry point.
  * ------------------------------------------------------------------- */
-void ff_scr_settings_build(ff_app_settings_t const *settings)
+void ff_scr_settings_build(lv_obj_t *parent, ff_app_settings_t const *settings)
 {
-    if (settings == NULL) {
+    if (parent == NULL || settings == NULL) {
         return;
     }
 
     s_settings = *settings;
 
-    lv_obj_t *scr = lv_screen_active();
-    lv_obj_set_style_bg_color(scr, lv_color_hex(0x000000), 0);
-    lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
-
-    lv_obj_t *puck = lv_obj_create(scr);
+    lv_obj_t *puck = lv_obj_create(parent);
     lv_obj_remove_style_all(puck);
     lv_obj_set_size(puck, FF_THEME_PUCK_PX, FF_THEME_PUCK_PX);
     lv_obj_align(puck, LV_ALIGN_CENTER, 0, 0);
@@ -781,29 +767,11 @@ void ff_scr_settings_build(ff_app_settings_t const *settings)
      * ink — no gradient, so no RGB565 edge banding on device. --- */
     settings_build_header_band(puck, list_margin, row_w, FF_SETTINGS_LIST_Y);
 
-    /* --- PINNED, centered header: back button + SETTINGS title + name.
-     * Built directly on the puck (never inside the scroll list) so it never
-     * scrolls away and the sweep checks the back button at its absolute
-     * position. --- */
-    lv_obj_t *back = lv_button_create(puck);
-    lv_obj_remove_style_all(back);
-    lv_obj_set_size(back, FF_SETTINGS_BACK_SZ, FF_SETTINGS_BACK_SZ);
-    lv_obj_set_pos(back, FF_SETTINGS_HDR_X, FF_SETTINGS_HDR_Y);
-    lv_obj_set_style_bg_color(back, lv_color_hex(FF_THEME_COLOR_SURFACE), 0);
-    lv_obj_set_style_bg_opa(back, LV_OPA_COVER, 0);
-    lv_obj_set_style_radius(back, 14, 0);
-    lv_obj_add_event_cb(back, settings_back_cb, LV_EVENT_CLICKED, NULL);
-    /* A drawn left-chevron rather than a "<" glyph — a real stroked caret reads
-     * as a deliberate control, not placeholder text. Points persist (static)
-     * because lv_line borrows the array. */
-    static const lv_point_precise_t back_chevron[] = {{9, 0}, {0, 9}, {9, 18}};
-    lv_obj_t *chev = lv_line_create(back);
-    lv_line_set_points(chev, back_chevron, 3);
-    lv_obj_set_style_line_width(chev, 3, 0);
-    lv_obj_set_style_line_color(chev, lv_color_hex(FF_THEME_COLOR_AMBER), 0);
-    lv_obj_set_style_line_rounded(chev, true, 0);
-    lv_obj_center(chev);
-
+    /* --- PINNED, centered header: SETTINGS title + name. Built directly
+     * on the puck (never inside the scroll list) so it never scrolls
+     * away. There is no BACK control any more — the horizontal-carousel
+     * rework made Settings a swipe tile you leave by swiping left, not a
+     * modal with a back button (see scr_settings.h). --- */
     lv_obj_t *title = lv_label_create(puck);
     lv_label_set_text(title, "SETTINGS");
     lv_obj_set_style_text_font(title, FF_THEME_FONT_HEADLINE, 0);

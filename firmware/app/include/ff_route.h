@@ -4,10 +4,22 @@
  * Spec: docs/specs/S16-app-shell.md, "App: routing".
  *
  * `ff_route_t` is the app's navigation state, and *only* that: which of
- * the three swipe faces is under the finger (`base`), and whether a
+ * the five swipe faces is under the finger (`base`), and whether a
  * full-screen modal is covering it (`modal`). It is pure C11 — no LVGL,
  * no I/O, no core state — so every rule below is unit-testable without a
  * display (app/tests/test_route.c).
+ *
+ * ## The horizontal carousel (scroll-vs-swipe rework)
+ * Faces are ONE left-to-right sequence — Radar · Now · Signals · Map ·
+ * Settings — navigated by horizontal swipe only. Map and Settings used
+ * to be modals reached off the swipe axis (Map by a vertical top-swipe
+ * on the tileview, Settings by a nav long-press), which is exactly why a
+ * vertical list-scroll that a scrollable didn't fully claim could bubble
+ * up as a GESTURE and jump to Map. Making every face a horizontal
+ * neighbour lets vertical drags be scroll and nothing else: the swipe
+ * axis below now holds all five, and Compose is the sole remaining
+ * modal. `[api]` — this changes `base`'s and `modal`'s value ranges and
+ * `ff_route_push_modal`'s accepted set, and adds `ff_route_goto`.
  *
  * ## Why app/, not core/
  * The obvious argument ("routing must be testable without LVGL") does
@@ -55,8 +67,8 @@ extern "C" {
  *
  * There is deliberately **no `has_modal` flag**: `modal ==
  * FF_APP_FACE_NONE` is the entire "is a modal up" predicate. A separate
- * bool would give a 3-state lifecycle (no modal / Compose / Settings)
- * four representable combinations, two of which contradict each other —
+ * bool would give a 2-state lifecycle (no modal / Compose) three
+ * representable combinations, one of which contradicts itself —
  * exactly the shape PR #21's review ruled out for `now_state_t`, and the
  * same reasoning as `stage_color_valid` and `FF_FRESH_NEVER`: absence is
  * represented once, in the field itself.
@@ -65,20 +77,20 @@ extern "C" {
  * `ff_route_visible()`.
  *
  * Zero-initialising an `ff_route_t` yields `{NONE, NONE}`, which is not
- * a valid route (`base` must be one of the three swipe faces); call
+ * a valid route (`base` must be one of the five swipe faces); call
  * `ff_route_init()`. The zero value is left invalid on purpose rather
  * than being quietly defined as "RADAR, no modal", so a forgotten init
  * is a visible NONE rather than a plausible-looking Radar.
  */
 typedef struct {
-    /** The swipe face underneath: `FF_APP_FACE_RADAR`, `_NOW` or
-     *  `_SIGNALS`. Never NONE, SETTINGS, COMPOSE or FLARE after init. */
+    /** The swipe face underneath, one of the five carousel faces:
+     *  `FF_APP_FACE_RADAR`, `_NOW`, `_SIGNALS`, `_MAP` or `_SETTINGS`.
+     *  Never NONE, COMPOSE or FLARE after init. */
     ff_app_face_t base;
-    /** The modal covering `base`: `FF_APP_FACE_COMPOSE`,
-     *  `FF_APP_FACE_SETTINGS`, `FF_APP_FACE_MAP`, or `FF_APP_FACE_NONE`
-     *  for "no modal". None of these is a swipe tile of its own —
-     *  Compose is reached from Signals' "+", Settings from a nav
-     *  long-press, Map (S09 [api]) from Radar. */
+    /** The modal covering `base`: `FF_APP_FACE_COMPOSE` (the sole modal
+     *  face — reached from Signals' "+"), or `FF_APP_FACE_NONE` for "no
+     *  modal". Map and Settings are NOT modals any more — they are swipe
+     *  tiles on the axis above (the horizontal-carousel rework). */
     ff_app_face_t modal;
 } ff_route_t;
 
@@ -101,44 +113,73 @@ void ff_route_init(ff_route_t *r);
  * partial mutation.
  *
  * **`dir` is a ROUTE direction, not a gesture direction.** `-1` means
- * *toward Radar*, `+1` means *toward Signals*, along the fixed order
- * `RADAR < NOW < SIGNALS`. The target decodes its own gesture into one
- * of these, and in every touch UI — including LVGL's own tileview — a
- * **rightward finger drag maps to `-1`**, because dragging the content
- * right brings the *previous* tile into view. Wiring `LV_DIR_RIGHT` to
- * `+1` yields a UI whose navigation is mirrored end to end while still
- * passing AC1 and AC2, since neither criterion mentions fingers.
+ * *toward Radar*, `+1` means *toward Settings*, along the fixed order
+ * `RADAR < NOW < SIGNALS < MAP < SETTINGS`. The target decodes its own
+ * gesture into one of these, and in every touch UI — including LVGL's
+ * own tileview — a **rightward finger drag maps to `-1`**, because
+ * dragging the content right brings the *previous* tile into view.
+ * Wiring `LV_DIR_RIGHT` to `+1` yields a UI whose navigation is mirrored
+ * end to end while still passing AC1 and AC2, since neither criterion
+ * mentions fingers.
  *
  * Rejected (returns false, `r` untouched):
  * - a modal is up — **any** modal suppresses swipe entirely (AC2). A
  *   horizontal drag must never slide the composer away and lose a
- *   half-typed message, and Settings gets the same protection so the
- *   rule is "a modal is up", not "Compose is up".
+ *   half-typed message. Only Compose is a modal now, so in practice
+ *   this is "Compose is up", but the rule stays phrased as "a modal is
+ *   up" so a future modal inherits the protection for free.
  * - `dir` is anything other than -1 or +1 (0, +2, a raw pixel delta…).
  * - the step would run off either end. Swipe is **bounded, not
  *   wrapping** (AC1): wrapping at 2 a.m. with one thumb means you never
- *   know which direction gets you home.
- * - `r` is NULL, or `r->base` is not one of the three swipe faces
+ *   know which direction gets you home. RADAR is the left bound,
+ *   SETTINGS the right.
+ * - `r` is NULL, or `r->base` is not one of the five swipe faces
  *   (an uninitialised or corrupted route stays put rather than being
  *   silently repaired to a guess).
  */
 bool ff_route_swipe(ff_route_t *r, int8_t dir);
 
 /**
+ * Jumps `base` directly to swipe face `f`, skipping the intermediate
+ * steps `ff_route_swipe` would take. Returns true iff the route changed.
+ *
+ * This is the seam for a shortcut that reaches a far face in one gesture
+ * rather than a run of swipes — today, the nav long-press that jumps
+ * straight to Settings from wherever you are. It steps OUTSIDE the
+ * bounded one-at-a-time axis on purpose, so it is a separate entry point
+ * from `ff_route_swipe` rather than a `dir` value, and it carries the
+ * same guards:
+ *
+ * Rejected (returns false, `r` untouched):
+ * - a modal is up (AC2) — a jump must not slide a half-typed Compose
+ *   away any more than a swipe may.
+ * - `f` is not one of the five swipe faces (Compose, NONE, FLARE, or a
+ *   garbage value) — a bad target is a no-op, never a base set off the
+ *   axis. `base` validity is implied: a jump overwrites `base` outright,
+ *   so an uninitialised route is *repaired* by a valid jump rather than
+ *   masked (the push_modal hazard does not apply — there is no modal to
+ *   back out of onto the broken base).
+ * - `r->base` already equals `f` — nothing to change.
+ * - `r` is NULL.
+ */
+bool ff_route_goto(ff_route_t *r, ff_app_face_t f);
+
+/**
  * Raises `f` as the modal over the current `base`. Returns true iff the
  * route changed.
  *
- * `f` must be `FF_APP_FACE_COMPOSE`, `FF_APP_FACE_SETTINGS` or
- * `FF_APP_FACE_MAP` (S09 [api]); anything else (a swipe face, NONE,
- * FLARE) is rejected. FLARE in particular is never a modal: the
- * takeover is not routed, it overrides — see `ff_route_visible()`.
+ * `f` must be `FF_APP_FACE_COMPOSE` — the sole modal face since the
+ * horizontal-carousel rework moved Map and Settings onto the swipe axis;
+ * anything else (a swipe face, NONE, FLARE) is rejected. FLARE in
+ * particular is never a modal: the takeover is not routed, it overrides
+ * — see `ff_route_visible()`.
  *
  * **Pushing while a modal is already up is rejected**, rather than
  * replacing it. There is one modal slot, not a stack, so "replace" would
  * silently discard a half-typed Compose draft — the loss AC2 exists to
  * prevent, through a different door. (S16 does not state this case;
  * interpretation noted in the PR body.) No real flow reaches it today:
- * Compose has no nav bar to long-press Settings from.
+ * Compose is the only modal, and it has no nav bar to open another from.
  *
  * **Pushing over an off-axis `base` is also rejected**, the same rule
  * `ff_route_swipe()` applies — because a modal is the one operation

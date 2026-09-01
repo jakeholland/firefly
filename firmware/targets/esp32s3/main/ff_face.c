@@ -10,9 +10,8 @@
 #include "esp_log.h"
 #include "scr_compose.h"
 #include "scr_flare.h"
-#include "scr_map.h"
-#include "scr_nav.h"
-#include "scr_settings.h"
+#include "scr_nav.h"      /* the 5-face carousel — Radar/Now/Signals/Map/Settings all render through here */
+#include "scr_settings.h" /* the Settings scroll-reset hook (the tile itself is built by scr_nav) */
 
 static const char *TAG = "ff_face";
 
@@ -40,15 +39,17 @@ void ff_face_build(ff_app_state_t const *state)
         return;
     }
 
+    /* Horizontal-carousel rework: all five swipe faces — Radar, Now,
+     * Signals, Map, Settings — render through the nav tileview now (Map
+     * and Settings were their own full-screen builds here; they are
+     * carousel tiles today, built by scr_nav.c). Compose stays the one
+     * full-screen modal. */
     if (state->active_face == FF_APP_FACE_RADAR || state->active_face == FF_APP_FACE_NOW ||
-        state->active_face == FF_APP_FACE_SIGNALS) {
+        state->active_face == FF_APP_FACE_SIGNALS || state->active_face == FF_APP_FACE_MAP ||
+        state->active_face == FF_APP_FACE_SETTINGS) {
         ff_scr_nav_build(state);
     } else if (state->active_face == FF_APP_FACE_COMPOSE) {
         ff_scr_compose_build(&state->compose);
-    } else if (state->active_face == FF_APP_FACE_SETTINGS) {
-        ff_scr_settings_build(&state->settings);
-    } else if (state->active_face == FF_APP_FACE_MAP) {
-        ff_scr_map_build(&state->map, state->settings.colorblind);
     } else {
         ESP_LOGW(TAG, "no device screen for face %d — nothing built", (int)state->active_face);
     }

@@ -9,8 +9,10 @@
 #include "ff_intent.h" /* S16c1 — the emit seam; see nav_long_press_cb */
 #include "ff_theme.h"
 #include "scr_flare.h" /* S10 slice b — lock chip + sender overlay */
+#include "scr_map.h" /* carousel tile 3 — Map, an ordinary swipe face now */
 #include "scr_now.h" /* S07b — ff_scr_now_build, the Now face */
 #include "scr_radar.h"
+#include "scr_settings.h" /* carousel tile 4 — Settings, the far-right swipe face */
 #include "scr_signals.h" /* S08c */
 
 /* Long-press-anywhere -> Settings: emits FF_INTENT_OPEN_SETTINGS through
@@ -57,33 +59,22 @@ static void nav_long_press_cb(lv_event_t *e)
  *
  * `ff_route`'s dir convention is a ROUTE direction, not a finger
  * direction (ff_route.h's own warning): -1 toward RADAR, +1 toward
- * SIGNALS, and a RIGHTWARD drag maps to -1. LVGL's gesture_dir names the
+ * SETTINGS, and a RIGHTWARD drag maps to -1. LVGL's gesture_dir names the
  * direction the content was dragged, the same sense, so LV_DIR_RIGHT ->
  * -1 and LV_DIR_LEFT -> +1.
  *
- * LV_DIR_TOP (S09 [api], PR #73 review finding #4 — the Map face shipped
- * with a complete renderer and no way to reach it, which both
- * independent reviewers correctly refused to wave through as "under-
- * claiming honestly": a screen nobody can open is not a v1 face, it's
- * dead code) opens Map instead of moving `base` — see
- * `ff_app_state.h`'s `FF_APP_FACE_MAP` comment and this slice's spec
- * Amendment for the full routing rationale. Deliberately the LEAST
- * invasive entry point available: this handler is the ONLY thing that
- * changes, so it adds ZERO drawn pixels to any existing radar/now/
- * signals golden (verified: all 30 pre-existing goldens stayed
- * byte-identical through this fix round) — a visible tap-target
- * affordance was considered and deferred, see issue #76 and the PR
- * reply for why. Works from any of the three tiles, not gated to Radar
- * specifically: the shell's own routing already treats Map uniformly as
- * a modal over whatever base is current (`ff_route_push_modal`), so
- * restricting the gesture to one tile would be an arbitrary limitation
- * this handler has no principled reason to add — and it means one swipe
- * reaches Map regardless of which face you're already on, not "swipe
- * back to Radar first, then swipe up".
- *
- * LV_DIR_BOTTOM remains unclaimed (not a face swipe, not Map) — no
- * product need for it yet, and claiming it speculatively would be
- * exactly the kind of invented behavior CLAUDE.md rules out. */
+ * HORIZONTAL-ONLY (the scroll-vs-swipe fix). Only LV_DIR_LEFT/RIGHT move
+ * the face; LV_DIR_TOP and LV_DIR_BOTTOM do NOTHING — they return, so a
+ * vertical drag is left to be exactly what the finger meant: a scroll of
+ * whatever scrollable is underneath (the Signals inbox/thread lists, the
+ * Settings list). LV_DIR_TOP used to open the Map face
+ * (FF_INTENT_OPEN_MAP), and THAT was the bug the maintainer hit on
+ * glass: a vertical list-scroll that a list didn't fully claim bubbled
+ * up here as a GESTURE and jumped to Map. Map is an ordinary horizontal
+ * neighbour now (between Signals and Settings — see the tileview below
+ * and ff_route's 5-face swipe axis), reached by swiping like any other
+ * tile, so no gesture direction is a face-jump except the two horizontal
+ * ones. There is no vertical-swipe face left, by design. */
 static void nav_swipe_gesture_cb(lv_event_t *e)
 {
     (void)e;
@@ -94,17 +85,13 @@ static void nav_swipe_gesture_cb(lv_event_t *e)
 
     lv_dir_t const dir = lv_indev_get_gesture_dir(indev);
 
-    if (dir == LV_DIR_TOP) {
-        ff_intent_t open_map = {.kind = FF_INTENT_OPEN_MAP, .u = {0}};
-        ff_intent_emit(&open_map);
-        return;
-    }
-
     int8_t route_dir;
     switch (dir) {
     case LV_DIR_RIGHT: route_dir = -1; break;
     case LV_DIR_LEFT: route_dir = 1; break;
-    default: return; /* LV_DIR_BOTTOM / none: not a face swipe, not Map */
+    default: return; /* LV_DIR_TOP / LV_DIR_BOTTOM / none: a vertical drag
+                        is a scroll, never a face change — the whole point
+                        of horizontal-only navigation. */
     }
 
     ff_intent_t in = {.kind = FF_INTENT_SWIPE, .u = {0}};
@@ -117,12 +104,13 @@ static void nav_swipe_gesture_cb(lv_event_t *e)
  * created after (so drawn on top of) the tileview.
  *
  * `signals_unread_count`: S08 spec ("unread count drives a badge on the
- * page dot") — the Signals tile is always dot index 2 (fixed tile order
- * Radar/Now/Signals, see ff_scr_nav_build below), so this only ever
- * decorates that one dot, regardless of which tile is currently active. */
+ * page dot") — the Signals tile is always dot index 2 (fixed carousel
+ * order Radar/Now/Signals/Map/Settings, see ff_scr_nav_build below), so
+ * this only ever decorates that one dot, regardless of which tile is
+ * currently active. */
 static void nav_build_page_dots(lv_obj_t *puck, uint32_t active_idx, uint16_t signals_unread_count)
 {
-    enum { N_DOTS = 3, SIGNALS_DOT_IDX = 2 };
+    enum { N_DOTS = 5, SIGNALS_DOT_IDX = 2 };
     const int32_t dot_px = 10;
     const int32_t gap_px = 20;
     const int32_t total_w = N_DOTS * dot_px + (N_DOTS - 1) * gap_px;
@@ -245,33 +233,39 @@ void ff_scr_nav_build(ff_app_state_t const *state)
      * over empty tile space now resolves one level up, at the still-
      * CLICKABLE `tileview` (which still carries LV_OBJ_FLAG_EVENT_BUBBLE),
      * and bubbles to `puck` exactly as before — one hop shorter, same
-     * destination. */
-    lv_obj_t *tile_radar = lv_tileview_add_tile(tileview, 0, 0, LV_DIR_NONE);
-    lv_obj_set_style_pad_all(tile_radar, 0, 0);
-    lv_obj_set_style_bg_opa(tile_radar, LV_OPA_TRANSP, 0);
-    lv_obj_clear_flag(tile_radar, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_clear_flag(tile_radar, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_add_flag(tile_radar, LV_OBJ_FLAG_EVENT_BUBBLE); /* GESTURE_BUBBLE: already on by default */
-
-    lv_obj_t *tile_now = lv_tileview_add_tile(tileview, 1, 0, LV_DIR_NONE);
-    lv_obj_set_style_pad_all(tile_now, 0, 0);
-    lv_obj_set_style_bg_opa(tile_now, LV_OPA_TRANSP, 0);
-    lv_obj_clear_flag(tile_now, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_clear_flag(tile_now, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_add_flag(tile_now, LV_OBJ_FLAG_EVENT_BUBBLE); /* GESTURE_BUBBLE: already on by default */
-
-    lv_obj_t *tile_signals = lv_tileview_add_tile(tileview, 2, 0, LV_DIR_NONE);
-    lv_obj_set_style_pad_all(tile_signals, 0, 0);
-    lv_obj_set_style_bg_opa(tile_signals, LV_OPA_TRANSP, 0);
-    lv_obj_clear_flag(tile_signals, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_clear_flag(tile_signals, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_add_flag(tile_signals, LV_OBJ_FLAG_EVENT_BUBBLE); /* GESTURE_BUBBLE: already on by default */
+     * destination.
+     *
+     * HORIZONTAL-CAROUSEL REWORK: this used to be three tiles
+     * (Radar/Now/Signals); it is FIVE now — Radar · Now · Signals · Map ·
+     * Settings — a single horizontal carousel. Map and Settings joined as
+     * ordinary tiles (they were modals before), so one gesture handler,
+     * one swap surface, and one page-dot row now cover every face; there
+     * is no vertical-swipe face and no separate full-screen modal path
+     * for Map/Settings any more. Each tile is set up identically —
+     * transparent, non-scrollable, non-clickable, EVENT_BUBBLE for
+     * long-press reachability, LV_DIR_NONE so the native tileview scroll
+     * stays off and a horizontal drag becomes the GESTURE the handler
+     * above decodes. */
+    lv_obj_t *const tiles[5] = {
+        lv_tileview_add_tile(tileview, 0, 0, LV_DIR_NONE), /* Radar    */
+        lv_tileview_add_tile(tileview, 1, 0, LV_DIR_NONE), /* Now      */
+        lv_tileview_add_tile(tileview, 2, 0, LV_DIR_NONE), /* Signals  */
+        lv_tileview_add_tile(tileview, 3, 0, LV_DIR_NONE), /* Map      */
+        lv_tileview_add_tile(tileview, 4, 0, LV_DIR_NONE), /* Settings */
+    };
+    for (int i = 0; i < 5; i++) {
+        lv_obj_set_style_pad_all(tiles[i], 0, 0);
+        lv_obj_set_style_bg_opa(tiles[i], LV_OPA_TRANSP, 0);
+        lv_obj_clear_flag(tiles[i], LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_clear_flag(tiles[i], LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_add_flag(tiles[i], LV_OBJ_FLAG_EVENT_BUBBLE); /* GESTURE_BUBBLE: already on by default */
+    }
 
     /* ISSUE #29, closed: build content into the ACTIVE tile ONLY. Before
-     * S16 slice d, all three tiles' content was built on every render —
+     * S16 slice d, all tiles' content was built on every render —
      * harmless while a screen only ever built once per process, but
-     * three faces' worth of LVGL objects on every dirty-driven rebuild is
-     * real, unbounded-per-tick cost, and the two inactive tiles' controls
+     * several faces' worth of LVGL objects on every dirty-driven rebuild
+     * is real, unbounded-per-tick cost, and the inactive tiles' controls
      * sat at their un-scrolled tileview position: hundreds of pixels
      * outside the 412px window, not merely outside the round glass —
      * unreachable by any real touch, and the hit-target sweep
@@ -279,7 +273,7 @@ void ff_scr_nav_build(ff_app_state_t const *state)
      * exactly that. `ff_route` already drives face navigation and native
      * tileview swipe is disabled (LV_DIR_NONE, S16 slice c3), so nothing
      * depends on an inactive tile ever holding real content — the
-     * tileview's three tiles stay purely as the swap surface
+     * tileview's five tiles stay purely as the swap surface
      * `lv_tileview_set_tile_by_index` jumps between (LV_ANIM_OFF: no
      * motion, so which tiles are populated is invisible to a real touch
      * either way). The tile index is resolved FIRST so exactly one
@@ -295,28 +289,46 @@ void ff_scr_nav_build(ff_app_state_t const *state)
     case FF_APP_FACE_SIGNALS:
         tile_idx = 2;
         break;
+    case FF_APP_FACE_MAP:
+        tile_idx = 3;
+        break;
     case FF_APP_FACE_SETTINGS:
+        tile_idx = 4;
+        break;
     default:
-        /* Settings has no tile of its own (reached by long-press, not
-         * swipe) — default to Radar rather than an undefined tile. */
+        /* Not a swipe face (COMPOSE/FLARE/NONE never reach here — the
+         * dispatcher routes those elsewhere) — default to Radar rather
+         * than an undefined tile. */
         tile_idx = 0;
         break;
     }
 
     switch (tile_idx) {
     case 0:
-        ff_scr_radar_build(tile_radar, &state->radar, state->settings.colorblind);
+        ff_scr_radar_build(tiles[0], &state->radar, state->settings.colorblind);
         /* S10 slice b: the Radar face's lock chip. Added as a child of
-         * tile_radar specifically (not the puck) — spec: "the Radar face
-         * shows a lock indicator" — so it only ever appears alongside the
-         * Radar tile's own content, not on Now/Signals. */
-        ff_scr_flare_build_lock_chip(tile_radar, &state->flare);
+         * the Radar tile specifically (not the puck) — spec: "the Radar
+         * face shows a lock indicator" — so it only ever appears
+         * alongside the Radar tile's own content. */
+        ff_scr_flare_build_lock_chip(tiles[0], &state->flare);
         break;
     case 1:
-        ff_scr_now_build(tile_now, &state->now); /* S07b */
+        ff_scr_now_build(tiles[1], &state->now); /* S07b */
+        break;
+    case 2:
+        ff_scr_signals_build(tiles[2], &state->signals, state->settings.colorblind); /* S22b */
+        break;
+    case 3:
+        ff_scr_map_build(tiles[3], &state->map, state->settings.colorblind);
         break;
     default:
-        ff_scr_signals_build(tile_signals, &state->signals, state->settings.colorblind); /* S22b */
+        /* Settings tile (index 4). The fresh-entry scroll reset and the
+         * sim golden scroll hint stay the dispatcher's job, wrapped
+         * around this build (targets/sim/face_dispatch.c) — the scroll
+         * machinery keys off the static list pointer this build sets, so
+         * it is agnostic to whether Settings renders as a tile or a
+         * full screen. */
+        ff_scr_settings_build(tiles[4], &state->settings);
         break;
     }
 

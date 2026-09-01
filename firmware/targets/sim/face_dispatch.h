@@ -30,17 +30,17 @@ extern "C" {
  * whatever face would otherwise show, exactly like a real full-screen
  * interrupt would; `active_face` is not consulted at all on that path.
  *
- * Otherwise: RADAR, NOW, and SIGNALS all go through the shared three-tile
- * shell (`ff_scr_nav_build` — NOW renders real content as of S07b, SIGNALS
- * as of S08c); COMPOSE is its own full-screen face (`ff_scr_compose_build`,
- * reached from Signals' "+", not a swipe tile); SETTINGS is its own
- * full-screen modal face (`ff_scr_settings_build`, S11 slice b — reached
- * by long-press, not a swipe tile either); MAP is its own full-screen
- * modal face (`ff_scr_map_build`, S09 — Radar's alternate view, reached
- * via `FF_INTENT_OPEN_MAP`, not a swipe tile — see ff_app_state.h's
- * FF_APP_FACE_MAP comment for the routing rationale). Every other face
- * still has no real screen and falls through to fixture_view.h's S13
- * placeholder.
+ * Otherwise: the whole five-face horizontal carousel — RADAR, NOW,
+ * SIGNALS, MAP, and SETTINGS — goes through the shared tileview shell
+ * (`ff_scr_nav_build`, which builds the active face into its tile).
+ * MAP and SETTINGS used to be their own full-screen modal builds here;
+ * the horizontal-carousel rework made them ordinary swipe tiles, so they
+ * render through nav like Radar/Now/Signals (SETTINGS keeps its
+ * fresh-entry scroll reset and the sim scroll hint, applied around the
+ * nav call). COMPOSE is the one remaining full-screen face
+ * (`ff_scr_compose_build`, reached from Signals' "+", not a swipe tile).
+ * Every other face still has no real screen and falls through to
+ * fixture_view.h's S13 placeholder.
  *
  * S16 slice c2's `[api]` change dropped the `ff_flare_t *flare_rt`
  * parameter this function used to forward to `ff_scr_nav_build`/

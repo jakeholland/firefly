@@ -221,31 +221,12 @@ static void radar_build_status_bar(lv_obj_t *parent, ff_radar_view_t const *r)
     lv_obj_align(batt_lbl, LV_ALIGN_CENTER, 78, (int32_t)RADAR_LAYOUT_STATUS_BAR_DY);
 }
 
-/* Map entry hint (issue #76) — S09 shipped the Map face reachable only by
- * an undiscoverable swipe-up gesture (scr_nav.c's nav_swipe_gesture_cb);
- * both independent reviewers on that fix round agreed a visible hint was
- * still owed (Bailey: "even an unstyled corner glyph beats invisible"),
- * just deferred out of that round's scope. This is that glyph: a small,
- * muted "swipe up for Map" label, cross-mode chrome exactly like the
- * status bar above (drawn on every mode, reserved in radar_layout's
- * registry so the arrow/ring dots steer clear of it). Deliberately NOT
- * clickable — the swipe gesture already IS the real, tested entry point
- * from any of the three tiles; this label's whole job is to tell a
- * first-time rider it exists, not to add a second way to trigger the
- * same intent (which would mean a second FF_INTENT_OPEN_MAP emission
- * path to test and keep in sync with the first). LV_SYMBOL_UP is one of
- * LVGL's built-in icon glyphs, bundled into the default Montserrat
- * fonts this codebase already uses everywhere else (FF_THEME_FONT_LABEL
- * == lv_font_montserrat_14) — no new font asset needed. */
-static void radar_build_map_hint(lv_obj_t *parent)
-{
-    lv_obj_t *hint = lv_label_create(parent);
-    lv_label_set_text(hint, LV_SYMBOL_UP " MAP");
-    lv_obj_set_style_text_font(hint, FF_THEME_FONT_LABEL, 0);
-    lv_obj_set_style_text_color(hint, lv_color_hex(FF_THEME_COLOR_DIM), 0);
-    lv_obj_clear_flag(hint, LV_OBJ_FLAG_CLICKABLE); /* hint only — the swipe gesture is the real entry point */
-    lv_obj_align(hint, LV_ALIGN_CENTER, 0, (int32_t)RADAR_LAYOUT_MAP_HINT_DY);
-}
+/* (The "swipe up for MAP" hint, issue #76, is gone: the
+ * horizontal-carousel rework retired the vertical top-swipe that used to
+ * open Map. Map is an ordinary swipe neighbour now — right of Signals,
+ * reached the same way Now and Signals are — so it needs no special hint,
+ * any more than Now or Signals carry one. Its old page-dot-adjacent
+ * registry reservation in radar_layout is removed with it.) */
 
 /* Crew ring: every dot ff_radar_compute produced, placed and clustered by
  * radar_layout_resolve_dots (see that function's doc comment) against
@@ -981,7 +962,6 @@ void ff_scr_radar_build(lv_obj_t *parent, ff_radar_view_t const *radar, bool col
     s_tri_desc_next = 0;
 
     radar_build_status_bar(parent, radar);
-    radar_build_map_hint(parent); /* issue #76 — cross-mode chrome, same as the status bar */
 
     /* ONE reserved-region registry for this render, built before any
      * movable element is resolved — every movable element (dots below,
