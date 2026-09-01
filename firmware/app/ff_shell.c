@@ -3526,6 +3526,23 @@ uint32_t ff_shell_compose_to_node(ff_shell_t const *sh_pub)
     return (sh_pub == NULL) ? 0u : shell_of_const(sh_pub)->compose_to_node;
 }
 
+bool ff_shell_keep_awake(ff_app_state_t const *view, bool touch_cal_running)
+{
+    if (touch_cal_running) {
+        return true;
+    }
+    if (view == NULL) {
+        return false;
+    }
+    if (view->flare.takeover_active) {
+        return true;
+    }
+    if (view->active_face == FF_APP_FACE_POWER_MENU) {
+        return true;
+    }
+    return false;
+}
+
 uint32_t ff_shell_wall_rejected_relatches(ff_shell_t const *sh_pub)
 {
     return (sh_pub == NULL) ? 0u : ff_wall_trust_rejected_count(&shell_of_const(sh_pub)->wall);

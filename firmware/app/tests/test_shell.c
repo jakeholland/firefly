@@ -4958,6 +4958,61 @@ static void S24_demo_loopback_seam_makes_out_items_appear(void)
     TEST_ASSERT_EQUAL(FEED_DIR_OUT, it->dir);
 }
 
+/* ---------------------------------------------------------------------
+ * S26 slice (c) — ff_shell_keep_awake, docs/specs/S26-device-lifecycle.md
+ * "(c) Inactivity -> dim -> screen off", AC1: "no transition while an
+ * FSM-declared keep awake holds (flare takeover pending, power menu
+ * open, calibration running)". A pure function of an ff_app_state_t
+ * (no shell instance needed) plus the one out-of-view fact
+ * (touch_cal_running) — see ff_shell.h's doc comment.
+ * ------------------------------------------------------------------- */
+
+static void S26c_AC1_keep_awake_false_when_nothing_holds(void)
+{
+    ff_app_state_t view;
+    memset(&view, 0, sizeof(view));
+    view.active_face = FF_APP_FACE_RADAR;
+
+    TEST_ASSERT_FALSE(ff_shell_keep_awake(&view, false));
+}
+
+static void S26c_AC1_keep_awake_true_while_flare_takeover_pending(void)
+{
+    ff_app_state_t view;
+    memset(&view, 0, sizeof(view));
+    view.active_face = FF_APP_FACE_RADAR;
+    view.flare.takeover_active = true;
+
+    TEST_ASSERT_TRUE(ff_shell_keep_awake(&view, false));
+}
+
+static void S26c_AC1_keep_awake_true_while_power_menu_open(void)
+{
+    ff_app_state_t view;
+    memset(&view, 0, sizeof(view));
+    view.active_face = FF_APP_FACE_POWER_MENU;
+
+    TEST_ASSERT_TRUE(ff_shell_keep_awake(&view, false));
+}
+
+static void S26c_AC1_keep_awake_true_while_touch_cal_running(void)
+{
+    ff_app_state_t view;
+    memset(&view, 0, sizeof(view));
+    view.active_face = FF_APP_FACE_RADAR;
+
+    TEST_ASSERT_TRUE(ff_shell_keep_awake(&view, true));
+}
+
+/* NULL view, e.g. a caller that has not ticked the shell yet — no
+ * source to hold awake for, but touch_cal_running (the one fact the
+ * view can never carry) still short-circuits true. */
+static void S26c_AC1_keep_awake_null_view_is_safe(void)
+{
+    TEST_ASSERT_FALSE(ff_shell_keep_awake(NULL, false));
+    TEST_ASSERT_TRUE(ff_shell_keep_awake(NULL, true));
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -5090,6 +5145,12 @@ int main(void)
     RUN_TEST(S24c_AC8_thread_key_opaque_to_other_conversations_churn);
     RUN_TEST(S24c_AC8_thread_header_presence_keys_rendered_bucket);
     RUN_TEST(S24_signals_1to1_projects_the_members_own_color);
+
+    RUN_TEST(S26c_AC1_keep_awake_false_when_nothing_holds);
+    RUN_TEST(S26c_AC1_keep_awake_true_while_flare_takeover_pending);
+    RUN_TEST(S26c_AC1_keep_awake_true_while_power_menu_open);
+    RUN_TEST(S26c_AC1_keep_awake_true_while_touch_cal_running);
+    RUN_TEST(S26c_AC1_keep_awake_null_view_is_safe);
 
     return UNITY_END();
 }

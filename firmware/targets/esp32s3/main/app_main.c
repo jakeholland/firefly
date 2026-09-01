@@ -44,6 +44,7 @@
 
 #include "ff_display.h"
 #include "ff_face.h"
+#include "ff_idle.h"       /* S26 slice c — core: inactivity -> dim -> screen off */
 #include "ff_intent.h"
 #include "ff_nvs_store.h" /* S21 §4 — the real NVS-backed store */
 #include "ff_power.h"      /* S25 — battery keep-alive latch (must fire first) + S26b PWR/BOOT sampling */
@@ -274,6 +275,31 @@ static bool ff_calibrate_touch_cb(void *user, ff_touchcal_t *out_cal)
  * ------------------------------------------------------------------- */
 static ff_power_fsm_t s_power_fsm;
 
+/* ---------------------------------------------------------------------
+ * S26 slice c — inactivity -> dim -> screen off.
+ *
+ * `s_idle` is core/ff_idle.h's whole state; this file only feeds it
+ * input (touch, PWR SHORT_PRESS, BOOT — the render loop, next to
+ * `s_power_fsm`'s tick above) and enacts its ACTIVE/DIM/OFF decision
+ * (backlight percent + skipping the rebuild while OFF, both below in
+ * the render loop). The keep-awake predicate combining flare
+ * takeover/power-menu/calibration is `ff_shell_keep_awake`
+ * (app/include/ff_shell.h) — this file never itself branches on any of
+ * those three facts (CLAUDE.md's house rule).
+ *
+ * touch_cal_running (the third keep-awake source): this file always
+ * passes `false` for it. `ff_display_run_calibration` BLOCKS this very
+ * task (see `ff_calibrate_touch_cb`'s doc comment above) for the whole
+ * crosshair capture, so NO `ff_idle_tick` call from the render loop
+ * below can ever run WHILE a calibration is in progress — the parameter
+ * would be observably true on zero ticks either way. The practical
+ * equivalent instead: `ff_idle_input` is called once the blocking flow
+ * returns (both the boot-time STAGE 4 path and the runtime deferred
+ * path below), so a long capture session never leaves a stale idle
+ * reference that slams straight to DIM/OFF the instant it exits.
+ * Flagged here as this slice's interpretation call (AGENTS.md). */
+static ff_idle_t s_idle;
+
 /* ff_shell_cfg_t.power_off: called by the shell's FF_INTENT_POWER_OFF
  * handler. Composes the two device-IO calls the spec's slice (b) section
  * names — GPIO7 low (ff_power.h; a pure two-pin HAL with no display
@@ -338,6 +364,13 @@ void app_main(void)
     /* S26 slice b — zero the PWR-button FSM before anything can tick it
      * (the main loop below is the only tick site). */
     ff_power_fsm_init(&s_power_fsm);
+
+    /* S26 slice c — zero the idle FSM; re-pinned to "now" right before
+     * the render loop starts (below), after every one-shot bring-up step
+     * (including a possibly long, human-paced STAGE 4 calibration) has
+     * had its say, so the very first DIM/OFF countdown starts at the
+     * actual beginning of interactive use, not at cold boot. */
+    ff_idle_init(&s_idle);
 
     s_shell_p = heap_caps_calloc(1, sizeof(ff_shell_t), MALLOC_CAP_SPIRAM);
     if (s_shell_p == NULL) { ESP_LOGE(TAG, "shell PSRAM alloc failed"); return; }
@@ -565,6 +598,19 @@ void app_main(void)
      * transient, so the pending rebuild always drains. */
     bool rebuild_pending = false;
 
+    /* S26 slice c — pin the idle reference to "now", the actual start of
+     * interactive use: everything above (panel bring-up, LVGL start,
+     * touch start, and — worst case — a human-paced STAGE 4 crosshair
+     * capture) can take an unbounded amount of real time, and `s_idle`
+     * was zero-initialised (ref_ms == 0) long before any of it ran.
+     * Pinning here means the first DIM/OFF countdown starts now, not at
+     * cold boot. `last_idle_state` tracks the previous frame's state so
+     * the render loop below only re-programs the backlight on an actual
+     * ACTIVE/DIM/OFF transition (or a live brightness change while
+     * ACTIVE), not every single frame. */
+    ff_idle_input(&s_idle, ff_bringup_now_ms());
+    ff_idle_state_t last_idle_state = FF_IDLE_STATE_ACTIVE;
+
     /* Render lifecycle mirrors the sim (targets/sim/ctl_loop.c): tick the
      * shell every frame, rebuild the LVGL tree ONLY on a dirty tick. The
      * esp_lvgl_port task does the actual flushing; we just own the model. */
@@ -592,6 +638,13 @@ void app_main(void)
                 ff_face_build(ff_shell_view(&s_shell));
                 ff_display_unlock();
             }
+            /* S26 slice c — the blocking capture above (five taps' worth
+             * of real, human-paced time) ran with no ff_idle_tick call
+             * anywhere near it (see s_idle's doc comment for why
+             * touch_cal_running is passed false below); treat its
+             * completion as a wake so a long session does not slam
+             * straight to DIM/OFF the instant this returns. */
+            ff_idle_input(&s_idle, ff_bringup_now_ms());
         }
 
         /* ff_bringup_now_ms() is the demo clock under CONFIG_FF_DEMO_MODE —
@@ -629,34 +682,90 @@ void app_main(void)
             esp_restart();
         }
 
+        /* S26 slice c — feed touch + BOOT into ff_idle_input every frame,
+         * same "always feed, let the FSM decide" placement as the PWR FSM
+         * above. A held BOOT (or a held finger) reads true every frame
+         * it stays down — harmless: ff_idle_input just keeps re-pinning
+         * ACTIVE, exactly like a genuinely continuous touch should. */
+        if (ff_display_touch_is_down() || ff_power_boot_pressed()) {
+            ff_idle_input(&s_idle, now_ms);
+        }
+
+        /* PWR SHORT_PRESS — the WHOLE decision (keep_awake no-op /
+         * ACTIVE->force-off / DIM,OFF->wake) is core's
+         * ff_idle_short_press (S26 AC: "while OFF = wake; while ACTIVE =
+         * go OFF immediately" — this is where slice (b)'s reserved
+         * SHORT_PRESS lands; DIM extended to "wake" too and the
+         * keep_awake no-op are both documented interpretation calls in
+         * ff_idle.h's doc comment on that function, PR body). This file
+         * only samples the FSM event and the keep-awake predicate and
+         * hands both to core — no `if` about idle behavior here
+         * (CLAUDE.md's house rule). Reads the view from the PREVIOUS
+         * frame (ff_shell_tick for THIS frame has not run yet), same
+         * one-frame lag the LONG_PRESS/reboot-guard handling above
+         * already accepts. */
+        if (pwr_ev == FF_POWER_FSM_EVENT_SHORT_PRESS) {
+            ff_idle_short_press(&s_idle, now_ms, ff_shell_keep_awake(ff_shell_view(&s_shell), false));
+        }
+
         bool const dirty = ff_shell_tick(&s_shell, now_ms);
         ff_app_state_t const *v = ff_shell_view(&s_shell);
 
-        /* Re-program the backlight whenever the projected percent moved
-         * (#100/#bug1) — EVERY tick, NOT only on a dirty one. A live
-         * brightness drag is deliberately kept out of the shell's render key
-         * (ff_shell.c shell_render_key) so it does not force a face rebuild
-         * that would destroy the slider mid-drag; that means a brightness-only
-         * change no longer sets the dirty bit, so the backlight apply must run
-         * outside the dirty gate to follow the finger live. Cheap: a percent
-         * compare and, only on an actual change, one LEDC re-program. */
-        if (v->settings.brightness_pct != last_brightness) {
+        /* S26 slice c — the idle decision itself: ticked every frame
+         * (same "always tick" contract as the PWR FSM), against THIS
+         * frame's freshly-projected view. */
+        bool const keep_awake = ff_shell_keep_awake(v, false);
+        ff_idle_state_t const idle_state = ff_idle_tick(&s_idle, now_ms, keep_awake);
+
+        /* Backlight enact — the VALUE is core's decision
+         * (ff_idle_brightness_pct: stored_pct unchanged for ACTIVE —
+         * AC2's "wake restores exactly the pre-dim brightness_pct" —
+         * FF_BRIGHTNESS_MIN_PCT for DIM, a true 0 for OFF); this file
+         * only decides WHEN to re-program the LEDC duty (an actual
+         * idle-state transition, or — while ACTIVE — the projected
+         * brightness percent itself moving, #100/#bug1's original
+         * reasoning: brightness is deliberately EXCLUDED from the
+         * shell's render key so a live Settings drag does not force a
+         * face rebuild mid-drag, so that comparison must keep running
+         * every ACTIVE frame, not only a dirty one) and which HAL call a
+         * `0` result means (ff_display_backlight_off — a true zero,
+         * bypassing ff_display_set_brightness's non-zero floor) versus
+         * a nonzero one (ff_display_backlight_on, the alias for
+         * ff_display_set_brightness) — never which idle STATE maps to
+         * which percent; that mapping lives in core, unit-tested there
+         * (S26c_AC2_brightness_* in core/tests/test_idle.c). */
+        uint8_t const pct = ff_idle_brightness_pct(idle_state, v->settings.brightness_pct);
+        bool const live_brightness_drag =
+            (idle_state == FF_IDLE_STATE_ACTIVE) && (v->settings.brightness_pct != last_brightness);
+        if (idle_state != last_idle_state || live_brightness_drag) {
             last_brightness = v->settings.brightness_pct;
-            (void)ff_display_set_brightness(last_brightness);
+            if (pct == 0u) {
+                (void)ff_display_backlight_off();
+            } else {
+                (void)ff_display_backlight_on(pct);
+            }
         }
+        last_idle_state = idle_state;
 
         /* Accumulate the dirty bit into the pending latch — NEVER cleared by
          * skipping, only by an actual rebuild below — so a change that arrives
-         * mid-tap is not lost when we defer it (fix: rebuild-mid-tap). */
+         * mid-tap is not lost when we defer it (fix: rebuild-mid-tap). S26
+         * slice c: a dirty tick that lands while OFF is deferred exactly the
+         * same way — it drains on the first non-OFF frame after a wake ("a
+         * dirty view is rebuilt on wake"), not lost either. */
         if (dirty) {
             rebuild_pending = true;
         }
 
-        /* Rebuild only when something is pending AND no finger is down. While
-         * a finger is down we hold off so the button under it survives to emit
-         * its CLICKED on release; the pending flag stays set and drains on the
-         * first frame after the finger lifts. */
-        if (rebuild_pending && !ff_display_touch_is_down()) {
+        /* Rebuild only when something is pending, no finger is down, AND the
+         * screen is not OFF (S26 slice c: "skip rendering" — the LVGL tick
+         * still runs via esp_lvgl_port's own task; only the face
+         * teardown+rebuild is skipped here). While a finger is down we hold
+         * off so the button under it survives to emit its CLICKED on
+         * release; the pending flag stays set and drains on the first frame
+         * after the finger lifts (or after the screen wakes, whichever is
+         * later). */
+        if (rebuild_pending && !ff_display_touch_is_down() && idle_state != FF_IDLE_STATE_OFF) {
             if (ff_display_lock(100 /* ms */)) {
                 lv_obj_clean(lv_screen_active());
                 ff_face_build(v);

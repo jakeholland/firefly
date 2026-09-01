@@ -166,6 +166,28 @@ if(FF_BUILD_TESTS)
     ff_apply_warnings(test_ctl_flare_sequence)
 
     add_test(NAME test_ctl_flare_sequence COMMAND test_ctl_flare_sequence)
+
+    # S26 slice c, AC3: "OFF skips face rebuilds" — asserts the render
+    # loop's rebuild count is 0 across an OFF window, against real dirty
+    # ticks (not "nothing happened anyway" — see the test file's top
+    # comment), driven through the same ff-sim-ctl-loop session as
+    # test_ctl_flare_sequence above.
+    add_executable(test_idle_render_skip
+        tests/test_idle_render_skip.c
+        screenshot.c
+    )
+    target_link_libraries(test_idle_render_skip PRIVATE
+        ff-sim-ctl-loop
+        ff-sim-ctl
+        ff-shell
+        ff-app-ui
+        ff-stb-image-write
+        lvgl::lvgl
+        unity
+    )
+    ff_apply_warnings(test_idle_render_skip)
+
+    add_test(NAME test_idle_render_skip COMMAND test_idle_render_skip)
 endif()
 
 # Issue #3 — ff_screenshot_write now creates its output directory itself

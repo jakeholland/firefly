@@ -30,6 +30,18 @@
 extern "C" {
 #endif
 
+/** FF_BL_MIN_PCT / FF_BL_MAX_PCT — the backlight percent range
+ * `ff_display_set_brightness` clamps a caller's `pct` into (mirrors core
+ * FF_BRIGHTNESS_MIN_PCT/_MAX_PCT, ff_settings.h). Public (S26 slice c)
+ * so app_main's DIM enact (`ff_display_set_brightness(FF_BL_MIN_PCT)`,
+ * docs/specs/S26-device-lifecycle.md "(c) Inactivity -> dim -> screen
+ * off") uses the SAME constant this HAL enforces, rather than a second
+ * local literal that could drift from it. The floor is non-zero on
+ * purpose — see `ff_display_set_brightness`'s doc comment and
+ * `ff_display_backlight_off` below for the one true-zero path. */
+#define FF_BL_MIN_PCT 10u
+#define FF_BL_MAX_PCT 100u
+
 /**
  * ff_display_expander_init — bring up the shared I2C bus and the TCA9554
  * IO expander, then RELEASE both hardware resets through it (TP_RST on
@@ -111,6 +123,34 @@ bool ff_display_touch_is_down(void);
  * otherwise, and a logged esp_err_t on any LEDC failure.
  */
 esp_err_t ff_display_set_brightness(uint8_t pct);
+
+/**
+ * ff_display_backlight_off — S26 slice (c)'s screen-OFF enact: drive the
+ * LEDC duty to a TRUE zero, bypassing `ff_display_set_brightness`'s
+ * `FF_BL_MIN_PCT` floor. That floor exists so no OTHER caller can
+ * accidentally leave the backlight black-and-unrecoverable; the idle
+ * FSM's OFF state is the one legitimate "actually dark" caller
+ * (docs/specs/S26-device-lifecycle.md "(c) Inactivity -> dim -> screen
+ * off", AC2/AC3), so it gets its own explicit entry point rather than
+ * weakening that clamp for everyone. Requires `ff_display_panel_init()`
+ * to have run, same precondition as `ff_display_set_brightness` —
+ * returns ESP_ERR_INVALID_STATE otherwise.
+ */
+esp_err_t ff_display_backlight_off(void);
+
+/**
+ * ff_display_backlight_on — the wake-side counterpart of
+ * `ff_display_backlight_off`: restore the backlight to `pct` percent.
+ * A thin, explicitly-named alias for `ff_display_set_brightness(pct)`
+ * (same clamp, same precondition, same LEDC path) — kept as its own
+ * symbol so `app_main.c`'s ACTIVE/DIM/OFF enact site reads as three
+ * parallel calls (`_on`/`ff_display_set_brightness(FF_BL_MIN_PCT)` for
+ * DIM/`_off`) rather than one of the three being a bare call into a
+ * function named for a general-purpose setter. Callers restoring the
+ * pre-dim brightness on wake pass the EXACT stored `settings.brightness_pct`
+ * here — never a hardcoded value (AC2).
+ */
+esp_err_t ff_display_backlight_on(uint8_t pct);
 
 /**
  * ff_display_touch_set_cal — install the active touch-calibration

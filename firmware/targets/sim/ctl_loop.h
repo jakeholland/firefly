@@ -35,6 +35,7 @@
 
 #include "ctl_server.h"
 #include "ff_app_state.h"
+#include "ff_idle.h" /* S26 slice c — the OFF-skips-rebuild enact this loop mirrors app_main.c's */
 #include "ff_shell.h"
 #include "live_setup.h"
 
@@ -86,6 +87,29 @@ typedef struct {
      * explicit rather than relying on that harmlessness). */
     bool has_screen;
 
+    /* S26 slice c (docs/specs/S26-device-lifecycle.md "(c) Inactivity ->
+     * dim -> screen off") — mirrors app_main.c's enact so AC3's harness
+     * test ("the render loop's rebuild count is 0 across an OFF window")
+     * exercises the SAME rebuild-skip logic the device runs, not a
+     * test-only stand-in. `idle`'s keep_awake input is
+     * `ff_shell_keep_awake(&state, false)` — the sim has no blocking
+     * touch-calibration flow, so that third source is always false here.
+     * Every real pointer gesture (tap/swipe/hold) feeds `ff_idle_input`
+     * (mirrors touch on device); tests may also call it directly on
+     * `&ctx.idle` to simulate a wake with no gesture. `rebuild_pending`
+     * is app_main.c's same "accumulate dirty, drain on the first
+     * non-OFF tick" latch (mirrors that file's finger-down defer latch
+     * in spirit: an OFF window defers a rebuild instead of a held
+     * finger). `rebuild_count` counts actual rebuilds
+     * (lv_obj_clean+ff_build_face_screen calls) — exposed so a test can
+     * assert it stayed 0 across a window instead of inferring that from
+     * ff_shell_tick's dirty bit (which the OFF-gate governs, not the
+     * other way around — asserting on the bit would test the wrong
+     * layer). */
+    ff_idle_t idle;
+    bool      rebuild_pending;
+    uint32_t  rebuild_count;
+
     char ctl_out_dir_real[4096]; /* PATH_MAX-sized; see ctl_out_path.h */
 } ff_ctl_loop_ctx_t;
 
@@ -136,11 +160,17 @@ ff_ctl_handlers_t ff_ctl_loop_handlers(ff_ctl_loop_ctx_t *ctx, bool *quit_flag);
 /**
  * ff_ctl_loop_pump — one tick of the live session: `ff_shell_tick` at
  * the current clock reading, mirror the projection into `ctx->state`,
- * and — ONLY when that tick was dirty (S16 slice d) — `lv_obj_clean()`
- * the active screen and rebuild it (`ff_build_face_screen`). Does NOT
- * call `lv_timer_handler()` or poll the ctl socket; the caller does both
- * (main.c's real loop, or a test driving the sequence by hand) so this
- * function stays a single, testable unit: tick-and-maybe-rebuild.
+ * tick `ctx->idle` (S26 slice c) against `ff_shell_keep_awake(&ctx->state,
+ * false)`, and — ONLY when a dirty tick is pending (S16 slice d) AND
+ * `ctx->idle` is not OFF (S26 slice c) — `lv_obj_clean()` the active
+ * screen and rebuild it (`ff_build_face_screen`), counting the rebuild
+ * in `ctx->rebuild_count`. A dirty tick that lands while OFF is not
+ * lost: it stays latched in `ctx->rebuild_pending` and drains on the
+ * first non-OFF pump after a wake (mirrors app_main.c's "a dirty view is
+ * rebuilt on wake"). Does NOT call `lv_timer_handler()` or poll the ctl
+ * socket; the caller does both (main.c's real loop, or a test driving
+ * the sequence by hand) so this function stays a single, testable unit:
+ * tick-and-maybe-rebuild.
  */
 void ff_ctl_loop_pump(ff_ctl_loop_ctx_t *ctx);
 

@@ -89,21 +89,24 @@ static const char *TAG = "ff_display";
  * GPIO level — so brightness is a duty cycle, not on/off. We mirror that:
  * a low-speed-mode timer + one channel on GPIO5. 10-bit resolution (duty
  * 0..1023) is ample for a smooth 10..100% range; 5 kHz is well above the
- * flicker floor and below any audible-whine range. The MIN/MAX below mirror
- * core's FF_BRIGHTNESS_MIN_PCT / _MAX_PCT (ff_settings.h) — kept as local
- * literals so this device HAL stays free of any core/ include (its header
- * comment: "NONE of this touches core/ or app/"). The floor is a DEFENSIVE
- * second clamp: the shell already clamps the setting to the same range, but
- * the HAL never trusts a caller to have done so — a 0% duty is a black,
- * unrecoverable backlight, so ff_display_set_brightness can never program
- * one. */
+ * flicker floor and below any audible-whine range. FF_BL_MIN_PCT/_MAX_PCT
+ * (mirroring core's FF_BRIGHTNESS_MIN_PCT/_MAX_PCT, ff_settings.h) are now
+ * PUBLIC (ff_display.h, S26 slice c) rather than local literals, so
+ * app_main's DIM enact shares this exact constant instead of a second copy
+ * that could drift from it — this device HAL still gains no core/ include
+ * (its header comment: "NONE of this touches core/ or app/"); the value is
+ * just no longer duplicated. The floor is a DEFENSIVE second clamp: the
+ * shell already clamps the setting to the same range, but the HAL never
+ * trusts a caller to have done so — a 0% duty via ff_display_set_brightness
+ * is a black, unrecoverable backlight, so that path can never program one.
+ * The one legitimate true-zero path is ff_display_backlight_off (S26 slice
+ * c's OFF enact), which bypasses this clamp entirely and is documented as
+ * such in ff_display.h. */
 #define FF_BL_LEDC_MODE    LEDC_LOW_SPEED_MODE
 #define FF_BL_LEDC_TIMER   LEDC_TIMER_0
 #define FF_BL_LEDC_CHANNEL LEDC_CHANNEL_0
 #define FF_BL_LEDC_RES     LEDC_TIMER_10_BIT
 #define FF_BL_LEDC_FREQ_HZ 5000
-#define FF_BL_MIN_PCT      10  /* mirrors core FF_BRIGHTNESS_MIN_PCT — never 0/black-unrecoverable */
-#define FF_BL_MAX_PCT      100 /* mirrors core FF_BRIGHTNESS_MAX_PCT */
 
 /* ---- Shared I2C bus: touch (0x53) + TCA9554 (0x20) (I2C_Driver.h) ----- */
 #define FF_I2C_PORT I2C_NUM_0
@@ -172,6 +175,29 @@ static esp_err_t ff_display_backlight_init(void)
     return ESP_OK;
 }
 
+/* Shared LEDC duty program + error handling, used by both
+ * ff_display_set_brightness (percent, clamped) and
+ * ff_display_backlight_off (a raw duty of 0, S26 slice c — bypasses that
+ * clamp entirely, see this file's FF_BL_MIN_PCT comment above). Requires
+ * s_bl_ready — callers check that themselves so each can log its own
+ * "called before panel_init" context. */
+static esp_err_t ff_display_program_duty(uint32_t duty, uint8_t logged_pct)
+{
+    esp_err_t err = ledc_set_duty(FF_BL_LEDC_MODE, FF_BL_LEDC_CHANNEL, duty);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "backlight ledc_set_duty failed: %s", esp_err_to_name(err));
+        return err;
+    }
+    err = ledc_update_duty(FF_BL_LEDC_MODE, FF_BL_LEDC_CHANNEL);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "backlight ledc_update_duty failed: %s", esp_err_to_name(err));
+        return err;
+    }
+    const uint32_t full_duty = (1u << FF_BL_LEDC_RES) - 1u;
+    ESP_LOGI(TAG, "backlight set to %u%% (duty %u/%u)", (unsigned)logged_pct, (unsigned)duty, (unsigned)full_duty);
+    return ESP_OK;
+}
+
 esp_err_t ff_display_set_brightness(uint8_t pct)
 {
     if (!s_bl_ready) {
@@ -186,19 +212,24 @@ esp_err_t ff_display_set_brightness(uint8_t pct)
 
     const uint32_t full_duty = (1u << FF_BL_LEDC_RES) - 1u;
     const uint32_t duty = (full_duty * (uint32_t)pct) / 100u;
+    return ff_display_program_duty(duty, pct);
+}
 
-    esp_err_t err = ledc_set_duty(FF_BL_LEDC_MODE, FF_BL_LEDC_CHANNEL, duty);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "backlight ledc_set_duty failed: %s", esp_err_to_name(err));
-        return err;
+esp_err_t ff_display_backlight_off(void)
+{
+    if (!s_bl_ready) {
+        ESP_LOGE(TAG, "backlight_off called before panel_init (backlight LEDC not up)");
+        return ESP_ERR_INVALID_STATE;
     }
-    err = ledc_update_duty(FF_BL_LEDC_MODE, FF_BL_LEDC_CHANNEL);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "backlight ledc_update_duty failed: %s", esp_err_to_name(err));
-        return err;
-    }
-    ESP_LOGI(TAG, "backlight set to %u%% (duty %u/%u)", (unsigned)pct, (unsigned)duty, (unsigned)full_duty);
-    return ESP_OK;
+    /* The one true-zero path — deliberately bypasses ff_display_set_brightness's
+     * FF_BL_MIN_PCT floor (see this file's top-of-block comment and
+     * ff_display.h's doc comment on this function). */
+    return ff_display_program_duty(0u, 0u);
+}
+
+esp_err_t ff_display_backlight_on(uint8_t pct)
+{
+    return ff_display_set_brightness(pct);
 }
 
 /* Active touch-calibration transform (S15 slice d). Identity until
