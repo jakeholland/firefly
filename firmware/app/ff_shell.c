@@ -1073,14 +1073,31 @@ static bool shell_member_paired(shell_t const *sh, uint32_t node_id)
  * projectors — see its caller. */
 static void shell_project_signals(shell_t *sh, uint32_t now_ms, ff_app_signals_t *out)
 {
-    ff_inbox_build(&out->inbox, &sh->feed, &sh->crew, now_ms);
-
     /* Re-validate an open MEMBER thread (node 0 = CREW, always valid). */
     if (sh->sig_subview == FF_SIG_SUB_THREAD && sh->sig_thread_node != 0u &&
         !shell_member_paired(sh, sh->sig_thread_node)) {
         sh->sig_subview     = FF_SIG_SUB_INBOX;
         sh->sig_thread_node = 0u;
     }
+
+    /* S24 slice (c) — live arrivals into the OPEN, VISIBLE thread are on
+     * glass the moment they are projected, so their badge debt clears
+     * BEFORE the conversation list is built this tick (the AC4 open-
+     * transition mark-read in the INBOX_OPEN_THREAD/PICK handlers covers
+     * the backlog; this covers arrivals while the thread is up — the
+     * same honesty rule's second half, and doing it first keeps this
+     * tick's badges coherent with it). Gated on the thread actually
+     * being VISIBLE: under a modal (compose/settings/map) or a flare
+     * takeover nothing here is on glass and nothing is marked read. */
+    if (sh->sig_subview == FF_SIG_SUB_THREAD && sh->view.active_face == FF_APP_FACE_SIGNALS &&
+        !sh->flare.takeover_active) {
+        (void)ff_inbox_mark_thread_read(&sh->feed,
+                                        (sh->sig_thread_node == 0u) ? FF_CONV_CREW : FF_CONV_MEMBER,
+                                        sh->sig_thread_node);
+    }
+
+    ff_inbox_build(&out->inbox, &sh->feed, &sh->crew, now_ms);
+
     out->subview     = sh->sig_subview;
     out->thread_node = sh->sig_thread_node;
     if (sh->sig_subview == FF_SIG_SUB_THREAD) {
@@ -1094,6 +1111,13 @@ static void shell_project_signals(shell_t *sh, uint32_t now_ms, ff_app_signals_t
             shell_copy_str(out->thread_name, sizeof(out->thread_name), (m != NULL) ? m->name : "");
             out->thread_color_idx = (m != NULL) ? m->color_idx : 0u;
         }
+
+        /* S24 slice (c) — the open thread's messages, built from the same
+         * sources as the conversation list (mark-read of live arrivals
+         * already ran above, before the inbox build). */
+        ff_inbox_thread_build(&out->thread, &sh->feed, &sh->crew,
+                              (sh->sig_thread_node == 0u) ? FF_CONV_CREW : FF_CONV_MEMBER,
+                              sh->sig_thread_node, now_ms);
     }
 
     /* S22(d) send machinery, kept for slice (d): re-validate the member
@@ -1576,6 +1600,56 @@ static void shell_render_key(ff_app_state_t const *v, ff_app_state_t *key)
     }
     for (uint8_t i = key->signals.inbox.conv_count; i < FF_INBOX_MAX_CONVS; i++) {
         memset(&key->signals.inbox.convs[i], 0, sizeof(key->signals.inbox.convs[i]));
+    }
+
+    /* S24 slice (c) — while a THREAD is open, the thread is the ONLY
+     * Signals surface rendered (scr_signals.c's THREAD arm; the nav
+     * page-dots/badge are suppressed there too, per the design
+     * artboards), so the key reduces to exactly the thread's own
+     * rendered projection: the messages (ages coarsened to their
+     * ff_fmt_age bucket), the header scope facts (name, member
+     * dot/color, the CREW roster count, the 1:1 presence line's
+     * category + SEEN bucket), and nothing else. Everything the inbox
+     * rows render — other conversations' previews, ages, presence and
+     * unread badges — is masked to zero, so a live thread cannot be
+     * rebuilt (and the chip under a finger destroyed) by churn in
+     * conversations that change no pixel on this screen. The same
+     * flare-takeover lesson one block down, applied at this sub-view's
+     * birth. */
+    if (v->signals.subview == FF_SIG_SUB_THREAD) {
+        ff_inbox_conv_t open_cv;
+        memset(&open_cv, 0, sizeof(open_cv));
+        for (uint8_t i = 0; i < v->signals.inbox.conv_count && i < FF_INBOX_MAX_CONVS; i++) {
+            ff_inbox_conv_t const *cv = &v->signals.inbox.convs[i];
+            bool const is_crew = (cv->kind == FF_CONV_CREW);
+            if ((v->signals.thread_node == 0u && is_crew) ||
+                (v->signals.thread_node != 0u && !is_crew && cv->node_id == v->signals.thread_node)) {
+                /* Header facts only — never the conversation's preview/
+                 * unread, which this screen does not draw. */
+                open_cv.kind     = cv->kind;
+                open_cv.node_id  = cv->node_id;
+                memcpy(open_cv.name, cv->name, sizeof(open_cv.name));
+                open_cv.initial   = cv->initial;
+                open_cv.color_idx = cv->color_idx;
+                open_cv.presence_valid  = cv->presence_valid;
+                open_cv.presence        = cv->presence;
+                open_cv.presence_age_ms = (cv->presence == FF_PRESENCE_SEEN)
+                                              ? shell_coarsen_age_ms(cv->presence_age_ms)
+                                              : 0u;
+                break;
+            }
+        }
+        uint8_t const conv_count = v->signals.inbox.conv_count;
+        memset(&key->signals.inbox, 0, sizeof(key->signals.inbox));
+        key->signals.inbox.conv_count = conv_count; /* the CREW header's "N CREW" roster fact */
+        key->signals.inbox.convs[0]   = open_cv;
+        for (uint8_t i = 0; i < key->signals.thread.msg_count && i < FF_INBOX_MAX_MSGS; i++) {
+            key->signals.thread.msgs[i].age_ms =
+                shell_coarsen_age_ms(v->signals.thread.msgs[i].age_ms);
+        }
+        for (uint8_t i = key->signals.thread.msg_count; i < FF_INBOX_MAX_MSGS; i++) {
+            memset(&key->signals.thread.msgs[i], 0, sizeof(key->signals.thread.msgs[i]));
+        }
     }
 
     /* #flare-repeat-dismiss — the takeover is OPAQUE in the render key.
@@ -2351,6 +2425,23 @@ void ff_shell_intent(ff_shell_t *sh_pub, ff_intent_t const *in)
          * turns into MC_ADDR_BROADCAST itself. Gated on the visible face:
          * the reply chips live on the Signals tile. */
         if (takeover_up) return;
+        /* S24 slice (c) — the thread quick chips (OMW / IN 5 MIN): with a
+         * thread OPEN, the reply goes to the THREAD's scope ("the open
+         * thread IS the send scope"), never to whoever happened to send
+         * the newest feed item in some other conversation. The member
+         * scope is re-validated paired at the send instant (the
+         * shell_sig_dest belt-and-braces rule); a stale scope sends
+         * NOTHING rather than silently broadcasting. */
+        if (sh->route.base == FF_APP_FACE_SIGNALS && sh->route.modal == FF_APP_FACE_NONE &&
+            sh->sig_subview == FF_SIG_SUB_THREAD) {
+            uint32_t dest = MC_ADDR_BROADCAST; /* thread_node 0 = the CREW thread */
+            if (sh->sig_thread_node != 0u) {
+                if (!shell_member_paired(sh, sh->sig_thread_node)) return;
+                dest = sh->sig_thread_node;
+            }
+            (void)ff_wiring_send_canned_reply_to(&sh->wiring, in->u.reply, dest);
+            return;
+        }
         {
             /* S24 amendment to the "newest feed item" rule: outgoing
              * items (FEED_DIR_OUT, from_node 0) now live in the feed too,
@@ -2673,6 +2764,16 @@ void ff_shell_intent(ff_shell_t *sh_pub, ff_intent_t const *in)
         if (takeover_up) return;
         sh->sig_rally_armed = false;
         {
+            /* S24 slice (c) — with a thread open (the 1:1 PULSE chip; the
+             * slice-d popup later), the scope IS the thread: re-assert the
+             * S22(d) holders from the thread key at the send instant, so a
+             * pulse can never chase a target the user is not looking at. */
+            bool const thread_open =
+                (sh->route.base == FF_APP_FACE_SIGNALS && sh->sig_subview == FF_SIG_SUB_THREAD);
+            if (thread_open) {
+                sh->sig_target_kind = (sh->sig_thread_node == 0u) ? FF_TARGET_WHOLE_CREW : FF_TARGET_MEMBER;
+                sh->sig_target_node = sh->sig_thread_node;
+            }
             uint32_t dest = MC_ADDR_BROADCAST;
             if (!shell_sig_dest(sh, &dest)) return; /* stale member target: send nothing */
             uint8_t buf[FF_PROTO_MAX_PAYLOAD];
@@ -2685,7 +2786,14 @@ void ff_shell_intent(ff_shell_t *sh_pub, ff_intent_t const *in)
                      * send; a refused one fabricates nothing. */
                     ff_wiring_push_outgoing(&sh->wiring, FEED_PULSE, dest, NULL);
                 }
-                shell_sig_reset_target(sh); /* AC3 */
+                /* S22 AC3's reset-to-WHOLE_CREW belonged to the retired
+                 * target-line screen. With a thread open the open thread
+                 * IS the scope (S24's no-desync rule) — resetting here
+                 * would silently re-aim the very chips still under the
+                 * user's thumb, so the scope stays the thread. */
+                if (!thread_open) {
+                    shell_sig_reset_target(sh); /* AC3 (no thread open) */
+                }
             }
         }
         return;

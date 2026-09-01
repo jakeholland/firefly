@@ -383,9 +383,25 @@ typedef struct {
  * sub-view/thread/target fields — which is a little SMALLER than the
  * `ff_sigview_t` it replaced (9 conversations vs 41 rows), and the shell
  * gained only two small persistent holders (sig_subview/sig_thread_node)
- * on the S22 target-holder precedent. The budget stands unchanged.
+ * on the S22 target-holder precedent. The budget stood unchanged.
+ *
+ * RAISED 25 KB -> 32.5 KB in S24 slice c, deliberately, per this
+ * comment's own instruction: the thread screens render the core
+ * `ff_inbox_thread_t` DIRECTLY (`ff_app_signals_t.thread`,
+ * ff_app_state.h — the same embed-the-real-view-model resolution as
+ * `inbox`/`radar`/`ff_sigview_t` before it), and `ff_inbox_thread_t` is
+ * 3,460 B (FF_INBOX_MAX_MSGS = FF_FEED_CAP = 32 messages, each carrying
+ * its FF_FEED_TEXT_LEN text + joined identity), landing TWICE via the
+ * `view` + `prev_key` copies. Measured, not estimated: sizeof(shell_t)
+ * is 32,056 B against the old 25,600 B budget (a hard compile failure).
+ * 32.5 KB (33,280 B) clears it with ~1.2 KB headroom — same
+ * tight-round-number discipline as the earlier raises. Still REAL
+ * view-model state (a pack-embed would add ~23.7 KB more at once — the
+ * test_shell.c red-flag check still catches that), and a ~32 KB static
+ * shell remains comfortable in the S3's 512 KB SRAM; this stays a
+ * runaway-growth tripwire, not a hardware limit.
  */
-#define FF_SHELL_BYTES 25600u
+#define FF_SHELL_BYTES 33280u
 
 /** Alignment of the opaque payload. 8 covers every member the shell
  *  holds today (the widest are `double` inside `ff_latlon_t` and

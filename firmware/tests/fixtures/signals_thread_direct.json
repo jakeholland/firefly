@@ -1,5 +1,5 @@
 {
-  "fixture": "signals_thread_stub",
+  "fixture": "signals_thread_direct",
   "face": "signals",
   "signals": {
     "subview": "thread",
@@ -9,13 +9,18 @@
     "target_kind": "member",
     "target_node": 111,
     "convs": [
-      {"conv": "crew", "unread": 2, "item_count": 5,
+      {"conv": "crew", "unread": 0, "item_count": 5,
        "preview_kind": "rally", "preview_dir": "broadcast", "preview_text": "Main Stage",
        "preview_age_ms": 360000, "preview_from": "RILEY"},
       {"conv": "member", "node_id": 111, "name": "DANA", "initial": "D", "color_idx": 0,
        "unread": 0, "item_count": 2,
        "preview_kind": "pulse", "preview_dir": "direct", "preview_age_ms": 60000,
        "presence": "seen", "presence_age_ms": 60000}
+    ],
+    "msgs": [
+      {"kind": "text", "dir": "out", "text": "at the tower, come find us", "age_ms": 240000},
+      {"kind": "pulse", "dir": "direct", "node_id": 111, "from": "DANA", "initial": "D",
+       "color_idx": 0, "age_ms": 60000}
     ]
   }
 }

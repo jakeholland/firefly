@@ -189,7 +189,7 @@ model's own AC2 ordering; a fixture is a snapshot, it does not re-sort):
 
 | Field | Values / cap | Default | Notes |
 |---|---|---|---|
-| `subview` | `inbox` \| `picker` \| `thread` \| `popup` \| `rally` | `inbox` | Which Signals sub-screen renders. `thread` is a slice-(b) stub; `popup`/`rally` are declared slice-(d) placeholders that fall back to the inbox render. |
+| `subview` | `inbox` \| `picker` \| `thread` \| `popup` \| `rally` | `inbox` | Which Signals sub-screen renders. `thread` renders the S24 slice-(c) message screen from `msgs` below; `popup`/`rally` are declared slice-(d) placeholders that fall back to the inbox render. |
 | `thread_node` / `thread_name` / `thread_color_idx` | int / string / int | `0` / `""` / `0` | The open thread's scope (meaningful for `subview: "thread"`); node 0 = the CREW conversation. |
 | `target_kind` / `target_node` / `rally_confirm_armed` | enum / int / bool | `whole_crew` / `0` / `false` | The kept S22(d) send-machinery state (not rendered by slice b; slice d's popup/rally surfaces read it). |
 | `convs` | array, up to `FF_INBOX_MAX_CONVS` (9) | `[]` | The conversation list, top to bottom — a 10th entry fails the whole load with `FF_FIXTURE_ERR_TOO_BIG`. |
@@ -200,6 +200,12 @@ model's own AC2 ordering; a fixture is a snapshot, it does not re-sort):
 | `convs[].preview_kind` / `preview_dir` / `preview_text` / `preview_age_ms` | enum / enum / string / int | `pulse` / `unknown` / `""` / `0` | The newest item. `preview_dir` is `unknown` \| `broadcast` \| `direct` \| `out` — `out` renders the honest `YOU:` prefix. Age formatted at render time by `ff_fmt_age`. |
 | `convs[].preview_from` | string | *(absent)* | The newest item's joined sender name. **Its presence derives `preview_from_known`** — the CREW row's sender prefix; omit it for an unknown/outgoing sender (never fabricate one). |
 | `convs[].presence` / `presence_age_ms` | enum / int | `seen` / `0` | Member rows only (**`presence_valid` derives from `conv: "member"`**): `seen` renders `SEEN <age>` in stale-amber, `lost` renders `LOST` in stale-amber, `linked` renders `LINKED` (no age) — the legible tier (S24 AC3). |
+| `msgs` | array, up to `FF_INBOX_MAX_MSGS` (32) | `[]` | S24 slice (c): the OPEN thread's messages (`ff_inbox_msg_t`), OLDEST first — the order the thread screen stacks them (it scrolls to the newest). Meaningful with `subview: "thread"`. A 33rd entry fails the whole load with `FF_FIXTURE_ERR_TOO_BIG`. |
+| `msgs[].kind` / `dir` | enum / enum | `pulse` / `unknown` | Same enums as the preview fields. `dir: "out"` sides the bubble on MY side (amber, right); everything else renders left; `unknown` renders like inbound but its wording never claims an address. |
+| `msgs[].from` | string | *(absent)* | The joined sender name. **Its presence derives `identity_known`** (`"from": ""` = known-but-unnamed, renders `MEMBER`); omit it entirely for an unjoined sender, which renders an honest `UNKNOWN` — never a guessed name. |
+| `msgs[].node_id` / `initial` / `color_idx` | int / 1-char / int | `0` / `''` / `0` | The joined sender's identity details (crew dot color etc.). |
+| `msgs[].text` | string (≤63 chars) | `""` | TEXT/STATUS body, or a RALLY's place name. Ellipsized at render, never wrapped. |
+| `msgs[].age_ms` / `unread` | int / bool | `0` / `false` | Age formatted at render time by `ff_fmt_age`; `unread` is model state (the thread marks itself read on open — goldens author it `false`). |
 
 ## `flare` (S10 slice b)
 

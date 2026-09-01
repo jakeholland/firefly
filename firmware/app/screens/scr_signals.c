@@ -1,8 +1,9 @@
 /**
- * scr_signals.c — see scr_signals.h. The S24 Signals INBOX (spec:
- * docs/specs/S24-signals-inbox.md, slice b): a pure projection of
- * `ff_app_signals_t` — the sub-view selector plus the core `ff_inbox_t`
- * conversation model — replacing the S22 unified-list screen.
+ * scr_signals.c — see scr_signals.h. The S24 Signals INBOX + THREAD
+ * screens (spec: docs/specs/S24-signals-inbox.md, slices b/c): a pure
+ * projection of `ff_app_signals_t` — the sub-view selector, the core
+ * `ff_inbox_t` conversation model, and the open thread's
+ * `ff_inbox_thread_t` messages — replacing the S22 unified-list screen.
  *
  * ## Round-glass layout — chrome above a bottom-anchored scroll list
  * The (non-clickable) header sits above one vertically-scrolling
@@ -115,9 +116,50 @@ _Static_assert(FF_SIGNALS_FAB_HIT_PX >= FF_THEME_MIN_HIT_PX, "FAB tap target mus
  * target; the row is generously tappable everywhere else. */
 #define FF_SIGNALS_ROW_HIT_CLEAR_X (FF_SIGNALS_FAB_HIT_X - FF_HIT_MIN_GAP_PX)
 
+/* The FAB's `+` glyph center — the CENTER of the 48px tap target
+ * (302..350 -> 326), not the deco disc's own centroid: the glyph is the
+ * user's aim point, so it must mark where the tap actually registers
+ * (slice-b UX review nit, fixed here in slice c). */
+#define FF_SIGNALS_FAB_GLYPH_C (FF_SIGNALS_FAB_HIT_X + FF_SIGNALS_FAB_HIT_PX / 2)
+
 /* Row internals. */
 #define FF_SIGNALS_AVATAR_PX 46
 #define FF_SIGNALS_BADGE_H   20
+
+/* ---------------------------------------------------------------------
+ * Thread sub-view geometry (S24 slice c — design canvas ThreadGroup /
+ * ThreadPerson artboards). One scrollable message list under the header
+ * band; the CREW thread's list runs to the fade, the 1:1 list stops
+ * earlier to make room for the quick-chip strip. Message rows are pure
+ * deco (bubbles are not tappable), so — unlike the inbox — overflow rows
+ * can never collide with anything clickable at any scroll offset.
+ * ------------------------------------------------------------------- */
+
+#define FF_SIGNALS_THREAD_LIST_TOP_Y   84
+#define FF_SIGNALS_THREAD_LIST_H_CREW  190 /* -> y 274; fade + FAB own the pole */
+#define FF_SIGNALS_THREAD_LIST_H_1TO1  172 /* -> y 256; the chip strip sits below */
+
+/* Quick-reply chips (1:1 only): OMW / IN 5 MIN / PULSE, one row, capped
+ * on the right so the strip and the FAB's tap target keep the adjacency
+ * floor (the same clearance rule as FF_SIGNALS_ROW_HIT_CLEAR_X). */
+#define FF_SIGNALS_CHIP_Y         264
+#define FF_SIGNALS_CHIP_H         44
+#define FF_SIGNALS_CHIP_GAP       8
+#define FF_SIGNALS_CHIP_MAX_RIGHT (FF_SIGNALS_FAB_HIT_X - FF_HIT_MIN_GAP_PX)
+_Static_assert(FF_SIGNALS_CHIP_H >= FF_THEME_MIN_HIT_PX, "quick chips must clear the 44px hit floor");
+_Static_assert(FF_SIGNALS_CHIP_GAP >= FF_HIT_MIN_GAP_PX,
+               "adjacent quick chips must clear the 8px adjacency floor");
+
+/* Message-row internals (heights follow the canvas's single-line rows;
+ * long content ellipsizes rather than wraps, so the pitch stays fixed
+ * and the newest message's scroll anchor is stable). */
+#define FF_SIGNALS_MSG_SENDER_H 18  /* dot + name + age line above a CREW inbound bubble */
+#define FF_SIGNALS_MSG_BUBBLE_H 34  /* one-line text bubble */
+#define FF_SIGNALS_MSG_RALLY_H  46  /* RALLY badge + place callout */
+#define FF_SIGNALS_MSG_EVENT_H  22  /* pulse/flare one-liner */
+#define FF_SIGNALS_MSG_AGE_H    16  /* age line under a bubble (rows with no sender line) */
+#define FF_SIGNALS_MSG_GAP      10
+#define FF_SIGNALS_MSG_MAX_W    236 /* bubble width cap; text past it ellipsizes */
 
 /* signals_safe_margin_x — int32/ceil wrapper around ff_layout_safe_margin_x,
  * bound to this puck's center/radius and this file's safety buffer (twin of
@@ -192,6 +234,28 @@ static void signals_back_cb(lv_event_t *e)
 {
     (void)e;
     ff_intent_t in = {.kind = FF_INTENT_BACK, .u = {0}};
+    ff_intent_emit(&in);
+}
+
+/* A 1:1 quick chip (OMW / IN 5 MIN) -> FF_INTENT_CANNED_REPLY, carrying
+ * which canned reply through user_data (the compose_key_click_cb
+ * pattern). The DESTINATION is never this screen's claim: the shell
+ * resolves the open thread's scope (S24 "the open thread IS the send
+ * scope" — see the CANNED_REPLY handler in ff_shell.c). */
+static void signals_chip_reply_cb(lv_event_t *e)
+{
+    uintptr_t which = (uintptr_t)lv_event_get_user_data(e);
+    ff_intent_t in = {.kind = FF_INTENT_CANNED_REPLY, .u = {0}};
+    in.u.reply = (ff_wiring_canned_reply_t)which;
+    ff_intent_emit(&in);
+}
+
+/* The 1:1 PULSE chip -> FF_INTENT_SIG_PULSE (the S22(d) send intent; the
+ * shell aims it at the open thread's scope). */
+static void signals_chip_pulse_cb(lv_event_t *e)
+{
+    (void)e;
+    ff_intent_t in = {.kind = FF_INTENT_SIG_PULSE, .u = {0}};
     ff_intent_emit(&in);
 }
 
@@ -523,7 +587,7 @@ static void signals_build_conv_row(lv_obj_t *parent, ff_inbox_conv_t const *cv, 
  * pointer, so it must outlive the object tree — file-static.
  * ------------------------------------------------------------------- */
 
-static void signals_build_bottom_fade(lv_obj_t *parent)
+static void signals_build_bottom_fade(lv_obj_t *parent, int32_t bot_y)
 {
     static lv_grad_dsc_t grad; /* zero-initialized once; filled on first use */
     grad.dir = LV_GRAD_DIR_VER;
@@ -538,7 +602,7 @@ static void signals_build_bottom_fade(lv_obj_t *parent)
     lv_obj_t *fade = lv_obj_create(parent);
     signals_child_deco(fade);
     lv_obj_set_size(fade, FF_THEME_PUCK_PX, 40);
-    lv_obj_set_pos(fade, 0, FF_SIGNALS_LIST_BOT_Y - 40);
+    lv_obj_set_pos(fade, 0, bot_y - 40);
     lv_obj_set_style_bg_opa(fade, LV_OPA_COVER, 0);
     lv_obj_set_style_bg_grad(fade, &grad, 0);
 }
@@ -599,18 +663,21 @@ static void signals_build_fab(lv_obj_t *parent)
     lv_obj_set_style_border_color(ring, lv_color_hex(0x000000), 0); /* the letterbox black outside the glass */
     lv_obj_set_style_border_opa(ring, LV_OPA_COVER, 0);
 
-    /* The + glyph, dark ink, fully on-glass (drawn after the mask). */
+    /* The + glyph, dark ink, fully on-glass (drawn after the mask),
+     * centered on the TAP TARGET's center (FF_SIGNALS_FAB_GLYPH_C — the
+     * slice-b UX nit: the glyph is the aim point, so it marks where the
+     * tap registers, not the deco disc's centroid). */
     lv_obj_t *bar_h = lv_obj_create(glass);
     signals_child_deco(bar_h);
     lv_obj_set_size(bar_h, 26, 4);
-    lv_obj_set_pos(bar_h, 339 - 13, 339 - 2);
+    lv_obj_set_pos(bar_h, FF_SIGNALS_FAB_GLYPH_C - 13, FF_SIGNALS_FAB_GLYPH_C - 2);
     lv_obj_set_style_radius(bar_h, 2, 0);
     lv_obj_set_style_bg_color(bar_h, lv_color_hex(FF_THEME_COLOR_BG), 0);
     lv_obj_set_style_bg_opa(bar_h, LV_OPA_COVER, 0);
     lv_obj_t *bar_v = lv_obj_create(glass);
     signals_child_deco(bar_v);
     lv_obj_set_size(bar_v, 4, 26);
-    lv_obj_set_pos(bar_v, 339 - 2, 339 - 13);
+    lv_obj_set_pos(bar_v, FF_SIGNALS_FAB_GLYPH_C - 2, FF_SIGNALS_FAB_GLYPH_C - 13);
     lv_obj_set_style_radius(bar_v, 2, 0);
     lv_obj_set_style_bg_color(bar_v, lv_color_hex(FF_THEME_COLOR_BG), 0);
     lv_obj_set_style_bg_opa(bar_v, LV_OPA_COVER, 0);
@@ -706,7 +773,7 @@ static void signals_build_inbox(lv_obj_t *parent, ff_app_signals_t const *v, boo
         signals_build_no_crew_hint(list, y, list_margin);
     }
 
-    signals_build_bottom_fade(parent);
+    signals_build_bottom_fade(parent, FF_SIGNALS_LIST_BOT_Y);
     signals_build_fab(parent);
 }
 
@@ -795,23 +862,27 @@ static void signals_build_picker(lv_obj_t *parent, ff_app_signals_t const *v, bo
 }
 
 /* ---------------------------------------------------------------------
- * Sub-view: THREAD — slice (b) STUB (clearly a slice-c surface).
+ * Sub-view: THREAD (S24 slice c) — the CREW + 1:1 message screens.
  *
- * The NAVIGATION into here is fully real (row tap -> shell sub-view ->
- * mark-read-on-open -> send scope); what slice (c) replaces is only this
- * body: the scrollable message list, quick chips and per-thread FAB.
- * Until then the stub renders nothing but honest facts from the model —
- * the scope's name/color, its real signal count, and a member's honest
- * presence — plus the >=44px back escape. No fake bubbles, no sample
- * content (CLAUDE.md).
+ * One scrollable list of message rows (oldest at the top, NEWEST at the
+ * bottom — the list is scrolled to its end after build), rendered purely
+ * from `v->thread` (`ff_inbox_msg_t`): the screen sides each bubble by
+ * the model's direction fact (FEED_DIR_OUT = my side, amber, right;
+ * everything else = theirs, dark, left — an UNKNOWN direction renders
+ * like inbound but its wording never claims an address, see
+ * signals_msg_event_text), and names a sender ONLY when the model joined
+ * one (`identity_known`; an unjoined sender renders an honest "UNKNOWN",
+ * never a guessed name). Bubbles are DECO — not tappable — so the
+ * message list has no hit-rects to collide with the chips/FAB at any
+ * scroll offset. Long content ellipsizes (fixed row pitch; DOTS needs
+ * bounded width AND height, the slice-b lesson).
  * ------------------------------------------------------------------- */
 
-static void signals_build_thread_stub(lv_obj_t *parent, ff_app_signals_t const *v, bool colorblind)
+/* signals_thread_conv — the open conversation's row in the inbox model
+ * (header presence / identity), or NULL (e.g. a fixture that authors no
+ * convs — every dependent element renders honestly absent). */
+static ff_inbox_conv_t const *signals_thread_conv(ff_app_signals_t const *v)
 {
-    signals_build_back(parent);
-
-    /* Find the open conversation in the model (same key convention). */
-    ff_inbox_conv_t const *cv = NULL;
     uint8_t n = ff_inbox_conv_count(&v->inbox);
     for (uint8_t i = 0; i < n; i++) {
         ff_inbox_conv_t const *c = ff_inbox_conv_at(&v->inbox, i);
@@ -819,55 +890,474 @@ static void signals_build_thread_stub(lv_obj_t *parent, ff_app_signals_t const *
         bool const want_crew = (v->thread_node == 0u);
         if ((want_crew && c->kind == FF_CONV_CREW) ||
             (!want_crew && c->kind == FF_CONV_MEMBER && c->node_id == v->thread_node)) {
-            cv = c;
-            break;
+            return c;
         }
     }
+    return NULL;
+}
 
-    /* Scope avatar + name, centered. */
-    if (v->thread_node == 0u) {
-        lv_obj_t *holder = lv_obj_create(parent);
-        signals_child_deco(holder);
-        lv_obj_set_size(holder, FF_SIGNALS_AVATAR_PX + 16, FF_SIGNALS_AVATAR_PX);
-        lv_obj_align(holder, LV_ALIGN_TOP_MID, 0, 118);
-        signals_build_crew_avatar(holder, 8, colorblind);
-    } else if (cv != NULL) {
-        lv_obj_t *holder = lv_obj_create(parent);
-        signals_child_deco(holder);
-        lv_obj_set_size(holder, FF_SIGNALS_AVATAR_PX + 16, FF_SIGNALS_AVATAR_PX);
-        lv_obj_align(holder, LV_ALIGN_TOP_MID, 0, 118);
-        signals_build_member_avatar(holder, 8, cv->initial, cv->color_idx, colorblind);
+/* The honest display name for a message's sender: the joined identity
+ * when the model has one ("MEMBER" for a joined member whose name never
+ * arrived — the inbox row precedent), an explicit "UNKNOWN" when it
+ * does not. Never a guess. */
+static char const *signals_msg_sender_name(ff_inbox_msg_t const *m)
+{
+    if (!m->identity_known) return "UNKNOWN";
+    return (m->name[0] != '\0') ? m->name : "MEMBER";
+}
+
+/* A small label helper: font + color + text, returns the label. */
+static lv_obj_t *signals_mk_label(lv_obj_t *parent, char const *text, lv_font_t const *font,
+                                  uint32_t color)
+{
+    lv_obj_t *l = lv_label_create(parent);
+    lv_label_set_text(l, text);
+    lv_obj_set_style_text_font(l, font, 0);
+    lv_obj_set_style_text_color(l, lv_color_hex(color), 0);
+    return l;
+}
+
+/* Clamp a freshly-created single-line label to `max_w`, ellipsizing when
+ * it does not fit. Returns the final (clamped) width. */
+static int32_t signals_label_clamp(lv_obj_t *label, int32_t max_w)
+{
+    lv_obj_update_layout(label);
+    int32_t w = lv_obj_get_width(label);
+    if (w > max_w) {
+        w = max_w;
+        lv_label_set_long_mode(label, LV_LABEL_LONG_MODE_DOTS);
+        lv_obj_set_size(label, w, 18);
+    }
+    return w;
+}
+
+/* The CREW-thread inbound sender line: crew dot + name + mono age. */
+static void signals_msg_sender_line(lv_obj_t *row, ff_inbox_msg_t const *m, char const *age,
+                                    bool colorblind)
+{
+    uint32_t const name_color =
+        m->identity_known ? ff_theme_crew_color(m->color_idx, colorblind) : FF_THEME_COLOR_MUTED;
+
+    if (m->identity_known) {
+        lv_obj_t *dot = lv_obj_create(row);
+        signals_child_deco(dot);
+        lv_obj_set_size(dot, 7, 7);
+        lv_obj_set_style_radius(dot, LV_RADIUS_CIRCLE, 0);
+        lv_obj_set_style_bg_color(dot, lv_color_hex(name_color), 0);
+        lv_obj_set_style_bg_opa(dot, LV_OPA_COVER, 0);
+        lv_obj_set_pos(dot, 0, 5);
+    }
+    int32_t x = m->identity_known ? 13 : 0;
+
+    lv_obj_t *name = signals_mk_label(row, signals_msg_sender_name(m), FF_THEME_FONT_CHIP, name_color);
+    lv_obj_set_pos(name, x, 0);
+    x += signals_label_clamp(name, 120) + 8;
+
+    lv_obj_t *age_l = signals_mk_label(row, age, FF_THEME_FONT_CHIP, FF_THEME_COLOR_DIM);
+    lv_obj_set_pos(age_l, x, 1);
+}
+
+/* The mono age line under a bubble (rows with no sender line above). */
+static void signals_msg_age_below(lv_obj_t *row, char const *age, int32_t y, bool out, int32_t row_w)
+{
+    lv_obj_t *l = signals_mk_label(row, age, FF_THEME_FONT_CHIP, FF_THEME_COLOR_DIM);
+    lv_obj_update_layout(l);
+    lv_obj_set_pos(l, out ? (row_w - lv_obj_get_width(l) - 4) : 4, y);
+}
+
+/* A one-line bubble (TEXT / STATUS / the 1:1 pulse callout / an OUT
+ * pulse): dark surface for theirs, solid amber with dark ink for mine.
+ * Returns the bubble container (its content laid out by the caller when
+ * `text` is NULL). */
+static lv_obj_t *signals_msg_bubble(lv_obj_t *row, char const *text, int32_t y, bool out,
+                                    int32_t row_w)
+{
+    lv_obj_t *bub = lv_obj_create(row);
+    signals_child_deco(bub);
+    lv_obj_set_style_radius(bub, 12, 0);
+    lv_obj_set_style_bg_color(bub, lv_color_hex(out ? FF_THEME_COLOR_AMBER : FF_THEME_COLOR_SURFACE), 0);
+    lv_obj_set_style_bg_opa(bub, LV_OPA_COVER, 0);
+
+    int32_t w = FF_SIGNALS_MSG_MAX_W;
+    if (text != NULL) {
+        lv_obj_t *l = signals_mk_label(bub, text, FF_THEME_FONT_CHIP,
+                                       out ? FF_THEME_COLOR_BG : FF_THEME_COLOR_INK);
+        int32_t const tw = signals_label_clamp(l, FF_SIGNALS_MSG_MAX_W - 26);
+        lv_obj_set_pos(l, 13, 8);
+        w = tw + 26;
+    }
+    lv_obj_set_size(bub, w, FF_SIGNALS_MSG_BUBBLE_H);
+    lv_obj_set_pos(bub, out ? (row_w - w) : 0, y);
+    return bub;
+}
+
+/* The RALLY callout: violet-tinted box, RALLY caption + place name. */
+static void signals_msg_rally(lv_obj_t *row, ff_inbox_msg_t const *m, int32_t y, bool out,
+                              int32_t row_w)
+{
+    lv_obj_t *box = lv_obj_create(row);
+    signals_child_deco(box);
+    lv_obj_set_style_radius(box, 12, 0);
+    lv_obj_set_style_bg_color(box, lv_color_hex(FF_THEME_CREW_VIOLET), 0);
+    lv_obj_set_style_bg_opa(box, 30, 0); /* ~12% — the canvas's violet wash */
+    lv_obj_set_style_border_color(box, lv_color_hex(FF_THEME_CREW_VIOLET), 0);
+    lv_obj_set_style_border_opa(box, LV_OPA_30, 0);
+    lv_obj_set_style_border_width(box, 1, 0);
+
+    lv_obj_t *cap = signals_mk_label(box, "RALLY", FF_THEME_FONT_CHIP, FF_THEME_CREW_VIOLET);
+    lv_obj_set_style_text_letter_space(cap, 2, 0);
+    lv_obj_set_pos(cap, 12, 5);
+
+    /* The place is the wire name verbatim (m->text); "" renders as the
+     * honest absence of a place claim, never an invented one. */
+    lv_obj_t *place = signals_mk_label(box, m->text, FF_THEME_FONT_CHIP, FF_THEME_COLOR_INK);
+    int32_t const pw = signals_label_clamp(place, FF_SIGNALS_MSG_MAX_W - 24);
+    lv_obj_set_pos(place, 12, 23);
+
+    int32_t w = pw + 24;
+    if (w < 96) w = 96; /* never narrower than its own RALLY caption */
+    lv_obj_set_size(box, w, FF_SIGNALS_MSG_RALLY_H);
+    lv_obj_set_pos(box, out ? (row_w - w) : 0, y);
+}
+
+/* Honest event wording for PULSE/FLARE — the address half of the
+ * sentence comes from the DIRECTION FACT, never from which thread is
+ * showing: a BROADCAST pulse "pulsed the crew", a DIRECT one "pulsed
+ * you", an OUT one names my own act, and an UNKNOWN direction claims no
+ * address at all (bare "pulsed"/"flared"). */
+static char const *signals_msg_event_text(ff_inbox_msg_t const *m, bool crew_thread)
+{
+    bool const pulse = (m->kind == FEED_PULSE);
+    if (m->dir == FEED_DIR_OUT) {
+        if (pulse) {
+            return crew_thread ? "You pulsed the crew" : "You pulsed";
+        }
+        return "You flared";
+    }
+    switch (m->dir) {
+    case FEED_DIR_BROADCAST: return pulse ? "pulsed the crew" : "flared the crew";
+    case FEED_DIR_DIRECT: return pulse ? "pulsed you" : "flared you";
+    case FEED_DIR_UNKNOWN:
+    default: return pulse ? "pulsed" : "flared"; /* no address claim */
+    }
+}
+
+/* The small amber pulse mark (dot + ring). */
+static void signals_msg_pulse_mark(lv_obj_t *parent, int32_t x, int32_t y)
+{
+    lv_obj_t *ring = lv_obj_create(parent);
+    signals_child_deco(ring);
+    lv_obj_set_size(ring, 13, 13);
+    lv_obj_set_style_radius(ring, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_border_color(ring, lv_color_hex(FF_THEME_COLOR_AMBER), 0);
+    lv_obj_set_style_border_opa(ring, LV_OPA_60, 0);
+    lv_obj_set_style_border_width(ring, 1, 0);
+    lv_obj_set_pos(ring, x, y);
+
+    lv_obj_t *dot = lv_obj_create(parent);
+    signals_child_deco(dot);
+    lv_obj_set_size(dot, 5, 5);
+    lv_obj_set_style_radius(dot, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_bg_color(dot, lv_color_hex(FF_THEME_COLOR_AMBER), 0);
+    lv_obj_set_style_bg_opa(dot, LV_OPA_COVER, 0);
+    lv_obj_set_pos(dot, x + 4, y + 4);
+}
+
+/* An inbound CREW-thread event one-liner (pulse/flare): crew dot + mark
+ * + "<NAME> <event>" + age at the right. */
+static void signals_msg_event_line(lv_obj_t *row, ff_inbox_msg_t const *m, char const *age,
+                                   bool colorblind, int32_t row_w)
+{
+    uint32_t const name_color =
+        m->identity_known ? ff_theme_crew_color(m->color_idx, colorblind) : FF_THEME_COLOR_MUTED;
+
+    int32_t x = 0;
+    if (m->identity_known) {
+        lv_obj_t *dot = lv_obj_create(row);
+        signals_child_deco(dot);
+        lv_obj_set_size(dot, 7, 7);
+        lv_obj_set_style_radius(dot, LV_RADIUS_CIRCLE, 0);
+        lv_obj_set_style_bg_color(dot, lv_color_hex(name_color), 0);
+        lv_obj_set_style_bg_opa(dot, LV_OPA_COVER, 0);
+        lv_obj_set_pos(dot, 0, 7);
+        x = 13;
+    }
+    if (m->kind == FEED_PULSE) {
+        signals_msg_pulse_mark(row, x, 4);
+        x += 19;
+    }
+    lv_obj_t *name = signals_mk_label(row, signals_msg_sender_name(m), FF_THEME_FONT_CHIP, name_color);
+    lv_obj_set_pos(name, x, 1);
+    x += signals_label_clamp(name, 110) + 6;
+
+    lv_obj_t *what = signals_mk_label(row, signals_msg_event_text(m, true), FF_THEME_FONT_CHIP,
+                                      (m->kind == FEED_FLARE) ? FF_THEME_COLOR_STALE_AMBER
+                                                              : FF_THEME_COLOR_INK);
+    lv_obj_set_pos(what, x, 1);
+    (void)signals_label_clamp(what, row_w - x - 58);
+
+    lv_obj_t *age_l = signals_mk_label(row, age, FF_THEME_FONT_CHIP, FF_THEME_COLOR_DIM);
+    lv_obj_update_layout(age_l);
+    lv_obj_set_pos(age_l, row_w - lv_obj_get_width(age_l) - 4, 1);
+}
+
+/**
+ * One message row at list-relative `y`. Returns the row's total pitch
+ * (content + gap) so the caller can stack the next one. `crew_thread`
+ * picks the CREW layout (inbound rows carry a sender line / event line
+ * with the sender named) vs the 1:1 layout (the header already names the
+ * peer, so inbound rows are bubble + age only — the canvas's shapes).
+ */
+static int32_t signals_build_msg(lv_obj_t *list, ff_inbox_msg_t const *m, int32_t y,
+                                 int32_t margin_x, bool crew_thread, bool colorblind)
+{
+    int32_t const row_w = FF_THEME_PUCK_PX - 2 * margin_x;
+    bool const out = (m->dir == FEED_DIR_OUT);
+    bool const sender_line = crew_thread && !out;
+
+    char age[FF_APP_STR_SHORT];
+    ff_fmt_age(age, sizeof(age), m->age_ms);
+
+    /* Content height by kind/shape. */
+    int32_t content_h;
+    bool event_line = false; /* the CREW one-liner shape (no bubble, no age-below) */
+    switch (m->kind) {
+    case FEED_RALLY:
+        content_h = FF_SIGNALS_MSG_RALLY_H;
+        break;
+    case FEED_PULSE:
+    case FEED_FLARE:
+        if (sender_line) {
+            event_line = true;
+            content_h = FF_SIGNALS_MSG_EVENT_H;
+        } else {
+            content_h = FF_SIGNALS_MSG_BUBBLE_H;
+        }
+        break;
+    default: /* TEXT / STATUS */
+        content_h = FF_SIGNALS_MSG_BUBBLE_H;
+        break;
+    }
+    int32_t const head_h = (sender_line && !event_line) ? FF_SIGNALS_MSG_SENDER_H : 0;
+    int32_t const tail_h = (!sender_line) ? FF_SIGNALS_MSG_AGE_H : 0;
+    int32_t const row_h = head_h + content_h + tail_h;
+
+    lv_obj_t *row = lv_obj_create(list);
+    signals_child_deco(row);
+    lv_obj_set_size(row, row_w, row_h);
+    lv_obj_set_pos(row, margin_x, y);
+
+    if (event_line) {
+        /* CREW inbound pulse/flare: single line with the sender named. */
+        signals_msg_event_line(row, m, age, colorblind, row_w);
+        return row_h + FF_SIGNALS_MSG_GAP;
     }
 
-    lv_obj_t *name = lv_label_create(parent);
-    lv_label_set_long_mode(name, LV_LABEL_LONG_MODE_DOTS);
-    lv_obj_set_width(name, 220);
-    lv_label_set_text(name, (v->thread_name[0] != '\0') ? v->thread_name : "MEMBER");
-    lv_obj_set_style_text_font(name, FF_THEME_FONT_NAME, 0);
-    lv_obj_set_style_text_color(name, lv_color_hex(FF_THEME_COLOR_INK), 0);
-    lv_obj_set_style_text_align(name, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_align(name, LV_ALIGN_TOP_MID, 0, 180);
+    if (sender_line) {
+        signals_msg_sender_line(row, m, age, colorblind);
+    }
 
-    /* Honest facts only: the real signal count, and (member) presence. */
-    char count_buf[24];
-    unsigned const items = (cv != NULL) ? (unsigned)cv->item_count : 0u;
-    snprintf(count_buf, sizeof(count_buf), "%u SIGNAL%s", items, items == 1u ? "" : "S");
-    lv_obj_t *count = lv_label_create(parent);
-    lv_label_set_text(count, count_buf);
-    lv_obj_set_style_text_font(count, FF_THEME_FONT_CHIP, 0);
-    lv_obj_set_style_text_color(count, lv_color_hex(FF_THEME_COLOR_MUTED), 0);
-    lv_obj_align(count, LV_ALIGN_TOP_MID, 0, 214);
+    switch (m->kind) {
+    case FEED_RALLY:
+        signals_msg_rally(row, m, head_h, out, row_w);
+        break;
+    case FEED_PULSE:
+    case FEED_FLARE: {
+        /* 1:1 pulse callout / any OUT pulse/flare: a bubble carrying the
+         * honest event sentence (inbound names the sender; OUT names my
+         * own act). */
+        lv_obj_t *bub = signals_msg_bubble(row, NULL, head_h, out, row_w);
+        int32_t x = 13;
+        if (m->kind == FEED_PULSE) {
+            signals_msg_pulse_mark(bub, x, 10);
+            x += 19;
+        }
+        uint32_t const ink = out ? FF_THEME_COLOR_BG : FF_THEME_COLOR_INK;
+        int32_t w;
+        if (!out) {
+            uint32_t const name_color = m->identity_known
+                                            ? ff_theme_crew_color(m->color_idx, colorblind)
+                                            : FF_THEME_COLOR_MUTED;
+            lv_obj_t *name = signals_mk_label(bub, signals_msg_sender_name(m), FF_THEME_FONT_CHIP,
+                                              name_color);
+            lv_obj_set_pos(name, x, 8);
+            x += signals_label_clamp(name, 100) + 6;
+            lv_obj_t *what = signals_mk_label(bub, signals_msg_event_text(m, crew_thread),
+                                              FF_THEME_FONT_CHIP, ink);
+            lv_obj_set_pos(what, x, 8);
+            w = x + signals_label_clamp(what, FF_SIGNALS_MSG_MAX_W - x - 13) + 13;
+        } else {
+            lv_obj_t *what = signals_mk_label(bub, signals_msg_event_text(m, crew_thread),
+                                              FF_THEME_FONT_CHIP, ink);
+            lv_obj_set_pos(what, x, 8);
+            w = x + signals_label_clamp(what, FF_SIGNALS_MSG_MAX_W - x - 13) + 13;
+        }
+        lv_obj_set_size(bub, w, FF_SIGNALS_MSG_BUBBLE_H);
+        lv_obj_set_pos(bub, out ? (row_w - w) : 0, head_h);
+        break;
+    }
+    default: { /* TEXT / STATUS */
+        char line[FF_FEED_TEXT_LEN + 12];
+        if (m->kind == FEED_STATUS) {
+            /* "STATUS - text": the inbox preview's own ASCII-separator
+             * convention (the vendored font has no middot). */
+            snprintf(line, sizeof(line), "STATUS - %s", m->text);
+        } else {
+            snprintf(line, sizeof(line), "%s", m->text);
+        }
+        (void)signals_msg_bubble(row, line, head_h, out, row_w);
+        break;
+    }
+    }
+
+    if (!sender_line) {
+        signals_msg_age_below(row, age, head_h + content_h + 2, out, row_w);
+    }
+    return row_h + FF_SIGNALS_MSG_GAP;
+}
+
+/* The thread header. CREW: centered "CREW" + the roster fact "N CREW"
+ * (paired members = the model's member conversations — a roster count,
+ * never a present-tense "N here"). 1:1: crew dot + name, and the honest
+ * presence line ("SEEN <age>" stale-amber / LOST / LINKED) beneath —
+ * the legible stale tier, same formatter as the inbox rows. */
+static void signals_build_thread_header(lv_obj_t *parent, ff_app_signals_t const *v,
+                                        ff_inbox_conv_t const *cv, bool colorblind)
+{
+    if (v->thread_node == 0u) {
+        lv_obj_t *title = signals_mk_label(parent, "CREW", FF_THEME_FONT_HEADLINE, FF_THEME_COLOR_INK);
+        lv_obj_set_style_text_letter_space(title, 1, 0);
+        lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 34);
+
+        /* Member conversations == paired members (ff_inbox: CREW + one
+         * per paired member) — a roster fact read off the model, not a
+         * second source. */
+        uint8_t const n = ff_inbox_conv_count(&v->inbox);
+        char buf[16];
+        snprintf(buf, sizeof(buf), "%u CREW", (n > 0u) ? (unsigned)(n - 1u) : 0u);
+        lv_obj_t *sub = signals_mk_label(parent, buf, FF_THEME_FONT_CHIP, FF_THEME_COLOR_DIM);
+        lv_obj_align(sub, LV_ALIGN_TOP_MID, 0, 58);
+        return;
+    }
+
+    char const *name_txt = (v->thread_name[0] != '\0') ? v->thread_name : "MEMBER";
+    lv_obj_t *name = signals_mk_label(parent, name_txt, FF_THEME_FONT_HEADLINE, FF_THEME_COLOR_INK);
+    lv_obj_align(name, LV_ALIGN_TOP_MID, 8, 34);
+    /* Ellipsize a long name, then hug the crew dot to the MEASURED text
+     * edge (a fixed offset either collides with the back button or
+     * floats detached on a short name — measured, not guessed). */
+    int32_t const name_w = signals_label_clamp(name, 140);
+
+    lv_obj_t *dot = lv_obj_create(parent);
+    signals_child_deco(dot);
+    lv_obj_set_size(dot, 9, 9);
+    lv_obj_set_style_radius(dot, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_bg_color(dot, lv_color_hex(ff_theme_crew_color(v->thread_color_idx, colorblind)), 0);
+    lv_obj_set_style_bg_opa(dot, LV_OPA_COVER, 0);
+    lv_obj_align(dot, LV_ALIGN_TOP_MID, 8 - name_w / 2 - 12, 40);
 
     if (cv != NULL && cv->presence_valid) {
-        char pres_buf[32];
+        char pres[32];
         uint32_t pres_color = FF_THEME_COLOR_MUTED;
-        signals_presence_text(cv, pres_buf, sizeof(pres_buf), &pres_color);
-        lv_obj_t *pres = lv_label_create(parent);
-        lv_label_set_text(pres, pres_buf);
-        lv_obj_set_style_text_font(pres, FF_THEME_FONT_CHIP, 0);
-        lv_obj_set_style_text_color(pres, lv_color_hex(pres_color), 0);
-        lv_obj_align(pres, LV_ALIGN_TOP_MID, 0, 240);
+        signals_presence_text(cv, pres, sizeof(pres), &pres_color);
+        lv_obj_t *pl = signals_mk_label(parent, pres, FF_THEME_FONT_CHIP, pres_color);
+        lv_obj_align(pl, LV_ALIGN_TOP_MID, 0, 58);
     }
+}
+
+/* One quick chip. `which` rides user_data for the canned replies;
+ * `amber_text` marks the PULSE chip's accent. */
+static void signals_build_chip(lv_obj_t *parent, int32_t x, int32_t w, char const *text,
+                               bool amber_text, lv_event_cb_t cb, uintptr_t which)
+{
+    lv_obj_t *chip = lv_button_create(parent);
+    lv_obj_remove_style_all(chip);
+    lv_obj_set_size(chip, w, FF_SIGNALS_CHIP_H);
+    lv_obj_set_pos(chip, x, FF_SIGNALS_CHIP_Y);
+    lv_obj_set_style_radius(chip, FF_SIGNALS_CHIP_H / 2, 0);
+    lv_obj_set_style_bg_color(chip, lv_color_hex(FF_THEME_COLOR_SURFACE), 0);
+    lv_obj_set_style_bg_opa(chip, LV_OPA_COVER, 0);
+    lv_obj_add_event_cb(chip, cb, LV_EVENT_CLICKED, (void *)which);
+    signals_press_feedback(chip);
+
+    lv_obj_t *l = signals_mk_label(chip, text, FF_THEME_FONT_CHIP,
+                                   amber_text ? FF_THEME_COLOR_AMBER : FF_THEME_COLOR_INK);
+    lv_obj_center(l);
+}
+
+/* The 1:1 quick-chip strip: OMW / IN 5 MIN / PULSE, centered in the band
+ * left of the FAB clearance (FF_SIGNALS_CHIP_MAX_RIGHT). */
+static void signals_build_chips(lv_obj_t *parent)
+{
+    static const int32_t w_omw = 66, w_5min = 96, w_pulse = 74;
+    int32_t const margin = signals_safe_margin_x(FF_SIGNALS_CHIP_Y, FF_SIGNALS_CHIP_H);
+    int32_t const strip_w = w_omw + w_5min + w_pulse + 2 * FF_SIGNALS_CHIP_GAP;
+    int32_t const avail = FF_SIGNALS_CHIP_MAX_RIGHT - margin;
+    int32_t x = margin + (avail > strip_w ? (avail - strip_w) / 2 : 0);
+
+    signals_build_chip(parent, x, w_omw, "OMW", false, signals_chip_reply_cb,
+                       (uintptr_t)FF_WIRING_REPLY_OMW);
+    x += w_omw + FF_SIGNALS_CHIP_GAP;
+    signals_build_chip(parent, x, w_5min, "IN 5 MIN", false, signals_chip_reply_cb,
+                       (uintptr_t)FF_WIRING_REPLY_5MIN);
+    x += w_5min + FF_SIGNALS_CHIP_GAP;
+    signals_build_chip(parent, x, w_pulse, "PULSE", true, signals_chip_pulse_cb, 0u);
+}
+
+static void signals_build_thread(lv_obj_t *parent, ff_app_signals_t const *v, bool colorblind)
+{
+    bool const crew_thread = (v->thread_node == 0u);
+    ff_inbox_conv_t const *cv = signals_thread_conv(v);
+
+    signals_build_back(parent);
+    signals_build_thread_header(parent, v, cv, colorblind);
+
+    int32_t const list_h = crew_thread ? FF_SIGNALS_THREAD_LIST_H_CREW : FF_SIGNALS_THREAD_LIST_H_1TO1;
+    int32_t const list_margin = signals_safe_margin_x(FF_SIGNALS_THREAD_LIST_TOP_Y, list_h);
+
+    lv_obj_t *list = lv_obj_create(parent);
+    lv_obj_remove_style_all(list);
+    lv_obj_set_pos(list, 0, FF_SIGNALS_THREAD_LIST_TOP_Y);
+    lv_obj_set_size(list, FF_THEME_PUCK_PX, list_h);
+    lv_obj_set_style_bg_opa(list, LV_OPA_TRANSP, 0);
+    lv_obj_add_flag(list, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_clear_flag(list, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_scroll_dir(list, LV_DIR_VER);
+    lv_obj_set_scrollbar_mode(list, LV_SCROLLBAR_MODE_OFF);
+    /* Bottom padding: the scroll-to-newest below parks the LAST message
+     * this far above the hard clip, so the newest signal reads at full
+     * strength instead of dying under the fade. */
+    lv_obj_set_style_pad_bottom(list, 32, 0);
+
+    uint8_t const n = ff_inbox_thread_count(&v->thread);
+    int32_t y = 0;
+    for (uint8_t i = 0; i < n; i++) {
+        ff_inbox_msg_t const *m = ff_inbox_thread_at(&v->thread, i);
+        if (m == NULL) continue;
+        y += signals_build_msg(list, m, y, list_margin, crew_thread, colorblind);
+    }
+
+    if (n == 0) {
+        /* Honest empty thread (a quiet member / a traffic-less crew). */
+        lv_obj_t *empty = signals_mk_label(list, "NO SIGNALS YET", FF_THEME_FONT_CHIP,
+                                           FF_THEME_COLOR_DIM);
+        lv_obj_set_style_text_letter_space(empty, 2, 0);
+        lv_obj_align(empty, LV_ALIGN_CENTER, 0, -20);
+    }
+
+    /* Newest at the bottom: scroll to the end (LVGL clamps to the
+     * scrollable range; a short thread stays put at the top). */
+    lv_obj_update_layout(list);
+    int32_t const overflow = lv_obj_get_scroll_bottom(list);
+    if (overflow > 0) {
+        lv_obj_scroll_to_y(list, overflow, LV_ANIM_OFF);
+    }
+
+    signals_build_bottom_fade(parent, FF_SIGNALS_THREAD_LIST_TOP_Y + list_h);
+    if (!crew_thread) {
+        signals_build_chips(parent);
+    }
+    signals_build_fab(parent);
 }
 
 /* ---------------------------------------------------------------------
@@ -901,7 +1391,7 @@ void ff_scr_signals_build(lv_obj_t *parent, ff_app_signals_t const *v, bool colo
         signals_build_picker(parent, v, colorblind);
         return;
     case FF_SIG_SUB_THREAD:
-        signals_build_thread_stub(parent, v, colorblind);
+        signals_build_thread(parent, v, colorblind);
         return;
     case FF_SIG_SUB_INBOX:
     case FF_SIG_SUB_POPUP: /* slice (d) surface — unrouted; falls back to the inbox */

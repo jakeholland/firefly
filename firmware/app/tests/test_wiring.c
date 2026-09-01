@@ -683,6 +683,57 @@ static void S24_AC1_refused_send_pushes_no_outgoing_item(void)
     TEST_ASSERT_EQUAL_UINT8(0, ff_feed_count(&r.feed));
 }
 
+/* ------------------------------------------------------------------- */
+/* S24 AC4 — the thread-scope canned-send seam (slice c).               */
+/* ------------------------------------------------------------------- */
+
+/* ff_wiring_send_canned_reply_to sends the SAME canned strings/encodes
+ * to an EXPLICIT destination (the open thread's scope, resolved by the
+ * shell) — and pushes the same honest FEED_DIR_OUT item on acceptance. */
+static void S24_AC4_canned_reply_to_sends_to_explicit_dest(void)
+{
+    test_rig_t r;
+    rig_init(&r);
+
+    r.fc.t = 42000;
+    TEST_ASSERT_EQUAL_INT(0, ff_wiring_send_canned_reply_to(&r.w, FF_WIRING_REPLY_5MIN, 0xDA1Au));
+    TEST_ASSERT_TRUE(r.sender_state.used_send_text);
+    TEST_ASSERT_EQUAL_UINT32(0xDA1Au, r.sender_state.last_dest);
+    TEST_ASSERT_EQUAL_STRING("5 min", r.sender_state.last_text);
+
+    ff_feed_item_t const *it = ff_feed_at(&r.feed, 0);
+    TEST_ASSERT_EQUAL(FEED_TEXT, it->kind);
+    TEST_ASSERT_EQUAL(FEED_DIR_OUT, it->dir);
+    TEST_ASSERT_EQUAL_UINT32(0xDA1Au, it->to_node);
+    TEST_ASSERT_EQUAL_STRING("5 min", it->text);
+    TEST_ASSERT_FALSE(it->unread);
+
+    /* PULSE to an explicit broadcast dest: real encoded packet (verified
+     * by independent decode), and the outgoing item records the core
+     * whole-crew sentinel to_node 0. */
+    TEST_ASSERT_EQUAL_INT(0, ff_wiring_send_canned_reply_to(&r.w, FF_WIRING_REPLY_PULSE, MC_ADDR_BROADCAST));
+    TEST_ASSERT_TRUE(r.sender_state.used_send_private);
+    TEST_ASSERT_EQUAL_UINT32(MC_ADDR_BROADCAST, r.sender_state.last_dest);
+    ff_proto_msg_t decoded;
+    TEST_ASSERT_EQUAL(FF_PROTO_TYPE_PULSE,
+                      ff_proto_decode(r.sender_state.last_payload, r.sender_state.last_payload_len, &decoded));
+    it = ff_feed_at(&r.feed, 0);
+    TEST_ASSERT_EQUAL(FEED_PULSE, it->kind);
+    TEST_ASSERT_EQUAL(FEED_DIR_OUT, it->dir);
+    TEST_ASSERT_EQUAL_UINT32(0u, it->to_node);
+}
+
+/* A refused _to send fabricates nothing, same rc-gate as the wrapper. */
+static void S24_AC4_canned_reply_to_refused_pushes_no_item(void)
+{
+    test_rig_t r;
+    rig_init(&r);
+    r.w.sender.send_text = refusing_send_text;
+
+    TEST_ASSERT_EQUAL_INT(-1, ff_wiring_send_canned_reply_to(&r.w, FF_WIRING_REPLY_OMW, 0xDA1Au));
+    TEST_ASSERT_EQUAL_UINT8(0, ff_feed_count(&r.feed));
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -718,6 +769,8 @@ int main(void)
     RUN_TEST(S24_AC1_direct_text_from_unpaired_sender_still_dropped);
     RUN_TEST(S24_AC1_canned_reply_pushes_outgoing_item);
     RUN_TEST(S24_AC1_refused_send_pushes_no_outgoing_item);
+    RUN_TEST(S24_AC4_canned_reply_to_sends_to_explicit_dest);
+    RUN_TEST(S24_AC4_canned_reply_to_refused_pushes_no_item);
 
     return UNITY_END();
 }
