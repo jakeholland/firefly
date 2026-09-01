@@ -806,25 +806,37 @@ typedef enum {
     FF_APP_FACE_RADAR,
     FF_APP_FACE_NOW,
     FF_APP_FACE_SIGNALS,
+    /* HORIZONTAL-CAROUSEL REWORK [api]: Settings is the far-right SWIPE
+     * FACE now (fifth of five: Radar · Now · Signals · Map · Settings),
+     * not a modal. It used to be reached by a nav long-press pushing a
+     * modal; the long-press survives as a JUMP shortcut
+     * (`ff_route_goto`), but Settings is on `ff_route`'s swipe axis and
+     * `ff_route_push_modal` no longer accepts it. You swipe left to leave
+     * (the old back-button dismiss is gone with the modal). */
     FF_APP_FACE_SETTINGS,
-    /* S08 slice d — reached from Signals' "+", not a swipe tile of its
-     * own (scr_nav.c's tileview only ever has 3 tiles: Radar/Now/
-     * Signals); rendered as its own full screen, see scr_compose.h. */
+    /* S08 slice d — reached from Signals' "+", NOT a swipe tile of its
+     * own; rendered as its own full screen, see scr_compose.h. Compose
+     * is the sole remaining MODAL face after the horizontal-carousel
+     * rework (Map and Settings became swipe tiles) — the one value
+     * `ff_route_push_modal` still accepts. */
     FF_APP_FACE_COMPOSE,
     /* S09 [api] — Radar's alternate view (docs/specs/S09-map-face.md:
-     * "Purpose: Radar's alternate view"). NOT a fourth swipe tile:
-     * `scr_nav.c`'s tileview stays RADAR/NOW/SIGNALS exactly as S16's own
-     * "App: routing" section fixes it, and the spec's own render rule —
-     * "tap anywhere -> back to Radar" — is the modal-dismiss idiom
-     * (`FF_INTENT_BACK` popping a route modal) this codebase already uses
-     * for COMPOSE/SETTINGS, not the bounded swipe axis's rule (which has
-     * no "tap anywhere" exit at all, and would need a page-dot/AC1 change
-     * to every existing swipe-face golden to add a tile). So Map is a
-     * THIRD modal face, alongside them: `ff_route_push_modal` accepts it,
-     * reached via `FF_INTENT_OPEN_MAP`. Recorded per CLAUDE.md/AGENTS.md's
-     * "note the interpretation" rule — see this slice's PR body for the
-     * full reasoning and the one thing this choice deliberately leaves
-     * unwired (a real on-Radar tap target to reach it). */
+     * "Purpose: Radar's alternate view").
+     *
+     * HORIZONTAL-CAROUSEL REWORK [api]: Map is now an ordinary SWIPE
+     * FACE, the fourth of five in the single left-to-right carousel
+     * `scr_nav.c`'s tileview builds — Radar · Now · Signals · Map ·
+     * Settings — sitting between Signals and Settings. It used to be a
+     * modal reached by a VERTICAL top-swipe on the tileview
+     * (`LV_DIR_TOP` -> `FF_INTENT_OPEN_MAP`), which is precisely what let
+     * a vertical list-scroll bubble up as a GESTURE and jump here; making
+     * every face a horizontal neighbour is the fix. So `ff_route`'s swipe
+     * axis now includes Map, `ff_route_push_modal` no longer accepts it,
+     * and there is no `FF_INTENT_OPEN_MAP` — you swipe to Map like any
+     * other tile, and swipe away to leave (the old "tap anywhere -> back"
+     * modal-dismiss is gone with the modal). Recorded per
+     * CLAUDE.md/AGENTS.md's "note the interpretation" rule — see the PR
+     * body for the full reasoning. */
     FF_APP_FACE_MAP,
     /* S16 slice a [api] — ROUTING ONLY. This is `ff_route_visible()`'s
      * answer for "a takeover is up, so the next intent goes to the

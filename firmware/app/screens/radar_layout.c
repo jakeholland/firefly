@@ -65,12 +65,13 @@ void radar_layout_build_registry(radar_mode_t mode, bool never_fixed, radar_layo
     }
     out->count = 0;
 
-    /* Cross-mode chrome, present on every render, no exceptions. */
+    /* Cross-mode chrome, present on every render, no exceptions. The
+     * page-dot band widened when the carousel went from 3 dots to 5, but
+     * the reserved half-width (70) already covers the 5-dot span. The Map
+     * entry hint that used to sit below the dots is gone with the
+     * vertical top-swipe it advertised (horizontal-carousel rework). */
     add_rect(out, -120.0f, RADAR_LAYOUT_STATUS_BAR_DY - 17.0f, 120.0f, RADAR_LAYOUT_STATUS_BAR_DY + 17.0f);
     add_rect(out, -70.0f, RADAR_LAYOUT_PAGE_DOT_DY - 10.0f, 70.0f, RADAR_LAYOUT_PAGE_DOT_DY + 10.0f);
-    /* issue #76 — the Map entry hint below the page dots; see
-     * RADAR_LAYOUT_MAP_HINT_DY's own doc comment for the geometry. */
-    add_rect(out, -40.0f, RADAR_LAYOUT_MAP_HINT_DY - 12.0f, 40.0f, RADAR_LAYOUT_MAP_HINT_DY + 12.0f);
 
     switch (mode) {
     case RADAR_LIVE:

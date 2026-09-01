@@ -2651,21 +2651,14 @@ void ff_shell_intent(ff_shell_t *sh_pub, ff_intent_t const *in)
     case FF_INTENT_OPEN_SETTINGS:
         if (takeover_up) return;
         if (!k_settings_renderer_exists) return; /* the judgment call — see the constant's comment */
-        /* S21: the Settings face is one scrolling list with no page state to
-         * reset — a fresh open always renders scrolled to the top (the list
-         * container's own default scroll offset), no shell bookkeeping. */
-        (void)ff_route_push_modal(&sh->route, FF_APP_FACE_SETTINGS);
-        return;
-
-    case FF_INTENT_OPEN_MAP:
-        /* S09 [api]. Same push_modal machinery as OPEN_COMPOSE/
-         * OPEN_SETTINGS above (rejected over an existing modal or an
-         * off-axis base); no per-open state to reset (unlike Compose's
-         * draft) since Map has none of its own — the view it renders
-         * comes from `sh->view.map`'s projection, populated fresh every
-         * tick like `now`/`radar`. */
-        if (takeover_up) return;
-        (void)ff_route_push_modal(&sh->route, FF_APP_FACE_MAP);
+        /* Horizontal-carousel rework: Settings is the far-right swipe
+         * face now, not a modal. The nav long-press is a JUMP shortcut
+         * straight to it (ff_route_goto), suppressed under a modal the
+         * same way swipe is. The fresh-open-scrolled-to-top behavior is
+         * face_dispatch's (it resets the Settings scroll on the
+         * not-Settings -> Settings transition), unchanged by the move
+         * from modal to base. */
+        (void)ff_route_goto(&sh->route, FF_APP_FACE_SETTINGS);
         return;
 
     case FF_INTENT_TAKEOVER_GO:

@@ -1,13 +1,14 @@
 /**
  * scr_settings.h — app/screens: the Settings face (S11 slice b).
  *
- * Reached by long-press-anywhere (scr_nav.c's `nav_long_press_cb`), which
- * has emitted `FF_INTENT_OPEN_SETTINGS` since S16 slice c1 — the shell
- * rejected it until this renderer existed
- * (`ff_shell.c`'s `k_settings_renderer_exists`, flipped true by this
- * slice). Pure rendering: reads an `ff_app_settings_t` and draws every
+ * HORIZONTAL-CAROUSEL REWORK: Settings is the far-right SWIPE TILE now,
+ * not a long-press modal. It is reached by swiping right past Map (and,
+ * as a shortcut, by the nav long-press, which now JUMPS the swipe base
+ * here via `ff_route_goto` instead of pushing a modal), and it is left by
+ * swiping left — so there is no BACK control on this face any more.
+ * Pure rendering: reads an `ff_app_settings_t` and draws every
  * user-facing preference (units, share mode, haptics, night glow,
- * water-nudge interval, quiet hours, UTC offset, your name) plus BACK.
+ * water-nudge interval, quiet hours, UTC offset, your name).
  * No domain logic here (CLAUDE.md) — every control is a bare
  * `FF_INTENT_SETTING_SET` emitter; range validation and persistence are
  * the shell's (`ff_shell.c`'s `shell_setting_set`), same "screens stay
@@ -27,11 +28,13 @@ extern "C" {
 #endif
 
 /**
- * ff_scr_settings_build — builds the Settings screen on the current
- * default display's active screen (own puck/top-level screen, same
- * calling convention as `ff_scr_compose_build` — Settings is a modal
- * reached by long-press, not a tileview swipe tile, so it isn't nested
- * inside scr_nav.c's shell).
+ * ff_scr_settings_build — builds the Settings face into `parent` [api].
+ *
+ * HORIZONTAL-CAROUSEL REWORK: Settings is a SWIPE TILE now, so it builds
+ * into the caller's container (`scr_nav.c` passes the Settings tile) —
+ * the same tile-parented convention every other swipe face uses — rather
+ * than onto the active screen. `parent == NULL` or `settings == NULL`
+ * draws nothing.
  *
  * The paint is a pure function of `*settings` (matching every other
  * screen in this codebase): a tap reports the gesture through the intent
@@ -40,7 +43,7 @@ extern "C" {
  * argument or holds live editable state beyond the one build-time
  * snapshot every callback needs to compute "current -> next".
  */
-void ff_scr_settings_build(ff_app_settings_t const *settings);
+void ff_scr_settings_build(lv_obj_t *parent, ff_app_settings_t const *settings);
 
 /**
  * ff_scr_settings_reset_scroll — [api] discard the remembered scroll

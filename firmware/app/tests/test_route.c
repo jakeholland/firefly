@@ -1,13 +1,22 @@
 /**
- * test_route.c — unit tests for app/include/ff_route.h (S16 slice a).
+ * test_route.c — unit tests for app/include/ff_route.h (S16 slice a,
+ * extended by the horizontal-carousel rework).
  *
  * Test names mirror the spec's acceptance criteria numbering per
- * AGENTS.md: `S16_ACn_description` for the three criteria this slice
- * owns (AC1 bounded swipe, AC2 modal suppresses swipe, AC3 takeover
- * overrides without mutating). Tests named without an AC prefix cover
- * the header's contract around those criteria — init, the modal
- * lifecycle, argument rejection, NULL guards — the same way
- * test_ff_layout.c names its non-criteria geometry cases.
+ * AGENTS.md: `S16_ACn_description` for the criteria this module owns
+ * (AC1 bounded swipe, AC2 modal suppresses swipe, AC3 takeover overrides
+ * without mutating). Tests named without an AC prefix cover the header's
+ * contract around those criteria — init, the modal lifecycle, argument
+ * rejection, NULL guards — the same way test_ff_layout.c names its
+ * non-criteria geometry cases.
+ *
+ * The horizontal-carousel rework changed the swipe axis from three faces
+ * (Radar/Now/Signals) to five (Radar · Now · Signals · Map · Settings),
+ * made Compose the sole modal (Map and Settings became swipe faces), and
+ * added ff_route_goto (the long-press jump-to-Settings shortcut). The AC1
+ * bound/no-wrap and AC2 modal-suppression PROPERTIES are unchanged; only
+ * the set they range over grew, so the tests below assert the new order
+ * end to end rather than trusting the count.
  *
  * Pure C11, no LVGL, no fixtures: ff_route is plain state machine logic,
  * so every assertion here is a direct check on the real struct rather
@@ -22,6 +31,14 @@
 void setUp(void) {}
 void tearDown(void) {}
 
+/* The swipe axis under test, in order — the tests assert the WHOLE
+ * sequence against this so a reordering (or a dropped/added face) fails
+ * loudly rather than passing on a count that happens to still match. */
+static ff_app_face_t const k_axis[] = {
+    FF_APP_FACE_RADAR, FF_APP_FACE_NOW, FF_APP_FACE_SIGNALS, FF_APP_FACE_MAP, FF_APP_FACE_SETTINGS,
+};
+enum { AXIS_N = (int)(sizeof(k_axis) / sizeof(k_axis[0])) };
+
 /* Helper: a route parked on a given base with no modal. Built through
  * the real API (init + swipes) rather than by poking fields, so the
  * tests below can never assert against a route the module itself would
@@ -34,9 +51,9 @@ static ff_route_t route_at(ff_app_face_t base)
      * that returned true without advancing would spin here forever, and
      * since every test below routes through this helper, CI would report
      * a ctest timeout instead of naming the broken function. The axis is
-     * three faces, so two swipes always suffice. */
+     * five faces, so at most four swipes always suffice. */
     for (int guard = 0; r.base != base; guard++) {
-        TEST_ASSERT_LESS_THAN_INT_MESSAGE(3, guard, "ff_route_swipe is not advancing toward the target base");
+        TEST_ASSERT_LESS_THAN_INT_MESSAGE(AXIS_N, guard, "ff_route_swipe is not advancing toward the target base");
         TEST_ASSERT_TRUE(ff_route_swipe(&r, 1));
     }
     return r;
@@ -72,50 +89,71 @@ static void S16_AC1_swipe_back_from_radar_is_a_no_op(void)
     TEST_ASSERT_EQUAL_INT(FF_APP_FACE_NONE, r.modal);
 }
 
-static void S16_AC1_three_forward_swipes_end_at_signals_not_radar(void)
+/* The new 5-face order, forward, end to end: RADAR -> NOW -> SIGNALS ->
+ * MAP -> SETTINGS, then off the right end is a no-op. This is the
+ * horizontal-carousel replacement for the old "three swipes end at
+ * SIGNALS" test — Map and Settings are ordinary neighbours now, so the
+ * traversal runs all the way to the SETTINGS bound, and modular
+ * arithmetic (which would wrap SETTINGS back to RADAR) is ruled out. */
+static void S16_AC1_forward_traverses_all_five_then_clamps_at_settings(void)
 {
-    /* The wrap check, stated exactly as AC1 phrases it: modular
-     * arithmetic would land back on RADAR here. */
-    ff_route_t r = route_at(FF_APP_FACE_RADAR);
-
-    TEST_ASSERT_TRUE(ff_route_swipe(&r, 1));
-    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_NOW, r.base);
-
-    TEST_ASSERT_TRUE(ff_route_swipe(&r, 1));
-    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_SIGNALS, r.base);
-
-    TEST_ASSERT_FALSE(ff_route_swipe(&r, 1)); /* off the end: no-op */
-    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_SIGNALS, r.base);
+    ff_route_t r;
+    ff_route_init(&r);
+    for (int i = 1; i < AXIS_N; i++) {
+        TEST_ASSERT_TRUE(ff_route_swipe(&r, 1));
+        TEST_ASSERT_EQUAL_INT(k_axis[i], r.base);
+    }
+    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_SETTINGS, r.base);
+    TEST_ASSERT_FALSE(ff_route_swipe(&r, 1)); /* off the right end: no-op, no wrap */
+    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_SETTINGS, r.base);
 }
 
-static void S16_AC1_swipe_forward_from_signals_is_a_no_op(void)
+static void S16_AC1_swipe_forward_from_settings_is_a_no_op(void)
 {
-    ff_route_t r = route_at(FF_APP_FACE_SIGNALS);
+    ff_route_t r = route_at(FF_APP_FACE_SETTINGS);
     TEST_ASSERT_FALSE(ff_route_swipe(&r, 1));
-    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_SIGNALS, r.base);
+    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_SETTINGS, r.base);
 }
 
 static void S16_AC1_swipe_axis_is_symmetric_and_round_trips(void)
 {
-    /* -1 is toward RADAR and +1 toward SIGNALS — the direction contract
+    /* -1 is toward RADAR and +1 toward SETTINGS — the direction contract
      * the header warns is NOT a finger direction. Asserted as a full
-     * round trip so an inverted axis cannot pass. */
-    ff_route_t r = route_at(FF_APP_FACE_RADAR);
-
-    TEST_ASSERT_TRUE(ff_route_swipe(&r, 1));
-    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_NOW, r.base);
-    TEST_ASSERT_TRUE(ff_route_swipe(&r, 1));
-    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_SIGNALS, r.base);
-    TEST_ASSERT_TRUE(ff_route_swipe(&r, -1));
-    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_NOW, r.base);
-    TEST_ASSERT_TRUE(ff_route_swipe(&r, -1));
+     * round trip across all five faces so an inverted axis cannot pass. */
+    ff_route_t r;
+    ff_route_init(&r);
+    for (int i = 1; i < AXIS_N; i++) {
+        TEST_ASSERT_TRUE(ff_route_swipe(&r, 1));
+        TEST_ASSERT_EQUAL_INT(k_axis[i], r.base);
+    }
+    for (int i = AXIS_N - 2; i >= 0; i--) {
+        TEST_ASSERT_TRUE(ff_route_swipe(&r, -1));
+        TEST_ASSERT_EQUAL_INT(k_axis[i], r.base);
+    }
     TEST_ASSERT_EQUAL_INT(FF_APP_FACE_RADAR, r.base);
+}
+
+/* Map and Settings are swipe faces now, not modals — pin that they are
+ * reached by an ordinary swipe from their neighbour, the exact behaviour
+ * the rework is about. Named so a regression reads as "Map/Settings fell
+ * off the swipe axis", not folded into the generic traversal above. */
+static void carousel_signals_map_settings_are_swipe_neighbours(void)
+{
+    ff_route_t r = route_at(FF_APP_FACE_SIGNALS);
+    TEST_ASSERT_TRUE(ff_route_swipe(&r, 1));
+    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_MAP, r.base);
+    TEST_ASSERT_TRUE(ff_route_swipe(&r, 1));
+    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_SETTINGS, r.base);
+    TEST_ASSERT_TRUE(ff_route_swipe(&r, -1));
+    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_MAP, r.base);
 }
 
 static void swipe_rejects_directions_other_than_plus_or_minus_one(void)
 {
     /* A raw gesture delta or a zeroed intent payload must not move the
-     * route by an arbitrary number of tiles. */
+     * route by an arbitrary number of tiles. This is the route-level half
+     * of the "a vertical drag never changes face" rule — the screen half
+     * (LV_DIR_TOP/BOTTOM emit nothing) lives in test_scr_intent.c. */
     int8_t const bad_dirs[] = {0, 2, -2, 3, 127, -128};
     for (size_t i = 0; i < sizeof(bad_dirs) / sizeof(bad_dirs[0]); i++) {
         ff_route_t r = route_at(FF_APP_FACE_NOW);
@@ -144,6 +182,61 @@ static void swipe_is_null_safe(void)
 }
 
 /* ------------------------------------------------------------------- */
+/* ff_route_goto — the long-press jump-to-a-face shortcut               */
+/* ------------------------------------------------------------------- */
+
+static void goto_jumps_straight_to_a_far_face(void)
+{
+    /* From Radar to Settings in one call — the nav long-press shortcut,
+     * skipping the intermediate swipes ff_route_swipe would take. */
+    ff_route_t r = route_at(FF_APP_FACE_RADAR);
+    TEST_ASSERT_TRUE(ff_route_goto(&r, FF_APP_FACE_SETTINGS));
+    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_SETTINGS, r.base);
+    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_NONE, r.modal);
+}
+
+static void goto_reaches_every_swipe_face(void)
+{
+    for (int i = 0; i < AXIS_N; i++) {
+        ff_route_t r = route_at(FF_APP_FACE_NOW); /* mid-axis start */
+        if (k_axis[i] == FF_APP_FACE_NOW) {
+            TEST_ASSERT_FALSE(ff_route_goto(&r, k_axis[i])); /* already there: no change */
+        } else {
+            TEST_ASSERT_TRUE(ff_route_goto(&r, k_axis[i]));
+        }
+        TEST_ASSERT_EQUAL_INT(k_axis[i], r.base);
+    }
+}
+
+static void goto_off_axis_targets_are_rejected(void)
+{
+    /* Compose/NONE/FLARE are not swipe faces — a jump to one is a no-op,
+     * never a base set off the axis. */
+    ff_app_face_t const bad[] = {FF_APP_FACE_NONE, FF_APP_FACE_COMPOSE, FF_APP_FACE_FLARE};
+    for (size_t i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {
+        ff_route_t r = route_at(FF_APP_FACE_NOW);
+        TEST_ASSERT_FALSE(ff_route_goto(&r, bad[i]));
+        TEST_ASSERT_EQUAL_INT(FF_APP_FACE_NOW, r.base);
+    }
+}
+
+static void goto_is_suppressed_under_a_modal(void)
+{
+    /* A jump must not slide a half-typed Compose away, exactly as a swipe
+     * may not (AC2). */
+    ff_route_t r = route_at(FF_APP_FACE_NOW);
+    TEST_ASSERT_TRUE(ff_route_push_modal(&r, FF_APP_FACE_COMPOSE));
+    TEST_ASSERT_FALSE(ff_route_goto(&r, FF_APP_FACE_SETTINGS));
+    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_NOW, r.base);
+    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_COMPOSE, r.modal);
+}
+
+static void goto_is_null_safe(void)
+{
+    TEST_ASSERT_FALSE(ff_route_goto(NULL, FF_APP_FACE_SETTINGS));
+}
+
+/* ------------------------------------------------------------------- */
 /* AC2 — any modal suppresses swipe entirely                            */
 /* ------------------------------------------------------------------- */
 
@@ -159,22 +252,6 @@ static void S16_AC2_compose_modal_suppresses_swipe_in_both_directions(void)
     TEST_ASSERT_FALSE(ff_route_swipe(&r, -1));
     TEST_ASSERT_EQUAL_INT(FF_APP_FACE_NOW, r.base);
     TEST_ASSERT_EQUAL_INT(FF_APP_FACE_COMPOSE, r.modal);
-}
-
-static void S16_AC2_settings_modal_suppresses_swipe_in_both_directions(void)
-{
-    /* AC2 names both modals explicitly: the rule is "a modal is up",
-     * not "Compose is up". */
-    ff_route_t r = route_at(FF_APP_FACE_NOW);
-    TEST_ASSERT_TRUE(ff_route_push_modal(&r, FF_APP_FACE_SETTINGS));
-
-    TEST_ASSERT_FALSE(ff_route_swipe(&r, 1));
-    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_NOW, r.base);
-    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_SETTINGS, r.modal);
-
-    TEST_ASSERT_FALSE(ff_route_swipe(&r, -1));
-    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_NOW, r.base);
-    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_SETTINGS, r.modal);
 }
 
 static void S16_AC2_swipe_resumes_once_the_modal_is_popped(void)
@@ -247,23 +324,20 @@ static void S16_AC3_takeover_is_not_stored_so_two_reads_can_disagree(void)
 /* ff_route_visible — the non-takeover precedence                       */
 /* ------------------------------------------------------------------- */
 
-static void visible_is_base_when_no_modal_and_no_takeover(void)
+static void visible_is_base_across_the_whole_carousel(void)
 {
-    ff_app_face_t const bases[] = {FF_APP_FACE_RADAR, FF_APP_FACE_NOW, FF_APP_FACE_SIGNALS};
-    for (size_t i = 0; i < sizeof(bases) / sizeof(bases[0]); i++) {
-        ff_route_t r = route_at(bases[i]);
-        TEST_ASSERT_EQUAL_INT(bases[i], ff_route_visible(&r, false));
+    for (int i = 0; i < AXIS_N; i++) {
+        ff_route_t r = route_at(k_axis[i]);
+        TEST_ASSERT_EQUAL_INT(k_axis[i], ff_route_visible(&r, false));
     }
 }
 
 static void visible_is_the_modal_when_one_is_up(void)
 {
-    ff_app_face_t const modals[] = {FF_APP_FACE_COMPOSE, FF_APP_FACE_SETTINGS};
-    for (size_t i = 0; i < sizeof(modals) / sizeof(modals[0]); i++) {
-        ff_route_t r = route_at(FF_APP_FACE_RADAR);
-        TEST_ASSERT_TRUE(ff_route_push_modal(&r, modals[i]));
-        TEST_ASSERT_EQUAL_INT(modals[i], ff_route_visible(&r, false));
-    }
+    /* Compose is the only modal now. */
+    ff_route_t r = route_at(FF_APP_FACE_RADAR);
+    TEST_ASSERT_TRUE(ff_route_push_modal(&r, FF_APP_FACE_COMPOSE));
+    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_COMPOSE, ff_route_visible(&r, false));
 }
 
 static void visible_of_null_is_none(void)
@@ -273,78 +347,42 @@ static void visible_of_null_is_none(void)
 }
 
 /* ------------------------------------------------------------------- */
-/* modal lifecycle                                                      */
+/* modal lifecycle — Compose is the sole modal face                     */
 /* ------------------------------------------------------------------- */
 
-static void push_modal_accepts_only_compose_settings_and_map(void)
+static void push_modal_accepts_only_compose(void)
 {
-    /* FLARE is rejected on purpose: the takeover is not routed, it
-     * overrides — accepting it as a modal would put ff_flare_t's single
-     * fact in a second place. */
+    /* Everything but Compose is rejected. Map and Settings in particular
+     * are swipe faces now — accepting either as a modal would put a fact
+     * that lives on the swipe axis in a second place. FLARE is rejected
+     * because the takeover overrides, it is not routed. */
     ff_app_face_t const rejected[] = {
-        FF_APP_FACE_NONE, FF_APP_FACE_RADAR, FF_APP_FACE_NOW,
-        FF_APP_FACE_SIGNALS, FF_APP_FACE_FLARE,
+        FF_APP_FACE_NONE,     FF_APP_FACE_RADAR, FF_APP_FACE_NOW, FF_APP_FACE_SIGNALS,
+        FF_APP_FACE_SETTINGS, FF_APP_FACE_MAP,   FF_APP_FACE_FLARE,
     };
     for (size_t i = 0; i < sizeof(rejected) / sizeof(rejected[0]); i++) {
         ff_route_t r = route_at(FF_APP_FACE_RADAR);
         TEST_ASSERT_FALSE(ff_route_push_modal(&r, rejected[i]));
         TEST_ASSERT_EQUAL_INT(FF_APP_FACE_NONE, r.modal);
     }
-}
 
-/* S09 [api] — Map joins Compose/Settings as a third modal face (see
- * ff_app_state.h's FF_APP_FACE_MAP comment and ff_route.c's push_modal
- * comment for the full routing rationale: "Radar's alternate view" with
- * a tap-anywhere-back exit is this codebase's existing modal-dismiss
- * idiom, not the bounded swipe axis). Named separately from the
- * accepted-vs-rejected sweep above so a regression here reads as "Map
- * routing broke", not folded into a generic list assertion. */
-static void S09_push_modal_accepts_map_from_radar(void)
-{
     ff_route_t r = route_at(FF_APP_FACE_RADAR);
-    TEST_ASSERT_TRUE(ff_route_push_modal(&r, FF_APP_FACE_MAP));
-    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_MAP, r.modal);
-    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_RADAR, r.base);
+    TEST_ASSERT_TRUE(ff_route_push_modal(&r, FF_APP_FACE_COMPOSE));
+    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_COMPOSE, r.modal);
 }
 
-/* Map is reached from Radar per the spec's own "Radar's alternate view"
- * framing, but push_modal's own contract is base-axis-general (same rule
- * Compose/Settings already get) — pin that Map is not silently
- * Radar-only, so a future base-validity refactor can't quietly narrow it
- * without a test noticing. */
-static void S09_push_modal_accepts_map_from_any_swipe_face(void)
+/* Map and Settings are no longer modals — pin that push_modal refuses
+ * them explicitly, so a future change that tried to re-add them as modals
+ * (re-opening the scroll-vs-swipe bug) fails here rather than silently. */
+static void push_modal_rejects_map_and_settings(void)
 {
-    ff_app_face_t const bases[] = {FF_APP_FACE_RADAR, FF_APP_FACE_NOW, FF_APP_FACE_SIGNALS};
-    for (size_t i = 0; i < sizeof(bases) / sizeof(bases[0]); i++) {
-        ff_route_t r = route_at(bases[i]);
-        TEST_ASSERT_TRUE(ff_route_push_modal(&r, FF_APP_FACE_MAP));
-        TEST_ASSERT_EQUAL_INT(FF_APP_FACE_MAP, r.modal);
+    ff_app_face_t const not_modals[] = {FF_APP_FACE_MAP, FF_APP_FACE_SETTINGS};
+    for (size_t i = 0; i < sizeof(not_modals) / sizeof(not_modals[0]); i++) {
+        ff_route_t r = route_at(FF_APP_FACE_RADAR);
+        TEST_ASSERT_FALSE(ff_route_push_modal(&r, not_modals[i]));
+        TEST_ASSERT_EQUAL_INT(FF_APP_FACE_NONE, r.modal);
+        TEST_ASSERT_EQUAL_INT(FF_APP_FACE_RADAR, r.base);
     }
-}
-
-/* Tap-anywhere-back (S09 spec) is FF_INTENT_BACK popping the modal —
- * exactly ff_route_pop_modal, no Map-specific code path. Pins that a Map
- * modal behaves identically to Compose/Settings on the way out: the same
- * generic pop restores base untouched. */
-static void S09_pop_modal_from_map_restores_base(void)
-{
-    ff_route_t r = route_at(FF_APP_FACE_RADAR);
-    TEST_ASSERT_TRUE(ff_route_push_modal(&r, FF_APP_FACE_MAP));
-    TEST_ASSERT_TRUE(ff_route_pop_modal(&r));
-    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_NONE, r.modal);
-    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_RADAR, r.base);
-}
-
-/* Same AC2 protection Compose/Settings already get: a Map modal must
- * suppress swipe too — "tap anywhere -> back" must never race a
- * horizontal drag that slides Radar out from underneath it. */
-static void S09_map_modal_suppresses_swipe(void)
-{
-    ff_route_t r = route_at(FF_APP_FACE_RADAR);
-    TEST_ASSERT_TRUE(ff_route_push_modal(&r, FF_APP_FACE_MAP));
-    TEST_ASSERT_FALSE(ff_route_swipe(&r, 1));
-    TEST_ASSERT_FALSE(ff_route_swipe(&r, -1));
-    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_RADAR, r.base);
 }
 
 static void push_modal_leaves_base_untouched(void)
@@ -357,12 +395,11 @@ static void push_modal_leaves_base_untouched(void)
 static void push_modal_over_a_live_modal_is_rejected(void)
 {
     /* One slot, not a stack: replacing would silently discard a
-     * half-typed Compose draft. */
+     * half-typed Compose draft. Compose is the only modal, so the
+     * second push is Compose again — re-pushing the live modal reports
+     * no change. */
     ff_route_t r = route_at(FF_APP_FACE_SIGNALS);
     TEST_ASSERT_TRUE(ff_route_push_modal(&r, FF_APP_FACE_COMPOSE));
-    TEST_ASSERT_FALSE(ff_route_push_modal(&r, FF_APP_FACE_SETTINGS));
-    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_COMPOSE, r.modal);
-    /* Even re-pushing the same modal reports no change. */
     TEST_ASSERT_FALSE(ff_route_push_modal(&r, FF_APP_FACE_COMPOSE));
     TEST_ASSERT_EQUAL_INT(FF_APP_FACE_COMPOSE, r.modal);
 }
@@ -372,18 +409,14 @@ static void push_modal_on_a_base_off_the_axis_is_a_no_op(void)
     /* The counterpart to swipe_on_a_base_off_the_axis_is_a_no_op, and
      * the sharper of the two: a forgotten ff_route_init must not be
      * MASKED by a modal that behaves perfectly until it is popped
-     * (PR #36 review, D1). Both modal faces, since the rule is about
-     * the base, not about which modal is being raised. */
-    ff_app_face_t const modals[] = {FF_APP_FACE_COMPOSE, FF_APP_FACE_SETTINGS};
-    for (size_t i = 0; i < sizeof(modals) / sizeof(modals[0]); i++) {
-        ff_route_t r;
-        memset(&r, 0, sizeof(r)); /* the deliberately-invalid zero value */
-        TEST_ASSERT_FALSE(ff_route_push_modal(&r, modals[i]));
-        TEST_ASSERT_EQUAL_INT(FF_APP_FACE_NONE, r.modal);
-        /* The point of the guard: `visible` must not report a working
-         * face for a route that was never initialised. */
-        TEST_ASSERT_EQUAL_INT(FF_APP_FACE_NONE, ff_route_visible(&r, false));
-    }
+     * (PR #36 review, D1). */
+    ff_route_t r;
+    memset(&r, 0, sizeof(r)); /* the deliberately-invalid zero value */
+    TEST_ASSERT_FALSE(ff_route_push_modal(&r, FF_APP_FACE_COMPOSE));
+    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_NONE, r.modal);
+    /* The point of the guard: `visible` must not report a working face
+     * for a route that was never initialised. */
+    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_NONE, ff_route_visible(&r, false));
 }
 
 static void pop_modal_on_a_base_off_the_axis_still_pops(void)
@@ -407,7 +440,7 @@ static void pop_modal_on_a_base_off_the_axis_still_pops(void)
 static void pop_modal_restores_the_base_face(void)
 {
     ff_route_t r = route_at(FF_APP_FACE_NOW);
-    TEST_ASSERT_TRUE(ff_route_push_modal(&r, FF_APP_FACE_SETTINGS));
+    TEST_ASSERT_TRUE(ff_route_push_modal(&r, FF_APP_FACE_COMPOSE));
     TEST_ASSERT_TRUE(ff_route_pop_modal(&r));
     TEST_ASSERT_EQUAL_INT(FF_APP_FACE_NONE, r.modal);
     TEST_ASSERT_EQUAL_INT(FF_APP_FACE_NOW, r.base);
@@ -440,15 +473,21 @@ int main(void)
     RUN_TEST(init_is_null_safe);
 
     RUN_TEST(S16_AC1_swipe_back_from_radar_is_a_no_op);
-    RUN_TEST(S16_AC1_three_forward_swipes_end_at_signals_not_radar);
-    RUN_TEST(S16_AC1_swipe_forward_from_signals_is_a_no_op);
+    RUN_TEST(S16_AC1_forward_traverses_all_five_then_clamps_at_settings);
+    RUN_TEST(S16_AC1_swipe_forward_from_settings_is_a_no_op);
     RUN_TEST(S16_AC1_swipe_axis_is_symmetric_and_round_trips);
+    RUN_TEST(carousel_signals_map_settings_are_swipe_neighbours);
     RUN_TEST(swipe_rejects_directions_other_than_plus_or_minus_one);
     RUN_TEST(swipe_on_a_base_off_the_axis_is_a_no_op);
     RUN_TEST(swipe_is_null_safe);
 
+    RUN_TEST(goto_jumps_straight_to_a_far_face);
+    RUN_TEST(goto_reaches_every_swipe_face);
+    RUN_TEST(goto_off_axis_targets_are_rejected);
+    RUN_TEST(goto_is_suppressed_under_a_modal);
+    RUN_TEST(goto_is_null_safe);
+
     RUN_TEST(S16_AC2_compose_modal_suppresses_swipe_in_both_directions);
-    RUN_TEST(S16_AC2_settings_modal_suppresses_swipe_in_both_directions);
     RUN_TEST(S16_AC2_swipe_resumes_once_the_modal_is_popped);
 
     RUN_TEST(S16_AC3_takeover_returns_flare_and_leaves_route_byte_identical);
@@ -456,15 +495,12 @@ int main(void)
     RUN_TEST(S16_AC3_takeover_overrides_a_bare_base_face_too);
     RUN_TEST(S16_AC3_takeover_is_not_stored_so_two_reads_can_disagree);
 
-    RUN_TEST(visible_is_base_when_no_modal_and_no_takeover);
+    RUN_TEST(visible_is_base_across_the_whole_carousel);
     RUN_TEST(visible_is_the_modal_when_one_is_up);
     RUN_TEST(visible_of_null_is_none);
 
-    RUN_TEST(push_modal_accepts_only_compose_settings_and_map);
-    RUN_TEST(S09_push_modal_accepts_map_from_radar);
-    RUN_TEST(S09_push_modal_accepts_map_from_any_swipe_face);
-    RUN_TEST(S09_pop_modal_from_map_restores_base);
-    RUN_TEST(S09_map_modal_suppresses_swipe);
+    RUN_TEST(push_modal_accepts_only_compose);
+    RUN_TEST(push_modal_rejects_map_and_settings);
     RUN_TEST(push_modal_leaves_base_untouched);
     RUN_TEST(push_modal_over_a_live_modal_is_rejected);
     RUN_TEST(push_modal_on_a_base_off_the_axis_is_a_no_op);

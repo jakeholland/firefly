@@ -105,11 +105,11 @@ typedef enum {
  */
 typedef enum {
     FF_INTENT_SWIPE, FF_INTENT_BACK, FF_INTENT_OPEN_COMPOSE, FF_INTENT_OPEN_SETTINGS,
-    /* S09 [api] — opens the Map face as a modal over the current base
-     * (ff_app_state.h's FF_APP_FACE_MAP comment has the routing
-     * rationale). No payload: unlike OPEN_COMPOSE there is no
-     * destination to resolve. */
-    FF_INTENT_OPEN_MAP,
+    /* NOTE: there is deliberately no FF_INTENT_OPEN_MAP. Map used to be a
+     * modal opened by a vertical top-swipe (S09 [api]); the
+     * horizontal-carousel rework made it an ordinary swipe face between
+     * Signals and Settings, reached by FF_INTENT_SWIPE like any other
+     * neighbour, so a Map-specific open intent no longer exists. */
     FF_INTENT_CANNED_REPLY, FF_INTENT_SEND_TEXT, FF_INTENT_MARK_FEED_READ,
     FF_INTENT_SELECT_CREW, FF_INTENT_SELECT_RALLY,
     FF_INTENT_T9_KEY, FF_INTENT_T9_SPACE, FF_INTENT_T9_BACKSPACE,

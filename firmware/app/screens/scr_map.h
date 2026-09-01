@@ -21,28 +21,25 @@ extern "C" {
 #endif
 
 /**
- * ff_scr_map_build — builds the Map face on the CURRENT default display's
- * active screen (same calling convention as `ff_scr_settings_build`/
- * `ff_scr_compose_build`: a full-screen modal face, not a swipe tile —
- * see `ff_app_state.h`'s `FF_APP_FACE_MAP` comment for the routing
- * rationale).
+ * ff_scr_map_build — builds the Map face into `parent` [api].
  *
- * Tapping ANYWHERE on the puck emits `FF_INTENT_BACK` through the intent
- * seam (S09 spec: "Tap anywhere -> back to Radar", the same modal-dismiss
- * idiom `ff_route_pop_modal` already gives Compose/Settings's own back
- * buttons — here the whole glass is the button). Unbound (golden/headless
- * rendering, which never fires a click), the emit is a safe no-op — same
- * contract every intent emit site in this codebase follows.
+ * HORIZONTAL-CAROUSEL REWORK: Map is a SWIPE TILE now, not a full-screen
+ * modal, so it builds into the caller's container (`scr_nav.c` passes the
+ * Map tile) rather than onto the active screen — the same tile-parented
+ * convention `ff_scr_radar_build`/`ff_scr_now_build`/`ff_scr_signals_build`
+ * already use. The old "tap anywhere -> back to Radar" is gone with the
+ * modal: you swipe left to leave Map like any other carousel face, so this
+ * face no longer emits `FF_INTENT_BACK` and installs no tap handler.
  *
- * `map == NULL` draws nothing (same "no invented fallback" contract as
- * every other screen builder here).
+ * `parent == NULL` or `map == NULL` draws nothing (same "no invented
+ * fallback" contract as every other screen builder here).
  *
  * `colorblind` (S17 slice a, [api]): selects the crew palette every crew
  * dot on this face is drawn with — see scr_radar.h's identical parameter
  * for the full rationale (ff_theme.h's doc comment has the layering
  * argument for why this is explicit, not a hidden global).
  */
-void ff_scr_map_build(ff_app_map_t const *map, bool colorblind);
+void ff_scr_map_build(lv_obj_t *parent, ff_app_map_t const *map, bool colorblind);
 
 #ifdef __cplusplus
 }

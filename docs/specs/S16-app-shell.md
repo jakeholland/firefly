@@ -554,15 +554,26 @@ one distinctive return value is the very value AC13 forbids storing in
 intent go?"*, which is an input-dispatch question, not a render instruction.
 Rendering continues to read `takeover_active` directly.
 
+> **Horizontal-carousel rework (2026-09-01), `[api]`.** The sketch below
+> is the ORIGINAL three-face shape. The swipe axis is now the five-face
+> carousel `RADAR < NOW < SIGNALS < MAP < SETTINGS`: Map and Settings
+> moved off the modal set (Map from a vertical top-swipe, Settings from a
+> long-press modal) onto the horizontal axis, so navigation is
+> horizontal-only and a vertical drag is always a scroll — the fix for
+> "scrolls accepted as swipes". `base` now ranges over all five faces;
+> `modal` is COMPOSE-or-NONE (Compose is the sole modal); a new
+> `ff_route_goto(r, f)` backs the long-press jump-to-Settings.
+
 ```c
-typedef struct { ff_app_face_t base;   /* RADAR|NOW|SIGNALS */
-                 ff_app_face_t modal;  /* COMPOSE|SETTINGS, or FF_APP_FACE_NONE */
+typedef struct { ff_app_face_t base;   /* RADAR|NOW|SIGNALS|MAP|SETTINGS */
+                 ff_app_face_t modal;  /* COMPOSE, or FF_APP_FACE_NONE */
                } ff_route_t;
 
 void ff_route_init(ff_route_t *r);
-/* dir: -1 toward RADAR, +1 toward SIGNALS. NOT a gesture direction — the
+/* dir: -1 toward RADAR, +1 toward SETTINGS. NOT a gesture direction — the
  * target maps its gesture to these, and a rightward finger drag maps to -1. */
 bool ff_route_swipe(ff_route_t *r, int8_t dir);
+bool ff_route_goto(ff_route_t *r, ff_app_face_t f); /* jump base to a swipe face */
 bool ff_route_push_modal(ff_route_t *r, ff_app_face_t f);
 bool ff_route_pop_modal(ff_route_t *r);
 

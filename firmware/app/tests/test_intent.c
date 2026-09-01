@@ -181,15 +181,22 @@ static void S16_c1_swipe_dispatch_moves_base_and_stays_bounded(void)
     send_swipe(-1); /* off the RADAR end: bounded, not wrapping (AC1 at the seam) */
     TEST_ASSERT_EQUAL(FF_APP_FACE_RADAR, view()->active_face);
 
+    /* The horizontal carousel, end to end: Radar · Now · Signals · Map ·
+     * Settings. Map and Settings are ordinary swipe faces now, so the
+     * traversal runs all the way to the Settings bound. */
     send_swipe(+1);
     TEST_ASSERT_EQUAL(FF_APP_FACE_NOW, view()->active_face);
     send_swipe(+1);
     TEST_ASSERT_EQUAL(FF_APP_FACE_SIGNALS, view()->active_face);
-    send_swipe(+1); /* off the SIGNALS end */
-    TEST_ASSERT_EQUAL(FF_APP_FACE_SIGNALS, view()->active_face);
+    send_swipe(+1);
+    TEST_ASSERT_EQUAL(FF_APP_FACE_MAP, view()->active_face);
+    send_swipe(+1);
+    TEST_ASSERT_EQUAL(FF_APP_FACE_SETTINGS, view()->active_face);
+    send_swipe(+1); /* off the SETTINGS end: bounded, not wrapping */
+    TEST_ASSERT_EQUAL(FF_APP_FACE_SETTINGS, view()->active_face);
 
     send_swipe(-1);
-    TEST_ASSERT_EQUAL(FF_APP_FACE_NOW, view()->active_face);
+    TEST_ASSERT_EQUAL(FF_APP_FACE_MAP, view()->active_face);
 }
 
 /* =================================================================== */
@@ -336,69 +343,62 @@ static void S16_c1_back_clears_the_compose_destination(void)
 }
 
 /* =================================================================== */
-/* OPEN_SETTINGS — round trip (S11 slice b: the renderer now exists,    */
-/* resolving the judgment call ff_shell.c's k_settings_renderer_exists  */
-/* comment records — see that comment's history for the prior-rejected  */
-/* behavior this test used to pin, up through PR #54).                  */
+/* OPEN_SETTINGS — the long-press JUMP shortcut (horizontal-carousel    */
+/* rework: Settings is the far-right swipe face now, not a modal, so    */
+/* the long-press goes there via ff_route_goto rather than pushing a    */
+/* modal — see ff_shell.c's OPEN_SETTINGS case).                        */
 /* =================================================================== */
 
-static void S16_c1_open_settings_and_back_round_trip(void)
+static void S16_c1_open_settings_jumps_base_to_the_settings_face(void)
 {
     harness_init(100000u);
-    send_swipe(+1); /* Now — prove the modal opens over a non-Radar base too */
+    send_swipe(+1); /* Now — prove the jump works from any base, not just Radar */
     TEST_ASSERT_EQUAL(FF_APP_FACE_NOW, view()->active_face);
 
+    /* One long-press jumps straight to the far-right Settings tile,
+     * skipping Signals and Map. */
     send_kind(FF_INTENT_OPEN_SETTINGS);
     TEST_ASSERT_EQUAL(FF_APP_FACE_SETTINGS, view()->active_face);
 
-    /* Any modal suppresses swipe (AC2 at the seam): a horizontal drag
-     * must never slide the settings face away. */
+    /* Settings is a base swipe face, not a modal — you leave it by
+     * swiping left (to Map), not by BACK. */
     send_swipe(-1);
-    TEST_ASSERT_EQUAL(FF_APP_FACE_SETTINGS, view()->active_face);
+    TEST_ASSERT_EQUAL(FF_APP_FACE_MAP, view()->active_face);
 
-    /* A second OPEN_SETTINGS over the modal is rejected, not a replace —
-     * one modal slot, same rule OPEN_COMPOSE follows. */
+    /* Jump back to Settings, then confirm BACK on a bare face is a
+     * no-op (there is no modal to pop). */
     send_kind(FF_INTENT_OPEN_SETTINGS);
     TEST_ASSERT_EQUAL(FF_APP_FACE_SETTINGS, view()->active_face);
-
     send_kind(FF_INTENT_BACK);
-    TEST_ASSERT_EQUAL(FF_APP_FACE_NOW, view()->active_face); /* base intact underneath */
-
-    /* BACK on a bare face is a no-op, not a face change. */
-    send_kind(FF_INTENT_BACK);
-    TEST_ASSERT_EQUAL(FF_APP_FACE_NOW, view()->active_face);
+    TEST_ASSERT_EQUAL(FF_APP_FACE_SETTINGS, view()->active_face);
 }
 
 /**
- * S09 [api] — FF_INTENT_OPEN_MAP/BACK round trip, same shape as
- * OPEN_SETTINGS above: `ff_route_push_modal`/`ff_route_pop_modal`
- * machinery, no Map-specific handling to independently break. Pins the
- * routing choice recorded in ff_app_state.h's FF_APP_FACE_MAP comment —
- * Map is a modal reached by an explicit open intent, not a swipe tile.
+ * Horizontal-carousel rework: Map is an ordinary swipe face between
+ * Signals and Settings now — there is no FF_INTENT_OPEN_MAP any more, and
+ * no "tap anywhere -> back" modal exit. Reached and left by swiping, like
+ * every other carousel face. (The old S09 open/back modal round trip is
+ * gone with the modal.)
  */
-static void S09_open_map_and_back_round_trip(void)
+static void carousel_map_is_reached_by_swipe_between_signals_and_settings(void)
 {
     harness_init(100000u);
-    TEST_ASSERT_EQUAL(FF_APP_FACE_RADAR, view()->active_face); /* the spec's own framing: opened from Radar */
 
-    send_kind(FF_INTENT_OPEN_MAP);
+    send_swipe(+1); /* Now */
+    send_swipe(+1); /* Signals */
+    TEST_ASSERT_EQUAL(FF_APP_FACE_SIGNALS, view()->active_face);
+
+    send_swipe(+1); /* Map — right of Signals */
     TEST_ASSERT_EQUAL(FF_APP_FACE_MAP, view()->active_face);
 
-    /* Any modal suppresses swipe (AC2 at the seam) — same protection
-     * Compose/Settings get, applied here so a horizontal drag can never
-     * be mistaken for the spec's own "tap anywhere -> back" exit. */
+    send_swipe(+1); /* Settings — right of Map */
+    TEST_ASSERT_EQUAL(FF_APP_FACE_SETTINGS, view()->active_face);
+
+    /* Leave Map by swiping, both ways — no modal, no BACK involved. */
     send_swipe(-1);
-    send_swipe(+1);
     TEST_ASSERT_EQUAL(FF_APP_FACE_MAP, view()->active_face);
-
-    /* A second OPEN_MAP over the modal is rejected, not a replace — one
-     * modal slot, same rule every other push_modal caller follows. */
-    send_kind(FF_INTENT_OPEN_MAP);
-    TEST_ASSERT_EQUAL(FF_APP_FACE_MAP, view()->active_face);
-
-    /* Tap-anywhere-back IS FF_INTENT_BACK — no Map-specific intent. */
-    send_kind(FF_INTENT_BACK);
-    TEST_ASSERT_EQUAL(FF_APP_FACE_RADAR, view()->active_face);
+    send_swipe(-1);
+    TEST_ASSERT_EQUAL(FF_APP_FACE_SIGNALS, view()->active_face);
 }
 
 /**
@@ -428,14 +428,19 @@ static void S11b_a_compose_draft_survives_a_settings_visit(void)
     send_kind(FF_INTENT_BACK);
     TEST_ASSERT_EQUAL(FF_APP_FACE_RADAR, view()->active_face);
 
-    send_kind(FF_INTENT_OPEN_SETTINGS);
+    send_kind(FF_INTENT_OPEN_SETTINGS); /* jumps base to the Settings swipe face */
     TEST_ASSERT_EQUAL(FF_APP_FACE_SETTINGS, view()->active_face);
     /* The draft is still projected — unconditionally, every tick,
      * regardless of active_face (ff_shell.c's shell_project) — even
      * while it isn't the visible face. */
     TEST_ASSERT_EQUAL_STRING("omw", view()->compose.text);
 
-    send_kind(FF_INTENT_BACK);
+    /* Leave Settings by swiping back across the carousel (Map, Signals,
+     * Now, Radar) — the draft is untouched the whole way. */
+    send_swipe(-1); /* Map */
+    send_swipe(-1); /* Signals */
+    send_swipe(-1); /* Now */
+    send_swipe(-1); /* Radar */
     TEST_ASSERT_EQUAL(FF_APP_FACE_RADAR, view()->active_face);
     TEST_ASSERT_EQUAL_STRING("omw", view()->compose.text); /* still there, untouched */
 }
@@ -713,8 +718,7 @@ static void S16_c1_route_intents_are_rejected_while_a_takeover_is_visible(void)
     send_kind(FF_INTENT_BACK);
     send_swipe(-1);
     send_open_compose(0u);
-    send_kind(FF_INTENT_OPEN_SETTINGS);
-    send_kind(FF_INTENT_OPEN_MAP); /* S09 — same routing-rule-4 gate as every other route intent */
+    send_kind(FF_INTENT_OPEN_SETTINGS); /* the long-press jump: same routing-rule-4 gate, rejected under takeover */
     TEST_ASSERT_TRUE(ff_shell_flare(&H.shell)->takeover_active); /* nothing consumed it */
 
     /* Clearing the takeover restores the EXACT prior route: Compose,
@@ -1432,8 +1436,8 @@ int main(void)
     RUN_TEST(S16_c1_open_compose_never_retargets_an_unhonorable_destination);
     RUN_TEST(S16_c1_a_rejected_open_compose_does_not_retarget_the_composer);
     RUN_TEST(S16_c1_back_clears_the_compose_destination);
-    RUN_TEST(S16_c1_open_settings_and_back_round_trip);
-    RUN_TEST(S09_open_map_and_back_round_trip);
+    RUN_TEST(S16_c1_open_settings_jumps_base_to_the_settings_face);
+    RUN_TEST(carousel_map_is_reached_by_swipe_between_signals_and_settings);
     RUN_TEST(S11b_a_compose_draft_survives_a_settings_visit);
     RUN_TEST(S08_pred_defaults_on_open_and_projects_the_top_candidate);
     RUN_TEST(S08_pred_cycle_advances_selection_and_word_follows);

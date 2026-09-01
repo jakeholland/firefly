@@ -301,8 +301,10 @@ static void drag(int32_t from_x, int32_t to_x, int32_t y)
 }
 
 /* Vertical counterpart to `drag` above — same real-indev press/move/
- * release shape, varying y instead of x. S09 [api]: a swipe UP through
- * this opens Map (nav_swipe_gesture_cb's LV_DIR_TOP case). */
+ * release shape, varying y instead of x. Horizontal-carousel rework: a
+ * vertical drag through nav_swipe_gesture_cb is now a NO-OP (LV_DIR_TOP
+ * and LV_DIR_BOTTOM return without emitting), so a vertical drag is left
+ * to be a scroll and never a face change. */
 static void drag_v(int32_t from_y, int32_t to_y, int32_t x)
 {
     lv_indev_t *indev = lv_indev_create();
@@ -357,15 +359,17 @@ static void S16_c3_physical_rightward_drag_emits_swipe_toward_radar(void)
     TEST_ASSERT_EQUAL_INT8(-1, s_spy.last.u.swipe_dir); /* toward RADAR */
 }
 
-/* S09 [api], PR #73 review finding #4 — the Map entry point: a real
- * upward drag on the (real) tileview reaches nav_swipe_gesture_cb's new
- * LV_DIR_TOP case and emits FF_INTENT_OPEN_MAP, not FF_INTENT_SWIPE.
- * Same "build the real screen, synthesize a real indev gesture" pattern
- * as the horizontal-drag tests above — this is what actually resolves
- * an unclaimed vertical drag through LVGL's own gesture machinery, not
- * a synthetic shortcut that could pass while a real finger still
- * reached nothing. */
-static void S09_physical_upward_drag_emits_open_map(void)
+/* THE SCROLL-VS-SWIPE FIX (horizontal-carousel rework): a real UPWARD
+ * drag on the (real) tileview reaches nav_swipe_gesture_cb's LV_DIR_TOP
+ * case and emits NOTHING — it is not a face change, so it is left to be a
+ * scroll of whatever scrollable is underneath. This is the exact
+ * regression guard for the bug the maintainer hit on glass: an upward
+ * drag used to emit FF_INTENT_OPEN_MAP and jump to Map, which is how a
+ * vertical list-scroll got mistaken for a face swipe. Same "build the
+ * real screen, synthesize a real indev gesture" pattern as the
+ * horizontal-drag tests above, so it exercises LVGL's own gesture
+ * machinery, not a synthetic shortcut. */
+static void carousel_physical_upward_drag_emits_nothing(void)
 {
     ff_app_state_t state;
     memset(&state, 0, sizeof(state));
@@ -374,31 +378,27 @@ static void S09_physical_upward_drag_emits_open_map(void)
 
     drag_v(380, 60, 228); /* finger moving UP */
 
-    TEST_ASSERT_EQUAL_INT(1, s_spy.count);
-    TEST_ASSERT_EQUAL(FF_INTENT_OPEN_MAP, s_spy.last.kind);
+    TEST_ASSERT_EQUAL_INT(0, s_spy.count); /* vertical is a scroll, never a face change */
 }
 
-/* The gesture is NOT gated to the Radar tile — see nav_swipe_gesture_cb's
- * own doc comment for why. Pinned from Now (tile index 1) so a future
- * change that accidentally narrows this to "Radar only" fails loudly
- * here rather than only being caught by inspection. */
-static void S09_physical_upward_drag_emits_open_map_from_now_too(void)
+/* Same, from a different tile (Signals, index 2) — a vertical drag is a
+ * no-op on every face, so a future change that re-wired a vertical swipe
+ * to a face on some tile fails loudly here. */
+static void carousel_physical_upward_drag_emits_nothing_from_signals_too(void)
 {
     ff_app_state_t state;
     memset(&state, 0, sizeof(state));
-    state.active_face = FF_APP_FACE_NOW;
+    state.active_face = FF_APP_FACE_SIGNALS;
     ff_scr_nav_build(&state);
 
     drag_v(380, 60, 228);
 
-    TEST_ASSERT_EQUAL_INT(1, s_spy.count);
-    TEST_ASSERT_EQUAL(FF_INTENT_OPEN_MAP, s_spy.last.kind);
+    TEST_ASSERT_EQUAL_INT(0, s_spy.count);
 }
 
-/* A DOWNWARD drag stays unclaimed (not a face swipe, not Map) — the
- * negative control proving LV_DIR_TOP specifically is what's wired, not
- * "any vertical gesture". */
-static void S09_physical_downward_drag_emits_nothing(void)
+/* A DOWNWARD drag likewise emits nothing — the other vertical direction,
+ * proving neither LV_DIR_TOP nor LV_DIR_BOTTOM is wired to a face. */
+static void carousel_physical_downward_drag_emits_nothing(void)
 {
     ff_app_state_t state;
     memset(&state, 0, sizeof(state));
@@ -1251,45 +1251,11 @@ static void S16_c2_sender_overlay_cancel_emits_flare_end(void)
 }
 
 /* =================================================================== */
-/* Settings face (S11 slice b) — every control emits FF_INTENT_SETTING_SET */
-/* except BACK, which is the same FF_INTENT_BACK every other modal uses.  */
+/* Settings face — every control emits FF_INTENT_SETTING_SET. There is   */
+/* no BACK control any more: the horizontal-carousel rework made          */
+/* Settings a swipe tile you leave by swiping, not a modal with a back    */
+/* button (see scr_settings.h), so the old back-emits-BACK test is gone.  */
 /* =================================================================== */
-
-/* The Settings back button draws its caret as an lv_line chevron (not a "<"
- * glyph), so it is found as the button containing a line child. */
-static lv_obj_t *find_settings_back(lv_obj_t *root)
-{
-    uint32_t n = lv_obj_get_child_count(root);
-    for (uint32_t i = 0; i < n; i++) {
-        lv_obj_t *child = lv_obj_get_child(root, i);
-        if (lv_obj_check_type(child, &lv_button_class)) {
-            uint32_t nc = lv_obj_get_child_count(child);
-            for (uint32_t j = 0; j < nc; j++) {
-                if (lv_obj_check_type(lv_obj_get_child(child, j), &lv_line_class)) {
-                    return child;
-                }
-            }
-        }
-        lv_obj_t *found = find_settings_back(child);
-        if (found != NULL) {
-            return found;
-        }
-    }
-    return NULL;
-}
-
-static void S11b_settings_back_emits_back(void)
-{
-    ff_app_settings_t s;
-    memset(&s, 0, sizeof(s));
-
-    ff_scr_settings_build(&s);
-
-    click(find_settings_back(lv_screen_active()));
-
-    TEST_ASSERT_EQUAL_INT(1, s_spy.count);
-    TEST_ASSERT_EQUAL(FF_INTENT_BACK, s_spy.last.kind);
-}
 
 static void S11b_settings_units_chip_toggles_imperial(void)
 {
@@ -1297,7 +1263,7 @@ static void S11b_settings_units_chip_toggles_imperial(void)
     memset(&s, 0, sizeof(s));
     s.imperial = true; /* renders "FT" */
 
-    ff_scr_settings_build(&s);
+    ff_scr_settings_build(lv_screen_active(), &s);
 
     click(find_button_with_label(lv_screen_active(), "FT"));
 
@@ -1316,7 +1282,7 @@ static void S11b_settings_share_chip_cycles_live_to_ghost_skipping_zones(void)
     ff_app_settings_t s;
     memset(&s, 0, sizeof(s)); /* share_mode 0 = FF_SHARE_LIVE, renders "LIVE" */
 
-    ff_scr_settings_build(&s);
+    ff_scr_settings_build(lv_screen_active(), &s);
 
     click(find_button_with_label(lv_screen_active(), "LIVE"));
 
@@ -1335,7 +1301,7 @@ static void S11b_settings_share_chip_from_ghost_and_from_zones_both_avoid_zones(
     memset(&s, 0, sizeof(s));
     s.share_mode = FF_SHARE_GHOST;
 
-    ff_scr_settings_build(&s);
+    ff_scr_settings_build(lv_screen_active(), &s);
     click(find_button_with_label(lv_screen_active(), "GHOST"));
     TEST_ASSERT_EQUAL_INT(1, s_spy.count);
     TEST_ASSERT_EQUAL(FF_SETTING_SHARE_MODE, s_spy.last.u.setting.id);
@@ -1346,7 +1312,7 @@ static void S11b_settings_share_chip_from_ghost_and_from_zones_both_avoid_zones(
     memset(&s, 0, sizeof(s));
     s.share_mode = FF_SHARE_ZONES; /* the persisted-ZONES edge case */
 
-    ff_scr_settings_build(&s);
+    ff_scr_settings_build(lv_screen_active(), &s);
     /* The [LIVE|GHOST] pair shows neither pill active for a persisted ZONES,
      * but tapping either still moves it to GHOST (never back to ZONES). */
     click(find_pill_in_row(lv_screen_active(), "SHARE", "LIVE"));
@@ -1361,7 +1327,7 @@ static void S11b_settings_haptics_chip_toggles(void)
     memset(&s, 0, sizeof(s));
     s.haptics = false; /* OFF pill active */
 
-    ff_scr_settings_build(&s);
+    ff_scr_settings_build(lv_screen_active(), &s);
 
     /* Tapping either pill of the two-state pair flips it. */
     click(find_pill_in_row(lv_screen_active(), "HAPTICS", "OFF"));
@@ -1378,7 +1344,7 @@ static void S11b_settings_night_glow_chip_toggles(void)
     memset(&s, 0, sizeof(s));
     s.night_glow = true; /* ON pill active */
 
-    ff_scr_settings_build(&s);
+    ff_scr_settings_build(lv_screen_active(), &s);
 
     click(find_pill_in_row(lv_screen_active(), "GLOW", "ON"));
 
@@ -1394,7 +1360,7 @@ static void S11b_settings_water_chip_cycles_presets(void)
     memset(&s, 0, sizeof(s));
     s.water_min = 90; /* renders "90 MIN" */
 
-    ff_scr_settings_build(&s);
+    ff_scr_settings_build(lv_screen_active(), &s);
 
     click(find_button_with_label(lv_screen_active(), "90 MIN"));
 
@@ -1413,7 +1379,7 @@ static void S11b_settings_water_label_tap_also_cycles(void)
     memset(&s, 0, sizeof(s));
     s.water_min = 90;
 
-    ff_scr_settings_build(&s);
+    ff_scr_settings_build(lv_screen_active(), &s);
 
     lv_obj_t *label = find_label_exact(lv_screen_active(), "WATER NUDGE");
     TEST_ASSERT_NOT_NULL(label);
@@ -1455,7 +1421,7 @@ static void S11b_settings_quiet_chip_sets_both_from_and_to(void)
     s.quiet_from_min = 240;
     s.quiet_to_min = 600; /* the "4A-10A" preset */
 
-    ff_scr_settings_build(&s);
+    ff_scr_settings_build(lv_screen_active(), &s);
 
     history_spy_t hist;
     memset(&hist, 0, sizeof(hist));
@@ -1498,7 +1464,7 @@ static void S100_settings_brightness_stepper_steps_and_clamps(void)
     memset(&s, 0, sizeof(s));
     s.brightness_pct = 70;
 
-    ff_scr_settings_build(&s);
+    ff_scr_settings_build(lv_screen_active(), &s);
 
     lv_obj_t *minus = find_button_with_label(lv_screen_active(), "-");
     lv_obj_t *plus = find_button_with_label(lv_screen_active(), "+");
@@ -1532,7 +1498,7 @@ static void S21_settings_calibrate_touch_row_emits_calibrate_intent(void)
     ff_app_settings_t s;
     memset(&s, 0, sizeof(s));
 
-    ff_scr_settings_build(&s);
+    ff_scr_settings_build(lv_screen_active(), &s);
 
     click(find_button_with_label(lv_screen_active(), "CALIBRATE TOUCH"));
 
@@ -1574,9 +1540,9 @@ int main(void)
     RUN_TEST(S16_c3_content_button_long_press_does_not_reach_open_settings);
     RUN_TEST(S16_c3_physical_leftward_drag_emits_swipe_toward_signals);
     RUN_TEST(S16_c3_physical_rightward_drag_emits_swipe_toward_radar);
-    RUN_TEST(S09_physical_upward_drag_emits_open_map);
-    RUN_TEST(S09_physical_upward_drag_emits_open_map_from_now_too);
-    RUN_TEST(S09_physical_downward_drag_emits_nothing);
+    RUN_TEST(carousel_physical_upward_drag_emits_nothing);
+    RUN_TEST(carousel_physical_upward_drag_emits_nothing_from_signals_too);
+    RUN_TEST(carousel_physical_downward_drag_emits_nothing);
     RUN_TEST(S16_c1_compose_back_emits_back);
     RUN_TEST(S16_c2_compose_send_emits_send_text);
     RUN_TEST(S16_c3_abc_letter_key_emits_t9_key);
@@ -1612,7 +1578,6 @@ int main(void)
     RUN_TEST(S16_c2_flare_takeover_go_emits_takeover_go);
     RUN_TEST(S16_c2_flare_takeover_dismiss_emits_takeover_dismiss);
     RUN_TEST(S16_c2_sender_overlay_cancel_emits_flare_end);
-    RUN_TEST(S11b_settings_back_emits_back);
     RUN_TEST(S11b_settings_units_chip_toggles_imperial);
     RUN_TEST(S11b_settings_share_chip_cycles_live_to_ghost_skipping_zones);
     RUN_TEST(S11b_settings_share_chip_from_ghost_and_from_zones_both_avoid_zones);

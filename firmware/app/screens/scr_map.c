@@ -109,7 +109,6 @@
 #include <math.h>
 #include <stdio.h> /* snprintf — the "+N MORE" truncation indicator */
 
-#include "ff_intent.h" /* the emit seam — see map_tap_back_cb */
 #include "ff_map.h"    /* core/include — the shared fixed-fit camera transform + triangulation */
 #include "ff_theme.h"
 
@@ -863,23 +862,12 @@ static void map_draw_truncated_indicator(lv_obj_t *parent, ff_app_map_t const *m
 }
 
 /* ---------------------------------------------------------------------
- * Tap anywhere -> back to Radar (S09 spec).
- * ------------------------------------------------------------------- */
-
-static void map_tap_back_cb(lv_event_t *e)
-{
-    (void)e;
-    ff_intent_t in = {.kind = FF_INTENT_BACK, .u = {0}};
-    ff_intent_emit(&in);
-}
-
-/* ---------------------------------------------------------------------
  * Entry point.
  * ------------------------------------------------------------------- */
 
-void ff_scr_map_build(ff_app_map_t const *map, bool colorblind)
+void ff_scr_map_build(lv_obj_t *parent, ff_app_map_t const *map, bool colorblind)
 {
-    if (map == NULL) {
+    if (parent == NULL || map == NULL) {
         return;
     }
 
@@ -887,11 +875,7 @@ void ff_scr_map_build(ff_app_map_t const *map, bool colorblind)
     map_label_collector_t label_collector;
     map_label_collector_reset(&label_collector);
 
-    lv_obj_t *scr = lv_screen_active();
-    lv_obj_set_style_bg_color(scr, lv_color_hex(0x000000), 0);
-    lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
-
-    lv_obj_t *puck = lv_obj_create(scr);
+    lv_obj_t *puck = lv_obj_create(parent);
     lv_obj_remove_style_all(puck);
     lv_obj_set_size(puck, FF_THEME_PUCK_PX, FF_THEME_PUCK_PX);
     lv_obj_align(puck, LV_ALIGN_CENTER, 0, 0);
@@ -900,6 +884,14 @@ void ff_scr_map_build(ff_app_map_t const *map, bool colorblind)
     lv_obj_set_style_bg_opa(puck, LV_OPA_COVER, 0);
     lv_obj_set_style_border_width(puck, 0, 0);
     lv_obj_clear_flag(puck, LV_OBJ_FLAG_SCROLLABLE);
+    /* Carousel tile now: non-clickable, and its children (below) all
+     * clear CLICKABLE too, so a horizontal drag anywhere on Map bubbles
+     * up as the GESTURE the nav tileview decodes into a swipe — and a
+     * long-press bubbles to the nav puck (jump-to-Settings) exactly as on
+     * the other tiles. (There is no tap-to-go-back any more — Map is left
+     * by swiping, like every other face.) */
+    lv_obj_clear_flag(puck, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_flag(puck, LV_OBJ_FLAG_EVENT_BUBBLE);
     /* No `lv_obj_set_style_clip_corner` here — deliberately (issue #75:
      * it reliably hangs `ffsim --headless` at this file's draw-object
      * count). Containment is geometric instead: every projected
@@ -908,13 +900,6 @@ void ff_scr_map_build(ff_app_map_t const *map, bool colorblind)
      * inside the same circle by `ff_map_place_labels` (dropped if LOW,
      * pulled inward if HIGH) in `map_label_collector_flush` — see this
      * file's header comment for the full rationale. */
-    /* Tap ANYWHERE -> back (S09 spec) — unlike every other full-screen
-     * face in this codebase, the puck itself is the button; every child
-     * this file draws clears LV_OBJ_FLAG_CLICKABLE so a tap always
-     * resolves here rather than to whichever shape/label happens to be
-     * underneath the finger. */
-    lv_obj_add_flag(puck, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_add_event_cb(puck, map_tap_back_cb, LV_EVENT_CLICKED, NULL);
 
     /* Fixed-fit camera (S09 slice a, refined by PR #73 review finding
      * #3): ONE anchor point per feature — not every vertex of every

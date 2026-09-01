@@ -21,6 +21,22 @@ a) xform + tests · b) render + goldens.
 
 ## Amendments
 
+- **2026-09-01, horizontal-carousel rework — routing SUPERSEDED: Map is
+  an ordinary SWIPE FACE now, not a modal.** The 2026-08-25 amendment
+  below made Map a modal reached by a vertical top-swipe
+  (`LV_DIR_TOP -> FF_INTENT_OPEN_MAP`); that vertical entry point is
+  exactly what let a vertical list-scroll bubble up as a GESTURE and jump
+  to Map (the maintainer's on-glass "scrolls accepted as swipes" bug).
+  The fix makes navigation horizontal-only: `k_swipe_axis` (`ff_route.c`)
+  is now the five-face carousel `RADAR < NOW < SIGNALS < MAP < SETTINGS`,
+  Map sitting between Signals and Settings, reached and left by a normal
+  horizontal swipe like every other face. `[api]`: `ff_route_push_modal`
+  no longer accepts `FF_APP_FACE_MAP` (Compose is the sole modal);
+  `FF_INTENT_OPEN_MAP` is removed; the "tap anywhere -> back" exit and the
+  radar "swipe up for MAP" hint are gone with the modal;
+  `ff_scr_map_build` takes a parent container (it is a tileview tile now).
+  Everything below this bullet is HISTORICAL — the modal routing it
+  describes is no longer how Map is reached.
 - **2026-08-25, implementation PR — routing: Map is a THIRD MODAL face
   (alongside Compose/Settings), not a fourth swipe tile.** The spec's
   own framing ("Radar's alternate view", "Tap anywhere -> back to

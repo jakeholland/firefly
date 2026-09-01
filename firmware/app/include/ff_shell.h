@@ -648,11 +648,13 @@ bool ff_shell_pair(ff_shell_t *sh, uint32_t node_id, bool paired);
  *                       explicit id falls back to BROADCAST, never to a
  *                       different member: a message must not be silently
  *                       retargeted at somebody the caller did not name.
- *  - OPEN_SETTINGS   -> deliberately rejected (a no-op) until the S11b
- *                       Settings renderer exists — see the judgment-call
- *                       note in ff_shell.c's OPEN_SETTINGS case. The
- *                       route/dispatch path is complete; S11b flips one
- *                       named constant, no seam change.
+ *  - OPEN_SETTINGS   -> `ff_route_goto(SETTINGS)` — the nav long-press
+ *                       jumps straight to the far-right Settings swipe
+ *                       face (the horizontal-carousel rework made
+ *                       Settings a base face, not a modal). Suppressed
+ *                       under a takeover or a modal, exactly as swipe is,
+ *                       and still gated on the S11b renderer constant.
+ *                       There is no OPEN_MAP: Map is reached by swipe.
  *  - TAKEOVER_GO / TAKEOVER_DISMISS -> `ff_flare_go` /
  *                       `ff_flare_dismiss_takeover`, only while the
  *                       takeover is visible (they are decisions ABOUT

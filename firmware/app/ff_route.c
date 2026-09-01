@@ -1,29 +1,38 @@
 /**
  * ff_route.c — see ff_route.h for the contract and the reasoning behind
- * every rule implemented here (S16 slice a).
+ * every rule implemented here (S16 slice a; extended to the 5-face
+ * horizontal carousel — see ff_route.h's header note).
  */
 #include <stddef.h> /* NULL */
 
 #include "ff_route.h"
 
 /* The swipe axis, in order. `ff_route_swipe`'s `dir` steps along THIS
- * array, which is why -1 is "toward Radar" and +1 "toward Signals" —
+ * array, which is why -1 is "toward Radar" and +1 "toward Settings" —
  * see ff_route_swipe's doc comment on why that is not a finger
- * direction. Settings and Compose are absent on purpose: neither is a
- * swipe tile (scr_nav.c's tileview only ever has these three), they are
- * modals over one of them. */
+ * direction.
+ *
+ * As of the horizontal-carousel rework this is the WHOLE face set the
+ * user swipes between: Radar · Now · Signals · Map · Settings, left to
+ * right. Map and Settings used to be modals reached off-axis (Map by a
+ * vertical top-swipe, Settings by a nav long-press); they are ordinary
+ * horizontal neighbours now. Compose is still absent on purpose: it is
+ * the one remaining modal (reached from Signals' "+"), not a swipe
+ * tile. */
 static ff_app_face_t const k_swipe_axis[] = {
     FF_APP_FACE_RADAR,
     FF_APP_FACE_NOW,
     FF_APP_FACE_SIGNALS,
+    FF_APP_FACE_MAP,
+    FF_APP_FACE_SETTINGS,
 };
 #define K_SWIPE_AXIS_N ((int)(sizeof(k_swipe_axis) / sizeof(k_swipe_axis[0])))
 
 /* Position of `f` on the swipe axis, or false if `f` is not on it at
- * all (a modal face, NONE, FLARE, or a garbage value from an
- * uninitialised route). Returning false rather than defaulting to 0
- * keeps `ff_route_swipe` a no-op on a corrupted route instead of
- * silently "repairing" base to Radar mid-gesture. */
+ * all (Compose, NONE, FLARE, or a garbage value from an uninitialised
+ * route). Returning false rather than defaulting to 0 keeps
+ * `ff_route_swipe` a no-op on a corrupted route instead of silently
+ * "repairing" base to Radar mid-gesture. */
 static bool route_axis_index(ff_app_face_t f, int *out_idx)
 {
     for (int i = 0; i < K_SWIPE_AXIS_N; i++) {
@@ -67,7 +76,7 @@ bool ff_route_swipe(ff_route_t *r, int8_t dir)
     }
 
     /* AC1 — bounded, NOT wrapping. Modular arithmetic here would let
-     * three +1 swipes from Radar land back on Radar. */
+     * five +1 swipes from Radar land back on Radar. */
     int next = idx + (int)dir;
     if (next < 0 || next >= K_SWIPE_AXIS_N) {
         return false;
@@ -77,24 +86,45 @@ bool ff_route_swipe(ff_route_t *r, int8_t dir)
     return true;
 }
 
+bool ff_route_goto(ff_route_t *r, ff_app_face_t f)
+{
+    if (r == NULL) {
+        return false;
+    }
+    /* A modal suppresses the jump exactly as it suppresses swipe (AC2):
+     * a long-press-to-Settings must not slide a half-typed Compose away.
+     * `modal == FF_APP_FACE_NONE` is the whole predicate. */
+    if (r->modal != FF_APP_FACE_NONE) {
+        return false;
+    }
+    /* Only a swipe-axis face is a valid jump target — Compose/NONE/FLARE
+     * are rejected the same way route_axis_index rejects them for swipe,
+     * so a bad `f` is a no-op rather than a base set off the axis. */
+    int idx;
+    if (!route_axis_index(f, &idx)) {
+        return false;
+    }
+    if (r->base == f) {
+        return false; /* already there: no change */
+    }
+    r->base = f;
+    return true;
+}
+
 bool ff_route_push_modal(ff_route_t *r, ff_app_face_t f)
 {
     if (r == NULL) {
         return false;
     }
-    /* Compose, Settings and Map are the only modal faces. Rejecting
-     * FLARE here is load-bearing, not defensive tidiness: the takeover
-     * is not something the route holds (see ff_route_visible), so
-     * accepting it as a modal would put the same fact in two places —
-     * the desync this module's whole shape exists to prevent.
-     *
-     * Map (S09 [api], `ff_app_state.h`'s FF_APP_FACE_MAP comment has the
-     * full reasoning) joins here rather than the swipe axis above: the
-     * spec frames it as "Radar's alternate view" with a "tap anywhere ->
-     * back to Radar" exit, which is this codebase's existing
-     * modal-dismiss idiom (FF_INTENT_BACK popping the route), not the
-     * bounded swipe axis's rule. */
-    if (f != FF_APP_FACE_COMPOSE && f != FF_APP_FACE_SETTINGS && f != FF_APP_FACE_MAP) {
+    /* Compose is now the ONLY modal face (Map and Settings joined the
+     * swipe axis in the horizontal-carousel rework). Rejecting FLARE
+     * here is load-bearing, not defensive tidiness: the takeover is not
+     * something the route holds (see ff_route_visible), so accepting it
+     * as a modal would put the same fact in two places — the desync this
+     * module's whole shape exists to prevent. A swipe face (RADAR..
+     * SETTINGS), NONE, and everything else are rejected too — Compose is
+     * the one value that is a modal and nothing else. */
+    if (f != FF_APP_FACE_COMPOSE) {
         return false;
     }
     /* Same base-validity rule as ff_route_swipe, and for a sharper
