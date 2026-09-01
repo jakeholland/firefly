@@ -142,6 +142,40 @@ static void S26b_AC1_long_press_boundary_is_inclusive_at_exactly_1500ms(void)
     TEST_ASSERT_TRUE(fsm.long_fired);
 }
 
+/* MUTATION GUARD (independent review finding, PR #135): the boundary
+ * test above references the threshold entirely through the
+ * FF_POWER_FSM_LONG_MS macro, so it cannot catch the macro's VALUE
+ * drifting away from the spec's actual contract (docs/specs/
+ * S26-device-lifecycle.md: "LONG_PRESS ... >= 1500 ms") — a reviewer
+ * mutation of the macro from 1500 to 1400 left all 14 original tests in
+ * this file green, because every one of them references the threshold
+ * symbolically. This test pins the spec number with HARDCODED LITERALS
+ * (1499, 1500), never the macro, for the two release/hold outcomes, PLUS
+ * a direct by-name assertion on the macro's own value, so either kind of
+ * drift — the macro changing, or a future edit quietly reading the wrong
+ * literal — is caught. */
+static void S26b_AC1_spec_pins_the_long_press_threshold_at_1500ms_literal(void)
+{
+    TEST_ASSERT_EQUAL_UINT32(1500u, FF_POWER_FSM_LONG_MS);
+
+    /* Held for exactly 1499 ms since the debounced press committed, then
+     * released: must be SHORT_PRESS — 1499 ms of hold must NOT be long. */
+    ff_power_fsm_t fsm_short;
+    ff_power_fsm_init(&fsm_short);
+    uint32_t const pressed_at = press_and_settle(&fsm_short, 1000);
+    uint32_t const release_raw_at = pressed_at + 1499u;
+    TEST_ASSERT_EQUAL(FF_POWER_FSM_EVENT_NONE, ff_power_fsm_tick(&fsm_short, release_raw_at, false));
+    TEST_ASSERT_EQUAL(FF_POWER_FSM_EVENT_SHORT_PRESS,
+                       ff_power_fsm_tick(&fsm_short, release_raw_at + FF_POWER_FSM_DEBOUNCE_MS, false));
+
+    /* A separate press, held to exactly 1500 ms since the debounced press
+     * committed, still held: must be LONG_PRESS on that exact tick. */
+    ff_power_fsm_t fsm_long;
+    ff_power_fsm_init(&fsm_long);
+    uint32_t const pressed_at2 = press_and_settle(&fsm_long, 5000);
+    TEST_ASSERT_EQUAL(FF_POWER_FSM_EVENT_LONG_PRESS, ff_power_fsm_tick(&fsm_long, pressed_at2 + 1500u, true));
+}
+
 static void S26b_AC1_a_held_press_emits_long_exactly_once(void)
 {
     ff_power_fsm_t fsm;
@@ -295,6 +329,7 @@ int main(void)
     RUN_TEST(S26b_AC1_release_debounces_symmetrically);
     RUN_TEST(S26b_AC1_a_quick_tap_emits_short_press_never_long);
     RUN_TEST(S26b_AC1_long_press_boundary_is_inclusive_at_exactly_1500ms);
+    RUN_TEST(S26b_AC1_spec_pins_the_long_press_threshold_at_1500ms_literal);
     RUN_TEST(S26b_AC1_a_held_press_emits_long_exactly_once);
     RUN_TEST(S26b_AC1_release_after_long_emits_release_not_short);
     RUN_TEST(S26b_AC1_a_second_press_after_a_short_release_can_still_go_long);
