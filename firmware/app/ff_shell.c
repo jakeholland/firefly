@@ -121,6 +121,12 @@ typedef struct {
      * own, untouched takeover path in ff_flare_t; nothing here pushes a
      * FLARE/TAKEOVER-tier entry yet. */
     ff_notify_t notify;
+    /* S26(c)+(d) wake hook: set when a BANNER is pushed (a notification
+     * must light a dim/off screen — the spec's "notification wakes the
+     * screen"), cleared by ff_shell_take_wake. The DECISION that a banner
+     * wakes lives HERE, beside the push; the ff_idle owner (app_main /
+     * sim ctl_loop) only forwards it to ff_idle_input — enact, not decide. */
+    bool wake_pending;
 
     /* The Signals send TARGET (S22 slice b) — the ONLY persistent Signals
      * state, held on the RADAR precedent: `ff_radar_compute` builds straight
@@ -1119,8 +1125,8 @@ static void shell_notify_push_banner(shell_t *sh, ff_notify_kind_t kind, uint32_
     int n = snprintf(preview, sizeof(preview), "%.*s", (int)body_len, (body != NULL) ? body : "");
     if (n < 0) preview[0] = '\0'; /* snprintf failure: an honestly empty preview, never garbage */
 
-    /* S26(c) wake hook: orchestrator wires ff_idle_input here after both land */
     (void)ff_notify_push(&sh->notify, kind, FF_NOTIFY_TIER_BANNER, from, preview, now_ms);
+    sh->wake_pending = true; /* S26(c) wake hook — see the field's comment */
 }
 
 /** Milliseconds until `expiry_ms`, or -1 when the fact is not live.
@@ -3660,6 +3666,15 @@ ff_settings_t const *ff_shell_settings(ff_shell_t const *sh_pub)
 uint32_t ff_shell_compose_to_node(ff_shell_t const *sh_pub)
 {
     return (sh_pub == NULL) ? 0u : shell_of_const(sh_pub)->compose_to_node;
+}
+
+bool ff_shell_take_wake(ff_shell_t *shell)
+{
+    shell_t *sh = (shell_t *)shell;
+    if (sh == NULL) return false;
+    bool const w = sh->wake_pending;
+    sh->wake_pending = false;
+    return w;
 }
 
 bool ff_shell_keep_awake(ff_app_state_t const *view, bool touch_cal_running)

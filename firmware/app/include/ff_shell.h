@@ -909,6 +909,18 @@ uint32_t ff_shell_compose_to_node(ff_shell_t const *sh);
  */
 bool ff_shell_keep_awake(ff_app_state_t const *view, bool touch_cal_running);
 
+/**
+ * ff_shell_take_wake — S26 (c)+(d): one-shot "a notification wants the
+ * screen lit" pulse. Returns true exactly once after a BANNER was pushed
+ * (any number of pushes since the last take collapse to one true), false
+ * otherwise; clears on read. The ff_idle OWNER (app_main / sim ctl_loop)
+ * calls this once per tick after ff_shell_tick and forwards a true to
+ * ff_idle_input(now) — a mechanical forward, not a behavior decision: the
+ * decision that a banner wakes the screen is made in the shell beside the
+ * push. NULL-safe (returns false).
+ */
+bool ff_shell_take_wake(ff_shell_t *shell);
+
 /* ---------------------------------------------------------------------
  * Sim-only dev affordances (S16 AC6, slice b2) — COMPILED OUT on device
  * ---------------------------------------------------------------------
