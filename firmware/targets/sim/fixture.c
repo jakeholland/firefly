@@ -898,6 +898,36 @@ static void fx_parse_flare(fx_ctx_t const *c, int obj_i, ff_app_flare_t *fl)
         fl->locked_expires_in_ms = (int32_t)fx_num(c, t, -1.0);
 }
 
+/* banner (S26 slice d) — mirrors ff_app_banner_t field-for-field. Absent
+ * section (or `active` omitted/false): the whole-struct memset's zeroed
+ * `active == false` stands, the honest "no banner queued" default. */
+static const fx_enum_entry_t fx_notify_kind_table[] = {
+    {"message", FF_NOTIFY_MESSAGE},
+    {"flare", FF_NOTIFY_FLARE},
+    {"rally", FF_NOTIFY_RALLY},
+    {"system", FF_NOTIFY_SYSTEM},
+};
+
+static ff_fixture_result_t fx_parse_banner(fx_ctx_t const *c, int obj_i, ff_app_banner_t *b)
+{
+    int t;
+    if (fx_obj_get(c, obj_i, "active", &t)) b->active = fx_bool(c, t, false);
+    if (fx_obj_get(c, obj_i, "kind", &t)) {
+        int v;
+        ff_fixture_result_t rc = fx_enum(c, t, fx_notify_kind_table,
+                                          sizeof(fx_notify_kind_table) / sizeof(fx_notify_kind_table[0]),
+                                          "banner.kind", &v);
+        if (rc != FF_FIXTURE_OK) return rc;
+        b->kind = (ff_notify_kind_t)v;
+    }
+    if (fx_obj_get(c, obj_i, "node_id", &t)) b->node_id = (uint32_t)fx_num(c, t, 0.0);
+    if (fx_obj_get(c, obj_i, "name", &t)) fx_copy_str(c, t, b->name, sizeof(b->name));
+    if (fx_obj_get(c, obj_i, "color_idx", &t)) b->color_idx = (uint8_t)fx_num(c, t, 0.0);
+    if (fx_obj_get(c, obj_i, "text", &t)) fx_copy_str(c, t, b->text, sizeof(b->text));
+    if (fx_obj_get(c, obj_i, "age_ms", &t)) b->age_ms = (uint32_t)fx_num(c, t, 0.0);
+    return FF_FIXTURE_OK;
+}
+
 static const fx_enum_entry_t fx_share_mode_table[] = {
     {"live", 0}, {"zones", 1}, {"ghost", 2},
 };
@@ -1273,6 +1303,15 @@ ff_fixture_result_t ff_fixture_load_json(char const *json, size_t len, ff_app_st
             return rc;
         }
     }
+    if (fx_obj_get(&ctx, 0, "banner", &sec_i) && !fx_is_null(&ctx, sec_i)) {
+        ff_fixture_result_t rc = fx_parse_banner(&ctx, sec_i, &out->banner);
+        if (rc != FF_FIXTURE_OK) {
+            memset(out, 0, sizeof(*out));
+            return rc;
+        }
+    }
+    /* else: out->banner stays fully zeroed (active == false) — the
+     * honest "no banner queued" default (S26 slice d). */
 
     return FF_FIXTURE_OK;
 }

@@ -10,9 +10,11 @@
  */
 #include "ff_shell.h"
 
+#include <stdio.h>
 #include <string.h>
 
 #include "ff_geo.h"
+#include "ff_notify.h" /* S26(d) — the notification queue */
 #include "ff_proto.h"
 #include "ff_radar.h"
 #include "ff_route.h"
@@ -110,6 +112,15 @@ typedef struct {
     ff_wall_state_t wall;
     ff_radar_smooth_t smooth;
     ff_route_t route;
+
+    /* S26 slice d — the notification queue (docs/specs/
+     * S26-device-lifecycle.md "(d) ff_notify + message banner"). Ticked
+     * once per ff_shell_tick; pushed to from shell_ev_text/shell_ev_private
+     * (see shell_notify_push_banner) on an incoming MESSAGE/RALLY from a
+     * PAIRED crew member only — the S22 stranger rule. FLARE keeps its
+     * own, untouched takeover path in ff_flare_t; nothing here pushes a
+     * FLARE/TAKEOVER-tier entry yet. */
+    ff_notify_t notify;
 
     /* The Signals send TARGET (S22 slice b) — the ONLY persistent Signals
      * state, held on the RADAR precedent: `ff_radar_compute` builds straight
@@ -953,6 +964,12 @@ static void shell_ev_position(void *u, uint32_t node, mc_position_t const *p)
     ff_crew_on_position(&sh->crew, node, pos, rx_ms, shell_pos_meta(p));
 }
 
+/* S26 slice d — push a BANNER for an incoming MESSAGE/RALLY. Defined
+ * below shell_name_of (uses it for the sender-prefixed preview); forward-
+ * declared here so shell_ev_text/shell_ev_private can call it. */
+static void shell_notify_push_banner(shell_t *sh, ff_notify_kind_t kind, uint32_t from, char const *body,
+                                      size_t body_len, uint32_t now_ms);
+
 static void shell_ev_text(void *u, uint32_t from, uint32_t to, char const *utf8, size_t len)
 {
     shell_t *sh = (shell_t *)u;
@@ -961,6 +978,11 @@ static void shell_ev_text(void *u, uint32_t from, uint32_t to, char const *utf8,
     /* ff_wiring owns the crew-paired filter, the heard-note on a miss,
      * the feed push and the (quiet-gated, via shell_haptic_feed) buzz. */
     ff_wiring_on_text(&sh->wiring, from, to, utf8, len);
+    /* S26(d): a text message is a MESSAGE-kind banner candidate. Re-gated
+     * on paired inside shell_notify_push_banner (the S22 stranger rule) —
+     * an unpaired sender's text was already dropped from the feed by
+     * ff_wiring above, and must never reach the banner queue either. */
+    shell_notify_push_banner(sh, FF_NOTIFY_MESSAGE, from, utf8, len, shell_now(sh));
 }
 
 static void shell_ev_private(void *u, uint32_t from, uint32_t to, uint32_t portnum,
@@ -993,6 +1015,12 @@ static void shell_ev_private(void *u, uint32_t from, uint32_t to, uint32_t portn
         }
     } else if (type == FF_PROTO_TYPE_FLARE_END) {
         (void)ff_flare_on_flare_end_rx(&sh->flare, from);
+    } else if (type == FF_PROTO_TYPE_RALLY) {
+        /* S26(d): a RALLY is the other banner-eligible kind (spec:
+         * "an incoming MESSAGE or RALLY"). msg is still in scope from the
+         * decode above — no re-decode. */
+        shell_notify_push_banner(sh, FF_NOTIFY_RALLY, from, msg.body.rally.name, strlen(msg.body.rally.name),
+                                  shell_now(sh));
     }
 }
 
@@ -1056,6 +1084,45 @@ static char const *shell_name_of(shell_t const *sh, uint32_t node_id)
     return (m != NULL) ? m->name : "";
 }
 
+/**
+ * shell_notify_push_banner — S26 slice d: event WIRING, not projection
+ * (textually here only because it needs shell_name_of's sibling helpers
+ * above) — push a BANNER-tier ff_notify entry for an incoming
+ * MESSAGE/RALLY from `from`.
+ *
+ * Re-checks shell_is_paired(sh, from) itself rather than trusting the
+ * caller: this is the SAME paired-crew-sender gate ff_wiring.c's
+ * wiring_push_if_paired applies to feed pushes (the S22 stranger rule) —
+ * an unpaired sender must NEVER enqueue a banner (S26 AC3), and a second,
+ * independent check here is what makes that true regardless of how this
+ * function's two call sites evolve.
+ *
+ * `body`/`body_len` is the feed-equivalent preview text (the message body,
+ * or the rally name) — NOT necessarily NUL-terminated (mirrors
+ * ff_wiring_on_text's own `utf8`/`len` contract), safely truncated by
+ * `ff_notify_push` itself. Pushed VERBATIM, with no sender-name prefix
+ * (ff_notify.h's `text` doc comment): the queue entry's `node_id` is the
+ * identity fact, and the renderer (`scr_banner.c`, via the shell's own
+ * `shell_name_of` lookup at projection time — the same "look up at
+ * render time, not capture time" convention every other name in this
+ * app follows, e.g. shell_project_flare's takeover_from_name) shows the
+ * sender's name in its own distinct style (crew color) — never baked
+ * into this string, which would either duplicate it or (before a
+ * NodeInfo name arrives) freeze an honest gap into permanent text.
+ */
+static void shell_notify_push_banner(shell_t *sh, ff_notify_kind_t kind, uint32_t from, char const *body,
+                                      size_t body_len, uint32_t now_ms)
+{
+    if (!shell_is_paired(sh, from)) return; /* S22 stranger rule / S26 AC3 */
+
+    char preview[FF_NOTIFY_TEXT_MAX];
+    int n = snprintf(preview, sizeof(preview), "%.*s", (int)body_len, (body != NULL) ? body : "");
+    if (n < 0) preview[0] = '\0'; /* snprintf failure: an honestly empty preview, never garbage */
+
+    /* S26(c) wake hook: orchestrator wires ff_idle_input here after both land */
+    (void)ff_notify_push(&sh->notify, kind, FF_NOTIFY_TIER_BANNER, from, preview, now_ms);
+}
+
 /** Milliseconds until `expiry_ms`, or -1 when the fact is not live.
  *  Wraparound-safe: the subtraction is unsigned, and a deadline already
  *  passed (which ff_flare_tick clears in the same tick) reads as 0. */
@@ -1106,6 +1173,27 @@ static void shell_project_flare(shell_t const *sh, uint32_t now_ms, ff_app_flare
         shell_copy_str(out->locked_from_name, sizeof(out->locked_from_name),
                         shell_name_of(sh, f->locked_node_id));
     }
+}
+
+/* S26 slice d — project the ff_notify queue's HEAD (ff_notify_tick has
+ * already dropped anything expired this tick, in ff_shell_tick, before
+ * shell_project runs). `out->active == false` (a zeroed struct) when the
+ * queue is empty — the honest "nothing to show" default. */
+static void shell_project_banner(shell_t const *sh, uint32_t now_ms, ff_app_banner_t *out)
+{
+    ff_notify_entry_t const *h = ff_notify_head(&sh->notify);
+    if (h == NULL) return; /* out is already zeroed by shell_project's whole-view memset */
+
+    out->active = true;
+    out->kind = h->kind;
+    out->node_id = h->node_id;
+    shell_copy_str(out->name, sizeof(out->name), shell_name_of(sh, h->node_id));
+    ff_crew_member_t const *m = ff_crew_find(&sh->crew, h->node_id);
+    out->color_idx = (m != NULL) ? m->color_idx : 0u;
+    shell_copy_str(out->text, sizeof(out->text), h->text);
+    /* REAL age (CLAUDE.md: never a fabricated "now") — unsigned
+     * subtraction, wraparound-safe like every other age in this file. */
+    out->age_ms = now_ms - h->at_ms;
 }
 
 /* shell_member_paired — the one roster predicate the Signals projection and
@@ -1518,6 +1606,7 @@ static void shell_project(shell_t *sh, uint32_t now_ms)
     shell_project_flare(sh, now_ms, &sh->view.flare);
     shell_project_settings(sh, &sh->view.settings);
     shell_project_map(sh, &sh->view.map);
+    shell_project_banner(sh, now_ms, &sh->view.banner); /* S26(d) */
 
     /* compose: the draft (text/mode/pending) is shell-owned T9 state as
      * of slice c3 (`sh->compose_draft`) — projected verbatim from
@@ -1681,6 +1770,18 @@ static void shell_render_key(ff_app_state_t const *v, ff_app_state_t *key)
     for (uint8_t i = key->signals.inbox.conv_count; i < FF_INBOX_MAX_CONVS; i++) {
         memset(&key->signals.inbox.convs[i], 0, sizeof(key->signals.inbox.convs[i]));
     }
+
+    /* S26 slice d — the banner's age, same coarsened-age discipline as
+     * every preview/presence age above: scr_banner.c renders it only
+     * through ff_fmt_age (whole-second-under-a-minute buckets, all of
+     * which read "now" — a banner's whole 6s life sits inside that one
+     * bucket in practice), so per-tick ticking must not dirty the key and
+     * rebuild the strip out from under a finger mid-press. `active`/
+     * `kind`/`node_id`/`name`/`color_idx`/`text` are already in the key
+     * VERBATIM via the memcpy above — a banner arriving, changing sender,
+     * or expiring (active flips false) still dirties, which is the
+     * legitimate rebuild the spec calls for. */
+    key->banner.age_ms = v->banner.active ? shell_coarsen_age_ms(v->banner.age_ms) : 0u;
 
     /* S24 slice (c) — while a THREAD is open, the thread is the ONLY
      * Signals surface rendered (scr_signals.c's THREAD arm; the nav
@@ -1878,6 +1979,7 @@ int ff_shell_init(ff_shell_t *sh_pub, ff_shell_cfg_t const *cfg)
     ff_wall_init(&sh->wall);
     ff_radar_smooth_reset(&sh->smooth);
     ff_route_init(&sh->route);
+    ff_notify_init(&sh->notify); /* S26(d) */
     sh->sig_target_kind = FF_TARGET_WHOLE_CREW; /* S22 slice b — default target */
     sh->sig_target_node = 0u;
     sh->sig_rally_sel   = 0u; /* S24 slice d — On Me by default (projection re-validates) */
@@ -2002,6 +2104,11 @@ bool ff_shell_tick(ff_shell_t *sh_pub, uint32_t now_ms)
      * here with no route involved, which is why ff_route_visible takes
      * takeover as a parameter rather than caching it. */
     (void)ff_flare_tick(&sh->flare, now_ms);
+
+    /* S26 slice d — drop any BANNER whose 6s TTL has elapsed (spec:
+     * "auto-expire 6 s"). Before shell_project below, so the same tick
+     * that expires a banner also stops projecting it. */
+    ff_notify_tick(&sh->notify, now_ms);
 
     /* S26 slice b — the power menu's 10 s auto-dismiss timeout ("Cancel or
      * a 10 s timeout -> dismiss"). Same wraparound-safe unsigned-subtraction
@@ -3421,6 +3528,35 @@ void ff_shell_intent(ff_shell_t *sh_pub, ff_intent_t const *in)
         if (takeover_up) return;
         (void)ff_route_pop_modal(&sh->route);
         return;
+
+    case FF_INTENT_BANNER_OPEN: {
+        /* S26 slice d — the banner's tap. No payload (ff_intent.h's doc
+         * comment): scr_banner.c is a pure renderer and must not carry
+         * the scope itself, so this acts on the shell's OWN ff_notify
+         * head — the exact fact scr_banner just rendered, never a stale
+         * or re-derived one. */
+        if (takeover_up) return;
+        ff_notify_entry_t const *h = ff_notify_head(&sh->notify);
+        if (h == NULL) return; /* a stray tap after the banner already expired: no-op */
+        uint32_t const node = h->node_id;
+        /* Roster re-validation, the INBOX_OPEN_THREAD precedent: a tap
+         * naming a member who unpaired since the banner enqueued is
+         * rejected whole — no navigation, no mark-read, no dismiss (the
+         * banner itself still ticks toward its own expiry). */
+        if (!shell_member_paired(sh, node)) return;
+
+        (void)ff_route_goto(&sh->route, FF_APP_FACE_SIGNALS);
+        sh->sig_rally_armed = false; /* an intervening action disarms (S22 AC4) */
+        sh->sig_thread_node = node;
+        shell_scope_from_thread(sh);
+        (void)ff_inbox_mark_thread_read(&sh->feed, FF_CONV_MEMBER, node);
+        sh->view.signals.target_kind = sh->sig_target_kind;
+        sh->view.signals.target_node = sh->sig_target_node;
+        sh->sig_subview = FF_SIG_SUB_THREAD;
+
+        (void)ff_notify_dismiss(&sh->notify, 0); /* the head — exactly what was opened */
+        return;
+    }
 
     /* --- deliberate no-ops until their owning slice lands ------------ */
     case FF_INTENT_MARK_FEED_READ: /* c2 relic — S24 replaced the face-view clear with per-thread

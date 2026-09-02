@@ -28,6 +28,7 @@ idf_component_register(
         "${FF_CORE_DIR}/src/ff_inbox.c"    # S24a — Signals inbox -> thread view-model
         "${FF_CORE_DIR}/src/ff_power_fsm.c" # S26 slice b — PWR-button press FSM + reboot BOOT-release guard
         "${FF_CORE_DIR}/src/ff_idle.c"      # S26 slice c — inactivity -> dim -> screen off
+        "${FF_CORE_DIR}/src/ff_notify.c"   # S26 slice d — notification queue (message banner)
     INCLUDE_DIRS "${FF_CORE_DIR}/include"
     REQUIRES ff_platform
 )

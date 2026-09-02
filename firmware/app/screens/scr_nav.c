@@ -8,6 +8,7 @@
 
 #include "ff_intent.h" /* S16c1 — the emit seam; see nav_long_press_cb */
 #include "ff_theme.h"
+#include "scr_banner.h" /* S26 slice d — the ff_notify message banner overlay */
 #include "scr_flare.h" /* S10 slice b — lock chip + sender overlay */
 #include "scr_map.h" /* carousel tile 3 — Map, an ordinary swipe face now */
 #include "scr_now.h" /* S07b — ff_scr_now_build, the Now face */
@@ -373,4 +374,14 @@ void ff_scr_nav_build(ff_app_state_t const *state)
      * are showing — spec: "own screen pulses amber" applies regardless
      * of which face is active. No-op internally when !state->flare.sending. */
     ff_scr_flare_build_sender_overlay(puck, &state->flare);
+
+    /* S26 slice d — the message banner, built LAST OF ALL (on the puck,
+     * after the sender overlay) so it paints on top of everything else
+     * this function draws — spec: "an overlay STRIP... built after the
+     * face, like the page dots". No-op internally when !state->banner.active.
+     * Note: this is unreachable while the flare TAKEOVER is up — the
+     * dispatcher (face_dispatch.c / ff_face.c) returns before ever
+     * calling ff_scr_nav_build in that case, so a banner never competes
+     * with the takeover for the same glass. */
+    ff_scr_banner_build(puck, &state->banner, state->settings.colorblind);
 }

@@ -355,6 +355,7 @@ static void inject_pulse(uint32_t from)
     H.ev.on_private(H.ev.user, from, MC_ADDR_BROADCAST, FF_PORTNUM, buf, (size_t)n);
 }
 
+
 static void inject_flare(uint32_t from, uint16_t dur_s)
 {
     uint8_t buf[FF_PROTO_MAX_PAYLOAD];
@@ -4175,6 +4176,18 @@ static void S24_AC8_inbox_key_same_bucket_age_tick_is_clean(void)
     TEST_ASSERT_FALSE_MESSAGE(ff_shell_tick(&H.shell, H.clk.t),
                               "a sub-bucket age tick rebuilt the inbox - the row under a finger would be destroyed");
 
+    /* S26(d): the same inbound (paired) text ALSO pushed a BANNER
+     * (FF_NOTIFY_MESSAGE) — a legitimate, SEPARATE dirty event 6s after it
+     * was pushed (the banner's own auto-expiry, spec AC2: "a banner
+     * appearing/expiring is a legitimate rebuild"), independent of the
+     * inbox row's own age bucketing this test otherwise exercises. Cross
+     * that expiry deliberately, before the "must stay clean" loop below,
+     * so the loop tests exactly what its name says and nothing else. */
+    advance(6000u);
+    TEST_ASSERT_TRUE_MESSAGE(ff_shell_tick(&H.shell, H.clk.t),
+                             "the banner's own 6s auto-expiry did not repaint (S26(d) spec AC2)");
+    TEST_ASSERT_FALSE(ff_shell_tick(&H.shell, H.clk.t)); /* settled again */
+
     /* The churn fix's core: the WHOLE sub-minute span is ONE "now" bucket,
      * so an age ticking second-by-second under a minute must stay CLEAN.
      * Advance well into the sub-minute range a second at a time. */
@@ -4187,8 +4200,9 @@ static void S24_AC8_inbox_key_same_bucket_age_tick_is_clean(void)
 
     /* Cross-bucket tick: crossing the 60 s boundary changes the rendered
      * string "now"->"1 MIN" -> MUST be dirty (positive control proving the
-     * clean results above are bucketing, not a dead key). Age is ~40.4 s;
-     * +20 s crosses 60 s. */
+     * clean results above are bucketing, not a dead key). Age is ~46.4 s
+     * (400ms + the 6s banner crossing above + 40s of loop); +20 s crosses
+     * 60 s. */
     advance(20000u);
     TEST_ASSERT_TRUE_MESSAGE(ff_shell_tick(&H.shell, H.clk.t),
                              "the now->1 MIN boundary did not repaint - the age on glass would go stale");
@@ -4524,6 +4538,17 @@ static void S24c_AC8_thread_key_opaque_to_other_conversations_churn(void)
     TEST_ASSERT_TRUE(ff_shell_tick(&H.shell, H.clk.t));  /* thread opened: dirty */
     TEST_ASSERT_FALSE(ff_shell_tick(&H.shell, H.clk.t)); /* settled */
 
+    /* S26(d): the earlier inject_text(DANA, "yo") also pushed a BANNER
+     * (FF_NOTIFY_MESSAGE) — a legitimate, separate dirty tick 6s after it
+     * was pushed (spec AC2: auto-expiry is a legitimate rebuild). Cross
+     * that expiry before the "must stay clean" loop, so the loop tests
+     * only the thread's own per-second age bucketing (this test's actual
+     * subject), same fix as S24_AC8_inbox_key_same_bucket_age_tick_is_clean. */
+    advance(6000u);
+    TEST_ASSERT_TRUE_MESSAGE(ff_shell_tick(&H.shell, H.clk.t),
+                             "the banner's own 6s auto-expiry did not repaint (S26(d) spec AC2)");
+    TEST_ASSERT_FALSE(ff_shell_tick(&H.shell, H.clk.t)); /* settled again */
+
     /* Sub-minute age ticks (the whole "now" span is ONE bucket): a message
      * age ticking second-by-second under a minute must NOT rebuild the open
      * thread and destroy the chip under a finger. */
@@ -4536,20 +4561,34 @@ static void S24c_AC8_thread_key_opaque_to_other_conversations_churn(void)
 
     /* Cross-bucket: crossing 60 s changes "now"->"1 MIN" -> dirty (positive
      * control proving the clean results above are bucketing), then settle.
-     * Age is ~40 s; +21 s crosses 60 s. */
+     * Age is ~46 s (the 6s banner crossing above + 40s of loop); +21 s
+     * crosses 60 s. */
     advance(21000u);
     TEST_ASSERT_TRUE_MESSAGE(ff_shell_tick(&H.shell, H.clk.t),
                              "the now->1 MIN message-age boundary did not repaint - the age on glass "
                              "would go stale");
     TEST_ASSERT_FALSE(ff_shell_tick(&H.shell, H.clk.t));
 
-    /* A new item in ANOTHER thread (KEV's 1:1): CLEAN — nothing this
-     * screen renders changed (no page-dot badge on a thread screen; the
-     * inbox rows are not on glass). */
+    /* A new item in ANOTHER conversation (KEV's 1:1) while DANA's thread is
+     * open: the THREAD CONTENT itself must stay opaque (KEV's item must
+     * never leak into DANA's own message list — the property this test
+     * names), but a paired KEV TEXT is ALSO a banner-eligible kind
+     * (S26(d) spec: "MESSAGE or RALLY"), and a banner is a genuinely NEW
+     * top-of-glass surface, not part of the inbox/thread content this
+     * opacity rule protects (shell_render_key's comment on the popup/
+     * rally mask makes the identical call the other way). So this DOES
+     * dirty — once, for the banner's arrival — and the thread's own
+     * projected content must be provably unchanged underneath it. */
+    uint8_t const msg_count_before = ff_shell_view(&H.shell)->signals.thread.msg_count;
     inject_text(KEV_ID, "elsewhere");
-    TEST_ASSERT_FALSE_MESSAGE(ff_shell_tick(&H.shell, H.clk.t),
-                              "another conversation's new item rebuilt the open thread - the key must be "
-                              "opaque to other threads' churn");
+    TEST_ASSERT_TRUE_MESSAGE(ff_shell_tick(&H.shell, H.clk.t),
+                             "a banner from another paired conversation must dirty the key - it is a new "
+                             "top-of-glass surface (S26(d))");
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(msg_count_before, ff_shell_view(&H.shell)->signals.thread.msg_count,
+                                    "KEV's item leaked into DANA's own open thread - the THREAD CONTENT key "
+                                    "must stay opaque to other conversations' traffic even though the banner "
+                                    "overlay correctly is not");
+    TEST_ASSERT_FALSE_MESSAGE(ff_shell_tick(&H.shell, H.clk.t), "settled: no further churn from the banner");
 
     /* Positive control: a new item in THIS thread is dirty. */
     inject_text(DANA, "same thread");
@@ -4625,6 +4664,336 @@ static void S24_signals_1to1_projects_the_members_own_color(void)
 
     /* And the inbox conversation row projects the same per-member color. */
     TEST_ASSERT_EQUAL_UINT8(member(KEV_ID)->color_idx, view_conv(KEV_ID)->color_idx);
+}
+
+/* =================================================================== */
+/* S26 slice d — ff_notify + the message banner (docs/specs/            */
+/* S26-device-lifecycle.md, "(d) ff_notify + message banner"). AC3: an  */
+/* unpaired sender's MESSAGE/RALLY never enqueues a banner; a paired    */
+/* one does. Also: the coalesce-through-the-shell effect, expiry, and   */
+/* the FF_INTENT_BANNER_OPEN routing/mark-read/dismiss seam.            */
+/* =================================================================== */
+
+/* AC3 — a paired sender's text produces a BANNER, sender-name-prefixed
+ * per the CREW-preview convention (scr_signals.c's preview_from_known
+ * pattern, S26(d) doc comment on shell_notify_push_banner). */
+static void S26_AC3_paired_message_pushes_banner(void)
+{
+    harness_init(100000u, false);
+    inject_my_info(MY_ID);
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, true));
+    inject_node(DANA, "DANA", U_EVENING); /* NodeInfo name — projected separately, see below */
+
+    inject_text(DANA, "you close?");
+    (void)ff_shell_tick(&H.shell, H.clk.t);
+
+    ff_app_banner_t const *b = &ff_shell_view(&H.shell)->banner;
+    TEST_ASSERT_TRUE(b->active);
+    TEST_ASSERT_EQUAL_INT(FF_NOTIFY_MESSAGE, b->kind);
+    TEST_ASSERT_EQUAL_UINT32(DANA, b->node_id);
+    /* name and text are SEPARATE fields (not baked into one string) —
+     * scr_banner.c renders the name in the sender's crew color, distinct
+     * from the plain preview body. */
+    TEST_ASSERT_EQUAL_STRING("DANA", b->name);
+    TEST_ASSERT_EQUAL_STRING("you close?", b->text);
+}
+
+/* AC3, the other half — an UNPAIRED sender's text must NEVER enqueue a
+ * banner (the S22 stranger rule), even though ff_wiring still notes them
+ * as heard. Proxy check: DANA is deliberately never paired here, so a
+ * banner appearing would prove the gate is missing, not merely untested. */
+static void S26_AC3_unpaired_message_pushes_no_banner(void)
+{
+    harness_init(100000u, false);
+    inject_my_info(MY_ID);
+    /* No ff_shell_pair call: DANA is a stranger. */
+
+    inject_text(DANA, "hi, who are you");
+    (void)ff_shell_tick(&H.shell, H.clk.t);
+    TEST_ASSERT_FALSE(ff_shell_view(&H.shell)->banner.active);
+}
+
+/* AC3 — a paired sender's RALLY also produces a BANNER (spec: "an
+ * incoming MESSAGE or RALLY"), distinct kind. */
+static void S26_AC3_paired_rally_pushes_banner(void)
+{
+    harness_init(100000u, false);
+    inject_my_info(MY_ID);
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, true));
+    inject_node(DANA, "DANA", U_EVENING); /* NodeInfo name, for the sender-prefixed preview */
+
+    uint8_t buf[FF_PROTO_MAX_PAYLOAD];
+    int n = ff_proto_encode_rally(buf, sizeof(buf), (ff_latlon_t){39.0, -82.0}, "Main Stage");
+    TEST_ASSERT_GREATER_THAN_INT(0, n);
+    H.ev.on_private(H.ev.user, DANA, MC_ADDR_BROADCAST, FF_PORTNUM, buf, (size_t)n);
+    (void)ff_shell_tick(&H.shell, H.clk.t);
+
+    ff_app_banner_t const *b = &ff_shell_view(&H.shell)->banner;
+    TEST_ASSERT_TRUE(b->active);
+    TEST_ASSERT_EQUAL_INT(FF_NOTIFY_RALLY, b->kind);
+    TEST_ASSERT_EQUAL_UINT32(DANA, b->node_id);
+    TEST_ASSERT_EQUAL_STRING("DANA", b->name);
+    TEST_ASSERT_EQUAL_STRING("Main Stage", b->text);
+}
+
+/* An unpaired sender's RALLY also produces no banner (same gate, the
+ * other banner-eligible kind — proxy-check symmetry with the MESSAGE
+ * case above). */
+static void S26_AC3_unpaired_rally_pushes_no_banner(void)
+{
+    harness_init(100000u, false);
+    inject_my_info(MY_ID);
+
+    uint8_t buf[FF_PROTO_MAX_PAYLOAD];
+    int n = ff_proto_encode_rally(buf, sizeof(buf), (ff_latlon_t){39.0, -82.0}, "Main Stage");
+    TEST_ASSERT_GREATER_THAN_INT(0, n);
+    H.ev.on_private(H.ev.user, DANA, MC_ADDR_BROADCAST, FF_PORTNUM, buf, (size_t)n);
+    (void)ff_shell_tick(&H.shell, H.clk.t);
+
+    TEST_ASSERT_FALSE(ff_shell_view(&H.shell)->banner.active);
+}
+
+/* A FLARE or PULSE from a paired sender must NOT produce a banner — only
+ * MESSAGE/RALLY are banner-eligible per spec; FLARE keeps its own,
+ * untouched takeover path. */
+static void S26_flare_and_pulse_do_not_push_banners(void)
+{
+    harness_init(100000u, false);
+    inject_my_info(MY_ID);
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, true));
+
+    inject_pulse(DANA);
+    (void)ff_shell_tick(&H.shell, H.clk.t);
+    TEST_ASSERT_FALSE(ff_shell_view(&H.shell)->banner.active);
+
+    inject_flare(DANA, 300);
+    (void)ff_shell_tick(&H.shell, H.clk.t);
+    TEST_ASSERT_FALSE(ff_shell_view(&H.shell)->banner.active); /* the FLARE takeover is separate, untouched */
+    TEST_ASSERT_TRUE(ff_shell_flare(&H.shell)->takeover_active);
+}
+
+/* AC1's coalesce rule, observed THROUGH the shell: a second text from the
+ * SAME paired sender within 2s replaces the queue's head IN PLACE (not a
+ * second, newer entry) — proven by the head still showing the coalesced
+ * (latest) text rather than the original one a plain "newest wins" queue
+ * would also produce (see ff_notify.h's top comment on why position is
+ * preserved). */
+static void S26_coalesce_within_2s_updates_head_in_place(void)
+{
+    harness_init(100000u, false);
+    inject_my_info(MY_ID);
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, true));
+    inject_node(DANA, "DANA", U_EVENING);
+
+    inject_text(DANA, "first");
+    (void)ff_shell_tick(&H.shell, H.clk.t);
+    TEST_ASSERT_EQUAL_STRING("first", ff_shell_view(&H.shell)->banner.text);
+
+    advance(1000u); /* within the 2000ms coalesce window */
+    inject_text(DANA, "second");
+    (void)ff_shell_tick(&H.shell, H.clk.t);
+    ff_app_banner_t const *b = &ff_shell_view(&H.shell)->banner;
+    TEST_ASSERT_TRUE(b->active);
+    TEST_ASSERT_EQUAL_STRING("second", b->text);
+
+    /* The coalesced entry's freshness reset too (ff_notify.h: the push
+     * overwrites at_ms/expiry_ms in place). The differentiator: hold at
+     * exactly the FIRST push's original deadline (100000+6000=106000) —
+     * still active only because the coalesce reset the clock to the
+     * SECOND push (101000+6000=107000); a coalesce that failed to reset
+     * at_ms would have already expired here. */
+    advance(4999u); /* t = 105999, before either deadline */
+    (void)ff_shell_tick(&H.shell, H.clk.t);
+    TEST_ASSERT_TRUE(ff_shell_view(&H.shell)->banner.active);
+
+    advance(1u); /* t = 106000 exactly — the FIRST push's original deadline */
+    (void)ff_shell_tick(&H.shell, H.clk.t);
+    TEST_ASSERT_TRUE_MESSAGE(ff_shell_view(&H.shell)->banner.active,
+                             "banner expired at the ORIGINAL push's deadline - the coalesce did not reset "
+                             "expiry_ms to the SECOND push's at_ms");
+
+    advance(1000u); /* t = 107000 — the coalesced (SECOND push) deadline: now due */
+    TEST_ASSERT_TRUE_MESSAGE(ff_shell_tick(&H.shell, H.clk.t), "the coalesced entry's own expiry did not repaint");
+    TEST_ASSERT_FALSE(ff_shell_view(&H.shell)->banner.active);
+}
+
+/* AC1/AC2 — the banner auto-expires 6s after at_ms (inclusive boundary,
+ * matching ff_flare's own convention), driven by ff_shell_tick. */
+static void S26_AC1_banner_auto_expires_after_6s(void)
+{
+    harness_init(100000u, false);
+    inject_my_info(MY_ID);
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, true));
+
+    inject_text(DANA, "hi");
+    (void)ff_shell_tick(&H.shell, H.clk.t);
+    TEST_ASSERT_TRUE(ff_shell_view(&H.shell)->banner.active);
+
+    advance(5999u);
+    (void)ff_shell_tick(&H.shell, H.clk.t);
+    TEST_ASSERT_TRUE_MESSAGE(ff_shell_view(&H.shell)->banner.active, "expired one tick early");
+
+    advance(1u); /* exactly 6000ms */
+    TEST_ASSERT_TRUE_MESSAGE(ff_shell_tick(&H.shell, H.clk.t), "the banner's own expiry did not repaint");
+    TEST_ASSERT_FALSE(ff_shell_view(&H.shell)->banner.active);
+}
+
+/* AC2 — the coarsened-age discipline (spec: "its age uses the coarsened-
+ * age discipline — shell_coarsen_age_ms — so per-second churn does not
+ * rebuild"), the same S24_AC8 churn mold applied to the banner: a
+ * banner's whole 6s life sits inside ff_fmt_age's one sub-minute "now"
+ * bucket, so ticking it second-by-second must NOT dirty the render key
+ * (a rebuild mid-press would destroy the strip's own tap target — the
+ * exact clobber class this discipline exists to prevent) until the
+ * banner's own content genuinely changes (a new push, or its expiry). */
+static void S26_AC2_banner_age_same_bucket_ticks_are_clean(void)
+{
+    harness_init(100000u, false);
+    inject_my_info(MY_ID);
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, true));
+
+    inject_text(DANA, "hi");
+    TEST_ASSERT_TRUE(ff_shell_tick(&H.shell, H.clk.t)); /* new banner: dirty (control) */
+    TEST_ASSERT_FALSE(ff_shell_tick(&H.shell, H.clk.t)); /* settled */
+
+    /* The banner's entire 6s life is inside the sub-minute "now" bucket —
+     * every one-second tick up to (but not including) its own expiry must
+     * be clean. */
+    for (int s = 0; s < 5; s++) {
+        advance(1000u);
+        TEST_ASSERT_FALSE_MESSAGE(ff_shell_tick(&H.shell, H.clk.t),
+                                  "a sub-bucket banner-age tick rebuilt the strip - the tap target under a "
+                                  "finger would be destroyed");
+    }
+
+    /* Positive control: the banner's OWN expiry (a genuine content change,
+     * active true -> false) still dirties. */
+    advance(1000u); /* t = push + 6000ms */
+    TEST_ASSERT_TRUE_MESSAGE(ff_shell_tick(&H.shell, H.clk.t), "the banner's own expiry did not repaint");
+    TEST_ASSERT_FALSE(ff_shell_view(&H.shell)->banner.active);
+}
+
+/* AC2 — a banner from a DIFFERENT paired conversation than the one
+ * currently open MUST dirty the render key: it is a genuinely NEW top-
+ * of-glass surface, not part of the open thread's own content (unlike an
+ * inbox-only churn source, e.g. a PULSE elsewhere, which the S24c_AC8
+ * opacity tests correctly keep invisible). The full shape: dirty once on
+ * arrival, clean through the coarsened-age sub-minute bucket, dirty once
+ * more (only) at the banner's own 6s expiry — proving the open thread's
+ * OWN content never sees KEV's item while the banner overlay correctly
+ * does. */
+static void S26_AC2_banner_from_other_paired_conv_dirties_open_thread_key(void)
+{
+    harness_init(100000u, false);
+    inject_my_info(MY_ID);
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, true));
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, KEV_ID, true));
+
+    s24c_swipe_to_signals();
+    ff_intent_t open = {.kind = FF_INTENT_INBOX_OPEN_THREAD, .u = {0}};
+    open.u.node_id = DANA;
+    ff_shell_intent(&H.shell, &open);
+    TEST_ASSERT_TRUE(ff_shell_tick(&H.shell, H.clk.t));  /* thread opened: dirty */
+    TEST_ASSERT_FALSE(ff_shell_tick(&H.shell, H.clk.t)); /* settled */
+
+    uint8_t const msg_count_before = ff_shell_view(&H.shell)->signals.thread.msg_count;
+
+    /* KEV, not DANA: a banner from the OTHER paired conversation while
+     * DANA's thread is open. */
+    inject_text(KEV_ID, "you around?");
+    TEST_ASSERT_TRUE_MESSAGE(ff_shell_tick(&H.shell, H.clk.t),
+                             "a banner from another paired conversation must dirty the open thread's key "
+                             "- it is a new top-of-glass surface (S26(d))");
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(msg_count_before, ff_shell_view(&H.shell)->signals.thread.msg_count,
+                                    "KEV's item leaked into DANA's own open thread content");
+    TEST_ASSERT_TRUE(ff_shell_view(&H.shell)->banner.active);
+    TEST_ASSERT_EQUAL_UINT32(KEV_ID, ff_shell_view(&H.shell)->banner.node_id);
+
+    /* Coarsened age (spec: "so per-second churn does not rebuild"): the
+     * banner's entire 6s life sits inside ff_fmt_age's one sub-minute
+     * "now" bucket, so every one-second tick up to (but not including)
+     * its own expiry must be clean — the tap target under a finger must
+     * survive. */
+    for (int s = 0; s < 5; s++) {
+        advance(1000u);
+        TEST_ASSERT_FALSE_MESSAGE(ff_shell_tick(&H.shell, H.clk.t),
+                                  "a sub-bucket banner-age tick rebuilt the open thread - the tap target "
+                                  "under a finger would be destroyed");
+    }
+
+    /* Exactly one more dirty tick, at the banner's own 6000ms deadline
+     * (inclusive boundary) — its expiry — and the banner is gone. */
+    advance(1000u); /* t = push + 6000ms */
+    TEST_ASSERT_TRUE_MESSAGE(ff_shell_tick(&H.shell, H.clk.t), "the banner's own expiry did not repaint");
+    TEST_ASSERT_FALSE(ff_shell_view(&H.shell)->banner.active);
+    TEST_ASSERT_FALSE(ff_shell_tick(&H.shell, H.clk.t)); /* settled */
+}
+
+/* The banner's tap (FF_INTENT_BANNER_OPEN): routes to the sender's
+ * thread, marks it read, and dismisses the head banner — S26(d)'s whole
+ * navigation contract in one test. */
+static void S26_banner_open_routes_marks_read_and_dismisses(void)
+{
+    harness_init(100000u, false);
+    inject_my_info(MY_ID);
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, true));
+
+    inject_text(DANA, "you close?");
+    (void)ff_shell_tick(&H.shell, H.clk.t);
+    TEST_ASSERT_TRUE(ff_shell_view(&H.shell)->banner.active);
+    TEST_ASSERT_EQUAL_UINT16(1, view_conv(DANA)->unread);
+
+    ff_intent_t open = {.kind = FF_INTENT_BANNER_OPEN, .u = {0}};
+    ff_shell_intent(&H.shell, &open);
+    (void)ff_shell_tick(&H.shell, H.clk.t);
+
+    ff_app_state_t const *v = ff_shell_view(&H.shell);
+    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_SIGNALS, v->active_face);
+    TEST_ASSERT_EQUAL_INT(FF_SIG_SUB_THREAD, v->signals.subview);
+    TEST_ASSERT_EQUAL_UINT32(DANA, v->signals.thread_node);
+    TEST_ASSERT_EQUAL_UINT16(0, view_conv(DANA)->unread); /* marked read */
+    TEST_ASSERT_FALSE(v->banner.active);                  /* dismissed */
+}
+
+/* A stray BANNER_OPEN with no banner queued is a safe no-op (no route
+ * change, no crash) — the screen only ever emits this from a rendered
+ * banner, but the shell must not assume that. */
+static void S26_banner_open_with_no_banner_is_noop(void)
+{
+    harness_init(100000u, false);
+    inject_my_info(MY_ID);
+    (void)ff_shell_tick(&H.shell, H.clk.t); /* settle: a fresh shell's very first tick is always dirty */
+
+    ff_app_face_t const before = ff_shell_view(&H.shell)->active_face;
+    ff_intent_t open = {.kind = FF_INTENT_BANNER_OPEN, .u = {0}};
+    ff_shell_intent(&H.shell, &open);
+    (void)ff_shell_tick(&H.shell, H.clk.t);
+    TEST_ASSERT_EQUAL_INT(before, ff_shell_view(&H.shell)->active_face);
+}
+
+/* Routing rule 4 (the S16_AC3b pattern, same as the INBOX_* intents):
+ * while a takeover owns the screen, BANNER_OPEN must not navigate,
+ * mark-read or dismiss. */
+static void S26_banner_open_is_inert_under_a_takeover(void)
+{
+    harness_init(100000u, false);
+    inject_my_info(MY_ID);
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, true));
+
+    inject_text(DANA, "you close?");
+    (void)ff_shell_tick(&H.shell, H.clk.t);
+    TEST_ASSERT_TRUE(ff_shell_view(&H.shell)->banner.active);
+
+    inject_flare(DANA, 300); /* takeover up */
+    (void)ff_shell_tick(&H.shell, H.clk.t);
+    TEST_ASSERT_TRUE(ff_shell_flare(&H.shell)->takeover_active);
+
+    ff_intent_t open = {.kind = FF_INTENT_BANNER_OPEN, .u = {0}};
+    ff_shell_intent(&H.shell, &open);
+    (void)ff_shell_tick(&H.shell, H.clk.t);
+
+    TEST_ASSERT_EQUAL_UINT16(1, view_conv(DANA)->unread);         /* not marked read */
+    TEST_ASSERT_NOT_EQUAL_INT(FF_SIG_SUB_THREAD, ff_shell_view(&H.shell)->signals.subview);
 }
 
 /* =================================================================== */
@@ -4892,10 +5261,14 @@ static void S24_AC6_crew_rally_arms_then_sends(void)
     TEST_ASSERT_EQUAL_INT(FF_SIG_SUB_THREAD, ff_shell_view(&H.shell)->signals.subview);
 }
 
-/* AC8 — the popup and Rally screen are OPAQUE in the render key: churn in
- * the conversations beneath them (a fresh inbound feed item) does NOT dirty
- * the frame, so the overlay's controls are never rebuilt/destroyed under a
- * finger. A genuine change (opening the Rally screen) still dirties. */
+/* AC8 — the popup and Rally screen are OPAQUE in the render key to
+ * ordinary INBOX/THREAD churn beneath them (a fresh PULSE elsewhere does
+ * NOT dirty the frame — see S26_AC2_banner_from_other_paired_conv_dirties_
+ * popup_overlay_exactly_once for the one exception this opacity does NOT
+ * cover: a banner-eligible MESSAGE/RALLY from another paired conversation
+ * IS a genuinely new top-of-glass surface, and correctly dirties). A
+ * genuine popup/rally-own change (opening the Rally screen) still
+ * dirties. */
 static void S24_AC8_popup_and_rally_opaque_to_feed_churn(void)
 {
     s22_connect_shell();
@@ -4906,19 +5279,81 @@ static void S24_AC8_popup_and_rally_opaque_to_feed_churn(void)
 
     /* A settled popup: a no-op tick is clean. */
     TEST_ASSERT_FALSE(ff_shell_tick(&H.shell, H.clk.t));
-    /* A fresh inbound (broadcast) item in the CREW conversation beneath —
-     * a genuine inbox change — must not dirty the OPAQUE popup. */
+    /* A fresh inbound TEXT in ANOTHER conversation beneath — a genuine
+     * inbox change — must not dirty the OPAQUE popup's OWN content (the
+     * popup renders nothing about the inbox beneath it: subview stays
+     * POPUP, scope stays DANA), but the paired KEV sender's text is ALSO
+     * a banner-eligible kind, and a banner is a genuinely NEW top-of-
+     * glass surface — NOT masked by the popup/rally opacity (see
+     * shell_render_key's own comment on that mask). So this DOES dirty —
+     * once, for the banner's arrival — while the popup's own scope is
+     * provably unaffected underneath it. */
+    ff_sig_subview_t const subview_before = ff_shell_view(&H.shell)->signals.subview;
+    uint32_t const thread_node_before = ff_shell_view(&H.shell)->signals.thread_node;
     inject_text(KEV_ID, "beneath");
-    TEST_ASSERT_FALSE(ff_shell_tick(&H.shell, H.clk.t));
+    TEST_ASSERT_TRUE_MESSAGE(ff_shell_tick(&H.shell, H.clk.t),
+                             "a banner from another paired conversation must dirty the key - it is a new "
+                             "top-of-glass surface (S26(d))");
+    TEST_ASSERT_EQUAL_INT_MESSAGE(subview_before, ff_shell_view(&H.shell)->signals.subview,
+                                  "the banner's arrival must not itself change the popup's own subview");
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(thread_node_before, ff_shell_view(&H.shell)->signals.thread_node,
+                                     "the banner's arrival must not itself change the popup's own scope");
+    TEST_ASSERT_FALSE_MESSAGE(ff_shell_tick(&H.shell, H.clk.t), "settled: no further churn from the banner");
 
     /* Opening the Rally screen is a real change (dirties). */
     ff_intent_t pr = {.kind = FF_INTENT_INBOX_POPUP_RALLY, .u = {0}};
     ff_shell_intent(&H.shell, &pr);
     TEST_ASSERT_TRUE(ff_shell_tick(&H.shell, H.clk.t));
-    /* The Rally screen is opaque to the same churn. */
+    /* The Rally screen is opaque to the same churn (the SAME precise
+     * shape: one dirty tick for the banner's arrival, then clean — the
+     * Rally screen's own selection/echo fields are untouched). */
     inject_text(KEV_ID, "again");
-    TEST_ASSERT_FALSE(ff_shell_tick(&H.shell, H.clk.t));
+    TEST_ASSERT_TRUE_MESSAGE(ff_shell_tick(&H.shell, H.clk.t),
+                             "a banner from another paired conversation must dirty the key over the Rally "
+                             "screen too - it is a new top-of-glass surface (S26(d))");
+    TEST_ASSERT_EQUAL_INT_MESSAGE(FF_SIG_SUB_RALLY, ff_shell_view(&H.shell)->signals.subview,
+                                  "the banner's arrival must not itself change the Rally screen's own subview");
+    TEST_ASSERT_FALSE_MESSAGE(ff_shell_tick(&H.shell, H.clk.t), "settled: no further churn from the banner");
 }
+
+/* AC2, the popup-overlay leg — same full shape as the thread test above,
+ * over the action popup (S24_AC8_popup_and_rally_opaque_to_feed_churn
+ * proves the single dirty+settle for both popup AND rally; this proves
+ * the fuller "exactly once, then clean, then exactly once more at
+ * expiry" sequence, so a double-repaint on arrival or a missed/duplicated
+ * expiry repaint over an overlay can't hide behind the shorter test). */
+static void S26_AC2_banner_from_other_paired_conv_dirties_popup_overlay_exactly_once(void)
+{
+    s22_connect_shell();
+    H.ev = ff_shell_events(&H.shell); /* s22_connect_shell does not bind the inject seam */
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, true));
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, KEV_ID, true));
+    s24d_open_popup(DANA);
+    TEST_ASSERT_FALSE(ff_shell_tick(&H.shell, H.clk.t)); /* settled popup */
+
+    ff_sig_subview_t const subview_before = ff_shell_view(&H.shell)->signals.subview;
+
+    inject_text(KEV_ID, "you around?");
+    TEST_ASSERT_TRUE_MESSAGE(ff_shell_tick(&H.shell, H.clk.t),
+                             "a banner from another paired conversation must dirty the popup overlay's key "
+                             "- it is a new top-of-glass surface (S26(d))");
+    TEST_ASSERT_EQUAL_INT(subview_before, ff_shell_view(&H.shell)->signals.subview);
+    TEST_ASSERT_TRUE(ff_shell_view(&H.shell)->banner.active);
+
+    for (int s = 0; s < 5; s++) {
+        advance(1000u);
+        TEST_ASSERT_FALSE_MESSAGE(ff_shell_tick(&H.shell, H.clk.t),
+                                  "a sub-bucket banner-age tick rebuilt the popup overlay - the tap target "
+                                  "under a finger would be destroyed");
+    }
+
+    advance(1000u); /* t = push + 6000ms */
+    TEST_ASSERT_TRUE_MESSAGE(ff_shell_tick(&H.shell, H.clk.t), "the banner's own expiry did not repaint");
+    TEST_ASSERT_FALSE(ff_shell_view(&H.shell)->banner.active);
+    TEST_ASSERT_EQUAL_INT(subview_before, ff_shell_view(&H.shell)->signals.subview); /* the popup itself never moved */
+    TEST_ASSERT_FALSE(ff_shell_tick(&H.shell, H.clk.t)); /* settled */
+}
+
 
 /* The demo-loopback SEND SEAM (the mechanism the device demo build wires):
  * with no accepting sender a broadcast pulse is refused and no OUT item
@@ -5151,6 +5586,21 @@ int main(void)
     RUN_TEST(S26c_AC1_keep_awake_true_while_power_menu_open);
     RUN_TEST(S26c_AC1_keep_awake_true_while_touch_cal_running);
     RUN_TEST(S26c_AC1_keep_awake_null_view_is_safe);
+
+    /* S26 slice d — ff_notify + message banner. */
+    RUN_TEST(S26_AC3_paired_message_pushes_banner);
+    RUN_TEST(S26_AC3_unpaired_message_pushes_no_banner);
+    RUN_TEST(S26_AC3_paired_rally_pushes_banner);
+    RUN_TEST(S26_AC3_unpaired_rally_pushes_no_banner);
+    RUN_TEST(S26_flare_and_pulse_do_not_push_banners);
+    RUN_TEST(S26_coalesce_within_2s_updates_head_in_place);
+    RUN_TEST(S26_AC1_banner_auto_expires_after_6s);
+    RUN_TEST(S26_AC2_banner_age_same_bucket_ticks_are_clean);
+    RUN_TEST(S26_AC2_banner_from_other_paired_conv_dirties_open_thread_key);
+    RUN_TEST(S26_AC2_banner_from_other_paired_conv_dirties_popup_overlay_exactly_once);
+    RUN_TEST(S26_banner_open_routes_marks_read_and_dismisses);
+    RUN_TEST(S26_banner_open_with_no_banner_is_noop);
+    RUN_TEST(S26_banner_open_is_inert_under_a_takeover);
 
     return UNITY_END();
 }

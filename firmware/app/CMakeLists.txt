@@ -224,6 +224,7 @@ add_library(ff-app-ui STATIC
     screens/scr_settings.c # S11b — the Settings modal face
     screens/scr_map.c # S09 — the Map face (Radar's alternate view)
     screens/scr_power_menu.c # S26 slice b — the PWR-button power menu modal
+    screens/scr_banner.c # S26 slice d — the ff_notify message banner overlay
 )
 target_include_directories(ff-app-ui PUBLIC theme screens)
 # ff-intent (S16c1): scr_nav/scr_signals/scr_compose emit navigation
