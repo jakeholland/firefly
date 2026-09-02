@@ -1481,20 +1481,53 @@ static void S24_thread_message_bubble_not_compressed(void)
 
 /* =================================================================== */
 /* PR #149 review round 2 (FAIL 1 — "the thread still reads smashed:      */
-/* only ~3 of 12 messages are visible at rest"): a measurable rows-       */
-/* visible AC. "Visible" = at least HALF the row's own height overlaps    */
-/* the list's viewport — chosen (not assumed) after measuring that FULL  */
-/* containment is mathematically unreachable for the 1:1 thread within   */
-/* its own stated boundary (chips pinned below, per the review's own     */
-/* lever list): four 1:1 rows cost >= 4*(BUBBLE_H+AGE_H) = 200px at ZERO  */
-/* gap, but the 1:1 band tops out at ~182px between the header and the   */
-/* chip strip (a hard floor this fix does not move) — no combination of  */
-/* GAP/padding within the design's own bubble padding (8px, ThreadGroup. */
-/* dc.html) closes that gap. Half-visible is legible (you can read the   */
-/* row's own top half) and, measured, is exactly what both fixtures need */
-/* — the SAME criterion also gives the CREW fixture its 5, so one        */
-/* definition serves both, not two different bars picked to pass.        */
+/* only ~3 of 12 messages are visible at rest") + round 3 (the deep CREW  */
+/* band buried the NEWEST message under the FAB slice, faded and         */
+/* partly hidden — a row count gained by burying it is not a win).       */
+/*                                                                        */
+/* Round 3 pulled the CREW band back to stop EXACTLY at FF_SIGNALS_FAB_   */
+/* DECO_Y (the FAB's own visible top edge) — `list` clips its children    */
+/* to its own bounds, so nothing in it can ever paint past that y         */
+/* regardless of x, the simplest way to guarantee no bubble/age is ever   */
+/* under the slice. A deeper band was rejected: PR #143's scroll-         */
+/* preservation restores an arbitrary saved scroll_y on a same-thread     */
+/* rebuild (not just "newest at bottom"), so a fully correct per-row FAB  */
+/* inset would have to protect EVERY row, not just the newest — any one   */
+/* could end up settled at the viewport's bottom edge — which collapses   */
+/* to the same width cap as never entering the FAB zone at all. Measured  */
+/* (not assumed) that 5 FULLY-contained rows is unreachable within that   */
+/* boundary even at zero gap; the honest AC for the CREW fixture is       */
+/* therefore >= 4 FULLY-contained rows (count_rows_full_visible — no      */
+/* partial-overlap credit, per the review). The 1:1 thread's own boundary */
+/* (the chip strip, unmoved, unaffected by the FAB fix) is untouched from */
+/* round 2: full containment is still mathematically unreachable there    */
+/* (4 rows cost >= 4*(BUBBLE_H+AGE_H) = 200px at zero gap against a hard  */
+/* ~182px ceiling neither the font floor nor the design's own 8px bubble  */
+/* padding can close), so it keeps the round-2 "at least half the row's   */
+/* own height on-glass" criterion (count_rows_half_visible).              */
 /* ------------------------------------------------------------------- */
+
+/* Counts message rows (plain lv_obj children of `list`, skipping the
+ * FLOATING scroll catcher) that are FULLY contained within the list's
+ * own viewport — no part clipped top or bottom. */
+static int count_rows_full_visible(lv_obj_t *list)
+{
+    lv_area_t la;
+    lv_obj_get_coords(list, &la);
+    uint32_t n = lv_obj_get_child_count(list);
+    int count = 0;
+    for (uint32_t i = 0; i < n; i++) {
+        lv_obj_t *child = lv_obj_get_child(list, i);
+        if (!lv_obj_check_type(child, &lv_obj_class)) continue;
+        if (lv_obj_has_flag(child, LV_OBJ_FLAG_FLOATING)) continue; /* the scroll catcher, not a message row */
+        lv_area_t ra;
+        lv_obj_get_coords(child, &ra);
+        if (ra.y1 >= la.y1 && ra.y2 <= la.y2) {
+            count++;
+        }
+    }
+    return count;
+}
 
 /* Counts message rows (plain lv_obj children of `list`, skipping the
  * FLOATING scroll catcher — same shape as find_scrollable's own
@@ -1524,7 +1557,7 @@ static int count_rows_half_visible(lv_obj_t *list)
     return count;
 }
 
-static void S24_crew_thread_shows_at_least_5_rows_at_rest(void)
+static void S24_crew_thread_shows_at_least_4_full_rows_at_rest(void)
 {
     ff_app_signals_t v;
     s24_make_crew_thread_long(&v);
@@ -1535,9 +1568,11 @@ static void S24_crew_thread_shows_at_least_5_rows_at_rest(void)
 
     lv_obj_t *list = find_scrollable(parent);
     TEST_ASSERT_NOT_NULL(list);
-    TEST_ASSERT_GREATER_OR_EQUAL_INT_MESSAGE(5, count_rows_half_visible(list),
-                                             "the 12-message CREW thread must show at least 5 message rows "
-                                             "(each >= half its own height on-glass) at rest, not scrolled");
+    TEST_ASSERT_GREATER_OR_EQUAL_INT_MESSAGE(4, count_rows_full_visible(list),
+                                             "the 12-message CREW thread must show at least 4 FULLY-contained "
+                                             "message rows at rest, not scrolled (5 is unreachable without the "
+                                             "band extending under the FAB slice, which round 3 of this review "
+                                             "explicitly rejected)");
 }
 
 static void S24_direct_thread_shows_at_least_4_rows_at_rest(void)
@@ -1559,6 +1594,94 @@ static void S24_direct_thread_shows_at_least_4_rows_at_rest(void)
      * silently removing the quick-reply strip to buy the 1:1 thread more
      * room. */
     TEST_ASSERT_NOT_NULL_MESSAGE(find_button_with_label(parent, "OMW"), "1:1 quick-reply chips must stay present");
+}
+
+/* =================================================================== */
+/* PR #149 review round 3 — "no part of any bubble/age is ever under the */
+/* FAB slice": a direct geometric regression guard, independent of      */
+/* which of the review's two acceptable shapes a future change picks.   */
+/* Circle matches scr_signals.c's own FF_SIGNALS_FAB_DECO_X/Y/D (278,    */
+/* 280, 240 — private to that file, so mirrored here as literals, same  */
+/* convention this file already uses for the FAB hit target's 112x112   */
+/* size via find_clickable_by_size). Checked against every message ROW  */
+/* (not each label individually) — rows bound their own bubble/age/     */
+/* sender-line children, so a row disjoint from the circle guarantees   */
+/* everything inside it is too. */
+/* ------------------------------------------------------------------- */
+
+#define FAB_DECO_D 240.0f /* FF_SIGNALS_FAB_DECO_D — private to scr_signals.c, mirrored here */
+#define FAB_DECO_R (FAB_DECO_D / 2.0f)
+
+/* true iff the closest point of rect `a` to the FAB deco circle (center
+ * `cx`,`cy`, radius FAB_DECO_R) is farther than the radius — i.e. the
+ * rect never paints any pixel the amber slice also claims. */
+static bool rect_disjoint_from_fab_deco(lv_area_t const *a, float cx, float cy)
+{
+    float const nx = (float)a->x1 > cx   ? (float)a->x1
+                      : (float)a->x2 < cx ? (float)a->x2
+                                          : cx;
+    float const ny = (float)a->y1 > cy   ? (float)a->y1
+                      : (float)a->y2 < cy ? (float)a->y2
+                                          : cy;
+    float const dx = nx - cx;
+    float const dy = ny - cy;
+    return (dx * dx + dy * dy) > (FAB_DECO_R * FAB_DECO_R);
+}
+
+/* The FAB deco circle's ABSOLUTE center in THIS test's own render space.
+ * Derived at runtime from the FAB hit target (112x112, corner-anchored —
+ * already how this file locates the FAB elsewhere, find_clickable_by_size)
+ * rather than hardcoding scr_signals.c's private FF_SIGNALS_FAB_DECO_X/Y
+ * literals: this test's bare `lv_obj_create(lv_screen_active())` parent
+ * (unlike the real shell's own stripped container) carries default-theme
+ * padding that shifts EVERY absolute coordinate by a constant offset —
+ * measured, not assumed, elsewhere in this file's own S24 probes — so a
+ * literal circle center would silently compare against the wrong origin.
+ * FF_SIGNALS_FAB_HIT_X/Y are both 300 (scr_signals.c); the deco circle's
+ * center sits at deco (278,280) + D/2 = (398,400) in that SAME space, a
+ * constant (+98,+100) offset from the hit rect's own top-left corner that
+ * survives whatever the test harness's own translation happens to be. */
+static void fab_deco_center(lv_obj_t *parent, float *out_cx, float *out_cy)
+{
+    lv_obj_t *fab = find_clickable_by_size(parent, 112, 112);
+    TEST_ASSERT_NOT_NULL_MESSAGE(fab, "FAB hit target (112x112) not found — can't locate the deco circle");
+    lv_area_t fa;
+    lv_obj_get_coords(fab, &fa);
+    *out_cx = (float)fa.x1 + 98.0f; /* FF_SIGNALS_FAB_DECO_X(278) - FF_SIGNALS_FAB_HIT_X(300) + D/2(120) */
+    *out_cy = (float)fa.y1 + 100.0f; /* FF_SIGNALS_FAB_DECO_Y(280) - FF_SIGNALS_FAB_HIT_Y(300) + D/2(120) */
+}
+
+static void S24_crew_thread_no_row_ever_under_the_fab_slice(void)
+{
+    ff_app_signals_t v;
+    s24_make_crew_thread_long(&v);
+    lv_obj_t *parent = lv_obj_create(lv_screen_active());
+    lv_obj_set_size(parent, 412, 412);
+    ff_scr_signals_build(parent, &v, false);
+    lv_obj_update_layout(parent);
+
+    lv_obj_t *list = find_scrollable(parent);
+    TEST_ASSERT_NOT_NULL(list);
+
+    float cx, cy;
+    fab_deco_center(parent, &cx, &cy);
+
+    uint32_t n = lv_obj_get_child_count(list);
+    int checked = 0;
+    for (uint32_t i = 0; i < n; i++) {
+        lv_obj_t *child = lv_obj_get_child(list, i);
+        if (!lv_obj_check_type(child, &lv_obj_class)) continue;
+        if (lv_obj_has_flag(child, LV_OBJ_FLAG_FLOATING)) continue; /* the scroll catcher, not a message row */
+        lv_area_t ra;
+        lv_obj_get_coords(child, &ra);
+        checked++;
+        char msg[160];
+        snprintf(msg, sizeof(msg),
+                 "message row %u rect=(%d,%d)-(%d,%d) must never overlap the FAB deco circle (center=%.0f,%.0f)",
+                 i, (int)ra.x1, (int)ra.y1, (int)ra.x2, (int)ra.y2, (double)cx, (double)cy);
+        TEST_ASSERT_TRUE_MESSAGE(rect_disjoint_from_fab_deco(&ra, cx, cy), msg);
+    }
+    TEST_ASSERT_GREATER_THAN_INT_MESSAGE(0, checked, "no message rows were even found to check");
 }
 
 /* =================================================================== */
@@ -2690,8 +2813,9 @@ int main(void)
     RUN_TEST(S24_crew_thread_overflow_scrolls_on_drag);
     RUN_TEST(S24_direct_thread_overflow_scrolls_on_drag);
     RUN_TEST(S24_thread_message_bubble_not_compressed);
-    RUN_TEST(S24_crew_thread_shows_at_least_5_rows_at_rest);
+    RUN_TEST(S24_crew_thread_shows_at_least_4_full_rows_at_rest);
     RUN_TEST(S24_direct_thread_shows_at_least_4_rows_at_rest);
+    RUN_TEST(S24_crew_thread_no_row_ever_under_the_fab_slice);
     RUN_TEST(S24_widest_fixture_message_does_not_truncate);
     RUN_TEST(S24_rally_where_list_scrolls_to_reach_all_rows);
     RUN_TEST(S24_thread_scroll_preserved_across_same_thread_rebuild);

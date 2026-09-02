@@ -155,8 +155,23 @@ _Static_assert(FF_SIGNALS_FAB_HIT_PX >= FF_THEME_MIN_HIT_PX, "FAB tap target mus
  * ------------------------------------------------------------------- */
 
 #define FF_SIGNALS_THREAD_LIST_TOP_Y   80
-#define FF_SIGNALS_THREAD_LIST_H_CREW  262 /* -> y 344; extends under the FAB corner slice (FF_SIGNALS_FAB_DECO_Y=280) — see the FAB-avoid note below */
+#define FF_SIGNALS_THREAD_LIST_H_CREW  200 /* -> y 280, EXACTLY FF_SIGNALS_FAB_DECO_Y — PR #149 review
+ * round 3: the band must never extend past the FAB's visible top edge.
+ * A deeper band (round 2's 262) put the NEWEST message — the one that
+ * must never be hidden — at risk under the slice on every rebuild that
+ * restores an arbitrary saved scroll_y (PR #143's scroll-preservation:
+ * a rebuild within the SAME thread restores whatever offset the user
+ * last settled on, not just "newest at bottom"), which means a fully
+ * correct per-row FAB inset would have to protect EVERY row (any one
+ * could end up settled at the viewport's bottom edge), collapsing to
+ * the same width cap as never entering the FAB zone at all — so
+ * stopping the band here is both the SIMPLEST fix and not actually
+ * narrower than a "fully correct" per-row inset would have been. `list`
+ * clips its children to its own bounds (LVGL default), so at this
+ * exact boundary there is no ambiguity: nothing in the list can ever
+ * paint past y=280 regardless of x. */
 #define FF_SIGNALS_THREAD_LIST_H_1TO1  182 /* -> y 262; the chip strip sits below (2px clearance, not the 8px hit floor — the list's own touch target is the exempt FLOATING catcher, Exclusion 4, so this gap is a visual choice, not a hit-adjacency requirement) */
+#define FF_SIGNALS_THREAD_FADE_H       16  /* PR #149 review round 3: short, so it never meaningfully dims the newest message (was the shared 40px default) */
 
 /* Quick-reply chips (1:1 only): OMW / IN 5 MIN / FLARE, one row, capped
  * on the right so the strip and the FAB's tap target keep the adjacency
@@ -276,7 +291,7 @@ _Static_assert(FF_SIGNALS_RALLY_FOOTER_Y - (FF_SIGNALS_RALLY_LIST_TOP_Y + FF_SIG
 #define FF_SIGNALS_MSG_RALLY_H  46  /* RALLY badge + place callout — design canvas ThreadGroup.dc.html's own box: 8px v-padding + 12px caption + 18px place line, no inner gap (46 total) */
 #define FF_SIGNALS_MSG_EVENT_H  22  /* pulse/flare one-liner */
 #define FF_SIGNALS_MSG_AGE_H    16  /* age line under a bubble (rows with no sender line) */
-#define FF_SIGNALS_MSG_GAP      2   /* PR #149 review round 2: tightened from 10 to fit more rows at rest */
+#define FF_SIGNALS_MSG_GAP      0   /* PR #149 review round 2/3: tightened from 10 to fit more rows at rest (all message kinds; CREW at rest needs every px to reach 4 full rows within the FAB-safe band) */
 #define FF_SIGNALS_MSG_MAX_W    294 /* bubble width cap; text past it ellipsizes. PR #149 review round 2:
  * widened from 236 for the 16px body font (the pre-PR 14px cap, proportionally
  * would be ~270, but the DEEPENED CREW list_h — needed for the 5-rows-visible
@@ -833,7 +848,7 @@ static void signals_build_conv_row(lv_obj_t *parent, ff_inbox_conv_t const *cv, 
  * pointer, so it must outlive the object tree — file-static.
  * ------------------------------------------------------------------- */
 
-static void signals_build_bottom_fade(lv_obj_t *parent, int32_t bot_y)
+static void signals_build_bottom_fade_h(lv_obj_t *parent, int32_t bot_y, int32_t h)
 {
     static lv_grad_dsc_t grad; /* zero-initialized once; filled on first use */
     grad.dir = LV_GRAD_DIR_VER;
@@ -847,10 +862,18 @@ static void signals_build_bottom_fade(lv_obj_t *parent, int32_t bot_y)
 
     lv_obj_t *fade = lv_obj_create(parent);
     signals_child_deco(fade);
-    lv_obj_set_size(fade, FF_THEME_PUCK_PX, 40);
-    lv_obj_set_pos(fade, 0, bot_y - 40);
+    lv_obj_set_size(fade, FF_THEME_PUCK_PX, h);
+    lv_obj_set_pos(fade, 0, bot_y - h);
     lv_obj_set_style_bg_opa(fade, LV_OPA_COVER, 0);
     lv_obj_set_style_bg_grad(fade, &grad, 0);
+}
+
+/* Inbox/picker/Rally's own fade height, unchanged from before this file's
+ * PR #149 round 3 — only the THREAD call site (signals_build_thread) needs
+ * a shorter fade now (see FF_SIGNALS_THREAD_FADE_H's own comment). */
+static void signals_build_bottom_fade(lv_obj_t *parent, int32_t bot_y)
+{
+    signals_build_bottom_fade_h(parent, bot_y, 40);
 }
 
 /* ---------------------------------------------------------------------
@@ -1657,8 +1680,12 @@ static void signals_build_thread(lv_obj_t *parent, ff_app_signals_t const *v, bo
     lv_obj_set_scrollbar_mode(list, LV_SCROLLBAR_MODE_OFF);
     /* Bottom padding: the scroll-to-newest below parks the LAST message
      * this far above the hard clip, so the newest signal reads at full
-     * strength instead of dying under the fade. */
-    lv_obj_set_style_pad_bottom(list, 0, 0); /* PR #149 review round 2: newest flush at the bottom */
+     * strength instead of dying under the fade. CREW only (PR #149 review
+     * round 3) — 1:1's list never approaches the FAB (it stops well above
+     * the chip strip) and round 2 already found 0 pad was the right call
+     * there (needed for its own rows-visible AC); only CREW's newest-row-
+     * under-the-fade defect needs this back. */
+    lv_obj_set_style_pad_bottom(list, crew_thread ? 0 : 0, 0);
     /* Observe the live scroll offset so the NEXT rebuild (see below) can
      * restore it instead of always snapping to newest. */
     lv_obj_add_event_cb(list, signals_thread_scroll_cb, LV_EVENT_SCROLL, NULL);
@@ -1784,7 +1811,14 @@ static void signals_build_thread(lv_obj_t *parent, ff_app_signals_t const *v, bo
     s_thread_scroll_msg_count = n;
     s_thread_scroll_valid = true;
 
-    signals_build_bottom_fade(parent, FF_SIGNALS_THREAD_LIST_TOP_Y + list_h);
+    /* PR #149 review round 3: a 40px fade (the inbox/Rally default) would
+     * dim most or all of the newest message, which must read at FULL
+     * strength ("the newest message is the one that must never be
+     * hidden") — FF_SIGNALS_THREAD_FADE_H is a much shorter cue, just
+     * enough to signal "content continues below" without touching the
+     * newest row's own text (its natural height clears the fade given the
+     * list's own bottom_pad above). */
+    signals_build_bottom_fade_h(parent, FF_SIGNALS_THREAD_LIST_TOP_Y + list_h, FF_SIGNALS_THREAD_FADE_H);
     if (!crew_thread) {
         signals_build_chips(parent);
     }
