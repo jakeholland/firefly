@@ -305,7 +305,7 @@ static inline uint32_t ff_theme_crew_color(uint8_t color_idx, bool colorblind)
  * board; do not assume the SKU is uniform. */
 #define FF_THEME_GLASS_CX 208
 #define FF_THEME_GLASS_CY 206
-#define FF_THEME_GLASS_R  203
+#define FF_THEME_GLASS_R  200 /* 203 measured; pulled in 3 px so a ring on it clears the bezel lip on glass (maintainer, 2026-09-02) */
 
 /* Arrow/ring/dot placement geometry (arrow length & taper, ring radius,
  * dot size) moved to app/screens/radar_layout.h as of PR #16's round-4

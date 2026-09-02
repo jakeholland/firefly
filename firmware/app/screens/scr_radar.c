@@ -175,7 +175,7 @@ static void radar_build_rim_tint(lv_obj_t *parent, uint32_t color_hex, lv_opa_t 
     lv_obj_set_size(rim, 2 * FF_THEME_GLASS_R - 4, 2 * FF_THEME_GLASS_R - 4);
     lv_obj_set_style_radius(rim, LV_RADIUS_CIRCLE, 0);
     lv_obj_set_style_bg_opa(rim, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_border_width(rim, 3, 0);
+    lv_obj_set_style_border_width(rim, 5, 0); /* was 3: read too thin on glass once the rim sat inside the bezel (maintainer, 2026-09-02) */
     lv_obj_set_style_border_color(rim, lv_color_hex(color_hex), 0);
     lv_obj_set_style_border_opa(rim, opa, 0);
     lv_obj_clear_flag(rim, LV_OBJ_FLAG_SCROLLABLE);
