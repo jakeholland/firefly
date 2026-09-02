@@ -1524,6 +1524,38 @@ static void signals_build_chips(lv_obj_t *parent)
     signals_build_chip(parent, x, w_flare, "FLARE", true, signals_chip_flare_cb, 0u);
 }
 
+/* ---------------------------------------------------------------------
+ * Thread scroll-position preservation across the S24 render-key rebuild
+ * (ff_shell.c's render-key doc comment: an age-bucket crossing is the
+ * spec's own legitimate rebuild trigger for a live thread — it does
+ * lv_obj_clean + a fresh signals_build_thread). Without this, a user
+ * scrolled up mid-read was silently snapped back to newest on the very
+ * next age tick. Mirrors scr_settings.c's s_list/s_scroll_y precedent
+ * (#bug4) — one LV_EVENT_SCROLL callback writes back a file-static
+ * offset, restored on the next build — but keyed on WHICH thread and
+ * HOW MANY messages it held, not just "the list exists": unlike
+ * Settings, a Signals rebuild can also mean a different thread opened,
+ * or a new message arrived in this one, and both of those must land on
+ * newest, never a stale offset. `node_id` alone is enough of a key
+ * because 0 is CREW's own sentinel (never a real member id) throughout
+ * this file (`crew_thread = (v->thread_node == 0u)` above), so there is
+ * no separate CREW/member ambiguity to carry a second field for.
+ * ------------------------------------------------------------------- */
+static uint32_t s_thread_scroll_node_id;
+static uint8_t  s_thread_scroll_msg_count;
+static int32_t  s_thread_scroll_y;
+static bool     s_thread_scroll_valid;
+
+/* LV_EVENT_SCROLL — captured live WHILE the user scrolls: the render loop
+ * that triggers a rebuild does lv_obj_clean() first, destroying `list`
+ * and any chance to read its scroll offset AFTER the fact, so this is
+ * the only point the offset can ever be observed. */
+static void signals_thread_scroll_cb(lv_event_t *e)
+{
+    lv_obj_t *list = lv_event_get_target(e);
+    s_thread_scroll_y = lv_obj_get_scroll_y(list);
+}
+
 static void signals_build_thread(lv_obj_t *parent, ff_app_signals_t const *v, bool colorblind)
 {
     bool const crew_thread = (v->thread_node == 0u);
@@ -1548,6 +1580,9 @@ static void signals_build_thread(lv_obj_t *parent, ff_app_signals_t const *v, bo
      * this far above the hard clip, so the newest signal reads at full
      * strength instead of dying under the fade. */
     lv_obj_set_style_pad_bottom(list, 32, 0);
+    /* Observe the live scroll offset so the NEXT rebuild (see below) can
+     * restore it instead of always snapping to newest. */
+    lv_obj_add_event_cb(list, signals_thread_scroll_cb, LV_EVENT_SCROLL, NULL);
 
     uint8_t const n = ff_inbox_thread_count(&v->thread);
     int32_t y = 0;
@@ -1637,10 +1672,36 @@ static void signals_build_thread(lv_obj_t *parent, ff_app_signals_t const *v, bo
         lv_obj_set_pos(hit, list_margin, 0);
         lv_obj_set_size(hit, FF_THEME_PUCK_PX - 2 * list_margin, list_h);
 
-        /* Newest at the bottom: scroll to the end (LVGL clamps to the
-         * scrollable range). */
-        lv_obj_scroll_to_y(list, overflow, LV_ANIM_OFF);
+        /* Scroll-position preservation (PR #143 review): a render-key
+         * rebuild of the SAME thread, with the SAME message count, is
+         * the user still reading — restore exactly where they were
+         * (lv_obj_scroll_to_y clamps to the freshly-laid-out range, so a
+         * stale offset from a since-shrunk thread can never overshoot).
+         * Anything else — no prior state, a different thread_node (a
+         * fresh open, or "switch to a different thread" per the S24
+         * spec), or a changed message count (a new message arrived, or
+         * the thread got marked/joined differently) — lands on newest,
+         * exactly as before this fix. `list_margin`/list_h/the FLOATING
+         * hit target above are unaffected either way: the touch target
+         * stays pinned to the viewport regardless of which scroll
+         * offset ends up restored. */
+        bool const same_thread_state = s_thread_scroll_valid && (s_thread_scroll_node_id == v->thread_node) &&
+                                       (s_thread_scroll_msg_count == n);
+        if (same_thread_state) {
+            lv_obj_scroll_to_y(list, s_thread_scroll_y, LV_ANIM_OFF);
+        } else {
+            lv_obj_scroll_to_y(list, overflow, LV_ANIM_OFF); /* newest at the bottom */
+        }
     }
+
+    /* Remember this build's identity for the NEXT rebuild's same-thread-
+     * state check above (recorded unconditionally, including a non-
+     * overflowing thread, so a later message that pushes it over the
+     * overflow threshold is correctly seen as "count changed" rather
+     * than "no prior state"). */
+    s_thread_scroll_node_id = v->thread_node;
+    s_thread_scroll_msg_count = n;
+    s_thread_scroll_valid = true;
 
     signals_build_bottom_fade(parent, FF_SIGNALS_THREAD_LIST_TOP_Y + list_h);
     if (!crew_thread) {
