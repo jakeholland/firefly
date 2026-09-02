@@ -30,6 +30,35 @@
  * accepted set move. Every "Compose is the sole modal face" statement
  * elsewhere in this file predates this slice.
  *
+ * ## S26 slice e [api] — HOME and the launcher; the carousel retired
+ * `docs/specs/S26-device-lifecycle.md`, "Nav model (slice e)": BOOT
+ * (GPIO0) is the home button. `ff_route_home()` is the WHOLE decision —
+ * from Radar it opens `FF_APP_FACE_LAUNCHER` (a THIRD value
+ * `ff_route_push_modal` now accepts, alongside Compose and Power menu);
+ * from the launcher it returns to Radar; from any other base face
+ * (Now/Signals/Map/Settings) it returns to Radar; a live modal
+ * (Compose, Power menu) suppresses it exactly as it suppresses swipe.
+ * `ff_route_launcher_select()` is the launcher's own tap: while the
+ * launcher modal is up, pick one of the four app circles and land there
+ * directly, skipping Radar. Both are `[api]` additions — `base`'s and
+ * `modal`'s value ranges are unchanged (the five-face swipe axis stays
+ * exactly what it was), but `ff_route_push_modal`'s accepted set grows
+ * to three.
+ *
+ * This slice also RETIRES the carousel as a live navigation mechanism:
+ * `scr_nav.c` no longer emits `FF_INTENT_SWIPE` (its gesture handler is
+ * gone, along with the page-dot row it used to drive), so no user
+ * action can move `base` any more — `ff_route_swipe()` below is
+ * UNCHANGED and still fully tested (its huge existing test suite stays
+ * green — a deliberate scope call, not an oversight: see this header's
+ * own top-of-function note on it), but it is now a dormant pure
+ * primitive with no live caller anywhere in the app, kept rather than
+ * deleted so its extensive coverage need not be rewritten for a
+ * navigation change that lives entirely in the SHELL's dispatch
+ * decision (`ff_shell.c`'s `FF_INTENT_SWIPE` case is now a no-op) and
+ * the SCREEN's gesture wiring (removed), not in this module's own
+ * behaviour. Interpretation call, noted per AGENTS.md — see the PR body.
+ *
  * ## Why app/, not core/
  * The obvious argument ("routing must be testable without LVGL") does
  * NOT select core/: `app/screens/` already holds four pure, LVGL-free,
@@ -97,10 +126,12 @@ typedef struct {
      *  Never NONE, COMPOSE or FLARE after init. */
     ff_app_face_t base;
     /** The modal covering `base`: `FF_APP_FACE_COMPOSE` (reached from
-     *  Signals' "+") or, as of S26 slice b [api], `FF_APP_FACE_POWER_MENU`
-     *  (the PWR-button long-press menu) — or `FF_APP_FACE_NONE` for "no
-     *  modal". Map and Settings are NOT modals any more — they are swipe
-     *  tiles on the axis above (the horizontal-carousel rework). */
+     *  Signals' "+"), `FF_APP_FACE_POWER_MENU` (S26 slice b, the
+     *  PWR-button long-press menu), or, as of S26 slice e [api],
+     *  `FF_APP_FACE_LAUNCHER` (the BOOT-button home screen, reached only
+     *  from `base == RADAR`) — or `FF_APP_FACE_NONE` for "no modal".
+     *  Map and Settings are NOT modals any more — they are swipe tiles
+     *  on the axis above (the horizontal-carousel rework). */
     ff_app_face_t modal;
 } ff_route_t;
 
@@ -178,12 +209,12 @@ bool ff_route_goto(ff_route_t *r, ff_app_face_t f);
  * Raises `f` as the modal over the current `base`. Returns true iff the
  * route changed.
  *
- * `f` must be `FF_APP_FACE_COMPOSE` or, as of S26 slice b [api],
- * `FF_APP_FACE_POWER_MENU` — the two modal faces since the
- * horizontal-carousel rework moved Map and Settings onto the swipe axis;
- * anything else (a swipe face, NONE, FLARE) is rejected. FLARE in
- * particular is never a modal: the takeover is not routed, it overrides
- * — see `ff_route_visible()`.
+ * `f` must be `FF_APP_FACE_COMPOSE`, `FF_APP_FACE_POWER_MENU` (S26 slice
+ * b), or, as of S26 slice e [api], `FF_APP_FACE_LAUNCHER` — the three
+ * modal faces since the horizontal-carousel rework moved Map and
+ * Settings onto the swipe axis; anything else (a swipe face, NONE,
+ * FLARE) is rejected. FLARE in particular is never a modal: the
+ * takeover is not routed, it overrides — see `ff_route_visible()`.
  *
  * **Pushing while a modal is already up is rejected**, rather than
  * replacing it. There is one modal slot, not a stack, so "replace" would
@@ -194,6 +225,17 @@ bool ff_route_goto(ff_route_t *r, ff_app_face_t f);
  * (the draft survives, same as any other modal-suppression), and
  * `ff_shell.c`'s FF_INTENT_POWER_MENU_OPEN handler relies on exactly this
  * rejection rather than re-deriving "is a modal already up" itself.
+ *
+ * **The ONE exception (S26 slice e, PR #142 review FAIL 2)**: pushing
+ * `FF_APP_FACE_POWER_MENU` while `FF_APP_FACE_LAUNCHER` is already up
+ * REPLACES it (pops the launcher, pushes the power menu) instead of
+ * being rejected — a PWR long-press must reach the user even from the
+ * launcher, which is a transient hub, not a place that should be able
+ * to swallow it. `base` is untouched (the launcher never changes it),
+ * so popping the power menu afterward reveals `base` directly — never
+ * the launcher, which is simply gone. Every other (`f`, current modal)
+ * pair — POWER_MENU over COMPOSE in particular — still falls through
+ * to the one-slot rejection above unchanged.
  *
  * **Pushing over an off-axis `base` is also rejected**, the same rule
  * `ff_route_swipe()` applies — because a modal is the one operation
@@ -254,6 +296,56 @@ bool ff_route_pop_modal(ff_route_t *r);
  * answer, and one no dispatcher will match a face against.
  */
 ff_app_face_t ff_route_visible(ff_route_t const *r, bool takeover);
+
+/**
+ * ff_route_home — S26 slice e [api]: the WHOLE BOOT-button decision
+ * (docs/specs/S26-device-lifecycle.md, "Nav model (slice e)"). Returns
+ * true iff the route changed.
+ *
+ *  - `modal == FF_APP_FACE_LAUNCHER` -> pops it, back to `base` (which
+ *    is always RADAR here — the launcher is only ever reached FROM
+ *    Radar, see below).
+ *  - any OTHER modal is up (Compose, Power menu) -> rejected (no-op),
+ *    the same suppression `ff_route_swipe`/`ff_route_goto` apply — a
+ *    half-typed draft or an open power menu must not be yanked away by
+ *    a home press any more than by a swipe.
+ *  - `base == FF_APP_FACE_RADAR` (no modal) -> pushes the launcher
+ *    modal (`ff_route_push_modal(FF_APP_FACE_LAUNCHER)`, which is what
+ *    enforces the base-must-be-on-the-swipe-axis guard here too).
+ *  - any other `base` (NOW/SIGNALS/MAP/SETTINGS, no modal) -> jumps
+ *    straight back to Radar (`ff_route_goto(FF_APP_FACE_RADAR)`).
+ *
+ * `r` NULL, or an uninitialised/off-axis route with no modal up, is a
+ * no-op (the underlying `ff_route_goto`/`ff_route_push_modal` calls
+ * both refuse an off-axis base — see their own doc comments).
+ */
+bool ff_route_home(ff_route_t *r);
+
+/**
+ * ff_route_launcher_select — S26 slice e [api]: a tap on one of the
+ * launcher's app circles. Returns true iff the route changed.
+ *
+ * Only meaningful while the launcher is the visible modal
+ * (`r->modal == FF_APP_FACE_LAUNCHER`) — rejected otherwise, so a stray
+ * or late-arriving tap after the launcher has already closed cannot
+ * resurrect it or jump the base out from under whatever IS showing.
+ *
+ * `f` must be one of the four launcher circles — `FF_APP_FACE_NOW`,
+ * `_SIGNALS`, `_MAP` or `_SETTINGS` — never `FF_APP_FACE_RADAR` (Radar
+ * is not a circle; it is home, and BOOT already gets you there) and
+ * never a non-swipe-axis value (Compose/NONE/FLARE/Power menu/
+ * Launcher itself). A rejected `f` leaves `r` untouched, including the
+ * launcher modal itself — a bad tap does not silently close the
+ * launcher.
+ *
+ * On success this pops the launcher modal AND sets `base = f` in one
+ * call — deliberately not built out of a separate pop-then-goto pair,
+ * because `base` is already RADAR while the launcher is up (the only
+ * way in is from Radar) and `ff_route_goto` would report "no change"
+ * were it asked to jump base to RADAR-that-is-already-RADAR first; the
+ * direct assignment is simpler and carries no such edge case.
+ */
+bool ff_route_launcher_select(ff_route_t *r, ff_app_face_t f);
 
 #ifdef __cplusplus
 }

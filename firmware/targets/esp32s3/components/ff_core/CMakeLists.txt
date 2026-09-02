@@ -29,6 +29,7 @@ idf_component_register(
         "${FF_CORE_DIR}/src/ff_power_fsm.c" # S26 slice b — PWR-button press FSM + reboot BOOT-release guard
         "${FF_CORE_DIR}/src/ff_idle.c"      # S26 slice c — inactivity -> dim -> screen off
         "${FF_CORE_DIR}/src/ff_notify.c"   # S26 slice d — notification queue (message banner)
+        "${FF_CORE_DIR}/src/ff_button.c"   # S26 slice e — generic debounced push-button (BOOT-as-home)
     INCLUDE_DIRS "${FF_CORE_DIR}/include"
     REQUIRES ff_platform
 )

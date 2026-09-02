@@ -1155,6 +1155,12 @@ static const fx_enum_entry_t fx_face_table[] = {
      * (scr_power_menu.h's top comment), so `"face": "power_menu"` is the
      * entire fixture. */
     {"power_menu", FF_APP_FACE_POWER_MENU},
+    /* S26 slice e — the BOOT-button launcher. Unlike power_menu it DOES
+     * read a section (the existing "signals" one — its Signals circle's
+     * unread badge is `ff_scr_signals_unread_count(&out->signals)`), so
+     * a launcher fixture that wants the badge just supplies "signals"
+     * like any signals-face fixture does. */
+    {"launcher", FF_APP_FACE_LAUNCHER},
 };
 
 ff_fixture_result_t ff_fixture_load_json(char const *json, size_t len, ff_app_state_t *out)

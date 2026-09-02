@@ -209,6 +209,28 @@ extern "C" {
 #endif
 
 /**
+ * FF_LAUNCHER_TIMEOUT_MS — S26 slice e, PR #142 review FAIL 1
+ * (docs/specs/S26-device-lifecycle.md: "Radar is the watchface... what
+ * the screen wakes to"). The launcher is a TRANSIENT hub, not a resting
+ * place: if nothing happens inside it for this long, the shell pops it
+ * back to Radar on its own (`ff_shell_tick`), the same "Cancel or a
+ * timeout -> dismiss" shape the power menu already uses
+ * (`FF_POWER_MENU_TIMEOUT_MS`, ff_shell.c). Reset by any intent
+ * dispatched while the launcher is open (`ff_shell_intent`).
+ *
+ * Deliberately well under `FF_IDLE_T_DIM_MS` (core/include/ff_idle.h,
+ * 15000 ms): the launcher is ALWAYS gone before the screen ever dims,
+ * so an OFF/wake cycle can never show the launcher — it lands on Radar
+ * (or whichever app was already open; only the launcher is the
+ * transient hub apps themselves are not). Exposed here (not kept
+ * ff_shell.c-private like FF_POWER_MENU_TIMEOUT_MS) so
+ * app/tests/test_intent.c can pin the ordering against
+ * FF_IDLE_T_DIM_MS directly, by name, rather than by a duplicated
+ * literal.
+ */
+#define FF_LAUNCHER_TIMEOUT_MS ((uint32_t)10000u)
+
+/**
  * Link state — first-class, per S16's "Behavior" section. A stale view
  * during reconnect must not present itself as live.
  *
@@ -689,9 +711,14 @@ bool ff_shell_pair(ff_shell_t *sh, uint32_t node_id, bool paired);
  * user — which is the frame their finger was aimed at.
  *
  * Handled in this slice:
- *  - SWIPE           -> `ff_route_swipe` (bounded, modal-suppressed —
- *                       the route's own rules). Rejected while a
- *                       takeover is visible.
+ *  - SWIPE           -> S26 slice e RETIRED this: a documented no-op now
+ *                       (the carousel is gone; no screen emits SWIPE any
+ *                       more — BOOT/the launcher own navigation, see
+ *                       HOME/LAUNCHER_SELECT below, added that slice).
+ *                       `ff_route_swipe` itself is unchanged and still
+ *                       fully tested — only this dispatch site's use of
+ *                       it was removed (ff_route.h's own doc comment on
+ *                       that call).
  *  - BACK            -> `ff_route_pop_modal`. Rejected while a takeover
  *                       is visible (AC3b: both halves, routing AND the
  *                       draft, since the draft is shell-owned T9 state
@@ -746,6 +773,15 @@ bool ff_shell_pair(ff_shell_t *sh, uint32_t node_id, bool paired);
  *                       value is rejected outright, not clamped. Rejected
  *                       while a takeover is visible, same routing rule as
  *                       every other core-mutating intent (AC8).
+ *  - HOME (S26 slice e) -> `ff_route_home` — the WHOLE BOOT-button
+ *                       decision (open/close the launcher from Radar,
+ *                       jump any other base face straight back to
+ *                       Radar). Rejected while a takeover is visible.
+ *  - LAUNCHER_SELECT (S26 slice e) -> maps `u.launcher_idx` (0=Now,
+ *                       1=Signals, 2=Map, 3=Settings) to a real face and
+ *                       calls `ff_route_launcher_select` — a no-op
+ *                       unless the launcher is actually open. Rejected
+ *                       while a takeover is visible.
  *
  * Every other kind is a documented no-op until its owning slice (c2:
  * remaining core-mutating intents) — see ff_shell.c.

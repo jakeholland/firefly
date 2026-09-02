@@ -4064,11 +4064,13 @@ static void S24_AC3_fab_pick_and_back_navigate_subviews(void)
 
     /* Navigate to the Signals face first — these controls only exist
      * there, and BACK's sub-view pop is (correctly) gated on the
-     * Signals base face. */
-    ff_intent_t to_signals = {.kind = FF_INTENT_SWIPE, .u = {0}};
-    to_signals.u.swipe_dir = 1;
-    ff_shell_intent(&H.shell, &to_signals); /* RADAR -> NOW */
-    ff_shell_intent(&H.shell, &to_signals); /* NOW -> SIGNALS */
+     * Signals base face. S26 slice e: via the BOOT-button launcher
+     * (HOME opens it from Radar, LAUNCHER_SELECT idx 1 = Signals). */
+    ff_intent_t to_home = {.kind = FF_INTENT_HOME, .u = {0}};
+    ff_shell_intent(&H.shell, &to_home); /* RADAR -> LAUNCHER */
+    ff_intent_t to_signals = {.kind = FF_INTENT_LAUNCHER_SELECT, .u = {0}};
+    to_signals.u.launcher_idx = 1u;
+    ff_shell_intent(&H.shell, &to_signals); /* LAUNCHER -> SIGNALS */
 
     ff_intent_t fab = {.kind = FF_INTENT_INBOX_NEW, .u = {0}};
     ff_intent_t back = {.kind = FF_INTENT_BACK, .u = {0}};
@@ -4130,10 +4132,12 @@ static void S24_AC3_leaving_signals_face_resets_subview_to_inbox(void)
     inject_my_info(MY_ID);
     TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, true));
 
-    ff_intent_t swipe = {.kind = FF_INTENT_SWIPE, .u = {0}};
-    swipe.u.swipe_dir = 1;
-    ff_shell_intent(&H.shell, &swipe); /* RADAR -> NOW */
-    ff_shell_intent(&H.shell, &swipe); /* NOW -> SIGNALS */
+    /* S26 slice e: via the BOOT-button launcher. */
+    ff_intent_t home = {.kind = FF_INTENT_HOME, .u = {0}};
+    ff_intent_t to_signals = {.kind = FF_INTENT_LAUNCHER_SELECT, .u = {0}};
+    to_signals.u.launcher_idx = 1u;
+    ff_shell_intent(&H.shell, &home); /* RADAR -> LAUNCHER */
+    ff_shell_intent(&H.shell, &to_signals); /* LAUNCHER -> SIGNALS */
     (void)ff_shell_tick(&H.shell, H.clk.t);
     TEST_ASSERT_EQUAL_INT(FF_APP_FACE_SIGNALS, ff_shell_view(&H.shell)->active_face);
 
@@ -4143,12 +4147,11 @@ static void S24_AC3_leaving_signals_face_resets_subview_to_inbox(void)
     (void)ff_shell_tick(&H.shell, H.clk.t);
     TEST_ASSERT_EQUAL_INT(FF_SIG_SUB_THREAD, ff_shell_view(&H.shell)->signals.subview);
 
-    ff_intent_t away = {.kind = FF_INTENT_SWIPE, .u = {0}};
-    away.u.swipe_dir = -1;
-    ff_shell_intent(&H.shell, &away); /* SIGNALS -> NOW */
+    ff_shell_intent(&H.shell, &home); /* SIGNALS -> RADAR (HOME: "from any app -> Radar") */
     (void)ff_shell_tick(&H.shell, H.clk.t);
 
-    ff_shell_intent(&H.shell, &swipe); /* back to SIGNALS */
+    ff_shell_intent(&H.shell, &home); /* RADAR -> LAUNCHER */
+    ff_shell_intent(&H.shell, &to_signals); /* back to SIGNALS */
     (void)ff_shell_tick(&H.shell, H.clk.t);
     TEST_ASSERT_EQUAL_INT(FF_APP_FACE_SIGNALS, ff_shell_view(&H.shell)->active_face);
     TEST_ASSERT_EQUAL_INT(FF_SIG_SUB_INBOX, ff_shell_view(&H.shell)->signals.subview);
@@ -4330,14 +4333,19 @@ static void S24_AC8_presence_age_keys_rendered_bucket_only(void)
 /* S24 slice c — thread screens: projection, quick chips, churn key     */
 /* =================================================================== */
 
-/* Swipe the route RADAR -> NOW -> SIGNALS (the thread chip paths are
- * gated on the Signals base face, like every other base-face control). */
+/* Navigate the route from Radar to Signals (the thread chip paths are
+ * gated on the Signals base face, like every other base-face control).
+ * S26 slice e: via the BOOT-button launcher (HOME opens it from Radar,
+ * LAUNCHER_SELECT idx 1 = Signals — ff_intent.h's fixed circle order) —
+ * this replaces the retired swipe-based route this helper used to take;
+ * every call site assumes the route starts on Radar, same as before. */
 static void s24c_swipe_to_signals(void)
 {
-    ff_intent_t swipe = {.kind = FF_INTENT_SWIPE, .u = {0}};
-    swipe.u.swipe_dir = 1;
-    ff_shell_intent(&H.shell, &swipe); /* RADAR -> NOW */
-    ff_shell_intent(&H.shell, &swipe); /* NOW -> SIGNALS */
+    ff_intent_t home = {.kind = FF_INTENT_HOME, .u = {0}};
+    ff_shell_intent(&H.shell, &home); /* RADAR -> LAUNCHER */
+    ff_intent_t select = {.kind = FF_INTENT_LAUNCHER_SELECT, .u = {0}};
+    select.u.launcher_idx = 1u; /* Signals */
+    ff_shell_intent(&H.shell, &select); /* LAUNCHER -> SIGNALS */
 }
 
 /* AC4 — the thread PROJECTION: opening a thread builds `view.signals.
@@ -5062,14 +5070,16 @@ static char const PACK_JSON_RALLY[] =
     "{\"id\":\"bg\",\"name\":\"RallyPointAtTheBigOpenField\",\"lat\":39.002,\"lon\":-82.0}"
     "]}}";
 
-/* Swipe RADAR -> NOW -> SIGNALS so the Signals sub-views are the visible
- * face (the popup/rally are then really rendered, and mark-read runs). */
+/* Navigate to Signals (via the BOOT-button launcher, S26 slice e) so the
+ * Signals sub-views are the visible face (the popup/rally are then
+ * really rendered, and mark-read runs). */
 static void s24d_to_signals(void)
 {
-    ff_intent_t sw = {.kind = FF_INTENT_SWIPE, .u = {0}};
-    sw.u.swipe_dir = 1;
-    ff_shell_intent(&H.shell, &sw);
-    ff_shell_intent(&H.shell, &sw);
+    ff_intent_t home = {.kind = FF_INTENT_HOME, .u = {0}};
+    ff_shell_intent(&H.shell, &home); /* RADAR -> LAUNCHER */
+    ff_intent_t select = {.kind = FF_INTENT_LAUNCHER_SELECT, .u = {0}};
+    select.u.launcher_idx = 1u; /* Signals */
+    ff_shell_intent(&H.shell, &select); /* LAUNCHER -> SIGNALS */
 }
 
 /* Open a thread on `conv_node` (0 = crew) then its FAB -> the action

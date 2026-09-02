@@ -1,0 +1,14 @@
+{
+  "fixture": "launcher_unread",
+  "face": "launcher",
+  "signals": {
+    "subview": "inbox",
+    "convs": [
+      {"conv": "member", "node_id": 111, "name": "DANA", "initial": "D", "color_idx": 0,
+       "unread": 3, "item_count": 3,
+       "preview_kind": "text", "preview_dir": "direct", "preview_text": "at the gate",
+       "preview_age_ms": 60000,
+       "presence": "seen", "presence_age_ms": 60000}
+    ]
+  }
+}

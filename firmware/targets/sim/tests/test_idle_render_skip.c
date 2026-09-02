@@ -16,19 +16,19 @@
  * rebuilds during an OFF window" is trivially satisfied by a shell that
  * simply has nothing to rebuild (no traffic, no intents) — that would
  * pass even with the OFF gate deleted entirely. So every tick in the
- * OFF window here is made GENUINELY dirty first (an `FF_INTENT_SWIPE`
- * alternating RADAR<->NOW, guaranteed to change `active_face` — the
- * same guaranteed-dirty technique `ctl_swipe_actually_changes_the_face`
- * proves), and the test opens with a POSITIVE CONTROL proving that same
- * dirty-producing sequence DOES rebuild while ACTIVE — so the OFF
- * window's zero count is a property of the OFF gate, not of nothing
- * happening. The dirty producer goes through `ff_shell_intent` directly
- * (not a real pointer gesture / the ctl `swipe` command): a real
- * gesture is itself a touch and would wake the idle FSM via
- * `ff_idle_input` (ctl_loop.c wires every tap/swipe/hold to it, mirroring
- * app_main.c's touch feed) — exactly the thing under test must NOT do
- * while proving the OFF window holds. The final wake step below uses a
- * REAL ctl `tap`, deliberately, to prove that path.
+ * OFF window here is made GENUINELY dirty first (an `FF_INTENT_HOME`
+ * alternating RADAR<->LAUNCHER, guaranteed to change `active_face` —
+ * S26 slice e retired the swipe carousel this used to drive, so HOME is
+ * this file's replacement dirty producer), and the test opens with a
+ * POSITIVE CONTROL proving that same dirty-producing sequence DOES
+ * rebuild while ACTIVE — so the OFF window's zero count is a property
+ * of the OFF gate, not of nothing happening. The dirty producer goes
+ * through `ff_shell_intent` directly (not a real pointer gesture / the
+ * ctl `swipe` command): a real gesture is itself a touch and would wake
+ * the idle FSM via `ff_idle_input` (ctl_loop.c wires every tap/swipe/hold
+ * to it, mirroring app_main.c's touch feed) — exactly the thing under
+ * test must NOT do while proving the OFF window holds. The final wake
+ * step below uses a REAL ctl `tap`, deliberately, to prove that path.
  */
 #include <string.h>
 
@@ -46,18 +46,16 @@
 void setUp(void) {}
 void tearDown(void) {}
 
-/* Alternates FF_INTENT_SWIPE RADAR<->NOW directly through
+/* Alternates FF_INTENT_HOME RADAR<->LAUNCHER directly through
  * ff_shell_intent, bypassing the pointer-gesture path (see this file's
- * top comment for why). Starting from RADAR, the first call must swipe
- * toward SIGNALS (+1, ff_intent.h's documented direction convention) or
- * it would be clamped at the RADAR boundary and produce no change. */
-static int8_t s_swipe_dir = 1;
-
-static void drive_one_dirty_swipe(ff_shell_t *shell)
+ * top comment for why). ff_route_home toggles deterministically every
+ * call (Radar, no modal -> opens the launcher; launcher open -> closes
+ * it) — unlike the retired swipe producer this replaces, no direction
+ * state is needed. */
+static void drive_one_dirty_home(ff_shell_t *shell)
 {
-    ff_intent_t sw = {.kind = FF_INTENT_SWIPE, .u = {.swipe_dir = s_swipe_dir}};
-    ff_shell_intent(shell, &sw);
-    s_swipe_dir = (int8_t)(-s_swipe_dir);
+    ff_intent_t home = {.kind = FF_INTENT_HOME, .u = {0}};
+    ff_shell_intent(shell, &home);
 }
 
 static void S26c_AC3_off_skips_rebuild_and_defers_to_wake(void)
@@ -85,13 +83,13 @@ static void S26c_AC3_off_skips_rebuild_and_defers_to_wake(void)
      * while ACTIVE. Small clock steps, well under FF_IDLE_T_DIM_MS
      * cumulative, so idle stays ACTIVE throughout. ---- */
     for (int i = 0; i < 4; i++) {
-        drive_one_dirty_swipe(&shell);
+        drive_one_dirty_home(&shell);
         ctx.mock_clock_ms += 500u;
         ff_ctl_loop_pump(&ctx);
     }
     TEST_ASSERT_EQUAL(FF_IDLE_STATE_ACTIVE, ff_idle_state(&ctx.idle));
     TEST_ASSERT_GREATER_THAN_UINT32_MESSAGE(
-        0u, ctx.rebuild_count, "positive control failed: alternating FF_INTENT_SWIPE never rebuilt while ACTIVE");
+        0u, ctx.rebuild_count, "positive control failed: alternating FF_INTENT_HOME never rebuilt while ACTIVE");
 
     /* ---- Cross into OFF. ff_idle_input is never called anywhere in
      * this test (the dirty producer above deliberately bypasses the
@@ -101,7 +99,7 @@ static void S26c_AC3_off_skips_rebuild_and_defers_to_wake(void)
      * threshold arithmetic; this harness only needs ONE confirmed
      * crossing). ---- */
     ctx.mock_clock_ms = FF_IDLE_T_OFF_MS + 5000u;
-    drive_one_dirty_swipe(&shell);
+    drive_one_dirty_home(&shell);
     ff_ctl_loop_pump(&ctx);
     TEST_ASSERT_EQUAL(FF_IDLE_STATE_OFF, ff_idle_state(&ctx.idle));
 
@@ -111,7 +109,7 @@ static void S26c_AC3_off_skips_rebuild_and_defers_to_wake(void)
      * happened anyway" — see this file's top comment) across many
      * pumps; the rebuild count must not move. ---- */
     for (int i = 0; i < 6; i++) {
-        drive_one_dirty_swipe(&shell);
+        drive_one_dirty_home(&shell);
         ctx.mock_clock_ms += 1000u;
         ff_ctl_loop_pump(&ctx);
         TEST_ASSERT_EQUAL_MESSAGE(FF_IDLE_STATE_OFF, ff_idle_state(&ctx.idle),
@@ -169,14 +167,6 @@ static void S26f_sleep_window_also_skips_rebuild_and_defers_to_wake(void)
 
     TEST_ASSERT_EQUAL_INT(0, ff_ctl_loop_open(&ctx, &shell, &pack, &shell_cfg, &cfg));
 
-    /* This test runs after S26c_AC3's, which leaves s_swipe_dir toggled
-     * an odd number of times — reset it so THIS shell (fresh at RADAR,
-     * just asserted below) gets the same "first swipe goes toward
-     * SIGNALS" direction drive_one_dirty_swipe's own comment assumes;
-     * otherwise the first call here would swipe off the RADAR boundary
-     * and produce no change, silently defeating the positive control. */
-    s_swipe_dir = 1;
-
     ff_ctl_loop_pump(&ctx);
     TEST_ASSERT_EQUAL(FF_APP_FACE_RADAR, ctx.state.active_face);
     TEST_ASSERT_EQUAL(FF_IDLE_STATE_ACTIVE, ff_idle_state(&ctx.idle));
@@ -184,13 +174,13 @@ static void S26f_sleep_window_also_skips_rebuild_and_defers_to_wake(void)
     /* ---- Positive control, same as the OFF test: dirty ticks rebuild
      * while ACTIVE. ---- */
     for (int i = 0; i < 4; i++) {
-        drive_one_dirty_swipe(&shell);
+        drive_one_dirty_home(&shell);
         ctx.mock_clock_ms += 500u;
         ff_ctl_loop_pump(&ctx);
     }
     TEST_ASSERT_EQUAL(FF_IDLE_STATE_ACTIVE, ff_idle_state(&ctx.idle));
     TEST_ASSERT_GREATER_THAN_UINT32_MESSAGE(
-        0u, ctx.rebuild_count, "positive control failed: alternating FF_INTENT_SWIPE never rebuilt while ACTIVE");
+        0u, ctx.rebuild_count, "positive control failed: alternating FF_INTENT_HOME never rebuilt while ACTIVE");
 
     /* ---- Jump straight into SLEEP (past FF_IDLE_T_OFF_MS +
      * FF_IDLE_T_SLEEP_MS) — no ff_idle_input anywhere in this test, so
@@ -198,7 +188,7 @@ static void S26f_sleep_window_also_skips_rebuild_and_defers_to_wake(void)
      * confirmed crossing is enough; ff_idle's own tests cover the exact
      * threshold arithmetic. ---- */
     ctx.mock_clock_ms = FF_IDLE_T_OFF_MS + FF_IDLE_T_SLEEP_MS + 5000u;
-    drive_one_dirty_swipe(&shell);
+    drive_one_dirty_home(&shell);
     ff_ctl_loop_pump(&ctx);
     TEST_ASSERT_EQUAL(FF_IDLE_STATE_SLEEP, ff_idle_state(&ctx.idle));
 
@@ -208,7 +198,7 @@ static void S26f_sleep_window_also_skips_rebuild_and_defers_to_wake(void)
      * count must not move, same AC3 property OFF already proved, now
      * extended one state further. ---- */
     for (int i = 0; i < 6; i++) {
-        drive_one_dirty_swipe(&shell);
+        drive_one_dirty_home(&shell);
         ctx.mock_clock_ms += 1000u;
         ff_ctl_loop_pump(&ctx);
         TEST_ASSERT_EQUAL_MESSAGE(FF_IDLE_STATE_SLEEP, ff_idle_state(&ctx.idle),
