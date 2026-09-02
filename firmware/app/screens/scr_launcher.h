@@ -60,6 +60,20 @@ extern "C" {
  */
 void ff_scr_launcher_build(ff_app_state_t const *state);
 
+/**
+ * ff_scr_launcher_satellite_deg — [api] the N-agnostic satellite ANGLE
+ * formula, exposed for direct host-side unit testing (no LVGL, no
+ * `ff_app_state_t`): `compass_pos * (360 / n)`, in degrees, 0 = top of
+ * the puck, increasing clockwise — the same convention
+ * `scr_launcher.c`'s `launcher_deg_to_offset` turns into an actual
+ * (dx, dy) offset. `compass_pos` is which of the `n` evenly-spaced
+ * compass slots a satellite occupies (0-indexed); `n <= 0` returns 0.0
+ * rather than dividing by zero. See `scr_launcher.c`'s top comment,
+ * "N-agnostic satellite layout", for why this is a pure function rather
+ * than a hand-typed angle table.
+ */
+float ff_scr_launcher_satellite_deg(int compass_pos, int n);
+
 #ifdef __cplusplus
 }
 #endif

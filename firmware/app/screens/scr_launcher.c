@@ -40,22 +40,23 @@
  * far more margin than the shape it replaces.
  *
  * ## N-agnostic satellite layout — the Music-readiness contract
- * Every satellite's placement is one of the N-agnostic angle set
- * `{k * 360/N : k = 0..N-1}` (`launcher_deg_to_offset`, 0 = top,
- * clockwise) — at today's N=4 that's `{0, 90, 180, 270}`. `sats[]`
- * stores each entry's own `deg` explicitly rather than deriving it from
- * array position in the build loop (see that array's own comment for
- * why: array order there is launcher_idx order, for an existing test's
- * benefit, which is no longer compass order) — but the angle each entry
- * carries is still that same formula's output, computed by hand once
- * per entry rather than by a loop. Adding a fifth real, routable app
- * later (the design canvas's own pentagon, with Music) means computing
- * the new N=5 set (`{0, 72, 144, 216, 288}`) and reassigning five `deg`
- * values — a one-line-per-entry change, no new static asserts to
- * hand-rederive. Today `n` is 4: this file does NOT ship a "Music"
- * tile — there is no fifth app to route to yet, and a tappable circle
- * that goes nowhere is its own kind of dishonesty (CLAUDE.md's honesty
- * rule extends past data to controls).
+ * Every satellite's placement angle is COMPUTED, not hand-typed:
+ * `ff_scr_launcher_satellite_deg(compass_pos, n)` returns
+ * `compass_pos * (360 / n)` (0 = top, clockwise) — a small pure
+ * function, unit-tested directly (app/screens/tests/test_scr_intent.c's
+ * `S26e_satellite_deg_is_n_agnostic`) against both today's N=4 (the
+ * four cardinal points) and a hypothetical N=5 (the design canvas's own
+ * pentagon), independent of anything this file renders. `sats[]` stores
+ * each entry's `compass_pos` (which of the N evenly-spaced slots it
+ * occupies), not the angle itself — see that array's own comment for
+ * why array order is launcher_idx order rather than compass order (an
+ * existing test's benefit). Adding a fifth real, routable app later
+ * means `LAUNCHER_SAT_COUNT = 5` and one new descriptor with
+ * `compass_pos = 4` — the angle set itself is computed by the same
+ * formula, never retyped. Today `n` is 4: this file does NOT ship a
+ * "Music" tile — there is no fifth app to route to yet, and a tappable
+ * circle that goes nowhere is its own kind of dishonesty (CLAUDE.md's
+ * honesty rule extends past data to controls).
  *
  * ## Removed from the design canvas: the orbit tick
  * The canvas's "Home · at rest" artboard also drew a small 2x10px amber
@@ -153,6 +154,7 @@
 #define LAUNCHER_OPA_16 (lv_opa_t)41   /* orbit ring: amber @ 16% */
 #define LAUNCHER_OPA_55 (lv_opa_t)140  /* hub ring (and its icon's inner ring): amber @ 55% */
 #define LAUNCHER_OPA_20 (lv_opa_t)51   /* hub glow shadow: amber @ ~20% (this file's own closest LVGL approximation of the design's CSS blur, not a transcribed number) */
+#define LAUNCHER_OPA_28 (lv_opa_t)71   /* radar icon sweep wedge fill: amber @ 28% (design: fill-opacity 0.28) */
 
 _Static_assert(LAUNCHER_SAT_DIAM >= 56, "launcher satellites must clear the spec's 56px floor");
 _Static_assert(LAUNCHER_SAT_DIAM >= FF_THEME_MIN_HIT_PX, "launcher satellites must clear the shared 44px hit floor");
@@ -184,6 +186,35 @@ static void launcher_deg_to_offset(float deg, float radius, float *dx, float *dy
     float const rad = deg * (LAUNCHER_PI / 180.0f);
     *dx = radius * sinf(rad);
     *dy = -radius * cosf(rad);
+}
+
+/**
+ * ff_scr_launcher_satellite_deg — the N-agnostic satellite ANGLE
+ * formula itself, factored out to a small pure function (no LVGL, no
+ * app state) specifically so it is unit-testable on the host without
+ * building a screen: `deg = compass_pos * (360 / n)`, in
+ * `launcher_deg_to_offset`'s own 0-deg-is-top-clockwise convention.
+ * `compass_pos` is which of the `n` evenly-spaced compass slots a
+ * satellite occupies (0 = top, then clockwise) — NOT the same axis as
+ * `launcher_idx` (see the satellite descriptor table's own comment for
+ * why those two orderings differ in this file). At `n=4` this yields
+ * the four cardinal points {0, 90, 180, 270}; at `n=5`, the design
+ * canvas's own pentagon {0, 72, 144, 216, 288} — see
+ * app/screens/tests/test_scr_intent.c's
+ * `S26e_satellite_deg_is_n_agnostic` for both, proven directly against
+ * this function rather than against rendered pixel positions.
+ *
+ * `n <= 0` returns 0.0 (defensive: never divide by zero) — not a case
+ * any real caller reaches (LAUNCHER_SAT_COUNT is a positive compile-time
+ * constant), but a pure function with no caller-side guard should still
+ * behave defined for any input.
+ */
+float ff_scr_launcher_satellite_deg(int compass_pos, int n)
+{
+    if (n <= 0) {
+        return 0.0f;
+    }
+    return (float)compass_pos * (360.0f / (float)n);
 }
 
 /* ---------------------------------------------------------------------
@@ -291,8 +322,8 @@ static lv_obj_t *launcher_mk_arc(lv_obj_t *icon, int32_t diam, int32_t width, fl
  * geometry, safe for the program's lifetime) or a `static` (mutable,
  * loop-filled once per build) array, matching scr_radar.c's own
  * caller-cleans-before-rebuild discipline. */
-static void launcher_mk_line(lv_obj_t *icon, int32_t container_px, lv_point_precise_t const *pts, uint32_t n,
-                              int32_t width)
+static lv_obj_t *launcher_mk_line(lv_obj_t *icon, int32_t container_px, lv_point_precise_t const *pts, uint32_t n,
+                                   int32_t width)
 {
     lv_obj_t *line = lv_line_create(icon);
     lv_obj_remove_style_all(line);
@@ -303,6 +334,7 @@ static void launcher_mk_line(lv_obj_t *icon, int32_t container_px, lv_point_prec
     lv_obj_set_style_line_width(line, width, 0);
     lv_obj_set_style_line_color(line, lv_color_hex(FF_THEME_COLOR_AMBER), 0);
     lv_obj_set_style_line_rounded(line, true, 0);
+    return line;
 }
 
 /* A small filled dot at ABSOLUTE (abs_cx, abs_cy) within the icon's own
@@ -323,6 +355,23 @@ static lv_obj_t *launcher_mk_dot(lv_obj_t *icon, int32_t diam, int32_t abs_cx, i
     return dot;
 }
 
+/* A small filled, SQUARE-CORNERED block centered at ABSOLUTE (abs_cx,
+ * abs_cy) — same convention as launcher_mk_dot, but no radius, for a
+ * gear tooth (a block, not a rounded dot — this file's cog icon is the
+ * only user today). */
+static lv_obj_t *launcher_mk_block(lv_obj_t *icon, int32_t w, int32_t h, int32_t abs_cx, int32_t abs_cy)
+{
+    lv_obj_t *blk = lv_obj_create(icon);
+    lv_obj_remove_style_all(blk);
+    lv_obj_set_size(blk, w, h);
+    lv_obj_set_style_bg_color(blk, lv_color_hex(FF_THEME_COLOR_AMBER), 0);
+    lv_obj_set_style_bg_opa(blk, LV_OPA_COVER, 0);
+    lv_obj_clear_flag(blk, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_clear_flag(blk, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_pos(blk, abs_cx - w / 2, abs_cy - h / 2);
+    return blk;
+}
+
 /* ---------------------------------------------------------------------
  * The five icons. Each draws into `icon`, a container already sized to
  * the fixed pixel size the caller passes (46 for the hub, 30 for every
@@ -333,20 +382,32 @@ static lv_obj_t *launcher_mk_dot(lv_obj_t *icon, int32_t diam, int32_t abs_cx, i
  * top comment for why fills became outlines.
  * ------------------------------------------------------------------- */
 
-/* Radar scope: outer + inner ring, a brighter/thicker ring SEGMENT
- * standing in for the design's filled sweep wedge (0=east, sweeping to
+/* Radar scope: a genuinely FILLED sweep wedge (0=east, sweeping to
  * -45/315 — the design path's own two endpoints, independently
- * recomputed from its (21,12)/(18.36,5.64) SVG points), a heading line
- * along that same edge, and a small blip dot (design: (8.2,14.6) r1.5,
- * scaled 1.9167x from a 46/24 hub icon and re-centered on (23,23)). */
+ * recomputed from its (21,12)/(18.36,5.64) SVG points, at the design's
+ * own fill-opacity 0.28), outer + inner ring, a toned-down heading line
+ * (so the wedge leads, not a needle), and a small blip dot (design:
+ * (8.2,14.6) r1.5, scaled 1.9167x from a 46/24 hub icon and re-centered
+ * on (23,23)).
+ *
+ * The wedge is a real `lv_arc` sector, not a thick ring segment: an
+ * arc's `width` is a stroke inward from its own outer radius, so
+ * setting `width == radius` (17 for this 34px-diameter ring) makes the
+ * inner edge of that "ring" land exactly on the icon's center — the
+ * angular span becomes a genuine filled pie slice from center to rim,
+ * with no custom draw callback (see this file's top comment, "Icon
+ * pipeline", for why a callback-drawn fill would break the generic
+ * press-recolor walk). Drawn FIRST so the rings/blip/line render
+ * crisply on top of it. */
 static void launcher_icon_radar(lv_obj_t *icon, int32_t px)
 {
     (void)px; /* fixed 46px hub icon */
+    launcher_mk_arc(icon, 34, 17, 315.0f, 360.0f, LAUNCHER_OPA_28); /* filled sweep wedge, center to rim */
     launcher_mk_arc(icon, 34, 2, 0.0f, 360.0f, LV_OPA_COVER);
     launcher_mk_arc(icon, 17, 2, 0.0f, 360.0f, LAUNCHER_OPA_55); /* design: inner ring opacity 0.55 */
-    launcher_mk_arc(icon, 36, 6, 315.0f, 360.0f, LV_OPA_80);     /* sweep highlight, stands in for the filled wedge */
     static const lv_point_precise_t heading_pts[2] = {{23, 23}, {35, 11}};
-    launcher_mk_line(icon, 46, heading_pts, 2, 2);
+    lv_obj_t *heading = launcher_mk_line(icon, 46, heading_pts, 2, 1); /* 1px, toned down — the wedge leads */
+    lv_obj_set_style_line_opa(heading, LV_OPA_70, 0);
     launcher_mk_dot(icon, 6, 16, 28);
 }
 
@@ -400,34 +461,28 @@ static void launcher_icon_map(lv_obj_t *icon, int32_t px)
     launcher_mk_line(icon, 30, arrow, 5, 2);
 }
 
-/* Settings: a gear — outer + inner ring, plus 8 radial teeth at 45deg
- * increments (the design's own N/S/E/W + 4 diagonals), inner radius 8px
- * / outer radius 12px from the icon's own center (15,15). Table, not a
- * runtime sinf/cosf loop: every OTHER icon in this file is a fixed
- * `static const` point array (compile-time, `.rodata`/flash, zero
- * `.bss`) — a per-build mutable pool (this file's earlier draft used
- * one, matching scr_radar.c's own line-point-pool convention for
- * DATA-DEPENDENT geometry) would have been the one static buffer in
- * this whole file that actually grows DIRAM, for geometry that never
- * changes between builds. Values are `round(15 +- {8,12} * cos/sin(k *
- * 45deg))` for k=0..7, computed once by hand rather than at runtime. */
+/* Settings: a COG, not a sun — a real annulus (ring band, not a thin
+ * outline) for the rim, a small hollow center hole, and 8 SHORT THICK
+ * BLOCK teeth protruding from the ring's own outer edge at 45deg
+ * increments (the design's own N/S/E/W + 4 diagonals) — not thin rays
+ * from a center dot (the previous draft's actual defect, per the PR
+ * review: it read as a sun). Annulus outer diam 20 (radius 10), band
+ * width 3 (~2.5px stroke); teeth are 4x4 blocks centered at radius 12
+ * (2px proud of the annulus's own outer edge); center hole diam 7,
+ * width 2. Tooth centers are `round(15 +- 12 * cos/sin(k * 45deg))` for
+ * k=0..7, a fixed table (not a runtime sinf/cosf loop — every other
+ * icon in this file is compile-time `.rodata`, zero `.bss`; see
+ * git history for why a mutable per-build point pool was rejected
+ * here). */
 static void launcher_icon_settings(lv_obj_t *icon, int32_t px)
 {
     (void)px;
-    launcher_mk_arc(icon, 16, 2, 0.0f, 360.0f, LV_OPA_COVER);
-    launcher_mk_arc(icon, 6, 2, 0.0f, 360.0f, LV_OPA_COVER);
-    static const lv_point_precise_t teeth[8][2] = {
-        {{23, 15}, {27, 15}}, /* 0deg   (east) */
-        {{21, 21}, {23, 23}}, /* 45deg  (southeast) */
-        {{15, 23}, {15, 27}}, /* 90deg  (south) */
-        {{9, 21}, {7, 23}},   /* 135deg (southwest) */
-        {{7, 15}, {3, 15}},   /* 180deg (west) */
-        {{9, 9}, {7, 7}},     /* 225deg (northwest) */
-        {{15, 7}, {15, 3}},   /* 270deg (north) */
-        {{21, 9}, {23, 7}},   /* 315deg (northeast) */
-    };
+    launcher_mk_arc(icon, 20, 3, 0.0f, 360.0f, LV_OPA_COVER); /* rim annulus */
+    launcher_mk_arc(icon, 7, 2, 0.0f, 360.0f, LV_OPA_COVER);  /* center hole */
+    static const int32_t teeth_cx[8] = {27, 23, 15, 7, 3, 7, 15, 23};
+    static const int32_t teeth_cy[8] = {15, 23, 27, 23, 15, 7, 3, 7};
     for (int i = 0; i < 8; i++) {
-        launcher_mk_line(icon, 30, teeth[i], 2, 2);
+        launcher_mk_block(icon, 4, 4, teeth_cx[i], teeth_cy[i]);
     }
 }
 
@@ -671,13 +726,17 @@ static void launcher_build_status_row(lv_obj_t *puck, ff_radar_view_t const *r)
 }
 
 /* ---------------------------------------------------------------------
- * Satellite descriptor table — each entry's `deg` (0 = top, clockwise —
- * launcher_deg_to_offset's convention) is one of the N-agnostic set
- * `{0, 360/N, 2*360/N, ...}` this file's top comment describes; at
- * today's N=4 that's exactly {0, 90, 180, 270} — Inbox top, Lineup
- * right, Settings bottom, Map left, reading the brief's own "clockwise
- * from the top" order, which is also the design canvas's pentagon order
- * with Music simply absent (no dead tile — see top comment).
+ * Satellite descriptor table — each entry's `compass_pos` (0 = top,
+ * clockwise) is fed straight into `ff_scr_launcher_satellite_deg`,
+ * which COMPUTES the angle as `compass_pos * (360 / LAUNCHER_SAT_COUNT)`
+ * — not a hand-typed angle literal. At today's N=4 that formula yields
+ * exactly {0, 90, 180, 270} for compass_pos {0,1,2,3} — Inbox top (0),
+ * Lineup right (1), Settings bottom (2), Map left (3), reading the
+ * brief's own "clockwise from the top" order, which is also the design
+ * canvas's pentagon order with Music simply absent (no dead tile — see
+ * top comment). See `ff_scr_launcher_satellite_deg`'s own doc comment
+ * and its unit test for the formula proven directly, independent of
+ * this table.
  *
  * Array ORDER here is `launcher_idx` order (1..4), not compass order —
  * deliberately: every existing S26e test (app/screens/tests/
@@ -686,18 +745,19 @@ static void launcher_build_status_row(lv_obj_t *puck, ff_radar_view_t const *r)
  * that predates this visual rework and is cheaper to keep satisfied
  * than to rewrite. Creation order carries no meaning of its own (see
  * `launcher_circle_click_cb`'s comment — `launcher_idx` is the only
- * semantic fact); `deg` is what actually places each circle, and it is
+ * semantic fact); `compass_pos` is what actually places each circle,
  * assigned per-entry precisely because array position no longer implies
  * compass position once creation is reordered this way. Adding a fifth
- * satellite later means a new N=5 angle set (`{0, 72, 144, 216, 288}`)
- * assigned the same way — one new entry, no formula change.
+ * satellite later means a new N=5 (LAUNCHER_SAT_COUNT=5) and five
+ * `compass_pos` assignments 0..4 — the angle set itself
+ * (`{0, 72, 144, 216, 288}`) is computed, not retyped.
  * ------------------------------------------------------------------- */
 typedef struct {
     void (*icon_fn)(lv_obj_t *, int32_t);
     char const *caption;
     uintptr_t launcher_idx;
     bool badge_capable;
-    float deg;
+    int compass_pos;
 } launcher_satellite_desc_t;
 
 void ff_scr_launcher_build(ff_app_state_t const *state)
@@ -726,14 +786,15 @@ void ff_scr_launcher_build(ff_app_state_t const *state)
     launcher_make_hub(puck);
 
     static launcher_satellite_desc_t const sats[LAUNCHER_SAT_COUNT] = {
-        {launcher_icon_lineup, "LINEUP", 1, false, 90.0f},
-        {launcher_icon_inbox, "INBOX", 2, true, 0.0f},
-        {launcher_icon_map, "MAP", 3, false, 270.0f},
-        {launcher_icon_settings, "SETTINGS", 4, false, 180.0f},
+        {launcher_icon_lineup, "LINEUP", 1, false, 1},
+        {launcher_icon_inbox, "INBOX", 2, true, 0},
+        {launcher_icon_map, "MAP", 3, false, 3},
+        {launcher_icon_settings, "SETTINGS", 4, false, 2},
     };
     for (int i = 0; i < LAUNCHER_SAT_COUNT; i++) {
+        float const deg = ff_scr_launcher_satellite_deg(sats[i].compass_pos, LAUNCHER_SAT_COUNT);
         float dx, dy;
-        launcher_deg_to_offset(sats[i].deg, LAUNCHER_ORBIT_RADIUS_PX, &dx, &dy);
+        launcher_deg_to_offset(deg, LAUNCHER_ORBIT_RADIUS_PX, &dx, &dy);
         launcher_make_satellite(puck, sats[i].icon_fn, sats[i].caption, dx, dy, sats[i].launcher_idx,
                                  sats[i].badge_capable && unread > 0, unread);
     }

@@ -1,6 +1,9 @@
 {
   "fixture": "launcher_unread",
   "face": "launcher",
+  "radar": {
+    "batt_pct": -1
+  },
   "signals": {
     "subview": "inbox",
     "convs": [

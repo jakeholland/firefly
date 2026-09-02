@@ -1,4 +1,8 @@
 {
   "fixture": "launcher",
-  "face": "launcher"
+  "face": "launcher",
+  "radar": {
+    "clock_str": "9:46",
+    "batt_pct": 74
+  }
 }
