@@ -178,9 +178,11 @@ int ff_ctl_loop_open(ff_ctl_loop_ctx_t *ctx, ff_shell_t *shell, fp_pack_t *pack,
     /* S16 slice a: FF_APP_FACE_NONE = 0 renumbered ff_app_face_t — set the
      * opening face explicitly rather than rely on a memset default, same
      * reasoning as the pre-extraction code this replaces. Overwritten by
-     * the first ff_ctl_loop_pump's shell projection (whose own
-     * ff_route_init also starts at RADAR) — this is purely the pre-first-
-     * tick face. */
+     * the first ff_ctl_loop_pump's shell projection — this is purely the
+     * pre-first-tick face, so its exact value doesn't have to match
+     * ff_route_init's own opening face (FF_APP_FACE_LAUNCHER as of S26
+     * slice e, amended 2026-09-01); RADAR is kept here only because it
+     * is a valid, renderable face on its own. */
     memset(&ctx->state, 0, sizeof(ctx->state));
     ctx->state.active_face = FF_APP_FACE_RADAR;
 

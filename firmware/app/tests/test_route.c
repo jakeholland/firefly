@@ -23,13 +23,25 @@
  * than a pixel-diff proxy for one.
  *
  * S26 slice e (docs/specs/S26-device-lifecycle.md "(e) Home button +
- * launcher") added `ff_route_home`/`ff_route_launcher_select` — the
- * BOOT-button nav model, tested under `S26e_AC1_*` below — and retired
- * the swipe/goto-based navigation `scr_nav.c` used to drive, WITHOUT
- * touching `ff_route_swipe`/`ff_route_goto` themselves or any test
- * above this comment: both stay dormant pure primitives, still fully
- * covered, with no live caller left anywhere in the app (see
- * ff_route.h's header note on that call).
+ * launcher") added `ff_route_home`/`ff_route_launcher_select` and
+ * retired the swipe/goto-based navigation `scr_nav.c` used to drive,
+ * WITHOUT touching `ff_route_swipe`/`ff_route_goto` themselves or any
+ * test above the `S26e_*` block below: both stay dormant pure
+ * primitives, still fully covered, with no live caller left driving
+ * navigation (see ff_route.h's header note on that call — `ff_route_goto`
+ * does still have two unrelated live shell callers, both jumping between
+ * ordinary swipe-axis faces).
+ *
+ * AMENDED 2026-09-01 (the maintainer's on-glass decision, superseding
+ * this slice's original "Radar is the watchface, the launcher is a
+ * transient modal hub" cut): the launcher IS home now —
+ * `FF_APP_FACE_LAUNCHER` is the opening `base` value, not a modal, and
+ * Radar is an ordinary swipe/launcher face with no special treatment.
+ * The `S26e_*` tests below were rewritten for that model; the launcher
+ * timeout tests and the "POWER_MENU replaces a live LAUNCHER modal"
+ * tests are GONE (there is no launcher timeout and no launcher modal to
+ * replace any more — see ff_route.h's header note for the full
+ * reasoning).
  */
 #include <string.h>
 
@@ -48,23 +60,25 @@ static ff_app_face_t const k_axis[] = {
 };
 enum { AXIS_N = (int)(sizeof(k_axis) / sizeof(k_axis[0])) };
 
-/* Helper: a route parked on a given base with no modal. Built through
- * the real API (init + swipes) rather than by poking fields, so the
- * tests below can never assert against a route the module itself would
- * refuse to produce. */
+/* Helper: a route parked on a given base with no modal, built through
+ * the real API rather than by poking fields, so the tests below can
+ * never assert against a route the module itself would refuse to
+ * produce.
+ *
+ * S26 slice e, amended 2026-09-01: `ff_route_init` now opens on the
+ * LAUNCHER (home), not Radar — so reaching any swipe-axis face means
+ * going through `ff_route_launcher_select`, exactly the real BOOT ->
+ * tap-a-circle path a user takes. Reaching the launcher itself is just
+ * `ff_route_init`'s own result; no further step needed. */
 static ff_route_t route_at(ff_app_face_t base)
 {
     ff_route_t r;
     ff_route_init(&r);
-    /* Bounded, not a bare `while` (PR #36 review, N1): an ff_route_swipe
-     * that returned true without advancing would spin here forever, and
-     * since every test below routes through this helper, CI would report
-     * a ctest timeout instead of naming the broken function. The axis is
-     * five faces, so at most four swipes always suffice. */
-    for (int guard = 0; r.base != base; guard++) {
-        TEST_ASSERT_LESS_THAN_INT_MESSAGE(AXIS_N, guard, "ff_route_swipe is not advancing toward the target base");
-        TEST_ASSERT_TRUE(ff_route_swipe(&r, 1));
+    if (base == FF_APP_FACE_LAUNCHER) {
+        return r;
     }
+    TEST_ASSERT_TRUE_MESSAGE(ff_route_launcher_select(&r, base),
+                              "route_at: ff_route_launcher_select refused the requested base");
     return r;
 }
 
@@ -72,13 +86,14 @@ static ff_route_t route_at(ff_app_face_t base)
 /* ff_route_init                                                        */
 /* ------------------------------------------------------------------- */
 
-static void init_opens_on_radar_with_no_modal(void)
+static void init_opens_on_the_launcher_with_no_modal(void)
 {
     ff_route_t r;
     memset(&r, 0xAA, sizeof(r)); /* garbage in: init must fully define both fields */
     ff_route_init(&r);
-    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_RADAR, r.base);
+    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_LAUNCHER, r.base);
     TEST_ASSERT_EQUAL_INT(FF_APP_FACE_NONE, r.modal);
+    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_LAUNCHER, ff_route_visible(&r, false));
 }
 
 static void init_is_null_safe(void)
@@ -87,7 +102,8 @@ static void init_is_null_safe(void)
 }
 
 /* ------------------------------------------------------------------- */
-/* AC1 — swipe is bounded, not wrapping                                 */
+/* AC1 — swipe is bounded, not wrapping (dormant primitive, unaffected  */
+/* by the S26e amendment — see this file's top comment)                 */
 /* ------------------------------------------------------------------- */
 
 static void S16_AC1_swipe_back_from_radar_is_a_no_op(void)
@@ -98,16 +114,13 @@ static void S16_AC1_swipe_back_from_radar_is_a_no_op(void)
     TEST_ASSERT_EQUAL_INT(FF_APP_FACE_NONE, r.modal);
 }
 
-/* The new 5-face order, forward, end to end: RADAR -> NOW -> SIGNALS ->
- * MAP -> SETTINGS, then off the right end is a no-op. This is the
- * horizontal-carousel replacement for the old "three swipes end at
- * SIGNALS" test — Map and Settings are ordinary neighbours now, so the
- * traversal runs all the way to the SETTINGS bound, and modular
- * arithmetic (which would wrap SETTINGS back to RADAR) is ruled out. */
+/* The 5-face order, forward, end to end: RADAR -> NOW -> SIGNALS ->
+ * MAP -> SETTINGS, then off the right end is a no-op. Starts from
+ * route_at(RADAR) (a launcher-select, not a bare init) since
+ * ff_route_init no longer opens on Radar. */
 static void S16_AC1_forward_traverses_all_five_then_clamps_at_settings(void)
 {
-    ff_route_t r;
-    ff_route_init(&r);
+    ff_route_t r = route_at(FF_APP_FACE_RADAR);
     for (int i = 1; i < AXIS_N; i++) {
         TEST_ASSERT_TRUE(ff_route_swipe(&r, 1));
         TEST_ASSERT_EQUAL_INT(k_axis[i], r.base);
@@ -129,8 +142,7 @@ static void S16_AC1_swipe_axis_is_symmetric_and_round_trips(void)
     /* -1 is toward RADAR and +1 toward SETTINGS — the direction contract
      * the header warns is NOT a finger direction. Asserted as a full
      * round trip across all five faces so an inverted axis cannot pass. */
-    ff_route_t r;
-    ff_route_init(&r);
+    ff_route_t r = route_at(FF_APP_FACE_RADAR);
     for (int i = 1; i < AXIS_N; i++) {
         TEST_ASSERT_TRUE(ff_route_swipe(&r, 1));
         TEST_ASSERT_EQUAL_INT(k_axis[i], r.base);
@@ -142,10 +154,9 @@ static void S16_AC1_swipe_axis_is_symmetric_and_round_trips(void)
     TEST_ASSERT_EQUAL_INT(FF_APP_FACE_RADAR, r.base);
 }
 
-/* Map and Settings are swipe faces now, not modals — pin that they are
+/* Map and Settings are swipe faces, not modals — pin that they are
  * reached by an ordinary swipe from their neighbour, the exact behaviour
- * the rework is about. Named so a regression reads as "Map/Settings fell
- * off the swipe axis", not folded into the generic traversal above. */
+ * the horizontal-carousel rework was about. */
 static void carousel_signals_map_settings_are_swipe_neighbours(void)
 {
     ff_route_t r = route_at(FF_APP_FACE_SIGNALS);
@@ -184,6 +195,18 @@ static void swipe_on_a_base_off_the_axis_is_a_no_op(void)
     TEST_ASSERT_EQUAL_INT(FF_APP_FACE_NONE, r.base);
 }
 
+/* S26 slice e, amended 2026-09-01: the launcher is `base` now but is
+ * NOT on the swipe axis — a route parked there is off-axis by
+ * ff_route_swipe's own rule, same as the zero value above. This is also
+ * pinned one layer up, through the dispatch seam, by test_intent.c. */
+static void swipe_on_the_launcher_base_is_a_no_op(void)
+{
+    ff_route_t r = route_at(FF_APP_FACE_LAUNCHER);
+    TEST_ASSERT_FALSE(ff_route_swipe(&r, 1));
+    TEST_ASSERT_FALSE(ff_route_swipe(&r, -1));
+    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_LAUNCHER, r.base);
+}
+
 static void swipe_is_null_safe(void)
 {
     TEST_ASSERT_FALSE(ff_route_swipe(NULL, 1));
@@ -191,7 +214,11 @@ static void swipe_is_null_safe(void)
 }
 
 /* ------------------------------------------------------------------- */
-/* ff_route_goto — the long-press jump-to-a-face shortcut               */
+/* ff_route_goto — the long-press jump-to-a-face shortcut. Dormant for  */
+/* scr_nav.c's own retired long-press, but still has two live shell     */
+/* callers (Settings long-press, message-banner-tap-to-Signals) that    */
+/* jump between ordinary swipe-axis faces — unaffected by the S26e      */
+/* amendment, since the launcher was never a valid `f` here.            */
 /* ------------------------------------------------------------------- */
 
 static void goto_jumps_straight_to_a_far_face(void)
@@ -219,9 +246,14 @@ static void goto_reaches_every_swipe_face(void)
 
 static void goto_off_axis_targets_are_rejected(void)
 {
-    /* Compose/NONE/FLARE are not swipe faces — a jump to one is a no-op,
-     * never a base set off the axis. */
-    ff_app_face_t const bad[] = {FF_APP_FACE_NONE, FF_APP_FACE_COMPOSE, FF_APP_FACE_FLARE};
+    /* Compose/NONE/FLARE/Power menu/Launcher are not swipe faces — a
+     * jump to one is a no-op, never a base set off the axis. The
+     * launcher in particular is NOT reachable through ff_route_goto (S26
+     * slice e, amended 2026-09-01): it is reached only via
+     * ff_route_home. */
+    ff_app_face_t const bad[] = {
+        FF_APP_FACE_NONE, FF_APP_FACE_COMPOSE, FF_APP_FACE_FLARE, FF_APP_FACE_POWER_MENU, FF_APP_FACE_LAUNCHER,
+    };
     for (size_t i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {
         ff_route_t r = route_at(FF_APP_FACE_NOW);
         TEST_ASSERT_FALSE(ff_route_goto(&r, bad[i]));
@@ -341,9 +373,15 @@ static void visible_is_base_across_the_whole_carousel(void)
     }
 }
 
+static void visible_is_the_launcher_when_base_is_the_launcher(void)
+{
+    ff_route_t r = route_at(FF_APP_FACE_LAUNCHER);
+    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_LAUNCHER, ff_route_visible(&r, false));
+}
+
 static void visible_is_the_modal_when_one_is_up(void)
 {
-    /* Compose is the only modal now. */
+    /* Compose and Power menu are the only modals now. */
     ff_route_t r = route_at(FF_APP_FACE_RADAR);
     TEST_ASSERT_TRUE(ff_route_push_modal(&r, FF_APP_FACE_COMPOSE));
     TEST_ASSERT_EQUAL_INT(FF_APP_FACE_COMPOSE, ff_route_visible(&r, false));
@@ -356,20 +394,23 @@ static void visible_of_null_is_none(void)
 }
 
 /* ------------------------------------------------------------------- */
-/* modal lifecycle — Compose and (S26 slice b) Power menu are the two    */
-/* modal faces                                                          */
+/* modal lifecycle — Compose and Power menu are the two modal faces.    */
+/* AMENDED 2026-09-01: the launcher is NOT a modal any more (it is a    */
+/* `base` value — see ff_route.h's header note), so it moves from the   */
+/* accepted set to the rejected one, and the launcher-base case is a    */
+/* new, ordinary member of "which bases can carry a modal".             */
 /* ------------------------------------------------------------------- */
 
-static void push_modal_accepts_only_compose_power_menu_and_launcher(void)
+static void push_modal_accepts_only_compose_and_power_menu(void)
 {
-    /* Everything but Compose/Power menu/Launcher is rejected. Map and
-     * Settings in particular are swipe faces now — accepting either as
-     * a modal would put a fact that lives on the swipe axis in a second
-     * place. FLARE is rejected because the takeover overrides, it is
-     * not routed. */
+    /* Everything but Compose/Power menu is rejected — the launcher
+     * included, now that it is `base`, not a modal target. Map and
+     * Settings are swipe faces; accepting either as a modal would put a
+     * fact that lives on the swipe axis in a second place. FLARE is
+     * rejected because the takeover overrides, it is not routed. */
     ff_app_face_t const rejected[] = {
-        FF_APP_FACE_NONE,     FF_APP_FACE_RADAR, FF_APP_FACE_NOW, FF_APP_FACE_SIGNALS,
-        FF_APP_FACE_SETTINGS, FF_APP_FACE_MAP,   FF_APP_FACE_FLARE,
+        FF_APP_FACE_NONE, FF_APP_FACE_RADAR,    FF_APP_FACE_NOW,     FF_APP_FACE_SIGNALS,
+        FF_APP_FACE_SETTINGS, FF_APP_FACE_MAP,  FF_APP_FACE_FLARE,   FF_APP_FACE_LAUNCHER,
     };
     for (size_t i = 0; i < sizeof(rejected) / sizeof(rejected[0]); i++) {
         ff_route_t r = route_at(FF_APP_FACE_RADAR);
@@ -384,10 +425,6 @@ static void push_modal_accepts_only_compose_power_menu_and_launcher(void)
     ff_route_t r2 = route_at(FF_APP_FACE_RADAR);
     TEST_ASSERT_TRUE(ff_route_push_modal(&r2, FF_APP_FACE_POWER_MENU));
     TEST_ASSERT_EQUAL_INT(FF_APP_FACE_POWER_MENU, r2.modal);
-
-    ff_route_t r3 = route_at(FF_APP_FACE_RADAR);
-    TEST_ASSERT_TRUE(ff_route_push_modal(&r3, FF_APP_FACE_LAUNCHER));
-    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_LAUNCHER, r3.modal);
 }
 
 /* S26 slice b: the PWR long-press must not be able to open a second
@@ -409,48 +446,47 @@ static void push_modal_power_menu_over_compose_is_rejected_and_vice_versa(void)
     TEST_ASSERT_EQUAL_INT(FF_APP_FACE_POWER_MENU, r2.modal);
 }
 
-/* PR #142 review FAIL 2 — the ONE exception to the one-slot rule just
- * pinned above: POWER_MENU REPLACES a live LAUNCHER instead of being
- * rejected by it, so a PWR long-press reaches the user even from the
- * launcher. */
-static void push_modal_power_menu_replaces_the_launcher(void)
+/* S26 slice e, amended 2026-09-01: pushing the power menu over a
+ * launcher-parked base now works through the ORDINARY one-slot path —
+ * no special "replace" case (the launcher is not a modal to replace any
+ * more). `base` stays FF_APP_FACE_LAUNCHER throughout, exactly like any
+ * other base a modal covers. This is the Gate's required "power menu
+ * opens over the launcher" coverage. */
+static void push_modal_power_menu_opens_over_the_launcher_base(void)
 {
-    ff_route_t r = route_at(FF_APP_FACE_RADAR);
-    TEST_ASSERT_TRUE(ff_route_push_modal(&r, FF_APP_FACE_LAUNCHER));
-    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_LAUNCHER, r.modal);
-
+    ff_route_t r = route_at(FF_APP_FACE_LAUNCHER);
     TEST_ASSERT_TRUE(ff_route_push_modal(&r, FF_APP_FACE_POWER_MENU));
-    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_POWER_MENU, r.modal); /* the launcher is gone */
-    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_RADAR, r.base); /* untouched by the replace */
+    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_POWER_MENU, r.modal);
+    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_LAUNCHER, r.base); /* untouched */
+    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_POWER_MENU, ff_route_visible(&r, false));
 }
 
-/* COMPOSE must NOT get the same treatment — over either LAUNCHER or
- * POWER_MENU, a half-typed draft is never slid away by anything. This
- * is the narrowness of FAIL 2's fix: only the exact (POWER_MENU,
- * LAUNCHER) pair replaces; everything else still falls to the one-slot
- * rejection. */
-static void push_modal_compose_does_not_replace_the_launcher(void)
+/* ...and Cancel (ff_route_pop_modal) returns to the launcher — never to
+ * some other face, since the launcher was never replaced or popped
+ * underneath the power menu. This is the Gate's required "Cancel
+ * returns to the launcher" coverage, paired with the push test above. */
+static void push_modal_power_menu_over_launcher_then_cancel_returns_to_launcher(void)
 {
-    ff_route_t r = route_at(FF_APP_FACE_RADAR);
-    TEST_ASSERT_TRUE(ff_route_push_modal(&r, FF_APP_FACE_LAUNCHER));
-    TEST_ASSERT_FALSE(ff_route_push_modal(&r, FF_APP_FACE_COMPOSE));
-    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_LAUNCHER, r.modal);
-}
-
-/* After the power menu that replaced the launcher pops (Cancel / Power
- * off / Reboot — ff_route_pop_modal either way), the route reveals
- * `base` directly (RADAR) — never the launcher, which the replace
- * already discarded. */
-static void pop_modal_after_replacing_the_launcher_reveals_radar_not_the_launcher(void)
-{
-    ff_route_t r = route_at(FF_APP_FACE_RADAR);
-    TEST_ASSERT_TRUE(ff_route_push_modal(&r, FF_APP_FACE_LAUNCHER));
+    ff_route_t r = route_at(FF_APP_FACE_LAUNCHER);
     TEST_ASSERT_TRUE(ff_route_push_modal(&r, FF_APP_FACE_POWER_MENU));
 
-    TEST_ASSERT_TRUE(ff_route_pop_modal(&r));
+    TEST_ASSERT_TRUE(ff_route_pop_modal(&r)); /* Cancel */
     TEST_ASSERT_EQUAL_INT(FF_APP_FACE_NONE, r.modal);
-    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_RADAR, r.base);
-    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_RADAR, ff_route_visible(&r, false));
+    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_LAUNCHER, r.base);
+    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_LAUNCHER, ff_route_visible(&r, false));
+}
+
+/* Compose over the launcher base is accepted too — the base-validity
+ * guard has no reason to single out Compose, even though nothing in the
+ * live app reaches OPEN_COMPOSE from the launcher today (Compose is
+ * reached from Signals' "+" only). Pinned so a future change that tried
+ * to special-case Compose here would fail loudly. */
+static void push_modal_compose_also_opens_over_the_launcher_base(void)
+{
+    ff_route_t r = route_at(FF_APP_FACE_LAUNCHER);
+    TEST_ASSERT_TRUE(ff_route_push_modal(&r, FF_APP_FACE_COMPOSE));
+    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_COMPOSE, r.modal);
+    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_LAUNCHER, r.base);
 }
 
 /* Same swipe-suppression and visible() rules Compose already has,
@@ -486,6 +522,18 @@ static void push_modal_rejects_map_and_settings(void)
     }
 }
 
+/* The launcher itself is no longer a valid push_modal target — pin it
+ * separately from the "rejected" sweep above so a regression that
+ * re-accepted it (reopening the pre-amendment modal-launcher shape)
+ * reads as exactly that, by name. */
+static void push_modal_rejects_the_launcher(void)
+{
+    ff_route_t r = route_at(FF_APP_FACE_RADAR);
+    TEST_ASSERT_FALSE(ff_route_push_modal(&r, FF_APP_FACE_LAUNCHER));
+    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_NONE, r.modal);
+    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_RADAR, r.base);
+}
+
 static void push_modal_leaves_base_untouched(void)
 {
     ff_route_t r = route_at(FF_APP_FACE_SIGNALS);
@@ -510,7 +558,9 @@ static void push_modal_on_a_base_off_the_axis_is_a_no_op(void)
     /* The counterpart to swipe_on_a_base_off_the_axis_is_a_no_op, and
      * the sharper of the two: a forgotten ff_route_init must not be
      * MASKED by a modal that behaves perfectly until it is popped
-     * (PR #36 review, D1). */
+     * (PR #36 review, D1). The zero value (base == NONE) is neither a
+     * swipe face nor the launcher, so it is still off-axis under the
+     * amended base-validity rule too. */
     ff_route_t r;
     memset(&r, 0, sizeof(r)); /* the deliberately-invalid zero value */
     TEST_ASSERT_FALSE(ff_route_push_modal(&r, FF_APP_FACE_COMPOSE));
@@ -565,44 +615,47 @@ static void modal_null_guards_are_no_ops_not_crashes(void)
 }
 
 /* ------------------------------------------------------------------- */
-/* S26 slice e — ff_route_home (the BOOT-button nav model) + the        */
-/* launcher's own ff_route_launcher_select                              */
+/* S26 slice e, amended 2026-09-01 — ff_route_home (the launcher IS     */
+/* home) + the launcher's own ff_route_launcher_select                  */
 /* ------------------------------------------------------------------- */
 
-/* S26 AC1: BOOT from Radar -> launcher. */
-static void S26e_AC1_home_from_radar_opens_the_launcher(void)
+/* HOME from Radar sets base to the launcher — Radar gets no special
+ * treatment: this is the same outcome every other app face gets. */
+static void S26e_AC1_home_from_radar_sets_base_to_the_launcher(void)
 {
     ff_route_t r = route_at(FF_APP_FACE_RADAR);
     TEST_ASSERT_TRUE(ff_route_home(&r));
-    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_RADAR, r.base);
-    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_LAUNCHER, r.modal);
-}
-
-/* S26 AC1: from the launcher -> Radar. */
-static void S26e_AC1_home_from_the_launcher_returns_to_radar(void)
-{
-    ff_route_t r = route_at(FF_APP_FACE_RADAR);
-    TEST_ASSERT_TRUE(ff_route_home(&r));
-    TEST_ASSERT_TRUE(ff_route_home(&r));
-    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_RADAR, r.base);
+    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_LAUNCHER, r.base);
     TEST_ASSERT_EQUAL_INT(FF_APP_FACE_NONE, r.modal);
-    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_RADAR, ff_route_visible(&r, false));
 }
 
-/* S26 AC1: from EACH app (Now/Signals/Map/Settings) -> Radar, in one
- * press — not via the launcher. */
-static void S26e_AC1_home_from_each_app_returns_straight_to_radar(void)
+/* HOME from EVERY app face (Radar included) sets base to the launcher,
+ * in one press. */
+static void S26e_AC1_home_from_each_app_sets_base_to_the_launcher(void)
 {
-    ff_app_face_t const apps[] = {FF_APP_FACE_NOW, FF_APP_FACE_SIGNALS, FF_APP_FACE_MAP, FF_APP_FACE_SETTINGS};
-    for (size_t i = 0; i < sizeof(apps) / sizeof(apps[0]); i++) {
-        ff_route_t r = route_at(apps[i]);
+    for (int i = 0; i < AXIS_N; i++) {
+        ff_route_t r = route_at(k_axis[i]);
         TEST_ASSERT_TRUE(ff_route_home(&r));
-        TEST_ASSERT_EQUAL_INT(FF_APP_FACE_RADAR, r.base);
+        TEST_ASSERT_EQUAL_INT(FF_APP_FACE_LAUNCHER, r.base);
         TEST_ASSERT_EQUAL_INT(FF_APP_FACE_NONE, r.modal);
     }
 }
 
-/* S26 AC1: Compose/Power-menu modal suppresses HOME, exactly like swipe. */
+/* BOOT on the launcher is a no-op — there is nowhere "home-er" to go.
+ * This REPLACES the pre-amendment "home from the launcher returns to
+ * Radar" behaviour (the launcher no longer closes on a second press). */
+static void S26e_AC1_home_on_the_launcher_is_a_no_op(void)
+{
+    ff_route_t r = route_at(FF_APP_FACE_LAUNCHER);
+    TEST_ASSERT_FALSE(ff_route_home(&r));
+    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_LAUNCHER, r.base);
+    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_NONE, r.modal);
+    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_LAUNCHER, ff_route_visible(&r, false));
+}
+
+/* HOME is suppressed by any live modal — Compose or Power menu — exactly
+ * like swipe/goto, whether the base underneath is an app face or the
+ * launcher itself. */
 static void S26e_AC1_home_is_suppressed_by_compose(void)
 {
     ff_route_t r = route_at(FF_APP_FACE_SIGNALS);
@@ -621,20 +674,44 @@ static void S26e_AC1_home_is_suppressed_by_the_power_menu(void)
     TEST_ASSERT_EQUAL_INT(FF_APP_FACE_POWER_MENU, r.modal);
 }
 
-/* S26 AC1 (via ff_route.h's own house rule): swipe no longer moves
- * base — ff_route_swipe is retired from every LIVE call path (no screen
- * emits FF_INTENT_SWIPE any more, and ff_shell.c's handler is a no-op),
- * which this test pins one layer down: while the launcher modal is up
- * (the state BOOT now puts the route in), a swipe is rejected by the
- * SAME generic modal-suppression rule every other modal already gets —
- * no LAUNCHER-specific carve-out was needed, or written. */
-static void S26e_AC1_swipe_is_suppressed_while_the_launcher_is_open(void)
+static void S26e_AC1_home_is_suppressed_by_the_power_menu_over_the_launcher(void)
 {
-    ff_route_t r = route_at(FF_APP_FACE_RADAR);
+    ff_route_t r = route_at(FF_APP_FACE_LAUNCHER);
+    TEST_ASSERT_TRUE(ff_route_push_modal(&r, FF_APP_FACE_POWER_MENU));
+    TEST_ASSERT_FALSE(ff_route_home(&r));
+    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_LAUNCHER, r.base);
+    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_POWER_MENU, r.modal);
+}
+
+/* HOME repairs an invalid route rather than masking it — the same
+ * "the target's own validity is what's checked" shape ff_route_goto
+ * uses. Pinned since ff_route_home no longer delegates to
+ * ff_route_goto/push_modal (both of which DO check target validity, but
+ * neither validates the CURRENT base — this direct-assignment
+ * implementation preserves that). */
+static void home_repairs_an_off_axis_base(void)
+{
+    ff_route_t r;
+    memset(&r, 0, sizeof(r)); /* base == NONE, modal == NONE: the zero value */
     TEST_ASSERT_TRUE(ff_route_home(&r));
+    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_LAUNCHER, r.base);
+    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_NONE, r.modal);
+}
+
+/* Swipe no longer moves base at all (S26 slice e retired the swipe
+ * carousel from every live call path), which this test pins one layer
+ * down: while base is the launcher (the state BOOT now puts the route
+ * in by default), a swipe is rejected by the SAME generic off-axis rule
+ * every other invalid base already gets — no launcher-specific carve-out
+ * was needed, or written. (Equivalent to
+ * swipe_on_the_launcher_base_is_a_no_op above; kept under the S26e name
+ * too since it is exactly what AC1 describes.) */
+static void S26e_AC1_swipe_is_a_no_op_on_the_launcher_base(void)
+{
+    ff_route_t r = route_at(FF_APP_FACE_LAUNCHER);
     TEST_ASSERT_FALSE(ff_route_swipe(&r, 1));
     TEST_ASSERT_FALSE(ff_route_swipe(&r, -1));
-    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_LAUNCHER, r.modal);
+    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_LAUNCHER, r.base);
 }
 
 static void home_is_null_safe(void)
@@ -642,52 +719,55 @@ static void home_is_null_safe(void)
     TEST_ASSERT_FALSE(ff_route_home(NULL));
 }
 
-/* ff_route_launcher_select — the four app circles. */
+/* ff_route_launcher_select — the five app circles, amended 2026-09-01:
+ * Radar is an ordinary circle now, so the circle set grew from four to
+ * five and the old "Radar is rejected" test is replaced by Radar simply
+ * being one of the reachable faces below. */
 
 static void launcher_select_reaches_every_circle(void)
 {
-    ff_app_face_t const circles[] = {FF_APP_FACE_NOW, FF_APP_FACE_SIGNALS, FF_APP_FACE_MAP, FF_APP_FACE_SETTINGS};
-    for (size_t i = 0; i < sizeof(circles) / sizeof(circles[0]); i++) {
-        ff_route_t r = route_at(FF_APP_FACE_RADAR);
-        TEST_ASSERT_TRUE(ff_route_home(&r)); /* opens the launcher */
-        TEST_ASSERT_TRUE(ff_route_launcher_select(&r, circles[i]));
-        TEST_ASSERT_EQUAL_INT(circles[i], r.base);
+    for (int i = 0; i < AXIS_N; i++) {
+        ff_route_t r = route_at(FF_APP_FACE_LAUNCHER);
+        TEST_ASSERT_TRUE(ff_route_launcher_select(&r, k_axis[i]));
+        TEST_ASSERT_EQUAL_INT(k_axis[i], r.base);
         TEST_ASSERT_EQUAL_INT(FF_APP_FACE_NONE, r.modal);
-        TEST_ASSERT_EQUAL_INT(circles[i], ff_route_visible(&r, false));
+        TEST_ASSERT_EQUAL_INT(k_axis[i], ff_route_visible(&r, false));
     }
-}
-
-/* Radar is home, not a circle — the launcher never offers it. */
-static void launcher_select_rejects_radar(void)
-{
-    ff_route_t r = route_at(FF_APP_FACE_RADAR);
-    TEST_ASSERT_TRUE(ff_route_home(&r));
-    TEST_ASSERT_FALSE(ff_route_launcher_select(&r, FF_APP_FACE_RADAR));
-    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_LAUNCHER, r.modal); /* still open */
 }
 
 static void launcher_select_rejects_non_swipe_faces(void)
 {
+    /* The launcher itself is included: you cannot "select" the launcher
+     * from the launcher. */
     ff_app_face_t const bad[] = {
         FF_APP_FACE_NONE, FF_APP_FACE_COMPOSE, FF_APP_FACE_FLARE, FF_APP_FACE_POWER_MENU, FF_APP_FACE_LAUNCHER,
     };
     for (size_t i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {
-        ff_route_t r = route_at(FF_APP_FACE_RADAR);
-        TEST_ASSERT_TRUE(ff_route_home(&r));
+        ff_route_t r = route_at(FF_APP_FACE_LAUNCHER);
         TEST_ASSERT_FALSE(ff_route_launcher_select(&r, bad[i]));
-        TEST_ASSERT_EQUAL_INT(FF_APP_FACE_LAUNCHER, r.modal);
-        TEST_ASSERT_EQUAL_INT(FF_APP_FACE_RADAR, r.base);
+        TEST_ASSERT_EQUAL_INT(FF_APP_FACE_LAUNCHER, r.base);
+        TEST_ASSERT_EQUAL_INT(FF_APP_FACE_NONE, r.modal);
     }
 }
 
-/* A tap with no launcher open (a stray/late event) must not resurrect
- * it or move base out from under whatever IS actually showing. */
-static void launcher_select_is_a_no_op_when_the_launcher_is_not_open(void)
+/* A tap with the launcher not showing (a stray/late event, or a modal
+ * covering it) must not move base out from under whatever IS actually
+ * showing. */
+static void launcher_select_is_a_no_op_when_the_launcher_is_not_showing(void)
 {
     ff_route_t r = route_at(FF_APP_FACE_SIGNALS);
     TEST_ASSERT_FALSE(ff_route_launcher_select(&r, FF_APP_FACE_NOW));
     TEST_ASSERT_EQUAL_INT(FF_APP_FACE_SIGNALS, r.base);
     TEST_ASSERT_EQUAL_INT(FF_APP_FACE_NONE, r.modal);
+}
+
+static void launcher_select_is_rejected_while_the_power_menu_covers_the_launcher(void)
+{
+    ff_route_t r = route_at(FF_APP_FACE_LAUNCHER);
+    TEST_ASSERT_TRUE(ff_route_push_modal(&r, FF_APP_FACE_POWER_MENU));
+    TEST_ASSERT_FALSE(ff_route_launcher_select(&r, FF_APP_FACE_NOW));
+    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_LAUNCHER, r.base);
+    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_POWER_MENU, r.modal);
 }
 
 static void launcher_select_is_null_safe(void)
@@ -701,7 +781,7 @@ int main(void)
 {
     UNITY_BEGIN();
 
-    RUN_TEST(init_opens_on_radar_with_no_modal);
+    RUN_TEST(init_opens_on_the_launcher_with_no_modal);
     RUN_TEST(init_is_null_safe);
 
     RUN_TEST(S16_AC1_swipe_back_from_radar_is_a_no_op);
@@ -711,6 +791,7 @@ int main(void)
     RUN_TEST(carousel_signals_map_settings_are_swipe_neighbours);
     RUN_TEST(swipe_rejects_directions_other_than_plus_or_minus_one);
     RUN_TEST(swipe_on_a_base_off_the_axis_is_a_no_op);
+    RUN_TEST(swipe_on_the_launcher_base_is_a_no_op);
     RUN_TEST(swipe_is_null_safe);
 
     RUN_TEST(goto_jumps_straight_to_a_far_face);
@@ -728,16 +809,18 @@ int main(void)
     RUN_TEST(S16_AC3_takeover_is_not_stored_so_two_reads_can_disagree);
 
     RUN_TEST(visible_is_base_across_the_whole_carousel);
+    RUN_TEST(visible_is_the_launcher_when_base_is_the_launcher);
     RUN_TEST(visible_is_the_modal_when_one_is_up);
     RUN_TEST(visible_of_null_is_none);
 
-    RUN_TEST(push_modal_accepts_only_compose_power_menu_and_launcher);
+    RUN_TEST(push_modal_accepts_only_compose_and_power_menu);
     RUN_TEST(push_modal_power_menu_over_compose_is_rejected_and_vice_versa);
-    RUN_TEST(push_modal_power_menu_replaces_the_launcher);
-    RUN_TEST(push_modal_compose_does_not_replace_the_launcher);
-    RUN_TEST(pop_modal_after_replacing_the_launcher_reveals_radar_not_the_launcher);
+    RUN_TEST(push_modal_power_menu_opens_over_the_launcher_base);
+    RUN_TEST(push_modal_power_menu_over_launcher_then_cancel_returns_to_launcher);
+    RUN_TEST(push_modal_compose_also_opens_over_the_launcher_base);
     RUN_TEST(power_menu_modal_suppresses_swipe_and_is_the_visible_face);
     RUN_TEST(push_modal_rejects_map_and_settings);
+    RUN_TEST(push_modal_rejects_the_launcher);
     RUN_TEST(push_modal_leaves_base_untouched);
     RUN_TEST(push_modal_over_a_live_modal_is_rejected);
     RUN_TEST(push_modal_on_a_base_off_the_axis_is_a_no_op);
@@ -746,18 +829,20 @@ int main(void)
     RUN_TEST(pop_modal_with_nothing_up_is_a_no_op);
     RUN_TEST(modal_null_guards_are_no_ops_not_crashes);
 
-    RUN_TEST(S26e_AC1_home_from_radar_opens_the_launcher);
-    RUN_TEST(S26e_AC1_home_from_the_launcher_returns_to_radar);
-    RUN_TEST(S26e_AC1_home_from_each_app_returns_straight_to_radar);
+    RUN_TEST(S26e_AC1_home_from_radar_sets_base_to_the_launcher);
+    RUN_TEST(S26e_AC1_home_from_each_app_sets_base_to_the_launcher);
+    RUN_TEST(S26e_AC1_home_on_the_launcher_is_a_no_op);
     RUN_TEST(S26e_AC1_home_is_suppressed_by_compose);
     RUN_TEST(S26e_AC1_home_is_suppressed_by_the_power_menu);
-    RUN_TEST(S26e_AC1_swipe_is_suppressed_while_the_launcher_is_open);
+    RUN_TEST(S26e_AC1_home_is_suppressed_by_the_power_menu_over_the_launcher);
+    RUN_TEST(home_repairs_an_off_axis_base);
+    RUN_TEST(S26e_AC1_swipe_is_a_no_op_on_the_launcher_base);
     RUN_TEST(home_is_null_safe);
 
     RUN_TEST(launcher_select_reaches_every_circle);
-    RUN_TEST(launcher_select_rejects_radar);
     RUN_TEST(launcher_select_rejects_non_swipe_faces);
-    RUN_TEST(launcher_select_is_a_no_op_when_the_launcher_is_not_open);
+    RUN_TEST(launcher_select_is_a_no_op_when_the_launcher_is_not_showing);
+    RUN_TEST(launcher_select_is_rejected_while_the_power_menu_covers_the_launcher);
     RUN_TEST(launcher_select_is_null_safe);
 
     return UNITY_END();

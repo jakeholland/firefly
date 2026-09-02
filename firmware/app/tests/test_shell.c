@@ -1001,7 +1001,7 @@ static void S16_AC13_active_face_is_never_flare_even_during_a_takeover(void)
     TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, true));
 
     ff_shell_tick(&H.shell, H.clk.t);
-    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_RADAR, ff_shell_view(&H.shell)->active_face);
+    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_LAUNCHER, ff_shell_view(&H.shell)->active_face); /* the boot default, S26e amended 2026-09-01 */
 
     inject_flare(DANA, 300);
     TEST_ASSERT_TRUE(ff_shell_flare(&H.shell)->takeover_active);
@@ -1012,7 +1012,7 @@ static void S16_AC13_active_face_is_never_flare_even_during_a_takeover(void)
         ff_shell_tick(&H.shell, H.clk.t);
         ff_app_state_t const *v = ff_shell_view(&H.shell);
         TEST_ASSERT_NOT_EQUAL_INT(FF_APP_FACE_FLARE, v->active_face);
-        TEST_ASSERT_EQUAL_INT(FF_APP_FACE_RADAR, v->active_face);
+        TEST_ASSERT_EQUAL_INT(FF_APP_FACE_LAUNCHER, v->active_face);
         /* The takeover DOES reach the screen — as ff_flare_t's single
          * fact, which face_dispatch.c already reads. If it did not, the
          * assertion above would be passing for the wrong reason. */
@@ -1096,7 +1096,7 @@ static void S16_AC3b_send_text_and_back_rejected_during_takeover_draft_survives(
      * not "SEND_TEXT never does anything". */
     ff_shell_intent(&H.shell, &send);
     (void)ff_shell_tick(&H.shell, H.clk.t);
-    TEST_ASSERT_EQUAL(FF_APP_FACE_RADAR, ff_shell_view(&H.shell)->active_face); /* SEND pops back to base */
+    TEST_ASSERT_EQUAL(FF_APP_FACE_LAUNCHER, ff_shell_view(&H.shell)->active_face); /* SEND pops back to base (the boot default) */
     TEST_ASSERT_EQUAL_STRING("", ff_shell_view(&H.shell)->compose.text);       /* draft reset on send */
 }
 
@@ -1415,6 +1415,16 @@ static void S16_AC4a_dirty_is_the_rendered_projection_not_the_raw_struct(void)
     TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, true));
     inject_node(DANA, "DANA", U_EVENING); /* NodeInfo only, no position -> DANA is LINKED, no presence age churn */
     inject_text(DANA, "omw"); /* a feed item whose age_str the Signals face renders */
+
+    /* S26e amended 2026-09-01: the boot default is the launcher, whose
+     * render key masks everything except the unread badge (the same
+     * "opaque overlay" discipline the power menu uses), so the Signals
+     * row's age_str this scene measures would never dirty the key from
+     * there. Leave the launcher for the Signals face first. */
+    {
+        ff_intent_t const leave_launcher = {.kind = FF_INTENT_LAUNCHER_SELECT, .u = {.launcher_idx = 2u}};
+        ff_shell_intent(&H.shell, &leave_launcher);
+    }
 
     ff_shell_tick(&H.shell, H.clk.t); /* first frame: always dirty */
 
@@ -3422,7 +3432,7 @@ static void S16_c3_send_text_sends_the_shell_owned_draft(void)
      * call, noted in the PR body): back at the base face, and typing
      * again after re-opening starts from empty, not from "j ". */
     (void)ff_shell_tick(&H.shell, H.clk.t);
-    TEST_ASSERT_EQUAL(FF_APP_FACE_RADAR, ff_shell_view(&H.shell)->active_face);
+    TEST_ASSERT_EQUAL(FF_APP_FACE_LAUNCHER, ff_shell_view(&H.shell)->active_face); /* base underneath was the boot default */
     TEST_ASSERT_EQUAL_STRING("", ff_shell_view(&H.shell)->compose.text);
 
     /* Explicit-destination half: OPEN_COMPOSE(DANA) -> SEND targets DANA,
@@ -3524,7 +3534,7 @@ static void S08_pred_send_with_unaccepted_candidate_sends_the_visible_word(void)
 
     /* Sending closed the composer and reset draft + predictive session. */
     (void)ff_shell_tick(&H.shell, H.clk.t);
-    TEST_ASSERT_EQUAL(FF_APP_FACE_RADAR, ff_shell_view(&H.shell)->active_face);
+    TEST_ASSERT_EQUAL(FF_APP_FACE_LAUNCHER, ff_shell_view(&H.shell)->active_face); /* base underneath was the boot default */
     TEST_ASSERT_EQUAL_STRING("", ff_shell_view(&H.shell)->compose.text);
     TEST_ASSERT_EQUAL_STRING("", ff_shell_view(&H.shell)->compose.word);
 }
@@ -4065,11 +4075,11 @@ static void S24_AC3_fab_pick_and_back_navigate_subviews(void)
     /* Navigate to the Signals face first — these controls only exist
      * there, and BACK's sub-view pop is (correctly) gated on the
      * Signals base face. S26 slice e: via the BOOT-button launcher
-     * (HOME opens it from Radar, LAUNCHER_SELECT idx 1 = Signals). */
+     * (HOME opens it from Radar, LAUNCHER_SELECT idx 2 = Signals, amended 2026-09-01 5-circle order). */
     ff_intent_t to_home = {.kind = FF_INTENT_HOME, .u = {0}};
     ff_shell_intent(&H.shell, &to_home); /* RADAR -> LAUNCHER */
     ff_intent_t to_signals = {.kind = FF_INTENT_LAUNCHER_SELECT, .u = {0}};
-    to_signals.u.launcher_idx = 1u;
+    to_signals.u.launcher_idx = 2u; /* Signals — index 2 as of the amended 5-circle order */
     ff_shell_intent(&H.shell, &to_signals); /* LAUNCHER -> SIGNALS */
 
     ff_intent_t fab = {.kind = FF_INTENT_INBOX_NEW, .u = {0}};
@@ -4135,7 +4145,7 @@ static void S24_AC3_leaving_signals_face_resets_subview_to_inbox(void)
     /* S26 slice e: via the BOOT-button launcher. */
     ff_intent_t home = {.kind = FF_INTENT_HOME, .u = {0}};
     ff_intent_t to_signals = {.kind = FF_INTENT_LAUNCHER_SELECT, .u = {0}};
-    to_signals.u.launcher_idx = 1u;
+    to_signals.u.launcher_idx = 2u; /* Signals — index 2 as of the amended 5-circle order */
     ff_shell_intent(&H.shell, &home); /* RADAR -> LAUNCHER */
     ff_shell_intent(&H.shell, &to_signals); /* LAUNCHER -> SIGNALS */
     (void)ff_shell_tick(&H.shell, H.clk.t);
@@ -4166,6 +4176,17 @@ static void S24_AC3_leaving_signals_face_resets_subview_to_inbox(void)
 static void S24_AC8_inbox_key_same_bucket_age_tick_is_clean(void)
 {
     harness_init(100000u, false);
+    /* S26e amended 2026-09-01: the boot default is the launcher, whose
+     * render key masks everything except the unread badge (the same
+     * "opaque overlay" discipline the power menu uses) — and the
+     * launcher does not render the Signals/inbox content at all
+     * (face_dispatch.c dispatches it to ff_scr_launcher_build, not
+     * scr_nav.c). Leave it for the Signals face first, so the
+     * dirty-key assertions below are testing what they say they test. */
+    {
+        ff_intent_t const leave_launcher = {.kind = FF_INTENT_LAUNCHER_SELECT, .u = {.launcher_idx = 2u}};
+        ff_shell_intent(&H.shell, &leave_launcher);
+    }
     inject_my_info(MY_ID);
     TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, true));
 
@@ -4286,6 +4307,17 @@ static void S24_AC3_inbox_intents_are_inert_under_a_takeover(void)
 static void S24_AC8_presence_age_keys_rendered_bucket_only(void)
 {
     harness_init(100000u, false);
+    /* S26e amended 2026-09-01: the boot default is the launcher, whose
+     * render key masks everything except the unread badge (the same
+     * "opaque overlay" discipline the power menu uses) — and the
+     * launcher does not render the Signals/inbox content at all
+     * (face_dispatch.c dispatches it to ff_scr_launcher_build, not
+     * scr_nav.c). Leave it for the Signals face first, so the
+     * dirty-key assertions below are testing what they say they test. */
+    {
+        ff_intent_t const leave_launcher = {.kind = FF_INTENT_LAUNCHER_SELECT, .u = {.launcher_idx = 2u}};
+        ff_shell_intent(&H.shell, &leave_launcher);
+    }
     inject_my_info(MY_ID);
     TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, true));
 
@@ -4333,18 +4365,20 @@ static void S24_AC8_presence_age_keys_rendered_bucket_only(void)
 /* S24 slice c — thread screens: projection, quick chips, churn key     */
 /* =================================================================== */
 
-/* Navigate the route from Radar to Signals (the thread chip paths are
- * gated on the Signals base face, like every other base-face control).
- * S26 slice e: via the BOOT-button launcher (HOME opens it from Radar,
- * LAUNCHER_SELECT idx 1 = Signals — ff_intent.h's fixed circle order) —
- * this replaces the retired swipe-based route this helper used to take;
- * every call site assumes the route starts on Radar, same as before. */
+/* Navigate the route to Signals (the thread chip paths are gated on the
+ * Signals base face, like every other base-face control). S26 slice e,
+ * amended 2026-09-01: via the BOOT-button launcher — HOME (a no-op if
+ * already on the launcher, which is the boot default) followed by
+ * LAUNCHER_SELECT idx 2 (Signals — ff_intent.h's fixed 5-circle order).
+ * This replaces the retired swipe-based route this helper used to take;
+ * it works from ANY starting base (HOME always returns to the launcher
+ * first), not just Radar. */
 static void s24c_swipe_to_signals(void)
 {
     ff_intent_t home = {.kind = FF_INTENT_HOME, .u = {0}};
-    ff_shell_intent(&H.shell, &home); /* RADAR -> LAUNCHER */
+    ff_shell_intent(&H.shell, &home); /* any base -> LAUNCHER (no-op if already there) */
     ff_intent_t select = {.kind = FF_INTENT_LAUNCHER_SELECT, .u = {0}};
-    select.u.launcher_idx = 1u; /* Signals */
+    select.u.launcher_idx = 2u; /* Signals — index 2 as of the amended 5-circle order */
     ff_shell_intent(&H.shell, &select); /* LAUNCHER -> SIGNALS */
 }
 
@@ -4833,6 +4867,16 @@ static void S26_flare_and_pulse_do_not_push_banners(void)
 static void S26_coalesce_within_2s_updates_head_in_place(void)
 {
     harness_init(100000u, false);
+    /* S26e amended 2026-09-01: the boot default is the launcher, whose
+     * render key masks everything except the unread badge (the same
+     * "opaque overlay" discipline the power menu uses) — and the
+     * launcher does not render the banner overlay at all
+     * (face_dispatch.c dispatches it to ff_scr_launcher_build, not
+     * scr_nav.c). Leave it for an ordinary base face first, so the
+     * banner's dirty-key assertions below are testing what they say
+     * they test. */
+    ff_intent_t const leave_launcher = {.kind = FF_INTENT_LAUNCHER_SELECT, .u = {0}};
+    ff_shell_intent(&H.shell, &leave_launcher);
     inject_my_info(MY_ID);
     TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, true));
     inject_node(DANA, "DANA", U_EVENING);
@@ -4874,6 +4918,16 @@ static void S26_coalesce_within_2s_updates_head_in_place(void)
 static void S26_AC1_banner_auto_expires_after_6s(void)
 {
     harness_init(100000u, false);
+    /* S26e amended 2026-09-01: the boot default is the launcher, whose
+     * render key masks everything except the unread badge (the same
+     * "opaque overlay" discipline the power menu uses) — and the
+     * launcher does not render the banner overlay at all
+     * (face_dispatch.c dispatches it to ff_scr_launcher_build, not
+     * scr_nav.c). Leave it for an ordinary base face first, so the
+     * banner's dirty-key assertions below are testing what they say
+     * they test. */
+    ff_intent_t const leave_launcher = {.kind = FF_INTENT_LAUNCHER_SELECT, .u = {0}};
+    ff_shell_intent(&H.shell, &leave_launcher);
     inject_my_info(MY_ID);
     TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, true));
 
@@ -4901,6 +4955,16 @@ static void S26_AC1_banner_auto_expires_after_6s(void)
 static void S26_AC2_banner_age_same_bucket_ticks_are_clean(void)
 {
     harness_init(100000u, false);
+    /* S26e amended 2026-09-01: the boot default is the launcher, whose
+     * render key masks everything except the unread badge (the same
+     * "opaque overlay" discipline the power menu uses) — and the
+     * launcher does not render the banner overlay at all
+     * (face_dispatch.c dispatches it to ff_scr_launcher_build, not
+     * scr_nav.c). Leave it for an ordinary base face first, so the
+     * banner's dirty-key assertions below are testing what they say
+     * they test. */
+    ff_intent_t const leave_launcher = {.kind = FF_INTENT_LAUNCHER_SELECT, .u = {0}};
+    ff_shell_intent(&H.shell, &leave_launcher);
     inject_my_info(MY_ID);
     TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, true));
 
@@ -5078,7 +5142,7 @@ static void s24d_to_signals(void)
     ff_intent_t home = {.kind = FF_INTENT_HOME, .u = {0}};
     ff_shell_intent(&H.shell, &home); /* RADAR -> LAUNCHER */
     ff_intent_t select = {.kind = FF_INTENT_LAUNCHER_SELECT, .u = {0}};
-    select.u.launcher_idx = 1u; /* Signals */
+    select.u.launcher_idx = 2u; /* Signals — index 2 as of the amended 5-circle order */
     ff_shell_intent(&H.shell, &select); /* LAUNCHER -> SIGNALS */
 }
 

@@ -584,8 +584,8 @@ static lv_obj_t *find_clickable_by_size(lv_obj_t *root, int32_t w, int32_t h)
     return NULL;
 }
 
-/* PR #142 review Design 2: the launcher's four circles are now all the
- * SAME size (96x96, up from 64x64), so `find_clickable_by_size` above
+/* PR #142 review Design 2: the launcher's circles are all the SAME
+ * size (96x96, up from 64x64), so `find_clickable_by_size` above
  * (which returns the FIRST match) can no longer tell them apart — and
  * Design 1 swapped their labels for LV_SYMBOL_* glyphs, so
  * `find_button_with_label` can't either (the glyph string is not a
@@ -593,10 +593,11 @@ static lv_obj_t *find_clickable_by_size(lv_obj_t *root, int32_t w, int32_t h)
  * used to be). Walks the SAME depth-first, sibling-order traversal as
  * both helpers above and returns the `want`-th (0-based) same-size
  * button it finds — reliable because `ff_scr_launcher_build` adds the
- * four circles as direct puck children in a FIXED order (Now, Signals,
- * Map, Settings — the same order `launcher_idx` encodes), so tree order
- * IS circle order. `*counter` is threaded through the recursion so one
- * top-level call counts correctly across the whole subtree. */
+ * circles as direct puck children in a FIXED order (S26e, amended
+ * 2026-09-01: FIVE circles now — Radar, Now, Signals, Map, Settings —
+ * the same order `launcher_idx` encodes), so tree order IS circle
+ * order. `*counter` is threaded through the recursion so one top-level
+ * call counts correctly across the whole subtree. */
 static lv_obj_t *find_nth_clickable_by_size(lv_obj_t *root, int32_t w, int32_t h, int *counter, int want)
 {
     uint32_t n = lv_obj_get_child_count(root);
@@ -615,9 +616,9 @@ static lv_obj_t *find_nth_clickable_by_size(lv_obj_t *root, int32_t w, int32_t h
     return NULL;
 }
 
-/* `idx`: 0=Now, 1=Signals, 2=Map, 3=Settings (ff_intent.h's
+/* `idx`: 0=Radar, 1=Now, 2=Signals, 3=Map, 4=Settings (ff_intent.h's
  * FF_INTENT_LAUNCHER_SELECT payload convention == scr_launcher.c's own
- * build order). */
+ * build order, amended 2026-09-01 for the fifth — Radar — circle). */
 static lv_obj_t *launcher_circle_at(int idx)
 {
     int counter = 0;
@@ -1832,7 +1833,9 @@ static void S16_c1_wired_sites_are_noops_while_the_seam_is_unbound(void)
 }
 
 /* =================================================================== */
-/* S26 slice e — the launcher's four circles -> LAUNCHER_SELECT          */
+/* S26 slice e, amended 2026-09-01 — the launcher's FIVE circles ->      */
+/* LAUNCHER_SELECT (Radar joined with no special treatment; see          */
+/* ff_route.h's header note for the model amendment)                     */
 /* =================================================================== */
 
 static void S26e_launcher_circle_click_emits_launcher_select(int circle_idx, uint8_t expect_idx)
@@ -1848,24 +1851,29 @@ static void S26e_launcher_circle_click_emits_launcher_select(int circle_idx, uin
     TEST_ASSERT_EQUAL_UINT8(expect_idx, s_spy.last.u.launcher_idx);
 }
 
-static void S26e_launcher_now_circle_emits_index_0(void)
+static void S26e_launcher_radar_circle_emits_index_0(void)
 {
     S26e_launcher_circle_click_emits_launcher_select(0, 0u);
 }
 
-static void S26e_launcher_signals_circle_emits_index_1(void)
+static void S26e_launcher_now_circle_emits_index_1(void)
 {
     S26e_launcher_circle_click_emits_launcher_select(1, 1u);
 }
 
-static void S26e_launcher_map_circle_emits_index_2(void)
+static void S26e_launcher_signals_circle_emits_index_2(void)
 {
     S26e_launcher_circle_click_emits_launcher_select(2, 2u);
 }
 
-static void S26e_launcher_settings_circle_emits_index_3(void)
+static void S26e_launcher_map_circle_emits_index_3(void)
 {
     S26e_launcher_circle_click_emits_launcher_select(3, 3u);
+}
+
+static void S26e_launcher_settings_circle_emits_index_4(void)
+{
+    S26e_launcher_circle_click_emits_launcher_select(4, 4u);
 }
 
 /* Each click must produce EXACTLY ONE intent (same discipline this
@@ -1878,7 +1886,7 @@ static void S26e_launcher_click_emits_exactly_one_intent(void)
     memset(&state, 0, sizeof(state));
     ff_scr_launcher_build(&state);
 
-    click(launcher_circle_at(1)); /* Signals */
+    click(launcher_circle_at(2)); /* Signals — index 2 as of the amended 5-circle order */
     TEST_ASSERT_EQUAL_INT(1, s_spy.count);
 }
 
@@ -1945,10 +1953,11 @@ int main(void)
     RUN_TEST(S21_settings_calibrate_touch_row_emits_calibrate_intent);
     RUN_TEST(S16_c1_wired_sites_are_noops_while_the_seam_is_unbound);
 
-    RUN_TEST(S26e_launcher_now_circle_emits_index_0);
-    RUN_TEST(S26e_launcher_signals_circle_emits_index_1);
-    RUN_TEST(S26e_launcher_map_circle_emits_index_2);
-    RUN_TEST(S26e_launcher_settings_circle_emits_index_3);
+    RUN_TEST(S26e_launcher_radar_circle_emits_index_0);
+    RUN_TEST(S26e_launcher_now_circle_emits_index_1);
+    RUN_TEST(S26e_launcher_signals_circle_emits_index_2);
+    RUN_TEST(S26e_launcher_map_circle_emits_index_3);
+    RUN_TEST(S26e_launcher_settings_circle_emits_index_4);
     RUN_TEST(S26e_launcher_click_emits_exactly_one_intent);
 
     return UNITY_END();

@@ -15,6 +15,18 @@
  * earlier `pack_loaded`+`tbd` bool pair with this enum specifically so
  * "which state is this" is a fact of the data, not something this file
  * has to re-derive from check order.
+ *
+ * S26 slice e renames (2026-09-01): "Now" -> "Lineup" everywhere the
+ * user can read it. This file carries no standalone page-title string
+ * of its own to rename (unlike scr_signals.c's header "SIGNALS" ->
+ * "INBOX") — its only chrome header is "NOW PLAYING"
+ * (now_render_live), which describes CONTENT that is currently live,
+ * not this screen's own name, the same "now" the word / "now" the
+ * screen-name distinction CLAUDE.md's "now" age-formatting caution
+ * already draws elsewhere; left unchanged, along with "NOTHING LIVE
+ * RIGHT NOW". The renamed occurrence for this face is the launcher's
+ * own caption (scr_launcher.c: "NOW" -> "LINEUP"). Interpretation call,
+ * noted per AGENTS.md — see the PR body.
  */
 #include "scr_now.h"
 

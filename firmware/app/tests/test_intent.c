@@ -41,7 +41,6 @@
 #include "ff_shell.h"
 
 #include "ff_crew.h"
-#include "ff_idle.h" /* S26 slice e — FF_IDLE_T_DIM_MS, the launcher-timeout ordering test */
 #include "ff_proto.h"
 
 /* ------------------------------------------------------------------- */
@@ -161,22 +160,27 @@ static void send_launcher_select(uint8_t launcher_idx)
     ff_shell_intent(&H.shell, &in);
 }
 
-/* Navigate straight from Radar to one of the four launcher circles —
+/* Navigate from the launcher (home) to one of its five circles —
  * this file's replacement for what a run of `send_swipe` calls used to
- * do. `face` must be NOW/SIGNALS/MAP/SETTINGS; the caller is assumed to
- * be on Radar already (every test below calls this right after
- * harness_init, matching ff_route_init's opening face). */
-static void nav_from_radar_to(ff_app_face_t face)
+ * do. S26 slice e amended 2026-09-01: the launcher IS home, so
+ * `harness_init` already leaves the route there — but this always
+ * presses HOME first anyway (a no-op if already on the launcher, per
+ * `ff_route_home`'s own rule) rather than assuming the caller's prior
+ * state, so it works identically whether called fresh after
+ * harness_init or mid-test after leaving some other face, exactly the
+ * real BOOT-then-tap gesture a thumb performs. */
+static void nav_home_to(ff_app_face_t face)
 {
     uint8_t idx;
     switch (face) {
-    case FF_APP_FACE_NOW: idx = 0; break;
-    case FF_APP_FACE_SIGNALS: idx = 1; break;
-    case FF_APP_FACE_MAP: idx = 2; break;
-    case FF_APP_FACE_SETTINGS: idx = 3; break;
-    default: TEST_FAIL_MESSAGE("nav_from_radar_to: not a launcher circle"); return;
+    case FF_APP_FACE_RADAR: idx = 0; break;
+    case FF_APP_FACE_NOW: idx = 1; break;
+    case FF_APP_FACE_SIGNALS: idx = 2; break;
+    case FF_APP_FACE_MAP: idx = 3; break;
+    case FF_APP_FACE_SETTINGS: idx = 4; break;
+    default: TEST_FAIL_MESSAGE("nav_home_to: not a launcher circle"); return;
     }
-    send_home(); /* Radar -> launcher */
+    send_home(); /* BOOT: a no-op if already on the launcher */
     send_launcher_select(idx); /* launcher -> face */
 }
 
@@ -213,27 +217,31 @@ void tearDown(void) {}
 /* documented no-op now (scr_nav.c emits nothing to feed it any more —  */
 /* see that case's own comment); pinned here at the dispatch layer, the */
 /* same "swipe no longer moves base" property test_route.c's own        */
-/* S26e_AC1_swipe_is_suppressed_while_the_launcher_is_open pins one      */
-/* layer down (for the launcher-open case specifically).                */
+/* S26e_AC1_swipe_is_a_no_op_on_the_launcher_base pins one layer down    */
+/* (for the launcher-base case specifically).                           */
 /* =================================================================== */
 
 static void S26e_swipe_dispatch_moves_nothing_from_any_base_face(void)
 {
     harness_init(100000u);
 
-    TEST_ASSERT_EQUAL(FF_APP_FACE_RADAR, view()->active_face); /* ff_route_init's opening face */
+    /* S26 slice e amended 2026-09-01: ff_route_init's opening face is
+     * now the launcher itself (home), not Radar. */
+    TEST_ASSERT_EQUAL(FF_APP_FACE_LAUNCHER, view()->active_face);
 
     send_swipe(+1);
     send_swipe(-1);
-    TEST_ASSERT_EQUAL(FF_APP_FACE_RADAR, view()->active_face);
+    TEST_ASSERT_EQUAL(FF_APP_FACE_LAUNCHER, view()->active_face);
 
-    /* From every other base face too — a leftover call site is not
-     * quietly re-wiring navigation through the intent that used to own
-     * it. */
-    ff_app_face_t const bases[] = {FF_APP_FACE_NOW, FF_APP_FACE_SIGNALS, FF_APP_FACE_MAP, FF_APP_FACE_SETTINGS};
+    /* From every app face too, Radar included (an ordinary circle now,
+     * no special treatment) — a leftover call site is not quietly
+     * re-wiring navigation through the intent that used to own it. */
+    ff_app_face_t const bases[] = {
+        FF_APP_FACE_RADAR, FF_APP_FACE_NOW, FF_APP_FACE_SIGNALS, FF_APP_FACE_MAP, FF_APP_FACE_SETTINGS,
+    };
     for (size_t i = 0; i < sizeof(bases) / sizeof(bases[0]); i++) {
         harness_init(100000u);
-        nav_from_radar_to(bases[i]);
+        nav_home_to(bases[i]);
         TEST_ASSERT_EQUAL(bases[i], view()->active_face);
         send_swipe(+1);
         send_swipe(-1);
@@ -242,19 +250,38 @@ static void S26e_swipe_dispatch_moves_nothing_from_any_base_face(void)
 }
 
 /* =================================================================== */
-/* S26 slice e — HOME + LAUNCHER_SELECT, through the seam                */
+/* S26 slice e, AMENDED 2026-09-01 — HOME + LAUNCHER_SELECT, through the */
+/* seam. The launcher IS home now: it is what ff_route_init opens on,   */
+/* BOOT from any app (Radar included) returns to it, and BOOT while     */
+/* already on it is a no-op — see ff_route.h's header note for the full */
+/* model. The pre-amendment "home from Radar opens the launcher, a      */
+/* second press returns to Radar" tests are GONE with that model.       */
 /* =================================================================== */
 
-static void S26e_home_from_radar_opens_launcher_then_returns(void)
+static void S26e_home_on_the_launcher_is_a_noop(void)
 {
     harness_init(100000u);
-    TEST_ASSERT_EQUAL(FF_APP_FACE_RADAR, view()->active_face);
+    TEST_ASSERT_EQUAL(FF_APP_FACE_LAUNCHER, view()->active_face); /* the boot default */
 
     send_home();
-    TEST_ASSERT_EQUAL(FF_APP_FACE_LAUNCHER, view()->active_face);
+    TEST_ASSERT_EQUAL(FF_APP_FACE_LAUNCHER, view()->active_face); /* still there — nowhere "home-er" to go */
+}
 
-    send_home();
-    TEST_ASSERT_EQUAL(FF_APP_FACE_RADAR, view()->active_face);
+/* HOME from every app face, Radar included, lands on the launcher in
+ * one press — no special-cased return-to-Radar any more. */
+static void S26e_home_from_each_app_sets_base_to_the_launcher(void)
+{
+    ff_app_face_t const bases[] = {
+        FF_APP_FACE_RADAR, FF_APP_FACE_NOW, FF_APP_FACE_SIGNALS, FF_APP_FACE_MAP, FF_APP_FACE_SETTINGS,
+    };
+    for (size_t i = 0; i < sizeof(bases) / sizeof(bases[0]); i++) {
+        harness_init(100000u);
+        nav_home_to(bases[i]);
+        TEST_ASSERT_EQUAL(bases[i], view()->active_face);
+
+        send_home();
+        TEST_ASSERT_EQUAL(FF_APP_FACE_LAUNCHER, view()->active_face);
+    }
 }
 
 static void S26e_home_is_rejected_while_a_takeover_is_visible(void)
@@ -265,34 +292,45 @@ static void S26e_home_is_rejected_while_a_takeover_is_visible(void)
     TEST_ASSERT_TRUE(ff_shell_flare(&H.shell)->takeover_active);
 
     send_home();
-    TEST_ASSERT_EQUAL(FF_APP_FACE_RADAR, view()->active_face); /* route untouched underneath */
+    /* Route untouched underneath — still the boot default, the launcher. */
+    TEST_ASSERT_EQUAL(FF_APP_FACE_LAUNCHER, view()->active_face);
 }
 
+/* Five circles now (Radar included, index 0) — see ff_shell.c's
+ * k_launcher_faces table and scr_launcher.c's fixed circle order. */
 static void S26e_launcher_select_reaches_every_circle_and_the_badge_projects(void)
 {
     harness_init(100000u);
-    ff_app_face_t const circles[] = {FF_APP_FACE_NOW, FF_APP_FACE_SIGNALS, FF_APP_FACE_MAP, FF_APP_FACE_SETTINGS};
+    ff_app_face_t const circles[] = {
+        FF_APP_FACE_RADAR, FF_APP_FACE_NOW, FF_APP_FACE_SIGNALS, FF_APP_FACE_MAP, FF_APP_FACE_SETTINGS,
+    };
     for (size_t i = 0; i < sizeof(circles) / sizeof(circles[0]); i++) {
         harness_init(100000u);
-        nav_from_radar_to(circles[i]);
+        nav_home_to(circles[i]);
         TEST_ASSERT_EQUAL(circles[i], view()->active_face);
     }
 }
 
-static void S26e_launcher_select_is_a_noop_when_the_launcher_is_not_open(void)
+/* "The launcher is not showing" now has to be built by LEAVING it
+ * first (harness_init's own opening state IS the launcher, as of this
+ * amendment) — the inverse of the pre-amendment test, which had to do
+ * nothing at all to get this precondition. */
+static void S26e_launcher_select_is_a_noop_when_the_launcher_is_not_showing(void)
 {
     harness_init(100000u);
+    nav_home_to(FF_APP_FACE_RADAR);
     TEST_ASSERT_EQUAL(FF_APP_FACE_RADAR, view()->active_face);
-    send_launcher_select(1u); /* Signals — but the launcher was never opened */
+
+    send_launcher_select(2u); /* Signals — but the launcher isn't showing */
     TEST_ASSERT_EQUAL(FF_APP_FACE_RADAR, view()->active_face);
 }
 
+/* Five circles (0..4) now — one past the last real one is 5, not 4. */
 static void S26e_launcher_select_out_of_range_index_is_a_noop(void)
 {
     harness_init(100000u);
-    send_home();
-    TEST_ASSERT_EQUAL(FF_APP_FACE_LAUNCHER, view()->active_face);
-    send_launcher_select(4u); /* one past the last real circle (0..3) */
+    TEST_ASSERT_EQUAL(FF_APP_FACE_LAUNCHER, view()->active_face); /* the boot default */
+    send_launcher_select(5u); /* one past the last real circle (0..4) */
     TEST_ASSERT_EQUAL(FF_APP_FACE_LAUNCHER, view()->active_face); /* still open */
     send_launcher_select(255u);
     TEST_ASSERT_EQUAL(FF_APP_FACE_LAUNCHER, view()->active_face);
@@ -302,14 +340,13 @@ static void S26e_launcher_select_is_rejected_while_a_takeover_is_visible(void)
 {
     harness_init(100000u);
     pair_named(DANA, "DANA");
-    send_home();
-    TEST_ASSERT_EQUAL(FF_APP_FACE_LAUNCHER, view()->active_face);
+    TEST_ASSERT_EQUAL(FF_APP_FACE_LAUNCHER, view()->active_face); /* the boot default — already showing */
 
     inject_flare(DANA, 300u);
     TEST_ASSERT_TRUE(ff_shell_flare(&H.shell)->takeover_active);
 
-    send_launcher_select(1u); /* Signals */
-    /* The route's own modal is untouched underneath the takeover (S16
+    send_launcher_select(2u); /* Signals */
+    /* The route's own base is untouched underneath the takeover (S16
      * AC13: active_face never reflects the takeover itself). */
     TEST_ASSERT_EQUAL(FF_APP_FACE_LAUNCHER, view()->active_face);
 }
@@ -321,7 +358,7 @@ static void S26e_launcher_select_is_rejected_while_a_takeover_is_visible(void)
 static void S16_c1_open_compose_and_back_round_trip(void)
 {
     harness_init(100000u);
-    nav_from_radar_to(FF_APP_FACE_SIGNALS); /* where the real "+" lives */
+    nav_home_to(FF_APP_FACE_SIGNALS); /* where the real "+" lives */
     TEST_ASSERT_EQUAL(FF_APP_FACE_SIGNALS, view()->active_face);
 
     send_open_compose(0u);
@@ -469,7 +506,7 @@ static void S16_c1_back_clears_the_compose_destination(void)
 static void S16_c1_open_settings_jumps_base_to_the_settings_face(void)
 {
     harness_init(100000u);
-    nav_from_radar_to(FF_APP_FACE_NOW); /* prove the jump works from any base, not just Radar */
+    nav_home_to(FF_APP_FACE_NOW); /* prove the jump works from any base, not just the launcher */
     TEST_ASSERT_EQUAL(FF_APP_FACE_NOW, view()->active_face);
 
     /* One dispatch jumps straight to the far-right Settings face,
@@ -478,9 +515,10 @@ static void S16_c1_open_settings_jumps_base_to_the_settings_face(void)
     TEST_ASSERT_EQUAL(FF_APP_FACE_SETTINGS, view()->active_face);
 
     /* Settings is a base face, not a modal — you leave it via HOME (S26
-     * slice e: "from any app -> Radar"), not BACK. */
+     * slice e, amended 2026-09-01: "any base -> the launcher"), not
+     * BACK. */
     send_home();
-    TEST_ASSERT_EQUAL(FF_APP_FACE_RADAR, view()->active_face);
+    TEST_ASSERT_EQUAL(FF_APP_FACE_LAUNCHER, view()->active_face);
 
     /* Jump back to Settings, then confirm BACK on a bare face is a
      * no-op (there is no modal to pop). */
@@ -494,27 +532,32 @@ static void S16_c1_open_settings_jumps_base_to_the_settings_face(void)
  * S26 slice e: Map is a launcher circle now — there is no FF_INTENT_OPEN_MAP
  * and no swipe-between-neighbours path any more (the horizontal carousel
  * that used to carry it is retired). Reached directly from the launcher,
- * left via HOME straight back to Radar.
+ * left via HOME straight back to the launcher (amended 2026-09-01: not
+ * to Radar specifically — Radar is an ordinary circle now too).
  */
 static void launcher_reaches_map_directly(void)
 {
     harness_init(100000u);
 
-    nav_from_radar_to(FF_APP_FACE_MAP);
+    nav_home_to(FF_APP_FACE_MAP);
     TEST_ASSERT_EQUAL(FF_APP_FACE_MAP, view()->active_face);
 
-    /* Leave Map via HOME — straight back to Radar, no modal, no BACK
-     * involved (S26 slice e: "from any app -> Radar"). */
+    /* Leave Map via HOME — straight back to the launcher, no modal, no
+     * BACK involved (S26 slice e, amended 2026-09-01: "any base -> the
+     * launcher"). */
     send_home();
-    TEST_ASSERT_EQUAL(FF_APP_FACE_RADAR, view()->active_face);
+    TEST_ASSERT_EQUAL(FF_APP_FACE_LAUNCHER, view()->active_face);
 
-    /* Every other launcher circle is reachable the same way. */
-    ff_app_face_t const others[] = {FF_APP_FACE_NOW, FF_APP_FACE_SIGNALS, FF_APP_FACE_SETTINGS};
+    /* Every other launcher circle is reachable the same way, Radar
+     * included. */
+    ff_app_face_t const others[] = {
+        FF_APP_FACE_RADAR, FF_APP_FACE_NOW, FF_APP_FACE_SIGNALS, FF_APP_FACE_SETTINGS,
+    };
     for (size_t i = 0; i < sizeof(others) / sizeof(others[0]); i++) {
-        nav_from_radar_to(others[i]);
+        nav_home_to(others[i]);
         TEST_ASSERT_EQUAL(others[i], view()->active_face);
         send_home();
-        TEST_ASSERT_EQUAL(FF_APP_FACE_RADAR, view()->active_face);
+        TEST_ASSERT_EQUAL(FF_APP_FACE_LAUNCHER, view()->active_face);
     }
 }
 
@@ -543,7 +586,7 @@ static void S11b_a_compose_draft_survives_a_settings_visit(void)
     TEST_ASSERT_EQUAL_STRING("omw", view()->compose.text);
 
     send_kind(FF_INTENT_BACK);
-    TEST_ASSERT_EQUAL(FF_APP_FACE_RADAR, view()->active_face);
+    TEST_ASSERT_EQUAL(FF_APP_FACE_LAUNCHER, view()->active_face); /* base underneath was the launcher (the boot default) */
 
     send_kind(FF_INTENT_OPEN_SETTINGS); /* jumps base to the Settings face */
     TEST_ASSERT_EQUAL(FF_APP_FACE_SETTINGS, view()->active_face);
@@ -552,10 +595,10 @@ static void S11b_a_compose_draft_survives_a_settings_visit(void)
      * while it isn't the visible face. */
     TEST_ASSERT_EQUAL_STRING("omw", view()->compose.text);
 
-    /* Leave Settings via HOME — straight back to Radar (S26 slice e) —
-     * the draft is untouched. */
+    /* Leave Settings via HOME — straight back to the launcher (S26
+     * slice e, amended 2026-09-01) — the draft is untouched. */
     send_home();
-    TEST_ASSERT_EQUAL(FF_APP_FACE_RADAR, view()->active_face);
+    TEST_ASSERT_EQUAL(FF_APP_FACE_LAUNCHER, view()->active_face);
     TEST_ASSERT_EQUAL_STRING("omw", view()->compose.text); /* still there, untouched */
 }
 
@@ -846,7 +889,7 @@ static void S16_c1_route_intents_are_rejected_while_a_takeover_is_visible(void)
 
     /* And dispatch to Compose is restored with it. */
     send_kind(FF_INTENT_BACK);
-    TEST_ASSERT_EQUAL(FF_APP_FACE_RADAR, view()->active_face);
+    TEST_ASSERT_EQUAL(FF_APP_FACE_LAUNCHER, view()->active_face); /* base underneath was the boot default */
 }
 
 static void S16_c1_takeover_decisions_require_a_visible_takeover(void)
@@ -1105,6 +1148,17 @@ static void bug1_brightness_change_does_not_mark_the_render_dirty(void)
     setting_harness_t h;
     setting_harness_init(&h);
 
+    /* S26e amended 2026-09-01: the boot default is the launcher, whose
+     * render key masks EVERYTHING except the unread badge (the same
+     * "opaque overlay" discipline the power menu uses) — correctly so,
+     * since Settings isn't what is on screen there. Leave the launcher
+     * for an ordinary base face first, so the control assertion below
+     * is actually testing what it says it tests: a rendered
+     * Settings-face change dirtying the key. */
+    ff_intent_t leave_launcher = {.kind = FF_INTENT_LAUNCHER_SELECT, .u = {0}};
+    leave_launcher.u.launcher_idx = 0u; /* Radar — any ordinary base face works */
+    ff_shell_intent(&h.shell, &leave_launcher);
+
     (void)ff_shell_tick(&h.shell, h.clk.t);              /* first frame is always dirty; settle it */
     TEST_ASSERT_FALSE(ff_shell_tick(&h.shell, h.clk.t)); /* frozen clock, idle -> not dirty (baseline) */
 
@@ -1335,19 +1389,12 @@ static void send_power(ff_shell_t *shell, ff_intent_kind_t kind)
     ff_shell_intent(shell, &in);
 }
 
-/* S26 slice e — HOME/LAUNCHER_SELECT against an explicit shell (the
- * power-menu section's own harness, `setting_harness_t`, not the
- * global `H` the earlier S26e_* tests use). */
+/* S26 slice e — HOME against an explicit shell (the power-menu
+ * section's own harness, `setting_harness_t`, not the global `H` the
+ * earlier S26e_* tests use). */
 static void send_home_on(ff_shell_t *shell)
 {
     ff_intent_t in = {.kind = FF_INTENT_HOME, .u = {0}};
-    ff_shell_intent(shell, &in);
-}
-
-static void send_launcher_select_on(ff_shell_t *shell, uint8_t launcher_idx)
-{
-    ff_intent_t in = {.kind = FF_INTENT_LAUNCHER_SELECT, .u = {0}};
-    in.u.launcher_idx = launcher_idx;
     ff_shell_intent(shell, &in);
 }
 
@@ -1444,7 +1491,7 @@ static void S26b_power_off_calls_the_hook_and_closes_the_menu(void)
 
     TEST_ASSERT_EQUAL_INT(1, spy.off_calls);
     TEST_ASSERT_EQUAL_INT(0, spy.reboot_calls);
-    TEST_ASSERT_EQUAL(FF_APP_FACE_RADAR, power_view(&h)->active_face); /* popped back to base */
+    TEST_ASSERT_EQUAL(FF_APP_FACE_LAUNCHER, power_view(&h)->active_face); /* popped back to base (the boot default) */
 
     ff_shell_close(&h.shell);
 }
@@ -1469,7 +1516,7 @@ static void S26b_power_off_with_no_hook_still_closes_the_menu(void)
 
     send_power(&h.shell, FF_INTENT_POWER_MENU_OPEN);
     send_power(&h.shell, FF_INTENT_POWER_OFF);
-    TEST_ASSERT_EQUAL(FF_APP_FACE_RADAR, power_view(&h)->active_face);
+    TEST_ASSERT_EQUAL(FF_APP_FACE_LAUNCHER, power_view(&h)->active_face);
 
     ff_shell_close(&h.shell);
 }
@@ -1485,7 +1532,7 @@ static void S26b_power_reboot_calls_the_hook_and_closes_the_menu(void)
 
     TEST_ASSERT_EQUAL_INT(0, spy.off_calls);
     TEST_ASSERT_EQUAL_INT(1, spy.reboot_calls);
-    TEST_ASSERT_EQUAL(FF_APP_FACE_RADAR, power_view(&h)->active_face);
+    TEST_ASSERT_EQUAL(FF_APP_FACE_LAUNCHER, power_view(&h)->active_face);
 
     ff_shell_close(&h.shell);
 }
@@ -1501,7 +1548,7 @@ static void S26b_power_cancel_closes_the_menu_without_calling_either_hook(void)
 
     TEST_ASSERT_EQUAL_INT(0, spy.off_calls);
     TEST_ASSERT_EQUAL_INT(0, spy.reboot_calls);
-    TEST_ASSERT_EQUAL(FF_APP_FACE_RADAR, power_view(&h)->active_face); /* base untouched */
+    TEST_ASSERT_EQUAL(FF_APP_FACE_LAUNCHER, power_view(&h)->active_face); /* base untouched (the boot default) */
 
     ff_shell_close(&h.shell);
 }
@@ -1534,7 +1581,7 @@ static void S26b_power_menu_auto_dismisses_at_exactly_the_10s_timeout(void)
     uint32_t const opened_at = h.clk.t;
 
     h.clk.t = opened_at + 10000u;
-    TEST_ASSERT_EQUAL(FF_APP_FACE_RADAR, power_view(&h)->active_face);
+    TEST_ASSERT_EQUAL(FF_APP_FACE_LAUNCHER, power_view(&h)->active_face);
     TEST_ASSERT_EQUAL_INT(0, spy.off_calls); /* a timeout is a dismiss, not a Power off */
     TEST_ASSERT_EQUAL_INT(0, spy.reboot_calls);
 
@@ -1573,122 +1620,67 @@ static void S26b_power_actions_are_rejected_while_a_takeover_is_visible(void)
 }
 
 /* =================================================================== */
-/* S26 slice e, PR #142 review — FAIL 1: the launcher's transient        */
-/* timeout, and FAIL 2: POWER_MENU reaching the user from the launcher   */
+/* S26 slice e, AMENDED 2026-09-01 — the launcher IS home. The          */
+/* pre-amendment "PR #142 review FAIL 1" (launcher auto-dismiss timeout) */
+/* and "FAIL 2" (POWER_MENU replaces a live LAUNCHER modal) fixes, and    */
+/* every test that pinned them, are GONE: there is no timeout (the       */
+/* launcher does not auto-dismiss — it is not a hub you pass through any  */
+/* more) and no "replace" special case (the launcher is `base` now, not  */
+/* a modal, so POWER_MENU_OPEN just pushes over it through the ordinary  */
+/* one-modal-slot path — see ff_route.h's header note for the full       */
+/* model). The two tests below are the Gate's required replacement       */
+/* coverage: "power menu opens over the launcher" and "Cancel returns to */
+/* the launcher".                                                        */
 /* =================================================================== */
 
-/* AC (FAIL 1): "Radar is the watchface... what the screen wakes to" —
- * the launcher must never be able to outlive a dim/OFF/wake cycle, so it
- * pops itself back to Radar well before FF_IDLE_T_DIM_MS could ever fire.
- * Boundary pinned exactly like the power menu's own timeout tests just
- * above (9999 held open, 10000 auto-dismissed). */
-static void S26e_launcher_timeout_stays_open_just_before_10s(void)
+static void S26e_power_menu_opens_over_the_launcher_base(void)
 {
     setting_harness_t h;
     power_spy_t spy = {0};
     power_harness_init(&h, &spy);
 
-    send_home_on(&h.shell); /* Radar -> launcher */
-    uint32_t const opened_at = h.clk.t;
-
-    h.clk.t = opened_at + 9999u;
-    TEST_ASSERT_EQUAL(FF_APP_FACE_LAUNCHER, power_view(&h)->active_face);
-
-    ff_shell_close(&h.shell);
-}
-
-static void S26e_launcher_timeout_auto_dismisses_at_exactly_10s(void)
-{
-    setting_harness_t h;
-    power_spy_t spy = {0};
-    power_harness_init(&h, &spy);
-
-    send_home_on(&h.shell);
-    uint32_t const opened_at = h.clk.t;
-
-    h.clk.t = opened_at + 10000u;
-    TEST_ASSERT_EQUAL(FF_APP_FACE_RADAR, power_view(&h)->active_face);
-
-    ff_shell_close(&h.shell);
-}
-
-/* "reset by any press inside the launcher" — a press well before the
- * deadline (here, an out-of-range LAUNCHER_SELECT: a real mistap that
- * misses every circle, still "a press", still inside the launcher)
- * pushes the deadline out by another full FF_LAUNCHER_TIMEOUT_MS from
- * the press, not from the original open. Proven by landing PAST the
- * original 10s mark (opened_at + 10000) while STILL open. */
-static void S26e_launcher_timeout_is_reset_by_a_press_inside(void)
-{
-    setting_harness_t h;
-    power_spy_t spy = {0};
-    power_harness_init(&h, &spy);
-
-    send_home_on(&h.shell);
-    uint32_t const opened_at = h.clk.t;
-
-    h.clk.t = opened_at + 9000u;
-    send_launcher_select_on(&h.shell, 99u); /* out of range: a no-op nav, still "a press" */
-    TEST_ASSERT_EQUAL(FF_APP_FACE_LAUNCHER, power_view(&h)->active_face); /* still open */
-
-    /* Without the reset this would already be past the original
-     * deadline (opened_at + 10000); with it, the deadline is now
-     * (opened_at + 9000 + 10000). */
-    h.clk.t = opened_at + 10000u;
-    TEST_ASSERT_EQUAL(FF_APP_FACE_LAUNCHER, power_view(&h)->active_face);
-
-    h.clk.t = opened_at + 9000u + 10000u;
-    TEST_ASSERT_EQUAL(FF_APP_FACE_RADAR, power_view(&h)->active_face);
-
-    ff_shell_close(&h.shell);
-}
-
-/* The ordering guarantee the whole fix depends on: the launcher is
- * ALWAYS gone before the screen could ever dim with it showing. A
- * 10000 -> 20000 mutation of FF_LAUNCHER_TIMEOUT_MS flips this false
- * (20000 > FF_IDLE_T_DIM_MS's 15000) and fails loudly here, independent
- * of (and in addition to) the boundary tests above timing out
- * differently under such a mutation. */
-static void S26e_launcher_timeout_is_safely_below_dim(void)
-{
-    TEST_ASSERT_TRUE(FF_LAUNCHER_TIMEOUT_MS < FF_IDLE_T_DIM_MS);
-}
-
-/* FAIL 2 — a PWR long-press must reach the user even while the launcher
- * is open: POWER_MENU_OPEN replaces it instead of being silently
- * swallowed by the one-modal-slot rule. */
-static void S26e_power_menu_open_replaces_the_launcher(void)
-{
-    setting_harness_t h;
-    power_spy_t spy = {0};
-    power_harness_init(&h, &spy);
-
-    send_home_on(&h.shell);
-    TEST_ASSERT_EQUAL(FF_APP_FACE_LAUNCHER, power_view(&h)->active_face);
+    TEST_ASSERT_EQUAL(FF_APP_FACE_LAUNCHER, power_view(&h)->active_face); /* the boot default */
 
     send_power(&h.shell, FF_INTENT_POWER_MENU_OPEN);
-    TEST_ASSERT_EQUAL(FF_APP_FACE_POWER_MENU, power_view(&h)->active_face); /* the launcher is gone */
+    TEST_ASSERT_EQUAL(FF_APP_FACE_POWER_MENU, power_view(&h)->active_face);
 
     ff_shell_close(&h.shell);
 }
 
-/* Cancelling that power menu lands on Radar, never back on the
- * launcher — the replace discarded it; there is nothing left to "go
- * back" to. */
-static void S26e_power_menu_cancel_after_replacing_the_launcher_returns_to_radar(void)
+/* Cancelling that power menu reveals the launcher again — never
+ * anywhere else, since the launcher was never replaced or popped
+ * underneath the power menu (it is `base`, untouched by the push). */
+static void S26e_power_menu_cancel_over_the_launcher_returns_to_the_launcher(void)
 {
     setting_harness_t h;
     power_spy_t spy = {0};
     power_harness_init(&h, &spy);
 
-    send_home_on(&h.shell);
     send_power(&h.shell, FF_INTENT_POWER_MENU_OPEN);
     TEST_ASSERT_EQUAL(FF_APP_FACE_POWER_MENU, power_view(&h)->active_face);
 
     send_power(&h.shell, FF_INTENT_POWER_CANCEL);
-    TEST_ASSERT_EQUAL(FF_APP_FACE_RADAR, power_view(&h)->active_face);
+    TEST_ASSERT_EQUAL(FF_APP_FACE_LAUNCHER, power_view(&h)->active_face);
     TEST_ASSERT_EQUAL_INT(0, spy.off_calls);
     TEST_ASSERT_EQUAL_INT(0, spy.reboot_calls);
+
+    ff_shell_close(&h.shell);
+}
+
+/* HOME while the power menu covers the launcher is suppressed, same as
+ * over any other base — a PWR long-press decision in progress must not
+ * be yanked away by a home press. */
+static void S26e_home_is_rejected_while_the_power_menu_covers_the_launcher(void)
+{
+    setting_harness_t h;
+    power_spy_t spy = {0};
+    power_harness_init(&h, &spy);
+
+    send_power(&h.shell, FF_INTENT_POWER_MENU_OPEN);
+    TEST_ASSERT_EQUAL(FF_APP_FACE_POWER_MENU, power_view(&h)->active_face);
+
+    send_home_on(&h.shell);
+    TEST_ASSERT_EQUAL(FF_APP_FACE_POWER_MENU, power_view(&h)->active_face); /* untouched */
 
     ff_shell_close(&h.shell);
 }
@@ -1918,8 +1910,11 @@ static void S16_c1_emit_seam_forwards_when_bound_and_noops_unbound(void)
     TEST_ASSERT_EQUAL(FF_INTENT_HOME, spy.last.kind);
 
     /* The real production binding: ff_shell_intent_sink adapts the seam
-     * onto a shell without a function-pointer cast. From Radar, HOME
-     * opens the launcher. */
+     * onto a shell without a function-pointer cast. HOME on the boot
+     * default (the launcher, S26 slice e amended 2026-09-01) is a
+     * no-op — it stays the visible face either way, which is still a
+     * real assertion: it proves the intent reached the shell and was
+     * dispatched, not merely that nothing crashed. */
     ff_intent_emit_bind(ff_shell_intent_sink, &H.shell);
     ff_intent_emit(&in);
     TEST_ASSERT_EQUAL(FF_APP_FACE_LAUNCHER, view()->active_face);
@@ -1949,7 +1944,7 @@ static void S16_c1_null_and_garbage_dispatch_is_safe(void)
      * switch as a no-op — never routes, never crashes. */
     in.kind = (ff_intent_kind_t)0x7FFF;
     ff_shell_intent(&H.shell, &in);
-    TEST_ASSERT_EQUAL(FF_APP_FACE_RADAR, view()->active_face);
+    TEST_ASSERT_EQUAL(FF_APP_FACE_LAUNCHER, view()->active_face); /* the boot default, untouched */
 }
 
 int main(void)
@@ -1958,10 +1953,11 @@ int main(void)
 
     RUN_TEST(S26e_swipe_dispatch_moves_nothing_from_any_base_face);
 
-    RUN_TEST(S26e_home_from_radar_opens_launcher_then_returns);
+    RUN_TEST(S26e_home_on_the_launcher_is_a_noop);
+    RUN_TEST(S26e_home_from_each_app_sets_base_to_the_launcher);
     RUN_TEST(S26e_home_is_rejected_while_a_takeover_is_visible);
     RUN_TEST(S26e_launcher_select_reaches_every_circle_and_the_badge_projects);
-    RUN_TEST(S26e_launcher_select_is_a_noop_when_the_launcher_is_not_open);
+    RUN_TEST(S26e_launcher_select_is_a_noop_when_the_launcher_is_not_showing);
     RUN_TEST(S26e_launcher_select_out_of_range_index_is_a_noop);
     RUN_TEST(S26e_launcher_select_is_rejected_while_a_takeover_is_visible);
 
@@ -2008,12 +2004,9 @@ int main(void)
     RUN_TEST(S26b_power_menu_auto_dismisses_at_exactly_the_10s_timeout);
     RUN_TEST(S26b_power_actions_are_rejected_while_a_takeover_is_visible);
 
-    RUN_TEST(S26e_launcher_timeout_stays_open_just_before_10s);
-    RUN_TEST(S26e_launcher_timeout_auto_dismisses_at_exactly_10s);
-    RUN_TEST(S26e_launcher_timeout_is_reset_by_a_press_inside);
-    RUN_TEST(S26e_launcher_timeout_is_safely_below_dim);
-    RUN_TEST(S26e_power_menu_open_replaces_the_launcher);
-    RUN_TEST(S26e_power_menu_cancel_after_replacing_the_launcher_returns_to_radar);
+    RUN_TEST(S26e_power_menu_opens_over_the_launcher_base);
+    RUN_TEST(S26e_power_menu_cancel_over_the_launcher_returns_to_the_launcher);
+    RUN_TEST(S26e_home_is_rejected_while_the_power_menu_covers_the_launcher);
     RUN_TEST(S16_AC8_setting_set_out_of_range_is_rejected_not_clamped);
     RUN_TEST(S16_AC8_setting_set_my_name_is_bounded_and_terminated);
     RUN_TEST(S16_AC8_setting_set_is_rejected_while_a_takeover_is_visible);

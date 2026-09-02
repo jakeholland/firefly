@@ -1,8 +1,9 @@
 /**
  * ff_route.c — see ff_route.h for the contract and the reasoning behind
  * every rule implemented here (S16 slice a; extended to the 5-face
- * horizontal carousel, and again by S26 slice e's HOME/launcher —
- * see ff_route.h's header notes).
+ * horizontal carousel, and again by S26 slice e's HOME/launcher, amended
+ * 2026-09-01 to make the launcher home itself — see ff_route.h's header
+ * notes).
  */
 #include <stddef.h> /* NULL */
 
@@ -50,7 +51,9 @@ void ff_route_init(ff_route_t *r)
     if (r == NULL) {
         return;
     }
-    r->base = FF_APP_FACE_RADAR;
+    /* S26 slice e, amended 2026-09-01: the launcher IS home — see
+     * ff_route.h's header note. */
+    r->base = FF_APP_FACE_LAUNCHER;
     r->modal = FF_APP_FACE_NONE;
 }
 
@@ -112,62 +115,64 @@ bool ff_route_goto(ff_route_t *r, ff_app_face_t f)
     return true;
 }
 
+/* Is `f` a valid `base` value: the launcher (S26 slice e, amended
+ * 2026-09-01 — home itself, not a modal any more) or one of the five
+ * swipe-axis faces. Used by ff_route_push_modal's base-validity guard,
+ * which must accept a launcher-parked route now that pushing a modal
+ * (the power menu, in practice) over the launcher is an ordinary,
+ * unexceptional case rather than the "replace" special case the
+ * original slice-e cut needed. */
+static bool route_base_is_valid(ff_app_face_t f)
+{
+    if (f == FF_APP_FACE_LAUNCHER) {
+        return true;
+    }
+    int idx;
+    return route_axis_index(f, &idx);
+}
+
 bool ff_route_push_modal(ff_route_t *r, ff_app_face_t f)
 {
     if (r == NULL) {
         return false;
     }
-    /* Compose, POWER_MENU (S26 slice b) and, as of S26 slice e, LAUNCHER
-     * are the only three modal faces (Map and Settings joined the swipe
-     * axis in the horizontal-carousel rework). Rejecting FLARE here is
-     * load-bearing, not defensive tidiness: the takeover is not
+    /* Compose and POWER_MENU (S26 slice b) are the only two modal faces
+     * (Map and Settings joined the swipe axis in the horizontal-
+     * carousel rework; the launcher joined `base` in the S26 slice e
+     * amendment — see ff_route.h's header note). Rejecting FLARE here
+     * is load-bearing, not defensive tidiness: the takeover is not
      * something the route holds (see ff_route_visible), so accepting it
      * as a modal would put the same fact in two places — the desync
      * this module's whole shape exists to prevent. A swipe face
-     * (RADAR..SETTINGS), NONE, and everything else are rejected too —
-     * these three are the only values that are a modal and nothing
-     * else. */
-    if (f != FF_APP_FACE_COMPOSE && f != FF_APP_FACE_POWER_MENU && f != FF_APP_FACE_LAUNCHER) {
+     * (RADAR..SETTINGS), FF_APP_FACE_LAUNCHER, NONE, and everything else
+     * are rejected too — these two are the only values that are a modal
+     * and nothing else. */
+    if (f != FF_APP_FACE_COMPOSE && f != FF_APP_FACE_POWER_MENU) {
         return false;
     }
-    /* Same base-validity rule as ff_route_swipe, and for a sharper
-     * reason than symmetry (PR #36 review, D1). A route whose base is
-     * off the swipe axis was never initialised; raising a modal over it
-     * would MASK that, because the modal works perfectly — it renders,
-     * it accepts input, it sends — right up until the user backs out of
-     * it and lands on a broken route with no visible cause. That is the
-     * exact opposite of the fail-visibly-and-immediately behaviour this
-     * module's deliberately-invalid zero value exists to produce. */
-    int base_idx;
-    if (!route_axis_index(r->base, &base_idx)) {
+    /* Base-validity rule, and for a sharper reason than symmetry with
+     * ff_route_swipe (PR #36 review, D1). A route whose base is neither
+     * the launcher nor on the swipe axis was never initialised; raising
+     * a modal over it would MASK that, because the modal works
+     * perfectly — it renders, it accepts input, it sends — right up
+     * until the user backs out of it and lands on a broken route with
+     * no visible cause. That is the exact opposite of the
+     * fail-visibly-and-immediately behaviour this module's
+     * deliberately-invalid zero value exists to produce. */
+    if (!route_base_is_valid(r->base)) {
         return false;
-    }
-
-    /* PR #142 review FAIL 2 — the ONE exception to "one slot, no
-     * replace" below: a PWR long-press must reach the user even while
-     * the launcher is open (it is a transient hub, not a place that
-     * should be able to swallow the power menu), so POWER_MENU is
-     * allowed to REPLACE a live LAUNCHER — pop it, push the power menu,
-     * in one step. `base` is untouched either way (the launcher never
-     * changes it — it is always RADAR underneath), so a later Cancel/
-     * Power-off/Reboot pop from the power menu reveals RADAR, never the
-     * launcher: there is nothing left to "go back to" once this
-     * replace has happened.
-     *
-     * Deliberately narrow — checked by exact (f, r->modal) pair, not
-     * "any modal can be replaced": COMPOSE must still be REJECTED over
-     * either LAUNCHER or POWER_MENU (a half-typed draft is never slid
-     * away by anything), and POWER_MENU must still be REJECTED over
-     * COMPOSE (push_modal_power_menu_over_compose_is_rejected_and_
-     * vice_versa, unchanged) — both fall through to the generic
-     * one-slot rule just below like every other combination. */
-    if (f == FF_APP_FACE_POWER_MENU && r->modal == FF_APP_FACE_LAUNCHER) {
-        r->modal = FF_APP_FACE_POWER_MENU;
-        return true;
     }
 
     /* One slot, not a stack: replacing a live modal would silently
-     * discard a half-typed Compose draft. */
+     * discard a half-typed Compose draft. This is the ONLY rule left —
+     * S26 slice e's original "PR #142 review FAIL 2" exception (POWER_MENU
+     * REPLACES a live LAUNCHER modal) is retired along with the modal it
+     * was about: the launcher is `base` now, so a PWR long-press from the
+     * launcher lands here with `r->modal == FF_APP_FACE_NONE` and simply
+     * pushes, through this ordinary path, with `base` left as
+     * FF_APP_FACE_LAUNCHER — no replace needed, and cancelling the menu
+     * (ff_route_pop_modal) reveals the launcher again like any other
+     * base. */
     if (r->modal != FF_APP_FACE_NONE) {
         return false;
     }
@@ -214,49 +219,51 @@ bool ff_route_home(ff_route_t *r)
         return false;
     }
 
-    /* The launcher is up: BOOT again closes it, back to base (RADAR —
-     * the launcher is only ever reached FROM Radar, so there is nothing
-     * else `base` could be here). */
-    if (r->modal == FF_APP_FACE_LAUNCHER) {
-        return ff_route_pop_modal(r);
-    }
-
-    /* Any OTHER modal (Compose, Power menu) suppresses HOME exactly as
-     * it suppresses swipe/goto — a half-typed draft or an open power
-     * menu must not vanish under a home press. */
+    /* Any modal (Compose, Power menu) suppresses HOME exactly as it
+     * suppresses swipe/goto — a half-typed draft or an open power menu
+     * must not vanish under a home press. `modal == FF_APP_FACE_NONE` is
+     * the whole "no modal" predicate, as everywhere else in this file. */
     if (r->modal != FF_APP_FACE_NONE) {
         return false;
     }
 
-    /* No modal: from Radar, open the launcher; from any other base
-     * face, jump straight back to Radar. Both delegate to the existing,
-     * already-guarded primitives (push_modal enforces the base-on-axis
-     * rule; goto is a no-op if base is already RADAR or off-axis) rather
-     * than re-deriving those checks here. */
-    if (r->base == FF_APP_FACE_RADAR) {
-        return ff_route_push_modal(r, FF_APP_FACE_LAUNCHER);
+    /* S26 slice e, amended 2026-09-01: the launcher IS home. Already
+     * there -> no-op (BOOT on the launcher does nothing); otherwise an
+     * unconditional overwrite of `base`, deliberately NOT gated on the
+     * current base's own validity (the same "the TARGET's validity is
+     * what's checked" shape ff_route_goto uses) — so a corrupted or
+     * uninitialised route is repaired by a home press rather than
+     * stranded by one. */
+    if (r->base == FF_APP_FACE_LAUNCHER) {
+        return false;
     }
-    return ff_route_goto(r, FF_APP_FACE_RADAR);
+    r->base = FF_APP_FACE_LAUNCHER;
+    return true;
 }
 
 bool ff_route_launcher_select(ff_route_t *r, ff_app_face_t f)
 {
-    if (r == NULL || r->modal != FF_APP_FACE_LAUNCHER) {
+    if (r == NULL) {
         return false;
     }
-    /* Every swipe-axis face except RADAR is a launcher circle — Radar
-     * itself is never one (it is home, not a destination the launcher
-     * offers). route_axis_index rejects Compose/NONE/FLARE/Power
-     * menu/Launcher the same way it rejects them for swipe/goto. */
+    /* Only meaningful with the launcher showing and nothing over it: a
+     * stray or late-arriving tap must not resurrect a launcher that has
+     * already been left, nor jump `base` out from under a live modal. */
+    if (r->modal != FF_APP_FACE_NONE || r->base != FF_APP_FACE_LAUNCHER) {
+        return false;
+    }
+    /* Every swipe-axis face, RADAR included as of this amendment (an
+     * ordinary circle now, no special "Radar is home" carve-out), is a
+     * valid launcher target. route_axis_index rejects Compose/NONE/
+     * FLARE/Power menu/the launcher itself the same way it rejects them
+     * for swipe/goto. */
     int idx;
-    if (!route_axis_index(f, &idx) || f == FF_APP_FACE_RADAR) {
+    if (!route_axis_index(f, &idx)) {
         return false;
     }
-    /* Pop the launcher AND jump base to `f` in one step — base is
-     * already RADAR here (the only way in), so there is no "already
-     * there" case to special-case the way a bare ff_route_goto would
-     * have to. */
-    r->modal = FF_APP_FACE_NONE;
+    /* Direct assignment, not a pop-then-goto pair: the launcher WAS
+     * `base`, so there is no separate face underneath it to pop back to
+     * first (unlike the original modal-launcher cut). */
     r->base = f;
     return true;
 }

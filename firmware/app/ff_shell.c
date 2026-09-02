@@ -177,13 +177,10 @@ typedef struct {
      * modal pops by any other means (Power off / Reboot / Cancel). */
     uint32_t power_menu_opened_ms;
 
-    /* S26 slice e, PR #142 review FAIL 1 — when the launcher was last
-     * opened OR touched (FF_INTENT_HOME opening it, or ANY intent
-     * dispatched while it is open — see ff_shell_intent's top), for
-     * FF_LAUNCHER_TIMEOUT_MS's auto-pop-to-Radar. Same shape as
-     * power_menu_opened_ms just above; meaningful only while route.modal
-     * == FF_APP_FACE_LAUNCHER. */
-    uint32_t launcher_opened_ms;
+    /* S26 slice e, amended 2026-09-01 — `launcher_opened_ms` (the
+     * launcher's own auto-dismiss timeout stamp) REMOVED along with
+     * FF_LAUNCHER_TIMEOUT_MS: the launcher is home now and does not
+     * auto-dismiss. See ff_route.h's header note on the amendment. */
 
     /* S24 slice d — the Rally sub-view's persistent WHERE/WHEN selection
      * (the view is memset each tick, so like sig_subview these live in the
@@ -1958,9 +1955,13 @@ static void shell_render_key(ff_app_state_t const *v, ff_app_state_t *key)
         memset(key, 0, sizeof(*key));
         key->active_face = af;
     } else if (v->active_face == FF_APP_FACE_LAUNCHER) {
-        /* S26 slice e — the launcher, same "opaque overlay" discipline
-         * as the power menu above, with ONE exception: unlike that
-         * fully-static face, the launcher's Signals circle carries the
+        /* S26 slice e (amended 2026-09-01: the launcher is `base` now,
+         * not a modal — see ff_route.h's header note — but it is still
+         * exactly one `active_face` value among several, so this mask
+         * is unaffected by that change) — the launcher, same "opaque
+         * overlay" discipline as the power menu above, with ONE
+         * exception: unlike that fully-static face, the launcher's
+         * Signals circle carries the
          * unread badge (scr_launcher.c, moved off the old page-dot
          * row), so the mask keeps exactly that one scalar rather than
          * going fully static. Computed the same way
@@ -2171,20 +2172,11 @@ bool ff_shell_tick(ff_shell_t *sh_pub, uint32_t now_ms)
         (void)ff_route_pop_modal(&sh->route);
     }
 
-    /* S26 slice e, PR #142 review FAIL 1 — the launcher's own transient
-     * timeout, identical shape to the power menu's just above (same
-     * wraparound-safe idiom, same "pop straight on the route, not
-     * through a synthesized intent" reasoning). `launcher_opened_ms` is
-     * stamped on open (ff_shell_intent's FF_INTENT_HOME case) and reset
-     * by any intent dispatched while the launcher is open (see
-     * ff_shell_intent's top) — a real thumb still deciding keeps it
-     * open; true inactivity pops it to Radar well before FF_IDLE_T_DIM_MS
-     * could ever dim the screen with the launcher showing (FF_LAUNCHER_
-     * TIMEOUT_MS's own doc comment, ff_shell.h). */
-    if (sh->route.modal == FF_APP_FACE_LAUNCHER &&
-        (now_ms - sh->launcher_opened_ms) >= FF_LAUNCHER_TIMEOUT_MS) {
-        (void)ff_route_pop_modal(&sh->route);
-    }
+    /* S26 slice e, amended 2026-09-01 — the launcher's own transient
+     * auto-dismiss timeout (formerly here, mirroring the power menu's
+     * just above) is REMOVED: the launcher is home now, not a hub you
+     * pass through, so it does not auto-dismiss. See ff_route.h's
+     * header note on the amendment for the full reasoning. */
 
     /* S16 slice c3: the injected clock, not lv_tick_get() (scr_compose.c
      * no longer touches the clock at all — see ff_t9.h's "Deviations"
@@ -2814,21 +2806,6 @@ void ff_shell_intent(ff_shell_t *sh_pub, ff_intent_t const *in)
      * would outlive the fact it copied (ff_route_visible's doc). */
     bool const takeover_up = (ff_route_visible(&sh->route, sh->flare.takeover_active) == FF_APP_FACE_FLARE);
 
-    /* S26 slice e, PR #142 review FAIL 1 — ANY intent dispatched while
-     * the launcher is open counts as "still deciding" and resets its
-     * transient timeout (FF_LAUNCHER_TIMEOUT_MS, ff_shell.h), whether or
-     * not the intent itself does anything (a mistap that misses every
-     * circle — an out-of-range LAUNCHER_SELECT — is exactly the case
-     * this exists for). Checked BEFORE the switch, unconditionally of
-     * `in->kind`, so no individual case has to remember to do it; a
-     * HOME/LAUNCHER_SELECT that goes on to CLOSE the launcher this same
-     * call makes the reset moot (nothing reads a stale timestamp once
-     * modal != LAUNCHER), so this never needs its own takeover/kind
-     * gating. */
-    if (sh->route.modal == FF_APP_FACE_LAUNCHER) {
-        sh->launcher_opened_ms = shell_now(sh);
-    }
-
     switch (in->kind) {
     case FF_INTENT_SWIPE:
         /* S26 slice e — RETIRED as a live navigation mechanism: no
@@ -2845,36 +2822,34 @@ void ff_shell_intent(ff_shell_t *sh_pub, ff_intent_t const *in)
         return;
 
     case FF_INTENT_HOME:
-        /* S26 slice e — the BOOT-button decision, entirely ff_route's
-         * (app/include/ff_route.h's ff_route_home doc comment has the
-         * whole rule set: open/close the launcher, or jump any other
-         * app straight to Radar). Suppressed under a takeover exactly
-         * like every other nav intent (routing rule 4) — BOOT while a
-         * flare takeover is up must not navigate out from under it. */
+        /* S26 slice e, amended 2026-09-01 — the BOOT-button decision,
+         * entirely ff_route's (app/include/ff_route.h's ff_route_home
+         * doc comment has the whole rule set: set `base` to the
+         * launcher, a no-op if it already is). Suppressed under a
+         * takeover exactly like every other nav intent (routing rule
+         * 4) — BOOT while a flare takeover is up must not navigate out
+         * from under it. No launcher-timeout stamp any more (that
+         * mechanism, and the field it stamped, are both gone): the
+         * launcher does not auto-dismiss — it IS home now. */
         if (takeover_up) return;
         (void)ff_route_home(&sh->route);
-        /* PR #142 review FAIL 1 — this call just OPENED the launcher
-         * (Radar -> launcher) iff the route now shows it; the top-of-
-         * function reset above ran before this call, against whatever
-         * modal was live BEFORE it (not LAUNCHER, or this HOME would
-         * have CLOSED it instead — ff_route_home's own rule set), so
-         * the very first stamp has to happen here. */
-        if (sh->route.modal == FF_APP_FACE_LAUNCHER) {
-            sh->launcher_opened_ms = shell_now(sh);
-        }
         return;
 
     case FF_INTENT_LAUNCHER_SELECT: {
-        /* S26 slice e — a launcher circle tap. `u.launcher_idx` is a
-         * small int (0=Now, 1=Signals, 2=Map, 3=Settings), not a domain
-         * enum (ff_intent.h stays dependency-free) — mapped to a real
-         * face here, the one place both vocabularies are in scope.
+        /* S26 slice e, amended 2026-09-01 — a launcher circle tap.
+         * `u.launcher_idx` is a small int (0=Radar, 1=Now, 2=Signals,
+         * 3=Map, 4=Settings — the launcher's own fixed circle order,
+         * scr_launcher.c), not a domain enum (ff_intent.h stays
+         * dependency-free) — mapped to a real face here, the one place
+         * both vocabularies are in scope. Radar is index 0 as of this
+         * amendment: it is an ordinary circle now, no longer excluded.
          * ff_route_launcher_select itself is the real guard (only
-         * meaningful while the launcher is open); the takeover check
-         * here is the same routing-rule-4 belt this file applies to
-         * every other nav intent. */
+         * meaningful while the launcher is showing with nothing over
+         * it); the takeover check here is the same routing-rule-4 belt
+         * this file applies to every other nav intent. */
         if (takeover_up) return;
         static ff_app_face_t const k_launcher_faces[] = {
+            FF_APP_FACE_RADAR,
             FF_APP_FACE_NOW,
             FF_APP_FACE_SIGNALS,
             FF_APP_FACE_MAP,
@@ -3813,11 +3788,14 @@ bool ff_shell_keep_awake(ff_app_state_t const *view, bool touch_cal_running)
     }
     /* S26 slice e — the launcher deliberately does NOT keep awake, unlike
      * the power menu just above: the spec states no such rule, ANY input
-     * (including the BOOT press that opened it) already resets idle to
+     * (including the BOOT press that shows it) already resets idle to
      * ACTIVE per slice (c), and a user who pauses long enough to dim can
-     * simply press BOOT again to both wake and re-open it. Considered and
-     * rejected per AGENTS.md's "note the interpretation" — see the PR
-     * body. */
+     * simply press BOOT again to both wake and return home. Unchanged by
+     * the 2026-09-01 amendment that made the launcher `base` itself
+     * (rather than a modal reached from Radar) — this predicate was
+     * never keyed off modal vs. base, only off `active_face`, so there
+     * was nothing here to revisit. Considered and rejected per
+     * AGENTS.md's "note the interpretation" — see the PR body. */
     return false;
 }
 

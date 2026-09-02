@@ -283,30 +283,34 @@ typedef enum {
     FF_INTENT_BANNER_OPEN,
     /* [api] S26 slice e — the BOOT-button home model + the launcher's
      * own tap (docs/specs/S26-device-lifecycle.md "(e) Home button +
-     * launcher"). Appended, so no existing intent's numeric value
-     * moves. This slice also RETIRES `FF_INTENT_SWIPE` as a live
-     * navigation mechanism — no screen emits it any more (scr_nav.c's
-     * gesture handler is gone) and `ff_shell.c`'s own case is now a
-     * no-op — but the member itself stays (removing it would renumber
-     * every intent after it) and its union payload is untouched.
+     * launcher"), AMENDED 2026-09-01 (the launcher IS home now — see
+     * `ff_route.h`'s header note for the full model change). Appended,
+     * so no existing intent's numeric value moves. This slice also
+     * RETIRES `FF_INTENT_SWIPE` as a live navigation mechanism — no
+     * screen emits it any more (scr_nav.c's gesture handler is gone) and
+     * `ff_shell.c`'s own case is now a no-op — but the member itself
+     * stays (removing it would renumber every intent after it) and its
+     * union payload is untouched.
      *
      * HOME — NOT emitted by a screen, the same way POWER_MENU_OPEN
      *   above is not: the esp32s3 target's app_main debounces GPIO0
      *   through the new core `ff_button` (reusing `ff_power_fsm`'s
      *   debounce shape — see that header) and forwards one HOME per
      *   physical press. No payload — the shell owns the whole decision
-     *   in `ff_route_home` (app/include/ff_route.h): open the launcher
-     *   from Radar, close it back to Radar, or jump any other app
-     *   straight to Radar; suppressed under a takeover or a live modal
-     *   (Compose, Power menu) exactly like every other nav intent.
+     *   in `ff_route_home` (app/include/ff_route.h): set `base` to the
+     *   launcher, a no-op if it already is; suppressed under a takeover
+     *   or a live modal (Compose, Power menu) exactly like every other
+     *   nav intent.
      * LAUNCHER_SELECT — a tap on one of the launcher's app circles
      *   (`scr_launcher.c`). Payload: `u.launcher_idx`, an index into the
-     *   launcher's own fixed circle order (0=Now, 1=Signals, 2=Map,
-     *   3=Settings) — a small int, not a domain enum, so this
-     *   dependency-free header (see its top comment) needs no
-     *   `ff_app_state.h` include for `ff_app_face_t`; the shell maps the
-     *   index to a face and calls `ff_route_launcher_select`. Only
-     *   meaningful while the launcher is open — a no-op otherwise
+     *   launcher's own fixed circle order — as of this amendment, FIVE
+     *   circles (0=Radar, 1=Now, 2=Signals, 3=Map, 4=Settings; Radar is
+     *   an ordinary circle now, no longer excluded) — a small int, not a
+     *   domain enum, so this dependency-free header (see its top
+     *   comment) needs no `ff_app_state.h` include for `ff_app_face_t`;
+     *   the shell maps the index to a face and calls
+     *   `ff_route_launcher_select`. Only meaningful while the launcher
+     *   is showing with nothing over it — a no-op otherwise
      *   (`ff_route_launcher_select`'s own guard). */
     FF_INTENT_HOME, FF_INTENT_LAUNCHER_SELECT,
 } ff_intent_kind_t;
@@ -359,8 +363,9 @@ typedef struct {
         uint32_t node_id;
         uint8_t rally_idx;                      /* SELECT_RALLY; RALLY_SELECT_PLACE
                                                  * (S24 d: 0 = On Me, 1.. = landmark) */
-        uint8_t launcher_idx;                   /* LAUNCHER_SELECT (S26e): 0=Now,
-                                                 * 1=Signals, 2=Map, 3=Settings —
+        uint8_t launcher_idx;                   /* LAUNCHER_SELECT (S26e, amended
+                                                 * 2026-09-01): 0=Radar, 1=Now,
+                                                 * 2=Signals, 3=Map, 4=Settings —
                                                  * the launcher's own fixed circle
                                                  * order (scr_launcher.c); the shell
                                                  * maps this to an ff_app_face_t. */

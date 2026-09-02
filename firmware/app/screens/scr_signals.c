@@ -72,7 +72,7 @@
 
 #define FF_SIGNALS_SAFETY_PX 10.0f /* see scr_compose.c's FF_COMPOSE_SAFETY_PX — same rationale */
 
-/* Header: centered "SIGNALS" caption + the numbered unread badge. Not a
+/* Header: centered "INBOX" caption (renamed 2026-09-01; was "SIGNALS") + the numbered unread badge. Not a
  * control — nothing here is clickable, so no adjacency partner for the
  * list's first row. */
 #define FF_SIGNALS_HEADER_Y 34
@@ -496,7 +496,9 @@ static char const *signals_kind_word(ff_feed_kind_t kind)
     case FEED_TEXT: return "TEXT";
     case FEED_STATUS: return "STATUS";
     case FEED_FLARE: return "FLARE";
-    default: return "SIGNAL";
+    default: return "MESSAGE"; /* renamed 2026-09-01, was "SIGNAL" — reviewer PR #144 round 2: live user-facing
+                                 * text even though FEED_PULSE/RALLY/TEXT/STATUS/FLARE cover every kind
+                                 * currently produced, so this default is presently unreachable. */
     }
 }
 
@@ -723,13 +725,16 @@ static void signals_build_conv_row(lv_obj_t *parent, ff_inbox_conv_t const *cv, 
     lv_obj_set_pos(name, text_x, 12);
 
     /* Second line: the newest-item preview, or (a traffic-less row) the
-     * honest state — presence for a member, "NO SIGNALS YET" for CREW. */
+     * honest state — presence for a member, "NO MESSAGES YET" for CREW
+     * (renamed 2026-09-01, was "NO SIGNALS YET" — reviewer PR #144
+     * round 2: "signal" is confusing to the person holding the puck
+     * here too, not just in the header title). */
     char line[FF_FEED_TEXT_LEN + 32];
     uint32_t line_color = FF_THEME_COLOR_MUTED;
     if (cv->has_preview) {
         signals_preview_text(cv, line, sizeof(line));
     } else if (cv->kind == FF_CONV_CREW) {
-        snprintf(line, sizeof(line), "NO SIGNALS YET");
+        snprintf(line, sizeof(line), "NO MESSAGES YET");
         line_color = FF_THEME_COLOR_DIM;
     } else {
         signals_presence_text(cv, line, sizeof(line), &line_color);
@@ -912,10 +917,27 @@ static void signals_build_fab(lv_obj_t *parent)
  * Sub-view: INBOX.
  * ------------------------------------------------------------------- */
 
+/* S26 slice e renames (2026-09-01): "Signals" -> "Inbox" everywhere the
+ * user can read it (see the PR body for the full list of renamed
+ * strings). This header title is the primary occurrence; the screen
+ * file, code identifiers, fixtures and test names stay "signals" —
+ * that mechanical rename is explicitly out of scope (a separate PR if
+ * wanted).
+ *
+ * ROUND 2 (reviewer PR #144, same date): "signal" reads as confusing
+ * jargon to the person holding the puck everywhere they read it on
+ * THIS screen, not only in the header title — reversing this file's
+ * earlier "signal is domain vocabulary, not the screen name" call.
+ * Every user-visible "SIGNAL"/"Signal" string in this file is now
+ * "MESSAGE" instead: "NEW SIGNAL" -> "NEW MESSAGE", "NO SIGNALS YET"
+ * -> "NO MESSAGES YET" (both occurrences), and signals_kind_word's
+ * default fallback "SIGNAL" -> "MESSAGE". ff_fmt_age's "now" (an age
+ * under a minute) is a different word in a different sense and is
+ * untouched, per CLAUDE.md/AGENTS.md's standing "now" caution. */
 static void signals_build_header(lv_obj_t *parent, uint16_t unread)
 {
     lv_obj_t *title = lv_label_create(parent);
-    lv_label_set_text(title, "SIGNALS");
+    lv_label_set_text(title, "INBOX");
     lv_obj_set_style_text_font(title, FF_THEME_FONT_CHIP, 0);
     lv_obj_set_style_text_color(title, lv_color_hex(FF_THEME_COLOR_MUTED), 0);
     lv_obj_set_style_text_letter_space(title, 3, 0);
@@ -1005,7 +1027,7 @@ static void signals_build_picker(lv_obj_t *parent, ff_app_signals_t const *v, bo
      * first render, not theorized). */
     int32_t back_margin = signals_safe_margin_x(FF_SIGNALS_BACK_Y, FF_SIGNALS_BACK_PX);
     lv_obj_t *title = lv_label_create(parent);
-    lv_label_set_text(title, "NEW SIGNAL");
+    lv_label_set_text(title, "NEW MESSAGE");
     lv_obj_set_style_text_font(title, FF_THEME_FONT_CHIP, 0);
     lv_obj_set_style_text_color(title, lv_color_hex(FF_THEME_COLOR_MUTED), 0);
     lv_obj_set_style_text_letter_space(title, 3, 0);
@@ -1593,8 +1615,10 @@ static void signals_build_thread(lv_obj_t *parent, ff_app_signals_t const *v, bo
     }
 
     if (n == 0) {
-        /* Honest empty thread (a quiet member / a traffic-less crew). */
-        lv_obj_t *empty = signals_mk_label(list, "NO SIGNALS YET", FF_THEME_FONT_CHIP,
+        /* Honest empty thread (a quiet member / a traffic-less crew).
+         * Renamed 2026-09-01, was "NO SIGNALS YET" (reviewer PR #144
+         * round 2). */
+        lv_obj_t *empty = signals_mk_label(list, "NO MESSAGES YET", FF_THEME_FONT_CHIP,
                                            FF_THEME_COLOR_DIM);
         lv_obj_set_style_text_letter_space(empty, 2, 0);
         lv_obj_align(empty, LV_ALIGN_CENTER, 0, -20);
