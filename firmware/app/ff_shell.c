@@ -1949,6 +1949,41 @@ static void shell_render_key(ff_app_state_t const *v, ff_app_state_t *key)
         ff_app_face_t const af = key->active_face;
         memset(key, 0, sizeof(*key));
         key->active_face = af;
+    } else if (v->active_face == FF_APP_FACE_LAUNCHER) {
+        /* S26 slice e — the launcher, same "opaque overlay" discipline
+         * as the power menu above, with ONE exception: unlike that
+         * fully-static face, the launcher's Signals circle carries the
+         * unread badge (scr_launcher.c, moved off the old page-dot
+         * row), so the mask keeps exactly that one scalar rather than
+         * going fully static. Computed the same way
+         * ff_scr_signals_unread_count does (a sum over
+         * v->signals.inbox) but inline here rather than calling that
+         * screens-layer helper — ff-shell deliberately links no LVGL
+         * (see this file's own architecture note / docs/ARCHITECTURE.md:
+         * "screens read ff_shell_view()'s output; they are not linked
+         * here"), and both `ff_inbox_conv_count`/`ff_inbox_conv_at` are
+         * plain core calls already reachable here. Stashed in
+         * `convs[0].unread` — an otherwise-fully-zeroed slot, not a
+         * real conversation entry — purely as a change-detector scalar;
+         * nothing reads it back as inbox data while this branch is
+         * live. Without this, a live radar arrow or feed item ticking
+         * underneath (base stays RADAR the whole time the launcher
+         * modal is up) would dirty the key every frame and rebuild the
+         * launcher's tree out from under a finger, the same clobber
+         * class the power-menu comment above documents — while a
+         * genuinely new unread message SHOULD still dirty the badge. */
+        ff_app_face_t const af = key->active_face;
+        uint32_t unread_total = 0;
+        uint8_t const n = ff_inbox_conv_count(&v->signals.inbox);
+        for (uint8_t i = 0; i < n; i++) {
+            ff_inbox_conv_t const *cv = ff_inbox_conv_at(&v->signals.inbox, i);
+            if (cv != NULL) {
+                unread_total += cv->unread;
+            }
+        }
+        memset(key, 0, sizeof(*key));
+        key->active_face = af;
+        key->signals.inbox.convs[0].unread = (unread_total > UINT16_MAX) ? UINT16_MAX : (uint16_t)unread_total;
     }
 }
 
@@ -2758,13 +2793,51 @@ void ff_shell_intent(ff_shell_t *sh_pub, ff_intent_t const *in)
 
     switch (in->kind) {
     case FF_INTENT_SWIPE:
-        /* While a takeover is up the swipe faces are not the visible
-         * face, so they receive no intents (AC3b's routing half). The
-         * modal-suppression and bounded-not-wrapping rules are the
-         * route's own (AC1/AC2). */
-        if (takeover_up) return;
-        (void)ff_route_swipe(&sh->route, in->u.swipe_dir);
+        /* S26 slice e — RETIRED as a live navigation mechanism: no
+         * screen emits this any more (scr_nav.c's gesture handler and
+         * page-dot row are gone with the swipe carousel; BOOT/the
+         * launcher own navigation now). Kept as an explicit no-op case,
+         * not deleted, so `-Wswitch` still sees every ff_intent_kind_t
+         * member handled and this stays a documented, tested "does
+         * nothing" rather than an accidental fallthrough — the intent
+         * kind itself stays (ff_intent.h's append-only convention), and
+         * `ff_route_swipe` stays a live, fully-tested pure primitive
+         * with simply no caller left (see that function's doc comment
+         * in app/include/ff_route.h). */
         return;
+
+    case FF_INTENT_HOME:
+        /* S26 slice e — the BOOT-button decision, entirely ff_route's
+         * (app/include/ff_route.h's ff_route_home doc comment has the
+         * whole rule set: open/close the launcher, or jump any other
+         * app straight to Radar). Suppressed under a takeover exactly
+         * like every other nav intent (routing rule 4) — BOOT while a
+         * flare takeover is up must not navigate out from under it. */
+        if (takeover_up) return;
+        (void)ff_route_home(&sh->route);
+        return;
+
+    case FF_INTENT_LAUNCHER_SELECT: {
+        /* S26 slice e — a launcher circle tap. `u.launcher_idx` is a
+         * small int (0=Now, 1=Signals, 2=Map, 3=Settings), not a domain
+         * enum (ff_intent.h stays dependency-free) — mapped to a real
+         * face here, the one place both vocabularies are in scope.
+         * ff_route_launcher_select itself is the real guard (only
+         * meaningful while the launcher is open); the takeover check
+         * here is the same routing-rule-4 belt this file applies to
+         * every other nav intent. */
+        if (takeover_up) return;
+        static ff_app_face_t const k_launcher_faces[] = {
+            FF_APP_FACE_NOW,
+            FF_APP_FACE_SIGNALS,
+            FF_APP_FACE_MAP,
+            FF_APP_FACE_SETTINGS,
+        };
+        uint8_t const idx = in->u.launcher_idx;
+        if (idx >= (sizeof(k_launcher_faces) / sizeof(k_launcher_faces[0]))) return;
+        (void)ff_route_launcher_select(&sh->route, k_launcher_faces[idx]);
+        return;
+    }
 
     case FF_INTENT_BACK:
         if (takeover_up) return; /* a tap where "<" was must not close the composer under a takeover */
@@ -3691,6 +3764,13 @@ bool ff_shell_keep_awake(ff_app_state_t const *view, bool touch_cal_running)
     if (view->active_face == FF_APP_FACE_POWER_MENU) {
         return true;
     }
+    /* S26 slice e — the launcher deliberately does NOT keep awake, unlike
+     * the power menu just above: the spec states no such rule, ANY input
+     * (including the BOOT press that opened it) already resets idle to
+     * ACTIVE per slice (c), and a user who pauses long enough to dim can
+     * simply press BOOT again to both wake and re-open it. Considered and
+     * rejected per AGENTS.md's "note the interpretation" — see the PR
+     * body. */
     return false;
 }
 

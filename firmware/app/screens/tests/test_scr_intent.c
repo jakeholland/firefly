@@ -45,6 +45,7 @@
 #include "ff_settings.h" /* FF_SHARE_LIVE/_ZONES/_GHOST, for the settings-face share-mode tests */
 #include "scr_compose.h"
 #include "scr_flare.h"
+#include "scr_launcher.h" /* S26 slice e — the BOOT-button launcher */
 #include "scr_nav.h"
 #include "scr_radar.h"
 #include "scr_settings.h"
@@ -146,115 +147,26 @@ static void click(lv_obj_t *obj)
 }
 
 /* =================================================================== */
-/* nav long-press CALLBACK -> OPEN_SETTINGS                             */
+/* nav long-press -> OPEN_SETTINGS — RETIRED (S26 slice e)               */
+/*                                                                       */
+/* scr_nav.c no longer has a long-press hook at all: `nav_long_press_cb` */
+/* and the puck's LONG_PRESSED binding are gone with the carousel        */
+/* (Settings is a launcher circle now — scr_launcher.h). The three tests */
+/* this section used to hold (the callback proof, the physical           */
+/* reachability probe via `lv_indev_search_obj`, and the                 */
+/* content-button-does-not-bubble guard) tested a mechanism that no      */
+/* longer exists; removed rather than left asserting nothing meaningful. */
+/* A long-press anywhere now emits no intent at all — implicitly covered */
+/* by every other test in this file, none of which sends LONG_PRESSED    */
+/* and expects a count.                                                  */
 /* =================================================================== */
 
-/**
- * WHAT THIS PROVES — AND WHAT IT DELIBERATELY DOES NOT (PR #54 review,
- * HIGH finding).
- *
- * `lv_obj_send_event` delivers LV_EVENT_LONG_PRESSED DIRECTLY to the
- * puck, so this test pins only the CALLBACK: when the hook fires, it
- * emits OPEN_SETTINGS, exactly once. It does NOT prove a physical
- * long-press reaches that callback — see
- * `S16_c3_physical_long_press_on_empty_puck_space_reaches_open_settings`
- * below for the probe that does, using the same technique the reviewer
- * used (`lv_indev_search_obj`) rather than assuming the fix worked.
- */
-static void S16_c1_nav_long_press_callback_emits_open_settings(void)
-{
-    ff_app_state_t state;
-    memset(&state, 0, sizeof(state));
-    state.active_face = FF_APP_FACE_RADAR;
-
-    ff_scr_nav_build(&state);
-
-    /* The long-press hook lives on the puck — scr_nav.c's first child of
-     * the active screen (the same object it marks LV_OBJ_FLAG_CLICKABLE
-     * for exactly this gesture). If the build order ever changes this
-     * lookup fails loudly here rather than silently testing nothing. */
-    lv_obj_t *puck = lv_obj_get_child(lv_screen_active(), 0);
-    TEST_ASSERT_NOT_NULL(puck);
-    TEST_ASSERT_TRUE(lv_obj_has_flag(puck, LV_OBJ_FLAG_CLICKABLE));
-
-    lv_result_t r = lv_obj_send_event(puck, LV_EVENT_LONG_PRESSED, NULL);
-    TEST_ASSERT_EQUAL(LV_RESULT_OK, r);
-
-    TEST_ASSERT_EQUAL_INT(1, s_spy.count);
-    TEST_ASSERT_EQUAL(FF_INTENT_OPEN_SETTINGS, s_spy.last.kind);
-}
-
-/**
- * The reachability probe itself (S16 slice c3, PR #54 review, HIGH —
- * closed here). Uses `lv_indev_search_obj` — the same function LVGL's own
- * indev processing calls to decide who a real touch's events go to, and
- * the same one the reviewer used to MEASURE the original defect — rather
- * than assuming a real finger behaves like `lv_obj_send_event` does.
- *
- * Two things are proven, not one:
- *  1. The topology fact the reviewer measured is STILL true: a press over
- *     empty puck space does not resolve to the puck itself (the tileview
- *     still covers it). If a future refactor cleared CLICKABLE on the
- *     tileview instead of fixing bubbling, this assertion would fail
- *     loudly rather than the test quietly stopping to mean anything.
- *  2. What LVGL would ACTUALLY deliver LONG_PRESSED to — the resolved
- *     object, not the puck — still reaches OPEN_SETTINGS, via the
- *     EVENT_BUBBLE chain `ff_scr_nav_build` now sets up (tile ->
- *     tileview -> puck).
- */
-static void S16_c3_physical_long_press_on_empty_puck_space_reaches_open_settings(void)
-{
-    ff_app_state_t state;
-    memset(&state, 0, sizeof(state)); /* RADAR_LIVE (mode 0): no clickable content at all */
-    state.active_face = FF_APP_FACE_RADAR;
-
-    ff_scr_nav_build(&state);
-
-    lv_obj_t *puck = lv_obj_get_child(lv_screen_active(), 0);
-    TEST_ASSERT_NOT_NULL(puck);
-
-    lv_point_t pt = {228, 228}; /* puck/window center; nothing clickable sits here in this state */
-    lv_obj_t *hit = lv_indev_search_obj(lv_screen_active(), &pt);
-    TEST_ASSERT_NOT_NULL(hit);
-    TEST_ASSERT_NOT_EQUAL(puck, hit); /* still the tileview/tile, not the puck — the topology is unchanged */
-
-    lv_result_t r = lv_obj_send_event(hit, LV_EVENT_LONG_PRESSED, NULL);
-    TEST_ASSERT_EQUAL(LV_RESULT_OK, r);
-
-    TEST_ASSERT_EQUAL_INT(1, s_spy.count);
-    TEST_ASSERT_EQUAL(FF_INTENT_OPEN_SETTINGS, s_spy.last.kind);
-}
-
-/**
- * The other half of "don't fix it with a bare EVENT_BUBBLE flag" (the
- * TODO this slice closed): a long-press ON a content button must NOT
- * bubble up and misfire OPEN_SETTINGS. Only the tileview and its tiles
- * (container objects) carry LV_OBJ_FLAG_EVENT_BUBBLE — content controls
- * like FLARE never do — so this stays confined to the button.
- */
-static void S16_c3_content_button_long_press_does_not_reach_open_settings(void)
-{
-    ff_app_state_t state;
-    memset(&state, 0, sizeof(state));
-    state.active_face = FF_APP_FACE_RADAR;
-    state.radar.mode = RADAR_CLOSE;
-    strncpy(state.radar.name, "DANA", sizeof(state.radar.name) - 1);
-    strncpy(state.radar.dist_str, "15 m", sizeof(state.radar.dist_str) - 1);
-
-    ff_scr_nav_build(&state);
-
-    lv_obj_t *flare_btn = find_button_with_label(lv_screen_active(), "FLARE");
-    TEST_ASSERT_NOT_NULL(flare_btn);
-
-    lv_result_t r = lv_obj_send_event(flare_btn, LV_EVENT_LONG_PRESSED, NULL);
-    TEST_ASSERT_EQUAL(LV_RESULT_OK, r);
-
-    TEST_ASSERT_EQUAL_INT(0, s_spy.count); /* did not bubble up to OPEN_SETTINGS */
-}
-
 /* =================================================================== */
-/* Physical swipe -> SWIPE (S16 slice c3: ff_route owns face nav now,   */
-/* not the tileview's own native drag-to-scroll)                        */
+/* S26 slice e, AC3 — a physical drag, any direction, changes NOTHING   */
+/* (the carousel is retired; scr_nav.c has no gesture handler at all    */
+/* any more, so there is nothing left for an unclaimed drag to become — */
+/* it is simply left as whatever scroll the content underneath makes    */
+/* of it, same as a vertical drag always was).                          */
 /* =================================================================== */
 
 static lv_point_t s_probe_pt;
@@ -331,44 +243,44 @@ static void drag_v(int32_t from_y, int32_t to_y, int32_t x)
     lv_indev_delete(indev);
 }
 
-static void S16_c3_physical_leftward_drag_emits_swipe_toward_signals(void)
+/* S26e AC3: "a horizontal drag on Radar/Now/Signals changes nothing" —
+ * both directions, on all three named faces. scr_nav.c has no gesture
+ * handler at all any more, so this is really testing that nothing NEW
+ * grew one; a leftover call site elsewhere would still leave this
+ * green, which is the point (nothing here to wire up). */
+static void S26e_AC3_horizontal_drag_emits_nothing(ff_app_face_t face)
 {
     ff_app_state_t state;
     memset(&state, 0, sizeof(state));
-    state.active_face = FF_APP_FACE_RADAR;
+    state.active_face = face;
     ff_scr_nav_build(&state);
 
     drag(380, 60, 228); /* finger moving LEFT */
-
-    TEST_ASSERT_EQUAL_INT(1, s_spy.count);
-    TEST_ASSERT_EQUAL(FF_INTENT_SWIPE, s_spy.last.kind);
-    TEST_ASSERT_EQUAL_INT8(1, s_spy.last.u.swipe_dir); /* toward SIGNALS */
-}
-
-static void S16_c3_physical_rightward_drag_emits_swipe_toward_radar(void)
-{
-    ff_app_state_t state;
-    memset(&state, 0, sizeof(state));
-    state.active_face = FF_APP_FACE_RADAR;
-    ff_scr_nav_build(&state);
+    TEST_ASSERT_EQUAL_INT(0, s_spy.count);
 
     drag(60, 380, 228); /* finger moving RIGHT */
-
-    TEST_ASSERT_EQUAL_INT(1, s_spy.count);
-    TEST_ASSERT_EQUAL(FF_INTENT_SWIPE, s_spy.last.kind);
-    TEST_ASSERT_EQUAL_INT8(-1, s_spy.last.u.swipe_dir); /* toward RADAR */
+    TEST_ASSERT_EQUAL_INT(0, s_spy.count);
 }
 
-/* THE SCROLL-VS-SWIPE FIX (horizontal-carousel rework): a real UPWARD
- * drag on the (real) tileview reaches nav_swipe_gesture_cb's LV_DIR_TOP
- * case and emits NOTHING — it is not a face change, so it is left to be a
- * scroll of whatever scrollable is underneath. This is the exact
- * regression guard for the bug the maintainer hit on glass: an upward
- * drag used to emit FF_INTENT_OPEN_MAP and jump to Map, which is how a
- * vertical list-scroll got mistaken for a face swipe. Same "build the
- * real screen, synthesize a real indev gesture" pattern as the
- * horizontal-drag tests above, so it exercises LVGL's own gesture
- * machinery, not a synthetic shortcut. */
+static void S26e_AC3_horizontal_drag_on_radar_emits_nothing(void)
+{
+    S26e_AC3_horizontal_drag_emits_nothing(FF_APP_FACE_RADAR);
+}
+
+static void S26e_AC3_horizontal_drag_on_now_emits_nothing(void)
+{
+    S26e_AC3_horizontal_drag_emits_nothing(FF_APP_FACE_NOW);
+}
+
+static void S26e_AC3_horizontal_drag_on_signals_emits_nothing(void)
+{
+    S26e_AC3_horizontal_drag_emits_nothing(FF_APP_FACE_SIGNALS);
+}
+
+/* Vertical too, both directions — the scroll-vs-swipe property the
+ * horizontal-carousel rework introduced (a vertical drag is always a
+ * scroll, never a face change) still holds now that there is no
+ * gesture handler left to hold it. */
 static void carousel_physical_upward_drag_emits_nothing(void)
 {
     ff_app_state_t state;
@@ -378,12 +290,9 @@ static void carousel_physical_upward_drag_emits_nothing(void)
 
     drag_v(380, 60, 228); /* finger moving UP */
 
-    TEST_ASSERT_EQUAL_INT(0, s_spy.count); /* vertical is a scroll, never a face change */
+    TEST_ASSERT_EQUAL_INT(0, s_spy.count);
 }
 
-/* Same, from a different tile (Signals, index 2) — a vertical drag is a
- * no-op on every face, so a future change that re-wired a vertical swipe
- * to a face on some tile fails loudly here. */
 static void carousel_physical_upward_drag_emits_nothing_from_signals_too(void)
 {
     ff_app_state_t state;
@@ -396,8 +305,6 @@ static void carousel_physical_upward_drag_emits_nothing_from_signals_too(void)
     TEST_ASSERT_EQUAL_INT(0, s_spy.count);
 }
 
-/* A DOWNWARD drag likewise emits nothing — the other vertical direction,
- * proving neither LV_DIR_TOP nor LV_DIR_BOTTOM is wired to a face. */
 static void carousel_physical_downward_drag_emits_nothing(void)
 {
     ff_app_state_t state;
@@ -1531,15 +1438,64 @@ static void S16_c1_wired_sites_are_noops_while_the_seam_is_unbound(void)
     TEST_ASSERT_EQUAL_INT(0, s_spy.count); /* nothing reached the (unbound) spy — and nothing crashed */
 }
 
+/* =================================================================== */
+/* S26 slice e — the launcher's four circles -> LAUNCHER_SELECT          */
+/* =================================================================== */
+
+static void S26e_launcher_circle_click_emits_launcher_select(char const *glyph, uint8_t expect_idx)
+{
+    ff_app_state_t state;
+    memset(&state, 0, sizeof(state));
+    ff_scr_launcher_build(&state);
+
+    click(find_button_with_label(lv_screen_active(), glyph));
+
+    TEST_ASSERT_EQUAL_INT(1, s_spy.count);
+    TEST_ASSERT_EQUAL(FF_INTENT_LAUNCHER_SELECT, s_spy.last.kind);
+    TEST_ASSERT_EQUAL_UINT8(expect_idx, s_spy.last.u.launcher_idx);
+}
+
+static void S26e_launcher_now_circle_emits_index_0(void)
+{
+    S26e_launcher_circle_click_emits_launcher_select("NOW", 0u);
+}
+
+static void S26e_launcher_signals_circle_emits_index_1(void)
+{
+    S26e_launcher_circle_click_emits_launcher_select("SIG", 1u);
+}
+
+static void S26e_launcher_map_circle_emits_index_2(void)
+{
+    S26e_launcher_circle_click_emits_launcher_select("MAP", 2u);
+}
+
+static void S26e_launcher_settings_circle_emits_index_3(void)
+{
+    S26e_launcher_circle_click_emits_launcher_select("SET", 3u);
+}
+
+/* Each click must produce EXACTLY ONE intent (same discipline this
+ * file's header comment states for every other wired site) — a control
+ * double-registered on two callbacks would pass a kind-only check while
+ * double-dispatching every tap. */
+static void S26e_launcher_click_emits_exactly_one_intent(void)
+{
+    ff_app_state_t state;
+    memset(&state, 0, sizeof(state));
+    ff_scr_launcher_build(&state);
+
+    click(find_button_with_label(lv_screen_active(), "SIG"));
+    TEST_ASSERT_EQUAL_INT(1, s_spy.count);
+}
+
 int main(void)
 {
     UNITY_BEGIN();
 
-    RUN_TEST(S16_c1_nav_long_press_callback_emits_open_settings);
-    RUN_TEST(S16_c3_physical_long_press_on_empty_puck_space_reaches_open_settings);
-    RUN_TEST(S16_c3_content_button_long_press_does_not_reach_open_settings);
-    RUN_TEST(S16_c3_physical_leftward_drag_emits_swipe_toward_signals);
-    RUN_TEST(S16_c3_physical_rightward_drag_emits_swipe_toward_radar);
+    RUN_TEST(S26e_AC3_horizontal_drag_on_radar_emits_nothing);
+    RUN_TEST(S26e_AC3_horizontal_drag_on_now_emits_nothing);
+    RUN_TEST(S26e_AC3_horizontal_drag_on_signals_emits_nothing);
     RUN_TEST(carousel_physical_upward_drag_emits_nothing);
     RUN_TEST(carousel_physical_upward_drag_emits_nothing_from_signals_too);
     RUN_TEST(carousel_physical_downward_drag_emits_nothing);
@@ -1589,6 +1545,12 @@ int main(void)
     RUN_TEST(S100_settings_brightness_stepper_steps_and_clamps);
     RUN_TEST(S21_settings_calibrate_touch_row_emits_calibrate_intent);
     RUN_TEST(S16_c1_wired_sites_are_noops_while_the_seam_is_unbound);
+
+    RUN_TEST(S26e_launcher_now_circle_emits_index_0);
+    RUN_TEST(S26e_launcher_signals_circle_emits_index_1);
+    RUN_TEST(S26e_launcher_map_circle_emits_index_2);
+    RUN_TEST(S26e_launcher_settings_circle_emits_index_3);
+    RUN_TEST(S26e_launcher_click_emits_exactly_one_intent);
 
     return UNITY_END();
 }

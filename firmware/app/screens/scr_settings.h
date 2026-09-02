@@ -1,12 +1,14 @@
 /**
  * scr_settings.h — app/screens: the Settings face (S11 slice b).
  *
- * HORIZONTAL-CAROUSEL REWORK: Settings is the far-right SWIPE TILE now,
- * not a long-press modal. It is reached by swiping right past Map (and,
- * as a shortcut, by the nav long-press, which now JUMPS the swipe base
- * here via `ff_route_goto` instead of pushing a modal), and it is left by
- * swiping left — so there is no BACK control on this face any more.
- * Pure rendering: reads an `ff_app_settings_t` and draws every
+ * Settings is one of the five base faces `ff_route`'s swipe axis still
+ * ranges over (RADAR/NOW/SIGNALS/MAP/SETTINGS — unchanged since the
+ * horizontal-carousel rework), but S26 slice e retired the swipe
+ * GESTURE as a live way to reach any of them: it is reached from the
+ * BOOT-button launcher's Settings circle now (`scr_launcher.h`), and
+ * left the same way every other launcher-reached face is — BOOT again,
+ * straight back to Radar (`ff_route_home`). Pure rendering: reads an
+ * `ff_app_settings_t` and draws every
  * user-facing preference (units, share mode, haptics, night glow,
  * water-nudge interval, quiet hours, UTC offset, your name).
  * No domain logic here (CLAUDE.md) — every control is a bare

@@ -30,15 +30,13 @@ extern "C" {
  * whatever face would otherwise show, exactly like a real full-screen
  * interrupt would; `active_face` is not consulted at all on that path.
  *
- * Otherwise: the whole five-face horizontal carousel — RADAR, NOW,
- * SIGNALS, MAP, and SETTINGS — goes through the shared tileview shell
- * (`ff_scr_nav_build`, which builds the active face into its tile).
- * MAP and SETTINGS used to be their own full-screen modal builds here;
- * the horizontal-carousel rework made them ordinary swipe tiles, so they
- * render through nav like Radar/Now/Signals (SETTINGS keeps its
- * fresh-entry scroll reset and the sim scroll hint, applied around the
- * nav call). COMPOSE is the one remaining full-screen face
- * (`ff_scr_compose_build`, reached from Signals' "+", not a swipe tile).
+ * Otherwise: the five base faces — RADAR, NOW, SIGNALS, MAP, and
+ * SETTINGS — go through the shared nav shell (`ff_scr_nav_build`, which
+ * builds the active face's content). SETTINGS keeps its fresh-entry
+ * scroll reset and the sim scroll hint, applied around the nav call.
+ * COMPOSE, POWER_MENU, and (S26 slice e) LAUNCHER are the three
+ * full-screen modals (`ff_scr_compose_build`/`ff_scr_power_menu_build`/
+ * `ff_scr_launcher_build`) — none is a base face reached through nav.
  * Every other face still has no real screen and falls through to
  * fixture_view.h's S13 placeholder.
  *

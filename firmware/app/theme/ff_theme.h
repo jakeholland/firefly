@@ -58,7 +58,7 @@ extern "C" {
 #define FF_THEME_COLOR_STALE_AMBER 0xFFB454 /* STALE rim tint / chip */
 #define FF_THEME_COLOR_LIVE_GREEN  0x9BE07B /* LIVE chip, CLOSE pulse rings */
 #define FF_THEME_COLOR_MUTED       0x8B8A97 /* secondary text, LOST rim tint */
-#define FF_THEME_COLOR_DIM         0x55545F /* tertiary text, inactive page dot */
+#define FF_THEME_COLOR_DIM         0x55545F /* tertiary text (the retired page-dot row's inactive-dot color, before S26e) */
 #define FF_THEME_COLOR_INK         0xF2EFE6 /* primary text on dark surfaces */
 
 /* Crew palette — indexed by ff_crew_member_t::color_idx / ff_radar_dot_t

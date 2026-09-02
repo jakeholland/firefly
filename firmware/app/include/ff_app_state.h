@@ -874,6 +874,36 @@ typedef enum {
      * mid-press. Unlike FLARE, this IS a renderable `active_face` value
      * (it is a real modal, not a routing-only sentinel). */
     FF_APP_FACE_POWER_MENU,
+    /* [api] S26 slice e (docs/specs/S26-device-lifecycle.md "(e) Home
+     * button + launcher"). Appended after POWER_MENU, so no existing
+     * face's numeric value moves — this repo's standing convention for
+     * this enum. The BOOT-button home screen: a ring of app circles
+     * (Now / Signals / Map / Settings — Radar is not listed, it IS
+     * home), reached only from Radar (`ff_route_home`) and left either
+     * by BOOT again (back to Radar) or by tapping a circle (straight
+     * into that app, `ff_route_launcher_select`).
+     *
+     * The THIRD value `ff_route_push_modal` accepts (`app/include/
+     * ff_route.h`) — like POWER_MENU, it is a modal over `base`, which
+     * stays RADAR the whole time the launcher is up. Unlike POWER_MENU
+     * it is not fully static: the Signals circle carries the unread
+     * badge (`ff_scr_signals_unread_count`, moved off the old page-dot
+     * row — see scr_launcher.h), so `ff_shell.c`'s render-key mask for
+     * this face keeps that one scalar and zeroes everything else, the
+     * same "reduce to exactly what's drawn" discipline the power-menu
+     * mask uses (see shell_render_key's comment there).
+     *
+     * This slice RETIRES the five-face horizontal swipe carousel as a
+     * navigation mechanism (`scr_nav.c`'s gesture handler and page-dot
+     * row are gone; `ff_route_swipe` stays a tested pure primitive with
+     * no live caller — see that function's doc comment) and the
+     * long-press-anywhere shortcut to Settings (Settings is a launcher
+     * circle now). `ff_route`'s five-member swipe axis itself
+     * (RADAR/NOW/SIGNALS/MAP/SETTINGS) is UNCHANGED — it is still what
+     * `base` ranges over, and still how `ff_scr_nav_build` picks what to
+     * render; only how a user REACHES a given base face changed, from a
+     * horizontal drag to a launcher tap. */
+    FF_APP_FACE_LAUNCHER,
 } ff_app_face_t;
 
 /* -------------------------------------------------------------------

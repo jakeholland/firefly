@@ -46,6 +46,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
+#include "ff_button.h"     /* S26 slice e — core: the generic debounced push-button (BOOT-as-home) */
 #include "ff_display.h"
 #include "ff_face.h"
 #include "ff_idle.h"       /* S26 slices c+f — core: inactivity -> dim -> screen off -> light sleep */
@@ -278,6 +279,22 @@ static bool ff_calibrate_touch_cb(void *user, ff_touchcal_t *out_cal)
  * (CLAUDE.md's house rule).
  * ------------------------------------------------------------------- */
 static ff_power_fsm_t s_power_fsm;
+
+/* ---------------------------------------------------------------------
+ * S26 slice e — BOOT-as-home-button (docs/specs/S26-device-lifecycle.md
+ * "(e) Home button + launcher").
+ *
+ * `s_boot_button` is core/ff_button.h's whole state — the same debounce
+ * shape `s_power_fsm` uses, reused rather than shared (see ff_button.h's
+ * header comment for why this is a standalone module). This file only
+ * samples GPIO0 (`ff_power_boot_pressed()`, already used above for the
+ * reboot guard and for ff_idle's keep-awake feed) and ticks the
+ * debouncer every main-loop frame, forwarding a debounced press as
+ * FF_INTENT_HOME — `ff_route_home` (app/include/ff_route.h) makes the
+ * entire nav decision, so nothing here is an `if` about behavior
+ * (CLAUDE.md's house rule).
+ * ------------------------------------------------------------------- */
+static ff_button_t s_boot_button;
 
 /* ---------------------------------------------------------------------
  * S26 slice c — inactivity -> dim -> screen off.
@@ -563,6 +580,10 @@ void app_main(void)
     /* S26 slice b — zero the PWR-button FSM before anything can tick it
      * (the main loop below is the only tick site). */
     ff_power_fsm_init(&s_power_fsm);
+
+    /* S26 slice e — zero the BOOT-button debouncer, same "before anything
+     * can tick it" placement. */
+    ff_button_init(&s_boot_button);
 
     /* S26 slice c — zero the idle FSM; re-pinned to "now" right before
      * the render loop starts (below), after every one-shot bring-up step
@@ -905,6 +926,20 @@ void app_main(void)
         if (ff_power_fsm_reboot_ready(&s_power_fsm, ff_power_boot_pressed())) {
             ESP_LOGI(TAG, "S26b reboot guard ready (BOOT released) — esp_restart()");
             esp_restart();
+        }
+
+        /* S26 slice e — the BOOT-as-home-button debounce, same "tick every
+         * frame, forward the decision as an intent" placement as the PWR
+         * FSM above: ff_button_tick debounces GPIO0 (already sampled above
+         * for the reboot guard and the idle-input feed below — reading it
+         * again here is a second, independent sample, exactly like
+         * ff_power_pwr_pressed's own reuse pattern) and fires true exactly
+         * once per physical press; this file only forwards that as
+         * FF_INTENT_HOME. `ff_route_home` (app/include/ff_route.h) owns
+         * the whole nav decision — no `if` about behavior here. */
+        if (ff_button_tick(&s_boot_button, now_ms, ff_power_boot_pressed())) {
+            ff_intent_t const home = {.kind = FF_INTENT_HOME, .u = {0}};
+            ff_shell_intent(&s_shell, &home);
         }
 
         /* S26 slice c — feed touch + BOOT into ff_idle_input every frame,

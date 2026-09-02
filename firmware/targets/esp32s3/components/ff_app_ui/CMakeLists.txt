@@ -38,6 +38,7 @@ idf_component_register(
         "${FF_APP_DIR}/screens/scr_map.c"
         "${FF_APP_DIR}/screens/scr_power_menu.c" # S26 slice b — the PWR-button power menu modal
         "${FF_APP_DIR}/screens/scr_banner.c" # S26 slice d — the ff_notify message banner overlay
+        "${FF_APP_DIR}/screens/scr_launcher.c" # S26 slice e — the BOOT-button launcher, carousel retired
     INCLUDE_DIRS
         "${FF_APP_DIR}/screens"  # scr_*.h, *_layout.h
         "${FF_APP_DIR}/theme"    # ff_theme.h (header-only)

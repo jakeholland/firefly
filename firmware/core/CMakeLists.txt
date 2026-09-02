@@ -315,6 +315,23 @@ if(FF_BUILD_TESTS)
     add_test(NAME test_idle COMMAND test_idle)
 endif()
 
+# S26 slice e (core/button — a small, generic debounced push-button, used
+# for the BOOT-as-home-button debounce; docs/specs/S26-device-lifecycle.md
+# "(e) Home button + launcher"). Pure C11, no I/O: the esp32s3 target only
+# samples GPIO0 (ff_power_boot_pressed, already exists for the reboot
+# guard) and forwards the debounced press as FF_INTENT_HOME.
+target_sources(ff-core PRIVATE src/ff_button.c)
+
+if(FF_BUILD_TESTS)
+    add_executable(test_button
+        tests/test_button.c
+    )
+    target_link_libraries(test_button PRIVATE ff-core unity)
+    ff_apply_warnings(test_button)
+
+    add_test(NAME test_button COMMAND test_button)
+endif()
+
 # S26 slice d (core/notify — the notification queue: fixed-depth FIFO,
 # coalescing, expiry; docs/specs/S26-device-lifecycle.md "(d) ff_notify +
 # message banner"). Pure C11, no I/O — the shell wires events -> enqueue;

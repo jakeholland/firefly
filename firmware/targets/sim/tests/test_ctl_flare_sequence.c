@@ -358,14 +358,16 @@ static void S16_d_idle_ticks_never_rebuild_the_screen(void)
     lv_deinit();
 }
 
-/* ctl `swipe` regression: the command used to run its press/moves/release
- * with zero elapsed time between steps, so LVGL's indev timer polled at
- * most once, no gesture was recognized, and the face never changed while
- * the command replied ok. This drives a real swipe end to end and asserts
- * the face actually moved. (This file's top comment explains why AC10
- * itself deliberately avoided `swipe`; that avoidance is also why the bug
- * survived until someone drove the command for real.) */
-static void ctl_swipe_actually_changes_the_face(void)
+/* S26 slice e: the ctl `swipe` command still exists (nothing in
+ * ctl_server.c/ctl_loop.c changed — see that pair's own files), but it
+ * dispatches FF_INTENT_SWIPE, which ff_shell.c's own case now retires as
+ * a documented no-op (the carousel is gone; BOOT/the launcher own
+ * navigation). This regression-guards the retirement end to end through
+ * the REAL ctl socket path — the same one a leftover UI/tooling caller
+ * would actually hit — replacing the old `ctl_swipe_actually_changes_
+ * the_face` positive proof (which is now, correctly, the wrong
+ * property to assert). */
+static void ctl_swipe_no_longer_changes_the_face(void)
 {
     static ff_shell_t shell;
     static fp_pack_t pack;
@@ -389,13 +391,11 @@ static void ctl_swipe_actually_changes_the_face(void)
     char resp[256];
     ctl_send(&h, "{\"cmd\":\"swipe\",\"dir\":\"left\"}", resp, sizeof(resp));
     ctl_settle(&ctx, &h);
-    TEST_ASSERT_EQUAL_MESSAGE(FF_APP_FACE_NOW, ctx.state.active_face,
-                               "ctl swipe left did not move radar -> now");
+    TEST_ASSERT_EQUAL_MESSAGE(FF_APP_FACE_RADAR, ctx.state.active_face, "ctl swipe left moved the face — SWIPE should be retired");
 
     ctl_send(&h, "{\"cmd\":\"swipe\",\"dir\":\"right\"}", resp, sizeof(resp));
     ctl_settle(&ctx, &h);
-    TEST_ASSERT_EQUAL_MESSAGE(FF_APP_FACE_RADAR, ctx.state.active_face,
-                               "ctl swipe right did not move now -> radar");
+    TEST_ASSERT_EQUAL_MESSAGE(FF_APP_FACE_RADAR, ctx.state.active_face, "ctl swipe right moved the face — SWIPE should be retired");
 
     ff_ctl_loop_close(&ctx);
     ff_shell_close(&shell);
@@ -419,26 +419,18 @@ static void ctl_hold(ff_ctl_handlers_t const *h, double x, double y, uint32_t ms
     ctl_send(h, cmd, resp, resp_sz);
 }
 
-/* issue #70: tap's press/release is a fixed ~40ms, well under LVGL's
- * ~400ms long_press_time, so the ONE gesture that opens Settings
- * (scr_nav.c's nav_long_press_cb, reached by a long-press anywhere on
- * the tileview) could not be driven through the ctl socket at all —
- * blocking the Settings/Map UX reviews (PR #68) from driving those
- * faces live. Drives a REAL long-press through ff_ctl_process_line and
- * asserts the face actually reaches Settings, the same way
- * ctl_swipe_actually_changes_the_face asserts the face actually moved.
- *
- * Mutation-conscious (standing brief: "what input satisfies the proxy
- * and violates the property?"): a `hold` implementation that always
- * held "long enough" regardless of `ms` (e.g. one that hardcoded enough
- * steps and ignored the caller's value) would still pass a test that
- * only checked the positive case. The negative case below — an 80ms
- * hold, well under the 400ms threshold — pins the other direction: it
- * must NOT open Settings. (228, 228) is the puck/window center — the
- * exact reachability point app/screens/tests/test_scr_intent.c's own
- * `S16_c3_physical_long_press_on_empty_puck_space_reaches_open_settings`
- * documents as "nothing clickable sits here in this state" on Radar. */
-static void ctl_hold_opens_settings_but_short_hold_does_not(void)
+/* issue #70's `hold` command (press-and-hold, driving a REAL
+ * LONG_PRESSED through the ctl socket) still exists — nothing in
+ * ctl_server.c/ctl_loop.c changed — but S26 slice e retired the one
+ * thing it used to prove: `scr_nav.c`'s `nav_long_press_cb` is gone
+ * along with the carousel (Settings is a launcher circle now,
+ * scr_launcher.h). This regression-guards the retirement through the
+ * REAL ctl socket path, both below and above LVGL's ~400ms
+ * long_press_time — neither duration opens anything, because there is
+ * no long-press handler left to open it. (228, 228) is the puck/window
+ * center — the same point the old positive proof used, still nothing
+ * clickable there on Radar. */
+static void ctl_hold_no_longer_opens_settings(void)
 {
     static ff_shell_t shell;
     static fp_pack_t pack;
@@ -461,22 +453,23 @@ static void ctl_hold_opens_settings_but_short_hold_does_not(void)
 
     char resp[256];
 
-    /* --- negative control: below threshold, Settings must NOT open --- */
+    /* A short hold (well under the old 400ms threshold) still does
+     * nothing — unchanged. */
     ctl_hold(&h, 228.0, 228.0, 80, resp, sizeof(resp));
     ctl_settle(&ctx, &h);
-    TEST_ASSERT_EQUAL_MESSAGE(FF_APP_FACE_RADAR, ctx.state.active_face,
-                              "an 80ms ctl hold (well under LVGL's 400ms long_press_time) opened Settings");
+    TEST_ASSERT_EQUAL_MESSAGE(FF_APP_FACE_RADAR, ctx.state.active_face, "an 80ms ctl hold moved the face");
 
-    /* --- positive: FF_CTL_HOLD_DEFAULT_MS (600ms) opens Settings ------ */
+    /* A long hold (the old FF_CTL_HOLD_DEFAULT_MS, 600ms) is the
+     * retirement itself: it used to open Settings and must not any
+     * more. */
     ctl_hold(&h, 228.0, 228.0, 600, resp, sizeof(resp));
     ctl_settle(&ctx, &h);
-    TEST_ASSERT_EQUAL_MESSAGE(FF_APP_FACE_SETTINGS, ctx.state.active_face, "ctl hold did not open Settings");
+    TEST_ASSERT_EQUAL_MESSAGE(FF_APP_FACE_RADAR, ctx.state.active_face,
+                              "a 600ms ctl hold opened Settings — long-press-anywhere should be retired");
 
-    /* Read end to end through the `state` dump too, same "not just the C
-     * struct" check AC10 makes at its own finish line. */
     char state_resp[FF_CTL_MAX_RESP];
     ctl_send(&h, "{\"cmd\":\"state\"}", state_resp, sizeof(state_resp));
-    TEST_ASSERT_NOT_NULL_MESSAGE(strstr(state_resp, "\"face\":\"settings\""), state_resp);
+    TEST_ASSERT_NOT_NULL_MESSAGE(strstr(state_resp, "\"face\":\"radar\""), state_resp);
 
     ff_ctl_loop_close(&ctx);
     ff_shell_close(&shell);
@@ -675,8 +668,8 @@ int main(void)
     RUN_TEST(flare_second_takeover_dismisses_via_real_tap);
     RUN_TEST(flare_takeover_mark_pulse_animates);
     RUN_TEST(S16_d_idle_ticks_never_rebuild_the_screen);
-    RUN_TEST(ctl_swipe_actually_changes_the_face);
-    RUN_TEST(ctl_hold_opens_settings_but_short_hold_does_not);
+    RUN_TEST(ctl_swipe_no_longer_changes_the_face);
+    RUN_TEST(ctl_hold_no_longer_opens_settings);
     RUN_TEST(ctl_wall_sets_bench_time_honestly);
 
     return UNITY_END();

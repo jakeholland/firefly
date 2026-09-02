@@ -109,12 +109,16 @@ typedef struct {
     /**
      * Inject a press-and-hold at (x, y) (screen pixels) lasting `ms`
      * before release — issue #70: `tap`'s press/release is a fixed
-     * ~40ms, well under LVGL's ~400ms long-press threshold, so the ONE
-     * gesture that opens Settings (scr_nav.c's nav_long_press_cb) could
-     * not be driven through this socket at all. `ff_ctl_process_line`
-     * has already validated `x`/`y` the same way it does for `tap`
-     * (finite, within [FF_CTL_TAP_COORD_MIN, FF_CTL_TAP_COORD_MAX]) and
-     * `ms` (finite, within [0, FF_CTL_HOLD_MS_MAX], defaulted to
+     * ~40ms, well under LVGL's ~400ms long-press threshold, so a real
+     * LONG_PRESSED gesture could not be driven through this socket at
+     * all. Originally added to drive Settings' old long-press-anywhere
+     * hook (`scr_nav.c`'s `nav_long_press_cb`, retired S26 slice e — see
+     * `tests/test_ctl_flare_sequence.c`'s `ctl_hold_no_longer_opens_
+     * settings`); kept as general LONG_PRESSED-injection infrastructure
+     * for whatever future control needs it. `ff_ctl_process_line` has
+     * already validated `x`/`y` the same way it does for `tap` (finite,
+     * within [FF_CTL_TAP_COORD_MIN, FF_CTL_TAP_COORD_MAX]) and `ms`
+     * (finite, within [0, FF_CTL_HOLD_MS_MAX], defaulted to
      * FF_CTL_HOLD_DEFAULT_MS when omitted) before this is called — same
      * "safe to narrow, no further range checks needed here" contract
      * `tap` documents. */
