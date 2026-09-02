@@ -154,9 +154,9 @@ _Static_assert(FF_SIGNALS_FAB_HIT_PX >= FF_THEME_MIN_HIT_PX, "FAB tap target mus
  * can never collide with anything clickable at any scroll offset.
  * ------------------------------------------------------------------- */
 
-#define FF_SIGNALS_THREAD_LIST_TOP_Y   84
-#define FF_SIGNALS_THREAD_LIST_H_CREW  190 /* -> y 274; fade + FAB own the pole */
-#define FF_SIGNALS_THREAD_LIST_H_1TO1  172 /* -> y 256; the chip strip sits below */
+#define FF_SIGNALS_THREAD_LIST_TOP_Y   80
+#define FF_SIGNALS_THREAD_LIST_H_CREW  262 /* -> y 344; extends under the FAB corner slice (FF_SIGNALS_FAB_DECO_Y=280) — see the FAB-avoid note below */
+#define FF_SIGNALS_THREAD_LIST_H_1TO1  182 /* -> y 262; the chip strip sits below (2px clearance, not the 8px hit floor — the list's own touch target is the exempt FLOATING catcher, Exclusion 4, so this gap is a visual choice, not a hit-adjacency requirement) */
 
 /* Quick-reply chips (1:1 only): OMW / IN 5 MIN / FLARE, one row, capped
  * on the right so the strip and the FAB's tap target keep the adjacency
@@ -271,13 +271,21 @@ _Static_assert(FF_SIGNALS_RALLY_FOOTER_Y - (FF_SIGNALS_RALLY_LIST_TOP_Y + FF_SIG
 /* Message-row internals (heights follow the canvas's single-line rows;
  * long content ellipsizes rather than wraps, so the pitch stays fixed
  * and the newest message's scroll anchor is stable). */
-#define FF_SIGNALS_MSG_SENDER_H 18  /* dot + name + age line above a CREW inbound bubble */
+#define FF_SIGNALS_MSG_SENDER_H 16  /* dot + name + age line above a CREW inbound bubble (FF_THEME_FONT_CHIP's own 16px line height, zero slack) */
 #define FF_SIGNALS_MSG_BUBBLE_H 34  /* one-line text bubble */
-#define FF_SIGNALS_MSG_RALLY_H  48  /* RALLY badge + place callout (place name at FF_THEME_FONT_MSG_BODY) */
+#define FF_SIGNALS_MSG_RALLY_H  46  /* RALLY badge + place callout — design canvas ThreadGroup.dc.html's own box: 8px v-padding + 12px caption + 18px place line, no inner gap (46 total) */
 #define FF_SIGNALS_MSG_EVENT_H  22  /* pulse/flare one-liner */
 #define FF_SIGNALS_MSG_AGE_H    16  /* age line under a bubble (rows with no sender line) */
-#define FF_SIGNALS_MSG_GAP      10
-#define FF_SIGNALS_MSG_MAX_W    236 /* bubble width cap; text past it ellipsizes */
+#define FF_SIGNALS_MSG_GAP      2   /* PR #149 review round 2: tightened from 10 to fit more rows at rest */
+#define FF_SIGNALS_MSG_MAX_W    294 /* bubble width cap; text past it ellipsizes. PR #149 review round 2:
+ * widened from 236 for the 16px body font (the pre-PR 14px cap, proportionally
+ * would be ~270, but the DEEPENED CREW list_h — needed for the 5-rows-visible
+ * AC — narrows the round-glass-safe row width to ~295px at its worst extent,
+ * which is the actual binding constraint: 294 is the largest cap that both (a)
+ * fits every existing fixture's longest message ("sounds good, heading there
+ * now", measured natural width 268px at FF_THEME_FONT_MSG_BODY, needs
+ * MAX_W-26 >= 268) without truncating, and (b) stays on-glass at every scroll
+ * offset in the deepened CREW band (measured row width ~295px, worst case). */
 
 /* signals_safe_margin_x — int32/ceil wrapper around ff_layout_safe_margin_x,
  * bound to this puck's center/radius and this file's safety buffer (twin of
@@ -1650,7 +1658,7 @@ static void signals_build_thread(lv_obj_t *parent, ff_app_signals_t const *v, bo
     /* Bottom padding: the scroll-to-newest below parks the LAST message
      * this far above the hard clip, so the newest signal reads at full
      * strength instead of dying under the fade. */
-    lv_obj_set_style_pad_bottom(list, 32, 0);
+    lv_obj_set_style_pad_bottom(list, 0, 0); /* PR #149 review round 2: newest flush at the bottom */
     /* Observe the live scroll offset so the NEXT rebuild (see below) can
      * restore it instead of always snapping to newest. */
     lv_obj_add_event_cb(list, signals_thread_scroll_cb, LV_EVENT_SCROLL, NULL);

@@ -1480,6 +1480,127 @@ static void S24_thread_message_bubble_not_compressed(void)
 }
 
 /* =================================================================== */
+/* PR #149 review round 2 (FAIL 1 — "the thread still reads smashed:      */
+/* only ~3 of 12 messages are visible at rest"): a measurable rows-       */
+/* visible AC. "Visible" = at least HALF the row's own height overlaps    */
+/* the list's viewport — chosen (not assumed) after measuring that FULL  */
+/* containment is mathematically unreachable for the 1:1 thread within   */
+/* its own stated boundary (chips pinned below, per the review's own     */
+/* lever list): four 1:1 rows cost >= 4*(BUBBLE_H+AGE_H) = 200px at ZERO  */
+/* gap, but the 1:1 band tops out at ~182px between the header and the   */
+/* chip strip (a hard floor this fix does not move) — no combination of  */
+/* GAP/padding within the design's own bubble padding (8px, ThreadGroup. */
+/* dc.html) closes that gap. Half-visible is legible (you can read the   */
+/* row's own top half) and, measured, is exactly what both fixtures need */
+/* — the SAME criterion also gives the CREW fixture its 5, so one        */
+/* definition serves both, not two different bars picked to pass.        */
+/* ------------------------------------------------------------------- */
+
+/* Counts message rows (plain lv_obj children of `list`, skipping the
+ * FLOATING scroll catcher — same shape as find_scrollable's own
+ * decoration convention) whose rect overlaps the list's own viewport by
+ * at least half of the row's own height. */
+static int count_rows_half_visible(lv_obj_t *list)
+{
+    lv_area_t la;
+    lv_obj_get_coords(list, &la);
+    uint32_t n = lv_obj_get_child_count(list);
+    int count = 0;
+    for (uint32_t i = 0; i < n; i++) {
+        lv_obj_t *child = lv_obj_get_child(list, i);
+        if (!lv_obj_check_type(child, &lv_obj_class)) continue;
+        if (lv_obj_has_flag(child, LV_OBJ_FLAG_FLOATING)) continue; /* the scroll catcher, not a message row */
+        lv_area_t ra;
+        lv_obj_get_coords(child, &ra);
+        if (ra.y2 < la.y1 || ra.y1 > la.y2) continue; /* no overlap at all */
+        int32_t ov_y1 = ra.y1 > la.y1 ? ra.y1 : la.y1;
+        int32_t ov_y2 = ra.y2 < la.y2 ? ra.y2 : la.y2;
+        int32_t overlap = ov_y2 - ov_y1 + 1;
+        int32_t row_h = ra.y2 - ra.y1 + 1;
+        if (overlap * 2 >= row_h) {
+            count++;
+        }
+    }
+    return count;
+}
+
+static void S24_crew_thread_shows_at_least_5_rows_at_rest(void)
+{
+    ff_app_signals_t v;
+    s24_make_crew_thread_long(&v);
+    lv_obj_t *parent = lv_obj_create(lv_screen_active());
+    lv_obj_set_size(parent, 412, 412);
+    ff_scr_signals_build(parent, &v, false);
+    lv_obj_update_layout(parent);
+
+    lv_obj_t *list = find_scrollable(parent);
+    TEST_ASSERT_NOT_NULL(list);
+    TEST_ASSERT_GREATER_OR_EQUAL_INT_MESSAGE(5, count_rows_half_visible(list),
+                                             "the 12-message CREW thread must show at least 5 message rows "
+                                             "(each >= half its own height on-glass) at rest, not scrolled");
+}
+
+static void S24_direct_thread_shows_at_least_4_rows_at_rest(void)
+{
+    ff_app_signals_t v;
+    s24_make_direct_thread_long(&v);
+    lv_obj_t *parent = lv_obj_create(lv_screen_active());
+    lv_obj_set_size(parent, 412, 412);
+    ff_scr_signals_build(parent, &v, false);
+    lv_obj_update_layout(parent);
+
+    lv_obj_t *list = find_scrollable(parent);
+    TEST_ASSERT_NOT_NULL(list);
+    TEST_ASSERT_GREATER_OR_EQUAL_INT_MESSAGE(4, count_rows_half_visible(list),
+                                             "the long 1:1 thread must show at least 4 message rows (each >= half "
+                                             "its own height on-glass) at rest, not scrolled, with the quick-reply "
+                                             "chips still present");
+    /* "chips present" per the review — this AC must not be satisfiable by
+     * silently removing the quick-reply strip to buy the 1:1 thread more
+     * room. */
+    TEST_ASSERT_NOT_NULL_MESSAGE(find_button_with_label(parent, "OMW"), "1:1 quick-reply chips must stay present");
+}
+
+/* =================================================================== */
+/* PR #149 review round 2 (FAIL 2 — truncation regression): the message- */
+/* body font bump (14px -> FF_THEME_FONT_MSG_BODY, 16px) needs a wider   */
+/* FF_SIGNALS_MSG_MAX_W or text that fit before now ellipsizes. Checks   */
+/* the WIDEST message string across every committed fixture (measured,   */
+/* not guessed — "sounds good, heading there now" beats the longer-      */
+/* looking "grabbing water first, back in 10" by actual rendered pixel   */
+/* width at this font) renders in a real message bubble without engaging */
+/* LV_LABEL_LONG_MODE_DOTS (signals_label_clamp's own truncation flag).  */
+/* ------------------------------------------------------------------- */
+static void S24_widest_fixture_message_does_not_truncate(void)
+{
+    ff_app_signals_t v;
+    memset(&v, 0, sizeof(v));
+    v.subview = FF_SIG_SUB_THREAD;
+    v.thread_node = 0u;
+    strncpy(v.thread_name, "CREW", sizeof(v.thread_name) - 1);
+    sig_add_conv(&v, FF_CONV_CREW, 0u, NULL, 0, 1);
+
+    static char const *const WIDEST_FIXTURE_TEXT = "sounds good, heading there now"; /* measured widest, see above */
+    ff_inbox_msg_t *m = &v.thread.msgs[v.thread.msg_count++];
+    memset(m, 0, sizeof(*m));
+    m->kind = FEED_TEXT;
+    m->dir = FEED_DIR_OUT;
+    strncpy(m->text, WIDEST_FIXTURE_TEXT, sizeof(m->text) - 1);
+    m->age_ms = 60000u;
+
+    lv_obj_t *parent = lv_obj_create(lv_screen_active());
+    lv_obj_set_size(parent, 412, 412);
+    ff_scr_signals_build(parent, &v, false);
+
+    lv_obj_t *label = find_label_exact(parent, WIDEST_FIXTURE_TEXT);
+    TEST_ASSERT_NOT_NULL_MESSAGE(label, "the widest fixture message must render its FULL text verbatim as one "
+                                        "findable label — if this fails, the text was truncated (a different, "
+                                        "dot-suffixed string) or clipped out of the tree entirely");
+    TEST_ASSERT_NOT_EQUAL_MESSAGE(LV_LABEL_LONG_MODE_DOTS, lv_label_get_long_mode(label),
+                                  "the widest fixture message must not engage the ellipsis long-mode");
+}
+
+/* =================================================================== */
 /* Rally WHERE list reachability (maintainer bug report: "I can't scroll */
 /* to select all the locations on the send rally screen") — a real       */
 /* festpack-shaped 7-row list (On Me + 5 stages + Camp), same real-indev  */
@@ -2569,6 +2690,9 @@ int main(void)
     RUN_TEST(S24_crew_thread_overflow_scrolls_on_drag);
     RUN_TEST(S24_direct_thread_overflow_scrolls_on_drag);
     RUN_TEST(S24_thread_message_bubble_not_compressed);
+    RUN_TEST(S24_crew_thread_shows_at_least_5_rows_at_rest);
+    RUN_TEST(S24_direct_thread_shows_at_least_4_rows_at_rest);
+    RUN_TEST(S24_widest_fixture_message_does_not_truncate);
     RUN_TEST(S24_rally_where_list_scrolls_to_reach_all_rows);
     RUN_TEST(S24_thread_scroll_preserved_across_same_thread_rebuild);
     RUN_TEST(S24_thread_scroll_resets_to_newest_on_new_message);
