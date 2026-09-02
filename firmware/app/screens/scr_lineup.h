@@ -1,5 +1,5 @@
 /**
- * scr_now.h — app/screens: the Now face (S07 slice b).
+ * scr_lineup.h — app/screens: the Now face (S07 slice b).
  *
  * Pure rendering: reads an `ff_app_now_t` and draws it. No domain logic
  * lives here (CLAUDE.md: "UI code only renders core state and forwards
@@ -7,8 +7,8 @@
  * already computed, never about *what the value should be*). Same
  * calling convention as scr_radar.h's `ff_scr_radar_build`.
  */
-#ifndef FF_SCR_NOW_H
-#define FF_SCR_NOW_H
+#ifndef FF_SCR_LINEUP_H
+#define FF_SCR_LINEUP_H
 
 #include "ff_app_state.h"
 #include "lvgl.h"
@@ -18,7 +18,7 @@ extern "C" {
 #endif
 
 /**
- * ff_scr_now_build — renders `*now` into `parent` (expected to be
+ * ff_scr_lineup_build — renders `*now` into `parent` (expected to be
  * `FF_THEME_PUCK_PX` square — the shell, scr_nav.c, hands it a tileview
  * tile sized to the puck, same as scr_radar.h's contract). Builds fresh
  * children every call; does not clear `parent` itself.
@@ -54,10 +54,10 @@ extern "C" {
  *     live right now" note, distinct from NOW_NO_PACK and every TBD
  *     state.
  */
-void ff_scr_now_build(lv_obj_t *parent, ff_app_now_t const *now);
+void ff_scr_lineup_build(lv_obj_t *parent, ff_app_now_t const *now);
 
 #ifdef __cplusplus
 }
 #endif
 
-#endif /* FF_SCR_NOW_H */
+#endif /* FF_SCR_LINEUP_H */

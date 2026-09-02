@@ -28,7 +28,7 @@ extern "C" {
  *
  * The initial paint is a pure function of `*compose` (matching every
  * other screen in this codebase — same static-golden-render guarantee as
- * `ff_scr_radar_build`/`ff_scr_signals_build`). Real keypad input then
+ * `ff_scr_radar_build`/`ff_scr_inbox_build`). Real keypad input then
  * drives a live, internal `ff_t9_t` — see scr_compose.c's header comment
  * for exactly when rendering switches from "the fixture snapshot" to
  * "the live engine's own text".

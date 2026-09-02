@@ -210,7 +210,7 @@ endif()
 # S22a (core/sigview — Signals-face view-model: merges ff_feed + ff_crew
 # into one ordered row list, honest presence, and the send-target state
 # machine; docs/specs/S22-signals-rework.md, slice a. Pure C11, no UI —
-# scr_signals.c, slice b, only renders this.)
+# scr_inbox.c, slice b, only renders this.)
 target_sources(ff-core PRIVATE src/ff_sigview.c)
 
 if(FF_BUILD_TESTS)

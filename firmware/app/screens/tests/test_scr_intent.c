@@ -29,7 +29,7 @@
  *
  * Mutation-check (hand-verified before pushing, per
  * docs/review/code-review.md item 6): swapping compose_back_cb's and
- * signals_open_compose_cb's emitted kinds fails both of their tests on
+ * inbox_open_compose_cb's emitted kinds fails both of their tests on
  * the kind assertion; removing an `ff_intent_emit` call entirely fails
  * on count == 0. Swapping flare_go_cb's/flare_dismiss_takeover_cb's
  * emitted kinds (the exact PR #20 regression class, now one layer up)
@@ -50,7 +50,7 @@
 #include "scr_nav.h"
 #include "scr_radar.h"
 #include "scr_settings.h"
-#include "scr_signals.h"
+#include "scr_inbox.h"
 
 #include "ff_theme.h" /* FF_THEME_PUCK_RADIUS_PX — the S99 compose SEND corner-distance test */
 #include "radar_layout.h" /* RADAR_LAYOUT_DOT_PX — S17a AC4 render tests, see that section below */
@@ -303,14 +303,14 @@ static void S26e_AC3_horizontal_drag_on_radar_emits_nothing(void)
     S26e_AC3_horizontal_drag_emits_nothing(FF_APP_FACE_RADAR);
 }
 
-static void S26e_AC3_horizontal_drag_on_now_emits_nothing(void)
+static void S26e_AC3_horizontal_drag_on_lineup_emits_nothing(void)
 {
-    S26e_AC3_horizontal_drag_emits_nothing(FF_APP_FACE_NOW);
+    S26e_AC3_horizontal_drag_emits_nothing(FF_APP_FACE_LINEUP);
 }
 
-static void S26e_AC3_horizontal_drag_on_signals_emits_nothing(void)
+static void S26e_AC3_horizontal_drag_on_inbox_emits_nothing(void)
 {
-    S26e_AC3_horizontal_drag_emits_nothing(FF_APP_FACE_SIGNALS);
+    S26e_AC3_horizontal_drag_emits_nothing(FF_APP_FACE_INBOX);
 }
 
 /* Vertical too, both directions — the scroll-vs-swipe property the
@@ -329,11 +329,11 @@ static void carousel_physical_upward_drag_emits_nothing(void)
     TEST_ASSERT_EQUAL_INT(0, s_spy.count);
 }
 
-static void carousel_physical_upward_drag_emits_nothing_from_signals_too(void)
+static void carousel_physical_upward_drag_emits_nothing_from_inbox_too(void)
 {
     ff_app_state_t state;
     memset(&state, 0, sizeof(state));
-    state.active_face = FF_APP_FACE_SIGNALS;
+    state.active_face = FF_APP_FACE_INBOX;
     ff_scr_nav_build(&state);
 
     drag_v(380, 60, 228);
@@ -925,10 +925,10 @@ static void S99_compose_pred_mode_shows_recipient_on_draft_line(void)
 /* Signals (S24 slice b): the inbox face's navigation intents            */
 /* =================================================================== */
 
-/* Small helpers to hand-build an ff_app_signals_t the screen renders —
+/* Small helpers to hand-build an ff_app_inbox_t the screen renders —
  * the unit-test analog of the fixtures, so a test names exactly the
  * conversations it needs. */
-static ff_inbox_conv_t *sig_add_conv(ff_app_signals_t *v, ff_conv_kind_t kind, uint32_t node_id,
+static ff_inbox_conv_t *sig_add_conv(ff_app_inbox_t *v, ff_conv_kind_t kind, uint32_t node_id,
                                      char const *name, uint16_t unread, uint8_t item_count)
 {
     ff_inbox_conv_t *cv = &v->inbox.convs[v->inbox.conv_count++];
@@ -945,8 +945,8 @@ static ff_inbox_conv_t *sig_add_conv(ff_app_signals_t *v, ff_conv_kind_t kind, u
 }
 
 /* Rows are plain lv_obj_t containers whose TAP TARGET is a transparent
- * overlay button created as the row's FIRST child (scr_signals.c's
- * signals_row_container — the touching-rows/adjacency-floor shape). A
+ * overlay button created as the row's FIRST child (scr_inbox.c's
+ * inbox_row_container — the touching-rows/adjacency-floor shape). A
  * row's only unique on-screen text is its name label, so the lookup goes
  * by that, steps up to the row, and takes child 0 — the overlay. (Shared
  * find_label_exact below is also used by the settings-face tests.) */
@@ -981,8 +981,8 @@ static lv_obj_t *find_row_hit_by_name(lv_obj_t *root, char const *name_text)
 }
 
 /* The FAB's tap target carries no label (the + glyph is deco); find it
- * as the one clickable button sized exactly 112x112 (scr_signals.c's
- * FF_SIGNALS_FAB_HIT_PX = PUCK_PX - 300 — the corner-anchored hit that
+ * as the one clickable button sized exactly 112x112 (scr_inbox.c's
+ * FF_INBOX_FAB_HIT_PX = PUCK_PX - 300 — the corner-anchored hit that
  * covers the whole visible amber lens). */
 static lv_obj_t *find_clickable_by_size(lv_obj_t *root, int32_t w, int32_t h)
 {
@@ -1055,13 +1055,13 @@ static lv_obj_t *launcher_circle_at(int idx)
  * node id. */
 static void S24b_inbox_member_row_tap_emits_open_thread(void)
 {
-    ff_app_signals_t v;
+    ff_app_inbox_t v;
     memset(&v, 0, sizeof(v));
     sig_add_conv(&v, FF_CONV_CREW, 0u, NULL, 0, 0);
     sig_add_conv(&v, FF_CONV_MEMBER, 111u, "DANA", 1, 2);
 
     lv_obj_t *parent = lv_obj_create(lv_screen_active());
-    ff_scr_signals_build(parent, &v, false);
+    ff_scr_inbox_build(parent, &v, false);
 
     click(find_row_hit_by_name(parent, "DANA"));
     TEST_ASSERT_EQUAL_INT(1, s_spy.count);
@@ -1072,12 +1072,12 @@ static void S24b_inbox_member_row_tap_emits_open_thread(void)
 /* The CREW row emits OPEN_THREAD with the CREW key (node 0). */
 static void S24b_inbox_crew_row_tap_emits_open_thread_crew(void)
 {
-    ff_app_signals_t v;
+    ff_app_inbox_t v;
     memset(&v, 0, sizeof(v));
     sig_add_conv(&v, FF_CONV_CREW, 0u, NULL, 2, 3);
 
     lv_obj_t *parent = lv_obj_create(lv_screen_active());
-    ff_scr_signals_build(parent, &v, false);
+    ff_scr_inbox_build(parent, &v, false);
 
     click(find_row_hit_by_name(parent, "CREW"));
     TEST_ASSERT_EQUAL_INT(1, s_spy.count);
@@ -1089,14 +1089,14 @@ static void S24b_inbox_crew_row_tap_emits_open_thread_crew(void)
  * where you'd go to signal them. */
 static void S24b_inbox_quiet_member_row_is_tappable(void)
 {
-    ff_app_signals_t v;
+    ff_app_inbox_t v;
     memset(&v, 0, sizeof(v));
     sig_add_conv(&v, FF_CONV_CREW, 0u, NULL, 0, 0);
     ff_inbox_conv_t *max = sig_add_conv(&v, FF_CONV_MEMBER, 222u, "MAX", 0, 0);
     max->presence = FF_PRESENCE_LINKED;
 
     lv_obj_t *parent = lv_obj_create(lv_screen_active());
-    ff_scr_signals_build(parent, &v, false);
+    ff_scr_inbox_build(parent, &v, false);
 
     click(find_row_hit_by_name(parent, "MAX"));
     TEST_ASSERT_EQUAL_INT(1, s_spy.count);
@@ -1107,12 +1107,12 @@ static void S24b_inbox_quiet_member_row_is_tappable(void)
 /* The + FAB emits INBOX_NEW (the recipient-picker step). */
 static void S24b_inbox_fab_emits_inbox_new(void)
 {
-    ff_app_signals_t v;
+    ff_app_inbox_t v;
     memset(&v, 0, sizeof(v));
     sig_add_conv(&v, FF_CONV_CREW, 0u, NULL, 0, 0);
 
     lv_obj_t *parent = lv_obj_create(lv_screen_active());
-    ff_scr_signals_build(parent, &v, false);
+    ff_scr_inbox_build(parent, &v, false);
 
     click(find_clickable_by_size(parent, 112, 112));
     TEST_ASSERT_EQUAL_INT(1, s_spy.count);
@@ -1123,14 +1123,14 @@ static void S24b_inbox_fab_emits_inbox_new(void)
  * carries the CREW key. */
 static void S24b_picker_rows_emit_pick(void)
 {
-    ff_app_signals_t v;
+    ff_app_inbox_t v;
     memset(&v, 0, sizeof(v));
-    v.subview = FF_SIG_SUB_PICKER;
+    v.subview = FF_INBOX_SUB_PICKER;
     sig_add_conv(&v, FF_CONV_CREW, 0u, NULL, 0, 0);
     sig_add_conv(&v, FF_CONV_MEMBER, 111u, "DANA", 0, 0);
 
     lv_obj_t *parent = lv_obj_create(lv_screen_active());
-    ff_scr_signals_build(parent, &v, false);
+    ff_scr_inbox_build(parent, &v, false);
 
     click(find_row_hit_by_name(parent, "WHOLE CREW"));
     TEST_ASSERT_EQUAL_INT(1, s_spy.count);
@@ -1147,22 +1147,22 @@ static void S24b_picker_rows_emit_pick(void)
  * sub-view back to the inbox). */
 static void S24b_picker_and_thread_back_emit_back(void)
 {
-    ff_app_signals_t v;
+    ff_app_inbox_t v;
     memset(&v, 0, sizeof(v));
-    v.subview = FF_SIG_SUB_PICKER;
+    v.subview = FF_INBOX_SUB_PICKER;
     sig_add_conv(&v, FF_CONV_CREW, 0u, NULL, 0, 0);
 
     lv_obj_t *parent = lv_obj_create(lv_screen_active());
-    ff_scr_signals_build(parent, &v, false);
+    ff_scr_inbox_build(parent, &v, false);
     click(find_button_with_label(parent, LV_SYMBOL_LEFT));
     TEST_ASSERT_EQUAL_INT(1, s_spy.count);
     TEST_ASSERT_EQUAL(FF_INTENT_BACK, s_spy.last.kind);
 
     lv_obj_clean(parent);
-    v.subview = FF_SIG_SUB_THREAD;
+    v.subview = FF_INBOX_SUB_THREAD;
     v.thread_node = 0u;
     strncpy(v.thread_name, "CREW", sizeof(v.thread_name) - 1);
-    ff_scr_signals_build(parent, &v, false);
+    ff_scr_inbox_build(parent, &v, false);
     click(find_button_with_label(parent, LV_SYMBOL_LEFT));
     TEST_ASSERT_EQUAL_INT(2, s_spy.count);
     TEST_ASSERT_EQUAL(FF_INTENT_BACK, s_spy.last.kind);
@@ -1170,10 +1170,10 @@ static void S24b_picker_and_thread_back_emit_back(void)
 
 /* S24 slice (c) — a rendered 1:1 thread view for the chip tests: the
  * DANA scope, one inbound and one outgoing message. */
-static void s24c_make_direct_thread(ff_app_signals_t *v)
+static void s24c_make_direct_thread(ff_app_inbox_t *v)
 {
     memset(v, 0, sizeof(*v));
-    v->subview = FF_SIG_SUB_THREAD;
+    v->subview = FF_INBOX_SUB_THREAD;
     v->thread_node = 111u;
     strncpy(v->thread_name, "DANA", sizeof(v->thread_name) - 1);
     sig_add_conv(v, FF_CONV_CREW, 0u, NULL, 0, 0);
@@ -1199,11 +1199,11 @@ static void s24c_make_direct_thread(ff_app_signals_t *v)
  * canned id (the shell aims them at the thread scope — its own test). */
 static void S24c_thread_omw_chip_emits_canned_reply_omw(void)
 {
-    ff_app_signals_t v;
+    ff_app_inbox_t v;
     s24c_make_direct_thread(&v);
 
     lv_obj_t *parent = lv_obj_create(lv_screen_active());
-    ff_scr_signals_build(parent, &v, false);
+    ff_scr_inbox_build(parent, &v, false);
 
     click(find_button_with_label(parent, "OMW"));
     TEST_ASSERT_EQUAL_INT(1, s_spy.count);
@@ -1213,11 +1213,11 @@ static void S24c_thread_omw_chip_emits_canned_reply_omw(void)
 
 static void S24c_thread_in5min_chip_emits_canned_reply_5min(void)
 {
-    ff_app_signals_t v;
+    ff_app_inbox_t v;
     s24c_make_direct_thread(&v);
 
     lv_obj_t *parent = lv_obj_create(lv_screen_active());
-    ff_scr_signals_build(parent, &v, false);
+    ff_scr_inbox_build(parent, &v, false);
 
     click(find_button_with_label(parent, "IN 5 MIN"));
     TEST_ASSERT_EQUAL_INT(1, s_spy.count);
@@ -1229,15 +1229,15 @@ static void S24c_thread_in5min_chip_emits_canned_reply_5min(void)
  * quick signal is a flare, not a pulse). */
 static void S24c_thread_flare_chip_emits_sig_flare(void)
 {
-    ff_app_signals_t v;
+    ff_app_inbox_t v;
     s24c_make_direct_thread(&v);
 
     lv_obj_t *parent = lv_obj_create(lv_screen_active());
-    ff_scr_signals_build(parent, &v, false);
+    ff_scr_inbox_build(parent, &v, false);
 
     click(find_button_with_label(parent, "FLARE"));
     TEST_ASSERT_EQUAL_INT(1, s_spy.count);
-    TEST_ASSERT_EQUAL(FF_INTENT_SIG_FLARE, s_spy.last.kind);
+    TEST_ASSERT_EQUAL(FF_INTENT_INBOX_FLARE, s_spy.last.kind);
 }
 
 /* The thread FAB emits INBOX_NEW (slice (d) routes it to the scoped
@@ -1245,11 +1245,11 @@ static void S24c_thread_flare_chip_emits_sig_flare(void)
  * no-op outside the inbox). Both thread shapes carry the FAB. */
 static void S24c_thread_fab_emits_inbox_new(void)
 {
-    ff_app_signals_t v;
+    ff_app_inbox_t v;
     s24c_make_direct_thread(&v);
 
     lv_obj_t *parent = lv_obj_create(lv_screen_active());
-    ff_scr_signals_build(parent, &v, false);
+    ff_scr_inbox_build(parent, &v, false);
     click(find_clickable_by_size(parent, 112, 112));
     TEST_ASSERT_EQUAL_INT(1, s_spy.count);
     TEST_ASSERT_EQUAL(FF_INTENT_INBOX_NEW, s_spy.last.kind);
@@ -1257,11 +1257,11 @@ static void S24c_thread_fab_emits_inbox_new(void)
     /* CREW thread too. */
     lv_obj_clean(parent);
     memset(&v, 0, sizeof(v));
-    v.subview = FF_SIG_SUB_THREAD;
+    v.subview = FF_INBOX_SUB_THREAD;
     v.thread_node = 0u;
     strncpy(v.thread_name, "CREW", sizeof(v.thread_name) - 1);
     sig_add_conv(&v, FF_CONV_CREW, 0u, NULL, 0, 0);
-    ff_scr_signals_build(parent, &v, false);
+    ff_scr_inbox_build(parent, &v, false);
     click(find_clickable_by_size(parent, 112, 112));
     TEST_ASSERT_EQUAL_INT(2, s_spy.count);
     TEST_ASSERT_EQUAL(FF_INTENT_INBOX_NEW, s_spy.last.kind);
@@ -1271,15 +1271,15 @@ static void S24c_thread_fab_emits_inbox_new(void)
  * a chip label must not be findable there. */
 static void S24c_crew_thread_has_no_quick_chips(void)
 {
-    ff_app_signals_t v;
+    ff_app_inbox_t v;
     memset(&v, 0, sizeof(v));
-    v.subview = FF_SIG_SUB_THREAD;
+    v.subview = FF_INBOX_SUB_THREAD;
     v.thread_node = 0u;
     strncpy(v.thread_name, "CREW", sizeof(v.thread_name) - 1);
     sig_add_conv(&v, FF_CONV_CREW, 0u, NULL, 0, 0);
 
     lv_obj_t *parent = lv_obj_create(lv_screen_active());
-    ff_scr_signals_build(parent, &v, false);
+    ff_scr_inbox_build(parent, &v, false);
     TEST_ASSERT_NULL(find_button_with_label(parent, "OMW"));
     TEST_ASSERT_NULL(find_button_with_label(parent, "FLARE"));
 }
@@ -1292,10 +1292,10 @@ static void S24c_crew_thread_has_no_quick_chips(void)
 /* overflow regardless of row-height tuning.                            */
 /* =================================================================== */
 
-static void s24_make_crew_thread_long(ff_app_signals_t *v)
+static void s24_make_crew_thread_long(ff_app_inbox_t *v)
 {
     memset(v, 0, sizeof(*v));
-    v->subview = FF_SIG_SUB_THREAD;
+    v->subview = FF_INBOX_SUB_THREAD;
     v->thread_node = 0u;
     strncpy(v->thread_name, "CREW", sizeof(v->thread_name) - 1);
     sig_add_conv(v, FF_CONV_CREW, 0u, NULL, 0, 12);
@@ -1319,10 +1319,10 @@ static void s24_make_crew_thread_long(ff_app_signals_t *v)
 /* Same shape, DANA's 1:1 thread — used to prove the property holds there
  * too (it already did; this is the comparison the investigation brief
  * asks for, not a regression guard for a prior bug). */
-static void s24_make_direct_thread_long(ff_app_signals_t *v)
+static void s24_make_direct_thread_long(ff_app_inbox_t *v)
 {
     memset(v, 0, sizeof(*v));
-    v->subview = FF_SIG_SUB_THREAD;
+    v->subview = FF_INBOX_SUB_THREAD;
     v->thread_node = 111u;
     strncpy(v->thread_name, "DANA", sizeof(v->thread_name) - 1);
     sig_add_conv(v, FF_CONV_CREW, 0u, NULL, 0, 0);
@@ -1347,9 +1347,9 @@ static void s24_make_direct_thread_long(ff_app_signals_t *v)
 /* Finds the one PLAIN lv_obj (not a label/button — lv_label_create
  * leaves LV_OBJ_FLAG_SCROLLABLE set by default too, so filtering on the
  * flag alone would match the first header label instead) carrying
- * LV_OBJ_FLAG_SCROLLABLE. Every other lv_obj_create object scr_signals.c
+ * LV_OBJ_FLAG_SCROLLABLE. Every other lv_obj_create object scr_inbox.c
  * builds under a thread (message rows, the crew dot, the bottom fade) is
- * explicitly decorated via signals_child_deco, which clears this flag,
+ * explicitly decorated via inbox_child_deco, which clears this flag,
  * so it uniquely identifies the message list regardless of whether the
  * list itself is also CLICKABLE. */
 static lv_obj_t *find_scrollable(lv_obj_t *root)
@@ -1374,7 +1374,7 @@ static lv_obj_t *find_scrollable(lv_obj_t *root)
  * thread has none, so this also just asserts zero spurious intents). */
 static void thread_overflow_scrolls_on_drag(bool crew)
 {
-    ff_app_signals_t v;
+    ff_app_inbox_t v;
     if (crew) {
         s24_make_crew_thread_long(&v);
     } else {
@@ -1388,7 +1388,7 @@ static void thread_overflow_scrolls_on_drag(bool crew)
      * the real shell sizing its container to the full 412x412 display. */
     lv_obj_t *parent = lv_obj_create(lv_screen_active());
     lv_obj_set_size(parent, 412, 412);
-    ff_scr_signals_build(parent, &v, false);
+    ff_scr_inbox_build(parent, &v, false);
 
     lv_obj_t *list = find_scrollable(parent);
     TEST_ASSERT_NOT_NULL(list);
@@ -1429,14 +1429,14 @@ static void S24_direct_thread_overflow_scrolls_on_drag(void)
 /* =================================================================== */
 /* Thread message bubbles are NOT compressed (investigation brief's first */
 /* hypothesis to test for "the thread view looks a bit smashed" — see    */
-/* scr_signals.c's own header comment on signals_build_thread: DISPROVEN */
+/* scr_inbox.c's own header comment on inbox_build_thread: DISPROVEN */
 /* by inspection, no flex/shrink layout anywhere in this file, but kept  */
 /* as a standing regression guard rather than thrown away — a future     */
 /* change that DID introduce a shrink-to-fit container should fail this. */
 /* =================================================================== */
 
 /* A message bubble's text label is a DIRECT child of the bubble
- * container (signals_msg_bubble: `lv_obj_t *l = signals_mk_label(bub,
+ * container (inbox_msg_bubble: `lv_obj_t *l = inbox_mk_label(bub,
  * text, ...)`), positioned at a fixed (13, 8) offset — never wrapped, so
  * its natural (unclamped) height is exactly its font's line height. This
  * asserts that height survives all the way to the rendered object (proof
@@ -1445,9 +1445,9 @@ static void S24_direct_thread_overflow_scrolls_on_drag(void)
  * its natural height" property for both the label and its container. */
 static void S24_thread_message_bubble_not_compressed(void)
 {
-    ff_app_signals_t v;
+    ff_app_inbox_t v;
     memset(&v, 0, sizeof(v));
-    v.subview = FF_SIG_SUB_THREAD;
+    v.subview = FF_INBOX_SUB_THREAD;
     v.thread_node = 0u;
     strncpy(v.thread_name, "CREW", sizeof(v.thread_name) - 1);
     sig_add_conv(&v, FF_CONV_CREW, 0u, NULL, 0, 1);
@@ -1461,7 +1461,7 @@ static void S24_thread_message_bubble_not_compressed(void)
 
     lv_obj_t *parent = lv_obj_create(lv_screen_active());
     lv_obj_set_size(parent, 412, 412);
-    ff_scr_signals_build(parent, &v, false);
+    ff_scr_inbox_build(parent, &v, false);
 
     lv_obj_t *label = find_label_exact(parent, "copy, see you there");
     TEST_ASSERT_NOT_NULL_MESSAGE(label, "message bubble text not found");
@@ -1485,7 +1485,7 @@ static void S24_thread_message_bubble_not_compressed(void)
 /* band buried the NEWEST message under the FAB slice, faded and         */
 /* partly hidden — a row count gained by burying it is not a win).       */
 /*                                                                        */
-/* Round 3 pulled the CREW band back to stop EXACTLY at FF_SIGNALS_FAB_   */
+/* Round 3 pulled the CREW band back to stop EXACTLY at FF_INBOX_FAB_   */
 /* DECO_Y (the FAB's own visible top edge) — `list` clips its children    */
 /* to its own bounds, so nothing in it can ever paint past that y         */
 /* regardless of x, the simplest way to guarantee no bubble/age is ever   */
@@ -1559,11 +1559,11 @@ static int count_rows_half_visible(lv_obj_t *list)
 
 static void S24_crew_thread_shows_at_least_4_full_rows_at_rest(void)
 {
-    ff_app_signals_t v;
+    ff_app_inbox_t v;
     s24_make_crew_thread_long(&v);
     lv_obj_t *parent = lv_obj_create(lv_screen_active());
     lv_obj_set_size(parent, 412, 412);
-    ff_scr_signals_build(parent, &v, false);
+    ff_scr_inbox_build(parent, &v, false);
     lv_obj_update_layout(parent);
 
     lv_obj_t *list = find_scrollable(parent);
@@ -1577,11 +1577,11 @@ static void S24_crew_thread_shows_at_least_4_full_rows_at_rest(void)
 
 static void S24_direct_thread_shows_at_least_4_rows_at_rest(void)
 {
-    ff_app_signals_t v;
+    ff_app_inbox_t v;
     s24_make_direct_thread_long(&v);
     lv_obj_t *parent = lv_obj_create(lv_screen_active());
     lv_obj_set_size(parent, 412, 412);
-    ff_scr_signals_build(parent, &v, false);
+    ff_scr_inbox_build(parent, &v, false);
     lv_obj_update_layout(parent);
 
     lv_obj_t *list = find_scrollable(parent);
@@ -1600,7 +1600,7 @@ static void S24_direct_thread_shows_at_least_4_rows_at_rest(void)
 /* PR #149 review round 3 — "no part of any bubble/age is ever under the */
 /* FAB slice": a direct geometric regression guard, independent of      */
 /* which of the review's two acceptable shapes a future change picks.   */
-/* Circle matches scr_signals.c's own FF_SIGNALS_FAB_DECO_X/Y/D (278,    */
+/* Circle matches scr_inbox.c's own FF_INBOX_FAB_DECO_X/Y/D (278,    */
 /* 280, 240 — private to that file, so mirrored here as literals, same  */
 /* convention this file already uses for the FAB hit target's 112x112   */
 /* size via find_clickable_by_size). Checked against every message ROW  */
@@ -1609,7 +1609,7 @@ static void S24_direct_thread_shows_at_least_4_rows_at_rest(void)
 /* everything inside it is too. */
 /* ------------------------------------------------------------------- */
 
-#define FAB_DECO_D 240.0f /* FF_SIGNALS_FAB_DECO_D — private to scr_signals.c, mirrored here */
+#define FAB_DECO_D 240.0f /* FF_INBOX_FAB_DECO_D — private to scr_inbox.c, mirrored here */
 #define FAB_DECO_R (FAB_DECO_D / 2.0f)
 
 /* true iff the closest point of rect `a` to the FAB deco circle (center
@@ -1631,13 +1631,13 @@ static bool rect_disjoint_from_fab_deco(lv_area_t const *a, float cx, float cy)
 /* The FAB deco circle's ABSOLUTE center in THIS test's own render space.
  * Derived at runtime from the FAB hit target (112x112, corner-anchored —
  * already how this file locates the FAB elsewhere, find_clickable_by_size)
- * rather than hardcoding scr_signals.c's private FF_SIGNALS_FAB_DECO_X/Y
+ * rather than hardcoding scr_inbox.c's private FF_INBOX_FAB_DECO_X/Y
  * literals: this test's bare `lv_obj_create(lv_screen_active())` parent
  * (unlike the real shell's own stripped container) carries default-theme
  * padding that shifts EVERY absolute coordinate by a constant offset —
  * measured, not assumed, elsewhere in this file's own S24 probes — so a
  * literal circle center would silently compare against the wrong origin.
- * FF_SIGNALS_FAB_HIT_X/Y are both 300 (scr_signals.c); the deco circle's
+ * FF_INBOX_FAB_HIT_X/Y are both 300 (scr_inbox.c); the deco circle's
  * center sits at deco (278,280) + D/2 = (398,400) in that SAME space, a
  * constant (+98,+100) offset from the hit rect's own top-left corner that
  * survives whatever the test harness's own translation happens to be. */
@@ -1647,17 +1647,17 @@ static void fab_deco_center(lv_obj_t *parent, float *out_cx, float *out_cy)
     TEST_ASSERT_NOT_NULL_MESSAGE(fab, "FAB hit target (112x112) not found — can't locate the deco circle");
     lv_area_t fa;
     lv_obj_get_coords(fab, &fa);
-    *out_cx = (float)fa.x1 + 98.0f; /* FF_SIGNALS_FAB_DECO_X(278) - FF_SIGNALS_FAB_HIT_X(300) + D/2(120) */
-    *out_cy = (float)fa.y1 + 100.0f; /* FF_SIGNALS_FAB_DECO_Y(280) - FF_SIGNALS_FAB_HIT_Y(300) + D/2(120) */
+    *out_cx = (float)fa.x1 + 98.0f; /* FF_INBOX_FAB_DECO_X(278) - FF_INBOX_FAB_HIT_X(300) + D/2(120) */
+    *out_cy = (float)fa.y1 + 100.0f; /* FF_INBOX_FAB_DECO_Y(280) - FF_INBOX_FAB_HIT_Y(300) + D/2(120) */
 }
 
 static void S24_crew_thread_no_row_ever_under_the_fab_slice(void)
 {
-    ff_app_signals_t v;
+    ff_app_inbox_t v;
     s24_make_crew_thread_long(&v);
     lv_obj_t *parent = lv_obj_create(lv_screen_active());
     lv_obj_set_size(parent, 412, 412);
-    ff_scr_signals_build(parent, &v, false);
+    ff_scr_inbox_build(parent, &v, false);
     lv_obj_update_layout(parent);
 
     lv_obj_t *list = find_scrollable(parent);
@@ -1687,18 +1687,18 @@ static void S24_crew_thread_no_row_ever_under_the_fab_slice(void)
 /* =================================================================== */
 /* PR #149 review round 2 (FAIL 2 — truncation regression): the message- */
 /* body font bump (14px -> FF_THEME_FONT_MSG_BODY, 16px) needs a wider   */
-/* FF_SIGNALS_MSG_MAX_W or text that fit before now ellipsizes. Checks   */
+/* FF_INBOX_MSG_MAX_W or text that fit before now ellipsizes. Checks   */
 /* the WIDEST message string across every committed fixture (measured,   */
 /* not guessed — "sounds good, heading there now" beats the longer-      */
 /* looking "grabbing water first, back in 10" by actual rendered pixel   */
 /* width at this font) renders in a real message bubble without engaging */
-/* LV_LABEL_LONG_MODE_DOTS (signals_label_clamp's own truncation flag).  */
+/* LV_LABEL_LONG_MODE_DOTS (inbox_label_clamp's own truncation flag).  */
 /* ------------------------------------------------------------------- */
 static void S24_widest_fixture_message_does_not_truncate(void)
 {
-    ff_app_signals_t v;
+    ff_app_inbox_t v;
     memset(&v, 0, sizeof(v));
-    v.subview = FF_SIG_SUB_THREAD;
+    v.subview = FF_INBOX_SUB_THREAD;
     v.thread_node = 0u;
     strncpy(v.thread_name, "CREW", sizeof(v.thread_name) - 1);
     sig_add_conv(&v, FF_CONV_CREW, 0u, NULL, 0, 1);
@@ -1713,7 +1713,7 @@ static void S24_widest_fixture_message_does_not_truncate(void)
 
     lv_obj_t *parent = lv_obj_create(lv_screen_active());
     lv_obj_set_size(parent, 412, 412);
-    ff_scr_signals_build(parent, &v, false);
+    ff_scr_inbox_build(parent, &v, false);
 
     lv_obj_t *label = find_label_exact(parent, WIDEST_FIXTURE_TEXT);
     TEST_ASSERT_NOT_NULL_MESSAGE(label, "the widest fixture message must render its FULL text verbatim as one "
@@ -1730,10 +1730,10 @@ static void S24_widest_fixture_message_does_not_truncate(void)
 /* drag()/tap_at() harness as the thread scroll tests above.             */
 /* =================================================================== */
 
-static void s24_make_rally_seven_rows(ff_app_signals_t *v)
+static void s24_make_rally_seven_rows(ff_app_inbox_t *v)
 {
     memset(v, 0, sizeof(*v));
-    v->subview = FF_SIG_SUB_RALLY;
+    v->subview = FF_INBOX_SUB_RALLY;
     v->thread_node = 0u;
     strncpy(v->thread_name, "CREW", sizeof(v->thread_name) - 1);
     sig_add_conv(v, FF_CONV_CREW, 0u, NULL, 0, 0);
@@ -1753,12 +1753,12 @@ static void s24_make_rally_seven_rows(ff_app_signals_t *v)
 
 static void S24_rally_where_list_scrolls_to_reach_all_rows(void)
 {
-    ff_app_signals_t v;
+    ff_app_inbox_t v;
     s24_make_rally_seven_rows(&v);
 
     lv_obj_t *parent = lv_obj_create(lv_screen_active());
     lv_obj_set_size(parent, 412, 412);
-    ff_scr_signals_build(parent, &v, false);
+    ff_scr_inbox_build(parent, &v, false);
 
     lv_obj_t *list = find_scrollable(parent);
     TEST_ASSERT_NOT_NULL(list);
@@ -1786,7 +1786,7 @@ static void S24_rally_where_list_scrolls_to_reach_all_rows(void)
     /* The PLACES divider band sits strictly between the On Me row's hit
      * target and the first landmark row's — its own geometric midpoint,
      * not a private layout constant this test file has no access to (the
-     * FF_SIGNALS_RALLY_* pitch macros are scr_signals.c-local). */
+     * FF_INBOX_RALLY_* pitch macros are scr_inbox.c-local). */
     lv_obj_t *on_me_hit = find_row_hit_by_name(parent, "On Me");
     lv_obj_t *main_stage_hit = find_row_hit_by_name(parent, "Main Stage");
     TEST_ASSERT_NOT_NULL(on_me_hit);
@@ -1826,9 +1826,9 @@ static void S24_rally_where_list_scrolls_to_reach_all_rows(void)
  * PR #143 review: scroll position must survive the S24 render-key
  * rebuild (an age-bucket crossing legitimately dirties the key —
  * ff_shell.c's own doc comment — which does lv_obj_clean + a fresh
- * signals_build_thread). Screen-level tests: a rebuild is simulated the
+ * inbox_build_thread). Screen-level tests: a rebuild is simulated the
  * same way ff_shell's render loop does it, lv_obj_clean(parent) then a
- * second ff_scr_signals_build(parent, &v, false) call, since that IS
+ * second ff_scr_inbox_build(parent, &v, false) call, since that IS
  * the mechanism (ff_shell decides WHEN to rebuild; this file already
  * tests screens by driving that same primitive directly, same as every
  * other test in it).
@@ -1841,12 +1841,12 @@ static void S24_rally_where_list_scrolls_to_reach_all_rows(void)
  * disturbed it. */
 static void S24_thread_scroll_preserved_across_same_thread_rebuild(void)
 {
-    ff_app_signals_t v;
+    ff_app_inbox_t v;
     s24_make_crew_thread_long(&v);
 
     lv_obj_t *parent = lv_obj_create(lv_screen_active());
     lv_obj_set_size(parent, 412, 412);
-    ff_scr_signals_build(parent, &v, false);
+    ff_scr_inbox_build(parent, &v, false);
 
     lv_obj_t *list = find_scrollable(parent);
     TEST_ASSERT_NOT_NULL(list);
@@ -1866,7 +1866,7 @@ static void S24_thread_scroll_preserved_across_same_thread_rebuild(void)
      * thread (node_id unchanged), SAME message count — the property
      * under test is that this alone preserves the offset. */
     lv_obj_clean(parent);
-    ff_scr_signals_build(parent, &v, false);
+    ff_scr_inbox_build(parent, &v, false);
 
     lv_obj_t *list2 = find_scrollable(parent);
     TEST_ASSERT_NOT_NULL(list2);
@@ -1885,12 +1885,12 @@ static void S24_thread_scroll_preserved_across_same_thread_rebuild(void)
  * shorter thread would misrepresent where "the end" now is. */
 static void S24_thread_scroll_resets_to_newest_on_new_message(void)
 {
-    ff_app_signals_t v;
+    ff_app_inbox_t v;
     s24_make_crew_thread_long(&v);
 
     lv_obj_t *parent = lv_obj_create(lv_screen_active());
     lv_obj_set_size(parent, 412, 412);
-    ff_scr_signals_build(parent, &v, false);
+    ff_scr_inbox_build(parent, &v, false);
 
     lv_obj_t *list = find_scrollable(parent);
     TEST_ASSERT_NOT_NULL(list);
@@ -1919,7 +1919,7 @@ static void S24_thread_scroll_resets_to_newest_on_new_message(void)
     m->age_ms = 0u;
 
     lv_obj_clean(parent);
-    ff_scr_signals_build(parent, &v, false);
+    ff_scr_inbox_build(parent, &v, false);
 
     lv_obj_t *list2 = find_scrollable(parent);
     TEST_ASSERT_NOT_NULL(list2);
@@ -1934,12 +1934,12 @@ static void S24_thread_scroll_resets_to_newest_on_new_message(void)
  * coincidence, since the restore requires BOTH to match. */
 static void S24_thread_scroll_resets_to_newest_on_different_thread(void)
 {
-    ff_app_signals_t crew_v;
+    ff_app_inbox_t crew_v;
     s24_make_crew_thread_long(&crew_v);
 
     lv_obj_t *parent = lv_obj_create(lv_screen_active());
     lv_obj_set_size(parent, 412, 412);
-    ff_scr_signals_build(parent, &crew_v, false);
+    ff_scr_inbox_build(parent, &crew_v, false);
 
     lv_obj_t *list = find_scrollable(parent);
     TEST_ASSERT_NOT_NULL(list);
@@ -1955,11 +1955,11 @@ static void S24_thread_scroll_resets_to_newest_on_different_thread(void)
     TEST_ASSERT_GREATER_THAN_INT32(0, lv_obj_get_scroll_y(list));
 
     /* Switch to DANA's 1:1 thread — a different node_id entirely. */
-    ff_app_signals_t dana_v;
+    ff_app_inbox_t dana_v;
     s24_make_direct_thread_long(&dana_v);
 
     lv_obj_clean(parent);
-    ff_scr_signals_build(parent, &dana_v, false);
+    ff_scr_inbox_build(parent, &dana_v, false);
 
     lv_obj_t *list2 = find_scrollable(parent);
     TEST_ASSERT_NOT_NULL(list2);
@@ -1978,12 +1978,12 @@ static void S24_thread_scroll_resets_to_newest_on_different_thread(void)
  * not just synthetic click(). */
 static void S24_omw_chip_real_touch_on_long_overflowing_1to1_thread(void)
 {
-    ff_app_signals_t v;
+    ff_app_inbox_t v;
     s24_make_direct_thread_long(&v);
 
     lv_obj_t *parent = lv_obj_create(lv_screen_active());
     lv_obj_set_size(parent, 412, 412);
-    ff_scr_signals_build(parent, &v, false);
+    ff_scr_inbox_build(parent, &v, false);
 
     lv_obj_t *list = find_scrollable(parent);
     TEST_ASSERT_NOT_NULL(list);
@@ -2010,22 +2010,22 @@ static void S24_omw_chip_real_touch_on_long_overflowing_1to1_thread(void)
 /* =================================================================== */
 
 /* Build the action popup sub-view scoped to a member (DANA). */
-static lv_obj_t *build_popup(ff_app_signals_t *v)
+static lv_obj_t *build_popup(ff_app_inbox_t *v)
 {
     memset(v, 0, sizeof(*v));
-    v->subview = FF_SIG_SUB_POPUP;
+    v->subview = FF_INBOX_SUB_POPUP;
     v->thread_node = 111u;
     strncpy(v->thread_name, "DANA", sizeof(v->thread_name) - 1);
     sig_add_conv(v, FF_CONV_CREW, 0u, NULL, 0, 0);
     sig_add_conv(v, FF_CONV_MEMBER, 111u, "DANA", 0, 0);
     lv_obj_t *parent = lv_obj_create(lv_screen_active());
-    ff_scr_signals_build(parent, v, false);
+    ff_scr_inbox_build(parent, v, false);
     return parent;
 }
 
 static void S24d_popup_compose_row_emits_popup_compose(void)
 {
-    ff_app_signals_t v;
+    ff_app_inbox_t v;
     lv_obj_t *parent = build_popup(&v);
     click(find_button_with_label(parent, "Compose"));
     TEST_ASSERT_EQUAL_INT(1, s_spy.count);
@@ -2034,7 +2034,7 @@ static void S24d_popup_compose_row_emits_popup_compose(void)
 
 static void S24d_popup_rally_row_emits_popup_rally(void)
 {
-    ff_app_signals_t v;
+    ff_app_inbox_t v;
     lv_obj_t *parent = build_popup(&v);
     click(find_button_with_label(parent, "Rally"));
     TEST_ASSERT_EQUAL_INT(1, s_spy.count);
@@ -2043,7 +2043,7 @@ static void S24d_popup_rally_row_emits_popup_rally(void)
 
 static void S24d_popup_flare_row_emits_popup_flare(void)
 {
-    ff_app_signals_t v;
+    ff_app_inbox_t v;
     lv_obj_t *parent = build_popup(&v);
     click(find_button_with_label(parent, "Flare"));
     TEST_ASSERT_EQUAL_INT(1, s_spy.count);
@@ -2052,7 +2052,7 @@ static void S24d_popup_flare_row_emits_popup_flare(void)
 
 static void S24d_popup_close_emits_back(void)
 {
-    ff_app_signals_t v;
+    ff_app_inbox_t v;
     lv_obj_t *parent = build_popup(&v);
     click(find_button_with_label(parent, LV_SYMBOL_CLOSE));
     TEST_ASSERT_EQUAL_INT(1, s_spy.count);
@@ -2061,10 +2061,10 @@ static void S24d_popup_close_emits_back(void)
 
 /* Build the Rally sub-view with On Me + one landmark, the landmark
  * selected, WHEN=Now, Send enabled. */
-static lv_obj_t *build_rally(ff_app_signals_t *v)
+static lv_obj_t *build_rally(ff_app_inbox_t *v)
 {
     memset(v, 0, sizeof(*v));
-    v->subview = FF_SIG_SUB_RALLY;
+    v->subview = FF_INBOX_SUB_RALLY;
     v->thread_node = 111u;
     strncpy(v->thread_name, "DANA", sizeof(v->thread_name) - 1);
     sig_add_conv(v, FF_CONV_CREW, 0u, NULL, 0, 0);
@@ -2078,13 +2078,13 @@ static lv_obj_t *build_rally(ff_app_signals_t *v)
     strncpy(v->rally.echo_when, "Now", sizeof(v->rally.echo_when) - 1);
     v->rally.can_send = true;
     lv_obj_t *parent = lv_obj_create(lv_screen_active());
-    ff_scr_signals_build(parent, v, false);
+    ff_scr_inbox_build(parent, v, false);
     return parent;
 }
 
 static void S24d_rally_on_me_row_emits_select_place_zero(void)
 {
-    ff_app_signals_t v;
+    ff_app_inbox_t v;
     lv_obj_t *parent = build_rally(&v);
     click(find_row_hit_by_name(parent, "On Me"));
     TEST_ASSERT_EQUAL_INT(1, s_spy.count);
@@ -2094,7 +2094,7 @@ static void S24d_rally_on_me_row_emits_select_place_zero(void)
 
 static void S24d_rally_landmark_row_emits_select_place_index(void)
 {
-    ff_app_signals_t v;
+    ff_app_inbox_t v;
     lv_obj_t *parent = build_rally(&v);
     click(find_row_hit_by_name(parent, "Main Stage"));
     TEST_ASSERT_EQUAL_INT(1, s_spy.count);
@@ -2104,7 +2104,7 @@ static void S24d_rally_landmark_row_emits_select_place_index(void)
 
 static void S24d_rally_when_chip_emits_cycle_when(void)
 {
-    ff_app_signals_t v;
+    ff_app_inbox_t v;
     lv_obj_t *parent = build_rally(&v);
     click(find_button_with_label(parent, "WHEN"));
     TEST_ASSERT_EQUAL_INT(1, s_spy.count);
@@ -2113,7 +2113,7 @@ static void S24d_rally_when_chip_emits_cycle_when(void)
 
 static void S24d_rally_send_button_emits_rally_send(void)
 {
-    ff_app_signals_t v;
+    ff_app_inbox_t v;
     lv_obj_t *parent = build_rally(&v);
     click(find_button_with_label(parent, "Send Rally"));
     TEST_ASSERT_EQUAL_INT(1, s_spy.count);
@@ -2124,15 +2124,15 @@ static void S24d_rally_send_button_emits_rally_send(void)
  * but the row cannot be picked (never a fabricated position). */
 static void S24d_rally_disabled_on_me_is_not_tappable(void)
 {
-    ff_app_signals_t v;
+    ff_app_inbox_t v;
     memset(&v, 0, sizeof(v));
-    v.subview = FF_SIG_SUB_RALLY;
+    v.subview = FF_INBOX_SUB_RALLY;
     sig_add_conv(&v, FF_CONV_CREW, 0u, NULL, 0, 0);
     v.rally.on_me_ok = false; /* no fix */
     v.rally.place_count = 0;
     v.rally.can_send = false;
     lv_obj_t *parent = lv_obj_create(lv_screen_active());
-    ff_scr_signals_build(parent, &v, false);
+    ff_scr_inbox_build(parent, &v, false);
     /* The On Me row renders (its label is present) but has no clickable
      * tap target, and Send is a dead (non-button) control. */
     TEST_ASSERT_NOT_NULL(find_label_exact(parent, "On Me"));
@@ -2633,7 +2633,7 @@ static void S16_c1_wired_sites_are_noops_while_the_seam_is_unbound(void)
 
     ff_app_state_t state;
     memset(&state, 0, sizeof(state));
-    state.active_face = FF_APP_FACE_SIGNALS;
+    state.active_face = FF_APP_FACE_INBOX;
     ff_scr_nav_build(&state);
 
     lv_obj_t *puck = lv_obj_get_child(lv_screen_active(), 0);
@@ -2672,12 +2672,12 @@ static void S26e_launcher_radar_circle_emits_index_0(void)
     S26e_launcher_circle_click_emits_launcher_select(0, 0u);
 }
 
-static void S26e_launcher_now_circle_emits_index_1(void)
+static void S26e_launcher_lineup_circle_emits_index_1(void)
 {
     S26e_launcher_circle_click_emits_launcher_select(1, 1u);
 }
 
-static void S26e_launcher_signals_circle_emits_index_2(void)
+static void S26e_launcher_inbox_circle_emits_index_2(void)
 {
     S26e_launcher_circle_click_emits_launcher_select(2, 2u);
 }
@@ -2773,10 +2773,10 @@ int main(void)
     UNITY_BEGIN();
 
     RUN_TEST(S26e_AC3_horizontal_drag_on_radar_emits_nothing);
-    RUN_TEST(S26e_AC3_horizontal_drag_on_now_emits_nothing);
-    RUN_TEST(S26e_AC3_horizontal_drag_on_signals_emits_nothing);
+    RUN_TEST(S26e_AC3_horizontal_drag_on_lineup_emits_nothing);
+    RUN_TEST(S26e_AC3_horizontal_drag_on_inbox_emits_nothing);
     RUN_TEST(carousel_physical_upward_drag_emits_nothing);
-    RUN_TEST(carousel_physical_upward_drag_emits_nothing_from_signals_too);
+    RUN_TEST(carousel_physical_upward_drag_emits_nothing_from_inbox_too);
     RUN_TEST(carousel_physical_downward_drag_emits_nothing);
     RUN_TEST(S16_c1_compose_back_emits_back);
     RUN_TEST(S16_c2_compose_send_emits_send_text);
@@ -2850,8 +2850,8 @@ int main(void)
     RUN_TEST(S16_c1_wired_sites_are_noops_while_the_seam_is_unbound);
 
     RUN_TEST(S26e_launcher_radar_circle_emits_index_0);
-    RUN_TEST(S26e_launcher_now_circle_emits_index_1);
-    RUN_TEST(S26e_launcher_signals_circle_emits_index_2);
+    RUN_TEST(S26e_launcher_lineup_circle_emits_index_1);
+    RUN_TEST(S26e_launcher_inbox_circle_emits_index_2);
     RUN_TEST(S26e_launcher_map_circle_emits_index_3);
     RUN_TEST(S26e_launcher_settings_circle_emits_index_4);
     RUN_TEST(S26e_launcher_click_emits_exactly_one_intent);

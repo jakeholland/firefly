@@ -115,7 +115,7 @@
 
 #include "ff_intent.h"
 #include "ff_theme.h"
-#include "scr_signals.h" /* ff_scr_signals_unread_count — the Inbox circle's badge */
+#include "scr_inbox.h" /* ff_scr_inbox_unread_count — the Inbox circle's badge */
 #include "lvgl.h"
 
 /* ---------------------------------------------------------------------
@@ -493,7 +493,7 @@ static void launcher_icon_settings(lv_obj_t *icon, int32_t px)
 /* `launcher_idx`: this file's own fixed semantic order (0=Radar,
  * 1=Now/Lineup, 2=Signals/Inbox, 3=Map, 4=Settings —
  * ff_intent.h's FF_INTENT_LAUNCHER_SELECT payload), passed through LVGL
- * event user_data (the scr_compose.c/scr_signals.c precedent for a
+ * event user_data (the scr_compose.c/scr_inbox.c precedent for a
  * per-callback small int with no new global state) — see this file's top
  * comment, "Index -> face mapping: UNCHANGED". */
 static void launcher_circle_click_cb(lv_event_t *e)
@@ -780,7 +780,7 @@ void ff_scr_launcher_build(ff_app_state_t const *state)
     lv_obj_set_style_border_width(puck, 0, 0);
     lv_obj_clear_flag(puck, LV_OBJ_FLAG_SCROLLABLE);
 
-    uint16_t const unread = ff_scr_signals_unread_count(&state->signals);
+    uint16_t const unread = ff_scr_inbox_unread_count(&state->inbox);
 
     launcher_make_orbit_ring(puck);
     launcher_make_hub(puck);

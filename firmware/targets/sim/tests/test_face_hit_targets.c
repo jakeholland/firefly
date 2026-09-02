@@ -34,7 +34,7 @@
  * the way an undersized-or-misplaced button can. (1) the whole-puck gesture
  * region, described next; (2) a CORNER-BLEED control — its hit-rect's far
  * corner is the window's bottom-right corner and its near corner is on glass
- * (scr_signals.c's `+` FAB, whose tap target covers the visible amber lens
+ * (scr_inbox.c's `+` FAB, whose tap target covers the visible amber lens
  * and bleeds off the rim) — see the inline `is_corner_bleed` comment in
  * sweep_walk. Both stay subject to the adjacency floor below.
  *
@@ -135,15 +135,15 @@
  * **Exclusion 4 — an inert FLOATING scroll-relay catcher.** A pair is
  * skipped when either side is CLICKABLE, has NO registered event
  * callback at all, AND carries LV_OBJ_FLAG_FLOATING — the exact shape of
- * PR #143's thread-scroll fix and its sibling in scr_signals.c's Rally
+ * PR #143's thread-scroll fix and its sibling in scr_inbox.c's Rally
  * WHERE list (S24 bugfix, same PR family): one invisible hit target,
  * pinned to a scrollable list's own viewport (FLOATING = LVGL's "don't
  * move this when the parent scrolls"), that exists ONLY so
  * lv_indev_find_scroll_obj has something to walk UP FROM when a touch
  * lands on a dead zone inside an otherwise partially-tappable list (a
  * divider band, an inter-row gap, a disabled row with no hit child of
- * its own) — see scr_signals.c's own header comments on
- * signals_build_thread and signals_build_rally for the full mechanism.
+ * its own) — see scr_inbox.c's own header comments on
+ * inbox_build_thread and inbox_build_rally for the full mechanism.
  * It performs no action of its own (no CLICKED handler is ever bound to
  * it) and, being added at the LOWEST z-order/hit-test priority in every
  * site that builds one (checked LAST, per LVGL's reverse child-order
@@ -176,7 +176,7 @@
  * COUSINS (different parents, neither one an ancestor of the other, but
  * visually right next to each other) were structurally invisible to the
  * sweep forever, no matter how close together they sat. The reviewer's
- * concrete instance: `scr_signals.c`'s header "+" button and the first
+ * concrete instance: `scr_inbox.c`'s header "+" button and the first
  * feed row measured exactly 8px apart — the floor itself, zero slack —
  * and neither shares a parent with the other (the "+" is a child of the
  * face's own root container; feed rows are children of the scrollable
@@ -487,7 +487,7 @@ static void sweep_walk(lv_obj_t *obj, char const *fixture_name, sweep_result_t *
 
             bool is_whole_puck_gesture_region = (w == (float)FF_THEME_PUCK_PX) && (h == (float)FF_THEME_PUCK_PX);
 
-            /* Corner-bleed exclusion (scr_signals.c's `+` FAB). A control
+            /* Corner-bleed exclusion (scr_inbox.c's `+` FAB). A control
              * that bleeds off the bottom-right rim — its hit-rect's far
              * corner IS the window's bottom-right corner, its near corner on
              * glass, and it is not the whole puck — is excluded from the

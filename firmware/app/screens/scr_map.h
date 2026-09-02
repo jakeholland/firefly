@@ -26,7 +26,7 @@ extern "C" {
  * HORIZONTAL-CAROUSEL REWORK: Map is a SWIPE TILE now, not a full-screen
  * modal, so it builds into the caller's container (`scr_nav.c` passes the
  * Map tile) rather than onto the active screen — the same tile-parented
- * convention `ff_scr_radar_build`/`ff_scr_now_build`/`ff_scr_signals_build`
+ * convention `ff_scr_radar_build`/`ff_scr_lineup_build`/`ff_scr_inbox_build`
  * already use. The old "tap anywhere -> back to Radar" is gone with the
  * modal: you swipe left to leave Map like any other carousel face, so this
  * face no longer emits `FF_INTENT_BACK` and installs no tap handler.

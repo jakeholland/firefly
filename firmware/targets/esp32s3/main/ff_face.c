@@ -47,8 +47,8 @@ void ff_face_build(ff_app_state_t const *state)
      * the two full-screen modals; the Launcher (amended 2026-09-01) is
      * a BASE face — home itself, not a modal — but is dispatched here
      * exactly like one, since active_face names it either way. */
-    if (state->active_face == FF_APP_FACE_RADAR || state->active_face == FF_APP_FACE_NOW ||
-        state->active_face == FF_APP_FACE_SIGNALS || state->active_face == FF_APP_FACE_MAP ||
+    if (state->active_face == FF_APP_FACE_RADAR || state->active_face == FF_APP_FACE_LINEUP ||
+        state->active_face == FF_APP_FACE_INBOX || state->active_face == FF_APP_FACE_MAP ||
         state->active_face == FF_APP_FACE_SETTINGS) {
         ff_scr_nav_build(state);
     } else if (state->active_face == FF_APP_FACE_COMPOSE) {

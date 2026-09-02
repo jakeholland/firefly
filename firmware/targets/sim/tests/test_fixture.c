@@ -64,7 +64,7 @@ static void radar_live_parses_exact_values(void)
      * documented flare "n/a" sentinel. */
     TEST_ASSERT_EQUAL_UINT8(0, s.now.n_rows);
     TEST_ASSERT_FALSE(s.now.next.valid);
-    TEST_ASSERT_EQUAL_UINT8(0, s.signals.inbox.conv_count);
+    TEST_ASSERT_EQUAL_UINT8(0, s.inbox.inbox.conv_count);
     TEST_ASSERT_FALSE(s.flare.sending);
     TEST_ASSERT_EQUAL_INT32(-1, s.flare.send_expires_in_ms);
     TEST_ASSERT_FALSE(s.flare.takeover_active);
@@ -544,7 +544,7 @@ static void now_stage_color_rgb_absent_key_marks_invalid(void)
     TEST_ASSERT_FALSE(s.now.rows[0].stage_color_valid);
 }
 
-static void signals_section_parses_every_field(void)
+static void inbox_section_parses_every_field(void)
 {
     ff_app_state_t s;
     char const *json = "{\"signals\": {"
@@ -573,16 +573,16 @@ static void signals_section_parses_every_field(void)
                         "}}";
     TEST_ASSERT_EQUAL_INT(FF_FIXTURE_OK, ff_fixture_load_json(json, strlen(json), &s));
 
-    TEST_ASSERT_EQUAL_INT(FF_SIG_SUB_THREAD, s.signals.subview);
-    TEST_ASSERT_EQUAL_UINT32(4242u, s.signals.thread_node);
-    TEST_ASSERT_EQUAL_STRING("RILEY", s.signals.thread_name);
-    TEST_ASSERT_EQUAL_UINT8(3, s.signals.thread_color_idx);
-    TEST_ASSERT_EQUAL_INT(FF_TARGET_MEMBER, s.signals.target_kind);
-    TEST_ASSERT_EQUAL_UINT32(4242u, s.signals.target_node);
-    TEST_ASSERT_TRUE(s.signals.rally_confirm_armed);
-    TEST_ASSERT_EQUAL_UINT8(3, s.signals.inbox.conv_count);
+    TEST_ASSERT_EQUAL_INT(FF_INBOX_SUB_THREAD, s.inbox.subview);
+    TEST_ASSERT_EQUAL_UINT32(4242u, s.inbox.thread_node);
+    TEST_ASSERT_EQUAL_STRING("RILEY", s.inbox.thread_name);
+    TEST_ASSERT_EQUAL_UINT8(3, s.inbox.thread_color_idx);
+    TEST_ASSERT_EQUAL_INT(FF_TARGET_MEMBER, s.inbox.target_kind);
+    TEST_ASSERT_EQUAL_UINT32(4242u, s.inbox.target_node);
+    TEST_ASSERT_TRUE(s.inbox.rally_confirm_armed);
+    TEST_ASSERT_EQUAL_UINT8(3, s.inbox.inbox.conv_count);
 
-    ff_inbox_conv_t const *crew = &s.signals.inbox.convs[0];
+    ff_inbox_conv_t const *crew = &s.inbox.inbox.convs[0];
     TEST_ASSERT_EQUAL_INT(FF_CONV_CREW, crew->kind);
     TEST_ASSERT_EQUAL_UINT16(2, crew->unread);
     TEST_ASSERT_EQUAL_UINT8(5, crew->item_count);
@@ -595,7 +595,7 @@ static void signals_section_parses_every_field(void)
     TEST_ASSERT_TRUE(crew->preview_from_known); /* derived: preview_from present */
     TEST_ASSERT_EQUAL_STRING("RILEY", crew->preview_from_name);
 
-    ff_inbox_conv_t const *riley = &s.signals.inbox.convs[1];
+    ff_inbox_conv_t const *riley = &s.inbox.inbox.convs[1];
     TEST_ASSERT_EQUAL_INT(FF_CONV_MEMBER, riley->kind);
     TEST_ASSERT_EQUAL_UINT32(4242u, riley->node_id);
     TEST_ASSERT_EQUAL_STRING("RILEY", riley->name);
@@ -607,15 +607,15 @@ static void signals_section_parses_every_field(void)
     TEST_ASSERT_EQUAL_UINT32(120000u, riley->presence_age_ms);
     TEST_ASSERT_FALSE(riley->preview_from_known); /* no preview_from key */
 
-    ff_inbox_conv_t const *jo = &s.signals.inbox.convs[2];
+    ff_inbox_conv_t const *jo = &s.inbox.inbox.convs[2];
     TEST_ASSERT_EQUAL_STRING("JO", jo->name);
     TEST_ASSERT_FALSE(jo->has_preview); /* derived: item_count 0 */
     TEST_ASSERT_EQUAL_INT(FF_PRESENCE_LOST, jo->presence);
     TEST_ASSERT_EQUAL_UINT32(900000u, jo->presence_age_ms);
 
     /* S24 slice (c): the thread messages. */
-    TEST_ASSERT_EQUAL_UINT8(2, s.signals.thread.msg_count);
-    ff_inbox_msg_t const *m0 = &s.signals.thread.msgs[0];
+    TEST_ASSERT_EQUAL_UINT8(2, s.inbox.thread.msg_count);
+    ff_inbox_msg_t const *m0 = &s.inbox.thread.msgs[0];
     TEST_ASSERT_EQUAL_INT(FEED_RALLY, m0->kind);
     TEST_ASSERT_EQUAL_INT(FEED_DIR_DIRECT, m0->dir);
     TEST_ASSERT_EQUAL_UINT32(4242u, m0->node_id);
@@ -626,7 +626,7 @@ static void signals_section_parses_every_field(void)
     TEST_ASSERT_EQUAL_STRING("Main Stage", m0->text);
     TEST_ASSERT_EQUAL_UINT32(360000u, m0->age_ms);
     TEST_ASSERT_TRUE(m0->unread);
-    ff_inbox_msg_t const *m1 = &s.signals.thread.msgs[1];
+    ff_inbox_msg_t const *m1 = &s.inbox.thread.msgs[1];
     TEST_ASSERT_EQUAL_INT(FEED_TEXT, m1->kind);
     TEST_ASSERT_EQUAL_INT(FEED_DIR_OUT, m1->dir);
     TEST_ASSERT_FALSE(m1->identity_known); /* derived: no `from` key — never a guessed sender */
@@ -907,7 +907,7 @@ static void now_lineup_at_cap_still_loads_ok(void)
     TEST_ASSERT_EQUAL_UINT8(FF_APP_NOW_MAX_LINEUP, s.now.n_lineup);
 }
 
-static void signals_items_over_cap_fails_loud(void)
+static void inbox_items_over_cap_fails_loud(void)
 {
     char json[1024];
     build_n_element_array_json(json, sizeof(json), "signals", "convs", FF_INBOX_MAX_CONVS + 1);
@@ -921,7 +921,7 @@ static void signals_items_over_cap_fails_loud(void)
     TEST_ASSERT_EQUAL_MEMORY(&zero, &s, sizeof(s));
 }
 
-static void signals_msgs_over_cap_fails_loud(void)
+static void inbox_msgs_over_cap_fails_loud(void)
 {
     char json[4096];
     build_n_element_array_json(json, sizeof(json), "signals", "msgs", FF_INBOX_MAX_MSGS + 1);
@@ -1108,10 +1108,10 @@ static void bug5a_ui_settings_scroll_y_parses_and_round_trips(void)
     TEST_ASSERT_EQUAL_MEMORY(&scrolled, &reloaded, sizeof(scrolled));
 }
 
-static void dump_then_reload_round_trips_now_mixed_fixture(void)
+static void dump_then_reload_round_trips_lineup_mixed_fixture(void)
 {
     ff_app_state_t original;
-    TEST_ASSERT_EQUAL_INT(FF_FIXTURE_OK, ff_fixture_load_file(fixture_path("now_mixed.json"), &original));
+    TEST_ASSERT_EQUAL_INT(FF_FIXTURE_OK, ff_fixture_load_file(fixture_path("lineup_mixed.json"), &original));
     TEST_ASSERT_EQUAL_INT(NOW_MIXED, original.now.state);
     TEST_ASSERT_EQUAL_UINT8(1, original.now.n_rows);
     TEST_ASSERT_TRUE(original.now.rows[0].stage_color_valid);
@@ -1127,15 +1127,15 @@ static void dump_then_reload_round_trips_now_mixed_fixture(void)
     TEST_ASSERT_EQUAL_MEMORY(&original, &reloaded, sizeof(original));
 }
 
-/* now_tbd.json covers the OTHER shape of `now`: `lineup` populated with
+/* lineup_tbd.json covers the OTHER shape of `now`: `lineup` populated with
  * every entry (not a subset — NOW_TBD's whole-day meaning), `rows`/`next`
  * both at their empty default. Confirms the round-trip holds for the
  * "known-time sections genuinely absent" case too, not just the
  * "everything populated" one above. */
-static void dump_then_reload_round_trips_now_tbd_fixture(void)
+static void dump_then_reload_round_trips_lineup_tbd_fixture(void)
 {
     ff_app_state_t original;
-    TEST_ASSERT_EQUAL_INT(FF_FIXTURE_OK, ff_fixture_load_file(fixture_path("now_tbd.json"), &original));
+    TEST_ASSERT_EQUAL_INT(FF_FIXTURE_OK, ff_fixture_load_file(fixture_path("lineup_tbd.json"), &original));
     TEST_ASSERT_EQUAL_INT(NOW_TBD, original.now.state);
     TEST_ASSERT_EQUAL_UINT8(0, original.now.n_rows);
     TEST_ASSERT_FALSE(original.now.next.valid);
@@ -1161,11 +1161,11 @@ static void dump_escapes_quotes_and_backslashes_in_names(void)
     memset(&original, 0, sizeof(original));
     original.radar.mode = RADAR_LIVE;
     (void)snprintf(original.radar.name, sizeof(original.radar.name), "\"Q\\R\"");
-    original.signals.inbox.conv_count = 1;
-    original.signals.inbox.convs[0].kind = FF_CONV_MEMBER;
-    original.signals.inbox.convs[0].node_id = 9u;
-    original.signals.inbox.convs[0].presence_valid = true; /* the loader re-derives this for a member */
-    (void)snprintf(original.signals.inbox.convs[0].name, sizeof(original.signals.inbox.convs[0].name),
+    original.inbox.inbox.conv_count = 1;
+    original.inbox.inbox.convs[0].kind = FF_CONV_MEMBER;
+    original.inbox.inbox.convs[0].node_id = 9u;
+    original.inbox.inbox.convs[0].presence_valid = true; /* the loader re-derives this for a member */
+    (void)snprintf(original.inbox.inbox.convs[0].name, sizeof(original.inbox.inbox.convs[0].name),
                    "A\"B\\C");
 
     char json[FF_FIXTURE_DUMP_MAX];
@@ -1176,7 +1176,7 @@ static void dump_escapes_quotes_and_backslashes_in_names(void)
     TEST_ASSERT_EQUAL_INT(FF_FIXTURE_OK, ff_fixture_load_json(json, (size_t)n, &reloaded));
 
     TEST_ASSERT_EQUAL_STRING("\"Q\\R\"", reloaded.radar.name);
-    TEST_ASSERT_EQUAL_STRING("A\"B\\C", reloaded.signals.inbox.convs[0].name);
+    TEST_ASSERT_EQUAL_STRING("A\"B\\C", reloaded.inbox.inbox.convs[0].name);
 }
 
 static void dump_maximally_populated_state_fits_budget(void)
@@ -1184,7 +1184,7 @@ static void dump_maximally_populated_state_fits_budget(void)
     ff_app_state_t s;
     memset(&s, 0, sizeof(s));
     (void)snprintf(s.fixture_name, sizeof(s.fixture_name), "%s", "0123456789012345678901234567890");
-    s.active_face = FF_APP_FACE_SIGNALS;
+    s.active_face = FF_APP_FACE_INBOX;
     s.settings.colorblind = true; /* S17 slice a: stress the writer for this new field too */
 
     s.radar.mode = RADAR_CLOSE;
@@ -1236,16 +1236,16 @@ static void dump_maximally_populated_state_fits_budget(void)
      * Fields the LOADER derives (has_preview / presence_valid /
      * preview_from_known) are set to exactly what re-derivation yields,
      * since the round-trip below compares whole-struct memory. */
-    s.signals.subview = FF_SIG_SUB_THREAD;
-    s.signals.thread_node = 0xFFFFFFFFu;
-    (void)snprintf(s.signals.thread_name, sizeof(s.signals.thread_name), "%s", "ABCDEFGHIJKLMNO");
-    s.signals.thread_color_idx = 255;
-    s.signals.target_kind = FF_TARGET_MEMBER;
-    s.signals.target_node = 0xFFFFFFFFu;
-    s.signals.rally_confirm_armed = true;
-    s.signals.inbox.conv_count = FF_INBOX_MAX_CONVS;
+    s.inbox.subview = FF_INBOX_SUB_THREAD;
+    s.inbox.thread_node = 0xFFFFFFFFu;
+    (void)snprintf(s.inbox.thread_name, sizeof(s.inbox.thread_name), "%s", "ABCDEFGHIJKLMNO");
+    s.inbox.thread_color_idx = 255;
+    s.inbox.target_kind = FF_TARGET_MEMBER;
+    s.inbox.target_node = 0xFFFFFFFFu;
+    s.inbox.rally_confirm_armed = true;
+    s.inbox.inbox.conv_count = FF_INBOX_MAX_CONVS;
     for (uint8_t i = 0; i < FF_INBOX_MAX_CONVS; i++) {
-        ff_inbox_conv_t *cv = &s.signals.inbox.convs[i];
+        ff_inbox_conv_t *cv = &s.inbox.inbox.convs[i];
         cv->kind = FF_CONV_MEMBER;
         cv->node_id = 0xFFFFFFFFu;
         /* 15 chars: sizeof(name) (16) - 1 for the NUL. */
@@ -1270,9 +1270,9 @@ static void dump_maximally_populated_state_fits_budget(void)
     /* S24 slice (c) — the thread messages at their FF_INBOX_MAX_MSGS cap,
      * every dumped field non-zero and every string at its budget, so the
      * worst-case bound covers the msgs array too. */
-    s.signals.thread.msg_count = FF_INBOX_MAX_MSGS;
+    s.inbox.thread.msg_count = FF_INBOX_MAX_MSGS;
     for (uint8_t i = 0; i < FF_INBOX_MAX_MSGS; i++) {
-        ff_inbox_msg_t *m = &s.signals.thread.msgs[i];
+        ff_inbox_msg_t *m = &s.inbox.thread.msgs[i];
         m->kind = FEED_STATUS;
         m->dir = FEED_DIR_DIRECT;
         m->identity_known = true;
@@ -1354,7 +1354,7 @@ int main(void)
     RUN_TEST(now_state_every_enum_value_round_trips);
     RUN_TEST(now_lineup_section_parses_every_field);
     RUN_TEST(now_mixed_state_carries_both_known_and_unknown);
-    RUN_TEST(signals_section_parses_every_field);
+    RUN_TEST(inbox_section_parses_every_field);
     RUN_TEST(flare_section_parses_every_field);
     RUN_TEST(flare_omitted_group_defaults_independently);
     RUN_TEST(flare_takeover_bearing_valid_defaults_false);
@@ -1370,8 +1370,8 @@ int main(void)
     RUN_TEST(now_rows_over_cap_fails_loud);
     RUN_TEST(now_lineup_over_cap_fails_loud);
     RUN_TEST(now_lineup_at_cap_still_loads_ok);
-    RUN_TEST(signals_items_over_cap_fails_loud);
-    RUN_TEST(signals_msgs_over_cap_fails_loud);
+    RUN_TEST(inbox_items_over_cap_fails_loud);
+    RUN_TEST(inbox_msgs_over_cap_fails_loud);
     RUN_TEST(oversized_array_zeroes_entire_state_including_other_sections);
 
     RUN_TEST(stem_strips_dir_and_json_extension);
@@ -1383,8 +1383,8 @@ int main(void)
     RUN_TEST(dump_then_reload_round_trips_settings_default_fixture);
     RUN_TEST(bug5a_ui_settings_scroll_y_parses_and_round_trips);
     RUN_TEST(dump_then_reload_round_trips_flare_takeover_locked_fixture);
-    RUN_TEST(dump_then_reload_round_trips_now_mixed_fixture);
-    RUN_TEST(dump_then_reload_round_trips_now_tbd_fixture);
+    RUN_TEST(dump_then_reload_round_trips_lineup_mixed_fixture);
+    RUN_TEST(dump_then_reload_round_trips_lineup_tbd_fixture);
     RUN_TEST(dump_escapes_quotes_and_backslashes_in_names);
     RUN_TEST(dump_maximally_populated_state_fits_budget);
     RUN_TEST(dump_buffer_too_small_returns_negative);

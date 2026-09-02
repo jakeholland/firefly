@@ -4,7 +4,7 @@
  * Spec: docs/specs/S08-signals-t9.md, slice (b) — "feed + wiring + crew
  * filter" (feed itself). No wiring, no meshclient, no LVGL here — see
  * app/ff_wiring.c for the glue that pushes decoded mesh events in here,
- * and app/screens/scr_signals.c for the renderer that reads it out.
+ * and app/screens/scr_inbox.c for the renderer that reads it out.
  *
  * Pure C11, no I/O, zero heap allocation — `ff_feed_t` is a plain struct
  * (fixed-size ring buffer only) safe to put on the stack or in a static.
@@ -169,7 +169,7 @@ ff_feed_item_t const *ff_feed_at(ff_feed_t const *f, uint8_t idx);
 /** ff_feed_unread_count — the feed's own running unread count. S24 note:
  * this no longer drives anything on-glass — both the Signals header
  * badge and the nav page-dot badge sum PER-CONVERSATION unread counts
- * (`ff_scr_signals_unread_count` over the ff_inbox model) instead,
+ * (`ff_scr_inbox_unread_count` over the ff_inbox model) instead,
  * because this total also counts direct items from non-paired senders
  * that honestly belong to no conversation, and a badge the rows can't
  * explain would read as a lie. Still the internal bookkeeping the

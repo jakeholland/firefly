@@ -163,8 +163,8 @@ typedef enum {
      * payload — each acts on the current target, which the shell reads from
      * its own `ff_sigview_t` / target holder, never from the screen (a pure
      * renderer must not carry the target itself). */
-    FF_INTENT_SIG_SELECT_MEMBER, FF_INTENT_SIG_CLEAR_TARGET,
-    FF_INTENT_SIG_RALLY, FF_INTENT_SIG_PULSE, FF_INTENT_SIG_COMPOSE,
+    FF_INTENT_INBOX_SELECT_MEMBER, FF_INTENT_INBOX_CLEAR_TARGET,
+    FF_INTENT_INBOX_RALLY, FF_INTENT_INBOX_PULSE, FF_INTENT_INBOX_COMPOSE,
     /* [api] S24 slice b — the Signals inbox -> thread navigation seam
      * (docs/specs/S24-signals-inbox.md). The Signals face is now the S24
      * INBOX (a projection of `ff_inbox_t`); these three intents are its
@@ -232,13 +232,13 @@ typedef enum {
      *   flares the scope immediately, then pops the popup back to the thread
      *   (the OUT flare shows there).
      *
-     * FF_INTENT_SIG_PULSE / FF_INTENT_INBOX_POPUP_PULSE are DELIBERATELY kept
+     * FF_INTENT_INBOX_PULSE / FF_INTENT_INBOX_POPUP_PULSE are DELIBERATELY kept
      * (no screen emits them now — the outbound-pulse SEND path stays a
      * programmatic seam, still exercised by the shell's unit tests): removing
      * them would renumber the intents above. The INCOMING pulse (the feed
      * kind, the "DANA pulsed you" wording, the demo generator) is untouched —
      * other pucks may still pulse; only this outbound action changed. */
-    FF_INTENT_SIG_FLARE, FF_INTENT_INBOX_POPUP_FLARE,
+    FF_INTENT_INBOX_FLARE, FF_INTENT_INBOX_POPUP_FLARE,
     /* [api] S26 slice b — PWR button -> power menu -> soft power-off
      * (docs/specs/S26-device-lifecycle.md). Appended, so no existing
      * intent's numeric value moves. No payload on any of the four — each

@@ -23,8 +23,8 @@
  * tile. */
 static ff_app_face_t const k_swipe_axis[] = {
     FF_APP_FACE_RADAR,
-    FF_APP_FACE_NOW,
-    FF_APP_FACE_SIGNALS,
+    FF_APP_FACE_LINEUP,
+    FF_APP_FACE_INBOX,
     FF_APP_FACE_MAP,
     FF_APP_FACE_SETTINGS,
 };

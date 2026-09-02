@@ -174,8 +174,8 @@ static void nav_home_to(ff_app_face_t face)
     uint8_t idx;
     switch (face) {
     case FF_APP_FACE_RADAR: idx = 0; break;
-    case FF_APP_FACE_NOW: idx = 1; break;
-    case FF_APP_FACE_SIGNALS: idx = 2; break;
+    case FF_APP_FACE_LINEUP: idx = 1; break;
+    case FF_APP_FACE_INBOX: idx = 2; break;
     case FF_APP_FACE_MAP: idx = 3; break;
     case FF_APP_FACE_SETTINGS: idx = 4; break;
     default: TEST_FAIL_MESSAGE("nav_home_to: not a launcher circle"); return;
@@ -237,7 +237,7 @@ static void S26e_swipe_dispatch_moves_nothing_from_any_base_face(void)
      * no special treatment) — a leftover call site is not quietly
      * re-wiring navigation through the intent that used to own it. */
     ff_app_face_t const bases[] = {
-        FF_APP_FACE_RADAR, FF_APP_FACE_NOW, FF_APP_FACE_SIGNALS, FF_APP_FACE_MAP, FF_APP_FACE_SETTINGS,
+        FF_APP_FACE_RADAR, FF_APP_FACE_LINEUP, FF_APP_FACE_INBOX, FF_APP_FACE_MAP, FF_APP_FACE_SETTINGS,
     };
     for (size_t i = 0; i < sizeof(bases) / sizeof(bases[0]); i++) {
         harness_init(100000u);
@@ -272,7 +272,7 @@ static void S26e_home_on_the_launcher_is_a_noop(void)
 static void S26e_home_from_each_app_sets_base_to_the_launcher(void)
 {
     ff_app_face_t const bases[] = {
-        FF_APP_FACE_RADAR, FF_APP_FACE_NOW, FF_APP_FACE_SIGNALS, FF_APP_FACE_MAP, FF_APP_FACE_SETTINGS,
+        FF_APP_FACE_RADAR, FF_APP_FACE_LINEUP, FF_APP_FACE_INBOX, FF_APP_FACE_MAP, FF_APP_FACE_SETTINGS,
     };
     for (size_t i = 0; i < sizeof(bases) / sizeof(bases[0]); i++) {
         harness_init(100000u);
@@ -302,7 +302,7 @@ static void S26e_launcher_select_reaches_every_circle_and_the_badge_projects(voi
 {
     harness_init(100000u);
     ff_app_face_t const circles[] = {
-        FF_APP_FACE_RADAR, FF_APP_FACE_NOW, FF_APP_FACE_SIGNALS, FF_APP_FACE_MAP, FF_APP_FACE_SETTINGS,
+        FF_APP_FACE_RADAR, FF_APP_FACE_LINEUP, FF_APP_FACE_INBOX, FF_APP_FACE_MAP, FF_APP_FACE_SETTINGS,
     };
     for (size_t i = 0; i < sizeof(circles) / sizeof(circles[0]); i++) {
         harness_init(100000u);
@@ -358,8 +358,8 @@ static void S26e_launcher_select_is_rejected_while_a_takeover_is_visible(void)
 static void S16_c1_open_compose_and_back_round_trip(void)
 {
     harness_init(100000u);
-    nav_home_to(FF_APP_FACE_SIGNALS); /* where the real "+" lives */
-    TEST_ASSERT_EQUAL(FF_APP_FACE_SIGNALS, view()->active_face);
+    nav_home_to(FF_APP_FACE_INBOX); /* where the real "+" lives */
+    TEST_ASSERT_EQUAL(FF_APP_FACE_INBOX, view()->active_face);
 
     send_open_compose(0u);
     TEST_ASSERT_EQUAL(FF_APP_FACE_COMPOSE, view()->active_face);
@@ -375,11 +375,11 @@ static void S16_c1_open_compose_and_back_round_trip(void)
     TEST_ASSERT_EQUAL(FF_APP_FACE_COMPOSE, view()->active_face);
 
     send_kind(FF_INTENT_BACK);
-    TEST_ASSERT_EQUAL(FF_APP_FACE_SIGNALS, view()->active_face); /* base intact underneath */
+    TEST_ASSERT_EQUAL(FF_APP_FACE_INBOX, view()->active_face); /* base intact underneath */
 
     /* BACK on a bare face is a no-op, not a face change. */
     send_kind(FF_INTENT_BACK);
-    TEST_ASSERT_EQUAL(FF_APP_FACE_SIGNALS, view()->active_face);
+    TEST_ASSERT_EQUAL(FF_APP_FACE_INBOX, view()->active_face);
 }
 
 /* =================================================================== */
@@ -506,8 +506,8 @@ static void S16_c1_back_clears_the_compose_destination(void)
 static void S16_c1_open_settings_jumps_base_to_the_settings_face(void)
 {
     harness_init(100000u);
-    nav_home_to(FF_APP_FACE_NOW); /* prove the jump works from any base, not just the launcher */
-    TEST_ASSERT_EQUAL(FF_APP_FACE_NOW, view()->active_face);
+    nav_home_to(FF_APP_FACE_LINEUP); /* prove the jump works from any base, not just the launcher */
+    TEST_ASSERT_EQUAL(FF_APP_FACE_LINEUP, view()->active_face);
 
     /* One dispatch jumps straight to the far-right Settings face,
      * skipping Signals and Map. */
@@ -551,7 +551,7 @@ static void launcher_reaches_map_directly(void)
     /* Every other launcher circle is reachable the same way, Radar
      * included. */
     ff_app_face_t const others[] = {
-        FF_APP_FACE_RADAR, FF_APP_FACE_NOW, FF_APP_FACE_SIGNALS, FF_APP_FACE_SETTINGS,
+        FF_APP_FACE_RADAR, FF_APP_FACE_LINEUP, FF_APP_FACE_INBOX, FF_APP_FACE_SETTINGS,
     };
     for (size_t i = 0; i < sizeof(others) / sizeof(others[0]); i++) {
         nav_home_to(others[i]);

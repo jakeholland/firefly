@@ -3,7 +3,7 @@
  *
  * Spec: docs/specs/S22-signals-rework.md, slice (a). This is the pure
  * core the reworked Signals face renders and forwards intents to; the
- * screen (`scr_signals.c`, slice b) only projects this model and never
+ * screen (`scr_inbox.c`, slice b) only projects this model and never
  * decides ordering, identity, presence, or targeting itself.
  *
  * Pure C11, no I/O, no LVGL, zero heap allocation — `ff_sigview_t` is a

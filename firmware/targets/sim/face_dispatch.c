@@ -50,8 +50,8 @@ void ff_build_face_screen(ff_app_state_t const *state)
      * through scr_nav.c, reached only via the launcher/BOOT since S26
      * slice e retired the swipe carousel. Compose/Power menu/Launcher
      * are the full-screen modals. */
-    if (state->active_face == FF_APP_FACE_RADAR || state->active_face == FF_APP_FACE_NOW ||
-        state->active_face == FF_APP_FACE_SIGNALS || state->active_face == FF_APP_FACE_MAP ||
+    if (state->active_face == FF_APP_FACE_RADAR || state->active_face == FF_APP_FACE_LINEUP ||
+        state->active_face == FF_APP_FACE_INBOX || state->active_face == FF_APP_FACE_MAP ||
         state->active_face == FF_APP_FACE_SETTINGS) {
         ff_scr_nav_build(state);
         /* #bug5a — apply the fixture's sim-only scroll hint AFTER the

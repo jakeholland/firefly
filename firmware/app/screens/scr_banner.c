@@ -30,9 +30,9 @@
  * BANNER_W (240) clears that comfortably.
  *
  * BANNER_CY itself (not just BANNER_W) is chosen against a SECOND
- * constraint the chord math alone doesn't capture: `scr_signals.c`'s
+ * constraint the chord math alone doesn't capture: `scr_inbox.c`'s
  * thread/picker/popup/rally sub-views all pin a >=44px BACK/close control
- * at puck-local y=[30,74] (FF_SIGNALS_BACK_Y/FF_SIGNALS_BACK_PX) — the
+ * at puck-local y=[30,74] (FF_INBOX_BACK_Y/FF_INBOX_BACK_PX) — the
  * banner must clear that by the FF_HIT_MIN_GAP_PX (8px) adjacency floor
  * too, or it collides with a live control the sweep (correctly) flags.
  * At BANNER_CY=-90 the pill's top edge sits at puck-local y = 206-90-26 =
@@ -67,7 +67,7 @@ static char const *banner_glyph(ff_notify_kind_t kind)
     switch (kind) {
     case FF_NOTIFY_MESSAGE: return LV_SYMBOL_ENVELOPE;
     case FF_NOTIFY_RALLY:   return LV_SYMBOL_GPS;
-    case FF_NOTIFY_FLARE:   return LV_SYMBOL_EYE_OPEN; /* mirrors the popup's flare row, scr_signals.c */
+    case FF_NOTIFY_FLARE:   return LV_SYMBOL_EYE_OPEN; /* mirrors the popup's flare row, scr_inbox.c */
     case FF_NOTIFY_SYSTEM:  return LV_SYMBOL_BELL;
     default:                return LV_SYMBOL_BELL;
     }
@@ -139,7 +139,7 @@ void ff_scr_banner_build(lv_obj_t *parent, ff_app_banner_t const *banner, bool c
     lv_obj_set_style_text_font(name, FF_THEME_FONT_CHIP, 0);
     lv_obj_set_style_text_color(name, lv_color_hex(ff_theme_crew_color(banner->color_idx, colorblind)), 0);
     /* DOTS mode only truncates to ONE line when the label's HEIGHT is
-     * bounded too — width alone makes LVGL wrap instead (scr_signals.c's
+     * bounded too — width alone makes LVGL wrap instead (scr_inbox.c's
      * own documented lesson, same fix applied here). */
     lv_obj_set_size(name, BANNER_TEXT_W, 18);
     lv_label_set_long_mode(name, LV_LABEL_LONG_MODE_DOTS); /* ellipsize, never overflow off-glass */

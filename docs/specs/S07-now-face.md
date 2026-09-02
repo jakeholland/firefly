@@ -29,7 +29,7 @@ fp_set_t const *ff_sched_alarm_tick(ff_sched_alarm_t *st, fp_pack_t const *p,
 3. next_starred picks earliest future starred set; none starred/future → false.
 4. Alarm: advancing clock past T-15 fires exactly once; re-tick no refire; two stars 5 min apart fire in order.
 5. All-null-times pack: now/next return empty/false; TBD path flagged in view struct.
-6. Goldens: `now_live.json` (mocked times) and `now_tbd.json` (real Lost Lands pack) match.
+6. Goldens: `lineup_live.json` (mocked times) and `lineup_tbd.json` (real Lost Lands pack) match.
 
 ## Slices
 a) engine + tests · b) face render + goldens · c) alarm + haptic hook + star persistence.
@@ -71,7 +71,7 @@ a) engine + tests · b) face render + goldens · c) alarm + haptic hook + star p
   TIMES TBD". That is not a missing-data edge case; it is a straightforward
   lie about data the puck has. The bug was invisible to every prior test
   because the only real-world fixture on hand (Lost Lands) is currently
-  ALL-null (`now_tbd.json`'s case): a fixture with no start times at all
+  ALL-null (`lineup_tbd.json`'s case): a fixture with no start times at all
   can never exercise "start known, end not," so the AC5 acceptance
   criterion's "all-null-times pack" case was satisfied while the actual
   starts-only shape was never tested.
@@ -97,7 +97,7 @@ a) engine + tests · b) face render + goldens · c) alarm + haptic hook + star p
      start to derive an end from: it is LIVE once started, but `pct_done`
      is UNKNOWABLE. Per this project's never-let-absence-carry-meaning
      convention, `ff_now_row_t`/`ff_app_now_row_t` gain an explicit
-     `pct_valid` flag (`[api]`); the renderer (`scr_now.c`) omits the
+     `pct_valid` flag (`[api]`); the renderer (`scr_lineup.c`) omits the
      progress-bar element entirely when false, rather than showing an
      empty or fabricated fill. No default duration is invented. It stops
      counting as "now" at the festival day window's own end (`now_min`
@@ -128,7 +128,7 @@ a) engine + tests · b) face render + goldens · c) alarm + haptic hook + star p
 
   `app/ff_shell.c`'s projection currently falls back to `NOW_NO_PACK`, the
   least-claiming of the five existing members. It never invents a clock —
-  but `scr_now.c:419-433` renders it as **"NO FESTIVAL LOADED / Load a
+  but `scr_lineup.c:419-433` renders it as **"NO FESTIVAL LOADED / Load a
   festpack to see what's playing"**, which does not under-claim, it
   *mis*-claims: it names the wrong missing fact and instructs the user to
   redo something they have already done. `NOW_TBD` would be worse still,
@@ -149,12 +149,12 @@ a) engine + tests · b) face render + goldens · c) alarm + haptic hook + star p
   now checks pack-loaded and clock-known as two SEPARATE early returns —
   no pack at all -> `NOW_NO_PACK` (narrowed back to its original,
   literal meaning); pack loaded but `wall.src == FF_WALL_UNKNOWN` ->
-  `NOW_TIME_UNKNOWN`. `scr_now.c` gets a `now_render_time_unknown` arm:
+  `NOW_TIME_UNKNOWN`. `scr_lineup.c` gets a `lineup_render_time_unknown` arm:
   "WAITING FOR TIME FIX" / "Clock hasn't synced from the mesh yet" —
   echoing the radar face's own NOFIX vocabulary for the same "honestly
   waiting on a signal" shape, never mentioning a festpack or a schedule.
-  New fixture `tests/fixtures/now_time_unknown.json` + golden
-  `tests/golden/now_time_unknown.png`. Regression-tested by
+  New fixture `tests/fixtures/lineup_time_unknown.json` + golden
+  `tests/golden/lineup_time_unknown.png`. Regression-tested by
   `firmware/app/tests/test_shell.c`'s
   `S16_b1_now_projection_needs_both_a_pack_and_a_known_clock` (now pins
   `NOW_TIME_UNKNOWN`, not the old `NOW_NO_PACK` workaround) and the new

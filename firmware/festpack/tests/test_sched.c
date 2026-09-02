@@ -19,7 +19,7 @@
  *         fixture via fp_parse (firmware/festpack/tests/fixtures/) —
  *         see the CMakeLists.txt S07 section for why that lives in this
  *         same executable rather than a separate test_sched_integration.
- *   AC6 (golden now_live.json/now_tbd.json screenshots) is UI (slice b)
+ *   AC6 (golden lineup_live.json/lineup_tbd.json screenshots) is UI (slice b)
  *         — out of scope for this engine-only PR.
  *
  * Fixtures for AC1-4 are in-code fp_pack_t literals built with mk_set()
@@ -1104,7 +1104,7 @@ static void S07_AC5_real_lost_lands_fixture_is_all_null_tbd(void)
     TEST_ASSERT_TRUE_MESSAGE(ff_sched_day_tbd(&pack, day),
                               "expected the real Lost Lands fixture to still be all-null (SET TIMES TBD) — "
                               "if this now fails, the fixture has been updated with real set times and "
-                              "S07-now-face.md's AC5/AC6 goldens (now_tbd.json) likely need attention too");
+                              "S07-now-face.md's AC5/AC6 goldens (lineup_tbd.json) likely need attention too");
 
     ff_now_row_t rows[8];
     TEST_ASSERT_EQUAL_UINT8(0, ff_sched_now_playing(&pack, day, 720, rows, 8));

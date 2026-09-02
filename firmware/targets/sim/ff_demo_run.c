@@ -118,9 +118,9 @@ int ff_run_demo_headless(const char *screenshot_dir)
         {"radar_riley", FF_APP_FACE_RADAR, FF_DEMO_NODE_RILEY}, /* close-range */
         {"radar_maya", FF_APP_FACE_RADAR, FF_DEMO_NODE_MAYA},   /* stale — LAST SEEN 25 MIN */
         {"radar_sam", FF_APP_FACE_RADAR, FF_DEMO_NODE_SAM},     /* no fix */
-        {"now", FF_APP_FACE_NOW, 0},
+        {"now", FF_APP_FACE_LINEUP, 0},
         {"map", FF_APP_FACE_MAP, 0},
-        {"signals", FF_APP_FACE_SIGNALS, 0},
+        {"signals", FF_APP_FACE_INBOX, 0},
     };
 
     static ff_shell_t shell;
@@ -138,7 +138,7 @@ int ff_run_demo_headless(const char *screenshot_dir)
         (void)ff_shell_tick(&shell, s_demo_clock_ms);
 
         /* Render the requested face. active_face selects the builder;
-         * every sub-view (radar/now/map/signals) is already populated in
+         * every sub-view (radar/now/map/inbox) is already populated in
          * the projection regardless of which one is "active". */
         ff_app_state_t view = *ff_shell_view(&shell);
         view.active_face = shots[i].face;
