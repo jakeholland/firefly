@@ -617,12 +617,23 @@ static lv_obj_t *find_nth_clickable_by_size(lv_obj_t *root, int32_t w, int32_t h
 }
 
 /* `idx`: 0=Radar, 1=Now, 2=Signals, 3=Map, 4=Settings (ff_intent.h's
- * FF_INTENT_LAUNCHER_SELECT payload convention == scr_launcher.c's own
- * build order, amended 2026-09-01 for the fifth — Radar — circle). */
+ * FF_INTENT_LAUNCHER_SELECT payload convention).
+ *
+ * S26e VISUAL REFRESH (2026-09-01, compass ring): the launcher no
+ * longer draws five uniform 96x96 circles — idx 0 (Radar) is now the
+ * 120x120 HUB disc and idx 1-4 are 88x88 SATELLITE discs
+ * (scr_launcher.c). Circle CREATION order still equals launcher_idx
+ * order (see that file's satellite descriptor table comment, which
+ * exists specifically so this helper doesn't have to change beyond its
+ * size constants) — so idx 0 is the sole 120x120 clickable, and idx
+ * 1..4 are the Nth 88x88 clickable in creation order. */
 static lv_obj_t *launcher_circle_at(int idx)
 {
     int counter = 0;
-    return find_nth_clickable_by_size(lv_screen_active(), 96, 96, &counter, idx);
+    if (idx == 0) {
+        return find_nth_clickable_by_size(lv_screen_active(), 120, 120, &counter, 0);
+    }
+    return find_nth_clickable_by_size(lv_screen_active(), 88, 88, &counter, idx - 1);
 }
 
 /* A member conversation row tap emits OPEN_THREAD with that member's
@@ -1890,6 +1901,68 @@ static void S26e_launcher_click_emits_exactly_one_intent(void)
     TEST_ASSERT_EQUAL_INT(1, s_spy.count);
 }
 
+/* ff_scr_launcher_satellite_deg (scr_launcher.h [api]): the N-agnostic
+ * satellite-angle formula, tested directly rather than through rendered
+ * pixel positions — 0deg = top, clockwise, `compass_pos * (360 / n)`.
+ * N=4 (today's real satellite count) yields the four cardinal points;
+ * N=5 (the design canvas's own pentagon, hypothetical — this app has no
+ * 5th routable satellite yet) yields its 72deg spacing. Proves the
+ * FORMULA is N-agnostic independent of anything scr_launcher.c actually
+ * renders today. */
+static void S26e_satellite_deg_is_n_agnostic(void)
+{
+    TEST_ASSERT_EQUAL_FLOAT(0.0f, ff_scr_launcher_satellite_deg(0, 4));
+    TEST_ASSERT_EQUAL_FLOAT(90.0f, ff_scr_launcher_satellite_deg(1, 4));
+    TEST_ASSERT_EQUAL_FLOAT(180.0f, ff_scr_launcher_satellite_deg(2, 4));
+    TEST_ASSERT_EQUAL_FLOAT(270.0f, ff_scr_launcher_satellite_deg(3, 4));
+
+    TEST_ASSERT_EQUAL_FLOAT(0.0f, ff_scr_launcher_satellite_deg(0, 5));
+    TEST_ASSERT_EQUAL_FLOAT(72.0f, ff_scr_launcher_satellite_deg(1, 5));
+    TEST_ASSERT_EQUAL_FLOAT(144.0f, ff_scr_launcher_satellite_deg(2, 5));
+    TEST_ASSERT_EQUAL_FLOAT(216.0f, ff_scr_launcher_satellite_deg(3, 5));
+    TEST_ASSERT_EQUAL_FLOAT(288.0f, ff_scr_launcher_satellite_deg(4, 5));
+
+    /* n <= 0 is defensive-only (no real caller reaches it — see this
+     * function's own doc comment) but must stay defined, never a
+     * divide-by-zero. */
+    TEST_ASSERT_EQUAL_FLOAT(0.0f, ff_scr_launcher_satellite_deg(2, 0));
+}
+
+/* PR #145 review — PRESS_LOCK regression guard. A real indev drag that
+ * PRESSES DOWN on one launcher circle and releases somewhere else must
+ * emit NOTHING: LVGL's default LV_OBJ_FLAG_PRESS_LOCK ("keep the object
+ * pressed even if the press slid from the object") would otherwise fire
+ * LV_EVENT_CLICKED on the ORIGINAL press target regardless of where the
+ * finger ends up — exactly what a horizontal sweep across the puck's
+ * own midline does today, since the compass ring's left/right
+ * satellites sit exactly on that line by construction (see
+ * scr_launcher.c's `launcher_make_satellite`, the PRESS_LOCK comment).
+ * This uses the SAME shape as targets/sim's real `ctl swipe` command
+ * (ctl_loop.c's ctl_loop_swipe): press at (352,206) — inside the
+ * Lineup satellite (idx 1, right cardinal point, x 290-378 / y
+ * 162-250) — six move steps, release at (60,206) — inside the Map
+ * satellite (idx 3, left cardinal point, x 34-122 / y 162-250).
+ *
+ * Mutation check (per AGENTS.md's proxy-check discipline): re-adding
+ * `lv_obj_add_state`-style PRESS_LOCK (i.e. removing this file's
+ * `lv_obj_clear_flag(btn, LV_OBJ_FLAG_PRESS_LOCK)` calls in
+ * scr_launcher.c) flips this test from PASS to FAIL — verified by hand
+ * before landing this test, see the PR body for the exact output. */
+static void S26e_launcher_drag_across_satellites_emits_nothing(void)
+{
+    ff_app_state_t state;
+    memset(&state, 0, sizeof(state));
+    ff_scr_launcher_build(&state);
+
+    /* (352, 206) -> (60, 206): press inside Lineup (idx 1, real
+     * rendered center verified at (333,205) — 352 is still comfortably
+     * inside its 88px box), release inside Map (idx 3). Identical shape
+     * to targets/sim's real `ctl swipe` command (ctl_loop.c's
+     * ctl_loop_swipe: press at width-60, release at 60, y = height/2). */
+    drag(352, 60, 206);
+    TEST_ASSERT_EQUAL_INT(0, s_spy.count);
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -1959,6 +2032,8 @@ int main(void)
     RUN_TEST(S26e_launcher_map_circle_emits_index_3);
     RUN_TEST(S26e_launcher_settings_circle_emits_index_4);
     RUN_TEST(S26e_launcher_click_emits_exactly_one_intent);
+    RUN_TEST(S26e_satellite_deg_is_n_agnostic);
+    RUN_TEST(S26e_launcher_drag_across_satellites_emits_nothing);
 
     return UNITY_END();
 }
