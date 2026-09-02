@@ -137,29 +137,63 @@ A notification **wakes the screen** (DIM/OFF → ACTIVE) — otherwise "come fin
 me" is useless while idle. Honest data: a banner shows the real `at_ms`
 age via `ff_fmt_age`, never a fabricated "now".
 
-**Placement (maintainer decision B, 2026-09-02):** the BANNER strip covers
-the status bar row (clock · MESH · battery — `RADAR_LAYOUT_STATUS_BAR_DY`),
-not the row below it. A transient banner should hide the LEAST valuable row
-on whatever face is showing; the strip's original position (just below the
-status bar) instead covered the top of Radar's compass/close-range readout,
-or a thread's first message bubble — both more valuable than the clock/mesh/
-battery row a 6 s banner can safely eclipse. The strip's vertical center is
-computed from `RADAR_LAYOUT_STATUS_BAR_DY` directly (never a second
-hand-typed constant), and its width shrinks to 90 px — down from 240 — to
-clear the round glass with a genuine 10 px margin at that height (see
-`scr_banner.c`'s own layout-constant comment for the exact chord math: the
-naive per-axis chord bound allows ~137 px, but the binding constraint is the
-true Euclidean distance of each corner from the glass center, which only
-clears at ~95 px). At this width the age no longer fits as a separate
-top-right corner chip; it sits beside the name on the same row instead.
-The launcher face does not build the banner overlay at all today (a
-pre-existing gap: `ff_build_face_screen` dispatches `FF_APP_FACE_LAUNCHER`
-straight to `ff_scr_launcher_build`, which never calls
-`ff_scr_banner_build`) — flagged as a follow-up, out of scope here, since a
-banner placed this way would collide with the launcher's top compass
-satellite by construction (checked directly: the strip's rect and the top
-satellite's rect overlap outright, not just violate the 8 px adjacency
-floor).
+**Placement (maintainer decision B, 2026-09-02; refined 2026-09-02 orchestrator
+review round 2):** the BANNER strip covers the status bar row (clock · MESH ·
+battery — `RADAR_LAYOUT_STATUS_BAR_DY`), not the row below it. A transient
+banner should hide the LEAST valuable row on whatever face is showing; the
+strip's original position (just below the status bar) instead covered the
+top of Radar's compass/close-range readout, or a thread's first message
+bubble — both more valuable than the clock/mesh/battery row a 6 s banner can
+safely eclipse.
+
+Round 1 centered the strip exactly on `RADAR_LAYOUT_STATUS_BAR_DY` (-160)
+and shrank its width to ~90 px to fit the round glass there — technically
+correct but too narrow to read as a banner (only the MESH label was ever
+covered; sender name and preview text were crushed to one or two
+characters). Round 2 instead finds the LOWEST (least-negative) centre whose
+top edge still clears the status text's own measured top (y=38 on a 412 px
+puck): `BANNER_CY = RADAR_LAYOUT_STATUS_BAR_DY + 14` (dy -146, puck-local
+y=60) — still derived from the status-row constant, not a second
+independent number, just offset by the amount that trade needs. At that
+height the strip widens back out to 160 px (up from round 1's 90, still well
+short of the original 240) while keeping a real ≥10 px margin off
+`FF_THEME_GLASS_R`/`FF_THEME_GLASS_CX/CY` at every corner (see
+`scr_banner.c`'s own layout comment for the exact chord math, including a
+correction to which radius that check runs against — `FF_THEME_GLASS_R`
+200, the real measured glass, not the framebuffer's 206). At this width the
+strip now reaches (and partially covers) the clock and battery labels too,
+not just MESH — accepted deliberately: the strip's own rectangle has one
+constant y-range across its whole width, so wherever it does reach it
+covers the text FULLY top-to-bottom, never a half-height sliver poking out.
+The age no longer fits as a separate top-right corner chip; it sits beside
+the name on the same row instead, and at 160 px both the sender's full demo
+name and a preview past 10 characters render before DOTS ellipsis has to
+step in.
+
+Widening the strip this much also reaches `scr_signals.c`'s pinned BACK
+button (`FF_SIGNALS_BACK_Y`/`_PX`) on the thread/picker/popup/rally
+sub-views. Rather than either shrinking the strip back down (defeating the
+readability fix above) or growing `scr_banner.c` face-aware knowledge of
+`scr_signals.c`'s internals, `scr_nav.c` — the one place that already
+composes every face's content with the banner overlay — masks
+`LV_OBJ_FLAG_CLICKABLE` on any control the banner's rect now covers, right
+after building it. This matches what LVGL's own top-z hit-testing already
+does in practice (the last-added/topmost object under a touch point wins),
+so it aligns the STATIC hit-target sweep with the real, already-true
+runtime behavior rather than changing what a tap does.
+
+**Launcher wiring:** the launcher (home) face now composites the banner too
+— `ff_scr_launcher_build` calls `ff_scr_banner_build` last, the same
+"built after, drawn on top" convention `scr_nav.c` uses for every other
+face. The banner only ever reaches the top compass satellite (Inbox,
+`compass_pos == 0`); that satellite's own `CLICKABLE` flag is masked while a
+banner is active (mirroring the `scr_nav.c` fix above) — accepted as
+intentional and semantically consistent: while a banner shows, that region
+IS the banner, and tapping it opens the sender's thread, which is roughly
+where tapping Inbox would have led anyway. The launcher's own status row
+(bottom of the puck, `LAUNCHER_STATUS_ROW_DY`) is far enough from the
+banner's position to never compete with it. Launcher renders WITHOUT an
+active banner are untouched (goldens byte-identical).
 
 ## Slices + acceptance criteria
 

@@ -42,6 +42,50 @@
 #include "scr_settings.h" /* Settings — the launcher's fourth circle */
 #include "scr_inbox.h" /* S08c */
 
+/* ---------------------------------------------------------------------
+ * S26 slice d (round 2, orchestrator review on #157): the WIDER banner
+ * (scr_banner.c's own geometry comment) now reaches far enough to
+ * overlap real controls underneath it on some faces — the Signals
+ * thread/picker/popup/rally sub-views' pinned BACK button
+ * (FF_SIGNALS_BACK_Y/PX, scr_signals.c) sits close enough to center
+ * that the banner's new width overlaps it. LVGL's own hit-testing
+ * already routes a tap there to the banner (the topmost/last-added
+ * object under the touch point wins — lv_indev_search_obj walks
+ * children back-to-front), so the covered control is ALREADY
+ * functionally unreachable; this pass makes the STATIC state agree
+ * with that real behavior, the same "mask what a higher-z, opaque,
+ * ALSO-clickable overlay covers" fix scr_launcher.c's own copy of this
+ * comment applies to the launcher's top satellite. Deliberately generic
+ * (not scr_signals.c-specific) and confined to THIS file — the one
+ * place that already composes every face's content with the banner —
+ * so no other screen file needs banner-awareness of its own, preserving
+ * scr_banner.h's "no face-awareness" contract and scr_signals.h's
+ * existing signature.
+ * ------------------------------------------------------------------- */
+static void nav_mask_clickables_under_banner(lv_obj_t *root, lv_obj_t *banner, lv_area_t const *banner_area)
+{
+    if (root == NULL || root == banner) {
+        return; /* never touch the banner's own subtree */
+    }
+    uint32_t n = lv_obj_get_child_count(root);
+    for (uint32_t i = 0; i < n; i++) {
+        lv_obj_t *child = lv_obj_get_child(root, i);
+        if (child == banner) {
+            continue;
+        }
+        if (lv_obj_has_flag(child, LV_OBJ_FLAG_CLICKABLE)) {
+            lv_area_t a;
+            lv_obj_get_coords(child, &a);
+            bool overlaps = a.x1 <= banner_area->x2 && banner_area->x1 <= a.x2 && a.y1 <= banner_area->y2 &&
+                             banner_area->y1 <= a.y2;
+            if (overlaps) {
+                lv_obj_clear_flag(child, LV_OBJ_FLAG_CLICKABLE);
+            }
+        }
+        nav_mask_clickables_under_banner(child, banner, banner_area);
+    }
+}
+
 void ff_scr_nav_build(ff_app_state_t const *state)
 {
     if (state == NULL) {
@@ -138,4 +182,15 @@ void ff_scr_nav_build(ff_app_state_t const *state)
      * ff_scr_nav_build in that case, so a banner never competes with the
      * takeover for the same glass. */
     ff_scr_banner_build(puck, &state->banner, state->settings.colorblind);
+
+    if (state->banner.active) {
+        /* The strip is the LAST child ff_scr_banner_build just added to
+         * `puck` (its own doc comment's contract). Mask whatever it now
+         * covers — see nav_mask_clickables_under_banner's own comment. */
+        lv_obj_t *strip = lv_obj_get_child(puck, lv_obj_get_child_count(puck) - 1);
+        lv_obj_update_layout(puck); /* coords are lazily computed — force it before reading any (S99 precedent) */
+        lv_area_t strip_area;
+        lv_obj_get_coords(strip, &strip_area);
+        nav_mask_clickables_under_banner(puck, strip, &strip_area);
+    }
 }
