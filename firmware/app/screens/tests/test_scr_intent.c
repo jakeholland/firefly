@@ -804,6 +804,123 @@ static void S99_compose_send_corner_clears_bezel_margin_bar(void)
 }
 
 /* =================================================================== */
+/* Compose TO readability (PR #148 review round 3, blocking): round 2's  */
+/* fix bounded TO to the ~52px BACK-to-SEND header gap, which made even  */
+/* an ORDINARY short name unreadable ("TO: DANA" -> "TO: D..."). TO now  */
+/* lives on its own row below the header, wide enough for every demo    */
+/* crew name in full, while a genuinely long one still ellipsizes.      */
+/* =================================================================== */
+
+/* find_label_with_prefix — like find_button_with_label, but for a bare
+ * (non-button) label whose text starts with `prefix` — TO isn't a
+ * button, so that helper (which only descends into lv_button_class
+ * children) can't find it. */
+static lv_obj_t *find_label_with_prefix(lv_obj_t *root, char const *prefix)
+{
+    uint32_t n = lv_obj_get_child_count(root);
+    size_t plen = strlen(prefix);
+    for (uint32_t i = 0; i < n; i++) {
+        lv_obj_t *child = lv_obj_get_child(root, i);
+        if (lv_obj_check_type(child, &lv_label_class)) {
+            char const *txt = lv_label_get_text(child);
+            if (txt != NULL && strncmp(txt, prefix, plen) == 0) {
+                return child;
+            }
+        }
+        lv_obj_t *found = find_label_with_prefix(child, prefix);
+        if (found != NULL) {
+            return found;
+        }
+    }
+    return NULL;
+}
+
+/* compose_mid.json's ordinary short recipient (DANA, a real demo crew
+ * name) must render in FULL — no ellipsis at all. LVGL's
+ * LV_LABEL_LONG_MODE_DOTS mutates the label's OWN stored text (not just
+ * how it paints) when it truncates, so checking lv_label_get_text() for
+ * the absence of the "..." it appends is a direct, sufficient proof —
+ * not an approximation of what the pixels show. */
+static void S99_compose_to_short_name_renders_in_full_no_dots(void)
+{
+    ff_app_compose_t compose;
+    memset(&compose, 0, sizeof(compose));
+    strncpy(compose.to_name, "DANA", sizeof(compose.to_name) - 1);
+
+    ff_scr_compose_build(&compose);
+    lv_obj_update_layout(lv_screen_active());
+
+    lv_obj_t *to = find_label_with_prefix(lv_screen_active(), "TO:");
+    TEST_ASSERT_NOT_NULL_MESSAGE(to, "TO label not found");
+    char const *txt = lv_label_get_text(to);
+    TEST_ASSERT_EQUAL_STRING_MESSAGE("TO: DANA", txt, "a real demo crew name must render in full");
+    TEST_ASSERT_NULL_MESSAGE(strstr(txt, "..."), "a short, ordinary recipient name must never ellipsize");
+}
+
+/* Every other demo crew name (+ EVERYONE, the broadcast fallback) must
+ * also render in full — not just DANA. */
+static void S99_compose_to_every_demo_crew_name_renders_in_full(void)
+{
+    char const *const names[] = {"DANA", "KEV", "RILEY", "MAYA", "SAM", "EVERYONE"};
+    for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); i++) {
+        lv_obj_clean(lv_screen_active());
+        ff_app_compose_t compose;
+        memset(&compose, 0, sizeof(compose));
+        if (strcmp(names[i], "EVERYONE") != 0) {
+            strncpy(compose.to_name, names[i], sizeof(compose.to_name) - 1);
+        } /* else: leave to_name empty — the code's own "EVERYONE" fallback */
+
+        ff_scr_compose_build(&compose);
+        lv_obj_update_layout(lv_screen_active());
+
+        lv_obj_t *to = find_label_with_prefix(lv_screen_active(), "TO:");
+        TEST_ASSERT_NOT_NULL_MESSAGE(to, names[i]);
+        char const *txt = lv_label_get_text(to);
+        TEST_ASSERT_NULL_MESSAGE(strstr(txt, "..."), names[i]);
+    }
+}
+
+/* compose_to_long.json's genuinely long recipient ("WHOLE CREW") must
+ * still ellipsize cleanly — the DOTS path stays provably reachable, not
+ * dead code now that real names all fit. */
+static void S99_compose_to_long_name_ellipsizes_cleanly(void)
+{
+    ff_app_compose_t compose;
+    memset(&compose, 0, sizeof(compose));
+    strncpy(compose.to_name, "WHOLE CREW", sizeof(compose.to_name) - 1);
+
+    ff_scr_compose_build(&compose);
+    lv_obj_update_layout(lv_screen_active()); /* DOTS truncation is computed during layout, not at label_set_text */
+
+    lv_obj_t *to = find_label_with_prefix(lv_screen_active(), "TO:");
+    TEST_ASSERT_NOT_NULL(to);
+    char const *txt = lv_label_get_text(to);
+    TEST_ASSERT_NOT_NULL_MESSAGE(strstr(txt, "..."), "a genuinely long recipient name must ellipsize, not overflow");
+}
+
+/* PRED mode has no separate TO row (see scr_compose.c's own comment,
+ * "TO — PR #148 review round 3") — the recipient is prepended to the
+ * draft line itself instead. Prove it's actually there (and the
+ * dedicated TO row is NOT double-built at the same y, the bug an
+ * earlier draft of this fix shipped). */
+static void S99_compose_pred_mode_shows_recipient_on_draft_line(void)
+{
+    ff_app_compose_t compose;
+    memset(&compose, 0, sizeof(compose));
+    compose.mode = FF_APP_COMPOSE_PRED;
+    strncpy(compose.to_name, "DANA", sizeof(compose.to_name) - 1);
+
+    ff_scr_compose_build(&compose);
+
+    lv_obj_t *prefix = find_label_with_prefix(lv_screen_active(), "DANA:");
+    TEST_ASSERT_NOT_NULL_MESSAGE(prefix, "PRED draft line must carry the recipient prefix");
+    /* And the dedicated TO row (which would sit at the identical y) must
+     * NOT also exist — that's the double-render bug this test guards. */
+    lv_obj_t *to_row = find_label_with_prefix(lv_screen_active(), "TO:");
+    TEST_ASSERT_NULL_MESSAGE(to_row, "PRED mode must not ALSO build the dedicated TO row at the same y");
+}
+
+/* =================================================================== */
 /* Signals (S24 slice b): the inbox face's navigation intents            */
 /* =================================================================== */
 
@@ -2281,6 +2398,10 @@ int main(void)
     RUN_TEST(S99_compose_drag_off_send_emits_nothing);
     RUN_TEST(S99_compose_drag_off_key_emits_nothing);
     RUN_TEST(S99_compose_send_corner_clears_bezel_margin_bar);
+    RUN_TEST(S99_compose_to_short_name_renders_in_full_no_dots);
+    RUN_TEST(S99_compose_to_every_demo_crew_name_renders_in_full);
+    RUN_TEST(S99_compose_to_long_name_ellipsizes_cleanly);
+    RUN_TEST(S99_compose_pred_mode_shows_recipient_on_draft_line);
     RUN_TEST(S24b_inbox_member_row_tap_emits_open_thread);
     RUN_TEST(S24b_inbox_crew_row_tap_emits_open_thread_crew);
     RUN_TEST(S24b_inbox_quiet_member_row_is_tappable);

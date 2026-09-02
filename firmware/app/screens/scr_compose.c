@@ -184,25 +184,47 @@
 #define FF_COMPOSE_SEND_HEADER_W 48
 _Static_assert(FF_COMPOSE_SEND_HEADER_W >= FF_THEME_MIN_HIT_PX, "header SEND must clear the 44px hit-target floor");
 
-#define FF_COMPOSE_BUBBLE_Y (FF_COMPOSE_HEADER_Y + FF_COMPOSE_HEADER_H + 8)
-#define FF_COMPOSE_BUBBLE_H 60
+/* TO — PR #148 review round 3 (blocking): a bounded-to-the-header-gap TO
+ * label made "TO: DANA" render as "TO: D..." — unreadable for an ORDINARY
+ * short name, not just a genuinely long one. The header row itself
+ * (y=24-68) cannot fit a readable TO: BACK+SEND already claim both its
+ * ends (the review's own Option B — drop the "TO:" prefix, bound at
+ * >=120px, keep it in the header — measured infeasible: the gap between
+ * BACK's right edge and SEND's left edge is ~52px, nowhere near 120px).
+ * So TO drops to its OWN row just below the header, where the circle is
+ * already much wider (no BACK/SEND to share with) — Option A, the
+ * review's primary ask. Gaps above/below are minimal (2px, not the 8px
+ * floor) because TO is NOT clickable, so FF_HIT_MIN_GAP_PX's adjacency
+ * floor (about two independent TAP TARGETS) never applied to it. */
+#define FF_COMPOSE_TO_GAP_ABOVE 2
+#define FF_COMPOSE_TO_H 18 /* one line of FF_THEME_FONT_LABEL (montserrat_14); also the label's own set-height below */
+#define FF_COMPOSE_TO_GAP_BELOW 2
+#define FF_COMPOSE_TO_Y (FF_COMPOSE_HEADER_Y + FF_COMPOSE_HEADER_H + FF_COMPOSE_TO_GAP_ABOVE)
 
-/* Gap spent between the bubble/PRED band and the T9 grid — PR #148
- * review (should-fix 4): trimmed 8->6px to buy the grid 2px of headroom
- * (GRID_Y 144->142, the max this file's own PRED-strip-clearance assert
- * below allows), which — because the bottom row sits near the pole,
- * where the circle narrows fast — is worth ~8px of extra ROW WIDTH at
- * the bottom row, not just 2px (verified: margin(334,56)=123.4 vs
- * margin(336,56)=127.5, i.e. row_w 165.3 vs 157.1). Safe to shrink: this
- * gap sits between the bubble/draft area (non-clickable — a display box
- * or a plain label, not a control) and the grid's first row, so it is
- * NOT one of the pairs FF_HIT_MIN_GAP_PX's 8px CLICKABLE-adjacency floor
- * applies to (that floor is about two independent tap targets, ff_theme.h);
- * it is purely the cosmetic breathing room between a display element and
- * the keys below it. Spent entirely on should-fix 4's DEL/SPACE width
- * (compose_build_bottom_row) — see that function's own comment. */
+/* FF_COMPOSE_TO_W — deliberately narrower than this row's own full
+ * chord-derived width (~288px at this Y — see compose_to_left/_width's
+ * own comment below for the measured "why not just use the max"). */
+#define FF_COMPOSE_TO_W 130
+
+#define FF_COMPOSE_BUBBLE_Y (FF_COMPOSE_TO_Y + FF_COMPOSE_TO_H + FF_COMPOSE_TO_GAP_BELOW)
+
+/* Gap spent between the bubble/PRED band and the T9 grid (PR #148 review
+ * round 2, should-fix 4) — see that round's own note: this gap sits
+ * between non-clickable display elements and the grid's first row, so
+ * it's cosmetic breathing room, not an adjacency-floor pair. */
 #define FF_COMPOSE_BUBBLE_GRID_GAP 6
-#define FF_COMPOSE_GRID_Y (FF_COMPOSE_BUBBLE_Y + FF_COMPOSE_BUBBLE_H + FF_COMPOSE_BUBBLE_GRID_GAP)
+
+/* GRID_Y is FROZEN at its round-2 value (142) — PR #148 review round 3:
+ * "the keys/rows below must not move". Round 2 already used every pixel
+ * of slack this file's own PRED-strip-clearance assert (below) allows to
+ * get here, so this round's new TO row can't push it any further without
+ * either violating that assert or shrinking a hit-floor control — it has
+ * to come out of BUBBLE_H instead (now DERIVED, not an independently
+ * chosen literal, so GRID_Y can never silently drift if TO's own numbers
+ * above change). */
+#define FF_COMPOSE_GRID_Y 142
+#define FF_COMPOSE_BUBBLE_H (FF_COMPOSE_GRID_Y - FF_COMPOSE_BUBBLE_GRID_GAP - FF_COMPOSE_BUBBLE_Y)
+_Static_assert(FF_COMPOSE_BUBBLE_H >= 40, "compose bubble shrank too far fitting the new TO row above it");
 /* S17 slice b (AC2, docs/specs/S17-usability-hardening.md): was 6px — the
  * dense T9 grid is exactly the stress case that slice's task brief named,
  * and 6px measured under `FF_HIT_MIN_GAP_PX` (8px, ff_theme.h) on every
@@ -342,28 +364,40 @@ static int32_t compose_send_x(void)
     return x2 - FF_COMPOSE_SEND_HEADER_W + 1;
 }
 
-/* compose_to_left / compose_to_width — PR #148 review (FAIL 2): TO's
- * label used to be centered across the WHOLE puck width with no bound,
- * so a long recipient name silently ran UNDER SEND (drawn after it,
- * z-order on top) instead of stopping before it — "TO: DANA" rendered
- * as "TO: DAN", its last glyph simply painted over. Bounded here to the
- * honest available band between BACK's right edge and SEND's left edge,
- * each with FF_HIT_MIN_GAP_PX's own 8px clearance (matching this file's
- * other "give a neighbor room" gaps, even though TO itself isn't
- * clickable) — paired with LV_LABEL_LONG_MODE_DOTS (ellipsis) at the
- * build site so anything that doesn't fit truncates cleanly instead of
- * overflowing onto SEND again. */
-static int32_t compose_to_left(int32_t header_margin)
+/* compose_to_left / compose_to_width — PR #148 review round 3 (blocking
+ * FAIL, round 2's fix regressed): squeezing TO into the header's
+ * BACK-to-SEND gap (round 2's fix) left only ~52px — barely 4-5 chars —
+ * which made even an ORDINARY short name unreadable ("TO: DANA" ->
+ * "TO: D..."), not just a genuinely long one. TO now lives on its OWN
+ * row just below the header (FF_COMPOSE_TO_Y) where BACK/SEND aren't
+ * competing for the space at all.
+ *
+ * The row's own full chord-derived margin (compose_safe_margin_x, the
+ * same primitive every other centered row here uses) works out to
+ * ~288px at this Y — comfortably >= the review's "bounded at >=200px"
+ * ask, but MEASURED (via a standalone LVGL harness against
+ * lv_font_montserrat_14, this PR's body has the numbers) to be wide
+ * enough that NO value `to_name` can ever hold (FF_APP_NAME_LEN caps it
+ * at 15 chars) actually triggers LV_LABEL_LONG_MODE_DOTS — even the
+ * longest possible field content renders in full at that width, which
+ * would make the ellipsis path untestable/dead code for any real input.
+ * FF_COMPOSE_TO_W is instead a deliberately chosen, MEASURED width
+ * (130px) that keeps ALL real recipients — every demo crew name (DANA,
+ * KEV, RILEY, MAYA, SAM), "EVERYONE", and "CREW" — fully readable with
+ * room to spare, while still forcing a genuinely long name
+ * (compose_to_long.json's "WHOLE CREW", 10 chars) to ellipsize, so the
+ * DOTS path stays exercised and provably correct rather than a safety
+ * net nothing ever reaches. Well inside the row's own ~288px safe
+ * bound, so still centered entirely within the circle with room to
+ * spare either side. */
+static int32_t compose_to_left(void)
 {
-    return header_margin + FF_THEME_MIN_HIT_PX + FF_HIT_MIN_GAP_PX;
+    return (FF_THEME_PUCK_PX - FF_COMPOSE_TO_W) / 2;
 }
 
-static int32_t compose_to_width(int32_t header_margin)
+static int32_t compose_to_width(void)
 {
-    int32_t const left = compose_to_left(header_margin);
-    int32_t const right = compose_send_x() - FF_HIT_MIN_GAP_PX;
-    int32_t const w = right - left;
-    return (w > 0) ? w : 0;
+    return FF_COMPOSE_TO_W;
 }
 
 /* ---------------------------------------------------------------------
@@ -839,6 +873,28 @@ static void compose_build_pred_draft(lv_obj_t *puck, ff_app_compose_t const *com
     lv_obj_clear_flag(cont, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_clear_flag(cont, LV_OBJ_FLAG_CLICKABLE); /* a display line, not a control */
 
+    /* Recipient prefix — PR #148 review round 3: TO needs its own
+     * dedicated row in ABC/123/SYM (see FF_COMPOSE_TO_Y above), but PRED
+     * mode has no vertical room for a second row of its own:
+     * FF_COMPOSE_PRED_STRIP_Y is already pinned to the maximum this
+     * file's PRED-strip-clearance assert allows (90 = GRID_Y(142) - 44 -
+     * 8, zero slack), and PRED_DRAFT_Y (70) sits only 2px below the
+     * header — there is no gap left to insert a whole extra line above
+     * it without either moving the (frozen, per the review) grid or
+     * shrinking the chip strip below its own 44px hit floor. Prepending
+     * the recipient to this SAME flex row instead costs only WIDTH (this
+     * row's own y is very wide — no BACK/SEND sharing it, unlike the
+     * header), never height, so it fits with zero layout risk. Dim, no
+     * "TO:" prefix (this compact form matches the review's own "drop the
+     * prefix, show just the name" suggestion) so it reads as context, not
+     * message content. */
+    lv_obj_t *to_prefix = lv_label_create(cont);
+    char to_prefix_buf[FF_APP_NAME_LEN + 4];
+    snprintf(to_prefix_buf, sizeof(to_prefix_buf), "%s: ", (compose->to_name[0] != '\0') ? compose->to_name : "EVERYONE");
+    lv_label_set_text(to_prefix, to_prefix_buf);
+    lv_obj_set_style_text_font(to_prefix, FF_THEME_FONT_LABEL, 0);
+    lv_obj_set_style_text_color(to_prefix, lv_color_hex(FF_THEME_COLOR_DIM), 0);
+
     bool cold_open = (compose->text[0] == '\0' && compose->word[0] == '\0' && !compose->word_nomatch);
     if (cold_open) {
         lv_obj_t *ph = lv_label_create(cont);
@@ -1028,30 +1084,46 @@ void ff_scr_compose_build(ff_app_compose_t const *compose)
     lv_obj_center(back_lbl);
     compose_key_press_feedback(back, back_lbl); /* transparent normally; amber fill on press */
 
-    /* TO — bounded to the honest band between BACK and SEND, ellipsized
-     * (LV_LABEL_LONG_MODE_DOTS) rather than left to overflow onto SEND
-     * (PR #148 review, FAIL 2 — see compose_to_left/_width's own comment
-     * for the "why", and compose_to_long.json / its golden for the proof
-     * a long recipient name truncates cleanly). Centered within its own
-     * bounded box (not the whole puck) so a short name like "DANA" still
-     * reads centered-ish in the available header space instead of
-     * hugging BACK's edge. */
-    int32_t to_left = compose_to_left(header_margin);
-    int32_t to_width = compose_to_width(header_margin);
-    lv_obj_t *to_lbl = lv_label_create(puck);
-    char to_buf[FF_APP_NAME_LEN + 8];
-    snprintf(to_buf, sizeof(to_buf), "TO: %s", (compose->to_name[0] != '\0') ? compose->to_name : "EVERYONE");
-    lv_label_set_text(to_lbl, to_buf);
-    lv_obj_set_style_text_font(to_lbl, FF_THEME_FONT_LABEL, 0);
-    lv_obj_set_style_text_color(to_lbl, lv_color_hex(FF_THEME_COLOR_DIM), 0);
-    lv_obj_set_style_text_align(to_lbl, LV_TEXT_ALIGN_CENTER, 0);
-    lv_label_set_long_mode(to_lbl, LV_LABEL_LONG_MODE_DOTS);
-    /* DOTS only truncates (rather than wrapping across multiple lines,
-     * which is what it did without this) once the label's HEIGHT is
-     * also bounded to one line — same fix scr_flare.c's own DOTS labels
-     * already use (lv_font_get_line_height), not a made-up literal. */
-    lv_obj_set_size(to_lbl, to_width, lv_font_get_line_height(FF_THEME_FONT_LABEL));
-    lv_obj_set_pos(to_lbl, to_left, FF_COMPOSE_HEADER_Y + 12);
+    /* TO — PR #148 review round 3: its own row just below the header
+     * (FF_COMPOSE_TO_Y), not squeezed into the BACK-to-SEND gap any more
+     * (round 2's fix — see compose_to_left/_width's own comment for why
+     * that regressed readability). Centered across a deliberately
+     * measured width that fits every demo crew name in full;
+     * LV_LABEL_LONG_MODE_DOTS still ellipsizes a genuinely long one
+     * (compose_to_long.json / its golden).
+     *
+     * PRED-mode ONLY skips this widget entirely: FF_COMPOSE_TO_Y is the
+     * SAME y as FF_COMPOSE_PRED_DRAFT_Y (both "the first line just below
+     * the header" — there is no spare vertical band to give PRED mode
+     * its OWN separate copy without moving the grid, which this review
+     * round explicitly forbids). PRED gets the recipient a different
+     * way: compose_build_pred_draft prepends it as the first segment of
+     * its OWN draft line instead (see that function's own comment) —
+     * building this widget too would double-render at the identical Y,
+     * which is exactly the bug an earlier draft of this fix shipped
+     * (visually confirmed: "DANA" and "DANA: omw to the" stacked
+     * illegibly on top of each other). */
+    if (s_mode != FF_APP_COMPOSE_PRED) {
+        int32_t to_left = compose_to_left();
+        int32_t to_width = compose_to_width();
+        lv_obj_t *to_lbl = lv_label_create(puck);
+        char to_buf[FF_APP_NAME_LEN + 8];
+        snprintf(to_buf, sizeof(to_buf), "TO: %s", (compose->to_name[0] != '\0') ? compose->to_name : "EVERYONE");
+        lv_label_set_text(to_lbl, to_buf);
+        lv_obj_set_style_text_font(to_lbl, FF_THEME_FONT_LABEL, 0);
+        lv_obj_set_style_text_color(to_lbl, lv_color_hex(FF_THEME_COLOR_DIM), 0);
+        lv_obj_set_style_text_align(to_lbl, LV_TEXT_ALIGN_CENTER, 0);
+        lv_label_set_long_mode(to_lbl, LV_LABEL_LONG_MODE_DOTS);
+        /* Height pinned to FF_COMPOSE_TO_H — the SAME constant the layout
+         * budget above (FF_COMPOSE_BUBBLE_Y) was computed from, so the
+         * widget's actual rendered height can never silently drift out of
+         * sync with the space reserved for it (DOTS needs a bounded height
+         * to truncate on one line instead of wrapping — same fix
+         * scr_flare.c's own DOTS labels use, just this file's own constant
+         * instead of a runtime font-metric query, to guarantee that match). */
+        lv_obj_set_size(to_lbl, to_width, FF_COMPOSE_TO_H);
+        lv_obj_set_pos(to_lbl, to_left, FF_COMPOSE_TO_Y);
+    }
 
     /* SEND — the far top-right corner, the watch-composer convention, and
      * (per this file's header comment) ~269px of vertical separation from
