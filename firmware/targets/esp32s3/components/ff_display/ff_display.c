@@ -71,8 +71,8 @@ static const char *TAG = "ff_display";
  * image toward the top-left; if the wrap instead appears on the LEFT/TOP,
  * the value is too high. Leave the drawn resolution (412) and orientation
  * untouched — only these two numbers change. */
-#define FF_LCD_X_GAP 0
-#define FF_LCD_Y_GAP 0
+#define FF_LCD_X_GAP 5 /* measured on glass with the ruler (CONFIG_FF_GLASS_RULER), 2026-09-02 — see docs/hardware/glass-offset.md */
+#define FF_LCD_Y_GAP 1 /* measured on glass with the ruler, 2026-09-02 — see docs/hardware/glass-offset.md */
 
 /* ---- Display QSPI pins (Display_SPD2010.h) --------------------------- */
 #define FF_LCD_HOST SPI2_HOST
