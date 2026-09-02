@@ -408,6 +408,22 @@ if(FF_BUILD_TESTS)
     ff_apply_warnings(test_scr_intent)
 
     add_test(NAME test_scr_intent COMMAND test_scr_intent)
+
+    # S26 slice d (maintainer decision B, 2026-09-02) — the banner strip's
+    # move to cover the status bar: geometry (disjoint from Radar's name/
+    # distance stack and a thread's first bubble, covers the status row,
+    # every corner clears the glass by 10px) plus the #145 PRESS_LOCK tap/
+    # drag proof, same "build the real screens, measure the real rects"
+    # discipline test_scr_flare.c/test_radar_layout.c already established
+    # for this exact class of bug (a pixel-stable golden can't catch a
+    # wrong-but-stable placement).
+    add_executable(test_scr_banner
+        screens/tests/test_scr_banner.c
+    )
+    target_link_libraries(test_scr_banner PRIVATE ff-app-ui ff-intent unity)
+    ff_apply_warnings(test_scr_banner)
+
+    add_test(NAME test_scr_banner COMMAND test_scr_banner)
 endif()
 
 # S20 (app/ff_demo.c — demo-mode seeding; docs/specs/S20-demo-mode.md)

@@ -137,6 +137,30 @@ A notification **wakes the screen** (DIM/OFF → ACTIVE) — otherwise "come fin
 me" is useless while idle. Honest data: a banner shows the real `at_ms`
 age via `ff_fmt_age`, never a fabricated "now".
 
+**Placement (maintainer decision B, 2026-09-02):** the BANNER strip covers
+the status bar row (clock · MESH · battery — `RADAR_LAYOUT_STATUS_BAR_DY`),
+not the row below it. A transient banner should hide the LEAST valuable row
+on whatever face is showing; the strip's original position (just below the
+status bar) instead covered the top of Radar's compass/close-range readout,
+or a thread's first message bubble — both more valuable than the clock/mesh/
+battery row a 6 s banner can safely eclipse. The strip's vertical center is
+computed from `RADAR_LAYOUT_STATUS_BAR_DY` directly (never a second
+hand-typed constant), and its width shrinks to 90 px — down from 240 — to
+clear the round glass with a genuine 10 px margin at that height (see
+`scr_banner.c`'s own layout-constant comment for the exact chord math: the
+naive per-axis chord bound allows ~137 px, but the binding constraint is the
+true Euclidean distance of each corner from the glass center, which only
+clears at ~95 px). At this width the age no longer fits as a separate
+top-right corner chip; it sits beside the name on the same row instead.
+The launcher face does not build the banner overlay at all today (a
+pre-existing gap: `ff_build_face_screen` dispatches `FF_APP_FACE_LAUNCHER`
+straight to `ff_scr_launcher_build`, which never calls
+`ff_scr_banner_build`) — flagged as a follow-up, out of scope here, since a
+banner placed this way would collide with the launcher's top compass
+satellite by construction (checked directly: the strip's rect and the top
+satellite's rect overlap outright, not just violate the 8 px adjacency
+floor).
+
 ## Slices + acceptance criteria
 
 ### (a) Reclaim the festpack token buffer — `[api]`
