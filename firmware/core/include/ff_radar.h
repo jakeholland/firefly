@@ -54,6 +54,7 @@
 
 #include "ff_crew.h"
 #include "ff_latlon.h"
+#include "ff_wall.h" /* FF_WALL_CLOCK_STR_LEN — kept equal to FF_RADAR_CLOCK_LEN below, statically checked */
 
 #ifdef __cplusplus
 extern "C" {
@@ -80,10 +81,18 @@ typedef enum {
 } radar_mode_t;
 
 /* Small-string budgets, transcribed from the spec sketch's field widths
- * (name[16], dist_str[12], age_str[12], clock_str[6]). */
+ * (name[16], dist_str[12], age_str[12], clock_str[6]) — clock_str widened
+ * past the sketch's original 6 by the S21 clock-format amendment: the
+ * default 12-hour form's am/pm suffix ("12:59 pm") no longer fits 6 bytes.
+ * FF_RADAR_CLOCK_LEN == FF_WALL_CLOCK_STR_LEN (ff_wall.h), the same budget
+ * `ff_fmt_clock` documents itself against; kept as its own named constant
+ * (not a wall.h dependency) matching this header's own "spec sketch field
+ * widths" convention for the other three. */
 #define FF_RADAR_NAME_LEN  16
 #define FF_RADAR_STR_LEN   12
-#define FF_RADAR_CLOCK_LEN 6
+#define FF_RADAR_CLOCK_LEN 9
+_Static_assert(FF_RADAR_CLOCK_LEN == FF_WALL_CLOCK_STR_LEN,
+               "clock_str's budget has drifted from ff_fmt_clock's own documented worst case");
 
 /** One crew-ring dot: a paired member's heading-relative bearing. */
 typedef struct {

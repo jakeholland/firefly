@@ -202,4 +202,27 @@ c (pack-derived window, shell boundary + `ff_wall` window-as-input). All pure/co
 are precision/robustness and can follow in either order.
 
 ## Amendments
-(none yet)
+
+**2026-09-02 — display format: `ff_fmt_clock` (S21 amendment).** This spec
+resolves *when* the wall clock is allowed to change; the *display* of the
+resolved minute-of-day was, until now, an ad hoc "HH:MM" formatter living in
+the shell (`shell_project_clock_str`, app/ff_shell.c) — not core logic, and
+not settable. S21's clock-format ask moved the formatter into core as a pure
+function, `ff_fmt_clock(buf, n, minute_of_day, valid, clock_24h)`
+(`firmware/core/include/ff_wall.h` / `ff_wall.c`), alongside the rest of this
+module's minute-of-day math:
+- `clock_24h == false` (the new default): 12-hour, no leading zero on the
+  hour, lowercase am/pm suffix — `"9:46 pm"`, `"12:00 am"` (midnight).
+- `clock_24h == true`: 24-hour, unchanged from the pre-amendment format —
+  `"21:46"`.
+- `valid == false` (i.e. `w.src == FF_WALL_UNKNOWN`) still writes `""`,
+  unchanged: the screen renders that as `"--:--"`, never an invented time —
+  this spec's honesty rule is untouched by the format choice.
+
+The flag lives in `ff_settings_t.clock_24h` (S11/`ff_settings.h`, format
+version bumped to 7) and is surfaced as a Settings CLOCK row
+(docs/specs/S21-settings-rework.md). `clock_str`'s buffer budget
+(`FF_RADAR_CLOCK_LEN`, `ff_radar.h`) grew from 6 to 9 bytes to fit the
+12-hour form's am/pm suffix (`FF_WALL_CLOCK_STR_LEN`, statically asserted
+equal). No change to the trust/latch/window logic in this spec — this
+amendment is display-only.

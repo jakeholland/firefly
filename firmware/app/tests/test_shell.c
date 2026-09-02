@@ -1500,8 +1500,11 @@ static void S16_b1_wall_is_unknown_until_a_plausible_timestamp_arrives(void)
     TEST_ASSERT_EQUAL_INT16(1320, w.now_min);
     TEST_ASSERT_EQUAL_UINT16(261, w.day_doy);
 
+    /* S21 amendment: default is 12-hour, so 22:00 local renders "10:00 pm"
+     * (ff_fmt_clock, ff_wall.h) — not the bare 24-hour "22:00" this test
+     * pinned before the clock-format setting existed. */
     ff_shell_tick(&H.shell, H.clk.t);
-    TEST_ASSERT_EQUAL_STRING("22:00", ff_shell_view(&H.shell)->radar.clock_str);
+    TEST_ASSERT_EQUAL_STRING("10:00 pm", ff_shell_view(&H.shell)->radar.clock_str);
 }
 
 static void S16_b1_positions_are_never_stamped_from_the_local_clock(void)
@@ -2082,8 +2085,8 @@ static void S16_b1_now_projection_needs_both_a_pack_and_a_known_clock(void)
     /* Nothing is starred, so there is no honest "next". */
     TEST_ASSERT_FALSE(n->next.valid);
 
-    /* And the clock now renders. */
-    TEST_ASSERT_EQUAL_STRING("22:00", ff_shell_view(&H.shell)->radar.clock_str);
+    /* And the clock now renders — 12-hour by default (S21 amendment). */
+    TEST_ASSERT_EQUAL_STRING("10:00 pm", ff_shell_view(&H.shell)->radar.clock_str);
 }
 
 /* Issue #48 — the narrowed-back-down half of the ruling: with NO pack

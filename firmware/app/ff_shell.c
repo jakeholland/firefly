@@ -1463,6 +1463,8 @@ static void shell_project_settings(shell_t const *sh, ff_app_settings_t *out)
     /* #100: brightness percent, projected verbatim (already clamped on write
      * — see shell_setting_set). */
     out->brightness_pct = sh->settings.brightness_pct;
+    /* S21 amendment — the CLOCK 12H|24H toggle, projected verbatim. */
+    out->clock_24h = sh->settings.clock_24h;
 }
 
 /**
@@ -1549,24 +1551,18 @@ static void shell_project_map(shell_t const *sh, ff_app_map_t *out)
     out->you_heading_deg = out->you_heading_valid ? sh->heading_deg : 0.0f;
 }
 
-/** "HH:MM", or "" when the puck does not know what time it is.
- *  scr_radar renders an empty clock_str as "--:--" — an explicit
- *  unknown, never an invented time. */
-static void shell_project_clock_str(ff_wall_t w, char *buf, size_t n)
+/** "H:MM am/pm" (12h, default) or "HH:MM" (24h, `ff_settings_t.clock_24h`),
+ *  or "" when the puck does not know what time it is. scr_radar/
+ *  scr_launcher render an empty clock_str as "--:--" — an explicit
+ *  unknown, never an invented time.
+ *
+ * The FORMAT itself is pure core logic (`ff_fmt_clock`, ff_wall.h — S21's
+ * clock-format amendment / S18's "display format"); this is the thin
+ * shell-side wiring that picks the 24h flag off settings and the
+ * minute-of-day off the resolved wall clock. */
+static void shell_project_clock_str(ff_wall_t w, bool clock_24h, char *buf, size_t n)
 {
-    if (n == 0) return;
-    buf[0] = '\0';
-    if (w.src == FF_WALL_UNKNOWN || n < 6u) return;
-
-    int const minute_of_day = (int)(((w.now_min % 1440) + 1440) % 1440);
-    int const hh = minute_of_day / 60;
-    int const mm = minute_of_day % 60;
-    buf[0] = (char)('0' + (hh / 10));
-    buf[1] = (char)('0' + (hh % 10));
-    buf[2] = ':';
-    buf[3] = (char)('0' + (mm / 10));
-    buf[4] = (char)('0' + (mm % 10));
-    buf[5] = '\0';
+    ff_fmt_clock(buf, n, w.now_min, w.src != FF_WALL_UNKNOWN, clock_24h);
 }
 
 static void shell_project(shell_t *sh, uint32_t now_ms)
@@ -1608,7 +1604,7 @@ static void shell_project(shell_t *sh, uint32_t now_ms)
     /* ff_radar_compute deliberately does not write these three — they
      * come from the RTC, the battery ADC and the mesh link, none of which
      * are its inputs (see ff_radar.h's deviation note). */
-    shell_project_clock_str(wall, sh->view.radar.clock_str, sizeof(sh->view.radar.clock_str));
+    shell_project_clock_str(wall, sh->settings.clock_24h, sh->view.radar.clock_str, sizeof(sh->view.radar.clock_str));
     sh->view.radar.batt_pct = -1; /* no battery ADC on either target yet: honestly unknown */
     sh->view.radar.mesh_ok = (sh->link == FF_SHELL_LINK_CONNECTED);
 
@@ -2674,6 +2670,8 @@ static void shell_project_rally(shell_t *sh, ff_app_rally_t *out)
  *     seam and chooses to bound rather than refuse an overlong name).
  *   - FF_SETTING_COLORBLIND (S17 slice a): bool-backed, same "nonzero is
  *     true" convention as IMPERIAL/HAPTICS/NIGHT_GLOW — no range to reject.
+ *   - FF_SETTING_CLOCK_24H (S21 amendment): bool-backed, same convention —
+ *     no range to reject.
  *
  * Persisted on CHANGE ONLY (S16 "Behavior": "saved on change, never
  * every tick") — every branch below compares the OLD value before
@@ -2718,6 +2716,15 @@ static void shell_setting_set(shell_t *sh, ff_intent_t const *in)
         bool const v = (in->u.setting.v.i != 0);
         changed = (s->colorblind != v);
         s->colorblind = v;
+        break;
+    }
+    case FF_SETTING_CLOCK_24H: {
+        /* S21 amendment — the Settings CLOCK row. Bool-backed, same
+         * "nonzero is true" convention as IMPERIAL/HAPTICS/NIGHT_GLOW/
+         * COLORBLIND above — no range to reject. */
+        bool const v = (in->u.setting.v.i != 0);
+        changed = (s->clock_24h != v);
+        s->clock_24h = v;
         break;
     }
     case FF_SETTING_BRIGHTNESS: {

@@ -1,0 +1,11 @@
+{
+  "fixture": "settings_clock_24h",
+  "face": "launcher",
+  "radar": {
+    "clock_str": "21:46",
+    "batt_pct": 74
+  },
+  "settings": {
+    "clock_24h": true
+  }
+}

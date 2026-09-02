@@ -126,6 +126,10 @@ static void ff_assert_defaults(ff_settings_t const *s)
     ff_geo_cal_t zero_cal;
     memset(&zero_cal, 0, sizeof(zero_cal));
     TEST_ASSERT_EQUAL_MEMORY(&zero_cal, &s->compass_cal, sizeof(ff_geo_cal_t));
+
+    /* S21 amendment: default is 12-hour (the design vocabulary's mockup
+     * form, e.g. "9:46 pm"), not 24-hour. */
+    TEST_ASSERT_FALSE(s->clock_24h);
 }
 
 static void S11_AC1_load_with_empty_store_yields_exact_defaults(void)
@@ -315,6 +319,162 @@ static void S11_AC1_load_with_v4_blob_yields_defaults_not_a_migration(void)
     TEST_ASSERT_EQUAL_FLOAT(1.0f, s.touch_ax);
 }
 
+/* v5-or-older still rejects outright (S21 amendment's v7 forward-migrates
+ * ONLY v6 — see ff_settings.c's v7 comment for why the cutoff is exactly
+ * there: v6 is the layout the real NVS store, S21 §4, actually shipped
+ * with; anything older pre-dates that store entirely, so no fielded
+ * device holds one and there is nothing genuine to preserve). Same
+ * reject-not-migrate shape as the v2/v3/v4 tests above, one version
+ * closer to the new v6 boundary — the case most likely to accidentally
+ * slip through the v6-migration branch if its size/version guard were
+ * ever loosened. */
+static void S11_AC1_load_with_v5_blob_yields_defaults_not_a_migration(void)
+{
+    mock_store_io_t m;
+    mock_store_reset(&m);
+    ff_store_t st = mock_store_vtable(&m);
+
+    ff_settings_t saved;
+    memset(&saved, 0, sizeof(saved));
+    saved.imperial = false;
+    saved.water_min = 45;
+    saved.touch_calibrated = true;
+    saved.touch_ax = 1.0123f; /* a value distinct from the identity default, to prove it's not carried across */
+    ff_settings_save(&saved, &st);
+    TEST_ASSERT_TRUE(m.has_value);
+
+    uint16_t v5 = 5;
+    memcpy(m.data + 4, &v5, sizeof(v5));
+
+    ff_settings_t s;
+    memset(&s, 0xAA, sizeof(s));
+    ff_settings_load(&s, &st);
+
+    ff_assert_defaults(&s);
+    TEST_ASSERT_EQUAL_FLOAT(1.0f, s.touch_ax); /* discarded, not carried across */
+}
+
+/* v6 -> v7 FORWARD MIGRATION (S21 amendment, reviewer finding on the first
+ * version of this PR): unlike every earlier bump, a v6 blob is NOT
+ * discarded — S21 §4's real NVS store means fielded pucks hold a genuine
+ * v6 blob today (brightness, touch calibration, unit preference, ...),
+ * and this repo's own honest-data ruling ("a settings change must never
+ * silently wipe a unit's stored calibration") applies. Builds a hand-made
+ * v6-SHAPED blob (own local mirror of the frozen ff_settings_v6_t layout
+ * — see ff_settings.c) with every field set to a real, non-default value,
+ * loads it under v7, and asserts EVERY ONE of those values survives, plus
+ * the field v6 never had (clock_24h) lands at its honest default. */
+static void S21_v6_blob_forward_migrates_preserving_every_value(void)
+{
+    mock_store_io_t m;
+    mock_store_reset(&m);
+    ff_store_t st = mock_store_vtable(&m);
+
+    /* Establish a real header (correct magic) via the actual save() path —
+     * same "don't hardcode the encoding" technique the wrong-version test
+     * above uses — then overwrite version/payload_size and replace the
+     * payload with a v6-SIZED (not v7-sized) one, exactly matching what a
+     * real v6 firmware actually wrote to NVS. */
+    ff_settings_t seed;
+    memset(&seed, 0, sizeof(seed));
+    ff_settings_save(&seed, &st);
+    TEST_ASSERT_TRUE(m.has_value);
+
+    /* Independently declared here (not shared with ff_settings.c's private
+     * ff_settings_v6_t) — a byte-for-byte mirror of that frozen v6 layout,
+     * so a migration bug in EITHER copy is caught by comparing this test's
+     * expectations against the production loader's real behavior, rather
+     * than both silently drifting the same wrong way together. */
+    typedef struct {
+        bool imperial;
+        uint8_t share_mode;
+        bool haptics;
+        bool night_glow;
+        uint16_t water_min;
+        uint16_t quiet_from_min;
+        uint16_t quiet_to_min;
+        int16_t utc_offset_min;
+        bool utc_offset_set;
+        bool colorblind;
+        uint8_t brightness_pct;
+        char my_name[FF_SETTINGS_NAME_LEN];
+        ff_geo_cal_t compass_cal;
+        bool cal_valid;
+        float touch_ax;
+        float touch_bx;
+        float touch_ay;
+        float touch_by;
+        bool touch_calibrated;
+    } v6_mirror_t;
+
+    v6_mirror_t v6;
+    memset(&v6, 0, sizeof(v6));
+    v6.imperial = true; /* units: imperial */
+    v6.share_mode = FF_SHARE_GHOST;
+    v6.haptics = false;
+    v6.night_glow = false;
+    v6.water_min = 45;         /* != the 90 default */
+    v6.quiet_from_min = 120;
+    v6.quiet_to_min = 480;
+    v6.utc_offset_min = -420;
+    v6.utc_offset_set = true;
+    v6.colorblind = true;
+    v6.brightness_pct = 35;    /* != FF_BRIGHTNESS_DEFAULT_PCT */
+    strncpy(v6.my_name, "Dana", sizeof(v6.my_name) - 1);
+    v6.compass_cal.hard_offset = (ff_vec3_t){12.5f, -3.25f, 0.75f};
+    v6.compass_cal.soft_scale[0] = 1.04f;
+    v6.compass_cal.soft_scale[1] = 0.97f;
+    v6.compass_cal.soft_scale[2] = 1.11f;
+    v6.compass_cal.declination_deg = -6.5f;
+    v6.cal_valid = true;
+    v6.touch_calibrated = true; /* a real, calibrated unit */
+    v6.touch_ax = 1.0123f;      /* non-identity affine */
+    v6.touch_bx = -14.0f;
+    v6.touch_ay = 1.0087f;
+    v6.touch_by = -18.5f;
+
+    /* Header layout: magic(4) | version(2) | payload_size(2) — see the
+     * wrong-version test above. Overwrite version -> 6 and payload_size ->
+     * this v6-shaped payload's own size, then replace the payload bytes,
+     * and SHRINK the mock store's recorded length to match — a real v6 NVS
+     * record was genuinely shorter than a v7 one (this is the "a v6 blob
+     * is a strict byte-prefix of v7" fact the migration relies on). */
+    uint16_t const v6_version = 6;
+    memcpy(m.data + 4, &v6_version, sizeof(v6_version));
+    uint16_t const v6_payload_size = (uint16_t)sizeof(v6);
+    memcpy(m.data + 6, &v6_payload_size, sizeof(v6_payload_size));
+    memcpy(m.data + 8, &v6, sizeof(v6));
+    m.len = 8 + sizeof(v6);
+
+    ff_settings_t s;
+    memset(&s, 0xAA, sizeof(s));
+    ff_settings_load(&s, &st);
+
+    /* Every v6 value survives... */
+    TEST_ASSERT_TRUE(s.imperial);
+    TEST_ASSERT_EQUAL_UINT8(FF_SHARE_GHOST, s.share_mode);
+    TEST_ASSERT_FALSE(s.haptics);
+    TEST_ASSERT_FALSE(s.night_glow);
+    TEST_ASSERT_EQUAL_UINT16(45, s.water_min);
+    TEST_ASSERT_EQUAL_UINT16(120, s.quiet_from_min);
+    TEST_ASSERT_EQUAL_UINT16(480, s.quiet_to_min);
+    TEST_ASSERT_EQUAL_INT16(-420, s.utc_offset_min);
+    TEST_ASSERT_TRUE(s.utc_offset_set);
+    TEST_ASSERT_TRUE(s.colorblind);
+    TEST_ASSERT_EQUAL_UINT8(35, s.brightness_pct);
+    TEST_ASSERT_EQUAL_STRING("Dana", s.my_name);
+    TEST_ASSERT_TRUE(s.cal_valid);
+    TEST_ASSERT_EQUAL_MEMORY(&v6.compass_cal, &s.compass_cal, sizeof(ff_geo_cal_t));
+    TEST_ASSERT_TRUE(s.touch_calibrated);
+    TEST_ASSERT_EQUAL_FLOAT(1.0123f, s.touch_ax);
+    TEST_ASSERT_EQUAL_FLOAT(-14.0f, s.touch_bx);
+    TEST_ASSERT_EQUAL_FLOAT(1.0087f, s.touch_ay);
+    TEST_ASSERT_EQUAL_FLOAT(-18.5f, s.touch_by);
+
+    /* ...and the one field v6 never had lands at its honest default. */
+    TEST_ASSERT_FALSE(s.clock_24h);
+}
+
 /* ---------------------------------------------------------------------
  * AC2 — round-trip save/load equality, including calibration.
  * ------------------------------------------------------------------- */
@@ -338,6 +498,7 @@ static void S11_AC2_round_trip_save_load_is_exact_including_calibration(void)
     out.utc_offset_set = true;
     out.colorblind = true; /* S17 slice a: a real change from the default, not left at its zero value */
     out.brightness_pct = 55; /* #100: a real change from the default, so the round-trip actually proves it persists */
+    out.clock_24h = true; /* S21 amendment: a real change from the default, not left at its zero value */
     strncpy(out.my_name, "Dana", sizeof(out.my_name) - 1);
     out.cal_valid = true;
     out.compass_cal.hard_offset = (ff_vec3_t){12.5f, -3.25f, 0.75f};
@@ -583,6 +744,8 @@ int main(void)
     RUN_TEST(S11_AC1_load_with_v2_blob_yields_defaults_not_a_migration);
     RUN_TEST(S11_AC1_load_with_v3_blob_yields_defaults_not_a_migration);
     RUN_TEST(S11_AC1_load_with_v4_blob_yields_defaults_not_a_migration);
+    RUN_TEST(S11_AC1_load_with_v5_blob_yields_defaults_not_a_migration);
+    RUN_TEST(S21_v6_blob_forward_migrates_preserving_every_value);
 
     RUN_TEST(S11_AC2_round_trip_save_load_is_exact_including_calibration);
     RUN_TEST(S11_AC2_round_trip_preserves_exact_defaults);

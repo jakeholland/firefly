@@ -968,6 +968,9 @@ static ff_fixture_result_t fx_parse_settings(fx_ctx_t const *c, int obj_i, ff_ap
     s->brightness_pct = FF_BRIGHTNESS_DEFAULT_PCT;
     if (fx_obj_get(c, obj_i, "brightness_pct", &t))
         s->brightness_pct = (uint8_t)fx_num(c, t, (double)FF_BRIGHTNESS_DEFAULT_PCT);
+    /* S21 amendment: the CLOCK 12H|24H toggle. Omitted -> false (12-hour),
+     * the memset(0) default, same as a fresh puck. */
+    if (fx_obj_get(c, obj_i, "clock_24h", &t)) s->clock_24h = fx_bool(c, t, false);
     return FF_FIXTURE_OK;
 }
 
@@ -1800,6 +1803,7 @@ int ff_fixture_dump_json(ff_app_state_t const *s, char *buf, size_t buf_sz)
     fw_fmt(&w, ",\"utc_offset_min\":%d", (int)s->settings.utc_offset_min);
     fw_raw(&w, s->settings.colorblind ? ",\"colorblind\":true" : ",\"colorblind\":false"); /* S17 slice a */
     fw_fmt(&w, ",\"brightness_pct\":%u", (unsigned)s->settings.brightness_pct); /* #100 */
+    fw_raw(&w, s->settings.clock_24h ? ",\"clock_24h\":true" : ",\"clock_24h\":false"); /* S21 amendment */
     fw_raw(&w, "}");
 
     /* map (S09) — field-for-field mirror of fx_parse_map so a dump

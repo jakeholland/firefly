@@ -137,6 +137,16 @@ typedef struct {
     float touch_ay;
     float touch_by;
     bool touch_calibrated;
+
+    /* [api] S21 amendment (clock-format setting) — the Settings CLOCK
+     * row's 12H|24H toggle. Read by the wall-clock formatter
+     * (`ff_fmt_clock`, ff_wall.h) via the app-shell projection (S18's
+     * `clock_str`). Default FALSE — 12-hour with a lowercase am/pm
+     * suffix (e.g. "9:46 pm"), the design vocabulary's mockup form —
+     * true switches to 24-hour ("21:46", no suffix). Purely a
+     * render-time format selector; it changes no other behavior (the
+     * underlying wall-clock minute-of-day is unaffected either way). */
+    bool clock_24h;
 } ff_settings_t;
 
 /* ff_geo_cal_t must fit the persisted-layout budget above — a layout

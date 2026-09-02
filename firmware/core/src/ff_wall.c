@@ -1,6 +1,7 @@
 #include "ff_wall.h"
 
 #include <stddef.h> /* NULL */
+#include <stdio.h>  /* snprintf — ff_fmt_clock, same as ff_crew.c's ff_fmt_distance/ff_fmt_age */
 
 /* S16 slice b0 — wall-clock derivation. See ff_wall.h for the placement
  * rationale, the honesty rule, and the three time bases. Pure integer
@@ -409,4 +410,41 @@ ff_wall_t ff_wall_now(ff_wall_state_t const *st, uint32_t now_ms, ff_wall_offset
     w.now_min = now_min;
     w.offset_assumed = assumed;
     return w;
+}
+
+/* ---------------------------------------------------------------------
+ * Formatting — see ff_wall.h's doc comment for the exact contract.
+ * ------------------------------------------------------------------- */
+
+void ff_fmt_clock(char *buf, size_t n, int32_t minute_of_day, bool valid, bool clock_24h)
+{
+    if (buf == NULL || n == 0) {
+        return;
+    }
+    buf[0] = '\0';
+    if (!valid) {
+        return; /* honest "unknown": empty string, never an invented time */
+    }
+
+    int32_t norm = minute_of_day % 1440;
+    if (norm < 0) {
+        norm += 1440;
+    }
+    int const hh = (int)(norm / 60);
+    int const mm = (int)(norm % 60);
+
+    if (clock_24h) {
+        snprintf(buf, n, "%02d:%02d", hh, mm);
+        return;
+    }
+
+    /* 12-hour: hour-of-day 0 and 12 both display as "12"; 1..11 as-is;
+     * 13..23 as hour-12. No leading zero on the hour (design vocabulary:
+     * "9:46", not "09:46"). */
+    int h12 = hh % 12;
+    if (h12 == 0) {
+        h12 = 12;
+    }
+    char const *ap = (hh < 12) ? "am" : "pm";
+    snprintf(buf, n, "%d:%02d %s", h12, mm, ap);
 }
