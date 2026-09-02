@@ -4702,6 +4702,50 @@ static void S26_AC3_paired_message_pushes_banner(void)
  * banner (the S22 stranger rule), even though ff_wiring still notes them
  * as heard. Proxy check: DANA is deliberately never paired here, so a
  * banner appearing would prove the gate is missing, not merely untested. */
+/* S26 (c)+(d) wake hook — a pushed BANNER must light a dim/off screen.
+ * The DECISION lives in the shell beside the push (ff_shell_take_wake pulses
+ * true); the ff_idle owner only forwards it. One-shot: true exactly once,
+ * then false until the next banner; several pushes in one tick collapse to
+ * one true. Proxy check: an unpaired sender pushes no banner, so it must
+ * also raise no wake — a wake without a banner would prove the pulse is
+ * wired to the wrong event. */
+static void S26_wake_pulse_true_once_after_banner_then_clear(void)
+{
+    harness_init(100000u, false);
+    inject_my_info(MY_ID);
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, true));
+    inject_node(DANA, "DANA", U_EVENING);
+
+    TEST_ASSERT_FALSE(ff_shell_take_wake(&H.shell)); /* nothing yet */
+
+    inject_text(DANA, "you close?");
+    (void)ff_shell_tick(&H.shell, H.clk.t);
+    TEST_ASSERT_TRUE(ff_shell_view(&H.shell)->banner.active);
+
+    TEST_ASSERT_TRUE(ff_shell_take_wake(&H.shell));  /* exactly once */
+    TEST_ASSERT_FALSE(ff_shell_take_wake(&H.shell)); /* cleared on read */
+
+    /* Two banners between takes collapse to one pulse. */
+    inject_text(DANA, "still there?");
+    inject_text(DANA, "??");
+    (void)ff_shell_tick(&H.shell, H.clk.t);
+    TEST_ASSERT_TRUE(ff_shell_take_wake(&H.shell));
+    TEST_ASSERT_FALSE(ff_shell_take_wake(&H.shell));
+}
+
+static void S26_wake_pulse_not_raised_by_unpaired_sender_or_null(void)
+{
+    harness_init(100000u, false);
+    inject_my_info(MY_ID);
+    /* DANA never paired: no banner (S22 stranger rule) => no wake either. */
+    inject_text(DANA, "you close?");
+    (void)ff_shell_tick(&H.shell, H.clk.t);
+    TEST_ASSERT_FALSE(ff_shell_view(&H.shell)->banner.active);
+    TEST_ASSERT_FALSE(ff_shell_take_wake(&H.shell));
+
+    TEST_ASSERT_FALSE(ff_shell_take_wake(NULL)); /* NULL-safe */
+}
+
 static void S26_AC3_unpaired_message_pushes_no_banner(void)
 {
     harness_init(100000u, false);
@@ -5589,6 +5633,8 @@ int main(void)
 
     /* S26 slice d — ff_notify + message banner. */
     RUN_TEST(S26_AC3_paired_message_pushes_banner);
+    RUN_TEST(S26_wake_pulse_true_once_after_banner_then_clear);
+    RUN_TEST(S26_wake_pulse_not_raised_by_unpaired_sender_or_null);
     RUN_TEST(S26_AC3_unpaired_message_pushes_no_banner);
     RUN_TEST(S26_AC3_paired_rally_pushes_banner);
     RUN_TEST(S26_AC3_unpaired_rally_pushes_no_banner);

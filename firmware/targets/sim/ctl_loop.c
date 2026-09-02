@@ -216,6 +216,9 @@ void ff_ctl_loop_pump(ff_ctl_loop_ctx_t *ctx)
 
     uint32_t const now_ms = ff_ctl_loop_tick_cb();
     bool const dirty = ff_shell_tick(ctx->shell, now_ms);
+    if (ff_shell_take_wake(ctx->shell)) { /* S26(c)+(d) banner wakes the screen — see app_main */
+        ff_idle_input(&ctx->idle, now_ms);
+    }
     ctx->state = *ff_shell_view(ctx->shell);
 
     /* S26 slice c — the sim's own AC3 harness mirrors app_main.c's

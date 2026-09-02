@@ -709,6 +709,12 @@ void app_main(void)
         }
 
         bool const dirty = ff_shell_tick(&s_shell, now_ms);
+        /* S26(c)+(d) — a pushed banner wakes a dim/off screen. Mechanical
+         * forward of the shell's decision (ff_shell_take_wake); the idle
+         * FSM then re-pins ACTIVE exactly as a touch would. */
+        if (ff_shell_take_wake(&s_shell)) {
+            ff_idle_input(&s_idle, now_ms);
+        }
         ff_app_state_t const *v = ff_shell_view(&s_shell);
 
         /* S26 slice c — the idle decision itself: ticked every frame
