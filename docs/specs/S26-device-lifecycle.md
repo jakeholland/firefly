@@ -237,6 +237,29 @@ line one). Field and demo builds identical.
   timestamps on glass).
 - **AC2** Splash golden; no change to the first-face golden.
 
+**AMENDED 2026-09-02 — "can the boot animation be the flare animation?"**
+The first cut of this splash (PR #139) drew a plain breathing amber dot as a
+deliberately simplified stand-in for "the firefly mark," reasoning that
+plotting rotated ray geometry in the raw pre-LVGL draw path wasn't worth the
+complexity for a splash on screen well under 1.1 s. The maintainer's
+follow-up ask, after seeing it on glass, was direct: the splash should be
+the actual flare mark — the same 8-ray burst + center dot
+`app/screens/scr_flare.c`'s flare takeover screen breathes (`ff_theme`
+amber, `flare_build_mark`), not an abstracted dot. Implemented in the same
+PR that added this amendment: `ff_display_draw_boot_splash`
+(`targets/esp32s3/components/ff_display/ff_display.c`) now rasterizes the
+mark procedurally (per-pixel capsule test against each ray segment plus the
+center dot — no LVGL, no anti-aliasing) from `core/include/ff_flare_mark.h`,
+a new core-free, LVGL-free header holding the ray count, the per-ray length
+fractions, the dot radius, and the stroke width — the exact values
+`scr_flare.c` already drew with, moved to one shared table so `scr_flare.c`
+and the splash cannot draw two different shapes. The breathe ramp
+(`kFadeSteps`, `FF_SPLASH_STEP_MS`, `FF_SPLASH_HOLD_MS`) and the ~1.1 s
+total budget are unchanged by this amendment — only the per-pixel shape
+test (mark vs. circle) changed. The mark is centered on the panel rather
+than at `scr_flare.c`'s off-center `FLARE_MARK_CY` (this splash has no
+headline/buttons competing for space).
+
 ## Sequencing
 
 (a) and (b) in parallel (a touches `festpack` + one `app_main` call; b

@@ -18,8 +18,10 @@
  */
 #include "ff_display.h"
 
+#include <math.h> /* sqrtf — the boot splash's ray-unit-vector precompute, ff_display_draw_boot_splash */
 #include <string.h>
 
+#include "ff_flare_mark.h" /* S26g — shared flare-mark geometry table; see that header's doc comment */
 #include "ff_touchcal.h"
 
 #include "driver/gpio.h"
@@ -94,9 +96,10 @@ static const char *TAG = "ff_display";
  * (mirroring core's FF_BRIGHTNESS_MIN_PCT/_MAX_PCT, ff_settings.h) are now
  * PUBLIC (ff_display.h, S26 slice c) rather than local literals, so
  * app_main's DIM enact shares this exact constant instead of a second copy
- * that could drift from it — this device HAL still gains no core/ include
- * (its header comment: "NONE of this touches core/ or app/"); the value is
- * just no longer duplicated. The floor is a DEFENSIVE second clamp: the
+ * that could drift from it — this device HAL still touches no core/
+ * DOMAIN STATE (ff_display.h's updated header comment draws that line
+ * precisely, as of S26g); the value is just no longer duplicated. The
+ * floor is a DEFENSIVE second clamp: the
  * shell already clamps the setting to the same range, but the HAL never
  * trusts a caller to have done so — a 0% duty via ff_display_set_brightness
  * is a black, unrecoverable backlight, so that path can never program one.
@@ -477,15 +480,93 @@ esp_err_t ff_display_draw_test_pattern(void)
 }
 
 /* =====================================================================
- * S26 slice (g) — boot splash: a simple centered amber dot breathing
- * once against the theme background, drawn RAW (no LVGL) so it is the
- * very first thing on glass. Reuses the exact band-buffer /
- * draw_bitmap / byte-swap shape ff_display_draw_test_pattern established
- * just above (small INTERNAL-DMA band, 4-line-aligned, same
- * ff_rgb565_swap helper) rather than inventing a second draw path. See
- * ff_display_draw_boot_splash's doc comment (ff_display.h) for the
- * rationale and constraints.
- * ===================================================================== */
+ * S26 slice (g) — boot splash: the Firefly flare mark (the same 8-ray
+ * burst + center dot scr_flare.c's takeover screen breathes,
+ * core/include/ff_flare_mark.h) breathing once against the theme
+ * background, drawn RAW (no LVGL) so it is the very first thing on
+ * glass. Reuses the exact band-buffer / draw_bitmap / byte-swap shape
+ * ff_display_draw_test_pattern established just above (small
+ * INTERNAL-DMA band, 4-line-aligned, same ff_rgb565_swap helper) rather
+ * than inventing a second draw path. See ff_display_draw_boot_splash's
+ * doc comment (ff_display.h) for the rationale and constraints.
+ *
+ * flare_ray_t / flare_mark_pixel_hit below are this file's own raw
+ * rasterizer for the mark's geometry — there is no lv_line, no lv_obj,
+ * no anti-aliasing here, just a per-pixel capsule-vs-point test against
+ * the SAME ray table scr_flare.c's flare_build_mark draws with LVGL
+ * lines, so the two draw paths cannot silently drift into two different
+ * shapes (S26g: "can the boot animation be the flare animation?").
+ *
+ * PERFORMANCE (independent review, PR #146): the first cut here stored
+ * just the ray endpoint and tested every pixel against every ray with a
+ * per-pixel float DIVIDE (t = dot / len_sq) and no early-out, over the
+ * FULL 412px row width. Disassembly showed that divide wasn't inlined
+ * and ran ~2.97M times across the splash's 10 fade steps — ~1.25 s of
+ * ADDED compute on top of the existing FF_SPLASH_STEP_MS/HOLD_MS delays,
+ * roughly doubling the maintainer-approved ~1.1 s total. Fixed three
+ * ways: (1) below — each ray now precomputes a unit direction + length
+ * (once, outside the per-step loop), so the per-pixel projection is a
+ * dot product against a unit vector (t = px*ux + py*uy, clamped to
+ * [0,len]) — NO division at all; (2) each ray also precomputes its own
+ * axis-aligned bounding box (its own segment extent, expanded by the
+ * stroke half-width), so a pixel outside a ray's box skips that ray
+ * with four cheap comparisons instead of paying the full
+ * projection+distance math — most (pixel, ray) pairs in the strip fall
+ * outside the ray's own thin box; (3) see
+ * ff_display_draw_boot_splash's Pass 2 comment below — only the mark's
+ * own horizontal band of columns is rasterized at all now, not the
+ * full 412px row. Also added: the accumulated-raster-time log this
+ * review asked for, kept separate from the existing total-elapsed log
+ * so the maintainer can read compute-vs-delay apart on glass. */
+typedef struct {
+    float ux, uy;  /* unit direction of the ray, pointing away from center */
+    float len;     /* ray length, pixels (== |(ex,ey)|) — the projection clamp bound */
+    float min_x, max_x, min_y, max_y; /* AABB of the STROKE (segment extent +/- half_w), mark-center-relative */
+} flare_ray_t;
+
+/* True if point (px,py) — pixel offset from the mark's center — falls
+ * inside the filled center dot (radius `dot_r_sq`, already squared) or
+ * within `half_w_sq` (half the stroke width, squared) of the nearest
+ * point on any of the 8 ray segments in `rays`. The segment test is the
+ * standard point-to-segment distance, but projected via a precomputed
+ * UNIT direction (t = px*ux + py*uy, clamped to [0, len]) rather than
+ * dividing by the segment's length-squared per pixel — see the struct's
+ * doc comment above. Clamping t is what gives the ray a ROUNDED cap at
+ * both ends for free, matching `lv_obj_set_style_line_rounded(line,
+ * true, 0)` in scr_flare.c without needing LVGL's rasterizer here.
+ * `static inline`: this is the hot loop (called once per strip pixel,
+ * up to 8 times each) and the checked-in device build is -Og — the
+ * algorithmic fixes above (no divide, AABB reject, narrower strip) are
+ * what make this cheap, not reliance on -O2-grade auto-inlining, but
+ * `inline` still gives the compiler the option at this call count. */
+static inline bool flare_mark_pixel_hit(float px, float py, flare_ray_t const rays[FF_FLARE_MARK_N_RAYS],
+                                         float dot_r_sq, float half_w_sq)
+{
+    if (px * px + py * py <= dot_r_sq) {
+        return true;
+    }
+    for (int i = 0; i < FF_FLARE_MARK_N_RAYS; i++) {
+        flare_ray_t const *r = &rays[i];
+        /* AABB reject FIRST: four cheap comparisons that skip the
+         * projection math entirely for a pixel outside this ray's own
+         * stroke extent — true for the large majority of (pixel, ray)
+         * pairs in the strip (the 8 boxes cover only a fraction of the
+         * strip's area between them — see the struct doc comment). */
+        if (px < r->min_x || px > r->max_x || py < r->min_y || py > r->max_y) {
+            continue;
+        }
+        float t = px * r->ux + py * r->uy; /* projection length onto the ray direction, no divide */
+        if (t < 0.0f) t = 0.0f;
+        if (t > r->len) t = r->len;
+        float const nx = px - t * r->ux;
+        float const ny = py - t * r->uy;
+        if (nx * nx + ny * ny <= half_w_sq) {
+            return true;
+        }
+    }
+    return false;
+}
+
 esp_err_t ff_display_draw_boot_splash(void)
 {
     if (s_panel == NULL) {
@@ -505,12 +586,16 @@ esp_err_t ff_display_draw_boot_splash(void)
 
     /* Theme background (#0B0B10 -> RGB565 0x0842) — see
      * FF_THEME_COLOR_BG, app/theme/ff_theme.h. Hardcoded rather than
-     * included: this file's header comment is explicit that NONE of
-     * targets/esp32s3 touches core/ or app/, and draw_test_pattern
-     * already establishes the same "value transcribed in a comment"
-     * convention for its own amber fill above. The amber accent itself
-     * (#FFC66B) is not a separate constant here — the per-step blend
-     * below reaches it exactly at its t=255 step (amber_r/g/b). */
+     * included: ff_theme.h is an app/ header that pulls in lvgl.h for its
+     * color macros, and this splash draws before LVGL exists — a
+     * different, still-live reason than core/ (ff_display.h's header
+     * comment now draws that line at "domain state", not "any header
+     * at all" — see S26g's ff_flare_mark.h include just above, which IS
+     * a core/ header this file now uses). draw_test_pattern already
+     * establishes the same "value transcribed in a comment" convention
+     * for its own amber fill above. The amber accent itself (#FFC66B) is
+     * not a separate constant here — the per-step blend below reaches it
+     * exactly at its t=255 step (amber_r/g/b). */
     const uint16_t bg = ff_rgb565_swap(0x0842);
 
     /* ---- Pass 1: wipe the whole panel to the theme background ----
@@ -533,28 +618,91 @@ esp_err_t ff_display_draw_boot_splash(void)
         }
     }
 
-    /* ---- Pass 2: breathe a centered amber dot ----
-     * A filled circle at the puck center (206,206), radius 48px. Only
-     * the vertical strip the circle occupies (4-line-aligned) is
-     * redrawn per step, not the full 412 rows — pass 1 already painted
-     * everything outside it, and re-touching untouched background every
-     * step would just be wasted SPI time against the < 1000 ms budget.
+    /* ---- Pass 2: breathe the flare mark ----
+     * Centered on the panel (206,206) — unlike the takeover screen's
+     * FLARE_MARK_CY offset above its headline/buttons, this splash has
+     * no other content to make room for. Ray geometry comes from
+     * ff_flare_mark_ray_offset (ff_flare_mark.h), computed once here
+     * (not per fade step — the SHAPE doesn't change, only the blend
+     * factor does) into a stack-local table: no static/.bss storage, the
+     * same "transient, freed on every path" contract this splash's band
+     * buffer already keeps.
+     *
+     * Only the square region the mark's rays can possibly reach — BOTH
+     * rows and columns, see the strip_top/strip_left computation below —
+     * is redrawn per step; pass 1 already painted everything outside it.
+     *
      * There is no real alpha compositing in a raw panel write, so
-     * "opacity" is faked by linearly blending each 8-bit channel between
-     * bg and amber per step — a symmetric ramp up then down (breathe,
-     * not a hold), matching the flare mark's own ease-style pulse in
-     * spirit (scr_flare.c's flare_anim_set_opa_cb) without needing LVGL's
-     * animator here. */
+     * "opacity" is faked exactly as the previous dot version did:
+     * linearly blending each 8-bit channel between bg and amber per
+     * step — a symmetric ramp up then down (breathe, not a hold),
+     * matching the flare mark's own ease-style pulse in spirit
+     * (scr_flare.c's flare_anim_set_opa_cb) without needing LVGL's
+     * animator here. Only the per-pixel SHAPE test changed (mark vs.
+     * circle); the ramp itself (kFadeSteps, FF_SPLASH_STEP_MS,
+     * FF_SPLASH_HOLD_MS below) is untouched. */
     const int cx = FF_LCD_H_RES / 2;
     const int cy = FF_LCD_V_RES / 2;
-    const int radius = 48;
-    const int radius_sq = radius * radius;
-    int strip_top = cy - radius;
-    int strip_bottom = cy + radius;
-    strip_top -= strip_top % BAND_LINES;                                    /* 4-line align, round down */
+
+    float const half_w = FF_FLARE_MARK_LINE_W_PX / 2.0f;
+    float const half_w_sq = half_w * half_w;
+    float const dot_r_sq = FF_FLARE_MARK_CENTER_R_PX * FF_FLARE_MARK_CENTER_R_PX;
+
+    /* Ray table: unit direction + length (the no-divide projection basis)
+     * plus each ray's own stroke AABB (the early-reject bound) — both
+     * PERFORMANCE fixes from the struct's doc comment above, computed
+     * once here per call, not per pixel or per fade step. sqrtf x8 is
+     * negligible next to what it replaces. */
+    flare_ray_t rays[FF_FLARE_MARK_N_RAYS];
+    for (int i = 0; i < FF_FLARE_MARK_N_RAYS; i++) {
+        float dx, dy;
+        ff_flare_mark_ray_offset(i, FF_FLARE_MARK_MAX_LEN_PX, &dx, &dy);
+        float const len = sqrtf(dx * dx + dy * dy);
+        rays[i].len = len;
+        rays[i].ux = (len > 0.0f) ? (dx / len) : 0.0f;
+        rays[i].uy = (len > 0.0f) ? (dy / len) : 0.0f;
+        /* AABB of the segment from (0,0) to (dx,dy), expanded by the
+         * stroke half-width on every side. */
+        float const seg_min_x = (dx < 0.0f) ? dx : 0.0f;
+        float const seg_max_x = (dx > 0.0f) ? dx : 0.0f;
+        float const seg_min_y = (dy < 0.0f) ? dy : 0.0f;
+        float const seg_max_y = (dy > 0.0f) ? dy : 0.0f;
+        rays[i].min_x = seg_min_x - half_w;
+        rays[i].max_x = seg_max_x + half_w;
+        rays[i].min_y = seg_min_y - half_w;
+        rays[i].max_y = seg_max_y + half_w;
+    }
+
+    /* Both the row STRIP (y) and, as of this review's FAIL 1, the column
+     * BAND (x) the mark's rays can possibly reach are bounded the same
+     * way: every ray's |dx| and |dy| is <= FF_FLARE_MARK_MAX_LEN_PX by
+     * construction (sin/cos are each <= 1), so a symmetric square of
+     * that reach (plus stroke half-width, plus a 1px rasterization
+     * safety margin — there is no anti-aliasing here) around the mark's
+     * center is a safe superset of the true bounding box on BOTH axes,
+     * without computing it exactly. Restricting x too (not just y) is
+     * the third performance fix: pass 1 already painted the background
+     * everywhere, so a full 412px row was always wasted work outside
+     * this ~90px band — both the per-pixel rasterization cost AND the
+     * SPI transfer per draw_bitmap call shrink with it. 4-px aligned on
+     * both axes, matching the SPD2010's documented GRAM window rule
+     * (see ff_display_invalidate_align_cb's comment below for the same
+     * rule applied to LVGL partial redraws). */
+    int const mark_reach = (int)(FF_FLARE_MARK_MAX_LEN_PX + half_w + 1.0f); /* +1: rasterization safety margin */
+    int strip_top = cy - mark_reach;
+    int strip_bottom = cy + mark_reach;
+    strip_top -= strip_top % BAND_LINES;                                    /* 4-px align, round down */
     strip_bottom += (BAND_LINES - (strip_bottom % BAND_LINES)) % BAND_LINES; /* round up */
     if (strip_top < 0) strip_top = 0;
     if (strip_bottom > FF_LCD_V_RES) strip_bottom = FF_LCD_V_RES;
+
+    int strip_left = cx - mark_reach;
+    int strip_right = cx + mark_reach;
+    strip_left -= strip_left % BAND_LINES;                                  /* 4-px align, round down */
+    strip_right += (BAND_LINES - (strip_right % BAND_LINES)) % BAND_LINES;  /* round up */
+    if (strip_left < 0) strip_left = 0;
+    if (strip_right > FF_LCD_H_RES) strip_right = FF_LCD_H_RES;
+    int const strip_w = strip_right - strip_left; /* <= FF_LCD_H_RES, so `band`'s existing capacity always fits it */
 
     /* 8-bit channel components (pre-swap, pre-RGB565-pack) for the blend. */
     const int bg_r = 0x0B, bg_g = 0x0B, bg_b = 0x10;
@@ -572,6 +720,16 @@ esp_err_t ff_display_draw_boot_splash(void)
     static const int kFadeSteps[] = {51, 102, 153, 204, 255, 204, 153, 102, 51, 0};
     enum { N_STEPS = sizeof(kFadeSteps) / sizeof(kFadeSteps[0]) };
 
+    /* Accumulated RASTER compute time only (the flare_mark_pixel_hit
+     * double loop below) — separate from the total elapsed time logged
+     * at the end, and excluding both the SPI draw_bitmap calls and the
+     * vTaskDelay ramp, so the maintainer can read compute-vs-delay apart
+     * on glass (independent review, PR #146 FAIL 1). Before the fixes in
+     * this same review round, this number would have read ~1.1-1.3s (a
+     * non-inlined per-pixel float divide, no early-out, over the full
+     * 412px row); after them it should be a few ms. */
+    int64_t raster_us = 0;
+
     for (int s = 0; s < N_STEPS; s++) {
         int const t = kFadeSteps[s];
         int const r = bg_r + ((amber_r - bg_r) * t) / 255;
@@ -581,16 +739,19 @@ esp_err_t ff_display_draw_boot_splash(void)
         uint16_t const blended = ff_rgb565_swap(natural);
 
         for (int y = strip_top; y < strip_bottom; y += BAND_LINES) {
+            int64_t const raster_start_us = esp_timer_get_time();
             for (int ly = 0; ly < BAND_LINES; ly++) {
                 int const py = y + ly;
-                int const dy = py - cy;
-                uint16_t *row = band + (size_t)ly * FF_LCD_H_RES;
-                for (int x = 0; x < FF_LCD_H_RES; x++) {
-                    int const dx = x - cx;
-                    row[x] = (dx * dx + dy * dy <= radius_sq) ? blended : bg;
+                float const fpy = (float)(py - cy);
+                uint16_t *row = band + (size_t)ly * strip_w;
+                for (int x = strip_left; x < strip_right; x++) {
+                    float const fpx = (float)(x - cx);
+                    row[x - strip_left] = flare_mark_pixel_hit(fpx, fpy, rays, dot_r_sq, half_w_sq) ? blended : bg;
                 }
             }
-            esp_err_t err = esp_lcd_panel_draw_bitmap(s_panel, 0, y, FF_LCD_H_RES, y + BAND_LINES, band);
+            raster_us += esp_timer_get_time() - raster_start_us;
+
+            esp_err_t err = esp_lcd_panel_draw_bitmap(s_panel, strip_left, y, strip_right, y + BAND_LINES, band);
             if (err != ESP_OK) {
                 ESP_LOGE(TAG, "boot splash: mark band y=%d draw_bitmap failed: %s", y, esp_err_to_name(err));
                 heap_caps_free(band);
@@ -605,8 +766,10 @@ esp_err_t ff_display_draw_boot_splash(void)
 
     heap_caps_free(band);
     int64_t const elapsed_us = esp_timer_get_time() - t_start_us;
-    ESP_LOGI(TAG, "S26g: boot splash complete, %lld ms (radius=%dpx, %d fade steps)",
-             (long long)(elapsed_us / 1000), radius, (int)N_STEPS);
+    ESP_LOGI(TAG, "S26g: boot splash complete, %lld ms total (%lld us raster compute, PR #146 FAIL 1 fix), "
+                  "8-ray flare mark, max_len=%dpx, %dx%dpx strip, %d fade steps",
+             (long long)(elapsed_us / 1000), (long long)raster_us, (int)FF_FLARE_MARK_MAX_LEN_PX, strip_w,
+             (strip_bottom - strip_top), (int)N_STEPS);
     return ESP_OK;
 }
 

@@ -14,9 +14,17 @@
  * so a dark screen still tells the maintainer how far it got — the whole
  * point of the staged bring-up.
  *
- * NONE of this touches core/ or app/: the screens consume ff_app_state_t
- * and emit ff_intent_t exactly as in the sim; this HAL only provides the
- * display they draw into and the pointer events they hit-test against.
+ * NONE of this touches core/ DOMAIN STATE or app/: the screens consume
+ * ff_app_state_t and emit ff_intent_t exactly as in the sim; this HAL only
+ * provides the display they draw into and the pointer events they
+ * hit-test against. This HAL DOES include a couple of core/ headers that
+ * are plain values with zero domain logic and zero LVGL types —
+ * ff_touchcal.h (the calibration math) and, as of S26g,
+ * ff_flare_mark.h (the flare mark's geometry table, shared with
+ * app/screens/scr_flare.c so the boot splash draws the identical mark —
+ * see ff_display_draw_boot_splash below and that header's own doc
+ * comment) — deliberately distinguished from "touches core/": neither
+ * reads or writes a single byte of live device state.
  */
 #ifndef FF_DISPLAY_H
 #define FF_DISPLAY_H
@@ -82,21 +90,31 @@ esp_err_t ff_display_draw_test_pattern(void);
  * ff_display_draw_test_pattern above — NO LVGL — so it is the earliest
  * possible content on glass, covering the reset pulses + LVGL init
  * latency that otherwise leave the screen black for a few hundred ms
- * (docs/specs/S26-device-lifecycle.md "(g) Boot animation"). Wipes the
- * panel to the theme background, then breathes a simple centered amber
- * dot (a deliberately simplified stand-in for the flare mark's 8-ray
- * burst, scr_flare.c — plotting rotated ray geometry in this raw
- * pre-LVGL path is not worth the complexity the spec waives: "a simple
- * centered glyph ... is enough") once, in and out, over well under
- * 1000 ms total. No text, no version, no "connecting" claim — honest
- * data: a static mark, nothing this splash cannot itself guarantee is
- * true yet.
+ * (docs/specs/S26-device-lifecycle.md "(g) Boot animation"; see that
+ * section's amendment for this change). Wipes the panel to the theme
+ * background, then breathes the actual Firefly flare mark — the same
+ * 8-ray burst + center dot app/screens/scr_flare.c's takeover screen
+ * draws with LVGL (flare_build_mark), rasterized procedurally here
+ * instead ("can the boot animation be the flare animation?" — S26g,
+ * 2026-09-02) since this path runs before LVGL exists. The ray
+ * count/lengths/angles, the dot radius, and the stroke width are the
+ * SAME table both draw sites read (core/include/ff_flare_mark.h), so
+ * the two cannot silently drift into two different shapes; only the
+ * color (amber, matching FF_THEME_COLOR_AMBER) is a value transcribed
+ * here rather than included, for the LVGL-coupling reason ff_display.c's
+ * own comment on the theme background gives. Centered on the panel
+ * (this splash has no headline/buttons to make room for, unlike the
+ * takeover screen). Once, in and out, over ~1.1 s total — the spec's
+ * timing budget (FF_SPLASH_STEP_MS/FF_SPLASH_HOLD_MS in ff_display.c).
+ * No text, no version, no "connecting" claim — honest data: a static
+ * mark, nothing this splash cannot itself guarantee is true yet.
  *
  * Requires ff_display_panel_init() first (same precondition as
  * ff_display_draw_test_pattern) and MUST be called before
  * ff_display_lvgl_start() — mixing this with LVGL running is undefined
  * (LVGL owns the panel writes once started). Draws from a small
- * INTERNAL-DMA band buffer that is allocated and freed within this
+ * INTERNAL-DMA band buffer AND the mark's ray-endpoint table into
+ * stack-local storage, both allocated/computed and released within this
  * call — never a static/.bss allocation, so this splash costs zero
  * bytes of internal DIRAM at rest.
  *

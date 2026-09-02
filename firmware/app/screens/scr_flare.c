@@ -3,9 +3,9 @@
  */
 #include "scr_flare.h"
 
-#include <math.h>
 #include <stdio.h>
 
+#include "ff_flare_mark.h" /* S26g — shared mark geometry table, see that header's doc comment */
 #include "ff_intent.h" /* S16c2 — the emit seam; see flare_go_cb et al. */
 #include "ff_layout.h"
 #include "ff_theme.h"
@@ -28,24 +28,25 @@
  * first-run flow, the mark's other consumer, hasn't landed); flagged as
  * an interpretation call per AGENTS.md.
  *
+ * S26g: the ray-count/fraction table and the canonical max-len/center-r
+ * pixel sizes moved to core/include/ff_flare_mark.h (FF_FLARE_MARK_*) so
+ * the device boot splash can draw the identical shape from the same
+ * table instead of a hand-copied second literal — see that header's doc
+ * comment. FLARE_MARK_MAX_LEN/CENTER_R below are this screen's own names
+ * for the shared constants (unchanged call sites throughout this file);
+ * FLARE_MARK_CY (the takeover layout's vertical offset for the mark) has
+ * no shared analogue — it's this screen's own layout, not part of the
+ * mark's look.
+ *
  * Kept well inside the puck's circular silhouette at this cy (the
  * longest ray's tip must stay within FF_THEME_PUCK_RADIUS_PX of center —
  * LVGL doesn't clip children to a parent's rounded/circular shape by
  * default, so a ray sized past that boundary would visibly poke outside
  * the puck's drawn edge). */
 #define FLARE_MARK_CY (-128.0f)
-#define FLARE_MARK_MAX_LEN 42.0f
-#define FLARE_MARK_CENTER_R 7.0f
-#define FLARE_MARK_N_RAYS 8
-/* Fractions of FLARE_MARK_MAX_LEN, indexed clockwise from north (index 0
- * = straight up). North is the deliberate standout (spec: "a long north
- * ray"); the rest taper UNEVENLY rather than a repeating long/short
- * alternation, so the shape reads as "a burst with a direction," not a
- * generic sunburst/loading-spinner silhouette (the review's exact
- * complaint about the old rings). */
-static const float FLARE_MARK_RAY_FRAC[FLARE_MARK_N_RAYS] = {
-    1.00f, 0.52f, 0.62f, 0.46f, 0.58f, 0.46f, 0.62f, 0.52f,
-};
+#define FLARE_MARK_MAX_LEN FF_FLARE_MARK_MAX_LEN_PX
+#define FLARE_MARK_CENTER_R FF_FLARE_MARK_CENTER_R_PX
+#define FLARE_MARK_N_RAYS FF_FLARE_MARK_N_RAYS
 /* One lv_line point-pair PER ray, not a single reused buffer — lv_line
  * keeps a POINTER to whatever array it's given (same hazard scr_radar.c's
  * top comment documents for its own line-point pool), so each of the 8
@@ -56,10 +57,6 @@ static const float FLARE_MARK_RAY_FRAC[FLARE_MARK_N_RAYS] = {
  * `lv_line` from the PREVIOUS build is gone before this array is
  * overwritten for the next one (issue #17, closed). */
 static lv_point_precise_t s_flare_mark_ray_pts[FLARE_MARK_N_RAYS][2];
-
-/* Avoid the POSIX-only M_PI (undefined under strict -std=c11 on some
- * libcs) — same rationale as core/src/ff_geo.c's own FF_GEO_PI. */
-#define FLARE_MARK_PI 3.14159265358979323846f
 
 #define FLARE_TAKEOVER_HEADLINE_DY (-72.0f)
 #define FLARE_TAKEOVER_BEARING_DY  (-34.0f)
@@ -266,12 +263,13 @@ static void flare_build_mark(lv_obj_t *parent, float cy)
     lv_obj_set_style_opa(mark, LV_OPA_COVER, 0); /* resting = golden */
 
     for (int i = 0; i < FLARE_MARK_N_RAYS; i++) {
-        float angle_deg = (float)i * (360.0f / (float)FLARE_MARK_N_RAYS);
-        float rad = angle_deg * FLARE_MARK_PI / 180.0f;
-        float len = FLARE_MARK_MAX_LEN * FLARE_MARK_RAY_FRAC[i];
-        /* North (i==0) is straight up: screen +Y is down, so "up" is -Y. */
-        float dx = sinf(rad) * len;
-        float dy = -cosf(rad) * len;
+        /* S26g: ray endpoint math now lives once, in
+         * ff_flare_mark_ray_offset (ff_flare_mark.h) — identical to what
+         * this loop computed inline before (north == i==0 straight up,
+         * screen +Y down so "up" is -Y), just shared with the boot
+         * splash rather than duplicated. */
+        float dx, dy;
+        ff_flare_mark_ray_offset(i, FLARE_MARK_MAX_LEN, &dx, &dy);
 
         lv_point_precise_t *pts = s_flare_mark_ray_pts[i];
         pts[0].x = half;
@@ -285,7 +283,7 @@ static void flare_build_mark(lv_obj_t *parent, float cy)
         lv_obj_set_pos(line, 0, 0);
         lv_obj_clear_flag(line, LV_OBJ_FLAG_CLICKABLE);
         lv_line_set_points(line, pts, 2);
-        lv_obj_set_style_line_width(line, 5, 0);
+        lv_obj_set_style_line_width(line, (int32_t)FF_FLARE_MARK_LINE_W_PX, 0);
         lv_obj_set_style_line_color(line, lv_color_hex(FF_THEME_COLOR_AMBER), 0);
         lv_obj_set_style_line_rounded(line, true, 0);
         lv_obj_set_style_line_opa(line, LV_OPA_COVER, 0);
