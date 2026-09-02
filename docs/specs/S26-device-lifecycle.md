@@ -175,25 +175,40 @@ button (`FF_INBOX_BACK_Y`/`_PX`) on the thread/picker/popup/rally
 sub-views. Rather than either shrinking the strip back down (defeating the
 readability fix above) or growing `scr_banner.c` face-aware knowledge of
 `scr_inbox.c`'s internals, `scr_nav.c` — the one place that already
-composes every face's content with the banner overlay — masks
-`LV_OBJ_FLAG_CLICKABLE` on any control the banner's rect now covers, right
-after building it. This matches what LVGL's own top-z hit-testing already
-does in practice (the last-added/topmost object under a touch point wins),
-so it aligns the STATIC hit-target sweep with the real, already-true
-runtime behavior rather than changing what a tap does.
+composes every face's content with the banner overlay — runs a shared
+post-pass (`ff_scr_nav_mask_clickables_under_banner`, scr_nav.h) right
+after building it.
+
+**The masking rule (review round 3 correction):** an earlier pass masked
+`LV_OBJ_FLAG_CLICKABLE` on ANY control the banner merely touched, on the
+claim that LVGL's own top-z hit-testing already routes taps there to the
+banner — measurably false for a PARTIAL overlap (the thread BACK button
+is only 25 of its 44px width under the strip, leaving a real, visible
+19px sliver LVGL would route straight to BACK). The rule is now honest:
+a control is masked only when its UNCOVERED REMAINDER — the largest
+rectangular piece of it left outside the banner
+(`ff_scr_nav_rect_best_remainder`) — itself fails `FF_THEME_MIN_HIT_PX`
+(44px) in either dimension, the same floor `test_face_hit_targets.c`
+already holds every other control to; a control whose remainder still
+clears 44px both ways keeps its clickability, since LVGL routes correctly
+between it and the banner on its own. Checked against every real overlap
+this repo ships: the thread BACK button's remainder (a 19px-wide sliver)
+fails the width floor and stays masked; nothing currently produces a
+"kept clickable" case.
 
 **Launcher wiring:** the launcher (home) face now composites the banner too
 — `ff_scr_launcher_build` calls `ff_scr_banner_build` last, the same
 "built after, drawn on top" convention `scr_nav.c` uses for every other
-face. The banner only ever reaches the top compass satellite (Inbox,
-`compass_pos == 0`); that satellite's own `CLICKABLE` flag is masked while a
-banner is active (mirroring the `scr_nav.c` fix above) — accepted as
-intentional and semantically consistent: while a banner shows, that region
-IS the banner, and tapping it opens the sender's thread, which is roughly
-where tapping Inbox would have led anyway. The launcher's own status row
-(bottom of the puck, `LAUNCHER_STATUS_ROW_DY`) is far enough from the
-banner's position to never compete with it. Launcher renders WITHOUT an
-active banner are untouched (goldens byte-identical).
+face, then calls the SAME shared `ff_scr_nav_mask_clickables_under_banner`
+pass rather than a second, launcher-specific rule. The banner only ever
+reaches the top compass satellite (Inbox, `compass_pos == 0`); its
+remainder there (~88x37px) fails the 44px HEIGHT floor, so it is masked —
+accepted as intentional and semantically consistent: while a banner shows,
+that region IS the banner, and tapping it opens the sender's thread, which
+is roughly where tapping Inbox would have led anyway. The launcher's own
+status row (bottom of the puck, `LAUNCHER_STATUS_ROW_DY`) is far enough
+from the banner's position to never compete with it. Launcher renders
+WITHOUT an active banner are untouched (goldens byte-identical).
 
 ## Slices + acceptance criteria
 

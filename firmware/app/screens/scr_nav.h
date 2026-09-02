@@ -63,6 +63,40 @@ extern "C" {
  */
 void ff_scr_nav_build(ff_app_state_t const *state);
 
+/**
+ * ff_scr_nav_rect_best_remainder / ff_scr_nav_remainder_clears_floor —
+ * [api] pure geometry, exposed purely for direct unit testing
+ * (test_scr_banner.c), the same "expose the small pure mechanic so a
+ * test can name it precisely" convention `ff_scr_launcher_satellite_deg`
+ * already set (scr_launcher.h). Real callers never need these directly
+ * — `ff_scr_nav_build`'s own internal banner-masking pass is the only
+ * production call site — but a test that wants to prove the REMAINDER
+ * rule itself (not just its end-to-end effect on one real control)
+ * needs to reach it with hand-typed rects, no LVGL object tree required.
+ * See scr_nav.c's own top-of-block comment (just above
+ * nav_mask_clickables_under_banner) for the full rationale: an object
+ * only loses LV_OBJ_FLAG_CLICKABLE while a banner covers it if the
+ * largest rectangular piece STILL left uncovered fails
+ * FF_THEME_MIN_HIT_PX in either dimension — the same floor
+ * test_face_hit_targets.c's sweep already holds every control to,
+ * applied to a remainder rect instead of an object's own full rect.
+ */
+lv_area_t ff_scr_nav_rect_best_remainder(lv_area_t obj, lv_area_t cover);
+bool ff_scr_nav_remainder_clears_floor(lv_area_t obj, lv_area_t cover);
+
+/**
+ * ff_scr_nav_mask_clickables_under_banner — [api] walk `root`'s subtree
+ * (skipping `banner`'s own subtree) and clear LV_OBJ_FLAG_CLICKABLE on
+ * any OTHER clickable object whose rect overlaps `*banner_area` AND
+ * whose remainder there fails ff_scr_nav_remainder_clears_floor (see
+ * that function's doc comment and scr_nav.c's top-of-block comment for
+ * the full rule). Shared between `ff_scr_nav_build` (every base face)
+ * and `scr_launcher.c` (the launcher's own Inbox satellite) so both
+ * apply the identical rule via one implementation rather than two
+ * copies drifting apart.
+ */
+void ff_scr_nav_mask_clickables_under_banner(lv_obj_t *root, lv_obj_t *banner, lv_area_t const *banner_area);
+
 #ifdef __cplusplus
 }
 #endif

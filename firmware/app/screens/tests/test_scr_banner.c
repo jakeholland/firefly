@@ -56,6 +56,7 @@
 #include "radar_layout.h"
 #include "scr_banner.h"
 #include "scr_launcher.h" /* the launcher-collision finding, see the bottom section */
+#include "scr_nav.h" /* ff_scr_nav_build / the remainder-rule masking pass, round 3 */
 #include "scr_radar.h"
 #include "scr_inbox.h"
 
@@ -185,6 +186,16 @@ static void drag_v(int32_t from_y, int32_t to_y, int32_t x)
 
     lv_anim_delete(indev, NULL);
     lv_indev_delete(indev);
+}
+
+/* A single press-then-release at one point — a real tap through the
+ * same synthetic pointer indev drag_v() uses (test_scr_intent.c's own
+ * tap_at, duplicated here per this file's file-local-helper
+ * convention). Used below to prove a control routes a REAL coordinate
+ * tap correctly, not just that its CLICKABLE flag reads true. */
+static void tap_at(int32_t x, int32_t y)
+{
+    drag_v(y, y, x);
 }
 
 /* ---------------------------------------------------------------------
@@ -484,19 +495,21 @@ static void S26d_AC2_banner_drag_off_emits_nothing(void)
 }
 
 /* ---------------------------------------------------------------------
- * Launcher wiring (orchestrator review round 2): round 1 found
- * `ff_scr_launcher_build` never called `ff_scr_banner_build` at all and
- * left it unwired, flagging the top-satellite collision as a follow-up.
- * Round 2 wires it in for real (ff_scr_launcher_build now calls
- * ff_scr_banner_build LAST, same "built after, drawn on top" convention
- * scr_nav.c's own call-order comment uses for every other face) and
- * accepts the top (Inbox) satellite overlap as intentional: while a
- * banner shows, that region IS the banner — a tap there opens the
- * sender's thread, which is what tapping Inbox would have led toward
- * anyway. `launcher_make_satellite`'s own `clickable` parameter masks
- * the covered satellite's CLICKABLE flag (not just its click callback)
- * so the hit-target sweep sees exactly ONE clickable there, matching
- * what LVGL's own top-z hit-testing already does in practice.
+ * Launcher wiring (orchestrator review round 2, remainder rule round 3):
+ * round 1 found `ff_scr_launcher_build` never called `ff_scr_banner_
+ * build` at all and left it unwired. Round 2 wired it in for real
+ * (`ff_scr_launcher_build` now calls `ff_scr_banner_build` LAST, same
+ * "built after, drawn on top" convention `scr_nav.c` uses for every
+ * other face) and masked the covered Inbox satellite unconditionally
+ * by compass position. Round 3 replaced that blanket mask with the
+ * shared remainder rule (`ff_scr_nav_mask_clickables_under_banner`,
+ * scr_nav.h) — the SAME pass `scr_nav.c` runs for the five base faces,
+ * so the launcher's Inbox satellite is masked for the identical
+ * measured reason (its ~88x37px remainder under the strip fails the
+ * 44px HEIGHT floor), not a hard-coded "compass_pos 0 always loses"
+ * rule. See scr_nav.c's own top-of-block comment for the full
+ * rationale and the "the region is the banner" acceptance this rule
+ * still honors.
  * ------------------------------------------------------------------- */
 
 static void S26d_AC2_launcher_banner_tap_emits_banner_open_not_launcher_select(void)
@@ -523,10 +536,12 @@ static void S26d_AC2_launcher_banner_tap_emits_banner_open_not_launcher_select(v
 
 /* The Inbox satellite (the one the banner ever reaches — compass_pos 0,
  * the top cardinal point) must stop being independently tappable while
- * the banner covers it: found by its own "INBOX" caption, walking up to
- * the satellite's button ancestor (the caption's great-grandparent —
- * caption -> button; same one-step-up shape find_row_hit_by_name uses
- * elsewhere in this codebase for a caption/row relationship). */
+ * the banner covers it — its own remainder there (~88x37px) fails the
+ * 44px HEIGHT floor (ff_scr_nav_remainder_clears_floor), same rule as
+ * every other masked control in this file. Found by its own "INBOX"
+ * caption, walking up to the satellite's button ancestor (caption ->
+ * button; same one-step-up shape find_row_hit_by_name uses elsewhere in
+ * this codebase for a caption/row relationship). */
 static void S26d_AC2_launcher_inbox_satellite_not_clickable_while_banner_active(void)
 {
     ff_app_state_t state;
@@ -571,6 +586,131 @@ static void S26d_AC2_launcher_inbox_satellite_stays_clickable_without_banner(voi
                              "Inbox must stay clickable when no banner is showing");
 }
 
+/* ---------------------------------------------------------------------
+ * Remainder-rule masking (orchestrator review round 3): the honest
+ * "only mask what the uncovered remainder can't itself serve as a
+ * target" rule scr_nav.c's own top-of-block comment documents, proven
+ * against the ONE real control it currently affects outside the
+ * launcher (Inbox's thread/picker/popup/rally BACK button) plus a
+ * synthetic control whose remainder DOES clear the floor, to prove the
+ * rule doesn't over-mask.
+ * ------------------------------------------------------------------- */
+
+static void S26d_AC2_inbox_thread_back_masked_while_banner_active(void)
+{
+    ff_app_state_t state;
+    memset(&state, 0, sizeof(state));
+    state.active_face = FF_APP_FACE_INBOX;
+    make_thread(&state.inbox);
+    make_banner(&state.banner);
+
+    ff_scr_nav_build(&state);
+    lv_obj_update_layout(lv_screen_active());
+
+    lv_obj_t *glyph = find_label_exact(lv_screen_active(), LV_SYMBOL_LEFT);
+    TEST_ASSERT_NOT_NULL_MESSAGE(glyph, "thread BACK glyph not found");
+    lv_obj_t *back = lv_obj_get_parent(glyph);
+    TEST_ASSERT_NOT_NULL(back);
+
+    lv_area_t back_a, strip_a;
+    lv_obj_get_coords(back, &back_a);
+    /* The banner is the last child scr_banner.c's own contract adds to
+     * the puck (scr_nav.c builds puck -> content -> ... -> banner). */
+    lv_obj_t *scr = lv_screen_active();
+    lv_obj_t *puck = lv_obj_get_child(scr, 0);
+    lv_obj_t *strip = lv_obj_get_child(puck, lv_obj_get_child_count(puck) - 1);
+    lv_obj_get_coords(strip, &strip_a);
+
+    /* This IS the exact case round 3 fixes: only 25 of BACK's 44px
+     * width sits under the strip, leaving a real 19px-wide sliver — too
+     * narrow (< FF_THEME_MIN_HIT_PX) to be its own target, so BACK is
+     * still the right control to mask, just for the measured reason. */
+    TEST_ASSERT_TRUE_MESSAGE(areas_overlap(&back_a, &strip_a), "test is vacuous unless BACK and the banner overlap");
+    TEST_ASSERT_FALSE_MESSAGE(ff_scr_nav_remainder_clears_floor(back_a, strip_a),
+                              "BACK's remainder must fail the 44px floor for this test to be meaningful");
+    TEST_ASSERT_FALSE_MESSAGE(lv_obj_has_flag(back, LV_OBJ_FLAG_CLICKABLE),
+                              "the thread BACK button must not stay independently clickable "
+                              "while its remainder under the banner is under 44px");
+}
+
+/* "restored after expiry/rebuild": a banner is transient (6s, per spec)
+ * — the shell rebuilds the WHOLE screen every tick, so "restored" is
+ * simply what a fresh build with an expired (inactive) banner produces.
+ * Proven directly rather than assumed. */
+static void S26d_AC2_inbox_thread_back_clickable_again_once_banner_inactive(void)
+{
+    ff_app_state_t state;
+    memset(&state, 0, sizeof(state));
+    state.active_face = FF_APP_FACE_INBOX;
+    make_thread(&state.inbox);
+    state.banner.active = false; /* expired / never queued */
+
+    ff_scr_nav_build(&state);
+    lv_obj_update_layout(lv_screen_active());
+
+    lv_obj_t *glyph = find_label_exact(lv_screen_active(), LV_SYMBOL_LEFT);
+    TEST_ASSERT_NOT_NULL_MESSAGE(glyph, "thread BACK glyph not found");
+    lv_obj_t *back = lv_obj_get_parent(glyph);
+    TEST_ASSERT_NOT_NULL(back);
+
+    TEST_ASSERT_TRUE_MESSAGE(lv_obj_has_flag(back, LV_OBJ_FLAG_CLICKABLE),
+                             "BACK must be clickable again once no banner is showing");
+}
+
+/* A synthetic control whose remainder DOES clear 44px in both
+ * dimensions on either side of the banner (300x48, spanning the
+ * banner's own y-range but far wider in x) must KEEP its clickability —
+ * proving the rule doesn't over-mask — and a REAL coordinate tap on its
+ * visible (uncovered) left slice must still route to it, not vanish
+ * into the banner drawn on top of the OTHER half of this control. */
+static int s_wide_clicks;
+
+static void wide_click_cb(lv_event_t *e)
+{
+    (void)e;
+    s_wide_clicks++;
+}
+
+static void S26d_AC2_object_with_wide_remainder_stays_clickable_and_routes_tap(void)
+{
+    lv_obj_t *parent = lv_obj_create(lv_screen_active());
+    lv_obj_remove_style_all(parent); /* strip default theme padding — this parent must be a raw (0,0)-origin canvas */
+    lv_obj_set_size(parent, FF_THEME_WINDOW_PX, FF_THEME_WINDOW_PX);
+    lv_obj_set_pos(parent, 0, 0);
+    lv_obj_clear_flag(parent, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t *wide = lv_button_create(parent);
+    lv_obj_remove_style_all(wide);
+    lv_obj_set_size(wide, 300, 48);
+    lv_obj_set_pos(wide, 60, 36); /* same y-band the banner sits in, MUCH wider in x */
+    s_wide_clicks = 0;
+    lv_obj_add_event_cb(wide, wide_click_cb, LV_EVENT_CLICKED, NULL);
+
+    ff_app_banner_t b;
+    make_banner(&b);
+    ff_scr_banner_build(parent, &b, false);
+    lv_obj_update_layout(parent);
+
+    lv_obj_t *strip = lv_obj_get_child(parent, lv_obj_get_child_count(parent) - 1);
+    lv_area_t strip_a, wide_a;
+    lv_obj_get_coords(strip, &strip_a);
+    lv_obj_get_coords(wide, &wide_a);
+
+    TEST_ASSERT_TRUE_MESSAGE(areas_overlap(&wide_a, &strip_a), "test is vacuous unless the control and banner overlap");
+    TEST_ASSERT_TRUE_MESSAGE(ff_scr_nav_remainder_clears_floor(wide_a, strip_a),
+                             "this control's remainder must clear 44px both ways for this test to be meaningful");
+
+    ff_scr_nav_mask_clickables_under_banner(parent, strip, &strip_a);
+
+    TEST_ASSERT_TRUE_MESSAGE(lv_obj_has_flag(wide, LV_OBJ_FLAG_CLICKABLE),
+                             "a control whose remainder clears the 44px floor must stay clickable");
+
+    /* Tap inside the LEFT slice (x=[60,strip_a.x1), y=[36,84)) — visible,
+     * uncovered, and per the assertion above >= 44px in both dimensions. */
+    tap_at(80, 60);
+    TEST_ASSERT_EQUAL_INT_MESSAGE(1, s_wide_clicks, "a real tap on the control's visible remainder must reach it");
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -584,5 +724,8 @@ int main(void)
     RUN_TEST(S26d_AC2_launcher_banner_tap_emits_banner_open_not_launcher_select);
     RUN_TEST(S26d_AC2_launcher_inbox_satellite_not_clickable_while_banner_active);
     RUN_TEST(S26d_AC2_launcher_inbox_satellite_stays_clickable_without_banner);
+    RUN_TEST(S26d_AC2_inbox_thread_back_masked_while_banner_active);
+    RUN_TEST(S26d_AC2_inbox_thread_back_clickable_again_once_banner_inactive);
+    RUN_TEST(S26d_AC2_object_with_wide_remainder_stays_clickable_and_routes_tap);
     return UNITY_END();
 }

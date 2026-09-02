@@ -117,6 +117,7 @@
 #include "ff_theme.h"
 #include "scr_banner.h" /* S26 slice d — the notification banner, now composited on the launcher too */
 #include "scr_inbox.h" /* ff_scr_inbox_unread_count — the Inbox circle's badge */
+#include "scr_nav.h" /* ff_scr_nav_mask_clickables_under_banner — the shared banner-coverage rule */
 #include "lvgl.h"
 
 /* ---------------------------------------------------------------------
@@ -606,8 +607,7 @@ static void launcher_make_badge(lv_obj_t *puck, float sat_dx, float sat_dy, uint
 }
 
 static void launcher_make_satellite(lv_obj_t *puck, void (*icon_fn)(lv_obj_t *, int32_t), char const *caption_text,
-                                     float dx, float dy, uintptr_t launcher_idx, bool badge, uint16_t unread,
-                                     bool clickable)
+                                     float dx, float dy, uintptr_t launcher_idx, bool badge, uint16_t unread)
 {
     lv_obj_t *btn = lv_button_create(puck);
     lv_obj_remove_style_all(btn);
@@ -644,35 +644,24 @@ static void launcher_make_satellite(lv_obj_t *puck, void (*icon_fn)(lv_obj_t *, 
      * real, stationary tap (which never leaves the disc's own bounds)
      * is completely unaffected. */
     lv_obj_clear_flag(btn, LV_OBJ_FLAG_PRESS_LOCK);
-    /* `clickable` is false for exactly one case today: this satellite
-     * sits fully or partly behind the notification banner overlay
-     * (built after every satellite, on top — see ff_scr_launcher_build's
-     * own call-order comment). A control a higher-z, opaque, ALSO-
-     * clickable strip is painted over must not remain independently
-     * tappable underneath it — the honest reading of "tap that region"
-     * while a banner shows is "open the banner", never "also secretly
-     * launcher-select whatever used to be there". Clearing CLICKABLE
-     * (not just skipping the event binding) also removes it from the
-     * hit-target sweep's walk entirely, so the sweep sees exactly ONE
-     * clickable at this position (the banner) rather than two
-     * overlapping ones — test_face_hit_targets.c's own adjacency/
-     * containment checks stay meaningful instead of needing a bespoke
-     * "covered by a higher control" exclusion (deliberately not added:
-     * that exclusion category would apply to any future overlap by
-     * construction rather than by an explicit per-control decision,
-     * exactly the kind of broad loophole that sweep's own header
-     * comment warns a genuine violation could hide behind). */
-    if (!clickable) {
-        lv_obj_clear_flag(btn, LV_OBJ_FLAG_CLICKABLE);
-    } else {
-        lv_obj_add_event_cb(btn, launcher_circle_click_cb, LV_EVENT_CLICKED, (void *)launcher_idx);
-        lv_obj_add_event_cb(btn, launcher_press_cb, LV_EVENT_PRESSED, NULL);
-        lv_obj_add_event_cb(btn, launcher_press_cb, LV_EVENT_RELEASED, NULL);
-        lv_obj_add_event_cb(btn, launcher_press_cb, LV_EVENT_PRESS_LOST, NULL);
-    }
-    /* Icon + caption still build either way — a satellite behind the
-     * banner is only PARTLY covered in practice (the banner's height is
-     * well short of the satellite's own 88px), so its caption/icon
+    /* Whether this satellite stays clickable while a banner covers part
+     * of it (the top/Inbox one, the only one the banner ever reaches) is
+     * decided AFTER the banner is built, by the shared remainder-rule
+     * pass `ff_scr_nav_mask_clickables_under_banner` (scr_nav.h) —
+     * ff_scr_launcher_build's own call-order comment explains why this
+     * has to happen post-hoc rather than here. Every satellite is wired
+     * clickable unconditionally at construction time; the post-pass is
+     * the one and only place that ever takes it away, so there is
+     * exactly one rule (scr_nav.c's own doc comment on it) rather than
+     * this file guessing "covered" from compass position alone the way
+     * an earlier round of this PR did. */
+    lv_obj_add_event_cb(btn, launcher_circle_click_cb, LV_EVENT_CLICKED, (void *)launcher_idx);
+    lv_obj_add_event_cb(btn, launcher_press_cb, LV_EVENT_PRESSED, NULL);
+    lv_obj_add_event_cb(btn, launcher_press_cb, LV_EVENT_RELEASED, NULL);
+    lv_obj_add_event_cb(btn, launcher_press_cb, LV_EVENT_PRESS_LOST, NULL);
+    /* Icon + caption build normally — a satellite behind the banner is
+     * only PARTLY covered in practice (the banner's height is well
+     * short of the satellite's own 88px), so its caption/icon
      * below the overlap stays visibly, honestly present; only the tap
      * target is what the banner's presence takes over. */
 
@@ -824,15 +813,8 @@ void ff_scr_launcher_build(ff_app_state_t const *state)
         float const deg = ff_scr_launcher_satellite_deg(sats[i].compass_pos, LAUNCHER_SAT_COUNT);
         float dx, dy;
         launcher_deg_to_offset(deg, LAUNCHER_ORBIT_RADIUS_PX, &dx, &dy);
-        /* `compass_pos == 0` is the TOP cardinal point — today that's
-         * always Inbox (see the satellite descriptor table's own
-         * comment) — the one position the banner overlay (built last,
-         * below) ever reaches. Named by geometry, not by app identity,
-         * so this stays correct even if a future N-satellite layout
-         * reassigns which app sits at the top. */
-        bool const clickable = !(state->banner.active && sats[i].compass_pos == 0);
         launcher_make_satellite(puck, sats[i].icon_fn, sats[i].caption, dx, dy, sats[i].launcher_idx,
-                                 sats[i].badge_capable && unread > 0, unread, clickable);
+                                 sats[i].badge_capable && unread > 0, unread);
     }
 
     launcher_build_status_row(puck, &state->radar);
@@ -841,9 +823,27 @@ void ff_scr_launcher_build(ff_app_state_t const *state)
      * satellite and the status row) so it paints on top of whatever the
      * launcher shows, exactly the "built after, so drawn on top of"
      * placement scr_nav.c's own call-order comment documents for every
-     * other face. No-op internally when !state->banner.active. The one
-     * satellite it can ever reach (the top/Inbox one) already had its
-     * own clickability masked above so the two never compete for the
-     * same tap. */
+     * other face. No-op internally when !state->banner.active. */
     ff_scr_banner_build(puck, &state->banner, state->settings.colorblind);
+
+    if (state->banner.active) {
+        /* The strip is the LAST child ff_scr_banner_build just added to
+         * `puck` (its own doc comment's contract) — same "read it back
+         * after building" shape ff_scr_nav_build uses for the five base
+         * faces. Reuses that EXACT shared pass (scr_nav.h) rather than a
+         * second copy: the one position the banner can ever reach here
+         * is the top (Inbox) satellite (compass_pos 0), and the SAME
+         * remainder rule (scr_nav.c's own doc comment: mask only when
+         * the uncovered remainder fails FF_THEME_MIN_HIT_PX in either
+         * dimension) decides it — currently that satellite's remainder
+         * below the strip is ~88x37px, failing the height floor, so it
+         * IS masked, but this file no longer hard-codes that outcome by
+         * compass position; it falls out of the same measured rule
+         * every other face uses. */
+        lv_obj_t *strip = lv_obj_get_child(puck, lv_obj_get_child_count(puck) - 1);
+        lv_obj_update_layout(puck);
+        lv_area_t strip_area;
+        lv_obj_get_coords(strip, &strip_area);
+        ff_scr_nav_mask_clickables_under_banner(puck, strip, &strip_area);
+    }
 }
