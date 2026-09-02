@@ -49,8 +49,20 @@ extern "C" {
  * through as `ff_app_settings_t.colorblind` by the caller (scr_nav.c has
  * the full `ff_app_state_t` in scope; see ff_theme.h's own doc comment
  * for why this is an explicit parameter rather than a hidden global).
+ *
+ * `screen_flip` (format v8 amendment, [api]): selects which visible-glass
+ * centre (`ff_theme_glass_cx`/`_cy`, ff_theme.h) the STALE rim tint
+ * (`radar_build_rim_tint`, the one element on this face that hugs the
+ * physical bezel) centres on — `ff_settings_t.screen_flip` projected
+ * through as `ff_app_settings_t.screen_flip`, same explicit-parameter
+ * convention as `colorblind` above. Every other element on this face
+ * keeps the plain puck centre (unaffected by flip — see ff_theme.h): the
+ * HARDWARE panel mirror (`ff_display_set_flip`, device-only) is what
+ * actually re-orients the pixels on glass, so this parameter's only job
+ * is keeping the one edge-hugging element concentric with the bezel in
+ * either orientation.
  */
-void ff_scr_radar_build(lv_obj_t *parent, ff_radar_view_t const *radar, bool colorblind);
+void ff_scr_radar_build(lv_obj_t *parent, ff_radar_view_t const *radar, bool colorblind, bool screen_flip);
 
 #ifdef __cplusplus
 }

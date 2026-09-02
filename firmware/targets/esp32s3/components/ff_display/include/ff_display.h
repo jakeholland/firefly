@@ -74,6 +74,43 @@ esp_err_t ff_display_expander_init(void);
 esp_err_t ff_display_panel_init(void);
 
 /**
+ * ff_display_set_flip — format v8 amendment (maintainer ask, 2026-09-02):
+ * apply/undo a HARDWARE 180-degree mirror of the panel via
+ * `esp_lcd_panel_mirror(panel, flip, flip)`, driven by
+ * `ff_settings_t.screen_flip` (the Settings SCREEN NORMAL|FLIPPED row).
+ * A hardware mirror, not `lv_display_set_rotation` (a software/LVGL
+ * rotation), on purpose — see this function's own definition for the
+ * `esp_lcd_spd2010` driver citation confirming `mirror` IS implemented
+ * (via a MADCTL write), unlike `swap_xy` (logged unsupported by this
+ * panel, see ff_display_lvgl_start's own comment on that log line).
+ *
+ * The Fusion-designed case mounts the puck upside-down; mirroring BOTH
+ * axes (`mirror_x=flip, mirror_y=flip`) is the standard MADCTL trick for
+ * a full 180-degree rotation (mirror-X and mirror-Y compose to a
+ * point-reflection through the panel centre) — cheaper than a real
+ * hardware rotate (which this controller doesn't support at all —
+ * `swap_xy` is the piece an actual 90/270 rotation would need) and,
+ * unlike `lv_display_set_rotation(LV_DISPLAY_ROTATION_180)`, costs
+ * NOTHING extra per frame: the panel does the pixel reordering in
+ * silicon, so LVGL's own render/flush path (including the FF_LVGL_STRIP_
+ * LINES full-width strip flushing this HAL already relies on) is
+ * completely unaffected — no shadow buffer, no per-pixel software
+ * rotation pass.
+ *
+ * Requires `ff_display_panel_init()` to have run (that brings `s_panel`
+ * up) — returns ESP_ERR_INVALID_STATE otherwise, and a logged esp_err_t
+ * on any panel-IO failure. Safe to call again at ANY time after that,
+ * including from a live UI with no reboot: it is a single MADCTL command
+ * write, independent of the framebuffer content already flushed (the
+ * NEXT flush after this call paints through the new orientation; nothing
+ * currently on glass needs to be redrawn for the mirror itself to take
+ * effect, though the app still triggers a normal face rebuild so the
+ * Settings row and Radar's glass-centred rim tint reflect the new value
+ * too — see app_main.c and `ff_theme_glass_cx`/`_cy`, ff_theme.h).
+ */
+esp_err_t ff_display_set_flip(bool flip);
+
+/**
  * ff_display_draw_test_pattern — b1 "first light": paint a solid colour
  * fill over the whole 412x412 panel, then a two-colour split (left half
  * one colour, right half another) via esp_lcd_panel_draw_bitmap. The

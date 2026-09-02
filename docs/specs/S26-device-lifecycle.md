@@ -291,6 +291,19 @@ test (mark vs. circle) changed. The mark is centered on the panel rather
 than at `scr_flare.c`'s off-center `FLARE_MARK_CY` (this splash has no
 headline/buttons competing for space).
 
+**AMENDED 2026-09-02 — SCREEN flip setting (see `docs/specs/S21-settings-
+rework.md`'s own amendment for the full mechanism).** This splash's own
+orientation is unaffected by `ff_settings_t.screen_flip` — it is drawn
+raw, in the framebuffer's own coordinate space, exactly as before. The
+FLIPPED case orientation instead renders correctly because `app_main.c`
+applies `ff_display_set_flip` (a HARDWARE panel mirror) right after the
+panel initializes and BEFORE this splash draws — so the splash is already
+the first UPRIGHT content on a flipped puck's glass, the same "first
+content, no visible flip" property (g)'s own AC2 goldens verify for
+NORMAL orientation. The sim cannot render this distinction (it has no
+panel mirror to apply); on-glass verification that the splash reads
+upright in the flipped case is the maintainer's.
+
 ## Sequencing
 
 (a) and (b) in parallel (a touches `festpack` + one `app_main` call; b

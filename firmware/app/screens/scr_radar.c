@@ -164,8 +164,19 @@ static bool radar_cluster_all_stale(ff_radar_view_t const *r, radar_layout_wedge
  * (S06: "amber rim tint"; LOST deliberately gets none — see
  * radar_render_lost). Drawn here (not by the shell, which owns the puck
  * object) so this file stays a pure function of (parent, radar) with no
- * dependency on the shell's internal object tree. */
-static void radar_build_rim_tint(lv_obj_t *parent, uint32_t color_hex, lv_opa_t opa)
+ * dependency on the shell's internal object tree.
+ *
+ * `screen_flip` (format v8 amendment): the bezel offset FF_THEME_GLASS_*
+ * was measured against is a PHYSICAL bezel feature, not a framebuffer
+ * one — under the device's hardware 180° mirror (ff_display_set_flip),
+ * the same physical bezel hides the opposite framebuffer edge, so the
+ * ring must centre on the mirrored point (`ff_theme_glass_cx`/`_cy`,
+ * ff_theme.h) to stay concentric with the bezel in either orientation.
+ * The sim never mirrors its own framebuffer (there is no physical bezel
+ * to reason about), so this only ever changes WHERE the ring is drawn in
+ * the same un-mirrored coordinate space — see radar_stale_flipped's
+ * fixture/golden for the proof the centre actually moves. */
+static void radar_build_rim_tint(lv_obj_t *parent, uint32_t color_hex, lv_opa_t opa, bool screen_flip)
 {
     lv_obj_t *rim = lv_obj_create(parent);
     lv_obj_remove_style_all(rim);
@@ -180,8 +191,8 @@ static void radar_build_rim_tint(lv_obj_t *parent, uint32_t color_hex, lv_opa_t 
     lv_obj_set_style_border_opa(rim, opa, 0);
     lv_obj_clear_flag(rim, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_clear_flag(rim, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_align(rim, LV_ALIGN_CENTER, FF_THEME_GLASS_CX - FF_THEME_PUCK_RADIUS_PX,
-                 FF_THEME_GLASS_CY - FF_THEME_PUCK_RADIUS_PX);
+    lv_obj_align(rim, LV_ALIGN_CENTER, ff_theme_glass_cx(screen_flip) - FF_THEME_PUCK_RADIUS_PX,
+                 ff_theme_glass_cy(screen_flip) - FF_THEME_PUCK_RADIUS_PX);
 }
 
 /* Status bar: clock / mesh / battery. Cross-mode chrome, not part of the
@@ -661,9 +672,10 @@ static void radar_render_live(lv_obj_t *parent, ff_radar_view_t const *r, radar_
                      (int32_t)RADAR_LAYOUT_STACK_CHIP_DY);
 }
 
-static void radar_render_stale(lv_obj_t *parent, ff_radar_view_t const *r, radar_layout_registry_t const *reg)
+static void radar_render_stale(lv_obj_t *parent, ff_radar_view_t const *r, radar_layout_registry_t const *reg,
+                               bool screen_flip)
 {
-    radar_build_rim_tint(parent, FF_THEME_COLOR_STALE_AMBER, LV_OPA_50);
+    radar_build_rim_tint(parent, FF_THEME_COLOR_STALE_AMBER, LV_OPA_50, screen_flip);
 
     radar_layout_arrow_t arrow;
     radar_layout_resolve_arrow(reg, r->arrow_deg, &arrow);
@@ -956,7 +968,7 @@ static void radar_render_nosel(lv_obj_t *parent)
  * Entry point.
  * ------------------------------------------------------------------- */
 
-void ff_scr_radar_build(lv_obj_t *parent, ff_radar_view_t const *radar, bool colorblind)
+void ff_scr_radar_build(lv_obj_t *parent, ff_radar_view_t const *radar, bool colorblind, bool screen_flip)
 {
     if (parent == NULL || radar == NULL) {
         return;
@@ -982,7 +994,7 @@ void ff_scr_radar_build(lv_obj_t *parent, ff_radar_view_t const *radar, bool col
         radar_render_live(parent, radar, &reg);
         break;
     case RADAR_STALE:
-        radar_render_stale(parent, radar, &reg);
+        radar_render_stale(parent, radar, &reg, screen_flip);
         break;
     case RADAR_PLACE:
         radar_render_place(parent, radar, &reg);

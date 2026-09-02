@@ -81,7 +81,7 @@ void ff_scr_nav_build(ff_app_state_t const *state)
      * undefined build. */
     switch (state->active_face) {
     case FF_APP_FACE_RADAR:
-        ff_scr_radar_build(content, &state->radar, state->settings.colorblind);
+        ff_scr_radar_build(content, &state->radar, state->settings.colorblind, state->settings.screen_flip);
         /* S10 slice b: the Radar face's lock chip — a child of the
          * Radar content specifically, so it only ever appears alongside
          * Radar's own content. */
@@ -104,7 +104,7 @@ void ff_scr_nav_build(ff_app_state_t const *state)
         ff_scr_settings_build(content, &state->settings);
         break;
     default:
-        ff_scr_radar_build(content, &state->radar, state->settings.colorblind);
+        ff_scr_radar_build(content, &state->radar, state->settings.colorblind, state->settings.screen_flip);
         ff_scr_flare_build_lock_chip(content, &state->flare);
         break;
     }

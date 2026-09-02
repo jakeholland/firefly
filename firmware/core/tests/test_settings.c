@@ -130,6 +130,10 @@ static void ff_assert_defaults(ff_settings_t const *s)
     /* S21 amendment: default is 12-hour (the design vocabulary's mockup
      * form, e.g. "9:46 pm"), not 24-hour. */
     TEST_ASSERT_FALSE(s->clock_24h);
+
+    /* format v8 amendment: default is NORMAL (not FLIPPED) — a fresh puck's
+     * case orientation is unknown until the owner sets it. */
+    TEST_ASSERT_FALSE(s->screen_flip);
 }
 
 static void S11_AC1_load_with_empty_store_yields_exact_defaults(void)
@@ -471,8 +475,123 @@ static void S21_v6_blob_forward_migrates_preserving_every_value(void)
     TEST_ASSERT_EQUAL_FLOAT(1.0087f, s.touch_ay);
     TEST_ASSERT_EQUAL_FLOAT(-18.5f, s.touch_by);
 
-    /* ...and the one field v6 never had lands at its honest default. */
+    /* ...and the two fields v6 never had land at their honest defaults —
+     * clock_24h (the v6->v7 step, already covered before this format-v8
+     * amendment) AND screen_flip (the v7->v8 step this test now also
+     * exercises, since a v6 blob chains through BOTH steps to reach the
+     * live v8 struct — see ff_settings.c's v8 migration comment). */
     TEST_ASSERT_FALSE(s.clock_24h);
+    TEST_ASSERT_FALSE(s.screen_flip);
+}
+
+/* v7 -> v8 FORWARD MIGRATION (format v8 amendment, maintainer ask,
+ * 2026-09-02): same shape as the v6->v7 test above, one version hop
+ * later. A v7 blob (the format S21's clock_24h amendment shipped, and
+ * the one every fielded puck flashed since holds) is NOT discarded —
+ * every v7 value must survive, and only the field v7 never had
+ * (screen_flip) lands at its honest default (false / NORMAL). Builds a
+ * hand-made v7-SHAPED blob (own local mirror of the frozen
+ * ff_settings_v7_t layout — see ff_settings.c) with every field set to a
+ * real, non-default value. */
+static void S21_v7_blob_forward_migrates_preserving_every_value(void)
+{
+    mock_store_io_t m;
+    mock_store_reset(&m);
+    ff_store_t st = mock_store_vtable(&m);
+
+    ff_settings_t seed;
+    memset(&seed, 0, sizeof(seed));
+    ff_settings_save(&seed, &st);
+    TEST_ASSERT_TRUE(m.has_value);
+
+    /* Independently declared here (not shared with ff_settings.c's private
+     * ff_settings_v7_t) — same "two independent copies must agree" reasoning
+     * as the v6 mirror above. */
+    typedef struct {
+        bool imperial;
+        uint8_t share_mode;
+        bool haptics;
+        bool night_glow;
+        uint16_t water_min;
+        uint16_t quiet_from_min;
+        uint16_t quiet_to_min;
+        int16_t utc_offset_min;
+        bool utc_offset_set;
+        bool colorblind;
+        uint8_t brightness_pct;
+        char my_name[FF_SETTINGS_NAME_LEN];
+        ff_geo_cal_t compass_cal;
+        bool cal_valid;
+        float touch_ax;
+        float touch_bx;
+        float touch_ay;
+        float touch_by;
+        bool touch_calibrated;
+        bool clock_24h;
+    } v7_mirror_t;
+
+    v7_mirror_t v7;
+    memset(&v7, 0, sizeof(v7));
+    v7.imperial = false;
+    v7.share_mode = FF_SHARE_ZONES;
+    v7.haptics = true;
+    v7.night_glow = true;
+    v7.water_min = 60;
+    v7.quiet_from_min = 60;
+    v7.quiet_to_min = 300;
+    v7.utc_offset_min = 330;
+    v7.utc_offset_set = true;
+    v7.colorblind = false;
+    v7.brightness_pct = 88;
+    strncpy(v7.my_name, "Kai", sizeof(v7.my_name) - 1);
+    v7.compass_cal.hard_offset = (ff_vec3_t){-2.0f, 4.5f, 0.1f};
+    v7.compass_cal.soft_scale[0] = 0.99f;
+    v7.compass_cal.soft_scale[1] = 1.02f;
+    v7.compass_cal.soft_scale[2] = 0.95f;
+    v7.compass_cal.declination_deg = 3.25f;
+    v7.cal_valid = true;
+    v7.touch_calibrated = true;
+    v7.touch_ax = 0.994f;
+    v7.touch_bx = 6.0f;
+    v7.touch_ay = 1.006f;
+    v7.touch_by = 9.5f;
+    v7.clock_24h = true; /* a real, non-default value only v7+ could hold */
+
+    uint16_t const v7_version = 7;
+    memcpy(m.data + 4, &v7_version, sizeof(v7_version));
+    uint16_t const v7_payload_size = (uint16_t)sizeof(v7);
+    memcpy(m.data + 6, &v7_payload_size, sizeof(v7_payload_size));
+    memcpy(m.data + 8, &v7, sizeof(v7));
+    m.len = 8 + sizeof(v7);
+
+    ff_settings_t s;
+    memset(&s, 0xAA, sizeof(s));
+    ff_settings_load(&s, &st);
+
+    /* Every v7 value survives... */
+    TEST_ASSERT_FALSE(s.imperial);
+    TEST_ASSERT_EQUAL_UINT8(FF_SHARE_ZONES, s.share_mode);
+    TEST_ASSERT_TRUE(s.haptics);
+    TEST_ASSERT_TRUE(s.night_glow);
+    TEST_ASSERT_EQUAL_UINT16(60, s.water_min);
+    TEST_ASSERT_EQUAL_UINT16(60, s.quiet_from_min);
+    TEST_ASSERT_EQUAL_UINT16(300, s.quiet_to_min);
+    TEST_ASSERT_EQUAL_INT16(330, s.utc_offset_min);
+    TEST_ASSERT_TRUE(s.utc_offset_set);
+    TEST_ASSERT_FALSE(s.colorblind);
+    TEST_ASSERT_EQUAL_UINT8(88, s.brightness_pct);
+    TEST_ASSERT_EQUAL_STRING("Kai", s.my_name);
+    TEST_ASSERT_TRUE(s.cal_valid);
+    TEST_ASSERT_EQUAL_MEMORY(&v7.compass_cal, &s.compass_cal, sizeof(ff_geo_cal_t));
+    TEST_ASSERT_TRUE(s.touch_calibrated);
+    TEST_ASSERT_EQUAL_FLOAT(0.994f, s.touch_ax);
+    TEST_ASSERT_EQUAL_FLOAT(6.0f, s.touch_bx);
+    TEST_ASSERT_EQUAL_FLOAT(1.006f, s.touch_ay);
+    TEST_ASSERT_EQUAL_FLOAT(9.5f, s.touch_by);
+    TEST_ASSERT_TRUE(s.clock_24h);
+
+    /* ...and the one field v7 never had lands at its honest default. */
+    TEST_ASSERT_FALSE(s.screen_flip);
 }
 
 /* ---------------------------------------------------------------------
@@ -499,6 +618,7 @@ static void S11_AC2_round_trip_save_load_is_exact_including_calibration(void)
     out.colorblind = true; /* S17 slice a: a real change from the default, not left at its zero value */
     out.brightness_pct = 55; /* #100: a real change from the default, so the round-trip actually proves it persists */
     out.clock_24h = true; /* S21 amendment: a real change from the default, not left at its zero value */
+    out.screen_flip = true; /* format v8 amendment: a real change from the default, not left at its zero value */
     strncpy(out.my_name, "Dana", sizeof(out.my_name) - 1);
     out.cal_valid = true;
     out.compass_cal.hard_offset = (ff_vec3_t){12.5f, -3.25f, 0.75f};
@@ -746,6 +866,7 @@ int main(void)
     RUN_TEST(S11_AC1_load_with_v4_blob_yields_defaults_not_a_migration);
     RUN_TEST(S11_AC1_load_with_v5_blob_yields_defaults_not_a_migration);
     RUN_TEST(S21_v6_blob_forward_migrates_preserving_every_value);
+    RUN_TEST(S21_v7_blob_forward_migrates_preserving_every_value);
 
     RUN_TEST(S11_AC2_round_trip_save_load_is_exact_including_calibration);
     RUN_TEST(S11_AC2_round_trip_preserves_exact_defaults);

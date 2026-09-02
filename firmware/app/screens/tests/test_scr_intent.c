@@ -2173,7 +2173,7 @@ static void S16_c2_radar_flare_button_emits_flare_start(void)
     strncpy(r.dist_str, "15 m", sizeof(r.dist_str) - 1);
 
     lv_obj_t *parent = lv_obj_create(lv_screen_active());
-    ff_scr_radar_build(parent, &r, false);
+    ff_scr_radar_build(parent, &r, false, false);
 
     click(find_button_with_label(parent, "FLARE"));
 
@@ -2257,7 +2257,7 @@ static void S17a_AC4_radar_precise_dot_renders_filled_with_its_initial(void)
     r.dots[0].imprecise = false;
 
     lv_obj_t *parent = lv_obj_create(lv_screen_active());
-    ff_scr_radar_build(parent, &r, false);
+    ff_scr_radar_build(parent, &r, false, false);
     /* lv_obj_set_size only records the SPEC; actual lv_obj_get_width/
      * height() (what find_obj_by_size below reads) aren't resolved until
      * a layout pass runs — same requirement test_scr_flare.c's own
@@ -2293,7 +2293,7 @@ static void S17a_AC4_radar_imprecise_dot_renders_as_hollow_ring_with_no_initial(
     r.dots[0].imprecise = true;
 
     lv_obj_t *parent = lv_obj_create(lv_screen_active());
-    ff_scr_radar_build(parent, &r, false);
+    ff_scr_radar_build(parent, &r, false, false);
     /* lv_obj_set_size only records the SPEC; actual lv_obj_get_width/
      * height() (what find_obj_by_size below reads) aren't resolved until
      * a layout pass runs — same requirement test_scr_flare.c's own

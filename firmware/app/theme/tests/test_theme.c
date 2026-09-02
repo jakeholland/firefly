@@ -149,6 +149,52 @@ static void S17a_AC2_toggling_colorblind_does_not_perturb_the_brand_palette(void
     TEST_ASSERT_EQUAL_HEX32(0x9BE07Bu, ff_theme_crew_color(3, false));
 }
 
+/* ---------------------------------------------------------------------
+ * format v8 amendment — ff_theme_glass_cx/_cy (maintainer ask,
+ * 2026-09-02). Pinned to the exact measured constants (not just "some
+ * other value"), so a mutant that returns the un-flipped constant
+ * unconditionally, or reflects across the wrong axis/midline, is caught.
+ * ------------------------------------------------------------------- */
+
+static void SFLIP_glass_cx_normal_is_the_measured_208(void)
+{
+    TEST_ASSERT_EQUAL_INT32(208, ff_theme_glass_cx(false));
+}
+
+static void SFLIP_glass_cx_flipped_is_412_minus_208(void)
+{
+    TEST_ASSERT_EQUAL_INT32(204, ff_theme_glass_cx(true));
+}
+
+/* CY is symmetric: the measured vertical offset is 0 (CY already equals
+ * PUCK_PX/2), so its mirror is itself — pinned explicitly so a future
+ * reader trusts this is INTENTIONAL (see ff_theme.h's doc comment),
+ * not a bug where the flip failed to apply. */
+static void SFLIP_glass_cy_is_206_in_both_orientations(void)
+{
+    TEST_ASSERT_EQUAL_INT32(206, ff_theme_glass_cy(false));
+    TEST_ASSERT_EQUAL_INT32(206, ff_theme_glass_cy(true));
+}
+
+/* Mutation-conscious: a mutant that always returns the un-flipped
+ * constant (ignoring `flip` entirely) would still pass the CY test above
+ * (206 either way) — this is CX's job specifically, asserting the two
+ * calls give genuinely DIFFERENT answers. */
+static void SFLIP_glass_cx_flip_flag_actually_changes_the_centre(void)
+{
+    TEST_ASSERT_NOT_EQUAL(ff_theme_glass_cx(false), ff_theme_glass_cx(true));
+}
+
+/* Applying the flip twice returns to the un-flipped centre — proves the
+ * transform is a true reflection about PUCK_PX's own midline, not an
+ * arbitrary offset that happens to read 204 once. */
+static void SFLIP_glass_cx_double_flip_is_identity(void)
+{
+    int32_t const normal = ff_theme_glass_cx(false);
+    int32_t const flipped = ff_theme_glass_cx(true);
+    TEST_ASSERT_EQUAL_INT32(normal, FF_THEME_PUCK_PX - flipped);
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -162,6 +208,12 @@ int main(void)
     RUN_TEST(S17a_AC2_colorblind_out_of_range_index_wraps_modulo_8);
     RUN_TEST(S17a_AC2_colorblind_flag_actually_changes_the_palette);
     RUN_TEST(S17a_AC2_toggling_colorblind_does_not_perturb_the_brand_palette);
+
+    RUN_TEST(SFLIP_glass_cx_normal_is_the_measured_208);
+    RUN_TEST(SFLIP_glass_cx_flipped_is_412_minus_208);
+    RUN_TEST(SFLIP_glass_cy_is_206_in_both_orientations);
+    RUN_TEST(SFLIP_glass_cx_flip_flag_actually_changes_the_centre);
+    RUN_TEST(SFLIP_glass_cx_double_flip_is_identity);
 
     return UNITY_END();
 }

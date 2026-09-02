@@ -246,6 +246,35 @@ esp_err_t ff_display_backlight_on(uint8_t pct)
  * fields are independent floats and the next poll reads the settled value. */
 static ff_touchcal_t s_active_cal = {.ax = 1.0f, .bx = 0.0f, .ay = 1.0f, .by = 0.0f, .valid = false};
 
+/* Active screen-flip flag (format v8 amendment). Written by
+ * ff_display_set_flip, read by ff_touchcal_process_cb on every touch poll
+ * — same "torn read is harmless" contract as s_active_cal above (a bool
+ * is written/read atomically on this target either way, and even a torn
+ * read only ever produces one of the two valid values for one frame). */
+static bool s_screen_flip = false;
+
+/* Set only while ff_display_run_calibration's crosshair capture is live
+ * (see that function). While true, ff_touchcal_process_cb captures TRUE
+ * raw ticks — it still runs ff_touchcal_apply (identity, per "Capture
+ * RAW" below) but SKIPS the screen_flip rotation step, and
+ * ff_cal_release_cb records each target's screen_x/y already rotated to
+ * match (`ff_touchcal_flip180` applied to the LOGICAL crosshair position
+ * when screen_flip is on). This is not a cosmetic nicety: composing
+ * "capture-time flip" with "apply-time flip" the same way live touch
+ * does would fit an affine transform against a DIFFERENT, flip-
+ * contaminated raw/target relationship than the one live touch actually
+ * measures against later — see this file's own worked-through derivation
+ * in the PR that introduced this flag for why a calibration solved while
+ * naively flipping during capture drifts on live use, even for a puck
+ * that never changes its screen_flip setting again after calibrating.
+ * Capturing genuinely raw ticks against the PHYSICAL (flip-aware) target
+ * position instead keeps the solved (ax,bx,ay,by) a pure, orientation-
+ * independent characterization of the touch sensor's own error — exactly
+ * the property that lets it "stay valid in both orientations" (no
+ * re-calibration on a later flip toggle) regardless of which orientation
+ * the puck happened to be in WHEN it was calibrated. */
+static volatile bool s_cal_capturing = false;
+
 /* =====================================================================
  * b1 step 1 — I2C bus + TCA9554 up, both resets released through it.
  * ===================================================================== */
@@ -399,6 +428,94 @@ esp_err_t ff_display_panel_init(void)
         return err; /* already logged */
     }
 
+    return ESP_OK;
+}
+
+/* =====================================================================
+ * format v8 amendment (maintainer ask, 2026-09-02) — SCREEN NORMAL|
+ * FLIPPED: a HARDWARE 180-degree panel mirror, applied via MADCTL.
+ *
+ * Driver support, confirmed by reading the vendored espressif__esp_lcd_
+ * spd2010 2.0.0~1 source (~/Library/Caches/Espressif/ComponentManager/
+ * .../espressif__esp_lcd_spd2010_2.0.0~1_2b62e656/esp_lcd_spd2010.c,
+ * lines 717-735 on this machine — re-confirm on another, per this
+ * component's own line-number caveat already noted in
+ * docs/hardware/glass-offset.md):
+ *
+ *     static esp_err_t panel_spd2010_mirror(esp_lcd_panel_t *panel, bool mirror_x, bool mirror_y)
+ *     {
+ *         ...
+ *         if (mirror_x) { spd2010->madctl_val |= BIT(1); } else { ... &= ~BIT(1); }
+ *         if (mirror_y) { spd2010->madctl_val |= BIT(0); } else { ... &= ~BIT(0); }
+ *         ESP_RETURN_ON_ERROR(tx_param(spd2010, io, LCD_CMD_MADCTL, (uint8_t[]){ spd2010->madctl_val }, 1), ...);
+ *         return ESP_OK;
+ *     }
+ *
+ * i.e. `esp_lcd_panel_mirror` IS wired to a real, driver-implemented
+ * MADCTL write on this panel — UNLIKE `panel_spd2010_swap_xy`, a few
+ * lines below it in the same file, which is a stub
+ * (`ESP_LOGE(TAG, "swap_xy is not supported by this panel"); return
+ * ESP_ERR_NOT_SUPPORTED;`, already cited in ff_display_lvgl_start's own
+ * comment on the benign swap_xy(false) log line esp_lvgl_port emits at
+ * add_disp time). So `esp_lcd_panel_mirror(panel, flip, flip)` — both
+ * axes together, the standard MADCTL trick for a full 180-degree
+ * rotation — is a real, driver-backed call on THIS panel, not a silent
+ * no-op the way swap_xy would be; no `lv_display_set_rotation` software
+ * fallback is needed (see ff_display.h's doc comment on this function
+ * for that fallback's cost, spelled out for the record even though it
+ * isn't taken).
+ *
+ * 4-px window-alignment reasoning (docs/hardware/glass-offset.md's own
+ * constraint, re-derived here because mirror touches orientation the
+ * same way a bad gap once did — #152/#153): `panel_spd2010_draw_bitmap`
+ * (the same vendored file) computes its CASET/RASET window ENTIRELY in
+ * OUR coordinate space —
+ *
+ *     x_start += spd2010->x_gap;  x_end += spd2010->x_gap;
+ *     y_start += spd2010->y_gap;  y_end += spd2010->y_gap;
+ *     tx_param(..., LCD_CMD_CASET, ...);  tx_param(..., LCD_CMD_RASET, ...);
+ *
+ * — and NEVER reads `madctl_val` while building that window. The mirror
+ * bits change how the panel's OWN internal GRAM address counter walks
+ * the pixels it receives for a given CASET/RASET window (which physical
+ * column framebuffer-column-0 lands on), not what window WE compute and
+ * send. We never construct an `x' = 411 - x` window ourselves — there is
+ * no software coordinate flip on the draw-bitmap path at all — so the
+ * existing FF_LCD_X_GAP/_Y_GAP 4-px-aligned static assert and the
+ * always-full-width-strip flush (FF_LVGL_STRIP_LINES, x always 0..411,
+ * both divisible by 4) stay EXACTLY as aligned under mirror as without
+ * it: mirror is orthogonal to gap/window math, not an interaction with
+ * it. This is a *stronger* guarantee than "verified still 4-aligned by
+ * reasoning through the arithmetic" — there is no new arithmetic to
+ * misalign in the first place. What this file's reasoning CANNOT confirm
+ * from source alone is whether the SPD2010 silicon's own mirrored-
+ * addressing implementation has some other undocumented edge quirk (the
+ * gap-tuning history in docs/hardware/glass-offset.md is a reminder this
+ * particular controller has surprised this project before) — the sim
+ * cannot catch that either way (it does not model MADCTL at all), so
+ * on-glass verification of the mirrored render (boot splash upright,
+ * Radar rim tint centred, no stray edge line) is the maintainer's, per
+ * this repo's hardware-in-the-loop convention (S15b's own "Verification"
+ * section).
+ */
+esp_err_t ff_display_set_flip(bool flip)
+{
+    if (s_panel == NULL) {
+        ESP_LOGE(TAG, "set_flip called before panel_init — no panel handle");
+        return ESP_ERR_INVALID_STATE;
+    }
+    esp_err_t const err = esp_lcd_panel_mirror(s_panel, flip, flip);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "esp_lcd_panel_mirror failed: %s", esp_err_to_name(err));
+        return err;
+    }
+    /* Touch (ff_touchcal_process_cb below) reads this same flag: the
+     * panel mirror and the touch-coordinate flip are ONE user-visible
+     * decision (this call is the one seam both derive from), so they
+     * must never be settable independently — there is no path here that
+     * updates the display without also updating touch. */
+    s_screen_flip = flip;
+    ESP_LOGI(TAG, "panel mirror: %s", flip ? "FLIPPED (180 deg)" : "NORMAL");
     return ESP_OK;
 }
 
@@ -1187,7 +1304,19 @@ static void ff_touch_press_log_cb(lv_event_t *e)
  * before esp_lvgl_port hands it to LVGL (esp_lcd_touch_get_coordinates
  * calls this after the controller read). Correcting here fixes gestures,
  * long-press, and buttons alike — no second input path. Identity when
- * uncalibrated, so raw passes through (still clamped to the panel). */
+ * uncalibrated, so raw passes through (still clamped to the panel).
+ *
+ * format v8 amendment: the screen-flip 180-degree rotation is applied
+ * AFTER calibration, as its own separate step — never folded into
+ * `s_active_cal` itself. The calibration fit corrects the panel's OWN
+ * raw-to-screen error (a per-unit hardware quirk, measured against
+ * un-mirrored controller output); the case orientation is a SEPARATE,
+ * independently-toggled fact that doesn't change what the controller
+ * reports. Keeping them as two composed steps means a previously-solved
+ * calibration stays valid in EITHER orientation — flipping the case
+ * never demands a re-calibration, and re-running Calibrate Touch while
+ * flipped still fits against the (already-flipped) screen-space the
+ * crosshair itself is drawn in, so it composes correctly either way. */
 static void ff_touchcal_process_cb(esp_lcd_touch_handle_t tp, uint16_t *x, uint16_t *y,
                                    uint16_t *strength, uint8_t *point_num, uint8_t max_point_num)
 {
@@ -1200,6 +1329,15 @@ static void ff_touchcal_process_cb(esp_lcd_touch_handle_t tp, uint16_t *x, uint1
     for (uint8_t i = 0; i < *point_num; i++) {
         int sx, sy;
         ff_touchcal_apply(&s_active_cal, (int)x[i], (int)y[i], &sx, &sy);
+        /* Skip the rotation while a calibration crosshair capture is in
+         * progress (s_cal_capturing) — see that flag's own doc comment
+         * for why: it must record TRUE raw-ticks-through-apply() only, so
+         * the solved transform stays a pure, orientation-independent
+         * sensor characterization that composes correctly with THIS same
+         * flip step on every later live touch, in either orientation. */
+        if (s_screen_flip && !s_cal_capturing) {
+            ff_touchcal_flip180(sx, sy, FF_LCD_H_RES, FF_LCD_V_RES, &sx, &sy);
+        }
         x[i] = (uint16_t)sx;
         y[i] = (uint16_t)sy;
     }
@@ -1353,10 +1491,25 @@ static void ff_cal_release_cb(lv_event_t *e)
 
     s_cal.pts[idx].raw_x = (int)p.x;
     s_cal.pts[idx].raw_y = (int)p.y;
-    s_cal.pts[idx].screen_x = s_cal_tx[idx];
-    s_cal.pts[idx].screen_y = s_cal_ty[idx];
-    ESP_LOGI(TAG, "cal capture %d/%d: raw (%d,%d) -> target (%d,%d)", idx + 1, FF_CAL_TARGET_COUNT,
-             (int)p.x, (int)p.y, s_cal_tx[idx], s_cal_ty[idx]);
+    /* format v8 amendment: the crosshair is placed at the LOGICAL
+     * framebuffer position (s_cal_tx/ty) — under a HARDWARE mirror
+     * (screen_flip), it physically APPEARS at that position's 180-degree
+     * rotation, which is where the raw ticks captured above (flip
+     * deliberately skipped during capture — see s_cal_capturing's doc
+     * comment) actually measure. Record the PHYSICAL position as the fit
+     * target, not the logical one, so the solved transform is a pure
+     * sensor characterization — see s_cal_capturing's doc comment for the
+     * full reasoning. A no-op rotation when screen_flip is off. */
+    if (s_screen_flip) {
+        ff_touchcal_flip180(s_cal_tx[idx], s_cal_ty[idx], FF_LCD_H_RES, FF_LCD_V_RES, &s_cal.pts[idx].screen_x,
+                             &s_cal.pts[idx].screen_y);
+    } else {
+        s_cal.pts[idx].screen_x = s_cal_tx[idx];
+        s_cal.pts[idx].screen_y = s_cal_ty[idx];
+    }
+    ESP_LOGI(TAG, "cal capture %d/%d: raw (%d,%d) -> target (%d,%d) [logical (%d,%d)%s]", idx + 1,
+             FF_CAL_TARGET_COUNT, (int)p.x, (int)p.y, s_cal.pts[idx].screen_x, s_cal.pts[idx].screen_y,
+             s_cal_tx[idx], s_cal_ty[idx], s_screen_flip ? ", screen_flip on" : "");
 
     s_cal.captured = idx + 1;
     if (s_cal.captured >= FF_CAL_TARGET_COUNT) {
@@ -1390,8 +1543,11 @@ esp_err_t ff_display_run_calibration(ff_touchcal_t *out_cal)
         return ESP_ERR_INVALID_STATE;
     }
 
-    /* Capture RAW: the active transform must be identity while we record. */
+    /* Capture RAW: the active transform must be identity while we record,
+     * AND (format v8 amendment) the screen-flip rotation step must be
+     * skipped too — see s_cal_capturing's own doc comment for why. */
     ff_touchcal_identity(&s_active_cal);
+    s_cal_capturing = true;
     memset(&s_cal, 0, sizeof(s_cal));
 
     const lv_color_t accent = lv_color_hex(0xFFC66B); /* Firefly amber */
@@ -1445,6 +1601,8 @@ esp_err_t ff_display_run_calibration(ff_touchcal_t *out_cal)
     while (!s_cal.done) {
         vTaskDelay(pdMS_TO_TICKS(20));
     }
+
+    s_cal_capturing = false; /* every point is captured; live touch handling resumes normally */
 
     bool ok = ff_touchcal_solve(s_cal.pts, FF_CAL_TARGET_COUNT, out_cal);
 
