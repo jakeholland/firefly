@@ -23,7 +23,7 @@ void ff_idle_init(ff_idle_t *idle)
     memset(idle, 0, sizeof(*idle));
 }
 
-ff_idle_state_t ff_idle_tick(ff_idle_t *idle, uint32_t now_ms, bool keep_awake)
+ff_idle_state_t ff_idle_tick(ff_idle_t *idle, uint32_t now_ms, bool keep_awake, bool sleep_inhibit)
 {
     if (idle == NULL) {
         return FF_IDLE_STATE_ACTIVE;
@@ -57,8 +57,19 @@ ff_idle_state_t ff_idle_tick(ff_idle_t *idle, uint32_t now_ms, bool keep_awake)
      * call, mirroring the property this file already guaranteed for
      * OFF/DIM ("OFF reached directly without visiting DIM first").
      * Measured from the SAME ref_ms every other threshold here uses
-     * (header's top comment). */
-    if (ff_idle_reached(now_ms, idle->ref_ms + FF_IDLE_T_OFF_MS + FF_IDLE_T_SLEEP_MS)) {
+     * (header's top comment).
+     *
+     * `!sleep_inhibit` gates ONLY this one comparison — the OFF->SLEEP
+     * transition — per ff_idle.h's "Sleep inhibit" section: it does not
+     * touch ref_ms (unlike keep_awake above) and does not affect the
+     * DIM/OFF checks below at all, so a USB-tethered puck still dims and
+     * blanks its screen on schedule; it just never advances into SLEEP
+     * while inhibited. Nothing else needs to change to satisfy "once
+     * inhibit releases, SLEEP is entered as soon as the threshold has
+     * elapsed (immediately if it already has)": this comparison is
+     * re-evaluated fresh, against the same unmoved ref_ms, on every tick
+     * regardless of how sleep_inhibit behaved on prior ticks. */
+    if (!sleep_inhibit && ff_idle_reached(now_ms, idle->ref_ms + FF_IDLE_T_OFF_MS + FF_IDLE_T_SLEEP_MS)) {
         idle->state = FF_IDLE_STATE_SLEEP;
         return idle->state;
     }

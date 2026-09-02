@@ -41,7 +41,7 @@ static void S26c_AC1_stays_active_below_dim_threshold(void)
     ff_idle_init(&idle);
     ff_idle_input(&idle, 0);
 
-    TEST_ASSERT_EQUAL(FF_IDLE_STATE_ACTIVE, ff_idle_tick(&idle, FF_IDLE_T_DIM_MS - 1, false));
+    TEST_ASSERT_EQUAL(FF_IDLE_STATE_ACTIVE, ff_idle_tick(&idle, FF_IDLE_T_DIM_MS - 1, false, false));
     TEST_ASSERT_EQUAL(FF_IDLE_STATE_ACTIVE, ff_idle_state(&idle));
 }
 
@@ -51,7 +51,7 @@ static void S26c_AC1_dims_exactly_at_dim_threshold(void)
     ff_idle_init(&idle);
     ff_idle_input(&idle, 0);
 
-    TEST_ASSERT_EQUAL(FF_IDLE_STATE_DIM, ff_idle_tick(&idle, FF_IDLE_T_DIM_MS, false));
+    TEST_ASSERT_EQUAL(FF_IDLE_STATE_DIM, ff_idle_tick(&idle, FF_IDLE_T_DIM_MS, false, false));
 }
 
 static void S26c_AC1_stays_dim_below_off_threshold(void)
@@ -60,8 +60,8 @@ static void S26c_AC1_stays_dim_below_off_threshold(void)
     ff_idle_init(&idle);
     ff_idle_input(&idle, 0);
 
-    TEST_ASSERT_EQUAL(FF_IDLE_STATE_DIM, ff_idle_tick(&idle, FF_IDLE_T_DIM_MS, false));
-    TEST_ASSERT_EQUAL(FF_IDLE_STATE_DIM, ff_idle_tick(&idle, FF_IDLE_T_OFF_MS - 1, false));
+    TEST_ASSERT_EQUAL(FF_IDLE_STATE_DIM, ff_idle_tick(&idle, FF_IDLE_T_DIM_MS, false, false));
+    TEST_ASSERT_EQUAL(FF_IDLE_STATE_DIM, ff_idle_tick(&idle, FF_IDLE_T_OFF_MS - 1, false, false));
 }
 
 static void S26c_AC1_off_exactly_at_off_threshold(void)
@@ -70,8 +70,8 @@ static void S26c_AC1_off_exactly_at_off_threshold(void)
     ff_idle_init(&idle);
     ff_idle_input(&idle, 0);
 
-    TEST_ASSERT_EQUAL(FF_IDLE_STATE_DIM, ff_idle_tick(&idle, FF_IDLE_T_DIM_MS, false));
-    TEST_ASSERT_EQUAL(FF_IDLE_STATE_OFF, ff_idle_tick(&idle, FF_IDLE_T_OFF_MS, false));
+    TEST_ASSERT_EQUAL(FF_IDLE_STATE_DIM, ff_idle_tick(&idle, FF_IDLE_T_DIM_MS, false, false));
+    TEST_ASSERT_EQUAL(FF_IDLE_STATE_OFF, ff_idle_tick(&idle, FF_IDLE_T_OFF_MS, false, false));
 }
 
 /* A single large jump (no intervening ticks through DIM's boundary)
@@ -84,7 +84,7 @@ static void S26c_AC1_off_reached_directly_without_visiting_dim_first(void)
     ff_idle_init(&idle);
     ff_idle_input(&idle, 1000);
 
-    TEST_ASSERT_EQUAL(FF_IDLE_STATE_OFF, ff_idle_tick(&idle, 1000 + FF_IDLE_T_OFF_MS, false));
+    TEST_ASSERT_EQUAL(FF_IDLE_STATE_OFF, ff_idle_tick(&idle, 1000 + FF_IDLE_T_OFF_MS, false, false));
 }
 
 /* ------------------------------------------------------------------- */
@@ -96,7 +96,7 @@ static void S26c_AC1_input_resets_to_active_from_dim(void)
     ff_idle_t idle;
     ff_idle_init(&idle);
     ff_idle_input(&idle, 0);
-    TEST_ASSERT_EQUAL(FF_IDLE_STATE_DIM, ff_idle_tick(&idle, FF_IDLE_T_DIM_MS, false));
+    TEST_ASSERT_EQUAL(FF_IDLE_STATE_DIM, ff_idle_tick(&idle, FF_IDLE_T_DIM_MS, false, false));
 
     ff_idle_input(&idle, FF_IDLE_T_DIM_MS + 500);
     TEST_ASSERT_EQUAL(FF_IDLE_STATE_ACTIVE, ff_idle_state(&idle));
@@ -105,8 +105,8 @@ static void S26c_AC1_input_resets_to_active_from_dim(void)
      * original t=0 — proves ref_ms was actually re-pinned, not just the
      * state flipped back. */
     uint32_t const restarted_dim_at = FF_IDLE_T_DIM_MS + 500 + FF_IDLE_T_DIM_MS;
-    TEST_ASSERT_EQUAL(FF_IDLE_STATE_ACTIVE, ff_idle_tick(&idle, restarted_dim_at - 1, false));
-    TEST_ASSERT_EQUAL(FF_IDLE_STATE_DIM, ff_idle_tick(&idle, restarted_dim_at, false));
+    TEST_ASSERT_EQUAL(FF_IDLE_STATE_ACTIVE, ff_idle_tick(&idle, restarted_dim_at - 1, false, false));
+    TEST_ASSERT_EQUAL(FF_IDLE_STATE_DIM, ff_idle_tick(&idle, restarted_dim_at, false, false));
 }
 
 static void S26c_AC1_input_resets_to_active_from_off(void)
@@ -114,7 +114,7 @@ static void S26c_AC1_input_resets_to_active_from_off(void)
     ff_idle_t idle;
     ff_idle_init(&idle);
     ff_idle_input(&idle, 0);
-    TEST_ASSERT_EQUAL(FF_IDLE_STATE_OFF, ff_idle_tick(&idle, FF_IDLE_T_OFF_MS, false));
+    TEST_ASSERT_EQUAL(FF_IDLE_STATE_OFF, ff_idle_tick(&idle, FF_IDLE_T_OFF_MS, false, false));
 
     ff_idle_input(&idle, FF_IDLE_T_OFF_MS + 42);
     TEST_ASSERT_EQUAL(FF_IDLE_STATE_ACTIVE, ff_idle_state(&idle));
@@ -122,7 +122,7 @@ static void S26c_AC1_input_resets_to_active_from_off(void)
     /* And it does not immediately slam back to OFF on the very next
      * tick — proves the natural-tick "OFF is sticky" short-circuit does
      * not also poison a fresh ACTIVE-from-input state. */
-    TEST_ASSERT_EQUAL(FF_IDLE_STATE_ACTIVE, ff_idle_tick(&idle, FF_IDLE_T_OFF_MS + 43, false));
+    TEST_ASSERT_EQUAL(FF_IDLE_STATE_ACTIVE, ff_idle_tick(&idle, FF_IDLE_T_OFF_MS + 43, false, false));
 }
 
 static void S26c_AC1_input_resets_to_active_from_active(void)
@@ -130,7 +130,7 @@ static void S26c_AC1_input_resets_to_active_from_active(void)
     ff_idle_t idle;
     ff_idle_init(&idle);
     ff_idle_input(&idle, 0);
-    TEST_ASSERT_EQUAL(FF_IDLE_STATE_ACTIVE, ff_idle_tick(&idle, 1000, false));
+    TEST_ASSERT_EQUAL(FF_IDLE_STATE_ACTIVE, ff_idle_tick(&idle, 1000, false, false));
 
     ff_idle_input(&idle, 1500);
     TEST_ASSERT_EQUAL(FF_IDLE_STATE_ACTIVE, ff_idle_state(&idle));
@@ -148,8 +148,8 @@ static void S26c_AC1_keep_awake_holds_active_past_both_thresholds(void)
 
     /* Well past both FF_IDLE_T_DIM_MS and FF_IDLE_T_OFF_MS — a version
      * that ignored keep_awake would report DIM then OFF here. */
-    TEST_ASSERT_EQUAL(FF_IDLE_STATE_ACTIVE, ff_idle_tick(&idle, 20000, true));
-    TEST_ASSERT_EQUAL(FF_IDLE_STATE_ACTIVE, ff_idle_tick(&idle, 60000, true));
+    TEST_ASSERT_EQUAL(FF_IDLE_STATE_ACTIVE, ff_idle_tick(&idle, 20000, true, false));
+    TEST_ASSERT_EQUAL(FF_IDLE_STATE_ACTIVE, ff_idle_tick(&idle, 60000, true, false));
     TEST_ASSERT_EQUAL(FF_IDLE_STATE_ACTIVE, ff_idle_state(&idle));
 }
 
@@ -162,13 +162,13 @@ static void S26c_AC1_keep_awake_does_not_backdate_idle_time_on_release(void)
     ff_idle_init(&idle);
     ff_idle_input(&idle, 0);
 
-    TEST_ASSERT_EQUAL(FF_IDLE_STATE_ACTIVE, ff_idle_tick(&idle, 60000, true)); /* held awake well past OFF */
+    TEST_ASSERT_EQUAL(FF_IDLE_STATE_ACTIVE, ff_idle_tick(&idle, 60000, true, false)); /* held awake well past OFF */
 
     /* keep_awake releases at t=60000. If idle time had kept accruing in
      * the background (the bug this test catches), the very next tick
      * would already read >= FF_IDLE_T_OFF_MS and jump straight to OFF. */
-    TEST_ASSERT_EQUAL(FF_IDLE_STATE_ACTIVE, ff_idle_tick(&idle, 60000 + FF_IDLE_T_DIM_MS - 1, false));
-    TEST_ASSERT_EQUAL(FF_IDLE_STATE_DIM, ff_idle_tick(&idle, 60000 + FF_IDLE_T_DIM_MS, false));
+    TEST_ASSERT_EQUAL(FF_IDLE_STATE_ACTIVE, ff_idle_tick(&idle, 60000 + FF_IDLE_T_DIM_MS - 1, false, false));
+    TEST_ASSERT_EQUAL(FF_IDLE_STATE_DIM, ff_idle_tick(&idle, 60000 + FF_IDLE_T_DIM_MS, false, false));
 }
 
 /* keep_awake also reactivates a state that was already forced OFF — a
@@ -182,7 +182,7 @@ static void S26c_AC1_keep_awake_reactivates_from_forced_off(void)
     ff_idle_force_off(&idle);
     TEST_ASSERT_EQUAL(FF_IDLE_STATE_OFF, ff_idle_state(&idle));
 
-    TEST_ASSERT_EQUAL(FF_IDLE_STATE_ACTIVE, ff_idle_tick(&idle, 100, true));
+    TEST_ASSERT_EQUAL(FF_IDLE_STATE_ACTIVE, ff_idle_tick(&idle, 100, true, false));
 }
 
 /* ------------------------------------------------------------------- */
@@ -196,7 +196,7 @@ static void S26c_AC1_force_off_from_active_ignores_elapsed_time(void)
     ff_idle_t idle;
     ff_idle_init(&idle);
     ff_idle_input(&idle, 0);
-    TEST_ASSERT_EQUAL(FF_IDLE_STATE_ACTIVE, ff_idle_tick(&idle, 100, false));
+    TEST_ASSERT_EQUAL(FF_IDLE_STATE_ACTIVE, ff_idle_tick(&idle, 100, false, false));
 
     ff_idle_force_off(&idle);
     TEST_ASSERT_EQUAL(FF_IDLE_STATE_OFF, ff_idle_state(&idle));
@@ -213,8 +213,8 @@ static void S26c_AC1_force_off_sticks_under_natural_ticking(void)
     ff_idle_input(&idle, 0);
     ff_idle_force_off(&idle);
 
-    TEST_ASSERT_EQUAL(FF_IDLE_STATE_OFF, ff_idle_tick(&idle, 200, false));
-    TEST_ASSERT_EQUAL(FF_IDLE_STATE_OFF, ff_idle_tick(&idle, FF_IDLE_T_DIM_MS - 1, false));
+    TEST_ASSERT_EQUAL(FF_IDLE_STATE_OFF, ff_idle_tick(&idle, 200, false, false));
+    TEST_ASSERT_EQUAL(FF_IDLE_STATE_OFF, ff_idle_tick(&idle, FF_IDLE_T_DIM_MS - 1, false, false));
 }
 
 /* Only ff_idle_input wakes a forced-OFF idle — mirrors "PWR SHORT_PRESS
@@ -256,10 +256,10 @@ static void S26c_AC1_thresholds_pinned_to_spec_literals(void)
     ff_idle_init(&idle);
     ff_idle_input(&idle, 0);
 
-    TEST_ASSERT_EQUAL(FF_IDLE_STATE_ACTIVE, ff_idle_tick(&idle, 14999, false));
-    TEST_ASSERT_EQUAL(FF_IDLE_STATE_DIM, ff_idle_tick(&idle, 15000, false));
-    TEST_ASSERT_EQUAL(FF_IDLE_STATE_DIM, ff_idle_tick(&idle, 29999, false));
-    TEST_ASSERT_EQUAL(FF_IDLE_STATE_OFF, ff_idle_tick(&idle, 30000, false));
+    TEST_ASSERT_EQUAL(FF_IDLE_STATE_ACTIVE, ff_idle_tick(&idle, 14999, false, false));
+    TEST_ASSERT_EQUAL(FF_IDLE_STATE_DIM, ff_idle_tick(&idle, 15000, false, false));
+    TEST_ASSERT_EQUAL(FF_IDLE_STATE_DIM, ff_idle_tick(&idle, 29999, false, false));
+    TEST_ASSERT_EQUAL(FF_IDLE_STATE_OFF, ff_idle_tick(&idle, 30000, false, false));
 }
 
 /* ------------------------------------------------------------------- */
@@ -271,7 +271,7 @@ static void S26c_AC1_short_press_from_active_forces_off(void)
     ff_idle_t idle;
     ff_idle_init(&idle);
     ff_idle_input(&idle, 0);
-    TEST_ASSERT_EQUAL(FF_IDLE_STATE_ACTIVE, ff_idle_tick(&idle, 100, false));
+    TEST_ASSERT_EQUAL(FF_IDLE_STATE_ACTIVE, ff_idle_tick(&idle, 100, false, false));
 
     ff_idle_short_press(&idle, 100, false);
     TEST_ASSERT_EQUAL(FF_IDLE_STATE_OFF, ff_idle_state(&idle));
@@ -282,7 +282,7 @@ static void S26c_AC1_short_press_from_dim_wakes(void)
     ff_idle_t idle;
     ff_idle_init(&idle);
     ff_idle_input(&idle, 0);
-    TEST_ASSERT_EQUAL(FF_IDLE_STATE_DIM, ff_idle_tick(&idle, FF_IDLE_T_DIM_MS, false));
+    TEST_ASSERT_EQUAL(FF_IDLE_STATE_DIM, ff_idle_tick(&idle, FF_IDLE_T_DIM_MS, false, false));
 
     ff_idle_short_press(&idle, FF_IDLE_T_DIM_MS + 10, false);
     TEST_ASSERT_EQUAL(FF_IDLE_STATE_ACTIVE, ff_idle_state(&idle));
@@ -316,7 +316,7 @@ static void S26c_AC1_short_press_noop_while_keep_awake(void)
 
     ff_idle_init(&idle);
     ff_idle_input(&idle, 0);
-    TEST_ASSERT_EQUAL(FF_IDLE_STATE_DIM, ff_idle_tick(&idle, FF_IDLE_T_DIM_MS, false));
+    TEST_ASSERT_EQUAL(FF_IDLE_STATE_DIM, ff_idle_tick(&idle, FF_IDLE_T_DIM_MS, false, false));
     ff_idle_short_press(&idle, FF_IDLE_T_DIM_MS + 10, true);
     TEST_ASSERT_EQUAL_MESSAGE(FF_IDLE_STATE_DIM, ff_idle_state(&idle), "keep_awake short_press acted from DIM");
 
@@ -375,10 +375,10 @@ static void S26f_AC1_stays_off_below_sleep_threshold(void)
     ff_idle_t idle;
     ff_idle_init(&idle);
     ff_idle_input(&idle, 0);
-    TEST_ASSERT_EQUAL(FF_IDLE_STATE_OFF, ff_idle_tick(&idle, FF_IDLE_T_OFF_MS, false));
+    TEST_ASSERT_EQUAL(FF_IDLE_STATE_OFF, ff_idle_tick(&idle, FF_IDLE_T_OFF_MS, false, false));
 
     TEST_ASSERT_EQUAL(FF_IDLE_STATE_OFF,
-                       ff_idle_tick(&idle, FF_IDLE_T_OFF_MS + FF_IDLE_T_SLEEP_MS - 1, false));
+                       ff_idle_tick(&idle, FF_IDLE_T_OFF_MS + FF_IDLE_T_SLEEP_MS - 1, false, false));
 }
 
 static void S26f_AC1_sleeps_exactly_at_sleep_threshold(void)
@@ -386,10 +386,10 @@ static void S26f_AC1_sleeps_exactly_at_sleep_threshold(void)
     ff_idle_t idle;
     ff_idle_init(&idle);
     ff_idle_input(&idle, 0);
-    TEST_ASSERT_EQUAL(FF_IDLE_STATE_OFF, ff_idle_tick(&idle, FF_IDLE_T_OFF_MS, false));
+    TEST_ASSERT_EQUAL(FF_IDLE_STATE_OFF, ff_idle_tick(&idle, FF_IDLE_T_OFF_MS, false, false));
 
     TEST_ASSERT_EQUAL(FF_IDLE_STATE_SLEEP,
-                       ff_idle_tick(&idle, FF_IDLE_T_OFF_MS + FF_IDLE_T_SLEEP_MS, false));
+                       ff_idle_tick(&idle, FF_IDLE_T_OFF_MS + FF_IDLE_T_SLEEP_MS, false, false));
 }
 
 /* A single large jump (no intervening ticks through DIM/OFF's own
@@ -403,7 +403,7 @@ static void S26f_AC1_sleep_reached_directly_without_visiting_off_first(void)
     ff_idle_input(&idle, 1000);
 
     TEST_ASSERT_EQUAL(FF_IDLE_STATE_SLEEP,
-                       ff_idle_tick(&idle, 1000 + FF_IDLE_T_OFF_MS + FF_IDLE_T_SLEEP_MS, false));
+                       ff_idle_tick(&idle, 1000 + FF_IDLE_T_OFF_MS + FF_IDLE_T_SLEEP_MS, false, false));
 }
 
 /* Threshold literal pin (mirrors S26c_AC1_thresholds_pinned_to_spec_literals):
@@ -417,10 +417,10 @@ static void S26f_AC1_thresholds_pinned_to_spec_literals(void)
     ff_idle_t idle;
     ff_idle_init(&idle);
     ff_idle_input(&idle, 0);
-    TEST_ASSERT_EQUAL(FF_IDLE_STATE_OFF, ff_idle_tick(&idle, 30000, false));
+    TEST_ASSERT_EQUAL(FF_IDLE_STATE_OFF, ff_idle_tick(&idle, 30000, false, false));
 
-    TEST_ASSERT_EQUAL(FF_IDLE_STATE_OFF, ff_idle_tick(&idle, 30000 + 119999, false));
-    TEST_ASSERT_EQUAL(FF_IDLE_STATE_SLEEP, ff_idle_tick(&idle, 30000 + 120000, false));
+    TEST_ASSERT_EQUAL(FF_IDLE_STATE_OFF, ff_idle_tick(&idle, 30000 + 119999, false, false));
+    TEST_ASSERT_EQUAL(FF_IDLE_STATE_SLEEP, ff_idle_tick(&idle, 30000 + 120000, false, false));
 }
 
 /* ff_idle_input wakes from SLEEP to ACTIVE like any other state (S26f). */
@@ -430,7 +430,7 @@ static void S26f_AC1_input_wakes_from_sleep_to_active(void)
     ff_idle_init(&idle);
     ff_idle_input(&idle, 0);
     TEST_ASSERT_EQUAL(FF_IDLE_STATE_SLEEP,
-                       ff_idle_tick(&idle, FF_IDLE_T_OFF_MS + FF_IDLE_T_SLEEP_MS, false));
+                       ff_idle_tick(&idle, FF_IDLE_T_OFF_MS + FF_IDLE_T_SLEEP_MS, false, false));
 
     ff_idle_input(&idle, FF_IDLE_T_OFF_MS + FF_IDLE_T_SLEEP_MS + 7);
     TEST_ASSERT_EQUAL(FF_IDLE_STATE_ACTIVE, ff_idle_state(&idle));
@@ -439,7 +439,7 @@ static void S26f_AC1_input_wakes_from_sleep_to_active(void)
      * "does not immediately re-poison a fresh ACTIVE" check as
      * S26c_AC1_input_resets_to_active_from_off. */
     TEST_ASSERT_EQUAL(FF_IDLE_STATE_ACTIVE,
-                       ff_idle_tick(&idle, FF_IDLE_T_OFF_MS + FF_IDLE_T_SLEEP_MS + 8, false));
+                       ff_idle_tick(&idle, FF_IDLE_T_OFF_MS + FF_IDLE_T_SLEEP_MS + 8, false, false));
 }
 
 /* ff_idle_short_press (DIM/OFF/SLEEP -> wake) reaches SLEEP too — the
@@ -451,7 +451,7 @@ static void S26f_AC1_short_press_from_sleep_wakes(void)
     ff_idle_init(&idle);
     ff_idle_input(&idle, 0);
     TEST_ASSERT_EQUAL(FF_IDLE_STATE_SLEEP,
-                       ff_idle_tick(&idle, FF_IDLE_T_OFF_MS + FF_IDLE_T_SLEEP_MS, false));
+                       ff_idle_tick(&idle, FF_IDLE_T_OFF_MS + FF_IDLE_T_SLEEP_MS, false, false));
 
     ff_idle_short_press(&idle, FF_IDLE_T_OFF_MS + FF_IDLE_T_SLEEP_MS + 3, false);
     TEST_ASSERT_EQUAL(FF_IDLE_STATE_ACTIVE, ff_idle_state(&idle));
@@ -468,7 +468,7 @@ static void S26f_AC2_no_sleep_while_keep_awake_holds(void)
     ff_idle_input(&idle, 0);
 
     TEST_ASSERT_EQUAL(FF_IDLE_STATE_ACTIVE,
-                       ff_idle_tick(&idle, FF_IDLE_T_OFF_MS + FF_IDLE_T_SLEEP_MS + 60000, true));
+                       ff_idle_tick(&idle, FF_IDLE_T_OFF_MS + FF_IDLE_T_SLEEP_MS + 60000, true, false));
     TEST_ASSERT_EQUAL(FF_IDLE_STATE_ACTIVE, ff_idle_state(&idle));
 }
 
@@ -480,10 +480,10 @@ static void S26f_AC2_keep_awake_reactivates_from_sleep(void)
     ff_idle_init(&idle);
     ff_idle_input(&idle, 0);
     TEST_ASSERT_EQUAL(FF_IDLE_STATE_SLEEP,
-                       ff_idle_tick(&idle, FF_IDLE_T_OFF_MS + FF_IDLE_T_SLEEP_MS, false));
+                       ff_idle_tick(&idle, FF_IDLE_T_OFF_MS + FF_IDLE_T_SLEEP_MS, false, false));
 
     TEST_ASSERT_EQUAL(FF_IDLE_STATE_ACTIVE,
-                       ff_idle_tick(&idle, FF_IDLE_T_OFF_MS + FF_IDLE_T_SLEEP_MS + 1, true));
+                       ff_idle_tick(&idle, FF_IDLE_T_OFF_MS + FF_IDLE_T_SLEEP_MS + 1, true, false));
 }
 
 /* ff_idle_brightness_pct(SLEEP) = 0, a true zero — same contract as OFF. */
@@ -491,6 +491,105 @@ static void S26f_AC1_brightness_sleep_returns_true_zero(void)
 {
     TEST_ASSERT_EQUAL_UINT8(0, ff_idle_brightness_pct(FF_IDLE_STATE_SLEEP, 70));
     TEST_ASSERT_EQUAL_UINT8(0, ff_idle_brightness_pct(FF_IDLE_STATE_SLEEP, 10));
+}
+
+/* ------------------------------------------------------------------- */
+/* S26 slice (f) AMENDMENT (2026-09-02) — sleep_inhibit (don't enter     */
+/* light sleep while USB is connected)                                  */
+/* ------------------------------------------------------------------- */
+
+/* THE PROXY (AGENTS.md item 6): the easy proxy for "the OFF->SLEEP
+ * transition is inhibited" is a single tick just past the sleep
+ * threshold while inhibit holds — which a version with an off-by-one, or
+ * one that only samples sleep_inhibit on the FIRST inhibited tick, could
+ * still pass. So this ticks to 10x FF_IDLE_T_SLEEP_MS past OFF with
+ * inhibit held true the whole way (this brief's own literal ask). */
+static void S26f_amendment_sleep_inhibit_holds_off_well_past_sleep_threshold(void)
+{
+    ff_idle_t idle;
+    ff_idle_init(&idle);
+    ff_idle_input(&idle, 0);
+    TEST_ASSERT_EQUAL(FF_IDLE_STATE_OFF, ff_idle_tick(&idle, FF_IDLE_T_OFF_MS, false, false));
+
+    uint32_t const far_past_sleep = FF_IDLE_T_OFF_MS + (10u * FF_IDLE_T_SLEEP_MS);
+    TEST_ASSERT_EQUAL(FF_IDLE_STATE_OFF, ff_idle_tick(&idle, far_past_sleep, false, true));
+    TEST_ASSERT_EQUAL(FF_IDLE_STATE_OFF, ff_idle_state(&idle));
+}
+
+/* Releasing inhibit when the sleep threshold has ALREADY elapsed enters
+ * SLEEP on the very next tick — no extra delay, no re-arming needed:
+ * inhibit only ever gated the one comparison, which is re-evaluated
+ * fresh (and now true) the instant inhibit is false again. */
+static void S26f_amendment_sleep_inhibit_release_after_elapsed_sleeps_next_tick(void)
+{
+    ff_idle_t idle;
+    ff_idle_init(&idle);
+    ff_idle_input(&idle, 0);
+    TEST_ASSERT_EQUAL(FF_IDLE_STATE_OFF, ff_idle_tick(&idle, FF_IDLE_T_OFF_MS, false, false));
+
+    uint32_t const far_past_sleep = FF_IDLE_T_OFF_MS + (10u * FF_IDLE_T_SLEEP_MS);
+    TEST_ASSERT_EQUAL(FF_IDLE_STATE_OFF, ff_idle_tick(&idle, far_past_sleep, false, true));
+
+    TEST_ASSERT_EQUAL(FF_IDLE_STATE_SLEEP, ff_idle_tick(&idle, far_past_sleep + 1, false, false));
+}
+
+/* Releasing inhibit BEFORE the sleep threshold has elapsed waits out
+ * exactly the remaining time from the SAME unmoved reference — proves
+ * inhibit never re-pinned ref_ms while it held (a version that re-pinned
+ * ref_ms to the release instant would need another full
+ * FF_IDLE_T_OFF_MS+FF_IDLE_T_SLEEP_MS from here and would still be OFF
+ * at the boundary this test checks). */
+static void S26f_amendment_sleep_inhibit_release_before_elapsed_sleeps_after_remaining_time(void)
+{
+    ff_idle_t idle;
+    ff_idle_init(&idle);
+    ff_idle_input(&idle, 0);
+    TEST_ASSERT_EQUAL(FF_IDLE_STATE_OFF, ff_idle_tick(&idle, FF_IDLE_T_OFF_MS, false, false));
+
+    /* Hold inhibit, but release WELL BEFORE the sleep threshold. */
+    uint32_t const still_before_sleep = FF_IDLE_T_OFF_MS + FF_IDLE_T_SLEEP_MS - 5000;
+    TEST_ASSERT_EQUAL(FF_IDLE_STATE_OFF, ff_idle_tick(&idle, still_before_sleep, false, true));
+
+    /* Inhibit released now (sleep_inhibit=false from here on): the
+     * threshold has not elapsed yet, still OFF one ms short of it, then
+     * SLEEP exactly at it — the ORIGINAL boundary, not a new one counted
+     * from the release instant. */
+    TEST_ASSERT_EQUAL(FF_IDLE_STATE_OFF,
+                       ff_idle_tick(&idle, FF_IDLE_T_OFF_MS + FF_IDLE_T_SLEEP_MS - 1, false, false));
+    TEST_ASSERT_EQUAL(FF_IDLE_STATE_SLEEP,
+                       ff_idle_tick(&idle, FF_IDLE_T_OFF_MS + FF_IDLE_T_SLEEP_MS, false, false));
+}
+
+/* sleep_inhibit is NOT keep_awake and must not re-pin ref_ms or block
+ * DIM/OFF: both still happen at their normal thresholds even while
+ * sleep_inhibit holds true the whole time (a version that folded
+ * sleep_inhibit into keep_awake, or treated it as any kind of wake,
+ * would stay ACTIVE here instead of dimming/going OFF on schedule). */
+static void S26f_amendment_sleep_inhibit_does_not_block_dim_or_off(void)
+{
+    ff_idle_t idle;
+    ff_idle_init(&idle);
+    ff_idle_input(&idle, 0);
+
+    TEST_ASSERT_EQUAL(FF_IDLE_STATE_ACTIVE, ff_idle_tick(&idle, FF_IDLE_T_DIM_MS - 1, false, true));
+    TEST_ASSERT_EQUAL(FF_IDLE_STATE_DIM, ff_idle_tick(&idle, FF_IDLE_T_DIM_MS, false, true));
+    TEST_ASSERT_EQUAL(FF_IDLE_STATE_DIM, ff_idle_tick(&idle, FF_IDLE_T_OFF_MS - 1, false, true));
+    TEST_ASSERT_EQUAL(FF_IDLE_STATE_OFF, ff_idle_tick(&idle, FF_IDLE_T_OFF_MS, false, true));
+}
+
+/* sleep_inhibit is independent of keep_awake in the other direction too:
+ * keep_awake still forces + holds ACTIVE regardless of sleep_inhibit's
+ * value (a version that let either parameter suppress the other's effect
+ * would fail this). */
+static void S26f_amendment_keep_awake_dominates_regardless_of_sleep_inhibit(void)
+{
+    ff_idle_t idle;
+    ff_idle_init(&idle);
+    ff_idle_input(&idle, 0);
+
+    TEST_ASSERT_EQUAL(FF_IDLE_STATE_ACTIVE,
+                       ff_idle_tick(&idle, FF_IDLE_T_OFF_MS + FF_IDLE_T_SLEEP_MS + 60000, true, true));
+    TEST_ASSERT_EQUAL(FF_IDLE_STATE_ACTIVE, ff_idle_state(&idle));
 }
 
 /* ------------------------------------------------------------------- */
@@ -502,7 +601,7 @@ static void S26c_AC1_null_safe(void)
     ff_idle_init(NULL);
     ff_idle_input(NULL, 0);
     ff_idle_force_off(NULL);
-    TEST_ASSERT_EQUAL(FF_IDLE_STATE_ACTIVE, ff_idle_tick(NULL, 0, false));
+    TEST_ASSERT_EQUAL(FF_IDLE_STATE_ACTIVE, ff_idle_tick(NULL, 0, false, false));
     TEST_ASSERT_EQUAL(FF_IDLE_STATE_ACTIVE, ff_idle_state(NULL));
 }
 
@@ -551,6 +650,12 @@ int main(void)
     RUN_TEST(S26f_AC2_no_sleep_while_keep_awake_holds);
     RUN_TEST(S26f_AC2_keep_awake_reactivates_from_sleep);
     RUN_TEST(S26f_AC1_brightness_sleep_returns_true_zero);
+
+    RUN_TEST(S26f_amendment_sleep_inhibit_holds_off_well_past_sleep_threshold);
+    RUN_TEST(S26f_amendment_sleep_inhibit_release_after_elapsed_sleeps_next_tick);
+    RUN_TEST(S26f_amendment_sleep_inhibit_release_before_elapsed_sleeps_after_remaining_time);
+    RUN_TEST(S26f_amendment_sleep_inhibit_does_not_block_dim_or_off);
+    RUN_TEST(S26f_amendment_keep_awake_dominates_regardless_of_sleep_inhibit);
 
     RUN_TEST(S26c_AC1_null_safe);
 

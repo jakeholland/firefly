@@ -38,6 +38,7 @@
 #include <string.h>
 
 #include "driver/gpio.h" /* S26 slice f — GPIO wake source config (touch-INT/PWR/BOOT) for light sleep */
+#include "driver/usb_serial_jtag.h" /* S26 slice f amendment — usb_serial_jtag_is_connected(), sleep-inhibit sample */
 #include "esp_err.h" /* esp_err_to_name() — S26 slice g's boot-splash failure log */
 #include "esp_log.h"
 #include "esp_sleep.h"  /* S26 slice f — esp_light_sleep_start() + wake-source config */
@@ -502,10 +503,46 @@ static void ff_configure_light_sleep_wake(void)
     ESP_LOGI(TAG, "S26f light-sleep wake sources armed: timer=%dms, GPIO wake on PWR(6)/BOOT(0)/touch-INT(%d), VDD_SDIO forced ON",
              (int)(FF_LIGHT_SLEEP_TIMER_WAKE_US / 1000), (int)FF_PIN_TOUCH_INT);
 }
-/* S26 slice f (END) — the actual sleep call site is in the render loop,
- * below app_main()'s `while (true)`, next to the idle-state backlight
- * enact it's a sibling decision to.
- * --------------------------------------------------------------------- */
+
+/* ---------------------------------------------------------------------
+ * S26 slice f AMENDMENT (2026-09-02, maintainer decision) — don't enter
+ * light sleep while USB is connected.
+ *
+ * The ESP32-S3's native USB-Serial/JTAG peripheral powers down during
+ * light sleep, so the puck vanishes from the host the instant the screen
+ * sleeps — breaking every dev/flash session tethered over USB. A
+ * USB-powered puck is also not battery-limited, so there is no cost to
+ * simply never sleeping while connected. Per this repo's house rule
+ * (CLAUDE.md: "all logic goes in firmware/core/"), the DECISION —
+ * whether that means SLEEP is actually withheld — is core's
+ * (`ff_idle_tick`'s new `sleep_inhibit` parameter, ff_idle.h). This file
+ * only SAMPLES the fact and passes the bool through: no `if` about idle
+ * behavior here.
+ *
+ * `usb_serial_jtag_is_connected()` (driver/usb_serial_jtag.h) is backed
+ * by a SOF-packet connection monitor that starts itself automatically at
+ * system init (`ESP_SYSTEM_INIT_FN`, esp_driver_usb_serial_jtag's
+ * usb_serial_jtag_connection_monitor.c) — it needs no
+ * `usb_serial_jtag_driver_install()` call and no new Kconfig: this
+ * project's sdkconfig already sets `CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG_ENABLED=y`
+ * (USB-Serial/JTAG is the secondary console), which is exactly the
+ * condition esp_driver_usb_serial_jtag/CMakeLists.txt uses to force-link
+ * the connection monitor object (`-u usb_serial_jtag_connection_monitor_include`)
+ * — confirmed by reading that CMakeLists.txt and the sdkconfig checked
+ * into this repo, not assumed. main/CMakeLists.txt adds the
+ * `esp_driver_usb_serial_jtag` component to PRIV_REQUIRES so this file
+ * can include its header; no sdkconfig edit was needed or made.
+ * "Connected" per that function's own doc comment means receiving SOF
+ * packets from a host (a live serial/JTAG link), not merely VBUS power —
+ * a USB power bank with no host on the other end reads as NOT connected,
+ * which is the right behaviour here (nothing to keep a port alive for).
+ *
+ * `s_usb_connected_logged` tracks the last value LOGGED (not the value
+ * fed to ff_idle_tick, which is resampled fresh every frame) purely so
+ * the render loop below logs the transition ONCE per change rather than
+ * every 20 ms frame while connected. */
+static bool s_usb_connected_logged = false;
+/* S26 slice f amendment (END) --------------------------------------- */
 
 /* ff_shell_cfg_t.power_off: called by the shell's FF_INTENT_POWER_OFF
  * handler. Composes the two device-IO calls the spec's slice (b) section
@@ -977,11 +1014,33 @@ void app_main(void)
         }
         ff_app_state_t const *v = ff_shell_view(&s_shell);
 
+        /* S26 slice f amendment — sample USB-Serial/JTAG connection state
+         * fresh every frame (same "always sample, let core decide"
+         * placement as every other ff_idle input on this loop) and log
+         * ONLY the transition, not every frame — see
+         * s_usb_connected_logged's doc comment above. `"%s"` (not the
+         * ternary directly as the format argument): ESP_LOGx's LOG_FORMAT
+         * macro adjacent-string-literal-pastes the format argument at
+         * PREPROCESS time, which requires it to be an actual string
+         * literal token, not a runtime expression — a ternary there
+         * fails to compile under -Werror=format (confirmed: this is
+         * exactly what idf.py build first caught). */
+        bool const usb_connected = usb_serial_jtag_is_connected();
+        if (usb_connected != s_usb_connected_logged) {
+            ESP_LOGI(TAG, "%s", usb_connected ? "S26f: USB connected — light sleep inhibited"
+                                               : "S26f: USB disconnected — light sleep armed");
+            s_usb_connected_logged = usb_connected;
+        }
+
         /* S26 slice c — the idle decision itself: ticked every frame
          * (same "always tick" contract as the PWR FSM), against THIS
-         * frame's freshly-projected view. */
+         * frame's freshly-projected view. `usb_connected` is S26f's
+         * amendment: sleep_inhibit, NOT keep_awake — see ff_idle.h's
+         * "Sleep inhibit" section (DIM/OFF still happen; only the
+         * OFF->SLEEP transition is withheld, and ref_ms is never
+         * re-pinned by it). */
         bool const keep_awake = ff_shell_keep_awake(v, false);
-        ff_idle_state_t const idle_state = ff_idle_tick(&s_idle, now_ms, keep_awake);
+        ff_idle_state_t const idle_state = ff_idle_tick(&s_idle, now_ms, keep_awake, usb_connected);
 
         /* Backlight enact — the VALUE is core's decision
          * (ff_idle_brightness_pct: stored_pct unchanged for ACTIVE —

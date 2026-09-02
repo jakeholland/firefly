@@ -227,9 +227,12 @@ void ff_ctl_loop_pump(ff_ctl_loop_ctx_t *ctx)
      * keep_awake source (the sim has no blocking calibration flow, so
      * that third source is always false here) and idle tick, ticked
      * every pump regardless of dirty (same "always tick" contract every
-     * FSM in this codebase follows). */
+     * FSM in this codebase follows). S26f USB-sleep-inhibit: the sim has
+     * no light sleep on host (nothing to inhibit) and no USB-Serial/JTAG
+     * connection to sample, so this always passes false — see
+     * ff_idle.h's "Sleep inhibit" section. */
     bool const keep_awake = ff_shell_keep_awake(&ctx->state, false);
-    ff_idle_state_t const idle_state = ff_idle_tick(&ctx->idle, now_ms, keep_awake);
+    ff_idle_state_t const idle_state = ff_idle_tick(&ctx->idle, now_ms, keep_awake, false);
 
     /* S16 slice d: rebuild ONLY on a dirty tick — this is the whole
      * point (closes #17/#29's "rebuild every frame regardless" cost, and
