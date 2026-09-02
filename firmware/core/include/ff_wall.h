@@ -88,6 +88,7 @@
 #define FF_WALL_H
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -571,6 +572,47 @@ bool ff_wall_split_local(int64_t unix_s, int16_t utc_offset_min, uint16_t *out_d
  * This is what slice b1's `ff_shell_wall()` returns.
  */
 ff_wall_t ff_wall_now(ff_wall_state_t const *st, uint32_t now_ms, ff_wall_offset_cfg_t const *cfg);
+
+/**
+ * Buffer budget for `ff_fmt_clock`'s output, NUL included. The worst
+ * case is 12-hour: "12:59 pm" is 8 characters + NUL = 9. (24-hour's
+ * worst case, "23:59\0", is smaller — 6 — so the 12-hour form binds.)
+ */
+#define FF_WALL_CLOCK_STR_LEN 9
+
+/**
+ * ff_fmt_clock — [api] S21 amendment (clock-format setting) / S18
+ * ("display format"): format a wall-clock minute-of-day as a short human
+ * time string.
+ *
+ * `minute_of_day` is normalized modulo 1440 first, so any
+ * `ff_wall_t.now_min` — including S16's documented [360, 1800) range,
+ * which can exceed a single day — maps to the correct time of day; a
+ * negative value normalizes the same way `ff_settings.c`'s own
+ * `ff_norm_min` does.
+ *
+ * `valid` is the caller's honest-unknown gate (pass `w.src !=
+ * FF_WALL_UNKNOWN` for a wall-clock reading): when false, this writes ""
+ * (NUL-terminated empty string) and nothing else — never an invented
+ * time. The caller/screen renders an empty string as "--:--" (unchanged
+ * behavior; see scr_radar.c/scr_launcher.c).
+ *
+ * `clock_24h` selects the format (`ff_settings_t.clock_24h`):
+ *   - true  (24-hour): "HH:MM", always two-digit hour and minute, e.g.
+ *     "09:46", "21:46", "00:00".
+ *   - false (12-hour, the default): "H:MM am/pm" — NO leading zero on
+ *     the hour, a lowercase "am"/"pm" suffix, e.g. "9:46 pm", "12:00 am"
+ *     (midnight), "12:00 pm" (noon). Hour-of-day 0 and 12 both render as
+ *     "12", the standard 12-hour convention; 1..11 render as-is; 13..23
+ *     render as hour-12.
+ *
+ * `buf`/`n` follow this codebase's other `ff_fmt_*` functions
+ * (`ff_fmt_distance`, `ff_fmt_age` — ff_crew.h): NUL-terminated,
+ * truncated to fit `n` if needed (size it to at least
+ * `FF_WALL_CLOCK_STR_LEN` to never truncate). A NULL `buf` or `n == 0`
+ * is a no-op.
+ */
+void ff_fmt_clock(char *buf, size_t n, int32_t minute_of_day, bool valid, bool clock_24h);
 
 #ifdef __cplusplus
 }

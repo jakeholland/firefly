@@ -1135,6 +1135,86 @@ static void S16_AC12_null_inputs_read_as_unknown(void)
     ff_wall_init(NULL); /* must not crash */
 }
 
+/* ---------------------------------------------------------------------
+ * S21 amendment — ff_fmt_clock, the wall-clock display formatter
+ * (docs/specs/S18-wall-clock-trust.md's "display format" note; the field
+ * it reads, ff_settings_t.clock_24h, is documented in ff_settings.h).
+ * ------------------------------------------------------------------- */
+
+static void S21_fmt_clock_midnight_noon_1pm_both_modes(void)
+{
+    char buf[FF_WALL_CLOCK_STR_LEN];
+
+    /* Midnight: 00:00, minute 0. Both 12-hour edge cases (midnight and
+     * noon) render hour-of-day 0/12 as "12", not "0". */
+    ff_fmt_clock(buf, sizeof(buf), 0, true, true);
+    TEST_ASSERT_EQUAL_STRING("00:00", buf);
+    ff_fmt_clock(buf, sizeof(buf), 0, true, false);
+    TEST_ASSERT_EQUAL_STRING("12:00 am", buf);
+
+    /* Noon: 12:00, minute 720. */
+    ff_fmt_clock(buf, sizeof(buf), 720, true, true);
+    TEST_ASSERT_EQUAL_STRING("12:00", buf);
+    ff_fmt_clock(buf, sizeof(buf), 720, true, false);
+    TEST_ASSERT_EQUAL_STRING("12:00 pm", buf);
+
+    /* 1 pm: 13:00, minute 780 — the first hour after noon rolls back to
+     * "1" (not "13") in 12-hour form. */
+    ff_fmt_clock(buf, sizeof(buf), 780, true, true);
+    TEST_ASSERT_EQUAL_STRING("13:00", buf);
+    ff_fmt_clock(buf, sizeof(buf), 780, true, false);
+    TEST_ASSERT_EQUAL_STRING("1:00 pm", buf);
+
+    /* The design vocabulary's own worked example: 9:46 pm, minute
+     * 21*60+46 = 1306 — also the no-leading-zero-on-the-hour check
+     * ("9:46", never "09:46", in 12-hour form). */
+    ff_fmt_clock(buf, sizeof(buf), 1306, true, false);
+    TEST_ASSERT_EQUAL_STRING("9:46 pm", buf);
+    ff_fmt_clock(buf, sizeof(buf), 1306, true, true);
+    TEST_ASSERT_EQUAL_STRING("21:46", buf);
+}
+
+static void S21_fmt_clock_unknown_stays_empty_both_modes(void)
+{
+    char buf[FF_WALL_CLOCK_STR_LEN];
+
+    /* "" is the honest-unknown output (CLAUDE.md) — the caller/screen
+     * renders it as "--:--", never an invented time; unchanged by this
+     * amendment in either format. */
+    memset(buf, 0xAA, sizeof(buf));
+    ff_fmt_clock(buf, sizeof(buf), 780, false, true);
+    TEST_ASSERT_EQUAL_STRING("", buf);
+
+    memset(buf, 0xAA, sizeof(buf));
+    ff_fmt_clock(buf, sizeof(buf), 780, false, false);
+    TEST_ASSERT_EQUAL_STRING("", buf);
+}
+
+static void S21_fmt_clock_normalizes_minute_of_day(void)
+{
+    char buf[FF_WALL_CLOCK_STR_LEN];
+
+    /* ff_wall_t.now_min's documented range, [360, 1800), can exceed a
+     * single day (1500 falls in it) — must still normalize modulo 1440. */
+    ff_fmt_clock(buf, sizeof(buf), 1500, true, true); /* 1500 - 1440 = 60 -> 01:00 */
+    TEST_ASSERT_EQUAL_STRING("01:00", buf);
+
+    /* Negative wraps the same way ff_settings.c's own ff_norm_min does. */
+    ff_fmt_clock(buf, sizeof(buf), -1, true, true); /* -> 23:59 */
+    TEST_ASSERT_EQUAL_STRING("23:59", buf);
+}
+
+static void S21_fmt_clock_null_and_zero_len_buf_are_a_no_op(void)
+{
+    char buf[FF_WALL_CLOCK_STR_LEN];
+    memset(buf, 0x55, sizeof(buf));
+
+    ff_fmt_clock(buf, 0, 780, true, true);
+    TEST_ASSERT_EQUAL_HEX8(0x55, (uint8_t)buf[0]); /* n == 0: untouched */
+
+    ff_fmt_clock(NULL, sizeof(buf), 780, true, true); /* must not crash */
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -1180,6 +1260,11 @@ int main(void)
     RUN_TEST(S16_AC12c_unloaded_pack_is_not_a_stated_utc_offset);
     RUN_TEST(S16_AC12c_out_of_range_offset_falls_through);
     RUN_TEST(S16_AC12c_settings_utc_offset_round_trips_through_the_store);
+
+    RUN_TEST(S21_fmt_clock_midnight_noon_1pm_both_modes);
+    RUN_TEST(S21_fmt_clock_unknown_stays_empty_both_modes);
+    RUN_TEST(S21_fmt_clock_normalizes_minute_of_day);
+    RUN_TEST(S21_fmt_clock_null_and_zero_len_buf_are_a_no_op);
 
     return UNITY_END();
 }

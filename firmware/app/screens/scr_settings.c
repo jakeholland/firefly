@@ -14,12 +14,16 @@
  *
  * ## Round-safe framing — the key constraint on a 412 ROUND puck
  * NOTHING may cross the round glass edge. Two devices enforce that here:
- *   - The header group (back button + title + name) is CENTERED in the top
- *     band, not tucked in a top-left corner — the corners of the square are
- *     off-glass on the physical circle, so a corner-anchored control is
- *     clipped by the bezel. The group is a fixed-width block centered
- *     horizontally (`FF_SETTINGS_HDR_W`, start x computed once), placed low
- *     enough that the back button's own corners clear the r=206 circle.
+ *   - The header group (title + name) is CENTERED in the top band, not
+ *     tucked in a top-left corner — the corners of the square are off-glass
+ *     on the physical circle, so a corner-anchored control is clipped by
+ *     the bezel. The title and name are built into ONE flex-COLUMN
+ *     container, cross-axis centered, so both share the glass's own
+ *     vertical axis regardless of their own (different) natural text
+ *     widths — see the header-alignment-fix note above `FF_SETTINGS_HDR_Y`.
+ *     The container's width is queried from `ff_layout_safe_margin_x`
+ *     (same primitive the scroll list below uses), placed low enough that
+ *     it clears the r=206 circle at FF_SETTINGS_HDR_Y.
  *   - The scroll rows live in ONE `lv_obj` list container positioned as a
  *     rectangle INSCRIBED in the round glass across its whole height (its
  *     x-inset is `ff_layout_safe_margin_x` evaluated over the container's
@@ -44,9 +48,10 @@
  * ## One consistent row language
  * Every row reads label LEFT (muted, uppercase), control RIGHT. Controls are
  * PILLS (rounded ~12px):
- *   - Toggle pairs (UNITS FT|MI, SHARE LIVE|GHOST, HAPTICS ON|OFF,
- *     GLOW ON|OFF, COLORBLIND ON|OFF) render two pills; the ACTIVE one is
- *     amber-on-ink, the inactive one surface-on-muted. Both pills of a pair
+ *   - Toggle pairs (UNITS FT|MI, CLOCK 12H|24H, SHARE LIVE|GHOST,
+ *     HAPTICS ON|OFF, GLOW ON|OFF, COLORBLIND ON|OFF) render two pills; the
+ *     ACTIVE one is amber-on-ink, the inactive one surface-on-muted. Both
+ *     pills of a pair
  *     forward to the SAME toggle callback with no user_data, so (a) tapping
  *     either flips the two-state setting and (b) the hit-target sweep treats
  *     them as ONE logical control (its composite-control exclusion keys off
@@ -114,21 +119,30 @@
 
 #define FF_SETTINGS_SAFETY_PX 10.0f /* see scr_compose.c's FF_COMPOSE_SAFETY_PX — same rationale */
 
-/* --- Pinned, horizontally-centered header. A fixed-width block so the back
- * button's absolute position is deterministic regardless of the (variable-
- * length, clipped) name: back button on the left, a title/name text column
- * to its right, the whole block centered in the top band. Placed at
- * FF_SETTINGS_HDR_Y (low enough that the 46px button's top corners clear the
- * r=206 circle even at the block's leftmost x). --- */
-#define FF_SETTINGS_BACK_SZ   46
-#define FF_SETTINGS_HDR_GAP   10
-#define FF_SETTINGS_HDR_TEXT_W 140
-#define FF_SETTINGS_HDR_W     (FF_SETTINGS_BACK_SZ + FF_SETTINGS_HDR_GAP + FF_SETTINGS_HDR_TEXT_W) /* 196 */
-#define FF_SETTINGS_HDR_X     ((FF_THEME_PUCK_PX - FF_SETTINGS_HDR_W) / 2)                          /* 108 */
-#define FF_SETTINGS_HDR_Y     34
-#define FF_SETTINGS_HDR_TEXT_X (FF_SETTINGS_HDR_X + FF_SETTINGS_BACK_SZ + FF_SETTINGS_HDR_GAP)      /* 164 */
-#define FF_SETTINGS_TITLE_Y   (FF_SETTINGS_HDR_Y + 4)  /* 38 — vertically nestled against the button */
-#define FF_SETTINGS_NAME_Y    (FF_SETTINGS_TITLE_Y + 22) /* 60 */
+/* --- Pinned header: SETTINGS + the owner's name, stacked as ONE centered
+ * block on the glass's own vertical axis (round-safe framing note above).
+ *
+ * Header-alignment fix: S21's horizontal-carousel rework retired the back
+ * button (Settings is a swipe tile now, left by swiping — see this file's
+ * top comment), but the header kept reserving that button's gutter and
+ * left-anchoring both lines against it — so the two lines merely happened
+ * to sit near the puck's center rather than actually being centered on it,
+ * and "SETTINGS" (an unconstrained-width label, whose glyph width differs
+ * from the fixed text column) drifted visibly right of the shorter, truly
+ * left-anchored name below it (`firmware/tests/golden/settings_default.png`
+ * before this fix: the name sits left of the title's center). Fixed by
+ * building the two labels into ONE flex COLUMN container, cross-axis
+ * centered (`LV_FLEX_ALIGN_CENTER`) — each label's own natural width is
+ * centered independently within the shared column, so a short name and a
+ * wider title share one true vertical axis regardless of glyph width. The
+ * container's own width is queried from `ff_layout_safe_margin_x` (same
+ * round-safe-framing primitive the scroll list below uses), so it clears
+ * the r=206 bezel at FF_SETTINGS_HDR_Y exactly as the old fixed-width
+ * block did — just centered on the puck instead of offset for a button
+ * that no longer exists. */
+#define FF_SETTINGS_HDR_Y       34
+#define FF_SETTINGS_HDR_H       52 /* generous band covering title+name, for the safe-margin query below */
+#define FF_SETTINGS_HDR_ROW_GAP 2  /* title -> name vertical gap inside the stacked block */
 
 /* The scroll viewport: an inscribed rectangle spanning the MIDDLE band, well
  * clear of the header above and the bottom curve below. Its x-inset is the
@@ -173,14 +187,20 @@
 #define FF_SETTINGS_BRIGHT_BLOCK_H   (FF_SETTINGS_REL_SLIDER_Y + FF_SETTINGS_SLIDER_H) /* 74 */
 
 #define FF_SETTINGS_REL_UNITS_Y (FF_SETTINGS_BRIGHT_BLOCK_H + FF_SETTINGS_ROW_GAP)     /* 88  */
-#define FF_SETTINGS_REL_SHARE_Y (FF_SETTINGS_REL_UNITS_Y + FF_SETTINGS_ROW_STEP)       /* 150 */
-#define FF_SETTINGS_REL_HAPTICS_Y (FF_SETTINGS_REL_SHARE_Y + FF_SETTINGS_ROW_STEP)     /* 212 */
-#define FF_SETTINGS_REL_GLOW_Y  (FF_SETTINGS_REL_HAPTICS_Y + FF_SETTINGS_ROW_STEP)     /* 274 */
-#define FF_SETTINGS_REL_WATER_Y (FF_SETTINGS_REL_GLOW_Y + FF_SETTINGS_ROW_STEP)        /* 336 */
-#define FF_SETTINGS_REL_QUIET_Y (FF_SETTINGS_REL_WATER_Y + FF_SETTINGS_ROW_STEP)       /* 398 */
-#define FF_SETTINGS_REL_CB_Y    (FF_SETTINGS_REL_QUIET_Y + FF_SETTINGS_ROW_STEP)       /* 460 */
-#define FF_SETTINGS_REL_CAL_Y   (FF_SETTINGS_REL_CB_Y + FF_SETTINGS_ROW_STEP)          /* 522 */
-#define FF_SETTINGS_CONTENT_H   (FF_SETTINGS_REL_CAL_Y + FF_SETTINGS_ROW_H)            /* 570 */
+/* CLOCK sits right after UNITS — both are display-format toggles — ahead of
+ * SHARE/HAPTICS/GLOW/WATER/QUIET/COLORBLIND/CALIBRATE, each of which simply
+ * shifts down by one FF_SETTINGS_ROW_STEP (spacing itself unchanged; S21's
+ * scroll list has no page to overflow, so the new row just scrolls into
+ * view like every other). */
+#define FF_SETTINGS_REL_CLOCK_Y (FF_SETTINGS_REL_UNITS_Y + FF_SETTINGS_ROW_STEP)       /* 150 */
+#define FF_SETTINGS_REL_SHARE_Y (FF_SETTINGS_REL_CLOCK_Y + FF_SETTINGS_ROW_STEP)       /* 212 */
+#define FF_SETTINGS_REL_HAPTICS_Y (FF_SETTINGS_REL_SHARE_Y + FF_SETTINGS_ROW_STEP)     /* 274 */
+#define FF_SETTINGS_REL_GLOW_Y  (FF_SETTINGS_REL_HAPTICS_Y + FF_SETTINGS_ROW_STEP)     /* 336 */
+#define FF_SETTINGS_REL_WATER_Y (FF_SETTINGS_REL_GLOW_Y + FF_SETTINGS_ROW_STEP)        /* 398 */
+#define FF_SETTINGS_REL_QUIET_Y (FF_SETTINGS_REL_WATER_Y + FF_SETTINGS_ROW_STEP)       /* 460 */
+#define FF_SETTINGS_REL_CB_Y    (FF_SETTINGS_REL_QUIET_Y + FF_SETTINGS_ROW_STEP)       /* 522 */
+#define FF_SETTINGS_REL_CAL_Y   (FF_SETTINGS_REL_CB_Y + FF_SETTINGS_ROW_STEP)          /* 584 */
+#define FF_SETTINGS_CONTENT_H   (FF_SETTINGS_REL_CAL_Y + FF_SETTINGS_ROW_H)            /* 632 */
 
 /**
  * settings_safe_margin_x — thin int32_t/ceil wrapper around
@@ -400,6 +420,16 @@ static void settings_units_cb(lv_event_t *e)
 {
     (void)e;
     settings_emit_int(FF_SETTING_IMPERIAL, s_settings.imperial ? 0 : 1);
+}
+
+/* ---------------------------------------------------------------------
+ * CLOCK (12H|24H) — S21 amendment. Same two-state toggle shape as UNITS
+ * above: FF_SETTING_CLOCK_24H is bool-backed, "nonzero is true".
+ * ------------------------------------------------------------------- */
+static void settings_clock_cb(lv_event_t *e)
+{
+    (void)e;
+    settings_emit_int(FF_SETTING_CLOCK_24H, s_settings.clock_24h ? 0 : 1);
 }
 
 /* ---------------------------------------------------------------------
@@ -767,26 +797,45 @@ void ff_scr_settings_build(lv_obj_t *parent, ff_app_settings_t const *settings)
      * ink — no gradient, so no RGB565 edge banding on device. --- */
     settings_build_header_band(puck, list_margin, row_w, FF_SETTINGS_LIST_Y);
 
-    /* --- PINNED, centered header: SETTINGS title + name. Built directly
-     * on the puck (never inside the scroll list) so it never scrolls
-     * away. There is no BACK control any more — the horizontal-carousel
-     * rework made Settings a swipe tile you leave by swiping left, not a
-     * modal with a back button (see scr_settings.h). --- */
-    lv_obj_t *title = lv_label_create(puck);
+    /* --- PINNED, centered header: SETTINGS title + name, stacked as ONE
+     * flex-column block centered on the glass's own vertical axis (see this
+     * constant block's doc comment above for the alignment-fix rationale).
+     * Built directly on the puck (never inside the scroll list) so it never
+     * scrolls away. There is no BACK control any more — the horizontal-
+     * carousel rework made Settings a swipe tile you leave by swiping left,
+     * not a modal with a back button (see scr_settings.h). --- */
+    int32_t const hdr_margin = settings_safe_margin_x(FF_SETTINGS_HDR_Y, FF_SETTINGS_HDR_H);
+    int32_t const hdr_w = FF_THEME_PUCK_PX - 2 * hdr_margin;
+
+    lv_obj_t *hdr = lv_obj_create(puck);
+    lv_obj_remove_style_all(hdr);
+    lv_obj_set_size(hdr, hdr_w, LV_SIZE_CONTENT);
+    lv_obj_set_pos(hdr, hdr_margin, FF_SETTINGS_HDR_Y);
+    lv_obj_set_style_pad_all(hdr, 0, 0);
+    lv_obj_set_style_pad_row(hdr, FF_SETTINGS_HDR_ROW_GAP, 0);
+    lv_obj_clear_flag(hdr, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_clear_flag(hdr, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_flex_flow(hdr, LV_FLEX_FLOW_COLUMN);
+    /* Main axis (vertical, column flow): pack from the top, no extra
+     * stretch. Cross axis (horizontal): CENTER each child — this is what
+     * puts a short name and a wider title on the same true vertical axis
+     * regardless of their own (different) natural widths. */
+    lv_obj_set_flex_align(hdr, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+
+    lv_obj_t *title = lv_label_create(hdr);
     lv_label_set_text(title, "SETTINGS");
     lv_obj_set_style_text_font(title, FF_THEME_FONT_HEADLINE, 0);
     lv_obj_set_style_text_color(title, lv_color_hex(FF_THEME_COLOR_AMBER), 0);
     lv_obj_set_style_text_letter_space(title, 3, 0);
-    lv_obj_set_pos(title, FF_SETTINGS_HDR_TEXT_X, FF_SETTINGS_TITLE_Y);
 
-    lv_obj_t *name_lbl = lv_label_create(puck);
-    lv_obj_set_width(name_lbl, FF_SETTINGS_HDR_TEXT_W);
+    lv_obj_t *name_lbl = lv_label_create(hdr);
+    lv_obj_set_width(name_lbl, hdr_w);
     lv_label_set_long_mode(name_lbl, LV_LABEL_LONG_DOT);
+    lv_obj_set_style_text_align(name_lbl, LV_TEXT_ALIGN_CENTER, 0); /* centers within its own (container-width) box */
     lv_label_set_text(name_lbl, (s_settings.my_name[0] != '\0') ? s_settings.my_name : "(unset)");
     lv_obj_set_style_text_font(name_lbl, FF_THEME_FONT_LABEL, 0);
     lv_obj_set_style_text_color(name_lbl, lv_color_hex(FF_THEME_COLOR_MUTED), 0);
     lv_obj_set_style_text_letter_space(name_lbl, 1, 0);
-    lv_obj_set_pos(name_lbl, FF_SETTINGS_HDR_TEXT_X, FF_SETTINGS_NAME_Y);
 
     /* --- The scroll list: an inscribed rectangle in the round glass, vertical-
      * only user scroll. --- */
@@ -820,6 +869,8 @@ void ff_scr_settings_build(lv_obj_t *parent, ff_app_settings_t const *settings)
     settings_build_brightness(list, row_w);
     settings_build_toggle_row(list, FF_SETTINGS_REL_UNITS_Y, row_w, "UNITS", "FT", "M",
                               s_settings.imperial ? 0 : 1, settings_units_cb);
+    settings_build_toggle_row(list, FF_SETTINGS_REL_CLOCK_Y, row_w, "CLOCK", "12H", "24H",
+                              s_settings.clock_24h ? 1 : 0, settings_clock_cb);
     settings_build_toggle_row(list, FF_SETTINGS_REL_SHARE_Y, row_w, "SHARE", "LIVE", "GHOST",
                               (s_settings.share_mode == FF_SHARE_LIVE)    ? 0
                               : (s_settings.share_mode == FF_SHARE_GHOST) ? 1
