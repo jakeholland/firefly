@@ -42,6 +42,12 @@
 #define LV_FONT_MONTSERRAT_22 1
 #define LV_FONT_MONTSERRAT_36 1
 
+/* S24 slice c bugfix (scr_signals.c thread messages): the design canvas's
+ * ~15px thread-bubble body text. Rounds UP to the nearest vendored size
+ * per this block's own rationale above (never down, to clear the
+ * legibility floor) — 16, not 14. */
+#define LV_FONT_MONTSERRAT_16 1
+
 /* S06 (app/screens/scr_nav.c): three-face swipe shell. */
 #define LV_USE_TILEVIEW 1
 

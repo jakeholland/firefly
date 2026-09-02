@@ -1,0 +1,27 @@
+{
+  "fixture": "signals_rally_scrolled",
+  "face": "signals",
+  "signals": {
+    "subview": "rally",
+    "thread_node": 0,
+    "thread_name": "CREW",
+    "target_kind": "whole_crew",
+    "convs": [
+      {"conv": "crew", "unread": 0, "item_count": 4,
+       "preview_kind": "pulse", "preview_dir": "broadcast", "preview_age_ms": 60000,
+       "preview_from": "DANA"},
+      {"conv": "member", "node_id": 111, "name": "DANA", "initial": "D", "color_idx": 0,
+       "presence": "seen", "presence_age_ms": 60000}
+    ],
+    "rally": {
+      "on_me_ok": true,
+      "sel": 1,
+      "when": "15",
+      "places": ["Main Stage", "Bass Hollow", "Wompy Woods", "The Grove", "Sunrise Stage", "Camp"],
+      "echo_place": "Main Stage",
+      "echo_when": "+15m",
+      "can_send": true,
+      "confirm_armed": false
+    }
+  }
+}
