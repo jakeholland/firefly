@@ -186,9 +186,10 @@ Read off the ruler by the maintainer over three flashes:
 | (0, 0) | whole image visible but sitting left: pink block ~5/12 columns out from the left bezel, lit background right of column 411, r=205 ring's left arc under the bezel; **no wrap** (nothing striped at the right edge) — the panel's addressable area is wider than 412 and the glass is centred on it |
 | (5, 0) | all four corner squares visible and symmetric, ring complete, pink block fully visible; bottom gap slightly larger than top |
 | (6, 3) | bottom-right corner square hidden, left ruler more visible than right — overshoot |
-| **(5, 1)** | **all four corner squares visible, rulers balanced — adopted** |
+| (5, 1) | all four corner squares visible, rulers balanced — but stray white lines at the top and right edges: the SPD2010 needs 4-px-aligned flush windows in panel coordinates, and a non-multiple-of-4 gap misaligns every flush |
+| **(4, 0)** | **nearest multiple-of-4 gap; adopted** (within the eye's resolution of (5,1)) |
 
-`FF_LCD_X_GAP 5`, `FF_LCD_Y_GAP 1` in `ff_display.c`. The outer r=205 ring sits on the
+`FF_LCD_X_GAP 4`, `FF_LCD_Y_GAP 0` in `ff_display.c` (statically asserted to multiples of 4). The outer r=205 ring sits on the
 last pixel and is only visible at some viewing angles — the bezel lip covers the outermost
 pixels; that is expected and symmetric. Touch calibration was re-run after this change
 (pixels moved under the sensor). Other boards of the same SKU should be re-measured with the
