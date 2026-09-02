@@ -127,3 +127,23 @@ UART transport to the comms brain (slice c), sensors/compass calibration (slice
 d), idle/wake power (slice e), embedded festpack assets (slice e). Touch
 *calibration* accuracy beyond "tap/swipe register in the right region" is slice
 d's concern; b needs the events wired, not surveyed-accurate coordinates.
+
+## Amendments
+
+**2026-09-02 — SCREEN flip setting (maintainer ask; full mechanism in
+`docs/specs/S21-settings-rework.md`'s own amendment).** AC1 above ("a
+two-colour split to prove orientation") establishes this panel's ONE
+native orientation at bring-up; the Fusion-designed case can mount the
+puck 180° from that native orientation, which is now a runtime toggle
+(`ff_settings_t.screen_flip`, Settings' SCREEN row) rather than a
+fixed board-bring-up fact. `ff_display_set_flip`
+(`targets/esp32s3/components/ff_display/ff_display.c`) applies a
+HARDWARE `esp_lcd_panel_mirror` — b1's own orientation-proving split-
+fill pattern, and STAGE 1's test pattern generally, are drawn assuming
+NORMAL orientation and are unaffected by this setting (they run before
+`ff_shell_init` ever loads it). b3's touch-event path is amended too:
+`ff_touchcal_process_cb` (the SAME `process_coordinates` seam this
+slice wired) now composes a `screen_flip`-driven rotation AFTER the
+S15d calibration fit — see that spec's own S21 cross-reference — so a
+physical tap or swipe still lands on the same LOGICAL element as the
+un-flipped case, in either orientation.

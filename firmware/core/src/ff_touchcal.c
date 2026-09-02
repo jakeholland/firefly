@@ -127,3 +127,16 @@ void ff_touchcal_apply(const ff_touchcal_t *c, int rawx, int rawy, int *sx, int 
     *sx = ff_clamp_coord(ox);
     *sy = ff_clamp_coord(oy);
 }
+
+void ff_touchcal_flip180(int x, int y, int w, int h, int *out_x, int *out_y)
+{
+    if (out_x == NULL || out_y == NULL) {
+        return;
+    }
+    /* Snapshot before writing, so out_x/out_y aliasing x/y's own storage
+     * (a caller doing `ff_touchcal_flip180(x, y, w, h, &x, &y)`) is safe. */
+    int const in_x = x;
+    int const in_y = y;
+    *out_x = w - 1 - in_x;
+    *out_y = h - 1 - in_y;
+}

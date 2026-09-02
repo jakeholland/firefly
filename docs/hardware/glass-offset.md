@@ -207,3 +207,57 @@ the **visible glass geometry** in `ff_theme.h`: `FF_THEME_GLASS_CX 208`, `_CY 20
 Edge-hugging elements (first: Radar's rim tint) centre on it and stay inside it; everything
 else keeps the framebuffer centre, where 2 px is invisible. Touch calibration absorbs the
 same offset via its own affine fit. Re-measure on any other board.
+
+## Amendment (2026-09-02): the flipped-case rule
+
+The Fusion-designed case mounts the puck upside-down. `docs/specs/S21-settings-rework.md`'s
+own amendment on that date adds a Settings **SCREEN NORMAL|FLIPPED** row
+(`ff_settings_t.screen_flip`) that drives a HARDWARE 180° panel mirror
+(`ff_display_set_flip`, `esp_lcd_panel_mirror`) — not a software rotation, and not a change
+to the panel gap (the `set_gap` outcome above still stands: this panel's gap must stay
+`(0, 0)`, unrelated to and unaffected by the mirror bits).
+
+**The bezel is a case feature, not a display feature — it does not move with the mirror.**
+The measured `FF_THEME_GLASS_CX 208` offset above says the bezel hides the framebuffer's
+PHYSICAL LEFT ~5px when the panel renders in its native (NORMAL) orientation. Flipping the
+panel via MADCTL swaps which physical edge each framebuffer column lands on, but the bezel
+cutout itself is a fixed physical hole in the case — it still hides the same ~5px on the
+puck's physical left. Under the mirror, framebuffer column 0 (the LEFT edge in un-mirrored
+terms) now lands on the puck's physical RIGHT, so the ~5px the bezel was already hiding on
+the physical left is now hiding the framebuffer's RIGHT ~5px instead — the visible centre
+mirrors to `FF_THEME_PUCK_PX - FF_THEME_GLASS_CX` (412 - 208 = **204**). `FF_THEME_GLASS_CY`
+(206) needs the identical treatment for consistency even though it is numerically a no-op
+here — the measured vertical offset on board 2 was 0 (CY already equals `FF_THEME_PUCK_PX /
+2`), so its mirror (412 - 206 = 206) is itself; a future board with a genuine non-zero CY
+offset gets the correction for free rather than a second hand-derived constant. `GLASS_R`
+(the radius) is unaffected by either axis's mirror — a point reflection doesn't change a
+*radius* — so it has no flipped variant.
+
+`ff_theme.h` expresses this as two pure functions, `ff_theme_glass_cx(bool flip)` /
+`ff_theme_glass_cy(bool flip)` (same `static inline`, explicit-parameter, no-hidden-global
+convention `ff_theme_crew_color`'s `colorblind` parameter already established in this same
+header — see that function's own doc comment), consumed by `radar_build_rim_tint`
+(`scr_radar.c`) — the one on-glass element, today, that hugs the physical bezel closely
+enough for a 4px shift to be the visible thing. Grep `FF_THEME_GLASS_` before adding a
+second edge-hugging element; it must thread the same explicit `screen_flip` parameter
+(`ff_scr_radar_build`'s own signature is the existing example) rather than reading a global.
+
+**Touch absorbs the SAME flip, composed AFTER calibration, never folded into the calibration
+fit itself.** `ff_touchcal_flip180` (`ff_touchcal.h`/`.c`, a pure, unit-tested helper) runs in
+the device's `process_coordinates` seam right after `ff_touchcal_apply`. Composing the two
+steps in THIS order — rather than, say, re-deriving a single combined affine — is what lets a
+calibration solved in one orientation stay valid in the other with no re-calibration: the
+per-unit `ff_touchcal_t` fit characterizes the touch SENSOR's own raw-tick error, which is a
+property of the silicon and the glass, not of which way the case happens to be mounted; the
+180° flip is a separate, later, orientation-only step. (One care point this raised: the S15d
+crosshair-capture flow itself had to be taught to capture against the true, un-flipped sensor
+reading even when run WHILE already flipped — otherwise a fresh calibration performed on an
+already-flipped puck would double-compose with live use's own flip step and drift. See
+`ff_display.c`'s `s_cal_capturing` for that fix and its derivation.)
+
+Sim note: the sim never mirrors its own framebuffer — there is no physical bezel for it to
+reason about, and `screen_flip` only ever moves WHERE `ff_theme_glass_cx`/`_cy` compute the
+rim-tint centre in the sim's own un-mirrored coordinate space (see the `radar_stale_flipped`
+golden fixture). On-glass verification of the real hardware mirror (splash upright, rim
+centred, touch landing correctly, in the physically flipped case) is the maintainer's,
+per this document's own hardware-in-the-loop convention.

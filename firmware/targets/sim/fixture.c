@@ -971,6 +971,13 @@ static ff_fixture_result_t fx_parse_settings(fx_ctx_t const *c, int obj_i, ff_ap
     /* S21 amendment: the CLOCK 12H|24H toggle. Omitted -> false (12-hour),
      * the memset(0) default, same as a fresh puck. */
     if (fx_obj_get(c, obj_i, "clock_24h", &t)) s->clock_24h = fx_bool(c, t, false);
+    /* format v8 amendment: the SCREEN NORMAL|FLIPPED toggle. Omitted ->
+     * false (NORMAL), the memset(0) default, same as a fresh puck. The
+     * sim never mirrors its own framebuffer (there is no physical bezel
+     * to reason about — see ff_theme.h's ff_theme_glass_cx/_cy doc
+     * comment); this only moves WHERE the glass-centred rim tint draws
+     * in the sim's own un-mirrored coordinate space. */
+    if (fx_obj_get(c, obj_i, "screen_flip", &t)) s->screen_flip = fx_bool(c, t, false);
     return FF_FIXTURE_OK;
 }
 
@@ -1804,6 +1811,7 @@ int ff_fixture_dump_json(ff_app_state_t const *s, char *buf, size_t buf_sz)
     fw_raw(&w, s->settings.colorblind ? ",\"colorblind\":true" : ",\"colorblind\":false"); /* S17 slice a */
     fw_fmt(&w, ",\"brightness_pct\":%u", (unsigned)s->settings.brightness_pct); /* #100 */
     fw_raw(&w, s->settings.clock_24h ? ",\"clock_24h\":true" : ",\"clock_24h\":false"); /* S21 amendment */
+    fw_raw(&w, s->settings.screen_flip ? ",\"screen_flip\":true" : ",\"screen_flip\":false"); /* format v8 amendment */
     fw_raw(&w, "}");
 
     /* map (S09) — field-for-field mirror of fx_parse_map so a dump

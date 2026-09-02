@@ -165,6 +165,22 @@
 #define FF_SETTINGS_TOGGLE_GAP    6
 #define FF_SETTINGS_TOGGLE_GRP_W  (2 * FF_SETTINGS_TOGGLE_PILL_W + FF_SETTINGS_TOGGLE_GAP) /* 122 */
 
+/* SCREEN's own pill width (format v8 amendment): "NORMAL"/"FLIPPED" are
+ * longer than every other toggle-pair's label ("GHOST", this row's own
+ * previous longest at 5 glyphs, is the runner-up) — at the shared
+ * FF_SETTINGS_TOGGLE_PILL_W (58px, sized for "GHOST"), "FLIPPED" visibly
+ * overflows the pill on the FF_THEME_FONT_CHIP (Montserrat 14) render (a
+ * real, sim-caught defect — not a hypothetical). Widened just for this
+ * row's pill pair, right-aligned the same as every other toggle row (only
+ * `grp_x` moves left to fit); every other toggle row's pill width and
+ * alignment is untouched. Not a hardcoded guess: the row is wide enough
+ * (see FF_SETTINGS_LIST_H's own inscribed-rectangle margin) that widening
+ * only this row's control group cannot crowd the "SCREEN" caption or cross
+ * the round glass edge — the sim's own scroll-aware hit-target sweep
+ * (test_face_hit_targets.c) still verifies both pills clear the ≥44px
+ * floor and the round-glass containment at this width. */
+#define FF_SETTINGS_SCREEN_PILL_W 84
+
 /* Value pill (WATER/QUIET): one pill wide enough for "120 MIN"/"4A-10A". */
 #define FF_SETTINGS_VALUE_PILL_W 96
 #define FF_SETTINGS_VALUE_GAP    12
@@ -193,14 +209,19 @@
  * scroll list has no page to overflow, so the new row just scrolls into
  * view like every other). */
 #define FF_SETTINGS_REL_CLOCK_Y (FF_SETTINGS_REL_UNITS_Y + FF_SETTINGS_ROW_STEP)       /* 150 */
-#define FF_SETTINGS_REL_SHARE_Y (FF_SETTINGS_REL_CLOCK_Y + FF_SETTINGS_ROW_STEP)       /* 212 */
-#define FF_SETTINGS_REL_HAPTICS_Y (FF_SETTINGS_REL_SHARE_Y + FF_SETTINGS_ROW_STEP)     /* 274 */
-#define FF_SETTINGS_REL_GLOW_Y  (FF_SETTINGS_REL_HAPTICS_Y + FF_SETTINGS_ROW_STEP)     /* 336 */
-#define FF_SETTINGS_REL_WATER_Y (FF_SETTINGS_REL_GLOW_Y + FF_SETTINGS_ROW_STEP)        /* 398 */
-#define FF_SETTINGS_REL_QUIET_Y (FF_SETTINGS_REL_WATER_Y + FF_SETTINGS_ROW_STEP)       /* 460 */
-#define FF_SETTINGS_REL_CB_Y    (FF_SETTINGS_REL_QUIET_Y + FF_SETTINGS_ROW_STEP)       /* 522 */
-#define FF_SETTINGS_REL_CAL_Y   (FF_SETTINGS_REL_CB_Y + FF_SETTINGS_ROW_STEP)          /* 584 */
-#define FF_SETTINGS_CONTENT_H   (FF_SETTINGS_REL_CAL_Y + FF_SETTINGS_ROW_H)            /* 632 */
+/* SCREEN sits right after CLOCK — same "format v8 amendment, maintainer
+ * ask, 2026-09-02" insertion CLOCK's own S21 amendment made above CLOCK:
+ * every row from SHARE down simply shifts by one more FF_SETTINGS_ROW_STEP
+ * (spacing unchanged; the scroll list absorbs it, no page to overflow). */
+#define FF_SETTINGS_REL_SCREEN_Y (FF_SETTINGS_REL_CLOCK_Y + FF_SETTINGS_ROW_STEP)      /* 212 */
+#define FF_SETTINGS_REL_SHARE_Y (FF_SETTINGS_REL_SCREEN_Y + FF_SETTINGS_ROW_STEP)      /* 274 */
+#define FF_SETTINGS_REL_HAPTICS_Y (FF_SETTINGS_REL_SHARE_Y + FF_SETTINGS_ROW_STEP)     /* 336 */
+#define FF_SETTINGS_REL_GLOW_Y  (FF_SETTINGS_REL_HAPTICS_Y + FF_SETTINGS_ROW_STEP)     /* 398 */
+#define FF_SETTINGS_REL_WATER_Y (FF_SETTINGS_REL_GLOW_Y + FF_SETTINGS_ROW_STEP)        /* 460 */
+#define FF_SETTINGS_REL_QUIET_Y (FF_SETTINGS_REL_WATER_Y + FF_SETTINGS_ROW_STEP)       /* 522 */
+#define FF_SETTINGS_REL_CB_Y    (FF_SETTINGS_REL_QUIET_Y + FF_SETTINGS_ROW_STEP)       /* 584 */
+#define FF_SETTINGS_REL_CAL_Y   (FF_SETTINGS_REL_CB_Y + FF_SETTINGS_ROW_STEP)          /* 646 */
+#define FF_SETTINGS_CONTENT_H   (FF_SETTINGS_REL_CAL_Y + FF_SETTINGS_ROW_H)            /* 694 */
 
 /**
  * settings_safe_margin_x — thin int32_t/ceil wrapper around
@@ -361,22 +382,31 @@ static void settings_row_caption(lv_obj_t *row, char const *text)
  * active_side: 0 = left pill active, 1 = right, -1 = neither (honest render
  * of a persisted value that maps to neither shown option).
  * ------------------------------------------------------------------- */
-static void settings_build_toggle_row(lv_obj_t *list, int32_t rel_y, int32_t row_w, char const *label,
-                                      char const *left_text, char const *right_text, int active_side,
-                                      lv_event_cb_t cb)
+static void settings_build_toggle_row_ex(lv_obj_t *list, int32_t rel_y, int32_t row_w, char const *label,
+                                         char const *left_text, char const *right_text, int active_side,
+                                         int32_t pill_w, lv_event_cb_t cb)
 {
     lv_obj_t *row = settings_make_row(list, rel_y, row_w);
     settings_row_caption(row, label);
 
-    int32_t const grp_x = row_w - FF_SETTINGS_TOGGLE_GRP_W;
+    int32_t const grp_w = 2 * pill_w + FF_SETTINGS_TOGGLE_GAP;
+    int32_t const grp_x = row_w - grp_w;
     uint32_t const l_bg = (active_side == 0) ? FF_SETTINGS_PILL_ON_BG : FF_SETTINGS_PILL_OFF_BG;
     uint32_t const l_fg = (active_side == 0) ? FF_SETTINGS_PILL_ON_FG : FF_SETTINGS_PILL_OFF_FG;
     uint32_t const r_bg = (active_side == 1) ? FF_SETTINGS_PILL_ON_BG : FF_SETTINGS_PILL_OFF_BG;
     uint32_t const r_fg = (active_side == 1) ? FF_SETTINGS_PILL_ON_FG : FF_SETTINGS_PILL_OFF_FG;
 
-    settings_make_pill(row, left_text, grp_x, 0, FF_SETTINGS_TOGGLE_PILL_W, FF_SETTINGS_ROW_H, l_bg, l_fg, 0, cb, NULL);
-    settings_make_pill(row, right_text, grp_x + FF_SETTINGS_TOGGLE_PILL_W + FF_SETTINGS_TOGGLE_GAP, 0,
-                       FF_SETTINGS_TOGGLE_PILL_W, FF_SETTINGS_ROW_H, r_bg, r_fg, 0, cb, NULL);
+    settings_make_pill(row, left_text, grp_x, 0, pill_w, FF_SETTINGS_ROW_H, l_bg, l_fg, 0, cb, NULL);
+    settings_make_pill(row, right_text, grp_x + pill_w + FF_SETTINGS_TOGGLE_GAP, 0, pill_w, FF_SETTINGS_ROW_H, r_bg,
+                       r_fg, 0, cb, NULL);
+}
+
+static void settings_build_toggle_row(lv_obj_t *list, int32_t rel_y, int32_t row_w, char const *label,
+                                      char const *left_text, char const *right_text, int active_side,
+                                      lv_event_cb_t cb)
+{
+    settings_build_toggle_row_ex(list, rel_y, row_w, label, left_text, right_text, active_side,
+                                 FF_SETTINGS_TOGGLE_PILL_W, cb);
 }
 
 /* ---------------------------------------------------------------------
@@ -430,6 +460,21 @@ static void settings_clock_cb(lv_event_t *e)
 {
     (void)e;
     settings_emit_int(FF_SETTING_CLOCK_24H, s_settings.clock_24h ? 0 : 1);
+}
+
+/* ---------------------------------------------------------------------
+ * SCREEN (NORMAL|FLIPPED) — format v8 amendment (maintainer ask,
+ * 2026-09-02): the Fusion-designed case mounts the puck upside-down.
+ * Same two-state toggle shape as UNITS/CLOCK above: FF_SETTING_SCREEN_FLIP
+ * is bool-backed, "nonzero is true". The device applies a HARDWARE panel
+ * mirror on change (app_main.c reads the shell's projected screen_flip
+ * every tick, same pattern brightness_pct's live apply already uses) —
+ * this row only ever emits the intent, never touches display HAL.
+ * ------------------------------------------------------------------- */
+static void settings_screen_cb(lv_event_t *e)
+{
+    (void)e;
+    settings_emit_int(FF_SETTING_SCREEN_FLIP, s_settings.screen_flip ? 0 : 1);
 }
 
 /* ---------------------------------------------------------------------
@@ -871,6 +916,8 @@ void ff_scr_settings_build(lv_obj_t *parent, ff_app_settings_t const *settings)
                               s_settings.imperial ? 0 : 1, settings_units_cb);
     settings_build_toggle_row(list, FF_SETTINGS_REL_CLOCK_Y, row_w, "CLOCK", "12H", "24H",
                               s_settings.clock_24h ? 1 : 0, settings_clock_cb);
+    settings_build_toggle_row_ex(list, FF_SETTINGS_REL_SCREEN_Y, row_w, "SCREEN", "NORMAL", "FLIPPED",
+                                 s_settings.screen_flip ? 1 : 0, FF_SETTINGS_SCREEN_PILL_W, settings_screen_cb);
     settings_build_toggle_row(list, FF_SETTINGS_REL_SHARE_Y, row_w, "SHARE", "LIVE", "GHOST",
                               (s_settings.share_mode == FF_SHARE_LIVE)    ? 0
                               : (s_settings.share_mode == FF_SHARE_GHOST) ? 1

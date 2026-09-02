@@ -147,6 +147,36 @@ typedef struct {
      * render-time format selector; it changes no other behavior (the
      * underlying wall-clock minute-of-day is unaffected either way). */
     bool clock_24h;
+
+    /* [api] format v8 amendment (maintainer ask, 2026-09-02) — the
+     * Settings SCREEN row's NORMAL|FLIPPED toggle. The Fusion-designed
+     * case mounts the puck upside-down, so this drives a HARDWARE 180°
+     * mirror of the panel (targets/esp32s3/ff_display's
+     * ff_display_set_flip, `esp_lcd_panel_mirror`), not a software/LVGL
+     * rotation — see docs/hardware/glass-offset.md's flipped-case
+     * amendment for why the panel mirror is the correct layer. Two other
+     * things key off this same flag, deliberately NOT stored separately
+     * (one flip decision, three honest consequences of it, not three
+     * settings a puck could get out of sync):
+     *   - Touch: `ff_touchcal_flip180` runs AFTER `ff_touchcal_apply` in
+     *     the device's `process_coordinates` seam, so a previously-solved
+     *     calibration stays valid in either orientation (no
+     *     re-calibration on flip).
+     *   - Glass geometry: the bezel's visible-window offset
+     *     (`FF_THEME_GLASS_CX/CY`, ff_theme.h) is measured against the
+     *     NORMAL orientation; flipped, the offset is mirrored too — see
+     *     `ff_theme_glass_cx`/`_cy` (ff_theme.h) and
+     *     `radar_build_rim_tint` (scr_radar.c), the one on-glass element
+     *     that hugs the physical bezel.
+     * Default FALSE (NORMAL) — a freshly-flashed puck's case orientation
+     * is not known until the owner sets it, and NORMAL is what every
+     * puck shipped before this setting existed was already rendering as
+     * (the honest reading of "this field didn't exist yet", same
+     * "reject-not-migrate lands the new field at its honest default"
+     * policy as `clock_24h` above and every touch-cal field before it —
+     * see ff_settings.c's v8 migration comment). Purely a render/HAL
+     * selector; it changes no domain behavior. */
+    bool screen_flip;
 } ff_settings_t;
 
 /* ff_geo_cal_t must fit the persisted-layout budget above — a layout

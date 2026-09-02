@@ -162,3 +162,85 @@ and a new `settings_clock_24h` fixture/golden (the CLOCK toggle set to 24H,
 rendered on the launcher's time·battery row as `"21:46"`). `test_face_hit_
 targets` (this slice's scroll-aware sweep) covers the new row generically —
 no sweep-file change needed.
+
+**2026-09-02 — SCREEN flip setting (maintainer ask): the Fusion case
+mounts the puck upside-down.** The Fusion-designed case holds the puck
+180 degrees from the panel's native orientation, so this adds a
+**SCREEN** row (`NORMAL | FLIPPED`, the same toggle-pair pill shape as
+UNITS/CLOCK/SHARE) implemented as a HARDWARE mirror, not a software
+rotation:
+
+1. **`ff_settings_t.screen_flip`** (`[api]`, format version 7 -> 8,
+   `ff_settings.h`): bool, default `false` (NORMAL) — a fresh puck's case
+   orientation is unknown until the owner sets it, and NORMAL is what
+   every pre-v8 puck was already rendering as. Drives the new Settings
+   **SCREEN** row (sits directly under CLOCK; SHARE/HAPTICS/GLOW/WATER/
+   QUIET/COLORBLIND/CALIBRATE each shift down by one more
+   `FF_SETTINGS_ROW_STEP`, same "the scroll list absorbs it" mechanics
+   CLOCK's own insertion above already established) through
+   `FF_SETTING_SCREEN_FLIP` — the same bare `FF_INTENT_SETTING_SET` seam,
+   "nonzero is true" range validation, same as every other two-state row.
+   **v7 -> v8 chains the SAME forward-migration policy v6 -> v7
+   established above**, one hop further: a real v7 blob (clock_24h
+   already shipped with the NVS store, so fielded pucks hold one) is
+   migrated via a newly-frozen `ff_settings_v7_t` shadow, and a v6 blob
+   chains THROUGH that same v7 shadow (`ff_settings_migrate_v6` now
+   targets the v7 shadow; `ff_settings_migrate_v7` — shared by both a
+   real v7 blob and a migrated-from-v6 one — carries every value across
+   and lands the one field that shape never had, `screen_flip`, at its
+   honest default). The <=v5 reject-not-migrate boundary is unchanged.
+   See `ff_settings.c`'s v8 comment for the full reasoning and
+   `test_settings.c`'s `S21_v7_blob_forward_migrates_preserving_every_value`
+   (mirroring the v6 test above) for the new hop's proof.
+2. **The mirror is a HARDWARE panel mirror, not a software rotation.**
+   `ff_display_set_flip` (`targets/esp32s3/components/ff_display`) calls
+   `esp_lcd_panel_mirror(panel, flip, flip)` — the vendored
+   `esp_lcd_spd2010` driver DOES implement `mirror` via a real MADCTL
+   write (unlike `swap_xy`, a logged no-op on this panel); see that
+   function's own doc comment for the exact driver citation and the 4-px
+   window-alignment reasoning (the driver's CASET/RASET window math never
+   depends on the mirror bits, so the existing alignment holds unchanged
+   — verified by reading the driver source, not by a sim render, which
+   cannot exercise MADCTL at all). Applied once at boot (right after the
+   panel initializes, before the boot splash — so the splash itself
+   renders upright) and again immediately on any live Settings change (no
+   reboot) — see `app_main.c`.
+3. **Touch flips in OUR layer, composed AFTER calibration**, inside the
+   existing `process_coordinates` seam: a new pure core helper,
+   `ff_touchcal_flip180` (`ff_touchcal.h`/`.c`, unit-tested standalone),
+   computes `x' = w-1-x, y' = h-1-y` on the ALREADY-calibrated point. This
+   ordering (apply, then flip — never the other way, and never folded
+   into the calibration fit itself) is what lets a calibration solved in
+   either orientation stay valid in both, with no re-calibration on a
+   flip toggle — the crosshair capture flow (`ff_display_run_calibration`)
+   was ALSO adjusted so a recalibration run while already flipped fits
+   against the true, orientation-independent sensor error rather than a
+   flip-contaminated one (see `s_cal_capturing`'s doc comment in
+   `ff_display.c` for the full derivation of why that adjustment is
+   necessary, not cosmetic).
+4. **Glass geometry is a function of the flip.** The bezel hides the
+   PHYSICAL left ~5px of the panel (`docs/hardware/glass-offset.md`); under
+   a 180° mirror those pixels are the user's RIGHT, so the visible centre
+   becomes `FF_THEME_PUCK_PX - FF_THEME_GLASS_CX` (208 -> 204).
+   `ff_theme_glass_cx`/`_cy` (`ff_theme.h`, pure `static inline`, same
+   convention as `ff_theme_crew_color`) compute this; `radar_build_rim_tint`
+   (`scr_radar.c`, the one on-glass element that hugs the physical bezel)
+   is the sole consumer (grepped for every other `FF_THEME_GLASS_*` use).
+   `ff_scr_radar_build` gained a `screen_flip` parameter (same explicit-
+   parameter convention `colorblind` already uses) threaded from
+   `scr_nav.c`. See `docs/hardware/glass-offset.md`'s own amendment for
+   the flipped-case rule.
+
+Goldens regenerated: the five `settings_*` fixtures affected by the new
+row (`settings_brightness`, `settings_colorblind_on`, `settings_default`,
+`settings_ghost`, `settings_scrolled_mid` — `settings_scrolled_bottom` and
+`settings_clock_24h` render byte-identically, unaffected), plus two new
+fixtures: `settings_screen_flipped` (SCREEN toggled to FLIPPED) and
+`radar_stale_flipped` (same radar_stale scene, `settings.screen_flip:
+true` — proves the rim tint recenters; the sim never mirrors its own
+framebuffer, so this fixture exists specifically to prove the CENTRE
+moves, not to simulate the physical mirror itself). `test_face_hit_
+targets` again covers the new row generically. On-glass verification
+(flip on: UI upright in the flipped case, touch lands correctly, rim
+centred, boot splash upright) is the maintainer's — see
+docs/hardware/glass-offset.md's hardware-in-the-loop convention.

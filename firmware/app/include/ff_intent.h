@@ -344,6 +344,14 @@ typedef enum {
      * (ff_settings_t.clock_24h). Bool-backed, same "nonzero is true" int
      * payload convention as IMPERIAL/HAPTICS/NIGHT_GLOW/COLORBLIND above. */
     FF_SETTING_CLOCK_24H,
+    /* [api] format v8 amendment (maintainer ask, 2026-09-02) — the
+     * Settings SCREEN NORMAL|FLIPPED toggle (ff_settings_t.screen_flip).
+     * Bool-backed, same "nonzero is true" int payload convention as every
+     * other two-state row above — no range to reject. Drives a HARDWARE
+     * 180° panel mirror + a touch-coordinate flip + a mirrored glass
+     * centre; see ff_settings.h's doc comment on the field for the full
+     * mechanism. */
+    FF_SETTING_SCREEN_FLIP,
 } ff_setting_id_t;
 
 typedef struct {

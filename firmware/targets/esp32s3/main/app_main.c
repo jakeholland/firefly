@@ -748,6 +748,27 @@ void app_main(void)
         return;
     }
 
+    /* format v8 amendment (maintainer ask, 2026-09-02) — apply the SCREEN
+     * NORMAL|FLIPPED setting's hardware panel mirror right after the panel
+     * is up and BEFORE the boot splash below, so the splash itself (the
+     * FIRST content on glass) already renders upright in whichever
+     * orientation the case is mounted — a flip applied only after the
+     * splash would show it upside-down for one frame on every boot of a
+     * flipped puck. `view` (fetched above from the shell, which already
+     * loaded settings from NVS via ff_shell_init — see this file's own
+     * boot-order note near ff_shell_init) carries the persisted value;
+     * a failure here is logged and non-fatal (same "cosmetic loss, not a
+     * park reason" policy the boot splash below already uses) — a puck
+     * that boots un-mirrored when it should have flipped is a wrong-side-
+     * up UI, not a dark/broken one, and CONFIG_FF_GLASS_RULER below
+     * assumes the panel's NORMAL orientation for its own diagnostic
+     * reading, so this intentionally runs before that block too. */
+    esp_err_t const flip_err = ff_display_set_flip(view->settings.screen_flip);
+    if (flip_err != ESP_OK) {
+        ESP_LOGE(TAG, "boot screen-flip apply failed (%s) — continuing bring-up regardless",
+                 esp_err_to_name(flip_err));
+    }
+
 #if CONFIG_FF_GLASS_RULER
     /* Device-only diagnostic (default OFF, docs/hardware/glass-offset.md):
      * drawn right after the panel comes up — same spot the boot splash
@@ -884,6 +905,24 @@ void app_main(void)
      * live brightness drag tracks the finger without rebuilding the face. */
     uint8_t last_brightness = ff_shell_view(&s_shell)->settings.brightness_pct;
     (void)ff_display_set_brightness(last_brightness);
+
+    /* format v8 amendment — track the last-applied SCREEN flip the same
+     * way `last_brightness` tracks brightness above, so the render loop
+     * below re-applies the hardware mirror the moment the setting
+     * changes (Settings SCREEN row, or CALIBRATE TOUCH's own re-apply
+     * are the only writers), with no reboot. Already applied once at
+     * boot (right after ff_bringup_panel, before the splash — see
+     * above); this is the LIVE-change path. Unlike brightness, screen_
+     * flip is NOT excluded from the shell's render key (a flip is a rare,
+     * discrete toggle, never a live drag), so it also drives a normal
+     * dirty-tick face rebuild (Settings row, Radar's glass-centred rim
+     * tint) through the existing `rebuild_pending` mechanism below — this
+     * variable ONLY gates the separate display-HAL mirror call, which
+     * must not wait for `rebuild_pending`'s finger-down/screen-blank
+     * gating (a stale hardware orientation while the device screen is
+     * briefly OFF/asleep would be a bug users could see as a
+     * disorienting flash on wake, not a cosmetic no-op). */
+    bool last_screen_flip = ff_shell_view(&s_shell)->settings.screen_flip;
 
     /* Defer-rebuild-mid-tap latch (the on-glass "just highlights, won't open"
      * report). A dirty tick that lands while a finger is down is NOT rebuilt
@@ -1035,6 +1074,20 @@ void app_main(void)
             ff_idle_input(&s_idle, now_ms);
         }
         ff_app_state_t const *v = ff_shell_view(&s_shell);
+
+        /* format v8 amendment — apply the hardware panel mirror the
+         * instant the SCREEN setting changes, independent of the dirty-
+         * tick face rebuild below (which still happens too, via the
+         * normal render key — see `last_screen_flip`'s own doc comment
+         * above for why this needs its own unconditional check rather
+         * than piggybacking on `rebuild_pending`). */
+        if (v->settings.screen_flip != last_screen_flip) {
+            last_screen_flip = v->settings.screen_flip;
+            esp_err_t const flip_err = ff_display_set_flip(last_screen_flip);
+            if (flip_err != ESP_OK) {
+                ESP_LOGE(TAG, "live screen-flip apply failed (%s)", esp_err_to_name(flip_err));
+            }
+        }
 
         /* S26 slice f amendment — sample USB-Serial/JTAG connection state
          * fresh every frame (same "always sample, let core decide"

@@ -1465,6 +1465,9 @@ static void shell_project_settings(shell_t const *sh, ff_app_settings_t *out)
     out->brightness_pct = sh->settings.brightness_pct;
     /* S21 amendment — the CLOCK 12H|24H toggle, projected verbatim. */
     out->clock_24h = sh->settings.clock_24h;
+    /* format v8 amendment — the SCREEN NORMAL|FLIPPED toggle, projected
+     * verbatim. */
+    out->screen_flip = sh->settings.screen_flip;
 }
 
 /**
@@ -2672,6 +2675,8 @@ static void shell_project_rally(shell_t *sh, ff_app_rally_t *out)
  *     true" convention as IMPERIAL/HAPTICS/NIGHT_GLOW — no range to reject.
  *   - FF_SETTING_CLOCK_24H (S21 amendment): bool-backed, same convention —
  *     no range to reject.
+ *   - FF_SETTING_SCREEN_FLIP (format v8 amendment): bool-backed, same
+ *     convention — no range to reject.
  *
  * Persisted on CHANGE ONLY (S16 "Behavior": "saved on change, never
  * every tick") — every branch below compares the OLD value before
@@ -2725,6 +2730,20 @@ static void shell_setting_set(shell_t *sh, ff_intent_t const *in)
         bool const v = (in->u.setting.v.i != 0);
         changed = (s->clock_24h != v);
         s->clock_24h = v;
+        break;
+    }
+    case FF_SETTING_SCREEN_FLIP: {
+        /* format v8 amendment — the Settings SCREEN row. Bool-backed,
+         * same "nonzero is true" convention as every other two-state
+         * row above — no range to reject. The in-memory flip here is
+         * what the render-key-driven rebuild (Settings row, Radar rim
+         * tint) reacts to; the device HAL mirror
+         * (`ff_display_set_flip`) is applied by app_main.c reading this
+         * same projected value, not from inside the shell (core/app
+         * stay IO-free — CLAUDE.md). */
+        bool const v = (in->u.setting.v.i != 0);
+        changed = (s->screen_flip != v);
+        s->screen_flip = v;
         break;
     }
     case FF_SETTING_BRIGHTNESS: {

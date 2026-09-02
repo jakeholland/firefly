@@ -99,3 +99,23 @@ for the first working version.
 ## Out of scope
 Multi-touch, gesture tuning, the Settings "Calibrate" entry point (productization),
 tap-target SIZE (#99 part 2). This slice is the correction transform + capture flow.
+
+## Amendments
+
+**2026-09-02 — SCREEN flip setting composes AFTER this transform (maintainer
+ask; full mechanism in `docs/specs/S21-settings-rework.md`'s own amendment).**
+The Fusion-designed case can mount the puck 180° from native orientation
+(`ff_settings_t.screen_flip`). The 180° rotation (`ff_touchcal_flip180`,
+`ff_touchcal.h`/`.c`, a pure helper alongside `ff_touchcal_apply`) is applied
+in the device's `process_coordinates` seam AFTER this slice's calibration
+fit, never folded into it — the per-unit `(ax,bx,ay,by)` this slice solves
+characterizes the touch SENSOR's own raw-tick error (a property of the
+silicon and the glass), which does not change with case orientation, so
+composing the two as separate steps means a calibration solved in either
+orientation stays valid in both, no re-calibration on a flip toggle. One
+consequence: `ff_display_run_calibration`'s crosshair-capture flow
+(`ff_cal_release_cb`/`s_cal_capturing`, `ff_display.c`) was taught to
+record each captured pair against the true, orientation-independent sensor
+reading even when a recalibration is run WHILE already flipped — see that
+flag's own doc comment for the derivation of why a naive "just also flip
+during capture" would have drifted.

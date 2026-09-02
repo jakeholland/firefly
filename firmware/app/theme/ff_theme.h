@@ -307,6 +307,53 @@ static inline uint32_t ff_theme_crew_color(uint8_t color_idx, bool colorblind)
 #define FF_THEME_GLASS_CY 206
 #define FF_THEME_GLASS_R  200 /* 203 measured; pulled in 3 px so a ring on it clears the bezel lip on glass (maintainer, 2026-09-02) */
 
+/**
+ * ff_theme_glass_cx / ff_theme_glass_cy — the visible-glass centre, as a
+ * function of the SCREEN flip (format v8 amendment, maintainer ask,
+ * 2026-09-02: the Fusion-designed case mounts the puck upside-down).
+ *
+ * FF_THEME_GLASS_CX/CY above were measured with the panel in its NORMAL
+ * (un-mirrored) orientation: the bezel hides the PHYSICAL left ~5 px of
+ * the 412-wide pixel array, so the visible centre sits 2 px right of the
+ * framebuffer centre (208 vs. 206). `ff_display_set_flip` (device HAL)
+ * flips the panel with a HARDWARE mirror (`esp_lcd_panel_mirror`), not a
+ * software/coordinate transform — so from the framebuffer's own point of
+ * view nothing moves; what moves is which PHYSICAL edge each framebuffer
+ * column ends up on. The bezel itself does not move with the mirror (the
+ * case is what flipped, not the glass), so the physical ~5 px the bezel
+ * hides is now hiding the framebuffer's RIGHT ~5 px instead of its left —
+ * the mirrored visible centre is `FF_THEME_PUCK_PX - FF_THEME_GLASS_CX`
+ * (412 - 208 = 204), the reflection of the un-flipped centre across the
+ * framebuffer's own midline. FF_THEME_GLASS_CY needs the same treatment
+ * for consistency even though it is numerically a no-op here: CY (206)
+ * already equals FF_THEME_PUCK_PX/2 (the measured vertical offset was 0 —
+ * see docs/hardware/glass-offset.md's board-2 measurement), so its
+ * mirror (412 - 206 = 206) is itself; a future board with a genuine
+ * non-zero CY offset gets the same correction for free from this one
+ * function rather than a hand-derived constant.
+ *
+ * `flip` is an explicit parameter, not a hidden global — same convention
+ * (and the same reasoning) as `ff_theme_crew_color`'s `colorblind`
+ * parameter above: this header is a plain, dependency-light, header-only
+ * inline function included from multiple independent translation units
+ * (scr_radar.c today), so a file-static "current orientation" variable
+ * would desync across them. Callers already have `ff_app_settings_t`/the
+ * shell's settings one frame away (scr_nav.c threads `screen_flip`
+ * through to `ff_scr_radar_build`, exactly as it already does for
+ * `colorblind`). GLASS_R is unaffected by flip (a mirror doesn't change
+ * a *radius*), so it has no function form — the plain #define still
+ * applies in both orientations.
+ */
+static inline int32_t ff_theme_glass_cx(bool flip)
+{
+    return flip ? (FF_THEME_PUCK_PX - FF_THEME_GLASS_CX) : FF_THEME_GLASS_CX;
+}
+
+static inline int32_t ff_theme_glass_cy(bool flip)
+{
+    return flip ? (FF_THEME_PUCK_PX - FF_THEME_GLASS_CY) : FF_THEME_GLASS_CY;
+}
+
 /* Arrow/ring/dot placement geometry (arrow length & taper, ring radius,
  * dot size) moved to app/screens/radar_layout.h as of PR #16's round-4
  * rework — that module is the single source of truth for every number

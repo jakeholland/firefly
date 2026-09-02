@@ -606,6 +606,19 @@ typedef struct {
      * the format every clock display (Radar status bar, launcher's
      * time·battery row) shows. Default false (12-hour). */
     bool     clock_24h;
+
+    /* [api] format v8 amendment (maintainer ask, 2026-09-02) — mirrors
+     * ff_settings_t.screen_flip field-for-field (core/include/
+     * ff_settings.h). The Settings face renders it as the SCREEN row's
+     * NORMAL|FLIPPED toggle; threaded as an explicit `bool screen_flip`
+     * parameter into `ff_scr_radar_build` (same "explicit parameter, not
+     * a hidden global" convention `colorblind` already uses — see
+     * ff_theme.h's own doc comment) so `radar_build_rim_tint` can centre
+     * on the mirrored glass geometry (`ff_theme_glass_cx`/`_cy`,
+     * ff_theme.h). The device app additionally reads this straight off
+     * the shell's view (not through a screen builder) to drive the
+     * HARDWARE panel mirror (`ff_display_set_flip`) — see app_main.c. */
+    bool     screen_flip;
 } ff_app_settings_t;
 /* S21 removed ff_app_settings_t.page / FF_SETTINGS_PAGE_COUNT (#105's
  * pagination): the Settings face is now one scrolling list, so there is no

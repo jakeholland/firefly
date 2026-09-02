@@ -13,7 +13,7 @@
  * below only catches size mismatches; two different layouts can share the
  * same sizeof() (e.g. a reordering, or swapping a bool+uint8_t pair) and
  * would otherwise pass validation with silently corrupted semantics. */
-#define FF_SETTINGS_FORMAT_VERSION ((uint16_t)7u)
+#define FF_SETTINGS_FORMAT_VERSION ((uint16_t)8u)
 /* v2: compass_cal_blob (opaque uint8_t[32]) -> compass_cal (ff_geo_cal_t),
  * per TODO(S01) in ff_settings.h. Same sizeof() risk the header comment
  * warns about (a reordering/retype can share sizeof() with the old
@@ -68,12 +68,40 @@
  * shipping at all, so there is no fielded device whose real persisted
  * state that rule could destroy — the "no fielded devices to migrate"
  * premise stated for v3-v6 above is still true for anything that old. */
+/* v8: + screen_flip (maintainer ask, 2026-09-02 — the Fusion case's
+ * SCREEN NORMAL|FLIPPED row; see ff_settings.h's doc comment on the
+ * field for the hardware-mirror/touch-flip/glass-centre mechanism this
+ * one flag drives). SAME forward-migration policy v7 established, one
+ * hop further: fielded pucks now hold real v6 AND v7 blobs (v7 shipped
+ * with this same NVS store, S21 §4), and this repo's honest-data ruling
+ * ("never silently wipe a unit's stored calibration") applies to both.
+ * screen_flip is a single bool appended at the very end of ff_settings_t
+ * again, so — same "byte-for-byte prefix" fact v7's migration relied on
+ * — a v7 blob's payload is a strict prefix of a v8 one, and (chained
+ * through v7) so is a v6 blob's.
+ *
+ * ff_settings_load reads a v7 blob via the newly-frozen
+ * `ff_settings_v7_t` shadow below and fills screen_flip in at its honest
+ * default (false — a v7 puck genuinely had no flip toggle, so NORMAL is
+ * the correct reading, not a guess). A v6 blob CHAINS: it is first
+ * migrated into an `ff_settings_v7_t` (the exact same
+ * `ff_settings_migrate_v6` this build already had, just retargeted to
+ * write the v7 shadow instead of the live struct directly), and that
+ * intermediate v7 shape is then run through the SAME v7->v8 step every
+ * real v7 blob takes — one migration function per version hop, composed,
+ * not a v6->v8 special case that could drift from what a real two-step
+ * upgrade does. A blob OLDER than v6 (<=v5) still rejects outright, same
+ * boundary as before: those pre-date the NVS store entirely, so no
+ * fielded device holds one. */
 
 typedef struct {
     uint32_t magic;
     uint16_t version;
-    uint16_t payload_size; /* sizeof(ff_settings_t) (or, for a v6 blob being
-                             * migrated, sizeof(ff_settings_v6_t)) at write time */
+    uint16_t payload_size; /* sizeof(ff_settings_t) at write time for the
+                             * CURRENT version, or the frozen size of
+                             * whichever older vN shadow (ff_settings_v6_t /
+                             * ff_settings_v7_t) a migrated blob was written
+                             * as */
 } ff_settings_header_t;
 
 #define FF_SETTINGS_BLOB_LEN (sizeof(ff_settings_header_t) + sizeof(ff_settings_t))
@@ -115,6 +143,44 @@ typedef struct {
     float touch_by;
     bool touch_calibrated;
 } ff_settings_v6_t;
+
+/**
+ * ff_settings_v7_t — a FROZEN, byte-for-byte mirror of ff_settings_t
+ * exactly as it existed at format version 7 (every field ff_settings_v6_t
+ * has, plus v7's own trailing `clock_24h`; every field ff_settings_t has
+ * TODAY except the v8 amendment's trailing `screen_flip`). Same rationale
+ * and same rule as ff_settings_v6_t above: deliberately its own
+ * independent, hand-written type (not derived from the live struct), so
+ * a later reorder of ff_settings_t's live fields can't silently change
+ * what a v7-blob migration reads — this struct has to keep matching what
+ * real v7 firmware actually wrote to NVS, forever. It doubles as the
+ * INTERMEDIATE shape a v6 blob is migrated through on its way to v8 (see
+ * ff_settings_migrate_v6 below) — the one v7 shape, never duplicated for
+ * "a v6 blob's v7 stage" vs. "a real v7 blob". If a future version bump
+ * needs its own migration, it adds its own frozen vN shadow the same
+ * way; this one never changes again. */
+typedef struct {
+    bool imperial;
+    uint8_t share_mode;
+    bool haptics;
+    bool night_glow;
+    uint16_t water_min;
+    uint16_t quiet_from_min;
+    uint16_t quiet_to_min;
+    int16_t utc_offset_min;
+    bool utc_offset_set;
+    bool colorblind;
+    uint8_t brightness_pct;
+    char my_name[FF_SETTINGS_NAME_LEN];
+    ff_geo_cal_t compass_cal;
+    bool cal_valid;
+    float touch_ax;
+    float touch_bx;
+    float touch_ay;
+    float touch_by;
+    bool touch_calibrated;
+    bool clock_24h;
+} ff_settings_v7_t;
 
 static void ff_settings_apply_defaults(ff_settings_t *s)
 {
@@ -162,39 +228,80 @@ static void ff_settings_apply_defaults(ff_settings_t *s)
     /* clock_24h: left zeroed -> false (12-hour, with a lowercase am/pm
      * suffix — the design vocabulary's mockup form). See ff_settings.h's
      * doc comment on the field. */
+
+    /* screen_flip: left zeroed -> false (NORMAL). See ff_settings.h's
+     * doc comment on the field. */
 }
 
-/* v6 -> v7 forward migration (see the v7 comment above `ff_settings_header_t`
- * for why this exists). Copies every v6 field across EXPLICITLY, field by
- * field — not a single memcpy of the whole struct — so a future reorder of
- * ff_settings_t's live field layout can't silently misalign this migration;
- * the compiler catches a missing/renamed field as a normal member-access
- * error at the call site below. clock_24h, which v6 never had, is set to
- * its honest default. */
-static void ff_settings_migrate_v6(ff_settings_t *s, ff_settings_v6_t const *v6)
+/* v6 -> v7 forward migration step (see the v8 comment above
+ * `ff_settings_header_t` for why this now targets the v7 SHADOW rather
+ * than the live struct directly — it's the first half of a chained v6 ->
+ * v7 -> v8 upgrade). Copies every v6 field across EXPLICITLY, field by
+ * field — not a single memcpy of the whole struct — so a future reorder
+ * of either struct's field layout can't silently misalign this
+ * migration; the compiler catches a missing/renamed field as a normal
+ * member-access error at the call site below. clock_24h, which v6 never
+ * had, is set to its honest default; screen_flip does not exist at this
+ * shape yet (it's ff_settings_migrate_v7's field to fill, one step
+ * later). */
+static void ff_settings_migrate_v6(ff_settings_v7_t *v7, ff_settings_v6_t const *v6)
 {
-    s->imperial = v6->imperial;
-    s->share_mode = v6->share_mode;
-    s->haptics = v6->haptics;
-    s->night_glow = v6->night_glow;
-    s->water_min = v6->water_min;
-    s->quiet_from_min = v6->quiet_from_min;
-    s->quiet_to_min = v6->quiet_to_min;
-    s->utc_offset_min = v6->utc_offset_min;
-    s->utc_offset_set = v6->utc_offset_set;
-    s->colorblind = v6->colorblind;
-    s->brightness_pct = v6->brightness_pct;
-    memcpy(s->my_name, v6->my_name, sizeof(s->my_name));
-    s->compass_cal = v6->compass_cal;
-    s->cal_valid = v6->cal_valid;
-    s->touch_ax = v6->touch_ax;
-    s->touch_bx = v6->touch_bx;
-    s->touch_ay = v6->touch_ay;
-    s->touch_by = v6->touch_by;
-    s->touch_calibrated = v6->touch_calibrated;
-    s->clock_24h = false; /* v6 never had this field: false (12-hour) is the
-                            * honest reading of "this puck never had the
-                            * toggle", not a guess — see ff_settings.h. */
+    v7->imperial = v6->imperial;
+    v7->share_mode = v6->share_mode;
+    v7->haptics = v6->haptics;
+    v7->night_glow = v6->night_glow;
+    v7->water_min = v6->water_min;
+    v7->quiet_from_min = v6->quiet_from_min;
+    v7->quiet_to_min = v6->quiet_to_min;
+    v7->utc_offset_min = v6->utc_offset_min;
+    v7->utc_offset_set = v6->utc_offset_set;
+    v7->colorblind = v6->colorblind;
+    v7->brightness_pct = v6->brightness_pct;
+    memcpy(v7->my_name, v6->my_name, sizeof(v7->my_name));
+    v7->compass_cal = v6->compass_cal;
+    v7->cal_valid = v6->cal_valid;
+    v7->touch_ax = v6->touch_ax;
+    v7->touch_bx = v6->touch_bx;
+    v7->touch_ay = v6->touch_ay;
+    v7->touch_by = v6->touch_by;
+    v7->touch_calibrated = v6->touch_calibrated;
+    v7->clock_24h = false; /* v6 never had this field: false (12-hour) is the
+                             * honest reading of "this puck never had the
+                             * toggle", not a guess — see ff_settings.h. */
+}
+
+/* v7 -> v8 forward migration step (see the v8 comment above
+ * `ff_settings_header_t`). Same explicit field-by-field convention as
+ * ff_settings_migrate_v6 above, same reason. Used for BOTH a real v7
+ * blob (read straight off the store) and a v6 blob already lifted to
+ * v7 shape by ff_settings_migrate_v6 above — one v7->v8 step, run once
+ * either way, never duplicated. screen_flip, which v7 never had, is set
+ * to its honest default. */
+static void ff_settings_migrate_v7(ff_settings_t *s, ff_settings_v7_t const *v7)
+{
+    s->imperial = v7->imperial;
+    s->share_mode = v7->share_mode;
+    s->haptics = v7->haptics;
+    s->night_glow = v7->night_glow;
+    s->water_min = v7->water_min;
+    s->quiet_from_min = v7->quiet_from_min;
+    s->quiet_to_min = v7->quiet_to_min;
+    s->utc_offset_min = v7->utc_offset_min;
+    s->utc_offset_set = v7->utc_offset_set;
+    s->colorblind = v7->colorblind;
+    s->brightness_pct = v7->brightness_pct;
+    memcpy(s->my_name, v7->my_name, sizeof(s->my_name));
+    s->compass_cal = v7->compass_cal;
+    s->cal_valid = v7->cal_valid;
+    s->touch_ax = v7->touch_ax;
+    s->touch_bx = v7->touch_bx;
+    s->touch_ay = v7->touch_ay;
+    s->touch_by = v7->touch_by;
+    s->touch_calibrated = v7->touch_calibrated;
+    s->clock_24h = v7->clock_24h;
+    s->screen_flip = false; /* v7 never had this field: false (NORMAL) is the
+                              * honest reading of "this puck never had the
+                              * toggle", not a guess — see ff_settings.h. */
 }
 
 void ff_settings_load(ff_settings_t *s, ff_store_t const *st)
@@ -209,12 +316,12 @@ void ff_settings_load(ff_settings_t *s, ff_store_t const *st)
         return;
     }
 
-    /* Sized to the LARGEST blob this build can read (today, v7's). A v6
-     * blob is smaller, so it fits the same buffer; `get` (ff_store_t's
+    /* Sized to the LARGEST blob this build can read (today, v8's). A v6 or
+     * v7 blob is smaller, so either fits the same buffer; `get` (ff_store_t's
      * documented contract) returns the value's ACTUAL stored length, which
      * can legitimately be shorter than the buffer's capacity — this is not
      * "short read" in the corrupt-data sense, it's a real, older, still-
-     * valid record. See the two explicit per-version branches below; no
+     * valid record. See the three explicit per-version branches below; no
      * length is accepted silently, each is checked against the exact size
      * its claimed version is documented to be. */
     uint8_t buf[FF_SETTINGS_BLOB_LEN];
@@ -233,10 +340,10 @@ void ff_settings_load(ff_settings_t *s, ff_store_t const *st)
     }
 
     /* Explicit per-version step table (AGENTS.md: "no silent 'accept any
-     * size'") — exactly two versions this build knows how to read, each
+     * size'") — exactly three versions this build knows how to read, each
      * gated on BOTH its own version number and its own exact documented
      * payload size. Anything else (an unknown/future version, a <=v5 blob,
-     * or a version/size combination that doesn't match either row) falls
+     * or a version/size combination that doesn't match any row) falls
      * through to the defaults ff_settings_apply_defaults already applied
      * above — reject, not guess. */
     if (hdr.version == FF_SETTINGS_FORMAT_VERSION && hdr.payload_size == (uint16_t)sizeof(ff_settings_t) &&
@@ -244,11 +351,23 @@ void ff_settings_load(ff_settings_t *s, ff_store_t const *st)
         memcpy(s, buf + sizeof(hdr), sizeof(*s));
         return;
     }
+    if (hdr.version == 7u && hdr.payload_size == (uint16_t)sizeof(ff_settings_v7_t) &&
+        got == sizeof(hdr) + sizeof(ff_settings_v7_t)) {
+        ff_settings_v7_t v7;
+        memcpy(&v7, buf + sizeof(hdr), sizeof(v7));
+        ff_settings_migrate_v7(s, &v7);
+        return;
+    }
     if (hdr.version == 6u && hdr.payload_size == (uint16_t)sizeof(ff_settings_v6_t) &&
         got == sizeof(hdr) + sizeof(ff_settings_v6_t)) {
         ff_settings_v6_t v6;
         memcpy(&v6, buf + sizeof(hdr), sizeof(v6));
-        ff_settings_migrate_v6(s, &v6);
+        /* Chained: v6 -> v7 (shadow) -> v8 (live) — one migration step
+         * each, composed, not a v6->v8 special case (see the v8 comment
+         * above `ff_settings_header_t`). */
+        ff_settings_v7_t v7;
+        ff_settings_migrate_v6(&v7, &v6);
+        ff_settings_migrate_v7(s, &v7);
         return;
     }
 

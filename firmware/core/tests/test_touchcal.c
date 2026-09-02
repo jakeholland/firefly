@@ -200,6 +200,91 @@ static void S15d_AC1_apply_identity_passes_through_clamped(void)
     TEST_ASSERT_EQUAL_INT(0, sy);
 }
 
+/* --------------------------------------------------------------------- */
+/* Screen-flip amendment — ff_touchcal_flip180 (maintainer ask,          */
+/* 2026-09-02). Pure geometry: out = (w-1-x, h-1-y). Tested directly on  */
+/* the 412x412 panel, plus a non-square w/h to prove the two axes are    */
+/* independent (a mutant that swapped w and h, or used one for both,     */
+/* would still pass a square-panel-only test).                          */
+/* --------------------------------------------------------------------- */
+
+static void SFLIP_center_maps_to_center(void)
+{
+    /* The panel center (205/206 split on an even 412) reflects near
+     * itself — the one point closest to a fixed point under this
+     * reflection on an even-sized panel. */
+    int ox, oy;
+    ff_touchcal_flip180(206, 206, 412, 412, &ox, &oy);
+    TEST_ASSERT_EQUAL_INT(205, ox); /* 412 - 1 - 206 */
+    TEST_ASSERT_EQUAL_INT(205, oy);
+}
+
+static void SFLIP_corners_swap_diagonally(void)
+{
+    int ox, oy;
+
+    ff_touchcal_flip180(0, 0, 412, 412, &ox, &oy);
+    TEST_ASSERT_EQUAL_INT(411, ox);
+    TEST_ASSERT_EQUAL_INT(411, oy);
+
+    ff_touchcal_flip180(411, 411, 412, 412, &ox, &oy);
+    TEST_ASSERT_EQUAL_INT(0, ox);
+    TEST_ASSERT_EQUAL_INT(0, oy);
+
+    ff_touchcal_flip180(0, 411, 412, 412, &ox, &oy);
+    TEST_ASSERT_EQUAL_INT(411, ox);
+    TEST_ASSERT_EQUAL_INT(0, oy);
+
+    ff_touchcal_flip180(411, 0, 412, 412, &ox, &oy);
+    TEST_ASSERT_EQUAL_INT(0, ox);
+    TEST_ASSERT_EQUAL_INT(411, oy);
+}
+
+/* Applying the flip twice must be the identity — a mutant that dropped
+ * the "-1" (using w-x instead of w-1-x) would fail THIS, not the single-
+ * application tests above, since w-(w-x) == x regardless of the off-by-one. */
+static void SFLIP_applying_twice_is_identity(void)
+{
+    const int xs[] = {0, 1, 5, 100, 205, 206, 300, 410, 411};
+    for (size_t i = 0; i < sizeof(xs) / sizeof(xs[0]); i++) {
+        int mx, my, bx, by;
+        ff_touchcal_flip180(xs[i], xs[i], 412, 412, &mx, &my);
+        ff_touchcal_flip180(mx, my, 412, 412, &bx, &by);
+        TEST_ASSERT_EQUAL_INT(xs[i], bx);
+        TEST_ASSERT_EQUAL_INT(xs[i], by);
+    }
+}
+
+/* Non-square w/h proves x and y are independent transforms (each keyed
+ * off its OWN dimension), not one shared "w" mutant would still pass the
+ * two square-panel tests above. */
+static void SFLIP_independent_axes_on_a_non_square_panel(void)
+{
+    int ox, oy;
+    ff_touchcal_flip180(10, 20, 300, 500, &ox, &oy);
+    TEST_ASSERT_EQUAL_INT(289, ox); /* 300 - 1 - 10 */
+    TEST_ASSERT_EQUAL_INT(479, oy); /* 500 - 1 - 20 */
+}
+
+/* Aliased output (out_x/out_y point at the same storage as x/y) must not
+ * corrupt the second axis by reading an already-overwritten input. */
+static void SFLIP_aliased_output_is_safe(void)
+{
+    int x = 10, y = 20;
+    ff_touchcal_flip180(x, y, 412, 412, &x, &y);
+    TEST_ASSERT_EQUAL_INT(401, x); /* 412 - 1 - 10 */
+    TEST_ASSERT_EQUAL_INT(391, y); /* 412 - 1 - 20 */
+}
+
+static void SFLIP_null_out_pointers_are_a_safe_no_op(void)
+{
+    int ox = 999;
+    ff_touchcal_flip180(1, 2, 412, 412, NULL, &ox);
+    TEST_ASSERT_EQUAL_INT(999, ox); /* untouched: NULL out_x -> whole call is a no-op */
+    ff_touchcal_flip180(1, 2, 412, 412, &ox, NULL);
+    TEST_ASSERT_EQUAL_INT(999, ox);
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -210,5 +295,12 @@ int main(void)
     RUN_TEST(S15d_AC1_too_few_points_is_identity);
     RUN_TEST(S15d_AC1_apply_clamps_to_panel);
     RUN_TEST(S15d_AC1_apply_identity_passes_through_clamped);
+
+    RUN_TEST(SFLIP_center_maps_to_center);
+    RUN_TEST(SFLIP_corners_swap_diagonally);
+    RUN_TEST(SFLIP_applying_twice_is_identity);
+    RUN_TEST(SFLIP_independent_axes_on_a_non_square_panel);
+    RUN_TEST(SFLIP_aliased_output_is_safe);
+    RUN_TEST(SFLIP_null_out_pointers_are_a_safe_no_op);
     return UNITY_END();
 }

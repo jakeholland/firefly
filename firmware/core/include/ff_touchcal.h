@@ -97,6 +97,30 @@ bool ff_touchcal_solve(const ff_cal_point_t *pts, int n, ff_touchcal_t *out);
  */
 void ff_touchcal_apply(const ff_touchcal_t *c, int rawx, int rawy, int *sx, int *sy);
 
+/**
+ * ff_touchcal_flip180 — rotate a screen-space point 180 degrees within a
+ * `w`x`h` panel: `*out_x = w - 1 - x`, `*out_y = h - 1 - y`.
+ *
+ * Pure geometry, no clamping (the input is already screen-space, already
+ * in [0, w-1]x[0, h-1] — same contract `ff_touchcal_apply`'s output
+ * carries — so the reflection can't escape that range either).
+ *
+ * Device use (targets/esp32s3/ff_display's `process_coordinates` seam):
+ * called AFTER `ff_touchcal_apply`, not instead of it, when
+ * `ff_settings_t.screen_flip` is set — the panel's per-unit calibration
+ * fit (`ff_touchcal_t`) is measured against raw controller coordinates,
+ * which don't change when the CASE is mounted flipped (the touch
+ * controller doesn't know or care how the case is oriented); only the
+ * mapping from "corrected screen point" to "the glass position the user
+ * actually sees at that point" flips. Doing the 180 rotation as a
+ * separate, LAST step means a previously-solved calibration stays valid
+ * in either orientation with no re-calibration on flip.
+ *
+ * `out_x`/`out_y` may alias `x`/`y`'s own storage (each output is
+ * computed from a snapshotted parameter, not read back mid-computation).
+ */
+void ff_touchcal_flip180(int x, int y, int w, int h, int *out_x, int *out_y);
+
 #ifdef __cplusplus
 }
 #endif
