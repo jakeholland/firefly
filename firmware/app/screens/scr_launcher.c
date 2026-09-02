@@ -5,6 +5,13 @@
  * copy, not shared with `scr_power_menu.c`'s (near-identical) button
  * helper — same file-static, nothing-to-import tradeoff that file's own
  * top comment documents against `scr_flare.c`.
+ *
+ * PR #142 review, Design 1 + Design 2: the circles now show a real LVGL
+ * built-in symbol glyph (`LV_SYMBOL_*` — compiled into the Montserrat
+ * bitmap fonts this codebase already ships, exactly like
+ * `scr_banner.c`'s `LV_SYMBOL_ENVELOPE`/`LV_SYMBOL_GPS` and
+ * `scr_signals.c`'s several `LV_SYMBOL_*` rows) rather than a text
+ * abbreviation, and are 96px in diameter rather than 64px.
  */
 #include "scr_launcher.h"
 
@@ -17,33 +24,38 @@
  * Layout constants.
  *
  * Four circles in a diagonal cross (NW/NE/SW/SE) around the puck
- * center, at radius CIRCLE_OFFSET (~120px) — verified to fit the round
+ * center, at radius CIRCLE_OFFSET (85px) — verified to fit the round
  * glass (FF_THEME_PUCK_RADIUS_PX == 206): a circle's farthest corner
- * from center is sqrt(85^2+85^2) + CIRCLE_DIAM/2 ~= 152px, and a
- * caption's farthest label pixel at the bottom row's y (~129) sits
- * within that row's ~160px chord half-width — both comfortably inside
- * the 206px radius. Adjacent circles (e.g. NW-NE) are 170px apart
- * center-to-center, an edge-to-edge gap of 170-64=106px, far past the
- * FF_HIT_MIN_GAP_PX floor.
+ * from center is sqrt(85^2+85^2) + CIRCLE_DIAM/2 ~= 168px, and a
+ * caption's farthest label pixel at the bottom row's y (~145) sits
+ * within that row's ~146px chord half-width — both comfortably inside
+ * the 206px radius, with the corner-clip margin `radar_layout.h`'s own
+ * collision-free placement discipline expects. Adjacent circles (e.g.
+ * NW-NE) are 170px apart center-to-center, an edge-to-edge gap of
+ * 170-96=74px, far past the FF_HIT_MIN_GAP_PX floor — verified by
+ * `test_face_hit_targets.c`'s adjacency sweep, not just by hand.
  * ------------------------------------------------------------------- */
 
 #define LAUNCHER_CIRCLE_OFFSET 85.0f /* dx=dy from center for each circle, NE/NW/SW/SE */
-#define LAUNCHER_CIRCLE_DIAM   64    /* spec: ">= 56 px targets" — 64 for headroom */
-#define LAUNCHER_CAPTION_DY    44.0f /* caption baseline offset from its circle's own center */
+#define LAUNCHER_CIRCLE_DIAM   96    /* PR #142 review Design 2 — up from 64px: "easier-to-tap targets" */
+#define LAUNCHER_CAPTION_DY    60.0f /* caption baseline offset from its circle's own center */
+#define LAUNCHER_BADGE_PX      16    /* the unread badge scales with the circle (was 12px at 64px) */
+#define LAUNCHER_GLYPH_FONT    (&lv_font_montserrat_24) /* readable at ~30px inside a 96px circle */
 
 _Static_assert(LAUNCHER_CIRCLE_DIAM >= 56, "launcher circles must clear the spec's 56px floor");
 _Static_assert(LAUNCHER_CIRCLE_DIAM >= FF_THEME_MIN_HIT_PX, "launcher circles must clear the shared 44px hit floor");
 
 /* ---------------------------------------------------------------------
- * One app circle + its caption. `glyph`: a short (<=3 char) abbreviation
- * drawn INSIDE the circle — this repo vendors no icon font (ff_theme.h's
- * own font-substitution note documents the same constraint for every
- * other screen), so a short abbreviation stands in for "kind glyph".
- * `caption`: the full word, drawn below the circle. `launcher_idx`: this
- * file's own fixed circle order (0=Now, 1=Signals, 2=Map, 3=Settings —
- * ff_intent.h's FF_INTENT_LAUNCHER_SELECT payload), passed through LVGL
- * event user_data (the scr_compose.c/scr_signals.c precedent for a
- * per-callback small int with no new global state).
+ * One app circle + its caption. `glyph`: an `LV_SYMBOL_*` string drawn
+ * INSIDE the circle — the spec's "kind glyph" (PR #142 review Design 1:
+ * this repo DOES vendor icon glyphs, compiled into its Montserrat
+ * bitmap fonts by default; `ff_theme.h`'s font-substitution note is
+ * about DEVICE FONTS/type sizes, not about symbols, and does not apply
+ * here). `caption`: the full word, drawn below the circle.
+ * `launcher_idx`: this file's own fixed circle order (0=Now, 1=Signals,
+ * 2=Map, 3=Settings — ff_intent.h's FF_INTENT_LAUNCHER_SELECT payload),
+ * passed through LVGL event user_data (the scr_compose.c/scr_signals.c
+ * precedent for a per-callback small int with no new global state).
  * ------------------------------------------------------------------- */
 
 static void launcher_circle_click_cb(lv_event_t *e)
@@ -76,7 +88,7 @@ static void launcher_make_circle(lv_obj_t *puck, char const *glyph, char const *
 
     lv_obj_t *glyph_label = lv_label_create(btn);
     lv_label_set_text(glyph_label, glyph);
-    lv_obj_set_style_text_font(glyph_label, FF_THEME_FONT_HEADLINE, 0);
+    lv_obj_set_style_text_font(glyph_label, LAUNCHER_GLYPH_FONT, 0);
     lv_obj_set_style_text_color(glyph_label, lv_color_hex(FF_THEME_COLOR_INK), 0);
     lv_obj_center(glyph_label);
 
@@ -94,10 +106,11 @@ static void launcher_make_circle(lv_obj_t *puck, char const *glyph, char const *
     if (badge) {
         /* Small amber dot at the circle's upper-right — same badge shape
          * the old page-dot row used (scr_nav.c's retired
-         * nav_build_page_dots), moved here per this slice's spec. */
+         * nav_build_page_dots), moved here per this slice's spec, scaled
+         * up with the circle (PR #142 review Design 2). */
         lv_obj_t *dot = lv_obj_create(puck);
         lv_obj_remove_style_all(dot);
-        lv_obj_set_size(dot, 12, 12);
+        lv_obj_set_size(dot, LAUNCHER_BADGE_PX, LAUNCHER_BADGE_PX);
         lv_obj_set_style_radius(dot, LV_RADIUS_CIRCLE, 0);
         lv_obj_set_style_bg_color(dot, lv_color_hex(FF_THEME_COLOR_AMBER), 0);
         lv_obj_set_style_bg_opa(dot, LV_OPA_COVER, 0);
@@ -133,10 +146,18 @@ void ff_scr_launcher_build(ff_app_state_t const *state)
     /* Fixed circle order — MUST match ff_intent.h's FF_INTENT_LAUNCHER_SELECT
      * payload convention (0=Now, 1=Signals, 2=Map, 3=Settings) and
      * ff_shell.c's k_launcher_faces mapping table. Reading order:
-     * top-left, top-right, bottom-left, bottom-right. */
-    launcher_make_circle(puck, "NOW", "NOW", -LAUNCHER_CIRCLE_OFFSET, -LAUNCHER_CIRCLE_OFFSET, 0, false);
-    launcher_make_circle(puck, "SIG", "SIGNALS", LAUNCHER_CIRCLE_OFFSET, -LAUNCHER_CIRCLE_OFFSET, 1,
+     * top-left, top-right, bottom-left, bottom-right.
+     *
+     * Glyphs (PR #142 review Design 1): LV_SYMBOL_LIST for Now (the
+     * lineup/schedule list), LV_SYMBOL_ENVELOPE for Signals (the same
+     * glyph scr_banner.c already uses for an incoming MESSAGE),
+     * LV_SYMBOL_GPS for Map (the same glyph scr_banner.c uses for RALLY
+     * and scr_signals.c's own rally row), LV_SYMBOL_SETTINGS for
+     * Settings — the standard LVGL gear glyph. */
+    launcher_make_circle(puck, LV_SYMBOL_LIST, "NOW", -LAUNCHER_CIRCLE_OFFSET, -LAUNCHER_CIRCLE_OFFSET, 0, false);
+    launcher_make_circle(puck, LV_SYMBOL_ENVELOPE, "SIGNALS", LAUNCHER_CIRCLE_OFFSET, -LAUNCHER_CIRCLE_OFFSET, 1,
                           signals_unread);
-    launcher_make_circle(puck, "MAP", "MAP", -LAUNCHER_CIRCLE_OFFSET, LAUNCHER_CIRCLE_OFFSET, 2, false);
-    launcher_make_circle(puck, "SET", "SETTINGS", LAUNCHER_CIRCLE_OFFSET, LAUNCHER_CIRCLE_OFFSET, 3, false);
+    launcher_make_circle(puck, LV_SYMBOL_GPS, "MAP", -LAUNCHER_CIRCLE_OFFSET, LAUNCHER_CIRCLE_OFFSET, 2, false);
+    launcher_make_circle(puck, LV_SYMBOL_SETTINGS, "SETTINGS", LAUNCHER_CIRCLE_OFFSET, LAUNCHER_CIRCLE_OFFSET, 3,
+                          false);
 }

@@ -34,12 +34,13 @@ extern "C" {
  * convention as `ff_scr_power_menu_build`/`ff_scr_compose_build` — the
  * launcher is a full-screen modal, not nested inside `scr_nav.c`).
  * Draws: four circles (>= 56 px targets, per spec — this file uses
- * 64 px for headroom over that floor), each a kind glyph (a short
- * abbreviation — no icon font is vendored in this repo, see
- * `ff_theme.h`'s own font-substitution note for the same constraint)
- * plus a short caption label below it, `LV_STATE_PRESSED` press
- * feedback, and the Signals circle's unread badge when
- * `state->signals` has unread items.
+ * 96 px, PR #142 review Design 2: "easier-to-tap targets"), each a
+ * real LVGL `LV_SYMBOL_*` kind glyph (compiled into the Montserrat
+ * bitmap fonts this codebase already ships — the same symbols
+ * `scr_banner.c`/`scr_signals.c` already render; PR #142 review
+ * Design 1) plus a short caption label below it, `LV_STATE_PRESSED`
+ * press feedback, and the Signals circle's unread badge (scaled with
+ * the circle) when `state->signals` has unread items.
  *
  * NULL-safe (no-op, matching every other builder in this directory).
  */

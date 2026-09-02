@@ -226,6 +226,17 @@ bool ff_route_goto(ff_route_t *r, ff_app_face_t f);
  * `ff_shell.c`'s FF_INTENT_POWER_MENU_OPEN handler relies on exactly this
  * rejection rather than re-deriving "is a modal already up" itself.
  *
+ * **The ONE exception (S26 slice e, PR #142 review FAIL 2)**: pushing
+ * `FF_APP_FACE_POWER_MENU` while `FF_APP_FACE_LAUNCHER` is already up
+ * REPLACES it (pops the launcher, pushes the power menu) instead of
+ * being rejected — a PWR long-press must reach the user even from the
+ * launcher, which is a transient hub, not a place that should be able
+ * to swallow it. `base` is untouched (the launcher never changes it),
+ * so popping the power menu afterward reveals `base` directly — never
+ * the launcher, which is simply gone. Every other (`f`, current modal)
+ * pair — POWER_MENU over COMPOSE in particular — still falls through
+ * to the one-slot rejection above unchanged.
+ *
  * **Pushing over an off-axis `base` is also rejected**, the same rule
  * `ff_route_swipe()` applies — because a modal is the one operation
  * that could hide a forgotten `ff_route_init()` instead of exposing it.

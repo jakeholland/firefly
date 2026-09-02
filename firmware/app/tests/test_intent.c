@@ -41,6 +41,7 @@
 #include "ff_shell.h"
 
 #include "ff_crew.h"
+#include "ff_idle.h" /* S26 slice e — FF_IDLE_T_DIM_MS, the launcher-timeout ordering test */
 #include "ff_proto.h"
 
 /* ------------------------------------------------------------------- */
@@ -1334,6 +1335,22 @@ static void send_power(ff_shell_t *shell, ff_intent_kind_t kind)
     ff_shell_intent(shell, &in);
 }
 
+/* S26 slice e — HOME/LAUNCHER_SELECT against an explicit shell (the
+ * power-menu section's own harness, `setting_harness_t`, not the
+ * global `H` the earlier S26e_* tests use). */
+static void send_home_on(ff_shell_t *shell)
+{
+    ff_intent_t in = {.kind = FF_INTENT_HOME, .u = {0}};
+    ff_shell_intent(shell, &in);
+}
+
+static void send_launcher_select_on(ff_shell_t *shell, uint8_t launcher_idx)
+{
+    ff_intent_t in = {.kind = FF_INTENT_LAUNCHER_SELECT, .u = {0}};
+    in.u.launcher_idx = launcher_idx;
+    ff_shell_intent(shell, &in);
+}
+
 /* Deliver a paired FLARE so `ff_shell_flare(shell)->takeover_active`
  * becomes true — the exact technique
  * S16_AC8_setting_set_is_rejected_while_a_takeover_is_visible uses. */
@@ -1551,6 +1568,127 @@ static void S26b_power_actions_are_rejected_while_a_takeover_is_visible(void)
      * comment on that exact point). */
     TEST_ASSERT_EQUAL(FF_APP_FACE_POWER_MENU, power_view(&h)->active_face);
     TEST_ASSERT_TRUE(ff_shell_flare(&h.shell)->takeover_active);
+
+    ff_shell_close(&h.shell);
+}
+
+/* =================================================================== */
+/* S26 slice e, PR #142 review — FAIL 1: the launcher's transient        */
+/* timeout, and FAIL 2: POWER_MENU reaching the user from the launcher   */
+/* =================================================================== */
+
+/* AC (FAIL 1): "Radar is the watchface... what the screen wakes to" —
+ * the launcher must never be able to outlive a dim/OFF/wake cycle, so it
+ * pops itself back to Radar well before FF_IDLE_T_DIM_MS could ever fire.
+ * Boundary pinned exactly like the power menu's own timeout tests just
+ * above (9999 held open, 10000 auto-dismissed). */
+static void S26e_launcher_timeout_stays_open_just_before_10s(void)
+{
+    setting_harness_t h;
+    power_spy_t spy = {0};
+    power_harness_init(&h, &spy);
+
+    send_home_on(&h.shell); /* Radar -> launcher */
+    uint32_t const opened_at = h.clk.t;
+
+    h.clk.t = opened_at + 9999u;
+    TEST_ASSERT_EQUAL(FF_APP_FACE_LAUNCHER, power_view(&h)->active_face);
+
+    ff_shell_close(&h.shell);
+}
+
+static void S26e_launcher_timeout_auto_dismisses_at_exactly_10s(void)
+{
+    setting_harness_t h;
+    power_spy_t spy = {0};
+    power_harness_init(&h, &spy);
+
+    send_home_on(&h.shell);
+    uint32_t const opened_at = h.clk.t;
+
+    h.clk.t = opened_at + 10000u;
+    TEST_ASSERT_EQUAL(FF_APP_FACE_RADAR, power_view(&h)->active_face);
+
+    ff_shell_close(&h.shell);
+}
+
+/* "reset by any press inside the launcher" — a press well before the
+ * deadline (here, an out-of-range LAUNCHER_SELECT: a real mistap that
+ * misses every circle, still "a press", still inside the launcher)
+ * pushes the deadline out by another full FF_LAUNCHER_TIMEOUT_MS from
+ * the press, not from the original open. Proven by landing PAST the
+ * original 10s mark (opened_at + 10000) while STILL open. */
+static void S26e_launcher_timeout_is_reset_by_a_press_inside(void)
+{
+    setting_harness_t h;
+    power_spy_t spy = {0};
+    power_harness_init(&h, &spy);
+
+    send_home_on(&h.shell);
+    uint32_t const opened_at = h.clk.t;
+
+    h.clk.t = opened_at + 9000u;
+    send_launcher_select_on(&h.shell, 99u); /* out of range: a no-op nav, still "a press" */
+    TEST_ASSERT_EQUAL(FF_APP_FACE_LAUNCHER, power_view(&h)->active_face); /* still open */
+
+    /* Without the reset this would already be past the original
+     * deadline (opened_at + 10000); with it, the deadline is now
+     * (opened_at + 9000 + 10000). */
+    h.clk.t = opened_at + 10000u;
+    TEST_ASSERT_EQUAL(FF_APP_FACE_LAUNCHER, power_view(&h)->active_face);
+
+    h.clk.t = opened_at + 9000u + 10000u;
+    TEST_ASSERT_EQUAL(FF_APP_FACE_RADAR, power_view(&h)->active_face);
+
+    ff_shell_close(&h.shell);
+}
+
+/* The ordering guarantee the whole fix depends on: the launcher is
+ * ALWAYS gone before the screen could ever dim with it showing. A
+ * 10000 -> 20000 mutation of FF_LAUNCHER_TIMEOUT_MS flips this false
+ * (20000 > FF_IDLE_T_DIM_MS's 15000) and fails loudly here, independent
+ * of (and in addition to) the boundary tests above timing out
+ * differently under such a mutation. */
+static void S26e_launcher_timeout_is_safely_below_dim(void)
+{
+    TEST_ASSERT_TRUE(FF_LAUNCHER_TIMEOUT_MS < FF_IDLE_T_DIM_MS);
+}
+
+/* FAIL 2 — a PWR long-press must reach the user even while the launcher
+ * is open: POWER_MENU_OPEN replaces it instead of being silently
+ * swallowed by the one-modal-slot rule. */
+static void S26e_power_menu_open_replaces_the_launcher(void)
+{
+    setting_harness_t h;
+    power_spy_t spy = {0};
+    power_harness_init(&h, &spy);
+
+    send_home_on(&h.shell);
+    TEST_ASSERT_EQUAL(FF_APP_FACE_LAUNCHER, power_view(&h)->active_face);
+
+    send_power(&h.shell, FF_INTENT_POWER_MENU_OPEN);
+    TEST_ASSERT_EQUAL(FF_APP_FACE_POWER_MENU, power_view(&h)->active_face); /* the launcher is gone */
+
+    ff_shell_close(&h.shell);
+}
+
+/* Cancelling that power menu lands on Radar, never back on the
+ * launcher — the replace discarded it; there is nothing left to "go
+ * back" to. */
+static void S26e_power_menu_cancel_after_replacing_the_launcher_returns_to_radar(void)
+{
+    setting_harness_t h;
+    power_spy_t spy = {0};
+    power_harness_init(&h, &spy);
+
+    send_home_on(&h.shell);
+    send_power(&h.shell, FF_INTENT_POWER_MENU_OPEN);
+    TEST_ASSERT_EQUAL(FF_APP_FACE_POWER_MENU, power_view(&h)->active_face);
+
+    send_power(&h.shell, FF_INTENT_POWER_CANCEL);
+    TEST_ASSERT_EQUAL(FF_APP_FACE_RADAR, power_view(&h)->active_face);
+    TEST_ASSERT_EQUAL_INT(0, spy.off_calls);
+    TEST_ASSERT_EQUAL_INT(0, spy.reboot_calls);
 
     ff_shell_close(&h.shell);
 }
@@ -1869,6 +2007,13 @@ int main(void)
     RUN_TEST(S26b_power_menu_stays_open_just_before_the_10s_timeout);
     RUN_TEST(S26b_power_menu_auto_dismisses_at_exactly_the_10s_timeout);
     RUN_TEST(S26b_power_actions_are_rejected_while_a_takeover_is_visible);
+
+    RUN_TEST(S26e_launcher_timeout_stays_open_just_before_10s);
+    RUN_TEST(S26e_launcher_timeout_auto_dismisses_at_exactly_10s);
+    RUN_TEST(S26e_launcher_timeout_is_reset_by_a_press_inside);
+    RUN_TEST(S26e_launcher_timeout_is_safely_below_dim);
+    RUN_TEST(S26e_power_menu_open_replaces_the_launcher);
+    RUN_TEST(S26e_power_menu_cancel_after_replacing_the_launcher_returns_to_radar);
     RUN_TEST(S16_AC8_setting_set_out_of_range_is_rejected_not_clamped);
     RUN_TEST(S16_AC8_setting_set_my_name_is_bounded_and_terminated);
     RUN_TEST(S16_AC8_setting_set_is_rejected_while_a_takeover_is_visible);

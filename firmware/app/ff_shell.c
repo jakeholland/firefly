@@ -177,6 +177,14 @@ typedef struct {
      * modal pops by any other means (Power off / Reboot / Cancel). */
     uint32_t power_menu_opened_ms;
 
+    /* S26 slice e, PR #142 review FAIL 1 — when the launcher was last
+     * opened OR touched (FF_INTENT_HOME opening it, or ANY intent
+     * dispatched while it is open — see ff_shell_intent's top), for
+     * FF_LAUNCHER_TIMEOUT_MS's auto-pop-to-Radar. Same shape as
+     * power_menu_opened_ms just above; meaningful only while route.modal
+     * == FF_APP_FACE_LAUNCHER. */
+    uint32_t launcher_opened_ms;
+
     /* S24 slice d — the Rally sub-view's persistent WHERE/WHEN selection
      * (the view is memset each tick, so like sig_subview these live in the
      * shell). `sig_rally_sel`: 0 = On Me, 1..N = the (sel-1)-th displayable
@@ -2163,6 +2171,21 @@ bool ff_shell_tick(ff_shell_t *sh_pub, uint32_t now_ms)
         (void)ff_route_pop_modal(&sh->route);
     }
 
+    /* S26 slice e, PR #142 review FAIL 1 — the launcher's own transient
+     * timeout, identical shape to the power menu's just above (same
+     * wraparound-safe idiom, same "pop straight on the route, not
+     * through a synthesized intent" reasoning). `launcher_opened_ms` is
+     * stamped on open (ff_shell_intent's FF_INTENT_HOME case) and reset
+     * by any intent dispatched while the launcher is open (see
+     * ff_shell_intent's top) — a real thumb still deciding keeps it
+     * open; true inactivity pops it to Radar well before FF_IDLE_T_DIM_MS
+     * could ever dim the screen with the launcher showing (FF_LAUNCHER_
+     * TIMEOUT_MS's own doc comment, ff_shell.h). */
+    if (sh->route.modal == FF_APP_FACE_LAUNCHER &&
+        (now_ms - sh->launcher_opened_ms) >= FF_LAUNCHER_TIMEOUT_MS) {
+        (void)ff_route_pop_modal(&sh->route);
+    }
+
     /* S16 slice c3: the injected clock, not lv_tick_get() (scr_compose.c
      * no longer touches the clock at all — see ff_t9.h's "Deviations"
      * note for why the multi-tap commit timeout needs an explicit poll).
@@ -2791,6 +2814,21 @@ void ff_shell_intent(ff_shell_t *sh_pub, ff_intent_t const *in)
      * would outlive the fact it copied (ff_route_visible's doc). */
     bool const takeover_up = (ff_route_visible(&sh->route, sh->flare.takeover_active) == FF_APP_FACE_FLARE);
 
+    /* S26 slice e, PR #142 review FAIL 1 — ANY intent dispatched while
+     * the launcher is open counts as "still deciding" and resets its
+     * transient timeout (FF_LAUNCHER_TIMEOUT_MS, ff_shell.h), whether or
+     * not the intent itself does anything (a mistap that misses every
+     * circle — an out-of-range LAUNCHER_SELECT — is exactly the case
+     * this exists for). Checked BEFORE the switch, unconditionally of
+     * `in->kind`, so no individual case has to remember to do it; a
+     * HOME/LAUNCHER_SELECT that goes on to CLOSE the launcher this same
+     * call makes the reset moot (nothing reads a stale timestamp once
+     * modal != LAUNCHER), so this never needs its own takeover/kind
+     * gating. */
+    if (sh->route.modal == FF_APP_FACE_LAUNCHER) {
+        sh->launcher_opened_ms = shell_now(sh);
+    }
+
     switch (in->kind) {
     case FF_INTENT_SWIPE:
         /* S26 slice e — RETIRED as a live navigation mechanism: no
@@ -2815,6 +2853,15 @@ void ff_shell_intent(ff_shell_t *sh_pub, ff_intent_t const *in)
          * flare takeover is up must not navigate out from under it. */
         if (takeover_up) return;
         (void)ff_route_home(&sh->route);
+        /* PR #142 review FAIL 1 — this call just OPENED the launcher
+         * (Radar -> launcher) iff the route now shows it; the top-of-
+         * function reset above ran before this call, against whatever
+         * modal was live BEFORE it (not LAUNCHER, or this HOME would
+         * have CLOSED it instead — ff_route_home's own rule set), so
+         * the very first stamp has to happen here. */
+        if (sh->route.modal == FF_APP_FACE_LAUNCHER) {
+            sh->launcher_opened_ms = shell_now(sh);
+        }
         return;
 
     case FF_INTENT_LAUNCHER_SELECT: {

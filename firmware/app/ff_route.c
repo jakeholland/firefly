@@ -142,6 +142,30 @@ bool ff_route_push_modal(ff_route_t *r, ff_app_face_t f)
     if (!route_axis_index(r->base, &base_idx)) {
         return false;
     }
+
+    /* PR #142 review FAIL 2 — the ONE exception to "one slot, no
+     * replace" below: a PWR long-press must reach the user even while
+     * the launcher is open (it is a transient hub, not a place that
+     * should be able to swallow the power menu), so POWER_MENU is
+     * allowed to REPLACE a live LAUNCHER — pop it, push the power menu,
+     * in one step. `base` is untouched either way (the launcher never
+     * changes it — it is always RADAR underneath), so a later Cancel/
+     * Power-off/Reboot pop from the power menu reveals RADAR, never the
+     * launcher: there is nothing left to "go back to" once this
+     * replace has happened.
+     *
+     * Deliberately narrow — checked by exact (f, r->modal) pair, not
+     * "any modal can be replaced": COMPOSE must still be REJECTED over
+     * either LAUNCHER or POWER_MENU (a half-typed draft is never slid
+     * away by anything), and POWER_MENU must still be REJECTED over
+     * COMPOSE (push_modal_power_menu_over_compose_is_rejected_and_
+     * vice_versa, unchanged) — both fall through to the generic
+     * one-slot rule just below like every other combination. */
+    if (f == FF_APP_FACE_POWER_MENU && r->modal == FF_APP_FACE_LAUNCHER) {
+        r->modal = FF_APP_FACE_POWER_MENU;
+        return true;
+    }
+
     /* One slot, not a stack: replacing a live modal would silently
      * discard a half-typed Compose draft. */
     if (r->modal != FF_APP_FACE_NONE) {

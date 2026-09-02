@@ -562,6 +562,46 @@ static lv_obj_t *find_clickable_by_size(lv_obj_t *root, int32_t w, int32_t h)
     return NULL;
 }
 
+/* PR #142 review Design 2: the launcher's four circles are now all the
+ * SAME size (96x96, up from 64x64), so `find_clickable_by_size` above
+ * (which returns the FIRST match) can no longer tell them apart — and
+ * Design 1 swapped their labels for LV_SYMBOL_* glyphs, so
+ * `find_button_with_label` can't either (the glyph string is not a
+ * stable per-circle identifier the way "NOW"/"SIG"/"MAP"/"SET" text
+ * used to be). Walks the SAME depth-first, sibling-order traversal as
+ * both helpers above and returns the `want`-th (0-based) same-size
+ * button it finds — reliable because `ff_scr_launcher_build` adds the
+ * four circles as direct puck children in a FIXED order (Now, Signals,
+ * Map, Settings — the same order `launcher_idx` encodes), so tree order
+ * IS circle order. `*counter` is threaded through the recursion so one
+ * top-level call counts correctly across the whole subtree. */
+static lv_obj_t *find_nth_clickable_by_size(lv_obj_t *root, int32_t w, int32_t h, int *counter, int want)
+{
+    uint32_t n = lv_obj_get_child_count(root);
+    for (uint32_t i = 0; i < n; i++) {
+        lv_obj_t *child = lv_obj_get_child(root, i);
+        if (lv_obj_check_type(child, &lv_button_class) && lv_obj_has_flag(child, LV_OBJ_FLAG_CLICKABLE) &&
+            lv_obj_get_style_width(child, 0) == w && lv_obj_get_style_height(child, 0) == h) {
+            if (*counter == want) {
+                return child;
+            }
+            (*counter)++;
+        }
+        lv_obj_t *found = find_nth_clickable_by_size(child, w, h, counter, want);
+        if (found != NULL) return found;
+    }
+    return NULL;
+}
+
+/* `idx`: 0=Now, 1=Signals, 2=Map, 3=Settings (ff_intent.h's
+ * FF_INTENT_LAUNCHER_SELECT payload convention == scr_launcher.c's own
+ * build order). */
+static lv_obj_t *launcher_circle_at(int idx)
+{
+    int counter = 0;
+    return find_nth_clickable_by_size(lv_screen_active(), 96, 96, &counter, idx);
+}
+
 /* A member conversation row tap emits OPEN_THREAD with that member's
  * node id. */
 static void S24b_inbox_member_row_tap_emits_open_thread(void)
@@ -1442,13 +1482,13 @@ static void S16_c1_wired_sites_are_noops_while_the_seam_is_unbound(void)
 /* S26 slice e — the launcher's four circles -> LAUNCHER_SELECT          */
 /* =================================================================== */
 
-static void S26e_launcher_circle_click_emits_launcher_select(char const *glyph, uint8_t expect_idx)
+static void S26e_launcher_circle_click_emits_launcher_select(int circle_idx, uint8_t expect_idx)
 {
     ff_app_state_t state;
     memset(&state, 0, sizeof(state));
     ff_scr_launcher_build(&state);
 
-    click(find_button_with_label(lv_screen_active(), glyph));
+    click(launcher_circle_at(circle_idx));
 
     TEST_ASSERT_EQUAL_INT(1, s_spy.count);
     TEST_ASSERT_EQUAL(FF_INTENT_LAUNCHER_SELECT, s_spy.last.kind);
@@ -1457,22 +1497,22 @@ static void S26e_launcher_circle_click_emits_launcher_select(char const *glyph, 
 
 static void S26e_launcher_now_circle_emits_index_0(void)
 {
-    S26e_launcher_circle_click_emits_launcher_select("NOW", 0u);
+    S26e_launcher_circle_click_emits_launcher_select(0, 0u);
 }
 
 static void S26e_launcher_signals_circle_emits_index_1(void)
 {
-    S26e_launcher_circle_click_emits_launcher_select("SIG", 1u);
+    S26e_launcher_circle_click_emits_launcher_select(1, 1u);
 }
 
 static void S26e_launcher_map_circle_emits_index_2(void)
 {
-    S26e_launcher_circle_click_emits_launcher_select("MAP", 2u);
+    S26e_launcher_circle_click_emits_launcher_select(2, 2u);
 }
 
 static void S26e_launcher_settings_circle_emits_index_3(void)
 {
-    S26e_launcher_circle_click_emits_launcher_select("SET", 3u);
+    S26e_launcher_circle_click_emits_launcher_select(3, 3u);
 }
 
 /* Each click must produce EXACTLY ONE intent (same discipline this
@@ -1485,7 +1525,7 @@ static void S26e_launcher_click_emits_exactly_one_intent(void)
     memset(&state, 0, sizeof(state));
     ff_scr_launcher_build(&state);
 
-    click(find_button_with_label(lv_screen_active(), "SIG"));
+    click(launcher_circle_at(1)); /* Signals */
     TEST_ASSERT_EQUAL_INT(1, s_spy.count);
 }
 

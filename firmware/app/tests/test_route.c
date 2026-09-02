@@ -409,6 +409,50 @@ static void push_modal_power_menu_over_compose_is_rejected_and_vice_versa(void)
     TEST_ASSERT_EQUAL_INT(FF_APP_FACE_POWER_MENU, r2.modal);
 }
 
+/* PR #142 review FAIL 2 — the ONE exception to the one-slot rule just
+ * pinned above: POWER_MENU REPLACES a live LAUNCHER instead of being
+ * rejected by it, so a PWR long-press reaches the user even from the
+ * launcher. */
+static void push_modal_power_menu_replaces_the_launcher(void)
+{
+    ff_route_t r = route_at(FF_APP_FACE_RADAR);
+    TEST_ASSERT_TRUE(ff_route_push_modal(&r, FF_APP_FACE_LAUNCHER));
+    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_LAUNCHER, r.modal);
+
+    TEST_ASSERT_TRUE(ff_route_push_modal(&r, FF_APP_FACE_POWER_MENU));
+    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_POWER_MENU, r.modal); /* the launcher is gone */
+    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_RADAR, r.base); /* untouched by the replace */
+}
+
+/* COMPOSE must NOT get the same treatment — over either LAUNCHER or
+ * POWER_MENU, a half-typed draft is never slid away by anything. This
+ * is the narrowness of FAIL 2's fix: only the exact (POWER_MENU,
+ * LAUNCHER) pair replaces; everything else still falls to the one-slot
+ * rejection. */
+static void push_modal_compose_does_not_replace_the_launcher(void)
+{
+    ff_route_t r = route_at(FF_APP_FACE_RADAR);
+    TEST_ASSERT_TRUE(ff_route_push_modal(&r, FF_APP_FACE_LAUNCHER));
+    TEST_ASSERT_FALSE(ff_route_push_modal(&r, FF_APP_FACE_COMPOSE));
+    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_LAUNCHER, r.modal);
+}
+
+/* After the power menu that replaced the launcher pops (Cancel / Power
+ * off / Reboot — ff_route_pop_modal either way), the route reveals
+ * `base` directly (RADAR) — never the launcher, which the replace
+ * already discarded. */
+static void pop_modal_after_replacing_the_launcher_reveals_radar_not_the_launcher(void)
+{
+    ff_route_t r = route_at(FF_APP_FACE_RADAR);
+    TEST_ASSERT_TRUE(ff_route_push_modal(&r, FF_APP_FACE_LAUNCHER));
+    TEST_ASSERT_TRUE(ff_route_push_modal(&r, FF_APP_FACE_POWER_MENU));
+
+    TEST_ASSERT_TRUE(ff_route_pop_modal(&r));
+    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_NONE, r.modal);
+    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_RADAR, r.base);
+    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_RADAR, ff_route_visible(&r, false));
+}
+
 /* Same swipe-suppression and visible() rules Compose already has,
  * pinned for Power menu too — a future change that special-cased Compose
  * in either function would leave Power menu wrongly swipeable/invisible
@@ -689,6 +733,9 @@ int main(void)
 
     RUN_TEST(push_modal_accepts_only_compose_power_menu_and_launcher);
     RUN_TEST(push_modal_power_menu_over_compose_is_rejected_and_vice_versa);
+    RUN_TEST(push_modal_power_menu_replaces_the_launcher);
+    RUN_TEST(push_modal_compose_does_not_replace_the_launcher);
+    RUN_TEST(pop_modal_after_replacing_the_launcher_reveals_radar_not_the_launcher);
     RUN_TEST(power_menu_modal_suppresses_swipe_and_is_the_visible_face);
     RUN_TEST(push_modal_rejects_map_and_settings);
     RUN_TEST(push_modal_leaves_base_untouched);
