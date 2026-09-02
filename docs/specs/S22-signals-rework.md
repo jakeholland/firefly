@@ -145,8 +145,21 @@ redirect and the code will follow.
 
 - **Should a COMPOSE launched from a target reset that target after its text
   send?** (d) resets the Signals target to WHOLE_CREW only after a *direct*
-  PULSE/RALLY send (AC3, scoped to those in the (d) brief); COMPOSE merely
+  FLARE/RALLY send (AC3, scoped to those in the (d) brief); COMPOSE merely
   navigates to the composer with `TO` preset, and the composer's own SEND
   operates on its `compose_to_node`, leaving the Signals target as-is. If AC3's
   "after any send" is meant to include the composer's send too, the composer's
   SEND_TEXT handler would also clear the Signals target.
+
+## Amendments
+
+- **2026-09-02, maintainer decision — PULSE retired end to end:** this
+  document's PULSE references (the `FF_INTENT_INBOX_PULSE` action button,
+  the OMW/5 MIN/PULSE reply row, `FF_PROTO_TYPE_PULSE`) describe the
+  as-built (d) slice at the time; left as historical record. As of
+  2026-09-02 PULSE is retired everywhere (see `S04-firefly-protocol.md`'s
+  Amendments): the outbound action button and popup row are FLARE (already
+  true since PR #129, "in send to crew we should have flare not pulse");
+  the reply row is OMW / 5 MIN only; `FF_INTENT_INBOX_PULSE` /
+  `FF_INTENT_INBOX_POPUP_PULSE` (the outbound-pulse programmatic seam PR
+  #129 deliberately kept for tests) are removed outright.

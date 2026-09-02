@@ -6,7 +6,7 @@
     "convs": [
       {"conv": "member", "node_id": 111, "name": "DANA", "initial": "D", "color_idx": 0,
        "unread": 1, "item_count": 2,
-       "preview_kind": "pulse", "preview_dir": "direct", "preview_age_ms": 60000,
+       "preview_kind": "flare", "preview_dir": "direct", "preview_age_ms": 60000,
        "presence": "seen", "presence_age_ms": 60000},
       {"conv": "crew", "unread": 2, "item_count": 5,
        "preview_kind": "rally", "preview_dir": "broadcast", "preview_text": "Main Stage",

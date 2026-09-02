@@ -54,23 +54,28 @@
  *    Settings/pairing screen, not yet built) ever grows the roster;
  *    inbound radio traffic alone never does.
  *  - On a successful (paired-sender) push, fires the injected haptic
- *    callback once per pushed item. The spec's AC4 wording calls this out
- *    specifically for PULSE ("feed item + haptic callback"); this module
- *    fires it for every kind that reaches the feed (PULSE/RALLY/STATUS/
- *    TEXT), not just PULSE — a product judgment call (flagged here, and
- *    in the PR body), reasoned as: a silent buzz-less RALLY notification
- *    from a paired friend would be a worse UX gap than an extra buzz for
- *    non-PULSE kinds, and the spec gives no reason PULSE alone should
- *    buzz. FLARE_END/RALLY_CLEAR/ACK_PING are state-transition signals,
- *    not feed items (no `ff_feed_kind_t` value represents them) — decoded
- *    and silently dropped from the feed-push path, matching FEED_FLARE's
- *    absence of an END counterpart in the S08 kind list.
- *  - **Canned replies** (`ff_wiring_send_canned_reply`): OMW / 5 MIN send
- *    plain text via the injected sender; PULSE sends the `ff_proto`-
- *    encoded PULSE packet. Destination is `reply_ctx->from_node` if a
- *    reply context is given, else `MC_ADDR_BROADCAST` (S08 spec:
- *    "...to the feed item's sender if a reply-context exists, else
- *    broadcast"). Actually sending needs a live, want_config-ready
+ *    callback once per pushed item. The spec's AC4 wording called this out
+ *    specifically for the (now-retired) PULSE kind ("feed item + haptic
+ *    callback"); this module fires it for every kind that reaches the feed
+ *    (RALLY/STATUS/TEXT/FLARE), not just one of them — a product judgment
+ *    call (flagged here, and in the original PR body), reasoned as: a
+ *    silent buzz-less RALLY notification from a paired friend would be a
+ *    worse UX gap than an extra buzz for other kinds. RESERVED_01 (0x01,
+ *    retired PULSE, 2026-09-02) joins FLARE_END/RALLY_CLEAR/ACK_PING as a
+ *    type that decodes successfully but is not a feed item — decoded and
+ *    silently dropped from the feed-push path (see `ff_wiring_retired_frame_count`
+ *    below for how a dropped RESERVED_01 frame stays bench-visible without a
+ *    feed item or a log call). Presence/"heard" tracking is unaffected: it
+ *    runs off `mc_events_t.on_rx_meta`, which fires for every inbound
+ *    MeshPacket regardless of portnum/payload (`ff_shell.c`'s
+ *    `shell_ev_rx_meta`), so a retired frame's radio activity is already
+ *    seen there — nothing extra to poke here.
+ *  - **Canned replies** (`ff_wiring_send_canned_reply`): OMW ("omw" text) /
+ *    5 MIN ("5 min" text) send plain text via the injected sender.
+ *    Destination is `reply_ctx->from_node` if a reply context is given,
+ *    else `MC_ADDR_BROADCAST` (S08 spec: "...to the feed item's sender if
+ *    a reply-context exists, else broadcast"). Actually sending needs a
+ *    live, want_config-ready
  *    `mc_client_t` — which a unit test has no easy way to stand up without
  *    a real transport and handshake (see test_meshclient.c's own mock-IO
  *    harness for how heavy that is) — so sending is behind the small
@@ -135,6 +140,15 @@ typedef struct {
      * (never guessed DIRECT). */
     uint32_t self_node;
     bool     has_self_node;
+
+    /* [api] 2026-09-02 — bench-visible count of RESERVED_01 (retired
+     * PULSE) frames dropped by ff_wiring_on_private. Same convention as
+     * ff_wall_state_t.trust_rejected_count (ff_wall.h): a counter
+     * tests/tooling can read, not a log call — see this header's top
+     * comment for the drop decision. Never decremented; wraps like any
+     * other uint32_t counter (not a realistic concern at festival RF
+     * volumes over one session). */
+    uint32_t retired_frame_count;
 } ff_wiring_ctx_t;
 
 /**
@@ -162,17 +176,25 @@ void ff_wiring_init_with_sender(ff_wiring_ctx_t *w, ff_feed_t *feed, ff_crew_t *
  * must be a `ff_wiring_ctx_t *` (cast internally). Ignores `portnum !=
  * FF_PORTNUM` (not this app's protocol — S04 rides its own private
  * portnum). Decodes via `ff_proto_decode`; on a recognized
- * feed-representable type (PULSE/RALLY/STATUS — FLARE is decoded but not
- * currently fed, see header note on FLARE_END/RALLY_CLEAR/ACK_PING),
- * applies the crew-paired-sender filter and pushes a feed item timestamped
- * at `w->clock`'s current `now_ms`. `to` (issue #123) is the packet's
- * destination address, classified into the item's direction exactly like
- * `ff_wiring_on_text`: MC_ADDR_BROADCAST -> BROADCAST, our own node id
- * (when known via `ff_wiring_set_self_node`) -> DIRECT, anything else
- * (including MC_ADDR_UNKNOWN) -> UNKNOWN.
+ * feed-representable type (RALLY/STATUS — FLARE is decoded but not
+ * currently fed, see header note on FLARE_END/RALLY_CLEAR/ACK_PING/
+ * RESERVED_01), applies the crew-paired-sender filter and pushes a feed
+ * item timestamped at `w->clock`'s current `now_ms`. `to` (issue #123) is
+ * the packet's destination address, classified into the item's direction
+ * exactly like `ff_wiring_on_text`: MC_ADDR_BROADCAST -> BROADCAST, our
+ * own node id (when known via `ff_wiring_set_self_node`) -> DIRECT,
+ * anything else (including MC_ADDR_UNKNOWN) -> UNKNOWN.
  */
 void ff_wiring_on_private(void *user, uint32_t from, uint32_t to, uint32_t portnum, uint8_t const *payload,
                            size_t len);
+
+/**
+ * ff_wiring_retired_frame_count — how many RESERVED_01 (retired PULSE)
+ * frames `ff_wiring_on_private` has dropped since `w` was initialized. 0
+ * if `w` is NULL. See this header's top comment and `ff_wiring_ctx_t`'s
+ * `retired_frame_count` field.
+ */
+uint32_t ff_wiring_retired_frame_count(ff_wiring_ctx_t const *w);
 
 /**
  * ff_wiring_on_text — `mc_events_t.on_text`-shaped handler. `user` must be
@@ -195,44 +217,46 @@ void ff_wiring_set_self_node(ff_wiring_ctx_t *w, uint32_t self_node);
  * badge or a buzz) so threads show both sides. `dest` is the MESH
  * destination the send was addressed to; MC_ADDR_BROADCAST maps to the
  * core-side "whole crew" to_node sentinel 0 (ff_feed.h). `text` may be
- * NULL/empty for textless kinds (PULSE). Callers push AFTER the sender
- * accepted the message — never fabricate a "sent" item for a refused
- * send. No-op if `w` or `w->feed` is NULL.
+ * NULL/empty for textless kinds (e.g. FLARE). Callers push AFTER the
+ * sender accepted the message — never fabricate a "sent" item for a
+ * refused send. No-op if `w` or `w->feed` is NULL.
  */
 void ff_wiring_push_outgoing(ff_wiring_ctx_t *w, ff_feed_kind_t kind, uint32_t dest, char const *text);
 
-/* `ff_wiring_canned_reply_t` (OMW / 5MIN / PULSE) is still this module's
+/* `ff_wiring_canned_reply_t` (OMW / 5MIN) is still this module's
  * vocabulary, but its DEFINITION lives in app/include/ff_intent.h as of
  * S16 slice c1 (included above, so every existing consumer of this
  * header compiles unchanged): the intent union carries a
  * `ff_wiring_canned_reply_t reply` by the spec's exact wording, and
  * screens must be able to build intents without transitively including
  * mc_client.h — which including THIS header would do. Same members, same
- * order, same name; only the textual home moved. `[api]`. */
+ * order, same name; only the textual home moved. `[api]`. (2026-09-02: the
+ * enum's third member, PULSE, is retired along with the rest of the wire
+ * type — see this header's top comment.) */
 
 /**
  * ff_wiring_send_canned_reply — send OMW ("omw" text) / 5 MIN ("5 min"
- * text) / PULSE (encoded PULSE packet) via `w->sender`. Destination is
- * `reply_ctx->from_node` if `reply_ctx` is non-NULL, else
- * `MC_ADDR_BROADCAST`. Returns the sender's return value (0 success,
- * negative failure); -1 if `which` is unrecognized.
+ * text) via `w->sender`. Destination is `reply_ctx->from_node` if
+ * `reply_ctx` is non-NULL, else `MC_ADDR_BROADCAST`. Returns the sender's
+ * return value (0 success, negative failure); -1 if `which` is
+ * unrecognized.
  */
 int ff_wiring_send_canned_reply(ff_wiring_ctx_t *w, ff_wiring_canned_reply_t which, ff_feed_item_t const *reply_ctx);
 
 /**
  * ff_wiring_send_canned_reply_to — S24 slice (c): the same canned sends
- * (identical strings/encodes — OMW "omw" text, 5 MIN "5 min" text, PULSE
- * the encoded PULSE packet), addressed to an EXPLICIT mesh destination
- * instead of a reply-context item. This is the seam the thread quick
- * chips send through: the open thread IS the send scope (S24), so the
- * shell resolves the scope (member node id, or MC_ADDR_BROADCAST for the
- * CREW thread) and hands it here — no feed-item context involved.
- * `ff_wiring_send_canned_reply` above is a thin wrapper over this
- * (context -> destination resolution only), so the two paths cannot
- * drift. A successful send pushes its own FEED_DIR_OUT feed item exactly
- * like the wrapper (accepted sends only — a refused send fabricates
- * nothing). Returns the sender's return value (0 success, negative
- * failure); -1 if `w`/its sender is unset or `which` is unrecognized.
+ * (identical strings — OMW "omw" text, 5 MIN "5 min" text), addressed to
+ * an EXPLICIT mesh destination instead of a reply-context item. This is
+ * the seam the thread quick chips send through: the open thread IS the
+ * send scope (S24), so the shell resolves the scope (member node id, or
+ * MC_ADDR_BROADCAST for the CREW thread) and hands it here — no feed-item
+ * context involved. `ff_wiring_send_canned_reply` above is a thin wrapper
+ * over this (context -> destination resolution only), so the two paths
+ * cannot drift. A successful send pushes its own FEED_DIR_OUT feed item
+ * exactly like the wrapper (accepted sends only — a refused send
+ * fabricates nothing). Returns the sender's return value (0 success,
+ * negative failure); -1 if `w`/its sender is unset or `which` is
+ * unrecognized.
  */
 int ff_wiring_send_canned_reply_to(ff_wiring_ctx_t *w, ff_wiring_canned_reply_t which, uint32_t dest);
 

@@ -65,7 +65,7 @@ evidence, and exactly what does/doesn't work); the short version:
   `dist_str`/`arrow_deg`/etc — verified repeatedly against the real
   container in this repo's dev session (and pinned down as
   `test_position_reaches_radar` in `firmware/tests/e2e/`).
-- **`pulse`/`status`/`text` are real and correctly wire-format-encoded**
+- **`flare`/`status`/`text` are real and correctly wire-format-encoded**
   (verified against the pinned image), but **cannot reach an
   already-connected `ffsim`** through a single stock meshtasticd
   instance: it only accepts one client TCP connection at a time (a new
@@ -75,7 +75,9 @@ evidence, and exactly what does/doesn't work); the short version:
   are only observed by whoever's connected at the instant they're sent.
   Since crew_sim.py must itself be the connected client to send at all,
   and doing so kicks ffsim off, there is no window in which ffsim can
-  observe the packet. `firmware/tests/e2e/test_pulse_reaches_feed` and
+  observe the packet. `firmware/tests/e2e/test_flare_reaches_feed` (renamed
+  2026-09-02 from `test_pulse_reaches_feed` — PULSE is retired, see
+  docs/specs/S04-firefly-protocol.md's Amendments) and
   `test_text_roundtrip` encode this as `xfail(strict=False)` with the
   same explanation, not a skip and not a deletion — the scenarios are
   real and worth having ready to go once the gap below is closed.
@@ -98,7 +100,7 @@ evidence, and exactly what does/doesn't work); the short version:
 - **`crew_sim.py rename` (renaming the connected node's identity) reboots
   meshtasticd, and the pinned container image does not survive that
   reboot** (`execv() returned -1! error: No such file or directory`,
-  then the container exits). This is why `walk`/`pulse`/`status`/`text`
+  then the container exits). This is why `walk`/`flare`/`status`/`text`
   don't rename the node on every call — `--node NAME` is a display label
   for scenario narration, not an in-mesh identity change. Use `rename`
   deliberately, and expect to restart the container afterward.
@@ -123,7 +125,7 @@ evidence, and exactly what does/doesn't work); the short version:
   meshtasticd logs `"No 'config.yaml' found, running simulated."` and
   `"Use SIMULATED radio!"` on its own when no hardware is passed
   through — confirmed, not assumed).
-- `crew_sim.py` — scenario API + CLI (`walk`/`pulse`/`status`/`text`/
+- `crew_sim.py` — scenario API + CLI (`walk`/`flare`/`status`/`text`/
   `rename`). `python3 crew_sim.py --help` / `crew_sim.py <cmd> --help`
   for the full flag list.
 - `CTL.md` — ffsim's control socket protocol reference (S13 slice c).

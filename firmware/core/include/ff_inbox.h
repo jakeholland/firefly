@@ -38,8 +38,8 @@
  *     should label it honestly), but every item must be renderable
  *     somewhere, and the communal thread is the only container that
  *     doesn't claim a private 1:1 relationship the data can't attest.
- *     (Today the entire inbound private-portnum path — PULSE/RALLY/
- *     STATUS/FLARE — is UNKNOWN; see ff_feed_dir_t's doc comment.)
+ *     (Today the entire inbound private-portnum path — RALLY/STATUS/
+ *     FLARE — is UNKNOWN; see ff_feed_dir_t's doc comment.)
  *   - MEMBER (node X): inbound FEED_DIR_DIRECT items with from_node == X,
  *     and outgoing items with to_node == X.
  *   - A conversation exists only for CREW and for PAIRED members. A

@@ -18,20 +18,23 @@
  *   - `text_ref`    -> a demo string (the small, demo-gated table below).
  *   - `kind`        -> which mesh-inbound callback to drive:
  *                        TEXT        -> mc_events_t.on_text
- *                        PULSE/STATUS/FLARE -> mc_events_t.on_private
- *                                             (ff_proto payload)
+ *                        STATUS/FLARE -> mc_events_t.on_private
+ *                                        (ff_proto payload)
  *                        RALLY       -> mc_events_t.on_private, but its place
  *                                       name AND lat/lon are sourced from the
  *                                       loaded demo festpack (ff_demo_rally_point),
  *                                       NOT from a demo string — a rally point
  *                                       is festival content (S23 AC5, see below).
+ *                      (2026-09-02: PULSE was a fourth on_private kind here;
+ *                      it is retired and this generator never draws it — see
+ *                      ff_demofeed.h's FF_DEMOFEED_KIND_COUNT.)
  *   - PRESENCE_POKE -> mc_events_t.on_rx_meta (a DIRECT RSSI sample that
  *                      refreshes the member's rssi_age, so presence drifts
  *                      LIVE->STALE->LOST and recovers — S23 AC3).
  *
  * Events are applied through `ff_shell_events()` — the SAME seven-callback
- * seam a live radio drives (ff_shell.h) — so a synthetic pulse/rally/text
- * is indistinguishable in ff_feed_t / ff_crew_t from a mesh one (same
+ * seam a live radio drives (ff_shell.h) — so a synthetic rally/text/status/
+ * flare is indistinguishable in ff_feed_t / ff_crew_t from a mesh one (same
  * paired-sender filter, same unread=true push, same haptic; S23 AC2). This
  * module writes NO core state directly and fabricates no freshness: it only
  * hands honest-looking inbound events to the real inbound path.
@@ -183,8 +186,9 @@ typedef struct {
  *      FEED_RALLY  -> PRIVATE, proto RALLY,  text = NULL (the rally's place
  *                    name is festpack-sourced by ff_demo_apply_event via
  *                    ff_demo_rally_point, not a demo string — S23 AC5)
- *      FEED_PULSE  -> PRIVATE, proto PULSE,  text = NULL
  *      FEED_FLARE  -> PRIVATE, proto FLARE,  text = NULL
+ *    (2026-09-02: FEED_PULSE was a fifth case here, proto PULSE; retired,
+ *    see ff_feed.h.)
  *
  * Returns `out->valid`. Safe no-op returning false if `ev`/`node_ids`/
  * `out` is NULL or `member_count` is 0.

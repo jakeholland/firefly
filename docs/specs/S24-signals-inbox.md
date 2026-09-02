@@ -167,3 +167,20 @@ positions/times anywhere (rally rules above).
   (picker + On Me + WHEN); COMPOSE-doesn't-reset-target is moot (scope = the
   thread you're in). A protocol-level rally time field is an open S04 question
   if WHEN-in-name proves too crude in the field.
+
+## Amendments
+
+- **2026-09-02, maintainer decision — PULSE retired end to end:** this
+  document's PULSE references (the quick-reply chip row "OMW / IN 5 MIN /
+  PULSE", the action popup's "Pulse (amber, 'ping')" row, "PULSE sends
+  immediately") describe the as-built (c)/(d) slices at the time; left as
+  historical record. As of 2026-09-02 PULSE is retired everywhere (see
+  `S04-firefly-protocol.md`'s Amendments): the thread quick chips are OMW /
+  IN 5 MIN / FLARE (FLARE already replaced the outbound Pulse chip/popup
+  row since PR #129, "in send to crew we should have flare not pulse");
+  the "pulsed you" / "pulsed the crew" thread wording and its amber pulse
+  mark are removed from `scr_inbox.c`'s rendering, and the demo feed
+  (`S23-demo-feed.md`) never generates a PULSE kind. Incoming rendering for
+  a retired-type wire frame is honestly nothing: no feed item, no banner
+  (`S26-device-lifecycle.md`'s Notifications section) — see `ff_wiring.h`'s
+  header note for the drop ruling.

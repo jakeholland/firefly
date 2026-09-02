@@ -387,3 +387,17 @@ the shell tick) → (e), (f), (g) after the festival cut is on glass.
 
 Deep sleep (UART framing + wake source unresolved), battery gauge (S25c),
 folding flare into `ff_notify` (later), per-user idle timeouts in Settings.
+
+## Amendments
+
+- **2026-09-02, maintainer decision — PULSE retired end to end:**
+  `ff_notify_kind_t` never had a PULSE value — this Notifications section's
+  **kind** ∈ MESSAGE · FLARE · RALLY · SYSTEM list was accurate before and
+  after PULSE's retirement (see `S04-firefly-protocol.md`'s Amendments),
+  since only MESSAGE/RALLY were ever banner-eligible and PULSE was never
+  one of the four. Recorded here rather than left silent because a
+  RESERVED_01 (retired PULSE) inbound frame is now explicitly a
+  banner-eligibility non-event too, by the SAME "not MESSAGE/RALLY, no
+  banner" rule this section already states — `app/ff_wiring.c`'s drop of a
+  RESERVED_01 frame (no feed item) means `ff_shell.c`'s banner push never
+  even sees one to consider.

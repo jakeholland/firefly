@@ -6,6 +6,9 @@
  * error paths; missing-section defaults; and ff_fixture_stem()'s path
  * handling.
  */
+#include <ctype.h>
+#include <dirent.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -558,7 +561,7 @@ static void inbox_section_parses_every_field(void)
                         "     \"preview_from\": \"RILEY\"},"
                         "    {\"conv\": \"member\", \"node_id\": 4242, \"name\": \"RILEY\","
                         "     \"initial\": \"R\", \"color_idx\": 1, \"unread\": 1, \"item_count\": 3,"
-                        "     \"preview_kind\": \"pulse\", \"preview_dir\": \"direct\","
+                        "     \"preview_kind\": \"flare\", \"preview_dir\": \"direct\","
                         "     \"preview_age_ms\": 60000, \"presence\": \"seen\","
                         "     \"presence_age_ms\": 120000},"
                         "    {\"conv\": \"member\", \"node_id\": 77, \"name\": \"JO\", \"initial\": \"J\","
@@ -601,6 +604,7 @@ static void inbox_section_parses_every_field(void)
     TEST_ASSERT_EQUAL_STRING("RILEY", riley->name);
     TEST_ASSERT_EQUAL_INT('R', riley->initial);
     TEST_ASSERT_EQUAL_UINT8(1, riley->color_idx);
+    TEST_ASSERT_EQUAL_INT(FEED_FLARE, riley->preview_kind);
     TEST_ASSERT_EQUAL_INT(FEED_DIR_DIRECT, riley->preview_dir);
     TEST_ASSERT_TRUE(riley->presence_valid); /* derived: member */
     TEST_ASSERT_EQUAL_INT(FF_PRESENCE_SEEN, riley->presence);
@@ -1316,6 +1320,70 @@ static void dump_null_args_return_negative(void)
     TEST_ASSERT_EQUAL_INT(-1, ff_fixture_dump_json(&s, buf, 0));
 }
 
+/* ---------------------------------------------------------------------
+ * 2026-09-02 — PULSE retirement regression guard: no committed fixture
+ * may claim the retired "pulse" kind (fx_feed_kind_table no longer
+ * recognizes it, ff_feed.h's FEED_PULSE is gone). A REGRESSION test, not
+ * a one-time cleanup check — it greps every *.json under tests/fixtures/
+ * at test time, so a future fixture that reintroduces "pulse" (copy-
+ * pasted from an old example, an editor's autocomplete, etc.) fails CI
+ * immediately instead of silently reintroducing a retired concept.
+ * Case-insensitive substring match, same bar ff_proto.h's RESERVED_01
+ * holds the wire side to. Mutation check: temporarily add {"kind":
+ * "pulse"} to any committed fixture JSON file and this test fails,
+ * naming the file — see the PR body for the run.
+ * ------------------------------------------------------------------- */
+static bool file_contains_case_insensitive(char const *path, char const *needle)
+{
+    FILE *f = fopen(path, "rb");
+    if (f == NULL) return false; /* can't-open is a different failure mode, not this test's job */
+
+    char buf[4096];
+    size_t needle_len = strlen(needle);
+    /* Simple/adequate for this repo's fixture file sizes: read the whole
+     * file (fixtures are all well under 4 KB — the same TOO_BIG cap the
+     * loader itself enforces elsewhere in this file) and scan once. */
+    size_t n = fread(buf, 1, sizeof(buf) - 1, f);
+    fclose(f);
+    buf[n] = '\0';
+
+    for (size_t i = 0; i + needle_len <= n; i++) {
+        size_t j = 0;
+        for (; j < needle_len; j++) {
+            if (tolower((unsigned char)buf[i + j]) != tolower((unsigned char)needle[j])) break;
+        }
+        if (j == needle_len) return true;
+    }
+    return false;
+}
+
+static void no_fixture_contains_the_retired_pulse_kind(void)
+{
+    DIR *d = opendir(FF_FIXTURE_DIR);
+    TEST_ASSERT_NOT_NULL_MESSAGE(d, "cannot open " FF_FIXTURE_DIR " — wrong CWD for this test binary?");
+
+    unsigned checked = 0;
+    struct dirent *ent;
+    while ((ent = readdir(d)) != NULL) {
+        size_t len = strlen(ent->d_name);
+        if (len < 5 || strcmp(ent->d_name + len - 5, ".json") != 0) continue; /* not a *.json entry */
+
+        char const *path = fixture_path(ent->d_name);
+        /* fixture_path() writes into the shared g_path buffer; snapshot
+         * the name into the failure message BEFORE any further call
+         * could reuse that buffer (there is none here, but the ordering
+         * is the honest-instrumentation habit, not an accident). */
+        TEST_ASSERT_FALSE_MESSAGE(file_contains_case_insensitive(path, "pulse"), ent->d_name);
+        checked++;
+    }
+    closedir(d);
+
+    /* Proxy check: prove the sweep actually walked real files, not an
+     * empty/missing directory that would vacuously pass every iteration
+     * above. */
+    TEST_ASSERT_GREATER_THAN_UINT_MESSAGE(0, checked, "swept zero fixture files — directory empty or path wrong");
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -1389,6 +1457,8 @@ int main(void)
     RUN_TEST(dump_maximally_populated_state_fits_budget);
     RUN_TEST(dump_buffer_too_small_returns_negative);
     RUN_TEST(dump_null_args_return_negative);
+
+    RUN_TEST(no_fixture_contains_the_retired_pulse_kind);
 
     return UNITY_END();
 }

@@ -148,3 +148,21 @@ and demoed against the live feed.
 
 - Real mesh reconnection / hybrid demo+mesh (demo is mesh-*less* by definition).
 - Replacing S20's static snapshot — S23 is additive; static stays the default.
+
+## Amendments
+
+- **2026-09-02, maintainer decision — PULSE retired end to end:** this
+  document's "pulse/rally/text/…" and "kind (pulse/rally/…)" phrasing
+  describes the as-built generator at the time (5 kinds, `ff_feed_kind_t`'s
+  FEED_PULSE..FEED_FLARE); left as historical record. As of 2026-09-02
+  PULSE is retired (see `S04-firefly-protocol.md`'s Amendments):
+  `ff_demofeed`'s SIGNAL kind draw is over the 4 remaining kinds
+  (`FF_DEMOFEED_KIND_COUNT` 5 → 4, `ff_demofeed.h`), so the generator never
+  emits a PULSE signal again. The change alters the RNG's per-signal kind
+  draw (a `% 4` divisor in place of `% 5`, same xorshift32 state stream —
+  see `ff_demofeed.c`), so AC1/AC6's fixed-seed determinism goldens were
+  regenerated from the new generator: a fixed `(seed, epoch_ms,
+  member_count, now_ms sequence)` still yields a byte-identical stream,
+  just a DIFFERENT one than before this change (the determinism CONTRACT
+  is unchanged; the CONCRETE sequence a given seed produces is not — see
+  the retirement PR body for the regenerated golden list).

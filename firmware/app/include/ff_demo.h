@@ -97,7 +97,7 @@ extern "C" {
  *     paired.
  *  5. Set my position (The Firefly Tower, the meetup landmark) and a north
  *     heading, so Radar can point and the Map can place YOU.
- *  6. Seed the Signals feed: a status + a pulse from KEV, a rally point at
+ *  6. Seed the Signals feed: two statuses from KEV, a rally point at
  *     The Firefly Tower, MAYA's "omw" canned reply, and a broadcast
  *     message — each via the real ff_wiring feed path (paired-sender
  *     gated).

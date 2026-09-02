@@ -121,11 +121,6 @@ bool ff_demo_apply_plan(ff_demo_event_t const *ev, uint32_t const *node_ids, uin
         out->text = NULL; /* a rally's place name is festpack-sourced (S23 AC5),
                              resolved in ff_demo_apply_event, not from text_ref */
         break;
-    case FEED_PULSE:
-        out->dispatch = FF_DEMO_DISPATCH_PRIVATE;
-        out->proto_type = FF_PROTO_TYPE_PULSE;
-        out->text = NULL;
-        break;
     case FEED_FLARE:
         out->dispatch = FF_DEMO_DISPATCH_PRIVATE;
         out->proto_type = FF_PROTO_TYPE_FLARE;
@@ -196,9 +191,6 @@ void ff_demo_apply_event(mc_events_t const *ev, ff_demo_event_t const *event, ui
         uint8_t buf[FF_PROTO_MAX_PAYLOAD];
         int n = -1;
         switch (plan.proto_type) {
-        case FF_PROTO_TYPE_PULSE:
-            n = ff_proto_encode_pulse(buf, sizeof(buf));
-            break;
         case FF_PROTO_TYPE_FLARE:
             n = ff_proto_encode_flare(buf, sizeof(buf), FF_DEMO_LIVE_FLARE_DUR_S);
             break;

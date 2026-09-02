@@ -38,14 +38,16 @@
  *   - `member_idx` — WHICH demo crew member (0..member_count-1). The APP owns
  *     the idx -> node_id mapping (seeded from the demo festpack); the
  *     generator stays decoupled from real identities.
- *   - `kind` — for a SIGNAL, a feed kind (ff_feed_kind_t: PULSE/TEXT/RALLY/
+ *   - `kind` — for a SIGNAL, a feed kind (ff_feed_kind_t: TEXT/RALLY/
  *     STATUS/FLARE), reusing the S08 feed enum so the app pushes it verbatim.
+ *     (2026-09-02: PULSE is retired and no longer a draw — see
+ *     FF_DEMOFEED_KIND_COUNT below.)
  *   - `text_ref` — for a SIGNAL, a small opaque index (0..FF_DEMOFEED_TEXT_REF_COUNT-1)
  *     the app resolves against ITS OWN demo string table. The generator
  *     fabricates no text.
  *   - `at_ms` — the demo-clock time the event is scheduled for.
  * A PRESENCE_POKE carries only `member_idx` + `at_ms` (a "member was heard
- * now" pulse the app applies to refresh that member's rssi_age, so presence
+ * now" event the app applies to refresh that member's rssi_age, so presence
  * drifts LIVE->STALE->LOST and recovers). `kind`/`text_ref` are 0 on a poke.
  *
  * ## Two independent seeded schedules
@@ -85,14 +87,17 @@ extern "C" {
  *  demo string table resolves these; the generator only picks an index. */
 #define FF_DEMOFEED_TEXT_REF_COUNT ((uint8_t)16u)
 
-/** How many feed kinds a SIGNAL draws from (mirrors ff_feed_kind_t's 5
- *  values FEED_PULSE..FEED_FLARE — static-asserted against the enum in
- *  ff_demofeed.c so the two never silently drift). */
-#define FF_DEMOFEED_KIND_COUNT ((uint8_t)5u)
+/** How many feed kinds a SIGNAL draws from (mirrors ff_feed_kind_t's 4
+ *  values FEED_TEXT..FEED_FLARE — static-asserted against the enum in
+ *  ff_demofeed.c so the two never silently drift). 2026-09-02: was 5
+ *  (FEED_PULSE..FEED_FLARE) before FEED_PULSE was retired; the demo
+ *  generator never draws a retired kind, and this count/the S23
+ *  determinism goldens were regenerated for the new 4-kind draw. */
+#define FF_DEMOFEED_KIND_COUNT ((uint8_t)4u)
 
 typedef enum {
     FF_DEMO_EVENT_SIGNAL,        /* an incoming signal: kind + text_ref meaningful */
-    FF_DEMO_EVENT_PRESENCE_POKE, /* a "heard now" pulse: kind/text_ref are 0 */
+    FF_DEMO_EVENT_PRESENCE_POKE, /* a "heard now" event: kind/text_ref are 0 */
 } ff_demo_event_type_t;
 
 /**
@@ -102,7 +107,7 @@ typedef enum {
 typedef struct {
     ff_demo_event_type_t type;
     uint8_t              member_idx; /* 0..member_count-1 */
-    ff_feed_kind_t       kind;       /* SIGNAL only; 0 (FEED_PULSE) on a poke */
+    ff_feed_kind_t       kind;       /* SIGNAL only; 0 (FEED_TEXT) on a poke */
     uint8_t              text_ref;   /* SIGNAL only; 0..FF_DEMOFEED_TEXT_REF_COUNT-1 */
     uint32_t             at_ms;      /* demo-clock time the event is scheduled for */
 } ff_demo_event_t;

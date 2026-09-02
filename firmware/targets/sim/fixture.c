@@ -557,8 +557,12 @@ static const fx_enum_entry_t fx_rally_when_table[] = {
     {"30", FF_RALLY_WHEN_30},
 };
 
+/* 2026-09-02: "pulse"/FEED_PULSE retired (see ff_feed.h) — no longer a
+ * valid fixture value; a fixture that still says "pulse" now fails to
+ * load loudly (fx_enum's own unrecognized-name error), which is the
+ * point: no fixture may claim a kind that no longer exists. */
 static const fx_enum_entry_t fx_feed_kind_table[] = {
-    {"pulse", FEED_PULSE}, {"text", FEED_TEXT}, {"rally", FEED_RALLY},
+    {"text", FEED_TEXT}, {"rally", FEED_RALLY},
     {"status", FEED_STATUS}, {"flare", FEED_FLARE},
 };
 

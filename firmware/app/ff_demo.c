@@ -112,9 +112,12 @@ static void demo_seed_feed(mc_events_t const *ev)
 {
     uint8_t buf[FF_PROTO_MAX_PAYLOAD];
 
-    /* KEV drops a status, then a pulse. */
+    /* KEV drops two statuses in a row (2026-09-02: the second used to be
+     * a PULSE, now retired — see ff_feed.h / docs/specs/S04's Amendments;
+     * a second STATUS keeps this seed's item count and "one sender, two
+     * signals" shape unchanged rather than silently thinning the feed). */
     demo_private(ev, FF_DEMO_NODE_KEV, buf, ff_proto_encode_status(buf, sizeof(buf), "at bass hollow!"));
-    demo_private(ev, FF_DEMO_NODE_KEV, buf, ff_proto_encode_pulse(buf, sizeof(buf)));
+    demo_private(ev, FF_DEMO_NODE_KEV, buf, ff_proto_encode_status(buf, sizeof(buf), "who's got water?"));
 
     /* A rally point dropped at The Firefly Tower (by DANA). */
     ff_latlon_t const tower = {FF_DEMO_ORIGIN_LAT, FF_DEMO_ORIGIN_LON};

@@ -6,7 +6,7 @@ via the ctl socket's state dump. Skips cleanly (not an error) whenever
 docker, the `docker compose` plugin, the `meshtastic` pip package, or a
 built `ffsim` binary isn't available — see conftest.py's fixtures.
 
-## Read before touching test_pulse_reaches_feed / test_text_roundtrip
+## Read before touching test_flare_reaches_feed / test_text_roundtrip
 
 These two are marked `xfail(strict=False)`, not skipped and not deleted.
 This is not a wishy-washy "might not work" hedge — it's the documented
@@ -25,7 +25,7 @@ linux_amd64) in this repo's own dev session:
 Since crew_sim.py must itself be the connected client to trigger a send
 at all, and doing so force-disconnects ffsim's own connection (#1), and
 the packet isn't queued for ffsim to see once it reconnects (#2), a
-PULSE/text message crew_sim.py sends cannot reach an already-connected
+FLARE/text message crew_sim.py sends cannot reach an already-connected
 (or later-reconnecting) ffsim through a single stock meshtasticd
 instance — full stop, not a timing flake.
 
@@ -132,26 +132,28 @@ def test_position_reaches_radar(run_ffsim, crew_sim):
            "send can't reach an already-connected ffsim — see this file's module docstring",
     strict=False,
 )
-def test_pulse_reaches_feed(run_ffsim, crew_sim):
-    """A firefly PULSE from a paired node is received into the signals
-    feed."""
+def test_flare_reaches_feed(run_ffsim, crew_sim):
+    """A firefly FLARE from a paired node is received into the signals
+    feed. (2026-09-02: this scenario used to send a PULSE — retired end to
+    end, see docs/specs/S04-firefly-protocol.md's Amendments; FLARE is the
+    drop-in, same portnum/paired-sender path.)"""
     fp = run_ffsim(["--connect", "127.0.0.1:4403"])
     # Let the handshake settle before crew_sim's connection kicks it.
     fp.ctl.wait_for(lambda s: True, timeout=5.0)
 
-    crew_sim(["pulse", "--from", "Dana"])
+    crew_sim(["flare", "--from", "Dana"])
 
     try:
         state = fp.ctl.wait_for(
-            lambda s: any(item["kind"] == "pulse" for item in s["signals"]["items"]),
+            lambda s: any(item["kind"] == "flare" for item in s["signals"]["items"]),
             timeout=15.0,
         )
     except CtlError as e:
         pytest.fail(str(e))
 
-    pulses = [item for item in state["signals"]["items"] if item["kind"] == "pulse"]
-    assert pulses
-    assert pulses[0]["from_name"] == "DANA"
+    flares = [item for item in state["signals"]["items"] if item["kind"] == "flare"]
+    assert flares
+    assert flares[0]["from_name"] == "DANA"
 
 
 @pytest.mark.xfail(

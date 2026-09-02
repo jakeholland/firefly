@@ -816,7 +816,7 @@ void ff_shell_clear_my_pos(ff_shell_t *sh);
 
 /**
  * ff_shell_set_sender — override the shell's outbound `ff_wiring_sender_t`
- * (the vtable every send — canned reply, pulse, rally, composed text —
+ * (the vtable every send — canned reply, flare, rally, composed text —
  * goes through). No-op if `sh` is NULL.
  *
  * `ff_shell_init` binds this to the real `mc_client_t` by default (the
@@ -825,7 +825,7 @@ void ff_shell_clear_my_pos(ff_shell_t *sh);
  *  - a target with no mesh transport that still wants sends to be VISIBLE
  *    — the CONFIG_FF_DEMO_MODE loopback sender (ff_demo.h), whose
  *    send_text/send_private accept (return 0) so the OUT feed item is
- *    pushed and the user's own message/pulse/rally shows in the thread.
+ *    pushed and the user's own message/flare/rally shows in the thread.
  *    This echoes the user's REAL outbound as an OUT item; it fabricates no
  *    incoming content, and is wired only in clearly-labelled demo mode.
  *  - a test injecting a recording mock (the ff_wiring_init_with_sender
@@ -867,6 +867,12 @@ ff_heard_t const *ff_shell_heard(ff_shell_t const *sh);
 
 /** ff_shell_feed — the Signals feed ring, read-only. NULL if `sh` is NULL. */
 ff_feed_t const *ff_shell_feed(ff_shell_t const *sh);
+
+/** ff_shell_retired_frame_count — [api] 2026-09-02: forwards
+ *  `ff_wiring_retired_frame_count` (ff_wiring.h) for the shell's own
+ *  wiring context — how many RESERVED_01 (retired PULSE) frames have
+ *  been dropped since this shell was initialized. 0 if `sh` is NULL. */
+uint32_t ff_shell_retired_frame_count(ff_shell_t const *sh);
 
 /** ff_shell_flare — flare state, read-only. NULL if `sh` is NULL. The
  *  takeover is this struct's single fact; see AC13 in this header's top

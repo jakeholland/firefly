@@ -59,8 +59,16 @@ extern "C" {
 /** Feed item text budget (S08 spec's `ff_feed_item_t` sketch: `char text[64]`). */
 #define FF_FEED_TEXT_LEN 64
 
+/* 2026-09-02: FEED_PULSE is retired and removed outright (not reserved as
+ * a numbered slot) — feed items live only in this in-RAM ring buffer,
+ * never persisted to NVS/ff_store, and every fixture that encodes a kind
+ * does so by NAME (see targets/sim/fixture.c's fx_feed_kind_table), never
+ * by this enum's numeric value — so renumbering the remaining kinds is
+ * safe and costs nothing a reserved slot would have bought. Contrast
+ * ff_proto.h's FF_PROTO_TYPE_RESERVED_01, which IS kept as a
+ * numbered-but-unused reservation, because that number travels over RF
+ * between pucks of different firmware ages. */
 typedef enum {
-    FEED_PULSE,
     FEED_TEXT,
     FEED_RALLY,
     FEED_STATUS,
@@ -76,10 +84,10 @@ typedef enum {
  *
  * Honesty rule (S24 AC1): a push site records only what it actually
  * knows. UNKNOWN is a first-class value, not an error. Both inbound
- * paths — text AND the private portnum (PULSE/RALLY/STATUS/FLARE) —
+ * paths — text AND the private portnum (RALLY/STATUS/FLARE) —
  * now classify from the packet's `to` address (issue #123 resolved:
  * `mc_events_t.on_private` carries `to` just like `.on_text`), so a
- * 1:1 pulse lands DIRECT and a whole-crew pulse lands BROADCAST.
+ * 1:1 rally lands DIRECT and a whole-crew rally lands BROADCAST.
  * UNKNOWN remains what it always was: the honest record for an address
  * this device could not attest (third-party destination, self id not
  * yet learned, or a producer's explicit MC_ADDR_UNKNOWN). UNKNOWN is

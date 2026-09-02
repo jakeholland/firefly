@@ -7,6 +7,10 @@
  *   AC1 — round-trip every type (table-driven), including max-length
  *         name/status and the empty-body types. Also covers the boundary
  *         cases that *should* succeed (24-char name, 20-char status).
+ *         RESERVED_01 (retired PULSE, 2026-09-02) has no encoder any more
+ *         — it is exercised the same way ACK_PING is, hand-crafted wire
+ *         bytes decoded straight, proving it is a real successful decode
+ *         (a "retired" result), never 0/failure.
  *   AC2 — bad ver / unknown type / truncated body all return 0, and never
  *         read past the buffer (the per-length truncation loops are what
  *         actually exercise "never OOB" — run this file under ASan, see
@@ -78,18 +82,20 @@ static uint8_t *load_fixture(char const *name, size_t *out_len)
 /* AC1 — round-trip every type                                         */
 /* ------------------------------------------------------------------- */
 
-static void S04_AC1_pulse_round_trips(void)
+/* RESERVED_01 (0x01, was PULSE) has no encoder any more — hand-craft the
+ * wire bytes, like S04_AC1_ack_ping_reserved_type_decodes_from_raw_bytes
+ * below. The point of this test: decoding a retired-type frame is a real,
+ * SUCCESSFUL decode (type == FF_PROTO_TYPE_RESERVED_01, a positive value),
+ * never the 0/failure a stranger-detection or malformed-input path might
+ * key off — see ff_proto.h's "RESERVED_01" section. */
+static void S04_AC1_reserved_01_decodes_as_retired_from_raw_bytes(void)
 {
-    uint8_t buf[8];
-    int len = ff_proto_encode_pulse(buf, sizeof(buf));
-    TEST_ASSERT_EQUAL_INT(2, len);
-    TEST_ASSERT_EQUAL_UINT8(FF_PROTO_VERSION, buf[0]);
-    TEST_ASSERT_EQUAL_UINT8((uint8_t)FF_PROTO_TYPE_PULSE, buf[1]);
+    uint8_t buf[] = {(uint8_t)FF_PROTO_VERSION, (uint8_t)FF_PROTO_TYPE_RESERVED_01};
 
     ff_proto_msg_t out;
-    int type = ff_proto_decode(buf, (size_t)len, &out);
-    TEST_ASSERT_EQUAL_INT(FF_PROTO_TYPE_PULSE, type);
-    TEST_ASSERT_EQUAL_UINT8((uint8_t)FF_PROTO_TYPE_PULSE, out.type);
+    int type = ff_proto_decode(buf, sizeof(buf), &out);
+    TEST_ASSERT_EQUAL_INT(FF_PROTO_TYPE_RESERVED_01, type);
+    TEST_ASSERT_EQUAL_UINT8((uint8_t)FF_PROTO_TYPE_RESERVED_01, out.type);
 }
 
 static void S04_AC1_flare_end_round_trips(void)
@@ -208,7 +214,7 @@ static void S04_AC1_ack_ping_reserved_type_decodes_from_raw_bytes(void)
 
 static void S04_AC2_bad_version_zero_is_ignored(void)
 {
-    uint8_t buf[] = {0x00, (uint8_t)FF_PROTO_TYPE_PULSE};
+    uint8_t buf[] = {0x00, (uint8_t)FF_PROTO_TYPE_RESERVED_01};
     ff_proto_msg_t out;
     memset(&out, 0xAA, sizeof(out));
     int type = ff_proto_decode(buf, sizeof(buf), &out);
@@ -218,7 +224,7 @@ static void S04_AC2_bad_version_zero_is_ignored(void)
 
 static void S04_AC2_bad_version_two_is_ignored(void)
 {
-    uint8_t buf[] = {0x02, (uint8_t)FF_PROTO_TYPE_PULSE};
+    uint8_t buf[] = {0x02, (uint8_t)FF_PROTO_TYPE_RESERVED_01};
     ff_proto_msg_t out;
     int type = ff_proto_decode(buf, sizeof(buf), &out);
     TEST_ASSERT_EQUAL_INT(0, type);
@@ -237,7 +243,7 @@ static void S04_AC2_null_buf_and_null_out_are_ignored(void)
     ff_proto_msg_t out;
     TEST_ASSERT_EQUAL_INT(0, ff_proto_decode(NULL, 10, &out));
 
-    uint8_t buf[] = {(uint8_t)FF_PROTO_VERSION, (uint8_t)FF_PROTO_TYPE_PULSE};
+    uint8_t buf[] = {(uint8_t)FF_PROTO_VERSION, (uint8_t)FF_PROTO_TYPE_RESERVED_01};
     TEST_ASSERT_EQUAL_INT(0, ff_proto_decode(buf, sizeof(buf), NULL));
 }
 
@@ -345,7 +351,7 @@ static void S04_AC2_payload_of_201_bytes_is_rejected(void)
     uint8_t buf[FF_PROTO_MAX_PAYLOAD + 1];
     memset(buf, 0, sizeof(buf));
     buf[0] = (uint8_t)FF_PROTO_VERSION;
-    buf[1] = (uint8_t)FF_PROTO_TYPE_PULSE;
+    buf[1] = (uint8_t)FF_PROTO_TYPE_RESERVED_01;
 
     ff_proto_msg_t out;
     TEST_ASSERT_EQUAL_INT(0, ff_proto_decode(buf, sizeof(buf), &out));
@@ -380,14 +386,14 @@ static void S04_AC2_trailing_bytes_rejected(void)
 }
 
 /* Branch coverage for the strict per-type exact-length checks: one
- * trailing byte is enough to flip each of PULSE/FLARE_END/RALLY_CLEAR
+ * trailing byte is enough to flip each of RESERVED_01/FLARE_END/RALLY_CLEAR
  * (body_len != 0), FLARE (!= 2), and ACK_PING (!= 4) from accept to
  * reject — each of these is a distinct comparison in ff_proto_decode's
  * switch, so the single RALLY-shaped repro above doesn't exercise them. */
 static void S04_AC2_empty_body_types_reject_one_trailing_byte(void)
 {
     uint8_t const types[] = {
-        (uint8_t)FF_PROTO_TYPE_PULSE,
+        (uint8_t)FF_PROTO_TYPE_RESERVED_01,
         (uint8_t)FF_PROTO_TYPE_FLARE_END,
         (uint8_t)FF_PROTO_TYPE_RALLY_CLEAR,
     };
@@ -453,18 +459,6 @@ static void S04_AC3_rally_latlon_1e7_matches_hand_computed_bytes(void)
 /* AC4 — too-small buffer / too-long string: negative, writes nothing   */
 /* ------------------------------------------------------------------- */
 
-static void S04_AC4_pulse_buffer_too_small_writes_nothing(void)
-{
-    uint8_t buf[2];
-    uint8_t before[2];
-    sentinel_fill(buf, sizeof(buf));
-    memcpy(before, buf, sizeof(buf));
-
-    int len = ff_proto_encode_pulse(buf, 1); /* needs 2, given 1 */
-    TEST_ASSERT_TRUE(len < 0);
-    TEST_ASSERT_EQUAL_UINT8_ARRAY(before, buf, sizeof(buf));
-}
-
 static void S04_AC4_flare_buffer_too_small_writes_nothing(void)
 {
     uint8_t buf[4];
@@ -510,7 +504,6 @@ static void S04_AC4_status_buffer_too_small_writes_nothing(void)
 
 static void S04_AC4_null_buffer_pointer_is_rejected(void)
 {
-    TEST_ASSERT_TRUE(ff_proto_encode_pulse(NULL, 8) < 0);
     TEST_ASSERT_TRUE(ff_proto_encode_flare(NULL, 8, 300u) < 0);
     TEST_ASSERT_TRUE(ff_proto_encode_flare_end(NULL, 8) < 0);
     ff_latlon_t p = {0.0, 0.0};
@@ -574,7 +567,7 @@ int main(void)
 {
     UNITY_BEGIN();
 
-    RUN_TEST(S04_AC1_pulse_round_trips);
+    RUN_TEST(S04_AC1_reserved_01_decodes_as_retired_from_raw_bytes);
     RUN_TEST(S04_AC1_flare_end_round_trips);
     RUN_TEST(S04_AC1_rally_clear_round_trips);
     RUN_TEST(S04_AC1_flare_round_trips_table);
@@ -601,7 +594,6 @@ int main(void)
 
     RUN_TEST(S04_AC3_rally_latlon_1e7_matches_hand_computed_bytes);
 
-    RUN_TEST(S04_AC4_pulse_buffer_too_small_writes_nothing);
     RUN_TEST(S04_AC4_flare_buffer_too_small_writes_nothing);
     RUN_TEST(S04_AC4_rally_buffer_too_small_writes_nothing);
     RUN_TEST(S04_AC4_status_buffer_too_small_writes_nothing);

@@ -54,7 +54,7 @@ static void S08_AC3_push_is_newest_first(void)
     ff_feed_t f;
     ff_feed_init(&f);
 
-    ff_feed_item_t a = make_item(FEED_PULSE, 1, 100, "first", false);
+    ff_feed_item_t a = make_item(FEED_TEXT, 1, 100, "first", false);
     ff_feed_item_t b = make_item(FEED_TEXT, 2, 200, "second", false);
     ff_feed_item_t c = make_item(FEED_RALLY, 3, 300, "third", false);
 
@@ -177,9 +177,9 @@ static void S08_AC3_unread_count_increments_on_unread_push(void)
     ff_feed_t f;
     ff_feed_init(&f);
 
-    ff_feed_item_t a = make_item(FEED_PULSE, 1, 0, "a", true);
-    ff_feed_item_t b = make_item(FEED_PULSE, 2, 1, "b", false);
-    ff_feed_item_t c = make_item(FEED_PULSE, 3, 2, "c", true);
+    ff_feed_item_t a = make_item(FEED_TEXT, 1, 0, "a", true);
+    ff_feed_item_t b = make_item(FEED_TEXT, 2, 1, "b", false);
+    ff_feed_item_t c = make_item(FEED_TEXT, 3, 2, "c", true);
 
     ff_feed_push(&f, &a);
     TEST_ASSERT_EQUAL_UINT16(1, ff_feed_unread_count(&f));
@@ -199,12 +199,12 @@ static void S08_AC3_evicting_an_unread_item_decrements_unread_count(void)
     ff_feed_init(&f);
 
     for (int i = 0; i < FF_FEED_CAP; i++) {
-        ff_feed_item_t it = make_item(FEED_PULSE, (uint32_t)i, (uint32_t)i, "u", true);
+        ff_feed_item_t it = make_item(FEED_TEXT, (uint32_t)i, (uint32_t)i, "u", true);
         ff_feed_push(&f, &it);
     }
     TEST_ASSERT_EQUAL_UINT16(FF_FEED_CAP, ff_feed_unread_count(&f));
 
-    ff_feed_item_t read_item = make_item(FEED_PULSE, 99, 99, "read", false);
+    ff_feed_item_t read_item = make_item(FEED_TEXT, 99, 99, "read", false);
     ff_feed_push(&f, &read_item);
 
     /* One unread item evicted, one non-unread item pushed -> net -1. */
@@ -219,16 +219,16 @@ static void S08_AC3_evicting_a_read_item_leaves_unread_count_unchanged(void)
     ff_feed_t f;
     ff_feed_init(&f);
 
-    ff_feed_item_t oldest_read = make_item(FEED_PULSE, 0, 0, "read0", false);
+    ff_feed_item_t oldest_read = make_item(FEED_TEXT, 0, 0, "read0", false);
     ff_feed_push(&f, &oldest_read);
     for (int i = 1; i < FF_FEED_CAP; i++) {
-        ff_feed_item_t it = make_item(FEED_PULSE, (uint32_t)i, (uint32_t)i, "u", true);
+        ff_feed_item_t it = make_item(FEED_TEXT, (uint32_t)i, (uint32_t)i, "u", true);
         ff_feed_push(&f, &it);
     }
     uint16_t before = ff_feed_unread_count(&f);
     TEST_ASSERT_EQUAL_UINT16(FF_FEED_CAP - 1, before);
 
-    ff_feed_item_t evictor = make_item(FEED_PULSE, 999, 999, "evictor", false);
+    ff_feed_item_t evictor = make_item(FEED_TEXT, 999, 999, "evictor", false);
     ff_feed_push(&f, &evictor);
 
     TEST_ASSERT_EQUAL_UINT16(before, ff_feed_unread_count(&f));
@@ -240,7 +240,7 @@ static void S08_AC3_mark_all_read_zeroes_count_and_clears_flags(void)
     ff_feed_init(&f);
 
     for (int i = 0; i < 5; i++) {
-        ff_feed_item_t it = make_item(FEED_PULSE, (uint32_t)i, (uint32_t)i, "u", true);
+        ff_feed_item_t it = make_item(FEED_TEXT, (uint32_t)i, (uint32_t)i, "u", true);
         ff_feed_push(&f, &it);
     }
     TEST_ASSERT_EQUAL_UINT16(5, ff_feed_unread_count(&f));
@@ -263,14 +263,14 @@ static void S08_AC3_unread_count_never_underflows_past_zero(void)
     ff_feed_init(&f);
 
     for (int i = 0; i < FF_FEED_CAP; i++) {
-        ff_feed_item_t it = make_item(FEED_PULSE, (uint32_t)i, (uint32_t)i, "u", true);
+        ff_feed_item_t it = make_item(FEED_TEXT, (uint32_t)i, (uint32_t)i, "u", true);
         ff_feed_push(&f, &it);
     }
     ff_feed_mark_all_read(&f);
     TEST_ASSERT_EQUAL_UINT16(0, ff_feed_unread_count(&f));
 
     for (int i = 0; i < 10; i++) {
-        ff_feed_item_t it = make_item(FEED_PULSE, (uint32_t)(100 + i), (uint32_t)(100 + i), "r", false);
+        ff_feed_item_t it = make_item(FEED_TEXT, (uint32_t)(100 + i), (uint32_t)(100 + i), "r", false);
         ff_feed_push(&f, &it);
     }
     TEST_ASSERT_EQUAL_UINT16(0, ff_feed_unread_count(&f));
@@ -375,7 +375,7 @@ static void S08_AC3_null_guards_are_no_ops_not_crashes(void)
 
     ff_feed_t f;
     ff_feed_init(&f);
-    ff_feed_item_t it = make_item(FEED_PULSE, 1, 1, "x", false);
+    ff_feed_item_t it = make_item(FEED_TEXT, 1, 1, "x", false);
     ff_feed_push(&f, NULL); /* no-op, doesn't corrupt f */
     TEST_ASSERT_EQUAL_UINT8(0, ff_feed_count(&f));
     ff_feed_push(&f, &it);

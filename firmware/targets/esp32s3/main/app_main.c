@@ -722,7 +722,7 @@ void app_main(void)
          * mesh transport, so the real mc_send_* path refuses every send and
          * the thread's whole send half is mute. The loopback accepts each
          * send (returns 0) so the shell pushes the OUT feed item and the
-         * user's own pulse/rally/message shows in the thread. This echoes
+         * user's own flare/rally/message shows in the thread. This echoes
          * the user's REAL outbound as an OUT item in a clearly-demo build;
          * it fabricates no incoming content and reaches no radio.
          *

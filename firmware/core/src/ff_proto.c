@@ -75,8 +75,9 @@ static void put_envelope(uint8_t *buf, uint8_t type)
     buf[1] = type;
 }
 
-/* Shared body for the three empty-body types (PULSE/FLARE_END/RALLY_CLEAR):
- * just the envelope, nothing else. */
+/* Shared body for the empty-body types (FLARE_END/RALLY_CLEAR — RESERVED_01
+ * used to be a third, but its encoder is retired, see ff_proto.h): just the
+ * envelope, nothing else. */
 static int encode_empty(uint8_t *buf, size_t n, uint8_t type)
 {
     size_t total = FF_PROTO_ENVELOPE_LEN;
@@ -85,11 +86,6 @@ static int encode_empty(uint8_t *buf, size_t n, uint8_t type)
     }
     put_envelope(buf, type);
     return (int)total;
-}
-
-int ff_proto_encode_pulse(uint8_t *buf, size_t n)
-{
-    return encode_empty(buf, n, (uint8_t)FF_PROTO_TYPE_PULSE);
 }
 
 int ff_proto_encode_flare_end(uint8_t *buf, size_t n)
@@ -182,7 +178,9 @@ int ff_proto_decode(uint8_t const *buf, size_t n, ff_proto_msg_t *out)
     size_t body_len = n - FF_PROTO_ENVELOPE_LEN;
 
     switch (type) {
-    case FF_PROTO_TYPE_PULSE:
+    case FF_PROTO_TYPE_RESERVED_01: /* was PULSE — still a real, successful
+                                      * decode, see ff_proto.h's RESERVED_01
+                                      * section; just no encoder any more. */
     case FF_PROTO_TYPE_FLARE_END:
     case FF_PROTO_TYPE_RALLY_CLEAR:
         /* Strict: these types define an empty body, so any body at all

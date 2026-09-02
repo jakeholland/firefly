@@ -352,7 +352,7 @@ typedef struct {
      * broadcast, a specific node id for a directed packet, or
      * MC_ADDR_UNKNOWN from a producer that genuinely lacks the address.
      * The client itself always has it (`pkt->to`), so 1:1 private
-     * traffic (a pulse sent to one member) is classifiable downstream
+     * traffic (a flare sent to one member) is classifiable downstream
      * as addressed-to-me instead of collapsing to unknown.
      */
     void (*on_private)(void *u, uint32_t from, uint32_t to, uint32_t portnum,

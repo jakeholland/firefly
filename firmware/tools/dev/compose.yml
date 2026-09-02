@@ -44,7 +44,7 @@ services:
     # No USB/SPI device is passed through on purpose: with no LoRa radio
     # attached, meshtasticd comes up as a client-API-only node with no
     # real mesh link — exactly the "simulated/no-radio node" the S13 spec
-    # asks for. Position/text/pulse traffic in the dev loop and e2e tests
+    # asks for. Position/text/flare traffic in the dev loop and e2e tests
     # is injected entirely by crew_sim.py talking to this same client API,
     # not by any real RF link.
     restart: unless-stopped

@@ -5,9 +5,10 @@
  * S16 slice c1 wired the three navigation-only stubs: nav long-press
  * (-> OPEN_SETTINGS), Compose back "<" (-> BACK), Signals "+" (->
  * OPEN_COMPOSE). Slice c2 wires the core-mutating ones: Compose SEND (->
- * SEND_TEXT), the Signals rally-row tap (-> SELECT_RALLY) and OMW/5 MIN/
- * PULSE chips (-> CANNED_REPLY), the Radar-face CLOSE-mode FLARE button
- * (-> FLARE_START), and the S10 takeover/sender-overlay buttons GO/
+ * SEND_TEXT), the Signals rally-row tap (-> SELECT_RALLY) and OMW/5 MIN
+ * chips (-> CANNED_REPLY; a third PULSE chip existed here before its
+ * 2026-09-02 retirement, see ff_intent.h's header note), the Radar-face
+ * CLOSE-mode FLARE button (-> FLARE_START), and the S10 takeover/sender-overlay buttons GO/
  * DISMISS/CANCEL (-> TAKEOVER_GO/TAKEOVER_DISMISS/FLARE_END) — the last
  * three moved here from test_scr_flare.c once they stopped mutating a
  * live `ff_flare_t` directly (S16's `[api]` change dropping `ff_flare_t
@@ -1188,11 +1189,15 @@ static void s24c_make_direct_thread(ff_app_inbox_t *v)
     strncpy(out->text, "at the tower", sizeof(out->text) - 1);
     ff_inbox_msg_t *in_m = &v->thread.msgs[v->thread.msg_count++];
     memset(in_m, 0, sizeof(*in_m));
-    in_m->kind = FEED_PULSE;
+    in_m->kind = FEED_TEXT; /* 2026-09-02: was FEED_PULSE, retired — see
+                              * ff_feed.h; this fixture only needs SOME
+                              * rendered inbound row for the chip-click
+                              * tests below, kind is otherwise immaterial */
     in_m->dir = FEED_DIR_DIRECT;
     in_m->identity_known = true;
     in_m->node_id = 111u;
     strncpy(in_m->name, "DANA", sizeof(in_m->name) - 1);
+    strncpy(in_m->text, "on my way", sizeof(in_m->text) - 1);
 }
 
 /* The 1:1 quick chips: OMW and IN 5 MIN emit CANNED_REPLY with the right

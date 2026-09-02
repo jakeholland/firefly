@@ -179,7 +179,7 @@ model's own AC2 ordering; a fixture is a snapshot, it does not re-sort):
      "preview_from": "RILEY"},
     {"conv": "member", "node_id": 111, "name": "DANA", "initial": "D",
      "color_idx": 0, "unread": 1, "item_count": 2,
-     "preview_kind": "pulse", "preview_dir": "direct",
+     "preview_kind": "flare", "preview_dir": "direct",
      "preview_age_ms": 60000, "presence": "seen", "presence_age_ms": 60000},
     {"conv": "member", "node_id": 116, "name": "SAM", "initial": "S",
      "color_idx": 5, "presence": "linked"}
@@ -197,11 +197,11 @@ model's own AC2 ordering; a fixture is a snapshot, it does not re-sort):
 | `convs[].node_id` / `name` / `initial` / `color_idx` | int / string / 1-char / int | `0` / `""` / `''` / `0` | Member identity (from the paired roster). CREW carries none. |
 | `convs[].unread` | integer | `0` | This conversation's unread count — drives its numbered amber badge and the header/page-dot sums. |
 | `convs[].item_count` | integer | `0` | Total items in the conversation. **Derives `has_preview`** (`item_count > 0`) — the model's own invariant, not separately authorable. |
-| `convs[].preview_kind` / `preview_dir` / `preview_text` / `preview_age_ms` | enum / enum / string / int | `pulse` / `unknown` / `""` / `0` | The newest item. `preview_dir` is `unknown` \| `broadcast` \| `direct` \| `out` — `out` renders the honest `YOU:` prefix. Age formatted at render time by `ff_fmt_age`. |
+| `convs[].preview_kind` / `preview_dir` / `preview_text` / `preview_age_ms` | enum / enum / string / int | `text` / `unknown` / `""` / `0` | The newest item. `preview_dir` is `unknown` \| `broadcast` \| `direct` \| `out` — `out` renders the honest `YOU:` prefix. Age formatted at render time by `ff_fmt_age`. |
 | `convs[].preview_from` | string | *(absent)* | The newest item's joined sender name. **Its presence derives `preview_from_known`** — the CREW row's sender prefix; omit it for an unknown/outgoing sender (never fabricate one). |
 | `convs[].presence` / `presence_age_ms` | enum / int | `seen` / `0` | Member rows only (**`presence_valid` derives from `conv: "member"`**): `seen` renders `SEEN <age>` in stale-amber, `lost` renders `LOST` in stale-amber, `linked` renders `LINKED` (no age) — the legible tier (S24 AC3). |
 | `msgs` | array, up to `FF_INBOX_MAX_MSGS` (32) | `[]` | S24 slice (c): the OPEN thread's messages (`ff_inbox_msg_t`), OLDEST first — the order the thread screen stacks them (it scrolls to the newest). Meaningful with `subview: "thread"`. A 33rd entry fails the whole load with `FF_FIXTURE_ERR_TOO_BIG`. |
-| `msgs[].kind` / `dir` | enum / enum | `pulse` / `unknown` | Same enums as the preview fields. `dir: "out"` sides the bubble on MY side (amber, right); everything else renders left; `unknown` renders like inbound but its wording never claims an address. |
+| `msgs[].kind` / `dir` | enum / enum | `text` / `unknown` | Same enums as the preview fields. `dir: "out"` sides the bubble on MY side (amber, right); everything else renders left; `unknown` renders like inbound but its wording never claims an address. |
 | `msgs[].from` | string | *(absent)* | The joined sender name. **Its presence derives `identity_known`** (`"from": ""` = known-but-unnamed, renders `MEMBER`); omit it entirely for an unjoined sender, which renders an honest `UNKNOWN` — never a guessed name. |
 | `msgs[].node_id` / `initial` / `color_idx` | int / 1-char / int | `0` / `''` / `0` | The joined sender's identity details (crew dot color etc.). |
 | `msgs[].text` | string (≤63 chars) | `""` | TEXT/STATUS body, or a RALLY's place name. Ellipsized at render, never wrapped. |
