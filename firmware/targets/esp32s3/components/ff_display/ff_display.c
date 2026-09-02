@@ -71,8 +71,8 @@ static const char *TAG = "ff_display";
  * image toward the top-left; if the wrap instead appears on the LEFT/TOP,
  * the value is too high. Leave the drawn resolution (412) and orientation
  * untouched — only these two numbers change. */
-#define FF_LCD_X_GAP 4 /* measured on glass with the ruler (CONFIG_FF_GLASS_RULER), 2026-09-02 — see docs/hardware/glass-offset.md. MUST be a multiple of 4: the SPD2010 only accepts 4-px-aligned windows in ITS coordinates (the #131 ghosting), and the gap shifts every flush window. */
-#define FF_LCD_Y_GAP 0 /* measured (5,1) read best by eye; snapped to the 4-px window alignment the panel requires — (5,1) painted stray lines at the top/right edges */
+#define FF_LCD_X_GAP 0 /* MUST stay 0 on this SPD2010: the pixel array is exactly 412 wide (a positive gap pushes the last columns off the array and the panel paints them WHITE — measured 2026-09-02). The glass sits ~5 px right of the pixel array; that is a THEME concern (FF_THEME_GLASS_*), not a panel window shift. See docs/hardware/glass-offset.md. */
+#define FF_LCD_Y_GAP 0 /* see X_GAP */
 _Static_assert(FF_LCD_X_GAP % 4 == 0 && FF_LCD_Y_GAP % 4 == 0,
               "panel gaps must be multiples of 4: the SPD2010 requires 4-px-aligned flush windows in panel coordinates");
 

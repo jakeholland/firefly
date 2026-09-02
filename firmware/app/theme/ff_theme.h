@@ -292,6 +292,21 @@ static inline uint32_t ff_theme_crew_color(uint8_t color_idx, bool colorblind)
 #define FF_THEME_PUCK_PX   412 /* the device panel is 412x412; the puck fills it */
 #define FF_THEME_PUCK_RADIUS_PX (FF_THEME_PUCK_PX / 2)
 
+/* The VISIBLE glass, measured on the Waveshare ESP32-S3-Touch-LCD-1.46 with the
+ * CONFIG_FF_GLASS_RULER pattern (docs/hardware/glass-offset.md, 2026-09-02):
+ * the round bezel window sits ~5 px right of the 412-wide pixel array, so
+ * columns ~0-5 are under the left bezel and the glass shows ≈ [6..411].
+ * The panel cannot be shifted (esp_lcd_panel_set_gap pushes the last
+ * columns off the array and they paint white), so edge-hugging elements
+ * (the Radar rim tint, anything that must read as concentric with the
+ * bezel) centre on THIS point and stay inside THIS radius instead of the
+ * framebuffer's (206, 206)/206. Content away from the edge keeps using the
+ * puck centre - a 2 px asymmetry is invisible there. Re-measure on any new
+ * board; do not assume the SKU is uniform. */
+#define FF_THEME_GLASS_CX 208
+#define FF_THEME_GLASS_CY 206
+#define FF_THEME_GLASS_R  203
+
 /* Arrow/ring/dot placement geometry (arrow length & taper, ring radius,
  * dot size) moved to app/screens/radar_layout.h as of PR #16's round-4
  * rework — that module is the single source of truth for every number
