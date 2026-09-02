@@ -561,10 +561,14 @@ esp_err_t ff_display_draw_boot_splash(void)
     const int amber_r = 0xFF, amber_g = 0xC6, amber_b = 0x6B;
 
     /* Blend factor (0..255, toward amber) per step: a symmetric triangle
-     * ramp, 5 steps up to full amber then 5 back down to bg — ~35 ms
-     * apart (below) puts the whole breathe at roughly (10 * 35) + draw
-     * time, comfortably under the 1000 ms budget with margin for the
-     * background wipe above and the LVGL init still to come. */
+     * ramp, 5 steps up to full amber, a HOLD at full amber, then 5 back
+     * down to bg. The first cut had no hold — the mark peaked for a single
+     * 35 ms step and read as a blink on glass (maintainer, 2026-09-01:
+     * "really quick"). Timing: (10 * FF_SPLASH_STEP_MS) + FF_SPLASH_HOLD_MS
+     * + draw ≈ 1.1 s total — the spec's budget was raised from ≤ 1 s to
+     * ~1 s (S26g) on that feedback. Tune the two constants, not the ramp. */
+#define FF_SPLASH_STEP_MS 35
+#define FF_SPLASH_HOLD_MS 600 /* dwell at full amber (the t == 255 step) */
     static const int kFadeSteps[] = {51, 102, 153, 204, 255, 204, 153, 102, 51, 0};
     enum { N_STEPS = sizeof(kFadeSteps) / sizeof(kFadeSteps[0]) };
 
@@ -593,7 +597,10 @@ esp_err_t ff_display_draw_boot_splash(void)
                 return err;
             }
         }
-        vTaskDelay(pdMS_TO_TICKS(35));
+        vTaskDelay(pdMS_TO_TICKS(FF_SPLASH_STEP_MS));
+        if (t == 255) {
+            vTaskDelay(pdMS_TO_TICKS(FF_SPLASH_HOLD_MS)); /* the hold — see kFadeSteps' comment */
+        }
     }
 
     heap_caps_free(band);

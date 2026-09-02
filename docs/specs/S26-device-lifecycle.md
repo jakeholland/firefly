@@ -163,7 +163,9 @@ Each timer wake services the link and returns to sleep unless input arrived.
 - **AC2** Not entered while any keep-awake holds (reuses (c)'s predicate).
 
 ### (g) Boot animation
-A splash (the firefly mark, ≤ 1 s) drawn as the FIRST panel content, covering
+A splash (the firefly mark, ~1 s: ramp up, hold at full amber, ramp down —
+raised from ≤ 1 s after the first cut read as a blink on glass) drawn as the
+FIRST panel content, covering
 the reset pulses + LVGL init. **Must not delay `ff_power_latch_on`** (still
 line one). Field and demo builds identical.
 - **AC1** Latch still precedes everything (assert order in `app_main`, log
