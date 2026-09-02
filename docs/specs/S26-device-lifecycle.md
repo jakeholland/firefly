@@ -170,11 +170,11 @@ the name on the same row instead, and at 160 px both the sender's full demo
 name and a preview past 10 characters render before DOTS ellipsis has to
 step in.
 
-Widening the strip this much also reaches `scr_signals.c`'s pinned BACK
-button (`FF_SIGNALS_BACK_Y`/`_PX`) on the thread/picker/popup/rally
+Widening the strip this much also reaches `scr_inbox.c`'s pinned BACK
+button (`FF_INBOX_BACK_Y`/`_PX`) on the thread/picker/popup/rally
 sub-views. Rather than either shrinking the strip back down (defeating the
 readability fix above) or growing `scr_banner.c` face-aware knowledge of
-`scr_signals.c`'s internals, `scr_nav.c` — the one place that already
+`scr_inbox.c`'s internals, `scr_nav.c` — the one place that already
 composes every face's content with the banner overlay — masks
 `LV_OBJ_FLAG_CLICKABLE` on any control the banner's rect now covers, right
 after building it. This matches what LVGL's own top-z hit-testing already

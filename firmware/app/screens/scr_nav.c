@@ -47,7 +47,7 @@
  * (scr_banner.c's own geometry comment) now reaches far enough to
  * overlap real controls underneath it on some faces — the Signals
  * thread/picker/popup/rally sub-views' pinned BACK button
- * (FF_SIGNALS_BACK_Y/PX, scr_signals.c) sits close enough to center
+ * (FF_INBOX_BACK_Y/PX, scr_inbox.c) sits close enough to center
  * that the banner's new width overlaps it. LVGL's own hit-testing
  * already routes a tap there to the banner (the topmost/last-added
  * object under the touch point wins — lv_indev_search_obj walks
@@ -56,10 +56,10 @@
  * with that real behavior, the same "mask what a higher-z, opaque,
  * ALSO-clickable overlay covers" fix scr_launcher.c's own copy of this
  * comment applies to the launcher's top satellite. Deliberately generic
- * (not scr_signals.c-specific) and confined to THIS file — the one
+ * (not scr_inbox.c-specific) and confined to THIS file — the one
  * place that already composes every face's content with the banner —
  * so no other screen file needs banner-awareness of its own, preserving
- * scr_banner.h's "no face-awareness" contract and scr_signals.h's
+ * scr_banner.h's "no face-awareness" contract and scr_inbox.h's
  * existing signature.
  * ------------------------------------------------------------------- */
 static void nav_mask_clickables_under_banner(lv_obj_t *root, lv_obj_t *banner, lv_area_t const *banner_area)
