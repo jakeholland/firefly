@@ -209,6 +209,24 @@ static void drag(int32_t from_x, int32_t to_x, int32_t y)
     s_fake_tick_ms += 40u;
     lv_timer_handler();
 
+    /* A release with residual velocity schedules LVGL's scroll-THROW
+     * momentum animation, keyed on `var = indev` (lv_indev.c's
+     * indev_scroll_throw_anim_cb) — NOT on the scrolled object, so
+     * lv_obj_del/lv_obj_clean on the scrolled tree never cancels it, and
+     * lv_indev_delete() below does not either (measured: it frees the
+     * indev struct directly with no animation cleanup at all). Deleting
+     * the indev while that animation is still pending leaves a dangling
+     * `var` that crashes the NEXT lv_timer_handler() call — including one
+     * from a LATER, unrelated drag() well after this function returned —
+     * whenever the freed memory happens to get reused (a rebuilt screen
+     * being the everyday way that happens). Canceling it here, before the
+     * indev goes away, is required for this helper to be safely reusable
+     * across an in-between lv_obj_clean + rebuild, which no test needed
+     * before the S24 thread scroll-preservation tests. No observable
+     * effect on any existing caller: nothing here previously read the
+     * throw's own further motion — every existing assertion runs off
+     * the position drag_v/drag already reached at release. */
+    lv_anim_delete(indev, NULL);
     lv_indev_delete(indev);
 }
 
@@ -240,6 +258,10 @@ static void drag_v(int32_t from_y, int32_t to_y, int32_t x)
     s_fake_tick_ms += 40u;
     lv_timer_handler();
 
+    /* See drag()'s own comment above for why this is required, not
+     * defensive belt-and-suspenders: lv_indev_delete() alone leaves a
+     * pending scroll-throw animation dangling on the freed indev. */
+    lv_anim_delete(indev, NULL);
     lv_indev_delete(indev);
 }
 
@@ -833,6 +855,337 @@ static void S24c_crew_thread_has_no_quick_chips(void)
     ff_scr_signals_build(parent, &v, false);
     TEST_ASSERT_NULL(find_button_with_label(parent, "OMW"));
     TEST_ASSERT_NULL(find_button_with_label(parent, "FLARE"));
+}
+
+/* =================================================================== */
+/* Thread message list scroll (maintainer bug report: "CREW thread      */
+/* messages don't scroll") — the scroll-vs-tap property this file's     */
+/* drag()/drag_v() helpers already exist to test. Twelve messages, well */
+/* past the CREW list's 190px band, so the content is guaranteed to     */
+/* overflow regardless of row-height tuning.                            */
+/* =================================================================== */
+
+static void s24_make_crew_thread_long(ff_app_signals_t *v)
+{
+    memset(v, 0, sizeof(*v));
+    v->subview = FF_SIG_SUB_THREAD;
+    v->thread_node = 0u;
+    strncpy(v->thread_name, "CREW", sizeof(v->thread_name) - 1);
+    sig_add_conv(v, FF_CONV_CREW, 0u, NULL, 0, 12);
+
+    static char const *const names[] = {"DANA", "RILEY", "MAX", "JAMIE", "KEV"};
+    for (int i = 0; i < 12; i++) {
+        ff_inbox_msg_t *m = &v->thread.msgs[v->thread.msg_count++];
+        memset(m, 0, sizeof(*m));
+        m->kind = FEED_TEXT;
+        m->dir = FEED_DIR_BROADCAST;
+        m->identity_known = true;
+        m->node_id = 111u + (uint32_t)(i % 5);
+        strncpy(m->name, names[i % 5], sizeof(m->name) - 1);
+        m->initial = names[i % 5][0];
+        m->color_idx = (uint8_t)(i % 5);
+        snprintf(m->text, sizeof(m->text), "signal number %d checking in", i);
+        m->age_ms = (uint32_t)(60000u * (uint32_t)(12 - i));
+    }
+}
+
+/* Same shape, DANA's 1:1 thread — used to prove the property holds there
+ * too (it already did; this is the comparison the investigation brief
+ * asks for, not a regression guard for a prior bug). */
+static void s24_make_direct_thread_long(ff_app_signals_t *v)
+{
+    memset(v, 0, sizeof(*v));
+    v->subview = FF_SIG_SUB_THREAD;
+    v->thread_node = 111u;
+    strncpy(v->thread_name, "DANA", sizeof(v->thread_name) - 1);
+    sig_add_conv(v, FF_CONV_CREW, 0u, NULL, 0, 0);
+    ff_inbox_conv_t *dana = sig_add_conv(v, FF_CONV_MEMBER, 111u, "DANA", 0, 12);
+    dana->presence = FF_PRESENCE_SEEN;
+    dana->presence_age_ms = 60000u;
+
+    for (int i = 0; i < 12; i++) {
+        ff_inbox_msg_t *m = &v->thread.msgs[v->thread.msg_count++];
+        memset(m, 0, sizeof(*m));
+        m->kind = FEED_TEXT;
+        m->dir = (i % 2 == 0) ? FEED_DIR_DIRECT : FEED_DIR_OUT;
+        m->identity_known = true;
+        m->node_id = 111u;
+        strncpy(m->name, "DANA", sizeof(m->name) - 1);
+        m->initial = 'D';
+        snprintf(m->text, sizeof(m->text), "message number %d", i);
+        m->age_ms = (uint32_t)(60000u * (uint32_t)(12 - i));
+    }
+}
+
+/* Finds the one PLAIN lv_obj (not a label/button — lv_label_create
+ * leaves LV_OBJ_FLAG_SCROLLABLE set by default too, so filtering on the
+ * flag alone would match the first header label instead) carrying
+ * LV_OBJ_FLAG_SCROLLABLE. Every other lv_obj_create object scr_signals.c
+ * builds under a thread (message rows, the crew dot, the bottom fade) is
+ * explicitly decorated via signals_child_deco, which clears this flag,
+ * so it uniquely identifies the message list regardless of whether the
+ * list itself is also CLICKABLE. */
+static lv_obj_t *find_scrollable(lv_obj_t *root)
+{
+    uint32_t n = lv_obj_get_child_count(root);
+    for (uint32_t i = 0; i < n; i++) {
+        lv_obj_t *child = lv_obj_get_child(root, i);
+        if (lv_obj_check_type(child, &lv_obj_class) && lv_obj_has_flag(child, LV_OBJ_FLAG_SCROLLABLE)) {
+            return child;
+        }
+        lv_obj_t *found = find_scrollable(child);
+        if (found != NULL) return found;
+    }
+    return NULL;
+}
+
+/* A physical vertical drag over the thread's message content must move
+ * the list's scroll offset — content that overflows a bounded list is
+ * useless if touch can never reach it. Covers CREW (the maintainer's
+ * report) and 1:1 (the investigation brief's required comparison): both
+ * must scroll, and neither drag may be mistaken for a row-open tap (the
+ * thread has none, so this also just asserts zero spurious intents). */
+static void thread_overflow_scrolls_on_drag(bool crew)
+{
+    ff_app_signals_t v;
+    if (crew) {
+        s24_make_crew_thread_long(&v);
+    } else {
+        s24_make_direct_thread_long(&v);
+    }
+
+    /* Real-indev hit-testing (unlike click()'s direct event injection the
+     * other Signals tests use) needs `parent`'s own geometry to actually
+     * contain the drag point — lv_obj_create's 100x100 default leaves
+     * anything past x/y=100 unreachable by lv_indev_search_obj, same as
+     * the real shell sizing its container to the full 412x412 display. */
+    lv_obj_t *parent = lv_obj_create(lv_screen_active());
+    lv_obj_set_size(parent, 412, 412);
+    ff_scr_signals_build(parent, &v, false);
+
+    lv_obj_t *list = find_scrollable(parent);
+    TEST_ASSERT_NOT_NULL(list);
+
+    /* The build scrolls to newest-at-bottom already: confirm the content
+     * actually overflows (scroll range > 0) rather than trusting the
+     * fixture's message count. */
+    lv_obj_update_layout(list);
+    int32_t const max_scroll = lv_obj_get_scroll_y(list) + lv_obj_get_scroll_bottom(list);
+    TEST_ASSERT_GREATER_THAN_INT32(0, max_scroll);
+
+    /* Reset to the top so an upward drag has room to move, then drag a
+     * finger up (content follows the finger toward the newest message,
+     * increasing the scroll offset) inside the list's on-glass band. */
+    lv_obj_scroll_to_y(list, 0, LV_ANIM_OFF);
+    TEST_ASSERT_EQUAL_INT32(0, lv_obj_get_scroll_y(list));
+
+    lv_area_t list_area;
+    lv_obj_get_coords(list, &list_area);
+    int32_t const list_top = list_area.y1;
+    int32_t const list_center_x = (list_area.x1 + list_area.x2) / 2;
+    drag_v(list_top + 90, list_top + 10, list_center_x);
+
+    TEST_ASSERT_GREATER_THAN_INT32(0, lv_obj_get_scroll_y(list));
+    TEST_ASSERT_EQUAL_INT(0, s_spy.count);
+}
+
+static void S24_crew_thread_overflow_scrolls_on_drag(void)
+{
+    thread_overflow_scrolls_on_drag(true);
+}
+
+static void S24_direct_thread_overflow_scrolls_on_drag(void)
+{
+    thread_overflow_scrolls_on_drag(false);
+}
+
+/* ---------------------------------------------------------------------
+ * PR #143 review: scroll position must survive the S24 render-key
+ * rebuild (an age-bucket crossing legitimately dirties the key —
+ * ff_shell.c's own doc comment — which does lv_obj_clean + a fresh
+ * signals_build_thread). Screen-level tests: a rebuild is simulated the
+ * same way ff_shell's render loop does it, lv_obj_clean(parent) then a
+ * second ff_scr_signals_build(parent, &v, false) call, since that IS
+ * the mechanism (ff_shell decides WHEN to rebuild; this file already
+ * tests screens by driving that same primitive directly, same as every
+ * other test in it).
+ * ------------------------------------------------------------------- */
+
+/* A real vertical drag, then a same-thread/same-count rebuild: the
+ * offset must be preserved, not snapped back to newest. The FLOATING
+ * touch target must still be there and still reachable afterward (a
+ * second drag still moves the list) — the restore must not have
+ * disturbed it. */
+static void S24_thread_scroll_preserved_across_same_thread_rebuild(void)
+{
+    ff_app_signals_t v;
+    s24_make_crew_thread_long(&v);
+
+    lv_obj_t *parent = lv_obj_create(lv_screen_active());
+    lv_obj_set_size(parent, 412, 412);
+    ff_scr_signals_build(parent, &v, false);
+
+    lv_obj_t *list = find_scrollable(parent);
+    TEST_ASSERT_NOT_NULL(list);
+    lv_obj_update_layout(list);
+
+    lv_area_t list_area;
+    lv_obj_get_coords(list, &list_area);
+    int32_t const list_top = list_area.y1;
+    int32_t const list_center_x = (list_area.x1 + list_area.x2) / 2;
+
+    lv_obj_scroll_to_y(list, 0, LV_ANIM_OFF);
+    drag_v(list_top + 90, list_top + 10, list_center_x);
+    int32_t const scrolled_y = lv_obj_get_scroll_y(list);
+    TEST_ASSERT_GREATER_THAN_INT32(0, scrolled_y);
+
+    /* Simulate the render loop's legitimate age-bucket rebuild: SAME
+     * thread (node_id unchanged), SAME message count — the property
+     * under test is that this alone preserves the offset. */
+    lv_obj_clean(parent);
+    ff_scr_signals_build(parent, &v, false);
+
+    lv_obj_t *list2 = find_scrollable(parent);
+    TEST_ASSERT_NOT_NULL(list2);
+    lv_obj_update_layout(list2);
+    TEST_ASSERT_EQUAL_INT32(scrolled_y, lv_obj_get_scroll_y(list2));
+
+    /* The touch target must still be alive post-restore: drag again and
+     * confirm the list keeps scrolling (not stuck, not swallowed). */
+    int32_t const before_second_drag = lv_obj_get_scroll_y(list2);
+    drag_v(list_top + 90, list_top + 10, list_center_x);
+    TEST_ASSERT_GREATER_THAN_INT32(before_second_drag, lv_obj_get_scroll_y(list2));
+}
+
+/* A new message arriving (message count changes) must land on newest,
+ * even though it's still the SAME thread — a stale offset from a
+ * shorter thread would misrepresent where "the end" now is. */
+static void S24_thread_scroll_resets_to_newest_on_new_message(void)
+{
+    ff_app_signals_t v;
+    s24_make_crew_thread_long(&v);
+
+    lv_obj_t *parent = lv_obj_create(lv_screen_active());
+    lv_obj_set_size(parent, 412, 412);
+    ff_scr_signals_build(parent, &v, false);
+
+    lv_obj_t *list = find_scrollable(parent);
+    TEST_ASSERT_NOT_NULL(list);
+    lv_obj_update_layout(list);
+
+    lv_area_t list_area;
+    lv_obj_get_coords(list, &list_area);
+    int32_t const list_top = list_area.y1;
+    int32_t const list_center_x = (list_area.x1 + list_area.x2) / 2;
+
+    lv_obj_scroll_to_y(list, 0, LV_ANIM_OFF);
+    drag_v(list_top + 90, list_top + 10, list_center_x);
+    TEST_ASSERT_GREATER_THAN_INT32(0, lv_obj_get_scroll_y(list));
+
+    /* A 13th message arrives — same thread (node_id unchanged), but the
+     * message count differs from what was last built. */
+    ff_inbox_msg_t *m = &v.thread.msgs[v.thread.msg_count++];
+    memset(m, 0, sizeof(*m));
+    m->kind = FEED_TEXT;
+    m->dir = FEED_DIR_BROADCAST;
+    m->identity_known = true;
+    m->node_id = 111u;
+    strncpy(m->name, "DANA", sizeof(m->name) - 1);
+    m->initial = 'D';
+    snprintf(m->text, sizeof(m->text), "just landed");
+    m->age_ms = 0u;
+
+    lv_obj_clean(parent);
+    ff_scr_signals_build(parent, &v, false);
+
+    lv_obj_t *list2 = find_scrollable(parent);
+    TEST_ASSERT_NOT_NULL(list2);
+    lv_obj_update_layout(list2);
+    /* Fully scrolled to the end == 0 remaining scroll-bottom distance. */
+    TEST_ASSERT_EQUAL_INT32(0, lv_obj_get_scroll_bottom(list2));
+    TEST_ASSERT_GREATER_THAN_INT32(0, lv_obj_get_scroll_y(list2));
+}
+
+/* Switching to a DIFFERENT thread must land on newest — a node_id
+ * mismatch alone forces this regardless of any message-count
+ * coincidence, since the restore requires BOTH to match. */
+static void S24_thread_scroll_resets_to_newest_on_different_thread(void)
+{
+    ff_app_signals_t crew_v;
+    s24_make_crew_thread_long(&crew_v);
+
+    lv_obj_t *parent = lv_obj_create(lv_screen_active());
+    lv_obj_set_size(parent, 412, 412);
+    ff_scr_signals_build(parent, &crew_v, false);
+
+    lv_obj_t *list = find_scrollable(parent);
+    TEST_ASSERT_NOT_NULL(list);
+    lv_obj_update_layout(list);
+
+    lv_area_t list_area;
+    lv_obj_get_coords(list, &list_area);
+    int32_t const list_top = list_area.y1;
+    int32_t const list_center_x = (list_area.x1 + list_area.x2) / 2;
+
+    lv_obj_scroll_to_y(list, 0, LV_ANIM_OFF);
+    drag_v(list_top + 90, list_top + 10, list_center_x);
+    TEST_ASSERT_GREATER_THAN_INT32(0, lv_obj_get_scroll_y(list));
+
+    /* Switch to DANA's 1:1 thread — a different node_id entirely. */
+    ff_app_signals_t dana_v;
+    s24_make_direct_thread_long(&dana_v);
+
+    lv_obj_clean(parent);
+    ff_scr_signals_build(parent, &dana_v, false);
+
+    lv_obj_t *list2 = find_scrollable(parent);
+    TEST_ASSERT_NOT_NULL(list2);
+    lv_obj_update_layout(list2);
+    TEST_ASSERT_EQUAL_INT32(0, lv_obj_get_scroll_bottom(list2));
+    TEST_ASSERT_GREATER_THAN_INT32(0, lv_obj_get_scroll_y(list2));
+}
+
+/* A single press-then-release at one point, no movement — a real tap
+ * through the same synthetic pointer indev drag()/drag_v() use, as
+ * opposed to click()'s direct LV_EVENT_CLICKED injection every other
+ * Signals test in this file uses. Proves a genuine physical tap still
+ * resolves to a control OUTSIDE `list` (the chip strip is a sibling of
+ * `list`, not a descendant) even once the FLOATING scroll touch target
+ * is added inside an overflowing thread's list — the touch-safety
+ * property the review asked to keep covered by real touch, not just
+ * synthetic click(). */
+static void tap_at(int32_t x, int32_t y)
+{
+    drag_v(y, y, x);
+}
+
+static void S24_omw_chip_real_touch_on_long_overflowing_1to1_thread(void)
+{
+    ff_app_signals_t v;
+    s24_make_direct_thread_long(&v);
+
+    lv_obj_t *parent = lv_obj_create(lv_screen_active());
+    lv_obj_set_size(parent, 412, 412);
+    ff_scr_signals_build(parent, &v, false);
+
+    lv_obj_t *list = find_scrollable(parent);
+    TEST_ASSERT_NOT_NULL(list);
+    lv_obj_update_layout(list);
+    int32_t const max_scroll = lv_obj_get_scroll_y(list) + lv_obj_get_scroll_bottom(list);
+    TEST_ASSERT_GREATER_THAN_INT32(0, max_scroll); /* confirm this thread genuinely overflows */
+
+    lv_obj_t *omw = find_button_with_label(parent, "OMW");
+    TEST_ASSERT_NOT_NULL(omw);
+    lv_area_t chip_area;
+    lv_obj_get_coords(omw, &chip_area);
+    int32_t const cx = (chip_area.x1 + chip_area.x2) / 2;
+    int32_t const cy = (chip_area.y1 + chip_area.y2) / 2;
+
+    tap_at(cx, cy);
+
+    TEST_ASSERT_EQUAL_INT(1, s_spy.count);
+    TEST_ASSERT_EQUAL(FF_INTENT_CANNED_REPLY, s_spy.last.kind);
+    TEST_ASSERT_EQUAL(FF_WIRING_REPLY_OMW, s_spy.last.u.reply);
 }
 
 /* =================================================================== */
@@ -1559,6 +1912,12 @@ int main(void)
     RUN_TEST(S24c_thread_flare_chip_emits_sig_flare);
     RUN_TEST(S24c_thread_fab_emits_inbox_new);
     RUN_TEST(S24c_crew_thread_has_no_quick_chips);
+    RUN_TEST(S24_crew_thread_overflow_scrolls_on_drag);
+    RUN_TEST(S24_direct_thread_overflow_scrolls_on_drag);
+    RUN_TEST(S24_thread_scroll_preserved_across_same_thread_rebuild);
+    RUN_TEST(S24_thread_scroll_resets_to_newest_on_new_message);
+    RUN_TEST(S24_thread_scroll_resets_to_newest_on_different_thread);
+    RUN_TEST(S24_omw_chip_real_touch_on_long_overflowing_1to1_thread);
     RUN_TEST(S24d_popup_compose_row_emits_popup_compose);
     RUN_TEST(S24d_popup_rally_row_emits_popup_rally);
     RUN_TEST(S24d_popup_flare_row_emits_popup_flare);
