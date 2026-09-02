@@ -748,6 +748,28 @@ void app_main(void)
         return;
     }
 
+#if CONFIG_FF_GLASS_RULER
+    /* Device-only diagnostic (default OFF, docs/hardware/glass-offset.md):
+     * drawn right after the panel comes up — same spot the boot splash
+     * claims below, "after the latch, like the splash" — then HOLDS
+     * forever instead of continuing bring-up, so the maintainer can read
+     * it against the physical bezel with no time pressure. This entire
+     * block (and ff_display_draw_glass_ruler itself) compiles out of a
+     * normal build. */
+    esp_err_t const ruler_err = ff_display_draw_glass_ruler();
+    if (ruler_err != ESP_OK) {
+        ff_park("glass ruler draw failed");
+        return;
+    }
+    ESP_LOGI(TAG, "CONFIG_FF_GLASS_RULER: glass ruler on glass, holding forever "
+                  "(never continuing to the splash/LVGL/normal boot) — see "
+                  "docs/hardware/glass-offset.md to read dx/dy off it");
+    while (true) {
+        ESP_LOGI(TAG, "glass ruler: count the ticks hidden under the bezel on each side");
+        vTaskDelay(pdMS_TO_TICKS(1000));
+    }
+#endif
+
     /* S26 slice (g) — the boot splash: drawn HERE, immediately after the
      * panel + backlight are up and BEFORE ff_display_lvgl_start(), so it
      * is the FIRST content on glass — earlier than LVGL init could ever

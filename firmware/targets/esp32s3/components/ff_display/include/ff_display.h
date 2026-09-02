@@ -125,6 +125,28 @@ esp_err_t ff_display_draw_test_pattern(void);
  */
 esp_err_t ff_display_draw_boot_splash(void);
 
+#if CONFIG_FF_GLASS_RULER
+/**
+ * ff_display_draw_glass_ruler — device-only diagnostic (CONFIG_FF_GLASS_RULER,
+ * default OFF): draws a boot-time "glass ruler" pattern directly to the
+ * panel via esp_lcd_panel_draw_bitmap (same raw, no-LVGL path as
+ * ff_display_draw_test_pattern / ff_display_draw_boot_splash above) so the
+ * maintainer can measure the bezel/pixel-array offset by eye on real
+ * glass. See docs/hardware/glass-offset.md for exactly what it draws and
+ * how to read dx/dy off it. The caller (app_main, under the same
+ * CONFIG_FF_GLASS_RULER guard) holds the pattern on glass forever after
+ * this returns — it never hands off to the splash/LVGL/normal boot.
+ *
+ * Requires ff_display_panel_init() first (same precondition as
+ * ff_display_draw_test_pattern). Compiled out entirely — this declaration
+ * included — when CONFIG_FF_GLASS_RULER is off (the default), so a field
+ * or demo build is byte-identical with or without this diagnostic
+ * existing in the tree. Returns ESP_OK on success; the first failing
+ * esp_err_t (logged) otherwise.
+ */
+esp_err_t ff_display_draw_glass_ruler(void);
+#endif /* CONFIG_FF_GLASS_RULER */
+
 /**
  * ff_display_lvgl_start — b2: initialise esp_lvgl_port and add an LVGL v9
  * lv_display backed by this panel (PSRAM double buffer, RGB565). After

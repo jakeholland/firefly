@@ -99,4 +99,26 @@ menu "Firefly bring-up (S15 slice b)"
             produce the same event stream (goldens use fixed snapshots, not
             wall-clock live generation — S23 AC6).
 
+    config FF_GLASS_RULER
+        bool "Draw the glass-ruler calibration pattern at boot and hold it"
+        default n
+        help
+            Device-only diagnostic for the bezel/pixel-array offset
+            investigation (docs/hardware/glass-offset.md): draws a
+            boot-time "ruler" pattern (a crosshair + r=205 outer circle
+            centered on the panel, four edge rulers with 2px ticks out to
+            40px, four 45-degree corner markers, and dx/dy wrap-test
+            striped blocks at the left and top edges) directly to the
+            panel with esp_lcd_panel_draw_bitmap — no LVGL — right after
+            the panel comes up, THEN HOLDS IT FOREVER (a 1s heartbeat log,
+            never continuing to the boot splash, LVGL, or the normal UI)
+            so the maintainer can read the offset by eye against the
+            physical bezel with no time pressure.
+
+            Default OFF: zero behaviour change to every other build. The
+            drawing function itself is compiled out entirely
+            (#if CONFIG_FF_GLASS_RULER) when this is off, so a field or
+            demo build is byte-identical with or without this diagnostic
+            existing in the tree — verify with `idf.py size` if in doubt.
+
 endmenu
