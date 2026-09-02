@@ -34,6 +34,7 @@
 #include "esp_lcd_spd2010.h"
 #include "esp_lcd_touch_spd2010.h"
 #include "esp_lvgl_port.h"
+#include "esp_timer.h" /* S26 slice (g) — esp_timer_get_time() for the boot-splash timing log */
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
@@ -472,6 +473,133 @@ esp_err_t ff_display_draw_test_pattern(void)
     ESP_LOGI(TAG, "first light: two-colour split drawn (left=green right=red)");
 
     heap_caps_free(band);
+    return ESP_OK;
+}
+
+/* =====================================================================
+ * S26 slice (g) — boot splash: a simple centered amber dot breathing
+ * once against the theme background, drawn RAW (no LVGL) so it is the
+ * very first thing on glass. Reuses the exact band-buffer /
+ * draw_bitmap / byte-swap shape ff_display_draw_test_pattern established
+ * just above (small INTERNAL-DMA band, 4-line-aligned, same
+ * ff_rgb565_swap helper) rather than inventing a second draw path. See
+ * ff_display_draw_boot_splash's doc comment (ff_display.h) for the
+ * rationale and constraints.
+ * ===================================================================== */
+esp_err_t ff_display_draw_boot_splash(void)
+{
+    if (s_panel == NULL) {
+        ESP_LOGE(TAG, "draw_boot_splash called before panel_init");
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    int64_t const t_start_us = esp_timer_get_time();
+
+    enum { BAND_LINES = 4 };
+    const size_t band_px = (size_t)FF_LCD_H_RES * BAND_LINES;
+    uint16_t *band = heap_caps_malloc(band_px * sizeof(uint16_t), MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
+    if (band == NULL) {
+        ESP_LOGE(TAG, "boot splash: OOM allocating %u byte band buffer", (unsigned)(band_px * 2));
+        return ESP_ERR_NO_MEM;
+    }
+
+    /* Theme background (#0B0B10 -> RGB565 0x0842) — see
+     * FF_THEME_COLOR_BG, app/theme/ff_theme.h. Hardcoded rather than
+     * included: this file's header comment is explicit that NONE of
+     * targets/esp32s3 touches core/ or app/, and draw_test_pattern
+     * already establishes the same "value transcribed in a comment"
+     * convention for its own amber fill above. The amber accent itself
+     * (#FFC66B) is not a separate constant here — the per-step blend
+     * below reaches it exactly at its t=255 step (amber_r/g/b). */
+    const uint16_t bg = ff_rgb565_swap(0x0842);
+
+    /* ---- Pass 1: wipe the whole panel to the theme background ----
+     * ff_display_panel_init's contract only promises "blank", not a
+     * known colour — this explicitly establishes the canvas before the
+     * mark is drawn on it. The FIRST pixel this splash puts on glass
+     * (AC1) is logged at the first band of this pass. */
+    for (size_t i = 0; i < band_px; i++) band[i] = bg;
+    bool logged_first_pixel = false;
+    for (int y = 0; y < FF_LCD_V_RES; y += BAND_LINES) {
+        esp_err_t err = esp_lcd_panel_draw_bitmap(s_panel, 0, y, FF_LCD_H_RES, y + BAND_LINES, band);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "boot splash: bg band y=%d draw_bitmap failed: %s", y, esp_err_to_name(err));
+            heap_caps_free(band);
+            return err;
+        }
+        if (!logged_first_pixel) {
+            logged_first_pixel = true;
+            ESP_LOGI(TAG, "S26g AC1: first splash pixel at t=%lld us", (long long)esp_timer_get_time());
+        }
+    }
+
+    /* ---- Pass 2: breathe a centered amber dot ----
+     * A filled circle at the puck center (206,206), radius 48px. Only
+     * the vertical strip the circle occupies (4-line-aligned) is
+     * redrawn per step, not the full 412 rows — pass 1 already painted
+     * everything outside it, and re-touching untouched background every
+     * step would just be wasted SPI time against the < 1000 ms budget.
+     * There is no real alpha compositing in a raw panel write, so
+     * "opacity" is faked by linearly blending each 8-bit channel between
+     * bg and amber per step — a symmetric ramp up then down (breathe,
+     * not a hold), matching the flare mark's own ease-style pulse in
+     * spirit (scr_flare.c's flare_anim_set_opa_cb) without needing LVGL's
+     * animator here. */
+    const int cx = FF_LCD_H_RES / 2;
+    const int cy = FF_LCD_V_RES / 2;
+    const int radius = 48;
+    const int radius_sq = radius * radius;
+    int strip_top = cy - radius;
+    int strip_bottom = cy + radius;
+    strip_top -= strip_top % BAND_LINES;                                    /* 4-line align, round down */
+    strip_bottom += (BAND_LINES - (strip_bottom % BAND_LINES)) % BAND_LINES; /* round up */
+    if (strip_top < 0) strip_top = 0;
+    if (strip_bottom > FF_LCD_V_RES) strip_bottom = FF_LCD_V_RES;
+
+    /* 8-bit channel components (pre-swap, pre-RGB565-pack) for the blend. */
+    const int bg_r = 0x0B, bg_g = 0x0B, bg_b = 0x10;
+    const int amber_r = 0xFF, amber_g = 0xC6, amber_b = 0x6B;
+
+    /* Blend factor (0..255, toward amber) per step: a symmetric triangle
+     * ramp, 5 steps up to full amber then 5 back down to bg — ~35 ms
+     * apart (below) puts the whole breathe at roughly (10 * 35) + draw
+     * time, comfortably under the 1000 ms budget with margin for the
+     * background wipe above and the LVGL init still to come. */
+    static const int kFadeSteps[] = {51, 102, 153, 204, 255, 204, 153, 102, 51, 0};
+    enum { N_STEPS = sizeof(kFadeSteps) / sizeof(kFadeSteps[0]) };
+
+    for (int s = 0; s < N_STEPS; s++) {
+        int const t = kFadeSteps[s];
+        int const r = bg_r + ((amber_r - bg_r) * t) / 255;
+        int const g = bg_g + ((amber_g - bg_g) * t) / 255;
+        int const b = bg_b + ((amber_b - bg_b) * t) / 255;
+        uint16_t const natural = (uint16_t)(((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3));
+        uint16_t const blended = ff_rgb565_swap(natural);
+
+        for (int y = strip_top; y < strip_bottom; y += BAND_LINES) {
+            for (int ly = 0; ly < BAND_LINES; ly++) {
+                int const py = y + ly;
+                int const dy = py - cy;
+                uint16_t *row = band + (size_t)ly * FF_LCD_H_RES;
+                for (int x = 0; x < FF_LCD_H_RES; x++) {
+                    int const dx = x - cx;
+                    row[x] = (dx * dx + dy * dy <= radius_sq) ? blended : bg;
+                }
+            }
+            esp_err_t err = esp_lcd_panel_draw_bitmap(s_panel, 0, y, FF_LCD_H_RES, y + BAND_LINES, band);
+            if (err != ESP_OK) {
+                ESP_LOGE(TAG, "boot splash: mark band y=%d draw_bitmap failed: %s", y, esp_err_to_name(err));
+                heap_caps_free(band);
+                return err;
+            }
+        }
+        vTaskDelay(pdMS_TO_TICKS(35));
+    }
+
+    heap_caps_free(band);
+    int64_t const elapsed_us = esp_timer_get_time() - t_start_us;
+    ESP_LOGI(TAG, "S26g: boot splash complete, %lld ms (radius=%dpx, %d fade steps)",
+             (long long)(elapsed_us / 1000), radius, (int)N_STEPS);
     return ESP_OK;
 }
 

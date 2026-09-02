@@ -25,6 +25,7 @@ idf_component_register(
         esp_driver_gpio
         esp_driver_ledc
         driver
+        esp_timer # S26 slice (g) — esp_timer_get_time() for the boot-splash timing log
 )
 
 target_compile_options(${COMPONENT_LIB} PRIVATE -Wall -Wextra -Werror)

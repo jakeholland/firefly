@@ -36,6 +36,7 @@
 #include <stddef.h>
 #include <string.h>
 
+#include "esp_err.h" /* esp_err_to_name() — S26 slice g's boot-splash failure log */
 #include "esp_log.h"
 #include "esp_system.h" /* esp_restart() — S26 slice b's reboot action */
 #include "esp_timer.h"
@@ -358,8 +359,17 @@ void app_main(void)
      * hold line high so it survives the button release. Must beat the display
      * bring-up's reset delays, hence the very first line. Non-fatal on failure
      * (USB boots run regardless; battery was going to drop either way, and a
-     * live-but-unlatched puck is more debuggable than a park loop). */
+     * live-but-unlatched puck is more debuggable than a park loop).
+     *
+     * S26g AC1: this call stays app_main's first statement — nothing above
+     * it, nothing inserted before it by this slice. The timestamp logged
+     * right after is read together with ff_display's own "S26g AC1: first
+     * splash pixel" log (targets/esp32s3/components/ff_display/ff_display.c)
+     * so the maintainer can confirm the order (latch, then splash pixel,
+     * never the reverse) straight off the serial log. */
     (void)ff_power_latch_on();
+    ESP_LOGI(TAG, "S26g AC1: latch requested at t=%lld us (app_main's first statement)",
+             (long long)esp_timer_get_time());
 
     /* S26 slice b — zero the PWR-button FSM before anything can tick it
      * (the main loop below is the only tick site). */
@@ -489,6 +499,26 @@ void app_main(void)
     if (!ff_bringup_panel()) {
         ff_park("panel bring-up failed");
         return;
+    }
+
+    /* S26 slice (g) — the boot splash: drawn HERE, immediately after the
+     * panel + backlight are up and BEFORE ff_display_lvgl_start(), so it
+     * is the FIRST content on glass — earlier than LVGL init could ever
+     * put pixels up (docs/specs/S26-device-lifecycle.md "(g) Boot
+     * animation"). Same raw esp_lcd_panel_draw_bitmap path STAGE 1's test
+     * pattern uses just below, chosen over an LVGL-screen splash
+     * specifically to beat LVGL's own init latency rather than merely
+     * occupy it. Runs for every stage/build (field and demo identical,
+     * no CONFIG_FF_DEMO_MODE gate) — STAGE 1 below is a manual bring-up
+     * debug aid, not the normal boot path, and simply overdraws the
+     * splash with its own pattern when selected via menuconfig. A
+     * failure here is logged and non-fatal (a missing splash is a
+     * cosmetic loss, not a reason to park a boot the field test depends
+     * on) — the panel is already known-good at this point (ff_bringup_panel
+     * just succeeded), so bring-up continues either way. */
+    esp_err_t const splash_err = ff_display_draw_boot_splash();
+    if (splash_err != ESP_OK) {
+        ESP_LOGE(TAG, "boot splash failed (%s) — continuing bring-up regardless", esp_err_to_name(splash_err));
     }
 
     /* ---- STAGE 1: first light, no LVGL ---- */

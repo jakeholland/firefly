@@ -77,6 +77,37 @@ esp_err_t ff_display_panel_init(void);
 esp_err_t ff_display_draw_test_pattern(void);
 
 /**
+ * ff_display_draw_boot_splash — S26 slice (g): the boot splash, drawn
+ * directly via esp_lcd_panel_draw_bitmap exactly like
+ * ff_display_draw_test_pattern above — NO LVGL — so it is the earliest
+ * possible content on glass, covering the reset pulses + LVGL init
+ * latency that otherwise leave the screen black for a few hundred ms
+ * (docs/specs/S26-device-lifecycle.md "(g) Boot animation"). Wipes the
+ * panel to the theme background, then breathes a simple centered amber
+ * dot (a deliberately simplified stand-in for the flare mark's 8-ray
+ * burst, scr_flare.c — plotting rotated ray geometry in this raw
+ * pre-LVGL path is not worth the complexity the spec waives: "a simple
+ * centered glyph ... is enough") once, in and out, over well under
+ * 1000 ms total. No text, no version, no "connecting" claim — honest
+ * data: a static mark, nothing this splash cannot itself guarantee is
+ * true yet.
+ *
+ * Requires ff_display_panel_init() first (same precondition as
+ * ff_display_draw_test_pattern) and MUST be called before
+ * ff_display_lvgl_start() — mixing this with LVGL running is undefined
+ * (LVGL owns the panel writes once started). Draws from a small
+ * INTERNAL-DMA band buffer that is allocated and freed within this
+ * call — never a static/.bss allocation, so this splash costs zero
+ * bytes of internal DIRAM at rest.
+ *
+ * Logs ESP_LOGI at the very first pixel drawn (AC1's latch-vs-splash
+ * timestamp ordering, read together with ff_power_latch_on's own log)
+ * and again on completion with the measured elapsed time. Returns
+ * ESP_OK on success; the first failing esp_err_t (logged) otherwise.
+ */
+esp_err_t ff_display_draw_boot_splash(void);
+
+/**
  * ff_display_lvgl_start — b2: initialise esp_lvgl_port and add an LVGL v9
  * lv_display backed by this panel (PSRAM double buffer, RGB565). After
  * this returns, lv_screen_active() draws to the glass and the caller
