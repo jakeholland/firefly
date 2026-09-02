@@ -194,3 +194,16 @@ last pixel and is only visible at some viewing angles — the bezel lip covers t
 pixels; that is expected and symmetric. Touch calibration was re-run after this change
 (pixels moved under the sensor). Other boards of the same SKU should be re-measured with the
 ruler rather than assumed identical.
+
+
+## Outcome (2026-09-02): `set_gap` is not viable on this panel — fixed in the theme
+
+At (4, 0) the right edge still painted white: the SPD2010's pixel array is exactly 412
+columns, so any positive x gap pushes the image's last columns off the array and the panel
+renders them white. The bezel window physically sits ~5 px right of the pixel array; that
+cannot be corrected by shifting the panel window. The panel gap is back at (0, 0) (kept
+under a multiple-of-4 static assert for whoever tries again), and the offset is recorded as
+the **visible glass geometry** in `ff_theme.h`: `FF_THEME_GLASS_CX 208`, `_CY 206`, `_R 203`.
+Edge-hugging elements (first: Radar's rim tint) centre on it and stay inside it; everything
+else keeps the framebuffer centre, where 2 px is invisible. Touch calibration absorbs the
+same offset via its own affine fit. Re-measure on any other board.
