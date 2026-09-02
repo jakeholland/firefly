@@ -13,7 +13,7 @@ Run the whole app on a Mac/Linux host: LVGL in an SDL window or fully headless, 
    - `--script FILE.py`⇢ no — scripting stays external: sim exposes a control socket (`--ctl PORT`, newline JSON: inject touch, advance mock clock, dump state, screenshot) that the Python e2e harness drives.
 3. **PNG writer**: LVGL snapshot buffer → PNG (stb_image_write, vendored single header).
 4. **Mock clock**: `--mock-clock` makes time advance only via ctl socket (determinism for goldens/alarms).
-5. **`tools/dev/`**: `compose.yml` (meshtasticd), `crew_sim.py` (Meshtastic Python API: spawn fake nodes, walk paths at Legend Valley coords, send pulses — "Dana walks 300 m NE at 1.2 m/s" one-liners), `record_fixture.py` (captures S03 handshake bytes).
+5. **`tools/dev/`**: `compose.yml` (meshtasticd), `crew_sim.py` (Meshtastic Python API: spawn fake nodes, walk paths at Legend Valley coords, send flares — "Dana walks 300 m NE at 1.2 m/s" one-liners; the `flare` verb replaced `pulse` 2026-09-02, PULSE retired, see docs/specs/S04-firefly-protocol.md's Amendments), `record_fixture.py` (captures S03 handshake bytes).
 
 ## Acceptance criteria
 1. `cmake -B build -DFF_TARGET=sim && cmake --build build` clean from fresh clone on macOS + Ubuntu (CI proves Ubuntu; macOS documented).

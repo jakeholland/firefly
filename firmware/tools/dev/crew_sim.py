@@ -31,10 +31,10 @@ design:
      container image does not survive it** — its `execv()` re-exec fails
      ("Rebooting... execv() returned -1! error: No such file or
      directory") and the container dies. So this script deliberately
-     does **not** call `setOwner()` in the hot path of walk/pulse/status/
+     does **not** call `setOwner()` in the hot path of walk/flare/status/
      text — doing so would crash your meshtasticd on every single call.
   4. **Position persists (via the daemon's NodeDB) across a
-     disconnect/reconnect; transient Data packets (PULSE/STATUS/plain
+     disconnect/reconnect; transient Data packets (FLARE/STATUS/plain
      text) do not.** A `sendPosition()` is visible to a client that
      connects *after* the sender disconnected (this is what makes
      `walk` + a later `ffsim --connect` work). A `sendData()`/`sendText()`
@@ -61,7 +61,7 @@ design:
 Net effect: `crew_sim.py walk` genuinely drives ffsim's radar face end to
 end against real meshtasticd (see firmware/tests/e2e/
 test_position_reaches_radar) — slowly (up to about a minute, per finding
-#5), but reliably. `pulse`/`status`/`text` are implemented here for real
+#5), but reliably. `flare`/`status`/`text` are implemented here for real
 (correct wire format, verified against the pinned image) and are exactly
 what a real multi-node mesh would carry, but delivering them to a
 *second*, already-connected observer needs either real Meshtastic
@@ -75,7 +75,7 @@ test_scenarios.py's module docstring for the full writeup.
 ## Scenario API + CLI
 
     crew_sim.py walk   --node Dana --from-stage prehistoric --to-stage wompy-woods --speed 1.2
-    crew_sim.py pulse  --from Dana
+    crew_sim.py flare  --from Dana
     crew_sim.py text   --from Dana --message "omw!"
     crew_sim.py status --from Dana --text "RAGING"
 
@@ -106,17 +106,17 @@ except ImportError:  # pragma: no cover
 FF_PORTNUM = 269  # meshtastic PortNum this protocol rides on (mc_client.h)
 FF_PROTO_VERSION = 1
 
-FF_PROTO_TYPE_PULSE = 0x01
+# 2026-09-02: 0x01 was PULSE ("thinking of you", no body). Retired end to
+# end (see firmware/core/include/ff_proto.h's RESERVED_01 section /
+# docs/specs/S04-firefly-protocol.md's Amendments) — no encoder here any
+# more, and this tool never sends 0x01 again. The value stays a reserved
+# comment, matching the C side, so nobody accidentally reassigns it.
+FF_PROTO_TYPE_RESERVED_01 = 0x01  # was PULSE — DO NOT reassign
 FF_PROTO_TYPE_FLARE = 0x02
 FF_PROTO_TYPE_FLARE_END = 0x03
 FF_PROTO_TYPE_RALLY = 0x04
 FF_PROTO_TYPE_RALLY_CLEAR = 0x05
 FF_PROTO_TYPE_STATUS = 0x06
-
-
-def ff_encode_pulse() -> bytes:
-    """[ver:1][type:1], no body — ff_proto_encode_pulse()'s wire shape."""
-    return struct.pack("<BB", FF_PROTO_VERSION, FF_PROTO_TYPE_PULSE)
 
 
 def ff_encode_flare(dur_s: int) -> bytes:
@@ -201,7 +201,7 @@ def rename_node(iface: TCPInterface, name: str) -> None:
     """Relabels the single connected daemon's own node (long/short name).
     **Opt-in only, via the `rename` subcommand** — see this file's
     top-of-module note #3: this reboots the daemon, which crashes the
-    pinned container image outright. Not called from walk/pulse/status/
+    pinned container image outright. Not called from walk/flare/status/
     text's hot path. short_name is Meshtastic's "ideally two
     characters... suitable for a tiny OLED screen" field; truncated to 4
     here to stay legible without crowding."""
@@ -343,9 +343,9 @@ def walk(iface: TCPInterface, node: str, from_stage: str, to_stage: str, speed_m
     print(f"crew_sim: {node} arrived at {to_stage} ({lat1:.6f}, {lon1:.6f})")
 
 
-def pulse(iface: TCPInterface, node: str, dest: str = "^all") -> None:
-    iface.sendData(ff_encode_pulse(), destinationId=dest, portNum=FF_PORTNUM, wantAck=False)
-    print(f"crew_sim: {node} sent PULSE to {dest}")
+def flare(iface: TCPInterface, node: str, dest: str = "^all", dur_s: int = 300) -> None:
+    iface.sendData(ff_encode_flare(dur_s), destinationId=dest, portNum=FF_PORTNUM, wantAck=True)
+    print(f"crew_sim: {node} sent FLARE (dur={dur_s}s) to {dest}")
 
 
 def send_status(iface: TCPInterface, node: str, text: str, dest: str = "^all") -> None:
@@ -376,9 +376,10 @@ def main() -> None:
     walk_p.add_argument("--speed", type=float, default=1.2, help="m/s, default 1.2 (a brisk walk)")
     walk_p.add_argument("--update-hz", type=float, default=1.0, dest="update_hz")
 
-    pulse_p = sub.add_parser("pulse", help="send a firefly PULSE (portnum 269)")
-    pulse_p.add_argument("--from", required=True, dest="node")
-    pulse_p.add_argument("--to", default="^all")
+    flare_p = sub.add_parser("flare", help="send a firefly FLARE (portnum 269)")
+    flare_p.add_argument("--from", required=True, dest="node")
+    flare_p.add_argument("--to", default="^all")
+    flare_p.add_argument("--dur", type=int, default=300, dest="dur_s", help="seconds, default 300")
 
     status_p = sub.add_parser("status", help="send a firefly STATUS (portnum 269)")
     status_p.add_argument("--from", required=True, dest="node")
@@ -406,8 +407,8 @@ def main() -> None:
     try:
         if args.cmd == "walk":
             walk(iface, args.node, args.from_stage, args.to_stage, args.speed, args.update_hz)
-        elif args.cmd == "pulse":
-            pulse(iface, args.node, args.to)
+        elif args.cmd == "flare":
+            flare(iface, args.node, args.to, args.dur_s)
         elif args.cmd == "status":
             send_status(iface, args.node, args.text, args.to)
         elif args.cmd == "text":

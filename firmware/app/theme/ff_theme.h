@@ -261,7 +261,7 @@ static inline uint32_t ff_theme_crew_color(uint8_t color_idx, bool colorblind)
 #define FF_THEME_FONT_HEADLINE (&lv_font_montserrat_20) /* NOFIX/NOSEL primary message */
 /* S24 slice c bugfix (scr_inbox.c: "the thread view looks a bit
  * smashed; the messages could be larger"). The Signals thread's own
- * message-BODY text (bubble text, RALLY place name, the 1:1 pulse/flare
+ * message-BODY text (bubble text, RALLY place name, the 1:1 flare
  * callout sentence) — design canvas ThreadGroup.dc.html / ThreadPerson.dc.html
  * put this at 15px, distinctly larger than the 12px sender name / 10px
  * mono age around it. Rounds UP to 16 (this header's own never-round-down

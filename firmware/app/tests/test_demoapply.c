@@ -93,8 +93,11 @@ void test_S23c_idx_out_of_range_invalid(void)
 }
 
 /* S23c_AC_kind_dispatch — each SIGNAL feed kind maps to the right inbound
- * seam + proto type; TEXT/STATUS/RALLY carry a resolved string, PULSE/FLARE
- * carry none. */
+ * seam + proto type; TEXT/STATUS/RALLY carry a resolved string, FLARE
+ * carries none. (2026-09-02: FEED_PULSE/FF_PROTO_TYPE_PULSE were a fifth
+ * case here; retired, see ff_feed.h / docs/specs/S04's Amendments — the
+ * generator never draws it any more, see ff_demofeed.h's
+ * FF_DEMOFEED_KIND_COUNT.) */
 void test_S23c_kind_dispatch(void)
 {
     uint8_t n = 0;
@@ -119,13 +122,7 @@ void test_S23c_kind_dispatch(void)
     TEST_ASSERT_EQUAL_INT(FF_PROTO_TYPE_RALLY, p.proto_type);
     TEST_ASSERT_NULL(p.text); /* a rally's place name is festpack-sourced (S23 AC5), not text_ref */
 
-    ff_demo_event_t pl = mk_signal(3, FEED_PULSE, 0);
-    TEST_ASSERT_TRUE(ff_demo_apply_plan(&pl, ids, n, &p));
-    TEST_ASSERT_EQUAL_INT(FF_DEMO_DISPATCH_PRIVATE, p.dispatch);
-    TEST_ASSERT_EQUAL_INT(FF_PROTO_TYPE_PULSE, p.proto_type);
-    TEST_ASSERT_NULL(p.text);
-
-    ff_demo_event_t fl = mk_signal(4, FEED_FLARE, 0);
+    ff_demo_event_t fl = mk_signal(3, FEED_FLARE, 0);
     TEST_ASSERT_TRUE(ff_demo_apply_plan(&fl, ids, n, &p));
     TEST_ASSERT_EQUAL_INT(FF_DEMO_DISPATCH_PRIVATE, p.dispatch);
     TEST_ASSERT_EQUAL_INT(FF_PROTO_TYPE_FLARE, p.proto_type);

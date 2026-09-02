@@ -8,7 +8,7 @@
     "target_kind": "whole_crew",
     "convs": [
       {"conv": "crew", "unread": 0, "item_count": 4,
-       "preview_kind": "pulse", "preview_dir": "broadcast", "preview_age_ms": 60000,
+       "preview_kind": "flare", "preview_dir": "broadcast", "preview_age_ms": 60000,
        "preview_from": "DANA"},
       {"conv": "member", "node_id": 111, "name": "DANA", "initial": "D", "color_idx": 0,
        "presence": "seen", "presence_age_ms": 60000},
@@ -27,7 +27,7 @@
       {"kind": "rally", "dir": "broadcast", "node_id": 112, "from": "RILEY", "initial": "R",
        "color_idx": 6, "text": "Main Stage", "age_ms": 360000},
       {"kind": "text", "dir": "out", "text": "meet at the totem after?", "age_ms": 240000},
-      {"kind": "pulse", "dir": "broadcast", "node_id": 111, "from": "DANA", "initial": "D",
+      {"kind": "flare", "dir": "broadcast", "node_id": 111, "from": "DANA", "initial": "D",
        "color_idx": 0, "age_ms": 60000}
     ]
   }

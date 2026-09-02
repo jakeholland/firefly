@@ -26,7 +26,7 @@
  *     fact (FEED_DIR_OUT = mine, amber, right; everything else theirs,
  *     dark, left; UNKNOWN renders like inbound but never claims an
  *     address), kind-specific rows (text/status bubbles, rally callout
- *     with place, pulse/flare one-liners), sender identity only where
+ *     with place, flare one-liners), sender identity only where
  *     the model joined one. CREW header carries the `N CREW` roster
  *     fact; a 1:1 header carries the honest presence line and the
  *     quick-chip strip (OMW / IN 5 MIN emit FF_INTENT_CANNED_REPLY;

@@ -10,7 +10,7 @@
     "target_node": 111,
     "convs": [
       {"conv": "crew", "unread": 0, "item_count": 4,
-       "preview_kind": "pulse", "preview_dir": "broadcast", "preview_age_ms": 60000,
+       "preview_kind": "flare", "preview_dir": "broadcast", "preview_age_ms": 60000,
        "preview_from": "DANA"},
       {"conv": "member", "node_id": 111, "name": "DANA", "initial": "D", "color_idx": 0,
        "presence": "seen", "presence_age_ms": 60000},

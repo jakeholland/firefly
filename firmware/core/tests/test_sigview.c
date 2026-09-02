@@ -142,7 +142,7 @@ static void S22_AC1_recent_joins_from_node_to_correct_identity(void)
     add_member(&c, 7001, "Alice", 'A', 2, true); /* slot 0 */
     add_member(&c, 7002, "Bob", 'B', 5, true);   /* slot 1 */
 
-    ff_feed_item_t it = make_item(FEED_PULSE, 7002, 500, NULL, true);
+    ff_feed_item_t it = make_item(FEED_TEXT, 7002, 500, NULL, true);
     ff_feed_push(&f, &it);
 
     ff_sigview_t v;
@@ -156,7 +156,7 @@ static void S22_AC1_recent_joins_from_node_to_correct_identity(void)
     TEST_ASSERT_EQUAL_STRING("Bob", r->name);
     TEST_ASSERT_EQUAL_CHAR('B', r->initial);
     TEST_ASSERT_EQUAL_UINT8(5, r->color_idx);
-    TEST_ASSERT_EQUAL(FEED_PULSE, r->feed_kind);
+    TEST_ASSERT_EQUAL(FEED_TEXT, r->feed_kind);
     TEST_ASSERT_TRUE(r->unread);
 }
 

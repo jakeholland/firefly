@@ -62,7 +62,9 @@ Seed via the real core APIs so freshness/close-range/no-fix all render honestly:
 So Radar shows the full spread: live arrow, close-range rings, stale, no-fix.
 
 **Signals feed** (a few, via ff_feed):
-- pulse from **KEV**: "at bass hollow!"
+- two statuses from **KEV**: "at bass hollow!" / "who's got water?" (2026-09-02:
+  the second used to be a PULSE — retired, see S04's Amendments — replaced
+  with a second status so the seed keeps its item count)
 - a **rally point** dropped at **The Firefly Tower**
 - canned reply from **MAYA**: "omw"
 - a message: "lineup is stacked tonight 🔥" (emoji only if the font has it; else plain)

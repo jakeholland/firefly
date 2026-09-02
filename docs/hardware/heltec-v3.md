@@ -80,7 +80,7 @@ attached isn't reproducible.
 
 ## Use 1 — a real two-node mesh (closes the `xfail` gap)
 
-Two `xfail(strict=False)` end-to-end tests, `test_pulse_reaches_feed` and
+Two `xfail(strict=False)` end-to-end tests, `test_flare_reaches_feed` (renamed 2026-09-02 from `test_pulse_reaches_feed` — PULSE is retired, see docs/specs/S04-firefly-protocol.md's Amendments) and
 `test_text_roundtrip`, are blocked for a reason that has nothing to do with
 our code: a single `meshtasticd` accepts only one client connection at a time,
 so there's no window in which `ffsim` can observe a transient packet. (The

@@ -139,32 +139,37 @@ static void rig_pair(test_rig_t *r, uint32_t node_id)
 #define SELF_NODE     0x5E1Fu /* our own node id, for S24 direction tests */
 
 /* ------------------------------------------------------------------- */
-/* AC4 — PULSE from paired node -> feed item + haptic; unpaired -> drop */
+/* AC4 — FLARE from paired node -> feed item + haptic; unpaired -> drop */
+/* (2026-09-02: this group used to exercise PULSE — retired, see          */
+/* ff_feed.h / docs/specs/S04's Amendments. FLARE is the drop-in stand-in: */
+/* same empty wire body, same "generic feed-representable private type"   */
+/* shape these tests actually exercise — none of them test PULSE-specific */
+/* wording or rendering, which lives in scr_inbox.c's own tests.)         */
 /* ------------------------------------------------------------------- */
 
-static void S08_AC4_pulse_from_paired_node_pushes_feed_item_and_fires_haptic(void)
+static void S08_AC4_flare_from_paired_node_pushes_feed_item_and_fires_haptic(void)
 {
     test_rig_t r;
     rig_init(&r);
     rig_pair(&r, PAIRED_NODE);
     r.fc.t = 5000;
 
-    uint8_t buf[FF_PROTO_ENVELOPE_LEN];
-    int n = ff_proto_encode_pulse(buf, sizeof(buf));
+    uint8_t buf[FF_PROTO_ENVELOPE_LEN + 2];
+    int n = ff_proto_encode_flare(buf, sizeof(buf), 300u);
     TEST_ASSERT_TRUE(n > 0);
 
     ff_wiring_on_private(&r.w, PAIRED_NODE, MC_ADDR_BROADCAST, FF_PORTNUM, buf, (size_t)n);
 
     TEST_ASSERT_EQUAL_UINT8(1, ff_feed_count(&r.feed));
     ff_feed_item_t const *it = ff_feed_at(&r.feed, 0);
-    TEST_ASSERT_EQUAL(FEED_PULSE, it->kind);
+    TEST_ASSERT_EQUAL(FEED_FLARE, it->kind);
     TEST_ASSERT_EQUAL_UINT32(PAIRED_NODE, it->from_node);
     TEST_ASSERT_EQUAL_UINT32(5000, it->at_ms);
     TEST_ASSERT_TRUE(it->unread);
     TEST_ASSERT_EQUAL_INT(1, r.haptic.count);
 }
 
-static void S08_AC4_pulse_from_unpaired_node_is_dropped(void)
+static void S08_AC4_flare_from_unpaired_node_is_dropped(void)
 {
     test_rig_t r;
     rig_init(&r);
@@ -172,8 +177,8 @@ static void S08_AC4_pulse_from_unpaired_node_is_dropped(void)
      * node has no crew slot at all), not trusted for feed purposes. */
     r.fc.t = 7000;
 
-    uint8_t buf[FF_PROTO_ENVELOPE_LEN];
-    int n = ff_proto_encode_pulse(buf, sizeof(buf));
+    uint8_t buf[FF_PROTO_ENVELOPE_LEN + 2];
+    int n = ff_proto_encode_flare(buf, sizeof(buf), 300u);
 
     ff_wiring_on_private(&r.w, UNPAIRED_NODE, MC_ADDR_BROADCAST, FF_PORTNUM, buf, (size_t)n);
 
@@ -189,7 +194,7 @@ static void S08_AC4_pulse_from_unpaired_node_is_dropped(void)
     TEST_ASSERT_EQUAL_UINT32(7000, he->last_heard_ms);
 }
 
-static void S08_AC4_pulse_from_node_with_no_roster_room_is_dropped(void)
+static void S08_AC4_flare_from_node_with_no_roster_room_is_dropped(void)
 {
     /* Fill the crew roster to FF_CREW_MAX with OTHER node ids (directly,
      * simulating "the roster is already full for unrelated reasons"),
@@ -205,8 +210,8 @@ static void S08_AC4_pulse_from_node_with_no_roster_room_is_dropped(void)
     }
     TEST_ASSERT_EQUAL_UINT8(FF_CREW_MAX, r.crew.count);
 
-    uint8_t buf[FF_PROTO_ENVELOPE_LEN];
-    int n = ff_proto_encode_pulse(buf, sizeof(buf));
+    uint8_t buf[FF_PROTO_ENVELOPE_LEN + 2];
+    int n = ff_proto_encode_flare(buf, sizeof(buf), 300u);
 
     ff_wiring_on_private(&r.w, 0xABCDu, MC_ADDR_BROADCAST, FF_PORTNUM, buf, (size_t)n);
 
@@ -214,6 +219,65 @@ static void S08_AC4_pulse_from_node_with_no_roster_room_is_dropped(void)
     TEST_ASSERT_EQUAL_INT(0, r.haptic.count);
     TEST_ASSERT_EQUAL_UINT8(FF_CREW_MAX, r.crew.count); /* unchanged — no upsert attempted */
     TEST_ASSERT_TRUE(ff_heard_contains(&r.heard, 0xABCDu)); /* still surfaced via the heard list */
+}
+
+/* ------------------------------------------------------------------- */
+/* 2026-09-02 — RESERVED_01 (retired PULSE): a well-formed frame from an  */
+/* old puck build decodes successfully but is honestly nothing — no feed  */
+/* item, no haptic, no roster/heard interaction. Bench-visible instead    */
+/* via ff_wiring_retired_frame_count. See ff_proto.h's RESERVED_01        */
+/* section and ff_wiring.h's header note for the full ruling.             */
+/* ------------------------------------------------------------------- */
+
+static void S24_AC_reserved01_frame_is_dropped_no_feed_item_counter_bumps(void)
+{
+    test_rig_t r;
+    rig_init(&r);
+    rig_pair(&r, PAIRED_NODE);
+
+    uint8_t buf[] = {(uint8_t)FF_PROTO_VERSION, (uint8_t)FF_PROTO_TYPE_RESERVED_01};
+    TEST_ASSERT_EQUAL_UINT32(0, ff_wiring_retired_frame_count(&r.w));
+
+    ff_wiring_on_private(&r.w, PAIRED_NODE, MC_ADDR_BROADCAST, FF_PORTNUM, buf, sizeof(buf));
+
+    TEST_ASSERT_EQUAL_UINT8(0, ff_feed_count(&r.feed)); /* no feed item */
+    TEST_ASSERT_EQUAL_INT(0, r.haptic.count);            /* no haptic */
+    TEST_ASSERT_EQUAL_UINT32(1, ff_wiring_retired_frame_count(&r.w)); /* bench-visible instead */
+
+    /* A second one from an UNPAIRED sender: still dropped, still bumps
+     * the counter — the counter is diagnostic-only and does not gate on
+     * trust (nothing trust-sensitive happens either way: no feed push,
+     * no roster/heard interaction). */
+    ff_wiring_on_private(&r.w, UNPAIRED_NODE, MC_ADDR_BROADCAST, FF_PORTNUM, buf, sizeof(buf));
+    TEST_ASSERT_EQUAL_UINT8(0, ff_feed_count(&r.feed));
+    TEST_ASSERT_EQUAL_UINT32(2, ff_wiring_retired_frame_count(&r.w));
+}
+
+/* NULL w is a safe no-op, 0. */
+static void S24_AC_reserved01_count_null_w_is_zero(void)
+{
+    TEST_ASSERT_EQUAL_UINT32(0, ff_wiring_retired_frame_count(NULL));
+}
+
+/* Mutation-check anchor: if a future edit re-enables feeding RESERVED_01
+ * (e.g. by falling through to the FLARE/RALLY-style push instead of
+ * incrementing the counter), this must fail — proving the drop is real,
+ * not just "the test never looked". */
+static void S24_AC_reserved01_frame_never_reaches_feed_even_after_other_traffic(void)
+{
+    test_rig_t r;
+    rig_init(&r);
+    rig_pair(&r, PAIRED_NODE);
+
+    char const *msg = "hi";
+    ff_wiring_on_text(&r.w, PAIRED_NODE, MC_ADDR_BROADCAST, msg, strlen(msg));
+    TEST_ASSERT_EQUAL_UINT8(1, ff_feed_count(&r.feed));
+
+    uint8_t buf[] = {(uint8_t)FF_PROTO_VERSION, (uint8_t)FF_PROTO_TYPE_RESERVED_01};
+    ff_wiring_on_private(&r.w, PAIRED_NODE, MC_ADDR_BROADCAST, FF_PORTNUM, buf, sizeof(buf));
+
+    TEST_ASSERT_EQUAL_UINT8(1, ff_feed_count(&r.feed)); /* still just the text */
+    TEST_ASSERT_EQUAL(FEED_TEXT, ff_feed_at(&r.feed, 0)->kind);
 }
 
 /* ------------------------------------------------------------------- */
@@ -228,13 +292,14 @@ static void S08_AC4_flood_of_unknown_senders_does_not_exhaust_roster_or_block_pa
     rig_init(&r);
 
     /* Flood: well past BOTH FF_CREW_MAX (8) and FF_HEARD_MAX (16) distinct
-     * never-before-heard node ids, each sending one PULSE — large enough
-     * to prove two separate things at once: the (non-evicting) crew
-     * roster never grows at all, AND the heard list, which SHOULD grow,
-     * stays genuinely bounded via real eviction rather than "happened to
-     * be big enough to hold this test's flood". */
-    uint8_t buf[FF_PROTO_ENVELOPE_LEN];
-    int n = ff_proto_encode_pulse(buf, sizeof(buf));
+     * never-before-heard node ids, each sending one FLARE (2026-09-02: was
+     * PULSE, retired — see this file's earlier note) — large enough to
+     * prove two separate things at once: the (non-evicting) crew roster
+     * never grows at all, AND the heard list, which SHOULD grow, stays
+     * genuinely bounded via real eviction rather than "happened to be big
+     * enough to hold this test's flood". */
+    uint8_t buf[FF_PROTO_ENVELOPE_LEN + 2];
+    int n = ff_proto_encode_flare(buf, sizeof(buf), 300u);
     TEST_ASSERT_TRUE(n > 0);
 
     enum { FLOOD_N = FF_HEARD_MAX + 5 };
@@ -277,8 +342,8 @@ static void S08_AC4_wrong_portnum_is_ignored(void)
     rig_init(&r);
     rig_pair(&r, PAIRED_NODE);
 
-    uint8_t buf[FF_PROTO_ENVELOPE_LEN];
-    int n = ff_proto_encode_pulse(buf, sizeof(buf));
+    uint8_t buf[FF_PROTO_ENVELOPE_LEN + 2];
+    int n = ff_proto_encode_flare(buf, sizeof(buf), 300u);
 
     ff_wiring_on_private(&r.w, PAIRED_NODE, MC_ADDR_BROADCAST, FF_PORTNUM + 1, buf, (size_t)n);
 
@@ -405,14 +470,14 @@ static void S08_AC4_text_from_unpaired_node_is_dropped(void)
 /* AC6 — canned reply destination + payload.                            */
 /* ------------------------------------------------------------------- */
 
-static void S08_AC6_canned_omw_from_pulse_context_sends_to_that_sender(void)
+static void S08_AC6_canned_omw_from_flare_context_sends_to_that_sender(void)
 {
     test_rig_t r;
     rig_init(&r);
 
     ff_feed_item_t reply_ctx;
     memset(&reply_ctx, 0, sizeof(reply_ctx));
-    reply_ctx.kind = FEED_PULSE;
+    reply_ctx.kind = FEED_FLARE; /* any context kind — OMW/5MIN don't care */
     reply_ctx.from_node = 0x777u;
 
     int rc = ff_wiring_send_canned_reply(&r.w, FF_WIRING_REPLY_OMW, &reply_ctx);
@@ -439,31 +504,6 @@ static void S08_AC6_canned_5min_sends_correct_text_to_that_sender(void)
     TEST_ASSERT_EQUAL_INT(0, rc);
     TEST_ASSERT_EQUAL_UINT32(0x42u, r.sender_state.last_dest);
     TEST_ASSERT_EQUAL_STRING("5 min", r.sender_state.last_text);
-}
-
-static void S08_AC6_canned_pulse_sends_encoded_pulse_packet(void)
-{
-    test_rig_t r;
-    rig_init(&r);
-
-    ff_feed_item_t reply_ctx;
-    memset(&reply_ctx, 0, sizeof(reply_ctx));
-    reply_ctx.from_node = 0x99u;
-
-    int rc = ff_wiring_send_canned_reply(&r.w, FF_WIRING_REPLY_PULSE, &reply_ctx);
-
-    TEST_ASSERT_EQUAL_INT(0, rc);
-    TEST_ASSERT_TRUE(r.sender_state.used_send_private);
-    TEST_ASSERT_EQUAL_UINT32(0x99u, r.sender_state.last_dest);
-
-    /* Verify by independent decode, not by comparing raw bytes against
-     * ff_proto_encode_pulse's own output (that would only prove "wiring
-     * called the encoder", not "the encoder produced a real PULSE
-     * packet" — an encoder bug and this test could both be wrong the
-     * same way). */
-    ff_proto_msg_t decoded;
-    int type = ff_proto_decode(r.sender_state.last_payload, r.sender_state.last_payload_len, &decoded);
-    TEST_ASSERT_EQUAL(FF_PROTO_TYPE_PULSE, type);
 }
 
 static void S08_AC6_canned_reply_without_context_broadcasts(void)
@@ -527,51 +567,52 @@ static void S24_AC1_specific_address_without_self_match_stays_unknown(void)
     TEST_ASSERT_EQUAL(FEED_DIR_UNKNOWN, ff_feed_at(&r.feed, 0)->dir);
 }
 
-/* Issue #123 — the private inbound path (PULSE et al) now carries `to`
- * and classifies EXACTLY like on_text. The four truth-table rows follow;
- * they replace the pre-#123 pin `..._private_path_direction_is_unknown_
- * not_guessed` (which asserted the whole path was UNKNOWN back when
- * mc_events_t.on_private had no `to`). */
+/* Issue #123 — the private inbound path (FLARE et al — this group used
+ * PULSE before its 2026-09-02 retirement) now carries `to` and classifies
+ * EXACTLY like on_text. The four truth-table rows follow; they replace
+ * the pre-#123 pin `..._private_path_direction_is_unknown_not_guessed`
+ * (which asserted the whole path was UNKNOWN back when mc_events_t.
+ * on_private had no `to`). */
 
-static int encode_pulse_checked(uint8_t *buf, size_t cap)
+static int encode_flare_checked(uint8_t *buf, size_t cap)
 {
-    int n = ff_proto_encode_pulse(buf, cap);
+    int n = ff_proto_encode_flare(buf, cap, 300u);
     TEST_ASSERT_TRUE(n > 0);
     return n;
 }
 
-/* Row 1: a whole-crew pulse is a broadcast on the wire and MUST stay
+/* Row 1: a whole-crew flare is a broadcast on the wire and MUST stay
  * BROADCAST (the issue's core caution — 1:1 support must not steal
  * crew-wide traffic into a 1:1 thread). */
-static void S24_AC1_broadcast_pulse_records_dir_broadcast(void)
+static void S24_AC1_broadcast_flare_records_dir_broadcast(void)
 {
     test_rig_t r;
     rig_init(&r);
     rig_pair(&r, PAIRED_NODE);
     ff_wiring_set_self_node(&r.w, SELF_NODE);
 
-    uint8_t buf[FF_PROTO_ENVELOPE_LEN];
-    int n = encode_pulse_checked(buf, sizeof(buf));
+    uint8_t buf[FF_PROTO_ENVELOPE_LEN + 2];
+    int n = encode_flare_checked(buf, sizeof(buf));
     ff_wiring_on_private(&r.w, PAIRED_NODE, MC_ADDR_BROADCAST, FF_PORTNUM, buf, (size_t)n);
 
     TEST_ASSERT_EQUAL_UINT8(1, ff_feed_count(&r.feed));
     TEST_ASSERT_EQUAL(FEED_DIR_BROADCAST, ff_feed_at(&r.feed, 0)->dir);
 }
 
-/* Row 2: a pulse addressed to OUR OWN id (self known) is DIRECT.
+/* Row 2: a flare addressed to OUR OWN id (self known) is DIRECT.
  * Proxy-check: SELF_NODE is a specific address, not the broadcast one,
  * so a classifier that ignores self-id entirely (returns UNKNOWN for
  * every non-broadcast, or never consults w->self_node) fails here —
  * DIRECT is only reachable through the self-id comparison. */
-static void S24_AC1_pulse_addressed_to_me_records_dir_direct(void)
+static void S24_AC1_flare_addressed_to_me_records_dir_direct(void)
 {
     test_rig_t r;
     rig_init(&r);
     rig_pair(&r, PAIRED_NODE);
     ff_wiring_set_self_node(&r.w, SELF_NODE);
 
-    uint8_t buf[FF_PROTO_ENVELOPE_LEN];
-    int n = encode_pulse_checked(buf, sizeof(buf));
+    uint8_t buf[FF_PROTO_ENVELOPE_LEN + 2];
+    int n = encode_flare_checked(buf, sizeof(buf));
     ff_wiring_on_private(&r.w, PAIRED_NODE, SELF_NODE, FF_PORTNUM, buf, (size_t)n);
 
     TEST_ASSERT_EQUAL_UINT8(1, ff_feed_count(&r.feed));
@@ -580,15 +621,15 @@ static void S24_AC1_pulse_addressed_to_me_records_dir_direct(void)
 
 /* Row 3: addressed to some OTHER node — we cannot attest "addressed to
  * me", so UNKNOWN (never guessed DIRECT, never guessed BROADCAST). */
-static void S24_AC1_pulse_addressed_to_other_node_stays_unknown(void)
+static void S24_AC1_flare_addressed_to_other_node_stays_unknown(void)
 {
     test_rig_t r;
     rig_init(&r);
     rig_pair(&r, PAIRED_NODE);
     ff_wiring_set_self_node(&r.w, SELF_NODE);
 
-    uint8_t buf[FF_PROTO_ENVELOPE_LEN];
-    int n = encode_pulse_checked(buf, sizeof(buf));
+    uint8_t buf[FF_PROTO_ENVELOPE_LEN + 2];
+    int n = encode_flare_checked(buf, sizeof(buf));
     ff_wiring_on_private(&r.w, PAIRED_NODE, 0x333u, FF_PORTNUM, buf, (size_t)n);
 
     TEST_ASSERT_EQUAL_UINT8(1, ff_feed_count(&r.feed));
@@ -598,15 +639,15 @@ static void S24_AC1_pulse_addressed_to_other_node_stays_unknown(void)
 /* Row 4: addressed to what will turn out to be our id, but BEFORE
  * my_info taught us who we are — UNKNOWN, because at receipt this
  * device could not attest the match. */
-static void S24_AC1_pulse_before_my_info_stays_unknown(void)
+static void S24_AC1_flare_before_my_info_stays_unknown(void)
 {
     test_rig_t r;
     rig_init(&r);
     rig_pair(&r, PAIRED_NODE);
     /* deliberately NO ff_wiring_set_self_node */
 
-    uint8_t buf[FF_PROTO_ENVELOPE_LEN];
-    int n = encode_pulse_checked(buf, sizeof(buf));
+    uint8_t buf[FF_PROTO_ENVELOPE_LEN + 2];
+    int n = encode_flare_checked(buf, sizeof(buf));
     ff_wiring_on_private(&r.w, PAIRED_NODE, SELF_NODE, FF_PORTNUM, buf, (size_t)n);
 
     TEST_ASSERT_EQUAL_UINT8(1, ff_feed_count(&r.feed));
@@ -655,10 +696,10 @@ static void S24_AC1_canned_reply_pushes_outgoing_item(void)
     TEST_ASSERT_EQUAL_INT(0, r.haptic.count);                   /* ...and no buzz */
 
     /* A broadcast reply (no context) maps to the core-side whole-crew
-     * sentinel to_node == 0, and a PULSE reply records kind PULSE. */
-    TEST_ASSERT_EQUAL_INT(0, ff_wiring_send_canned_reply(&r.w, FF_WIRING_REPLY_PULSE, NULL));
+     * sentinel to_node == 0. */
+    TEST_ASSERT_EQUAL_INT(0, ff_wiring_send_canned_reply(&r.w, FF_WIRING_REPLY_5MIN, NULL));
     it = ff_feed_at(&r.feed, 0);
-    TEST_ASSERT_EQUAL(FEED_PULSE, it->kind);
+    TEST_ASSERT_EQUAL(FEED_TEXT, it->kind);
     TEST_ASSERT_EQUAL(FEED_DIR_OUT, it->dir);
     TEST_ASSERT_EQUAL_UINT32(0u, it->to_node);
 }
@@ -708,17 +749,16 @@ static void S24_AC4_canned_reply_to_sends_to_explicit_dest(void)
     TEST_ASSERT_EQUAL_STRING("5 min", it->text);
     TEST_ASSERT_FALSE(it->unread);
 
-    /* PULSE to an explicit broadcast dest: real encoded packet (verified
-     * by independent decode), and the outgoing item records the core
-     * whole-crew sentinel to_node 0. */
-    TEST_ASSERT_EQUAL_INT(0, ff_wiring_send_canned_reply_to(&r.w, FF_WIRING_REPLY_PULSE, MC_ADDR_BROADCAST));
-    TEST_ASSERT_TRUE(r.sender_state.used_send_private);
+    /* OMW to an explicit broadcast dest: the outgoing item records the
+     * core whole-crew sentinel to_node 0 (2026-09-02: this used to be a
+     * PULSE case, verified by independent decode against
+     * FF_PROTO_TYPE_PULSE — retired along with the rest of the canned-
+     * reply PULSE seam, see ff_wiring.h's header note). */
+    TEST_ASSERT_EQUAL_INT(0, ff_wiring_send_canned_reply_to(&r.w, FF_WIRING_REPLY_OMW, MC_ADDR_BROADCAST));
+    TEST_ASSERT_TRUE(r.sender_state.used_send_text);
     TEST_ASSERT_EQUAL_UINT32(MC_ADDR_BROADCAST, r.sender_state.last_dest);
-    ff_proto_msg_t decoded;
-    TEST_ASSERT_EQUAL(FF_PROTO_TYPE_PULSE,
-                      ff_proto_decode(r.sender_state.last_payload, r.sender_state.last_payload_len, &decoded));
     it = ff_feed_at(&r.feed, 0);
-    TEST_ASSERT_EQUAL(FEED_PULSE, it->kind);
+    TEST_ASSERT_EQUAL(FEED_TEXT, it->kind);
     TEST_ASSERT_EQUAL(FEED_DIR_OUT, it->dir);
     TEST_ASSERT_EQUAL_UINT32(0u, it->to_node);
 }
@@ -738,10 +778,14 @@ int main(void)
 {
     UNITY_BEGIN();
 
-    RUN_TEST(S08_AC4_pulse_from_paired_node_pushes_feed_item_and_fires_haptic);
-    RUN_TEST(S08_AC4_pulse_from_unpaired_node_is_dropped);
-    RUN_TEST(S08_AC4_pulse_from_node_with_no_roster_room_is_dropped);
+    RUN_TEST(S08_AC4_flare_from_paired_node_pushes_feed_item_and_fires_haptic);
+    RUN_TEST(S08_AC4_flare_from_unpaired_node_is_dropped);
+    RUN_TEST(S08_AC4_flare_from_node_with_no_roster_room_is_dropped);
     RUN_TEST(S08_AC4_flood_of_unknown_senders_does_not_exhaust_roster_or_block_pairing);
+
+    RUN_TEST(S24_AC_reserved01_frame_is_dropped_no_feed_item_counter_bumps);
+    RUN_TEST(S24_AC_reserved01_count_null_w_is_zero);
+    RUN_TEST(S24_AC_reserved01_frame_never_reaches_feed_even_after_other_traffic);
 
     RUN_TEST(S08_AC4_wrong_portnum_is_ignored);
     RUN_TEST(S08_AC4_malformed_payload_is_ignored);
@@ -754,18 +798,17 @@ int main(void)
     RUN_TEST(S08_AC4_text_from_paired_node_pushes_feed_text_item);
     RUN_TEST(S08_AC4_text_from_unpaired_node_is_dropped);
 
-    RUN_TEST(S08_AC6_canned_omw_from_pulse_context_sends_to_that_sender);
+    RUN_TEST(S08_AC6_canned_omw_from_flare_context_sends_to_that_sender);
     RUN_TEST(S08_AC6_canned_5min_sends_correct_text_to_that_sender);
-    RUN_TEST(S08_AC6_canned_pulse_sends_encoded_pulse_packet);
     RUN_TEST(S08_AC6_canned_reply_without_context_broadcasts);
 
     RUN_TEST(S24_AC1_broadcast_text_records_dir_broadcast);
     RUN_TEST(S24_AC1_text_addressed_to_me_records_dir_direct);
     RUN_TEST(S24_AC1_specific_address_without_self_match_stays_unknown);
-    RUN_TEST(S24_AC1_broadcast_pulse_records_dir_broadcast);
-    RUN_TEST(S24_AC1_pulse_addressed_to_me_records_dir_direct);
-    RUN_TEST(S24_AC1_pulse_addressed_to_other_node_stays_unknown);
-    RUN_TEST(S24_AC1_pulse_before_my_info_stays_unknown);
+    RUN_TEST(S24_AC1_broadcast_flare_records_dir_broadcast);
+    RUN_TEST(S24_AC1_flare_addressed_to_me_records_dir_direct);
+    RUN_TEST(S24_AC1_flare_addressed_to_other_node_stays_unknown);
+    RUN_TEST(S24_AC1_flare_before_my_info_stays_unknown);
     RUN_TEST(S24_AC1_direct_text_from_unpaired_sender_still_dropped);
     RUN_TEST(S24_AC1_canned_reply_pushes_outgoing_item);
     RUN_TEST(S24_AC1_refused_send_pushes_no_outgoing_item);

@@ -76,10 +76,9 @@ static void wiring_push_if_paired(ff_wiring_ctx_t *w, uint32_t from, ff_feed_kin
  *    this device attest "addressed to me", and DIRECT is exactly that
  *    claim.
  * One classifier shared by the text and private paths (issue #123
- * resolved: mc_events_t.on_private now carries `to`, so a 1:1 pulse or
- * rally classifies DIRECT the same way a 1:1 text does — and a
- * whole-crew pulse stays BROADCAST, because that is what its `to`
- * says). */
+ * resolved: mc_events_t.on_private now carries `to`, so a 1:1 rally
+ * classifies DIRECT the same way a 1:1 text does — and a whole-crew
+ * rally stays BROADCAST, because that is what its `to` says). */
 static ff_feed_dir_t wiring_classify_dir(ff_wiring_ctx_t const *w, uint32_t to)
 {
     if (to == MC_ADDR_BROADCAST) return FEED_DIR_BROADCAST;
@@ -100,9 +99,6 @@ void ff_wiring_on_private(void *user, uint32_t from, uint32_t to, uint32_t portn
     ff_feed_dir_t const dir = wiring_classify_dir(w, to);
 
     switch (type) {
-    case FF_PROTO_TYPE_PULSE:
-        wiring_push_if_paired(w, from, FEED_PULSE, dir, NULL, 0);
-        break;
     case FF_PROTO_TYPE_FLARE:
         wiring_push_if_paired(w, from, FEED_FLARE, dir, NULL, 0);
         break;
@@ -114,6 +110,17 @@ void ff_wiring_on_private(void *user, uint32_t from, uint32_t to, uint32_t portn
         wiring_push_if_paired(w, from, FEED_STATUS, dir, msg.body.status.text,
                               strlen(msg.body.status.text));
         break;
+    case FF_PROTO_TYPE_RESERVED_01:
+        /* Retired PULSE (0x01), 2026-09-02 — a well-formed frame from an
+         * old puck build, not malformed input (ff_proto_decode already
+         * told us that by returning a positive type here, not 0). Still
+         * honestly nothing: no feed item, no notify/banner. Bumped so a
+         * dropped retired frame stays bench-visible without a feed item
+         * or a log call (see ff_wiring.h's retired_frame_count doc).
+         * Presence/"heard" is unaffected — see this file's/header's note
+         * on mc_events_t.on_rx_meta firing independent of this switch. */
+        w->retired_frame_count++;
+        break;
     case FF_PROTO_TYPE_FLARE_END:
     case FF_PROTO_TYPE_RALLY_CLEAR:
     case FF_PROTO_TYPE_ACK_PING:
@@ -122,6 +129,11 @@ void ff_wiring_on_private(void *user, uint32_t from, uint32_t to, uint32_t portn
          * type == 0) — not feed items, see ff_wiring.h's header note. */
         break;
     }
+}
+
+uint32_t ff_wiring_retired_frame_count(ff_wiring_ctx_t const *w)
+{
+    return (w == NULL) ? 0u : w->retired_frame_count;
 }
 
 void ff_wiring_on_text(void *user, uint32_t from, uint32_t to, char const *utf8, size_t len)
@@ -233,14 +245,6 @@ int ff_wiring_send_canned_reply_to(ff_wiring_ctx_t *w, ff_wiring_canned_reply_t 
         text = "5 min";
         rc = w->sender.send_text(w->sender.ctx, dest, text);
         break;
-    case FF_WIRING_REPLY_PULSE: {
-        uint8_t buf[FF_PROTO_ENVELOPE_LEN];
-        int n = ff_proto_encode_pulse(buf, sizeof(buf));
-        if (n < 0) return -1;
-        kind = FEED_PULSE;
-        rc = w->sender.send_private(w->sender.ctx, dest, buf, (size_t)n);
-        break;
-    }
     }
     /* No default: -Wswitch flags any new ff_wiring_canned_reply_t member
      * left unhandled (the house convention); an out-of-enum value skips

@@ -347,14 +347,20 @@ static void inject_text(uint32_t from, char const *text)
     H.ev.on_text(H.ev.user, from, MY_ID, text, strlen(text));
 }
 
-static void inject_pulse(uint32_t from)
+/* 2026-09-02: this file used to have an inject_pulse(from) helper (PULSE,
+ * empty body) for "some generic private-portnum inbound signal" — retired
+ * along with the wire type (ff_proto.h's RESERVED_01 section). STATUS is
+ * the drop-in stand-in everywhere that generic role was needed: like PULSE
+ * it is feed-representable and NOT flare/rally-shaped, so it doesn't
+ * trip the flare-takeover or rally-confirm machinery a careless PULSE
+ * replacement could. */
+static void inject_status(uint32_t from, char const *text)
 {
-    uint8_t buf[FF_PROTO_ENVELOPE_LEN];
-    int n = ff_proto_encode_pulse(buf, sizeof(buf));
+    uint8_t buf[FF_PROTO_MAX_PAYLOAD];
+    int n = ff_proto_encode_status(buf, sizeof(buf), text);
     TEST_ASSERT_GREATER_THAN_INT(0, n);
     H.ev.on_private(H.ev.user, from, MC_ADDR_BROADCAST, FF_PORTNUM, buf, (size_t)n);
 }
-
 
 static void inject_flare(uint32_t from, uint16_t dur_s)
 {
@@ -362,6 +368,14 @@ static void inject_flare(uint32_t from, uint16_t dur_s)
     int n = ff_proto_encode_flare(buf, sizeof(buf), dur_s);
     TEST_ASSERT_GREATER_THAN_INT(0, n);
     H.ev.on_private(H.ev.user, from, MC_ADDR_BROADCAST, FF_PORTNUM, buf, (size_t)n);
+}
+
+/* A RESERVED_01 (retired PULSE) frame — hand-crafted, since there is no
+ * encoder any more (ff_proto.h's RESERVED_01 section). */
+static void inject_reserved01(uint32_t from)
+{
+    uint8_t buf[] = {(uint8_t)FF_PROTO_VERSION, (uint8_t)FF_PROTO_TYPE_RESERVED_01};
+    H.ev.on_private(H.ev.user, from, MC_ADDR_BROADCAST, FF_PORTNUM, buf, sizeof(buf));
 }
 
 static ff_crew_member_t const *member(uint32_t node)
@@ -385,7 +399,7 @@ static void S16_AC5a_unknown_sender_no_feed_no_crew_slot_one_heard_entry(void)
      * metadata event fires first (mc_client.h's documented ordering),
      * then the payload event. */
     inject_rx_meta(STRANGER, MC_RX_PATH_DIRECT, true, -55);
-    inject_pulse(STRANGER);
+    inject_status(STRANGER, "hey");
 
     TEST_ASSERT_EQUAL_UINT8(0, ff_feed_count(ff_shell_feed(&H.shell)));
     TEST_ASSERT_EQUAL_UINT8(0, ff_shell_crew(&H.shell)->count);
@@ -424,7 +438,7 @@ static void S16_AC5b_known_unpaired_sender_no_feed_and_no_new_heard_entry(void)
     TEST_ASSERT_NOT_NULL(member(DANA));
     TEST_ASSERT_FALSE(member(DANA)->paired);
 
-    inject_pulse(DANA);
+    inject_status(DANA, "hey");
     inject_text(DANA, "still here");
 
     TEST_ASSERT_EQUAL_UINT8(0, ff_feed_count(ff_shell_feed(&H.shell)));
@@ -1257,7 +1271,7 @@ static void flare_takeover_is_opaque_to_underlying_churn(void)
     TEST_ASSERT_FALSE_MESSAGE(ff_shell_tick(&H.shell, H.clk.t),
                               "underlying activity rebuilt the takeover — its DISMISS button would be clobbered");
     advance(1000u);
-    inject_pulse(KEV_ID);
+    inject_status(KEV_ID, "hey");
     TEST_ASSERT_FALSE_MESSAGE(ff_shell_tick(&H.shell, H.clk.t),
                               "a second underlying signal rebuilt the takeover");
 
@@ -1546,7 +1560,7 @@ static void S16_b1_own_traffic_is_not_treated_as_inbound(void)
     inject_rx_meta(MY_ID, MC_RX_PATH_DIRECT, true, -30);
     inject_position(MY_ID, U_EVENING, 39.0, -82.0);
     inject_text(MY_ID, "echo");
-    inject_pulse(MY_ID);
+    inject_status(MY_ID, "hey");
 
     TEST_ASSERT_EQUAL_UINT8(0, ff_shell_crew(&H.shell)->count);
     TEST_ASSERT_EQUAL_UINT8(0, ff_heard_count(ff_shell_heard(&H.shell)));
@@ -2779,7 +2793,7 @@ static void decode_packet_text(uint8_t const *buf, size_t len, char *out, size_t
 
 /** Decode a single outbound ToRadio frame's PRIVATE (ff_proto) payload: it
  *  MUST be on FF_PORTNUM, and its bytes are run through ff_proto_decode so
- *  the S22 AC4 tests can assert the encoded TYPE (PULSE vs RALLY), not just
+ *  the S22 AC4 tests can assert the encoded TYPE (FLARE vs RALLY), not just
  *  that "a send happened" — the proxy trap the brief warns about. Returns
  *  the ff_proto type (positive) and, for RALLY, fills *out_msg. */
 static int decode_packet_private(uint8_t const *buf, size_t len, ff_proto_msg_t *out_msg)
@@ -2846,38 +2860,15 @@ static void s22_connect_shell(void)
 /* S22 slice d — AC4: action send wiring + rally-to-crew confirm        */
 /* =================================================================== */
 
-/* AC4 — PULSE addresses a member vs the whole crew, and encodes TYPE PULSE.
- * The proxy the brief names ("a send happened" without asserting node+type)
- * is refused here: every send asserts BOTH the destination NODE and the
- * decoded ff_proto TYPE. */
-static void S22_AC4_pulse_addresses_member_vs_whole_crew(void)
-{
-    s22_connect_shell();
-    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, true));
-
-    /* Member: SELECT DANA, then PULSE -> addressed to DANA, type PULSE. */
-    ff_intent_t sel = {.kind = FF_INTENT_INBOX_SELECT_MEMBER, .u = {0}};
-    sel.u.node_id = DANA;
-    ff_shell_intent(&H.shell, &sel);
-
-    size_t tx_before = P.tx_len;
-    ff_intent_t pulse = {.kind = FF_INTENT_INBOX_PULSE, .u = {0}};
-    ff_shell_intent(&H.shell, &pulse);
-    TEST_ASSERT_GREATER_THAN_size_t(tx_before, P.tx_len);
-    TEST_ASSERT_EQUAL_UINT32(DANA, decode_packet_to(P.tx + tx_before, P.tx_len - tx_before));
-    TEST_ASSERT_EQUAL_INT(FF_PROTO_TYPE_PULSE, decode_packet_private(P.tx + tx_before, P.tx_len - tx_before, NULL));
-
-    /* The send reset the target to WHOLE_CREW (AC3). A second PULSE now
-     * broadcasts. */
-    TEST_ASSERT_EQUAL_INT(FF_TARGET_WHOLE_CREW, ff_shell_view(&H.shell)->inbox.target_kind);
-    tx_before = P.tx_len;
-    ff_shell_intent(&H.shell, &pulse);
-    TEST_ASSERT_GREATER_THAN_size_t(tx_before, P.tx_len);
-    TEST_ASSERT_EQUAL_UINT32(MC_ADDR_BROADCAST, decode_packet_to(P.tx + tx_before, P.tx_len - tx_before));
-    TEST_ASSERT_EQUAL_INT(FF_PROTO_TYPE_PULSE, decode_packet_private(P.tx + tx_before, P.tx_len - tx_before, NULL));
-}
-
-/* The OUTBOUND quick signal is a FLARE, not a pulse (the maintainer's "in
+/* (2026-09-02: this used to open with S22_AC4_pulse_addresses_member_vs_
+ * whole_crew, PULSE addressing a member vs the whole crew and encoding TYPE
+ * PULSE. PULSE is retired end to end — see ff_intent.h's header note — and
+ * the test below, S24_flare_chip_addresses_member_vs_whole_crew_as_flare,
+ * already covered the identical shape one FLARE_DEFAULT_DUR_S assertion
+ * stronger, so the PULSE version is removed outright rather than kept
+ * redundant.)
+ *
+ * The OUTBOUND quick signal is a FLARE, not a pulse (the maintainer's "in
  * send to crew we should have flare not pulse"). The 1:1 FLARE chip
  * (FF_INTENT_INBOX_FLARE) addresses a member vs broadcasts to the whole crew
  * through the SAME S22(d) seam, and the wire body is a FLARE at the S10
@@ -2925,12 +2916,13 @@ static void S24_flare_chip_addresses_member_vs_whole_crew_as_flare(void)
 /* AC4 / honest-data (Tier 3) — a send to a member who was JUST unpaired,
  * with NO intervening tick, is REFUSED. `ff_shell_pair(node, false)` clears
  * `paired` but leaves the node in the roster, so `ff_crew_find` still returns
- * it; between SELECT and this PULSE the per-tick projection that normally
+ * it; between SELECT and this FLARE (2026-09-02: was PULSE, retired — see
+ * ff_intent.h's header note) the per-tick projection that normally
  * downgrades a stale member target has not run, so the send-time `!m->paired`
  * re-validation in `shell_sig_dest` is the ONLY thing standing between the
  * user's drop and a directed send to a node they just removed. This is the
  * mutation guard for that guard: it PASSES with the check present and FAILS
- * (a PULSE goes to the dropped node) when `!m->paired` is dropped from
+ * (a FLARE goes to the dropped node) when `!m->paired` is dropped from
  * `shell_sig_dest`. */
 static void S22_AC4_send_to_just_unpaired_member_is_refused(void)
 {
@@ -2948,11 +2940,11 @@ static void S22_AC4_send_to_just_unpaired_member_is_refused(void)
      * the projection's stale-target downgrade cannot run first. */
     TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, false));
 
-    /* A PULSE now must send NOTHING: shell_sig_dest refuses a member target
+    /* A FLARE now must send NOTHING: shell_sig_dest refuses a member target
      * that is no longer paired rather than addressing the dropped node. */
     size_t const tx_before = P.tx_len;
-    ff_intent_t pulse = {.kind = FF_INTENT_INBOX_PULSE, .u = {0}};
-    ff_shell_intent(&H.shell, &pulse);
+    ff_intent_t flare = {.kind = FF_INTENT_INBOX_FLARE, .u = {0}};
+    ff_shell_intent(&H.shell, &flare);
     TEST_ASSERT_EQUAL_size_t(tx_before, P.tx_len); /* refused — nothing on the wire */
 }
 
@@ -3033,11 +3025,12 @@ static void S22_AC4_rally_whole_crew_confirm(void)
     (void)ff_shell_tick(&H.shell, H.clk.t);
     TEST_ASSERT_FALSE(ff_shell_view(&H.shell)->inbox.rally_confirm_armed);
 
-    /* Arm again, then an intervening PULSE DISARMS: the next rally tap must
-     * arm afresh, not send. */
+    /* Arm again, then an intervening FLARE DISARMS (2026-09-02: was PULSE,
+     * retired — see ff_intent.h's header note): the next rally tap must arm
+     * afresh, not send. */
     ff_shell_intent(&H.shell, &rally); /* arm */
-    ff_intent_t pulse = {.kind = FF_INTENT_INBOX_PULSE, .u = {0}};
-    ff_shell_intent(&H.shell, &pulse); /* intervening action disarms (and itself sends a pulse) */
+    ff_intent_t flare = {.kind = FF_INTENT_INBOX_FLARE, .u = {0}};
+    ff_shell_intent(&H.shell, &flare); /* intervening action disarms (and itself sends a flare) */
     (void)ff_shell_tick(&H.shell, H.clk.t);
     TEST_ASSERT_FALSE(ff_shell_view(&H.shell)->inbox.rally_confirm_armed);
 
@@ -3073,7 +3066,7 @@ static void S22_AC4_rally_confirm_lapses_after_window(void)
 
 /* AC4 — COMPOSE opens the composer with its TO set to the current target
  * and switches to the compose face; the Signals target is NOT reset (only
- * a direct PULSE/RALLY send resets it). */
+ * a direct FLARE/RALLY send resets it). */
 static void S22_AC4_compose_sets_dest_and_switches_face(void)
 {
     s22_connect_shell();
@@ -3179,11 +3172,11 @@ static void S16_AC6_dev_trust_all_auto_pairs_on_nodeinfo_only(void)
     TEST_ASSERT_EQUAL_UINT8(1, ff_shell_crew(&H.shell)->count);
     TEST_ASSERT_TRUE(ff_heard_contains(ff_shell_heard(&H.shell), STRANGER2));
 
-    /* The pairing is real, not cosmetic: a PULSE from the paired node
+    /* The pairing is real, not cosmetic: a STATUS from the paired node
      * reaches the feed; one from the position-only node still does not. */
-    inject_pulse(STRANGER);
+    inject_status(STRANGER, "hey");
     TEST_ASSERT_EQUAL_UINT8(1, ff_feed_count(ff_shell_feed(&H.shell)));
-    inject_pulse(STRANGER2);
+    inject_status(STRANGER2, "hey");
     TEST_ASSERT_EQUAL_UINT8(1, ff_feed_count(ff_shell_feed(&H.shell)));
 }
 
@@ -3779,10 +3772,13 @@ static void S47_replay_absent_precision_renders_normally_not_degraded(void)
 /* S24 slice a — AC1: direction at the shell's push sites               */
 /* =================================================================== */
 
-/* An accepted PULSE send pushes its own OUTGOING feed item — dir OUT,
+/* An accepted FLARE send pushes its own OUTGOING feed item — dir OUT,
  * to_node = the resolved destination (member id, or 0 for the whole-crew
- * broadcast), unread false (my own send is never a badge). */
-static void S24_AC1_sig_pulse_send_pushes_outgoing_item(void)
+ * broadcast), unread false (my own send is never a badge). (2026-09-02:
+ * this was S24_AC1_sig_pulse_send_pushes_outgoing_item, FF_INTENT_INBOX_
+ * PULSE; retired along with the intent, see ff_intent.h's header note —
+ * FLARE is the drop-in, same S22(d) scope+send seam.) */
+static void S24_AC1_sig_flare_send_pushes_outgoing_item(void)
 {
     s22_connect_shell();
     TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, true));
@@ -3791,22 +3787,22 @@ static void S24_AC1_sig_pulse_send_pushes_outgoing_item(void)
     sel.u.node_id = DANA;
     ff_shell_intent(&H.shell, &sel);
 
-    ff_intent_t pulse = {.kind = FF_INTENT_INBOX_PULSE, .u = {0}};
-    ff_shell_intent(&H.shell, &pulse);
+    ff_intent_t flare = {.kind = FF_INTENT_INBOX_FLARE, .u = {0}};
+    ff_shell_intent(&H.shell, &flare);
 
     ff_feed_t const *feed = ff_shell_feed(&H.shell);
     TEST_ASSERT_EQUAL_UINT8(1, ff_feed_count(feed));
     ff_feed_item_t const *it = ff_feed_at(feed, 0);
-    TEST_ASSERT_EQUAL(FEED_PULSE, it->kind);
+    TEST_ASSERT_EQUAL(FEED_FLARE, it->kind);
     TEST_ASSERT_EQUAL(FEED_DIR_OUT, it->dir);
     TEST_ASSERT_EQUAL_UINT32(DANA, it->to_node);
     TEST_ASSERT_EQUAL_UINT32(0u, it->from_node);
     TEST_ASSERT_FALSE(it->unread);
     TEST_ASSERT_EQUAL_UINT16(0, ff_feed_unread_count(feed));
 
-    /* The target reset to WHOLE_CREW (AC3) — a second PULSE broadcasts,
+    /* The target reset to WHOLE_CREW (AC3) — a second FLARE broadcasts,
      * and its outgoing item records the whole-crew sentinel to_node 0. */
-    ff_shell_intent(&H.shell, &pulse);
+    ff_shell_intent(&H.shell, &flare);
     TEST_ASSERT_EQUAL_UINT8(2, ff_feed_count(ff_shell_feed(&H.shell)));
     it = ff_feed_at(ff_shell_feed(&H.shell), 0);
     TEST_ASSERT_EQUAL(FEED_DIR_OUT, it->dir);
@@ -4236,7 +4232,7 @@ static void S24_AC8_inbox_key_same_bucket_age_tick_is_clean(void)
     TEST_ASSERT_FALSE(ff_shell_tick(&H.shell, H.clk.t)); /* settled again */
 
     /* A new item is dirty. */
-    inject_pulse(DANA);
+    inject_status(DANA, "hey");
     TEST_ASSERT_TRUE(ff_shell_tick(&H.shell, H.clk.t));
     TEST_ASSERT_FALSE(ff_shell_tick(&H.shell, H.clk.t));
 
@@ -4523,11 +4519,14 @@ static void S24c_AC4_quick_chip_canned_reply_targets_thread_scope(void)
     TEST_ASSERT_EQUAL_UINT32(MC_ADDR_BROADCAST, decode_packet_to(P.tx + tx_before, P.tx_len - tx_before));
 }
 
-/* AC4 — the PULSE chip: FF_INTENT_INBOX_PULSE with a thread open sends to
+/* AC4 — the FLARE chip: FF_INTENT_INBOX_FLARE with a thread open sends to
  * the THREAD's scope, keeps the scope (no reset-to-WHOLE_CREW while the
- * thread is open — a second pulse must not silently broadcast), and the
- * OUT pulse lands in the thread. */
-static void S24c_AC4_pulse_chip_sends_to_thread_scope_and_keeps_scope(void)
+ * thread is open — a second flare must not silently broadcast), and the
+ * OUT flare lands in the thread. (2026-09-02: this was S24c_AC4_pulse_
+ * chip_sends_to_thread_scope_and_keeps_scope, FF_INTENT_INBOX_PULSE;
+ * retired along with the intent, see ff_intent.h's header note — FLARE is
+ * the only chip left, same shape.) */
+static void S24c_AC4_flare_chip_sends_to_thread_scope_and_keeps_scope(void)
 {
     s22_connect_shell();
     H.ev = ff_shell_events(&H.shell);
@@ -4540,23 +4539,23 @@ static void S24c_AC4_pulse_chip_sends_to_thread_scope_and_keeps_scope(void)
     (void)ff_shell_tick(&H.shell, H.clk.t);
 
     size_t tx_before = P.tx_len;
-    ff_intent_t pulse = {.kind = FF_INTENT_INBOX_PULSE, .u = {0}};
-    ff_shell_intent(&H.shell, &pulse);
+    ff_intent_t flare = {.kind = FF_INTENT_INBOX_FLARE, .u = {0}};
+    ff_shell_intent(&H.shell, &flare);
     TEST_ASSERT_GREATER_THAN_size_t(tx_before, P.tx_len);
     TEST_ASSERT_EQUAL_UINT32(DANA, decode_packet_to(P.tx + tx_before, P.tx_len - tx_before));
 
-    /* The scope stays the thread; a SECOND pulse still goes to DANA (the
+    /* The scope stays the thread; a SECOND flare still goes to DANA (the
      * mutation this pins: shell_sig_reset_target here would make this
      * one a broadcast the user never chose). */
     tx_before = P.tx_len;
-    ff_shell_intent(&H.shell, &pulse);
+    ff_shell_intent(&H.shell, &flare);
     TEST_ASSERT_GREATER_THAN_size_t(tx_before, P.tx_len);
     TEST_ASSERT_EQUAL_UINT32(DANA, decode_packet_to(P.tx + tx_before, P.tx_len - tx_before));
 
     (void)ff_shell_tick(&H.shell, H.clk.t);
     ff_app_inbox_t const *sig = &ff_shell_view(&H.shell)->inbox;
     TEST_ASSERT_EQUAL_UINT8(2, sig->thread.msg_count);
-    TEST_ASSERT_EQUAL(FEED_PULSE, sig->thread.msgs[1].kind);
+    TEST_ASSERT_EQUAL(FEED_FLARE, sig->thread.msgs[1].kind);
     TEST_ASSERT_EQUAL(FEED_DIR_OUT, sig->thread.msgs[1].dir);
     TEST_ASSERT_EQUAL_INT(FF_TARGET_MEMBER, sig->target_kind);
     TEST_ASSERT_EQUAL_UINT32(DANA, sig->target_node);
@@ -4842,18 +4841,25 @@ static void S26_AC3_unpaired_rally_pushes_no_banner(void)
     TEST_ASSERT_FALSE(ff_shell_view(&H.shell)->banner.active);
 }
 
-/* A FLARE or PULSE from a paired sender must NOT produce a banner — only
- * MESSAGE/RALLY are banner-eligible per spec; FLARE keeps its own,
- * untouched takeover path. */
-static void S26_flare_and_pulse_do_not_push_banners(void)
+/* A FLARE or a RESERVED_01 (retired PULSE) frame from a paired sender must
+ * NOT produce a banner — only MESSAGE/RALLY are banner-eligible per spec;
+ * FLARE keeps its own, untouched takeover path, and RESERVED_01 is
+ * honestly nothing (no feed item either, see ff_wiring's own unit tests) —
+ * bench-visible instead via `ff_shell_retired_frame_count` (2026-09-02:
+ * this test used to be S26_flare_and_pulse_do_not_push_banners, injecting
+ * a real PULSE; PULSE is retired end to end, see ff_proto.h's RESERVED_01
+ * section). */
+static void S26_flare_and_reserved01_do_not_push_banners(void)
 {
     harness_init(100000u, false);
     inject_my_info(MY_ID);
     TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, true));
 
-    inject_pulse(DANA);
+    TEST_ASSERT_EQUAL_UINT32(0, ff_shell_retired_frame_count(&H.shell));
+    inject_reserved01(DANA);
     (void)ff_shell_tick(&H.shell, H.clk.t);
     TEST_ASSERT_FALSE(ff_shell_view(&H.shell)->banner.active);
+    TEST_ASSERT_EQUAL_UINT32(1, ff_shell_retired_frame_count(&H.shell)); /* bench-visible instead */
 
     inject_flare(DANA, 300);
     (void)ff_shell_tick(&H.shell, H.clk.t);
@@ -4995,7 +5001,7 @@ static void S26_AC2_banner_age_same_bucket_ticks_are_clean(void)
 /* AC2 — a banner from a DIFFERENT paired conversation than the one
  * currently open MUST dirty the render key: it is a genuinely NEW top-
  * of-glass surface, not part of the open thread's own content (unlike an
- * inbox-only churn source, e.g. a PULSE elsewhere, which the S24c_AC8
+ * inbox-only churn source, e.g. a STATUS elsewhere, which the S24c_AC8
  * opacity tests correctly keep invisible). The full shape: dirty once on
  * arrival, clean through the coarsened-age sub-minute bucket, dirty once
  * more (only) at the banner's own 6s expiry — proving the open thread's
@@ -5171,31 +5177,11 @@ static void s24d_open_rally(void)
     TEST_ASSERT_EQUAL_INT(FF_INBOX_SUB_RALLY, ff_shell_view(&H.shell)->inbox.subview);
 }
 
-/* AC5 — the popup Pulse row sends a PULSE to the scope (decoded TYPE + dest
- * NODE, not "a send happened"), pushes the OUT feed item, and pops back to
- * the thread. */
-static void S24_AC5_popup_pulse_sends_to_scope_and_closes(void)
-{
-    s22_connect_shell();
-    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, true));
-    s24d_open_popup(DANA);
-
-    size_t const tx_before = P.tx_len;
-    ff_intent_t pp = {.kind = FF_INTENT_INBOX_POPUP_PULSE, .u = {0}};
-    ff_shell_intent(&H.shell, &pp);
-    TEST_ASSERT_GREATER_THAN_size_t(tx_before, P.tx_len);
-    TEST_ASSERT_EQUAL_UINT32(DANA, decode_packet_to(P.tx + tx_before, P.tx_len - tx_before));
-    TEST_ASSERT_EQUAL_INT(FF_PROTO_TYPE_PULSE, decode_packet_private(P.tx + tx_before, P.tx_len - tx_before, NULL));
-
-    (void)ff_shell_tick(&H.shell, H.clk.t);
-    TEST_ASSERT_EQUAL_INT(FF_INBOX_SUB_THREAD, ff_shell_view(&H.shell)->inbox.subview);
-    ff_feed_item_t const *it = ff_feed_at(ff_shell_feed(&H.shell), 0);
-    TEST_ASSERT_EQUAL(FEED_PULSE, it->kind);
-    TEST_ASSERT_EQUAL(FEED_DIR_OUT, it->dir);
-    TEST_ASSERT_EQUAL_UINT32(DANA, it->to_node);
-}
-
-/* The popup's third row is a FLARE, not a pulse: FF_INTENT_INBOX_POPUP_FLARE
+/* The popup's third row is a FLARE, not a pulse (2026-09-02: PULSE is
+ * retired end to end — this row used to also be exercised as
+ * FF_INTENT_INBOX_POPUP_PULSE by a test of this exact shape; removed
+ * along with the intent itself, see ff_intent.h's header note):
+ * FF_INTENT_INBOX_POPUP_FLARE
  * sends a FLARE to the scope (decoded TYPE + dest NODE, not "a send
  * happened"), pushes the OUT FEED_FLARE item, and pops back to the thread. */
 static void S24_popup_flare_sends_flare_to_scope_and_closes(void)
@@ -5383,7 +5369,7 @@ static void S24_AC6_crew_rally_arms_then_sends(void)
 }
 
 /* AC8 — the popup and Rally screen are OPAQUE in the render key to
- * ordinary INBOX/THREAD churn beneath them (a fresh PULSE elsewhere does
+ * ordinary INBOX/THREAD churn beneath them (a fresh STATUS elsewhere does
  * NOT dirty the frame — see S26_AC2_banner_from_other_paired_conv_dirties_
  * popup_overlay_exactly_once for the one exception this opacity does NOT
  * cover: a banner-eligible MESSAGE/RALLY from another paired conversation
@@ -5477,10 +5463,12 @@ static void S26_AC2_banner_from_other_paired_conv_dirties_popup_overlay_exactly_
 
 
 /* The demo-loopback SEND SEAM (the mechanism the device demo build wires):
- * with no accepting sender a broadcast pulse is refused and no OUT item
+ * with no accepting sender a broadcast flare is refused and no OUT item
  * appears; installing an accept-every-send sender via ff_shell_set_sender
  * makes the OUT item appear — exactly what the CONFIG_FF_DEMO_MODE loopback
- * does on device. */
+ * does on device. (2026-09-02: this used to send a PULSE — retired, see
+ * ff_intent.h's header note — FLARE is the only outbound quick signal
+ * left.) */
 static int s24d_loop_send_text(void *c, uint32_t d, char const *u)
 {
     (void)c;
@@ -5501,16 +5489,16 @@ static void S24_demo_loopback_seam_makes_out_items_appear(void)
     harness_init(100000u, false); /* NO transport: the default sender refuses */
     inject_my_info(MY_ID);
 
-    ff_intent_t pulse = {.kind = FF_INTENT_INBOX_PULSE, .u = {0}};
-    ff_shell_intent(&H.shell, &pulse);
+    ff_intent_t flare = {.kind = FF_INTENT_INBOX_FLARE, .u = {0}};
+    ff_shell_intent(&H.shell, &flare);
     TEST_ASSERT_EQUAL_UINT8(0, ff_feed_count(ff_shell_feed(&H.shell))); /* refused -> no OUT item */
 
     ff_wiring_sender_t loop = {s24d_loop_send_text, s24d_loop_send_private, NULL};
     ff_shell_set_sender(&H.shell, loop);
-    ff_shell_intent(&H.shell, &pulse);
+    ff_shell_intent(&H.shell, &flare);
     TEST_ASSERT_EQUAL_UINT8(1, ff_feed_count(ff_shell_feed(&H.shell))); /* accepted -> OUT item appears */
     ff_feed_item_t const *it = ff_feed_at(ff_shell_feed(&H.shell), 0);
-    TEST_ASSERT_EQUAL(FEED_PULSE, it->kind);
+    TEST_ASSERT_EQUAL(FEED_FLARE, it->kind);
     TEST_ASSERT_EQUAL(FEED_DIR_OUT, it->dir);
 }
 
@@ -5637,7 +5625,6 @@ int main(void)
     RUN_TEST(S16_b1_a_flare_on_a_foreign_portnum_raises_no_takeover);
     RUN_TEST(S16_b1_shell_footprint_excludes_the_pack);
     RUN_TEST(S22b_inbox_target_survives_rebuild_and_is_gated);
-    RUN_TEST(S22_AC4_pulse_addresses_member_vs_whole_crew);
     RUN_TEST(S24_flare_chip_addresses_member_vs_whole_crew_as_flare);
     RUN_TEST(S22_AC4_send_to_just_unpaired_member_is_refused);
     RUN_TEST(S22_AC4_rally_to_member_sends_first_tap);
@@ -5667,7 +5654,7 @@ int main(void)
     RUN_TEST(S47_live_absent_precision_renders_normally);
     RUN_TEST(S47_replay_absent_precision_renders_normally_not_degraded);
 
-    RUN_TEST(S24_AC1_sig_pulse_send_pushes_outgoing_item);
+    RUN_TEST(S24_AC1_sig_flare_send_pushes_outgoing_item);
     RUN_TEST(S24_AC1_rally_send_pushes_outgoing_item_with_place_name);
     RUN_TEST(S24_AC1_refused_rally_pushes_no_outgoing_item);
     RUN_TEST(S24_AC1_shell_classifies_inbound_text_direction_via_my_info);
@@ -5682,7 +5669,6 @@ int main(void)
     RUN_TEST(S24_AC8_presence_age_keys_rendered_bucket_only);
     RUN_TEST(S24_AC3_inbox_intents_are_inert_under_a_takeover);
     /* S24 slice d — popup / rally / opacity / demo-loopback seam. */
-    RUN_TEST(S24_AC5_popup_pulse_sends_to_scope_and_closes);
     RUN_TEST(S24_popup_flare_sends_flare_to_scope_and_closes);
     RUN_TEST(S24_AC5_popup_compose_opens_composer_at_scope);
     RUN_TEST(S24_AC5_popup_rally_opens_rally_screen);
@@ -5697,7 +5683,7 @@ int main(void)
     RUN_TEST(S24c_AC4_thread_projection_builds_messages_both_ways);
     RUN_TEST(S24c_AC4_live_arrival_into_open_thread_marks_read_only_when_visible);
     RUN_TEST(S24c_AC4_quick_chip_canned_reply_targets_thread_scope);
-    RUN_TEST(S24c_AC4_pulse_chip_sends_to_thread_scope_and_keeps_scope);
+    RUN_TEST(S24c_AC4_flare_chip_sends_to_thread_scope_and_keeps_scope);
     RUN_TEST(S24c_AC8_thread_key_opaque_to_other_conversations_churn);
     RUN_TEST(S24c_AC8_thread_header_presence_keys_rendered_bucket);
     RUN_TEST(S24_inbox_1to1_projects_the_members_own_color);
@@ -5715,7 +5701,7 @@ int main(void)
     RUN_TEST(S26_AC3_unpaired_message_pushes_no_banner);
     RUN_TEST(S26_AC3_paired_rally_pushes_banner);
     RUN_TEST(S26_AC3_unpaired_rally_pushes_no_banner);
-    RUN_TEST(S26_flare_and_pulse_do_not_push_banners);
+    RUN_TEST(S26_flare_and_reserved01_do_not_push_banners);
     RUN_TEST(S26_coalesce_within_2s_updates_head_in_place);
     RUN_TEST(S26_AC1_banner_auto_expires_after_6s);
     RUN_TEST(S26_AC2_banner_age_same_bucket_ticks_are_clean);

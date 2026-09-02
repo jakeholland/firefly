@@ -181,7 +181,7 @@ void test_S20_feed_seeded(void)
 {
     ff_app_state_t const *v = seed(0);
     ff_feed_t const *feed = ff_shell_feed(&s_shell);
-    TEST_ASSERT_EQUAL_UINT8(5, ff_feed_count(feed));   /* status, pulse, rally, omw, message */
+    TEST_ASSERT_EQUAL_UINT8(5, ff_feed_count(feed));   /* status, status, rally, omw, message */
     /* S24 — the Signals inbox model projects those into conversation
      * traffic. Sum item_count across conversations (the seeded chatter
      * must actually reach the model the screen renders, not only the raw

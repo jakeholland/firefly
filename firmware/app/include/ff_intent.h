@@ -86,14 +86,16 @@ extern "C" {
 #endif
 
 /**
- * Canned replies (S08: OMW / 5 MIN / PULSE chips). Defined here — see
- * this header's top comment — consumed by `ff_wiring_send_canned_reply`
+ * Canned replies (S08: OMW / 5 MIN chips). Defined here — see this
+ * header's top comment — consumed by `ff_wiring_send_canned_reply`
  * (app/ff_wiring.h), which is why it keeps the ff_wiring_ prefix.
+ * (2026-09-02: a third member, FF_WIRING_REPLY_PULSE, is retired along
+ * with the rest of the PULSE wire type — see ff_proto.h's RESERVED_01
+ * section and ff_wiring.h's header note.)
  */
 typedef enum {
     FF_WIRING_REPLY_OMW,
     FF_WIRING_REPLY_5MIN,
-    FF_WIRING_REPLY_PULSE,
 } ff_wiring_canned_reply_t;
 
 /**
@@ -150,21 +152,26 @@ typedef enum {
      * node id in `u.node_id` (a paired-crew node by construction — every
      * selectable row has a known identity); CLEAR has no payload.
      *
-     * SIG_RALLY / SIG_PULSE / SIG_COMPOSE are the three action buttons, wired
-     * to real sends in slice (d): PULSE encodes an `ff_proto` PULSE and RALLY
-     * an `ff_proto` RALLY, dispatched over FF_PORTNUM to the current target
-     * (WHOLE_CREW broadcast vs a member's addressed send), then the target
-     * resets to WHOLE_CREW (S22 AC3). RALLY to WHOLE_CREW is the one loud
-     * broadcast, so its first tap ARMS a confirm (rendered on the button via
-     * `ff_sigview_rally_confirm_armed`) and only a second tap within a short
-     * window sends (S22 AC4); a member rally and every pulse send on the first
-     * tap. COMPOSE opens the composer with its TO set to the current target
-     * and switches face — the composer's own SEND does the text send. No
-     * payload — each acts on the current target, which the shell reads from
-     * its own `ff_sigview_t` / target holder, never from the screen (a pure
-     * renderer must not carry the target itself). */
+     * SIG_RALLY / SIG_COMPOSE were originally three action buttons with
+     * SIG_PULSE alongside them (RALLY encodes an `ff_proto` RALLY, PULSE
+     * encoded an `ff_proto` PULSE), dispatched over FF_PORTNUM to the
+     * current target (WHOLE_CREW broadcast vs a member's addressed send),
+     * then the target resets to WHOLE_CREW (S22 AC3). RALLY to WHOLE_CREW
+     * is the one loud broadcast, so its first tap ARMS a confirm (rendered
+     * on the button via `ff_sigview_rally_confirm_armed`) and only a
+     * second tap within a short window sends (S22 AC4); a member rally
+     * sends on the first tap. COMPOSE opens the composer with its TO set
+     * to the current target and switches face — the composer's own SEND
+     * does the text send. No payload — each acts on the current target,
+     * which the shell reads from its own `ff_sigview_t` / target holder,
+     * never from the screen (a pure renderer must not carry the target
+     * itself). (2026-09-02: FF_INTENT_INBOX_PULSE, the SIG_PULSE member,
+     * is retired — see the FLARE note further below, where its sibling
+     * FF_INTENT_INBOX_POPUP_PULSE is also retired; removing an enum member
+     * here renumbers everything after it, which is fine — intents are
+     * never persisted or encoded by number anywhere.) */
     FF_INTENT_INBOX_SELECT_MEMBER, FF_INTENT_INBOX_CLEAR_TARGET,
-    FF_INTENT_INBOX_RALLY, FF_INTENT_INBOX_PULSE, FF_INTENT_INBOX_COMPOSE,
+    FF_INTENT_INBOX_RALLY, FF_INTENT_INBOX_COMPOSE,
     /* [api] S24 slice b — the Signals inbox -> thread navigation seam
      * (docs/specs/S24-signals-inbox.md). The Signals face is now the S24
      * INBOX (a projection of `ff_inbox_t`); these three intents are its
@@ -203,9 +210,6 @@ typedef enum {
      * POPUP_COMPOSE — the popup's Compose row: opens the S08 composer with
      *   its TO set to the scope, dropping back to the thread underneath so
      *   SEND/BACK land there.
-     * POPUP_PULSE — the popup's Pulse row: sends a PULSE to the scope
-     *   immediately, then pops the popup back to the thread (the OUT pulse
-     *   shows there).
      * POPUP_RALLY — the popup's Rally row: opens the Rally sub-view.
      * RALLY_SELECT_PLACE — a WHERE radio-row tap. `u.rally_idx` is the
      *   selection: 0 = On Me, 1..place_count = landmark (idx - 1). An On Me
@@ -213,31 +217,41 @@ typedef enum {
      * RALLY_CYCLE_WHEN — the WHEN chip: Now -> +15m -> +30m -> Now.
      * RALLY_SEND — the Send button: encodes+sends the rally to the scope at
      *   the selected place/when, then pops to the thread. A crew-wide rally
-     *   arms on the first tap and sends on the second (S22 AC4). */
-    FF_INTENT_INBOX_POPUP_COMPOSE, FF_INTENT_INBOX_POPUP_PULSE, FF_INTENT_INBOX_POPUP_RALLY,
+     *   arms on the first tap and sends on the second (S22 AC4).
+     * (2026-09-02: the popup's third row used to be POPUP_PULSE — see the
+     * FLARE note just below, retired along with it.) */
+    FF_INTENT_INBOX_POPUP_COMPOSE, FF_INTENT_INBOX_POPUP_RALLY,
     FF_INTENT_RALLY_SELECT_PLACE, FF_INTENT_RALLY_CYCLE_WHEN, FF_INTENT_RALLY_SEND,
     /* The OUTBOUND quick signal is a FLARE ("come find me"), not a PULSE
      * (empty ping) — the maintainer's "in send to crew we should have flare
      * not pulse". Both intents encode an `ff_proto` FLARE
      * (`ff_proto_encode_flare`, FF_FLARE_DEFAULT_DUR_S) and dispatch it over
      * FF_PORTNUM to the current scope through the SAME S22(d)/S24(d) send
-     * seam PULSE used (WHOLE_CREW broadcast vs a member's addressed send) —
-     * no new transport path. Appended, so no existing intent's numeric value
+     * seam PULSE used to. Appended, so no existing intent's numeric value
      * moves.
      *
      * SIG_FLARE — the 1:1 thread's quick chip (was the PULSE chip): flares
      *   the open thread's scope, then (no thread open) resets the target to
-     *   WHOLE_CREW, exactly as SIG_PULSE did.
+     *   WHOLE_CREW, exactly as the retired SIG_PULSE did.
      * INBOX_POPUP_FLARE — the action popup's third row (was the Pulse row):
      *   flares the scope immediately, then pops the popup back to the thread
      *   (the OUT flare shows there).
      *
-     * FF_INTENT_INBOX_PULSE / FF_INTENT_INBOX_POPUP_PULSE are DELIBERATELY kept
-     * (no screen emits them now — the outbound-pulse SEND path stays a
-     * programmatic seam, still exercised by the shell's unit tests): removing
-     * them would renumber the intents above. The INCOMING pulse (the feed
-     * kind, the "DANA pulsed you" wording, the demo generator) is untouched —
-     * other pucks may still pulse; only this outbound action changed. */
+     * 2026-09-02, PULSE retired end to end: FF_INTENT_INBOX_PULSE and
+     * FF_INTENT_INBOX_POPUP_PULSE — the outbound-pulse programmatic seam
+     * this comment used to say were DELIBERATELY kept for the shell's unit
+     * tests, since no screen emitted them — are now removed outright along
+     * with `shell_pulse_to_scope` (ff_shell.c) and `FF_WIRING_REPLY_PULSE`
+     * (this header, above): the device has no notion of a pulse left to
+     * program against, so keeping a dead send path alive under test bought
+     * nothing. Removing them DOES renumber the intents below, which is
+     * fine — nothing persists or encodes an `ff_intent_kind_t` by number
+     * (contrast `ff_proto_type_t`, which travels over RF and is why
+     * FF_PROTO_TYPE_RESERVED_01 stays a reserved slot instead). The
+     * INCOMING pulse — the feed kind, the "DANA pulsed you" wording, the
+     * demo generator — is ALSO retired now (this was the surviving piece
+     * when only the outbound send path was retired, PR #129); see
+     * ff_feed.h's FEED_PULSE removal and scr_inbox.c's rendering. */
     FF_INTENT_INBOX_FLARE, FF_INTENT_INBOX_POPUP_FLARE,
     /* [api] S26 slice b — PWR button -> power menu -> soft power-off
      * (docs/specs/S26-device-lifecycle.md). Appended, so no existing

@@ -7,9 +7,10 @@
 #include <stddef.h> /* NULL */
 
 /* The generator's kind draw must stay in lockstep with ff_feed_kind_t: the
- * enum's 5 values (FEED_PULSE..FEED_FLARE) are exactly the range we pick from.
- * If someone adds a feed kind, this fires at compile time so FF_DEMOFEED_KIND_COUNT
- * (and any distribution test) gets revisited rather than silently under-covering. */
+ * enum's 4 values (FEED_TEXT..FEED_FLARE, since FEED_PULSE's 2026-09-02
+ * retirement) are exactly the range we pick from. If someone adds a feed
+ * kind, this fires at compile time so FF_DEMOFEED_KIND_COUNT (and any
+ * distribution test) gets revisited rather than silently under-covering. */
 #if defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L
 _Static_assert(FF_DEMOFEED_KIND_COUNT == (uint8_t)(FEED_FLARE + 1),
                "FF_DEMOFEED_KIND_COUNT out of sync with ff_feed_kind_t");
@@ -108,7 +109,7 @@ static void ff_demofeed_emit_poke(ff_demofeed_t *s, ff_demo_event_t *ev)
     ev->type = FF_DEMO_EVENT_PRESENCE_POKE;
     ev->at_ms = s->next_poke_ms;
     ev->member_idx = (uint8_t)(ff_demofeed_xs32(&s->rng) % s->member_count);
-    ev->kind = (ff_feed_kind_t)0; /* FEED_PULSE, unused on a poke */
+    ev->kind = (ff_feed_kind_t)0; /* FEED_TEXT, unused on a poke */
     ev->text_ref = 0u;
 
     s->next_poke_ms += ff_demofeed_gap(&s->rng, FF_DEMOFEED_POKE_MIN_MS,

@@ -137,7 +137,7 @@ static void S24_AC2_membership_splits_crew_and_member_traffic(void)
 
     push(&f, FEED_TEXT, FEED_DIR_BROADCAST, DANA, 0, 100, "hi all", false);   /* CREW */
     push(&f, FEED_TEXT, FEED_DIR_DIRECT, DANA, 0, 200, "just you", true);     /* DANA */
-    push(&f, FEED_PULSE, FEED_DIR_UNKNOWN, KEV, 0, 300, "", true);            /* CREW (placement) */
+    push(&f, FEED_TEXT, FEED_DIR_UNKNOWN, KEV, 0, 300, "", true);            /* CREW (placement) */
     push(&f, FEED_TEXT, FEED_DIR_OUT, 0, DANA, 400, "omw", false);            /* DANA (my send) */
     push(&f, FEED_TEXT, FEED_DIR_OUT, 0, 0, 500, "party at 9", false);        /* CREW (my broadcast) */
 
@@ -153,9 +153,9 @@ static void S24_AC2_membership_splits_crew_and_member_traffic(void)
     TEST_ASSERT_NOT_NULL(dana);
     TEST_ASSERT_NOT_NULL(kev);
 
-    TEST_ASSERT_EQUAL_UINT8(3, crew->item_count); /* broadcast + unknown pulse + my broadcast */
+    TEST_ASSERT_EQUAL_UINT8(3, crew->item_count); /* broadcast + unknown item + my broadcast */
     TEST_ASSERT_EQUAL_UINT8(2, dana->item_count); /* her direct + my direct to her */
-    TEST_ASSERT_EQUAL_UINT8(0, kev->item_count);  /* his pulse was UNKNOWN -> CREW, not 1:1 */
+    TEST_ASSERT_EQUAL_UINT8(0, kev->item_count);  /* his item was UNKNOWN -> CREW, not 1:1 */
 
     /* Identity came from the roster join. */
     TEST_ASSERT_EQUAL_STRING("dana", dana->name);
@@ -173,7 +173,7 @@ static void S24_AC2_unknown_direction_preserved_not_rewritten(void)
     memset(&c, 0, sizeof(c));
     add_member(&c, DANA, "dana", 'D', 1, true);
 
-    push(&f, FEED_PULSE, FEED_DIR_UNKNOWN, DANA, 0, 500, "", true);
+    push(&f, FEED_TEXT, FEED_DIR_UNKNOWN, DANA, 0, 500, "", true);
 
     ff_inbox_t ib;
     ff_inbox_build(&ib, &f, &c, NOW);
@@ -433,7 +433,7 @@ static void S24_AC2_thread_is_oldest_first_with_direction_sided(void)
     push(&f, FEED_TEXT, FEED_DIR_DIRECT, KEV, 0, 1500, "not yours", true); /* another thread */
     push(&f, FEED_TEXT, FEED_DIR_OUT, 0, DANA, 2000, "omw", false);
     push(&f, FEED_TEXT, FEED_DIR_BROADCAST, DANA, 0, 2500, "crew stuff", true); /* CREW thread */
-    push(&f, FEED_PULSE, FEED_DIR_OUT, 0, DANA, 3000, "", false);
+    push(&f, FEED_TEXT, FEED_DIR_OUT, 0, DANA, 3000, "", false);
 
     ff_inbox_thread_t t;
     ff_inbox_thread_build(&t, &f, &c, FF_CONV_MEMBER, DANA, NOW);
@@ -458,7 +458,7 @@ static void S24_AC2_thread_is_oldest_first_with_direction_sided(void)
     TEST_ASSERT_FALSE(m1->identity_known); /* no fabricated sender for my own item */
 
     TEST_ASSERT_EQUAL(FEED_DIR_OUT, m2->dir);
-    TEST_ASSERT_EQUAL(FEED_PULSE, m2->kind);
+    TEST_ASSERT_EQUAL(FEED_TEXT, m2->kind);
 }
 
 /* The identity join gates on `paired` (the sigview B1 precedent): a
@@ -512,7 +512,7 @@ static void S24_AC2_mark_thread_read_spares_other_threads(void)
 
     push(&f, FEED_TEXT, FEED_DIR_BROADCAST, DANA, 0, 100, "crew1", true);
     push(&f, FEED_TEXT, FEED_DIR_DIRECT, DANA, 0, 200, "dana1", true);
-    push(&f, FEED_PULSE, FEED_DIR_UNKNOWN, KEV, 0, 300, "", true); /* CREW (placement) */
+    push(&f, FEED_TEXT, FEED_DIR_UNKNOWN, KEV, 0, 300, "", true); /* CREW (placement) */
     push(&f, FEED_TEXT, FEED_DIR_DIRECT, KEV, 0, 400, "kev1", true);
     push(&f, FEED_TEXT, FEED_DIR_DIRECT, DANA, 0, 500, "dana2", true);
     TEST_ASSERT_EQUAL_UINT16(5, ff_feed_unread_count(&f));
@@ -521,10 +521,10 @@ static void S24_AC2_mark_thread_read_spares_other_threads(void)
     TEST_ASSERT_EQUAL_UINT16(2, marked);
     TEST_ASSERT_EQUAL_UINT16(3, ff_feed_unread_count(&f));
 
-    /* Item-by-item: newest-first order is dana2, kev1, pulse, dana1, crew1. */
+    /* Item-by-item: newest-first order is dana2, kev1, item, dana1, crew1. */
     TEST_ASSERT_FALSE(ff_feed_at(&f, 0)->unread); /* dana2 — marked */
     TEST_ASSERT_TRUE(ff_feed_at(&f, 1)->unread);  /* kev1 — spared */
-    TEST_ASSERT_TRUE(ff_feed_at(&f, 2)->unread);  /* unknown pulse (CREW) — spared */
+    TEST_ASSERT_TRUE(ff_feed_at(&f, 2)->unread);  /* unknown item (CREW) — spared */
     TEST_ASSERT_FALSE(ff_feed_at(&f, 3)->unread); /* dana1 — marked */
     TEST_ASSERT_TRUE(ff_feed_at(&f, 4)->unread);  /* crew1 — spared */
 
@@ -535,7 +535,7 @@ static void S24_AC2_mark_thread_read_spares_other_threads(void)
     TEST_ASSERT_EQUAL_UINT16(1, find_conv(&ib, FF_CONV_MEMBER, KEV)->unread);
     TEST_ASSERT_EQUAL_UINT16(2, find_conv(&ib, FF_CONV_CREW, 0)->unread);
 
-    /* Marking CREW clears the broadcast AND the unknown-placed pulse. */
+    /* Marking CREW clears the broadcast AND the unknown-placed item. */
     marked = ff_inbox_mark_thread_read(&f, FF_CONV_CREW, 0);
     TEST_ASSERT_EQUAL_UINT16(2, marked);
     TEST_ASSERT_EQUAL_UINT16(1, ff_feed_unread_count(&f));

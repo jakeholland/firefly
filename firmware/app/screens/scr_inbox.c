@@ -289,7 +289,7 @@ _Static_assert(FF_INBOX_RALLY_FOOTER_Y - (FF_INBOX_RALLY_LIST_TOP_Y + FF_INBOX_R
 #define FF_INBOX_MSG_SENDER_H 16  /* dot + name + age line above a CREW inbound bubble (FF_THEME_FONT_CHIP's own 16px line height, zero slack) */
 #define FF_INBOX_MSG_BUBBLE_H 34  /* one-line text bubble */
 #define FF_INBOX_MSG_RALLY_H  46  /* RALLY badge + place callout — design canvas ThreadGroup.dc.html's own box: 8px v-padding + 12px caption + 18px place line, no inner gap (46 total) */
-#define FF_INBOX_MSG_EVENT_H  22  /* pulse/flare one-liner */
+#define FF_INBOX_MSG_EVENT_H  22  /* flare one-liner */
 #define FF_INBOX_MSG_AGE_H    16  /* age line under a bubble (rows with no sender line) */
 #define FF_INBOX_MSG_GAP      0   /* PR #149 review round 2/3: tightened from 10 to fit more rows at rest (all message kinds; CREW at rest needs every px to reach 4 full rows within the FAB-safe band) */
 #define FF_INBOX_MSG_MAX_W    294 /* bubble width cap; text past it ellipsizes. PR #149 review round 2:
@@ -392,7 +392,7 @@ static void inbox_chip_reply_cb(lv_event_t *e)
 }
 
 /* The 1:1 FLARE chip -> FF_INTENT_INBOX_FLARE (the outbound quick signal is a
- * flare, "come find me", not a pulse; the shell aims it at the open thread's
+ * flare, "come find me" (PULSE retired 2026-09-02); the shell aims it at the open thread's
  * scope through the S22(d) send seam). */
 static void inbox_chip_flare_cb(lv_event_t *e)
 {
@@ -563,14 +563,14 @@ static void inbox_build_member_avatar(lv_obj_t *parent, int32_t x, char initial,
 static char const *inbox_kind_word(ff_feed_kind_t kind)
 {
     switch (kind) {
-    case FEED_PULSE: return "PULSE";
     case FEED_RALLY: return "RALLY";
     case FEED_TEXT: return "TEXT";
     case FEED_STATUS: return "STATUS";
     case FEED_FLARE: return "FLARE";
     default: return "MESSAGE"; /* renamed 2026-09-01, was "SIGNAL" — reviewer PR #144 round 2: live user-facing
-                                 * text even though FEED_PULSE/RALLY/TEXT/STATUS/FLARE cover every kind
-                                 * currently produced, so this default is presently unreachable. */
+                                 * text even though FEED_RALLY/TEXT/STATUS/FLARE cover every kind currently
+                                 * produced (FEED_PULSE retired 2026-09-02, see ff_feed.h), so this default
+                                 * is presently unreachable. */
     }
 }
 
@@ -583,7 +583,7 @@ static char const *inbox_kind_word(ff_feed_kind_t kind)
  *     prefix for CREW"); an unjoined sender simply gets no prefix (no
  *     claim), never a fabricated name;
  *   - a member row's inbound sender IS the row identity — no prefix;
- *   - TEXT shows its text; PULSE/FLARE their kind word; RALLY/STATUS
+ *   - TEXT shows its text; FLARE its kind word; RALLY/STATUS
  *     "KIND · text" when text exists (a rally's place name).
  */
 static void inbox_preview_text(ff_inbox_conv_t const *cv, char *buf, size_t n)
@@ -1287,8 +1287,8 @@ static void inbox_msg_age_below(lv_obj_t *row, char const *age, int32_t y, bool 
     lv_obj_set_pos(l, out ? (row_w - lv_obj_get_width(l) - 4) : 4, y);
 }
 
-/* A one-line bubble (TEXT / STATUS / the 1:1 pulse callout / an OUT
- * pulse): dark surface for theirs, solid amber with dark ink for mine.
+/* A one-line bubble (TEXT / STATUS / the 1:1 flare callout / an OUT
+ * flare): dark surface for theirs, solid amber with dark ink for mine.
  * Returns the bubble container (its content laid out by the caller when
  * `text` is NULL). */
 static lv_obj_t *inbox_msg_bubble(lv_obj_t *row, char const *text, int32_t y, bool out,
@@ -1342,51 +1342,35 @@ static void inbox_msg_rally(lv_obj_t *row, ff_inbox_msg_t const *m, int32_t y, b
     lv_obj_set_pos(box, out ? (row_w - w) : 0, y);
 }
 
-/* Honest event wording for PULSE/FLARE — the address half of the
- * sentence comes from the DIRECTION FACT, never from which thread is
- * showing: a BROADCAST pulse "pulsed the crew", a DIRECT one "pulsed
- * you", an OUT one names my own act, and an UNKNOWN direction claims no
- * address at all (bare "pulsed"/"flared"). */
+/* Honest event wording for FLARE (2026-09-02: this used to also cover
+ * PULSE, retired end to end — see ff_feed.h/docs/specs/S04's Amendments;
+ * the wording collapses to FLARE-only, no more per-kind branch) — the
+ * address half of the sentence comes from the DIRECTION FACT, never from
+ * which thread is showing: a BROADCAST flare "flared the crew", a DIRECT
+ * one "flared you", an OUT one names my own act, and an UNKNOWN direction
+ * claims no address at all (bare "flared"). */
 static char const *inbox_msg_event_text(ff_inbox_msg_t const *m, bool crew_thread)
 {
-    bool const pulse = (m->kind == FEED_PULSE);
+    (void)crew_thread; /* kept for signature symmetry with callers below;
+                         * PULSE's "You pulsed the crew" vs "You pulsed"
+                         * distinction is gone, FLARE never used it. */
     if (m->dir == FEED_DIR_OUT) {
-        if (pulse) {
-            return crew_thread ? "You pulsed the crew" : "You pulsed";
-        }
         return "You flared";
     }
     switch (m->dir) {
-    case FEED_DIR_BROADCAST: return pulse ? "pulsed the crew" : "flared the crew";
-    case FEED_DIR_DIRECT: return pulse ? "pulsed you" : "flared you";
+    case FEED_DIR_BROADCAST: return "flared the crew";
+    case FEED_DIR_DIRECT: return "flared you";
     case FEED_DIR_UNKNOWN:
-    default: return pulse ? "pulsed" : "flared"; /* no address claim */
+    default: return "flared"; /* no address claim */
     }
 }
 
-/* The small amber pulse mark (dot + ring). */
-static void inbox_msg_pulse_mark(lv_obj_t *parent, int32_t x, int32_t y)
-{
-    lv_obj_t *ring = lv_obj_create(parent);
-    inbox_child_deco(ring);
-    lv_obj_set_size(ring, 13, 13);
-    lv_obj_set_style_radius(ring, LV_RADIUS_CIRCLE, 0);
-    lv_obj_set_style_border_color(ring, lv_color_hex(FF_THEME_COLOR_AMBER), 0);
-    lv_obj_set_style_border_opa(ring, LV_OPA_60, 0);
-    lv_obj_set_style_border_width(ring, 1, 0);
-    lv_obj_set_pos(ring, x, y);
-
-    lv_obj_t *dot = lv_obj_create(parent);
-    inbox_child_deco(dot);
-    lv_obj_set_size(dot, 5, 5);
-    lv_obj_set_style_radius(dot, LV_RADIUS_CIRCLE, 0);
-    lv_obj_set_style_bg_color(dot, lv_color_hex(FF_THEME_COLOR_AMBER), 0);
-    lv_obj_set_style_bg_opa(dot, LV_OPA_COVER, 0);
-    lv_obj_set_pos(dot, x + 4, y + 4);
-}
-
-/* An inbound CREW-thread event one-liner (pulse/flare): crew dot + mark
- * + "<NAME> <event>" + age at the right. */
+/* An inbound CREW-thread event one-liner (flare): crew dot + "<NAME>
+ * <event>" + age at the right. (2026-09-02: this row used to ALSO draw
+ * a small amber pulse mark — dot + ring, `inbox_msg_pulse_mark` — before
+ * the sender name when `m->kind == FEED_PULSE`; removed with the kind
+ * itself, see ff_feed.h. FLARE never drew one, so no replacement glyph
+ * is needed here.) */
 static void inbox_msg_event_line(lv_obj_t *row, ff_inbox_msg_t const *m, char const *age,
                                    bool colorblind, int32_t row_w)
 {
@@ -1403,10 +1387,6 @@ static void inbox_msg_event_line(lv_obj_t *row, ff_inbox_msg_t const *m, char co
         lv_obj_set_style_bg_opa(dot, LV_OPA_COVER, 0);
         lv_obj_set_pos(dot, 0, 7);
         x = 13;
-    }
-    if (m->kind == FEED_PULSE) {
-        inbox_msg_pulse_mark(row, x, 4);
-        x += 19;
     }
     lv_obj_t *name = inbox_mk_label(row, inbox_msg_sender_name(m), FF_THEME_FONT_CHIP, name_color);
     lv_obj_set_pos(name, x, 1);
@@ -1447,7 +1427,6 @@ static int32_t inbox_build_msg(lv_obj_t *list, ff_inbox_msg_t const *m, int32_t 
     case FEED_RALLY:
         content_h = FF_INBOX_MSG_RALLY_H;
         break;
-    case FEED_PULSE:
     case FEED_FLARE:
         if (sender_line) {
             event_line = true;
@@ -1470,7 +1449,7 @@ static int32_t inbox_build_msg(lv_obj_t *list, ff_inbox_msg_t const *m, int32_t 
     lv_obj_set_pos(row, margin_x, y);
 
     if (event_line) {
-        /* CREW inbound pulse/flare: single line with the sender named. */
+        /* CREW inbound flare: single line with the sender named. */
         inbox_msg_event_line(row, m, age, colorblind, row_w);
         return row_h + FF_INBOX_MSG_GAP;
     }
@@ -1483,17 +1462,14 @@ static int32_t inbox_build_msg(lv_obj_t *list, ff_inbox_msg_t const *m, int32_t 
     case FEED_RALLY:
         inbox_msg_rally(row, m, head_h, out, row_w);
         break;
-    case FEED_PULSE:
     case FEED_FLARE: {
-        /* 1:1 pulse callout / any OUT pulse/flare: a bubble carrying the
+        /* 1:1 flare callout / any OUT flare: a bubble carrying the
          * honest event sentence (inbound names the sender; OUT names my
-         * own act). */
+         * own act). (2026-09-02: this case used to also cover FEED_PULSE,
+         * which additionally drew `inbox_msg_pulse_mark` before the text —
+         * removed with the kind, see ff_feed.h.) */
         lv_obj_t *bub = inbox_msg_bubble(row, NULL, head_h, out, row_w);
         int32_t x = 13;
-        if (m->kind == FEED_PULSE) {
-            inbox_msg_pulse_mark(bub, x, 10);
-            x += 19;
-        }
         uint32_t const ink = out ? FF_THEME_COLOR_BG : FF_THEME_COLOR_INK;
         int32_t w;
         if (!out) {
@@ -1740,7 +1716,7 @@ static void inbox_build_thread(lv_obj_t *parent, ff_app_inbox_t const *v, bool c
          * reachable-by-scroll to begin with.
          *
          * Two shapes were tried and measured to fail before this one:
-         * (1) a hit-rect PER ROW — a CREW inbound pulse/flare event line
+         * (1) a hit-rect PER ROW — a CREW inbound flare event line
          * is only 22px tall, under the 44px hit floor, and a row scrolled
          * to straddle the viewport's top edge still carries its FULL
          * un-clipped rect, which the hit-target sweep's adjacency check

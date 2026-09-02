@@ -64,7 +64,7 @@ if(FF_BUILD_TESTS)
     add_test(NAME test_geo COMMAND test_geo)
 endif()
 
-# S04 (firefly protocol — app-layer pulse/flare/rally/status packets;
+# S04 (firefly protocol — app-layer flare/rally/status packets;
 # docs/specs/S04-firefly-protocol.md)
 target_sources(ff-core PRIVATE src/ff_proto.c)
 

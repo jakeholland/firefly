@@ -25,7 +25,7 @@
       {"kind": "text", "dir": "broadcast", "node_id": 112, "from": "RILEY", "initial": "R",
        "color_idx": 6, "text": "who's near the main gate?", "age_ms": 1500000},
       {"kind": "text", "dir": "out", "text": "just got here, by the totem", "age_ms": 1440000},
-      {"kind": "pulse", "dir": "broadcast", "node_id": 114, "from": "JAMIE", "initial": "J",
+      {"kind": "flare", "dir": "broadcast", "node_id": 114, "from": "JAMIE", "initial": "J",
        "color_idx": 3, "age_ms": 1380000},
       {"kind": "text", "dir": "broadcast", "node_id": 113, "from": "MAX", "initial": "M",
        "color_idx": 2, "text": "on my way!", "age_ms": 1140000},
@@ -34,14 +34,14 @@
       {"kind": "text", "dir": "out", "text": "meet at the totem after?", "age_ms": 900000},
       {"kind": "text", "dir": "broadcast", "node_id": 111, "from": "DANA", "initial": "D",
        "color_idx": 0, "text": "sounds good, heading there now", "age_ms": 720000},
-      {"kind": "pulse", "dir": "broadcast", "node_id": 115, "from": "KEV", "initial": "K",
+      {"kind": "flare", "dir": "broadcast", "node_id": 115, "from": "KEV", "initial": "K",
        "color_idx": 4, "age_ms": 540000},
       {"kind": "text", "dir": "broadcast", "node_id": 113, "from": "MAX", "initial": "M",
        "color_idx": 2, "text": "grabbing water first, back in 10", "age_ms": 360000},
       {"kind": "rally", "dir": "out", "text": "Water Refill", "age_ms": 180000},
       {"kind": "text", "dir": "broadcast", "node_id": 112, "from": "RILEY", "initial": "R",
        "color_idx": 6, "text": "copy, see you there", "age_ms": 90000},
-      {"kind": "pulse", "dir": "broadcast", "node_id": 111, "from": "DANA", "initial": "D",
+      {"kind": "flare", "dir": "broadcast", "node_id": 111, "from": "DANA", "initial": "D",
        "color_idx": 0, "age_ms": 30000}
     ]
   }

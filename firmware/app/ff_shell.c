@@ -159,9 +159,9 @@ typedef struct {
      * the target is WHOLE_CREW ARMS the confirm (`inbox_rally_armed`, stamped
      * `inbox_rally_armed_ms`) and renders the button armed instead of
      * sending; a second RALLY tap within FF_INBOX_RALLY_CONFIRM_MS sends and
-     * disarms; a timeout or ANY intervening Signals action (pulse, compose,
+     * disarms; a timeout or ANY intervening Signals action (flare, compose,
      * select, clear) disarms. Only WHOLE_CREW arms — a rally to one member,
-     * and every pulse/compose, sends on the first tap. This lives in the
+     * and every flare/compose, sends on the first tap. This lives in the
      * shell, not core, because it is time-based (needs the injected clock);
      * the shell reflects `inbox_rally_armed` into the view's display flag
      * (`ff_sigview_set_rally_confirm_armed`) each tick. */
@@ -2348,7 +2348,7 @@ static bool shell_sig_dest(shell_t const *sh, uint32_t *out_dest)
 }
 
 /**
- * shell_sig_reset_target — S22 AC3: after a successful PULSE/RALLY send the
+ * shell_sig_reset_target — S22 AC3: after a successful FLARE/RALLY send the
  * target returns to WHOLE_CREW. Resets both the shell's persistent holder
  * (the source of truth, which survives the per-tick view rebuild) and the
  * live view's mirror of it (so a same-frame read sees the reset, the same
@@ -2526,41 +2526,20 @@ static bool shell_scope_thread_open(shell_t const *sh)
             sh->inbox_subview == FF_INBOX_SUB_RALLY);
 }
 
-/* Encode + send a PULSE to the CURRENT resolved scope, pushing the OUT
- * feed item on an accepted send (S22(d) pulse, factored so the 1:1 chip and
- * the popup Pulse row share one send path). No-op on a stale member scope
- * (shell_sig_dest false) or a missing sender. Does NOT touch the target/
- * arm state — the caller owns that. */
-static void shell_pulse_to_scope(shell_t *sh)
-{
-    uint32_t dest = MC_ADDR_BROADCAST;
-    if (!shell_sig_dest(sh, &dest)) return; /* stale member scope: send nothing */
-    uint8_t buf[FF_PROTO_MAX_PAYLOAD];
-    int const n = ff_proto_encode_pulse(buf, sizeof buf);
-    if (n > 0 && sh->wiring.sender.send_private != NULL) {
-        int const rc = sh->wiring.sender.send_private(sh->wiring.sender.ctx, dest, buf, (size_t)n);
-        if (rc == 0) {
-            /* My own send lands in the feed (FEED_DIR_OUT) so the thread
-             * shows both sides. Accepted sends only; a refused one
-             * fabricates nothing. */
-            ff_wiring_push_outgoing(&sh->wiring, FEED_PULSE, dest, NULL);
-        }
-    }
-}
-
 /* Encode + send a FLARE ("come find me") to the CURRENT resolved scope,
  * pushing the OUT feed item on an accepted send. The outbound quick signal
  * is a flare, not a pulse (the maintainer's "in send to crew we should have
- * flare not pulse") — but it rides the SAME S22(d) scope+send seam PULSE
- * used: shell_sig_dest resolves WHOLE_CREW -> broadcast and a member -> its
- * addressed id, and the wire body is `ff_proto_encode_flare` at
- * FF_FLARE_DEFAULT_DUR_S (the S10 default duration; the quick chip/row has
- * no duration picker). This does NOT touch the S10 self-flare "sending"
+ * flare not pulse") — PULSE is retired end to end as of 2026-09-02 (see
+ * ff_proto.h's RESERVED_01 section), so this is now the only S22(d)/S24(d)
+ * scope+send path: shell_sig_dest resolves WHOLE_CREW -> broadcast and a
+ * member -> its addressed id, and the wire body is `ff_proto_encode_flare`
+ * at FF_FLARE_DEFAULT_DUR_S (the S10 default duration; the quick chip/row
+ * has no duration picker). This does NOT touch the S10 self-flare "sending"
  * state (ff_flare_send_begin / the sender overlay) — that is the Radar
  * face's own "light my puck up" flare; this is an addressed come-find-me
- * signal into a conversation, exactly parallel to shell_pulse_to_scope.
- * No-op on a stale member scope (shell_sig_dest false) or a missing sender.
- * Does NOT touch the target/arm state — the caller owns that. */
+ * signal into a conversation. No-op on a stale member scope (shell_sig_dest
+ * false) or a missing sender. Does NOT touch the target/arm state — the
+ * caller owns that. */
 static void shell_flare_to_scope(shell_t *sh)
 {
     uint32_t dest = MC_ADDR_BROADCAST;
@@ -3025,7 +3004,9 @@ void ff_shell_intent(ff_shell_t *sh_pub, ff_intent_t const *in)
         return;
 
     case FF_INTENT_CANNED_REPLY:
-        /* OMW / 5 MIN / PULSE (S16 slice c2, AC7). Reply context is the
+        /* OMW / 5 MIN (S16 slice c2, AC7 — a third canned reply, PULSE,
+         * was retired 2026-09-02, see ff_intent.h's header note). Reply
+         * context is the
          * newest feed item — `ff_feed_at(feed, 0)`, per
          * ff_wiring_send_canned_reply's documented contract — deliberately
          * NOT the composer's destination rule (shell_compose_dest above):
@@ -3382,25 +3363,13 @@ void ff_shell_intent(ff_shell_t *sh_pub, ff_intent_t const *in)
         }
         return;
 
-    case FF_INTENT_INBOX_POPUP_PULSE:
-        /* S24 AC5 — the popup's (retired) Pulse row: pulse the scope
-         * immediately, then close the popup back to the thread (the OUT
-         * pulse shows there). Only from the popup. No screen emits this now
-         * (the row sends a FLARE — see FF_INTENT_INBOX_POPUP_FLARE below);
-         * kept as the outbound-pulse programmatic seam. */
-        if (takeover_up) return;
-        if (sh->inbox_subview != FF_INBOX_SUB_POPUP) return;
-        sh->inbox_rally_armed = false;
-        shell_scope_from_thread(sh);
-        shell_pulse_to_scope(sh);
-        sh->inbox_subview = FF_INBOX_SUB_THREAD;
-        return;
-
     case FF_INTENT_INBOX_POPUP_FLARE:
-        /* The popup's third row: FLARE ("come find me") to the scope
-         * immediately, then close the popup back to the thread (the OUT
-         * flare shows there). Same shape as POPUP_PULSE above, only the wire
-         * body differs (a flare, not a pulse). Only from the popup. */
+        /* The popup's third row (2026-09-02: this row used to be a
+         * FF_INTENT_INBOX_POPUP_PULSE "Pulse" row before the PULSE
+         * intents were removed outright — see ff_intent.h's header
+         * note): FLARE ("come find me") to the scope immediately, then
+         * close the popup back to the thread (the OUT flare shows
+         * there). Only from the popup. */
         if (takeover_up) return;
         if (sh->inbox_subview != FF_INBOX_SUB_POPUP) return;
         sh->inbox_rally_armed = false;
@@ -3494,41 +3463,19 @@ void ff_shell_intent(ff_shell_t *sh_pub, ff_intent_t const *in)
         }
         return;
 
-    case FF_INTENT_INBOX_PULSE:
-        /* S22 slice d — PULSE (empty-body ping) to the current target. Sends
-         * on the first tap for both WHOLE_CREW and a member (only RALLY-to-
-         * WHOLE_CREW confirms). Any action other than a second RALLY tap
-         * disarms a pending rally confirm. No screen emits this now (the 1:1
-         * quick chip sends a FLARE — see FF_INTENT_INBOX_FLARE below); kept as
-         * the outbound-pulse programmatic seam. */
-        if (takeover_up) return;
-        sh->inbox_rally_armed = false;
-        {
-            /* S24 — with a thread (or the popup/rally over it) open, the
-             * scope IS the thread: re-assert the S22(d) holders from the
-             * thread key at the send instant, so a pulse can never chase a
-             * target the user is not looking at. */
-            bool const thread_open = shell_scope_thread_open(sh);
-            if (thread_open) {
-                shell_scope_from_thread(sh);
-            }
-            shell_pulse_to_scope(sh);
-            /* S22 AC3's reset-to-WHOLE_CREW belonged to the retired target-
-             * line screen. With a thread open the open thread IS the scope
-             * (S24's no-desync rule) — resetting would silently re-aim the
-             * chips still under the user's thumb, so the scope stays. */
-            if (!thread_open) {
-                shell_sig_reset_target(sh); /* AC3 (no thread open) */
-            }
-        }
-        return;
-
     case FF_INTENT_INBOX_FLARE:
-        /* The 1:1 thread's quick chip: FLARE ("come find me") to the current
-         * target. Same scope/target handling as SIG_PULSE above (send on the
-         * first tap; the open thread IS the scope when one is open; reset to
-         * WHOLE_CREW only with no thread open) — only the wire body differs
-         * (a flare, not a pulse). */
+        /* The 1:1 thread's quick chip: FLARE ("come find me") to the
+         * current target (2026-09-02: this used to be paired with a
+         * separate FF_INTENT_INBOX_PULSE case, "S22 slice d — PULSE
+         * (empty-body ping) to the current target", removed outright now
+         * that PULSE is retired end to end — see ff_intent.h's header
+         * note; FLARE is the only outbound quick signal left, always was
+         * since PR #129). Sends on the first tap for both WHOLE_CREW and
+         * a member (only RALLY-to-WHOLE_CREW confirms). With a thread (or
+         * the popup/rally over it) open, the scope IS the thread:
+         * re-assert the S22(d) holders from the thread key at the send
+         * instant, so a flare can never chase a target the user is not
+         * looking at. */
         if (takeover_up) return;
         sh->inbox_rally_armed = false;
         {
@@ -3595,7 +3542,7 @@ void ff_shell_intent(ff_shell_t *sh_pub, ff_intent_t const *in)
          * send; this intent only navigates + sets the destination the
          * composer already reads (`compose_to_node`), so it deliberately
          * does NOT reset the Signals target (that is the AC3 reset for a
-         * direct PULSE/RALLY send, not for opening a modal). WHOLE_CREW maps
+         * direct FLARE/RALLY send, not for opening a modal). WHOLE_CREW maps
          * to broadcast (0); a member target maps to that member, re-checked
          * paired. Mirrors FF_INTENT_OPEN_COMPOSE's fresh-session setup. */
         if (takeover_up) return;
@@ -3772,6 +3719,11 @@ ff_heard_t const *ff_shell_heard(ff_shell_t const *sh_pub)
 ff_feed_t const *ff_shell_feed(ff_shell_t const *sh_pub)
 {
     return (sh_pub == NULL) ? NULL : &shell_of_const(sh_pub)->feed;
+}
+
+uint32_t ff_shell_retired_frame_count(ff_shell_t const *sh_pub)
+{
+    return (sh_pub == NULL) ? 0u : ff_wiring_retired_frame_count(&shell_of_const(sh_pub)->wiring);
 }
 
 ff_flare_t const *ff_shell_flare(ff_shell_t const *sh_pub)

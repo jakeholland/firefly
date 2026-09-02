@@ -19,7 +19,7 @@
  *
  * Decode is **strict**: an unrecognized `ver` or `type`, or a body that
  * isn't *exactly* the defined length for its type (fixed 0 for
- * PULSE/FLARE_END/RALLY_CLEAR, exactly 2/4 for FLARE/ACK_PING, exactly
+ * RESERVED_01/FLARE_END/RALLY_CLEAR, exactly 2/4 for FLARE/ACK_PING, exactly
  * `9 + name_len` for RALLY, exactly `1 + status_len` for STATUS) — all
  * mean "ignore silently" (forward compat with newer/older pucks at the
  * same festival is handled by the `ver` byte, not by tolerating unexplained
@@ -29,12 +29,28 @@
  * rationale — untrusted RF input silently swallowing trailing garbage
  * could mask a framing/concatenation bug elsewhere.
  *
+ * ## RESERVED_01 (0x01) — retired PULSE, 2026-09-02
+ * The device dropped the notion of a "pulse" (docs/specs/S04's
+ * Amendments): there is no encoder for 0x01 any more and nothing in this
+ * codebase ever produces it again. The TYPE VALUE stays permanently
+ * reserved rather than freed for reuse — an old puck already in the field
+ * may still transmit it, and a future type silently inheriting 0x01 would
+ * make that old puck's traffic misparse as something it never meant.
+ * `ff_proto_decode` still recognizes it (same empty-body strict shape
+ * PULSE always had) and returns it as a normal, SUCCESSFUL decode — type
+ * `FF_PROTO_TYPE_RESERVED_01`, not 0/failure — because a well-formed frame
+ * from an old build is not malformed input; it just carries no content any
+ * more. Callers see a real, positive type and can choose to do nothing
+ * with it (see app/ff_wiring.c) without that decision reading as a decode
+ * error or an unrecognized-type rejection.
+ *
  * ## Deviations from the spec's interface sketch (see PR for detail)
  *  - The spec's `## Interface` code block only shows encoders for
  *    PULSE/FLARE/RALLY/STATUS, but the type table also defines FLARE_END
- *    and RALLY_CLEAR as empty-body messages every bit as real as PULSE —
- *    `ff_proto_encode_flare_end` / `ff_proto_encode_rally_clear` are added
- *    here, following the exact same shape as `ff_proto_encode_pulse`.
+ *    and RALLY_CLEAR as empty-body messages every bit as real as PULSE
+ *    used to be — `ff_proto_encode_flare_end` / `ff_proto_encode_rally_clear`
+ *    are added here, following the same empty-body shape RESERVED_01's
+ *    (now-removed) encoder once did.
  *  - ACK_PING (type 0x07) is "reserved for delivery UX (v1.5)": its wire
  *    shape (`[nonce:4]`) is defined here and `ff_proto_decode` understands
  *    it (so a v1 puck that somehow receives one doesn't misparse it as
@@ -74,7 +90,10 @@ extern "C" {
 #define FF_PROTO_STATUS_MAX 20u
 
 typedef enum {
-    FF_PROTO_TYPE_PULSE = 0x01,       /* "thinking of you"; no body */
+    FF_PROTO_TYPE_RESERVED_01 = 0x01, /* was PULSE ("thinking of you", no body),
+                                        * retired 2026-09-02 — see this header's
+                                        * "RESERVED_01" section. Never reassign
+                                        * this wire value to a new type. */
     FF_PROTO_TYPE_FLARE = 0x02,       /* come-find-me; [dur_s:2] */
     FF_PROTO_TYPE_FLARE_END = 0x03,   /* sender cancelled; no body */
     FF_PROTO_TYPE_RALLY = 0x04,       /* [lat:i32][lon:i32][name_len:1][name] */
@@ -109,7 +128,7 @@ typedef struct {
 /** Decoded message: `type` is one of ff_proto_type_t (mirrors
  * ff_proto_decode's return value); `body` is valid per `type` for
  * FLARE/RALLY/STATUS/ACK_PING and unused (zeroed) for the empty-body
- * types (PULSE/FLARE_END/RALLY_CLEAR). */
+ * types (RESERVED_01/FLARE_END/RALLY_CLEAR). */
 typedef struct {
     uint8_t type;
     union {
@@ -132,7 +151,6 @@ typedef struct {
  * The size check always happens before any byte is written — a
  * too-small-buffer call never partially writes.
  */
-int ff_proto_encode_pulse(uint8_t *buf, size_t n);
 int ff_proto_encode_flare(uint8_t *buf, size_t n, uint16_t dur_s);
 int ff_proto_encode_flare_end(uint8_t *buf, size_t n);
 int ff_proto_encode_rally(uint8_t *buf, size_t n, ff_latlon_t p, char const *name);
