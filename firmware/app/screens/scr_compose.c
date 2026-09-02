@@ -65,6 +65,52 @@
  * targets/sim/tests/test_face_hit_targets.c, which builds this exact
  * screen from every committed fixture and fails if any hit-rect ever
  * drifts back outside the circle.
+ *
+ * ## SEND relocation + key-size audit (maintainer: "move SEND away from
+ * SPACE to avoid accidental press; audit buttons, make them as large as
+ * possible")
+ *
+ * The bottom DEL/0/SEND row put SEND immediately adjacent to SPACE (8px
+ * apart, the adjacency FLOOR, zero slack) — exactly the shape of mis-tap
+ * this codebase's own FF_HIT_MIN_GAP_PX doctrine exists to prevent, except
+ * the sweep never caught it because SEND and SPACE are each individually
+ * >=44px and >=8px apart: the floor was satisfied to the pixel while the
+ * real-world risk (a fat thumb aiming for the space bar overshooting onto
+ * a full-message SEND) was not what the floor was ever sized to rule out.
+ * Fix: SEND and the mode chip TRADE PLACES. SEND moves to the header's
+ * top-right corner (the mode chip's old slot) — far from SPACE (they no
+ * longer share a row at all: edge-to-edge vertical gap measures ~269px,
+ * SEND's bottom edge at y=67 to SPACE's top edge at y=336 — the full
+ * height of the draft/keypad stack, nowhere near "one key-width" or the
+ * 12px dead-gap floor the maintainer asked for).
+ * The mode chip drops into SEND's old bottom-row slot, which is harmless
+ * to fat-finger: mis-hitting it only flips ABC/123/SYM/T9, never sends a
+ * message. This is a straight swap, not a new control, so it costs zero
+ * extra vertical budget — the header row width is untouched (BACK stays
+ * put; only the right-hand control's identity changes), and TO's centered
+ * label needs no repositioning of its own.
+ *
+ * Freed from having to share a row with SEND, the bottom row's three
+ * remaining controls (DEL / SPACE / MODE) no longer need equal thirds:
+ * DEL and MODE are sized to the exact FF_THEME_MIN_HIT_PX floor (44px —
+ * both are lower-frequency, non-destructive-if-mistapped actions) and
+ * SPACE — by far the most-tapped key on this keypad — gets every
+ * remaining pixel (FF_COMPOSE_BOTTOM_SIDE_W below).
+ *
+ * Separately, the audit re-ran this file's own "largest key that still
+ * fits the glass" search (ff_layout_safe_margin_x, the same primitive
+ * every row here already used — never hand math, per PR #86's lesson) and
+ * found 2px of unclaimed headroom: FF_COMPOSE_KEY_H/FF_COMPOSE_BOTTOM_ROW_H
+ * grow 54->56, and the bottom row's now-unnecessary
+ * FF_COMPOSE_BOTTOM_ROW_GAP_EXTRA (4px, pure cosmetic breathing room
+ * between row2 and the bottom row, never required by the adjacency floor)
+ * is removed and spent on height too. 56px is the actual ceiling for a
+ * three-column bottom row at this Y — 57px measures under 44px column
+ * width at the pole (139px row width, short of the 148px three-column
+ * floor of 3*44 + 2*8) — verified by sweeping FF_COMPOSE_KEY_H against
+ * ff_layout_safe_margin_x in this PR's body, then confirmed against the
+ * REAL rendered click-area by test_face_hit_targets.c, same as every
+ * other number in this file.
  */
 #include "scr_compose.h"
 
@@ -119,7 +165,18 @@
  * height. Final rendered sizes are verified by test_face_hit_targets.c's
  * sweep, never this hand-math (PR #86's lesson). */
 #define FF_COMPOSE_HEADER_Y 24
-#define FF_COMPOSE_HEADER_H FF_THEME_MIN_HIT_PX /* back button / mode chip */
+#define FF_COMPOSE_HEADER_H FF_THEME_MIN_HIT_PX /* back button / SEND (SEND relocation: was back/mode chip) */
+
+/* SEND's header slot — kept at the mode chip's OLD width (64px, already
+ * >= the hit floor by a comfortable 20px) rather than grown further: TO's
+ * centered label already runs right up against this corner control at
+ * this width (a pre-existing cosmetic overlap, not something this PR
+ * introduces — see this file's header comment), and widening this slot
+ * only crops more of "TO: <name>" for no functional gain. See this
+ * file's header comment ("SEND relocation") for why this is a straight
+ * swap that costs no extra vertical budget. */
+#define FF_COMPOSE_SEND_HEADER_W 64
+_Static_assert(FF_COMPOSE_SEND_HEADER_W >= FF_THEME_MIN_HIT_PX, "header SEND must clear the 44px hit-target floor");
 
 #define FF_COMPOSE_BUBBLE_Y (FF_COMPOSE_HEADER_Y + FF_COMPOSE_HEADER_H + 8)
 #define FF_COMPOSE_BUBBLE_H 60
@@ -143,9 +200,19 @@
  * 100x46, row1 (4/5/6) is 122x46, row0 (1/2/3) is 132x46 — see this
  * file's PR body for the full before/after). */
 #define FF_COMPOSE_KEY_GAP 8  /* device follow-up: 10 -> 8 (the FF_HIT_MIN_GAP_PX floor); wider keys, tighter stack */
-#define FF_COMPOSE_KEY_H   54 /* device follow-up: 50 -> 54, a bigger vertical target; >= FF_THEME_MIN_HIT_PX (assert below) */
-#define FF_COMPOSE_BOTTOM_ROW_GAP_EXTRA 4
-#define FF_COMPOSE_BOTTOM_ROW_H 54 /* device follow-up: 50 -> 54; >= FF_THEME_MIN_HIT_PX (assert below) */
+#define FF_COMPOSE_KEY_H   56 /* SEND-relocation audit: 54 -> 56, the reclaimed BOTTOM_ROW_GAP_EXTRA spent on height;
+                                * >= FF_THEME_MIN_HIT_PX (assert below); see this file's header comment for the
+                                * "why 56, not 57" chord-width search. */
+#define FF_COMPOSE_BOTTOM_ROW_H 56 /* kept equal to FF_COMPOSE_KEY_H — see above */
+
+/* DEL and MODE (the bottom row's two low-frequency neighbors) are pinned
+ * to the exact hit floor; SPACE — by far this row's most-tapped key —
+ * takes every pixel left over (computed at build time from the row's own
+ * chord-derived width in compose_build_bottom_row, same "never hand
+ * math" discipline as every other number here). See this file's header
+ * comment, "SEND relocation". */
+#define FF_COMPOSE_BOTTOM_SIDE_W FF_THEME_MIN_HIT_PX
+_Static_assert(FF_COMPOSE_BOTTOM_SIDE_W >= FF_THEME_MIN_HIT_PX, "DEL/MODE must clear the 44px hit-target floor");
 
 _Static_assert(FF_COMPOSE_KEY_H >= FF_THEME_MIN_HIT_PX, "compose grid keys must clear the 44px hit-target floor");
 _Static_assert(FF_COMPOSE_BOTTOM_ROW_H >= FF_THEME_MIN_HIT_PX,
@@ -153,14 +220,15 @@ _Static_assert(FF_COMPOSE_BOTTOM_ROW_H >= FF_THEME_MIN_HIT_PX,
 _Static_assert(FF_COMPOSE_KEY_GAP >= FF_HIT_MIN_GAP_PX,
                "compose grid key gap (both within-row and between-row) must clear the adjacency floor");
 
-/* Row 0 (keys 1-3), row 1 (keys 4-6), row 2 (keys 7-9), then the DEL/0/SEND row. */
+/* Row 0 (keys 1-3), row 1 (keys 4-6), row 2 (keys 7-9), then the DEL/SPACE/MODE row
+ * (SEND relocation: this row no longer carries SEND — see this file's header comment). */
 #define FF_COMPOSE_ROW0_Y (FF_COMPOSE_GRID_Y)
 #define FF_COMPOSE_ROW1_Y (FF_COMPOSE_ROW0_Y + FF_COMPOSE_KEY_H + FF_COMPOSE_KEY_GAP)
 #define FF_COMPOSE_ROW2_Y (FF_COMPOSE_ROW1_Y + FF_COMPOSE_KEY_H + FF_COMPOSE_KEY_GAP)
-#define FF_COMPOSE_BOTTOM_ROW_Y (FF_COMPOSE_ROW2_Y + FF_COMPOSE_KEY_H + FF_COMPOSE_KEY_GAP + FF_COMPOSE_BOTTOM_ROW_GAP_EXTRA)
+#define FF_COMPOSE_BOTTOM_ROW_Y (FF_COMPOSE_ROW2_Y + FF_COMPOSE_KEY_H + FF_COMPOSE_KEY_GAP)
 
 /* S15c guard: the whole T9 stack must stay inside the 412 puck square (the
- * bottom DEL/0/SEND row is the lowest thing on this face). Square-fit
+ * bottom DEL/SPACE/MODE row is the lowest thing on this face). Square-fit
  * backstop only; the tighter in-circle key-width check the narrowing pole
  * imposes is enforced by test_face_hit_targets.c's sweep (it needs the chord
  * math, so it can't be a static assert). */
@@ -544,14 +612,22 @@ static void compose_build_grid_row(lv_obj_t *container, ff_app_compose_mode_t mo
     }
 }
 
+/* DEL / SPACE / MODE — SEND no longer lives in this row (see this file's
+ * header comment, "SEND relocation": SEND moved to the header's top-right
+ * corner specifically so it can never again sit edge-to-edge with SPACE).
+ * DEL and MODE are pinned to FF_COMPOSE_BOTTOM_SIDE_W (the exact hit
+ * floor); SPACE takes whatever width is left in the row once both gaps
+ * and both side keys are accounted for — computed here from the row's
+ * OWN chord-derived width, never hand-picked, same discipline as every
+ * other size in this file. */
 static void compose_build_bottom_row(lv_obj_t *container, ff_app_compose_mode_t mode, int32_t y, int32_t margin_x)
 {
     int32_t row_w = FF_THEME_PUCK_PX - 2 * margin_x;
-    int32_t btn_w = (row_w - 2 * FF_COMPOSE_KEY_GAP) / 3;
+    int32_t space_w = row_w - 2 * FF_COMPOSE_BOTTOM_SIDE_W - 2 * FF_COMPOSE_KEY_GAP;
 
     lv_obj_t *del = lv_button_create(container);
     lv_obj_remove_style_all(del);
-    lv_obj_set_size(del, btn_w, FF_COMPOSE_BOTTOM_ROW_H);
+    lv_obj_set_size(del, FF_COMPOSE_BOTTOM_SIDE_W, FF_COMPOSE_BOTTOM_ROW_H);
     lv_obj_set_pos(del, margin_x, y);
     lv_obj_set_style_bg_color(del, lv_color_hex(FF_THEME_COLOR_SURFACE), 0);
     lv_obj_set_style_bg_opa(del, LV_OPA_COVER, 0);
@@ -564,24 +640,30 @@ static void compose_build_bottom_row(lv_obj_t *container, ff_app_compose_mode_t 
     lv_obj_center(del_lbl);
     compose_key_press_feedback(del, del_lbl);
 
-    compose_make_key(container, compose_legend_for(mode, 0), margin_x + btn_w + FF_COMPOSE_KEY_GAP, y, btn_w,
-                      FF_COMPOSE_BOTTOM_ROW_H, 0, FF_THEME_COLOR_SURFACE, FF_THEME_COLOR_INK);
+    int32_t space_x = margin_x + FF_COMPOSE_BOTTOM_SIDE_W + FF_COMPOSE_KEY_GAP;
+    compose_make_key(container, compose_legend_for(mode, 0), space_x, y, space_w, FF_COMPOSE_BOTTOM_ROW_H, 0,
+                      FF_THEME_COLOR_SURFACE, FF_THEME_COLOR_INK);
 
-    lv_obj_t *send = lv_button_create(container);
-    lv_obj_remove_style_all(send);
-    lv_obj_set_size(send, btn_w, FF_COMPOSE_BOTTOM_ROW_H);
-    lv_obj_set_pos(send, margin_x + 2 * (btn_w + FF_COMPOSE_KEY_GAP), y);
-    lv_obj_set_style_bg_color(send, lv_color_hex(FF_THEME_COLOR_AMBER), 0);
-    lv_obj_set_style_bg_opa(send, LV_OPA_COVER, 0);
-    lv_obj_set_style_radius(send, LV_RADIUS_CIRCLE, 0);
-    lv_obj_add_event_cb(send, compose_send_cb, LV_EVENT_CLICKED, NULL);
-    lv_obj_t *send_lbl = lv_label_create(send);
-    lv_label_set_text(send_lbl, "SEND");
-    lv_obj_set_style_text_font(send_lbl, FF_THEME_FONT_CHIP, 0);
-    lv_obj_set_style_text_color(send_lbl, lv_color_hex(FF_THEME_COLOR_BG), 0);
-    lv_obj_center(send_lbl);
-    /* SEND is already amber, so it dims on press instead of lighting up. */
-    lv_obj_set_style_bg_opa(send, LV_OPA_60, LV_STATE_PRESSED);
+    /* Mode chip — relocated here from the header (SEND relocation). Same
+     * "always shows the current mode's name" contract the S08 Amendments
+     * ruling requires (compose_update_mode_chip_label), just a new home:
+     * mis-tapping it only cycles ABC/123/SYM/T9, never sends, so it's the
+     * harmless neighbor SPACE can safely share this row with. */
+    int32_t mode_x = space_x + space_w + FF_COMPOSE_KEY_GAP;
+    lv_obj_t *mode_chip = lv_button_create(container);
+    lv_obj_remove_style_all(mode_chip);
+    lv_obj_set_size(mode_chip, FF_COMPOSE_BOTTOM_SIDE_W, FF_COMPOSE_BOTTOM_ROW_H);
+    lv_obj_set_pos(mode_chip, mode_x, y);
+    lv_obj_set_style_bg_color(mode_chip, lv_color_hex(FF_THEME_COLOR_SURFACE), 0);
+    lv_obj_set_style_bg_opa(mode_chip, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(mode_chip, LV_RADIUS_CIRCLE, 0);
+    lv_obj_add_event_cb(mode_chip, compose_mode_chip_click_cb, LV_EVENT_CLICKED, NULL);
+    s_mode_chip_label = lv_label_create(mode_chip);
+    lv_obj_set_style_text_font(s_mode_chip_label, FF_THEME_FONT_CHIP, 0);
+    lv_obj_set_style_text_color(s_mode_chip_label, lv_color_hex(FF_THEME_COLOR_AMBER), 0);
+    lv_obj_center(s_mode_chip_label);
+    compose_key_press_feedback(mode_chip, s_mode_chip_label);
+    compose_update_mode_chip_label();
 }
 
 /* Builds the 3x3 letter/digit/symbol grid (keys 1-9) plus the DEL / 0 /
@@ -807,10 +889,13 @@ void ff_scr_compose_build(ff_app_compose_t const *compose)
     lv_obj_clear_flag(puck, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_clear_flag(puck, LV_OBJ_FLAG_CLICKABLE); /* base lv_obj defaults clickable; this one is a plain backdrop */
 
-    /* --- Header: back (dead-end escape, ux-raver checklist item 6) / TO / mode chip. ---
+    /* --- Header: back (dead-end escape, ux-raver checklist item 6) / TO / SEND. ---
      * Margin derived from the header row's own y band, per this file's
      * header comment — NOT the flat "16, 10" pixel offsets the original
-     * (off-glass) version used. */
+     * (off-glass) version used. SEND relocation: this top-right slot used
+     * to hold the mode chip; SEND and the mode chip traded places (see
+     * this file's header comment) so SEND is never again adjacent to
+     * SPACE. */
     int32_t header_margin = compose_safe_margin_x(FF_COMPOSE_HEADER_Y, FF_COMPOSE_HEADER_H);
 
     lv_obj_t *back = lv_button_create(puck);
@@ -834,21 +919,26 @@ void ff_scr_compose_build(ff_app_compose_t const *compose)
     lv_obj_set_style_text_color(to_lbl, lv_color_hex(FF_THEME_COLOR_DIM), 0);
     lv_obj_align(to_lbl, LV_ALIGN_TOP_MID, 0, FF_COMPOSE_HEADER_Y + 12);
 
-    int32_t mode_chip_w = 64;
-    lv_obj_t *mode_chip = lv_button_create(puck);
-    lv_obj_remove_style_all(mode_chip);
-    lv_obj_set_size(mode_chip, mode_chip_w, FF_THEME_MIN_HIT_PX);
-    lv_obj_set_pos(mode_chip, FF_THEME_PUCK_PX - header_margin - mode_chip_w, FF_COMPOSE_HEADER_Y);
-    lv_obj_set_style_bg_color(mode_chip, lv_color_hex(FF_THEME_COLOR_SURFACE), 0);
-    lv_obj_set_style_bg_opa(mode_chip, LV_OPA_COVER, 0);
-    lv_obj_set_style_radius(mode_chip, LV_RADIUS_CIRCLE, 0);
-    lv_obj_add_event_cb(mode_chip, compose_mode_chip_click_cb, LV_EVENT_CLICKED, NULL);
-    s_mode_chip_label = lv_label_create(mode_chip);
-    lv_obj_set_style_text_font(s_mode_chip_label, FF_THEME_FONT_CHIP, 0);
-    lv_obj_set_style_text_color(s_mode_chip_label, lv_color_hex(FF_THEME_COLOR_AMBER), 0);
-    lv_obj_center(s_mode_chip_label);
-    compose_key_press_feedback(mode_chip, s_mode_chip_label);
-    compose_update_mode_chip_label();
+    /* SEND — the far top-right corner, the watch-composer convention, and
+     * (per this file's header comment) ~269px of vertical separation from
+     * SPACE at the bottom of the keypad: no shared row, no shared edge,
+     * nowhere close to a mis-tap. Same amber CTA styling / press-dim
+     * treatment SEND always had; only its position moved. */
+    lv_obj_t *send = lv_button_create(puck);
+    lv_obj_remove_style_all(send);
+    lv_obj_set_size(send, FF_COMPOSE_SEND_HEADER_W, FF_THEME_MIN_HIT_PX);
+    lv_obj_set_pos(send, FF_THEME_PUCK_PX - header_margin - FF_COMPOSE_SEND_HEADER_W, FF_COMPOSE_HEADER_Y);
+    lv_obj_set_style_bg_color(send, lv_color_hex(FF_THEME_COLOR_AMBER), 0);
+    lv_obj_set_style_bg_opa(send, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(send, LV_RADIUS_CIRCLE, 0);
+    lv_obj_add_event_cb(send, compose_send_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *send_lbl = lv_label_create(send);
+    lv_label_set_text(send_lbl, "SEND");
+    lv_obj_set_style_text_font(send_lbl, FF_THEME_FONT_CHIP, 0);
+    lv_obj_set_style_text_color(send_lbl, lv_color_hex(FF_THEME_COLOR_BG), 0);
+    lv_obj_center(send_lbl);
+    /* SEND is already amber, so it dims on press instead of lighting up. */
+    lv_obj_set_style_bg_opa(send, LV_OPA_60, LV_STATE_PRESSED);
 
     /* --- Draft area. ---
      * PRED replaces the surface bubble with the compact predictive draft
