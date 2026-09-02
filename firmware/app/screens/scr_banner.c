@@ -7,51 +7,121 @@
 #include "ff_intent.h"
 #include "ff_layout.h"
 #include "ff_theme.h"
+#include "radar_layout.h" /* RADAR_LAYOUT_STATUS_BAR_DY — the row this strip now centers on */
 
 /* ---------------------------------------------------------------------
  * Layout constants.
  *
- * A rounded pill, horizontally centered, near the top of the puck.
+ * MAINTAINER DECISION (B, 2026-09-02, docs/specs/S26-device-lifecycle.md
+ * "Notifications (slice d)"): a transient banner should hide the LEAST
+ * valuable row on whatever face is showing. At the old BANNER_CY (-90)
+ * the strip sat just below the status bar and covered the top of
+ * Radar's compass/close-range readout, or a thread's first bubble —
+ * both more valuable than the clock/mesh/battery row. Moved to COVER
+ * the status bar instead.
+ *
  * `BANNER_CY` is the CENTER-relative vertical offset (this codebase's
  * standing convention for *_DY constants, ff_layout.h's own doc comment
  * on ff_layout_centered_band_max_width) — negative = above the puck's
  * own center.
  *
- * Circle-fit math (radius = FF_THEME_PUCK_RADIUS_PX = 206), the same
- * hand-worked-and-commented check scr_power_menu.c's button geometry
- * uses (that file's BTN3_DY comment is the precedent for this style —
- * verified by eye here, then asserted empirically by
- * test_face_hit_targets.c's circle-containment + adjacency sweep, which
- * covers every committed fixture): the farther edge from the pill's own
- * center is |BANNER_CY| + BANNER_H/2 = 90 + 26 = 116px from the puck's
- * center; sqrt(206^2 - 116^2) = sqrt(28980) ~= 170.2px is the widest
- * half-chord at that height, less a 10px safety margin = ~160.2px, i.e.
- * a pill up to ~320px wide fits entirely on-glass at this height.
- * BANNER_W (240) clears that comfortably.
+ * ## Centre: lowest position whose top edge still clears the status text
+ * Round 1 of this PR centred exactly on `RADAR_LAYOUT_STATUS_BAR_DY`
+ * (-160) and shrank the width to ~90px to fit. Orchestrator review
+ * (round 2) correctly called that the wrong trade — a 90px strip only
+ * ever covers the MESH label, leaving clock/battery fully exposed
+ * either side and crushing the content ("D…"/"no"/"you cl…") to the
+ * point the banner stopped reading as a banner. The brief's own words —
+ * "or as close as the round glass allows" — meant find the LOWEST
+ * (least-negative) centre whose TOP edge still sits at or above the
+ * status text's own top (measured: the clock/MESH/battery labels render
+ * at y=[38,53] on a 412px puck), not pin the centre to the row's own
+ * DY and shrink width to whatever that forces.
  *
- * BANNER_CY itself (not just BANNER_W) is chosen against a SECOND
- * constraint the chord math alone doesn't capture: `scr_inbox.c`'s
- * thread/picker/popup/rally sub-views all pin a >=44px BACK/close control
- * at puck-local y=[30,74] (FF_INBOX_BACK_Y/FF_INBOX_BACK_PX) — the
- * banner must clear that by the FF_HIT_MIN_GAP_PX (8px) adjacency floor
- * too, or it collides with a live control the sweep (correctly) flags.
- * At BANNER_CY=-90 the pill's top edge sits at puck-local y = 206-90-26 =
- * 90, a 16px clearance below the back button's y=74 bottom.
+ * `BANNER_CY = RADAR_LAYOUT_STATUS_BAR_DY + 14.0f` = -146 (puck-local
+ * y=60): top edge at y = 206 + (-146) - 24 = 36, two pixels above the
+ * measured text top (38) — still computed FROM the status-row constant
+ * (never a second independent magic number), just offset by the amount
+ * that trade needs, with the derivation kept here rather than folded
+ * silently into the constant.
+ *
+ * ## Width: two chord checks, not one — and a correction to the radius
+ * they're run against
+ * At dy=-146 the chord is still narrow enough that the "obvious" per-
+ * axis bound is not the binding one — the same S99 compose-SEND lesson
+ * (test_scr_intent.c: chord math "is a DIFFERENT, WEAKER quantity for a
+ * corner point" than the true 2D distance) this file's first round
+ * already cited, run again at the new centre:
+ *
+ *  1. The PERMISSIVE bound: farther (top) edge at
+ *     |BANNER_CY| + BANNER_H/2 = 146 + 24 = 170px from center.
+ *  2. The BINDING bound: the TRUE Euclidean distance of each corner
+ *     from center, which is what "N px inside the glass radius" means
+ *     for a rectangle's hit-rect.
+ *
+ * Both bounds need a RADIUS to check against, and this round corrects
+ * WHICH one: round 1 (and the orchestrator's own re-check numbers) used
+ * `FF_THEME_PUCK_RADIUS_PX` (206) — the framebuffer's radius, matching
+ * `S99_compose_send_corner_clears_bezel_margin_bar`'s own precedent
+ * (that test literally centers on and measures against
+ * `FF_THEME_PUCK_RADIUS_PX`, not `FF_THEME_GLASS_*`). But
+ * `FF_THEME_GLASS_R` (200) — not 206 — is the actual MEASURED visible
+ * glass on real hardware (ff_theme.h's own doc comment: "the round
+ * bezel window sits ~5px right of the 412-wide pixel array... GLASS_R
+ * 200, pulled in 3px from the 203 measured so a ring clears the bezel
+ * lip") — and this exact distinction was the subject of the two
+ * most recent commits on this repo before this PR (#154 "centre edge-
+ * hugging elements on the measured glass", #155 "glass radius 200 —
+ * reads thin and clipped by the bezel lip at 3px/203"). A corner check
+ * against 206 can be satisfied by a corner that is NOT actually 10px
+ * inside the real, physical, glued-down glass — the exact "looks like a
+ * guard rail and isn't one" failure mode `ff_layout_centered_band_max_
+ * width`'s own doc comment already warns about for a different
+ * quantity. This file uses `FF_THEME_GLASS_R`/`FF_THEME_GLASS_CX/CY`
+ * throughout — the S99 compose test's use of the framebuffer radius
+ * predates the glass-offset measurement (#154/#155) and is arguably
+ * itself due for the same correction, tracked separately, not silently
+ * copied into new code here.
+ *
+ * At dy=-146, radius 200, 10px safety: top edge dy=-170,
+ * sqrt((200-10)^2 - 170^2) = sqrt(190^2 - 170^2) = sqrt(36100-28900) =
+ * sqrt(7200) ~= 84.85px half-chord -> ~169.7px max width. BANNER_W (160,
+ * half-width 80) clears this with room to spare: corner distance from
+ * glass center = sqrt(80^2 + 170^2) = sqrt(35300) ~= 187.88px, a
+ * 12.12px margin inside FF_THEME_GLASS_R (200) — verified precisely,
+ * not eyeballed (test_scr_banner.c's
+ * S26d_AC2_banner_corners_clear_glass_by_10px asserts this for real,
+ * against the real rendered rect).
+ *
+ * Centered on FF_THEME_GLASS_CX (208), not the puck's own 206 — the
+ * same "edge-hugging elements centre on the VISIBLE glass, not the
+ * framebuffer" rule scr_radar.c's rim tint follows (ff_theme.h's own
+ * doc comment on FF_THEME_GLASS_*).
  * ------------------------------------------------------------------- */
 
-#define BANNER_W  240
-#define BANNER_H  52 /* spec: "≥ 48 px tall hit target" */
-#define BANNER_CY (-90.0f)
+#define BANNER_W  160
+#define BANNER_H  48 /* the hit floor itself — unchanged; narrowing further buys no more usable width at this centre */
+#define BANNER_CY ((float)RADAR_LAYOUT_STATUS_BAR_DY + 14.0f) /* derived from the status row's own DY, see above */
+#define BANNER_DX (FF_THEME_GLASS_CX - FF_THEME_PUCK_RADIUS_PX) /* +2: recentre on the visible glass, not the framebuffer */
 
 _Static_assert(BANNER_H >= FF_THEME_MIN_HIT_PX, "banner strip must clear the 44px hit-target floor");
 
 /* Inner padding / sub-element geometry, relative to the pill's own
- * top-left corner (0,0 .. BANNER_W,BANNER_H). */
-#define BANNER_PAD_X    14
-#define BANNER_GLYPH_W  24
+ * top-left corner (0,0 .. BANNER_W,BANNER_H). At BANNER_W=160 there is
+ * real room again: a demo-length name (e.g. "DANA") renders in full,
+ * the preview shows well past 10 characters before DOTS ellipsis has to
+ * step in, and the age fits without truncating every time. */
+#define BANNER_PAD_X    10
+#define BANNER_GLYPH_W  18
 #define BANNER_TEXT_X   (BANNER_PAD_X + BANNER_GLYPH_W + 8)
-#define BANNER_TEXT_W   (BANNER_W - BANNER_TEXT_X - BANNER_PAD_X - 44) /* leaves room for the age chip, right */
 #define BANNER_AGE_W    40
+#define BANNER_NAME_AGE_GAP 4
+#define BANNER_TEXT_W   (BANNER_W - BANNER_TEXT_X - BANNER_PAD_X - BANNER_AGE_W - BANNER_NAME_AGE_GAP)
+#define BANNER_ROW1_Y   4
+#define BANNER_ROW2_Y   25
+#define BANNER_ROW_H    18
+
+_Static_assert(BANNER_TEXT_W > 0, "narrow banner: name column would invert (negative width)");
 
 /* ---------------------------------------------------------------------
  * Kind -> glyph + accent color. MESSAGE/RALLY are the only kinds this
@@ -108,7 +178,7 @@ void ff_scr_banner_build(lv_obj_t *parent, ff_app_banner_t const *banner, bool c
     lv_obj_t *strip = lv_button_create(parent);
     lv_obj_remove_style_all(strip);
     lv_obj_set_size(strip, BANNER_W, BANNER_H);
-    lv_obj_align(strip, LV_ALIGN_CENTER, 0, (int32_t)BANNER_CY);
+    lv_obj_align(strip, LV_ALIGN_CENTER, (int32_t)BANNER_DX, (int32_t)BANNER_CY);
     lv_obj_set_style_radius(strip, BANNER_H / 2, 0);
     lv_obj_set_style_bg_color(strip, lv_color_hex(FF_THEME_COLOR_SURFACE), 0);
     lv_obj_set_style_bg_opa(strip, LV_OPA_COVER, 0);
@@ -116,6 +186,16 @@ void ff_scr_banner_build(lv_obj_t *parent, ff_app_banner_t const *banner, bool c
     lv_obj_set_style_border_color(strip, lv_color_hex(banner_accent(banner->kind)), 0);
     lv_obj_set_style_border_opa(strip, LV_OPA_60, 0);
     lv_obj_clear_flag(strip, LV_OBJ_FLAG_SCROLLABLE);
+    /* Clear LVGL's default LV_OBJ_FLAG_PRESS_LOCK ("keep the object
+     * pressed, and still fire CLICKED on release, even if the press slid
+     * off it") — the #145 launcher lesson (scr_launcher.c/scr_compose.c's
+     * own copies of this fix; see either's comment for the full LVGL
+     * mechanism). Without this, a real finger that presses the banner
+     * and drags away before lifting still opens it on release — a
+     * scroll/dismiss gesture across the strip must never be read as a
+     * deliberate tap. See test_scr_banner.c's
+     * S26d_AC2_banner_drag_off_emits_nothing for the real-indev proof. */
+    lv_obj_clear_flag(strip, LV_OBJ_FLAG_PRESS_LOCK);
     lv_obj_add_event_cb(strip, banner_open_cb, LV_EVENT_CLICKED, NULL);
     /* Press feedback (every tappable control, S24's standing convention):
      * a visible amber-toward-accent wash on touch-down. */
@@ -132,8 +212,12 @@ void ff_scr_banner_build(lv_obj_t *parent, ff_app_banner_t const *banner, bool c
     /* Row 1: sender name (their crew color — the "prove you meant this"
      * honest-identity convention every other name in this app follows:
      * an empty name, e.g. a paired member whose NodeInfo hasn't arrived
-     * yet, renders as an honest blank rather than a fabricated one) +
-     * the real age, right. */
+     * yet, renders as an honest blank rather than a fabricated one)
+     * beside the real age — at this width there is no room for a
+     * separate age "chip" in a top-right corner (spec: "the age may
+     * drop to a single line beside the name if the width demands", and
+     * here it does), so both live on row 1, name first, age immediately
+     * after it. */
     lv_obj_t *name = lv_label_create(strip);
     lv_label_set_text(name, banner->name);
     lv_obj_set_style_text_font(name, FF_THEME_FONT_CHIP, 0);
@@ -141,9 +225,9 @@ void ff_scr_banner_build(lv_obj_t *parent, ff_app_banner_t const *banner, bool c
     /* DOTS mode only truncates to ONE line when the label's HEIGHT is
      * bounded too — width alone makes LVGL wrap instead (scr_inbox.c's
      * own documented lesson, same fix applied here). */
-    lv_obj_set_size(name, BANNER_TEXT_W, 18);
+    lv_obj_set_size(name, BANNER_TEXT_W, BANNER_ROW_H);
     lv_label_set_long_mode(name, LV_LABEL_LONG_MODE_DOTS); /* ellipsize, never overflow off-glass */
-    lv_obj_set_pos(name, BANNER_TEXT_X, 6);
+    lv_obj_set_pos(name, BANNER_TEXT_X, BANNER_ROW1_Y);
 
     char age_buf[12];
     ff_fmt_age(age_buf, sizeof(age_buf), banner->age_ms); /* honest, real age — never a fabricated "now" */
@@ -151,9 +235,12 @@ void ff_scr_banner_build(lv_obj_t *parent, ff_app_banner_t const *banner, bool c
     lv_label_set_text(age, age_buf);
     lv_obj_set_style_text_font(age, FF_THEME_FONT_CHIP, 0);
     lv_obj_set_style_text_color(age, lv_color_hex(FF_THEME_COLOR_MUTED), 0);
-    lv_obj_set_style_text_align(age, LV_TEXT_ALIGN_RIGHT, 0);
-    lv_obj_set_width(age, BANNER_AGE_W);
-    lv_obj_align(age, LV_ALIGN_TOP_RIGHT, -BANNER_PAD_X, 6);
+    /* Same DOTS + bounded-height ellipsis as name/body above: even the
+     * coarsest ff_fmt_age output ("59 MIN") can outrun BANNER_AGE_W at
+     * this width, and this must still never overflow off the strip. */
+    lv_obj_set_size(age, BANNER_AGE_W, BANNER_ROW_H);
+    lv_label_set_long_mode(age, LV_LABEL_LONG_MODE_DOTS);
+    lv_obj_set_pos(age, BANNER_W - BANNER_PAD_X - BANNER_AGE_W, BANNER_ROW1_Y);
 
     /* Row 2: the preview body (plain ink — the name above already carries
      * the color/identity cue, so this stays legible against any kind's
@@ -162,7 +249,7 @@ void ff_scr_banner_build(lv_obj_t *parent, ff_app_banner_t const *banner, bool c
     lv_label_set_text(body, banner->text);
     lv_obj_set_style_text_font(body, FF_THEME_FONT_CHIP, 0);
     lv_obj_set_style_text_color(body, lv_color_hex(FF_THEME_COLOR_INK), 0);
-    lv_obj_set_size(body, BANNER_W - BANNER_TEXT_X - BANNER_PAD_X, 18); /* DOTS + bounded height, see above */
+    lv_obj_set_size(body, BANNER_W - BANNER_TEXT_X - BANNER_PAD_X, BANNER_ROW_H); /* DOTS + bounded height, see above */
     lv_label_set_long_mode(body, LV_LABEL_LONG_MODE_DOTS);
-    lv_obj_set_pos(body, BANNER_TEXT_X, 27);
+    lv_obj_set_pos(body, BANNER_TEXT_X, BANNER_ROW2_Y);
 }

@@ -137,6 +137,79 @@ A notification **wakes the screen** (DIM/OFF → ACTIVE) — otherwise "come fin
 me" is useless while idle. Honest data: a banner shows the real `at_ms`
 age via `ff_fmt_age`, never a fabricated "now".
 
+**Placement (maintainer decision B, 2026-09-02; refined 2026-09-02 orchestrator
+review round 2):** the BANNER strip covers the status bar row (clock · MESH ·
+battery — `RADAR_LAYOUT_STATUS_BAR_DY`), not the row below it. A transient
+banner should hide the LEAST valuable row on whatever face is showing; the
+strip's original position (just below the status bar) instead covered the
+top of Radar's compass/close-range readout, or a thread's first message
+bubble — both more valuable than the clock/mesh/battery row a 6 s banner can
+safely eclipse.
+
+Round 1 centered the strip exactly on `RADAR_LAYOUT_STATUS_BAR_DY` (-160)
+and shrank its width to ~90 px to fit the round glass there — technically
+correct but too narrow to read as a banner (only the MESH label was ever
+covered; sender name and preview text were crushed to one or two
+characters). Round 2 instead finds the LOWEST (least-negative) centre whose
+top edge still clears the status text's own measured top (y=38 on a 412 px
+puck): `BANNER_CY = RADAR_LAYOUT_STATUS_BAR_DY + 14` (dy -146, puck-local
+y=60) — still derived from the status-row constant, not a second
+independent number, just offset by the amount that trade needs. At that
+height the strip widens back out to 160 px (up from round 1's 90, still well
+short of the original 240) while keeping a real ≥10 px margin off
+`FF_THEME_GLASS_R`/`FF_THEME_GLASS_CX/CY` at every corner (see
+`scr_banner.c`'s own layout comment for the exact chord math, including a
+correction to which radius that check runs against — `FF_THEME_GLASS_R`
+200, the real measured glass, not the framebuffer's 206). At this width the
+strip now reaches (and partially covers) the clock and battery labels too,
+not just MESH — accepted deliberately: the strip's own rectangle has one
+constant y-range across its whole width, so wherever it does reach it
+covers the text FULLY top-to-bottom, never a half-height sliver poking out.
+The age no longer fits as a separate top-right corner chip; it sits beside
+the name on the same row instead, and at 160 px both the sender's full demo
+name and a preview past 10 characters render before DOTS ellipsis has to
+step in.
+
+Widening the strip this much also reaches `scr_inbox.c`'s pinned BACK
+button (`FF_INBOX_BACK_Y`/`_PX`) on the thread/picker/popup/rally
+sub-views. Rather than either shrinking the strip back down (defeating the
+readability fix above) or growing `scr_banner.c` face-aware knowledge of
+`scr_inbox.c`'s internals, `scr_nav.c` — the one place that already
+composes every face's content with the banner overlay — runs a shared
+post-pass (`ff_scr_nav_mask_clickables_under_banner`, scr_nav.h) right
+after building it.
+
+**The masking rule (review round 3 correction):** an earlier pass masked
+`LV_OBJ_FLAG_CLICKABLE` on ANY control the banner merely touched, on the
+claim that LVGL's own top-z hit-testing already routes taps there to the
+banner — measurably false for a PARTIAL overlap (the thread BACK button
+is only 25 of its 44px width under the strip, leaving a real, visible
+19px sliver LVGL would route straight to BACK). The rule is now honest:
+a control is masked only when its UNCOVERED REMAINDER — the largest
+rectangular piece of it left outside the banner
+(`ff_scr_nav_rect_best_remainder`) — itself fails `FF_THEME_MIN_HIT_PX`
+(44px) in either dimension, the same floor `test_face_hit_targets.c`
+already holds every other control to; a control whose remainder still
+clears 44px both ways keeps its clickability, since LVGL routes correctly
+between it and the banner on its own. Checked against every real overlap
+this repo ships: the thread BACK button's remainder (a 19px-wide sliver)
+fails the width floor and stays masked; nothing currently produces a
+"kept clickable" case.
+
+**Launcher wiring:** the launcher (home) face now composites the banner too
+— `ff_scr_launcher_build` calls `ff_scr_banner_build` last, the same
+"built after, drawn on top" convention `scr_nav.c` uses for every other
+face, then calls the SAME shared `ff_scr_nav_mask_clickables_under_banner`
+pass rather than a second, launcher-specific rule. The banner only ever
+reaches the top compass satellite (Inbox, `compass_pos == 0`); its
+remainder there (~88x37px) fails the 44px HEIGHT floor, so it is masked —
+accepted as intentional and semantically consistent: while a banner shows,
+that region IS the banner, and tapping it opens the sender's thread, which
+is roughly where tapping Inbox would have led anyway. The launcher's own
+status row (bottom of the puck, `LAUNCHER_STATUS_ROW_DY`) is far enough
+from the banner's position to never compete with it. Launcher renders
+WITHOUT an active banner are untouched (goldens byte-identical).
+
 ## Slices + acceptance criteria
 
 ### (a) Reclaim the festpack token buffer — `[api]`

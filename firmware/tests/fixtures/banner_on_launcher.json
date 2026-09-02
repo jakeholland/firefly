@@ -1,0 +1,17 @@
+{
+  "fixture": "banner_on_launcher",
+  "face": "launcher",
+  "radar": {
+    "clock_str": "9:46 pm",
+    "batt_pct": 74
+  },
+  "banner": {
+    "active": true,
+    "kind": "message",
+    "node_id": 111,
+    "name": "DANA",
+    "color_idx": 0,
+    "text": "you close? we're at the tower",
+    "age_ms": 4000
+  }
+}

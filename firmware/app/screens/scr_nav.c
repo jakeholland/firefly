@@ -42,6 +42,183 @@
 #include "scr_settings.h" /* Settings — the launcher's fourth circle */
 #include "scr_inbox.h" /* S08c */
 
+/* ---------------------------------------------------------------------
+ * S26 slice d (round 3, orchestrator review on #157): the WIDER banner
+ * (scr_banner.c's own geometry comment) now reaches far enough to
+ * overlap real controls underneath it on some faces — the Inbox
+ * thread/picker/popup/rally sub-views' pinned BACK button
+ * (FF_INBOX_BACK_Y/PX, scr_inbox.c) sits close enough to center that
+ * the banner's width overlaps it.
+ *
+ * Round 2 masked CLICKABLE on ANY object the banner's rect touched at
+ * all, on the claim "LVGL's hit-testing already routes taps there to
+ * the banner". Review round 3 measured that claim and found it false
+ * for a PARTIAL overlap: the thread BACK button's rect is (109,30)-
+ * (153,74) against a banner of (128,36)-(288,84) — only the right 25 of
+ * its 44px width sits under the strip. The left 19px is a REAL, visibly
+ * exposed sliver LVGL would route straight to BACK, and round 2 was
+ * silently eating a tap there for the banner's whole 6s life.
+ *
+ * The honest rule, replacing that claim: mask an object only when its
+ * UNCOVERED REMAINDER cannot itself be a usable target — i.e. the
+ * largest rectangular piece of it left outside the banner has width OR
+ * height under FF_THEME_MIN_HIT_PX (44), the exact floor
+ * test_face_hit_targets.c's own sweep already enforces for every OTHER
+ * control on glass. An object whose remainder still clears 44px in BOTH
+ * dimensions keeps its clickability — LVGL routes correctly on its own
+ * (banner on the covered part, the object on its own uncovered part),
+ * so masking it would only make a real target unreachable for no
+ * reason. This is the single source of truth for "too small to be a
+ * target" already; this rule doesn't invent a second one, it applies
+ * the existing one to a REMAINDER rect instead of the object's own full
+ * rect.
+ *
+ * Checked against every real overlap this repo currently ships: the
+ * Inbox thread BACK button's largest remainder (the 19px-wide left
+ * sliver above) fails the width floor -> masked, same outcome as round
+ * 2 for that control, now for the true reason. The launcher's Inbox
+ * satellite has an 88px-wide, ~37px-tall remainder below the strip ->
+ * fails the HEIGHT floor -> masked too (scr_launcher.c calls this SAME
+ * exported pass — see its own call site comment — rather than growing a
+ * second copy of the walk). No shipped fixture currently produces a
+ * "kept clickable" case — if one ever does, and its FULL (uncovered-
+ * remainder-aside) rect still trips test_face_hit_targets.c's own
+ * adjacency/containment check against the banner, that sweep is the
+ * tie-breaker: mask the object rather than keep a control the sweep
+ * itself calls unsafe. This pass only ever WIDENS what's reachable
+ * versus round 2, never narrows it, so it cannot be the thing that
+ * newly fails the sweep.
+ *
+ * The WALK is confined to this file (`ff_scr_nav_mask_clickables_under_
+ * banner`, exported so `scr_launcher.c` can reuse the identical logic
+ * rather than duplicating it) so no screen file needs to know about any
+ * OTHER screen file's controls — `scr_inbox.c`/`scr_launcher.c` stay as
+ * banner-unaware as `scr_banner.h`'s own "no face-awareness" contract
+ * promises. The remainder GEOMETRY itself
+ * (ff_scr_nav_rect_best_remainder/_remainder_clears_floor, below) is
+ * additionally exposed purely for direct unit testing
+ * (test_scr_banner.c), the same "expose the pure mechanic so a test can
+ * name it precisely" convention `ff_scr_launcher_satellite_deg` already
+ * set.
+ * ------------------------------------------------------------------- */
+
+static int32_t nav_rect_w(lv_area_t const *r)
+{
+    return r->x2 - r->x1 + 1; /* lv_area_t's x2/y2 are INCLUSIVE */
+}
+
+static int32_t nav_rect_h(lv_area_t const *r)
+{
+    return r->y2 - r->y1 + 1;
+}
+
+static bool nav_rects_overlap(lv_area_t const *a, lv_area_t const *b)
+{
+    return a->x1 <= b->x2 && b->x1 <= a->x2 && a->y1 <= b->y2 && b->y1 <= a->y2;
+}
+
+/**
+ * ff_scr_nav_rect_best_remainder — the largest-by-area of the (up to)
+ * four axis-aligned SLICES of `obj` left over once `cover` is
+ * subtracted: the part of `obj` entirely above, below, left of, or
+ * right of `cover`. Deliberately NOT full rectilinear polygon
+ * subtraction (which can leave an L/U/ring-shaped remainder for a
+ * `cover` that pokes into the middle of `obj` on two axes) — a single
+ * "is there still one big-enough rectangular target here" answer is
+ * the only question FF_THEME_MIN_HIT_PX cares about, and every real
+ * case this file handles (a banner strip clipping one edge of a
+ * button/satellite) is exactly the shape this model is exact for. A
+ * slice candidate with non-positive width or height (`cover` doesn't
+ * clip that side of `obj` at all) is never considered. If `obj` and
+ * `cover` don't overlap, returns `*obj` unchanged — nothing to
+ * subtract. If `cover` fully contains `obj` (or matches it exactly),
+ * no slice survives and a degenerate zero-area rect is returned, which
+ * ff_scr_nav_remainder_clears_floor correctly reads as "not a target".
+ */
+lv_area_t ff_scr_nav_rect_best_remainder(lv_area_t obj, lv_area_t cover)
+{
+    if (!nav_rects_overlap(&obj, &cover)) {
+        return obj;
+    }
+
+    lv_area_t candidates[4];
+    int n = 0;
+    if (cover.y1 > obj.y1) { /* the slice above cover */
+        candidates[n] = obj;
+        candidates[n].y2 = cover.y1 - 1;
+        n++;
+    }
+    if (cover.y2 < obj.y2) { /* below cover */
+        candidates[n] = obj;
+        candidates[n].y1 = cover.y2 + 1;
+        n++;
+    }
+    if (cover.x1 > obj.x1) { /* left of cover */
+        candidates[n] = obj;
+        candidates[n].x2 = cover.x1 - 1;
+        n++;
+    }
+    if (cover.x2 < obj.x2) { /* right of cover */
+        candidates[n] = obj;
+        candidates[n].x1 = cover.x2 + 1;
+        n++;
+    }
+    if (n == 0) {
+        lv_area_t zero = {0, 0, -1, -1}; /* width=height=0 via the +1 convention above */
+        return zero;
+    }
+
+    lv_area_t best = candidates[0];
+    int64_t best_area = (int64_t)nav_rect_w(&best) * (int64_t)nav_rect_h(&best);
+    for (int i = 1; i < n; i++) {
+        int64_t area = (int64_t)nav_rect_w(&candidates[i]) * (int64_t)nav_rect_h(&candidates[i]);
+        if (area > best_area) {
+            best = candidates[i];
+            best_area = area;
+        }
+    }
+    return best;
+}
+
+/**
+ * ff_scr_nav_remainder_clears_floor — true iff `obj`'s largest remaining
+ * slice after `cover` is subtracted (ff_scr_nav_rect_best_remainder)
+ * still measures >= FF_THEME_MIN_HIT_PX in BOTH dimensions — the exact
+ * bar test_face_hit_targets.c's own sweep already holds every other
+ * control to. false means the remainder is too small to be its own
+ * usable target, i.e. `obj` should be masked while `cover` sits over
+ * it; true means it stays clickable (LVGL's own z-order hit-testing
+ * routes a tap correctly between the two without any help from this
+ * file).
+ */
+bool ff_scr_nav_remainder_clears_floor(lv_area_t obj, lv_area_t cover)
+{
+    lv_area_t rem = ff_scr_nav_rect_best_remainder(obj, cover);
+    return nav_rect_w(&rem) >= FF_THEME_MIN_HIT_PX && nav_rect_h(&rem) >= FF_THEME_MIN_HIT_PX;
+}
+
+void ff_scr_nav_mask_clickables_under_banner(lv_obj_t *root, lv_obj_t *banner, lv_area_t const *banner_area)
+{
+    if (root == NULL || root == banner) {
+        return; /* never touch the banner's own subtree */
+    }
+    uint32_t n = lv_obj_get_child_count(root);
+    for (uint32_t i = 0; i < n; i++) {
+        lv_obj_t *child = lv_obj_get_child(root, i);
+        if (child == banner) {
+            continue;
+        }
+        if (lv_obj_has_flag(child, LV_OBJ_FLAG_CLICKABLE)) {
+            lv_area_t a;
+            lv_obj_get_coords(child, &a);
+            if (nav_rects_overlap(&a, banner_area) && !ff_scr_nav_remainder_clears_floor(a, *banner_area)) {
+                lv_obj_clear_flag(child, LV_OBJ_FLAG_CLICKABLE);
+            }
+        }
+        ff_scr_nav_mask_clickables_under_banner(child, banner, banner_area);
+    }
+}
+
 void ff_scr_nav_build(ff_app_state_t const *state)
 {
     if (state == NULL) {
@@ -138,4 +315,15 @@ void ff_scr_nav_build(ff_app_state_t const *state)
      * ff_scr_nav_build in that case, so a banner never competes with the
      * takeover for the same glass. */
     ff_scr_banner_build(puck, &state->banner, state->settings.colorblind);
+
+    if (state->banner.active) {
+        /* The strip is the LAST child ff_scr_banner_build just added to
+         * `puck` (its own doc comment's contract). Mask whatever it now
+         * covers — see nav_mask_clickables_under_banner's own comment. */
+        lv_obj_t *strip = lv_obj_get_child(puck, lv_obj_get_child_count(puck) - 1);
+        lv_obj_update_layout(puck); /* coords are lazily computed — force it before reading any (S99 precedent) */
+        lv_area_t strip_area;
+        lv_obj_get_coords(strip, &strip_area);
+        ff_scr_nav_mask_clickables_under_banner(puck, strip, &strip_area);
+    }
 }
