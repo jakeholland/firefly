@@ -71,8 +71,10 @@ static const char *TAG = "ff_display";
  * image toward the top-left; if the wrap instead appears on the LEFT/TOP,
  * the value is too high. Leave the drawn resolution (412) and orientation
  * untouched — only these two numbers change. */
-#define FF_LCD_X_GAP 5 /* measured on glass with the ruler (CONFIG_FF_GLASS_RULER), 2026-09-02 — see docs/hardware/glass-offset.md */
-#define FF_LCD_Y_GAP 1 /* measured on glass with the ruler, 2026-09-02 — see docs/hardware/glass-offset.md */
+#define FF_LCD_X_GAP 4 /* measured on glass with the ruler (CONFIG_FF_GLASS_RULER), 2026-09-02 — see docs/hardware/glass-offset.md. MUST be a multiple of 4: the SPD2010 only accepts 4-px-aligned windows in ITS coordinates (the #131 ghosting), and the gap shifts every flush window. */
+#define FF_LCD_Y_GAP 0 /* measured (5,1) read best by eye; snapped to the 4-px window alignment the panel requires — (5,1) painted stray lines at the top/right edges */
+_Static_assert(FF_LCD_X_GAP % 4 == 0 && FF_LCD_Y_GAP % 4 == 0,
+              "panel gaps must be multiples of 4: the SPD2010 requires 4-px-aligned flush windows in panel coordinates");
 
 /* ---- Display QSPI pins (Display_SPD2010.h) --------------------------- */
 #define FF_LCD_HOST SPI2_HOST
