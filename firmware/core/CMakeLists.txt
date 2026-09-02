@@ -159,6 +159,24 @@ if(FF_BUILD_TESTS)
     add_test(NAME test_flare COMMAND test_flare)
 endif()
 
+# S26g (core/include/ff_flare_mark.h — the flare mark's geometry table,
+# shared between app/screens/scr_flare.c's LVGL takeover screen and the
+# esp32s3 target's raw pre-LVGL boot splash; docs/specs/S26-device-
+# lifecycle.md "(g) Boot animation" amendment, 2026-09-02). Header-only
+# (no ff-core source to add — see the header's own top comment), so this
+# test #includes it directly; see test_flare_mark.c's top comment for why
+# it still links ff-core (libm for sinf/cosf, propagated the same way
+# test_geo.c documents).
+if(FF_BUILD_TESTS)
+    add_executable(test_flare_mark
+        tests/test_flare_mark.c
+    )
+    target_link_libraries(test_flare_mark PRIVATE ff-core unity)
+    ff_apply_warnings(test_flare_mark)
+
+    add_test(NAME test_flare_mark COMMAND test_flare_mark)
+endif()
+
 # S08b (core/feed — Signals-face event ring buffer; docs/specs/S08-signals-t9.md,
 # slice b. Wiring — mc events -> feed pushes, crew-paired-sender filter —
 # lives in app/ff_wiring.c, not here: core stays free of meshclient.)
