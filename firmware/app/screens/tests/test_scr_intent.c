@@ -35,6 +35,7 @@
  * emitted kinds (the exact PR #20 regression class, now one layer up)
  * fails both GO/DISMISS tests on the kind assertion the same way.
  */
+#include <math.h> /* sqrtf — the S99 compose SEND corner-distance test */
 #include <string.h>
 
 #include "unity.h"
@@ -51,6 +52,7 @@
 #include "scr_settings.h"
 #include "scr_signals.h"
 
+#include "ff_theme.h" /* FF_THEME_PUCK_RADIUS_PX — the S99 compose SEND corner-distance test */
 #include "radar_layout.h" /* RADAR_LAYOUT_DOT_PX — S17a AC4 render tests, see that section below */
 
 /* Frozen-by-default tick — same convention as test_scr_flare.c: nothing
@@ -699,6 +701,106 @@ static void S99_compose_pred_candidates_have_press_state_feedback(void)
     int checked = 0;
     walk_assert_press_feedback(lv_screen_active(), &checked);
     TEST_ASSERT_GREATER_THAN_INT_MESSAGE(0, checked, "swept zero clickable controls — test is vacuous");
+}
+
+/* =================================================================== */
+/* Compose drag-off (PR #148 review, FAIL 1): LVGL's default             */
+/* LV_OBJ_FLAG_PRESS_LOCK keeps an object "pressed" — and still fires    */
+/* CLICKED on release — even after a real touch has slid off it. A       */
+/* finger that presses SEND (or any key) and drags away before lifting   */
+/* must never commit that key; compose_clear_press_lock (the #145        */
+/* launcher-lesson fix, scr_launcher.c) clears the flag on every         */
+/* clickable control in this file. Both tests drag through a REAL        */
+/* synthetic indev (drag_v — LVGL's own press/move/release path, the     */
+/* same mechanism a real finger drives), not a synthetic CLICKED event:  */
+/* only a real drag can exercise PRESS_LOCK at all.                      */
+/* =================================================================== */
+
+static void S99_compose_drag_off_send_emits_nothing(void)
+{
+    ff_app_compose_t compose;
+    memset(&compose, 0, sizeof(compose));
+    ff_scr_compose_build(&compose);
+    lv_obj_update_layout(lv_screen_active()); /* coords are lazily computed — force it before reading any */
+
+    lv_obj_t *send = find_button_with_label(lv_screen_active(), "SEND");
+    TEST_ASSERT_NOT_NULL(send);
+    lv_area_t a;
+    lv_obj_get_coords(send, &a);
+    int32_t cx = (a.x1 + a.x2) / 2;
+    int32_t cy = (a.y1 + a.y2) / 2;
+
+    /* Press on SEND's own center, drag straight down 150px (>= the
+     * review's 100px ask — comfortably off SEND, which is only 44px
+     * tall), release far away, never back on SEND. */
+    drag_v(cy, cy + 150, cx);
+
+    TEST_ASSERT_EQUAL_INT_MESSAGE(0, s_spy.count, "a slide-off of SEND must never commit SEND_TEXT");
+}
+
+/* Same proof for an ordinary T9 key (DEF, key 3) — the review's "and the
+ * same for a T9 key" ask, not just SEND. */
+static void S99_compose_drag_off_key_emits_nothing(void)
+{
+    ff_app_compose_t compose;
+    memset(&compose, 0, sizeof(compose));
+    ff_scr_compose_build(&compose);
+    lv_obj_update_layout(lv_screen_active());
+
+    lv_obj_t *def = find_button_with_label(lv_screen_active(), "DEF");
+    TEST_ASSERT_NOT_NULL(def);
+    lv_area_t a;
+    lv_obj_get_coords(def, &a);
+    int32_t cx = (a.x1 + a.x2) / 2;
+    int32_t cy = (a.y1 + a.y2) / 2;
+
+    drag_v(cy, cy + 150, cx);
+
+    TEST_ASSERT_EQUAL_INT_MESSAGE(0, s_spy.count, "a slide-off of a T9 key must never commit T9_KEY");
+}
+
+/* =================================================================== */
+/* Compose SEND corner-distance (PR #148 review, should-fix 3): SEND's   */
+/* farthest corner must sit within (radius - safety) = 196px of the      */
+/* puck's own center — the true 2D Euclidean bezel-margin bar, not just  */
+/* inside the raw 206px circle (which test_face_hit_targets.c's sweep    */
+/* already asserts) and not just safe along its own row's horizontal     */
+/* chord (compose_safe_margin_x's guarantee, which is a DIFFERENT,       */
+/* weaker quantity for a corner point — see compose_send_x's own         */
+/* comment in scr_compose.c for why).                                    */
+/* =================================================================== */
+
+static void S99_compose_send_corner_clears_bezel_margin_bar(void)
+{
+    ff_app_compose_t compose;
+    memset(&compose, 0, sizeof(compose));
+    ff_scr_compose_build(&compose);
+    lv_obj_update_layout(lv_screen_active());
+
+    lv_obj_t *send = find_button_with_label(lv_screen_active(), "SEND");
+    TEST_ASSERT_NOT_NULL(send);
+    lv_area_t a;
+    lv_obj_get_coords(send, &a);
+
+    /* Puck center (window == puck, no margin — ff_theme.h). Check all
+     * four corners; the farthest one is what matters, but checking all
+     * four is what actually proves it rather than assuming which one. */
+    float const cx = (float)FF_THEME_PUCK_RADIUS_PX;
+    float const cy = (float)FF_THEME_PUCK_RADIUS_PX;
+    float const safe_r = (float)FF_THEME_PUCK_RADIUS_PX - 10.0f; /* FF_COMPOSE_SAFETY_PX, scr_compose.c */
+    float const corners_x[4] = {(float)a.x1, (float)a.x2, (float)a.x1, (float)a.x2};
+    float const corners_y[4] = {(float)a.y1, (float)a.y1, (float)a.y2, (float)a.y2};
+    float max_dist = 0.0f;
+    for (int i = 0; i < 4; i++) {
+        float dx = corners_x[i] - cx;
+        float dy = corners_y[i] - cy;
+        float dist = sqrtf(dx * dx + dy * dy);
+        if (dist > max_dist) max_dist = dist;
+    }
+    char msg[96];
+    snprintf(msg, sizeof(msg), "SEND's farthest corner measures %.1fpx from center (bar: %.1fpx)", (double)max_dist,
+              (double)safe_r);
+    TEST_ASSERT_LESS_OR_EQUAL_FLOAT_MESSAGE(safe_r, max_dist, msg);
 }
 
 /* =================================================================== */
@@ -2176,6 +2278,9 @@ int main(void)
     RUN_TEST(S99_compose_space_and_send_clear_the_maintainer_gap_ask);
     RUN_TEST(S99_compose_every_key_has_press_state_feedback);
     RUN_TEST(S99_compose_pred_candidates_have_press_state_feedback);
+    RUN_TEST(S99_compose_drag_off_send_emits_nothing);
+    RUN_TEST(S99_compose_drag_off_key_emits_nothing);
+    RUN_TEST(S99_compose_send_corner_clears_bezel_margin_bar);
     RUN_TEST(S24b_inbox_member_row_tap_emits_open_thread);
     RUN_TEST(S24b_inbox_crew_row_tap_emits_open_thread_crew);
     RUN_TEST(S24b_inbox_quiet_member_row_is_tappable);

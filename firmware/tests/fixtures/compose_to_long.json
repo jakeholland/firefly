@@ -1,0 +1,10 @@
+{
+  "fixture": "compose_to_long",
+  "face": "compose",
+  "compose": {
+    "to_name": "WHOLE CREW",
+    "text": "",
+    "has_pending": false,
+    "mode": "abc"
+  }
+}

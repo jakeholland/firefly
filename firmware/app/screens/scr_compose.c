@@ -167,21 +167,42 @@
 #define FF_COMPOSE_HEADER_Y 24
 #define FF_COMPOSE_HEADER_H FF_THEME_MIN_HIT_PX /* back button / SEND (SEND relocation: was back/mode chip) */
 
-/* SEND's header slot — kept at the mode chip's OLD width (64px, already
- * >= the hit floor by a comfortable 20px) rather than grown further: TO's
- * centered label already runs right up against this corner control at
- * this width (a pre-existing cosmetic overlap, not something this PR
- * introduces — see this file's header comment), and widening this slot
- * only crops more of "TO: <name>" for no functional gain. See this
- * file's header comment ("SEND relocation") for why this is a straight
- * swap that costs no extra vertical budget. */
-#define FF_COMPOSE_SEND_HEADER_W 64
+/* SEND's header slot. PR #148 review (should-fix 3): the original 64px
+ * width, positioned via compose_safe_margin_x's row-wide margin (a
+ * chord-at-ONE-Y approximation), left SEND's own farthest CORNER
+ * (292,24) ~201px from the puck's center — past the intended
+ * radius(206) - safety(10) = 196px bezel-margin bar, even though the
+ * chord math it was positioned with is exactly right for a full-width
+ * ROW. A corner control needs the true 2D distance checked, not just
+ * the row's own horizontal chord at its farthest Y — see
+ * compose_send_x() below, which solves that directly. Narrowed 64->48px
+ * (still a comfortable 4px over the 44px floor) because compose_send_x's
+ * fix moves SEND's RIGHT edge left to satisfy the corner bar — at a
+ * fixed right edge, a NARROWER control's LEFT edge sits farther right,
+ * which is exactly the room should-fix 2 (TO's label) needs to avoid
+ * being covered; see compose_to_reserved_left()/_width() below. */
+#define FF_COMPOSE_SEND_HEADER_W 48
 _Static_assert(FF_COMPOSE_SEND_HEADER_W >= FF_THEME_MIN_HIT_PX, "header SEND must clear the 44px hit-target floor");
 
 #define FF_COMPOSE_BUBBLE_Y (FF_COMPOSE_HEADER_Y + FF_COMPOSE_HEADER_H + 8)
 #define FF_COMPOSE_BUBBLE_H 60
 
-#define FF_COMPOSE_GRID_Y (FF_COMPOSE_BUBBLE_Y + FF_COMPOSE_BUBBLE_H + 8)
+/* Gap spent between the bubble/PRED band and the T9 grid — PR #148
+ * review (should-fix 4): trimmed 8->6px to buy the grid 2px of headroom
+ * (GRID_Y 144->142, the max this file's own PRED-strip-clearance assert
+ * below allows), which — because the bottom row sits near the pole,
+ * where the circle narrows fast — is worth ~8px of extra ROW WIDTH at
+ * the bottom row, not just 2px (verified: margin(334,56)=123.4 vs
+ * margin(336,56)=127.5, i.e. row_w 165.3 vs 157.1). Safe to shrink: this
+ * gap sits between the bubble/draft area (non-clickable — a display box
+ * or a plain label, not a control) and the grid's first row, so it is
+ * NOT one of the pairs FF_HIT_MIN_GAP_PX's 8px CLICKABLE-adjacency floor
+ * applies to (that floor is about two independent tap targets, ff_theme.h);
+ * it is purely the cosmetic breathing room between a display element and
+ * the keys below it. Spent entirely on should-fix 4's DEL/SPACE width
+ * (compose_build_bottom_row) — see that function's own comment. */
+#define FF_COMPOSE_BUBBLE_GRID_GAP 6
+#define FF_COMPOSE_GRID_Y (FF_COMPOSE_BUBBLE_Y + FF_COMPOSE_BUBBLE_H + FF_COMPOSE_BUBBLE_GRID_GAP)
 /* S17 slice b (AC2, docs/specs/S17-usability-hardening.md): was 6px — the
  * dense T9 grid is exactly the stress case that slice's task brief named,
  * and 6px measured under `FF_HIT_MIN_GAP_PX` (8px, ff_theme.h) on every
@@ -205,14 +226,19 @@ _Static_assert(FF_COMPOSE_SEND_HEADER_W >= FF_THEME_MIN_HIT_PX, "header SEND mus
                                 * "why 56, not 57" chord-width search. */
 #define FF_COMPOSE_BOTTOM_ROW_H 56 /* kept equal to FF_COMPOSE_KEY_H — see above */
 
-/* DEL and MODE (the bottom row's two low-frequency neighbors) are pinned
- * to the exact hit floor; SPACE — by far this row's most-tapped key —
- * takes every pixel left over (computed at build time from the row's own
- * chord-derived width in compose_build_bottom_row, same "never hand
- * math" discipline as every other number here). See this file's header
- * comment, "SEND relocation". */
-#define FF_COMPOSE_BOTTOM_SIDE_W FF_THEME_MIN_HIT_PX
-_Static_assert(FF_COMPOSE_BOTTOM_SIDE_W >= FF_THEME_MIN_HIT_PX, "DEL/MODE must clear the 44px hit-target floor");
+/* PR #148 review (should-fix 4): pinning DEL to the bare hit floor
+ * shrank it from its pre-this-PR 52px to 44px — a real regression, not
+ * an improvement, in a "make buttons bigger" PR. DEL gets its old 52px
+ * back; MODE (this row's least-tapped key — mistapping it only cycles
+ * keypad pages, never sends or deletes) is the one pinned to the exact
+ * floor instead. SPACE still takes whatever the row's own chord-derived
+ * width leaves over (computed at build time in compose_build_bottom_row,
+ * same "never hand math" discipline as every other number here). See
+ * this file's header comment, "SEND relocation". */
+#define FF_COMPOSE_DEL_W 52
+#define FF_COMPOSE_MODE_W FF_THEME_MIN_HIT_PX
+_Static_assert(FF_COMPOSE_DEL_W >= FF_THEME_MIN_HIT_PX, "DEL must clear the 44px hit-target floor");
+_Static_assert(FF_COMPOSE_MODE_W >= FF_THEME_MIN_HIT_PX, "MODE chip must clear the 44px hit-target floor");
 
 _Static_assert(FF_COMPOSE_KEY_H >= FF_THEME_MIN_HIT_PX, "compose grid keys must clear the 44px hit-target floor");
 _Static_assert(FF_COMPOSE_BOTTOM_ROW_H >= FF_THEME_MIN_HIT_PX,
@@ -280,6 +306,64 @@ static int32_t compose_safe_margin_x(int32_t top_y, int32_t h)
     float margin = ff_layout_safe_margin_x((float)top_y, (float)h, (float)FF_THEME_PUCK_RADIUS_PX,
                                             (float)FF_THEME_PUCK_RADIUS_PX, FF_COMPOSE_SAFETY_PX);
     return (int32_t)ceilf(margin);
+}
+
+/**
+ * compose_send_x — SEND's LEFT x position in the header's top-right
+ * corner slot. PR #148 review (should-fix 3): compose_safe_margin_x's
+ * chord-at-one-Y approximation only guarantees a ROW's full horizontal
+ * span is safe at that row's OWN farthest Y line — it says nothing about
+ * a single CORNER control's true 2D distance from center, which can
+ * (and did) end up past the intended radius-minus-safety bezel bar even
+ * while satisfying the row-wide chord math exactly (measured: the
+ * pre-fix corner sat ~201px from center, past the intended
+ * radius(206) - safety(10) = 196px bar). This solves the corner question
+ * directly: for SEND's fixed y-band [FF_COMPOSE_HEADER_Y,
+ * +FF_THEME_MIN_HIT_PX), find the edge farther from center-y, then reuse
+ * ff_layout_chord_half_width — the SAME shared primitive
+ * compose_safe_margin_x uses — against a REDUCED radius
+ * (radius - FF_COMPOSE_SAFETY_PX) instead of the raw one: a corner IS a
+ * single point at that farthest y, so "how far can a point at this y be
+ * from center-x and still clear radius R" is exactly chord_half_width's
+ * own question, just asked of the safety-shrunk circle instead of the
+ * true one.
+ */
+static int32_t compose_send_x(void)
+{
+    float const cy = (float)FF_THEME_PUCK_RADIUS_PX;
+    float const y_top = (float)FF_COMPOSE_HEADER_Y;
+    float const y_bot = (float)(FF_COMPOSE_HEADER_Y + FF_THEME_MIN_HIT_PX);
+    float const dy_top = y_top - cy;
+    float const dy_bot = y_bot - cy;
+    float const far_dy = (fabsf(dy_top) > fabsf(dy_bot)) ? dy_top : dy_bot;
+    float const safe_radius = (float)FF_THEME_PUCK_RADIUS_PX - FF_COMPOSE_SAFETY_PX;
+    float const max_dx = ff_layout_chord_half_width(far_dy, safe_radius);
+    int32_t const x2 = (int32_t)floorf((float)FF_THEME_PUCK_RADIUS_PX + max_dx); /* inclusive right edge */
+    return x2 - FF_COMPOSE_SEND_HEADER_W + 1;
+}
+
+/* compose_to_left / compose_to_width — PR #148 review (FAIL 2): TO's
+ * label used to be centered across the WHOLE puck width with no bound,
+ * so a long recipient name silently ran UNDER SEND (drawn after it,
+ * z-order on top) instead of stopping before it — "TO: DANA" rendered
+ * as "TO: DAN", its last glyph simply painted over. Bounded here to the
+ * honest available band between BACK's right edge and SEND's left edge,
+ * each with FF_HIT_MIN_GAP_PX's own 8px clearance (matching this file's
+ * other "give a neighbor room" gaps, even though TO itself isn't
+ * clickable) — paired with LV_LABEL_LONG_MODE_DOTS (ellipsis) at the
+ * build site so anything that doesn't fit truncates cleanly instead of
+ * overflowing onto SEND again. */
+static int32_t compose_to_left(int32_t header_margin)
+{
+    return header_margin + FF_THEME_MIN_HIT_PX + FF_HIT_MIN_GAP_PX;
+}
+
+static int32_t compose_to_width(int32_t header_margin)
+{
+    int32_t const left = compose_to_left(header_margin);
+    int32_t const right = compose_send_x() - FF_HIT_MIN_GAP_PX;
+    int32_t const w = right - left;
+    return (w > 0) ? w : 0;
 }
 
 /* ---------------------------------------------------------------------
@@ -559,6 +643,26 @@ static void compose_mode_chip_click_cb(lv_event_t *e)
  * landed). A press brightens the key: an amber fill (the theme's "lit" colour)
  * with dark ink, applied to LV_STATE_PRESSED so LVGL shows it the instant the
  * finger is down and clears it on release. Works on any base colour. */
+/* Clear LVGL's default LV_OBJ_FLAG_PRESS_LOCK ("keep the object pressed,
+ * and still fire CLICKED on release, even if the press slid off it") on
+ * every clickable control in this file — the #145 launcher lesson
+ * (scr_launcher.c's own copy of this fix, see its own comment for the
+ * full LVGL mechanism). Without this, a real finger that presses SEND
+ * (or any key/chip) and drags away before lifting still fires that
+ * control's click on release — an accidental slide-off commits the key
+ * exactly like a deliberate tap would, which is the opposite of what
+ * this PR's SEND relocation is for. Once cleared, LVGL drops the press
+ * (LV_EVENT_PRESS_LOST) the instant the pointer leaves the control's own
+ * bounds, so a stationary tap (which never leaves those bounds) is
+ * completely unaffected — only a genuine drag-off is neutralized. See
+ * S99_compose_drag_off_send_emits_nothing /
+ * S99_compose_drag_off_key_emits_nothing (test_scr_intent.c) for the
+ * real-indev proof. */
+static void compose_clear_press_lock(lv_obj_t *btn)
+{
+    lv_obj_clear_flag(btn, LV_OBJ_FLAG_PRESS_LOCK);
+}
+
 static void compose_key_press_feedback(lv_obj_t *btn, lv_obj_t *label)
 {
     lv_obj_set_style_bg_color(btn, lv_color_hex(FF_THEME_COLOR_AMBER), LV_STATE_PRESSED);
@@ -578,6 +682,7 @@ static lv_obj_t *compose_make_key(lv_obj_t *parent, char const *legend, int32_t 
     lv_obj_set_style_bg_color(btn, lv_color_hex(bg_hex), 0);
     lv_obj_set_style_bg_opa(btn, LV_OPA_COVER, 0);
     lv_obj_set_style_radius(btn, 10, 0);
+    compose_clear_press_lock(btn);
     lv_obj_add_event_cb(btn, compose_key_click_cb, LV_EVENT_CLICKED, (void *)(uintptr_t)key);
 
     lv_obj_t *label = lv_label_create(btn);
@@ -615,23 +720,29 @@ static void compose_build_grid_row(lv_obj_t *container, ff_app_compose_mode_t mo
 /* DEL / SPACE / MODE — SEND no longer lives in this row (see this file's
  * header comment, "SEND relocation": SEND moved to the header's top-right
  * corner specifically so it can never again sit edge-to-edge with SPACE).
- * DEL and MODE are pinned to FF_COMPOSE_BOTTOM_SIDE_W (the exact hit
- * floor); SPACE takes whatever width is left in the row once both gaps
- * and both side keys are accounted for — computed here from the row's
- * OWN chord-derived width, never hand-picked, same discipline as every
- * other size in this file. */
+ *
+ * PR #148 review (should-fix 4): pinning BOTH DEL and MODE to the bare
+ * 44px floor (the original shape of this fix) shrank DEL from its old
+ * 52x54 to 44x56 — a real regression in a PR whose whole point was
+ * bigger buttons. MODE (the least-tapped key in this row — mistapping it
+ * only cycles ABC/123/SYM/T9) stays AT the floor; DEL gets its own
+ * dedicated FF_COMPOSE_DEL_W (52px, its pre-this-PR width) back; SPACE
+ * still takes whatever the row's own chord-derived width leaves over —
+ * computed here, never hand-picked, same discipline as every other size
+ * in this file. */
 static void compose_build_bottom_row(lv_obj_t *container, ff_app_compose_mode_t mode, int32_t y, int32_t margin_x)
 {
     int32_t row_w = FF_THEME_PUCK_PX - 2 * margin_x;
-    int32_t space_w = row_w - 2 * FF_COMPOSE_BOTTOM_SIDE_W - 2 * FF_COMPOSE_KEY_GAP;
+    int32_t space_w = row_w - FF_COMPOSE_DEL_W - FF_COMPOSE_MODE_W - 2 * FF_COMPOSE_KEY_GAP;
 
     lv_obj_t *del = lv_button_create(container);
     lv_obj_remove_style_all(del);
-    lv_obj_set_size(del, FF_COMPOSE_BOTTOM_SIDE_W, FF_COMPOSE_BOTTOM_ROW_H);
+    lv_obj_set_size(del, FF_COMPOSE_DEL_W, FF_COMPOSE_BOTTOM_ROW_H);
     lv_obj_set_pos(del, margin_x, y);
     lv_obj_set_style_bg_color(del, lv_color_hex(FF_THEME_COLOR_SURFACE), 0);
     lv_obj_set_style_bg_opa(del, LV_OPA_COVER, 0);
     lv_obj_set_style_radius(del, LV_RADIUS_CIRCLE, 0);
+    compose_clear_press_lock(del);
     lv_obj_add_event_cb(del, compose_backspace_cb, LV_EVENT_CLICKED, NULL);
     lv_obj_t *del_lbl = lv_label_create(del);
     lv_label_set_text(del_lbl, "DEL");
@@ -640,7 +751,7 @@ static void compose_build_bottom_row(lv_obj_t *container, ff_app_compose_mode_t 
     lv_obj_center(del_lbl);
     compose_key_press_feedback(del, del_lbl);
 
-    int32_t space_x = margin_x + FF_COMPOSE_BOTTOM_SIDE_W + FF_COMPOSE_KEY_GAP;
+    int32_t space_x = margin_x + FF_COMPOSE_DEL_W + FF_COMPOSE_KEY_GAP;
     compose_make_key(container, compose_legend_for(mode, 0), space_x, y, space_w, FF_COMPOSE_BOTTOM_ROW_H, 0,
                       FF_THEME_COLOR_SURFACE, FF_THEME_COLOR_INK);
 
@@ -648,15 +759,18 @@ static void compose_build_bottom_row(lv_obj_t *container, ff_app_compose_mode_t 
      * "always shows the current mode's name" contract the S08 Amendments
      * ruling requires (compose_update_mode_chip_label), just a new home:
      * mis-tapping it only cycles ABC/123/SYM/T9, never sends, so it's the
-     * harmless neighbor SPACE can safely share this row with. */
+     * harmless neighbor SPACE can safely share this row with — and, per
+     * the should-fix above, the one this row's floor-sized key belongs
+     * on, not DEL. */
     int32_t mode_x = space_x + space_w + FF_COMPOSE_KEY_GAP;
     lv_obj_t *mode_chip = lv_button_create(container);
     lv_obj_remove_style_all(mode_chip);
-    lv_obj_set_size(mode_chip, FF_COMPOSE_BOTTOM_SIDE_W, FF_COMPOSE_BOTTOM_ROW_H);
+    lv_obj_set_size(mode_chip, FF_COMPOSE_MODE_W, FF_COMPOSE_BOTTOM_ROW_H);
     lv_obj_set_pos(mode_chip, mode_x, y);
     lv_obj_set_style_bg_color(mode_chip, lv_color_hex(FF_THEME_COLOR_SURFACE), 0);
     lv_obj_set_style_bg_opa(mode_chip, LV_OPA_COVER, 0);
     lv_obj_set_style_radius(mode_chip, LV_RADIUS_CIRCLE, 0);
+    compose_clear_press_lock(mode_chip);
     lv_obj_add_event_cb(mode_chip, compose_mode_chip_click_cb, LV_EVENT_CLICKED, NULL);
     s_mode_chip_label = lv_label_create(mode_chip);
     lv_obj_set_style_text_font(s_mode_chip_label, FF_THEME_FONT_CHIP, 0);
@@ -777,6 +891,7 @@ static void compose_make_cand_chip(lv_obj_t *strip, char const *text, bool from_
     lv_obj_set_style_radius(chip, 12, 0);
     lv_obj_set_style_bg_opa(chip, LV_OPA_COVER, 0);
     lv_obj_set_style_bg_color(chip, lv_color_hex(selected ? FF_THEME_COLOR_AMBER : FF_THEME_COLOR_SURFACE), 0);
+    compose_clear_press_lock(chip);
     lv_obj_add_event_cb(chip, compose_cand_click_cb, LV_EVENT_CLICKED, (void *)(uintptr_t)index);
 
     char buf[FF_APP_COMPOSE_WORD_LEN + 4];
@@ -849,6 +964,7 @@ static void compose_build_pred_strip(lv_obj_t *puck, ff_app_compose_t const *com
         lv_obj_set_style_radius(more, 12, 0);
         lv_obj_set_style_bg_opa(more, LV_OPA_COVER, 0);
         lv_obj_set_style_bg_color(more, lv_color_hex(FF_THEME_COLOR_SURFACE), 0);
+        compose_clear_press_lock(more);
         lv_obj_add_event_cb(more, compose_cycle_click_cb, LV_EVENT_CLICKED, NULL);
         lv_obj_t *lbl = lv_label_create(more);
         lv_label_set_text(lbl, ">");
@@ -903,6 +1019,7 @@ void ff_scr_compose_build(ff_app_compose_t const *compose)
     lv_obj_set_size(back, FF_THEME_MIN_HIT_PX, FF_THEME_MIN_HIT_PX);
     lv_obj_set_pos(back, header_margin, FF_COMPOSE_HEADER_Y);
     lv_obj_set_style_bg_opa(back, LV_OPA_TRANSP, 0);
+    compose_clear_press_lock(back);
     lv_obj_add_event_cb(back, compose_back_cb, LV_EVENT_CLICKED, NULL);
     lv_obj_t *back_lbl = lv_label_create(back);
     lv_label_set_text(back_lbl, "<");
@@ -911,26 +1028,46 @@ void ff_scr_compose_build(ff_app_compose_t const *compose)
     lv_obj_center(back_lbl);
     compose_key_press_feedback(back, back_lbl); /* transparent normally; amber fill on press */
 
+    /* TO — bounded to the honest band between BACK and SEND, ellipsized
+     * (LV_LABEL_LONG_MODE_DOTS) rather than left to overflow onto SEND
+     * (PR #148 review, FAIL 2 — see compose_to_left/_width's own comment
+     * for the "why", and compose_to_long.json / its golden for the proof
+     * a long recipient name truncates cleanly). Centered within its own
+     * bounded box (not the whole puck) so a short name like "DANA" still
+     * reads centered-ish in the available header space instead of
+     * hugging BACK's edge. */
+    int32_t to_left = compose_to_left(header_margin);
+    int32_t to_width = compose_to_width(header_margin);
     lv_obj_t *to_lbl = lv_label_create(puck);
     char to_buf[FF_APP_NAME_LEN + 8];
     snprintf(to_buf, sizeof(to_buf), "TO: %s", (compose->to_name[0] != '\0') ? compose->to_name : "EVERYONE");
     lv_label_set_text(to_lbl, to_buf);
     lv_obj_set_style_text_font(to_lbl, FF_THEME_FONT_LABEL, 0);
     lv_obj_set_style_text_color(to_lbl, lv_color_hex(FF_THEME_COLOR_DIM), 0);
-    lv_obj_align(to_lbl, LV_ALIGN_TOP_MID, 0, FF_COMPOSE_HEADER_Y + 12);
+    lv_obj_set_style_text_align(to_lbl, LV_TEXT_ALIGN_CENTER, 0);
+    lv_label_set_long_mode(to_lbl, LV_LABEL_LONG_MODE_DOTS);
+    /* DOTS only truncates (rather than wrapping across multiple lines,
+     * which is what it did without this) once the label's HEIGHT is
+     * also bounded to one line — same fix scr_flare.c's own DOTS labels
+     * already use (lv_font_get_line_height), not a made-up literal. */
+    lv_obj_set_size(to_lbl, to_width, lv_font_get_line_height(FF_THEME_FONT_LABEL));
+    lv_obj_set_pos(to_lbl, to_left, FF_COMPOSE_HEADER_Y + 12);
 
     /* SEND — the far top-right corner, the watch-composer convention, and
      * (per this file's header comment) ~269px of vertical separation from
      * SPACE at the bottom of the keypad: no shared row, no shared edge,
      * nowhere close to a mis-tap. Same amber CTA styling / press-dim
-     * treatment SEND always had; only its position moved. */
+     * treatment SEND always had; only its position/width moved (PR #148
+     * review, should-fix 3 — see compose_send_x's own comment for the
+     * corner-distance fix). */
     lv_obj_t *send = lv_button_create(puck);
     lv_obj_remove_style_all(send);
     lv_obj_set_size(send, FF_COMPOSE_SEND_HEADER_W, FF_THEME_MIN_HIT_PX);
-    lv_obj_set_pos(send, FF_THEME_PUCK_PX - header_margin - FF_COMPOSE_SEND_HEADER_W, FF_COMPOSE_HEADER_Y);
+    lv_obj_set_pos(send, compose_send_x(), FF_COMPOSE_HEADER_Y);
     lv_obj_set_style_bg_color(send, lv_color_hex(FF_THEME_COLOR_AMBER), 0);
     lv_obj_set_style_bg_opa(send, LV_OPA_COVER, 0);
     lv_obj_set_style_radius(send, LV_RADIUS_CIRCLE, 0);
+    compose_clear_press_lock(send);
     lv_obj_add_event_cb(send, compose_send_cb, LV_EVENT_CLICKED, NULL);
     lv_obj_t *send_lbl = lv_label_create(send);
     lv_label_set_text(send_lbl, "SEND");
