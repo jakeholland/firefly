@@ -1737,6 +1737,67 @@ static void S21_setting_set_clock_24h_applies_and_persists_only_on_change(void)
     ff_shell_close(&h.shell);
 }
 
+/* format v8 amendment: FF_SETTING_SCREEN_FLIP — the same bool-backed,
+ * persist-on-change-only contract as IMPERIAL/COLORBLIND/CLOCK_24H above,
+ * pinned separately per this repo's "test names mirror the criteria"
+ * convention (AGENTS.md). Default false (NORMAL). Beyond the bare
+ * apply+persist contract the toggle rows above already cover, this also
+ * asserts the PROJECTED view actually carries the new value (not just the
+ * raw core settings) and that the change marks the render key dirty — the
+ * property that makes Radar's glass-centred rim tint (`radar_build_rim_tint`,
+ * via `ff_theme_glass_cx`/`_cy`) actually re-centre on the next repaint,
+ * rather than the flag silently taking effect only after some unrelated
+ * later rebuild. Unlike brightness_pct (deliberately EXCLUDED from the
+ * render key — see bug1_brightness_change_does_not_mark_the_render_dirty
+ * above), screen_flip is a rare, discrete toggle with no live-drag
+ * concern, so it is NOT excluded. */
+static void S21_setting_set_screen_flip_applies_and_persists_only_on_change(void)
+{
+    setting_harness_t h;
+    setting_harness_init(&h);
+
+    /* S26e: land on an ordinary base face first (same reasoning as
+     * bug1_brightness_change_does_not_mark_the_render_dirty above) so the
+     * dirty-tick assertion below is testing a rendered Settings/Radar
+     * change, not the launcher's masked render key. */
+    ff_intent_t leave_launcher = {.kind = FF_INTENT_LAUNCHER_SELECT, .u = {0}};
+    leave_launcher.u.launcher_idx = 0u; /* Radar */
+    ff_shell_intent(&h.shell, &leave_launcher);
+
+    (void)ff_shell_tick(&h.shell, h.clk.t);              /* first frame is always dirty; settle it */
+    TEST_ASSERT_FALSE(ff_shell_tick(&h.shell, h.clk.t)); /* frozen clock, idle -> not dirty (baseline) */
+
+    TEST_ASSERT_FALSE(ff_shell_settings(&h.shell)->screen_flip);      /* default: NORMAL */
+    TEST_ASSERT_FALSE(ff_shell_view(&h.shell)->settings.screen_flip); /* projection agrees */
+    TEST_ASSERT_EQUAL_INT(0, h.store_mem.set_calls);
+
+    /* ff_shell_view()'s `.settings` (like `.active_face`) is only refreshed
+     * BY `ff_shell_tick` (shell_project_settings runs during projection,
+     * not at dispatch time) — unlike `ff_shell_settings()`, which reads the
+     * shell's raw core `ff_settings_t` live. So the tick's return value
+     * (the render-key-changed bit) and the freshly-projected view are
+     * checked TOGETHER, right after the one tick that produces both. */
+    setting_send(&h.shell, FF_SETTING_SCREEN_FLIP, 1, NULL); /* true: a real change */
+    TEST_ASSERT_TRUE(ff_shell_settings(&h.shell)->screen_flip); /* raw core settings, live */
+    TEST_ASSERT_EQUAL_INT(1, h.store_mem.set_calls);            /* persisted on change */
+    TEST_ASSERT_TRUE(ff_shell_tick(&h.shell, h.clk.t));         /* render key changed: rim re-centres */
+    TEST_ASSERT_TRUE(ff_shell_view(&h.shell)->settings.screen_flip); /* the freshly-projected view flips too */
+
+    TEST_ASSERT_FALSE(ff_shell_tick(&h.shell, h.clk.t)); /* idle again: no residual dirty */
+
+    setting_send(&h.shell, FF_SETTING_SCREEN_FLIP, 1, NULL); /* same value again */
+    TEST_ASSERT_EQUAL_INT(1, h.store_mem.set_calls);         /* unchanged: no new write */
+    TEST_ASSERT_FALSE(ff_shell_tick(&h.shell, h.clk.t));     /* and no spurious dirty either */
+
+    setting_send(&h.shell, FF_SETTING_SCREEN_FLIP, 0, NULL); /* back to false: a change again */
+    TEST_ASSERT_FALSE(ff_shell_settings(&h.shell)->screen_flip);
+    TEST_ASSERT_EQUAL_INT(2, h.store_mem.set_calls);
+    TEST_ASSERT_TRUE(ff_shell_tick(&h.shell, h.clk.t)); /* dirty again: flipping back also re-centres */
+    TEST_ASSERT_FALSE(ff_shell_view(&h.shell)->settings.screen_flip); /* the freshly-projected view flips back too */
+
+    ff_shell_close(&h.shell);
+}
+
 static void S16_AC8_setting_set_out_of_range_is_rejected_not_clamped(void)
 {
     setting_harness_t h;
@@ -2014,6 +2075,7 @@ int main(void)
     RUN_TEST(S16_AC8_setting_set_applies_and_persists_only_on_change);
     RUN_TEST(S17a_AC2_setting_set_colorblind_applies_and_persists_only_on_change);
     RUN_TEST(S21_setting_set_clock_24h_applies_and_persists_only_on_change);
+    RUN_TEST(S21_setting_set_screen_flip_applies_and_persists_only_on_change);
     RUN_TEST(bug1_transient_brightness_applies_live_but_persists_only_on_commit);
     RUN_TEST(bug1_brightness_change_does_not_mark_the_render_dirty);
     RUN_TEST(S21_calibrate_valid_fit_applies_and_persists);
