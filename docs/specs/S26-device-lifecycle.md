@@ -227,6 +227,29 @@ Each timer wake services the link and returns to sleep unless input arrived.
   tap → wakes to Radar with correct brightness).
 - **AC2** Not entered while any keep-awake holds (reuses (c)'s predicate).
 
+**AMENDED 2026-09-02 — "don't enter light sleep while USB is connected"**
+(maintainer decision). Light sleep is inhibited while USB is connected: the
+ESP32-S3's native USB-Serial/JTAG powers down during light sleep, so the
+host loses the port the moment the screen sleeps — every dev/flash session
+tethered over USB was breaking on the very cadence this slice introduced.
+USB-powered operation is also not battery-limited, so there is no cost to
+staying awake while connected. Dim/off still apply exactly as before — this
+only withholds the OFF → SLEEP transition itself; a USB-tethered puck sitting
+idle still dims at `t_dim` and blanks the screen at `t_off`, it just never
+stops answering the host. Implemented as a second, independent input to
+`ff_idle_tick` (`sleep_inhibit`, core/include/ff_idle.h `[api]`) — distinct
+from `keep_awake`: it does not force ACTIVE and does not re-pin the idle
+reference, so DIM/OFF timings are unaffected; once USB disconnects, SLEEP is
+entered as soon as `t_sleep` has actually elapsed from the same unmoved
+reference (immediately, if it already had). The esp32s3 target samples
+`usb_serial_jtag_is_connected()` (`driver/usb_serial_jtag.h`) once per frame
+and passes it straight through — no behavior `if` outside core. That
+connection monitor is backed by the host's USB SOF packets, not merely VBUS
+power, and is already linked into this build (this project's sdkconfig sets
+`CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG_ENABLED=y`, which is what
+`esp_driver_usb_serial_jtag`'s own CMakeLists.txt force-links the connection
+monitor on) — no new Kconfig, no `usb_serial_jtag_driver_install()` call.
+
 ### (g) Boot animation
 A splash (the firefly mark, ~1 s: ramp up, hold at full amber, ramp down —
 raised from ≤ 1 s after the first cut read as a blink on glass) drawn as the

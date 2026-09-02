@@ -16,8 +16,8 @@
  * ## States
  *
  * ```
- * ACTIVE --(idle>=T_DIM_MS)--> DIM --(idle>=T_OFF_MS)--> OFF --(idle>=T_OFF_MS+T_SLEEP_MS)--> SLEEP
- *    ^-------------------------------- ff_idle_input() from ANY state -----------------------------^
+ * ACTIVE --(idle>=T_DIM_MS)--> DIM --(idle>=T_OFF_MS)--> OFF --(idle>=T_OFF_MS+T_SLEEP_MS, !sleep_inhibit)--> SLEEP
+ *    ^-------------------------------- ff_idle_input() from ANY state ------------------------------------------^
  * ```
  *
  * "idle" is elapsed time since the last `ff_idle_input()` call (or
@@ -73,6 +73,36 @@
  * reached: a bare timer wake with no real input keeps `ff_idle_tick`
  * reporting SLEEP so the target's enact loop goes straight back to
  * sleep (S26 slice f: "if no input arrived, ff_idle stays SLEEP").
+ *
+ * ## Sleep inhibit (USB connected)
+ *
+ * `ff_idle_tick` takes a second, independent bool: `sleep_inhibit`.
+ * Maintainer decision, dated 2026-09-02 (docs/specs/S26-device-lifecycle.md
+ * slice (f) amendment): the ESP32-S3's native USB-Serial/JTAG powers down
+ * during light sleep, so the puck vanishes from the host the moment the
+ * screen sleeps — every dev/flash session over USB breaks. USB-powered
+ * operation is also not battery-limited, so there is no cost to staying
+ * awake. `sleep_inhibit` is NOT `keep_awake`: it blocks ONLY the OFF ->
+ * SLEEP transition. DIM and OFF still happen exactly as today (the screen
+ * still goes dark on schedule; only entering light sleep itself is
+ * withheld) — a USB-tethered puck sitting idle on a desk still dims and
+ * blanks its screen, it just never stops answering the host. Unlike
+ * `keep_awake`, `sleep_inhibit` does NOT re-pin `ref_ms` — it is not a
+ * wake or an activity signal, so DIM/OFF timings are completely unchanged
+ * by it (a version that folded `sleep_inhibit` into `keep_awake` would
+ * make USB itself a keep-awake source and the screen would never dim,
+ * which is not what's asked). When `sleep_inhibit` releases, SLEEP is
+ * computed the same way it always is: entered the moment
+ * `FF_IDLE_T_OFF_MS + FF_IDLE_T_SLEEP_MS` has elapsed from the SAME
+ * unmoved reference — immediately, on the very next tick, if that instant
+ * is already in the past (the common case: USB was unplugged well after
+ * the screen had gone OFF), or after the remaining time if not. No extra
+ * state is needed for this — inhibit only ever gates the one comparison
+ * that would set SLEEP, so the FSM just resumes evaluating it normally
+ * once the gate lifts. The esp32s3 target is the only caller that ever
+ * passes `true` here (`usb_serial_jtag_is_connected()`, sampled once per
+ * tick — see app_main.c); the sim's ctl loop always passes `false` (no
+ * light sleep on host, nothing to inhibit).
  *
  * Fully-defined (not opaque), same convention as `ff_flare_t` /
  * `ff_power_fsm_t`: safe on the stack or in a static; zero-initialise
@@ -138,14 +168,18 @@ void ff_idle_init(ff_idle_t *idle);
  * accruing; while false, elapsed idle time since the last
  * `ff_idle_input` (or since `keep_awake` last released) drives ACTIVE ->
  * DIM at `FF_IDLE_T_DIM_MS`, -> OFF at `FF_IDLE_T_OFF_MS`, and -> SLEEP
- * at `FF_IDLE_T_OFF_MS + FF_IDLE_T_SLEEP_MS` (S26 slice f). OFF and
- * SLEEP are both sticky (see top comment) — natural ticking never
- * reverses either back down; OFF can still advance forward into SLEEP.
- * Returns the resulting state (also readable via `ff_idle_state`).
- * Returns `FF_IDLE_STATE_ACTIVE` for a NULL `idle` (safe default; no
- * state is mutated).
+ * at `FF_IDLE_T_OFF_MS + FF_IDLE_T_SLEEP_MS` (S26 slice f) — UNLESS
+ * `sleep_inhibit` is true, in which case that last transition (OFF ->
+ * SLEEP only) is withheld; see this header's "Sleep inhibit" section
+ * above for the full contract (it does not touch DIM/OFF and does not
+ * re-pin the idle reference). OFF and SLEEP are both sticky (see top
+ * comment) — natural ticking never reverses either back down; OFF can
+ * still advance forward into SLEEP once `sleep_inhibit` is false and the
+ * threshold has elapsed. Returns the resulting state (also readable via
+ * `ff_idle_state`). Returns `FF_IDLE_STATE_ACTIVE` for a NULL `idle`
+ * (safe default; no state is mutated).
  */
-ff_idle_state_t ff_idle_tick(ff_idle_t *idle, uint32_t now_ms, bool keep_awake);
+ff_idle_state_t ff_idle_tick(ff_idle_t *idle, uint32_t now_ms, bool keep_awake, bool sleep_inhibit);
 
 /**
  * ff_idle_input — a real wake/reset event (touch, PWR SHORT_PRESS while

@@ -18,7 +18,14 @@ idf_component_register(
     REQUIRES ff_app ff_app_ui ff_core ff_display ff_power lvgl
     # nvs_flash: the real settings store (S21 §4). esp_timer/freertos: clock
     # + task delays. esp_system: esp_restart() (S26 slice b's reboot action).
-    PRIV_REQUIRES esp_timer freertos nvs_flash esp_system
+    # esp_driver_usb_serial_jtag: usb_serial_jtag_is_connected() (S26 slice f
+    # amendment — light-sleep inhibit while USB is connected). Its connection
+    # monitor is already linked in this project's sdkconfig
+    # (CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG_ENABLED=y forces the component's own
+    # `-u usb_serial_jtag_connection_monitor_include` in
+    # esp_driver_usb_serial_jtag/CMakeLists.txt) — no driver_install() call,
+    # no sdkconfig change needed here.
+    PRIV_REQUIRES esp_timer freertos nvs_flash esp_system esp_driver_usb_serial_jtag
     EMBED_FILES "${FF_DEMO_EMBED}"
 )
 
