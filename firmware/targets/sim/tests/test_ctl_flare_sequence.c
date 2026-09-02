@@ -431,15 +431,23 @@ static void ctl_hold(ff_ctl_handlers_t const *h, double x, double y, uint32_t ms
  * scr_launcher.h). This regression-guards the retirement through the
  * REAL ctl socket path, both below and above LVGL's ~400ms
  * long_press_time — neither duration opens anything, because there is
- * no long-press handler left to open it. (206, 206) is the EXACT
- * puck/window center (206 = FF_CTL_LOOP_WINDOW_W/2) — amended
- * 2026-09-01 from the pre-amendment (228, 228): that point sat clear of
- * every clickable on Radar, but the launcher's own circles now cover
- * part of the screen by default (S26e: the launcher IS home), and
- * (228, 228) falls inside the Map circle's hit rect (scr_launcher.c's
- * 2-over-3 grid deliberately keeps the EXACT center clear of every
- * circle — see that file's layout comment — so this is the one point
- * guaranteed to stay empty regardless of which face is showing). */
+ * no long-press handler left to open it.
+ *
+ * (206, 134) — amended AGAIN 2026-09-01 (S26e's compass-ring visual
+ * refresh) from this test's own prior probe point, the exact center
+ * (206, 206): the pre-amendment 2-over-3 grid deliberately kept that
+ * exact point clear of every circle, but the compass ring puts the
+ * RADAR HUB disc — a real 120px clickable — centered exactly there on
+ * purpose (scr_launcher.c's own top comment), so a stationary hold at
+ * dead-center now correctly clicks the hub (that's a real circle doing
+ * its job, not a bug this test should paper over). (206, 134) sits in
+ * the vertical gap between the hub's own top edge (y=146,
+ * center 206 - 120/2) and the Inbox satellite's bottom edge (y=122,
+ * center 78 + 88/2) — 24px tall, and, since both of those circles are
+ * horizontally centered on x=206 same as this probe, no OTHER circle
+ * (Lineup/Map/Settings, all off that x) can reach it either. Still one
+ * point, still verified empty by construction rather than eyeballed —
+ * same discipline the prior point's own comment used. */
 static void ctl_hold_no_longer_opens_settings(void)
 {
     static ff_shell_t shell;
@@ -467,14 +475,14 @@ static void ctl_hold_no_longer_opens_settings(void)
 
     /* A short hold (well under the old 400ms threshold) still does
      * nothing — unchanged. */
-    ctl_hold(&h, 206.0, 206.0, 80, resp, sizeof(resp));
+    ctl_hold(&h, 206.0, 134.0, 80, resp, sizeof(resp));
     ctl_settle(&ctx, &h);
     TEST_ASSERT_EQUAL_MESSAGE(FF_APP_FACE_LAUNCHER, ctx.state.active_face, "an 80ms ctl hold moved the face");
 
     /* A long hold (the old FF_CTL_HOLD_DEFAULT_MS, 600ms) is the
      * retirement itself: it used to open Settings and must not any
      * more. */
-    ctl_hold(&h, 206.0, 206.0, 600, resp, sizeof(resp));
+    ctl_hold(&h, 206.0, 134.0, 600, resp, sizeof(resp));
     ctl_settle(&ctx, &h);
     TEST_ASSERT_EQUAL_MESSAGE(FF_APP_FACE_LAUNCHER, ctx.state.active_face,
                               "a 600ms ctl hold opened Settings — long-press-anywhere should be retired");

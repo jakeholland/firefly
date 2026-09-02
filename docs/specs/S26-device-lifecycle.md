@@ -77,6 +77,27 @@ word (an item's freshness, e.g. `ff_fmt_age`'s "now" for an age under a
 minute, or the Rally WHEN chip's "Now" meaning "right now" as opposed to
 "+15m") — only the screen NAME changed.
 
+**Visual: compass ring (2026-09-01, same maintainer pass — the maintainer's
+pick off the design canvas).** The launcher's shipped 2-over-3 grid of five
+uniform circles is replaced by a compass ring: Radar becomes a 120px HUB
+disc at the puck's own center (not a sixth thing "reached" — it is drawn
+inside the same launcher, still an ordinary circle per the nav model above,
+just visually the middle one), and the other faces sit as 88px SATELLITE
+discs on a 128px orbit around it. Satellite placement is **N-agnostic**: the
+first satellite sits at the top (12 o'clock) and the rest step `360/N`
+degrees clockwise, for whatever `N` real, routable apps exist — today `N=4`
+(Inbox, Lineup, Settings, Map), which lands them on the four cardinal
+points; a real fifth app added later (Music, on the design canvas's own
+pentagon) becomes a one-line addition to that same computation, not a
+redesign. **No dead tiles**: a circle that routes nowhere is not shipped
+just to pre-fill a slot the design shows — the honesty rule (CLAUDE.md)
+covers controls, not only data. This is a rendering change only:
+`launcher_idx`/`FF_INTENT_LAUNCHER_SELECT`'s five values and
+`ff_route_launcher_select`'s semantics are unchanged — see
+`app/screens/scr_launcher.c`'s own top comment for the full geometry,
+press-state, and icon-pipeline detail (drawn with LVGL primitives, not
+image assets — no SVG rasterizer was available in the build sandbox).
+
 ### Pre-amendment model (superseded, kept for history)
 The original cut of this slice made Radar the watchface: what the screen
 woke to and rested on, with BOOT opening a transient launcher (a ring of Now

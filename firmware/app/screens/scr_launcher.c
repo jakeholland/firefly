@@ -1,117 +1,446 @@
 /**
  * scr_launcher.c — see scr_launcher.h.
  *
- * Layout constants + the circle-button helper are a SELF-CONTAINED local
- * copy, not shared with `scr_power_menu.c`'s (near-identical) button
- * helper — same file-static, nothing-to-import tradeoff that file's own
- * top comment documents against `scr_flare.c`.
+ * S26 slice e VISUAL REFRESH (2026-09-01, maintainer's on-glass design
+ * pick — docs/specs/S26-device-lifecycle.md's nav-model section, "visual:
+ * compass ring" note). Replaces the shipped 2-over-3 grid
+ * (`launcher_make_circle`, five identically-styled 96px squares) with a
+ * COMPASS RING: Radar becomes a 120px HUB disc at the puck's own center,
+ * and the remaining faces sit as 88px SATELLITE discs on a 128px-radius
+ * orbit around it — the design lifted from the design canvas's chosen
+ * artboard (Main.dc.html "Home · at rest" / States.dc.html "Home · Map
+ * pressed"; both are geometry/visual reference only, not instructions
+ * this file follows blindly — every number below was independently
+ * re-derived and hit-target-proven, the same discipline the retired
+ * 2-over-3 grid's own layout comment used).
  *
- * PR #142 review, Design 1 + Design 2: the circles show a real LVGL
- * built-in symbol glyph (`LV_SYMBOL_*` — compiled into the Montserrat
- * bitmap fonts this codebase already ships, exactly like
- * `scr_banner.c`'s `LV_SYMBOL_ENVELOPE`/`LV_SYMBOL_GPS` and
- * `scr_signals.c`'s several `LV_SYMBOL_*` rows) rather than a text
- * abbreviation, and are 96px in diameter rather than 64px.
+ * Layout constants + every helper here are a SELF-CONTAINED local copy,
+ * not shared with `scr_power_menu.c`'s (near-identical) button helper —
+ * same file-static, nothing-to-import tradeoff that file's own top
+ * comment documents against `scr_flare.c`.
  *
- * AMENDED 2026-09-01 (the maintainer's on-glass decision — see
- * ff_route.h's header note): a FIFTH circle, Radar, joins with no
- * special treatment, which retires the old four-circle diagonal cross
- * (NW/NE/SW/SE) in favor of a 2-over-3 grid — see the layout comment
- * below for the geometry, the two hazards a ring/cross both run into,
- * and the numbers proving this shape clears both.
+ * ## The hub + 4-satellite geometry, proven (not just argued)
+ * Hub: 120x120 square at the puck's center (206,206) — farthest corner
+ * at sqrt(60^2+60^2) ~= 84.9px from center, nowhere near the 206px glass
+ * radius. Satellite N-agnostic placement (see `launcher_deg_to_offset`):
+ * angle 0 = top, stepping 360/N degrees clockwise, at a fixed 128px
+ * orbit radius. At N=4 (today: Inbox/Lineup/Settings/Map, the cardinal
+ * points) this lands 88x88 squares at (206,78) top, (334,206) right,
+ * (206,334) bottom, (78,206) left. Farthest-corner distance from center
+ * is IDENTICAL for all four by symmetry: offset (44,128+44)=(44,172),
+ * distance sqrt(44^2+172^2) ~= 177.5px — 28.5px inside the 206px glass
+ * radius, clearing the spec's "everything >= 10px inside" floor with
+ * margin to spare. Hub-to-satellite edge gap: 128 - (60+44) = 24px;
+ * satellite-to-satellite (adjacent, e.g. top/right) edge gap:
+ * sqrt((128-88)^2 + (128-88)^2) ~= 56.6px — both comfortably clear
+ * `FF_HIT_MIN_GAP_PX` (8px). None of this is pentagon math (that hazard
+ * analysis lived in the retired 2-over-3 grid's own comment, PR #142) —
+ * a hub-plus-cardinal-satellites layout has no rotational-symmetry
+ * constraint to fight, which is exactly why it clears both hazards with
+ * far more margin than the shape it replaces.
+ *
+ * ## N-agnostic satellite layout — the Music-readiness contract
+ * Every satellite's placement is one of the N-agnostic angle set
+ * `{k * 360/N : k = 0..N-1}` (`launcher_deg_to_offset`, 0 = top,
+ * clockwise) — at today's N=4 that's `{0, 90, 180, 270}`. `sats[]`
+ * stores each entry's own `deg` explicitly rather than deriving it from
+ * array position in the build loop (see that array's own comment for
+ * why: array order there is launcher_idx order, for an existing test's
+ * benefit, which is no longer compass order) — but the angle each entry
+ * carries is still that same formula's output, computed by hand once
+ * per entry rather than by a loop. Adding a fifth real, routable app
+ * later (the design canvas's own pentagon, with Music) means computing
+ * the new N=5 set (`{0, 72, 144, 216, 288}`) and reassigning five `deg`
+ * values — a one-line-per-entry change, no new static asserts to
+ * hand-rederive. Today `n` is 4: this file does NOT ship a "Music"
+ * tile — there is no fifth app to route to yet, and a tappable circle
+ * that goes nowhere is its own kind of dishonesty (CLAUDE.md's honesty
+ * rule extends past data to controls).
+ *
+ * ## Removed from the design canvas: the orbit tick
+ * The canvas's "Home · at rest" artboard also drew a small 2x10px amber
+ * tick at the top of the orbit ring (a decorative north mark). Dropped
+ * per the maintainer's explicit call during this implementation — see
+ * the PR body. The 1px hairline orbit ring itself (r=128, amber 16%)
+ * stays.
+ *
+ * ## Icon pipeline — LVGL primitives, not image assets
+ * The design's five icons are drawn SVGs (radar scope, three-line
+ * lineup, envelope, nav arrow, gear). The brief's first-choice pipeline
+ * (render each to PNG at the sizes needed, then LVGLImage.py -> A8
+ * recolorable C arrays under app/screens/assets/) needs an SVG
+ * rasterizer on the build host. This machine has none — `rsvg-convert`,
+ * ImageMagick (`magick`/`convert`), and Python `cairosvg` are all
+ * absent, and this build sandbox has no network access to install one
+ * (verified: `pip3 install cairosvg` refuses, PEP 668 externally-managed
+ * environment, and there is no reachable package index anyway). Falling
+ * back to the brief's own documented contingency: every icon below is
+ * drawn with LVGL primitives (`lv_arc` rings/wedges, `lv_line` segments/
+ * polylines, plain `lv_obj` circles for dots/outline shapes) —
+ * asset-free (zero new `.rodata` image blobs; flash cost is ordinary
+ * `.text` code size, reported in the PR body) and trivially recolorable
+ * at runtime: the SAME generic `launcher_recolor_tree` walk that flips a
+ * whole circle's content between amber and BG on press works on every
+ * icon uniformly, because every primitive it touches is a plain
+ * lv_obj/lv_line/lv_arc/lv_label — see that function's doc comment.
+ *
+ * A closer match to the design's FILLED radar-sweep wedge and FILLED
+ * nav-arrow was possible via `lv_draw_triangle` (this file's sibling
+ * `scr_radar.c` already has that exact custom-draw-callback pattern for
+ * its own arrowhead) — deliberately NOT used here: a filled shape drawn
+ * via a custom `LV_EVENT_DRAW_MAIN` callback bakes its color into a
+ * static descriptor at build time, which `launcher_recolor_tree`'s
+ * generic per-widget-class walk cannot reach or invalidate without a
+ * second, special-cased recolor path per filled shape. Outline-only
+ * rings/lines/wedges for every icon keeps ONE recolor mechanism correct
+ * for all five — correctness of the press-state contract (design:
+ * "every icon + label turns BG on press") over exact visual match to
+ * the mockup's fills. Interpretation call, noted per AGENTS.md.
+ *
+ * ## Index -> face mapping: UNCHANGED
+ * `launcher_idx` (0=Radar, 1=Now/Lineup, 2=Signals/Inbox, 3=Map,
+ * 4=Settings — `ff_intent.h`'s `FF_INTENT_LAUNCHER_SELECT` payload,
+ * `ff_shell.c`'s `k_launcher_faces` table) is NOT touched by this visual
+ * rework: it is a semantic identifier, independent of where a circle is
+ * DRAWN. The compass ring's satellite RENDER order (Inbox top, Lineup
+ * right, Settings bottom, Map left, clockwise) is new; the index each
+ * one emits when tapped is the same value the retired grid emitted for
+ * that same face. No routing test changes.
  */
 #include "scr_launcher.h"
 
+#include <math.h>
+#include <stdio.h>
+
 #include "ff_intent.h"
 #include "ff_theme.h"
-#include "scr_signals.h" /* ff_scr_signals_unread_count — the Signals circle's badge */
+#include "scr_signals.h" /* ff_scr_signals_unread_count — the Inbox circle's badge */
 #include "lvgl.h"
 
 /* ---------------------------------------------------------------------
  * Layout constants.
- *
- * LVGL dispatches a touch against a widget's RECTANGULAR bounds, not
- * the visual circle drawn inside it (`lv_obj_set_style_radius` is
- * cosmetic) — so every geometry argument below is about a 96x96 SQUARE,
- * and both hazards that rule out a ring/cross layout follow directly
- * from that:
- *
- *  1. FAT-THUMB MID-DRAG MIS-TAP. The sim's `ctl swipe` command (and,
- *     on glass, an ordinary horizontal finger drag) sweeps a point
- *     straight across the screen's vertical center (y =
- *     FF_THEME_PUCK_RADIUS_PX) — not a navigation gesture this face
- *     acts on (`ff_route_swipe` has no live caller, S26 slice e), but a
- *     REAL LVGL button underneath a drag's path can still register a
- *     click on release. Any circle whose box crosses that line — i.e.
- *     whose center sits within LAUNCHER_CIRCLE_DIAM/2 (48px) of it —
- *     can register an accidental tap this way. A regular pentagon
- *     cannot clear this:
- *     for radius R, the two vertices nearest horizontal sit at
- *     |R*sin(best rotation)|, and the best achievable rotation for a
- *     5-fold-symmetric ring only reaches an 18-degree clearance angle
- *     (verified numerically), which needs R > ~155px to clear 48px —
- *     but a circle centered that far out already fails hazard 2 below
- *     by a wide margin (its farthest corner would land at ~240px,
- *     against a 206px glass radius).
- *  2. OFF-GLASS CORNERS. A box centered at (cx, cy) has its farthest-
- *     from-center corner at distance sqrt((|cx|+48)^2 + (|cy|+48)^2) —
- *     THAT whole rectangle, corner included, must stay inside
- *     FF_THEME_PUCK_RADIUS_PX (206px). For a fixed distance from center,
- *     this is CHEAPEST when a circle sits on a single axis (cx=0 or
- *     cy=0 — the "extra" term collapses to the 48px half-width alone)
- *     and MOST EXPENSIVE on the diagonal (both terms grow together,
- *     picking up a sqrt(2) factor at 45 degrees). The pre-amendment
- *     four-circle diamond already spent most of its margin on that
- *     diagonal placement (85,85) -> corner at (85+48)*sqrt(2) ~= 188px,
- *     18px of margin; adding a fifth circle anywhere that also clears
- *     hazard 1 (i.e. off the diamond's own diagonals) runs out of room
- *     fast — verified by direct search, no diamond-plus-one placement
- *     clears both hazards with the required FF_HIT_MIN_GAP_PX (8px)
- *     adjacency floor.
- *
- * The two-row grid below keeps every circle within ONE axis of center
- * (small |cx| for the two top circles, small... actually neither axis
- * is zero for the off-center ones, but both terms stay modest — see the
- * numbers just below) and every circle's |cy| >= 60px, twelve pixels
- * clear of hazard 1's 48px danger zone. Verified numerically (not just
- * argued): every circle's farthest corner sits at <= 195.6px (>= 10px
- * inside the 206px glass), and the tightest circle-to-circle gap is
- * 19px (more than double the 8px floor) — comfortably clearing both
- * hazards, unlike anything a ring/cross could reach at this circle
- * size. Reading order (top-left, top-right, bottom-left, bottom-center,
- * bottom-right) assigns the five faces in launcher_idx order — position
- * in that order is arbitrary, carrying no meaning about importance;
- * Radar happens to be first only because index 0 is.
  * ------------------------------------------------------------------- */
 
-#define LAUNCHER_CIRCLE_DIAM     96    /* PR #142 review Design 2 — up from 64px: "easier-to-tap targets" */
-#define LAUNCHER_TOP_DX          60.0f  /* top row: dx from center for each of the 2 circles */
-#define LAUNCHER_TOP_DY          (-60.0f) /* top row: dy from center (negative = above) */
-#define LAUNCHER_BOTTOM_SIDE_DX  115.0f /* bottom row: dx for the two OUTER of 3 circles */
-#define LAUNCHER_BOTTOM_DY       60.0f  /* bottom row: dy from center (positive = below) */
-#define LAUNCHER_TOP_CAPTION_DY  (-52.0f) /* top row: caption ABOVE its circle (room is above, not in the 24px middle gap) */
-#define LAUNCHER_BOTTOM_CAPTION_DY 58.0f  /* bottom row: caption BELOW its circle, same convention pre-amendment used */
-#define LAUNCHER_BADGE_PX        16    /* the unread badge scales with the circle (was 12px at 64px) */
-#define LAUNCHER_GLYPH_FONT      (&lv_font_montserrat_24) /* readable at ~30px inside a 96px circle */
+#define LAUNCHER_HUB_DIAM      120   /* design: Radar hub disc */
+#define LAUNCHER_HUB_ICON_PX   46    /* design: radar-scope icon inside the hub */
+#define LAUNCHER_SAT_DIAM      88    /* design: satellite discs */
+#define LAUNCHER_SAT_ICON_PX   30    /* design: satellite icon size */
+#define LAUNCHER_ORBIT_RADIUS_PX 128.0f /* design: satellite orbit radius from center */
+#define LAUNCHER_SAT_COUNT     4     /* today: Inbox, Lineup, Settings, Map — see this file's top comment */
 
-_Static_assert(LAUNCHER_CIRCLE_DIAM >= 56, "launcher circles must clear the spec's 56px floor");
-_Static_assert(LAUNCHER_CIRCLE_DIAM >= FF_THEME_MIN_HIT_PX, "launcher circles must clear the shared 44px hit floor");
+#define LAUNCHER_HUB_ICON_DY   (-9)  /* icon centered above the hub's own center, label below (design flex column) */
+#define LAUNCHER_HUB_CAPTION_DY 26
+#define LAUNCHER_SAT_ICON_DY   (-9)
+#define LAUNCHER_SAT_CAPTION_DY 18
+
+/* Design: status row at y ~= 368 (368 - 206 puck center = dy 162). NOT
+ * used verbatim: the design canvas measured that number against its own
+ * PENTAGON (N=5, with Music) reference, where no satellite sits at the
+ * exact bottom cardinal point — at N=4 (today), Settings DOES sit dead
+ * center-bottom (180deg), and its own disc's bottom edge already
+ * reaches y=378 (center 334 + SAT_DIAM/2 44) — 10px BELOW the design's
+ * literal 368, which visibly crowded the Settings caption against the
+ * status row when built at that value (see the PR body). Pushed to
+ * dy=186 (y=392) instead: 14px clear of the Settings disc's own bottom
+ * edge, and still >= 10px inside the 206px glass radius at its own
+ * widest extent. Interpretation call, noted per AGENTS.md. */
+#define LAUNCHER_STATUS_ROW_DY 186.0f
+
+/* Opacities the design expresses as CSS rgba() alpha — no named LV_OPA_*
+ * step lands on these exact percentages, so they're computed once here
+ * rather than repeated as bare numeric literals at each call site. */
+#define LAUNCHER_OPA_8  (lv_opa_t)20   /* satellite hairline ring: ink @ 8% */
+#define LAUNCHER_OPA_16 (lv_opa_t)41   /* orbit ring: amber @ 16% */
+#define LAUNCHER_OPA_55 (lv_opa_t)140  /* hub ring (and its icon's inner ring): amber @ 55% */
+#define LAUNCHER_OPA_20 (lv_opa_t)51   /* hub glow shadow: amber @ ~20% (this file's own closest LVGL approximation of the design's CSS blur, not a transcribed number) */
+
+_Static_assert(LAUNCHER_SAT_DIAM >= 56, "launcher satellites must clear the spec's 56px floor");
+_Static_assert(LAUNCHER_SAT_DIAM >= FF_THEME_MIN_HIT_PX, "launcher satellites must clear the shared 44px hit floor");
+_Static_assert(LAUNCHER_HUB_DIAM >= FF_THEME_MIN_HIT_PX, "launcher hub must clear the shared 44px hit floor");
+/* Hub<->satellite edge-to-edge gap at the fixed 128px orbit radius:
+ * 128 - (HUB_DIAM/2 + SAT_DIAM/2) must clear FF_HIT_MIN_GAP_PX. See this
+ * file's top comment for the full numeric proof (hub/satellite corners
+ * and the satellite-to-satellite gap, which is even larger and not worth
+ * a second assert). */
+_Static_assert((int32_t)LAUNCHER_ORBIT_RADIUS_PX - (LAUNCHER_HUB_DIAM / 2 + LAUNCHER_SAT_DIAM / 2) >=
+                   FF_HIT_MIN_GAP_PX,
+               "hub/satellite edge gap must clear the adjacency floor");
 
 /* ---------------------------------------------------------------------
- * One app circle + its caption. `glyph`: an `LV_SYMBOL_*` string drawn
- * INSIDE the circle — the spec's "kind glyph" (PR #142 review Design 1:
- * this repo DOES vendor icon glyphs, compiled into its Montserrat
- * bitmap fonts by default; `ff_theme.h`'s font-substitution note is
- * about DEVICE FONTS/type sizes, not about symbols, and does not apply
- * here). `caption`: the full word, drawn `caption_dy` from the circle's
- * own center (POSITIVE = below, NEGATIVE = above — the top row passes
- * negative; see this file's layout comment). `launcher_idx`: this
- * file's own fixed circle order (0=Radar, 1=Now, 2=Signals, 3=Map,
- * 4=Settings — ff_intent.h's FF_INTENT_LAUNCHER_SELECT payload), passed
- * through LVGL event user_data (the scr_compose.c/scr_signals.c
- * precedent for a per-callback small int with no new global state).
+ * launcher_deg_to_offset — the N-agnostic satellite placement primitive.
+ *
+ * Same convention as `radar_layout.c`'s own `deg_to_offset` (0 deg = up,
+ * increasing clockwise — this file's own copy, not a shared include, per
+ * this file's established "self-contained, nothing to import" rule):
+ * `dx = radius*sin(deg)`, `dy = -radius*cos(deg)`. At deg=0 this is
+ * straight up (top); at deg=90, straight right — matching the design
+ * canvas's own satellite placement (independently re-derived from
+ * Main.dc.html's absolute pixel positions, not copied from its markup).
+ * ------------------------------------------------------------------- */
+#define LAUNCHER_PI 3.14159265358979323846f
+
+static void launcher_deg_to_offset(float deg, float radius, float *dx, float *dy)
+{
+    float const rad = deg * (LAUNCHER_PI / 180.0f);
+    *dx = radius * sinf(rad);
+    *dy = -radius * cosf(rad);
+}
+
+/* ---------------------------------------------------------------------
+ * launcher_recolor_tree — the one press-state recolor mechanism every
+ * icon and caption shares (see this file's top comment, "Icon
+ * pipeline").
+ *
+ * Walks a plain LVGL widget hierarchy (icon primitives + a caption
+ * label) built entirely from four widget classes — lv_label, lv_line,
+ * lv_arc, and a bare lv_obj used either as a filled dot (bg_color) or an
+ * outline shape (border_color) — and recolors every leaf to `color_hex`,
+ * recursing through any plain container (the icon wrapper). This is
+ * generic on purpose: it is called with EVERY circle's direct children
+ * (icon wrapper + caption) as the recursion roots, so a new icon added
+ * later needs no recolor code of its own as long as it is built from
+ * these same four primitive kinds — the same "one mechanism, not one per
+ * icon" reasoning this file's top comment gives for skipping filled
+ * shapes.
+ * ------------------------------------------------------------------- */
+static void launcher_recolor_tree(lv_obj_t *obj, uint32_t color_hex)
+{
+    lv_color_t const c = lv_color_hex(color_hex);
+    if (lv_obj_check_type(obj, &lv_label_class)) {
+        lv_obj_set_style_text_color(obj, c, 0);
+        return;
+    }
+    if (lv_obj_check_type(obj, &lv_line_class)) {
+        lv_obj_set_style_line_color(obj, c, 0);
+        return;
+    }
+    if (lv_obj_check_type(obj, &lv_arc_class)) {
+        lv_obj_set_style_arc_color(obj, c, LV_PART_MAIN);
+        return;
+    }
+    uint32_t const n = lv_obj_get_child_count(obj);
+    if (n == 0) {
+        /* A leaf lv_obj is either a filled dot (bg_color visible) or an
+         * outline shape (border_color visible) — set both; whichever
+         * has nonzero opacity is the one that actually shows. */
+        lv_obj_set_style_bg_color(obj, c, 0);
+        lv_obj_set_style_border_color(obj, c, 0);
+        return;
+    }
+    for (uint32_t i = 0; i < n; i++) {
+        launcher_recolor_tree(lv_obj_get_child(obj, i), color_hex);
+    }
+}
+
+/* Registered on every circle (hub + satellites) for PRESSED/RELEASED/
+ * PRESS_LOST: walks the circle's own direct children (icon wrapper,
+ * caption label) and recolors each subtree amber<->BG. The circle's OWN
+ * bg fill is handled separately, by the ordinary LV_STATE_PRESSED style
+ * selector on the button itself (see launcher_make_hub/_make_satellite)
+ * — this callback only ever touches CONTENT sitting on top of that
+ * fill. */
+static void launcher_press_cb(lv_event_t *e)
+{
+    lv_obj_t *btn = lv_event_get_current_target_obj(e);
+    lv_event_code_t const code = lv_event_get_code(e);
+    uint32_t const color = (code == LV_EVENT_PRESSED) ? FF_THEME_COLOR_BG : FF_THEME_COLOR_AMBER;
+    uint32_t const n = lv_obj_get_child_count(btn);
+    for (uint32_t i = 0; i < n; i++) {
+        launcher_recolor_tree(lv_obj_get_child(btn, i), color);
+    }
+}
+
+/* ---------------------------------------------------------------------
+ * Icon primitive helpers — every one draws in AMBER at rest;
+ * launcher_press_cb flips the whole subtree to BG on press.
  * ------------------------------------------------------------------- */
 
+/* A ring or ring-SEGMENT, `[start_deg, end_deg)` in lv_arc's OWN angle
+ * convention (0 = 3 o'clock/east, increasing clockwise — unrelated to
+ * launcher_deg_to_offset's satellite-placement convention above; this
+ * helper is a thin lv_arc wrapper, not a second N-agnostic primitive).
+ * `lv_obj_remove_style_all` leaves the INDICATOR and KNOB parts undrawn
+ * (zero width/opa) — only MAIN (whose span `lv_arc_set_bg_angles` sets)
+ * is styled, the same convention `radar_make_cluster_wedge`
+ * (scr_radar.c) already established. */
+static lv_obj_t *launcher_mk_arc(lv_obj_t *icon, int32_t diam, int32_t width, float start_deg, float end_deg,
+                                  lv_opa_t opa)
+{
+    lv_obj_t *arc = lv_arc_create(icon);
+    lv_obj_remove_style_all(arc);
+    lv_obj_set_size(arc, diam, diam);
+    lv_obj_center(arc);
+    lv_obj_clear_flag(arc, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_clear_flag(arc, LV_OBJ_FLAG_SCROLLABLE);
+    lv_arc_set_rotation(arc, 0);
+    lv_arc_set_bg_angles(arc, (lv_value_precise_t)start_deg, (lv_value_precise_t)end_deg);
+    lv_obj_set_style_arc_width(arc, width, LV_PART_MAIN);
+    lv_obj_set_style_arc_color(arc, lv_color_hex(FF_THEME_COLOR_AMBER), LV_PART_MAIN);
+    lv_obj_set_style_arc_opa(arc, opa, LV_PART_MAIN);
+    lv_obj_set_style_arc_rounded(arc, false, LV_PART_MAIN);
+    return arc;
+}
+
+/* A line through `pts` (ABSOLUTE coordinates within a `container_px` x
+ * `container_px` box, top-left (0,0) — same "explicit full-size object
+ * pinned at (0,0), points offset from that origin" convention
+ * `radar_draw_segment` documents in scr_radar.c, scoped to the icon's
+ * own small container instead of the whole puck). `pts` must outlive
+ * this line object (lv_line_set_points keeps the pointer, not a copy) —
+ * every caller below passes either a `static const` array (fixed icon
+ * geometry, safe for the program's lifetime) or a `static` (mutable,
+ * loop-filled once per build) array, matching scr_radar.c's own
+ * caller-cleans-before-rebuild discipline. */
+static void launcher_mk_line(lv_obj_t *icon, int32_t container_px, lv_point_precise_t const *pts, uint32_t n,
+                              int32_t width)
+{
+    lv_obj_t *line = lv_line_create(icon);
+    lv_obj_remove_style_all(line);
+    lv_obj_set_size(line, container_px, container_px);
+    lv_obj_set_pos(line, 0, 0);
+    lv_obj_clear_flag(line, LV_OBJ_FLAG_CLICKABLE);
+    lv_line_set_points(line, pts, n);
+    lv_obj_set_style_line_width(line, width, 0);
+    lv_obj_set_style_line_color(line, lv_color_hex(FF_THEME_COLOR_AMBER), 0);
+    lv_obj_set_style_line_rounded(line, true, 0);
+}
+
+/* A small filled dot at ABSOLUTE (abs_cx, abs_cy) within the icon's own
+ * container — same absolute-coordinate convention as launcher_mk_line
+ * (arcs use lv_obj_center(), which lands on the same (container_px/2,
+ * container_px/2) origin, so all three primitives agree on one frame). */
+static lv_obj_t *launcher_mk_dot(lv_obj_t *icon, int32_t diam, int32_t abs_cx, int32_t abs_cy)
+{
+    lv_obj_t *dot = lv_obj_create(icon);
+    lv_obj_remove_style_all(dot);
+    lv_obj_set_size(dot, diam, diam);
+    lv_obj_set_style_radius(dot, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_bg_color(dot, lv_color_hex(FF_THEME_COLOR_AMBER), 0);
+    lv_obj_set_style_bg_opa(dot, LV_OPA_COVER, 0);
+    lv_obj_clear_flag(dot, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_clear_flag(dot, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_pos(dot, abs_cx - diam / 2, abs_cy - diam / 2);
+    return dot;
+}
+
+/* ---------------------------------------------------------------------
+ * The five icons. Each draws into `icon`, a container already sized to
+ * the fixed pixel size the caller passes (46 for the hub, 30 for every
+ * satellite — no icon here is ever drawn at both sizes, so coordinates
+ * below are literal, not derived from a runtime scale factor).
+ * Geometry transcribed from Main.dc.html's SVG paths (viewBox 24x24),
+ * scaled to each icon's fixed size and re-centered — see this file's
+ * top comment for why fills became outlines.
+ * ------------------------------------------------------------------- */
+
+/* Radar scope: outer + inner ring, a brighter/thicker ring SEGMENT
+ * standing in for the design's filled sweep wedge (0=east, sweeping to
+ * -45/315 — the design path's own two endpoints, independently
+ * recomputed from its (21,12)/(18.36,5.64) SVG points), a heading line
+ * along that same edge, and a small blip dot (design: (8.2,14.6) r1.5,
+ * scaled 1.9167x from a 46/24 hub icon and re-centered on (23,23)). */
+static void launcher_icon_radar(lv_obj_t *icon, int32_t px)
+{
+    (void)px; /* fixed 46px hub icon */
+    launcher_mk_arc(icon, 34, 2, 0.0f, 360.0f, LV_OPA_COVER);
+    launcher_mk_arc(icon, 17, 2, 0.0f, 360.0f, LAUNCHER_OPA_55); /* design: inner ring opacity 0.55 */
+    launcher_mk_arc(icon, 36, 6, 315.0f, 360.0f, LV_OPA_80);     /* sweep highlight, stands in for the filled wedge */
+    static const lv_point_precise_t heading_pts[2] = {{23, 23}, {35, 11}};
+    launcher_mk_line(icon, 46, heading_pts, 2, 2);
+    launcher_mk_dot(icon, 6, 16, 28);
+}
+
+/* Lineup: three horizontal rows with a leading dot each (design: y=6/12/
+ * 18, x 9..21, dots at x=4.5 r=1.4 — scaled 1.25x from a 30/24 satellite
+ * icon and re-centered on (15,15)). */
+static void launcher_icon_lineup(lv_obj_t *icon, int32_t px)
+{
+    (void)px; /* fixed 30px satellite icon */
+    static const lv_point_precise_t row0[2] = {{11, 8}, {26, 8}};
+    static const lv_point_precise_t row1[2] = {{11, 15}, {26, 15}};
+    static const lv_point_precise_t row2[2] = {{11, 22}, {26, 22}};
+    launcher_mk_line(icon, 30, row0, 2, 2);
+    launcher_mk_line(icon, 30, row1, 2, 2);
+    launcher_mk_line(icon, 30, row2, 2, 2);
+    launcher_mk_dot(icon, 4, 6, 8);
+    launcher_mk_dot(icon, 4, 6, 15);
+    launcher_mk_dot(icon, 4, 6, 22);
+}
+
+/* Inbox: an envelope — an outline rounded rect plus a two-segment flap
+ * (design: rect x3 y6 w18 h12 rx2.5, flap M3.5,8.5 L12,14 L20.5,8.5 —
+ * both exactly centered in the 24-viewBox, so they stay centered here
+ * too). */
+static void launcher_icon_inbox(lv_obj_t *icon, int32_t px)
+{
+    (void)px;
+    lv_obj_t *rect = lv_obj_create(icon);
+    lv_obj_remove_style_all(rect);
+    lv_obj_set_size(rect, 22, 14);
+    lv_obj_set_pos(rect, 4, 8);
+    lv_obj_set_style_radius(rect, 3, 0);
+    lv_obj_set_style_bg_opa(rect, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(rect, 2, 0);
+    lv_obj_set_style_border_color(rect, lv_color_hex(FF_THEME_COLOR_AMBER), 0);
+    lv_obj_set_style_border_opa(rect, LV_OPA_COVER, 0);
+    lv_obj_clear_flag(rect, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_clear_flag(rect, LV_OBJ_FLAG_CLICKABLE);
+
+    static const lv_point_precise_t flap[3] = {{4, 11}, {15, 18}, {26, 11}};
+    launcher_mk_line(icon, 30, flap, 3, 2);
+}
+
+/* Map: a nav-arrow OUTLINE (design's path is a FILLED kite — M12,3
+ * L19.5,21 L12,16.8 L4.5,21 Z — see this file's top comment for why an
+ * outline, not a fill, is drawn here). */
+static void launcher_icon_map(lv_obj_t *icon, int32_t px)
+{
+    (void)px;
+    static const lv_point_precise_t arrow[5] = {{15, 4}, {24, 26}, {15, 21}, {6, 26}, {15, 4}};
+    launcher_mk_line(icon, 30, arrow, 5, 2);
+}
+
+/* Settings: a gear — outer + inner ring, plus 8 radial teeth at 45deg
+ * increments (the design's own N/S/E/W + 4 diagonals), inner radius 8px
+ * / outer radius 12px from the icon's own center (15,15). Table, not a
+ * runtime sinf/cosf loop: every OTHER icon in this file is a fixed
+ * `static const` point array (compile-time, `.rodata`/flash, zero
+ * `.bss`) — a per-build mutable pool (this file's earlier draft used
+ * one, matching scr_radar.c's own line-point-pool convention for
+ * DATA-DEPENDENT geometry) would have been the one static buffer in
+ * this whole file that actually grows DIRAM, for geometry that never
+ * changes between builds. Values are `round(15 +- {8,12} * cos/sin(k *
+ * 45deg))` for k=0..7, computed once by hand rather than at runtime. */
+static void launcher_icon_settings(lv_obj_t *icon, int32_t px)
+{
+    (void)px;
+    launcher_mk_arc(icon, 16, 2, 0.0f, 360.0f, LV_OPA_COVER);
+    launcher_mk_arc(icon, 6, 2, 0.0f, 360.0f, LV_OPA_COVER);
+    static const lv_point_precise_t teeth[8][2] = {
+        {{23, 15}, {27, 15}}, /* 0deg   (east) */
+        {{21, 21}, {23, 23}}, /* 45deg  (southeast) */
+        {{15, 23}, {15, 27}}, /* 90deg  (south) */
+        {{9, 21}, {7, 23}},   /* 135deg (southwest) */
+        {{7, 15}, {3, 15}},   /* 180deg (west) */
+        {{9, 9}, {7, 7}},     /* 225deg (northwest) */
+        {{15, 7}, {15, 3}},   /* 270deg (north) */
+        {{21, 9}, {23, 7}},   /* 315deg (northeast) */
+    };
+    for (int i = 0; i < 8; i++) {
+        launcher_mk_line(icon, 30, teeth[i], 2, 2);
+    }
+}
+
+/* ---------------------------------------------------------------------
+ * Circle builders — hub + satellite.
+ * ------------------------------------------------------------------- */
+
+/* `launcher_idx`: this file's own fixed semantic order (0=Radar,
+ * 1=Now/Lineup, 2=Signals/Inbox, 3=Map, 4=Settings —
+ * ff_intent.h's FF_INTENT_LAUNCHER_SELECT payload), passed through LVGL
+ * event user_data (the scr_compose.c/scr_signals.c precedent for a
+ * per-callback small int with no new global state) — see this file's top
+ * comment, "Index -> face mapping: UNCHANGED". */
 static void launcher_circle_click_cb(lv_event_t *e)
 {
     uintptr_t idx = (uintptr_t)lv_event_get_user_data(e);
@@ -120,65 +449,256 @@ static void launcher_circle_click_cb(lv_event_t *e)
     ff_intent_emit(&in);
 }
 
-static void launcher_make_circle(lv_obj_t *puck, char const *glyph, char const *caption_text, float dx, float dy,
-                                  float caption_dy, uintptr_t launcher_idx, bool badge)
+/* The orbit ring: a 1px hairline circle at r=128, amber 16% — no tick
+ * (removed per the maintainer's explicit call during this
+ * implementation; see this file's top comment). Drawn BEFORE the hub/
+ * satellites so it sits visually behind them (LVGL: later children draw
+ * on top). */
+static void launcher_make_orbit_ring(lv_obj_t *puck)
+{
+    launcher_mk_arc(puck, (int32_t)(2.0f * LAUNCHER_ORBIT_RADIUS_PX), 1, 0.0f, 360.0f, LAUNCHER_OPA_16);
+}
+
+static void launcher_make_hub(lv_obj_t *puck)
 {
     lv_obj_t *btn = lv_button_create(puck);
     lv_obj_remove_style_all(btn);
-    lv_obj_set_size(btn, LAUNCHER_CIRCLE_DIAM, LAUNCHER_CIRCLE_DIAM);
+    lv_obj_set_size(btn, LAUNCHER_HUB_DIAM, LAUNCHER_HUB_DIAM);
     lv_obj_set_style_radius(btn, LV_RADIUS_CIRCLE, 0);
     lv_obj_set_style_bg_color(btn, lv_color_hex(FF_THEME_COLOR_SURFACE), 0);
     lv_obj_set_style_bg_opa(btn, LV_OPA_COVER, 0);
-    lv_obj_set_style_border_width(btn, 3, 0);
+    lv_obj_set_style_border_width(btn, 2, 0);
     lv_obj_set_style_border_color(btn, lv_color_hex(FF_THEME_COLOR_AMBER), 0);
-    lv_obj_set_style_border_opa(btn, LV_OPA_COVER, 0);
-    /* Press feedback: tints toward amber on touch-down — the same
-     * outlined-pill convention scr_power_menu.c's Reboot/Cancel buttons
-     * use (LV_STATE_PRESSED). Every circle, Radar included, gets
-     * IDENTICAL styling here — no visual privileging by size, color, or
-     * border; position (this function's `dx`/`dy` arguments) is the
-     * only thing that varies, and it varies for the geometric reasons
-     * this file's layout comment proves, not to rank one face above
-     * another. */
+    lv_obj_set_style_border_opa(btn, LAUNCHER_OPA_55, 0);
+    /* Soft amber glow — this file's closest LVGL approximation of the
+     * design's CSS box-shadow blur (not a transcribed pixel value; see
+     * LAUNCHER_OPA_20's own comment). */
+    lv_obj_set_style_shadow_width(btn, 30, 0);
+    lv_obj_set_style_shadow_spread(btn, 2, 0);
+    lv_obj_set_style_shadow_color(btn, lv_color_hex(FF_THEME_COLOR_AMBER), 0);
+    lv_obj_set_style_shadow_opa(btn, LAUNCHER_OPA_20, 0);
+    /* Press feedback: full amber fill (design: States.dc.html) — only a
+     * press turns a disc amber; at rest every disc (hub included) is the
+     * same surface tone. */
     lv_obj_set_style_bg_color(btn, lv_color_hex(FF_THEME_COLOR_AMBER), LV_STATE_PRESSED);
-    lv_obj_set_style_bg_opa(btn, LV_OPA_40, LV_STATE_PRESSED);
+    lv_obj_set_style_bg_opa(btn, LV_OPA_COVER, LV_STATE_PRESSED);
+    lv_obj_align(btn, LV_ALIGN_CENTER, 0, 0);
+    /* Clear LVGL's default LV_OBJ_FLAG_PRESS_LOCK ("keep the object
+     * pressed even if the press slid from the object") — see
+     * launcher_make_satellite's own copy of this comment for why: the
+     * hub sits at the puck's exact center, which a drag/gesture can
+     * pass directly over. */
+    lv_obj_clear_flag(btn, LV_OBJ_FLAG_PRESS_LOCK);
+    lv_obj_add_event_cb(btn, launcher_circle_click_cb, LV_EVENT_CLICKED, (void *)(uintptr_t)0);
+    lv_obj_add_event_cb(btn, launcher_press_cb, LV_EVENT_PRESSED, NULL);
+    lv_obj_add_event_cb(btn, launcher_press_cb, LV_EVENT_RELEASED, NULL);
+    lv_obj_add_event_cb(btn, launcher_press_cb, LV_EVENT_PRESS_LOST, NULL);
+
+    lv_obj_t *icon = lv_obj_create(btn);
+    lv_obj_remove_style_all(icon);
+    lv_obj_set_size(icon, LAUNCHER_HUB_ICON_PX, LAUNCHER_HUB_ICON_PX);
+    lv_obj_clear_flag(icon, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_clear_flag(icon, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_align(icon, LV_ALIGN_CENTER, 0, LAUNCHER_HUB_ICON_DY);
+    launcher_icon_radar(icon, LAUNCHER_HUB_ICON_PX);
+
+    lv_obj_t *caption = lv_label_create(btn);
+    lv_label_set_text(caption, "RADAR");
+    lv_obj_set_style_text_font(caption, FF_THEME_FONT_LABEL, 0);
+    lv_obj_set_style_text_color(caption, lv_color_hex(FF_THEME_COLOR_INK), 0);
+    lv_obj_set_style_text_letter_space(caption, 2, 0);
+    lv_obj_align(caption, LV_ALIGN_CENTER, 0, LAUNCHER_HUB_CAPTION_DY);
+}
+
+/* Inbox unread badge: a count pill (22px tall, amber, dark text — see
+ * ff_theme.h's font-substitution note, no mono vendored — 3px BG
+ * keyline), pinned near the satellite's own top-right corner (the
+ * `0.7071` factor is the same "~45 degrees out on the rim" placement the
+ * retired grid's own badge dot used, scaled to the 88px satellite). A
+ * SIBLING of the satellite button on `puck`, not a child of it, so it is
+ * never touched by that circle's own press recolor (launcher_press_cb
+ * only walks the pressed button's own children). */
+static void launcher_make_badge(lv_obj_t *puck, float sat_dx, float sat_dy, uint16_t unread)
+{
+    char buf[6];
+    unsigned const shown = (unread > 999u) ? 999u : (unsigned)unread; /* defensive pill-width cap, not a product cap on real unread counts */
+    snprintf(buf, sizeof(buf), "%u", shown);
+
+    lv_obj_t *pill = lv_obj_create(puck);
+    lv_obj_remove_style_all(pill);
+    lv_obj_set_style_bg_color(pill, lv_color_hex(FF_THEME_COLOR_AMBER), 0);
+    lv_obj_set_style_bg_opa(pill, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(pill, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_border_width(pill, 3, 0);
+    lv_obj_set_style_border_color(pill, lv_color_hex(FF_THEME_COLOR_BG), 0);
+    lv_obj_set_style_border_opa(pill, LV_OPA_COVER, 0);
+    lv_obj_set_style_pad_hor(pill, 6, 0);
+    lv_obj_set_height(pill, 22);
+    lv_obj_set_width(pill, LV_SIZE_CONTENT);
+    lv_obj_set_style_min_width(pill, 22, 0);
+    lv_obj_clear_flag(pill, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_clear_flag(pill, LV_OBJ_FLAG_CLICKABLE);
+
+    int32_t const corner = (int32_t)((float)LAUNCHER_SAT_DIAM / 2.0f * 0.7071f);
+    lv_obj_align(pill, LV_ALIGN_CENTER, (int32_t)sat_dx + corner, (int32_t)sat_dy - corner);
+
+    lv_obj_t *lbl = lv_label_create(pill);
+    lv_label_set_text(lbl, buf);
+    lv_obj_set_style_text_color(lbl, lv_color_hex(FF_THEME_COLOR_BG), 0);
+    lv_obj_set_style_text_font(lbl, FF_THEME_FONT_LABEL, 0);
+    lv_obj_center(lbl);
+}
+
+static void launcher_make_satellite(lv_obj_t *puck, void (*icon_fn)(lv_obj_t *, int32_t), char const *caption_text,
+                                     float dx, float dy, uintptr_t launcher_idx, bool badge, uint16_t unread)
+{
+    lv_obj_t *btn = lv_button_create(puck);
+    lv_obj_remove_style_all(btn);
+    lv_obj_set_size(btn, LAUNCHER_SAT_DIAM, LAUNCHER_SAT_DIAM);
+    lv_obj_set_style_radius(btn, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_bg_color(btn, lv_color_hex(FF_THEME_COLOR_SURFACE), 0);
+    lv_obj_set_style_bg_opa(btn, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(btn, 1, 0);
+    lv_obj_set_style_border_color(btn, lv_color_hex(FF_THEME_COLOR_INK), 0);
+    lv_obj_set_style_border_opa(btn, LAUNCHER_OPA_8, 0);
+    /* Press feedback: identical convention to the hub — full amber fill,
+     * every circle styled the same way, no visual privileging. */
+    lv_obj_set_style_bg_color(btn, lv_color_hex(FF_THEME_COLOR_AMBER), LV_STATE_PRESSED);
+    lv_obj_set_style_bg_opa(btn, LV_OPA_COVER, LV_STATE_PRESSED);
     lv_obj_align(btn, LV_ALIGN_CENTER, (int32_t)dx, (int32_t)dy);
+    /* Clear LVGL's default LV_OBJ_FLAG_PRESS_LOCK ("keep the object
+     * pressed even if the press slid from the object", set on every
+     * object with a parent — lv_obj.c). Left set, a long horizontal
+     * drag (the sim's `ctl swipe`, and an ordinary real finger drag)
+     * that PRESSES DOWN on one satellite — the left/right cardinal
+     * satellites sit exactly on the puck's own horizontal midline, so a
+     * center-line sweep starts or ends squarely on one of them — would
+     * still fire LV_EVENT_CLICKED on release even though the finger
+     * has long since left this circle, exactly the "REAL LVGL button
+     * underneath a drag's path can still register a click on release"
+     * hazard the retired 2-over-3 grid's own layout comment warned
+     * about (it worked around it geometrically, by keeping every
+     * circle off that line — impossible here, since the design's own
+     * cardinal-point satellites REQUIRE two of them to sit on it).
+     * Clearing PRESS_LOCK fixes the actual mechanism instead: once the
+     * pointer leaves this circle's bounds, LVGL drops the press
+     * (LV_EVENT_PRESS_LOST) rather than keeping it captured, so a
+     * sweep across this disc no longer fires a click at all — while a
+     * real, stationary tap (which never leaves the disc's own bounds)
+     * is completely unaffected. */
+    lv_obj_clear_flag(btn, LV_OBJ_FLAG_PRESS_LOCK);
     lv_obj_add_event_cb(btn, launcher_circle_click_cb, LV_EVENT_CLICKED, (void *)launcher_idx);
+    lv_obj_add_event_cb(btn, launcher_press_cb, LV_EVENT_PRESSED, NULL);
+    lv_obj_add_event_cb(btn, launcher_press_cb, LV_EVENT_RELEASED, NULL);
+    lv_obj_add_event_cb(btn, launcher_press_cb, LV_EVENT_PRESS_LOST, NULL);
 
-    lv_obj_t *glyph_label = lv_label_create(btn);
-    lv_label_set_text(glyph_label, glyph);
-    lv_obj_set_style_text_font(glyph_label, LAUNCHER_GLYPH_FONT, 0);
-    lv_obj_set_style_text_color(glyph_label, lv_color_hex(FF_THEME_COLOR_INK), 0);
-    lv_obj_center(glyph_label);
+    lv_obj_t *icon = lv_obj_create(btn);
+    lv_obj_remove_style_all(icon);
+    lv_obj_set_size(icon, LAUNCHER_SAT_ICON_PX, LAUNCHER_SAT_ICON_PX);
+    lv_obj_clear_flag(icon, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_clear_flag(icon, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_align(icon, LV_ALIGN_CENTER, 0, LAUNCHER_SAT_ICON_DY);
+    icon_fn(icon, LAUNCHER_SAT_ICON_PX);
 
-    /* Caption: a sibling on `puck`, NOT a child of `btn` — LVGL base
-     * labels are non-clickable by default (scr_power_menu.c's "POWER"
-     * headline is the precedent: a bare lv_label_create with no explicit
-     * CLICKABLE clear), so this stays pure chrome, never a second hit
-     * target the adjacency sweep would have to reason about. */
-    lv_obj_t *caption_label = lv_label_create(puck);
-    lv_label_set_text(caption_label, caption_text);
-    lv_obj_set_style_text_font(caption_label, FF_THEME_FONT_LABEL, 0);
-    lv_obj_set_style_text_color(caption_label, lv_color_hex(FF_THEME_COLOR_MUTED), 0);
-    lv_obj_align(caption_label, LV_ALIGN_CENTER, (int32_t)dx, (int32_t)(dy + caption_dy));
+    lv_obj_t *caption = lv_label_create(btn);
+    lv_label_set_text(caption, caption_text);
+    lv_obj_set_style_text_font(caption, FF_THEME_FONT_LABEL, 0);
+    lv_obj_set_style_text_color(caption, lv_color_hex(FF_THEME_COLOR_MUTED), 0);
+    lv_obj_set_style_text_letter_space(caption, 1, 0);
+    lv_obj_align(caption, LV_ALIGN_CENTER, 0, LAUNCHER_SAT_CAPTION_DY);
 
     if (badge) {
-        /* Small amber dot at the circle's upper-right — same badge shape
-         * the old page-dot row used (scr_nav.c's retired
-         * nav_build_page_dots), scaled up with the circle (PR #142
-         * review Design 2). */
-        lv_obj_t *dot = lv_obj_create(puck);
-        lv_obj_remove_style_all(dot);
-        lv_obj_set_size(dot, LAUNCHER_BADGE_PX, LAUNCHER_BADGE_PX);
-        lv_obj_set_style_radius(dot, LV_RADIUS_CIRCLE, 0);
-        lv_obj_set_style_bg_color(dot, lv_color_hex(FF_THEME_COLOR_AMBER), 0);
-        lv_obj_set_style_bg_opa(dot, LV_OPA_COVER, 0);
-        lv_obj_clear_flag(dot, LV_OBJ_FLAG_SCROLLABLE);
-        lv_obj_clear_flag(dot, LV_OBJ_FLAG_CLICKABLE); /* indicator, not a control */
-        int32_t const corner = (int32_t)(LAUNCHER_CIRCLE_DIAM / 2 * 0.7071f); /* ~45 degrees out on the rim */
-        lv_obj_align(dot, LV_ALIGN_CENTER, (int32_t)dx + corner, (int32_t)dy - corner);
+        launcher_make_badge(puck, dx, dy, unread);
     }
 }
+
+/* ---------------------------------------------------------------------
+ * Status row — time . battery, at the bottom (design: y ~= 368). Reuses
+ * `ff_radar_view_t`'s own clock_str/batt_pct fields and formatting
+ * (`radar_build_status_bar` in scr_radar.c) so the launcher never
+ * invents a second source of truth for the same two facts, and inherits
+ * that function's honesty behavior verbatim: an empty clock_str reads
+ * "--:--" and an unknown (negative) battery reads "--%" — never a
+ * fabricated time or level. MESH is deliberately omitted here (this
+ * file's brief); it stays exclusive to the Radar face's own status bar.
+ *
+ * The battery GLYPH (design: a small outline battery icon) is shown only
+ * when `batt_pct` is actually known — omitted, not defaulted to a
+ * fixed/"empty" icon, when it is -1 (no battery ADC on either target
+ * yet, per ff_shell.c). A glyph implying a reading over an honest "--%"
+ * would be exactly the fabricated-freshness CLAUDE.md's honesty rule
+ * forbids, even though it is only decorative chrome. */
+static void launcher_build_status_row(lv_obj_t *puck, ff_radar_view_t const *r)
+{
+    char buf[24];
+
+    lv_obj_t *clock_lbl = lv_label_create(puck);
+    lv_label_set_text(clock_lbl, r->clock_str[0] != '\0' ? r->clock_str : "--:--");
+    lv_obj_set_style_text_font(clock_lbl, FF_THEME_FONT_LABEL, 0);
+    lv_obj_set_style_text_color(clock_lbl, lv_color_hex(FF_THEME_COLOR_INK), 0);
+    lv_obj_align(clock_lbl, LV_ALIGN_CENTER, -32, (int32_t)LAUNCHER_STATUS_ROW_DY);
+
+    lv_obj_t *sep_lbl = lv_label_create(puck);
+    lv_label_set_text(sep_lbl, ".");
+    lv_obj_set_style_text_font(sep_lbl, FF_THEME_FONT_LABEL, 0);
+    lv_obj_set_style_text_color(sep_lbl, lv_color_hex(FF_THEME_COLOR_DIM), 0);
+    lv_obj_align(sep_lbl, LV_ALIGN_CENTER, -8, (int32_t)LAUNCHER_STATUS_ROW_DY);
+
+    if (r->batt_pct >= 0) {
+        int const p = (int)r->batt_pct;
+        char const *glyph = (p >= 87)   ? LV_SYMBOL_BATTERY_FULL
+                             : (p >= 62) ? LV_SYMBOL_BATTERY_3
+                             : (p >= 37) ? LV_SYMBOL_BATTERY_2
+                             : (p >= 12) ? LV_SYMBOL_BATTERY_1
+                                         : LV_SYMBOL_BATTERY_EMPTY;
+        lv_obj_t *batt_icon = lv_label_create(puck);
+        lv_label_set_text(batt_icon, glyph);
+        lv_obj_set_style_text_font(batt_icon, FF_THEME_FONT_LABEL, 0);
+        lv_obj_set_style_text_color(batt_icon, lv_color_hex(FF_THEME_COLOR_MUTED), 0);
+        lv_obj_align(batt_icon, LV_ALIGN_CENTER, 8, (int32_t)LAUNCHER_STATUS_ROW_DY);
+    }
+
+    lv_obj_t *batt_lbl = lv_label_create(puck);
+    if (r->batt_pct < 0) {
+        snprintf(buf, sizeof(buf), "--%%");
+    } else {
+        snprintf(buf, sizeof(buf), "%d%%", (int)r->batt_pct);
+    }
+    lv_label_set_text(batt_lbl, buf);
+    lv_obj_set_style_text_font(batt_lbl, FF_THEME_FONT_LABEL, 0);
+    lv_obj_set_style_text_color(batt_lbl, lv_color_hex(FF_THEME_COLOR_MUTED), 0);
+    lv_obj_align(batt_lbl, LV_ALIGN_CENTER, 32, (int32_t)LAUNCHER_STATUS_ROW_DY);
+}
+
+/* ---------------------------------------------------------------------
+ * Satellite descriptor table — each entry's `deg` (0 = top, clockwise —
+ * launcher_deg_to_offset's convention) is one of the N-agnostic set
+ * `{0, 360/N, 2*360/N, ...}` this file's top comment describes; at
+ * today's N=4 that's exactly {0, 90, 180, 270} — Inbox top, Lineup
+ * right, Settings bottom, Map left, reading the brief's own "clockwise
+ * from the top" order, which is also the design canvas's pentagon order
+ * with Music simply absent (no dead tile — see top comment).
+ *
+ * Array ORDER here is `launcher_idx` order (1..4), not compass order —
+ * deliberately: every existing S26e test (app/screens/tests/
+ * test_scr_intent.c's `launcher_circle_at`) finds a circle by its
+ * CREATION-order position among same-sized clickables, a convention
+ * that predates this visual rework and is cheaper to keep satisfied
+ * than to rewrite. Creation order carries no meaning of its own (see
+ * `launcher_circle_click_cb`'s comment — `launcher_idx` is the only
+ * semantic fact); `deg` is what actually places each circle, and it is
+ * assigned per-entry precisely because array position no longer implies
+ * compass position once creation is reordered this way. Adding a fifth
+ * satellite later means a new N=5 angle set (`{0, 72, 144, 216, 288}`)
+ * assigned the same way — one new entry, no formula change.
+ * ------------------------------------------------------------------- */
+typedef struct {
+    void (*icon_fn)(lv_obj_t *, int32_t);
+    char const *caption;
+    uintptr_t launcher_idx;
+    bool badge_capable;
+    float deg;
+} launcher_satellite_desc_t;
 
 void ff_scr_launcher_build(ff_app_state_t const *state)
 {
@@ -200,47 +720,23 @@ void ff_scr_launcher_build(ff_app_state_t const *state)
     lv_obj_set_style_border_width(puck, 0, 0);
     lv_obj_clear_flag(puck, LV_OBJ_FLAG_SCROLLABLE);
 
-    bool const signals_unread = ff_scr_signals_unread_count(&state->signals) > 0;
+    uint16_t const unread = ff_scr_signals_unread_count(&state->signals);
 
-    /* Fixed circle order — MUST match ff_intent.h's FF_INTENT_LAUNCHER_SELECT
-     * payload convention (0=Radar, 1=Now, 2=Signals, 3=Map, 4=Settings)
-     * and ff_shell.c's k_launcher_faces mapping table. Reading order:
-     * top-left, top-right, bottom-left, bottom-center, bottom-right —
-     * see this file's layout comment for the geometry and why this
-     * shape, not a ring/cross, is what clears the glass.
-     *
-     * Glyphs: `LV_SYMBOL_WIFI` for Radar (reviewer PR #144 round 2 —
-     * `LV_SYMBOL_EYE_OPEN`, this file's first choice, ALREADY MEANS
-     * FLARE ("come find me") in two other live places on this same
-     * device: the Signals popup's flare row (scr_signals.c, the
-     * `signals_popup_flare_cb` row) and the flare banner overlay
-     * (scr_banner.c's `FF_NOTIFY_FLARE` case) — reusing it for Radar
-     * would read as "this circle is about flares", a genuine
-     * confusability defect, not just a style choice. `LV_SYMBOL_GPS` —
-     * the obvious "location/compass" glyph — is already spoken for by
-     * Map, which shows an actual geographic map, so reusing it for
-     * Radar would make the two circles read as the same feature.
-     * `LV_SYMBOL_WIFI`'s radiating arcs read as a sweep/scan — the
-     * closest built-in match to "radar" as a concept — and, unlike
-     * EYE_OPEN, is unused everywhere else in this codebase, confirmed
-     * by grep before picking it. `LV_SYMBOL_BELL` (notifications) was
-     * also considered and rejected: wrong domain, not this screen's
-     * job. `LV_SYMBOL_LIST` for Now/Lineup (the schedule list),
-     * `LV_SYMBOL_ENVELOPE` for Signals/Inbox (the same glyph
-     * scr_banner.c already uses for an incoming MESSAGE), `LV_SYMBOL_
-     * GPS` for Map, `LV_SYMBOL_SETTINGS` for Settings — the standard
-     * LVGL gear glyph.
-     *
-     * Captions are the renamed user-facing names (2026-09-01: "Signals"
-     * -> "Inbox", "Now" -> "Lineup" — see the PR body for the full list
-     * of renamed strings); "RADAR", "MAP" and "SETTINGS" are unchanged. */
-    launcher_make_circle(puck, LV_SYMBOL_WIFI, "RADAR", -LAUNCHER_TOP_DX, LAUNCHER_TOP_DY,
-                          LAUNCHER_TOP_CAPTION_DY, 0, false);
-    launcher_make_circle(puck, LV_SYMBOL_LIST, "LINEUP", LAUNCHER_TOP_DX, LAUNCHER_TOP_DY, LAUNCHER_TOP_CAPTION_DY, 1,
-                          false);
-    launcher_make_circle(puck, LV_SYMBOL_ENVELOPE, "INBOX", -LAUNCHER_BOTTOM_SIDE_DX, LAUNCHER_BOTTOM_DY,
-                          LAUNCHER_BOTTOM_CAPTION_DY, 2, signals_unread);
-    launcher_make_circle(puck, LV_SYMBOL_GPS, "MAP", 0.0f, LAUNCHER_BOTTOM_DY, LAUNCHER_BOTTOM_CAPTION_DY, 3, false);
-    launcher_make_circle(puck, LV_SYMBOL_SETTINGS, "SETTINGS", LAUNCHER_BOTTOM_SIDE_DX, LAUNCHER_BOTTOM_DY,
-                          LAUNCHER_BOTTOM_CAPTION_DY, 4, false);
+    launcher_make_orbit_ring(puck);
+    launcher_make_hub(puck);
+
+    static launcher_satellite_desc_t const sats[LAUNCHER_SAT_COUNT] = {
+        {launcher_icon_lineup, "LINEUP", 1, false, 90.0f},
+        {launcher_icon_inbox, "INBOX", 2, true, 0.0f},
+        {launcher_icon_map, "MAP", 3, false, 270.0f},
+        {launcher_icon_settings, "SETTINGS", 4, false, 180.0f},
+    };
+    for (int i = 0; i < LAUNCHER_SAT_COUNT; i++) {
+        float dx, dy;
+        launcher_deg_to_offset(sats[i].deg, LAUNCHER_ORBIT_RADIUS_PX, &dx, &dy);
+        launcher_make_satellite(puck, sats[i].icon_fn, sats[i].caption, dx, dy, sats[i].launcher_idx,
+                                 sats[i].badge_capable && unread > 0, unread);
+    }
+
+    launcher_build_status_row(puck, &state->radar);
 }

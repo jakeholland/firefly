@@ -5,44 +5,34 @@
  * `ff_route.h`'s header note for the full model change: the launcher
  * IS home now, not a modal reached from Radar).
  *
- * A grid of FIVE app circles — Radar / Now / Signals / Map / Settings,
- * in that fixed order. Radar is an ORDINARY circle as of this amendment
- * (no special handling, no privileged position, size, or color — the
- * original cut's "Radar is not listed here, it IS home" rule is
- * retired with the watchface concept it protected). Pure rendering
- * (CLAUDE.md: "UI code only renders core state and forwards input"):
- * each circle emits exactly one `FF_INTENT_LAUNCHER_SELECT` (payload:
- * `u.launcher_idx`, this file's own fixed circle order — 0=Radar,
- * 1=Now, 2=Signals, 3=Map, 4=Settings), and the shell decides whether
- * the tap lands (only while the launcher is actually showing with
- * nothing over it — `ff_route_launcher_select`'s own guard).
+ * FIVE app circles — Radar / Now / Signals / Map / Settings — pure
+ * rendering (CLAUDE.md: "UI code only renders core state and forwards
+ * input"): each circle emits exactly one `FF_INTENT_LAUNCHER_SELECT`
+ * (payload: `u.launcher_idx`, this file's own fixed SEMANTIC order —
+ * 0=Radar, 1=Now, 2=Signals, 3=Map, 4=Settings — unrelated to where a
+ * circle is drawn, see below), and the shell decides whether the tap
+ * lands (only while the launcher is actually showing with nothing over
+ * it — `ff_route_launcher_select`'s own guard).
  *
  * Takes the full `ff_app_state_t const *`, unlike `scr_power_menu.c`'s
  * argument-free build: unlike that fully-static face, this one has ONE
- * dynamic fact to render — the Signals circle's unread badge
- * (`ff_scr_signals_unread_count(&state->signals)`, moved here off the
- * old page-dot row the carousel used to carry it on).
+ * dynamic fact to render — the Signals/Inbox circle's unread badge
+ * (`ff_scr_signals_unread_count(&state->signals)`) — plus one more read
+ * off `state->radar`, the bottom status row's time/battery (see below).
  *
- * ## Layout — a 2-over-3 grid, not a ring
- * A true rotationally-symmetric 5-point ring (a regular pentagon) and
- * the pre-amendment four-circle diagonal cross both turn out to be
- * geometrically infeasible at this circle's 96px floor once BOTH real
- * constraints are accounted for together: every circle's LVGL hit rect
- * is a full 96x96 SQUARE (not the visual circle inscribed in it — LVGL
- * dispatches touches against the object's rectangular bounds), so (a)
- * it must fit entirely inside the round glass, corner included, and (b)
- * no two circles' squares may come within `FF_HIT_MIN_GAP_PX` (8px) of
- * each other on both axes at once. A regular pentagon cannot keep every
- * vertex clear of the screen's horizontal midline at a radius small
- * enough to also stay on-glass (provably — see scr_launcher.c's layout
- * comment for the numbers); diagonal placements (any circle whose
- * center is off BOTH axes) pay a `sqrt(2)` penalty on their farthest
- * corner that a plain diamond-plus-fifth-circle layout cannot afford
- * either. Two horizontal rows (2 circles top, 3 bottom), each row kept
- * clear of the midline by a real margin and each circle no more than
- * one axis off-center, is the shape that verifiably clears both
- * constraints with margin to spare (see that same comment for the
- * numbers) — chosen for that reason, not for its shape.
+ * ## Layout, VISUAL REFRESH 2026-09-01 — a compass ring, not a grid
+ * The five-circle GRID this header used to describe (2-over-3, all five
+ * circles the same 96px size) is retired: Radar is now a 120px HUB disc
+ * at the puck's own center, and the other four sit as 88px SATELLITE
+ * discs on a 128px orbit around it, N-agnostic (position computed from
+ * the count of real, routable satellite apps — today 4, the cardinal
+ * points) so a real fifth app later is a small, formula-driven addition
+ * rather than a redesign. Every number, the full press-state contract,
+ * and the icon-drawing pipeline (LVGL primitives, not image assets — no
+ * SVG rasterizer was available when this was built) are documented in
+ * `scr_launcher.c`'s own top comment, the single source of truth for
+ * this face's geometry (the same "detail lives in the .c, this header
+ * summarizes" split the retired grid's own comment used).
  */
 #ifndef FF_SCR_LAUNCHER_H
 #define FF_SCR_LAUNCHER_H
@@ -57,15 +47,14 @@ extern "C" {
  * ff_scr_launcher_build — builds the launcher on the current default
  * display's active screen (own puck/top-level screen, same calling
  * convention as `ff_scr_power_menu_build`/`ff_scr_compose_build`).
- * Draws: five circles (>= 56 px targets, per spec — this file uses
- * 96 px, PR #142 review Design 2: "easier-to-tap targets", unchanged by
- * the 2026-09-01 amendment) arranged in a symmetric 2-over-3 grid, each
- * a real LVGL `LV_SYMBOL_*` kind glyph (compiled into the Montserrat
- * bitmap fonts this codebase already ships — the same symbols
- * `scr_banner.c`/`scr_signals.c` already render; PR #142 review
- * Design 1) plus a short caption label near it, `LV_STATE_PRESSED`
- * press feedback, and the Signals circle's unread badge (scaled with
- * the circle) when `state->signals` has unread items.
+ * Draws: the Radar hub (120px, >= the spec's 56px floor with a lot to
+ * spare) plus four satellite discs (88px each) on a compass-ring orbit,
+ * every disc's icon drawn with LVGL primitives (not an `LV_SYMBOL_*`
+ * glyph any more — see scr_launcher.c's top comment), `LV_STATE_PRESSED`
+ * press feedback (a disc fills amber and its icon/caption invert to
+ * `FF_THEME_COLOR_BG`), the Inbox circle's unread-count badge
+ * (`state->signals`) when nonzero, and a bottom time/battery status row
+ * (`state->radar`).
  *
  * NULL-safe (no-op, matching every other builder in this directory).
  */

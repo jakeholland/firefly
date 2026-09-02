@@ -617,12 +617,23 @@ static lv_obj_t *find_nth_clickable_by_size(lv_obj_t *root, int32_t w, int32_t h
 }
 
 /* `idx`: 0=Radar, 1=Now, 2=Signals, 3=Map, 4=Settings (ff_intent.h's
- * FF_INTENT_LAUNCHER_SELECT payload convention == scr_launcher.c's own
- * build order, amended 2026-09-01 for the fifth — Radar — circle). */
+ * FF_INTENT_LAUNCHER_SELECT payload convention).
+ *
+ * S26e VISUAL REFRESH (2026-09-01, compass ring): the launcher no
+ * longer draws five uniform 96x96 circles — idx 0 (Radar) is now the
+ * 120x120 HUB disc and idx 1-4 are 88x88 SATELLITE discs
+ * (scr_launcher.c). Circle CREATION order still equals launcher_idx
+ * order (see that file's satellite descriptor table comment, which
+ * exists specifically so this helper doesn't have to change beyond its
+ * size constants) — so idx 0 is the sole 120x120 clickable, and idx
+ * 1..4 are the Nth 88x88 clickable in creation order. */
 static lv_obj_t *launcher_circle_at(int idx)
 {
     int counter = 0;
-    return find_nth_clickable_by_size(lv_screen_active(), 96, 96, &counter, idx);
+    if (idx == 0) {
+        return find_nth_clickable_by_size(lv_screen_active(), 120, 120, &counter, 0);
+    }
+    return find_nth_clickable_by_size(lv_screen_active(), 88, 88, &counter, idx - 1);
 }
 
 /* A member conversation row tap emits OPEN_THREAD with that member's
