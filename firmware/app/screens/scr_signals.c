@@ -1084,8 +1084,16 @@ static void signals_build_picker(lv_obj_t *parent, ff_app_signals_t const *v, bo
  * like inbound but its wording never claims an address, see
  * signals_msg_event_text), and names a sender ONLY when the model joined
  * one (`identity_known`; an unjoined sender renders an honest "UNKNOWN",
- * never a guessed name). Bubbles are DECO — not tappable — so the
- * message list has no hit-rects to collide with the chips/FAB at any
+ * never a guessed name). Bubbles are DECO — not individually tappable —
+ * so the message list has no PER-ROW hit-rects to collide with the
+ * chips/FAB at any scroll offset. `list` itself still needs exactly ONE
+ * clickable surface for touch to ever resolve a drag to its LV_DIR_VER
+ * scroll at all (LVGL's hit-test requires CLICKABLE on SOMETHING under
+ * the finger): a single invisible hit target the full height of the
+ * message content, scrolled right along with it, added after the loop
+ * below — see its own comment for why one full-content overlay (not
+ * per-row, not the list container itself) is what keeps the hit-target
+ * sweep's circle-containment AND adjacency checks passing at every
  * scroll offset. Long content ellipsizes (fixed row pitch; DOTS needs
  * bounded width AND height, the slice-b lesson).
  * ------------------------------------------------------------------- */
@@ -1557,11 +1565,80 @@ static void signals_build_thread(lv_obj_t *parent, ff_app_signals_t const *v, bo
         lv_obj_align(empty, LV_ALIGN_CENTER, 0, -20);
     }
 
-    /* Newest at the bottom: scroll to the end (LVGL clamps to the
-     * scrollable range; a short thread stays put at the top). */
+    /* Compute overflow BEFORE the scroll-to-newest below needs it, so the
+     * scroll touch target (next) can also gate on it: whether content
+     * overflows is knowable only once the loop above has actually laid
+     * out every row. */
     lv_obj_update_layout(list);
     int32_t const overflow = lv_obj_get_scroll_bottom(list);
+
     if (overflow > 0) {
+        /* The scroll touch target (root-cause fix for "CREW thread
+         * messages don't scroll", confirmed also true of 1:1 before this
+         * fix): message bubbles are pure deco (no CLICKABLE flag), and
+         * `list` itself deliberately isn't CLICKABLE either (matching the
+         * inbox/picker lists' own convention) — LVGL's `lv_indev_search_obj`
+         * only ever resolves a touch to an object carrying LV_OBJ_FLAG_
+         * CLICKABLE (lv_obj_hit_test requires it), so with NOTHING
+         * clickable anywhere under `list`, a press over the message area
+         * resolved to no object inside it at all: it fell through to a
+         * non-scrollable ancestor, and a drag never reached `list`'s own
+         * LV_DIR_VER scroll. Gated on genuine overflow (not just "any
+         * messages") for two reasons: a short thread has nothing to
+         * scroll to in the first place, and — measured, not theorized —
+         * `banner_on_thread.json` renders a short (non-overflowing) 1:1
+         * thread with the S26(d) message banner up top; an unconditional
+         * hit target would still claim the full list viewport and the
+         * hit-target sweep (correctly) flags it against the banner's own
+         * tap target, two independently-clickable siblings (not an
+         * ancestor/descendant pair the sweep already exempts) that
+         * visually overlap. No overflow, no hit target, no collision —
+         * and nothing is lost, since a non-overflowing thread was never
+         * reachable-by-scroll to begin with.
+         *
+         * Two shapes were tried and measured to fail before this one:
+         * (1) a hit-rect PER ROW — a CREW inbound pulse/flare event line
+         * is only 22px tall, under the 44px hit floor, and a row scrolled
+         * to straddle the viewport's top edge still carries its FULL
+         * un-clipped rect, which the hit-target sweep's adjacency check
+         * then measures against the pinned back button above the list
+         * (on this screen's own newest-at-bottom auto-scroll that
+         * straddle is the common case, not an edge case); (2) ONE
+         * hit-rect spanning the full scrolled CONTENT height — tall
+         * enough to always cover the viewport at any scroll offset, but
+         * for the SAME reason it necessarily passes straight through
+         * y=0 on its way from a (scrolled-to-newest) deeply negative top
+         * to a positive bottom, so its raw rect always overlaps the
+         * header sitting at y<TOP_Y, regardless of scroll position.
+         *
+         * The fix: ONE hit-rect sized to `list`'s own VIEWPORT (not the
+         * scrolled content) and marked LV_OBJ_FLAG_FLOATING — LVGL's
+         * "do not scroll the object when the parent scrolls" flag — so
+         * its absolute on-screen rect stays fixed at exactly
+         * (list_margin, TOP_Y)-(PUCK_PX - list_margin, TOP_Y + list_h)
+         * no matter how far `list` is scrolled. That rect already
+         * respects `list_margin` — the same safe margin every message
+         * row in this band uses — so it passes circle-containment
+         * directly, with no need for the sweep's S21 viewport
+         * adjustment; and being fixed, its distance from the header/FAB
+         * is the same constant clearance the list's own static geometry
+         * already guarantees, never a scroll-dependent straddle. No
+         * CLICKED callback is ever bound to it, so it adds no tap
+         * behavior of its own; LVGL's scroll processing walks UP from
+         * whatever it resolves a press to, finds `list` as the nearest
+         * LV_DIR_VER-scrollable ancestor (FLOATING does not remove it
+         * from that ancestor walk, only from scroll-following and
+         * layout), and scrolls that. */
+        lv_obj_t *hit = lv_obj_create(list);
+        lv_obj_remove_style_all(hit);
+        lv_obj_add_flag(hit, LV_OBJ_FLAG_FLOATING);
+        lv_obj_clear_flag(hit, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_set_style_bg_opa(hit, LV_OPA_TRANSP, 0);
+        lv_obj_set_pos(hit, list_margin, 0);
+        lv_obj_set_size(hit, FF_THEME_PUCK_PX - 2 * list_margin, list_h);
+
+        /* Newest at the bottom: scroll to the end (LVGL clamps to the
+         * scrollable range). */
         lv_obj_scroll_to_y(list, overflow, LV_ANIM_OFF);
     }
 

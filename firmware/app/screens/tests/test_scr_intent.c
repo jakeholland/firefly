@@ -836,6 +836,148 @@ static void S24c_crew_thread_has_no_quick_chips(void)
 }
 
 /* =================================================================== */
+/* Thread message list scroll (maintainer bug report: "CREW thread      */
+/* messages don't scroll") — the scroll-vs-tap property this file's     */
+/* drag()/drag_v() helpers already exist to test. Twelve messages, well */
+/* past the CREW list's 190px band, so the content is guaranteed to     */
+/* overflow regardless of row-height tuning.                            */
+/* =================================================================== */
+
+static void s24_make_crew_thread_long(ff_app_signals_t *v)
+{
+    memset(v, 0, sizeof(*v));
+    v->subview = FF_SIG_SUB_THREAD;
+    v->thread_node = 0u;
+    strncpy(v->thread_name, "CREW", sizeof(v->thread_name) - 1);
+    sig_add_conv(v, FF_CONV_CREW, 0u, NULL, 0, 12);
+
+    static char const *const names[] = {"DANA", "RILEY", "MAX", "JAMIE", "KEV"};
+    for (int i = 0; i < 12; i++) {
+        ff_inbox_msg_t *m = &v->thread.msgs[v->thread.msg_count++];
+        memset(m, 0, sizeof(*m));
+        m->kind = FEED_TEXT;
+        m->dir = FEED_DIR_BROADCAST;
+        m->identity_known = true;
+        m->node_id = 111u + (uint32_t)(i % 5);
+        strncpy(m->name, names[i % 5], sizeof(m->name) - 1);
+        m->initial = names[i % 5][0];
+        m->color_idx = (uint8_t)(i % 5);
+        snprintf(m->text, sizeof(m->text), "signal number %d checking in", i);
+        m->age_ms = (uint32_t)(60000u * (uint32_t)(12 - i));
+    }
+}
+
+/* Same shape, DANA's 1:1 thread — used to prove the property holds there
+ * too (it already did; this is the comparison the investigation brief
+ * asks for, not a regression guard for a prior bug). */
+static void s24_make_direct_thread_long(ff_app_signals_t *v)
+{
+    memset(v, 0, sizeof(*v));
+    v->subview = FF_SIG_SUB_THREAD;
+    v->thread_node = 111u;
+    strncpy(v->thread_name, "DANA", sizeof(v->thread_name) - 1);
+    sig_add_conv(v, FF_CONV_CREW, 0u, NULL, 0, 0);
+    ff_inbox_conv_t *dana = sig_add_conv(v, FF_CONV_MEMBER, 111u, "DANA", 0, 12);
+    dana->presence = FF_PRESENCE_SEEN;
+    dana->presence_age_ms = 60000u;
+
+    for (int i = 0; i < 12; i++) {
+        ff_inbox_msg_t *m = &v->thread.msgs[v->thread.msg_count++];
+        memset(m, 0, sizeof(*m));
+        m->kind = FEED_TEXT;
+        m->dir = (i % 2 == 0) ? FEED_DIR_DIRECT : FEED_DIR_OUT;
+        m->identity_known = true;
+        m->node_id = 111u;
+        strncpy(m->name, "DANA", sizeof(m->name) - 1);
+        m->initial = 'D';
+        snprintf(m->text, sizeof(m->text), "message number %d", i);
+        m->age_ms = (uint32_t)(60000u * (uint32_t)(12 - i));
+    }
+}
+
+/* Finds the one PLAIN lv_obj (not a label/button — lv_label_create
+ * leaves LV_OBJ_FLAG_SCROLLABLE set by default too, so filtering on the
+ * flag alone would match the first header label instead) carrying
+ * LV_OBJ_FLAG_SCROLLABLE. Every other lv_obj_create object scr_signals.c
+ * builds under a thread (message rows, the crew dot, the bottom fade) is
+ * explicitly decorated via signals_child_deco, which clears this flag,
+ * so it uniquely identifies the message list regardless of whether the
+ * list itself is also CLICKABLE. */
+static lv_obj_t *find_scrollable(lv_obj_t *root)
+{
+    uint32_t n = lv_obj_get_child_count(root);
+    for (uint32_t i = 0; i < n; i++) {
+        lv_obj_t *child = lv_obj_get_child(root, i);
+        if (lv_obj_check_type(child, &lv_obj_class) && lv_obj_has_flag(child, LV_OBJ_FLAG_SCROLLABLE)) {
+            return child;
+        }
+        lv_obj_t *found = find_scrollable(child);
+        if (found != NULL) return found;
+    }
+    return NULL;
+}
+
+/* A physical vertical drag over the thread's message content must move
+ * the list's scroll offset — content that overflows a bounded list is
+ * useless if touch can never reach it. Covers CREW (the maintainer's
+ * report) and 1:1 (the investigation brief's required comparison): both
+ * must scroll, and neither drag may be mistaken for a row-open tap (the
+ * thread has none, so this also just asserts zero spurious intents). */
+static void thread_overflow_scrolls_on_drag(bool crew)
+{
+    ff_app_signals_t v;
+    if (crew) {
+        s24_make_crew_thread_long(&v);
+    } else {
+        s24_make_direct_thread_long(&v);
+    }
+
+    /* Real-indev hit-testing (unlike click()'s direct event injection the
+     * other Signals tests use) needs `parent`'s own geometry to actually
+     * contain the drag point — lv_obj_create's 100x100 default leaves
+     * anything past x/y=100 unreachable by lv_indev_search_obj, same as
+     * the real shell sizing its container to the full 412x412 display. */
+    lv_obj_t *parent = lv_obj_create(lv_screen_active());
+    lv_obj_set_size(parent, 412, 412);
+    ff_scr_signals_build(parent, &v, false);
+
+    lv_obj_t *list = find_scrollable(parent);
+    TEST_ASSERT_NOT_NULL(list);
+
+    /* The build scrolls to newest-at-bottom already: confirm the content
+     * actually overflows (scroll range > 0) rather than trusting the
+     * fixture's message count. */
+    lv_obj_update_layout(list);
+    int32_t const max_scroll = lv_obj_get_scroll_y(list) + lv_obj_get_scroll_bottom(list);
+    TEST_ASSERT_GREATER_THAN_INT32(0, max_scroll);
+
+    /* Reset to the top so an upward drag has room to move, then drag a
+     * finger up (content follows the finger toward the newest message,
+     * increasing the scroll offset) inside the list's on-glass band. */
+    lv_obj_scroll_to_y(list, 0, LV_ANIM_OFF);
+    TEST_ASSERT_EQUAL_INT32(0, lv_obj_get_scroll_y(list));
+
+    lv_area_t list_area;
+    lv_obj_get_coords(list, &list_area);
+    int32_t const list_top = list_area.y1;
+    int32_t const list_center_x = (list_area.x1 + list_area.x2) / 2;
+    drag_v(list_top + 90, list_top + 10, list_center_x);
+
+    TEST_ASSERT_GREATER_THAN_INT32(0, lv_obj_get_scroll_y(list));
+    TEST_ASSERT_EQUAL_INT(0, s_spy.count);
+}
+
+static void S24_crew_thread_overflow_scrolls_on_drag(void)
+{
+    thread_overflow_scrolls_on_drag(true);
+}
+
+static void S24_direct_thread_overflow_scrolls_on_drag(void)
+{
+    thread_overflow_scrolls_on_drag(false);
+}
+
+/* =================================================================== */
 /* S24 slice d — action popup + Rally screen emitters                  */
 /* =================================================================== */
 
@@ -1559,6 +1701,8 @@ int main(void)
     RUN_TEST(S24c_thread_flare_chip_emits_sig_flare);
     RUN_TEST(S24c_thread_fab_emits_inbox_new);
     RUN_TEST(S24c_crew_thread_has_no_quick_chips);
+    RUN_TEST(S24_crew_thread_overflow_scrolls_on_drag);
+    RUN_TEST(S24_direct_thread_overflow_scrolls_on_drag);
     RUN_TEST(S24d_popup_compose_row_emits_popup_compose);
     RUN_TEST(S24d_popup_rally_row_emits_popup_rally);
     RUN_TEST(S24d_popup_flare_row_emits_popup_flare);
