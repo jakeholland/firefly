@@ -35,6 +35,7 @@
  * emitted kinds (the exact PR #20 regression class, now one layer up)
  * fails both GO/DISMISS tests on the kind assertion the same way.
  */
+#include <math.h> /* sqrtf — the S99 compose SEND corner-distance test */
 #include <string.h>
 
 #include "unity.h"
@@ -51,6 +52,7 @@
 #include "scr_settings.h"
 #include "scr_signals.h"
 
+#include "ff_theme.h" /* FF_THEME_PUCK_RADIUS_PX — the S99 compose SEND corner-distance test */
 #include "radar_layout.h" /* RADAR_LAYOUT_DOT_PX — S17a AC4 render tests, see that section below */
 
 /* Frozen-by-default tick — same convention as test_scr_flare.c: nothing
@@ -263,6 +265,17 @@ static void drag_v(int32_t from_y, int32_t to_y, int32_t x)
      * pending scroll-throw animation dangling on the freed indev. */
     lv_anim_delete(indev, NULL);
     lv_indev_delete(indev);
+}
+
+/* A single press-then-release at one point, no movement — a real tap
+ * through the same synthetic pointer indev drag()/drag_v() use, as
+ * opposed to click()'s direct LV_EVENT_CLICKED injection most tests in
+ * this file use. Defined here (right after drag_v, its one dependency)
+ * rather than down by its first caller, so every test above — including
+ * the S99 compose SEND/SPACE real-touch tests — can use it too. */
+static void tap_at(int32_t x, int32_t y)
+{
+    drag_v(y, y, x);
 }
 
 /* S26e AC3: "a horizontal drag on Radar/Now/Signals changes nothing" —
@@ -504,6 +517,407 @@ static void S16_c3_mode_chip_emits_t9_mode(void)
 
     TEST_ASSERT_EQUAL_INT(1, s_spy.count);
     TEST_ASSERT_EQUAL(FF_INTENT_T9_MODE, s_spy.last.kind);
+}
+
+/* =================================================================== */
+/* Compose SEND relocation (maintainer: "move SEND away from SPACE to   */
+/* avoid accidental press") + full-key press-state / full-shape         */
+/* hit-area audit.                                                      */
+/*                                                                       */
+/* `click()`'s direct LV_EVENT_CLICKED injection (every test above)     */
+/* proves a control is WIRED to the right intent, but not that its      */
+/* whole visible area is genuinely tappable, nor that it sits where a   */
+/* real thumb would land relative to its neighbors — a label-only hit   */
+/* trap or a too-close SPACE/SEND pair would pass every `click()` test   */
+/* in this file unchanged. `tap_at()` (defined above, real synthetic    */
+/* indev press/release through `lv_indev_search_obj`'s own hit-testing) */
+/* is what proves those, the same reasoning S24's real-touch OMW test   */
+/* already established for Signals.                                    */
+/* =================================================================== */
+
+static void S99_compose_tap_on_space_center_emits_space_never_send(void)
+{
+    ff_app_compose_t compose;
+    memset(&compose, 0, sizeof(compose));
+    ff_scr_compose_build(&compose);
+    lv_obj_update_layout(lv_screen_active()); /* coords are lazily computed — force it before reading any */
+
+    lv_obj_t *space = find_button_with_label(lv_screen_active(), "SPACE");
+    TEST_ASSERT_NOT_NULL(space);
+    lv_area_t a;
+    lv_obj_get_coords(space, &a);
+
+    tap_at((a.x1 + a.x2) / 2, (a.y1 + a.y2) / 2);
+
+    TEST_ASSERT_EQUAL_INT(1, s_spy.count);
+    TEST_ASSERT_EQUAL(FF_INTENT_T9_SPACE, s_spy.last.kind);
+}
+
+/* A real physical tap anywhere on SEND's full visible rect — center and
+ * all four corners — must resolve to SEND and ONLY SEND, exactly once
+ * per tap. This is the test the mutation check below (shrinking SEND's
+ * hit area to its label) is written to catch: a label-only hit trap
+ * would still pass a center tap but miss every corner. */
+static void S99_compose_send_full_area_tap_emits_send_exactly_once(void)
+{
+    ff_app_compose_t compose;
+    memset(&compose, 0, sizeof(compose));
+    ff_scr_compose_build(&compose);
+    lv_obj_update_layout(lv_screen_active()); /* coords are lazily computed — force it before reading any */
+
+    lv_obj_t *send = find_button_with_label(lv_screen_active(), "SEND");
+    TEST_ASSERT_NOT_NULL(send);
+    lv_area_t a;
+    lv_obj_get_coords(send, &a);
+
+    /* 1px inset from the true boundary: indev coordinates address pixel
+     * centers, so a tap exactly ON the last-pixel boundary is an
+     * off-by-one hazard unrelated to what this test is proving (the
+     * WHOLE visible area, corners included, is real estate — not just
+     * the geometric center). */
+    int32_t const pts[5][2] = {
+        {(a.x1 + a.x2) / 2, (a.y1 + a.y2) / 2}, /* center */
+        {a.x1 + 1, a.y1 + 1},                   /* top-left corner */
+        {a.x2 - 1, a.y1 + 1},                   /* top-right corner */
+        {a.x1 + 1, a.y2 - 1},                   /* bottom-left corner */
+        {a.x2 - 1, a.y2 - 1},                   /* bottom-right corner */
+    };
+    char const *const names[5] = {"center", "top-left", "top-right", "bottom-left", "bottom-right"};
+
+    for (int i = 0; i < 5; i++) {
+        memset(&s_spy, 0, sizeof(s_spy));
+        tap_at(pts[i][0], pts[i][1]);
+        TEST_ASSERT_EQUAL_INT_MESSAGE(1, s_spy.count, names[i]);
+        TEST_ASSERT_EQUAL_MESSAGE(FF_INTENT_SEND_TEXT, s_spy.last.kind, names[i]);
+    }
+}
+
+/* Direct geometric proof of the maintainer's own ask ("at least one
+ * key-width, or a >=12px dead gap, between SPACE and SEND") — belt and
+ * suspenders alongside test_face_hit_targets.c's generic 8px adjacency
+ * sweep, which this pair clears by over 20x (see this test's own
+ * assertion message for the measured number). */
+static void S99_compose_space_and_send_clear_the_maintainer_gap_ask(void)
+{
+    ff_app_compose_t compose;
+    memset(&compose, 0, sizeof(compose));
+    ff_scr_compose_build(&compose);
+    lv_obj_update_layout(lv_screen_active()); /* coords are lazily computed — force it before reading any */
+
+    lv_obj_t *space = find_button_with_label(lv_screen_active(), "SPACE");
+    lv_obj_t *send = find_button_with_label(lv_screen_active(), "SEND");
+    TEST_ASSERT_NOT_NULL(space);
+    TEST_ASSERT_NOT_NULL(send);
+
+    lv_area_t sa, se;
+    lv_obj_get_coords(space, &sa);
+    lv_obj_get_coords(send, &se);
+
+    /* SEND sits in the header, well above SPACE at the bottom of the
+     * keypad — they do not even overlap on the x-axis, so the vertical
+     * edge-to-edge gap alone is the right quantity here. */
+    TEST_ASSERT_TRUE_MESSAGE(se.y2 < sa.y1, "SEND must be entirely above SPACE (no shared row)");
+    int32_t gap_y = sa.y1 - se.y2;
+    TEST_ASSERT_GREATER_OR_EQUAL_INT32_MESSAGE(12, gap_y,
+                                               "SEND must clear SPACE by >= 12px (maintainer ask); see test output "
+                                               "for the actual measured gap");
+}
+
+/* has_press_feedback — true iff `obj` registers a LOCAL style rule for
+ * (LV_PART_MAIN | LV_STATE_PRESSED) on either bg_opa or bg_color — the
+ * two properties every press treatment in this file's target
+ * (compose_key_press_feedback, and SEND's own dim-on-press) actually
+ * sets. This is a SELECTOR query (lv_obj_has_style_prop with an
+ * explicit part|state pair), not a "what does this look like right
+ * now" query — it works without the object ever actually being
+ * pressed, so a headless sweep like the one below can check every
+ * control in one pass instead of driving a real press on each. */
+static bool has_press_feedback(lv_obj_t *obj)
+{
+    return lv_obj_has_style_prop(obj, LV_PART_MAIN | LV_STATE_PRESSED, LV_STYLE_BG_OPA) ||
+           lv_obj_has_style_prop(obj, LV_PART_MAIN | LV_STATE_PRESSED, LV_STYLE_BG_COLOR);
+}
+
+/* walk_assert_press_feedback — recursively asserts every CLICKABLE
+ * object in the tree rooted at `obj` carries press-state feedback
+ * (S24 AC7 / the device-polish "presses must register" convention every
+ * control in this file follows), incrementing *out_n for each one
+ * checked so the caller can rule out a vacuous (zero-controls-found)
+ * pass, same discipline test_face_hit_targets.c's own sweep uses. */
+static void walk_assert_press_feedback(lv_obj_t *obj, int *out_n)
+{
+    uint32_t n = lv_obj_get_child_count(obj);
+    for (uint32_t i = 0; i < n; i++) {
+        lv_obj_t *child = lv_obj_get_child(obj, i);
+        if (lv_obj_has_flag(child, LV_OBJ_FLAG_CLICKABLE)) {
+            (*out_n)++;
+            TEST_ASSERT_TRUE_MESSAGE(has_press_feedback(child),
+                                      "every clickable compose control must carry an LV_STATE_PRESSED style");
+        }
+        walk_assert_press_feedback(child, out_n);
+    }
+}
+
+/* Every key/button on every keypad page (ABC/123/SYM; PRED is covered by
+ * the dedicated test right below, since it also swaps in the candidate
+ * chips) must have press-state feedback — the full audit request, not
+ * just SEND/SPACE. */
+static void S99_compose_every_key_has_press_state_feedback(void)
+{
+    ff_app_compose_mode_t const modes[] = {FF_APP_COMPOSE_ABC, FF_APP_COMPOSE_123, FF_APP_COMPOSE_SYM};
+    for (size_t m = 0; m < sizeof(modes) / sizeof(modes[0]); m++) {
+        lv_obj_clean(lv_screen_active());
+        ff_app_compose_t compose;
+        memset(&compose, 0, sizeof(compose));
+        compose.mode = modes[m];
+        ff_scr_compose_build(&compose);
+
+        int checked = 0;
+        walk_assert_press_feedback(lv_screen_active(), &checked);
+        TEST_ASSERT_GREATER_THAN_INT_MESSAGE(0, checked, "swept zero clickable controls — test is vacuous");
+    }
+}
+
+/* PRED mode's candidate chips (including the selected/amber chip's
+ * dim-on-press variant and the trailing "more" chip) are a separate
+ * render path from the ABC/123/SYM keypad — swept on their own fixture
+ * so the audit actually covers them, not just the shared keypad. */
+static void S99_compose_pred_candidates_have_press_state_feedback(void)
+{
+    ff_app_compose_t compose;
+    memset(&compose, 0, sizeof(compose));
+    compose.mode = FF_APP_COMPOSE_PRED;
+    strncpy(compose.text, "omw to ", sizeof(compose.text) - 1);
+    strncpy(compose.word, "the", sizeof(compose.word) - 1);
+    compose.n_cand = 3;
+    compose.total_cand = 5; /* > n_cand, so the trailing "more" chip renders too */
+    strncpy(compose.cand[0].text, "the", sizeof(compose.cand[0].text) - 1);
+    strncpy(compose.cand[1].text, "tie", sizeof(compose.cand[1].text) - 1);
+    strncpy(compose.cand[2].text, "vie", sizeof(compose.cand[2].text) - 1);
+    compose.sel_cand = 0;
+
+    ff_scr_compose_build(&compose);
+
+    int checked = 0;
+    walk_assert_press_feedback(lv_screen_active(), &checked);
+    TEST_ASSERT_GREATER_THAN_INT_MESSAGE(0, checked, "swept zero clickable controls — test is vacuous");
+}
+
+/* =================================================================== */
+/* Compose drag-off (PR #148 review, FAIL 1): LVGL's default             */
+/* LV_OBJ_FLAG_PRESS_LOCK keeps an object "pressed" — and still fires    */
+/* CLICKED on release — even after a real touch has slid off it. A       */
+/* finger that presses SEND (or any key) and drags away before lifting   */
+/* must never commit that key; compose_clear_press_lock (the #145        */
+/* launcher-lesson fix, scr_launcher.c) clears the flag on every         */
+/* clickable control in this file. Both tests drag through a REAL        */
+/* synthetic indev (drag_v — LVGL's own press/move/release path, the     */
+/* same mechanism a real finger drives), not a synthetic CLICKED event:  */
+/* only a real drag can exercise PRESS_LOCK at all.                      */
+/* =================================================================== */
+
+static void S99_compose_drag_off_send_emits_nothing(void)
+{
+    ff_app_compose_t compose;
+    memset(&compose, 0, sizeof(compose));
+    ff_scr_compose_build(&compose);
+    lv_obj_update_layout(lv_screen_active()); /* coords are lazily computed — force it before reading any */
+
+    lv_obj_t *send = find_button_with_label(lv_screen_active(), "SEND");
+    TEST_ASSERT_NOT_NULL(send);
+    lv_area_t a;
+    lv_obj_get_coords(send, &a);
+    int32_t cx = (a.x1 + a.x2) / 2;
+    int32_t cy = (a.y1 + a.y2) / 2;
+
+    /* Press on SEND's own center, drag straight down 150px (>= the
+     * review's 100px ask — comfortably off SEND, which is only 44px
+     * tall), release far away, never back on SEND. */
+    drag_v(cy, cy + 150, cx);
+
+    TEST_ASSERT_EQUAL_INT_MESSAGE(0, s_spy.count, "a slide-off of SEND must never commit SEND_TEXT");
+}
+
+/* Same proof for an ordinary T9 key (DEF, key 3) — the review's "and the
+ * same for a T9 key" ask, not just SEND. */
+static void S99_compose_drag_off_key_emits_nothing(void)
+{
+    ff_app_compose_t compose;
+    memset(&compose, 0, sizeof(compose));
+    ff_scr_compose_build(&compose);
+    lv_obj_update_layout(lv_screen_active());
+
+    lv_obj_t *def = find_button_with_label(lv_screen_active(), "DEF");
+    TEST_ASSERT_NOT_NULL(def);
+    lv_area_t a;
+    lv_obj_get_coords(def, &a);
+    int32_t cx = (a.x1 + a.x2) / 2;
+    int32_t cy = (a.y1 + a.y2) / 2;
+
+    drag_v(cy, cy + 150, cx);
+
+    TEST_ASSERT_EQUAL_INT_MESSAGE(0, s_spy.count, "a slide-off of a T9 key must never commit T9_KEY");
+}
+
+/* =================================================================== */
+/* Compose SEND corner-distance (PR #148 review, should-fix 3): SEND's   */
+/* farthest corner must sit within (radius - safety) = 196px of the      */
+/* puck's own center — the true 2D Euclidean bezel-margin bar, not just  */
+/* inside the raw 206px circle (which test_face_hit_targets.c's sweep    */
+/* already asserts) and not just safe along its own row's horizontal     */
+/* chord (compose_safe_margin_x's guarantee, which is a DIFFERENT,       */
+/* weaker quantity for a corner point — see compose_send_x's own         */
+/* comment in scr_compose.c for why).                                    */
+/* =================================================================== */
+
+static void S99_compose_send_corner_clears_bezel_margin_bar(void)
+{
+    ff_app_compose_t compose;
+    memset(&compose, 0, sizeof(compose));
+    ff_scr_compose_build(&compose);
+    lv_obj_update_layout(lv_screen_active());
+
+    lv_obj_t *send = find_button_with_label(lv_screen_active(), "SEND");
+    TEST_ASSERT_NOT_NULL(send);
+    lv_area_t a;
+    lv_obj_get_coords(send, &a);
+
+    /* Puck center (window == puck, no margin — ff_theme.h). Check all
+     * four corners; the farthest one is what matters, but checking all
+     * four is what actually proves it rather than assuming which one. */
+    float const cx = (float)FF_THEME_PUCK_RADIUS_PX;
+    float const cy = (float)FF_THEME_PUCK_RADIUS_PX;
+    float const safe_r = (float)FF_THEME_PUCK_RADIUS_PX - 10.0f; /* FF_COMPOSE_SAFETY_PX, scr_compose.c */
+    float const corners_x[4] = {(float)a.x1, (float)a.x2, (float)a.x1, (float)a.x2};
+    float const corners_y[4] = {(float)a.y1, (float)a.y1, (float)a.y2, (float)a.y2};
+    float max_dist = 0.0f;
+    for (int i = 0; i < 4; i++) {
+        float dx = corners_x[i] - cx;
+        float dy = corners_y[i] - cy;
+        float dist = sqrtf(dx * dx + dy * dy);
+        if (dist > max_dist) max_dist = dist;
+    }
+    char msg[96];
+    snprintf(msg, sizeof(msg), "SEND's farthest corner measures %.1fpx from center (bar: %.1fpx)", (double)max_dist,
+              (double)safe_r);
+    TEST_ASSERT_LESS_OR_EQUAL_FLOAT_MESSAGE(safe_r, max_dist, msg);
+}
+
+/* =================================================================== */
+/* Compose TO readability (PR #148 review round 3, blocking): round 2's  */
+/* fix bounded TO to the ~52px BACK-to-SEND header gap, which made even  */
+/* an ORDINARY short name unreadable ("TO: DANA" -> "TO: D..."). TO now  */
+/* lives on its own row below the header, wide enough for every demo    */
+/* crew name in full, while a genuinely long one still ellipsizes.      */
+/* =================================================================== */
+
+/* find_label_with_prefix — like find_button_with_label, but for a bare
+ * (non-button) label whose text starts with `prefix` — TO isn't a
+ * button, so that helper (which only descends into lv_button_class
+ * children) can't find it. */
+static lv_obj_t *find_label_with_prefix(lv_obj_t *root, char const *prefix)
+{
+    uint32_t n = lv_obj_get_child_count(root);
+    size_t plen = strlen(prefix);
+    for (uint32_t i = 0; i < n; i++) {
+        lv_obj_t *child = lv_obj_get_child(root, i);
+        if (lv_obj_check_type(child, &lv_label_class)) {
+            char const *txt = lv_label_get_text(child);
+            if (txt != NULL && strncmp(txt, prefix, plen) == 0) {
+                return child;
+            }
+        }
+        lv_obj_t *found = find_label_with_prefix(child, prefix);
+        if (found != NULL) {
+            return found;
+        }
+    }
+    return NULL;
+}
+
+/* compose_mid.json's ordinary short recipient (DANA, a real demo crew
+ * name) must render in FULL — no ellipsis at all. LVGL's
+ * LV_LABEL_LONG_MODE_DOTS mutates the label's OWN stored text (not just
+ * how it paints) when it truncates, so checking lv_label_get_text() for
+ * the absence of the "..." it appends is a direct, sufficient proof —
+ * not an approximation of what the pixels show. */
+static void S99_compose_to_short_name_renders_in_full_no_dots(void)
+{
+    ff_app_compose_t compose;
+    memset(&compose, 0, sizeof(compose));
+    strncpy(compose.to_name, "DANA", sizeof(compose.to_name) - 1);
+
+    ff_scr_compose_build(&compose);
+    lv_obj_update_layout(lv_screen_active());
+
+    lv_obj_t *to = find_label_with_prefix(lv_screen_active(), "TO:");
+    TEST_ASSERT_NOT_NULL_MESSAGE(to, "TO label not found");
+    char const *txt = lv_label_get_text(to);
+    TEST_ASSERT_EQUAL_STRING_MESSAGE("TO: DANA", txt, "a real demo crew name must render in full");
+    TEST_ASSERT_NULL_MESSAGE(strstr(txt, "..."), "a short, ordinary recipient name must never ellipsize");
+}
+
+/* Every other demo crew name (+ EVERYONE, the broadcast fallback) must
+ * also render in full — not just DANA. */
+static void S99_compose_to_every_demo_crew_name_renders_in_full(void)
+{
+    char const *const names[] = {"DANA", "KEV", "RILEY", "MAYA", "SAM", "EVERYONE"};
+    for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); i++) {
+        lv_obj_clean(lv_screen_active());
+        ff_app_compose_t compose;
+        memset(&compose, 0, sizeof(compose));
+        if (strcmp(names[i], "EVERYONE") != 0) {
+            strncpy(compose.to_name, names[i], sizeof(compose.to_name) - 1);
+        } /* else: leave to_name empty — the code's own "EVERYONE" fallback */
+
+        ff_scr_compose_build(&compose);
+        lv_obj_update_layout(lv_screen_active());
+
+        lv_obj_t *to = find_label_with_prefix(lv_screen_active(), "TO:");
+        TEST_ASSERT_NOT_NULL_MESSAGE(to, names[i]);
+        char const *txt = lv_label_get_text(to);
+        TEST_ASSERT_NULL_MESSAGE(strstr(txt, "..."), names[i]);
+    }
+}
+
+/* compose_to_long.json's genuinely long recipient ("WHOLE CREW") must
+ * still ellipsize cleanly — the DOTS path stays provably reachable, not
+ * dead code now that real names all fit. */
+static void S99_compose_to_long_name_ellipsizes_cleanly(void)
+{
+    ff_app_compose_t compose;
+    memset(&compose, 0, sizeof(compose));
+    strncpy(compose.to_name, "WHOLE CREW", sizeof(compose.to_name) - 1);
+
+    ff_scr_compose_build(&compose);
+    lv_obj_update_layout(lv_screen_active()); /* DOTS truncation is computed during layout, not at label_set_text */
+
+    lv_obj_t *to = find_label_with_prefix(lv_screen_active(), "TO:");
+    TEST_ASSERT_NOT_NULL(to);
+    char const *txt = lv_label_get_text(to);
+    TEST_ASSERT_NOT_NULL_MESSAGE(strstr(txt, "..."), "a genuinely long recipient name must ellipsize, not overflow");
+}
+
+/* PRED mode has no separate TO row (see scr_compose.c's own comment,
+ * "TO — PR #148 review round 3") — the recipient is prepended to the
+ * draft line itself instead. Prove it's actually there (and the
+ * dedicated TO row is NOT double-built at the same y, the bug an
+ * earlier draft of this fix shipped). */
+static void S99_compose_pred_mode_shows_recipient_on_draft_line(void)
+{
+    ff_app_compose_t compose;
+    memset(&compose, 0, sizeof(compose));
+    compose.mode = FF_APP_COMPOSE_PRED;
+    strncpy(compose.to_name, "DANA", sizeof(compose.to_name) - 1);
+
+    ff_scr_compose_build(&compose);
+
+    lv_obj_t *prefix = find_label_with_prefix(lv_screen_active(), "DANA:");
+    TEST_ASSERT_NOT_NULL_MESSAGE(prefix, "PRED draft line must carry the recipient prefix");
+    /* And the dedicated TO row (which would sit at the identical y) must
+     * NOT also exist — that's the double-render bug this test guards. */
+    lv_obj_t *to_row = find_label_with_prefix(lv_screen_active(), "TO:");
+    TEST_ASSERT_NULL_MESSAGE(to_row, "PRED mode must not ALSO build the dedicated TO row at the same y");
 }
 
 /* =================================================================== */
@@ -1157,20 +1571,14 @@ static void S24_thread_scroll_resets_to_newest_on_different_thread(void)
     TEST_ASSERT_GREATER_THAN_INT32(0, lv_obj_get_scroll_y(list2));
 }
 
-/* A single press-then-release at one point, no movement — a real tap
- * through the same synthetic pointer indev drag()/drag_v() use, as
- * opposed to click()'s direct LV_EVENT_CLICKED injection every other
- * Signals test in this file uses. Proves a genuine physical tap still
- * resolves to a control OUTSIDE `list` (the chip strip is a sibling of
- * `list`, not a descendant) even once the FLOATING scroll touch target
- * is added inside an overflowing thread's list — the touch-safety
- * property the review asked to keep covered by real touch, not just
- * synthetic click(). */
-static void tap_at(int32_t x, int32_t y)
-{
-    drag_v(y, y, x);
-}
-
+/* tap_at() is defined earlier in this file (right after drag_v, its one
+ * dependency) so both the S99 compose tests above and the Signals test
+ * below can use it. This Signals test itself proves a genuine physical
+ * tap still resolves to a control OUTSIDE `list` (the chip strip is a
+ * sibling of `list`, not a descendant) even once the FLOATING scroll
+ * touch target is added inside an overflowing thread's list — the
+ * touch-safety property the review asked to keep covered by real touch,
+ * not just synthetic click(). */
 static void S24_omw_chip_real_touch_on_long_overflowing_1to1_thread(void)
 {
     ff_app_signals_t v;
@@ -1982,6 +2390,18 @@ int main(void)
     RUN_TEST(S16_c3_sym_symbol_key_emits_t9_insert);
     RUN_TEST(S16_c3_sym_space_key_emits_t9_space);
     RUN_TEST(S16_c3_mode_chip_emits_t9_mode);
+    RUN_TEST(S99_compose_tap_on_space_center_emits_space_never_send);
+    RUN_TEST(S99_compose_send_full_area_tap_emits_send_exactly_once);
+    RUN_TEST(S99_compose_space_and_send_clear_the_maintainer_gap_ask);
+    RUN_TEST(S99_compose_every_key_has_press_state_feedback);
+    RUN_TEST(S99_compose_pred_candidates_have_press_state_feedback);
+    RUN_TEST(S99_compose_drag_off_send_emits_nothing);
+    RUN_TEST(S99_compose_drag_off_key_emits_nothing);
+    RUN_TEST(S99_compose_send_corner_clears_bezel_margin_bar);
+    RUN_TEST(S99_compose_to_short_name_renders_in_full_no_dots);
+    RUN_TEST(S99_compose_to_every_demo_crew_name_renders_in_full);
+    RUN_TEST(S99_compose_to_long_name_ellipsizes_cleanly);
+    RUN_TEST(S99_compose_pred_mode_shows_recipient_on_draft_line);
     RUN_TEST(S24b_inbox_member_row_tap_emits_open_thread);
     RUN_TEST(S24b_inbox_crew_row_tap_emits_open_thread_crew);
     RUN_TEST(S24b_inbox_quiet_member_row_is_tappable);
