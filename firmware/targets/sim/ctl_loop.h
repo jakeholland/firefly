@@ -105,7 +105,11 @@ typedef struct {
      * assert it stayed 0 across a window instead of inferring that from
      * ff_shell_tick's dirty bit (which the OFF-gate governs, not the
      * other way around — asserting on the bit would test the wrong
-     * layer). */
+     * layer). S26 slice f (light sleep) folds into this SAME gate: the
+     * sim has nothing to enact for SLEEP (no light sleep on host), but
+     * the screen is just as blank, so `ff_ctl_loop_pump` treats
+     * `FF_IDLE_STATE_SLEEP` exactly like `FF_IDLE_STATE_OFF` for the
+     * rebuild-skip decision — see ctl_loop.c. */
     ff_idle_t idle;
     bool      rebuild_pending;
     uint32_t  rebuild_count;

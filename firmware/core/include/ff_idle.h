@@ -1,35 +1,50 @@
 /**
- * ff_idle.h — S26 slice (c): inactivity -> dim -> screen off.
+ * ff_idle.h — S26 slices (c)+(f): inactivity -> dim -> screen off ->
+ * timer-based light sleep.
  *
  * Spec: docs/specs/S26-device-lifecycle.md, "(c) Inactivity -> dim ->
- * screen off". Per this repo's house rule (CLAUDE.md: "all logic goes
- * in firmware/core/"), the DECISION of when the screen should dim or
- * turn off is pure function of (now_ms, input events, a keep-awake
- * predicate) and belongs here — the esp32s3 target only enacts it
- * (backlight percent + skipping face rebuilds; see
- * targets/esp32s3/main/app_main.c) and the sim's ctl loop mirrors the
- * same enact split for its own AC3 test
+ * screen off" and "(f) Light sleep — timer-based". Per this repo's
+ * house rule (CLAUDE.md: "all logic goes in firmware/core/"), the
+ * DECISION of when the screen should dim, turn off, or the device
+ * should light-sleep is a pure function of (now_ms, input events, a
+ * keep-awake predicate) and belongs here — the esp32s3 target only
+ * enacts it (backlight percent + skipping face rebuilds +
+ * `esp_light_sleep_start()`; see targets/esp32s3/main/app_main.c) and
+ * the sim's ctl loop mirrors the same enact split for its own AC3 test
  * (targets/sim/tests/test_idle_render_skip.c).
  *
  * ## States
  *
  * ```
- * ACTIVE --(idle >= FF_IDLE_T_DIM_MS)--> DIM --(idle >= FF_IDLE_T_OFF_MS)--> OFF
- *    ^------------------------ ff_idle_input() from ANY state -------------^
+ * ACTIVE --(idle>=T_DIM_MS)--> DIM --(idle>=T_OFF_MS)--> OFF --(idle>=T_OFF_MS+T_SLEEP_MS)--> SLEEP
+ *    ^-------------------------------- ff_idle_input() from ANY state -----------------------------^
  * ```
  *
  * "idle" is elapsed time since the last `ff_idle_input()` call (or
- * since init) — NOT time-in-DIM. Both thresholds are measured from the
- * SAME reference instant, so a single large `now_ms` jump with no
- * intervening ticks lands directly in the right state (OFF at 30000 ms
- * idle even if DIM's 15000 ms boundary was never separately ticked
- * through) — this is what AC1's boundary tests check.
+ * since init) — NOT time-in-DIM or time-in-OFF. Every threshold is
+ * measured from the SAME reference instant, so a single large `now_ms`
+ * jump with no intervening ticks lands directly in the right state
+ * (SLEEP at `FF_IDLE_T_OFF_MS + FF_IDLE_T_SLEEP_MS` idle even if the
+ * DIM/OFF boundaries were never separately ticked through) — this is
+ * what AC1's boundary tests check. Slice (f)'s AC names this as "after
+ * OFF for FF_IDLE_T_SLEEP_MS", which reads the same way in the only
+ * path that reaches SLEEP by natural ticking: OFF is itself entered at
+ * exactly `ref_ms + FF_IDLE_T_OFF_MS`, so "T_SLEEP_MS after OFF" and
+ * "T_OFF_MS + T_SLEEP_MS after the reference instant" are the same
+ * instant. (The one case they can diverge is `ff_idle_force_off` from
+ * ACTIVE well before `FF_IDLE_T_OFF_MS` of real idle time has elapsed —
+ * see that function's doc comment: it deliberately leaves `ref_ms`
+ * untouched, so SLEEP in that case is measured from the same
+ * still-old reference, i.e. from the LAST REAL INPUT, not from the
+ * forced-OFF instant. Flagged as this slice's interpretation call,
+ * PR body — the common case (PWR short-press soon after the last
+ * touch) makes the two reference points coincide in practice.)
  *
  * ## Keep-awake
  *
  * While the caller's `keep_awake` predicate is true, `ff_idle_tick`
  * forces (and holds) ACTIVE and continuously re-pins the idle reference
- * to `now_ms` — so no elapsed time accrues toward a future DIM/OFF
+ * to `now_ms` — so no elapsed time accrues toward a future DIM/OFF/SLEEP
  * while it holds, and once it releases, idle time starts counting fresh
  * from that instant (not backdated to whenever the predicate first
  * became true). The three sources this spec names (flare takeover
@@ -37,18 +52,27 @@
  * into one bool by the shell-level predicate `ff_shell_keep_awake`
  * (app/include/ff_shell.h) — this header takes the already-combined
  * bool so it stays free of any app/UI type. `ff_idle_short_press` below
- * takes the same already-combined bool for the identical reason.
+ * takes the same already-combined bool for the identical reason. S26
+ * slice (f) AC2 ("not entered while any keep-awake holds") needs no new
+ * code: `keep_awake` unconditionally forces ACTIVE every tick
+ * regardless of the CURRENT state, so SLEEP (like OFF before it) can
+ * never be computed while it holds — this is the same mechanism slice
+ * (c) already relied on for OFF, just inherited by the new state.
  *
- * ## OFF is sticky
+ * ## OFF and SLEEP are sticky
  *
  * Once OFF (whether reached by elapsed idle time or by
  * `ff_idle_force_off`), `ff_idle_tick` will not walk it back down to
  * DIM/ACTIVE on its own — only `ff_idle_input` (a real wake: touch, PWR
- * SHORT_PRESS while OFF, BOOT) or a newly-true `keep_awake` does that.
- * This is what makes `ff_idle_force_off` (PWR SHORT_PRESS while ACTIVE
- * -> "go OFF immediately", docs/specs/S26-device-lifecycle.md slice c)
- * stick even though the elapsed idle time at the moment of the press
- * may be far short of `FF_IDLE_T_OFF_MS`.
+ * SHORT_PRESS while OFF, BOOT, a GPIO/timer light-sleep wake carrying
+ * real input) or a newly-true `keep_awake` does that. This is what
+ * makes `ff_idle_force_off` (PWR SHORT_PRESS while ACTIVE -> "go OFF
+ * immediately", docs/specs/S26-device-lifecycle.md slice c) stick even
+ * though the elapsed idle time at the moment of the press may be far
+ * short of `FF_IDLE_T_OFF_MS`. SLEEP is sticky the same way once
+ * reached: a bare timer wake with no real input keeps `ff_idle_tick`
+ * reporting SLEEP so the target's enact loop goes straight back to
+ * sleep (S26 slice f: "if no input arrived, ff_idle stays SLEEP").
  *
  * Fully-defined (not opaque), same convention as `ff_flare_t` /
  * `ff_power_fsm_t`: safe on the stack or in a static; zero-initialise
@@ -72,10 +96,26 @@ extern "C" {
  * which the screen turns off. */
 #define FF_IDLE_T_OFF_MS ((uint32_t)30000u)
 
+/** Additional idle time, on top of `FF_IDLE_T_OFF_MS` (i.e. measured from
+ * the same reference instant as every other threshold here — see this
+ * header's top comment), at which the device enters timer-based light
+ * sleep (S26 slice f). Literal-pinned in a unit test
+ * (`S26f_AC1_thresholds_pinned_to_spec_literals`, core/tests/test_idle.c)
+ * per this repo's proxy-check failure mode (AGENTS.md item 6, bug
+ * #135/#136): a test that only ever compares against this macro
+ * symbolically would still pass if the macro's value silently changed. */
+#define FF_IDLE_T_SLEEP_MS ((uint32_t)120000u)
+
 typedef enum {
     FF_IDLE_STATE_ACTIVE = 0,
     FF_IDLE_STATE_DIM,
     FF_IDLE_STATE_OFF,
+    /** S26 slice f: OFF for `FF_IDLE_T_SLEEP_MS` with no keep-awake
+     * source holding — the esp32s3 target enacts this with
+     * `esp_light_sleep_start()` (timer + GPIO wake); the sim has nothing
+     * to enact (no sleep on host) and treats it like OFF for its
+     * rebuild-skip gate (targets/sim/ctl_loop.c). */
+    FF_IDLE_STATE_SLEEP,
 } ff_idle_state_t;
 
 typedef struct {
@@ -97,18 +137,21 @@ void ff_idle_init(ff_idle_t *idle);
  * true, forces and holds ACTIVE and prevents any idle time from
  * accruing; while false, elapsed idle time since the last
  * `ff_idle_input` (or since `keep_awake` last released) drives ACTIVE ->
- * DIM at `FF_IDLE_T_DIM_MS` and -> OFF at `FF_IDLE_T_OFF_MS`. OFF is
- * sticky (see top comment) — natural ticking never reverses it. Returns
- * the resulting state (also readable via `ff_idle_state`). Returns
- * `FF_IDLE_STATE_ACTIVE` for a NULL `idle` (safe default; no state is
- * mutated).
+ * DIM at `FF_IDLE_T_DIM_MS`, -> OFF at `FF_IDLE_T_OFF_MS`, and -> SLEEP
+ * at `FF_IDLE_T_OFF_MS + FF_IDLE_T_SLEEP_MS` (S26 slice f). OFF and
+ * SLEEP are both sticky (see top comment) — natural ticking never
+ * reverses either back down; OFF can still advance forward into SLEEP.
+ * Returns the resulting state (also readable via `ff_idle_state`).
+ * Returns `FF_IDLE_STATE_ACTIVE` for a NULL `idle` (safe default; no
+ * state is mutated).
  */
 ff_idle_state_t ff_idle_tick(ff_idle_t *idle, uint32_t now_ms, bool keep_awake);
 
 /**
  * ff_idle_input — a real wake/reset event (touch, PWR SHORT_PRESS while
- * OFF, BOOT, and later a notification — docs/specs/S26-device-lifecycle.md
- * slice d) from ANY current state, including OFF. Sets state to ACTIVE
+ * OFF, BOOT, a light-sleep GPIO wake carrying real input (S26 slice f),
+ * and later a notification — docs/specs/S26-device-lifecycle.md slice d)
+ * from ANY current state, including OFF and SLEEP. Sets state to ACTIVE
  * and pins the idle reference to `now_ms`, so the next `FF_IDLE_T_DIM_MS`
  * countdown starts fresh from this instant. NULL-safe (no-op).
  */
@@ -119,10 +162,10 @@ void ff_idle_input(ff_idle_t *idle, uint32_t now_ms);
  * (docs/specs/S26-device-lifecycle.md slice c), independent of how much
  * idle time has actually elapsed. Sets state to OFF; the idle reference
  * (`ref_ms`) is left untouched, which is harmless — see this header's
- * "OFF is sticky" note: a subsequent `ff_idle_tick` with `keep_awake`
- * false will keep computing OFF (elapsed time only grows), so the forced
- * state never needs its own separate "why am I off" bit. NULL-safe
- * (no-op).
+ * "OFF and SLEEP are sticky" note: a subsequent `ff_idle_tick` with
+ * `keep_awake` false will keep computing OFF (elapsed time only grows,
+ * eventually advancing into SLEEP too), so the forced state never needs
+ * its own separate "why am I off" bit. NULL-safe (no-op).
  */
 void ff_idle_force_off(ff_idle_t *idle);
 
@@ -141,10 +184,12 @@ void ff_idle_force_off(ff_idle_t *idle);
  *    produce a one-tick OFF-then-ACTIVE flicker with no spec guidance
  *    either way — an explicit no-op is simpler and avoids it.
  *  - ACTIVE: `ff_idle_force_off` — go OFF immediately, per the spec.
- *  - DIM or OFF: `ff_idle_input` — a wake. The spec's AC only names OFF
- *    explicitly; DIM is extended to the same "wake" behaviour here
- *    (interpretation call, PR body) since "not fully off yet" reads as
- *    a wake, not a no-op.
+ *  - DIM, OFF, or SLEEP: `ff_idle_input` — a wake. The spec's AC only
+ *    names OFF explicitly; DIM and SLEEP are extended to the same
+ *    "wake" behaviour here (interpretation call, PR body) since "not
+ *    fully off yet" / "off but sleeping" both read as a wake, not a
+ *    no-op — this is also how a PWR press reaching app_main.c's loop on
+ *    a light-sleep GPIO wake (S26 slice f) lands back in ACTIVE.
  *
  * NULL-safe (no-op, mirrors ff_idle_input/ff_idle_force_off).
  */
@@ -169,8 +214,10 @@ ff_idle_state_t ff_idle_state(ff_idle_t const *idle);
  *  - DIM: `FF_BRIGHTNESS_MIN_PCT` (core/ff_settings.h — the same
  *    constant the stored setting itself is floored to, NOT a
  *    display-layer macro: this file has no display/ include).
- *  - OFF: `0` — a TRUE zero. The caller is expected to route a `0`
- *    result to a true-off backlight call (e.g. esp32s3's
+ *  - OFF or SLEEP: `0` — a TRUE zero (S26 slice f: the backlight is
+ *    already off from the OFF state that preceded SLEEP; light sleep
+ *    does not change what gets driven to it). The caller is expected to
+ *    route a `0` result to a true-off backlight call (e.g. esp32s3's
  *    `ff_display_backlight_off()`) and any nonzero result to a normal
  *    percent-set call — this function never needs to know which
  *    concrete HAL calls those are (no display/ include here either).

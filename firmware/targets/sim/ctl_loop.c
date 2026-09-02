@@ -238,7 +238,13 @@ void ff_ctl_loop_pump(ff_ctl_loop_ctx_t *ctx)
      * `rebuild_pending` so it drains on the first non-OFF pump after a
      * wake — "a dirty view is rebuilt on wake" (never lost, only
      * deferred, mirroring app_main.c's finger-down defer latch in
-     * spirit).
+     * spirit). S26 slice f: SLEEP is OFF-with-the-CPU-also-asleep on the
+     * esp32s3 target — there is nothing to enact here (no light sleep on
+     * host, per the spec's "Sim: nothing to enact" note), but the
+     * rebuild-skip gate still applies (the screen is just as blank), so
+     * SLEEP is folded into the same gate rather than getting a second
+     * one — a dirty tick during SLEEP defers exactly like a dirty tick
+     * during OFF.
      *
      * lv_obj_clean() BEFORE rebuilding is what makes issue #17's static
      * point pools (scr_radar.c, scr_flare.c) safe under repeated builds:
@@ -251,7 +257,8 @@ void ff_ctl_loop_pump(ff_ctl_loop_ctx_t *ctx)
     if (dirty) {
         ctx->rebuild_pending = true;
     }
-    if (ctx->rebuild_pending && ctx->has_screen && idle_state != FF_IDLE_STATE_OFF) {
+    bool const screen_blank = (idle_state == FF_IDLE_STATE_OFF) || (idle_state == FF_IDLE_STATE_SLEEP);
+    if (ctx->rebuild_pending && ctx->has_screen && !screen_blank) {
         lv_obj_clean(lv_screen_active());
         ff_build_face_screen(&ctx->state);
         ctx->rebuild_pending = false;

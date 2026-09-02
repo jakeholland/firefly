@@ -42,10 +42,31 @@ ff_idle_state_t ff_idle_tick(ff_idle_t *idle, uint32_t now_ms, bool keep_awake)
         return idle->state;
     }
 
+    if (idle->state == FF_IDLE_STATE_SLEEP) {
+        /* SLEEP is sticky against natural ticking, same reasoning as OFF
+         * below (header's "OFF and SLEEP are sticky" note) — it is the
+         * highest state there is, so nothing can advance it further.
+         * Only ff_idle_input (a real wake) or a newly true keep_awake
+         * (handled above) walks it back. */
+        return idle->state;
+    }
+
+    /* SLEEP's threshold is checked BEFORE the OFF short-circuit below —
+     * not folded into that branch — so a single large now_ms jump from
+     * ANY state (not only from OFF) lands directly in SLEEP in one
+     * call, mirroring the property this file already guaranteed for
+     * OFF/DIM ("OFF reached directly without visiting DIM first").
+     * Measured from the SAME ref_ms every other threshold here uses
+     * (header's top comment). */
+    if (ff_idle_reached(now_ms, idle->ref_ms + FF_IDLE_T_OFF_MS + FF_IDLE_T_SLEEP_MS)) {
+        idle->state = FF_IDLE_STATE_SLEEP;
+        return idle->state;
+    }
+
     if (idle->state == FF_IDLE_STATE_OFF) {
-        /* OFF is sticky against natural ticking — see the header's "OFF
-         * is sticky" note. Only ff_idle_input (a real wake) or a newly
-         * true keep_awake (handled above) walks it back. */
+        /* OFF is sticky against reversal to DIM/ACTIVE — see the
+         * header's "OFF and SLEEP are sticky" note. The only forward
+         * move left from here (SLEEP) was already checked above. */
         return idle->state;
     }
 
@@ -56,7 +77,7 @@ ff_idle_state_t ff_idle_tick(ff_idle_t *idle, uint32_t now_ms, bool keep_awake)
     }
     /* else: elapsed idle time has not reached FF_IDLE_T_DIM_MS yet —
      * stays whatever it already was (ACTIVE; DIM can only be reached
-     * here, and OFF short-circuited above). */
+     * here, and OFF/SLEEP short-circuited above). */
 
     return idle->state;
 }
@@ -93,7 +114,7 @@ void ff_idle_short_press(ff_idle_t *idle, uint32_t now_ms, bool keep_awake)
     if (idle->state == FF_IDLE_STATE_ACTIVE) {
         ff_idle_force_off(idle);
     } else {
-        /* DIM or OFF: a wake. */
+        /* DIM, OFF, or SLEEP: a wake. */
         ff_idle_input(idle, now_ms);
     }
 }
@@ -112,6 +133,7 @@ uint8_t ff_idle_brightness_pct(ff_idle_state_t state, uint8_t stored_pct)
     case FF_IDLE_STATE_DIM:
         return (uint8_t)FF_BRIGHTNESS_MIN_PCT;
     case FF_IDLE_STATE_OFF:
+    case FF_IDLE_STATE_SLEEP:
         return 0u;
     case FF_IDLE_STATE_ACTIVE:
     default:
