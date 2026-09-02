@@ -132,6 +132,42 @@
  * exact same reasoning Exclusion 2 relies on — this exclusion just
  * covers the sibling-shaped instance of the identical fact).
  *
+ * **Exclusion 4 — an inert FLOATING scroll-relay catcher.** A pair is
+ * skipped when either side is CLICKABLE, has NO registered event
+ * callback at all, AND carries LV_OBJ_FLAG_FLOATING — the exact shape of
+ * PR #143's thread-scroll fix and its sibling in scr_signals.c's Rally
+ * WHERE list (S24 bugfix, same PR family): one invisible hit target,
+ * pinned to a scrollable list's own viewport (FLOATING = LVGL's "don't
+ * move this when the parent scrolls"), that exists ONLY so
+ * lv_indev_find_scroll_obj has something to walk UP FROM when a touch
+ * lands on a dead zone inside an otherwise partially-tappable list (a
+ * divider band, an inter-row gap, a disabled row with no hit child of
+ * its own) — see scr_signals.c's own header comments on
+ * signals_build_thread and signals_build_rally for the full mechanism.
+ * It performs no action of its own (no CLICKED handler is ever bound to
+ * it) and, being added at the LOWEST z-order/hit-test priority in every
+ * site that builds one (checked LAST, per LVGL's reverse child-order
+ * search — see those same comments), a real, more specific control
+ * sharing its space always resolves first: per LVGL's own deepest-hit-
+ * wins search, a thumb can never be misdirected FROM a real control TO
+ * this catcher, only relayed to `list`'s ambient scroll on a press that
+ * would otherwise have hit nothing at all. This is the same underlying
+ * "not a genuine mis-tap risk" fact Exclusions 2 and 3 rest on, applied
+ * to a new structural shape neither covers: the catcher is a SIBLING
+ * (not an ancestor) of the rows it necessarily overlaps at every scroll
+ * offset, and it is not puck-sized. Scoped narrowly to CLICKABLE +
+ * no-callback + FLOATING specifically so it cannot silently swallow a
+ * genuine bug — an ordinary button that simply forgot to wire a click
+ * handler is never FLOATING, and a FLOATING object that DOES register a
+ * real callback is never exempted either.
+ * Unit-tested directly below (S24_AC7_inert_scroll_catcher_exclusion), same
+ * shape as S17b_AC2_composite_control_detection: a floating, callback-less
+ * catcher fully overlapping a real row must not violate the floor, a
+ * NON-floating callback-less object placed the same way still must (the
+ * exclusion is not "any object with no callback"), and two real,
+ * differently-wired rows placed too close together must still be caught
+ * (the exclusion does not blanket-disable AC2).
+ *
  * PR #86 code review (BLOCKING + should-fix): an earlier version of this
  * sweep scoped the adjacency check to elements sharing an immediate LVGL
  * parent instead of this global all-pairs form, reasoning that ancestors
@@ -184,19 +220,29 @@
  *  - The pinned header (the back button) is NOT inside a scroll list, so
  *    it keeps the absolute circle check — "back" is always on-glass, not
  *    "on-glass once you scroll to it".
- *  - ADJACENCY is unchanged, and that is correct rather than an omission:
- *    a vertical scroll shifts every row in the list by the same amount, so
- *    the edge-to-edge GAP between any two rows is scroll-invariant, and the
- *    raw rects already encode each pair's true gap. Two rows far apart in
- *    scroll are never simultaneously in the viewport, and their raw rects
- *    are correspondingly far apart, so they pass the floor on their real
+ *  - ADJACENCY is unchanged for two rows OF THE SAME LIST, and that is
+ *    correct rather than an omission: a vertical scroll shifts every row
+ *    in the list by the same amount, so the edge-to-edge GAP between any
+ *    two rows is scroll-invariant, and the raw rects already encode each
+ *    pair's true gap. Two rows far apart in scroll are never
+ *    simultaneously in the viewport, and their raw rects are
+ *    correspondingly far apart, so they pass the floor on their real
  *    geometry — they are not exempted by size or by a co-visibility
  *    special case, they simply are not close. Two rows near each other in
- *    the list are near each other on glass at every scroll offset, and are
- *    caught. The header-to-first-row gap (the one cross-boundary pair that
- *    matters) is a fixed quantity checked at scroll 0, where the first row
- *    sits at the viewport top; no scrolled row can get nearer the header
- *    than the viewport top, so that one check covers it.
+ *    the list are near each other on glass at every scroll offset, and
+ *    are caught. (S24 correction: this file used to claim the
+ *    header-to-first-row gap was "the one cross-boundary pair that
+ *    matters", checked once at scroll 0 because no scrolled row gets
+ *    nearer the TOP than the viewport top. True for the top boundary, but
+ *    it missed the symmetric BOTTOM one — a long list's deep, off-
+ *    viewport rows sit at raw y past the viewport, which can numerically
+ *    collide with a pinned element BELOW the list, e.g. Rally's WHEN/Send
+ *    footer, measured via the WHERE list's first genuinely-long (7-row)
+ *    fixture. `sweep_gap_rect_for_pair`, right before sweep_check_
+ *    adjacency below, is the fix: a row IS clipped to its own viewport —
+ *    same principle as the containment check above — but ONLY when the
+ *    OTHER side of the pair is outside that same list, so this
+ *    paragraph's row-vs-row reasoning is untouched.)
  *
  * The face tileview is deliberately NOT a scroll viewport under this rule:
  * its user-scroll is (correctly) disabled and it pages HORIZONTALLY, so it
@@ -348,6 +394,19 @@ static bool sweep_same_composite_control(sweep_clickable_t const *a, sweep_click
     return a->cb == b->cb && a->user_data == b->user_data;
 }
 
+/* sweep_is_inert_scroll_catcher — true iff `s` is a callback-less
+ * FLOATING hit target: the PR #143 / Rally-fix shape (see this file's
+ * header comment, "S17 slice b: the adjacency floor", Exclusion 4).
+ * Scoped to exactly CLICKABLE (implicit — only CLICKABLE objects are
+ * ever gathered into a sweep_clickable_t at all) + no callback +
+ * FLOATING, so an ordinary button that simply forgot to wire a click
+ * handler (never FLOATING) is not swept into this exclusion, and a
+ * FLOATING object that DOES register a real callback is not either. */
+static bool sweep_is_inert_scroll_catcher(sweep_clickable_t const *s)
+{
+    return s->cb == NULL && lv_obj_has_flag(s->obj, LV_OBJ_FLAG_FLOATING);
+}
+
 /* sweep_is_ancestor — true iff `maybe_ancestor` is a strict LVGL ancestor
  * of `obj` (walks lv_obj_get_parent from `obj` up to the screen root).
  * See this file's header comment ("S17 slice b: the adjacency floor",
@@ -373,8 +432,11 @@ static bool sweep_is_ancestor(lv_obj_t *maybe_ancestor, lv_obj_t *obj)
  * VERTICAL scroll range is what excludes the face tileview (horizontal /
  * user-scroll-disabled, so zero vertical range) while including a real
  * settings/feed list — see this file's header ("S21: the sweep goes
- * scroll-aware"). */
-static bool sweep_scroll_viewport(lv_obj_t *obj, ff_layout_rect_t *out_vp)
+ * scroll-aware"). `out_ancestor` (may be NULL) receives the scroll list
+ * object itself — sweep_check_adjacency's cross-boundary clip (below)
+ * needs it to tell "two rows of the SAME list" from "a row vs. something
+ * outside it". */
+static bool sweep_scroll_viewport(lv_obj_t *obj, ff_layout_rect_t *out_vp, lv_obj_t **out_ancestor)
 {
     lv_obj_t *p = lv_obj_get_parent(obj);
     while (p != NULL) {
@@ -386,6 +448,9 @@ static bool sweep_scroll_viewport(lv_obj_t *obj, ff_layout_rect_t *out_vp)
             out_vp->y1 = (float)a.y1;
             out_vp->x2 = (float)a.x2 + 1.0f; /* lv_area_t x2/y2 inclusive -> exclusive far edge */
             out_vp->y2 = (float)a.y2 + 1.0f;
+            if (out_ancestor != NULL) {
+                *out_ancestor = p;
+            }
             return true;
         }
         p = lv_obj_get_parent(p);
@@ -464,7 +529,7 @@ static void sweep_walk(lv_obj_t *obj, char const *fixture_name, sweep_result_t *
              * scroll cannot rescue a too-small control. */
             ff_layout_rect_t circle_rect = r;
             ff_layout_rect_t vp;
-            if (sweep_scroll_viewport(child, &vp)) {
+            if (sweep_scroll_viewport(child, &vp, NULL)) {
                 circle_rect.y1 = vp.y1;
                 circle_rect.y2 = vp.y2;
             }
@@ -507,12 +572,65 @@ static void sweep_walk(lv_obj_t *obj, char const *fixture_name, sweep_result_t *
  * every clickable element gathered into `list`: every PAIR must clear
  * FF_HIT_MIN_GAP_PX edge to edge, unless they're the SAME logical control
  * (sweep_same_composite_control, Exclusion 1), one is an LVGL ancestor of
- * the other (sweep_is_ancestor, Exclusion 2), or either side IS the
- * whole-puck gesture region (Exclusion 3) — see this file's header
- * comment ("S17 slice b: the adjacency floor") for why a GLOBAL all-pairs
- * sweep, not one scoped to elements sharing an immediate parent, is what
- * "adjacent" actually has to mean here, and for the full rationale behind
- * all three exclusions. */
+ * the other (sweep_is_ancestor, Exclusion 2), either side IS the
+ * whole-puck gesture region (Exclusion 3), or either side is an inert
+ * FLOATING scroll-relay catcher (sweep_is_inert_scroll_catcher, Exclusion
+ * 4) — see this file's header comment ("S17 slice b: the adjacency
+ * floor") for why a GLOBAL all-pairs sweep, not one scoped to elements
+ * sharing an immediate parent, is what "adjacent" actually has to mean
+ * here, and for the full rationale behind all four exclusions. */
+/* sweep_gap_rect_for_pair — the rect to use for `s` when computing ITS
+ * gap against a DIFFERENT clickable whose own scroll-list ancestor is
+ * `other_scroll_anc` (NULL if the other side is not inside a scroll list
+ * at all). S24 addendum to the S21 scroll-aware model above, exposed by
+ * the Rally WHERE-list bugfix's first genuinely-long (7-row) fixture:
+ * S21 made the CIRCLE-CONTAINMENT check viewport-aware but left ADJACENCY
+ * on raw rects everywhere — correct for two rows of the SAME list (this
+ * file's S21 header comment: scroll shifts both by the same amount, so
+ * their mutual gap is scroll-invariant), but WRONG for a row vs. an
+ * element OUTSIDE that list: a long list's deep, not-currently-scrolled-
+ * to rows sit at raw absolute y far past the viewport, which can
+ * numerically land right on top of a pinned sibling below/above the list
+ * (Rally's WHEN/Send footer, measured: a 7-row WHERE list's "The Grove"
+ * row raw-overlaps the footer at scroll 0) even though the two can NEVER
+ * be simultaneously touchable — LVGL's lv_indev_search_obj only recurses
+ * into a scrolling container's children when the touch point falls
+ * within the CONTAINER's own fixed viewport bounds (lv_indev.c), so a
+ * child parked outside that band is simply never reachable there,
+ * regardless of what its raw stored coordinates say. Clips `s` to its
+ * own scroll list's viewport ONLY when the other side is outside that
+ * SAME list (`anc != other_scroll_anc`); row-vs-row keeps the raw rect,
+ * unchanged. `*out_degenerate` is set when the clip leaves nothing (the
+ * row's raw y-range does not intersect the viewport's AT ALL) — such a
+ * pair can never be simultaneously touchable and must be skipped
+ * entirely, not gap-checked on a zero-height sliver. Unit-tested below
+ * (S24_AC7b_scroll_list_row_vs_outside_element): a row parked at raw
+ * y-overlap with an outside element but never reachable there must PASS,
+ * while the SAME row genuinely close to that element AT A REACHABLE
+ * scroll offset must still be caught — the relaxation must not become a
+ * blanket exemption for every scroll-list clickable. */
+static ff_layout_rect_t sweep_gap_rect_for_pair(sweep_clickable_t const *s, lv_obj_t *other_scroll_anc,
+                                                bool *out_degenerate)
+{
+    *out_degenerate = false;
+    ff_layout_rect_t vp;
+    lv_obj_t *anc = NULL;
+    if (!sweep_scroll_viewport(s->obj, &vp, &anc) || anc == other_scroll_anc) {
+        return s->rect; /* not in a scroll list, or both sides share the SAME one */
+    }
+    ff_layout_rect_t r = s->rect;
+    if (r.y1 < vp.y1) {
+        r.y1 = vp.y1;
+    }
+    if (r.y2 > vp.y2) {
+        r.y2 = vp.y2;
+    }
+    if (r.y1 >= r.y2) {
+        *out_degenerate = true;
+    }
+    return r;
+}
+
 static void sweep_check_adjacency(sweep_clickable_list_t const *list, char const *fixture_name, sweep_result_t *out)
 {
     for (int i = 0; i < list->n; i++) {
@@ -526,18 +644,37 @@ static void sweep_check_adjacency(sweep_clickable_list_t const *list, char const
             if (sweep_is_ancestor(a->obj, b->obj) || sweep_is_ancestor(b->obj, a->obj)) {
                 continue;
             }
+            if (sweep_is_inert_scroll_catcher(a) || sweep_is_inert_scroll_catcher(b)) {
+                continue;
+            }
             if (sweep_same_composite_control(a, b)) {
                 continue;
             }
 
+            lv_obj_t *anc_a = NULL;
+            lv_obj_t *anc_b = NULL;
+            ff_layout_rect_t vp_tmp;
+            (void)sweep_scroll_viewport(a->obj, &vp_tmp, &anc_a);
+            (void)sweep_scroll_viewport(b->obj, &vp_tmp, &anc_b);
+            bool degenerate_a = false;
+            bool degenerate_b = false;
+            ff_layout_rect_t ra = sweep_gap_rect_for_pair(a, anc_b, &degenerate_a);
+            ff_layout_rect_t rb = sweep_gap_rect_for_pair(b, anc_a, &degenerate_b);
+            if (degenerate_a || degenerate_b) {
+                /* One side is a scroll-list member that cannot be
+                 * scrolled into the other's y-range at all — never
+                 * simultaneously touchable, not a real mis-tap risk. */
+                continue;
+            }
+
             out->gap_checked++;
-            float gap = sweep_rect_gap_px(a->rect, b->rect);
+            float gap = sweep_rect_gap_px(ra, rb);
             if (gap < (float)FF_HIT_MIN_GAP_PX) {
                 out->violations++;
                 printf("  HIT-TARGETS-TOO-CLOSE [%s]  rect_a=(%.0f,%.0f)-(%.0f,%.0f)  "
                        "rect_b=(%.0f,%.0f)-(%.0f,%.0f)  gap=%.1fpx  (floor %dpx)\n",
-                       fixture_name, (double)a->rect.x1, (double)a->rect.y1, (double)a->rect.x2, (double)a->rect.y2,
-                       (double)b->rect.x1, (double)b->rect.y1, (double)b->rect.x2, (double)b->rect.y2, (double)gap,
+                       fixture_name, (double)ra.x1, (double)ra.y1, (double)ra.x2, (double)ra.y2,
+                       (double)rb.x1, (double)rb.y1, (double)rb.x2, (double)rb.y2, (double)gap,
                        (int)FF_HIT_MIN_GAP_PX);
             }
         }
@@ -736,6 +873,58 @@ static void S17b_AC2_composite_control_detection(void)
     lv_deinit();
 }
 
+/* S24 bugfix (Rally WHERE list scroll — "same PR family" as #143's thread
+ * fix) — Exclusion 4's direct unit test, same shape as
+ * S17b_AC2_composite_control_detection above: proves
+ * sweep_is_inert_scroll_catcher's three branches (floating + no callback
+ * -> true; floating + a REAL callback -> false; non-floating + no
+ * callback -> false) rather than trusting the predicate's one-line body
+ * by inspection alone. */
+static void S24_AC7_inert_scroll_catcher_predicate(void)
+{
+    lv_init();
+    lv_tick_set_cb(sweep_tick_cb);
+    const int32_t w = FF_THEME_WINDOW_PX;
+    const int32_t h = FF_THEME_WINDOW_PX;
+    const uint32_t buf_size = (uint32_t)(w * h * 4);
+    uint8_t *buf = (uint8_t *)malloc(buf_size);
+    TEST_ASSERT_NOT_NULL(buf);
+    lv_display_t *disp = lv_display_create(w, h);
+    lv_display_set_buffers(disp, buf, NULL, buf_size, LV_DISPLAY_RENDER_MODE_FULL);
+    lv_display_set_flush_cb(disp, sweep_flush_cb);
+    lv_display_set_default(disp);
+
+    lv_obj_t *scr = lv_screen_active();
+
+    lv_obj_t *floating_no_cb = lv_obj_create(scr);
+    lv_obj_add_flag(floating_no_cb, LV_OBJ_FLAG_FLOATING);
+
+    lv_obj_t *floating_with_cb = lv_obj_create(scr);
+    lv_obj_add_flag(floating_with_cb, LV_OBJ_FLAG_FLOATING);
+    lv_obj_add_event_cb(floating_with_cb, sweep_test_dummy_click_cb, LV_EVENT_CLICKED, NULL);
+
+    lv_obj_t *plain_no_cb = lv_obj_create(scr); /* CLICKABLE by default, NOT floating */
+
+    sweep_clickable_t catcher = {.obj = floating_no_cb, .rect = {0}, .cb = NULL, .user_data = NULL};
+    sweep_clickable_t real_floating = {
+        .obj = floating_with_cb,
+        .rect = {0},
+        .cb = (void *)lv_event_dsc_get_cb(lv_obj_get_event_dsc(floating_with_cb, 0)),
+        .user_data = lv_event_dsc_get_user_data(lv_obj_get_event_dsc(floating_with_cb, 0))};
+    sweep_clickable_t forgotten_handler = {.obj = plain_no_cb, .rect = {0}, .cb = NULL, .user_data = NULL};
+
+    TEST_ASSERT_TRUE_MESSAGE(sweep_is_inert_scroll_catcher(&catcher),
+                             "a callback-less FLOATING object must be recognized as an inert scroll catcher");
+    TEST_ASSERT_FALSE_MESSAGE(sweep_is_inert_scroll_catcher(&real_floating),
+                              "a FLOATING object that DOES register a real callback must not be exempted");
+    TEST_ASSERT_FALSE_MESSAGE(sweep_is_inert_scroll_catcher(&forgotten_handler),
+                              "a non-floating callback-less object (an ordinary forgotten-handler bug) must not "
+                              "be exempted — the exclusion is not \"any object with no callback\"");
+
+    free(buf);
+    lv_deinit();
+}
+
 /* ---------------------------------------------------------------------
  * S21 — the scroll-aware sweep, proven meaningful.
  *
@@ -810,6 +999,65 @@ static sweep_result_t sweep_run_current_screen(char const *name)
     return result;
 }
 
+/* S24 bugfix (Rally WHERE list scroll) — Exclusion 4's end-to-end
+ * companion to S24_AC7_inert_scroll_catcher_predicate above (not just the
+ * predicate in isolation): a real FLOATING no-callback catcher fully
+ * overlapping a real, individually-wired button inside a live scroll
+ * list must sweep at ZERO violations (the exact Rally shape) — while
+ * swapping the SAME geometry to a non-floating "catcher" (the ordinary-
+ * bug shape the predicate test also guards) must still be flagged,
+ * proving Exclusion 4 does not quietly disable AC2 for every overlapping
+ * pair. Uses the same synthetic inscribed-list builders as the S21 tests
+ * below. */
+static void S24_AC7_sweep_exempts_floating_catcher_over_a_real_row(void)
+{
+    uint8_t *buf = sweep_test_display_up();
+
+    lv_obj_t *list = sweep_build_inscribed_list();
+    lv_obj_t *catcher = lv_obj_create(list); /* child index 0 — added first, like the real fix */
+    lv_obj_remove_style_all(catcher);
+    lv_obj_add_flag(catcher, LV_OBJ_FLAG_FLOATING);
+    lv_obj_clear_flag(catcher, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_size(catcher, 262, 256); /* the whole inscribed viewport */
+    lv_obj_set_pos(catcher, 0, 0);
+    (void)sweep_add_row(list, 80, 40, 100, 48); /* a real row, fully inside the catcher's rect */
+
+    sweep_result_t exempted = sweep_run_current_screen("s24_floating_catcher_over_row");
+    /* Both objects must actually have been SWEPT (gathered as clickable —
+     * `.checked` counts every CLICKABLE element regardless of adjacency
+     * exclusions); `.gap_checked` only counts pairs that were NOT
+     * exempted, so it is deliberately NOT asserted here — 0 is exactly
+     * what a correctly-exempted pair looks like, the property under
+     * test. */
+    TEST_ASSERT_EQUAL_INT_MESSAGE(2, exempted.checked,
+                                  "both the catcher and the row must have been gathered as clickable elements");
+    TEST_ASSERT_EQUAL_INT_MESSAGE(0, exempted.gap_checked,
+                                  "the catcher/row pair must have been EXEMPTED, not merely happen to pass the "
+                                  "floor on its own geometry (they fully overlap — 0px gap — so an unexempted "
+                                  "check would have both counted the pair AND flagged it)");
+    TEST_ASSERT_EQUAL_INT_MESSAGE(0, exempted.violations,
+                                  "a FLOATING, callback-less catcher fully overlapping a real row must NOT "
+                                  "violate the adjacency floor (Exclusion 4)");
+
+    /* Same geometry, catcher no longer FLOATING — must now violate. */
+    lv_obj_clean(lv_screen_active());
+    list = sweep_build_inscribed_list();
+    lv_obj_t *not_floating = lv_obj_create(list);
+    lv_obj_remove_style_all(not_floating);
+    lv_obj_clear_flag(not_floating, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_size(not_floating, 262, 256);
+    lv_obj_set_pos(not_floating, 0, 0);
+    (void)sweep_add_row(list, 80, 40, 100, 48);
+
+    sweep_result_t not_exempted = sweep_run_current_screen("s24_non_floating_overlap");
+    TEST_ASSERT_GREATER_THAN_INT_MESSAGE(0, not_exempted.violations,
+                                         "the SAME overlapping geometry, without the FLOATING flag, must still be "
+                                         "flagged — Exclusion 4 is not \"any callback-less object\"");
+
+    free(buf);
+    lv_deinit();
+}
+
 /* A well-sized (100x48) row placed BELOW the viewport — scrolled off-glass
  * at its raw absolute y (abs y ~400, which the OLD absolute check failed),
  * but on-glass at every scroll position within the inscribed viewport. The
@@ -876,14 +1124,78 @@ static void S21_sweep_still_catches_bad_controls_in_a_scroll_list(void)
     lv_deinit();
 }
 
+/* S24 addendum unit test — sweep_gap_rect_for_pair's own two branches,
+ * same "not just reasoned about, measured" rigor as S21's tests above:
+ * (a) a scroll-list row whose RAW rect overlaps an outside element but
+ * can never be SCROLLED into that element's y-range (it lies entirely
+ * outside the viewport at every possible clip) must NOT violate — the
+ * exact false positive the Rally WHERE-list bugfix's 7-row fixture
+ * exposed; (b) the SAME outside element, but a row that genuinely
+ * straddles the viewport edge (reachable, on-glass, and too close once
+ * clipped) must still be flagged — the relaxation is "clip to what's
+ * reachable", not "any scroll-list member is exempt from its neighbors
+ * outside the list". */
+static void S24_AC7b_scroll_list_row_vs_outside_element(void)
+{
+    uint8_t *buf = sweep_test_display_up();
+
+    /* (a) Unreachable overlap. The inscribed list's viewport is
+     * puck-relative (75,100)-(337,356) (sweep_build_inscribed_list); an
+     * outside element at absolute y=360-408 sits just past its bottom
+     * edge. A row whose RAW rect is placed at that exact same y-range
+     * (list-relative y=260, so absolute 100+260=360 to 408) numerically
+     * overlaps it 100% — the pre-fix sweep would have flagged this on
+     * every fixture with a list this long — but the row can never
+     * actually be scrolled to occupy y>356 while still being INSIDE the
+     * viewport, so it is never simultaneously touchable with the outside
+     * element and must not violate. */
+    lv_obj_t *list = sweep_build_inscribed_list();
+    (void)sweep_add_row(list, 101, 260, 60, 48); /* raw abs y 360-408 */
+    lv_obj_t *outside_a = lv_button_create(lv_screen_active());
+    lv_obj_remove_style_all(outside_a);
+    lv_obj_set_size(outside_a, 60, 48); /* narrow + centered: stays on-glass this deep near the bottom pole */
+    lv_obj_set_pos(outside_a, 176, 360); /* directly overlaps the row's RAW rect */
+    sweep_result_t unreachable = sweep_run_current_screen("s24_row_unreachable_at_outside_elements_y");
+    TEST_ASSERT_EQUAL_INT_MESSAGE(0, unreachable.violations,
+                                  "a scroll-list row that can never be scrolled into an outside element's "
+                                  "y-range must not violate, even though its RAW rect overlaps it");
+
+    /* (b) The SAME outside element, but a row straddling the viewport's
+     * bottom edge (list-relative y=240 -> absolute 340-388): clipped to
+     * the viewport it becomes 340-356, genuinely reachable (part of it
+     * is on-glass at the bottom of the visible list), and only 4px from
+     * the outside element at y=360 — under the 8px floor. Must still be
+     * flagged: the relaxation must not blanket-exempt every scroll-list
+     * member from its outside neighbors. */
+    lv_obj_clean(lv_screen_active());
+    list = sweep_build_inscribed_list();
+    (void)sweep_add_row(list, 101, 240, 60, 48); /* raw abs y 340-388, straddles viewport bottom 356 */
+    lv_obj_t *outside_b = lv_button_create(lv_screen_active());
+    lv_obj_remove_style_all(outside_b);
+    lv_obj_set_size(outside_b, 60, 48); /* narrow + centered: stays on-glass this deep near the bottom pole */
+    lv_obj_set_pos(outside_b, 176, 360); /* clipped row bottom (356) to here (360) = 4px, under the floor */
+    sweep_result_t reachable_close = sweep_run_current_screen("s24_row_reachable_and_too_close");
+    TEST_ASSERT_GREATER_THAN_INT_MESSAGE(0, reachable_close.gap_checked,
+                                         "the adjacency pass must actually have checked this pair");
+    TEST_ASSERT_GREATER_THAN_INT_MESSAGE(0, reachable_close.violations,
+                                         "a row genuinely reachable to the viewport edge, too close to an "
+                                         "outside element there, must still be flagged");
+
+    free(buf);
+    lv_deinit();
+}
+
 int main(void)
 {
     UNITY_BEGIN();
 
     RUN_TEST(S08_hit_targets_every_committed_fixture_fits_the_glass);
     RUN_TEST(S17b_AC2_composite_control_detection);
+    RUN_TEST(S24_AC7_inert_scroll_catcher_predicate);
+    RUN_TEST(S24_AC7_sweep_exempts_floating_catcher_over_a_real_row);
     RUN_TEST(S21_sweep_scroll_aware_passes_an_offscreen_but_in_band_row);
     RUN_TEST(S21_sweep_still_catches_bad_controls_in_a_scroll_list);
+    RUN_TEST(S24_AC7b_scroll_list_row_vs_outside_element);
 
     return UNITY_END();
 }

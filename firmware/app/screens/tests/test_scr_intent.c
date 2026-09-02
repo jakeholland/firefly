@@ -54,6 +54,7 @@
 
 #include "ff_theme.h" /* FF_THEME_PUCK_RADIUS_PX — the S99 compose SEND corner-distance test */
 #include "radar_layout.h" /* RADAR_LAYOUT_DOT_PX — S17a AC4 render tests, see that section below */
+#include "ff_theme.h" /* FF_THEME_FONT_MSG_BODY — S24 thread-bubble-not-compressed test */
 
 /* Frozen-by-default tick — same convention as test_scr_flare.c: nothing
  * here renders a frame, so every existing test in this file (all
@@ -1425,6 +1426,158 @@ static void S24_direct_thread_overflow_scrolls_on_drag(void)
     thread_overflow_scrolls_on_drag(false);
 }
 
+/* =================================================================== */
+/* Thread message bubbles are NOT compressed (investigation brief's first */
+/* hypothesis to test for "the thread view looks a bit smashed" — see    */
+/* scr_signals.c's own header comment on signals_build_thread: DISPROVEN */
+/* by inspection, no flex/shrink layout anywhere in this file, but kept  */
+/* as a standing regression guard rather than thrown away — a future     */
+/* change that DID introduce a shrink-to-fit container should fail this. */
+/* =================================================================== */
+
+/* A message bubble's text label is a DIRECT child of the bubble
+ * container (signals_msg_bubble: `lv_obj_t *l = signals_mk_label(bub,
+ * text, ...)`), positioned at a fixed (13, 8) offset — never wrapped, so
+ * its natural (unclamped) height is exactly its font's line height. This
+ * asserts that height survives all the way to the rendered object (proof
+ * nothing upstream shrank it) AND that the bubble container is tall
+ * enough to show it without clipping — the literal "not compressed below
+ * its natural height" property for both the label and its container. */
+static void S24_thread_message_bubble_not_compressed(void)
+{
+    ff_app_signals_t v;
+    memset(&v, 0, sizeof(v));
+    v.subview = FF_SIG_SUB_THREAD;
+    v.thread_node = 0u;
+    strncpy(v.thread_name, "CREW", sizeof(v.thread_name) - 1);
+    sig_add_conv(&v, FF_CONV_CREW, 0u, NULL, 0, 1);
+
+    ff_inbox_msg_t *m = &v.thread.msgs[v.thread.msg_count++];
+    memset(m, 0, sizeof(*m));
+    m->kind = FEED_TEXT;
+    m->dir = FEED_DIR_OUT; /* OUT text -> plain bubble, no sender line above it */
+    strncpy(m->text, "copy, see you there", sizeof(m->text) - 1);
+    m->age_ms = 60000u;
+
+    lv_obj_t *parent = lv_obj_create(lv_screen_active());
+    lv_obj_set_size(parent, 412, 412);
+    ff_scr_signals_build(parent, &v, false);
+
+    lv_obj_t *label = find_label_exact(parent, "copy, see you there");
+    TEST_ASSERT_NOT_NULL_MESSAGE(label, "message bubble text not found");
+    lv_obj_t *bubble = lv_obj_get_parent(label);
+    TEST_ASSERT_NOT_NULL(bubble);
+
+    lv_obj_update_layout(label);
+    int32_t const natural_h = (int32_t)lv_font_get_line_height(FF_THEME_FONT_MSG_BODY);
+    TEST_ASSERT_GREATER_OR_EQUAL_INT32_MESSAGE(natural_h, lv_obj_get_height(label),
+                                               "the label itself must not be squeezed under its font's natural "
+                                               "line height");
+    int32_t const label_bottom = lv_obj_get_y(label) + lv_obj_get_height(label);
+    TEST_ASSERT_LESS_OR_EQUAL_INT32_MESSAGE(lv_obj_get_height(bubble), label_bottom,
+                                            "the bubble container must be tall enough to show its label's full "
+                                            "natural height without clipping it");
+}
+
+/* =================================================================== */
+/* Rally WHERE list reachability (maintainer bug report: "I can't scroll */
+/* to select all the locations on the send rally screen") — a real       */
+/* festpack-shaped 7-row list (On Me + 5 stages + Camp), same real-indev  */
+/* drag()/tap_at() harness as the thread scroll tests above.             */
+/* =================================================================== */
+
+static void s24_make_rally_seven_rows(ff_app_signals_t *v)
+{
+    memset(v, 0, sizeof(*v));
+    v->subview = FF_SIG_SUB_RALLY;
+    v->thread_node = 0u;
+    strncpy(v->thread_name, "CREW", sizeof(v->thread_name) - 1);
+    sig_add_conv(v, FF_CONV_CREW, 0u, NULL, 0, 0);
+    v->rally.on_me_ok = true;
+    v->rally.sel = 1u;
+    v->rally.when = FF_RALLY_WHEN_15;
+    strncpy(v->rally.echo_when, "+15m", sizeof(v->rally.echo_when) - 1);
+    v->rally.place_count = 6u; /* + On Me = 7 WHERE rows, per the maintainer's real festpack */
+    static char const *const places[] = {"Main Stage", "Bass Hollow", "Wompy Woods",
+                                         "The Grove",  "Sunrise Stage", "Camp"};
+    for (int i = 0; i < 6; i++) {
+        strncpy(v->rally.place_names[i], places[i], FF_APP_NAME_LEN - 1);
+    }
+    strncpy(v->rally.echo_place, "Main Stage", sizeof(v->rally.echo_place) - 1);
+    v->rally.can_send = true;
+}
+
+static void S24_rally_where_list_scrolls_to_reach_all_rows(void)
+{
+    ff_app_signals_t v;
+    s24_make_rally_seven_rows(&v);
+
+    lv_obj_t *parent = lv_obj_create(lv_screen_active());
+    lv_obj_set_size(parent, 412, 412);
+    ff_scr_signals_build(parent, &v, false);
+
+    lv_obj_t *list = find_scrollable(parent);
+    TEST_ASSERT_NOT_NULL(list);
+    lv_obj_update_layout(list);
+    int32_t const max_scroll = lv_obj_get_scroll_y(list) + lv_obj_get_scroll_bottom(list);
+    TEST_ASSERT_GREATER_THAN_INT32_MESSAGE(0, max_scroll, "the 7-row WHERE list must genuinely overflow");
+
+    /* "Camp", the LAST row, is off-screen at open (the list opens
+     * scrolled to the top, showing On Me first). */
+    lv_obj_t *camp_hit = find_row_hit_by_name(parent, "Camp");
+    TEST_ASSERT_NOT_NULL(camp_hit);
+    lv_area_t camp_area;
+    lv_obj_get_coords(camp_hit, &camp_area);
+    lv_area_t list_area;
+    lv_obj_get_coords(list, &list_area);
+    TEST_ASSERT_GREATER_OR_EQUAL_INT32_MESSAGE(list_area.y2, camp_area.y1,
+                                               "Camp must be off-viewport (below) before any scroll");
+
+    /* A drag started on the PLACES divider band — a dead zone with no
+     * clickable descendant of its own (the maintainer's actual failure
+     * mode: not every drag starts squarely on a row) — must still move
+     * the list, and must never be mistaken for a tap (no intent). */
+    int32_t const list_top = list_area.y1;
+    int32_t const cx = (list_area.x1 + list_area.x2) / 2;
+    /* The PLACES divider band sits strictly between the On Me row's hit
+     * target and the first landmark row's — its own geometric midpoint,
+     * not a private layout constant this test file has no access to (the
+     * FF_SIGNALS_RALLY_* pitch macros are scr_signals.c-local). */
+    lv_obj_t *on_me_hit = find_row_hit_by_name(parent, "On Me");
+    lv_obj_t *main_stage_hit = find_row_hit_by_name(parent, "Main Stage");
+    TEST_ASSERT_NOT_NULL(on_me_hit);
+    TEST_ASSERT_NOT_NULL(main_stage_hit);
+    lv_area_t on_me_area, main_stage_area;
+    lv_obj_get_coords(on_me_hit, &on_me_area);
+    lv_obj_get_coords(main_stage_hit, &main_stage_area);
+    int32_t const divider_y = (on_me_area.y2 + main_stage_area.y1) / 2;
+    TEST_ASSERT_GREATER_THAN_INT32_MESSAGE(on_me_area.y2, main_stage_area.y1,
+                                           "test setup: expected a real gap between On Me and Main Stage to drag "
+                                           "in — the divider band would not exist otherwise");
+    drag_v(divider_y, list_top - 260, cx);
+    TEST_ASSERT_GREATER_THAN_INT32_MESSAGE(0, lv_obj_get_scroll_y(list),
+                                           "a drag started on the PLACES divider dead zone must still scroll "
+                                           "the WHERE list");
+    TEST_ASSERT_EQUAL_INT(0, s_spy.count);
+
+    /* Now that the drag brought it into view, Camp is reachable AND still
+     * tappable — a real physical tap (press+release, not click()'s direct
+     * event injection), same property PR #143's OMW test proved for the
+     * thread's own scroll touch target. */
+    lv_obj_update_layout(list);
+    lv_obj_get_coords(camp_hit, &camp_area);
+    int32_t const camp_cy = (camp_area.y1 + camp_area.y2) / 2;
+    TEST_ASSERT_TRUE_MESSAGE(camp_cy >= list_area.y1 && camp_cy <= list_area.y2,
+                             "Camp must have scrolled into the viewport");
+    /* tap_at() is defined further down this file (used by the thread's
+     * own real-touch test); a real tap is a press+release with no
+     * movement, so drag_v(y, y, x) is exactly that primitive inline. */
+    drag_v(camp_cy, camp_cy, (camp_area.x1 + camp_area.x2) / 2);
+    TEST_ASSERT_EQUAL_INT(1, s_spy.count);
+    TEST_ASSERT_EQUAL(FF_INTENT_RALLY_SELECT_PLACE, s_spy.last.kind);
+    TEST_ASSERT_EQUAL_UINT8(6u, s_spy.last.u.rally_idx); /* On Me=0, ... Camp is the 6th place -> idx 6 */
+}
+
 /* ---------------------------------------------------------------------
  * PR #143 review: scroll position must survive the S24 render-key
  * rebuild (an age-bucket crossing legitimately dirties the key —
@@ -2415,6 +2568,8 @@ int main(void)
     RUN_TEST(S24c_crew_thread_has_no_quick_chips);
     RUN_TEST(S24_crew_thread_overflow_scrolls_on_drag);
     RUN_TEST(S24_direct_thread_overflow_scrolls_on_drag);
+    RUN_TEST(S24_thread_message_bubble_not_compressed);
+    RUN_TEST(S24_rally_where_list_scrolls_to_reach_all_rows);
     RUN_TEST(S24_thread_scroll_preserved_across_same_thread_rebuild);
     RUN_TEST(S24_thread_scroll_resets_to_newest_on_new_message);
     RUN_TEST(S24_thread_scroll_resets_to_newest_on_different_thread);

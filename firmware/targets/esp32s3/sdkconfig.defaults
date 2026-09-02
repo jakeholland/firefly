@@ -52,11 +52,12 @@ CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
 #     the panel just wants 16bpp — esp_lvgl_port swap_bytes handles the
 #     big-endian wire order, so LV_COLOR_16_SWAP stays OFF to avoid a
 #     double swap).
-#   - the exact Montserrat sizes ff_theme.h references (14/20/22/24/36),
+#   - the exact Montserrat sizes ff_theme.h references (14/16/20/22/24/36),
 #     default 24, matching lv_conf.h lines 32-43.
 #   - TILEVIEW (scr_nav's three-face swipe shell) + ARC (radar rings).
 CONFIG_LV_COLOR_DEPTH_16=y
 CONFIG_LV_FONT_MONTSERRAT_14=y
+CONFIG_LV_FONT_MONTSERRAT_16=y
 CONFIG_LV_FONT_MONTSERRAT_20=y
 CONFIG_LV_FONT_MONTSERRAT_22=y
 CONFIG_LV_FONT_MONTSERRAT_24=y

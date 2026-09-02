@@ -194,9 +194,58 @@ _Static_assert(FF_SIGNALS_POPUP_CLOSE_PX >= FF_THEME_MIN_HIT_PX, "popup close mu
  * row pitch opened past the canvas's 6px so adjacent TAP TARGETS clear
  * the 8px floor (the inbox row inset trade). The WHERE list holds the
  * demo/real pack's handful of landmarks without overflowing into the
- * footer; a bigger pack scrolls, its off-viewport rows clipped by the
- * list and the footer drawn on top (topmost-hit-wins) — the inbox FAB's
- * own on-glass-safety reasoning.
+ * footer; a bigger pack (a real festpack's 5 stages + Camp + On Me, easily
+ * past this list's ~206px band) scrolls, its off-viewport rows clipped by
+ * the list.
+ *
+ * Bugfix (maintainer report: "I can't scroll to select all the locations
+ * on the send rally screen"): unlike the inbox/picker lists, each WHERE
+ * row already carries its OWN clickable hit button (`signals_build_rally_
+ * row`'s inset `hit`, needed so a row stays individually tappable), so a
+ * drag started ON a row's own hit rect already reaches `list`'s
+ * LV_DIR_VER scroll fine (LVGL's lv_indev_find_scroll_obj walks UP from
+ * whatever was hit and finds `list` as the nearest LV_DIR_VER-scrollable
+ * ancestor — confirmed, not assumed: a real-indev drag starting on the
+ * "On Me" row's hit target reaches the bottom of a 7-row list in one
+ * drag). But `list` itself is deliberately NOT CLICKABLE (the inbox/
+ * picker convention scr_signals.c follows throughout — see this file's
+ * header comment near signals_build_thread), and — unlike a row's own
+ * hit rect — the PLACES divider band, the ~8px gap between rows, a row's
+ * own 4px top/bottom hit-inset, and a disabled "On Me" row (no GPS fix:
+ * `signals_build_rally_row` adds NO hit child at all when `!enabled`,
+ * intentionally — "On Me without a fix is not tappable") carry no
+ * clickable descendant whatsoever. A press there resolves to no object
+ * inside `list` at all (falls through to a non-scrollable ancestor,
+ * exactly PR #143's thread root cause, LVGL's lv_indev_search_obj/
+ * lv_indev_find_scroll_obj) and the drag is never seen as a drag on
+ * `list` — measured with the same real-indev harness PR #143 used
+ * (started on the PLACES divider band: scroll_y stayed 0). Concretely
+ * reachable in normal use: "On Me" (the FIRST row, the natural first
+ * touch point for a scroll gesture) has NO hit target at all whenever
+ * the puck has no GPS fix yet — a common festival-field state.
+ *
+ * Fix, mirroring PR #143's shape exactly: ONE inert, FLOATING hit
+ * target sized to `list`'s own VIEWPORT (not the scrolled content — the
+ * same "sized to content" shape PR #143 measured to fail, colliding
+ * with whatever sits past the viewport edge; here that would be the
+ * pinned WHEN/Send footer instead of the thread's header), added as
+ * `list`'s FIRST child (index 0) — LVGL's lv_indev_search_obj walks a
+ * node's children in REVERSE index order (src/indev/lv_indev.c), so a
+ * LATER-added row (and its own hit button) is always checked BEFORE
+ * this floating catcher: a tap that lands on a real row's hit target
+ * still resolves to that row (taps keep working, unaffected), and only
+ * a press that matches NOTHING else inside `list` — every dead zone
+ * above — falls through to the catcher, which relays it to `list`'s own
+ * scroll exactly like PR #143's thread fix. No CLICKED handler is ever
+ * bound to it, so it adds zero tap behavior of its own — see
+ * test_face_hit_targets.c's Exclusion 4 (a callback-less FLOATING hit
+ * target is not adjacency-checked against the real rows it necessarily
+ * overlaps at every scroll offset; unlike the thread, Rally's rows ARE
+ * individually clickable, so this overlap is real and new, not the
+ * thread's "nothing else is clickable" case). Gated on genuine overflow
+ * (computed analytically from `r->place_count` — every WHERE row has a
+ * fixed height, no measured-content variance to account for) so a short
+ * pack (today's 2-place demo/test fixture) adds nothing extra.
  * ------------------------------------------------------------------- */
 #define FF_SIGNALS_RALLY_LIST_TOP_Y   82 /* clears the pinned close/back (bottom y74) by the 8px floor */
 #define FF_SIGNALS_RALLY_LIST_H       206
@@ -224,7 +273,7 @@ _Static_assert(FF_SIGNALS_RALLY_FOOTER_Y - (FF_SIGNALS_RALLY_LIST_TOP_Y + FF_SIG
  * and the newest message's scroll anchor is stable). */
 #define FF_SIGNALS_MSG_SENDER_H 18  /* dot + name + age line above a CREW inbound bubble */
 #define FF_SIGNALS_MSG_BUBBLE_H 34  /* one-line text bubble */
-#define FF_SIGNALS_MSG_RALLY_H  46  /* RALLY badge + place callout */
+#define FF_SIGNALS_MSG_RALLY_H  48  /* RALLY badge + place callout (place name at FF_THEME_FONT_MSG_BODY) */
 #define FF_SIGNALS_MSG_EVENT_H  22  /* pulse/flare one-liner */
 #define FF_SIGNALS_MSG_AGE_H    16  /* age line under a bubble (rows with no sender line) */
 #define FF_SIGNALS_MSG_GAP      10
@@ -1222,7 +1271,7 @@ static lv_obj_t *signals_msg_bubble(lv_obj_t *row, char const *text, int32_t y, 
 
     int32_t w = FF_SIGNALS_MSG_MAX_W;
     if (text != NULL) {
-        lv_obj_t *l = signals_mk_label(bub, text, FF_THEME_FONT_CHIP,
+        lv_obj_t *l = signals_mk_label(bub, text, FF_THEME_FONT_MSG_BODY,
                                        out ? FF_THEME_COLOR_BG : FF_THEME_COLOR_INK);
         int32_t const tw = signals_label_clamp(l, FF_SIGNALS_MSG_MAX_W - 26);
         lv_obj_set_pos(l, 13, 8);
@@ -1252,7 +1301,7 @@ static void signals_msg_rally(lv_obj_t *row, ff_inbox_msg_t const *m, int32_t y,
 
     /* The place is the wire name verbatim (m->text); "" renders as the
      * honest absence of a place claim, never an invented one. */
-    lv_obj_t *place = signals_mk_label(box, m->text, FF_THEME_FONT_CHIP, FF_THEME_COLOR_INK);
+    lv_obj_t *place = signals_mk_label(box, m->text, FF_THEME_FONT_MSG_BODY, FF_THEME_COLOR_INK);
     int32_t const pw = signals_label_clamp(place, FF_SIGNALS_MSG_MAX_W - 24);
     lv_obj_set_pos(place, 12, 23);
 
@@ -1420,17 +1469,17 @@ static int32_t signals_build_msg(lv_obj_t *list, ff_inbox_msg_t const *m, int32_
             uint32_t const name_color = m->identity_known
                                             ? ff_theme_crew_color(m->color_idx, colorblind)
                                             : FF_THEME_COLOR_MUTED;
-            lv_obj_t *name = signals_mk_label(bub, signals_msg_sender_name(m), FF_THEME_FONT_CHIP,
+            lv_obj_t *name = signals_mk_label(bub, signals_msg_sender_name(m), FF_THEME_FONT_MSG_BODY,
                                               name_color);
             lv_obj_set_pos(name, x, 8);
             x += signals_label_clamp(name, 100) + 6;
             lv_obj_t *what = signals_mk_label(bub, signals_msg_event_text(m, crew_thread),
-                                              FF_THEME_FONT_CHIP, ink);
+                                              FF_THEME_FONT_MSG_BODY, ink);
             lv_obj_set_pos(what, x, 8);
             w = x + signals_label_clamp(what, FF_SIGNALS_MSG_MAX_W - x - 13) + 13;
         } else {
             lv_obj_t *what = signals_mk_label(bub, signals_msg_event_text(m, crew_thread),
-                                              FF_THEME_FONT_CHIP, ink);
+                                              FF_THEME_FONT_MSG_BODY, ink);
             lv_obj_set_pos(what, x, 8);
             w = x + signals_label_clamp(what, FF_SIGNALS_MSG_MAX_W - x - 13) + 13;
         }
@@ -1995,6 +2044,34 @@ static void signals_build_rally(lv_obj_t *parent, ff_app_signals_t const *v, boo
     lv_obj_clear_flag(list, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_set_scroll_dir(list, LV_DIR_VER);
     lv_obj_set_scrollbar_mode(list, LV_SCROLLBAR_MODE_OFF);
+
+    /* Genuine-overflow gate, computed analytically (every WHERE row has a
+     * FIXED height — FF_SIGNALS_RALLY_ROW_H, no content-driven variance
+     * like the thread's message rows — so this exactly predicts what
+     * lv_obj_get_scroll_bottom(list) will read once the rows below are
+     * built, with no need for a build-then-measure-then-rebuild pass). */
+    uint8_t const n_places = (r->place_count > FF_APP_RALLY_MAX_PLACES) ? FF_APP_RALLY_MAX_PLACES : r->place_count;
+    int32_t rally_content_h = FF_SIGNALS_RALLY_ROW_H + FF_HIT_MIN_GAP_PX; /* On Me */
+    if (n_places > 0u) {
+        rally_content_h += FF_SIGNALS_RALLY_DIVIDER_H +
+                           (int32_t)n_places * (FF_SIGNALS_RALLY_ROW_H + FF_HIT_MIN_GAP_PX);
+    }
+    if (rally_content_h > FF_SIGNALS_RALLY_LIST_H) {
+        /* Added FIRST (child index 0) — see this file's header comment
+         * above (Rally screen geometry) for why z-order here is load-
+         * bearing, not incidental: LVGL checks a node's children in
+         * REVERSE index order, so every row (added after, below) is
+         * tried before this catcher, and a row's own hit target still
+         * wins whenever a touch actually lands on it. */
+        int32_t const margin = signals_safe_margin_x(FF_SIGNALS_RALLY_LIST_TOP_Y, FF_SIGNALS_RALLY_LIST_H);
+        lv_obj_t *hit = lv_obj_create(list);
+        lv_obj_remove_style_all(hit);
+        lv_obj_add_flag(hit, LV_OBJ_FLAG_FLOATING);
+        lv_obj_clear_flag(hit, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_set_style_bg_opa(hit, LV_OPA_TRANSP, 0);
+        lv_obj_set_pos(hit, margin, 0);
+        lv_obj_set_size(hit, FF_THEME_PUCK_PX - 2 * margin, FF_SIGNALS_RALLY_LIST_H);
+    }
 
     int32_t y = 0;
     /* On Me (index 0), pinned first. Disabled with an honest reason when
