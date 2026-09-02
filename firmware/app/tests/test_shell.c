@@ -2498,17 +2498,17 @@ static void S16_b1_shell_footprint_excludes_the_pack(void)
 }
 
 /* S22 slice b — the Signals send target is the ONLY persistent Signals state,
- * held in an 8-byte shell holder because view.signals is memset + rebuilt from
+ * held in an 8-byte shell holder because view.inbox is memset + rebuilt from
  * scratch every tick. This pins the whole reason that holder exists: a target
  * set by a SELECT intent must SURVIVE the per-tick rebuild, a CLEAR returns to
  * WHOLE_CREW, and a tap that can't legitimately target (unpaired node, or the
  * Signals face not visible under a takeover) leaves it unchanged.
  *
- * This also guards the shell_project_signals refactor's key step: the "survives
+ * This also guards the shell_project_inbox refactor's key step: the "survives
  * a rebuild" assertion FAILS if the projection stops re-applying the holder
  * after ff_sigview_build (mutation — the target would reset to WHOLE_CREW every
  * tick). */
-static void S22b_signals_target_survives_rebuild_and_is_gated(void)
+static void S22b_inbox_target_survives_rebuild_and_is_gated(void)
 {
     harness_init(100000u, false);
     inject_my_info(MY_ID);
@@ -2517,35 +2517,35 @@ static void S22b_signals_target_survives_rebuild_and_is_gated(void)
 
     /* Default after a build: WHOLE_CREW. */
     ff_shell_tick(&H.shell, H.clk.t);
-    TEST_ASSERT_EQUAL_INT(FF_TARGET_WHOLE_CREW, ff_shell_view(&H.shell)->signals.target_kind);
+    TEST_ASSERT_EQUAL_INT(FF_TARGET_WHOLE_CREW, ff_shell_view(&H.shell)->inbox.target_kind);
 
     /* SELECT a paired member, then rebuild TWICE — the target must still hold.
-     * (Mutation guard: without the holder re-apply in shell_project_signals it
+     * (Mutation guard: without the holder re-apply in shell_project_inbox it
      * resets to WHOLE_CREW on the very next tick.) */
-    ff_intent_t sel = {.kind = FF_INTENT_SIG_SELECT_MEMBER, .u = {0}};
+    ff_intent_t sel = {.kind = FF_INTENT_INBOX_SELECT_MEMBER, .u = {0}};
     sel.u.node_id = DANA;
     ff_shell_intent(&H.shell, &sel);
     ff_shell_tick(&H.shell, H.clk.t);
     ff_shell_tick(&H.shell, H.clk.t);
-    TEST_ASSERT_EQUAL_INT(FF_TARGET_MEMBER, ff_shell_view(&H.shell)->signals.target_kind);
-    TEST_ASSERT_EQUAL_UINT32(DANA, ff_shell_view(&H.shell)->signals.target_node);
+    TEST_ASSERT_EQUAL_INT(FF_TARGET_MEMBER, ff_shell_view(&H.shell)->inbox.target_kind);
+    TEST_ASSERT_EQUAL_UINT32(DANA, ff_shell_view(&H.shell)->inbox.target_node);
 
     /* CLEAR returns to WHOLE_CREW. */
-    ff_intent_t clr = {.kind = FF_INTENT_SIG_CLEAR_TARGET, .u = {0}};
+    ff_intent_t clr = {.kind = FF_INTENT_INBOX_CLEAR_TARGET, .u = {0}};
     ff_shell_intent(&H.shell, &clr);
     ff_shell_tick(&H.shell, H.clk.t);
-    TEST_ASSERT_EQUAL_INT(FF_TARGET_WHOLE_CREW, ff_shell_view(&H.shell)->signals.target_kind);
+    TEST_ASSERT_EQUAL_INT(FF_TARGET_WHOLE_CREW, ff_shell_view(&H.shell)->inbox.target_kind);
 
     /* Re-target KEV, then an UNPAIRED node's SELECT is rejected (roster
      * validation in ff_sigview_target_select) — target unchanged. */
     sel.u.node_id = KEV_ID;
     ff_shell_intent(&H.shell, &sel);
-    ff_intent_t bad = {.kind = FF_INTENT_SIG_SELECT_MEMBER, .u = {0}};
+    ff_intent_t bad = {.kind = FF_INTENT_INBOX_SELECT_MEMBER, .u = {0}};
     bad.u.node_id = STRANGER; /* never paired */
     ff_shell_intent(&H.shell, &bad);
     ff_shell_tick(&H.shell, H.clk.t);
-    TEST_ASSERT_EQUAL_INT(FF_TARGET_MEMBER, ff_shell_view(&H.shell)->signals.target_kind);
-    TEST_ASSERT_EQUAL_UINT32(KEV_ID, ff_shell_view(&H.shell)->signals.target_node);
+    TEST_ASSERT_EQUAL_INT(FF_TARGET_MEMBER, ff_shell_view(&H.shell)->inbox.target_kind);
+    TEST_ASSERT_EQUAL_UINT32(KEV_ID, ff_shell_view(&H.shell)->inbox.target_node);
 
     /* A stray SELECT while a TAKEOVER is up is gated (the Signals face is not
      * the visible face) — target stays KEV, does not jump to DANA. */
@@ -2555,12 +2555,12 @@ static void S22b_signals_target_survives_rebuild_and_is_gated(void)
     H.ev.on_private(H.ev.user, KEV_ID, MC_ADDR_BROADCAST, FF_PORTNUM, buf, (size_t)n);
     TEST_ASSERT_TRUE(ff_shell_flare(&H.shell)->takeover_active);
 
-    ff_intent_t stray = {.kind = FF_INTENT_SIG_SELECT_MEMBER, .u = {0}};
+    ff_intent_t stray = {.kind = FF_INTENT_INBOX_SELECT_MEMBER, .u = {0}};
     stray.u.node_id = DANA;
     ff_shell_intent(&H.shell, &stray);
     ff_shell_tick(&H.shell, H.clk.t);
-    TEST_ASSERT_EQUAL_INT(FF_TARGET_MEMBER, ff_shell_view(&H.shell)->signals.target_kind);
-    TEST_ASSERT_EQUAL_UINT32(KEV_ID, ff_shell_view(&H.shell)->signals.target_node);
+    TEST_ASSERT_EQUAL_INT(FF_TARGET_MEMBER, ff_shell_view(&H.shell)->inbox.target_kind);
+    TEST_ASSERT_EQUAL_UINT32(KEV_ID, ff_shell_view(&H.shell)->inbox.target_node);
 }
 
 static void S16_b1_failed_pack_load_does_not_outrank_the_settings_offset(void)
@@ -2856,12 +2856,12 @@ static void S22_AC4_pulse_addresses_member_vs_whole_crew(void)
     TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, true));
 
     /* Member: SELECT DANA, then PULSE -> addressed to DANA, type PULSE. */
-    ff_intent_t sel = {.kind = FF_INTENT_SIG_SELECT_MEMBER, .u = {0}};
+    ff_intent_t sel = {.kind = FF_INTENT_INBOX_SELECT_MEMBER, .u = {0}};
     sel.u.node_id = DANA;
     ff_shell_intent(&H.shell, &sel);
 
     size_t tx_before = P.tx_len;
-    ff_intent_t pulse = {.kind = FF_INTENT_SIG_PULSE, .u = {0}};
+    ff_intent_t pulse = {.kind = FF_INTENT_INBOX_PULSE, .u = {0}};
     ff_shell_intent(&H.shell, &pulse);
     TEST_ASSERT_GREATER_THAN_size_t(tx_before, P.tx_len);
     TEST_ASSERT_EQUAL_UINT32(DANA, decode_packet_to(P.tx + tx_before, P.tx_len - tx_before));
@@ -2869,7 +2869,7 @@ static void S22_AC4_pulse_addresses_member_vs_whole_crew(void)
 
     /* The send reset the target to WHOLE_CREW (AC3). A second PULSE now
      * broadcasts. */
-    TEST_ASSERT_EQUAL_INT(FF_TARGET_WHOLE_CREW, ff_shell_view(&H.shell)->signals.target_kind);
+    TEST_ASSERT_EQUAL_INT(FF_TARGET_WHOLE_CREW, ff_shell_view(&H.shell)->inbox.target_kind);
     tx_before = P.tx_len;
     ff_shell_intent(&H.shell, &pulse);
     TEST_ASSERT_GREATER_THAN_size_t(tx_before, P.tx_len);
@@ -2879,7 +2879,7 @@ static void S22_AC4_pulse_addresses_member_vs_whole_crew(void)
 
 /* The OUTBOUND quick signal is a FLARE, not a pulse (the maintainer's "in
  * send to crew we should have flare not pulse"). The 1:1 FLARE chip
- * (FF_INTENT_SIG_FLARE) addresses a member vs broadcasts to the whole crew
+ * (FF_INTENT_INBOX_FLARE) addresses a member vs broadcasts to the whole crew
  * through the SAME S22(d) seam, and the wire body is a FLARE at the S10
  * default duration. Every send asserts the destination NODE, the decoded
  * ff_proto TYPE, AND the duration — refusing the proxy the brief names ("a
@@ -2892,12 +2892,12 @@ static void S24_flare_chip_addresses_member_vs_whole_crew_as_flare(void)
 
     /* Member: SELECT DANA, then FLARE -> addressed to DANA, type FLARE at
      * the default duration. */
-    ff_intent_t sel = {.kind = FF_INTENT_SIG_SELECT_MEMBER, .u = {0}};
+    ff_intent_t sel = {.kind = FF_INTENT_INBOX_SELECT_MEMBER, .u = {0}};
     sel.u.node_id = DANA;
     ff_shell_intent(&H.shell, &sel);
 
     size_t tx_before = P.tx_len;
-    ff_intent_t flare = {.kind = FF_INTENT_SIG_FLARE, .u = {0}};
+    ff_intent_t flare = {.kind = FF_INTENT_INBOX_FLARE, .u = {0}};
     ff_shell_intent(&H.shell, &flare);
     TEST_ASSERT_GREATER_THAN_size_t(tx_before, P.tx_len);
     TEST_ASSERT_EQUAL_UINT32(DANA, decode_packet_to(P.tx + tx_before, P.tx_len - tx_before));
@@ -2908,7 +2908,7 @@ static void S24_flare_chip_addresses_member_vs_whole_crew_as_flare(void)
 
     /* The send reset the target to WHOLE_CREW (AC3, no thread open). A second
      * FLARE now broadcasts, still as a FLARE. */
-    TEST_ASSERT_EQUAL_INT(FF_TARGET_WHOLE_CREW, ff_shell_view(&H.shell)->signals.target_kind);
+    TEST_ASSERT_EQUAL_INT(FF_TARGET_WHOLE_CREW, ff_shell_view(&H.shell)->inbox.target_kind);
     tx_before = P.tx_len;
     ff_shell_intent(&H.shell, &flare);
     TEST_ASSERT_GREATER_THAN_size_t(tx_before, P.tx_len);
@@ -2938,11 +2938,11 @@ static void S22_AC4_send_to_just_unpaired_member_is_refused(void)
     TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, true));
 
     /* SELECT DANA as the target while she is still paired. */
-    ff_intent_t sel = {.kind = FF_INTENT_SIG_SELECT_MEMBER, .u = {0}};
+    ff_intent_t sel = {.kind = FF_INTENT_INBOX_SELECT_MEMBER, .u = {0}};
     sel.u.node_id = DANA;
     ff_shell_intent(&H.shell, &sel);
-    TEST_ASSERT_EQUAL_INT(FF_TARGET_MEMBER, ff_shell_view(&H.shell)->signals.target_kind);
-    TEST_ASSERT_EQUAL_UINT32(DANA, ff_shell_view(&H.shell)->signals.target_node);
+    TEST_ASSERT_EQUAL_INT(FF_TARGET_MEMBER, ff_shell_view(&H.shell)->inbox.target_kind);
+    TEST_ASSERT_EQUAL_UINT32(DANA, ff_shell_view(&H.shell)->inbox.target_node);
 
     /* Drop DANA — cleared `paired`, still in the roster — and do NOT tick, so
      * the projection's stale-target downgrade cannot run first. */
@@ -2951,7 +2951,7 @@ static void S22_AC4_send_to_just_unpaired_member_is_refused(void)
     /* A PULSE now must send NOTHING: shell_sig_dest refuses a member target
      * that is no longer paired rather than addressing the dropped node. */
     size_t const tx_before = P.tx_len;
-    ff_intent_t pulse = {.kind = FF_INTENT_SIG_PULSE, .u = {0}};
+    ff_intent_t pulse = {.kind = FF_INTENT_INBOX_PULSE, .u = {0}};
     ff_shell_intent(&H.shell, &pulse);
     TEST_ASSERT_EQUAL_size_t(tx_before, P.tx_len); /* refused — nothing on the wire */
 }
@@ -2965,12 +2965,12 @@ static void S22_AC4_rally_to_member_sends_first_tap(void)
     ff_latlon_t const here = {.lat = 39.7392, .lon = -104.9903};
     ff_shell_set_my_pos(&H.shell, here);
 
-    ff_intent_t sel = {.kind = FF_INTENT_SIG_SELECT_MEMBER, .u = {0}};
+    ff_intent_t sel = {.kind = FF_INTENT_INBOX_SELECT_MEMBER, .u = {0}};
     sel.u.node_id = DANA;
     ff_shell_intent(&H.shell, &sel);
 
     size_t tx_before = P.tx_len;
-    ff_intent_t rally = {.kind = FF_INTENT_SIG_RALLY, .u = {0}};
+    ff_intent_t rally = {.kind = FF_INTENT_INBOX_RALLY, .u = {0}};
     ff_shell_intent(&H.shell, &rally); /* first tap: a member rally sends immediately */
     TEST_ASSERT_GREATER_THAN_size_t(tx_before, P.tx_len);
     TEST_ASSERT_EQUAL_UINT32(DANA, decode_packet_to(P.tx + tx_before, P.tx_len - tx_before));
@@ -2983,7 +2983,7 @@ static void S22_AC4_rally_to_member_sends_first_tap(void)
     TEST_ASSERT_EQUAL_STRING("MY SPOT", msg.body.rally.name);
 
     /* Reset-after-send (AC3). */
-    TEST_ASSERT_EQUAL_INT(FF_TARGET_WHOLE_CREW, ff_shell_view(&H.shell)->signals.target_kind);
+    TEST_ASSERT_EQUAL_INT(FF_TARGET_WHOLE_CREW, ff_shell_view(&H.shell)->inbox.target_kind);
 }
 
 /* AC4 — RALLY with an UNKNOWN own position sends NOTHING: a rally carries a
@@ -2993,16 +2993,16 @@ static void S22_AC4_rally_without_my_pos_sends_nothing(void)
     s22_connect_shell();
     TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, true));
     /* my_pos deliberately unset. */
-    ff_intent_t sel = {.kind = FF_INTENT_SIG_SELECT_MEMBER, .u = {0}};
+    ff_intent_t sel = {.kind = FF_INTENT_INBOX_SELECT_MEMBER, .u = {0}};
     sel.u.node_id = DANA;
     ff_shell_intent(&H.shell, &sel);
 
     size_t const tx_before = P.tx_len;
-    ff_intent_t rally = {.kind = FF_INTENT_SIG_RALLY, .u = {0}};
+    ff_intent_t rally = {.kind = FF_INTENT_INBOX_RALLY, .u = {0}};
     ff_shell_intent(&H.shell, &rally);
     TEST_ASSERT_EQUAL_size_t(tx_before, P.tx_len); /* nothing sent */
     /* Target unchanged (no send, so no AC3 reset) — still DANA. */
-    TEST_ASSERT_EQUAL_INT(FF_TARGET_MEMBER, ff_shell_view(&H.shell)->signals.target_kind);
+    TEST_ASSERT_EQUAL_INT(FF_TARGET_MEMBER, ff_shell_view(&H.shell)->inbox.target_kind);
 }
 
 /* AC4 — RALLY to WHOLE_CREW is the one loud broadcast: the first tap ARMS
@@ -3014,15 +3014,15 @@ static void S22_AC4_rally_whole_crew_confirm(void)
     ff_latlon_t const here = {.lat = 39.7392, .lon = -104.9903};
     ff_shell_set_my_pos(&H.shell, here);
     /* Default target is WHOLE_CREW. */
-    TEST_ASSERT_EQUAL_INT(FF_TARGET_WHOLE_CREW, ff_shell_view(&H.shell)->signals.target_kind);
+    TEST_ASSERT_EQUAL_INT(FF_TARGET_WHOLE_CREW, ff_shell_view(&H.shell)->inbox.target_kind);
 
     /* First tap: ARMS, sends nothing. */
     size_t tx_before = P.tx_len;
-    ff_intent_t rally = {.kind = FF_INTENT_SIG_RALLY, .u = {0}};
+    ff_intent_t rally = {.kind = FF_INTENT_INBOX_RALLY, .u = {0}};
     ff_shell_intent(&H.shell, &rally);
     TEST_ASSERT_EQUAL_size_t(tx_before, P.tx_len); /* no send on first whole-crew tap */
     (void)ff_shell_tick(&H.shell, H.clk.t);
-    TEST_ASSERT_TRUE(ff_shell_view(&H.shell)->signals.rally_confirm_armed); /* button shows armed */
+    TEST_ASSERT_TRUE(ff_shell_view(&H.shell)->inbox.rally_confirm_armed); /* button shows armed */
 
     /* Second tap within the window: SENDS to broadcast, type RALLY, disarms. */
     tx_before = P.tx_len;
@@ -3031,15 +3031,15 @@ static void S22_AC4_rally_whole_crew_confirm(void)
     TEST_ASSERT_EQUAL_UINT32(MC_ADDR_BROADCAST, decode_packet_to(P.tx + tx_before, P.tx_len - tx_before));
     TEST_ASSERT_EQUAL_INT(FF_PROTO_TYPE_RALLY, decode_packet_private(P.tx + tx_before, P.tx_len - tx_before, NULL));
     (void)ff_shell_tick(&H.shell, H.clk.t);
-    TEST_ASSERT_FALSE(ff_shell_view(&H.shell)->signals.rally_confirm_armed);
+    TEST_ASSERT_FALSE(ff_shell_view(&H.shell)->inbox.rally_confirm_armed);
 
     /* Arm again, then an intervening PULSE DISARMS: the next rally tap must
      * arm afresh, not send. */
     ff_shell_intent(&H.shell, &rally); /* arm */
-    ff_intent_t pulse = {.kind = FF_INTENT_SIG_PULSE, .u = {0}};
+    ff_intent_t pulse = {.kind = FF_INTENT_INBOX_PULSE, .u = {0}};
     ff_shell_intent(&H.shell, &pulse); /* intervening action disarms (and itself sends a pulse) */
     (void)ff_shell_tick(&H.shell, H.clk.t);
-    TEST_ASSERT_FALSE(ff_shell_view(&H.shell)->signals.rally_confirm_armed);
+    TEST_ASSERT_FALSE(ff_shell_view(&H.shell)->inbox.rally_confirm_armed);
 
     tx_before = P.tx_len;
     ff_shell_intent(&H.shell, &rally); /* this is a fresh FIRST tap: arms, no send */
@@ -3047,7 +3047,7 @@ static void S22_AC4_rally_whole_crew_confirm(void)
 }
 
 /* AC4 — the confirm arms on the first tap but LAPSES after the window: a
- * tap past FF_SIG_RALLY_CONFIRM_MS is a fresh first tap (arms), never a
+ * tap past FF_INBOX_RALLY_CONFIRM_MS is a fresh first tap (arms), never a
  * silent send of the loud broadcast. */
 static void S22_AC4_rally_confirm_lapses_after_window(void)
 {
@@ -3055,15 +3055,15 @@ static void S22_AC4_rally_confirm_lapses_after_window(void)
     ff_latlon_t const here = {.lat = 39.7392, .lon = -104.9903};
     ff_shell_set_my_pos(&H.shell, here);
 
-    ff_intent_t rally = {.kind = FF_INTENT_SIG_RALLY, .u = {0}};
+    ff_intent_t rally = {.kind = FF_INTENT_INBOX_RALLY, .u = {0}};
     ff_shell_intent(&H.shell, &rally); /* arm at t0 */
     (void)ff_shell_tick(&H.shell, H.clk.t);
-    TEST_ASSERT_TRUE(ff_shell_view(&H.shell)->signals.rally_confirm_armed);
+    TEST_ASSERT_TRUE(ff_shell_view(&H.shell)->inbox.rally_confirm_armed);
 
     /* Let the window lapse, then tick: the arm expires (button clears). */
-    advance(5000u); /* > FF_SIG_RALLY_CONFIRM_MS (4000) */
+    advance(5000u); /* > FF_INBOX_RALLY_CONFIRM_MS (4000) */
     (void)ff_shell_tick(&H.shell, H.clk.t);
-    TEST_ASSERT_FALSE(ff_shell_view(&H.shell)->signals.rally_confirm_armed);
+    TEST_ASSERT_FALSE(ff_shell_view(&H.shell)->inbox.rally_confirm_armed);
 
     /* A tap now is a fresh first tap: arms, sends nothing. */
     size_t const tx_before = P.tx_len;
@@ -3080,7 +3080,7 @@ static void S22_AC4_compose_sets_dest_and_switches_face(void)
     TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, true));
 
     /* WHOLE_CREW target: COMPOSE opens broadcast (dest 0). */
-    ff_intent_t compose = {.kind = FF_INTENT_SIG_COMPOSE, .u = {0}};
+    ff_intent_t compose = {.kind = FF_INTENT_INBOX_COMPOSE, .u = {0}};
     ff_shell_intent(&H.shell, &compose);
     (void)ff_shell_tick(&H.shell, H.clk.t);
     TEST_ASSERT_EQUAL(FF_APP_FACE_COMPOSE, ff_shell_view(&H.shell)->active_face);
@@ -3089,7 +3089,7 @@ static void S22_AC4_compose_sets_dest_and_switches_face(void)
     /* Back out, target a member, COMPOSE: TO is that member. */
     ff_intent_t back = {.kind = FF_INTENT_BACK, .u = {0}};
     ff_shell_intent(&H.shell, &back);
-    ff_intent_t sel = {.kind = FF_INTENT_SIG_SELECT_MEMBER, .u = {0}};
+    ff_intent_t sel = {.kind = FF_INTENT_INBOX_SELECT_MEMBER, .u = {0}};
     sel.u.node_id = DANA;
     ff_shell_intent(&H.shell, &sel);
     ff_shell_intent(&H.shell, &compose);
@@ -3098,7 +3098,7 @@ static void S22_AC4_compose_sets_dest_and_switches_face(void)
     TEST_ASSERT_EQUAL_UINT32(DANA, ff_shell_compose_to_node(&H.shell));
     /* COMPOSE did not reset the Signals target (it is a navigation, not a
      * direct send). */
-    TEST_ASSERT_EQUAL_INT(FF_TARGET_MEMBER, ff_shell_view(&H.shell)->signals.target_kind);
+    TEST_ASSERT_EQUAL_INT(FF_TARGET_MEMBER, ff_shell_view(&H.shell)->inbox.target_kind);
 }
 
 /**
@@ -3787,11 +3787,11 @@ static void S24_AC1_sig_pulse_send_pushes_outgoing_item(void)
     s22_connect_shell();
     TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, true));
 
-    ff_intent_t sel = {.kind = FF_INTENT_SIG_SELECT_MEMBER, .u = {0}};
+    ff_intent_t sel = {.kind = FF_INTENT_INBOX_SELECT_MEMBER, .u = {0}};
     sel.u.node_id = DANA;
     ff_shell_intent(&H.shell, &sel);
 
-    ff_intent_t pulse = {.kind = FF_INTENT_SIG_PULSE, .u = {0}};
+    ff_intent_t pulse = {.kind = FF_INTENT_INBOX_PULSE, .u = {0}};
     ff_shell_intent(&H.shell, &pulse);
 
     ff_feed_t const *feed = ff_shell_feed(&H.shell);
@@ -3821,11 +3821,11 @@ static void S24_AC1_rally_send_pushes_outgoing_item_with_place_name(void)
     TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, true));
     ff_shell_set_my_pos(&H.shell, (ff_latlon_t){39.7392, -104.9903});
 
-    ff_intent_t sel = {.kind = FF_INTENT_SIG_SELECT_MEMBER, .u = {0}};
+    ff_intent_t sel = {.kind = FF_INTENT_INBOX_SELECT_MEMBER, .u = {0}};
     sel.u.node_id = DANA;
     ff_shell_intent(&H.shell, &sel);
 
-    ff_intent_t rally = {.kind = FF_INTENT_SIG_RALLY, .u = {0}};
+    ff_intent_t rally = {.kind = FF_INTENT_INBOX_RALLY, .u = {0}};
     ff_shell_intent(&H.shell, &rally); /* member rally: first tap sends */
 
     ff_feed_t const *feed = ff_shell_feed(&H.shell);
@@ -3848,11 +3848,11 @@ static void S24_AC1_refused_rally_pushes_no_outgoing_item(void)
     s22_connect_shell();
     TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, true));
     /* my_pos deliberately unset. */
-    ff_intent_t sel = {.kind = FF_INTENT_SIG_SELECT_MEMBER, .u = {0}};
+    ff_intent_t sel = {.kind = FF_INTENT_INBOX_SELECT_MEMBER, .u = {0}};
     sel.u.node_id = DANA;
     ff_shell_intent(&H.shell, &sel);
 
-    ff_intent_t rally = {.kind = FF_INTENT_SIG_RALLY, .u = {0}};
+    ff_intent_t rally = {.kind = FF_INTENT_INBOX_RALLY, .u = {0}};
     ff_shell_intent(&H.shell, &rally);
 
     TEST_ASSERT_EQUAL_UINT8(0, ff_feed_count(ff_shell_feed(&H.shell)));
@@ -4004,7 +4004,7 @@ static void S24_AC1_composer_send_refused_pushes_no_item(void)
 /* Find one conversation in the projected inbox by its key (0 = CREW). */
 static ff_inbox_conv_t const *view_conv(uint32_t node)
 {
-    ff_app_signals_t const *sig = &ff_shell_view(&H.shell)->signals;
+    ff_app_inbox_t const *sig = &ff_shell_view(&H.shell)->inbox;
     for (uint8_t i = 0; i < sig->inbox.conv_count; i++) {
         ff_inbox_conv_t const *cv = &sig->inbox.convs[i];
         bool const is_crew = (cv->kind == FF_CONV_CREW);
@@ -4042,17 +4042,17 @@ static void S24_AC4_open_thread_marks_only_that_thread_read(void)
     ff_shell_intent(&H.shell, &open);
     (void)ff_shell_tick(&H.shell, H.clk.t);
 
-    TEST_ASSERT_EQUAL_INT(FF_SIG_SUB_THREAD, ff_shell_view(&H.shell)->signals.subview);
-    TEST_ASSERT_EQUAL_UINT32(DANA, ff_shell_view(&H.shell)->signals.thread_node);
-    TEST_ASSERT_EQUAL_STRING("", ff_shell_view(&H.shell)->signals.thread_name); /* no NodeInfo yet: honest "" */
+    TEST_ASSERT_EQUAL_INT(FF_INBOX_SUB_THREAD, ff_shell_view(&H.shell)->inbox.subview);
+    TEST_ASSERT_EQUAL_UINT32(DANA, ff_shell_view(&H.shell)->inbox.thread_node);
+    TEST_ASSERT_EQUAL_STRING("", ff_shell_view(&H.shell)->inbox.thread_name); /* no NodeInfo yet: honest "" */
     TEST_ASSERT_EQUAL_UINT16(0, view_conv(DANA)->unread);   /* opened thread cleared */
     TEST_ASSERT_EQUAL_UINT16(1, view_conv(KEV_ID)->unread); /* other threads survive */
     TEST_ASSERT_EQUAL_UINT16(1, view_conv(0)->unread);
     TEST_ASSERT_EQUAL_UINT16(2, ff_feed_unread_count(ff_shell_feed(&H.shell)));
 
     /* The open thread IS the send scope (S22(d) holders follow). */
-    TEST_ASSERT_EQUAL_INT(FF_TARGET_MEMBER, ff_shell_view(&H.shell)->signals.target_kind);
-    TEST_ASSERT_EQUAL_UINT32(DANA, ff_shell_view(&H.shell)->signals.target_node);
+    TEST_ASSERT_EQUAL_INT(FF_TARGET_MEMBER, ff_shell_view(&H.shell)->inbox.target_kind);
+    TEST_ASSERT_EQUAL_UINT32(DANA, ff_shell_view(&H.shell)->inbox.target_node);
 
     /* Opening the CREW thread clears the broadcast item only. */
     ff_intent_t open_crew = {.kind = FF_INTENT_INBOX_OPEN_THREAD, .u = {0}};
@@ -4061,7 +4061,7 @@ static void S24_AC4_open_thread_marks_only_that_thread_read(void)
     TEST_ASSERT_EQUAL_UINT16(0, view_conv(0)->unread);
     TEST_ASSERT_EQUAL_UINT16(1, view_conv(KEV_ID)->unread);
     TEST_ASSERT_EQUAL_UINT16(1, ff_feed_unread_count(ff_shell_feed(&H.shell)));
-    TEST_ASSERT_EQUAL_INT(FF_TARGET_WHOLE_CREW, ff_shell_view(&H.shell)->signals.target_kind);
+    TEST_ASSERT_EQUAL_INT(FF_TARGET_WHOLE_CREW, ff_shell_view(&H.shell)->inbox.target_kind);
 }
 
 /* AC3 (navigation): the FAB opens the picker; a pick routes to the
@@ -4081,20 +4081,20 @@ static void S24_AC3_fab_pick_and_back_navigate_subviews(void)
      * (HOME opens it from Radar, LAUNCHER_SELECT idx 2 = Signals, amended 2026-09-01 5-circle order). */
     ff_intent_t to_home = {.kind = FF_INTENT_HOME, .u = {0}};
     ff_shell_intent(&H.shell, &to_home); /* RADAR -> LAUNCHER */
-    ff_intent_t to_signals = {.kind = FF_INTENT_LAUNCHER_SELECT, .u = {0}};
-    to_signals.u.launcher_idx = 2u; /* Signals — index 2 as of the amended 5-circle order */
-    ff_shell_intent(&H.shell, &to_signals); /* LAUNCHER -> SIGNALS */
+    ff_intent_t to_inbox = {.kind = FF_INTENT_LAUNCHER_SELECT, .u = {0}};
+    to_inbox.u.launcher_idx = 2u; /* Signals — index 2 as of the amended 5-circle order */
+    ff_shell_intent(&H.shell, &to_inbox); /* LAUNCHER -> SIGNALS */
 
     ff_intent_t fab = {.kind = FF_INTENT_INBOX_NEW, .u = {0}};
     ff_intent_t back = {.kind = FF_INTENT_BACK, .u = {0}};
 
     ff_shell_intent(&H.shell, &fab);
     (void)ff_shell_tick(&H.shell, H.clk.t);
-    TEST_ASSERT_EQUAL_INT(FF_SIG_SUB_PICKER, ff_shell_view(&H.shell)->signals.subview);
+    TEST_ASSERT_EQUAL_INT(FF_INBOX_SUB_PICKER, ff_shell_view(&H.shell)->inbox.subview);
 
     ff_shell_intent(&H.shell, &back);
     (void)ff_shell_tick(&H.shell, H.clk.t);
-    TEST_ASSERT_EQUAL_INT(FF_SIG_SUB_INBOX, ff_shell_view(&H.shell)->signals.subview);
+    TEST_ASSERT_EQUAL_INT(FF_INBOX_SUB_INBOX, ff_shell_view(&H.shell)->inbox.subview);
 
     /* S24 slice (d): PICK now routes to the action POPUP scoped to the
      * pick (over the thread), not straight to the thread — it still
@@ -4105,18 +4105,18 @@ static void S24_AC3_fab_pick_and_back_navigate_subviews(void)
     pick.u.node_id = KEV_ID;
     ff_shell_intent(&H.shell, &pick);
     (void)ff_shell_tick(&H.shell, H.clk.t);
-    TEST_ASSERT_EQUAL_INT(FF_SIG_SUB_POPUP, ff_shell_view(&H.shell)->signals.subview);
-    TEST_ASSERT_EQUAL_UINT32(KEV_ID, ff_shell_view(&H.shell)->signals.thread_node);
+    TEST_ASSERT_EQUAL_INT(FF_INBOX_SUB_POPUP, ff_shell_view(&H.shell)->inbox.subview);
+    TEST_ASSERT_EQUAL_UINT32(KEV_ID, ff_shell_view(&H.shell)->inbox.thread_node);
     TEST_ASSERT_EQUAL_UINT16(0, view_conv(KEV_ID)->unread); /* pick routes through the open transition */
-    TEST_ASSERT_EQUAL_INT(FF_TARGET_MEMBER, ff_shell_view(&H.shell)->signals.target_kind);
+    TEST_ASSERT_EQUAL_INT(FF_TARGET_MEMBER, ff_shell_view(&H.shell)->inbox.target_kind);
 
     /* BACK steps the stack one level at a time: POPUP -> THREAD -> INBOX. */
     ff_shell_intent(&H.shell, &back);
     (void)ff_shell_tick(&H.shell, H.clk.t);
-    TEST_ASSERT_EQUAL_INT(FF_SIG_SUB_THREAD, ff_shell_view(&H.shell)->signals.subview);
+    TEST_ASSERT_EQUAL_INT(FF_INBOX_SUB_THREAD, ff_shell_view(&H.shell)->inbox.subview);
     ff_shell_intent(&H.shell, &back);
     (void)ff_shell_tick(&H.shell, H.clk.t);
-    TEST_ASSERT_EQUAL_INT(FF_SIG_SUB_INBOX, ff_shell_view(&H.shell)->signals.subview);
+    TEST_ASSERT_EQUAL_INT(FF_INBOX_SUB_INBOX, ff_shell_view(&H.shell)->inbox.subview);
 
     /* Unknown recipient: rejected whole. Asserted BEFORE the next tick
      * (review Finding 4): the projection re-validates holders every tick
@@ -4128,18 +4128,18 @@ static void S24_AC3_fab_pick_and_back_navigate_subviews(void)
     ff_intent_t bad = {.kind = FF_INTENT_INBOX_OPEN_THREAD, .u = {0}};
     bad.u.node_id = 0xBADBEEFu;
     ff_shell_intent(&H.shell, &bad);
-    TEST_ASSERT_EQUAL_INT(FF_TARGET_MEMBER, ff_shell_view(&H.shell)->signals.target_kind);
-    TEST_ASSERT_EQUAL_UINT32(KEV_ID, ff_shell_view(&H.shell)->signals.target_node);
+    TEST_ASSERT_EQUAL_INT(FF_TARGET_MEMBER, ff_shell_view(&H.shell)->inbox.target_kind);
+    TEST_ASSERT_EQUAL_UINT32(KEV_ID, ff_shell_view(&H.shell)->inbox.target_node);
     TEST_ASSERT_EQUAL_UINT16(1, ff_feed_unread_count(ff_shell_feed(&H.shell))); /* no mark-read fired */
     (void)ff_shell_tick(&H.shell, H.clk.t);
-    TEST_ASSERT_EQUAL_INT(FF_SIG_SUB_INBOX, ff_shell_view(&H.shell)->signals.subview);
+    TEST_ASSERT_EQUAL_INT(FF_INBOX_SUB_INBOX, ff_shell_view(&H.shell)->inbox.subview);
     TEST_ASSERT_EQUAL_UINT16(1, view_conv(KEV_ID)->unread); /* nothing was marked read */
 }
 
 /* Leaving the Signals face resets the sub-view: a fresh entry always
  * lands on the inbox, never a stale thread. (Signals is base index 2;
  * the route starts on RADAR.) */
-static void S24_AC3_leaving_signals_face_resets_subview_to_inbox(void)
+static void S24_AC3_leaving_inbox_face_resets_subview_to_inbox(void)
 {
     harness_init(100000u, false);
     inject_my_info(MY_ID);
@@ -4147,28 +4147,28 @@ static void S24_AC3_leaving_signals_face_resets_subview_to_inbox(void)
 
     /* S26 slice e: via the BOOT-button launcher. */
     ff_intent_t home = {.kind = FF_INTENT_HOME, .u = {0}};
-    ff_intent_t to_signals = {.kind = FF_INTENT_LAUNCHER_SELECT, .u = {0}};
-    to_signals.u.launcher_idx = 2u; /* Signals — index 2 as of the amended 5-circle order */
+    ff_intent_t to_inbox = {.kind = FF_INTENT_LAUNCHER_SELECT, .u = {0}};
+    to_inbox.u.launcher_idx = 2u; /* Signals — index 2 as of the amended 5-circle order */
     ff_shell_intent(&H.shell, &home); /* RADAR -> LAUNCHER */
-    ff_shell_intent(&H.shell, &to_signals); /* LAUNCHER -> SIGNALS */
+    ff_shell_intent(&H.shell, &to_inbox); /* LAUNCHER -> SIGNALS */
     (void)ff_shell_tick(&H.shell, H.clk.t);
-    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_SIGNALS, ff_shell_view(&H.shell)->active_face);
+    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_INBOX, ff_shell_view(&H.shell)->active_face);
 
     ff_intent_t open = {.kind = FF_INTENT_INBOX_OPEN_THREAD, .u = {0}};
     open.u.node_id = DANA;
     ff_shell_intent(&H.shell, &open);
     (void)ff_shell_tick(&H.shell, H.clk.t);
-    TEST_ASSERT_EQUAL_INT(FF_SIG_SUB_THREAD, ff_shell_view(&H.shell)->signals.subview);
+    TEST_ASSERT_EQUAL_INT(FF_INBOX_SUB_THREAD, ff_shell_view(&H.shell)->inbox.subview);
 
     ff_shell_intent(&H.shell, &home); /* SIGNALS -> RADAR (HOME: "from any app -> Radar") */
     (void)ff_shell_tick(&H.shell, H.clk.t);
 
     ff_shell_intent(&H.shell, &home); /* RADAR -> LAUNCHER */
-    ff_shell_intent(&H.shell, &to_signals); /* back to SIGNALS */
+    ff_shell_intent(&H.shell, &to_inbox); /* back to SIGNALS */
     (void)ff_shell_tick(&H.shell, H.clk.t);
-    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_SIGNALS, ff_shell_view(&H.shell)->active_face);
-    TEST_ASSERT_EQUAL_INT(FF_SIG_SUB_INBOX, ff_shell_view(&H.shell)->signals.subview);
-    TEST_ASSERT_EQUAL_UINT32(0u, ff_shell_view(&H.shell)->signals.thread_node);
+    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_INBOX, ff_shell_view(&H.shell)->active_face);
+    TEST_ASSERT_EQUAL_INT(FF_INBOX_SUB_INBOX, ff_shell_view(&H.shell)->inbox.subview);
+    TEST_ASSERT_EQUAL_UINT32(0u, ff_shell_view(&H.shell)->inbox.thread_node);
 }
 
 /* AC8 — the inbox's render key covers exactly its rendered projection
@@ -4269,12 +4269,12 @@ static void S24_AC3_inbox_intents_are_inert_under_a_takeover(void)
     open.u.node_id = DANA;
     ff_shell_intent(&H.shell, &open);
     (void)ff_shell_tick(&H.shell, H.clk.t);
-    TEST_ASSERT_EQUAL_INT(FF_SIG_SUB_INBOX, ff_shell_view(&H.shell)->signals.subview);
+    TEST_ASSERT_EQUAL_INT(FF_INBOX_SUB_INBOX, ff_shell_view(&H.shell)->inbox.subview);
     TEST_ASSERT_EQUAL_UINT16(1, view_conv(DANA)->unread); /* nothing marked read */
     /* 2: DANA's text + the inbound FLARE's own feed item (dir UNKNOWN ->
      * the CREW conversation) — both still unread. */
     TEST_ASSERT_EQUAL_UINT16(2, ff_feed_unread_count(ff_shell_feed(&H.shell)));
-    TEST_ASSERT_EQUAL_INT(FF_TARGET_WHOLE_CREW, ff_shell_view(&H.shell)->signals.target_kind);
+    TEST_ASSERT_EQUAL_INT(FF_TARGET_WHOLE_CREW, ff_shell_view(&H.shell)->inbox.target_kind);
 
     /* Same for the FAB and a picker pick. */
     ff_intent_t fab = {.kind = FF_INTENT_INBOX_NEW, .u = {0}};
@@ -4283,7 +4283,7 @@ static void S24_AC3_inbox_intents_are_inert_under_a_takeover(void)
     pick.u.node_id = DANA;
     ff_shell_intent(&H.shell, &pick);
     (void)ff_shell_tick(&H.shell, H.clk.t);
-    TEST_ASSERT_EQUAL_INT(FF_SIG_SUB_INBOX, ff_shell_view(&H.shell)->signals.subview);
+    TEST_ASSERT_EQUAL_INT(FF_INBOX_SUB_INBOX, ff_shell_view(&H.shell)->inbox.subview);
     TEST_ASSERT_EQUAL_UINT16(1, view_conv(DANA)->unread);
 
     /* Positive control: dismissed, the same intent works. */
@@ -4292,7 +4292,7 @@ static void S24_AC3_inbox_intents_are_inert_under_a_takeover(void)
     (void)ff_shell_tick(&H.shell, H.clk.t);
     ff_shell_intent(&H.shell, &open);
     (void)ff_shell_tick(&H.shell, H.clk.t);
-    TEST_ASSERT_EQUAL_INT(FF_SIG_SUB_THREAD, ff_shell_view(&H.shell)->signals.subview);
+    TEST_ASSERT_EQUAL_INT(FF_INBOX_SUB_THREAD, ff_shell_view(&H.shell)->inbox.subview);
     TEST_ASSERT_EQUAL_UINT16(0, view_conv(DANA)->unread);
 }
 
@@ -4376,7 +4376,7 @@ static void S24_AC8_presence_age_keys_rendered_bucket_only(void)
  * This replaces the retired swipe-based route this helper used to take;
  * it works from ANY starting base (HOME always returns to the launcher
  * first), not just Radar. */
-static void s24c_swipe_to_signals(void)
+static void s24c_swipe_to_inbox(void)
 {
     ff_intent_t home = {.kind = FF_INTENT_HOME, .u = {0}};
     ff_shell_intent(&H.shell, &home); /* any base -> LAUNCHER (no-op if already there) */
@@ -4385,7 +4385,7 @@ static void s24c_swipe_to_signals(void)
     ff_shell_intent(&H.shell, &select); /* LAUNCHER -> SIGNALS */
 }
 
-/* AC4 — the thread PROJECTION: opening a thread builds `view.signals.
+/* AC4 — the thread PROJECTION: opening a thread builds `view.inbox.
  * thread` from the feed, oldest first, direction preserved (in vs out),
  * identity joined only for paired senders, and read on open. */
 static void S24c_AC4_thread_projection_builds_messages_both_ways(void)
@@ -4397,7 +4397,7 @@ static void S24c_AC4_thread_projection_builds_messages_both_ways(void)
     inject_text(DANA, "you close?");                 /* DIRECT -> DANA thread */
     advance(1000u);
 
-    s24c_swipe_to_signals();
+    s24c_swipe_to_inbox();
     ff_intent_t open = {.kind = FF_INTENT_INBOX_OPEN_THREAD, .u = {0}};
     open.u.node_id = DANA;
     ff_shell_intent(&H.shell, &open);
@@ -4408,8 +4408,8 @@ static void S24c_AC4_thread_projection_builds_messages_both_ways(void)
     ff_shell_intent(&H.shell, &omw);
     (void)ff_shell_tick(&H.shell, H.clk.t);
 
-    ff_app_signals_t const *sig = &ff_shell_view(&H.shell)->signals;
-    TEST_ASSERT_EQUAL_INT(FF_SIG_SUB_THREAD, sig->subview);
+    ff_app_inbox_t const *sig = &ff_shell_view(&H.shell)->inbox;
+    TEST_ASSERT_EQUAL_INT(FF_INBOX_SUB_THREAD, sig->subview);
     TEST_ASSERT_EQUAL_UINT8(2, sig->thread.msg_count);
 
     /* Oldest first: DANA's inbound text, then my outgoing reply. */
@@ -4438,7 +4438,7 @@ static void S24c_AC4_live_arrival_into_open_thread_marks_read_only_when_visible(
     inject_my_info(MY_ID);
     TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, true));
 
-    s24c_swipe_to_signals();
+    s24c_swipe_to_inbox();
     ff_intent_t open = {.kind = FF_INTENT_INBOX_OPEN_THREAD, .u = {0}};
     open.u.node_id = DANA;
     ff_shell_intent(&H.shell, &open);
@@ -4447,7 +4447,7 @@ static void S24c_AC4_live_arrival_into_open_thread_marks_read_only_when_visible(
     inject_text(DANA, "here now");
     (void)ff_shell_tick(&H.shell, H.clk.t);
     TEST_ASSERT_EQUAL_UINT16(0, ff_feed_unread_count(ff_shell_feed(&H.shell)));
-    TEST_ASSERT_EQUAL_UINT8(1, ff_shell_view(&H.shell)->signals.thread.msg_count);
+    TEST_ASSERT_EQUAL_UINT8(1, ff_shell_view(&H.shell)->inbox.thread.msg_count);
 
     /* Takeover up: an arrival is NOT silently marked read (the user
      * cannot see it), and it surfaces as unread once the takeover ends. */
@@ -4481,7 +4481,7 @@ static void S24c_AC4_quick_chip_canned_reply_targets_thread_scope(void)
      * reply-context rule would aim there. The open thread is DANA's. */
     inject_text(DANA, "you close?");
     inject_text(KEV_ID, "unrelated");
-    s24c_swipe_to_signals();
+    s24c_swipe_to_inbox();
     ff_intent_t open = {.kind = FF_INTENT_INBOX_OPEN_THREAD, .u = {0}};
     open.u.node_id = DANA;
     ff_shell_intent(&H.shell, &open);
@@ -4497,7 +4497,7 @@ static void S24c_AC4_quick_chip_canned_reply_targets_thread_scope(void)
     /* End-to-end: the accepted send appears in the OPEN thread as the
      * newest message, sided OUT. */
     (void)ff_shell_tick(&H.shell, H.clk.t);
-    ff_app_signals_t const *sig = &ff_shell_view(&H.shell)->signals;
+    ff_app_inbox_t const *sig = &ff_shell_view(&H.shell)->inbox;
     TEST_ASSERT_GREATER_THAN_UINT8(0, sig->thread.msg_count);
     ff_inbox_msg_t const *last = &sig->thread.msgs[sig->thread.msg_count - 1];
     TEST_ASSERT_EQUAL(FEED_TEXT, last->kind);
@@ -4523,7 +4523,7 @@ static void S24c_AC4_quick_chip_canned_reply_targets_thread_scope(void)
     TEST_ASSERT_EQUAL_UINT32(MC_ADDR_BROADCAST, decode_packet_to(P.tx + tx_before, P.tx_len - tx_before));
 }
 
-/* AC4 — the PULSE chip: FF_INTENT_SIG_PULSE with a thread open sends to
+/* AC4 — the PULSE chip: FF_INTENT_INBOX_PULSE with a thread open sends to
  * the THREAD's scope, keeps the scope (no reset-to-WHOLE_CREW while the
  * thread is open — a second pulse must not silently broadcast), and the
  * OUT pulse lands in the thread. */
@@ -4533,14 +4533,14 @@ static void S24c_AC4_pulse_chip_sends_to_thread_scope_and_keeps_scope(void)
     H.ev = ff_shell_events(&H.shell);
     TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, true));
 
-    s24c_swipe_to_signals();
+    s24c_swipe_to_inbox();
     ff_intent_t open = {.kind = FF_INTENT_INBOX_OPEN_THREAD, .u = {0}};
     open.u.node_id = DANA;
     ff_shell_intent(&H.shell, &open);
     (void)ff_shell_tick(&H.shell, H.clk.t);
 
     size_t tx_before = P.tx_len;
-    ff_intent_t pulse = {.kind = FF_INTENT_SIG_PULSE, .u = {0}};
+    ff_intent_t pulse = {.kind = FF_INTENT_INBOX_PULSE, .u = {0}};
     ff_shell_intent(&H.shell, &pulse);
     TEST_ASSERT_GREATER_THAN_size_t(tx_before, P.tx_len);
     TEST_ASSERT_EQUAL_UINT32(DANA, decode_packet_to(P.tx + tx_before, P.tx_len - tx_before));
@@ -4554,7 +4554,7 @@ static void S24c_AC4_pulse_chip_sends_to_thread_scope_and_keeps_scope(void)
     TEST_ASSERT_EQUAL_UINT32(DANA, decode_packet_to(P.tx + tx_before, P.tx_len - tx_before));
 
     (void)ff_shell_tick(&H.shell, H.clk.t);
-    ff_app_signals_t const *sig = &ff_shell_view(&H.shell)->signals;
+    ff_app_inbox_t const *sig = &ff_shell_view(&H.shell)->inbox;
     TEST_ASSERT_EQUAL_UINT8(2, sig->thread.msg_count);
     TEST_ASSERT_EQUAL(FEED_PULSE, sig->thread.msgs[1].kind);
     TEST_ASSERT_EQUAL(FEED_DIR_OUT, sig->thread.msgs[1].dir);
@@ -4575,7 +4575,7 @@ static void S24c_AC8_thread_key_opaque_to_other_conversations_churn(void)
     TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, true));
     TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, KEV_ID, true));
 
-    s24c_swipe_to_signals();
+    s24c_swipe_to_inbox();
     inject_text(DANA, "yo");
     ff_intent_t open = {.kind = FF_INTENT_INBOX_OPEN_THREAD, .u = {0}};
     open.u.node_id = DANA;
@@ -4624,12 +4624,12 @@ static void S24c_AC8_thread_key_opaque_to_other_conversations_churn(void)
      * rally mask makes the identical call the other way). So this DOES
      * dirty — once, for the banner's arrival — and the thread's own
      * projected content must be provably unchanged underneath it. */
-    uint8_t const msg_count_before = ff_shell_view(&H.shell)->signals.thread.msg_count;
+    uint8_t const msg_count_before = ff_shell_view(&H.shell)->inbox.thread.msg_count;
     inject_text(KEV_ID, "elsewhere");
     TEST_ASSERT_TRUE_MESSAGE(ff_shell_tick(&H.shell, H.clk.t),
                              "a banner from another paired conversation must dirty the key - it is a new "
                              "top-of-glass surface (S26(d))");
-    TEST_ASSERT_EQUAL_UINT8_MESSAGE(msg_count_before, ff_shell_view(&H.shell)->signals.thread.msg_count,
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(msg_count_before, ff_shell_view(&H.shell)->inbox.thread.msg_count,
                                     "KEV's item leaked into DANA's own open thread - the THREAD CONTENT key "
                                     "must stay opaque to other conversations' traffic even though the banner "
                                     "overlay correctly is not");
@@ -4652,7 +4652,7 @@ static void S24c_AC8_thread_header_presence_keys_rendered_bucket(void)
     inject_my_info(MY_ID);
     TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, true));
 
-    s24c_swipe_to_signals();
+    s24c_swipe_to_inbox();
     ff_intent_t open = {.kind = FF_INTENT_INBOX_OPEN_THREAD, .u = {0}};
     open.u.node_id = DANA;
     ff_shell_intent(&H.shell, &open);
@@ -4682,7 +4682,7 @@ static void S24c_AC8_thread_header_presence_keys_rendered_bucket(void)
  * members get DISTINCT palette colors and the 1:1 thread header projects the
  * open member's real color_idx — before this, every member kept color_idx 0
  * and every 1:1 (and radar dot) rendered palette[0]. */
-static void S24_signals_1to1_projects_the_members_own_color(void)
+static void S24_inbox_1to1_projects_the_members_own_color(void)
 {
     harness_init(100000u, false);
     inject_my_info(MY_ID);
@@ -4693,16 +4693,16 @@ static void S24_signals_1to1_projects_the_members_own_color(void)
     TEST_ASSERT_NOT_EQUAL_INT(member(DANA)->color_idx, member(KEV_ID)->color_idx);
     TEST_ASSERT_NOT_EQUAL_INT(0, member(KEV_ID)->color_idx);
 
-    s24c_swipe_to_signals();
+    s24c_swipe_to_inbox();
     ff_intent_t open = {.kind = FF_INTENT_INBOX_OPEN_THREAD, .u = {0}};
     open.u.node_id = KEV_ID;
     ff_shell_intent(&H.shell, &open);
     (void)ff_shell_tick(&H.shell, H.clk.t);
 
-    ff_app_signals_t const *sig = &ff_shell_view(&H.shell)->signals;
-    TEST_ASSERT_EQUAL_INT(FF_SIG_SUB_THREAD, sig->subview);
+    ff_app_inbox_t const *sig = &ff_shell_view(&H.shell)->inbox;
+    TEST_ASSERT_EQUAL_INT(FF_INBOX_SUB_THREAD, sig->subview);
     TEST_ASSERT_EQUAL_UINT32(KEV_ID, sig->thread_node);
-    /* The 1:1 header dot/accent (scr_signals.c reads sig->thread_color_idx)
+    /* The 1:1 header dot/accent (scr_inbox.c reads sig->thread_color_idx)
      * carries KEV's real color, not the palette[0] default. */
     TEST_ASSERT_EQUAL_UINT8(member(KEV_ID)->color_idx, sig->thread_color_idx);
     TEST_ASSERT_NOT_EQUAL_INT(0, sig->thread_color_idx);
@@ -4720,7 +4720,7 @@ static void S24_signals_1to1_projects_the_members_own_color(void)
 /* =================================================================== */
 
 /* AC3 — a paired sender's text produces a BANNER, sender-name-prefixed
- * per the CREW-preview convention (scr_signals.c's preview_from_known
+ * per the CREW-preview convention (scr_inbox.c's preview_from_known
  * pattern, S26(d) doc comment on shell_notify_push_banner). */
 static void S26_AC3_paired_message_pushes_banner(void)
 {
@@ -5008,14 +5008,14 @@ static void S26_AC2_banner_from_other_paired_conv_dirties_open_thread_key(void)
     TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, true));
     TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, KEV_ID, true));
 
-    s24c_swipe_to_signals();
+    s24c_swipe_to_inbox();
     ff_intent_t open = {.kind = FF_INTENT_INBOX_OPEN_THREAD, .u = {0}};
     open.u.node_id = DANA;
     ff_shell_intent(&H.shell, &open);
     TEST_ASSERT_TRUE(ff_shell_tick(&H.shell, H.clk.t));  /* thread opened: dirty */
     TEST_ASSERT_FALSE(ff_shell_tick(&H.shell, H.clk.t)); /* settled */
 
-    uint8_t const msg_count_before = ff_shell_view(&H.shell)->signals.thread.msg_count;
+    uint8_t const msg_count_before = ff_shell_view(&H.shell)->inbox.thread.msg_count;
 
     /* KEV, not DANA: a banner from the OTHER paired conversation while
      * DANA's thread is open. */
@@ -5023,7 +5023,7 @@ static void S26_AC2_banner_from_other_paired_conv_dirties_open_thread_key(void)
     TEST_ASSERT_TRUE_MESSAGE(ff_shell_tick(&H.shell, H.clk.t),
                              "a banner from another paired conversation must dirty the open thread's key "
                              "- it is a new top-of-glass surface (S26(d))");
-    TEST_ASSERT_EQUAL_UINT8_MESSAGE(msg_count_before, ff_shell_view(&H.shell)->signals.thread.msg_count,
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(msg_count_before, ff_shell_view(&H.shell)->inbox.thread.msg_count,
                                     "KEV's item leaked into DANA's own open thread content");
     TEST_ASSERT_TRUE(ff_shell_view(&H.shell)->banner.active);
     TEST_ASSERT_EQUAL_UINT32(KEV_ID, ff_shell_view(&H.shell)->banner.node_id);
@@ -5067,9 +5067,9 @@ static void S26_banner_open_routes_marks_read_and_dismisses(void)
     (void)ff_shell_tick(&H.shell, H.clk.t);
 
     ff_app_state_t const *v = ff_shell_view(&H.shell);
-    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_SIGNALS, v->active_face);
-    TEST_ASSERT_EQUAL_INT(FF_SIG_SUB_THREAD, v->signals.subview);
-    TEST_ASSERT_EQUAL_UINT32(DANA, v->signals.thread_node);
+    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_INBOX, v->active_face);
+    TEST_ASSERT_EQUAL_INT(FF_INBOX_SUB_THREAD, v->inbox.subview);
+    TEST_ASSERT_EQUAL_UINT32(DANA, v->inbox.thread_node);
     TEST_ASSERT_EQUAL_UINT16(0, view_conv(DANA)->unread); /* marked read */
     TEST_ASSERT_FALSE(v->banner.active);                  /* dismissed */
 }
@@ -5112,7 +5112,7 @@ static void S26_banner_open_is_inert_under_a_takeover(void)
     (void)ff_shell_tick(&H.shell, H.clk.t);
 
     TEST_ASSERT_EQUAL_UINT16(1, view_conv(DANA)->unread);         /* not marked read */
-    TEST_ASSERT_NOT_EQUAL_INT(FF_SIG_SUB_THREAD, ff_shell_view(&H.shell)->signals.subview);
+    TEST_ASSERT_NOT_EQUAL_INT(FF_INBOX_SUB_THREAD, ff_shell_view(&H.shell)->inbox.subview);
 }
 
 /* =================================================================== */
@@ -5140,7 +5140,7 @@ static char const PACK_JSON_RALLY[] =
 /* Navigate to Signals (via the BOOT-button launcher, S26 slice e) so the
  * Signals sub-views are the visible face (the popup/rally are then
  * really rendered, and mark-read runs). */
-static void s24d_to_signals(void)
+static void s24d_to_inbox(void)
 {
     ff_intent_t home = {.kind = FF_INTENT_HOME, .u = {0}};
     ff_shell_intent(&H.shell, &home); /* RADAR -> LAUNCHER */
@@ -5153,14 +5153,14 @@ static void s24d_to_signals(void)
  * popup scoped to that thread. */
 static void s24d_open_popup(uint32_t conv_node)
 {
-    s24d_to_signals();
+    s24d_to_inbox();
     ff_intent_t open = {.kind = FF_INTENT_INBOX_OPEN_THREAD, .u = {0}};
     open.u.node_id = conv_node;
     ff_shell_intent(&H.shell, &open);
     ff_intent_t fab = {.kind = FF_INTENT_INBOX_NEW, .u = {0}};
     ff_shell_intent(&H.shell, &fab);
     (void)ff_shell_tick(&H.shell, H.clk.t);
-    TEST_ASSERT_EQUAL_INT(FF_SIG_SUB_POPUP, ff_shell_view(&H.shell)->signals.subview);
+    TEST_ASSERT_EQUAL_INT(FF_INBOX_SUB_POPUP, ff_shell_view(&H.shell)->inbox.subview);
 }
 
 static void s24d_open_rally(void)
@@ -5168,7 +5168,7 @@ static void s24d_open_rally(void)
     ff_intent_t pr = {.kind = FF_INTENT_INBOX_POPUP_RALLY, .u = {0}};
     ff_shell_intent(&H.shell, &pr);
     (void)ff_shell_tick(&H.shell, H.clk.t);
-    TEST_ASSERT_EQUAL_INT(FF_SIG_SUB_RALLY, ff_shell_view(&H.shell)->signals.subview);
+    TEST_ASSERT_EQUAL_INT(FF_INBOX_SUB_RALLY, ff_shell_view(&H.shell)->inbox.subview);
 }
 
 /* AC5 — the popup Pulse row sends a PULSE to the scope (decoded TYPE + dest
@@ -5188,7 +5188,7 @@ static void S24_AC5_popup_pulse_sends_to_scope_and_closes(void)
     TEST_ASSERT_EQUAL_INT(FF_PROTO_TYPE_PULSE, decode_packet_private(P.tx + tx_before, P.tx_len - tx_before, NULL));
 
     (void)ff_shell_tick(&H.shell, H.clk.t);
-    TEST_ASSERT_EQUAL_INT(FF_SIG_SUB_THREAD, ff_shell_view(&H.shell)->signals.subview);
+    TEST_ASSERT_EQUAL_INT(FF_INBOX_SUB_THREAD, ff_shell_view(&H.shell)->inbox.subview);
     ff_feed_item_t const *it = ff_feed_at(ff_shell_feed(&H.shell), 0);
     TEST_ASSERT_EQUAL(FEED_PULSE, it->kind);
     TEST_ASSERT_EQUAL(FEED_DIR_OUT, it->dir);
@@ -5212,7 +5212,7 @@ static void S24_popup_flare_sends_flare_to_scope_and_closes(void)
     TEST_ASSERT_EQUAL_INT(FF_PROTO_TYPE_FLARE, decode_packet_private(P.tx + tx_before, P.tx_len - tx_before, NULL));
 
     (void)ff_shell_tick(&H.shell, H.clk.t);
-    TEST_ASSERT_EQUAL_INT(FF_SIG_SUB_THREAD, ff_shell_view(&H.shell)->signals.subview);
+    TEST_ASSERT_EQUAL_INT(FF_INBOX_SUB_THREAD, ff_shell_view(&H.shell)->inbox.subview);
     ff_feed_item_t const *it = ff_feed_at(ff_shell_feed(&H.shell), 0);
     TEST_ASSERT_EQUAL(FEED_FLARE, it->kind);
     TEST_ASSERT_EQUAL(FEED_DIR_OUT, it->dir);
@@ -5236,7 +5236,7 @@ static void S24_AC5_popup_compose_opens_composer_at_scope(void)
      * sub-view to INBOX (the standing "a fresh entry to Signals lands on
      * the inbox" rule — the same behavior SIG_COMPOSE has): backing out of
      * the composer returns to the inbox, not a stale thread. */
-    TEST_ASSERT_EQUAL_INT(FF_SIG_SUB_INBOX, ff_shell_view(&H.shell)->signals.subview);
+    TEST_ASSERT_EQUAL_INT(FF_INBOX_SUB_INBOX, ff_shell_view(&H.shell)->inbox.subview);
 }
 
 /* AC5 — the popup Rally row opens the Rally sub-view. */
@@ -5258,7 +5258,7 @@ static void S24_AC6_rally_places_from_pack(void)
     s24d_open_popup(0u); /* crew scope */
     s24d_open_rally();
 
-    ff_app_rally_t const *r = &ff_shell_view(&H.shell)->signals.rally;
+    ff_app_rally_t const *r = &ff_shell_view(&H.shell)->inbox.rally;
     TEST_ASSERT_TRUE(r->on_me_ok);
     TEST_ASSERT_EQUAL_UINT8(2, r->place_count);
     TEST_ASSERT_EQUAL_STRING("Main Stage", r->place_names[0]);
@@ -5276,7 +5276,7 @@ static void S24_AC6_on_me_disabled_encodes_nothing(void)
     s24d_open_popup(DANA);
     s24d_open_rally();
 
-    ff_app_rally_t const *r = &ff_shell_view(&H.shell)->signals.rally;
+    ff_app_rally_t const *r = &ff_shell_view(&H.shell)->inbox.rally;
     TEST_ASSERT_FALSE(r->on_me_ok);
     TEST_ASSERT_EQUAL_UINT8(0, r->place_count);
     TEST_ASSERT_FALSE(r->can_send);
@@ -5322,7 +5322,7 @@ static void S24_AC6_when_rides_in_the_name(void)
     TEST_ASSERT_DOUBLE_WITHIN(0.001, -82.001, msg.body.rally.pos.lon);
 
     (void)ff_shell_tick(&H.shell, H.clk.t);
-    TEST_ASSERT_EQUAL_INT(FF_SIG_SUB_THREAD, ff_shell_view(&H.shell)->signals.subview);
+    TEST_ASSERT_EQUAL_INT(FF_INBOX_SUB_THREAD, ff_shell_view(&H.shell)->inbox.subview);
 }
 
 /* AC6 — the truncate rule: a place name too long to fit alongside the WHEN
@@ -5372,14 +5372,14 @@ static void S24_AC6_crew_rally_arms_then_sends(void)
     ff_shell_intent(&H.shell, &send); /* first tap: arms, no send */
     TEST_ASSERT_EQUAL_size_t(tx_before, P.tx_len);
     (void)ff_shell_tick(&H.shell, H.clk.t);
-    TEST_ASSERT_TRUE(ff_shell_view(&H.shell)->signals.rally.confirm_armed);
+    TEST_ASSERT_TRUE(ff_shell_view(&H.shell)->inbox.rally.confirm_armed);
 
     ff_shell_intent(&H.shell, &send); /* second tap within the window: sends */
     TEST_ASSERT_GREATER_THAN_size_t(tx_before, P.tx_len);
     TEST_ASSERT_EQUAL_UINT32(MC_ADDR_BROADCAST, decode_packet_to(P.tx + tx_before, P.tx_len - tx_before));
     TEST_ASSERT_EQUAL_INT(FF_PROTO_TYPE_RALLY, decode_packet_private(P.tx + tx_before, P.tx_len - tx_before, NULL));
     (void)ff_shell_tick(&H.shell, H.clk.t);
-    TEST_ASSERT_EQUAL_INT(FF_SIG_SUB_THREAD, ff_shell_view(&H.shell)->signals.subview);
+    TEST_ASSERT_EQUAL_INT(FF_INBOX_SUB_THREAD, ff_shell_view(&H.shell)->inbox.subview);
 }
 
 /* AC8 — the popup and Rally screen are OPAQUE in the render key to
@@ -5409,15 +5409,15 @@ static void S24_AC8_popup_and_rally_opaque_to_feed_churn(void)
      * shell_render_key's own comment on that mask). So this DOES dirty —
      * once, for the banner's arrival — while the popup's own scope is
      * provably unaffected underneath it. */
-    ff_sig_subview_t const subview_before = ff_shell_view(&H.shell)->signals.subview;
-    uint32_t const thread_node_before = ff_shell_view(&H.shell)->signals.thread_node;
+    ff_inbox_subview_t const subview_before = ff_shell_view(&H.shell)->inbox.subview;
+    uint32_t const thread_node_before = ff_shell_view(&H.shell)->inbox.thread_node;
     inject_text(KEV_ID, "beneath");
     TEST_ASSERT_TRUE_MESSAGE(ff_shell_tick(&H.shell, H.clk.t),
                              "a banner from another paired conversation must dirty the key - it is a new "
                              "top-of-glass surface (S26(d))");
-    TEST_ASSERT_EQUAL_INT_MESSAGE(subview_before, ff_shell_view(&H.shell)->signals.subview,
+    TEST_ASSERT_EQUAL_INT_MESSAGE(subview_before, ff_shell_view(&H.shell)->inbox.subview,
                                   "the banner's arrival must not itself change the popup's own subview");
-    TEST_ASSERT_EQUAL_UINT32_MESSAGE(thread_node_before, ff_shell_view(&H.shell)->signals.thread_node,
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(thread_node_before, ff_shell_view(&H.shell)->inbox.thread_node,
                                      "the banner's arrival must not itself change the popup's own scope");
     TEST_ASSERT_FALSE_MESSAGE(ff_shell_tick(&H.shell, H.clk.t), "settled: no further churn from the banner");
 
@@ -5432,7 +5432,7 @@ static void S24_AC8_popup_and_rally_opaque_to_feed_churn(void)
     TEST_ASSERT_TRUE_MESSAGE(ff_shell_tick(&H.shell, H.clk.t),
                              "a banner from another paired conversation must dirty the key over the Rally "
                              "screen too - it is a new top-of-glass surface (S26(d))");
-    TEST_ASSERT_EQUAL_INT_MESSAGE(FF_SIG_SUB_RALLY, ff_shell_view(&H.shell)->signals.subview,
+    TEST_ASSERT_EQUAL_INT_MESSAGE(FF_INBOX_SUB_RALLY, ff_shell_view(&H.shell)->inbox.subview,
                                   "the banner's arrival must not itself change the Rally screen's own subview");
     TEST_ASSERT_FALSE_MESSAGE(ff_shell_tick(&H.shell, H.clk.t), "settled: no further churn from the banner");
 }
@@ -5452,13 +5452,13 @@ static void S26_AC2_banner_from_other_paired_conv_dirties_popup_overlay_exactly_
     s24d_open_popup(DANA);
     TEST_ASSERT_FALSE(ff_shell_tick(&H.shell, H.clk.t)); /* settled popup */
 
-    ff_sig_subview_t const subview_before = ff_shell_view(&H.shell)->signals.subview;
+    ff_inbox_subview_t const subview_before = ff_shell_view(&H.shell)->inbox.subview;
 
     inject_text(KEV_ID, "you around?");
     TEST_ASSERT_TRUE_MESSAGE(ff_shell_tick(&H.shell, H.clk.t),
                              "a banner from another paired conversation must dirty the popup overlay's key "
                              "- it is a new top-of-glass surface (S26(d))");
-    TEST_ASSERT_EQUAL_INT(subview_before, ff_shell_view(&H.shell)->signals.subview);
+    TEST_ASSERT_EQUAL_INT(subview_before, ff_shell_view(&H.shell)->inbox.subview);
     TEST_ASSERT_TRUE(ff_shell_view(&H.shell)->banner.active);
 
     for (int s = 0; s < 5; s++) {
@@ -5471,7 +5471,7 @@ static void S26_AC2_banner_from_other_paired_conv_dirties_popup_overlay_exactly_
     advance(1000u); /* t = push + 6000ms */
     TEST_ASSERT_TRUE_MESSAGE(ff_shell_tick(&H.shell, H.clk.t), "the banner's own expiry did not repaint");
     TEST_ASSERT_FALSE(ff_shell_view(&H.shell)->banner.active);
-    TEST_ASSERT_EQUAL_INT(subview_before, ff_shell_view(&H.shell)->signals.subview); /* the popup itself never moved */
+    TEST_ASSERT_EQUAL_INT(subview_before, ff_shell_view(&H.shell)->inbox.subview); /* the popup itself never moved */
     TEST_ASSERT_FALSE(ff_shell_tick(&H.shell, H.clk.t)); /* settled */
 }
 
@@ -5501,7 +5501,7 @@ static void S24_demo_loopback_seam_makes_out_items_appear(void)
     harness_init(100000u, false); /* NO transport: the default sender refuses */
     inject_my_info(MY_ID);
 
-    ff_intent_t pulse = {.kind = FF_INTENT_SIG_PULSE, .u = {0}};
+    ff_intent_t pulse = {.kind = FF_INTENT_INBOX_PULSE, .u = {0}};
     ff_shell_intent(&H.shell, &pulse);
     TEST_ASSERT_EQUAL_UINT8(0, ff_feed_count(ff_shell_feed(&H.shell))); /* refused -> no OUT item */
 
@@ -5636,7 +5636,7 @@ int main(void)
     RUN_TEST(S18_expired_latch_relatches_trust_blind_through_the_shell);
     RUN_TEST(S16_b1_a_flare_on_a_foreign_portnum_raises_no_takeover);
     RUN_TEST(S16_b1_shell_footprint_excludes_the_pack);
-    RUN_TEST(S22b_signals_target_survives_rebuild_and_is_gated);
+    RUN_TEST(S22b_inbox_target_survives_rebuild_and_is_gated);
     RUN_TEST(S22_AC4_pulse_addresses_member_vs_whole_crew);
     RUN_TEST(S24_flare_chip_addresses_member_vs_whole_crew_as_flare);
     RUN_TEST(S22_AC4_send_to_just_unpaired_member_is_refused);
@@ -5677,7 +5677,7 @@ int main(void)
 
     RUN_TEST(S24_AC4_open_thread_marks_only_that_thread_read);
     RUN_TEST(S24_AC3_fab_pick_and_back_navigate_subviews);
-    RUN_TEST(S24_AC3_leaving_signals_face_resets_subview_to_inbox);
+    RUN_TEST(S24_AC3_leaving_inbox_face_resets_subview_to_inbox);
     RUN_TEST(S24_AC8_inbox_key_same_bucket_age_tick_is_clean);
     RUN_TEST(S24_AC8_presence_age_keys_rendered_bucket_only);
     RUN_TEST(S24_AC3_inbox_intents_are_inert_under_a_takeover);
@@ -5700,7 +5700,7 @@ int main(void)
     RUN_TEST(S24c_AC4_pulse_chip_sends_to_thread_scope_and_keeps_scope);
     RUN_TEST(S24c_AC8_thread_key_opaque_to_other_conversations_churn);
     RUN_TEST(S24c_AC8_thread_header_presence_keys_rendered_bucket);
-    RUN_TEST(S24_signals_1to1_projects_the_members_own_color);
+    RUN_TEST(S24_inbox_1to1_projects_the_members_own_color);
 
     RUN_TEST(S26c_AC1_keep_awake_false_when_nothing_holds);
     RUN_TEST(S26c_AC1_keep_awake_true_while_flare_takeover_pending);

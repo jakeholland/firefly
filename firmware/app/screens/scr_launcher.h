@@ -17,7 +17,7 @@
  * Takes the full `ff_app_state_t const *`, unlike `scr_power_menu.c`'s
  * argument-free build: unlike that fully-static face, this one has ONE
  * dynamic fact to render — the Signals/Inbox circle's unread badge
- * (`ff_scr_signals_unread_count(&state->signals)`) — plus one more read
+ * (`ff_scr_inbox_unread_count(&state->inbox)`) — plus one more read
  * off `state->radar`, the bottom status row's time/battery (see below).
  *
  * ## Layout, VISUAL REFRESH 2026-09-01 — a compass ring, not a grid
@@ -53,7 +53,7 @@ extern "C" {
  * glyph any more — see scr_launcher.c's top comment), `LV_STATE_PRESSED`
  * press feedback (a disc fills amber and its icon/caption invert to
  * `FF_THEME_COLOR_BG`), the Inbox circle's unread-count badge
- * (`state->signals`) when nonzero, and a bottom time/battery status row
+ * (`state->inbox`) when nonzero, and a bottom time/battery status row
  * (`state->radar`).
  *
  * NULL-safe (no-op, matching every other builder in this directory).

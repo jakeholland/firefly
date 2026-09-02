@@ -46,7 +46,7 @@ _Static_assert(FF_COMPOSE_EXTRA_MAX == 280,
  * it the arm has lapsed and the next tap re-arms (a stale confirm never
  * silently fires the one loud broadcast). Four seconds: long enough to be
  * a deliberate double-tap, short enough that a forgotten arm cannot lurk. */
-#define FF_SIG_RALLY_CONFIRM_MS 4000u
+#define FF_INBOX_RALLY_CONFIRM_MS 4000u
 
 /* S26 slice b — the power menu's auto-dismiss timeout ("Cancel or a 10 s
  * timeout -> dismiss", docs/specs/S26-device-lifecycle.md). Checked once
@@ -59,8 +59,8 @@ _Static_assert(FF_COMPOSE_EXTRA_MAX == 280,
  * (else the honest constant "MY SPOT"). Naming a rally after a landmark the
  * sender is nowhere near would be dishonest, so the match is gated on real
  * proximity; 120 m ~ "you are effectively at it" at festival scale. */
-#define FF_SIG_RALLY_LANDMARK_NEAR_M 120.0f
-#define FF_SIG_RALLY_DEFAULT_NAME "MY SPOT"
+#define FF_INBOX_RALLY_LANDMARK_NEAR_M 120.0f
+#define FF_INBOX_RALLY_DEFAULT_NAME "MY SPOT"
 
 /* S24 slice d — the Rally WHERE list projects at most this many festpack
  * landmark rows. Pinned to FP_MAX_LANDMARKS so a festpack cap bump fails
@@ -132,15 +132,15 @@ typedef struct {
      * state, held on the RADAR precedent: `ff_radar_compute` builds straight
      * into `sh->view.radar` and the shell keeps only a tiny `ff_radar_smooth_t`
      * beside it, never a second full view-model. So here the shell keeps just
-     * the target (WHOLE_CREW or one member node, ~8 B) and `shell_project_signals`
-     * builds the rows straight into `sh->view.signals` each tick, re-applying
+     * the target (WHOLE_CREW or one member node, ~8 B) and `shell_project_inbox`
+     * builds the rows straight into `sh->view.inbox` each tick, re-applying
      * this holder afterward (the whole view is memset each tick, so the target
      * cannot live in the view itself). Re-applying through
      * `ff_sigview_target_select` RE-VALIDATES the member against the current
      * roster every tick, so a member who unpaired/left honestly falls back to
      * WHOLE_CREW. SELECT/CLEAR intents mutate this holder. */
-    ff_target_kind_t sig_target_kind;
-    uint32_t         sig_target_node;
+    ff_target_kind_t inbox_target_kind;
+    uint32_t         inbox_target_node;
 
     /* S24 slice b — the Signals SUB-VIEW state (inbox / picker / thread;
      * popup + rally arrive in slices c/d): which sub-screen the Signals
@@ -151,27 +151,27 @@ typedef struct {
      * roster each projection (a thread of a member who unpaired falls
      * back to the inbox honestly). Leaving the Signals face resets to
      * INBOX — a fresh entry always lands on the inbox. */
-    ff_sig_subview_t sig_subview;
-    uint32_t         sig_thread_node;
+    ff_inbox_subview_t inbox_subview;
+    uint32_t         inbox_thread_node;
 
     /* S22 slice d — the RALLY-to-WHOLE_CREW confirm state machine (AC4:
      * "the one loud broadcast requires a confirm"). A first RALLY tap while
-     * the target is WHOLE_CREW ARMS the confirm (`sig_rally_armed`, stamped
-     * `sig_rally_armed_ms`) and renders the button armed instead of
-     * sending; a second RALLY tap within FF_SIG_RALLY_CONFIRM_MS sends and
+     * the target is WHOLE_CREW ARMS the confirm (`inbox_rally_armed`, stamped
+     * `inbox_rally_armed_ms`) and renders the button armed instead of
+     * sending; a second RALLY tap within FF_INBOX_RALLY_CONFIRM_MS sends and
      * disarms; a timeout or ANY intervening Signals action (pulse, compose,
      * select, clear) disarms. Only WHOLE_CREW arms — a rally to one member,
      * and every pulse/compose, sends on the first tap. This lives in the
      * shell, not core, because it is time-based (needs the injected clock);
-     * the shell reflects `sig_rally_armed` into the view's display flag
+     * the shell reflects `inbox_rally_armed` into the view's display flag
      * (`ff_sigview_set_rally_confirm_armed`) each tick. */
-    bool     sig_rally_armed;
-    uint32_t sig_rally_armed_ms;
+    bool     inbox_rally_armed;
+    uint32_t inbox_rally_armed_ms;
 
     /* S26 slice b — when the power menu was opened (FF_INTENT_POWER_MENU_OPEN
      * successfully pushed the modal), for the spec's 10 s auto-dismiss
      * timeout. Same "time-based state lives in the shell, needs the
-     * injected clock" reasoning as sig_rally_armed_ms above; checked once
+     * injected clock" reasoning as inbox_rally_armed_ms above; checked once
      * per ff_shell_tick. Meaningful only while route.modal ==
      * FF_APP_FACE_POWER_MENU — cleared (well, simply not read) once the
      * modal pops by any other means (Power off / Reboot / Cancel). */
@@ -183,12 +183,12 @@ typedef struct {
      * auto-dismiss. See ff_route.h's header note on the amendment. */
 
     /* S24 slice d — the Rally sub-view's persistent WHERE/WHEN selection
-     * (the view is memset each tick, so like sig_subview these live in the
-     * shell). `sig_rally_sel`: 0 = On Me, 1..N = the (sel-1)-th displayable
+     * (the view is memset each tick, so like inbox_subview these live in the
+     * shell). `inbox_rally_sel`: 0 = On Me, 1..N = the (sel-1)-th displayable
      * landmark. Reset to a selectable default when the Rally screen opens
      * (FF_INTENT_INBOX_POPUP_RALLY). */
-    uint8_t         sig_rally_sel;
-    ff_rally_when_t sig_rally_when;
+    uint8_t         inbox_rally_sel;
+    ff_rally_when_t inbox_rally_when;
 
     /* The composer's destination, resolved when FF_INTENT_OPEN_COMPOSE
      * pushed the modal (S16 slice c1). 0 = broadcast ("TO: EVERYONE").
@@ -1227,21 +1227,21 @@ static bool shell_member_paired(shell_t const *sh, uint32_t node_id)
  * downgrade its own holders on a failed re-validation) unlike the other
  * projectors — see its caller. */
 /* Defined alongside the Rally send helpers below (it uses them); forward-
- * declared here for shell_project_signals. */
+ * declared here for shell_project_inbox. */
 static void shell_project_rally(shell_t *sh, ff_app_rally_t *out);
 
-static void shell_project_signals(shell_t *sh, uint32_t now_ms, ff_app_signals_t *out)
+static void shell_project_inbox(shell_t *sh, uint32_t now_ms, ff_app_inbox_t *out)
 {
     /* Re-validate an open MEMBER scope (node 0 = CREW, always valid). The
      * thread, and the popup / rally screens layered over it, all scope to
-     * `sig_thread_node`; a member who unpaired drops the whole stack back
+     * `inbox_thread_node`; a member who unpaired drops the whole stack back
      * to the inbox honestly. */
-    bool const scoped_subview = (sh->sig_subview == FF_SIG_SUB_THREAD ||
-                                 sh->sig_subview == FF_SIG_SUB_POPUP ||
-                                 sh->sig_subview == FF_SIG_SUB_RALLY);
-    if (scoped_subview && sh->sig_thread_node != 0u && !shell_member_paired(sh, sh->sig_thread_node)) {
-        sh->sig_subview     = FF_SIG_SUB_INBOX;
-        sh->sig_thread_node = 0u;
+    bool const scoped_subview = (sh->inbox_subview == FF_INBOX_SUB_THREAD ||
+                                 sh->inbox_subview == FF_INBOX_SUB_POPUP ||
+                                 sh->inbox_subview == FF_INBOX_SUB_RALLY);
+    if (scoped_subview && sh->inbox_thread_node != 0u && !shell_member_paired(sh, sh->inbox_thread_node)) {
+        sh->inbox_subview     = FF_INBOX_SUB_INBOX;
+        sh->inbox_thread_node = 0u;
     }
 
     /* S24 slice (c) — live arrivals into the OPEN, VISIBLE thread are on
@@ -1256,26 +1256,26 @@ static void shell_project_signals(shell_t *sh, uint32_t now_ms, ff_app_signals_t
     /* THREAD and the POPUP over it both render the thread (the popup dims
      * it behind the action rows), so arrivals into either clear their badge
      * debt; the RALLY screen does not show the thread, so it does not. */
-    bool const thread_visible = (sh->sig_subview == FF_SIG_SUB_THREAD || sh->sig_subview == FF_SIG_SUB_POPUP);
-    if (thread_visible && sh->view.active_face == FF_APP_FACE_SIGNALS && !sh->flare.takeover_active) {
+    bool const thread_visible = (sh->inbox_subview == FF_INBOX_SUB_THREAD || sh->inbox_subview == FF_INBOX_SUB_POPUP);
+    if (thread_visible && sh->view.active_face == FF_APP_FACE_INBOX && !sh->flare.takeover_active) {
         (void)ff_inbox_mark_thread_read(&sh->feed,
-                                        (sh->sig_thread_node == 0u) ? FF_CONV_CREW : FF_CONV_MEMBER,
-                                        sh->sig_thread_node);
+                                        (sh->inbox_thread_node == 0u) ? FF_CONV_CREW : FF_CONV_MEMBER,
+                                        sh->inbox_thread_node);
     }
 
     ff_inbox_build(&out->inbox, &sh->feed, &sh->crew, now_ms);
 
-    out->subview     = sh->sig_subview;
-    out->thread_node = sh->sig_thread_node;
+    out->subview     = sh->inbox_subview;
+    out->thread_node = sh->inbox_thread_node;
     /* Scope display name — needed by THREAD (header), POPUP (the "SEND TO
      * <scope>" line) and kept uniform for RALLY (harmless). Looked up at
      * projection time (the compose to_name precedent) so a rename mid-scope
      * is reflected; a paired member whose name never arrived projects "". */
     if (scoped_subview) {
-        if (sh->sig_thread_node == 0u) {
+        if (sh->inbox_thread_node == 0u) {
             shell_copy_str(out->thread_name, sizeof(out->thread_name), "CREW");
         } else {
-            ff_crew_member_t const *m = ff_crew_find(&sh->crew, sh->sig_thread_node);
+            ff_crew_member_t const *m = ff_crew_find(&sh->crew, sh->inbox_thread_node);
             shell_copy_str(out->thread_name, sizeof(out->thread_name), (m != NULL) ? m->name : "");
             out->thread_color_idx = (m != NULL) ? m->color_idx : 0u;
         }
@@ -1284,14 +1284,14 @@ static void shell_project_signals(shell_t *sh, uint32_t now_ms, ff_app_signals_t
         /* The open thread's messages (mark-read of live arrivals already
          * ran above, before the inbox build). */
         ff_inbox_thread_build(&out->thread, &sh->feed, &sh->crew,
-                              (sh->sig_thread_node == 0u) ? FF_CONV_CREW : FF_CONV_MEMBER,
-                              sh->sig_thread_node, now_ms);
+                              (sh->inbox_thread_node == 0u) ? FF_CONV_CREW : FF_CONV_MEMBER,
+                              sh->inbox_thread_node, now_ms);
     }
 
     /* S24 slice (d) — the Rally sub-view's projected WHERE/WHEN/Send state.
      * Built only while the Rally screen is up (like the thread above); the
      * `out->rally` struct is otherwise the memset-zeroed default. */
-    if (sh->sig_subview == FF_SIG_SUB_RALLY) {
+    if (sh->inbox_subview == FF_INBOX_SUB_RALLY) {
         shell_project_rally(sh, &out->rally);
     }
 
@@ -1299,17 +1299,17 @@ static void shell_project_signals(shell_t *sh, uint32_t now_ms, ff_app_signals_t
      * target against the roster (a gone member falls back to WHOLE_CREW),
      * expire a lapsed RALLY-to-WHOLE_CREW confirm (S22 AC4: a forgotten
      * first tap must not lurk armed forever), and project both. */
-    if (sh->sig_target_kind == FF_TARGET_MEMBER && !shell_member_paired(sh, sh->sig_target_node)) {
-        sh->sig_target_kind = FF_TARGET_WHOLE_CREW;
-        sh->sig_target_node = 0u;
+    if (sh->inbox_target_kind == FF_TARGET_MEMBER && !shell_member_paired(sh, sh->inbox_target_node)) {
+        sh->inbox_target_kind = FF_TARGET_WHOLE_CREW;
+        sh->inbox_target_node = 0u;
     }
-    out->target_kind = sh->sig_target_kind;
-    out->target_node = sh->sig_target_node;
+    out->target_kind = sh->inbox_target_kind;
+    out->target_node = sh->inbox_target_node;
 
-    if (sh->sig_rally_armed && (now_ms - sh->sig_rally_armed_ms) > FF_SIG_RALLY_CONFIRM_MS) {
-        sh->sig_rally_armed = false;
+    if (sh->inbox_rally_armed && (now_ms - sh->inbox_rally_armed_ms) > FF_INBOX_RALLY_CONFIRM_MS) {
+        sh->inbox_rally_armed = false;
     }
-    out->rally_confirm_armed = sh->sig_rally_armed;
+    out->rally_confirm_armed = sh->inbox_rally_armed;
 }
 
 /**
@@ -1351,7 +1351,7 @@ static bool shell_stage_color(fp_pack_t const *p, int8_t stage_idx, uint32_t *ou
  * mesh timestamp arrives during the want_config handshake, and a pack
  * can load before that) now projects NOW_TIME_UNKNOWN, not NOW_NO_PACK.
  * The old fallback named the wrong missing fact — "no pack" when a pack
- * WAS loaded — and scr_now.c rendered it as "NO FESTIVAL LOADED / Load a
+ * WAS loaded — and scr_lineup.c rendered it as "NO FESTIVAL LOADED / Load a
  * festpack...", which mis-claims rather than under-claims: it tells the
  * user to redo something they already did. NOW_TBD would have been
  * equally wrong the other way (a claim about the DATA, not the clock).
@@ -1593,9 +1593,9 @@ static void shell_project(shell_t *sh, uint32_t now_ms)
      * what makes the badges honest. What the face transition still does:
      * leaving Signals resets the sub-view, so a fresh entry always lands
      * on the inbox rather than a stale thread/picker. */
-    if (sh->view.active_face != FF_APP_FACE_SIGNALS && sh->prev_face == FF_APP_FACE_SIGNALS) {
-        sh->sig_subview     = FF_SIG_SUB_INBOX;
-        sh->sig_thread_node = 0u;
+    if (sh->view.active_face != FF_APP_FACE_INBOX && sh->prev_face == FF_APP_FACE_INBOX) {
+        sh->inbox_subview     = FF_INBOX_SUB_INBOX;
+        sh->inbox_thread_node = 0u;
     }
     sh->prev_face = sh->view.active_face;
 
@@ -1609,7 +1609,7 @@ static void shell_project(shell_t *sh, uint32_t now_ms)
     sh->view.radar.mesh_ok = (sh->link == FF_SHELL_LINK_CONNECTED);
 
     shell_project_now(sh, wall, &sh->view.now);
-    shell_project_signals(sh, now_ms, &sh->view.signals);
+    shell_project_inbox(sh, now_ms, &sh->view.inbox);
     shell_project_flare(sh, now_ms, &sh->view.flare);
     shell_project_settings(sh, &sh->view.settings);
     shell_project_map(sh, &sh->view.map);
@@ -1764,18 +1764,18 @@ static void shell_render_key(ff_app_state_t const *v, ff_app_state_t *key)
      *     normalizing anyway keeps the key a pure function of what is
      *     shown even if a future build stops clearing the tail (the
      *     ff_sigview stale-tail hazard, pre-empted). */
-    for (uint8_t i = 0; i < key->signals.inbox.conv_count && i < FF_INBOX_MAX_CONVS; i++) {
-        ff_inbox_conv_t *kc = &key->signals.inbox.convs[i];
-        kc->preview_age_ms = shell_coarsen_age_ms(v->signals.inbox.convs[i].preview_age_ms);
+    for (uint8_t i = 0; i < key->inbox.inbox.conv_count && i < FF_INBOX_MAX_CONVS; i++) {
+        ff_inbox_conv_t *kc = &key->inbox.inbox.convs[i];
+        kc->preview_age_ms = shell_coarsen_age_ms(v->inbox.inbox.convs[i].preview_age_ms);
         /* The presence AGE is only ever drawn for SEEN ("SEEN 2 HR");
          * LOST/LINKED render as bare words, so their age is not part of
          * the rendered projection at all — keyed as 0, not a bucket. */
-        kc->presence_age_ms = (v->signals.inbox.convs[i].presence == FF_PRESENCE_SEEN)
-                                  ? shell_coarsen_age_ms(v->signals.inbox.convs[i].presence_age_ms)
+        kc->presence_age_ms = (v->inbox.inbox.convs[i].presence == FF_PRESENCE_SEEN)
+                                  ? shell_coarsen_age_ms(v->inbox.inbox.convs[i].presence_age_ms)
                                   : 0u;
     }
-    for (uint8_t i = key->signals.inbox.conv_count; i < FF_INBOX_MAX_CONVS; i++) {
-        memset(&key->signals.inbox.convs[i], 0, sizeof(key->signals.inbox.convs[i]));
+    for (uint8_t i = key->inbox.inbox.conv_count; i < FF_INBOX_MAX_CONVS; i++) {
+        memset(&key->inbox.inbox.convs[i], 0, sizeof(key->inbox.inbox.convs[i]));
     }
 
     /* S26 slice d — the banner's age, same coarsened-age discipline as
@@ -1791,7 +1791,7 @@ static void shell_render_key(ff_app_state_t const *v, ff_app_state_t *key)
     key->banner.age_ms = v->banner.active ? shell_coarsen_age_ms(v->banner.age_ms) : 0u;
 
     /* S24 slice (c) — while a THREAD is open, the thread is the ONLY
-     * Signals surface rendered (scr_signals.c's THREAD arm; the nav
+     * Signals surface rendered (scr_inbox.c's THREAD arm; the nav
      * page-dots/badge are suppressed there too, per the design
      * artboards), so the key reduces to exactly the thread's own
      * rendered projection: the messages (ages coarsened to their
@@ -1804,14 +1804,14 @@ static void shell_render_key(ff_app_state_t const *v, ff_app_state_t *key)
      * conversations that change no pixel on this screen. The same
      * flare-takeover lesson one block down, applied at this sub-view's
      * birth. */
-    if (v->signals.subview == FF_SIG_SUB_THREAD) {
+    if (v->inbox.subview == FF_INBOX_SUB_THREAD) {
         ff_inbox_conv_t open_cv;
         memset(&open_cv, 0, sizeof(open_cv));
-        for (uint8_t i = 0; i < v->signals.inbox.conv_count && i < FF_INBOX_MAX_CONVS; i++) {
-            ff_inbox_conv_t const *cv = &v->signals.inbox.convs[i];
+        for (uint8_t i = 0; i < v->inbox.inbox.conv_count && i < FF_INBOX_MAX_CONVS; i++) {
+            ff_inbox_conv_t const *cv = &v->inbox.inbox.convs[i];
             bool const is_crew = (cv->kind == FF_CONV_CREW);
-            if ((v->signals.thread_node == 0u && is_crew) ||
-                (v->signals.thread_node != 0u && !is_crew && cv->node_id == v->signals.thread_node)) {
+            if ((v->inbox.thread_node == 0u && is_crew) ||
+                (v->inbox.thread_node != 0u && !is_crew && cv->node_id == v->inbox.thread_node)) {
                 /* Header facts only — never the conversation's preview/
                  * unread, which this screen does not draw. */
                 open_cv.kind     = cv->kind;
@@ -1827,16 +1827,16 @@ static void shell_render_key(ff_app_state_t const *v, ff_app_state_t *key)
                 break;
             }
         }
-        uint8_t const conv_count = v->signals.inbox.conv_count;
-        memset(&key->signals.inbox, 0, sizeof(key->signals.inbox));
-        key->signals.inbox.conv_count = conv_count; /* the CREW header's "N CREW" roster fact */
-        key->signals.inbox.convs[0]   = open_cv;
-        for (uint8_t i = 0; i < key->signals.thread.msg_count && i < FF_INBOX_MAX_MSGS; i++) {
-            key->signals.thread.msgs[i].age_ms =
-                shell_coarsen_age_ms(v->signals.thread.msgs[i].age_ms);
+        uint8_t const conv_count = v->inbox.inbox.conv_count;
+        memset(&key->inbox.inbox, 0, sizeof(key->inbox.inbox));
+        key->inbox.inbox.conv_count = conv_count; /* the CREW header's "N CREW" roster fact */
+        key->inbox.inbox.convs[0]   = open_cv;
+        for (uint8_t i = 0; i < key->inbox.thread.msg_count && i < FF_INBOX_MAX_MSGS; i++) {
+            key->inbox.thread.msgs[i].age_ms =
+                shell_coarsen_age_ms(v->inbox.thread.msgs[i].age_ms);
         }
-        for (uint8_t i = key->signals.thread.msg_count; i < FF_INBOX_MAX_MSGS; i++) {
-            memset(&key->signals.thread.msgs[i], 0, sizeof(key->signals.thread.msgs[i]));
+        for (uint8_t i = key->inbox.thread.msg_count; i < FF_INBOX_MAX_MSGS; i++) {
+            memset(&key->inbox.thread.msgs[i], 0, sizeof(key->inbox.thread.msgs[i]));
         }
     }
 
@@ -1852,9 +1852,9 @@ static void shell_render_key(ff_app_state_t const *v, ff_app_state_t *key)
      * thread_color_idx (top-level, untouched here), and the Rally screen
      * its projected `signals.rally` struct (untouched). The subview itself
      * is in the key too, so opening/closing the overlay still dirties. */
-    if (v->signals.subview == FF_SIG_SUB_POPUP || v->signals.subview == FF_SIG_SUB_RALLY) {
-        memset(&key->signals.inbox, 0, sizeof(key->signals.inbox));
-        memset(&key->signals.thread, 0, sizeof(key->signals.thread));
+    if (v->inbox.subview == FF_INBOX_SUB_POPUP || v->inbox.subview == FF_INBOX_SUB_RALLY) {
+        memset(&key->inbox.inbox, 0, sizeof(key->inbox.inbox));
+        memset(&key->inbox.thread, 0, sizeof(key->inbox.thread));
     }
 
     /* #flare-repeat-dismiss — the takeover is OPAQUE in the render key.
@@ -1961,8 +1961,8 @@ static void shell_render_key(ff_app_state_t const *v, ff_app_state_t *key)
          * unread badge (scr_launcher.c, moved off the old page-dot
          * row), so the mask keeps exactly that one scalar rather than
          * going fully static. Computed the same way
-         * ff_scr_signals_unread_count does (a sum over
-         * v->signals.inbox) but inline here rather than calling that
+         * ff_scr_inbox_unread_count does (a sum over
+         * v->inbox.inbox) but inline here rather than calling that
          * screens-layer helper — ff-shell deliberately links no LVGL
          * (see this file's own architecture note / docs/ARCHITECTURE.md:
          * "screens read ff_shell_view()'s output; they are not linked
@@ -1979,16 +1979,16 @@ static void shell_render_key(ff_app_state_t const *v, ff_app_state_t *key)
          * genuinely new unread message SHOULD still dirty the badge. */
         ff_app_face_t const af = key->active_face;
         uint32_t unread_total = 0;
-        uint8_t const n = ff_inbox_conv_count(&v->signals.inbox);
+        uint8_t const n = ff_inbox_conv_count(&v->inbox.inbox);
         for (uint8_t i = 0; i < n; i++) {
-            ff_inbox_conv_t const *cv = ff_inbox_conv_at(&v->signals.inbox, i);
+            ff_inbox_conv_t const *cv = ff_inbox_conv_at(&v->inbox.inbox, i);
             if (cv != NULL) {
                 unread_total += cv->unread;
             }
         }
         memset(key, 0, sizeof(*key));
         key->active_face = af;
-        key->signals.inbox.convs[0].unread = (unread_total > UINT16_MAX) ? UINT16_MAX : (uint16_t)unread_total;
+        key->inbox.inbox.convs[0].unread = (unread_total > UINT16_MAX) ? UINT16_MAX : (uint16_t)unread_total;
     }
 }
 
@@ -2026,10 +2026,10 @@ int ff_shell_init(ff_shell_t *sh_pub, ff_shell_cfg_t const *cfg)
     ff_radar_smooth_reset(&sh->smooth);
     ff_route_init(&sh->route);
     ff_notify_init(&sh->notify); /* S26(d) */
-    sh->sig_target_kind = FF_TARGET_WHOLE_CREW; /* S22 slice b — default target */
-    sh->sig_target_node = 0u;
-    sh->sig_rally_sel   = 0u; /* S24 slice d — On Me by default (projection re-validates) */
-    sh->sig_rally_when  = FF_RALLY_WHEN_NOW;
+    sh->inbox_target_kind = FF_TARGET_WHOLE_CREW; /* S22 slice b — default target */
+    sh->inbox_target_node = 0u;
+    sh->inbox_rally_sel   = 0u; /* S24 slice d — On Me by default (projection re-validates) */
+    sh->inbox_rally_when  = FF_RALLY_WHEN_NOW;
     ff_t9_reset(&sh->compose_draft); /* S16 slice c3 */
     /* S08 addendum — reset site #1 (init). memset zeroed compose_extra_n,
      * so no pack words are bound yet; a later ff_shell_load_pack collects
@@ -2158,7 +2158,7 @@ bool ff_shell_tick(ff_shell_t *sh_pub, uint32_t now_ms)
 
     /* S26 slice b — the power menu's 10 s auto-dismiss timeout ("Cancel or
      * a 10 s timeout -> dismiss"). Same wraparound-safe unsigned-subtraction
-     * idiom the rally-confirm timeout above uses (sig_rally_armed_ms).
+     * idiom the rally-confirm timeout above uses (inbox_rally_armed_ms).
      * Popping here (not through FF_INTENT_POWER_CANCEL) is deliberate: a
      * timeout is not a user action, so it goes straight to the route the
      * same way ff_flare_tick's own expiries do, rather than synthesizing a
@@ -2332,12 +2332,12 @@ static uint32_t shell_compose_dest(shell_t *sh, uint32_t requested)
  * check at the exact instant of a send.) */
 static bool shell_sig_dest(shell_t const *sh, uint32_t *out_dest)
 {
-    if (sh->sig_target_kind == FF_TARGET_MEMBER) {
-        ff_crew_member_t const *m = ff_crew_find(&sh->crew, sh->sig_target_node);
-        if (sh->sig_target_node == 0u || m == NULL || !m->paired) {
+    if (sh->inbox_target_kind == FF_TARGET_MEMBER) {
+        ff_crew_member_t const *m = ff_crew_find(&sh->crew, sh->inbox_target_node);
+        if (sh->inbox_target_node == 0u || m == NULL || !m->paired) {
             return false;
         }
-        *out_dest = sh->sig_target_node;
+        *out_dest = sh->inbox_target_node;
         return true;
     }
     *out_dest = MC_ADDR_BROADCAST;
@@ -2353,18 +2353,18 @@ static bool shell_sig_dest(shell_t const *sh, uint32_t *out_dest)
  * any armed rally confirm. */
 static void shell_sig_reset_target(shell_t *sh)
 {
-    sh->sig_target_kind = FF_TARGET_WHOLE_CREW;
-    sh->sig_target_node = 0u;
-    sh->sig_rally_armed = false;
-    sh->view.signals.target_kind = FF_TARGET_WHOLE_CREW;
-    sh->view.signals.target_node = 0u;
+    sh->inbox_target_kind = FF_TARGET_WHOLE_CREW;
+    sh->inbox_target_node = 0u;
+    sh->inbox_rally_armed = false;
+    sh->view.inbox.target_kind = FF_TARGET_WHOLE_CREW;
+    sh->view.inbox.target_node = 0u;
 }
 
 /**
  * shell_rally_place — S22 slice d SPEC-GAP MVP (see the spec "Questions"):
  * derive the (position, name) a quick RALLY gathers the crew to. The point
  * is the SENDER's own current location (`my_pos`); the name is the nearest
- * festpack landmark within FF_SIG_RALLY_LANDMARK_NEAR_M, else the honest
+ * festpack landmark within FF_INBOX_RALLY_LANDMARK_NEAR_M, else the honest
  * constant "MY SPOT".
  *
  * Returns false — and the caller sends NOTHING — when `my_pos` is unknown:
@@ -2384,13 +2384,13 @@ static bool shell_rally_place(shell_t const *sh, ff_latlon_t *out_pos, char cons
         return false;
     }
     *out_pos = sh->my_pos;
-    *out_name = FF_SIG_RALLY_DEFAULT_NAME;
+    *out_name = FF_INBOX_RALLY_DEFAULT_NAME;
 
     if (sh->pack_loaded && sh->pack != NULL && sh->pack->origin_known) {
         float my_e = 0.0f, my_n = 0.0f;
         ff_geo_project(sh->pack->origin, sh->my_pos, &my_e, &my_n);
         /* Compare squared distances — no sqrt, no <math.h>. */
-        float best2 = FF_SIG_RALLY_LANDMARK_NEAR_M * FF_SIG_RALLY_LANDMARK_NEAR_M;
+        float best2 = FF_INBOX_RALLY_LANDMARK_NEAR_M * FF_INBOX_RALLY_LANDMARK_NEAR_M;
         for (uint8_t i = 0; i < sh->pack->n_landmarks; ++i) {
             fp_landmark_t const *lm = &sh->pack->landmarks[i];
             if (!lm->has_pos || lm->name[0] == '\0') {
@@ -2506,21 +2506,21 @@ static bool shell_rally_compose_name(char const *place, ff_rally_when_t when, ch
  * index no longer resolves. */
 static bool shell_rally_resolve_sel(shell_t const *sh, ff_latlon_t *out_pos, char const **out_name)
 {
-    if (sh->sig_rally_sel == 0u) {
+    if (sh->inbox_rally_sel == 0u) {
         return shell_rally_place(sh, out_pos, out_name); /* On Me */
     }
-    return shell_rally_landmark_at(sh, (uint8_t)(sh->sig_rally_sel - 1u), out_pos, out_name);
+    return shell_rally_landmark_at(sh, (uint8_t)(sh->inbox_rally_sel - 1u), out_pos, out_name);
 }
 
 /* Is a thread (or the popup / rally screen OVER it) the visible Signals
  * scope? The open thread IS the send scope (S24), and the popup and rally
  * sub-views sit over that same thread, so all three re-assert the scope
- * from `sig_thread_node`. */
+ * from `inbox_thread_node`. */
 static bool shell_scope_thread_open(shell_t const *sh)
 {
-    return sh->route.base == FF_APP_FACE_SIGNALS && sh->route.modal == FF_APP_FACE_NONE &&
-           (sh->sig_subview == FF_SIG_SUB_THREAD || sh->sig_subview == FF_SIG_SUB_POPUP ||
-            sh->sig_subview == FF_SIG_SUB_RALLY);
+    return sh->route.base == FF_APP_FACE_INBOX && sh->route.modal == FF_APP_FACE_NONE &&
+           (sh->inbox_subview == FF_INBOX_SUB_THREAD || sh->inbox_subview == FF_INBOX_SUB_POPUP ||
+            sh->inbox_subview == FF_INBOX_SUB_RALLY);
 }
 
 /* Encode + send a PULSE to the CURRENT resolved scope, pushing the OUT
@@ -2580,14 +2580,14 @@ static void shell_flare_to_scope(shell_t *sh)
  * the popup rows). Node 0 = whole crew, else that member. */
 static void shell_scope_from_thread(shell_t *sh)
 {
-    sh->sig_target_kind = (sh->sig_thread_node == 0u) ? FF_TARGET_WHOLE_CREW : FF_TARGET_MEMBER;
-    sh->sig_target_node = sh->sig_thread_node;
+    sh->inbox_target_kind = (sh->inbox_thread_node == 0u) ? FF_TARGET_WHOLE_CREW : FF_TARGET_MEMBER;
+    sh->inbox_target_node = sh->inbox_thread_node;
 }
 
 /* Project the Rally sub-view's WHERE/WHEN/Send state (S24 AC6). Re-derives
  * the SAME displayable-landmark list the send resolves against, so the rows
  * the screen shows and the place a `sel` sends to can never diverge. Also
- * re-validates `sig_rally_sel` (a place list that shrank, or On Me becoming
+ * re-validates `inbox_rally_sel` (a place list that shrank, or On Me becoming
  * unusable, must not leave a stale/dangling selection) and composes the
  * Send echo from the same resolution the send uses. */
 static void shell_project_rally(shell_t *sh, ff_app_rally_t *out)
@@ -2612,16 +2612,16 @@ static void shell_project_rally(shell_t *sh, ff_app_rally_t *out)
      * a landmark index past the list, or On Me while my position is
      * unknown, falls back to the first usable option (On Me if usable,
      * else the first landmark, else 0 with nothing sendable). */
-    uint8_t sel = sh->sig_rally_sel;
+    uint8_t sel = sh->inbox_rally_sel;
     if (sel > n) {
         sel = 0u;
     }
     if (sel == 0u && !out->on_me_ok) {
         sel = (n > 0u) ? 1u : 0u;
     }
-    sh->sig_rally_sel = sel;
+    sh->inbox_rally_sel = sel;
     out->sel = sel;
-    out->when = sh->sig_rally_when;
+    out->when = sh->inbox_rally_when;
 
     /* The Send echo — composed from the SAME resolution the send uses, so
      * the payload preview cannot disagree with the wire. */
@@ -2633,11 +2633,11 @@ static void shell_project_rally(shell_t *sh, ff_app_rally_t *out)
     } else {
         out->echo_place[0] = '\0';
     }
-    shell_copy_str(out->echo_when, sizeof(out->echo_when), shell_rally_when_echo(sh->sig_rally_when));
+    shell_copy_str(out->echo_when, sizeof(out->echo_when), shell_rally_when_echo(sh->inbox_rally_when));
 
     /* Crew-wide confirm display: mirror the shell's armed flag while the
      * scope is the whole crew (a member rally sends on the first tap). */
-    out->confirm_armed = sh->sig_rally_armed && (sh->sig_target_kind == FF_TARGET_WHOLE_CREW);
+    out->confirm_armed = sh->inbox_rally_armed && (sh->inbox_target_kind == FF_TARGET_WHOLE_CREW);
 }
 
 /**
@@ -2857,8 +2857,8 @@ void ff_shell_intent(ff_shell_t *sh_pub, ff_intent_t const *in)
         if (takeover_up) return;
         static ff_app_face_t const k_launcher_faces[] = {
             FF_APP_FACE_RADAR,
-            FF_APP_FACE_NOW,
-            FF_APP_FACE_SIGNALS,
+            FF_APP_FACE_LINEUP,
+            FF_APP_FACE_INBOX,
             FF_APP_FACE_MAP,
             FF_APP_FACE_SETTINGS,
         };
@@ -2886,20 +2886,20 @@ void ff_shell_intent(ff_shell_t *sh_pub, ff_intent_t const *in)
          *   THREAD -> INBOX
          *   PICKER -> INBOX
          * A BACK on the inbox itself — or on any other base face — stays a
-         * no-op. `sig_thread_node` is only cleared on the return to INBOX
+         * no-op. `inbox_thread_node` is only cleared on the return to INBOX
          * (POPUP/RALLY keep the scope so the thread underneath is intact).
          * Any pending rally-to-crew confirm disarms on a back step (an
          * intervening action, S22 AC4). */
-        if (sh->route.base == FF_APP_FACE_SIGNALS && sh->sig_subview != FF_SIG_SUB_INBOX) {
-            sh->sig_rally_armed = false;
-            switch (sh->sig_subview) {
-            case FF_SIG_SUB_RALLY:  sh->sig_subview = FF_SIG_SUB_POPUP; break;
-            case FF_SIG_SUB_POPUP:  sh->sig_subview = FF_SIG_SUB_THREAD; break;
-            case FF_SIG_SUB_THREAD:
-            case FF_SIG_SUB_PICKER:
+        if (sh->route.base == FF_APP_FACE_INBOX && sh->inbox_subview != FF_INBOX_SUB_INBOX) {
+            sh->inbox_rally_armed = false;
+            switch (sh->inbox_subview) {
+            case FF_INBOX_SUB_RALLY:  sh->inbox_subview = FF_INBOX_SUB_POPUP; break;
+            case FF_INBOX_SUB_POPUP:  sh->inbox_subview = FF_INBOX_SUB_THREAD; break;
+            case FF_INBOX_SUB_THREAD:
+            case FF_INBOX_SUB_PICKER:
             default:
-                sh->sig_subview     = FF_SIG_SUB_INBOX;
-                sh->sig_thread_node = 0u;
+                sh->inbox_subview     = FF_INBOX_SUB_INBOX;
+                sh->inbox_thread_node = 0u;
                 break;
             }
         }
@@ -3022,12 +3022,12 @@ void ff_shell_intent(ff_shell_t *sh_pub, ff_intent_t const *in)
          * scope is re-validated paired at the send instant (the
          * shell_sig_dest belt-and-braces rule); a stale scope sends
          * NOTHING rather than silently broadcasting. */
-        if (sh->route.base == FF_APP_FACE_SIGNALS && sh->route.modal == FF_APP_FACE_NONE &&
-            sh->sig_subview == FF_SIG_SUB_THREAD) {
+        if (sh->route.base == FF_APP_FACE_INBOX && sh->route.modal == FF_APP_FACE_NONE &&
+            sh->inbox_subview == FF_INBOX_SUB_THREAD) {
             uint32_t dest = MC_ADDR_BROADCAST; /* thread_node 0 = the CREW thread */
-            if (sh->sig_thread_node != 0u) {
-                if (!shell_member_paired(sh, sh->sig_thread_node)) return;
-                dest = sh->sig_thread_node;
+            if (sh->inbox_thread_node != 0u) {
+                if (!shell_member_paired(sh, sh->inbox_thread_node)) return;
+                dest = sh->inbox_thread_node;
             }
             (void)ff_wiring_send_canned_reply_to(&sh->wiring, in->u.reply, dest);
             return;
@@ -3260,7 +3260,7 @@ void ff_shell_intent(ff_shell_t *sh_pub, ff_intent_t const *in)
         }
         return;
 
-    case FF_INTENT_SIG_SELECT_MEMBER:
+    case FF_INTENT_INBOX_SELECT_MEMBER:
         /* S22 slice b (S24 note: the S22 screen that emitted this is
          * retired — nothing emits it today — but the handler stays as
          * the S22(d) send machinery's programmatic "set the send scope"
@@ -3272,24 +3272,24 @@ void ff_shell_intent(ff_shell_t *sh_pub, ff_intent_t const *in)
         if (takeover_up) return;
         /* Changing the target disarms any pending rally-to-WHOLE_CREW
          * confirm (S22 AC4 "anything else disarms"). */
-        sh->sig_rally_armed = false;
+        sh->inbox_rally_armed = false;
         if (shell_member_paired(sh, in->u.node_id)) {
-            sh->sig_target_kind = FF_TARGET_MEMBER;
-            sh->sig_target_node = in->u.node_id;
-            sh->view.signals.target_kind = FF_TARGET_MEMBER;
-            sh->view.signals.target_node = in->u.node_id;
+            sh->inbox_target_kind = FF_TARGET_MEMBER;
+            sh->inbox_target_node = in->u.node_id;
+            sh->view.inbox.target_kind = FF_TARGET_MEMBER;
+            sh->view.inbox.target_node = in->u.node_id;
         }
         return;
 
-    case FF_INTENT_SIG_CLEAR_TARGET:
+    case FF_INTENT_INBOX_CLEAR_TARGET:
         /* S22 slice b — back to WHOLE_CREW (see the S24 note above: kept
          * as the programmatic clear for the S22(d) machinery). */
         if (takeover_up) return;
-        sh->sig_rally_armed = false; /* AC4 — an intervening action disarms */
-        sh->sig_target_kind = FF_TARGET_WHOLE_CREW;
-        sh->sig_target_node = 0u;
-        sh->view.signals.target_kind = FF_TARGET_WHOLE_CREW;
-        sh->view.signals.target_node = 0u;
+        sh->inbox_rally_armed = false; /* AC4 — an intervening action disarms */
+        sh->inbox_target_kind = FF_TARGET_WHOLE_CREW;
+        sh->inbox_target_node = 0u;
+        sh->view.inbox.target_kind = FF_TARGET_WHOLE_CREW;
+        sh->view.inbox.target_node = 0u;
         return;
 
     case FF_INTENT_INBOX_OPEN_THREAD:
@@ -3298,7 +3298,7 @@ void ff_shell_intent(ff_shell_t *sh_pub, ff_intent_t const *in)
          * row tap (PICK). u.node_id is the conversation key: 0 = CREW,
          * nonzero = that member. Both establish the SAME open-thread scope
          * (set the S22(d) send holders, mark that conversation read, set
-         * sig_thread_node), and differ ONLY in the sub-view they land on:
+         * inbox_thread_node), and differ ONLY in the sub-view they land on:
          *  - OPEN_THREAD -> the THREAD screen (read the conversation).
          *  - PICK        -> the action POPUP over that thread (the spec's
          *    "then the action popup scoped to the pick" — slice d). The
@@ -3308,18 +3308,18 @@ void ff_shell_intent(ff_shell_t *sh_pub, ff_intent_t const *in)
          * scope change, no mark-read, no navigation (the roster, not the
          * tap, is trusted — the SIG_SELECT precedent). */
         if (takeover_up) return;
-        sh->sig_rally_armed = false; /* an intervening action disarms (S22 AC4) */
+        sh->inbox_rally_armed = false; /* an intervening action disarms (S22 AC4) */
         if (in->u.node_id != 0u && !shell_member_paired(sh, in->u.node_id)) {
             return;
         }
-        sh->sig_thread_node = in->u.node_id;
+        sh->inbox_thread_node = in->u.node_id;
         shell_scope_from_thread(sh);
         (void)ff_inbox_mark_thread_read(&sh->feed,
                                         (in->u.node_id == 0u) ? FF_CONV_CREW : FF_CONV_MEMBER,
                                         in->u.node_id);
-        sh->view.signals.target_kind = sh->sig_target_kind;
-        sh->view.signals.target_node = sh->sig_target_node;
-        sh->sig_subview = (in->kind == FF_INTENT_INBOX_PICK) ? FF_SIG_SUB_POPUP : FF_SIG_SUB_THREAD;
+        sh->view.inbox.target_kind = sh->inbox_target_kind;
+        sh->view.inbox.target_node = sh->inbox_target_node;
+        sh->inbox_subview = (in->kind == FF_INTENT_INBOX_PICK) ? FF_INBOX_SUB_POPUP : FF_INBOX_SUB_THREAD;
         return;
 
     case FF_INTENT_INBOX_NEW:
@@ -3329,15 +3329,15 @@ void ff_shell_intent(ff_shell_t *sh_pub, ff_intent_t const *in)
          * spec's "a thread's FAB skips straight to the popup"). Any other
          * sub-view is a stray tap (the FAB only renders on inbox/thread). */
         if (takeover_up) return;
-        if (sh->sig_subview == FF_SIG_SUB_INBOX) {
-            sh->sig_rally_armed = false;
-            sh->sig_subview = FF_SIG_SUB_PICKER;
-        } else if (sh->sig_subview == FF_SIG_SUB_THREAD) {
-            sh->sig_rally_armed = false;
+        if (sh->inbox_subview == FF_INBOX_SUB_INBOX) {
+            sh->inbox_rally_armed = false;
+            sh->inbox_subview = FF_INBOX_SUB_PICKER;
+        } else if (sh->inbox_subview == FF_INBOX_SUB_THREAD) {
+            sh->inbox_rally_armed = false;
             shell_scope_from_thread(sh); /* the popup acts on the thread's scope */
-            sh->view.signals.target_kind = sh->sig_target_kind;
-            sh->view.signals.target_node = sh->sig_target_node;
-            sh->sig_subview = FF_SIG_SUB_POPUP;
+            sh->view.inbox.target_kind = sh->inbox_target_kind;
+            sh->view.inbox.target_node = sh->inbox_target_node;
+            sh->inbox_subview = FF_INBOX_SUB_POPUP;
         }
         return;
 
@@ -3347,19 +3347,19 @@ void ff_shell_intent(ff_shell_t *sh_pub, ff_intent_t const *in)
          * over the real thread (SEND/BACK then land there). Mirrors
          * SIG_COMPOSE's fresh-session setup. Only from the popup. */
         if (takeover_up) return;
-        if (sh->sig_subview != FF_SIG_SUB_POPUP) return;
-        sh->sig_rally_armed = false;
+        if (sh->inbox_subview != FF_INBOX_SUB_POPUP) return;
+        sh->inbox_rally_armed = false;
         if (ff_route_push_modal(&sh->route, FF_APP_FACE_COMPOSE)) {
             uint32_t to = 0u;
-            if (sh->sig_thread_node != 0u && shell_member_paired(sh, sh->sig_thread_node)) {
-                to = sh->sig_thread_node;
+            if (sh->inbox_thread_node != 0u && shell_member_paired(sh, sh->inbox_thread_node)) {
+                to = sh->inbox_thread_node;
             }
             sh->compose_to_node = to;
             ff_t9_reset(&sh->compose_draft);
             ff_t9pred_session_reset(&sh->compose_pred);
             ff_t9pred_session_set_extra(&sh->compose_pred, sh->compose_extra, sh->compose_extra_n);
             sh->compose_mode = FF_APP_COMPOSE_PRED;
-            sh->sig_subview = FF_SIG_SUB_THREAD; /* under the modal */
+            sh->inbox_subview = FF_INBOX_SUB_THREAD; /* under the modal */
         }
         return;
 
@@ -3370,11 +3370,11 @@ void ff_shell_intent(ff_shell_t *sh_pub, ff_intent_t const *in)
          * (the row sends a FLARE — see FF_INTENT_INBOX_POPUP_FLARE below);
          * kept as the outbound-pulse programmatic seam. */
         if (takeover_up) return;
-        if (sh->sig_subview != FF_SIG_SUB_POPUP) return;
-        sh->sig_rally_armed = false;
+        if (sh->inbox_subview != FF_INBOX_SUB_POPUP) return;
+        sh->inbox_rally_armed = false;
         shell_scope_from_thread(sh);
         shell_pulse_to_scope(sh);
-        sh->sig_subview = FF_SIG_SUB_THREAD;
+        sh->inbox_subview = FF_INBOX_SUB_THREAD;
         return;
 
     case FF_INTENT_INBOX_POPUP_FLARE:
@@ -3383,11 +3383,11 @@ void ff_shell_intent(ff_shell_t *sh_pub, ff_intent_t const *in)
          * flare shows there). Same shape as POPUP_PULSE above, only the wire
          * body differs (a flare, not a pulse). Only from the popup. */
         if (takeover_up) return;
-        if (sh->sig_subview != FF_SIG_SUB_POPUP) return;
-        sh->sig_rally_armed = false;
+        if (sh->inbox_subview != FF_INBOX_SUB_POPUP) return;
+        sh->inbox_rally_armed = false;
         shell_scope_from_thread(sh);
         shell_flare_to_scope(sh);
-        sh->sig_subview = FF_SIG_SUB_THREAD;
+        sh->inbox_subview = FF_INBOX_SUB_THREAD;
         return;
 
     case FF_INTENT_INBOX_POPUP_RALLY:
@@ -3396,12 +3396,12 @@ void ff_shell_intent(ff_shell_t *sh_pub, ff_intent_t const *in)
          * is known, else the first landmark; WHEN back to Now). Only from
          * the popup. */
         if (takeover_up) return;
-        if (sh->sig_subview != FF_SIG_SUB_POPUP) return;
-        sh->sig_rally_armed = false;
+        if (sh->inbox_subview != FF_INBOX_SUB_POPUP) return;
+        sh->inbox_rally_armed = false;
         shell_scope_from_thread(sh);
-        sh->sig_rally_sel  = sh->my_pos_ok ? 0u : 1u; /* projection re-validates against the real place list */
-        sh->sig_rally_when = FF_RALLY_WHEN_NOW;
-        sh->sig_subview = FF_SIG_SUB_RALLY;
+        sh->inbox_rally_sel  = sh->my_pos_ok ? 0u : 1u; /* projection re-validates against the real place list */
+        sh->inbox_rally_when = FF_RALLY_WHEN_NOW;
+        sh->inbox_subview = FF_INBOX_SUB_RALLY;
         return;
 
     case FF_INTENT_RALLY_SELECT_PLACE:
@@ -3411,22 +3411,22 @@ void ff_shell_intent(ff_shell_t *sh_pub, ff_intent_t const *in)
          * position). The projection re-validates the index against the
          * live place list, so an out-of-range index self-corrects. */
         if (takeover_up) return;
-        if (sh->sig_subview != FF_SIG_SUB_RALLY) return;
-        sh->sig_rally_armed = false; /* changing the place disarms a crew confirm (S22 AC4) */
+        if (sh->inbox_subview != FF_INBOX_SUB_RALLY) return;
+        sh->inbox_rally_armed = false; /* changing the place disarms a crew confirm (S22 AC4) */
         if (in->u.rally_idx == 0u && !sh->my_pos_ok) return; /* On Me disabled */
-        sh->sig_rally_sel = in->u.rally_idx;
+        sh->inbox_rally_sel = in->u.rally_idx;
         return;
 
     case FF_INTENT_RALLY_CYCLE_WHEN:
         /* S24 AC6 — the WHEN chip: Now -> +15m -> +30m -> Now. */
         if (takeover_up) return;
-        if (sh->sig_subview != FF_SIG_SUB_RALLY) return;
-        sh->sig_rally_armed = false; /* changing WHEN disarms a crew confirm */
-        switch (sh->sig_rally_when) {
-        case FF_RALLY_WHEN_NOW: sh->sig_rally_when = FF_RALLY_WHEN_15; break;
-        case FF_RALLY_WHEN_15:  sh->sig_rally_when = FF_RALLY_WHEN_30; break;
+        if (sh->inbox_subview != FF_INBOX_SUB_RALLY) return;
+        sh->inbox_rally_armed = false; /* changing WHEN disarms a crew confirm */
+        switch (sh->inbox_rally_when) {
+        case FF_RALLY_WHEN_NOW: sh->inbox_rally_when = FF_RALLY_WHEN_15; break;
+        case FF_RALLY_WHEN_15:  sh->inbox_rally_when = FF_RALLY_WHEN_30; break;
         case FF_RALLY_WHEN_30:
-        default:                sh->sig_rally_when = FF_RALLY_WHEN_NOW; break;
+        default:                sh->inbox_rally_when = FF_RALLY_WHEN_NOW; break;
         }
         return;
 
@@ -3439,16 +3439,16 @@ void ff_shell_intent(ff_shell_t *sh_pub, ff_intent_t const *in)
          * the place cannot be resolved (On Me with unknown position, or a
          * name that cannot fit the wire with its WHEN suffix). */
         if (takeover_up) return;
-        if (sh->sig_subview != FF_SIG_SUB_RALLY) return;
+        if (sh->inbox_subview != FF_INBOX_SUB_RALLY) return;
         shell_scope_from_thread(sh);
         {
-            bool const whole_crew = (sh->sig_target_kind == FF_TARGET_WHOLE_CREW);
+            bool const whole_crew = (sh->inbox_target_kind == FF_TARGET_WHOLE_CREW);
             if (whole_crew) {
                 bool const armed_live =
-                    sh->sig_rally_armed && (shell_now(sh) - sh->sig_rally_armed_ms) <= FF_SIG_RALLY_CONFIRM_MS;
+                    sh->inbox_rally_armed && (shell_now(sh) - sh->inbox_rally_armed_ms) <= FF_INBOX_RALLY_CONFIRM_MS;
                 if (!armed_live) {
-                    sh->sig_rally_armed = true; /* first tap: arm, do not send */
-                    sh->sig_rally_armed_ms = shell_now(sh);
+                    sh->inbox_rally_armed = true; /* first tap: arm, do not send */
+                    sh->inbox_rally_armed_ms = shell_now(sh);
                     return;
                 }
             }
@@ -3458,7 +3458,7 @@ void ff_shell_intent(ff_shell_t *sh_pub, ff_intent_t const *in)
             char const *base = NULL;
             if (!shell_rally_resolve_sel(sh, &pos, &base)) return; /* place unresolvable: send nothing */
             char name[FF_PROTO_RALLY_NAME_MAX + 1];
-            if (!shell_rally_compose_name(base, sh->sig_rally_when, name, sizeof name)) return;
+            if (!shell_rally_compose_name(base, sh->inbox_rally_when, name, sizeof name)) return;
             uint8_t buf[FF_PROTO_MAX_PAYLOAD];
             int const n = ff_proto_encode_rally(buf, sizeof buf, pos, name);
             if (n > 0 && sh->wiring.sender.send_private != NULL) {
@@ -3470,20 +3470,20 @@ void ff_shell_intent(ff_shell_t *sh_pub, ff_intent_t const *in)
                     ff_wiring_push_outgoing(&sh->wiring, FEED_RALLY, dest, name);
                 }
             }
-            sh->sig_rally_armed = false;
-            sh->sig_subview = FF_SIG_SUB_THREAD; /* pop to the thread to see the sent rally */
+            sh->inbox_rally_armed = false;
+            sh->inbox_subview = FF_INBOX_SUB_THREAD; /* pop to the thread to see the sent rally */
         }
         return;
 
-    case FF_INTENT_SIG_PULSE:
+    case FF_INTENT_INBOX_PULSE:
         /* S22 slice d — PULSE (empty-body ping) to the current target. Sends
          * on the first tap for both WHOLE_CREW and a member (only RALLY-to-
          * WHOLE_CREW confirms). Any action other than a second RALLY tap
          * disarms a pending rally confirm. No screen emits this now (the 1:1
-         * quick chip sends a FLARE — see FF_INTENT_SIG_FLARE below); kept as
+         * quick chip sends a FLARE — see FF_INTENT_INBOX_FLARE below); kept as
          * the outbound-pulse programmatic seam. */
         if (takeover_up) return;
-        sh->sig_rally_armed = false;
+        sh->inbox_rally_armed = false;
         {
             /* S24 — with a thread (or the popup/rally over it) open, the
              * scope IS the thread: re-assert the S22(d) holders from the
@@ -3504,14 +3504,14 @@ void ff_shell_intent(ff_shell_t *sh_pub, ff_intent_t const *in)
         }
         return;
 
-    case FF_INTENT_SIG_FLARE:
+    case FF_INTENT_INBOX_FLARE:
         /* The 1:1 thread's quick chip: FLARE ("come find me") to the current
          * target. Same scope/target handling as SIG_PULSE above (send on the
          * first tap; the open thread IS the scope when one is open; reset to
          * WHOLE_CREW only with no thread open) — only the wire body differs
          * (a flare, not a pulse). */
         if (takeover_up) return;
-        sh->sig_rally_armed = false;
+        sh->inbox_rally_armed = false;
         {
             bool const thread_open = shell_scope_thread_open(sh);
             if (thread_open) {
@@ -3524,35 +3524,35 @@ void ff_shell_intent(ff_shell_t *sh_pub, ff_intent_t const *in)
         }
         return;
 
-    case FF_INTENT_SIG_RALLY:
+    case FF_INTENT_INBOX_RALLY:
         /* S22 slice d — RALLY (gather + place) to the current target.
          *
          * Confirm gate (AC4): a rally to WHOLE_CREW is the one loud
          * broadcast, so the FIRST tap ARMS a confirm (rendered on the
          * button) instead of sending; only a SECOND tap within
-         * FF_SIG_RALLY_CONFIRM_MS sends. A rally to a single member sends on
+         * FF_INBOX_RALLY_CONFIRM_MS sends. A rally to a single member sends on
          * the first tap (no confirm). The place is the sender's own location
          * (`shell_rally_place`, SPEC-GAP MVP — see the spec Questions). */
         if (takeover_up) return;
         {
-            bool const whole_crew = (sh->sig_target_kind == FF_TARGET_WHOLE_CREW);
+            bool const whole_crew = (sh->inbox_target_kind == FF_TARGET_WHOLE_CREW);
             if (whole_crew) {
                 bool const armed_live =
-                    sh->sig_rally_armed && (shell_now(sh) - sh->sig_rally_armed_ms) <= FF_SIG_RALLY_CONFIRM_MS;
+                    sh->inbox_rally_armed && (shell_now(sh) - sh->inbox_rally_armed_ms) <= FF_INBOX_RALLY_CONFIRM_MS;
                 if (!armed_live) {
                     /* First tap (or a lapsed arm): ARM, do not send. */
-                    sh->sig_rally_armed = true;
-                    sh->sig_rally_armed_ms = shell_now(sh);
+                    sh->inbox_rally_armed = true;
+                    sh->inbox_rally_armed_ms = shell_now(sh);
                     return;
                 }
                 /* Second tap within the window: fall through and send. */
             }
-            sh->sig_rally_armed = false;
+            sh->inbox_rally_armed = false;
 
             uint32_t dest = MC_ADDR_BROADCAST;
             if (!shell_sig_dest(sh, &dest)) return; /* stale member target: send nothing */
             ff_latlon_t pos;
-            char const *name = FF_SIG_RALLY_DEFAULT_NAME;
+            char const *name = FF_INBOX_RALLY_DEFAULT_NAME;
             if (!shell_rally_place(sh, &pos, &name)) return; /* location unknown: send nothing */
             uint8_t buf[FF_PROTO_MAX_PAYLOAD];
             int const n = ff_proto_encode_rally(buf, sizeof buf, pos, name);
@@ -3569,7 +3569,7 @@ void ff_shell_intent(ff_shell_t *sh_pub, ff_intent_t const *in)
         }
         return;
 
-    case FF_INTENT_SIG_COMPOSE:
+    case FF_INTENT_INBOX_COMPOSE:
         /* S22 slice d — COMPOSE opens the composer with its TO set to the
          * current Signals target, then switches to the compose face. The
          * composer's OWN SEND (existing T9 SEND_TEXT path) does the text
@@ -3580,12 +3580,12 @@ void ff_shell_intent(ff_shell_t *sh_pub, ff_intent_t const *in)
          * to broadcast (0); a member target maps to that member, re-checked
          * paired. Mirrors FF_INTENT_OPEN_COMPOSE's fresh-session setup. */
         if (takeover_up) return;
-        sh->sig_rally_armed = false;
+        sh->inbox_rally_armed = false;
         if (ff_route_push_modal(&sh->route, FF_APP_FACE_COMPOSE)) {
             uint32_t to = 0u;
-            if (sh->sig_target_kind == FF_TARGET_MEMBER) {
-                ff_crew_member_t const *m = ff_crew_find(&sh->crew, sh->sig_target_node);
-                to = (m != NULL && m->paired) ? sh->sig_target_node : 0u;
+            if (sh->inbox_target_kind == FF_TARGET_MEMBER) {
+                ff_crew_member_t const *m = ff_crew_find(&sh->crew, sh->inbox_target_node);
+                to = (m != NULL && m->paired) ? sh->inbox_target_node : 0u;
             }
             sh->compose_to_node = to;
             ff_t9_reset(&sh->compose_draft);
@@ -3653,14 +3653,14 @@ void ff_shell_intent(ff_shell_t *sh_pub, ff_intent_t const *in)
          * banner itself still ticks toward its own expiry). */
         if (!shell_member_paired(sh, node)) return;
 
-        (void)ff_route_goto(&sh->route, FF_APP_FACE_SIGNALS);
-        sh->sig_rally_armed = false; /* an intervening action disarms (S22 AC4) */
-        sh->sig_thread_node = node;
+        (void)ff_route_goto(&sh->route, FF_APP_FACE_INBOX);
+        sh->inbox_rally_armed = false; /* an intervening action disarms (S22 AC4) */
+        sh->inbox_thread_node = node;
         shell_scope_from_thread(sh);
         (void)ff_inbox_mark_thread_read(&sh->feed, FF_CONV_MEMBER, node);
-        sh->view.signals.target_kind = sh->sig_target_kind;
-        sh->view.signals.target_node = sh->sig_target_node;
-        sh->sig_subview = FF_SIG_SUB_THREAD;
+        sh->view.inbox.target_kind = sh->inbox_target_kind;
+        sh->view.inbox.target_node = sh->inbox_target_node;
+        sh->inbox_subview = FF_INBOX_SUB_THREAD;
 
         (void)ff_notify_dismiss(&sh->notify, 0); /* the head — exactly what was opened */
         return;
@@ -3674,7 +3674,7 @@ void ff_shell_intent(ff_shell_t *sh_pub, ff_intent_t const *in)
     case FF_INTENT_SELECT_RALLY:   /* still unbuilt: ff_crew_select_rally does not exist yet
                                      * (core/include/ff_crew.h's own documented deviation —
                                      * a rally point doesn't fit ff_crew_member_t, deferred to
-                                     * S06/S08). signals_rally_tap_cb emits this intent as of
+                                     * S06/S08). inbox_rally_tap_cb emits this intent as of
                                      * c2 (S08 spec: "Rally row tap -> sets rally as radar/map
                                      * target"), and the shell has nothing to call yet — wiring
                                      * the emit site now means the eventual handler is the

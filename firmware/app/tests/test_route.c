@@ -56,7 +56,7 @@ void tearDown(void) {}
  * sequence against this so a reordering (or a dropped/added face) fails
  * loudly rather than passing on a count that happens to still match. */
 static ff_app_face_t const k_axis[] = {
-    FF_APP_FACE_RADAR, FF_APP_FACE_NOW, FF_APP_FACE_SIGNALS, FF_APP_FACE_MAP, FF_APP_FACE_SETTINGS,
+    FF_APP_FACE_RADAR, FF_APP_FACE_LINEUP, FF_APP_FACE_INBOX, FF_APP_FACE_MAP, FF_APP_FACE_SETTINGS,
 };
 enum { AXIS_N = (int)(sizeof(k_axis) / sizeof(k_axis[0])) };
 
@@ -157,9 +157,9 @@ static void S16_AC1_swipe_axis_is_symmetric_and_round_trips(void)
 /* Map and Settings are swipe faces, not modals — pin that they are
  * reached by an ordinary swipe from their neighbour, the exact behaviour
  * the horizontal-carousel rework was about. */
-static void carousel_signals_map_settings_are_swipe_neighbours(void)
+static void carousel_inbox_map_settings_are_swipe_neighbours(void)
 {
-    ff_route_t r = route_at(FF_APP_FACE_SIGNALS);
+    ff_route_t r = route_at(FF_APP_FACE_INBOX);
     TEST_ASSERT_TRUE(ff_route_swipe(&r, 1));
     TEST_ASSERT_EQUAL_INT(FF_APP_FACE_MAP, r.base);
     TEST_ASSERT_TRUE(ff_route_swipe(&r, 1));
@@ -176,9 +176,9 @@ static void swipe_rejects_directions_other_than_plus_or_minus_one(void)
      * (LV_DIR_TOP/BOTTOM emit nothing) lives in test_scr_intent.c. */
     int8_t const bad_dirs[] = {0, 2, -2, 3, 127, -128};
     for (size_t i = 0; i < sizeof(bad_dirs) / sizeof(bad_dirs[0]); i++) {
-        ff_route_t r = route_at(FF_APP_FACE_NOW);
+        ff_route_t r = route_at(FF_APP_FACE_LINEUP);
         TEST_ASSERT_FALSE(ff_route_swipe(&r, bad_dirs[i]));
-        TEST_ASSERT_EQUAL_INT(FF_APP_FACE_NOW, r.base);
+        TEST_ASSERT_EQUAL_INT(FF_APP_FACE_LINEUP, r.base);
     }
 }
 
@@ -234,8 +234,8 @@ static void goto_jumps_straight_to_a_far_face(void)
 static void goto_reaches_every_swipe_face(void)
 {
     for (int i = 0; i < AXIS_N; i++) {
-        ff_route_t r = route_at(FF_APP_FACE_NOW); /* mid-axis start */
-        if (k_axis[i] == FF_APP_FACE_NOW) {
+        ff_route_t r = route_at(FF_APP_FACE_LINEUP); /* mid-axis start */
+        if (k_axis[i] == FF_APP_FACE_LINEUP) {
             TEST_ASSERT_FALSE(ff_route_goto(&r, k_axis[i])); /* already there: no change */
         } else {
             TEST_ASSERT_TRUE(ff_route_goto(&r, k_axis[i]));
@@ -255,9 +255,9 @@ static void goto_off_axis_targets_are_rejected(void)
         FF_APP_FACE_NONE, FF_APP_FACE_COMPOSE, FF_APP_FACE_FLARE, FF_APP_FACE_POWER_MENU, FF_APP_FACE_LAUNCHER,
     };
     for (size_t i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {
-        ff_route_t r = route_at(FF_APP_FACE_NOW);
+        ff_route_t r = route_at(FF_APP_FACE_LINEUP);
         TEST_ASSERT_FALSE(ff_route_goto(&r, bad[i]));
-        TEST_ASSERT_EQUAL_INT(FF_APP_FACE_NOW, r.base);
+        TEST_ASSERT_EQUAL_INT(FF_APP_FACE_LINEUP, r.base);
     }
 }
 
@@ -265,10 +265,10 @@ static void goto_is_suppressed_under_a_modal(void)
 {
     /* A jump must not slide a half-typed Compose away, exactly as a swipe
      * may not (AC2). */
-    ff_route_t r = route_at(FF_APP_FACE_NOW);
+    ff_route_t r = route_at(FF_APP_FACE_LINEUP);
     TEST_ASSERT_TRUE(ff_route_push_modal(&r, FF_APP_FACE_COMPOSE));
     TEST_ASSERT_FALSE(ff_route_goto(&r, FF_APP_FACE_SETTINGS));
-    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_NOW, r.base);
+    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_LINEUP, r.base);
     TEST_ASSERT_EQUAL_INT(FF_APP_FACE_COMPOSE, r.modal);
 }
 
@@ -283,26 +283,26 @@ static void goto_is_null_safe(void)
 
 static void S16_AC2_compose_modal_suppresses_swipe_in_both_directions(void)
 {
-    ff_route_t r = route_at(FF_APP_FACE_NOW); /* mid-axis: both directions are otherwise legal */
+    ff_route_t r = route_at(FF_APP_FACE_LINEUP); /* mid-axis: both directions are otherwise legal */
     TEST_ASSERT_TRUE(ff_route_push_modal(&r, FF_APP_FACE_COMPOSE));
 
     TEST_ASSERT_FALSE(ff_route_swipe(&r, 1));
-    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_NOW, r.base);
+    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_LINEUP, r.base);
     TEST_ASSERT_EQUAL_INT(FF_APP_FACE_COMPOSE, r.modal);
 
     TEST_ASSERT_FALSE(ff_route_swipe(&r, -1));
-    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_NOW, r.base);
+    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_LINEUP, r.base);
     TEST_ASSERT_EQUAL_INT(FF_APP_FACE_COMPOSE, r.modal);
 }
 
 static void S16_AC2_swipe_resumes_once_the_modal_is_popped(void)
 {
-    ff_route_t r = route_at(FF_APP_FACE_NOW);
+    ff_route_t r = route_at(FF_APP_FACE_LINEUP);
     TEST_ASSERT_TRUE(ff_route_push_modal(&r, FF_APP_FACE_COMPOSE));
     TEST_ASSERT_FALSE(ff_route_swipe(&r, 1));
     TEST_ASSERT_TRUE(ff_route_pop_modal(&r));
     TEST_ASSERT_TRUE(ff_route_swipe(&r, 1));
-    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_SIGNALS, r.base);
+    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_INBOX, r.base);
 }
 
 /* ------------------------------------------------------------------- */
@@ -311,7 +311,7 @@ static void S16_AC2_swipe_resumes_once_the_modal_is_popped(void)
 
 static void S16_AC3_takeover_returns_flare_and_leaves_route_byte_identical(void)
 {
-    ff_route_t r = route_at(FF_APP_FACE_NOW);
+    ff_route_t r = route_at(FF_APP_FACE_LINEUP);
     TEST_ASSERT_TRUE(ff_route_push_modal(&r, FF_APP_FACE_COMPOSE));
 
     ff_route_t before;
@@ -321,7 +321,7 @@ static void S16_AC3_takeover_returns_flare_and_leaves_route_byte_identical(void)
 
     /* "byte-identical", as AC3 words it — not just field-equal. */
     TEST_ASSERT_EQUAL_MEMORY(&before, &r, sizeof(before));
-    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_NOW, r.base);
+    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_LINEUP, r.base);
     TEST_ASSERT_EQUAL_INT(FF_APP_FACE_COMPOSE, r.modal);
 }
 
@@ -330,20 +330,20 @@ static void S16_AC3_clearing_takeover_restores_the_prior_modal_not_base(void)
     /* The half of AC3 that a "takeover pops the modal" implementation
      * would fail: after the takeover clears, the composer is still
      * there (draft intact, one layer up), NOT the base face. */
-    ff_route_t r = route_at(FF_APP_FACE_NOW);
+    ff_route_t r = route_at(FF_APP_FACE_LINEUP);
     TEST_ASSERT_TRUE(ff_route_push_modal(&r, FF_APP_FACE_COMPOSE));
 
     TEST_ASSERT_EQUAL_INT(FF_APP_FACE_FLARE, ff_route_visible(&r, true));
     TEST_ASSERT_EQUAL_INT(FF_APP_FACE_COMPOSE, ff_route_visible(&r, false));
-    TEST_ASSERT_NOT_EQUAL_INT(FF_APP_FACE_NOW, ff_route_visible(&r, false));
+    TEST_ASSERT_NOT_EQUAL_INT(FF_APP_FACE_LINEUP, ff_route_visible(&r, false));
 }
 
 static void S16_AC3_takeover_overrides_a_bare_base_face_too(void)
 {
-    ff_route_t r = route_at(FF_APP_FACE_SIGNALS);
+    ff_route_t r = route_at(FF_APP_FACE_INBOX);
     TEST_ASSERT_EQUAL_INT(FF_APP_FACE_FLARE, ff_route_visible(&r, true));
-    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_SIGNALS, ff_route_visible(&r, false));
-    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_SIGNALS, r.base);
+    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_INBOX, ff_route_visible(&r, false));
+    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_INBOX, r.base);
     TEST_ASSERT_EQUAL_INT(FF_APP_FACE_NONE, r.modal);
 }
 
@@ -409,7 +409,7 @@ static void push_modal_accepts_only_compose_and_power_menu(void)
      * fact that lives on the swipe axis in a second place. FLARE is
      * rejected because the takeover overrides, it is not routed. */
     ff_app_face_t const rejected[] = {
-        FF_APP_FACE_NONE, FF_APP_FACE_RADAR,    FF_APP_FACE_NOW,     FF_APP_FACE_SIGNALS,
+        FF_APP_FACE_NONE, FF_APP_FACE_RADAR,    FF_APP_FACE_LINEUP,     FF_APP_FACE_INBOX,
         FF_APP_FACE_SETTINGS, FF_APP_FACE_MAP,  FF_APP_FACE_FLARE,   FF_APP_FACE_LAUNCHER,
     };
     for (size_t i = 0; i < sizeof(rejected) / sizeof(rejected[0]); i++) {
@@ -435,12 +435,12 @@ static void push_modal_accepts_only_compose_and_power_menu(void)
  * direction. */
 static void push_modal_power_menu_over_compose_is_rejected_and_vice_versa(void)
 {
-    ff_route_t r = route_at(FF_APP_FACE_SIGNALS);
+    ff_route_t r = route_at(FF_APP_FACE_INBOX);
     TEST_ASSERT_TRUE(ff_route_push_modal(&r, FF_APP_FACE_COMPOSE));
     TEST_ASSERT_FALSE(ff_route_push_modal(&r, FF_APP_FACE_POWER_MENU));
     TEST_ASSERT_EQUAL_INT(FF_APP_FACE_COMPOSE, r.modal);
 
-    ff_route_t r2 = route_at(FF_APP_FACE_SIGNALS);
+    ff_route_t r2 = route_at(FF_APP_FACE_INBOX);
     TEST_ASSERT_TRUE(ff_route_push_modal(&r2, FF_APP_FACE_POWER_MENU));
     TEST_ASSERT_FALSE(ff_route_push_modal(&r2, FF_APP_FACE_COMPOSE));
     TEST_ASSERT_EQUAL_INT(FF_APP_FACE_POWER_MENU, r2.modal);
@@ -536,9 +536,9 @@ static void push_modal_rejects_the_launcher(void)
 
 static void push_modal_leaves_base_untouched(void)
 {
-    ff_route_t r = route_at(FF_APP_FACE_SIGNALS);
+    ff_route_t r = route_at(FF_APP_FACE_INBOX);
     TEST_ASSERT_TRUE(ff_route_push_modal(&r, FF_APP_FACE_COMPOSE));
-    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_SIGNALS, r.base);
+    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_INBOX, r.base);
 }
 
 static void push_modal_over_a_live_modal_is_rejected(void)
@@ -547,7 +547,7 @@ static void push_modal_over_a_live_modal_is_rejected(void)
      * half-typed Compose draft. Compose is the only modal, so the
      * second push is Compose again — re-pushing the live modal reports
      * no change. */
-    ff_route_t r = route_at(FF_APP_FACE_SIGNALS);
+    ff_route_t r = route_at(FF_APP_FACE_INBOX);
     TEST_ASSERT_TRUE(ff_route_push_modal(&r, FF_APP_FACE_COMPOSE));
     TEST_ASSERT_FALSE(ff_route_push_modal(&r, FF_APP_FACE_COMPOSE));
     TEST_ASSERT_EQUAL_INT(FF_APP_FACE_COMPOSE, r.modal);
@@ -590,12 +590,12 @@ static void pop_modal_on_a_base_off_the_axis_still_pops(void)
 
 static void pop_modal_restores_the_base_face(void)
 {
-    ff_route_t r = route_at(FF_APP_FACE_NOW);
+    ff_route_t r = route_at(FF_APP_FACE_LINEUP);
     TEST_ASSERT_TRUE(ff_route_push_modal(&r, FF_APP_FACE_COMPOSE));
     TEST_ASSERT_TRUE(ff_route_pop_modal(&r));
     TEST_ASSERT_EQUAL_INT(FF_APP_FACE_NONE, r.modal);
-    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_NOW, r.base);
-    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_NOW, ff_route_visible(&r, false));
+    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_LINEUP, r.base);
+    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_LINEUP, ff_route_visible(&r, false));
 }
 
 static void pop_modal_with_nothing_up_is_a_no_op(void)
@@ -658,10 +658,10 @@ static void S26e_AC1_home_on_the_launcher_is_a_no_op(void)
  * launcher itself. */
 static void S26e_AC1_home_is_suppressed_by_compose(void)
 {
-    ff_route_t r = route_at(FF_APP_FACE_SIGNALS);
+    ff_route_t r = route_at(FF_APP_FACE_INBOX);
     TEST_ASSERT_TRUE(ff_route_push_modal(&r, FF_APP_FACE_COMPOSE));
     TEST_ASSERT_FALSE(ff_route_home(&r));
-    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_SIGNALS, r.base);
+    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_INBOX, r.base);
     TEST_ASSERT_EQUAL_INT(FF_APP_FACE_COMPOSE, r.modal); /* draft untouched */
 }
 
@@ -755,9 +755,9 @@ static void launcher_select_rejects_non_swipe_faces(void)
  * showing. */
 static void launcher_select_is_a_no_op_when_the_launcher_is_not_showing(void)
 {
-    ff_route_t r = route_at(FF_APP_FACE_SIGNALS);
-    TEST_ASSERT_FALSE(ff_route_launcher_select(&r, FF_APP_FACE_NOW));
-    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_SIGNALS, r.base);
+    ff_route_t r = route_at(FF_APP_FACE_INBOX);
+    TEST_ASSERT_FALSE(ff_route_launcher_select(&r, FF_APP_FACE_LINEUP));
+    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_INBOX, r.base);
     TEST_ASSERT_EQUAL_INT(FF_APP_FACE_NONE, r.modal);
 }
 
@@ -765,14 +765,14 @@ static void launcher_select_is_rejected_while_the_power_menu_covers_the_launcher
 {
     ff_route_t r = route_at(FF_APP_FACE_LAUNCHER);
     TEST_ASSERT_TRUE(ff_route_push_modal(&r, FF_APP_FACE_POWER_MENU));
-    TEST_ASSERT_FALSE(ff_route_launcher_select(&r, FF_APP_FACE_NOW));
+    TEST_ASSERT_FALSE(ff_route_launcher_select(&r, FF_APP_FACE_LINEUP));
     TEST_ASSERT_EQUAL_INT(FF_APP_FACE_LAUNCHER, r.base);
     TEST_ASSERT_EQUAL_INT(FF_APP_FACE_POWER_MENU, r.modal);
 }
 
 static void launcher_select_is_null_safe(void)
 {
-    TEST_ASSERT_FALSE(ff_route_launcher_select(NULL, FF_APP_FACE_NOW));
+    TEST_ASSERT_FALSE(ff_route_launcher_select(NULL, FF_APP_FACE_LINEUP));
 }
 
 /* ------------------------------------------------------------------- */
@@ -788,7 +788,7 @@ int main(void)
     RUN_TEST(S16_AC1_forward_traverses_all_five_then_clamps_at_settings);
     RUN_TEST(S16_AC1_swipe_forward_from_settings_is_a_no_op);
     RUN_TEST(S16_AC1_swipe_axis_is_symmetric_and_round_trips);
-    RUN_TEST(carousel_signals_map_settings_are_swipe_neighbours);
+    RUN_TEST(carousel_inbox_map_settings_are_swipe_neighbours);
     RUN_TEST(swipe_rejects_directions_other_than_plus_or_minus_one);
     RUN_TEST(swipe_on_a_base_off_the_axis_is_a_no_op);
     RUN_TEST(swipe_on_the_launcher_base_is_a_no_op);

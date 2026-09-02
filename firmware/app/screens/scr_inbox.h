@@ -1,7 +1,7 @@
 /**
- * scr_signals.h — app/screens: the Signals face (S24 inbox rework).
+ * scr_inbox.h — app/screens: the Signals face (S24 inbox rework).
  *
- * Pure rendering of the S24 Signals view (`ff_app_signals_t`,
+ * Pure rendering of the S24 Signals view (`ff_app_inbox_t`,
  * app/include/ff_app_state.h): the shell owns the sub-view state and
  * builds the core conversation model (`ff_inbox_t`, core/include/
  * ff_inbox.h) into the view each tick; this file only projects whichever
@@ -30,11 +30,11 @@
  *     the model joined one. CREW header carries the `N CREW` roster
  *     fact; a 1:1 header carries the honest presence line and the
  *     quick-chip strip (OMW / IN 5 MIN emit FF_INTENT_CANNED_REPLY;
- *     FLARE emits FF_INTENT_SIG_FLARE — the shell aims all three at the
+ *     FLARE emits FF_INTENT_INBOX_FLARE — the shell aims all three at the
  *     open thread's scope). Both carry the FAB (FF_INTENT_INBOX_NEW —
  *     routed to the scoped action popup in slice d). POPUP/RALLY remain
  *     slice (d) placeholders falling back to the inbox render (see
- *     ff_app_state.h's ff_sig_subview_t).
+ *     ff_app_state.h's ff_inbox_subview_t).
  *
  * ## Round-glass layout notes (the repeated lessons — PR #25/#86, S21/S22)
  * Chrome (the non-clickable header / the pinned back button) sits above a
@@ -50,16 +50,16 @@
  *     spill is masked back to letterbox black by a border-only RIM RING
  *     drawn over it — NOT by `style_clip_corner`, which hangs this
  *     project's software renderer (measured by bisect; see
- *     scr_signals.c's signals_build_fab section comment) — so nothing
+ *     scr_inbox.c's inbox_build_fab section comment) — so nothing
  *     paints outside the glass silhouette. Its 48px TAP TARGET sits
  *     fully on-glass, and every row's hit-rect stops 8px short of the
  *     FAB's column so the two can never violate the adjacency floor at
  *     any scroll offset.
  */
-#ifndef FF_SCR_SIGNALS_H
-#define FF_SCR_SIGNALS_H
+#ifndef FF_SCR_INBOX_H
+#define FF_SCR_INBOX_H
 
-#include "ff_app_state.h" /* ff_app_signals_t — the S24 view this projects */
+#include "ff_app_state.h" /* ff_app_inbox_t — the S24 view this projects */
 #include "lvgl.h"
 
 #ifdef __cplusplus
@@ -67,7 +67,7 @@ extern "C" {
 #endif
 
 /**
- * ff_scr_signals_build — render `*v` into `parent` (expected to be
+ * ff_scr_inbox_build — render `*v` into `parent` (expected to be
  * `FF_THEME_PUCK_PX` square — the shell, scr_nav.c, hands it a tileview
  * tile sized to the puck, same convention as `ff_scr_radar_build`).
  * `colorblind` selects the crew-color palette (avatars / the CREW
@@ -80,10 +80,10 @@ extern "C" {
  * stale -> the legible stale treatment (presence text in the
  * stale-amber tier, never the dimmest gray).
  */
-void ff_scr_signals_build(lv_obj_t *parent, ff_app_signals_t const *v, bool colorblind);
+void ff_scr_inbox_build(lv_obj_t *parent, ff_app_inbox_t const *v, bool colorblind);
 
 /**
- * ff_scr_signals_unread_count — the sum of every conversation's unread
+ * ff_scr_inbox_unread_count — the sum of every conversation's unread
  * count in `v`'s inbox model. A presentational tally over the
  * already-computed model (each conversation's `unread` is core's
  * decision, not this function's) — exposed so the nav chrome's Signals
@@ -91,10 +91,10 @@ void ff_scr_signals_build(lv_obj_t *parent, ff_app_signals_t const *v, bool colo
  * same thing from the one source. 0 when `v` is NULL. Saturates at
  * UINT16_MAX.
  */
-uint16_t ff_scr_signals_unread_count(ff_app_signals_t const *v);
+uint16_t ff_scr_inbox_unread_count(ff_app_inbox_t const *v);
 
 #ifdef __cplusplus
 }
 #endif
 
-#endif /* FF_SCR_SIGNALS_H */
+#endif /* FF_SCR_INBOX_H */

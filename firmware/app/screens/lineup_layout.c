@@ -1,12 +1,12 @@
 /**
- * now_layout.c — see now_layout.h. Pure C11, no LVGL.
+ * lineup_layout.c — see lineup_layout.h. Pure C11, no LVGL.
  */
-#include "now_layout.h"
+#include "lineup_layout.h"
 
 #include <math.h>
 #include <stdio.h>
 
-void now_layout_format_countdown(int16_t mins_until, char *out, size_t out_sz)
+void lineup_layout_format_countdown(int16_t mins_until, char *out, size_t out_sz)
 {
     if (out == NULL || out_sz == 0) {
         return;
@@ -18,7 +18,7 @@ void now_layout_format_countdown(int16_t mins_until, char *out, size_t out_sz)
     snprintf(out, out_sz, "IN %d MIN", mins);
 }
 
-int32_t now_layout_bar_fill_px(uint8_t pct_done, int32_t track_w_px)
+int32_t lineup_layout_bar_fill_px(uint8_t pct_done, int32_t track_w_px)
 {
     int pct = pct_done;
     if (pct > 100) {
@@ -30,9 +30,9 @@ int32_t now_layout_bar_fill_px(uint8_t pct_done, int32_t track_w_px)
     return (int32_t)(((int64_t)track_w_px * (int64_t)pct) / 100);
 }
 
-float now_layout_chord_half_width_px(float dy)
+float lineup_layout_chord_half_width_px(float dy)
 {
-    float r = NOW_LAYOUT_PUCK_RADIUS_PX;
+    float r = LINEUP_LAYOUT_PUCK_RADIUS_PX;
     float d = fabsf(dy);
     if (d >= r) {
         return 0.0f;

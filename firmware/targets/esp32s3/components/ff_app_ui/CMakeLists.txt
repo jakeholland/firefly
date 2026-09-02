@@ -1,7 +1,7 @@
 # ff_app_ui — ESP-IDF wrapper for firmware/app's LVGL screen code.
 #
 # The device analogue of the sim build's ff-app-ui library (plus the pure
-# helper libs it links: ff-layout, ff-radar-layout, ff-now-layout,
+# helper libs it links: ff-layout, ff-radar-layout, ff-lineup-layout,
 # ff-flare-fmt) — the SAME .c files the sim compiles, so a face renders
 # byte-for-byte the same projection on glass that it does in the sim
 # window (S15b: "LVGL version MUST match the sim's (v9) so the same
@@ -25,13 +25,13 @@ idf_component_register(
         # Pure (zero-LVGL) layout/format helpers the screens link against.
         "${FF_APP_DIR}/screens/ff_layout.c"
         "${FF_APP_DIR}/screens/radar_layout.c"
-        "${FF_APP_DIR}/screens/now_layout.c"
+        "${FF_APP_DIR}/screens/lineup_layout.c"
         "${FF_APP_DIR}/screens/flare_fmt.c"
         # Real LVGL screen builders (the sim's ff-app-ui source set).
         "${FF_APP_DIR}/screens/scr_radar.c"
         "${FF_APP_DIR}/screens/scr_nav.c"
-        "${FF_APP_DIR}/screens/scr_now.c"
-        "${FF_APP_DIR}/screens/scr_signals.c"
+        "${FF_APP_DIR}/screens/scr_lineup.c"
+        "${FF_APP_DIR}/screens/scr_inbox.c"
         "${FF_APP_DIR}/screens/scr_compose.c"
         "${FF_APP_DIR}/screens/scr_flare.c"
         "${FF_APP_DIR}/screens/scr_settings.c"

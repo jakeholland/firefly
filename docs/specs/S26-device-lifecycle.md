@@ -77,6 +77,14 @@ word (an item's freshness, e.g. `ff_fmt_age`'s "now" for an age under a
 minute, or the Rally WHEN chip's "Now" meaning "right now" as opposed to
 "+15m") — only the screen NAME changed.
 
+**Code identifiers renamed to inbox/lineup on 2026-09-02** (mechanical
+follow-up, no behaviour change): the paragraph above is now the HISTORICAL
+record of the on-glass rename — the code identifiers and files it says were
+"unchanged" have since caught up (`scr_signals.{c,h}` -> `scr_inbox.{c,h}`,
+`scr_now.{c,h}` -> `scr_lineup.{c,h}`, `FF_APP_FACE_SIGNALS`/`FF_APP_FACE_NOW`
+-> `FF_APP_FACE_INBOX`/`FF_APP_FACE_LINEUP`, etc.), while the S24 spec's own
+title/filename and the time-word "now" remain exactly as described above.
+
 **Visual: compass ring (2026-09-01, same maintainer pass — the maintainer's
 pick off the design canvas).** The launcher's shipped 2-over-3 grid of five
 uniform circles is replaced by a compass ring: Radar becomes a 120px HUB

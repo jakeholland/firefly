@@ -446,8 +446,8 @@ static void fx_parse_now_row(fx_ctx_t const *c, int obj_i, ff_app_now_row_t *row
     /* 2026-08-24: pct_valid absent -> stays false (the zeroed default
      * from fx_parse_now's memset before this call) — same "absent ->
      * least-claiming" convention as stage_color_valid/arrow_valid. A
-     * fixture authored before this field existed (now_live.json,
-     * now_mixed.json) must set this explicitly to keep rendering its bar
+     * fixture authored before this field existed (lineup_live.json,
+     * lineup_mixed.json) must set this explicitly to keep rendering its bar
      * — see ff_app_now_row_t's doc comment. */
     if (fx_obj_get(c, obj_i, "pct_valid", &t)) row->pct_valid = fx_bool(c, t, false);
 }
@@ -531,18 +531,18 @@ static ff_fixture_result_t fx_parse_now(fx_ctx_t const *c, int obj_i, ff_app_now
     return FF_FIXTURE_OK;
 }
 
-/* S24: the `signals` fixture section describes an `ff_app_signals_t`
+/* S24: the `signals` fixture section describes an `ff_app_inbox_t`
  * directly — the sub-view selector + the core `ff_inbox_t` conversation
  * list + the kept S22(d) target fields — the same "fixture is a view
  * snapshot" convention the `radar` section uses; see ff_app_state.h's
  * signals doc comment. Tables: `fx_subview_table`'s values are
- * FF_SIG_SUB_*, `fx_conv_kind_table`'s FF_CONV_*, `fx_feed_kind_table`'s
+ * FF_INBOX_SUB_*, `fx_conv_kind_table`'s FF_CONV_*, `fx_feed_kind_table`'s
  * ff_feed_kind_t (S08's FEED_*), `fx_feed_dir_table`'s ff_feed_dir_t
  * (S24 slice a's FEED_DIR_*), `fx_presence_table`'s FF_PRESENCE_*, and
  * `fx_target_kind_table`'s FF_TARGET_*. */
 static const fx_enum_entry_t fx_subview_table[] = {
-    {"inbox", FF_SIG_SUB_INBOX},   {"picker", FF_SIG_SUB_PICKER}, {"thread", FF_SIG_SUB_THREAD},
-    {"popup", FF_SIG_SUB_POPUP},   {"rally", FF_SIG_SUB_RALLY},
+    {"inbox", FF_INBOX_SUB_INBOX},   {"picker", FF_INBOX_SUB_PICKER}, {"thread", FF_INBOX_SUB_THREAD},
+    {"popup", FF_INBOX_SUB_POPUP},   {"rally", FF_INBOX_SUB_RALLY},
 };
 
 static const fx_enum_entry_t fx_conv_kind_table[] = {
@@ -580,7 +580,7 @@ static const fx_enum_entry_t fx_target_kind_table[] = {
     {"member", FF_TARGET_MEMBER},
 };
 
-/* fx_parse_signals — same fail-loud-on-oversized-array treatment as
+/* fx_parse_inbox — same fail-loud-on-oversized-array treatment as
  * fx_parse_radar_dots above, for the `convs` array (cap
  * FF_INBOX_MAX_CONVS). Derived-but-not-independent facts follow the
  * model's own invariants rather than being separately authorable:
@@ -589,7 +589,7 @@ static const fx_enum_entry_t fx_target_kind_table[] = {
  * `preview_from_known` by a `preview_from` key being present (a fixture
  * that writes an empty `preview_from` still means "known but unnamed" —
  * a paired member whose NodeInfo never arrived). */
-static ff_fixture_result_t fx_parse_signals(fx_ctx_t const *c, int obj_i, ff_app_signals_t *sig)
+static ff_fixture_result_t fx_parse_inbox(fx_ctx_t const *c, int obj_i, ff_app_inbox_t *sig)
 {
     int t;
 
@@ -599,7 +599,7 @@ static ff_fixture_result_t fx_parse_signals(fx_ctx_t const *c, int obj_i, ff_app
                                           sizeof(fx_subview_table) / sizeof(fx_subview_table[0]),
                                           "signals.subview", &v);
         if (rc != FF_FIXTURE_OK) return rc;
-        sig->subview = (ff_sig_subview_t)v;
+        sig->subview = (ff_inbox_subview_t)v;
     }
     if (fx_obj_get(c, obj_i, "thread_node", &t)) sig->thread_node = (uint32_t)fx_num(c, t, 0.0);
     if (fx_obj_get(c, obj_i, "thread_name", &t)) fx_copy_str(c, t, sig->thread_name, sizeof(sig->thread_name));
@@ -1148,8 +1148,8 @@ static ff_fixture_result_t fx_parse_map(fx_ctx_t const *c, int obj_i, ff_app_map
 
 static const fx_enum_entry_t fx_face_table[] = {
     {"radar", FF_APP_FACE_RADAR},
-    {"now", FF_APP_FACE_NOW},
-    {"signals", FF_APP_FACE_SIGNALS},
+    {"now", FF_APP_FACE_LINEUP},
+    {"signals", FF_APP_FACE_INBOX},
     {"settings", FF_APP_FACE_SETTINGS},
     {"compose", FF_APP_FACE_COMPOSE},
     {"map", FF_APP_FACE_MAP},
@@ -1160,7 +1160,7 @@ static const fx_enum_entry_t fx_face_table[] = {
     {"power_menu", FF_APP_FACE_POWER_MENU},
     /* S26 slice e — the BOOT-button launcher. Unlike power_menu it DOES
      * read a section (the existing "signals" one — its Signals circle's
-     * unread badge is `ff_scr_signals_unread_count(&out->signals)`), so
+     * unread badge is `ff_scr_inbox_unread_count(&out->inbox)`), so
      * a launcher fixture that wants the badge just supplies "signals"
      * like any signals-face fixture does. */
     {"launcher", FF_APP_FACE_LAUNCHER},
@@ -1283,7 +1283,7 @@ ff_fixture_result_t ff_fixture_load_json(char const *json, size_t len, ff_app_st
         }
     }
     if (fx_obj_get(&ctx, 0, "signals", &sec_i) && !fx_is_null(&ctx, sec_i)) {
-        ff_fixture_result_t rc = fx_parse_signals(&ctx, sec_i, &out->signals);
+        ff_fixture_result_t rc = fx_parse_inbox(&ctx, sec_i, &out->inbox);
         if (rc != FF_FIXTURE_OK) {
             memset(out, 0, sizeof(*out));
             return rc;
@@ -1552,7 +1552,7 @@ static void fw_map_crew(fw_cur_t *w, ff_app_map_crew_t const *c)
     fw_raw(w, c->imprecise ? ",\"imprecise\":true}" : ",\"imprecise\":false}");
 }
 
-/* S24: serialize one ff_inbox_conv_t. Mirrors fx_parse_signals
+/* S24: serialize one ff_inbox_conv_t. Mirrors fx_parse_inbox
  * field-for-field so a dump round-trips through the loader. Fields the
  * loader DERIVES (has_preview, presence_valid, preview_from_known) are
  * not written as independent facts: `preview_from` is written only when
@@ -1713,33 +1713,33 @@ int ff_fixture_dump_json(ff_app_state_t const *s, char *buf, size_t buf_sz)
     }
     fw_raw(&w, "]}");
 
-    /* signals (S24 — ff_app_signals_t: sub-view + the ff_inbox_t
+    /* signals (S24 — ff_app_inbox_t: sub-view + the ff_inbox_t
      * conversation list + the kept S22(d) target fields) */
     fw_raw(&w, ",\"signals\":{\"subview\":\"");
     fw_raw(&w, fx_enum_name(fx_subview_table, sizeof(fx_subview_table) / sizeof(fx_subview_table[0]),
-                             s->signals.subview, "inbox"));
+                             s->inbox.subview, "inbox"));
     fw_raw(&w, "\"");
-    fw_fmt(&w, ",\"thread_node\":%u", (unsigned)s->signals.thread_node);
+    fw_fmt(&w, ",\"thread_node\":%u", (unsigned)s->inbox.thread_node);
     fw_raw(&w, ",\"thread_name\":");
-    fw_json_str(&w, s->signals.thread_name);
-    fw_fmt(&w, ",\"thread_color_idx\":%u", (unsigned)s->signals.thread_color_idx);
+    fw_json_str(&w, s->inbox.thread_name);
+    fw_fmt(&w, ",\"thread_color_idx\":%u", (unsigned)s->inbox.thread_color_idx);
     fw_raw(&w, ",\"target_kind\":\"");
     fw_raw(&w, fx_enum_name(fx_target_kind_table, sizeof(fx_target_kind_table) / sizeof(fx_target_kind_table[0]),
-                             s->signals.target_kind, "whole_crew"));
+                             s->inbox.target_kind, "whole_crew"));
     fw_raw(&w, "\"");
-    fw_fmt(&w, ",\"target_node\":%u", (unsigned)s->signals.target_node);
-    fw_raw(&w, s->signals.rally_confirm_armed ? ",\"rally_confirm_armed\":true" : ",\"rally_confirm_armed\":false");
+    fw_fmt(&w, ",\"target_node\":%u", (unsigned)s->inbox.target_node);
+    fw_raw(&w, s->inbox.rally_confirm_armed ? ",\"rally_confirm_armed\":true" : ",\"rally_confirm_armed\":false");
     fw_raw(&w, ",\"convs\":[");
-    for (uint8_t i = 0; i < s->signals.inbox.conv_count; i++) {
+    for (uint8_t i = 0; i < s->inbox.inbox.conv_count; i++) {
         if (i > 0) fw_raw(&w, ",");
-        fw_conv(&w, &s->signals.inbox.convs[i]);
+        fw_conv(&w, &s->inbox.inbox.convs[i]);
     }
     fw_raw(&w, "]");
     /* S24 slice (c): the open thread's messages. */
     fw_raw(&w, ",\"msgs\":[");
-    for (uint8_t i = 0; i < s->signals.thread.msg_count; i++) {
+    for (uint8_t i = 0; i < s->inbox.thread.msg_count; i++) {
         if (i > 0) fw_raw(&w, ",");
-        fw_msg(&w, &s->signals.thread.msgs[i]);
+        fw_msg(&w, &s->inbox.thread.msgs[i]);
     }
     fw_raw(&w, "]}");
 

@@ -187,8 +187,8 @@ void test_S20_feed_seeded(void)
      * must actually reach the model the screen renders, not only the raw
      * feed). */
     unsigned items = 0;
-    for (uint8_t i = 0; i < v->signals.inbox.conv_count; i++) {
-        items += v->signals.inbox.convs[i].item_count;
+    for (uint8_t i = 0; i < v->inbox.inbox.conv_count; i++) {
+        items += v->inbox.inbox.convs[i].item_count;
     }
     TEST_ASSERT_GREATER_THAN_UINT(0, items);
     ff_shell_close(&s_shell);

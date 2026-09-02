@@ -99,7 +99,7 @@ nav page-dots. Every band's width derived from its worst-case y, verified by
 - **(a) core view-model + targeting** — new `core/` module: merge feed+crew into
   the ordered list, presence-label derivation, target state + transitions.
   Unity tests, no UI. (First PR.)
-- **(b) scr_signals.c** — render the unified list + target line + 3 actions to
+- **(b) scr_inbox.c** — render the unified list + target line + 3 actions to
   the model; round-fit geometry; new golden fixtures. Emits intents.
 - **(c) composer quick-reply start** — start-state suggestions + send wiring in
   `scr_compose.c` / shell.

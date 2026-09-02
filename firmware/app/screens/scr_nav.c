@@ -37,10 +37,10 @@
 #include "scr_banner.h" /* S26 slice d — the ff_notify message banner overlay */
 #include "scr_flare.h" /* S10 slice b — lock chip + sender overlay */
 #include "scr_map.h" /* Map — an ordinary base face */
-#include "scr_now.h" /* S07b — ff_scr_now_build, the Now face */
+#include "scr_lineup.h" /* S07b — ff_scr_lineup_build, the Now face */
 #include "scr_radar.h"
 #include "scr_settings.h" /* Settings — the launcher's fourth circle */
-#include "scr_signals.h" /* S08c */
+#include "scr_inbox.h" /* S08c */
 
 void ff_scr_nav_build(ff_app_state_t const *state)
 {
@@ -87,11 +87,11 @@ void ff_scr_nav_build(ff_app_state_t const *state)
          * Radar's own content. */
         ff_scr_flare_build_lock_chip(content, &state->flare);
         break;
-    case FF_APP_FACE_NOW:
-        ff_scr_now_build(content, &state->now); /* S07b */
+    case FF_APP_FACE_LINEUP:
+        ff_scr_lineup_build(content, &state->now); /* S07b */
         break;
-    case FF_APP_FACE_SIGNALS:
-        ff_scr_signals_build(content, &state->signals, state->settings.colorblind); /* S22b */
+    case FF_APP_FACE_INBOX:
+        ff_scr_inbox_build(content, &state->inbox, state->settings.colorblind); /* S22b */
         break;
     case FF_APP_FACE_MAP:
         ff_scr_map_build(content, &state->map, state->settings.colorblind);

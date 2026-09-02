@@ -8,6 +8,13 @@ quick-replies now live in threads). Design canvas (authoritative for layout):
 https://claude.ai/code/artifact/9a79dd0f-a9ab-4282-97cf-d7eb05ef1de7 —
 revised per the ux-raver review (2026-08-28); its four blockers are ACs here.
 
+**Code identifiers renamed to inbox/lineup on 2026-09-02** (mechanical,
+no behaviour change — the on-glass strings were already Inbox/Lineup as of
+2026-09-01): `scr_signals.{c,h}` -> `scr_inbox.{c,h}`, `FF_APP_FACE_SIGNALS`
+-> `FF_APP_FACE_INBOX`, `FF_SIG_SUB_*` -> `FF_INBOX_SUB_*`, etc. This spec's
+own title/filename are unchanged (history); `ff_sigview` is unchanged (it
+names the reused presence/target-vocabulary data, not this screen).
+
 ## Why
 
 On-glass testing of the S22 screen: one round face holding a unified list +
@@ -146,7 +153,7 @@ positions/times anywhere (rally rules above).
 
 - **(a) `[api]` core**: ff_feed direction + the `ff_inbox` module + tests.
   (Tier 3.)
-- **(b) inbox screen + nav**: scr_signals becomes the inbox; thread-stack
+- **(b) inbox screen + nav**: scr_inbox becomes the inbox; thread-stack
   routing/intents; recipient picker; fixtures/goldens. (Tier 2 + ux pass.)
 - **(c) thread screens**: CREW + 1:1, quick chips, mark-read wiring,
   press-down everywhere, churn keys. (Tier 2 + ux pass.)

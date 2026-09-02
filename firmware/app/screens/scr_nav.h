@@ -28,7 +28,7 @@ extern "C" {
  * ff_fixture_view_build: a display must already be the LVGL default).
  *
  * Every one of the five base faces renders real content
- * (`ff_scr_radar_build`/`ff_scr_now_build`/`ff_scr_signals_build`/
+ * (`ff_scr_radar_build`/`ff_scr_lineup_build`/`ff_scr_inbox_build`/
  * `ff_scr_map_build`/`ff_scr_settings_build`, each driven by its own
  * `ff_app_state_t` section). A face outside that set (COMPOSE/FLARE/
  * POWER_MENU/LAUNCHER/NONE — none of which the dispatcher routes here)

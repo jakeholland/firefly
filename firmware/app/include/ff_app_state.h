@@ -121,7 +121,7 @@ typedef struct {
      * same-stage/same-day start to derive one from). The set IS live
      * (that's why it's a row at all); only its progress fraction isn't
      * knowable. Same "never let absence carry meaning" convention as
-     * stage_color_valid above: scr_now.c must gate the progress-bar
+     * stage_color_valid above: scr_lineup.c must gate the progress-bar
      * render on this flag, not on pct_done being merely 0. */
     bool     pct_valid;
 } ff_app_now_row_t;
@@ -135,7 +135,7 @@ typedef struct {
 
 /* One entry in the still-unknown-time list (`ff_app_now_t.lineup`): just
  * enough to render "ARTIST — STAGE" (or the explicit "STAGE UNKNOWN"
- * fallback scr_now.c renders when the stage itself is also unknown —
+ * fallback scr_lineup.c renders when the stage itself is also unknown —
  * fp_set_t.stage_idx can be -1, e.g. several of the real Lost Lands
  * pack's early-entry sets). No times: every set that reaches this list
  * is, by construction, one whose start/end the app does not know. */
@@ -156,8 +156,8 @@ typedef struct {
  * downstream re-derives it from other fields.
  */
 typedef enum {
-    NOW_NO_PACK,         /* no festpack loaded at all (tests/fixtures/now_empty.json) */
-    NOW_TBD,              /* pack loaded; every set on the day lacks a known time (now_tbd.json) */
+    NOW_NO_PACK,         /* no festpack loaded at all (tests/fixtures/lineup_empty.json) */
+    NOW_TBD,              /* pack loaded; every set on the day lacks a known time (lineup_tbd.json) */
     NOW_MIXED,            /* pack loaded; day.mixed, ROUND 2 fix — see NOW_MIXED's own note below */
     NOW_LIVE,             /* pack loaded; every set on the day has a known time; something's now/next */
     NOW_NOTHING_PLAYING,  /* pack loaded; every set on the day has a known time; nothing now/next right now */
@@ -175,7 +175,7 @@ typedef enum {
      * wall clock only latches once a plausible mesh timestamp arrives
      * during the want_config handshake, and a pack can load before that.
      * Before this member existed, `ff_shell.c`'s projection fell back to
-     * NOW_NO_PACK, which `scr_now.c` rendered as "NO FESTIVAL LOADED /
+     * NOW_NO_PACK, which `scr_lineup.c` rendered as "NO FESTIVAL LOADED /
      * Load a festpack..." — that MIS-claims: it names the wrong missing
      * fact (a pack the user already loaded) rather than the actual one
      * (the clock). NOW_TBD would be equally wrong the other way — it
@@ -187,7 +187,7 @@ typedef enum {
      * comment above: this is a distinct member, not an overload of
      * NOW_NO_PACK — never-let-absence-carry-meaning applies here exactly
      * as it does to `stage_color_valid`/`pct_valid` elsewhere in this
-     * header. Render arm: scr_now.c's now_render_time_unknown. */
+     * header. Render arm: scr_lineup.c's lineup_render_time_unknown. */
     NOW_TIME_UNKNOWN,
 } now_state_t;
 
@@ -225,12 +225,12 @@ typedef struct {
 /* -------------------------------------------------------------------
  * signals (S24, [api]) — the Signals face is now the S24 INBOX
  * (docs/specs/S24-signals-inbox.md, superseding the S22 unified-list
- * screen): `ff_app_signals_t` below embeds the genuine core `ff_inbox_t`
+ * screen): `ff_app_inbox_t` below embeds the genuine core `ff_inbox_t`
  * (core/include/ff_inbox.h, S24 slice a) by value — the same DRIFT-GUARD
  * resolution `radar` took (see that section above) and the S22(b)
  * precedent this replaces: the shell builds the conversation model
  * straight into the view each tick (`ff_inbox_build`), and the screen
- * (scr_signals.c) is a pure projection of it plus this struct's
+ * (scr_inbox.c) is a pure projection of it plus this struct's
  * navigation fields.
  *
  * What of S22 carries over ([api] note): the S22 target-line/action-
@@ -243,15 +243,15 @@ typedef struct {
  * (the sigview module stays in core — ff_inbox reuses its presence
  * classifier and this header its `ff_target_kind_t` vocabulary).
  *
- * A fixture (tests/fixtures/signals_*.json) describes an
- * `ff_app_signals_t` directly — sub-view + conversation list — the same
+ * A fixture (tests/fixtures/inbox_*.json) describes an
+ * `ff_app_inbox_t` directly — sub-view + conversation list — the same
  * "fixture is a view snapshot, not live wiring" convention the radar
- * fixtures use; see fx_parse_signals in targets/sim/fixture.c and
+ * fixtures use; see fx_parse_inbox in targets/sim/fixture.c and
  * tests/fixtures/README.md.
  * ------------------------------------------------------------------- */
 
 /**
- * ff_sig_subview_t — which Signals sub-screen is showing (S24's "more
+ * ff_inbox_subview_t — which Signals sub-screen is showing (S24's "more
  * screens that are easier to tap"; the shell owns the transitions, the
  * screen only renders whichever this names). INBOX is the zero value —
  * the least-claiming resting state, this header's standing convention.
@@ -264,12 +264,12 @@ typedef struct {
  * behavior.
  */
 typedef enum {
-    FF_SIG_SUB_INBOX = 0,
-    FF_SIG_SUB_PICKER, /* recipient picker — the inbox FAB's scope step */
-    FF_SIG_SUB_THREAD, /* the slice-(c) CREW / 1:1 message screen */
-    FF_SIG_SUB_POPUP,  /* slice (d) — action popup over the (dimmed) thread */
-    FF_SIG_SUB_RALLY,  /* slice (d) — the Rally WHERE/WHEN/Send screen */
-} ff_sig_subview_t;
+    FF_INBOX_SUB_INBOX = 0,
+    FF_INBOX_SUB_PICKER, /* recipient picker — the inbox FAB's scope step */
+    FF_INBOX_SUB_THREAD, /* the slice-(c) CREW / 1:1 message screen */
+    FF_INBOX_SUB_POPUP,  /* slice (d) — action popup over the (dimmed) thread */
+    FF_INBOX_SUB_RALLY,  /* slice (d) — the Rally WHERE/WHEN/Send screen */
+} ff_inbox_subview_t;
 
 /**
  * ff_rally_when_t — the Rally screen's WHEN chip (S24 AC6): the rally time
@@ -293,7 +293,7 @@ typedef enum {
 
 /**
  * ff_app_rally_t — the Rally sub-view's projected state (S24 slice d,
- * AC6). Built by the shell each tick ONLY while `subview == FF_SIG_SUB_
+ * AC6). Built by the shell each tick ONLY while `subview == FF_INBOX_SUB_
  * RALLY` (like `thread` for THREAD); zeroed otherwise. The screen is a
  * pure renderer of this: it draws the WHERE radio list (On Me + the
  * landmark rows), the WHEN chip and the payload-echoing Send, and emits
@@ -329,12 +329,12 @@ typedef struct {
 
     /* Crew-wide confirm (S22 AC4 precedent, reused): a rally to the whole
      * crew arms on the first Send tap and sends on the second. Mirrors the
-     * shell's sig_rally_armed while the Rally screen is up. */
+     * shell's inbox_rally_armed while the Rally screen is up. */
     bool confirm_armed;
 } ff_app_rally_t;
 
 typedef struct {
-    ff_sig_subview_t subview;
+    ff_inbox_subview_t subview;
 
     /* The conversation model (rebuilt per tick by the shell; the picker
      * renders from the same list — CREW pinned + each paired member). */
@@ -354,7 +354,7 @@ typedef struct {
     /* [api] S24 slice (c) — the OPEN thread's messages: the genuine core
      * `ff_inbox_thread_t` (core/include/ff_inbox.h), embedded by value —
      * the same drift-guard resolution as `inbox` above. Built per tick by
-     * the shell (`ff_inbox_thread_build`) iff `subview == FF_SIG_SUB_
+     * the shell (`ff_inbox_thread_build`) iff `subview == FF_INBOX_SUB_
      * THREAD`; left zeroed (msg_count 0) for every other sub-view, so a
      * fixture that names a thread sub-view but authors no `msgs` renders
      * an honest empty thread, never a stale one. Fixtures author it as
@@ -369,10 +369,10 @@ typedef struct {
     bool             rally_confirm_armed;
 
     /* [api] S24 slice (d) — the Rally sub-view's projected WHERE/WHEN/Send
-     * state, built by the shell only while `subview == FF_SIG_SUB_RALLY`
+     * state, built by the shell only while `subview == FF_INBOX_SUB_RALLY`
      * (zeroed otherwise). See ff_app_rally_t. */
     ff_app_rally_t rally;
-} ff_app_signals_t;
+} ff_app_inbox_t;
 
 /* -------------------------------------------------------------------
  * compose (S08 slice d) — the T9 composer screen. Flattened, same
@@ -813,8 +813,8 @@ typedef enum {
      * targets/sim/fixture.c and targets/sim/main.c). */
     FF_APP_FACE_NONE = 0,
     FF_APP_FACE_RADAR,
-    FF_APP_FACE_NOW,
-    FF_APP_FACE_SIGNALS,
+    FF_APP_FACE_LINEUP,
+    FF_APP_FACE_INBOX,
     /* HORIZONTAL-CAROUSEL REWORK [api]: Settings is the far-right SWIPE
      * FACE now (fifth of five: Radar · Now · Signals · Map · Settings),
      * not a modal. It used to be reached by a nav long-press pushing a
@@ -901,7 +901,7 @@ typedef enum {
      * `ff_route_push_modal` no longer accepts this value — it is a
      * `base` face now, not a modal (see `ff_route.h`'s header note for
      * the full reasoning). It is not fully static: the Signals circle
-     * carries the unread badge (`ff_scr_signals_unread_count`, moved off
+     * carries the unread badge (`ff_scr_inbox_unread_count`, moved off
      * the old page-dot row — see scr_launcher.h), so `ff_shell.c`'s
      * render-key mask for this face keeps that one scalar and zeroes
      * everything else, the same "reduce to exactly what's drawn"
@@ -997,7 +997,7 @@ typedef struct {
 
     ff_radar_view_t   radar;
     ff_app_now_t      now;
-    ff_app_signals_t  signals; /* S24 — sub-view + the core ff_inbox_t, rendered directly */
+    ff_app_inbox_t   inbox; /* S24 — sub-view + the core ff_inbox_t, rendered directly */
     ff_app_compose_t  compose;
     ff_app_flare_t    flare;
     ff_app_settings_t settings;
@@ -1018,7 +1018,7 @@ typedef struct {
  * this same struct. Revisit the number if a future slice has a real
  * reason to grow past it. S22 is such a reason: embedding the real
  * `ff_sigview_t` view-model (its FF_SIGVIEW_MAX_ROWS=41 fixed row array +
- * target) in place of the small flattened `ff_app_signals_t` added ~1.2KB,
+ * target) in place of the small flattened `ff_app_inbox_t` added ~1.2KB,
  * pushing past the old 8KB — bumped to 12KB, still generous headroom over
  * the ~8.2KB actual, and still a runaway-growth tripwire rather than a hard
  * hardware limit. */

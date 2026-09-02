@@ -259,7 +259,7 @@ static inline uint32_t ff_theme_crew_color(uint8_t color_idx, bool colorblind)
 #define FF_THEME_FONT_CHIP     (&lv_font_montserrat_14) /* mockup: ~11-12px equivalent */
 #define FF_THEME_FONT_LABEL    (&lv_font_montserrat_14) /* mockup: ~10-11px equivalent */
 #define FF_THEME_FONT_HEADLINE (&lv_font_montserrat_20) /* NOFIX/NOSEL primary message */
-/* S24 slice c bugfix (scr_signals.c: "the thread view looks a bit
+/* S24 slice c bugfix (scr_inbox.c: "the thread view looks a bit
  * smashed; the messages could be larger"). The Signals thread's own
  * message-BODY text (bubble text, RALLY place name, the 1:1 pulse/flare
  * callout sentence) — design canvas ThreadGroup.dc.html / ThreadPerson.dc.html

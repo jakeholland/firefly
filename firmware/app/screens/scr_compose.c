@@ -4,7 +4,7 @@
  * ## Render vs. live input — the split, and why
  * The INITIAL paint of the message bubble is a pure function of
  * `*compose` (the fixture snapshot), exactly like every other screen in
- * this codebase (`ff_scr_radar_build`/`ff_scr_signals_build`) — that's
+ * this codebase (`ff_scr_radar_build`/`ff_scr_inbox_build`) — that's
  * what keeps `--headless --screenshot` deterministic and goldens
  * reproducible: a headless single-frame render never processes a click
  * event, so it always shows exactly what the fixture says, nothing more.

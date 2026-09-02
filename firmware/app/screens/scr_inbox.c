@@ -1,7 +1,7 @@
 /**
- * scr_signals.c — see scr_signals.h. The S24 Signals INBOX + THREAD
+ * scr_inbox.c — see scr_inbox.h. The S24 Signals INBOX + THREAD
  * screens (spec: docs/specs/S24-signals-inbox.md, slices b/c): a pure
- * projection of `ff_app_signals_t` — the sub-view selector, the core
+ * projection of `ff_app_inbox_t` — the sub-view selector, the core
  * `ff_inbox_t` conversation model, and the open thread's
  * `ff_inbox_thread_t` messages — replacing the S22 unified-list screen.
  *
@@ -14,7 +14,7 @@
  * adjacency pass measures them there — a real geometric fact, not a
  * sweep quirk). The one clickable thing near the bottom is the FAB's tap
  * target, which sits to the RIGHT of every row's hit-rect (see
- * FF_SIGNALS_ROW_HIT_CLEAR_X below) precisely so overflow rows can never
+ * FF_INBOX_ROW_HIT_CLEAR_X below) precisely so overflow rows can never
  * collide with it at any scroll offset.
  *
  * ## Touching rows vs. the adjacency floor (design/sweep reconciliation)
@@ -22,7 +22,7 @@
  * (68px pitch, no gap). The sweep's 8px adjacency floor is about HIT
  * rects, not paint: each row's visual container is non-clickable and
  * touches its neighbors exactly as drawn, while the row's actual tap
- * target (a transparent overlay) is inset FF_SIGNALS_ROW_HIT_INSET_Y
+ * target (a transparent overlay) is inset FF_INBOX_ROW_HIT_INSET_Y
  * (4px) top and bottom — adjacent tap targets therefore keep an 8px
  * dead band a thumb cannot straddle, and every target still measures
  * 60px tall, comfortably over the 44px floor. Same trade the spec's own
@@ -33,7 +33,7 @@
  * rim (a corner slice). Its off-glass spill is masked back to the
  * letterbox black by a border-only RIM RING drawn over it (NOT by
  * `style_clip_corner`, which hangs this project's software renderer —
- * see signals_build_fab's section comment for the measured bisect), so
+ * see inbox_build_fab's section comment for the measured bisect), so
  * the sim golden shows exactly what the round panel shows. Its TAP
  * TARGET is a separate transparent button covering the WHOLE visible
  * amber lens (corner-anchored to the window's bottom-right corner); its
@@ -53,7 +53,7 @@
  * the on-glass "presses must register" finding): an amber flash for
  * dark/transparent controls, a dim for the already-amber FAB.
  */
-#include "scr_signals.h"
+#include "scr_inbox.h"
 
 #include <math.h>
 #include <stdint.h>
@@ -70,32 +70,32 @@
  * MATH they feed, ff_layout.h, is the shared/tested part).
  * ------------------------------------------------------------------- */
 
-#define FF_SIGNALS_SAFETY_PX 10.0f /* see scr_compose.c's FF_COMPOSE_SAFETY_PX — same rationale */
+#define FF_INBOX_SAFETY_PX 10.0f /* see scr_compose.c's FF_COMPOSE_SAFETY_PX — same rationale */
 
 /* Header: centered "INBOX" caption (renamed 2026-09-01; was "SIGNALS") + the numbered unread badge. Not a
  * control — nothing here is clickable, so no adjacency partner for the
  * list's first row. */
-#define FF_SIGNALS_HEADER_Y 34
+#define FF_INBOX_HEADER_Y 34
 
 /* Sub-screen (picker/thread) pinned back button — the spec's ">=44px
  * escape, off the rim". Its band's own chord margin is computed below. */
-#define FF_SIGNALS_BACK_Y 30
-#define FF_SIGNALS_BACK_PX FF_THEME_MIN_HIT_PX
+#define FF_INBOX_BACK_Y 30
+#define FF_INBOX_BACK_PX FF_THEME_MIN_HIT_PX
 
 /* The inbox conversation list: full-bleed 68px rows, touching (design
  * canvas), inside a viewport whose lower edge stays above the pole. */
-#define FF_SIGNALS_LIST_TOP_Y 74
-#define FF_SIGNALS_LIST_H     268
-#define FF_SIGNALS_LIST_BOT_Y (FF_SIGNALS_LIST_TOP_Y + FF_SIGNALS_LIST_H)
+#define FF_INBOX_LIST_TOP_Y 74
+#define FF_INBOX_LIST_H     268
+#define FF_INBOX_LIST_BOT_Y (FF_INBOX_LIST_TOP_Y + FF_INBOX_LIST_H)
 
-#define FF_SIGNALS_ROW_H 68 /* the canvas's full-bleed pitch — rows touch */
+#define FF_INBOX_ROW_H 68 /* the canvas's full-bleed pitch — rows touch */
 /* Hit-rect vertical inset: rows touch visually; tap targets keep the 8px
  * adjacency floor between them (2 * inset) and still clear the 44px size
  * floor. See this file's header comment. */
-#define FF_SIGNALS_ROW_HIT_INSET_Y 4
-_Static_assert(FF_SIGNALS_ROW_H - 2 * FF_SIGNALS_ROW_HIT_INSET_Y >= FF_THEME_MIN_HIT_PX,
+#define FF_INBOX_ROW_HIT_INSET_Y 4
+_Static_assert(FF_INBOX_ROW_H - 2 * FF_INBOX_ROW_HIT_INSET_Y >= FF_THEME_MIN_HIT_PX,
                "signals row tap target must clear the 44px hit floor");
-_Static_assert(2 * FF_SIGNALS_ROW_HIT_INSET_Y >= FF_HIT_MIN_GAP_PX,
+_Static_assert(2 * FF_INBOX_ROW_HIT_INSET_Y >= FF_HIT_MIN_GAP_PX,
                "adjacent signals row tap targets must clear the 8px adjacency floor");
 
 /* The FAB. Deco disc geometry is the design canvas's (a 240px amber
@@ -110,17 +110,17 @@ _Static_assert(2 * FF_SIGNALS_ROW_HIT_INSET_Y >= FF_HIT_MIN_GAP_PX,
  * check the way it excludes the whole-puck gesture region (a NEW, narrow
  * corner-bleed exclusion in test_face_hit_targets.c; the size floor and the
  * adjacency floor still apply, and the FAB keeps its 8px clearance from the
- * rows/chips via FF_SIGNALS_ROW_HIT_CLEAR_X below). The already-transparent
+ * rows/chips via FF_INBOX_ROW_HIT_CLEAR_X below). The already-transparent
  * hit doubles as the press overlay: its LV_STATE_PRESSED dark wash now
  * spans the whole lens, so the ENTIRE visible amber dims on press (the
  * maintainer's "the touchdown should fill the entire shape"). */
-#define FF_SIGNALS_FAB_DECO_D  240
-#define FF_SIGNALS_FAB_DECO_X  278
-#define FF_SIGNALS_FAB_DECO_Y  280
-#define FF_SIGNALS_FAB_HIT_X   300
-#define FF_SIGNALS_FAB_HIT_Y   300
-#define FF_SIGNALS_FAB_HIT_PX  (FF_THEME_PUCK_PX - FF_SIGNALS_FAB_HIT_X) /* -> 112: reaches the window corner */
-_Static_assert(FF_SIGNALS_FAB_HIT_PX >= FF_THEME_MIN_HIT_PX, "FAB tap target must clear the hit floor");
+#define FF_INBOX_FAB_DECO_D  240
+#define FF_INBOX_FAB_DECO_X  278
+#define FF_INBOX_FAB_DECO_Y  280
+#define FF_INBOX_FAB_HIT_X   300
+#define FF_INBOX_FAB_HIT_Y   300
+#define FF_INBOX_FAB_HIT_PX  (FF_THEME_PUCK_PX - FF_INBOX_FAB_HIT_X) /* -> 112: reaches the window corner */
+_Static_assert(FF_INBOX_FAB_HIT_PX >= FF_THEME_MIN_HIT_PX, "FAB tap target must clear the hit floor");
 
 /* Every inbox row's hit-rect stops this far left of the FAB's tap
  * target, so a row and the FAB can never violate the 8px adjacency floor
@@ -128,7 +128,7 @@ _Static_assert(FF_SIGNALS_FAB_HIT_PX >= FF_THEME_MIN_HIT_PX, "FAB tap target mus
  * viewport in exactly the FAB's y-range (see this file's header). The
  * row's right-hand content (age, badge) is deliberately outside the tap
  * target; the row is generously tappable everywhere else. */
-#define FF_SIGNALS_ROW_HIT_CLEAR_X (FF_SIGNALS_FAB_HIT_X - FF_HIT_MIN_GAP_PX)
+#define FF_INBOX_ROW_HIT_CLEAR_X (FF_INBOX_FAB_HIT_X - FF_HIT_MIN_GAP_PX)
 
 /* The FAB's `+` glyph center — the centroid of the VISIBLE amber lens
  * (the deco disc ∩ the round glass), on the 45-degree diagonal by
@@ -139,11 +139,11 @@ _Static_assert(FF_SIGNALS_FAB_HIT_PX >= FF_THEME_MIN_HIT_PX, "FAB tap target mus
  * (the maintainer's "the + reads misaligned"). ~334 is the on-diagonal
  * midpoint between the disc's innermost on-glass arc point (~314) and the
  * glass rim (~352). */
-#define FF_SIGNALS_FAB_GLYPH_C 334
+#define FF_INBOX_FAB_GLYPH_C 334
 
 /* Row internals. */
-#define FF_SIGNALS_AVATAR_PX 46
-#define FF_SIGNALS_BADGE_H   20
+#define FF_INBOX_AVATAR_PX 46
+#define FF_INBOX_BADGE_H   20
 
 /* ---------------------------------------------------------------------
  * Thread sub-view geometry (S24 slice c — design canvas ThreadGroup /
@@ -154,8 +154,8 @@ _Static_assert(FF_SIGNALS_FAB_HIT_PX >= FF_THEME_MIN_HIT_PX, "FAB tap target mus
  * can never collide with anything clickable at any scroll offset.
  * ------------------------------------------------------------------- */
 
-#define FF_SIGNALS_THREAD_LIST_TOP_Y   80
-#define FF_SIGNALS_THREAD_LIST_H_CREW  200 /* -> y 280, EXACTLY FF_SIGNALS_FAB_DECO_Y — PR #149 review
+#define FF_INBOX_THREAD_LIST_TOP_Y   80
+#define FF_INBOX_THREAD_LIST_H_CREW  200 /* -> y 280, EXACTLY FF_INBOX_FAB_DECO_Y — PR #149 review
  * round 3: the band must never extend past the FAB's visible top edge.
  * A deeper band (round 2's 262) put the NEWEST message — the one that
  * must never be hidden — at risk under the slice on every rebuild that
@@ -170,18 +170,18 @@ _Static_assert(FF_SIGNALS_FAB_HIT_PX >= FF_THEME_MIN_HIT_PX, "FAB tap target mus
  * clips its children to its own bounds (LVGL default), so at this
  * exact boundary there is no ambiguity: nothing in the list can ever
  * paint past y=280 regardless of x. */
-#define FF_SIGNALS_THREAD_LIST_H_1TO1  182 /* -> y 262; the chip strip sits below (2px clearance, not the 8px hit floor — the list's own touch target is the exempt FLOATING catcher, Exclusion 4, so this gap is a visual choice, not a hit-adjacency requirement) */
-#define FF_SIGNALS_THREAD_FADE_H       16  /* PR #149 review round 3: short, so it never meaningfully dims the newest message (was the shared 40px default) */
+#define FF_INBOX_THREAD_LIST_H_1TO1  182 /* -> y 262; the chip strip sits below (2px clearance, not the 8px hit floor — the list's own touch target is the exempt FLOATING catcher, Exclusion 4, so this gap is a visual choice, not a hit-adjacency requirement) */
+#define FF_INBOX_THREAD_FADE_H       16  /* PR #149 review round 3: short, so it never meaningfully dims the newest message (was the shared 40px default) */
 
 /* Quick-reply chips (1:1 only): OMW / IN 5 MIN / FLARE, one row, capped
  * on the right so the strip and the FAB's tap target keep the adjacency
- * floor (the same clearance rule as FF_SIGNALS_ROW_HIT_CLEAR_X). */
-#define FF_SIGNALS_CHIP_Y         264
-#define FF_SIGNALS_CHIP_H         44
-#define FF_SIGNALS_CHIP_GAP       8
-#define FF_SIGNALS_CHIP_MAX_RIGHT (FF_SIGNALS_FAB_HIT_X - FF_HIT_MIN_GAP_PX)
-_Static_assert(FF_SIGNALS_CHIP_H >= FF_THEME_MIN_HIT_PX, "quick chips must clear the 44px hit floor");
-_Static_assert(FF_SIGNALS_CHIP_GAP >= FF_HIT_MIN_GAP_PX,
+ * floor (the same clearance rule as FF_INBOX_ROW_HIT_CLEAR_X). */
+#define FF_INBOX_CHIP_Y         264
+#define FF_INBOX_CHIP_H         44
+#define FF_INBOX_CHIP_GAP       8
+#define FF_INBOX_CHIP_MAX_RIGHT (FF_INBOX_FAB_HIT_X - FF_HIT_MIN_GAP_PX)
+_Static_assert(FF_INBOX_CHIP_H >= FF_THEME_MIN_HIT_PX, "quick chips must clear the 44px hit floor");
+_Static_assert(FF_INBOX_CHIP_GAP >= FF_HIT_MIN_GAP_PX,
                "adjacent quick chips must clear the 8px adjacency floor");
 
 /* ---------------------------------------------------------------------
@@ -189,18 +189,18 @@ _Static_assert(FF_SIGNALS_CHIP_GAP >= FF_HIT_MIN_GAP_PX,
  * Three big color-coded action rows over the (opaque-keyed) thread scope,
  * plus a >=44px close. All values lifted from ActionPopup.dc.html.
  * ------------------------------------------------------------------- */
-#define FF_SIGNALS_POPUP_ROW_X   66
-#define FF_SIGNALS_POPUP_ROW_W   280
-#define FF_SIGNALS_POPUP_ROW_H   66
-#define FF_SIGNALS_POPUP_ROW1_Y  92
-#define FF_SIGNALS_POPUP_ROW2_Y  170
-#define FF_SIGNALS_POPUP_ROW3_Y  248
-#define FF_SIGNALS_POPUP_CLOSE_Y 330
-#define FF_SIGNALS_POPUP_CLOSE_PX 54
-_Static_assert(FF_SIGNALS_POPUP_ROW_H >= FF_THEME_MIN_HIT_PX, "popup rows must clear the 44px hit floor");
-_Static_assert(FF_SIGNALS_POPUP_ROW2_Y - (FF_SIGNALS_POPUP_ROW1_Y + FF_SIGNALS_POPUP_ROW_H) >= FF_HIT_MIN_GAP_PX,
+#define FF_INBOX_POPUP_ROW_X   66
+#define FF_INBOX_POPUP_ROW_W   280
+#define FF_INBOX_POPUP_ROW_H   66
+#define FF_INBOX_POPUP_ROW1_Y  92
+#define FF_INBOX_POPUP_ROW2_Y  170
+#define FF_INBOX_POPUP_ROW3_Y  248
+#define FF_INBOX_POPUP_CLOSE_Y 330
+#define FF_INBOX_POPUP_CLOSE_PX 54
+_Static_assert(FF_INBOX_POPUP_ROW_H >= FF_THEME_MIN_HIT_PX, "popup rows must clear the 44px hit floor");
+_Static_assert(FF_INBOX_POPUP_ROW2_Y - (FF_INBOX_POPUP_ROW1_Y + FF_INBOX_POPUP_ROW_H) >= FF_HIT_MIN_GAP_PX,
                "popup rows must clear the 8px adjacency floor");
-_Static_assert(FF_SIGNALS_POPUP_CLOSE_PX >= FF_THEME_MIN_HIT_PX, "popup close must clear the 44px hit floor");
+_Static_assert(FF_INBOX_POPUP_CLOSE_PX >= FF_THEME_MIN_HIT_PX, "popup close must clear the 44px hit floor");
 
 /* ---------------------------------------------------------------------
  * Rally screen (S24 slice d) — the design canvas Rally artboard. A
@@ -215,7 +215,7 @@ _Static_assert(FF_SIGNALS_POPUP_CLOSE_PX >= FF_THEME_MIN_HIT_PX, "popup close mu
  *
  * Bugfix (maintainer report: "I can't scroll to select all the locations
  * on the send rally screen"): unlike the inbox/picker lists, each WHERE
- * row already carries its OWN clickable hit button (`signals_build_rally_
+ * row already carries its OWN clickable hit button (`inbox_build_rally_
  * row`'s inset `hit`, needed so a row stays individually tappable), so a
  * drag started ON a row's own hit rect already reaches `list`'s
  * LV_DIR_VER scroll fine (LVGL's lv_indev_find_scroll_obj walks UP from
@@ -223,11 +223,11 @@ _Static_assert(FF_SIGNALS_POPUP_CLOSE_PX >= FF_THEME_MIN_HIT_PX, "popup close mu
  * ancestor — confirmed, not assumed: a real-indev drag starting on the
  * "On Me" row's hit target reaches the bottom of a 7-row list in one
  * drag). But `list` itself is deliberately NOT CLICKABLE (the inbox/
- * picker convention scr_signals.c follows throughout — see this file's
- * header comment near signals_build_thread), and — unlike a row's own
+ * picker convention scr_inbox.c follows throughout — see this file's
+ * header comment near inbox_build_thread), and — unlike a row's own
  * hit rect — the PLACES divider band, the ~8px gap between rows, a row's
  * own 4px top/bottom hit-inset, and a disabled "On Me" row (no GPS fix:
- * `signals_build_rally_row` adds NO hit child at all when `!enabled`,
+ * `inbox_build_rally_row` adds NO hit child at all when `!enabled`,
  * intentionally — "On Me without a fix is not tappable") carry no
  * clickable descendant whatsoever. A press there resolves to no object
  * inside `list` at all (falls through to a non-scrollable ancestor,
@@ -262,37 +262,37 @@ _Static_assert(FF_SIGNALS_POPUP_CLOSE_PX >= FF_THEME_MIN_HIT_PX, "popup close mu
  * fixed height, no measured-content variance to account for) so a short
  * pack (today's 2-place demo/test fixture) adds nothing extra.
  * ------------------------------------------------------------------- */
-#define FF_SIGNALS_RALLY_LIST_TOP_Y   82 /* clears the pinned close/back (bottom y74) by the 8px floor */
-#define FF_SIGNALS_RALLY_LIST_H       206
-#define FF_SIGNALS_RALLY_ROW_H        52
-#define FF_SIGNALS_RALLY_ROW_HIT_INSET_Y 4
-#define FF_SIGNALS_RALLY_DIVIDER_H    22
-#define FF_SIGNALS_RALLY_FOOTER_Y     300
-#define FF_SIGNALS_RALLY_FOOTER_H     56
-#define FF_SIGNALS_RALLY_WHEN_W       86
-#define FF_SIGNALS_RALLY_FOOTER_GAP   10
-_Static_assert(FF_SIGNALS_RALLY_ROW_H - 2 * FF_SIGNALS_RALLY_ROW_HIT_INSET_Y >= FF_THEME_MIN_HIT_PX,
+#define FF_INBOX_RALLY_LIST_TOP_Y   82 /* clears the pinned close/back (bottom y74) by the 8px floor */
+#define FF_INBOX_RALLY_LIST_H       206
+#define FF_INBOX_RALLY_ROW_H        52
+#define FF_INBOX_RALLY_ROW_HIT_INSET_Y 4
+#define FF_INBOX_RALLY_DIVIDER_H    22
+#define FF_INBOX_RALLY_FOOTER_Y     300
+#define FF_INBOX_RALLY_FOOTER_H     56
+#define FF_INBOX_RALLY_WHEN_W       86
+#define FF_INBOX_RALLY_FOOTER_GAP   10
+_Static_assert(FF_INBOX_RALLY_ROW_H - 2 * FF_INBOX_RALLY_ROW_HIT_INSET_Y >= FF_THEME_MIN_HIT_PX,
                "rally WHERE rows must clear the 44px hit floor");
-_Static_assert(2 * FF_SIGNALS_RALLY_ROW_HIT_INSET_Y >= FF_HIT_MIN_GAP_PX,
+_Static_assert(2 * FF_INBOX_RALLY_ROW_HIT_INSET_Y >= FF_HIT_MIN_GAP_PX,
                "adjacent rally WHERE rows must clear the 8px adjacency floor");
-_Static_assert(FF_SIGNALS_RALLY_FOOTER_H >= FF_THEME_MIN_HIT_PX, "rally footer controls must clear the 44px hit floor");
-_Static_assert(FF_SIGNALS_RALLY_FOOTER_GAP >= FF_HIT_MIN_GAP_PX,
+_Static_assert(FF_INBOX_RALLY_FOOTER_H >= FF_THEME_MIN_HIT_PX, "rally footer controls must clear the 44px hit floor");
+_Static_assert(FF_INBOX_RALLY_FOOTER_GAP >= FF_HIT_MIN_GAP_PX,
                "rally WHEN chip and Send must clear the 8px adjacency floor");
 /* An 8px+ gap between the scroll list's viewport bottom and the pinned
  * footer, so a row parked at the viewport edge never crowds the footer. */
-_Static_assert(FF_SIGNALS_RALLY_FOOTER_Y - (FF_SIGNALS_RALLY_LIST_TOP_Y + FF_SIGNALS_RALLY_LIST_H) >= FF_HIT_MIN_GAP_PX,
+_Static_assert(FF_INBOX_RALLY_FOOTER_Y - (FF_INBOX_RALLY_LIST_TOP_Y + FF_INBOX_RALLY_LIST_H) >= FF_HIT_MIN_GAP_PX,
                "rally footer must clear the WHERE list viewport by the 8px floor");
 
 /* Message-row internals (heights follow the canvas's single-line rows;
  * long content ellipsizes rather than wraps, so the pitch stays fixed
  * and the newest message's scroll anchor is stable). */
-#define FF_SIGNALS_MSG_SENDER_H 16  /* dot + name + age line above a CREW inbound bubble (FF_THEME_FONT_CHIP's own 16px line height, zero slack) */
-#define FF_SIGNALS_MSG_BUBBLE_H 34  /* one-line text bubble */
-#define FF_SIGNALS_MSG_RALLY_H  46  /* RALLY badge + place callout — design canvas ThreadGroup.dc.html's own box: 8px v-padding + 12px caption + 18px place line, no inner gap (46 total) */
-#define FF_SIGNALS_MSG_EVENT_H  22  /* pulse/flare one-liner */
-#define FF_SIGNALS_MSG_AGE_H    16  /* age line under a bubble (rows with no sender line) */
-#define FF_SIGNALS_MSG_GAP      0   /* PR #149 review round 2/3: tightened from 10 to fit more rows at rest (all message kinds; CREW at rest needs every px to reach 4 full rows within the FAB-safe band) */
-#define FF_SIGNALS_MSG_MAX_W    294 /* bubble width cap; text past it ellipsizes. PR #149 review round 2:
+#define FF_INBOX_MSG_SENDER_H 16  /* dot + name + age line above a CREW inbound bubble (FF_THEME_FONT_CHIP's own 16px line height, zero slack) */
+#define FF_INBOX_MSG_BUBBLE_H 34  /* one-line text bubble */
+#define FF_INBOX_MSG_RALLY_H  46  /* RALLY badge + place callout — design canvas ThreadGroup.dc.html's own box: 8px v-padding + 12px caption + 18px place line, no inner gap (46 total) */
+#define FF_INBOX_MSG_EVENT_H  22  /* pulse/flare one-liner */
+#define FF_INBOX_MSG_AGE_H    16  /* age line under a bubble (rows with no sender line) */
+#define FF_INBOX_MSG_GAP      0   /* PR #149 review round 2/3: tightened from 10 to fit more rows at rest (all message kinds; CREW at rest needs every px to reach 4 full rows within the FAB-safe band) */
+#define FF_INBOX_MSG_MAX_W    294 /* bubble width cap; text past it ellipsizes. PR #149 review round 2:
  * widened from 236 for the 16px body font (the pre-PR 14px cap, proportionally
  * would be ~270, but the DEEPENED CREW list_h — needed for the 5-rows-visible
  * AC — narrows the round-glass-safe row width to ~295px at its worst extent,
@@ -302,17 +302,17 @@ _Static_assert(FF_SIGNALS_RALLY_FOOTER_Y - (FF_SIGNALS_RALLY_LIST_TOP_Y + FF_SIG
  * MAX_W-26 >= 268) without truncating, and (b) stays on-glass at every scroll
  * offset in the deepened CREW band (measured row width ~295px, worst case). */
 
-/* signals_safe_margin_x — int32/ceil wrapper around ff_layout_safe_margin_x,
+/* inbox_safe_margin_x — int32/ceil wrapper around ff_layout_safe_margin_x,
  * bound to this puck's center/radius and this file's safety buffer (twin of
  * scr_compose.c's compose_safe_margin_x). */
-static int32_t signals_safe_margin_x(int32_t top_y, int32_t h)
+static int32_t inbox_safe_margin_x(int32_t top_y, int32_t h)
 {
     float margin = ff_layout_safe_margin_x((float)top_y, (float)h, (float)FF_THEME_PUCK_RADIUS_PX,
-                                            (float)FF_THEME_PUCK_RADIUS_PX, FF_SIGNALS_SAFETY_PX);
+                                            (float)FF_THEME_PUCK_RADIUS_PX, FF_INBOX_SAFETY_PX);
     return (int32_t)ceilf(margin);
 }
 
-static void signals_child_deco(lv_obj_t *o)
+static void inbox_child_deco(lv_obj_t *o)
 {
     lv_obj_remove_style_all(o);
     lv_obj_clear_flag(o, LV_OBJ_FLAG_SCROLLABLE);
@@ -326,7 +326,7 @@ static void signals_child_deco(lv_obj_t *o)
  * The FAB variant dims instead (it is already amber).
  * ------------------------------------------------------------------- */
 
-static void signals_press_feedback(lv_obj_t *btn)
+static void inbox_press_feedback(lv_obj_t *btn)
 {
     lv_obj_set_style_bg_color(btn, lv_color_hex(FF_THEME_COLOR_AMBER), LV_STATE_PRESSED);
     lv_obj_set_style_bg_opa(btn, LV_OPA_40, LV_STATE_PRESSED);
@@ -341,7 +341,7 @@ static void signals_press_feedback(lv_obj_t *btn)
  * user_data — the compose_key_click_cb pattern. The shell validates a
  * member key against the roster before navigating (a pure-render screen
  * must not decide membership). */
-static void signals_open_thread_cb(lv_event_t *e)
+static void inbox_open_thread_cb(lv_event_t *e)
 {
     uintptr_t node = (uintptr_t)lv_event_get_user_data(e);
     ff_intent_t in = {.kind = FF_INTENT_INBOX_OPEN_THREAD, .u = {0}};
@@ -352,7 +352,7 @@ static void signals_open_thread_cb(lv_event_t *e)
 /* A recipient-picker row -> FF_INTENT_INBOX_PICK (same key convention).
  * Distinct from OPEN_THREAD so slice (d) can re-route picks to the
  * action popup in the shell alone — see ff_intent.h. */
-static void signals_pick_cb(lv_event_t *e)
+static void inbox_pick_cb(lv_event_t *e)
 {
     uintptr_t node = (uintptr_t)lv_event_get_user_data(e);
     ff_intent_t in = {.kind = FF_INTENT_INBOX_PICK, .u = {0}};
@@ -361,7 +361,7 @@ static void signals_pick_cb(lv_event_t *e)
 }
 
 /* The `+` FAB -> FF_INTENT_INBOX_NEW (no payload). */
-static void signals_fab_cb(lv_event_t *e)
+static void inbox_fab_cb(lv_event_t *e)
 {
     (void)e;
     ff_intent_t in = {.kind = FF_INTENT_INBOX_NEW, .u = {0}};
@@ -371,7 +371,7 @@ static void signals_fab_cb(lv_event_t *e)
 /* Picker/thread back "<" -> FF_INTENT_BACK; the shell pops the sub-view
  * (thread/picker -> inbox). Which screen is revealed is never this
  * file's decision. */
-static void signals_back_cb(lv_event_t *e)
+static void inbox_back_cb(lv_event_t *e)
 {
     (void)e;
     ff_intent_t in = {.kind = FF_INTENT_BACK, .u = {0}};
@@ -383,7 +383,7 @@ static void signals_back_cb(lv_event_t *e)
  * pattern). The DESTINATION is never this screen's claim: the shell
  * resolves the open thread's scope (S24 "the open thread IS the send
  * scope" — see the CANNED_REPLY handler in ff_shell.c). */
-static void signals_chip_reply_cb(lv_event_t *e)
+static void inbox_chip_reply_cb(lv_event_t *e)
 {
     uintptr_t which = (uintptr_t)lv_event_get_user_data(e);
     ff_intent_t in = {.kind = FF_INTENT_CANNED_REPLY, .u = {0}};
@@ -391,13 +391,13 @@ static void signals_chip_reply_cb(lv_event_t *e)
     ff_intent_emit(&in);
 }
 
-/* The 1:1 FLARE chip -> FF_INTENT_SIG_FLARE (the outbound quick signal is a
+/* The 1:1 FLARE chip -> FF_INTENT_INBOX_FLARE (the outbound quick signal is a
  * flare, "come find me", not a pulse; the shell aims it at the open thread's
  * scope through the S22(d) send seam). */
-static void signals_chip_flare_cb(lv_event_t *e)
+static void inbox_chip_flare_cb(lv_event_t *e)
 {
     (void)e;
-    ff_intent_t in = {.kind = FF_INTENT_SIG_FLARE, .u = {0}};
+    ff_intent_t in = {.kind = FF_INTENT_INBOX_FLARE, .u = {0}};
     ff_intent_emit(&in);
 }
 
@@ -406,19 +406,19 @@ static void signals_chip_flare_cb(lv_event_t *e)
  * ------------------------------------------------------------------- */
 
 /* One emitter per popup action row — the shell owns the scope. */
-static void signals_popup_compose_cb(lv_event_t *e)
+static void inbox_popup_compose_cb(lv_event_t *e)
 {
     (void)e;
     ff_intent_t in = {.kind = FF_INTENT_INBOX_POPUP_COMPOSE, .u = {0}};
     ff_intent_emit(&in);
 }
-static void signals_popup_rally_cb(lv_event_t *e)
+static void inbox_popup_rally_cb(lv_event_t *e)
 {
     (void)e;
     ff_intent_t in = {.kind = FF_INTENT_INBOX_POPUP_RALLY, .u = {0}};
     ff_intent_emit(&in);
 }
-static void signals_popup_flare_cb(lv_event_t *e)
+static void inbox_popup_flare_cb(lv_event_t *e)
 {
     (void)e;
     ff_intent_t in = {.kind = FF_INTENT_INBOX_POPUP_FLARE, .u = {0}};
@@ -427,7 +427,7 @@ static void signals_popup_flare_cb(lv_event_t *e)
 
 /* A Rally WHERE radio row -> FF_INTENT_RALLY_SELECT_PLACE, carrying the
  * selection index (0 = On Me, 1.. = landmark) through user_data. */
-static void signals_rally_place_cb(lv_event_t *e)
+static void inbox_rally_place_cb(lv_event_t *e)
 {
     uintptr_t idx = (uintptr_t)lv_event_get_user_data(e);
     ff_intent_t in = {.kind = FF_INTENT_RALLY_SELECT_PLACE, .u = {0}};
@@ -436,7 +436,7 @@ static void signals_rally_place_cb(lv_event_t *e)
 }
 
 /* The Rally WHEN chip -> FF_INTENT_RALLY_CYCLE_WHEN. */
-static void signals_rally_when_cb(lv_event_t *e)
+static void inbox_rally_when_cb(lv_event_t *e)
 {
     (void)e;
     ff_intent_t in = {.kind = FF_INTENT_RALLY_CYCLE_WHEN, .u = {0}};
@@ -444,7 +444,7 @@ static void signals_rally_when_cb(lv_event_t *e)
 }
 
 /* The Rally Send button -> FF_INTENT_RALLY_SEND. */
-static void signals_rally_send_cb(lv_event_t *e)
+static void inbox_rally_send_cb(lv_event_t *e)
 {
     (void)e;
     ff_intent_t in = {.kind = FF_INTENT_RALLY_SEND, .u = {0}};
@@ -457,19 +457,19 @@ static void signals_rally_send_cb(lv_event_t *e)
 
 /* The pinned back button for the picker/thread sub-screens: a real
  * FF_THEME_MIN_HIT_PX target at its band's own chord margin. */
-static void signals_build_back(lv_obj_t *parent)
+static void inbox_build_back(lv_obj_t *parent)
 {
-    int32_t margin = signals_safe_margin_x(FF_SIGNALS_BACK_Y, FF_SIGNALS_BACK_PX);
+    int32_t margin = inbox_safe_margin_x(FF_INBOX_BACK_Y, FF_INBOX_BACK_PX);
 
     lv_obj_t *back = lv_button_create(parent);
     lv_obj_remove_style_all(back);
-    lv_obj_set_size(back, FF_SIGNALS_BACK_PX, FF_SIGNALS_BACK_PX);
-    lv_obj_set_pos(back, margin, FF_SIGNALS_BACK_Y);
+    lv_obj_set_size(back, FF_INBOX_BACK_PX, FF_INBOX_BACK_PX);
+    lv_obj_set_pos(back, margin, FF_INBOX_BACK_Y);
     lv_obj_set_style_radius(back, LV_RADIUS_CIRCLE, 0);
     lv_obj_set_style_bg_color(back, lv_color_hex(FF_THEME_COLOR_SURFACE), 0);
     lv_obj_set_style_bg_opa(back, LV_OPA_COVER, 0);
-    lv_obj_add_event_cb(back, signals_back_cb, LV_EVENT_CLICKED, NULL);
-    signals_press_feedback(back);
+    lv_obj_add_event_cb(back, inbox_back_cb, LV_EVENT_CLICKED, NULL);
+    inbox_press_feedback(back);
 
     lv_obj_t *glyph = lv_label_create(back);
     lv_label_set_text(glyph, LV_SYMBOL_LEFT);
@@ -480,7 +480,7 @@ static void signals_build_back(lv_obj_t *parent)
 
 /* A numbered amber unread badge pill (99+ saturates the display, never
  * the count itself — the model's number stays honest). */
-static void signals_build_badge(lv_obj_t *parent, uint16_t count, lv_align_t align, int32_t dx, int32_t dy)
+static void inbox_build_badge(lv_obj_t *parent, uint16_t count, lv_align_t align, int32_t dx, int32_t dy)
 {
     char buf[8];
     if (count > 99u) {
@@ -490,10 +490,10 @@ static void signals_build_badge(lv_obj_t *parent, uint16_t count, lv_align_t ali
     }
 
     lv_obj_t *badge = lv_obj_create(parent);
-    signals_child_deco(badge);
+    inbox_child_deco(badge);
     int32_t w = (count > 9u) ? 30 : 22;
-    lv_obj_set_size(badge, w, FF_SIGNALS_BADGE_H);
-    lv_obj_set_style_radius(badge, FF_SIGNALS_BADGE_H / 2, 0);
+    lv_obj_set_size(badge, w, FF_INBOX_BADGE_H);
+    lv_obj_set_style_radius(badge, FF_INBOX_BADGE_H / 2, 0);
     lv_obj_set_style_bg_color(badge, lv_color_hex(FF_THEME_COLOR_AMBER), 0);
     lv_obj_set_style_bg_opa(badge, LV_OPA_COVER, 0);
     lv_obj_align(badge, align, dx, dy);
@@ -507,11 +507,11 @@ static void signals_build_badge(lv_obj_t *parent, uint16_t count, lv_align_t ali
 
 /* The CREW cluster avatar: a dark disc holding three overlapping crew-
  * color dots (the canvas's communal-thread mark). */
-static void signals_build_crew_avatar(lv_obj_t *parent, int32_t x, bool colorblind)
+static void inbox_build_crew_avatar(lv_obj_t *parent, int32_t x, bool colorblind)
 {
     lv_obj_t *disc = lv_obj_create(parent);
-    signals_child_deco(disc);
-    lv_obj_set_size(disc, FF_SIGNALS_AVATAR_PX, FF_SIGNALS_AVATAR_PX);
+    inbox_child_deco(disc);
+    lv_obj_set_size(disc, FF_INBOX_AVATAR_PX, FF_INBOX_AVATAR_PX);
     lv_obj_set_style_radius(disc, LV_RADIUS_CIRCLE, 0);
     lv_obj_set_style_bg_color(disc, lv_color_hex(FF_THEME_COLOR_SURFACE), 0);
     lv_obj_set_style_bg_opa(disc, LV_OPA_COVER, 0);
@@ -520,7 +520,7 @@ static void signals_build_crew_avatar(lv_obj_t *parent, int32_t x, bool colorbli
     static const int8_t offs[3][2] = {{-7, -3}, {6, -6}, {0, 7}};
     for (int i = 0; i < 3; i++) {
         lv_obj_t *dot = lv_obj_create(disc);
-        signals_child_deco(dot);
+        inbox_child_deco(dot);
         lv_obj_set_size(dot, 16, 16);
         lv_obj_set_style_radius(dot, LV_RADIUS_CIRCLE, 0);
         lv_obj_set_style_bg_color(dot, lv_color_hex(ff_theme_crew_color((uint8_t)i, colorblind)), 0);
@@ -534,12 +534,12 @@ static void signals_build_crew_avatar(lv_obj_t *parent, int32_t x, bool colorbli
 
 /* A member avatar: crew-color disc with the member's initial in dark
  * ink; a member with no known initial gets an honest empty disc. */
-static void signals_build_member_avatar(lv_obj_t *parent, int32_t x, char initial, uint8_t color_idx,
+static void inbox_build_member_avatar(lv_obj_t *parent, int32_t x, char initial, uint8_t color_idx,
                                         bool colorblind)
 {
     lv_obj_t *disc = lv_obj_create(parent);
-    signals_child_deco(disc);
-    lv_obj_set_size(disc, FF_SIGNALS_AVATAR_PX, FF_SIGNALS_AVATAR_PX);
+    inbox_child_deco(disc);
+    lv_obj_set_size(disc, FF_INBOX_AVATAR_PX, FF_INBOX_AVATAR_PX);
     lv_obj_set_style_radius(disc, LV_RADIUS_CIRCLE, 0);
     lv_obj_set_style_bg_color(disc, lv_color_hex(ff_theme_crew_color(color_idx, colorblind)), 0);
     lv_obj_set_style_bg_opa(disc, LV_OPA_COVER, 0);
@@ -560,7 +560,7 @@ static void signals_build_member_avatar(lv_obj_t *parent, int32_t x, char initia
  * core model; ages go through the one shared ff_fmt_age).
  * ------------------------------------------------------------------- */
 
-static char const *signals_kind_word(ff_feed_kind_t kind)
+static char const *inbox_kind_word(ff_feed_kind_t kind)
 {
     switch (kind) {
     case FEED_PULSE: return "PULSE";
@@ -586,7 +586,7 @@ static char const *signals_kind_word(ff_feed_kind_t kind)
  *   - TEXT shows its text; PULSE/FLARE their kind word; RALLY/STATUS
  *     "KIND · text" when text exists (a rally's place name).
  */
-static void signals_preview_text(ff_inbox_conv_t const *cv, char *buf, size_t n)
+static void inbox_preview_text(ff_inbox_conv_t const *cv, char *buf, size_t n)
 {
     char body[FF_FEED_TEXT_LEN + 12];
     switch (cv->preview_kind) {
@@ -599,14 +599,14 @@ static void signals_preview_text(ff_inbox_conv_t const *cv, char *buf, size_t n)
          * (U+00B7) — the vendored Montserrat subset lacks that glyph and
          * renders it as tofu, the exact trap S22's divider already hit. */
         if (cv->preview_text[0] != '\0') {
-            snprintf(body, sizeof(body), "%s - %s", signals_kind_word(cv->preview_kind),
+            snprintf(body, sizeof(body), "%s - %s", inbox_kind_word(cv->preview_kind),
                      cv->preview_text);
         } else {
-            snprintf(body, sizeof(body), "%s", signals_kind_word(cv->preview_kind));
+            snprintf(body, sizeof(body), "%s", inbox_kind_word(cv->preview_kind));
         }
         break;
     default:
-        snprintf(body, sizeof(body), "%s", signals_kind_word(cv->preview_kind));
+        snprintf(body, sizeof(body), "%s", inbox_kind_word(cv->preview_kind));
         break;
     }
 
@@ -624,7 +624,7 @@ static void signals_preview_text(ff_inbox_conv_t const *cv, char *buf, size_t n)
  * gray; LINKED (paired, never sighted — no honest age) renders muted but
  * still comfortably legible. The age is formatted only for SEEN, via the
  * one shared ff_fmt_age. */
-static void signals_presence_text(ff_inbox_conv_t const *cv, char *buf, size_t n, uint32_t *out_color)
+static void inbox_presence_text(ff_inbox_conv_t const *cv, char *buf, size_t n, uint32_t *out_color)
 {
     switch (cv->presence) {
     case FF_PRESENCE_SEEN: {
@@ -658,7 +658,7 @@ static void signals_presence_text(ff_inbox_conv_t const *cv, char *buf, size_t n
  * old 4px-short, right-capped pill the maintainer saw. Instead a deco
  * highlight spans the FULL row (full height, full width) BEHIND the content,
  * and press/release events on the (inset) tap target toggle it. */
-static void signals_row_press_ev(lv_event_t *e)
+static void inbox_row_press_ev(lv_event_t *e)
 {
     lv_obj_t *hl = (lv_obj_t *)lv_event_get_user_data(e);
     if (hl == NULL) return;
@@ -669,25 +669,25 @@ static void signals_row_press_ev(lv_event_t *e)
 /**
  * One big conversation/picker row at list-relative `y`, visually
  * full-bleed (touching its neighbors). A full-row deco highlight (lit on
- * press by signals_row_press_ev) sits behind the content, and an inset
+ * press by inbox_row_press_ev) sits behind the content, and an inset
  * transparent tap target wired to `cb` carrying `node` sits on top (see
  * this file's header for the touching-vs-adjacency reconciliation). The tap
  * target keeps the 4px vertical inset for the row-to-row adjacency floor;
  * the highlight does not (it is deco, never a hit rect the sweep pairs).
  * `hit_clear_right` caps the tap target's AND the highlight's absolute right
  * edge — the inbox passes the FAB clearance ONLY for rows whose scroll-0
- * band actually reaches the FAB (signals_row_overlaps_fab); every other row,
+ * band actually reaches the FAB (inbox_row_overlaps_fab); every other row,
  * and every picker row (no FAB), passes 0 = full width. Returns the row
  * container (deco).
  */
-static lv_obj_t *signals_row_container(lv_obj_t *parent, int32_t y, int32_t margin_x, uint32_t node,
+static lv_obj_t *inbox_row_container(lv_obj_t *parent, int32_t y, int32_t margin_x, uint32_t node,
                                        lv_event_cb_t cb, int32_t hit_clear_right)
 {
     int32_t row_w = FF_THEME_PUCK_PX - 2 * margin_x;
 
     lv_obj_t *row = lv_obj_create(parent);
-    signals_child_deco(row);
-    lv_obj_set_size(row, row_w, FF_SIGNALS_ROW_H);
+    inbox_child_deco(row);
+    lv_obj_set_size(row, row_w, FF_INBOX_ROW_H);
     lv_obj_set_pos(row, margin_x, y);
 
     int32_t hit_w = row_w;
@@ -706,8 +706,8 @@ static lv_obj_t *signals_row_container(lv_obj_t *parent, int32_t y, int32_t marg
      * full-row highlight (wired below, once `hl` exists). */
     lv_obj_t *hit = lv_button_create(row);
     lv_obj_remove_style_all(hit);
-    lv_obj_set_size(hit, hit_w, FF_SIGNALS_ROW_H - 2 * FF_SIGNALS_ROW_HIT_INSET_Y);
-    lv_obj_set_pos(hit, 0, FF_SIGNALS_ROW_HIT_INSET_Y);
+    lv_obj_set_size(hit, hit_w, FF_INBOX_ROW_H - 2 * FF_INBOX_ROW_HIT_INSET_Y);
+    lv_obj_set_pos(hit, 0, FF_INBOX_ROW_HIT_INSET_Y);
     lv_obj_set_style_bg_opa(hit, LV_OPA_TRANSP, 0);
 
     /* The full-row highlight, above the (transparent) tap target and BELOW
@@ -716,17 +716,17 @@ static lv_obj_t *signals_row_container(lv_obj_t *parent, int32_t y, int32_t marg
      * it stops at the FAB clearance, never painting under the FAB — "only
      * clip the rows the FAB overlaps"). */
     lv_obj_t *hl = lv_obj_create(row);
-    signals_child_deco(hl);
-    lv_obj_set_size(hl, hit_w, FF_SIGNALS_ROW_H);
+    inbox_child_deco(hl);
+    lv_obj_set_size(hl, hit_w, FF_INBOX_ROW_H);
     lv_obj_set_pos(hl, 0, 0);
     lv_obj_set_style_radius(hl, 12, 0);
     lv_obj_set_style_bg_color(hl, lv_color_hex(FF_THEME_COLOR_AMBER), 0);
     lv_obj_set_style_bg_opa(hl, LV_OPA_TRANSP, 0);
 
     lv_obj_add_event_cb(hit, cb, LV_EVENT_CLICKED, (void *)(uintptr_t)node);
-    lv_obj_add_event_cb(hit, signals_row_press_ev, LV_EVENT_PRESSED, hl);
-    lv_obj_add_event_cb(hit, signals_row_press_ev, LV_EVENT_RELEASED, hl);
-    lv_obj_add_event_cb(hit, signals_row_press_ev, LV_EVENT_PRESS_LOST, hl);
+    lv_obj_add_event_cb(hit, inbox_row_press_ev, LV_EVENT_PRESSED, hl);
+    lv_obj_add_event_cb(hit, inbox_row_press_ev, LV_EVENT_RELEASED, hl);
+    lv_obj_add_event_cb(hit, inbox_row_press_ev, LV_EVENT_PRESS_LOST, hl);
 
     return row;
 }
@@ -741,33 +741,33 @@ static lv_obj_t *signals_row_container(lv_obj_t *parent, int32_t y, int32_t marg
  * a touch in the overlap resolves to the FAB, never ambiguously to the row
  * beneath it (LVGL's deepest/topmost-hit-wins — the same fact the sweep's
  * ancestor/whole-puck exclusions rest on). */
-static bool signals_row_overlaps_fab(int32_t y)
+static bool inbox_row_overlaps_fab(int32_t y)
 {
-    int32_t const abs_top = FF_SIGNALS_LIST_TOP_Y + y; /* scroll 0 */
-    int32_t const abs_bot = abs_top + FF_SIGNALS_ROW_H;
-    int32_t const fab_top = FF_SIGNALS_FAB_HIT_Y - FF_HIT_MIN_GAP_PX;
-    int32_t const fab_bot = FF_SIGNALS_FAB_HIT_Y + FF_SIGNALS_FAB_HIT_PX + FF_HIT_MIN_GAP_PX;
+    int32_t const abs_top = FF_INBOX_LIST_TOP_Y + y; /* scroll 0 */
+    int32_t const abs_bot = abs_top + FF_INBOX_ROW_H;
+    int32_t const fab_top = FF_INBOX_FAB_HIT_Y - FF_HIT_MIN_GAP_PX;
+    int32_t const fab_bot = FF_INBOX_FAB_HIT_Y + FF_INBOX_FAB_HIT_PX + FF_HIT_MIN_GAP_PX;
     return abs_bot > fab_top && abs_top < fab_bot;
 }
 
 /* One INBOX conversation row, rendered from the model row alone. */
-static void signals_build_conv_row(lv_obj_t *parent, ff_inbox_conv_t const *cv, int32_t y, int32_t margin_x,
+static void inbox_build_conv_row(lv_obj_t *parent, ff_inbox_conv_t const *cv, int32_t y, int32_t margin_x,
                                    bool colorblind)
 {
     /* Clip the tap target on the right ONLY when this row's scroll-0 band
      * actually reaches the FAB (fix 2: "clip the rows the FAB overlaps, not
      * all rows"); every other row is full width so taps anywhere on it
      * register and its press highlight spans the whole row. */
-    int32_t const clear = signals_row_overlaps_fab(y) ? FF_SIGNALS_ROW_HIT_CLEAR_X : 0;
-    lv_obj_t *row = signals_row_container(parent, y, margin_x, cv->node_id, signals_open_thread_cb, clear);
+    int32_t const clear = inbox_row_overlaps_fab(y) ? FF_INBOX_ROW_HIT_CLEAR_X : 0;
+    lv_obj_t *row = inbox_row_container(parent, y, margin_x, cv->node_id, inbox_open_thread_cb, clear);
     int32_t row_w = FF_THEME_PUCK_PX - 2 * margin_x;
 
     if (cv->unread > 0) {
         /* Soft amber wash behind an unread conversation (the canvas's
          * rgba(amber, 0.08)) — an at-a-glance cue that needs no reading. */
         lv_obj_t *wash = lv_obj_create(row);
-        signals_child_deco(wash);
-        lv_obj_set_size(wash, row_w, FF_SIGNALS_ROW_H - 2);
+        inbox_child_deco(wash);
+        lv_obj_set_size(wash, row_w, FF_INBOX_ROW_H - 2);
         lv_obj_set_pos(wash, 0, 1);
         lv_obj_set_style_radius(wash, 16, 0);
         lv_obj_set_style_bg_color(wash, lv_color_hex(FF_THEME_COLOR_AMBER), 0);
@@ -775,12 +775,12 @@ static void signals_build_conv_row(lv_obj_t *parent, ff_inbox_conv_t const *cv, 
     }
 
     if (cv->kind == FF_CONV_CREW) {
-        signals_build_crew_avatar(row, 8, colorblind);
+        inbox_build_crew_avatar(row, 8, colorblind);
     } else {
-        signals_build_member_avatar(row, 8, cv->initial, cv->color_idx, colorblind);
+        inbox_build_member_avatar(row, 8, cv->initial, cv->color_idx, colorblind);
     }
 
-    int32_t text_x = 8 + FF_SIGNALS_AVATAR_PX + 12;
+    int32_t text_x = 8 + FF_INBOX_AVATAR_PX + 12;
     int32_t right_w = 58; /* age / badge column */
     bool const quiet = (cv->item_count == 0 && cv->kind == FF_CONV_MEMBER);
 
@@ -804,12 +804,12 @@ static void signals_build_conv_row(lv_obj_t *parent, ff_inbox_conv_t const *cv, 
     char line[FF_FEED_TEXT_LEN + 32];
     uint32_t line_color = FF_THEME_COLOR_MUTED;
     if (cv->has_preview) {
-        signals_preview_text(cv, line, sizeof(line));
+        inbox_preview_text(cv, line, sizeof(line));
     } else if (cv->kind == FF_CONV_CREW) {
         snprintf(line, sizeof(line), "NO MESSAGES YET");
         line_color = FF_THEME_COLOR_DIM;
     } else {
-        signals_presence_text(cv, line, sizeof(line), &line_color);
+        inbox_presence_text(cv, line, sizeof(line), &line_color);
     }
 
     /* One line, ellipsized: DOTS mode only truncates when the label's
@@ -837,7 +837,7 @@ static void signals_build_conv_row(lv_obj_t *parent, ff_inbox_conv_t const *cv, 
         lv_obj_align(age, LV_ALIGN_RIGHT_MID, -2, cv->unread > 0 ? -12 : 0);
     }
     if (cv->unread > 0) {
-        signals_build_badge(row, cv->unread, LV_ALIGN_RIGHT_MID, -2, 12);
+        inbox_build_badge(row, cv->unread, LV_ALIGN_RIGHT_MID, -2, 12);
     }
 }
 
@@ -848,7 +848,7 @@ static void signals_build_conv_row(lv_obj_t *parent, ff_inbox_conv_t const *cv, 
  * pointer, so it must outlive the object tree — file-static.
  * ------------------------------------------------------------------- */
 
-static void signals_build_bottom_fade_h(lv_obj_t *parent, int32_t bot_y, int32_t h)
+static void inbox_build_bottom_fade_h(lv_obj_t *parent, int32_t bot_y, int32_t h)
 {
     static lv_grad_dsc_t grad; /* zero-initialized once; filled on first use */
     grad.dir = LV_GRAD_DIR_VER;
@@ -861,7 +861,7 @@ static void signals_build_bottom_fade_h(lv_obj_t *parent, int32_t bot_y, int32_t
     grad.stops[1].frac = 255;
 
     lv_obj_t *fade = lv_obj_create(parent);
-    signals_child_deco(fade);
+    inbox_child_deco(fade);
     lv_obj_set_size(fade, FF_THEME_PUCK_PX, h);
     lv_obj_set_pos(fade, 0, bot_y - h);
     lv_obj_set_style_bg_opa(fade, LV_OPA_COVER, 0);
@@ -869,11 +869,11 @@ static void signals_build_bottom_fade_h(lv_obj_t *parent, int32_t bot_y, int32_t
 }
 
 /* Inbox/picker/Rally's own fade height, unchanged from before this file's
- * PR #149 round 3 — only the THREAD call site (signals_build_thread) needs
- * a shorter fade now (see FF_SIGNALS_THREAD_FADE_H's own comment). */
-static void signals_build_bottom_fade(lv_obj_t *parent, int32_t bot_y)
+ * PR #149 round 3 — only the THREAD call site (inbox_build_thread) needs
+ * a shorter fade now (see FF_INBOX_THREAD_FADE_H's own comment). */
+static void inbox_build_bottom_fade(lv_obj_t *parent, int32_t bot_y)
 {
-    signals_build_bottom_fade_h(parent, bot_y, 40);
+    inbox_build_bottom_fade_h(parent, bot_y, 40);
 }
 
 /* ---------------------------------------------------------------------
@@ -898,21 +898,21 @@ static void signals_build_bottom_fade(lv_obj_t *parent, int32_t bot_y)
 /* Ring mask geometry: the disc's farthest visible point from the puck
  * center is the window corner (412,412), at ~291px; the ring's border
  * covers radius 206..(206+RING_T), so RING_T must reach past 291-206=85. */
-#define FF_SIGNALS_FAB_RING_T 96
+#define FF_INBOX_FAB_RING_T 96
 
-static void signals_build_fab(lv_obj_t *parent)
+static void inbox_build_fab(lv_obj_t *parent)
 {
     /* Holder for the deco stack (disc under mask), full-puck, inert. */
     lv_obj_t *glass = lv_obj_create(parent);
-    signals_child_deco(glass);
+    inbox_child_deco(glass);
     lv_obj_set_size(glass, FF_THEME_PUCK_PX, FF_THEME_PUCK_PX);
     lv_obj_set_pos(glass, 0, 0);
     lv_obj_set_style_bg_opa(glass, LV_OPA_TRANSP, 0);
 
     lv_obj_t *disc = lv_obj_create(glass);
-    signals_child_deco(disc);
-    lv_obj_set_size(disc, FF_SIGNALS_FAB_DECO_D, FF_SIGNALS_FAB_DECO_D);
-    lv_obj_set_pos(disc, FF_SIGNALS_FAB_DECO_X, FF_SIGNALS_FAB_DECO_Y);
+    inbox_child_deco(disc);
+    lv_obj_set_size(disc, FF_INBOX_FAB_DECO_D, FF_INBOX_FAB_DECO_D);
+    lv_obj_set_pos(disc, FF_INBOX_FAB_DECO_X, FF_INBOX_FAB_DECO_Y);
     lv_obj_set_style_radius(disc, LV_RADIUS_CIRCLE, 0);
     lv_obj_set_style_bg_color(disc, lv_color_hex(FF_THEME_COLOR_AMBER), 0);
     lv_obj_set_style_bg_opa(disc, LV_OPA_COVER, 0);
@@ -920,7 +920,7 @@ static void signals_build_fab(lv_obj_t *parent)
     /* The whole-shape PRESS DIM (the maintainer's "the touchdown should
      * fill the entire shape"): a dark disc EXACTLY coincident with the
      * amber deco disc, transparent at rest, lit to a dark wash by the tap
-     * target's press/release (wired below via signals_row_press_ev — the
+     * target's press/release (wired below via inbox_row_press_ev — the
      * full-row-highlight precedent). Drawn AFTER the amber disc so it dims
      * it, and BEFORE the rim mask so its off-glass excess is masked back to
      * black exactly like the disc's — so the ENTIRE visible amber lens
@@ -928,9 +928,9 @@ static void signals_build_fab(lv_obj_t *parent)
      * LV_STATE_PRESSED on `hit` left the amber above y=300 / the top arc
      * undimmed, which is what read as "not the whole shape"). */
     lv_obj_t *press_dim = lv_obj_create(glass);
-    signals_child_deco(press_dim);
-    lv_obj_set_size(press_dim, FF_SIGNALS_FAB_DECO_D, FF_SIGNALS_FAB_DECO_D);
-    lv_obj_set_pos(press_dim, FF_SIGNALS_FAB_DECO_X, FF_SIGNALS_FAB_DECO_Y);
+    inbox_child_deco(press_dim);
+    lv_obj_set_size(press_dim, FF_INBOX_FAB_DECO_D, FF_INBOX_FAB_DECO_D);
+    lv_obj_set_pos(press_dim, FF_INBOX_FAB_DECO_X, FF_INBOX_FAB_DECO_Y);
     lv_obj_set_style_radius(press_dim, LV_RADIUS_CIRCLE, 0);
     lv_obj_set_style_bg_color(press_dim, lv_color_hex(FF_THEME_COLOR_BG), 0);
     lv_obj_set_style_bg_opa(press_dim, LV_OPA_TRANSP, 0);
@@ -940,31 +940,31 @@ static void signals_build_fab(lv_obj_t *parent)
      * the disc, so it paints the disc's off-glass spill back to the
      * letterbox black the sim/device frame shows outside the glass. */
     lv_obj_t *ring = lv_obj_create(glass);
-    signals_child_deco(ring);
-    lv_obj_set_size(ring, FF_THEME_PUCK_PX + 2 * FF_SIGNALS_FAB_RING_T,
-                    FF_THEME_PUCK_PX + 2 * FF_SIGNALS_FAB_RING_T);
-    lv_obj_set_pos(ring, -FF_SIGNALS_FAB_RING_T, -FF_SIGNALS_FAB_RING_T);
+    inbox_child_deco(ring);
+    lv_obj_set_size(ring, FF_THEME_PUCK_PX + 2 * FF_INBOX_FAB_RING_T,
+                    FF_THEME_PUCK_PX + 2 * FF_INBOX_FAB_RING_T);
+    lv_obj_set_pos(ring, -FF_INBOX_FAB_RING_T, -FF_INBOX_FAB_RING_T);
     lv_obj_set_style_radius(ring, LV_RADIUS_CIRCLE, 0);
     lv_obj_set_style_bg_opa(ring, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_border_width(ring, FF_SIGNALS_FAB_RING_T, 0);
+    lv_obj_set_style_border_width(ring, FF_INBOX_FAB_RING_T, 0);
     lv_obj_set_style_border_color(ring, lv_color_hex(0x000000), 0); /* the letterbox black outside the glass */
     lv_obj_set_style_border_opa(ring, LV_OPA_COVER, 0);
 
     /* The + glyph, dark ink, fully on-glass (drawn after the mask),
-     * centered on the TAP TARGET's center (FF_SIGNALS_FAB_GLYPH_C — the
+     * centered on the TAP TARGET's center (FF_INBOX_FAB_GLYPH_C — the
      * slice-b UX nit: the glyph is the aim point, so it marks where the
      * tap registers, not the deco disc's centroid). */
     lv_obj_t *bar_h = lv_obj_create(glass);
-    signals_child_deco(bar_h);
+    inbox_child_deco(bar_h);
     lv_obj_set_size(bar_h, 26, 4);
-    lv_obj_set_pos(bar_h, FF_SIGNALS_FAB_GLYPH_C - 13, FF_SIGNALS_FAB_GLYPH_C - 2);
+    lv_obj_set_pos(bar_h, FF_INBOX_FAB_GLYPH_C - 13, FF_INBOX_FAB_GLYPH_C - 2);
     lv_obj_set_style_radius(bar_h, 2, 0);
     lv_obj_set_style_bg_color(bar_h, lv_color_hex(FF_THEME_COLOR_BG), 0);
     lv_obj_set_style_bg_opa(bar_h, LV_OPA_COVER, 0);
     lv_obj_t *bar_v = lv_obj_create(glass);
-    signals_child_deco(bar_v);
+    inbox_child_deco(bar_v);
     lv_obj_set_size(bar_v, 4, 26);
-    lv_obj_set_pos(bar_v, FF_SIGNALS_FAB_GLYPH_C - 2, FF_SIGNALS_FAB_GLYPH_C - 13);
+    lv_obj_set_pos(bar_v, FF_INBOX_FAB_GLYPH_C - 2, FF_INBOX_FAB_GLYPH_C - 13);
     lv_obj_set_style_radius(bar_v, 2, 0);
     lv_obj_set_style_bg_color(bar_v, lv_color_hex(FF_THEME_COLOR_BG), 0);
     lv_obj_set_style_bg_opa(bar_v, LV_OPA_COVER, 0);
@@ -980,17 +980,17 @@ static void signals_build_fab(lv_obj_t *parent)
      * the masked letterbox black and stays black. */
     lv_obj_t *hit = lv_button_create(parent);
     lv_obj_remove_style_all(hit);
-    lv_obj_set_size(hit, FF_SIGNALS_FAB_HIT_PX, FF_SIGNALS_FAB_HIT_PX);
-    lv_obj_set_pos(hit, FF_SIGNALS_FAB_HIT_X, FF_SIGNALS_FAB_HIT_Y);
+    lv_obj_set_size(hit, FF_INBOX_FAB_HIT_PX, FF_INBOX_FAB_HIT_PX);
+    lv_obj_set_pos(hit, FF_INBOX_FAB_HIT_X, FF_INBOX_FAB_HIT_Y);
     lv_obj_set_style_radius(hit, 0, 0);
     lv_obj_set_style_bg_opa(hit, LV_OPA_TRANSP, 0);
     /* The press wash is now on the whole amber disc (press_dim above),
      * lit by this tap target's PRESSED/RELEASED — not a wash on the hit
      * rect's own square (which stopped short of the amber's top arc). */
-    lv_obj_add_event_cb(hit, signals_fab_cb, LV_EVENT_CLICKED, NULL);
-    lv_obj_add_event_cb(hit, signals_row_press_ev, LV_EVENT_PRESSED, press_dim);
-    lv_obj_add_event_cb(hit, signals_row_press_ev, LV_EVENT_RELEASED, press_dim);
-    lv_obj_add_event_cb(hit, signals_row_press_ev, LV_EVENT_PRESS_LOST, press_dim);
+    lv_obj_add_event_cb(hit, inbox_fab_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_add_event_cb(hit, inbox_row_press_ev, LV_EVENT_PRESSED, press_dim);
+    lv_obj_add_event_cb(hit, inbox_row_press_ev, LV_EVENT_RELEASED, press_dim);
+    lv_obj_add_event_cb(hit, inbox_row_press_ev, LV_EVENT_PRESS_LOST, press_dim);
 }
 
 /* ---------------------------------------------------------------------
@@ -1010,31 +1010,31 @@ static void signals_build_fab(lv_obj_t *parent)
  * earlier "signal is domain vocabulary, not the screen name" call.
  * Every user-visible "SIGNAL"/"Signal" string in this file is now
  * "MESSAGE" instead: "NEW SIGNAL" -> "NEW MESSAGE", "NO SIGNALS YET"
- * -> "NO MESSAGES YET" (both occurrences), and signals_kind_word's
+ * -> "NO MESSAGES YET" (both occurrences), and inbox_kind_word's
  * default fallback "SIGNAL" -> "MESSAGE". ff_fmt_age's "now" (an age
  * under a minute) is a different word in a different sense and is
  * untouched, per CLAUDE.md/AGENTS.md's standing "now" caution. */
-static void signals_build_header(lv_obj_t *parent, uint16_t unread)
+static void inbox_build_header(lv_obj_t *parent, uint16_t unread)
 {
     lv_obj_t *title = lv_label_create(parent);
     lv_label_set_text(title, "INBOX");
     lv_obj_set_style_text_font(title, FF_THEME_FONT_CHIP, 0);
     lv_obj_set_style_text_color(title, lv_color_hex(FF_THEME_COLOR_MUTED), 0);
     lv_obj_set_style_text_letter_space(title, 3, 0);
-    lv_obj_align(title, LV_ALIGN_TOP_MID, unread > 0 ? -16 : 0, FF_SIGNALS_HEADER_Y);
+    lv_obj_align(title, LV_ALIGN_TOP_MID, unread > 0 ? -16 : 0, FF_INBOX_HEADER_Y);
 
     if (unread > 0) {
-        signals_build_badge(parent, unread, LV_ALIGN_TOP_MID, 42, FF_SIGNALS_HEADER_Y - 3);
+        inbox_build_badge(parent, unread, LV_ALIGN_TOP_MID, 42, FF_INBOX_HEADER_Y - 3);
     }
 }
 
 /* Honest no-crew hint (S24 AC9): shown beneath the CREW row when the
  * model holds no member conversations at all — never a blank face, and
  * pairing itself stays out of scope (the S22 note stands). */
-static void signals_build_no_crew_hint(lv_obj_t *list, int32_t y, int32_t margin_x)
+static void inbox_build_no_crew_hint(lv_obj_t *list, int32_t y, int32_t margin_x)
 {
     lv_obj_t *box = lv_obj_create(list);
-    signals_child_deco(box);
+    inbox_child_deco(box);
     lv_obj_set_size(box, FF_THEME_PUCK_PX - 2 * margin_x, 76);
     lv_obj_set_pos(box, margin_x, y + 10);
 
@@ -1051,21 +1051,21 @@ static void signals_build_no_crew_hint(lv_obj_t *list, int32_t y, int32_t margin
     lv_obj_align(sub, LV_ALIGN_TOP_MID, 0, 34);
 }
 
-static void signals_build_inbox(lv_obj_t *parent, ff_app_signals_t const *v, bool colorblind)
+static void inbox_build_inbox(lv_obj_t *parent, ff_app_inbox_t const *v, bool colorblind)
 {
-    signals_build_header(parent, ff_scr_signals_unread_count(v));
+    inbox_build_header(parent, ff_scr_inbox_unread_count(v));
 
     /* Bottom-anchored scroll list — full puck width so the scroll
      * gesture isn't narrowed; rows are inset to the list's own
      * chord-derived margin (computed once against the viewport band's
      * worst-case edge). Clips its children, so overflow rows are
      * reachable by scroll and never paint past the viewport. */
-    int32_t list_margin = signals_safe_margin_x(FF_SIGNALS_LIST_TOP_Y, FF_SIGNALS_LIST_H);
+    int32_t list_margin = inbox_safe_margin_x(FF_INBOX_LIST_TOP_Y, FF_INBOX_LIST_H);
 
     lv_obj_t *list = lv_obj_create(parent);
     lv_obj_remove_style_all(list);
-    lv_obj_set_pos(list, 0, FF_SIGNALS_LIST_TOP_Y);
-    lv_obj_set_size(list, FF_THEME_PUCK_PX, FF_SIGNALS_LIST_H);
+    lv_obj_set_pos(list, 0, FF_INBOX_LIST_TOP_Y);
+    lv_obj_set_size(list, FF_THEME_PUCK_PX, FF_INBOX_LIST_H);
     lv_obj_set_style_bg_opa(list, LV_OPA_TRANSP, 0);
     lv_obj_add_flag(list, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_clear_flag(list, LV_OBJ_FLAG_CLICKABLE);
@@ -1077,48 +1077,48 @@ static void signals_build_inbox(lv_obj_t *parent, ff_app_signals_t const *v, boo
     for (uint8_t i = 0; i < n; i++) {
         ff_inbox_conv_t const *cv = ff_inbox_conv_at(&v->inbox, i);
         if (cv == NULL) continue;
-        signals_build_conv_row(list, cv, y, list_margin, colorblind);
-        y += FF_SIGNALS_ROW_H;
+        inbox_build_conv_row(list, cv, y, list_margin, colorblind);
+        y += FF_INBOX_ROW_H;
     }
 
     /* No paired members at all (only the ever-present CREW row): say so
      * honestly right in the list band (AC9). */
     if (n <= 1) {
-        signals_build_no_crew_hint(list, y, list_margin);
+        inbox_build_no_crew_hint(list, y, list_margin);
     }
 
-    signals_build_bottom_fade(parent, FF_SIGNALS_LIST_BOT_Y);
-    signals_build_fab(parent);
+    inbox_build_bottom_fade(parent, FF_INBOX_LIST_BOT_Y);
+    inbox_build_fab(parent);
 }
 
 /* ---------------------------------------------------------------------
  * Sub-view: RECIPIENT PICKER (the FAB's scope step).
  * ------------------------------------------------------------------- */
 
-#define FF_SIGNALS_PICKER_LIST_TOP_Y 82
-#define FF_SIGNALS_PICKER_LIST_H     260
+#define FF_INBOX_PICKER_LIST_TOP_Y 82
+#define FF_INBOX_PICKER_LIST_H     260
 
-static void signals_build_picker(lv_obj_t *parent, ff_app_signals_t const *v, bool colorblind)
+static void inbox_build_picker(lv_obj_t *parent, ff_app_inbox_t const *v, bool colorblind)
 {
-    signals_build_back(parent);
+    inbox_build_back(parent);
 
     /* Caption sits to the back button's RIGHT (a centered caption would
      * collide with the button at this band's chord margin — seen in the
      * first render, not theorized). */
-    int32_t back_margin = signals_safe_margin_x(FF_SIGNALS_BACK_Y, FF_SIGNALS_BACK_PX);
+    int32_t back_margin = inbox_safe_margin_x(FF_INBOX_BACK_Y, FF_INBOX_BACK_PX);
     lv_obj_t *title = lv_label_create(parent);
     lv_label_set_text(title, "NEW MESSAGE");
     lv_obj_set_style_text_font(title, FF_THEME_FONT_CHIP, 0);
     lv_obj_set_style_text_color(title, lv_color_hex(FF_THEME_COLOR_MUTED), 0);
     lv_obj_set_style_text_letter_space(title, 3, 0);
-    lv_obj_set_pos(title, back_margin + FF_SIGNALS_BACK_PX + 14, FF_SIGNALS_BACK_Y + 15);
+    lv_obj_set_pos(title, back_margin + FF_INBOX_BACK_PX + 14, FF_INBOX_BACK_Y + 15);
 
-    int32_t list_margin = signals_safe_margin_x(FF_SIGNALS_PICKER_LIST_TOP_Y, FF_SIGNALS_PICKER_LIST_H);
+    int32_t list_margin = inbox_safe_margin_x(FF_INBOX_PICKER_LIST_TOP_Y, FF_INBOX_PICKER_LIST_H);
 
     lv_obj_t *list = lv_obj_create(parent);
     lv_obj_remove_style_all(list);
-    lv_obj_set_pos(list, 0, FF_SIGNALS_PICKER_LIST_TOP_Y);
-    lv_obj_set_size(list, FF_THEME_PUCK_PX, FF_SIGNALS_PICKER_LIST_H);
+    lv_obj_set_pos(list, 0, FF_INBOX_PICKER_LIST_TOP_Y);
+    lv_obj_set_size(list, FF_THEME_PUCK_PX, FF_INBOX_PICKER_LIST_H);
     lv_obj_set_style_bg_opa(list, LV_OPA_TRANSP, 0);
     lv_obj_add_flag(list, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_clear_flag(list, LV_OBJ_FLAG_CLICKABLE);
@@ -1136,16 +1136,16 @@ static void signals_build_picker(lv_obj_t *parent, ff_app_signals_t const *v, bo
             bool const is_crew = (cv->kind == FF_CONV_CREW);
             if ((pass == 0) != is_crew) continue;
 
-            lv_obj_t *row = signals_row_container(list, y, list_margin, cv->node_id, signals_pick_cb, 0);
+            lv_obj_t *row = inbox_row_container(list, y, list_margin, cv->node_id, inbox_pick_cb, 0);
             int32_t row_w = FF_THEME_PUCK_PX - 2 * list_margin;
 
             if (is_crew) {
-                signals_build_crew_avatar(row, 8, colorblind);
+                inbox_build_crew_avatar(row, 8, colorblind);
             } else {
-                signals_build_member_avatar(row, 8, cv->initial, cv->color_idx, colorblind);
+                inbox_build_member_avatar(row, 8, cv->initial, cv->color_idx, colorblind);
             }
 
-            int32_t text_x = 8 + FF_SIGNALS_AVATAR_PX + 12;
+            int32_t text_x = 8 + FF_INBOX_AVATAR_PX + 12;
             lv_obj_t *name = lv_label_create(row);
             lv_label_set_long_mode(name, LV_LABEL_LONG_MODE_DOTS);
             lv_obj_set_width(name, row_w - text_x - 8);
@@ -1162,7 +1162,7 @@ static void signals_build_picker(lv_obj_t *parent, ff_app_signals_t const *v, bo
             if (is_crew) {
                 snprintf(line, sizeof(line), "EVERYONE PAIRED");
             } else {
-                signals_presence_text(cv, line, sizeof(line), &line_color);
+                inbox_presence_text(cv, line, sizeof(line), &line_color);
             }
             lv_obj_t *sub = lv_label_create(row);
             lv_label_set_text(sub, line);
@@ -1170,7 +1170,7 @@ static void signals_build_picker(lv_obj_t *parent, ff_app_signals_t const *v, bo
             lv_obj_set_style_text_color(sub, lv_color_hex(line_color), 0);
             lv_obj_set_pos(sub, text_x, 38);
 
-            y += FF_SIGNALS_ROW_H;
+            y += FF_INBOX_ROW_H;
         }
     }
 }
@@ -1184,7 +1184,7 @@ static void signals_build_picker(lv_obj_t *parent, ff_app_signals_t const *v, bo
  * the model's direction fact (FEED_DIR_OUT = my side, amber, right;
  * everything else = theirs, dark, left — an UNKNOWN direction renders
  * like inbound but its wording never claims an address, see
- * signals_msg_event_text), and names a sender ONLY when the model joined
+ * inbox_msg_event_text), and names a sender ONLY when the model joined
  * one (`identity_known`; an unjoined sender renders an honest "UNKNOWN",
  * never a guessed name). Bubbles are DECO — not individually tappable —
  * so the message list has no PER-ROW hit-rects to collide with the
@@ -1200,10 +1200,10 @@ static void signals_build_picker(lv_obj_t *parent, ff_app_signals_t const *v, bo
  * bounded width AND height, the slice-b lesson).
  * ------------------------------------------------------------------- */
 
-/* signals_thread_conv — the open conversation's row in the inbox model
+/* inbox_thread_conv — the open conversation's row in the inbox model
  * (header presence / identity), or NULL (e.g. a fixture that authors no
  * convs — every dependent element renders honestly absent). */
-static ff_inbox_conv_t const *signals_thread_conv(ff_app_signals_t const *v)
+static ff_inbox_conv_t const *inbox_thread_conv(ff_app_inbox_t const *v)
 {
     uint8_t n = ff_inbox_conv_count(&v->inbox);
     for (uint8_t i = 0; i < n; i++) {
@@ -1222,14 +1222,14 @@ static ff_inbox_conv_t const *signals_thread_conv(ff_app_signals_t const *v)
  * when the model has one ("MEMBER" for a joined member whose name never
  * arrived — the inbox row precedent), an explicit "UNKNOWN" when it
  * does not. Never a guess. */
-static char const *signals_msg_sender_name(ff_inbox_msg_t const *m)
+static char const *inbox_msg_sender_name(ff_inbox_msg_t const *m)
 {
     if (!m->identity_known) return "UNKNOWN";
     return (m->name[0] != '\0') ? m->name : "MEMBER";
 }
 
 /* A small label helper: font + color + text, returns the label. */
-static lv_obj_t *signals_mk_label(lv_obj_t *parent, char const *text, lv_font_t const *font,
+static lv_obj_t *inbox_mk_label(lv_obj_t *parent, char const *text, lv_font_t const *font,
                                   uint32_t color)
 {
     lv_obj_t *l = lv_label_create(parent);
@@ -1241,7 +1241,7 @@ static lv_obj_t *signals_mk_label(lv_obj_t *parent, char const *text, lv_font_t 
 
 /* Clamp a freshly-created single-line label to `max_w`, ellipsizing when
  * it does not fit. Returns the final (clamped) width. */
-static int32_t signals_label_clamp(lv_obj_t *label, int32_t max_w)
+static int32_t inbox_label_clamp(lv_obj_t *label, int32_t max_w)
 {
     lv_obj_update_layout(label);
     int32_t w = lv_obj_get_width(label);
@@ -1254,7 +1254,7 @@ static int32_t signals_label_clamp(lv_obj_t *label, int32_t max_w)
 }
 
 /* The CREW-thread inbound sender line: crew dot + name + mono age. */
-static void signals_msg_sender_line(lv_obj_t *row, ff_inbox_msg_t const *m, char const *age,
+static void inbox_msg_sender_line(lv_obj_t *row, ff_inbox_msg_t const *m, char const *age,
                                     bool colorblind)
 {
     uint32_t const name_color =
@@ -1262,7 +1262,7 @@ static void signals_msg_sender_line(lv_obj_t *row, ff_inbox_msg_t const *m, char
 
     if (m->identity_known) {
         lv_obj_t *dot = lv_obj_create(row);
-        signals_child_deco(dot);
+        inbox_child_deco(dot);
         lv_obj_set_size(dot, 7, 7);
         lv_obj_set_style_radius(dot, LV_RADIUS_CIRCLE, 0);
         lv_obj_set_style_bg_color(dot, lv_color_hex(name_color), 0);
@@ -1271,18 +1271,18 @@ static void signals_msg_sender_line(lv_obj_t *row, ff_inbox_msg_t const *m, char
     }
     int32_t x = m->identity_known ? 13 : 0;
 
-    lv_obj_t *name = signals_mk_label(row, signals_msg_sender_name(m), FF_THEME_FONT_CHIP, name_color);
+    lv_obj_t *name = inbox_mk_label(row, inbox_msg_sender_name(m), FF_THEME_FONT_CHIP, name_color);
     lv_obj_set_pos(name, x, 0);
-    x += signals_label_clamp(name, 120) + 8;
+    x += inbox_label_clamp(name, 120) + 8;
 
-    lv_obj_t *age_l = signals_mk_label(row, age, FF_THEME_FONT_CHIP, FF_THEME_COLOR_DIM);
+    lv_obj_t *age_l = inbox_mk_label(row, age, FF_THEME_FONT_CHIP, FF_THEME_COLOR_DIM);
     lv_obj_set_pos(age_l, x, 1);
 }
 
 /* The mono age line under a bubble (rows with no sender line above). */
-static void signals_msg_age_below(lv_obj_t *row, char const *age, int32_t y, bool out, int32_t row_w)
+static void inbox_msg_age_below(lv_obj_t *row, char const *age, int32_t y, bool out, int32_t row_w)
 {
-    lv_obj_t *l = signals_mk_label(row, age, FF_THEME_FONT_CHIP, FF_THEME_COLOR_DIM);
+    lv_obj_t *l = inbox_mk_label(row, age, FF_THEME_FONT_CHIP, FF_THEME_COLOR_DIM);
     lv_obj_update_layout(l);
     lv_obj_set_pos(l, out ? (row_w - lv_obj_get_width(l) - 4) : 4, y);
 }
@@ -1291,34 +1291,34 @@ static void signals_msg_age_below(lv_obj_t *row, char const *age, int32_t y, boo
  * pulse): dark surface for theirs, solid amber with dark ink for mine.
  * Returns the bubble container (its content laid out by the caller when
  * `text` is NULL). */
-static lv_obj_t *signals_msg_bubble(lv_obj_t *row, char const *text, int32_t y, bool out,
+static lv_obj_t *inbox_msg_bubble(lv_obj_t *row, char const *text, int32_t y, bool out,
                                     int32_t row_w)
 {
     lv_obj_t *bub = lv_obj_create(row);
-    signals_child_deco(bub);
+    inbox_child_deco(bub);
     lv_obj_set_style_radius(bub, 14, 0); /* design canvas ThreadGroup/ThreadPerson bubble radius */
     lv_obj_set_style_bg_color(bub, lv_color_hex(out ? FF_THEME_COLOR_AMBER : FF_THEME_COLOR_SURFACE), 0);
     lv_obj_set_style_bg_opa(bub, LV_OPA_COVER, 0);
 
-    int32_t w = FF_SIGNALS_MSG_MAX_W;
+    int32_t w = FF_INBOX_MSG_MAX_W;
     if (text != NULL) {
-        lv_obj_t *l = signals_mk_label(bub, text, FF_THEME_FONT_MSG_BODY,
+        lv_obj_t *l = inbox_mk_label(bub, text, FF_THEME_FONT_MSG_BODY,
                                        out ? FF_THEME_COLOR_BG : FF_THEME_COLOR_INK);
-        int32_t const tw = signals_label_clamp(l, FF_SIGNALS_MSG_MAX_W - 26);
+        int32_t const tw = inbox_label_clamp(l, FF_INBOX_MSG_MAX_W - 26);
         lv_obj_set_pos(l, 13, 8);
         w = tw + 26;
     }
-    lv_obj_set_size(bub, w, FF_SIGNALS_MSG_BUBBLE_H);
+    lv_obj_set_size(bub, w, FF_INBOX_MSG_BUBBLE_H);
     lv_obj_set_pos(bub, out ? (row_w - w) : 0, y);
     return bub;
 }
 
 /* The RALLY callout: violet-tinted box, RALLY caption + place name. */
-static void signals_msg_rally(lv_obj_t *row, ff_inbox_msg_t const *m, int32_t y, bool out,
+static void inbox_msg_rally(lv_obj_t *row, ff_inbox_msg_t const *m, int32_t y, bool out,
                               int32_t row_w)
 {
     lv_obj_t *box = lv_obj_create(row);
-    signals_child_deco(box);
+    inbox_child_deco(box);
     lv_obj_set_style_radius(box, 14, 0); /* design canvas rally-callout radius */
     lv_obj_set_style_bg_color(box, lv_color_hex(FF_THEME_CREW_VIOLET), 0);
     lv_obj_set_style_bg_opa(box, 30, 0); /* ~12% — the canvas's violet wash */
@@ -1326,19 +1326,19 @@ static void signals_msg_rally(lv_obj_t *row, ff_inbox_msg_t const *m, int32_t y,
     lv_obj_set_style_border_opa(box, LV_OPA_30, 0);
     lv_obj_set_style_border_width(box, 1, 0);
 
-    lv_obj_t *cap = signals_mk_label(box, "RALLY", FF_THEME_FONT_CHIP, FF_THEME_CREW_VIOLET);
+    lv_obj_t *cap = inbox_mk_label(box, "RALLY", FF_THEME_FONT_CHIP, FF_THEME_CREW_VIOLET);
     lv_obj_set_style_text_letter_space(cap, 2, 0);
     lv_obj_set_pos(cap, 12, 5);
 
     /* The place is the wire name verbatim (m->text); "" renders as the
      * honest absence of a place claim, never an invented one. */
-    lv_obj_t *place = signals_mk_label(box, m->text, FF_THEME_FONT_MSG_BODY, FF_THEME_COLOR_INK);
-    int32_t const pw = signals_label_clamp(place, FF_SIGNALS_MSG_MAX_W - 24);
+    lv_obj_t *place = inbox_mk_label(box, m->text, FF_THEME_FONT_MSG_BODY, FF_THEME_COLOR_INK);
+    int32_t const pw = inbox_label_clamp(place, FF_INBOX_MSG_MAX_W - 24);
     lv_obj_set_pos(place, 12, 23);
 
     int32_t w = pw + 24;
     if (w < 96) w = 96; /* never narrower than its own RALLY caption */
-    lv_obj_set_size(box, w, FF_SIGNALS_MSG_RALLY_H);
+    lv_obj_set_size(box, w, FF_INBOX_MSG_RALLY_H);
     lv_obj_set_pos(box, out ? (row_w - w) : 0, y);
 }
 
@@ -1347,7 +1347,7 @@ static void signals_msg_rally(lv_obj_t *row, ff_inbox_msg_t const *m, int32_t y,
  * showing: a BROADCAST pulse "pulsed the crew", a DIRECT one "pulsed
  * you", an OUT one names my own act, and an UNKNOWN direction claims no
  * address at all (bare "pulsed"/"flared"). */
-static char const *signals_msg_event_text(ff_inbox_msg_t const *m, bool crew_thread)
+static char const *inbox_msg_event_text(ff_inbox_msg_t const *m, bool crew_thread)
 {
     bool const pulse = (m->kind == FEED_PULSE);
     if (m->dir == FEED_DIR_OUT) {
@@ -1365,10 +1365,10 @@ static char const *signals_msg_event_text(ff_inbox_msg_t const *m, bool crew_thr
 }
 
 /* The small amber pulse mark (dot + ring). */
-static void signals_msg_pulse_mark(lv_obj_t *parent, int32_t x, int32_t y)
+static void inbox_msg_pulse_mark(lv_obj_t *parent, int32_t x, int32_t y)
 {
     lv_obj_t *ring = lv_obj_create(parent);
-    signals_child_deco(ring);
+    inbox_child_deco(ring);
     lv_obj_set_size(ring, 13, 13);
     lv_obj_set_style_radius(ring, LV_RADIUS_CIRCLE, 0);
     lv_obj_set_style_border_color(ring, lv_color_hex(FF_THEME_COLOR_AMBER), 0);
@@ -1377,7 +1377,7 @@ static void signals_msg_pulse_mark(lv_obj_t *parent, int32_t x, int32_t y)
     lv_obj_set_pos(ring, x, y);
 
     lv_obj_t *dot = lv_obj_create(parent);
-    signals_child_deco(dot);
+    inbox_child_deco(dot);
     lv_obj_set_size(dot, 5, 5);
     lv_obj_set_style_radius(dot, LV_RADIUS_CIRCLE, 0);
     lv_obj_set_style_bg_color(dot, lv_color_hex(FF_THEME_COLOR_AMBER), 0);
@@ -1387,7 +1387,7 @@ static void signals_msg_pulse_mark(lv_obj_t *parent, int32_t x, int32_t y)
 
 /* An inbound CREW-thread event one-liner (pulse/flare): crew dot + mark
  * + "<NAME> <event>" + age at the right. */
-static void signals_msg_event_line(lv_obj_t *row, ff_inbox_msg_t const *m, char const *age,
+static void inbox_msg_event_line(lv_obj_t *row, ff_inbox_msg_t const *m, char const *age,
                                    bool colorblind, int32_t row_w)
 {
     uint32_t const name_color =
@@ -1396,7 +1396,7 @@ static void signals_msg_event_line(lv_obj_t *row, ff_inbox_msg_t const *m, char 
     int32_t x = 0;
     if (m->identity_known) {
         lv_obj_t *dot = lv_obj_create(row);
-        signals_child_deco(dot);
+        inbox_child_deco(dot);
         lv_obj_set_size(dot, 7, 7);
         lv_obj_set_style_radius(dot, LV_RADIUS_CIRCLE, 0);
         lv_obj_set_style_bg_color(dot, lv_color_hex(name_color), 0);
@@ -1405,20 +1405,20 @@ static void signals_msg_event_line(lv_obj_t *row, ff_inbox_msg_t const *m, char 
         x = 13;
     }
     if (m->kind == FEED_PULSE) {
-        signals_msg_pulse_mark(row, x, 4);
+        inbox_msg_pulse_mark(row, x, 4);
         x += 19;
     }
-    lv_obj_t *name = signals_mk_label(row, signals_msg_sender_name(m), FF_THEME_FONT_CHIP, name_color);
+    lv_obj_t *name = inbox_mk_label(row, inbox_msg_sender_name(m), FF_THEME_FONT_CHIP, name_color);
     lv_obj_set_pos(name, x, 1);
-    x += signals_label_clamp(name, 110) + 6;
+    x += inbox_label_clamp(name, 110) + 6;
 
-    lv_obj_t *what = signals_mk_label(row, signals_msg_event_text(m, true), FF_THEME_FONT_CHIP,
+    lv_obj_t *what = inbox_mk_label(row, inbox_msg_event_text(m, true), FF_THEME_FONT_CHIP,
                                       (m->kind == FEED_FLARE) ? FF_THEME_COLOR_STALE_AMBER
                                                               : FF_THEME_COLOR_INK);
     lv_obj_set_pos(what, x, 1);
-    (void)signals_label_clamp(what, row_w - x - 58);
+    (void)inbox_label_clamp(what, row_w - x - 58);
 
-    lv_obj_t *age_l = signals_mk_label(row, age, FF_THEME_FONT_CHIP, FF_THEME_COLOR_DIM);
+    lv_obj_t *age_l = inbox_mk_label(row, age, FF_THEME_FONT_CHIP, FF_THEME_COLOR_DIM);
     lv_obj_update_layout(age_l);
     lv_obj_set_pos(age_l, row_w - lv_obj_get_width(age_l) - 4, 1);
 }
@@ -1430,7 +1430,7 @@ static void signals_msg_event_line(lv_obj_t *row, ff_inbox_msg_t const *m, char 
  * with the sender named) vs the 1:1 layout (the header already names the
  * peer, so inbound rows are bubble + age only — the canvas's shapes).
  */
-static int32_t signals_build_msg(lv_obj_t *list, ff_inbox_msg_t const *m, int32_t y,
+static int32_t inbox_build_msg(lv_obj_t *list, ff_inbox_msg_t const *m, int32_t y,
                                  int32_t margin_x, bool crew_thread, bool colorblind)
 {
     int32_t const row_w = FF_THEME_PUCK_PX - 2 * margin_x;
@@ -1445,53 +1445,53 @@ static int32_t signals_build_msg(lv_obj_t *list, ff_inbox_msg_t const *m, int32_
     bool event_line = false; /* the CREW one-liner shape (no bubble, no age-below) */
     switch (m->kind) {
     case FEED_RALLY:
-        content_h = FF_SIGNALS_MSG_RALLY_H;
+        content_h = FF_INBOX_MSG_RALLY_H;
         break;
     case FEED_PULSE:
     case FEED_FLARE:
         if (sender_line) {
             event_line = true;
-            content_h = FF_SIGNALS_MSG_EVENT_H;
+            content_h = FF_INBOX_MSG_EVENT_H;
         } else {
-            content_h = FF_SIGNALS_MSG_BUBBLE_H;
+            content_h = FF_INBOX_MSG_BUBBLE_H;
         }
         break;
     default: /* TEXT / STATUS */
-        content_h = FF_SIGNALS_MSG_BUBBLE_H;
+        content_h = FF_INBOX_MSG_BUBBLE_H;
         break;
     }
-    int32_t const head_h = (sender_line && !event_line) ? FF_SIGNALS_MSG_SENDER_H : 0;
-    int32_t const tail_h = (!sender_line) ? FF_SIGNALS_MSG_AGE_H : 0;
+    int32_t const head_h = (sender_line && !event_line) ? FF_INBOX_MSG_SENDER_H : 0;
+    int32_t const tail_h = (!sender_line) ? FF_INBOX_MSG_AGE_H : 0;
     int32_t const row_h = head_h + content_h + tail_h;
 
     lv_obj_t *row = lv_obj_create(list);
-    signals_child_deco(row);
+    inbox_child_deco(row);
     lv_obj_set_size(row, row_w, row_h);
     lv_obj_set_pos(row, margin_x, y);
 
     if (event_line) {
         /* CREW inbound pulse/flare: single line with the sender named. */
-        signals_msg_event_line(row, m, age, colorblind, row_w);
-        return row_h + FF_SIGNALS_MSG_GAP;
+        inbox_msg_event_line(row, m, age, colorblind, row_w);
+        return row_h + FF_INBOX_MSG_GAP;
     }
 
     if (sender_line) {
-        signals_msg_sender_line(row, m, age, colorblind);
+        inbox_msg_sender_line(row, m, age, colorblind);
     }
 
     switch (m->kind) {
     case FEED_RALLY:
-        signals_msg_rally(row, m, head_h, out, row_w);
+        inbox_msg_rally(row, m, head_h, out, row_w);
         break;
     case FEED_PULSE:
     case FEED_FLARE: {
         /* 1:1 pulse callout / any OUT pulse/flare: a bubble carrying the
          * honest event sentence (inbound names the sender; OUT names my
          * own act). */
-        lv_obj_t *bub = signals_msg_bubble(row, NULL, head_h, out, row_w);
+        lv_obj_t *bub = inbox_msg_bubble(row, NULL, head_h, out, row_w);
         int32_t x = 13;
         if (m->kind == FEED_PULSE) {
-            signals_msg_pulse_mark(bub, x, 10);
+            inbox_msg_pulse_mark(bub, x, 10);
             x += 19;
         }
         uint32_t const ink = out ? FF_THEME_COLOR_BG : FF_THEME_COLOR_INK;
@@ -1500,21 +1500,21 @@ static int32_t signals_build_msg(lv_obj_t *list, ff_inbox_msg_t const *m, int32_
             uint32_t const name_color = m->identity_known
                                             ? ff_theme_crew_color(m->color_idx, colorblind)
                                             : FF_THEME_COLOR_MUTED;
-            lv_obj_t *name = signals_mk_label(bub, signals_msg_sender_name(m), FF_THEME_FONT_MSG_BODY,
+            lv_obj_t *name = inbox_mk_label(bub, inbox_msg_sender_name(m), FF_THEME_FONT_MSG_BODY,
                                               name_color);
             lv_obj_set_pos(name, x, 8);
-            x += signals_label_clamp(name, 100) + 6;
-            lv_obj_t *what = signals_mk_label(bub, signals_msg_event_text(m, crew_thread),
+            x += inbox_label_clamp(name, 100) + 6;
+            lv_obj_t *what = inbox_mk_label(bub, inbox_msg_event_text(m, crew_thread),
                                               FF_THEME_FONT_MSG_BODY, ink);
             lv_obj_set_pos(what, x, 8);
-            w = x + signals_label_clamp(what, FF_SIGNALS_MSG_MAX_W - x - 13) + 13;
+            w = x + inbox_label_clamp(what, FF_INBOX_MSG_MAX_W - x - 13) + 13;
         } else {
-            lv_obj_t *what = signals_mk_label(bub, signals_msg_event_text(m, crew_thread),
+            lv_obj_t *what = inbox_mk_label(bub, inbox_msg_event_text(m, crew_thread),
                                               FF_THEME_FONT_MSG_BODY, ink);
             lv_obj_set_pos(what, x, 8);
-            w = x + signals_label_clamp(what, FF_SIGNALS_MSG_MAX_W - x - 13) + 13;
+            w = x + inbox_label_clamp(what, FF_INBOX_MSG_MAX_W - x - 13) + 13;
         }
-        lv_obj_set_size(bub, w, FF_SIGNALS_MSG_BUBBLE_H);
+        lv_obj_set_size(bub, w, FF_INBOX_MSG_BUBBLE_H);
         lv_obj_set_pos(bub, out ? (row_w - w) : 0, head_h);
         break;
     }
@@ -1527,15 +1527,15 @@ static int32_t signals_build_msg(lv_obj_t *list, ff_inbox_msg_t const *m, int32_
         } else {
             snprintf(line, sizeof(line), "%s", m->text);
         }
-        (void)signals_msg_bubble(row, line, head_h, out, row_w);
+        (void)inbox_msg_bubble(row, line, head_h, out, row_w);
         break;
     }
     }
 
     if (!sender_line) {
-        signals_msg_age_below(row, age, head_h + content_h + 2, out, row_w);
+        inbox_msg_age_below(row, age, head_h + content_h + 2, out, row_w);
     }
-    return row_h + FF_SIGNALS_MSG_GAP;
+    return row_h + FF_INBOX_MSG_GAP;
 }
 
 /* The thread header. CREW: centered "CREW" + the roster fact "N CREW"
@@ -1543,11 +1543,11 @@ static int32_t signals_build_msg(lv_obj_t *list, ff_inbox_msg_t const *m, int32_
  * never a present-tense "N here"). 1:1: crew dot + name, and the honest
  * presence line ("SEEN <age>" stale-amber / LOST / LINKED) beneath —
  * the legible stale tier, same formatter as the inbox rows. */
-static void signals_build_thread_header(lv_obj_t *parent, ff_app_signals_t const *v,
+static void inbox_build_thread_header(lv_obj_t *parent, ff_app_inbox_t const *v,
                                         ff_inbox_conv_t const *cv, bool colorblind)
 {
     if (v->thread_node == 0u) {
-        lv_obj_t *title = signals_mk_label(parent, "CREW", FF_THEME_FONT_HEADLINE, FF_THEME_COLOR_INK);
+        lv_obj_t *title = inbox_mk_label(parent, "CREW", FF_THEME_FONT_HEADLINE, FF_THEME_COLOR_INK);
         lv_obj_set_style_text_letter_space(title, 1, 0);
         lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 34);
 
@@ -1557,21 +1557,21 @@ static void signals_build_thread_header(lv_obj_t *parent, ff_app_signals_t const
         uint8_t const n = ff_inbox_conv_count(&v->inbox);
         char buf[16];
         snprintf(buf, sizeof(buf), "%u CREW", (n > 0u) ? (unsigned)(n - 1u) : 0u);
-        lv_obj_t *sub = signals_mk_label(parent, buf, FF_THEME_FONT_CHIP, FF_THEME_COLOR_DIM);
+        lv_obj_t *sub = inbox_mk_label(parent, buf, FF_THEME_FONT_CHIP, FF_THEME_COLOR_DIM);
         lv_obj_align(sub, LV_ALIGN_TOP_MID, 0, 58);
         return;
     }
 
     char const *name_txt = (v->thread_name[0] != '\0') ? v->thread_name : "MEMBER";
-    lv_obj_t *name = signals_mk_label(parent, name_txt, FF_THEME_FONT_HEADLINE, FF_THEME_COLOR_INK);
+    lv_obj_t *name = inbox_mk_label(parent, name_txt, FF_THEME_FONT_HEADLINE, FF_THEME_COLOR_INK);
     lv_obj_align(name, LV_ALIGN_TOP_MID, 8, 34);
     /* Ellipsize a long name, then hug the crew dot to the MEASURED text
      * edge (a fixed offset either collides with the back button or
      * floats detached on a short name — measured, not guessed). */
-    int32_t const name_w = signals_label_clamp(name, 140);
+    int32_t const name_w = inbox_label_clamp(name, 140);
 
     lv_obj_t *dot = lv_obj_create(parent);
-    signals_child_deco(dot);
+    inbox_child_deco(dot);
     lv_obj_set_size(dot, 9, 9);
     lv_obj_set_style_radius(dot, LV_RADIUS_CIRCLE, 0);
     lv_obj_set_style_bg_color(dot, lv_color_hex(ff_theme_crew_color(v->thread_color_idx, colorblind)), 0);
@@ -1581,56 +1581,56 @@ static void signals_build_thread_header(lv_obj_t *parent, ff_app_signals_t const
     if (cv != NULL && cv->presence_valid) {
         char pres[32];
         uint32_t pres_color = FF_THEME_COLOR_MUTED;
-        signals_presence_text(cv, pres, sizeof(pres), &pres_color);
-        lv_obj_t *pl = signals_mk_label(parent, pres, FF_THEME_FONT_CHIP, pres_color);
+        inbox_presence_text(cv, pres, sizeof(pres), &pres_color);
+        lv_obj_t *pl = inbox_mk_label(parent, pres, FF_THEME_FONT_CHIP, pres_color);
         lv_obj_align(pl, LV_ALIGN_TOP_MID, 0, 58);
     }
 }
 
 /* One quick chip. `which` rides user_data for the canned replies;
  * `amber_text` marks the FLARE chip's accent. */
-static void signals_build_chip(lv_obj_t *parent, int32_t x, int32_t w, char const *text,
+static void inbox_build_chip(lv_obj_t *parent, int32_t x, int32_t w, char const *text,
                                bool amber_text, lv_event_cb_t cb, uintptr_t which)
 {
     lv_obj_t *chip = lv_button_create(parent);
     lv_obj_remove_style_all(chip);
-    lv_obj_set_size(chip, w, FF_SIGNALS_CHIP_H);
-    lv_obj_set_pos(chip, x, FF_SIGNALS_CHIP_Y);
-    lv_obj_set_style_radius(chip, FF_SIGNALS_CHIP_H / 2, 0);
+    lv_obj_set_size(chip, w, FF_INBOX_CHIP_H);
+    lv_obj_set_pos(chip, x, FF_INBOX_CHIP_Y);
+    lv_obj_set_style_radius(chip, FF_INBOX_CHIP_H / 2, 0);
     lv_obj_set_style_bg_color(chip, lv_color_hex(FF_THEME_COLOR_SURFACE), 0);
     lv_obj_set_style_bg_opa(chip, LV_OPA_COVER, 0);
     lv_obj_add_event_cb(chip, cb, LV_EVENT_CLICKED, (void *)which);
-    signals_press_feedback(chip);
+    inbox_press_feedback(chip);
 
-    lv_obj_t *l = signals_mk_label(chip, text, FF_THEME_FONT_CHIP,
+    lv_obj_t *l = inbox_mk_label(chip, text, FF_THEME_FONT_CHIP,
                                    amber_text ? FF_THEME_COLOR_AMBER : FF_THEME_COLOR_INK);
     lv_obj_center(l);
 }
 
 /* The 1:1 quick-chip strip: OMW / IN 5 MIN / FLARE, centered in the band
- * left of the FAB clearance (FF_SIGNALS_CHIP_MAX_RIGHT). */
-static void signals_build_chips(lv_obj_t *parent)
+ * left of the FAB clearance (FF_INBOX_CHIP_MAX_RIGHT). */
+static void inbox_build_chips(lv_obj_t *parent)
 {
     static const int32_t w_omw = 66, w_5min = 96, w_flare = 74;
-    int32_t const margin = signals_safe_margin_x(FF_SIGNALS_CHIP_Y, FF_SIGNALS_CHIP_H);
-    int32_t const strip_w = w_omw + w_5min + w_flare + 2 * FF_SIGNALS_CHIP_GAP;
-    int32_t const avail = FF_SIGNALS_CHIP_MAX_RIGHT - margin;
+    int32_t const margin = inbox_safe_margin_x(FF_INBOX_CHIP_Y, FF_INBOX_CHIP_H);
+    int32_t const strip_w = w_omw + w_5min + w_flare + 2 * FF_INBOX_CHIP_GAP;
+    int32_t const avail = FF_INBOX_CHIP_MAX_RIGHT - margin;
     int32_t x = margin + (avail > strip_w ? (avail - strip_w) / 2 : 0);
 
-    signals_build_chip(parent, x, w_omw, "OMW", false, signals_chip_reply_cb,
+    inbox_build_chip(parent, x, w_omw, "OMW", false, inbox_chip_reply_cb,
                        (uintptr_t)FF_WIRING_REPLY_OMW);
-    x += w_omw + FF_SIGNALS_CHIP_GAP;
-    signals_build_chip(parent, x, w_5min, "IN 5 MIN", false, signals_chip_reply_cb,
+    x += w_omw + FF_INBOX_CHIP_GAP;
+    inbox_build_chip(parent, x, w_5min, "IN 5 MIN", false, inbox_chip_reply_cb,
                        (uintptr_t)FF_WIRING_REPLY_5MIN);
-    x += w_5min + FF_SIGNALS_CHIP_GAP;
-    signals_build_chip(parent, x, w_flare, "FLARE", true, signals_chip_flare_cb, 0u);
+    x += w_5min + FF_INBOX_CHIP_GAP;
+    inbox_build_chip(parent, x, w_flare, "FLARE", true, inbox_chip_flare_cb, 0u);
 }
 
 /* ---------------------------------------------------------------------
  * Thread scroll-position preservation across the S24 render-key rebuild
  * (ff_shell.c's render-key doc comment: an age-bucket crossing is the
  * spec's own legitimate rebuild trigger for a live thread — it does
- * lv_obj_clean + a fresh signals_build_thread). Without this, a user
+ * lv_obj_clean + a fresh inbox_build_thread). Without this, a user
  * scrolled up mid-read was silently snapped back to newest on the very
  * next age tick. Mirrors scr_settings.c's s_list/s_scroll_y precedent
  * (#bug4) — one LV_EVENT_SCROLL callback writes back a file-static
@@ -1652,26 +1652,26 @@ static bool     s_thread_scroll_valid;
  * that triggers a rebuild does lv_obj_clean() first, destroying `list`
  * and any chance to read its scroll offset AFTER the fact, so this is
  * the only point the offset can ever be observed. */
-static void signals_thread_scroll_cb(lv_event_t *e)
+static void inbox_thread_scroll_cb(lv_event_t *e)
 {
     lv_obj_t *list = lv_event_get_target(e);
     s_thread_scroll_y = lv_obj_get_scroll_y(list);
 }
 
-static void signals_build_thread(lv_obj_t *parent, ff_app_signals_t const *v, bool colorblind)
+static void inbox_build_thread(lv_obj_t *parent, ff_app_inbox_t const *v, bool colorblind)
 {
     bool const crew_thread = (v->thread_node == 0u);
-    ff_inbox_conv_t const *cv = signals_thread_conv(v);
+    ff_inbox_conv_t const *cv = inbox_thread_conv(v);
 
-    signals_build_back(parent);
-    signals_build_thread_header(parent, v, cv, colorblind);
+    inbox_build_back(parent);
+    inbox_build_thread_header(parent, v, cv, colorblind);
 
-    int32_t const list_h = crew_thread ? FF_SIGNALS_THREAD_LIST_H_CREW : FF_SIGNALS_THREAD_LIST_H_1TO1;
-    int32_t const list_margin = signals_safe_margin_x(FF_SIGNALS_THREAD_LIST_TOP_Y, list_h);
+    int32_t const list_h = crew_thread ? FF_INBOX_THREAD_LIST_H_CREW : FF_INBOX_THREAD_LIST_H_1TO1;
+    int32_t const list_margin = inbox_safe_margin_x(FF_INBOX_THREAD_LIST_TOP_Y, list_h);
 
     lv_obj_t *list = lv_obj_create(parent);
     lv_obj_remove_style_all(list);
-    lv_obj_set_pos(list, 0, FF_SIGNALS_THREAD_LIST_TOP_Y);
+    lv_obj_set_pos(list, 0, FF_INBOX_THREAD_LIST_TOP_Y);
     lv_obj_set_size(list, FF_THEME_PUCK_PX, list_h);
     lv_obj_set_style_bg_opa(list, LV_OPA_TRANSP, 0);
     lv_obj_add_flag(list, LV_OBJ_FLAG_SCROLLABLE);
@@ -1688,21 +1688,21 @@ static void signals_build_thread(lv_obj_t *parent, ff_app_signals_t const *v, bo
     lv_obj_set_style_pad_bottom(list, crew_thread ? 0 : 0, 0);
     /* Observe the live scroll offset so the NEXT rebuild (see below) can
      * restore it instead of always snapping to newest. */
-    lv_obj_add_event_cb(list, signals_thread_scroll_cb, LV_EVENT_SCROLL, NULL);
+    lv_obj_add_event_cb(list, inbox_thread_scroll_cb, LV_EVENT_SCROLL, NULL);
 
     uint8_t const n = ff_inbox_thread_count(&v->thread);
     int32_t y = 0;
     for (uint8_t i = 0; i < n; i++) {
         ff_inbox_msg_t const *m = ff_inbox_thread_at(&v->thread, i);
         if (m == NULL) continue;
-        y += signals_build_msg(list, m, y, list_margin, crew_thread, colorblind);
+        y += inbox_build_msg(list, m, y, list_margin, crew_thread, colorblind);
     }
 
     if (n == 0) {
         /* Honest empty thread (a quiet member / a traffic-less crew).
          * Renamed 2026-09-01, was "NO SIGNALS YET" (reviewer PR #144
          * round 2). */
-        lv_obj_t *empty = signals_mk_label(list, "NO MESSAGES YET", FF_THEME_FONT_CHIP,
+        lv_obj_t *empty = inbox_mk_label(list, "NO MESSAGES YET", FF_THEME_FONT_CHIP,
                                            FF_THEME_COLOR_DIM);
         lv_obj_set_style_text_letter_space(empty, 2, 0);
         lv_obj_align(empty, LV_ALIGN_CENTER, 0, -20);
@@ -1814,15 +1814,15 @@ static void signals_build_thread(lv_obj_t *parent, ff_app_signals_t const *v, bo
     /* PR #149 review round 3: a 40px fade (the inbox/Rally default) would
      * dim most or all of the newest message, which must read at FULL
      * strength ("the newest message is the one that must never be
-     * hidden") — FF_SIGNALS_THREAD_FADE_H is a much shorter cue, just
+     * hidden") — FF_INBOX_THREAD_FADE_H is a much shorter cue, just
      * enough to signal "content continues below" without touching the
      * newest row's own text (its natural height clears the fade given the
      * list's own bottom_pad above). */
-    signals_build_bottom_fade_h(parent, FF_SIGNALS_THREAD_LIST_TOP_Y + list_h, FF_SIGNALS_THREAD_FADE_H);
+    inbox_build_bottom_fade_h(parent, FF_INBOX_THREAD_LIST_TOP_Y + list_h, FF_INBOX_THREAD_FADE_H);
     if (!crew_thread) {
-        signals_build_chips(parent);
+        inbox_build_chips(parent);
     }
-    signals_build_fab(parent);
+    inbox_build_fab(parent);
 }
 
 /* ---------------------------------------------------------------------
@@ -1836,13 +1836,13 @@ static void signals_build_thread(lv_obj_t *parent, ff_app_signals_t const *v, bo
 /* One popup action row: a color-washed rounded button (title + subtitle)
  * with a colored left accent. `accent` tints the wash/border/accent; the
  * whole 280x66 row is the tap target (>=44px). */
-static void signals_build_popup_row(lv_obj_t *parent, int32_t y, uint32_t accent, char const *title,
+static void inbox_build_popup_row(lv_obj_t *parent, int32_t y, uint32_t accent, char const *title,
                                     char const *sub, lv_event_cb_t cb, char const *symbol)
 {
     lv_obj_t *row = lv_button_create(parent);
     lv_obj_remove_style_all(row);
-    lv_obj_set_size(row, FF_SIGNALS_POPUP_ROW_W, FF_SIGNALS_POPUP_ROW_H);
-    lv_obj_set_pos(row, FF_SIGNALS_POPUP_ROW_X, y);
+    lv_obj_set_size(row, FF_INBOX_POPUP_ROW_W, FF_INBOX_POPUP_ROW_H);
+    lv_obj_set_pos(row, FF_INBOX_POPUP_ROW_X, y);
     lv_obj_set_style_radius(row, 18, 0);
     lv_obj_set_style_bg_color(row, lv_color_hex(accent), 0);
     lv_obj_set_style_bg_opa(row, 34, 0); /* ~13% wash, the canvas's rgba(accent,0.13) */
@@ -1860,25 +1860,25 @@ static void signals_build_popup_row(lv_obj_t *parent, int32_t y, uint32_t accent
     lv_obj_set_style_text_color(icon, lv_color_hex(accent), 0);
     lv_obj_align(icon, LV_ALIGN_LEFT_MID, 20, 0);
 
-    lv_obj_t *t = signals_mk_label(row, title, FF_THEME_FONT_HEADLINE, FF_THEME_COLOR_INK);
+    lv_obj_t *t = inbox_mk_label(row, title, FF_THEME_FONT_HEADLINE, FF_THEME_COLOR_INK);
     lv_obj_align(t, LV_ALIGN_LEFT_MID, 58, -9);
-    lv_obj_t *s = signals_mk_label(row, sub, FF_THEME_FONT_CHIP, FF_THEME_COLOR_MUTED);
+    lv_obj_t *s = inbox_mk_label(row, sub, FF_THEME_FONT_CHIP, FF_THEME_COLOR_MUTED);
     lv_obj_align(s, LV_ALIGN_LEFT_MID, 58, 12);
 }
 
 /* The centered >=44px circular close (pops the popup back to the thread —
  * FF_INTENT_BACK). */
-static void signals_build_popup_close(lv_obj_t *parent)
+static void inbox_build_popup_close(lv_obj_t *parent)
 {
     lv_obj_t *close = lv_button_create(parent);
     lv_obj_remove_style_all(close);
-    lv_obj_set_size(close, FF_SIGNALS_POPUP_CLOSE_PX, FF_SIGNALS_POPUP_CLOSE_PX);
-    lv_obj_set_pos(close, (FF_THEME_PUCK_PX - FF_SIGNALS_POPUP_CLOSE_PX) / 2, FF_SIGNALS_POPUP_CLOSE_Y);
+    lv_obj_set_size(close, FF_INBOX_POPUP_CLOSE_PX, FF_INBOX_POPUP_CLOSE_PX);
+    lv_obj_set_pos(close, (FF_THEME_PUCK_PX - FF_INBOX_POPUP_CLOSE_PX) / 2, FF_INBOX_POPUP_CLOSE_Y);
     lv_obj_set_style_radius(close, LV_RADIUS_CIRCLE, 0);
     lv_obj_set_style_bg_color(close, lv_color_hex(FF_THEME_COLOR_SURFACE), 0);
     lv_obj_set_style_bg_opa(close, LV_OPA_COVER, 0);
-    lv_obj_add_event_cb(close, signals_back_cb, LV_EVENT_CLICKED, NULL);
-    signals_press_feedback(close);
+    lv_obj_add_event_cb(close, inbox_back_cb, LV_EVENT_CLICKED, NULL);
+    inbox_press_feedback(close);
 
     lv_obj_t *x = lv_label_create(close);
     lv_label_set_text(x, LV_SYMBOL_CLOSE);
@@ -1887,21 +1887,21 @@ static void signals_build_popup_close(lv_obj_t *parent)
     lv_obj_center(x);
 }
 
-static void signals_build_popup(lv_obj_t *parent, ff_app_signals_t const *v, bool colorblind)
+static void inbox_build_popup(lv_obj_t *parent, ff_app_inbox_t const *v, bool colorblind)
 {
     (void)colorblind;
     /* Scope hint + "SEND TO <scope>" (the popup states the scope; the
      * Rally screen then does NOT repeat it — the maintainer's note). */
     char const *scope = (v->thread_node == 0u) ? "CREW" : (v->thread_name[0] != '\0' ? v->thread_name : "MEMBER");
 
-    lv_obj_t *hint = signals_mk_label(parent, scope, FF_THEME_FONT_CHIP, FF_THEME_COLOR_MUTED);
+    lv_obj_t *hint = inbox_mk_label(parent, scope, FF_THEME_FONT_CHIP, FF_THEME_COLOR_MUTED);
     lv_obj_set_style_text_letter_space(hint, 1, 0);
     lv_obj_set_style_text_opa(hint, LV_OPA_40, 0); /* the dimmed thread-context cue */
     lv_obj_align(hint, LV_ALIGN_TOP_MID, 0, 34);
 
     char sendto[FF_APP_NAME_LEN + 12];
     snprintf(sendto, sizeof(sendto), "SEND TO %s", scope);
-    lv_obj_t *title = signals_mk_label(parent, sendto, FF_THEME_FONT_CHIP, FF_THEME_COLOR_MUTED);
+    lv_obj_t *title = inbox_mk_label(parent, sendto, FF_THEME_FONT_CHIP, FF_THEME_COLOR_MUTED);
     lv_obj_set_style_text_letter_space(title, 2, 0);
     lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 60);
 
@@ -1911,14 +1911,14 @@ static void signals_build_popup(lv_obj_t *parent, ff_app_signals_t const *v, boo
      * glyph exists (the 8-ray flare mark is custom-drawn in scr_flare.c, not
      * a font glyph), so the come-find-me row takes LV_SYMBOL_EYE_OPEN ("spot
      * me") — distinct from Compose's EDIT and Rally's GPS. */
-    signals_build_popup_row(parent, FF_SIGNALS_POPUP_ROW1_Y, FF_THEME_CREW_GREEN, "Compose",
-                            "write a message", signals_popup_compose_cb, LV_SYMBOL_EDIT);
-    signals_build_popup_row(parent, FF_SIGNALS_POPUP_ROW2_Y, FF_THEME_CREW_VIOLET, "Rally",
-                            "meet somewhere", signals_popup_rally_cb, LV_SYMBOL_GPS);
-    signals_build_popup_row(parent, FF_SIGNALS_POPUP_ROW3_Y, FF_THEME_COLOR_AMBER, "Flare",
-                            "come find me", signals_popup_flare_cb, LV_SYMBOL_EYE_OPEN);
+    inbox_build_popup_row(parent, FF_INBOX_POPUP_ROW1_Y, FF_THEME_CREW_GREEN, "Compose",
+                            "write a message", inbox_popup_compose_cb, LV_SYMBOL_EDIT);
+    inbox_build_popup_row(parent, FF_INBOX_POPUP_ROW2_Y, FF_THEME_CREW_VIOLET, "Rally",
+                            "meet somewhere", inbox_popup_rally_cb, LV_SYMBOL_GPS);
+    inbox_build_popup_row(parent, FF_INBOX_POPUP_ROW3_Y, FF_THEME_COLOR_AMBER, "Flare",
+                            "come find me", inbox_popup_flare_cb, LV_SYMBOL_EYE_OPEN);
 
-    signals_build_popup_close(parent);
+    inbox_build_popup_close(parent);
 }
 
 /* ---------------------------------------------------------------------
@@ -1928,15 +1928,15 @@ static void signals_build_popup(lv_obj_t *parent, ff_app_signals_t const *v, boo
 /* One WHERE radio row inside the scroll list. `sel` draws the violet
  * selected treatment + a check; `enabled` false renders a disabled On Me
  * (honest reason, no tap target). `idx` rides to RALLY_SELECT_PLACE. */
-static void signals_build_rally_row(lv_obj_t *list, int32_t y, uint8_t idx, char const *name,
+static void inbox_build_rally_row(lv_obj_t *list, int32_t y, uint8_t idx, char const *name,
                                     char const *sub, bool selected, bool enabled)
 {
-    int32_t const margin = signals_safe_margin_x(FF_SIGNALS_RALLY_LIST_TOP_Y, FF_SIGNALS_RALLY_LIST_H);
+    int32_t const margin = inbox_safe_margin_x(FF_INBOX_RALLY_LIST_TOP_Y, FF_INBOX_RALLY_LIST_H);
     int32_t const w = FF_THEME_PUCK_PX - 2 * margin;
 
     lv_obj_t *row = lv_obj_create(list);
-    signals_child_deco(row);
-    lv_obj_set_size(row, w, FF_SIGNALS_RALLY_ROW_H);
+    inbox_child_deco(row);
+    lv_obj_set_size(row, w, FF_INBOX_RALLY_ROW_H);
     lv_obj_set_pos(row, margin, y);
     lv_obj_set_style_radius(row, 13, 0);
     if (selected) {
@@ -1959,85 +1959,85 @@ static void signals_build_rally_row(lv_obj_t *list, int32_t y, uint8_t idx, char
     if (enabled) {
         lv_obj_t *hit = lv_button_create(row);
         lv_obj_remove_style_all(hit);
-        lv_obj_set_size(hit, w, FF_SIGNALS_RALLY_ROW_H - 2 * FF_SIGNALS_RALLY_ROW_HIT_INSET_Y);
-        lv_obj_set_pos(hit, 0, FF_SIGNALS_RALLY_ROW_HIT_INSET_Y);
+        lv_obj_set_size(hit, w, FF_INBOX_RALLY_ROW_H - 2 * FF_INBOX_RALLY_ROW_HIT_INSET_Y);
+        lv_obj_set_pos(hit, 0, FF_INBOX_RALLY_ROW_HIT_INSET_Y);
         lv_obj_set_style_bg_opa(hit, LV_OPA_TRANSP, 0);
         lv_obj_set_style_radius(hit, 13, 0);
         lv_obj_set_style_bg_color(hit, lv_color_hex(FF_THEME_CREW_VIOLET), LV_STATE_PRESSED);
         lv_obj_set_style_bg_opa(hit, LV_OPA_30, LV_STATE_PRESSED);
-        lv_obj_add_event_cb(hit, signals_rally_place_cb, LV_EVENT_CLICKED, (void *)(uintptr_t)idx);
+        lv_obj_add_event_cb(hit, inbox_rally_place_cb, LV_EVENT_CLICKED, (void *)(uintptr_t)idx);
     }
 
     uint32_t const name_color = !enabled ? FF_THEME_COLOR_DIM : FF_THEME_COLOR_INK;
-    lv_obj_t *nm = signals_mk_label(row, name, FF_THEME_FONT_LABEL, name_color);
+    lv_obj_t *nm = inbox_mk_label(row, name, FF_THEME_FONT_LABEL, name_color);
     lv_obj_align(nm, LV_ALIGN_LEFT_MID, 16, sub != NULL ? -8 : 0);
     if (sub != NULL) {
-        lv_obj_t *s = signals_mk_label(row, sub, FF_THEME_FONT_CHIP, FF_THEME_COLOR_DIM);
+        lv_obj_t *s = inbox_mk_label(row, sub, FF_THEME_FONT_CHIP, FF_THEME_COLOR_DIM);
         lv_obj_align(s, LV_ALIGN_LEFT_MID, 16, 11);
     }
     if (selected) {
-        lv_obj_t *ck = signals_mk_label(row, LV_SYMBOL_OK, FF_THEME_FONT_CHIP, FF_THEME_CREW_VIOLET);
+        lv_obj_t *ck = inbox_mk_label(row, LV_SYMBOL_OK, FF_THEME_FONT_CHIP, FF_THEME_CREW_VIOLET);
         lv_obj_align(ck, LV_ALIGN_RIGHT_MID, -14, 0);
     }
 }
 
 /* A small centered "PLACES" divider between On Me and the landmark rows. */
-static void signals_build_rally_divider(lv_obj_t *list, int32_t y)
+static void inbox_build_rally_divider(lv_obj_t *list, int32_t y)
 {
-    int32_t const margin = signals_safe_margin_x(FF_SIGNALS_RALLY_LIST_TOP_Y, FF_SIGNALS_RALLY_LIST_H);
-    lv_obj_t *lab = signals_mk_label(list, "PLACES", FF_THEME_FONT_CHIP, FF_THEME_COLOR_DIM);
+    int32_t const margin = inbox_safe_margin_x(FF_INBOX_RALLY_LIST_TOP_Y, FF_INBOX_RALLY_LIST_H);
+    lv_obj_t *lab = inbox_mk_label(list, "PLACES", FF_THEME_FONT_CHIP, FF_THEME_COLOR_DIM);
     lv_obj_set_style_text_letter_space(lab, 2, 0);
     lv_obj_set_pos(lab, margin + 8, y + 6);
 }
 
 /* The pinned WHEN chip + Send footer. */
-static void signals_build_rally_footer(lv_obj_t *parent, ff_app_rally_t const *r)
+static void inbox_build_rally_footer(lv_obj_t *parent, ff_app_rally_t const *r)
 {
-    int32_t const margin = signals_safe_margin_x(FF_SIGNALS_RALLY_FOOTER_Y, FF_SIGNALS_RALLY_FOOTER_H);
+    int32_t const margin = inbox_safe_margin_x(FF_INBOX_RALLY_FOOTER_Y, FF_INBOX_RALLY_FOOTER_H);
     int32_t const total_w = FF_THEME_PUCK_PX - 2 * margin;
-    int32_t const send_w = total_w - FF_SIGNALS_RALLY_WHEN_W - FF_SIGNALS_RALLY_FOOTER_GAP;
+    int32_t const send_w = total_w - FF_INBOX_RALLY_WHEN_W - FF_INBOX_RALLY_FOOTER_GAP;
 
     /* WHEN chip — cycles Now / +15m / +30m. */
     lv_obj_t *when = lv_button_create(parent);
     lv_obj_remove_style_all(when);
-    lv_obj_set_size(when, FF_SIGNALS_RALLY_WHEN_W, FF_SIGNALS_RALLY_FOOTER_H);
-    lv_obj_set_pos(when, margin, FF_SIGNALS_RALLY_FOOTER_Y);
+    lv_obj_set_size(when, FF_INBOX_RALLY_WHEN_W, FF_INBOX_RALLY_FOOTER_H);
+    lv_obj_set_pos(when, margin, FF_INBOX_RALLY_FOOTER_Y);
     lv_obj_set_style_radius(when, 16, 0);
     lv_obj_set_style_bg_color(when, lv_color_hex(FF_THEME_COLOR_SURFACE), 0);
     lv_obj_set_style_bg_opa(when, LV_OPA_COVER, 0);
-    lv_obj_add_event_cb(when, signals_rally_when_cb, LV_EVENT_CLICKED, NULL);
-    signals_press_feedback(when);
-    lv_obj_t *wl = signals_mk_label(when, "WHEN", FF_THEME_FONT_CHIP, FF_THEME_COLOR_MUTED);
+    lv_obj_add_event_cb(when, inbox_rally_when_cb, LV_EVENT_CLICKED, NULL);
+    inbox_press_feedback(when);
+    lv_obj_t *wl = inbox_mk_label(when, "WHEN", FF_THEME_FONT_CHIP, FF_THEME_COLOR_MUTED);
     lv_obj_set_style_text_letter_space(wl, 1, 0);
     lv_obj_align(wl, LV_ALIGN_CENTER, 0, -9);
-    lv_obj_t *wv = signals_mk_label(when, r->echo_when, FF_THEME_FONT_LABEL, FF_THEME_COLOR_INK);
+    lv_obj_t *wv = inbox_mk_label(when, r->echo_when, FF_THEME_FONT_LABEL, FF_THEME_COLOR_INK);
     lv_obj_align(wv, LV_ALIGN_CENTER, 0, 9);
 
     /* Send Rally — echoes "<place> · <when>". Disabled (deco, no tap
      * target) when nothing is sendable (On Me off + no places). The armed
      * crew-confirm restyles it to an explicit second-tap ask. */
-    int32_t const send_x = margin + FF_SIGNALS_RALLY_WHEN_W + FF_SIGNALS_RALLY_FOOTER_GAP;
+    int32_t const send_x = margin + FF_INBOX_RALLY_WHEN_W + FF_INBOX_RALLY_FOOTER_GAP;
     if (!r->can_send) {
         lv_obj_t *dead = lv_obj_create(parent);
-        signals_child_deco(dead);
-        lv_obj_set_size(dead, send_w, FF_SIGNALS_RALLY_FOOTER_H);
-        lv_obj_set_pos(dead, send_x, FF_SIGNALS_RALLY_FOOTER_Y);
+        inbox_child_deco(dead);
+        lv_obj_set_size(dead, send_w, FF_INBOX_RALLY_FOOTER_H);
+        lv_obj_set_pos(dead, send_x, FF_INBOX_RALLY_FOOTER_Y);
         lv_obj_set_style_radius(dead, 16, 0);
         lv_obj_set_style_bg_color(dead, lv_color_hex(FF_THEME_COLOR_SURFACE), 0);
         lv_obj_set_style_bg_opa(dead, LV_OPA_50, 0);
-        lv_obj_t *dl = signals_mk_label(dead, "PICK A PLACE", FF_THEME_FONT_CHIP, FF_THEME_COLOR_DIM);
+        lv_obj_t *dl = inbox_mk_label(dead, "PICK A PLACE", FF_THEME_FONT_CHIP, FF_THEME_COLOR_DIM);
         lv_obj_center(dl);
         return;
     }
 
     lv_obj_t *send = lv_button_create(parent);
     lv_obj_remove_style_all(send);
-    lv_obj_set_size(send, send_w, FF_SIGNALS_RALLY_FOOTER_H);
-    lv_obj_set_pos(send, send_x, FF_SIGNALS_RALLY_FOOTER_Y);
+    lv_obj_set_size(send, send_w, FF_INBOX_RALLY_FOOTER_H);
+    lv_obj_set_pos(send, send_x, FF_INBOX_RALLY_FOOTER_Y);
     lv_obj_set_style_radius(send, 16, 0);
     lv_obj_set_style_bg_color(send, lv_color_hex(FF_THEME_CREW_VIOLET), 0);
     lv_obj_set_style_bg_opa(send, LV_OPA_COVER, 0);
-    lv_obj_add_event_cb(send, signals_rally_send_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_add_event_cb(send, inbox_rally_send_cb, LV_EVENT_CLICKED, NULL);
     lv_obj_set_style_bg_color(send, lv_color_hex(FF_THEME_COLOR_INK), LV_STATE_PRESSED);
     lv_obj_set_style_bg_opa(send, LV_OPA_20, LV_STATE_PRESSED);
 
@@ -2045,25 +2045,25 @@ static void signals_build_rally_footer(lv_obj_t *parent, ff_app_rally_t const *r
     if (r->confirm_armed) {
         /* Crew-wide: first tap armed the confirm — the button now asks for
          * the second, explicit tap (S22 AC4 armed state). */
-        lv_obj_t *tl = signals_mk_label(send, "Tap to confirm", FF_THEME_FONT_LABEL, FF_THEME_COLOR_BG);
+        lv_obj_t *tl = inbox_mk_label(send, "Tap to confirm", FF_THEME_FONT_LABEL, FF_THEME_COLOR_BG);
         lv_obj_align(tl, LV_ALIGN_CENTER, 0, -9);
         snprintf(echo, sizeof(echo), "%s . %s", r->echo_place, r->echo_when);
-        lv_obj_t *el = signals_mk_label(send, echo, FF_THEME_FONT_CHIP, FF_THEME_COLOR_BG);
+        lv_obj_t *el = inbox_mk_label(send, echo, FF_THEME_FONT_CHIP, FF_THEME_COLOR_BG);
         lv_obj_set_style_text_opa(el, LV_OPA_70, 0);
         lv_obj_align(el, LV_ALIGN_CENTER, 0, 10);
     } else {
-        lv_obj_t *sl = signals_mk_label(send, "Send Rally", FF_THEME_FONT_LABEL, FF_THEME_COLOR_BG);
+        lv_obj_t *sl = inbox_mk_label(send, "Send Rally", FF_THEME_FONT_LABEL, FF_THEME_COLOR_BG);
         lv_obj_align(sl, LV_ALIGN_CENTER, 0, -9);
         /* ASCII separator, not the canvas middot (the vendored font has no
          * middot — the same trap the inbox preview divider hit). */
         snprintf(echo, sizeof(echo), "%s . %s", r->echo_place, r->echo_when);
-        lv_obj_t *el = signals_mk_label(send, echo, FF_THEME_FONT_CHIP, FF_THEME_COLOR_BG);
+        lv_obj_t *el = inbox_mk_label(send, echo, FF_THEME_FONT_CHIP, FF_THEME_COLOR_BG);
         lv_obj_set_style_text_opa(el, LV_OPA_70, 0);
         lv_obj_align(el, LV_ALIGN_CENTER, 0, 10);
     }
 }
 
-static void signals_build_rally(lv_obj_t *parent, ff_app_signals_t const *v, bool colorblind)
+static void inbox_build_rally(lv_obj_t *parent, ff_app_inbox_t const *v, bool colorblind)
 {
     (void)colorblind;
     ff_app_rally_t const *r = &v->rally;
@@ -2071,16 +2071,16 @@ static void signals_build_rally(lv_obj_t *parent, ff_app_signals_t const *v, boo
     /* Header: the >=44px close (BACK -> popup) + a violet RALLY caption.
      * No scope label here (the popup already stated it; the Send echo
      * restates the payload — the maintainer's header note). */
-    signals_build_back(parent);
-    lv_obj_t *cap = signals_mk_label(parent, LV_SYMBOL_GPS " RALLY", FF_THEME_FONT_CHIP, FF_THEME_CREW_VIOLET);
+    inbox_build_back(parent);
+    lv_obj_t *cap = inbox_mk_label(parent, LV_SYMBOL_GPS " RALLY", FF_THEME_FONT_CHIP, FF_THEME_CREW_VIOLET);
     lv_obj_set_style_text_letter_space(cap, 2, 0);
     lv_obj_align(cap, LV_ALIGN_TOP_MID, 0, 40);
 
     /* WHERE — a scrollable radio list. */
     lv_obj_t *list = lv_obj_create(parent);
     lv_obj_remove_style_all(list);
-    lv_obj_set_pos(list, 0, FF_SIGNALS_RALLY_LIST_TOP_Y);
-    lv_obj_set_size(list, FF_THEME_PUCK_PX, FF_SIGNALS_RALLY_LIST_H);
+    lv_obj_set_pos(list, 0, FF_INBOX_RALLY_LIST_TOP_Y);
+    lv_obj_set_size(list, FF_THEME_PUCK_PX, FF_INBOX_RALLY_LIST_H);
     lv_obj_set_style_bg_opa(list, LV_OPA_TRANSP, 0);
     lv_obj_add_flag(list, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_clear_flag(list, LV_OBJ_FLAG_CLICKABLE);
@@ -2088,60 +2088,60 @@ static void signals_build_rally(lv_obj_t *parent, ff_app_signals_t const *v, boo
     lv_obj_set_scrollbar_mode(list, LV_SCROLLBAR_MODE_OFF);
 
     /* Genuine-overflow gate, computed analytically (every WHERE row has a
-     * FIXED height — FF_SIGNALS_RALLY_ROW_H, no content-driven variance
+     * FIXED height — FF_INBOX_RALLY_ROW_H, no content-driven variance
      * like the thread's message rows — so this exactly predicts what
      * lv_obj_get_scroll_bottom(list) will read once the rows below are
      * built, with no need for a build-then-measure-then-rebuild pass). */
     uint8_t const n_places = (r->place_count > FF_APP_RALLY_MAX_PLACES) ? FF_APP_RALLY_MAX_PLACES : r->place_count;
-    int32_t rally_content_h = FF_SIGNALS_RALLY_ROW_H + FF_HIT_MIN_GAP_PX; /* On Me */
+    int32_t rally_content_h = FF_INBOX_RALLY_ROW_H + FF_HIT_MIN_GAP_PX; /* On Me */
     if (n_places > 0u) {
-        rally_content_h += FF_SIGNALS_RALLY_DIVIDER_H +
-                           (int32_t)n_places * (FF_SIGNALS_RALLY_ROW_H + FF_HIT_MIN_GAP_PX);
+        rally_content_h += FF_INBOX_RALLY_DIVIDER_H +
+                           (int32_t)n_places * (FF_INBOX_RALLY_ROW_H + FF_HIT_MIN_GAP_PX);
     }
-    if (rally_content_h > FF_SIGNALS_RALLY_LIST_H) {
+    if (rally_content_h > FF_INBOX_RALLY_LIST_H) {
         /* Added FIRST (child index 0) — see this file's header comment
          * above (Rally screen geometry) for why z-order here is load-
          * bearing, not incidental: LVGL checks a node's children in
          * REVERSE index order, so every row (added after, below) is
          * tried before this catcher, and a row's own hit target still
          * wins whenever a touch actually lands on it. */
-        int32_t const margin = signals_safe_margin_x(FF_SIGNALS_RALLY_LIST_TOP_Y, FF_SIGNALS_RALLY_LIST_H);
+        int32_t const margin = inbox_safe_margin_x(FF_INBOX_RALLY_LIST_TOP_Y, FF_INBOX_RALLY_LIST_H);
         lv_obj_t *hit = lv_obj_create(list);
         lv_obj_remove_style_all(hit);
         lv_obj_add_flag(hit, LV_OBJ_FLAG_FLOATING);
         lv_obj_clear_flag(hit, LV_OBJ_FLAG_SCROLLABLE);
         lv_obj_set_style_bg_opa(hit, LV_OPA_TRANSP, 0);
         lv_obj_set_pos(hit, margin, 0);
-        lv_obj_set_size(hit, FF_THEME_PUCK_PX - 2 * margin, FF_SIGNALS_RALLY_LIST_H);
+        lv_obj_set_size(hit, FF_THEME_PUCK_PX - 2 * margin, FF_INBOX_RALLY_LIST_H);
     }
 
     int32_t y = 0;
     /* On Me (index 0), pinned first. Disabled with an honest reason when
      * my position is unknown — never a fabricated location. */
-    signals_build_rally_row(list, y, 0u, "On Me",
+    inbox_build_rally_row(list, y, 0u, "On Me",
                             r->on_me_ok ? "rally to my live location" : "no position yet",
                             r->sel == 0u && r->on_me_ok, r->on_me_ok);
-    y += FF_SIGNALS_RALLY_ROW_H + FF_HIT_MIN_GAP_PX;
+    y += FF_INBOX_RALLY_ROW_H + FF_HIT_MIN_GAP_PX;
 
     if (r->place_count > 0u) {
-        signals_build_rally_divider(list, y);
-        y += FF_SIGNALS_RALLY_DIVIDER_H;
+        inbox_build_rally_divider(list, y);
+        y += FF_INBOX_RALLY_DIVIDER_H;
         for (uint8_t i = 0; i < r->place_count && i < FF_APP_RALLY_MAX_PLACES; i++) {
             uint8_t const idx = (uint8_t)(i + 1u);
-            signals_build_rally_row(list, y, idx, r->place_names[i], NULL, r->sel == idx, true);
-            y += FF_SIGNALS_RALLY_ROW_H + FF_HIT_MIN_GAP_PX;
+            inbox_build_rally_row(list, y, idx, r->place_names[i], NULL, r->sel == idx, true);
+            y += FF_INBOX_RALLY_ROW_H + FF_HIT_MIN_GAP_PX;
         }
     }
 
-    signals_build_bottom_fade(parent, FF_SIGNALS_RALLY_LIST_TOP_Y + FF_SIGNALS_RALLY_LIST_H);
-    signals_build_rally_footer(parent, r);
+    inbox_build_bottom_fade(parent, FF_INBOX_RALLY_LIST_TOP_Y + FF_INBOX_RALLY_LIST_H);
+    inbox_build_rally_footer(parent, r);
 }
 
 /* ---------------------------------------------------------------------
  * Public helpers + entry point.
  * ------------------------------------------------------------------- */
 
-uint16_t ff_scr_signals_unread_count(ff_app_signals_t const *v)
+uint16_t ff_scr_inbox_unread_count(ff_app_inbox_t const *v)
 {
     if (v == NULL) {
         return 0;
@@ -2157,28 +2157,28 @@ uint16_t ff_scr_signals_unread_count(ff_app_signals_t const *v)
     return (total > UINT16_MAX) ? UINT16_MAX : (uint16_t)total;
 }
 
-void ff_scr_signals_build(lv_obj_t *parent, ff_app_signals_t const *v, bool colorblind)
+void ff_scr_inbox_build(lv_obj_t *parent, ff_app_inbox_t const *v, bool colorblind)
 {
     if (parent == NULL || v == NULL) {
         return;
     }
 
     switch (v->subview) {
-    case FF_SIG_SUB_PICKER:
-        signals_build_picker(parent, v, colorblind);
+    case FF_INBOX_SUB_PICKER:
+        inbox_build_picker(parent, v, colorblind);
         return;
-    case FF_SIG_SUB_THREAD:
-        signals_build_thread(parent, v, colorblind);
+    case FF_INBOX_SUB_THREAD:
+        inbox_build_thread(parent, v, colorblind);
         return;
-    case FF_SIG_SUB_POPUP:
-        signals_build_popup(parent, v, colorblind);
+    case FF_INBOX_SUB_POPUP:
+        inbox_build_popup(parent, v, colorblind);
         return;
-    case FF_SIG_SUB_RALLY:
-        signals_build_rally(parent, v, colorblind);
+    case FF_INBOX_SUB_RALLY:
+        inbox_build_rally(parent, v, colorblind);
         return;
-    case FF_SIG_SUB_INBOX:
+    case FF_INBOX_SUB_INBOX:
     default:
-        signals_build_inbox(parent, v, colorblind);
+        inbox_build_inbox(parent, v, colorblind);
         return;
     }
 }

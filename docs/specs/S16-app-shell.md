@@ -517,7 +517,7 @@ as a value that means something — the same ruling as `stage_color_valid` and
 **Placement (PR #34 review, §2): `app/`, not `core/`.** The original
 justification — "must be testable without LVGL" — does not select core:
 `app/screens/` already holds four pure, LVGL-free, unit-tested modules
-(`ff_layout`, `radar_layout`, `now_layout`, `flare_fmt`). The deciding argument
+(`ff_layout`, `radar_layout`, `lineup_layout`, `flare_fmt`). The deciding argument
 is the other way: `core/` today has *zero* knowledge that screens exist, and a
 face enum would make core's contents change whenever a face is added.
 

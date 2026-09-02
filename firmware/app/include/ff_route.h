@@ -100,7 +100,7 @@
  * ## Why app/, not core/
  * The obvious argument ("routing must be testable without LVGL") does
  * NOT select core/: `app/screens/` already holds four pure, LVGL-free,
- * unit-tested modules (`ff_layout`, `radar_layout`, `now_layout`,
+ * unit-tested modules (`ff_layout`, `radar_layout`, `lineup_layout`,
  * `flare_fmt`). The deciding argument runs the other way — `core/` today
  * has zero knowledge that screens exist at all, and putting a face enum
  * there would make core's contents change every time a face is added.

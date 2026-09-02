@@ -100,7 +100,7 @@ float ff_layout_chord_half_width(float dy, float radius);
  *
  * This is the "how much does THIS row need to be inset" query a face's
  * layout code asks far more often than the raw chord half-width alone —
- * both `app/screens/scr_compose.c` and `scr_signals.c` needed this exact
+ * both `app/screens/scr_compose.c` and `scr_inbox.c` needed this exact
  * computation for the S08 UX-review round-glass fix (PR #25), which is
  * what earned it this shared home instead of a second near-identical
  * per-file copy.

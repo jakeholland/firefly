@@ -430,8 +430,8 @@ typedef struct {
  * renders the core view-model `ff_sigview_t` DIRECTLY (docs/specs/S22, and
  * ff_app_state.h's signals doc), so `ff_app_state_t` embeds it by value, and
  * the shell holds TWO of it — `view` and the `prev_key` render-key copy —
- * plus a tiny 8-byte send-target HOLDER (sig_target_kind/node) rather than a
- * third full view-model: the rows are built straight into `view.signals`
+ * plus a tiny 8-byte send-target HOLDER (inbox_target_kind/node) rather than a
+ * third full view-model: the rows are built straight into `view.inbox`
  * each tick (the RADAR precedent, `ff_radar_compute(&sh->view.radar, ...)`
  * beside a small `ff_radar_smooth_t`), and only the target survives the
  * per-tick view memset. `ff_sigview_t` is 1,816 B (FF_SIGVIEW_MAX_ROWS=41
@@ -448,15 +448,15 @@ typedef struct {
  * tripwire, not a hardware limit.
  *
  * S24 slice b (no raise needed): the view's `signals` section became
- * `ff_app_signals_t` — the embedded `ff_inbox_t` conversation model plus
+ * `ff_app_inbox_t` — the embedded `ff_inbox_t` conversation model plus
  * sub-view/thread/target fields — which is a little SMALLER than the
  * `ff_sigview_t` it replaced (9 conversations vs 41 rows), and the shell
- * gained only two small persistent holders (sig_subview/sig_thread_node)
+ * gained only two small persistent holders (inbox_subview/inbox_thread_node)
  * on the S22 target-holder precedent. The budget stood unchanged.
  *
  * RAISED 25 KB -> 32.5 KB in S24 slice c, deliberately, per this
  * comment's own instruction: the thread screens render the core
- * `ff_inbox_thread_t` DIRECTLY (`ff_app_signals_t.thread`,
+ * `ff_inbox_thread_t` DIRECTLY (`ff_app_inbox_t.thread`,
  * ff_app_state.h — the same embed-the-real-view-model resolution as
  * `inbox`/`radar`/`ff_sigview_t` before it), and `ff_inbox_thread_t` is
  * 3,460 B (FF_INBOX_MAX_MSGS = FF_FEED_CAP = 32 messages, each carrying

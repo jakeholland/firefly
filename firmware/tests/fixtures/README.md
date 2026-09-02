@@ -61,7 +61,7 @@ unrelated-looking golden diff.)
 | Key | Type | Default | Notes |
 |---|---|---|---|
 | `fixture` | string | `""` | Debug-only provenance name. The S13 placeholder debug face renders this verbatim as its title — real S06+ screens ignore it. Conventionally matches the filename stem. |
-| `face` | string enum: `radar` \| `now` \| `signals` \| `settings` \| `compose` \| `map` \| `power_menu` \| `launcher` | `radar` (when the key is **absent** — an unrecognized string fails the load, see the fail-loud note above) | Which `ff_app_state_t.active_face` this snapshot represents; selects which section the S13 placeholder debug face's body renders. `power_menu` (S26 slice b) has no section of its own below — the face renders fixed content, so `"face": "power_menu"` is the entire fixture (see `power_menu.json`). `launcher` (S26 slice e) is the BOOT-button launcher — it DOES read the existing `signals` section (its Signals circle's unread badge is `ff_scr_signals_unread_count`), so a launcher fixture that wants the badge supplies `signals` like any Signals-face fixture (see `launcher.json` / `launcher_unread.json`). |
+| `face` | string enum: `radar` \| `now` \| `signals` \| `settings` \| `compose` \| `map` \| `power_menu` \| `launcher` | `radar` (when the key is **absent** — an unrecognized string fails the load, see the fail-loud note above) | Which `ff_app_state_t.active_face` this snapshot represents; selects which section the S13 placeholder debug face's body renders. `power_menu` (S26 slice b) has no section of its own below — the face renders fixed content, so `"face": "power_menu"` is the entire fixture (see `power_menu.json`). `launcher` (S26 slice e) is the BOOT-button launcher — it DOES read the existing `signals` section (its Signals circle's unread badge is `ff_scr_inbox_unread_count`), so a launcher fixture that wants the badge supplies `signals` like any Signals-face fixture (see `launcher.json` / `launcher_unread.json`). |
 | `ui_settings_scroll_y` | integer | `0` | **Sim/golden render hint only (#bug5a), same category as `fixture`.** Scrolls the Settings list to this vertical offset (device points, clamped by LVGL to the scrollable range) before the screenshot, so a golden can capture a non-zero scroll position. Applied only to the `settings` face; `0` (the default, and the only value the live shell carries) is a no-op. See `settings_scrolled_bottom.json` / `settings_scrolled_mid.json`. |
 
 ## `radar` (mirrors `ff_radar_view_t`, `core/include/ff_radar.h`)
@@ -157,13 +157,13 @@ See `test_fixture.c`'s `now_stage_color_rgb_valid_black_is_marked_valid`
 "tbd"` shows "SET TIMES TBD"; `state: "mixed"` shows "SOME SET TIMES
 TBD" instead — the unqualified wording sitting directly above a section
 proving some times AREN'T unknown read as a self-contradiction at a
-glance. Not a fixture field — `scr_now.c` picks the text from `state`
+glance. Not a fixture field — `scr_lineup.c` picks the text from `state`
 itself.
 
-## `signals` (the S24 inbox view, `ff_app_signals_t`)
+## `signals` (the S24 inbox view, `ff_app_inbox_t`)
 
 The Signals face is the S24 INBOX (docs/specs/S24-signals-inbox.md), so
-this section describes an `ff_app_signals_t` — the sub-view selector,
+this section describes an `ff_app_inbox_t` — the sub-view selector,
 the core `ff_inbox_t` conversation list, and the kept S22(d) target
 fields — the same "fixture is a view snapshot" convention `radar` uses.
 Conversations are authored in the order the screen shows them (the
@@ -482,43 +482,43 @@ interpretation" — noted here and in the PR body.
 ### Now face fixtures (S07 slice b)
 
 Six fixtures cover the Now face's six honestly-distinct `now_state_t`
-values — one apiece. `now_nothing_live.json` was added in PR #21 UX
+values — one apiece. `lineup_nothing_live.json` was added in PR #21 UX
 review round 1 (reachable in code from the first pass, no golden yet);
-`now_mixed.json` was added in PR #21 code review round 2, alongside the
+`lineup_mixed.json` was added in PR #21 code review round 2, alongside the
 `now_state_t` enum itself replacing an earlier `pack_loaded`+`tbd` bool
 pair that could only represent 3 of these states cleanly (see the
-schema section above); `now_time_unknown.json` was added by issue #48
+schema section above); `lineup_time_unknown.json` was added by issue #48
 (PR #46 review, D3) for the sixth member, `NOW_TIME_UNKNOWN`.
 
 | Fixture | `state` | What it exercises |
 |---|---|---|
-| `now_live.json` | `live` | Three concurrent now-playing rows (mocked artists/percentages; stage names + colors are the REAL Lost Lands stages — see the provenance note below, UX review round 1 flagged the original EDC-flavored placeholders) plus a starred-next card — "IN 33 MIN" is the literal countdown text the spec's own example transcribes. |
-| `now_mixed.json` | `mixed` | Code review round 2's fix in action, refined in UX review round 2 into three visually distinct classes (never distinguished by an absent element): Excision (`rows[0]`, `pct_done: 22`) renders as a full **playing-now** row — the exact same stage-colored-label + progress-bar treatment `NOW_LIVE` uses, via the same `now_build_row()` call, because it's the same fact; TYNAN (`next`) renders as **scheduled, not started** — a countdown-LED block ("IN 58 MIN" first, biggest, amber, no progress bar); five more real Lost Lands day-1 artists (NGHTMRE, Borgore, Levity, Doctor P, Hairitage) stay visible as **time unknown** in the "STILL TBD" list under a "SOME SET TIMES TBD" banner (not the unqualified "SET TIMES TBD" `now_tbd.json` uses — see the schema section above), rather than silently vanishing the moment the day stopped being all-null. |
-| `now_tbd.json` | `tbd` | The real 2026 Lost Lands pack's actual state today: every set's start/end is null. `lineup` is transcribed verbatim (artist + stage, in pack order) from day 1 (2026-09-18) of `firmware/festpack/tests/fixtures/lost-lands-2026.festpack.json` — 7 sets, most with `stage: null` (rendered as the explicit "STAGE UNKNOWN" fallback, not silently omitted — see the provenance note) except Excision (`prehistoric` → "Prehistoric Stage"). This is the pack-update story CLAUDE.md's honesty rule exists for: don't invent set times the source data doesn't have. |
-| `now_nothing_live.json` | `nothing_playing` | Pack loaded, schedule known, but nothing is currently playing and nothing is starred upcoming — a genuinely reachable state (early morning between sets) distinct from every other state in this table. `rows`/`next`/`lineup` are all absent. |
-| `now_empty.json` | `no_pack` (omitted — the default) | No festpack loaded at all — `now` is entirely absent from the fixture. Deliberately distinct from `now_tbd.json`/`now_mixed.json`: a puck with nothing loaded must never show schedule chrome (a "SET TIMES TBD" banner) that implies a pack exists. |
-| `now_time_unknown.json` | `time_unknown` | Issue #48: a pack IS loaded but the wall clock is not (the normal cold-boot path, before a mesh timestamp latches) — distinct from `now_empty.json`'s true "nothing loaded" and from every TBD-flavored state (this isn't a claim about the DATA at all; the projection never got far enough to look at the schedule). `rows`/`next`/`lineup` are all absent, same as `now_nothing_live.json`'s shape, but the copy names the CLOCK as the missing fact, not the pack or the schedule. |
+| `lineup_live.json` | `live` | Three concurrent now-playing rows (mocked artists/percentages; stage names + colors are the REAL Lost Lands stages — see the provenance note below, UX review round 1 flagged the original EDC-flavored placeholders) plus a starred-next card — "IN 33 MIN" is the literal countdown text the spec's own example transcribes. |
+| `lineup_mixed.json` | `mixed` | Code review round 2's fix in action, refined in UX review round 2 into three visually distinct classes (never distinguished by an absent element): Excision (`rows[0]`, `pct_done: 22`) renders as a full **playing-now** row — the exact same stage-colored-label + progress-bar treatment `NOW_LIVE` uses, via the same `lineup_build_row()` call, because it's the same fact; TYNAN (`next`) renders as **scheduled, not started** — a countdown-LED block ("IN 58 MIN" first, biggest, amber, no progress bar); five more real Lost Lands day-1 artists (NGHTMRE, Borgore, Levity, Doctor P, Hairitage) stay visible as **time unknown** in the "STILL TBD" list under a "SOME SET TIMES TBD" banner (not the unqualified "SET TIMES TBD" `lineup_tbd.json` uses — see the schema section above), rather than silently vanishing the moment the day stopped being all-null. |
+| `lineup_tbd.json` | `tbd` | The real 2026 Lost Lands pack's actual state today: every set's start/end is null. `lineup` is transcribed verbatim (artist + stage, in pack order) from day 1 (2026-09-18) of `firmware/festpack/tests/fixtures/lost-lands-2026.festpack.json` — 7 sets, most with `stage: null` (rendered as the explicit "STAGE UNKNOWN" fallback, not silently omitted — see the provenance note) except Excision (`prehistoric` → "Prehistoric Stage"). This is the pack-update story CLAUDE.md's honesty rule exists for: don't invent set times the source data doesn't have. |
+| `lineup_nothing_live.json` | `nothing_playing` | Pack loaded, schedule known, but nothing is currently playing and nothing is starred upcoming — a genuinely reachable state (early morning between sets) distinct from every other state in this table. `rows`/`next`/`lineup` are all absent. |
+| `lineup_empty.json` | `no_pack` (omitted — the default) | No festpack loaded at all — `now` is entirely absent from the fixture. Deliberately distinct from `lineup_tbd.json`/`lineup_mixed.json`: a puck with nothing loaded must never show schedule chrome (a "SET TIMES TBD" banner) that implies a pack exists. |
+| `lineup_time_unknown.json` | `time_unknown` | Issue #48: a pack IS loaded but the wall clock is not (the normal cold-boot path, before a mesh timestamp latches) — distinct from `lineup_empty.json`'s true "nothing loaded" and from every TBD-flavored state (this isn't a claim about the DATA at all; the projection never got far enough to look at the schedule). `rows`/`next`/`lineup` are all absent, same as `lineup_nothing_live.json`'s shape, but the copy names the CLOCK as the missing fact, not the pack or the schedule. |
 
-**Provenance note (`now_live.json`/`now_mixed.json`):** artist names and
+**Provenance note (`lineup_live.json`/`lineup_mixed.json`):** artist names and
 set times/percentages are mocked test data (GRiZ, Wooli, Kompany, and
-`now_mixed.json`'s illustrative "TYNAN just got a time and a stage"
+`lineup_mixed.json`'s illustrative "TYNAN just got a time and a stage"
 scenario — none of this is a real Lost Lands 2026 announcement), same
 "good-faith reconstruction, not a mockup transcription" category as the
 radar fixtures above (no mockup artboards in-tree — see CLAUDE.md).
-**Stage names + colors in `now_live.json`, however, are the real ones**
+**Stage names + colors in `lineup_live.json`, however, are the real ones**
 — `Prehistoric Stage` (`#ffc66b`), `Subsidia Stage` (`#ff5ca8`), `Forest
 Stage` (`#9be07b`), copied from
 `firmware/festpack/tests/fixtures/lost-lands-2026.festpack.json`'s
 `stages[]`, after UX review round 1 (PR #21) flagged the original
 fixture's "Bass Camp"/"Kinetic Field"/"The Grove" as reading like a
 different festival's stage names — this PNG is permanent repo history,
-worth getting right even though it's mocked data. `now_mixed.json`'s
+worth getting right even though it's mocked data. `lineup_mixed.json`'s
 still-unknown `lineup` entries (NGHTMRE, Borgore, Levity, Doctor P,
 Hairitage) and its one known row's artist (Excision) ARE the real Lost
-Lands day-1 names, continuing `now_tbd.json`'s same day — only the
+Lands day-1 names, continuing `lineup_tbd.json`'s same day — only the
 *times/percentages/second stage* attached to them are invented, to
 illustrate the day partway through the real pack-update process the
-reviewer described. **`now_tbd.json` is the one Now fixture that is NOT
+reviewer described. **`lineup_tbd.json` is the one Now fixture that is NOT
 mocked at all** — its `lineup` entries are copied field-for-field from
 the real vendored Lost Lands pack, specifically because the spec calls
 out this exact case ("real Lost Lands pack") as the thing this fixture

@@ -333,7 +333,7 @@ static lv_obj_t *flare_make_button(lv_obj_t *parent, char const *text, uint32_t 
         /* Press feedback (issue: "missing touchdown state for the flaring
          * notification screen"). A solid-amber primary is already amber, so
          * it DIMS on touch-down rather than flashing amber-on-amber — the
-         * composer SEND / Signals FAB precedent (scr_signals.c's SEND button
+         * composer SEND / Signals FAB precedent (scr_inbox.c's SEND button
          * and press_dim: a dark ink wash darkens the fill the instant the
          * finger is down; LVGL clears it on release). LV_STATE_PRESSED-only,
          * so the resting render the goldens capture is untouched. */
@@ -347,7 +347,7 @@ static lv_obj_t *flare_make_button(lv_obj_t *parent, char const *text, uint32_t 
         lv_obj_set_style_border_opa(btn, LV_OPA_COVER, 0);
         /* Press feedback for the outlined pill (DISMISS/CANCEL): its surface
          * fill is NOT amber, so it TINTS amber on touch-down — the
-         * signals_press_feedback / compose_key_press_feedback amber-flash
+         * inbox_press_feedback / compose_key_press_feedback amber-flash
          * idiom (light the control amber at a translucent opa while pressed).
          * LV_STATE_PRESSED-only; the resting outlined look, and the goldens,
          * stay byte-identical. */

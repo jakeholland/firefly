@@ -29,7 +29,7 @@ target_link_libraries(ff-app INTERFACE ff-core)
 # face is added (see ff_route.h's header comment, and S16 §"App: routing").
 #
 # Zero LVGL dependency, same "pure C11, unit-testable without a display"
-# shape as ff-layout/ff-radar-layout/ff-now-layout/ff-flare-fmt above. It
+# shape as ff-layout/ff-radar-layout/ff-lineup-layout/ff-flare-fmt above. It
 # links ff-app only for ff_app_state.h's ff_app_face_t, which routing
 # extends rather than mirroring in a second enum.
 # ---------------------------------------------------------------------------
@@ -218,7 +218,7 @@ endif()
 add_library(ff-app-ui STATIC
     screens/scr_radar.c
     screens/scr_nav.c
-    screens/scr_signals.c # S08c
+    screens/scr_inbox.c # S08c
     screens/scr_compose.c # S08d
     screens/scr_flare.c # S10b
     screens/scr_settings.c # S11b — the Settings modal face
@@ -228,7 +228,7 @@ add_library(ff-app-ui STATIC
     screens/scr_launcher.c # S26 slice e — the BOOT-button launcher, carousel retired
 )
 target_include_directories(ff-app-ui PUBLIC theme screens)
-# ff-intent (S16c1): scr_nav/scr_signals/scr_compose emit navigation
+# ff-intent (S16c1): scr_nav/scr_inbox/scr_compose emit navigation
 # intents through the seam — see ff_intent.h for why this dependency is
 # safe for screens (no meshclient, no shell, no core state).
 target_link_libraries(ff-app-ui PUBLIC ff-app ff-radar-layout ff-layout ff-flare-fmt ff-intent lvgl::lvgl)
@@ -268,46 +268,46 @@ if(FF_BUILD_TESTS)
     add_test(NAME test_wiring COMMAND test_wiring)
 endif()
 
-# S07b (app/screens/now_layout.c, scr_now.c — Now face render;
+# S07b (app/screens/lineup_layout.c, scr_lineup.c — Now face render;
 # docs/specs/S07-now-face.md slice b)
 # ---------------------------------------------------------------------------
-# ff-now-layout: same "pure C11, zero LVGL, unit-tested directly" split as
+# ff-lineup-layout: same "pure C11, zero LVGL, unit-tested directly" split as
 # ff-radar-layout above (format/geometry helpers only — see
-# app/screens/now_layout.h's top comment for what it reuses from
+# app/screens/lineup_layout.h's top comment for what it reuses from
 # radar_layout.h and what it doesn't). Even lighter-weight than
 # ff-radar-layout: no ff_radar.h/FF_CREW_MAX dependency at all, so this
 # links only ff_apply_warnings + libm, not ff-app.
 # ---------------------------------------------------------------------------
-add_library(ff-now-layout STATIC
-    screens/now_layout.c
+add_library(ff-lineup-layout STATIC
+    screens/lineup_layout.c
 )
-target_include_directories(ff-now-layout PUBLIC screens)
-target_compile_features(ff-now-layout PUBLIC c_std_11)
+target_include_directories(ff-lineup-layout PUBLIC screens)
+target_compile_features(ff-lineup-layout PUBLIC c_std_11)
 if(UNIX)
-    target_link_libraries(ff-now-layout PRIVATE m)
+    target_link_libraries(ff-lineup-layout PRIVATE m)
 endif()
-ff_apply_warnings(ff-now-layout)
+ff_apply_warnings(ff-lineup-layout)
 
 if(FF_BUILD_TESTS)
-    add_executable(test_now_layout
-        screens/tests/test_now_layout.c
+    add_executable(test_lineup_layout
+        screens/tests/test_lineup_layout.c
     )
-    target_link_libraries(test_now_layout PRIVATE ff-now-layout unity)
-    ff_apply_warnings(test_now_layout)
+    target_link_libraries(test_lineup_layout PRIVATE ff-lineup-layout unity)
+    ff_apply_warnings(test_lineup_layout)
 
-    add_test(NAME test_now_layout COMMAND test_now_layout)
+    add_test(NAME test_lineup_layout COMMAND test_lineup_layout)
 endif()
 
-# scr_now.c joins ff-app-ui (declared above) rather than a new library:
+# scr_lineup.c joins ff-app-ui (declared above) rather than a new library:
 # same shape as scr_radar.c/scr_nav.c — real LVGL screen code, not a
 # separately-tested pure module. Appended via target_sources (not folded
 # into the add_library() call above) so this stays a purely additive diff
 # — two other face agents (Signals/Flare UI) are touching this same file
 # in parallel for their own tiles.
 target_sources(ff-app-ui PRIVATE
-    screens/scr_now.c
+    screens/scr_lineup.c
 )
-target_link_libraries(ff-app-ui PUBLIC ff-now-layout)
+target_link_libraries(ff-app-ui PUBLIC ff-lineup-layout)
 
 # S10b (continued) — headless LVGL geometry tests for the flare UI (the
 # lock-disclosure chip's round-glass clamp, issue #27). Declared here,

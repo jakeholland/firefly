@@ -54,12 +54,12 @@ The middle one is the point of the whole project: most trackers keep pointing co
 
 | Set times, honestly | A flare arriving |
 |---|---|
-| <img src="docs/screens/now-tbd.png" width="200" alt="Now face listing Friday's Lost Lands lineup under a SET TIMES TBD banner"> | <img src="docs/screens/flare-takeover.png" width="200" alt="Full-screen takeover reading KEV IS FLARING, E - 40 m, above an amber chip reading GO DROPS LOCK - DANA — the disclosure that pressing GO costs you the navigation lock you already have"> |
+| <img src="docs/screens/lineup-tbd.png" width="200" alt="Lineup face listing Friday's Lost Lands lineup under a SET TIMES TBD banner"> | <img src="docs/screens/flare-takeover.png" width="200" alt="Full-screen takeover reading KEV IS FLARING, E - 40 m, above an amber chip reading GO DROPS LOCK - DANA — the disclosure that pressing GO costs you the navigation lock you already have"> |
 | Lost Lands hasn't published set times yet, so the puck says so and lists the day instead of inventing a schedule. | Press and hold, and your crew's pucks light up and point at you. If you were already navigating to someone else, it tells you what GO will cost you. |
 
-| Signals | Typing, off-grid |
+| Inbox | Typing, off-grid |
 |---|---|
-| <img src="docs/screens/signals.png" width="200" alt="Signals face listing a pulse from Dana, a rally point, and a message, above OMW / 5 MIN / PULSE reply chips"> | <img src="docs/screens/compose.png" width="200" alt="T9 composer showing the SYM page of symbols and emoticons"> |
+| <img src="docs/screens/inbox.png" width="200" alt="Inbox face listing a pulse from Dana, a rally point, and a message, above OMW / 5 MIN / PULSE reply chips"> | <img src="docs/screens/compose.png" width="200" alt="T9 composer showing the SYM page of symbols and emoticons"> |
 | Pulses, rally points, and one-tap replies — most festival coordination is four words or fewer. | A T9 keypad, because a QWERTY at 37 mm is a joke. ABC, 123, and a symbols page. |
 
 ## How it works

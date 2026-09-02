@@ -33,7 +33,7 @@ v1 = **multi-tap only** (2→abc cycling, 900 ms commit timer, key 1 cycles `. ,
 2. Punctuation key and space behave per spec; 160-char cap enforced.
 3. Feed: 33rd push evicts oldest; unread count increments and clears on face view.
 4. Wiring: injected mc on_private PULSE from paired node → feed item + haptic callback; from unpaired node → dropped (crew filtering).
-5. Goldens: `signals_feed.json`, `compose_mid.json` (matching mockup content) pass.
+5. Goldens: `inbox_feed.json`, `compose_mid.json` (matching mockup content) pass.
 6. Canned OMW from a pulse context sends to that sender (mock mc captures dest).
 
 ## Slices
