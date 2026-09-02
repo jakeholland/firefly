@@ -75,9 +75,10 @@ extern "C" {
  *
  * A NULL `v` renders nothing. Edge states render honestly (S24 AC9):
  * no paired crew -> the CREW row plus a "no crew linked yet" hint; crew
- * with no traffic -> quiet rows with presence and a CREW "no signals
- * yet" preview; everyone stale -> the legible stale treatment (presence
- * text in the stale-amber tier, never the dimmest gray).
+ * with no traffic -> quiet rows with presence and a CREW "no messages
+ * yet" preview (renamed 2026-09-01, was "no signals yet"); everyone
+ * stale -> the legible stale treatment (presence text in the
+ * stale-amber tier, never the dimmest gray).
  */
 void ff_scr_signals_build(lv_obj_t *parent, ff_app_signals_t const *v, bool colorblind);
 

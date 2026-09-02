@@ -36,12 +36,16 @@
  * and both hazards that rule out a ring/cross layout follow directly
  * from that:
  *
- *  1. HORIZONTAL-SWIPE SAFETY. The sim's `ctl swipe` command (and, on
- *     glass, an ordinary horizontal finger drag) sweeps a point straight
- *     across the screen's vertical center (y = FF_THEME_PUCK_RADIUS_PX).
- *     Any circle whose box crosses that line — i.e. whose center sits
- *     within LAUNCHER_CIRCLE_DIAM/2 (48px) of it — can register an
- *     accidental tap mid-swipe. A regular pentagon cannot clear this:
+ *  1. FAT-THUMB MID-DRAG MIS-TAP. The sim's `ctl swipe` command (and,
+ *     on glass, an ordinary horizontal finger drag) sweeps a point
+ *     straight across the screen's vertical center (y =
+ *     FF_THEME_PUCK_RADIUS_PX) — not a navigation gesture this face
+ *     acts on (`ff_route_swipe` has no live caller, S26 slice e), but a
+ *     REAL LVGL button underneath a drag's path can still register a
+ *     click on release. Any circle whose box crosses that line — i.e.
+ *     whose center sits within LAUNCHER_CIRCLE_DIAM/2 (48px) of it —
+ *     can register an accidental tap this way. A regular pentagon
+ *     cannot clear this:
  *     for radius R, the two vertices nearest horizontal sit at
  *     |R*sin(best rotation)|, and the best achievable rotation for a
  *     5-fold-symmetric ring only reaches an 18-degree clearance angle
@@ -205,24 +209,32 @@ void ff_scr_launcher_build(ff_app_state_t const *state)
      * see this file's layout comment for the geometry and why this
      * shape, not a ring/cross, is what clears the glass.
      *
-     * Glyphs: `LV_SYMBOL_EYE_OPEN` for Radar (PR #142 review Design 1
-     * already established this repo vendors icon glyphs; `LV_SYMBOL_GPS`
-     * — the obvious "location/compass" glyph — is already spoken for by
-     * Map, which shows an actual geographic map, so reusing it for Radar
-     * would make the two circles read as the same feature. Radar's job
-     * is spotting/finding nearby crew, not showing a map, so the "eye" —
-     * keeping watch — is the closer fit; `LV_SYMBOL_BELL` reads as
-     * notifications and `LV_SYMBOL_WIFI` reads as mesh/radio status,
-     * neither of which is what this screen does), `LV_SYMBOL_LIST` for
-     * Now/Lineup (the schedule list), `LV_SYMBOL_ENVELOPE` for
-     * Signals/Inbox (the same glyph scr_banner.c already uses for an
-     * incoming MESSAGE), `LV_SYMBOL_GPS` for Map, `LV_SYMBOL_SETTINGS`
-     * for Settings — the standard LVGL gear glyph.
+     * Glyphs: `LV_SYMBOL_WIFI` for Radar (reviewer PR #144 round 2 —
+     * `LV_SYMBOL_EYE_OPEN`, this file's first choice, ALREADY MEANS
+     * FLARE ("come find me") in two other live places on this same
+     * device: the Signals popup's flare row (scr_signals.c, the
+     * `signals_popup_flare_cb` row) and the flare banner overlay
+     * (scr_banner.c's `FF_NOTIFY_FLARE` case) — reusing it for Radar
+     * would read as "this circle is about flares", a genuine
+     * confusability defect, not just a style choice. `LV_SYMBOL_GPS` —
+     * the obvious "location/compass" glyph — is already spoken for by
+     * Map, which shows an actual geographic map, so reusing it for
+     * Radar would make the two circles read as the same feature.
+     * `LV_SYMBOL_WIFI`'s radiating arcs read as a sweep/scan — the
+     * closest built-in match to "radar" as a concept — and, unlike
+     * EYE_OPEN, is unused everywhere else in this codebase, confirmed
+     * by grep before picking it. `LV_SYMBOL_BELL` (notifications) was
+     * also considered and rejected: wrong domain, not this screen's
+     * job. `LV_SYMBOL_LIST` for Now/Lineup (the schedule list),
+     * `LV_SYMBOL_ENVELOPE` for Signals/Inbox (the same glyph
+     * scr_banner.c already uses for an incoming MESSAGE), `LV_SYMBOL_
+     * GPS` for Map, `LV_SYMBOL_SETTINGS` for Settings — the standard
+     * LVGL gear glyph.
      *
      * Captions are the renamed user-facing names (2026-09-01: "Signals"
      * -> "Inbox", "Now" -> "Lineup" — see the PR body for the full list
      * of renamed strings); "RADAR", "MAP" and "SETTINGS" are unchanged. */
-    launcher_make_circle(puck, LV_SYMBOL_EYE_OPEN, "RADAR", -LAUNCHER_TOP_DX, LAUNCHER_TOP_DY,
+    launcher_make_circle(puck, LV_SYMBOL_WIFI, "RADAR", -LAUNCHER_TOP_DX, LAUNCHER_TOP_DY,
                           LAUNCHER_TOP_CAPTION_DY, 0, false);
     launcher_make_circle(puck, LV_SYMBOL_LIST, "LINEUP", LAUNCHER_TOP_DX, LAUNCHER_TOP_DY, LAUNCHER_TOP_CAPTION_DY, 1,
                           false);
