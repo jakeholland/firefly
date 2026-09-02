@@ -167,14 +167,6 @@ static void S26f_sleep_window_also_skips_rebuild_and_defers_to_wake(void)
 
     TEST_ASSERT_EQUAL_INT(0, ff_ctl_loop_open(&ctx, &shell, &pack, &shell_cfg, &cfg));
 
-    /* This test runs after S26c_AC3's, which leaves s_swipe_dir toggled
-     * an odd number of times — reset it so THIS shell (fresh at RADAR,
-     * just asserted below) gets the same "first swipe goes toward
-     * SIGNALS" direction drive_one_dirty_swipe's own comment assumes;
-     * otherwise the first call here would swipe off the RADAR boundary
-     * and produce no change, silently defeating the positive control. */
-    s_swipe_dir = 1;
-
     ff_ctl_loop_pump(&ctx);
     TEST_ASSERT_EQUAL(FF_APP_FACE_RADAR, ctx.state.active_face);
     TEST_ASSERT_EQUAL(FF_IDLE_STATE_ACTIVE, ff_idle_state(&ctx.idle));
@@ -182,13 +174,13 @@ static void S26f_sleep_window_also_skips_rebuild_and_defers_to_wake(void)
     /* ---- Positive control, same as the OFF test: dirty ticks rebuild
      * while ACTIVE. ---- */
     for (int i = 0; i < 4; i++) {
-        drive_one_dirty_swipe(&shell);
+        drive_one_dirty_home(&shell);
         ctx.mock_clock_ms += 500u;
         ff_ctl_loop_pump(&ctx);
     }
     TEST_ASSERT_EQUAL(FF_IDLE_STATE_ACTIVE, ff_idle_state(&ctx.idle));
     TEST_ASSERT_GREATER_THAN_UINT32_MESSAGE(
-        0u, ctx.rebuild_count, "positive control failed: alternating FF_INTENT_SWIPE never rebuilt while ACTIVE");
+        0u, ctx.rebuild_count, "positive control failed: alternating FF_INTENT_HOME never rebuilt while ACTIVE");
 
     /* ---- Jump straight into SLEEP (past FF_IDLE_T_OFF_MS +
      * FF_IDLE_T_SLEEP_MS) — no ff_idle_input anywhere in this test, so
@@ -196,7 +188,7 @@ static void S26f_sleep_window_also_skips_rebuild_and_defers_to_wake(void)
      * confirmed crossing is enough; ff_idle's own tests cover the exact
      * threshold arithmetic. ---- */
     ctx.mock_clock_ms = FF_IDLE_T_OFF_MS + FF_IDLE_T_SLEEP_MS + 5000u;
-    drive_one_dirty_swipe(&shell);
+    drive_one_dirty_home(&shell);
     ff_ctl_loop_pump(&ctx);
     TEST_ASSERT_EQUAL(FF_IDLE_STATE_SLEEP, ff_idle_state(&ctx.idle));
 
@@ -206,7 +198,7 @@ static void S26f_sleep_window_also_skips_rebuild_and_defers_to_wake(void)
      * count must not move, same AC3 property OFF already proved, now
      * extended one state further. ---- */
     for (int i = 0; i < 6; i++) {
-        drive_one_dirty_swipe(&shell);
+        drive_one_dirty_home(&shell);
         ctx.mock_clock_ms += 1000u;
         ff_ctl_loop_pump(&ctx);
         TEST_ASSERT_EQUAL_MESSAGE(FF_IDLE_STATE_SLEEP, ff_idle_state(&ctx.idle),
