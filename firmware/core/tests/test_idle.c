@@ -362,6 +362,138 @@ static void S26c_AC2_brightness_round_trip_active_dim_active(void)
 }
 
 /* ------------------------------------------------------------------- */
+/* S26 slice (f) — timer-based light sleep after screen-off             */
+/* ------------------------------------------------------------------- */
+
+/* "OFF + 119,999 ms -> OFF; + 120,000 ms -> SLEEP" — the brief's own
+ * literal boundary check, same one-ms-on-both-sides technique as the
+ * DIM/OFF boundary tests above (this repo's proxy-check failure mode,
+ * AGENTS.md item 6: a version with an off-by-one on this threshold
+ * would still pass a test that only checked one side). */
+static void S26f_AC1_stays_off_below_sleep_threshold(void)
+{
+    ff_idle_t idle;
+    ff_idle_init(&idle);
+    ff_idle_input(&idle, 0);
+    TEST_ASSERT_EQUAL(FF_IDLE_STATE_OFF, ff_idle_tick(&idle, FF_IDLE_T_OFF_MS, false));
+
+    TEST_ASSERT_EQUAL(FF_IDLE_STATE_OFF,
+                       ff_idle_tick(&idle, FF_IDLE_T_OFF_MS + FF_IDLE_T_SLEEP_MS - 1, false));
+}
+
+static void S26f_AC1_sleeps_exactly_at_sleep_threshold(void)
+{
+    ff_idle_t idle;
+    ff_idle_init(&idle);
+    ff_idle_input(&idle, 0);
+    TEST_ASSERT_EQUAL(FF_IDLE_STATE_OFF, ff_idle_tick(&idle, FF_IDLE_T_OFF_MS, false));
+
+    TEST_ASSERT_EQUAL(FF_IDLE_STATE_SLEEP,
+                       ff_idle_tick(&idle, FF_IDLE_T_OFF_MS + FF_IDLE_T_SLEEP_MS, false));
+}
+
+/* A single large jump (no intervening ticks through DIM/OFF's own
+ * boundaries) still lands in SLEEP directly — mirrors
+ * S26c_AC1_off_reached_directly_without_visiting_dim_first for the new
+ * state one level up. */
+static void S26f_AC1_sleep_reached_directly_without_visiting_off_first(void)
+{
+    ff_idle_t idle;
+    ff_idle_init(&idle);
+    ff_idle_input(&idle, 1000);
+
+    TEST_ASSERT_EQUAL(FF_IDLE_STATE_SLEEP,
+                       ff_idle_tick(&idle, 1000 + FF_IDLE_T_OFF_MS + FF_IDLE_T_SLEEP_MS, false));
+}
+
+/* Threshold literal pin (mirrors S26c_AC1_thresholds_pinned_to_spec_literals):
+ * the macro AND the boundary behaviour are both checked against the
+ * spec's actual literal numbers, independent of each other, so a
+ * mutation to the macro's value is caught twice. */
+static void S26f_AC1_thresholds_pinned_to_spec_literals(void)
+{
+    TEST_ASSERT_EQUAL_UINT32(120000u, FF_IDLE_T_SLEEP_MS);
+
+    ff_idle_t idle;
+    ff_idle_init(&idle);
+    ff_idle_input(&idle, 0);
+    TEST_ASSERT_EQUAL(FF_IDLE_STATE_OFF, ff_idle_tick(&idle, 30000, false));
+
+    TEST_ASSERT_EQUAL(FF_IDLE_STATE_OFF, ff_idle_tick(&idle, 30000 + 119999, false));
+    TEST_ASSERT_EQUAL(FF_IDLE_STATE_SLEEP, ff_idle_tick(&idle, 30000 + 120000, false));
+}
+
+/* ff_idle_input wakes from SLEEP to ACTIVE like any other state (S26f). */
+static void S26f_AC1_input_wakes_from_sleep_to_active(void)
+{
+    ff_idle_t idle;
+    ff_idle_init(&idle);
+    ff_idle_input(&idle, 0);
+    TEST_ASSERT_EQUAL(FF_IDLE_STATE_SLEEP,
+                       ff_idle_tick(&idle, FF_IDLE_T_OFF_MS + FF_IDLE_T_SLEEP_MS, false));
+
+    ff_idle_input(&idle, FF_IDLE_T_OFF_MS + FF_IDLE_T_SLEEP_MS + 7);
+    TEST_ASSERT_EQUAL(FF_IDLE_STATE_ACTIVE, ff_idle_state(&idle));
+
+    /* And SLEEP does not slam straight back on the very next tick — same
+     * "does not immediately re-poison a fresh ACTIVE" check as
+     * S26c_AC1_input_resets_to_active_from_off. */
+    TEST_ASSERT_EQUAL(FF_IDLE_STATE_ACTIVE,
+                       ff_idle_tick(&idle, FF_IDLE_T_OFF_MS + FF_IDLE_T_SLEEP_MS + 8, false));
+}
+
+/* ff_idle_short_press (DIM/OFF/SLEEP -> wake) reaches SLEEP too — the
+ * PWR-press-during-a-GPIO-wake path app_main.c's light-sleep loop relies
+ * on (S26f target enact: "wake on input must land in ACTIVE"). */
+static void S26f_AC1_short_press_from_sleep_wakes(void)
+{
+    ff_idle_t idle;
+    ff_idle_init(&idle);
+    ff_idle_input(&idle, 0);
+    TEST_ASSERT_EQUAL(FF_IDLE_STATE_SLEEP,
+                       ff_idle_tick(&idle, FF_IDLE_T_OFF_MS + FF_IDLE_T_SLEEP_MS, false));
+
+    ff_idle_short_press(&idle, FF_IDLE_T_OFF_MS + FF_IDLE_T_SLEEP_MS + 3, false);
+    TEST_ASSERT_EQUAL(FF_IDLE_STATE_ACTIVE, ff_idle_state(&idle));
+}
+
+/* No SLEEP while keep_awake holds (S26f AC2) — reuses (c)'s predicate:
+ * keep_awake unconditionally forces ACTIVE every tick regardless of
+ * current state, so ticking well past BOTH the OFF and SLEEP thresholds
+ * while it holds must never report SLEEP (or OFF, or DIM). */
+static void S26f_AC2_no_sleep_while_keep_awake_holds(void)
+{
+    ff_idle_t idle;
+    ff_idle_init(&idle);
+    ff_idle_input(&idle, 0);
+
+    TEST_ASSERT_EQUAL(FF_IDLE_STATE_ACTIVE,
+                       ff_idle_tick(&idle, FF_IDLE_T_OFF_MS + FF_IDLE_T_SLEEP_MS + 60000, true));
+    TEST_ASSERT_EQUAL(FF_IDLE_STATE_ACTIVE, ff_idle_state(&idle));
+}
+
+/* keep_awake also reactivates a state that had already reached SLEEP —
+ * mirrors S26c_AC1_keep_awake_reactivates_from_forced_off. */
+static void S26f_AC2_keep_awake_reactivates_from_sleep(void)
+{
+    ff_idle_t idle;
+    ff_idle_init(&idle);
+    ff_idle_input(&idle, 0);
+    TEST_ASSERT_EQUAL(FF_IDLE_STATE_SLEEP,
+                       ff_idle_tick(&idle, FF_IDLE_T_OFF_MS + FF_IDLE_T_SLEEP_MS, false));
+
+    TEST_ASSERT_EQUAL(FF_IDLE_STATE_ACTIVE,
+                       ff_idle_tick(&idle, FF_IDLE_T_OFF_MS + FF_IDLE_T_SLEEP_MS + 1, true));
+}
+
+/* ff_idle_brightness_pct(SLEEP) = 0, a true zero — same contract as OFF. */
+static void S26f_AC1_brightness_sleep_returns_true_zero(void)
+{
+    TEST_ASSERT_EQUAL_UINT8(0, ff_idle_brightness_pct(FF_IDLE_STATE_SLEEP, 70));
+    TEST_ASSERT_EQUAL_UINT8(0, ff_idle_brightness_pct(FF_IDLE_STATE_SLEEP, 10));
+}
+
+/* ------------------------------------------------------------------- */
 /* NULL-safety                                                          */
 /* ------------------------------------------------------------------- */
 
@@ -409,6 +541,16 @@ int main(void)
     RUN_TEST(S26c_AC2_brightness_dim_returns_core_brightness_min);
     RUN_TEST(S26c_AC2_brightness_off_returns_true_zero);
     RUN_TEST(S26c_AC2_brightness_round_trip_active_dim_active);
+
+    RUN_TEST(S26f_AC1_stays_off_below_sleep_threshold);
+    RUN_TEST(S26f_AC1_sleeps_exactly_at_sleep_threshold);
+    RUN_TEST(S26f_AC1_sleep_reached_directly_without_visiting_off_first);
+    RUN_TEST(S26f_AC1_thresholds_pinned_to_spec_literals);
+    RUN_TEST(S26f_AC1_input_wakes_from_sleep_to_active);
+    RUN_TEST(S26f_AC1_short_press_from_sleep_wakes);
+    RUN_TEST(S26f_AC2_no_sleep_while_keep_awake_holds);
+    RUN_TEST(S26f_AC2_keep_awake_reactivates_from_sleep);
+    RUN_TEST(S26f_AC1_brightness_sleep_returns_true_zero);
 
     RUN_TEST(S26c_AC1_null_safe);
 

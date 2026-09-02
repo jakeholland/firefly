@@ -34,10 +34,13 @@
  */
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdio.h> /* S26 slice f — snprintf, ff_wakeup_cause_str's fallback branch */
 #include <string.h>
 
+#include "driver/gpio.h" /* S26 slice f — GPIO wake source config (touch-INT/PWR/BOOT) for light sleep */
 #include "esp_err.h" /* esp_err_to_name() — S26 slice g's boot-splash failure log */
 #include "esp_log.h"
+#include "esp_sleep.h"  /* S26 slice f — esp_light_sleep_start() + wake-source config */
 #include "esp_system.h" /* esp_restart() — S26 slice b's reboot action */
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
@@ -45,7 +48,7 @@
 
 #include "ff_display.h"
 #include "ff_face.h"
-#include "ff_idle.h"       /* S26 slice c — core: inactivity -> dim -> screen off */
+#include "ff_idle.h"       /* S26 slices c+f — core: inactivity -> dim -> screen off -> light sleep */
 #include "ff_intent.h"
 #include "ff_nvs_store.h" /* S21 §4 — the real NVS-backed store */
 #include "ff_power.h"      /* S25 — battery keep-alive latch (must fire first) + S26b PWR/BOOT sampling */
@@ -300,6 +303,192 @@ static ff_power_fsm_t s_power_fsm;
  * reference that slams straight to DIM/OFF the instant it exits.
  * Flagged here as this slice's interpretation call (AGENTS.md). */
 static ff_idle_t s_idle;
+
+/* ---------------------------------------------------------------------
+ * S26 slice f — timer-based light sleep after screen-off (BEGIN).
+ *
+ * Enact-only, same split as slice c above: `ff_idle_tick` (core) is the
+ * ONLY thing that decides FF_IDLE_STATE_SLEEP; this file only calls
+ * `esp_light_sleep_start()` when it reports that state (in the render
+ * loop below, right next to the backlight enact) and configures WHICH
+ * hardware events are allowed to end that sleep.
+ *
+ * Wake sources, and why:
+ *   - TIMER (`esp_sleep_enable_timer_wakeup`), FF_LIGHT_SLEEP_TIMER_WAKE_US
+ *     below — keeps the mesh link serviced (a normal tick still runs on
+ *     every wake, per the spec: "each timer wake services the link and
+ *     returns to sleep unless input arrived") even with the puck sitting
+ *     untouched in a pocket.
+ *   - GPIO: PWR (GPIO6), BOOT (GPIO0), and the SPD2010 touch INT line
+ *     (GPIO4) — `esp_sleep_enable_gpio_wakeup()` is light sleep's own
+ *     wake mechanism (distinct from deep sleep's ext0/ext1), driven by
+ *     `gpio_wakeup_enable()` per pin.
+ *   - NOT UART: this spec slice is explicit that a UART wake is wrong for
+ *     this board — the XIAO comms brain runs STOCK Meshtastic with no
+ *     wake preamble, so RX bytes that arrive mid-sleep and trigger a wake
+ *     are simply lost off the front of whatever frame was in flight
+ *     (corrupts the next packet, not just delays it). ESP-IDF light sleep
+ *     has no UART wake source configured here at all — nothing to
+ *     disable, just nothing enabled.
+ *
+ * ## Touch-INT (GPIO4) wake is BEST-EFFORT, not the guaranteed path
+ *
+ * Honest-data note (do not oversell this line): ff_display.c's own S15b
+ * comment (`ff_display_touch_start`, the `int_gpio_num` config) records
+ * that on THIS board, wiring the SPD2010's INT line as an interrupt
+ * source starved the reader — no press ever reached LVGL — which is WHY
+ * touch is polled instead of interrupt-driven at runtime. That is direct
+ * prior evidence this specific board's INT line may never assert on a
+ * touch at all, not merely "unverified" — arming it as a light-sleep
+ * wake source here is a free, best-effort addition (`gpio_wakeup_enable`
+ * costs nothing to configure) that may simply never fire in practice.
+ * `FF_PIN_TOUCH_INT`'s active-level (open-drain, active-LOW, the common
+ * touch-controller convention, matching the runtime polarity assumption
+ * elsewhere on this board) is unverified either way, same posture as
+ * ff_power.c's `FF_POWER_PWR_ACTIVE_LOW` flag; an internal pull-up is
+ * enabled here so the line reads a clean idle HIGH regardless of the
+ * board's own pull-up. None of this matters for correctness: the 1500 ms
+ * TIMER wake above is the guaranteed path regardless of whether INT ever
+ * asserts, so a touch arriving while asleep costs AT MOST one timer
+ * period (1.5 s) of latency before the next scheduled wake notices it —
+ * never a missed wake. S26f AC1 (on-glass) will show which: if the log's
+ * wake-cause line ever reads GPIO on a touch, this line works on this
+ * unit after all; if every wake during a touch test reads TIMER, it
+ * doesn't, and the timer alone is still carrying the AC. */
+#define FF_PIN_TOUCH_INT GPIO_NUM_4 /* matches ff_display.c's FF_PIN_TP_INT (4) — SPD2010 touch INT, normally unused/polled */
+
+/* Timer wake period. Spec range is 1-2 s; 1500 ms is the midpoint —
+ * frequent enough that a held mesh link still looks "serviced" on a
+ * human timescale (a message arriving while asleep is noticed within
+ * 1.5 s of the next wake, well under the 6 s banner-relevant timescales
+ * elsewhere in this spec) without waking so often that light sleep stops
+ * being worth entering in the first place (30-40 wakes/min at the 1 s end
+ * of the range vs 40 at 1.5 s vs ~30 at 2 s — the difference across the
+ * whole range is small relative to DIM/OFF's already-15s/30s cadence, so
+ * this is a soft pick, not a load-bearing one). */
+#define FF_LIGHT_SLEEP_TIMER_WAKE_US (1500 * 1000)
+
+/* Human-readable wake cause, for the on-glass log line the spec's AC1
+ * asks for ("log sleep entry + wake cause ... so the maintainer can read
+ * it on glass"). Deliberately NOT a full switch over every
+ * esp_sleep_wakeup_cause_t value — only the causes this file's own wake
+ * config above can actually produce (TIMER, GPIO) get a name; anything
+ * else (a cause this file never enabled) is reported literally as
+ * "OTHER(<n>)" rather than guessed at. */
+static const char *ff_wakeup_cause_str(esp_sleep_wakeup_cause_t cause, char *scratch, size_t scratch_len)
+{
+    switch (cause) {
+    case ESP_SLEEP_WAKEUP_TIMER:
+        return "TIMER";
+    case ESP_SLEEP_WAKEUP_GPIO:
+        return "GPIO";
+    case ESP_SLEEP_WAKEUP_UNDEFINED:
+        return "UNDEFINED (no prior sleep — cold boot or reset)";
+    default:
+        snprintf(scratch, scratch_len, "OTHER(%d)", (int)cause);
+        return scratch;
+    }
+}
+
+/* Arm every S26f wake source once, before the render loop's first
+ * possible sleep. Idempotent to call more than once (gpio_config /
+ * gpio_wakeup_enable / esp_sleep_enable_* re-apply cleanly), but this
+ * file only calls it the one time, right before `while (true)` starts. */
+static void ff_configure_light_sleep_wake(void)
+{
+    /* Same "log and continue, never abort a boot over a single non-fatal
+     * HAL call" posture this file already uses throughout (ff_power_latch_on,
+     * ff_bringup_panel's callers, ...) — each wake source below is
+     * independent, so a failure on one (say, the touch-INT line) should
+     * not cost the other two (PWR/BOOT still work) or the timer wake
+     * (which alone already guarantees the link keeps getting serviced). */
+    esp_err_t err = esp_sleep_enable_timer_wakeup(FF_LIGHT_SLEEP_TIMER_WAKE_US);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "esp_sleep_enable_timer_wakeup failed: %s — light sleep would never wake on its own",
+                 esp_err_to_name(err));
+    }
+
+    /* PWR (GPIO6) and BOOT (GPIO0): configured here directly (input,
+     * matching ff_power.c's own pin config for each — no pull on PWR, an
+     * internal pull-up on BOOT) rather than relying on
+     * ff_power_pwr_pressed()/ff_power_boot_pressed() having already run
+     * at least once — gpio_config re-apply is idempotent (same
+     * "configuring an already-configured pin is a no-op re-apply, not an
+     * error" precedent ff_power.c's own comments already establish), so
+     * this function can run at any point in bring-up without an ordering
+     * dependency on those two. Both active-LOW — FF_POWER_PWR_ACTIVE_LOW
+     * / the standard BOOT-button convention, see ff_power.h. */
+    const gpio_config_t pwr_io = {
+        .pin_bit_mask = 1ULL << GPIO_NUM_6,
+        .mode = GPIO_MODE_INPUT,
+        .pull_up_en = GPIO_PULLUP_DISABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_DISABLE,
+    };
+    if ((err = gpio_config(&pwr_io)) != ESP_OK || (err = gpio_wakeup_enable(GPIO_NUM_6, GPIO_INTR_LOW_LEVEL)) != ESP_OK) {
+        ESP_LOGE(TAG, "PWR (GPIO%d) light-sleep wake config failed: %s", GPIO_NUM_6, esp_err_to_name(err));
+    }
+
+    const gpio_config_t boot_io = {
+        .pin_bit_mask = 1ULL << GPIO_NUM_0,
+        .mode = GPIO_MODE_INPUT,
+        .pull_up_en = GPIO_PULLUP_ENABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_DISABLE,
+    };
+    if ((err = gpio_config(&boot_io)) != ESP_OK || (err = gpio_wakeup_enable(GPIO_NUM_0, GPIO_INTR_LOW_LEVEL)) != ESP_OK) {
+        ESP_LOGE(TAG, "BOOT (GPIO%d) light-sleep wake config failed: %s", GPIO_NUM_0, esp_err_to_name(err));
+    }
+
+    /* Touch INT (GPIO4) — see this block's top comment for the
+     * active-LOW interpretation call. Not otherwise configured anywhere
+     * in this codebase (ff_display.c polls the controller instead). */
+    const gpio_config_t touch_int_io = {
+        .pin_bit_mask = 1ULL << FF_PIN_TOUCH_INT,
+        .mode = GPIO_MODE_INPUT,
+        .pull_up_en = GPIO_PULLUP_ENABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_DISABLE,
+    };
+    if ((err = gpio_config(&touch_int_io)) != ESP_OK ||
+        (err = gpio_wakeup_enable(FF_PIN_TOUCH_INT, GPIO_INTR_LOW_LEVEL)) != ESP_OK) {
+        ESP_LOGE(TAG, "touch-INT (GPIO%d) light-sleep wake config failed: %s — timer wake still covers it",
+                 (int)FF_PIN_TOUCH_INT, esp_err_to_name(err));
+    }
+
+    err = esp_sleep_enable_gpio_wakeup();
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "esp_sleep_enable_gpio_wakeup failed: %s — GPIO wakes may not fire; timer wake still covers it",
+                 esp_err_to_name(err));
+    }
+
+    /* Interpretation call #1 (PR body): force the VDD_SDIO power domain
+     * (flash + this board's octal PSRAM, CONFIG_SPIRAM_MODE_OCT — the
+     * shell + festpack scratch live there, see ff_shell_init/s_shell_p
+     * above) to stay powered across every light sleep, rather than
+     * trusting esp-idf's own AUTO heuristic. Reading esp-idf's own
+     * source (esp_hw_support/sleep_modes.c, can_power_down_vddsdio):
+     * AUTO would only power VDD_SDIO down if the timer wake were the
+     * SOLE wake trigger (`wakeup_triggers == RTC_TIMER_TRIG_EN`) — ours
+     * also has GPIO wake armed above, so AUTO would already keep it on
+     * in this config. This ON is a deliberate, explicit pin of that
+     * fact rather than a silent dependency on triggers-config staying
+     * exactly this shape — a future edit that (say) dropped the GPIO
+     * wakes would otherwise flip PSRAM's sleep behaviour with no
+     * warning. */
+    err = esp_sleep_pd_config(ESP_PD_DOMAIN_VDDSDIO, ESP_PD_OPTION_ON);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "esp_sleep_pd_config(VDDSDIO, ON) failed: %s — PSRAM/flash power state across sleep is un-pinned",
+                 esp_err_to_name(err));
+    }
+
+    ESP_LOGI(TAG, "S26f light-sleep wake sources armed: timer=%dms, GPIO wake on PWR(6)/BOOT(0)/touch-INT(%d), VDD_SDIO forced ON",
+             (int)(FF_LIGHT_SLEEP_TIMER_WAKE_US / 1000), (int)FF_PIN_TOUCH_INT);
+}
+/* S26 slice f (END) — the actual sleep call site is in the render loop,
+ * below app_main()'s `while (true)`, next to the idle-state backlight
+ * enact it's a sibling decision to.
+ * --------------------------------------------------------------------- */
 
 /* ff_shell_cfg_t.power_off: called by the shell's FF_INTENT_POWER_OFF
  * handler. Composes the two device-IO calls the spec's slice (b) section
@@ -641,6 +830,12 @@ void app_main(void)
     ff_idle_input(&s_idle, ff_bringup_now_ms());
     ff_idle_state_t last_idle_state = FF_IDLE_STATE_ACTIVE;
 
+    /* S26 slice f — arm the light-sleep wake sources once, right before
+     * the render loop can first reach SLEEP. See
+     * ff_configure_light_sleep_wake's own doc comment above for the wake
+     * sources and the PSRAM/VDD_SDIO interpretation call. */
+    ff_configure_light_sleep_wake();
+
     /* Render lifecycle mirrors the sim (targets/sim/ctl_loop.c): tick the
      * shell every frame, rebuild the LVGL tree ONLY on a dirty tick. The
      * esp_lvgl_port task does the actual flushing; we just own the model. */
@@ -794,14 +989,17 @@ void app_main(void)
         }
 
         /* Rebuild only when something is pending, no finger is down, AND the
-         * screen is not OFF (S26 slice c: "skip rendering" — the LVGL tick
-         * still runs via esp_lvgl_port's own task; only the face
-         * teardown+rebuild is skipped here). While a finger is down we hold
-         * off so the button under it survives to emit its CLICKED on
-         * release; the pending flag stays set and drains on the first frame
-         * after the finger lifts (or after the screen wakes, whichever is
-         * later). */
-        if (rebuild_pending && !ff_display_touch_is_down() && idle_state != FF_IDLE_STATE_OFF) {
+         * screen is not OFF or SLEEP (S26 slice c: "skip rendering" — the
+         * LVGL tick still runs via esp_lvgl_port's own task; only the face
+         * teardown+rebuild is skipped here; S26 slice f folds SLEEP into
+         * this SAME check, same as the sim's ctl_loop.c screen_blank gate —
+         * the screen is just as blank while asleep as it is OFF). While a
+         * finger is down we hold off so the button under it survives to
+         * emit its CLICKED on release; the pending flag stays set and
+         * drains on the first frame after the finger lifts (or after the
+         * screen wakes, whichever is later). */
+        bool const screen_blank = (idle_state == FF_IDLE_STATE_OFF) || (idle_state == FF_IDLE_STATE_SLEEP);
+        if (rebuild_pending && !ff_display_touch_is_down() && !screen_blank) {
             if (ff_display_lock(100 /* ms */)) {
                 lv_obj_clean(lv_screen_active());
                 ff_face_build(v);
@@ -809,6 +1007,29 @@ void app_main(void)
                 rebuild_pending = false;
             }
         }
-        vTaskDelay(pdMS_TO_TICKS(20));
+
+        /* S26 slice f — the actual light-sleep enact. `idle_state` above
+         * is core's decision (ff_idle_tick) — this file only reads it:
+         * SLEEP means "sleep now"; anything else means the normal 20 ms
+         * frame delay. Waking (whether the timer or a GPIO source fired)
+         * re-enters the loop at the top, where the very next
+         * `ff_power_fsm_tick` / touch-feed / `ff_idle_tick` calls are the
+         * spec's "one normal tick" — if real input came with the wake
+         * (PWR/BOOT/touch), that tick lands ACTIVE via the existing
+         * ff_idle_input/ff_idle_short_press paths (no new code needed —
+         * see ff_idle.h); if only the timer fired, `ff_idle_tick` reports
+         * SLEEP again (S26f: "OFF and SLEEP are sticky") and this same
+         * branch sends the device straight back to sleep — the DECISION
+         * that a bare timer wake stays SLEEP already happened in core, not
+         * here. */
+        if (idle_state == FF_IDLE_STATE_SLEEP) {
+            ESP_LOGI(TAG, "S26f: entering light sleep");
+            esp_light_sleep_start();
+            char cause_scratch[16];
+            ESP_LOGI(TAG, "S26f: light sleep wake, cause=%s",
+                     ff_wakeup_cause_str(esp_sleep_get_wakeup_cause(), cause_scratch, sizeof(cause_scratch)));
+        } else {
+            vTaskDelay(pdMS_TO_TICKS(20));
+        }
     }
 }
