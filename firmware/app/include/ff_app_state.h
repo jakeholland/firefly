@@ -598,6 +598,14 @@ typedef struct {
      * the backlight HAL. Clamped to [FF_BRIGHTNESS_MIN_PCT,
      * FF_BRIGHTNESS_MAX_PCT] by the shell before it ever reaches here. */
     uint8_t  brightness_pct;
+
+    /* [api] S21 amendment (clock-format setting) — mirrors ff_settings_t.
+     * clock_24h field-for-field (core/include/ff_settings.h). The Settings
+     * face renders it as the CLOCK row's 12H|24H toggle; the wall-clock
+     * projection (`radar.clock_str`, S18) reads it via ff_fmt_clock to pick
+     * the format every clock display (Radar status bar, launcher's
+     * time·battery row) shows. Default false (12-hour). */
+    bool     clock_24h;
 } ff_app_settings_t;
 /* S21 removed ff_app_settings_t.page / FF_SETTINGS_PAGE_COUNT (#105's
  * pagination): the Settings face is now one scrolling list, so there is no

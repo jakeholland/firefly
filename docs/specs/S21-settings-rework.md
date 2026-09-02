@@ -102,3 +102,63 @@ default" direction on the honest-data value.)
 
 ## Out of scope
 Multi-profile settings, cloud sync, the compose predictive-T9 UX (#104's follow-up).
+
+## Amendments
+
+**2026-09-02 — clock-format setting + centered header (maintainer ask).**
+Two small additions on top of this slice's scrolling-list Settings:
+
+1. **`ff_settings_t.clock_24h`** (`[api]`, format version 6 -> 7,
+   `ff_settings.h`): the puck's default clock format is now 12-hour with a
+   lowercase am/pm suffix (`"9:46 pm"`), not bare 24-hour — the design
+   vocabulary's own mockup form. `clock_24h = true` switches to 24-hour
+   (`"21:46"`). A new Settings row, **CLOCK** (`12H | 24H`, the same
+   toggle-pair pill shape as UNITS/SHARE), sits directly under UNITS and
+   drives it through `FF_SETTING_CLOCK_24H` — the same bare
+   `FF_INTENT_SETTING_SET` seam every other row uses; range validation is
+   "nonzero is true", same as HAPTICS/GLOW/COLORBLIND.
+   **From v7 on, a format bump FORWARD-MIGRATES** (review finding on the
+   first version of this PR, corrected here): S21 §4's real NVS-backed
+   store means fielded devices exist now — the maintainer's own puck holds
+   a genuine v6 blob (brightness, touch calibration, unit preference) —
+   so the pre-v1 "no fielded devices to migrate" premise every v2-v6 bump
+   relied on is no longer true, and discarding it would violate this
+   project's own honest-data ruling that a settings change must never
+   silently wipe a unit's stored calibration. A v6 blob's payload is a
+   byte-for-byte prefix of v7's (`clock_24h` is a single bool appended at
+   the very end, so every earlier field's offset is unchanged): v7's
+   loader reads it via a frozen `ff_settings_v6_t` shadow, carries every
+   v6 value across field-by-field, and only `clock_24h` — which v6 never
+   had — lands at its honest default (false / 12-hour). **The pre-v1
+   reject-not-migrate rule still applies to anything OLDER than v6** (<=v5):
+   those blobs pre-date the NVS store shipping at all, so no fielded
+   device holds one and there is nothing genuine a migration could
+   preserve — see `ff_settings.c`'s v7 comment for the full reasoning and
+   `test_settings.c`'s `S21_v6_blob_forward_migrates_preserving_every_value`
+   / `S11_AC1_load_with_v5_blob_yields_defaults_not_a_migration` for the two
+   sides of that boundary.
+   The formatter itself (`ff_fmt_clock`) is core logic in `ff_wall.h`/
+   `ff_wall.c`, not this file — see docs/specs/S18-wall-clock-trust.md's
+   own Amendments entry for the exact format strings and the buffer-size
+   bump this required (`FF_RADAR_CLOCK_LEN` 6 -> 9).
+2. **Header alignment fix.** The pinned SETTINGS/name header still
+   reserved a back-button-shaped gutter and left-anchored both lines
+   against it, though the horizontal-carousel rework (S26) had already
+   removed the back button itself — so the two lines merely happened to
+   sit near center rather than actually being centered, and the
+   (unconstrained-width) title visibly drifted right of the (fixed-width,
+   left-anchored) name below it
+   (`firmware/tests/golden/settings_default.png` before this fix).
+   Rebuilt as one flex-COLUMN container, cross-axis centered, so title and
+   name share the glass's true vertical axis regardless of their own
+   (different) natural text widths — sizes/colors unchanged, no other
+   layout change. This inserted the new CLOCK row shifts every row below
+   UNITS down by one `FF_SETTINGS_ROW_STEP` (spacing itself unchanged;
+   S21's scroll list has no page for it to overflow — it simply scrolls
+   into view like every other row).
+
+Goldens regenerated: all six `settings_*` fixtures (header fix + new row)
+and a new `settings_clock_24h` fixture/golden (the CLOCK toggle set to 24H,
+rendered on the launcher's time·battery row as `"21:46"`). `test_face_hit_
+targets` (this slice's scroll-aware sweep) covers the new row generically —
+no sweep-file change needed.

@@ -340,6 +340,10 @@ typedef enum {
      * — the floor is non-zero on purpose (never a black, unrecoverable
      * screen). */
     FF_SETTING_BRIGHTNESS,
+    /* [api] S21 amendment — the Settings CLOCK 12H|24H toggle
+     * (ff_settings_t.clock_24h). Bool-backed, same "nonzero is true" int
+     * payload convention as IMPERIAL/HAPTICS/NIGHT_GLOW/COLORBLIND above. */
+    FF_SETTING_CLOCK_24H,
 } ff_setting_id_t;
 
 typedef struct {

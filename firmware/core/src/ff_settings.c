@@ -13,7 +13,7 @@
  * below only catches size mismatches; two different layouts can share the
  * same sizeof() (e.g. a reordering, or swapping a bool+uint8_t pair) and
  * would otherwise pass validation with silently corrupted semantics. */
-#define FF_SETTINGS_FORMAT_VERSION ((uint16_t)6u)
+#define FF_SETTINGS_FORMAT_VERSION ((uint16_t)7u)
 /* v2: compass_cal_blob (opaque uint8_t[32]) -> compass_cal (ff_geo_cal_t),
  * per TODO(S01) in ff_settings.h. Same sizeof() risk the header comment
  * warns about (a reordering/retype can share sizeof() with the old
@@ -50,14 +50,71 @@
  * puck had a fixed full-on backlight and no brightness concept, so there is
  * no honest legacy value to migrate. Still pre-v1 firmware, no fielded
  * devices. */
+/* v7: + clock_24h (S21 amendment — the Settings CLOCK 12H|24H toggle; see
+ * ff_settings.h). UNLIKE v2-v6 above, this bump FORWARD-MIGRATES a v6 blob
+ * instead of discarding it: S21 slice 4 (already merged) wired the real
+ * NVS-backed store, so fielded pucks now hold a real v6 blob — brightness,
+ * touch calibration, unit preference — and the pre-v1 "no fielded devices
+ * to migrate" premise every earlier bump relied on no longer holds. This
+ * repo's own honest-data ruling ("a settings change must never silently
+ * wipe a unit's stored calibration") applies here for the first time.
+ * clock_24h is a single bool appended at the very end of ff_settings_t —
+ * every earlier field's offset is unchanged — so a v6 blob's payload is a
+ * byte-for-byte prefix of a v7 one; ff_settings_load reads it with the
+ * frozen ff_settings_v6_t shadow below and fills clock_24h in at its
+ * honest default (false — a v6 puck genuinely had no clock-format toggle,
+ * so 12-hour is the correct reading, not a guess). A blob OLDER than v6
+ * (<=v5) still rejects outright: those pre-date the NVS store (S21 §4)
+ * shipping at all, so there is no fielded device whose real persisted
+ * state that rule could destroy — the "no fielded devices to migrate"
+ * premise stated for v3-v6 above is still true for anything that old. */
 
 typedef struct {
     uint32_t magic;
     uint16_t version;
-    uint16_t payload_size; /* sizeof(ff_settings_t) at write time */
+    uint16_t payload_size; /* sizeof(ff_settings_t) (or, for a v6 blob being
+                             * migrated, sizeof(ff_settings_v6_t)) at write time */
 } ff_settings_header_t;
 
 #define FF_SETTINGS_BLOB_LEN (sizeof(ff_settings_header_t) + sizeof(ff_settings_t))
+
+/**
+ * ff_settings_v6_t — a FROZEN, byte-for-byte mirror of ff_settings_t exactly
+ * as it existed at format version 6 (i.e. every field ff_settings_t has
+ * TODAY except the v7 amendment's trailing `clock_24h`, in the same order).
+ * Exists ONLY so ff_settings_load can forward-migrate a real v6 blob — see
+ * the v7 comment above for why that migration is required now (S21 §4's NVS
+ * store means fielded pucks hold real v6 blobs today).
+ *
+ * Deliberately NOT derived from ff_settings_t (e.g. via some "all fields but
+ * the last" trick) — it is its own independent, hand-written type. A LATER
+ * reorder of ff_settings_t's live fields (however unlikely; nothing in this
+ * codebase does that) must never silently change what this migration reads,
+ * because this struct has to keep matching what a real v6 firmware actually
+ * wrote to NVS, forever, regardless of what ff_settings_t looks like by
+ * then. If a future version bump also needs a migration, that bump adds its
+ * OWN frozen vN shadow the same way — this one never changes again. */
+typedef struct {
+    bool imperial;
+    uint8_t share_mode;
+    bool haptics;
+    bool night_glow;
+    uint16_t water_min;
+    uint16_t quiet_from_min;
+    uint16_t quiet_to_min;
+    int16_t utc_offset_min;
+    bool utc_offset_set;
+    bool colorblind;
+    uint8_t brightness_pct;
+    char my_name[FF_SETTINGS_NAME_LEN];
+    ff_geo_cal_t compass_cal;
+    bool cal_valid;
+    float touch_ax;
+    float touch_bx;
+    float touch_ay;
+    float touch_by;
+    bool touch_calibrated;
+} ff_settings_v6_t;
 
 static void ff_settings_apply_defaults(ff_settings_t *s)
 {
@@ -101,6 +158,43 @@ static void ff_settings_apply_defaults(ff_settings_t *s)
     s->touch_ay = 1.0f;
     s->touch_by = 0.0f;
     s->touch_calibrated = false;
+
+    /* clock_24h: left zeroed -> false (12-hour, with a lowercase am/pm
+     * suffix — the design vocabulary's mockup form). See ff_settings.h's
+     * doc comment on the field. */
+}
+
+/* v6 -> v7 forward migration (see the v7 comment above `ff_settings_header_t`
+ * for why this exists). Copies every v6 field across EXPLICITLY, field by
+ * field — not a single memcpy of the whole struct — so a future reorder of
+ * ff_settings_t's live field layout can't silently misalign this migration;
+ * the compiler catches a missing/renamed field as a normal member-access
+ * error at the call site below. clock_24h, which v6 never had, is set to
+ * its honest default. */
+static void ff_settings_migrate_v6(ff_settings_t *s, ff_settings_v6_t const *v6)
+{
+    s->imperial = v6->imperial;
+    s->share_mode = v6->share_mode;
+    s->haptics = v6->haptics;
+    s->night_glow = v6->night_glow;
+    s->water_min = v6->water_min;
+    s->quiet_from_min = v6->quiet_from_min;
+    s->quiet_to_min = v6->quiet_to_min;
+    s->utc_offset_min = v6->utc_offset_min;
+    s->utc_offset_set = v6->utc_offset_set;
+    s->colorblind = v6->colorblind;
+    s->brightness_pct = v6->brightness_pct;
+    memcpy(s->my_name, v6->my_name, sizeof(s->my_name));
+    s->compass_cal = v6->compass_cal;
+    s->cal_valid = v6->cal_valid;
+    s->touch_ax = v6->touch_ax;
+    s->touch_bx = v6->touch_bx;
+    s->touch_ay = v6->touch_ay;
+    s->touch_by = v6->touch_by;
+    s->touch_calibrated = v6->touch_calibrated;
+    s->clock_24h = false; /* v6 never had this field: false (12-hour) is the
+                            * honest reading of "this puck never had the
+                            * toggle", not a guess — see ff_settings.h. */
 }
 
 void ff_settings_load(ff_settings_t *s, ff_store_t const *st)
@@ -115,12 +209,21 @@ void ff_settings_load(ff_settings_t *s, ff_store_t const *st)
         return;
     }
 
+    /* Sized to the LARGEST blob this build can read (today, v7's). A v6
+     * blob is smaller, so it fits the same buffer; `get` (ff_store_t's
+     * documented contract) returns the value's ACTUAL stored length, which
+     * can legitimately be shorter than the buffer's capacity — this is not
+     * "short read" in the corrupt-data sense, it's a real, older, still-
+     * valid record. See the two explicit per-version branches below; no
+     * length is accepted silently, each is checked against the exact size
+     * its claimed version is documented to be. */
     uint8_t buf[FF_SETTINGS_BLOB_LEN];
     int n = st->get(st->io, FF_SETTINGS_STORE_KEY, buf, sizeof(buf));
-    if (n < 0 || (size_t)n != sizeof(buf)) {
-        /* Missing, short, truncated, or oversized read -> defaults stand. */
+    if (n < 0 || (size_t)n < sizeof(ff_settings_header_t)) {
+        /* Missing, failed, or too short to even hold a header -> defaults. */
         return;
     }
+    size_t const got = (size_t)n;
 
     ff_settings_header_t hdr;
     memcpy(&hdr, buf, sizeof(hdr));
@@ -128,14 +231,29 @@ void ff_settings_load(ff_settings_t *s, ff_store_t const *st)
     if (hdr.magic != FF_SETTINGS_MAGIC) {
         return;
     }
-    if (hdr.version != FF_SETTINGS_FORMAT_VERSION) {
+
+    /* Explicit per-version step table (AGENTS.md: "no silent 'accept any
+     * size'") — exactly two versions this build knows how to read, each
+     * gated on BOTH its own version number and its own exact documented
+     * payload size. Anything else (an unknown/future version, a <=v5 blob,
+     * or a version/size combination that doesn't match either row) falls
+     * through to the defaults ff_settings_apply_defaults already applied
+     * above — reject, not guess. */
+    if (hdr.version == FF_SETTINGS_FORMAT_VERSION && hdr.payload_size == (uint16_t)sizeof(ff_settings_t) &&
+        got == sizeof(hdr) + sizeof(ff_settings_t)) {
+        memcpy(s, buf + sizeof(hdr), sizeof(*s));
         return;
     }
-    if (hdr.payload_size != (uint16_t)sizeof(ff_settings_t)) {
+    if (hdr.version == 6u && hdr.payload_size == (uint16_t)sizeof(ff_settings_v6_t) &&
+        got == sizeof(hdr) + sizeof(ff_settings_v6_t)) {
+        ff_settings_v6_t v6;
+        memcpy(&v6, buf + sizeof(hdr), sizeof(v6));
+        ff_settings_migrate_v6(s, &v6);
         return;
     }
 
-    memcpy(s, buf + sizeof(hdr), sizeof(*s));
+    /* <=v5 (pre-dates the NVS store, S21 §4 — no fielded device holds one),
+     * or a version/size mismatch (corrupt or foreign): defaults stand. */
 }
 
 void ff_settings_save(ff_settings_t const *s, ff_store_t const *st)
