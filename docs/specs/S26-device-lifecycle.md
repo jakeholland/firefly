@@ -43,16 +43,50 @@ fed ticks + levels); the esp32s3 target only samples pins and enacts
 
 ## Nav model (slice e)
 
-**Radar is the watchface.** It is what the screen wakes to and rests on — at
-a festival the compass is glanced at constantly, so waking to a menu would be
-wrong. **BOOT (GPIO0) is the home button**: from Radar it opens the
-**launcher** (a ring of app circles: Now · Signals · Map · Settings — Radar
-is not listed, it is home); from any app it returns to Radar; from the
-launcher it returns to Radar. Picking a circle enters that app full-screen.
-This retires the horizontal carousel: with one global nav gesture (a button),
-vertical drag is unambiguously scroll everywhere, and horizontal is free for
-apps. GPIO0 is a normal input once booted (only special at reset) and is free
-in the pin map.
+**AMENDED 2026-09-01 — maintainer decision after on-glass use.** The launcher
++ BOOT button work as originally cut below, but real use on the puck showed
+the "Radar is the watchface" model to be wrong: it special-cased Radar in a
+way that made the launcher a fragile, transient thing you passed *through*
+rather than a place you could actually rest on. The model is now:
+
+**The launcher IS home.** It is what BOOT always returns you to, and — since
+this slice's field observation, not the original cut — it is also where the
+device simply STAYS if you leave it there; it does not time out or hand
+control back to Radar on its own. **Radar gets no special handling**: it is
+an ordinary circle in the launcher, ranked no differently from Now/Signals/
+Map/Settings, and it is reached the same way every other app is (a launcher
+tap), not treated as a default destination. **BOOT (GPIO0) is the home
+button**: from any app (Radar included) it returns to the launcher; from the
+launcher itself it is a no-op (there is nowhere "home-er" to go). Picking a
+circle enters that app full-screen. **The screen wakes to whatever base was
+showing** when it went to sleep — the launcher if that's where BOOT last left
+it, or an app if you were in one — never to a fixed "watchface" regardless of
+where you were.
+
+This retains the original cut's retirement of the horizontal carousel: with
+one global nav gesture (a button), vertical drag is unambiguously scroll
+everywhere, and horizontal is free for apps. GPIO0 is a normal input once
+booted (only special at reset) and is free in the pin map.
+
+**Renamed for the field (2026-09-01, same maintainer pass):** the "Now" face
+is called **Lineup** and the "Signals" face is called **Inbox** everywhere a
+user reads the name — launcher labels, screen headers, and this document.
+This is a user-facing rename only: the code identifiers, files, and the S24
+spec's own title (`S24-signals-inbox.md`) are unchanged, and so is "now" the
+word (an item's freshness, e.g. `ff_fmt_age`'s "now" for an age under a
+minute, or the Rally WHEN chip's "Now" meaning "right now" as opposed to
+"+15m") — only the screen NAME changed.
+
+### Pre-amendment model (superseded, kept for history)
+The original cut of this slice made Radar the watchface: what the screen
+woke to and rested on, with BOOT opening a transient launcher (a ring of Now
+· Signals · Map · Settings — Radar was deliberately excluded, "it is home")
+that auto-dismissed back to Radar after a short idle timeout, and that a PWR
+long-press could replace with the power menu. None of that survives this
+amendment: there is no watchface, no launcher timeout, and no replace-the-
+launcher special case (the power menu now opens as a plain modal over
+whichever base — launcher or app — is showing, the same as it does over any
+other base).
 
 **Download-mode guard:** GPIO0 held LOW during a reset enters the ROM
 bootloader. A "Reboot" from the power menu therefore waits until BOOT reads
@@ -144,13 +178,23 @@ enqueue wakes the screen via (c). Flare takeover untouched.
 
 ### (e) Home button + launcher — `[api]`
 Target: GPIO0 sampled like GPIO6 (same debounce module); core: `ff_route`
-gains HOME semantics per the nav model above; a new `scr_launcher` face (ring
-of app circles, ≥ 56 px targets on round glass, press states). Remove the
-carousel swipe from `scr_nav.c` (LEFT/RIGHT no longer change faces); page dots
-go. Long-press-anywhere → Settings is retired (Settings is a launcher circle).
-- **AC1** `ff_route` tests: BOOT from Radar → launcher, from launcher → Radar,
-  from app → Radar; modal (Compose, power menu) suppresses.
-- **AC2** Launcher golden; hit-target sweep green.
+gains HOME semantics per the nav model above; a new `scr_launcher` face (grid
+of app circles, ≥ 56 px targets — the shipped build uses 96 px — on round
+glass, press states). Remove the carousel swipe from `scr_nav.c` (LEFT/RIGHT
+no longer change faces); page dots go. Long-press-anywhere → Settings is
+retired (Settings is a launcher circle).
+
+**AMENDED 2026-09-01**, per the nav model's own amendment above — ACs below
+are the CURRENT contract, not the original cut's:
+- **AC1** `ff_route` tests: init base == launcher; HOME from every base
+  (Radar included, no special case) → launcher; HOME on the launcher → no
+  change; selecting a launcher circle (Radar included) → that base; a live
+  modal (Compose, power menu) or a takeover suppresses HOME; the power menu
+  opens as a plain modal over the launcher base and Cancel reveals the
+  launcher again (no launcher timeout, no replace-the-launcher special case —
+  both retired with the model that needed them).
+- **AC2** Launcher golden (five circles, no privileged member); hit-target
+  sweep green.
 - **AC3** No horizontal swipe changes face (sim indev test).
 
 ### (f) Light sleep — timer-based

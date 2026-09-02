@@ -72,7 +72,7 @@
 
 #define FF_SIGNALS_SAFETY_PX 10.0f /* see scr_compose.c's FF_COMPOSE_SAFETY_PX — same rationale */
 
-/* Header: centered "SIGNALS" caption + the numbered unread badge. Not a
+/* Header: centered "INBOX" caption (renamed 2026-09-01; was "SIGNALS") + the numbered unread badge. Not a
  * control — nothing here is clickable, so no adjacency partner for the
  * list's first row. */
 #define FF_SIGNALS_HEADER_Y 34
@@ -912,10 +912,22 @@ static void signals_build_fab(lv_obj_t *parent)
  * Sub-view: INBOX.
  * ------------------------------------------------------------------- */
 
+/* S26 slice e renames (2026-09-01): "Signals" -> "Inbox" everywhere the
+ * user can read it (see the PR body for the full list of renamed
+ * strings). This header title is the primary occurrence; the screen
+ * file, code identifiers, fixtures and test names stay "signals" —
+ * that mechanical rename is explicitly out of scope (a separate PR if
+ * wanted). Deliberately NOT renaming "NO SIGNALS YET"/"NEW SIGNAL"
+ * elsewhere in this file: those use "signal" as the domain word for a
+ * message/ping (the thing that arrives), not as this screen's own
+ * name — the same "don't touch the word's other senses" caution
+ * CLAUDE.md/AGENTS.md already applies to "now" (ff_fmt_age's "now" for
+ * <60s ages) is applied here too; interpretation call, noted per
+ * AGENTS.md. */
 static void signals_build_header(lv_obj_t *parent, uint16_t unread)
 {
     lv_obj_t *title = lv_label_create(parent);
-    lv_label_set_text(title, "SIGNALS");
+    lv_label_set_text(title, "INBOX");
     lv_obj_set_style_text_font(title, FF_THEME_FONT_CHIP, 0);
     lv_obj_set_style_text_color(title, lv_color_hex(FF_THEME_COLOR_MUTED), 0);
     lv_obj_set_style_text_letter_space(title, 3, 0);

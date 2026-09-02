@@ -209,26 +209,15 @@ extern "C" {
 #endif
 
 /**
- * FF_LAUNCHER_TIMEOUT_MS — S26 slice e, PR #142 review FAIL 1
- * (docs/specs/S26-device-lifecycle.md: "Radar is the watchface... what
- * the screen wakes to"). The launcher is a TRANSIENT hub, not a resting
- * place: if nothing happens inside it for this long, the shell pops it
- * back to Radar on its own (`ff_shell_tick`), the same "Cancel or a
- * timeout -> dismiss" shape the power menu already uses
- * (`FF_POWER_MENU_TIMEOUT_MS`, ff_shell.c). Reset by any intent
- * dispatched while the launcher is open (`ff_shell_intent`).
- *
- * Deliberately well under `FF_IDLE_T_DIM_MS` (core/include/ff_idle.h,
- * 15000 ms): the launcher is ALWAYS gone before the screen ever dims,
- * so an OFF/wake cycle can never show the launcher — it lands on Radar
- * (or whichever app was already open; only the launcher is the
- * transient hub apps themselves are not). Exposed here (not kept
- * ff_shell.c-private like FF_POWER_MENU_TIMEOUT_MS) so
- * app/tests/test_intent.c can pin the ordering against
- * FF_IDLE_T_DIM_MS directly, by name, rather than by a duplicated
- * literal.
+ * FF_LAUNCHER_TIMEOUT_MS — REMOVED, S26 slice e amended 2026-09-01
+ * (the maintainer's on-glass decision, superseding the original slice's
+ * "Radar is the watchface... the launcher is a transient hub" model —
+ * see docs/specs/S26-device-lifecycle.md's "Nav model (slice e)" and
+ * app/include/ff_route.h's header note). The launcher IS home now, not
+ * a hub you pass through: there is no auto-dismiss timeout to define,
+ * and none of the four tests that pinned it survive (see
+ * app/tests/test_intent.c's S26e_* block).
  */
-#define FF_LAUNCHER_TIMEOUT_MS ((uint32_t)10000u)
 
 /**
  * Link state — first-class, per S16's "Behavior" section. A stale view

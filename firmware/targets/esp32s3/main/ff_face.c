@@ -43,8 +43,10 @@ void ff_face_build(ff_app_state_t const *state)
 
     /* The five base faces — Radar, Now, Signals, Map, Settings — render
      * through scr_nav.c, reached only via the launcher/BOOT since S26
-     * slice e retired the swipe carousel. Compose/Power menu/Launcher
-     * are the full-screen modals. */
+     * slice e retired the swipe carousel. Compose and Power menu are
+     * the two full-screen modals; the Launcher (amended 2026-09-01) is
+     * a BASE face — home itself, not a modal — but is dispatched here
+     * exactly like one, since active_face names it either way. */
     if (state->active_face == FF_APP_FACE_RADAR || state->active_face == FF_APP_FACE_NOW ||
         state->active_face == FF_APP_FACE_SIGNALS || state->active_face == FF_APP_FACE_MAP ||
         state->active_face == FF_APP_FACE_SETTINGS) {

@@ -386,16 +386,20 @@ static void ctl_swipe_no_longer_changes_the_face(void)
     ff_ctl_handlers_t h = ff_ctl_loop_handlers(&ctx, &quit_flag);
 
     ctl_settle(&ctx, &h);
-    TEST_ASSERT_EQUAL(FF_APP_FACE_RADAR, ctx.state.active_face);
+    /* S26e amended 2026-09-01: the boot default is the launcher, not
+     * Radar — this test's property (swipe moves nothing) holds either
+     * way, so it is pinned against whichever face BOOT actually opens
+     * on rather than assuming Radar specifically. */
+    TEST_ASSERT_EQUAL(FF_APP_FACE_LAUNCHER, ctx.state.active_face);
 
     char resp[256];
     ctl_send(&h, "{\"cmd\":\"swipe\",\"dir\":\"left\"}", resp, sizeof(resp));
     ctl_settle(&ctx, &h);
-    TEST_ASSERT_EQUAL_MESSAGE(FF_APP_FACE_RADAR, ctx.state.active_face, "ctl swipe left moved the face — SWIPE should be retired");
+    TEST_ASSERT_EQUAL_MESSAGE(FF_APP_FACE_LAUNCHER, ctx.state.active_face, "ctl swipe left moved the face — SWIPE should be retired");
 
     ctl_send(&h, "{\"cmd\":\"swipe\",\"dir\":\"right\"}", resp, sizeof(resp));
     ctl_settle(&ctx, &h);
-    TEST_ASSERT_EQUAL_MESSAGE(FF_APP_FACE_RADAR, ctx.state.active_face, "ctl swipe right moved the face — SWIPE should be retired");
+    TEST_ASSERT_EQUAL_MESSAGE(FF_APP_FACE_LAUNCHER, ctx.state.active_face, "ctl swipe right moved the face — SWIPE should be retired");
 
     ff_ctl_loop_close(&ctx);
     ff_shell_close(&shell);
@@ -427,9 +431,15 @@ static void ctl_hold(ff_ctl_handlers_t const *h, double x, double y, uint32_t ms
  * scr_launcher.h). This regression-guards the retirement through the
  * REAL ctl socket path, both below and above LVGL's ~400ms
  * long_press_time — neither duration opens anything, because there is
- * no long-press handler left to open it. (228, 228) is the puck/window
- * center — the same point the old positive proof used, still nothing
- * clickable there on Radar. */
+ * no long-press handler left to open it. (206, 206) is the EXACT
+ * puck/window center (206 = FF_CTL_LOOP_WINDOW_W/2) — amended
+ * 2026-09-01 from the pre-amendment (228, 228): that point sat clear of
+ * every clickable on Radar, but the launcher's own circles now cover
+ * part of the screen by default (S26e: the launcher IS home), and
+ * (228, 228) falls inside the Map circle's hit rect (scr_launcher.c's
+ * 2-over-3 grid deliberately keeps the EXACT center clear of every
+ * circle — see that file's layout comment — so this is the one point
+ * guaranteed to stay empty regardless of which face is showing). */
 static void ctl_hold_no_longer_opens_settings(void)
 {
     static ff_shell_t shell;
@@ -449,27 +459,29 @@ static void ctl_hold_no_longer_opens_settings(void)
     ff_ctl_handlers_t h = ff_ctl_loop_handlers(&ctx, &quit_flag);
 
     ctl_settle(&ctx, &h);
-    TEST_ASSERT_EQUAL(FF_APP_FACE_RADAR, ctx.state.active_face);
+    /* S26e amended 2026-09-01: boots on the launcher, not Radar — see
+     * ctl_swipe_no_longer_changes_the_face's own note just above. */
+    TEST_ASSERT_EQUAL(FF_APP_FACE_LAUNCHER, ctx.state.active_face);
 
     char resp[256];
 
     /* A short hold (well under the old 400ms threshold) still does
      * nothing — unchanged. */
-    ctl_hold(&h, 228.0, 228.0, 80, resp, sizeof(resp));
+    ctl_hold(&h, 206.0, 206.0, 80, resp, sizeof(resp));
     ctl_settle(&ctx, &h);
-    TEST_ASSERT_EQUAL_MESSAGE(FF_APP_FACE_RADAR, ctx.state.active_face, "an 80ms ctl hold moved the face");
+    TEST_ASSERT_EQUAL_MESSAGE(FF_APP_FACE_LAUNCHER, ctx.state.active_face, "an 80ms ctl hold moved the face");
 
     /* A long hold (the old FF_CTL_HOLD_DEFAULT_MS, 600ms) is the
      * retirement itself: it used to open Settings and must not any
      * more. */
-    ctl_hold(&h, 228.0, 228.0, 600, resp, sizeof(resp));
+    ctl_hold(&h, 206.0, 206.0, 600, resp, sizeof(resp));
     ctl_settle(&ctx, &h);
-    TEST_ASSERT_EQUAL_MESSAGE(FF_APP_FACE_RADAR, ctx.state.active_face,
+    TEST_ASSERT_EQUAL_MESSAGE(FF_APP_FACE_LAUNCHER, ctx.state.active_face,
                               "a 600ms ctl hold opened Settings — long-press-anywhere should be retired");
 
     char state_resp[FF_CTL_MAX_RESP];
     ctl_send(&h, "{\"cmd\":\"state\"}", state_resp, sizeof(state_resp));
-    TEST_ASSERT_NOT_NULL_MESSAGE(strstr(state_resp, "\"face\":\"radar\""), state_resp);
+    TEST_ASSERT_NOT_NULL_MESSAGE(strstr(state_resp, "\"face\":\"launcher\""), state_resp);
 
     ff_ctl_loop_close(&ctx);
     ff_shell_close(&shell);
