@@ -291,6 +291,45 @@ if(FF_BUILD_TESTS)
     ff_apply_warnings(test_ctl_quick_flare)
 
     add_test(NAME test_ctl_quick_flare COMMAND test_ctl_quick_flare)
+
+    # S25 slice c (device follow-up PR): the ctl `batt_mv` command reaches
+    # a live shell end to end — parse layer, ctl_loop.c's handler,
+    # ff_shell_set_batt_mv, the core ff_batt filter, and the rendered
+    # Radar status-bar label (percent text + amber low-battery tint) —
+    # through the same real ff-sim-ctl-loop session as the tests above.
+    add_executable(test_ctl_batt
+        tests/test_ctl_batt.c
+        screenshot.c
+    )
+    target_link_libraries(test_ctl_batt PRIVATE
+        ff-sim-ctl-loop
+        ff-sim-ctl
+        ff-shell
+        ff-app-ui
+        ff-stb-image-write
+        lvgl::lvgl
+        unity
+    )
+    ff_apply_warnings(test_ctl_batt)
+
+    add_test(NAME test_ctl_batt COMMAND test_ctl_batt)
+
+    # S25 slice c, review fix: pins the pure pin-mV -> pack-mV conversion
+    # arithmetic (ff_power_batt_conv.h, hoisted out of the esp32s3-only
+    # ff_power.c specifically so this can run here) by literal, on the
+    # host. No ESP/LVGL/shell dependency at all — the header is pure
+    # <stdint.h>, included directly from the esp32s3 component's own
+    # include/ dir rather than duplicated.
+    add_executable(test_batt_pack_mv
+        tests/test_batt_pack_mv.c
+    )
+    target_include_directories(test_batt_pack_mv PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/../esp32s3/components/ff_power/include
+    )
+    target_link_libraries(test_batt_pack_mv PRIVATE unity)
+    ff_apply_warnings(test_batt_pack_mv)
+
+    add_test(NAME test_batt_pack_mv COMMAND test_batt_pack_mv)
 endif()
 
 # Issue #3 — ff_screenshot_write now creates its output directory itself

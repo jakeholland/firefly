@@ -397,6 +397,17 @@ static ff_idle_t s_idle;
  * this is a soft pick, not a load-bearing one). */
 #define FF_LIGHT_SLEEP_TIMER_WAKE_US (1500 * 1000)
 
+/* S25 slice c — battery-read tick period. Named constant per the task
+ * brief; 2000 ms is comfortably slower than every other periodic
+ * decision in this file (idle DIM/OFF at 15s/30s, the light-sleep timer
+ * wake above at 1.5s) — a battery's charge state simply does not move
+ * fast enough to need reading more often than this, and
+ * ff_batt_filter_t's own moving-average + Schmitt-hysteresis filter
+ * (core/include/ff_batt.h) already assumes a "battery-read tick", not
+ * a per-frame sample, as its unit of time (its stale-gap reset is 30s,
+ * fifteen ticks at this period). */
+#define FF_BATT_SAMPLE_PERIOD_MS ((uint32_t)2000u)
+
 /* Human-readable wake cause, for the on-glass log line the spec's AC1
  * asks for ("log sleep entry + wake cause ... so the maintainer can read
  * it on glass"). Deliberately NOT a full switch over every
@@ -625,6 +636,17 @@ void app_main(void)
     ESP_LOGI(TAG, "S26g AC1: latch requested at t=%lld us (app_main's first statement)",
              (long long)esp_timer_get_time());
 
+    /* S25 slice c — bring up the battery-sense ADC right after the latch.
+     * Order matters only relative to the latch (which must stay first);
+     * nothing else in this boot depends on the battery ADC being up
+     * before it runs, so this sits here rather than deeper in bring-up.
+     * Non-fatal on failure (same posture as the latch call just above,
+     * and every other HAL bring-up step in this file) — a puck with no
+     * battery-sense ADC still boots; ff_power_batt_mv() simply reports 0
+     * (unknown) forever, and the status bar honestly shows "--%". */
+    esp_err_t const batt_init_err = ff_power_batt_init();
+    ESP_LOGI(TAG, "S25c battery ADC init: %s", (batt_init_err == ESP_OK) ? "ok" : esp_err_to_name(batt_init_err));
+
     /* S26 slice b — zero the PWR-button FSM before anything can tick it
      * (the main loop below is the only tick site). */
     ff_power_fsm_init(&s_power_fsm);
@@ -711,6 +733,23 @@ void app_main(void)
         ff_park("ff_shell_init failed");
         return;
     }
+
+    /* S25 slice c — push one battery reading immediately after init, so
+     * the very first face flushed to glass already has a real (or
+     * honestly-unknown, if ff_power_batt_init failed above) reading
+     * rather than showing "--%" for up to FF_BATT_SAMPLE_PERIOD_MS
+     * before the render loop's own periodic sample below gets to it.
+     * ff_shell_set_batt_mv accepts 0 (unknown) the same as any other
+     * reading — no branch needed here for the init-failed case.
+     * `ff_bringup_now_ms()` (the demo clock under CONFIG_FF_DEMO_MODE,
+     * real esp_timer time otherwise) is the SAME "now" source every
+     * other bring-up call in this function already uses, including the
+     * boot's first `ff_shell_tick(&s_shell, ff_bringup_now_ms())` call
+     * further down — S25c review round: `ff_shell_set_batt_mv` now
+     * takes the caller's `now_ms` explicitly rather than reading a
+     * cached shell clock, so the filter's stale-gap timing agrees with
+     * the rest of boot. */
+    ff_shell_set_batt_mv(&s_shell, ff_power_batt_mv(), ff_bringup_now_ms());
 
 #if CONFIG_FF_DEMO_MODE
     {
@@ -969,6 +1008,13 @@ void app_main(void)
     ff_idle_input(&s_idle, ff_bringup_now_ms());
     ff_idle_state_t last_idle_state = FF_IDLE_STATE_ACTIVE;
 
+    /* S25 slice c — the first battery reading was already pushed right
+     * after ff_shell_init (above); this seeds the periodic-sample clock
+     * to "now" so the render loop's own sample (below) waits a full
+     * FF_BATT_SAMPLE_PERIOD_MS before reading the ADC again, rather than
+     * immediately re-sampling on the loop's very first iteration. */
+    uint32_t last_batt_sample_ms = ff_bringup_now_ms();
+
     /* S26 slice f — arm the light-sleep wake sources once, right before
      * the render loop can first reach SLEEP. See
      * ff_configure_light_sleep_wake's own doc comment above for the wake
@@ -1148,6 +1194,21 @@ void app_main(void)
             ESP_LOGI(TAG, "%s", usb_connected ? "S26f: USB connected — light sleep inhibited"
                                                : "S26f: USB disconnected — light sleep armed");
             s_usb_connected_logged = usb_connected;
+        }
+
+        /* S25 slice c — sample the battery ADC every FF_BATT_SAMPLE_PERIOD_MS
+         * and forward the raw reading to the shell. This file only
+         * samples and pushes — ff_power_batt_mv() is a pure HAL read (no
+         * percent math, see ff_power.h) and ff_shell_set_batt_mv runs
+         * the core display filter (ff_batt.h) immediately, before the
+         * NEXT ff_shell_tick projects it into the view (that function's
+         * own doc comment); no decision about what to SHOW is made here
+         * (CLAUDE.md's house rule). ff_time_reached is the same
+         * wraparound-safe deadline check every other periodic FSM in
+         * this codebase uses (ff_idle, ff_power_fsm, ...). */
+        if (ff_time_reached(now_ms, last_batt_sample_ms + FF_BATT_SAMPLE_PERIOD_MS)) {
+            last_batt_sample_ms = now_ms;
+            ff_shell_set_batt_mv(&s_shell, ff_power_batt_mv(), now_ms);
         }
 
         /* S26 slice c — the idle decision itself: ticked every frame

@@ -333,6 +333,34 @@ unix_s` · `wall unix_s must be within [0, 4e9]` · `wall unsupported`
 
 Response: `{"ok": true}` on success.
 
+### `batt_mv`
+
+```json
+{"cmd": "batt_mv", "mv": 3700}
+```
+
+S25c: pushes one raw pack-voltage reading (millivolts) straight into the
+live shell's battery gauge (`ff_shell_set_batt_mv`,
+`app/include/ff_shell.h`) — the sim's own affordance for driving the
+Radar/launcher status bar's battery percent with no ADC hardware, same
+class of dev/test tool as `wall`'s bench time-travel and `flare`'s
+synthetic inbound. The device target calls the same seam from a real
+ADC1 ch7 read (`firmware/targets/esp32s3/components/ff_power`); this
+command reaches it from the bench instead.
+
+`mv == 0` is the documented "no reading yet / sense line dead" sentinel
+(`ff_batt.h`) — sending it drives the honest un-set `"--%"` display, not
+an error. `mv` must be within `[0, 65535]` (its wire type, `uint16_t`);
+the actual single-cell-LiPo plausibility window (`[2500, 4600]`) and the
+mV→percent curve are `ff_batt_pct_from_mv`'s (`core/include/ff_batt.h`)
+job, not this parse layer's — a value inside `[0, 65535]` but outside
+that window is accepted here and resolves to an honest "unknown" percent
+downstream, exactly as a real out-of-range ADC reading would.
+
+Response: `{"ok": true}`, or `{"ok": false, "error": "batt_mv requires numeric mv"}`
+/ `"batt_mv mv must be within [0, 65535]"` / `"batt_mv unsupported"` (no
+live shell behind this session).
+
 ### `quit`
 
 ```json
