@@ -7085,6 +7085,108 @@ static void S27_shell_sound_sink_silent_when_ui_ticks_off(void)
     TEST_ASSERT_EQUAL_INT(0, H.sound.count);
 }
 
+/* ===================================================================== */
+/* fix/audio-init-order-seed-silence — "seeded/replayed history never    */
+/* chimes" (docs/specs/S27-sounds.md Amendments). The real end-to-end    */
+/* demo-seed path (ff_demo_seed against the actual embedded festpack) is */
+/* covered in targets/sim/tests/test_ctl_flare_sequence.c's              */
+/* S27_demo_seed_through_ctl_loop_fires_no_sound (test_shell can't link  */
+/* ff-demo/a festpack fixture); these tests pin the shell-level MECHANISM*/
+/* both of ff_demo_seed's mute and the mesh handshake/settle mute share: */
+/* ff_shell_set_sound_muted_for_seed and shell_ev_state/ff_shell_tick's  */
+/* own handshake-burst pair. See shell_t's `sound_muted_for_seed` field  */
+/* doc comment (ff_shell.c) for who sets/clears it and why.              */
+/* ===================================================================== */
+
+/** ff_demo_seed's own bracketing pattern (mute, push seeded rally +
+ *  message, unmute) reproduced directly against the public setter — the
+ *  exact shape app/ff_demo.c uses around demo_seed_feed. Zero sounds
+ *  while muted; the first live event once unmuted sounds exactly once. */
+static void S27_sound_muted_for_seed_silences_seeded_rally_and_message(void)
+{
+    harness_init(100000u, false);
+    inject_my_info(MY_ID);
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, true));
+
+    ff_shell_set_sound_muted_for_seed(&H.shell, true);
+    inject_rally(DANA, "The Firefly Tower");
+    inject_text(DANA, "lineup is stacked tonight");
+    TEST_ASSERT_EQUAL_INT_MESSAGE(0, H.sound.count, "seeded rally + message must land silently");
+    ff_shell_set_sound_muted_for_seed(&H.shell, false);
+
+    /* The first LIVE event after seeding sounds exactly once — the mute
+     * is a bounded window, not a stuck flag. Advance past the notify
+     * coalesce window (FF_NOTIFY_COALESCE_MS, 2s) so this reads as a
+     * genuinely new banner rather than a refresh of the muted one. */
+    advance(3000u);
+    inject_text(DANA, "on my way!");
+    TEST_ASSERT_EQUAL_INT(1, sound_count(FF_SOUND_MESSAGE));
+    TEST_ASSERT_EQUAL_INT(1, H.sound.count);
+}
+
+/** NULL-safe, matching every other ff_shell_set_* setter's convention. */
+static void S27_sound_muted_for_seed_null_shell_is_a_safe_noop(void)
+{
+    ff_shell_set_sound_muted_for_seed(NULL, true); /* must not crash */
+}
+
+/** The cold-boot want_config replay/settle side of the same mechanism:
+ *  shell_ev_state mutes on MC_STATE_HANDSHAKE, ff_shell_tick clears it at
+ *  the not-ready->ready edge (the same edge shell_settle_replay itself
+ *  keys off, S18 slice b). Positions never reach shell_sound either way
+ *  (they go through shell_replay_buffer/shell_settle_replay, which never
+ *  calls it) — MESSAGE is the observable per this fix's own PR-body
+ *  note ("positions don't chime anyway — pick MESSAGE"). */
+static void S27_handshake_burst_fires_no_sound_live_message_after_settle_sounds(void)
+{
+    harness_init(100000u, false);
+    inject_my_info(MY_ID);
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, true));
+
+    H.ev.on_state(H.ev.user, MC_STATE_HANDSHAKE);
+    inject_text(DANA, "cached while you were gone");
+    TEST_ASSERT_EQUAL_INT_MESSAGE(0, H.sound.count, "mid-handshake traffic is a replay, not a live arrival");
+
+    H.ev.on_state(H.ev.user, MC_STATE_READY);
+    (void)ff_shell_tick(&H.shell, H.clk.t); /* the not-ready->ready edge: shell_settle_replay + unmute */
+
+    advance(3000u); /* clear of the notify coalesce window, same reasoning as the seed test above */
+    inject_text(DANA, "here now");
+    TEST_ASSERT_EQUAL_INT(1, sound_count(FF_SOUND_MESSAGE));
+    TEST_ASSERT_EQUAL_INT(1, H.sound.count);
+}
+
+/** A reconnect's SECOND handshake burst mutes again — not a one-shot
+ *  "only cold boot" flag. Mirrors S16_AC9_want_config_replay_does_not_
+ *  refresh_position_age's own drop/reconnect shape. */
+static void S27_reconnect_handshake_burst_mutes_again(void)
+{
+    harness_init(100000u, false);
+    inject_my_info(MY_ID);
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, true));
+
+    H.ev.on_state(H.ev.user, MC_STATE_HANDSHAKE);
+    H.ev.on_state(H.ev.user, MC_STATE_READY);
+    (void)ff_shell_tick(&H.shell, H.clk.t);
+    advance(3000u);
+    inject_text(DANA, "live one");
+    TEST_ASSERT_EQUAL_INT(1, H.sound.count);
+
+    /* The drop, then the reconnect's own replay burst. */
+    H.ev.on_state(H.ev.user, MC_STATE_DISCONNECTED);
+    (void)ff_shell_tick(&H.shell, H.clk.t); /* was_ready -> false while link != CONNECTED */
+    H.ev.on_state(H.ev.user, MC_STATE_HANDSHAKE);
+    advance(3000u);
+    inject_text(DANA, "replayed on reconnect");
+    TEST_ASSERT_EQUAL_INT_MESSAGE(1, H.sound.count, "the reconnect's own handshake burst must mute too");
+
+    H.ev.on_state(H.ev.user, MC_STATE_READY);
+    (void)ff_shell_tick(&H.shell, H.clk.t);
+    advance(3000u);
+    inject_text(DANA, "live again");
+    TEST_ASSERT_EQUAL_INT(2, H.sound.count);
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -7294,6 +7396,10 @@ int main(void)
     RUN_TEST(S27_tap_sound_silenced_during_quiet_hours_even_with_ui_ticks_on);
     RUN_TEST(S27_shell_sound_sink_plays_tap_when_gated_on);
     RUN_TEST(S27_shell_sound_sink_silent_when_ui_ticks_off);
+    RUN_TEST(S27_sound_muted_for_seed_silences_seeded_rally_and_message);
+    RUN_TEST(S27_sound_muted_for_seed_null_shell_is_a_safe_noop);
+    RUN_TEST(S27_handshake_burst_fires_no_sound_live_message_after_settle_sounds);
+    RUN_TEST(S27_reconnect_handshake_burst_mutes_again);
 
     return UNITY_END();
 }

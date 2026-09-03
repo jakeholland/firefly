@@ -366,6 +366,23 @@ file(WRITE ${FF_DEMO_GEN}
     "const unsigned char ff_demo_festpack_json[] = { ${_ff_demo_bytes} };\n"
     "const unsigned int ff_demo_festpack_json_len = sizeof(ff_demo_festpack_json);\n")
 
+# fix/audio-init-order-seed-silence — test_ctl_flare_sequence (defined
+# above, before FF_DEMO_GEN exists) also needs the generated demo festpack
+# bytes + ff-demo (ff_demo_seed) so it can seed the REAL Firefly Fields
+# demo through a REAL ctl_loop session and assert the ctl-observable sound
+# log (ff_ctl_loop_sound_log_count) stays at 0 across seeding — the same
+# real wiring S27_ctl_loop_play_sound_hook_logs_flare_sent already proves
+# for a live FLARE_SENT. target_sources/target_link_libraries on an
+# already-defined target works from anywhere later in this file; this is
+# appended here (not folded into that earlier add_executable block)
+# because FF_DEMO_GEN is only known once this generation step above has
+# run.
+if(FF_BUILD_TESTS)
+    target_sources(test_ctl_flare_sequence PRIVATE ${FF_DEMO_GEN})
+    target_link_libraries(test_ctl_flare_sequence PRIVATE ff-demo)
+    target_include_directories(test_ctl_flare_sequence PRIVATE ${CMAKE_CURRENT_BINARY_DIR})
+endif()
+
 add_executable(ffsim
     main.c
     ff_demo_run.c    # S20 — the --demo render driver (Firefly Fields)

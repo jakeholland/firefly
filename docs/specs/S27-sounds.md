@@ -428,3 +428,93 @@ See the PR body for exact `ctest` output.
      speaker at that level, and MESSAGE's soft blip is still audibly
      softer than it. Re-flash and re-listen; no build-system change
      needed, it's one `#define`.
+
+- **2026-09-03 — boot order, and seeded/replayed history never chimes
+  (`fix/audio-init-order-seed-silence`).** Two defects found on glass
+  (`CONFIG_FF_AUDIO_SELFTEST=y`, main `86d2fba`) against the device half's
+  original wiring (the Amendment directly above):
+
+  **(1) Boot order.** `ff_audio_init()` (and the TAP-sink bind,
+  `ff_sound_emit_bind(ff_shell_sound_sink, &s_shell)`) ran AFTER the panel
+  + boot splash — well after `ff_shell_init` and the S20 demo seed that
+  runs immediately inside its caller. The observed log:
+  `W ff_audio: ff_audio_play(3) called but ff_audio_init never
+  succeeded — no-op` (event 3 = `FF_SOUND_RALLY`, the demo seed's rally
+  point) followed ~1.6s later by `I ff_audio: I2S0 TX up`. Any real sound
+  event that happened to fire that early (not only a seeded one) would
+  have been lost the same silent way. **Fix:** `ff_audio_init()` and the
+  TAP-sink bind now run BEFORE `ff_shell_init` — after the power latch
+  and the NVS store, alongside where `cfg.play_sound` is already set (all
+  three are now one contiguous "S27 sounds device wiring" block,
+  `firmware/targets/esp32s3/main/app_main.c`). `ff_audio_init` (channel
+  allocation, one mutex, one 1-deep queue, one FreeRTOS task creation —
+  no `vTaskDelay`, no DMA start; the channel stays disabled until a
+  pattern actually renders, `ff_audio.c`'s own "Channel enable/disable
+  strategy") does not touch the display/QSPI bus, so this move does not
+  change the boot-time budget between the power latch and the first
+  splash pixel — argued from the code (register writes + small heap
+  allocations, no blocking calls), since the sim has no device boot-log
+  timestamps to measure this against directly. `ff_audio_init`'s own doc
+  comment (`ff_audio.h`) is updated to match; see the PR body for the
+  boot-order proof (a numbered list of `app_main.c`'s init steps with
+  line numbers).
+
+  **(2) Seeded/replayed history never chimes.** Even with (1) fixed, a
+  seeded rally/message would now sound — which is dishonest: a demo seed
+  applying five minutes of "history" at boot is not five events arriving
+  live, any more than a replayed NodeInfo's cached position is a live
+  sighting (`AGENTS.md`: "a replayed timestamp is a summary, not an
+  observation"). **Fix:** one shell-private flag, `shell_t.
+  sound_muted_for_seed`, consulted at the very top of `shell_sound` (the
+  one choke point every shell-driven event already funnels through —
+  see that function's own doc comment, `ff_shell.c`) — `false` at init
+  (so every existing S27 test's bare, no-seed no-mesh shell keeps
+  sounding exactly as before this fix), flipped `true`/`false` in pairs
+  by two independent, narrowly-scoped writers, never left stuck:
+  - **App-layer seeding** — the new public setter
+    `ff_shell_set_sound_muted_for_seed` (`ff_shell.h`, `[api]`) is called
+    by `ff_demo_seed` (`app/ff_demo.c`) bracketing only its call to
+    `demo_seed_feed` — the one seeding step that can reach `shell_sound`
+    at all (pairing/NodeInfo/position/RSSI pushes never do). The S23
+    live synthetic demo feed (`ff_demo_apply_event`, `ff_demoapply.c`)
+    is applied later, over real time, from app_main's own tick loop,
+    entirely outside this bracket — it SHOULD chime, and does; that is
+    the live feed's whole point (S23's own "Why": "messages that
+    *arrive* and presence that *decays*, not hand-authored snapshots").
+  - **Cold-boot / reconnect replay** — `shell_ev_state`'s
+    `MC_STATE_HANDSHAKE` case sets the same flag `true` (every
+    want_config handshake burst, cold boot or a later reconnect, is a
+    replay); `ff_shell_tick`'s not-ready→ready edge — the exact edge
+    `shell_settle_replay` (S18 slice b) already keys off — clears it.
+    Positions never reach `shell_sound` regardless (they go through
+    `shell_replay_buffer`/`shell_settle_replay` instead, which never
+    calls it), but a MESSAGE/RALLY that happened to arrive mid-burst
+    would be exactly as much a replay as a cached position is.
+
+  Tests: `test_shell.c`'s
+  `S27_sound_muted_for_seed_silences_seeded_rally_and_message` (seed
+  bracket → zero sounds → first live event after → exactly one),
+  `S27_sound_muted_for_seed_null_shell_is_a_safe_noop`,
+  `S27_handshake_burst_fires_no_sound_live_message_after_settle_sounds`,
+  and `S27_reconnect_handshake_burst_mutes_again` (the SECOND handshake
+  burst mutes too, not just cold boot); `targets/sim/tests/
+  test_ctl_flare_sequence.c`'s
+  `S27_demo_seed_through_ctl_loop_fires_no_sound` drives the REAL
+  `ff_demo_seed` against the real embedded Firefly Fields festpack
+  through a real `ff-sim-ctl-loop` session and asserts the ctl-observable
+  sound log (`ff_ctl_loop_sound_log_count`) stays at 0 across seeding,
+  then exactly 1 after a genuinely live message. Mutation (dropping the
+  `sound_muted_for_seed` check in `shell_sound`) fails all five of the
+  above; see the PR body for the exact output.
+
+  **Touched files (this fix only):** `firmware/targets/esp32s3/main/
+  app_main.c` (boot-order move), `firmware/targets/esp32s3/components/
+  ff_audio/include/ff_audio.h` (doc comment follow-up, no behavior
+  change), `firmware/app/ff_shell.c`/`ff_shell.h` (the mute flag +
+  setter + the two handshake/settle call sites), `firmware/app/ff_demo.c`
+  (the seed-time mute bracket), `firmware/app/tests/test_shell.c`,
+  `firmware/targets/sim/tests/test_ctl_flare_sequence.c` +
+  `firmware/targets/sim/CMakeLists.txt` (test-only linkage for the new
+  sim test), and this spec file. See `docs/specs/S20-demo-mode.md` and
+  `docs/specs/S23-demo-feed.md` for a one-line pointer each back to this
+  Amendment.

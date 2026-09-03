@@ -109,6 +109,27 @@ typedef struct {
      * crossing, not every tick it reads low). Set/cleared alongside
      * `view.radar.batt_pct`'s projection in shell_project. */
     bool batt_was_low;
+    /* fix/audio-init-order-seed-silence — "replayed/seeded history is a
+     * summary, not an observation" (AGENTS.md), applied to sound.
+     * `false` at init (matches every S27 test's shell — direct event
+     * injection with no seed and no mesh, which must keep sounding
+     * exactly as before this fix). Two independent writers set it
+     * `true` for a bounded window and always set it back to `false`
+     * when that window ends — never a third path that could leave it
+     * stuck: (1) `ff_shell_set_sound_muted_for_seed`, called only from
+     * `ff_demo_seed` (app/ff_demo.c), bracketing just the seeded feed
+     * push (the one step of demo seeding that can reach `shell_sound`
+     * at all — pairing/position/NodeInfo pushes never do); (2) this
+     * file's own `shell_ev_state`/`ff_shell_tick`, muting for the
+     * duration of a want_config handshake burst and clearing at
+     * `shell_settle_replay` (the same not-ready->ready edge S18 slice b
+     * already treats as "the burst is over") — positions never call
+     * `shell_sound` either way, but a MESSAGE/RALLY that arrived mid-
+     * burst would be exactly as much a replay as a cached position is.
+     * Checked by `shell_sound`, the ONE choke point every shell-driven
+     * event already funnels through — see that function's own doc
+     * comment. */
+    bool sound_muted_for_seed;
     fp_pack_t *pack; /* caller-owned storage; NULL = this target has no pack */
     bool pack_loaded;
     jsmntok_t *toks; /* caller-owned jsmn scratch for fp_parse (S26 slice a) */
@@ -634,9 +655,21 @@ static void shell_haptic_alert(shell_t *sh)
  * the injected `play_sound` hook. NULL `play_sound` (both targets today)
  * makes every call here a no-op below the policy check, mirroring
  * `shell_haptic_fire`'s own NULL-hook shape.
+ *
+ * fix/audio-init-order-seed-silence: `sound_muted_for_seed` gates BEFORE
+ * the sounds-on/quiet-hours policy above and applies to every event
+ * including FLARE_INCOMING — unlike sounds-on/quiet-hours (a live user
+ * preference the spec deliberately never lets FLARE_INCOMING override),
+ * this flag means "this is not a live event at all, it is seeded or
+ * replayed history" (AGENTS.md's "a replayed timestamp is a summary, not
+ * an observation", applied to sound rather than the wall clock) — no
+ * exception makes sense for a fact that isn't happening right now. See
+ * `sh->sound_muted_for_seed`'s own doc comment (shell_t) for who sets
+ * and clears it.
  */
 static void shell_sound(shell_t *sh, ff_sound_event_t ev)
 {
+    if (sh->sound_muted_for_seed) return;
     if (sh->play_sound == NULL) return;
     if (!ff_sound_should_play(ev, sh->settings.sounds_on, shell_quiet_now(sh))) return;
     sh->play_sound(sh->play_sound_user, ev);
@@ -826,6 +859,17 @@ static void shell_ev_state(void *u, mc_state_t s)
         break;
     case MC_STATE_HANDSHAKE:
         sh->link = FF_SHELL_LINK_RECONNECTING;
+        /* fix/audio-init-order-seed-silence: every want_config handshake
+         * (cold boot AND every later reconnect — see shell_settle_replay's
+         * own comment, "run EXACTLY once per handshake") replays cached
+         * state. Positions never reach shell_sound (they go through
+         * shell_replay_buffer/shell_settle_replay instead), but a
+         * MESSAGE/RALLY that happened to arrive mid-burst would be just
+         * as much a replay — muted here, cleared at the matching
+         * not-ready->ready edge in ff_shell_tick (right where
+         * shell_settle_replay already runs, the existing "burst is over"
+         * signal). */
+        sh->sound_muted_for_seed = true;
         break;
     case MC_STATE_DISCONNECTED:
     default:
@@ -2317,6 +2361,11 @@ int ff_shell_init(ff_shell_t *sh_pub, ff_shell_cfg_t const *cfg)
     sh->play_sound = cfg->play_sound;
     sh->play_sound_user = cfg->play_sound_user;
     sh->batt_was_low = false;
+    /* fix/audio-init-order-seed-silence: unmuted at init — the caller
+     * (ff_demo_seed, or this file's own handshake/settle pair) mutes for
+     * a bounded window and always unmutes again; see the field's own doc
+     * comment above. */
+    sh->sound_muted_for_seed = false;
     sh->pack = cfg->pack;
     sh->pack_loaded = false;
     sh->toks = cfg->toks;
@@ -2455,6 +2504,12 @@ bool ff_shell_tick(ff_shell_t *sh_pub, uint32_t now_ms)
     bool const ready = (sh->link == FF_SHELL_LINK_CONNECTED);
     if (ready && !sh->was_ready) {
         shell_settle_replay(sh, now_ms);
+        /* fix/audio-init-order-seed-silence: the burst just ended (same
+         * edge shell_settle_replay itself keys off) — clear the mute
+         * shell_ev_state's MC_STATE_HANDSHAKE case set, so a genuinely
+         * live event from here on sounds normally. See sh->
+         * sound_muted_for_seed's own doc comment (shell_t). */
+        sh->sound_muted_for_seed = false;
     }
     sh->was_ready = ready;
 
@@ -4207,6 +4262,13 @@ void ff_shell_sound_sink(void *user, ff_sound_event_t ev)
     if (sh->play_sound != NULL) {
         sh->play_sound(sh->play_sound_user, FF_SOUND_TAP);
     }
+}
+
+void ff_shell_set_sound_muted_for_seed(ff_shell_t *sh_pub, bool muted)
+{
+    if (sh_pub == NULL) return;
+    shell_t *sh = shell_of(sh_pub);
+    sh->sound_muted_for_seed = muted;
 }
 
 void ff_shell_home_press(ff_shell_t *sh_pub, uint32_t now_ms, bool deliver)

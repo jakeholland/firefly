@@ -730,12 +730,67 @@ void app_main(void)
     cfg.power_reboot = ff_power_reboot_cb;
     cfg.power_reboot_user = NULL;
     /* S27 sounds (device half) — set BEFORE ff_shell_init so the hook is
-     * live the moment the shell exists; the actual I2S HAL bring-up
-     * (ff_audio_init) runs later, after display bring-up (see its own
-     * call site below) — a play_sound call landing before that has run
-     * is a safe no-op (ff_audio_play's own guard, ff_audio.c). */
+     * live the moment the shell exists. This USED to say the actual I2S
+     * HAL bring-up (ff_audio_init) ran later, after display bring-up —
+     * that was the bug this fix closes (docs/specs/S27-sounds.md
+     * Amendments, "boot order"): a play_sound call landing before
+     * ff_audio_init had run was a silent no-op (`ff_audio_play`'s own
+     * guard), and the S20 demo seed's seeded RALLY fires from right
+     * inside `ff_shell_init`'s caller (a few lines below, in the
+     * CONFIG_FF_DEMO_MODE block) — on real glass this produced exactly
+     * "ff_audio_play(3) called but ff_audio_init never succeeded —
+     * no-op" followed a full 1.6s later by "I2S0 TX up", i.e. any real
+     * early event was lost too, not just the seeded one. `ff_audio_init`
+     * is now brought up immediately below, BEFORE `ff_shell_init`, so
+     * the HAL is live (or has already failed and logged so) before the
+     * shell can generate its first sound-eligible event. */
     cfg.play_sound = app_play_sound;
     cfg.play_sound_user = NULL;
+
+    /* S27 sounds — bring up the I2S0 TX HAL here, before the shell
+     * exists, instead of after the panel + boot splash (where this call
+     * used to live, and where `ff_audio_init`'s own header comment still
+     * describes it — see this fix's PR body for the header follow-up).
+     * `ff_audio_init` (ff_audio.c) only allocates one I2S0 TX channel
+     * (register configuration; the channel is left DISABLED — nothing
+     * gets enabled/started here at all, that happens per-pattern in the
+     * render task, ff_audio.c's own "Channel enable/disable strategy"),
+     * one mutex, one 1-deep queue, and starts one small FreeRTOS task —
+     * no `vTaskDelay`, no blocking wait, nothing that touches the
+     * display/QSPI bus. It therefore cannot measurably move the S26g
+     * power-latch-to-first-splash-pixel budget or delay
+     * `ff_bringup_panel`/`ff_display_draw_boot_splash` below, which are
+     * unchanged by this move and remain the first pixels on glass
+     * either way — see this fix's PR body ("boot-order proof") for the
+     * full reasoning (no sim boot-log timestamps exist to time this
+     * against directly, so this is argued from the code, not measured).
+     * Non-fatal on failure, same "log and continue" posture as every
+     * other HAL bring-up step in this function — the puck must boot and
+     * be fully usable with no speaker (ff_audio.h's own "Failure
+     * handling"). */
+    esp_err_t const audio_err = ff_audio_init();
+    if (audio_err != ESP_OK) {
+        ESP_LOGE(TAG, "ff_audio_init failed (%s) — continuing bring-up with sound disabled", esp_err_to_name(audio_err));
+    }
+
+    /* S27 sounds — bind the TAP seam here too, alongside ff_audio_init
+     * (moved from its old spot inside STAGE 3's touch bring-up below).
+     * A physical tap cannot happen before STAGE 3 ever brings touch up,
+     * regardless of when this bind runs, so moving it earlier changes
+     * no TAP behavior — it moves purely so every piece of S27's device
+     * wiring (the play_sound hook above, ff_audio_init, and this bind)
+     * is set up as one block before the shell (and any seeding) exists,
+     * rather than split across two very different points in boot.
+     * `ff_sound_emit_bind` only stores a function pointer + user data
+     * (app/include/ff_sound_emit.h) — `ff_shell_sound_sink` is never
+     * CALLED until a real click reaches it, so binding it against
+     * `&s_shell` before `ff_shell_init` has populated that memory is
+     * safe (the same "bind now, only read at call time" reasoning
+     * `ff_intent_emit_bind`'s own late STAGE-3 bind below already
+     * relies on). */
+    ff_sound_emit_bind(ff_shell_sound_sink, &s_shell);
+    ESP_LOGI(TAG, "TAP sound seam bound: touch -> ff_sound_emit -> ff_shell_sound_sink");
+
 #if CONFIG_FF_DEMO_MODE
     s_demo_pack = heap_caps_malloc(sizeof(*s_demo_pack), MALLOC_CAP_SPIRAM);
     if (s_demo_pack == NULL) {
@@ -901,19 +956,12 @@ void app_main(void)
         ESP_LOGE(TAG, "boot splash failed (%s) — continuing bring-up regardless", esp_err_to_name(splash_err));
     }
 
-    /* S27 sounds (device half) — bring up the I2S0 TX HAL here: AFTER the
-     * panel + boot splash (so a slow or failing I2S bring-up can never
-     * delay the S26g power-latch timestamp or the first splash pixel —
-     * both of those already happened above) but before STAGE 1's
-     * keep-ticking-forever loop, so sound is live for the rest of boot
-     * regardless of which bring-up stage is selected. Non-fatal on
-     * failure — logged and continues; the puck boots and is fully usable
-     * with no speaker, and every ff_audio_play call after a failed init
-     * is a no-op (logged once, ff_audio.c). */
-    esp_err_t const audio_err = ff_audio_init();
-    if (audio_err != ESP_OK) {
-        ESP_LOGE(TAG, "ff_audio_init failed (%s) — continuing bring-up with sound disabled", esp_err_to_name(audio_err));
-    }
+    /* S27 sounds (device half) — ff_audio_init and the TAP-sink bind now
+     * run BEFORE ff_shell_init, not here (fix/audio-init-order-seed-
+     * silence: "after the panel + boot splash" was also after the S20
+     * demo seed, so a seeded sound event could beat the HAL up). See
+     * this file's earlier S27 sounds comment, right after `cfg.
+     * play_sound` is set, for the actual call site. */
 
     /* ---- STAGE 1: first light, no LVGL ---- */
     if (stage <= 1) {
@@ -950,18 +998,12 @@ void app_main(void)
         ESP_LOGI(TAG, "input seam bound: touch -> ff_shell_intent");
 
         /* S27 sounds — the screens-level TAP seam (ff_sound_emit.h,
-         * mirrors ff_intent_emit_bind exactly, same file/same call site
-         * as targets/sim/main.c's own S27 wiring): every
-         * ff_scr_button_create click now reaches ff_shell_sound_sink,
-         * which composes ui_ticks + sounds_on/quiet-hours
-         * (ff_shell_should_tap_sound) and, if true, calls the SAME
-         * play_sound hook (app_play_sound -> ff_audio_play) every other
-         * sound event uses — one uniform call site regardless of which
-         * of the six events fired it. Unbind is unnecessary, same
-         * "shell lives for the process lifetime" reasoning as the intent
-         * bind just above. */
-        ff_sound_emit_bind(ff_shell_sound_sink, &s_shell);
-        ESP_LOGI(TAG, "TAP sound seam bound: touch -> ff_sound_emit -> ff_shell_sound_sink");
+         * mirrors ff_intent_emit_bind's own bind just above) is now
+         * bound earlier, alongside ff_audio_init and before ff_shell_
+         * init — see this file's earlier S27 sounds comment. A physical
+         * tap cannot reach `ff_scr_button_create` before this STAGE-3
+         * touch bring-up has run anyway, so nothing here depends on the
+         * bind having happened at this particular point. */
 
         /* ---- Touch calibration (S15 slice d) ----
          * STAGE 4 (CAL): run the crosshair capture -> solve -> store ->

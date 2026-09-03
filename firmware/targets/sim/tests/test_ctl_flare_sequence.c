@@ -57,6 +57,8 @@
 #include "ctl_loop.h"
 #include "ctl_server.h"
 #include "ff_app_state.h"
+#include "ff_demo.h"          /* fix/audio-init-order-seed-silence — ff_demo_seed, the S20 seed */
+#include "ff_demo_festpack.h" /* generated: the real embedded Firefly Fields festpack bytes */
 #include "ff_flare.h"
 #include "ff_intent.h"
 #include "ff_shell.h"
@@ -519,6 +521,76 @@ static void S27_ctl_loop_play_sound_hook_logs_flare_sent(void)
     lv_deinit();
 }
 
+/* fix/audio-init-order-seed-silence — the sim-level half of the fix:
+ * "seeded/replayed history never chimes". Proves it through the SAME
+ * real ctl-observable wiring `S27_ctl_loop_play_sound_hook_logs_flare_
+ * sent` above uses (`ctl_loop_play_sound_cb` -> `ff_ctl_loop_sound_log_*`),
+ * not just a unit-level shell hook — the ctl sound log stays at 0 while
+ * `ff_demo_seed` runs the REAL Firefly Fields demo festpack (the exact
+ * bytes `ffsim --demo` embeds, `ff_demo_festpack_json`) through the
+ * shell's real inbound seam (the same `pack`/`toks` `ff_ctl_loop_open`
+ * already wired via `shell_cfg`), then that a genuinely live event
+ * right after DOES sound — proving the mute is a bounded window, not a
+ * stuck flag. */
+static void S27_demo_seed_through_ctl_loop_fires_no_sound(void)
+{
+    static ff_shell_t shell;
+    static fp_pack_t pack;
+    static ff_ctl_loop_ctx_t ctx;
+
+    ff_shell_cfg_t shell_cfg;
+    memset(&shell_cfg, 0, sizeof(shell_cfg));
+
+    ff_ctl_loop_cfg_t cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.mock_clock = true;
+
+    TEST_ASSERT_EQUAL_INT(0, ff_ctl_loop_open(&ctx, &shell, &pack, &shell_cfg, &cfg));
+    TEST_ASSERT_EQUAL_UINT32(0, ff_ctl_loop_sound_log_count(&ctx));
+
+    /* The real S20 seed: a rally + two statuses + two messages, applied
+     * through ev.on_private/ev.on_text exactly like app_main.c's
+     * CONFIG_FF_DEMO_MODE block or ffsim --demo. `clock_ms_unused` is
+     * ff_demo_seed's own convenience out-param for a caller that ticks
+     * a FROZEN demo clock off it (ff_demo_run.c does); this ctl session
+     * ticks its own mock clock instead, so the value is unused here. */
+    uint32_t clock_ms_unused = 0;
+    TEST_ASSERT_EQUAL_INT(0, ff_demo_seed(&shell, (char const *)ff_demo_festpack_json,
+                                           (size_t)ff_demo_festpack_json_len, &clock_ms_unused, 0));
+
+    /* The seeded rally + messages must have landed silently — this is
+     * the headline assertion (docs/specs/S27-sounds.md Amendments,
+     * "seeded/replayed history never chimes"). */
+    TEST_ASSERT_EQUAL_UINT32(0, ff_ctl_loop_sound_log_count(&ctx));
+
+    /* A genuinely live message right after seeding DOES sound exactly
+     * once — the mute is a bounded window around the seed call, not a
+     * flag some earlier bug could leave stuck (this fix's own mutation
+     * target: dropping `sound_muted_for_seed`'s check makes the
+     * assertion above fail instead of this one flipping). DANA is
+     * seeded+paired by ff_demo_seed above, so this reaches
+     * shell_notify_push_banner's paired-sender gate. Advance the mock
+     * clock past FF_NOTIFY_COALESCE_MS (2s) first: DANA is also the
+     * seeded broadcast message's own sender (demo_seed_feed, ff_demo.c),
+     * and a second push from the SAME sender within the coalesce window
+     * would legitimately merge into that muted banner and stay silent
+     * for an unrelated reason (S27's own coalesce rule, not this fix) —
+     * ctx.mock_clock_ms is a plain public field of ff_ctl_loop_ctx_t
+     * (ctl_loop.h), the same one the ctl `clock` command's handler
+     * advances. */
+    ctx.mock_clock_ms += 3000u;
+    mc_events_t const ev = ff_shell_events(&shell);
+    char const *live_msg = "on the way!";
+    ev.on_text(ev.user, FF_DEMO_NODE_DANA, MC_ADDR_BROADCAST, live_msg, strlen(live_msg));
+
+    TEST_ASSERT_EQUAL_UINT32(1, ff_ctl_loop_sound_log_count(&ctx));
+    TEST_ASSERT_EQUAL(FF_SOUND_MESSAGE, ff_ctl_loop_sound_log_at(&ctx, 0));
+
+    ff_ctl_loop_close(&ctx);
+    ff_shell_close(&shell);
+    lv_deinit();
+}
+
 /* PR #60 review finding: the slice's headline claim — "rebuild only on a
  * dirty tick, never every frame" — had no regression test. The reviewer
  * proved it by mutation: ignoring `dirty` in ctl_loop.c passed the entire
@@ -917,6 +989,7 @@ int main(void)
     RUN_TEST(S26_flare_go_from_the_launcher_lands_on_radar);
     RUN_TEST(S16_AC10_draft_typed_flare_injected_takeover_clears_draft_survives);
     RUN_TEST(S27_ctl_loop_play_sound_hook_logs_flare_sent);
+    RUN_TEST(S27_demo_seed_through_ctl_loop_fires_no_sound);
     RUN_TEST(flare_second_takeover_dismisses_via_real_tap);
     RUN_TEST(flare_takeover_mark_pulse_animates);
     RUN_TEST(S16_d_idle_ticks_never_rebuild_the_screen);

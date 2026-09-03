@@ -871,6 +871,34 @@ bool ff_shell_should_tap_sound(ff_shell_t const *sh);
 void ff_shell_sound_sink(void *user, ff_sound_event_t ev);
 
 /**
+ * ff_shell_set_sound_muted_for_seed — `[api]` fix/audio-init-order-seed-
+ * silence: mute (or unmute) every shell-driven sound event (everything
+ * `shell_sound` gates — FLARE_SENT, FLARE_INCOMING, MESSAGE, RALLY,
+ * BATT_LOW; TAP is unaffected, see `ff_shell_sound_sink`'s own doc
+ * comment for why TAP is a separate seam) without touching
+ * `settings.sounds_on` (the user's own master switch, persisted,
+ * unrelated to this) or quiet hours.
+ *
+ * The one caller in this codebase is `ff_demo_seed` (app/ff_demo.c),
+ * bracketing just its seeded-feed push (a rally + a couple of messages
+ * applied through the shell's real inbound seam at boot, S20): `true`
+ * right before, `false` right after. Docs/specs/S27-sounds.md's
+ * Amendments call this "seeded/replayed history is a summary, not an
+ * observation" (AGENTS.md's own wording for the analogous wall-clock
+ * rule, applied here to sound) — a seeded rally is real state (S20's own
+ * honesty note: it flows through the exact core APIs a live rally
+ * would), but it did not just arrive, so it must not chime as if it did.
+ *
+ * `ff_shell.c` sets/clears the SAME underlying flag itself around a
+ * want_config handshake burst (`shell_ev_state`'s MC_STATE_HANDSHAKE
+ * case sets it, the not-ready->ready edge in `ff_shell_tick` — right
+ * where `shell_settle_replay` runs — clears it); this function is the
+ * other writer, for the app layer's seeding path, which has no other way
+ * to reach a shell-private field. NULL `sh` is a safe no-op.
+ */
+void ff_shell_set_sound_muted_for_seed(ff_shell_t *sh, bool muted);
+
+/**
  * ff_shell_home_press — S10 quick flare (docs/specs/S10-flare.md's
  * Amendments, 2026-09-03): the ONE entry point both targets call for
  * every debounced HOME/BOOT press EDGE (`ff_button_tick`'s `true`
