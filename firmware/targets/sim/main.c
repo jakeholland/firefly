@@ -113,13 +113,18 @@
  * a node that has only ever sent NodeInfo + Position produces zero feed
  * items and no roster slot.
  *
- * RENDER LIFECYCLE (S16 slice d, closes #17/#29): both live entry points
- * — this window mode and the ctl loop (ctl_loop.c) — tick the shell every
- * frame and rebuild the LVGL screen ONLY when `ff_shell_tick`'s return
- * says the rendered view actually changed, always `lv_obj_clean()`ing the
- * active screen first. `app/screens/scr_nav.c` also now builds content
- * into the ACTIVE tile only, not all three. See ctl_loop.h's top comment
- * for the full reasoning (shared by both entry points).
+ * RENDER LIFECYCLE (S16 slice d, closes #17/#29; debt/sim-window-lifecycle
+ * added the device lifecycle itself): every live entry point — this window
+ * mode's LIVE loop, `ff_demo_run.c`'s live loop, and the ctl loop
+ * (ctl_loop.c) — ticks the shell every frame, runs the S26 idle FSM
+ * (DIM/OFF/SLEEP, wake-only touch) through the ONE shared
+ * `ff_sim_lifecycle_pump` (sim_lifecycle.h), and rebuilds the LVGL screen
+ * ONLY when a dirty tick is pending AND no finger is down AND the screen
+ * isn't blank, always `lv_obj_clean()`ing the active screen first.
+ * `app/screens/scr_nav.c` also now builds content into the ACTIVE tile
+ * only, not all three. See sim_lifecycle.h's top comment for the full
+ * reasoning (shared by every live entry point) and ctl_loop.h's top
+ * comment for the original S16d extraction this builds on.
  *
  * The boot screen and the fixture debug face are both scaffolding: real
  * screens arrive with S06+.
@@ -155,8 +160,9 @@
 #include "ff_shell.h"      /* S16b2 — live mode is the app shell now (live.{c,h} retired) */
 #include "ff_wall.h"       /* S18c — the no-pack-window decay backstop (build-date proximity guard) */
 #include "fixture.h"
-#include "live_setup.h"    /* S16 slice d — the setup sequence shared with ctl_loop.c */
-#include "screenshot.h"    /* ff_screenshot_write — the one-shot headless render path */
+#include "live_setup.h"      /* S16 slice d — the setup sequence shared with ctl_loop.c */
+#include "screenshot.h"      /* ff_screenshot_write — the one-shot headless render path */
+#include "sim_lifecycle.h"   /* debt/sim-window-lifecycle — the idle+rebuild pump shared with ctl_loop.c/ff_demo_run.c */
 
 /* The sim window/framebuffer IS the device panel: 412x412 (S15 slice c,
  * ff_theme.h's FF_THEME_WINDOW_PX). The puck fills it with no margin, so a
@@ -298,18 +304,32 @@ static int ff_run_headless_once(const char *screenshot_dir, const char *fixture_
  *    that same static tree. No shell exists, so the intent seam is never
  *    bound and every S10/S16 button is a documented no-op — printed as a
  *    NOTE for a takeover fixture specifically, since that screen has no
- *    other on-screen way to leave.
- *  - LIVE (--connect given, S16 slice d): a real `ff_shell_t` is brought
- *    up (`ff_live_setup` — the same sequence the ctl loop uses),
- *    `--fixture` seeds only the very first frame, and every frame after
- *    that ticks the shell and rebuilds the screen ONLY on a dirty tick
- *    (build-once/update-in-place, closing #17/#29 the same way
- *    ctl_loop.c does). The intent seam IS bound here, so every button is
- *    live: this is the first mode where a window-mode FLARE tap, T9
- *    keystroke, GO/DISMISS, ... actually does something.
+ *    other on-screen way to leave. The pointer indev below is still
+ *    gated (same callback as LIVE), but is inert here: nothing ever
+ *    calls `ff_idle_tick` in this shape, so idle never leaves ACTIVE and
+ *    the gate always delivers — behaviorally identical to a bare
+ *    `lv_sdl_mouse_create()`, just one code path instead of two.
+ *  - LIVE (--connect given, S16 slice d; debt/sim-window-lifecycle):
+ *    a real `ff_shell_t` is brought up (`ff_live_setup` — the same
+ *    sequence the ctl loop uses), `--fixture` seeds only the very first
+ *    frame, and every frame after that runs the SAME device lifecycle
+ *    pump `ctl_loop.c` runs (`ff_sim_lifecycle_pump`, sim_lifecycle.h):
+ *    ticks the shell, ticks the S26 idle FSM (DIM/OFF/SLEEP now actually
+ *    happen in the window you're looking at), and rebuilds the screen
+ *    ONLY on a dirty tick that lands with no finger down and the screen
+ *    not blank (build-once/update-in-place, closing #17/#29 the same
+ *    way ctl_loop.c does, AND no longer tearing down the button under a
+ *    live SDL mouse-down mid-tick — the bug this PR fixes). OFF/SLEEP
+ *    additionally render as a solid black overlay (see sim_lifecycle.h's
+ *    top comment for why, and why DIM does not) — any click wakes it.
+ *    The intent seam IS bound here, so every button is live: this is the
+ *    first mode where a window-mode FLARE tap, T9 keystroke, GO/DISMISS,
+ *    ... actually does something.
  *
  * Neither shape ever returns in practice — the process exits via window
- * close or Ctrl+C, same as every window-mode build before this slice.
+ * close or Ctrl+C, same as every window-mode build before this slice;
+ * "power off" in this window (OFF/SLEEP) is the black overlay above, not
+ * a process exit — see sim_lifecycle.h's interpretation-call note.
  */
 static int ff_run_window(const char *fixture_path, bool mock_clock, const char *connect_hostport,
                           const char *pack_path, bool dev_trust_all)
@@ -328,7 +348,26 @@ static int ff_run_window(const char *fixture_path, bool mock_clock, const char *
 
     lv_display_t *disp = lv_sdl_window_create(FF_SIM_WINDOW_W, FF_SIM_WINDOW_H);
     lv_sdl_window_set_title(disp, "Firefly (ffsim)");
-    lv_sdl_mouse_create();
+
+    /* debt/sim-window-lifecycle: a gated pointer indev, not a bare
+     * lv_sdl_mouse_create() — see this function's doc comment and
+     * sim_lifecycle.h's own top comment for why every live sim pointer
+     * now goes through the same wake-only-touch gate ctl_loop.c's
+     * synthetic pointer already had. `s_win_lifecycle` backs BOTH shapes
+     * (STATIC never ticks it, so its gate is a no-op there — see this
+     * function's doc comment); `s_win_pointer_ctx.now_ms_cb` is
+     * `SDL_GetTicks` unconditionally, matching this function's own tick
+     * source for LIVE (STATIC's gate never fires either way, so which
+     * clock it reads there is moot). */
+    static ff_sim_lifecycle_t s_win_lifecycle;
+    static ff_sim_lifecycle_pointer_ctx_t s_win_pointer_ctx;
+    ff_sim_lifecycle_init(&s_win_lifecycle);
+    s_win_pointer_ctx.lc = &s_win_lifecycle;
+    s_win_pointer_ctx.now_ms_cb = SDL_GetTicks;
+    lv_indev_t *pointer_indev = lv_indev_create();
+    lv_indev_set_type(pointer_indev, LV_INDEV_TYPE_POINTER);
+    lv_indev_set_user_data(pointer_indev, &s_win_pointer_ctx);
+    lv_indev_set_read_cb(pointer_indev, ff_sim_lifecycle_pointer_read_cb);
 
     if (connect_hostport != NULL) {
         static ff_shell_t s_win_shell;
@@ -376,11 +415,27 @@ static int ff_run_window(const char *fixture_path, bool mock_clock, const char *
         }
 
         while (true) {
-            bool const dirty = ff_shell_tick(&s_win_shell, SDL_GetTicks());
-            if (dirty) {
-                lv_obj_clean(lv_screen_active());
-                ff_build_face_screen(ff_shell_view(&s_win_shell));
-            }
+            uint32_t const now_ms = SDL_GetTicks();
+            bool const dirty = ff_shell_tick(&s_win_shell, now_ms);
+            bool const shell_wake = ff_shell_take_wake(&s_win_shell); /* S26(c)+(d) banner wake */
+            ff_app_state_t const *view = ff_shell_view(&s_win_shell);
+
+            /* debt/sim-window-lifecycle: raw finger-down truth, sampled
+             * directly (not through the gated indev's own decision —
+             * see sim_lifecycle.h's ff_sim_lifecycle_pump doc comment:
+             * this must be the physical level, not a UI delivery
+             * decision) — same source ff_sim_lifecycle_pointer_read_cb
+             * reads for its own gate. */
+            int mx, my;
+            bool const finger_down = (SDL_GetMouseState(&mx, &my) & SDL_BUTTON(SDL_BUTTON_LEFT)) != 0u;
+            bool const keep_awake = ff_shell_keep_awake(view, false); /* no blocking touch-cal flow in the sim */
+
+            ff_idle_state_t const idle_state =
+                ff_sim_lifecycle_pump(&s_win_lifecycle.idle, &s_win_lifecycle.rebuild_pending,
+                                       &s_win_lifecycle.rebuild_count, now_ms, dirty, shell_wake, finger_down,
+                                       keep_awake, /* sleep_inhibit */ false, view);
+            ff_sim_lifecycle_apply_blank_overlay(idle_state);
+
             uint32_t next_ms = lv_timer_handler();
             SDL_Delay(next_ms > 0 ? next_ms : 1);
         }

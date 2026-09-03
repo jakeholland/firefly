@@ -27,6 +27,7 @@
 #include "ff_intent.h"
 #include "ff_shell.h"
 #include "screenshot.h"
+#include "sim_lifecycle.h" /* debt/sim-window-lifecycle — the idle+rebuild pump shared with ctl_loop.c/main.c */
 
 #define FF_DEMO_WINDOW_W 412
 #define FF_DEMO_WINDOW_H 412
@@ -170,7 +171,25 @@ int ff_run_demo_window(void)
 
     lv_display_t *disp = lv_sdl_window_create(FF_DEMO_WINDOW_W, FF_DEMO_WINDOW_H);
     lv_sdl_window_set_title(disp, "Firefly (ffsim --demo: Firefly Fields)");
-    lv_sdl_mouse_create();
+
+    /* debt/sim-window-lifecycle: a gated pointer indev, not a bare
+     * lv_sdl_mouse_create() — same reasoning as main.c's live window
+     * loop (see sim_lifecycle.h's top comment): every live sim pointer
+     * now goes through the wake-only-touch gate. `now_ms_cb` reads
+     * SDL_GetTicks (real elapsed dev-desk time), deliberately NOT the
+     * demo world's own frozen `s_demo_clock_ms` (pinned to Sat 21:30,
+     * S20 static) — DIM/OFF/SLEEP must be observable by a human sitting
+     * at this window in real time regardless of what fictional in-world
+     * instant the seeded festival shows. */
+    static ff_sim_lifecycle_t s_demo_lifecycle;
+    static ff_sim_lifecycle_pointer_ctx_t s_demo_pointer_ctx;
+    ff_sim_lifecycle_init(&s_demo_lifecycle);
+    s_demo_pointer_ctx.lc = &s_demo_lifecycle;
+    s_demo_pointer_ctx.now_ms_cb = SDL_GetTicks;
+    lv_indev_t *pointer_indev = lv_indev_create();
+    lv_indev_set_type(pointer_indev, LV_INDEV_TYPE_POINTER);
+    lv_indev_set_user_data(pointer_indev, &s_demo_pointer_ctx);
+    lv_indev_set_read_cb(pointer_indev, ff_sim_lifecycle_pointer_read_cb);
 
     static ff_shell_t shell;
     static fp_pack_t pack;
@@ -191,11 +210,21 @@ int ff_run_demo_window(void)
     printf("ffsim --demo: Firefly Fields is live (Sat 21:30). Swipe/tap to explore. Ctrl+C to quit.\n");
 
     while (true) {
+        uint32_t const now_ms = SDL_GetTicks(); /* idle/lifecycle clock — see the note above */
         bool const dirty = ff_shell_tick(&shell, s_demo_clock_ms);
-        if (dirty) {
-            lv_obj_clean(lv_screen_active());
-            ff_build_face_screen(ff_shell_view(&shell));
-        }
+        bool const shell_wake = ff_shell_take_wake(&shell); /* S26(c)+(d) banner wake */
+        ff_app_state_t const *view = ff_shell_view(&shell);
+
+        int mx, my;
+        bool const finger_down = (SDL_GetMouseState(&mx, &my) & SDL_BUTTON(SDL_BUTTON_LEFT)) != 0u;
+        bool const keep_awake = ff_shell_keep_awake(view, false); /* no blocking touch-cal flow in the sim */
+
+        ff_idle_state_t const idle_state =
+            ff_sim_lifecycle_pump(&s_demo_lifecycle.idle, &s_demo_lifecycle.rebuild_pending,
+                                   &s_demo_lifecycle.rebuild_count, now_ms, dirty, shell_wake, finger_down,
+                                   keep_awake, /* sleep_inhibit */ false, view);
+        ff_sim_lifecycle_apply_blank_overlay(idle_state);
+
         uint32_t next_ms = lv_timer_handler();
         SDL_Delay(next_ms > 0 ? next_ms : 1);
     }
