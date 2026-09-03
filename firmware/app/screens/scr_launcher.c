@@ -116,6 +116,7 @@
 #include "ff_intent.h"
 #include "ff_theme.h"
 #include "scr_banner.h" /* S26 slice d — the notification banner, now composited on the launcher too */
+#include "scr_flare.h" /* S10 quick flare — ff_scr_flare_build_sender_overlay, now composited on the launcher too */
 #include "scr_inbox.h" /* ff_scr_inbox_unread_count — the Inbox circle's badge */
 #include "scr_nav.h" /* ff_scr_nav_mask_clickables_under_banner — the shared banner-coverage rule */
 #include "lvgl.h"
@@ -815,8 +816,28 @@ void ff_scr_launcher_build(ff_app_state_t const *state)
 
     uint16_t const unread = ff_scr_inbox_unread_count(&state->inbox);
 
-    launcher_make_orbit_ring(puck);
-    launcher_make_hub(puck);
+    /* S10 quick flare (docs/specs/S10-flare.md's Amendments, 2026-09-03)
+     * — a swap surface distinct from `puck`, same "the one dimmable
+     * layer" role `ff_scr_nav_build`'s own `content` container plays
+     * (scr_nav.c), added here specifically so the sender overlay below
+     * can dim EVERYTHING the launcher normally draws (the orbit ring,
+     * hub, satellites, status row) without also dimming ITSELF — the
+     * overlay is a sibling of `content`, not a child of it, exactly
+     * scr_nav.c's own structure. Before this, the launcher had no such
+     * wrapper because nothing needed to dim under it; quick flare is
+     * the first thing that can start SENDING while the launcher is the
+     * active face (FLARE_START, the only other sender, lives on the
+     * Radar tile and can never fire from here). */
+    lv_obj_t *content = lv_obj_create(puck);
+    lv_obj_remove_style_all(content);
+    lv_obj_set_size(content, FF_THEME_PUCK_PX, FF_THEME_PUCK_PX);
+    lv_obj_set_pos(content, 0, 0);
+    lv_obj_set_style_bg_opa(content, LV_OPA_TRANSP, 0);
+    lv_obj_clear_flag(content, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_clear_flag(content, LV_OBJ_FLAG_CLICKABLE);
+
+    launcher_make_orbit_ring(content);
+    launcher_make_hub(content);
 
     static launcher_satellite_desc_t const sats[LAUNCHER_SAT_COUNT] = {
         {launcher_icon_lineup, "LINEUP", 1, false, 1},
@@ -828,15 +849,27 @@ void ff_scr_launcher_build(ff_app_state_t const *state)
         float const deg = ff_scr_launcher_satellite_deg(sats[i].compass_pos, LAUNCHER_SAT_COUNT);
         float dx, dy;
         launcher_deg_to_offset(deg, LAUNCHER_ORBIT_RADIUS_PX, &dx, &dy);
-        launcher_make_satellite(puck, sats[i].icon_fn, sats[i].caption, dx, dy, sats[i].launcher_idx,
+        launcher_make_satellite(content, sats[i].icon_fn, sats[i].caption, dx, dy, sats[i].launcher_idx,
                                  sats[i].badge_capable && unread > 0, unread);
     }
 
-    launcher_build_status_row(puck, &state->radar);
+    launcher_build_status_row(content, &state->radar);
 
-    /* S26 slice d — the message banner, built LAST (after every
-     * satellite and the status row) so it paints on top of whatever the
-     * launcher shows, exactly the "built after, so drawn on top of"
+    /* S10 quick flare — mirrors scr_nav.c's exact "dim the base, draw
+     * the overlay on top" placement (PR #20 UX finding #4: "flaring_self
+     * reads as an error" if the base content stays full-opacity under
+     * the overlay's own news). `ff_scr_flare_build_sender_overlay` is a
+     * no-op internally when !state->flare.sending, matching scr_nav.c's
+     * convention; added to `puck` (a SIBLING of `content`, not a child),
+     * so the dim above never touches the overlay itself. */
+    if (state->flare.sending) {
+        lv_obj_set_style_opa(content, LV_OPA_30, 0);
+    }
+    ff_scr_flare_build_sender_overlay(puck, &state->flare);
+
+    /* S26 slice d — the message banner, built LAST (after everything
+     * above, sender overlay included) so it paints on top of whatever
+     * the launcher shows, exactly the "built after, so drawn on top of"
      * placement scr_nav.c's own call-order comment documents for every
      * other face. No-op internally when !state->banner.active. */
     ff_scr_banner_build(puck, &state->banner, state->settings.colorblind);

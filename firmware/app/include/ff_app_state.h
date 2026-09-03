@@ -1026,6 +1026,16 @@ typedef struct {
     ff_app_settings_t settings;
     ff_app_map_t      map;
     ff_app_banner_t   banner; /* S26(d) — the ff_notify queue's head; scr_banner.c's whole input */
+
+    /* S10 quick flare (docs/specs/S10-flare.md's Amendments, 2026-09-03):
+     * true while the shell's HOME/BOOT multitap FSM has an in-progress,
+     * still-live run (mirrors `ff_multitap_pending`, core/include/
+     * ff_multitap.h) — nothing renders this (there is deliberately no
+     * on-screen progress indicator for the gesture, "no screen needed"),
+     * it exists purely as `ff_shell_keep_awake`'s (app/include/ff_shell.h)
+     * third keep-awake input, so the idle FSM does not let the puck dim/
+     * sleep between taps mid-sequence. */
+    bool quick_flare_pending;
 } ff_app_state_t;
 
 /* PR #21 code review finding #4: ff_app_state_t grew ~2.5x in this PR
