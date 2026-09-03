@@ -1,33 +1,38 @@
 # meshclient — embedded Meshtastic client library (framing, want_config
 # handshake, nodeDB, messaging) over a transport vtable. Extraction-grade:
 # no includes from core/ or app/ (see docs/specs/S03-meshclient.md AC7).
+#
+# Source lists live in sources.cmake, shared verbatim with the esp32s3
+# IDF components ff_meshclient_proto and ff_meshclient
+# (firmware/targets/esp32s3/components/) — see that file's header for why
+# (including why mc_transport_tcp.c gets its own sim-only list).
+include(${CMAKE_CURRENT_SOURCE_DIR}/sources.cmake)
+
+# Sim-only completeness guards (see ff_check_sources_complete()'s comment
+# in the top-level firmware/CMakeLists.txt).
+ff_check_sources_complete(${CMAKE_CURRENT_SOURCE_DIR}/proto/meshtastic ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}/sources.cmake FF_MESHCLIENT_PROTO_SOURCES)
+ff_check_sources_complete(${CMAKE_CURRENT_SOURCE_DIR}/src ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}/sources.cmake
+    FF_MESHCLIENT_SOURCES FF_MESHCLIENT_SIM_ONLY_SOURCES)
 
 # ---------------------------------------------------------------------------
 # S03: generated nanopb C for meshtastic/protobufs (committed under proto/,
 # regenerated via tools/gen_nanopb.sh — see that script for the pinned
 # commits). Vendored/generated code: not ours, no -Wall -Wextra -Werror.
 # ---------------------------------------------------------------------------
-add_library(ff-meshclient-proto STATIC
-    proto/meshtastic/mesh.pb.c
-    proto/meshtastic/channel.pb.c
-    proto/meshtastic/config.pb.c
-    proto/meshtastic/device_ui.pb.c
-    proto/meshtastic/module_config.pb.c
-    proto/meshtastic/atak.pb.c
-    proto/meshtastic/portnums.pb.c
-    proto/meshtastic/telemetry.pb.c
-    proto/meshtastic/xmodem.pb.c
-)
+add_library(ff-meshclient-proto STATIC ${FF_MESHCLIENT_PROTO_SOURCES})
 target_include_directories(ff-meshclient-proto PUBLIC proto)
 target_link_libraries(ff-meshclient-proto PUBLIC ff-nanopb)
 
 # ---------------------------------------------------------------------------
-# S03: the library itself.
+# S03: the library itself. mc_transport_tcp.c (FF_MESHCLIENT_SIM_ONLY_
+# SOURCES) is how the sim dials meshtasticd over TCP; the device build
+# excludes it — see sources.cmake's header comment.
 # ---------------------------------------------------------------------------
 add_library(ff-meshclient STATIC
-    src/mc_framing.c
-    src/mc_client.c
-    src/mc_transport_tcp.c
+    ${FF_MESHCLIENT_SOURCES}
+    ${FF_MESHCLIENT_SIM_ONLY_SOURCES}
 )
 target_include_directories(ff-meshclient PUBLIC include)
 target_link_libraries(ff-meshclient

@@ -1,6 +1,9 @@
 # ff_meshclient — ESP-IDF wrapper for firmware/meshclient. Mirrors
 # firmware/meshclient/CMakeLists.txt's ff-meshclient target with ONE
-# deliberate difference: mc_transport_tcp.c is NOT built here.
+# deliberate difference: mc_transport_tcp.c is NOT built here — both now
+# read firmware/meshclient/sources.cmake's FF_MESHCLIENT_SOURCES (shared)
+# instead of hand-copying the list, while FF_MESHCLIENT_SIM_ONLY_SOURCES
+# stays sim-only by construction (this component never reads it).
 #
 # mc_transport_tcp.c (firmware/meshclient/src/mc_transport_tcp.c) is a
 # POSIX sockets transport (<sys/socket.h>, <sys/select.h>, <unistd.h>) —
@@ -16,10 +19,13 @@
 set(FF_FW_DIR ${CMAKE_CURRENT_LIST_DIR}/../../../..)
 set(FF_MC_DIR ${FF_FW_DIR}/meshclient)
 
+include(${FF_MC_DIR}/sources.cmake)
+
+set(FF_MESHCLIENT_SOURCES_ABS ${FF_MESHCLIENT_SOURCES})
+list(TRANSFORM FF_MESHCLIENT_SOURCES_ABS PREPEND "${FF_MC_DIR}/")
+
 idf_component_register(
-    SRCS
-        "${FF_MC_DIR}/src/mc_framing.c"
-        "${FF_MC_DIR}/src/mc_client.c"
+    SRCS ${FF_MESHCLIENT_SOURCES_ABS}
     INCLUDE_DIRS "${FF_MC_DIR}/include"
     REQUIRES ff_platform
     PRIV_REQUIRES ff_meshclient_proto

@@ -40,6 +40,53 @@ function(ff_apply_warnings target)
 endfunction()
 
 # ---------------------------------------------------------------------------
+# ff_check_sources_complete(glob_dir rel_base list_file expected_var...) —
+# a CI-free guard, sim-build only, for the shared *_SOURCES lists in each
+# library's sources.cmake (firmware/core/sources.cmake,
+# firmware/app/sources.cmake, firmware/app/screens/sources.cmake,
+# firmware/meshclient/sources.cmake, firmware/festpack/sources.cmake).
+#
+# file(GLOB) here is NOT used to build anything — house lesson #112 bans
+# that, because a stray non-source .c dropped under a src/ directory (a
+# fixture, a generator scratch file) would silently get compiled into
+# the library. This GLOB exists ONLY to audit that every .c file
+# physically present under `glob_dir` is named in at least one of the
+# `expected_var` list variables (each is a CMake list, e.g.
+# FF_CORE_SOURCES, or several for a directory several libraries share,
+# e.g. app/screens' FF_LAYOUT_SOURCES + FF_APP_UI_SOURCES + ...). A file
+# added to disk but forgotten from every list fails `cmake` configure
+# immediately, naming the file and the list file to edit — instead of
+# silently missing from the sim link, the device build, or both.
+#
+# `rel_base` is the directory the *_SOURCES entries are written relative
+# to (e.g. firmware/core/, so FF_CORE_SOURCES reads "src/ff_geo.c") —
+# usually the sources.cmake's own directory, but NOT always the same as
+# `glob_dir` (e.g. core's list entries carry a "src/" prefix, so files
+# are globbed from core/src/ but matched against paths made relative to
+# core/, not core/src/).
+# ---------------------------------------------------------------------------
+function(ff_check_sources_complete glob_dir rel_base list_file)
+    set(_ff_expected "")
+    foreach(_ff_var IN LISTS ARGN)
+        list(APPEND _ff_expected ${${_ff_var}})
+    endforeach()
+
+    file(GLOB _ff_actual RELATIVE "${rel_base}" "${glob_dir}/*.c")
+    foreach(_ff_file IN LISTS _ff_actual)
+        list(FIND _ff_expected "${_ff_file}" _ff_idx)
+        if(_ff_idx EQUAL -1)
+            message(FATAL_ERROR
+                "${rel_base}/${_ff_file} exists but is not listed in any "
+                "of ${ARGN} in ${list_file} — add it to the right list "
+                "there (see that file's comments for which library it "
+                "belongs to). Until it is, this file is silently NOT "
+                "built for the sim OR the esp32s3 device target, since "
+                "both read the same list.")
+        endif()
+    endforeach()
+endfunction()
+
+# ---------------------------------------------------------------------------
 # Third-party dependencies — FetchContent, pinned to commit hashes (never
 # floating tags/branches), per AGENTS.md.
 # ---------------------------------------------------------------------------
