@@ -67,15 +67,6 @@ typedef struct ff_face_dispatch_ctx {
     }
 
 /**
- * ff_face_dispatch_ctx_reset — resets `*ctx` to the "no prior face"
- * state, so the next Settings entry through it is always treated as
- * fresh. Same effect as FF_FACE_DISPATCH_CTX_INIT, offered as a
- * callable so tests (and a target reinitializing its display) don't
- * need to reach into the struct directly. `ctx == NULL` is a no-op.
- */
-void ff_face_dispatch_ctx_reset(ff_face_dispatch_ctx_t *ctx);
-
-/**
  * ff_face_dispatch_hooks_t — the two per-target deltas described above.
  * Every member is individually optional (NULL = no-op); `hooks` itself
  * may also be NULL. `user_data` is passed through unchanged — neither

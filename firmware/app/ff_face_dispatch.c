@@ -22,14 +22,6 @@ static ff_app_face_t face_dispatch_effective(ff_app_state_t const *state)
     return state->active_face;
 }
 
-void ff_face_dispatch_ctx_reset(ff_face_dispatch_ctx_t *ctx)
-{
-    if (ctx == NULL) {
-        return;
-    }
-    ctx->prev_face = FF_APP_FACE_NONE;
-}
-
 void ff_face_dispatch_build(ff_app_state_t const *state, ff_face_dispatch_ctx_t *ctx,
                              ff_face_dispatch_hooks_t const *hooks)
 {
