@@ -41,6 +41,25 @@ static void S22_nearest_landmark_chosen_among_several(void)
     TEST_ASSERT_EQUAL_STRING("Near Stage", ff_rally_place_name(lm, 3, 0.0f, 0.0f));
 }
 
+/* Reviewer finding (PR #175 review): a mutation that just returns the
+ * FIRST in-range landmark (never comparing distances after finding one
+ * qualifier) survived the original suite because in every existing case
+ * the true nearest also happened to be the first IN-RANGE entry. Put a
+ * FARTHER-but-still-in-range landmark first and a NEARER one second so
+ * "first in range" and "actually nearest" disagree. */
+static void S22_nearer_landmark_wins_even_when_not_first_in_array(void)
+{
+    ff_rally_landmark_t lm[2] = {
+        {.name = "Farther In Range", .has_pos = true, .east_m = 80.0f, .north_m = 0.0f},
+        {.name = "Nearer In Range", .has_pos = true, .east_m = 20.0f, .north_m = 0.0f},
+    };
+    uint8_t idx = 99;
+    bool const ok = ff_rally_nearest_landmark(lm, 2, 0.0f, 0.0f, FF_RALLY_LANDMARK_NEAR_M, &idx);
+    TEST_ASSERT_TRUE(ok);
+    TEST_ASSERT_EQUAL_UINT8(1, idx); /* the NEARER one, not index 0 */
+    TEST_ASSERT_EQUAL_STRING("Nearer In Range", ff_rally_place_name(lm, 2, 0.0f, 0.0f));
+}
+
 /* Boundary pin, by LITERAL (not the macro) — mutation (a) flips 120 -> 121
  * and this is exactly the case that then starts (wrongly) succeeding. */
 static void S22_landmark_at_exactly_120m_is_not_near(void)
@@ -114,6 +133,26 @@ static void S22_landmark_without_pos_or_name_is_skipped(void)
     TEST_ASSERT_FALSE(
         ff_rally_nearest_landmark(lm, 3, 0.0f, 0.0f, FF_RALLY_LANDMARK_NEAR_M, &idx));
     TEST_ASSERT_EQUAL_STRING("MY SPOT", ff_rally_place_name(lm, 3, 0.0f, 0.0f));
+}
+
+/* Reviewer finding (PR #175 review): a mutation admitting has_pos=false
+ * candidates into the distance comparison survived the original suite
+ * because no existing case had a real, in-range landmark competing
+ * against a "ghost" (has_pos=false, so east_m/north_m are meaningless —
+ * here deliberately AT my own position, distance 0, the closest possible
+ * value) at the same time. A ghost must never win over a real landmark,
+ * however close its garbage coordinates look. */
+static void S22_real_landmark_beats_a_ghost_at_zero_distance(void)
+{
+    ff_rally_landmark_t lm[2] = {
+        {.name = "Ghost", .has_pos = false, .east_m = 0.0f, .north_m = 0.0f}, /* "0 m" but not real */
+        {.name = "Real Stage", .has_pos = true, .east_m = 30.0f, .north_m = 0.0f},
+    };
+    uint8_t idx = 99;
+    bool const ok = ff_rally_nearest_landmark(lm, 2, 0.0f, 0.0f, FF_RALLY_LANDMARK_NEAR_M, &idx);
+    TEST_ASSERT_TRUE(ok);
+    TEST_ASSERT_EQUAL_UINT8(1, idx); /* the real one, never the ghost at index 0 */
+    TEST_ASSERT_EQUAL_STRING("Real Stage", ff_rally_place_name(lm, 2, 0.0f, 0.0f));
 }
 
 /* A landmark whose name would not fit the wire is skipped by the
@@ -247,12 +286,14 @@ int main(void)
     UNITY_BEGIN();
 
     RUN_TEST(S22_nearest_landmark_chosen_among_several);
+    RUN_TEST(S22_nearer_landmark_wins_even_when_not_first_in_array);
     RUN_TEST(S22_landmark_at_exactly_120m_is_not_near);
     RUN_TEST(S22_landmark_at_121m_is_not_near);
     RUN_TEST(S22_landmark_just_inside_120m_is_near);
     RUN_TEST(S22_no_landmark_in_range_falls_back_to_my_spot);
     RUN_TEST(S22_null_landmarks_or_empty_list_is_honest_fallback);
     RUN_TEST(S22_landmark_without_pos_or_name_is_skipped);
+    RUN_TEST(S22_real_landmark_beats_a_ghost_at_zero_distance);
     RUN_TEST(S22_landmark_name_too_long_for_wire_is_skipped);
 
     RUN_TEST(S24_landmark_displayable_requires_pos_and_name);

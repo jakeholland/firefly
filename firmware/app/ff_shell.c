@@ -54,14 +54,22 @@ _Static_assert(FF_COMPOSE_EXTRA_MAX == 280,
  * per ff_shell_tick against power_menu_opened_ms. */
 #define FF_POWER_MENU_TIMEOUT_MS 10000u
 
-/* S22 slice d, SPEC GAP (see docs/specs/S22-signals-rework.md "Questions"):
- * a quick RALLY gathers the crew to the SENDER's own current location, and
- * names the place after the nearest festpack landmark within
- * FF_RALLY_LANDMARK_NEAR_M (else the honest constant FF_RALLY_DEFAULT_NAME
- * — both now core policy, `ff_rally.h`, tech-debt sprint move). Naming a
- * rally after a landmark the sender is nowhere near would be dishonest, so
- * the match is gated on real proximity; 120 m ~ "you are effectively at
- * it" at festival scale. */
+/* S22 slice d — a quick RALLY (the thread quick-chip / whole-crew popup
+ * row, distinct from the S24 Rally screen's explicit picker) gathers the
+ * crew to the SENDER's own current location, and names the place after
+ * the nearest festpack landmark within FF_RALLY_LANDMARK_NEAR_M (else the
+ * honest constant FF_RALLY_DEFAULT_NAME). Naming a rally after a landmark
+ * the sender is nowhere near would be dishonest, so the match is gated on
+ * real proximity; 120 m ~ "you are effectively at it" at festival scale.
+ *
+ * The SPEC GAP docs/specs/S22-signals-rework.md's "Questions" section
+ * raised about this (current-location-only vs. a place/landmark picker)
+ * is RESOLVED — see that spec's Amendments: S24-signals-inbox.md slice
+ * (d) shipped the picker (the Rally screen), and this quick-RALLY
+ * proximity heuristic now backs only the one-tap path. The threshold, the
+ * fallback name, the nearest-search, and the WHEN/wire-name policy are
+ * core policy now — see `ff_rally.h` (tech-debt sprint move); this file
+ * keeps only the dispatch. */
 
 /* S24 slice d — the Rally WHERE list projects at most this many festpack
  * landmark rows. Pinned to FP_MAX_LANDMARKS so a festpack cap bump fails
