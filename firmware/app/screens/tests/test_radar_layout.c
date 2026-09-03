@@ -155,7 +155,7 @@ static void sweep_arrow_never_overlaps_registry_or_changes_bearing(radar_mode_t 
     for (int tenth_deg = 0; tenth_deg < 3600; tenth_deg++) {
         float bearing = (float)tenth_deg / 10.0f;
         radar_layout_arrow_t arrow;
-        radar_layout_resolve_arrow(&reg, bearing, &arrow);
+        radar_layout_resolve_arrow(&reg, bearing, RADAR_LAYOUT_ARROW_LEN_PX, &arrow);
 
         radar_layout_rect_t bbox = arrow_head_bbox(&arrow);
         if (registry_overlaps_rect(&reg, &bbox)) {
@@ -215,7 +215,7 @@ static void test_arrow_not_shortened_when_clear(void)
     /* Due "north" (straight up, away from the name/dist/chip stack and
      * the status bar) needs no shortening at all. */
     radar_layout_arrow_t arrow;
-    radar_layout_resolve_arrow(&reg, 0.0f, &arrow);
+    radar_layout_resolve_arrow(&reg, 0.0f, RADAR_LAYOUT_ARROW_LEN_PX, &arrow);
 
     TEST_ASSERT_FALSE(arrow.shortened);
     TEST_ASSERT_FLOAT_WITHIN(0.01f, RADAR_LAYOUT_ARROW_LEN_PX, arrow.len_px);
