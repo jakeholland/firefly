@@ -29,6 +29,7 @@ Specs are contracts. Acceptance criteria (AC) become test names (`S01_AC3_...`).
 | S24 | signals inbox — inbox → thread rework | S22 | YES | ✅ merged (PR #121 docs, #122 a, #124 b, #126 c, #128 d); supersedes S22's screen (b) and composer quick-replies (c) |
 | S25 | power latch + soft power button (`ff_power`) | S15 | YES (device) | ◐ a merged (PR #132 — battery keep-alive latch); b delivered under S26(b) (PR #135) |
 | S26 | device lifecycle — power/idle/notify/home/boot | S25 | YES | ✅ a–g merged (PR #133 docs; #134 a, #135 b, #136+#138 c, #137+#138 d, #142+#144+#145 e, #140+#150 f, #139+#141+#146 g) |
+| S27 | sounds — event vocabulary, tone patterns, quiet-hours policy, Sounds toggle | S11,S16,S26 | stretch (device HAL is a separate PR) | ◐ core+shell+settings+sim merged; DEVICE HAL (tone generator) pending |
 
 **Wave plan:** Wave 0 = S13+S14 (the loop itself). Wave 1 = S01,S03,S05,S11 (parallel, no deps). Wave 2 = S02,S04,S07. Wave 3 = S06,S08,S10. Wave 4 = S16, then S09,S12,S15.
 

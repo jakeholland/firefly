@@ -361,3 +361,16 @@ if(FF_BUILD_TESTS)
 
     add_test(NAME test_rally COMMAND test_rally)
 endif()
+
+# S27 (core/sound — event vocabulary, tone patterns, quiet-hours policy,
+# priority table; docs/specs/S27-sounds.md). Pure C11, no I/O — the DEVICE
+# HAL that turns a pattern into PCM samples is a separate, stacked PR.
+if(FF_BUILD_TESTS)
+    add_executable(test_sound
+        tests/test_sound.c
+    )
+    target_link_libraries(test_sound PRIVATE ff-core unity)
+    ff_apply_warnings(test_sound)
+
+    add_test(NAME test_sound COMMAND test_sound)
+endif()

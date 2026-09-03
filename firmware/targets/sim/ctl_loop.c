@@ -15,6 +15,7 @@
 #include "face_dispatch.h"
 #include "ff_intent.h"
 #include "ff_proto.h"
+#include "ff_sound_emit.h" /* S27 — the TAP screens-level sound seam this loop also binds */
 #include "fixture.h"
 #include "screenshot.h"
 #include "sim_lifecycle.h" /* debt/sim-window-lifecycle — ff_sim_lifecycle_pump, the shared idle+rebuild pump */
@@ -55,6 +56,55 @@ uint32_t ff_ctl_loop_tick_cb(void)
 {
     if (g_ctl_loop_ctx != NULL && g_ctl_loop_ctx->mock_clock) return g_ctl_loop_ctx->mock_clock_ms;
     return ctl_loop_wall_clock_ms();
+}
+
+/**
+ * ctl_loop_play_sound_cb — S27 sounds (docs/specs/S27-sounds.md): the
+ * sim's `ff_shell_cfg_t.play_sound` hook. Neither target has a real
+ * speaker driver yet (the DEVICE HAL is a separate, stacked PR), so this
+ * does not synthesize audio — it LOGS the event (stderr, so it shows up
+ * in an interactive `ffsim` run without polluting stdout's ctl-socket
+ * protocol) and appends it to `ctx->sound_log`, a small ctl-observable
+ * record a test can assert against via `ff_ctl_loop_sound_log_count`/
+ * `_at` (mirrors `ctx->rebuild_count`'s own "count as a real signal,
+ * bounded storage" shape elsewhere in this file). A push past the log's
+ * fixed capacity still increments `sound_log_count` (so overflow is
+ * itself observable, never silently dropped) but does not overwrite an
+ * already-recorded slot — same "count can exceed storage, oldest entries
+ * stay put" convention `ctx->rebuild_count` uses relative to whatever
+ * bounded state it is counting changes to.
+ */
+static void ctl_loop_play_sound_cb(void *user, ff_sound_event_t ev)
+{
+    ff_ctl_loop_ctx_t *ctx = (ff_ctl_loop_ctx_t *)user;
+    if (ctx == NULL) return;
+
+    static char const *const kNames[FF_SOUND_COUNT] = {
+        [FF_SOUND_FLARE_SENT] = "FLARE_SENT",         [FF_SOUND_FLARE_INCOMING] = "FLARE_INCOMING",
+        [FF_SOUND_MESSAGE] = "MESSAGE",               [FF_SOUND_RALLY] = "RALLY",
+        [FF_SOUND_BATT_LOW] = "BATT_LOW",             [FF_SOUND_TAP] = "TAP",
+    };
+    char const *name = ((int)ev >= 0 && ev < FF_SOUND_COUNT) ? kNames[ev] : "UNKNOWN";
+    fprintf(stderr, "ffsim: sound %s\n", name);
+
+    uint32_t const cap = (uint32_t)(sizeof(ctx->sound_log) / sizeof(ctx->sound_log[0]));
+    if (ctx->sound_log_count < cap) {
+        ctx->sound_log[ctx->sound_log_count] = ev;
+    }
+    ctx->sound_log_count++;
+}
+
+uint32_t ff_ctl_loop_sound_log_count(ff_ctl_loop_ctx_t const *ctx)
+{
+    return (ctx != NULL) ? ctx->sound_log_count : 0u;
+}
+
+ff_sound_event_t ff_ctl_loop_sound_log_at(ff_ctl_loop_ctx_t const *ctx, uint32_t idx)
+{
+    uint32_t const cap = (ctx != NULL) ? (uint32_t)(sizeof(ctx->sound_log) / sizeof(ctx->sound_log[0])) : 0u;
+    uint32_t const n = (ctx != NULL && ctx->sound_log_count < cap) ? ctx->sound_log_count : cap;
+    if (ctx == NULL || idx >= n) return FF_SOUND_COUNT; /* out of range: the vocabulary's own "not a real event" sentinel */
+    return ctx->sound_log[idx];
 }
 
 static uint32_t ctl_loop_clock_now_ms(void *user)
@@ -149,6 +199,8 @@ int ff_ctl_loop_open(ff_ctl_loop_ctx_t *ctx, ff_shell_t *shell, fp_pack_t *pack,
     ctx->clock.user = NULL;
     shell_cfg->clock = &ctx->clock;
     shell_cfg->pack = pack;
+    shell_cfg->play_sound = ctl_loop_play_sound_cb; /* S27 sounds — log + ctl-observable record */
+    shell_cfg->play_sound_user = ctx;
     /* Static, singleton like g_ctl_loop_ctx above — this loop only ever
      * runs one shell at a time. See fp_pack.h's FP_MAX_TOKENS. */
     static jsmntok_t s_toks[FP_MAX_TOKENS];
@@ -213,6 +265,10 @@ int ff_ctl_loop_open(ff_ctl_loop_ctx_t *ctx, ff_shell_t *shell, fp_pack_t *pack,
      * ff_intent.h's LIFETIME contract. */
     ff_intent_emit_bind(ff_shell_intent_sink, shell);
 
+    /* S27 sounds — the TAP seam (ff_sound_emit.h), same bind/unbind
+     * lifetime discipline as the intent seam just above. */
+    ff_sound_emit_bind(ff_shell_sound_sink, shell);
+
     return 0;
 }
 
@@ -261,6 +317,7 @@ void ff_ctl_loop_close(ff_ctl_loop_ctx_t *ctx)
 {
     if (ctx == NULL) return;
     ff_intent_emit_bind(NULL, NULL); /* before the shell can go away — ff_intent.h LIFETIME */
+    ff_sound_emit_bind(NULL, NULL);  /* S27 — same LIFETIME contract, ff_sound_emit.h */
     ff_live_setup_close(&ctx->live);
     free(ctx->xrgb_buf);
     ctx->xrgb_buf = NULL;

@@ -137,6 +137,14 @@ typedef struct {
     ff_idle_touch_gate_t touch_gate;
 
     char ctl_out_dir_real[4096]; /* PATH_MAX-sized; see ctl_out_path.h */
+
+    /* S27 sounds (docs/specs/S27-sounds.md) — the play_sound hook's own
+     * ctl-observable log; see ctl_loop.c's ctl_loop_play_sound_cb doc
+     * comment. Read via ff_ctl_loop_sound_log_count/_at below, never
+     * directly (same "treat every field as private" convention this
+     * struct's own top comment states). */
+    ff_sound_event_t sound_log[16];
+    uint32_t         sound_log_count;
 } ff_ctl_loop_ctx_t;
 
 /**
@@ -238,6 +246,20 @@ void ff_ctl_loop_pointer_release(ff_ctl_loop_ctx_t *ctx);
  *  other layer here. Safe on a `*ctx` that ff_ctl_loop_open never
  *  successfully populated. */
 void ff_ctl_loop_close(ff_ctl_loop_ctx_t *ctx);
+
+/**
+ * ff_ctl_loop_sound_log_count / ff_ctl_loop_sound_log_at — S27 sounds:
+ * read access to the play_sound hook's ctl-observable log (so a test can
+ * assert "FLARE_SENT was played", the shape docs/specs/S27-sounds.md
+ * asks for at the sim level). `_count` is the total number of events
+ * pushed since `ff_ctl_loop_open` (can exceed the log's fixed 16-slot
+ * capacity — an overflow is itself observable via this count, never
+ * silently dropped); `_at` returns the idx-th (0-based, oldest-first)
+ * LOGGED event, or FF_SOUND_COUNT (not a real event) for an out-of-range
+ * `idx` or a NULL `ctx`.
+ */
+uint32_t ff_ctl_loop_sound_log_count(ff_ctl_loop_ctx_t const *ctx);
+ff_sound_event_t ff_ctl_loop_sound_log_at(ff_ctl_loop_ctx_t const *ctx, uint32_t idx);
 
 #ifdef __cplusplus
 }

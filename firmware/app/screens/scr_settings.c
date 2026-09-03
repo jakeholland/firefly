@@ -49,7 +49,8 @@
  * Every row reads label LEFT (muted, uppercase), control RIGHT. Controls are
  * PILLS (rounded ~12px):
  *   - Toggle pairs (UNITS FT|MI, CLOCK 12H|24H, SHARE LIVE|GHOST,
- *     HAPTICS ON|OFF, GLOW ON|OFF, COLORBLIND ON|OFF) render two pills; the
+ *     HAPTICS ON|OFF, SOUNDS ON|OFF, UI TICKS ON|OFF (S27), GLOW ON|OFF,
+ *     COLORBLIND ON|OFF) render two pills; the
  *     ACTIVE one is amber-on-ink, the inactive one surface-on-muted. Both
  *     pills of a pair
  *     forward to the SAME toggle callback with no user_data, so (a) tapping
@@ -222,12 +223,19 @@ _Static_assert(FF_SETTINGS_ROW_H >= FF_THEME_MIN_HIT_PX, "settings pill rows mus
 #define FF_SETTINGS_REL_SCREEN_Y (FF_SETTINGS_REL_CLOCK_Y + FF_SETTINGS_ROW_STEP)      /* 212 */
 #define FF_SETTINGS_REL_SHARE_Y (FF_SETTINGS_REL_SCREEN_Y + FF_SETTINGS_ROW_STEP)      /* 274 */
 #define FF_SETTINGS_REL_HAPTICS_Y (FF_SETTINGS_REL_SHARE_Y + FF_SETTINGS_ROW_STEP)     /* 336 */
-#define FF_SETTINGS_REL_GLOW_Y  (FF_SETTINGS_REL_HAPTICS_Y + FF_SETTINGS_ROW_STEP)     /* 398 */
-#define FF_SETTINGS_REL_WATER_Y (FF_SETTINGS_REL_GLOW_Y + FF_SETTINGS_ROW_STEP)        /* 460 */
-#define FF_SETTINGS_REL_QUIET_Y (FF_SETTINGS_REL_WATER_Y + FF_SETTINGS_ROW_STEP)       /* 522 */
-#define FF_SETTINGS_REL_CB_Y    (FF_SETTINGS_REL_QUIET_Y + FF_SETTINGS_ROW_STEP)       /* 584 */
-#define FF_SETTINGS_REL_CAL_Y   (FF_SETTINGS_REL_CB_Y + FF_SETTINGS_ROW_STEP)          /* 646 */
-#define FF_SETTINGS_CONTENT_H   (FF_SETTINGS_REL_CAL_Y + FF_SETTINGS_ROW_H)            /* 694 */
+/* SOUNDS and UI TICKS sit right after HAPTICS (S27 sounds,
+ * docs/specs/S27-sounds.md — "next to HAPTICS"): every row from GLOW down
+ * simply shifts by two more FF_SETTINGS_ROW_STEP (spacing unchanged; the
+ * scroll list absorbs it, same "no page to overflow" precedent CLOCK's
+ * and SCREEN's own insertions above already established). */
+#define FF_SETTINGS_REL_SOUNDS_Y (FF_SETTINGS_REL_HAPTICS_Y + FF_SETTINGS_ROW_STEP)    /* 398 */
+#define FF_SETTINGS_REL_UI_TICKS_Y (FF_SETTINGS_REL_SOUNDS_Y + FF_SETTINGS_ROW_STEP)   /* 460 */
+#define FF_SETTINGS_REL_GLOW_Y  (FF_SETTINGS_REL_UI_TICKS_Y + FF_SETTINGS_ROW_STEP)    /* 522 */
+#define FF_SETTINGS_REL_WATER_Y (FF_SETTINGS_REL_GLOW_Y + FF_SETTINGS_ROW_STEP)        /* 584 */
+#define FF_SETTINGS_REL_QUIET_Y (FF_SETTINGS_REL_WATER_Y + FF_SETTINGS_ROW_STEP)       /* 646 */
+#define FF_SETTINGS_REL_CB_Y    (FF_SETTINGS_REL_QUIET_Y + FF_SETTINGS_ROW_STEP)       /* 708 */
+#define FF_SETTINGS_REL_CAL_Y   (FF_SETTINGS_REL_CB_Y + FF_SETTINGS_ROW_STEP)          /* 770 */
+#define FF_SETTINGS_CONTENT_H   (FF_SETTINGS_REL_CAL_Y + FF_SETTINGS_ROW_H)            /* 818 */
 
 /**
  * settings_safe_margin_x — thin int32_t/ceil wrapper around
@@ -501,12 +509,28 @@ static void settings_share_cb(lv_event_t *e)
 }
 
 /* ---------------------------------------------------------------------
- * HAPTICS / GLOW / COLORBLIND — plain booleans.
+ * HAPTICS / SOUNDS / UI TICKS / GLOW / COLORBLIND — plain booleans.
  * ------------------------------------------------------------------- */
 static void settings_haptics_cb(lv_event_t *e)
 {
     (void)e;
     settings_emit_int(FF_SETTING_HAPTICS, s_settings.haptics ? 0 : 1);
+}
+
+/* SOUNDS (S27, docs/specs/S27-sounds.md) — the master switch for every
+ * sound this puck plays. Same two-state toggle shape as HAPTICS above. */
+static void settings_sounds_cb(lv_event_t *e)
+{
+    (void)e;
+    settings_emit_int(FF_SETTING_SOUNDS_ON, s_settings.sounds_on ? 0 : 1);
+}
+
+/* UI TICKS (S27) — the second, TAP-only gate. Same two-state toggle
+ * shape; defaults OFF (ff_settings.h's doc comment on the field). */
+static void settings_ui_ticks_cb(lv_event_t *e)
+{
+    (void)e;
+    settings_emit_int(FF_SETTING_UI_TICKS, s_settings.ui_ticks ? 0 : 1);
 }
 
 static void settings_night_glow_cb(lv_event_t *e)
@@ -935,6 +959,10 @@ void ff_scr_settings_build(lv_obj_t *parent, ff_app_settings_t const *settings)
                               settings_share_cb);
     settings_build_toggle_row(list, FF_SETTINGS_REL_HAPTICS_Y, row_w, "HAPTICS", "ON", "OFF",
                               s_settings.haptics ? 0 : 1, settings_haptics_cb);
+    settings_build_toggle_row(list, FF_SETTINGS_REL_SOUNDS_Y, row_w, "SOUNDS", "ON", "OFF",
+                              s_settings.sounds_on ? 0 : 1, settings_sounds_cb);
+    settings_build_toggle_row(list, FF_SETTINGS_REL_UI_TICKS_Y, row_w, "UI TICKS", "ON", "OFF",
+                              s_settings.ui_ticks ? 0 : 1, settings_ui_ticks_cb);
     settings_build_toggle_row(list, FF_SETTINGS_REL_GLOW_Y, row_w, "GLOW", "ON", "OFF",
                               s_settings.night_glow ? 0 : 1, settings_night_glow_cb);
 

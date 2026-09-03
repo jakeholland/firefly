@@ -169,6 +169,28 @@ static void spy_haptic(void *user)
 }
 
 /* ------------------------------------------------------------------- */
+/* S27 sounds — play_sound spy (mirrors the haptic spy above, plus a    */
+/* small event log so a test can assert not just "did a sound fire" but */
+/* "which event, how many times" — the "which call site fired what,     */
+/* exactly once" shape S27's own AC needs).                             */
+/* ------------------------------------------------------------------- */
+
+typedef struct {
+    ff_sound_event_t events[32];
+    int count; /* total pushes, INCLUDING any past the array's capacity —
+                * see sound_count's own note on why that's still safe */
+} sound_spy_t;
+
+static void spy_play_sound(void *user, ff_sound_event_t ev)
+{
+    sound_spy_t *s = (sound_spy_t *)user;
+    if (s->count < (int)(sizeof(s->events) / sizeof(s->events[0]))) {
+        s->events[s->count] = ev;
+    }
+    s->count++;
+}
+
+/* ------------------------------------------------------------------- */
 /* harness                                                              */
 /* ------------------------------------------------------------------- */
 
@@ -176,6 +198,7 @@ typedef struct {
     fake_clock_t clk;
     ff_clock_t clock;
     haptic_spy_t haptic;
+    sound_spy_t sound;
     mem_store_t store_mem;
     ff_store_t store;
     fp_pack_t pack;
@@ -185,6 +208,21 @@ typedef struct {
 } harness_t;
 
 static harness_t H;
+
+/** How many times `ev` was pushed to H.sound so far. Scans only the
+ *  populated prefix of `events` (bounded by the spy's own capacity, not
+ *  `count`, so an over-capacity test — none currently need more than
+ *  32 — still can't read past the array). */
+static int sound_count(ff_sound_event_t ev)
+{
+    int const cap = (int)(sizeof(H.sound.events) / sizeof(H.sound.events[0]));
+    int const n = (H.sound.count < cap) ? H.sound.count : cap;
+    int c = 0;
+    for (int i = 0; i < n; i++) {
+        if (H.sound.events[i] == ev) c++;
+    }
+    return c;
+}
 
 #define MY_ID 0x00001000u
 #define DANA 0x0000DA1Au
@@ -215,6 +253,8 @@ static void harness_init(uint32_t t0_ms, bool with_store)
     cfg.store = with_store ? &H.store : NULL;
     cfg.haptic = spy_haptic;
     cfg.haptic_user = &H.haptic;
+    cfg.play_sound = spy_play_sound; /* S27 sounds */
+    cfg.play_sound_user = &H.sound;
     cfg.pack = &H.pack;
     cfg.toks = H.toks;
     cfg.ntoks = FP_MAX_TOKENS;
@@ -5857,6 +5897,347 @@ static void S26c_AC1_keep_awake_null_view_is_safe(void)
     TEST_ASSERT_TRUE(ff_shell_keep_awake(NULL, true));
 }
 
+/* =================================================================== */
+/* S27 sounds — event vocabulary call sites (docs/specs/S27-sounds.md).  */
+/* Each test asserts BOTH that the expected event(s) fired the right    */
+/* number of times AND (via H.sound.count) that nothing ELSE fired —    */
+/* the "exactly once, exactly this event" shape the task brief asks     */
+/* for, not merely "at least once".                                    */
+/* =================================================================== */
+
+static void send_setting(ff_setting_id_t id, int32_t i)
+{
+    ff_intent_t in = {.kind = FF_INTENT_SETTING_SET, .u = {0}};
+    in.u.setting.id = id;
+    in.u.setting.v.i = i;
+    ff_shell_intent(&H.shell, &in);
+}
+
+static void send_flare_start(void)
+{
+    ff_intent_t in = {.kind = FF_INTENT_FLARE_START, .u = {0}};
+    ff_shell_intent(&H.shell, &in);
+}
+
+static void inject_rally(uint32_t from, char const *place)
+{
+    uint8_t buf[FF_PROTO_MAX_PAYLOAD];
+    int n = ff_proto_encode_rally(buf, sizeof(buf), (ff_latlon_t){39.0, -82.0}, place);
+    TEST_ASSERT_GREATER_THAN_INT(0, n);
+    H.ev.on_private(H.ev.user, from, MC_ADDR_BROADCAST, FF_PORTNUM, buf, (size_t)n);
+}
+
+static void S27_flare_start_fires_flare_sent_exactly_once(void)
+{
+    harness_init(100000u, false);
+    inject_my_info(MY_ID);
+
+    TEST_ASSERT_EQUAL_INT(0, H.sound.count);
+    send_flare_start();
+    TEST_ASSERT_EQUAL_INT(1, sound_count(FF_SOUND_FLARE_SENT));
+    TEST_ASSERT_EQUAL_INT(1, H.sound.count); /* exactly one sound event total */
+}
+
+/* Gated on the visible face like the intent handler itself: a second
+ * FLARE_START while a takeover is up must not also sound (the intent is
+ * rejected before shell_sound is ever reached). */
+static void S27_flare_start_during_a_takeover_fires_nothing(void)
+{
+    harness_init(100000u, false);
+    inject_my_info(MY_ID);
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, true));
+
+    inject_flare(DANA, 300); /* raises a takeover; also fires FLARE_INCOMING */
+    TEST_ASSERT_TRUE(ff_shell_flare(&H.shell)->takeover_active);
+    int const before = H.sound.count;
+
+    send_flare_start();
+    TEST_ASSERT_EQUAL_INT(before, H.sound.count);
+}
+
+static void S27_inbound_flare_from_paired_sender_fires_flare_incoming_exactly_once(void)
+{
+    harness_init(100000u, false);
+    inject_my_info(MY_ID);
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, true));
+
+    TEST_ASSERT_EQUAL_INT(0, H.sound.count);
+    inject_flare(DANA, 300);
+    TEST_ASSERT_EQUAL_INT(1, sound_count(FF_SOUND_FLARE_INCOMING));
+    TEST_ASSERT_EQUAL_INT(1, H.sound.count);
+}
+
+/* An unpaired sender's flare is ignored entirely by ff_flare_on_flare_rx's
+ * own trust gate (should_alert stays false) — same proxy-check discipline
+ * S16_AC11_unpaired_flare_neither_alerts_nor_takes_over already applies to
+ * the haptic; mirrored here for the sound. */
+static void S27_inbound_flare_from_unpaired_sender_fires_no_sound(void)
+{
+    harness_init(100000u, false);
+    inject_my_info(MY_ID);
+    inject_flare(DANA, 300); /* DANA never paired */
+    TEST_ASSERT_EQUAL_INT(0, H.sound.count);
+}
+
+static void S27_paired_message_fires_message_sound_exactly_once(void)
+{
+    harness_init(100000u, false);
+    inject_my_info(MY_ID);
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, true));
+
+    inject_text(DANA, "you close?");
+    TEST_ASSERT_EQUAL_INT(1, sound_count(FF_SOUND_MESSAGE));
+    TEST_ASSERT_EQUAL_INT(1, H.sound.count);
+}
+
+static void S27_unpaired_message_fires_no_sound(void)
+{
+    harness_init(100000u, false);
+    inject_my_info(MY_ID);
+    inject_text(DANA, "hi, who are you"); /* DANA never paired: S22 stranger rule */
+    TEST_ASSERT_EQUAL_INT(0, H.sound.count);
+}
+
+static void S27_paired_rally_fires_rally_sound_exactly_once(void)
+{
+    harness_init(100000u, false);
+    inject_my_info(MY_ID);
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, true));
+
+    inject_rally(DANA, "Main Stage");
+    TEST_ASSERT_EQUAL_INT(1, sound_count(FF_SOUND_RALLY));
+    TEST_ASSERT_EQUAL_INT(1, H.sound.count);
+}
+
+static void S27_sounds_off_silences_every_call_site(void)
+{
+    harness_init(100000u, false);
+    inject_my_info(MY_ID);
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, true));
+
+    send_setting(FF_SETTING_SOUNDS_ON, 0);
+    TEST_ASSERT_FALSE(ff_shell_settings(&H.shell)->sounds_on);
+
+    send_flare_start();
+    inject_flare(DANA, 300); /* FLARE_INCOMING, even the "loudest thing", is silenced too */
+    inject_text(DANA, "hi");
+    inject_rally(DANA, "Main Stage");
+
+    TEST_ASSERT_EQUAL_INT(0, H.sound.count);
+}
+
+/* Positive control for the mutation above: with sounds back on, the
+ * exact same sequence produces the expected four events (one each). */
+static void S27_sounds_on_positive_control_for_the_off_test(void)
+{
+    harness_init(100000u, false);
+    inject_my_info(MY_ID);
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, true));
+    TEST_ASSERT_TRUE(ff_shell_settings(&H.shell)->sounds_on); /* the default */
+
+    send_flare_start();
+    inject_flare(DANA, 300);
+    inject_text(DANA, "hi");
+    inject_rally(DANA, "Main Stage");
+
+    TEST_ASSERT_EQUAL_INT(1, sound_count(FF_SOUND_FLARE_SENT));
+    TEST_ASSERT_EQUAL_INT(1, sound_count(FF_SOUND_FLARE_INCOMING));
+    TEST_ASSERT_EQUAL_INT(1, sound_count(FF_SOUND_MESSAGE));
+    TEST_ASSERT_EQUAL_INT(1, sound_count(FF_SOUND_RALLY));
+    TEST_ASSERT_EQUAL_INT(4, H.sound.count);
+}
+
+/* The mutation target (task's mutation (a), exercised end to end through
+ * the real shell wiring — test_sound.c already covers the core policy in
+ * isolation; this is the "the shell actually calls through it correctly"
+ * half): quiet hours exempts ONLY the two FLARE events. */
+static void S27_quiet_hours_only_the_two_flare_events_play(void)
+{
+    harness_seed_settings(0); /* UTC, so U_QUIET's 05:00Z is 05:00 local */
+    harness_init(100000u, true);
+    inject_my_info(MY_ID);
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, true));
+
+    /* Latch the wall clock into quiet hours (S16_AC11's own technique). */
+    inject_node(DANA, "DANA", U_QUIET);
+    ff_wall_t const w = ff_shell_wall(&H.shell);
+    TEST_ASSERT_EQUAL_INT(FF_WALL_MESH, w.src);
+    TEST_ASSERT_TRUE(ff_quiet_now(ff_shell_settings(&H.shell), w.now_min));
+
+    send_flare_start();
+    TEST_ASSERT_EQUAL_INT(1, sound_count(FF_SOUND_FLARE_SENT));
+
+    inject_flare(DANA, 300);
+    TEST_ASSERT_EQUAL_INT(1, sound_count(FF_SOUND_FLARE_INCOMING));
+
+    int const before = H.sound.count;
+    inject_text(DANA, "you close?");
+    inject_rally(DANA, "Main Stage");
+    TEST_ASSERT_EQUAL_INT_MESSAGE(before, H.sound.count,
+                                  "MESSAGE/RALLY must stay silent in quiet hours - only FLARE_* is exempt");
+}
+
+/* Positive control: OUTSIDE quiet hours, the same MESSAGE/RALLY pair DO
+ * sound — proves the quiet-hours test above is measuring the exemption,
+ * not a call site that never fires at all. */
+static void S27_awake_hours_message_and_rally_do_play(void)
+{
+    harness_seed_settings(0);
+    harness_init(100000u, true);
+    inject_my_info(MY_ID);
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, true));
+
+    inject_node(DANA, "DANA", U_AWAKE);
+    ff_wall_t const w = ff_shell_wall(&H.shell);
+    TEST_ASSERT_FALSE(ff_quiet_now(ff_shell_settings(&H.shell), w.now_min));
+
+    inject_text(DANA, "you close?");
+    inject_rally(DANA, "Main Stage");
+    TEST_ASSERT_EQUAL_INT(1, sound_count(FF_SOUND_MESSAGE));
+    TEST_ASSERT_EQUAL_INT(1, sound_count(FF_SOUND_RALLY));
+}
+
+/* BATT_LOW: fires once on a crossing into the low band, never again
+ * while it stays low, and again on a genuinely NEW crossing after
+ * recovering. Uses ff_shell_dev_set_batt_pct — the S27 test/dev seam
+ * (ff_shell.h) — since neither target has a real ADC yet. */
+static void S27_batt_low_fires_once_per_crossing_not_every_tick(void)
+{
+    harness_init(100000u, false);
+    inject_my_info(MY_ID);
+
+    ff_shell_dev_set_batt_pct(&H.shell, 50); /* well above FF_BATT_LOW_PCT (15) */
+    (void)ff_shell_tick(&H.shell, H.clk.t); /* shell_project runs every tick regardless of the dirty bit */
+    TEST_ASSERT_EQUAL_INT(0, sound_count(FF_SOUND_BATT_LOW));
+
+    ff_shell_dev_set_batt_pct(&H.shell, 10); /* crosses into low */
+    (void)ff_shell_tick(&H.shell, H.clk.t);
+    TEST_ASSERT_EQUAL_INT(1, sound_count(FF_SOUND_BATT_LOW));
+
+    /* The mutation target (task's mutation (b)): still low on every
+     * subsequent tick must NOT fire again. */
+    for (int i = 0; i < 20; i++) {
+        advance(1000u);
+        (void)ff_shell_tick(&H.shell, H.clk.t);
+    }
+    TEST_ASSERT_EQUAL_INT_MESSAGE(1, sound_count(FF_SOUND_BATT_LOW),
+                                  "BATT_LOW must fire once on the crossing, not on every tick it reads low");
+
+    /* Recover above the threshold... */
+    ff_shell_dev_set_batt_pct(&H.shell, 60);
+    (void)ff_shell_tick(&H.shell, H.clk.t);
+    TEST_ASSERT_EQUAL_INT(1, sound_count(FF_SOUND_BATT_LOW));
+
+    /* ...then a SECOND, genuinely new crossing fires again — this is not
+     * a stuck one-shot latch. */
+    ff_shell_dev_set_batt_pct(&H.shell, 5);
+    (void)ff_shell_tick(&H.shell, H.clk.t);
+    TEST_ASSERT_EQUAL_INT(2, sound_count(FF_SOUND_BATT_LOW));
+}
+
+/* The boundary itself: exactly FF_BATT_LOW_PCT (15) is low ("<=", per
+ * ff_radar_batt_is_low's own doc comment), one above it is not. */
+static void S27_batt_low_boundary_is_inclusive(void)
+{
+    harness_init(100000u, false);
+    inject_my_info(MY_ID);
+
+    ff_shell_dev_set_batt_pct(&H.shell, 16);
+    (void)ff_shell_tick(&H.shell, H.clk.t);
+    TEST_ASSERT_EQUAL_INT(0, sound_count(FF_SOUND_BATT_LOW));
+
+    ff_shell_dev_set_batt_pct(&H.shell, 15);
+    (void)ff_shell_tick(&H.shell, H.clk.t);
+    TEST_ASSERT_EQUAL_INT(1, sound_count(FF_SOUND_BATT_LOW));
+}
+
+/* An unknown reading (-1, the honest default) is never "low" — never
+ * fires BATT_LOW, even the very first tick. */
+static void S27_batt_unknown_never_fires_batt_low(void)
+{
+    harness_init(100000u, false);
+    inject_my_info(MY_ID);
+    for (int i = 0; i < 5; i++) {
+        advance(1000u);
+        (void)ff_shell_tick(&H.shell, H.clk.t);
+    }
+    TEST_ASSERT_EQUAL_INT(0, sound_count(FF_SOUND_BATT_LOW));
+}
+
+/* ---------------------------------------------------------------------
+ * TAP — ff_shell_should_tap_sound's composed policy (sounds_on AND
+ * ui_ticks AND not quiet), and ff_shell_sound_sink's end-to-end wiring.
+ * ------------------------------------------------------------------- */
+
+static void S27_tap_sound_gated_by_ui_ticks_and_sounds_on(void)
+{
+    harness_init(100000u, false);
+    inject_my_info(MY_ID);
+
+    /* Defaults: sounds_on=true, ui_ticks=false -> no tap sound (spec:
+     * "default OFF"). */
+    TEST_ASSERT_TRUE(ff_shell_settings(&H.shell)->sounds_on);
+    TEST_ASSERT_FALSE(ff_shell_settings(&H.shell)->ui_ticks);
+    TEST_ASSERT_FALSE(ff_shell_should_tap_sound(&H.shell));
+
+    send_setting(FF_SETTING_UI_TICKS, 1);
+    TEST_ASSERT_TRUE(ff_shell_should_tap_sound(&H.shell));
+
+    send_setting(FF_SETTING_SOUNDS_ON, 0);
+    TEST_ASSERT_FALSE_MESSAGE(ff_shell_should_tap_sound(&H.shell), "sounds_on must still gate TAP even with ui_ticks on");
+
+    send_setting(FF_SETTING_SOUNDS_ON, 1);
+    TEST_ASSERT_TRUE(ff_shell_should_tap_sound(&H.shell));
+
+    TEST_ASSERT_FALSE(ff_shell_should_tap_sound(NULL));
+}
+
+static void S27_tap_sound_silenced_during_quiet_hours_even_with_ui_ticks_on(void)
+{
+    harness_seed_settings(0);
+    harness_init(100000u, true);
+    inject_my_info(MY_ID);
+    send_setting(FF_SETTING_UI_TICKS, 1);
+    TEST_ASSERT_TRUE(ff_shell_settings(&H.shell)->ui_ticks);
+
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, true));
+    inject_node(DANA, "DANA", U_QUIET);
+    ff_wall_t const w = ff_shell_wall(&H.shell);
+    TEST_ASSERT_TRUE(ff_quiet_now(ff_shell_settings(&H.shell), w.now_min));
+
+    TEST_ASSERT_FALSE(ff_shell_should_tap_sound(&H.shell));
+}
+
+static void S27_shell_sound_sink_plays_tap_when_gated_on(void)
+{
+    harness_init(100000u, false);
+    inject_my_info(MY_ID);
+    send_setting(FF_SETTING_UI_TICKS, 1);
+
+    ff_shell_sound_sink(&H.shell, FF_SOUND_TAP);
+    TEST_ASSERT_EQUAL_INT(1, sound_count(FF_SOUND_TAP));
+    TEST_ASSERT_EQUAL_INT(1, H.sound.count);
+
+    /* Defensive: this seam only ever carries TAP (ff_sound_emit.h's top
+     * comment) — any other event through it is a no-op, never forwarded
+     * to play_sound. */
+    ff_shell_sound_sink(&H.shell, FF_SOUND_MESSAGE);
+    TEST_ASSERT_EQUAL_INT(0, sound_count(FF_SOUND_MESSAGE));
+    TEST_ASSERT_EQUAL_INT(1, H.sound.count); /* unchanged */
+
+    ff_shell_sound_sink(NULL, FF_SOUND_TAP); /* NULL-safe */
+    TEST_ASSERT_EQUAL_INT(1, H.sound.count);
+}
+
+static void S27_shell_sound_sink_silent_when_ui_ticks_off(void)
+{
+    harness_init(100000u, false);
+    inject_my_info(MY_ID);
+    /* ui_ticks defaults false — the sink must NOT play. */
+    ff_shell_sound_sink(&H.shell, FF_SOUND_TAP);
+    TEST_ASSERT_EQUAL_INT(0, H.sound.count);
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -6017,6 +6398,26 @@ int main(void)
     RUN_TEST(S26_banner_open_routes_marks_read_and_dismisses);
     RUN_TEST(S26_banner_open_with_no_banner_is_noop);
     RUN_TEST(S26_banner_open_is_inert_under_a_takeover);
+
+    /* S27 sounds. */
+    RUN_TEST(S27_flare_start_fires_flare_sent_exactly_once);
+    RUN_TEST(S27_flare_start_during_a_takeover_fires_nothing);
+    RUN_TEST(S27_inbound_flare_from_paired_sender_fires_flare_incoming_exactly_once);
+    RUN_TEST(S27_inbound_flare_from_unpaired_sender_fires_no_sound);
+    RUN_TEST(S27_paired_message_fires_message_sound_exactly_once);
+    RUN_TEST(S27_unpaired_message_fires_no_sound);
+    RUN_TEST(S27_paired_rally_fires_rally_sound_exactly_once);
+    RUN_TEST(S27_sounds_off_silences_every_call_site);
+    RUN_TEST(S27_sounds_on_positive_control_for_the_off_test);
+    RUN_TEST(S27_quiet_hours_only_the_two_flare_events_play);
+    RUN_TEST(S27_awake_hours_message_and_rally_do_play);
+    RUN_TEST(S27_batt_low_fires_once_per_crossing_not_every_tick);
+    RUN_TEST(S27_batt_low_boundary_is_inclusive);
+    RUN_TEST(S27_batt_unknown_never_fires_batt_low);
+    RUN_TEST(S27_tap_sound_gated_by_ui_ticks_and_sounds_on);
+    RUN_TEST(S27_tap_sound_silenced_during_quiet_hours_even_with_ui_ticks_on);
+    RUN_TEST(S27_shell_sound_sink_plays_tap_when_gated_on);
+    RUN_TEST(S27_shell_sound_sink_silent_when_ui_ticks_off);
 
     return UNITY_END();
 }

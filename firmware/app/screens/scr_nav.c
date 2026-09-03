@@ -33,6 +33,7 @@
  */
 #include "scr_nav.h"
 
+#include "ff_sound_emit.h" /* S27 — the TAP sound seam every button reports through */
 #include "ff_theme.h"
 #include "scr_banner.h" /* S26 slice d — the ff_notify message banner overlay */
 #include "scr_flare.h" /* S10 slice b — lock chip + sender overlay */
@@ -48,12 +49,30 @@
  * through this instead of `lv_button_create` directly, so the
  * PRESS_LOCK fix (#145/#148) lives in exactly one place instead of
  * being re-discovered per screen.
- * ------------------------------------------------------------------- */
+ *
+ * S27 amendment (docs/specs/S27-sounds.md, "Shell seam") — this is also
+ * the ONE choke point every button in the app funnels through, which is
+ * exactly the coverage a "UI tick on button press" needs: wiring
+ * `ff_sound_emit(FF_SOUND_TAP)` here fires it for every button, on every
+ * screen, with no per-screen code to write or forget. Fired on
+ * LV_EVENT_CLICKED (a completed tap — press-down AND release inside the
+ * target), not LV_EVENT_PRESSED: a press that turns into a scroll drag
+ * (the Settings list's own "any press inside it initiates the scroll"
+ * design, scr_settings.c) or is dragged off the control is not a tap and
+ * must not tick. Emitted UNCONDITIONALLY — this file makes no gating
+ * decision at all; see ff_sound_emit.h's top comment for where the
+ * sounds_on/ui_ticks/quiet-hours policy is actually applied. */
+static void ff_scr_button_tap_sound_cb(lv_event_t *e)
+{
+    (void)e;
+    ff_sound_emit(FF_SOUND_TAP);
+}
 
 lv_obj_t *ff_scr_button_create(lv_obj_t *parent)
 {
     lv_obj_t *btn = lv_button_create(parent);
     lv_obj_clear_flag(btn, LV_OBJ_FLAG_PRESS_LOCK);
+    lv_obj_add_event_cb(btn, ff_scr_button_tap_sound_cb, LV_EVENT_CLICKED, NULL);
     return btn;
 }
 
