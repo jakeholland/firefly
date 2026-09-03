@@ -187,6 +187,142 @@ static void ctl_tap_button(ff_ctl_loop_ctx_t *ctx, ff_ctl_handlers_t const *h, l
     ctl_tap(ctx, h, x, y);
 }
 
+/**
+ * Maintainer-reported bug, reproduced end to end through the REAL ctl/
+ * LVGL stack (not a direct ff_shell_intent call — that half is
+ * app/tests/test_intent.c's `S26_notif_banner_open_navigates_to_the_
+ * thread_from_every_base_face`): "tapping a message banner on the
+ * launcher home screen does not open the sender's thread." From the
+ * LAUNCHER (the boot default, and the maintainer's literal repro
+ * state), a genuine synthetic tap on the rendered banner strip must
+ * land on the sender's thread — the #157 `banner_on_launcher` fixture's
+ * live counterpart, driven by an actual finger-shaped tap rather than a
+ * fixture snapshot.
+ */
+static void S26_banner_tap_from_the_launcher_lands_on_the_thread(void)
+{
+    static ff_shell_t shell;
+    static fp_pack_t pack;
+    static ff_ctl_loop_ctx_t ctx;
+
+    ff_shell_cfg_t shell_cfg;
+    memset(&shell_cfg, 0, sizeof(shell_cfg));
+
+    ff_ctl_loop_cfg_t cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.mock_clock = true;
+
+    TEST_ASSERT_EQUAL_INT(0, ff_ctl_loop_open(&ctx, &shell, &pack, &shell_cfg, &cfg));
+
+    bool quit_flag = false;
+    ff_ctl_handlers_t h = ff_ctl_loop_handlers(&ctx, &quit_flag);
+
+    ctl_settle(&ctx, &h);
+    TEST_ASSERT_EQUAL(FF_APP_FACE_LAUNCHER, ctx.state.active_face); /* the boot default */
+
+    /* A paired sender named DANA, then a text from her — the same
+     * shape app/tests/test_shell.c's S26_AC3_paired_message_pushes_
+     * banner injects, reached here through the shell's own events seam
+     * (ff_shell_pair/ff_shell_events) rather than a ctl command, since
+     * the ctl protocol has no "inject a text" verb (only `flare` does,
+     * for AC10's own reasons — see this file's `ctl_loop_flare`). */
+    enum { DANA = 0x0000DA1Au };
+    TEST_ASSERT_TRUE(ff_shell_pair(&shell, DANA, true));
+    mc_events_t const ev = ff_shell_events(&shell);
+    mc_nodeinfo_t n;
+    memset(&n, 0, sizeof(n));
+    n.node_num = DANA;
+    n.has_short_name = true;
+    strncpy(n.short_name, "DANA", sizeof(n.short_name) - 1);
+    ev.on_node(ev.user, &n);
+    ev.on_text(ev.user, DANA, MC_ADDR_BROADCAST, "you close?", strlen("you close?"));
+    ctl_settle(&ctx, &h);
+    TEST_ASSERT_TRUE(ctx.state.banner.active);
+    TEST_ASSERT_EQUAL_UINT32(DANA, ctx.state.banner.node_id);
+
+    /* The real tap: find the rendered banner strip by its own sender-
+     * name label (scr_banner.c's `name` label is a direct child of the
+     * strip button it built) and tap its center — a genuine LVGL
+     * press-then-release CLICKED, not a shortcut around the seam under
+     * test. */
+    lv_obj_t *banner_strip = find_button_with_label(lv_screen_active(), "DANA");
+    TEST_ASSERT_NOT_NULL_MESSAGE(banner_strip, "banner strip not found on the launcher - did it render?");
+    ctl_tap_button(&ctx, &h, banner_strip);
+
+    TEST_ASSERT_EQUAL(FF_APP_FACE_INBOX, ctx.state.active_face);
+    TEST_ASSERT_EQUAL(FF_INBOX_SUB_THREAD, ctx.state.inbox.subview);
+    TEST_ASSERT_EQUAL_UINT32(DANA, ctx.state.inbox.thread_node);
+    TEST_ASSERT_FALSE(ctx.state.banner.active);
+
+    ff_ctl_loop_close(&ctx);
+    ff_shell_close(&shell);
+    lv_deinit();
+}
+
+/**
+ * The other half of the same maintainer report: "the FLARE takeover's
+ * GO does not land on Radar." From the LAUNCHER, a real tap on GO must
+ * land on Radar, locked on the sender. No `flare_takeover_on_launcher`
+ * golden exists in this repo (the takeover is a full-screen, face-
+ * independent overlay — `face_dispatch.c` dispatches it identically
+ * regardless of which base it covers, so a launcher-specific rendering
+ * golden would duplicate `flare_takeover.json`'s pixels for no
+ * additional coverage); what was actually missing, and what this test
+ * pins, is the ROUTE decision GO makes once dismissed — proven here via
+ * a real tap through the live ctl/LVGL stack, same as the banner test
+ * above.
+ */
+static void S26_flare_go_from_the_launcher_lands_on_radar(void)
+{
+    static ff_shell_t shell;
+    static fp_pack_t pack;
+    static ff_ctl_loop_ctx_t ctx;
+
+    ff_shell_cfg_t shell_cfg;
+    memset(&shell_cfg, 0, sizeof(shell_cfg));
+
+    ff_ctl_loop_cfg_t cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.mock_clock = true;
+
+    TEST_ASSERT_EQUAL_INT(0, ff_ctl_loop_open(&ctx, &shell, &pack, &shell_cfg, &cfg));
+
+    bool quit_flag = false;
+    ff_ctl_handlers_t h = ff_ctl_loop_handlers(&ctx, &quit_flag);
+
+    ctl_settle(&ctx, &h);
+    TEST_ASSERT_EQUAL(FF_APP_FACE_LAUNCHER, ctx.state.active_face); /* the boot default */
+
+    enum { FLARE_FROM = 0xDA1Au, FLARE_DUR_S = 300u };
+    char resp[FF_CTL_MAX_RESP];
+    char flare_cmd[128];
+    int fn = snprintf(flare_cmd, sizeof(flare_cmd), "{\"cmd\":\"flare\",\"from\":%u,\"dur_s\":%u}",
+                       (unsigned)FLARE_FROM, (unsigned)FLARE_DUR_S);
+    TEST_ASSERT_TRUE(fn > 0 && (size_t)fn < sizeof(flare_cmd));
+    ctl_send(&h, flare_cmd, resp, sizeof(resp));
+    ctl_settle(&ctx, &h);
+    TEST_ASSERT_TRUE(ff_shell_flare(&shell)->takeover_active);
+    /* AC13: the takeover overrides on top of the launcher without ever
+     * being written into active_face — face_dispatch.c's takeover
+     * branch runs before its active_face dispatch, so this was already
+     * true before this PR; pinned here as the "reverse direction" the
+     * brief calls out, alongside the GO fix this test exists for. */
+    TEST_ASSERT_EQUAL(FF_APP_FACE_LAUNCHER, ctx.state.active_face);
+
+    lv_obj_t *go_btn = find_button_with_label(lv_screen_active(), "GO");
+    TEST_ASSERT_NOT_NULL_MESSAGE(go_btn, "takeover GO button not found - did it render over the launcher?");
+    ctl_tap_button(&ctx, &h, go_btn);
+
+    TEST_ASSERT_FALSE(ff_shell_flare(&shell)->takeover_active);
+    TEST_ASSERT_EQUAL_UINT32(FLARE_FROM, ff_shell_flare(&shell)->locked_node_id);
+    TEST_ASSERT_EQUAL_MESSAGE(FF_APP_FACE_RADAR, ctx.state.active_face,
+                              "GO did not navigate to Radar - the bug this PR fixes");
+
+    ff_ctl_loop_close(&ctx);
+    ff_shell_close(&shell);
+    lv_deinit();
+}
+
 static void S16_AC10_draft_typed_flare_injected_takeover_clears_draft_survives(void)
 {
     static ff_shell_t shell;
@@ -684,6 +820,8 @@ int main(void)
 {
     UNITY_BEGIN();
 
+    RUN_TEST(S26_banner_tap_from_the_launcher_lands_on_the_thread);
+    RUN_TEST(S26_flare_go_from_the_launcher_lands_on_radar);
     RUN_TEST(S16_AC10_draft_typed_flare_injected_takeover_clears_draft_survives);
     RUN_TEST(flare_second_takeover_dismisses_via_real_tap);
     RUN_TEST(flare_takeover_mark_pulse_animates);
