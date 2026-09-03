@@ -2872,6 +2872,17 @@ static void shell_flare_wire(shell_t *sh, ff_flare_intent_t intent, uint16_t dur
              * or a later retry, whichever lands first) — push the OUT
              * feed item exactly once. */
             ff_wiring_push_outgoing(&sh->wiring, FEED_FLARE, MC_ADDR_BROADCAST, NULL);
+            /* S27 sounds, moved here from the two ff_flare_send_begin call
+             * sites (2026-09-03 review round 2): FLARE_SENT must mark the
+             * frame actually reaching the wire, not the user's send
+             * INTENT — a chime saying "sent" over a "NO MESH" overlay is
+             * exactly the same class of dishonesty this whole PR exists
+             * to fix. Fires once, at the WAITING->SENT transition, on
+             * whichever attempt lands first (the initial one, or a later
+             * retry once the link returns) — the same "first confirmation
+             * only" guard the OUT feed item above uses, so the two can
+             * never disagree about when the send actually happened. */
+            shell_sound(sh, FF_SOUND_FLARE_SENT);
         }
     }
     /* FF_FLARE_INTENT_SEND_FLARE_END: fire-and-forget — no feed item (the
@@ -3385,21 +3396,15 @@ void ff_shell_intent(ff_shell_t *sh_pub, ff_intent_t const *in)
             ff_flare_result_t const r = ff_flare_send_begin(&sh->flare, 0, now_ms);
             shell_flare_wire(sh, r.intent, r.dur_s, now_ms);
         }
-        /* S27 sounds — "flare start (any trigger -> FLARE_SENT)": the
-         * Radar CLOSE-mode FLARE button's own trigger. The other trigger,
-         * the 5x-HOME quick-flare multitap gesture (FF_INTENT_QUICK_FLARE,
-         * below), has its own separate ff_flare_send_begin call site and
-         * its own matching shell_sound call — see that case's comment.
-         * ff_flare_send_begin is unconditional (ff_flare.h: "is
-         * unconditional" w.r.t. receive), so this always fires when
-         * reachable — no separate success check needed. This is
-         * deliberately independent of the S10 Amendment (2026-09-03,
-         * "Wire honesty") above: the chime marks the user's SEND INTENT
-         * (matches this case's own doc comment, "any trigger"), not
-         * whether the frame actually reached the mesh yet — an honest
-         * WAITING/SENT distinction belongs on the visual overlay
-         * (scr_flare.c), not as a second, silent chime gate here. */
-        shell_sound(sh, FF_SOUND_FLARE_SENT);
+        /* S27 sounds — "flare start (any trigger -> FLARE_SENT)": REVIEW
+         * ROUND 2 (2026-09-03) moved the actual `shell_sound` call into
+         * `shell_flare_wire` itself, fired only on the WAITING->SENT
+         * transition — see that function's own doc comment. This call
+         * site (the Radar CLOSE-mode FLARE button) and QUICK_FLARE below
+         * are simply the two triggers that reach `shell_flare_wire`; the
+         * chime no longer fires here directly, so a link-down send does
+         * NOT chime "sent" over a "NO MESH" overlay — it chimes once,
+         * later, exactly when a retry finally lands. */
         return;
 
     case FF_INTENT_FLARE_END:
@@ -4168,15 +4173,10 @@ void ff_shell_intent(ff_shell_t *sh_pub, ff_intent_t const *in)
             ff_flare_result_t const r = ff_flare_send_begin(&sh->flare, 0, now_ms);
             shell_flare_wire(sh, r.intent, r.dur_s, now_ms);
         }
-        /* S27 sounds — "flare start (any trigger -> FLARE_SENT)": this
-         * is the SECOND of the two triggers that reach ff_flare_send_begin
-         * (FF_INTENT_FLARE_START above is the first) — the quick-flare
-         * gesture gets the identical confirmation sound the on-screen
-         * button does. See that call site's own comment for the full
-         * "any trigger" reasoning, including why this is independent of
-         * the S10 Amendment (2026-09-03, "Wire honesty") wiring just
-         * above. */
-        shell_sound(sh, FF_SOUND_FLARE_SENT);
+        /* S27 sounds — see FF_INTENT_FLARE_START's own comment above:
+         * this is the SECOND of the two triggers that reach
+         * shell_flare_wire, which now owns the FLARE_SENT chime (fired on
+         * the WAITING->SENT transition, review round 2, 2026-09-03). */
         return;
     }
     /* No default: -Wswitch under -Werror flags any new ff_intent_kind_t

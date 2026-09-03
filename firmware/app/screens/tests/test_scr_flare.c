@@ -511,10 +511,15 @@ static void S10_wire_sender_overlay_sent_shows_flaring_copy(void)
     ff_scr_flare_build_sender_overlay(lv_screen_active(), &disp);
     lv_obj_update_layout(lv_screen_active());
 
-    TEST_ASSERT_NOT_NULL_MESSAGE(find_label_with_prefix(lv_screen_active(), "you are flaring"),
-                                  "SENT must keep the original 'you are flaring' copy");
+    lv_obj_t *status = find_label_with_prefix(lv_screen_active(), "you are flaring");
+    TEST_ASSERT_NOT_NULL_MESSAGE(status, "SENT must keep the original 'you are flaring' copy");
     TEST_ASSERT_NULL_MESSAGE(find_label_with_prefix(lv_screen_active(), "NO MESH"),
                               "SENT must not show the NO MESH retry copy");
+    /* Review round 2 (2026-09-03): the COLOUR, not just the text — SENT
+     * keeps the ordinary amber, never the WAITING alert shade. */
+    TEST_ASSERT_TRUE_MESSAGE(
+        lv_color_eq(lv_obj_get_style_text_color(status, LV_PART_MAIN), lv_color_hex(FF_THEME_COLOR_AMBER)),
+        "SENT must render the status line in the ordinary amber, not the WAITING alert shade");
 }
 
 static void S10_wire_sender_overlay_waiting_shows_no_mesh_copy(void)
@@ -528,8 +533,15 @@ static void S10_wire_sender_overlay_waiting_shows_no_mesh_copy(void)
     ff_scr_flare_build_sender_overlay(lv_screen_active(), &disp);
     lv_obj_update_layout(lv_screen_active());
 
-    TEST_ASSERT_NOT_NULL_MESSAGE(find_label_with_prefix(lv_screen_active(), "NO MESH"),
-                                  "WAITING must show the honest NO MESH retry copy");
+    lv_obj_t *status = find_label_with_prefix(lv_screen_active(), "NO MESH");
+    TEST_ASSERT_NOT_NULL_MESSAGE(status, "WAITING must show the honest NO MESH retry copy");
+    /* Review round 2 (2026-09-03): the COLOUR, not just the text — WAITING
+     * must NOT render in the ordinary "confident" amber the SENT copy
+     * uses; it gets the same alert shade the Radar face's STALE
+     * treatment already uses. */
+    TEST_ASSERT_TRUE_MESSAGE(
+        lv_color_eq(lv_obj_get_style_text_color(status, LV_PART_MAIN), lv_color_hex(FF_THEME_COLOR_STALE_AMBER)),
+        "WAITING must render the status line in the alert (stale) amber, not the ordinary SENT amber");
     TEST_ASSERT_NULL_MESSAGE(
         find_label_with_prefix(lv_screen_active(), "you are flaring"),
         "WAITING must not claim 'you are flaring' while nothing has actually reached the mesh");

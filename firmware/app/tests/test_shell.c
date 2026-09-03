@@ -6535,11 +6535,142 @@ static void S10_wire_auto_end_after_sent_sends_one_flare_end_frame(void)
 }
 
 /* ---------------------------------------------------------------------
+ * Review round 2 (2026-09-03) — should-fixes on the wire-honesty PR
+ * before merge.
+ * ------------------------------------------------------------------- */
+
+/* (1a) Link down the whole time: FLARE_SENT must never fire — the chime
+ * now marks the WAITING->SENT wire CONFIRMATION (shell_flare_wire), not
+ * the bare send intent, so a send that stays refused must stay silent
+ * even though `sending` is genuinely true and the overlay is up. */
+static void S10_wire_flare_sent_chime_does_not_fire_while_waiting(void)
+{
+    harness_init(100000u, false);
+    flare_wire_spy_install(false);
+
+    ff_intent_t const start = {.kind = FF_INTENT_FLARE_START, .u = {0}};
+    ff_shell_intent(&H.shell, &start);
+    TEST_ASSERT_TRUE(ff_shell_flare(&H.shell)->sending);
+    TEST_ASSERT_EQUAL(FF_FLARE_WIRE_WAITING, ff_shell_flare(&H.shell)->wire_state);
+    TEST_ASSERT_EQUAL_INT_MESSAGE(0, sound_count(FF_SOUND_FLARE_SENT),
+                                  "a refused (never-confirmed) send must never chime FLARE_SENT");
+
+    /* Several retry attempts, all still refused: still silent. */
+    for (int i = 0; i < 3; i++) {
+        advance(FF_FLARE_RESEND_MS);
+        ff_shell_tick(&H.shell, H.clk.t);
+    }
+    TEST_ASSERT_EQUAL(FF_FLARE_WIRE_WAITING, ff_shell_flare(&H.shell)->wire_state);
+    TEST_ASSERT_EQUAL_INT(0, sound_count(FF_SOUND_FLARE_SENT));
+}
+
+/* (1b) Link returns partway through: exactly ONE chime, fired at the
+ * retry that actually succeeds — not at the original (refused) send
+ * intent, and not more than once for the retries that follow once SENT. */
+static void S10_wire_flare_sent_chime_fires_once_when_retry_succeeds(void)
+{
+    harness_init(100000u, false);
+    flare_wire_spy_install(false);
+
+    ff_intent_t const start = {.kind = FF_INTENT_FLARE_START, .u = {0}};
+    ff_shell_intent(&H.shell, &start); /* refused: no chime */
+    TEST_ASSERT_EQUAL_INT(0, sound_count(FF_SOUND_FLARE_SENT));
+
+    advance(7000u); /* link returns */
+    S.accept = true;
+    ff_shell_tick(&H.shell, H.clk.t); /* the retry due at +5000ms fires and succeeds */
+
+    TEST_ASSERT_EQUAL(FF_FLARE_WIRE_SENT, ff_shell_flare(&H.shell)->wire_state);
+    TEST_ASSERT_EQUAL_INT_MESSAGE(1, sound_count(FF_SOUND_FLARE_SENT),
+                                  "the chime must fire exactly once, at the retry that actually confirmed");
+    TEST_ASSERT_EQUAL_INT(1, H.sound.count);
+
+    /* Further ticks (still SENT, no more retries) must not chime again. */
+    for (int i = 0; i < 5; i++) {
+        advance(5000u);
+        ff_shell_tick(&H.shell, H.clk.t);
+    }
+    TEST_ASSERT_EQUAL_INT(1, sound_count(FF_SOUND_FLARE_SENT));
+}
+
+/* (2) Pin: once SENT, the shell must never resend across many further
+ * ticks — a "resend every tick" (or "forgot the wire_state==SENT gate on
+ * retry") mutation would still pass every OTHER S10_wire_* test (they
+ * only check the frame count shortly after the transition) but is caught
+ * here by ticking well past several retry intervals and asserting the
+ * frame count never grows past 1. */
+static void S10_wire_no_resend_across_many_ticks_while_sent(void)
+{
+    harness_init(100000u, false);
+    flare_wire_spy_install(true);
+
+    ff_intent_t const start = {.kind = FF_INTENT_FLARE_START, .u = {0}};
+    ff_shell_intent(&H.shell, &start);
+    TEST_ASSERT_EQUAL_INT(1, S.n_sends);
+    TEST_ASSERT_EQUAL(FF_FLARE_WIRE_SENT, ff_shell_flare(&H.shell)->wire_state);
+
+    /* 20 ticks, each FF_FLARE_RESEND_MS apart (100s total, well inside
+     * the 300s send window) — every one of them is a moment a live "keep
+     * retrying" bug would fire again. */
+    for (int i = 0; i < 20; i++) {
+        advance(FF_FLARE_RESEND_MS);
+        ff_shell_tick(&H.shell, H.clk.t);
+    }
+
+    TEST_ASSERT_EQUAL_INT_MESSAGE(1, S.n_sends,
+                                  "SENT must never resend — a retry loop with no SENT gate would fire repeatedly here");
+    TEST_ASSERT_TRUE_MESSAGE(ff_shell_flare(&H.shell)->sending, "still well within the 300s send window");
+}
+
+/* (3) The launcher render-key mask must dirty on a WAITING->SENT
+ * transition while the launcher is the base face — mirrors the mask's
+ * pre-existing fourth exception (`sending`/`send_expires_in_ms`);
+ * `wire_state` needed the identical treatment (fifth exception, this PR)
+ * since the overlay now ALSO renders off that field. Isolated from every
+ * OTHER field a real link-return also touches: the natural retry path
+ * always sits FF_FLARE_RESEND_MS (5000ms) later, which by itself moves
+ * the send_expires_in_ms bucket and would dirty the key regardless of
+ * whether wire_state is masked correctly — exactly the proxy that would
+ * let the mask-restore mutation escape. A SECOND FLARE_START intent at
+ * the SAME clock reading instead restarts the send
+ * (ff_flare_send_begin's own "start or restart" contract) with an
+ * IDENTICAL send_expiry_ms (same now_ms, same default dur_s — asserted
+ * below), so wire_state is the ONLY field that changes between the two
+ * compared ticks. */
+static void S10_wire_launcher_mask_waiting_to_sent_dirties_key(void)
+{
+    harness_init(100000u, false);
+    (void)ff_shell_tick(&H.shell, H.clk.t); /* settle the always-dirty first tick */
+    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_LAUNCHER, ff_shell_view(&H.shell)->active_face);
+
+    flare_wire_spy_install(false); /* link down: the first attempt is refused */
+    ff_intent_t const start = {.kind = FF_INTENT_FLARE_START, .u = {0}};
+    ff_shell_intent(&H.shell, &start);
+    TEST_ASSERT_TRUE_MESSAGE(ff_shell_tick(&H.shell, H.clk.t),
+                              "starting a (refused) send did not dirty the launcher key");
+    TEST_ASSERT_EQUAL(FF_FLARE_WIRE_WAITING, ff_shell_flare(&H.shell)->wire_state);
+    uint32_t const expiry_before = ff_shell_flare(&H.shell)->send_expiry_ms;
+
+    S.accept = true; /* link "returns" */
+    ff_shell_intent(&H.shell, &start); /* same H.clk.t: restarts the send, not a tick-driven retry */
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(expiry_before, ff_shell_flare(&H.shell)->send_expiry_ms,
+                                      "test setup invalid: send_expiry_ms moved — no longer isolating wire_state");
+    TEST_ASSERT_EQUAL(FF_FLARE_WIRE_SENT, ff_shell_flare(&H.shell)->wire_state);
+
+    TEST_ASSERT_TRUE_MESSAGE(ff_shell_tick(&H.shell, H.clk.t),
+                              "the WAITING->SENT transition did not dirty the launcher key — with every other "
+                              "field held constant, this can only mean the mask failed to restore wire_state");
+    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_LAUNCHER, ff_shell_view(&H.shell)->active_face);
+}
+
+/* ---------------------------------------------------------------------
  * S27 sounds — see docs/specs/S27-sounds.md. Concurrent PR #184, merged
- * into this branch alongside the S10 wire-honesty work above; the two
- * are independent (a chime marking send INTENT vs. an overlay/wire fact
- * marking send CONFIRMATION — see the "any trigger" comment at each
- * ff_flare_send_begin call site in ff_shell.c).
+ * into this branch alongside the S10 wire-honesty work above. Review
+ * round 2 (2026-09-03) moved the FLARE_SENT chime from the bare send
+ * INTENT into `shell_flare_wire`'s WAITING->SENT CONFIRMATION (see that
+ * function's own doc comment) — so several tests below now install an
+ * accepting sender (`flare_wire_spy_install(true)`) to actually reach
+ * SENT; each says so where it matters.
  * ------------------------------------------------------------------- */
 
 static void send_setting(ff_setting_id_t id, int32_t i)
@@ -6568,6 +6699,12 @@ static void S27_flare_start_fires_flare_sent_exactly_once(void)
 {
     harness_init(100000u, false);
     inject_my_info(MY_ID);
+    /* S10 Amendment (2026-09-03, "Wire honesty", review round 2): FLARE_SENT
+     * now fires on the WAITING->SENT wire transition, not on the bare send
+     * intent (shell_flare_wire, ff_shell.c) — so this test needs a sender
+     * that actually ACCEPTS the send (harness_init's default no-transport
+     * sender always refuses) for the chime to ever fire at all. */
+    flare_wire_spy_install(true);
 
     TEST_ASSERT_EQUAL_INT(0, H.sound.count);
     send_flare_start();
@@ -6599,6 +6736,7 @@ static void S27_flare_start_during_a_takeover_fires_nothing(void)
 static void S27_quick_flare_gesture_fires_flare_sent_exactly_once(void)
 {
     harness_init(100000u, false);
+    flare_wire_spy_install(true); /* see S27_flare_start_fires_flare_sent_exactly_once's own comment */
 
     TEST_ASSERT_EQUAL_INT(0, H.sound.count);
     press_home_at(100000u);
@@ -6702,6 +6840,11 @@ static void S27_sounds_off_silences_every_call_site(void)
     harness_init(100000u, false);
     inject_my_info(MY_ID);
     TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, true));
+    /* An ACCEPTING sender: FLARE_SENT now gates on the WAITING->SENT wire
+     * transition (shell_flare_wire), so this test must reach SENT for
+     * "sounds off silences it" to be a genuine measurement rather than a
+     * pass-by-construction on a send that never confirmed anyway. */
+    flare_wire_spy_install(true);
 
     send_setting(FF_SETTING_SOUNDS_ON, 0);
     TEST_ASSERT_FALSE(ff_shell_settings(&H.shell)->sounds_on);
@@ -6722,6 +6865,7 @@ static void S27_sounds_on_positive_control_for_the_off_test(void)
     inject_my_info(MY_ID);
     TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, true));
     TEST_ASSERT_TRUE(ff_shell_settings(&H.shell)->sounds_on); /* the default */
+    flare_wire_spy_install(true); /* FLARE_SENT needs a confirmed wire send now — see the sibling test's comment */
 
     send_flare_start();
     inject_flare(DANA, 300);
@@ -6751,6 +6895,7 @@ static void S27_quiet_hours_only_the_two_flare_events_play(void)
     ff_wall_t const w = ff_shell_wall(&H.shell);
     TEST_ASSERT_EQUAL_INT(FF_WALL_MESH, w.src);
     TEST_ASSERT_TRUE(ff_quiet_now(ff_shell_settings(&H.shell), w.now_min));
+    flare_wire_spy_install(true); /* FLARE_SENT needs a confirmed wire send now — see the sibling test's comment */
 
     send_flare_start();
     TEST_ASSERT_EQUAL_INT(1, sound_count(FF_SOUND_FLARE_SENT));
@@ -7099,6 +7244,10 @@ int main(void)
     RUN_TEST(S10_wire_cancel_after_sent_sends_one_flare_end_frame);
     RUN_TEST(S10_wire_cancel_while_waiting_sends_no_frame);
     RUN_TEST(S10_wire_auto_end_after_sent_sends_one_flare_end_frame);
+    RUN_TEST(S10_wire_flare_sent_chime_does_not_fire_while_waiting);
+    RUN_TEST(S10_wire_flare_sent_chime_fires_once_when_retry_succeeds);
+    RUN_TEST(S10_wire_no_resend_across_many_ticks_while_sent);
+    RUN_TEST(S10_wire_launcher_mask_waiting_to_sent_dirties_key);
 
     /* S26 slice d — ff_notify + message banner. */
     RUN_TEST(S26_AC3_paired_message_pushes_banner);
