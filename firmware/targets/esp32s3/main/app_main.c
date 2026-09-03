@@ -980,9 +980,22 @@ void app_main(void)
      * FLARE_SENT once, right after the first face is on glass, so the
      * maintainer can hear the speaker work without triggering a real
      * flare (which would take over the whole UI). Compiles out entirely
-     * of a normal build. */
-    ESP_LOGI(TAG, "CONFIG_FF_AUDIO_SELFTEST: playing FLARE_SENT once");
+     * of a normal build.
+     *
+     * Log AFTER the hand-off, not before: ff_audio_play is fire-and-
+     * forget (non-blocking, returns void — see ff_audio.h), so logging
+     * "playing" beforehand would claim success even when ff_audio_init
+     * never came up (a no-op, logged separately by ff_audio_play itself)
+     * — checking ff_audio_busy() right after the call confirms the
+     * request actually landed (the render task has unfinished work)
+     * before this log claims it did. */
     ff_audio_play(FF_SOUND_FLARE_SENT);
+    if (ff_audio_busy()) {
+        ESP_LOGI(TAG, "CONFIG_FF_AUDIO_SELFTEST: FLARE_SENT handed off to the render task");
+    } else {
+        ESP_LOGW(TAG, "CONFIG_FF_AUDIO_SELFTEST: FLARE_SENT play request did not take "
+                       "(ff_audio_init likely failed — see its own log above)");
+    }
 #endif
 
     /* Apply the persisted display brightness on boot (#100). The setting

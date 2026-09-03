@@ -64,6 +64,7 @@
  */
 #include "ff_audio.h"
 
+#include <assert.h>
 #include <math.h>
 #include <stdint.h>
 
@@ -73,6 +74,7 @@
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
+#include "freertos/semphr.h"
 #include "freertos/task.h"
 
 static const char *TAG = "ff_audio";
@@ -112,9 +114,25 @@ static const char *TAG = "ff_audio";
  * State. `s_tx_chan` is touched by the main/app_main task only during
  * `ff_audio_init` (before the render task exists) and by the render task
  * only afterward — no lock needed for it. `s_busy` / `s_stop_requested` /
- * `s_playing_ev` are shared between whichever task calls `ff_audio_play`/
- * `ff_audio_stop`/`ff_audio_busy` (today, always app_main's main loop)
- * and the render task, so every access goes through `s_lock`.
+ * `s_playing_ev` (and the mailbox write itself, `xQueueOverwrite` in
+ * `ff_audio_play`/`ff_audio_stop`) are shared across THREE tasks in
+ * practice, not one: `ff_shell_cfg_t.play_sound` is called synchronously
+ * from whichever task happens to be running the shell code that decided
+ * a sound should play — esp_lvgl_port's own task for anything reached
+ * through a button click (`ff_scr_button_create` -> `ff_sound_emit` ->
+ * `ff_shell_sound_sink` for TAP, and FLARE_SENT when triggered by a tap
+ * via `ff_shell_intent`), and app_main's main-loop task for anything
+ * reached through `ff_shell_tick` (BATT_LOW, MESSAGE, RALLY,
+ * FLARE_INCOMING) — plus the render task itself. `s_lock` is a real
+ * FreeRTOS mutex (not a spinlock) precisely because of this: the decide
+ * step AND the `xQueueOverwrite` that commits it must be one atomic
+ * unit, or two callers on different tasks can interleave their decide
+ * and enqueue steps and land a stale/wrong event in the 1-deep mailbox
+ * (see `ff_audio_play`'s own doc comment for the failure this fixes).
+ * Every access to this state — including the mailbox write — goes
+ * through `ff_audio_lock`/`ff_audio_unlock` below. Task-context only:
+ * nothing in this HAL is ever called from an ISR, so a blocking mutex
+ * (not a spinlock) is safe to hold across a queue call.
  * ------------------------------------------------------------------- */
 static i2s_chan_handle_t s_tx_chan = NULL;
 static QueueHandle_t     s_mailbox = NULL; /* 1-deep: at most one pending "please play this" request */
@@ -123,7 +141,7 @@ static bool               s_initialized = false;
 static bool               s_noop_logged = false;            /* ff_audio_play called pre-/post-failed-init, logged once */
 static bool               s_reenable_failure_logged = false; /* see this file's top comment, "Light sleep" */
 
-static portMUX_TYPE       s_lock = portMUX_INITIALIZER_UNLOCKED;
+static SemaphoreHandle_t  s_lock = NULL; /* mutex, created in ff_audio_init; NULL (unused) until then */
 static volatile bool      s_busy = false;
 static volatile bool      s_stop_requested = false;
 static ff_sound_event_t   s_playing_ev = FF_SOUND_COUNT; /* meaningful only while s_busy */
@@ -133,6 +151,27 @@ static ff_sound_event_t   s_playing_ev = FF_SOUND_COUNT; /* meaningful only whil
  * task ever touches it, so this avoids putting ~1.7KB on that task's own
  * stack for no reason. */
 static int16_t s_chunk_buf[FF_AUDIO_CHUNK_FRAMES * 2];
+
+/* ff_audio_lock/ff_audio_unlock — the ONE way anything in this file
+ * touches `s_busy`/`s_stop_requested`/`s_playing_ev`/the mailbox. A real
+ * mutex, not a spinlock (see the state block's own doc comment above for
+ * why): `ff_audio_play` and `ff_audio_stop` hold it across BOTH the
+ * decide step and the `xQueueOverwrite`/`xQueueReset` that commits it, so
+ * two callers on different tasks can never interleave a decide with
+ * another caller's enqueue. Task-context only — asserted, since taking a
+ * blocking mutex from an ISR is a bug, not a degraded case, and this HAL
+ * is never meant to be touched from one. */
+static void ff_audio_lock(void)
+{
+    assert(xPortInIsrContext() == 0);
+    (void)xSemaphoreTake(s_lock, portMAX_DELAY);
+}
+
+static void ff_audio_unlock(void)
+{
+    (void)xSemaphoreGive(s_lock);
+}
+
 
 /* ---------------------------------------------------------------------
  * ff_audio_alloc_and_init_channel — allocate a fresh I2S0 TX channel and
@@ -211,9 +250,9 @@ static esp_err_t ff_audio_channel_enable_with_recovery(void)
 static bool ff_audio_should_stop(void)
 {
     bool r;
-    portENTER_CRITICAL(&s_lock);
+    ff_audio_lock();
     r = s_stop_requested;
-    portEXIT_CRITICAL(&s_lock);
+    ff_audio_unlock();
     return r;
 }
 
@@ -310,18 +349,18 @@ static void ff_audio_task_fn(void *arg)
         if (pattern == NULL) {
             /* ff_audio_play already filters this; stay defensive rather
              * than trust the caller unconditionally. */
-            portENTER_CRITICAL(&s_lock);
+            ff_audio_lock();
             s_busy = (uxQueueMessagesWaiting(s_mailbox) > 0u);
             if (!s_busy) {
                 s_playing_ev = FF_SOUND_COUNT;
             }
-            portEXIT_CRITICAL(&s_lock);
+            ff_audio_unlock();
             continue;
         }
 
-        portENTER_CRITICAL(&s_lock);
+        ff_audio_lock();
         s_stop_requested = false; /* a genuinely new play clears any earlier stop request */
-        portEXIT_CRITICAL(&s_lock);
+        ff_audio_unlock();
 
         esp_err_t const enable_err = ff_audio_channel_enable_with_recovery();
         if (enable_err == ESP_OK) {
@@ -340,13 +379,13 @@ static void ff_audio_task_fn(void *arg)
             ESP_LOGE(TAG, "channel enable failed for event %d — pattern dropped", (int)ev);
         }
 
-        portENTER_CRITICAL(&s_lock);
+        ff_audio_lock();
         bool const more_pending = uxQueueMessagesWaiting(s_mailbox) > 0u;
         if (!more_pending) {
             s_busy = false;
             s_playing_ev = FF_SOUND_COUNT;
         }
-        portEXIT_CRITICAL(&s_lock);
+        ff_audio_unlock();
     }
 }
 
@@ -361,9 +400,22 @@ esp_err_t ff_audio_init(void)
         return err; /* already logged; caller (app_main) treats this as non-fatal */
     }
 
+    /* A real mutex, not a spinlock — see the state block's doc comment
+     * above for why (it must be held across a blocking-capable queue
+     * call, which a spinlock/critical-section must never do). */
+    s_lock = xSemaphoreCreateMutex();
+    if (s_lock == NULL) {
+        ESP_LOGE(TAG, "state mutex allocation failed");
+        (void)i2s_del_channel(s_tx_chan);
+        s_tx_chan = NULL;
+        return ESP_ERR_NO_MEM;
+    }
+
     s_mailbox = xQueueCreate(1, sizeof(ff_sound_event_t));
     if (s_mailbox == NULL) {
         ESP_LOGE(TAG, "mailbox queue allocation failed");
+        vSemaphoreDelete(s_lock);
+        s_lock = NULL;
         (void)i2s_del_channel(s_tx_chan);
         s_tx_chan = NULL;
         return ESP_ERR_NO_MEM;
@@ -375,6 +427,8 @@ esp_err_t ff_audio_init(void)
         ESP_LOGE(TAG, "render task creation failed");
         vQueueDelete(s_mailbox);
         s_mailbox = NULL;
+        vSemaphoreDelete(s_lock);
+        s_lock = NULL;
         (void)i2s_del_channel(s_tx_chan);
         s_tx_chan = NULL;
         return ESP_ERR_NO_MEM;
@@ -398,8 +452,26 @@ void ff_audio_play(ff_sound_event_t ev)
         return; /* out of vocabulary — reject, not guess (ff_audio.h) */
     }
 
+    /* The decide step AND the xQueueOverwrite that commits it are held
+     * as ONE atomic unit under s_lock — see the state block's doc
+     * comment above. This function is called synchronously from TWO
+     * different tasks in practice (the LVGL port task for button-driven
+     * events, app_main's main loop for shell-tick-driven ones): without
+     * holding the lock across both steps, two callers could each decide
+     * "start" against a consistent view of s_busy/s_playing_ev but then
+     * have their xQueueOverwrite calls land in the OPPOSITE order from
+     * their decisions (e.g. a BATT_LOW decide-then-enqueue interleaved
+     * around a higher-priority FLARE_SENT's decide-then-enqueue), which
+     * would silently overwrite the higher-priority event in the 1-deep
+     * mailbox with the lower-priority one while s_playing_ev still
+     * (wrongly) claims the higher-priority event is what's queued —
+     * corrupting both the actual sound played and every future
+     * preemption/light-sleep-inhibit decision until the next event
+     * lands. xQueueOverwrite never blocks (the one FreeRTOS queue op
+     * guaranteed immediate on a length-1 queue), so holding a task-level
+     * mutex across it is cheap and introduces no new blocking risk. */
+    ff_audio_lock();
     bool start = false;
-    portENTER_CRITICAL(&s_lock);
     if (!s_busy) {
         s_busy = true;
         s_playing_ev = ev;
@@ -412,11 +484,10 @@ void ff_audio_play(ff_sound_event_t ev)
     /* else: not preempting a currently-playing (higher-or-equal-tier)
      * pattern — silently dropped, see ff_audio.h's "Preemption,
      * concurrency, and the one-speaker rule". */
-    portEXIT_CRITICAL(&s_lock);
-
     if (start) {
         (void)xQueueOverwrite(s_mailbox, &ev);
     }
+    ff_audio_unlock();
 }
 
 void ff_audio_stop(void)
@@ -424,19 +495,25 @@ void ff_audio_stop(void)
     if (!s_initialized) {
         return;
     }
-    portENTER_CRITICAL(&s_lock);
+    /* Same "decide + mailbox mutation as one atomic unit" reasoning as
+     * ff_audio_play above — xQueueReset here must not interleave with a
+     * concurrent ff_audio_play's xQueueOverwrite on another task, or a
+     * stop could race a fresh play and leave the mailbox holding
+     * whichever one happened to land last rather than a deterministic
+     * outcome. */
+    ff_audio_lock();
     s_stop_requested = true;
-    portEXIT_CRITICAL(&s_lock);
     if (s_mailbox != NULL) {
         (void)xQueueReset(s_mailbox); /* drop anything queued to start next too — a full stop is a full stop */
     }
+    ff_audio_unlock();
 }
 
 bool ff_audio_busy(void)
 {
     bool r;
-    portENTER_CRITICAL(&s_lock);
+    ff_audio_lock();
     r = s_busy;
-    portEXIT_CRITICAL(&s_lock);
+    ff_audio_unlock();
     return r;
 }
