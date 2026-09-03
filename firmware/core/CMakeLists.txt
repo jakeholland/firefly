@@ -1,10 +1,19 @@
 # firefly-core — pure C11 domain logic. No I/O, no LVGL, no ESP-IDF.
+#
+# The source list lives in sources.cmake (FF_CORE_SOURCES), shared
+# verbatim with the esp32s3 IDF component
+# (firmware/targets/esp32s3/components/ff_core/CMakeLists.txt) — see
+# that file's comment and sources.cmake's own header for why.
+include(${CMAKE_CURRENT_SOURCE_DIR}/sources.cmake)
 
-add_library(ff-core STATIC
-    src/ff_version.c
-    src/ff_settings.c # S11
-    src/ff_touchcal.c # S15d
-)
+add_library(ff-core STATIC ${FF_CORE_SOURCES})
+
+# Sim-only completeness guard (see ff_check_sources_complete()'s comment
+# in the top-level firmware/CMakeLists.txt) — every core/src/*.c must be
+# named in FF_CORE_SOURCES or this fails configure naming the missing
+# file.
+ff_check_sources_complete(${CMAKE_CURRENT_SOURCE_DIR}/src ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}/sources.cmake FF_CORE_SOURCES)
 
 target_include_directories(ff-core PUBLIC include)
 target_compile_features(ff-core PUBLIC c_std_11)
@@ -63,8 +72,6 @@ if(FF_BUILD_TESTS)
 endif()
 
 # S01 (core/geo — bearing, distance, heading fusion; docs/specs/S01-core-geo.md)
-target_sources(ff-core PRIVATE src/ff_geo.c)
-
 if(FF_BUILD_TESTS)
     add_executable(test_geo
         tests/test_geo.c
@@ -77,8 +84,6 @@ endif()
 
 # S04 (firefly protocol — app-layer flare/rally/status packets;
 # docs/specs/S04-firefly-protocol.md)
-target_sources(ff-core PRIVATE src/ff_proto.c)
-
 if(FF_BUILD_TESTS)
     add_executable(test_proto
         tests/test_proto.c
@@ -93,8 +98,6 @@ if(FF_BUILD_TESTS)
 endif()
 
 # S02 (core/crew — crew model & freshness; docs/specs/S02-core-crew.md)
-target_sources(ff-core PRIVATE src/ff_crew.c)
-
 if(FF_BUILD_TESTS)
     add_executable(test_crew
         tests/test_crew.c
@@ -106,8 +109,6 @@ if(FF_BUILD_TESTS)
 endif()
 
 # S06 (core/radar — radar-face view compute; docs/specs/S06-radar-face.md)
-target_sources(ff-core PRIVATE src/ff_radar.c)
-
 if(FF_BUILD_TESTS)
     add_executable(test_radar
         tests/test_radar.c
@@ -120,8 +121,6 @@ endif()
 
 # S08a (core/t9 — multi-tap T9 text-entry engine; docs/specs/S08-signals-t9.md,
 # slice a. UI + feed wiring are separate slices, not part of this build unit.)
-target_sources(ff-core PRIVATE src/ff_t9.c)
-
 if(FF_BUILD_TESTS)
     add_executable(test_t9
         tests/test_t9.c
@@ -140,11 +139,6 @@ endif()
 # (frequency ranking of public-domain Project Gutenberg text — see
 # core/tools/NOTICE-t9dict.md). Regenerate with:
 #   (cd core/tools && python3 gen_t9dict.py emit)
-target_sources(ff-core PRIVATE
-    src/ff_t9pred.c
-    src/ff_t9dict_data.c
-)
-
 if(FF_BUILD_TESTS)
     add_executable(test_t9pred
         tests/test_t9pred.c
@@ -158,8 +152,6 @@ endif()
 # S10a (flare state machine — IDLE/SENDING/RECEIVED/LOCKED;
 # docs/specs/S10-flare.md, slice a. Slice b — takeover + sender UI +
 # goldens — needs the S06 app shell and is not part of this slice.)
-target_sources(ff-core PRIVATE src/ff_flare.c)
-
 if(FF_BUILD_TESTS)
     add_executable(test_flare
         tests/test_flare.c
@@ -191,8 +183,6 @@ endif()
 # S08b (core/feed — Signals-face event ring buffer; docs/specs/S08-signals-t9.md,
 # slice b. Wiring — mc events -> feed pushes, crew-paired-sender filter —
 # lives in app/ff_wiring.c, not here: core stays free of meshclient.)
-target_sources(ff-core PRIVATE src/ff_feed.c)
-
 if(FF_BUILD_TESTS)
     add_executable(test_feed
         tests/test_feed.c
@@ -206,8 +196,6 @@ endif()
 # S08b follow-up (PR #25 code review, MEDIUM finding — roster exhaustion
 # from untrusted RF) — core/heard: bounded LRU-evictable heard-node list,
 # separate from ff_crew's protected paired roster. See ff_heard.h.
-target_sources(ff-core PRIVATE src/ff_heard.c)
-
 if(FF_BUILD_TESTS)
     add_executable(test_heard
         tests/test_heard.c
@@ -223,8 +211,6 @@ endif()
 # the row-list/target machinery to ff_inbox.c and the shell. What remains
 # is the honest presence classifier (ff_sigview_presence, reused by
 # ff_inbox.c) and the ff_target_kind_t vocabulary — see ff_sigview.h.
-target_sources(ff-core PRIVATE src/ff_sigview.c)
-
 if(FF_BUILD_TESTS)
     add_executable(test_sigview
         tests/test_sigview.c
@@ -240,8 +226,6 @@ endif()
 # thread extraction with direction preserved, per-thread mark-read;
 # docs/specs/S24-signals-inbox.md, slice a. Pure C11, no UI — the S24
 # inbox/thread screens, slices b/c, only render this.)
-target_sources(ff-core PRIVATE src/ff_inbox.c)
-
 if(FF_BUILD_TESTS)
     add_executable(test_inbox
         tests/test_inbox.c
@@ -260,12 +244,8 @@ endif()
 # ff_shell_wall(): it is pure math and policy with no I/O, and it takes
 # the UTC offset as plain values rather than an fp_pack_t, so core keeps
 # its zero-dependency, no-festpack posture. Full rationale in ff_wall.h.
-target_sources(ff-core PRIVATE src/ff_wall.c)
-
 # S09 (core/map — the map-face fixed-fit camera transform;
 # docs/specs/S09-map-face.md, slice a)
-target_sources(ff-core PRIVATE src/ff_map.c)
-
 if(FF_BUILD_TESTS)
     add_executable(test_map
         tests/test_map.c
@@ -299,8 +279,6 @@ endif()
 # docs/specs/S23-demo-feed.md, slice a). Pure C11 event SOURCE only: the live
 # demo clock, the CONFIG_FF_DEMO_LIVE switch, the app apply-loop through
 # ff_wiring, and the demo festpack string table are slices b/c/d — not here.
-target_sources(ff-core PRIVATE src/ff_demofeed.c)
-
 if(FF_BUILD_TESTS)
     add_executable(test_demofeed
         tests/test_demofeed.c
@@ -316,8 +294,6 @@ endif()
 # "(b) Power button -> power menu -> soft power-off"). Pure C11, no I/O:
 # the esp32s3 target only samples GPIO6/GPIO0 and drives GPIO7 — the
 # press-timing DECISION lives here per the house rule.
-target_sources(ff-core PRIVATE src/ff_power_fsm.c)
-
 if(FF_BUILD_TESTS)
     add_executable(test_power_fsm
         tests/test_power_fsm.c
@@ -333,8 +309,6 @@ endif()
 # off"). Pure C11, no I/O: the esp32s3 target (and the sim's ctl loop,
 # for its own AC3 test) only enact the DIM/OFF backlight + rebuild-skip
 # decision this FSM makes — see ff_idle.h.
-target_sources(ff-core PRIVATE src/ff_idle.c)
-
 if(FF_BUILD_TESTS)
     add_executable(test_idle
         tests/test_idle.c
@@ -350,8 +324,6 @@ endif()
 # "(e) Home button + launcher"). Pure C11, no I/O: the esp32s3 target only
 # samples GPIO0 (ff_power_boot_pressed, already exists for the reboot
 # guard) and forwards the debounced press as FF_INTENT_HOME.
-target_sources(ff-core PRIVATE src/ff_button.c)
-
 if(FF_BUILD_TESTS)
     add_executable(test_button
         tests/test_button.c
@@ -366,8 +338,6 @@ endif()
 # coalescing, expiry; docs/specs/S26-device-lifecycle.md "(d) ff_notify +
 # message banner"). Pure C11, no I/O — the shell wires events -> enqueue;
 # `scr_banner.c` only renders.
-target_sources(ff-core PRIVATE src/ff_notify.c)
-
 if(FF_BUILD_TESTS)
     add_executable(test_notify
         tests/test_notify.c
@@ -382,8 +352,6 @@ endif()
 # WHEN vocabulary, and wire-name composition; moved out of app/ff_shell.c
 # statics, see ff_rally.h's top comment). Pure C11, no I/O, no festpack
 # dependency (docs/ARCHITECTURE.md's one-way core->festpack edge).
-target_sources(ff-core PRIVATE src/ff_rally.c)
-
 if(FF_BUILD_TESTS)
     add_executable(test_rally
         tests/test_rally.c

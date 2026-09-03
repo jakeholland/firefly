@@ -1,36 +1,24 @@
 # ff_core — ESP-IDF wrapper for firmware/core. Same source list as
 # firmware/core/CMakeLists.txt's ff-core target, compiled UNCHANGED (no
 # core/ file needed a single line of edits for this port — see the S15a
-# PR body's portability findings). -Wall -Wextra -Werror applied to match
-# ff_apply_warnings()'s treatment of ff-core in the sim build.
+# PR body's portability findings) — both now read
+# firmware/core/sources.cmake's FF_CORE_SOURCES instead of hand-copying
+# the list (see that file's header for why). -Wall -Wextra -Werror
+# applied to match ff_apply_warnings()'s treatment of ff-core in the sim
+# build.
 set(FF_FW_DIR ${CMAKE_CURRENT_LIST_DIR}/../../../..)
 set(FF_CORE_DIR ${FF_FW_DIR}/core)
 
+include(${FF_CORE_DIR}/sources.cmake)
+
+# idf_component_register()'s SRCS wants paths relative to the component
+# dir or absolute — FF_CORE_SOURCES' entries are relative to
+# firmware/core/, so prepend the absolute path to that directory.
+set(FF_CORE_SOURCES_ABS ${FF_CORE_SOURCES})
+list(TRANSFORM FF_CORE_SOURCES_ABS PREPEND "${FF_CORE_DIR}/")
+
 idf_component_register(
-    SRCS
-        "${FF_CORE_DIR}/src/ff_version.c"
-        "${FF_CORE_DIR}/src/ff_settings.c"
-        "${FF_CORE_DIR}/src/ff_touchcal.c"
-        "${FF_CORE_DIR}/src/ff_geo.c"
-        "${FF_CORE_DIR}/src/ff_proto.c"
-        "${FF_CORE_DIR}/src/ff_crew.c"
-        "${FF_CORE_DIR}/src/ff_radar.c"
-        "${FF_CORE_DIR}/src/ff_t9.c"
-        "${FF_CORE_DIR}/src/ff_t9pred.c"
-        "${FF_CORE_DIR}/src/ff_t9dict_data.c"
-        "${FF_CORE_DIR}/src/ff_flare.c"
-        "${FF_CORE_DIR}/src/ff_feed.c"
-        "${FF_CORE_DIR}/src/ff_heard.c"
-        "${FF_CORE_DIR}/src/ff_wall.c"
-        "${FF_CORE_DIR}/src/ff_map.c"
-        "${FF_CORE_DIR}/src/ff_sigview.c"  # S22a — Signals-face view-model (was missing on device)
-        "${FF_CORE_DIR}/src/ff_demofeed.c" # S23a — deterministic demo-feed generator
-        "${FF_CORE_DIR}/src/ff_inbox.c"    # S24a — Signals inbox -> thread view-model
-        "${FF_CORE_DIR}/src/ff_power_fsm.c" # S26 slice b — PWR-button press FSM + reboot BOOT-release guard
-        "${FF_CORE_DIR}/src/ff_idle.c"      # S26 slice c — inactivity -> dim -> screen off
-        "${FF_CORE_DIR}/src/ff_notify.c"   # S26 slice d — notification queue (message banner)
-        "${FF_CORE_DIR}/src/ff_button.c"   # S26 slice e — generic debounced push-button (BOOT-as-home)
-        "${FF_CORE_DIR}/src/ff_rally.c"    # Tech-debt sprint — rally place/name/when logic (moved from ff_shell.c)
+    SRCS ${FF_CORE_SOURCES_ABS}
     INCLUDE_DIRS "${FF_CORE_DIR}/include"
     REQUIRES ff_platform
 )

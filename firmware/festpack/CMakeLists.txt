@@ -1,9 +1,19 @@
 # festpack — festpack.json subset parser (spec: fest-almanac v0.1).
+#
+# The source list lives in sources.cmake (FF_FESTPACK_SOURCES), shared
+# verbatim with the esp32s3 IDF component
+# (firmware/targets/esp32s3/components/ff_festpack/CMakeLists.txt) — see
+# that file's comment and sources.cmake's own header for why.
+include(${CMAKE_CURRENT_SOURCE_DIR}/sources.cmake)
 
-# S05
-add_library(ff-festpack STATIC
-    src/fp_pack.c
-)
+add_library(ff-festpack STATIC ${FF_FESTPACK_SOURCES})
+
+# Sim-only completeness guard (see ff_check_sources_complete()'s comment
+# in the top-level firmware/CMakeLists.txt) — every festpack/src/*.c
+# must be named in FF_FESTPACK_SOURCES or this fails configure naming
+# the missing file.
+ff_check_sources_complete(${CMAKE_CURRENT_SOURCE_DIR}/src ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}/sources.cmake FF_FESTPACK_SOURCES)
 
 target_include_directories(ff-festpack PUBLIC include)
 target_compile_features(ff-festpack PUBLIC c_std_11)
@@ -57,16 +67,16 @@ endif()
 # a + c. See firmware/festpack/include/ff_sched.h for why this lives here
 # instead of core/ (module-placement rationale in the header's top
 # comment) — its entire public surface is fp_pack_t/fp_set_t, so it is
-# built into ff-festpack itself rather than as a separate library.
-target_sources(ff-festpack PRIVATE src/ff_sched.c)
+# built into ff-festpack itself (src/ff_sched.c, in FF_FESTPACK_SOURCES)
+# rather than as a separate library.
 
-# S08 predictive-T9 addendum — festpack->words bridge (fp_t9words). Turns a
-# loaded fp_pack_t's artist/stage/landmark names into the caller-supplied
-# supplementary word array that core/t9pred's ff_t9pred_match_ex ranks above
-# its static dictionary. Lives HERE (not core/t9pred) so the engine stays
-# festpack-free — see fp_t9words.h's placement note. Depends only on fp_pack.h;
-# it does NOT link or include the engine (it just produces C strings).
-target_sources(ff-festpack PRIVATE src/fp_t9words.c)
+# S08 predictive-T9 addendum — festpack->words bridge (fp_t9words.c, in
+# FF_FESTPACK_SOURCES). Turns a loaded fp_pack_t's artist/stage/landmark
+# names into the caller-supplied supplementary word array that
+# core/t9pred's ff_t9pred_match_ex ranks above its static dictionary.
+# Lives HERE (not core/t9pred) so the engine stays festpack-free — see
+# fp_t9words.h's placement note. Depends only on fp_pack.h; it does NOT
+# link or include the engine (it just produces C strings).
 
 if(FF_BUILD_TESTS)
     # test_t9words exercises the bridge AND the pure engine together: it links

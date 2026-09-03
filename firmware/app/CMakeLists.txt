@@ -3,6 +3,27 @@
 # ff-app itself stays INTERFACE (header-only: ff_app_state.h, no domain
 # logic per CLAUDE.md). Real screens are a separate library, ff-app-ui
 # (added under the # S06b marker below) — see that section for why.
+#
+# Source lists live in sources.cmake (this directory's target-agnostic
+# libraries) and screens/sources.cmake (the LVGL screen libraries),
+# shared verbatim with the esp32s3 IDF components ff_app and ff_app_ui
+# (firmware/targets/esp32s3/components/) — see those files' comments and
+# each sources.cmake's own header for why.
+include(${CMAKE_CURRENT_SOURCE_DIR}/sources.cmake)
+include(${CMAKE_CURRENT_SOURCE_DIR}/screens/sources.cmake)
+
+# Sim-only completeness guards (see ff_check_sources_complete()'s comment
+# in the top-level firmware/CMakeLists.txt) — every app/*.c and
+# app/screens/*.c must be named in one of these lists, or this fails
+# configure naming the missing file.
+ff_check_sources_complete(${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}/sources.cmake
+    FF_ROUTE_SOURCES FF_INTENT_SOURCES FF_WALL_WINDOW_SOURCES
+    FF_WIRING_SOURCES FF_SHELL_SOURCES FF_DEMO_SOURCES FF_FACE_DISPATCH_SOURCES)
+ff_check_sources_complete(${CMAKE_CURRENT_SOURCE_DIR}/screens ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}/screens/sources.cmake
+    FF_LAYOUT_SOURCES FF_RADAR_LAYOUT_SOURCES FF_LINEUP_LAYOUT_SOURCES
+    FF_FLARE_FMT_SOURCES FF_APP_UI_SOURCES)
 
 add_library(ff-app INTERFACE)
 
@@ -33,9 +54,7 @@ target_link_libraries(ff-app INTERFACE ff-core)
 # links ff-app only for ff_app_state.h's ff_app_face_t, which routing
 # extends rather than mirroring in a second enum.
 # ---------------------------------------------------------------------------
-add_library(ff-route STATIC
-    ff_route.c
-)
+add_library(ff-route STATIC ${FF_ROUTE_SOURCES})
 target_link_libraries(ff-route PUBLIC ff-app) # ff_app_state.h (-> ff-core's ff_radar.h)
 target_compile_features(ff-route PUBLIC c_std_11)
 ff_apply_warnings(ff-route)
@@ -63,9 +82,7 @@ endif()
 # lives in ff-shell below and does not link this — the target binds the
 # two together at startup via ff_intent_emit_bind(ff_shell_intent_sink,..).
 # ---------------------------------------------------------------------------
-add_library(ff-intent STATIC
-    ff_intent.c
-)
+add_library(ff-intent STATIC ${FF_INTENT_SOURCES})
 target_link_libraries(ff-intent PUBLIC ff-app) # app/include/ff_intent.h's include path
 target_compile_features(ff-intent PUBLIC c_std_11)
 ff_apply_warnings(ff-intent)
@@ -83,9 +100,7 @@ ff_apply_warnings(ff-intent)
 # the pack. Unit-testable with a plain fp_pack_t and no shell — see
 # tests/test_wall_window.c.
 # ---------------------------------------------------------------------------
-add_library(ff-wall-window STATIC
-    ff_wall_window.c
-)
+add_library(ff-wall-window STATIC ${FF_WALL_WINDOW_SOURCES})
 target_include_directories(ff-wall-window PUBLIC include)
 target_link_libraries(ff-wall-window PUBLIC ff-core ff-festpack)
 target_compile_features(ff-wall-window PUBLIC c_std_11)
@@ -118,9 +133,7 @@ endif()
 # repeat (see ff_layout.h's header comment for why this is a DIFFERENT
 # kind of sharing from issue #24's deferred widget-library extraction,
 # and doesn't conflict with that deferral).
-add_library(ff-layout STATIC
-    screens/ff_layout.c
-)
+add_library(ff-layout STATIC ${FF_LAYOUT_SOURCES})
 target_include_directories(ff-layout PUBLIC screens)
 if(UNIX)
     target_link_libraries(ff-layout PRIVATE m)
@@ -144,9 +157,7 @@ endif()
 # geometric assertions (test_radar_layout, below) instead of only via a
 # golden PNG a human has to notice overlapping pixels in — PR #16 UX
 # review round 3 / code review round 2.
-add_library(ff-radar-layout STATIC
-    screens/radar_layout.c
-)
+add_library(ff-radar-layout STATIC ${FF_RADAR_LAYOUT_SOURCES})
 target_include_directories(ff-radar-layout PUBLIC screens)
 target_link_libraries(ff-radar-layout PUBLIC ff-app)
 if(UNIX)
@@ -172,9 +183,7 @@ endif()
 # (headline/compass/countdown strings) is unit-testable with direct string
 # assertions (test_flare_fmt, below) rather than only inferable from a
 # golden PNG diff.
-add_library(ff-flare-fmt STATIC
-    screens/flare_fmt.c
-)
+add_library(ff-flare-fmt STATIC ${FF_FLARE_FMT_SOURCES})
 target_include_directories(ff-flare-fmt PUBLIC screens)
 if(UNIX)
     target_link_libraries(ff-flare-fmt PRIVATE m) # fmodf
@@ -215,19 +224,7 @@ if(FF_BUILD_TESTS)
 endif()
 # ---------------------------------------------------------------------------
 
-add_library(ff-app-ui STATIC
-    screens/scr_radar.c
-    screens/scr_nav.c
-    screens/scr_widgets.c # S17 debt cleanup — shared pill factory (flare/power_menu/settings)
-    screens/scr_inbox.c # S08c
-    screens/scr_compose.c # S08d
-    screens/scr_flare.c # S10b
-    screens/scr_settings.c # S11b — the Settings modal face
-    screens/scr_map.c # S09 — the Map face (Radar's alternate view)
-    screens/scr_power_menu.c # S26 slice b — the PWR-button power menu modal
-    screens/scr_banner.c # S26 slice d — the ff_notify message banner overlay
-    screens/scr_launcher.c # S26 slice e — the BOOT-button launcher, carousel retired
-)
+add_library(ff-app-ui STATIC ${FF_APP_UI_SOURCES})
 target_include_directories(ff-app-ui PUBLIC theme screens)
 # ff-intent (S16c1): scr_nav/scr_inbox/scr_compose emit navigation
 # intents through the seam — see ff_intent.h for why this dependency is
@@ -268,9 +265,7 @@ ff_apply_warnings(ff-app-ui)
 # the first place — S15a's ff_app component was deliberately screen-free,
 # see that component's own header comment).
 # ---------------------------------------------------------------------------
-add_library(ff-face-dispatch STATIC
-    ff_face_dispatch.c
-)
+add_library(ff-face-dispatch STATIC ${FF_FACE_DISPATCH_SOURCES})
 target_include_directories(ff-face-dispatch PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(ff-face-dispatch PUBLIC ff-app-ui)
 ff_apply_warnings(ff-face-dispatch)
@@ -296,9 +291,7 @@ endif()
 # see ff_wiring.h's header comment for why that invariant changed);
 # everything else in this repo keeps core/meshclient/app strictly unaware
 # of each other. Not part of ff-app-ui: this is data-plumbing, no LVGL.
-add_library(ff-wiring STATIC
-    ff_wiring.c
-)
+add_library(ff-wiring STATIC ${FF_WIRING_SOURCES})
 target_include_directories(ff-wiring PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 # ff-app: ff_wiring.h now includes app/include/ff_intent.h — the
 # ff_wiring_canned_reply_t definition moved there in S16c1 so screens can
@@ -327,9 +320,7 @@ endif()
 # ff-radar-layout: no ff_radar.h/FF_CREW_MAX dependency at all, so this
 # links only ff_apply_warnings + libm, not ff-app.
 # ---------------------------------------------------------------------------
-add_library(ff-lineup-layout STATIC
-    screens/lineup_layout.c
-)
+add_library(ff-lineup-layout STATIC ${FF_LINEUP_LAYOUT_SOURCES})
 target_include_directories(ff-lineup-layout PUBLIC screens)
 target_compile_features(ff-lineup-layout PUBLIC c_std_11)
 if(UNIX)
@@ -347,15 +338,9 @@ if(FF_BUILD_TESTS)
     add_test(NAME test_lineup_layout COMMAND test_lineup_layout)
 endif()
 
-# scr_lineup.c joins ff-app-ui (declared above) rather than a new library:
-# same shape as scr_radar.c/scr_nav.c — real LVGL screen code, not a
-# separately-tested pure module. Appended via target_sources (not folded
-# into the add_library() call above) so this stays a purely additive diff
-# — two other face agents (Signals/Flare UI) are touching this same file
-# in parallel for their own tiles.
-target_sources(ff-app-ui PRIVATE
-    screens/scr_lineup.c
-)
+# scr_lineup.c (S07b — Now face) is part of ff-app-ui's FF_APP_UI_SOURCES
+# (screens/sources.cmake) alongside scr_radar.c/scr_nav.c — real LVGL
+# screen code, not a separately-tested pure module.
 target_link_libraries(ff-app-ui PUBLIC ff-lineup-layout)
 
 # S10b (continued) — headless LVGL geometry tests for the flare UI (the
@@ -400,9 +385,7 @@ endif()
 # No LVGL: this is data-plumbing and projection, exactly like ff-wiring.
 # The screens read ff_shell_view()'s output; they are not linked here.
 # ---------------------------------------------------------------------------
-add_library(ff-shell STATIC
-    ff_shell.c
-)
+add_library(ff-shell STATIC ${FF_SHELL_SOURCES})
 target_include_directories(ff-shell PUBLIC include)
 target_link_libraries(ff-shell PUBLIC ff-app ff-route ff-wiring ff-core ff-meshclient ff-festpack ff-wall-window)
 target_compile_features(ff-shell PUBLIC c_std_11)
@@ -492,10 +475,7 @@ endif()
 # mapping (ff_demoapply.h). Same demo-content gating as ff_demo.c — on
 # device reachable only from app_main.c's CONFIG_FF_DEMO_MODE/_LIVE block,
 # dead-stripped from a field build.
-add_library(ff-demo STATIC
-    ff_demo.c
-    ff_demoapply.c
-)
+add_library(ff-demo STATIC ${FF_DEMO_SOURCES})
 target_include_directories(ff-demo PUBLIC include)
 target_link_libraries(ff-demo PUBLIC ff-shell ff-core ff-meshclient)
 target_compile_features(ff-demo PUBLIC c_std_11)
