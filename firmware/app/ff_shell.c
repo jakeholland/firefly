@@ -2946,6 +2946,26 @@ void ff_shell_intent(ff_shell_t *sh_pub, ff_intent_t const *in)
          * rather than merely the outcome.) */
         if (!takeover_up) return;
         (void)ff_flare_go(&sh->flare);
+        /* S10 "GO -> radar with sender force-selected + flare-lock": GO
+         * must actually NAVIGATE, not just consume the takeover into the
+         * lock — a bug fixed here (docs/specs/S26-device-lifecycle.md,
+         * "Notifications"). GO is the explicit decision the takeover
+         * exists to let the user make (the same "GO is the explicit
+         * decision" framing S10 Ruling 2/3 already use for the lock
+         * itself), so — UNLIKE a passive nav intent (swipe, HOME, a
+         * banner tap) — it is not suppressed by a live modal: Compose or
+         * the power menu was already fully INVISIBLE for the whole time
+         * the full-screen takeover was up, so there is nothing left to
+         * "slide away" that the user could see change. Popping the modal
+         * mirrors FF_INTENT_BACK's own modal-exit shape exactly
+         * (compose_to_node reset; the T9 draft TEXT itself is untouched,
+         * same as leaving Compose any other way) rather than inventing a
+         * second way out of Compose. Interpretation call, noted per
+         * AGENTS.md — see the PR body. */
+        if (ff_route_pop_modal(&sh->route)) {
+            sh->compose_to_node = 0u;
+        }
+        (void)ff_route_goto(&sh->route, FF_APP_FACE_RADAR);
         return;
 
     case FF_INTENT_TAKEOVER_DISMISS:
@@ -3619,6 +3639,34 @@ void ff_shell_intent(ff_shell_t *sh_pub, ff_intent_t const *in)
          * banner itself still ticks toward its own expiry). */
         if (!shell_member_paired(sh, node)) return;
 
+        /* Modal decision (interpretation call, noted per AGENTS.md — see
+         * the PR body). The two live modals split:
+         *  - POWER_MENU is transient, no user data at stake — a banner
+         *    tap pops it, the same as BACK/Cancel/timeout already do,
+         *    and navigation proceeds normally underneath.
+         *  - COMPOSE holds a possibly half-typed draft, and the spec's
+         *    rule (S24, "a half-typed message is never slid away") is
+         *    unconditional — this is a PASSIVE interruption (unlike
+         *    flare's GO, nobody made an explicit decision to leave), so
+         *    it must not pop Compose. The whole handler bails here,
+         *    before any state changes: a bug fixed by this change was
+         *    doing the opposite — the goto below silently failed under
+         *    a modal, but every line after it (mark-read, thread-node,
+         *    dismiss) ran anyway, invisibly corrupting the Inbox behind
+         *    a Compose the user could still see and type into. Leaving
+         *    now instead keeps the banner exactly as it was: still
+         *    queued, still unread, tappable again once Compose closes. */
+        if (sh->route.modal == FF_APP_FACE_POWER_MENU) {
+            (void)ff_route_pop_modal(&sh->route);
+        } else if (sh->route.modal == FF_APP_FACE_COMPOSE) {
+            return;
+        }
+
+        /* `sh->route.modal` is FF_APP_FACE_NONE at this point (it either
+         * already was, or was just popped above), so this can only ever
+         * report false because `base` is already FF_APP_FACE_INBOX —
+         * never because the modal blocked it — and the thread switch
+         * below must still run in that case. */
         (void)ff_route_goto(&sh->route, FF_APP_FACE_INBOX);
         sh->inbox_rally_armed = false; /* an intervening action disarms (S22 AC4) */
         sh->inbox_thread_node = node;

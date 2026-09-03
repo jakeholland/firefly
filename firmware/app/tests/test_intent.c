@@ -954,6 +954,253 @@ static void S16_c1_release_lock_and_takeover_dismiss_are_never_folded(void)
 }
 
 /* =================================================================== */
+/* Notification routing — table-driven, every starting face x           */
+/* {BANNER_OPEN, TAKEOVER_GO, TAKEOVER_DISMISS} (maintainer report:      */
+/* "notifications like flaring and messages don't properly redirect to  */
+/* the proper screens from the home screen (may happen elsewhere?)").   */
+/* docs/specs/S26-device-lifecycle.md "Notifications" (BANNER tap ->     */
+/* the sender's thread) and docs/specs/S10-flare.md "Receive" (GO ->     */
+/* Radar locked on the sender; DISMISS -> back).                        */
+/*                                                                       */
+/* TWO BUGS FIXED BY THIS CHANGE, both at the route layer:              */
+/*  1. FF_INTENT_TAKEOVER_GO consumed the takeover into the lock         */
+/*     (`ff_flare_go`) but never called anything on `sh->route` at all  */
+/*     — `base` stayed whatever it was before the flare interrupted it, */
+/*     so GO silently did nothing visible from any face but Radar       */
+/*     itself. Proxy: the ONE pre-existing GO test                      */
+/*     (S16_c1_takeover_decisions_require_a_visible_takeover) only ever */
+/*     checked `locked_node_id`, never `active_face` — exactly the      */
+/*     proxy gap this table closes.                                     */
+/*  2. FF_INTENT_BANNER_OPEN's own `ff_route_goto` call silently failed  */
+/*     under a live modal (Compose) while every line after it (mark-    */
+/*     read, thread-node switch, banner dismiss) ran anyway — mutating  */
+/*     Inbox state behind a modal the user could still see and type     */
+/*     into, invisibly, with no navigation to show for it.              */
+/* =================================================================== */
+
+static void inject_text_notif(uint32_t from, char const *text)
+{
+    H.ev.on_text(H.ev.user, from, MY_ID, text, strlen(text));
+}
+
+typedef enum {
+    START_LAUNCHER,
+    START_RADAR,
+    START_LINEUP,
+    START_MAP,
+    START_SETTINGS,
+    START_INBOX_LIST,
+    START_INBOX_THREAD_OTHER, /* an open thread of a DIFFERENT sender (KEV) */
+    START_MODAL_COMPOSE,
+    START_MODAL_POWER_MENU,
+} start_state_t;
+
+static char const *start_state_name(start_state_t s)
+{
+    switch (s) {
+    case START_LAUNCHER:           return "LAUNCHER";
+    case START_RADAR:              return "RADAR";
+    case START_LINEUP:             return "LINEUP";
+    case START_MAP:                return "MAP";
+    case START_SETTINGS:           return "SETTINGS";
+    case START_INBOX_LIST:         return "INBOX_LIST";
+    case START_INBOX_THREAD_OTHER: return "INBOX_THREAD_OTHER";
+    case START_MODAL_COMPOSE:      return "MODAL_COMPOSE";
+    case START_MODAL_POWER_MENU:   return "MODAL_POWER_MENU";
+    }
+    return "?";
+}
+
+/* Fresh harness, DANA and KEV both paired, route parked at `s`. DANA is
+ * always the flare/message sender below; KEV exists so
+ * START_INBOX_THREAD_OTHER has a real, different thread to be sitting
+ * in (the brief's "an open thread of a DIFFERENT sender" starting
+ * state) and so the self-healing crew selection (DANA, paired first)
+ * is a real choice, not a vacuous single-member one. */
+static void notif_setup(start_state_t s)
+{
+    harness_init(100000u);
+    pair_named(DANA, "DANA");
+    pair_named(KEV_ID, "KEV");
+
+    switch (s) {
+    case START_LAUNCHER: break; /* harness_init's own boot default */
+    case START_RADAR: nav_home_to(FF_APP_FACE_RADAR); break;
+    case START_LINEUP: nav_home_to(FF_APP_FACE_LINEUP); break;
+    case START_MAP: nav_home_to(FF_APP_FACE_MAP); break;
+    case START_SETTINGS: nav_home_to(FF_APP_FACE_SETTINGS); break;
+    case START_INBOX_LIST: nav_home_to(FF_APP_FACE_INBOX); break;
+    case START_INBOX_THREAD_OTHER: {
+        nav_home_to(FF_APP_FACE_INBOX);
+        ff_intent_t open = {.kind = FF_INTENT_INBOX_OPEN_THREAD, .u = {0}};
+        open.u.node_id = KEV_ID;
+        ff_shell_intent(&H.shell, &open);
+        break;
+    }
+    case START_MODAL_COMPOSE: send_open_compose(0u); break;
+    case START_MODAL_POWER_MENU: send_kind(FF_INTENT_POWER_MENU_OPEN); break;
+    }
+}
+
+/* The seven states BANNER_OPEN is expected to actually NAVIGATE from
+ * (the two modal states get their own dedicated tests below, since
+ * their expected outcomes are qualitatively different — one bails
+ * entirely, one pops first). */
+static start_state_t const k_banner_nav_states[] = {
+    START_LAUNCHER, START_RADAR, START_LINEUP, START_MAP, START_SETTINGS,
+    START_INBOX_LIST, START_INBOX_THREAD_OTHER,
+};
+
+static void S26_notif_banner_open_navigates_to_the_thread_from_every_base_face(void)
+{
+    for (size_t i = 0; i < sizeof(k_banner_nav_states) / sizeof(k_banner_nav_states[0]); i++) {
+        start_state_t const s = k_banner_nav_states[i];
+        notif_setup(s);
+
+        inject_text_notif(DANA, "you close?");
+        TEST_ASSERT_TRUE_MESSAGE(view()->banner.active, start_state_name(s));
+
+        send_kind(FF_INTENT_BANNER_OPEN);
+        ff_app_state_t const *v = view();
+        TEST_ASSERT_EQUAL_INT_MESSAGE(FF_APP_FACE_INBOX, v->active_face, start_state_name(s));
+        TEST_ASSERT_EQUAL_INT_MESSAGE(FF_INBOX_SUB_THREAD, v->inbox.subview, start_state_name(s));
+        TEST_ASSERT_EQUAL_UINT32_MESSAGE(DANA, v->inbox.thread_node, start_state_name(s));
+        TEST_ASSERT_FALSE_MESSAGE(v->banner.active, start_state_name(s));
+    }
+}
+
+/* The Power menu is transient (no user data at stake): a banner tap
+ * pops it, the same way BACK/Cancel/the 10s timeout already do, and
+ * navigation proceeds normally underneath — same shape as every other
+ * base above, just with one extra pop first. */
+static void S26_notif_banner_open_pops_the_power_menu_and_navigates(void)
+{
+    notif_setup(START_MODAL_POWER_MENU);
+    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_POWER_MENU, view()->active_face);
+
+    inject_text_notif(DANA, "you close?");
+    TEST_ASSERT_TRUE(view()->banner.active);
+
+    send_kind(FF_INTENT_BANNER_OPEN);
+    ff_app_state_t const *v = view();
+    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_INBOX, v->active_face);
+    TEST_ASSERT_EQUAL_INT(FF_INBOX_SUB_THREAD, v->inbox.subview);
+    TEST_ASSERT_EQUAL_UINT32(DANA, v->inbox.thread_node);
+    TEST_ASSERT_FALSE(v->banner.active);
+}
+
+/* Compose holds a possibly half-typed draft, and the spec's rule (S24:
+ * "a half-typed message is never slid away") is unconditional — a
+ * banner tap is a PASSIVE interruption (nobody made an explicit
+ * decision to leave, unlike flare's GO), so it must not pop Compose.
+ * The fixed bug: the OLD code's `ff_route_goto` silently failed here
+ * (modal up) but ran every line after it anyway — this test's
+ * `inbox.subview`/banner-still-active/compose-untouched assertions are
+ * exactly what that mutation would have missed if only `active_face`
+ * were checked. */
+static void S26_notif_banner_open_while_composing_leaves_everything_untouched(void)
+{
+    notif_setup(START_MODAL_COMPOSE);
+    ff_app_state_t const *before = view();
+    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_COMPOSE, before->active_face);
+    TEST_ASSERT_EQUAL_UINT32(DANA, compose_to()); /* self-healing selection: DANA paired first */
+    ff_inbox_subview_t const prior_subview = before->inbox.subview;
+
+    inject_text_notif(DANA, "you close?");
+    TEST_ASSERT_TRUE(view()->banner.active);
+
+    send_kind(FF_INTENT_BANNER_OPEN);
+    ff_app_state_t const *v = view();
+    TEST_ASSERT_EQUAL_INT_MESSAGE(FF_APP_FACE_COMPOSE, v->active_face,
+                                  "the draft was slid away by a banner tap");
+    TEST_ASSERT_EQUAL_UINT32(DANA, compose_to()); /* destination intact */
+    TEST_ASSERT_EQUAL_INT_MESSAGE(prior_subview, v->inbox.subview,
+                                  "Inbox sub-view mutated behind a modal that never actually navigated");
+    TEST_ASSERT_TRUE_MESSAGE(v->banner.active,
+                             "the banner must stay queued - the user never actually saw it open");
+}
+
+/* All nine starting states, including both modals: GO must land on
+ * Radar from every single one of them. */
+static start_state_t const k_all_states[] = {
+    START_LAUNCHER, START_RADAR, START_LINEUP, START_MAP, START_SETTINGS,
+    START_INBOX_LIST, START_INBOX_THREAD_OTHER, START_MODAL_COMPOSE, START_MODAL_POWER_MENU,
+};
+
+static void S10_notif_flare_go_lands_on_radar_from_every_starting_state(void)
+{
+    for (size_t i = 0; i < sizeof(k_all_states) / sizeof(k_all_states[0]); i++) {
+        start_state_t const s = k_all_states[i];
+        notif_setup(s);
+
+        inject_flare(DANA, 300u);
+        TEST_ASSERT_TRUE_MESSAGE(ff_shell_flare(&H.shell)->takeover_active, start_state_name(s));
+
+        send_kind(FF_INTENT_TAKEOVER_GO);
+        ff_app_state_t const *v = view();
+        TEST_ASSERT_EQUAL_INT_MESSAGE(FF_APP_FACE_RADAR, v->active_face, start_state_name(s));
+        TEST_ASSERT_FALSE_MESSAGE(ff_shell_flare(&H.shell)->takeover_active, start_state_name(s));
+        TEST_ASSERT_EQUAL_UINT32_MESSAGE(DANA, ff_shell_flare(&H.shell)->locked_node_id, start_state_name(s));
+    }
+}
+
+/* DISMISS's contract is the opposite of GO's: restore EXACTLY the prior
+ * state (spec: "DISMISS -> back, feed item remains") — from every one
+ * of the nine starting states, including both modals (a live modal's
+ * draft/menu must survive a DISMISS on a takeover that happened to
+ * land on top of it). */
+static void S10_notif_flare_dismiss_restores_the_exact_prior_state(void)
+{
+    for (size_t i = 0; i < sizeof(k_all_states) / sizeof(k_all_states[0]); i++) {
+        start_state_t const s = k_all_states[i];
+        notif_setup(s);
+
+        ff_app_state_t const *before = view();
+        ff_app_face_t const prior_face = before->active_face;
+        ff_inbox_subview_t const prior_subview = before->inbox.subview;
+        uint32_t const prior_thread_node = before->inbox.thread_node;
+        uint32_t const prior_compose_to = compose_to();
+
+        inject_flare(DANA, 300u);
+        TEST_ASSERT_TRUE_MESSAGE(ff_shell_flare(&H.shell)->takeover_active, start_state_name(s));
+
+        send_kind(FF_INTENT_TAKEOVER_DISMISS);
+        ff_app_state_t const *v = view();
+        TEST_ASSERT_EQUAL_INT_MESSAGE(prior_face, v->active_face, start_state_name(s));
+        TEST_ASSERT_EQUAL_INT_MESSAGE(prior_subview, v->inbox.subview, start_state_name(s));
+        TEST_ASSERT_EQUAL_UINT32_MESSAGE(prior_thread_node, v->inbox.thread_node, start_state_name(s));
+        TEST_ASSERT_EQUAL_UINT32_MESSAGE(prior_compose_to, compose_to(), start_state_name(s));
+        TEST_ASSERT_FALSE_MESSAGE(ff_shell_flare(&H.shell)->takeover_active, start_state_name(s));
+        TEST_ASSERT_EQUAL_UINT32_MESSAGE(0u, ff_shell_flare(&H.shell)->locked_node_id, start_state_name(s));
+    }
+}
+
+/* The reverse-direction check the brief calls out separately: a flare
+ * takeover arriving while the LAUNCHER is showing renders on top of it
+ * (face_dispatch.c's takeover check runs before the active_face
+ * dispatch, so this was already true) and GO/DISMISS both work from
+ * there — pinned explicitly since it's the maintainer's literal "from
+ * the home screen" report. */
+static void S26_notif_flare_over_the_launcher_go_and_dismiss_both_work(void)
+{
+    /* GO half. */
+    notif_setup(START_LAUNCHER);
+    inject_flare(DANA, 300u);
+    TEST_ASSERT_TRUE(ff_shell_flare(&H.shell)->takeover_active);
+    send_kind(FF_INTENT_TAKEOVER_GO);
+    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_RADAR, view()->active_face);
+    TEST_ASSERT_EQUAL_UINT32(DANA, ff_shell_flare(&H.shell)->locked_node_id);
+
+    /* DISMISS half, fresh shell. */
+    notif_setup(START_LAUNCHER);
+    inject_flare(DANA, 300u);
+    TEST_ASSERT_TRUE(ff_shell_flare(&H.shell)->takeover_active);
+    send_kind(FF_INTENT_TAKEOVER_DISMISS);
+    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_LAUNCHER, view()->active_face);
+    TEST_ASSERT_FALSE(ff_shell_flare(&H.shell)->takeover_active);
+}
+
+/* =================================================================== */
 /* S16 slice c2 — FLARE_START / FLARE_END                               */
 /* =================================================================== */
 
@@ -2069,6 +2316,14 @@ int main(void)
     RUN_TEST(S16_c1_route_intents_are_rejected_while_a_takeover_is_visible);
     RUN_TEST(S16_c1_takeover_decisions_require_a_visible_takeover);
     RUN_TEST(S16_c1_release_lock_and_takeover_dismiss_are_never_folded);
+
+    RUN_TEST(S26_notif_banner_open_navigates_to_the_thread_from_every_base_face);
+    RUN_TEST(S26_notif_banner_open_pops_the_power_menu_and_navigates);
+    RUN_TEST(S26_notif_banner_open_while_composing_leaves_everything_untouched);
+    RUN_TEST(S10_notif_flare_go_lands_on_radar_from_every_starting_state);
+    RUN_TEST(S10_notif_flare_dismiss_restores_the_exact_prior_state);
+    RUN_TEST(S26_notif_flare_over_the_launcher_go_and_dismiss_both_work);
+
     RUN_TEST(S16_c2_flare_start_begins_sending);
     RUN_TEST(S16_c2_flare_start_is_rejected_while_a_takeover_is_visible);
     RUN_TEST(S16_c2_flare_end_cancels_a_send_even_while_a_takeover_is_visible);
