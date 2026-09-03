@@ -118,6 +118,32 @@ target_include_directories(ff-sim-live-setup PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(ff-sim-live-setup PUBLIC ff-shell)
 ff_apply_warnings(ff-sim-live-setup)
 
+# debt/sim-window-lifecycle
+# ---------------------------------------------------------------------------
+# ff-sim-lifecycle: sim_lifecycle.h/.c — the ONE per-tick device-lifecycle
+# pump (idle FSM + rebuild-mid-tap/OFF-SLEEP rebuild gate + the gated
+# SDL pointer read callback) shared by ctl_loop.c, main.c's live window
+# loop, and ff_demo_run.c's live window loop. See sim_lifecycle.h's top
+# comment for the full design writeup. Needs lvgl (LVGL types + the
+# SDL2 headers/libs LV_USE_SDL already links PUBLIC onto lvgl::lvgl —
+# see the top-level CMakeLists.txt), ff-core (ff_idle.h), ff-app
+# (ff_app_state.h), and ff-sim-face-dispatch (ff_build_face_screen,
+# needed only by the .c file — PRIVATE).
+# ---------------------------------------------------------------------------
+add_library(ff-sim-lifecycle STATIC
+    sim_lifecycle.c
+)
+target_include_directories(ff-sim-lifecycle PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(ff-sim-lifecycle
+    PUBLIC
+        lvgl::lvgl
+        ff-core
+        ff-app
+    PRIVATE
+        ff-sim-face-dispatch
+)
+ff_apply_warnings(ff-sim-lifecycle)
+
 # ff-sim-ctl-loop: the --ctl session itself (ctl_loop.h/.c), extracted out
 # of main.c so it can be driven in-process by test_ctl_flare_sequence (AC10
 # — a full draft-typed/flare-injected/takeover/cleared sequence through the
@@ -133,6 +159,7 @@ target_link_libraries(ff-sim-ctl-loop
         ff-sim-live-setup
         ff-sim-ctl
         ff-shell
+        ff-sim-lifecycle # debt/sim-window-lifecycle — the shared idle+rebuild pump
         lvgl::lvgl
     PRIVATE
         ff-sim-ctlout
@@ -210,6 +237,30 @@ if(FF_BUILD_TESTS)
     ff_apply_warnings(test_wakeonly_touch)
 
     add_test(NAME test_wakeonly_touch COMMAND test_wakeonly_touch)
+
+    # debt/sim-window-lifecycle: ctl_loop.c's rebuild gate was missing the
+    # finger-down term app_main.c's own gate has had since the original
+    # rebuild-mid-tap fix — see the test file's own top comment. Driven
+    # through the same real ff-sim-ctl-loop session as the tests above,
+    # using the newly-exposed ff_ctl_loop_pointer_press/_step/_release
+    # (ctl_loop.h) to land a real dirty tick WHILE a ctl-injected touch is
+    # still down.
+    add_executable(test_ctl_rebuild_under_finger
+        tests/test_ctl_rebuild_under_finger.c
+        screenshot.c
+    )
+    target_link_libraries(test_ctl_rebuild_under_finger PRIVATE
+        ff-sim-ctl-loop
+        ff-sim-ctl
+        ff-shell
+        ff-app-ui
+        ff-stb-image-write
+        lvgl::lvgl
+        unity
+    )
+    ff_apply_warnings(test_ctl_rebuild_under_finger)
+
+    add_test(NAME test_ctl_rebuild_under_finger COMMAND test_ctl_rebuild_under_finger)
 endif()
 
 # Issue #3 — ff_screenshot_write now creates its output directory itself
