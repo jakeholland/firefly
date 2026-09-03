@@ -13,6 +13,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "ff_batt.h" /* S25 slice c — battery gauge: honest mV -> percent + display filter */
 #include "ff_geo.h"
 #include "ff_notify.h" /* S26(d) — the notification queue */
 #include "ff_proto.h"
@@ -257,6 +258,25 @@ typedef struct {
     ff_latlon_t my_pos;
     bool my_pos_ok;
     float heading_deg; /* negative = unknown/unreliable (ff_geo_heading_deg's sentinel) */
+    /* S25 slice c — battery gauge. `ff_shell_set_batt_mv` runs each raw
+     * pack-voltage reading through the core filter (`ff_batt.h`)
+     * IMMEDIATELY, at push time, not deferred to the next tick — unlike
+     * `heading_deg`/`my_pos` above, which are raw sensor values a later
+     * `ff_shell_tick` interprets. The filter's whole job is display
+     * smoothing OVER TIME (the median window, the stale-gap reset,
+     * ff_batt.h's own doc comment), which needs to see every actual
+     * reading as its own event; folding that through `ff_shell_tick`
+     * instead would collapse multiple readings between two ticks into
+     * one filter push (or stretch one reading across many ticks if the
+     * ADC free-runs slower than the tick rate — either way the wrong
+     * cadence for a filter that reasons about "how long since the last
+     * READING", not "how long since the last tick"). `batt_filter.
+     * displayed_pct` (a plain, non-opaque field per ff_batt.h) is what
+     * `ff_shell_tick` copies into `view.radar.batt_pct` on the NEXT
+     * projection, matching this file's universal "state changes surface
+     * in the projection on the next tick" rule at the read side even
+     * though the mutation itself already happened. */
+    ff_batt_filter_t batt_filter;
 
 #if defined(FF_TARGET_SIM)
     /* --dev-trust-all (S16 AC6). SIM ONLY, and deliberately inside the
@@ -1627,7 +1647,12 @@ static void shell_project(shell_t *sh, uint32_t now_ms)
      * come from the RTC, the battery ADC and the mesh link, none of which
      * are its inputs (see ff_radar.h's deviation note). */
     shell_project_clock_str(wall, sh->settings.clock_24h, sh->view.radar.clock_str, sizeof(sh->view.radar.clock_str));
-    sh->view.radar.batt_pct = -1; /* no battery ADC on either target yet: honestly unknown */
+    /* S25 slice c — the filtered display value (ff_batt.h's own display
+     * smoothing already applied at push time, see `batt_filter`'s doc
+     * comment above); -1 (honestly unknown) until the first
+     * ff_shell_set_batt_mv call, same as heading_deg/my_pos_ok before
+     * their own first push. */
+    sh->view.radar.batt_pct = sh->batt_filter.displayed_pct;
     sh->view.radar.mesh_ok = (sh->link == FF_SHELL_LINK_CONNECTED);
 
     shell_project_now(sh, wall, &sh->view.now);
@@ -1977,8 +2002,10 @@ static void shell_render_key(ff_app_state_t const *v, ff_app_state_t *key)
          * not a modal — see ff_route.h's header note — but it is still
          * exactly one `active_face` value among several, so this mask
          * is unaffected by that change) — the launcher, same "opaque
-         * overlay" discipline as the power menu above, with TWO
-         * exceptions rather than the original one: unlike the fully-
+         * overlay" discipline as the power menu above, with THREE
+         * exceptions rather than the original one (a third, S25 slice
+         * c's `radar.batt_pct`, added below the other two — see that
+         * paragraph): unlike the fully-
          * static power menu, the launcher's Signals circle carries the
          * unread badge (scr_launcher.c, moved off the old page-dot
          * row), so the mask keeps exactly that one scalar rather than
@@ -2039,9 +2066,30 @@ static void shell_render_key(ff_app_state_t const *v, ff_app_state_t *key)
          * above is an `if` with this launcher branch as its `else if`
          * — so while a takeover is active this launcher branch never
          * runs, and the takeover's own dirtying (the block above) is
-         * already independent of everything this mask does. */
+         * already independent of everything this mask does.
+         *
+         * THIRD exception (S25 slice c): `key->radar.batt_pct`. The
+         * status row this mask's own top comment already describes as
+         * launcher content — `launcher_build_status_row`
+         * (scr_launcher.c) — renders `state->radar.batt_pct` verbatim
+         * (icon step + "N%" text, tinted amber via
+         * `ff_radar_batt_is_low` below `FF_BATT_LOW_PCT`), the exact
+         * same field scr_radar.c's own status bar reads. Before this
+         * fix the blanket `memset` below zeroed it along with
+         * everything else, so a battery reading that changed WHILE the
+         * launcher was showing (the common case — the launcher is home,
+         * S26 slice e) left the key byte-identical and the row sat
+         * stale on the glass until some unrelated field (badge, banner)
+         * happened to dirty the key — the exact `#157` banner clobber
+         * this mask's second exception already fixed, for a different
+         * field. Restored as a bare scalar (not coarsened — S25c's own
+         * `ff_batt_filter_t` hysteresis is what already keeps ordinary
+         * 1% ADC noise from dirtying this key every tick; there is no
+         * second reduction to apply here the way the arrow/age fields
+         * elsewhere in this function need). */
         ff_app_banner_t const banner = key->banner;
         ff_app_face_t const af = key->active_face;
+        int8_t const batt_pct = key->radar.batt_pct;
         uint32_t unread_total = 0;
         uint8_t const n = ff_inbox_conv_count(&v->inbox.inbox);
         for (uint8_t i = 0; i < n; i++) {
@@ -2054,6 +2102,7 @@ static void shell_render_key(ff_app_state_t const *v, ff_app_state_t *key)
         key->active_face = af;
         key->inbox.inbox.convs[0].unread = (unread_total > UINT16_MAX) ? UINT16_MAX : (uint16_t)unread_total;
         key->banner = banner;
+        key->radar.batt_pct = batt_pct;
     }
 }
 
@@ -2130,6 +2179,7 @@ int ff_shell_init(ff_shell_t *sh_pub, ff_shell_cfg_t const *cfg)
     ff_flare_init(&sh->flare);
     ff_wall_init(&sh->wall);
     ff_radar_smooth_reset(&sh->smooth);
+    ff_batt_filter_init(&sh->batt_filter); /* S25 slice c — displayed_pct starts -1 (unknown), not 0 (memset above would fake a real 0%) */
     ff_route_init(&sh->route);
     ff_notify_init(&sh->notify); /* S26(d) */
     sh->inbox_target_kind = FF_TARGET_WHOLE_CREW; /* S22 slice b — default target */
@@ -3796,6 +3846,18 @@ void ff_shell_set_heading(ff_shell_t *sh_pub, float heading_deg)
 {
     if (sh_pub == NULL) return;
     shell_of(sh_pub)->heading_deg = heading_deg;
+}
+
+void ff_shell_set_batt_mv(ff_shell_t *sh_pub, uint16_t pack_mv)
+{
+    if (sh_pub == NULL) return;
+    shell_t *sh = shell_of(sh_pub);
+    /* sh->now_ms is the last ff_shell_tick's clock reading — the same
+     * "now" every other tick-scoped decision in this file uses (e.g.
+     * inbox_rally_armed_ms), rather than requiring a second clock read
+     * here. See batt_filter's doc comment for why this runs the filter
+     * immediately rather than deferring to the next tick. */
+    (void)ff_batt_filter_push(&sh->batt_filter, pack_mv, sh->now_ms);
 }
 
 ff_shell_link_t ff_shell_link(ff_shell_t const *sh_pub)

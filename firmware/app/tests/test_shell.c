@@ -5262,6 +5262,77 @@ static void S26_launcher_flare_takeover_natural_expiry_dirties_key_and_renders_l
                              "the launcher did not resume normal live rendering after the takeover cleared");
 }
 
+/* ---------------------------------------------------------------------
+ * S25 slice c — ff_shell_set_batt_mv (docs/specs/S25-power-latch.md
+ * "(c) Battery gauge")
+ * ------------------------------------------------------------------- */
+
+/* Mutation (c) target: revert ff_shell_tick's radar.batt_pct assignment
+ * to the old hardcoded -1 and every assertion below that expects a real
+ * percent fails. Also exercises the render-key mask fix alongside the
+ * banner/unread ones already pinned above: `radar.batt_pct` is the
+ * THIRD field this PR adds to what `shell_render_key`'s LAUNCHER branch
+ * restores after its blanket memset (see that function's own doc
+ * comment) — before this fix a battery reading that changed while the
+ * launcher was showing (the common case; the launcher is home, S26
+ * slice e) left the render key byte-identical and the status row sat
+ * stale on the glass, the exact clobber class the banner exception
+ * (#157) already fixed for a different field.
+ */
+static void S25c_batt_mv_reflects_filtered_value_and_dirties_launcher_key(void)
+{
+    harness_init(100000u, false);
+    inject_my_info(MY_ID);
+    (void)ff_shell_tick(&H.shell, H.clk.t); /* settle boot */
+    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_LAUNCHER, ff_shell_view(&H.shell)->active_face); /* the boot default */
+
+    /* Before any push: honestly unknown, same "-1 until the first
+     * sensor push" contract heading_deg/my_pos_ok already have. */
+    TEST_ASSERT_EQUAL_INT8(-1, ff_shell_view(&H.shell)->radar.batt_pct);
+
+    /* mv=3700 is an exact OCV-table point (ff_batt.h) -> 30%. First-
+     * ever reading: shows immediately (ff_batt.h's "unknown-until-
+     * read, then real", no warm-up), and this unknown -> known
+     * transition must dirty the launcher's render key. */
+    ff_shell_set_batt_mv(&H.shell, 3700);
+    TEST_ASSERT_TRUE_MESSAGE(ff_shell_tick(&H.shell, H.clk.t),
+                             "the first battery reading did not dirty the launcher's render key - "
+                             "radar.batt_pct is being masked out again (mutation (c)-adjacent regression)");
+    TEST_ASSERT_EQUAL_INT8(30, ff_shell_view(&H.shell)->radar.batt_pct);
+
+    /* mv=3707 -> 31% (1 percentage point above the settled 30%,
+     * comfortably inside core's own FF_BATT_HYSTERESIS_PCT of 2 and
+     * nowhere near FF_BATT_LOW_PCT). ff_batt_filter_t's median+
+     * hysteresis (core/tests/test_batt.c covers the mechanism in
+     * isolation) absorbs a single such sample entirely, so the
+     * displayed value — and therefore the launcher's render key — must
+     * stay exactly as it was. Dropping the core hysteresis (mutation
+     * (b)) is exactly what would flip this assertion. */
+    advance(1000u);
+    ff_shell_set_batt_mv(&H.shell, 3707);
+    TEST_ASSERT_FALSE_MESSAGE(ff_shell_tick(&H.shell, H.clk.t),
+                              "a 1-point battery wobble dirtied the launcher's render key");
+    TEST_ASSERT_EQUAL_INT8(30, ff_shell_view(&H.shell)->radar.batt_pct);
+
+    /* A sustained, genuine move: mv=3900 (table-exact 65%) pushed twice
+     * more is enough for the filter's median to actually settle away
+     * from 30 (the first of the two is still outweighed by the 30/31
+     * already in the window; the second tips it) — a real KNOWN-to-
+     * KNOWN change, not merely the unknown->known edge above, and it
+     * must dirty the key too. */
+    advance(1000u);
+    ff_shell_set_batt_mv(&H.shell, 3900);
+    TEST_ASSERT_FALSE(ff_shell_tick(&H.shell, H.clk.t));
+    TEST_ASSERT_EQUAL_INT8(30, ff_shell_view(&H.shell)->radar.batt_pct);
+
+    advance(1000u);
+    ff_shell_set_batt_mv(&H.shell, 3900);
+    TEST_ASSERT_TRUE_MESSAGE(ff_shell_tick(&H.shell, H.clk.t),
+                             "a genuine, sustained battery reading change did not dirty the launcher's "
+                             "render key");
+    TEST_ASSERT_EQUAL_INT8(48, ff_shell_view(&H.shell)->radar.batt_pct);
+}
+
 /* AC2 — a banner from a DIFFERENT paired conversation than the one
  * currently open MUST dirty the render key: it is a genuinely NEW top-
  * of-glass surface, not part of the open thread's own content (unlike an
@@ -6012,6 +6083,9 @@ int main(void)
     RUN_TEST(S26_launcher_AC_second_sender_banner_dirties_key);
     RUN_TEST(S26_launcher_radar_position_update_does_not_dirty_key);
     RUN_TEST(S26_launcher_flare_takeover_natural_expiry_dirties_key_and_renders_launcher);
+
+    RUN_TEST(S25c_batt_mv_reflects_filtered_value_and_dirties_launcher_key);
+
     RUN_TEST(S26_AC2_banner_from_other_paired_conv_dirties_open_thread_key);
     RUN_TEST(S26_AC2_banner_from_other_paired_conv_dirties_popup_overlay_exactly_once);
     RUN_TEST(S26_banner_open_routes_marks_read_and_dismisses);

@@ -846,6 +846,34 @@ void ff_shell_set_sender(ff_shell_t *sh, ff_wiring_sender_t sender);
  */
 void ff_shell_set_heading(ff_shell_t *sh, float heading_deg);
 
+/**
+ * ff_shell_set_batt_mv — [api] S25 slice c: push one raw pack-voltage
+ * reading (millivolts), the same "push API" shape as
+ * `ff_shell_set_heading` above.
+ *
+ * The shell has no battery ADC of its own (neither target had one until
+ * this slice's device-side follow-up PR wires the Waveshare board's
+ * ADC1 ch7 read and calls this once per battery-read tick; the sim has
+ * no battery hardware at all and never calls it). Until the first call,
+ * the radar/launcher status bar's `batt_pct` honestly reads -1 ("--%"),
+ * mirroring `heading_deg`'s own -1-until-first-push contract.
+ *
+ * Unlike `ff_shell_set_heading`/`ff_shell_set_my_pos` (which just store
+ * the raw value for the next `ff_shell_tick` to interpret), this call
+ * runs the reading through the core display filter (`ff_batt.h`)
+ * IMMEDIATELY — see `ff_batt.h`'s own doc comment for why a moving-
+ * median + hysteresis filter needs to see every actual reading as its
+ * own timed event rather than being resampled at the shell's tick rate.
+ * The filtered result still only reaches `ff_shell_view()` on the NEXT
+ * `ff_shell_tick` (the projection is rebuilt there, same as every other
+ * view field) — this call never mutates the view directly.
+ *
+ * `pack_mv == 0` is the "no reading yet / sense line dead" sentinel
+ * (`ff_batt_pct_from_mv`'s own documented convention) — passing it is
+ * how a target reports "still don't know", not an error.
+ */
+void ff_shell_set_batt_mv(ff_shell_t *sh, uint16_t pack_mv);
+
 /* ---------------------------------------------------------------------
  * Read-only accessors (status bar, pairing UI, tests)
  * ------------------------------------------------------------------- */
