@@ -197,14 +197,49 @@ static void mc_emit_rx_meta(mc_client_t *c, meshtastic_MeshPacket const *pkt,
     c->events.on_rx_meta(c->events.user, pkt->from, &m);
 }
 
+/* Retry budget for a write() that returns 0 ("accepted nothing, try again
+ * later" — see the mc_transport_t.write() contract in mc_client.h), NOT
+ * an error. Measured in *calls*, not wall-clock time: mc_write_bytes()
+ * has no clock to measure against — mc_client_t carries a ff_clock_t, but
+ * it is read only at the mc_tick()/mc_begin_handshake()/mc_send_heartbeat()
+ * call sites that already have a `now_ms` in hand, not down here, and this
+ * loop has no yield point where wall time would meaningfully advance
+ * between attempts anyway (no sleep, no tick boundary) — a millisecond-
+ * resolution clock could read the same value for the whole loop, so a
+ * wall-clock deadline would not actually bound anything. A call-count
+ * budget bounds it unconditionally, matching the pattern
+ * mc_transport_tcp.c's own write() already uses for its EAGAIN retries.
+ *
+ * 64 is chosen to comfortably outlast a momentary stall on a bounded
+ * buffer (a UART TX ring draining at its own pace, S15) without turning a
+ * single frame's worth of back-pressure into a spurious reconnect: at the
+ * spec's ~50 Hz mc_tick() cadence, a caller retrying a handshake/heartbeat
+ * frame gets called again in ~20 ms regardless, so this budget only needs
+ * to cover one transport's worth of "still draining, not stuck" — not
+ * span multiple ticks. A permanently full/broken buffer still fails in a
+ * small, bounded number of calls instead of spinning forever. */
+#define MC_WRITE_ZERO_RETRY_BUDGET 64u
+
 static bool mc_write_bytes(mc_client_t *c, uint8_t const *buf, size_t len)
 {
     size_t sent = 0;
+    uint32_t zero_retries = 0;
     while (sent < len) {
         int n = c->transport.write(c->transport.io, buf + sent, len - sent);
-        if (n <= 0) {
-            return false;
+        if (n < 0) {
+            return false; /* hard transport failure — escalate immediately */
         }
+        if (n == 0) {
+            /* "Try again later", not an error (see mc_transport_t's
+             * write() contract) — but bounded, so a permanently stuck
+             * transport still fails instead of spinning forever. */
+            zero_retries++;
+            if (zero_retries >= MC_WRITE_ZERO_RETRY_BUDGET) {
+                return false;
+            }
+            continue;
+        }
+        zero_retries = 0; /* progress made; reset the budget for any later stall */
         sent += (size_t)n;
     }
     return true;
@@ -307,16 +342,31 @@ static void mc_process_mesh_packet(mc_client_t *c, meshtastic_MeshPacket const *
     } else if (portnum == (uint32_t)meshtastic_PortNum_POSITION_APP) {
         meshtastic_Position pos = meshtastic_Position_init_zero;
         pb_istream_t is = pb_istream_from_buffer(d->payload.bytes, d->payload.size);
-        if (pb_decode(&is, meshtastic_Position_fields, &pos) && pos.has_latitude_i &&
-            pos.has_longitude_i) {
+        if (!pb_decode(&is, meshtastic_Position_fields, &pos)) {
+            /* Genuine protobuf corruption: the only case decode_errors
+             * counts. Mirrors the NodeInfo replay path (below), which
+             * likewise counts nothing for a well-formed message that
+             * simply lacks coordinates. */
+            c->stats.decode_errors++;
+        } else if (pos.has_latitude_i && pos.has_longitude_i) {
             mc_position_t out;
             mc_position_from_pb(&pos, pkt->has_rx_time, pkt->rx_time, &out);
             if (c->events.on_position != NULL) {
                 c->events.on_position(c->events.user, pkt->from, &out);
             }
-        } else {
-            c->stats.decode_errors++;
         }
+        /* else: well-formed Position with no fix yet (both fields are
+         * explicit-presence and proto3 implicit-presence means "absent"
+         * and "0" are the same bytes) — a legitimate "no GPS fix yet"
+         * broadcast, not corruption. Nothing decoded wrong here, so
+         * nothing is counted: neither decode_errors (that would mislabel
+         * an honest no-fix broadcast as malformed protobuf) nor
+         * decode_skipped (the portnum *is* in decode scope; we understood
+         * the message perfectly, it just had nothing to report). Silently
+         * dropping the event is exactly what the NodeInfo path already
+         * does for the same condition (`ni->has_position &&
+         * ni->position.has_latitude_i && ni->position.has_longitude_i`,
+         * with no else branch at all). */
     } else if (portnum >= MC_PORTNUM_PRIVATE_MIN && portnum <= MC_PORTNUM_PRIVATE_MAX) {
         if (c->events.on_private != NULL) {
             c->events.on_private(c->events.user, pkt->from, pkt->to, portnum, d->payload.bytes,
@@ -449,9 +499,24 @@ void mc_connect(mc_client_t *c)
 
 void mc_tick(mc_client_t *c, uint32_t now_ms)
 {
+    /* Bounded drain (MC_TICK_MAX_FRAMES, see its doc comment in
+     * mc_client.h): stop once this call has decoded that many complete
+     * frames, leaving anything still buffered in the transport for the
+     * next call(s). Read one byte at a time — checked against the cap
+     * *before* each read — so a byte is never pulled out of the transport
+     * unless it is immediately fed to the framer; nothing is ever read
+     * and then discarded, so nothing is lost between calls, and frame
+     * order is naturally preserved (the framer/transport are simply
+     * resumed where this call left off). */
+    uint32_t frames_this_tick = 0;
+
     for (;;) {
-        uint8_t chunk[64];
-        int n = c->transport.read(c->transport.io, chunk, sizeof(chunk));
+        if (frames_this_tick >= MC_TICK_MAX_FRAMES) {
+            break;
+        }
+
+        uint8_t byte;
+        int n = c->transport.read(c->transport.io, &byte, 1);
         if (n < 0) {
             mc_fail_and_schedule_reconnect(c, now_ms);
             break;
@@ -461,19 +526,18 @@ void mc_tick(mc_client_t *c, uint32_t now_ms)
         }
         c->last_rx_ms = now_ms;
 
-        for (int i = 0; i < n; i++) {
-            uint8_t const *frame_buf = NULL;
-            uint16_t frame_len = 0;
-            if (mc_framer_feed(&c->framer, chunk[i], &frame_buf, &frame_len)) {
-                c->stats.frames_ok++;
+        uint8_t const *frame_buf = NULL;
+        uint16_t frame_len = 0;
+        if (mc_framer_feed(&c->framer, byte, &frame_buf, &frame_len)) {
+            c->stats.frames_ok++;
+            frames_this_tick++;
 
-                meshtastic_FromRadio fr = meshtastic_FromRadio_init_zero;
-                pb_istream_t is = pb_istream_from_buffer(frame_buf, frame_len);
-                if (pb_decode(&is, meshtastic_FromRadio_fields, &fr)) {
-                    mc_process_from_radio(c, &fr);
-                } else {
-                    c->stats.decode_errors++;
-                }
+            meshtastic_FromRadio fr = meshtastic_FromRadio_init_zero;
+            pb_istream_t is = pb_istream_from_buffer(frame_buf, frame_len);
+            if (pb_decode(&is, meshtastic_FromRadio_fields, &fr)) {
+                mc_process_from_radio(c, &fr);
+            } else {
+                c->stats.decode_errors++;
             }
         }
     }

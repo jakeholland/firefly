@@ -86,3 +86,103 @@ mc_state_t mc_state(mc_client_t const *c);
 a) framing+resync · b) protobuf gen + decode path · c) handshake state machine · d) send path · e) TCP transport + fixture capture tool (Python script recording meshtasticd session) · f) packet metadata: position provenance + per-packet RSSI/SNR/hop path (AC9, AC10; issues #33, #35) · g) coordinate precision (AC11; issue #47).
 
 **f and g make the data available; they do not consume it.** Wiring `on_rx_meta` into `ff_crew_on_rssi`, and giving `ff_crew` an asserted-position state off the live/stale/lost axis, both belong to S16 slice b1 (callback wiring) — see `docs/specs/S16-app-shell.md`. Until that lands, the Radar face's CLOSE mode still has no path from a radio to the screen. Likewise the *consumer* of precision — the Radar face refusing to render a confident metre-level distance from kilometre-level data — stays with issue #47, alongside the Firefly-channel provisioning that makes full precision available at all.
+
+## Amendments
+
+### `mc_transport_t.write()` backpressure contract (debt/meshclient-contracts)
+
+The vtable's `write()` had no documented contract for a partial or zero
+return: `mc_write_bytes`/`mc_send_frame` (`mc_client.c`) treated any
+`write() <= 0` as a hard failure and escalated straight to reconnect. Only
+`mc_transport_tcp` happened to satisfy that, by retrying `EAGAIN`/
+`EWOULDBLOCK` internally up to 200 times so its own `write()` never
+actually returns 0. The UART transport landing with S15 will naturally
+return 0 for "TX ring full" — treating that as a hard failure would fire a
+reconnect storm every time the device's own output momentarily outpaced
+the ring.
+
+**Contract, now stated in `mc_client.h`'s `mc_transport_t` doc comment:**
+`write()` returns the number of bytes accepted, `0..len`. `0` means
+"accepted nothing right now, try again later" — **not** an error. A
+negative return is a hard transport failure and is escalated immediately,
+no retry.
+
+`mc_write_bytes()` now retries a `0` return up to `MC_WRITE_ZERO_RETRY_BUDGET`
+(64, `mc_client.c`) times — a *call* budget, not a wall-clock one: the
+retry loop has no clock of its own in scope, no yield point, and no sleep
+between attempts, so a millisecond-resolution deadline could read the same
+timestamp for the entire loop and fail to bound anything. 64 calls is
+chosen to comfortably outlast one transport's momentary stall (a UART TX
+ring draining at its own pace) without turning a single frame's
+back-pressure into a spurious reconnect, while a permanently stuck
+transport still fails in a small, bounded number of calls rather than
+spinning forever. `mc_transport_tcp` is unchanged — it still never returns
+0, so this budget is never exercised on the shipped dev transport.
+
+Tests: `S03_debt_write_backpressure_below_budget_sends_frame_no_reconnect`,
+`S03_debt_write_backpressure_budget_exhausted_triggers_reconnect`,
+`S03_debt_write_negative_return_fails_immediately`
+(`meshclient/tests/test_meshclient.c`).
+
+### Honest `decode_errors` on the live Position path (debt/meshclient-contracts)
+
+`mc_process_mesh_packet`'s `POSITION_APP` branch counted `decode_errors++`
+whenever `pb_decode()` succeeded but the message lacked
+`latitude_i`/`longitude_i` — indistinguishable, in the stats, from genuine
+protobuf corruption. A Position broadcast with no coordinates is a
+legitimate "no GPS fix yet" message (both fields are proto3 implicit
+presence, so "absent" and "explicit zero" are the same wire bytes); it is
+not malformed. The NodeInfo replay path already got this right — it
+silently emits nothing for the same missing-coordinates condition, with no
+counter touched at all.
+
+**Fix:** `decode_errors` now increments *only* when `pb_decode()` itself
+fails. A well-formed, no-fix Position emits no `on_position` event and
+touches no counter — matching the NodeInfo path exactly, not even
+`decode_skipped` (the portnum *is* in decode scope; nothing was skipped,
+there was simply nothing to report).
+
+Tests: `S03_debt_position_no_fix_yet_does_not_count_as_decode_error`,
+`S03_debt_position_corrupt_protobuf_counts_decode_error`
+(`meshclient/tests/test_meshclient.c`). Mutation-tested: reverting to the
+old single-branch `decode_errors++` makes
+`S03_debt_position_no_fix_yet_does_not_count_as_decode_error` fail
+(`Expected 0 Was 1`) and nothing else.
+
+### Bounded `mc_tick()` drain — `MC_TICK_MAX_FRAMES` (debt/meshclient-contracts)
+
+`mc_tick()`'s read loop previously drained the transport completely in one
+call. meshtasticd's `want_config` response can burst a NodeInfo dump of
+the whole mesh's node database in one delivery, and `mc_tick()` shares its
+calling tick with UI rendering (`ff_shell.c`'s `ff_shell_tick`) — decoding
+an unbounded burst back-to-back in one call could stall that shared tick.
+
+**Fix:** `mc_tick()` now decodes at most `MC_TICK_MAX_FRAMES` (32,
+documented in `mc_client.h` next to `mc_tick()`) complete frames per call.
+32 is chosen against the largest realistic burst: even a 100-node
+want_config dump (on the order of Meshtastic's stock node-database size on
+typical hardware) finishes draining in ~4 calls — well under 100 ms at the
+spec's ~50 Hz cadence — while any single `mc_tick()` call never does more
+than 32 frames' worth of `pb_decode()` + dispatch.
+
+Implementation note: to guarantee nothing is lost when the cap lands
+mid-burst, `mc_tick()` now reads the transport **one byte at a time**,
+checking the cap before each read, instead of the previous 64-byte chunk
+read. This means a byte is never pulled out of the transport unless it is
+immediately fed to the framer — there is no partially-consumed chunk to
+carry over between calls, at the cost of more (cheap) `transport.read()`
+calls for the same total bytes. Bytes beyond the cap are simply left
+buffered in the transport for the next call(s); frame order is preserved
+because the framer and transport both simply resume where the previous
+call left off.
+
+Test: `S03_debt_mc_tick_bounded_drain_caps_frames_per_call` — feeds
+`MC_TICK_MAX_FRAMES + 5` frames into a fake transport; the first
+`mc_tick()` call delivers exactly the cap (transport left with bytes
+buffered), the second delivers the remaining 5, and both calls' payloads
+are checked in order end-to-end. The existing byte-dribble/resync (AC1)
+tests exercise `mc_framer_feed()` directly and are unaffected; the AC8
+fuzz-smoke test was updated to call `mc_tick()` in a loop until its mock
+transport drains, since a single call is no longer guaranteed to.
+Mutation-tested: disabling the cap check makes this test fail
+(`Expected 32 Was 37`) and nothing else.
