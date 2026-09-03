@@ -2648,6 +2648,55 @@ static void S26_launcher_status_row_tints_amber_when_battery_low(void)
                                   lv_color_hex(FF_THEME_COLOR_MUTED)));
 }
 
+/* =================================================================== */
+/* Radar counterpart of the launcher test above. Review finding (PR      */
+/* #177): no radar golden fixture has batt_pct <= FF_BATT_LOW_PCT and    */
+/* there was no color-level test for scr_radar.c's own status bar, so a  */
+/* hardcoded-muted regression there was caught by NOTHING. Same          */
+/* rendered-pixel-color proof, same three cases, on ff_scr_radar_build   */
+/* instead of ff_scr_launcher_build. */
+/* =================================================================== */
+
+static void S06_radar_battery_tints_amber_when_low(void)
+{
+    ff_radar_view_t r;
+
+    /* Known, low (<= FF_BATT_LOW_PCT) — the "NN%" status-bar label amber. */
+    memset(&r, 0, sizeof(r));
+    r.mode = RADAR_LIVE;
+    r.batt_pct = 10;
+    ff_scr_radar_build(lv_obj_create(lv_screen_active()), &r, false, false);
+
+    lv_obj_t *low_lbl = find_label_exact(lv_screen_active(), "10%");
+    TEST_ASSERT_NOT_NULL(low_lbl);
+    TEST_ASSERT_TRUE(lv_color_eq(lv_obj_get_style_text_color(low_lbl, LV_PART_MAIN),
+                                  lv_color_hex(FF_THEME_COLOR_STALE_AMBER)));
+
+    /* Known, NOT low — normal muted chrome, not amber. */
+    lv_obj_clean(lv_screen_active());
+    memset(&r, 0, sizeof(r));
+    r.mode = RADAR_LIVE;
+    r.batt_pct = 50;
+    ff_scr_radar_build(lv_obj_create(lv_screen_active()), &r, false, false);
+
+    lv_obj_t *ok_lbl = find_label_exact(lv_screen_active(), "50%");
+    TEST_ASSERT_NOT_NULL(ok_lbl);
+    TEST_ASSERT_TRUE(lv_color_eq(lv_obj_get_style_text_color(ok_lbl, LV_PART_MAIN),
+                                  lv_color_hex(FF_THEME_COLOR_MUTED)));
+
+    /* Unknown (-1, no ADC yet) — honestly "--%%", never amber. */
+    lv_obj_clean(lv_screen_active());
+    memset(&r, 0, sizeof(r));
+    r.mode = RADAR_LIVE;
+    r.batt_pct = -1;
+    ff_scr_radar_build(lv_obj_create(lv_screen_active()), &r, false, false);
+
+    lv_obj_t *unknown_lbl = find_label_exact(lv_screen_active(), "--%");
+    TEST_ASSERT_NOT_NULL(unknown_lbl);
+    TEST_ASSERT_TRUE(lv_color_eq(lv_obj_get_style_text_color(unknown_lbl, LV_PART_MAIN),
+                                  lv_color_hex(FF_THEME_COLOR_MUTED)));
+}
+
 /* ff_scr_launcher_satellite_deg (scr_launcher.h [api]): the N-agnostic
  * satellite-angle formula, tested directly rather than through rendered
  * pixel positions — 0deg = top, clockwise, `compass_pos * (360 / n)`.
@@ -3014,6 +3063,7 @@ int main(void)
     RUN_TEST(S26e_launcher_drag_across_satellites_emits_nothing);
 
     RUN_TEST(S26_launcher_status_row_tints_amber_when_battery_low);
+    RUN_TEST(S06_radar_battery_tints_amber_when_low);
 
     RUN_TEST(PL_launcher_satellite_drag_off_emits_nothing);
     RUN_TEST(PL_radar_flare_drag_off_emits_nothing);
