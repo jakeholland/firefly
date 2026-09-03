@@ -121,4 +121,21 @@ menu "Firefly bring-up (S15 slice b)"
             demo build is byte-identical with or without this diagnostic
             existing in the tree — verify with `idf.py size` if in doubt.
 
+    config FF_AUDIO_SELFTEST
+        bool "Play FLARE_SENT once at boot (S27 sounds device bring-up aid)"
+        default n
+        help
+            Device-only bring-up aid for the S27 sounds device HAL
+            (docs/specs/S27-sounds.md, ff_audio.h): once LVGL is up and the
+            first face is on glass, plays the FLARE_SENT pattern (the
+            short rising 3-note chime) exactly once via ff_audio_play, so
+            the maintainer can hear the speaker work without actually
+            triggering a flare (which would take over the whole UI). Logs
+            when it fires.
+
+            Default OFF: zero behaviour change to every other build (no
+            unsolicited sound on a normal boot). Enable, flash, listen,
+            then disable again before a field build — see this spec's
+            device on-glass steps for the full bring-up sequence.
+
 endmenu
