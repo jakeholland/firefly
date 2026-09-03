@@ -95,8 +95,13 @@ typedef struct {
      * `ff_shell_keep_awake(&state, false)` — the sim has no blocking
      * touch-calibration flow, so that third source is always false here.
      * Every real pointer gesture (tap/swipe/hold) feeds `ff_idle_input`
-     * (mirrors touch on device); tests may also call it directly on
-     * `&ctx.idle` to simulate a wake with no gesture. `rebuild_pending`
+     * every sample it is held (mirrors app_main.c's per-frame touch-down
+     * feed on device — see `ctl_loop_pointer_read_cb`); a press that
+     * BEGINS while idle is not ACTIVE is additionally gated (S26
+     * wake-only-touch amendment, `touch_gate` below) — wakes but is
+     * never delivered to LVGL for that gesture. Tests may also call
+     * `ff_idle_input` directly on `&ctx.idle` to simulate a wake with no
+     * gesture. `rebuild_pending`
      * is app_main.c's same "accumulate dirty, drain on the first
      * non-OFF tick" latch (mirrors that file's finger-down defer latch
      * in spirit: an OFF window defers a rebuild instead of a held
@@ -113,6 +118,16 @@ typedef struct {
     ff_idle_t idle;
     bool      rebuild_pending;
     uint32_t  rebuild_count;
+
+    /* S26 wake-only-touch amendment (docs/specs/S26-device-lifecycle.md
+     * "(c) Inactivity -> dim -> screen off", 2026-09-02): the sim's
+     * synthetic pointer indev is this session's ONE touch input source,
+     * so it gets ONE `ff_idle_touch_gate_t` instance (ff_idle.h's own
+     * doc comment on that type explains why an instance is per-input-
+     * source, never shared) — consulted every poll from
+     * `ctl_loop_pointer_read_cb`, mirroring `ff_display.c`'s device-side
+     * touch read path. */
+    ff_idle_touch_gate_t touch_gate;
 
     char ctl_out_dir_real[4096]; /* PATH_MAX-sized; see ctl_out_path.h */
 } ff_ctl_loop_ctx_t;
