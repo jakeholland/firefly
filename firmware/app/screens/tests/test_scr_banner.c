@@ -60,56 +60,32 @@
 #include "scr_radar.h"
 #include "scr_inbox.h"
 
-/* ---------------------------------------------------------------------
- * setUp/tearDown + the spy sink (S16c1's seam — same pattern
- * test_scr_intent.c uses, duplicated file-local rather than shared, that
- * file's own established convention for these small test-only helpers).
- * ------------------------------------------------------------------- */
-
-static uint32_t s_fake_tick_ms;
-
-static uint32_t test_tick_cb(void)
-{
-    return s_fake_tick_ms;
-}
-
-typedef struct {
-    int count;
-    ff_intent_t last;
-} spy_sink_t;
-
-static spy_sink_t s_spy;
-
-static void spy_sink_cb(void *user, ff_intent_t const *in)
-{
-    spy_sink_t *s = (spy_sink_t *)user;
-    s->count++;
-    s->last = *in;
-}
+/* setUp/tearDown, the spy sink, the frozen-but-advanceable tick,
+ * find_label_exact, click(), and drag_v()/tap_at() (including the one
+ * real hazard in drag_v() — the LVGL indev scroll-throw-animation
+ * use-after-free) now live in ONE shared header (debt/test-naming-
+ * harness), used by this file and test_scr_intent.c — see
+ * support/lv_test_harness.h's own top comment for the extraction
+ * rationale and the workaround's full derivation. This file previously
+ * hand-rolled its own copy of every one of these. */
+#include "support/lv_test_harness.h"
 
 void setUp(void)
 {
-    s_fake_tick_ms = 0;
-    lv_init();
-    lv_tick_set_cb(test_tick_cb);
-    lv_display_t *disp = lv_display_create(FF_THEME_WINDOW_PX, FF_THEME_WINDOW_PX);
-    lv_display_set_default(disp);
-
-    memset(&s_spy, 0, sizeof(s_spy));
-    ff_intent_emit_bind(spy_sink_cb, &s_spy);
+    ff_test_lv_setup(FF_THEME_WINDOW_PX);
 }
 
 void tearDown(void)
 {
-    ff_intent_emit_bind(NULL, NULL);
-    lv_deinit();
+    ff_test_lv_teardown();
 }
 
 /* ---------------------------------------------------------------------
  * Small geometry helpers — lv_area_t's x2/y2 are INCLUSIVE (ff_layout.h's
  * own doc comment on the convention mismatch with this codebase's usual
  * "size = far - near" rects), so both helpers below work directly in
- * that inclusive convention rather than converting.
+ * that inclusive convention rather than converting. Banner-specific (not
+ * part of the shared header — test_scr_intent.c has no equivalent).
  * ------------------------------------------------------------------- */
 
 static bool areas_overlap(lv_area_t const *a, lv_area_t const *b)
@@ -120,82 +96,6 @@ static bool areas_overlap(lv_area_t const *a, lv_area_t const *b)
 static bool area_contains(lv_area_t const *outer, lv_area_t const *inner)
 {
     return outer->x1 <= inner->x1 && outer->x2 >= inner->x2 && outer->y1 <= inner->y1 && outer->y2 >= inner->y2;
-}
-
-static lv_obj_t *find_label_exact(lv_obj_t *root, char const *text)
-{
-    uint32_t n = lv_obj_get_child_count(root);
-    for (uint32_t i = 0; i < n; i++) {
-        lv_obj_t *child = lv_obj_get_child(root, i);
-        if (lv_obj_check_type(child, &lv_label_class)) {
-            char const *txt = lv_label_get_text(child);
-            if (txt != NULL && strcmp(txt, text) == 0) {
-                return child;
-            }
-        }
-        lv_obj_t *found = find_label_exact(child, text);
-        if (found != NULL) {
-            return found;
-        }
-    }
-    return NULL;
-}
-
-static void click(lv_obj_t *obj)
-{
-    TEST_ASSERT_NOT_NULL(obj);
-    lv_result_t r = lv_obj_send_event(obj, LV_EVENT_CLICKED, NULL);
-    TEST_ASSERT_EQUAL(LV_RESULT_OK, r);
-}
-
-/* Real press/move/release through a synthetic pointer indev — the only
- * way to exercise LV_OBJ_FLAG_PRESS_LOCK at all (test_scr_intent.c's own
- * drag_v, duplicated here per this file's own top-comment convention). */
-static lv_point_t s_probe_pt;
-static lv_indev_state_t s_probe_state;
-
-static void probe_read_cb(lv_indev_t *indev, lv_indev_data_t *data)
-{
-    (void)indev;
-    data->point = s_probe_pt;
-    data->state = s_probe_state;
-}
-
-static void drag_v(int32_t from_y, int32_t to_y, int32_t x)
-{
-    lv_indev_t *indev = lv_indev_create();
-    lv_indev_set_type(indev, LV_INDEV_TYPE_POINTER);
-    lv_indev_set_read_cb(indev, probe_read_cb);
-
-    s_probe_pt.x = (lv_coord_t)x;
-    s_probe_pt.y = (lv_coord_t)from_y;
-    s_probe_state = LV_INDEV_STATE_PRESSED;
-    s_fake_tick_ms += 40u;
-    lv_timer_handler();
-
-    enum { STEPS = 6 };
-    for (int i = 1; i <= STEPS; i++) {
-        s_probe_pt.y = (lv_coord_t)(from_y + (to_y - from_y) * i / STEPS);
-        s_fake_tick_ms += 40u;
-        lv_timer_handler();
-    }
-
-    s_probe_state = LV_INDEV_STATE_RELEASED;
-    s_fake_tick_ms += 40u;
-    lv_timer_handler();
-
-    lv_anim_delete(indev, NULL);
-    lv_indev_delete(indev);
-}
-
-/* A single press-then-release at one point — a real tap through the
- * same synthetic pointer indev drag_v() uses (test_scr_intent.c's own
- * tap_at, duplicated here per this file's file-local-helper
- * convention). Used below to prove a control routes a REAL coordinate
- * tap correctly, not just that its CLICKABLE flag reads true. */
-static void tap_at(int32_t x, int32_t y)
-{
-    drag_v(y, y, x);
 }
 
 /* ---------------------------------------------------------------------
