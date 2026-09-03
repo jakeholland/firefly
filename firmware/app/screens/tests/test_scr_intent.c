@@ -58,97 +58,23 @@
 #include "radar_layout.h" /* RADAR_LAYOUT_DOT_PX — S17a AC4 render tests, see that section below */
 #include "ff_theme.h" /* FF_THEME_FONT_MSG_BODY — S24 thread-bubble-not-compressed test */
 
-/* Frozen-by-default tick — same convention as test_scr_flare.c: nothing
- * here renders a frame, so every existing test in this file (all
- * `lv_obj_send_event` direct injection, no `lv_timer_handler` loop) never
- * observes it moving. `s_fake_tick_ms` exists for the drag() helper below
- * (S16 slice c3's swipe-gesture tests) ONLY: LVGL's indev read timer is
- * scheduled on real elapsed ticks (`LV_DEF_REFR_PERIOD`, 33 ms) even in a
- * tight synchronous test loop, so a genuinely-frozen tick would let the
- * FIRST `lv_timer_handler()` call read the press and then silently stop
- * reading every subsequent position update — a drag that "moves" but is
- * never actually seen moving, and no gesture accumulates. Reset to 0 in
- * setUp() so every OTHER test keeps seeing a frozen 0, exactly as before. */
-static uint32_t s_fake_tick_ms;
-
-static uint32_t test_tick_cb(void)
-{
-    return s_fake_tick_ms;
-}
-
-/* ------------------------------------------------------------------- */
-/* spy sink                                                             */
-/* ------------------------------------------------------------------- */
-
-typedef struct {
-    int count;
-    ff_intent_t last; /* copied — the sink contract (ff_intent.h) */
-} spy_sink_t;
-
-static spy_sink_t s_spy;
-
-static void spy_sink_cb(void *user, ff_intent_t const *in)
-{
-    spy_sink_t *s = (spy_sink_t *)user;
-    s->count++;
-    s->last = *in;
-}
+/* setUp/tearDown, the spy sink, the frozen-but-advanceable tick, the
+ * label/button tree-search helpers, and click()/drag()/drag_v()/tap_at()
+ * (including the one real hazard in the last two — the LVGL indev
+ * scroll-throw-animation use-after-free) now live in ONE shared header
+ * (debt/test-naming-harness), used by this file and test_scr_banner.c —
+ * see support/lv_test_harness.h's own top comment for the extraction
+ * rationale and the workaround's full derivation. */
+#include "support/lv_test_harness.h"
 
 void setUp(void)
 {
-    s_fake_tick_ms = 0;
-    lv_init();
-    lv_tick_set_cb(test_tick_cb);
-    /* No buffers/flush callback: widget building + lv_obj_send_event
-     * never touch the flush path (see test_scr_flare.c's setUp note). */
-    lv_display_t *disp = lv_display_create(412, 412);
-    lv_display_set_default(disp);
-
-    memset(&s_spy, 0, sizeof(s_spy));
-    ff_intent_emit_bind(spy_sink_cb, &s_spy);
+    ff_test_lv_setup(412);
 }
 
 void tearDown(void)
 {
-    /* The sink is process-global (ff_intent.h); never leak a binding to
-     * a test that expects the unbound state. */
-    ff_intent_emit_bind(NULL, NULL);
-    lv_deinit();
-}
-
-/* find_button_with_label — same reusable lookup as test_scr_flare.c
- * (kept file-local there by design; duplicated rather than exported so
- * neither test file grows a shared-header dependency for one helper). */
-static lv_obj_t *find_button_with_label(lv_obj_t *root, char const *label_text)
-{
-    uint32_t n = lv_obj_get_child_count(root);
-    for (uint32_t i = 0; i < n; i++) {
-        lv_obj_t *child = lv_obj_get_child(root, i);
-        if (lv_obj_check_type(child, &lv_button_class)) {
-            uint32_t nc = lv_obj_get_child_count(child);
-            for (uint32_t j = 0; j < nc; j++) {
-                lv_obj_t *maybe_label = lv_obj_get_child(child, j);
-                if (lv_obj_check_type(maybe_label, &lv_label_class)) {
-                    char const *txt = lv_label_get_text(maybe_label);
-                    if (txt != NULL && strcmp(txt, label_text) == 0) {
-                        return child;
-                    }
-                }
-            }
-        }
-        lv_obj_t *found = find_button_with_label(child, label_text);
-        if (found != NULL) {
-            return found;
-        }
-    }
-    return NULL;
-}
-
-static void click(lv_obj_t *obj)
-{
-    TEST_ASSERT_NOT_NULL(obj);
-    lv_result_t r = lv_obj_send_event(obj, LV_EVENT_CLICKED, NULL);
-    TEST_ASSERT_EQUAL(LV_RESULT_OK, r);
+    ff_test_lv_teardown();
 }
 
 /* =================================================================== */
@@ -171,115 +97,9 @@ static void click(lv_obj_t *obj)
 /* (the carousel is retired; scr_nav.c has no gesture handler at all    */
 /* any more, so there is nothing left for an unclaimed drag to become — */
 /* it is simply left as whatever scroll the content underneath makes    */
-/* of it, same as a vertical drag always was).                          */
+/* of it, same as a vertical drag always was). drag()/drag_v()/tap_at() */
+/* are the shared header's synthetic-pointer-indev helpers.             */
 /* =================================================================== */
-
-static lv_point_t s_probe_pt;
-static lv_indev_state_t s_probe_state;
-
-static void probe_read_cb(lv_indev_t *indev, lv_indev_data_t *data)
-{
-    (void)indev;
-    data->point = s_probe_pt;
-    data->state = s_probe_state;
-}
-
-/* A press -> several move steps -> release sequence through a REAL
- * pointer indev, same shape as targets/sim/main.c's ff_loop_swipe (the
- * production ctl-socket "swipe" command). */
-static void drag(int32_t from_x, int32_t to_x, int32_t y)
-{
-    lv_indev_t *indev = lv_indev_create();
-    lv_indev_set_type(indev, LV_INDEV_TYPE_POINTER);
-    lv_indev_set_read_cb(indev, probe_read_cb);
-
-    /* LVGL's indev read timer only re-fires on real elapsed ticks (see
-     * s_fake_tick_ms's comment above) — advance past LV_DEF_REFR_PERIOD
-     * (33 ms) before every handler call, not just the first, or every
-     * position update after the initial press is silently never read. */
-    s_probe_pt.x = (lv_coord_t)from_x;
-    s_probe_pt.y = (lv_coord_t)y;
-    s_probe_state = LV_INDEV_STATE_PRESSED;
-    s_fake_tick_ms += 40u;
-    lv_timer_handler();
-
-    enum { STEPS = 6 };
-    for (int i = 1; i <= STEPS; i++) {
-        s_probe_pt.x = (lv_coord_t)(from_x + (to_x - from_x) * i / STEPS);
-        s_fake_tick_ms += 40u;
-        lv_timer_handler();
-    }
-
-    s_probe_state = LV_INDEV_STATE_RELEASED;
-    s_fake_tick_ms += 40u;
-    lv_timer_handler();
-
-    /* A release with residual velocity schedules LVGL's scroll-THROW
-     * momentum animation, keyed on `var = indev` (lv_indev.c's
-     * indev_scroll_throw_anim_cb) — NOT on the scrolled object, so
-     * lv_obj_del/lv_obj_clean on the scrolled tree never cancels it, and
-     * lv_indev_delete() below does not either (measured: it frees the
-     * indev struct directly with no animation cleanup at all). Deleting
-     * the indev while that animation is still pending leaves a dangling
-     * `var` that crashes the NEXT lv_timer_handler() call — including one
-     * from a LATER, unrelated drag() well after this function returned —
-     * whenever the freed memory happens to get reused (a rebuilt screen
-     * being the everyday way that happens). Canceling it here, before the
-     * indev goes away, is required for this helper to be safely reusable
-     * across an in-between lv_obj_clean + rebuild, which no test needed
-     * before the S24 thread scroll-preservation tests. No observable
-     * effect on any existing caller: nothing here previously read the
-     * throw's own further motion — every existing assertion runs off
-     * the position drag_v/drag already reached at release. */
-    lv_anim_delete(indev, NULL);
-    lv_indev_delete(indev);
-}
-
-/* Vertical counterpart to `drag` above — same real-indev press/move/
- * release shape, varying y instead of x. Horizontal-carousel rework: a
- * vertical drag through nav_swipe_gesture_cb is now a NO-OP (LV_DIR_TOP
- * and LV_DIR_BOTTOM return without emitting), so a vertical drag is left
- * to be a scroll and never a face change. */
-static void drag_v(int32_t from_y, int32_t to_y, int32_t x)
-{
-    lv_indev_t *indev = lv_indev_create();
-    lv_indev_set_type(indev, LV_INDEV_TYPE_POINTER);
-    lv_indev_set_read_cb(indev, probe_read_cb);
-
-    s_probe_pt.x = (lv_coord_t)x;
-    s_probe_pt.y = (lv_coord_t)from_y;
-    s_probe_state = LV_INDEV_STATE_PRESSED;
-    s_fake_tick_ms += 40u;
-    lv_timer_handler();
-
-    enum { STEPS = 6 };
-    for (int i = 1; i <= STEPS; i++) {
-        s_probe_pt.y = (lv_coord_t)(from_y + (to_y - from_y) * i / STEPS);
-        s_fake_tick_ms += 40u;
-        lv_timer_handler();
-    }
-
-    s_probe_state = LV_INDEV_STATE_RELEASED;
-    s_fake_tick_ms += 40u;
-    lv_timer_handler();
-
-    /* See drag()'s own comment above for why this is required, not
-     * defensive belt-and-suspenders: lv_indev_delete() alone leaves a
-     * pending scroll-throw animation dangling on the freed indev. */
-    lv_anim_delete(indev, NULL);
-    lv_indev_delete(indev);
-}
-
-/* A single press-then-release at one point, no movement — a real tap
- * through the same synthetic pointer indev drag()/drag_v() use, as
- * opposed to click()'s direct LV_EVENT_CLICKED injection most tests in
- * this file use. Defined here (right after drag_v, its one dependency)
- * rather than down by its first caller, so every test above — including
- * the S99 compose SEND/SPACE real-touch tests — can use it too. */
-static void tap_at(int32_t x, int32_t y)
-{
-    drag_v(y, y, x);
-}
 
 /* S26e AC3: "a horizontal drag on Radar/Now/Signals changes nothing" —
  * both directions, on all three named faces. scr_nav.c has no gesture
@@ -950,27 +770,9 @@ static ff_inbox_conv_t *sig_add_conv(ff_app_inbox_t *v, ff_conv_kind_t kind, uin
  * overlay button created as the row's FIRST child (scr_inbox.c's
  * inbox_row_container — the touching-rows/adjacency-floor shape). A
  * row's only unique on-screen text is its name label, so the lookup goes
- * by that, steps up to the row, and takes child 0 — the overlay. (Shared
- * find_label_exact below is also used by the settings-face tests.) */
-static lv_obj_t *find_label_exact(lv_obj_t *root, char const *text)
-{
-    uint32_t n = lv_obj_get_child_count(root);
-    for (uint32_t i = 0; i < n; i++) {
-        lv_obj_t *child = lv_obj_get_child(root, i);
-        if (lv_obj_check_type(child, &lv_label_class)) {
-            char const *txt = lv_label_get_text(child);
-            if (txt != NULL && strcmp(txt, text) == 0) {
-                return child;
-            }
-        }
-        lv_obj_t *found = find_label_exact(child, text);
-        if (found != NULL) {
-            return found;
-        }
-    }
-    return NULL;
-}
-
+ * by that, steps up to the row, and takes child 0 — the overlay.
+ * find_label_exact is the shared header's (support/lv_test_harness.h) —
+ * also used by the settings-face tests below. */
 static lv_obj_t *find_row_hit_by_name(lv_obj_t *root, char const *name_text)
 {
     lv_obj_t *name = find_label_exact(root, name_text);
@@ -2611,12 +2413,94 @@ static void S100_settings_brightness_stepper_steps_and_clamps(void)
     TEST_ASSERT_EQUAL_INT32((int32_t)FF_BRIGHTNESS_MIN_PCT, s_spy.last.u.setting.v.i);
 }
 
+/* S21 AC1 — "Settings is a single scrolling list (no page chip); the back
+ * button is pinned and always reachable; every prior row plus Calibrate
+ * Touch is present."
+ *
+ * The "back button" clause is now STALE: S26's horizontal-carousel rework
+ * (2026-09-01, well before this S21 slice landed) already retired the
+ * Settings back button entirely — see scr_settings.c's own header
+ * comment ("There is no BACK control any more — the horizontal-carousel
+ * rework made Settings a swipe tile you leave by swiping left, not a
+ * modal with a back button") and S21's own header-alignment amendment,
+ * which independently confirms the back button was already gone before
+ * this slice touched the header. Asserting a BACK control here would be
+ * testing a phantom, so this test instead pins what's actually true and
+ * current: (a) no page chip, (b) every settings row — every prior row
+ * plus CALIBRATE TOUCH — is present AND reachable by scrolling the list
+ * into its band, and (c) the pinned header (SETTINGS + name) stays put
+ * regardless of scroll position, so the equivalent "always reachable"
+ * property (a way back OUT is always on screen, just no longer a
+ * dedicated button) still holds. The horizontal-drag-leaves-Settings
+ * property itself is S26e's, pinned by S26e_AC3_horizontal_drag_*
+ * above and the swipe-navigation tests elsewhing in this file.
+ *
+ * Mutation check (hand-verified before pushing, per docs/review/
+ * code-review.md item 6): commenting out the
+ * `settings_build_calibrate_row(...)` call in ff_scr_settings_build
+ * (scr_settings.c) in a scratch build fails this test on the
+ * CALIBRATE TOUCH presence assertion; see the PR body for the exact
+ * `ctest` output. */
+static void S21_AC1_settings_is_one_scrolling_list_every_row_reachable(void)
+{
+    ff_scr_settings_reset_scroll(); /* a fresh entry always starts at the top */
+
+    ff_app_settings_t s;
+    memset(&s, 0, sizeof(s));
+
+    ff_scr_settings_build(lv_screen_active(), &s);
+
+    /* No page chip: S21 replaced #105's pagination outright — there is
+     * no "1/2"-style indicator left anywhere in the tree. */
+    TEST_ASSERT_NULL(find_label_exact(lv_screen_active(), "1/2"));
+    TEST_ASSERT_NULL(find_label_exact(lv_screen_active(), "2/2"));
+
+    /* Every prior row's caption/label is present SOMEWHERE in the tree
+     * (LVGL builds every child regardless of current scroll position —
+     * this alone proves "present", not yet "reachable"). */
+    static char const *const kRowLabels[] = {
+        "BRIGHTNESS", "UNITS",   "CLOCK",        "SCREEN",     "SHARE",
+        "HAPTICS",    "GLOW",    "WATER NUDGE",  "QUIET HOURS", "COLORBLIND",
+    };
+    for (size_t i = 0; i < sizeof(kRowLabels) / sizeof(kRowLabels[0]); i++) {
+        TEST_ASSERT_NOT_NULL_MESSAGE(find_label_exact(lv_screen_active(), kRowLabels[i]), kRowLabels[i]);
+    }
+    TEST_ASSERT_NOT_NULL(find_button_with_label(lv_screen_active(), "CALIBRATE TOUCH"));
+
+    /* "Reachable by scrolling": scroll the ONE list all the way down
+     * (LVGL clamps to the real content range) and prove the LAST row,
+     * CALIBRATE TOUCH, actually lands INSIDE the list's own viewport
+     * band at that scroll position — not merely present somewhere
+     * off-glass in the object tree. */
+    lv_obj_t *list = find_scrollable(lv_screen_active());
+    TEST_ASSERT_NOT_NULL_MESSAGE(list, "no scrollable settings list container found");
+    lv_obj_update_layout(list);
+    lv_obj_scroll_to_y(list, LV_COORD_MAX, LV_ANIM_OFF);
+    lv_obj_update_layout(list);
+
+    lv_obj_t *cal = find_button_with_label(lv_screen_active(), "CALIBRATE TOUCH");
+    TEST_ASSERT_NOT_NULL(cal);
+    lv_area_t cal_area;
+    lv_obj_get_coords(cal, &cal_area);
+    lv_area_t list_area;
+    lv_obj_get_coords(list, &list_area);
+    TEST_ASSERT_TRUE_MESSAGE(cal_area.y1 >= list_area.y1 && cal_area.y2 <= list_area.y2,
+                             "CALIBRATE TOUCH did not scroll into the list viewport");
+
+    /* The header (SETTINGS + name) is built directly on the puck, never
+     * inside the scroll list, so it is unaffected by scrolling the list
+     * to its far end — it is still there, pinned, after the scroll
+     * above. There is no dedicated BACK control any more (see this
+     * test's own header comment). */
+    TEST_ASSERT_NOT_NULL(find_label_exact(lv_screen_active(), "SETTINGS"));
+}
+
 /* S21 §3 — the "CALIBRATE TOUCH" row emits the shell-owned
  * FF_INTENT_CALIBRATE_TOUCH (the screen only reports the tap; the shell runs
  * the device crosshair flow via its injected hook, a no-op on the sim). The
  * row is far down the scrolling list, but click() injects the event
  * directly, so its scroll position is irrelevant to this seam test. */
-static void S21_settings_calibrate_touch_row_emits_calibrate_intent(void)
+static void S21_AC3_settings_calibrate_touch_row_emits_calibrate_intent(void)
 {
     ff_app_settings_t s;
     memset(&s, 0, sizeof(s));
@@ -3064,7 +2948,8 @@ int main(void)
     RUN_TEST(S11b_settings_water_label_tap_also_cycles);
     RUN_TEST(S11b_settings_quiet_chip_sets_both_from_and_to);
     RUN_TEST(S100_settings_brightness_stepper_steps_and_clamps);
-    RUN_TEST(S21_settings_calibrate_touch_row_emits_calibrate_intent);
+    RUN_TEST(S21_AC1_settings_is_one_scrolling_list_every_row_reachable);
+    RUN_TEST(S21_AC3_settings_calibrate_touch_row_emits_calibrate_intent);
     RUN_TEST(S16_c1_wired_sites_are_noops_while_the_seam_is_unbound);
 
     RUN_TEST(S26e_launcher_radar_circle_emits_index_0);

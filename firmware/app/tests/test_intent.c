@@ -1665,9 +1665,13 @@ static void send_calibrate(ff_shell_t *shell)
     ff_shell_intent(shell, &in);
 }
 
-/* A valid fit overwrites the (honest-uncalibrated identity) default and
- * persists exactly once. */
-static void S21_calibrate_valid_fit_applies_and_persists(void)
+/* S21 AC3 — "Calibrate Touch ... stores + applies the result" (the
+ * device-side crosshair flow itself is exercised through the injected
+ * hook above, per this file's header note; the sim/no-op path is
+ * covered by test_scr_intent.c's S21_AC3_settings_calibrate_touch_row_
+ * emits_calibrate_intent). A valid fit overwrites the (honest-
+ * uncalibrated identity) default and persists exactly once. */
+static void S21_AC3_calibrate_valid_fit_applies_and_persists_the_solved_transform(void)
 {
     calib_spy_t spy = {0};
     spy.cal = (ff_touchcal_t){.ax = 1.10f, .bx = -3.0f, .ay = 0.90f, .by = 4.0f, .valid = true};
@@ -1744,6 +1748,98 @@ static void S21_calibrate_unchanged_refit_skips_the_write(void)
     send_calibrate(&h.shell);                        /* same fit again */
     TEST_ASSERT_EQUAL_INT(2, spy.calls);             /* the hook still ran */
     TEST_ASSERT_EQUAL_INT(1, h.store_mem.set_calls); /* but nothing new was written */
+
+    ff_shell_close(&h.shell);
+}
+
+/* S21 AC4 — "NVS store persists settings across reboot ... boot applies
+ * them", proven the same way test_shell_settings_persist.c's
+ * S16_AC8_setting_set_survives_shell_close_and_reinit_against_the_same_
+ * store proves it for the general settings path (close the shell,
+ * re-init a FRESH shell against the SAME store, the value survives) —
+ * here specifically for the calibrated touch transform CALIBRATE TOUCH
+ * writes (S21 §3/§4). Uses this file's own in-memory setting_store_t
+ * spy rather than the real on-disk store test_shell_settings_persist.c
+ * exercises (that file is outside this PR's touched-file scope): the
+ * property under test here is "does ff_shell_init's LOAD half read back
+ * what the earlier session's CLOSE-time SAVE wrote", which the mock's
+ * get()/set() round trip proves regardless of the store's real backing
+ * (setting_store_get/_set actually copy bytes in and out of `buf`, not a
+ * live struct reference — see their definitions above). */
+static void S21_AC4_calibrated_touch_survives_shell_close_and_reinit_against_the_same_store(void)
+{
+    calib_spy_t spy = {0};
+    spy.cal = (ff_touchcal_t){.ax = 1.10f, .bx = -3.0f, .ay = 0.90f, .by = 4.0f, .valid = true};
+    spy.ret = true;
+
+    setting_store_t store_mem;
+    memset(&store_mem, 0, sizeof(store_mem));
+    ff_store_t store = setting_store(&store_mem);
+
+    fake_clock_t clk = {.t = 100000u};
+    ff_clock_t clock = {.now_ms = fake_now, .user = &clk};
+    fp_pack_t pack;
+
+    /* --- session 1: calibrate, then close ------------------------------ */
+    {
+        ff_shell_t shell;
+        ff_shell_cfg_t cfg;
+        memset(&cfg, 0, sizeof(cfg));
+        cfg.clock = &clock;
+        cfg.store = &store;
+        cfg.pack = &pack;
+        cfg.calibrate_touch = calib_spy_hook;
+        cfg.calibrate_touch_user = &spy;
+
+        TEST_ASSERT_EQUAL_INT(0, ff_shell_init(&shell, &cfg));
+        TEST_ASSERT_FALSE(ff_shell_settings(&shell)->touch_calibrated); /* identity default */
+
+        send_calibrate(&shell);
+        TEST_ASSERT_TRUE(ff_shell_settings(&shell)->touch_calibrated);
+        TEST_ASSERT_EQUAL_INT(1, store_mem.set_calls);
+
+        ff_shell_close(&shell);
+    }
+
+    /* --- session 2: a FRESH shell, the SAME store — "boot" -------------- */
+    {
+        ff_shell_t shell2;
+        ff_shell_cfg_t cfg2;
+        memset(&cfg2, 0, sizeof(cfg2));
+        cfg2.clock = &clock;
+        cfg2.store = &store;
+        cfg2.pack = &pack;
+        /* No calibrate_touch hook this session — proves the loaded value
+         * came from the store, not from a re-run of the hook. */
+
+        TEST_ASSERT_EQUAL_INT(0, ff_shell_init(&shell2, &cfg2));
+        ff_settings_t const *s = ff_shell_settings(&shell2);
+        TEST_ASSERT_TRUE(s->touch_calibrated);
+        TEST_ASSERT_EQUAL_FLOAT(1.10f, s->touch_ax);
+        TEST_ASSERT_EQUAL_FLOAT(-3.0f, s->touch_bx);
+        TEST_ASSERT_EQUAL_FLOAT(0.90f, s->touch_ay);
+        TEST_ASSERT_EQUAL_FLOAT(4.0f, s->touch_by);
+
+        ff_shell_close(&shell2);
+    }
+}
+
+/* S21 AC5 — "Default touch cal set as chosen ... with an honest comment"
+ * (ff_settings.c's own S21 §5 comment: identity, touch_calibrated =
+ * false). Literal values, not macro names — pinning FF_TOUCHCAL_IDENTITY_*
+ * or similar against itself would be vacuous; this asserts the actual
+ * numbers docs/specs/S21-settings-rework.md §5 commits to. */
+static void S21_AC5_default_touch_cal_is_identity(void)
+{
+    setting_harness_t h;
+    setting_harness_init(&h);
+
+    ff_settings_t const *s = ff_shell_settings(&h.shell);
+    TEST_ASSERT_FALSE(s->touch_calibrated);
+    TEST_ASSERT_EQUAL_FLOAT(1.0f, s->touch_ax);
+    TEST_ASSERT_EQUAL_FLOAT(0.0f, s->touch_bx);
+    TEST_ASSERT_EQUAL_FLOAT(1.0f, s->touch_ay);
+    TEST_ASSERT_EQUAL_FLOAT(0.0f, s->touch_by);
 
     ff_shell_close(&h.shell);
 }
@@ -2501,9 +2597,11 @@ int main(void)
     RUN_TEST(S21_setting_set_screen_flip_applies_and_persists_only_on_change);
     RUN_TEST(bug1_transient_brightness_applies_live_but_persists_only_on_commit);
     RUN_TEST(bug1_brightness_change_does_not_mark_the_render_dirty);
-    RUN_TEST(S21_calibrate_valid_fit_applies_and_persists);
+    RUN_TEST(S21_AC3_calibrate_valid_fit_applies_and_persists_the_solved_transform);
     RUN_TEST(S21_calibrate_failed_or_invalid_fit_is_a_clean_no_op);
     RUN_TEST(S21_calibrate_unchanged_refit_skips_the_write);
+    RUN_TEST(S21_AC4_calibrated_touch_survives_shell_close_and_reinit_against_the_same_store);
+    RUN_TEST(S21_AC5_default_touch_cal_is_identity);
 
     RUN_TEST(S26b_power_menu_open_pushes_the_modal_and_becomes_visible);
     RUN_TEST(S26b_power_menu_open_is_rejected_while_a_takeover_is_visible);
