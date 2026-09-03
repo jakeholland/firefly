@@ -17,6 +17,7 @@
 #include "ff_notify.h" /* S26(d) — the notification queue */
 #include "ff_proto.h"
 #include "ff_radar.h"
+#include "ff_rally.h" /* tech-debt sprint — rally place/name/when logic (moved from this file's statics) */
 #include "ff_route.h"
 #include "ff_sched.h"
 #include "ff_t9.h" /* S16 slice c3 — the shell-owned compose draft */
@@ -55,12 +56,12 @@ _Static_assert(FF_COMPOSE_EXTRA_MAX == 280,
 
 /* S22 slice d, SPEC GAP (see docs/specs/S22-signals-rework.md "Questions"):
  * a quick RALLY gathers the crew to the SENDER's own current location, and
- * names the place after the nearest festpack landmark within this radius
- * (else the honest constant "MY SPOT"). Naming a rally after a landmark the
- * sender is nowhere near would be dishonest, so the match is gated on real
- * proximity; 120 m ~ "you are effectively at it" at festival scale. */
-#define FF_INBOX_RALLY_LANDMARK_NEAR_M 120.0f
-#define FF_INBOX_RALLY_DEFAULT_NAME "MY SPOT"
+ * names the place after the nearest festpack landmark within
+ * FF_RALLY_LANDMARK_NEAR_M (else the honest constant FF_RALLY_DEFAULT_NAME
+ * — both now core policy, `ff_rally.h`, tech-debt sprint move). Naming a
+ * rally after a landmark the sender is nowhere near would be dishonest, so
+ * the match is gated on real proximity; 120 m ~ "you are effectively at
+ * it" at festival scale. */
 
 /* S24 slice d — the Rally WHERE list projects at most this many festpack
  * landmark rows. Pinned to FP_MAX_LANDMARKS so a festpack cap bump fails
@@ -2461,8 +2462,14 @@ static void shell_sig_reset_target(shell_t *sh)
  * shell_rally_place — S22 slice d SPEC-GAP MVP (see the spec "Questions"):
  * derive the (position, name) a quick RALLY gathers the crew to. The point
  * is the SENDER's own current location (`my_pos`); the name is the nearest
- * festpack landmark within FF_INBOX_RALLY_LANDMARK_NEAR_M, else the honest
- * constant "MY SPOT".
+ * festpack landmark within FF_RALLY_LANDMARK_NEAR_M, else the honest
+ * constant FF_RALLY_DEFAULT_NAME ("MY SPOT") — both the threshold and the
+ * nearest-search itself are core policy now (`ff_rally.h`/`ff_rally.c`,
+ * tech-debt sprint: rally place/name/when logic moved out of this file's
+ * statics). This function is the DISPATCH left behind: gather the pack's
+ * landmarks into the plain candidate array core's pure search takes (core
+ * cannot depend on `fp_pack_t` — see `ff_rally.h`'s top comment for why),
+ * project `my_pos` into the same east/north space, and call in.
  *
  * Returns false — and the caller sends NOTHING — when `my_pos` is unknown:
  * a RALLY carries a lat/lon in its wire body, and encoding {0,0} for "I do
@@ -2470,40 +2477,32 @@ static void shell_sig_reset_target(shell_t *sh)
  * this repo forbids (CLAUDE.md, [[firefly-touch-cal-default]]). A rally to
  * one's own location is only meaningful once that location is known.
  *
- * `*out_name` aliases either the string literal above or a landmark name
+ * `*out_name` aliases either FF_RALLY_DEFAULT_NAME or a landmark name
  * INSIDE `sh->pack` (no copy); it is consumed immediately by the encode at
- * the call site, well within the pack's lifetime. A landmark whose name
- * would exceed the protocol's FF_PROTO_RALLY_NAME_MAX budget is skipped
- * (the encoder would reject it), leaving the honest default. */
+ * the call site, well within the pack's lifetime. */
 static bool shell_rally_place(shell_t const *sh, ff_latlon_t *out_pos, char const **out_name)
 {
     if (!sh->my_pos_ok) {
         return false;
     }
     *out_pos = sh->my_pos;
-    *out_name = FF_INBOX_RALLY_DEFAULT_NAME;
+    *out_name = FF_RALLY_DEFAULT_NAME;
 
     if (sh->pack_loaded && sh->pack != NULL && sh->pack->origin_known) {
         float my_e = 0.0f, my_n = 0.0f;
         ff_geo_project(sh->pack->origin, sh->my_pos, &my_e, &my_n);
-        /* Compare squared distances — no sqrt, no <math.h>. */
-        float best2 = FF_INBOX_RALLY_LANDMARK_NEAR_M * FF_INBOX_RALLY_LANDMARK_NEAR_M;
-        for (uint8_t i = 0; i < sh->pack->n_landmarks; ++i) {
+
+        ff_rally_landmark_t cand[FP_MAX_LANDMARKS];
+        uint8_t n = 0;
+        for (uint8_t i = 0; i < sh->pack->n_landmarks && n < FP_MAX_LANDMARKS; ++i) {
             fp_landmark_t const *lm = &sh->pack->landmarks[i];
-            if (!lm->has_pos || lm->name[0] == '\0') {
-                continue;
-            }
-            if (strlen(lm->name) > FF_PROTO_RALLY_NAME_MAX) {
-                continue;
-            }
-            float const de = lm->east_m - my_e;
-            float const dn = lm->north_m - my_n;
-            float const d2 = de * de + dn * dn;
-            if (d2 < best2) {
-                best2 = d2;
-                *out_name = lm->name;
-            }
+            cand[n].name = lm->name;
+            cand[n].has_pos = lm->has_pos;
+            cand[n].east_m = lm->east_m;
+            cand[n].north_m = lm->north_m;
+            n++;
         }
+        *out_name = ff_rally_place_name(cand, n, my_e, my_n);
     }
     return true;
 }
@@ -2512,18 +2511,13 @@ static bool shell_rally_place(shell_t const *sh, ff_latlon_t *out_pos, char cons
  * S24 slice d — the Rally screen's WHERE list + WHEN-in-name send.
  * ------------------------------------------------------------------- */
 
-/* A landmark is a Rally WHERE row iff it has a known position AND a name —
- * the same displayable/sendable filter used for BOTH the projected row
- * list and the send-time resolution, so a `sel` index can never diverge
- * between what the screen shows and what the shell sends. */
-static bool shell_rally_landmark_displayable(fp_landmark_t const *lm)
-{
-    return lm != NULL && lm->has_pos && lm->name[0] != '\0';
-}
-
-/* Resolve the `idx`-th displayable landmark (0-based) to its wire position
+/* Resolve the `idx`-th displayable landmark (0-based, per
+ * ff_rally_landmark_displayable — core policy now) to its wire position
  * (unprojected from the pack origin) and name. Returns false if there is
- * no pack, no known origin, or fewer than idx+1 displayable landmarks. */
+ * no pack, no known origin, or fewer than idx+1 displayable landmarks.
+ * This walk is unavoidably tied to fp_pack_t's layout (core cannot depend
+ * on festpack — see ff_rally.h), so it stays shell-side dispatch; the
+ * DECISION of what counts as displayable is the core call inside it. */
 static bool shell_rally_landmark_at(shell_t const *sh, uint8_t idx, ff_latlon_t *out_pos,
                                     char const **out_name)
 {
@@ -2533,7 +2527,7 @@ static bool shell_rally_landmark_at(shell_t const *sh, uint8_t idx, ff_latlon_t 
     uint8_t seen = 0;
     for (uint8_t i = 0; i < sh->pack->n_landmarks; ++i) {
         fp_landmark_t const *lm = &sh->pack->landmarks[i];
-        if (!shell_rally_landmark_displayable(lm)) {
+        if (!ff_rally_landmark_displayable(lm->has_pos, lm->name)) {
             continue;
         }
         if (seen == idx) {
@@ -2544,57 +2538,6 @@ static bool shell_rally_landmark_at(shell_t const *sh, uint8_t idx, ff_latlon_t 
         seen++;
     }
     return false;
-}
-
-/* The WHEN suffix that rides in the rally NAME (S24 AC6): NOW appends
- * nothing; +15m/+30m append a fixed short tag. Kept well under
- * FF_PROTO_RALLY_NAME_MAX so a place name always has room. */
-static char const *shell_rally_when_suffix(ff_rally_when_t when)
-{
-    switch (when) {
-    case FF_RALLY_WHEN_15: return " +15m";
-    case FF_RALLY_WHEN_30: return " +30m";
-    case FF_RALLY_WHEN_NOW:
-    default: return "";
-    }
-}
-
-/* The WHEN chip's echo word ("Now" / "+15m" / "+30m"). */
-static char const *shell_rally_when_echo(ff_rally_when_t when)
-{
-    switch (when) {
-    case FF_RALLY_WHEN_15: return "+15m";
-    case FF_RALLY_WHEN_30: return "+30m";
-    case FF_RALLY_WHEN_NOW:
-    default: return "Now";
-    }
-}
-
-/* Compose the wire rally NAME from a base place name + the WHEN suffix,
- * into `out` (capacity FF_PROTO_RALLY_NAME_MAX + 1). The PLACE is truncated
- * to fit, the SUFFIX never (S24 AC6: "truncate the PLACE, never the time
- * suffix"). Returns false — the caller sends NOTHING — if the base place is
- * empty, or the budget cannot hold the suffix plus at least one place byte
- * (a misleading name is never sent). */
-static bool shell_rally_compose_name(char const *place, ff_rally_when_t when, char *out, size_t out_cap)
-{
-    if (place == NULL || place[0] == '\0' || out_cap < (size_t)FF_PROTO_RALLY_NAME_MAX + 1u) {
-        return false;
-    }
-    char const *suffix = shell_rally_when_suffix(when);
-    size_t const suffix_len = strlen(suffix);
-    /* The suffix must leave room for at least one place byte. */
-    if (suffix_len + 1u > (size_t)FF_PROTO_RALLY_NAME_MAX) {
-        return false;
-    }
-    size_t const place_budget = (size_t)FF_PROTO_RALLY_NAME_MAX - suffix_len;
-    size_t place_len = strlen(place);
-    if (place_len > place_budget) {
-        place_len = place_budget; /* truncate the PLACE only */
-    }
-    memcpy(out, place, place_len);
-    memcpy(out + place_len, suffix, suffix_len + 1u); /* includes the NUL */
-    return true;
 }
 
 /* Resolve the CURRENT Rally selection to its (position, base name) — On Me
@@ -2675,7 +2618,7 @@ static void shell_project_rally(shell_t *sh, ff_app_rally_t *out)
     if (sh->pack_loaded && sh->pack != NULL && sh->pack->origin_known) {
         for (uint8_t i = 0; i < sh->pack->n_landmarks && n < FF_APP_RALLY_MAX_PLACES; ++i) {
             fp_landmark_t const *lm = &sh->pack->landmarks[i];
-            if (!shell_rally_landmark_displayable(lm)) {
+            if (!ff_rally_landmark_displayable(lm->has_pos, lm->name)) {
                 continue;
             }
             shell_copy_str(out->place_names[n], sizeof(out->place_names[n]), lm->name);
@@ -2709,7 +2652,8 @@ static void shell_project_rally(shell_t *sh, ff_app_rally_t *out)
     } else {
         out->echo_place[0] = '\0';
     }
-    shell_copy_str(out->echo_when, sizeof(out->echo_when), shell_rally_when_echo(sh->inbox_rally_when));
+    shell_copy_str(out->echo_when, sizeof(out->echo_when),
+                    ff_rally_when_echo((int)sh->inbox_rally_when));
 
     /* Crew-wide confirm display: mirror the shell's armed flag while the
      * scope is the whole crew (a member rally sends on the first tap). */
@@ -3566,7 +3510,7 @@ void ff_shell_intent(ff_shell_t *sh_pub, ff_intent_t const *in)
             char const *base = NULL;
             if (!shell_rally_resolve_sel(sh, &pos, &base)) return; /* place unresolvable: send nothing */
             char name[FF_PROTO_RALLY_NAME_MAX + 1];
-            if (!shell_rally_compose_name(base, sh->inbox_rally_when, name, sizeof name)) return;
+            if (!ff_rally_compose_name(base, (int)sh->inbox_rally_when, name, sizeof name)) return;
             uint8_t buf[FF_PROTO_MAX_PAYLOAD];
             int const n = ff_proto_encode_rally(buf, sizeof buf, pos, name);
             if (n > 0 && sh->wiring.sender.send_private != NULL) {
@@ -3638,7 +3582,7 @@ void ff_shell_intent(ff_shell_t *sh_pub, ff_intent_t const *in)
             uint32_t dest = MC_ADDR_BROADCAST;
             if (!shell_sig_dest(sh, &dest)) return; /* stale member target: send nothing */
             ff_latlon_t pos;
-            char const *name = FF_INBOX_RALLY_DEFAULT_NAME;
+            char const *name = FF_RALLY_DEFAULT_NAME;
             if (!shell_rally_place(sh, &pos, &name)) return; /* location unknown: send nothing */
             uint8_t buf[FF_PROTO_MAX_PAYLOAD];
             int const n = ff_proto_encode_rally(buf, sizeof buf, pos, name);
