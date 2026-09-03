@@ -268,6 +268,28 @@ if(FF_BUILD_TESTS)
     ff_apply_warnings(test_ctl_rebuild_under_finger)
 
     add_test(NAME test_ctl_rebuild_under_finger COMMAND test_ctl_rebuild_under_finger)
+
+    # S25 slice c (device follow-up PR): the ctl `batt_mv` command reaches
+    # a live shell end to end — parse layer, ctl_loop.c's handler,
+    # ff_shell_set_batt_mv, the core ff_batt filter, and the rendered
+    # Radar status-bar label (percent text + amber low-battery tint) —
+    # through the same real ff-sim-ctl-loop session as the tests above.
+    add_executable(test_ctl_batt
+        tests/test_ctl_batt.c
+        screenshot.c
+    )
+    target_link_libraries(test_ctl_batt PRIVATE
+        ff-sim-ctl-loop
+        ff-sim-ctl
+        ff-shell
+        ff-app-ui
+        ff-stb-image-write
+        lvgl::lvgl
+        unity
+    )
+    ff_apply_warnings(test_ctl_batt)
+
+    add_test(NAME test_ctl_batt COMMAND test_ctl_batt)
 endif()
 
 # Issue #3 — ff_screenshot_write now creates its output directory itself

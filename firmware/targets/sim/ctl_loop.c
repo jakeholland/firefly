@@ -735,6 +735,19 @@ static bool ctl_loop_wall(void *user, int64_t unix_s, char const **err)
     return true;
 }
 
+/* S25c: the sim's own battery-gauge drive — same class of dev/test
+ * affordance as ctl_loop_wall's bench time-travel and ctl_loop_flare's
+ * synthetic inbound (both just above): reaches a live shell with no
+ * real hardware behind it. `ff_shell_set_batt_mv` has no failure mode of
+ * its own (see that function's doc comment — 0 is the documented "no
+ * reading" sentinel, not an error), so this handler is a bare forward,
+ * void like ctl_loop_tap/ctl_loop_swipe. */
+static void ctl_loop_batt_mv(void *user, uint16_t pack_mv)
+{
+    ff_ctl_loop_ctx_t *ctx = (ff_ctl_loop_ctx_t *)user;
+    ff_shell_set_batt_mv(ctx->shell, pack_mv);
+}
+
 static bool *g_ctl_loop_quit_flag = NULL;
 
 static void ctl_loop_quit(void *user)
@@ -764,6 +777,7 @@ ff_ctl_handlers_t ff_ctl_loop_handlers(ff_ctl_loop_ctx_t *ctx, bool *quit_flag)
     h.screenshot = ctl_loop_screenshot;
     h.flare = ctl_loop_flare;
     h.wall = ctl_loop_wall;
+    h.batt_mv = ctl_loop_batt_mv;
     h.quit = ctl_loop_quit;
     return h;
 }

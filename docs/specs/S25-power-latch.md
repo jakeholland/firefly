@@ -171,3 +171,88 @@ matching the other `targets/esp32s3` HAL code (`ff_display`), is:
     Tests: `crossing_to_low_shows_promptly_despite_small_delta`,
     `crossing_out_of_low_shows_promptly_despite_small_delta`
     (`core/tests/test_batt.c`).
+
+- **2026-09-03, S25 slice c, device + sim half (`ff_power` battery-sense
+  ADC, ctl `batt_mv`).** The follow-up this spec's slice (c) bullet (and
+  PR #180's own amendment above) named: reads the Waveshare board's
+  battery-sense ADC on `targets/esp32s3` and drives `ff_shell_set_batt_mv`
+  from `app_main`'s render loop; gives the sim a `batt_mv` ctl command so
+  the gauge can be exercised with no physical battery. No `core/`/`app/`
+  change (that landed in PR #180) — this PR only samples and forwards.
+
+  - **Hardware, cited** (Waveshare's own reference driver for this exact
+    board, `BAT_Driver.c`:
+    https://github.com/yaosy1997/ESP32-S3-Touch-LCD-1.46-Test/blob/main/main/BAT_Driver/BAT_Driver.c):
+    ADC1 channel 7 (**GPIO8**), `ADC_ATTEN_DB_12`, `ADC_BITWIDTH_DEFAULT`,
+    a 1:3 resistive divider, plus a small measured correction Waveshare's
+    own code applies on top of the naive ×3 (divide by 0.990476 — their
+    silicon's actual divider ratio is not exactly 3:1). Single-cell LiPo,
+    no fuel-gauge IC — the divider math is the entire sensor.
+  - `ff_power.h`/`.c` (`targets/esp32s3/components/ff_power`, +`esp_adc` in
+    its `CMakeLists.txt` `REQUIRES`): `esp_err_t ff_power_batt_init(void)`
+    brings up an ADC1 oneshot unit + channel 7, then tries calibration
+    tiered curve-fit → line-fit → none (mirroring ESP-IDF's own `esp_adc`
+    oneshot example; ESP32-S3 only ever compiles the curve-fit scheme in —
+    the line-fit branch is inert on this chip, kept `#if`-guarded for the
+    same portability reason the SDK's own example keeps it). Non-fatal on
+    failure or on no calibration scheme (logged either way; a puck with no
+    battery ADC still boots). `uint16_t ff_power_batt_mv(void)` averages
+    `FF_BATT_ADC_SAMPLES` (8) raw `adc_oneshot_read`s, calibrates the
+    average, then converts pin mV → PACK mV via ONE named integer constant
+    (`FF_BATT_PACK_MV_PER_CAL_MV_X1E6` = round(3.0 / 0.990476 × 1e6) =
+    3028835, composing the ×3 divider and the ÷0.990476 correction above;
+    a `uint64_t` intermediate avoids overflow). Returns 0 (unknown) on any
+    failure or before calibration succeeds — never a fabricated figure.
+    Pure HAL: no percent math here, matching `ff_power.h`'s existing
+    house rule. The first successful reading logs (`ESP_LOGI`, once) the
+    raw average, calibrated pin mV, and pack mV, labelled with which
+    calibration scheme is actually in effect (curve / line / NONE), so
+    bring-up can sanity-check against a multimeter.
+  - `app_main.c`: `ff_power_batt_init()` is called right after the power
+    latch (S25 slice a) and logged, non-fatal on failure. One reading is
+    pushed via `ff_shell_set_batt_mv` immediately after `ff_shell_init`
+    (so the very first face flushed to glass already has it), and again
+    every `FF_BATT_SAMPLE_PERIOD_MS` (a named constant, 2000 ms) in the
+    main render loop via `ff_time_reached` — the same wraparound-safe
+    periodic-deadline convention every other FSM in this file uses.
+    app_main only samples and forwards; the core filter (PR #180's
+    `ff_batt_filter_t`) decides what is actually shown.
+  - Sim: `targets/sim/ctl_server.h`/`.c` gain a `batt_mv` ctl command
+    (`{"cmd":"batt_mv","mv":<0..65535>}`, documented in
+    `firmware/tools/dev/CTL.md`) that forwards straight to
+    `ff_shell_set_batt_mv` (`ctl_loop.c`'s `ctl_loop_batt_mv`) — the sim's
+    own affordance for driving the gauge with no ADC hardware, same class
+    as `wall`'s bench time-travel and `flare`'s synthetic inbound. New
+    test `targets/sim/tests/test_ctl_batt.c` drives it end to end through
+    a real ctl/LVGL session: `batt_mv 3700` renders Radar's "30%" (muted);
+    `batt_mv 0` renders "--%"; `batt_mv 3400` renders "3%" amber (at/under
+    `FF_BATT_LOW_PCT`). Mutation-checked: dropping the
+    `ff_shell_set_batt_mv` forward inside `ctl_loop_batt_mv` fails the two
+    positive-reading tests (`Expected 30 Was -1` / `Expected 3 Was -1`),
+    confirming the test actually exercises the forward and not a proxy.
+
+  **On-glass verification** (no sim unit test can reach the real ADC —
+  same posture as slice (a)'s own Verification section):
+  - **(a)** Boot log shows the S25c battery-ADC init line
+    (`ok`/error name) and, once the render loop's first periodic sample
+    fires, the "S25c first battery reading" line — raw average, which
+    calibration scheme (curve/line/NONE), calibrated pin mV, and pack mV.
+  - **(b)** With a charged battery connected, Radar's/the launcher's
+    status bar shows a plausible, non-flickering percent. If a multimeter
+    on the pack is available, its reading (mV) should be within ~50 mV of
+    the boot log's `pack_mv` — a larger gap means the divider/correction
+    constant needs re-deriving for this specific board rather than
+    trusted from Waveshare's own measurement.
+  - **(c)** Unplug USB (battery only) and watch the percent hold steady
+    (no flicker) for at least a minute — the moving-median + hysteresis
+    filter (PR #180) doing its job against real load noise (radio TX,
+    backlight PWM, LVGL redraw).
+  - **(d)** A reading at or under `FF_BATT_LOW_PCT` (15%) shows the amber
+    low-battery tint on both Radar's status bar and the launcher's status
+    row. May be verified either by draining a real pack to that range, or
+    — faster, and what this PR's own CI coverage already exercises — by
+    simulating it in the sim via `{"cmd":"batt_mv","mv":3400}` (interpolates
+    to 3%) and confirming the same amber tint renders there; the on-glass
+    step is only to confirm the real ADC path reaches the same low reading
+    honestly when the pack is actually low, not to re-prove the color
+    logic itself.
