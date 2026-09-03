@@ -185,6 +185,33 @@ typedef struct {
      * see ff_settings.c's v8 migration comment). Purely a render/HAL
      * selector; it changes no domain behavior. */
     bool screen_flip;
+
+    /* [api] format v9 amendment (S27 sounds, docs/specs/S27-sounds.md) —
+     * the Settings SOUNDS ON|OFF row: the master switch for every sound
+     * this puck plays (core/include/ff_sound.h's `ff_sound_should_play`
+     * reads this first — sounds off silences everything, no exception,
+     * not even FF_SOUND_FLARE_INCOMING). Default TRUE — unlike
+     * `screen_flip`/`clock_24h` above (both display-format preferences
+     * with no natural "on" bias), sound is an opt-OUT feature: the
+     * maintainer's brief frames this as "we should add noises overall",
+     * and `haptics` (S11, also default true) is the closest existing
+     * precedent — a puck that can make a sound should, until the owner
+     * says otherwise. See `ff_settings.c`'s v9 migration comment for how
+     * this default is applied to a migrated (pre-v9) blob, which never
+     * had this field at all. */
+    bool sounds_on;
+
+    /* [api] format v9 amendment (S27 sounds) — the Settings UI TICKS
+     * ON|OFF row: a SECOND, independent gate that additionally must be
+     * true for `FF_SOUND_TAP` to play (`ff_sound_should_play` itself
+     * does not know about this field — see that function's doc comment
+     * for why the TAP gate is composed by the caller, not built into the
+     * 3-argument policy function). Default FALSE — deliberately the
+     * opposite bias from `sounds_on` above: a tick on every single
+     * button press is the kind of thing that gets old fast on a device
+     * you tap dozens of times a festival, so this ships silent and the
+     * maintainer can flip the default later if the field disagrees. */
+    bool ui_ticks;
 } ff_settings_t;
 
 /* ff_geo_cal_t must fit the persisted-layout budget above — a layout

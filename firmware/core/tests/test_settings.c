@@ -85,6 +85,12 @@ static void ff_assert_defaults(ff_settings_t const *s)
     /* format v8 amendment: default is NORMAL (not FLIPPED) — a fresh puck's
      * case orientation is unknown until the owner sets it. */
     TEST_ASSERT_FALSE(s->screen_flip);
+
+    /* S27 sounds (format v9): sounds_on defaults TRUE (opt-out — the
+     * one field on this struct whose honest default differs from "off",
+     * see ff_settings.h's doc comment); ui_ticks defaults FALSE (opt-in). */
+    TEST_ASSERT_TRUE(s->sounds_on);
+    TEST_ASSERT_FALSE(s->ui_ticks);
 }
 
 static void S11_AC1_load_with_empty_store_yields_exact_defaults(void)
@@ -426,13 +432,16 @@ static void S21_v6_blob_forward_migrates_preserving_every_value(void)
     TEST_ASSERT_EQUAL_FLOAT(1.0087f, s.touch_ay);
     TEST_ASSERT_EQUAL_FLOAT(-18.5f, s.touch_by);
 
-    /* ...and the two fields v6 never had land at their honest defaults —
-     * clock_24h (the v6->v7 step, already covered before this format-v8
-     * amendment) AND screen_flip (the v7->v8 step this test now also
-     * exercises, since a v6 blob chains through BOTH steps to reach the
-     * live v8 struct — see ff_settings.c's v8 migration comment). */
+    /* ...and the fields v6 never had land at their honest defaults —
+     * clock_24h (the v6->v7 step), screen_flip (the v7->v8 step), and
+     * sounds_on/ui_ticks (the v8->v9 step, S27 sounds) — a v6 blob chains
+     * through ALL THREE steps to reach the live v9 struct. sounds_on is
+     * the one field whose honest default is TRUE, not false — see
+     * ff_settings.c's v9 migration comment. */
     TEST_ASSERT_FALSE(s.clock_24h);
     TEST_ASSERT_FALSE(s.screen_flip);
+    TEST_ASSERT_TRUE(s.sounds_on);
+    TEST_ASSERT_FALSE(s.ui_ticks);
 }
 
 /* v7 -> v8 FORWARD MIGRATION (format v8 amendment, maintainer ask,
@@ -541,8 +550,12 @@ static void S21_v7_blob_forward_migrates_preserving_every_value(void)
     TEST_ASSERT_EQUAL_FLOAT(9.5f, s.touch_by);
     TEST_ASSERT_TRUE(s.clock_24h);
 
-    /* ...and the one field v7 never had lands at its honest default. */
+    /* ...and the fields v7 never had land at their honest defaults —
+     * screen_flip (the v7->v8 step) and sounds_on/ui_ticks (the v8->v9
+     * step, S27 sounds; a v7 blob chains through both). */
     TEST_ASSERT_FALSE(s.screen_flip);
+    TEST_ASSERT_TRUE(s.sounds_on);
+    TEST_ASSERT_FALSE(s.ui_ticks);
 }
 
 /* ---------------------------------------------------------------------
@@ -798,6 +811,240 @@ static void S21_v6_blob_truncated_yields_defaults_not_a_migration(void)
     ff_assert_defaults(&s);
 }
 
+/* v8 -> v9 FORWARD MIGRATION (S27 sounds, docs/specs/S27-sounds.md): same
+ * shape as the v6->v7 / v7->v8 tests above, one version hop later. A v8
+ * blob (the format S21's screen_flip amendment shipped, and the one every
+ * fielded puck flashed since holds) is NOT discarded — every v8 value
+ * must survive, and only the two fields v8 never had (sounds_on/ui_ticks)
+ * land at THEIR OWN honest defaults (true/false respectively — see
+ * ff_settings.h's doc comments and ff_settings.c's v9 migration comment
+ * for why sounds_on differs from every earlier migrated-in field's
+ * "lands at false"). Builds a hand-made v8-SHAPED blob (own local mirror
+ * of the frozen ff_settings_v8_t layout — see ff_settings.c) with every
+ * field set to a real, non-default value. */
+static void S27_v8_blob_forward_migrates_preserving_every_value(void)
+{
+    mock_store_io_t m;
+    mock_store_reset(&m);
+    ff_store_t st = mock_store_vtable(&m);
+
+    ff_settings_t seed;
+    memset(&seed, 0, sizeof(seed));
+    ff_settings_save(&seed, &st);
+    TEST_ASSERT_TRUE(m.has_value);
+
+    /* Independently declared here (not shared with ff_settings.c's private
+     * ff_settings_v8_t) — same "two independent copies must agree"
+     * reasoning as the v6/v7 mirrors above. */
+    typedef struct {
+        bool imperial;
+        uint8_t share_mode;
+        bool haptics;
+        bool night_glow;
+        uint16_t water_min;
+        uint16_t quiet_from_min;
+        uint16_t quiet_to_min;
+        int16_t utc_offset_min;
+        bool utc_offset_set;
+        bool colorblind;
+        uint8_t brightness_pct;
+        char my_name[FF_SETTINGS_NAME_LEN];
+        ff_geo_cal_t compass_cal;
+        bool cal_valid;
+        float touch_ax;
+        float touch_bx;
+        float touch_ay;
+        float touch_by;
+        bool touch_calibrated;
+        bool clock_24h;
+        bool screen_flip;
+    } v8_mirror_t;
+
+    v8_mirror_t v8;
+    memset(&v8, 0, sizeof(v8));
+    v8.imperial = true;
+    v8.share_mode = FF_SHARE_LIVE;
+    v8.haptics = false;
+    v8.night_glow = true;
+    v8.water_min = 120;
+    v8.quiet_from_min = 90;
+    v8.quiet_to_min = 400;
+    v8.utc_offset_min = 60;
+    v8.utc_offset_set = true;
+    v8.colorblind = true;
+    v8.brightness_pct = 42;
+    strncpy(v8.my_name, "Riley", sizeof(v8.my_name) - 1);
+    v8.compass_cal.hard_offset = (ff_vec3_t){1.0f, -2.0f, 3.0f};
+    v8.compass_cal.soft_scale[0] = 1.01f;
+    v8.compass_cal.soft_scale[1] = 0.98f;
+    v8.compass_cal.soft_scale[2] = 1.02f;
+    v8.compass_cal.declination_deg = 2.0f;
+    v8.cal_valid = true;
+    v8.touch_calibrated = true;
+    v8.touch_ax = 1.02f;
+    v8.touch_bx = 3.0f;
+    v8.touch_ay = 0.99f;
+    v8.touch_by = -1.5f;
+    v8.clock_24h = true;
+    v8.screen_flip = true; /* a real, non-default value only v8+ could hold */
+
+    uint16_t const v8_version = 8;
+    memcpy(m.data + 4, &v8_version, sizeof(v8_version));
+    uint16_t const v8_payload_size = (uint16_t)sizeof(v8);
+    memcpy(m.data + 6, &v8_payload_size, sizeof(v8_payload_size));
+    memcpy(m.data + 8, &v8, sizeof(v8));
+    m.len = 8 + sizeof(v8);
+
+    ff_settings_t s;
+    memset(&s, 0xAA, sizeof(s));
+    ff_settings_load(&s, &st);
+
+    /* Every v8 value survives... */
+    TEST_ASSERT_TRUE(s.imperial);
+    TEST_ASSERT_EQUAL_UINT8(FF_SHARE_LIVE, s.share_mode);
+    TEST_ASSERT_FALSE(s.haptics);
+    TEST_ASSERT_TRUE(s.night_glow);
+    TEST_ASSERT_EQUAL_UINT16(120, s.water_min);
+    TEST_ASSERT_EQUAL_UINT16(90, s.quiet_from_min);
+    TEST_ASSERT_EQUAL_UINT16(400, s.quiet_to_min);
+    TEST_ASSERT_EQUAL_INT16(60, s.utc_offset_min);
+    TEST_ASSERT_TRUE(s.utc_offset_set);
+    TEST_ASSERT_TRUE(s.colorblind);
+    TEST_ASSERT_EQUAL_UINT8(42, s.brightness_pct);
+    TEST_ASSERT_EQUAL_STRING("Riley", s.my_name);
+    TEST_ASSERT_TRUE(s.cal_valid);
+    TEST_ASSERT_EQUAL_MEMORY(&v8.compass_cal, &s.compass_cal, sizeof(ff_geo_cal_t));
+    TEST_ASSERT_TRUE(s.touch_calibrated);
+    TEST_ASSERT_EQUAL_FLOAT(1.02f, s.touch_ax);
+    TEST_ASSERT_EQUAL_FLOAT(3.0f, s.touch_bx);
+    TEST_ASSERT_EQUAL_FLOAT(0.99f, s.touch_ay);
+    TEST_ASSERT_EQUAL_FLOAT(-1.5f, s.touch_by);
+    TEST_ASSERT_TRUE(s.clock_24h);
+    TEST_ASSERT_TRUE(s.screen_flip);
+
+    /* ...and the two fields v8 never had land at THEIR OWN honest
+     * defaults — sounds_on=TRUE (opt-out), ui_ticks=FALSE (opt-in). This
+     * is the mutation target (task's mutation (c)): drop the ui_ticks
+     * default in the v9 migration and this assertion fails. */
+    TEST_ASSERT_TRUE(s.sounds_on);
+    TEST_ASSERT_FALSE(s.ui_ticks);
+}
+
+/* v6/v7/v8 guard coverage (same "each branch gated on BOTH its own
+ * version number and its own exact documented payload size" reasoning
+ * the v6/v7 guard tests above already establish) — the two tests below
+ * close the same live coverage gap for the NEW v8->v9 branch. */
+static void S27_v8_blob_wrong_payload_size_yields_defaults_not_a_migration(void)
+{
+    mock_store_io_t m;
+    mock_store_reset(&m);
+    ff_store_t st = mock_store_vtable(&m);
+
+    ff_settings_t seed;
+    memset(&seed, 0, sizeof(seed));
+    ff_settings_save(&seed, &st);
+    TEST_ASSERT_TRUE(m.has_value);
+
+    typedef struct {
+        bool imperial;
+        uint8_t share_mode;
+        bool haptics;
+        bool night_glow;
+        uint16_t water_min;
+        uint16_t quiet_from_min;
+        uint16_t quiet_to_min;
+        int16_t utc_offset_min;
+        bool utc_offset_set;
+        bool colorblind;
+        uint8_t brightness_pct;
+        char my_name[FF_SETTINGS_NAME_LEN];
+        ff_geo_cal_t compass_cal;
+        bool cal_valid;
+        float touch_ax;
+        float touch_bx;
+        float touch_ay;
+        float touch_by;
+        bool touch_calibrated;
+        bool clock_24h;
+        bool screen_flip;
+    } v8_mirror_t;
+
+    v8_mirror_t v8;
+    memset(&v8, 0x55, sizeof(v8));
+
+    uint16_t const v8_version = 8;
+    memcpy(m.data + 4, &v8_version, sizeof(v8_version));
+    /* The lie: payload_size does NOT equal sizeof(v8_mirror_t), even
+     * though the store below genuinely holds a full sizeof(v8_mirror_t)
+     * payload — isolates the payload_size guard term from the
+     * got-length term. */
+    uint16_t const wrong_payload_size = (uint16_t)(sizeof(v8) - 1u);
+    memcpy(m.data + 6, &wrong_payload_size, sizeof(wrong_payload_size));
+    memcpy(m.data + 8, &v8, sizeof(v8));
+    m.len = 8 + sizeof(v8);
+
+    ff_settings_t s;
+    memset(&s, 0xAA, sizeof(s));
+    ff_settings_load(&s, &st);
+
+    ff_assert_defaults(&s);
+}
+
+static void S27_v8_blob_truncated_yields_defaults_not_a_migration(void)
+{
+    mock_store_io_t m;
+    mock_store_reset(&m);
+    ff_store_t st = mock_store_vtable(&m);
+
+    ff_settings_t seed;
+    memset(&seed, 0, sizeof(seed));
+    ff_settings_save(&seed, &st);
+    TEST_ASSERT_TRUE(m.has_value);
+
+    typedef struct {
+        bool imperial;
+        uint8_t share_mode;
+        bool haptics;
+        bool night_glow;
+        uint16_t water_min;
+        uint16_t quiet_from_min;
+        uint16_t quiet_to_min;
+        int16_t utc_offset_min;
+        bool utc_offset_set;
+        bool colorblind;
+        uint8_t brightness_pct;
+        char my_name[FF_SETTINGS_NAME_LEN];
+        ff_geo_cal_t compass_cal;
+        bool cal_valid;
+        float touch_ax;
+        float touch_bx;
+        float touch_ay;
+        float touch_by;
+        bool touch_calibrated;
+        bool clock_24h;
+        bool screen_flip;
+    } v8_mirror_t;
+
+    v8_mirror_t v8;
+    memset(&v8, 0x66, sizeof(v8));
+
+    uint16_t const v8_version = 8;
+    memcpy(m.data + 4, &v8_version, sizeof(v8_version));
+    /* The header's payload_size field is HONEST (names the real
+     * sizeof(v8_mirror_t)) — isolates the got-length guard term: the
+     * store below returns fewer bytes than that honest claim. */
+    uint16_t const v8_payload_size = (uint16_t)sizeof(v8);
+    memcpy(m.data + 6, &v8_payload_size, sizeof(v8_payload_size));
+    memcpy(m.data + 8, &v8, sizeof(v8));
+    m.len = 8 + sizeof(v8) - 4; /* short by 4 bytes — a truncated/corrupt read */
+
+    ff_settings_t s;
+    memset(&s, 0xAA, sizeof(s));
+    ff_settings_load(&s, &st);
+
+    ff_assert_defaults(&s);
+}
+
 /* ---------------------------------------------------------------------
  * AC2 — round-trip save/load equality, including calibration.
  * ------------------------------------------------------------------- */
@@ -823,6 +1070,8 @@ static void S11_AC2_round_trip_save_load_is_exact_including_calibration(void)
     out.brightness_pct = 55; /* #100: a real change from the default, so the round-trip actually proves it persists */
     out.clock_24h = true; /* S21 amendment: a real change from the default, not left at its zero value */
     out.screen_flip = true; /* format v8 amendment: a real change from the default, not left at its zero value */
+    out.sounds_on = false; /* S27 (format v9): a real change from the default (true), not left at its zero value */
+    out.ui_ticks = true;   /* S27 (format v9): a real change from the default (false), not left at its zero value */
     strncpy(out.my_name, "Dana", sizeof(out.my_name) - 1);
     out.cal_valid = true;
     out.compass_cal.hard_offset = (ff_vec3_t){12.5f, -3.25f, 0.75f};
@@ -1075,6 +1324,9 @@ int main(void)
     RUN_TEST(S21_v7_blob_truncated_yields_defaults_not_a_migration);
     RUN_TEST(S21_v6_blob_wrong_payload_size_yields_defaults_not_a_migration);
     RUN_TEST(S21_v6_blob_truncated_yields_defaults_not_a_migration);
+    RUN_TEST(S27_v8_blob_forward_migrates_preserving_every_value);
+    RUN_TEST(S27_v8_blob_wrong_payload_size_yields_defaults_not_a_migration);
+    RUN_TEST(S27_v8_blob_truncated_yields_defaults_not_a_migration);
 
     RUN_TEST(S11_AC2_round_trip_save_load_is_exact_including_calibration);
     RUN_TEST(S11_AC2_round_trip_preserves_exact_defaults);

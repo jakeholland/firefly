@@ -30,10 +30,10 @@ uint8_t ff_notify_count(ff_notify_t const *q)
     return (q != NULL) ? q->count : 0u;
 }
 
-bool ff_notify_push(ff_notify_t *q, ff_notify_kind_t kind, ff_notify_tier_t tier, uint32_t node_id,
-                    char const *text, uint32_t now_ms)
+ff_notify_push_result_t ff_notify_push(ff_notify_t *q, ff_notify_kind_t kind, ff_notify_tier_t tier, uint32_t node_id,
+                                        char const *text, uint32_t now_ms)
 {
-    if (q == NULL) return false;
+    if (q == NULL) return FF_NOTIFY_PUSH_REJECTED;
 
     /* Coalesce: find the LIVE entry with matching kind+node_id whose
      * at_ms is the most recent (ties broken by scan order — the queue
@@ -62,7 +62,7 @@ bool ff_notify_push(ff_notify_t *q, ff_notify_kind_t kind, ff_notify_tier_t tier
             memcpy(e->text, text, n);
             e->text[n] = '\0';
         }
-        return true;
+        return FF_NOTIFY_PUSH_COALESCED;
     }
 
     /* No coalesce: append. Evict the oldest first if already full (spec:
@@ -85,7 +85,7 @@ bool ff_notify_push(ff_notify_t *q, ff_notify_kind_t kind, ff_notify_tier_t tier
         e->text[n] = '\0';
     }
     q->count++;
-    return true;
+    return FF_NOTIFY_PUSH_NEW;
 }
 
 ff_notify_entry_t const *ff_notify_head(ff_notify_t const *q)

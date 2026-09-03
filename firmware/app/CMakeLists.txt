@@ -83,7 +83,12 @@ endif()
 # two together at startup via ff_intent_emit_bind(ff_shell_intent_sink,..).
 # ---------------------------------------------------------------------------
 add_library(ff-intent STATIC ${FF_INTENT_SOURCES})
-target_link_libraries(ff-intent PUBLIC ff-app) # app/include/ff_intent.h's include path
+# S27 amendment: ff_intent.c's own header (app/sources.cmake) explains why
+# ff_sound_emit.c (the screens-level TAP sound seam, docs/specs/
+# S27-sounds.md "Shell seam") is built into THIS SAME library rather than
+# a separate one — ff-core is now needed too, for ff_sound_event_t
+# (ff_sound.h).
+target_link_libraries(ff-intent PUBLIC ff-app ff-core) # app/include/ff_intent.h's include path
 target_compile_features(ff-intent PUBLIC c_std_11)
 ff_apply_warnings(ff-intent)
 

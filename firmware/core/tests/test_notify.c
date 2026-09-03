@@ -31,8 +31,8 @@ static void S26_AC1_push_then_head_is_oldest(void)
     ff_notify_t q;
     ff_notify_init(&q);
 
-    TEST_ASSERT_TRUE(ff_notify_push(&q, FF_NOTIFY_MESSAGE, FF_NOTIFY_TIER_BANNER, 1, "a", NOW));
-    TEST_ASSERT_TRUE(ff_notify_push(&q, FF_NOTIFY_MESSAGE, FF_NOTIFY_TIER_BANNER, 2, "b", NOW + 10u));
+    TEST_ASSERT_EQUAL(FF_NOTIFY_PUSH_NEW, ff_notify_push(&q, FF_NOTIFY_MESSAGE, FF_NOTIFY_TIER_BANNER, 1, "a", NOW));
+    TEST_ASSERT_EQUAL(FF_NOTIFY_PUSH_NEW, ff_notify_push(&q, FF_NOTIFY_MESSAGE, FF_NOTIFY_TIER_BANNER, 2, "b", NOW + 10u));
     TEST_ASSERT_EQUAL_UINT8(2, ff_notify_count(&q));
 
     ff_notify_entry_t const *h = ff_notify_head(&q);
@@ -186,7 +186,7 @@ static void S26_AC1_coalesce_within_2s_replaces_in_place(void)
 
     /* Same node+kind, exactly at the 2000ms boundary: still coalesces
      * (inclusive). */
-    TEST_ASSERT_TRUE(ff_notify_push(&q, FF_NOTIFY_MESSAGE, FF_NOTIFY_TIER_BANNER, 5, "hi again", NOW + 2000u));
+    TEST_ASSERT_EQUAL(FF_NOTIFY_PUSH_COALESCED, ff_notify_push(&q, FF_NOTIFY_MESSAGE, FF_NOTIFY_TIER_BANNER, 5, "hi again", NOW + 2000u));
     TEST_ASSERT_EQUAL_UINT8(1, ff_notify_count(&q)); /* no new entry */
 
     ff_notify_entry_t const *h = ff_notify_head(&q);
@@ -203,7 +203,7 @@ static void S26_AC1_no_coalesce_past_2001ms(void)
     ff_notify_push(&q, FF_NOTIFY_MESSAGE, FF_NOTIFY_TIER_BANNER, 5, "hi", NOW);
 
     /* 2001ms later: past the window — a SECOND entry, not a coalesce. */
-    TEST_ASSERT_TRUE(ff_notify_push(&q, FF_NOTIFY_MESSAGE, FF_NOTIFY_TIER_BANNER, 5, "hi again", NOW + 2001u));
+    TEST_ASSERT_EQUAL(FF_NOTIFY_PUSH_NEW, ff_notify_push(&q, FF_NOTIFY_MESSAGE, FF_NOTIFY_TIER_BANNER, 5, "hi again", NOW + 2001u));
     TEST_ASSERT_EQUAL_UINT8(2, ff_notify_count(&q));
 
     ff_notify_entry_t const *h = ff_notify_head(&q);
@@ -251,6 +251,42 @@ static void S26_AC1_coalesce_preserves_other_entries_order(void)
     TEST_ASSERT_EQUAL_STRING("first-updated", h0->text);
 }
 
+/* [api] S27 sounds amendment — ff_notify_push_result_t: a caller (S27's
+ * shell_notify_push_banner, ff_shell.c) needs to fire a per-push side
+ * effect (a sound) only for a GENUINELY NEW notification, never for a
+ * coalesced refresh of an existing one. This is the direct proof the
+ * enum answers that correctly across the exact scenarios that side
+ * effect cares about: same sender twice within the coalesce window
+ * (COALESCED, second time), a different sender (NEW), and overflow
+ * eviction (still NEW — the pushed notification itself is new, even
+ * though pushing it evicted some OTHER unrelated entry to make room). */
+static void S27_push_result_new_vs_coalesced_vs_overflow(void)
+{
+    ff_notify_t q;
+    ff_notify_init(&q);
+
+    TEST_ASSERT_EQUAL(FF_NOTIFY_PUSH_NEW, ff_notify_push(&q, FF_NOTIFY_MESSAGE, FF_NOTIFY_TIER_BANNER, 1, "a", NOW));
+    /* Same sender, well within the 2s coalesce window: COALESCED. */
+    TEST_ASSERT_EQUAL(FF_NOTIFY_PUSH_COALESCED,
+                      ff_notify_push(&q, FF_NOTIFY_MESSAGE, FF_NOTIFY_TIER_BANNER, 1, "a2", NOW + 500u));
+    TEST_ASSERT_EQUAL_UINT8(1, ff_notify_count(&q)); /* proxy check: the count itself didn't grow either */
+
+    /* A DIFFERENT sender: NEW, even though it arrives inside the same
+     * 500ms window that just coalesced sender 1's second push. */
+    TEST_ASSERT_EQUAL(FF_NOTIFY_PUSH_NEW,
+                      ff_notify_push(&q, FF_NOTIFY_MESSAGE, FF_NOTIFY_TIER_BANNER, 2, "b", NOW + 600u));
+    TEST_ASSERT_EQUAL_UINT8(2, ff_notify_count(&q));
+
+    /* Fill to FF_NOTIFY_DEPTH (4) and push a 5th, forcing an eviction —
+     * still reports NEW for the pushed entry itself. */
+    ff_notify_push(&q, FF_NOTIFY_MESSAGE, FF_NOTIFY_TIER_BANNER, 3, "c", NOW + 700u);
+    ff_notify_push(&q, FF_NOTIFY_MESSAGE, FF_NOTIFY_TIER_BANNER, 4, "d", NOW + 800u);
+    TEST_ASSERT_EQUAL_UINT8(4, ff_notify_count(&q));
+    TEST_ASSERT_EQUAL(FF_NOTIFY_PUSH_NEW,
+                      ff_notify_push(&q, FF_NOTIFY_MESSAGE, FF_NOTIFY_TIER_BANNER, 5, "e", NOW + 900u));
+    TEST_ASSERT_EQUAL_UINT8(4, ff_notify_count(&q)); /* still capped: the oldest (node 1) was evicted */
+}
+
 /* A long text is safely truncated, never overrunning the buffer. */
 static void S26_text_overlong_is_truncated_safely(void)
 {
@@ -278,7 +314,7 @@ static void S26_null_guards(void)
     TEST_ASSERT_FALSE(ff_notify_pop(NULL));
     TEST_ASSERT_FALSE(ff_notify_dismiss(NULL, 0));
     ff_notify_tick(NULL, NOW); /* no crash */
-    TEST_ASSERT_FALSE(ff_notify_push(NULL, FF_NOTIFY_MESSAGE, FF_NOTIFY_TIER_BANNER, 1, "x", NOW));
+    TEST_ASSERT_EQUAL(FF_NOTIFY_PUSH_REJECTED, ff_notify_push(NULL, FF_NOTIFY_MESSAGE, FF_NOTIFY_TIER_BANNER, 1, "x", NOW));
 }
 
 /* ------------------------------------------------------------------- */
@@ -300,6 +336,7 @@ int main(void)
     RUN_TEST(S26_AC1_different_kind_does_not_coalesce);
     RUN_TEST(S26_AC1_different_node_does_not_coalesce);
     RUN_TEST(S26_AC1_coalesce_preserves_other_entries_order);
+    RUN_TEST(S27_push_result_new_vs_coalesced_vs_overflow);
     RUN_TEST(S26_text_overlong_is_truncated_safely);
     RUN_TEST(S26_null_guards);
 

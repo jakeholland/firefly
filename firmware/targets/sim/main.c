@@ -158,6 +158,7 @@
                              * instead of defined locally in this file. */
 #include "ff_intent.h"     /* S16 slice d — binding the seam for live window mode */
 #include "ff_shell.h"      /* S16b2 — live mode is the app shell now (live.{c,h} retired) */
+#include "ff_sound_emit.h" /* S27 — binding the TAP sound seam for live window mode */
 #include "ff_wall.h"       /* S18c — the no-pack-window decay backstop (build-date proximity guard) */
 #include "fixture.h"
 #include "live_setup.h"      /* S16 slice d — the setup sequence shared with ctl_loop.c */
@@ -205,6 +206,23 @@ static void ff_headless_flush_cb(lv_display_t *disp, const lv_area_t *area, uint
     (void)area;
     (void)px_map;
     lv_display_flush_ready(disp);
+}
+
+/* S27 sounds — the live-window path's ff_shell_cfg_t.play_sound hook.
+ * Same "no real speaker driver yet, just log it" shape as
+ * ctl_loop.c's ctl_loop_play_sound_cb (that file's own doc comment has
+ * the full rationale); this path has no ctl-observable log to append to
+ * (nothing scripts the interactive window), so it is stderr-only. */
+static void ff_win_play_sound_cb(void *user, ff_sound_event_t ev)
+{
+    (void)user;
+    static char const *const kNames[FF_SOUND_COUNT] = {
+        [FF_SOUND_FLARE_SENT] = "FLARE_SENT",         [FF_SOUND_FLARE_INCOMING] = "FLARE_INCOMING",
+        [FF_SOUND_MESSAGE] = "MESSAGE",               [FF_SOUND_RALLY] = "RALLY",
+        [FF_SOUND_BATT_LOW] = "BATT_LOW",             [FF_SOUND_TAP] = "TAP",
+    };
+    char const *name = ((int)ev >= 0 && ev < FF_SOUND_COUNT) ? kNames[ev] : "UNKNOWN";
+    fprintf(stderr, "ffsim: sound %s\n", name);
 }
 
 /* --mock-clock (one-shot headless/STATIC window paths only — see
@@ -385,6 +403,8 @@ static int ff_run_window(const char *fixture_path, bool mock_clock, const char *
         shell_cfg.pack = &s_win_pack;
         shell_cfg.toks = s_win_toks;
         shell_cfg.ntoks = FP_MAX_TOKENS;
+        shell_cfg.play_sound = ff_win_play_sound_cb; /* S27 sounds — stderr log */
+        shell_cfg.play_sound_user = NULL;
 
         ff_live_setup_cfg_t live_cfg = {
             .connect_hostport = connect_hostport,
@@ -399,6 +419,7 @@ static int ff_run_window(const char *fixture_path, bool mock_clock, const char *
         /* Every S10/S16 button now reaches this shell — see this
          * function's doc comment. */
         ff_intent_emit_bind(ff_shell_intent_sink, &s_win_shell);
+        ff_sound_emit_bind(ff_shell_sound_sink, &s_win_shell); /* S27 sounds — same bind lifetime */
 
         if (fixture_path != NULL) {
             ff_app_state_t seed;

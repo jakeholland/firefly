@@ -32,8 +32,21 @@ set(FF_ROUTE_SOURCES
 )
 
 # S16c1 — app/ff_intent.c: the intent seam (docs/specs/S16-app-shell.md slice c1)
+#
+# S27 amendment: ff_sound_emit.c (docs/specs/S27-sounds.md, "Shell seam")
+# joins this SAME list/library rather than getting its own — it is the
+# screens-level TAP sound seam, mirroring ff_intent.c's process-global
+# emit/bind shape exactly, and every consumer that needs one already
+# needs the other (ff-app-ui links ff-intent; the esp32s3 ff_app_ui
+# component REQUIRES the ff_app component, which is what compiles
+# FF_INTENT_SOURCES on device — see that component's CMakeLists.txt,
+# which this PR does not touch). Folding it in here, instead of a
+# separate FF_SOUND_EMIT_SOURCES/library, is what lets the device build
+# pick it up with ZERO changes under targets/esp32s3/ (this PR's own
+# scope boundary: core + shell + settings + sim only).
 set(FF_INTENT_SOURCES
     ff_intent.c
+    ff_sound_emit.c
 )
 
 # S18c — app/ff_wall_window.c: pack -> wall-clock plausibility window
