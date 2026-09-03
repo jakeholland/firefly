@@ -1,0 +1,96 @@
+name: esp32
+
+# S15 deliverable 7 / acceptance criterion 6 (docs/specs/S15-esp32s3-target.md:
+# "esp32-build job (build-only) becomes a PR gate" / "CI esp32 build
+# green") — never implemented until this PR. Dozens of device-facing PRs
+# merged on ci.yml's sim-only gate with zero proof the ESP-IDF project
+# still even configures or compiles.
+#
+# A SEPARATE workflow file rather than a job folded into ci.yml: this
+# build runs inside Espressif's docker toolchain image (~1GB pull) and
+# takes materially longer than the sim build; ci.yml/e2e.yml already
+# split by exactly this kind of concern (e2e is nightly + docker-backed,
+# split out from the PR-gate sim build for the same "slow, different
+# infra" reason — see e2e.yml's own header). Keeping esp32-build as its
+# own file means a Docker/toolchain outage here doesn't crowd ci.yml's
+# job list or its status-check names, and the file can gain its own
+# nightly/label triggers later without touching ci.yml.
+#
+# Build-only — no flash, no hardware attached to the runner. Matrix of
+# TWO configs (see docs/specs/S15-esp32s3-target.md's Amendments and
+# firmware/targets/esp32s3/sdkconfig.ci's header for the full story):
+#   - "defaults":     sdkconfig.defaults alone — the fresh-checkout,
+#                      bring-up STAGE 1 build (no LVGL/display/touch at
+#                      all). Kept honest and building on its own; this is
+#                      what a brand-new contributor's first `idf.py build`
+#                      actually gets.
+#   - "ci-shipping":   sdkconfig.defaults + sdkconfig.ci — the SHIPPING
+#                      config (STAGE 3, FF_DEMO_MODE, FF_DEMO_LIVE) that
+#                      matches the maintainer's real board. STAGE 1 alone
+#                      would never catch a break in the LVGL/display/
+#                      touch/demo code that actually ships.
+#
+# esp_idf_version is PINNED to the v5.3.5 docker tag — the exact release
+# nearest what firmware/targets/esp32s3/main/idf_component.yml and every
+# managed component in dependencies.lock require (`idf: ">=5.3"`), and
+# what the maintainer's own `source ~/esp/esp-idf/export.sh` checkout
+# resolves to (`idf.py --version` => v5.3.5-889-g7a911c980d6 — release/v5.3
+# HEAD, a bit past the v5.3.5 tag but the same minor/patch baseline).
+# Never `latest` or the floating `release-v5.3` tag: this repo's own rule
+# for vendored deps ("pinned ... via commit hashes — never floating tags",
+# AGENTS.md) applies just as much to the toolchain image, which is why
+# espressif/esp-idf-ci-action itself is pinned below to a commit SHA
+# rather than a tag too.
+#
+# NOT wired into branch protection as a required check by this PR — see
+# the PR body. The maintainer flips that on once they've watched it run
+# green a few times, same as any brand-new CI job.
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  esp32-build:
+    name: esp32-build (${{ matrix.config }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - config: defaults
+            sdkconfig_defaults: "sdkconfig.defaults"
+          - config: ci-shipping
+            sdkconfig_defaults: "sdkconfig.defaults;sdkconfig.ci"
+    steps:
+      - uses: actions/checkout@v4
+
+      # Managed components (lvgl, esp_lvgl_port, esp_lcd_spd2010,
+      # esp_io_expander_tca9554, transitively esp_lcd_touch) are fetched
+      # by the ESP-IDF component manager on `idf.py build` and are NOT
+      # committed — firmware/targets/esp32s3/.gitignore excludes
+      # managed_components/ ("never vendor the downloaded sources into
+      # git"). Cache them keyed on the manifest + lockfile so a normal PR
+      # doesn't re-download the same pinned set on every push. Both
+      # matrix legs fetch the identical component set (the two
+      # sdkconfig_defaults legs only change which Kconfig options they're
+      # built WITH, not which components idf_component.yml declares), so
+      # one cache key serves both legs.
+      - name: Cache ESP-IDF managed components
+        uses: actions/cache@v4
+        with:
+          path: firmware/targets/esp32s3/managed_components
+          key: ${{ runner.os }}-idf-managed-components-${{ hashFiles('firmware/targets/esp32s3/main/idf_component.yml', 'firmware/targets/esp32s3/dependencies.lock') }}
+
+      # Mechanism verified locally (this PR's body has the full command +
+      # output): `idf.py -DSDKCONFIG_DEFAULTS="a;b" build` layers sdkconfig
+      # files left-to-right, later files' keys winning — that's how
+      # sdkconfig.ci overlays sdkconfig.defaults without duplicating it.
+      - name: Build (${{ matrix.config }})
+        uses: espressif/esp-idf-ci-action@e6f5c74232b1ccd4c97ed641f1e48553853f1fd5 # v1.2.0
+        with:
+          esp_idf_version: v5.3.5
+          target: esp32s3
+          path: firmware/targets/esp32s3
+          command: idf.py -DSDKCONFIG_DEFAULTS="${{ matrix.sdkconfig_defaults }}" build

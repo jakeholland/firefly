@@ -49,6 +49,17 @@ if(FF_BUILD_TESTS)
     ff_apply_warnings(test_touchcal)
 
     add_test(NAME test_touchcal COMMAND test_touchcal)
+
+    # Tech-debt sprint: ff_time_reached (firmware/platform/include/ff_clock.h)
+    # — the single de-duplicated replacement for six identical
+    # reached()/due() one-liners core modules used to each define.
+    add_executable(test_time_reached
+        tests/test_time_reached.c
+    )
+    target_link_libraries(test_time_reached PRIVATE ff-platform unity)
+    ff_apply_warnings(test_time_reached)
+
+    add_test(NAME test_time_reached COMMAND test_time_reached)
 endif()
 
 # S01 (core/geo — bearing, distance, heading fusion; docs/specs/S01-core-geo.md)
@@ -207,10 +218,11 @@ if(FF_BUILD_TESTS)
     add_test(NAME test_heard COMMAND test_heard)
 endif()
 
-# S22a (core/sigview — Signals-face view-model: merges ff_feed + ff_crew
-# into one ordered row list, honest presence, and the send-target state
-# machine; docs/specs/S22-signals-rework.md, slice a. Pure C11, no UI —
-# scr_inbox.c, slice b, only renders this.)
+# core/sigview — originally the whole S22 Signals-face view-model
+# (docs/specs/S22-signals-rework.md, slice a); the S24 inbox rework moved
+# the row-list/target machinery to ff_inbox.c and the shell. What remains
+# is the honest presence classifier (ff_sigview_presence, reused by
+# ff_inbox.c) and the ff_target_kind_t vocabulary — see ff_sigview.h.
 target_sources(ff-core PRIVATE src/ff_sigview.c)
 
 if(FF_BUILD_TESTS)

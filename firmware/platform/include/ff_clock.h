@@ -15,6 +15,7 @@
 #ifndef FF_CLOCK_H
 #define FF_CLOCK_H
 
+#include <stdbool.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -30,6 +31,23 @@ typedef struct {
     uint32_t (*now_ms)(void *user);
     void *user;
 } ff_clock_t;
+
+/**
+ * ff_time_reached — wraparound-safe "has now_ms reached (or passed)
+ * deadline_ms yet", the comparison-by-subtraction convention documented
+ * above. INCLUSIVE at the boundary: now_ms == deadline_ms already
+ * returns true. Correct across uint32_t ms rollover as long as the true
+ * gap between now_ms and deadline_ms stays within 2^31 ms (~24.8 days),
+ * same as any twos-complement deadline check.
+ *
+ * The single copy of a one-liner six core modules used to each define
+ * for themselves (ff_button.c, ff_power_fsm.c, ff_idle.c, ff_notify.c,
+ * ff_flare.c, ff_demofeed.c) — behaviour is unchanged, just de-duplicated.
+ */
+static inline bool ff_time_reached(uint32_t now_ms, uint32_t deadline_ms)
+{
+    return (int32_t)(now_ms - deadline_ms) >= 0;
+}
 
 #ifdef __cplusplus
 }

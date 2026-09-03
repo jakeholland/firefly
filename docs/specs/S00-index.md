@@ -10,7 +10,7 @@ Specs are contracts. Acceptance criteria (AC) become test names (`S01_AC3_...`).
 | S04 | firefly protocol — pulse/flare/rally/status packets | S03 | YES | ✅ merged (PR #10) |
 | S05 | festpack — pack parser | — | YES | ✅ merged (PR #5) |
 | S06 | app/radar — Radar face (live/stale/close) | S01,S02 | YES | ✅ merged (PR #13 compute, #16 face+shell) |
-| S07 | app/now — schedule engine + Now face + alarms | S05 | YES | ✅ merged (PR #9 engine, #21 face) |
+| S07 | app/now — schedule engine + Lineup face (was Now) + alarms | S05 | YES | ✅ merged (PR #9 engine, #21 face) |
 | S08 | app/signals + T9 composer | S03,S04 | YES (T9 predictive: no) | ✅ merged (PR #14 engine, #25 feed+UI) |
 | S09 | app/map — vector map face | S05,S02 | YES | ✅ merged (PR #73) |
 | S10 | flare flow — send/receive/takeover | S04,S06 | YES | ✅ merged (PR #15 core, #20 UI) |
@@ -22,6 +22,13 @@ Specs are contracts. Acceptance criteria (AC) become test names (`S01_AC3_...`).
 | S16 | app/shell — event loop, routing, input dispatch, wall clock | S02,S03,S06,S08,S10,S11,S13 | YES | ✅ merged (PR #36,#37,#46,#54,#56,#58,#59,#60,#61) |
 | S17 | usability hardening — colorblind toggle, tap-target floor | S06,S08,S11 | YES | ✅ a+b merged (PR #83, #86) — #43,#74 closed |
 | S18 | wall-clock trust — what may change the puck's mind about the time | S16 | YES | ✅ a+b+c merged (PR #90,#94,#93 — #49,#50,#40 closed); follow-ups #95,#96 |
+| S20 | demo mode — Firefly Fields (seeded festival + crew, every screen alive) | S05,S02 | stretch (demos/dev) | ✅ merged (PR #106; fix #109) |
+| S21 | settings rework — scrolling list, Calibrate Touch, NVS persistence | S11 | YES | ✅ merged (PR #107); amendments: 12h/24h clock format (PR #147), screen flip (PR #158) |
+| S22 | app/signals rework — unified crew list + targeting + actions | S08,S04 | YES | ✅ a,b,d merged (PR #113 docs, #114 a, #116 b, #118 d); screen (b) and composer quick-replies (c) superseded by S24 |
+| S23 | demo-feed — live synthetic event source (extends S20) | S20 | stretch (demo/dev harness) | ✅ merged (PR #113 docs, #115 a, #117 b+c, #119 d) |
+| S24 | signals inbox — inbox → thread rework | S22 | YES | ✅ merged (PR #121 docs, #122 a, #124 b, #126 c, #128 d); supersedes S22's screen (b) and composer quick-replies (c) |
+| S25 | power latch + soft power button (`ff_power`) | S15 | YES (device) | ◐ a merged (PR #132 — battery keep-alive latch); b delivered under S26(b) (PR #135) |
+| S26 | device lifecycle — power/idle/notify/home/boot | S25 | YES | ✅ a–g merged (PR #133 docs; #134 a, #135 b, #136+#138 c, #137+#138 d, #142+#144+#145 e, #140+#150 f, #139+#141+#146 g) |
 
 **Wave plan:** Wave 0 = S13+S14 (the loop itself). Wave 1 = S01,S03,S05,S11 (parallel, no deps). Wave 2 = S02,S04,S07. Wave 3 = S06,S08,S10. Wave 4 = S16, then S09,S12,S15.
 

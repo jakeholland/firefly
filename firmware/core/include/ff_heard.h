@@ -86,10 +86,11 @@ void ff_heard_init(ff_heard_t *h);
  * A brand-new id, with the list not yet full, appends normally.
  *
  * A brand-new id, with the list already at `FF_HEARD_MAX`, evicts the
- * entry with the SMALLEST `last_heard_ms` (least-recently-heard) and
- * overwrites it — true LRU eviction, per the S08 PR #25 review ruling
- * ("bounded, LRU-evictable... populating the add-from-heard-nodes
- * pairing UI"). No-op if `h` is NULL.
+ * entry with the LARGEST age (`now_ms - last_heard_ms`, computed
+ * unsigned so it stays correct across uint32 ms wraparound) — i.e. the
+ * least-recently-heard entry — and overwrites it: true LRU eviction, per
+ * the S08 PR #25 review ruling ("bounded, LRU-evictable... populating
+ * the add-from-heard-nodes pairing UI"). No-op if `h` is NULL.
  */
 void ff_heard_note(ff_heard_t *h, uint32_t node_id, uint32_t now_ms);
 

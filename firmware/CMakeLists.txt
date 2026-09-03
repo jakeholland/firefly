@@ -125,6 +125,43 @@ target_include_directories(ff-nanopb PUBLIC ${nanopb_SOURCE_DIR})
 
 enable_testing()
 
+# ---------------------------------------------------------------------------
+# S14 P0 — global ctest timeout (docs/specs/S14-testing-ci.md Amendments).
+#
+# No test anywhere in this tree carries an explicit TIMEOUT, and CI set no
+# `timeout-minutes` on the jobs that run them either — so a hung test (a
+# real hang class was just reproduced in the sim tests) would ride GitHub
+# Actions' 360-minute *job* default before anything noticed, burning a
+# runner for six hours over one bad test. `timeout-minutes: 20` on each CI
+# job (ci.yml/e2e.yml) is a second, coarser backstop, but the fix that
+# actually protects a hang has to live here: it must catch a hang on a
+# contributor's laptop too, where there is no GitHub Actions job wrapper
+# at all — `ctest --timeout 120` sprinkled into every ctest invocation in
+# ci.yml would miss that entirely (and miss any invocation someone adds
+# later without remembering the flag). A CMake-side default fires for
+# every `ctest` invocation everywhere, with zero extra flags to remember.
+#
+# Mechanism: CMake auto-generates an underscore-prefixed alias
+# (`_add_test`) for any built-in command shadowed by a function/macro of
+# the same name (verified locally — see PR body), so redefining add_test()
+# here, BEFORE any add_subdirectory() that calls it, applies a default
+# TIMEOUT to every add_test(NAME ... COMMAND ...) call anywhere in this
+# tree without editing the ~20 call sites across core/meshclient/festpack/
+# app/targets/sim. A module can still opt an individual slow test into a
+# longer budget with its own set_tests_properties(... TIMEOUT ...) call
+# placed AFTER its add_test() (last write wins) — raise, never lower
+# below what would mask a real hang.
+set(FF_DEFAULT_TEST_TIMEOUT_SECONDS 120 CACHE STRING
+    "Default ctest TIMEOUT (seconds) applied to every add_test() registered in this tree.")
+
+function(add_test)
+    _add_test(${ARGV})
+    cmake_parse_arguments(_ff_test "" "NAME" "" ${ARGV})
+    if(_ff_test_NAME)
+        set_tests_properties(${_ff_test_NAME} PROPERTIES TIMEOUT ${FF_DEFAULT_TEST_TIMEOUT_SECONDS})
+    endif()
+endfunction()
+
 add_subdirectory(third_party)
 add_subdirectory(platform)
 add_subdirectory(core)
