@@ -6,6 +6,8 @@
 
 #include <stddef.h> /* NULL */
 
+#include "ff_clock.h" /* ff_time_reached — wraparound-safe deadline check */
+
 /* The generator's kind draw must stay in lockstep with ff_feed_kind_t: the
  * enum's 4 values (FEED_TEXT..FEED_FLARE, since FEED_PULSE's 2026-09-02
  * retirement) are exactly the range we pick from. If someone adds a feed
@@ -50,12 +52,6 @@ static uint32_t ff_demofeed_gap(uint32_t *rng, uint32_t lo, uint32_t hi)
 static bool ff_demofeed_time_le(uint32_t a, uint32_t b)
 {
     return (int32_t)(a - b) <= 0;
-}
-
-/* Wraparound-safe "has now reached (at or past) the deadline". */
-static bool ff_demofeed_due(uint32_t deadline, uint32_t now)
-{
-    return (int32_t)(now - deadline) >= 0;
 }
 
 /* ------------------------------------------------------------------- */
@@ -132,7 +128,7 @@ uint8_t ff_demofeed_tick(ff_demofeed_t *s, uint32_t now_ms,
         bool signal_first = ff_demofeed_time_le(s->next_signal_ms, s->next_poke_ms);
         uint32_t due = signal_first ? s->next_signal_ms : s->next_poke_ms;
 
-        if (!ff_demofeed_due(due, now_ms)) {
+        if (!ff_time_reached(now_ms, due)) {
             break; /* nothing more is due at or before now_ms */
         }
 

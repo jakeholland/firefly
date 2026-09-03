@@ -5,15 +5,8 @@
 
 #include <string.h>
 
+#include "ff_clock.h"    /* ff_time_reached — wraparound-safe deadline check */
 #include "ff_settings.h" /* FF_BRIGHTNESS_MIN_PCT — ff_idle_brightness_pct's DIM value */
-
-/* Wraparound-safe "has now_ms reached deadline_ms yet" — the same
- * convention ff_flare.c / ff_power_fsm.c document: INCLUSIVE at the
- * boundary, so now_ms == deadline_ms already fires. */
-static bool ff_idle_reached(uint32_t now_ms, uint32_t deadline_ms)
-{
-    return (int32_t)(now_ms - deadline_ms) >= 0;
-}
 
 void ff_idle_init(ff_idle_t *idle)
 {
@@ -69,7 +62,7 @@ ff_idle_state_t ff_idle_tick(ff_idle_t *idle, uint32_t now_ms, bool keep_awake, 
      * elapsed (immediately if it already has)": this comparison is
      * re-evaluated fresh, against the same unmoved ref_ms, on every tick
      * regardless of how sleep_inhibit behaved on prior ticks. */
-    if (!sleep_inhibit && ff_idle_reached(now_ms, idle->ref_ms + FF_IDLE_T_OFF_MS + FF_IDLE_T_SLEEP_MS)) {
+    if (!sleep_inhibit && ff_time_reached(now_ms, idle->ref_ms + FF_IDLE_T_OFF_MS + FF_IDLE_T_SLEEP_MS)) {
         idle->state = FF_IDLE_STATE_SLEEP;
         return idle->state;
     }
@@ -81,9 +74,9 @@ ff_idle_state_t ff_idle_tick(ff_idle_t *idle, uint32_t now_ms, bool keep_awake, 
         return idle->state;
     }
 
-    if (ff_idle_reached(now_ms, idle->ref_ms + FF_IDLE_T_OFF_MS)) {
+    if (ff_time_reached(now_ms, idle->ref_ms + FF_IDLE_T_OFF_MS)) {
         idle->state = FF_IDLE_STATE_OFF;
-    } else if (ff_idle_reached(now_ms, idle->ref_ms + FF_IDLE_T_DIM_MS)) {
+    } else if (ff_time_reached(now_ms, idle->ref_ms + FF_IDLE_T_DIM_MS)) {
         idle->state = FF_IDLE_STATE_DIM;
     }
     /* else: elapsed idle time has not reached FF_IDLE_T_DIM_MS yet —
