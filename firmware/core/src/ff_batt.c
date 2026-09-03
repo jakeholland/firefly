@@ -82,8 +82,9 @@ int8_t ff_batt_pct_from_mv(uint16_t pack_mv)
     return -1;
 }
 
+
 /* ---------------------------------------------------------------------
- * ff_batt_filter_t
+ * ff_batt_filter_t — moving-average + Schmitt-hysteresis
  * ------------------------------------------------------------------- */
 
 void ff_batt_filter_init(ff_batt_filter_t *f)
@@ -95,37 +96,6 @@ void ff_batt_filter_init(ff_batt_filter_t *f)
     f->displayed_pct = -1;
 }
 
-/* Median of the `n` values in `vals` (n >= 1, n <= FF_BATT_FILTER_WINDOW).
- * Sorts a small scratch COPY (insertion sort — n is at most 5, nothing
- * here benefits from anything fancier) and returns the middle element;
- * for an even `n` the two middle elements are averaged (rounded), so
- * every call during window warm-up (count growing 1..FF_BATT_FILTER_WINDOW)
- * has a well-defined answer, not just the steady-state odd-window case. */
-static int8_t batt_median(int8_t const *vals, uint8_t n)
-{
-    int8_t sorted[FF_BATT_FILTER_WINDOW];
-    for (uint8_t i = 0; i < n; i++) {
-        sorted[i] = vals[i];
-    }
-    for (uint8_t i = 1; i < n; i++) {
-        int8_t const v = sorted[i];
-        uint8_t j = i;
-        while (j > 0 && sorted[j - 1] > v) {
-            sorted[j] = sorted[j - 1];
-            j--;
-        }
-        sorted[j] = v;
-    }
-    if (n % 2u == 1u) {
-        return sorted[n / 2u];
-    }
-    int32_t const a = sorted[n / 2u - 1u];
-    int32_t const b = sorted[n / 2u];
-    /* Round-to-nearest average of the two middle values (a, b >= 0,
-     * since ff_batt_pct_from_mv's valid range is [0, 100]). */
-    return (int8_t)((a + b + 1) / 2);
-}
-
 int8_t ff_batt_filter_push(ff_batt_filter_t *f, uint16_t pack_mv, uint32_t now_ms)
 {
     if (f == NULL) {
@@ -135,45 +105,104 @@ int8_t ff_batt_filter_push(ff_batt_filter_t *f, uint16_t pack_mv, uint32_t now_m
     int8_t const raw_pct = ff_batt_pct_from_mv(pack_mv);
     if (raw_pct < 0) {
         /* An unreadable/implausible sample is never folded into the
-         * history — see ff_batt.h's doc comment. Report whatever is
-         * already displayed (honestly -1 if nothing ever has been). */
+         * window — see ff_batt.h's doc comment. Track consecutive bad
+         * samples for the dead-sensor revert (FF_BATT_FILTER_DEAD_AFTER). */
         f->has_last_push = true;
         f->last_push_ms = now_ms;
+        if (f->consecutive_bad < UINT8_MAX) {
+            f->consecutive_bad++;
+        }
+        if (f->consecutive_bad >= FF_BATT_FILTER_DEAD_AFTER) {
+            /* The sense line has gone dead: an old percent frozen from
+             * before it died is a stale-shown-as-current honesty
+             * violation (CLAUDE.md). Revert to unknown and clear the
+             * window so the next valid reading is a fresh first-ever
+             * sample (immediate reveal, no residual weight). */
+            f->has_displayed = false;
+            f->displayed_pct = -1;
+            f->filled = false;
+            f->next = 0;
+        }
         return f->displayed_pct;
     }
+
+    /* Valid reading: a real sample clears the consecutive-bad run. */
+    f->consecutive_bad = 0;
 
     if (f->has_last_push && ff_time_reached(now_ms, f->last_push_ms + FF_BATT_FILTER_STALE_GAP_MS)) {
         /* A long gap since the last push: start the window fresh
          * rather than blend a possibly stale pre-gap reading with the
          * new one (ff_batt.h's FF_BATT_FILTER_STALE_GAP_MS doc comment). */
-        f->count = 0;
+        f->filled = false;
         f->next = 0;
     }
     f->has_last_push = true;
     f->last_push_ms = now_ms;
 
-    f->history[f->next] = raw_pct;
-    f->next = (uint8_t)((f->next + 1u) % FF_BATT_FILTER_WINDOW);
-    if (f->count < FF_BATT_FILTER_WINDOW) {
-        f->count++;
+    if (!f->filled) {
+        /* Pre-fill: every slot starts as this one reading, not a
+         * window of 1 grown one sample at a time — see
+         * FF_BATT_FILTER_WINDOW's doc comment for why that avoids a
+         * variable-weight warm-up transient. */
+        for (uint8_t i = 0; i < FF_BATT_FILTER_WINDOW; i++) {
+            f->history[i] = pack_mv;
+        }
+        f->next = 0;
+        f->filled = true;
+    } else {
+        f->history[f->next] = pack_mv;
+        f->next = (uint8_t)((f->next + 1u) % FF_BATT_FILTER_WINDOW);
     }
 
-    int8_t const median = batt_median(f->history, f->count);
-
-    if (!f->has_displayed) {
-        /* First real sample ever: show immediately, no hysteresis, no
-         * warm-up wait (ff_batt.h's doc comment). */
-        f->has_displayed = true;
-        f->displayed_pct = median;
+    uint32_t sum_mv = 0;
+    for (uint8_t i = 0; i < FF_BATT_FILTER_WINDOW; i++) {
+        sum_mv += f->history[i];
+    }
+    /* Round-to-nearest mean, integer-only (both operands non-negative,
+     * so truncating division after adding half the divisor rounds
+     * correctly — same convention ff_batt_pct_from_mv's own
+     * interpolation uses). */
+    uint16_t const mean_mv = (uint16_t)((sum_mv + FF_BATT_FILTER_WINDOW / 2u) / FF_BATT_FILTER_WINDOW);
+    int8_t const filtered = ff_batt_pct_from_mv(mean_mv);
+    if (filtered < 0) {
+        /* Defensive only: a mean of plausible readings should itself
+         * be plausible. If it somehow isn't, don't let a single bad
+         * arithmetic corner silently move the display — hold what's
+         * already shown rather than guess. */
         return f->displayed_pct;
     }
 
-    int16_t const delta = (int16_t)median - (int16_t)f->displayed_pct;
-    int16_t const abs_delta = (delta < 0) ? (int16_t)(-delta) : delta;
-    bool const crosses_low = ff_radar_batt_is_low((int8_t)median) != ff_radar_batt_is_low(f->displayed_pct);
+    if (!f->has_displayed) {
+        /* First-ever real sample: shows immediately (a freshly
+         * pre-filled window's mean equals that one sample), no
+         * hysteresis, no warm-up wait. */
+        f->has_displayed = true;
+        f->displayed_pct = filtered;
+        return f->displayed_pct;
+    }
 
-    if (crosses_low || abs_delta >= FF_BATT_HYSTERESIS_PCT) {
-        f->displayed_pct = median;
+    bool const displayed_low = ff_radar_batt_is_low(f->displayed_pct);
+    bool const filtered_low = ff_radar_batt_is_low(filtered);
+    int16_t const delta = (int16_t)filtered - (int16_t)f->displayed_pct;
+    int16_t const abs_delta = (delta < 0) ? (int16_t)(-delta) : delta;
+
+    bool update;
+    if (!displayed_low && filtered_low) {
+        /* Downward crossing into low: always promote, no hysteresis
+         * check — the low-battery alert must never be delayed. */
+        update = true;
+    } else if (displayed_low && !filtered_low) {
+        /* Upward exit from low: requires clearing the boundary by a
+         * full hysteresis margin (asymmetric on purpose — see
+         * ff_batt_filter_push's doc comment). */
+        update = (filtered >= FF_BATT_LOW_PCT + FF_BATT_HYSTERESIS_PCT);
+    } else {
+        /* Ordinary case: both low, or both not low. */
+        update = (abs_delta >= FF_BATT_HYSTERESIS_PCT);
+    }
+
+    if (update) {
+        f->displayed_pct = filtered;
     }
     return f->displayed_pct;
 }

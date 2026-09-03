@@ -96,7 +96,10 @@ matching the other `targets/esp32s3` HAL code (`ff_display`), is:
   Lands the platform-neutral half of the battery gauge — everything the
   device-side ADC-read PR (this slice's own deferred bullet above) will call
   into. No `targets/esp32s3` change in this PR; the sim still never calls the
-  new seam and its `batt_pct` stays honestly -1, same as before.
+  new seam and its `batt_pct` stays honestly -1, same as before. **Revised
+  during PR review** (two blocking findings, two should-fixes — see below);
+  the design described here is the FINAL one that landed, not the PR's first
+  draft.
 
   - `core/include/ff_batt.h` / `core/src/ff_batt.c`: `int8_t
     ff_batt_pct_from_mv(uint16_t pack_mv)` — a single-cell LiPo open-circuit
@@ -112,26 +115,36 @@ matching the other `targets/esp32s3` HAL code (`ff_display`), is:
     as unknown rather than clamped into a plausible-looking percent
     (CLAUDE.md's "honest data over pretty data").
   - `ff_batt_filter_t` + `ff_batt_filter_init`/`ff_batt_filter_push`: a
-    5-sample moving median (rejects a single load-sag outlier — radio TX,
-    backlight PWM, an LVGL redraw spike) plus 2-percentage-point display
-    hysteresis, so the shown percent does not visibly tick on ordinary ADC
-    noise. The first-ever real reading shows immediately (no warm-up wait —
-    "unknown-until-read, then real", this spec's own slice (c) framing). A
-    gap of >= 30 s since the previous push resets the median window instead
-    of blending a stale pre-gap reading with a fresh post-wake one
-    (`FF_BATT_FILTER_STALE_GAP_MS`).
+    4-sample PRE-FILLED moving AVERAGE in the mV domain (not a moving
+    median — the review's first blocking finding, below) plus Schmitt-style
+    hysteresis on the resulting percent, so the shown percent does not
+    visibly tick on ordinary ADC noise. The first-ever real reading shows
+    immediately (no warm-up wait — "unknown-until-read, then real", this
+    spec's own slice (c) framing: a freshly pre-filled window's average
+    equals that one sample). A gap of >= 30 s since the previous push resets
+    the averaging window instead of blending a stale pre-gap reading with a
+    fresh post-wake one (`FF_BATT_FILTER_STALE_GAP_MS`). A sense line that
+    goes dead (an implausible/zero reading `FF_BATT_FILTER_DEAD_AFTER` (3)
+    times in a row) reverts the display to -1 rather than continuing to show
+    a number frozen from before it died (the review's should-fix #3).
   - `app/include/ff_shell.h` / `ff_shell.c`: `[api] void
-    ff_shell_set_batt_mv(ff_shell_t *sh, uint16_t pack_mv)` — a push API
-    (`ff_shell_set_heading`'s precedent), running the reading through the
-    core filter IMMEDIATELY at push time (not deferred to the next tick,
-    unlike `heading_deg`/`my_pos`: the filter needs to see every actual
-    reading as its own timed event, not resampled at the shell's tick rate —
-    see `ff_shell.c`'s `batt_filter` field comment). The filtered result
-    reaches `ff_shell_view()`'s `radar.batt_pct` on the next `ff_shell_tick`,
-    replacing the `-1` `ff_shell.c` hardcoded at ~line 1630 ("no battery ADC
-    on either target yet"). Before the first push, `batt_pct` stays -1,
-    honestly rendering "--%" on both Radar's status bar and the launcher's
-    status row.
+    ff_shell_set_batt_mv(ff_shell_t *sh, uint16_t pack_mv, uint32_t now_ms)`
+    — a push API (`ff_shell_set_heading`'s precedent), running the reading
+    through the core filter IMMEDIATELY at push time (not deferred to the
+    next tick, unlike `heading_deg`/`my_pos`: the filter needs to see every
+    actual reading as its own timed event, not resampled at the shell's tick
+    rate — see `ff_shell.c`'s `batt_filter` field comment). `now_ms` is the
+    CALLER's own clock reading at the moment of the read, not (as the PR's
+    first draft had it) `sh`'s own last-tick clock — the review's should-fix
+    #4: `sh->now_ms` defaults to 0 before the shell's first tick, so a
+    battery read before that first tick, followed by an ordinary tick and a
+    second read shortly after, could look like a many-second gap against the
+    stale "time 0" the first read was recorded at and spuriously trip the
+    stale-gap reset. The filtered result reaches `ff_shell_view()`'s
+    `radar.batt_pct` on the next `ff_shell_tick`, replacing the `-1`
+    `ff_shell.c` hardcoded at ~line 1630 ("no battery ADC on either target
+    yet"). Before the first push, `batt_pct` stays -1, honestly rendering
+    "--%" on both Radar's status bar and the launcher's status row.
   - `shell_render_key`'s LAUNCHER branch (the opaque-overlay render-key mask
     that keeps a live radar arrow / feed churn underneath the launcher from
     rebuilding its tree under a finger) gained a THIRD restored scalar,
@@ -142,6 +155,44 @@ matching the other `targets/esp32s3` HAL code (`ff_display`), is:
     left the render key byte-identical and the row sat stale, the same
     clobber class the banner exception (issue/PR #157) already fixed for a
     different field.
+
+  **Review findings that changed the design** (docs/review/code-review.md
+  item 6, "the proxy" — both blocking findings were measured, not reasoned
+  about: the reviewer ran the actual filter against an adversarial input and
+  counted displayed transitions):
+  - **Blocking #1 — moving-median oscillation.** The PR's first draft used a
+    5-sample moving MEDIAN. Fed an input alternating between two mV values
+    every push (3720 mV / 3650 mV, 2 s apart — the load-sag pattern a radio
+    TX duty cycle actually produces), a median's majority flips every single
+    sample once the window is full of alternating values, producing 29/29
+    displayed changes over a 60 s run — the exact flicker the hysteresis was
+    supposed to prevent. Fixed by switching to a small (4-sample) PRE-FILLED
+    moving AVERAGE in the mV domain: averaging is far less sensitive to
+    perfect alternation (an even-sized window of alternating inputs
+    converges toward the true mean instead of flip-flopping), and
+    pre-filling every window slot with the first reading (rather than
+    growing the window one sample at a time) avoids a SECOND, unrelated
+    instability the growing-mean design change introduced on its own first
+    pass — a variable per-sample weight (1/2, then 1/3, then 1/4) during
+    warm-up that bounced the display through 3 values before settling. The
+    window size (4, not the original draft's 5 or the review's own
+    example-suggested 8) was chosen by literally simulating this filter
+    against a battery of alternating stress pairs spanning the OCV table and
+    picking the smallest window whose worst case held to the review's
+    <= 2-change budget.
+  - **Blocking #2 — symmetric low-threshold exemption strobed the alert.**
+    The PR's first draft exempted BOTH directions of a `FF_BATT_LOW_PCT`
+    crossing from the ordinary hysteresis (prompt on the way down, equally
+    prompt on the way back up). Fed an input alternating right at the
+    boundary (3625 mV = 15% / 3630 mV = 16%), that produced 29/29 flips of
+    the amber low-battery state. Fixed by making the exemption ASYMMETRIC:
+    a downward crossing into low still promotes immediately and
+    unconditionally (the alert must never be delayed, even by 1 point), but
+    an upward exit from low now requires the filtered value to clear
+    `FF_BATT_LOW_PCT + FF_BATT_HYSTERESIS_PCT` (17) — a full hysteresis
+    margin past the boundary, not merely past it — before the display is
+    allowed to leave the low band. The 3625/3630 alternation now settles at
+    15% (or 16%, phase-dependent) and never leaves it once it lands.
 
   **Acceptance criteria** (mirroring this spec's own "unknown-until-read,
   never a faked full" framing for slice (c)):
@@ -161,13 +212,39 @@ matching the other `targets/esp32s3` HAL code (`ff_display`), is:
     (`core/tests/test_batt.c`).
   - **AC3** ordinary reading noise (a sub-hysteresis wobble) never changes
     the displayed percent, so it never flickers the status bar/row or dirties
-    a render key over noise alone. Tests: `one_percent_wobble_does_not_move_display`
+    a render key over noise alone — including ADVERSARIAL, perfectly
+    alternating noise (the review's own literal simulation acceptance test:
+    a 3720/3650 mV alternation every 2 s for 60 s must produce <= 2
+    displayed changes after the first reveal; the fixed filter measures 2).
+    Tests: `one_percent_wobble_does_not_move_display`,
+    `S180_alternating_3720_3650_settles_within_two_changes`
     (`core/tests/test_batt.c`); the wobble assertion inside
     `S25c_batt_mv_reflects_filtered_value_and_dirties_launcher_key`
     (`app/tests/test_shell.c`).
-  - **AC4** `FF_BATT_LOW_PCT` (`ff_radar.h`) is never masked by the display
-    hysteresis: a move that crosses the low-battery boundary shows promptly
-    even when it is smaller than the ordinary 2-point hysteresis threshold.
-    Tests: `crossing_to_low_shows_promptly_despite_small_delta`,
-    `crossing_out_of_low_shows_promptly_despite_small_delta`
+  - **AC4** `FF_BATT_LOW_PCT` (`ff_radar.h`) crossing DOWNWARD into low is
+    never masked by the display hysteresis, even for a sub-threshold move —
+    but crossing back UP out of low requires clearing a full hysteresis
+    margin past the boundary (asymmetric on purpose; see Blocking #2 above),
+    so a reading hovering right at the boundary settles into the low band
+    and holds rather than strobing the alert (the review's own literal
+    simulation acceptance test: a 3625/3630 mV alternation every 2 s for
+    60 s must settle at <= 15% and never leave the low band; the fixed
+    filter measures 0 changes after the reveal). Tests:
+    `crossing_to_low_shows_promptly_despite_small_delta`,
+    `crossing_out_of_low_requires_the_full_exit_margin`,
+    `S180_alternating_3625_3630_settles_at_or_below_low_and_stays`
     (`core/tests/test_batt.c`).
+  - **AC5** (added by the review's should-fix #3) a sense line that stops
+    reporting a plausible reading — `FF_BATT_FILTER_DEAD_AFTER` (3)
+    consecutive implausible/zero pushes — reverts the display to -1 rather
+    than continuing to show a stale percent as current. Tests:
+    `dead_sense_line_reverts_to_unknown_after_the_threshold`,
+    `fewer_than_threshold_bad_samples_does_not_revert`,
+    `mutation_target_dead_revert_is_load_bearing` (`core/tests/test_batt.c`).
+  - **AC6** (added by the review's should-fix #4) `ff_shell_set_batt_mv`
+    uses its caller-supplied `now_ms` for every filter decision, never a
+    cached shell clock reading — so a battery push before the shell's first
+    tick, followed by a tick and a second push shortly after, does not
+    spuriously trip the stale-gap reset. Test:
+    `S25c_set_batt_mv_before_first_tick_does_not_spuriously_reset`
+    (`app/tests/test_shell.c`).

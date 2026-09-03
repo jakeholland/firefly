@@ -263,19 +263,26 @@ typedef struct {
      * IMMEDIATELY, at push time, not deferred to the next tick — unlike
      * `heading_deg`/`my_pos` above, which are raw sensor values a later
      * `ff_shell_tick` interprets. The filter's whole job is display
-     * smoothing OVER TIME (the median window, the stale-gap reset,
+     * smoothing OVER TIME (the averaging window, the stale-gap reset,
      * ff_batt.h's own doc comment), which needs to see every actual
      * reading as its own event; folding that through `ff_shell_tick`
      * instead would collapse multiple readings between two ticks into
      * one filter push (or stretch one reading across many ticks if the
      * ADC free-runs slower than the tick rate — either way the wrong
      * cadence for a filter that reasons about "how long since the last
-     * READING", not "how long since the last tick"). `batt_filter.
-     * displayed_pct` (a plain, non-opaque field per ff_batt.h) is what
-     * `ff_shell_tick` copies into `view.radar.batt_pct` on the NEXT
-     * projection, matching this file's universal "state changes surface
-     * in the projection on the next tick" rule at the read side even
-     * though the mutation itself already happened. */
+     * READING", not "how long since the last tick"). PR #180 review
+     * (should-fix): `ff_shell_set_batt_mv` now takes `now_ms` as an
+     * explicit parameter from its caller (that function's own doc
+     * comment) rather than reading `sh->now_ms` here — `sh->now_ms`
+     * defaults to 0 until the shell's first tick, so a battery read
+     * before that first tick would push against a fake "now" and could
+     * spuriously trip the stale-gap reset on the very next real-time
+     * push. `batt_filter.displayed_pct` (a plain, non-opaque field per
+     * ff_batt.h) is what `ff_shell_tick` copies into `view.radar.
+     * batt_pct` on the NEXT projection, matching this file's universal
+     * "state changes surface in the projection on the next tick" rule
+     * at the read side even though the mutation itself already
+     * happened. */
     ff_batt_filter_t batt_filter;
 
 #if defined(FF_TARGET_SIM)
@@ -3848,16 +3855,27 @@ void ff_shell_set_heading(ff_shell_t *sh_pub, float heading_deg)
     shell_of(sh_pub)->heading_deg = heading_deg;
 }
 
-void ff_shell_set_batt_mv(ff_shell_t *sh_pub, uint16_t pack_mv)
+void ff_shell_set_batt_mv(ff_shell_t *sh_pub, uint16_t pack_mv, uint32_t now_ms)
 {
     if (sh_pub == NULL) return;
     shell_t *sh = shell_of(sh_pub);
-    /* sh->now_ms is the last ff_shell_tick's clock reading — the same
-     * "now" every other tick-scoped decision in this file uses (e.g.
-     * inbox_rally_armed_ms), rather than requiring a second clock read
-     * here. See batt_filter's doc comment for why this runs the filter
-     * immediately rather than deferring to the next tick. */
-    (void)ff_batt_filter_push(&sh->batt_filter, pack_mv, sh->now_ms);
+    /* PR #180 review (should-fix): this used to run the filter against
+     * `sh->now_ms` (the last ff_shell_tick's clock reading), but that
+     * defaults to 0 before the shell's first tick — a caller that reads
+     * the ADC before the first tick (plausible at boot: the battery
+     * matters before the UI has rendered a frame) would push at "now
+     * = 0", then a later push after the first real tick could look
+     * like a many-second gap and spuriously trigger the stale-gap
+     * window reset (ff_batt.h's FF_BATT_FILTER_STALE_GAP_MS). Taking
+     * `now_ms` as an explicit parameter — the same convention
+     * `ff_shell_tick` itself already uses — removes the dependency on
+     * shell tick bookkeeping entirely: the caller's own clock reading
+     * at the moment of the actual ADC read is definitionally correct,
+     * with no pre-tick edge case possible. [api] change from this
+     * function's first cut (S25 slice c core+shell PR): the device-side
+     * ADC-read PR must pass its own real clock reading (e.g.
+     * esp_timer_get_time() / 1000) here, not the shell's. */
+    (void)ff_batt_filter_push(&sh->batt_filter, pack_mv, now_ms);
 }
 
 ff_shell_link_t ff_shell_link(ff_shell_t const *sh_pub)
