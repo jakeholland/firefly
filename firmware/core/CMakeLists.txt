@@ -377,3 +377,19 @@ if(FF_BUILD_TESTS)
 
     add_test(NAME test_notify COMMAND test_notify)
 endif()
+
+# Tech-debt sprint (core/rally — quick-rally nearest-landmark naming, the
+# WHEN vocabulary, and wire-name composition; moved out of app/ff_shell.c
+# statics, see ff_rally.h's top comment). Pure C11, no I/O, no festpack
+# dependency (docs/ARCHITECTURE.md's one-way core->festpack edge).
+target_sources(ff-core PRIVATE src/ff_rally.c)
+
+if(FF_BUILD_TESTS)
+    add_executable(test_rally
+        tests/test_rally.c
+    )
+    target_link_libraries(test_rally PRIVATE ff-core unity)
+    ff_apply_warnings(test_rally)
+
+    add_test(NAME test_rally COMMAND test_rally)
+endif()
