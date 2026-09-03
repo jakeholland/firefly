@@ -556,10 +556,31 @@ void ff_scr_flare_build_sender_overlay(lv_obj_t *parent, ff_app_flare_t const *f
     lv_anim_set_repeat_count(&a, LV_ANIM_REPEAT_INFINITE);
     lv_anim_start(&a);
 
+    /* S10 Amendment (2026-09-03, "Wire honesty"): the status line is now
+     * two honest readings instead of one confident one, gated on
+     * `flare->wire_state` — mirrors `ff_flare_t.wire_state` (see
+     * ff_app_state.h's doc comment on this field). WAITING means the send
+     * has not actually reached the mesh yet (no link, or every attempt so
+     * far was refused) — the shell is still retrying every
+     * FF_FLARE_RESEND_MS in the background (ff_shell.c's
+     * shell_flare_wire) — so saying "you are flaring" here would be
+     * exactly the CLAUDE.md "honest data over pretty data" violation this
+     * amendment exists to fix. SENT keeps the original copy verbatim
+     * (flaring_self.json's golden is unaffected — see the PR body).
+     * FF_THEME_COLOR_STALE_AMBER (not the ordinary FF_THEME_COLOR_AMBER
+     * this overlay uses everywhere else) is this codebase's existing
+     * "something here is not fresh/right" amber, already used for the
+     * Radar face's STALE rim tint/chip — reused here rather than
+     * inventing a new alert color. */
+    bool const wire_sent = (flare->wire_state == FF_FLARE_WIRE_SENT);
+    char const *status_text =
+        wire_sent ? "you are flaring - crew arrows locked on you" : "NO MESH - flare not sent, retrying";
+    uint32_t const status_color = wire_sent ? FF_THEME_COLOR_AMBER : FF_THEME_COLOR_STALE_AMBER;
+
     lv_obj_t *status_lbl = lv_label_create(parent);
-    lv_label_set_text(status_lbl, "you are flaring - crew arrows locked on you");
+    lv_label_set_text(status_lbl, status_text);
     lv_obj_set_style_text_font(status_lbl, FF_THEME_FONT_LABEL, 0);
-    lv_obj_set_style_text_color(status_lbl, lv_color_hex(FF_THEME_COLOR_AMBER), 0);
+    lv_obj_set_style_text_color(status_lbl, lv_color_hex(status_color), 0);
     lv_obj_set_width(status_lbl, 280);
     lv_obj_set_style_text_align(status_lbl, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_align(status_lbl, LV_ALIGN_CENTER, 0, (int32_t)FLARE_SENDER_STATUS_DY);

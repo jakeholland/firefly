@@ -42,6 +42,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "ff_flare.h"   /* [api] S10 Amendment 2026-09-03 — ff_flare_wire_state_t, the real `flare.wire_state` field type */
 #include "ff_inbox.h"   /* S24 — ff_inbox_t, the inbox half of the `signals` field */
 #include "ff_notify.h"  /* S26(d) — ff_notify_kind_t, the real `banner` field's kind vocabulary */
 #include "ff_radar.h"   /* S06 — ff_radar_view_t, the real `radar` field type */
@@ -513,6 +514,19 @@ typedef struct {
      * two groups below — mirrors ff_flare_t's `sending`/`send_expiry_ms`. */
     bool     sending;
     int32_t  send_expires_in_ms; /* -1: n/a (not sending) or unknown */
+
+    /* [api] S10 Amendment (2026-09-03, "Wire honesty") — the P0 fix: the
+     * self-flare send used to flip `sending` and show "you are flaring"
+     * regardless of whether anything actually reached the mesh
+     * (FF_FLARE_INTENT_SEND_FLARE was discarded at every call site).
+     * Mirrors ff_flare_t's own `wire_state`, reused directly (the same
+     * DRIFT GUARD convention `banner.kind` takes on `ff_notify_kind_t` —
+     * see this header's "Shape" note) rather than a hand-mirrored second
+     * enum. Meaningful iff `sending`; FF_FLARE_WIRE_WAITING (the
+     * least-claiming default) when not sending. scr_flare.c's sender
+     * overlay reads this to choose between the normal "you are flaring"
+     * copy (SENT) and the amber "NO MESH" retry copy (WAITING). */
+    ff_flare_wire_state_t wire_state;
 
     /* The full-screen takeover currently awaiting a GO/DISMISS decision,
      * if any — mirrors ff_flare_t's `takeover_active`/`takeover_node_id`/

@@ -34,6 +34,7 @@
 #include "ff_flare.h"
 #include "ff_idle.h"
 #include "ff_intent.h"
+#include "ff_proto.h"
 #include "ff_shell.h"
 
 #include "fp_pack.h"
@@ -262,6 +263,96 @@ static void S10_quick_flare_launcher_cancel_button_ends_the_send(void)
     lv_deinit();
 }
 
+/* ---------------------------------------------------------------------
+ * S10 Amendment (2026-09-03, "Wire honesty", fix/flare-wire-send) — the
+ * P0 fix at the ctl-observable level: quick flare's real button path
+ * (ff_button debounce -> ff_shell_home_press -> the multitap FSM) must
+ * put an actual FLARE frame on the wire, not just flip `sending`. A
+ * small spy installed via `ff_shell_set_sender` stands in for the
+ * outbound transport (the same seam test_shell.c's flare_wire_spy_t
+ * uses) — this is the "ctl-observable outbound log" the task brief asks
+ * for: a real ff_ctl_loop_ctx_t session, driven through
+ * ff_ctl_loop_boot_press exactly like the sibling test above, with the
+ * frame captured at the one seam ctl_loop.h exposes for it
+ * (ff_shell_set_sender on the caller-owned `shell`).
+ * ------------------------------------------------------------------- */
+
+typedef struct {
+    uint8_t buf[FF_PROTO_MAX_PAYLOAD];
+    size_t  len;
+    int     n_sends;
+} qf_wire_spy_t;
+
+static qf_wire_spy_t QS;
+
+static int qf_wire_spy_send_text(void *ctx, uint32_t dest, char const *utf8)
+{
+    (void)ctx;
+    (void)dest;
+    (void)utf8;
+    return 0;
+}
+
+static int qf_wire_spy_send_private(void *ctx, uint32_t dest, uint8_t const *payload, size_t len)
+{
+    (void)dest;
+    qf_wire_spy_t *s = (qf_wire_spy_t *)ctx;
+    s->n_sends++;
+    s->len = (len > sizeof(s->buf)) ? sizeof(s->buf) : len;
+    memcpy(s->buf, payload, s->len);
+    return 0; /* accepted */
+}
+
+static void S10_wire_quick_flare_five_boot_presses_puts_one_flare_frame_on_the_wire(void)
+{
+    static ff_shell_t shell;
+    static fp_pack_t pack;
+    static ff_ctl_loop_ctx_t ctx;
+
+    ff_shell_cfg_t shell_cfg;
+    memset(&shell_cfg, 0, sizeof(shell_cfg));
+
+    ff_ctl_loop_cfg_t cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.mock_clock = true;
+
+    TEST_ASSERT_EQUAL_INT(0, ff_ctl_loop_open(&ctx, &shell, &pack, &shell_cfg, &cfg));
+
+    memset(&QS, 0, sizeof(QS));
+    ff_wiring_sender_t const spy = {qf_wire_spy_send_text, qf_wire_spy_send_private, &QS};
+    ff_shell_set_sender(&shell, spy);
+
+    bool quit_flag = false;
+    (void)ff_ctl_loop_handlers(&ctx, &quit_flag);
+    ff_ctl_loop_pump(&ctx); /* settle the always-dirty first tick */
+    TEST_ASSERT_EQUAL(FF_APP_FACE_LAUNCHER, ctx.state.active_face);
+    TEST_ASSERT_EQUAL_INT(0, QS.n_sends);
+
+    for (int tap = 0; tap < 5; tap++) {
+        ff_ctl_loop_boot_press(&ctx);
+        if (tap < 4) {
+            ctx.mock_clock_ms += QF_EXTRA_GAP_MS;
+        }
+        ff_ctl_loop_pump(&ctx);
+    }
+
+    TEST_ASSERT_TRUE_MESSAGE(ctx.state.flare.sending, "quick flare did not start sending");
+    TEST_ASSERT_EQUAL_INT_MESSAGE(1, QS.n_sends,
+                                   "the 5th BOOT press did not put a FLARE frame on the wire — "
+                                   "the P0 bug this PR fixes (FF_FLARE_INTENT_SEND_FLARE discarded)");
+
+    ff_proto_msg_t msg;
+    memset(&msg, 0, sizeof(msg));
+    TEST_ASSERT_EQUAL_INT(FF_PROTO_TYPE_FLARE, ff_proto_decode(QS.buf, QS.len, &msg));
+    TEST_ASSERT_EQUAL_UINT16(300u, msg.body.flare.dur_s);
+
+    TEST_ASSERT_EQUAL(FF_FLARE_WIRE_SENT, ctx.state.flare.wire_state);
+
+    ff_ctl_loop_close(&ctx);
+    ff_shell_close(&shell);
+    lv_deinit();
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -269,6 +360,7 @@ int main(void)
     RUN_TEST(S10_quick_flare_five_boot_presses_from_off_starts_sending_and_renders_overlay);
     RUN_TEST(S10_quick_flare_four_boot_presses_do_not_start_sending);
     RUN_TEST(S10_quick_flare_launcher_cancel_button_ends_the_send);
+    RUN_TEST(S10_wire_quick_flare_five_boot_presses_puts_one_flare_frame_on_the_wire);
 
     return UNITY_END();
 }

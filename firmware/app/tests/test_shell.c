@@ -6282,6 +6282,221 @@ static void S10_quick_flare_launcher_mask_auto_end_dirties_key(void)
     TEST_ASSERT_EQUAL_INT(FF_APP_FACE_LAUNCHER, ff_shell_view(&H.shell)->active_face);
 }
 
+/* ======================================================================
+ * S10 Amendment (2026-09-03, "Wire honesty") — fix/flare-wire-send.
+ *
+ * The P0 bug: FF_INTENT_FLARE_START/QUICK_FLARE called ff_flare_send_begin
+ * and discarded its FF_FLARE_INTENT_SEND_FLARE result, `(void)`'d — so
+ * ff_flare's own SEND intent was consumed nowhere and NOTHING was ever
+ * broadcast, while the sender overlay confidently said "you are flaring".
+ * These tests assert the actual bytes reach the wire (decoded via
+ * ff_proto_decode, not just "a send happened" — the proxy trap AGENTS.md
+ * item 6 warns about), and the honest WAITING/SENT view distinction when
+ * the link is down.
+ *
+ * A small injected sender spy stands in for `ff_wiring_sender_t` — the
+ * same seam `ff_shell_set_sender`/S24_demo_loopback_seam_makes_out_items_
+ * appear already uses — with an `accept` toggle so a test can simulate
+ * "no mesh" (refused) then "link returned" (accepted) without standing up
+ * the full P-pipe mc_client_t harness.
+ * ==================================================================== */
+
+typedef struct {
+    uint8_t  buf[FF_PROTO_MAX_PAYLOAD];
+    size_t   len;
+    uint32_t dest;
+    int      n_sends; /* every ATTEMPT, accepted or refused */
+    bool     accept;  /* false: send_private refuses (rc != 0) — "no mesh" */
+} flare_wire_spy_t;
+
+static flare_wire_spy_t S;
+
+static int flare_wire_spy_send_text(void *ctx, uint32_t dest, char const *utf8)
+{
+    (void)ctx;
+    (void)dest;
+    (void)utf8;
+    return 0; /* unused by these tests; present only because the vtable requires it */
+}
+
+static int flare_wire_spy_send_private(void *ctx, uint32_t dest, uint8_t const *payload, size_t len)
+{
+    flare_wire_spy_t *s = (flare_wire_spy_t *)ctx;
+    s->n_sends++;
+    if (!s->accept) return -1;
+    s->dest = dest;
+    s->len = (len > sizeof(s->buf)) ? sizeof(s->buf) : len;
+    memcpy(s->buf, payload, s->len);
+    return 0;
+}
+
+static void flare_wire_spy_install(bool accept)
+{
+    memset(&S, 0, sizeof(S));
+    S.accept = accept;
+    ff_wiring_sender_t const sender = {flare_wire_spy_send_text, flare_wire_spy_send_private, &S};
+    ff_shell_set_sender(&H.shell, sender);
+}
+
+/* FLARE_START with an accepting sender: exactly one FLARE frame with
+ * dur_s 300 reaches the wire, the OUT feed item appears once, and the
+ * view reads SENT. */
+static void S10_wire_flare_start_accepted_sends_one_flare_frame_dur_300(void)
+{
+    harness_init(100000u, false);
+    flare_wire_spy_install(true);
+
+    ff_intent_t const start = {.kind = FF_INTENT_FLARE_START, .u = {0}};
+    ff_shell_intent(&H.shell, &start);
+
+    TEST_ASSERT_EQUAL_INT(1, S.n_sends);
+    TEST_ASSERT_EQUAL_UINT32(MC_ADDR_BROADCAST, S.dest);
+
+    ff_proto_msg_t msg;
+    memset(&msg, 0, sizeof(msg));
+    int const type = ff_proto_decode(S.buf, S.len, &msg);
+    TEST_ASSERT_EQUAL_INT(FF_PROTO_TYPE_FLARE, type);
+    TEST_ASSERT_EQUAL_UINT16(300u, msg.body.flare.dur_s);
+
+    TEST_ASSERT_EQUAL_UINT8(1, ff_feed_count(ff_shell_feed(&H.shell)));
+    ff_feed_item_t const *it = ff_feed_at(ff_shell_feed(&H.shell), 0);
+    TEST_ASSERT_EQUAL(FEED_FLARE, it->kind);
+    TEST_ASSERT_EQUAL(FEED_DIR_OUT, it->dir);
+
+    ff_shell_tick(&H.shell, H.clk.t);
+    TEST_ASSERT_EQUAL(FF_FLARE_WIRE_SENT, ff_shell_view(&H.shell)->flare.wire_state);
+}
+
+/* QUICK_FLARE (5x HOME) mirrors FLARE_START exactly: same one frame. */
+static void S10_wire_quick_flare_accepted_sends_one_flare_frame(void)
+{
+    harness_init(100000u, false);
+    flare_wire_spy_install(true);
+
+    press_home_at(100000u);
+    press_home_at(100300u);
+    press_home_at(100600u);
+    press_home_at(100900u);
+    press_home_at(101200u); /* 5th */
+
+    TEST_ASSERT_EQUAL_INT(1, S.n_sends);
+    ff_proto_msg_t msg;
+    memset(&msg, 0, sizeof(msg));
+    TEST_ASSERT_EQUAL_INT(FF_PROTO_TYPE_FLARE, ff_proto_decode(S.buf, S.len, &msg));
+    TEST_ASSERT_EQUAL_UINT16(300u, msg.body.flare.dur_s);
+    TEST_ASSERT_EQUAL_UINT8(1, ff_feed_count(ff_shell_feed(&H.shell)));
+}
+
+/* Link down (refused sender): FLARE_START still starts sending locally
+ * (the user's intent is real), but nothing reaches the wire and the view
+ * honestly reads WAITING, not SENT. */
+static void S10_wire_flare_start_refused_stays_waiting_no_feed_item(void)
+{
+    harness_init(100000u, false);
+    flare_wire_spy_install(false);
+
+    ff_intent_t const start = {.kind = FF_INTENT_FLARE_START, .u = {0}};
+    ff_shell_intent(&H.shell, &start);
+
+    TEST_ASSERT_EQUAL_INT(1, S.n_sends); /* attempted */
+    TEST_ASSERT_TRUE(ff_shell_flare(&H.shell)->sending); /* the intent is still real */
+    TEST_ASSERT_EQUAL_UINT8(0, ff_feed_count(ff_shell_feed(&H.shell))); /* refused: no OUT item fabricated */
+
+    ff_shell_tick(&H.shell, H.clk.t);
+    TEST_ASSERT_EQUAL_MESSAGE(FF_FLARE_WIRE_WAITING, ff_shell_view(&H.shell)->flare.wire_state,
+                               "a refused send must not read as SENT");
+}
+
+/* The link returns 7s later: the next retry tick (due at
+ * FF_FLARE_RESEND_MS after the failed attempt) sends exactly one more
+ * frame and flips the view to SENT; the feed item appears on THAT
+ * success, not before. */
+static void S10_wire_flare_start_link_returns_after_7s_retries_and_sends(void)
+{
+    harness_init(100000u, false);
+    flare_wire_spy_install(false);
+
+    ff_intent_t const start = {.kind = FF_INTENT_FLARE_START, .u = {0}};
+    ff_shell_intent(&H.shell, &start); /* attempt #1, refused, wire_last_attempt_ms = 100000 */
+    TEST_ASSERT_EQUAL_INT(1, S.n_sends);
+
+    advance(7000u); /* link comes back at 107000 */
+    S.accept = true;
+    ff_shell_tick(&H.shell, H.clk.t); /* retry due at 100000 + FF_FLARE_RESEND_MS(5000) = 105000, already past */
+
+    TEST_ASSERT_EQUAL_INT_MESSAGE(2, S.n_sends, "the retry did not attempt a second send");
+    ff_proto_msg_t msg;
+    memset(&msg, 0, sizeof(msg));
+    TEST_ASSERT_EQUAL_INT(FF_PROTO_TYPE_FLARE, ff_proto_decode(S.buf, S.len, &msg));
+    TEST_ASSERT_EQUAL_UINT16(300u, msg.body.flare.dur_s);
+
+    TEST_ASSERT_EQUAL(FF_FLARE_WIRE_SENT, ff_shell_view(&H.shell)->flare.wire_state);
+    TEST_ASSERT_EQUAL_UINT8(1, ff_feed_count(ff_shell_feed(&H.shell)));
+}
+
+/* CANCEL after the send reached SENT: exactly one FLARE_END frame. */
+static void S10_wire_cancel_after_sent_sends_one_flare_end_frame(void)
+{
+    harness_init(100000u, false);
+    flare_wire_spy_install(true);
+
+    ff_intent_t const start = {.kind = FF_INTENT_FLARE_START, .u = {0}};
+    ff_shell_intent(&H.shell, &start);
+    TEST_ASSERT_EQUAL_INT(1, S.n_sends);
+
+    ff_intent_t const cancel = {.kind = FF_INTENT_FLARE_END, .u = {0}};
+    ff_shell_intent(&H.shell, &cancel);
+
+    TEST_ASSERT_EQUAL_INT(2, S.n_sends);
+    {
+        ff_proto_msg_t msg;
+        memset(&msg, 0, sizeof(msg));
+        TEST_ASSERT_EQUAL_INT(FF_PROTO_TYPE_FLARE_END, ff_proto_decode(S.buf, S.len, &msg));
+    }
+    TEST_ASSERT_FALSE(ff_shell_flare(&H.shell)->sending);
+}
+
+/* CANCEL while WAITING (never confirmed): ends locally, no frame at all —
+ * "never send END for a flare that never went out". */
+static void S10_wire_cancel_while_waiting_sends_no_frame(void)
+{
+    harness_init(100000u, false);
+    flare_wire_spy_install(false);
+
+    ff_intent_t const start = {.kind = FF_INTENT_FLARE_START, .u = {0}};
+    ff_shell_intent(&H.shell, &start);
+    TEST_ASSERT_EQUAL_INT(1, S.n_sends); /* the one refused attempt */
+
+    ff_intent_t const cancel = {.kind = FF_INTENT_FLARE_END, .u = {0}};
+    ff_shell_intent(&H.shell, &cancel);
+
+    TEST_ASSERT_EQUAL_INT_MESSAGE(1, S.n_sends, "CANCEL while WAITING must not put a FLARE_END on the wire");
+    TEST_ASSERT_FALSE(ff_shell_flare(&H.shell)->sending);
+}
+
+/* Auto-end after the send reached SENT: exactly one FLARE_END frame, at
+ * the send's own natural 300s expiry. */
+static void S10_wire_auto_end_after_sent_sends_one_flare_end_frame(void)
+{
+    harness_init(100000u, false);
+    flare_wire_spy_install(true);
+
+    ff_intent_t const start = {.kind = FF_INTENT_FLARE_START, .u = {0}};
+    ff_shell_intent(&H.shell, &start);
+    TEST_ASSERT_EQUAL_INT(1, S.n_sends);
+
+    advance((uint32_t)FF_FLARE_DEFAULT_DUR_S * 1000u);
+    ff_shell_tick(&H.shell, H.clk.t);
+
+    TEST_ASSERT_EQUAL_INT(2, S.n_sends);
+    {
+        ff_proto_msg_t msg;
+        memset(&msg, 0, sizeof(msg));
+        TEST_ASSERT_EQUAL_INT(FF_PROTO_TYPE_FLARE_END, ff_proto_decode(S.buf, S.len, &msg));
+    }
+    TEST_ASSERT_FALSE(ff_shell_flare(&H.shell)->sending);
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -6433,6 +6648,14 @@ int main(void)
     RUN_TEST(S10_quick_flare_pops_power_menu_modal_and_starts_sending);
     RUN_TEST(S10_quick_flare_starts_under_a_takeover_but_leaves_it_alone);
     RUN_TEST(S10_quick_flare_launcher_mask_auto_end_dirties_key);
+
+    RUN_TEST(S10_wire_flare_start_accepted_sends_one_flare_frame_dur_300);
+    RUN_TEST(S10_wire_quick_flare_accepted_sends_one_flare_frame);
+    RUN_TEST(S10_wire_flare_start_refused_stays_waiting_no_feed_item);
+    RUN_TEST(S10_wire_flare_start_link_returns_after_7s_retries_and_sends);
+    RUN_TEST(S10_wire_cancel_after_sent_sends_one_flare_end_frame);
+    RUN_TEST(S10_wire_cancel_while_waiting_sends_no_frame);
+    RUN_TEST(S10_wire_auto_end_after_sent_sends_one_flare_end_frame);
 
     /* S26 slice d — ff_notify + message banner. */
     RUN_TEST(S26_AC3_paired_message_pushes_banner);

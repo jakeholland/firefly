@@ -1,0 +1,15 @@
+{
+  "fixture": "flaring_self_nomesh",
+  "face": "radar",
+  "radar": {
+    "mode": "nosel",
+    "clock_str": "2:14",
+    "batt_pct": 55,
+    "mesh_ok": false
+  },
+  "flare": {
+    "sending": true,
+    "send_expires_in_ms": 245000,
+    "waiting": true
+  }
+}
