@@ -155,6 +155,60 @@ static void S08_heard_many_pushes_beyond_cap_stays_bounded(void)
     TEST_ASSERT_FALSE(ff_heard_contains(&h, 5000));
 }
 
+static void S08_heard_eviction_is_wrap_safe_across_uint32_ms_rollover(void)
+{
+    /* Pins the fix for the bug where eviction compared raw last_heard_ms
+     * values with '<' instead of computing age via now_ms - x (unsigned).
+     * That comparison is wrong across the ~49.7-day uint32 ms wraparound:
+     * an entry heard just BEFORE the wrap (last_heard_ms near UINT32_MAX)
+     * looks "large" / recent by raw value even though it is actually the
+     * OLDEST entry once "now" has wrapped around past it.
+     *
+     * Fill the table to FF_HEARD_MAX with exactly two distinct
+     * timestamps: one entry heard just before the wrap (0xFFFFFF00,
+     * genuinely old relative to now) and the rest heard just after the
+     * wrap (0x00000010, genuinely recent). now_ms = 0x00000100 is shortly
+     * after the wrap.
+     *
+     * Raw-value comparison ('<') would see 0xFFFFFF00 as the LARGEST
+     * value in the table and never pick it as the LRU victim — it would
+     * instead evict one of the 0x00000010 entries (smallest raw value),
+     * which is actually the MOST recently heard. Age-based comparison
+     * (now_ms - last_heard_ms, unsigned) correctly computes the old
+     * entry's age as the larger value, so it wins eviction instead. */
+
+    ff_heard_t h;
+    ff_heard_init(&h);
+
+    uint32_t const before_wrap = 0xFFFFFF00u; /* old: heard long before the wrap */
+    uint32_t const after_wrap  = 0x00000010u; /* recent: heard just after the wrap */
+    uint32_t const now_ms      = 0x00000100u; /* "now", shortly after the wrap */
+
+    /* Slot 0: the OLD entry (before the wrap). Its age = now_ms -
+     * before_wrap = 0x100 - 0xFFFFFF00 = 0x1100 (unsigned wraparound
+     * arithmetic) — genuinely large, i.e. genuinely old. */
+    ff_heard_note(&h, 1000, before_wrap);
+    /* Fill the rest with entries heard just after the wrap. Their age =
+     * now_ms - after_wrap = 0x100 - 0x10 = 0xF0 — small, i.e. recent. */
+    for (int i = 1; i < FF_HEARD_MAX; i++) {
+        ff_heard_note(&h, (uint32_t)(1000 + i), after_wrap);
+    }
+    TEST_ASSERT_EQUAL_UINT8(FF_HEARD_MAX, ff_heard_count(&h));
+
+    /* A new arrival must evict the OLD entry (id 1000), not one of the
+     * recently-heard after-wrap entries. The buggy raw '<' comparison
+     * picks id 1000 as having the LARGEST raw last_heard_ms
+     * (0xFFFFFF00 > 0x00000010) and therefore never evicts it — it
+     * evicts one of the after-wrap entries (smallest raw value) instead,
+     * which fails this assertion. */
+    ff_heard_note(&h, 9999, now_ms);
+
+    TEST_ASSERT_EQUAL_UINT8(FF_HEARD_MAX, ff_heard_count(&h));
+    TEST_ASSERT_FALSE(ff_heard_contains(&h, 1000)); /* the old, pre-wrap entry: evicted */
+    TEST_ASSERT_TRUE(ff_heard_contains(&h, 1001));  /* an after-wrap (recent) entry: survives */
+    TEST_ASSERT_TRUE(ff_heard_contains(&h, 9999));  /* the new arrival */
+}
+
 /* ------------------------------------------------------------------- */
 /* NULL-argument guards                                                 */
 /* ------------------------------------------------------------------- */
@@ -222,6 +276,7 @@ int main(void)
     RUN_TEST(S08_heard_over_max_evicts_least_recently_heard);
     RUN_TEST(S08_heard_renoting_the_oldest_protects_it_from_eviction);
     RUN_TEST(S08_heard_many_pushes_beyond_cap_stays_bounded);
+    RUN_TEST(S08_heard_eviction_is_wrap_safe_across_uint32_ms_rollover);
 
     RUN_TEST(S16_b2_heard_remove_forgets_only_the_named_id);
 
