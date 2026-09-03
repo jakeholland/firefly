@@ -1,0 +1,36 @@
+# sdkconfig.ci — CI-only overlay, applied ON TOP of sdkconfig.defaults via:
+#   idf.py -DSDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.ci" build
+# (see .github/workflows/esp32.yml's "ci-config" matrix leg; documented
+# again in docs/specs/S15-esp32s3-target.md's Amendments).
+#
+# WHY THIS EXISTS: a fresh checkout with only sdkconfig.defaults builds
+# CONFIG_FF_BRINGUP_STAGE=1 — no LVGL, no UI, no display driver even
+# linked in. That is deliberately the OOTB default (S15b's
+# bring-up-in-the-loop story: flash stage 1 first, look at the glass,
+# advance), but it is also the LEAST representative build there is — a
+# green STAGE-1-only CI has never once proven the display/touch/demo
+# code the app actually ships with still compiles. This overlay makes a
+# SECOND CI build target the SHIPPING config instead: the same
+# CONFIG_FF_BRINGUP_STAGE / CONFIG_FF_DEMO_MODE / CONFIG_FF_DEMO_LIVE
+# values as the maintainer's real board sdkconfig (that file is
+# untracked and never committed — these values were read directly off
+# it and copied here as an explicit, reviewable, committed overlay, not
+# reconstructed from memory).
+#
+# Deliberately minimal: only the FF_* keys that select bring-up stage and
+# demo mode. LV_* display/touch Kconfig (color depth, fonts,
+# TILEVIEW/ARC, LVGL heap, and the LV_BUILD_EXAMPLES/DEMOS=n added
+# alongside this PR) is already unconditional in sdkconfig.defaults and
+# applies to every stage — nothing LV_*-specific belongs here.
+#
+# esp32.yml builds BOTH configs (a 2-leg matrix): plain sdkconfig.defaults
+# (keeps the STAGE-1 bring-up path honestly tested) AND
+# "sdkconfig.defaults;sdkconfig.ci" (this file, the shipping config).
+
+# --- Bring-up stage: STAGE 3 ("touch drives it") — matches the real board ---
+CONFIG_FF_BRINGUP_STAGE_3=y
+CONFIG_FF_BRINGUP_STAGE=3
+
+# --- Demo mode (S20/S23) — matches the real board ---
+CONFIG_FF_DEMO_MODE=y
+CONFIG_FF_DEMO_LIVE=y
