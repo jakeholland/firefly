@@ -121,6 +121,27 @@ static void inject_flare(uint32_t from, uint16_t dur_s)
     H.ev.on_private(H.ev.user, from, MC_ADDR_BROADCAST, FF_PORTNUM, buf, (size_t)n);
 }
 
+/* A live over-the-air position: on_position with rx_time set — same
+ * shape as test_shell.c's own inject_position (this file's harness is
+ * documented as "a slimmed copy of test_shell.c's"). U_EVENING is an
+ * arbitrary but valid (inside FF_WALL_EPOCH_FLOOR/CEILING) unix
+ * timestamp, copied from test_shell.c's own constant of the same name
+ * so the wall-clock latch this triggers (shell_ev_position observes the
+ * wall before anything else) behaves identically to that file's proven
+ * usage. */
+#define U_EVENING ((uint32_t)1789768800u)
+
+static void inject_position(uint32_t node, uint32_t rx_time, double lat, double lon)
+{
+    mc_position_t p;
+    memset(&p, 0, sizeof(p));
+    p.lat = lat;
+    p.lon = lon;
+    p.has_rx_time = (rx_time != 0u);
+    p.rx_time = rx_time;
+    H.ev.on_position(H.ev.user, node, &p);
+}
+
 /* --- intent shorthands ---------------------------------------------- */
 
 static void send_kind(ff_intent_kind_t kind)
@@ -1141,6 +1162,44 @@ static void S10_notif_flare_go_lands_on_radar_from_every_starting_state(void)
         TEST_ASSERT_EQUAL_INT_MESSAGE(FF_APP_FACE_RADAR, v->active_face, start_state_name(s));
         TEST_ASSERT_FALSE_MESSAGE(ff_shell_flare(&H.shell)->takeover_active, start_state_name(s));
         TEST_ASSERT_EQUAL_UINT32_MESSAGE(DANA, ff_shell_flare(&H.shell)->locked_node_id, start_state_name(s));
+        /* The radar view's own target must agree with the lock — not
+         * just the lock field in isolation. In THIS table DANA is also
+         * the first-paired/self-healed default selection, so this
+         * assertion alone would pass even without the fix below; it is
+         * still worth pinning here as the baseline "the two never
+         * disagree" sanity check. The mutation-provable version of this
+         * — sender that is NOT the self-healed default — is
+         * S10_notif_flare_go_force_selects_the_sender_not_the_prior_selection
+         * just below. */
+        TEST_ASSERT_EQUAL_STRING_MESSAGE("DANA", v->radar.name, start_state_name(s));
+    }
+}
+
+/* THE regression test for docs/specs/S10-flare.md's "GO -> radar with
+ * the sender FORCE-SELECTED" (dated amendment, 2026-09-02). Bug shape:
+ * with 3+ paired crew members, a flare from anyone OTHER than the
+ * first-paired/self-healed selection landed GO on Radar still pointing
+ * at the PREVIOUS selection (ff_radar_compute targets
+ * ff_crew_selected(), and ff_flare_go only ever wrote the flare lock,
+ * never the crew selection). DANA pairs first here (the self-healed
+ * default, exactly like the table test above) and KEV flares —
+ * deliberately the member GO must switch AWAY from, not the one it
+ * would already be showing by coincidence. */
+static void S10_notif_flare_go_force_selects_the_sender_not_the_prior_selection(void)
+{
+    for (size_t i = 0; i < sizeof(k_all_states) / sizeof(k_all_states[0]); i++) {
+        start_state_t const s = k_all_states[i];
+        notif_setup(s); /* pairs DANA then KEV; DANA is the self-healed default */
+        TEST_ASSERT_EQUAL_STRING_MESSAGE("DANA", view()->radar.name, start_state_name(s));
+
+        inject_flare(KEV_ID, 300u);
+        TEST_ASSERT_TRUE_MESSAGE(ff_shell_flare(&H.shell)->takeover_active, start_state_name(s));
+
+        send_kind(FF_INTENT_TAKEOVER_GO);
+        ff_app_state_t const *v = view();
+        TEST_ASSERT_EQUAL_INT_MESSAGE(FF_APP_FACE_RADAR, v->active_face, start_state_name(s));
+        TEST_ASSERT_EQUAL_UINT32_MESSAGE(KEV_ID, ff_shell_flare(&H.shell)->locked_node_id, start_state_name(s));
+        TEST_ASSERT_EQUAL_STRING_MESSAGE("KEV", v->radar.name, start_state_name(s));
     }
 }
 
@@ -1173,6 +1232,111 @@ static void S10_notif_flare_dismiss_restores_the_exact_prior_state(void)
         TEST_ASSERT_FALSE_MESSAGE(ff_shell_flare(&H.shell)->takeover_active, start_state_name(s));
         TEST_ASSERT_EQUAL_UINT32_MESSAGE(0u, ff_shell_flare(&H.shell)->locked_node_id, start_state_name(s));
     }
+}
+
+/* DISMISS must not touch the radar SELECTION either — only GO is the
+ * explicit "force-select the sender" decision (S10 Ruling 2/3's own
+ * framing, and this fix's dated amendment, 2026-09-02). Sender is KEV
+ * (not the self-healed default DANA) specifically so a selection change
+ * would be visible if DISMISS wrongly triggered one. */
+static void S10_notif_flare_dismiss_does_not_change_the_radar_selection(void)
+{
+    for (size_t i = 0; i < sizeof(k_all_states) / sizeof(k_all_states[0]); i++) {
+        start_state_t const s = k_all_states[i];
+        notif_setup(s);
+        TEST_ASSERT_EQUAL_STRING_MESSAGE("DANA", view()->radar.name, start_state_name(s));
+
+        inject_flare(KEV_ID, 300u);
+        TEST_ASSERT_TRUE_MESSAGE(ff_shell_flare(&H.shell)->takeover_active, start_state_name(s));
+
+        send_kind(FF_INTENT_TAKEOVER_DISMISS);
+        ff_app_state_t const *v = view();
+        TEST_ASSERT_FALSE_MESSAGE(ff_shell_flare(&H.shell)->takeover_active, start_state_name(s));
+        TEST_ASSERT_EQUAL_UINT32_MESSAGE(0u, ff_shell_flare(&H.shell)->locked_node_id, start_state_name(s));
+        TEST_ASSERT_EQUAL_STRING_MESSAGE("DANA", v->radar.name, start_state_name(s));
+    }
+}
+
+/* Expiry rule for mechanism (b), "GO force-selects": the lock's OWN
+ * expiry (ff_flare_tick clearing locked_node_id) does NOT revert the
+ * radar SELECTION back to whoever was selected before GO — the user is
+ * left looking at the sender (KEV) and can re-select DANA (or anyone
+ * else) explicitly if they want to (via ff_crew_select_next / a future
+ * cycling intent — not yet wired to any FF_INTENT_* as of this fix, so
+ * not exercised here). This is documented in docs/specs/S10-flare.md's
+ * dated amendment (2026-09-02) as the chosen rule, distinct from
+ * mechanism (a)'s alternative ("radar follows the lock, and reverts
+ * when the lock releases"). */
+static void S10_notif_flare_lock_expiry_leaves_selection_on_the_sender(void)
+{
+    notif_setup(START_RADAR);
+    TEST_ASSERT_EQUAL_STRING("DANA", view()->radar.name);
+
+    inject_flare(KEV_ID, 300u);
+    send_kind(FF_INTENT_TAKEOVER_GO);
+    TEST_ASSERT_EQUAL_STRING("KEV", view()->radar.name);
+    TEST_ASSERT_EQUAL_UINT32(KEV_ID, ff_shell_flare(&H.shell)->locked_node_id);
+
+    /* Advance the clock past the 300s lock duration. */
+    H.clk.t += 301u * 1000u;
+    ff_app_state_t const *v = view();
+    TEST_ASSERT_EQUAL_UINT32(0u, ff_shell_flare(&H.shell)->locked_node_id); /* lock released */
+    TEST_ASSERT_EQUAL_STRING("KEV", v->radar.name); /* selection stays on KEV */
+}
+
+/* The reviewer's scratch-test scenario, confirmed non-vacuous: a NOFIX
+ * sender must render their own honest NOFIX state (RADAR_LOST / "NO FIX
+ * YET" — ff_radar.h's RENDERER CONTRACT: mode==RADAR_LOST with
+ * age_str=="" means never-fixed, as opposed to a real past fix gone
+ * stale) after GO, not the geometry left over from whoever was selected
+ * before. Three paired members: DANA (first-paired/self-healed default,
+ * given a real position fix so there IS prior geometry that could leak),
+ * KEV (flares, but has NEVER sent a position fix), MAX (a third member,
+ * proving this isn't just a two-member coincidence).
+ *
+ * `my_pos`/heading are set (ff_shell_set_my_pos/set_heading) specifically
+ * so mode resolution reaches the freshness switch at all — ff_radar.h's
+ * priority order puts RADAR_NOFIX (my own position/heading unknown)
+ * ABOVE freshness, and this test wants to isolate KEV's OWN never-fixed
+ * status (RADAR_LOST via FF_FRESH_NEVER), not a NOFIX caused by not
+ * knowing where *I* am. */
+static void S10_notif_flare_go_nofix_sender_shows_their_honest_nofix_not_prior_geometry(void)
+{
+    uint32_t const MAX_ID = 0x0000FA55u;
+
+    notif_setup(START_RADAR); /* pairs DANA then KEV */
+    pair_named(MAX_ID, "MAX");
+
+    ff_shell_set_my_pos(&H.shell, (ff_latlon_t){39.0, -82.0});
+    ff_shell_set_heading(&H.shell, 0.0f);
+    /* DANA gets a real fix: this is the "prior geometry" that must not
+     * leak onto KEV's view after GO. */
+    inject_position(DANA, U_EVENING, 39.002215, -82.003648);
+
+    ff_app_state_t const *before = view();
+    TEST_ASSERT_EQUAL_STRING("DANA", before->radar.name);
+    TEST_ASSERT_EQUAL_INT(RADAR_LIVE, before->radar.mode);
+    TEST_ASSERT_TRUE(before->radar.arrow_valid);
+    TEST_ASSERT_NOT_EQUAL(0, before->radar.dist_str[0]);
+    TEST_ASSERT_NOT_EQUAL(0, before->radar.age_str[0]);
+
+    /* KEV flares — KEV has never sent a position fix. */
+    inject_flare(KEV_ID, 300u);
+    TEST_ASSERT_TRUE(ff_shell_flare(&H.shell)->takeover_active);
+
+    send_kind(FF_INTENT_TAKEOVER_GO);
+    ff_app_state_t const *v = view();
+    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_RADAR, v->active_face);
+    TEST_ASSERT_EQUAL_UINT32(KEV_ID, ff_shell_flare(&H.shell)->locked_node_id);
+
+    /* KEV's own honest NOFIX (never had a fix -> RADAR_LOST, "NO FIX
+     * YET" per the RENDERER CONTRACT), not a fabricated arrow and not
+     * any trace of DANA's geometry above. */
+    TEST_ASSERT_EQUAL_STRING("KEV", v->radar.name);
+    TEST_ASSERT_EQUAL_INT(RADAR_LOST, v->radar.mode);
+    TEST_ASSERT_EQUAL_STRING("", v->radar.age_str);
+    TEST_ASSERT_FALSE(v->radar.arrow_valid);
+    TEST_ASSERT_EQUAL_STRING("", v->radar.dist_str);
 }
 
 /* The reverse-direction check the brief calls out separately: a flare
@@ -2321,7 +2485,11 @@ int main(void)
     RUN_TEST(S26_notif_banner_open_pops_the_power_menu_and_navigates);
     RUN_TEST(S26_notif_banner_open_while_composing_leaves_everything_untouched);
     RUN_TEST(S10_notif_flare_go_lands_on_radar_from_every_starting_state);
+    RUN_TEST(S10_notif_flare_go_force_selects_the_sender_not_the_prior_selection);
     RUN_TEST(S10_notif_flare_dismiss_restores_the_exact_prior_state);
+    RUN_TEST(S10_notif_flare_dismiss_does_not_change_the_radar_selection);
+    RUN_TEST(S10_notif_flare_lock_expiry_leaves_selection_on_the_sender);
+    RUN_TEST(S10_notif_flare_go_nofix_sender_shows_their_honest_nofix_not_prior_geometry);
     RUN_TEST(S26_notif_flare_over_the_launcher_go_and_dismiss_both_work);
 
     RUN_TEST(S16_c2_flare_start_begins_sending);

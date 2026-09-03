@@ -685,6 +685,87 @@ static void S02_selection_survives_member_appearing(void)
 }
 
 /* ------------------------------------------------------------------- */
+/* ff_crew_select_node — S10's "GO force-selects the flare sender" seam  */
+/* (docs/specs/S10-flare.md, dated amendment 2026-09-02). The direct     */
+/* unit coverage; the end-to-end "flare from a non-first-paired member,  */
+/* GO, radar target == sender" regression lives in                      */
+/* app/tests/test_intent.c against the real ff_shell wiring, since the   */
+/* actual call site (ff_flare_go + this function, back to back) is in   */
+/* ff_shell.c, not in core.                                              */
+/* ------------------------------------------------------------------- */
+
+static void S10_select_node_jumps_directly_to_a_non_adjacent_paired_member(void)
+{
+    /* The exact shape of the bug this exists to fix: three paired
+     * members, the first-paired one (A) is the self-healed selection by
+     * default, and the node that needs to become selected (C) is
+     * neither the current selection NOR "next" from it. */
+    fake_clock_t fc = {0};
+    ff_clock_t clk = make_clock(&fc);
+    ff_crew_t c;
+    ff_crew_init(&c, &clk);
+
+    ff_crew_upsert(&c, 1u); /* A */
+    ff_crew_upsert(&c, 2u); /* B */
+    ff_crew_upsert(&c, 3u); /* C */
+    ff_crew_set_paired(&c, 1u, true);
+    ff_crew_set_paired(&c, 2u, true);
+    ff_crew_set_paired(&c, 3u, true);
+
+    ff_crew_member_t *sel = ff_crew_selected(&c);
+    TEST_ASSERT_EQUAL_UINT32(1u, sel->node_id); /* A, self-healed default */
+
+    ff_crew_select_node(&c, 3u); /* C flared; jump straight to C */
+    sel = ff_crew_selected(&c);
+    TEST_ASSERT_NOT_NULL(sel);
+    TEST_ASSERT_EQUAL_UINT32(3u, sel->node_id);
+}
+
+static void S10_select_node_unknown_id_leaves_selection_untouched(void)
+{
+    fake_clock_t fc = {0};
+    ff_clock_t clk = make_clock(&fc);
+    ff_crew_t c;
+    ff_crew_init(&c, &clk);
+
+    ff_crew_upsert(&c, 1u);
+    ff_crew_set_paired(&c, 1u, true);
+
+    ff_crew_select_node(&c, 0xDEADBEEFu); /* never heard of this node */
+
+    ff_crew_member_t *sel = ff_crew_selected(&c);
+    TEST_ASSERT_NOT_NULL(sel);
+    TEST_ASSERT_EQUAL_UINT32(1u, sel->node_id); /* unchanged */
+}
+
+static void S10_select_node_unpaired_id_leaves_selection_untouched(void)
+{
+    /* A stranger's node_id existing in the roster (merely heard) must
+     * never become a valid radar-face selection — same rule
+     * ff_crew_selected's own self-heal already enforces. */
+    fake_clock_t fc = {0};
+    ff_clock_t clk = make_clock(&fc);
+    ff_crew_t c;
+    ff_crew_init(&c, &clk);
+
+    ff_crew_upsert(&c, 1u);
+    ff_crew_upsert(&c, 2u);
+    ff_crew_set_paired(&c, 1u, true);
+    ff_crew_set_paired(&c, 2u, false); /* heard, not crew */
+
+    ff_crew_select_node(&c, 2u);
+
+    ff_crew_member_t *sel = ff_crew_selected(&c);
+    TEST_ASSERT_NOT_NULL(sel);
+    TEST_ASSERT_EQUAL_UINT32(1u, sel->node_id); /* unchanged */
+}
+
+static void S10_select_node_null_crew_is_safe(void)
+{
+    ff_crew_select_node(NULL, 1u); /* must not crash */
+}
+
+/* ------------------------------------------------------------------- */
 /* ff_crew_find — read-only lookup (S08 PR #25 code review, MEDIUM       */
 /* finding: distinguishes this from ff_crew_upsert's find-or-CREATE).   */
 /* ------------------------------------------------------------------- */
@@ -940,6 +1021,11 @@ int main(void)
     RUN_TEST(S02_selection_survives_member_disappearing);
     RUN_TEST(S02_selection_survives_member_appearing);
     RUN_TEST(S02_selection_single_paired_member_wraps_to_itself);
+
+    RUN_TEST(S10_select_node_jumps_directly_to_a_non_adjacent_paired_member);
+    RUN_TEST(S10_select_node_unknown_id_leaves_selection_untouched);
+    RUN_TEST(S10_select_node_unpaired_id_leaves_selection_untouched);
+    RUN_TEST(S10_select_node_null_crew_is_safe);
 
     RUN_TEST(S02_find_returns_existing_paired_member);
     RUN_TEST(S02_find_returns_existing_unpaired_member);
