@@ -1981,7 +1981,7 @@ static void S16_c2_radar_flare_button_emits_flare_start(void)
     strncpy(r.dist_str, "15 m", sizeof(r.dist_str) - 1);
 
     lv_obj_t *parent = lv_obj_create(lv_screen_active());
-    ff_scr_radar_build(parent, &r, false, false);
+    ff_scr_radar_build(parent, &r, false, false, /*locked=*/false);
 
     click(find_button_with_label(parent, "FLARE"));
 
@@ -2065,7 +2065,7 @@ static void S17a_AC4_radar_precise_dot_renders_filled_with_its_initial(void)
     r.dots[0].imprecise = false;
 
     lv_obj_t *parent = lv_obj_create(lv_screen_active());
-    ff_scr_radar_build(parent, &r, false, false);
+    ff_scr_radar_build(parent, &r, false, false, /*locked=*/false);
     /* lv_obj_set_size only records the SPEC; actual lv_obj_get_width/
      * height() (what find_obj_by_size below reads) aren't resolved until
      * a layout pass runs — same requirement test_scr_flare.c's own
@@ -2101,7 +2101,7 @@ static void S17a_AC4_radar_imprecise_dot_renders_as_hollow_ring_with_no_initial(
     r.dots[0].imprecise = true;
 
     lv_obj_t *parent = lv_obj_create(lv_screen_active());
-    ff_scr_radar_build(parent, &r, false, false);
+    ff_scr_radar_build(parent, &r, false, false, /*locked=*/false);
     /* lv_obj_set_size only records the SPEC; actual lv_obj_get_width/
      * height() (what find_obj_by_size below reads) aren't resolved until
      * a layout pass runs — same requirement test_scr_flare.c's own
@@ -2666,7 +2666,7 @@ static void S06_radar_battery_tints_amber_when_low(void)
     memset(&r, 0, sizeof(r));
     r.mode = RADAR_LIVE;
     r.batt_pct = 10;
-    ff_scr_radar_build(lv_obj_create(lv_screen_active()), &r, false, false);
+    ff_scr_radar_build(lv_obj_create(lv_screen_active()), &r, false, false, /*locked=*/false);
 
     lv_obj_t *low_lbl = find_label_exact(lv_screen_active(), "10%");
     TEST_ASSERT_NOT_NULL(low_lbl);
@@ -2678,7 +2678,7 @@ static void S06_radar_battery_tints_amber_when_low(void)
     memset(&r, 0, sizeof(r));
     r.mode = RADAR_LIVE;
     r.batt_pct = 50;
-    ff_scr_radar_build(lv_obj_create(lv_screen_active()), &r, false, false);
+    ff_scr_radar_build(lv_obj_create(lv_screen_active()), &r, false, false, /*locked=*/false);
 
     lv_obj_t *ok_lbl = find_label_exact(lv_screen_active(), "50%");
     TEST_ASSERT_NOT_NULL(ok_lbl);
@@ -2690,7 +2690,7 @@ static void S06_radar_battery_tints_amber_when_low(void)
     memset(&r, 0, sizeof(r));
     r.mode = RADAR_LIVE;
     r.batt_pct = -1;
-    ff_scr_radar_build(lv_obj_create(lv_screen_active()), &r, false, false);
+    ff_scr_radar_build(lv_obj_create(lv_screen_active()), &r, false, false, /*locked=*/false);
 
     lv_obj_t *unknown_lbl = find_label_exact(lv_screen_active(), "--%");
     TEST_ASSERT_NOT_NULL(unknown_lbl);
@@ -2859,7 +2859,7 @@ static void PL_radar_flare_drag_off_emits_nothing(void)
     lv_obj_t *parent = lv_obj_create(lv_screen_active());
     lv_obj_set_size(parent, FF_THEME_PUCK_PX, FF_THEME_PUCK_PX);
     lv_obj_clear_flag(parent, LV_OBJ_FLAG_SCROLLABLE);
-    ff_scr_radar_build(parent, &r, false, false);
+    ff_scr_radar_build(parent, &r, false, false, /*locked=*/false);
     lv_obj_update_layout(lv_screen_active());
 
     lv_obj_t *btn = find_button_with_label(parent, "FLARE");

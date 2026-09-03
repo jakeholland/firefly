@@ -160,16 +160,17 @@ against the live settings + wall clock, and only then calls
   by a shell-owned `bool batt_was_low` edge detector — not a level check,
   so a battery that stays low for hours sounds exactly once.
 
-### Battery: no ADC yet — a test/dev seam
+### Battery: rides on #180's real gauge (merged concurrently)
 
-Neither target has a battery ADC wired (`view.radar.batt_pct` is
-honestly `-1`, unknown, per `ff_radar.h`'s deviation note). A new
-`ff_shell_dev_set_batt_pct(sh, pct)` is the ONLY way to move that value
-off unknown today, so the BATT_LOW crossing logic is exercisable at all.
-It is intentionally narrow (a single `int8_t` override, no other
-effect) so it merges cleanly once `ff_shell_set_batt_mv` (#180, in
-flight concurrently) lands the real millivolt→percent projection on the
-same line.
+`view.radar.batt_pct` is `sh->batt_filter.displayed_pct` — S25 slice c's
+mV→percent gauge + display filter (`ff_batt.h`, `ff_shell_set_batt_mv`),
+which landed on `main` while this PR was in flight and was merged into
+this branch rather than worked around. The BATT_LOW crossing detector
+sits at the exact same projection line either way (a single `bool
+batt_was_low` edge detector reading `ff_radar_batt_is_low(view.radar.
+batt_pct)`), so no separate test/dev seam is needed — `test_shell.c`
+drives it through the real `ff_shell_set_batt_mv` push API, same as any
+other caller would.
 
 ### TAP — a second seam (say what we chose)
 

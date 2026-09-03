@@ -5302,6 +5302,138 @@ static void S26_launcher_flare_takeover_natural_expiry_dirties_key_and_renders_l
                              "the launcher did not resume normal live rendering after the takeover cleared");
 }
 
+/* ---------------------------------------------------------------------
+ * S25 slice c — ff_shell_set_batt_mv (docs/specs/S25-power-latch.md
+ * "(c) Battery gauge")
+ * ------------------------------------------------------------------- */
+
+/* Mutation (c) target: revert ff_shell_tick's radar.batt_pct assignment
+ * to the old hardcoded -1 and every assertion below that expects a real
+ * percent fails. Also exercises the render-key mask fix alongside the
+ * banner/unread ones already pinned above: `radar.batt_pct` is the
+ * THIRD field this PR adds to what `shell_render_key`'s LAUNCHER branch
+ * restores after its blanket memset (see that function's own doc
+ * comment) — before this fix a battery reading that changed while the
+ * launcher was showing (the common case; the launcher is home, S26
+ * slice e) left the render key byte-identical and the status row sat
+ * stale on the glass, the exact clobber class the banner exception
+ * (#157) already fixed for a different field.
+ *
+ * PR #180 review round: `ff_shell_set_batt_mv` now takes `now_ms`
+ * explicitly (that function's own doc comment) — every call below
+ * passes `H.clk.t`, the harness's own fake-clock reading, the same
+ * value `ff_shell_tick` is driven with, so pushes and ticks share one
+ * consistent timeline (as any real caller must). The filter's own
+ * moving-average + Schmitt-hysteresis math (mean-of-4 in the mV domain,
+ * asymmetric low-band exit margin) is covered in isolation by
+ * `core/tests/test_batt.c`; this test only pins that the shell wires a
+ * real caller-supplied clock through faithfully and that the launcher
+ * render-key mask reacts to the resulting displayed changes.
+ */
+static void S25c_batt_mv_reflects_filtered_value_and_dirties_launcher_key(void)
+{
+    harness_init(100000u, false);
+    inject_my_info(MY_ID);
+    (void)ff_shell_tick(&H.shell, H.clk.t); /* settle boot */
+    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_LAUNCHER, ff_shell_view(&H.shell)->active_face); /* the boot default */
+
+    /* Before any push: honestly unknown, same "-1 until the first
+     * sensor push" contract heading_deg/my_pos_ok already have. */
+    TEST_ASSERT_EQUAL_INT8(-1, ff_shell_view(&H.shell)->radar.batt_pct);
+
+    /* mv=3700 is an exact OCV-table point (ff_batt.h) -> 30%. First-
+     * ever reading: shows immediately (ff_batt.h's "unknown-until-
+     * read, then real", no warm-up), and this unknown -> known
+     * transition must dirty the launcher's render key. */
+    ff_shell_set_batt_mv(&H.shell, 3700, H.clk.t);
+    TEST_ASSERT_TRUE_MESSAGE(ff_shell_tick(&H.shell, H.clk.t),
+                             "the first battery reading did not dirty the launcher's render key - "
+                             "radar.batt_pct is being masked out again (mutation (c)-adjacent regression)");
+    TEST_ASSERT_EQUAL_INT8(30, ff_shell_view(&H.shell)->radar.batt_pct);
+
+    /* mv=3707 -> 51% in isolation, but the pre-filled window (see
+     * ff_batt.h's FF_BATT_FILTER_WINDOW doc comment) averages it with
+     * the three settled 3700s first: (3700*3+3707)/4 rounds to 3702 mV,
+     * still 30% — absorbed entirely, comfortably inside
+     * FF_BATT_HYSTERESIS_PCT and nowhere near FF_BATT_LOW_PCT. The
+     * displayed value — and therefore the launcher's render key — must
+     * stay exactly as it was. Dropping the core hysteresis (mutation
+     * (b)) is exactly what would flip this assertion. */
+    advance(1000u);
+    ff_shell_set_batt_mv(&H.shell, 3707, H.clk.t);
+    TEST_ASSERT_FALSE_MESSAGE(ff_shell_tick(&H.shell, H.clk.t),
+                              "a battery reading wobble dirtied the launcher's render key");
+    TEST_ASSERT_EQUAL_INT8(30, ff_shell_view(&H.shell)->radar.batt_pct);
+
+    /* A sustained, genuine move: mv=3900 (table-exact 65%) replaces one
+     * more of the window's four slots. Mean = (3700*2+3707+3900)/4
+     * rounds to 3752 mV -> 40% (ff_batt_pct_from_mv, not re-derived
+     * here) — a 10-point move that clears the ordinary hysteresis, a
+     * real KNOWN-to-KNOWN change (not merely the unknown->known edge
+     * above), and it must dirty the key too. */
+    advance(1000u);
+    ff_shell_set_batt_mv(&H.shell, 3900, H.clk.t);
+    TEST_ASSERT_TRUE_MESSAGE(ff_shell_tick(&H.shell, H.clk.t),
+                             "a genuine, sustained battery reading change did not dirty the launcher's "
+                             "render key");
+    TEST_ASSERT_EQUAL_INT8(40, ff_shell_view(&H.shell)->radar.batt_pct);
+}
+
+/* PR #180 review, should-fix #4: `ff_shell_set_batt_mv` used to read
+ * `sh->now_ms` (the shell's own last-tick clock), which defaults to 0
+ * before the shell's first `ff_shell_tick` — a battery read that
+ * happens before that first tick (plausible at boot) would push
+ * against a fake "now = 0" and get recorded (internally, in the OLD
+ * buggy version) as having happened at time 0. Once the first REAL
+ * tick then runs and updates `sh->now_ms` to the true boot-time clock
+ * reading, a SECOND battery push shortly after that tick would (under
+ * the old bug) compute its gap against that stale "time 0" instead of
+ * the first push's own real moment — looking like a many-second gap
+ * and spuriously tripping `FF_BATT_FILTER_STALE_GAP_MS`'s window
+ * reset. This test drives exactly that shape — push, THEN a tick (the
+ * moment `sh->now_ms` would jump, in the buggy version), THEN a second
+ * push shortly after — with the fix in place: `now_ms` is now the
+ * caller's own explicit argument on every call, never `sh->now_ms`, so
+ * inserting a tick in between changes nothing about the filter's own
+ * timeline. No spurious reset happens: the second push is diluted
+ * (partially blended with the first), not treated as a lone post-gap
+ * sample.
+ */
+static void S25c_set_batt_mv_before_first_tick_does_not_spuriously_reset(void)
+{
+    harness_init(100000u, false); /* H.clk.t starts at 100000, matching a real boot-time clock reading */
+
+    /* Pushed BEFORE any ff_shell_tick call at all — sh->now_ms (were it
+     * still read internally) would be 0 here, not 100000, and the OLD
+     * buggy code would have recorded the filter's last-push time as 0. */
+    ff_shell_set_batt_mv(&H.shell, 3700, H.clk.t);
+
+    /* The FIRST real tick — this is the exact moment sh->now_ms jumps
+     * from 0 to a real value (100000) in the old buggy code, which is
+     * what makes the next push's gap look enormous under that bug. */
+    inject_my_info(MY_ID);
+    TEST_ASSERT_TRUE(ff_shell_tick(&H.shell, H.clk.t));
+    TEST_ASSERT_EQUAL_INT8(30, ff_shell_view(&H.shell)->radar.batt_pct);
+
+    /* A second push 1s after that tick, comfortably under
+     * FF_BATT_FILTER_STALE_GAP_MS as measured against the FIRST push's
+     * own real time. The old bug would instead measure this gap
+     * against the stale "time 0" the first push was mis-recorded at,
+     * making it look like a ~100000ms gap — well past the 30000ms
+     * threshold — and spuriously reset the window so this mv=4000
+     * sample would dominate undiluted (80%). With the fix, this is an
+     * ordinary short gap: mean = (3700*3+4000)/4 rounds to 3775 mV ->
+     * 45% (ff_batt_pct_from_mv), the diluted (not undiluted) answer. */
+    advance(1000u);
+    ff_shell_set_batt_mv(&H.shell, 4000, H.clk.t);
+
+    TEST_ASSERT_TRUE(ff_shell_tick(&H.shell, H.clk.t));
+    TEST_ASSERT_EQUAL_INT8_MESSAGE(45, ff_shell_view(&H.shell)->radar.batt_pct,
+        "a battery push shortly after the first tick was spuriously treated as a stale-gap "
+        "reset - ff_shell_set_batt_mv must use its own now_ms argument on every call, never "
+        "sh->now_ms");
+}
+
 /* AC2 — a banner from a DIFFERENT paired conversation than the one
  * currently open MUST dirty the render key: it is a genuinely NEW top-
  * of-glass surface, not part of the open thread's own content (unlike an
@@ -6099,23 +6231,42 @@ static void S27_awake_hours_message_and_rally_do_play(void)
 
 /* BATT_LOW: fires once on a crossing into the low band, never again
  * while it stays low, and again on a genuinely NEW crossing after
- * recovering. Uses ff_shell_dev_set_batt_pct — the S27 test/dev seam
- * (ff_shell.h) — since neither target has a real ADC yet. */
+ * recovering. Drives the REAL battery path (#180's `ff_shell_set_batt_mv`
+ * + `ff_batt_filter_t`, merged concurrently with this slice — the S27
+ * test/dev seam this test used before that landed is retired) rather
+ * than poking `view.radar.batt_pct` directly: pushes a high pack
+ * voltage once (the filter's own "first-ever reading shows immediately,
+ * no hysteresis" rule, `ff_batt.h`), then four consecutive LOW pushes
+ * (enough to fully cycle the filter's 4-sample averaging window past
+ * the boundary regardless of the exact intermediate values — the
+ * "crosses down into low promotes immediately" rule means the actual
+ * crossing happens partway through those four pushes; this test does
+ * not need to know exactly which one, only that `ff_shell_tick` after
+ * them observes the FINAL state and reports the crossing exactly once),
+ * then a matching four-push recovery + four-push re-crossing. */
 static void S27_batt_low_fires_once_per_crossing_not_every_tick(void)
 {
     harness_init(100000u, false);
     inject_my_info(MY_ID);
 
-    ff_shell_dev_set_batt_pct(&H.shell, 50); /* well above FF_BATT_LOW_PCT (15) */
+    enum { MV_HIGH = 4200u, MV_LOW = 3300u }; /* ff_batt.h's OCV table: 4200->100%, 3300->0% */
+
+    ff_shell_set_batt_mv(&H.shell, MV_HIGH, H.clk.t); /* first-ever reading: shows 100% immediately */
     (void)ff_shell_tick(&H.shell, H.clk.t); /* shell_project runs every tick regardless of the dirty bit */
+    TEST_ASSERT_EQUAL_INT8(100, ff_shell_view(&H.shell)->radar.batt_pct);
     TEST_ASSERT_EQUAL_INT(0, sound_count(FF_SOUND_BATT_LOW));
 
-    ff_shell_dev_set_batt_pct(&H.shell, 10); /* crosses into low */
+    for (int i = 0; i < 4; i++) {
+        advance(1000u);
+        ff_shell_set_batt_mv(&H.shell, MV_LOW, H.clk.t);
+    }
     (void)ff_shell_tick(&H.shell, H.clk.t);
+    TEST_ASSERT_TRUE_MESSAGE(ff_radar_batt_is_low(ff_shell_view(&H.shell)->radar.batt_pct),
+                             "four low pushes did not settle the filter into the low band");
     TEST_ASSERT_EQUAL_INT(1, sound_count(FF_SOUND_BATT_LOW));
 
     /* The mutation target (task's mutation (b)): still low on every
-     * subsequent tick must NOT fire again. */
+     * subsequent tick (no new pushes at all) must NOT fire again. */
     for (int i = 0; i < 20; i++) {
         advance(1000u);
         (void)ff_shell_tick(&H.shell, H.clk.t);
@@ -6123,35 +6274,31 @@ static void S27_batt_low_fires_once_per_crossing_not_every_tick(void)
     TEST_ASSERT_EQUAL_INT_MESSAGE(1, sound_count(FF_SOUND_BATT_LOW),
                                   "BATT_LOW must fire once on the crossing, not on every tick it reads low");
 
-    /* Recover above the threshold... */
-    ff_shell_dev_set_batt_pct(&H.shell, 60);
+    /* Recover above the threshold (four pushes: the filter's own exit
+     * hysteresis needs the filtered value to clear FF_BATT_LOW_PCT +
+     * FF_BATT_HYSTERESIS_PCT by a full margin, ff_batt.h). */
+    for (int i = 0; i < 4; i++) {
+        advance(1000u);
+        ff_shell_set_batt_mv(&H.shell, MV_HIGH, H.clk.t);
+    }
     (void)ff_shell_tick(&H.shell, H.clk.t);
+    TEST_ASSERT_FALSE(ff_radar_batt_is_low(ff_shell_view(&H.shell)->radar.batt_pct));
     TEST_ASSERT_EQUAL_INT(1, sound_count(FF_SOUND_BATT_LOW));
 
     /* ...then a SECOND, genuinely new crossing fires again — this is not
      * a stuck one-shot latch. */
-    ff_shell_dev_set_batt_pct(&H.shell, 5);
+    for (int i = 0; i < 4; i++) {
+        advance(1000u);
+        ff_shell_set_batt_mv(&H.shell, MV_LOW, H.clk.t);
+    }
     (void)ff_shell_tick(&H.shell, H.clk.t);
+    TEST_ASSERT_TRUE(ff_radar_batt_is_low(ff_shell_view(&H.shell)->radar.batt_pct));
     TEST_ASSERT_EQUAL_INT(2, sound_count(FF_SOUND_BATT_LOW));
 }
 
-/* The boundary itself: exactly FF_BATT_LOW_PCT (15) is low ("<=", per
- * ff_radar_batt_is_low's own doc comment), one above it is not. */
-static void S27_batt_low_boundary_is_inclusive(void)
-{
-    harness_init(100000u, false);
-    inject_my_info(MY_ID);
-
-    ff_shell_dev_set_batt_pct(&H.shell, 16);
-    (void)ff_shell_tick(&H.shell, H.clk.t);
-    TEST_ASSERT_EQUAL_INT(0, sound_count(FF_SOUND_BATT_LOW));
-
-    ff_shell_dev_set_batt_pct(&H.shell, 15);
-    (void)ff_shell_tick(&H.shell, H.clk.t);
-    TEST_ASSERT_EQUAL_INT(1, sound_count(FF_SOUND_BATT_LOW));
-}
-
-/* An unknown reading (-1, the honest default) is never "low" — never
+/* An unknown reading (-1, the honest default — no ff_shell_set_batt_mv
+ * call at all, same as neither target having a battery ADC wired yet)
+ * is never "low" — never fires BATT_LOW, even the very first tick. */
  * fires BATT_LOW, even the very first tick. */
 static void S27_batt_unknown_never_fires_batt_low(void)
 {
@@ -6393,6 +6540,10 @@ int main(void)
     RUN_TEST(S26_launcher_AC_second_sender_banner_dirties_key);
     RUN_TEST(S26_launcher_radar_position_update_does_not_dirty_key);
     RUN_TEST(S26_launcher_flare_takeover_natural_expiry_dirties_key_and_renders_launcher);
+
+    RUN_TEST(S25c_batt_mv_reflects_filtered_value_and_dirties_launcher_key);
+    RUN_TEST(S25c_set_batt_mv_before_first_tick_does_not_spuriously_reset);
+
     RUN_TEST(S26_AC2_banner_from_other_paired_conv_dirties_open_thread_key);
     RUN_TEST(S26_AC2_banner_from_other_paired_conv_dirties_popup_overlay_exactly_once);
     RUN_TEST(S26_banner_open_routes_marks_read_and_dismisses);
@@ -6412,7 +6563,6 @@ int main(void)
     RUN_TEST(S27_quiet_hours_only_the_two_flare_events_play);
     RUN_TEST(S27_awake_hours_message_and_rally_do_play);
     RUN_TEST(S27_batt_low_fires_once_per_crossing_not_every_tick);
-    RUN_TEST(S27_batt_low_boundary_is_inclusive);
     RUN_TEST(S27_batt_unknown_never_fires_batt_low);
     RUN_TEST(S27_tap_sound_gated_by_ui_ticks_and_sounds_on);
     RUN_TEST(S27_tap_sound_silenced_during_quiet_hours_even_with_ui_ticks_on);

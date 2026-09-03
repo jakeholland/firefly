@@ -61,8 +61,29 @@ extern "C" {
  * actually re-orients the pixels on glass, so this parameter's only job
  * is keeping the one edge-hugging element concentric with the bezel in
  * either orientation.
+ *
+ * `locked` (fix/radar-lock-chip-clears-status-bar follow-up, [api]):
+ * true iff the Radar-face lock chip (`scr_flare.c`'s
+ * `ff_scr_flare_build_lock_chip`, called by `scr_nav.c` right after this
+ * function whenever the active face is Radar) is about to be drawn over
+ * this same content. `scr_nav.c` passes `state->flare.locked` directly —
+ * the SAME fact that gates the chip itself, so the two can never
+ * disagree about whether it's showing — same explicit-parameter
+ * convention as `colorblind`/`screen_flip` above. When true, the
+ * compass arrow's maximum reach is capped at
+ * `RADAR_LAYOUT_ARROW_REACH_LOCKED_PX` (`radar_layout.h`) instead of the
+ * normal `RADAR_LAYOUT_ARROW_LEN_PX`, so the arrow's head can never reach
+ * the lock chip's band regardless of bearing — see that constant's own
+ * derivation comment for why (a due-north locked fixture originally
+ * shipped with the arrowhead painted squarely under the chip; the
+ * arrow's direction is this product's whole point, so unlike painting
+ * over the status bar, painting over the HEAD was ruled unacceptable
+ * even for a narrow bearing cone — docs/specs/S10-flare.md's Amendments
+ * has the full account). Ignored by CLOSE (no compass arrow — a
+ * proximity ring instead) and NOFIX/NOSEL (no arrow drawn at all).
  */
-void ff_scr_radar_build(lv_obj_t *parent, ff_radar_view_t const *radar, bool colorblind, bool screen_flip);
+void ff_scr_radar_build(lv_obj_t *parent, ff_radar_view_t const *radar, bool colorblind, bool screen_flip,
+                        bool locked);
 
 #ifdef __cplusplus
 }

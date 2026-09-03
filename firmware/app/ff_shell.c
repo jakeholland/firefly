@@ -13,6 +13,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "ff_batt.h" /* S25 slice c — battery gauge: honest mV -> percent + display filter */
 #include "ff_geo.h"
 #include "ff_notify.h" /* S26(d) — the notification queue */
 #include "ff_proto.h"
@@ -107,9 +108,6 @@ typedef struct {
      * crossing, not every tick it reads low). Set/cleared alongside
      * `view.radar.batt_pct`'s projection in shell_project. */
     bool batt_was_low;
-    /* S27 TEST/DEV SEAM — see ff_shell_dev_set_batt_pct's doc comment
-     * (ff_shell.h). -1 (unknown) until a test overrides it. */
-    int8_t dev_batt_pct_override;
     fp_pack_t *pack; /* caller-owned storage; NULL = this target has no pack */
     bool pack_loaded;
     jsmntok_t *toks; /* caller-owned jsmn scratch for fp_parse (S26 slice a) */
@@ -268,6 +266,32 @@ typedef struct {
     ff_latlon_t my_pos;
     bool my_pos_ok;
     float heading_deg; /* negative = unknown/unreliable (ff_geo_heading_deg's sentinel) */
+    /* S25 slice c — battery gauge. `ff_shell_set_batt_mv` runs each raw
+     * pack-voltage reading through the core filter (`ff_batt.h`)
+     * IMMEDIATELY, at push time, not deferred to the next tick — unlike
+     * `heading_deg`/`my_pos` above, which are raw sensor values a later
+     * `ff_shell_tick` interprets. The filter's whole job is display
+     * smoothing OVER TIME (the averaging window, the stale-gap reset,
+     * ff_batt.h's own doc comment), which needs to see every actual
+     * reading as its own event; folding that through `ff_shell_tick`
+     * instead would collapse multiple readings between two ticks into
+     * one filter push (or stretch one reading across many ticks if the
+     * ADC free-runs slower than the tick rate — either way the wrong
+     * cadence for a filter that reasons about "how long since the last
+     * READING", not "how long since the last tick"). PR #180 review
+     * (should-fix): `ff_shell_set_batt_mv` now takes `now_ms` as an
+     * explicit parameter from its caller (that function's own doc
+     * comment) rather than reading `sh->now_ms` here — `sh->now_ms`
+     * defaults to 0 until the shell's first tick, so a battery read
+     * before that first tick would push against a fake "now" and could
+     * spuriously trip the stale-gap reset on the very next real-time
+     * push. `batt_filter.displayed_pct` (a plain, non-opaque field per
+     * ff_batt.h) is what `ff_shell_tick` copies into `view.radar.
+     * batt_pct` on the NEXT projection, matching this file's universal
+     * "state changes surface in the projection on the next tick" rule
+     * at the read side even though the mutation itself already
+     * happened. */
+    ff_batt_filter_t batt_filter;
 
 #if defined(FF_TARGET_SIM)
     /* --dev-trust-all (S16 AC6). SIM ONLY, and deliberately inside the
@@ -1674,13 +1698,15 @@ static void shell_project(shell_t *sh, uint32_t now_ms)
      * come from the RTC, the battery ADC and the mesh link, none of which
      * are its inputs (see ff_radar.h's deviation note). */
     shell_project_clock_str(wall, sh->settings.clock_24h, sh->view.radar.clock_str, sizeof(sh->view.radar.clock_str));
-    /* No battery ADC on either target yet: honestly unknown (-1) by
-     * default. `dev_batt_pct_override` is a S27 test/dev seam only (see
-     * ff_shell_dev_set_batt_pct's doc comment, ff_shell.h) — it starts at
-     * -1 (unknown) and nothing else in this build ever moves it, so this
-     * line's real-world behavior is unchanged from the literal -1 it
-     * replaces. Superseded once #180's real millivolt projection lands. */
-    sh->view.radar.batt_pct = sh->dev_batt_pct_override;
+    /* S25 slice c — the filtered display value (ff_batt.h's own display
+     * smoothing already applied at push time, see `batt_filter`'s doc
+     * comment above); -1 (honestly unknown) until the first
+     * ff_shell_set_batt_mv call, same as heading_deg/my_pos_ok before
+     * their own first push. This is also the value the S27 BATT_LOW
+     * crossing-detector just below reads — no separate test/dev seam
+     * needed now that a real push API exists; see ff_shell_set_batt_mv
+     * (ff_shell.h) for how test_shell.c drives it. */
+    sh->view.radar.batt_pct = sh->batt_filter.displayed_pct;
     sh->view.radar.mesh_ok = (sh->link == FF_SHELL_LINK_CONNECTED);
 
     /* S27 sounds — BATT_LOW fires once per CROSSING into the low band,
@@ -2047,8 +2073,10 @@ static void shell_render_key(ff_app_state_t const *v, ff_app_state_t *key)
          * not a modal — see ff_route.h's header note — but it is still
          * exactly one `active_face` value among several, so this mask
          * is unaffected by that change) — the launcher, same "opaque
-         * overlay" discipline as the power menu above, with TWO
-         * exceptions rather than the original one: unlike the fully-
+         * overlay" discipline as the power menu above, with THREE
+         * exceptions rather than the original one (a third, S25 slice
+         * c's `radar.batt_pct`, added below the other two — see that
+         * paragraph): unlike the fully-
          * static power menu, the launcher's Signals circle carries the
          * unread badge (scr_launcher.c, moved off the old page-dot
          * row), so the mask keeps exactly that one scalar rather than
@@ -2109,9 +2137,30 @@ static void shell_render_key(ff_app_state_t const *v, ff_app_state_t *key)
          * above is an `if` with this launcher branch as its `else if`
          * — so while a takeover is active this launcher branch never
          * runs, and the takeover's own dirtying (the block above) is
-         * already independent of everything this mask does. */
+         * already independent of everything this mask does.
+         *
+         * THIRD exception (S25 slice c): `key->radar.batt_pct`. The
+         * status row this mask's own top comment already describes as
+         * launcher content — `launcher_build_status_row`
+         * (scr_launcher.c) — renders `state->radar.batt_pct` verbatim
+         * (icon step + "N%" text, tinted amber via
+         * `ff_radar_batt_is_low` below `FF_BATT_LOW_PCT`), the exact
+         * same field scr_radar.c's own status bar reads. Before this
+         * fix the blanket `memset` below zeroed it along with
+         * everything else, so a battery reading that changed WHILE the
+         * launcher was showing (the common case — the launcher is home,
+         * S26 slice e) left the key byte-identical and the row sat
+         * stale on the glass until some unrelated field (badge, banner)
+         * happened to dirty the key — the exact `#157` banner clobber
+         * this mask's second exception already fixed, for a different
+         * field. Restored as a bare scalar (not coarsened — S25c's own
+         * `ff_batt_filter_t` hysteresis is what already keeps ordinary
+         * 1% ADC noise from dirtying this key every tick; there is no
+         * second reduction to apply here the way the arrow/age fields
+         * elsewhere in this function need). */
         ff_app_banner_t const banner = key->banner;
         ff_app_face_t const af = key->active_face;
+        int8_t const batt_pct = key->radar.batt_pct;
         uint32_t unread_total = 0;
         uint8_t const n = ff_inbox_conv_count(&v->inbox.inbox);
         for (uint8_t i = 0; i < n; i++) {
@@ -2124,6 +2173,7 @@ static void shell_render_key(ff_app_state_t const *v, ff_app_state_t *key)
         key->active_face = af;
         key->inbox.inbox.convs[0].unread = (unread_total > UINT16_MAX) ? UINT16_MAX : (uint16_t)unread_total;
         key->banner = banner;
+        key->radar.batt_pct = batt_pct;
     }
 }
 
@@ -2192,7 +2242,6 @@ int ff_shell_init(ff_shell_t *sh_pub, ff_shell_cfg_t const *cfg)
     sh->play_sound = cfg->play_sound;
     sh->play_sound_user = cfg->play_sound_user;
     sh->batt_was_low = false;
-    sh->dev_batt_pct_override = -1; /* unknown, matches the honest default this replaces */
     sh->pack = cfg->pack;
     sh->pack_loaded = false;
     sh->toks = cfg->toks;
@@ -2204,6 +2253,7 @@ int ff_shell_init(ff_shell_t *sh_pub, ff_shell_cfg_t const *cfg)
     ff_flare_init(&sh->flare);
     ff_wall_init(&sh->wall);
     ff_radar_smooth_reset(&sh->smooth);
+    ff_batt_filter_init(&sh->batt_filter); /* S25 slice c — displayed_pct starts -1 (unknown), not 0 (memset above would fake a real 0%) */
     ff_route_init(&sh->route);
     ff_notify_init(&sh->notify); /* S26(d) */
     sh->inbox_target_kind = FF_TARGET_WHOLE_CREW; /* S22 slice b — default target */
@@ -3881,12 +3931,6 @@ void ff_shell_sound_sink(void *user, ff_sound_event_t ev)
     }
 }
 
-void ff_shell_dev_set_batt_pct(ff_shell_t *sh_pub, int8_t pct)
-{
-    if (sh_pub == NULL) return;
-    shell_of(sh_pub)->dev_batt_pct_override = pct;
-}
-
 bool ff_shell_pair(ff_shell_t *sh_pub, uint32_t node_id, bool paired)
 {
     if (sh_pub == NULL) return false;
@@ -3922,6 +3966,29 @@ void ff_shell_set_heading(ff_shell_t *sh_pub, float heading_deg)
 {
     if (sh_pub == NULL) return;
     shell_of(sh_pub)->heading_deg = heading_deg;
+}
+
+void ff_shell_set_batt_mv(ff_shell_t *sh_pub, uint16_t pack_mv, uint32_t now_ms)
+{
+    if (sh_pub == NULL) return;
+    shell_t *sh = shell_of(sh_pub);
+    /* PR #180 review (should-fix): this used to run the filter against
+     * `sh->now_ms` (the last ff_shell_tick's clock reading), but that
+     * defaults to 0 before the shell's first tick — a caller that reads
+     * the ADC before the first tick (plausible at boot: the battery
+     * matters before the UI has rendered a frame) would push at "now
+     * = 0", then a later push after the first real tick could look
+     * like a many-second gap and spuriously trigger the stale-gap
+     * window reset (ff_batt.h's FF_BATT_FILTER_STALE_GAP_MS). Taking
+     * `now_ms` as an explicit parameter — the same convention
+     * `ff_shell_tick` itself already uses — removes the dependency on
+     * shell tick bookkeeping entirely: the caller's own clock reading
+     * at the moment of the actual ADC read is definitionally correct,
+     * with no pre-tick edge case possible. [api] change from this
+     * function's first cut (S25 slice c core+shell PR): the device-side
+     * ADC-read PR must pass its own real clock reading (e.g.
+     * esp_timer_get_time() / 1000) here, not the shell's. */
+    (void)ff_batt_filter_push(&sh->batt_filter, pack_mv, now_ms);
 }
 
 ff_shell_link_t ff_shell_link(ff_shell_t const *sh_pub)

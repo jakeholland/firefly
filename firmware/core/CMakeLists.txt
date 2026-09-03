@@ -362,6 +362,22 @@ if(FF_BUILD_TESTS)
     add_test(NAME test_rally COMMAND test_rally)
 endif()
 
+# S25 slice c (core/batt — honest mV -> percent battery gauge + display
+# filter; docs/specs/S25-power-latch.md "(c) Battery gauge"). Pure C11,
+# no I/O: the esp32s3 target's own ADC-read PR reads the pack voltage
+# and calls ff_shell_set_batt_mv (app/include/ff_shell.h); the sim has
+# no battery hardware and never calls it, so batt_pct stays honestly -1
+# there.
+if(FF_BUILD_TESTS)
+    add_executable(test_batt
+        tests/test_batt.c
+    )
+    target_link_libraries(test_batt PRIVATE ff-core unity)
+    ff_apply_warnings(test_batt)
+
+    add_test(NAME test_batt COMMAND test_batt)
+endif()
+
 # S27 (core/sound — event vocabulary, tone patterns, quiet-hours policy,
 # priority table; docs/specs/S27-sounds.md). Pure C11, no I/O — the DEVICE
 # HAL that turns a pattern into PCM samples is a separate, stacked PR.

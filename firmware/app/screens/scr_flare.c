@@ -10,13 +10,19 @@
 #include "ff_layout.h"
 #include "ff_theme.h"
 #include "flare_fmt.h"
+#include "radar_layout.h" /* RADAR_LAYOUT_LOCK_CHIP_DY — see that header's doc comment for the derivation */
 #include "scr_widgets.h" /* ff_scr_pill_create — the shared pill factory (S17 debt cleanup) */
 
 /* ---------------------------------------------------------------------
- * Layout constants. Deliberately local to this file (not radar_layout.h)
- * — see scr_flare.h's ff_scr_flare_build_lock_chip doc comment for why
- * these never need to compete for space in that module's collision
- * registry.
+ * Layout constants. Most are deliberately local to this file (not
+ * radar_layout.h) — see scr_flare.h's ff_scr_flare_build_lock_chip doc
+ * comment for why they never need to compete for space in that module's
+ * collision registry. The ONE exception is the lock chip's own vertical
+ * offset: it has to stay correct relative to radar_layout.h's
+ * RADAR_LAYOUT_STATUS_BAR_DY (see the #98 regression this fix closes),
+ * so that one constant, RADAR_LAYOUT_LOCK_CHIP_DY, lives there instead —
+ * the file that owns the Radar face's vertical rhythm — and is used
+ * directly below rather than re-declared here.
  * ------------------------------------------------------------------- */
 
 /* The Firefly flare mark: an 8-ray burst, unequal ray lengths, a long
@@ -128,8 +134,6 @@ _Static_assert(FLARE_SENDER_CANCEL_H >= FF_THEME_MIN_HIT_PX, "CANCEL must clear 
  * test_ff_layout.c's centered_band_round_trips_through_rect_in_circle),
  * and on real glass there is a bezel, not a mathematical boundary. */
 #define FLARE_CHIP_GLASS_SAFETY_PX 8.0f
-
-#define FLARE_LOCK_CHIP_DY (-165.0f) /* clear of RADAR_LAYOUT_STATUS_BAR_DY (-195) and every mode's top content */
 
 /* ---------------------------------------------------------------------
  * Small shared builders (deliberately NOT shared with scr_radar.c's
@@ -585,7 +589,7 @@ void ff_scr_flare_build_lock_chip(lv_obj_t *parent, ff_app_flare_t const *flare)
     snprintf(text, sizeof(text), "LOCKED - %s", name); /* plain hyphen, not U+00B7 — see build_takeover's note */
 
     flare_make_chip(parent, text, FF_THEME_COLOR_AMBER, FF_THEME_COLOR_BG, FF_THEME_FONT_CHIP,
-                     (int32_t)FLARE_LOCK_CHIP_DY);
+                     (int32_t)RADAR_LAYOUT_LOCK_CHIP_DY);
 }
 
 bool ff_scr_flare_selection_locked(ff_app_flare_t const *flare)
