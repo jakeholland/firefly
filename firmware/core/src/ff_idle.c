@@ -151,3 +151,46 @@ uint8_t ff_idle_brightness_pct(ff_idle_state_t state, uint8_t stored_pct)
         return stored_pct;
     }
 }
+
+void ff_idle_touch_gate_init(ff_idle_touch_gate_t *gate)
+{
+    if (gate == NULL) {
+        return;
+    }
+    memset(gate, 0, sizeof(*gate));
+}
+
+bool ff_idle_touch_gate(ff_idle_t *idle, ff_idle_touch_gate_t *gate, uint32_t now_ms, bool pressed)
+{
+    if (idle == NULL || gate == NULL) {
+        /* Fail open — see ff_idle.h's NULL-safety note on this
+         * function: never silently block input over a wiring bug. */
+        return pressed;
+    }
+
+    if (!pressed) {
+        /* Release always resets the latch — whether this is a genuine
+         * release or simply "no press happening" (never pressed, or
+         * already released last call). Nothing to deliver either way. */
+        gate->was_pressed = false;
+        gate->swallowing = false;
+        return false;
+    }
+
+    bool const begin = !gate->was_pressed;
+    gate->was_pressed = true;
+
+    if (begin) {
+        /* The decision is made ONCE, right here, at press-begin — never
+         * re-evaluated for the rest of this gesture (see ff_idle.h's
+         * "state matters only at press START" note). */
+        gate->swallowing = (ff_idle_state(idle) != FF_IDLE_STATE_ACTIVE);
+        if (gate->swallowing) {
+            /* The wake itself — same call every other input source on
+             * this device makes (ff_idle_input's own doc comment). */
+            ff_idle_input(idle, now_ms);
+        }
+    }
+
+    return !gate->swallowing;
+}

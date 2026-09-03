@@ -265,6 +265,33 @@ SHORT_PRESS while OFF = wake; while ACTIVE = go OFF immediately (this is where
 - **AC3** OFF skips face rebuilds (assert the render loop's rebuild count is 0
   across an OFF window in the sim ctl harness).
 
+**AMENDED 2026-09-02 — "a tap on a dim/off screen shouldn't also tap
+whatever's behind it"** (maintainer decision, on-glass bug report). ANY
+input resetting to ACTIVE (above) was correct but incomplete: a touch or
+BOOT press that WOKE the screen was also being delivered to the UI as an
+ordinary tap — the wake and the tap were the same physical gesture,
+landing on whatever button happened to be under the finger when the
+screen was dim/off/asleep. The fix: **a touch or button press that
+begins while the screen is not ACTIVE is a wake-only input and is never
+delivered to the UI.** The press still wakes the screen (unchanged); the
+entire gesture — every sample from press to release — is withheld from
+the UI, so no button highlights, no click fires, no navigation happens.
+A press that begins while the screen IS already ACTIVE is delivered
+normally, including one that continues to be held as the screen later
+DIMs under it (state matters only at the instant the press begins, not
+for the rest of the gesture — this is what makes a legitimate long-press
+or drag survive a mid-gesture dim). Implemented as a pure gate,
+`ff_idle_touch_gate` (core/include/ff_idle.h `[api]`), consulted from
+both the touch read path (`ff_display_touch_start`/
+`ff_display_touch_set_idle`, targets/esp32s3/components/ff_display/
+ff_display.c) and the BOOT-as-home debounce (app_main.c) — each input
+source gets its own `ff_idle_touch_gate_t` latch instance
+(`ff_idle_touch_gate_t`'s own doc comment). PWR SHORT_PRESS already only
+ever wakes (or force-offs) with no other side effect
+(`ff_idle_short_press`, unchanged by this amendment) — confirmed, not
+altered. The sim's ctl pointer indev (`targets/sim/ctl_loop.c`) mirrors
+the same gate for its own AC3-style harness test.
+
 ### (d) `ff_notify` + message banner
 Core `ff_notify` as above (queue depth 4, FIFO, expiry, `dismiss`, `pop`).
 Shell: an incoming MESSAGE / RALLY (paired sender) enqueues a BANNER; the
