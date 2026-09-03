@@ -135,10 +135,10 @@ typedef struct {
      * the target (WHOLE_CREW or one member node, ~8 B) and `shell_project_inbox`
      * builds the rows straight into `sh->view.inbox` each tick, re-applying
      * this holder afterward (the whole view is memset each tick, so the target
-     * cannot live in the view itself). Re-applying through
-     * `ff_sigview_target_select` RE-VALIDATES the member against the current
-     * roster every tick, so a member who unpaired/left honestly falls back to
-     * WHOLE_CREW. SELECT/CLEAR intents mutate this holder. */
+     * cannot live in the view itself). Re-applying RE-VALIDATES the member
+     * against the current roster every tick (`shell_member_paired`), so a
+     * member who unpaired/left honestly falls back to WHOLE_CREW. SELECT/
+     * CLEAR intents mutate this holder. */
     ff_target_kind_t inbox_target_kind;
     uint32_t         inbox_target_node;
 
@@ -163,8 +163,8 @@ typedef struct {
      * select, clear) disarms. Only WHOLE_CREW arms — a rally to one member,
      * and every flare/compose, sends on the first tap. This lives in the
      * shell, not core, because it is time-based (needs the injected clock);
-     * the shell reflects `inbox_rally_armed` into the view's display flag
-     * (`ff_sigview_set_rally_confirm_armed`) each tick. */
+     * the shell reflects `inbox_rally_armed` directly into the view's
+     * `confirm_armed` display field each tick. */
     bool     inbox_rally_armed;
     uint32_t inbox_rally_armed_ms;
 
@@ -1866,9 +1866,9 @@ static void shell_render_key(ff_app_state_t const *v, ff_app_state_t *key)
      * targets/esp32s3/main/ff_face.c and targets/sim/face_dispatch.c build
      * the full-screen takeover and return before touching any face beneath
      * it. So the rendered screen is a pure function of the takeover's own
-     * fields — a moving radar arrow, an aging signals row, or a fresh feed
-     * item from the busy live demo (ff_sigview_build reads the feed every
-     * tick) changes no pixel.
+     * fields — a moving radar arrow, an aging inbox conversation, or a
+     * fresh feed item from the busy live demo (ff_inbox_build reads the
+     * feed every tick) changes no pixel.
      *
      * Keying on the whole projection there made every such underlying
      * change a dirty frame, and the device answers a dirty frame with
@@ -2351,8 +2351,8 @@ static bool shell_sig_dest(shell_t const *sh, uint32_t *out_dest)
  * shell_sig_reset_target — S22 AC3: after a successful FLARE/RALLY send the
  * target returns to WHOLE_CREW. Resets both the shell's persistent holder
  * (the source of truth, which survives the per-tick view rebuild) and the
- * live view's mirror of it (so a same-frame read sees the reset, the same
- * immediacy the old ff_sigview_target_reset_after_send call had), and drops
+ * live view's mirror of it (so a same-frame read sees the reset
+ * immediately, without waiting for the next projection tick), and drops
  * any armed rally confirm. */
 static void shell_sig_reset_target(shell_t *sh)
 {
@@ -3303,9 +3303,9 @@ void ff_shell_intent(ff_shell_t *sh_pub, ff_intent_t const *in)
          * the S22(d) send machinery's programmatic "set the send scope"
          * seam, VALIDATED against the roster exactly as before: paired
          * members only, never a trusted tap). Mirrored into the live
-         * view immediately so a same-frame read sees it, matching the
-         * old ff_sigview_target_select behavior. Takeover-gated like
-         * every face intent. */
+         * view immediately so a same-frame read sees it, without waiting
+         * for the next projection tick. Takeover-gated like every face
+         * intent. */
         if (takeover_up) return;
         /* Changing the target disarms any pending rally-to-WHOLE_CREW
          * confirm (S22 AC4 "anything else disarms"). */
