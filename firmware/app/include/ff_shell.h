@@ -846,6 +846,56 @@ void ff_shell_set_sender(ff_shell_t *sh, ff_wiring_sender_t sender);
  */
 void ff_shell_set_heading(ff_shell_t *sh, float heading_deg);
 
+/**
+ * ff_shell_set_batt_mv — [api] S25 slice c: push one raw pack-voltage
+ * reading (millivolts), the same "push API" shape as
+ * `ff_shell_set_heading` above.
+ *
+ * The shell has no battery ADC of its own (neither target had one until
+ * this slice's device-side follow-up PR wires the Waveshare board's
+ * ADC1 ch7 read and calls this once per battery-read tick; the sim has
+ * no battery hardware at all and never calls it). Until the first call,
+ * the radar/launcher status bar's `batt_pct` honestly reads -1 ("--%"),
+ * mirroring `heading_deg`'s own -1-until-first-push contract.
+ *
+ * Unlike `ff_shell_set_heading`/`ff_shell_set_my_pos` (which just store
+ * the raw value for the next `ff_shell_tick` to interpret), this call
+ * runs the reading through the core display filter (`ff_batt.h`)
+ * IMMEDIATELY — see `ff_batt.h`'s own doc comment for why a moving-
+ * average + Schmitt-hysteresis filter needs to see every actual reading
+ * as its own timed event rather than being resampled at the shell's
+ * tick rate. The filtered result still only reaches `ff_shell_view()`
+ * on the NEXT `ff_shell_tick` (the projection is rebuilt there, same as
+ * every other view field) — this call never mutates the view directly.
+ *
+ * `now_ms` — [api] CHANGED from this function's first cut (added in a
+ * PR #180 review round, should-fix): pass the CALLER's own clock
+ * reading at the moment of this actual ADC read, not a value cached
+ * from anywhere else in the shell. The first cut read `sh`'s own
+ * last-tick clock internally, which defaults to 0 before the shell's
+ * first `ff_shell_tick` — a caller reading the battery before that
+ * first tick (plausible at boot) would push against a fake "now", and
+ * a later push at the real time could then look like a many-second gap
+ * and spuriously trip `ff_batt.h`'s stale-gap window reset. Taking
+ * `now_ms` explicitly (the same convention `ff_shell_tick` itself
+ * already uses) removes the dependency on shell tick bookkeeping
+ * entirely — there is no pre-tick edge case left to get wrong. Any
+ * monotonic millisecond clock is fine (e.g. `esp_timer_get_time() /
+ * 1000` on device) as long as the SAME clock is used for every push —
+ * `ff_batt_filter_t`'s gap/window math only ever compares two of this
+ * function's own `now_ms` values against each other, never against
+ * `ff_shell_tick`'s.
+ *
+ * `pack_mv == 0` is the "no reading yet / sense line dead" sentinel
+ * (`ff_batt_pct_from_mv`'s own documented convention) — passing it is
+ * how a target reports "still don't know", not an error. A sense line
+ * that stays dead for `FF_BATT_FILTER_DEAD_AFTER` consecutive pushes
+ * (an implausible or zero reading each time) reverts the displayed
+ * percent to -1 rather than continuing to show a number frozen from
+ * before it died — see `ff_batt.h`.
+ */
+void ff_shell_set_batt_mv(ff_shell_t *sh, uint16_t pack_mv, uint32_t now_ms);
+
 /* ---------------------------------------------------------------------
  * Read-only accessors (status bar, pairing UI, tests)
  * ------------------------------------------------------------------- */
