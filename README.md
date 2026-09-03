@@ -2,7 +2,7 @@
 
 **An open-source festival compass that points at your friends.**
 
-Firefly is a palm-sized round-screen puck for music festivals: a compass arrow that points at your crew over LoRa mesh radio, off-grid messaging (pulses, canned replies, T9), the full lineup with set alarms, and a vector map of the grounds — so your phone stays at camp.
+Firefly is a palm-sized round-screen puck for music festivals: a compass arrow that points at your crew over LoRa mesh radio, off-grid messaging (canned replies, flares, T9), the full lineup with set alarms, and a vector map of the grounds — so your phone stays at camp.
 
 <p align="center">
   <img src="docs/screens/all-faces.gif" width="300" alt="Firefly cycling through the four built faces: the radar arrow locking onto a crew member, the Lost Lands lineup with set times still unpublished, the live schedule, the signals feed, the T9 composer, and a flare takeover.">
@@ -13,7 +13,7 @@ All six v1 faces, running. The arrow finds your friend, the lineup admits which 
 
 ## Status
 
-**The app runs.** As of 2026-08-24 the shell (S16) is complete: swipe between faces, type on the T9, get interrupted by a flare and keep your draft, reconnect when the link drops, and settings persist across restarts — live, against a real Meshtastic node, on the desktop simulator. Five of the six v1 faces are built (Radar, Now, Signals with its composer, Flare, Settings); only Map isn't started. What's left is that face and the device target itself — display driver, the link to the comms brain, sensors — which needs the hardware in hand. First field test: **Lost Lands, Sep 18–20 2026**.
+**The app runs.** As of 2026-09-02 all six v1 faces are built and merged: Radar, Lineup, Inbox (with its composer), Flare, Map, and Settings. The shell (S16) routes between them, and on top of it sits a device lifecycle (S25/S26): a launcher-is-home nav model, where a compass-ring launcher — Radar as the hub, the other faces as satellites — is what the puck boots into and rests on, with a physical button as the one "home" gesture from anywhere. Display, touch, the battery power latch, idle/sleep, and notification banners are hardware-verified on a real ESP32-S3 board, not just the desktop simulator. What's left before Lost Lands: the UART link to the comms brain (blocked on Seeed board availability), onboard sensors, and the enclosure. First field test: **Lost Lands, Sep 18–20 2026**.
 
 <p align="center">
   <img src="docs/screens/s16-alive.gif" width="300" alt="A live driven session: swiping from the radar's honest empty state through the Lost Lands lineup to Signals, typing omw on the T9 keypad, a flare takeover interrupting mid-draft with a live countdown, and the composer returning with the draft intact after DISMISS.">
@@ -30,14 +30,16 @@ This table is meant to be accurate rather than flattering — if something rende
 | festpack parser + the [Lost Lands 2026 pack](https://github.com/jakeholland/fest-almanac) | ✅ on `main` |
 | **Radar face** — live / stale / lost / no-fix / no-selection | ✅ on `main` |
 | Radar **close-range** mode — signal-strength rings under ~30 m | ✅ triggerable live with direct-path packets ([#35](https://github.com/jakeholland/firefly/issues/35)) |
-| **Now face** — live set times, starred-set countdown, and honest "times not published yet" states | ✅ on `main` |
+| **Lineup face** (was Now) — live set times, starred-set countdown, and honest "times not published yet" states | ✅ on `main` |
 | **Flare** — takeover screen, sender state, navigation lock | ✅ on `main` |
 | Dev harness — control socket, dockerised Meshtastic node, end-to-end tests | ✅ on `main` |
-| **Signals + Compose** — pulses, rally points, canned replies, and a T9 keypad with ABC/123/SYM pages | ✅ on `main` |
+| **Inbox face** (was Signals) — targeted crew messages and threads, rally points, OMW/5 MIN quick replies, and a T9 composer with ABC/123/SYM pages | ✅ on `main` (S22, S24) |
 | **Map face** — vector grounds, crew dots, YOU arrow, priority-decluttered labels | ✅ on `main` (S09) |
-| **Settings face** — units, quiet hours, share mode, name | ✅ on `main` (S11 slice b — long-press-anywhere; renaming is display-only, see below) |
+| **Settings face** — units, clock format, quiet hours, share mode, screen flip, name | ✅ on `main` (S11, S21 — scrolling list + on-device Calibrate Touch; renaming is display-only, see below) |
 | **App shell** — event loop, face routing, input dispatch, wall clock, link state, settings persistence | ✅ complete (S16, 9 slices) |
-| ESP32-S3 device target, enclosure | ⏳ when boards arrive |
+| **Launcher / home** — launcher-is-home nav model, compass-ring launcher (Radar hub + satellite faces), BOOT-button home, boot splash | ✅ on `main` (S26) |
+| ESP32-S3 device target — display/touch, battery power latch, idle/sleep, notifications | ◐ hardware-verified on board (S15/S15b/c/d, S25, S26); UART link to the comms brain still blocked (Seeed board availability), sensors pending |
+| Enclosure (`case/`) | ⏳ not started |
 
 Every merged line went through an independent code review plus, for anything on screen, a review in the persona of a tired raver at 2 a.m. ([why](docs/review/ux-raver.md)).
 
@@ -67,20 +69,20 @@ The middle one is the point of the whole project: most trackers keep pointing co
 Firefly is a **dual-brain** device:
 
 - **Comms brain** — a Seeed XIAO ESP32S3 + Wio-SX1262 stack running **stock, unmodified [Meshtastic](https://meshtastic.org)** with an L76K GPS. It owns the mesh, encryption, and positions, and gets free interop with every Meshtastic node on site.
-- **UI brain** — a Waveshare ESP32-S3-Touch-LCD-1.46 (412×412 round touchscreen, IMU, mic) running the Firefly app on LVGL. It will talk to the comms brain over UART using Meshtastic's documented client API — the same protocol the official phone apps speak. *Today the app speaks that API over TCP to a `meshtasticd` on your desktop; the UART link arrives with the device target (S15).*
+- **UI brain** — a Waveshare ESP32-S3-Touch-LCD-1.46 (412×412 round touchscreen, IMU, mic) running the Firefly app on LVGL. It will talk to the comms brain over UART using Meshtastic's documented client API — the same protocol the official phone apps speak. *The app runs on real UI-brain hardware today (display, touch, power, lifecycle) speaking that API over TCP to a `meshtasticd` on your desktop; the UART link to the comms brain is still blocked on comms-brain board availability.*
 
-No fork to maintain, no phone required, ~$80 in parts. Battery life is a design target, not a measurement — nothing has run on the real hardware yet.
+No fork to maintain, no phone required, ~$80 in parts. Battery life is a design target, not a measurement — the puck has run on its own battery on the bench (S25), but not through a full festival day yet.
 
 ## Feature set (v1)
 
 | Face | What it does |
 |---|---|
 | **Radar** | Big honest arrow + distance to a crew member; whole-crew dots; live/stale states. Close-range rings are triggerable live via direct-path packets from a paired peer ([#35](https://github.com/jakeholland/firefly/issues/35)) |
-| **Now** | Lineup per stage, set progress, starred-set alarms |
-| **Signals** | Pulses, rally points, canned replies, T9 composer |
+| **Lineup** | Set times per stage, set progress, starred-set alarms |
+| **Inbox** | Targeted crew messages and threads, rally points, OMW/5 MIN quick replies, T9 composer |
 | **Flare** | Press-and-hold "come find me" — crew pucks buzz and lock their arrows on you |
 | **Map** | Vector grounds from a festpack — real Legend Valley geometry — with crew dots, rally pin, and a YOU arrow; labels declutter by priority so stages never overprint |
-| **Settings** | Units, quiet hours, share mode, UTC offset — long-press anywhere to open it. Your name is shown but not yet editable: renaming needs its own T9 draft seam (the shell's only typed-input state today is the composer's), tracked as a follow-up rather than force-fit onto it |
+| **Settings** | Units, clock format, quiet hours, share mode, screen flip, on-device touch calibration — reached from the launcher, or long-press anywhere. Your name is shown but not yet editable: renaming needs its own T9 draft seam (the shell's only typed-input state today is the composer's), tracked as a follow-up rather than force-fit onto it |
 
 Festival data (map polygons + lineup + set times) loads as a **festpack** — see [fest-almanac](https://github.com/jakeholland/fest-almanac), the open per-festival data repo.
 

@@ -24,7 +24,8 @@ typedef struct { char name[32]; uint16_t year; ff_latlon_t origin; bool origin_a
                  fp_feature_t features[FP_MAX_FEATURES]; uint8_t n_features;
                  fp_landmark_t landmarks[FP_MAX_LANDMARKS]; uint8_t n_landmarks; } fp_pack_t;
 
-fp_result_t fp_parse(char const *json, size_t len, fp_pack_t *out); // OK / ERR_JSON / ERR_VERSION / ERR_TOO_BIG
+fp_result_t fp_parse(char const *json, size_t len, fp_pack_t *out,
+                      jsmntok_t *toks, int ntoks); // OK / ERR_JSON / ERR_VERSION / ERR_TOO_BIG
 ```
 
 ## Behavior
@@ -44,3 +45,20 @@ fp_result_t fp_parse(char const *json, size_t len, fp_pack_t *out); // OK / ERR_
 
 ## Slices
 a) tokenizer+festival/stages/schedule · b) map/landmarks+projection · c) fuzz+fixtures.
+
+## Amendments
+
+- **2026-09-01, S26 slice a (PR #134) — caller-supplied jsmn token scratch.**
+  `fp_parse()` gained two parameters, `jsmntok_t *toks, int ntoks`: the caller
+  now owns the token buffer `fp_parse()` tokenizes into. It used to be a
+  static 131,072-byte array living forever in `fp_pack.c`'s `.bss`; on the
+  ESP32-S3 target that internal-RAM cost is reclaimed by moving it to a
+  caller-owned buffer (stack, heap, or PSRAM) that can be sized, placed, or
+  freed by the caller instead. `FP_MAX_TOKENS` (8192) in `fp_pack.h` is the
+  recommended `ntoks` for callers with no reason to size differently —
+  `FP_MAX_TOKENS * sizeof(jsmntok_t)`. A caller may legally pass a smaller
+  buffer: `fp_parse()` returns `FP_ERR_TOO_BIG` rather than overrunning it,
+  exactly the same error an oversized festpack (too many stages/sets/etc.)
+  already produced — never a crash. This also makes `fp_parse()` reentrant,
+  which the old static-arena version was not. Parse behavior and output are
+  otherwise byte-identical (see `firmware/festpack/include/fp_pack.h`).

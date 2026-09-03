@@ -38,11 +38,19 @@ void ff_heard_note(ff_heard_t *h, uint32_t node_id, uint32_t now_ms)
         return;
     }
 
-    /* Full: evict the least-recently-heard entry (smallest last_heard_ms). */
-    uint8_t lru_idx = 0;
+    /* Full: evict the least-recently-heard entry — the one with the
+     * LARGEST age (now_ms - last_heard_ms), computed with unsigned
+     * subtraction so this stays correct across uint32 ms wraparound
+     * (~49.7 days). Comparing the raw last_heard_ms values directly with
+     * '<' breaks the moment one entry's timestamp is from before a wrap
+     * and another's is from after it — see test_heard.c's wrap-case test. */
+    uint8_t  lru_idx = 0;
+    uint32_t lru_age = now_ms - h->entries[0].last_heard_ms;
     for (uint8_t i = 1; i < h->count; i++) {
-        if (h->entries[i].last_heard_ms < h->entries[lru_idx].last_heard_ms) {
+        uint32_t age = now_ms - h->entries[i].last_heard_ms;
+        if (age > lru_age) {
             lru_idx = i;
+            lru_age = age;
         }
     }
     h->entries[lru_idx].node_id = node_id;

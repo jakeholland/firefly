@@ -5,13 +5,9 @@
 
 #include <string.h>
 
-/* Wraparound-safe "has now_ms reached deadline_ms yet" check, matching
- * ff_flare.c's own helper and ff_clock_t's documented convention.
- * INCLUSIVE at the boundary — see ff_notify.h's judgment call (1). */
-static bool notify_deadline_reached(uint32_t now_ms, uint32_t deadline_ms)
-{
-    return (int32_t)(now_ms - deadline_ms) >= 0;
-}
+#include "ff_clock.h" /* ff_time_reached — wraparound-safe deadline check;
+                        * see ff_notify.h's judgment call (1) for the
+                        * INCLUSIVE-at-the-boundary convention this uses. */
 
 /* Remove items[idx], shifting later entries down one slot. Caller
  * guarantees idx < q->count. */
@@ -121,7 +117,7 @@ void ff_notify_tick(ff_notify_t *q, uint32_t now_ms)
     uint8_t i = 0;
     while (i < q->count) {
         ff_notify_entry_t const *e = &q->items[i];
-        if (e->expiry_ms != 0u && notify_deadline_reached(now_ms, e->expiry_ms)) {
+        if (e->expiry_ms != 0u && ff_time_reached(now_ms, e->expiry_ms)) {
             notify_remove_at(q, i);
             /* do not advance i: the next entry has shifted into slot i */
         } else {

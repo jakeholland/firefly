@@ -22,6 +22,8 @@ loop while also fighting unfamiliar hardware for the first time.
 
 ## Amendments
 
+Renamed to Lineup/Inbox on 2026-09-01 — see S26 Nav model Amendments; this spec keeps its original vocabulary.
+
 - **2026-08-23, PR (slice b1) — the slice table said "all five `mc_events_t`
   callbacks". There are seven, and the count was wrong in two separate ways.**
 
