@@ -47,6 +47,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
+#include "ff_audio.h"      /* S27 sounds (device half) — the PCM5101 I2S tone-synth HAL */
 #include "ff_button.h"     /* S26 slice e — core: the generic debounced push-button (BOOT-as-home) */
 #include "ff_display.h"
 #include "ff_face.h"
@@ -57,6 +58,7 @@
 #include "ff_power_fsm.h"  /* S26 slice b — core: the press-timing FSM + reboot BOOT-release guard */
 #include "ff_settings.h"
 #include "ff_shell.h"
+#include "ff_sound_emit.h" /* S27 sounds — the screens-level TAP seam (ff_shell_sound_sink's bind target) */
 #include "ff_touchcal.h"
 
 #include "esp_heap_caps.h" /* PSRAM allocs: shell + demo festpack */
@@ -580,6 +582,28 @@ static void ff_power_reboot_cb(void *user)
     ff_power_fsm_request_reboot(&s_power_fsm);
 }
 
+/* ff_shell_cfg_t.play_sound: S27 sounds (device half, docs/specs/
+ * S27-sounds.md's "Amendments — device half"). The ONE call site every
+ * sound event reaches — the five shell-driven events (FLARE_SENT,
+ * FLARE_INCOMING, MESSAGE, RALLY, BATT_LOW) via shell.c's own
+ * `shell_sound` helper, and TAP via the `ff_sound_emit`/
+ * `ff_shell_sound_sink` seam bound below — all funnel through this same
+ * `ff_shell_cfg_t.play_sound` hook, same shape as `power_off`/
+ * `power_reboot` above. A thin adapter, deliberately: every decision
+ * about WHICH sound/WHEN already happened in core+shell before this is
+ * called (`ff_sound_should_play`/`ff_sound_priority`, `shell_sound`,
+ * `ff_shell_should_tap_sound`) — this function's only job is handing the
+ * already-approved event to the device HAL (`ff_audio.h`), which itself
+ * contains no product policy either (only preemption arbitration between
+ * two sounds already both approved to play — see ff_audio.h's top
+ * comment). Safe to call before `ff_audio_init` has run (see below) or
+ * if it failed — `ff_audio_play` is a no-op either way. */
+static void app_play_sound(void *user, ff_sound_event_t ev)
+{
+    (void)user;
+    ff_audio_play(ev);
+}
+
 /* Bring the panel up through the QSPI init (shared by every stage). Returns
  * true on success; logs and returns false so app_main can park rather than
  * spin a half-initialised peripheral. */
@@ -683,6 +707,13 @@ void app_main(void)
     cfg.power_off_user = NULL;
     cfg.power_reboot = ff_power_reboot_cb;
     cfg.power_reboot_user = NULL;
+    /* S27 sounds (device half) — set BEFORE ff_shell_init so the hook is
+     * live the moment the shell exists; the actual I2S HAL bring-up
+     * (ff_audio_init) runs later, after display bring-up (see its own
+     * call site below) — a play_sound call landing before that has run
+     * is a safe no-op (ff_audio_play's own guard, ff_audio.c). */
+    cfg.play_sound = app_play_sound;
+    cfg.play_sound_user = NULL;
 #if CONFIG_FF_DEMO_MODE
     s_demo_pack = heap_caps_malloc(sizeof(*s_demo_pack), MALLOC_CAP_SPIRAM);
     if (s_demo_pack == NULL) {
@@ -831,6 +862,20 @@ void app_main(void)
         ESP_LOGE(TAG, "boot splash failed (%s) — continuing bring-up regardless", esp_err_to_name(splash_err));
     }
 
+    /* S27 sounds (device half) — bring up the I2S0 TX HAL here: AFTER the
+     * panel + boot splash (so a slow or failing I2S bring-up can never
+     * delay the S26g power-latch timestamp or the first splash pixel —
+     * both of those already happened above) but before STAGE 1's
+     * keep-ticking-forever loop, so sound is live for the rest of boot
+     * regardless of which bring-up stage is selected. Non-fatal on
+     * failure — logged and continues; the puck boots and is fully usable
+     * with no speaker, and every ff_audio_play call after a failed init
+     * is a no-op (logged once, ff_audio.c). */
+    esp_err_t const audio_err = ff_audio_init();
+    if (audio_err != ESP_OK) {
+        ESP_LOGE(TAG, "ff_audio_init failed (%s) — continuing bring-up with sound disabled", esp_err_to_name(audio_err));
+    }
+
     /* ---- STAGE 1: first light, no LVGL ---- */
     if (stage <= 1) {
         if (ff_display_draw_test_pattern() != ESP_OK) {
@@ -864,6 +909,20 @@ void app_main(void)
          * shell lives for the process lifetime. */
         ff_intent_emit_bind(ff_shell_intent_sink, &s_shell);
         ESP_LOGI(TAG, "input seam bound: touch -> ff_shell_intent");
+
+        /* S27 sounds — the screens-level TAP seam (ff_sound_emit.h,
+         * mirrors ff_intent_emit_bind exactly, same file/same call site
+         * as targets/sim/main.c's own S27 wiring): every
+         * ff_scr_button_create click now reaches ff_shell_sound_sink,
+         * which composes ui_ticks + sounds_on/quiet-hours
+         * (ff_shell_should_tap_sound) and, if true, calls the SAME
+         * play_sound hook (app_play_sound -> ff_audio_play) every other
+         * sound event uses — one uniform call site regardless of which
+         * of the six events fired it. Unbind is unnecessary, same
+         * "shell lives for the process lifetime" reasoning as the intent
+         * bind just above. */
+        ff_sound_emit_bind(ff_shell_sound_sink, &s_shell);
+        ESP_LOGI(TAG, "TAP sound seam bound: touch -> ff_sound_emit -> ff_shell_sound_sink");
 
         /* ---- Touch calibration (S15 slice d) ----
          * STAGE 4 (CAL): run the crosshair capture -> solve -> store ->
@@ -914,6 +973,17 @@ void app_main(void)
         ff_display_unlock();
     }
     ESP_LOGI(TAG, "STAGE %d complete: first face flushed to glass", stage);
+
+#if CONFIG_FF_AUDIO_SELFTEST
+    /* S27 sounds device bring-up aid (Kconfig FF_AUDIO_SELFTEST, default
+     * n — docs/specs/S27-sounds.md's device on-glass steps): play
+     * FLARE_SENT once, right after the first face is on glass, so the
+     * maintainer can hear the speaker work without triggering a real
+     * flare (which would take over the whole UI). Compiles out entirely
+     * of a normal build. */
+    ESP_LOGI(TAG, "CONFIG_FF_AUDIO_SELFTEST: playing FLARE_SENT once");
+    ff_audio_play(FF_SOUND_FLARE_SENT);
+#endif
 
     /* Apply the persisted display brightness on boot (#100). The setting
      * lives in ff_settings (core, projected into the view); the app forwards
@@ -1150,9 +1220,19 @@ void app_main(void)
          * amendment: sleep_inhibit, NOT keep_awake — see ff_idle.h's
          * "Sleep inhibit" section (DIM/OFF still happen; only the
          * OFF->SLEEP transition is withheld, and ref_ms is never
-         * re-pinned by it). */
+         * re-pinned by it).
+         *
+         * S27 sounds (device half) composes a SECOND inhibit source into
+         * the same parameter: `ff_audio_busy()` (ff_audio.h) is true
+         * while a pattern is actively rendering or about to start — a
+         * pattern in flight must never be cut off mid-note by
+         * esp_light_sleep_start() below. Same OR composition as a
+         * two-source inhibit already needs (usb_connected here is
+         * itself already a single source; audio just adds a second),
+         * neither source alone owns the parameter. */
         bool const keep_awake = ff_shell_keep_awake(v, false);
-        ff_idle_state_t const idle_state = ff_idle_tick(&s_idle, now_ms, keep_awake, usb_connected);
+        bool const sleep_inhibit = usb_connected || ff_audio_busy();
+        ff_idle_state_t const idle_state = ff_idle_tick(&s_idle, now_ms, keep_awake, sleep_inhibit);
 
         /* Backlight enact — the VALUE is core's decision
          * (ff_idle_brightness_pct: stored_pct unchanged for ACTIVE —

@@ -284,3 +284,131 @@ See the PR body for exact `ctest` output.
 - **TAP's default OFF** — noted in the settings section above, not
   reopened here; flip the default in `ff_settings_apply_defaults` if
   field use says otherwise.
+
+## Amendments
+
+- **2026-09-03 — device half lands (`feat/s27-sounds-device`, stacked on
+  this PR's `feat/s27-sounds-core`).** This spec's own intro says the
+  device HAL is "a separate, stacked PR" — it has now landed as a new
+  `firmware/targets/esp32s3/components/ff_audio/` component
+  (`ff_audio.h`/`ff_audio.c`), plus the `app_main.c` wiring that connects
+  `ff_shell_cfg_t.play_sound` and the TAP seam (`ff_sound_emit_bind`) to
+  it. Nothing in this Amendment changes the core+shell+settings+sim
+  contract described above — it is exactly the "DEVICE HAL that turns a
+  `ff_sound_pattern_t` into actual PCM samples" this spec always deferred.
+
+  **Hardware** (Waveshare ESP32-S3-Touch-LCD-1.46 reference
+  `Audio_Driver/PCM5101.c`,
+  https://github.com/yaosy1997/ESP32-S3-Touch-LCD-1.46-Test): a PCM5101
+  I2S DAC feeding the onboard speaker. I2S port 0, standard (Philips)
+  format, BCLK GPIO48, WS/LRCK GPIO38, DOUT GPIO47; MCLK and DIN are not
+  wired on this board. 44.1 kHz, 16-bit, stereo slots
+  (`I2S_STD_PHILIP_SLOT_DEFAULT_CONFIG`) — every pattern is a single mono
+  tone, duplicated into both slots to match the wiring. The reference
+  driver only plays pre-recorded files and applies volume as a software
+  sample-scale before `i2s_channel_write` (mute is a no-op there, and
+  there is no PA-enable pin on this board); this repo synthesizes tones
+  instead of playing files, so only the I2S wiring/format is shared with
+  the reference, not its playback code.
+
+  **Synthesis.** Each `{freq_hz, ms}` step is rendered as a SINE wave
+  (not square — a square wave is harsh/buzzy on a speaker this small; a
+  sine reads as a chime) with a 5 ms linear attack and 10 ms linear
+  release per note to avoid clicking the speaker cone, at a fixed
+  `FF_AUDIO_AMPLITUDE` (~25% of INT16 full scale to start — **no scope,
+  no calibrated-loudness reference for this speaker/enclosure exists
+  yet; this is a conservative starting guess the maintainer is expected
+  to re-tune on glass, flagged as an interpretation call per AGENTS.md**;
+  see the on-glass steps below and `ff_audio.c`'s tunable). `freq_hz ==
+  0` (a rest) is true silence, no envelope. Samples are written in ~10 ms
+  chunks so a preemption request takes effect within one chunk, not only
+  at a step/pattern boundary.
+
+  **Preemption / concurrency — a mailbox, not a queue (interpretation
+  call).** `ff_audio_play` is non-blocking: it hands the event to a
+  dedicated FreeRTOS render task through a 1-deep mailbox and returns.
+  Nothing playing → the new event starts. Something already playing →
+  `ff_sound_preempts(incoming, playing)` (core, unchanged by this PR)
+  decides: preempt → the current pattern stops at the next ~10 ms chunk
+  boundary and the new one starts; otherwise the incoming event is
+  silently DROPPED. A queue was deliberately NOT used — this puck's "second
+  sense" sounds are meant to be immediate feedback; a MESSAGE chime that
+  fires three seconds late (because it was queued behind two higher-tier
+  sounds) is more confusing than no sound at all. At most one sound is
+  ever "in flight" plus one "about to start."
+
+  **Failure handling.** `ff_audio_init` failures (I2S channel alloc,
+  GPIO conflict, task/queue creation) are logged and non-fatal — the
+  puck must boot and be fully usable with no speaker. Every
+  `ff_audio_play` call after a failed/skipped init is a silent no-op,
+  logged once (not per call).
+
+  **I2S channel enable/disable strategy (interpretation call, no scope
+  used).** The channel is enabled only while a pattern is actively
+  rendering and disabled at pattern end — chosen over "keep it enabled,
+  write silence between patterns" because sounds are short (≤1.5 s) and
+  infrequent, so the vast majority of runtime has no sound playing at
+  all; keeping the channel/DMA/clock alive the whole time would burn
+  power for essentially no benefit. The pop/click risk a hard
+  enable/disable could cause is exactly what the attack/release envelope
+  already prevents (every note ramps to zero amplitude before disable
+  runs; a cold enable starts the DMA before any nonzero sample exists).
+  `FF_AUDIO_KEEP_CHANNEL_ENABLED` in `ff_audio.c` is the tunable if
+  on-glass testing proves this reasoning wrong.
+
+  **Light sleep (S26f interaction).** This project runs with
+  `CONFIG_PM_ENABLE` unset, so `esp_driver_i2s`'s own PM-lock guard never
+  engages — nothing in the I2S driver itself stops
+  `esp_light_sleep_start()` from cutting a pattern mid-flight. `bool
+  ff_audio_busy(void)` reports "audio has unfinished work" (rendering, or
+  a just-queued request the render task hasn't started yet) and
+  `app_main.c` composes it into the SAME `sleep_inhibit` parameter S26f's
+  USB amendment already added (`ff_idle_tick`'s 4th argument):
+  `usb_connected || ff_audio_busy()`. Because the channel is only ever
+  enabled while busy is true (previous paragraph), the channel should in
+  practice never be enabled at the moment sleep is entered — but
+  `ff_audio_channel_enable_with_recovery` (`ff_audio.c`) is defensive
+  anyway: if `i2s_channel_enable` ever fails post-wake, it logs once and
+  does a full re-init (delete + recreate the channel) rather than trust a
+  half-recovered peripheral, then retries. A pattern that hits this path
+  is dropped (logged), never a crash or a wedge.
+
+  **`CONFIG_FF_AUDIO_SELFTEST`** (Kconfig, default n,
+  `firmware/targets/esp32s3/main/Kconfig.projbuild`): plays FLARE_SENT
+  once, right after the first face is on glass, so the maintainer can
+  hear the speaker without triggering a real flare (which takes over the
+  whole UI). Compiles out entirely of a normal build.
+
+  **Touched files (device half only — this Amendment does not modify
+  any core/shell/settings/sim file from the section above):**
+  `firmware/targets/esp32s3/components/ff_audio/{include/ff_audio.h,
+  ff_audio.c, CMakeLists.txt}`, `firmware/targets/esp32s3/main/app_main.c`
+  (hook wiring + `ff_audio_init` call + `sleep_inhibit` composition),
+  `firmware/targets/esp32s3/main/CMakeLists.txt` (`REQUIRES ff_audio`),
+  `firmware/targets/esp32s3/main/Kconfig.projbuild` (the selftest option —
+  not in this PR's original touch list but required to deliver it; flagged
+  here as the interpretation call, AGENTS.md), and this spec file.
+
+  ### On-glass steps
+
+  1. **Hear it:** menuconfig → Firefly bring-up → enable
+     `CONFIG_FF_AUDIO_SELFTEST`, flash, boot to STAGE ≥2. Hear the
+     FLARE_SENT 3-note rising chime once, shortly after the first face
+     renders. Disable the option again before a field build.
+  2. **Quick-flare, once #183 (5×-HOME) lands:** from Home, tap HOME five
+     times quickly → the quick-flare chime (FLARE_SENT) plays alongside
+     the flare overlay.
+  3. **Settings → SOUNDS off:** every sound (including FLARE_INCOMING)
+     goes silent — the master switch has no exception on-device either,
+     matching `ff_sound_should_play`'s core contract.
+  4. **Settings → UI TICKS on:** a tick plays on every button press
+     across every screen (the `ff_scr_button_create` choke point) —
+     confirms the TAP seam (`ff_sound_emit` → `ff_shell_sound_sink`)
+     reaches the device HAL end to end.
+  5. **Amplitude tuning:** with the puck in hand (not on a bench), adjust
+     `FF_AUDIO_AMPLITUDE` in `ff_audio.c` up/down from its ~25%-full-scale
+     starting point until FLARE_INCOMING ("the loudest thing the puck
+     makes") is clearly audible in a pocket without distorting the
+     speaker at that level, and MESSAGE's soft blip is still audibly
+     softer than it. Re-flash and re-listen; no build-system change
+     needed, it's one `#define`.
