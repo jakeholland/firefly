@@ -30,6 +30,7 @@ idf_component_register(
         "${FF_CORE_DIR}/src/ff_idle.c"      # S26 slice c — inactivity -> dim -> screen off
         "${FF_CORE_DIR}/src/ff_notify.c"   # S26 slice d — notification queue (message banner)
         "${FF_CORE_DIR}/src/ff_button.c"   # S26 slice e — generic debounced push-button (BOOT-as-home)
+        "${FF_CORE_DIR}/src/ff_rally.c"    # Tech-debt sprint — rally place/name/when logic (moved from ff_shell.c)
     INCLUDE_DIRS "${FF_CORE_DIR}/include"
     REQUIRES ff_platform
 )

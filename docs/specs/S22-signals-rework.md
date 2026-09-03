@@ -139,9 +139,16 @@ redirect and the code will follow.
   **Question for the maintainer:** is "rally to my current location" the right
   model for a quick rally, or should the RALLY button instead open a
   **place/landmark picker** (pick a stage/landmark to gather at, the way the
-  radar/map already know landmarks)? If a picker is wanted, `shell_rally_place`
-  in `ff_shell.c` and the RALLY handler are the seam to replace, and the
-  proximity-naming heuristic (and its 120 m constant) goes away entirely.
+  radar/map already know landmarks)? **Resolved — see Amendments below:**
+  [S24-signals-inbox.md](S24-signals-inbox.md) slice (d) shipped exactly this
+  picker (WHERE list: On Me + festpack landmarks, plus a WHEN chip); the
+  proximity-naming heuristic below now backs only the *quick* one-tap RALLY
+  (thread quick-chip / whole-crew popup row), not the Rally screen's explicit
+  selection. The seam is now `ff_rally_place_name` /
+  `ff_rally_nearest_landmark` in [ff_rally.h](../../firmware/core/include/ff_rally.h)
+  (moved out of `ff_shell.c`'s `shell_rally_place` — tech-debt sprint, see
+  Amendments); `shell_rally_place` in `ff_shell.c` is now thin dispatch that
+  gathers the pack's landmarks and calls in.
 
 - **Should a COMPOSE launched from a target reset that target after its text
   send?** (d) resets the Signals target to WHOLE_CREW only after a *direct*
@@ -163,3 +170,32 @@ redirect and the code will follow.
   the reply row is OMW / 5 MIN only; `FF_INTENT_INBOX_PULSE` /
   `FF_INTENT_INBOX_POPUP_PULSE` (the outbound-pulse programmatic seam PR
   #129 deliberately kept for tests) are removed outright.
+
+- **2026-09-03, tech-debt sprint — quick-RALLY place/name/when logic moved
+  into core; the "Questions" SPEC GAP above is closed:** the picker-vs-
+  current-location question this section raised was already answered in
+  practice by [S24-signals-inbox.md](S24-signals-inbox.md) slice (d), which
+  shipped the Rally screen (WHERE list: `On Me` pinned + festpack landmarks,
+  a WHEN chip cycling `Now`/`+15m`/`+30m`, WHEN riding in the rally NAME)
+  well before this PR — that spec's own slice-plan note says as much
+  ("The S22 `## Questions` on rally place is resolved by this spec (picker
+  + On Me + WHEN)"). What this PR closes is that S22's own text never said
+  so: the "Question for the maintainer" above now points at the shipped
+  resolution instead of reading as still-open.
+
+  This PR's actual change is unrelated to that product question — a pure
+  CLAUDE.md house-rule fix ("all logic goes in `firmware/core/`"): the
+  nearest-landmark search, the "MY SPOT" fallback, the WHEN vocabulary, and
+  the truncate-place-never-suffix wire-name policy were pure computation
+  living as `static` functions in `firmware/app/ff_shell.c`
+  (`shell_rally_place`, `shell_rally_landmark_displayable`,
+  `shell_rally_landmark_at`, `shell_rally_when_suffix`/`_echo`,
+  `shell_rally_compose_name`) despite touching no I/O. They moved,
+  behavior-identical, into `firmware/core/include/ff_rally.h` +
+  `firmware/core/src/ff_rally.c` (Unity tests:
+  `firmware/core/tests/test_rally.c`). `ff_shell.c` keeps only the
+  dispatch: On-Me-vs-landmark-index selection, walking `sh->pack->landmarks[]`
+  (which core cannot do directly — see `ff_rally.h`'s top comment on the
+  one-way core→festpack dependency edge, `docs/ARCHITECTURE.md`), and the
+  call into `ff_proto_encode_rally`. No wire bytes, no test behavior, and no
+  product answer changed.

@@ -5580,6 +5580,42 @@ static void S24_AC6_when_truncates_place_never_suffix(void)
     TEST_ASSERT_EQUAL_INT(0, strncmp(msg.body.rally.name, "RallyPoint", 10));       /* place, truncated */
 }
 
+/* Reviewer finding (PR #175 review): pin the by-index dispatch itself,
+ * separate from the truncation-policy assertions above — selecting the
+ * SECOND landmark (rally_idx = 2) must resolve to the SECOND landmark's
+ * own position, not silently fall back to the first one (or to On Me). A
+ * dispatch bug that always resolved index 1 regardless of the selected
+ * index would still pass the truncation test above by accident if it
+ * happened to return a name starting with "RallyPoint"; this test isolates
+ * the position, which only the correctly-indexed landmark can produce. */
+static void S24_AC6_selecting_second_landmark_picks_the_right_one(void)
+{
+    s22_connect_shell();
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, true));
+    TEST_ASSERT_EQUAL_INT(0, ff_shell_load_pack(&H.shell, PACK_JSON_RALLY, sizeof(PACK_JSON_RALLY) - 1u));
+    s24d_open_popup(DANA);
+    s24d_open_rally();
+
+    ff_intent_t sp = {.kind = FF_INTENT_RALLY_SELECT_PLACE, .u = {0}};
+    sp.u.rally_idx = 2u; /* second landmark: RallyPointAtTheBigOpenField */
+    ff_shell_intent(&H.shell, &sp);
+    /* WHEN left at NOW (no suffix) — isolates indexing from truncation. */
+
+    size_t const tx_before = P.tx_len;
+    ff_intent_t send = {.kind = FF_INTENT_RALLY_SEND, .u = {0}};
+    ff_shell_intent(&H.shell, &send);
+    TEST_ASSERT_GREATER_THAN_size_t(tx_before, P.tx_len);
+    ff_proto_msg_t msg;
+    TEST_ASSERT_EQUAL_INT(FF_PROTO_TYPE_RALLY, decode_packet_private(P.tx + tx_before, P.tx_len - tx_before, &msg));
+    /* Name: the SECOND landmark's name (truncated to fit — 27 bytes over a
+     * 24-byte budget, no suffix), never "Main Stage". */
+    TEST_ASSERT_EQUAL_STRING("RallyPointAtTheBigOpenFi", msg.body.rally.name);
+    /* Position: the SECOND landmark's own lat/lon (39.002, -82.0), never
+     * the first landmark's (39.001, -82.001) and never On Me. */
+    TEST_ASSERT_DOUBLE_WITHIN(0.001, 39.002, msg.body.rally.pos.lat);
+    TEST_ASSERT_DOUBLE_WITHIN(0.001, -82.0, msg.body.rally.pos.lon);
+}
+
 /* AC6 — a crew-wide rally ARMS on the first Send tap and sends on the
  * second (S22 AC4 armed-confirm precedent); the confirm is visible; the
  * send pops back to the thread. */
@@ -5913,6 +5949,7 @@ int main(void)
     RUN_TEST(S24_AC6_on_me_disabled_encodes_nothing);
     RUN_TEST(S24_AC6_when_rides_in_the_name);
     RUN_TEST(S24_AC6_when_truncates_place_never_suffix);
+    RUN_TEST(S24_AC6_selecting_second_landmark_picks_the_right_one);
     RUN_TEST(S24_AC6_crew_rally_arms_then_sends);
     RUN_TEST(S24_AC8_popup_and_rally_opaque_to_feed_churn);
     RUN_TEST(S24_demo_loopback_seam_makes_out_items_appear);
