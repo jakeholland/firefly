@@ -24,68 +24,19 @@
 #include "ff_settings.h"
 #include "ff_store.h"
 
+#include "support/mock_store.h"
+
 void setUp(void) {}
 void tearDown(void) {}
 
-/* ---------------------------------------------------------------------
- * Mock ff_store_t: a single fixed-size slot plus a write counter, so
- * tests can assert both persisted content and write amplification
- * (AC6) without any real I/O.
- * ------------------------------------------------------------------- */
-
-#define MOCK_SLOT_CAP 256
-
-typedef struct {
-    bool has_value;
-    size_t len;
-    uint8_t data[MOCK_SLOT_CAP];
-    char key[64];
-    int set_calls;
-    int get_calls;
-} mock_store_io_t;
-
-static void mock_store_reset(mock_store_io_t *m)
-{
-    memset(m, 0, sizeof(*m));
-}
-
-static int mock_get(void *io, char const *key, void *buf, size_t n)
-{
-    mock_store_io_t *m = (mock_store_io_t *)io;
-    m->get_calls++;
-    if (!m->has_value || strcmp(m->key, key) != 0) {
-        return -1;
-    }
-    if (n < m->len) {
-        return -1; /* buffer too small */
-    }
-    memcpy(buf, m->data, m->len);
-    return (int)m->len;
-}
-
-static int mock_set(void *io, char const *key, void const *buf, size_t n)
-{
-    mock_store_io_t *m = (mock_store_io_t *)io;
-    m->set_calls++;
-    if (n > MOCK_SLOT_CAP) {
-        return -1;
-    }
-    strncpy(m->key, key, sizeof(m->key) - 1);
-    m->key[sizeof(m->key) - 1] = '\0';
-    memcpy(m->data, buf, n);
-    m->len = n;
-    m->has_value = true;
-    return (int)n;
-}
-
-static ff_store_t mock_store_vtable(mock_store_io_t *m)
-{
-    ff_store_t st;
-    st.get = mock_get;
-    st.set = mock_set;
-    st.io = m;
-    return st;
-}
+/* Mock ff_store_t (mock_store_io_t/mock_store_reset/mock_store_vtable):
+ * shared support/mock_store.h (debt/test-harness PR) — a single
+ * fixed-size slot plus get/set write counters, so tests can assert both
+ * persisted content and write amplification (AC6) without any real I/O.
+ * Previously hand-rolled here and independently in test_wall.c, which
+ * had already diverged from this file's own shape (no counters, a
+ * different key-copy call, a different return convention) — see the
+ * header's own doc comment for the superset reasoning. */
 
 /* ---------------------------------------------------------------------
  * AC1 — load with defaults.
@@ -595,6 +546,259 @@ static void S21_v7_blob_forward_migrates_preserving_every_value(void)
 }
 
 /* ---------------------------------------------------------------------
+ * v6/v7 guard coverage (debt/test-harness PR): the forward-migration
+ * branches above are gated on BOTH `hdr.payload_size == sizeof(vN)` AND
+ * `got == sizeof(hdr) + sizeof(vN)` (ff_settings.c's own comment calls
+ * this "each gated on BOTH its own version number and its own exact
+ * documented payload size" — reject, not guess). Deleting either guard
+ * term still passes every v2-v5/v6/v7-forward-migrate test above (none
+ * of them exercises a version/size MISMATCH on the v6/v7 branches
+ * specifically), so it's a live coverage gap a mutation on those two
+ * `&&` terms would slip through undetected. The four tests below close
+ * it, one per guard term per version, same "wrong payload_size" /
+ * "truncated buffer" shape as each other:
+ *   - wrong payload_size: the STORE genuinely holds a full, correctly-
+ *     sized vN payload (`got` is right), but the header's OWN
+ *     payload_size field lies about it — isolates the payload_size
+ *     term, since the got-length term alone would (wrongly) let this
+ *     through if that term were the only guard left.
+ *   - truncated buffer: the header's payload_size field correctly
+ *     names sizeof(vN), but the store actually returns fewer bytes than
+ *     that (a short/corrupt read) — isolates the got-length term the
+ *     same way in reverse.
+ * All four must yield the full default struct (ff_assert_defaults),
+ * never a migrated blob — reject-not-migrate, same as the v2-v5 tests.
+ * Named `S21_...` (no AC number), matching this file's own two sibling
+ * v6/v7-migration tests just above: S21-settings-rework.md's amendments
+ * (2026-09-02, clock_24h format v6->v7 / screen_flip format v7->v8) are
+ * what introduced these two guarded branches and their "reject anything
+ * that doesn't match" rule in the first place — S11-settings.md's own
+ * AC1 covers load-with-defaults in general (the v2-v5 tests above are
+ * S11_AC1_...) but does not itself enumerate the v6/v7 forward-migration
+ * guard, so following the sibling tests' precedent rather than
+ * retrofitting an S11 AC number that doesn't name this behavior. */
+static void S21_v7_blob_wrong_payload_size_yields_defaults_not_a_migration(void)
+{
+    mock_store_io_t m;
+    mock_store_reset(&m);
+    ff_store_t st = mock_store_vtable(&m);
+
+    ff_settings_t seed;
+    memset(&seed, 0, sizeof(seed));
+    ff_settings_save(&seed, &st);
+    TEST_ASSERT_TRUE(m.has_value);
+
+    /* Same v7_mirror_t shape as S21_v7_blob_forward_migrates_preserving_
+     * every_value above (independently declared, same "two independent
+     * copies must agree" reasoning). Filled with a non-zero/non-default
+     * byte pattern throughout: if the payload_size guard were missing
+     * and this were wrongly migrated, every field would read back as
+     * this pattern rather than the honest defaults, so the assertion
+     * below is a real proof, not a proxy that would pass even on a
+     * partially-broken migration. */
+    typedef struct {
+        bool imperial;
+        uint8_t share_mode;
+        bool haptics;
+        bool night_glow;
+        uint16_t water_min;
+        uint16_t quiet_from_min;
+        uint16_t quiet_to_min;
+        int16_t utc_offset_min;
+        bool utc_offset_set;
+        bool colorblind;
+        uint8_t brightness_pct;
+        char my_name[FF_SETTINGS_NAME_LEN];
+        ff_geo_cal_t compass_cal;
+        bool cal_valid;
+        float touch_ax;
+        float touch_bx;
+        float touch_ay;
+        float touch_by;
+        bool touch_calibrated;
+        bool clock_24h;
+    } v7_mirror_t;
+
+    v7_mirror_t v7;
+    memset(&v7, 0x55, sizeof(v7));
+
+    uint16_t const v7_version = 7;
+    memcpy(m.data + 4, &v7_version, sizeof(v7_version));
+    /* The lie: payload_size does NOT equal sizeof(v7_mirror_t), even
+     * though the store below genuinely holds a full sizeof(v7_mirror_t)
+     * payload (m.len matches it exactly) — isolates the payload_size
+     * guard term from the got-length term. */
+    uint16_t const wrong_payload_size = (uint16_t)(sizeof(v7) - 1u);
+    memcpy(m.data + 6, &wrong_payload_size, sizeof(wrong_payload_size));
+    memcpy(m.data + 8, &v7, sizeof(v7));
+    m.len = 8 + sizeof(v7);
+
+    ff_settings_t s;
+    memset(&s, 0xAA, sizeof(s));
+    ff_settings_load(&s, &st);
+
+    ff_assert_defaults(&s);
+}
+
+static void S21_v7_blob_truncated_yields_defaults_not_a_migration(void)
+{
+    mock_store_io_t m;
+    mock_store_reset(&m);
+    ff_store_t st = mock_store_vtable(&m);
+
+    ff_settings_t seed;
+    memset(&seed, 0, sizeof(seed));
+    ff_settings_save(&seed, &st);
+    TEST_ASSERT_TRUE(m.has_value);
+
+    typedef struct {
+        bool imperial;
+        uint8_t share_mode;
+        bool haptics;
+        bool night_glow;
+        uint16_t water_min;
+        uint16_t quiet_from_min;
+        uint16_t quiet_to_min;
+        int16_t utc_offset_min;
+        bool utc_offset_set;
+        bool colorblind;
+        uint8_t brightness_pct;
+        char my_name[FF_SETTINGS_NAME_LEN];
+        ff_geo_cal_t compass_cal;
+        bool cal_valid;
+        float touch_ax;
+        float touch_bx;
+        float touch_ay;
+        float touch_by;
+        bool touch_calibrated;
+        bool clock_24h;
+    } v7_mirror_t;
+
+    v7_mirror_t v7;
+    memset(&v7, 0x66, sizeof(v7));
+
+    uint16_t const v7_version = 7;
+    memcpy(m.data + 4, &v7_version, sizeof(v7_version));
+    /* The header's payload_size field is HONEST (names the real
+     * sizeof(v7_mirror_t)) — isolates the got-length guard term: the
+     * store below returns fewer bytes than that honest claim (a
+     * short/corrupt read), which the got-length term must catch on its
+     * own even though payload_size alone looks fine. */
+    uint16_t const v7_payload_size = (uint16_t)sizeof(v7);
+    memcpy(m.data + 6, &v7_payload_size, sizeof(v7_payload_size));
+    memcpy(m.data + 8, &v7, sizeof(v7));
+    m.len = 8 + sizeof(v7) - 4; /* short by 4 bytes — a truncated/corrupt read */
+
+    ff_settings_t s;
+    memset(&s, 0xAA, sizeof(s));
+    ff_settings_load(&s, &st);
+
+    ff_assert_defaults(&s);
+}
+
+static void S21_v6_blob_wrong_payload_size_yields_defaults_not_a_migration(void)
+{
+    mock_store_io_t m;
+    mock_store_reset(&m);
+    ff_store_t st = mock_store_vtable(&m);
+
+    ff_settings_t seed;
+    memset(&seed, 0, sizeof(seed));
+    ff_settings_save(&seed, &st);
+    TEST_ASSERT_TRUE(m.has_value);
+
+    /* Same v6_mirror_t shape as S21_v6_blob_forward_migrates_preserving_
+     * every_value above (independently declared). */
+    typedef struct {
+        bool imperial;
+        uint8_t share_mode;
+        bool haptics;
+        bool night_glow;
+        uint16_t water_min;
+        uint16_t quiet_from_min;
+        uint16_t quiet_to_min;
+        int16_t utc_offset_min;
+        bool utc_offset_set;
+        bool colorblind;
+        uint8_t brightness_pct;
+        char my_name[FF_SETTINGS_NAME_LEN];
+        ff_geo_cal_t compass_cal;
+        bool cal_valid;
+        float touch_ax;
+        float touch_bx;
+        float touch_ay;
+        float touch_by;
+        bool touch_calibrated;
+    } v6_mirror_t;
+
+    v6_mirror_t v6;
+    memset(&v6, 0x55, sizeof(v6));
+
+    uint16_t const v6_version = 6;
+    memcpy(m.data + 4, &v6_version, sizeof(v6_version));
+    uint16_t const wrong_payload_size = (uint16_t)(sizeof(v6) - 1u);
+    memcpy(m.data + 6, &wrong_payload_size, sizeof(wrong_payload_size));
+    memcpy(m.data + 8, &v6, sizeof(v6));
+    m.len = 8 + sizeof(v6);
+
+    ff_settings_t s;
+    memset(&s, 0xAA, sizeof(s));
+    ff_settings_load(&s, &st);
+
+    ff_assert_defaults(&s);
+}
+
+static void S21_v6_blob_truncated_yields_defaults_not_a_migration(void)
+{
+    mock_store_io_t m;
+    mock_store_reset(&m);
+    ff_store_t st = mock_store_vtable(&m);
+
+    ff_settings_t seed;
+    memset(&seed, 0, sizeof(seed));
+    ff_settings_save(&seed, &st);
+    TEST_ASSERT_TRUE(m.has_value);
+
+    typedef struct {
+        bool imperial;
+        uint8_t share_mode;
+        bool haptics;
+        bool night_glow;
+        uint16_t water_min;
+        uint16_t quiet_from_min;
+        uint16_t quiet_to_min;
+        int16_t utc_offset_min;
+        bool utc_offset_set;
+        bool colorblind;
+        uint8_t brightness_pct;
+        char my_name[FF_SETTINGS_NAME_LEN];
+        ff_geo_cal_t compass_cal;
+        bool cal_valid;
+        float touch_ax;
+        float touch_bx;
+        float touch_ay;
+        float touch_by;
+        bool touch_calibrated;
+    } v6_mirror_t;
+
+    v6_mirror_t v6;
+    memset(&v6, 0x66, sizeof(v6));
+
+    uint16_t const v6_version = 6;
+    memcpy(m.data + 4, &v6_version, sizeof(v6_version));
+    uint16_t const v6_payload_size = (uint16_t)sizeof(v6);
+    memcpy(m.data + 6, &v6_payload_size, sizeof(v6_payload_size));
+    memcpy(m.data + 8, &v6, sizeof(v6));
+    m.len = 8 + sizeof(v6) - 4; /* short by 4 bytes — a truncated/corrupt read */
+
+    ff_settings_t s;
+    memset(&s, 0xAA, sizeof(s));
+    ff_settings_load(&s, &st);
+
+    ff_assert_defaults(&s);
+}
+
+/* ---------------------------------------------------------------------
  * AC2 — round-trip save/load equality, including calibration.
  * ------------------------------------------------------------------- */
 
@@ -867,6 +1071,10 @@ int main(void)
     RUN_TEST(S11_AC1_load_with_v5_blob_yields_defaults_not_a_migration);
     RUN_TEST(S21_v6_blob_forward_migrates_preserving_every_value);
     RUN_TEST(S21_v7_blob_forward_migrates_preserving_every_value);
+    RUN_TEST(S21_v7_blob_wrong_payload_size_yields_defaults_not_a_migration);
+    RUN_TEST(S21_v7_blob_truncated_yields_defaults_not_a_migration);
+    RUN_TEST(S21_v6_blob_wrong_payload_size_yields_defaults_not_a_migration);
+    RUN_TEST(S21_v6_blob_truncated_yields_defaults_not_a_migration);
 
     RUN_TEST(S11_AC2_round_trip_save_load_is_exact_including_calibration);
     RUN_TEST(S11_AC2_round_trip_preserves_exact_defaults);

@@ -2,18 +2,13 @@
 
 #include <string.h>
 
+#include "ff_clock.h" /* ff_time_reached — wraparound-safe deadline check;
+                        * see ff_flare.h's judgment call (1) for the
+                        * INCLUSIVE-at-the-boundary convention this uses. */
+
 /* ------------------------------------------------------------------- */
 /* internal helpers                                                     */
 /* ------------------------------------------------------------------- */
-
-/* Wraparound-safe "has now_ms reached deadline_ms yet" check, matching
- * ff_clock_t's documented convention (firmware/platform/include/ff_clock.h:
- * "callers compare with subtraction, not '<'"). INCLUSIVE at the boundary
- * — see ff_flare.h's judgment call (1). */
-static bool ff_flare_deadline_reached(uint32_t now_ms, uint32_t deadline_ms)
-{
-    return (int32_t)(now_ms - deadline_ms) >= 0;
-}
 
 static ff_flare_result_t ff_flare_no_result(void)
 {
@@ -183,19 +178,19 @@ ff_flare_result_t ff_flare_tick(ff_flare_t *f, uint32_t now_ms)
         return r;
     }
 
-    if (f->sending && ff_flare_deadline_reached(now_ms, f->send_expiry_ms)) {
+    if (f->sending && ff_time_reached(now_ms, f->send_expiry_ms)) {
         f->sending = false;
         f->send_expiry_ms = 0;
         r.intent = FF_FLARE_INTENT_SEND_FLARE_END;
     }
 
-    if (f->takeover_active && ff_flare_deadline_reached(now_ms, f->takeover_expiry_ms)) {
+    if (f->takeover_active && ff_time_reached(now_ms, f->takeover_expiry_ms)) {
         f->takeover_active = false;
         f->takeover_node_id = 0;
         f->takeover_expiry_ms = 0;
     }
 
-    if (f->locked_node_id != 0 && ff_flare_deadline_reached(now_ms, f->locked_expiry_ms)) {
+    if (f->locked_node_id != 0 && ff_time_reached(now_ms, f->locked_expiry_ms)) {
         f->locked_node_id = 0;
         f->locked_expiry_ms = 0;
     }

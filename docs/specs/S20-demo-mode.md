@@ -114,3 +114,7 @@ neighbors read UPCOMING, and the starred-set countdown is ticking.
 ## Out of scope
 Persisting demo state, a Settings toggle for demo (a build/flag is enough for
 now), real festival data (that's fest-almanac).
+
+## Amendments
+
+Renamed to Lineup/Inbox on 2026-09-01 — see S26 Nav model Amendments; this spec keeps its original vocabulary.

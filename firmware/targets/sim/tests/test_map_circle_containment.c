@@ -62,7 +62,27 @@
 #define MAP_CIRCLE_RADIUS_PX 206.0f
 
 void setUp(void) {}
-void tearDown(void) {}
+
+/* P0 harness-hang fix (debt/test-harness PR). This file's one test pairs
+ * its own lv_init()/lv_deinit() (below), so a failed TEST_ASSERT
+ * anywhere before that lv_deinit() (several precede it: TEST_ASSERT_
+ * NOT_NULL(buf), TEST_ASSERT_EQUAL_INT_MESSAGE(FF_FIXTURE_OK, fr, path),
+ * the elapsed-time bound, ...) longjmps past it and leaks LVGL
+ * initialized — LVGL v9's lv_init() silently no-ops when already
+ * initialized (see tests/test_wakeonly_touch.c's own tearDown comment
+ * for the full repro/verification writeup of the resulting hang in a
+ * sibling file), so a leak here isn't caught by the next test in a
+ * combined binary, it's built on top of. This tearDown is the safety
+ * net Unity always runs after every test regardless of outcome: guarded
+ * by lv_is_initialized() so it's a no-op on the normal path (the test
+ * body already deinited) and does the actual cleanup on the failure
+ * path. */
+void tearDown(void)
+{
+    if (lv_is_initialized()) {
+        lv_deinit();
+    }
+}
 
 static void flush_cb(lv_display_t *disp, const lv_area_t *area, uint8_t *px_map)
 {

@@ -141,31 +141,41 @@ typedef enum {
      * test_face_hit_targets.c.) */
     FF_INTENT_CALIBRATE_TOUCH,
     /* [api] S22 slice b — the reworked Signals face (docs/specs/S22-signals-rework.md).
-     * The screen is a pure projection of the shell-owned `ff_sigview_t`; these
-     * five intents are the whole seam between it and the shell. Appended, so no
-     * existing intent's numeric value moves.
+     * The S24 inbox rework retired the S22 screen these were built for, but
+     * the S22(d) send machinery they drive stayed (see ff_shell.h /
+     * ff_app_state.h's "what of S22 carries over" notes); these five
+     * intents are still the whole seam between the (now S24) screen and
+     * the shell's send-target state. Appended, so no existing intent's
+     * numeric value moves.
      *
-     * SIG_SELECT_MEMBER / SIG_CLEAR_TARGET mutate the view-model's persistent
-     * target NOW (S22 AC3), via `ff_sigview_target_select` / `_clear` — the
-     * shell owns the one `ff_sigview_t` and is the only place the roster is
-     * consulted to validate a selection. SELECT carries the tapped member's
-     * node id in `u.node_id` (a paired-crew node by construction — every
-     * selectable row has a known identity); CLEAR has no payload.
+     * SIG_SELECT_MEMBER / SIG_CLEAR_TARGET mutate the shell's persistent
+     * target holders (`inbox_target_kind`/`inbox_target_node` in
+     * ff_shell.c) NOW (S22 AC3). The shell is the only place the roster is
+     * consulted to validate a selection — SELECT is checked against
+     * `shell_member_paired` at the point of the intent, and the same
+     * revalidation runs again every projection tick (a member who
+     * unpaired/left honestly falls back to WHOLE_CREW). SELECT carries the
+     * tapped member's node id in `u.node_id` (a paired-crew node by
+     * construction — every selectable row has a known identity); CLEAR has
+     * no payload.
      *
      * SIG_RALLY / SIG_COMPOSE were originally three action buttons with
      * SIG_PULSE alongside them (RALLY encodes an `ff_proto` RALLY, PULSE
      * encoded an `ff_proto` PULSE), dispatched over FF_PORTNUM to the
      * current target (WHOLE_CREW broadcast vs a member's addressed send),
      * then the target resets to WHOLE_CREW (S22 AC3). RALLY to WHOLE_CREW
-     * is the one loud broadcast, so its first tap ARMS a confirm (rendered
-     * on the button via `ff_sigview_rally_confirm_armed`) and only a
-     * second tap within a short window sends (S22 AC4); a member rally
-     * sends on the first tap. COMPOSE opens the composer with its TO set
-     * to the current target and switches face — the composer's own SEND
-     * does the text send. No payload — each acts on the current target,
-     * which the shell reads from its own `ff_sigview_t` / target holder,
-     * never from the screen (a pure renderer must not carry the target
-     * itself). (2026-09-02: FF_INTENT_INBOX_PULSE, the SIG_PULSE member,
+     * is the one loud broadcast, so its first tap ARMS a confirm (the
+     * shell mirrors its `inbox_rally_armed` state machine directly into
+     * the view's `confirm_armed` display field — `view.inbox.rally_confirm_armed`
+     * and `view.inbox.rally.confirm_armed` — each tick, and the button
+     * renders from that) and only a second tap within a short window sends
+     * (S22 AC4); a member rally sends on the first tap. COMPOSE opens the
+     * composer with its TO set to the current target and switches face —
+     * the composer's own SEND does the text send. No payload — each acts
+     * on the current target, which the shell reads from its own
+     * `inbox_target_kind`/`inbox_target_node` holder, never from the
+     * screen (a pure renderer must not carry the target itself).
+     * (2026-09-02: FF_INTENT_INBOX_PULSE, the SIG_PULSE member,
      * is retired — see the FLARE note further below, where its sibling
      * FF_INTENT_INBOX_POPUP_PULSE is also retired; removing an enum member
      * here renumbers everything after it, which is fine — intents are
@@ -384,8 +394,8 @@ typedef struct {
          *  currently selected paired member if there is one, else broadcast.
          *  See ff_shell_intent's doc in ff_shell.h for the exact rule. For
          *  SIG_SELECT_MEMBER (S22): the tapped Signals row's crew node id,
-         *  which the shell validates against the roster before it becomes
-         *  the send target (`ff_sigview_target_select`). */
+         *  which the shell validates against the roster (`shell_member_paired`)
+         *  before it becomes the send target. */
         uint32_t node_id;
         uint8_t rally_idx;                      /* SELECT_RALLY; RALLY_SELECT_PLACE
                                                  * (S24 d: 0 = On Me, 1.. = landmark) */

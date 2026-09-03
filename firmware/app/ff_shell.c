@@ -135,10 +135,10 @@ typedef struct {
      * the target (WHOLE_CREW or one member node, ~8 B) and `shell_project_inbox`
      * builds the rows straight into `sh->view.inbox` each tick, re-applying
      * this holder afterward (the whole view is memset each tick, so the target
-     * cannot live in the view itself). Re-applying through
-     * `ff_sigview_target_select` RE-VALIDATES the member against the current
-     * roster every tick, so a member who unpaired/left honestly falls back to
-     * WHOLE_CREW. SELECT/CLEAR intents mutate this holder. */
+     * cannot live in the view itself). Re-applying RE-VALIDATES the member
+     * against the current roster every tick (`shell_member_paired`), so a
+     * member who unpaired/left honestly falls back to WHOLE_CREW. SELECT/
+     * CLEAR intents mutate this holder. */
     ff_target_kind_t inbox_target_kind;
     uint32_t         inbox_target_node;
 
@@ -163,8 +163,8 @@ typedef struct {
      * select, clear) disarms. Only WHOLE_CREW arms — a rally to one member,
      * and every flare/compose, sends on the first tap. This lives in the
      * shell, not core, because it is time-based (needs the injected clock);
-     * the shell reflects `inbox_rally_armed` into the view's display flag
-     * (`ff_sigview_set_rally_confirm_armed`) each tick. */
+     * the shell reflects `inbox_rally_armed` directly into the view's
+     * `confirm_armed` display field each tick. */
     bool     inbox_rally_armed;
     uint32_t inbox_rally_armed_ms;
 
@@ -217,8 +217,18 @@ typedef struct {
      * ALIAS into `sh->pack` (fp_t9words_collect never copies), so the pack
      * must outlive them (it does: it is cfg->pack, caller-owned). A session
      * reset clears the extra binding (ff_t9pred.h), so `set_extra` follows
-     * every reset — the THREE reset sites are init/open, SPACE-accept and
-     * SEND. */
+     * every reset. Undercounted for a while as "the THREE reset sites are
+     * init/open, SPACE-accept and SEND": a FULL compose-session reset
+     * (draft + predictive session + mode, all four lines together) now
+     * runs through the single `shell_compose_session_reset` helper, called
+     * from FIVE sites — init, OPEN_COMPOSE, SEND_TEXT, INBOX_POPUP_COMPOSE
+     * and INBOX_COMPOSE — not three; see that helper's own doc comment.
+     * SPACE-accept (FF_INTENT_T9_SPACE) is a separate, deliberately
+     * PARTIAL reset that does not go through the helper: it resets only
+     * the predictive session (+ its `set_extra` rebind) to start the NEXT
+     * word, while leaving the already-committed draft and the PRED mode
+     * untouched — the helper's full reset would wrongly wipe the draft
+     * the user is still typing. */
     ff_t9pred_session_t compose_pred;
     char const *compose_extra[FF_COMPOSE_EXTRA_MAX];
     int compose_extra_n;
@@ -1866,9 +1876,9 @@ static void shell_render_key(ff_app_state_t const *v, ff_app_state_t *key)
      * targets/esp32s3/main/ff_face.c and targets/sim/face_dispatch.c build
      * the full-screen takeover and return before touching any face beneath
      * it. So the rendered screen is a pure function of the takeover's own
-     * fields — a moving radar arrow, an aging signals row, or a fresh feed
-     * item from the busy live demo (ff_sigview_build reads the feed every
-     * tick) changes no pixel.
+     * fields — a moving radar arrow, an aging inbox conversation, or a
+     * fresh feed item from the busy live demo (ff_inbox_build reads the
+     * feed every tick) changes no pixel.
      *
      * Keying on the whole projection there made every such underlying
      * change a dirty frame, and the device answers a dirty frame with
@@ -1958,9 +1968,9 @@ static void shell_render_key(ff_app_state_t const *v, ff_app_state_t *key)
          * not a modal — see ff_route.h's header note — but it is still
          * exactly one `active_face` value among several, so this mask
          * is unaffected by that change) — the launcher, same "opaque
-         * overlay" discipline as the power menu above, with ONE
-         * exception: unlike that fully-static face, the launcher's
-         * Signals circle carries the
+         * overlay" discipline as the power menu above, with TWO
+         * exceptions rather than the original one: unlike the fully-
+         * static power menu, the launcher's Signals circle carries the
          * unread badge (scr_launcher.c, moved off the old page-dot
          * row), so the mask keeps exactly that one scalar rather than
          * going fully static. Computed the same way
@@ -1979,7 +1989,49 @@ static void shell_render_key(ff_app_state_t const *v, ff_app_state_t *key)
          * modal is up) would dirty the key every frame and rebuild the
          * launcher's tree out from under a finger, the same clobber
          * class the power-menu comment above documents — while a
-         * genuinely new unread message SHOULD still dirty the badge. */
+         * genuinely new unread message SHOULD still dirty the badge.
+         *
+         * SECOND exception, added with the fix for the stale-banner bug
+         * (#157 put the message banner on top of every face, including
+         * the launcher — scr_launcher.c's `ff_scr_launcher_build` calls
+         * `ff_scr_banner_build` unconditionally, same as every other
+         * face's builder — but this mask predates that PR and still
+         * zeroed `key->banner` unconditionally along with everything
+         * else, same as the power menu's total-static mask). Because
+         * `ff_shell_tick`'s dirty bit is exactly a memcmp of this key
+         * against the previous tick's, a fully-zeroed `key->banner`
+         * means a banner-only transition — most importantly the
+         * banner's own 6 s auto-expiry, and a sender change/coalesce
+         * arriving while the launcher is up — left the key byte-
+         * identical to the previous tick's, so the dirty bit never
+         * fired and the tree was never rebuilt: an expired banner sat
+         * on the glass, stale, until something UNRELATED (e.g. the
+         * unread count) happened to dirty the key. Fix: stash the
+         * already-coarsened `key->banner` (the coarsening a few dozen
+         * lines up, in this same function, has already reduced its
+         * `age_ms` to the one bucket a live 6 s banner ever occupies —
+         * see that block's own comment) before the memset and restore
+         * it after, exactly the `af`/`unread_total` pattern above. This
+         * keeps the anti-clobber property intact: the radar arrow and
+         * feed items underneath still touch no field this mask
+         * restores, so they still cannot dirty the launcher key and
+         * rebuild the tree out from under a finger — only a genuine
+         * banner or badge change does.
+         *
+         * Audited for any OTHER overlay the launcher composites: the
+         * only other `_build()` call in scr_launcher.c is the banner
+         * (launcher_build_status_row is ordinary content, not an
+         * overlay). The flare TAKEOVER is not one of this mask's
+         * concerns either way — both dispatch paths
+         * (targets/sim/face_dispatch.c, targets/esp32s3/main/ff_face.c)
+         * check `state->flare.takeover_active` before consulting
+         * `active_face` at all and build the takeover screen INSTEAD of
+         * the launcher, and in this very function the takeover branch
+         * above is an `if` with this launcher branch as its `else if`
+         * — so while a takeover is active this launcher branch never
+         * runs, and the takeover's own dirtying (the block above) is
+         * already independent of everything this mask does. */
+        ff_app_banner_t const banner = key->banner;
         ff_app_face_t const af = key->active_face;
         uint32_t unread_total = 0;
         uint8_t const n = ff_inbox_conv_count(&v->inbox.inbox);
@@ -1992,7 +2044,49 @@ static void shell_render_key(ff_app_state_t const *v, ff_app_state_t *key)
         memset(key, 0, sizeof(*key));
         key->active_face = af;
         key->inbox.inbox.convs[0].unread = (unread_total > UINT16_MAX) ? UINT16_MAX : (uint16_t)unread_total;
+        key->banner = banner;
     }
+}
+
+/* ---------------------------------------------------------------------
+ * Compose-session reset (tech-debt cleanup — was hand-duplicated at
+ * every call site; see this function's own doc comment)
+ * ------------------------------------------------------------------- */
+
+/**
+ * Start a FRESH compose session: clear the committed T9 draft, reset the
+ * predictive engine's in-progress word and re-bind the festpack word
+ * table (a session reset clears the binding — ff_t9pred.h — so
+ * `set_extra` must follow every reset), and land in the default PRED
+ * mode. This is the exact four-line sequence every "begin a new compose
+ * session" call site needs, byte for byte.
+ *
+ * Extracted from FIVE call sites that had hand-duplicated it verbatim —
+ * `ff_shell_init`, `FF_INTENT_OPEN_COMPOSE`, `FF_INTENT_SEND_TEXT` (a
+ * successful send starts the NEXT session), `FF_INTENT_INBOX_POPUP_COMPOSE`
+ * and `FF_INTENT_INBOX_COMPOSE` — not the three `compose_pred`'s own doc
+ * comment (above, in `shell_t`) used to claim; see that comment's
+ * correction. `compose_extra`/`compose_extra_n` are read, never written,
+ * here: they are the loaded pack's word table, owned and rebuilt by
+ * `ff_shell_load_pack`, not session state a reset should touch. At
+ * `ff_shell_init` the struct has just been `memset` to zero by the
+ * caller, so `compose_extra_n` is 0 there (no pack is loaded yet) and
+ * this call is equivalent to the four lines it replaces — the binding
+ * becomes real once a later `ff_shell_load_pack` collects the pack's
+ * words and a session reset (OPEN_COMPOSE et al.) re-binds them.
+ *
+ * Deliberately NOT called from `FF_INTENT_T9_SPACE`'s predictive-accept
+ * reset: that one is a different, PARTIAL reset (session + set_extra
+ * only, to start the NEXT predicted word) that must leave the
+ * already-committed draft and the current mode alone — routing it
+ * through this helper would wrongly wipe both mid-sentence.
+ */
+static void shell_compose_session_reset(shell_t *sh)
+{
+    ff_t9_reset(&sh->compose_draft);
+    ff_t9pred_session_reset(&sh->compose_pred);
+    ff_t9pred_session_set_extra(&sh->compose_pred, sh->compose_extra, sh->compose_extra_n);
+    sh->compose_mode = FF_APP_COMPOSE_PRED;
 }
 
 /* ---------------------------------------------------------------------
@@ -2033,13 +2127,13 @@ int ff_shell_init(ff_shell_t *sh_pub, ff_shell_cfg_t const *cfg)
     sh->inbox_target_node = 0u;
     sh->inbox_rally_sel   = 0u; /* S24 slice d — On Me by default (projection re-validates) */
     sh->inbox_rally_when  = FF_RALLY_WHEN_NOW;
-    ff_t9_reset(&sh->compose_draft); /* S16 slice c3 */
-    /* S08 addendum — reset site #1 (init). memset zeroed compose_extra_n,
-     * so no pack words are bound yet; a later ff_shell_load_pack collects
-     * them and OPEN_COMPOSE re-binds. Default to the predictive mode. */
-    ff_t9pred_session_reset(&sh->compose_pred);
-    ff_t9pred_session_set_extra(&sh->compose_pred, sh->compose_extra, sh->compose_extra_n);
-    sh->compose_mode = FF_APP_COMPOSE_PRED;
+    /* S16 slice c3 / S08 addendum — reset site #1 (init), via the shared
+     * helper (see shell_compose_session_reset's own doc comment). At this
+     * point `compose_extra_n` is still 0 — the memset above zeroed it and
+     * no pack is loaded yet — so `set_extra` inside the helper binds an
+     * empty table; a later ff_shell_load_pack collects the pack's words
+     * and OPEN_COMPOSE (or any other reset site) re-binds them for real. */
+    shell_compose_session_reset(sh);
 
     /* Settings are loaded at init and never re-read per tick (S16
      * "Behavior"). A NULL store yields the exact defaults. */
@@ -2351,8 +2445,8 @@ static bool shell_sig_dest(shell_t const *sh, uint32_t *out_dest)
  * shell_sig_reset_target — S22 AC3: after a successful FLARE/RALLY send the
  * target returns to WHOLE_CREW. Resets both the shell's persistent holder
  * (the source of truth, which survives the per-tick view rebuild) and the
- * live view's mirror of it (so a same-frame read sees the reset, the same
- * immediacy the old ff_sigview_target_reset_after_send call had), and drops
+ * live view's mirror of it (so a same-frame read sees the reset
+ * immediately, without waiting for the next projection tick), and drops
  * any armed rally confirm. */
 static void shell_sig_reset_target(shell_t *sh)
 {
@@ -2910,19 +3004,14 @@ void ff_shell_intent(ff_shell_t *sh_pub, ff_intent_t const *in)
          * exactly what that rule protects) and over an off-axis base. */
         if (ff_route_push_modal(&sh->route, FF_APP_FACE_COMPOSE)) {
             sh->compose_to_node = shell_compose_dest(sh, in->u.node_id);
-            /* S16 slice c3: every OPEN_COMPOSE starts a FRESH session —
-             * the same "resets every build" behavior scr_compose.c's old
-             * `static ff_t9_t` had, now made explicit here since the
-             * draft survives everything else (in particular a takeover
-             * interruption, AC3b) rather than resetting on its own. */
-            ff_t9_reset(&sh->compose_draft);
-            /* S08 addendum — reset site #2 (open). A fresh predictive
-             * session, re-bound to the current festpack words (reset clears
-             * the binding, per ff_t9pred.h), and the predictive mode is the
-             * default the composer opens in. */
-            ff_t9pred_session_reset(&sh->compose_pred);
-            ff_t9pred_session_set_extra(&sh->compose_pred, sh->compose_extra, sh->compose_extra_n);
-            sh->compose_mode = FF_APP_COMPOSE_PRED;
+            /* S16 slice c3 / S08 addendum — reset site #2 (open). Every
+             * OPEN_COMPOSE starts a FRESH session — the same "resets every
+             * build" behavior scr_compose.c's old `static ff_t9_t` had, now
+             * made explicit here since the draft survives everything else
+             * (in particular a takeover interruption, AC3b) rather than
+             * resetting on its own — via the shared helper (see
+             * shell_compose_session_reset's own doc comment). */
+            shell_compose_session_reset(sh);
         }
         return;
 
@@ -3136,15 +3225,12 @@ void ff_shell_intent(ff_shell_t *sh_pub, ff_intent_t const *in)
                 /* A sent message ends the compose session — S08's "sent
                  * item appears in feed... " reads as returning to Signals
                  * to see it, not staying on an emptied composer. Draft
-                 * and destination both reset, same as a fresh open. */
-                ff_t9_reset(&sh->compose_draft);
-                /* S08 addendum — reset site #3 (send): fresh predictive
-                 * session, re-bound to the festpack words, back to the
-                 * predictive default. (Moot for the popped modal, but keeps
-                 * the three reset sites uniform.) */
-                ff_t9pred_session_reset(&sh->compose_pred);
-                ff_t9pred_session_set_extra(&sh->compose_pred, sh->compose_extra, sh->compose_extra_n);
-                sh->compose_mode = FF_APP_COMPOSE_PRED;
+                 * and destination both reset, same as a fresh open — S08
+                 * addendum reset site #3 (send), via the shared helper
+                 * (moot for the popped modal, but keeps every reset site
+                 * uniform — see shell_compose_session_reset's own doc
+                 * comment). */
+                shell_compose_session_reset(sh);
                 (void)ff_route_pop_modal(&sh->route);
                 sh->compose_to_node = 0u;
             }
@@ -3303,9 +3389,9 @@ void ff_shell_intent(ff_shell_t *sh_pub, ff_intent_t const *in)
          * the S22(d) send machinery's programmatic "set the send scope"
          * seam, VALIDATED against the roster exactly as before: paired
          * members only, never a trusted tap). Mirrored into the live
-         * view immediately so a same-frame read sees it, matching the
-         * old ff_sigview_target_select behavior. Takeover-gated like
-         * every face intent. */
+         * view immediately so a same-frame read sees it, without waiting
+         * for the next projection tick. Takeover-gated like every face
+         * intent. */
         if (takeover_up) return;
         /* Changing the target disarms any pending rally-to-WHOLE_CREW
          * confirm (S22 AC4 "anything else disarms"). */
@@ -3392,10 +3478,7 @@ void ff_shell_intent(ff_shell_t *sh_pub, ff_intent_t const *in)
                 to = sh->inbox_thread_node;
             }
             sh->compose_to_node = to;
-            ff_t9_reset(&sh->compose_draft);
-            ff_t9pred_session_reset(&sh->compose_pred);
-            ff_t9pred_session_set_extra(&sh->compose_pred, sh->compose_extra, sh->compose_extra_n);
-            sh->compose_mode = FF_APP_COMPOSE_PRED;
+            shell_compose_session_reset(sh); /* reset site #4 (popup compose) */
             sh->inbox_subview = FF_INBOX_SUB_THREAD; /* under the modal */
         }
         return;
@@ -3591,10 +3674,7 @@ void ff_shell_intent(ff_shell_t *sh_pub, ff_intent_t const *in)
                 to = (m != NULL && m->paired) ? sh->inbox_target_node : 0u;
             }
             sh->compose_to_node = to;
-            ff_t9_reset(&sh->compose_draft);
-            ff_t9pred_session_reset(&sh->compose_pred);
-            ff_t9pred_session_set_extra(&sh->compose_pred, sh->compose_extra, sh->compose_extra_n);
-            sh->compose_mode = FF_APP_COMPOSE_PRED;
+            shell_compose_session_reset(sh); /* reset site #5 (signals-target compose) */
         }
         return;
 
@@ -3701,7 +3781,14 @@ void ff_shell_intent(ff_shell_t *sh_pub, ff_intent_t const *in)
     case FF_INTENT_MARK_FEED_READ: /* c2 relic — S24 replaced the face-view clear with per-thread
                                      * mark-read on open (INBOX_OPEN_THREAD/PICK above); nothing
                                      * emits this and a whole-feed clear would zero every badge. */
-    case FF_INTENT_SELECT_CREW:    /* c2 — radar tap-cycle */
+    case FF_INTENT_SELECT_CREW:    /* c2 — radar tap-cycle (docs/specs/S06-radar-face.md's
+                                     * "tap center = cycle selected member" input rule). Retained
+                                     * though nothing emits it today: the S06 tap-cycle gesture
+                                     * was never wired into scr_radar.c, and the S26(e) nav rework
+                                     * that followed made the radar hub a plain launcher satellite
+                                     * rather than the tap surface the spec describes — so this
+                                     * stays the ready-made handler for whichever face eventually
+                                     * re-adds that gesture, same reasoning as SELECT_RALLY below. */
     case FF_INTENT_SELECT_RALLY:   /* still unbuilt: ff_crew_select_rally does not exist yet
                                      * (core/include/ff_crew.h's own documented deviation —
                                      * a rally point doesn't fit ff_crew_member_t, deferred to
