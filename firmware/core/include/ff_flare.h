@@ -166,6 +166,11 @@ extern "C" {
  * always used as-is, never defaulted — see this header's top comment. */
 #define FF_FLARE_DEFAULT_DUR_S ((uint16_t)300u)
 
+/** S10 Amendment (2026-09-03, "Wire honesty") — how often the caller
+ * should retry an unconfirmed FLARE broadcast while `ff_flare_wire_state`
+ * reads FF_FLARE_WIRE_WAITING. See `ff_flare_wire_should_retry`. */
+#define FF_FLARE_RESEND_MS ((uint32_t)5000u)
+
 /** Outbound network intent a transition wants the caller to act on. This
  * module never touches wire bytes or a transport — the caller already
  * owns `ff_proto_encode_flare`/`_flare_end` + `mc_send_private` (see this
@@ -175,6 +180,24 @@ typedef enum {
     FF_FLARE_INTENT_SEND_FLARE,     /* caller: ff_proto_encode_flare(..., dur_s), broadcast want_ack */
     FF_FLARE_INTENT_SEND_FLARE_END, /* caller: ff_proto_encode_flare_end(...), broadcast */
 } ff_flare_intent_t;
+
+/**
+ * ff_flare_wire_state_t — S10 Amendment (2026-09-03, "Wire honesty",
+ * fixing the P0 bug where `FF_INTENT_FLARE_START`/`QUICK_FLARE` called
+ * `ff_flare_send_begin` and discarded its `FF_FLARE_INTENT_SEND_FLARE`
+ * result, so the sender overlay said "you are flaring" while nothing was
+ * ever broadcast). Whether the CURRENT outbound send (`ff_flare_t.
+ * sending`) has actually reached the transport, or is still just the
+ * user's real intent with the shell retrying in the background.
+ * FF_FLARE_WIRE_WAITING is the zero value — this header's standing
+ * "least-claiming default" convention (see e.g. now_state_t in
+ * ff_app_state.h) — so a `sending` flare that has never been confirmed
+ * defaults to the honest "not yet on the wire" reading, never an implied
+ * SENT. */
+typedef enum {
+    FF_FLARE_WIRE_WAITING = 0, /* sending, but no attempt has succeeded yet (or link is down) */
+    FF_FLARE_WIRE_SENT,        /* sending, and at least one attempt reached the transport successfully */
+} ff_flare_wire_state_t;
 
 /** Result of any transition entry point below. */
 typedef struct {
@@ -207,6 +230,15 @@ typedef struct {
     bool     sending;
     uint32_t send_expiry_ms; /* meaningful iff sending */
 
+    /* Wire honesty (S10 Amendment 2026-09-03) — does `sending` above mean
+     * a FLARE frame actually reached the transport, or only that the
+     * user's intent is real and the shell is still trying? See
+     * `ff_flare_wire_state_t`'s own doc comment. All three fields below
+     * are meaningful iff `sending`. */
+    ff_flare_wire_state_t wire_state;
+    uint16_t wire_dur_s;           /* the FLARE dur_s to (re)send — fixed for this send's whole lifetime */
+    uint32_t wire_last_attempt_ms; /* last (re)try time, for FF_FLARE_RESEND_MS retry cadence; meaningful iff wire_state == WAITING */
+
     /* The full-screen takeover currently pending a GO/DISMISS decision,
      * if any. */
     bool     takeover_active;
@@ -230,17 +262,32 @@ void ff_flare_init(ff_flare_t *f);
  * FF_FLARE_INTENT_SEND_FLARE with the actual duration used (post-default)
  * in `dur_s`. Never reads or writes `takeover_*`/`locked_*` — completely
  * independent of receive state (see this header's top comment).
+ *
+ * Wire honesty (S10 Amendment 2026-09-03): also resets `wire_state` to
+ * FF_FLARE_WIRE_WAITING, stamps `wire_last_attempt_ms = now_ms` (the
+ * caller is expected to attempt the wire send immediately after this
+ * call returns — see `ff_flare_wire_mark_attempt`) and records
+ * `wire_dur_s` = the same post-default duration returned in `dur_s`, so
+ * every retry of THIS send resends the identical duration.
  */
 ff_flare_result_t ff_flare_send_begin(ff_flare_t *f, uint16_t dur_s, uint32_t now_ms);
 
 /**
- * ff_flare_send_cancel — cancel an in-progress send: `sending` -> false,
- * returning FF_FLARE_INTENT_SEND_FLARE_END exactly once. A no-op
- * (FF_FLARE_INTENT_NONE, no state change) when not currently sending —
- * including a second call right after the first, which is what guarantees
- * "emits FLARE_END once, not twice" (spec AC1). Always works regardless
- * of `takeover_active`/`locked_node_id` (the HIGH-finding fix, PR #15) —
- * this never reads or writes them.
+ * ff_flare_send_cancel — cancel an in-progress send: `sending` -> false.
+ * A no-op (FF_FLARE_INTENT_NONE, no state change) when not currently
+ * sending — including a second call right after the first, which is part
+ * of what guarantees "emits FLARE_END at most once" (spec AC1). Always
+ * works regardless of `takeover_active`/`locked_node_id` (the HIGH-finding
+ * fix, PR #15) — this never reads or writes them.
+ *
+ * Wire honesty (S10 Amendment 2026-09-03): returns
+ * FF_FLARE_INTENT_SEND_FLARE_END ONLY if `wire_state == FF_FLARE_WIRE_SENT`
+ * — i.e. only if a FLARE frame for this send actually reached the
+ * transport at least once. Cancelling a send that never got past
+ * FF_FLARE_WIRE_WAITING (no mesh link the whole time) returns
+ * FF_FLARE_INTENT_NONE: `sending` still clears (the user's cancel always
+ * ends the LOCAL state), but nothing is broadcast — there is no receiver
+ * to correct, since none ever saw the FLARE in the first place.
  */
 ff_flare_result_t ff_flare_send_cancel(ff_flare_t *f);
 
@@ -318,8 +365,13 @@ ff_flare_result_t ff_flare_release_lock(ff_flare_t *f);
 /**
  * ff_flare_tick — periodic expiry check, called with the current clock
  * reading. Evaluates all three independent deadlines in one call:
- *  - `sending` past `send_expiry_ms` auto-ends (-> `sending = false`,
- *    FF_FLARE_INTENT_SEND_FLARE_END).
+ *  - `sending` past `send_expiry_ms` auto-ends (-> `sending = false`).
+ *    Wire honesty (S10 Amendment 2026-09-03): returns
+ *    FF_FLARE_INTENT_SEND_FLARE_END only if `wire_state ==
+ *    FF_FLARE_WIRE_SENT` at the moment of auto-end — same "never send END
+ *    for a flare that never went out" rule `ff_flare_send_cancel` applies
+ *    (see its own doc comment). `wire_state` resets to WAITING and
+ *    `wire_dur_s`/`wire_last_attempt_ms` clear either way.
  *  - `takeover_active` past `takeover_expiry_ms` expires (-> false; no
  *    outbound intent — a receiver has nothing to announce when someone
  *    else's flare times out).
@@ -341,6 +393,68 @@ ff_flare_result_t ff_flare_tick(ff_flare_t *f, uint32_t now_ms);
  * — this module never reaches into `ff_crew` itself (see top comment).
  */
 uint32_t ff_flare_locked_node(ff_flare_t const *f);
+
+/* ------------------------------------------------------------------- */
+/* Wire honesty (S10 Amendment 2026-09-03) — the caller (shell) never    */
+/* decides retry cadence or wire_state transitions itself; it only       */
+/* encodes/sends and reports the outcome here. See the P0 bug this fixes */
+/* in docs/specs/S10-flare.md's Amendments and ff_flare_wire_state_t's   */
+/* own doc comment above.                                                */
+/* ------------------------------------------------------------------- */
+
+/**
+ * ff_flare_wire_should_retry — true iff a send is in flight
+ * (`f->sending`), has not yet been confirmed on the wire (`wire_state ==
+ * FF_FLARE_WIRE_WAITING`), and at least FF_FLARE_RESEND_MS has elapsed
+ * since the last attempt. INCLUSIVE at the boundary, matching this
+ * header's judgment call (1): a retry is due AT exactly
+ * `wire_last_attempt_ms + FF_FLARE_RESEND_MS`, not one ms later.
+ * Wraparound-safe (`ff_time_reached`). false if `f` is NULL, not
+ * currently sending, or `wire_state` is already FF_FLARE_WIRE_SENT. Pure
+ * query — does not itself record an attempt; pair with
+ * `ff_flare_wire_mark_attempt` after the caller actually tries.
+ */
+bool ff_flare_wire_should_retry(ff_flare_t const *f, uint32_t now_ms);
+
+/**
+ * ff_flare_wire_mark_attempt — record the outcome of a just-attempted
+ * FLARE broadcast: the caller's own encode + wire send (this module never
+ * touches wire bytes, see this header's top comment), whether that is the
+ * very first attempt right after `ff_flare_send_begin` or a later retry.
+ *
+ * `ok == true` (the transport accepted the send): `wire_state` becomes
+ * FF_FLARE_WIRE_SENT — sticky for the rest of THIS send (no further
+ * retries; see `ff_flare_wire_should_retry`). `ok == false`: `wire_state`
+ * stays/returns to FF_FLARE_WIRE_WAITING and `wire_last_attempt_ms` is
+ * stamped to `now_ms`, so the next retry is due `FF_FLARE_RESEND_MS`
+ * later.
+ *
+ * No-op if `f` is NULL or not currently sending — a stray/late report
+ * arriving after the send already ended locally (cancel, auto-end) must
+ * not resurrect it.
+ */
+void ff_flare_wire_mark_attempt(ff_flare_t *f, uint32_t now_ms, bool ok);
+
+/**
+ * ff_flare_wire_state — the current send's wire confirmation state.
+ * Returns FF_FLARE_WIRE_WAITING (the least-claiming default) if `f` is
+ * NULL or not currently sending — there is nothing to confirm.
+ */
+ff_flare_wire_state_t ff_flare_wire_state(ff_flare_t const *f);
+
+/**
+ * ff_flare_send_dur_s — the `dur_s` to encode for the CURRENT send's
+ * FLARE frame: the actual, post-default value `ff_flare_send_begin`
+ * picked, meaningful for the initial attempt and every retry alike.
+ * Retries resend this SAME fixed duration rather than a shrinking
+ * "remaining time" — deliberate: while `wire_state == WAITING`, no
+ * receiver has ever seen a frame for this send, so whichever attempt
+ * finally succeeds IS, from every receiver's perspective, the flare's
+ * true start; a shrinking duration would under-communicate how long the
+ * sender is actually locked-on-me for. Returns 0 if `f` is NULL or not
+ * currently sending.
+ */
+uint16_t ff_flare_send_dur_s(ff_flare_t const *f);
 
 #ifdef __cplusplus
 }

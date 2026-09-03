@@ -1258,6 +1258,7 @@ static void shell_project_flare(shell_t const *sh, uint32_t now_ms, ff_app_flare
 
     out->sending = f->sending;
     out->send_expires_in_ms = shell_remaining_ms(f->sending, f->send_expiry_ms, now_ms);
+    out->wire_state = ff_flare_wire_state(f); /* WAITING (least-claiming) when not sending */
 
     out->takeover_active = f->takeover_active;
     out->takeover_expires_in_ms = shell_remaining_ms(f->takeover_active, f->takeover_expiry_ms, now_ms);
@@ -2217,10 +2218,19 @@ static void shell_render_key(ff_app_state_t const *v, ff_app_state_t *key)
          * above), so un-masking them would let an unrelated lock-
          * countdown tick dirty the launcher key and rebuild the tree out
          * from under a finger — the exact clobber class this whole mask
-         * exists to prevent. */
+         * exists to prevent.
+         *
+         * FIFTH exception (S10 Amendment 2026-09-03, "Wire honesty"):
+         * `key->flare.wire_state` joins the same two fields above for the
+         * identical reason — the sender overlay now ALSO renders off this
+         * field (the "NO MESH — retrying" vs "you are flaring" copy), so
+         * a WAITING->SENT flip while on the launcher must dirty the key
+         * exactly like a `sending`/countdown change already does, not be
+         * masked back to its stale value by the blanket memset below. */
         ff_app_banner_t const banner = key->banner;
         bool const flare_sending = key->flare.sending;
         int32_t const flare_send_expires_in_ms = key->flare.send_expires_in_ms;
+        ff_flare_wire_state_t const flare_wire_state = key->flare.wire_state;
         ff_app_face_t const af = key->active_face;
         int8_t const batt_pct = key->radar.batt_pct;
         uint32_t unread_total = 0;
@@ -2238,6 +2248,7 @@ static void shell_render_key(ff_app_state_t const *v, ff_app_state_t *key)
         key->radar.batt_pct = batt_pct;
         key->flare.sending = flare_sending;
         key->flare.send_expires_in_ms = flare_send_expires_in_ms;
+        key->flare.wire_state = flare_wire_state;
     }
 }
 
@@ -2417,6 +2428,12 @@ int ff_shell_load_pack(ff_shell_t *sh_pub, char const *json, size_t len)
     return 0;
 }
 
+/* Forward declaration: shell_flare_wire is defined further down (next to
+ * shell_flare_to_scope, its sibling wire-send helper), but ff_shell_tick's
+ * auto-end/retry handling below needs it — see that function's own doc
+ * comment for what it does. */
+static void shell_flare_wire(shell_t *sh, ff_flare_intent_t intent, uint16_t dur_s, uint32_t now_ms);
+
 bool ff_shell_tick(ff_shell_t *sh_pub, uint32_t now_ms)
 {
     if (sh_pub == NULL) return false;
@@ -2443,8 +2460,27 @@ bool ff_shell_tick(ff_shell_t *sh_pub, uint32_t now_ms)
 
     /* All three flare deadlines in one call; takeover_active can clear
      * here with no route involved, which is why ff_route_visible takes
-     * takeover as a parameter rather than caching it. */
-    (void)ff_flare_tick(&sh->flare, now_ms);
+     * takeover as a parameter rather than caching it.
+     *
+     * S10 Amendment (2026-09-03, "Wire honesty"): the auto-end path is a
+     * consumer of ff_flare_result_t just like every other flare call site
+     * — shell_flare_wire sends the FLARE_END only if ff_flare_tick says
+     * this send actually reached FF_FLARE_WIRE_SENT (see that function's
+     * own doc comment). */
+    {
+        ff_flare_result_t const flare_r = ff_flare_tick(&sh->flare, now_ms);
+        shell_flare_wire(sh, flare_r.intent, flare_r.dur_s, now_ms);
+    }
+
+    /* S10 Amendment (2026-09-03, "Wire honesty") — periodic retry: while a
+     * send is in flight but not yet confirmed on the wire (no mesh link,
+     * or the link only just came back), reattempt the identical broadcast
+     * every FF_FLARE_RESEND_MS. ff_flare_tick above runs first each tick,
+     * so a send that auto-ended THIS tick is already !sending here and
+     * correctly skipped — no redundant retry after the send is over. */
+    if (sh->flare.sending && ff_flare_wire_should_retry(&sh->flare, now_ms)) {
+        shell_flare_wire(sh, FF_FLARE_INTENT_SEND_FLARE, ff_flare_send_dur_s(&sh->flare), now_ms);
+    }
 
     /* S26 slice d — drop any BANNER whose 6s TTL has elapsed (spec:
      * "auto-expire 6 s"). Before shell_project below, so the same tick
@@ -2758,6 +2794,101 @@ static bool shell_scope_thread_open(shell_t const *sh)
     return sh->route.base == FF_APP_FACE_INBOX && sh->route.modal == FF_APP_FACE_NONE &&
            (sh->inbox_subview == FF_INBOX_SUB_THREAD || sh->inbox_subview == FF_INBOX_SUB_POPUP ||
             sh->inbox_subview == FF_INBOX_SUB_RALLY);
+}
+
+/* shell_flare_wire — S10 Amendment (2026-09-03, "Wire honesty"): the ONE
+ * place any ff_flare_result_t.intent for the SELF-FLARE send state
+ * (`sh->flare.sending`) is turned into an actual mesh broadcast. Used at
+ * every site that consumes such a result — FLARE_START, QUICK_FLARE,
+ * FLARE_END/CANCEL, the tick's auto-end, and the tick's periodic retry —
+ * per the task's "one helper" requirement: a future call site cannot
+ * forget to wire ff_flare's SEND intents to the wire, which is exactly
+ * the P0 bug this fixes (FF_FLARE_INTENT_SEND_FLARE was previously
+ * discarded, `(void)`, at every FLARE_START/QUICK_FLARE call site — the
+ * puck showed "you are flaring" while nothing was ever broadcast).
+ *
+ * FF_FLARE_INTENT_SEND_FLARE: encode + broadcast a FLARE(dur_s) via
+ * sh->wiring.sender.send_private (MC_ADDR_BROADCAST — S10: "FLARE to
+ * broadcast"). On acceptance (rc == 0), reports the success to core
+ * (ff_flare_wire_mark_attempt(..., true)) and — ONLY on the transition
+ * into FF_FLARE_WIRE_SENT (never on a later, redundant confirm) — pushes
+ * the OUT feed item, mirroring shell_flare_to_scope's own "accepted
+ * sends only, never fabricate a sent item for a refused send" rule. On
+ * refusal (no link, sender NULL, or a nonzero rc), reports the failure
+ * (mark_attempt(..., false)) so the view stays/returns to WAITING and
+ * ff_flare_wire_should_retry fires again FF_FLARE_RESEND_MS later —
+ * called from this same helper, since a retry is just another attempt at
+ * the identical SEND_FLARE action.
+ *
+ * FF_FLARE_INTENT_SEND_FLARE_END: encode + broadcast FLARE_END,
+ * unconditionally when called — core has already decided whether this
+ * intent is even produced (ff_flare_send_cancel/ff_flare_tick only
+ * return it when the send that's ending actually reached
+ * FF_FLARE_WIRE_SENT; see ff_flare.h's "Wire honesty" doc). No feed item
+ * and no core state update here: sending/wire_state were already cleared
+ * by the caller (send_cancel/tick) before this runs.
+ *
+ * FF_FLARE_INTENT_NONE: no-op.
+ *
+ * want_ack note (interpretation call, flagged per AGENTS.md — see the PR
+ * body): S10's spec text says FLARE broadcasts "with want_ack", but
+ * `ff_wiring_sender_t.send_private` (ff_wiring.h) has no want_ack
+ * parameter at all — the production wrapper (`wiring_mc_send_private`,
+ * ff_wiring.c) hardcodes `false` to the underlying `mc_send_private`
+ * call, same as every OTHER sender.send_private call site already in
+ * this file (shell_flare_to_scope, the two RALLY sends). Widening that
+ * vtable to carry a per-call want_ack is a real gap but out of scope for
+ * this PR, which fixes the encode/send being skipped ENTIRELY, not this
+ * one flag.
+ *
+ * Link-down detection is likewise NOT a second, explicit `ff_shell_link
+ * != FF_SHELL_LINK_CONNECTED` gate here: the sender's own return code
+ * already captures it, since the production wrapper's `mc_send_private`
+ * fails (negative) whenever `mc_client_t` is not READY (its own
+ * documented contract) — the same convention every other
+ * sender.send_private call site in this file already relies on. Gating
+ * on the actual outcome, not a second inference of it, is the "measuring,
+ * not reasoning harder" rule (AGENTS.md item 6). */
+static void shell_flare_wire(shell_t *sh, ff_flare_intent_t intent, uint16_t dur_s, uint32_t now_ms)
+{
+    if (intent == FF_FLARE_INTENT_NONE) return;
+
+    uint8_t buf[FF_PROTO_MAX_PAYLOAD];
+    int const n = (intent == FF_FLARE_INTENT_SEND_FLARE) ? ff_proto_encode_flare(buf, sizeof buf, dur_s)
+                                                           : ff_proto_encode_flare_end(buf, sizeof buf);
+    if (n <= 0) return;
+
+    bool ok = false;
+    if (sh->wiring.sender.send_private != NULL) {
+        int const rc = sh->wiring.sender.send_private(sh->wiring.sender.ctx, MC_ADDR_BROADCAST, buf, (size_t)n);
+        ok = (rc == 0);
+    }
+
+    if (intent == FF_FLARE_INTENT_SEND_FLARE) {
+        bool const was_sent_already = (ff_flare_wire_state(&sh->flare) == FF_FLARE_WIRE_SENT);
+        ff_flare_wire_mark_attempt(&sh->flare, now_ms, ok);
+        if (ok && !was_sent_already) {
+            /* First successful confirmation of THIS send (initial attempt
+             * or a later retry, whichever lands first) — push the OUT
+             * feed item exactly once. */
+            ff_wiring_push_outgoing(&sh->wiring, FEED_FLARE, MC_ADDR_BROADCAST, NULL);
+            /* S27 sounds, moved here from the two ff_flare_send_begin call
+             * sites (2026-09-03 review round 2): FLARE_SENT must mark the
+             * frame actually reaching the wire, not the user's send
+             * INTENT — a chime saying "sent" over a "NO MESH" overlay is
+             * exactly the same class of dishonesty this whole PR exists
+             * to fix. Fires once, at the WAITING->SENT transition, on
+             * whichever attempt lands first (the initial one, or a later
+             * retry once the link returns) — the same "first confirmation
+             * only" guard the OUT feed item above uses, so the two can
+             * never disagree about when the send actually happened. */
+            shell_sound(sh, FF_SOUND_FLARE_SENT);
+        }
+    }
+    /* FF_FLARE_INTENT_SEND_FLARE_END: fire-and-forget — no feed item (the
+     * FLARE feed item was already pushed when sending began; an END is a
+     * cancellation, not a new event to surface) and no core state to
+     * touch (already cleared by the caller before this ran). */
 }
 
 /* Encode + send a FLARE ("come find me") to the CURRENT resolved scope,
@@ -3260,16 +3391,20 @@ void ff_shell_intent(ff_shell_t *sh_pub, ff_intent_t const *in)
          * all (ff_scr_radar_build dropped ff_flare_t* in this same
          * slice). */
         if (takeover_up) return;
-        (void)ff_flare_send_begin(&sh->flare, 0, shell_now(sh));
-        /* S27 sounds — "flare start (any trigger -> FLARE_SENT)": the
-         * Radar CLOSE-mode FLARE button's own trigger. The other trigger,
-         * the 5x-HOME quick-flare multitap gesture (FF_INTENT_QUICK_FLARE,
-         * below), has its own separate ff_flare_send_begin call site and
-         * its own matching shell_sound call — see that case's comment.
-         * ff_flare_send_begin is unconditional (ff_flare.h: "is
-         * unconditional" w.r.t. receive), so this always fires when
-         * reachable — no separate success check needed. */
-        shell_sound(sh, FF_SOUND_FLARE_SENT);
+        {
+            uint32_t const now_ms = shell_now(sh);
+            ff_flare_result_t const r = ff_flare_send_begin(&sh->flare, 0, now_ms);
+            shell_flare_wire(sh, r.intent, r.dur_s, now_ms);
+        }
+        /* S27 sounds — "flare start (any trigger -> FLARE_SENT)": REVIEW
+         * ROUND 2 (2026-09-03) moved the actual `shell_sound` call into
+         * `shell_flare_wire` itself, fired only on the WAITING->SENT
+         * transition — see that function's own doc comment. This call
+         * site (the Radar CLOSE-mode FLARE button) and QUICK_FLARE below
+         * are simply the two triggers that reach `shell_flare_wire`; the
+         * chime no longer fires here directly, so a link-down send does
+         * NOT chime "sent" over a "NO MESH" overlay — it chimes once,
+         * later, exactly when a retry finally lands. */
         return;
 
     case FF_INTENT_FLARE_END:
@@ -3292,8 +3427,16 @@ void ff_shell_intent(ff_shell_t *sh_pub, ff_intent_t const *in)
          * between the CANCEL tap landing and this intent dispatching.
          * Gate on takeover_up and that arrival silently swallows the
          * cancel; ungated, CANCEL still reaches ff_flare_send_cancel and
-         * the new takeover is still shown — nothing lost either way. */
-        (void)ff_flare_send_cancel(&sh->flare);
+         * the new takeover is still shown — nothing lost either way.
+         *
+         * S10 Amendment (2026-09-03, "Wire honesty"): ff_flare_send_cancel
+         * itself now decides whether a FLARE_END belongs on the wire at
+         * all (only if this send ever reached FF_FLARE_WIRE_SENT) —
+         * shell_flare_wire just executes whatever it returns. */
+        {
+            ff_flare_result_t const r = ff_flare_send_cancel(&sh->flare);
+            shell_flare_wire(sh, r.intent, r.dur_s, shell_now(sh));
+        }
         return;
 
     case FF_INTENT_CANNED_REPLY:
@@ -4025,14 +4168,15 @@ void ff_shell_intent(ff_shell_t *sh_pub, ff_intent_t const *in)
         if (!takeover_up && ff_route_pop_modal(&sh->route)) {
             sh->compose_to_node = 0u; /* mirrors FF_INTENT_BACK's own cleanup, see above */
         }
-        (void)ff_flare_send_begin(&sh->flare, 0, shell_now(sh));
-        /* S27 sounds — "flare start (any trigger -> FLARE_SENT)": this
-         * is the SECOND of the two triggers that reach ff_flare_send_begin
-         * (FF_INTENT_FLARE_START above is the first) — the quick-flare
-         * gesture gets the identical confirmation sound the on-screen
-         * button does. See that call site's own comment for the full
-         * "any trigger" reasoning. */
-        shell_sound(sh, FF_SOUND_FLARE_SENT);
+        {
+            uint32_t const now_ms = shell_now(sh);
+            ff_flare_result_t const r = ff_flare_send_begin(&sh->flare, 0, now_ms);
+            shell_flare_wire(sh, r.intent, r.dur_s, now_ms);
+        }
+        /* S27 sounds — see FF_INTENT_FLARE_START's own comment above:
+         * this is the SECOND of the two triggers that reach
+         * shell_flare_wire, which now owns the FLARE_SENT chime (fired on
+         * the WAITING->SENT transition, review round 2, 2026-09-03). */
         return;
     }
     /* No default: -Wswitch under -Werror flags any new ff_intent_kind_t

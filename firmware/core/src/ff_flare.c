@@ -47,6 +47,14 @@ ff_flare_result_t ff_flare_send_begin(ff_flare_t *f, uint16_t dur_s, uint32_t no
     f->sending = true;
     f->send_expiry_ms = now_ms + (uint32_t)dur * 1000u;
 
+    /* Wire honesty (S10 Amendment 2026-09-03): every send starts
+     * unconfirmed. The caller is expected to attempt the wire send right
+     * after this call returns, so wire_last_attempt_ms is stamped to
+     * `now_ms` now rather than left at 0 — see ff_flare_wire_should_retry. */
+    f->wire_state = FF_FLARE_WIRE_WAITING;
+    f->wire_dur_s = dur;
+    f->wire_last_attempt_ms = now_ms;
+
     r.intent = FF_FLARE_INTENT_SEND_FLARE;
     r.dur_s = dur;
     return r;
@@ -59,10 +67,18 @@ ff_flare_result_t ff_flare_send_cancel(ff_flare_t *f)
         return r; /* not sending: nothing to cancel, no FLARE_END emitted */
     }
 
+    /* Wire honesty (S10 Amendment 2026-09-03): only announce FLARE_END if
+     * a FLARE for this send actually reached the transport at least once
+     * — never send END for a flare that never went out. */
+    bool const was_sent = (f->wire_state == FF_FLARE_WIRE_SENT);
+
     f->sending = false;
     f->send_expiry_ms = 0;
+    f->wire_state = FF_FLARE_WIRE_WAITING;
+    f->wire_dur_s = 0;
+    f->wire_last_attempt_ms = 0;
 
-    r.intent = FF_FLARE_INTENT_SEND_FLARE_END;
+    r.intent = was_sent ? FF_FLARE_INTENT_SEND_FLARE_END : FF_FLARE_INTENT_NONE;
     return r;
 }
 
@@ -179,9 +195,15 @@ ff_flare_result_t ff_flare_tick(ff_flare_t *f, uint32_t now_ms)
     }
 
     if (f->sending && ff_time_reached(now_ms, f->send_expiry_ms)) {
+        /* Wire honesty (S10 Amendment 2026-09-03): same "never send END
+         * for a flare that never went out" rule as ff_flare_send_cancel. */
+        bool const was_sent = (f->wire_state == FF_FLARE_WIRE_SENT);
         f->sending = false;
         f->send_expiry_ms = 0;
-        r.intent = FF_FLARE_INTENT_SEND_FLARE_END;
+        f->wire_state = FF_FLARE_WIRE_WAITING;
+        f->wire_dur_s = 0;
+        f->wire_last_attempt_ms = 0;
+        r.intent = was_sent ? FF_FLARE_INTENT_SEND_FLARE_END : FF_FLARE_INTENT_NONE;
     }
 
     if (f->takeover_active && ff_time_reached(now_ms, f->takeover_expiry_ms)) {
@@ -208,4 +230,45 @@ uint32_t ff_flare_locked_node(ff_flare_t const *f)
         return 0;
     }
     return f->locked_node_id;
+}
+
+/* ------------------------------------------------------------------- */
+/* Wire honesty (S10 Amendment 2026-09-03)                              */
+/* ------------------------------------------------------------------- */
+
+bool ff_flare_wire_should_retry(ff_flare_t const *f, uint32_t now_ms)
+{
+    if (!f || !f->sending || f->wire_state == FF_FLARE_WIRE_SENT) {
+        return false;
+    }
+    return ff_time_reached(now_ms, f->wire_last_attempt_ms + FF_FLARE_RESEND_MS);
+}
+
+void ff_flare_wire_mark_attempt(ff_flare_t *f, uint32_t now_ms, bool ok)
+{
+    if (!f || !f->sending) {
+        return; /* stray/late report after the send already ended locally */
+    }
+    if (ok) {
+        f->wire_state = FF_FLARE_WIRE_SENT; /* sticky: no more retries this send */
+    } else {
+        f->wire_state = FF_FLARE_WIRE_WAITING;
+        f->wire_last_attempt_ms = now_ms;
+    }
+}
+
+ff_flare_wire_state_t ff_flare_wire_state(ff_flare_t const *f)
+{
+    if (!f || !f->sending) {
+        return FF_FLARE_WIRE_WAITING; /* least-claiming default: nothing to confirm */
+    }
+    return f->wire_state;
+}
+
+uint16_t ff_flare_send_dur_s(ff_flare_t const *f)
+{
+    if (!f || !f->sending) {
+        return 0;
+    }
+    return f->wire_dur_s;
 }
