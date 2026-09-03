@@ -2764,6 +2764,13 @@ static void S26e_launcher_drag_across_satellites_emits_nothing(void)
     ff_app_state_t state;
     memset(&state, 0, sizeof(state));
     ff_scr_launcher_build(&state);
+    lv_obj_update_layout(lv_screen_active()); /* coords are lazily computed — force it before a coordinate-driven drag
+                                                * (code review on PR #173: without this, the satellites' real screen
+                                                * coords were never committed before drag()'s hardcoded points were
+                                                * dispatched, so the initial press could miss its intended target
+                                                * entirely — the test then passed vacuously (count==0) regardless of
+                                                * PRESS_LOCK, which the reviewer confirmed by mutation: this test
+                                                * stayed green even with PRESS_LOCK left uncleared, until this fix). */
 
     /* (352, 206) -> (60, 206): press inside Lineup (idx 1, real
      * rendered center verified at (333,205) — 352 is still comfortably
@@ -2782,29 +2789,70 @@ static void S26e_launcher_drag_across_satellites_emits_nothing(void)
 /* scr_nav.h's ff_scr_button_create doc comment for the full mechanism.  */
 /* This section is the generalized proof: every screen's buttons now go  */
 /* through that one shared base, so a drag-off is neutralized EVERYWHERE,*/
-/* not just in the two files that had already been bitten. Four sites,   */
-/* one per screen named in the bug report: Radar's FLARE (the primary    */
-/* CTA), a Settings toggle pill, Power-menu's Power off (the one          */
-/* destructive action), and an Inbox quick-reply chip. Each drag-off test */
-/* is paired with a clean-tap positive control so the fix is proven to    */
-/* neutralize a SLIDE without breaking an ordinary press — for Radar/     */
-/* Settings/Inbox those positive controls already exist elsewhere in this */
-/* file (S16_c2_radar_flare_button_emits_flare_start,                    */
-/* S11b_settings_haptics_chip_toggles, S24c_thread_omw_chip_emits_        */
-/* canned_reply_omw); Power-menu had no coverage at all before this PR,   */
-/* so both directions are added here.                                    */
+/* not just in the two files that had already been bitten. Five sites,   */
+/* one per screen named in the bug report plus the launcher (whose OWN   */
+/* pre-existing S26e_launcher_drag_across_satellites_emits_nothing,      */
+/* just above, turned out — code review on PR #173 — to be missing an    */
+/* lv_obj_update_layout() before its coordinate-driven drag, so it        */
+/* passed regardless of PRESS_LOCK; fixed there, and this section adds    */
+/* its own PL_-named counterpart for symmetry with the other four sites): */
+/* Radar's FLARE (the primary CTA), a Settings toggle pill, Power-menu's  */
+/* Power off (the one destructive action), an Inbox quick-reply chip, and */
+/* a launcher satellite. Each drag-off test is paired with a clean-tap    */
+/* positive control so the fix is proven to neutralize a SLIDE without    */
+/* breaking an ordinary press — for Radar/Settings/Inbox/Launcher those   */
+/* positive controls already exist elsewhere in this file                */
+/* (S16_c2_radar_flare_button_emits_flare_start,                         */
+/* S11b_settings_units_chip_toggles_imperial, S24c_thread_omw_chip_       */
+/* emits_canned_reply_omw, S26e_launcher_lineup_circle_emits_index_1);    */
+/* Power-menu had no coverage at all before this PR, so both directions   */
+/* are added here.                                                       */
 /*                                                                        */
 /* Mutation check (hand-verified before pushing, per                     */
 /* docs/review/code-review.md item 6 / AGENTS.md's standing brief): with  */
 /* ff_scr_button_create (scr_nav.c) edited to NOT clear                   */
-/* LV_OBJ_FLAG_PRESS_LOCK, a fresh build fails all four PL_*_drag_off_    */
-/* emits_nothing tests below (each now sees s_spy.count == 1, the slide   */
-/* wrongly committing the control) while every positive-control test      */
-/* (PL_power_off_tap_emits_power_off included) still passes — a clean,    */
-/* stationary tap never depended on PRESS_LOCK in the first place. Exact  */
-/* output pasted in this PR's body; reverted with a targeted edit, not    */
-/* `git checkout` (per the standing brief), and re-verified green.        */
+/* LV_OBJ_FLAG_PRESS_LOCK, a fresh build fails all five PL_*_drag_off_    */
+/* emits_nothing tests below PLUS the fixed                               */
+/* S26e_launcher_drag_across_satellites_emits_nothing (each now sees      */
+/* s_spy.count == 1, the slide wrongly committing the control) while      */
+/* every positive-control test (PL_power_off_tap_emits_power_off          */
+/* included) still passes — a clean, stationary tap never depended on     */
+/* PRESS_LOCK in the first place. Exact output pasted in this PR's body;  */
+/* reverted with a targeted edit, not `git checkout` (per the standing    */
+/* brief), and re-verified green.                                        */
 /* =================================================================== */
+
+/* (0) Launcher satellite — the site #145 originally fixed, now proven
+ * with the same PL_-named shape as the other four sites (the launcher's
+ * OWN pre-existing S26e_launcher_drag_across_satellites_emits_nothing,
+ * above, is fixed separately — this is its symmetric counterpart, not a
+ * duplicate: that test drags horizontally ACROSS two satellites at
+ * hardcoded screen coordinates, matching the sim's real `ctl swipe`
+ * shape; this one presses a SINGLE satellite by object reference
+ * (`launcher_circle_at`, this file's own helper) and drags straight off
+ * it, the same shape as the other four PL_ tests). Positive control:
+ * S26e_launcher_lineup_circle_emits_index_1, already in this file. */
+static void PL_launcher_satellite_drag_off_emits_nothing(void)
+{
+    ff_app_state_t state;
+    memset(&state, 0, sizeof(state));
+    ff_scr_launcher_build(&state);
+    lv_obj_update_layout(lv_screen_active());
+
+    lv_obj_t *btn = launcher_circle_at(1); /* Lineup satellite */
+    TEST_ASSERT_NOT_NULL(btn);
+    lv_area_t a;
+    lv_obj_get_coords(btn, &a);
+    int32_t cx = (a.x1 + a.x2) / 2;
+    int32_t cy = (a.y1 + a.y2) / 2;
+
+    /* Press on the satellite's own center, drag 150px down (well past
+     * its own 88px diameter), release far away, never back on it. */
+    drag_v(cy, cy + 150, cx);
+
+    TEST_ASSERT_EQUAL_INT_MESSAGE(0, s_spy.count,
+                                   "a slide-off of a launcher satellite must never commit LAUNCHER_SELECT");
+}
 
 /* (a) Radar FLARE — the primary CTA on the CLOSE-mode radar face. */
 static void PL_radar_flare_drag_off_emits_nothing(void)
@@ -3028,6 +3076,7 @@ int main(void)
     RUN_TEST(S26e_satellite_deg_is_n_agnostic);
     RUN_TEST(S26e_launcher_drag_across_satellites_emits_nothing);
 
+    RUN_TEST(PL_launcher_satellite_drag_off_emits_nothing);
     RUN_TEST(PL_radar_flare_drag_off_emits_nothing);
     RUN_TEST(PL_settings_toggle_drag_off_emits_nothing);
     RUN_TEST(PL_power_off_drag_off_emits_nothing);
