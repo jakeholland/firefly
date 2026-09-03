@@ -9,6 +9,14 @@ jobs:
   build-test:
     name: build-test
     runs-on: ubuntu-latest
+    # S14 P0 (docs/specs/S14-testing-ci.md Amendments): a job-level backstop
+    # against a hung test/step burning the full runner allotment. The real
+    # protection is the global per-test ctest TIMEOUT set in
+    # firmware/CMakeLists.txt (fires locally too, not just in CI) — this is
+    # a coarser second layer in case something OTHER than a registered
+    # ctest test hangs (e.g. the golden-screenshot script itself, or a
+    # dependency fetch stalling).
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
 
@@ -17,11 +25,36 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libsdl2-dev
 
+      # S14 P1 (docs/specs/S14-testing-ci.md Amendments): shared with the
+      # sanitizers job's cache below via a common restore-keys PREFIX, not
+      # a single shared _deps PATH. The two build dirs' _deps trees are
+      # NOT interchangeable byte-for-byte — CMAKE_C_FLAGS is a top-level,
+      # whole-tree setting, so the sanitizers job compiles every
+      # FetchContent'd dependency (lvgl, unity, nanopb) WITH
+      # -fsanitize=address,undefined too. Pointing both jobs' _deps at one
+      # physical directory (via FETCHCONTENT_BASE_DIR) would mean whichever
+      # job wrote the cache last leaves ITS flag set baked into the other
+      # job's -build objects; the actions/cache first-writer-wins behavior
+      # (a second job's save to an already-existing key silently no-ops)
+      # would then make the outcome depend on job scheduling order — a
+      # flaky-by-construction shared cache. Separate keyed paths avoid
+      # that. What the restore-keys prefix buys instead: if this exact key
+      # misses, fall back to whichever _deps cache exists (this job's own
+      # older one, or — since prefix matching isn't job-scoped — a hit
+      # here is unlikely to come from the asan job's distinctly-keyed
+      # entry, but costs nothing to declare) rather than a fully cold
+      # fetch. CMake's own dependency tracking safely recompiles any
+      # object whose flags changed since the cache was written; only the
+      # network clone of lvgl/unity/nanopb sources is actually saved by a
+      # restore-keys fallback hit, which is the slow/flaky part worth
+      # caching.
       - name: Cache CMake FetchContent deps
         uses: actions/cache@v4
         with:
           path: firmware/build/_deps
           key: ${{ runner.os }}-fetchcontent-${{ hashFiles('firmware/CMakeLists.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-fetchcontent-
 
       - name: Configure
         working-directory: firmware
@@ -79,6 +112,7 @@ jobs:
   sanitizers:
     name: sanitizers
     runs-on: ubuntu-latest
+    timeout-minutes: 20 # S14 P0 — see build-test's timeout-minutes comment above.
     steps:
       - uses: actions/checkout@v4
 
@@ -87,11 +121,19 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libsdl2-dev
 
+      # S14 P1 — see build-test's "Cache CMake FetchContent deps" comment
+      # above for why this stays a SEPARATE path (build-asan/_deps, not
+      # shared with build/_deps) with only a shared restore-keys prefix:
+      # this job's FetchContent'd deps are compiled WITH the sanitizer
+      # flags below, so the two _deps trees' build artifacts are not
+      # interchangeable.
       - name: Cache CMake FetchContent deps
         uses: actions/cache@v4
         with:
           path: firmware/build-asan/_deps
-          key: ${{ runner.os }}-asan-fetchcontent-${{ hashFiles('firmware/CMakeLists.txt') }}
+          key: ${{ runner.os }}-fetchcontent-asan-${{ hashFiles('firmware/CMakeLists.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-fetchcontent-
 
       - name: Configure (ASan + UBSan)
         working-directory: firmware
@@ -112,3 +154,48 @@ jobs:
           # already the behavior we want.
           UBSAN_OPTIONS: halt_on_error=1
         run: ctest --test-dir build-asan --output-on-failure
+
+      # S14 P1 (docs/specs/S14-testing-ci.md Amendments): before this PR,
+      # goldens + the headless boot screenshot ran ONLY against the plain
+      # build/ffsim in the build-test job — the sanitizers job compiled an
+      # instrumented build-asan/ffsim and then never actually ran it
+      # through the app's real render paths (goldens exercise every
+      # fixture/face; the boot screenshot exercises cold start), so a
+      # heap-overflow or UB reachable only from rendering code had no
+      # sanitizer coverage at all. run_goldens.sh already accepts an
+      # explicit $BUILD_DIR (see its header, "Build-tree location (#55)")
+      # rather than only autodetecting ../build or ./build, so pointing it
+      # at build-asan needs no script change — verified locally against
+      # this exact build-asan tree before committing (PR body has the
+      # full run: 72/72 fixtures passed under ASan+UBSan, zero findings).
+      - name: Golden screenshots (under ASan/UBSan)
+        working-directory: firmware
+        env:
+          BUILD_DIR: ${{ github.workspace }}/firmware/build-asan
+          UBSAN_OPTIONS: halt_on_error=1
+        run: ./tests/run_goldens.sh
+
+      - name: Upload golden diff artifacts (ASan)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        continue-on-error: true   # artifact quota outages must not fail the build gate
+        with:
+          name: golden-diffs-asan
+          path: firmware/tests/golden/_diff_out/*.png
+          if-no-files-found: ignore
+
+      - name: Headless boot screenshot (under ASan/UBSan)
+        working-directory: firmware
+        env:
+          UBSAN_OPTIONS: halt_on_error=1
+        run: |
+          mkdir -p out
+          ./build-asan/ffsim --headless --screenshot out/
+
+      - name: Upload boot screenshot (ASan)
+        uses: actions/upload-artifact@v4
+        continue-on-error: true   # artifact quota outages must not fail the build gate
+        with:
+          name: ffsim-screenshots-asan
+          path: firmware/out/*.png
+          if-no-files-found: warn

@@ -459,3 +459,34 @@ if(FF_BUILD_TESTS)
 
     add_test(NAME test_map_circle_containment COMMAND test_map_circle_containment)
 endif()
+
+# ---------------------------------------------------------------------------
+# S24 AC9 (debt/test-harness PR) — the honest no-crew hint, at the model
+# level, closing a golden-pixels-only coverage gap. Same shape as
+# test_map_circle_containment above (in-process ff_build_face_screen + a
+# headless display buffer, no SDL) but walks the tree for the hint's own
+# label text against the three fixtures tests/golden/inbox_no_crew.png /
+# inbox_quiet.png / inbox_all_stale.png already render. See
+# test_scr_inbox_hint.c's own header comment for why this lives here
+# (screen-builder + label-search) rather than as a core/tests/test_inbox.c
+# unit test: the hint's visibility condition is decided in scr_inbox.c
+# (the screen), not core/shell.
+# ---------------------------------------------------------------------------
+if(FF_BUILD_TESTS)
+    add_executable(test_scr_inbox_hint
+        tests/test_scr_inbox_hint.c
+    )
+    target_link_libraries(test_scr_inbox_hint PRIVATE
+        ff-sim-fixture
+        ff-sim-face-dispatch
+        ff-app-ui
+        lvgl::lvgl
+        unity
+    )
+    target_compile_definitions(test_scr_inbox_hint PRIVATE
+        FF_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../../tests/fixtures/"
+    )
+    ff_apply_warnings(test_scr_inbox_hint)
+
+    add_test(NAME test_scr_inbox_hint COMMAND test_scr_inbox_hint)
+endif()

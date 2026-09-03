@@ -44,7 +44,25 @@
 #include "fp_pack.h"
 
 void setUp(void) {}
-void tearDown(void) {}
+
+/* P0 harness-hang fix (debt/test-harness PR). Same bug/fix as
+ * tests/test_ctl_flare_sequence.c and tests/test_wakeonly_touch.c (see
+ * the latter's tearDown comment for the full repro/verification
+ * writeup): each test owns its own lv_init()/lv_deinit() pairing
+ * (lv_init() inside ff_ctl_loop_open; lv_deinit() as the test's last
+ * line), so a failed TEST_ASSERT anywhere before that lv_deinit()
+ * longjmps past it and leaks LVGL initialized into the next test — LVGL
+ * v9's lv_init() silently no-ops when already initialized, so the leak
+ * isn't caught, it's built on top of. This tearDown is the safety net
+ * Unity always runs after every test regardless of outcome: guarded by
+ * lv_is_initialized() so it's a no-op on the normal path (the test body
+ * already deinited) and does the actual cleanup on the failure path. */
+void tearDown(void)
+{
+    if (lv_is_initialized()) {
+        lv_deinit();
+    }
+}
 
 /* Alternates LAUNCHER<->RADAR directly through ff_shell_intent,
  * bypassing the pointer-gesture path (see this file's top comment for

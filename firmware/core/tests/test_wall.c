@@ -46,6 +46,8 @@
 #include "ff_store.h"
 #include "ff_wall.h"
 
+#include "support/mock_store.h"
+
 /* Drift guard. ff_wall.h's FF_WALL_DAY_START_MIN duplicates
  * ff_sched.h's FF_SCHED_FESTIVAL_DAY_START_MIN because core cannot
  * include festpack (docs/ARCHITECTURE.md's one-way edge; see ff_wall.h's
@@ -1033,43 +1035,21 @@ static void S16_AC12c_out_of_range_offset_falls_through(void)
  * AC12c — the ff_settings_t field itself ([api]).
  * ------------------------------------------------------------------- */
 
-#define MOCK_SLOT_CAP 256
-
-typedef struct {
-    bool has_value;
-    size_t len;
-    uint8_t data[MOCK_SLOT_CAP];
-    char key[64];
-} mock_store_io_t;
-
-static int mock_get(void *io, char const *key, void *buf, size_t n)
-{
-    mock_store_io_t *m = (mock_store_io_t *)io;
-    if (!m->has_value || strcmp(m->key, key) != 0 || n < m->len) {
-        return -1;
-    }
-    memcpy(buf, m->data, m->len);
-    return (int)m->len;
-}
-
-static int mock_set(void *io, char const *key, void const *buf, size_t n)
-{
-    mock_store_io_t *m = (mock_store_io_t *)io;
-    if (n > MOCK_SLOT_CAP) {
-        return -1;
-    }
-    memcpy(m->data, buf, n);
-    m->len = n;
-    m->has_value = true;
-    snprintf(m->key, sizeof(m->key), "%s", key);
-    return 0;
-}
+/* Mock ff_store_t (mock_store_io_t/mock_store_reset/mock_store_vtable):
+ * shared support/mock_store.h (debt/test-harness PR) — previously
+ * hand-rolled here and independently in test_settings.c, which had
+ * already diverged from this file's own shape (this file's mock_set had
+ * no write counters, used snprintf instead of strncpy for the key copy,
+ * and returned a bare 0 instead of the bytes written) — see the header's
+ * own doc comment for the superset reasoning. Neither difference this
+ * test relied on (no assertion here reads set_calls/get_calls or the
+ * save/load return value), so the swap is behavior-preserving. */
 
 static void S16_AC12c_settings_utc_offset_round_trips_through_the_store(void)
 {
     mock_store_io_t io;
-    memset(&io, 0, sizeof(io));
-    ff_store_t store = {mock_get, mock_set, &io};
+    mock_store_reset(&io);
+    ff_store_t store = mock_store_vtable(&io);
 
     /* Defaults: unset, which is what keeps a never-configured puck
      * honestly UNKNOWN rather than guessing a zone. */

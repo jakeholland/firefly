@@ -1,5 +1,25 @@
 # sdkconfig.defaults — ESP32-S3 target defaults (S15 slice a).
 #
+# DRIFT RULE (added S14/S15 Amendments, 2026-09-02): a generated
+# `sdkconfig` in this directory (untracked — never commit it) does NOT
+# pick up new entries added here after it first exists. Kconfig only
+# fills in a value from *.defaults for a key that is ABSENT from
+# sdkconfig; a key already present — even written as
+# "# CONFIG_FOO is not set" — is left exactly as it is. Running
+# `idf.py reconfigure` after editing this file is NOT enough to make an
+# existing checkout pick up a new default: the key must either be
+# deleted from the board's sdkconfig (so Kconfig re-derives it from here)
+# or the whole sdkconfig regenerated (`idf.py fullclean` then
+# reconfigure). Live example: CONFIG_FREERTOS_PLACE_FUNCTIONS_INTO_FLASH=y
+# was added to this file in PR #98, but it never reached the maintainer's
+# already-generated board sdkconfig — that board is still running without
+# it today, silently, because the key was already present there (unset)
+# from an earlier configure. When adding a default that must actually
+# take effect on an existing board, say so explicitly in the PR body and
+# tell the maintainer which key(s) to delete from their local sdkconfig
+# (never edit that file from CI or an agent branch — it is untracked and
+# board-specific).
+#
 # Board: Waveshare ESP32-S3-Touch-LCD-1.46 (arrives the day after this
 # slice lands — these values are Waveshare's published module spec,
 # NOT yet confirmed against the physical board). Waveshare's product page
@@ -68,6 +88,20 @@ CONFIG_LV_USE_ARC=y
 # LVGL object heap — the radar face's static point pools are light, but
 # give the widget tree comfortable headroom (default is smaller).
 CONFIG_LV_MEM_SIZE_KILOBYTES=64
+# Espressif's registry lvgl component defaults CONFIG_LV_BUILD_EXAMPLES and
+# CONFIG_LV_BUILD_DEMOS to y — LVGL's own examples/ and demos/ trees get
+# compiled into the app image even though this project never calls
+# lv_example_*() or lv_demo_*() anywhere; nothing here references them.
+# Confirmed against the maintainer's real board sdkconfig (both =y there,
+# left over from the component's own default — the drift rule above is
+# exactly why: see this file's header) — 258 of that build's 1910 linked
+# objects are LVGL example/demo code with zero callers. Off here so a
+# fresh checkout doesn't carry that dead weight into flash budget or link
+# time. The sim's CMakeLists.txt already forces the equivalent
+# CONFIG_LV_BUILD_DEMOS/CONFIG_LV_BUILD_EXAMPLES OFF for FetchContent's
+# lvgl — this brings the device build's default in line with the sim's.
+CONFIG_LV_BUILD_EXAMPLES=n
+CONFIG_LV_BUILD_DEMOS=n
 
 # --- RAM headroom (S15 slice b) --------------------------------------------
 # On the IRAM "99.99%" concern S15a raised: measured, that 16 KB IRAM region

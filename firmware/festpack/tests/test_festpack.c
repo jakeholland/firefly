@@ -472,6 +472,158 @@ static void S05_review_null_venue_position_sets_origin_known_false(void)
 }
 
 /* ======================================================================
+ * Honest-data: wrong-TYPED numeric fields (present, but not the type the
+ * schema promises — e.g. a quoted "43.7" where a JSON number is
+ * required) must never look "verified"/"known"/"explicit" while actually
+ * holding a default. See docs/specs/S05-festpack.md's Amendments entry
+ * for the per-field policy this proves.
+ * ==================================================================== */
+
+/* Festival origin: venue.lat/lon has no per-field "unknown" concept
+ * distinct from origin_known itself, so a wrong-typed lat/lon is folded
+ * into that SAME honest-unknown slot the null-venue case already uses —
+ * origin_known stays false, origin stays {0,0}, and the rest of the pack
+ * (which has nothing to do with the venue) still parses. */
+static void S05_review_string_origin_lat_sets_origin_known_false(void)
+{
+    char buf[FIXTURE_BUF_SZ];
+    size_t len = load_fixture("wrong_type_origin.festpack.json", buf, sizeof(buf));
+    fp_pack_t pack;
+    fp_result_t r = fp_parse(buf, len, &pack, s_toks, FP_MAX_TOKENS);
+    TEST_ASSERT_EQUAL_INT(FP_OK, r);
+    TEST_ASSERT_FALSE(pack.origin_known);
+    TEST_ASSERT_EQUAL_FLOAT(0.0f, (float)pack.origin.lat);
+    TEST_ASSERT_EQUAL_FLOAT(0.0f, (float)pack.origin.lon);
+    /* Nothing else about the pack is affected. */
+    TEST_ASSERT_EQUAL_UINT8(1, pack.n_stages);
+    TEST_ASSERT_EQUAL_UINT16(1, pack.n_sets);
+    TEST_ASSERT_EQUAL_STRING("Solo Act", pack.sets[0].artist);
+}
+
+/* Landmark position: has_pos is exactly the "known" flag has_pos exists
+ * for — a wrong-typed lat leaves it false, same as a null/absent
+ * position, while the landmark's other fields (id/name) still parse. */
+static void S05_review_string_landmark_lat_sets_has_pos_false(void)
+{
+    char buf[FIXTURE_BUF_SZ];
+    size_t len = load_fixture("wrong_type_landmark.festpack.json", buf, sizeof(buf));
+    fp_pack_t pack;
+    fp_result_t r = fp_parse(buf, len, &pack, s_toks, FP_MAX_TOKENS);
+    TEST_ASSERT_EQUAL_INT(FP_OK, r);
+    TEST_ASSERT_EQUAL_UINT8(1, pack.n_landmarks);
+    TEST_ASSERT_FALSE(pack.landmarks[0].has_pos);
+    TEST_ASSERT_EQUAL_FLOAT(0.0f, pack.landmarks[0].east_m);
+    TEST_ASSERT_EQUAL_FLOAT(0.0f, pack.landmarks[0].north_m);
+    TEST_ASSERT_EQUAL_STRING("lm1", pack.landmarks[0].id);
+    TEST_ASSERT_EQUAL_STRING("Suspect Landmark", pack.landmarks[0].name);
+}
+
+/* utc_offset_min: a wrong-typed value must NOT flip utc_offset_assumed to
+ * false (that flag is ff_shell.c's S18 wall-clock-trust signal — a bad
+ * offset outranking the user's manual setting would be a real regression,
+ * not a cosmetic one). It falls through to the same default path as an
+ * absent field. */
+static void S05_review_string_utc_offset_min_stays_assumed(void)
+{
+    char buf[FIXTURE_BUF_SZ];
+    size_t len = load_fixture("wrong_type_utc_offset.festpack.json", buf, sizeof(buf));
+    fp_pack_t pack;
+    fp_result_t r = fp_parse(buf, len, &pack, s_toks, FP_MAX_TOKENS);
+    TEST_ASSERT_EQUAL_INT(FP_OK, r);
+    TEST_ASSERT_EQUAL_INT16(-240, pack.utc_offset_min);
+    TEST_ASSERT_TRUE(pack.utc_offset_assumed);
+}
+
+/* A quoted integer where a plain (unflagged) numeric field is expected —
+ * `year` has no downstream "known" flag, so the existing lenient fp_u16()
+ * default is the correct, unchanged behavior: parse still succeeds, year
+ * reads as the documented default (0) rather than crashing or erroring
+ * the whole pack. This is the deliberate contrast with the flagged sites
+ * above: fp_u16() (lenient) vs. fp_num_checked()/fp_i16_checked() (strict)
+ * is a per-field choice, not a blanket one — see fp_u16()'s comment in
+ * fp_pack.c. */
+static void S05_review_quoted_integer_year_defaults_without_error(void)
+{
+    char buf[FIXTURE_BUF_SZ];
+    size_t len = load_fixture("wrong_type_year.festpack.json", buf, sizeof(buf));
+    fp_pack_t pack;
+    fp_result_t r = fp_parse(buf, len, &pack, s_toks, FP_MAX_TOKENS);
+    TEST_ASSERT_EQUAL_INT(FP_OK, r);
+    TEST_ASSERT_EQUAL_UINT16(0, pack.year);
+    TEST_ASSERT_EQUAL_UINT8(1, pack.n_stages); /* rest of the pack parses fine */
+}
+
+/* A boolean literal where a polygon point's number is expected. Before
+ * this fix, fp_parse_polygon()'s type check accepted any JSMN_PRIMITIVE
+ * (true/false included) and the unchecked conversion would then silently
+ * substitute 0.0 on strtod failure — a `[true, -84.5]` point would have
+ * quietly become (0,0) input to ff_geo_project() and shipped as if it
+ * were real geometry. fp_num_checked() closes that: a non-numeric
+ * primitive fails the whole pack (FP_ERR_JSON), consistent with the
+ * object-format-point rejection already covered above. */
+static void S05_review_boolean_polygon_point_returns_err_json(void)
+{
+    char buf[FIXTURE_BUF_SZ];
+    size_t len = load_fixture("boolean_polygon_point.festpack.json", buf, sizeof(buf));
+    fp_pack_t pack;
+    fp_result_t r = fp_parse(buf, len, &pack, s_toks, FP_MAX_TOKENS);
+    TEST_ASSERT_EQUAL_INT(FP_ERR_JSON, r);
+}
+
+/* Non-finite numeric values (UBSan-confirmed pre-existing defect right
+ * next to this property): "1e400" is syntactically valid JSON number
+ * text (JSON's grammar puts no bound on exponent magnitude) that
+ * strtod() parses to +Infinity (HUGE_VAL) rather than failing outright.
+ * Before fp_num_checked() rejected non-finite results, this reached the
+ * `(int16_t)v` cast in fp_parse_inner()'s utc_offset_min handling —
+ * casting a non-finite double to int16_t is undefined behavior in C.
+ * Same treatment as any other wrong-typed utc_offset_min: falls through
+ * to the documented -240 default with utc_offset_assumed left true,
+ * never a crash/UB and never a false "explicit" reading. */
+static void S05_review_positive_infinity_utc_offset_min_stays_assumed(void)
+{
+    char buf[FIXTURE_BUF_SZ];
+    size_t len = load_fixture("non_finite_utc_offset_pos.festpack.json", buf, sizeof(buf));
+    fp_pack_t pack;
+    fp_result_t r = fp_parse(buf, len, &pack, s_toks, FP_MAX_TOKENS);
+    TEST_ASSERT_EQUAL_INT(FP_OK, r);
+    TEST_ASSERT_EQUAL_INT16(-240, pack.utc_offset_min);
+    TEST_ASSERT_TRUE(pack.utc_offset_assumed);
+}
+
+/* Same as above with "-1e400" (-Infinity) — proves the finite-check
+ * covers both signs, not just overflow-to-+Infinity. */
+static void S05_review_negative_infinity_utc_offset_min_stays_assumed(void)
+{
+    char buf[FIXTURE_BUF_SZ];
+    size_t len = load_fixture("non_finite_utc_offset_neg.festpack.json", buf, sizeof(buf));
+    fp_pack_t pack;
+    fp_result_t r = fp_parse(buf, len, &pack, s_toks, FP_MAX_TOKENS);
+    TEST_ASSERT_EQUAL_INT(FP_OK, r);
+    TEST_ASSERT_EQUAL_INT16(-240, pack.utc_offset_min);
+    TEST_ASSERT_TRUE(pack.utc_offset_assumed);
+}
+
+/* Non-finite festival origin lat: "1e400" parses to +Infinity via
+ * strtod(), same underlying defect as above but exercised through
+ * fp_num_checked() directly (no int16 cast involved here — origin.lat is
+ * a double) — proves fp_num_checked()'s own isfinite() rejection, not
+ * just the int16-cast guard, closes the honesty gap: origin_known must
+ * stay false rather than "verified" at a non-finite/nonsensical
+ * coordinate. */
+static void S05_review_infinite_origin_lat_sets_origin_known_false(void)
+{
+    char buf[FIXTURE_BUF_SZ];
+    size_t len = load_fixture("non_finite_origin_lat.festpack.json", buf, sizeof(buf));
+    fp_pack_t pack;
+    fp_result_t r = fp_parse(buf, len, &pack, s_toks, FP_MAX_TOKENS);
+    TEST_ASSERT_EQUAL_INT(FP_OK, r);
+    TEST_ASSERT_FALSE(pack.origin_known);
+    TEST_ASSERT_EQUAL_FLOAT(0.0f, (float)pack.origin.lat);
+    TEST_ASSERT_EQUAL_FLOAT(0.0f, (float)pack.origin.lon);
+}
+
+/* ======================================================================
  * AC6 — struct size budget (also enforced at compile time in fp_pack.h).
  * ==================================================================== */
 
@@ -584,6 +736,15 @@ int main(void)
     RUN_TEST(S05_AC5_feature_polygon_projects_known_square_within_1m);
 
     RUN_TEST(S05_review_null_venue_position_sets_origin_known_false);
+
+    RUN_TEST(S05_review_string_origin_lat_sets_origin_known_false);
+    RUN_TEST(S05_review_string_landmark_lat_sets_has_pos_false);
+    RUN_TEST(S05_review_string_utc_offset_min_stays_assumed);
+    RUN_TEST(S05_review_quoted_integer_year_defaults_without_error);
+    RUN_TEST(S05_review_boolean_polygon_point_returns_err_json);
+    RUN_TEST(S05_review_positive_infinity_utc_offset_min_stays_assumed);
+    RUN_TEST(S05_review_negative_infinity_utc_offset_min_stays_assumed);
+    RUN_TEST(S05_review_infinite_origin_lat_sets_origin_known_false);
 
     RUN_TEST(S05_AC6_pack_struct_fits_48kb_budget);
 
