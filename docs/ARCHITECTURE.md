@@ -53,15 +53,24 @@ C11 for firmware and libs (LVGL/ESP-IDF ecosystem, C ABI = the multi-language in
 
 ```
 firmware/
-  core/         include/  src/  tests/
-  meshclient/   include/  src/  tests/
-  festpack/     include/  src/  tests/
-  app/          screens/  fonts/  theme/
+  core/         include/  src/  tests/            pure C11 domain logic
+  meshclient/   include/  src/  tests/  proto/     Meshtastic client lib
+  festpack/     include/  src/  tests/             festpack.json parser
+  platform/     include/                           shared types (ff_clock_t, ff_latlon_t)
+  app/          screens/  theme/  include/  tests/ LVGL UI: renders core state, forwards input
   targets/      sim/  esp32s3/
-  third_party/  (FetchContent pins: lvgl, nanopb, unity, jsmn)
+    esp32s3/components/  ff_core  ff_meshclient  ff_meshclient_proto  ff_festpack
+                          ff_platform  ff_power  ff_display  ff_app  ff_app_ui
+                          ff_jsmn  ff_nanopb  esp_lcd_touch_spd2010
+  tools/        compare_png/png_diff (goldens)  social/ (render_scene.py)  dev/ (crew_sim, ctl docs)
+  tests/        golden/  fixtures/  e2e/ (pytest + meshtasticd)
+  assets/       demo/ (S20's embedded demo festpack)
+  third_party/  vendored: jsmn.h, stb_image*.h — FetchContent pins: lvgl, unity, nanopb
 docs/
-  specs/        S01..S15 feature specs (the contracts)
+  specs/        S01..S26 feature specs (the contracts)
   screens/      committed sim screenshots (PR artifacts)
-web/            (later) flasher + setup page
-case/           (later) enclosure CAD/STL
+  hardware/     bring-up notes (glass offset, bench rig)
+  review/       code-review.md, ux-raver.md review personas
+web/            (stub — README.md only so far) flasher + setup page
+case/           (stub — README.md only so far) enclosure CAD/STL
 ```

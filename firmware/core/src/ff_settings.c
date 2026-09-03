@@ -14,12 +14,12 @@
  * same sizeof() (e.g. a reordering, or swapping a bool+uint8_t pair) and
  * would otherwise pass validation with silently corrupted semantics. */
 #define FF_SETTINGS_FORMAT_VERSION ((uint16_t)8u)
-/* v2: compass_cal_blob (opaque uint8_t[32]) -> compass_cal (ff_geo_cal_t),
- * per TODO(S01) in ff_settings.h. Same sizeof() risk the header comment
- * warns about (a reordering/retype can share sizeof() with the old
- * layout) doesn't apply numerically here — ff_geo_cal_t is 28 bytes vs.
- * the blob's 32 — but the version bump is required regardless: this is a
- * field type/semantics change, not just a size change. */
+/* v2: compass_cal_blob (opaque uint8_t[32]) -> compass_cal (ff_geo_cal_t).
+ * Same sizeof() risk the header comment warns about (a reordering/retype
+ * can share sizeof() with the old layout) doesn't apply numerically here
+ * — ff_geo_cal_t is 28 bytes vs. the blob's 32 — but the version bump is
+ * required regardless: this is a field type/semantics change, not just a
+ * size change. */
 /* v3: + utc_offset_min / utc_offset_set (S16 slice b0's [api] amendment
  * to S11 — see ff_settings.h). A v2 blob is rejected on load and the
  * full defaults apply, which is the honest outcome here: the new field

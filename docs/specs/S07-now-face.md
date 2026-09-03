@@ -36,6 +36,8 @@ a) engine + tests · b) face render + goldens · c) alarm + haptic hook + star p
 
 ## Amendments
 
+Renamed to Lineup/Inbox on 2026-09-01 — see S26 Nav model Amendments; this spec keeps its original vocabulary.
+
 - **2026-08-25, PR #65 independent review, finding 1 — duplicate `start_min`
   on one stage must not double-render.** The 2026-08-24 derivation ruling
   below (item 2) fixed WHAT a null `end_min` derives to, but not what

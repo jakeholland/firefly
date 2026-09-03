@@ -8,7 +8,7 @@ name: e2e
 # triggers this; a maintainer opts a specific PR in on demand by applying
 # the "e2e" label. See docs/specs/S13-sim-target.md slice d and PR #19's
 # body/review for the documented, evidence-based limitations of two of
-# the three scenarios (test_pulse_reaches_feed / test_text_roundtrip are
+# the three scenarios (test_flare_reaches_feed / test_text_roundtrip are
 # xfail(strict=False), not skipped — see
 # firmware/tests/e2e/test_scenarios.py's module docstring).
 on:
@@ -23,6 +23,7 @@ jobs:
   e2e:
     name: e2e
     runs-on: ubuntu-latest
+    timeout-minutes: 20 # S14 P0 — job-level hang backstop, see ci.yml's build-test job.
     # Only actually run for the pull_request trigger when "e2e" was the
     # label just applied — GitHub fires `labeled` for every label, not
     # just this one, and this job is not meant to run on e.g. "bug" or

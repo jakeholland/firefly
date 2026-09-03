@@ -5,12 +5,7 @@
 
 #include <string.h>
 
-/* Wraparound-safe "has now_ms reached deadline_ms yet" — the same
- * convention ff_power_fsm.c documents. INCLUSIVE at the boundary. */
-static bool ff_button_reached(uint32_t now_ms, uint32_t deadline_ms)
-{
-    return (int32_t)(now_ms - deadline_ms) >= 0;
-}
+#include "ff_clock.h" /* ff_time_reached — wraparound-safe deadline check */
 
 void ff_button_init(ff_button_t *b)
 {
@@ -38,7 +33,7 @@ bool ff_button_tick(ff_button_t *b, uint32_t now_ms, bool level)
         b->raw_pending = true;
     }
 
-    if (b->raw_pending && ff_button_reached(now_ms, b->raw_change_ms + FF_BUTTON_DEBOUNCE_MS)) {
+    if (b->raw_pending && ff_time_reached(now_ms, b->raw_change_ms + FF_BUTTON_DEBOUNCE_MS)) {
         b->raw_pending = false;
         if (b->raw_level != b->debounced_pressed) {
             b->debounced_pressed = b->raw_level;

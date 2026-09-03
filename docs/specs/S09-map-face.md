@@ -21,6 +21,8 @@ a) xform + tests · b) render + goldens.
 
 ## Amendments
 
+Renamed to Lineup/Inbox on 2026-09-01 — see S26 Nav model Amendments; this spec keeps its original vocabulary.
+
 - **2026-09-01, horizontal-carousel rework — routing SUPERSEDED: Map is
   an ordinary SWIPE FACE now, not a modal.** The 2026-08-25 amendment
   below made Map a modal reached by a vertical top-swipe
