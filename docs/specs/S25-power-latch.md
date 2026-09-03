@@ -92,7 +92,7 @@ matching the other `targets/esp32s3` HAL code (`ff_display`), is:
 
 ## Amendments
 
-- **2026-09-03, S25 slice c, core + shell half (`ff_batt`, `ff_shell_set_batt_mv`).**
+- **2026-09-03, PR #180, S25 slice c, core + shell half (`ff_batt`, `ff_shell_set_batt_mv`).**
   Lands the platform-neutral half of the battery gauge — everything the
   device-side ADC-read PR (this slice's own deferred bullet above) will call
   into. No `targets/esp32s3` change in this PR; the sim still never calls the
