@@ -5054,18 +5054,33 @@ static void S26_launcher_AC_banner_expiry_dirties_key(void)
     TEST_ASSERT_EQUAL_INT(FF_APP_FACE_LAUNCHER, ff_shell_view(&H.shell)->active_face); /* stay ON the launcher */
 
     inject_text(DANA, "hi");
-    (void)ff_shell_tick(&H.shell, H.clk.t); /* new banner: the pre-existing arrival path, unaffected by this fix */
+    TEST_ASSERT_TRUE(ff_shell_tick(&H.shell, H.clk.t)); /* new banner: the pre-existing arrival path, unaffected
+                                                          * by this fix — dirty (control) */
     TEST_ASSERT_TRUE(ff_shell_view(&H.shell)->banner.active);
 
+    /* SUB-BUCKET tick, at 5999ms — still inside shell_coarsen_age_ms's
+     * one "now" bucket (s < 60u), same as S26_AC2_banner_age_same_bucket_
+     * ticks_are_clean's base-face proof. This is the review round-1
+     * finding: restoring the RAW (uncoarsened) `v->banner.age_ms` through
+     * the launcher mask instead of the already-coarsened `key->banner`
+     * would tick the age every millisecond and dirty the key here too —
+     * a proxy that would have made the expiry assertion below pass for
+     * the wrong reason (the key dirties on EVERY tick, not just the
+     * genuine expiry). Asserting FALSE here is what actually pins the
+     * mask restoring the coarsened field, not just any field named
+     * `banner`. */
     advance(5999u);
-    (void)ff_shell_tick(&H.shell, H.clk.t);
+    TEST_ASSERT_FALSE_MESSAGE(ff_shell_tick(&H.shell, H.clk.t),
+                              "a sub-bucket banner-age tick dirtied the launcher's render key - the mask must "
+                              "restore the COARSENED key->banner, not the raw v->banner, or every millisecond "
+                              "of a banner's life repaints the launcher");
     TEST_ASSERT_TRUE_MESSAGE(ff_shell_view(&H.shell)->banner.active, "expired one tick early");
 
-    /* Exactly 6000ms after the push — the banner's own expiry — with NO
-     * other state change at all (no new message, no unread delta, no
-     * face switch): the ONLY thing that changed is banner.active
-     * true->false. This is the exact transition the pre-fix mask
-     * swallowed. */
+    /* Exactly 6000ms after the push — the banner's own expiry, and also
+     * the coarsening bucket boundary — with NO other state change at all
+     * (no new message, no unread delta, no face switch): the ONLY thing
+     * that changed is banner.active true->false. This is the exact
+     * transition the pre-fix mask swallowed. */
     advance(1u);
     TEST_ASSERT_TRUE_MESSAGE(ff_shell_tick(&H.shell, H.clk.t),
                              "the banner's own expiry did not dirty the launcher's render key - an expired "
@@ -5161,6 +5176,63 @@ static void S26_launcher_radar_position_update_does_not_dirty_key(void)
                               "a radar position update dirtied the launcher's render key - the tree would "
                               "rebuild under a finger on every position tick (the anti-clobber property "
                               "this mask exists for)");
+}
+
+/* Review round 2 — the flare TAKEOVER's own NATURAL expiry (ff_flare_tick's
+ * tick-driven timeout, never a FF_INTENT_TAKEOVER_DISMISS) with base ==
+ * LAUNCHER underneath. Distinct from S16_AC13_active_face_is_never_flare_
+ * even_during_a_takeover (which walks the takeover's whole life on the
+ * launcher already) in one respect: that test never asserts the dirty
+ * BIT at the precise expiry tick, only that active_face stays sane across
+ * many 5s ticks — a takeover that stopped dirtying the key at expiry (the
+ * exact clobber the flare-takeover render-key comment documents guarding
+ * against, applied to the RECOVERY edge instead of the takeover's own
+ * appearance) would pass that test silently. This one pins the expiry
+ * tick's return value directly, and that the launcher genuinely renders
+ * again afterward — not just that active_face reads LAUNCHER (which,
+ * per S16 AC13, was already true THROUGHOUT the takeover and so is not
+ * by itself proof the tree came back). */
+static void S26_launcher_flare_takeover_natural_expiry_dirties_key_and_renders_launcher(void)
+{
+    harness_init(100000u, false);
+    inject_my_info(MY_ID);
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, true));
+    inject_node(DANA, "DANA", U_EVENING);
+    (void)ff_shell_tick(&H.shell, H.clk.t); /* settle the roster setup before reading the view back */
+    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_LAUNCHER, ff_shell_view(&H.shell)->active_face); /* the boot default,
+                                                                                        * base underneath */
+
+    inject_flare(DANA, 2u); /* short (2s) takeover — receive-side dur_s IS the takeover duration
+                              * (ff_flare_on_flare_rx: takeover_expiry_ms = now_ms + dur_s*1000),
+                              * no default substitution on the receive path */
+    TEST_ASSERT_TRUE(ff_shell_tick(&H.shell, H.clk.t)); /* takeover raised: dirty (control) */
+    TEST_ASSERT_TRUE(ff_shell_flare(&H.shell)->takeover_active);
+    /* S16 AC13: active_face is NEVER FLARE, takeover or not. */
+    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_LAUNCHER, ff_shell_view(&H.shell)->active_face);
+
+    advance(1000u); /* t = push + 1000ms: mid-life, well before the 2000ms expiry */
+    TEST_ASSERT_FALSE_MESSAGE(ff_shell_tick(&H.shell, H.clk.t), "a stable mid-life takeover repainted");
+
+    /* Exactly at the takeover's own NATURAL expiry (2000ms after the
+     * push — inclusive boundary, ff_flare.h's documented convention) —
+     * driven purely by ff_flare_tick inside ff_shell_tick, NOT
+     * FF_INTENT_TAKEOVER_DISMISS (which this test never sends). */
+    advance(1000u); /* t = push + 2000ms */
+    TEST_ASSERT_TRUE_MESSAGE(ff_shell_tick(&H.shell, H.clk.t),
+                             "the takeover's own natural expiry did not dirty the render key - the launcher "
+                             "would stay stuck showing the takeover's last frame");
+    TEST_ASSERT_FALSE(ff_shell_flare(&H.shell)->takeover_active);
+    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_LAUNCHER, ff_shell_view(&H.shell)->active_face);
+
+    /* The launcher genuinely renders again, not just active_face reading
+     * LAUNCHER (true throughout, S16 AC13) — a SECOND, independent dirty
+     * source (the unread badge, the launcher's one live scalar per this
+     * mask) still reaches the key, proving the tree is back to the
+     * launcher's normal masked behavior rather than wedged on whatever
+     * the takeover branch last produced. */
+    inject_text(DANA, "you there?"); /* a fresh unread + a banner arrival: both launcher-live facts */
+    TEST_ASSERT_TRUE_MESSAGE(ff_shell_tick(&H.shell, H.clk.t),
+                             "the launcher did not resume normal live rendering after the takeover cleared");
 }
 
 /* AC2 — a banner from a DIFFERENT paired conversation than the one
@@ -5873,6 +5945,7 @@ int main(void)
     RUN_TEST(S26_launcher_AC_banner_expiry_dirties_key);
     RUN_TEST(S26_launcher_AC_second_sender_banner_dirties_key);
     RUN_TEST(S26_launcher_radar_position_update_does_not_dirty_key);
+    RUN_TEST(S26_launcher_flare_takeover_natural_expiry_dirties_key_and_renders_launcher);
     RUN_TEST(S26_AC2_banner_from_other_paired_conv_dirties_open_thread_key);
     RUN_TEST(S26_AC2_banner_from_other_paired_conv_dirties_popup_overlay_exactly_once);
     RUN_TEST(S26_banner_open_routes_marks_read_and_dismisses);
