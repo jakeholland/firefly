@@ -282,7 +282,33 @@
 #endif
 
 void setUp(void) {}
-void tearDown(void) {}
+
+/* P0 harness-hang fix (debt/test-harness PR). Unlike test_ctl_flare_
+ * sequence.c/test_wakeonly_touch.c/test_idle_render_skip.c (one lv_init/
+ * lv_deinit pair per test), sweep_fixture() below pairs lv_init()/
+ * lv_deinit() PER FIXTURE, called in a loop from a single test
+ * (S08_hit_targets_every_committed_fixture_fits_the_glass walks every
+ * committed fixture) — that per-fixture reset is deliberate, not the
+ * bug. The bug is the same one either shape has: a failed TEST_ASSERT
+ * partway through one fixture's build (e.g. TEST_ASSERT_EQUAL_INT_
+ * MESSAGE(FF_FIXTURE_OK, fr, path)) longjmps past THAT fixture's
+ * lv_deinit(), leaking LVGL initialized into whatever runs next — this
+ * test's own remaining fixtures, or (once Unity's TEST_PROTECT() around
+ * the whole test body catches it) the next RUN_TEST entirely. LVGL v9's
+ * lv_init() silently no-ops when already initialized (see
+ * tests/test_wakeonly_touch.c's own tearDown comment for the full
+ * repro/verification writeup of the resulting hang), so the leak isn't
+ * caught, it's built on top of. This tearDown is the safety net Unity
+ * always runs after every test regardless of outcome: guarded by
+ * lv_is_initialized() so it's a no-op on the normal path (every fixture
+ * iteration already deinited cleanly) and does the actual cleanup on the
+ * failure path. */
+void tearDown(void)
+{
+    if (lv_is_initialized()) {
+        lv_deinit();
+    }
+}
 
 /* ---------------------------------------------------------------------
  * Headless LVGL setup — same shape as targets/sim/main.c's
