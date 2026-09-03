@@ -2596,6 +2596,58 @@ static void S26e_launcher_click_emits_exactly_one_intent(void)
     TEST_ASSERT_EQUAL_INT(1, s_spy.count);
 }
 
+/* =================================================================== */
+/* debt/batt-low-core — the launcher's status row must tint amber on a  */
+/* low reading, exactly like scr_radar.c's status bar. Both screens     */
+/* call the SAME core classifier (ff_radar_batt_is_low, ff_radar.h) on  */
+/* the SAME ff_radar_view_t.batt_pct field — this test proves the       */
+/* RENDERED pixel color, not just that the classifier itself is right   */
+/* (core/tests/test_radar.c already pins ff_radar_batt_is_low's         */
+/* boundary by literal; this is the render-side half that closes PR     */
+/* #177's mutation (b) gap, where the whole-frame golden threshold       */
+/* (run_goldens.sh, 0.5% of 412x412 pixels) was too coarse to catch a   */
+/* small status-row label/icon color regression in isolation).          */
+/* =================================================================== */
+
+static void S26_launcher_status_row_tints_amber_when_battery_low(void)
+{
+    ff_app_state_t state;
+
+    /* Known, low (<= FF_BATT_LOW_PCT) — icon + "NN%" label both amber. */
+    memset(&state, 0, sizeof(state));
+    state.radar.batt_pct = 10;
+    ff_scr_launcher_build(&state);
+
+    lv_obj_t *low_lbl = find_label_exact(lv_screen_active(), "10%");
+    TEST_ASSERT_NOT_NULL(low_lbl);
+    TEST_ASSERT_TRUE(lv_color_eq(lv_obj_get_style_text_color(low_lbl, LV_PART_MAIN),
+                                  lv_color_hex(FF_THEME_COLOR_STALE_AMBER)));
+
+    /* Known, NOT low — normal muted chrome, not amber. */
+    lv_obj_clean(lv_screen_active());
+    memset(&state, 0, sizeof(state));
+    state.radar.batt_pct = 50;
+    ff_scr_launcher_build(&state);
+
+    lv_obj_t *ok_lbl = find_label_exact(lv_screen_active(), "50%");
+    TEST_ASSERT_NOT_NULL(ok_lbl);
+    TEST_ASSERT_TRUE(lv_color_eq(lv_obj_get_style_text_color(ok_lbl, LV_PART_MAIN),
+                                  lv_color_hex(FF_THEME_COLOR_MUTED)));
+
+    /* Unknown (-1, no ADC yet) — honestly "--%%", never amber: unknown   */
+    /* never escalates to an alarm (CLAUDE.md "honest data over pretty   */
+    /* data"). */
+    lv_obj_clean(lv_screen_active());
+    memset(&state, 0, sizeof(state));
+    state.radar.batt_pct = -1;
+    ff_scr_launcher_build(&state);
+
+    lv_obj_t *unknown_lbl = find_label_exact(lv_screen_active(), "--%");
+    TEST_ASSERT_NOT_NULL(unknown_lbl);
+    TEST_ASSERT_TRUE(lv_color_eq(lv_obj_get_style_text_color(unknown_lbl, LV_PART_MAIN),
+                                  lv_color_hex(FF_THEME_COLOR_MUTED)));
+}
+
 /* ff_scr_launcher_satellite_deg (scr_launcher.h [api]): the N-agnostic
  * satellite-angle formula, tested directly rather than through rendered
  * pixel positions — 0deg = top, clockwise, `compass_pos * (360 / n)`.
@@ -2960,6 +3012,8 @@ int main(void)
     RUN_TEST(S26e_launcher_click_emits_exactly_one_intent);
     RUN_TEST(S26e_satellite_deg_is_n_agnostic);
     RUN_TEST(S26e_launcher_drag_across_satellites_emits_nothing);
+
+    RUN_TEST(S26_launcher_status_row_tints_amber_when_battery_low);
 
     RUN_TEST(PL_launcher_satellite_drag_off_emits_nothing);
     RUN_TEST(PL_radar_flare_drag_off_emits_nothing);
