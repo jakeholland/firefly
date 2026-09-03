@@ -1264,8 +1264,21 @@ lv_display_t *ff_display_lvgl_start(void)
          * call is a no-op (false) and orientation is unaffected. The only
          * ways to suppress it (sw_rotate, or vendoring the panel driver)
          * would risk the hardware-verified strip-flush/orientation, so we
-         * leave it per S15b FIX 3's "leave it if silencing risks orientation". */
-        .rotation = {.swap_xy = false, .mirror_x = false, .mirror_y = false},
+         * leave it per S15b FIX 3's "leave it if silencing risks orientation".
+         *
+         * mirror_x/mirror_y MUST follow s_screen_flip, not be hard-coded
+         * false: the same add_disp-time rotation update that issues the
+         * swap_xy call above also issues esp_lcd_panel_mirror(panel,
+         * cfg.mirror_x, cfg.mirror_y). With false/false here, a boot on a
+         * screen_flip=true settings blob went: app_main applies the panel
+         * mirror (ff_display_set_flip, before LVGL) -> this call silently
+         * un-mirrors the panel -> s_screen_flip stays true, so TOUCH kept
+         * rotating while the DISPLAY sat upright. The runtime toggle path
+         * never hit it (LVGL already up), which is why it only showed after
+         * a re-flash/reboot with flip persisted. Seeding the port with the
+         * live flag keeps the panel's MADCTL and the touch rotation derived
+         * from the ONE seam ff_display_set_flip's comment promises. */
+        .rotation = {.swap_xy = false, .mirror_x = s_screen_flip, .mirror_y = s_screen_flip},
         .color_format = LV_COLOR_FORMAT_RGB565,
         .flags = {
             .buff_dma = true,
