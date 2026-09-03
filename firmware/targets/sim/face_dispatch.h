@@ -10,6 +10,18 @@
  * fixture would render in order to walk its actual LVGL object tree —
  * duplicating this mapping in the test would risk it silently drifting
  * from what ffsim actually does).
+ *
+ * debt/shared-face-dispatch: the mapping itself moved into
+ * app/ff_face_dispatch.h/.c — the same chain the device target
+ * (targets/esp32s3/main/ff_face.c) now calls too, closing the "two
+ * independently hand-synced copies" gap that file's header used to
+ * document ("Mirrors targets/sim/face_dispatch.c's mapping ... the two
+ * must agree"). This header keeps `ff_build_face_screen`'s NAME and
+ * SIGNATURE unchanged (test_face_hit_targets.c and every other caller
+ * in this directory link against it as before) — face_dispatch.c is now
+ * a thin adapter over `ff_face_dispatch_build`, supplying the sim's two
+ * divergent tails (the fixture scroll hint + the fixture_view.h
+ * placeholder fallback) as hooks.
  */
 #ifndef FF_FACE_DISPATCH_H
 #define FF_FACE_DISPATCH_H
@@ -49,6 +61,11 @@ extern "C" {
  * those presses to DO something binds the seam to a real `ff_shell_t`
  * (`ff_intent_emit_bind(ff_shell_intent_sink, &shell)`) — this dispatch
  * function no longer needs to know that engine exists at all.
+ *
+ * The #bug4 fresh-entry memory this function used to keep as a file
+ * `static` now lives in a process-lifetime `ff_face_dispatch_ctx_t`
+ * inside face_dispatch.c (debt/shared-face-dispatch) — an internal
+ * implementation detail, not part of this header's contract.
  */
 void ff_build_face_screen(ff_app_state_t const *state);
 
