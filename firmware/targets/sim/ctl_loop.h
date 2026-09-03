@@ -35,6 +35,7 @@
 
 #include "ctl_server.h"
 #include "ff_app_state.h"
+#include "ff_button.h" /* S26 slice e / S10 quick flare — the debounced-press mirror below */
 #include "ff_idle.h" /* S26 slice c — the OFF-skips-rebuild enact this loop mirrors app_main.c's */
 #include "ff_shell.h"
 #include "live_setup.h"
@@ -135,6 +136,18 @@ typedef struct {
      * `ctl_loop_pointer_read_cb`, mirroring `ff_display.c`'s device-side
      * touch read path. */
     ff_idle_touch_gate_t touch_gate;
+
+    /* S10 quick flare — the sim mirror of app_main.c's `s_boot_button`/
+     * `s_boot_gate`: a SEPARATE `ff_button_t` (debounce state) and its
+     * OWN `ff_idle_touch_gate_t` instance (BOOT and the pointer above are
+     * independent input sources — ff_idle_touch_gate_t's own doc comment
+     * on why each gets its own latch), so `ff_ctl_loop_boot_press` below
+     * can drive a real, debounced BOOT/HOME press through the exact same
+     * `ff_button_tick` -> `ff_idle_touch_gate` -> `ff_shell_home_press`
+     * path app_main.c's device loop runs — see that function's own doc
+     * comment. */
+    ff_button_t boot_button;
+    ff_idle_touch_gate_t boot_gate;
 
     char ctl_out_dir_real[4096]; /* PATH_MAX-sized; see ctl_out_path.h */
 
@@ -239,6 +252,30 @@ void ff_ctl_loop_pump(ff_ctl_loop_ctx_t *ctx);
 void ff_ctl_loop_pointer_press(ff_ctl_loop_ctx_t *ctx, int32_t x, int32_t y);
 void ff_ctl_loop_pointer_step(ff_ctl_loop_ctx_t *ctx);
 void ff_ctl_loop_pointer_release(ff_ctl_loop_ctx_t *ctx);
+
+/**
+ * ff_ctl_loop_boot_press — S10 quick flare test infrastructure: drives
+ * ONE synthetic BOOT/HOME physical press through the REAL button path —
+ * `ff_button_tick`'s debounce settle, `ff_idle_touch_gate`'s wake-only
+ * verdict, `ff_idle_input`'s re-pin, and `ff_shell_home_press` — exactly
+ * mirroring app_main.c's per-frame BOOT sampling (see that file's own
+ * doc comment on `s_boot_button`/`s_boot_gate`), just choreographed
+ * (press-settle, then release-settle) across `--mock-clock` steps the
+ * same way `ff_ctl_loop_pointer_press`/`_release` choreograph a
+ * synthetic touch. Calling this N times back to back, spaced by
+ * whatever gap the caller advances the mock clock between calls, drives
+ * the shell's multitap FSM exactly as N real BOOT presses would —
+ * `tests/test_ctl_quick_flare.c`'s whole reason to exist (a real ctl
+ * session, not a bare `ff_shell_home_press` unit call, so the S26
+ * wake-only-touch gate is exercised for real from a genuinely DIM/OFF
+ * `ctx->idle`).
+ *
+ * Does NOT call `ff_ctl_loop_pump` — same "the caller drives ticks/pumps
+ * explicitly" convention as the pointer press/step/release trio above,
+ * so a test can pump other things between presses if it needs to.
+ * NULL-safe (no-op on a NULL ctx).
+ */
+void ff_ctl_loop_boot_press(ff_ctl_loop_ctx_t *ctx);
 
 /** ff_ctl_loop_close — unbinds the intent seam, tears down what
  *  ff_live_setup opened, and frees the framebuffer. Does NOT call

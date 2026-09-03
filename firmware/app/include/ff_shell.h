@@ -793,6 +793,20 @@ bool ff_shell_pair(ff_shell_t *sh, uint32_t node_id, bool paired);
  *                       calls `ff_route_launcher_select` — a no-op
  *                       unless the launcher is actually open. Rejected
  *                       while a takeover is visible.
+ *  - QUICK_FLARE (S10, docs/specs/S10-flare.md's Amendments) ->
+ *                       `ff_flare_send_begin`, exactly like FLARE_START,
+ *                       UNLESS a flare is already sending (idempotent —
+ *                       "if already flaring, a 5-tap does nothing").
+ *                       NOT rejected while a takeover is visible (unlike
+ *                       every other case here) — see `ff_shell_home_press`
+ *                       and this intent's own case in ff_shell.c for why.
+ *                       If a COMPOSE or POWER_MENU modal is up (and no
+ *                       takeover), POPS it first — neither modal
+ *                       composites the sender overlay, so the flare
+ *                       would otherwise start invisibly for as long as
+ *                       the modal stayed open. Not emitted by a screen;
+ *                       only `ff_shell_home_press` dispatches it, on its
+ *                       own multitap FSM's 5th press.
  *
  * Every other kind is a documented no-op until its owning slice (c2:
  * remaining core-mutating intents) — see ff_shell.c.
@@ -855,6 +869,50 @@ bool ff_shell_should_tap_sound(ff_shell_t const *sh);
  * call site regardless of which of the six events fired it.
  */
 void ff_shell_sound_sink(void *user, ff_sound_event_t ev);
+
+/**
+ * ff_shell_home_press — S10 quick flare (docs/specs/S10-flare.md's
+ * Amendments, 2026-09-03): the ONE entry point both targets call for
+ * every debounced HOME/BOOT press EDGE (`ff_button_tick`'s `true`
+ * return — S26 slice e), so the shell owns the whole "5 presses within
+ * a window" decision and neither target carries any of it (CLAUDE.md's
+ * "no `if` about domain behavior outside core/shell"). Replaces a
+ * target building its own `FF_INTENT_HOME` and calling `ff_shell_intent`
+ * directly — see targets/esp32s3/main/app_main.c / targets/sim/
+ * ctl_loop.c for the call sites this superseded.
+ *
+ * Does exactly two things, in this order:
+ *
+ *  1. UNCONDITIONALLY feeds the press into the shell's own
+ *     `ff_multitap_t` (core/include/ff_multitap.h) — regardless of
+ *     `deliver` below. This is deliberate, not an oversight: a press
+ *     that WAKES a DIM/OFF/SLEEP screen is, per S26's wake-only-touch
+ *     amendment, swallowed for navigation (delivered to the UI) but it
+ *     is still a real physical press of the button, and the spec is
+ *     explicit that the first tap of a burst that starts the screen
+ *     asleep must still count ("confirm the first tap wakes and
+ *     counts"). Counting here, before the `deliver` gate below, is what
+ *     makes that true.
+ *  2. If `ff_multitap_press` reports the 5th press of one continuous
+ *     run, dispatches `FF_INTENT_QUICK_FLARE` (ff_intent.h) — see that
+ *     intent's own case in ff_shell.c for what it does (mirrors
+ *     FF_INTENT_FLARE_START, idempotent against an already-sending
+ *     flare, NOT gated on a visible takeover).
+ *
+ * `deliver` is the caller's own wake-only-touch-gate decision for THIS
+ * press (`ff_idle_touch_gate`, core/include/ff_idle.h) — the same
+ * boolean every other input source's delivery already depends on. When
+ * true, this also dispatches the ordinary `FF_INTENT_HOME` (navigate to
+ * the launcher / no-op, exactly as before this slice) — taps 1-4 (and
+ * the 5th) still run this; it is harmless and is what keeps the gesture
+ * idempotent (spec: "taps 1-4 keep their normal HOME behaviour"). When
+ * false (a wake-only press), HOME is not dispatched — same rule S26
+ * already applies to every other input source — but step 1 above still
+ * ran, so the press still counted.
+ *
+ * NULL `sh`: safe no-op (nothing counted, nothing dispatched).
+ */
+void ff_shell_home_press(ff_shell_t *sh, uint32_t now_ms, bool deliver);
 
 /* ---------------------------------------------------------------------
  * Sensor seam — what the shell cannot know by itself
@@ -1023,8 +1081,8 @@ uint32_t ff_shell_compose_to_node(ff_shell_t const *sh);
  * `ff_shell_t` — it takes the PROJECTED view (`ff_shell_view`'s return)
  * plus the one fact the view does not carry, so it is unit-testable with
  * a bare `ff_app_state_t` (no shell instance, no clock, no store) the
- * same way `ff_shell.c`'s render-key reduction is exercised. Two of the
- * three sources are already-public view fields:
+ * same way `ff_shell.c`'s render-key reduction is exercised. Three of
+ * the four sources are already-public view fields:
  *
  *  - `view->flare.takeover_active` — a pending flare takeover (the
  *    existing S07 field; this slice adds no new one).
@@ -1034,6 +1092,10 @@ uint32_t ff_shell_compose_to_node(ff_shell_t const *sh);
  *    `FF_APP_FACE_POWER_MENU` for why that distinction matters here:
  *    this is the same fact `face_dispatch.c` renders from, not a
  *    reach-into-private-route check.
+ *  - `view->quick_flare_pending` — a HOME/BOOT multitap run in progress
+ *    (S10 quick flare, docs/specs/S10-flare.md's Amendments) — mirrors
+ *    `ff_multitap_pending` (core/include/ff_multitap.h); see that
+ *    view field's own doc comment in ff_app_state.h.
  *
  * `touch_cal_running` is the one source the view cannot carry: the S21
  * §3 crosshair capture is a blocking device-runtime flow
@@ -1045,7 +1107,7 @@ uint32_t ff_shell_compose_to_node(ff_shell_t const *sh);
  * OR, and what it feeds) lives in core/shell, never a scattered `if` in
  * app_main.
  *
- * Returns true if ANY of the three hold. `view == NULL` is treated as
+ * Returns true if ANY of the four hold. `view == NULL` is treated as
  * "nothing to hold awake for" (false), same safe-default convention as
  * `ff_shell_link` etc.
  */
