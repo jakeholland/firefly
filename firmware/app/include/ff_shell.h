@@ -862,17 +862,39 @@ void ff_shell_set_heading(ff_shell_t *sh, float heading_deg);
  * the raw value for the next `ff_shell_tick` to interpret), this call
  * runs the reading through the core display filter (`ff_batt.h`)
  * IMMEDIATELY — see `ff_batt.h`'s own doc comment for why a moving-
- * median + hysteresis filter needs to see every actual reading as its
- * own timed event rather than being resampled at the shell's tick rate.
- * The filtered result still only reaches `ff_shell_view()` on the NEXT
- * `ff_shell_tick` (the projection is rebuilt there, same as every other
- * view field) — this call never mutates the view directly.
+ * average + Schmitt-hysteresis filter needs to see every actual reading
+ * as its own timed event rather than being resampled at the shell's
+ * tick rate. The filtered result still only reaches `ff_shell_view()`
+ * on the NEXT `ff_shell_tick` (the projection is rebuilt there, same as
+ * every other view field) — this call never mutates the view directly.
+ *
+ * `now_ms` — [api] CHANGED from this function's first cut (added in a
+ * PR #180 review round, should-fix): pass the CALLER's own clock
+ * reading at the moment of this actual ADC read, not a value cached
+ * from anywhere else in the shell. The first cut read `sh`'s own
+ * last-tick clock internally, which defaults to 0 before the shell's
+ * first `ff_shell_tick` — a caller reading the battery before that
+ * first tick (plausible at boot) would push against a fake "now", and
+ * a later push at the real time could then look like a many-second gap
+ * and spuriously trip `ff_batt.h`'s stale-gap window reset. Taking
+ * `now_ms` explicitly (the same convention `ff_shell_tick` itself
+ * already uses) removes the dependency on shell tick bookkeeping
+ * entirely — there is no pre-tick edge case left to get wrong. Any
+ * monotonic millisecond clock is fine (e.g. `esp_timer_get_time() /
+ * 1000` on device) as long as the SAME clock is used for every push —
+ * `ff_batt_filter_t`'s gap/window math only ever compares two of this
+ * function's own `now_ms` values against each other, never against
+ * `ff_shell_tick`'s.
  *
  * `pack_mv == 0` is the "no reading yet / sense line dead" sentinel
  * (`ff_batt_pct_from_mv`'s own documented convention) — passing it is
- * how a target reports "still don't know", not an error.
+ * how a target reports "still don't know", not an error. A sense line
+ * that stays dead for `FF_BATT_FILTER_DEAD_AFTER` consecutive pushes
+ * (an implausible or zero reading each time) reverts the displayed
+ * percent to -1 rather than continuing to show a number frozen from
+ * before it died — see `ff_batt.h`.
  */
-void ff_shell_set_batt_mv(ff_shell_t *sh, uint16_t pack_mv);
+void ff_shell_set_batt_mv(ff_shell_t *sh, uint16_t pack_mv, uint32_t now_ms);
 
 /* ---------------------------------------------------------------------
  * Read-only accessors (status bar, pairing UI, tests)
