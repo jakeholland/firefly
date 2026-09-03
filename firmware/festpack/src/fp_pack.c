@@ -146,21 +146,55 @@ static void fp_copy_str(fp_ctx_t const *c, int i, char *dst, size_t dst_sz)
     dst[n] = '\0';
 }
 
-static double fp_num(fp_ctx_t const *c, int i, double dflt)
+/* Strict numeric extraction: succeeds ONLY if token i exists, is a JSON
+ * number (JSMN_PRIMITIVE, not "null"/"true"/"false"), and strtod()
+ * consumes the token's ENTIRE text with no trailing garbage. Writes *out
+ * and returns true on success; leaves *out untouched and returns false on
+ * any mismatch (wrong JSMN type — e.g. a quoted string — a boolean
+ * literal, null, or malformed number text).
+ *
+ * Any call site that gates a "known"/"verified"/"assumed" flag on a
+ * value's *correctness* (not just the key's presence) MUST use this, not
+ * fp_num() below — fp_num() silently substitutes a default on a type
+ * mismatch, which is fine for a plain data field with no separate honesty
+ * flag, but was exactly the bug fixed here for origin/landmark-position/
+ * utc_offset_min: those sites used to call fp_obj_get()+!fp_is_null() to
+ * decide the flag, then fp_num() (which can *also* silently default) for
+ * the value — so a wrong-typed-but-present field looked "verified" while
+ * actually holding the default. See docs/specs/S05-festpack.md's
+ * Amendments entry "Wrong-typed numeric fields are honest unknowns". */
+static bool fp_num_checked(fp_ctx_t const *c, int i, double *out)
 {
-    if (i < 0 || i >= c->ntoks) return dflt;
+    if (i < 0 || i >= c->ntoks) return false;
     jsmntok_t const *t = &c->toks[i];
-    if (t->type != JSMN_PRIMITIVE) return dflt;
+    if (t->type != JSMN_PRIMITIVE) return false;
     int n = t->end - t->start;
-    if (n == 4 && memcmp(c->js + t->start, "null", 4) == 0) return dflt;
+    if (n == 4 && memcmp(c->js + t->start, "null", 4) == 0) return false;
+    if (n == 4 && memcmp(c->js + t->start, "true", 4) == 0) return false;
+    if (n == 5 && memcmp(c->js + t->start, "false", 5) == 0) return false;
     char buf[32];
-    if (n <= 0 || (size_t)n >= sizeof(buf)) return dflt;
+    if (n <= 0 || (size_t)n >= sizeof(buf)) return false;
     memcpy(buf, c->js + t->start, (size_t)n);
     buf[n] = '\0';
     char *end = NULL;
     double v = strtod(buf, &end);
-    if (end == buf) return dflt;
-    return v;
+    if (end == buf || *end != '\0') return false; /* no digits, or trailing junk */
+    *out = v;
+    return true;
+}
+
+/* Lenient wrapper over fp_num_checked(): returns `dflt` on any mismatch
+ * instead of signaling failure. Correct for plain data fields that have
+ * no separate "was this verified" flag downstream (e.g. `year`, a set's
+ * `starred` bool) — silently defaulting there is the same tolerant
+ * posture the parser already takes for unknown keys. NOT correct for a
+ * field whose presence flips a "known"/"assumed" bool elsewhere; use
+ * fp_num_checked() directly for those (see its comment). */
+static double fp_num(fp_ctx_t const *c, int i, double dflt)
+{
+    double v;
+    if (fp_num_checked(c, i, &v)) return v;
+    return dflt;
 }
 
 static bool fp_bool(fp_ctx_t const *c, int i, bool dflt)
@@ -316,14 +350,23 @@ static fp_result_t fp_parse_festival(fp_ctx_t const *c, int fest_i, fp_pack_t *o
         int lat_i = -1, lon_i = -1;
         bool have_lat = fp_obj_get(c, venue_i, "lat", &lat_i) && !fp_is_null(c, lat_i);
         bool have_lon = fp_obj_get(c, venue_i, "lon", &lon_i) && !fp_is_null(c, lon_i);
-        if (have_lat && have_lon) {
-            origin->lat = fp_num(c, lat_i, 0.0);
-            origin->lon = fp_num(c, lon_i, 0.0);
+        double lat_v = 0.0, lon_v = 0.0;
+        if (have_lat && have_lon && fp_num_checked(c, lat_i, &lat_v) && fp_num_checked(c, lon_i, &lon_v)) {
+            origin->lat = lat_v;
+            origin->lon = lon_v;
             out->origin_known = true;
         }
         /* venue.lat/lon may be null (schema: "unknown venue") — origin
          * stays {0,0} and origin_known stays false, per fp_pack_t's
-         * documented contract. Don't silently present that as real. */
+         * documented contract. Don't silently present that as real.
+         * Same treatment for a wrong-typed lat/lon (e.g. a quoted
+         * "43.7"): fp_pack_t already has a dedicated honest-unknown slot
+         * for this exact "present but not usable" case, so a type
+         * mismatch here is folded into that existing null-venue path
+         * rather than failing the whole pack — see docs/specs/
+         * S05-festpack.md's Amendments entry for the policy and why this
+         * differs from fp_parse_polygon()'s FP_ERR_JSON (a polygon point
+         * has no per-point "unknown" slot to fall back to). */
         int lt;
         if (fp_obj_get(c, venue_i, "approximate", &lt)) out->origin_approx = fp_bool(c, lt, false);
     }
@@ -407,11 +450,19 @@ static fp_result_t fp_parse_polygon(fp_ctx_t const *c, int poly_i, ff_latlon_t o
         int lat_i = pt_tok_i + 1;
         int lon_i = fp_skip(c, lat_i);
         if (lat_i >= c->ntoks || lon_i >= c->ntoks) return FP_ERR_JSON;
-        jsmntok_t const *lat_tok = &c->toks[lat_i];
-        jsmntok_t const *lon_tok = &c->toks[lon_i];
-        if (lat_tok->type != JSMN_PRIMITIVE || lon_tok->type != JSMN_PRIMITIVE) return FP_ERR_JSON;
 
-        ff_latlon_t p = {fp_num(c, lat_i, 0.0), fp_num(c, lon_i, 0.0)};
+        /* fp_num_checked (not fp_num) so a boolean literal in tuple
+         * position — well-formed JSMN_PRIMITIVE, but not a number, e.g.
+         * [true, -82.4] — is also rejected rather than silently
+         * projecting a fabricated 0.0. Same policy as the JSMN_ARRAY/
+         * size checks above: a malformed point fails the whole pack,
+         * because a polygon point has no per-point "unknown" slot to
+         * honestly fall back to (unlike origin/landmark/utc_offset_min —
+         * see docs/specs/S05-festpack.md's Amendments entry). */
+        double lat_v, lon_v;
+        if (!fp_num_checked(c, lat_i, &lat_v) || !fp_num_checked(c, lon_i, &lon_v)) return FP_ERR_JSON;
+
+        ff_latlon_t p = {lat_v, lon_v};
         ff_geo_project(origin, p, &f->pts_en[f->n_pts][0], &f->pts_en[f->n_pts][1]);
         f->n_pts++;
         idx = fp_skip(c, pt_tok_i);
@@ -461,8 +512,13 @@ static fp_result_t fp_parse_landmarks(fp_ctx_t const *c, int arr_i, ff_latlon_t 
         int lat_i = -1, lon_i = -1;
         bool have_lat = fp_obj_get(c, obj_i, "lat", &lat_i) && !fp_is_null(c, lat_i);
         bool have_lon = fp_obj_get(c, obj_i, "lon", &lon_i) && !fp_is_null(c, lon_i);
-        if (have_lat && have_lon) {
-            ff_latlon_t p = {fp_num(c, lat_i, 0.0), fp_num(c, lon_i, 0.0)};
+        double lat_v = 0.0, lon_v = 0.0;
+        /* Wrong-typed lat/lon (e.g. a quoted string) is treated exactly
+         * like an absent/null position: has_pos stays false rather than
+         * projecting a fabricated (0,0)-derived east/north as if it were
+         * real. See docs/specs/S05-festpack.md's Amendments entry. */
+        if (have_lat && have_lon && fp_num_checked(c, lat_i, &lat_v) && fp_num_checked(c, lon_i, &lon_v)) {
+            ff_latlon_t p = {lat_v, lon_v};
             ff_geo_project(origin, p, &lm->east_m, &lm->north_m);
             lm->has_pos = true;
         }
@@ -511,14 +567,25 @@ static fp_result_t fp_parse_inner(fp_ctx_t const *c, fp_pack_t *out)
      * it entirely). Check top-level first, then nested under "festival"
      * as a fallback, then default to -240 (EDT, the Lost Lands venue's
      * standard September UTC offset). See docs/specs/S05-festpack.md and
-     * the S05 PR body for the interpretation call. */
+     * the S05 PR body for the interpretation call.
+     *
+     * A wrong-typed value (e.g. a quoted "-240") at either location is
+     * treated exactly like the field being absent there — it falls
+     * through to the next location, and ultimately to the default —
+     * rather than marking utc_offset_assumed false while quietly holding
+     * the -240 default. ff_shell.c reads utc_offset_assumed as the S18
+     * wall-clock-trust signal, so a bad-but-present value must not
+     * outrank the user's manual setting. See docs/specs/S05-festpack.md's
+     * Amendments entry. */
     {
         int t;
-        if (fp_obj_get(c, 0, "utc_offset_min", &t) && !fp_is_null(c, t)) {
-            out->utc_offset_min = (int16_t)fp_num(c, t, -240.0);
+        double v;
+        if (fp_obj_get(c, 0, "utc_offset_min", &t) && !fp_is_null(c, t) && fp_num_checked(c, t, &v)) {
+            out->utc_offset_min = (int16_t)v;
             out->utc_offset_assumed = false;
-        } else if (fest_i >= 0 && fp_obj_get(c, fest_i, "utc_offset_min", &t) && !fp_is_null(c, t)) {
-            out->utc_offset_min = (int16_t)fp_num(c, t, -240.0);
+        } else if (fest_i >= 0 && fp_obj_get(c, fest_i, "utc_offset_min", &t) && !fp_is_null(c, t) &&
+                   fp_num_checked(c, t, &v)) {
+            out->utc_offset_min = (int16_t)v;
             out->utc_offset_assumed = false;
         } else {
             out->utc_offset_min = -240;
