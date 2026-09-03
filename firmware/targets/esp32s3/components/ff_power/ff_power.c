@@ -23,6 +23,8 @@
 #include "esp_adc/adc_oneshot.h"
 #include "esp_log.h"
 
+#include "ff_power_batt_conv.h"
+
 /* SYS_EN / PWR_Control — the battery keep-alive latch. Drive HIGH to hold the
  * rail on; LOW is a soft power-off. Direct ESP32-S3 GPIO, NOT a TCA9554
  * expander pin, so this needs no I2C bring-up and can run first. Pin from
@@ -70,19 +72,12 @@
  * call this file's own caller (app_main.c) makes once every 2 seconds. */
 #define FF_BATT_ADC_SAMPLES 8u
 
-/* The pack-voltage conversion, composed into ONE named constant (see
- * ff_power.h's `ff_power_batt_mv` doc comment for why): the board's 1:3
- * resistive divider (×3) combined with Waveshare's own measured
- * correction on top of that (their BAT_Driver.c divides the naive ×3
- * result by 0.990476 — the silicon's actual divider ratio is not
- * exactly 3:1). 3.0 / 0.990476 = 3.028835... (to 6 s.f.), scaled by 1e6
- * so the whole conversion below is integer-only: `pack_mv = round(cal_mv
- * * FF_BATT_PACK_MV_PER_CAL_MV_X1E6 / 1e6)`. A `uint64_t` intermediate
- * is required at the multiply — the largest plausible calibrated ADC
- * reading here (~1533 mV, corresponding to `ff_batt.h`'s own ~4.6V pack
- * plausibility ceiling divided by 3) times this scaled ratio is
- * ~4.64e9, which overflows a 32-bit product (UINT32_MAX is ~4.29e9). */
-#define FF_BATT_PACK_MV_PER_CAL_MV_X1E6 ((uint32_t)3028835u)
+/* The pack-voltage conversion (the board's 1:3 divider composed with
+ * Waveshare's own measured correction) is pure arithmetic with no ESP
+ * dependency — hoisted into ff_power_batt_conv.h (review fix: also
+ * where the ×1e6-scaled constant's derivation is documented and where
+ * a HOST test, targets/sim/tests/test_batt_pack_mv.c, pins it by
+ * literal) rather than defined here. */
 
 static const char *TAG = "ff_power";
 
@@ -331,15 +326,10 @@ uint16_t ff_power_batt_mv(void)
         return 0;
     }
 
-    /* Pin mV -> pack mV: see FF_BATT_PACK_MV_PER_CAL_MV_X1E6's own doc
-     * comment for the arithmetic and why a uint64_t intermediate is
-     * required. Clamped to uint16_t (this function's return type) rather
-     * than silently wrapping — a reading that would overflow it is well
-     * outside any plausible pack voltage and core's own plausibility gate
-     * (ff_batt.h, [2500, 4600] mV) rejects it as unknown either way. */
-    uint64_t const scaled = (uint64_t)cal_mv * FF_BATT_PACK_MV_PER_CAL_MV_X1E6 + 500000ULL;
-    uint64_t const pack_mv64 = scaled / 1000000ULL;
-    uint16_t const pack_mv = (pack_mv64 > (uint64_t)UINT16_MAX) ? UINT16_MAX : (uint16_t)pack_mv64;
+    /* Pin mV -> pack mV: the pure conversion, host-testable —
+     * ff_power_batt_conv.h's own doc comment has the arithmetic, the
+     * uint64_t-overflow reasoning, and the clamp rationale. */
+    uint16_t const pack_mv = ff_power_batt_pack_mv_from_cal_mv((uint32_t)cal_mv);
 
     if (!s_batt_first_reading_logged) {
         s_batt_first_reading_logged = true;

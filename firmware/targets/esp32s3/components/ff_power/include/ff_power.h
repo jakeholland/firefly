@@ -159,9 +159,11 @@ esp_err_t ff_power_batt_init(void);
  *      `BAT_Driver.c` divides the naive ×3 result by 0.990476) — the
  *      silicon's actual divider ratio is not exactly 3:1.
  * Composed into ONE named integer constant
- * (`FF_BATT_PACK_MV_PER_CAL_MV_X1E6`, ff_power.c) rather than two
- * separate floating-point multiplies, so the whole device-facing
- * conversion is integer-only.
+ * (`FF_BATT_PACK_MV_PER_CAL_MV_X1E6`, ff_power_batt_conv.h — a pure,
+ * ESP-free header hoisted out of ff_power.c specifically so a HOST test,
+ * targets/sim/tests/test_batt_pack_mv.c, can pin the conversion by
+ * literal) rather than two separate floating-point multiplies, so the
+ * whole device-facing conversion is integer-only.
  *
  * The first successful call logs (ESP_LOGI, once) the raw average, the
  * calibrated pin mV, and the resulting pack mV — specifically so

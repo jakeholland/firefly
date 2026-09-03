@@ -200,14 +200,22 @@ matching the other `targets/esp32s3` HAL code (`ff_display`), is:
     `FF_BATT_ADC_SAMPLES` (8) raw `adc_oneshot_read`s, calibrates the
     average, then converts pin mV → PACK mV via ONE named integer constant
     (`FF_BATT_PACK_MV_PER_CAL_MV_X1E6` = round(3.0 / 0.990476 × 1e6) =
-    3028835, composing the ×3 divider and the ÷0.990476 correction above;
-    a `uint64_t` intermediate avoids overflow). Returns 0 (unknown) on any
+    3028847 at full double precision, composing the ×3 divider and the
+    ÷0.990476 correction above; a `uint64_t` intermediate avoids
+    overflow — review fix: an earlier revision truncated this to
+    3028835, one part in ~33000 low). Returns 0 (unknown) on any
     failure or before calibration succeeds — never a fabricated figure.
     Pure HAL: no percent math here, matching `ff_power.h`'s existing
-    house rule. The first successful reading logs (`ESP_LOGI`, once) the
-    raw average, calibrated pin mV, and pack mV, labelled with which
-    calibration scheme is actually in effect (curve / line / NONE), so
-    bring-up can sanity-check against a multimeter.
+    house rule. Hoisted into its own ESP-free header,
+    `ff_power_batt_conv.h`, specifically so a HOST test
+    (`targets/sim/tests/test_batt_pack_mv.c`) can pin the conversion by
+    literal — cal 1300 → 3938, cal 0 → 0, the `uint16_t` clamp, and the
+    round-half-up rule at an exact tie (mutation-checked: the constant
+    off by ±1% fails this test). The first successful reading logs
+    (`ESP_LOGI`, once) the raw average, calibrated pin mV, and pack mV,
+    labelled with which calibration scheme is actually in effect
+    (curve / line / NONE), so bring-up can sanity-check against a
+    multimeter.
   - `app_main.c`: `ff_power_batt_init()` is called right after the power
     latch (S25 slice a) and logged, non-fatal on failure. One reading is
     pushed via `ff_shell_set_batt_mv` immediately after `ff_shell_init`

@@ -290,6 +290,23 @@ if(FF_BUILD_TESTS)
     ff_apply_warnings(test_ctl_batt)
 
     add_test(NAME test_ctl_batt COMMAND test_ctl_batt)
+
+    # S25 slice c, review fix: pins the pure pin-mV -> pack-mV conversion
+    # arithmetic (ff_power_batt_conv.h, hoisted out of the esp32s3-only
+    # ff_power.c specifically so this can run here) by literal, on the
+    # host. No ESP/LVGL/shell dependency at all — the header is pure
+    # <stdint.h>, included directly from the esp32s3 component's own
+    # include/ dir rather than duplicated.
+    add_executable(test_batt_pack_mv
+        tests/test_batt_pack_mv.c
+    )
+    target_include_directories(test_batt_pack_mv PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/../esp32s3/components/ff_power/include
+    )
+    target_link_libraries(test_batt_pack_mv PRIVATE unity)
+    ff_apply_warnings(test_batt_pack_mv)
+
+    add_test(NAME test_batt_pack_mv COMMAND test_batt_pack_mv)
 endif()
 
 # Issue #3 — ff_screenshot_write now creates its output directory itself
