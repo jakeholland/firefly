@@ -4876,14 +4876,22 @@ static void S26_flare_and_reserved01_do_not_push_banners(void)
 static void S26_coalesce_within_2s_updates_head_in_place(void)
 {
     harness_init(100000u, false);
-    /* S26e amended 2026-09-01: the boot default is the launcher, whose
-     * render key masks everything except the unread badge (the same
-     * "opaque overlay" discipline the power menu uses) — and the
-     * launcher does not render the banner overlay at all
-     * (face_dispatch.c dispatches it to ff_scr_launcher_build, not
-     * scr_nav.c). Leave it for an ordinary base face first, so the
-     * banner's dirty-key assertions below are testing what they say
-     * they test. */
+    /* S26e amended 2026-09-01: the boot default is the launcher. Corrected
+     * 2026-09-02 — this comment used to claim "the launcher does not
+     * render the banner overlay at all"; that stopped being true with
+     * #157 (the message banner strip moved on top of every face,
+     * ff_scr_launcher_build calls ff_scr_banner_build unconditionally same
+     * as every other face's builder), and the render-key mask that made
+     * it LOOK true here (a stale `key->banner` bug — the launcher branch
+     * of shell_render_key zeroed the banner through its memset and never
+     * restored it, so a banner-only change never dirtied the key while on
+     * the launcher) is now fixed; see the launcher-specific
+     * S26_launcher_* tests below for that behavior directly. This test
+     * still leaves the launcher first, for a DIFFERENT reason: it is
+     * checking the banner's own dirty-key semantics (arrival / coarsened-
+     * age churn / expiry) in isolation, on an ordinary base face, rather
+     * than re-proving them through the launcher's extra unread-badge
+     * masking every time. */
     ff_intent_t const leave_launcher = {.kind = FF_INTENT_LAUNCHER_SELECT, .u = {0}};
     ff_shell_intent(&H.shell, &leave_launcher);
     inject_my_info(MY_ID);
@@ -4927,14 +4935,22 @@ static void S26_coalesce_within_2s_updates_head_in_place(void)
 static void S26_AC1_banner_auto_expires_after_6s(void)
 {
     harness_init(100000u, false);
-    /* S26e amended 2026-09-01: the boot default is the launcher, whose
-     * render key masks everything except the unread badge (the same
-     * "opaque overlay" discipline the power menu uses) — and the
-     * launcher does not render the banner overlay at all
-     * (face_dispatch.c dispatches it to ff_scr_launcher_build, not
-     * scr_nav.c). Leave it for an ordinary base face first, so the
-     * banner's dirty-key assertions below are testing what they say
-     * they test. */
+    /* S26e amended 2026-09-01: the boot default is the launcher. Corrected
+     * 2026-09-02 — this comment used to claim "the launcher does not
+     * render the banner overlay at all"; that stopped being true with
+     * #157 (the message banner strip moved on top of every face,
+     * ff_scr_launcher_build calls ff_scr_banner_build unconditionally same
+     * as every other face's builder), and the render-key mask that made
+     * it LOOK true here (a stale `key->banner` bug — the launcher branch
+     * of shell_render_key zeroed the banner through its memset and never
+     * restored it, so a banner-only change never dirtied the key while on
+     * the launcher) is now fixed; see the launcher-specific
+     * S26_launcher_* tests below for that behavior directly. This test
+     * still leaves the launcher first, for a DIFFERENT reason: it is
+     * checking the banner's own dirty-key semantics (arrival / coarsened-
+     * age churn / expiry) in isolation, on an ordinary base face, rather
+     * than re-proving them through the launcher's extra unread-badge
+     * masking every time. */
     ff_intent_t const leave_launcher = {.kind = FF_INTENT_LAUNCHER_SELECT, .u = {0}};
     ff_shell_intent(&H.shell, &leave_launcher);
     inject_my_info(MY_ID);
@@ -4964,14 +4980,22 @@ static void S26_AC1_banner_auto_expires_after_6s(void)
 static void S26_AC2_banner_age_same_bucket_ticks_are_clean(void)
 {
     harness_init(100000u, false);
-    /* S26e amended 2026-09-01: the boot default is the launcher, whose
-     * render key masks everything except the unread badge (the same
-     * "opaque overlay" discipline the power menu uses) — and the
-     * launcher does not render the banner overlay at all
-     * (face_dispatch.c dispatches it to ff_scr_launcher_build, not
-     * scr_nav.c). Leave it for an ordinary base face first, so the
-     * banner's dirty-key assertions below are testing what they say
-     * they test. */
+    /* S26e amended 2026-09-01: the boot default is the launcher. Corrected
+     * 2026-09-02 — this comment used to claim "the launcher does not
+     * render the banner overlay at all"; that stopped being true with
+     * #157 (the message banner strip moved on top of every face,
+     * ff_scr_launcher_build calls ff_scr_banner_build unconditionally same
+     * as every other face's builder), and the render-key mask that made
+     * it LOOK true here (a stale `key->banner` bug — the launcher branch
+     * of shell_render_key zeroed the banner through its memset and never
+     * restored it, so a banner-only change never dirtied the key while on
+     * the launcher) is now fixed; see the launcher-specific
+     * S26_launcher_* tests below for that behavior directly. This test
+     * still leaves the launcher first, for a DIFFERENT reason: it is
+     * checking the banner's own dirty-key semantics (arrival / coarsened-
+     * age churn / expiry) in isolation, on an ordinary base face, rather
+     * than re-proving them through the launcher's extra unread-badge
+     * masking every time. */
     ff_intent_t const leave_launcher = {.kind = FF_INTENT_LAUNCHER_SELECT, .u = {0}};
     ff_shell_intent(&H.shell, &leave_launcher);
     inject_my_info(MY_ID);
@@ -4996,6 +5020,147 @@ static void S26_AC2_banner_age_same_bucket_ticks_are_clean(void)
     advance(1000u); /* t = push + 6000ms */
     TEST_ASSERT_TRUE_MESSAGE(ff_shell_tick(&H.shell, H.clk.t), "the banner's own expiry did not repaint");
     TEST_ASSERT_FALSE(ff_shell_view(&H.shell)->banner.active);
+}
+
+/* =================================================================== */
+/* The stale-launcher-banner bug (this PR's P0 fix), reproduced directly */
+/* =================================================================== */
+
+/* The bug itself: `ff_shell_tick`'s dirty bit is exactly a memcmp of
+ * `shell_render_key`'s output against the previous tick's. Before this
+ * fix, the FF_APP_FACE_LAUNCHER branch of that function zeroed
+ * `key->banner` through its `memset(key, 0, sizeof(*key))` and restored
+ * only `active_face` and the unread badge — so a banner-only transition
+ * (most importantly its own 6 s auto-expiry) left the key byte-identical
+ * to the previous tick's while the launcher was showing, and
+ * `ff_shell_tick` never reported dirty: an expired banner stayed on the
+ * glass, stale, until something UNRELATED (e.g. the unread count)
+ * happened to dirty the key. `ff_scr_launcher_build` (scr_launcher.c)
+ * calls `ff_scr_banner_build` unconditionally, exactly like every other
+ * face's builder (#157), so the bug was purely in this file's render
+ * key, never in what the launcher actually draws. Deliberately NOT
+ * calling the `leave_launcher` intent the tests above use — staying ON
+ * the launcher (the boot default, ff_route_init) is the whole point:
+ * these tests fail on the pre-fix mask and pass once key->banner is
+ * stashed/restored the same way `af`/`unread_total` already were. */
+static void S26_launcher_AC_banner_expiry_dirties_key(void)
+{
+    harness_init(100000u, false);
+    inject_my_info(MY_ID);
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, true));
+    (void)ff_shell_tick(&H.shell, H.clk.t); /* the view is a zeroed struct (active_face NONE) until the
+                                              * first project — settle the roster setup above before
+                                              * reading it back */
+    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_LAUNCHER, ff_shell_view(&H.shell)->active_face); /* stay ON the launcher */
+
+    inject_text(DANA, "hi");
+    (void)ff_shell_tick(&H.shell, H.clk.t); /* new banner: the pre-existing arrival path, unaffected by this fix */
+    TEST_ASSERT_TRUE(ff_shell_view(&H.shell)->banner.active);
+
+    advance(5999u);
+    (void)ff_shell_tick(&H.shell, H.clk.t);
+    TEST_ASSERT_TRUE_MESSAGE(ff_shell_view(&H.shell)->banner.active, "expired one tick early");
+
+    /* Exactly 6000ms after the push — the banner's own expiry — with NO
+     * other state change at all (no new message, no unread delta, no
+     * face switch): the ONLY thing that changed is banner.active
+     * true->false. This is the exact transition the pre-fix mask
+     * swallowed. */
+    advance(1u);
+    TEST_ASSERT_TRUE_MESSAGE(ff_shell_tick(&H.shell, H.clk.t),
+                             "the banner's own expiry did not dirty the launcher's render key - an expired "
+                             "banner would sit stale on the glass (the P0 bug this PR fixes)");
+    TEST_ASSERT_FALSE(ff_shell_view(&H.shell)->banner.active);
+}
+
+/* A second, DIFFERENT sender's banner taking over the (now-empty) banner
+ * slot on the launcher must also dirty the key. `ff_notify` is a FIFO
+ * (ff_notify.h): a fresh push from a sender with no live entry does not
+ * pre-empt whoever is currently head, so DANA's banner has to actually
+ * be gone (its own natural expiry, proven by the test above) before
+ * KEV's arrival can become the new head — at which point it is a
+ * genuinely new sender/name/text in `key->banner`, not a coalesce
+ * (S26_coalesce_within_2s_updates_head_in_place's case, a different
+ * sender so not even coalesce-eligible) and not a repeat of the same
+ * content. */
+static void S26_launcher_AC_second_sender_banner_dirties_key(void)
+{
+    harness_init(100000u, false);
+    inject_my_info(MY_ID);
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, true));
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, KEV_ID, true));
+    inject_node(DANA, "DANA", U_EVENING);
+    inject_node(KEV_ID, "KEV", U_EVENING);
+    (void)ff_shell_tick(&H.shell, H.clk.t); /* settle the roster setup before reading the view back */
+    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_LAUNCHER, ff_shell_view(&H.shell)->active_face); /* stay ON the launcher */
+
+    inject_text(DANA, "first");
+    (void)ff_shell_tick(&H.shell, H.clk.t);
+    TEST_ASSERT_EQUAL_STRING("first", ff_shell_view(&H.shell)->banner.text);
+    TEST_ASSERT_EQUAL_UINT32(DANA, ff_shell_view(&H.shell)->banner.node_id);
+
+    /* DANA's banner runs out its own 6s life (proven dirty by the test
+     * above) — this test only needs the slot empty afterward. */
+    advance(6000u);
+    TEST_ASSERT_TRUE(ff_shell_tick(&H.shell, H.clk.t));
+    TEST_ASSERT_FALSE(ff_shell_view(&H.shell)->banner.active);
+
+    /* KEV's arrival, a DIFFERENT sender, becomes the new head. */
+    advance(1000u);
+    inject_text(KEV_ID, "second");
+    TEST_ASSERT_TRUE_MESSAGE(ff_shell_tick(&H.shell, H.clk.t),
+                             "a second sender's banner did not dirty the launcher's render key");
+    TEST_ASSERT_TRUE(ff_shell_view(&H.shell)->banner.active);
+    TEST_ASSERT_EQUAL_STRING("second", ff_shell_view(&H.shell)->banner.text);
+    TEST_ASSERT_EQUAL_UINT32(KEV_ID, ff_shell_view(&H.shell)->banner.node_id);
+}
+
+/* Negative control, pinning the launcher mask's PRE-EXISTING anti-clobber
+ * property — this PR only ADDS `key->banner` back to what the mask
+ * restores; it must not weaken the mask's original job of keeping the
+ * radar/feed churn that ticks constantly underneath the launcher (base
+ * stays RADAR-worthy state the whole time the launcher is up) from
+ * rebuilding the launcher's tree out from under a finger every frame.
+ * Proxy-check discipline (AGENTS.md / docs/review/code-review.md item
+ * 6): a position update that dirties NOTHING would make the "does not
+ * dirty" assertion below vacuous, so this first proves the SAME update
+ * genuinely dirties the key on an ordinary face (RADAR), then returns to
+ * the launcher and shows the identical update does not. */
+static void S26_launcher_radar_position_update_does_not_dirty_key(void)
+{
+    harness_init(100000u, false);
+    inject_my_info(MY_ID);
+    ff_shell_set_my_pos(&H.shell, (ff_latlon_t){39.0, -82.0});
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, true));
+    inject_node(DANA, "DANA", U_EVENING);
+    inject_position(DANA, U_EVENING, 39.01, -82.01);
+    (void)ff_shell_tick(&H.shell, H.clk.t); /* settle the roster setup above before reading the view back */
+    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_LAUNCHER, ff_shell_view(&H.shell)->active_face); /* the boot default */
+
+    /* Positive control: leave the launcher for the RADAR face and prove
+     * this exact kind of position update IS live, rendered content there
+     * — otherwise the negative control below would be measuring nothing. */
+    ff_intent_t const to_radar = {.kind = FF_INTENT_LAUNCHER_SELECT, .u = {0}};
+    ff_shell_intent(&H.shell, &to_radar);
+    (void)ff_shell_tick(&H.shell, H.clk.t); /* face switch: settle */
+    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_RADAR, ff_shell_view(&H.shell)->active_face);
+    advance(1000u);
+    inject_position(DANA, U_EVENING + 1u, 39.05, -82.05);
+    TEST_ASSERT_TRUE_MESSAGE(ff_shell_tick(&H.shell, H.clk.t),
+                             "control failed: a moved crew position did not dirty the RADAR face at all");
+
+    /* Back to the launcher, settled, then the SAME kind of update. */
+    ff_intent_t const home = {.kind = FF_INTENT_HOME, .u = {0}};
+    ff_shell_intent(&H.shell, &home);
+    (void)ff_shell_tick(&H.shell, H.clk.t); /* face switch: settle */
+    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_LAUNCHER, ff_shell_view(&H.shell)->active_face);
+
+    advance(1000u);
+    inject_position(DANA, U_EVENING + 2u, 39.10, -82.10);
+    TEST_ASSERT_FALSE_MESSAGE(ff_shell_tick(&H.shell, H.clk.t),
+                              "a radar position update dirtied the launcher's render key - the tree would "
+                              "rebuild under a finger on every position tick (the anti-clobber property "
+                              "this mask exists for)");
 }
 
 /* AC2 — a banner from a DIFFERENT paired conversation than the one
@@ -5705,6 +5870,9 @@ int main(void)
     RUN_TEST(S26_coalesce_within_2s_updates_head_in_place);
     RUN_TEST(S26_AC1_banner_auto_expires_after_6s);
     RUN_TEST(S26_AC2_banner_age_same_bucket_ticks_are_clean);
+    RUN_TEST(S26_launcher_AC_banner_expiry_dirties_key);
+    RUN_TEST(S26_launcher_AC_second_sender_banner_dirties_key);
+    RUN_TEST(S26_launcher_radar_position_update_does_not_dirty_key);
     RUN_TEST(S26_AC2_banner_from_other_paired_conv_dirties_open_thread_key);
     RUN_TEST(S26_AC2_banner_from_other_paired_conv_dirties_popup_overlay_exactly_once);
     RUN_TEST(S26_banner_open_routes_marks_read_and_dismisses);
