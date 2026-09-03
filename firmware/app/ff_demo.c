@@ -211,8 +211,20 @@ int ff_demo_seed(ff_shell_t *sh, char const *festpack_json, size_t festpack_len,
     ff_shell_set_my_pos(sh, me);
     ff_shell_set_heading(sh, 0.0f); /* facing north */
 
-    /* 6. The Signals feed. */
+    /* 6. The Signals feed. fix/audio-init-order-seed-silence: this is the
+     * one seeding step that can reach `shell_sound` at all (a rally +
+     * two messages, pushed through the real ev.on_private/ev.on_text
+     * path — steps 1-5 above never sound: pairing, NodeInfo, position,
+     * and RSSI pushes don't). Bracketed so this whole seeded feed lands
+     * SILENTLY — it is boot-time history, not a live arrival (S27-sounds.
+     * md Amendments, "seeded/replayed history"). Unmuted again
+     * immediately after, so the S23 live demo feed (ff_demo_apply_event,
+     * ff_demoapply.c — arrives later, over real time, via app_main's own
+     * tick loop) sounds normally: that generator's whole point is
+     * events arriving, which SHOULD chime. */
+    ff_shell_set_sound_muted_for_seed(sh, true);
     demo_seed_feed(&ev);
+    ff_shell_set_sound_muted_for_seed(sh, false);
 
     return 0;
 }

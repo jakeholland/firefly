@@ -166,3 +166,14 @@ and demoed against the live feed.
   just a DIFFERENT one than before this change (the determinism CONTRACT
   is unchanged; the CONCRETE sequence a given seed produces is not — see
   the retirement PR body for the regenerated golden list).
+
+- **2026-09-03 — the live feed chimes, the boot-time seed does not.**
+  `docs/specs/S27-sounds.md`'s Amendments ("seeded/replayed history never
+  chimes") mute only `ff_demo_seed`'s own boot-time feed push
+  (`app/ff_demo.c`) — `ff_demo_apply_event` (`app/ff_demoapply.c`, this
+  spec's own apply loop, slice (c)) runs entirely outside that mute
+  window and sounds normally. That is intentional and is this spec's own
+  point: S23 exists so "messages that *arrive* and presence that
+  *decays*" (this spec's "Why", above) read as arrivals, distinct from
+  S20's static snapshot — sound is one more face where that distinction
+  now shows.

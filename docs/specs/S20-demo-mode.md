@@ -118,3 +118,12 @@ now), real festival data (that's fest-almanac).
 ## Amendments
 
 Renamed to Lineup/Inbox on 2026-09-01 — see S26 Nav model Amendments; this spec keeps its original vocabulary.
+
+- **2026-09-03 — the seeded rally + feed items land silently.**
+  `ff_demo_seed` (S20's own entry point, above) never sounds — see
+  `docs/specs/S27-sounds.md`'s Amendments, "seeded/replayed history never
+  chimes", for the mechanism (`ff_shell_set_sound_muted_for_seed`
+  bracketing the seed's feed push) and why: this spec's own honesty note
+  above ("demo data is REAL state seeded through the REAL core APIs")
+  means the seed is honest DATA, but it is not a live ARRIVAL, and S27's
+  sounds are a signal for "something just happened."

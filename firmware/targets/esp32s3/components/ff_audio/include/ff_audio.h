@@ -136,10 +136,19 @@ extern "C" {
  * 16-bit stereo slots (mono content duplicated to both — see this
  * header's top comment), and start the audio render task.
  *
- * Call once, from app_main, AFTER the display bring-up (panel + boot
- * splash) so a slow or failing I2S bring-up can never delay the S26g
- * power-latch timestamp or the first splash pixel — see app_main.c's own
- * call-site comment for the exact placement and why.
+ * Call once, from app_main, BEFORE `ff_shell_init` (fix/audio-init-order-
+ * seed-silence) — after the power latch and NVS store, alongside the rest
+ * of the S27 sounds device wiring (the `play_sound` hook + the TAP-sink
+ * bind). This used to run AFTER the display bring-up (panel + boot
+ * splash); that let a seeded or genuinely-early sound event reach
+ * `play_sound` before the HAL had ever come up (logged as a silent no-op
+ * by `ff_audio_play` below) — see `docs/specs/S27-sounds.md`'s
+ * Amendments ("boot order") and app_main.c's own call-site comment for
+ * the full reasoning and the on-glass log evidence that caught it. Channel
+ * allocation here is register writes + a few small heap allocations (no
+ * `vTaskDelay`, no DMA start — the channel stays disabled until a pattern
+ * actually renders), so this move does not measurably affect the panel/
+ * splash timing that follows it.
  *
  * Non-fatal on failure: logs the underlying `esp_err_t` and returns it,
  * but the caller is expected to IGNORE the return value and continue
