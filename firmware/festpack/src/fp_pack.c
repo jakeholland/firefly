@@ -16,6 +16,7 @@
 
 #include "ff_geo.h"
 
+#include <math.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -147,21 +148,38 @@ static void fp_copy_str(fp_ctx_t const *c, int i, char *dst, size_t dst_sz)
 }
 
 /* Strict numeric extraction: succeeds ONLY if token i exists, is a JSON
- * number (JSMN_PRIMITIVE, not "null"/"true"/"false"), and strtod()
- * consumes the token's ENTIRE text with no trailing garbage. Writes *out
- * and returns true on success; leaves *out untouched and returns false on
- * any mismatch (wrong JSMN type — e.g. a quoted string — a boolean
- * literal, null, or malformed number text).
+ * number (JSMN_PRIMITIVE, not "null"/"true"/"false"), strtod() consumes
+ * the token's ENTIRE text with no trailing garbage, AND the result is
+ * finite. Writes *out and returns true on success; leaves *out untouched
+ * and returns false on any mismatch (wrong JSMN type — e.g. a quoted
+ * string — a boolean literal, null, malformed number text, or a
+ * non-finite result).
+ *
+ * Non-finite rejection matters even though JSON's own grammar has no
+ * Infinity/NaN literals: strtod() is a C-locale float parser, not a JSON
+ * validator, so it happily consumes JSON-legal-looking-but-huge numeric
+ * text like "1e400" (out of double's range -> HUGE_VAL) as well as
+ * bareword "Infinity"/"NaN" tokens (which jsmn still tokenizes as
+ * JSMN_PRIMITIVE, since it doesn't validate number grammar either). A
+ * non-finite value is treated exactly like any other wrong-typed value:
+ * an honest unknown, not a number to hand to a caller — see
+ * docs/specs/S05-festpack.md's Amendments entry. This also forecloses
+ * the UB a non-finite (or simply out-of-range) double would cause at an
+ * int16_t/uint16_t cast site downstream; see fp_i16_checked()/fp_u16()
+ * below for the additional range check those sites need even after this
+ * filter (a finite but huge value like 1e10 is still not
+ * representable).
  *
  * Any call site that gates a "known"/"verified"/"assumed" flag on a
- * value's *correctness* (not just the key's presence) MUST use this, not
- * fp_num() below — fp_num() silently substitutes a default on a type
- * mismatch, which is fine for a plain data field with no separate honesty
- * flag, but was exactly the bug fixed here for origin/landmark-position/
- * utc_offset_min: those sites used to call fp_obj_get()+!fp_is_null() to
- * decide the flag, then fp_num() (which can *also* silently default) for
- * the value — so a wrong-typed-but-present field looked "verified" while
- * actually holding the default. See docs/specs/S05-festpack.md's
+ * value's *correctness* (not just the key's presence) MUST call this
+ * directly (or fp_i16_checked() below, for an int16-typed field) rather
+ * than only checking fp_obj_get()+!fp_is_null() and then converting
+ * separately — that split is exactly the bug fixed here for
+ * origin/landmark-position/utc_offset_min: those sites used to decide
+ * the flag from presence alone, then convert with something that could
+ * *also* silently default or invoke UB on an out-of-range/non-finite
+ * value — so a wrong-typed-but-present field looked "verified" while
+ * actually holding a default (or worse). See docs/specs/S05-festpack.md's
  * Amendments entry "Wrong-typed numeric fields are honest unknowns". */
 static bool fp_num_checked(fp_ctx_t const *c, int i, double *out)
 {
@@ -179,22 +197,44 @@ static bool fp_num_checked(fp_ctx_t const *c, int i, double *out)
     char *end = NULL;
     double v = strtod(buf, &end);
     if (end == buf || *end != '\0') return false; /* no digits, or trailing junk */
+    if (!isfinite(v)) return false; /* +-Infinity, NaN, or magnitude overflow (1e400) */
     *out = v;
     return true;
 }
 
-/* Lenient wrapper over fp_num_checked(): returns `dflt` on any mismatch
- * instead of signaling failure. Correct for plain data fields that have
- * no separate "was this verified" flag downstream (e.g. `year`, a set's
- * `starred` bool) — silently defaulting there is the same tolerant
- * posture the parser already takes for unknown keys. NOT correct for a
- * field whose presence flips a "known"/"assumed" bool elsewhere; use
- * fp_num_checked() directly for those (see its comment). */
-static double fp_num(fp_ctx_t const *c, int i, double dflt)
+/* Strict int16 extraction built on fp_num_checked(): fails (false) if the
+ * value is wrong-typed/non-finite (fp_num_checked's job) OR finite but
+ * outside INT16_MIN..INT16_MAX. Casting an out-of-range double to
+ * int16_t is undefined behavior in C regardless of whether the double is
+ * finite — fp_num_checked() alone (Infinity/NaN/overflow) is not enough
+ * for a field like utc_offset_min that then gets cast; this closes that
+ * gap. Used wherever a strict/flagged int16 field is read — see
+ * fp_num_checked()'s comment. */
+static bool fp_i16_checked(fp_ctx_t const *c, int i, int16_t *out)
 {
     double v;
-    if (fp_num_checked(c, i, &v)) return v;
-    return dflt;
+    if (!fp_num_checked(c, i, &v)) return false;
+    if (v < (double)INT16_MIN || v > (double)INT16_MAX) return false;
+    *out = (int16_t)v;
+    return true;
+}
+
+/* Lenient uint16 extraction, for plain fields with no downstream "known"
+ * flag (e.g. `year`) — same range-safety as fp_i16_checked() (no
+ * out-of-range-or-non-finite-double-to-uint16_t cast, which is UB
+ * exactly like the int16 case), but returns `dflt` on any mismatch
+ * instead of a success/failure signal: silently defaulting is the same
+ * tolerant posture already taken for unknown keys, correct here because
+ * nothing downstream treats `year` as "verified" the way origin_known/
+ * has_pos/utc_offset_assumed do. NOT correct for a field whose presence
+ * flips a "known"/"assumed" bool elsewhere; use fp_num_checked() or
+ * fp_i16_checked() directly for those. */
+static uint16_t fp_u16(fp_ctx_t const *c, int i, uint16_t dflt)
+{
+    double v;
+    if (!fp_num_checked(c, i, &v)) return dflt;
+    if (v < 0.0 || v > (double)UINT16_MAX) return dflt;
+    return (uint16_t)v;
 }
 
 static bool fp_bool(fp_ctx_t const *c, int i, bool dflt)
@@ -335,7 +375,7 @@ static fp_result_t fp_parse_festival(fp_ctx_t const *c, int fest_i, fp_pack_t *o
 {
     int t;
     if (fp_obj_get(c, fest_i, "name", &t)) fp_copy_str(c, t, out->name, sizeof(out->name));
-    if (fp_obj_get(c, fest_i, "year", &t)) out->year = (uint16_t)fp_num(c, t, 0.0);
+    if (fp_obj_get(c, fest_i, "year", &t)) out->year = fp_u16(c, t, 0); /* range-safe cast, see fp_u16() */
     if (fp_obj_get(c, fest_i, "start", &t) && !fp_is_null(c, t)) {
         jsmntok_t const *tt = &c->toks[t];
         out->start_doy = fp_doy_from_iso_date(c->js + tt->start, (size_t)(tt->end - tt->start));
@@ -569,23 +609,28 @@ static fp_result_t fp_parse_inner(fp_ctx_t const *c, fp_pack_t *out)
      * standard September UTC offset). See docs/specs/S05-festpack.md and
      * the S05 PR body for the interpretation call.
      *
-     * A wrong-typed value (e.g. a quoted "-240") at either location is
-     * treated exactly like the field being absent there — it falls
-     * through to the next location, and ultimately to the default —
-     * rather than marking utc_offset_assumed false while quietly holding
-     * the -240 default. ff_shell.c reads utc_offset_assumed as the S18
+     * A wrong-typed value (e.g. a quoted "-240"), a non-finite value
+     * (Infinity/NaN/1e400), or a finite-but-out-of-int16-range value at
+     * either location is treated exactly like the field being absent
+     * there — it falls through to the next location, and ultimately to
+     * the default — rather than marking utc_offset_assumed false while
+     * quietly holding the -240 default (or, for the range/finiteness
+     * cases, invoking undefined behavior by casting an unrepresentable
+     * double to int16_t). ff_shell.c reads utc_offset_assumed as the S18
      * wall-clock-trust signal, so a bad-but-present value must not
-     * outrank the user's manual setting. See docs/specs/S05-festpack.md's
-     * Amendments entry. */
+     * outrank the user's manual setting. fp_i16_checked() does the
+     * finite+range-checked extraction; see its comment and
+     * fp_num_checked()'s. See docs/specs/S05-festpack.md's Amendments
+     * entry. */
     {
         int t;
-        double v;
-        if (fp_obj_get(c, 0, "utc_offset_min", &t) && !fp_is_null(c, t) && fp_num_checked(c, t, &v)) {
-            out->utc_offset_min = (int16_t)v;
+        int16_t v;
+        if (fp_obj_get(c, 0, "utc_offset_min", &t) && !fp_is_null(c, t) && fp_i16_checked(c, t, &v)) {
+            out->utc_offset_min = v;
             out->utc_offset_assumed = false;
         } else if (fest_i >= 0 && fp_obj_get(c, fest_i, "utc_offset_min", &t) && !fp_is_null(c, t) &&
-                   fp_num_checked(c, t, &v)) {
-            out->utc_offset_min = (int16_t)v;
+                   fp_i16_checked(c, t, &v)) {
+            out->utc_offset_min = v;
             out->utc_offset_assumed = false;
         } else {
             out->utc_offset_min = -240;

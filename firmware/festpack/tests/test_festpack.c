@@ -535,12 +535,13 @@ static void S05_review_string_utc_offset_min_stays_assumed(void)
 }
 
 /* A quoted integer where a plain (unflagged) numeric field is expected —
- * `year` has no downstream "known" flag, so the existing lenient fp_num()
+ * `year` has no downstream "known" flag, so the existing lenient fp_u16()
  * default is the correct, unchanged behavior: parse still succeeds, year
  * reads as the documented default (0) rather than crashing or erroring
  * the whole pack. This is the deliberate contrast with the flagged sites
- * above: fp_num() (lenient) vs. fp_num_checked() (strict) is a per-field
- * choice, not a blanket one — see fp_num()'s comment in fp_pack.c. */
+ * above: fp_u16() (lenient) vs. fp_num_checked()/fp_i16_checked() (strict)
+ * is a per-field choice, not a blanket one — see fp_u16()'s comment in
+ * fp_pack.c. */
 static void S05_review_quoted_integer_year_defaults_without_error(void)
 {
     char buf[FIXTURE_BUF_SZ];
@@ -554,12 +555,12 @@ static void S05_review_quoted_integer_year_defaults_without_error(void)
 
 /* A boolean literal where a polygon point's number is expected. Before
  * this fix, fp_parse_polygon()'s type check accepted any JSMN_PRIMITIVE
- * (true/false included) and fp_num() would then silently substitute 0.0
- * on strtod failure — a `[true, -84.5]` point would have quietly become
- * (0,0) input to ff_geo_project() and shipped as if it were real
- * geometry. fp_num_checked() closes that: a non-numeric primitive fails
- * the whole pack (FP_ERR_JSON), consistent with the object-format-point
- * rejection already covered above. */
+ * (true/false included) and the unchecked conversion would then silently
+ * substitute 0.0 on strtod failure — a `[true, -84.5]` point would have
+ * quietly become (0,0) input to ff_geo_project() and shipped as if it
+ * were real geometry. fp_num_checked() closes that: a non-numeric
+ * primitive fails the whole pack (FP_ERR_JSON), consistent with the
+ * object-format-point rejection already covered above. */
 static void S05_review_boolean_polygon_point_returns_err_json(void)
 {
     char buf[FIXTURE_BUF_SZ];
@@ -567,6 +568,59 @@ static void S05_review_boolean_polygon_point_returns_err_json(void)
     fp_pack_t pack;
     fp_result_t r = fp_parse(buf, len, &pack, s_toks, FP_MAX_TOKENS);
     TEST_ASSERT_EQUAL_INT(FP_ERR_JSON, r);
+}
+
+/* Non-finite numeric values (UBSan-confirmed pre-existing defect right
+ * next to this property): "1e400" is syntactically valid JSON number
+ * text (JSON's grammar puts no bound on exponent magnitude) that
+ * strtod() parses to +Infinity (HUGE_VAL) rather than failing outright.
+ * Before fp_num_checked() rejected non-finite results, this reached the
+ * `(int16_t)v` cast in fp_parse_inner()'s utc_offset_min handling —
+ * casting a non-finite double to int16_t is undefined behavior in C.
+ * Same treatment as any other wrong-typed utc_offset_min: falls through
+ * to the documented -240 default with utc_offset_assumed left true,
+ * never a crash/UB and never a false "explicit" reading. */
+static void S05_review_positive_infinity_utc_offset_min_stays_assumed(void)
+{
+    char buf[FIXTURE_BUF_SZ];
+    size_t len = load_fixture("non_finite_utc_offset_pos.festpack.json", buf, sizeof(buf));
+    fp_pack_t pack;
+    fp_result_t r = fp_parse(buf, len, &pack, s_toks, FP_MAX_TOKENS);
+    TEST_ASSERT_EQUAL_INT(FP_OK, r);
+    TEST_ASSERT_EQUAL_INT16(-240, pack.utc_offset_min);
+    TEST_ASSERT_TRUE(pack.utc_offset_assumed);
+}
+
+/* Same as above with "-1e400" (-Infinity) — proves the finite-check
+ * covers both signs, not just overflow-to-+Infinity. */
+static void S05_review_negative_infinity_utc_offset_min_stays_assumed(void)
+{
+    char buf[FIXTURE_BUF_SZ];
+    size_t len = load_fixture("non_finite_utc_offset_neg.festpack.json", buf, sizeof(buf));
+    fp_pack_t pack;
+    fp_result_t r = fp_parse(buf, len, &pack, s_toks, FP_MAX_TOKENS);
+    TEST_ASSERT_EQUAL_INT(FP_OK, r);
+    TEST_ASSERT_EQUAL_INT16(-240, pack.utc_offset_min);
+    TEST_ASSERT_TRUE(pack.utc_offset_assumed);
+}
+
+/* Non-finite festival origin lat: "1e400" parses to +Infinity via
+ * strtod(), same underlying defect as above but exercised through
+ * fp_num_checked() directly (no int16 cast involved here — origin.lat is
+ * a double) — proves fp_num_checked()'s own isfinite() rejection, not
+ * just the int16-cast guard, closes the honesty gap: origin_known must
+ * stay false rather than "verified" at a non-finite/nonsensical
+ * coordinate. */
+static void S05_review_infinite_origin_lat_sets_origin_known_false(void)
+{
+    char buf[FIXTURE_BUF_SZ];
+    size_t len = load_fixture("non_finite_origin_lat.festpack.json", buf, sizeof(buf));
+    fp_pack_t pack;
+    fp_result_t r = fp_parse(buf, len, &pack, s_toks, FP_MAX_TOKENS);
+    TEST_ASSERT_EQUAL_INT(FP_OK, r);
+    TEST_ASSERT_FALSE(pack.origin_known);
+    TEST_ASSERT_EQUAL_FLOAT(0.0f, (float)pack.origin.lat);
+    TEST_ASSERT_EQUAL_FLOAT(0.0f, (float)pack.origin.lon);
 }
 
 /* ======================================================================
@@ -688,6 +742,9 @@ int main(void)
     RUN_TEST(S05_review_string_utc_offset_min_stays_assumed);
     RUN_TEST(S05_review_quoted_integer_year_defaults_without_error);
     RUN_TEST(S05_review_boolean_polygon_point_returns_err_json);
+    RUN_TEST(S05_review_positive_infinity_utc_offset_min_stays_assumed);
+    RUN_TEST(S05_review_negative_infinity_utc_offset_min_stays_assumed);
+    RUN_TEST(S05_review_infinite_origin_lat_sets_origin_known_false);
 
     RUN_TEST(S05_AC6_pack_struct_fits_48kb_budget);
 
