@@ -792,6 +792,31 @@ static bool ctl_loop_wall(void *user, int64_t unix_s, char const **err)
     return true;
 }
 
+/* S25c: the sim's own battery-gauge drive — same class of dev/test
+ * affordance as ctl_loop_wall's bench time-travel and ctl_loop_flare's
+ * synthetic inbound (both just above): reaches a live shell with no
+ * real hardware behind it. `ff_shell_set_batt_mv` has no failure mode of
+ * its own (see that function's doc comment — 0 is the documented "no
+ * reading" sentinel, not an error), so this handler is a bare forward,
+ * void like ctl_loop_tap/ctl_loop_swipe.
+ *
+ * `now_ms` (S25c review round: `ff_shell_set_batt_mv` gained this
+ * parameter so the filter's stale-gap/timing decisions run on the
+ * CALLER's clock, never a cached shell-internal reading): sourced from
+ * `ff_ctl_loop_tick_cb()`, the exact same call `ff_ctl_loop_pump`
+ * (above) uses immediately before its own `ff_shell_tick` — real
+ * monotonic ms, or the frozen/advanced mock clock under
+ * `--mock-clock`/the ctl `clock` command. Threading the SAME clock
+ * source through here (rather than, say, a fresh `ctl_loop_tick_cb`
+ * call from a different call site with different mocking assumptions)
+ * is what keeps a `batt_mv` command's timing consistent with whatever
+ * tick the test/bench session is currently driving. */
+static void ctl_loop_batt_mv(void *user, uint16_t pack_mv)
+{
+    ff_ctl_loop_ctx_t *ctx = (ff_ctl_loop_ctx_t *)user;
+    ff_shell_set_batt_mv(ctx->shell, pack_mv, ff_ctl_loop_tick_cb());
+}
+
 static bool *g_ctl_loop_quit_flag = NULL;
 
 static void ctl_loop_quit(void *user)
@@ -821,6 +846,7 @@ ff_ctl_handlers_t ff_ctl_loop_handlers(ff_ctl_loop_ctx_t *ctx, bool *quit_flag)
     h.screenshot = ctl_loop_screenshot;
     h.flare = ctl_loop_flare;
     h.wall = ctl_loop_wall;
+    h.batt_mv = ctl_loop_batt_mv;
     h.quit = ctl_loop_quit;
     return h;
 }

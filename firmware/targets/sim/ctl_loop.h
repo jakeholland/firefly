@@ -183,7 +183,7 @@ uint32_t ff_ctl_loop_tick_cb(void);
 
 /**
  * ff_ctl_loop_handlers — the `ff_ctl_handlers_t` wired to `*ctx`:
- * tap/swipe/hold/clock/state/screenshot/flare/wall/quit. `quit_flag`, if non-NULL,
+ * tap/swipe/hold/clock/state/screenshot/flare/wall/batt_mv/quit. `quit_flag`, if non-NULL,
  * is set true the moment a "quit" command is fully processed — exposed
  * because a caller driving `ff_ctl_process_line` directly (a test) has
  * no `ff_ctl_poll` return value to read that from; main.c's real loop
