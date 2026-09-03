@@ -369,6 +369,30 @@ ff_crew_member_t *ff_crew_selected(ff_crew_t *c);
 void ff_crew_select_next(ff_crew_t *c);
 
 /**
+ * ff_crew_select_node — force the radar-face selection directly to
+ * `node_id`, bypassing `ff_crew_select_next`'s cycling order.
+ *
+ * [api] Added for docs/specs/S10-flare.md AC3/GO ("GO -> radar with the
+ * sender FORCE-SELECTED"): `ff_flare_go()` only knows about the flare
+ * lock (`locked_node_id`) — by design it never reaches into `ff_crew_t`
+ * (see `ff_flare_locked_node`'s own doc comment: "for S06's radar/crew
+ * selection code to consult"). Something on the crew side has to turn
+ * "the lock points at node X" into "the radar selection points at node
+ * X"; this is that seam. The caller (the app shell's TAKEOVER_GO intent
+ * handler) calls this right after `ff_flare_go()`, passing
+ * `ff_flare_locked_node()`.
+ *
+ * No-op — current selection left exactly as it was — if `node_id` has no
+ * slot, or its slot exists but is not `paired`. An unpaired/stranger node
+ * is never a valid selection (same rule `ff_crew_selected`'s self-heal
+ * already enforces; flare receipt is itself paired-gated in
+ * `ff_flare_on_flare_rx`'s caller, so this should not be reachable in
+ * practice, but the guard keeps this function honest on its own terms
+ * rather than trusting every future caller to pre-check).
+ */
+void ff_crew_select_node(ff_crew_t *c, uint32_t node_id);
+
+/**
  * ff_fmt_distance — format `meters` honoring the unit system, writing
  * e.g. "320 m" / "1.1 km" / "980 ft" / "0.6 mi" into `buf` (NUL-terminated,
  * truncated to fit `n` if needed).
