@@ -660,10 +660,12 @@ static void radar_dist_with_tilde(char *out, size_t n, char const *dist_str, boo
  * other, and that place is radar_layout.h itself.
  * ------------------------------------------------------------------- */
 
-static void radar_render_live(lv_obj_t *parent, ff_radar_view_t const *r, radar_layout_registry_t const *reg)
+static void radar_render_live(lv_obj_t *parent, ff_radar_view_t const *r, radar_layout_registry_t const *reg,
+                              bool locked)
 {
     radar_layout_arrow_t arrow;
-    radar_layout_resolve_arrow(reg, r->arrow_deg, &arrow);
+    radar_layout_resolve_arrow(reg, r->arrow_deg, locked ? RADAR_LAYOUT_ARROW_REACH_LOCKED_PX : RADAR_LAYOUT_ARROW_LEN_PX,
+                                &arrow);
     radar_draw_arrow(parent, &arrow, FF_THEME_COLOR_AMBER, LV_OPA_COVER, RADAR_ARROW_SOLID);
 
     radar_build_name_label(parent, r->name, (int32_t)RADAR_LAYOUT_STACK_NAME_DY);
@@ -677,12 +679,13 @@ static void radar_render_live(lv_obj_t *parent, ff_radar_view_t const *r, radar_
 }
 
 static void radar_render_stale(lv_obj_t *parent, ff_radar_view_t const *r, radar_layout_registry_t const *reg,
-                               bool screen_flip)
+                               bool screen_flip, bool locked)
 {
     radar_build_rim_tint(parent, FF_THEME_COLOR_STALE_AMBER, LV_OPA_50, screen_flip);
 
     radar_layout_arrow_t arrow;
-    radar_layout_resolve_arrow(reg, r->arrow_deg, &arrow);
+    radar_layout_resolve_arrow(reg, r->arrow_deg, locked ? RADAR_LAYOUT_ARROW_REACH_LOCKED_PX : RADAR_LAYOUT_ARROW_LEN_PX,
+                                &arrow);
     /* S06 spec: "dashed arrow at 28% opacity". LV_OPA values are 0-255;
      * 28% of 255 rounds to 71. */
     radar_draw_arrow(parent, &arrow, FF_THEME_COLOR_STALE_AMBER, 71, RADAR_ARROW_DASHED);
@@ -710,10 +713,12 @@ static void radar_render_stale(lv_obj_t *parent, ff_radar_view_t const *r, radar
  * instead of LIVE's energetic amber — this reading carries no freshness
  * signal to be energetic ABOUT. `age_str` is always "" here
  * (ff_radar_compute), so no age ever reaches this function to render. */
-static void radar_render_place(lv_obj_t *parent, ff_radar_view_t const *r, radar_layout_registry_t const *reg)
+static void radar_render_place(lv_obj_t *parent, ff_radar_view_t const *r, radar_layout_registry_t const *reg,
+                               bool locked)
 {
     radar_layout_arrow_t arrow;
-    radar_layout_resolve_arrow(reg, r->arrow_deg, &arrow);
+    radar_layout_resolve_arrow(reg, r->arrow_deg, locked ? RADAR_LAYOUT_ARROW_REACH_LOCKED_PX : RADAR_LAYOUT_ARROW_LEN_PX,
+                                &arrow);
     radar_draw_arrow(parent, &arrow, FF_THEME_COLOR_MUTED, LV_OPA_COVER, RADAR_ARROW_SOLID);
 
     radar_build_name_label(parent, r->name, (int32_t)RADAR_LAYOUT_STACK_NAME_DY);
@@ -732,7 +737,8 @@ static void radar_render_place(lv_obj_t *parent, ff_radar_view_t const *r, radar
                      (int32_t)RADAR_LAYOUT_STACK_CHIP_DY);
 }
 
-static void radar_render_lost(lv_obj_t *parent, ff_radar_view_t const *r, radar_layout_registry_t const *reg)
+static void radar_render_lost(lv_obj_t *parent, ff_radar_view_t const *r, radar_layout_registry_t const *reg,
+                              bool locked)
 {
     /* RENDERER CONTRACT (ff_radar.h): mode == RADAR_LOST alone doesn't
      * distinguish "genuinely old fix" from "never fixed" — key off
@@ -758,7 +764,8 @@ static void radar_render_lost(lv_obj_t *parent, ff_radar_view_t const *r, radar_
          *      not STALE's bright amber pill ("aging but plausible").
          */
         radar_layout_arrow_t arrow;
-        radar_layout_resolve_arrow(reg, r->arrow_deg, &arrow);
+        radar_layout_resolve_arrow(reg, r->arrow_deg,
+                                    locked ? RADAR_LAYOUT_ARROW_REACH_LOCKED_PX : RADAR_LAYOUT_ARROW_LEN_PX, &arrow);
         /* ~30% opacity: dimmer than LIVE's full strength but bumped up
          * from an earlier, too-faint pass (UX review round 3, non-
          * blocking finding #3: "may be faint enough to read as no arrow
@@ -986,7 +993,8 @@ static void radar_render_nosel(lv_obj_t *parent)
  * Entry point.
  * ------------------------------------------------------------------- */
 
-void ff_scr_radar_build(lv_obj_t *parent, ff_radar_view_t const *radar, bool colorblind, bool screen_flip)
+void ff_scr_radar_build(lv_obj_t *parent, ff_radar_view_t const *radar, bool colorblind, bool screen_flip,
+                        bool locked)
 {
     if (parent == NULL || radar == NULL) {
         return;
@@ -1007,18 +1015,26 @@ void ff_scr_radar_build(lv_obj_t *parent, ff_radar_view_t const *radar, bool col
 
     radar_build_dots(parent, radar, &reg, colorblind);
 
+    /* `locked` (fix/radar-lock-chip-clears-status-bar follow-up): true
+     * iff the Radar-face lock chip (scr_flare.c's
+     * ff_scr_flare_build_lock_chip) is about to be drawn over this same
+     * content — the caller (scr_nav.c) passes state->flare.locked
+     * directly, the SAME fact that gates the chip itself, so the two can
+     * never disagree about whether the chip is showing. Only the
+     * arrow-drawing modes (LIVE/STALE/PLACE/LOST) read it — CLOSE draws
+     * no compass arrow at all, and NOFIX/NOSEL draw no arrow either. */
     switch (radar->mode) {
     case RADAR_LIVE:
-        radar_render_live(parent, radar, &reg);
+        radar_render_live(parent, radar, &reg, locked);
         break;
     case RADAR_STALE:
-        radar_render_stale(parent, radar, &reg, screen_flip);
+        radar_render_stale(parent, radar, &reg, screen_flip, locked);
         break;
     case RADAR_PLACE:
-        radar_render_place(parent, radar, &reg);
+        radar_render_place(parent, radar, &reg, locked);
         break;
     case RADAR_LOST:
-        radar_render_lost(parent, radar, &reg);
+        radar_render_lost(parent, radar, &reg, locked);
         break;
     case RADAR_CLOSE:
         radar_render_close(parent, radar);
