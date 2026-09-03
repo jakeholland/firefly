@@ -17,6 +17,7 @@
 #include "ff_proto.h"
 #include "fixture.h"
 #include "screenshot.h"
+#include "sim_lifecycle.h" /* debt/sim-window-lifecycle — ff_sim_lifecycle_pump, the shared idle+rebuild pump */
 
 /* Matches the device panel / sim window (412x412, S15c — ff_theme.h's
  * FF_THEME_WINDOW_PX). Every ctl pointer command discovers its target's real
@@ -221,57 +222,39 @@ void ff_ctl_loop_pump(ff_ctl_loop_ctx_t *ctx)
 
     uint32_t const now_ms = ff_ctl_loop_tick_cb();
     bool const dirty = ff_shell_tick(ctx->shell, now_ms);
-    if (ff_shell_take_wake(ctx->shell)) { /* S26(c)+(d) banner wakes the screen — see app_main */
-        ff_idle_input(&ctx->idle, now_ms);
-    }
+    bool const shell_wake = ff_shell_take_wake(ctx->shell); /* S26(c)+(d) banner wakes the screen — see app_main */
     ctx->state = *ff_shell_view(ctx->shell);
 
     /* S26 slice c — the sim's own AC3 harness mirrors app_main.c's
      * keep_awake source (the sim has no blocking calibration flow, so
-     * that third source is always false here) and idle tick, ticked
-     * every pump regardless of dirty (same "always tick" contract every
-     * FSM in this codebase follows). S26f USB-sleep-inhibit: the sim has
-     * no light sleep on host (nothing to inhibit) and no USB-Serial/JTAG
-     * connection to sample, so this always passes false — see
-     * ff_idle.h's "Sleep inhibit" section. */
+     * that third source is always false here). S26f USB-sleep-inhibit:
+     * the sim has no light sleep on host (nothing to inhibit) and no
+     * USB-Serial/JTAG connection to sample, so this always passes false
+     * — see ff_idle.h's "Sleep inhibit" section. */
     bool const keep_awake = ff_shell_keep_awake(&ctx->state, false);
-    ff_idle_state_t const idle_state = ff_idle_tick(&ctx->idle, now_ms, keep_awake, false);
 
-    /* S16 slice d: rebuild ONLY on a dirty tick — this is the whole
-     * point (closes #17/#29's "rebuild every frame regardless" cost, and
-     * AC4(b)'s dirty bit is what drives it end to end, not just at the
-     * ff_shell_tick unit level). S26 slice c ADDS a second gate: OFF
-     * skips the rebuild entirely (no face rebuilds while the screen is
-     * off), latching a dirty tick that lands during OFF into
-     * `rebuild_pending` so it drains on the first non-OFF pump after a
-     * wake — "a dirty view is rebuilt on wake" (never lost, only
-     * deferred, mirroring app_main.c's finger-down defer latch in
-     * spirit). S26 slice f: SLEEP is OFF-with-the-CPU-also-asleep on the
-     * esp32s3 target — there is nothing to enact here (no light sleep on
-     * host, per the spec's "Sim: nothing to enact" note), but the
-     * rebuild-skip gate still applies (the screen is just as blank), so
-     * SLEEP is folded into the same gate rather than getting a second
-     * one — a dirty tick during SLEEP defers exactly like a dirty tick
-     * during OFF.
-     *
-     * lv_obj_clean() BEFORE rebuilding is what makes issue #17's static
-     * point pools (scr_radar.c, scr_flare.c) safe under repeated builds:
-     * every lv_line/triangle-descriptor object from the PREVIOUS build is
-     * deleted here, so by the time ff_build_face_screen resets those
-     * pools' indices, nothing still-alive references the points about to
-     * be overwritten. It also closes #17's OTHER half (unbounded object
-     * growth): the same screen object is reused forever, its children
-     * torn down and rebuilt, never accumulated. */
-    if (dirty) {
-        ctx->rebuild_pending = true;
-    }
-    bool const screen_blank = (idle_state == FF_IDLE_STATE_OFF) || (idle_state == FF_IDLE_STATE_SLEEP);
-    if (ctx->rebuild_pending && ctx->has_screen && !screen_blank) {
-        lv_obj_clean(lv_screen_active());
-        ff_build_face_screen(&ctx->state);
-        ctx->rebuild_pending = false;
-        ctx->rebuild_count++;
-    }
+    /* debt/sim-window-lifecycle: the raw finger-down truth for the
+     * rebuild-mid-tap latch below — ctx->pointer_state is set directly
+     * by ctl_loop_pointer_gesture (press/release), the same physical
+     * level ctl_loop_pointer_read_cb reads every indev poll. This is
+     * the parity fix this PR makes: before it, this gate had no
+     * finger-down term at all (see ff_sim_lifecycle_pump's own doc
+     * comment in sim_lifecycle.h for the on-glass bug that gap mirrors
+     * — app_main.c's `!ff_display_touch_is_down()` has had this term
+     * since the original rebuild-mid-tap fix; this file never did). */
+    bool const finger_down = (ctx->pointer_state == LV_INDEV_STATE_PRESSED);
+
+    /* ctx->has_screen is unconditionally true by the time this function
+     * can ever run (ff_ctl_loop_open sets it right after the first
+     * ff_build_face_screen call, before returning success) — kept as a
+     * struct field for the documented build-vs-clean reason
+     * (ctl_loop.h's own doc comment on it), not re-checked here. The
+     * actual idle-tick + dirty-latch + gated-rebuild sequence now lives
+     * in ONE place, sim_lifecycle.c's ff_sim_lifecycle_pump — see that
+     * function's doc comment for the full step-by-step this used to
+     * inline here. */
+    (void)ff_sim_lifecycle_pump(&ctx->idle, &ctx->rebuild_pending, &ctx->rebuild_count, now_ms, dirty, shell_wake,
+                                 finger_down, keep_awake, /* sleep_inhibit */ false, &ctx->state);
 }
 
 void ff_ctl_loop_close(ff_ctl_loop_ctx_t *ctx)
@@ -383,21 +366,88 @@ static void ctl_loop_pointer_step_delay(ff_ctl_loop_ctx_t *ctx)
  */
 typedef void (*ctl_loop_gesture_step_fn)(ff_ctl_loop_ctx_t *ctx, void *step_user, int step_i, int n_steps);
 
-static void ctl_loop_pointer_gesture(ff_ctl_loop_ctx_t *ctx, int32_t x0, int32_t y0, int n_steps,
-                                      ctl_loop_gesture_step_fn step_cb, void *step_user)
+/* debt/sim-window-lifecycle: ctl_loop_pointer_gesture's press and
+ * release ends, factored out so a caller can pump OTHER things (a real
+ * ff_ctl_loop_pump call, a dirtying ff_shell_intent) BETWEEN them —
+ * exactly what test_ctl_rebuild_under_finger.c needs to land a dirty
+ * tick while a ctl-injected touch is still down, which the old atomic
+ * press->N-steps->release shape had no seam for. Exposed publicly as
+ * ff_ctl_loop_pointer_press/_release (ctl_loop.h) for that test; every
+ * existing caller (tap/swipe/hold below) still goes through
+ * ctl_loop_pointer_gesture, unchanged in behavior. */
+static void ctl_loop_pointer_press(ff_ctl_loop_ctx_t *ctx, int32_t x, int32_t y)
 {
     /* S26 slice c / wake-only-touch amendment: every real pointer
      * gesture (tap/swipe/hold) is a touch, so it wakes the idle FSM
      * exactly as the device's touch indev does — and, if it BEGAN while
      * idle was not ACTIVE, is swallowed for its whole duration. Both are
-     * now decided per-poll in `ctl_loop_pointer_read_cb` (the actual
-     * LVGL indev read seam), not here — this function only choreographs
-     * WHEN each poll happens, same as before. */
-    ctx->pointer_point.x = (lv_coord_t)x0;
-    ctx->pointer_point.y = (lv_coord_t)y0;
+     * decided per-poll in `ctl_loop_pointer_read_cb` (the actual LVGL
+     * indev read seam), not here — this function only choreographs WHEN
+     * each poll happens, same as before. */
+    ctx->pointer_point.x = (lv_coord_t)x;
+    ctx->pointer_point.y = (lv_coord_t)y;
     ctl_loop_pointer_step_delay(ctx);
     ctx->pointer_state = LV_INDEV_STATE_PRESSED;
     lv_timer_handler();
+}
+
+static void ctl_loop_pointer_release(ff_ctl_loop_ctx_t *ctx)
+{
+    ctx->pointer_state = LV_INDEV_STATE_RELEASED;
+    ctl_loop_pointer_step_delay(ctx);
+    lv_timer_handler();
+}
+
+void ff_ctl_loop_pointer_press(ff_ctl_loop_ctx_t *ctx, int32_t x, int32_t y)
+{
+    if (ctx == NULL) return;
+    ctl_loop_pointer_press(ctx, x, y);
+}
+
+void ff_ctl_loop_pointer_step(ff_ctl_loop_ctx_t *ctx)
+{
+    if (ctx == NULL) return;
+    ctl_loop_pointer_step_delay(ctx);
+    lv_timer_handler();
+}
+
+void ff_ctl_loop_pointer_release(ff_ctl_loop_ctx_t *ctx)
+{
+    if (ctx == NULL) return;
+    ctl_loop_pointer_release(ctx);
+}
+
+/**
+ * ctl_loop_pointer_gesture — the shared press -> N-step -> release
+ * primitive `tap`/`swipe`/`hold` all reduce to. Issue #70's own larger
+ * point: every ctl pointer command (tap and swipe, PR #62; hold, here)
+ * has needed the exact same time choreography rediscovered —
+ * ctl_loop_pointer_step_delay between every step so LVGL's indev read
+ * timer (33ms period) actually polls at each one, matching the ordering
+ * ctl_loop_tap's original fix established: point set, THEN step_delay,
+ * THEN the state transition + lv_timer_handler, on both the press end
+ * and the release end.
+ *
+ * `n_steps` intermediate steps run between press and release, calling
+ * `step_cb(ctx, step_user, i, n_steps)` (if non-NULL) before each one's
+ * own step_delay+lv_timer_handler to update ctx->pointer_point:
+ *   - tap:   n_steps = 0, step_cb = NULL — nothing moves, nothing runs
+ *            between the press call and the release call, exactly
+ *            ctl_loop_tap's original two-call shape.
+ *   - swipe: n_steps = STEPS (6), step_cb interpolates x from start to
+ *            end — exactly ctl_loop_swipe's original press+6+release
+ *            shape.
+ *   - hold:  n_steps = ceil(ms/40), step_cb = NULL — the point never
+ *            moves; the steps exist purely to keep pumping
+ *            lv_timer_handler while enough mock-clock/wall time passes
+ *            for LVGL's long_press_time to elapse, the same "at most one
+ *            poll, gesture never recognized" failure mode PR #62 already
+ *            found and fixed for tap/swipe, now avoided here too.
+ */
+static void ctl_loop_pointer_gesture(ff_ctl_loop_ctx_t *ctx, int32_t x0, int32_t y0, int n_steps,
+                                      ctl_loop_gesture_step_fn step_cb, void *step_user)
+{
+    ctl_loop_pointer_press(ctx, x0, y0);
 
     for (int i = 1; i <= n_steps; i++) {
         if (step_cb != NULL) step_cb(ctx, step_user, i, n_steps);
@@ -405,9 +455,7 @@ static void ctl_loop_pointer_gesture(ff_ctl_loop_ctx_t *ctx, int32_t x0, int32_t
         lv_timer_handler();
     }
 
-    ctx->pointer_state = LV_INDEV_STATE_RELEASED;
-    ctl_loop_pointer_step_delay(ctx);
-    lv_timer_handler();
+    ctl_loop_pointer_release(ctx);
 }
 
 static void ctl_loop_tap(void *user, double x, double y)

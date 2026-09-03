@@ -103,9 +103,16 @@ typedef struct {
      * `ff_idle_input` directly on `&ctx.idle` to simulate a wake with no
      * gesture. `rebuild_pending`
      * is app_main.c's same "accumulate dirty, drain on the first
-     * non-OFF tick" latch (mirrors that file's finger-down defer latch
-     * in spirit: an OFF window defers a rebuild instead of a held
-     * finger). `rebuild_count` counts actual rebuilds
+     * eligible tick" latch — as of debt/sim-window-lifecycle this is
+     * EXACT parity, not just "in spirit": the gate
+     * (`ff_sim_lifecycle_pump`, sim_lifecycle.h) is
+     * `rebuild_pending && !finger_down && !screen_blank`, the same three
+     * terms `app_main.c`'s own gate has (`!ff_display_touch_is_down()`
+     * is that file's finger-down term); an OFF/SLEEP window and a held
+     * finger both defer a rebuild the same way, and can even overlap
+     * (a finger held down as the screen goes OFF underneath it defers
+     * on BOTH terms until whichever releases/wakes last). `rebuild_count`
+     * counts actual rebuilds
      * (lv_obj_clean+ff_build_face_screen calls) — exposed so a test can
      * assert it stayed 0 across a window instead of inferring that from
      * ff_shell_tick's dirty bit (which the OFF-gate governs, not the
@@ -179,19 +186,51 @@ ff_ctl_handlers_t ff_ctl_loop_handlers(ff_ctl_loop_ctx_t *ctx, bool *quit_flag);
 /**
  * ff_ctl_loop_pump — one tick of the live session: `ff_shell_tick` at
  * the current clock reading, mirror the projection into `ctx->state`,
- * tick `ctx->idle` (S26 slice c) against `ff_shell_keep_awake(&ctx->state,
- * false)`, and — ONLY when a dirty tick is pending (S16 slice d) AND
- * `ctx->idle` is not OFF (S26 slice c) — `lv_obj_clean()` the active
- * screen and rebuild it (`ff_build_face_screen`), counting the rebuild
- * in `ctx->rebuild_count`. A dirty tick that lands while OFF is not
- * lost: it stays latched in `ctx->rebuild_pending` and drains on the
- * first non-OFF pump after a wake (mirrors app_main.c's "a dirty view is
- * rebuilt on wake"). Does NOT call `lv_timer_handler()` or poll the ctl
+ * then hand off to `ff_sim_lifecycle_pump` (sim_lifecycle.h,
+ * debt/sim-window-lifecycle) — the ONE idle-FSM-plus-rebuild-gate pump
+ * this file shares with `main.c`'s live window loop and
+ * `ff_demo_run.c`'s live window loop — passing `ctx->idle`/
+ * `ctx->rebuild_pending`/`ctx->rebuild_count` by reference, this tick's
+ * dirty bit and `ff_shell_take_wake` result, the raw finger-down truth
+ * (`ctx->pointer_state`), and `ff_shell_keep_awake(&ctx->state, false)`.
+ * That function ticks `ctx->idle` (S26 slice c) and — ONLY when a dirty
+ * tick is pending (S16 slice d) AND no finger is down AND `ctx->idle` is
+ * not OFF/SLEEP (S26 slices c+f) — `lv_obj_clean()`s the active screen
+ * and rebuilds it (`ff_build_face_screen`), counting the rebuild in
+ * `ctx->rebuild_count`. A dirty tick that lands while OFF/SLEEP or under
+ * a held finger is not lost: it stays latched in `ctx->rebuild_pending`
+ * and drains on the first eligible pump after (mirrors app_main.c's "a
+ * dirty view is rebuilt on wake" / rebuild-mid-tap deferral — EXACT
+ * parity as of this PR, see `ctx->rebuild_pending`'s own doc comment
+ * above). Does NOT call `lv_timer_handler()` or poll the ctl
  * socket; the caller does both (main.c's real loop, or a test driving
  * the sequence by hand) so this function stays a single, testable unit:
  * tick-and-maybe-rebuild.
  */
 void ff_ctl_loop_pump(ff_ctl_loop_ctx_t *ctx);
+
+/**
+ * ff_ctl_loop_pointer_press / ff_ctl_loop_pointer_step /
+ * ff_ctl_loop_pointer_release — debt/sim-window-lifecycle: the press and
+ * release ends of the ctl socket's tap/swipe/hold gesture primitive
+ * (ctl_loop.c's `ctl_loop_pointer_gesture`), exposed separately so a
+ * test can pump OTHER things — a real `ff_ctl_loop_pump` call, a
+ * dirtying `ff_shell_intent` — WHILE a ctl-injected touch is still down
+ * (test_ctl_rebuild_under_finger.c's whole reason to exist: proving the
+ * rebuild-mid-tap latch actually defers a rebuild that lands between a
+ * press and a release, not just before or after one). `_press` sets
+ * `ctx->pointer_point`/`pointer_state` and pumps once (same choreography
+ * `ctl_loop_pointer_gesture` uses for its own press end); `_step` just
+ * advances the clock/pumps `lv_timer_handler()` again with the point
+ * unchanged (for holding in place across multiple ff_ctl_loop_pump
+ * calls); `_release` releases and pumps once more. Every existing ctl
+ * command (tap/swipe/hold) still goes through the atomic
+ * `ctl_loop_pointer_gesture` internally — these three are additive, not
+ * a replacement. NULL-safe (no-op on a NULL ctx).
+ */
+void ff_ctl_loop_pointer_press(ff_ctl_loop_ctx_t *ctx, int32_t x, int32_t y);
+void ff_ctl_loop_pointer_step(ff_ctl_loop_ctx_t *ctx);
+void ff_ctl_loop_pointer_release(ff_ctl_loop_ctx_t *ctx);
 
 /** ff_ctl_loop_close — unbinds the intent seam, tears down what
  *  ff_live_setup opened, and frees the framebuffer. Does NOT call

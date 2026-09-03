@@ -69,7 +69,35 @@ extern "C" {
 /* Transport + clock seams                                              */
 /* -------------------------------------------------------------------- */
 
-/** Byte transport vtable — UART, TCP, later BLE. */
+/**
+ * Byte transport vtable — UART, TCP, later BLE.
+ *
+ * write() backpressure contract (settled here so every transport, present
+ * and future, agrees on it):
+ *   - A return of 0..len means that many bytes were ACCEPTED. len itself
+ *     means the call fully succeeded.
+ *   - A return of 0 means "accepted nothing right now, try again later" —
+ *     this is NOT an error. A transport backed by a bounded buffer (a
+ *     UART TX ring, for instance) is expected to return 0 when that
+ *     buffer is momentarily full rather than block or fail; the caller
+ *     (mc_write_bytes() in mc_client.c) retries a bounded number of
+ *     times before giving up.
+ *   - A negative return is a hard transport failure (dead fd, broken
+ *     link) and is escalated immediately — no retry.
+ *
+ * mc_transport_tcp satisfies this today by retrying EAGAIN/EWOULDBLOCK
+ * internally (see mc_tcp_write_cb) — it only ever returns a full/partial
+ * byte count or -1, never 0, so nothing about its behavior changes here.
+ * The contract exists for transports that DO naturally produce 0, most
+ * notably the UART transport landing with S15: a full TX ring is normal
+ * back-pressure, not a link failure, and treating it as one would fire a
+ * reconnect storm every time the device fell behind draining its own
+ * output.
+ *
+ * read() stays as documented inline: nonblocking, 0 = nothing available
+ * (not an error either — see mc_tcp_read_cb's own comment on why a
+ * repeating -1 here would be actively harmful to the reconnect backoff).
+ */
 typedef struct {
     int (*write)(void *io, uint8_t const *buf, size_t len);
     int (*read)(void *io, uint8_t *buf, size_t maxlen); /* nonblocking, 0 = nothing */
@@ -386,6 +414,44 @@ typedef struct {
     void *user;
 } mc_events_t;
 
+/* Byte-chunk size mc_tick() reads from the transport at a time. Ordinary
+ * chunked I/O (not one byte per transport.read() call) — the cap below is
+ * what bounds per-call work, not the read granularity, so there is no
+ * reason to pay one transport call per byte. 64 matches the pre-existing
+ * chunk size this library has always used. */
+#define MC_TICK_READ_CHUNK 64u
+
+/* Cap on complete FromRadio frames DISPATCHED within one mc_tick() call
+ * (i.e. delivered to mc_process_from_radio() — decode_errors/decode_skipped
+ * still get bumped by whatever fires within a dispatch, this just bounds
+ * how many frames are pulled through per call).
+ *
+ * Without a cap, mc_tick()'s read loop drains the transport completely in
+ * one call — fine for ordinary traffic, but meshtasticd's want_config
+ * response can burst a NodeInfo dump of the whole mesh's node database in
+ * one delivery (a busy public channel can carry on the order of 100
+ * nodes), and mc_tick() shares its calling tick with UI rendering
+ * (ff_shell.c's ff_shell_tick). Decoding a large dump's worth of
+ * protobufs back-to-back in a single call would stall that shared tick.
+ *
+ * 32 caps the worst case at a small, constant amount of decode work per
+ * call: even a 100-node dump finishes in ~4 ticks (~80 ms at the spec's
+ * 50 Hz cadence, docs/specs/S03-meshclient.md), invisible to a human, while
+ * any single mc_tick() call never does more than 32 frames' worth of
+ * pb_decode() + dispatch.
+ *
+ * Frames beyond the cap are simply not consumed yet: mc_tick() still
+ * reads the transport in MC_TICK_READ_CHUNK-sized chunks (cheap — one
+ * transport.read() call per chunk, not per byte), but if the cap lands
+ * mid-chunk, the unconsumed remainder of that chunk is copied into
+ * mc_client_t's own tick_carry_buf rather than fed to the framer or
+ * discarded. mc_framer_t.buf cannot hold it — that accumulator only ever
+ * holds bytes belonging to the ONE frame currently in progress, not raw
+ * leftover bytes spanning a chunk boundary. The next mc_tick() call feeds
+ * tick_carry_buf to the framer first, before reading the transport again,
+ * so nothing is lost and frame order is preserved across calls. */
+#define MC_TICK_MAX_FRAMES 32u
+
 /* -------------------------------------------------------------------- */
 /* Client                                                                */
 /* -------------------------------------------------------------------- */
@@ -418,6 +484,17 @@ typedef struct mc_client {
     bool reconnect_pending;
 
     mc_stats_t stats;
+
+    /* Bytes read from the transport in a MC_TICK_MAX_FRAMES-capped
+     * mc_tick() call that couldn't be fed to the framer this call because
+     * the cap was already hit mid-chunk. Fed to the framer FIRST on the
+     * next mc_tick() call, before any further transport.read() — see
+     * MC_TICK_MAX_FRAMES's doc comment. tick_carry_len == 0 means empty;
+     * tick_carry_pos is how much of tick_carry_buf[0..tick_carry_len) has
+     * already been consumed. */
+    uint8_t tick_carry_buf[MC_TICK_READ_CHUNK];
+    uint16_t tick_carry_len;
+    uint16_t tick_carry_pos;
 } mc_client_t;
 
 /** Initialize a freshly-allocated client. Does not touch the transport or
@@ -425,7 +502,11 @@ typedef struct mc_client {
  * fully reset a client (equivalent to a fresh mc_client_t). */
 void mc_init(mc_client_t *c, mc_transport_t t, mc_events_t ev, ff_clock_t const *clock);
 
-/** Pump read/parse/heartbeat/reconnect. Call at ~50 Hz (every ~20ms). */
+/** Pump read/parse/heartbeat/reconnect. Call at ~50 Hz (every ~20ms).
+ * Bounded: dispatches at most MC_TICK_MAX_FRAMES frames per call (see its
+ * doc comment near mc_client_t, above) — a large burst drains over
+ * several calls, never one, and nothing read from the transport is ever
+ * lost when the cap lands mid-chunk (see mc_client_t.tick_carry_*). */
 void mc_tick(mc_client_t *c, uint32_t now_ms);
 
 /** Start (or restart) the want_config handshake. */

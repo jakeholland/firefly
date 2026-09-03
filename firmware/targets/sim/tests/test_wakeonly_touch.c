@@ -57,7 +57,29 @@
 #include "fp_pack.h"
 
 void setUp(void) {}
-void tearDown(void) {}
+
+/* P0 harness-hang fix (debt/test-harness PR). Each test below owns its
+ * own lv_init()/lv_deinit() pairing (lv_init() happens inside
+ * ff_ctl_loop_open; lv_deinit() is the last line of run_wakeonly_touch_
+ * case) instead of a shared setUp/tearDown pair — but Unity runs
+ * setUp()+the test body under ONE TEST_PROTECT() and tearDown() under a
+ * SEPARATE one, so a failed TEST_ASSERT anywhere before that final
+ * lv_deinit() (e.g. mid-gesture, indev still PRESSED) longjmps past it
+ * and leaves LVGL initialized. LVGL v9's lv_init() is idempotent ("do
+ * nothing if already initialized"), so the NEXT test's ff_ctl_loop_open
+ * -> lv_init() silently no-ops on top of that leaked state instead of
+ * starting fresh — reproduced as a genuine, silent (zero stdout)
+ * infinite hang rather than a second failure. This tearDown is the
+ * safety net Unity always runs after every test regardless of outcome:
+ * guarded by lv_is_initialized() so it's a no-op on the normal path (the
+ * test body already deinited) and does the actual cleanup on the
+ * failure path. */
+void tearDown(void)
+{
+    if (lv_is_initialized()) {
+        lv_deinit();
+    }
+}
 
 /* Same recursive lookup as test_ctl_flare_sequence.c's
  * find_button_with_label — duplicated rather than shared, same
@@ -217,10 +239,30 @@ static void S26_wakeonly_off_tap_wakes_and_swallows_then_delivers(void)
     run_wakeonly_touch_case(&shell, &pack, &ctx, FF_IDLE_T_OFF_MS, FF_IDLE_STATE_OFF);
 }
 
+/* Permanent regression guard for the tearDown fix above (debt/test-
+ * harness PR) — no fake failure needed, proves the exact idempotency
+ * property the fix depends on directly: lv_init() followed by TWO
+ * tearDown() calls in a row must not crash, and both calls must leave
+ * LVGL deinitialized. Without the lv_is_initialized() guard in tearDown,
+ * a second lv_deinit() call — exactly what Unity's own automatic
+ * post-test tearDown() would trigger on top of a test body that already
+ * deinited cleanly — is undefined behavior; this pins that it's a safe
+ * no-op instead. */
+static void tearDown_is_idempotent_after_lv_init(void)
+{
+    lv_init();
+    TEST_ASSERT_TRUE(lv_is_initialized());
+    tearDown();
+    TEST_ASSERT_FALSE(lv_is_initialized());
+    tearDown(); /* must not crash / double-free */
+    TEST_ASSERT_FALSE(lv_is_initialized());
+}
+
 int main(void)
 {
     UNITY_BEGIN();
     RUN_TEST(S26_wakeonly_dim_tap_wakes_and_swallows_then_delivers);
     RUN_TEST(S26_wakeonly_off_tap_wakes_and_swallows_then_delivers);
+    RUN_TEST(tearDown_is_idempotent_after_lv_init);
     return UNITY_END();
 }

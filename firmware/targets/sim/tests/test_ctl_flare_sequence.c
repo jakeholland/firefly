@@ -64,7 +64,30 @@
 #include "fp_pack.h"
 
 void setUp(void) {}
-void tearDown(void) {}
+
+/* P0 harness-hang fix (debt/test-harness PR). Every test below owns its
+ * own lv_init()/lv_deinit() pairing (lv_init() happens inside
+ * ff_ctl_loop_open; each test calls lv_deinit() itself as its last line)
+ * instead of a shared setUp/tearDown pair — but Unity runs setUp()+the
+ * test body under ONE TEST_PROTECT() and tearDown() under a SEPARATE
+ * one, so a failed TEST_ASSERT anywhere before that final lv_deinit()
+ * longjmps past it and leaves LVGL initialized. LVGL v9's lv_init() is
+ * idempotent ("do nothing if already initialized"), so the NEXT test's
+ * ff_ctl_loop_open -> lv_init() silently no-ops on top of that leaked
+ * state instead of starting fresh — reproduced (see
+ * tests/test_wakeonly_touch.c's own tearDown comment for the full
+ * repro/verification writeup, same file layout, same bug) as a genuine,
+ * silent (zero stdout) infinite hang rather than a second failure. This
+ * tearDown is the safety net Unity always runs after every test
+ * regardless of outcome: guarded by lv_is_initialized() so it's a no-op
+ * on the normal path (the test body already deinited) and does the
+ * actual cleanup on the failure path. */
+void tearDown(void)
+{
+    if (lv_is_initialized()) {
+        lv_deinit();
+    }
+}
 
 /* Same recursive lookup as app/screens/tests/test_scr_intent.c's
  * find_button_with_label — duplicated rather than shared (that file's

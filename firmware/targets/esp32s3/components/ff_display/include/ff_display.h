@@ -98,8 +98,8 @@ esp_err_t ff_display_panel_init(void);
  * completely unaffected — no shadow buffer, no per-pixel software
  * rotation pass.
  *
- * Requires `ff_display_panel_init()` to have run (that brings `s_panel`
- * up) — returns ESP_ERR_INVALID_STATE otherwise, and a logged esp_err_t
+ * Requires `ff_display_panel_init()` to have run (that brings the panel
+ * handle up) — returns ESP_ERR_INVALID_STATE otherwise, and a logged esp_err_t
  * on any panel-IO failure. Safe to call again at ANY time after that,
  * including from a live UI with no reboot: it is a single MADCTL command
  * write, independent of the framebuffer content already flushed (the
