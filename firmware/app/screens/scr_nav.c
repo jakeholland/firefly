@@ -43,6 +43,21 @@
 #include "scr_inbox.h" /* S08c */
 
 /* ---------------------------------------------------------------------
+ * ff_scr_button_create — see scr_nav.h's doc comment for the full
+ * rationale. One call, no branching: every screen file's buttons go
+ * through this instead of `lv_button_create` directly, so the
+ * PRESS_LOCK fix (#145/#148) lives in exactly one place instead of
+ * being re-discovered per screen.
+ * ------------------------------------------------------------------- */
+
+lv_obj_t *ff_scr_button_create(lv_obj_t *parent)
+{
+    lv_obj_t *btn = lv_button_create(parent);
+    lv_obj_clear_flag(btn, LV_OBJ_FLAG_PRESS_LOCK);
+    return btn;
+}
+
+/* ---------------------------------------------------------------------
  * S26 slice d (round 3, orchestrator review on #157): the WIDER banner
  * (scr_banner.c's own geometry comment) now reaches far enough to
  * overlap real controls underneath it on some faces — the Inbox

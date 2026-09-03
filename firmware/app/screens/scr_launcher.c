@@ -518,7 +518,7 @@ static void launcher_make_orbit_ring(lv_obj_t *puck)
 
 static void launcher_make_hub(lv_obj_t *puck)
 {
-    lv_obj_t *btn = lv_button_create(puck);
+    lv_obj_t *btn = ff_scr_button_create(puck);
     lv_obj_remove_style_all(btn);
     lv_obj_set_size(btn, LAUNCHER_HUB_DIAM, LAUNCHER_HUB_DIAM);
     lv_obj_set_style_radius(btn, LV_RADIUS_CIRCLE, 0);
@@ -540,12 +540,10 @@ static void launcher_make_hub(lv_obj_t *puck)
     lv_obj_set_style_bg_color(btn, lv_color_hex(FF_THEME_COLOR_AMBER), LV_STATE_PRESSED);
     lv_obj_set_style_bg_opa(btn, LV_OPA_COVER, LV_STATE_PRESSED);
     lv_obj_align(btn, LV_ALIGN_CENTER, 0, 0);
-    /* Clear LVGL's default LV_OBJ_FLAG_PRESS_LOCK ("keep the object
-     * pressed even if the press slid from the object") — see
-     * launcher_make_satellite's own copy of this comment for why: the
-     * hub sits at the puck's exact center, which a drag/gesture can
-     * pass directly over. */
-    lv_obj_clear_flag(btn, LV_OBJ_FLAG_PRESS_LOCK);
+    /* PRESS_LOCK is cleared for us by ff_scr_button_create (scr_nav.h,
+     * #145/#148) — see launcher_make_satellite's own copy of this
+     * comment for why it matters here: the hub sits at the puck's exact
+     * center, which a drag/gesture can pass directly over. */
     lv_obj_add_event_cb(btn, launcher_circle_click_cb, LV_EVENT_CLICKED, (void *)(uintptr_t)0);
     lv_obj_add_event_cb(btn, launcher_press_cb, LV_EVENT_PRESSED, NULL);
     lv_obj_add_event_cb(btn, launcher_press_cb, LV_EVENT_RELEASED, NULL);
@@ -609,7 +607,7 @@ static void launcher_make_badge(lv_obj_t *puck, float sat_dx, float sat_dy, uint
 static void launcher_make_satellite(lv_obj_t *puck, void (*icon_fn)(lv_obj_t *, int32_t), char const *caption_text,
                                      float dx, float dy, uintptr_t launcher_idx, bool badge, uint16_t unread)
 {
-    lv_obj_t *btn = lv_button_create(puck);
+    lv_obj_t *btn = ff_scr_button_create(puck);
     lv_obj_remove_style_all(btn);
     lv_obj_set_size(btn, LAUNCHER_SAT_DIAM, LAUNCHER_SAT_DIAM);
     lv_obj_set_style_radius(btn, LV_RADIUS_CIRCLE, 0);
@@ -623,27 +621,25 @@ static void launcher_make_satellite(lv_obj_t *puck, void (*icon_fn)(lv_obj_t *, 
     lv_obj_set_style_bg_color(btn, lv_color_hex(FF_THEME_COLOR_AMBER), LV_STATE_PRESSED);
     lv_obj_set_style_bg_opa(btn, LV_OPA_COVER, LV_STATE_PRESSED);
     lv_obj_align(btn, LV_ALIGN_CENTER, (int32_t)dx, (int32_t)dy);
-    /* Clear LVGL's default LV_OBJ_FLAG_PRESS_LOCK ("keep the object
-     * pressed even if the press slid from the object", set on every
-     * object with a parent — lv_obj.c). Left set, a long horizontal
-     * drag (the sim's `ctl swipe`, and an ordinary real finger drag)
-     * that PRESSES DOWN on one satellite — the left/right cardinal
-     * satellites sit exactly on the puck's own horizontal midline, so a
-     * center-line sweep starts or ends squarely on one of them — would
-     * still fire LV_EVENT_CLICKED on release even though the finger
-     * has long since left this circle, exactly the "REAL LVGL button
-     * underneath a drag's path can still register a click on release"
-     * hazard the retired 2-over-3 grid's own layout comment warned
-     * about (it worked around it geometrically, by keeping every
+    /* PRESS_LOCK is cleared for us by ff_scr_button_create (scr_nav.h,
+     * #145/#148). It matters a lot here: a long horizontal drag (the
+     * sim's `ctl swipe`, and an ordinary real finger drag) that PRESSES
+     * DOWN on one satellite — the left/right cardinal satellites sit
+     * exactly on the puck's own horizontal midline, so a center-line
+     * sweep starts or ends squarely on one of them — would, with
+     * PRESS_LOCK left set, still fire LV_EVENT_CLICKED on release even
+     * though the finger has long since left this circle: the "a real
+     * LVGL button underneath a drag's path can still register a click
+     * on release" hazard the retired 2-over-3 grid's own layout comment
+     * warned about (it worked around it geometrically, by keeping every
      * circle off that line — impossible here, since the design's own
      * cardinal-point satellites REQUIRE two of them to sit on it).
      * Clearing PRESS_LOCK fixes the actual mechanism instead: once the
      * pointer leaves this circle's bounds, LVGL drops the press
-     * (LV_EVENT_PRESS_LOST) rather than keeping it captured, so a
-     * sweep across this disc no longer fires a click at all — while a
-     * real, stationary tap (which never leaves the disc's own bounds)
-     * is completely unaffected. */
-    lv_obj_clear_flag(btn, LV_OBJ_FLAG_PRESS_LOCK);
+     * (LV_EVENT_PRESS_LOST) rather than keeping it captured, so a sweep
+     * across this disc no longer fires a click at all — while a real,
+     * stationary tap (which never leaves the disc's own bounds) is
+     * completely unaffected. */
     /* Whether this satellite stays clickable while a banner covers part
      * of it (the top/Inbox one, the only one the banner ever reaches) is
      * decided AFTER the banner is built, by the shared remainder-rule

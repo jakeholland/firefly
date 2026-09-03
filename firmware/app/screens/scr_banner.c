@@ -8,6 +8,7 @@
 #include "ff_layout.h"
 #include "ff_theme.h"
 #include "radar_layout.h" /* RADAR_LAYOUT_STATUS_BAR_DY — the row this strip now centers on */
+#include "scr_nav.h" /* ff_scr_button_create — the shared PRESS_LOCK-clearing button base (#145/#148) */
 
 /* ---------------------------------------------------------------------
  * Layout constants.
@@ -175,7 +176,7 @@ void ff_scr_banner_build(lv_obj_t *parent, ff_app_banner_t const *banner, bool c
         return; /* nothing to show — the honest "no banner queued" state */
     }
 
-    lv_obj_t *strip = lv_button_create(parent);
+    lv_obj_t *strip = ff_scr_button_create(parent);
     lv_obj_remove_style_all(strip);
     lv_obj_set_size(strip, BANNER_W, BANNER_H);
     lv_obj_align(strip, LV_ALIGN_CENTER, (int32_t)BANNER_DX, (int32_t)BANNER_CY);
@@ -186,16 +187,11 @@ void ff_scr_banner_build(lv_obj_t *parent, ff_app_banner_t const *banner, bool c
     lv_obj_set_style_border_color(strip, lv_color_hex(banner_accent(banner->kind)), 0);
     lv_obj_set_style_border_opa(strip, LV_OPA_60, 0);
     lv_obj_clear_flag(strip, LV_OBJ_FLAG_SCROLLABLE);
-    /* Clear LVGL's default LV_OBJ_FLAG_PRESS_LOCK ("keep the object
-     * pressed, and still fire CLICKED on release, even if the press slid
-     * off it") — the #145 launcher lesson (scr_launcher.c/scr_compose.c's
-     * own copies of this fix; see either's comment for the full LVGL
-     * mechanism). Without this, a real finger that presses the banner
-     * and drags away before lifting still opens it on release — a
-     * scroll/dismiss gesture across the strip must never be read as a
-     * deliberate tap. See test_scr_banner.c's
-     * S26d_AC2_banner_drag_off_emits_nothing for the real-indev proof. */
-    lv_obj_clear_flag(strip, LV_OBJ_FLAG_PRESS_LOCK);
+    /* PRESS_LOCK is cleared for us by ff_scr_button_create (scr_nav.h) —
+     * without it, a real finger that presses the banner and drags away
+     * before lifting would still open it on release. See
+     * test_scr_banner.c's S26d_AC2_banner_drag_off_emits_nothing for the
+     * real-indev proof. */
     lv_obj_add_event_cb(strip, banner_open_cb, LV_EVENT_CLICKED, NULL);
     /* Press feedback (every tappable control, S24's standing convention):
      * a visible amber-toward-accent wash on touch-down. */

@@ -10,6 +10,7 @@
 #include "ff_layout.h"
 #include "ff_theme.h"
 #include "flare_fmt.h"
+#include "scr_widgets.h" /* ff_scr_pill_create — the shared pill factory (S17 debt cleanup) */
 
 /* ---------------------------------------------------------------------
  * Layout constants. Deliberately local to this file (not radar_layout.h)
@@ -91,6 +92,8 @@ static lv_point_precise_t s_flare_mark_ray_pts[FLARE_MARK_N_RAYS][2];
  * floor. */
 #define FLARE_TAKEOVER_GO_BTN_H       56
 #define FLARE_TAKEOVER_DISMISS_BTN_H  50
+_Static_assert(FLARE_TAKEOVER_GO_BTN_H >= FF_THEME_MIN_HIT_PX, "GO must clear the 44px hit-target floor");
+_Static_assert(FLARE_TAKEOVER_DISMISS_BTN_H >= FF_THEME_MIN_HIT_PX, "DISMISS must clear the 44px hit-target floor");
 
 /* Kept clear of both NOSEL's "Pair a friend in Settings" sub-line
  * (RADAR_LAYOUT_NOSEL_SUB_DY == 40) above and the puck's own bottom edge
@@ -110,6 +113,7 @@ static lv_point_precise_t s_flare_mark_ray_pts[FLARE_MARK_N_RAYS][2];
 #define FLARE_SENDER_CANCEL_DY    158.0f
 #define FLARE_SENDER_CANCEL_W     140
 #define FLARE_SENDER_CANCEL_H     48
+_Static_assert(FLARE_SENDER_CANCEL_H >= FF_THEME_MIN_HIT_PX, "CANCEL must clear the 44px hit-target floor");
 
 /* Chip padding, named because the round-glass clamp in flare_make_chip
  * has to subtract it from the available width to get the label's budget.
@@ -315,57 +319,37 @@ static void flare_build_mark(lv_obj_t *parent, float cy)
     lv_anim_start(&a);
 }
 
-/* A visually solid, distinctly-shaped pill button (never text-only — see
- * scr_flare.h's ff_scr_flare_build_takeover doc comment for why). `filled`
- * true: solid `bg_hex` fill (GO). `filled` false: outlined pill over the
- * surface color (DISMISS/CANCEL) — still a filled, bordered shape, not
- * bare text on the background. */
+/* The pill button shape (never text-only — see scr_flare.h's
+ * ff_scr_flare_build_takeover doc comment for why) is built by the shared
+ * `ff_scr_pill_create` (scr_widgets.h) — GO/DISMISS/CANCEL each fill in a
+ * `ff_scr_pill_cfg_t` for their own filled/outlined + colour + press-
+ * feedback combination, byte-identical to this file's former
+ * `flare_make_button` (S17 debt cleanup: this was one of three near-
+ * identical per-screen copies of the same shape). `filled` true: solid
+ * `bg_hex` fill, dims on press (GO). `filled` false: outlined pill over
+ * the surface color, tints AMBER on press (DISMISS/CANCEL) — still a
+ * filled, bordered shape, not bare text on the background. */
 static lv_obj_t *flare_make_button(lv_obj_t *parent, char const *text, uint32_t bg_hex, uint32_t fg_hex, bool filled,
                                     int32_t w, int32_t h, int32_t dy, lv_event_cb_t cb, void *user_data)
 {
-    lv_obj_t *btn = lv_button_create(parent);
-    lv_obj_remove_style_all(btn);
-    lv_obj_set_size(btn, w, h);
-    lv_obj_set_style_radius(btn, LV_RADIUS_CIRCLE, 0);
-    if (filled) {
-        lv_obj_set_style_bg_color(btn, lv_color_hex(bg_hex), 0);
-        lv_obj_set_style_bg_opa(btn, LV_OPA_COVER, 0);
-        /* Press feedback (issue: "missing touchdown state for the flaring
-         * notification screen"). A solid-amber primary is already amber, so
-         * it DIMS on touch-down rather than flashing amber-on-amber — the
-         * composer SEND / Signals FAB precedent (scr_inbox.c's SEND button
-         * and press_dim: a dark ink wash darkens the fill the instant the
-         * finger is down; LVGL clears it on release). LV_STATE_PRESSED-only,
-         * so the resting render the goldens capture is untouched. */
-        lv_obj_set_style_bg_color(btn, lv_color_hex(FF_THEME_COLOR_INK), LV_STATE_PRESSED);
-        lv_obj_set_style_bg_opa(btn, LV_OPA_20, LV_STATE_PRESSED);
-    } else {
-        lv_obj_set_style_bg_color(btn, lv_color_hex(FF_THEME_COLOR_SURFACE), 0);
-        lv_obj_set_style_bg_opa(btn, LV_OPA_COVER, 0);
-        lv_obj_set_style_border_width(btn, 3, 0);
-        lv_obj_set_style_border_color(btn, lv_color_hex(bg_hex), 0);
-        lv_obj_set_style_border_opa(btn, LV_OPA_COVER, 0);
-        /* Press feedback for the outlined pill (DISMISS/CANCEL): its surface
-         * fill is NOT amber, so it TINTS amber on touch-down — the
-         * inbox_press_feedback / compose_key_press_feedback amber-flash
-         * idiom (light the control amber at a translucent opa while pressed).
-         * LV_STATE_PRESSED-only; the resting outlined look, and the goldens,
-         * stay byte-identical. */
-        lv_obj_set_style_bg_color(btn, lv_color_hex(FF_THEME_COLOR_AMBER), LV_STATE_PRESSED);
-        lv_obj_set_style_bg_opa(btn, LV_OPA_40, LV_STATE_PRESSED);
-    }
-    lv_obj_align(btn, LV_ALIGN_CENTER, 0, (int32_t)dy);
-    if (cb != NULL) {
-        lv_obj_add_event_cb(btn, cb, LV_EVENT_CLICKED, user_data);
-    }
-
-    lv_obj_t *label = lv_label_create(btn);
-    lv_label_set_text(label, text);
-    lv_obj_set_style_text_font(label, FF_THEME_FONT_NAME, 0);
-    lv_obj_set_style_text_color(label, lv_color_hex(fg_hex), 0);
-    lv_obj_center(label);
-
-    return btn;
+    ff_scr_pill_cfg_t cfg = {
+        .w = w,
+        .h = h,
+        .use_pos = false,
+        .dy = dy,
+        .radius = LV_RADIUS_CIRCLE,
+        .filled = filled,
+        .border_width = 3,
+        .bg_hex = bg_hex,
+        .fg_hex = fg_hex,
+        .press = filled ? FF_SCR_PILL_PRESS_DIM : FF_SCR_PILL_PRESS_TINT,
+        .press_tint_hex = FF_THEME_COLOR_AMBER,
+        .font = FF_THEME_FONT_NAME,
+        .letter_space = 0,
+        .cb = cb,
+        .user_data = user_data,
+    };
+    return ff_scr_pill_create(parent, text, &cfg);
 }
 
 /* ---------------------------------------------------------------------

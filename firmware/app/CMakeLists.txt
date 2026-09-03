@@ -218,6 +218,7 @@ endif()
 add_library(ff-app-ui STATIC
     screens/scr_radar.c
     screens/scr_nav.c
+    screens/scr_widgets.c # S17 debt cleanup — shared pill factory (flare/power_menu/settings)
     screens/scr_inbox.c # S08c
     screens/scr_compose.c # S08d
     screens/scr_flare.c # S10b
