@@ -68,15 +68,28 @@ void ff_scr_flare_build_sender_overlay(lv_obj_t *parent, ff_app_flare_t const *f
 /**
  * ff_scr_flare_build_lock_chip — draws a small "LOCKED · <NAME>" chip
  * onto `parent` (expected to be the Radar tile — spec: "when LOCKED to a
- * node, the Radar face shows a lock indicator"). Positioned clear of
- * every mode's status-bar reservation (RADAR_LAYOUT_STATUS_BAR_DY) but,
- * unlike the arrow/dots, is NOT registered in radar_layout's collision
- * registry — a judgment call (flagged per AGENTS.md, see this PR's body):
- * the chip's own position is fixed regardless of mode, so it never
- * competes for space with the mode-specific content the registry exists
- * to protect (arrow head / ring dots), and adding a 9th chrome type to
- * that registry for a chip that never moves would be complexity spent
- * where there's no actual collision risk to resolve.
+ * node, the Radar face shows a lock indicator"). Positioned at
+ * `radar_layout.h`'s `RADAR_LAYOUT_LOCK_CHIP_DY` — DERIVED from (not a
+ * literal alongside) `RADAR_LAYOUT_STATUS_BAR_DY`, specifically so the
+ * two can never drift apart the way they did between PR #98 (which moved
+ * the status bar for the 412 panel) and this fix (which found the chip
+ * still at its pre-#98 literal, now overlapping the status bar instead
+ * of sitting 30px clear of it — see radar_layout.h's comment on that
+ * constant for the full history and the arithmetic).
+ *
+ * Unlike the arrow/dots, this chip is NOT registered in radar_layout's
+ * collision registry — a judgment call (flagged per AGENTS.md, see this
+ * PR's body, and radar_layout.h's own COLLISION ANALYSIS on the constant
+ * above): the chip's own position is fixed regardless of mode, so
+ * registering it would only ever protect the status bar (which its
+ * derived DY already guarantees structurally) at the cost of a 9th
+ * chrome rectangle. The one real consequence of staying unregistered is
+ * that the compass arrow, for a narrow bearing cone near due north, may
+ * pass BEHIND this chip rather than shortening to avoid it — accepted,
+ * not overlooked (radar_layout.h's collision analysis works the
+ * arithmetic); `scr_nav.c` already builds this chip AFTER
+ * `ff_scr_radar_build`, so it painted over the arrow in z-order before
+ * this fix too — only painting over the status bar was the bug.
  * No-op if `!flare->locked`.
  *
  * This function does not re-derive the lock fact itself — `flare->locked`

@@ -96,6 +96,119 @@ extern "C" {
  * that opened Map, so the hint and its registry reservation went with
  * it. Map is now an ordinary swipe neighbour with no per-face hint.) */
 
+/* LOCK_CHIP_DY: the Radar face's amber "LOCKED - <name>" chip (S10,
+ * scr_flare.c's ff_scr_flare_build_lock_chip). Chrome, not domain state —
+ * lives here rather than in scr_flare.c precisely because it has to stay
+ * correct relative to STATUS_BAR_DY above, and this is the file that owns
+ * the Radar face's vertical rhythm.
+ *
+ * REGRESSION HISTORY. Before S15c (PR #98) STATUS_BAR_DY was -195 and the
+ * chip sat at a literal -165 — 30px below it, clear. PR #98 pulled
+ * STATUS_BAR_DY up to -160 for the 412 panel (see that constant's own
+ * comment) but nothing moved the chip's literal alongside it, so the
+ * chip's -165 ended up 5px ABOVE (more negative than) the new status bar
+ * position instead of 30px below it — chip and status bar now overlap
+ * outright. The golden (`radar_flare_locked.png`) was regenerated at 412
+ * with the overlap already baked in, so nothing caught it: a pixel-diff
+ * against itself can't see that the reference image is wrong. Root cause
+ * was the literal itself — a fixed offset with no relationship to the
+ * constant it needed to stay clear of. Fixed here by deriving the chip's
+ * position FROM `RADAR_LAYOUT_STATUS_BAR_DY` instead, so a future move of
+ * the status bar carries the chip with it.
+ *
+ * DERIVATION. This header is deliberately LVGL-free (see its own top
+ * comment), so the font metrics below are transcribed literals, not a
+ * live `lv_font_get_line_height()` call — each is matched 1:1 against
+ * the actual constant it stands in for, cited below so a font change
+ * shows up as a stale comment instead of a silent drift:
+ *   - Status-bar text is `FF_THEME_FONT_LABEL` (app/theme/ff_theme.h) =
+ *     `lv_font_montserrat_14`, 16px line height — the same number
+ *     docs/specs/S10-flare.md's issue #27 amendment already cites for
+ *     the sibling `FF_THEME_FONT_CHIP` (also montserrat_14). Half-height
+ *     8px.
+ *   - The lock chip's own label uses `FF_THEME_FONT_CHIP` (16px line
+ *     height, same font) inside `scr_flare.c`'s `flare_make_chip`, which
+ *     pads it `FLARE_CHIP_PAD_Y` (6px) on top and bottom — chip height
+ *     16 + 2*6 = 28px, half-height 14px. (This is the same arithmetic
+ *     that S10's issue #27 amendment already worked out for the OTHER
+ *     chip this file builds, the takeover screen's disclosure line,
+ *     when it grew from FONT_CHIP to FONT_HEADLINE: "28px to 34px".)
+ *   - Gap: 16px between the status bar's own bottom edge and the chip's
+ *     top edge — double the >=8px floor this constant is required to
+ *     clear, so a future small nudge to either element has slack before
+ *     it needs re-tuning. (Chosen, not derived: no spec numbers this: the
+ *     PR #20 UX review's own precedent for "comfortable, not bare-floor"
+ *     spacing between two independent chrome elements on this same
+ *     screen family is 16px — see FLARE_TAKEOVER_GO_BTN_H's comment in
+ *     scr_flare.c.)
+ *
+ *   offset from STATUS_BAR_DY = status-bar half-height (8) + gap (16) +
+ *                                chip half-height (14) = 38
+ *   RADAR_LAYOUT_LOCK_CHIP_DY  = RADAR_LAYOUT_STATUS_BAR_DY (-160) + 38
+ *                              = -122
+ *
+ * That clears the status bar's real bottom edge (-160+8 = -152) by a
+ * full 16px (chip top edge -122-14 = -136), not the bare 8px minimum,
+ * and sits comfortably clear of the STATUS_BAR registry rectangle's own
+ * (generous, +/-17px) bound at -143.
+ *
+ * COLLISION ANALYSIS (checked, not assumed — AGENTS.md's proxy check).
+ *   - Ring dots (`radar_layout_resolve_dots`, fixed RADAR_LAYOUT_RING_
+ *     RADIUS_PX=185): structurally cannot reach this chip's x-range.
+ *     For a dot's y to fall inside the chip's band ([-136,-108]), its
+ *     fixed-185px-radius bearing forces |x| into ~[125,150] — always
+ *     outside the chip's own ~+/-65px half-width (the "top-right avatar
+ *     bubble" this fix was asked to check against, e.g. `radar_flare_
+ *     locked.json`'s D dot at ring_deg 42 -> (~135,~-121), is exactly
+ *     this case: close in y, nowhere near in x). No test needed beyond
+ *     the existing radar_layout_resolve_dots sweep, which never places a
+ *     dot off its fixed ring radius.
+ *   - The compass ARROW (`radar_layout_resolve_arrow`) is the real
+ *     conflict. It originates at center (0,0), so for bearings near due
+ *     north its shaft/head run straight up through x=0 — the chip's own
+ *     center. At arrow_deg=0 (unshortened, nothing in the STATUS_BAR/
+ *     PAGE_DOT registry stops it short) the head spans y=[-140,-94],
+ *     which mostly overlaps the chip's y=[-136,-108] band at the same
+ *     x=0. This is unavoidable by moving the chip within the region that
+ *     clears the status bar: shrinking the gap only narrows the
+ *     already-narrow (~+/-25-31 deg around due north) bearing cone this
+ *     affects, it can't remove it, and moving the chip DOWN grows the
+ *     cone instead (the box gets closer to center, where more bearings'
+ *     radial lines pass through it). Decision: (c) from this fix's brief
+ *     — keep the chip at top, accept that the arrow may pass BEHIND it.
+ *     This is not a new tradeoff introduced here: `scr_nav.c` already
+ *     builds `ff_scr_flare_build_lock_chip` AFTER `ff_scr_radar_build`
+ *     for the Radar face, so the chip already painted over the arrow in
+ *     z-order before this fix (it just used to ALSO paint over the
+ *     status bar, which is the actual bug). Rejected: (a) shrink the gap
+ *     — doesn't clear the arrow (previous paragraph) and only makes the
+ *     status-bar clearance tighter for no benefit; (b) move the chip to
+ *     the bottom stack — RADAR_LAYOUT_STACK_CHIP_DY (148) is the LIVE/
+ *     STALE freshness chip's own row and RADAR_LAYOUT_CLOSE_FLARE_DY
+ *     (147) is the FLARE button's in CLOSE mode, so there is no free row
+ *     there to reuse without displacing content that's already there.
+ *     This is not a "wrong data" problem under CLAUDE.md's honesty rule
+ *     (the arrow's direction is never mis-drawn or foreshortened — only,
+ *     for a narrow bearing cone, partially occluded by an opaque chip
+ *     that itself names the locked node), and the affected cone is a
+ *     minority of bearings with the rest of the compass unaffected.
+ *   - RADAR_CLOSE mode's own pulsing-ring registry rect
+ *     (RADAR_LAYOUT_CLOSE_RING_CY +/- RADAR_LAYOUT_CLOSE_RING_MAX_R =
+ *     [-145,35]) overlaps this chip's y-band too, grazing only the
+ *     outermost (faintest, 20%-opacity) ring's top arc — CLOSE_NAME_DY
+ *     (59) and below, where the mode's actual name/chip/FLARE-button
+ *     content lives, is well clear. Not exercised by any fixture today
+ *     (`radar_flare_locked.json` is mode "live"); flagged rather than
+ *     solved, alongside this file's existing note above that these
+ *     radar-chrome DYs are hardcoded (not radius-relative) offsets
+ *     awaiting a systemic tidy.
+ *
+ * Guarded by app/screens/tests/test_scr_flare.c's
+ * S10_lock_chip_clears_the_status_bar (measures real built widget
+ * geometry, not this arithmetic — fails if this constant regresses to
+ * anything that overlaps the status bar, e.g. the old -165). */
+#define RADAR_LAYOUT_LOCK_CHIP_DY (RADAR_LAYOUT_STATUS_BAR_DY + 38.0f)
+
 /* LIVE / STALE / LOST-with-a-real-fix shared vertical stack. */
 #define RADAR_LAYOUT_STACK_NAME_DY 60.0f
 #define RADAR_LAYOUT_STACK_DIST_DY 100.0f

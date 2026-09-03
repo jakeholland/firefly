@@ -14,6 +14,10 @@
  * header used to also cover: the lock-disclosure chip's round-glass
  * clamp (issue #27 / PR #41 UX review), which has nothing to do with the
  * intent seam and everything to do with `flare_make_chip`'s pixel math.
+ *
+ * fix/radar-lock-chip-clears-status-bar (PR #98 regression): added the
+ * Radar-face lock chip's OWN geometry test, S10_lock_chip_clears_the_
+ * status_bar — see that test's own comment for the bug it guards.
  */
 #include <stdio.h>
 #include <string.h>
@@ -21,8 +25,11 @@
 #include "unity.h"
 
 #include "ff_layout.h"
+#include "ff_radar.h"
 #include "ff_theme.h"
+#include "radar_layout.h"
 #include "scr_flare.h"
+#include "scr_radar.h"
 
 /* Frozen tick — nothing in this file renders a frame, but lv_init still
  * wants a tick source. */
@@ -255,6 +262,136 @@ static void S10_ACn_lock_disclosure_is_always_accompanied_by_the_headline(void)
                               "the chip must not repeat the sender already named in the headline");
 }
 
+/* ---------------------------------------------------------------------
+ * fix/radar-lock-chip-clears-status-bar — the Radar face's own "LOCKED -
+ * <name>" chip (ff_scr_flare_build_lock_chip) must sit BELOW the status
+ * bar (clock/mesh/battery), never over it.
+ *
+ * REGRESSION THIS GUARDS. PR #98 (S15c, the 412-panel fit) moved
+ * RADAR_LAYOUT_STATUS_BAR_DY from -195 to -160 but left the lock chip at
+ * its own literal, -165 — unchanged, and now 5px ABOVE (more negative
+ * than) the status bar instead of the ~30px below it the two constants'
+ * original values put it. The golden (`radar_flare_locked.png`) was
+ * regenerated at 412 with the overlap already in the reference image, so
+ * the pixel-diff-against-itself golden check could never have caught it
+ * — this is exactly the "assertion, not a golden" gap
+ * app/screens/tests/test_radar_layout.c's own header comment already
+ * explains for this face's other geometry.
+ *
+ * PROXY-PROOF, PER AGENTS.md'S "measuring, not reasoning harder": this
+ * builds the REAL screen — `ff_scr_radar_build` then
+ * `ff_scr_flare_build_lock_chip`, the same two calls in the same order
+ * `scr_nav.c` makes for the live Radar face — and reads the actual
+ * built-and-laid-out LVGL widget geometry (`lv_obj_get_coords`), not
+ * `RADAR_LAYOUT_LOCK_CHIP_DY`'s own arithmetic. A test that re-derived
+ * the same formula the constant is defined by would pass no matter what
+ * the constant said, which is the proxy this file's own sibling tests
+ * above were written to avoid falling into.
+ *
+ * MUTATION CHECK (run manually, see this PR's body for the transcript):
+ * reverting RADAR_LAYOUT_LOCK_CHIP_DY to the old literal -165.0f makes
+ * this test fail immediately — the chip's top edge lands ABOVE the
+ * status bar's bottom edge, i.e. a negative gap, nowhere near the
+ * required 8px clearance.
+ */
+static void S10_lock_chip_clears_the_status_bar(void)
+{
+    float margin = (float)((FF_THEME_WINDOW_PX - FF_THEME_PUCK_PX) / 2);
+    float cx = margin + (float)FF_THEME_PUCK_RADIUS_PX;
+    float cy = margin + (float)FF_THEME_PUCK_RADIUS_PX;
+
+    /* Same content-container convention scr_nav.c uses: a PUCK_PX-square
+     * parent, positioned so its own center lands on the round glass's
+     * real center — both builders draw center-relative (LV_ALIGN_CENTER
+     * + dy) against THIS object, exactly as they do against scr_nav.c's
+     * `content`. */
+    lv_obj_t *puck = lv_obj_create(lv_screen_active());
+    lv_obj_remove_style_all(puck);
+    lv_obj_set_size(puck, FF_THEME_PUCK_PX, FF_THEME_PUCK_PX);
+    lv_obj_set_pos(puck, (int32_t)margin, (int32_t)margin);
+
+    /* radar_flare_locked.json's own fixture values — the one Radar-face
+     * fixture with flare.locked == true (grepped: no other Radar fixture
+     * sets it), so this is the exact scenario the regression shipped in. */
+    ff_radar_view_t radar;
+    memset(&radar, 0, sizeof(radar));
+    radar.mode = RADAR_LIVE;
+    radar.arrow_deg = 42.0f;
+    radar.arrow_valid = true;
+    snprintf(radar.name, sizeof(radar.name), "%s", "DANA");
+    snprintf(radar.dist_str, sizeof(radar.dist_str), "%s", "320 m");
+    snprintf(radar.age_str, sizeof(radar.age_str), "%s", "8 SEC");
+    radar.trend = 0;
+    snprintf(radar.clock_str, sizeof(radar.clock_str), "%s", "9:41");
+    radar.batt_pct = 78;
+    radar.mesh_ok = true;
+    radar.dots[0].ring_deg = 42.0f;
+    radar.dots[0].initial = 'D';
+    radar.dots[0].color_idx = 0;
+    radar.n_dots = 1;
+
+    ff_app_flare_t flare;
+    memset(&flare, 0, sizeof(flare));
+    flare.locked = true;
+    snprintf(flare.locked_from_name, sizeof(flare.locked_from_name), "%s", "DANA");
+    flare.locked_expires_in_ms = 60000;
+
+    ff_scr_radar_build(puck, &radar, /*colorblind=*/false, /*screen_flip=*/false);
+    ff_scr_flare_build_lock_chip(puck, &flare);
+    lv_obj_update_layout(lv_screen_active());
+
+    /* Status bar: the "MESH" label (mesh_ok == true) — same font/dy as
+     * the clock and battery labels either side of it, so any one of the
+     * three stands in for the row's real on-screen extent. */
+    lv_obj_t *mesh_lbl = find_label_with_prefix(puck, "MESH");
+    TEST_ASSERT_NOT_NULL_MESSAGE(mesh_lbl, "the status bar's MESH label must be built");
+    lv_area_t status_area;
+    lv_obj_get_coords(mesh_lbl, &status_area);
+
+    lv_obj_t *chip_label = find_label_with_prefix(puck, "LOCKED - DANA");
+    TEST_ASSERT_NOT_NULL_MESSAGE(chip_label, "the lock chip must be built when flare->locked");
+    lv_obj_t *chip = lv_obj_get_parent(chip_label);
+    TEST_ASSERT_NOT_NULL(chip);
+    lv_area_t chip_area;
+    lv_obj_get_coords(chip, &chip_area);
+
+    /* lv_area_t's y2 is an INCLUSIVE last-pixel coordinate; +1 gives the
+     * exclusive bottom edge — same conversion this file's sibling test
+     * (and test_face_hit_targets.c) already documents. Kept as plain
+     * `int` (not float/%.0f): on-screen pixel coordinates are small and
+     * bounded, but GCC's -Wformat-truncation sizes a numeric conversion's
+     * WORST CASE against the full width of the argument's TYPE (11 chars
+     * incl. sign for a bare `int`, far more for `%f`/`double`), not this
+     * variable's actual bound — CLAUDE.md: GCC is the CI authority, and
+     * clang has no equivalent check to catch this locally, so the buffer
+     * below is sized against that worst case (3 `int`s at 11 chars each)
+     * rather than the short values this test actually produces. */
+    int status_bottom = (int)status_area.y2 + 1;
+    int chip_top = (int)chip_area.y1;
+    int gap = chip_top - status_bottom;
+
+    char msg[256];
+    snprintf(msg, sizeof(msg),
+             "lock chip must clear the status bar by >= 8px (status bottom %d, chip top %d, gap %d) "
+             "— this is exactly the PR #98 regression (chip stuck at a stale literal) if it fails",
+             status_bottom, chip_top, gap);
+    TEST_ASSERT_TRUE_MESSAGE(gap >= 8, msg);
+
+    /* Both bands stay on the round glass at their own x-extents — the
+     * chip's own FLARE_CHIP_GLASS_SAFETY_PX bound (scr_flare.c) plus the
+     * status bar's pre-existing placement, both re-verified here rather
+     * than assumed. */
+    ff_layout_rect_t status_rect = {(float)status_area.x1, (float)status_area.y1, (float)status_area.x2 + 1.0f,
+                                     (float)status_area.y2 + 1.0f};
+    TEST_ASSERT_TRUE_MESSAGE(ff_layout_rect_in_circle(status_rect, cx, cy, (float)FF_THEME_PUCK_RADIUS_PX),
+                              "the status bar's MESH label must lie entirely within the round glass");
+
+    ff_layout_rect_t chip_rect = {(float)chip_area.x1, (float)chip_area.y1, (float)chip_area.x2 + 1.0f,
+                                   (float)chip_area.y2 + 1.0f};
+    TEST_ASSERT_TRUE_MESSAGE(ff_layout_rect_in_circle(chip_rect, cx, cy, (float)FF_THEME_PUCK_RADIUS_PX),
+                              "the lock chip must lie entirely within the round glass");
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -262,6 +399,7 @@ int main(void)
     RUN_TEST(S10_ACn_lock_disclosure_chip_stays_inside_the_round_glass);
     RUN_TEST(S10_ACn_lock_disclosure_only_truncates_names_that_dont_fit);
     RUN_TEST(S10_ACn_lock_disclosure_is_always_accompanied_by_the_headline);
+    RUN_TEST(S10_lock_chip_clears_the_status_bar);
 
     return UNITY_END();
 }
