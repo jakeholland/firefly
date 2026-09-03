@@ -197,12 +197,78 @@ static void S10_quick_flare_four_boot_presses_do_not_start_sending(void)
     lv_deinit();
 }
 
+
+/* Review round 2 — the launcher's own CANCEL button (the sender
+ * overlay's undo, `ff_scr_flare_build_sender_overlay`'s `flare_cancel_
+ * send_cb`) must actually work on the launcher, not just render there:
+ * a real tap on it emits FF_INTENT_FLARE_END and the overlay
+ * disappears from the live LVGL tree, driven through a genuine
+ * pointer gesture (ctl_loop.c's synthetic indev), not a bare
+ * `ff_shell_intent(FF_INTENT_FLARE_END)` call. */
+static void S10_quick_flare_launcher_cancel_button_ends_the_send(void)
+{
+    static ff_shell_t shell;
+    static fp_pack_t pack;
+    static ff_ctl_loop_ctx_t ctx;
+
+    ff_shell_cfg_t shell_cfg;
+    memset(&shell_cfg, 0, sizeof(shell_cfg));
+
+    ff_ctl_loop_cfg_t cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.mock_clock = true;
+
+    TEST_ASSERT_EQUAL_INT(0, ff_ctl_loop_open(&ctx, &shell, &pack, &shell_cfg, &cfg));
+    bool quit_flag = false;
+    (void)ff_ctl_loop_handlers(&ctx, &quit_flag);
+    ff_ctl_loop_pump(&ctx); /* settle the always-dirty first tick */
+    TEST_ASSERT_EQUAL(FF_APP_FACE_LAUNCHER, ctx.state.active_face);
+
+    /* Five BOOT presses (screen already ACTIVE throughout — the
+     * wake-only-touch interaction is the sibling OFF-screen test's job,
+     * not this one's). */
+    for (int tap = 0; tap < 5; tap++) {
+        ff_ctl_loop_boot_press(&ctx);
+        if (tap < 4) {
+            ctx.mock_clock_ms += QF_EXTRA_GAP_MS;
+        }
+        ff_ctl_loop_pump(&ctx);
+    }
+    TEST_ASSERT_TRUE(ctx.state.flare.sending);
+
+    lv_refr_now(ctx.disp);
+    lv_obj_t *cancel_btn = find_button_with_label(lv_screen_active(), "CANCEL");
+    TEST_ASSERT_NOT_NULL_MESSAGE(cancel_btn, "CANCEL button not found before the tap — setup failed");
+
+    lv_area_t area;
+    lv_obj_get_click_area(cancel_btn, &area);
+    int32_t const cx = (int32_t)(((int32_t)area.x1 + (int32_t)area.x2) / 2);
+    int32_t const cy = (int32_t)(((int32_t)area.y1 + (int32_t)area.y2) / 2);
+
+    ff_ctl_loop_pointer_press(&ctx, cx, cy);
+    ff_ctl_loop_pointer_release(&ctx);
+    ff_ctl_loop_pointer_step(&ctx); /* one more settle step so the fired intent's rebuild lands */
+    ff_ctl_loop_pump(&ctx);
+    lv_timer_handler();
+
+    TEST_ASSERT_FALSE_MESSAGE(ctx.state.flare.sending, "CANCEL tap did not end the send (FF_INTENT_FLARE_END never fired)");
+
+    lv_refr_now(ctx.disp);
+    lv_obj_t *cancel_after = find_button_with_label(lv_screen_active(), "CANCEL");
+    TEST_ASSERT_NULL_MESSAGE(cancel_after, "the sender overlay's CANCEL button is still in the tree after CANCEL was tapped");
+
+    ff_ctl_loop_close(&ctx);
+    ff_shell_close(&shell);
+    lv_deinit();
+}
+
 int main(void)
 {
     UNITY_BEGIN();
 
     RUN_TEST(S10_quick_flare_five_boot_presses_from_off_starts_sending_and_renders_overlay);
     RUN_TEST(S10_quick_flare_four_boot_presses_do_not_start_sending);
+    RUN_TEST(S10_quick_flare_launcher_cancel_button_ends_the_send);
 
     return UNITY_END();
 }

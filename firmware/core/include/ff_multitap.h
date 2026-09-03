@@ -39,11 +39,13 @@ extern "C" {
 #define FF_MULTITAP_COUNT ((uint8_t)5u)
 
 /** The longest gap allowed between two consecutive presses within one
- * run — a gap STRICTLY LONGER than this resets the count (the press that
- * finds the gap too long starts a fresh run of 1, it is not dropped).
- * 400 ms is comfortably longer than any real double-tap cadence but
- * short enough that an idle thumb resting near BOOT cannot accidentally
- * accumulate a run across unrelated presses minutes apart. */
+ * run — a gap of AT LEAST this length (>= 400 ms, INCLUSIVE — the same
+ * boundary convention `ff_time_reached` documents: "now_ms == deadline_ms
+ * already reached") resets the count (the press that finds the gap too
+ * long starts a fresh run of 1, it is not dropped). 400 ms is
+ * comfortably longer than any real double-tap cadence but short enough
+ * that an idle thumb resting near BOOT cannot accidentally accumulate a
+ * run across unrelated presses minutes apart. */
 #define FF_MULTITAP_MAX_GAP_MS ((uint32_t)400u)
 
 /** The longest the WHOLE run (first press to Nth) may span, measured
@@ -81,8 +83,9 @@ void ff_multitap_init(ff_multitap_t *m);
  *
  * Rules, in the order they're evaluated:
  *  1. If a run is already in progress (`count > 0`) and either the gap
- *     since the last press exceeds `FF_MULTITAP_MAX_GAP_MS`, OR the
- *     total span since the run's first press would exceed
+ *     since the last press has REACHED `FF_MULTITAP_MAX_GAP_MS` (i.e.
+ *     is `>=`, not `>` — `ff_time_reached`'s inclusive boundary), OR
+ *     the total span since the run's first press has likewise reached
  *     `FF_MULTITAP_WINDOW_MS`, the run resets — THIS press starts a
  *     brand-new run of 1 (it is the first press of the new run, not
  *     dropped and not counted toward the old one).

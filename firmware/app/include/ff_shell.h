@@ -778,8 +778,13 @@ bool ff_shell_pair(ff_shell_t *sh, uint32_t node_id, bool paired);
  *                       NOT rejected while a takeover is visible (unlike
  *                       every other case here) — see `ff_shell_home_press`
  *                       and this intent's own case in ff_shell.c for why.
- *                       Not emitted by a screen; only `ff_shell_home_press`
- *                       dispatches it, on its own multitap FSM's 5th press.
+ *                       If a COMPOSE or POWER_MENU modal is up (and no
+ *                       takeover), POPS it first — neither modal
+ *                       composites the sender overlay, so the flare
+ *                       would otherwise start invisibly for as long as
+ *                       the modal stayed open. Not emitted by a screen;
+ *                       only `ff_shell_home_press` dispatches it, on its
+ *                       own multitap FSM's 5th press.
  *
  * Every other kind is a documented no-op until its owning slice (c2:
  * remaining core-mutating intents) — see ff_shell.c.

@@ -6139,6 +6139,149 @@ static void S10_quick_flare_keep_awake_true_mid_sequence(void)
     TEST_ASSERT_FALSE(ff_shell_keep_awake(v, false));
 }
 
+/* ------------------------------------------------------------------- */
+/* S10 quick flare, review round 2 — visible feedback in every reachable */
+/* state (COMPOSE/POWER_MENU modals pop; a TAKEOVER is deliberately left */
+/* alone). docs/specs/S10-flare.md's Amendments table.                   */
+/* ------------------------------------------------------------------- */
+
+/* COMPOSE is up (no takeover): the 5th press POPS the modal so the
+ * flare starts on a face that actually shows it — neither
+ * ff_scr_compose_build nor ff_scr_power_menu_build composites the
+ * sender overlay (ff_face_dispatch_build's own dispatch: they are their
+ * own fixed builders, neither takes ff_app_flare_t at all). Taps 1-4
+ * must NOT pop it (ff_route_home is a documented no-op under a live
+ * modal) — only the 5th, together with QUICK_FLARE, does. */
+static void S10_quick_flare_pops_compose_modal_and_starts_sending(void)
+{
+    harness_init(100000u, false);
+    ff_intent_t const open = {.kind = FF_INTENT_OPEN_COMPOSE, .u = {0}};
+    ff_shell_intent(&H.shell, &open);
+    ff_shell_tick(&H.shell, H.clk.t);
+    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_COMPOSE, ff_shell_view(&H.shell)->active_face);
+
+    press_home_at(100000u); /* 1 */
+    press_home_at(100300u); /* 2 */
+    press_home_at(100600u); /* 3 */
+    press_home_at(100900u); /* 4 */
+    ff_shell_tick(&H.shell, H.clk.t);
+    TEST_ASSERT_EQUAL_INT_MESSAGE(FF_APP_FACE_COMPOSE, ff_shell_view(&H.shell)->active_face,
+                                   "taps 1-4 popped COMPOSE — ff_route_home must no-op under a live modal");
+    TEST_ASSERT_FALSE(ff_shell_flare(&H.shell)->sending);
+
+    press_home_at(101200u); /* 5th: pops the modal AND starts sending */
+
+    TEST_ASSERT_TRUE_MESSAGE(ff_shell_flare(&H.shell)->sending, "quick flare did not start while COMPOSE was open");
+    ff_shell_tick(&H.shell, H.clk.t);
+    TEST_ASSERT_NOT_EQUAL_MESSAGE(FF_APP_FACE_COMPOSE, ff_shell_view(&H.shell)->active_face,
+                                   "COMPOSE modal was not popped — the flare started invisibly behind it");
+}
+
+/* Same shape, POWER_MENU. */
+static void S10_quick_flare_pops_power_menu_modal_and_starts_sending(void)
+{
+    harness_init(100000u, false);
+    ff_intent_t const open = {.kind = FF_INTENT_POWER_MENU_OPEN, .u = {0}};
+    ff_shell_intent(&H.shell, &open);
+    ff_shell_tick(&H.shell, H.clk.t);
+    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_POWER_MENU, ff_shell_view(&H.shell)->active_face);
+
+    press_home_at(100000u);
+    press_home_at(100300u);
+    press_home_at(100600u);
+    press_home_at(100900u);
+    ff_shell_tick(&H.shell, H.clk.t);
+    TEST_ASSERT_EQUAL_INT_MESSAGE(FF_APP_FACE_POWER_MENU, ff_shell_view(&H.shell)->active_face,
+                                   "taps 1-4 popped POWER_MENU — ff_route_home must no-op under a live modal");
+
+    press_home_at(101200u); /* 5th */
+
+    TEST_ASSERT_TRUE_MESSAGE(ff_shell_flare(&H.shell)->sending, "quick flare did not start while POWER_MENU was open");
+    ff_shell_tick(&H.shell, H.clk.t);
+    TEST_ASSERT_NOT_EQUAL_MESSAGE(FF_APP_FACE_POWER_MENU, ff_shell_view(&H.shell)->active_face,
+                                   "POWER_MENU modal was not popped — the flare started invisibly behind it");
+}
+
+/* A TAKEOVER (a crew member's own flare) is up: deliberately NOT
+ * touched — no modal to pop here anyway (a takeover is not routed,
+ * ff_route.h's own "the takeover is not routed, it overrides" note),
+ * but the point pinned here is behavioral, not just structural: the
+ * flare STARTS (sending flips true, not silently dropped) while the
+ * takeover stays fully intact and visible, and once the takeover
+ * clears the base face (the launcher, boot default) renders the
+ * sender overlay normally with no further action needed. */
+static void S10_quick_flare_starts_under_a_takeover_but_leaves_it_alone(void)
+{
+    harness_init(100000u, false);
+    inject_my_info(MY_ID);
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, true));
+    inject_flare(DANA, 300u);
+    TEST_ASSERT_TRUE(ff_shell_flare(&H.shell)->takeover_active);
+
+    press_home_at(100000u);
+    press_home_at(100300u);
+    press_home_at(100600u);
+    press_home_at(100900u);
+    press_home_at(101200u); /* 5th */
+
+    TEST_ASSERT_TRUE_MESSAGE(ff_shell_flare(&H.shell)->sending, "quick flare did not start under a takeover");
+    TEST_ASSERT_TRUE_MESSAGE(ff_shell_flare(&H.shell)->takeover_active,
+                              "quick flare disturbed a crew member's own pending takeover");
+
+    /* Once the takeover clears (a DISMISS here; natural expiry is the
+     * same fact via ff_flare_tick, already covered by the launcher-mask
+     * auto-end test below), the sender overlay is what's left showing —
+     * both facts are simultaneously true, sending was never dropped. */
+    ff_intent_t const dismiss = {.kind = FF_INTENT_TAKEOVER_DISMISS, .u = {0}};
+    ff_shell_intent(&H.shell, &dismiss);
+    ff_shell_tick(&H.shell, H.clk.t);
+    TEST_ASSERT_FALSE(ff_shell_flare(&H.shell)->takeover_active);
+    TEST_ASSERT_TRUE_MESSAGE(ff_shell_flare(&H.shell)->sending, "dismissing the takeover cancelled my own send");
+    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_LAUNCHER, ff_shell_view(&H.shell)->active_face);
+}
+
+/* Review round 2 — the SEND-side flare's own natural auto-end
+ * (ff_flare_tick's tick-driven FF_FLARE_INTENT_SEND_FLARE_END at
+ * send_expiry_ms, never a FLARE_END/CANCEL intent) with base ==
+ * LAUNCHER underneath — the launcher render-key mask's fourth
+ * exception (`sending`/`send_expires_in_ms`, ff_shell.c's
+ * shell_render_key) must keep the countdown genuinely LIVE in the key,
+ * not just restore the initial flip: unlike `takeover_active` (which
+ * this mask deliberately keeps masked, since nothing renders it on the
+ * launcher), a live send's countdown IS rendered there, so there is no
+ * "stable mid-send" negative control the way the sibling takeover test
+ * above has one — a live send is EXPECTED to dirty the key as its
+ * countdown advances. What this test pins is that the auto-end tick
+ * specifically both dirties the key and clears `sending`, proving the
+ * mask does not silently freeze the overlay at whatever it looked like
+ * partway through. */
+static void S10_quick_flare_launcher_mask_auto_end_dirties_key(void)
+{
+    harness_init(100000u, false);
+    (void)ff_shell_tick(&H.shell, H.clk.t); /* settle the always-dirty first tick */
+    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_LAUNCHER, ff_shell_view(&H.shell)->active_face);
+
+    press_home_at(100000u);
+    press_home_at(100300u);
+    press_home_at(100600u);
+    press_home_at(100900u);
+    press_home_at(101200u); /* 5th: starts sending */
+    TEST_ASSERT_TRUE_MESSAGE(ff_shell_tick(&H.shell, H.clk.t),
+                              "starting a send did not dirty the launcher key — see the mask's fourth exception");
+    TEST_ASSERT_TRUE(ff_shell_flare(&H.shell)->sending);
+    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_LAUNCHER, ff_shell_view(&H.shell)->active_face);
+
+    /* Exactly at the send's own natural auto-end: FF_FLARE_DEFAULT_DUR_S
+     * (300s) after the 5th press, driven purely by ff_flare_tick inside
+     * ff_shell_tick — never a CANCEL/FLARE_END intent. */
+    H.clk.t = 101200u + (uint32_t)FF_FLARE_DEFAULT_DUR_S * 1000u;
+    TEST_ASSERT_TRUE_MESSAGE(ff_shell_tick(&H.shell, H.clk.t),
+                              "the send's own natural auto-end did not dirty the render key while on the "
+                              "launcher — the FLARING overlay would stay stuck on glass forever");
+    TEST_ASSERT_FALSE(ff_shell_flare(&H.shell)->sending);
+    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_LAUNCHER, ff_shell_view(&H.shell)->active_face);
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -6286,6 +6429,10 @@ int main(void)
     RUN_TEST(S10_quick_flare_taps_1_to_4_still_navigate_home);
     RUN_TEST(S10_quick_flare_already_flaring_a_second_run_does_not_resend);
     RUN_TEST(S10_quick_flare_keep_awake_true_mid_sequence);
+    RUN_TEST(S10_quick_flare_pops_compose_modal_and_starts_sending);
+    RUN_TEST(S10_quick_flare_pops_power_menu_modal_and_starts_sending);
+    RUN_TEST(S10_quick_flare_starts_under_a_takeover_but_leaves_it_alone);
+    RUN_TEST(S10_quick_flare_launcher_mask_auto_end_dirties_key);
 
     /* S26 slice d — ff_notify + message banner. */
     RUN_TEST(S26_AC3_paired_message_pushes_banner);

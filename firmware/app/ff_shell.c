@@ -3877,8 +3877,48 @@ void ff_shell_intent(ff_shell_t *sh_pub, ff_intent_t const *in)
          * screen); quick flare is a hardware gesture that the feature
          * brief states must work "from any state, screen off included"
          * — including while a takeover is showing on this puck's own
-         * glass. */
+         * glass.
+         *
+         * Review round 2 (2026-09-03): visible feedback across every
+         * reachable state, not just the faces that happened to already
+         * composite the sender overlay. Three cases, in priority order:
+         *
+         *  - TAKEOVER showing (`takeover_up`, computed above):
+         *    deliberately left untouched — a crew member's own urgent
+         *    takeover is not dismissed just to reveal MY overlay sooner.
+         *    The flare still STARTS below (`sending` flips true, not
+         *    silently dropped); it is simply invisible until the
+         *    takeover clears on its own (DISMISS or expiry), at which
+         *    point whichever base/modal face is underneath renders
+         *    normally and shows it — `ff_face_dispatch_build` already
+         *    renders the takeover INSTEAD of any base/modal face
+         *    whenever `takeover_active` is true and reverts to
+         *    `route.modal`/`route.base` unassisted once it clears, so
+         *    no routing change is needed for this case at all.
+         *  - A MODAL (COMPOSE or POWER_MENU) is up and no takeover:
+         *    neither composites the sender overlay
+         *    (`ff_face_dispatch_build`: both are their own fixed
+         *    builders — `ff_scr_compose_build`/`ff_scr_power_menu_build`
+         *    — neither takes `ff_app_flare_t`), so `sending` would
+         *    otherwise be invisible for as long as the modal stays
+         *    open: a panic gesture that visibly does nothing. The 5th
+         *    press POPS the modal (`ff_route_pop_modal`, the same
+         *    primitive FF_INTENT_BACK/POWER_CANCEL already use) so the
+         *    flare starts on a face that actually shows it — the
+         *    gesture wins over whatever the user was doing. Compose's
+         *    draft is not discarded by this: popping never touches
+         *    `compose_to_node`/the T9 draft, and this mirrors BACK's
+         *    own `compose_to_node = 0` cleanup below so a later
+         *    OPEN_COMPOSE re-resolves the destination exactly as a BACK
+         *    press would leave it (S16 AC2 — the draft itself survives
+         *    in `sh->compose_draft`, untouched either way).
+         *  - Neither: no routing change needed — the current base face
+         *    already composites the overlay (every `scr_nav.c` face and
+         *    the launcher, as of this PR) and shows it immediately. */
         if (sh->flare.sending) return;
+        if (!takeover_up && ff_route_pop_modal(&sh->route)) {
+            sh->compose_to_node = 0u; /* mirrors FF_INTENT_BACK's own cleanup, see above */
+        }
         (void)ff_flare_send_begin(&sh->flare, 0, shell_now(sh));
         return;
     }
