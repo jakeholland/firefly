@@ -30,6 +30,7 @@ idf_component_register(
         # Real LVGL screen builders (the sim's ff-app-ui source set).
         "${FF_APP_DIR}/screens/scr_radar.c"
         "${FF_APP_DIR}/screens/scr_nav.c"
+        "${FF_APP_DIR}/screens/scr_widgets.c" # S17 debt cleanup — shared pill factory (flare/power_menu/settings)
         "${FF_APP_DIR}/screens/scr_lineup.c"
         "${FF_APP_DIR}/screens/scr_inbox.c"
         "${FF_APP_DIR}/screens/scr_compose.c"

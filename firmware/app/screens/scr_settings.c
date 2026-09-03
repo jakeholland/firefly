@@ -97,6 +97,7 @@
 #include "ff_layout.h"
 #include "ff_settings.h" /* FF_SHARE_LIVE/_ZONES/_GHOST, FF_BRIGHTNESS_*_PCT */
 #include "ff_theme.h"
+#include "scr_widgets.h" /* ff_scr_pill_create — the shared pill factory (S17 debt cleanup) */
 
 /* ---------------------------------------------------------------------
  * Palette roles (redesign spec).
@@ -158,6 +159,11 @@
 #define FF_SETTINGS_ROW_H   48
 #define FF_SETTINGS_ROW_GAP 14
 #define FF_SETTINGS_ROW_STEP (FF_SETTINGS_ROW_H + FF_SETTINGS_ROW_GAP) /* 62 */
+/* Every pill this file builds (settings_make_pill) uses FF_SETTINGS_ROW_H as
+ * its height, and every pill's width (TOGGLE/SCREEN/VALUE, all below) is
+ * wider than that — so this one assert is the binding shorter-dimension
+ * floor check for all of them. */
+_Static_assert(FF_SETTINGS_ROW_H >= FF_THEME_MIN_HIT_PX, "settings pill rows must clear the 44px hit-target floor");
 
 /* Toggle-pair pills: two >=44px pills at a tight 6px gap (safe because a
  * pair shares one callback — see sweep composite-control exclusion). */
@@ -321,31 +327,35 @@ static void settings_emit_int(ff_setting_id_t id, int32_t v)
 /* ---------------------------------------------------------------------
  * Pill widget: a rounded button with a centered label. bg/fg carry the pill
  * role (active / inactive / value). `letter_space` is applied to the label.
+ * A thin adapter over the shared `ff_scr_pill_create` (scr_widgets.h, S17
+ * debt cleanup), byte-identical to this file's pre-refactor pixels: no
+ * press-feedback style (settings rows use their own dim/highlight
+ * conventions, decided by the caller before the pill is built) and
+ * absolute positioning (settings lays out every row in list-relative
+ * coords, not centered-with-offset like scr_flare.c/scr_power_menu.c's
+ * pills).
  * ------------------------------------------------------------------- */
 static lv_obj_t *settings_make_pill(lv_obj_t *parent, char const *text, int32_t x, int32_t y, int32_t w, int32_t h,
                                      uint32_t bg_hex, uint32_t fg_hex, int32_t letter_space, lv_event_cb_t cb,
                                      void *user_data)
 {
-    lv_obj_t *btn = lv_button_create(parent);
-    lv_obj_remove_style_all(btn);
-    lv_obj_set_size(btn, w, h);
-    lv_obj_set_pos(btn, x, y);
-    lv_obj_set_style_bg_color(btn, lv_color_hex(bg_hex), 0);
-    lv_obj_set_style_bg_opa(btn, LV_OPA_COVER, 0);
-    lv_obj_set_style_radius(btn, FF_SETTINGS_PILL_RADIUS, 0);
-    if (cb != NULL) {
-        lv_obj_add_event_cb(btn, cb, LV_EVENT_CLICKED, user_data);
-    }
-
-    lv_obj_t *label = lv_label_create(btn);
-    lv_label_set_text(label, text);
-    lv_obj_set_style_text_font(label, FF_THEME_FONT_CHIP, 0);
-    lv_obj_set_style_text_color(label, lv_color_hex(fg_hex), 0);
-    if (letter_space != 0) {
-        lv_obj_set_style_text_letter_space(label, letter_space, 0);
-    }
-    lv_obj_center(label);
-    return btn;
+    ff_scr_pill_cfg_t cfg = {
+        .w = w,
+        .h = h,
+        .use_pos = true,
+        .x = x,
+        .y = y,
+        .radius = FF_SETTINGS_PILL_RADIUS,
+        .filled = true,
+        .bg_hex = bg_hex,
+        .fg_hex = fg_hex,
+        .press = FF_SCR_PILL_PRESS_NONE,
+        .font = FF_THEME_FONT_CHIP,
+        .letter_space = letter_space,
+        .cb = cb,
+        .user_data = user_data,
+    };
+    return ff_scr_pill_create(parent, text, &cfg);
 }
 
 /* ---------------------------------------------------------------------

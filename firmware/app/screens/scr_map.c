@@ -129,9 +129,12 @@ static lv_obj_t *map_make_label(lv_obj_t *parent, char const *text, uint32_t col
  * (FF_THEME_PUCK_PX == 412, radius 206 == FF_MAP_CIRCLE_RADIUS_PX), so this
  * map circle now coincides exactly with the puck's own glass rather than
  * sitting inside a slightly larger one — the FF_MAP_MARGIN_PX inset keeps
- * fitted content clear of the bezel, never clipped by it.
+ * fitted content clear of the bezel, never clipped by it. Derived from
+ * FF_THEME_PUCK_RADIUS_PX (S17 debt cleanup) rather than re-transcribed as
+ * a second literal 206 — same value, one source, so the two can no longer
+ * silently drift apart if the puck's own size ever changes.
  * ------------------------------------------------------------------- */
-#define FF_MAP_CIRCLE_RADIUS_PX 206.0f
+#define FF_MAP_CIRCLE_RADIUS_PX ((float)FF_THEME_PUCK_RADIUS_PX)
 #define FF_MAP_MARGIN_PX 24.0f
 
 #define FF_MAP_FILL_OPA ((lv_opa_t)33) /* 13% of 255, rounded — spec: "filled 13%-alpha" */

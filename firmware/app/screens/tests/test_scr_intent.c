@@ -49,6 +49,7 @@
 #include "scr_flare.h"
 #include "scr_launcher.h" /* S26 slice e — the BOOT-button launcher */
 #include "scr_nav.h"
+#include "scr_power_menu.h" /* PL_ press-lock drag-off tests — the power menu's own PRESS_LOCK coverage */
 #include "scr_radar.h"
 #include "scr_settings.h"
 #include "scr_inbox.h"
@@ -2773,6 +2774,170 @@ static void S26e_launcher_drag_across_satellites_emits_nothing(void)
     TEST_ASSERT_EQUAL_INT(0, s_spy.count);
 }
 
+/* =================================================================== */
+/* PL_ — press-lock drag-off, generalized (this PR).                     */
+/*                                                                       */
+/* #145 (launcher) and #148 (compose) each found and fixed the same      */
+/* LV_OBJ_FLAG_PRESS_LOCK bug independently, per-screen — see             */
+/* scr_nav.h's ff_scr_button_create doc comment for the full mechanism.  */
+/* This section is the generalized proof: every screen's buttons now go  */
+/* through that one shared base, so a drag-off is neutralized EVERYWHERE,*/
+/* not just in the two files that had already been bitten. Four sites,   */
+/* one per screen named in the bug report: Radar's FLARE (the primary    */
+/* CTA), a Settings toggle pill, Power-menu's Power off (the one          */
+/* destructive action), and an Inbox quick-reply chip. Each drag-off test */
+/* is paired with a clean-tap positive control so the fix is proven to    */
+/* neutralize a SLIDE without breaking an ordinary press — for Radar/     */
+/* Settings/Inbox those positive controls already exist elsewhere in this */
+/* file (S16_c2_radar_flare_button_emits_flare_start,                    */
+/* S11b_settings_haptics_chip_toggles, S24c_thread_omw_chip_emits_        */
+/* canned_reply_omw); Power-menu had no coverage at all before this PR,   */
+/* so both directions are added here.                                    */
+/*                                                                        */
+/* Mutation check (hand-verified before pushing, per                     */
+/* docs/review/code-review.md item 6 / AGENTS.md's standing brief): with  */
+/* ff_scr_button_create (scr_nav.c) edited to NOT clear                   */
+/* LV_OBJ_FLAG_PRESS_LOCK, a fresh build fails all four PL_*_drag_off_    */
+/* emits_nothing tests below (each now sees s_spy.count == 1, the slide   */
+/* wrongly committing the control) while every positive-control test      */
+/* (PL_power_off_tap_emits_power_off included) still passes — a clean,    */
+/* stationary tap never depended on PRESS_LOCK in the first place. Exact  */
+/* output pasted in this PR's body; reverted with a targeted edit, not    */
+/* `git checkout` (per the standing brief), and re-verified green.        */
+/* =================================================================== */
+
+/* (a) Radar FLARE — the primary CTA on the CLOSE-mode radar face. */
+static void PL_radar_flare_drag_off_emits_nothing(void)
+{
+    ff_radar_view_t r;
+    memset(&r, 0, sizeof(r));
+    r.mode = RADAR_CLOSE;
+    strncpy(r.name, "DANA", sizeof(r.name) - 1);
+    strncpy(r.dist_str, "15 m", sizeof(r.dist_str) - 1);
+
+    /* Sized to the puck and cleared non-scrollable, matching production's
+     * `content` container (scr_nav.c) — an UN-sized/default-scrollable
+     * `lv_obj_create` here would give this test container itself a huge
+     * scroll overflow (its default ~100x50 box against FLARE's real,
+     * far-larger extent), letting the drag get swallowed by THIS
+     * container's own scroll capture — a mechanism entirely separate
+     * from PRESS_LOCK — instead of actually exercising PRESS_LOCK. */
+    lv_obj_t *parent = lv_obj_create(lv_screen_active());
+    lv_obj_set_size(parent, FF_THEME_PUCK_PX, FF_THEME_PUCK_PX);
+    lv_obj_clear_flag(parent, LV_OBJ_FLAG_SCROLLABLE);
+    ff_scr_radar_build(parent, &r, false, false);
+    lv_obj_update_layout(lv_screen_active());
+
+    lv_obj_t *btn = find_button_with_label(parent, "FLARE");
+    TEST_ASSERT_NOT_NULL(btn);
+    lv_area_t a;
+    lv_obj_get_coords(btn, &a);
+    int32_t cx = (a.x1 + a.x2) / 2;
+    int32_t cy = (a.y1 + a.y2) / 2;
+
+    /* Press on FLARE's own center, drag 150px down (well past its own
+     * FF_THEME_FLARE_BTN_H_PX == 48 height), release far away, never
+     * back on FLARE. */
+    drag_v(cy, cy + 150, cx);
+
+    TEST_ASSERT_EQUAL_INT_MESSAGE(0, s_spy.count, "a slide-off of FLARE must never commit FLARE_START");
+}
+
+/* (b) Settings toggle pill — HAPTICS OFF, one of every pill this face
+ * builds through settings_make_pill -> ff_scr_pill_create. */
+static void PL_settings_toggle_drag_off_emits_nothing(void)
+{
+    ff_app_settings_t s;
+    memset(&s, 0, sizeof(s));
+    s.imperial = true; /* renders "FT" — the units row, at rest within the
+                         * unscrolled list viewport (unlike a lower row
+                         * such as HAPTICS, which sits below
+                         * FF_SETTINGS_LIST_H at scroll offset 0 and so is
+                         * never reachable by a real, un-scrolled touch —
+                         * matches S11b_settings_units_chip_toggles_imperial's
+                         * own fixture, the positive control for this same
+                         * chip). */
+
+    ff_scr_settings_build(lv_screen_active(), &s);
+    lv_obj_update_layout(lv_screen_active());
+
+    lv_obj_t *btn = find_button_with_label(lv_screen_active(), "FT");
+    TEST_ASSERT_NOT_NULL(btn);
+    lv_area_t a;
+    lv_obj_get_coords(btn, &a);
+    int32_t cx = (a.x1 + a.x2) / 2;
+    int32_t cy = (a.y1 + a.y2) / 2;
+
+    /* Horizontal drag, not vertical: the pill's row lives inside
+     * Settings' own LV_DIR_VER-scrollable list, so a vertical drag would
+     * be ambiguous with the list's OWN scroll-gesture detection (a
+     * proxy-check trap this repo's AGENTS.md standing brief warns
+     * about) — a horizontal slide off the pill exercises PRESS_LOCK
+     * alone, since the list never claims a horizontal drag. */
+    drag(cx, cx - 150, cy);
+
+    TEST_ASSERT_EQUAL_INT_MESSAGE(0, s_spy.count, "a slide-off of a settings pill must never commit SETTING_SET");
+}
+
+/* (c) Power-menu Power off — the one destructive action on this face,
+ * and the site with NO prior test coverage at all (both directions
+ * added here, not just the drag-off). */
+static void PL_power_off_drag_off_emits_nothing(void)
+{
+    ff_scr_power_menu_build();
+    lv_obj_update_layout(lv_screen_active());
+
+    lv_obj_t *btn = find_button_with_label(lv_screen_active(), "POWER OFF");
+    TEST_ASSERT_NOT_NULL(btn);
+    lv_area_t a;
+    lv_obj_get_coords(btn, &a);
+    int32_t cx = (a.x1 + a.x2) / 2;
+    int32_t cy = (a.y1 + a.y2) / 2;
+
+    drag_v(cy, cy + 150, cx);
+
+    TEST_ASSERT_EQUAL_INT_MESSAGE(0, s_spy.count, "a slide-off of POWER OFF must never commit FF_INTENT_POWER_OFF");
+}
+
+static void PL_power_off_tap_emits_power_off(void)
+{
+    ff_scr_power_menu_build();
+
+    click(find_button_with_label(lv_screen_active(), "POWER OFF"));
+
+    TEST_ASSERT_EQUAL_INT(1, s_spy.count);
+    TEST_ASSERT_EQUAL(FF_INTENT_POWER_OFF, s_spy.last.kind);
+}
+
+/* (d) Inbox quick-reply chip (OMW) — the same fixture
+ * S24c_thread_omw_chip_emits_canned_reply_omw already uses. */
+static void PL_inbox_chip_drag_off_emits_nothing(void)
+{
+    ff_app_inbox_t v;
+    s24c_make_direct_thread(&v);
+
+    /* Sized to the puck and cleared non-scrollable — see the matching
+     * comment on PL_radar_flare_drag_off_emits_nothing above for why an
+     * un-sized default `lv_obj_create` here would falsely absorb this
+     * drag as ITS OWN scroll, never actually reaching PRESS_LOCK. */
+    lv_obj_t *parent = lv_obj_create(lv_screen_active());
+    lv_obj_set_size(parent, FF_THEME_PUCK_PX, FF_THEME_PUCK_PX);
+    lv_obj_clear_flag(parent, LV_OBJ_FLAG_SCROLLABLE);
+    ff_scr_inbox_build(parent, &v, false);
+    lv_obj_update_layout(lv_screen_active());
+
+    lv_obj_t *btn = find_button_with_label(parent, "OMW");
+    TEST_ASSERT_NOT_NULL(btn);
+    lv_area_t a;
+    lv_obj_get_coords(btn, &a);
+    int32_t cx = (a.x1 + a.x2) / 2;
+    int32_t cy = (a.y1 + a.y2) / 2;
+
+    drag_v(cy, cy + 150, cx);
+
+    TEST_ASSERT_EQUAL_INT_MESSAGE(0, s_spy.count, "a slide-off of OMW must never commit CANNED_REPLY");
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -2862,6 +3027,12 @@ int main(void)
     RUN_TEST(S26e_launcher_click_emits_exactly_one_intent);
     RUN_TEST(S26e_satellite_deg_is_n_agnostic);
     RUN_TEST(S26e_launcher_drag_across_satellites_emits_nothing);
+
+    RUN_TEST(PL_radar_flare_drag_off_emits_nothing);
+    RUN_TEST(PL_settings_toggle_drag_off_emits_nothing);
+    RUN_TEST(PL_power_off_drag_off_emits_nothing);
+    RUN_TEST(PL_power_off_tap_emits_power_off);
+    RUN_TEST(PL_inbox_chip_drag_off_emits_nothing);
 
     return UNITY_END();
 }

@@ -21,6 +21,7 @@
 #include "ff_intent.h" /* S16c2 — the emit seam; see radar_flare_cb */
 #include "ff_theme.h"
 #include "radar_layout.h"
+#include "scr_nav.h" /* ff_scr_button_create — the shared PRESS_LOCK-clearing button base (#145/#148) */
 
 /* ---------------------------------------------------------------------
  * lv_line point storage.
@@ -826,6 +827,16 @@ static void radar_anim_set_opa_cb(void *obj, int32_t v)
     lv_obj_set_style_opa((lv_obj_t *)obj, (lv_opa_t)v, 0);
 }
 
+/* The FLARE button's own footprint — the primary CTA on this screen (S17
+ * usability-hardening: docs/specs/S17-usability-hardening.md slice b's
+ * tap-target floor). Named here (rather than the two literals the button
+ * used to be built with inline) so its compile-time floor check has
+ * something to assert against. */
+#define RADAR_FLARE_BTN_W_PX 200
+_Static_assert(RADAR_FLARE_BTN_W_PX >= FF_THEME_MIN_HIT_PX, "FLARE button width must clear the 44px hit-target floor");
+_Static_assert(FF_THEME_FLARE_BTN_H_PX >= FF_THEME_MIN_HIT_PX,
+               "FLARE button height must clear the 44px hit-target floor");
+
 static void radar_render_close(lv_obj_t *parent, ff_radar_view_t const *r)
 {
     /* Three pulsing rings (S06: "LVGL anim, 1.2 s period"). Headless
@@ -892,10 +903,14 @@ static void radar_render_close(lv_obj_t *parent, ff_radar_view_t const *r)
     radar_make_chip(parent, trend_text, trend_color, FF_THEME_COLOR_BG, (int32_t)RADAR_LAYOUT_CLOSE_CHIP_DY);
 
     /* FLARE button: S06 spec "48 px high, full hit area" — also clears
-     * docs/review/ux-raver.md's >=44px tap-target floor with margin. */
-    lv_obj_t *btn = lv_button_create(parent);
+     * docs/review/ux-raver.md's >=44px tap-target floor with margin
+     * (FF_THEME_FLARE_BTN_H_PX's own _Static_assert, below, holds this
+     * at compile time — it's the primary CTA on this screen, and a
+     * thumb that presses it and slides away must never commit it, hence
+     * ff_scr_button_create rather than a raw lv_button_create). */
+    lv_obj_t *btn = ff_scr_button_create(parent);
     lv_obj_remove_style_all(btn);
-    lv_obj_set_size(btn, 200, FF_THEME_FLARE_BTN_H_PX);
+    lv_obj_set_size(btn, RADAR_FLARE_BTN_W_PX, FF_THEME_FLARE_BTN_H_PX);
     lv_obj_set_style_bg_color(btn, lv_color_hex(FF_THEME_COLOR_AMBER), 0);
     lv_obj_set_style_bg_opa(btn, LV_OPA_COVER, 0);
     lv_obj_set_style_radius(btn, LV_RADIUS_CIRCLE, 0);
