@@ -71,6 +71,7 @@
 #include "ff_crew.h"
 #include "ff_feed.h"
 #include "ff_heard.h"
+#include "ff_multitap.h" /* S10 quick flare — FF_MULTITAP_MAX_GAP_MS, for the keep_awake-expiry test */
 #include "ff_proto.h"
 #include "ff_radar.h"
 #include "ff_settings.h"
@@ -5857,6 +5858,155 @@ static void S26c_AC1_keep_awake_null_view_is_safe(void)
     TEST_ASSERT_TRUE(ff_shell_keep_awake(NULL, true));
 }
 
+/* S10 quick flare — the fourth keep_awake source (see this header's own
+ * "S26c_AC1" block above for the other three: this is the same bare-
+ * `ff_app_state_t` shape, not a live shell). */
+static void S26c_AC1_keep_awake_true_while_quick_flare_pending(void)
+{
+    ff_app_state_t view;
+    memset(&view, 0, sizeof(view));
+    view.active_face = FF_APP_FACE_LAUNCHER;
+    view.quick_flare_pending = true;
+
+    TEST_ASSERT_TRUE(ff_shell_keep_awake(&view, false));
+}
+
+/* ------------------------------------------------------------------- */
+/* S10 quick flare (docs/specs/S10-flare.md's Amendments, 2026-09-03):  */
+/* "press HOME 5 times quickly to flare to the crew, no screen needed." */
+/* ------------------------------------------------------------------- */
+
+/* Drives `ff_shell_home_press` directly at `deliver=true` (the "screen
+ * already ACTIVE" case) rather than through the sim's synthetic BOOT
+ * button — the wake-only-touch interaction with a genuinely DIM/OFF
+ * screen is targets/sim/tests/test_ctl_quick_flare.c's job (a real ctl
+ * session, real ff_idle_touch_gate); this file exercises the shell-level
+ * multitap-counting/flare-action wiring in isolation, the same split
+ * test_wakeonly_touch.c (device-adjacent) and this file (shell-only)
+ * already draw for every other input path.
+ *
+ * Keeps `H.clk.t` in lockstep with the timestamp passed to
+ * `ff_shell_home_press`: `FF_INTENT_QUICK_FLARE`'s handler (ff_shell.c)
+ * reads "now" from the shell's own injected clock (`shell_now`), not
+ * from this parameter — same as every other button intent dispatched
+ * through `ff_shell_intent` in this file (FLARE_START, POWER_MENU_OPEN,
+ * ...), so a test that let the two drift would be timing its multitap
+ * gaps against one clock while the eventual flare-expiry math ran
+ * against a different one. */
+static void press_home_at(uint32_t t_ms)
+{
+    H.clk.t = t_ms;
+    ff_shell_home_press(&H.shell, t_ms, true);
+}
+
+static void S10_quick_flare_5_home_presses_start_sending(void)
+{
+    harness_init(100000u, false);
+    TEST_ASSERT_FALSE(ff_shell_flare(&H.shell)->sending);
+
+    press_home_at(100000u); /* 1 */
+    press_home_at(100300u); /* 2 */
+    press_home_at(100600u); /* 3 */
+    press_home_at(100900u); /* 4 */
+    TEST_ASSERT_FALSE_MESSAGE(ff_shell_flare(&H.shell)->sending, "fired on the 4th press, not the 5th");
+    press_home_at(101200u); /* 5 */
+
+    TEST_ASSERT_TRUE_MESSAGE(ff_shell_flare(&H.shell)->sending, "did not fire on the 5th press");
+
+    /* The projected view — what the sender overlay (scr_nav.c /
+     * scr_launcher.c) actually renders from — agrees. */
+    ff_shell_tick(&H.shell, H.clk.t);
+    TEST_ASSERT_TRUE(ff_shell_view(&H.shell)->flare.sending);
+}
+
+static void S10_quick_flare_4_home_presses_do_not_start_sending(void)
+{
+    harness_init(100000u, false);
+
+    press_home_at(100000u);
+    press_home_at(100300u);
+    press_home_at(100600u);
+    press_home_at(100900u);
+
+    TEST_ASSERT_FALSE(ff_shell_flare(&H.shell)->sending);
+}
+
+/* Taps 1-4 keep their ordinary HOME behaviour (spec: "harmless and
+ * keeps the gesture idempotent") — pinned with a genuine nav change
+ * (leave the launcher for Radar first, so a HOME dispatch is not
+ * already a no-op), confirming the FIRST tap of a quick-flare run still
+ * navigates home exactly as a bare FF_INTENT_HOME would. */
+static void S10_quick_flare_taps_1_to_4_still_navigate_home(void)
+{
+    harness_init(100000u, false);
+    ff_intent_t sel = {.kind = FF_INTENT_LAUNCHER_SELECT, .u = {0}};
+    sel.u.launcher_idx = 0u; /* Radar — index 0 in the amended circle order */
+    ff_shell_intent(&H.shell, &sel);
+    ff_shell_tick(&H.shell, H.clk.t);
+    TEST_ASSERT_EQUAL(FF_APP_FACE_RADAR, ff_shell_view(&H.shell)->active_face);
+
+    press_home_at(100000u); /* tap 1 of a would-be run: HOME still dispatches, Radar -> Launcher */
+    ff_shell_tick(&H.shell, H.clk.t);
+    TEST_ASSERT_EQUAL(FF_APP_FACE_LAUNCHER, ff_shell_view(&H.shell)->active_face);
+    TEST_ASSERT_FALSE(ff_shell_flare(&H.shell)->sending); /* only 1 of 5 — no flare yet */
+}
+
+/* "If already flaring, a 5-tap does nothing" (spec): a second,
+ * independent 5-tap run (the first already fired and reset the
+ * multitap FSM to idle) while STILL sending must not restart the send
+ * — no second SEND_FLARE, no restarted timer. Pinned by the send
+ * expiry staying byte-identical across the second run, not just
+ * `sending` staying true (which a broken guard that restarts the timer
+ * would still satisfy — the proxy AGENTS.md item 6 warns about). */
+static void S10_quick_flare_already_flaring_a_second_run_does_not_resend(void)
+{
+    harness_init(100000u, false);
+
+    press_home_at(100000u);
+    press_home_at(100300u);
+    press_home_at(100600u);
+    press_home_at(100900u);
+    press_home_at(101200u);
+    TEST_ASSERT_TRUE(ff_shell_flare(&H.shell)->sending);
+    uint32_t const expiry_after_first_run = ff_shell_flare(&H.shell)->send_expiry_ms;
+
+    press_home_at(105000u);
+    press_home_at(105300u);
+    press_home_at(105600u);
+    press_home_at(105900u);
+    press_home_at(106200u);
+
+    TEST_ASSERT_TRUE(ff_shell_flare(&H.shell)->sending);
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(expiry_after_first_run, ff_shell_flare(&H.shell)->send_expiry_ms,
+                                      "a second 5-tap run while already sending restarted the send timer");
+}
+
+/* keep_awake mid-sequence through a REAL shell (not a bare fabricated
+ * view, unlike the S26c_AC1 test above): 2 of 5 taps in — a run
+ * genuinely in progress, not yet fired — the PROJECTED view must report
+ * `quick_flare_pending`, and `ff_shell_keep_awake` must honor it. Also
+ * checks the honest reverse: once the gap bound elapses with no further
+ * press, the run has genuinely trailed off and must stop reading as
+ * pending (nothing should hold the puck awake for an abandoned
+ * gesture). */
+static void S10_quick_flare_keep_awake_true_mid_sequence(void)
+{
+    harness_init(100000u, false);
+
+    press_home_at(100000u); /* 1 */
+    press_home_at(100300u); /* 2 */
+    ff_shell_tick(&H.shell, H.clk.t);
+    ff_app_state_t const *v = ff_shell_view(&H.shell);
+    TEST_ASSERT_TRUE_MESSAGE(v->quick_flare_pending, "a 2-of-5 run in progress did not project as pending");
+    TEST_ASSERT_TRUE(ff_shell_keep_awake(v, false));
+
+    H.clk.t = 100300u + FF_MULTITAP_MAX_GAP_MS + 1u; /* past the gap bound, no further press */
+    ff_shell_tick(&H.shell, H.clk.t);
+    v = ff_shell_view(&H.shell);
+    TEST_ASSERT_FALSE_MESSAGE(v->quick_flare_pending, "an expired run still projected as pending");
+    TEST_ASSERT_FALSE(ff_shell_keep_awake(v, false));
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -5996,6 +6146,14 @@ int main(void)
     RUN_TEST(S26c_AC1_keep_awake_true_while_power_menu_open);
     RUN_TEST(S26c_AC1_keep_awake_true_while_touch_cal_running);
     RUN_TEST(S26c_AC1_keep_awake_null_view_is_safe);
+    RUN_TEST(S26c_AC1_keep_awake_true_while_quick_flare_pending);
+
+    /* S10 quick flare — 5x HOME flares to the crew. */
+    RUN_TEST(S10_quick_flare_5_home_presses_start_sending);
+    RUN_TEST(S10_quick_flare_4_home_presses_do_not_start_sending);
+    RUN_TEST(S10_quick_flare_taps_1_to_4_still_navigate_home);
+    RUN_TEST(S10_quick_flare_already_flaring_a_second_run_does_not_resend);
+    RUN_TEST(S10_quick_flare_keep_awake_true_mid_sequence);
 
     /* S26 slice d — ff_notify + message banner. */
     RUN_TEST(S26_AC3_paired_message_pushes_banner);

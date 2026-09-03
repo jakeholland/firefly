@@ -361,3 +361,19 @@ if(FF_BUILD_TESTS)
 
     add_test(NAME test_rally COMMAND test_rally)
 endif()
+
+# S10 quick flare (core/multitap — the N-presses-within-a-window counter
+# FSM behind "press HOME 5x quickly to flare"; docs/specs/S10-flare.md's
+# quick-flare Amendment). Pure C11, no I/O: fed debounced press EDGES
+# from ff_button's own output (S26 slice e) — this module knows nothing
+# about buttons, HOME, or flares; app/ff_shell.c's ff_shell_home_press is
+# what turns a completed run into the actual flare-start action.
+if(FF_BUILD_TESTS)
+    add_executable(test_multitap
+        tests/test_multitap.c
+    )
+    target_link_libraries(test_multitap PRIVATE ff-core unity)
+    ff_apply_warnings(test_multitap)
+
+    add_test(NAME test_multitap COMMAND test_multitap)
+endif()

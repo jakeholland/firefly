@@ -14,6 +14,7 @@
 #include <string.h>
 
 #include "ff_geo.h"
+#include "ff_multitap.h" /* S10 quick flare — the N-presses-within-a-window counter FSM */
 #include "ff_notify.h" /* S26(d) — the notification queue */
 #include "ff_proto.h"
 #include "ff_radar.h"
@@ -117,6 +118,12 @@ typedef struct {
     ff_heard_t heard;
     ff_feed_t feed;
     ff_flare_t flare;
+    /* S10 quick flare (docs/specs/S10-flare.md's Amendments, 2026-09-03):
+     * the shell owns the whole "N presses within a window" decision —
+     * see `ff_shell_home_press` — so both targets stay dumb (they only
+     * forward a debounced HOME/BOOT press edge). Fed exclusively from
+     * `ff_shell_home_press`, nothing else touches this. */
+    ff_multitap_t multitap;
     ff_settings_t settings;
     ff_wall_state_t wall;
     ff_radar_smooth_t smooth;
@@ -1633,6 +1640,12 @@ static void shell_project(shell_t *sh, uint32_t now_ms)
     shell_project_now(sh, wall, &sh->view.now);
     shell_project_inbox(sh, now_ms, &sh->view.inbox);
     shell_project_flare(sh, now_ms, &sh->view.flare);
+    /* S10 quick flare — a pure query, mirrored verbatim into the view so
+     * `ff_shell_keep_awake` (which takes the projected view, not the
+     * shell) can consult it. Renders nothing (see the field's own doc
+     * comment in ff_app_state.h); kept out of the render key
+     * (shell_render_key) for exactly that reason. */
+    sh->view.quick_flare_pending = ff_multitap_pending(&sh->multitap, now_ms);
     shell_project_settings(sh, &sh->view.settings);
     shell_project_map(sh, &sh->view.map);
     shell_project_banner(sh, now_ms, &sh->view.banner); /* S26(d) */
@@ -1771,6 +1784,15 @@ static void shell_render_key(ff_app_state_t const *v, ff_app_state_t *key)
      * change does. (The committed value still reaches a fresh build via the
      * projection on the next real repaint / on re-entry to Settings.) */
     key->settings.brightness_pct = 0;
+
+    /* S10 quick flare — same "kept OUT of the render key" reasoning as
+     * brightness above: `quick_flare_pending` renders NO pixel at all
+     * (there is deliberately no on-screen progress indicator for the
+     * gesture, "no screen needed" — it exists purely as
+     * `ff_shell_keep_awake`'s third keep-awake input), so its own
+     * true<->false flips must not dirty the key and force a face
+     * teardown+rebuild with nothing on glass actually changing. */
+    key->quick_flare_pending = false;
 
     /* S24 signals (the flare-octant lesson, applied at birth rather than
      * as a fix): the inbox's key covers exactly its RENDERED projection.
@@ -2027,20 +2049,33 @@ static void shell_render_key(ff_app_state_t const *v, ff_app_state_t *key)
          * rebuild the tree out from under a finger — only a genuine
          * banner or badge change does.
          *
-         * Audited for any OTHER overlay the launcher composites: the
-         * only other `_build()` call in scr_launcher.c is the banner
-         * (launcher_build_status_row is ordinary content, not an
-         * overlay). The flare TAKEOVER is not one of this mask's
-         * concerns either way — both dispatch paths
-         * (targets/sim/face_dispatch.c, targets/esp32s3/main/ff_face.c)
-         * check `state->flare.takeover_active` before consulting
-         * `active_face` at all and build the takeover screen INSTEAD of
-         * the launcher, and in this very function the takeover branch
-         * above is an `if` with this launcher branch as its `else if`
-         * — so while a takeover is active this launcher branch never
-         * runs, and the takeover's own dirtying (the block above) is
-         * already independent of everything this mask does. */
+         * THIRD exception (S10 quick flare, docs/specs/S10-flare.md's
+         * Amendments, 2026-09-03): the "audited for any OTHER overlay"
+         * paragraph above is now HISTORICAL — quick flare made
+         * `ff_scr_launcher_build` composite the sender overlay too (the
+         * same `ff_scr_flare_build_sender_overlay` call `ff_scr_nav_
+         * build` makes for every other base face), because a hardware
+         * gesture that fires "from any state" can start SENDING while
+         * the launcher — BOOT's own home — is the active face, which
+         * nothing could do before (FLARE_START, the only prior sender,
+         * lives on the Radar tile and can never fire from here). Without
+         * restoring the two fields that overlay actually renders, a
+         * `sending` flip (or its countdown) while on the launcher was
+         * masked to zero by the blanket memset below exactly like the
+         * banner bug this file's SECOND exception fixed — same root
+         * cause, same fix shape: stash before the memset, restore after.
+         * Only `sending`/`send_expires_in_ms` (already coarsened by this
+         * function's own top-of-function pass, a few dozen lines up) —
+         * NOT `takeover_*`/`locked_*`, which this mask must keep
+         * suppressed: nothing on the launcher renders them (the takeover
+         * routes to its own full-screen face entirely, per the paragraph
+         * above), so un-masking them would let an unrelated lock-
+         * countdown tick dirty the launcher key and rebuild the tree out
+         * from under a finger — the exact clobber class this whole mask
+         * exists to prevent. */
         ff_app_banner_t const banner = key->banner;
+        bool const flare_sending = key->flare.sending;
+        int32_t const flare_send_expires_in_ms = key->flare.send_expires_in_ms;
         ff_app_face_t const af = key->active_face;
         uint32_t unread_total = 0;
         uint8_t const n = ff_inbox_conv_count(&v->inbox.inbox);
@@ -2054,6 +2089,8 @@ static void shell_render_key(ff_app_state_t const *v, ff_app_state_t *key)
         key->active_face = af;
         key->inbox.inbox.convs[0].unread = (unread_total > UINT16_MAX) ? UINT16_MAX : (uint16_t)unread_total;
         key->banner = banner;
+        key->flare.sending = flare_sending;
+        key->flare.send_expires_in_ms = flare_send_expires_in_ms;
     }
 }
 
@@ -2128,6 +2165,7 @@ int ff_shell_init(ff_shell_t *sh_pub, ff_shell_cfg_t const *cfg)
     ff_heard_init(&sh->heard);
     ff_feed_init(&sh->feed);
     ff_flare_init(&sh->flare);
+    ff_multitap_init(&sh->multitap); /* S10 quick flare */
     ff_wall_init(&sh->wall);
     ff_radar_smooth_reset(&sh->smooth);
     ff_route_init(&sh->route);
@@ -3750,6 +3788,28 @@ void ff_shell_intent(ff_shell_t *sh_pub, ff_intent_t const *in)
                                      * the emit site now means the eventual handler is the
                                      * only piece still missing, not a second UI change too. */
         return;
+
+    case FF_INTENT_QUICK_FLARE:
+        /* S10 quick flare (docs/specs/S10-flare.md's Amendments,
+         * 2026-09-03) — the ONLY place this fires from is
+         * `ff_shell_home_press`, on the tick the shell's own multitap
+         * FSM reports its 5th press. Mirrors FF_INTENT_FLARE_START just
+         * above EXACTLY (same ff_flare_send_begin call, dur_s=0 so core
+         * applies FF_FLARE_DEFAULT_DUR_S, the same now_ms source) with
+         * one addition: idempotent against a flare already in flight —
+         * the spec's explicit "if already flaring, a 5-tap does
+         * nothing" (no second SEND_FLARE intent, no restarted timer).
+         *
+         * Deliberately NOT gated on `takeover_up`, unlike FLARE_START:
+         * that gate is routing rule 4 (FLARE_START is the Radar tile's
+         * own on-screen button, not visible while a takeover owns the
+         * screen); quick flare is a hardware gesture that the feature
+         * brief states must work "from any state, screen off included"
+         * — including while a takeover is showing on this puck's own
+         * glass. */
+        if (sh->flare.sending) return;
+        (void)ff_flare_send_begin(&sh->flare, 0, shell_now(sh));
+        return;
     }
     /* No default: -Wswitch under -Werror flags any new ff_intent_kind_t
      * member left unhandled (the S16 fixture_view.c trap, avoided). A
@@ -3759,6 +3819,28 @@ void ff_shell_intent(ff_shell_t *sh_pub, ff_intent_t const *in)
 void ff_shell_intent_sink(void *user, ff_intent_t const *in)
 {
     ff_shell_intent((ff_shell_t *)user, in);
+}
+
+void ff_shell_home_press(ff_shell_t *sh_pub, uint32_t now_ms, bool deliver)
+{
+    if (sh_pub == NULL) return;
+    shell_t *sh = shell_of(sh_pub);
+
+    /* S10 quick flare — see this function's own doc comment (ff_shell.h)
+     * for why this runs UNCONDITIONALLY, before the `deliver` gate: a
+     * wake-only press still counts toward the gesture even though it is
+     * swallowed for navigation below. */
+    bool const fifth = ff_multitap_press(&sh->multitap, now_ms);
+
+    if (deliver) {
+        ff_intent_t const home = {.kind = FF_INTENT_HOME, .u = {0}};
+        ff_shell_intent(sh_pub, &home);
+    }
+
+    if (fifth) {
+        ff_intent_t const qf = {.kind = FF_INTENT_QUICK_FLARE, .u = {0}};
+        ff_shell_intent(sh_pub, &qf);
+    }
 }
 
 bool ff_shell_pair(ff_shell_t *sh_pub, uint32_t node_id, bool paired)
@@ -3866,6 +3948,13 @@ bool ff_shell_keep_awake(ff_app_state_t const *view, bool touch_cal_running)
         return true;
     }
     if (view->active_face == FF_APP_FACE_POWER_MENU) {
+        return true;
+    }
+    /* S10 quick flare — a multitap run in progress must hold the puck
+     * awake between taps (a burst that started mid-DIM must not let the
+     * screen slide to OFF/SLEEP before the 5th press lands). Mirrors
+     * `ff_multitap_pending`, projected verbatim (see shell_project). */
+    if (view->quick_flare_pending) {
         return true;
     }
     /* S26 slice e — the launcher deliberately does NOT keep awake, unlike

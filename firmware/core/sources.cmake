@@ -49,4 +49,5 @@ set(FF_CORE_SOURCES
     src/ff_notify.c          # S26 slice d — notification queue (message banner)
     src/ff_button.c          # S26 slice e — generic debounced push-button (BOOT-as-home)
     src/ff_rally.c           # tech-debt sprint — rally place/name/when logic (moved from ff_shell.c)
+    src/ff_multitap.c        # S10 quick flare — N-presses-within-a-window counter FSM
 )

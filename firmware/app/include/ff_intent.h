@@ -337,6 +337,33 @@ typedef enum {
      *   is showing with nothing over it — a no-op otherwise
      *   (`ff_route_launcher_select`'s own guard). */
     FF_INTENT_HOME, FF_INTENT_LAUNCHER_SELECT,
+    /* [api] S10 quick flare (docs/specs/S10-flare.md's Amendments,
+     * 2026-09-03 maintainer decision — "press the HOME (BOOT, GPIO0)
+     * button 5 times quickly to flare to the crew, no screen needed").
+     * Appended, so no existing intent's numeric value moves. No payload:
+     * same "acts on state the shell already owns" convention as
+     * POWER_MENU_OPEN/HOME above.
+     *
+     * QUICK_FLARE — NOT emitted by a screen, and not even by a target's
+     *   main loop directly: `ff_shell_home_press` (app/include/ff_shell.h)
+     *   is the ONE place that constructs this, on the tick a physical
+     *   HOME/BOOT press edge completes the shell's own multitap FSM
+     *   (`core/include/ff_multitap.h`) — both targets forward every
+     *   debounced press edge into `ff_shell_home_press`; the shell alone
+     *   decides whether that edge was the 5th of one continuous burst.
+     *   Handling mirrors FF_INTENT_FLARE_START exactly (same
+     *   `ff_flare_send_begin` call, same default 300s duration, same
+     *   wire-send path — see that intent's own case in ff_shell.c and
+     *   this PR's body for the one known gap both share) with two
+     *   differences: it is idempotent against a flare already in flight
+     *   (no second SEND_FLARE, no restarted timer — the spec's explicit
+     *   "if already flaring, a 5-tap does nothing"), and it is
+     *   deliberately NOT gated on a visible takeover the way FLARE_START
+     *   is (routing rule 4 exists because FLARE_START is an on-screen
+     *   Radar-face button, invisible during a takeover; quick flare is a
+     *   hardware gesture that must work "from any state, screen off
+     *   included" per the feature brief, takeover included). */
+    FF_INTENT_QUICK_FLARE,
 } ff_intent_kind_t;
 
 /**
