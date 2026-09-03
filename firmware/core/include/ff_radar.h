@@ -164,6 +164,76 @@ typedef struct {
     bool  mesh_ok;
 } ff_radar_view_t;
 
+/* ---------------------------------------------------------------------
+ * Battery semantics (debt/batt-low-core; formerly `FF_THEME_BATT_LOW_PCT`
+ * in app/theme/ff_theme.h — PR #16 code review already flagged that
+ * cutoff as a domain decision hiding in a renderer, CLAUDE.md: "if
+ * you're writing an `if` about domain behavior inside a screen file, it
+ * belongs in core"). `batt_pct` is not computed here (see the deviation
+ * note above: it comes from the battery ADC, which this header has no
+ * input for), but the CLASSIFICATION of an already-known reading needs
+ * no further input, so it lives here as a pure function every renderer
+ * that shows a battery reading calls on the SAME `batt_pct` field —
+ * scr_radar.c's status bar and scr_launcher.c's status row cannot
+ * disagree about "is this low" because there is exactly one input and
+ * exactly one decision function, not two independently-typed `<=`
+ * comparisons that could drift.
+ *
+ * `FF_BATT_LOW_PCT` has no basis in docs/specs/S06-radar-face.md, S02,
+ * or S03 — none of those specs define a low-battery threshold at all.
+ * 15% is a product-judgment call (same "not spec-numeric" category as
+ * ff_crew.h's documented FF_CREW_RSSI_TREND_THRESHOLD_DBM), recorded as
+ * S06's one source of truth for this number in its "Status bar alert
+ * color" paragraph.
+ */
+#define FF_BATT_LOW_PCT 15
+
+/**
+ * ff_radar_batt_is_low — true iff `batt_pct` is a KNOWN reading at or
+ * below `FF_BATT_LOW_PCT`. An unknown reading (`batt_pct < 0`, e.g. no
+ * battery ADC wired up yet — see ff_shell.c) is honestly reported as NOT
+ * low: this function never turns "we don't know" into an alarm, matching
+ * CLAUDE.md's "honest data over pretty data" (unknown stays unknown, it
+ * does not fall back to the scariest guess). The renderer contract is
+ * unchanged either way — an unknown reading shows "--%", never a
+ * fabricated percentage or a fabricated alert color.
+ */
+bool ff_radar_batt_is_low(int8_t batt_pct);
+
+/* ---------------------------------------------------------------------
+ * Battery status-row ICON ladder (scr_launcher.c's status row, today the
+ * only consumer). Unlike FF_BATT_LOW_PCT above, this ladder is NOT
+ * spec'd anywhere — a grep of S06/S26 turns up nothing beyond the single
+ * FF_BATT_LOW_PCT cutoff — so it is an invented, purely decorative visual
+ * affordance: nothing reads these five boundaries to decide alert color,
+ * sleep behavior, or any other product outcome (that is FF_BATT_LOW_PCT's
+ * job alone, and the two are independent — e.g. a reading can be
+ * FF_BATT_ICON_1 and NOT low, since 12 > FF_BATT_LOW_PCT's 15 is false
+ * but 20 > 15 is true and still selects FF_BATT_ICON_1). Named here, as
+ * an enum plus its boundary constants, purely so a second glyph-ladder
+ * consumer can't reinvent slightly different boundaries — "no second
+ * literal", same rule as FF_BATT_LOW_PCT. */
+typedef enum {
+    FF_BATT_ICON_UNKNOWN = 0, /* batt_pct < 0 — renderer must omit the glyph entirely, not draw an empty/full icon over an honest "--%" (see scr_launcher.c) */
+    FF_BATT_ICON_EMPTY,       /* [0, FF_BATT_ICON_1_MIN_PCT) */
+    FF_BATT_ICON_1,           /* [FF_BATT_ICON_1_MIN_PCT, FF_BATT_ICON_2_MIN_PCT) */
+    FF_BATT_ICON_2,           /* [FF_BATT_ICON_2_MIN_PCT, FF_BATT_ICON_3_MIN_PCT) */
+    FF_BATT_ICON_3,           /* [FF_BATT_ICON_3_MIN_PCT, FF_BATT_ICON_FULL_MIN_PCT) */
+    FF_BATT_ICON_FULL,        /* [FF_BATT_ICON_FULL_MIN_PCT, 100] */
+} ff_batt_icon_t;
+
+#define FF_BATT_ICON_1_MIN_PCT    12
+#define FF_BATT_ICON_2_MIN_PCT    37
+#define FF_BATT_ICON_3_MIN_PCT    62
+#define FF_BATT_ICON_FULL_MIN_PCT 87
+
+/**
+ * ff_radar_batt_icon — classify a known `batt_pct` into one of the five
+ * icon steps above, or FF_BATT_ICON_UNKNOWN when `batt_pct < 0`. Pure,
+ * total function of its one argument.
+ */
+ff_batt_icon_t ff_radar_batt_icon(int8_t batt_pct);
+
 /**
  * ff_radar_smooth_t — caller-owned state for the arrow's exponential
  * smoothing (see this header's deviation note for why `ff_radar_compute`

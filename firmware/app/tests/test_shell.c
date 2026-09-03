@@ -500,6 +500,33 @@ static void S16_AC5c_position_from_non_roster_node_is_dropped_and_noted(void)
 }
 
 /* =================================================================== */
+/* debt/batt-low-core — the shell projects ONE batt_pct that scr_radar.c */
+/* and scr_launcher.c both read (ff_radar_view_t.batt_pct is a single    */
+/* field, never duplicated per screen), and both call the SAME core      */
+/* classifier (ff_radar_batt_is_low, ff_radar.h) on it. Proving the      */
+/* shell's real projection path and the shared classifier agree here is  */
+/* therefore sufficient to prove radar and launcher cannot disagree:     */
+/* there is exactly one input and exactly one decision function — see    */
+/* ff_radar.h's doc comment on ff_radar_batt_is_low for the full case.   */
+/* =================================================================== */
+
+static void S06_shell_projects_batt_pct_unknown_and_batt_low_agrees(void)
+{
+    /* No battery ADC on either target yet (ff_shell.c's own comment,
+     * "no battery ADC on either target yet: honestly unknown") — the
+     * real shell tick always projects batt_pct == -1 today. Pinning that
+     * here (rather than only in core/tests/test_radar.c's classifier
+     * boundary tests) proves the INTEGRATION: the real projection path
+     * actually reaches -1, not just that -1-in gives false-out in
+     * isolation. */
+    harness_init(100000u, false);
+    ff_shell_tick(&H.shell, H.clk.t);
+
+    TEST_ASSERT_EQUAL_INT8(-1, ff_shell_view(&H.shell)->radar.batt_pct);
+    TEST_ASSERT_FALSE(ff_radar_batt_is_low(ff_shell_view(&H.shell)->radar.batt_pct));
+}
+
+/* =================================================================== */
 /* AC9 — reconnect must not refresh position ages                       */
 /* =================================================================== */
 
@@ -5837,6 +5864,8 @@ int main(void)
     RUN_TEST(S16_AC5a_unknown_sender_no_feed_no_crew_slot_one_heard_entry);
     RUN_TEST(S16_AC5b_known_unpaired_sender_no_feed_and_no_new_heard_entry);
     RUN_TEST(S16_AC5c_position_from_non_roster_node_is_dropped_and_noted);
+
+    RUN_TEST(S06_shell_projects_batt_pct_unknown_and_batt_low_agrees);
 
     RUN_TEST(S16_AC9_transport_drop_moves_link_state_to_reconnecting);
     RUN_TEST(S16_AC9_want_config_replay_does_not_refresh_position_age);
