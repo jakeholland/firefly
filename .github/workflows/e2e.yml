@@ -23,6 +23,7 @@ jobs:
   e2e:
     name: e2e
     runs-on: ubuntu-latest
+    timeout-minutes: 20 # S14 P0 — job-level hang backstop, see ci.yml's build-test job.
     # Only actually run for the pull_request trigger when "e2e" was the
     # label just applied — GitHub fires `labeled` for every label, not
     # just this one, and this job is not meant to run on e.g. "bug" or
