@@ -242,6 +242,54 @@ if(UNIX)
 endif()
 ff_apply_warnings(ff-app-ui)
 
+# debt/shared-face-dispatch (app/ff_face_dispatch.c — the one face-dispatch
+# chain shared by targets/sim/face_dispatch.c and targets/esp32s3/main/
+# ff_face.c; see ff_face_dispatch.h's top comment for the full "two
+# hand-synced copies" writeup this closes).
+# ---------------------------------------------------------------------------
+# A SEPARATE static library from ff-app-ui, not folded into it or left as
+# loose sources on a target: both targets/sim (ff-sim-face-dispatch) and
+# targets/esp32s3/main/ff_face.c need to link the exact same object, and
+# app/tests/test_face_dispatch.c below needs to link it directly too —
+# same "test links the exact object under test" shape every sibling
+# library in this file already follows (ff-route/ff-intent/ff-wall-window
+# above).
+#
+# Links ff-app-ui PUBLIC (not just ff-app): ff_face_dispatch.c calls
+# ff_scr_nav_build/ff_scr_compose_build/ff_scr_power_menu_build/
+# ff_scr_launcher_build/ff_scr_flare_build_takeover/ff_scr_settings_
+# reset_scroll/ff_scr_settings_apply_scroll_hint directly — every one of
+# those lives in app/screens/*.c, which is ff-app-ui's source set, NOT
+# ff-app's (ff-app stays INTERFACE/header-only per this file's own top
+# comment). The esp32s3 CMakeLists mirrors this choice deliberately: see
+# targets/esp32s3/components/ff_app_ui/CMakeLists.txt's own note on why
+# ff_face_dispatch.c's SRCS entry lives in THAT component and not
+# ff_app's (ff_app's REQUIRES never picked up lvgl/the screen builders in
+# the first place — S15a's ff_app component was deliberately screen-free,
+# see that component's own header comment).
+# ---------------------------------------------------------------------------
+add_library(ff-face-dispatch STATIC
+    ff_face_dispatch.c
+)
+target_include_directories(ff-face-dispatch PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(ff-face-dispatch PUBLIC ff-app-ui)
+ff_apply_warnings(ff-face-dispatch)
+
+if(FF_BUILD_TESTS)
+    # LVGL init/deinit in real setUp/tearDown (the harness-hang lesson
+    # test_wakeonly_touch.c's tearDown documents: guard with
+    # lv_is_initialized() so a failed TEST_ASSERT mid-test still leaves
+    # LVGL cleanly deinitialized for the next test, rather than a
+    # process-wide static leaking state across cases).
+    add_executable(test_face_dispatch
+        tests/test_face_dispatch.c
+    )
+    target_link_libraries(test_face_dispatch PRIVATE ff-face-dispatch ff-app-ui unity)
+    ff_apply_warnings(test_face_dispatch)
+
+    add_test(NAME test_face_dispatch COMMAND test_face_dispatch)
+endif()
+
 # S08b (app/ff_wiring.c — crew-filtered feed wiring;
 # docs/specs/S08-signals-t9.md slice b). One of the TWO libraries that
 # link core + meshclient together (the other is ff-shell, S16 slice b1 —

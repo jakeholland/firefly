@@ -17,6 +17,27 @@
 # splits into for unit-testability) — the pure helpers' unit tests run in
 # the sim build; on device they are just object files this component
 # needs. Same "one component" rationale as ff_app/ff_core's CMakeLists.
+#
+# debt/shared-face-dispatch: ff_face_dispatch.c (app/ff_face_dispatch.c —
+# the ONE face-dispatch chain shared by targets/sim/face_dispatch.c and
+# targets/esp32s3/main/ff_face.c) is added to THIS component's SRCS, not
+# ff_app's — even though the file lives directly under app/, same as the
+# four .c files ff_app's own CMakeLists builds. ff_face_dispatch.c calls
+# ff_scr_nav_build/ff_scr_compose_build/ff_scr_power_menu_build/
+# ff_scr_launcher_build/ff_scr_flare_build_takeover/ff_scr_settings_*,
+# every one of which is a screen builder in THIS component's SRCS list
+# above — ff_app's REQUIRES (ff_core ff_meshclient ff_festpack ff_platform,
+# below) never picked up lvgl or the screen builders in the first place
+# (S15a's ff_app component was deliberately screen-free: app_main only
+# needed the shell at that point, see that component's own header
+# comment). Building ff_face_dispatch.c as part of ff_app would need a
+# NEW dependency edge from ff_app onto ff_app_ui/lvgl that does not
+# otherwise exist and inverts the layering every other file in ff_app's
+# SRCS keeps (data-plumbing, zero LVGL) — ff_app_ui is simply the
+# component whose REQUIRES already covers what this file needs, so it
+# lives here instead. The sim build makes the identical choice
+# (app/CMakeLists.txt's new `ff-face-dispatch` library links ff-app-ui,
+# not just ff-app).
 set(FF_FW_DIR ${CMAKE_CURRENT_LIST_DIR}/../../../..)
 set(FF_APP_DIR ${FF_FW_DIR}/app)
 
@@ -40,11 +61,14 @@ idf_component_register(
         "${FF_APP_DIR}/screens/scr_power_menu.c" # S26 slice b — the PWR-button power menu modal
         "${FF_APP_DIR}/screens/scr_banner.c" # S26 slice d — the ff_notify message banner overlay
         "${FF_APP_DIR}/screens/scr_launcher.c" # S26 slice e — the BOOT-button launcher, carousel retired
+        "${FF_APP_DIR}/ff_face_dispatch.c" # debt/shared-face-dispatch — the shared face-dispatch chain (see above)
     INCLUDE_DIRS
         "${FF_APP_DIR}/screens"  # scr_*.h, *_layout.h
         "${FF_APP_DIR}/theme"    # ff_theme.h (header-only)
-    # ff_app: ff_app_state.h / ff_intent.h include paths + the
-    #         ff_intent_emit symbol the screens emit through.
+    # ff_app: ff_app_state.h / ff_intent.h include paths (also publishes
+    #         ${FF_APP_DIR} itself, so "ff_face_dispatch.h" resolves here
+    #         and for any component — e.g. main — that REQUIRES ff_app)
+    #         + the ff_intent_emit symbol the screens emit through.
     # ff_core: ff_app_state.h transitively needs ff_radar.h.
     # lvgl: every scr_*.c includes lvgl.h.
     REQUIRES ff_app ff_core lvgl

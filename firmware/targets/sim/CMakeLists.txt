@@ -40,12 +40,19 @@ endif()
 # apart. Previously fixture_view.c compiled straight into the ffsim
 # executable with no separate lib "because nothing else links/tests it" —
 # that's no longer true once this sweep test exists.
+#
+# debt/shared-face-dispatch: face_dispatch.c is now a thin adapter over
+# app/ff_face_dispatch.c's shared `ff_face_dispatch_build` (the actual
+# mapping table moved there — see that header's top comment) — this
+# library links ff-face-dispatch PUBLIC in addition to ff-app-ui, since
+# fixture_view.c (bundled here) still needs the screen builders directly
+# and face_dispatch.c now needs ff_face_dispatch.h's types.
 add_library(ff-sim-face-dispatch STATIC
     face_dispatch.c
     fixture_view.c
 )
 target_include_directories(ff-sim-face-dispatch PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
-target_link_libraries(ff-sim-face-dispatch PUBLIC ff-app-ui)
+target_link_libraries(ff-sim-face-dispatch PUBLIC ff-app-ui ff-face-dispatch)
 ff_apply_warnings(ff-sim-face-dispatch)
 
 # S13c
