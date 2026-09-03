@@ -455,6 +455,31 @@ bool ff_ctl_process_line(char const *line, ff_ctl_handlers_t const *h, char *res
         return false;
     }
 
+    if (strcmp(cmd, "batt_mv") == 0) {
+        int mi;
+        if (!ctl_obj_get(&ctx, 0, "mv", &mi) || toks[mi].type != JSMN_PRIMITIVE) {
+            ctl_err(resp, resp_sz, "batt_mv requires numeric mv");
+            return false;
+        }
+        /* Same NAN-as-sentinel / finite-range discipline as "tap"/"hold"
+         * above. Upper bound is UINT16_MAX (pack_mv's wire type,
+         * ff_shell_set_batt_mv) — this layer only bounds what's safe to
+         * narrow; ff_batt.h's own plausibility window (2500..4600) is
+         * what decides whether a value in range is an honest reading. */
+        double mv = ctl_num(&ctx, mi, NAN);
+        if (!isfinite(mv) || mv < 0.0 || mv > 65535.0 /* UINT16_MAX */) {
+            ctl_err(resp, resp_sz, "batt_mv mv must be within [0, 65535]");
+            return false;
+        }
+        if (h->batt_mv == NULL) {
+            ctl_err(resp, resp_sz, "batt_mv unsupported");
+            return false;
+        }
+        h->batt_mv(h->user, (uint16_t)mv);
+        ctl_ok(resp, resp_sz);
+        return false;
+    }
+
     if (strcmp(cmd, "quit") == 0) {
         if (h->quit != NULL) h->quit(h->user);
         ctl_ok(resp, resp_sz);
