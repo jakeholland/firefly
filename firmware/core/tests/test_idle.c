@@ -593,6 +593,173 @@ static void S26f_amendment_keep_awake_dominates_regardless_of_sleep_inhibit(void
 }
 
 /* ------------------------------------------------------------------- */
+/* Wake-only touch/button gate (amendment, 2026-09-02 maintainer        */
+/* decision, S26c) — see ff_idle.h's own doc comment for the full       */
+/* contract this implements.                                            */
+/*                                                                       */
+/* THE PROXY (AGENTS.md item 6): the easy proxy for "a wake-only press   */
+/* is swallowed" is checking the FIRST sample only — which a version     */
+/* that swallows once and then delivers every subsequent sample (a       */
+/* one-shot latch, not a held one) would still pass. So the DIM/OFF      */
+/* tests below sample MULTIPLE times while still held, before release,   */
+/* and assert every one of them reads "not delivered" — not just the     */
+/* first. */
+/* ------------------------------------------------------------------- */
+
+static void S26_wakeonly_AC_press_during_dim_wakes_and_swallows_until_release(void)
+{
+    ff_idle_t idle;
+    ff_idle_touch_gate_t gate;
+    ff_idle_init(&idle);
+    ff_idle_touch_gate_init(&gate);
+    ff_idle_input(&idle, 0);
+    TEST_ASSERT_EQUAL(FF_IDLE_STATE_DIM, ff_idle_tick(&idle, FF_IDLE_T_DIM_MS, false, false));
+
+    /* Press begins while DIM: wakes, and this very first sample is
+     * already swallowed (not "wakes, then delivers the same sample"). */
+    TEST_ASSERT_FALSE(ff_idle_touch_gate(&idle, &gate, FF_IDLE_T_DIM_MS + 10, true));
+    TEST_ASSERT_EQUAL_MESSAGE(FF_IDLE_STATE_ACTIVE, ff_idle_state(&idle), "press-begin-while-DIM did not wake");
+
+    /* Held: every subsequent sample stays swallowed, not just the
+     * first (the proxy this file's own note above calls out) — even
+     * though idle is now ACTIVE, which a version that re-checked state
+     * every sample (instead of latching at begin) would misread as
+     * "deliver". */
+    TEST_ASSERT_FALSE(ff_idle_touch_gate(&idle, &gate, FF_IDLE_T_DIM_MS + 20, true));
+    TEST_ASSERT_FALSE(ff_idle_touch_gate(&idle, &gate, FF_IDLE_T_DIM_MS + 30, true));
+
+    /* Release: not delivered either (nothing to deliver), and the latch
+     * resets. */
+    TEST_ASSERT_FALSE(ff_idle_touch_gate(&idle, &gate, FF_IDLE_T_DIM_MS + 40, false));
+
+    /* Next press begins while ACTIVE (the wake stuck): delivered from
+     * the very first sample. */
+    TEST_ASSERT_TRUE(ff_idle_touch_gate(&idle, &gate, FF_IDLE_T_DIM_MS + 100, true));
+    TEST_ASSERT_TRUE(ff_idle_touch_gate(&idle, &gate, FF_IDLE_T_DIM_MS + 110, true));
+    TEST_ASSERT_TRUE(ff_idle_touch_gate(&idle, &gate, FF_IDLE_T_DIM_MS + 120, true));
+    TEST_ASSERT_FALSE(ff_idle_touch_gate(&idle, &gate, FF_IDLE_T_DIM_MS + 130, false)); /* release */
+}
+
+static void S26_wakeonly_AC_press_during_off_wakes_and_swallows_until_release(void)
+{
+    ff_idle_t idle;
+    ff_idle_touch_gate_t gate;
+    ff_idle_init(&idle);
+    ff_idle_touch_gate_init(&gate);
+    ff_idle_input(&idle, 0);
+    ff_idle_force_off(&idle);
+    TEST_ASSERT_EQUAL(FF_IDLE_STATE_OFF, ff_idle_state(&idle));
+
+    TEST_ASSERT_FALSE(ff_idle_touch_gate(&idle, &gate, 500, true));
+    TEST_ASSERT_EQUAL_MESSAGE(FF_IDLE_STATE_ACTIVE, ff_idle_state(&idle), "press-begin-while-OFF did not wake");
+    TEST_ASSERT_FALSE(ff_idle_touch_gate(&idle, &gate, 510, true));
+    TEST_ASSERT_FALSE(ff_idle_touch_gate(&idle, &gate, 520, true));
+    TEST_ASSERT_FALSE(ff_idle_touch_gate(&idle, &gate, 530, false)); /* release resets */
+
+    TEST_ASSERT_TRUE(ff_idle_touch_gate(&idle, &gate, 600, true)); /* next press: delivered */
+}
+
+static void S26_wakeonly_AC_press_during_sleep_wakes_and_swallows_until_release(void)
+{
+    ff_idle_t idle;
+    ff_idle_touch_gate_t gate;
+    ff_idle_init(&idle);
+    ff_idle_touch_gate_init(&gate);
+    ff_idle_input(&idle, 0);
+    TEST_ASSERT_EQUAL(FF_IDLE_STATE_SLEEP,
+                       ff_idle_tick(&idle, FF_IDLE_T_OFF_MS + FF_IDLE_T_SLEEP_MS, false, false));
+
+    TEST_ASSERT_FALSE(ff_idle_touch_gate(&idle, &gate, FF_IDLE_T_OFF_MS + FF_IDLE_T_SLEEP_MS + 10, true));
+    TEST_ASSERT_EQUAL_MESSAGE(FF_IDLE_STATE_ACTIVE, ff_idle_state(&idle), "press-begin-while-SLEEP did not wake");
+    TEST_ASSERT_FALSE(ff_idle_touch_gate(&idle, &gate, FF_IDLE_T_OFF_MS + FF_IDLE_T_SLEEP_MS + 20, true));
+}
+
+static void S26_wakeonly_AC_press_during_active_delivers_from_first_sample(void)
+{
+    ff_idle_t idle;
+    ff_idle_touch_gate_t gate;
+    ff_idle_init(&idle);
+    ff_idle_touch_gate_init(&gate);
+    ff_idle_input(&idle, 0);
+    TEST_ASSERT_EQUAL(FF_IDLE_STATE_ACTIVE, ff_idle_state(&idle));
+
+    TEST_ASSERT_TRUE(ff_idle_touch_gate(&idle, &gate, 50, true)); /* first sample, no wake needed */
+    TEST_ASSERT_TRUE(ff_idle_touch_gate(&idle, &gate, 60, true));
+    TEST_ASSERT_FALSE(ff_idle_touch_gate(&idle, &gate, 70, false)); /* release */
+}
+
+/* "A press that starts ACTIVE and continues past a DIM transition is
+ * still delivered" — state matters only at press START. The background
+ * state is advanced via ff_idle_tick directly (not via this gesture's
+ * own input) to isolate the property: the decision was locked in at
+ * begin and must not waver just because idle drifted to DIM under it. */
+static void S26_wakeonly_AC_press_started_active_stays_delivered_through_dim_transition(void)
+{
+    ff_idle_t idle;
+    ff_idle_touch_gate_t gate;
+    ff_idle_init(&idle);
+    ff_idle_touch_gate_init(&gate);
+    ff_idle_input(&idle, 0);
+
+    TEST_ASSERT_TRUE(ff_idle_touch_gate(&idle, &gate, 100, true)); /* begins ACTIVE: delivered */
+
+    /* Background idle ticks (not this gesture's own input) push idle
+     * into DIM while the SAME gesture is still held. */
+    TEST_ASSERT_EQUAL(FF_IDLE_STATE_DIM, ff_idle_tick(&idle, FF_IDLE_T_DIM_MS, false, false));
+
+    /* Still the same held gesture: still delivered, because state only
+     * mattered at press-begin. A version that re-checked idle's CURRENT
+     * state on every sample would flip this to false here. */
+    TEST_ASSERT_TRUE_MESSAGE(ff_idle_touch_gate(&idle, &gate, FF_IDLE_T_DIM_MS + 10, true),
+                              "a held gesture stopped delivering after the background state dimmed under it");
+    TEST_ASSERT_TRUE(ff_idle_touch_gate(&idle, &gate, FF_IDLE_T_DIM_MS + 20, true));
+
+    TEST_ASSERT_FALSE(ff_idle_touch_gate(&idle, &gate, FF_IDLE_T_DIM_MS + 30, false)); /* release */
+}
+
+/* Literal pin (mirrors this file's other _thresholds_pinned_to_spec_
+ * literals tests): the WAKE side-effect happens at the exact instant the
+ * caller's now_ms names, not some other value — the wake is pinned to
+ * a literal ref_ms, independent of ff_idle_input's own unit test making
+ * the same claim in isolation. */
+static void S26_wakeonly_AC_wake_pins_ref_ms_to_the_literal_press_instant(void)
+{
+    ff_idle_t idle;
+    ff_idle_touch_gate_t gate;
+    ff_idle_init(&idle);
+    ff_idle_touch_gate_init(&gate);
+    ff_idle_input(&idle, 0);
+    ff_idle_force_off(&idle);
+
+    uint32_t const press_ms = 777777u;
+    TEST_ASSERT_FALSE(ff_idle_touch_gate(&idle, &gate, press_ms, true));
+    TEST_ASSERT_EQUAL(FF_IDLE_STATE_ACTIVE, ff_idle_state(&idle));
+
+    /* The DIM countdown from this wake starts at press_ms, not 0 or any
+     * other value — one ms short of press_ms+T_DIM_MS still ACTIVE,
+     * exactly at it, DIM. */
+    TEST_ASSERT_EQUAL(FF_IDLE_STATE_ACTIVE, ff_idle_tick(&idle, press_ms + FF_IDLE_T_DIM_MS - 1, false, false));
+    TEST_ASSERT_EQUAL(FF_IDLE_STATE_DIM, ff_idle_tick(&idle, press_ms + FF_IDLE_T_DIM_MS, false, false));
+}
+
+/* Mirrors ff_idle_short_press's own NULL-safety convention: a NULL
+ * idle/gate fails OPEN (returns `pressed` unchanged), never silently
+ * blocks input over a wiring bug. */
+static void S26_wakeonly_AC_null_safe_fails_open(void)
+{
+    ff_idle_touch_gate_t gate;
+    ff_idle_touch_gate_init(&gate);
+    ff_idle_t idle;
+    ff_idle_init(&idle);
+
+    ff_idle_touch_gate_init(NULL);
+    TEST_ASSERT_TRUE(ff_idle_touch_gate(NULL, &gate, 0, true));
+    TEST_ASSERT_FALSE(ff_idle_touch_gate(NULL, &gate, 0, false));
+    TEST_ASSERT_TRUE(ff_idle_touch_gate(&idle, NULL, 0, true));
+    TEST_ASSERT_FALSE(ff_idle_touch_gate(&idle, NULL, 0, false));
+}
+
+/* ------------------------------------------------------------------- */
 /* NULL-safety                                                          */
 /* ------------------------------------------------------------------- */
 
@@ -656,6 +823,14 @@ int main(void)
     RUN_TEST(S26f_amendment_sleep_inhibit_release_before_elapsed_sleeps_after_remaining_time);
     RUN_TEST(S26f_amendment_sleep_inhibit_does_not_block_dim_or_off);
     RUN_TEST(S26f_amendment_keep_awake_dominates_regardless_of_sleep_inhibit);
+
+    RUN_TEST(S26_wakeonly_AC_press_during_dim_wakes_and_swallows_until_release);
+    RUN_TEST(S26_wakeonly_AC_press_during_off_wakes_and_swallows_until_release);
+    RUN_TEST(S26_wakeonly_AC_press_during_sleep_wakes_and_swallows_until_release);
+    RUN_TEST(S26_wakeonly_AC_press_during_active_delivers_from_first_sample);
+    RUN_TEST(S26_wakeonly_AC_press_started_active_stays_delivered_through_dim_transition);
+    RUN_TEST(S26_wakeonly_AC_wake_pins_ref_ms_to_the_literal_press_instant);
+    RUN_TEST(S26_wakeonly_AC_null_safe_fails_open);
 
     RUN_TEST(S26c_AC1_null_safe);
 

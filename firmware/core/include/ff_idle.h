@@ -258,6 +258,73 @@ ff_idle_state_t ff_idle_state(ff_idle_t const *idle);
  */
 uint8_t ff_idle_brightness_pct(ff_idle_state_t state, uint8_t stored_pct);
 
+/**
+ * ## Wake-only touch/button gate (amendment, docs/specs/S26-device-
+ * lifecycle.md "(c) Inactivity -> dim -> screen off", dated 2026-09-02,
+ * maintainer decision): "a touch or button press that begins while the
+ * screen is not ACTIVE is a wake-only input and is never delivered to
+ * the UI." On-glass bug this closes: a tap on a DIM/OFF/SLEEP screen
+ * both woke the device AND landed on whatever was under the finger
+ * (an unintended button press, launcher navigation, etc.) — the wake
+ * should be the ENTIRE effect of that tap.
+ *
+ * `ff_idle_touch_gate_t` is a PER-INPUT-SOURCE latch: one instance per
+ * physical input (the touch panel, BOOT, ...) so two input sources'
+ * gestures are never confused with each other (e.g. a touch mid-gesture
+ * and a BOOT press starting a moment later each get their own
+ * press-begin/deliver decision) — pass a fresh instance (or a per-input
+ * `static`) for each one, never share a single instance across inputs.
+ * Zero-initialise or call `ff_idle_touch_gate_init()` before first use.
+ */
+typedef struct {
+    bool was_pressed; /* raw level on the PREVIOUS call — detects the false->true press-begin edge */
+    bool swallowing;  /* latched at press-begin; true = every sample of this gesture is withheld until release */
+} ff_idle_touch_gate_t;
+
+/** Zero the gate: not pressed, nothing swallowing. NULL-safe (no-op). */
+void ff_idle_touch_gate_init(ff_idle_touch_gate_t *gate);
+
+/**
+ * ff_idle_touch_gate — decide whether THIS sample of a press/release
+ * gesture may be delivered to the UI (see this header's "Wake-only
+ * touch/button gate" section above for the amendment this implements).
+ * Input-agnostic: the esp32s3 target calls this from BOTH the touch
+ * indev read path (`ff_display.c`) and the BOOT-as-home debounce
+ * (`app_main.c`) — pass the raw physical level (finger down / button
+ * held), not a debounced click — with a SEPARATE `ff_idle_touch_gate_t`
+ * instance per input source (see that type's doc comment).
+ *
+ * Semantics, sampled once per tick (same "call every tick, even when
+ * nothing changed" contract as `ff_idle_tick`):
+ *
+ *  - `pressed` transitions false -> true (a press BEGINS) while
+ *    `ff_idle_state(idle)` is NOT ACTIVE: this is a WAKE. Fires
+ *    `ff_idle_input(idle, now_ms)` (the wake itself — the same call
+ *    every other input source on this device makes), latches
+ *    `gate->swallowing = true`, and returns false (not delivered) —
+ *    for this sample and every subsequent sample of the SAME gesture,
+ *    until release.
+ *  - `pressed` transitions false -> true while ACTIVE: delivered
+ *    normally. Returns true; `gate->swallowing` stays false.
+ *  - `pressed` continues true (the gesture is still held): returns
+ *    whatever was decided AT PRESS-BEGIN (`!gate->swallowing`), even if
+ *    `idle`'s own state changes mid-gesture (e.g. ACTIVE -> DIM while a
+ *    finger is still down, held there by this very gesture's own
+ *    keep-awake feed racing a slow caller) — state matters only at
+ *    press START, never for the rest of the gesture; that is what keeps
+ *    a legitimate long-press/drag from being cut off mid-way.
+ *  - `pressed` is false (released, or never pressed): resets the latch
+ *    (`gate->was_pressed = gate->swallowing = false` — "release always
+ *    resets the latch") and returns false (there is no press to
+ *    deliver).
+ *
+ * NULL-safe: a NULL `idle` or `gate` fails OPEN — returns `pressed`
+ * unchanged (deliver whatever the caller asked), the same "never
+ * silently block input over a wiring bug" convention as the rest of
+ * this header (see e.g. `ff_idle_tick`'s NULL default).
+ */
+bool ff_idle_touch_gate(ff_idle_t *idle, ff_idle_touch_gate_t *gate, uint32_t now_ms, bool pressed);
+
 #ifdef __cplusplus
 }
 #endif

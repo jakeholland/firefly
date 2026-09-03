@@ -188,6 +188,28 @@ if(FF_BUILD_TESTS)
     ff_apply_warnings(test_idle_render_skip)
 
     add_test(NAME test_idle_render_skip COMMAND test_idle_render_skip)
+
+    # S26 wake-only-touch amendment (docs/specs/S26-device-lifecycle.md
+    # "(c) Inactivity -> dim -> screen off", 2026-09-02): a real ctl tap
+    # that BEGINS while idle is DIM/OFF must wake ACTIVE and deliver
+    # NOTHING to LVGL (no CLICKED, no PRESSED style) — driven through the
+    # same real ff-sim-ctl-loop session as the tests above.
+    add_executable(test_wakeonly_touch
+        tests/test_wakeonly_touch.c
+        screenshot.c
+    )
+    target_link_libraries(test_wakeonly_touch PRIVATE
+        ff-sim-ctl-loop
+        ff-sim-ctl
+        ff-shell
+        ff-app-ui
+        ff-stb-image-write
+        lvgl::lvgl
+        unity
+    )
+    ff_apply_warnings(test_wakeonly_touch)
+
+    add_test(NAME test_wakeonly_touch COMMAND test_wakeonly_touch)
 endif()
 
 # Issue #3 — ff_screenshot_write now creates its output directory itself

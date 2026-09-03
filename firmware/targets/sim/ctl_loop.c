@@ -202,6 +202,9 @@ int ff_ctl_loop_open(ff_ctl_loop_ctx_t *ctx, ff_shell_t *shell, fp_pack_t *pack,
 
     /* S26 slice c — see ctl_loop.h's ff_ctl_loop_ctx_t doc comment. */
     ff_idle_init(&ctx->idle);
+    /* S26 wake-only-touch amendment — see ctl_loop.h's own doc comment
+     * on `touch_gate`. */
+    ff_idle_touch_gate_init(&ctx->touch_gate);
 
     /* The intent seam: every wired button (FLARE, GO/DISMISS, the T9
      * keypad, ...) now reaches this shell. Unbind happens in
@@ -285,11 +288,49 @@ void ff_ctl_loop_close(ff_ctl_loop_ctx_t *ctx)
  * ff_ctl_handlers_t — tap / swipe / clock / state / screenshot / flare / quit.
  * ------------------------------------------------------------------- */
 
+/* S26 wake-only-touch amendment (docs/specs/S26-device-lifecycle.md
+ * "(c) Inactivity -> dim -> screen off", 2026-09-02): the ONE seam every
+ * synthetic touch sample passes through before LVGL sees it — mirrors
+ * `ff_display.c`'s device-side touch read path (that file's own comment
+ * on `ff_touch_gate_read_cb`/`ff_display_touch_set_idle` explains the
+ * device-side split; this is the sim's single-threaded equivalent, so no
+ * cross-task handoff is needed — `ctx->idle`/`ctx->touch_gate` are
+ * consulted and mutated directly).
+ *
+ * `ff_idle_touch_gate` is consulted FIRST, against whatever state
+ * `ctx->idle` is ALREADY in — that PRE-touch state is exactly what
+ * "began while not ACTIVE" must be judged against. Only THEN does any
+ * physical-level press re-pin `ff_idle_input` for this sample (mirrors
+ * app_main.c's per-frame `ff_display_touch_is_down()` feed — DIM/OFF/
+ * SLEEP must not creep in under a long-held gesture); doing this AFTER
+ * the gate, not before, matters — re-pinning first would force ACTIVE
+ * before the gate ever got to see the state it needs to swallow
+ * against, so EVERY press would read as "began ACTIVE" and nothing
+ * would ever be gated (caught by this file's own mutation check, see
+ * the PR body). The gate's OWN wake call (fired internally when it
+ * decides to swallow) makes this second call redundant on a begin
+ * sample — harmless, same idempotent `ff_idle_input` — and necessary on
+ * every HELD sample after, where the gate does not re-call it (S26f AC1
+ * pin, ff_idle.h's "state only matters at press START" note).
+ * `ff_idle_touch_gate` then decides delivery: a press that BEGAN while
+ * idle was not ACTIVE is swallowed (LVGL is told
+ * LV_INDEV_STATE_RELEASED, with the real last point, so it sees no
+ * press at all — no PRESSED style, no CLICKED) for the whole gesture;
+ * one that began ACTIVE (or is already past its own begin-sample) is
+ * delivered per the gate's own latched decision. */
 static void ctl_loop_pointer_read_cb(lv_indev_t *indev, lv_indev_data_t *data)
 {
     ff_ctl_loop_ctx_t *ctx = lv_indev_get_user_data(indev);
+    bool const pressed = (ctx->pointer_state == LV_INDEV_STATE_PRESSED);
+    uint32_t const now_ms = ff_ctl_loop_tick_cb();
+
+    bool const deliver = ff_idle_touch_gate(&ctx->idle, &ctx->touch_gate, now_ms, pressed);
+    if (pressed) {
+        ff_idle_input(&ctx->idle, now_ms);
+    }
+
     data->point = ctx->pointer_point;
-    data->state = ctx->pointer_state;
+    data->state = (pressed && deliver) ? LV_INDEV_STATE_PRESSED : LV_INDEV_STATE_RELEASED;
 }
 
 /* Advance time between the synthetic pointer steps below, so LVGL's
@@ -345,11 +386,13 @@ typedef void (*ctl_loop_gesture_step_fn)(ff_ctl_loop_ctx_t *ctx, void *step_user
 static void ctl_loop_pointer_gesture(ff_ctl_loop_ctx_t *ctx, int32_t x0, int32_t y0, int n_steps,
                                       ctl_loop_gesture_step_fn step_cb, void *step_user)
 {
-    /* S26 slice c — every real pointer gesture (tap/swipe/hold) is a
-     * touch, so it wakes the idle FSM exactly as the device's touch
-     * indev does (app_main.c). */
-    ff_idle_input(&ctx->idle, ff_ctl_loop_tick_cb());
-
+    /* S26 slice c / wake-only-touch amendment: every real pointer
+     * gesture (tap/swipe/hold) is a touch, so it wakes the idle FSM
+     * exactly as the device's touch indev does — and, if it BEGAN while
+     * idle was not ACTIVE, is swallowed for its whole duration. Both are
+     * now decided per-poll in `ctl_loop_pointer_read_cb` (the actual
+     * LVGL indev read seam), not here — this function only choreographs
+     * WHEN each poll happens, same as before. */
     ctx->pointer_point.x = (lv_coord_t)x0;
     ctx->pointer_point.y = (lv_coord_t)y0;
     ctl_loop_pointer_step_delay(ctx);

@@ -294,8 +294,19 @@ static ff_power_fsm_t s_power_fsm;
  * FF_INTENT_HOME — `ff_route_home` (app/include/ff_route.h) makes the
  * entire nav decision, so nothing here is an `if` about behavior
  * (CLAUDE.md's house rule).
+ *
+ * `s_boot_gate` (S26 wake-only-touch amendment, 2026-09-02 maintainer
+ * decision) is BOOT's own `ff_idle_touch_gate_t` instance — a SEPARATE
+ * one from `ff_display.c`'s touch gate (ff_idle_touch_gate_t's own doc
+ * comment: one instance per physical input source), since BOOT and
+ * touch are independent gestures that must never share a latch. A BOOT
+ * press that begins while the screen is not ACTIVE wakes it but is
+ * never forwarded as FF_INTENT_HOME — same rule as touch, applied to
+ * this repo's other physical input (docs/specs/S26-device-lifecycle.md
+ * "(c)" amendment: "a touch OR BUTTON press...").
  * ------------------------------------------------------------------- */
 static ff_button_t s_boot_button;
+static ff_idle_touch_gate_t s_boot_gate;
 
 /* ---------------------------------------------------------------------
  * S26 slice c — inactivity -> dim -> screen off.
@@ -621,6 +632,9 @@ void app_main(void)
     /* S26 slice e — zero the BOOT-button debouncer, same "before anything
      * can tick it" placement. */
     ff_button_init(&s_boot_button);
+    /* S26 wake-only-touch amendment — zero BOOT's own gate latch, same
+     * placement. */
+    ff_idle_touch_gate_init(&s_boot_gate);
 
     /* S26 slice c — zero the idle FSM; re-pinned to "now" right before
      * the render loop starts (below), after every one-shot bring-up step
@@ -628,6 +642,12 @@ void app_main(void)
      * had its say, so the very first DIM/OFF countdown starts at the
      * actual beginning of interactive use, not at cold boot. */
     ff_idle_init(&s_idle);
+    /* S26 wake-only-touch amendment — wire the shared idle FSM into the
+     * display HAL's touch read path (ff_display_touch_set_idle's own doc
+     * comment has the full contract) BEFORE ff_display_touch_start below
+     * ever brings the touch indev up, so the gate is live from the very
+     * first poll. */
+    ff_display_touch_set_idle(&s_idle);
 
     s_shell_p = heap_caps_calloc(1, sizeof(ff_shell_t), MALLOC_CAP_SPIRAM);
     if (s_shell_p == NULL) { ESP_LOGE(TAG, "shell PSRAM alloc failed"); return; }
@@ -1028,14 +1048,29 @@ void app_main(void)
 
         /* S26 slice e — the BOOT-as-home-button debounce, same "tick every
          * frame, forward the decision as an intent" placement as the PWR
-         * FSM above: ff_button_tick debounces GPIO0 (already sampled above
-         * for the reboot guard and the idle-input feed below — reading it
-         * again here is a second, independent sample, exactly like
-         * ff_power_pwr_pressed's own reuse pattern) and fires true exactly
+         * FSM above: ff_button_tick debounces GPIO0 and fires true exactly
          * once per physical press; this file only forwards that as
          * FF_INTENT_HOME. `ff_route_home` (app/include/ff_route.h) owns
-         * the whole nav decision — no `if` about behavior here. */
-        if (ff_button_tick(&s_boot_button, now_ms, ff_power_boot_pressed())) {
+         * the whole nav decision — no `if` about behavior here.
+         *
+         * S26 wake-only-touch amendment (2026-09-02 maintainer decision):
+         * `ff_idle_touch_gate` is consulted EVERY frame with the RAW level
+         * (`boot_level`, sampled once here and reused below — the button
+         * debounce and the idle re-pin/gate all need the SAME instant's
+         * reading, not three independent GPIO reads that could disagree
+         * within one frame) — and consulted BEFORE the unconditional
+         * re-pin two blocks down. That order matters: re-pinning first
+         * would force ACTIVE before the gate ever saw the state it needs
+         * to judge "began while not ACTIVE" against, and EVERY BOOT press
+         * would read as having begun ACTIVE — the exact bug this file's
+         * sim mirror (targets/sim/ctl_loop.c) caught and fixed the same
+         * way. FF_INTENT_HOME is forwarded only when the gate says
+         * `boot_deliver` — a BOOT press that woke the screen is wake-only,
+         * same rule as touch, per the amendment's own text ("a touch OR
+         * BUTTON press that begins while the screen is not ACTIVE..."). */
+        bool const boot_level = ff_power_boot_pressed();
+        bool const boot_deliver = ff_idle_touch_gate(&s_idle, &s_boot_gate, now_ms, boot_level);
+        if (ff_button_tick(&s_boot_button, now_ms, boot_level) && boot_deliver) {
             ff_intent_t const home = {.kind = FF_INTENT_HOME, .u = {0}};
             ff_shell_intent(&s_shell, &home);
         }
@@ -1044,8 +1079,10 @@ void app_main(void)
          * same "always feed, let the FSM decide" placement as the PWR FSM
          * above. A held BOOT (or a held finger) reads true every frame
          * it stays down — harmless: ff_idle_input just keeps re-pinning
-         * ACTIVE, exactly like a genuinely continuous touch should. */
-        if (ff_display_touch_is_down() || ff_power_boot_pressed()) {
+         * ACTIVE, exactly like a genuinely continuous touch should. This
+         * is exactly what keeps a wake-only BOOT press (swallowed above)
+         * awake for as long as it's physically held, same as touch. */
+        if (ff_display_touch_is_down() || boot_level) {
             ff_idle_input(&s_idle, now_ms);
         }
 
