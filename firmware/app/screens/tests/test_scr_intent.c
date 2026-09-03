@@ -2459,8 +2459,9 @@ static void S21_AC1_settings_is_one_scrolling_list_every_row_reachable(void)
      * (LVGL builds every child regardless of current scroll position —
      * this alone proves "present", not yet "reachable"). */
     static char const *const kRowLabels[] = {
-        "BRIGHTNESS", "UNITS",   "CLOCK",        "SCREEN",     "SHARE",
-        "HAPTICS",    "GLOW",    "WATER NUDGE",  "QUIET HOURS", "COLORBLIND",
+        "BRIGHTNESS", "UNITS",     "CLOCK",       "SCREEN",      "SHARE",
+        "HAPTICS",    "SOUNDS",    "UI TICKS",    "GLOW",        "WATER NUDGE",
+        "QUIET HOURS", "COLORBLIND", /* S27 sounds adds SOUNDS + UI TICKS, next to HAPTICS */
     };
     for (size_t i = 0; i < sizeof(kRowLabels) / sizeof(kRowLabels[0]); i++) {
         TEST_ASSERT_NOT_NULL_MESSAGE(find_label_exact(lv_screen_active(), kRowLabels[i]), kRowLabels[i]);

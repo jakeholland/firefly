@@ -449,6 +449,45 @@ static void S16_AC10_draft_typed_flare_injected_takeover_clears_draft_survives(v
     lv_deinit();
 }
 
+/* S27 sounds (docs/specs/S27-sounds.md) — proves the REAL sim wiring, not
+ * just the shell's own hooks (test_shell.c already covers those in
+ * isolation): `ff_ctl_loop_open` sets `shell_cfg.play_sound` to
+ * `ctl_loop_play_sound_cb`, which is what makes an event land in the
+ * ctl-observable log this test reads via `ff_ctl_loop_sound_log_count`/
+ * `_at`. FLARE_START (`ff_shell_intent`, the same entry point a real
+ * `ffsim --ctl` button tap reaches through `ff_shell_intent_sink`) needs
+ * no pairing to sound FLARE_SENT — see ff_shell.c's FF_INTENT_FLARE_START
+ * handler. */
+static void S27_ctl_loop_play_sound_hook_logs_flare_sent(void)
+{
+    static ff_shell_t shell;
+    static fp_pack_t pack;
+    static ff_ctl_loop_ctx_t ctx;
+
+    ff_shell_cfg_t shell_cfg;
+    memset(&shell_cfg, 0, sizeof(shell_cfg));
+
+    ff_ctl_loop_cfg_t cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.mock_clock = true;
+
+    TEST_ASSERT_EQUAL_INT(0, ff_ctl_loop_open(&ctx, &shell, &pack, &shell_cfg, &cfg));
+
+    TEST_ASSERT_EQUAL_UINT32(0, ff_ctl_loop_sound_log_count(&ctx));
+
+    ff_intent_t flare_start = {.kind = FF_INTENT_FLARE_START, .u = {0}};
+    ff_shell_intent(&shell, &flare_start);
+
+    TEST_ASSERT_EQUAL_UINT32(1, ff_ctl_loop_sound_log_count(&ctx));
+    TEST_ASSERT_EQUAL(FF_SOUND_FLARE_SENT, ff_ctl_loop_sound_log_at(&ctx, 0));
+    /* Out of range: the vocabulary's own "not a real event" sentinel. */
+    TEST_ASSERT_EQUAL(FF_SOUND_COUNT, ff_ctl_loop_sound_log_at(&ctx, 1));
+
+    ff_ctl_loop_close(&ctx);
+    ff_shell_close(&shell);
+    lv_deinit();
+}
+
 /* PR #60 review finding: the slice's headline claim — "rebuild only on a
  * dirty tick, never every frame" — had no regression test. The reviewer
  * proved it by mutation: ignoring `dirty` in ctl_loop.c passed the entire
@@ -846,6 +885,7 @@ int main(void)
     RUN_TEST(S26_banner_tap_from_the_launcher_lands_on_the_thread);
     RUN_TEST(S26_flare_go_from_the_launcher_lands_on_radar);
     RUN_TEST(S16_AC10_draft_typed_flare_injected_takeover_clears_draft_survives);
+    RUN_TEST(S27_ctl_loop_play_sound_hook_logs_flare_sent);
     RUN_TEST(flare_second_takeover_dismisses_via_real_tap);
     RUN_TEST(flare_takeover_mark_pulse_animates);
     RUN_TEST(S16_d_idle_ticks_never_rebuild_the_screen);

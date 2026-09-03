@@ -13,7 +13,7 @@
  * below only catches size mismatches; two different layouts can share the
  * same sizeof() (e.g. a reordering, or swapping a bool+uint8_t pair) and
  * would otherwise pass validation with silently corrupted semantics. */
-#define FF_SETTINGS_FORMAT_VERSION ((uint16_t)8u)
+#define FF_SETTINGS_FORMAT_VERSION ((uint16_t)9u)
 /* v2: compass_cal_blob (opaque uint8_t[32]) -> compass_cal (ff_geo_cal_t).
  * Same sizeof() risk the header comment warns about (a reordering/retype
  * can share sizeof() with the old layout) doesn't apply numerically here
@@ -93,6 +93,31 @@
  * upgrade does. A blob OLDER than v6 (<=v5) still rejects outright, same
  * boundary as before: those pre-date the NVS store entirely, so no
  * fielded device holds one. */
+/* v9: + sounds_on + ui_ticks (S27 sounds, docs/specs/S27-sounds.md). SAME
+ * chained forward-migration policy v7 and v8 established, one hop
+ * further: fielded pucks now hold real v6, v7 AND v8 blobs (v8 shipped
+ * with this same NVS store), and the honest-data ruling applies to all
+ * three. Both new fields are appended at the very end of ff_settings_t
+ * again, so a v8 blob's payload is a strict prefix of a v9 one, and
+ * (chained through v8, then v7) so are v7's and v6's.
+ *
+ * ff_settings_load reads a v8 blob via the newly-frozen `ff_settings_v8_t`
+ * shadow below and fills the two new fields in at THEIR OWN honest
+ * defaults — NOT both "false", unlike every field added by v3-v8 above.
+ * `sounds_on` lands at TRUE: sound is an opt-out feature here (the
+ * maintainer's brief: "we should add noises overall"), the same "ships
+ * enabled, the owner can turn it off" precedent `haptics` (S11, default
+ * true) already sets — landing it at false would misrepresent "this
+ * puck never had a sounds toggle" as "this owner deliberately silenced
+ * their puck", which is not what an absent field means. `ui_ticks` lands
+ * at FALSE, matching every prior migrated-field default: it really is
+ * an opt-IN feature (a tick on every tap is easy to find annoying), so
+ * "this puck never had the toggle" and "off" agree here the way they did
+ * for `clock_24h`/`screen_flip`. A v7 or v6 blob CHAINS through the same
+ * v6->v7->v8 steps already established, then this new v8->v9 step —
+ * one migration function per version hop, composed, never a shortcut
+ * special case. A blob OLDER than v6 (<=v5) still rejects outright, same
+ * boundary as before. */
 
 typedef struct {
     uint32_t magic;
@@ -100,8 +125,8 @@ typedef struct {
     uint16_t payload_size; /* sizeof(ff_settings_t) at write time for the
                              * CURRENT version, or the frozen size of
                              * whichever older vN shadow (ff_settings_v6_t /
-                             * ff_settings_v7_t) a migrated blob was written
-                             * as */
+                             * ff_settings_v7_t / ff_settings_v8_t) a
+                             * migrated blob was written as */
 } ff_settings_header_t;
 
 #define FF_SETTINGS_BLOB_LEN (sizeof(ff_settings_header_t) + sizeof(ff_settings_t))
@@ -182,6 +207,44 @@ typedef struct {
     bool clock_24h;
 } ff_settings_v7_t;
 
+/**
+ * ff_settings_v8_t — a FROZEN, byte-for-byte mirror of ff_settings_t
+ * exactly as it existed at format version 8 (every field ff_settings_v7_t
+ * has, plus v8's own trailing `screen_flip`; every field ff_settings_t
+ * has TODAY except v9's trailing `sounds_on`/`ui_ticks`, S27 sounds).
+ * Same rationale and same rule as ff_settings_v6_t/ff_settings_v7_t
+ * above: its own independent, hand-written type, so a later reorder of
+ * ff_settings_t's live fields can't silently change what a v8-blob
+ * migration reads. It doubles as the INTERMEDIATE shape a v6 or v7 blob
+ * is migrated through on its way to v9 (ff_settings_migrate_v7 now
+ * targets this shadow instead of the live struct — see that function's
+ * own doc comment) — the one v8 shape, never duplicated. If a future
+ * version bump needs its own migration, it adds its own frozen vN
+ * shadow the same way; this one never changes again. */
+typedef struct {
+    bool imperial;
+    uint8_t share_mode;
+    bool haptics;
+    bool night_glow;
+    uint16_t water_min;
+    uint16_t quiet_from_min;
+    uint16_t quiet_to_min;
+    int16_t utc_offset_min;
+    bool utc_offset_set;
+    bool colorblind;
+    uint8_t brightness_pct;
+    char my_name[FF_SETTINGS_NAME_LEN];
+    ff_geo_cal_t compass_cal;
+    bool cal_valid;
+    float touch_ax;
+    float touch_bx;
+    float touch_ay;
+    float touch_by;
+    bool touch_calibrated;
+    bool clock_24h;
+    bool screen_flip;
+} ff_settings_v8_t;
+
 static void ff_settings_apply_defaults(ff_settings_t *s)
 {
     memset(s, 0, sizeof(*s));
@@ -231,6 +294,15 @@ static void ff_settings_apply_defaults(ff_settings_t *s)
 
     /* screen_flip: left zeroed -> false (NORMAL). See ff_settings.h's
      * doc comment on the field. */
+
+    /* sounds_on: NOT left zeroed — TRUE (opt-out feature; see
+     * ff_settings.h's doc comment and this file's v9 migration comment
+     * above `ff_settings_header_t` for why this one default differs from
+     * every prior amendment's "leave it zeroed"). */
+    s->sounds_on = true;
+
+    /* ui_ticks: left zeroed -> false (opt-in; a tick on every press is
+     * easy to find annoying — see ff_settings.h's doc comment). */
 }
 
 /* v6 -> v7 forward migration step (see the v8 comment above
@@ -271,37 +343,78 @@ static void ff_settings_migrate_v6(ff_settings_v7_t *v7, ff_settings_v6_t const 
 }
 
 /* v7 -> v8 forward migration step (see the v8 comment above
- * `ff_settings_header_t`). Same explicit field-by-field convention as
+ * `ff_settings_header_t` for the original v8 reasoning, and the v9
+ * comment for why this now targets the v8 SHADOW rather than the live
+ * struct directly — it's the second-to-last hop of a chained v6 -> v7 ->
+ * v8 -> v9 upgrade). Same explicit field-by-field convention as
  * ff_settings_migrate_v6 above, same reason. Used for BOTH a real v7
  * blob (read straight off the store) and a v6 blob already lifted to
  * v7 shape by ff_settings_migrate_v6 above — one v7->v8 step, run once
  * either way, never duplicated. screen_flip, which v7 never had, is set
- * to its honest default. */
-static void ff_settings_migrate_v7(ff_settings_t *s, ff_settings_v7_t const *v7)
+ * to its honest default; sounds_on/ui_ticks do not exist at this shape
+ * yet (they're ff_settings_migrate_v8's fields to fill, one step later). */
+static void ff_settings_migrate_v7(ff_settings_v8_t *v8, ff_settings_v7_t const *v7)
 {
-    s->imperial = v7->imperial;
-    s->share_mode = v7->share_mode;
-    s->haptics = v7->haptics;
-    s->night_glow = v7->night_glow;
-    s->water_min = v7->water_min;
-    s->quiet_from_min = v7->quiet_from_min;
-    s->quiet_to_min = v7->quiet_to_min;
-    s->utc_offset_min = v7->utc_offset_min;
-    s->utc_offset_set = v7->utc_offset_set;
-    s->colorblind = v7->colorblind;
-    s->brightness_pct = v7->brightness_pct;
-    memcpy(s->my_name, v7->my_name, sizeof(s->my_name));
-    s->compass_cal = v7->compass_cal;
-    s->cal_valid = v7->cal_valid;
-    s->touch_ax = v7->touch_ax;
-    s->touch_bx = v7->touch_bx;
-    s->touch_ay = v7->touch_ay;
-    s->touch_by = v7->touch_by;
-    s->touch_calibrated = v7->touch_calibrated;
-    s->clock_24h = v7->clock_24h;
-    s->screen_flip = false; /* v7 never had this field: false (NORMAL) is the
-                              * honest reading of "this puck never had the
-                              * toggle", not a guess — see ff_settings.h. */
+    v8->imperial = v7->imperial;
+    v8->share_mode = v7->share_mode;
+    v8->haptics = v7->haptics;
+    v8->night_glow = v7->night_glow;
+    v8->water_min = v7->water_min;
+    v8->quiet_from_min = v7->quiet_from_min;
+    v8->quiet_to_min = v7->quiet_to_min;
+    v8->utc_offset_min = v7->utc_offset_min;
+    v8->utc_offset_set = v7->utc_offset_set;
+    v8->colorblind = v7->colorblind;
+    v8->brightness_pct = v7->brightness_pct;
+    memcpy(v8->my_name, v7->my_name, sizeof(v8->my_name));
+    v8->compass_cal = v7->compass_cal;
+    v8->cal_valid = v7->cal_valid;
+    v8->touch_ax = v7->touch_ax;
+    v8->touch_bx = v7->touch_bx;
+    v8->touch_ay = v7->touch_ay;
+    v8->touch_by = v7->touch_by;
+    v8->touch_calibrated = v7->touch_calibrated;
+    v8->clock_24h = v7->clock_24h;
+    v8->screen_flip = false; /* v7 never had this field: false (NORMAL) is the
+                               * honest reading of "this puck never had the
+                               * toggle", not a guess — see ff_settings.h. */
+}
+
+/* v8 -> v9 forward migration step (S27 sounds — see the v9 comment above
+ * `ff_settings_header_t`). Same explicit field-by-field convention as
+ * every migration step above, same reason. Used for a real v8 blob, AND
+ * for a v6 or v7 blob already lifted to v8 shape by the two steps above
+ * — one v8->v9 step, run once either way. sounds_on/ui_ticks, which v8
+ * never had, are set to THEIR OWN honest defaults — sounds_on=true,
+ * ui_ticks=false — see ff_settings.h's doc comments on both fields and
+ * this file's v9 comment above `ff_settings_header_t` for why the two
+ * differ (unlike every earlier migrated-in field, which always landed at
+ * false/off). */
+static void ff_settings_migrate_v8(ff_settings_t *s, ff_settings_v8_t const *v8)
+{
+    s->imperial = v8->imperial;
+    s->share_mode = v8->share_mode;
+    s->haptics = v8->haptics;
+    s->night_glow = v8->night_glow;
+    s->water_min = v8->water_min;
+    s->quiet_from_min = v8->quiet_from_min;
+    s->quiet_to_min = v8->quiet_to_min;
+    s->utc_offset_min = v8->utc_offset_min;
+    s->utc_offset_set = v8->utc_offset_set;
+    s->colorblind = v8->colorblind;
+    s->brightness_pct = v8->brightness_pct;
+    memcpy(s->my_name, v8->my_name, sizeof(s->my_name));
+    s->compass_cal = v8->compass_cal;
+    s->cal_valid = v8->cal_valid;
+    s->touch_ax = v8->touch_ax;
+    s->touch_bx = v8->touch_bx;
+    s->touch_ay = v8->touch_ay;
+    s->touch_by = v8->touch_by;
+    s->touch_calibrated = v8->touch_calibrated;
+    s->clock_24h = v8->clock_24h;
+    s->screen_flip = v8->screen_flip;
+    s->sounds_on = true;  /* v8 never had this field: opt-out feature, see ff_settings.h */
+    s->ui_ticks = false; /* v8 never had this field: opt-in feature, honest "never had it" default */
 }
 
 void ff_settings_load(ff_settings_t *s, ff_store_t const *st)
@@ -340,7 +453,7 @@ void ff_settings_load(ff_settings_t *s, ff_store_t const *st)
     }
 
     /* Explicit per-version step table (AGENTS.md: "no silent 'accept any
-     * size'") — exactly three versions this build knows how to read, each
+     * size'") — exactly four versions this build knows how to read, each
      * gated on BOTH its own version number and its own exact documented
      * payload size. Anything else (an unknown/future version, a <=v5 blob,
      * or a version/size combination that doesn't match any row) falls
@@ -351,23 +464,37 @@ void ff_settings_load(ff_settings_t *s, ff_store_t const *st)
         memcpy(s, buf + sizeof(hdr), sizeof(*s));
         return;
     }
+    if (hdr.version == 8u && hdr.payload_size == (uint16_t)sizeof(ff_settings_v8_t) &&
+        got == sizeof(hdr) + sizeof(ff_settings_v8_t)) {
+        ff_settings_v8_t v8;
+        memcpy(&v8, buf + sizeof(hdr), sizeof(v8));
+        ff_settings_migrate_v8(s, &v8);
+        return;
+    }
     if (hdr.version == 7u && hdr.payload_size == (uint16_t)sizeof(ff_settings_v7_t) &&
         got == sizeof(hdr) + sizeof(ff_settings_v7_t)) {
         ff_settings_v7_t v7;
         memcpy(&v7, buf + sizeof(hdr), sizeof(v7));
-        ff_settings_migrate_v7(s, &v7);
+        /* Chained: v7 -> v8 (shadow) -> v9 (live) — one migration step
+         * each, composed, not a v7->v9 special case (see the v9 comment
+         * above `ff_settings_header_t`). */
+        ff_settings_v8_t v8;
+        ff_settings_migrate_v7(&v8, &v7);
+        ff_settings_migrate_v8(s, &v8);
         return;
     }
     if (hdr.version == 6u && hdr.payload_size == (uint16_t)sizeof(ff_settings_v6_t) &&
         got == sizeof(hdr) + sizeof(ff_settings_v6_t)) {
         ff_settings_v6_t v6;
         memcpy(&v6, buf + sizeof(hdr), sizeof(v6));
-        /* Chained: v6 -> v7 (shadow) -> v8 (live) — one migration step
-         * each, composed, not a v6->v8 special case (see the v8 comment
-         * above `ff_settings_header_t`). */
+        /* Chained: v6 -> v7 (shadow) -> v8 (shadow) -> v9 (live) — one
+         * migration step each, composed, not a v6->v9 special case (see
+         * the v9 comment above `ff_settings_header_t`). */
         ff_settings_v7_t v7;
         ff_settings_migrate_v6(&v7, &v6);
-        ff_settings_migrate_v7(s, &v7);
+        ff_settings_v8_t v8;
+        ff_settings_migrate_v7(&v8, &v7);
+        ff_settings_migrate_v8(s, &v8);
         return;
     }
 

@@ -411,6 +411,19 @@ typedef enum {
      * centre; see ff_settings.h's doc comment on the field for the full
      * mechanism. */
     FF_SETTING_SCREEN_FLIP,
+    /* [api] format v9 amendment (S27 sounds, docs/specs/S27-sounds.md) —
+     * the Settings SOUNDS ON|OFF row (ff_settings_t.sounds_on). Bool-
+     * backed, same "nonzero is true" int payload convention as every
+     * other two-state row above — no range to reject. The master switch
+     * `ff_sound_should_play` (core/include/ff_sound.h) checks first. */
+    FF_SETTING_SOUNDS_ON,
+    /* [api] format v9 amendment (S27 sounds) — the Settings UI TICKS
+     * ON|OFF row (ff_settings_t.ui_ticks). Same bool-backed convention.
+     * A SECOND gate on top of SOUNDS_ON, consulted only for
+     * FF_SOUND_TAP — see ff_settings.h's doc comment on the field and
+     * `ff_shell_should_tap_sound`'s doc comment (ff_shell.h) for where
+     * the two are composed. */
+    FF_SETTING_UI_TICKS,
 } ff_setting_id_t;
 
 typedef struct {

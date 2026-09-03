@@ -101,6 +101,14 @@ typedef struct {
     void *power_off_user;
     void (*power_reboot)(void *user);
     void *power_reboot_user;
+    /* S27 sounds — device HAL hook. NULL on both targets as of this PR
+     * (see ff_shell.h's doc comment on ff_shell_cfg_t.play_sound). */
+    void (*play_sound)(void *user, ff_sound_event_t ev);
+    void *play_sound_user;
+    /* S27 sounds — battery-low edge detector (BATT_LOW fires once per
+     * crossing, not every tick it reads low). Set/cleared alongside
+     * `view.radar.batt_pct`'s projection in shell_project. */
+    bool batt_was_low;
     fp_pack_t *pack; /* caller-owned storage; NULL = this target has no pack */
     bool pack_loaded;
     jsmntok_t *toks; /* caller-owned jsmn scratch for fp_parse (S26 slice a) */
@@ -615,6 +623,25 @@ static void shell_haptic_alert(shell_t *sh)
     shell_haptic_fire(sh);
 }
 
+/**
+ * shell_sound — S27 sounds (docs/specs/S27-sounds.md): the ONE place
+ * every shell-driven sound event (FLARE_SENT, FLARE_INCOMING, MESSAGE,
+ * RALLY, BATT_LOW — everything except TAP, which reaches the same
+ * `play_sound` hook through `ff_shell_sound_sink` instead, since the
+ * shell never sees a raw button press) funnels through. Applies the core
+ * policy (`ff_sound_should_play` — sounds-off / quiet-hours-except-FLARE)
+ * against this shell's live settings + wall clock, and only THEN calls
+ * the injected `play_sound` hook. NULL `play_sound` (both targets today)
+ * makes every call here a no-op below the policy check, mirroring
+ * `shell_haptic_fire`'s own NULL-hook shape.
+ */
+static void shell_sound(shell_t *sh, ff_sound_event_t ev)
+{
+    if (sh->play_sound == NULL) return;
+    if (!ff_sound_should_play(ev, sh->settings.sounds_on, shell_quiet_now(sh))) return;
+    sh->play_sound(sh->play_sound_user, ev);
+}
+
 /* ---------------------------------------------------------------------
  * Wall-clock observation
  * ------------------------------------------------------------------- */
@@ -1076,6 +1103,14 @@ static void shell_ev_private(void *u, uint32_t from, uint32_t to, uint32_t portn
                                                          msg.body.flare.dur_s, shell_now(sh));
         if (r.should_alert) {
             shell_haptic_alert(sh); /* UNCONDITIONAL w.r.t. quiet hours — AC11 */
+            /* S27 sounds — a paired crew member's flare took over the
+             * screen: FLARE_INCOMING, gated on the SAME should_alert this
+             * haptic uses (unpaired senders never reach here at all —
+             * ff_flare_on_flare_rx's own trust gate). shell_sound itself
+             * still applies the quiet-hours exemption/sounds-off check —
+             * should_alert is the "this is a real, trusted flare" gate,
+             * not a bypass of the sound policy. */
+            shell_sound(sh, FF_SOUND_FLARE_INCOMING);
         }
     } else if (type == FF_PROTO_TYPE_FLARE_END) {
         (void)ff_flare_on_flare_end_rx(&sh->flare, from);
@@ -1183,8 +1218,27 @@ static void shell_notify_push_banner(shell_t *sh, ff_notify_kind_t kind, uint32_
     int n = snprintf(preview, sizeof(preview), "%.*s", (int)body_len, (body != NULL) ? body : "");
     if (n < 0) preview[0] = '\0'; /* snprintf failure: an honestly empty preview, never garbage */
 
-    (void)ff_notify_push(&sh->notify, kind, FF_NOTIFY_TIER_BANNER, from, preview, now_ms);
-    sh->wake_pending = true; /* S26(c) wake hook — see the field's comment */
+    ff_notify_push_result_t const r = ff_notify_push(&sh->notify, kind, FF_NOTIFY_TIER_BANNER, from, preview, now_ms);
+    sh->wake_pending = true; /* S26(c) wake hook — see the field's comment; a coalesced update is still a
+                              * genuinely new arrival worth waking the screen for, even though it does not
+                              * get its own sound below (see that gate's own comment). */
+
+    /* S27 sounds — a banner just pushed for a new MESSAGE or RALLY (this
+     * function's own two callers, both already re-checked paired above,
+     * are the whole banner-eligible set — see ff_notify.h's `kind`
+     * doc). One call site covers both events this function ever pushes.
+     *
+     * Gated on FF_NOTIFY_PUSH_NEW, not merely "a push happened": two
+     * rapid messages from the SAME sender within FF_NOTIFY_COALESCE_MS
+     * (2s) COALESCE into the one already-queued banner
+     * (ff_notify_push's own documented behavior) — that is one banner
+     * being refreshed, not a second notification, so it must not sound
+     * a second blip. A DIFFERENT sender (or the same sender past the
+     * coalesce window) always gets its own FF_NOTIFY_PUSH_NEW entry and
+     * its own sound. */
+    if (r == FF_NOTIFY_PUSH_NEW) {
+        shell_sound(sh, (kind == FF_NOTIFY_RALLY) ? FF_SOUND_RALLY : FF_SOUND_MESSAGE);
+    }
 }
 
 /** Milliseconds until `expiry_ms`, or -1 when the fact is not live.
@@ -1522,6 +1576,9 @@ static void shell_project_settings(shell_t const *sh, ff_app_settings_t *out)
     /* format v8 amendment — the SCREEN NORMAL|FLIPPED toggle, projected
      * verbatim. */
     out->screen_flip = sh->settings.screen_flip;
+    /* format v9 amendment — S27 sounds: SOUNDS/UI TICKS, projected verbatim. */
+    out->sounds_on = sh->settings.sounds_on;
+    out->ui_ticks = sh->settings.ui_ticks;
 }
 
 /**
@@ -1666,9 +1723,29 @@ static void shell_project(shell_t *sh, uint32_t now_ms)
      * smoothing already applied at push time, see `batt_filter`'s doc
      * comment above); -1 (honestly unknown) until the first
      * ff_shell_set_batt_mv call, same as heading_deg/my_pos_ok before
-     * their own first push. */
+     * their own first push. This is also the value the S27 BATT_LOW
+     * crossing-detector just below reads — no separate test/dev seam
+     * needed now that a real push API exists; see ff_shell_set_batt_mv
+     * (ff_shell.h) for how test_shell.c drives it. */
     sh->view.radar.batt_pct = sh->batt_filter.displayed_pct;
     sh->view.radar.mesh_ok = (sh->link == FF_SHELL_LINK_CONNECTED);
+
+    /* S27 sounds — BATT_LOW fires once per CROSSING into the low band,
+     * not on every tick the reading happens to be low (an edge detector
+     * against `sh->batt_was_low`, not a level check). Placed right after
+     * `batt_pct` is projected, per the spec's "on a projection" wording —
+     * this is the one place in the shell that knows the value both
+     * before (the previous tick's `batt_was_low`) and after (the line
+     * just above) a projection. `ff_radar_batt_is_low` (ff_radar.h)
+     * already treats an unknown reading (< 0) as NOT low, so an unknown
+     * batt_pct can never falsely arm or fire this. */
+    {
+        bool const low_now = ff_radar_batt_is_low(sh->view.radar.batt_pct);
+        if (low_now && !sh->batt_was_low) {
+            shell_sound(sh, FF_SOUND_BATT_LOW);
+        }
+        sh->batt_was_low = low_now;
+    }
 
     shell_project_now(sh, wall, &sh->view.now);
     shell_project_inbox(sh, now_ms, &sh->view.inbox);
@@ -2237,6 +2314,9 @@ int ff_shell_init(ff_shell_t *sh_pub, ff_shell_cfg_t const *cfg)
     sh->power_off_user = cfg->power_off_user;
     sh->power_reboot = cfg->power_reboot;
     sh->power_reboot_user = cfg->power_reboot_user;
+    sh->play_sound = cfg->play_sound;
+    sh->play_sound_user = cfg->play_sound_user;
+    sh->batt_was_low = false;
     sh->pack = cfg->pack;
     sh->pack_loaded = false;
     sh->toks = cfg->toks;
@@ -3000,6 +3080,23 @@ static void shell_setting_set(shell_t *sh, ff_intent_t const *in)
         s->screen_flip = v;
         break;
     }
+    case FF_SETTING_SOUNDS_ON: {
+        /* format v9 amendment (S27 sounds) — the Settings SOUNDS row.
+         * Bool-backed, same "nonzero is true" convention as every other
+         * two-state row above — no range to reject. */
+        bool const v = (in->u.setting.v.i != 0);
+        changed = (s->sounds_on != v);
+        s->sounds_on = v;
+        break;
+    }
+    case FF_SETTING_UI_TICKS: {
+        /* format v9 amendment (S27 sounds) — the Settings UI TICKS row.
+         * Same bool-backed convention. */
+        bool const v = (in->u.setting.v.i != 0);
+        changed = (s->ui_ticks != v);
+        s->ui_ticks = v;
+        break;
+    }
     case FF_SETTING_BRIGHTNESS: {
         /* #100 — CLAMPED, not rejected: a slider that drags past either end
          * should pin to the floor/ceiling, not silently drop the change (the
@@ -3288,6 +3385,21 @@ void ff_shell_intent(ff_shell_t *sh_pub, ff_intent_t const *in)
             ff_flare_result_t const r = ff_flare_send_begin(&sh->flare, 0, now_ms);
             shell_flare_wire(sh, r.intent, r.dur_s, now_ms);
         }
+        /* S27 sounds — "flare start (any trigger -> FLARE_SENT)": the
+         * Radar CLOSE-mode FLARE button's own trigger. The other trigger,
+         * the 5x-HOME quick-flare multitap gesture (FF_INTENT_QUICK_FLARE,
+         * below), has its own separate ff_flare_send_begin call site and
+         * its own matching shell_sound call — see that case's comment.
+         * ff_flare_send_begin is unconditional (ff_flare.h: "is
+         * unconditional" w.r.t. receive), so this always fires when
+         * reachable — no separate success check needed. This is
+         * deliberately independent of the S10 Amendment (2026-09-03,
+         * "Wire honesty") above: the chime marks the user's SEND INTENT
+         * (matches this case's own doc comment, "any trigger"), not
+         * whether the frame actually reached the mesh yet — an honest
+         * WAITING/SENT distinction belongs on the visual overlay
+         * (scr_flare.c), not as a second, silent chime gate here. */
+        shell_sound(sh, FF_SOUND_FLARE_SENT);
         return;
 
     case FF_INTENT_FLARE_END:
@@ -4056,6 +4168,15 @@ void ff_shell_intent(ff_shell_t *sh_pub, ff_intent_t const *in)
             ff_flare_result_t const r = ff_flare_send_begin(&sh->flare, 0, now_ms);
             shell_flare_wire(sh, r.intent, r.dur_s, now_ms);
         }
+        /* S27 sounds — "flare start (any trigger -> FLARE_SENT)": this
+         * is the SECOND of the two triggers that reach ff_flare_send_begin
+         * (FF_INTENT_FLARE_START above is the first) — the quick-flare
+         * gesture gets the identical confirmation sound the on-screen
+         * button does. See that call site's own comment for the full
+         * "any trigger" reasoning, including why this is independent of
+         * the S10 Amendment (2026-09-03, "Wire honesty") wiring just
+         * above. */
+        shell_sound(sh, FF_SOUND_FLARE_SENT);
         return;
     }
     /* No default: -Wswitch under -Werror flags any new ff_intent_kind_t
@@ -4066,6 +4187,26 @@ void ff_shell_intent(ff_shell_t *sh_pub, ff_intent_t const *in)
 void ff_shell_intent_sink(void *user, ff_intent_t const *in)
 {
     ff_shell_intent((ff_shell_t *)user, in);
+}
+
+bool ff_shell_should_tap_sound(ff_shell_t const *sh_pub)
+{
+    if (sh_pub == NULL) return false;
+    shell_t const *sh = shell_of_const(sh_pub);
+    if (!sh->settings.ui_ticks) return false; /* TAP's own second gate — see ff_sound.h's top comment */
+    return ff_sound_should_play(FF_SOUND_TAP, sh->settings.sounds_on, shell_quiet_now(sh));
+}
+
+void ff_shell_sound_sink(void *user, ff_sound_event_t ev)
+{
+    if (user == NULL) return;
+    if (ev != FF_SOUND_TAP) return; /* this seam only ever carries TAP — ff_sound_emit.h's top comment */
+    ff_shell_t *sh_pub = (ff_shell_t *)user;
+    if (!ff_shell_should_tap_sound(sh_pub)) return;
+    shell_t *sh = shell_of(sh_pub);
+    if (sh->play_sound != NULL) {
+        sh->play_sound(sh->play_sound_user, FF_SOUND_TAP);
+    }
 }
 
 void ff_shell_home_press(ff_shell_t *sh_pub, uint32_t now_ms, bool deliver)

@@ -194,6 +194,7 @@
 #include "ff_intent.h"
 #include "ff_latlon.h"
 #include "ff_settings.h"
+#include "ff_sound.h" /* S27 — ff_sound_event_t, returned/consumed by play_sound and the tap-sound query */
 #include "ff_store.h"
 #include "ff_touchcal.h" /* S21 §3 — ff_touchcal_t, returned by the calibrate hook */
 #include "ff_wall.h"
@@ -302,6 +303,27 @@ typedef struct {
      *  never risks entering the ROM bootloader (S26 AC4). */
     void (*power_reboot)(void *user);
     void *power_reboot_user;
+
+    /** S27 sounds (docs/specs/S27-sounds.md) — the device HAL hook that
+     *  turns a `ff_sound_event_t` into actual audio on the PCM5101 I2S
+     *  DAC. Same injected-device-IO shape as `haptic`/`power_off`: NULL
+     *  is a safe no-op — nothing plays, no error. NULL on BOTH targets
+     *  as of this PR (the sim has no speaker to simulate meaningfully
+     *  beyond logging; the esp32s3 tone generator is a separate, stacked
+     *  PR — this repo's `app_main.c` passes nothing yet, so the device
+     *  build links with a NULL hook exactly like every pre-existing one
+     *  did on its own first PR).
+     *
+     *  Called ONLY after the shell's own policy gate
+     *  (`ff_sound_should_play`, core/include/ff_sound.h) has already said
+     *  yes — see `ff_shell.c`'s `shell_sound` helper, the one place every
+     *  one of the five shell-driven events (FLARE_SENT, FLARE_INCOMING,
+     *  MESSAGE, RALLY, BATT_LOW) funnels through. The sixth event, TAP,
+     *  reaches this SAME hook via a different path — see
+     *  `ff_shell_should_tap_sound`/`ff_shell_sound_sink` below and
+     *  `app/include/ff_sound_emit.h`'s top comment for why. */
+    void (*play_sound)(void *user, ff_sound_event_t ev);
+    void *play_sound_user;
 
     /**
      * WHERE `fp_pack_t` LIVES — the decision S16 leaves to the
@@ -808,6 +830,45 @@ void ff_shell_intent(ff_shell_t *sh, ff_intent_t const *in);
  * convention as ff_wiring's mc_events_t-shaped handlers.
  */
 void ff_shell_intent_sink(void *user, ff_intent_t const *in);
+
+/**
+ * ff_shell_should_tap_sound — should a UI-tick sound (FF_SOUND_TAP) play
+ * right now? (docs/specs/S27-sounds.md, "Shell seam".)
+ *
+ * The one place BOTH of TAP's gates are composed: `ff_settings_t.
+ * ui_ticks` (the second, TAP-only setting `ff_sound_should_play` does not
+ * know about — see that function's own doc comment) AND the ordinary
+ * sounds_on/quiet-hours policy every other event goes through
+ * (`ff_sound_should_play(FF_SOUND_TAP, sounds_on, quiet_now)`). Lives
+ * here, not in a screen file, because only the shell holds settings AND
+ * the wall clock together — a screen cannot answer this question itself
+ * without including ff_shell.h, which would break the
+ * screens-never-see-core+meshclient+app layering (ff_intent.h's own top
+ * comment states the same rule for why screens build intents instead of
+ * deciding). `ff_shell_sound_sink` below is this function's one caller in
+ * this codebase; it is exposed publicly too so `test_shell.c` can assert
+ * the composed policy directly, independent of the emit-seam plumbing.
+ *
+ * False for a NULL `sh`.
+ */
+bool ff_shell_should_tap_sound(ff_shell_t const *sh);
+
+/**
+ * ff_shell_sound_sink — `ff_sound_emit_fn`-shaped adapter (app/include/
+ * ff_sound_emit.h): `user` must be the `ff_shell_t *`. A target binds
+ * this once at startup (`ff_sound_emit_bind(ff_shell_sound_sink, &shell)`),
+ * mirroring `ff_shell_intent_sink`'s bind exactly (same "callback-shaped
+ * wrapper, no unsafe function-pointer cast" convention).
+ *
+ * This seam carries only FF_SOUND_TAP today (see ff_sound_emit.h's top
+ * comment) — any other `ev` is a safe no-op here (defensive; nothing in
+ * this codebase emits one through this seam). Applies
+ * `ff_shell_should_tap_sound` and, if true, calls the shell's own
+ * injected `play_sound` hook (`ff_shell_cfg_t.play_sound`) — the SAME
+ * hook every other sound event calls, so the device HAL sees one uniform
+ * call site regardless of which of the six events fired it.
+ */
+void ff_shell_sound_sink(void *user, ff_sound_event_t ev);
 
 /**
  * ff_shell_home_press — S10 quick flare (docs/specs/S10-flare.md's

@@ -633,6 +633,16 @@ typedef struct {
      * the shell's view (not through a screen builder) to drive the
      * HARDWARE panel mirror (`ff_display_set_flip`) — see app_main.c. */
     bool     screen_flip;
+
+    /* [api] format v9 amendment (S27 sounds, docs/specs/S27-sounds.md) —
+     * mirrors ff_settings_t.sounds_on field-for-field. The Settings face
+     * renders it as the SOUNDS row's ON|OFF toggle. */
+    bool     sounds_on;
+
+    /* [api] format v9 amendment (S27 sounds) — mirrors
+     * ff_settings_t.ui_ticks field-for-field. The Settings face renders
+     * it as the UI TICKS row's ON|OFF toggle. */
+    bool     ui_ticks;
 } ff_app_settings_t;
 /* S21 removed ff_app_settings_t.page / FF_SETTINGS_PAGE_COUNT (#105's
  * pagination): the Settings face is now one scrolling list, so there is no
