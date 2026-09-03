@@ -256,7 +256,7 @@
  * controls_in_a_scroll_list` builds a scroll list containing a genuinely
  * too-wide row (pokes off the glass even normalized to the viewport), a
  * too-small row, and a too-close pair, and asserts the sweep flags each —
- * while `S21_sweep_scroll_aware_passes_an_offscreen_but_in_band_row`
+ * while `S21_AC2_sweep_scroll_aware_passes_an_offscreen_but_in_band_row`
  * proves a well-sized in-band row that is scrolled OFF the current viewport
  * (and so fails the old absolute check) now passes. Together they pin that
  * the relaxation is exactly "check it where it can be scrolled to", no
@@ -1089,7 +1089,7 @@ static void S24_AC7_sweep_exempts_floating_catcher_over_a_real_row(void)
  * but on-glass at every scroll position within the inscribed viewport. The
  * scroll-aware sweep must PASS it: this is the case #105 had to paginate
  * around, and the whole point of the relaxation. */
-static void S21_sweep_scroll_aware_passes_an_offscreen_but_in_band_row(void)
+static void S21_AC2_sweep_scroll_aware_passes_an_offscreen_but_in_band_row(void)
 {
     uint8_t *buf = sweep_test_display_up();
 
@@ -1109,7 +1109,7 @@ static void S21_sweep_scroll_aware_passes_an_offscreen_but_in_band_row(void)
 /* The relaxation must not neuter the sweep: each of the three checks still
  * bites on a genuinely bad control inside a scroll list. Rebuilds the list
  * between cases (lv_obj_clean) so each bad control is measured in isolation. */
-static void S21_sweep_still_catches_bad_controls_in_a_scroll_list(void)
+static void S21_AC2_sweep_still_catches_bad_controls_in_a_scroll_list(void)
 {
     uint8_t *buf = sweep_test_display_up();
 
@@ -1219,8 +1219,8 @@ int main(void)
     RUN_TEST(S17b_AC2_composite_control_detection);
     RUN_TEST(S24_AC7_inert_scroll_catcher_predicate);
     RUN_TEST(S24_AC7_sweep_exempts_floating_catcher_over_a_real_row);
-    RUN_TEST(S21_sweep_scroll_aware_passes_an_offscreen_but_in_band_row);
-    RUN_TEST(S21_sweep_still_catches_bad_controls_in_a_scroll_list);
+    RUN_TEST(S21_AC2_sweep_scroll_aware_passes_an_offscreen_but_in_band_row);
+    RUN_TEST(S21_AC2_sweep_still_catches_bad_controls_in_a_scroll_list);
     RUN_TEST(S24_AC7b_scroll_list_row_vs_outside_element);
 
     return UNITY_END();
