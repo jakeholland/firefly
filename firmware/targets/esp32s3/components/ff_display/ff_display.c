@@ -15,8 +15,20 @@
  * expander (EXIO2 / EXIO1). ff_display_expander_init() MUST run and pulse
  * those resets before ff_display_panel_init(), or the panel stays dark
  * with no error.
+ *
+ * This file holds the production HAL: expander/panel bring-up, first-light
+ * fill's OWN caller path, the boot splash, flip/mirror, backlight, LVGL
+ * start, and touch start + the touch-gate wrapper. Two bring-up-only
+ * debug surfaces (the STAGE-1 test pattern, the CONFIG_FF_GLASS_RULER
+ * diagnostic) live in ff_display_debug.c, and the S15d crosshair
+ * calibration flow lives in ff_display_cal.c — both siblings in this same
+ * component, sharing a handful of file-scope handles/state via the
+ * private ff_display_internal.h (see that header's own doc comment for
+ * the design). include/ff_display.h's public contract is unchanged by
+ * this split.
  */
 #include "ff_display.h"
+#include "ff_display_internal.h"
 
 #include <math.h> /* sqrtf — the boot splash's ray-unit-vector precompute, ff_display_draw_boot_splash */
 #include <string.h>
@@ -43,9 +55,10 @@
 
 static const char *TAG = "ff_display";
 
-/* ---- Panel geometry (round glass addressed as a square) --------------- */
-#define FF_LCD_H_RES 412
-#define FF_LCD_V_RES 412
+/* ---- Panel geometry (round glass addressed as a square) ---------------
+ * FF_LCD_H_RES / FF_LCD_V_RES now live in ff_display_internal.h, shared
+ * with ff_display_debug.c and ff_display_cal.c. FF_LCD_BITS_PER_PIXEL
+ * stays local here — only this file's panel/LVGL setup reads it. */
 #define FF_LCD_BITS_PER_PIXEL 16
 
 /* ---- Panel column/row offset (esp_lcd_panel_set_gap) ------------------
@@ -129,14 +142,19 @@ _Static_assert(FF_LCD_X_GAP % 4 == 0 && FF_LCD_Y_GAP % 4 == 0,
 #define FF_EXIO_TP_RST IO_EXPANDER_PIN_NUM_1
 #define FF_EXIO_LCD_RST IO_EXPANDER_PIN_NUM_2
 
-/* File-static handles, brought up in order by the functions below. */
+/* Handles, brought up in order by the functions below. Most are
+ * `static` — read/written only within this file, exactly as before this
+ * component was split. `ffd_panel`/`ffd_touch`/`ffd_lv_disp` are NOT
+ * `static`: ff_display_debug.c and/or ff_display_cal.c also read them
+ * (see ff_display_internal.h's own doc comment for why an extern
+ * declaration, not an accessor function). */
 static i2c_master_bus_handle_t s_i2c_bus;
 static esp_io_expander_handle_t s_io_exp;
 static esp_lcd_panel_io_handle_t s_panel_io;
-static esp_lcd_panel_handle_t s_panel;
-static esp_lcd_touch_handle_t s_touch;
+esp_lcd_panel_handle_t ffd_panel;
+esp_lcd_touch_handle_t ffd_touch;
 static lv_indev_t *s_touch_indev; /* the LVGL pointer indev the panel's touch drives (see ff_display_touch_indev) */
-static lv_display_t *s_lv_disp;
+lv_display_t *ffd_lv_disp;
 
 /* S26 wake-only-touch amendment (docs/specs/S26-device-lifecycle.md "(c)
  * Inactivity -> dim -> screen off", 2026-09-02): the shared idle FSM
@@ -265,20 +283,25 @@ esp_err_t ff_display_backlight_on(uint8_t pct)
  * the calibration capture itself) sees raw coords pass through. Read by
  * ff_touchcal_process_cb on every touch poll (LVGL port task); written by
  * ff_display_touch_set_cal. A torn read across the write is harmless — the
- * fields are independent floats and the next poll reads the settled value. */
-static ff_touchcal_t s_active_cal = {.ax = 1.0f, .bx = 0.0f, .ay = 1.0f, .by = 0.0f, .valid = false};
+ * fields are independent floats and the next poll reads the settled value.
+ * NOT `static` — ff_display_run_calibration (ff_display_cal.c) also resets
+ * this to identity before a capture; see ff_display_internal.h. */
+ff_touchcal_t ffd_active_cal = {.ax = 1.0f, .bx = 0.0f, .ay = 1.0f, .by = 0.0f, .valid = false};
 
 /* Active screen-flip flag (format v8 amendment). Written by
  * ff_display_set_flip, read by ff_touchcal_process_cb on every touch poll
- * — same "torn read is harmless" contract as s_active_cal above (a bool
+ * — same "torn read is harmless" contract as ffd_active_cal above (a bool
  * is written/read atomically on this target either way, and even a torn
- * read only ever produces one of the two valid values for one frame). */
-static bool s_screen_flip = false;
+ * read only ever produces one of the two valid values for one frame).
+ * NOT `static` — ff_cal_release_cb and ff_display_run_calibration (both
+ * ff_display_cal.c) also read this; see ff_display_internal.h. */
+bool ffd_screen_flip = false;
 
 /* Set only while ff_display_run_calibration's crosshair capture is live
- * (see that function). While true, ff_touchcal_process_cb captures TRUE
- * raw ticks — it still runs ff_touchcal_apply (identity, per "Capture
- * RAW" below) but SKIPS the screen_flip rotation step, and
+ * (see that function, ff_display_cal.c). While true, ff_touchcal_process_cb
+ * captures TRUE raw ticks — it still runs ff_touchcal_apply (identity, per
+ * that function's own "Capture RAW" comment) but SKIPS the screen_flip
+ * rotation step, and
  * ff_cal_release_cb records each target's screen_x/y already rotated to
  * match (`ff_touchcal_flip180` applied to the LOGICAL crosshair position
  * when screen_flip is on). This is not a cosmetic nicety: composing
@@ -294,8 +317,10 @@ static bool s_screen_flip = false;
  * independent characterization of the touch sensor's own error — exactly
  * the property that lets it "stay valid in both orientations" (no
  * re-calibration on a later flip toggle) regardless of which orientation
- * the puck happened to be in WHEN it was calibrated. */
-static volatile bool s_cal_capturing = false;
+ * the puck happened to be in WHEN it was calibrated. NOT `static` —
+ * ff_display_run_calibration (ff_display_cal.c) sets/clears this around
+ * a capture; see ff_display_internal.h. */
+volatile bool ffd_cal_capturing = false;
 
 /* =====================================================================
  * b1 step 1 — I2C bus + TCA9554 up, both resets released through it.
@@ -407,18 +432,18 @@ esp_err_t ff_display_panel_init(void)
         .flags = {.reset_active_high = 0},
         .vendor_config = &vendor_cfg,
     };
-    err = esp_lcd_new_panel_spd2010(s_panel_io, &panel_cfg, &s_panel);
+    err = esp_lcd_new_panel_spd2010(s_panel_io, &panel_cfg, &ffd_panel);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "esp_lcd_new_panel_spd2010 failed: %s", esp_err_to_name(err));
         return err;
     }
 
-    err = esp_lcd_panel_reset(s_panel);
+    err = esp_lcd_panel_reset(ffd_panel);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "esp_lcd_panel_reset failed: %s", esp_err_to_name(err));
         return err;
     }
-    err = esp_lcd_panel_init(s_panel);
+    err = esp_lcd_panel_init(ffd_panel);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "esp_lcd_panel_init failed: %s", esp_err_to_name(err));
         return err;
@@ -426,7 +451,7 @@ esp_err_t ff_display_panel_init(void)
     /* Column/row offset for the round 412x412 glass. Default 0,0 (both
      * official demos use no gap — see the FF_LCD_*_GAP note above); this is
      * the tuning knob for the faint right/bottom edge wrap, a no-op at 0. */
-    err = esp_lcd_panel_set_gap(s_panel, FF_LCD_X_GAP, FF_LCD_Y_GAP);
+    err = esp_lcd_panel_set_gap(ffd_panel, FF_LCD_X_GAP, FF_LCD_Y_GAP);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "esp_lcd_panel_set_gap failed: %s", esp_err_to_name(err));
         return err;
@@ -434,7 +459,7 @@ esp_err_t ff_display_panel_init(void)
     ESP_LOGI(TAG, "panel gap set (x=%d, y=%d)", FF_LCD_X_GAP, FF_LCD_Y_GAP);
 
     /* Native orientation: the demo sets no mirror/swap for this glass. */
-    err = esp_lcd_panel_disp_on_off(s_panel, true);
+    err = esp_lcd_panel_disp_on_off(ffd_panel, true);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "esp_lcd_panel_disp_on_off failed: %s", esp_err_to_name(err));
         return err;
@@ -522,11 +547,11 @@ esp_err_t ff_display_panel_init(void)
  */
 esp_err_t ff_display_set_flip(bool flip)
 {
-    if (s_panel == NULL) {
+    if (ffd_panel == NULL) {
         ESP_LOGE(TAG, "set_flip called before panel_init — no panel handle");
         return ESP_ERR_INVALID_STATE;
     }
-    esp_err_t const err = esp_lcd_panel_mirror(s_panel, flip, flip);
+    esp_err_t const err = esp_lcd_panel_mirror(ffd_panel, flip, flip);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "esp_lcd_panel_mirror failed: %s", esp_err_to_name(err));
         return err;
@@ -536,87 +561,8 @@ esp_err_t ff_display_set_flip(bool flip)
      * decision (this call is the one seam both derive from), so they
      * must never be settable independently — there is no path here that
      * updates the display without also updating touch. */
-    s_screen_flip = flip;
+    ffd_screen_flip = flip;
     ESP_LOGI(TAG, "panel mirror: %s", flip ? "FLIPPED (180 deg)" : "NORMAL");
-    return ESP_OK;
-}
-
-/* =====================================================================
- * b1 step 3 — first light: solid fill + two-colour split (no LVGL).
- *
- * SPD2010 takes RGB565 big-endian over the wire; ESP32 stores RGB565
- * little-endian, so each pixel is byte-swapped here (the demo does the
- * same with SPI_SWAP_DATA_TX). Whether the swap is CORRECT is exactly
- * what this stage proves: a swapped-wrong panel shows the wrong colours,
- * and the split's left/right halves prove orientation. draw_bitmap x
- * bounds stay full-width (0..412, both divisible by 4 — the SPD2010's
- * documented alignment rule); the colour boundary lives in the pixel
- * data, not the draw rectangle.
- * ===================================================================== */
-static inline uint16_t ff_rgb565_swap(uint16_t c)
-{
-    return (uint16_t)((c >> 8) | (c << 8));
-}
-
-esp_err_t ff_display_draw_test_pattern(void)
-{
-    if (s_panel == NULL) {
-        ESP_LOGE(TAG, "draw_test_pattern called before panel_init");
-        return ESP_ERR_INVALID_STATE;
-    }
-
-    /* Draw in horizontal bands from a small INTERNAL-DMA buffer. A full
-     * 412x412 frame (~331 KB) cannot be pushed in one draw_bitmap: sending
-     * that from PSRAM in a single SPI transaction returns ESP_ERR_NO_MEM
-     * (the SPI/esp_lcd layer can't get enough internal DMA for a transfer
-     * that large), and a full-frame INTERNAL buffer will not fit (~240 KB
-     * free). BAND_LINES divides 412 evenly (412 = 4*103) so every band is
-     * 4-line aligned on the y axis, matching the SPD2010's documented
-     * draw-alignment rule; the band buffer is a few KB of internal DMA RAM. */
-    enum { BAND_LINES = 4 };
-    const size_t band_px = (size_t)FF_LCD_H_RES * BAND_LINES;
-    uint16_t *band = heap_caps_malloc(band_px * sizeof(uint16_t), MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
-    if (band == NULL) {
-        ESP_LOGE(TAG, "test pattern: OOM allocating %u byte band buffer", (unsigned)(band_px * 2));
-        return ESP_ERR_NO_MEM;
-    }
-
-    /* Solid fill: amber (#FFC66B -> RGB565 0xFE2D). Every band is identical. */
-    const uint16_t amber = ff_rgb565_swap(0xFE2D);
-    for (size_t i = 0; i < band_px; i++) band[i] = amber;
-    for (int y = 0; y < FF_LCD_V_RES; y += BAND_LINES) {
-        esp_err_t err = esp_lcd_panel_draw_bitmap(s_panel, 0, y, FF_LCD_H_RES, y + BAND_LINES, band);
-        if (err != ESP_OK) {
-            ESP_LOGE(TAG, "solid-fill band y=%d draw_bitmap failed: %s", y, esp_err_to_name(err));
-            heap_caps_free(band);
-            return err;
-        }
-    }
-    ESP_LOGI(TAG, "first light: solid amber fill drawn (%d bands)", FF_LCD_V_RES / BAND_LINES);
-    vTaskDelay(pdMS_TO_TICKS(1500));
-
-    /* Two-colour split: left half green (#9BE07B->0x9F6F), right half red
-     * (#FF0000->0xF800). Boundary at x=206 lives in pixel data; every band
-     * is identical, so fill the band once and repeat it down the screen. */
-    const uint16_t green = ff_rgb565_swap(0x9F6F);
-    const uint16_t red = ff_rgb565_swap(0xF800);
-    for (int ly = 0; ly < BAND_LINES; ly++) {
-        uint16_t *row = band + (size_t)ly * FF_LCD_H_RES;
-        for (int x = 0; x < FF_LCD_H_RES; x++) {
-            row[x] = (x < FF_LCD_H_RES / 2) ? green : red;
-        }
-    }
-    for (int y = 0; y < FF_LCD_V_RES; y += BAND_LINES) {
-        esp_err_t err = esp_lcd_panel_draw_bitmap(s_panel, 0, y, FF_LCD_H_RES, y + BAND_LINES, band);
-        if (err != ESP_OK) {
-            ESP_LOGE(TAG, "split band y=%d draw_bitmap failed: %s", y, esp_err_to_name(err));
-            heap_caps_free(band);
-            return err;
-        }
-    }
-    ESP_LOGI(TAG, "first light: two-colour split drawn (left=green right=red)");
-
-    heap_caps_free(band);
     return ESP_OK;
 }
 
@@ -626,10 +572,11 @@ esp_err_t ff_display_draw_test_pattern(void)
  * core/include/ff_flare_mark.h) breathing once against the theme
  * background, drawn RAW (no LVGL) so it is the very first thing on
  * glass. Reuses the exact band-buffer / draw_bitmap / byte-swap shape
- * ff_display_draw_test_pattern established just above (small
- * INTERNAL-DMA band, 4-line-aligned, same ff_rgb565_swap helper) rather
- * than inventing a second draw path. See ff_display_draw_boot_splash's
- * doc comment (ff_display.h) for the rationale and constraints.
+ * ff_display_draw_test_pattern (ff_display_debug.c) established (small
+ * INTERNAL-DMA band, 4-line-aligned, same ff_rgb565_swap helper,
+ * ff_display_internal.h) rather than inventing a second draw path. See
+ * ff_display_draw_boot_splash's doc comment (ff_display.h) for the
+ * rationale and constraints.
  *
  * flare_ray_t / flare_mark_pixel_hit below are this file's own raw
  * rasterizer for the mark's geometry — there is no lv_line, no lv_obj,
@@ -710,7 +657,7 @@ static inline bool flare_mark_pixel_hit(float px, float py, flare_ray_t const ra
 
 esp_err_t ff_display_draw_boot_splash(void)
 {
-    if (s_panel == NULL) {
+    if (ffd_panel == NULL) {
         ESP_LOGE(TAG, "draw_boot_splash called before panel_init");
         return ESP_ERR_INVALID_STATE;
     }
@@ -732,11 +679,12 @@ esp_err_t ff_display_draw_boot_splash(void)
      * different, still-live reason than core/ (ff_display.h's header
      * comment now draws that line at "domain state", not "any header
      * at all" — see S26g's ff_flare_mark.h include just above, which IS
-     * a core/ header this file now uses). draw_test_pattern already
-     * establishes the same "value transcribed in a comment" convention
-     * for its own amber fill above. The amber accent itself (#FFC66B) is
-     * not a separate constant here — the per-step blend below reaches it
-     * exactly at its t=255 step (amber_r/g/b). */
+     * a core/ header this file now uses). ff_display_draw_test_pattern
+     * (ff_display_debug.c) already establishes the same "value
+     * transcribed in a comment" convention for its own amber fill. The
+     * amber accent itself (#FFC66B) is not a separate constant here — the
+     * per-step blend below reaches it exactly at its t=255 step
+     * (amber_r/g/b). */
     const uint16_t bg = ff_rgb565_swap(0x0842);
 
     /* ---- Pass 1: wipe the whole panel to the theme background ----
@@ -747,7 +695,7 @@ esp_err_t ff_display_draw_boot_splash(void)
     for (size_t i = 0; i < band_px; i++) band[i] = bg;
     bool logged_first_pixel = false;
     for (int y = 0; y < FF_LCD_V_RES; y += BAND_LINES) {
-        esp_err_t err = esp_lcd_panel_draw_bitmap(s_panel, 0, y, FF_LCD_H_RES, y + BAND_LINES, band);
+        esp_err_t err = esp_lcd_panel_draw_bitmap(ffd_panel, 0, y, FF_LCD_H_RES, y + BAND_LINES, band);
         if (err != ESP_OK) {
             ESP_LOGE(TAG, "boot splash: bg band y=%d draw_bitmap failed: %s", y, esp_err_to_name(err));
             heap_caps_free(band);
@@ -892,7 +840,7 @@ esp_err_t ff_display_draw_boot_splash(void)
             }
             raster_us += esp_timer_get_time() - raster_start_us;
 
-            esp_err_t err = esp_lcd_panel_draw_bitmap(s_panel, strip_left, y, strip_right, y + BAND_LINES, band);
+            esp_err_t err = esp_lcd_panel_draw_bitmap(ffd_panel, strip_left, y, strip_right, y + BAND_LINES, band);
             if (err != ESP_OK) {
                 ESP_LOGE(TAG, "boot splash: mark band y=%d draw_bitmap failed: %s", y, esp_err_to_name(err));
                 heap_caps_free(band);
@@ -913,299 +861,6 @@ esp_err_t ff_display_draw_boot_splash(void)
              (strip_bottom - strip_top), (int)N_STEPS);
     return ESP_OK;
 }
-
-#if CONFIG_FF_GLASS_RULER
-/* =====================================================================
- * Device-only diagnostic (CONFIG_FF_GLASS_RULER, default OFF) — the
- * "glass ruler" boot pattern. Measures the bezel/pixel-array offset
- * (docs/hardware/glass-offset.md) by eye: on the current build a
- * software-centered ring renders visibly off-center on the glass (the
- * left arc fully hidden under the bezel, a mirrored sliver reappearing at
- * the far right — a GRAM column-wrap, not a simple crop), so this pattern
- * gives the maintainer something to COUNT rather than eyeball a vague
- * "a few px" shift. Drawn RAW via esp_lcd_panel_draw_bitmap, the exact
- * same band-buffer/byte-swap shape ff_display_draw_test_pattern and
- * ff_display_draw_boot_splash above already establish — no new draw path.
- *
- * Compiled out entirely when CONFIG_FF_GLASS_RULER is off (the default):
- * this whole block, so a field/demo build is byte-identical either way.
- * ===================================================================== */
-
-/* Pre-swap RGB565 for the theme colors this pattern uses (see
- * ff_rgb565_swap above and ff_display_draw_boot_splash's comment on why
- * these are transcribed rather than included — ff_theme.h pulls in LVGL,
- * and this draws before LVGL exists). Computed as
- * ((r>>3)<<11)|((g>>2)<<5)|(b>>3) from the RGB888 hex named alongside
- * each — verified with a throwaway script, not hand-arithmetic, given a
- * wrong-but-plausible color here would be exactly the kind of "measuring
- * with a broken ruler" mistake this diagnostic exists to avoid. */
-#define FF_RULER_INK   0xF77C /* FF_THEME_COLOR_INK   0xF2EFE6 */
-#define FF_RULER_AMBER 0xFE2D /* FF_THEME_COLOR_AMBER 0xFFC66B — same value ff_display_draw_test_pattern's "amber" already uses */
-#define FF_RULER_MUTED 0x8C52 /* FF_THEME_COLOR_MUTED 0x8B8A97 */
-#define FF_RULER_PINK  0xFAF5 /* FF_THEME_CREW_PINK   0xFF5CA8 */
-#define FF_RULER_TEAL  0x4ED8 /* FF_THEME_CREW_TEAL   0x4FD8C4 */
-#define FF_RULER_BG    0x0842 /* FF_THEME_COLOR_BG    0x0B0B10 — same value ff_display_draw_boot_splash's "bg" already uses */
-
-/* Ruler tick geometry, shared by all four rulers via `d` = distance
- * inward from the panel's own edge (0, 2, 4, ... 40 — 21 positions). A
- * multiple of 10 is a MAJOR tick: 12px long, 2px wide (vs. the minor
- * ticks' 1px width) so every 10-px mark is unmistakable by eye without
- * needing numerals (the brief's "hard to draw raw" constraint). Non-major
- * ticks alternate short(4px)/long(8px) by (d/2)%2 — purely a visual
- * cadence so consecutive 2px ticks don't blur into one blob; only the
- * majors carry measurement meaning. */
-static inline int ff_ruler_tick_len(int d) {
-    if (d % 10 == 0) return 12;
-    return ((d / 2) % 2 == 0) ? 4 : 8;
-}
-static inline int ff_ruler_tick_w(int d) { return (d % 10 == 0) ? 2 : 1; }
-
-/* Per-pixel color for the glass-ruler pattern at (x,y). `row_x_left` /
- * `row_x_right` and `col_y_top` / `col_y_bot` are the r=205 outer
- * circle's precomputed intersections for THIS row and THIS column (see
- * ff_display_draw_glass_ruler's comment on why — no per-pixel sqrt over
- * ~170k pixels).
- *
- * Priority (first match wins), high to low:
- *  1. the four 45-degree corner squares
- *  2. the LEFT wrap-test stripe (x<12) — the PRIMARY dx read
- *  3. the TOP wrap-test stripe (y<12) — the PRIMARY dy-wrap read
- *  4. the outer r=205 circle
- *  5-8. the four rulers (LEFT=uniform pink; RIGHT/TOP/BOTTOM=ink+amber)
- *  9. the plain crosshair through (cx,cy) everywhere else
- *  10. theme background
- * Priority matters where regions overlap by construction (e.g. the LEFT
- * ruler's baseline runs through the LEFT stripe's x<12 columns too — the
- * stripe wins there, since it's the primary read this update introduced;
- * the ruler's own ticks from x=12 on are still a secondary cross-check). */
-static uint16_t ff_ruler_classify(int x, int y, int row_x_left, int row_x_right,
-                                   int col_y_top, int col_y_bot)
-{
-    const int cx = FF_LCD_H_RES / 2; /* 206 */
-    const int cy = FF_LCD_V_RES / 2; /* 206 */
-
-    /* 1. Four 6px filled corner squares at the r=205 circle's own
-     * 45-degree points: (cx +/- 145, cy +/- 145), where 145 =
-     * round(205 * cos 45deg) = round(205 * 0.70710678). A diagonal
-     * misalignment (rotation/scale, not a pure translation) shows up here
-     * even if the axis rulers alone wouldn't catch it. */
-    {
-        const int off = 145;
-        const int csx[2] = {cx - off, cx + off};
-        const int csy[2] = {cy - off, cy + off};
-        for (int i = 0; i < 2; i++) {
-            for (int j = 0; j < 2; j++) {
-                int const ax = csx[i] - 3;
-                int const ay = csy[j] - 3;
-                if (x >= ax && x < ax + 6 && y >= ay && y < ay + 6) {
-                    return FF_RULER_AMBER;
-                }
-            }
-        }
-    }
-
-    /* 2. LEFT wrap-test stripe: columns x=0..11, full height, alternating
-     * 1px ink/pink verticals. Whatever wraps around to the panel's RIGHT
-     * edge under the current (uncorrected) GRAM addressing counts BY EYE
-     * as "N striped columns visible at the right edge" = dx directly —
-     * see docs/hardware/glass-offset.md. Highest priority below the
-     * corners so the count is never occluded by anything else drawn. */
-    if (x < 12) {
-        return (x % 2 == 0) ? FF_RULER_INK : FF_RULER_PINK;
-    }
-
-    /* 3. TOP wrap-test stripe: rows y=0..11 (x already >= 12, claimed by
-     * #2 above), alternating 1px ink/teal horizontals — the same wrap
-     * check on the Y axis. A different color pair than the left stripe so
-     * the two blocks, and which axis wrapped, are never ambiguous. */
-    if (y < 12) {
-        return (y % 2 == 0) ? FF_RULER_INK : FF_RULER_TEAL;
-    }
-
-    /* 4. Outer circle, r=205 from (cx,cy) — the framebuffer's outermost
-     * circle at this center (206-205=1, i.e. it comes within 1px of the
-     * x=0/y=0 edges and touches x=411/y=411 exactly). 1px ring, muted. */
-    if (x == row_x_left || x == row_x_right || y == col_y_top || y == col_y_bot) {
-        return FF_RULER_MUTED;
-    }
-
-    /* 5. LEFT ruler: baseline row cy, x=0..40. Entirely crew-pink — both
-     * the baseline and every tick — a single color deliberately distinct
-     * from the ink/amber convention the other three rulers keep, so this
-     * one reads as "the ruler on the side that's wrapping" at a glance.
-     * Ticks are vertical marks (perpendicular to the horizontal baseline)
-     * centered on row cy, growing toward the panel center as x increases
-     * from the true edge (x=0). Kept as a cross-check against the stripe
-     * read above, not the primary measurement anymore. */
-    if (x <= 40) {
-        if (y == cy) {
-            return FF_RULER_PINK;
-        }
-        for (int d = 0; d <= 40; d += 2) {
-            int const w = ff_ruler_tick_w(d);
-            if (x < d || x >= d + w) continue;
-            int const half = ff_ruler_tick_len(d) / 2;
-            if (y >= cy - half && y < cy + half) {
-                return FF_RULER_PINK;
-            }
-        }
-    }
-
-    /* 6. RIGHT ruler: baseline row cy, x=371..411, ink + amber major
-     * ticks (unchanged convention) — the dx cross-check, and the place a
-     * maintainer confirms the mirrored/wrapped arc the bezel photo showed
-     * lines up with what the left stripe predicts. */
-    if (x >= 371) {
-        if (y == cy) {
-            return FF_RULER_INK;
-        }
-        for (int d = 0; d <= 40; d += 2) {
-            int const w = ff_ruler_tick_w(d);
-            int const x2 = 411 - d;
-            int const x1 = x2 - (w - 1);
-            if (x < x1 || x > x2) continue;
-            int const half = ff_ruler_tick_len(d) / 2;
-            if (y >= cy - half && y < cy + half) {
-                return (d % 10 == 0) ? FF_RULER_AMBER : FF_RULER_INK;
-            }
-        }
-    }
-
-    /* 7. TOP ruler: baseline col cx, y=0..40 (y<12 already claimed by the
-     * top stripe, #3), ink + amber major ticks — the dy cross-check. */
-    if (y <= 40) {
-        if (x == cx) {
-            return FF_RULER_INK;
-        }
-        for (int d = 0; d <= 40; d += 2) {
-            int const w = ff_ruler_tick_w(d);
-            if (y < d || y >= d + w) continue;
-            int const half = ff_ruler_tick_len(d) / 2;
-            if (x >= cx - half && x < cx + half) {
-                return (d % 10 == 0) ? FF_RULER_AMBER : FF_RULER_INK;
-            }
-        }
-    }
-
-    /* 8. BOTTOM ruler: baseline col cx, y=371..411, ink + amber major
-     * ticks — confirms nothing wraps on this edge either (no stripe block
-     * here; a clean plain ruler is itself the "nothing wrapped" signal). */
-    if (y >= 371) {
-        if (x == cx) {
-            return FF_RULER_INK;
-        }
-        for (int d = 0; d <= 40; d += 2) {
-            int const w = ff_ruler_tick_w(d);
-            int const y2 = 411 - d;
-            int const y1 = y2 - (w - 1);
-            if (y < y1 || y > y2) continue;
-            int const half = ff_ruler_tick_len(d) / 2;
-            if (x >= cx - half && x < cx + half) {
-                return (d % 10 == 0) ? FF_RULER_AMBER : FF_RULER_INK;
-            }
-        }
-    }
-
-    /* 9. Plain crosshair through pixel center (cx,cy), everywhere the
-     * rulers above don't already claim (the long straight middle span). */
-    if (x == cx || y == cy) {
-        return FF_RULER_MUTED;
-    }
-
-    /* 10. Theme background, everywhere else. */
-    return FF_RULER_BG;
-}
-
-esp_err_t ff_display_draw_glass_ruler(void)
-{
-    if (s_panel == NULL) {
-        ESP_LOGE(TAG, "draw_glass_ruler called before panel_init");
-        return ESP_ERR_INVALID_STATE;
-    }
-
-    const int cx = FF_LCD_H_RES / 2; /* 206 */
-    const int cy = FF_LCD_V_RES / 2; /* 206 */
-    enum { RULER_R = 205 };
-
-    /* Outer-circle hit test, gap-free WITHOUT a per-pixel sqrt: precompute
-     * the r=205 ring's row-wise (x at each y) AND column-wise (y at each
-     * x) intersections ONCE — 412+412 sqrtf calls total, not one per each
-     * of the ~170k pixels below. The union of a row-complete and a
-     * column-complete sampling of a circle has no gaps at any angle (each
-     * axis's own sampling is sparsest exactly where the OTHER axis's is
-     * densest) — same "no float cost in the per-pixel hot loop"
-     * discipline PR #146 established for the boot splash's ray
-     * rasterizer above (ff_display_draw_boot_splash's doc comment).
-     * Heap, not stack: ~1.6KB apiece, freed before return, matching this
-     * file's "transient, never a static/.bss allocation" convention for
-     * these raw-draw helpers. */
-    int *col_y_top = heap_caps_malloc((size_t)FF_LCD_H_RES * sizeof(int), MALLOC_CAP_INTERNAL);
-    int *col_y_bot = heap_caps_malloc((size_t)FF_LCD_H_RES * sizeof(int), MALLOC_CAP_INTERNAL);
-    if (col_y_top == NULL || col_y_bot == NULL) {
-        ESP_LOGE(TAG, "glass ruler: OOM allocating circle column tables");
-        heap_caps_free(col_y_top);
-        heap_caps_free(col_y_bot);
-        return ESP_ERR_NO_MEM;
-    }
-    for (int x = 0; x < FF_LCD_H_RES; x++) {
-        int const ddx = x - cx;
-        if (ddx * ddx > RULER_R * RULER_R) {
-            col_y_top[x] = -1;
-            col_y_bot[x] = -1;
-            continue;
-        }
-        int const dy = (int)(sqrtf((float)(RULER_R * RULER_R - ddx * ddx)) + 0.5f);
-        col_y_top[x] = cy - dy;
-        col_y_bot[x] = cy + dy;
-    }
-
-    enum { BAND_LINES = 4 };
-    const size_t band_px = (size_t)FF_LCD_H_RES * BAND_LINES;
-    uint16_t *band = heap_caps_malloc(band_px * sizeof(uint16_t), MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
-    if (band == NULL) {
-        ESP_LOGE(TAG, "glass ruler: OOM allocating %u byte band buffer", (unsigned)(band_px * 2));
-        heap_caps_free(col_y_top);
-        heap_caps_free(col_y_bot);
-        return ESP_ERR_NO_MEM;
-    }
-
-    for (int y0 = 0; y0 < FF_LCD_V_RES; y0 += BAND_LINES) {
-        for (int ly = 0; ly < BAND_LINES; ly++) {
-            int const y = y0 + ly;
-            int row_x_left = -1, row_x_right = -1;
-            int const ddy = y - cy;
-            if (ddy * ddy <= RULER_R * RULER_R) {
-                int const dx = (int)(sqrtf((float)(RULER_R * RULER_R - ddy * ddy)) + 0.5f);
-                row_x_left = cx - dx;
-                row_x_right = cx + dx;
-            }
-            uint16_t *row = band + (size_t)ly * FF_LCD_H_RES;
-            for (int x = 0; x < FF_LCD_H_RES; x++) {
-                uint16_t const raw = ff_ruler_classify(x, y, row_x_left, row_x_right,
-                                                        col_y_top[x], col_y_bot[x]);
-                row[x] = ff_rgb565_swap(raw);
-            }
-        }
-        esp_err_t err = esp_lcd_panel_draw_bitmap(s_panel, 0, y0, FF_LCD_H_RES, y0 + BAND_LINES, band);
-        if (err != ESP_OK) {
-            ESP_LOGE(TAG, "glass ruler: band y=%d draw_bitmap failed: %s", y0, esp_err_to_name(err));
-            heap_caps_free(band);
-            heap_caps_free(col_y_top);
-            heap_caps_free(col_y_bot);
-            return err;
-        }
-    }
-
-    heap_caps_free(band);
-    heap_caps_free(col_y_top);
-    heap_caps_free(col_y_bot);
-    ESP_LOGI(TAG, "glass ruler drawn: crosshair + r=%d ring + 4 rulers (2px ticks to 40px) "
-                  "+ 45deg corner squares + left/top dx/dy wrap-probe stripes — see "
-                  "docs/hardware/glass-offset.md to read it",
-             (int)RULER_R);
-    return ESP_OK;
-}
-#endif /* CONFIG_FF_GLASS_RULER */
 
 /* The SPD2010 addresses its GRAM in 4-px-aligned windows on BOTH axes: our
  * strip flushes are full-width (x 0..411) and 4-line tall, so they always land
@@ -1229,7 +884,7 @@ static void ff_display_invalidate_align_cb(lv_event_t *e)
  * ===================================================================== */
 lv_display_t *ff_display_lvgl_start(void)
 {
-    if (s_panel == NULL || s_panel_io == NULL) {
+    if (ffd_panel == NULL || s_panel_io == NULL) {
         ESP_LOGE(TAG, "lvgl_start called before panel_init");
         return NULL;
     }
@@ -1272,7 +927,7 @@ lv_display_t *ff_display_lvgl_start(void)
 #endif
     const lvgl_port_display_cfg_t disp_cfg = {
         .io_handle = s_panel_io,
-        .panel_handle = s_panel,
+        .panel_handle = ffd_panel,
         .buffer_size = (uint32_t)FF_LCD_H_RES * FF_LVGL_STRIP_LINES,
         .double_buffer = true,
         .hres = FF_LCD_H_RES,
@@ -1288,19 +943,19 @@ lv_display_t *ff_display_lvgl_start(void)
          * would risk the hardware-verified strip-flush/orientation, so we
          * leave it per S15b FIX 3's "leave it if silencing risks orientation".
          *
-         * mirror_x/mirror_y MUST follow s_screen_flip, not be hard-coded
+         * mirror_x/mirror_y MUST follow ffd_screen_flip, not be hard-coded
          * false: the same add_disp-time rotation update that issues the
          * swap_xy call above also issues esp_lcd_panel_mirror(panel,
          * cfg.mirror_x, cfg.mirror_y). With false/false here, a boot on a
          * screen_flip=true settings blob went: app_main applies the panel
          * mirror (ff_display_set_flip, before LVGL) -> this call silently
-         * un-mirrors the panel -> s_screen_flip stays true, so TOUCH kept
+         * un-mirrors the panel -> ffd_screen_flip stays true, so TOUCH kept
          * rotating while the DISPLAY sat upright. The runtime toggle path
          * never hit it (LVGL already up), which is why it only showed after
          * a re-flash/reboot with flip persisted. Seeding the port with the
          * live flag keeps the panel's MADCTL and the touch rotation derived
          * from the ONE seam ff_display_set_flip's comment promises. */
-        .rotation = {.swap_xy = false, .mirror_x = s_screen_flip, .mirror_y = s_screen_flip},
+        .rotation = {.swap_xy = false, .mirror_x = ffd_screen_flip, .mirror_y = ffd_screen_flip},
         .color_format = LV_COLOR_FORMAT_RGB565,
         .flags = {
             .buff_dma = true,
@@ -1309,16 +964,16 @@ lv_display_t *ff_display_lvgl_start(void)
             .full_refresh = false,
         },
     };
-    s_lv_disp = lvgl_port_add_disp(&disp_cfg);
-    if (s_lv_disp == NULL) {
+    ffd_lv_disp = lvgl_port_add_disp(&disp_cfg);
+    if (ffd_lv_disp == NULL) {
         ESP_LOGE(TAG, "lvgl_port_add_disp failed");
         return NULL;
     }
-    lv_display_add_event_cb(s_lv_disp, ff_display_invalidate_align_cb,
+    lv_display_add_event_cb(ffd_lv_disp, ff_display_invalidate_align_cb,
                             LV_EVENT_INVALIDATE_AREA, NULL);
     ESP_LOGI(TAG, "lv_display added (%dx%d RGB565, %d-line full-width strips, internal DMA)",
              FF_LCD_H_RES, FF_LCD_V_RES, FF_LVGL_STRIP_LINES);
-    return s_lv_disp;
+    return ffd_lv_disp;
 }
 
 /* =====================================================================
@@ -1332,7 +987,7 @@ static void ff_touch_press_log_cb(lv_event_t *e)
     /* Post-calibration coords: this is what LVGL and the shell act on. When
      * uncalibrated (identity), it equals the raw controller report. */
     ESP_LOGI(TAG, "touch @ (%d, %d) [%s]", (int)p.x, (int)p.y,
-             s_active_cal.valid ? "calibrated" : "raw, uncalibrated");
+             ffd_active_cal.valid ? "calibrated" : "raw, uncalibrated");
 }
 
 /* process_coordinates: the ONE seam every physical touch passes through
@@ -1343,7 +998,7 @@ static void ff_touch_press_log_cb(lv_event_t *e)
  *
  * format v8 amendment: the screen-flip 180-degree rotation is applied
  * AFTER calibration, as its own separate step — never folded into
- * `s_active_cal` itself. The calibration fit corrects the panel's OWN
+ * `ffd_active_cal` itself. The calibration fit corrects the panel's OWN
  * raw-to-screen error (a per-unit hardware quirk, measured against
  * un-mirrored controller output); the case orientation is a SEPARATE,
  * independently-toggled fact that doesn't change what the controller
@@ -1363,14 +1018,14 @@ static void ff_touchcal_process_cb(esp_lcd_touch_handle_t tp, uint16_t *x, uint1
     }
     for (uint8_t i = 0; i < *point_num; i++) {
         int sx, sy;
-        ff_touchcal_apply(&s_active_cal, (int)x[i], (int)y[i], &sx, &sy);
+        ff_touchcal_apply(&ffd_active_cal, (int)x[i], (int)y[i], &sx, &sy);
         /* Skip the rotation while a calibration crosshair capture is in
-         * progress (s_cal_capturing) — see that flag's own doc comment
+         * progress (ffd_cal_capturing) — see that flag's own doc comment
          * for why: it must record TRUE raw-ticks-through-apply() only, so
          * the solved transform stays a pure, orientation-independent
          * sensor characterization that composes correctly with THIS same
          * flip step on every later live touch, in either orientation. */
-        if (s_screen_flip && !s_cal_capturing) {
+        if (ffd_screen_flip && !ffd_cal_capturing) {
             ff_touchcal_flip180(sx, sy, FF_LCD_H_RES, FF_LCD_V_RES, &sx, &sy);
         }
         x[i] = (uint16_t)sx;
@@ -1437,11 +1092,11 @@ static void ff_touch_gate_read_cb(lv_indev_t *indev, lv_indev_data_t *data)
 void ff_display_touch_set_cal(const ff_touchcal_t *c)
 {
     if (c == NULL || !c->valid) {
-        ff_touchcal_identity(&s_active_cal);
+        ff_touchcal_identity(&ffd_active_cal);
         ESP_LOGI(TAG, "touch cal: identity (uncalibrated — raw passes through)");
         return;
     }
-    s_active_cal = *c;
+    ffd_active_cal = *c;
     ESP_LOGI(TAG, "touch cal active: sx=%.4f*rawx%+.2f  sy=%.4f*rawy%+.2f", (double)c->ax,
              (double)c->bx, (double)c->ay, (double)c->by);
 }
@@ -1489,7 +1144,7 @@ esp_err_t ff_display_touch_start(lv_display_t *disp)
          * esp_lvgl_port reads through. Identity until a cal is installed. */
         .process_coordinates = ff_touchcal_process_cb,
     };
-    err = esp_lcd_touch_new_i2c_spd2010(tp_io, &tp_cfg, &s_touch);
+    err = esp_lcd_touch_new_i2c_spd2010(tp_io, &tp_cfg, &ffd_touch);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "esp_lcd_touch_new_i2c_spd2010 failed: %s", esp_err_to_name(err));
         return err;
@@ -1502,7 +1157,7 @@ esp_err_t ff_display_touch_start(lv_display_t *disp)
      * pointer indev (targets/sim/ctl_loop.c) drives. No second path. */
     const lvgl_port_touch_cfg_t touch_cfg = {
         .disp = disp,
-        .handle = s_touch,
+        .handle = ffd_touch,
     };
     lv_indev_t *indev = lvgl_port_add_touch(&touch_cfg);
     if (indev == NULL) {
@@ -1547,202 +1202,6 @@ bool ff_display_touch_is_down(void)
      * separate NULL check is redundant but kept for clarity/symmetry
      * with `s_touch_indev`'s other use in this file. */
     return s_touch_indev != NULL && s_touch_raw_down;
-}
-
-/* =====================================================================
- * S15 slice d — crosshair capture calibration flow.
- *
- * Five targets (screen space): center first, then the four insets — all
- * comfortably inside the round glass, giving 3 distinct x and 3 distinct y
- * for a well-conditioned per-axis fit (docs/specs/S15d). One raw tap is
- * captured per target on a full press+release (debounce), then the pairs
- * feed ff_touchcal_solve. The capture runs with the active cal at identity
- * so the taps recorded are raw; the caller installs the solved transform.
- * ===================================================================== */
-enum { FF_CAL_TARGET_COUNT = 5 };
-static const int s_cal_tx[FF_CAL_TARGET_COUNT] = {206, 90, 322, 90, 322};
-static const int s_cal_ty[FF_CAL_TARGET_COUNT] = {206, 90, 90, 322, 322};
-
-static struct {
-    volatile int captured; /* number of targets captured so far          */
-    volatile bool done;    /* set true once all FF_CAL_TARGET_COUNT taken */
-    ff_cal_point_t pts[FF_CAL_TARGET_COUNT];
-    lv_obj_t *label;
-    lv_obj_t *ring;
-    lv_obj_t *bar_h;
-    lv_obj_t *bar_v;
-    lv_obj_t *dot;
-} s_cal;
-
-/* Move the crosshair to target `idx` and update the progress text. Runs
- * under the LVGL lock (from the setup path or the LVGL-task event cb). */
-static void ff_cal_place_crosshair(int idx)
-{
-    int tx = s_cal_tx[idx];
-    int ty = s_cal_ty[idx];
-    lv_obj_set_pos(s_cal.ring, tx - 20, ty - 20);
-    lv_obj_set_pos(s_cal.bar_h, tx - 20, ty - 1);
-    lv_obj_set_pos(s_cal.bar_v, tx - 1, ty - 20);
-    lv_obj_set_pos(s_cal.dot, tx - 3, ty - 3);
-    lv_label_set_text_fmt(s_cal.label, "Tap the target\n%d / %d", idx + 1, FF_CAL_TARGET_COUNT);
-}
-
-/* One capture per target, on release (a deliberate, completed tap). */
-static void ff_cal_release_cb(lv_event_t *e)
-{
-    if (s_cal.done) {
-        return;
-    }
-    int idx = s_cal.captured;
-    if (idx >= FF_CAL_TARGET_COUNT) {
-        return;
-    }
-    lv_indev_t *indev = lv_event_get_indev(e);
-    lv_point_t p;
-    lv_indev_get_point(indev, &p);
-
-    s_cal.pts[idx].raw_x = (int)p.x;
-    s_cal.pts[idx].raw_y = (int)p.y;
-    /* format v8 amendment: the crosshair is placed at the LOGICAL
-     * framebuffer position (s_cal_tx/ty) — under a HARDWARE mirror
-     * (screen_flip), it physically APPEARS at that position's 180-degree
-     * rotation, which is where the raw ticks captured above (flip
-     * deliberately skipped during capture — see s_cal_capturing's doc
-     * comment) actually measure. Record the PHYSICAL position as the fit
-     * target, not the logical one, so the solved transform is a pure
-     * sensor characterization — see s_cal_capturing's doc comment for the
-     * full reasoning. A no-op rotation when screen_flip is off. */
-    if (s_screen_flip) {
-        ff_touchcal_flip180(s_cal_tx[idx], s_cal_ty[idx], FF_LCD_H_RES, FF_LCD_V_RES, &s_cal.pts[idx].screen_x,
-                             &s_cal.pts[idx].screen_y);
-    } else {
-        s_cal.pts[idx].screen_x = s_cal_tx[idx];
-        s_cal.pts[idx].screen_y = s_cal_ty[idx];
-    }
-    ESP_LOGI(TAG, "cal capture %d/%d: raw (%d,%d) -> target (%d,%d) [logical (%d,%d)%s]", idx + 1,
-             FF_CAL_TARGET_COUNT, (int)p.x, (int)p.y, s_cal.pts[idx].screen_x, s_cal.pts[idx].screen_y,
-             s_cal_tx[idx], s_cal_ty[idx], s_screen_flip ? ", screen_flip on" : "");
-
-    s_cal.captured = idx + 1;
-    if (s_cal.captured >= FF_CAL_TARGET_COUNT) {
-        lv_label_set_text(s_cal.label, "Calibrating...");
-        s_cal.done = true; /* published last, after pts[] is written */
-    } else {
-        ff_cal_place_crosshair(s_cal.captured);
-    }
-}
-
-static lv_obj_t *ff_cal_make_bar(lv_obj_t *parent, int w, int h, lv_color_t col)
-{
-    lv_obj_t *o = lv_obj_create(parent);
-    lv_obj_remove_style_all(o);
-    lv_obj_set_size(o, w, h);
-    lv_obj_set_style_bg_color(o, col, 0);
-    lv_obj_set_style_bg_opa(o, LV_OPA_COVER, 0);
-    lv_obj_remove_flag(o, LV_OBJ_FLAG_CLICKABLE); /* clicks pass to root */
-    return o;
-}
-
-esp_err_t ff_display_run_calibration(ff_touchcal_t *out_cal)
-{
-    if (out_cal == NULL) {
-        return ESP_ERR_INVALID_ARG;
-    }
-    ff_touchcal_identity(out_cal);
-
-    if (s_lv_disp == NULL || s_touch == NULL) {
-        ESP_LOGE(TAG, "run_calibration needs lvgl_start + touch_start first");
-        return ESP_ERR_INVALID_STATE;
-    }
-
-    /* Capture RAW: the active transform must be identity while we record,
-     * AND (format v8 amendment) the screen-flip rotation step must be
-     * skipped too — see s_cal_capturing's own doc comment for why. */
-    ff_touchcal_identity(&s_active_cal);
-    s_cal_capturing = true;
-    memset(&s_cal, 0, sizeof(s_cal));
-
-    const lv_color_t accent = lv_color_hex(0xFFC66B); /* Firefly amber */
-
-    if (!ff_display_lock(1000)) {
-        ESP_LOGE(TAG, "run_calibration: LVGL lock timeout");
-        return ESP_ERR_TIMEOUT;
-    }
-    lv_obj_t *scr = lv_screen_active();
-    lv_obj_clean(scr);
-
-    /* Full-screen black backdrop that catches every tap. */
-    lv_obj_t *root = lv_obj_create(scr);
-    lv_obj_remove_style_all(root);
-    lv_obj_set_size(root, LV_PCT(100), LV_PCT(100));
-    lv_obj_set_style_bg_color(root, lv_color_black(), 0);
-    lv_obj_set_style_bg_opa(root, LV_OPA_COVER, 0);
-    lv_obj_add_flag(root, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_remove_flag(root, LV_OBJ_FLAG_SCROLLABLE);
-
-    s_cal.label = lv_label_create(root);
-    lv_obj_set_style_text_color(s_cal.label, lv_color_white(), 0);
-    lv_obj_set_style_text_align(s_cal.label, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_align(s_cal.label, LV_ALIGN_TOP_MID, 0, 96);
-    lv_obj_remove_flag(s_cal.label, LV_OBJ_FLAG_CLICKABLE);
-
-    /* Crosshair: an open ring + a thin cross + a centre dot, all in accent
-     * and all click-through so the tap always reaches `root`. */
-    s_cal.ring = lv_obj_create(root);
-    lv_obj_remove_style_all(s_cal.ring);
-    lv_obj_set_size(s_cal.ring, 40, 40);
-    lv_obj_set_style_radius(s_cal.ring, LV_RADIUS_CIRCLE, 0);
-    lv_obj_set_style_border_width(s_cal.ring, 3, 0);
-    lv_obj_set_style_border_color(s_cal.ring, accent, 0);
-    lv_obj_set_style_bg_opa(s_cal.ring, LV_OPA_TRANSP, 0);
-    lv_obj_remove_flag(s_cal.ring, LV_OBJ_FLAG_CLICKABLE);
-
-    s_cal.bar_h = ff_cal_make_bar(root, 40, 2, accent);
-    s_cal.bar_v = ff_cal_make_bar(root, 2, 40, accent);
-    s_cal.dot = ff_cal_make_bar(root, 6, 6, accent);
-    lv_obj_set_style_radius(s_cal.dot, LV_RADIUS_CIRCLE, 0);
-
-    lv_obj_add_event_cb(root, ff_cal_release_cb, LV_EVENT_RELEASED, NULL);
-    ff_cal_place_crosshair(0);
-    ff_display_unlock();
-
-    ESP_LOGI(TAG, "S15d calibration started: tap each of %d crosshairs on the glass",
-             FF_CAL_TARGET_COUNT);
-
-    /* Block this task until the LVGL-task event cb has captured all five. */
-    while (!s_cal.done) {
-        vTaskDelay(pdMS_TO_TICKS(20));
-    }
-
-    s_cal_capturing = false; /* every point is captured; live touch handling resumes normally */
-
-    bool ok = ff_touchcal_solve(s_cal.pts, FF_CAL_TARGET_COUNT, out_cal);
-
-    ESP_LOGI(TAG, "=== S15d touch calibration result ===");
-    for (int i = 0; i < FF_CAL_TARGET_COUNT; i++) {
-        ESP_LOGI(TAG, "  pair %d/%d: raw (%d,%d) -> screen (%d,%d)", i + 1, FF_CAL_TARGET_COUNT,
-                 s_cal.pts[i].raw_x, s_cal.pts[i].raw_y, s_cal.pts[i].screen_x, s_cal.pts[i].screen_y);
-    }
-    if (ok) {
-        ESP_LOGI(TAG, "  params: ax=%.6f bx=%.4f ay=%.6f by=%.4f", (double)out_cal->ax,
-                 (double)out_cal->bx, (double)out_cal->ay, (double)out_cal->by);
-        ESP_LOGI(TAG, "  transform: sx = %.6f*rawx %+.4f   sy = %.6f*rawy %+.4f", (double)out_cal->ax,
-                 (double)out_cal->bx, (double)out_cal->ay, (double)out_cal->by);
-    } else {
-        ESP_LOGE(TAG, "  DEGENERATE capture (no x- or y-spread) — identity kept, no correction. "
-                      "Re-run calibration and tap the distinct targets.");
-    }
-    ESP_LOGI(TAG, "=====================================");
-
-    /* Tear the calibration screen down; the caller rebuilds the real face. */
-    if (ff_display_lock(1000)) {
-        lv_obj_clean(lv_screen_active());
-        ff_display_unlock();
-    }
-    /* Drop the now-dangling object pointers (screen was cleaned). */
-    memset(&s_cal, 0, sizeof(s_cal));
-
-    return ESP_OK;
 }
 
 /* ---- LVGL task lock (esp_lvgl_port runs LVGL in its own task) --------- */
