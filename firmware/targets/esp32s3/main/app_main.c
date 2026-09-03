@@ -402,9 +402,10 @@ static ff_idle_t s_idle;
  * decision in this file (idle DIM/OFF at 15s/30s, the light-sleep timer
  * wake above at 1.5s) — a battery's charge state simply does not move
  * fast enough to need reading more often than this, and
- * ff_batt_filter_t's own moving-median (core/include/ff_batt.h) already
- * assumes a "battery-read tick", not a per-frame sample, as its unit of
- * time (its stale-gap reset is 30s, fifteen ticks at this period). */
+ * ff_batt_filter_t's own moving-average + Schmitt-hysteresis filter
+ * (core/include/ff_batt.h) already assumes a "battery-read tick", not
+ * a per-frame sample, as its unit of time (its stale-gap reset is 30s,
+ * fifteen ticks at this period). */
 #define FF_BATT_SAMPLE_PERIOD_MS ((uint32_t)2000u)
 
 /* Human-readable wake cause, for the on-glass log line the spec's AC1
@@ -739,8 +740,16 @@ void app_main(void)
      * rather than showing "--%" for up to FF_BATT_SAMPLE_PERIOD_MS
      * before the render loop's own periodic sample below gets to it.
      * ff_shell_set_batt_mv accepts 0 (unknown) the same as any other
-     * reading — no branch needed here for the init-failed case. */
-    ff_shell_set_batt_mv(&s_shell, ff_power_batt_mv());
+     * reading — no branch needed here for the init-failed case.
+     * `ff_bringup_now_ms()` (the demo clock under CONFIG_FF_DEMO_MODE,
+     * real esp_timer time otherwise) is the SAME "now" source every
+     * other bring-up call in this function already uses, including the
+     * boot's first `ff_shell_tick(&s_shell, ff_bringup_now_ms())` call
+     * further down — S25c review round: `ff_shell_set_batt_mv` now
+     * takes the caller's `now_ms` explicitly rather than reading a
+     * cached shell clock, so the filter's stale-gap timing agrees with
+     * the rest of boot. */
+    ff_shell_set_batt_mv(&s_shell, ff_power_batt_mv(), ff_bringup_now_ms());
 
 #if CONFIG_FF_DEMO_MODE
     {
@@ -1193,7 +1202,7 @@ void app_main(void)
          * this codebase uses (ff_idle, ff_power_fsm, ...). */
         if (ff_time_reached(now_ms, last_batt_sample_ms + FF_BATT_SAMPLE_PERIOD_MS)) {
             last_batt_sample_ms = now_ms;
-            ff_shell_set_batt_mv(&s_shell, ff_power_batt_mv());
+            ff_shell_set_batt_mv(&s_shell, ff_power_batt_mv(), now_ms);
         }
 
         /* S26 slice c — the idle decision itself: ticked every frame

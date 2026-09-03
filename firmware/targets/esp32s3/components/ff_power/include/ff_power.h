@@ -146,8 +146,9 @@ esp_err_t ff_power_batt_init(void);
  *
  * Averages `FF_BATT_ADC_SAMPLES` raw `adc_oneshot_read` calls (see
  * ff_power.c) before calibrating — cuts sample-to-sample ADC noise
- * before it ever reaches `ff_batt_filter_t`'s own moving-median (that
- * filter's job is smoothing across TICKS/load transients, not
+ * before it ever reaches `ff_batt_filter_t`'s own moving-average +
+ * Schmitt-hysteresis filter (that filter's job is smoothing across
+ * TICKS/load transients, not
  * suppressing single-conversion quantization noise within one tick).
  *
  * ## The conversion arithmetic

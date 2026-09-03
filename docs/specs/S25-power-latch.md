@@ -329,9 +329,9 @@ matching the other `targets/esp32s3` HAL code (`ff_display`), is:
     constant needs re-deriving for this specific board rather than
     trusted from Waveshare's own measurement.
   - **(c)** Unplug USB (battery only) and watch the percent hold steady
-    (no flicker) for at least a minute — the moving-median + hysteresis
-    filter (PR #180) doing its job against real load noise (radio TX,
-    backlight PWM, LVGL redraw).
+    (no flicker) for at least a minute — the moving-average +
+    Schmitt-hysteresis filter (PR #180) doing its job against real load
+    noise (radio TX, backlight PWM, LVGL redraw).
   - **(d)** A reading at or under `FF_BATT_LOW_PCT` (15%) shows the amber
     low-battery tint on both Radar's status bar and the launcher's status
     row. May be verified either by draining a real pack to that range, or
