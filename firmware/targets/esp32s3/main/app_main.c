@@ -1093,11 +1093,14 @@ void app_main(void)
         }
 
         /* S26 slice e — the BOOT-as-home-button debounce, same "tick every
-         * frame, forward the decision as an intent" placement as the PWR
-         * FSM above: ff_button_tick debounces GPIO0 and fires true exactly
-         * once per physical press; this file only forwards that as
-         * FF_INTENT_HOME. `ff_route_home` (app/include/ff_route.h) owns
-         * the whole nav decision — no `if` about behavior here.
+         * frame, forward the decision" placement as the PWR FSM above:
+         * ff_button_tick debounces GPIO0 and fires true exactly once per
+         * physical press; this file only forwards that edge (and the
+         * gate's own delivery verdict) to `ff_shell_home_press`
+         * (app/include/ff_shell.h), which owns the whole nav decision
+         * (`ff_route_home`) AND, as of S10 quick flare, the "5 presses in
+         * a row" decision (`ff_multitap`) — no `if` about behavior here
+         * either way.
          *
          * S26 wake-only-touch amendment (2026-09-02 maintainer decision):
          * `ff_idle_touch_gate` is consulted EVERY frame with the RAW level
@@ -1110,15 +1113,18 @@ void app_main(void)
          * to judge "began while not ACTIVE" against, and EVERY BOOT press
          * would read as having begun ACTIVE — the exact bug this file's
          * sim mirror (targets/sim/ctl_loop.c) caught and fixed the same
-         * way. FF_INTENT_HOME is forwarded only when the gate says
-         * `boot_deliver` — a BOOT press that woke the screen is wake-only,
-         * same rule as touch, per the amendment's own text ("a touch OR
-         * BUTTON press that begins while the screen is not ACTIVE..."). */
+         * way. `boot_deliver` is passed straight through to
+         * `ff_shell_home_press` as `deliver` — a BOOT press that woke the
+         * screen is wake-only for NAVIGATION, same rule as touch, per the
+         * amendment's own text ("a touch OR BUTTON press that begins
+         * while the screen is not ACTIVE..."); it still COUNTS toward
+         * the quick-flare gesture regardless (S10's own "the first tap
+         * wakes and counts" requirement — see ff_shell_home_press's doc
+         * comment for why that split lives there, not here). */
         bool const boot_level = ff_power_boot_pressed();
         bool const boot_deliver = ff_idle_touch_gate(&s_idle, &s_boot_gate, now_ms, boot_level);
-        if (ff_button_tick(&s_boot_button, now_ms, boot_level) && boot_deliver) {
-            ff_intent_t const home = {.kind = FF_INTENT_HOME, .u = {0}};
-            ff_shell_intent(&s_shell, &home);
+        if (ff_button_tick(&s_boot_button, now_ms, boot_level)) {
+            ff_shell_home_press(&s_shell, now_ms, boot_deliver);
         }
 
         /* S26 slice c — feed touch + BOOT into ff_idle_input every frame,

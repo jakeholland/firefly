@@ -269,6 +269,29 @@ if(FF_BUILD_TESTS)
 
     add_test(NAME test_ctl_rebuild_under_finger COMMAND test_ctl_rebuild_under_finger)
 
+    # S10 quick flare (docs/specs/S10-flare.md's Amendments, 2026-09-03):
+    # 5 BOOT/HOME presses through the REAL button path
+    # (ff_ctl_loop_boot_press, ctl_loop.h) starting from a genuinely
+    # idle-FSM-computed OFF screen, asserting a real flare send starts
+    # and the sender overlay actually renders in the live LVGL tree —
+    # same real-session convention as the tests above.
+    add_executable(test_ctl_quick_flare
+        tests/test_ctl_quick_flare.c
+        screenshot.c
+    )
+    target_link_libraries(test_ctl_quick_flare PRIVATE
+        ff-sim-ctl-loop
+        ff-sim-ctl
+        ff-shell
+        ff-app-ui
+        ff-stb-image-write
+        lvgl::lvgl
+        unity
+    )
+    ff_apply_warnings(test_ctl_quick_flare)
+
+    add_test(NAME test_ctl_quick_flare COMMAND test_ctl_quick_flare)
+
     # S25 slice c (device follow-up PR): the ctl `batt_mv` command reaches
     # a live shell end to end — parse layer, ctl_loop.c's handler,
     # ff_shell_set_batt_mv, the core ff_batt filter, and the rendered

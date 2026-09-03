@@ -206,6 +206,10 @@ int ff_ctl_loop_open(ff_ctl_loop_ctx_t *ctx, ff_shell_t *shell, fp_pack_t *pack,
     /* S26 wake-only-touch amendment — see ctl_loop.h's own doc comment
      * on `touch_gate`. */
     ff_idle_touch_gate_init(&ctx->touch_gate);
+    /* S10 quick flare — see ctl_loop.h's own doc comment on
+     * `boot_button`/`boot_gate`. */
+    ff_button_init(&ctx->boot_button);
+    ff_idle_touch_gate_init(&ctx->boot_gate);
 
     /* The intent seam: every wired button (FLARE, GO/DISMISS, the T9
      * keypad, ...) now reaches this shell. Unbind happens in
@@ -415,6 +419,64 @@ void ff_ctl_loop_pointer_release(ff_ctl_loop_ctx_t *ctx)
 {
     if (ctx == NULL) return;
     ctl_loop_pointer_release(ctx);
+}
+
+/* ---------------------------------------------------------------------
+ * S10 quick flare — the BOOT/HOME physical-press mirror. See
+ * ctl_loop.h's ff_ctl_loop_boot_press doc comment.
+ * ------------------------------------------------------------------- */
+
+/* Advances real (or mock) time between BOOT samples — the same role
+ * `ctl_loop_pointer_step_delay` plays for the pointer path, just not
+ * tied to LVGL's 33ms indev period (BOOT goes through no indev at all):
+ * this only needs to satisfy ff_button.h's own debounce window. */
+static void ctl_loop_boot_advance(ff_ctl_loop_ctx_t *ctx, uint32_t ms)
+{
+    if (ctx->mock_clock) {
+        ctx->mock_clock_ms += ms;
+    } else {
+        usleep((useconds_t)ms * 1000);
+    }
+}
+
+/* One raw-level sample through the exact same three calls, in the exact
+ * same order, as app_main.c's device loop: the wake-only-touch gate is
+ * consulted against `ctx->idle`'s CURRENT (pre-this-sample) state
+ * first, then the debounced press edge is decided and (if it fired)
+ * handed to the shell, then the raw level re-pins `ff_idle_input` if
+ * held — see app_main.c's own "that order matters" comment on why the
+ * gate must run before the re-pin. */
+static void ctl_loop_boot_sample(ff_ctl_loop_ctx_t *ctx, bool level)
+{
+    uint32_t const now_ms = ff_ctl_loop_tick_cb();
+    bool const deliver = ff_idle_touch_gate(&ctx->idle, &ctx->boot_gate, now_ms, level);
+    if (ff_button_tick(&ctx->boot_button, now_ms, level)) {
+        ff_shell_home_press(ctx->shell, now_ms, deliver);
+    }
+    if (level) {
+        ff_idle_input(&ctx->idle, now_ms);
+    }
+}
+
+void ff_ctl_loop_boot_press(ff_ctl_loop_ctx_t *ctx)
+{
+    if (ctx == NULL) return;
+
+    /* Press: two samples straddling the debounce window so the SECOND
+     * one is the tick ff_button_tick actually fires on (a single sample
+     * can never fire — the debounce window has not had a chance to
+     * elapse yet). */
+    ctl_loop_boot_sample(ctx, true);
+    ctl_loop_boot_advance(ctx, FF_BUTTON_DEBOUNCE_MS + 1u);
+    ctl_loop_boot_sample(ctx, true);
+
+    /* Release: same two-sample debounce settle, so the debouncer is
+     * ready to fire again on the NEXT press (ff_button.h: "the button
+     * must debounce-release before another press can fire again"). */
+    ctl_loop_boot_advance(ctx, 5u);
+    ctl_loop_boot_sample(ctx, false);
+    ctl_loop_boot_advance(ctx, FF_BUTTON_DEBOUNCE_MS + 1u);
+    ctl_loop_boot_sample(ctx, false);
 }
 
 /**
