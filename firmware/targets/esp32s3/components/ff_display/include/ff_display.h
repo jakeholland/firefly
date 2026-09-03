@@ -31,6 +31,7 @@
 
 #include "esp_err.h"
 #include "esp_lcd_types.h"
+#include "ff_idle.h" /* ff_idle_t — ff_display_touch_set_idle's parameter; see that function's doc comment */
 #include "ff_touchcal.h"
 #include "lvgl.h"
 
@@ -205,18 +206,75 @@ lv_display_t *ff_display_lvgl_start(void);
  * coords are logged as-is, not massaged).
  *
  * Returns ESP_OK on success; a logged esp_err_t otherwise.
+ *
+ * S26 wake-only-touch amendment (docs/specs/S26-device-lifecycle.md "(c)
+ * Inactivity -> dim -> screen off", 2026-09-02): if `ff_display_touch_set_idle`
+ * was called first, this also wraps esp_lvgl_port's own touch read
+ * callback so every sample is gated through `ff_idle_touch_gate` before
+ * LVGL sees it — see `ff_display_touch_set_idle`'s own doc comment.
  */
 esp_err_t ff_display_touch_start(lv_display_t *disp);
 
 /**
- * ff_display_touch_is_down — true while a finger is physically on the panel
- * (the touch indev is in LV_INDEV_STATE_PRESSED). The render loop uses it to
- * DEFER a face teardown+rebuild until the finger lifts: rebuilding
- * (lv_obj_clean + ff_face_build) between a tap's press and release destroys
- * the button under the finger, so its LV_EVENT_CLICKED never fires — the
- * on-glass "just highlights, won't open / missed tap" report. Returns false
- * when touch has not been started (no indev yet), so the caller never blocks
- * on a device without a live touch panel.
+ * ff_display_touch_set_idle — S26 wake-only-touch amendment
+ * (docs/specs/S26-device-lifecycle.md "(c) Inactivity -> dim -> screen
+ * off", 2026-09-02 maintainer decision: "a touch or button press that
+ * begins while the screen is not ACTIVE is a wake-only input and is
+ * never delivered to the UI"). Wires the shell's shared `ff_idle_t`
+ * (app_main.c's `s_idle`) into this HAL so the touch read path can
+ * consult `ff_idle_touch_gate` before delivering a press to LVGL — the
+ * DECISION stays in core (`ff_idle_touch_gate`, core/include/ff_idle.h);
+ * this HAL only calls it and enacts the result (report
+ * LV_INDEV_STATE_RELEASED to LVGL instead of PRESSED for a swallowed
+ * gesture), same "decision in core, enact in target" split as every
+ * other ff_idle_* enact in app_main.c.
+ *
+ * Call once, BEFORE `ff_display_touch_start` (after `ff_idle_init` has
+ * run on `idle`) — safe to call again later (e.g. re-wiring is a no-op
+ * in practice, since this app has exactly one `ff_idle_t`). Passing NULL
+ * disables gating: every press is delivered (fails open, same
+ * NULL-safety convention `ff_idle_touch_gate` itself uses) — the state
+ * before this is ever called (no bring-up stage has called it yet, or a
+ * test HAL that never wires it).
+ *
+ * `idle` is NOT copied — the caller's storage (a `static ff_idle_t`)
+ * must outlive every subsequent touch poll. The touch read path runs on
+ * esp_lvgl_port's own task while `idle` is otherwise owned by
+ * app_main's main-loop task (`ff_idle_tick`/`ff_idle_input`/
+ * `ff_idle_short_press`); this is the one place in this HAL that reads
+ * (and, via a swallowed gesture's wake, occasionally writes) a struct
+ * app_main's own task also mutates every frame. Each individual
+ * `ff_idle_input` call is a self-contained "reset to ACTIVE at this
+ * instant" (not a read-modify-write against prior state), and the touch
+ * task's poll can only ever observe `ff_display_touch_is_down()` — which
+ * this same poll sets — turning true AFTER this call already ran, so
+ * app_main's own per-frame re-pin can never race ahead of the FIRST
+ * sample of a new gesture (see this file's own top comment on
+ * `ff_touch_gate_read_cb` for the ordering that guarantees this).
+ * Flagged here as the interpretation call it is (PR body): a dedicated
+ * mutex around `ff_idle_t` was considered and set aside as more than
+ * this low-stakes UI FSM needs, consistent with this HAL's existing
+ * unsynchronized cross-task read for `ff_display_touch_is_down()`.
+ */
+void ff_display_touch_set_idle(ff_idle_t *idle);
+
+/**
+ * ff_display_touch_is_down — true while a finger is physically on the panel.
+ * The render loop uses it to DEFER a face teardown+rebuild until the
+ * finger lifts: rebuilding (lv_obj_clean + ff_face_build) between a tap's
+ * press and release destroys the button under the finger, so its
+ * LV_EVENT_CLICKED never fires — the on-glass "just highlights, won't
+ * open / missed tap" report. Returns false when touch has not been
+ * started (no indev yet), so the caller never blocks on a device without
+ * a live touch panel.
+ *
+ * S26 wake-only-touch amendment: this reads the PHYSICAL touch state
+ * (captured by the wrapped read callback, `ff_touch_gate_read_cb`'s own
+ * doc comment) — NOT `lv_indev_get_state`, which the wake-only gate can
+ * report as RELEASED while a wake-only gesture is still genuinely held.
+ * Stays truthful about the real finger either way, exactly as this
+ * function's callers (the rebuild-mid-tap latch, the idle-input feed)
+ * need.
  */
 bool ff_display_touch_is_down(void);
 

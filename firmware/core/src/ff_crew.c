@@ -308,6 +308,23 @@ void ff_crew_select_next(ff_crew_t *c)
     /* Only the current member is paired: wraps to itself (no-op). */
 }
 
+void ff_crew_select_node(ff_crew_t *c, uint32_t node_id)
+{
+    if (!c) {
+        return;
+    }
+
+    for (uint8_t i = 0; i < c->count; i++) {
+        if (c->members[i].node_id == node_id && c->members[i].paired) {
+            c->selected_slot = (int8_t)i;
+            return;
+        }
+    }
+    /* Not found, or found but unpaired: leave the current selection
+     * untouched rather than clearing it (see this function's doc
+     * comment). */
+}
+
 /* ------------------------------------------------------------------- */
 /* formatting                                                            */
 /* ------------------------------------------------------------------- */

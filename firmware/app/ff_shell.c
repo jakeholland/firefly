@@ -2946,9 +2946,26 @@ void ff_shell_intent(ff_shell_t *sh_pub, ff_intent_t const *in)
          * rather than merely the outcome.) */
         if (!takeover_up) return;
         (void)ff_flare_go(&sh->flare);
-        /* S10 "GO -> radar with sender force-selected + flare-lock": GO
-         * must actually NAVIGATE, not just consume the takeover into the
-         * lock — a bug fixed here (docs/specs/S26-device-lifecycle.md,
+        /* S10 "GO -> radar with the sender FORCE-SELECTED + flare-lock"
+         * (dated amendment, 2026-09-02): ff_flare_go only ever writes the
+         * flare LOCK (locked_node_id) — by design it never reaches into
+         * ff_crew_t (ff_flare.h's documented boundary). Nothing else was
+         * pointing the radar SELECTION at the sender, so ff_radar_compute
+         * (which targets ff_crew_selected(), not the lock) kept showing
+         * whoever was already selected — typically the first-paired
+         * member — instead of the person who just flared. Force the
+         * selection to the node the lock now names, using the value the
+         * lock itself just committed to (not takeover_node_id, which
+         * ff_flare_go already cleared) so this can never drift from what
+         * the lock chip on Radar says. See this PR's body for the
+         * mechanism write-up (option (b): "GO force-selects" — chosen
+         * over teaching ff_radar_compute to read the lock directly, which
+         * would touch its signature and ~35 existing call sites in
+         * test_radar.c for no behavioral gain over this one-line,
+         * single-call-site fix). */
+        ff_crew_select_node(&sh->crew, ff_flare_locked_node(&sh->flare));
+        /* GO must actually NAVIGATE, not just consume the takeover into
+         * the lock — a bug fixed here (docs/specs/S26-device-lifecycle.md,
          * "Notifications"). GO is the explicit decision the takeover
          * exists to let the user make (the same "GO is the explicit
          * decision" framing S10 Ruling 2/3 already use for the lock
