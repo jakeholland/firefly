@@ -1,20 +1,28 @@
-# firmware/app/sources.cmake — the source lists for app/'s
-# target-agnostic (zero-LVGL) libraries.
+# firmware/app/sources.cmake — the source lists for the .c files that
+# live directly under app/ (not app/screens/).
 #
 # Shared, verbatim, by:
-#   - the sim build (firmware/app/CMakeLists.txt), which keeps these as
-#     SEPARATE CMake targets (ff-route, ff-intent, ff-wall-window,
-#     ff-wiring, ff-shell, ff-demo) — that split matters for this repo's
-#     link-isolation tests, so each library gets its own list variable
-#     here rather than one flat list.
-#   - the esp32s3 IDF component
+#   - the sim build (firmware/app/CMakeLists.txt), which keeps most of
+#     these as SEPARATE CMake targets (ff-route, ff-intent,
+#     ff-wall-window, ff-wiring, ff-shell, ff-demo, ff-face-dispatch) —
+#     that split matters for this repo's link-isolation tests, so each
+#     library gets its own list variable here rather than one flat list.
+#   - the esp32s3 IDF component(s): FF_ROUTE_SOURCES through
+#     FF_DEMO_SOURCES go into ff_app
 #     (firmware/targets/esp32s3/components/ff_app/CMakeLists.txt), which
-#     concatenates all of them into ONE component (no cross-target reuse
-#     need justifies six IDF components here — see that file's comment).
+#     concatenates them into ONE component (no cross-target reuse need
+#     justifies six IDF components here — see that file's comment).
+#     FF_FACE_DISPATCH_SOURCES goes into ff_app_ui instead — see that
+#     component's CMakeLists.txt for why (it needs the screen builders
+#     ff_app_ui already REQUIRES lvgl + ff_app for, which plain ff_app
+#     deliberately does not pull in).
 #
 # LVGL screen code (app/screens/) is a SEPARATE list file —
 # app/screens/sources.cmake — not part of this one; see that file's
-# header for why.
+# header for why. FF_FACE_DISPATCH_SOURCES is the one exception living
+# HERE despite calling into LVGL screen builders: the .c file itself is
+# physically under app/, not app/screens/ (see ff_face_dispatch.h's top
+# comment for why it lives there).
 #
 # Paths are relative to this directory (firmware/app/).
 
@@ -49,4 +57,14 @@ set(FF_SHELL_SOURCES
 set(FF_DEMO_SOURCES
     ff_demo.c
     ff_demoapply.c
+)
+
+# debt/shared-face-dispatch — app/ff_face_dispatch.c: the one face-dispatch
+# chain shared by targets/sim/face_dispatch.c and targets/esp32s3/main/
+# ff_face.c (see ff_face_dispatch.h's top comment). Needs the screen
+# builders (app/screens/*.c), so on the sim side it links ff-app-ui, not
+# just ff-app — and on the esp32s3 side its SRCS entry lives in the
+# ff_app_ui component, not ff_app's (see that component's CMakeLists.txt).
+set(FF_FACE_DISPATCH_SOURCES
+    ff_face_dispatch.c
 )

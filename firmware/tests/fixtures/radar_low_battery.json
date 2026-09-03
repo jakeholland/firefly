@@ -1,0 +1,22 @@
+{
+  "fixture": "radar_low_battery",
+  "face": "radar",
+  "radar": {
+    "mode": "live",
+    "arrow_deg": 42.0,
+    "arrow_valid": true,
+    "name": "DANA",
+    "dist_str": "320 m",
+    "age_str": "8 SEC",
+    "trend": 0,
+    "clock_str": "9:41",
+    "batt_pct": 15,
+    "mesh_ok": true,
+    "dots": [
+      {"ring_deg": 42.0, "initial": "D", "color_idx": 0, "stale": false},
+      {"ring_deg": 128.0, "initial": "R", "color_idx": 1, "stale": false},
+      {"ring_deg": 205.0, "initial": "M", "color_idx": 2, "stale": true},
+      {"ring_deg": 301.0, "initial": "J", "color_idx": 3, "stale": false}
+    ]
+  }
+}

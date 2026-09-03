@@ -243,3 +243,21 @@ void ff_radar_compute(ff_radar_view_t *v, ff_radar_smooth_t *smooth, ff_crew_t *
     }
     v->arrow_valid = have_bearing;
 }
+
+bool ff_radar_batt_is_low(int8_t batt_pct)
+{
+    /* Unknown (< 0) is honestly NOT low — see this function's doc
+     * comment in ff_radar.h ("honest data over pretty data": an unknown
+     * reading never escalates to an alarm). */
+    return batt_pct >= 0 && batt_pct <= FF_BATT_LOW_PCT;
+}
+
+ff_batt_icon_t ff_radar_batt_icon(int8_t batt_pct)
+{
+    if (batt_pct < 0) return FF_BATT_ICON_UNKNOWN;
+    if (batt_pct >= FF_BATT_ICON_FULL_MIN_PCT) return FF_BATT_ICON_FULL;
+    if (batt_pct >= FF_BATT_ICON_3_MIN_PCT) return FF_BATT_ICON_3;
+    if (batt_pct >= FF_BATT_ICON_2_MIN_PCT) return FF_BATT_ICON_2;
+    if (batt_pct >= FF_BATT_ICON_1_MIN_PCT) return FF_BATT_ICON_1;
+    return FF_BATT_ICON_EMPTY;
+}

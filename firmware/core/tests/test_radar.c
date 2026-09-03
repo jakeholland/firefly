@@ -384,6 +384,71 @@ static void S06_AC1_compute_leaves_clock_batt_mesh_untouched(void)
 }
 
 /* ------------------------------------------------------------------- */
+/* debt/batt-low-core — ff_radar_batt_is_low / ff_radar_batt_icon.      */
+/* Not a numbered S06 AC (this PR predates any spec numbering for it);  */
+/* named S06_ to sit next to the rest of this file's battery coverage.  */
+/* ------------------------------------------------------------------- */
+
+static void S06_batt_low_boundary_at_threshold_is_low(void)
+{
+    /* FF_BATT_LOW_PCT == 15 (S06's documented "Status bar alert color"
+     * paragraph): AT the threshold counts as low, mutation-guard against
+     * `<=` silently becoming `<`. */
+    TEST_ASSERT_TRUE(ff_radar_batt_is_low(FF_BATT_LOW_PCT));
+    TEST_ASSERT_TRUE(ff_radar_batt_is_low(15));
+}
+
+static void S06_batt_low_boundary_one_above_threshold_is_not_low(void)
+{
+    TEST_ASSERT_FALSE(ff_radar_batt_is_low(FF_BATT_LOW_PCT + 1));
+    TEST_ASSERT_FALSE(ff_radar_batt_is_low(16));
+}
+
+static void S06_batt_low_unknown_neg1_is_not_low(void)
+{
+    /* Honest data: "we don't know" never escalates to an alarm. */
+    TEST_ASSERT_FALSE(ff_radar_batt_is_low(-1));
+}
+
+static void S06_batt_low_zero_is_low(void)
+{
+    TEST_ASSERT_TRUE(ff_radar_batt_is_low(0));
+}
+
+static void S06_batt_low_full_is_not_low(void)
+{
+    TEST_ASSERT_FALSE(ff_radar_batt_is_low(100));
+}
+
+/* Icon ladder boundaries (scr_launcher.c's status row) — pinned by
+ * literal so a future edit to the ladder is a deliberate, reviewed
+ * change to this test, not a silent renderer-side drift. */
+static void S06_batt_icon_ladder_boundaries(void)
+{
+    TEST_ASSERT_EQUAL_INT(FF_BATT_ICON_UNKNOWN, ff_radar_batt_icon(-1));
+
+    TEST_ASSERT_EQUAL_INT(FF_BATT_ICON_EMPTY, ff_radar_batt_icon(0));
+    TEST_ASSERT_EQUAL_INT(FF_BATT_ICON_EMPTY, ff_radar_batt_icon(FF_BATT_ICON_1_MIN_PCT - 1));
+    TEST_ASSERT_EQUAL_INT(11, FF_BATT_ICON_1_MIN_PCT - 1); /* pins the literal, not just the relation */
+
+    TEST_ASSERT_EQUAL_INT(FF_BATT_ICON_1, ff_radar_batt_icon(FF_BATT_ICON_1_MIN_PCT));
+    TEST_ASSERT_EQUAL_INT(12, FF_BATT_ICON_1_MIN_PCT);
+    TEST_ASSERT_EQUAL_INT(FF_BATT_ICON_1, ff_radar_batt_icon(FF_BATT_ICON_2_MIN_PCT - 1));
+
+    TEST_ASSERT_EQUAL_INT(FF_BATT_ICON_2, ff_radar_batt_icon(FF_BATT_ICON_2_MIN_PCT));
+    TEST_ASSERT_EQUAL_INT(37, FF_BATT_ICON_2_MIN_PCT);
+    TEST_ASSERT_EQUAL_INT(FF_BATT_ICON_2, ff_radar_batt_icon(FF_BATT_ICON_3_MIN_PCT - 1));
+
+    TEST_ASSERT_EQUAL_INT(FF_BATT_ICON_3, ff_radar_batt_icon(FF_BATT_ICON_3_MIN_PCT));
+    TEST_ASSERT_EQUAL_INT(62, FF_BATT_ICON_3_MIN_PCT);
+    TEST_ASSERT_EQUAL_INT(FF_BATT_ICON_3, ff_radar_batt_icon(FF_BATT_ICON_FULL_MIN_PCT - 1));
+
+    TEST_ASSERT_EQUAL_INT(FF_BATT_ICON_FULL, ff_radar_batt_icon(FF_BATT_ICON_FULL_MIN_PCT));
+    TEST_ASSERT_EQUAL_INT(87, FF_BATT_ICON_FULL_MIN_PCT);
+    TEST_ASSERT_EQUAL_INT(FF_BATT_ICON_FULL, ff_radar_batt_icon(100));
+}
+
+/* ------------------------------------------------------------------- */
 /* AC2 — arrow smoothing                                                */
 /* ------------------------------------------------------------------- */
 
@@ -945,6 +1010,13 @@ int main(void)
     RUN_TEST(S06_AC1_close_by_rssi_wins_over_stale_gps);
     RUN_TEST(S06_AC1_nofix_beats_close_by_rssi);
     RUN_TEST(S06_AC1_compute_leaves_clock_batt_mesh_untouched);
+
+    RUN_TEST(S06_batt_low_boundary_at_threshold_is_low);
+    RUN_TEST(S06_batt_low_boundary_one_above_threshold_is_not_low);
+    RUN_TEST(S06_batt_low_unknown_neg1_is_not_low);
+    RUN_TEST(S06_batt_low_zero_is_low);
+    RUN_TEST(S06_batt_low_full_is_not_low);
+    RUN_TEST(S06_batt_icon_ladder_boundaries);
 
     RUN_TEST(S06_AC2_smoothing_reaches_at_least_81deg_by_600ms_no_overshoot);
     RUN_TEST(S06_AC2_smoothing_350_to_10_wraps_through_zero_not_180);

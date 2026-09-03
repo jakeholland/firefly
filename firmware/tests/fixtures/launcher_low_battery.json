@@ -1,0 +1,8 @@
+{
+  "fixture": "launcher_low_battery",
+  "face": "launcher",
+  "radar": {
+    "clock_str": "9:46 pm",
+    "batt_pct": 15
+  }
+}

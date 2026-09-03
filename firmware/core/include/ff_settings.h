@@ -40,7 +40,15 @@ extern "C" {
  * value is a pure stored number here; the physical LEDC PWM apply is a
  * device-HAL concern (targets/esp32s3/components/ff_display), a no-op in the
  * sim — core stays logic-only, honest value everywhere, physical effect
- * device-only (#100's "keep the setting honest"). */
+ * device-only (#100's "keep the setting honest").
+ *
+ * debt/batt-low-core: `targets/esp32s3/components/ff_display/include/
+ * ff_display.h`'s `FF_BL_MIN_PCT`/`FF_BL_MAX_PCT` (the same range, applied
+ * to the physical LEDC PWM by `ff_display_set_brightness`) are now
+ * `#define`d as aliases of these two constants rather than a second pair
+ * of literals that had drifted no further apart than "10u/100u" purely
+ * by luck — see that header for the alias and the physical-side
+ * doc comment. */
 #define FF_BRIGHTNESS_MIN_PCT     10u
 #define FF_BRIGHTNESS_MAX_PCT     100u
 #define FF_BRIGHTNESS_DEFAULT_PCT 70u

@@ -231,7 +231,10 @@ static void radar_build_status_bar(lv_obj_t *parent, ff_radar_view_t const *r)
     }
     lv_label_set_text(batt_lbl, buf);
     lv_obj_set_style_text_font(batt_lbl, FF_THEME_FONT_LABEL, 0);
-    bool batt_low = (r->batt_pct >= 0 && r->batt_pct <= FF_THEME_BATT_LOW_PCT);
+    /* debt/batt-low-core: the decision moved to core (ff_radar_batt_is_low,
+     * ff_radar.h) so this renderer and scr_launcher.c's status row cannot
+     * disagree about "is this low" — see that function's doc comment. */
+    bool batt_low = ff_radar_batt_is_low(r->batt_pct);
     lv_obj_set_style_text_color(batt_lbl,
                                  lv_color_hex(batt_low ? FF_THEME_COLOR_STALE_AMBER : FF_THEME_COLOR_MUTED), 0);
     lv_obj_align(batt_lbl, LV_ALIGN_CENTER, 78, (int32_t)RADAR_LAYOUT_STATUS_BAR_DY);
