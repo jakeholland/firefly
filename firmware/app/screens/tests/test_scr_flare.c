@@ -336,7 +336,11 @@ static void S10_lock_chip_clears_the_status_bar(void)
     snprintf(flare.locked_from_name, sizeof(flare.locked_from_name), "%s", "DANA");
     flare.locked_expires_in_ms = 60000;
 
-    ff_scr_radar_build(puck, &radar, /*colorblind=*/false, /*screen_flip=*/false);
+    /* locked=true: matches `flare.locked = true` above — scr_nav.c always
+     * passes the SAME boolean to both calls (see scr_radar.h's doc comment
+     * on the `locked` parameter), so this test mirrors that invariant
+     * rather than building an unrealistic combination. */
+    ff_scr_radar_build(puck, &radar, /*colorblind=*/false, /*screen_flip=*/false, /*locked=*/true);
     ff_scr_flare_build_lock_chip(puck, &flare);
     lv_obj_update_layout(lv_screen_active());
 
@@ -392,6 +396,100 @@ static void S10_lock_chip_clears_the_status_bar(void)
                               "the lock chip must lie entirely within the round glass");
 }
 
+/* ---------------------------------------------------------------------
+ * Coordinator follow-up on this same fix: a due-north locked fixture
+ * (arrow_deg 0, ring_deg 0 — `radar_flare_locked_north.json`) showed the
+ * compass arrow's HEAD painted squarely under the lock chip. The
+ * original PR's "the chip may paint over the arrow for a narrow bearing
+ * cone" tradeoff was ruled unacceptable for the arrowhead specifically —
+ * the arrow's direction is this product's whole point, unlike the status
+ * bar it must never be COVERED, even for a narrow cone. See
+ * `RADAR_LAYOUT_ARROW_REACH_LOCKED_PX`'s own derivation comment in
+ * radar_layout.h.
+ *
+ * SAME "measure the real built thing" shape as
+ * S10_lock_chip_clears_the_status_bar above, but this one measures the
+ * arrow from radar_layout_resolve_arrow's own output rather than an LVGL
+ * widget: that function IS the single source of truth scr_radar.c draws
+ * from without any further placement math of its own (radar_layout.h's
+ * top comment — "the thing under test is provably the same geometry
+ * that ends up on screen"), so calling it directly with the SAME
+ * registry/bearing/reach the real LIVE-mode, due-north, locked render
+ * would use is not a re-derivation of the property under test — it is
+ * the exact computation the render call site performs. The chip's own
+ * band, by contrast, IS measured from the real built LVGL widget (same
+ * as the sibling test above), so nothing here trusts
+ * RADAR_LAYOUT_LOCK_CHIP_DY's arithmetic either.
+ */
+static void S10_locked_arrow_head_clears_the_lock_chip(void)
+{
+    float margin = (float)((FF_THEME_WINDOW_PX - FF_THEME_PUCK_PX) / 2);
+    float center_offset = margin + (float)FF_THEME_PUCK_RADIUS_PX;
+
+    /* The real chip, built for real (same as the sibling test): read its
+     * ACTUAL bottom edge, converted to the same puck-center-relative
+     * coordinate system radar_layout_resolve_arrow's output uses. */
+    lv_obj_t *puck = lv_obj_create(lv_screen_active());
+    lv_obj_remove_style_all(puck);
+    lv_obj_set_size(puck, FF_THEME_PUCK_PX, FF_THEME_PUCK_PX);
+    lv_obj_set_pos(puck, (int32_t)margin, (int32_t)margin);
+
+    ff_app_flare_t flare;
+    memset(&flare, 0, sizeof(flare));
+    flare.locked = true;
+    snprintf(flare.locked_from_name, sizeof(flare.locked_from_name), "%s", "DANA");
+    flare.locked_expires_in_ms = 60000;
+
+    ff_scr_flare_build_lock_chip(puck, &flare);
+    lv_obj_update_layout(lv_screen_active());
+
+    lv_obj_t *chip_label = find_label_with_prefix(puck, "LOCKED - DANA");
+    TEST_ASSERT_NOT_NULL_MESSAGE(chip_label, "the lock chip must be built when flare->locked");
+    lv_obj_t *chip = lv_obj_get_parent(chip_label);
+    TEST_ASSERT_NOT_NULL(chip);
+    lv_area_t chip_area;
+    lv_obj_get_coords(chip, &chip_area);
+    float chip_bottom = ((float)chip_area.y2 + 1.0f) - center_offset;
+
+    /* The arrow: radar_flare_locked_north.json's own values — LIVE mode,
+     * due north (worst case, radar_layout.h's own bearing-0 proof),
+     * locked. Same registry (RADAR_LIVE, not never_fixed) and locked
+     * reach cap the real ff_scr_radar_build(..., locked=true) call for
+     * this fixture uses. */
+    radar_layout_registry_t reg;
+    radar_layout_build_registry(RADAR_LIVE, /*never_fixed=*/false, &reg);
+    radar_layout_arrow_t arrow;
+    radar_layout_resolve_arrow(&reg, /*arrow_deg=*/0.0f, RADAR_LAYOUT_ARROW_REACH_LOCKED_PX, &arrow);
+
+    /* The head's topmost (most-negative-y) pixel is whichever of the
+     * tip/left-corner/right-corner reaches furthest — measured, not
+     * assumed to be the tip (radar_layout.h's own derivation comment
+     * proves the tip wins at bearing 0, but this test doesn't lean on
+     * that proof either). */
+    float head_top = arrow.tip_dy;
+    if (arrow.left_dy < head_top) {
+        head_top = arrow.left_dy;
+    }
+    if (arrow.right_dy < head_top) {
+        head_top = arrow.right_dy;
+    }
+
+    /* Both `chip_bottom` and `head_top` are y-coordinates in the same
+     * puck-center-relative system (negative = toward the top of the
+     * glass). The head clears the chip when its topmost point sits
+     * BELOW (numerically greater/less-negative than) the chip's own
+     * bottom edge — i.e. `head_top > chip_bottom` — so the gap between
+     * them is `head_top - chip_bottom`, not the other way around. */
+    float gap = head_top - chip_bottom;
+    char msg[256];
+    snprintf(msg, sizeof(msg),
+             "locked arrow head must clear the lock chip's bottom edge by >= 8px "
+             "(chip bottom %d, head top %d, gap %d) — the arrow's DIRECTION is the product; "
+             "painting over its head is not an acceptable tradeoff even for a narrow bearing cone",
+             (int)chip_bottom, (int)head_top, (int)gap);
+    TEST_ASSERT_TRUE_MESSAGE(gap >= 8.0f, msg);
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -400,6 +498,7 @@ int main(void)
     RUN_TEST(S10_ACn_lock_disclosure_only_truncates_names_that_dont_fit);
     RUN_TEST(S10_ACn_lock_disclosure_is_always_accompanied_by_the_headline);
     RUN_TEST(S10_lock_chip_clears_the_status_bar);
+    RUN_TEST(S10_locked_arrow_head_clears_the_lock_chip);
 
     return UNITY_END();
 }

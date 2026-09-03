@@ -209,6 +209,72 @@ extern "C" {
  * anything that overlaps the status bar, e.g. the old -165). */
 #define RADAR_LAYOUT_LOCK_CHIP_DY (RADAR_LAYOUT_STATUS_BAR_DY + 38.0f)
 
+/* ARROW_REACH_LOCKED_PX: the coordinator's follow-up finding on this
+ * same fix — a due-north locked fixture (arrow_deg 0, ring_deg 0) showed
+ * the compass arrow's HEAD painted squarely under the lock chip. The
+ * original PR treated that as an acceptable z-order tradeoff ("the chip
+ * may paint over the arrow for a narrow bearing cone"); the coordinator
+ * vetoed that specifically for the arrow's HEAD (the product's whole
+ * point — "come find me" — cannot be the thing that gets covered, even
+ * for a narrow cone). DESIGN CALL, maintainer may veto: rather than
+ * covering the arrowhead, the arrow gives up length while LOCKED, so its
+ * head never reaches the chip's band in the first place.
+ *
+ * DERIVATION. `radar_layout_resolve_arrow`'s head-shape math (tip at
+ * `tip_r` along the bearing; base at `tip_r - RADAR_LAYOUT_ARROW_HEAD_LEN_PX`;
+ * left/right base corners offset by `RADAR_LAYOUT_ARROW_HEAD_WIDTH_PX/2`
+ * perpendicular to the bearing) makes the TIP the head's topmost
+ * (most-negative-y) point for every bearing from due north out to
+ * `atan(RADAR_LAYOUT_ARROW_HEAD_LEN_PX / (RADAR_LAYOUT_ARROW_HEAD_WIDTH_PX/2))`
+ * ~= 70 deg either side — verified by an exhaustive tenth-degree sweep
+ * (0..360 deg) of tip/left/right corner y for a fixed reach, not just
+ * this arithmetic (AGENTS.md's "measuring, not reasoning harder"): the
+ * worst case is ALWAYS exactly bearing 0, where the topmost head pixel's
+ * y equals `-reach` exactly, with every other bearing strictly less
+ * extreme (`|cos(deg)|` scales the whole geometry down together, so a
+ * fixed reach's topmost reach only ever SHRINKS as bearing turns away
+ * from north — a wide-angle corner case where a base corner momentarily
+ * out-climbs the tip was checked and never wins: at those bearings
+ * `cos(deg)` is already small enough that the whole head sits far below
+ * bearing 0's topmost point). So bounding bearing 0 alone is sufficient
+ * to bound every bearing.
+ *
+ * The chip's bottom edge is `RADAR_LAYOUT_LOCK_CHIP_DY + 14.0f` (the
+ * chip's own half-height — see that constant's own derivation comment):
+ * `-122 + 14 = -108`. Requiring the head's topmost pixel (bearing 0's
+ * `-reach`) to clear that edge by the same >=8px floor this whole fix
+ * chain uses, plus the same "double the floor" margin convention
+ * `RADAR_LAYOUT_LOCK_CHIP_DY` itself used (16px, not the bare 8px
+ * minimum):
+ *
+ *   max reach = -(chip bottom edge) - gap = 108 - 16 = 92
+ *
+ * `RADAR_LAYOUT_ARROW_REACH_LOCKED_PX` is this module's SEARCH STARTING
+ * length while locked (`radar_layout_resolve_arrow`'s `max_len_px`
+ * parameter), used in place of `RADAR_LAYOUT_ARROW_LEN_PX` — NOT a
+ * bypass of the existing registry search. The search still independently
+ * (and correctly) shortens further, exactly as it always has, if a
+ * locked arrow's bearing points it into some OTHER reserved rectangle
+ * (e.g. LIVE/STALE's name/dist/chip stack when locked onto someone
+ * behind you) — that avoidance is unrelated to this fix and unchanged by
+ * it. What IS guaranteed, because 92 is provably the bearing-0 worst
+ * case for reaching the chip specifically and the chip itself is not a
+ * registered rectangle (scr_flare.h's doc comment explains why): a
+ * locked arrow's head can NEVER reach the chip's band regardless of
+ * bearing, so there is no bearing-dependent "wobble" in the one
+ * respect this fix is about — how close the head gets to the chip. At
+ * both fixtures this PR/its follow-up cover (`radar_flare_locked`,
+ * bearing 42; `radar_flare_locked_north`, bearing 0) the capped reach is
+ * ALSO short enough to clear every other registered rectangle outright,
+ * so the arrow renders at exactly 92px in both — but that is a property
+ * of those two bearings, not a guarantee this constant makes on its own.
+ *
+ * Guarded by app/screens/tests/test_scr_flare.c's
+ * S10_locked_arrow_head_clears_the_lock_chip (measures real built arrow
+ * geometry against the real built chip geometry — fails if this constant
+ * is reverted to the unlocked RADAR_LAYOUT_ARROW_LEN_PX while locked). */
+#define RADAR_LAYOUT_ARROW_REACH_LOCKED_PX 92.0f
+
 /* LIVE / STALE / LOST-with-a-real-fix shared vertical stack. */
 #define RADAR_LAYOUT_STACK_NAME_DY 60.0f
 #define RADAR_LAYOUT_STACK_DIST_DY 100.0f
@@ -280,15 +346,26 @@ typedef struct {
 /**
  * radar_layout_resolve_arrow — the arrow's on-screen geometry for
  * `arrow_deg`. A 1-D monotonic search over length: starts at
- * RADAR_LAYOUT_ARROW_LEN_PX, and on each step tests the CURRENT
- * candidate's tip and both head-base corners against the full registry
- * union (a fresh test every step, not an incremental push), shortening
- * by a fixed amount until every point clears every rectangle or the
- * length hits RADAR_LAYOUT_ARROW_MIN_LEN_PX. The bearing itself never
- * changes. Bounded by a hard iteration cap — terminates in a fixed
- * maximum number of steps regardless of `*reg`'s contents.
+ * `max_len_px` (callers pass RADAR_LAYOUT_ARROW_LEN_PX for the normal,
+ * unlocked reach, or RADAR_LAYOUT_ARROW_REACH_LOCKED_PX while the flare
+ * lock chip is showing — see that constant's own derivation comment for
+ * why locked reach is a fixed, shorter starting point rather than a
+ * per-bearing collision search against the chip specifically), and on
+ * each step tests the CURRENT candidate's tip and both head-base corners
+ * against the full registry union (a fresh test every step, not an
+ * incremental push), shortening by a fixed amount until every point
+ * clears every rectangle or the length hits RADAR_LAYOUT_ARROW_MIN_LEN_PX.
+ * The bearing itself never changes. Bounded by a hard iteration cap —
+ * terminates in a fixed maximum number of steps regardless of `*reg`'s
+ * contents or `max_len_px`'s value (a smaller starting length only ever
+ * needs FEWER steps to resolve, never more).
+ *
+ * `max_len_px` is expected `<= RADAR_LAYOUT_ARROW_LEN_PX`; passing a
+ * larger value is not defended against; every caller in this codebase
+ * passes one of the two named constants above.
  */
-void radar_layout_resolve_arrow(radar_layout_registry_t const *reg, float arrow_deg, radar_layout_arrow_t *out);
+void radar_layout_resolve_arrow(radar_layout_registry_t const *reg, float arrow_deg, float max_len_px,
+                                 radar_layout_arrow_t *out);
 
 /**
  * radar_layout_dot_result_t — one original ring dot's resolved marker.
