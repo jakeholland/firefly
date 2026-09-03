@@ -6130,6 +6130,36 @@ static void S27_unpaired_message_fires_no_sound(void)
     TEST_ASSERT_EQUAL_INT(0, H.sound.count);
 }
 
+/* Should-fix from PR #184 review: two rapid messages from the SAME
+ * sender within the notify queue's 2s coalesce window (ff_notify.h)
+ * must produce exactly ONE MESSAGE sound, not two —
+ * shell_notify_push_banner sounds only on FF_NOTIFY_PUSH_NEW, never on
+ * a coalesced refresh of the already-queued banner. A second, DIFFERENT
+ * sender still gets its own, independent sound. */
+static void S27_coalesced_message_from_same_sender_sounds_once_different_sender_sounds_again(void)
+{
+    harness_init(100000u, false);
+    inject_my_info(MY_ID);
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, true));
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, KEV_ID, true));
+
+    inject_text(DANA, "you close?");
+    TEST_ASSERT_EQUAL_INT(1, sound_count(FF_SOUND_MESSAGE));
+
+    /* Same sender, 500ms later: well within FF_NOTIFY_COALESCE_MS (2000ms)
+     * -> coalesces into the same banner entry, no second sound. */
+    advance(500u);
+    inject_text(DANA, "still there?");
+    TEST_ASSERT_EQUAL_INT_MESSAGE(1, sound_count(FF_SOUND_MESSAGE),
+                                  "a coalesced banner update from the same sender must not sound a second MESSAGE");
+    TEST_ASSERT_EQUAL_INT(1, H.sound.count);
+
+    /* A DIFFERENT sender: a genuinely new banner, its own sound. */
+    inject_text(KEV_ID, "yo");
+    TEST_ASSERT_EQUAL_INT(2, sound_count(FF_SOUND_MESSAGE));
+    TEST_ASSERT_EQUAL_INT(2, H.sound.count);
+}
+
 static void S27_paired_rally_fires_rally_sound_exactly_once(void)
 {
     harness_init(100000u, false);
@@ -6299,7 +6329,6 @@ static void S27_batt_low_fires_once_per_crossing_not_every_tick(void)
 /* An unknown reading (-1, the honest default — no ff_shell_set_batt_mv
  * call at all, same as neither target having a battery ADC wired yet)
  * is never "low" — never fires BATT_LOW, even the very first tick. */
- * fires BATT_LOW, even the very first tick. */
 static void S27_batt_unknown_never_fires_batt_low(void)
 {
     harness_init(100000u, false);
@@ -6557,6 +6586,7 @@ int main(void)
     RUN_TEST(S27_inbound_flare_from_unpaired_sender_fires_no_sound);
     RUN_TEST(S27_paired_message_fires_message_sound_exactly_once);
     RUN_TEST(S27_unpaired_message_fires_no_sound);
+    RUN_TEST(S27_coalesced_message_from_same_sender_sounds_once_different_sender_sounds_again);
     RUN_TEST(S27_paired_rally_fires_rally_sound_exactly_once);
     RUN_TEST(S27_sounds_off_silences_every_call_site);
     RUN_TEST(S27_sounds_on_positive_control_for_the_off_test);

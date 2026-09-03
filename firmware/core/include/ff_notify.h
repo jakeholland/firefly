@@ -203,6 +203,29 @@ void ff_notify_init(ff_notify_t *q);
 uint8_t ff_notify_count(ff_notify_t const *q);
 
 /**
+ * ff_notify_push_result_t — [api] S27 sounds amendment: what a push
+ * actually did, so a caller that fires a per-push side effect (S27's
+ * MESSAGE/RALLY sound — see ff_shell.c's shell_notify_push_banner) can
+ * tell "a genuinely new notification arrived" from "an existing one's
+ * preview refreshed" and fire that side effect only for the former.
+ * Before this amendment `ff_notify_push` returned a bare `bool` that
+ * could not distinguish the two (coalesce and append were both
+ * "success"); this replaces that return type outright rather than
+ * bolting on an out-parameter, since every caller needs the same
+ * three-way answer and a bare bool was never enough to give it.
+ *
+ * FF_NOTIFY_PUSH_REJECTED is 0 (falsy) so `if (!ff_notify_push(...))`
+ * still reads as "the push failed", matching the old bool contract's
+ * one failure case (NULL `q`) for any caller that only cares about
+ * that distinction.
+ */
+typedef enum {
+    FF_NOTIFY_PUSH_REJECTED = 0, /* NULL q: no-op, nothing changed */
+    FF_NOTIFY_PUSH_NEW,          /* a fresh entry was appended (may have evicted the oldest on overflow) */
+    FF_NOTIFY_PUSH_COALESCED,    /* an existing LIVE entry was updated in place — same queue position, ff_notify_count unchanged */
+} ff_notify_push_result_t;
+
+/**
  * ff_notify_push — push a notification of `kind`/`tier` from `node_id`
  * with preview `text`, timestamped `now_ms`. `text` is copied and safely
  * truncated to fit `FF_NOTIFY_TEXT_MAX` (NUL-terminated); NULL is treated
@@ -212,25 +235,29 @@ uint8_t ff_notify_count(ff_notify_t const *q);
  * `node_id` exists, and `now_ms` is within `FF_NOTIFY_COALESCE_MS` of
  * that entry's `at_ms` (inclusive), this OVERWRITES that entry's
  * `text`/`at_ms`/`expiry_ms` in place — same queue position, no new
- * entry, `ff_notify_count` unchanged — and returns. See this header's
- * top comment for tie-breaking when more than one live entry matches.
+ * entry, `ff_notify_count` unchanged — and returns
+ * `FF_NOTIFY_PUSH_COALESCED`. See this header's top comment for
+ * tie-breaking when more than one live entry matches.
  *
- * Otherwise APPENDS a new entry as the newest (`items[count]`). If the
- * queue is already at `FF_NOTIFY_DEPTH`, the OLDEST entry (`items[0]`)
- * is evicted first (spec: "Overflow drops the OLDEST") — `ff_notify_count`
- * stays at `FF_NOTIFY_DEPTH`.
+ * Otherwise APPENDS a new entry as the newest (`items[count]`) and
+ * returns `FF_NOTIFY_PUSH_NEW`. If the queue is already at
+ * `FF_NOTIFY_DEPTH`, the OLDEST entry (`items[0]`) is evicted first
+ * (spec: "Overflow drops the OLDEST") — `ff_notify_count` stays at
+ * `FF_NOTIFY_DEPTH`. Eviction is still `FF_NOTIFY_PUSH_NEW` (the pushed
+ * notification itself IS new; what happened to some OTHER, unrelated
+ * entry to make room is not this call's own outcome).
  *
  * `expiry_ms` is computed from `tier`: `FF_NOTIFY_TIER_BANNER` gets
  * `now_ms + FF_NOTIFY_BANNER_TTL_MS`; `FF_NOTIFY_TIER_TAKEOVER` gets 0
  * (no core-managed deadline — this header's top comment, judgment call
  * 3; unexercised by this slice).
  *
- * No-op (returns false) if `q` is NULL. Returns true otherwise (a push
- * always succeeds — coalesce and overflow-eviction are both successful
- * outcomes, never a rejection).
+ * `FF_NOTIFY_PUSH_REJECTED` if `q` is NULL (nothing else is ever
+ * rejected — coalesce and overflow-eviction are both successful
+ * outcomes, never a rejection, same as the bool contract this replaces).
  */
-bool ff_notify_push(ff_notify_t *q, ff_notify_kind_t kind, ff_notify_tier_t tier, uint32_t node_id,
-                    char const *text, uint32_t now_ms);
+ff_notify_push_result_t ff_notify_push(ff_notify_t *q, ff_notify_kind_t kind, ff_notify_tier_t tier, uint32_t node_id,
+                                        char const *text, uint32_t now_ms);
 
 /**
  * ff_notify_head — the oldest entry currently queued (spec: "head

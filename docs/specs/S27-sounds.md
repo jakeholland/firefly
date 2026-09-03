@@ -154,7 +154,19 @@ against the live settings + wall clock, and only then calls
   `ff_flare_on_flare_rx`'s own trust gate) → `FLARE_INCOMING`.
 - **`shell_notify_push_banner`** (S26(d)'s one call site for both
   banner-eligible kinds, already re-checked paired) → `MESSAGE` or
-  `RALLY` depending on `ff_notify_kind_t`.
+  `RALLY` depending on `ff_notify_kind_t` — but **only when
+  `ff_notify_push` reports `FF_NOTIFY_PUSH_NEW`**, `[api]` amendment
+  (PR #184 review): `ff_notify_push`'s return type changed from a bare
+  `bool` to `ff_notify_push_result_t` (`REJECTED`/`NEW`/`COALESCED`,
+  `core/include/ff_notify.h`) precisely so this call site can tell a
+  genuinely new notification from a coalesced refresh of the one
+  already queued (two texts from the same sender within the notify
+  queue's 2s coalesce window collapse into ONE banner entry,
+  `ff_notify.h`'s own documented behavior) — a coalesced update still
+  wakes the screen (`wake_pending`) but does not get a second sound.
+  See `test_notify.c`'s `S27_push_result_new_vs_coalesced_vs_overflow`
+  and `test_shell.c`'s
+  `S27_coalesced_message_from_same_sender_sounds_once_different_sender_sounds_again`.
 - **`shell_project`, right after `batt_pct` is projected** → `BATT_LOW`,
   once per CROSSING into the low band (`ff_radar_batt_is_low`), tracked
   by a shell-owned `bool batt_was_low` edge detector — not a level check,
@@ -268,6 +280,10 @@ contract as the intent seam).
   (`S21_v6_blob_forward_migrates_preserving_every_value`,
   `S21_v7_blob_forward_migrates_preserving_every_value`,
   `S27_v8_blob_forward_migrates_preserving_every_value`).
+- **(d)** (PR #184 review) Sound MESSAGE/RALLY unconditionally on every
+  `ff_notify_push`, ignoring the NEW-vs-COALESCED result → `test_shell.c`'s
+  `S27_coalesced_message_from_same_sender_sounds_once_different_sender_sounds_again`
+  fails (`Expected 1 Was 2`).
 
 See the PR body for exact `ctest` output.
 
