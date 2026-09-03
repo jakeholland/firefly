@@ -1,0 +1,31 @@
+{
+  "festpack": "0.1",
+  "festival": {
+    "name": "Wrong Type Origin Fest",
+    "year": 2027,
+    "start": "2027-08-01",
+    "end": "2027-08-02",
+    "venue": {
+      "name": "Somewhere",
+      "lat": "43.7",
+      "lon": -82.4,
+      "approximate": false
+    }
+  },
+  "stages": [
+    {
+      "id": "a",
+      "name": "A Stage",
+      "color": "#00ff00"
+    }
+  ],
+  "schedule": [
+    {
+      "artist": "Solo Act",
+      "stage": "a",
+      "day": "2027-08-01",
+      "start": "20:00",
+      "end": "21:00"
+    }
+  ]
+}
