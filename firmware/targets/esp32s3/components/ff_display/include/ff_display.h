@@ -24,7 +24,13 @@
  * app/screens/scr_flare.c so the boot splash draws the identical mark —
  * see ff_display_draw_boot_splash below and that header's own doc
  * comment) — deliberately distinguished from "touches core/": neither
- * reads or writes a single byte of live device state.
+ * reads or writes a single byte of live device state. debt/batt-low-core
+ * adds a third: ff_settings.h, for FF_BRIGHTNESS_MIN_PCT/_MAX_PCT alone
+ * (see FF_BL_MIN_PCT/_MAX_PCT below) — same category, one pair of
+ * `#define`d percentages, no store/load/struct/state of any kind reached
+ * through it. `ff_core` is already a REQUIRES of this component (see
+ * this component's CMakeLists.txt), so this is a header-only addition,
+ * no new build dependency.
  */
 #ifndef FF_DISPLAY_H
 #define FF_DISPLAY_H
@@ -32,6 +38,7 @@
 #include "esp_err.h"
 #include "esp_lcd_types.h"
 #include "ff_idle.h" /* ff_idle_t — ff_display_touch_set_idle's parameter; see that function's doc comment */
+#include "ff_settings.h" /* FF_BRIGHTNESS_MIN_PCT/_MAX_PCT — the one true source for FF_BL_MIN_PCT/_MAX_PCT below; see this file's top comment */
 #include "ff_touchcal.h"
 #include "lvgl.h"
 
@@ -40,16 +47,23 @@ extern "C" {
 #endif
 
 /** FF_BL_MIN_PCT / FF_BL_MAX_PCT — the backlight percent range
- * `ff_display_set_brightness` clamps a caller's `pct` into (mirrors core
- * FF_BRIGHTNESS_MIN_PCT/_MAX_PCT, ff_settings.h). Public (S26 slice c)
- * so app_main's DIM enact (`ff_display_set_brightness(FF_BL_MIN_PCT)`,
+ * `ff_display_set_brightness` clamps a caller's `pct` into. Public (S26
+ * slice c) so app_main's DIM enact (`ff_display_set_brightness(FF_BL_MIN_PCT)`,
  * docs/specs/S26-device-lifecycle.md "(c) Inactivity -> dim -> screen
  * off") uses the SAME constant this HAL enforces, rather than a second
  * local literal that could drift from it. The floor is non-zero on
  * purpose — see `ff_display_set_brightness`'s doc comment and
- * `ff_display_backlight_off` below for the one true-zero path. */
-#define FF_BL_MIN_PCT 10u
-#define FF_BL_MAX_PCT 100u
+ * `ff_display_backlight_off` below for the one true-zero path.
+ *
+ * debt/batt-low-core: these USED to be a second `10u`/`100u` pair that
+ * merely claimed (in this comment) to mirror core's FF_BRIGHTNESS_MIN_PCT/
+ * _MAX_PCT (ff_settings.h) — nothing enforced the mirror, so a future
+ * change to either pair alone would have silently diverged the setting's
+ * legal range from the range the backlight PWM actually honors. Now a
+ * literal alias of the core constants: "no second literal", the value
+ * lives in exactly one place. */
+#define FF_BL_MIN_PCT FF_BRIGHTNESS_MIN_PCT
+#define FF_BL_MAX_PCT FF_BRIGHTNESS_MAX_PCT
 
 /**
  * ff_display_expander_init — bring up the shared I2C bus and the TCA9554

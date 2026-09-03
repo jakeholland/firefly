@@ -696,10 +696,25 @@ static void launcher_make_satellite(lv_obj_t *puck, void (*icon_fn)(lv_obj_t *, 
  * fixed/"empty" icon, when it is -1 (no battery ADC on either target
  * yet, per ff_shell.c). A glyph implying a reading over an honest "--%"
  * would be exactly the fabricated-freshness CLAUDE.md's honesty rule
- * forbids, even though it is only decorative chrome. */
+ * forbids, even though it is only decorative chrome. The glyph STEP
+ * (FULL/3/2/1/EMPTY) comes from `ff_radar_batt_icon()` (ff_radar.h) —
+ * previously a bare 87/62/37/12 ladder typed directly here, now the same
+ * named-and-documented boundaries scr_radar.c would use if it ever grows
+ * this glyph too.
+ *
+ * debt/batt-low-core: icon + label now tint the SAME amber
+ * (`FF_THEME_COLOR_STALE_AMBER`) scr_radar.c's status bar uses when
+ * `ff_radar_batt_is_low(r->batt_pct)` is true — previously this row
+ * always rendered muted grey regardless of level, so a low-battery puck
+ * looked identical here and on Radar (Radar amber, launcher flat grey)
+ * even though the launcher IS home (S26 slice e) and is exactly where
+ * that alarm most needs to read as urgent. Both screens call the one
+ * core function on the one `batt_pct` field, so they cannot disagree. */
 static void launcher_build_status_row(lv_obj_t *puck, ff_radar_view_t const *r)
 {
     char buf[24];
+    bool const batt_low = ff_radar_batt_is_low(r->batt_pct);
+    uint32_t const batt_color = batt_low ? FF_THEME_COLOR_STALE_AMBER : FF_THEME_COLOR_MUTED;
 
     lv_obj_t *clock_lbl = lv_label_create(puck);
     lv_label_set_text(clock_lbl, r->clock_str[0] != '\0' ? r->clock_str : "--:--");
@@ -714,16 +729,20 @@ static void launcher_build_status_row(lv_obj_t *puck, ff_radar_view_t const *r)
     lv_obj_align(sep_lbl, LV_ALIGN_CENTER, -8, (int32_t)LAUNCHER_STATUS_ROW_DY);
 
     if (r->batt_pct >= 0) {
-        int const p = (int)r->batt_pct;
-        char const *glyph = (p >= 87)   ? LV_SYMBOL_BATTERY_FULL
-                             : (p >= 62) ? LV_SYMBOL_BATTERY_3
-                             : (p >= 37) ? LV_SYMBOL_BATTERY_2
-                             : (p >= 12) ? LV_SYMBOL_BATTERY_1
-                                         : LV_SYMBOL_BATTERY_EMPTY;
+        char const *glyph;
+        switch (ff_radar_batt_icon(r->batt_pct)) {
+        case FF_BATT_ICON_FULL: glyph = LV_SYMBOL_BATTERY_FULL; break;
+        case FF_BATT_ICON_3:    glyph = LV_SYMBOL_BATTERY_3; break;
+        case FF_BATT_ICON_2:    glyph = LV_SYMBOL_BATTERY_2; break;
+        case FF_BATT_ICON_1:    glyph = LV_SYMBOL_BATTERY_1; break;
+        case FF_BATT_ICON_EMPTY:
+        case FF_BATT_ICON_UNKNOWN:
+        default:                glyph = LV_SYMBOL_BATTERY_EMPTY; break;
+        }
         lv_obj_t *batt_icon = lv_label_create(puck);
         lv_label_set_text(batt_icon, glyph);
         lv_obj_set_style_text_font(batt_icon, FF_THEME_FONT_LABEL, 0);
-        lv_obj_set_style_text_color(batt_icon, lv_color_hex(FF_THEME_COLOR_MUTED), 0);
+        lv_obj_set_style_text_color(batt_icon, lv_color_hex(batt_color), 0);
         lv_obj_align(batt_icon, LV_ALIGN_CENTER, 8, (int32_t)LAUNCHER_STATUS_ROW_DY);
     }
 
@@ -735,7 +754,7 @@ static void launcher_build_status_row(lv_obj_t *puck, ff_radar_view_t const *r)
     }
     lv_label_set_text(batt_lbl, buf);
     lv_obj_set_style_text_font(batt_lbl, FF_THEME_FONT_LABEL, 0);
-    lv_obj_set_style_text_color(batt_lbl, lv_color_hex(FF_THEME_COLOR_MUTED), 0);
+    lv_obj_set_style_text_color(batt_lbl, lv_color_hex(batt_color), 0);
     lv_obj_align(batt_lbl, LV_ALIGN_CENTER, 32, (int32_t)LAUNCHER_STATUS_ROW_DY);
 }
 

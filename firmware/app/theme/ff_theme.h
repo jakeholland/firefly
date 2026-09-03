@@ -229,26 +229,37 @@ static inline uint32_t ff_theme_crew_color(uint8_t color_idx, bool colorblind)
 #define FF_THEME_MAP_UNKNOWN  0x8B8A97 /* == FF_THEME_COLOR_MUTED — an honest "kind not recognized", never a guessed color */
 
 /* -------------------------------------------------------------------
- * Status-bar alert thresholds (PR #16 code review finding: this cutoff
- * used to live as a bare `<= 15` literal inline in scr_radar.c, an
- * undocumented domain decision hiding in a renderer — CLAUDE.md: "if
- * you're writing an `if` about domain behavior inside a screen file, it
- * belongs in core"). Named and hoisted here so the one existing renderer
- * that reads it, and any future one, share a single definition instead of
- * repeating (and risking drifting) a magic number.
+ * Status-bar alert thresholds.
  *
- * `FF_THEME_BATT_LOW_PCT` has no basis in docs/specs/S06-radar-face.md,
- * S02, or S03 — none of those specs define a low-battery threshold at
- * all. 15% is a product-judgment call by this slice's implementer (same
- * "not spec-numeric" category as ff_crew.h's documented
- * FF_CREW_RSSI_TREND_THRESHOLD_DBM), now also written down in
- * docs/specs/S06-radar-face.md's behavior section so it has exactly one
- * source of truth. Both this threshold and mesh-loss share the same
- * amber "alert" treatment (`FF_THEME_COLOR_STALE_AMBER`) — flagged in UX
- * review as an inconsistency when mesh-loss alone rendered as flat grey
- * chrome (losing the mesh radio breaks the entire point of the puck: it
- * should look at least as alarming as a low battery, not less). */
-#define FF_THEME_BATT_LOW_PCT 15
+ * debt/batt-low-core: `FF_THEME_BATT_LOW_PCT` USED to be defined here
+ * (PR #16 code review finding: the cutoff started life as a bare `<= 15`
+ * literal inline in scr_radar.c, an undocumented domain decision hiding
+ * in a renderer — CLAUDE.md: "if you're writing an `if` about domain
+ * behavior inside a screen file, it belongs in core"). PR #16's fix only
+ * got the literal as far as this THEME header, which is app/, still a
+ * renderer-side file — and by the time a second renderer
+ * (scr_launcher.c's status row) needed the same decision, nothing forced
+ * it to read this constant rather than reinvent its own: it never did,
+ * which is how the launcher came to omit the amber "low" treatment
+ * radar has always had.
+ *
+ * The value has now moved the rest of the way into core:
+ * `FF_BATT_LOW_PCT` in `core/include/ff_radar.h`, alongside
+ * `ff_radar_batt_is_low()` — a single pure function every renderer calls
+ * on the same `batt_pct` field, rather than each renderer re-deriving
+ * "low" from a shared constant with its own `<=` comparison. This header
+ * intentionally keeps NO alias for it: aliasing would mean this pure
+ * design-token file (colors/fonts, no domain coupling by design — see
+ * this file's own top comment) including a core/ domain header for one
+ * constant. See ff_radar.h for the constant/function and
+ * docs/specs/S06-radar-face.md's "Status bar alert color" paragraph for
+ * the product rationale (15%, and why mesh-loss shares the same amber).
+ *
+ * NOTE: that spec paragraph still names THIS file as
+ * `FF_THEME_BATT_LOW_PCT`'s location; it is now stale (the constant is
+ * `FF_BATT_LOW_PCT` in ff_radar.h) — a doc-only follow-up, not fixed in
+ * this PR (docs/specs/S06-radar-face.md is out of this PR's touch
+ * scope; flagged in the PR body). */
 
 /* -------------------------------------------------------------------
  * Type scale — see this header's top comment for the rounding rationale.
