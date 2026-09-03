@@ -451,6 +451,25 @@ static void S16_AC10_draft_typed_flare_injected_takeover_clears_draft_survives(v
     lv_deinit();
 }
 
+/* Accepting sender spy — see this file's own S27 test's comment below for
+ * why FLARE_SENT needs one (review round 2, 2026-09-03). Mirrors
+ * test_shell.c's flare_wire_spy_t shape, minimal: only needs to accept. */
+static int s27_ctl_sound_send_text(void *ctx, uint32_t dest, char const *utf8)
+{
+    (void)ctx;
+    (void)dest;
+    (void)utf8;
+    return 0;
+}
+static int s27_ctl_sound_send_private(void *ctx, uint32_t dest, uint8_t const *payload, size_t len)
+{
+    (void)ctx;
+    (void)dest;
+    (void)payload;
+    (void)len;
+    return 0;
+}
+
 /* S27 sounds (docs/specs/S27-sounds.md) — proves the REAL sim wiring, not
  * just the shell's own hooks (test_shell.c already covers those in
  * isolation): `ff_ctl_loop_open` sets `shell_cfg.play_sound` to
@@ -459,7 +478,16 @@ static void S16_AC10_draft_typed_flare_injected_takeover_clears_draft_survives(v
  * `_at`. FLARE_START (`ff_shell_intent`, the same entry point a real
  * `ffsim --ctl` button tap reaches through `ff_shell_intent_sink`) needs
  * no pairing to sound FLARE_SENT — see ff_shell.c's FF_INTENT_FLARE_START
- * handler. */
+ * handler.
+ *
+ * Review round 2 (2026-09-03, "Wire honesty" PR): FLARE_SENT now fires on
+ * the WAITING->SENT wire CONFIRMATION (shell_flare_wire), not the bare
+ * send intent — this session opens with no transport (no `--connect`,
+ * `shell_cfg.transport` left zeroed), whose sender always refuses, so the
+ * chime would never fire without installing an ACCEPTING sender first.
+ * The real "no mesh -> silent, mesh -> chimes" behavior this now
+ * exercises is exactly the honest behavior test_shell.c's own
+ * S10_wire_flare_sent_chime_* tests pin in isolation. */
 static void S27_ctl_loop_play_sound_hook_logs_flare_sent(void)
 {
     static ff_shell_t shell;
@@ -474,6 +502,9 @@ static void S27_ctl_loop_play_sound_hook_logs_flare_sent(void)
     cfg.mock_clock = true;
 
     TEST_ASSERT_EQUAL_INT(0, ff_ctl_loop_open(&ctx, &shell, &pack, &shell_cfg, &cfg));
+
+    ff_wiring_sender_t const accept_sender = {s27_ctl_sound_send_text, s27_ctl_sound_send_private, NULL};
+    ff_shell_set_sender(&shell, accept_sender);
 
     TEST_ASSERT_EQUAL_UINT32(0, ff_ctl_loop_sound_log_count(&ctx));
 
