@@ -121,6 +121,10 @@ spinning forever. `mc_transport_tcp` is unchanged — it still never returns
 
 Tests: `S03_debt_write_backpressure_below_budget_sends_frame_no_reconnect`,
 `S03_debt_write_backpressure_budget_exhausted_triggers_reconnect`,
+`S03_debt_write_backpressure_transport_stuck_forever_fails_at_exactly_budget`
+(a transport that returns 0 unconditionally, forever — added after review
+on #170 so the budget pin isn't coincidental to a countdown mock that
+happens to recover exactly at the boundary),
 `S03_debt_write_negative_return_fails_immediately`
 (`meshclient/tests/test_meshclient.c`).
 
@@ -157,32 +161,52 @@ the whole mesh's node database in one delivery, and `mc_tick()` shares its
 calling tick with UI rendering (`ff_shell.c`'s `ff_shell_tick`) — decoding
 an unbounded burst back-to-back in one call could stall that shared tick.
 
-**Fix:** `mc_tick()` now decodes at most `MC_TICK_MAX_FRAMES` (32,
-documented in `mc_client.h` next to `mc_tick()`) complete frames per call.
-32 is chosen against the largest realistic burst: even a 100-node
+**Fix:** `mc_tick()` now dispatches at most `MC_TICK_MAX_FRAMES` (32,
+documented in `mc_client.h` next to `mc_client_t`) complete frames per
+call. 32 is chosen against the largest realistic burst: even a 100-node
 want_config dump (on the order of Meshtastic's stock node-database size on
 typical hardware) finishes draining in ~4 calls — well under 100 ms at the
 spec's ~50 Hz cadence — while any single `mc_tick()` call never does more
 than 32 frames' worth of `pb_decode()` + dispatch.
 
-Implementation note: to guarantee nothing is lost when the cap lands
-mid-burst, `mc_tick()` now reads the transport **one byte at a time**,
-checking the cap before each read, instead of the previous 64-byte chunk
-read. This means a byte is never pulled out of the transport unless it is
-immediately fed to the framer — there is no partially-consumed chunk to
-carry over between calls, at the cost of more (cheap) `transport.read()`
-calls for the same total bytes. Bytes beyond the cap are simply left
-buffered in the transport for the next call(s); frame order is preserved
-because the framer and transport both simply resume where the previous
-call left off.
+**Implementation (revised after review on #170):** the first version of
+this fix read the transport one byte at a time to make "nothing lost when
+the cap lands mid-burst" trivially true, but that traded away the actual
+goal — a 4160-byte/40-frame burst went from 66 `transport.read()` calls
+(pre-fix, 64-byte chunks) to 4161 (one recv() syscall per byte on TCP), a
+regression on cheap-per-tick-work on the shared UI tick. `mc_tick()` now
+reads `MC_TICK_READ_CHUNK`-sized chunks again (64 bytes, matching the
+pre-existing chunk size), and the "nothing lost" guarantee is carried by
+`mc_client_t.tick_carry_buf`/`tick_carry_len`/`tick_carry_pos` instead of
+by the read granularity: `mc_framer_t.buf` only ever accumulates the ONE
+frame currently in progress, so it can't hold raw leftover bytes spanning
+a chunk boundary — when the cap lands mid-chunk, the unconsumed remainder
+is copied into `tick_carry_buf` and fed to the framer FIRST on the next
+`mc_tick()` call, before any further `transport.read()`. No byte is ever
+read from the transport without being fed to the framer either within the
+same call or (via the carry) the next one, and frame order is preserved
+because the carry is always drained before fresh reads resume.
 
-Test: `S03_debt_mc_tick_bounded_drain_caps_frames_per_call` — feeds
-`MC_TICK_MAX_FRAMES + 5` frames into a fake transport; the first
-`mc_tick()` call delivers exactly the cap (transport left with bytes
-buffered), the second delivers the remaining 5, and both calls' payloads
-are checked in order end-to-end. The existing byte-dribble/resync (AC1)
-tests exercise `mc_framer_feed()` directly and are unaffected; the AC8
-fuzz-smoke test was updated to call `mc_tick()` in a loop until its mock
-transport drains, since a single call is no longer guaranteed to.
-Mutation-tested: disabling the cap check makes this test fail
-(`Expected 32 Was 37`) and nothing else.
+Tests (`test_meshclient.c`):
+- `S03_debt_mc_tick_bounded_drain_caps_frames_per_call` — feeds
+  `MC_TICK_MAX_FRAMES + 8` (40) frames / 1000 bytes into a fake transport;
+  the first `mc_tick()` call dispatches exactly 32, the second dispatches
+  the remaining 8, payload ordering checked end-to-end. The same test also
+  pins the read-call-count regression: total `transport.read()` calls
+  across both `mc_tick()` calls equals `ceil(1000/64) + 1 = 17` (both the
+  formula and the literal `17` are asserted), never the review's reported
+  4161-calls-for-a-similar-burst shape.
+- The existing byte-dribble/resync (AC1) tests exercise `mc_framer_feed()`
+  directly and are unaffected; the AC8 fuzz-smoke test calls `mc_tick()`
+  in a loop until its mock transport drains, since a single call is not
+  guaranteed to drain everything.
+
+Mutation-tested:
+- Dropping the carry (stashing nothing, just `break`ing on cap-mid-chunk)
+  → `S03_debt_mc_tick_bounded_drain_caps_frames_per_call` fails
+  (`Expected 40 Was 38`, frames genuinely lost).
+- Restoring byte-at-a-time reads → the same test's read-call-count pin
+  fails (`Expected 17 Was 1001`).
+Both mutations were reverted with targeted edits after a fresh rebuild
+confirmed the failure (object-file hash checked to rule out a stale
+binary).

@@ -414,6 +414,44 @@ typedef struct {
     void *user;
 } mc_events_t;
 
+/* Byte-chunk size mc_tick() reads from the transport at a time. Ordinary
+ * chunked I/O (not one byte per transport.read() call) — the cap below is
+ * what bounds per-call work, not the read granularity, so there is no
+ * reason to pay one transport call per byte. 64 matches the pre-existing
+ * chunk size this library has always used. */
+#define MC_TICK_READ_CHUNK 64u
+
+/* Cap on complete FromRadio frames DISPATCHED within one mc_tick() call
+ * (i.e. delivered to mc_process_from_radio() — decode_errors/decode_skipped
+ * still get bumped by whatever fires within a dispatch, this just bounds
+ * how many frames are pulled through per call).
+ *
+ * Without a cap, mc_tick()'s read loop drains the transport completely in
+ * one call — fine for ordinary traffic, but meshtasticd's want_config
+ * response can burst a NodeInfo dump of the whole mesh's node database in
+ * one delivery (a busy public channel can carry on the order of 100
+ * nodes), and mc_tick() shares its calling tick with UI rendering
+ * (ff_shell.c's ff_shell_tick). Decoding a large dump's worth of
+ * protobufs back-to-back in a single call would stall that shared tick.
+ *
+ * 32 caps the worst case at a small, constant amount of decode work per
+ * call: even a 100-node dump finishes in ~4 ticks (~80 ms at the spec's
+ * 50 Hz cadence, docs/specs/S03-meshclient.md), invisible to a human, while
+ * any single mc_tick() call never does more than 32 frames' worth of
+ * pb_decode() + dispatch.
+ *
+ * Frames beyond the cap are simply not consumed yet: mc_tick() still
+ * reads the transport in MC_TICK_READ_CHUNK-sized chunks (cheap — one
+ * transport.read() call per chunk, not per byte), but if the cap lands
+ * mid-chunk, the unconsumed remainder of that chunk is copied into
+ * mc_client_t's own tick_carry_buf rather than fed to the framer or
+ * discarded. mc_framer_t.buf cannot hold it — that accumulator only ever
+ * holds bytes belonging to the ONE frame currently in progress, not raw
+ * leftover bytes spanning a chunk boundary. The next mc_tick() call feeds
+ * tick_carry_buf to the framer first, before reading the transport again,
+ * so nothing is lost and frame order is preserved across calls. */
+#define MC_TICK_MAX_FRAMES 32u
+
 /* -------------------------------------------------------------------- */
 /* Client                                                                */
 /* -------------------------------------------------------------------- */
@@ -446,6 +484,17 @@ typedef struct mc_client {
     bool reconnect_pending;
 
     mc_stats_t stats;
+
+    /* Bytes read from the transport in a MC_TICK_MAX_FRAMES-capped
+     * mc_tick() call that couldn't be fed to the framer this call because
+     * the cap was already hit mid-chunk. Fed to the framer FIRST on the
+     * next mc_tick() call, before any further transport.read() — see
+     * MC_TICK_MAX_FRAMES's doc comment. tick_carry_len == 0 means empty;
+     * tick_carry_pos is how much of tick_carry_buf[0..tick_carry_len) has
+     * already been consumed. */
+    uint8_t tick_carry_buf[MC_TICK_READ_CHUNK];
+    uint16_t tick_carry_len;
+    uint16_t tick_carry_pos;
 } mc_client_t;
 
 /** Initialize a freshly-allocated client. Does not touch the transport or
@@ -453,29 +502,11 @@ typedef struct mc_client {
  * fully reset a client (equivalent to a fresh mc_client_t). */
 void mc_init(mc_client_t *c, mc_transport_t t, mc_events_t ev, ff_clock_t const *clock);
 
-/* Cap on complete FromRadio frames decoded within one mc_tick() call.
- *
- * Without a cap, mc_tick()'s read loop drains the transport completely in
- * one call — fine for ordinary traffic, but meshtasticd's want_config
- * response can burst a NodeInfo dump of the whole mesh's node database in
- * one delivery (a busy public channel can carry on the order of 100
- * nodes), and mc_tick() shares its calling tick with UI rendering
- * (ff_shell.c's ff_shell_tick). Decoding a large dump's worth of
- * protobufs back-to-back in a single call would stall that shared tick.
- *
- * 32 caps the worst case at a small, constant amount of decode work per
- * call: even a 100-node dump finishes in ~4 ticks (~80 ms at the spec's
- * 50 Hz cadence, docs/specs/S03-meshclient.md), invisible to a human, while
- * any single mc_tick() call never does more than 32 frames' worth of
- * pb_decode() + dispatch. Frames beyond the cap are simply not read from
- * the transport yet — mc_tick() reads one byte at a time and only ever
- * reads a byte it immediately feeds to the framer, so nothing already
- * buffered in the transport is lost; it drains on the next call(s). */
-#define MC_TICK_MAX_FRAMES 32u
-
 /** Pump read/parse/heartbeat/reconnect. Call at ~50 Hz (every ~20ms).
- * Bounded: decodes at most MC_TICK_MAX_FRAMES frames per call (see its
- * doc comment) — a large burst drains over several calls, never one. */
+ * Bounded: dispatches at most MC_TICK_MAX_FRAMES frames per call (see its
+ * doc comment near mc_client_t, above) — a large burst drains over
+ * several calls, never one, and nothing read from the transport is ever
+ * lost when the cap lands mid-chunk (see mc_client_t.tick_carry_*). */
 void mc_tick(mc_client_t *c, uint32_t now_ms);
 
 /** Start (or restart) the want_config handshake. */

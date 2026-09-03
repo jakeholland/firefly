@@ -85,7 +85,14 @@ typedef struct {
      * Simulates a transport like a UART TX ring that is momentarily full
      * for exactly this many write() *calls*. */
     uint32_t write_zero_countdown;
+    /* Never recovers: every write() call returns 0, forever (checked
+     * before write_zero_countdown, and ignores it). Distinct from
+     * write_zero_countdown so a "budget exhausted" test isn't pinning a
+     * number that only holds by coincidence of the mock recovering at
+     * exactly the budget boundary — this transport never would recover. */
+    bool write_always_zero;
     uint32_t write_calls; /* total mock_write invocations, for budget pinning */
+    uint32_t read_calls;  /* total mock_read invocations, for read-call-count pinning */
 } mock_io_t;
 
 static void mock_io_reset(mock_io_t *m)
@@ -96,6 +103,7 @@ static void mock_io_reset(mock_io_t *m)
 static int mock_read(void *io, uint8_t *buf, size_t maxlen)
 {
     mock_io_t *m = (mock_io_t *)io;
+    m->read_calls++;
     if (m->rx_error_once) {
         m->rx_error_once = false;
         return -1;
@@ -116,6 +124,9 @@ static int mock_write(void *io, uint8_t const *buf, size_t len)
     m->write_calls++;
     if (m->tx_fail) {
         return -1;
+    }
+    if (m->write_always_zero) {
+        return 0; /* never recovers — see the field's doc comment */
     }
     if (m->write_zero_countdown > 0) {
         m->write_zero_countdown--;
@@ -1065,6 +1076,38 @@ static void S03_debt_write_backpressure_budget_exhausted_triggers_reconnect(void
     TEST_ASSERT_EQUAL_UINT32(0, stats.reconnects);
 }
 
+static void S03_debt_write_backpressure_transport_stuck_forever_fails_at_exactly_budget(void)
+{
+    /* Unlike the budget-exhausted test above (which uses a countdown that
+     * happens to line up with the budget), this transport NEVER recovers
+     * — write() returns 0 on every single call, with no upper bound on
+     * how long it would keep doing so if the retry loop kept calling it.
+     * The only thing that can stop this loop is the budget itself, and
+     * the literal call count pins exactly where it stops. */
+    mock_io_t io;
+    mock_io_reset(&io);
+    io.write_always_zero = true;
+
+    mock_clock_t clk = {.t = 0};
+    ff_clock_t clock = {.now_ms = mock_now, .user = &clk};
+    events_capture_t cap;
+    memset(&cap, 0, sizeof(cap));
+
+    mc_client_t c;
+    mc_init(&c, (mc_transport_t){.write = mock_write, .read = mock_read, .io = &io}, make_events(&cap),
+             &clock);
+
+    mc_connect(&c);
+
+    TEST_ASSERT_EQUAL(MC_STATE_DISCONNECTED, mc_state(&c));
+    TEST_ASSERT_TRUE(c.reconnect_pending);
+    TEST_ASSERT_EQUAL_UINT32(0, io.tx_len);
+    /* The literal budget, pinned: exactly 64 calls, every one of them
+     * returning 0 forever — the loop had no way to know that in advance,
+     * only the call-count budget bounds it. */
+    TEST_ASSERT_EQUAL_UINT32(64, io.write_calls);
+}
+
 static void S03_debt_write_negative_return_fails_immediately(void)
 {
     mock_io_t io;
@@ -1118,7 +1161,9 @@ static void drain_on_private(void *u, uint32_t from, uint32_t to, uint32_t portn
 
 static void S03_debt_mc_tick_bounded_drain_caps_frames_per_call(void)
 {
-    uint32_t const total_frames = MC_TICK_MAX_FRAMES + 5u;
+    /* 32 + 8 = 40: the cap (32) then the remainder (8), pinned exactly —
+     * matches the review's own burst shape (a 40-frame burst). */
+    uint32_t const total_frames = MC_TICK_MAX_FRAMES + 8u;
     TEST_ASSERT_TRUE(total_frames <= 64u); /* fits drain_capture_t.seen */
 
     static uint8_t frames[8192];
@@ -1165,8 +1210,8 @@ static void S03_debt_mc_tick_bounded_drain_caps_frames_per_call(void)
 
     mc_tick(&c, 6);
 
-    /* The remainder arrives on the next call, ordering preserved
-     * throughout, and the transport is now fully drained. */
+    /* The remainder (8 frames) arrives on the next call, ordering
+     * preserved throughout, and the transport is now fully drained. */
     TEST_ASSERT_EQUAL_INT((int)total_frames, cap.count);
     TEST_ASSERT_EQUAL_UINT(io.rx_len, io.rx_pos);
     stats = mc_get_stats(&c);
@@ -1174,6 +1219,33 @@ static void S03_debt_mc_tick_bounded_drain_caps_frames_per_call(void)
     for (uint32_t i = 0; i < total_frames; i++) {
         TEST_ASSERT_EQUAL_UINT16((uint16_t)i, cap.seen[i]);
     }
+
+    /* Read-call-count regression pin (review finding on #170): a
+     * chunked-read implementation reads `pos` total bytes in
+     * MC_TICK_READ_CHUNK-sized chunks, plus exactly one final zero-length
+     * read to learn the transport is empty — regardless of how many
+     * mc_tick() calls that spans, because the per-tick frame cap only
+     * ever stops mid-CHUNK (carried over, never re-read), never causes a
+     * chunk to be read twice. So the total read() calls across both
+     * mc_tick() calls above is EXACTLY ceil(pos / MC_TICK_READ_CHUNK) + 1
+     * — an equality, not just the review's "<=" bound (which a byte-at-a-
+     * time implementation would blow past: that regression measured 4161
+     * calls for a similarly-sized burst, one read() per byte). */
+    /* Literal pin (review finding on #170's regression numbers): this
+     * fixture is 40 frames / 1000 bytes total. A chunked-read
+     * implementation needs ceil(1000/64) = 16 chunk reads to cover every
+     * byte, plus exactly one final zero-length read to learn the
+     * transport is empty = 17 read() calls, however many mc_tick() calls
+     * that spans — the frame cap only ever pauses mid-chunk (carried
+     * over, never re-read), it never causes a chunk to be read twice or
+     * adds an extra transport call. Both the formula and the literal are
+     * asserted so a change to the fixture size (which would legitimately
+     * move the literal) still has the formula catch a REAL regression. */
+    TEST_ASSERT_EQUAL_UINT(1000u, pos);
+    uint32_t const expected_reads = (uint32_t)((pos + MC_TICK_READ_CHUNK - 1u) / MC_TICK_READ_CHUNK) + 1u;
+    TEST_ASSERT_EQUAL_UINT32(17u, expected_reads);
+    TEST_ASSERT_EQUAL_UINT32(17u, io.read_calls);
+    TEST_ASSERT_TRUE(io.read_calls <= expected_reads); /* the review's own <= bound, restated */
 }
 
 /* -------------------------------------------------------------------- */
@@ -2345,6 +2417,7 @@ int main(void)
 
     RUN_TEST(S03_debt_write_backpressure_below_budget_sends_frame_no_reconnect);
     RUN_TEST(S03_debt_write_backpressure_budget_exhausted_triggers_reconnect);
+    RUN_TEST(S03_debt_write_backpressure_transport_stuck_forever_fails_at_exactly_budget);
     RUN_TEST(S03_debt_write_negative_return_fails_immediately);
 
     RUN_TEST(S03_debt_position_no_fix_yet_does_not_count_as_decode_error);

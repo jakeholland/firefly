@@ -497,26 +497,57 @@ void mc_connect(mc_client_t *c)
     mc_begin_handshake(c, mc_now(c));
 }
 
+/* Feeds one byte to the framer and, on a complete frame, decodes and
+ * dispatches it, incrementing *frames_dispatched. Shared by mc_tick()'s
+ * leftover-carry drain and its fresh-chunk drain so the two can't drift
+ * out of sync on what counts as "dispatched" against MC_TICK_MAX_FRAMES. */
+static void mc_tick_feed_byte(mc_client_t *c, uint8_t byte, uint32_t *frames_dispatched)
+{
+    uint8_t const *frame_buf = NULL;
+    uint16_t frame_len = 0;
+    if (mc_framer_feed(&c->framer, byte, &frame_buf, &frame_len)) {
+        c->stats.frames_ok++;
+        (*frames_dispatched)++;
+
+        meshtastic_FromRadio fr = meshtastic_FromRadio_init_zero;
+        pb_istream_t is = pb_istream_from_buffer(frame_buf, frame_len);
+        if (pb_decode(&is, meshtastic_FromRadio_fields, &fr)) {
+            mc_process_from_radio(c, &fr);
+        } else {
+            c->stats.decode_errors++;
+        }
+    }
+}
+
 void mc_tick(mc_client_t *c, uint32_t now_ms)
 {
     /* Bounded drain (MC_TICK_MAX_FRAMES, see its doc comment in
-     * mc_client.h): stop once this call has decoded that many complete
-     * frames, leaving anything still buffered in the transport for the
-     * next call(s). Read one byte at a time — checked against the cap
-     * *before* each read — so a byte is never pulled out of the transport
-     * unless it is immediately fed to the framer; nothing is ever read
-     * and then discarded, so nothing is lost between calls, and frame
-     * order is naturally preserved (the framer/transport are simply
-     * resumed where this call left off). */
-    uint32_t frames_this_tick = 0;
+     * mc_client.h): dispatch at most that many complete frames this call,
+     * leaving anything still buffered for the next call(s). */
+    uint32_t frames_dispatched = 0;
 
-    for (;;) {
-        if (frames_this_tick >= MC_TICK_MAX_FRAMES) {
-            break;
-        }
+    /* Bytes carried over from a PREVIOUS mc_tick() call that hit the cap
+     * mid-chunk (mc_client_t.tick_carry_*) are already-received data —
+     * feed them to the framer first, before touching the transport again,
+     * so ordering across calls is preserved. */
+    while (c->tick_carry_pos < c->tick_carry_len && frames_dispatched < MC_TICK_MAX_FRAMES) {
+        mc_tick_feed_byte(c, c->tick_carry_buf[c->tick_carry_pos++], &frames_dispatched);
+    }
+    if (c->tick_carry_pos >= c->tick_carry_len) {
+        c->tick_carry_len = 0;
+        c->tick_carry_pos = 0;
+    }
 
-        uint8_t byte;
-        int n = c->transport.read(c->transport.io, &byte, 1);
+    /* Ordinary chunked reads (MC_TICK_READ_CHUNK bytes/call, not one byte
+     * per transport.read() — the cap above is what bounds per-call work,
+     * paying one syscall per byte would not make this any more bounded,
+     * only slower). If the cap is reached partway through a chunk, the
+     * unconsumed remainder is copied into tick_carry_buf rather than fed
+     * to the framer or dropped — mc_framer_t.buf can't hold it, it only
+     * ever accumulates the ONE frame currently in progress. */
+    while (frames_dispatched < MC_TICK_MAX_FRAMES) {
+        uint8_t chunk[MC_TICK_READ_CHUNK];
+        int n = c->transport.read(c->transport.io, chunk, sizeof(chunk));
         if (n < 0) {
             mc_fail_and_schedule_reconnect(c, now_ms);
             break;
@@ -526,19 +557,18 @@ void mc_tick(mc_client_t *c, uint32_t now_ms)
         }
         c->last_rx_ms = now_ms;
 
-        uint8_t const *frame_buf = NULL;
-        uint16_t frame_len = 0;
-        if (mc_framer_feed(&c->framer, byte, &frame_buf, &frame_len)) {
-            c->stats.frames_ok++;
-            frames_this_tick++;
-
-            meshtastic_FromRadio fr = meshtastic_FromRadio_init_zero;
-            pb_istream_t is = pb_istream_from_buffer(frame_buf, frame_len);
-            if (pb_decode(&is, meshtastic_FromRadio_fields, &fr)) {
-                mc_process_from_radio(c, &fr);
-            } else {
-                c->stats.decode_errors++;
+        for (int i = 0; i < n; i++) {
+            if (frames_dispatched >= MC_TICK_MAX_FRAMES) {
+                /* Cap hit mid-chunk: chunk[i..n) was already pulled out
+                 * of the transport by the read() above, so it must be
+                 * carried to the next call, never dropped. */
+                size_t remaining = (size_t)(n - i);
+                memcpy(c->tick_carry_buf, chunk + i, remaining);
+                c->tick_carry_len = (uint16_t)remaining;
+                c->tick_carry_pos = 0;
+                break;
             }
+            mc_tick_feed_byte(c, chunk[i], &frames_dispatched);
         }
     }
 
