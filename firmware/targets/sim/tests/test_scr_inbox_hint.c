@@ -46,6 +46,21 @@
  * HAVING crew linked. Asserting the hint is ABSENT on those two fixtures
  * (not just present on inbox_no_crew) is what actually pins the n<=1
  * condition rather than some correlated-but-wrong stand-in for it.
+ *
+ * BOUNDARY COVERAGE (review finding on the first version of this file,
+ * PR #171): the three fixtures above only exercise n=1 (no_crew) and
+ * n=4 (quiet/all_stale) — n=2 and n=3 were never proven, so a mutant
+ * loosening the guard to `n <= 2` or `n <= 3` still passed every
+ * assertion here. tests/fixtures/inbox_rally.json (subview RALLY) and
+ * inbox_popup.json (subview POPUP) already carry real n=2/n=3 conv
+ * lists for their own screens' fixtures — `signals.convs` is parsed by
+ * fixture.c independently of `signals.subview` (loaded unconditionally,
+ * not gated on which sub-screen the fixture names), so reusing their
+ * conv DATA against the INBOX list screen just means overriding the
+ * loaded `state.inbox.subview` to FF_INBOX_SUB_INBOX before building —
+ * see assert_no_crew_hint_forcing_inbox_subview below. This is the
+ * same "reuse existing fixture data, force the sub-view under test"
+ * technique, not a new fixture file.
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -67,7 +82,7 @@ void setUp(void) {}
 /* P0 harness-hang fix (debt/test-harness PR), same shape as this
  * directory's sibling test files — see tests/test_wakeonly_touch.c's
  * own tearDown comment for the full repro/verification writeup. This
- * file's one test pairs its own lv_init()/lv_deinit() per fixture (a
+ * file's tests pair their own lv_init()/lv_deinit() per fixture (a
  * loop, same shape as test_face_hit_targets.c's sweep_fixture), so a
  * failed TEST_ASSERT partway through one fixture's build would longjmp
  * past that fixture's lv_deinit() without this safety net. */
@@ -115,8 +130,12 @@ static lv_obj_t *find_label_with_text(lv_obj_t *root, char const *text)
 
 /* Builds the real INBOX screen for one fixture and asserts whether the
  * no-crew hint's headline (and, when present, its exact sub-line) shows
- * up in the built LVGL tree. */
-static void assert_no_crew_hint(char const *fixture_name, bool expect_visible)
+ * up in the built LVGL tree. `force_inbox_subview`: override the loaded
+ * fixture's own `subview` to FF_INBOX_SUB_INBOX before building — needed
+ * for fixtures authored for a DIFFERENT sub-screen (rally/popup/thread)
+ * whose conv-list DATA (n=2, n=3) is what this test wants to reuse; a
+ * no-op for the three fixtures already authored with subview=inbox. */
+static void assert_no_crew_hint_ex(char const *fixture_name, bool expect_visible, bool force_inbox_subview)
 {
     char path[1024];
     snprintf(path, sizeof(path), "%s%s.json", FF_FIXTURE_DIR, fixture_name);
@@ -140,6 +159,10 @@ static void assert_no_crew_hint(char const *fixture_name, bool expect_visible)
     TEST_ASSERT_EQUAL_INT_MESSAGE(FF_FIXTURE_OK, fr, path);
     TEST_ASSERT_EQUAL_MESSAGE(FF_APP_FACE_INBOX, state.active_face, fixture_name);
 
+    if (force_inbox_subview) {
+        state.inbox.subview = FF_INBOX_SUB_INBOX;
+    }
+
     ff_build_face_screen(&state);
     lv_refr_now(disp);
 
@@ -156,6 +179,11 @@ static void assert_no_crew_hint(char const *fixture_name, bool expect_visible)
     lv_deinit();
 }
 
+static void assert_no_crew_hint(char const *fixture_name, bool expect_visible)
+{
+    assert_no_crew_hint_ex(fixture_name, expect_visible, false);
+}
+
 /* S24 AC9 — the honest no-crew hint's exact text and visibility across
  * the three states golden pixels already cover: shown (with its exact
  * headline + sub-line) with no crew linked at all, and absent — not a
@@ -164,14 +192,33 @@ static void assert_no_crew_hint(char const *fixture_name, bool expect_visible)
  * (every member LOST). */
 static void S24_AC9_no_crew_hint_text_and_visibility_across_the_three_states(void)
 {
-    assert_no_crew_hint("inbox_no_crew", true);
-    assert_no_crew_hint("inbox_quiet", false);
-    assert_no_crew_hint("inbox_all_stale", false);
+    assert_no_crew_hint("inbox_no_crew", true);   /* n=1 (CREW only) */
+    assert_no_crew_hint("inbox_quiet", false);    /* n=4 */
+    assert_no_crew_hint("inbox_all_stale", false); /* n=4 */
+}
+
+/* S24 AC9 boundary — n=2 and n=3 (review finding on PR #171): the three
+ * fixtures above skip straight from n=1 to n=4, so a mutant that
+ * loosens `n <= 1` to `n <= 2` or `n <= 3` passes every assertion in
+ * S24_AC9_no_crew_hint_text_and_visibility_across_the_three_states
+ * above undetected. inbox_rally.json (a real paired member + the CREW
+ * row, authored for the Rally screen) supplies a genuine n=2 case;
+ * inbox_popup.json (CREW + two paired members, authored for the action
+ * popup) supplies n=3 — both reused here against the INBOX list screen
+ * via assert_no_crew_hint_ex's force_inbox_subview, per this file's own
+ * header comment. Both must NOT show the hint: real crew is linked in
+ * both cases, just not the CREW-only (n<=1) state the hint is honest
+ * about. */
+static void S24_AC9_no_crew_hint_stays_absent_at_the_n2_and_n3_boundary(void)
+{
+    assert_no_crew_hint_ex("inbox_rally", false, true); /* n=2: CREW + 1 paired member */
+    assert_no_crew_hint_ex("inbox_popup", false, true); /* n=3: CREW + 2 paired members */
 }
 
 int main(void)
 {
     UNITY_BEGIN();
     RUN_TEST(S24_AC9_no_crew_hint_text_and_visibility_across_the_three_states);
+    RUN_TEST(S24_AC9_no_crew_hint_stays_absent_at_the_n2_and_n3_boundary);
     return UNITY_END();
 }
