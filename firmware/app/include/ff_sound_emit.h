@@ -4,7 +4,7 @@
  * Spec: docs/specs/S27-sounds.md, "Shell seam". Mirrors `ff_intent.h`'s
  * process-global emit/bind seam ON PURPOSE — same problem shape, same
  * answer: the shell does not see raw button presses (only screens'
- * `ff_scr_button_create` base does, via LVGL's `LV_EVENT_PRESSED`), so a
+ * `ff_scr_button_create` base does, via LVGL's `LV_EVENT_CLICKED`), so a
  * screen-layer press has nowhere to report "a tap just happened" except a
  * process-global sink, exactly like a screen-layer tap has nowhere to
  * report "the user asked to go back" except `ff_intent_emit`.

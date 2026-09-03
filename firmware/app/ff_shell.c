@@ -1211,14 +1211,27 @@ static void shell_notify_push_banner(shell_t *sh, ff_notify_kind_t kind, uint32_
     int n = snprintf(preview, sizeof(preview), "%.*s", (int)body_len, (body != NULL) ? body : "");
     if (n < 0) preview[0] = '\0'; /* snprintf failure: an honestly empty preview, never garbage */
 
-    (void)ff_notify_push(&sh->notify, kind, FF_NOTIFY_TIER_BANNER, from, preview, now_ms);
-    sh->wake_pending = true; /* S26(c) wake hook — see the field's comment */
+    ff_notify_push_result_t const r = ff_notify_push(&sh->notify, kind, FF_NOTIFY_TIER_BANNER, from, preview, now_ms);
+    sh->wake_pending = true; /* S26(c) wake hook — see the field's comment; a coalesced update is still a
+                              * genuinely new arrival worth waking the screen for, even though it does not
+                              * get its own sound below (see that gate's own comment). */
 
     /* S27 sounds — a banner just pushed for a new MESSAGE or RALLY (this
      * function's own two callers, both already re-checked paired above,
      * are the whole banner-eligible set — see ff_notify.h's `kind`
-     * doc). One call site covers both events this function ever pushes. */
-    shell_sound(sh, (kind == FF_NOTIFY_RALLY) ? FF_SOUND_RALLY : FF_SOUND_MESSAGE);
+     * doc). One call site covers both events this function ever pushes.
+     *
+     * Gated on FF_NOTIFY_PUSH_NEW, not merely "a push happened": two
+     * rapid messages from the SAME sender within FF_NOTIFY_COALESCE_MS
+     * (2s) COALESCE into the one already-queued banner
+     * (ff_notify_push's own documented behavior) — that is one banner
+     * being refreshed, not a second notification, so it must not sound
+     * a second blip. A DIFFERENT sender (or the same sender past the
+     * coalesce window) always gets its own FF_NOTIFY_PUSH_NEW entry and
+     * its own sound. */
+    if (r == FF_NOTIFY_PUSH_NEW) {
+        shell_sound(sh, (kind == FF_NOTIFY_RALLY) ? FF_SOUND_RALLY : FF_SOUND_MESSAGE);
+    }
 }
 
 /** Milliseconds until `expiry_ms`, or -1 when the fact is not live.

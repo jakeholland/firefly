@@ -1,7 +1,7 @@
 /**
  * ff_power.h — battery power latch + PWR/BOOT button sampling + soft
- * power-off for the Waveshare ESP32-S3-Touch-LCD-1.46 (S25 slices a+b /
- * S26 slice b).
+ * power-off + battery-sense ADC for the Waveshare ESP32-S3-Touch-LCD-1.46
+ * (S25 slices a+b+c / S26 slice b).
  *
  * The board's battery is gated by a soft-latch power circuit, not hard-wired
  * to the system rail. Pressing PWR momentarily powers the rail; firmware must
@@ -16,12 +16,17 @@
  * goes in firmware/core/"). `ff_power_off()` only drives a pin — the
  * caller (app_main) decides WHEN to call it and composes it with the
  * backlight-off call (`ff_display_set_brightness(0)`), which deliberately
- * does NOT live in this component either (no display dependency in a
- * two-pin GPIO HAL).
+ * does NOT live in this component either (no display dependency here).
+ * `ff_power_batt_mv()` (S25 slice c) is the same discipline applied to
+ * the battery-sense ADC: it returns a millivolt READING, never a
+ * percent — turning a voltage into a charge percent (and smoothing it
+ * across ticks) is `core/include/ff_batt.h`'s job, fed by
+ * `ff_shell_set_batt_mv` (app/include/ff_shell.h) one layer up.
  */
 #pragma once
 
 #include <stdbool.h>
+#include <stdint.h>
 
 #include "esp_err.h"
 
@@ -96,6 +101,79 @@ bool ff_power_pwr_pressed(void);
  * (the reboot BOOT-release guard, S26 AC4) every tick.
  */
 bool ff_power_boot_pressed(void);
+
+/**
+ * ff_power_batt_init — S25 slice c: bring up the battery-sense ADC.
+ * HARDWARE (from Waveshare's own reference driver, `BAT_Driver.c`,
+ * https://github.com/yaosy1997/ESP32-S3-Touch-LCD-1.46-Test/blob/main/main/BAT_Driver/BAT_Driver.c):
+ * pack voltage is sensed on **ADC1 channel 7 (GPIO8)**, `ADC_ATTEN_DB_12`,
+ * `ADC_BITWIDTH_DEFAULT`, through a 1:3 resistive divider, with a small
+ * measured correction (see `ff_power_batt_mv`'s doc comment for the exact
+ * arithmetic). Configures an ADC1 oneshot unit + that channel, and
+ * attempts calibration in the same tiered order ESP-IDF's own
+ * `esp_adc`-family examples use: curve fitting first
+ * (`adc_cali_create_scheme_curve_fitting`, the only scheme
+ * `ADC_CALI_SCHEME_CURVE_FITTING_SUPPORTED` compiles in for this chip —
+ * ESP32-S3 has no line-fitting scheme at all, `ADC_CALI_SCHEME_LINE_
+ * FITTING_SUPPORTED` is never defined for it), then line fitting on any
+ * chip where that scheme *is* compiled in (kept `#if`-guarded, matching
+ * the SDK's own portability idiom, even though it never compiles on
+ * this board), then no calibration at all. Pure HAL — no percent math
+ * here (see `ff_power_batt_mv`); this call only brings the ADC up.
+ *
+ * MUST be called after `ff_power_latch_on()` (the battery-keep-alive
+ * latch always goes first) but can run anywhere after that — unlike the
+ * latch, a few extra ms here costs nothing on either power source.
+ * Non-fatal on failure (same "log and continue" posture as every other
+ * HAL bring-up call in this file): a puck with no battery-sense ADC
+ * still boots and runs; `ff_power_batt_mv()` simply reports 0 (unknown)
+ * forever. Returns the underlying `esp_err_t` (already logged) on unit/
+ * channel-config failure; `ESP_OK` even when calibration itself could
+ * not be established (that degrade is logged, not treated as an error —
+ * an uncalibrated ADC is still readable, just not turned into an
+ * honest mV figure, see `ff_power_batt_mv`).
+ */
+esp_err_t ff_power_batt_init(void);
+
+/**
+ * ff_power_batt_mv — sample the battery-sense ADC and return the PACK
+ * voltage in millivolts, or 0 ("unknown") if `ff_power_batt_init` was
+ * never called, never calibrated, or a read fails. `0` matches
+ * `ff_shell_set_batt_mv`'s (app/include/ff_shell.h) own documented
+ * "no reading" sentinel one layer up — this function never fabricates a
+ * plausible-looking figure it does not have real calibrated evidence
+ * for (CLAUDE.md: "honest data over pretty data").
+ *
+ * Averages `FF_BATT_ADC_SAMPLES` raw `adc_oneshot_read` calls (see
+ * ff_power.c) before calibrating — cuts sample-to-sample ADC noise
+ * before it ever reaches `ff_batt_filter_t`'s own moving-average +
+ * Schmitt-hysteresis filter (that filter's job is smoothing across
+ * TICKS/load transients, not
+ * suppressing single-conversion quantization noise within one tick).
+ *
+ * ## The conversion arithmetic
+ * `adc_cali_raw_to_voltage` returns the voltage AT THE ADC PIN
+ * (post-divider) in mV. Getting from there to PACK mV composes two
+ * factors, cited in `ff_power.c`'s own top-of-file comment:
+ *   1. the board's 1:3 resistive divider — multiply by 3;
+ *   2. Waveshare's own measured correction on top of that (their
+ *      `BAT_Driver.c` divides the naive ×3 result by 0.990476) — the
+ *      silicon's actual divider ratio is not exactly 3:1.
+ * Composed into ONE named integer constant
+ * (`FF_BATT_PACK_MV_PER_CAL_MV_X1E6`, ff_power_batt_conv.h — a pure,
+ * ESP-free header hoisted out of ff_power.c specifically so a HOST test,
+ * targets/sim/tests/test_batt_pack_mv.c, can pin the conversion by
+ * literal) rather than two separate floating-point multiplies, so the
+ * whole device-facing conversion is integer-only.
+ *
+ * The first successful call logs (ESP_LOGI, once) the raw average, the
+ * calibrated pin mV, and the resulting pack mV — specifically so
+ * bring-up can sanity-check the reading against a multimeter on the
+ * pack — labelled with which calibration scheme is actually in effect
+ * (curve / line / NONE — an uncalibrated reading is never silently
+ * reported as if it were a real voltage).
+ */
+uint16_t ff_power_batt_mv(void);
 
 #ifdef __cplusplus
 }

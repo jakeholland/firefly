@@ -164,6 +164,19 @@ typedef struct {
      * "wall unsupported". */
     bool (*wall)(void *user, int64_t unix_s, char const **err);
 
+    /**
+     * S25c: push one raw pack-voltage reading (millivolts) into the
+     * live shell (`ff_shell_set_batt_mv`, app/include/ff_shell.h) — the
+     * sim's own affordance for driving the battery gauge with no ADC
+     * hardware, same class as `wall`'s bench time-travel and `flare`'s
+     * synthetic inbound. `pack_mv == 0` is the documented "no reading"
+     * sentinel (ff_batt.h) — sending it is how a test exercises the
+     * honest "--%" un-set state, not an error. No failure mode of its
+     * own (the shell always accepts a push); void, same shape as
+     * `tap`/`swipe`. NULL => "batt_mv unsupported".
+     */
+    void (*batt_mv)(void *user, uint16_t pack_mv);
+
     /** Called once, after "quit" is validated and just before the
      * `{"ok":true}` response is sent. May be NULL if the caller has
      * nothing to do here (ff_ctl_poll's caller learns about quit from its
