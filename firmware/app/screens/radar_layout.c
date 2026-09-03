@@ -110,7 +110,8 @@ void radar_layout_build_registry(radar_mode_t mode, bool never_fixed, radar_layo
  * Arrow — 1-D monotonic search over length.
  * ------------------------------------------------------------------- */
 
-void radar_layout_resolve_arrow(radar_layout_registry_t const *reg, float arrow_deg, radar_layout_arrow_t *out)
+void radar_layout_resolve_arrow(radar_layout_registry_t const *reg, float arrow_deg, float max_len_px,
+                                 radar_layout_arrow_t *out)
 {
     if (!out) {
         return;
@@ -122,15 +123,18 @@ void radar_layout_resolve_arrow(radar_layout_registry_t const *reg, float arrow_
     float half_w = RADAR_LAYOUT_ARROW_HEAD_WIDTH_PX / 2.0f;
 
     /* Bounded shortening loop: (ARROW_LEN_PX - ARROW_MIN_LEN_PX) / 4 =
-     * 30 steps needed in the worst case; MAX_STEPS is deliberately far
-     * more generous than that so this is a hard, provable cap, not a
-     * tight fit to today's constants. Every candidate is tested against
-     * the FULL registry union fresh each step (point_in_registry), never
-     * an incremental push toward one violated rectangle — so overlapping
+     * 30 steps needed in the worst case (`max_len_px` is never larger
+     * than RADAR_LAYOUT_ARROW_LEN_PX — see this function's doc comment —
+     * so a smaller starting length, e.g. the locked reach cap, only ever
+     * needs FEWER steps); MAX_STEPS is deliberately far more generous
+     * than that so this is a hard, provable cap, not a tight fit to
+     * today's constants. Every candidate is tested against the FULL
+     * registry union fresh each step (point_in_registry), never an
+     * incremental push toward one violated rectangle — so overlapping
      * reserved rectangles cannot make this oscillate. */
     enum { MAX_STEPS = 64 };
 
-    float tip_r = RADAR_LAYOUT_ARROW_LEN_PX;
+    float tip_r = max_len_px;
     bool shortened = false;
     float tip_x = 0.0f, tip_y = 0.0f, base_x = 0.0f, base_y = 0.0f, left_x = 0.0f, left_y = 0.0f, right_x = 0.0f,
           right_y = 0.0f;
