@@ -64,6 +64,7 @@
 #include "ff_intent.h" /* the emit seam */
 #include "ff_layout.h"
 #include "ff_theme.h"
+#include "scr_nav.h" /* ff_scr_button_create — the shared PRESS_LOCK-clearing button base (#145/#148) */
 
 /* ---------------------------------------------------------------------
  * Layout constants — local to this face (its own design; the geometry
@@ -319,6 +320,31 @@ static void inbox_child_deco(lv_obj_t *o)
     lv_obj_clear_flag(o, LV_OBJ_FLAG_CLICKABLE);
 }
 
+/* inbox_add_scroll_catcher — S17 debt cleanup: the identical 7-line
+ * FLOATING hit-rect this file used to build twice (the thread view's
+ * message list, and the Rally WHERE list), now one function. See the
+ * thread-list call site's own long comment (below, in
+ * inbox_build_thread_*) for the FULL rationale this shape exists for —
+ * both callers share it verbatim, so it's kept there rather than
+ * duplicated here.
+ *
+ * Z-ORDER IS LOAD-BEARING, not incidental: the caller must add this
+ * BEFORE any real row (child index 0), so LVGL's reverse-index hit
+ * search tries every real row first and a row's own hit target still
+ * wins whenever a touch actually lands on it — this function itself
+ * doesn't (can't) enforce call order, only document the requirement
+ * its two callers both already followed before this extraction. */
+static void inbox_add_scroll_catcher(lv_obj_t *list, int32_t margin_x, int32_t h)
+{
+    lv_obj_t *hit = lv_obj_create(list);
+    lv_obj_remove_style_all(hit);
+    lv_obj_add_flag(hit, LV_OBJ_FLAG_FLOATING);
+    lv_obj_clear_flag(hit, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_style_bg_opa(hit, LV_OPA_TRANSP, 0);
+    lv_obj_set_pos(hit, margin_x, 0);
+    lv_obj_set_size(hit, FF_THEME_PUCK_PX - 2 * margin_x, h);
+}
+
 /* ---------------------------------------------------------------------
  * Press-down feedback (S24 AC7) — mirrors the composer's convention
  * (compose_key_press_feedback): a press lights the control amber with
@@ -461,7 +487,7 @@ static void inbox_build_back(lv_obj_t *parent)
 {
     int32_t margin = inbox_safe_margin_x(FF_INBOX_BACK_Y, FF_INBOX_BACK_PX);
 
-    lv_obj_t *back = lv_button_create(parent);
+    lv_obj_t *back = ff_scr_button_create(parent);
     lv_obj_remove_style_all(back);
     lv_obj_set_size(back, FF_INBOX_BACK_PX, FF_INBOX_BACK_PX);
     lv_obj_set_pos(back, margin, FF_INBOX_BACK_Y);
@@ -704,7 +730,7 @@ static lv_obj_t *inbox_row_container(lv_obj_t *parent, int32_t y, int32_t margin
      * so it paints at the bottom, under the highlight and content. CLICKED
      * carries the intent; the PRESSED/RELEASED/PRESS_LOST trio lights the
      * full-row highlight (wired below, once `hl` exists). */
-    lv_obj_t *hit = lv_button_create(row);
+    lv_obj_t *hit = ff_scr_button_create(row);
     lv_obj_remove_style_all(hit);
     lv_obj_set_size(hit, hit_w, FF_INBOX_ROW_H - 2 * FF_INBOX_ROW_HIT_INSET_Y);
     lv_obj_set_pos(hit, 0, FF_INBOX_ROW_HIT_INSET_Y);
@@ -978,7 +1004,7 @@ static void inbox_build_fab(lv_obj_t *parent)
      * radius): the wash is transparent except where it overlaps amber, so
      * only the lens visibly dims; the off-glass corner it also covers is
      * the masked letterbox black and stays black. */
-    lv_obj_t *hit = lv_button_create(parent);
+    lv_obj_t *hit = ff_scr_button_create(parent);
     lv_obj_remove_style_all(hit);
     lv_obj_set_size(hit, FF_INBOX_FAB_HIT_PX, FF_INBOX_FAB_HIT_PX);
     lv_obj_set_pos(hit, FF_INBOX_FAB_HIT_X, FF_INBOX_FAB_HIT_Y);
@@ -1568,7 +1594,7 @@ static void inbox_build_thread_header(lv_obj_t *parent, ff_app_inbox_t const *v,
 static void inbox_build_chip(lv_obj_t *parent, int32_t x, int32_t w, char const *text,
                                bool amber_text, lv_event_cb_t cb, uintptr_t which)
 {
-    lv_obj_t *chip = lv_button_create(parent);
+    lv_obj_t *chip = ff_scr_button_create(parent);
     lv_obj_remove_style_all(chip);
     lv_obj_set_size(chip, w, FF_INBOX_CHIP_H);
     lv_obj_set_pos(chip, x, FF_INBOX_CHIP_Y);
@@ -1748,13 +1774,7 @@ static void inbox_build_thread(lv_obj_t *parent, ff_app_inbox_t const *v, bool c
          * LV_DIR_VER-scrollable ancestor (FLOATING does not remove it
          * from that ancestor walk, only from scroll-following and
          * layout), and scrolls that. */
-        lv_obj_t *hit = lv_obj_create(list);
-        lv_obj_remove_style_all(hit);
-        lv_obj_add_flag(hit, LV_OBJ_FLAG_FLOATING);
-        lv_obj_clear_flag(hit, LV_OBJ_FLAG_SCROLLABLE);
-        lv_obj_set_style_bg_opa(hit, LV_OPA_TRANSP, 0);
-        lv_obj_set_pos(hit, list_margin, 0);
-        lv_obj_set_size(hit, FF_THEME_PUCK_PX - 2 * list_margin, list_h);
+        inbox_add_scroll_catcher(list, list_margin, list_h);
 
         /* Scroll-position preservation (PR #143 review): a render-key
          * rebuild of the SAME thread, with the SAME message count, is
@@ -1815,7 +1835,7 @@ static void inbox_build_thread(lv_obj_t *parent, ff_app_inbox_t const *v, bool c
 static void inbox_build_popup_row(lv_obj_t *parent, int32_t y, uint32_t accent, char const *title,
                                     char const *sub, lv_event_cb_t cb, char const *symbol)
 {
-    lv_obj_t *row = lv_button_create(parent);
+    lv_obj_t *row = ff_scr_button_create(parent);
     lv_obj_remove_style_all(row);
     lv_obj_set_size(row, FF_INBOX_POPUP_ROW_W, FF_INBOX_POPUP_ROW_H);
     lv_obj_set_pos(row, FF_INBOX_POPUP_ROW_X, y);
@@ -1846,7 +1866,7 @@ static void inbox_build_popup_row(lv_obj_t *parent, int32_t y, uint32_t accent, 
  * FF_INTENT_BACK). */
 static void inbox_build_popup_close(lv_obj_t *parent)
 {
-    lv_obj_t *close = lv_button_create(parent);
+    lv_obj_t *close = ff_scr_button_create(parent);
     lv_obj_remove_style_all(close);
     lv_obj_set_size(close, FF_INBOX_POPUP_CLOSE_PX, FF_INBOX_POPUP_CLOSE_PX);
     lv_obj_set_pos(close, (FF_THEME_PUCK_PX - FF_INBOX_POPUP_CLOSE_PX) / 2, FF_INBOX_POPUP_CLOSE_Y);
@@ -1933,7 +1953,7 @@ static void inbox_build_rally_row(lv_obj_t *list, int32_t y, uint8_t idx, char c
      * sub/check) is added AFTER, so it paints on top. A disabled row gets
      * NO tap target (deco only) — On Me without a fix is not tappable. */
     if (enabled) {
-        lv_obj_t *hit = lv_button_create(row);
+        lv_obj_t *hit = ff_scr_button_create(row);
         lv_obj_remove_style_all(hit);
         lv_obj_set_size(hit, w, FF_INBOX_RALLY_ROW_H - 2 * FF_INBOX_RALLY_ROW_HIT_INSET_Y);
         lv_obj_set_pos(hit, 0, FF_INBOX_RALLY_ROW_HIT_INSET_Y);
@@ -1974,7 +1994,7 @@ static void inbox_build_rally_footer(lv_obj_t *parent, ff_app_rally_t const *r)
     int32_t const send_w = total_w - FF_INBOX_RALLY_WHEN_W - FF_INBOX_RALLY_FOOTER_GAP;
 
     /* WHEN chip — cycles Now / +15m / +30m. */
-    lv_obj_t *when = lv_button_create(parent);
+    lv_obj_t *when = ff_scr_button_create(parent);
     lv_obj_remove_style_all(when);
     lv_obj_set_size(when, FF_INBOX_RALLY_WHEN_W, FF_INBOX_RALLY_FOOTER_H);
     lv_obj_set_pos(when, margin, FF_INBOX_RALLY_FOOTER_Y);
@@ -2006,7 +2026,7 @@ static void inbox_build_rally_footer(lv_obj_t *parent, ff_app_rally_t const *r)
         return;
     }
 
-    lv_obj_t *send = lv_button_create(parent);
+    lv_obj_t *send = ff_scr_button_create(parent);
     lv_obj_remove_style_all(send);
     lv_obj_set_size(send, send_w, FF_INBOX_RALLY_FOOTER_H);
     lv_obj_set_pos(send, send_x, FF_INBOX_RALLY_FOOTER_Y);
@@ -2082,13 +2102,7 @@ static void inbox_build_rally(lv_obj_t *parent, ff_app_inbox_t const *v, bool co
          * tried before this catcher, and a row's own hit target still
          * wins whenever a touch actually lands on it. */
         int32_t const margin = inbox_safe_margin_x(FF_INBOX_RALLY_LIST_TOP_Y, FF_INBOX_RALLY_LIST_H);
-        lv_obj_t *hit = lv_obj_create(list);
-        lv_obj_remove_style_all(hit);
-        lv_obj_add_flag(hit, LV_OBJ_FLAG_FLOATING);
-        lv_obj_clear_flag(hit, LV_OBJ_FLAG_SCROLLABLE);
-        lv_obj_set_style_bg_opa(hit, LV_OPA_TRANSP, 0);
-        lv_obj_set_pos(hit, margin, 0);
-        lv_obj_set_size(hit, FF_THEME_PUCK_PX - 2 * margin, FF_INBOX_RALLY_LIST_H);
+        inbox_add_scroll_catcher(list, margin, FF_INBOX_RALLY_LIST_H);
     }
 
     int32_t y = 0;

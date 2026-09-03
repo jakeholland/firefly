@@ -23,6 +23,34 @@ extern "C" {
 #endif
 
 /**
+ * ff_scr_button_create — the ONE way any screen file makes an LVGL button.
+ * `lv_button_create` + `lv_obj_clear_flag(btn, LV_OBJ_FLAG_PRESS_LOCK)`.
+ *
+ * LVGL sets `LV_OBJ_FLAG_PRESS_LOCK` ("keep the object pressed, and still
+ * fire LV_EVENT_CLICKED on release, even if the press slid off it") on
+ * every object by default (lv_obj.c). Left set, a real finger — or the
+ * sim's drag/gesture harness — that presses a control and slides off
+ * before lifting STILL commits that control's tap on release. At a
+ * festival, on a 412px round glass, with one thumb: a press that starts
+ * on FLARE or Power-off and slides away (a stumble, a drag gesture that
+ * merely passes over the control) must never fire — sliding off is the
+ * one universal "I changed my mind" gesture LVGL almost doesn't give you
+ * for free.
+ *
+ * This was found and fixed per-screen, twice, before being generalized
+ * here: the launcher hub/satellites (#145, `scr_launcher.c`) and compose's
+ * keypad/chips (#148, `scr_compose.c`'s retired `compose_clear_press_lock`)
+ * both hand-rolled the identical two-line fix; the banner strip
+ * (`scr_banner.c`) copied it a third time. Call this instead of
+ * `lv_button_create` directly, everywhere in `app/screens/` — see
+ * `test_scr_intent.c`'s drag-off tests (the `S99_compose_drag_off_*` /
+ * `S26e_launcher_drag_across_satellites_emits_nothing` family, and the
+ * per-face ones this fix's own PR added) for the real-indev proof that a
+ * slide-off emits nothing while a stationary tap still does.
+ */
+lv_obj_t *ff_scr_button_create(lv_obj_t *parent);
+
+/**
  * ff_scr_nav_build — builds the shell on the current default display's
  * active screen (same calling convention as fixture_view.h's
  * ff_fixture_view_build: a display must already be the LVGL default).

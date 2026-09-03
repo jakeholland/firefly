@@ -121,6 +121,7 @@
 #include "ff_intent.h" /* S16c1 — the emit seam; see compose_back_cb */
 #include "ff_layout.h"
 #include "ff_theme.h"
+#include "scr_nav.h" /* ff_scr_button_create — the shared PRESS_LOCK-clearing button base (#145/#148) */
 
 /* ---------------------------------------------------------------------
  * Layout constants.
@@ -677,25 +678,16 @@ static void compose_mode_chip_click_cb(lv_event_t *e)
  * landed). A press brightens the key: an amber fill (the theme's "lit" colour)
  * with dark ink, applied to LV_STATE_PRESSED so LVGL shows it the instant the
  * finger is down and clears it on release. Works on any base colour. */
-/* Clear LVGL's default LV_OBJ_FLAG_PRESS_LOCK ("keep the object pressed,
- * and still fire CLICKED on release, even if the press slid off it") on
- * every clickable control in this file — the #145 launcher lesson
- * (scr_launcher.c's own copy of this fix, see its own comment for the
- * full LVGL mechanism). Without this, a real finger that presses SEND
- * (or any key/chip) and drags away before lifting still fires that
- * control's click on release — an accidental slide-off commits the key
- * exactly like a deliberate tap would, which is the opposite of what
- * this PR's SEND relocation is for. Once cleared, LVGL drops the press
- * (LV_EVENT_PRESS_LOST) the instant the pointer leaves the control's own
- * bounds, so a stationary tap (which never leaves those bounds) is
- * completely unaffected — only a genuine drag-off is neutralized. See
+/* Every button in this file is created via ff_scr_button_create (scr_nav.h),
+ * which clears LVGL's default LV_OBJ_FLAG_PRESS_LOCK for us — without it, a
+ * real finger that presses SEND (or any key/chip) and drags away before
+ * lifting would still fire that control's click on release, exactly the
+ * opposite of what this file's SEND relocation is for. See
  * S99_compose_drag_off_send_emits_nothing /
  * S99_compose_drag_off_key_emits_nothing (test_scr_intent.c) for the
- * real-indev proof. */
-static void compose_clear_press_lock(lv_obj_t *btn)
-{
-    lv_obj_clear_flag(btn, LV_OBJ_FLAG_PRESS_LOCK);
-}
+ * real-indev proof. This file used to hand-roll its own
+ * compose_clear_press_lock() copy of that fix (#148); it now routes
+ * through the shared base instead. */
 
 static void compose_key_press_feedback(lv_obj_t *btn, lv_obj_t *label)
 {
@@ -709,14 +701,13 @@ static void compose_key_press_feedback(lv_obj_t *btn, lv_obj_t *label)
 static lv_obj_t *compose_make_key(lv_obj_t *parent, char const *legend, int32_t x, int32_t y, int32_t w, int32_t h,
                                    uint8_t key, uint32_t bg_hex, uint32_t fg_hex)
 {
-    lv_obj_t *btn = lv_button_create(parent);
+    lv_obj_t *btn = ff_scr_button_create(parent);
     lv_obj_remove_style_all(btn);
     lv_obj_set_size(btn, w, h);
     lv_obj_set_pos(btn, x, y);
     lv_obj_set_style_bg_color(btn, lv_color_hex(bg_hex), 0);
     lv_obj_set_style_bg_opa(btn, LV_OPA_COVER, 0);
     lv_obj_set_style_radius(btn, 10, 0);
-    compose_clear_press_lock(btn);
     lv_obj_add_event_cb(btn, compose_key_click_cb, LV_EVENT_CLICKED, (void *)(uintptr_t)key);
 
     lv_obj_t *label = lv_label_create(btn);
@@ -769,14 +760,13 @@ static void compose_build_bottom_row(lv_obj_t *container, ff_app_compose_mode_t 
     int32_t row_w = FF_THEME_PUCK_PX - 2 * margin_x;
     int32_t space_w = row_w - FF_COMPOSE_DEL_W - FF_COMPOSE_MODE_W - 2 * FF_COMPOSE_KEY_GAP;
 
-    lv_obj_t *del = lv_button_create(container);
+    lv_obj_t *del = ff_scr_button_create(container);
     lv_obj_remove_style_all(del);
     lv_obj_set_size(del, FF_COMPOSE_DEL_W, FF_COMPOSE_BOTTOM_ROW_H);
     lv_obj_set_pos(del, margin_x, y);
     lv_obj_set_style_bg_color(del, lv_color_hex(FF_THEME_COLOR_SURFACE), 0);
     lv_obj_set_style_bg_opa(del, LV_OPA_COVER, 0);
     lv_obj_set_style_radius(del, LV_RADIUS_CIRCLE, 0);
-    compose_clear_press_lock(del);
     lv_obj_add_event_cb(del, compose_backspace_cb, LV_EVENT_CLICKED, NULL);
     lv_obj_t *del_lbl = lv_label_create(del);
     lv_label_set_text(del_lbl, "DEL");
@@ -797,14 +787,13 @@ static void compose_build_bottom_row(lv_obj_t *container, ff_app_compose_mode_t 
      * the should-fix above, the one this row's floor-sized key belongs
      * on, not DEL. */
     int32_t mode_x = space_x + space_w + FF_COMPOSE_KEY_GAP;
-    lv_obj_t *mode_chip = lv_button_create(container);
+    lv_obj_t *mode_chip = ff_scr_button_create(container);
     lv_obj_remove_style_all(mode_chip);
     lv_obj_set_size(mode_chip, FF_COMPOSE_MODE_W, FF_COMPOSE_BOTTOM_ROW_H);
     lv_obj_set_pos(mode_chip, mode_x, y);
     lv_obj_set_style_bg_color(mode_chip, lv_color_hex(FF_THEME_COLOR_SURFACE), 0);
     lv_obj_set_style_bg_opa(mode_chip, LV_OPA_COVER, 0);
     lv_obj_set_style_radius(mode_chip, LV_RADIUS_CIRCLE, 0);
-    compose_clear_press_lock(mode_chip);
     lv_obj_add_event_cb(mode_chip, compose_mode_chip_click_cb, LV_EVENT_CLICKED, NULL);
     s_mode_chip_label = lv_label_create(mode_chip);
     lv_obj_set_style_text_font(s_mode_chip_label, FF_THEME_FONT_CHIP, 0);
@@ -938,7 +927,7 @@ static void compose_build_pred_draft(lv_obj_t *puck, ff_app_compose_t const *com
  * though the mockup pill is visually smaller. */
 static void compose_make_cand_chip(lv_obj_t *strip, char const *text, bool from_pack, bool selected, uint8_t index)
 {
-    lv_obj_t *chip = lv_button_create(strip);
+    lv_obj_t *chip = ff_scr_button_create(strip);
     lv_obj_remove_style_all(chip);
     lv_obj_set_height(chip, FF_COMPOSE_PRED_CHIP_H);
     lv_obj_set_width(chip, LV_SIZE_CONTENT);
@@ -947,7 +936,6 @@ static void compose_make_cand_chip(lv_obj_t *strip, char const *text, bool from_
     lv_obj_set_style_radius(chip, 12, 0);
     lv_obj_set_style_bg_opa(chip, LV_OPA_COVER, 0);
     lv_obj_set_style_bg_color(chip, lv_color_hex(selected ? FF_THEME_COLOR_AMBER : FF_THEME_COLOR_SURFACE), 0);
-    compose_clear_press_lock(chip);
     lv_obj_add_event_cb(chip, compose_cand_click_cb, LV_EVENT_CLICKED, (void *)(uintptr_t)index);
 
     char buf[FF_APP_COMPOSE_WORD_LEN + 4];
@@ -1011,7 +999,7 @@ static void compose_build_pred_strip(lv_obj_t *puck, ff_app_compose_t const *com
     /* › chip: only when the engine really has more matches than are shown
      * (honest `total_cand`). Emits T9_CYCLE. */
     if (compose->total_cand > compose->n_cand) {
-        lv_obj_t *more = lv_button_create(strip);
+        lv_obj_t *more = ff_scr_button_create(strip);
         lv_obj_remove_style_all(more);
         lv_obj_set_height(more, FF_COMPOSE_PRED_CHIP_H);
         lv_obj_set_width(more, LV_SIZE_CONTENT);
@@ -1020,7 +1008,6 @@ static void compose_build_pred_strip(lv_obj_t *puck, ff_app_compose_t const *com
         lv_obj_set_style_radius(more, 12, 0);
         lv_obj_set_style_bg_opa(more, LV_OPA_COVER, 0);
         lv_obj_set_style_bg_color(more, lv_color_hex(FF_THEME_COLOR_SURFACE), 0);
-        compose_clear_press_lock(more);
         lv_obj_add_event_cb(more, compose_cycle_click_cb, LV_EVENT_CLICKED, NULL);
         lv_obj_t *lbl = lv_label_create(more);
         lv_label_set_text(lbl, ">");
@@ -1070,12 +1057,11 @@ void ff_scr_compose_build(ff_app_compose_t const *compose)
      * SPACE. */
     int32_t header_margin = compose_safe_margin_x(FF_COMPOSE_HEADER_Y, FF_COMPOSE_HEADER_H);
 
-    lv_obj_t *back = lv_button_create(puck);
+    lv_obj_t *back = ff_scr_button_create(puck);
     lv_obj_remove_style_all(back);
     lv_obj_set_size(back, FF_THEME_MIN_HIT_PX, FF_THEME_MIN_HIT_PX);
     lv_obj_set_pos(back, header_margin, FF_COMPOSE_HEADER_Y);
     lv_obj_set_style_bg_opa(back, LV_OPA_TRANSP, 0);
-    compose_clear_press_lock(back);
     lv_obj_add_event_cb(back, compose_back_cb, LV_EVENT_CLICKED, NULL);
     lv_obj_t *back_lbl = lv_label_create(back);
     lv_label_set_text(back_lbl, "<");
@@ -1132,14 +1118,13 @@ void ff_scr_compose_build(ff_app_compose_t const *compose)
      * treatment SEND always had; only its position/width moved (PR #148
      * review, should-fix 3 — see compose_send_x's own comment for the
      * corner-distance fix). */
-    lv_obj_t *send = lv_button_create(puck);
+    lv_obj_t *send = ff_scr_button_create(puck);
     lv_obj_remove_style_all(send);
     lv_obj_set_size(send, FF_COMPOSE_SEND_HEADER_W, FF_THEME_MIN_HIT_PX);
     lv_obj_set_pos(send, compose_send_x(), FF_COMPOSE_HEADER_Y);
     lv_obj_set_style_bg_color(send, lv_color_hex(FF_THEME_COLOR_AMBER), 0);
     lv_obj_set_style_bg_opa(send, LV_OPA_COVER, 0);
     lv_obj_set_style_radius(send, LV_RADIUS_CIRCLE, 0);
-    compose_clear_press_lock(send);
     lv_obj_add_event_cb(send, compose_send_cb, LV_EVENT_CLICKED, NULL);
     lv_obj_t *send_lbl = lv_label_create(send);
     lv_label_set_text(send_lbl, "SEND");
