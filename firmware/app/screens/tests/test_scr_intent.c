@@ -1263,6 +1263,39 @@ static void s24c_make_direct_thread(ff_app_inbox_t *v)
     strncpy(in_m->text, "on my way", sizeof(in_m->text) - 1);
 }
 
+/* 2026-09-03 maintainer decision — "put the quick replies in the group
+ * thread's unused space": a short CREW thread (one inbound, one
+ * outgoing message, mirroring s24c_make_direct_thread's shape) for the
+ * free-space-gated inline chip tests below. Content height (one 50px
+ * inbound TEXT row with its sender line + one 50px outgoing TEXT row =
+ * 100px) leaves 100px free in the 200px CREW band — comfortably clears
+ * FF_INBOX_CHIP_FREE_MIN_PX's 60px floor (scr_inbox.c), so the inline
+ * strip must render. */
+static void s24c_make_crew_thread_short(ff_app_inbox_t *v)
+{
+    memset(v, 0, sizeof(*v));
+    v->subview = FF_INBOX_SUB_THREAD;
+    v->thread_node = 0u;
+    strncpy(v->thread_name, "CREW", sizeof(v->thread_name) - 1);
+    sig_add_conv(v, FF_CONV_CREW, 0u, NULL, 0, 2);
+
+    ff_inbox_msg_t *in_m = &v->thread.msgs[v->thread.msg_count++];
+    memset(in_m, 0, sizeof(*in_m));
+    in_m->kind = FEED_TEXT;
+    in_m->dir = FEED_DIR_BROADCAST;
+    in_m->identity_known = true;
+    in_m->node_id = 111u;
+    strncpy(in_m->name, "DANA", sizeof(in_m->name) - 1);
+    in_m->initial = 'D';
+    strncpy(in_m->text, "on my way!", sizeof(in_m->text) - 1);
+
+    ff_inbox_msg_t *out = &v->thread.msgs[v->thread.msg_count++];
+    memset(out, 0, sizeof(*out));
+    out->kind = FEED_TEXT;
+    out->dir = FEED_DIR_OUT;
+    strncpy(out->text, "meet at the totem after?", sizeof(out->text) - 1);
+}
+
 /* The 1:1 quick chips: OMW and IN 5 MIN emit CANNED_REPLY with the right
  * canned id (the shell aims them at the thread scope — its own test). */
 static void S24c_thread_omw_chip_emits_canned_reply_omw(void)
@@ -1335,9 +1368,43 @@ static void S24c_thread_fab_emits_inbox_new(void)
     TEST_ASSERT_EQUAL(FF_INTENT_INBOX_NEW, s_spy.last.kind);
 }
 
-/* The CREW thread renders NO quick chips (they are the 1:1 screen's) —
- * a chip label must not be findable there. */
-static void S24c_crew_thread_has_no_quick_chips(void)
+/* 2026-09-03 maintainer decision — a CREW thread with free space (few
+ * messages, the maintainer's "unused blank space" complaint) now shows
+ * the SAME inline quick-reply strip the 1:1 thread always has, same
+ * intents: tapping OMW emits CANNED_REPLY with the OMW id, exactly like
+ * S24c_thread_omw_chip_emits_canned_reply_omw's 1:1 case (the shell's
+ * CANNED_REPLY handler already resolved thread_node==0 to broadcast
+ * before this PR — see ff_shell.c — so no shell change was needed to
+ * make this correct). Was S24c_crew_thread_has_no_quick_chips before
+ * this PR (which asserted NO crew thread ever shows chips, using an
+ * EMPTY thread as its fixture); the free-space gate below only narrows
+ * that to overflowing threads — see
+ * S24c_crew_thread_long_has_no_quick_chips further down (needs
+ * s24_make_crew_thread_long, defined below this point in the file). */
+static void S24c_crew_thread_short_shows_quick_chips_tap_omw_emits_canned_reply(void)
+{
+    ff_app_inbox_t v;
+    s24c_make_crew_thread_short(&v);
+
+    lv_obj_t *parent = lv_obj_create(lv_screen_active());
+    ff_scr_inbox_build(parent, &v, false);
+
+    TEST_ASSERT_NOT_NULL_MESSAGE(find_button_with_label(parent, "OMW"),
+                                  "a short CREW thread must show the inline quick-reply strip");
+    TEST_ASSERT_NOT_NULL(find_button_with_label(parent, "IN 5 MIN"));
+    TEST_ASSERT_NOT_NULL(find_button_with_label(parent, "FLARE"));
+
+    click(find_button_with_label(parent, "OMW"));
+    TEST_ASSERT_EQUAL_INT(1, s_spy.count);
+    TEST_ASSERT_EQUAL(FF_INTENT_CANNED_REPLY, s_spy.last.kind);
+    TEST_ASSERT_EQUAL(FF_WIRING_REPLY_OMW, s_spy.last.u.reply);
+}
+
+/* An EMPTY CREW thread (no traffic at all — the quiet-crew edge state)
+ * has the most free space of all, so it shows the strip too; not just
+ * "some" content, per the free-space formula, not a message-count
+ * special case. */
+static void S24c_crew_thread_empty_shows_quick_chips(void)
 {
     ff_app_inbox_t v;
     memset(&v, 0, sizeof(v));
@@ -1348,8 +1415,48 @@ static void S24c_crew_thread_has_no_quick_chips(void)
 
     lv_obj_t *parent = lv_obj_create(lv_screen_active());
     ff_scr_inbox_build(parent, &v, false);
-    TEST_ASSERT_NULL(find_button_with_label(parent, "OMW"));
-    TEST_ASSERT_NULL(find_button_with_label(parent, "FLARE"));
+    TEST_ASSERT_NOT_NULL(find_button_with_label(parent, "OMW"));
+    TEST_ASSERT_NOT_NULL(find_button_with_label(parent, "FLARE"));
+}
+
+/* 2026-09-03 — S24 render-key confirmation (task item 2): ff_shell.c's
+ * shell_render_key does `memcpy(key, v, sizeof(*key))` BEFORE any
+ * coarsening, so `key->inbox.thread.msg_count` is already the raw,
+ * uncoarsened count — a new message arriving already forces the S24
+ * dirty-key rebuild this screen depends on; nothing in ff_shell.c needed
+ * to change for this PR. This test proves the SCREEN half of that
+ * contract directly: given the same rebuild (lv_obj_clean + a fresh
+ * ff_scr_inbox_build) ff_shell.c's dirty-key path performs, a short
+ * CREW thread that gains enough messages to overflow the band must drop
+ * the inline row on that rebuild rather than paint it over the newly
+ * arrived messages. */
+static void S24c_crew_thread_chip_row_disappears_when_new_messages_overflow(void)
+{
+    ff_app_inbox_t v;
+    s24c_make_crew_thread_short(&v);
+
+    lv_obj_t *parent = lv_obj_create(lv_screen_active());
+    lv_obj_set_size(parent, 412, 412);
+    ff_scr_inbox_build(parent, &v, false);
+    TEST_ASSERT_NOT_NULL_MESSAGE(find_button_with_label(parent, "OMW"),
+                                  "short CREW thread must show the inline chip row first");
+
+    for (int i = 0; i < 8 && v.thread.msg_count < FF_INBOX_MAX_MSGS; i++) {
+        ff_inbox_msg_t *m = &v.thread.msgs[v.thread.msg_count++];
+        memset(m, 0, sizeof(*m));
+        m->kind = FEED_TEXT;
+        m->dir = FEED_DIR_BROADCAST;
+        m->identity_known = true;
+        m->node_id = 111u;
+        strncpy(m->name, "DANA", sizeof(m->name) - 1);
+        m->initial = 'D';
+        snprintf(m->text, sizeof(m->text), "extra message %d", i);
+    }
+    lv_obj_clean(parent);
+    ff_scr_inbox_build(parent, &v, false);
+    TEST_ASSERT_NULL_MESSAGE(find_button_with_label(parent, "OMW"),
+                              "the overflowing rebuild must hide the inline chip row, "
+                              "not paint it over the newly arrived messages");
 }
 
 /* =================================================================== */
@@ -1410,6 +1517,28 @@ static void s24_make_direct_thread_long(ff_app_inbox_t *v)
         snprintf(m->text, sizeof(m->text), "message number %d", i);
         m->age_ms = (uint32_t)(60000u * (uint32_t)(12 - i));
     }
+}
+
+/* 2026-09-03 maintainer decision, negative half — a long/overflowing
+ * CREW thread (the existing 12-message fixture above, already well past
+ * the 200px band) keeps "today's layout": no inline chip row, the FAB
+ * (Compose/Rally/Flare via the popup) the only way to reach a send.
+ * Was covered before this PR by S24c_crew_thread_has_no_quick_chips
+ * (an EMPTY-thread fixture, which no longer applies — see
+ * S24c_crew_thread_short_shows_quick_chips_tap_omw_emits_canned_reply /
+ * S24c_crew_thread_empty_shows_quick_chips above); this is the fixture
+ * that actually needs to keep failing the gate. */
+static void S24c_crew_thread_long_has_no_quick_chips(void)
+{
+    ff_app_inbox_t v;
+    s24_make_crew_thread_long(&v);
+
+    lv_obj_t *parent = lv_obj_create(lv_screen_active());
+    lv_obj_set_size(parent, 412, 412);
+    ff_scr_inbox_build(parent, &v, false);
+    TEST_ASSERT_NULL_MESSAGE(find_button_with_label(parent, "OMW"),
+                              "an overflowing CREW thread must not show the inline chip row");
+    TEST_ASSERT_NULL(find_button_with_label(parent, "FLARE"));
 }
 
 /* Finds the one PLAIN lv_obj (not a label/button — lv_label_create
@@ -2208,25 +2337,18 @@ static void S24d_rally_disabled_on_me_is_not_tappable(void)
     TEST_ASSERT_NULL(find_button_with_label(parent, "Send Rally"));
 }
 
-/* find_pill_in_row — the settings-face toggle rows (HAPTICS/GLOW/COLORBLIND)
- * all render generic "ON"/"OFF" pills, so a bare find_button_with_label would
- * ambiguously match the first such pill in the tree. This scopes the pill
- * lookup to the ROW that owns a given caption: find the caption label, step up
- * to its row container (the caption is a direct child of the row), then find
- * the pill by text within that subtree. Matches scr_settings.c's row shape
- * (row container -> [caption label, pill, pill]). */
-static lv_obj_t *find_pill_in_row(lv_obj_t *root, char const *row_caption, char const *pill_text)
-{
-    lv_obj_t *cap = find_label_exact(root, row_caption);
-    if (cap == NULL) {
-        return NULL;
-    }
-    lv_obj_t *row = lv_obj_get_parent(cap);
-    if (row == NULL) {
-        return NULL;
-    }
-    return find_button_with_label(row, pill_text);
-}
+/* find_pill_in_row (scoped-caption pill lookup — find the caption label,
+ * step up to its row container, then find the pill by text within that
+ * subtree) used to live here for the HAPTICS/GLOW/SHARE toggle-tap tests.
+ * Those rows are hidden as of the settings audit 2026-09-03
+ * (scr_settings.c's FF_SETTINGS_ROW_ENABLE_*) and replaced by
+ * S_audit_2026_09_03_hidden_rows_are_absent_from_settings (an absence
+ * check, which does not need a per-row pill lookup), so this helper had
+ * no remaining caller and was removed rather than kept as dead code under
+ * -Werror=unused-function. Every remaining settings-pill test in this file
+ * finds its pill directly by its own unambiguous text
+ * (find_button_with_label), since none of the currently-visible rows'
+ * pill labels collide the way HAPTICS/GLOW's bare "ON"/"OFF" used to. */
 
 /* =================================================================== */
 /* Radar CLOSE-mode FLARE -> FLARE_START (S16 slice c2)                 */
@@ -2458,126 +2580,43 @@ static void S11b_settings_units_chip_toggles_imperial(void)
     TEST_ASSERT_EQUAL_INT32(0, s_spy.last.u.setting.v.i); /* FT -> M */
 }
 
-/* PR #68 UX review (Bailey, blocking finding 1): ZONES is functionally
- * LIVE in this build (docs/specs/S11-settings.md's own "v1: LIVE/GHOST
- * honored; ZONES=LIVE + issue"), so the chip must never cycle a tap onto
- * it — LIVE and GHOST only, a plain two-stop loop. */
-static void S11b_settings_share_chip_cycles_live_to_ghost_skipping_zones(void)
-{
-    ff_app_settings_t s;
-    memset(&s, 0, sizeof(s)); /* share_mode 0 = FF_SHARE_LIVE, renders "LIVE" */
-
-    ff_scr_settings_build(lv_screen_active(), &s);
-
-    click(find_button_with_label(lv_screen_active(), "LIVE"));
-
-    TEST_ASSERT_EQUAL_INT(1, s_spy.count);
-    TEST_ASSERT_EQUAL(FF_INTENT_SETTING_SET, s_spy.last.kind);
-    TEST_ASSERT_EQUAL(FF_SETTING_SHARE_MODE, s_spy.last.u.setting.id);
-    TEST_ASSERT_EQUAL_INT32(FF_SHARE_GHOST, s_spy.last.u.setting.v.i); /* LIVE -> GHOST, never ZONES */
-}
-
-/* The other direction, and the persisted-ZONES edge case: even if
- * `share_mode` somehow already reads ZONES, a tap moves it to GHOST —
- * never back into ZONES, and never stuck. */
-static void S11b_settings_share_chip_from_ghost_and_from_zones_both_avoid_zones(void)
+/* Settings audit 2026-09-03 (S11 Amendment, S21 Amendment "Settings audit
+ * 2026-09-03") — SHARE, HAPTICS, GLOW and WATER NUDGE are HIDDEN rows:
+ * nothing on any target honors what they control (scr_settings.c's
+ * FF_SETTINGS_ROW_ENABLE_* table carries the audit finding + the spec
+ * slice, or missing hardware, that would re-enable each). Their
+ * FF_SETTING_* intents/handlers stay wired at the shell level — only the
+ * UI row is gone — so the six old tap-cycles-a-value tests that used to
+ * live here (one per row, plus WATER NUDGE's label-also-taps case) are
+ * replaced by a single "the row does not exist" assertion per row.
+ *
+ * Mutation check (hand-verified before pushing, per docs/review/
+ * code-review.md item 6): flipping FF_SETTINGS_ROW_ENABLE_HAPTICS to 1 in
+ * a scratch build makes the HAPTICS assertion below fail (the row
+ * reappears) while every other assertion here keeps passing — proving
+ * this test is actually sensitive to a specific row's flag, not just to
+ * "something about Settings changed"; see the PR body for the exact
+ * `ctest` output. */
+static void S_audit_2026_09_03_hidden_rows_are_absent_from_settings(void)
 {
     ff_app_settings_t s;
     memset(&s, 0, sizeof(s));
-    s.share_mode = FF_SHARE_GHOST;
-
-    ff_scr_settings_build(lv_screen_active(), &s);
-    click(find_button_with_label(lv_screen_active(), "GHOST"));
-    TEST_ASSERT_EQUAL_INT(1, s_spy.count);
-    TEST_ASSERT_EQUAL(FF_SETTING_SHARE_MODE, s_spy.last.u.setting.id);
-    TEST_ASSERT_EQUAL_INT32(FF_SHARE_LIVE, s_spy.last.u.setting.v.i); /* GHOST -> LIVE */
-
-    memset(&s_spy, 0, sizeof(s_spy));
-    lv_obj_clean(lv_screen_active());
-    memset(&s, 0, sizeof(s));
-    s.share_mode = FF_SHARE_ZONES; /* the persisted-ZONES edge case */
-
-    ff_scr_settings_build(lv_screen_active(), &s);
-    /* The [LIVE|GHOST] pair shows neither pill active for a persisted ZONES,
-     * but tapping either still moves it to GHOST (never back to ZONES). */
-    click(find_pill_in_row(lv_screen_active(), "SHARE", "LIVE"));
-    TEST_ASSERT_EQUAL_INT(1, s_spy.count);
-    TEST_ASSERT_EQUAL(FF_SETTING_SHARE_MODE, s_spy.last.u.setting.id);
-    TEST_ASSERT_EQUAL_INT32(FF_SHARE_GHOST, s_spy.last.u.setting.v.i); /* ZONES -> GHOST, not back to ZONES */
-}
-
-static void S11b_settings_haptics_chip_toggles(void)
-{
-    ff_app_settings_t s;
-    memset(&s, 0, sizeof(s));
-    s.haptics = false; /* OFF pill active */
 
     ff_scr_settings_build(lv_screen_active(), &s);
 
-    /* Tapping either pill of the two-state pair flips it. */
-    click(find_pill_in_row(lv_screen_active(), "HAPTICS", "OFF"));
+    TEST_ASSERT_NULL_MESSAGE(find_label_exact(lv_screen_active(), "SHARE"),
+                             "SHARE is a hidden row (no backend, S11 slice c never landed) and must not render");
+    TEST_ASSERT_NULL_MESSAGE(find_label_exact(lv_screen_active(), "HAPTICS"),
+                             "HAPTICS is a hidden row (no vibration motor on this board) and must not render");
+    TEST_ASSERT_NULL_MESSAGE(find_label_exact(lv_screen_active(), "GLOW"),
+                             "GLOW is a hidden row (night_glow has zero consumers) and must not render");
+    TEST_ASSERT_NULL_MESSAGE(find_label_exact(lv_screen_active(), "WATER NUDGE"),
+                             "WATER NUDGE is a hidden row (ff_water_tick is never called) and must not render");
 
-    TEST_ASSERT_EQUAL_INT(1, s_spy.count);
-    TEST_ASSERT_EQUAL(FF_INTENT_SETTING_SET, s_spy.last.kind);
-    TEST_ASSERT_EQUAL(FF_SETTING_HAPTICS, s_spy.last.u.setting.id);
-    TEST_ASSERT_EQUAL_INT32(1, s_spy.last.u.setting.v.i); /* OFF -> ON */
-}
+    /* Their pill/value text must not appear either — not just the caption. */
+    TEST_ASSERT_NULL(find_button_with_label(lv_screen_active(), "GHOST"));
 
-static void S11b_settings_night_glow_chip_toggles(void)
-{
-    ff_app_settings_t s;
-    memset(&s, 0, sizeof(s));
-    s.night_glow = true; /* ON pill active */
-
-    ff_scr_settings_build(lv_screen_active(), &s);
-
-    click(find_pill_in_row(lv_screen_active(), "GLOW", "ON"));
-
-    TEST_ASSERT_EQUAL_INT(1, s_spy.count);
-    TEST_ASSERT_EQUAL(FF_INTENT_SETTING_SET, s_spy.last.kind);
-    TEST_ASSERT_EQUAL(FF_SETTING_NIGHT_GLOW, s_spy.last.u.setting.id);
-    TEST_ASSERT_EQUAL_INT32(0, s_spy.last.u.setting.v.i); /* ON -> OFF */
-}
-
-static void S11b_settings_water_chip_cycles_presets(void)
-{
-    ff_app_settings_t s;
-    memset(&s, 0, sizeof(s));
-    s.water_min = 90; /* renders "90 MIN" */
-
-    ff_scr_settings_build(lv_screen_active(), &s);
-
-    click(find_button_with_label(lv_screen_active(), "90 MIN"));
-
-    TEST_ASSERT_EQUAL_INT(1, s_spy.count);
-    TEST_ASSERT_EQUAL(FF_INTENT_SETTING_SET, s_spy.last.kind);
-    TEST_ASSERT_EQUAL(FF_SETTING_WATER_MIN, s_spy.last.u.setting.id);
-    TEST_ASSERT_EQUAL_INT32(120, s_spy.last.u.setting.v.i); /* 90 -> 120, spec's v1 cycle */
-}
-
-/* PR #68 UX review (Bailey, non-blocking finding, fixed here): the row
- * LABEL, not just the value chip, now forwards to the same intent — no
- * more silent dead zone on the left half of the row. */
-static void S11b_settings_water_label_tap_also_cycles(void)
-{
-    ff_app_settings_t s;
-    memset(&s, 0, sizeof(s));
-    s.water_min = 90;
-
-    ff_scr_settings_build(lv_screen_active(), &s);
-
-    lv_obj_t *label = find_label_exact(lv_screen_active(), "WATER NUDGE");
-    TEST_ASSERT_NOT_NULL(label);
-    lv_obj_t *hit = lv_obj_get_parent(label);
-    TEST_ASSERT_NOT_NULL(hit);
-    TEST_ASSERT_TRUE(lv_obj_has_flag(hit, LV_OBJ_FLAG_CLICKABLE));
-
-    click(hit);
-
-    TEST_ASSERT_EQUAL_INT(1, s_spy.count);
-    TEST_ASSERT_EQUAL(FF_INTENT_SETTING_SET, s_spy.last.kind);
-    TEST_ASSERT_EQUAL(FF_SETTING_WATER_MIN, s_spy.last.u.setting.id);
-    TEST_ASSERT_EQUAL_INT32(120, s_spy.last.u.setting.v.i);
+    TEST_ASSERT_EQUAL_INT(0, s_spy.count); /* building the screen alone never emits anything */
 }
 
 /* A quiet-hours tap sets TWO fields (quiet_from_min AND quiet_to_min) —
@@ -2695,6 +2734,13 @@ static void S100_settings_brightness_stepper_steps_and_clamps(void)
  * property itself is S26e's, pinned by S26e_AC3_horizontal_drag_*
  * above and the swipe-navigation tests elsewhing in this file.
  *
+ * Settings audit 2026-09-03 (S21 Amendment "Settings audit 2026-09-03"):
+ * `kRowLabels` below drops SHARE, HAPTICS, GLOW and WATER NUDGE (now
+ * hidden rows — S_audit_2026_09_03_hidden_rows_are_absent_from_settings
+ * above is their own dedicated absence test) and gains the four section
+ * headers (DISPLAY/SOUND/UNITS/DEVICE) the audit introduced grouping the
+ * eight rows that remain.
+ *
  * Mutation check (hand-verified before pushing, per docs/review/
  * code-review.md item 6): commenting out the
  * `settings_build_calibrate_row(...)` call in ff_scr_settings_build
@@ -2717,16 +2763,31 @@ static void S21_AC1_settings_is_one_scrolling_list_every_row_reachable(void)
 
     /* Every prior row's caption/label is present SOMEWHERE in the tree
      * (LVGL builds every child regardless of current scroll position —
-     * this alone proves "present", not yet "reachable"). */
+     * this alone proves "present", not yet "reachable"), plus the four
+     * section headers the audit introduced. */
     static char const *const kRowLabels[] = {
-        "BRIGHTNESS", "UNITS",     "CLOCK",       "SCREEN",      "SHARE",
-        "HAPTICS",    "SOUNDS",    "UI TICKS",    "GLOW",        "WATER NUDGE",
-        "QUIET HOURS", "COLORBLIND", /* S27 sounds adds SOUNDS + UI TICKS, next to HAPTICS */
+        "DISPLAY", "BRIGHTNESS", "CLOCK", "SCREEN", "COLORBLIND",
+        "SOUND",   "SOUNDS",     "UI TICKS", "QUIET HOURS",
+        /* The UNITS *section header* and the UNITS *row's own caption* are the
+         * same literal text (a single-member section named after its only
+         * row) — one presence check below covers both; find_label_exact
+         * returns the first match, which is enough to prove the text exists
+         * SOMEWHERE, the property this loop checks for every other label
+         * too. */
+        "UNITS", "DEVICE",
     };
     for (size_t i = 0; i < sizeof(kRowLabels) / sizeof(kRowLabels[0]); i++) {
         TEST_ASSERT_NOT_NULL_MESSAGE(find_label_exact(lv_screen_active(), kRowLabels[i]), kRowLabels[i]);
     }
     TEST_ASSERT_NOT_NULL(find_button_with_label(lv_screen_active(), "CALIBRATE TOUCH"));
+
+    /* The four hidden rows must NOT be reachable either — belt-and-
+     * suspenders alongside their own dedicated absence test above, kept
+     * here too since this is the test that owns "every row" for S21 AC1. */
+    TEST_ASSERT_NULL(find_label_exact(lv_screen_active(), "SHARE"));
+    TEST_ASSERT_NULL(find_label_exact(lv_screen_active(), "HAPTICS"));
+    TEST_ASSERT_NULL(find_label_exact(lv_screen_active(), "GLOW"));
+    TEST_ASSERT_NULL(find_label_exact(lv_screen_active(), "WATER NUDGE"));
 
     /* "Reachable by scrolling": scroll the ONE list all the way down
      * (LVGL clamps to the real content range) and prove the LAST row,
@@ -3137,19 +3198,20 @@ static void PL_radar_flare_drag_off_emits_nothing(void)
     TEST_ASSERT_EQUAL_INT_MESSAGE(0, s_spy.count, "a slide-off of FLARE must never commit FLARE_START");
 }
 
-/* (b) Settings toggle pill — HAPTICS OFF, one of every pill this face
- * builds through settings_make_pill -> ff_scr_pill_create. */
+/* (b) Settings toggle pill — the UNITS row's FT pill, one of every pill
+ * this face builds through settings_make_pill -> ff_scr_pill_create. */
 static void PL_settings_toggle_drag_off_emits_nothing(void)
 {
     ff_app_settings_t s;
     memset(&s, 0, sizeof(s));
     s.imperial = true; /* renders "FT" — the units row, at rest within the
                          * unscrolled list viewport (unlike a lower row
-                         * such as HAPTICS, which sits below
-                         * FF_SETTINGS_LIST_H at scroll offset 0 and so is
-                         * never reachable by a real, un-scrolled touch —
-                         * matches S11b_settings_units_chip_toggles_imperial's
-                         * own fixture, the positive control for this same
+                         * such as QUIET HOURS or CALIBRATE TOUCH, which
+                         * sits below FF_SETTINGS_LIST_H at scroll offset 0
+                         * and so is never reachable by a real, un-scrolled
+                         * touch — matches
+                         * S11b_settings_units_chip_toggles_imperial's own
+                         * fixture, the positive control for this same
                          * chip). */
 
     ff_scr_settings_build(lv_screen_active(), &s);
@@ -3232,6 +3294,34 @@ static void PL_inbox_chip_drag_off_emits_nothing(void)
     TEST_ASSERT_EQUAL_INT_MESSAGE(0, s_spy.count, "a slide-off of OMW must never commit CANNED_REPLY");
 }
 
+/* 2026-09-03 — the CREW thread's own inline chip (new this PR) needs the
+ * same drag-off guard: same button base (#173, PRESS_LOCK cleared), same
+ * fixture shape as S24c_crew_thread_short_shows_quick_chips_tap_omw_
+ * emits_canned_reply. */
+static void PL_inbox_crew_chip_drag_off_emits_nothing(void)
+{
+    ff_app_inbox_t v;
+    s24c_make_crew_thread_short(&v);
+
+    lv_obj_t *parent = lv_obj_create(lv_screen_active());
+    lv_obj_set_size(parent, FF_THEME_PUCK_PX, FF_THEME_PUCK_PX);
+    lv_obj_clear_flag(parent, LV_OBJ_FLAG_SCROLLABLE);
+    ff_scr_inbox_build(parent, &v, false);
+    lv_obj_update_layout(lv_screen_active());
+
+    lv_obj_t *btn = find_button_with_label(parent, "OMW");
+    TEST_ASSERT_NOT_NULL(btn);
+    lv_area_t a;
+    lv_obj_get_coords(btn, &a);
+    int32_t cx = (a.x1 + a.x2) / 2;
+    int32_t cy = (a.y1 + a.y2) / 2;
+
+    drag_v(cy, cy + 150, cx);
+
+    TEST_ASSERT_EQUAL_INT_MESSAGE(0, s_spy.count,
+                                   "a slide-off of the CREW thread's OMW chip must never commit CANNED_REPLY");
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -3278,7 +3368,10 @@ int main(void)
     RUN_TEST(S24c_thread_in5min_chip_emits_canned_reply_5min);
     RUN_TEST(S24c_thread_flare_chip_emits_sig_flare);
     RUN_TEST(S24c_thread_fab_emits_inbox_new);
-    RUN_TEST(S24c_crew_thread_has_no_quick_chips);
+    RUN_TEST(S24c_crew_thread_short_shows_quick_chips_tap_omw_emits_canned_reply);
+    RUN_TEST(S24c_crew_thread_empty_shows_quick_chips);
+    RUN_TEST(S24c_crew_thread_chip_row_disappears_when_new_messages_overflow);
+    RUN_TEST(S24c_crew_thread_long_has_no_quick_chips);
     RUN_TEST(S24_crew_thread_overflow_scrolls_on_drag);
     RUN_TEST(S24_direct_thread_overflow_scrolls_on_drag);
     RUN_TEST(S24_thread_message_bubble_not_compressed);
@@ -3307,12 +3400,7 @@ int main(void)
     RUN_TEST(S16_c2_flare_takeover_dismiss_emits_takeover_dismiss);
     RUN_TEST(S16_c2_sender_overlay_cancel_emits_flare_end);
     RUN_TEST(S11b_settings_units_chip_toggles_imperial);
-    RUN_TEST(S11b_settings_share_chip_cycles_live_to_ghost_skipping_zones);
-    RUN_TEST(S11b_settings_share_chip_from_ghost_and_from_zones_both_avoid_zones);
-    RUN_TEST(S11b_settings_haptics_chip_toggles);
-    RUN_TEST(S11b_settings_night_glow_chip_toggles);
-    RUN_TEST(S11b_settings_water_chip_cycles_presets);
-    RUN_TEST(S11b_settings_water_label_tap_also_cycles);
+    RUN_TEST(S_audit_2026_09_03_hidden_rows_are_absent_from_settings);
     RUN_TEST(S11b_settings_quiet_chip_sets_both_from_and_to);
     RUN_TEST(S100_settings_brightness_stepper_steps_and_clamps);
     RUN_TEST(S21_AC1_settings_is_one_scrolling_list_every_row_reachable);
@@ -3337,6 +3425,7 @@ int main(void)
     RUN_TEST(PL_power_off_drag_off_emits_nothing);
     RUN_TEST(PL_power_off_tap_emits_power_off);
     RUN_TEST(PL_inbox_chip_drag_off_emits_nothing);
+    RUN_TEST(PL_inbox_crew_chip_drag_off_emits_nothing);
 
     return UNITY_END();
 }

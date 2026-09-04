@@ -293,9 +293,10 @@ static int qf_wire_spy_send_text(void *ctx, uint32_t dest, char const *utf8)
     return 0;
 }
 
-static int qf_wire_spy_send_private(void *ctx, uint32_t dest, uint8_t const *payload, size_t len)
+static int qf_wire_spy_send_private(void *ctx, uint32_t dest, uint8_t const *payload, size_t len, uint32_t flags)
 {
     (void)dest;
+    (void)flags;
     qf_wire_spy_t *s = (qf_wire_spy_t *)ctx;
     s->n_sends++;
     s->len = (len > sizeof(s->buf)) ? sizeof(s->buf) : len;
