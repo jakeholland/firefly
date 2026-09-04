@@ -1948,25 +1948,18 @@ static void S24d_rally_disabled_on_me_is_not_tappable(void)
     TEST_ASSERT_NULL(find_button_with_label(parent, "Send Rally"));
 }
 
-/* find_pill_in_row — the settings-face toggle rows (HAPTICS/GLOW/COLORBLIND)
- * all render generic "ON"/"OFF" pills, so a bare find_button_with_label would
- * ambiguously match the first such pill in the tree. This scopes the pill
- * lookup to the ROW that owns a given caption: find the caption label, step up
- * to its row container (the caption is a direct child of the row), then find
- * the pill by text within that subtree. Matches scr_settings.c's row shape
- * (row container -> [caption label, pill, pill]). */
-static lv_obj_t *find_pill_in_row(lv_obj_t *root, char const *row_caption, char const *pill_text)
-{
-    lv_obj_t *cap = find_label_exact(root, row_caption);
-    if (cap == NULL) {
-        return NULL;
-    }
-    lv_obj_t *row = lv_obj_get_parent(cap);
-    if (row == NULL) {
-        return NULL;
-    }
-    return find_button_with_label(row, pill_text);
-}
+/* find_pill_in_row (scoped-caption pill lookup — find the caption label,
+ * step up to its row container, then find the pill by text within that
+ * subtree) used to live here for the HAPTICS/GLOW/SHARE toggle-tap tests.
+ * Those rows are hidden as of the settings audit 2026-09-03
+ * (scr_settings.c's FF_SETTINGS_ROW_ENABLE_*) and replaced by
+ * S_audit_2026_09_03_hidden_rows_are_absent_from_settings (an absence
+ * check, which does not need a per-row pill lookup), so this helper had
+ * no remaining caller and was removed rather than kept as dead code under
+ * -Werror=unused-function. Every remaining settings-pill test in this file
+ * finds its pill directly by its own unambiguous text
+ * (find_button_with_label), since none of the currently-visible rows'
+ * pill labels collide the way HAPTICS/GLOW's bare "ON"/"OFF" used to. */
 
 /* =================================================================== */
 /* Radar CLOSE-mode FLARE -> FLARE_START (S16 slice c2)                 */
@@ -2198,126 +2191,43 @@ static void S11b_settings_units_chip_toggles_imperial(void)
     TEST_ASSERT_EQUAL_INT32(0, s_spy.last.u.setting.v.i); /* FT -> M */
 }
 
-/* PR #68 UX review (Bailey, blocking finding 1): ZONES is functionally
- * LIVE in this build (docs/specs/S11-settings.md's own "v1: LIVE/GHOST
- * honored; ZONES=LIVE + issue"), so the chip must never cycle a tap onto
- * it — LIVE and GHOST only, a plain two-stop loop. */
-static void S11b_settings_share_chip_cycles_live_to_ghost_skipping_zones(void)
-{
-    ff_app_settings_t s;
-    memset(&s, 0, sizeof(s)); /* share_mode 0 = FF_SHARE_LIVE, renders "LIVE" */
-
-    ff_scr_settings_build(lv_screen_active(), &s);
-
-    click(find_button_with_label(lv_screen_active(), "LIVE"));
-
-    TEST_ASSERT_EQUAL_INT(1, s_spy.count);
-    TEST_ASSERT_EQUAL(FF_INTENT_SETTING_SET, s_spy.last.kind);
-    TEST_ASSERT_EQUAL(FF_SETTING_SHARE_MODE, s_spy.last.u.setting.id);
-    TEST_ASSERT_EQUAL_INT32(FF_SHARE_GHOST, s_spy.last.u.setting.v.i); /* LIVE -> GHOST, never ZONES */
-}
-
-/* The other direction, and the persisted-ZONES edge case: even if
- * `share_mode` somehow already reads ZONES, a tap moves it to GHOST —
- * never back into ZONES, and never stuck. */
-static void S11b_settings_share_chip_from_ghost_and_from_zones_both_avoid_zones(void)
+/* Settings audit 2026-09-03 (S11 Amendment, S21 Amendment "Settings audit
+ * 2026-09-03") — SHARE, HAPTICS, GLOW and WATER NUDGE are HIDDEN rows:
+ * nothing on any target honors what they control (scr_settings.c's
+ * FF_SETTINGS_ROW_ENABLE_* table carries the audit finding + the spec
+ * slice, or missing hardware, that would re-enable each). Their
+ * FF_SETTING_* intents/handlers stay wired at the shell level — only the
+ * UI row is gone — so the six old tap-cycles-a-value tests that used to
+ * live here (one per row, plus WATER NUDGE's label-also-taps case) are
+ * replaced by a single "the row does not exist" assertion per row.
+ *
+ * Mutation check (hand-verified before pushing, per docs/review/
+ * code-review.md item 6): flipping FF_SETTINGS_ROW_ENABLE_HAPTICS to 1 in
+ * a scratch build makes the HAPTICS assertion below fail (the row
+ * reappears) while every other assertion here keeps passing — proving
+ * this test is actually sensitive to a specific row's flag, not just to
+ * "something about Settings changed"; see the PR body for the exact
+ * `ctest` output. */
+static void S_audit_2026_09_03_hidden_rows_are_absent_from_settings(void)
 {
     ff_app_settings_t s;
     memset(&s, 0, sizeof(s));
-    s.share_mode = FF_SHARE_GHOST;
-
-    ff_scr_settings_build(lv_screen_active(), &s);
-    click(find_button_with_label(lv_screen_active(), "GHOST"));
-    TEST_ASSERT_EQUAL_INT(1, s_spy.count);
-    TEST_ASSERT_EQUAL(FF_SETTING_SHARE_MODE, s_spy.last.u.setting.id);
-    TEST_ASSERT_EQUAL_INT32(FF_SHARE_LIVE, s_spy.last.u.setting.v.i); /* GHOST -> LIVE */
-
-    memset(&s_spy, 0, sizeof(s_spy));
-    lv_obj_clean(lv_screen_active());
-    memset(&s, 0, sizeof(s));
-    s.share_mode = FF_SHARE_ZONES; /* the persisted-ZONES edge case */
-
-    ff_scr_settings_build(lv_screen_active(), &s);
-    /* The [LIVE|GHOST] pair shows neither pill active for a persisted ZONES,
-     * but tapping either still moves it to GHOST (never back to ZONES). */
-    click(find_pill_in_row(lv_screen_active(), "SHARE", "LIVE"));
-    TEST_ASSERT_EQUAL_INT(1, s_spy.count);
-    TEST_ASSERT_EQUAL(FF_SETTING_SHARE_MODE, s_spy.last.u.setting.id);
-    TEST_ASSERT_EQUAL_INT32(FF_SHARE_GHOST, s_spy.last.u.setting.v.i); /* ZONES -> GHOST, not back to ZONES */
-}
-
-static void S11b_settings_haptics_chip_toggles(void)
-{
-    ff_app_settings_t s;
-    memset(&s, 0, sizeof(s));
-    s.haptics = false; /* OFF pill active */
 
     ff_scr_settings_build(lv_screen_active(), &s);
 
-    /* Tapping either pill of the two-state pair flips it. */
-    click(find_pill_in_row(lv_screen_active(), "HAPTICS", "OFF"));
+    TEST_ASSERT_NULL_MESSAGE(find_label_exact(lv_screen_active(), "SHARE"),
+                             "SHARE is a hidden row (no backend, S11 slice c never landed) and must not render");
+    TEST_ASSERT_NULL_MESSAGE(find_label_exact(lv_screen_active(), "HAPTICS"),
+                             "HAPTICS is a hidden row (no vibration motor on this board) and must not render");
+    TEST_ASSERT_NULL_MESSAGE(find_label_exact(lv_screen_active(), "GLOW"),
+                             "GLOW is a hidden row (night_glow has zero consumers) and must not render");
+    TEST_ASSERT_NULL_MESSAGE(find_label_exact(lv_screen_active(), "WATER NUDGE"),
+                             "WATER NUDGE is a hidden row (ff_water_tick is never called) and must not render");
 
-    TEST_ASSERT_EQUAL_INT(1, s_spy.count);
-    TEST_ASSERT_EQUAL(FF_INTENT_SETTING_SET, s_spy.last.kind);
-    TEST_ASSERT_EQUAL(FF_SETTING_HAPTICS, s_spy.last.u.setting.id);
-    TEST_ASSERT_EQUAL_INT32(1, s_spy.last.u.setting.v.i); /* OFF -> ON */
-}
+    /* Their pill/value text must not appear either — not just the caption. */
+    TEST_ASSERT_NULL(find_button_with_label(lv_screen_active(), "GHOST"));
 
-static void S11b_settings_night_glow_chip_toggles(void)
-{
-    ff_app_settings_t s;
-    memset(&s, 0, sizeof(s));
-    s.night_glow = true; /* ON pill active */
-
-    ff_scr_settings_build(lv_screen_active(), &s);
-
-    click(find_pill_in_row(lv_screen_active(), "GLOW", "ON"));
-
-    TEST_ASSERT_EQUAL_INT(1, s_spy.count);
-    TEST_ASSERT_EQUAL(FF_INTENT_SETTING_SET, s_spy.last.kind);
-    TEST_ASSERT_EQUAL(FF_SETTING_NIGHT_GLOW, s_spy.last.u.setting.id);
-    TEST_ASSERT_EQUAL_INT32(0, s_spy.last.u.setting.v.i); /* ON -> OFF */
-}
-
-static void S11b_settings_water_chip_cycles_presets(void)
-{
-    ff_app_settings_t s;
-    memset(&s, 0, sizeof(s));
-    s.water_min = 90; /* renders "90 MIN" */
-
-    ff_scr_settings_build(lv_screen_active(), &s);
-
-    click(find_button_with_label(lv_screen_active(), "90 MIN"));
-
-    TEST_ASSERT_EQUAL_INT(1, s_spy.count);
-    TEST_ASSERT_EQUAL(FF_INTENT_SETTING_SET, s_spy.last.kind);
-    TEST_ASSERT_EQUAL(FF_SETTING_WATER_MIN, s_spy.last.u.setting.id);
-    TEST_ASSERT_EQUAL_INT32(120, s_spy.last.u.setting.v.i); /* 90 -> 120, spec's v1 cycle */
-}
-
-/* PR #68 UX review (Bailey, non-blocking finding, fixed here): the row
- * LABEL, not just the value chip, now forwards to the same intent — no
- * more silent dead zone on the left half of the row. */
-static void S11b_settings_water_label_tap_also_cycles(void)
-{
-    ff_app_settings_t s;
-    memset(&s, 0, sizeof(s));
-    s.water_min = 90;
-
-    ff_scr_settings_build(lv_screen_active(), &s);
-
-    lv_obj_t *label = find_label_exact(lv_screen_active(), "WATER NUDGE");
-    TEST_ASSERT_NOT_NULL(label);
-    lv_obj_t *hit = lv_obj_get_parent(label);
-    TEST_ASSERT_NOT_NULL(hit);
-    TEST_ASSERT_TRUE(lv_obj_has_flag(hit, LV_OBJ_FLAG_CLICKABLE));
-
-    click(hit);
-
-    TEST_ASSERT_EQUAL_INT(1, s_spy.count);
-    TEST_ASSERT_EQUAL(FF_INTENT_SETTING_SET, s_spy.last.kind);
-    TEST_ASSERT_EQUAL(FF_SETTING_WATER_MIN, s_spy.last.u.setting.id);
-    TEST_ASSERT_EQUAL_INT32(120, s_spy.last.u.setting.v.i);
+    TEST_ASSERT_EQUAL_INT(0, s_spy.count); /* building the screen alone never emits anything */
 }
 
 /* A quiet-hours tap sets TWO fields (quiet_from_min AND quiet_to_min) —
@@ -2435,6 +2345,13 @@ static void S100_settings_brightness_stepper_steps_and_clamps(void)
  * property itself is S26e's, pinned by S26e_AC3_horizontal_drag_*
  * above and the swipe-navigation tests elsewhing in this file.
  *
+ * Settings audit 2026-09-03 (S21 Amendment "Settings audit 2026-09-03"):
+ * `kRowLabels` below drops SHARE, HAPTICS, GLOW and WATER NUDGE (now
+ * hidden rows — S_audit_2026_09_03_hidden_rows_are_absent_from_settings
+ * above is their own dedicated absence test) and gains the four section
+ * headers (DISPLAY/SOUND/UNITS/DEVICE) the audit introduced grouping the
+ * eight rows that remain.
+ *
  * Mutation check (hand-verified before pushing, per docs/review/
  * code-review.md item 6): commenting out the
  * `settings_build_calibrate_row(...)` call in ff_scr_settings_build
@@ -2457,16 +2374,31 @@ static void S21_AC1_settings_is_one_scrolling_list_every_row_reachable(void)
 
     /* Every prior row's caption/label is present SOMEWHERE in the tree
      * (LVGL builds every child regardless of current scroll position —
-     * this alone proves "present", not yet "reachable"). */
+     * this alone proves "present", not yet "reachable"), plus the four
+     * section headers the audit introduced. */
     static char const *const kRowLabels[] = {
-        "BRIGHTNESS", "UNITS",     "CLOCK",       "SCREEN",      "SHARE",
-        "HAPTICS",    "SOUNDS",    "UI TICKS",    "GLOW",        "WATER NUDGE",
-        "QUIET HOURS", "COLORBLIND", /* S27 sounds adds SOUNDS + UI TICKS, next to HAPTICS */
+        "DISPLAY", "BRIGHTNESS", "CLOCK", "SCREEN", "COLORBLIND",
+        "SOUND",   "SOUNDS",     "UI TICKS", "QUIET HOURS",
+        /* The UNITS *section header* and the UNITS *row's own caption* are the
+         * same literal text (a single-member section named after its only
+         * row) — one presence check below covers both; find_label_exact
+         * returns the first match, which is enough to prove the text exists
+         * SOMEWHERE, the property this loop checks for every other label
+         * too. */
+        "UNITS", "DEVICE",
     };
     for (size_t i = 0; i < sizeof(kRowLabels) / sizeof(kRowLabels[0]); i++) {
         TEST_ASSERT_NOT_NULL_MESSAGE(find_label_exact(lv_screen_active(), kRowLabels[i]), kRowLabels[i]);
     }
     TEST_ASSERT_NOT_NULL(find_button_with_label(lv_screen_active(), "CALIBRATE TOUCH"));
+
+    /* The four hidden rows must NOT be reachable either — belt-and-
+     * suspenders alongside their own dedicated absence test above, kept
+     * here too since this is the test that owns "every row" for S21 AC1. */
+    TEST_ASSERT_NULL(find_label_exact(lv_screen_active(), "SHARE"));
+    TEST_ASSERT_NULL(find_label_exact(lv_screen_active(), "HAPTICS"));
+    TEST_ASSERT_NULL(find_label_exact(lv_screen_active(), "GLOW"));
+    TEST_ASSERT_NULL(find_label_exact(lv_screen_active(), "WATER NUDGE"));
 
     /* "Reachable by scrolling": scroll the ONE list all the way down
      * (LVGL clamps to the real content range) and prove the LAST row,
@@ -2877,19 +2809,20 @@ static void PL_radar_flare_drag_off_emits_nothing(void)
     TEST_ASSERT_EQUAL_INT_MESSAGE(0, s_spy.count, "a slide-off of FLARE must never commit FLARE_START");
 }
 
-/* (b) Settings toggle pill — HAPTICS OFF, one of every pill this face
- * builds through settings_make_pill -> ff_scr_pill_create. */
+/* (b) Settings toggle pill — the UNITS row's FT pill, one of every pill
+ * this face builds through settings_make_pill -> ff_scr_pill_create. */
 static void PL_settings_toggle_drag_off_emits_nothing(void)
 {
     ff_app_settings_t s;
     memset(&s, 0, sizeof(s));
     s.imperial = true; /* renders "FT" — the units row, at rest within the
                          * unscrolled list viewport (unlike a lower row
-                         * such as HAPTICS, which sits below
-                         * FF_SETTINGS_LIST_H at scroll offset 0 and so is
-                         * never reachable by a real, un-scrolled touch —
-                         * matches S11b_settings_units_chip_toggles_imperial's
-                         * own fixture, the positive control for this same
+                         * such as QUIET HOURS or CALIBRATE TOUCH, which
+                         * sits below FF_SETTINGS_LIST_H at scroll offset 0
+                         * and so is never reachable by a real, un-scrolled
+                         * touch — matches
+                         * S11b_settings_units_chip_toggles_imperial's own
+                         * fixture, the positive control for this same
                          * chip). */
 
     ff_scr_settings_build(lv_screen_active(), &s);
@@ -3042,12 +2975,7 @@ int main(void)
     RUN_TEST(S16_c2_flare_takeover_dismiss_emits_takeover_dismiss);
     RUN_TEST(S16_c2_sender_overlay_cancel_emits_flare_end);
     RUN_TEST(S11b_settings_units_chip_toggles_imperial);
-    RUN_TEST(S11b_settings_share_chip_cycles_live_to_ghost_skipping_zones);
-    RUN_TEST(S11b_settings_share_chip_from_ghost_and_from_zones_both_avoid_zones);
-    RUN_TEST(S11b_settings_haptics_chip_toggles);
-    RUN_TEST(S11b_settings_night_glow_chip_toggles);
-    RUN_TEST(S11b_settings_water_chip_cycles_presets);
-    RUN_TEST(S11b_settings_water_label_tap_also_cycles);
+    RUN_TEST(S_audit_2026_09_03_hidden_rows_are_absent_from_settings);
     RUN_TEST(S11b_settings_quiet_chip_sets_both_from_and_to);
     RUN_TEST(S100_settings_brightness_stepper_steps_and_clamps);
     RUN_TEST(S21_AC1_settings_is_one_scrolling_list_every_row_reachable);

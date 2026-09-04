@@ -1,6 +1,32 @@
 /**
  * scr_settings.c — see scr_settings.h.
  *
+ * ## Settings audit 2026-09-03 — four rows hidden, the list sectioned
+ * A read-only audit (verified by grep, docs/specs/S11-settings.md's own
+ * "Amendments" and docs/specs/S21-settings-rework.md's own "Amendments" both
+ * carry the finding) found four rows with NO effect on ANY target:
+ *   - **SHARE** (LIVE|GHOST) — `share_mode` is written and projected but
+ *     nothing gates outbound position sharing; S11's slice c ("GHOST
+ *     admin-message wiring") never landed.
+ *   - **HAPTICS** — `cfg.haptic` is NULL on the device and unwired in the
+ *     sim; the board has no vibration motor at all.
+ *   - **GLOW** — `night_glow` has zero consumers; the launcher's ambient
+ *     glow renders unconditionally regardless of this setting.
+ *   - **WATER NUDGE** — `ff_water_tick` (core) is implemented and unit-
+ *     tested but `ff_shell` never calls it.
+ * Rather than delete these rows, each is gated behind its own
+ * `FF_SETTINGS_ROW_ENABLE_*` compile-time flag (below) — the persisted
+ * field, the `FF_SETTING_*` id, and the shell-level intent handler all stay
+ * wired exactly as before; flipping a flag back to 1 is the entire
+ * re-enable, no other code change. See each flag's own comment for the
+ * spec slice (or the missing hardware) that would re-enable it for real.
+ *
+ * With those four gone, the remaining rows are grouped under lightweight,
+ * non-interactive section headers — DISPLAY (BRIGHTNESS, CLOCK, SCREEN,
+ * COLORBLIND), SOUND (SOUNDS, UI TICKS, QUIET HOURS), UNITS (UNITS), DEVICE
+ * (CALIBRATE TOUCH) — see `settings_build_section_header`'s own doc comment
+ * for the header footprint and why it stays under the ~28px/header target.
+ *
  * ## One scrolling list, pinned centered header (S21 restyle)
  * A settings screen is a single vertically-scrolling list of rows, with the
  * header (back button + "SETTINGS" + name) PINNED at the top so "back" is
@@ -48,9 +74,11 @@
  * ## One consistent row language
  * Every row reads label LEFT (muted, uppercase), control RIGHT. Controls are
  * PILLS (rounded ~12px):
- *   - Toggle pairs (UNITS FT|MI, CLOCK 12H|24H, SHARE LIVE|GHOST,
- *     HAPTICS ON|OFF, SOUNDS ON|OFF, UI TICKS ON|OFF (S27), GLOW ON|OFF,
- *     COLORBLIND ON|OFF) render two pills; the
+ *   - Toggle pairs (UNITS FT|MI, CLOCK 12H|24H, SCREEN NORMAL|FLIPPED,
+ *     SOUNDS ON|OFF, UI TICKS ON|OFF (S27), COLORBLIND ON|OFF — plus the
+ *     hidden SHARE LIVE|GHOST, HAPTICS ON|OFF, GLOW ON|OFF rows, still built
+ *     by this file behind their own `FF_SETTINGS_ROW_ENABLE_*` flag, see the
+ *     "Settings audit 2026-09-03" note above) render two pills; the
  *     ACTIVE one is amber-on-ink, the inactive one surface-on-muted. Both
  *     pills of a pair
  *     forward to the SAME toggle callback with no user_data, so (a) tapping
@@ -58,9 +86,10 @@
  *     them as ONE logical control (its composite-control exclusion keys off
  *     matching cb+user_data), letting the pair sit at a tight ~6px gap
  *     without tripping the 8px adjacency floor two INDEPENDENT controls owe.
- *   - Value rows (WATER NUDGE, QUIET HOURS) render one surface/ink value
- *     pill; the row LABEL is itself a tap target forwarding to the same
- *     callback (no dead left half — PR #68), again composite with its pill.
+ *   - Value rows (QUIET HOURS, plus the hidden WATER NUDGE) render one
+ *     surface/ink value pill; the row LABEL is itself a tap target
+ *     forwarding to the same callback (no dead left half — PR #68), again
+ *     composite with its pill.
  *   - CALIBRATE TOUCH is a full-width surface pill with a thin amber border,
  *     an ACTION (amber text), not a stored value.
  * Every control is a bare `FF_INTENT_*` emitter — range validation and
@@ -193,49 +222,71 @@ _Static_assert(FF_SETTINGS_ROW_H >= FF_THEME_MIN_HIT_PX, "settings pill rows mus
 #define FF_SETTINGS_VALUE_GAP    12
 
 /* --- Container-relative row y-positions (0 = top of the scroll content). ---
- * BRIGHTNESS leads (its own taller block: caption over a slider), then the
- * uniform-step rows. */
+ * BRIGHTNESS leads (its own taller block: caption over a slider); its
+ * INTERNAL geometry (cap/slider/stepper, all base-relative) is unchanged by
+ * the audit below — only where the whole block SITS in the list moved, and
+ * that is now a build-time cursor (see ff_scr_settings_build), not a macro,
+ * because the row set below it is no longer a fixed chain (four rows are
+ * conditionally compiled out — see FF_SETTINGS_ROW_ENABLE_* below — and the
+ * remaining rows are grouped under section headers rather than laid out as
+ * one flat run). */
 #define FF_SETTINGS_REL_BRIGHT_CAP_Y 0
 #define FF_SETTINGS_BRIGHT_CAP_H     22
 #define FF_SETTINGS_REL_SLIDER_Y     30
 /* Transparent hit strip. Raised from the 44 floor to 56 after field-test:
- * the minimum-size strip was hard to land a drag on. 56 keeps a comfortable
- * >=6px (in fact the full FF_SETTINGS_ROW_GAP, 14px) gap to the UNITS row
- * below — every REL_*_Y position downstream is derived from
- * FF_SETTINGS_BRIGHT_BLOCK_H, so growing this constant slides the whole list
- * down uniformly and the slider->UNITS gap stays exactly ROW_GAP (the
- * scroll-aware tap-target sweep re-verifies 0 adjacency violations). The
- * list simply scrolls a little further, which is fine (S21's whole point). */
+ * the minimum-size strip was hard to land a drag on. */
 #define FF_SETTINGS_SLIDER_H         56
-#define FF_SETTINGS_BRIGHT_BLOCK_H   (FF_SETTINGS_REL_SLIDER_Y + FF_SETTINGS_SLIDER_H) /* 74 */
+#define FF_SETTINGS_BRIGHT_BLOCK_H   (FF_SETTINGS_REL_SLIDER_Y + FF_SETTINGS_SLIDER_H)
 
-#define FF_SETTINGS_REL_UNITS_Y (FF_SETTINGS_BRIGHT_BLOCK_H + FF_SETTINGS_ROW_GAP)     /* 88  */
-/* CLOCK sits right after UNITS — both are display-format toggles — ahead of
- * SHARE/HAPTICS/GLOW/WATER/QUIET/COLORBLIND/CALIBRATE, each of which simply
- * shifts down by one FF_SETTINGS_ROW_STEP (spacing itself unchanged; S21's
- * scroll list has no page to overflow, so the new row just scrolls into
- * view like every other). */
-#define FF_SETTINGS_REL_CLOCK_Y (FF_SETTINGS_REL_UNITS_Y + FF_SETTINGS_ROW_STEP)       /* 150 */
-/* SCREEN sits right after CLOCK — same "format v8 amendment, maintainer
- * ask, 2026-09-02" insertion CLOCK's own S21 amendment made above CLOCK:
- * every row from SHARE down simply shifts by one more FF_SETTINGS_ROW_STEP
- * (spacing unchanged; the scroll list absorbs it, no page to overflow). */
-#define FF_SETTINGS_REL_SCREEN_Y (FF_SETTINGS_REL_CLOCK_Y + FF_SETTINGS_ROW_STEP)      /* 212 */
-#define FF_SETTINGS_REL_SHARE_Y (FF_SETTINGS_REL_SCREEN_Y + FF_SETTINGS_ROW_STEP)      /* 274 */
-#define FF_SETTINGS_REL_HAPTICS_Y (FF_SETTINGS_REL_SHARE_Y + FF_SETTINGS_ROW_STEP)     /* 336 */
-/* SOUNDS and UI TICKS sit right after HAPTICS (S27 sounds,
- * docs/specs/S27-sounds.md — "next to HAPTICS"): every row from GLOW down
- * simply shifts by two more FF_SETTINGS_ROW_STEP (spacing unchanged; the
- * scroll list absorbs it, same "no page to overflow" precedent CLOCK's
- * and SCREEN's own insertions above already established). */
-#define FF_SETTINGS_REL_SOUNDS_Y (FF_SETTINGS_REL_HAPTICS_Y + FF_SETTINGS_ROW_STEP)    /* 398 */
-#define FF_SETTINGS_REL_UI_TICKS_Y (FF_SETTINGS_REL_SOUNDS_Y + FF_SETTINGS_ROW_STEP)   /* 460 */
-#define FF_SETTINGS_REL_GLOW_Y  (FF_SETTINGS_REL_UI_TICKS_Y + FF_SETTINGS_ROW_STEP)    /* 522 */
-#define FF_SETTINGS_REL_WATER_Y (FF_SETTINGS_REL_GLOW_Y + FF_SETTINGS_ROW_STEP)        /* 584 */
-#define FF_SETTINGS_REL_QUIET_Y (FF_SETTINGS_REL_WATER_Y + FF_SETTINGS_ROW_STEP)       /* 646 */
-#define FF_SETTINGS_REL_CB_Y    (FF_SETTINGS_REL_QUIET_Y + FF_SETTINGS_ROW_STEP)       /* 708 */
-#define FF_SETTINGS_REL_CAL_Y   (FF_SETTINGS_REL_CB_Y + FF_SETTINGS_ROW_STEP)          /* 770 */
-#define FF_SETTINGS_CONTENT_H   (FF_SETTINGS_REL_CAL_Y + FF_SETTINGS_ROW_H)            /* 818 */
+/* ---------------------------------------------------------------------
+ * Settings audit 2026-09-03 — row visibility table.
+ *
+ * Four rows have NO effect on any target (verified by grep; see the file
+ * header comment above and docs/specs/S11-settings.md / S21-settings-
+ * rework.md's own "Amendments" for the full audit writeup). Rather than
+ * delete them, each is gated behind its own flag here: the persisted
+ * `ff_settings_t` field, the `FF_SETTING_*` id, and the shell-level
+ * `FF_INTENT_SETTING_SET` handling all stay wired exactly as before —
+ * flipping a flag to 1 is the ENTIRE re-enable for the row's own
+ * visibility (the flag's own comment below says what else would need to
+ * land for the setting to actually do something once visible again).
+ * ------------------------------------------------------------------- */
+/* share_mode is written and projected but nothing gates outbound position
+ * sharing — S11 slice c, "GHOST admin-message wiring" (docs/specs/
+ * S11-settings.md), never landed. Re-enable once that slice ships. */
+#define FF_SETTINGS_ROW_ENABLE_SHARE   0
+/* cfg.haptic is NULL on the device and unwired in the sim; the Waveshare
+ * ESP32-S3-Touch-LCD-1.46 board this repo targets has no vibration motor at
+ * all. No spec slice re-enables this — it needs a haptic driver added to
+ * the BOM first. */
+#define FF_SETTINGS_ROW_ENABLE_HAPTICS 0
+/* night_glow has zero consumers — the launcher's ambient glow renders
+ * unconditionally regardless of this setting. No spec slice re-enables
+ * this — it needs the launcher's glow effect gated on the flag first. */
+#define FF_SETTINGS_ROW_ENABLE_GLOW    0
+/* ff_water_tick (core/ff_water.h) is implemented and unit-tested but
+ * ff_shell never calls it — S11's own "Water nudge" behavior section
+ * ("haptic + toast every water_min while awake, suppressed in quiet
+ * hours") describes the wiring that would re-enable this; it never
+ * landed. */
+#define FF_SETTINGS_ROW_ENABLE_WATER   0
+
+/* ---------------------------------------------------------------------
+ * Section header footprint (settings_build_section_header below): a single
+ * small-caps text line plus the gap to its section's first row. The 14px
+ * gap ABOVE a header (separating it from the previous section's last row)
+ * reuses FF_SETTINGS_ROW_GAP — the same gap that already sits between any
+ * two rows, not an extra cost, so it is not counted below. What a header
+ * actually ADDS over "no header, just a row gap" is HDR_H + HDR_GAP:
+ * 18 + 8 = 26px, under the ~28px/header target. HDR_GAP (not HDR_H) is
+ * sized to the sweep's own 8px adjacency floor (`FF_HIT_MIN_GAP_PX`,
+ * ff_theme.h) — a header isn't CLICKABLE so the sweep never checks it
+ * directly, but 8px keeps the header from ever visually reading as part of
+ * the control below it, the same property the floor enforces between two
+ * real controls. ------------------------------------------------------- */
+#define FF_SETTINGS_SECTION_HDR_H   18
+#define FF_SETTINGS_SECTION_HDR_GAP 8
+#define FF_SETTINGS_SECTION_BLOCK_H (FF_SETTINGS_SECTION_HDR_H + FF_SETTINGS_SECTION_HDR_GAP) /* 26 */
 
 /**
  * settings_safe_margin_x — thin int32_t/ceil wrapper around
@@ -500,22 +551,35 @@ static void settings_screen_cb(lv_event_t *e)
  * review, blocking finding 1): selecting ZONES does not change sharing
  * behavior from LIVE in v1, so a tap moves LIVE<->GHOST only. A persisted
  * ZONES renders as neither pill active and one tap moves it to GHOST.
+ *
+ * Settings audit 2026-09-03: this row is HIDDEN
+ * (FF_SETTINGS_ROW_ENABLE_SHARE == 0, see that flag's own comment) — the
+ * callback below is only ever wired by the row builder inside that same
+ * #if, so it is guarded identically here (an unused static function is a
+ * build error under -Werror). Re-enabling the row (flip the flag) brings
+ * this callback back automatically; no separate step.
  * ------------------------------------------------------------------- */
+#if FF_SETTINGS_ROW_ENABLE_SHARE
 static void settings_share_cb(lv_event_t *e)
 {
     (void)e;
     uint8_t const next = (s_settings.share_mode == FF_SHARE_GHOST) ? FF_SHARE_LIVE : FF_SHARE_GHOST;
     settings_emit_int(FF_SETTING_SHARE_MODE, next);
 }
+#endif
 
 /* ---------------------------------------------------------------------
  * HAPTICS / SOUNDS / UI TICKS / GLOW / COLORBLIND — plain booleans.
+ * HAPTICS and GLOW are hidden rows (settings audit 2026-09-03); their
+ * callbacks are guarded the same way SHARE's is above.
  * ------------------------------------------------------------------- */
+#if FF_SETTINGS_ROW_ENABLE_HAPTICS
 static void settings_haptics_cb(lv_event_t *e)
 {
     (void)e;
     settings_emit_int(FF_SETTING_HAPTICS, s_settings.haptics ? 0 : 1);
 }
+#endif
 
 /* SOUNDS (S27, docs/specs/S27-sounds.md) — the master switch for every
  * sound this puck plays. Same two-state toggle shape as HAPTICS above. */
@@ -533,11 +597,13 @@ static void settings_ui_ticks_cb(lv_event_t *e)
     settings_emit_int(FF_SETTING_UI_TICKS, s_settings.ui_ticks ? 0 : 1);
 }
 
+#if FF_SETTINGS_ROW_ENABLE_GLOW
 static void settings_night_glow_cb(lv_event_t *e)
 {
     (void)e;
     settings_emit_int(FF_SETTING_NIGHT_GLOW, s_settings.night_glow ? 0 : 1);
 }
+#endif
 
 static void settings_colorblind_cb(lv_event_t *e)
 {
@@ -547,7 +613,14 @@ static void settings_colorblind_cb(lv_event_t *e)
 
 /* ---------------------------------------------------------------------
  * WATER NUDGE — label + value pill cycling the spec's v1 presets.
+ *
+ * Settings audit 2026-09-03: this row is HIDDEN
+ * (FF_SETTINGS_ROW_ENABLE_WATER == 0) — every symbol below is only used by
+ * its own row builder inside that same #if, so the whole block is guarded
+ * together (an unused static function/array is a build error under
+ * -Werror). Re-enabling the row (flip the flag) brings all of it back.
  * ------------------------------------------------------------------- */
+#if FF_SETTINGS_ROW_ENABLE_WATER
 static uint16_t const kWaterPresets[] = {0, 45, 90, 120};
 enum { N_WATER_PRESETS = sizeof(kWaterPresets) / sizeof(kWaterPresets[0]) };
 
@@ -573,6 +646,7 @@ static void settings_water_label(char *buf, size_t n, uint16_t water_min)
         snprintf(buf, n, "%u MIN", (unsigned)water_min);
     }
 }
+#endif
 
 /* ---------------------------------------------------------------------
  * QUIET HOURS — label + value pill cycling the spec's v1 presets. Each
@@ -717,7 +791,7 @@ static lv_obj_t *settings_deco_box(lv_obj_t *parent, int32_t x, int32_t y, int32
     return o;
 }
 
-static void settings_build_brightness(lv_obj_t *list, int32_t row_w)
+static void settings_build_brightness(lv_obj_t *list, int32_t row_w, int32_t rel_y)
 {
     uint8_t const pct = settings_brightness_clamped();
 
@@ -727,11 +801,14 @@ static void settings_build_brightness(lv_obj_t *list, int32_t row_w)
      * without it, the block's only objects are a 6px level bar and some labels,
      * so a drag on the empty space around them landed on nothing scrollable and
      * the list would not scroll while the brightness row was on screen. The −/+
-     * pills sit on top and still take their taps. */
+     * pills sit on top and still take their taps. `rel_y` is this block's
+     * position in the LIST (the caller's running cursor); every child inside
+     * `base` below stays positioned relative to `base` itself
+     * (FF_SETTINGS_REL_BRIGHT_CAP_Y etc., unchanged, always 0-based). */
     lv_obj_t *base = lv_obj_create(list);
     lv_obj_remove_style_all(base);
     lv_obj_set_size(base, row_w, FF_SETTINGS_BRIGHT_BLOCK_H);
-    lv_obj_set_pos(base, 0, FF_SETTINGS_REL_BRIGHT_CAP_Y);
+    lv_obj_set_pos(base, 0, rel_y);
     lv_obj_set_style_pad_all(base, 0, 0);
     lv_obj_clear_flag(base, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_clear_flag(base, LV_OBJ_FLAG_SCROLLABLE);
@@ -845,6 +922,50 @@ static void settings_build_header_band(lv_obj_t *puck, int32_t x, int32_t w, int
 }
 
 /* ---------------------------------------------------------------------
+ * Section header (settings audit 2026-09-03) — a lightweight, NON-clickable
+ * small-caps label grouping the rows below it (DISPLAY / SOUND / UNITS /
+ * DEVICE). Deliberately NOT a control: no hit-target obligations, so it
+ * carries no click callback and is explicitly cleared of both CLICKABLE and
+ * SCROLLABLE (a plain lv_label defaults to neither, but this states the
+ * intent rather than relying on the default). Dimmer opacity and wider
+ * letter-spacing than a row caption (settings_row_caption) so it reads as
+ * chrome grouping rows, not a row itself.
+ *
+ * `y` is the caller's running layout cursor, in LIST-relative coordinates;
+ * `first` is true only for the very first header in the list (DISPLAY),
+ * which sits at the top of the content with nothing above it to separate
+ * from, so it skips the leading FF_SETTINGS_ROW_GAP every later header adds
+ * to clear the previous section's last row. Returns the y position of the
+ * section's first row — callers assign this straight back to their cursor:
+ *   y = settings_build_section_header(list, y, row_w, "DISPLAY", true);
+ *   settings_build_brightness(list, row_w, y); y += FF_SETTINGS_BRIGHT_BLOCK_H;
+ *   ...
+ * ------------------------------------------------------------------- */
+static int32_t settings_build_section_header(lv_obj_t *list, int32_t y, int32_t row_w, char const *text, bool first)
+{
+    if (!first) {
+        y += FF_SETTINGS_ROW_GAP; /* separate from the previous section's last row — the SAME gap
+                                    * any two rows already carry, not an extra cost (see this
+                                    * function's own doc comment / the FF_SETTINGS_SECTION_BLOCK_H
+                                    * comment above for the accounting). */
+    }
+
+    lv_obj_t *lbl = lv_label_create(list);
+    lv_obj_set_pos(lbl, 0, y);
+    lv_obj_set_width(lbl, row_w);
+    lv_obj_set_height(lbl, FF_SETTINGS_SECTION_HDR_H);
+    lv_label_set_text(lbl, text);
+    lv_obj_set_style_text_font(lbl, FF_THEME_FONT_LABEL, 0);
+    lv_obj_set_style_text_color(lbl, lv_color_hex(FF_THEME_COLOR_MUTED), 0);
+    lv_obj_set_style_text_opa(lbl, LV_OPA_60, 0); /* dimmer than a row caption's full opacity */
+    lv_obj_set_style_text_letter_space(lbl, 3, 0); /* wider tracking than a row caption's 2px */
+    lv_obj_clear_flag(lbl, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_clear_flag(lbl, LV_OBJ_FLAG_SCROLLABLE);
+
+    return y + FF_SETTINGS_SECTION_HDR_H + FF_SETTINGS_SECTION_HDR_GAP;
+}
+
+/* ---------------------------------------------------------------------
  * Entry point.
  * ------------------------------------------------------------------- */
 void ff_scr_settings_build(lv_obj_t *parent, ff_app_settings_t const *settings)
@@ -945,40 +1066,101 @@ void ff_scr_settings_build(lv_obj_t *parent, ff_app_settings_t const *settings)
     lv_obj_add_event_cb(list, settings_scroll_cb, LV_EVENT_SCROLL, NULL);
     lv_obj_add_event_cb(list, settings_scroll_end_cb, LV_EVENT_SCROLL_END, NULL);
 
-    settings_build_brightness(list, row_w);
-    settings_build_toggle_row(list, FF_SETTINGS_REL_UNITS_Y, row_w, "UNITS", "FT", "M",
-                              s_settings.imperial ? 0 : 1, settings_units_cb);
-    settings_build_toggle_row(list, FF_SETTINGS_REL_CLOCK_Y, row_w, "CLOCK", "12H", "24H",
-                              s_settings.clock_24h ? 1 : 0, settings_clock_cb);
-    settings_build_toggle_row_ex(list, FF_SETTINGS_REL_SCREEN_Y, row_w, "SCREEN", "NORMAL", "FLIPPED",
-                                 s_settings.screen_flip ? 1 : 0, FF_SETTINGS_SCREEN_PILL_W, settings_screen_cb);
-    settings_build_toggle_row(list, FF_SETTINGS_REL_SHARE_Y, row_w, "SHARE", "LIVE", "GHOST",
+    /* ---------------------------------------------------------------------
+     * Settings audit 2026-09-03 — sectioned row build, running cursor.
+     *
+     * `y` is this build's ONE layout cursor (list-relative, top of content =
+     * 0); every row/header advances it by its own footprint plus the gap the
+     * next item needs, so insertion/removal anywhere never requires touching
+     * a downstream constant — the failure mode the old REL_*_Y macro chain
+     * had (S21/S27's own amendments each had to manually re-derive every
+     * later offset by hand). Order: DISPLAY (BRIGHTNESS, CLOCK, SCREEN,
+     * COLORBLIND) -> SOUND (SOUNDS, UI TICKS, QUIET HOURS) -> UNITS (UNITS)
+     * -> DEVICE (CALIBRATE TOUCH), per the audit's maintainer-decided
+     * section order. The four hidden rows (SHARE/HAPTICS/GLOW/WATER NUDGE)
+     * are NOT assigned a section here — see their own trailing block below
+     * this one for why. ------------------------------------------------- */
+    int32_t y = 0;
+
+    y = settings_build_section_header(list, y, row_w, "DISPLAY", /*first=*/true);
+    settings_build_brightness(list, row_w, y);
+    y += FF_SETTINGS_BRIGHT_BLOCK_H + FF_SETTINGS_ROW_GAP;
+    settings_build_toggle_row(list, y, row_w, "CLOCK", "12H", "24H", s_settings.clock_24h ? 1 : 0, settings_clock_cb);
+    y += FF_SETTINGS_ROW_STEP;
+    settings_build_toggle_row_ex(list, y, row_w, "SCREEN", "NORMAL", "FLIPPED", s_settings.screen_flip ? 1 : 0,
+                                 FF_SETTINGS_SCREEN_PILL_W, settings_screen_cb);
+    y += FF_SETTINGS_ROW_STEP;
+    settings_build_toggle_row(list, y, row_w, "COLORBLIND", "ON", "OFF", s_settings.colorblind ? 0 : 1,
+                              settings_colorblind_cb);
+    y += FF_SETTINGS_ROW_H; /* last row of DISPLAY: no trailing gap, the next header adds it */
+
+    y = settings_build_section_header(list, y, row_w, "SOUND", /*first=*/false);
+    settings_build_toggle_row(list, y, row_w, "SOUNDS", "ON", "OFF", s_settings.sounds_on ? 0 : 1,
+                              settings_sounds_cb);
+    y += FF_SETTINGS_ROW_STEP;
+    settings_build_toggle_row(list, y, row_w, "UI TICKS", "ON", "OFF", s_settings.ui_ticks ? 0 : 1,
+                              settings_ui_ticks_cb);
+    y += FF_SETTINGS_ROW_STEP;
+    settings_quiet_preset_t const *quiet = settings_current_quiet(s_settings.quiet_from_min, s_settings.quiet_to_min);
+    bool const quiet_off = (quiet != NULL) && (quiet->from_min == 0) && (quiet->to_min == 0);
+    settings_build_value_row(list, y, row_w, "QUIET HOURS", (quiet != NULL) ? quiet->label : "CUSTOM", quiet_off,
+                             settings_quiet_cb);
+    y += FF_SETTINGS_ROW_H; /* last row of SOUND */
+
+    y = settings_build_section_header(list, y, row_w, "UNITS", /*first=*/false);
+    settings_build_toggle_row(list, y, row_w, "UNITS", "FT", "M", s_settings.imperial ? 0 : 1, settings_units_cb);
+    y += FF_SETTINGS_ROW_H; /* last (only) row of UNITS */
+
+    y = settings_build_section_header(list, y, row_w, "DEVICE", /*first=*/false);
+    settings_build_calibrate_row(list, y, row_w);
+    y += FF_SETTINGS_ROW_H; /* last (only) row of DEVICE */
+
+    /* ---------------------------------------------------------------------
+     * Hidden rows (settings audit 2026-09-03) — SHARE, HAPTICS, GLOW, WATER
+     * NUDGE. Each is gated by its own FF_SETTINGS_ROW_ENABLE_* flag (see
+     * that table's own comment above for the audit finding + what would
+     * re-enable it for real) and, while disabled, contributes NOTHING to
+     * the cursor or the rendered list — this is the "flip a flag, get the
+     * row back" contract the audit asked for.
+     *
+     * Placement (interpretation call, AGENTS.md): none of DISPLAY/SOUND/
+     * UNITS/DEVICE is really these rows' home — SHARE is privacy, HAPTICS/
+     * GLOW are feedback, WATER NUDGE is a reminder, and the audit's section
+     * plan (this function's own top comment) only names where the eight
+     * SURVIVING rows go. Rather than force a guess, a flipped-on row simply
+     * APPENDS past DEVICE, unsectioned — correct and reachable (still one
+     * scrolling list, still passes the hit-target sweep), just not yet
+     * grouped; the PR that actually re-enables a row is expected to also
+     * decide its section. -------------------------------------------- */
+#if FF_SETTINGS_ROW_ENABLE_SHARE
+    y += FF_SETTINGS_ROW_GAP;
+    settings_build_toggle_row(list, y, row_w, "SHARE", "LIVE", "GHOST",
                               (s_settings.share_mode == FF_SHARE_LIVE)    ? 0
                               : (s_settings.share_mode == FF_SHARE_GHOST) ? 1
                                                                           : -1,
                               settings_share_cb);
-    settings_build_toggle_row(list, FF_SETTINGS_REL_HAPTICS_Y, row_w, "HAPTICS", "ON", "OFF",
-                              s_settings.haptics ? 0 : 1, settings_haptics_cb);
-    settings_build_toggle_row(list, FF_SETTINGS_REL_SOUNDS_Y, row_w, "SOUNDS", "ON", "OFF",
-                              s_settings.sounds_on ? 0 : 1, settings_sounds_cb);
-    settings_build_toggle_row(list, FF_SETTINGS_REL_UI_TICKS_Y, row_w, "UI TICKS", "ON", "OFF",
-                              s_settings.ui_ticks ? 0 : 1, settings_ui_ticks_cb);
-    settings_build_toggle_row(list, FF_SETTINGS_REL_GLOW_Y, row_w, "GLOW", "ON", "OFF",
-                              s_settings.night_glow ? 0 : 1, settings_night_glow_cb);
-
+    y += FF_SETTINGS_ROW_H;
+#endif
+#if FF_SETTINGS_ROW_ENABLE_HAPTICS
+    y += FF_SETTINGS_ROW_GAP;
+    settings_build_toggle_row(list, y, row_w, "HAPTICS", "ON", "OFF", s_settings.haptics ? 0 : 1,
+                              settings_haptics_cb);
+    y += FF_SETTINGS_ROW_H;
+#endif
+#if FF_SETTINGS_ROW_ENABLE_GLOW
+    y += FF_SETTINGS_ROW_GAP;
+    settings_build_toggle_row(list, y, row_w, "GLOW", "ON", "OFF", s_settings.night_glow ? 0 : 1,
+                              settings_night_glow_cb);
+    y += FF_SETTINGS_ROW_H;
+#endif
+#if FF_SETTINGS_ROW_ENABLE_WATER
+    y += FF_SETTINGS_ROW_GAP;
     char water_buf[16];
     settings_water_label(water_buf, sizeof(water_buf), s_settings.water_min);
-    settings_build_value_row(list, FF_SETTINGS_REL_WATER_Y, row_w, "WATER NUDGE", water_buf,
-                             s_settings.water_min == 0, settings_water_cb);
-
-    settings_quiet_preset_t const *quiet = settings_current_quiet(s_settings.quiet_from_min, s_settings.quiet_to_min);
-    bool const quiet_off = (quiet != NULL) && (quiet->from_min == 0) && (quiet->to_min == 0);
-    settings_build_value_row(list, FF_SETTINGS_REL_QUIET_Y, row_w, "QUIET HOURS",
-                             (quiet != NULL) ? quiet->label : "CUSTOM", quiet_off, settings_quiet_cb);
-
-    settings_build_toggle_row(list, FF_SETTINGS_REL_CB_Y, row_w, "COLORBLIND", "ON", "OFF",
-                              s_settings.colorblind ? 0 : 1, settings_colorblind_cb);
-    settings_build_calibrate_row(list, FF_SETTINGS_REL_CAL_Y, row_w);
+    settings_build_value_row(list, y, row_w, "WATER NUDGE", water_buf, s_settings.water_min == 0, settings_water_cb);
+    y += FF_SETTINGS_ROW_H;
+#endif
+    (void)y; /* the final cursor value is only informative once every #if above resolves */
 
     /* #bug4 — restore the scroll offset the previous build left (0 on a fresh
      * entry, cleared by ff_scr_settings_reset_scroll). The layout must be

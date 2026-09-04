@@ -244,3 +244,79 @@ targets` again covers the new row generically. On-glass verification
 (flip on: UI upright in the flipped case, touch lands correctly, rim
 centred, boot splash upright) is the maintainer's — see
 docs/hardware/glass-offset.md's hardware-in-the-loop convention.
+
+**2026-09-03 — Settings audit: four rows hidden, list sectioned
+(`feat/settings-audit-sections`).** A read-only audit (grep-verified: for
+each row, trace every consumer of the `ff_settings_t` field it writes)
+found four Settings rows with **no effect on any target** — the row lets
+the wearer flip a persisted value, but nothing downstream, on the sim or
+the device, ever reads that value to change behavior:
+
+| Row | Field | Finding | Re-enables when |
+|---|---|---|---|
+| SHARE | `share_mode` | Written and projected but nothing gates outbound position sharing. | S11 slice c ("GHOST admin-message wiring") lands — still unimplemented, see S11's own Amendments entry added alongside this one. |
+| HAPTICS | `haptics` | `cfg.haptic` is NULL on the device and unwired in the sim; the Waveshare ESP32-S3-Touch-LCD-1.46 board has no vibration motor at all. | A haptic driver is added to the BOM — no spec slice claims this today. |
+| GLOW | `night_glow` | Zero consumers; the launcher's ambient glow renders unconditionally regardless of this setting. | The launcher's glow effect is gated on the flag — no spec slice claims this today. |
+| WATER NUDGE | `water_min` | `ff_water_tick` (core) is implemented and unit-tested, but `ff_shell` never calls it. | S11's own "Water nudge" behavior section (haptic + toast every `water_min`, suppressed in quiet hours) is actually wired into the shell tick — still unimplemented. |
+
+**Hidden, not deleted.** Each row is gated by its own
+`FF_SETTINGS_ROW_ENABLE_*` compile-time flag in `scr_settings.c` (default
+`0`); the persisted `ff_settings_t` field, the `FF_SETTING_*` id, and the
+shell-level `FF_INTENT_SETTING_SET` handling for it are untouched — no
+format bump, no field removed. Flipping a flag to `1` is the entire
+re-enable for the row's own visibility (see the table above for what
+would additionally need to land for the setting to actually do
+something once visible again). This is deliberately reversible: the
+audit's finding is "nothing consumes this today," not "this setting is
+wrong" — SHARE and WATER NUDGE both name a concrete spec slice that
+would make them real again.
+
+**Sectioned list.** With those four gone, the remaining eight rows are
+grouped under four lightweight, non-clickable, muted small-caps section
+headers (`settings_build_section_header`, `scr_settings.c`) — DISPLAY
+(BRIGHTNESS, CLOCK, SCREEN, COLORBLIND), SOUND (SOUNDS, UI TICKS, QUIET
+HOURS), UNITS (UNITS), DEVICE (CALIBRATE TOUCH). A header costs 26px
+(an 18px text line + an 8px gap to its section's first row — sized to
+the hit-target sweep's own 8px adjacency floor, `FF_HIT_MIN_GAP_PX`, so
+a header never reads as part of the control below it), under the ~28px
+target; the 14px gap above a header, separating it from the previous
+section's last row, reuses the existing inter-row gap rather than
+adding to it. UNITS' section header and its (only) row share the same
+literal text ("UNITS") since the section has exactly one member — an
+accepted, slightly redundant-looking consequence of a single-item
+category, not a bug.
+
+**Height, measured (not hand-computed — see `S21_AC1_settings_is_one_
+scrolling_list_every_row_reachable`'s own measurement in the PR, which
+reads the live list's real LVGL scroll range rather than trusting the
+layout macros' inline comments, several of which had drifted stale
+across earlier amendments):**
+
+| | Content height | Viewport | "Screens" (content ÷ 256) |
+|---|---|---|---|
+| Before | 830px | 256px | 3.24 |
+| After | 686px | 256px | 2.68 |
+
+**Row order changed**, not just shortened: CLOCK/SCREEN now follow
+BRIGHTNESS directly under DISPLAY (UNITS moves out to its own
+single-row section further down the list), and QUIET HOURS moves up
+into SOUND (previously it sat between WATER NUDGE and COLORBLIND). This
+is the maintainer's own section plan, not an incidental reshuffle.
+
+**Tests**: the six old screen-level tap tests for SHARE/HAPTICS/GLOW/
+WATER NUDGE (`test_scr_intent.c`) are replaced by one absence test,
+`S_audit_2026_09_03_hidden_rows_are_absent_from_settings`, plus a
+belt-and-suspenders absence check folded into
+`S21_AC1_settings_is_one_scrolling_list_every_row_reachable` itself
+(whose row list also gains the four section headers). Mutation
+(flip `FF_SETTINGS_ROW_ENABLE_HAPTICS` to `1`) fails exactly those two
+assertions and nothing else — see the PR body for the exact `ctest`
+output.
+
+Goldens regenerated: all seven `settings_*` fixtures rendering the
+Settings face change (`settings_brightness`, `settings_colorblind_on`,
+`settings_default`, `settings_ghost`, `settings_screen_flipped`,
+`settings_scrolled_bottom`, `settings_scrolled_mid`) —
+`settings_clock_24h` renders the LAUNCHER face, not Settings, so it is
+untouched. Every non-`settings_*` golden (69 fixtures) is byte-identical
+(`git status` on `firmware/tests/golden/` shows no other changes).
