@@ -112,6 +112,45 @@ typedef struct {
  */
 lv_obj_t *ff_scr_pill_create(lv_obj_t *parent, char const *text, ff_scr_pill_cfg_t const *cfg);
 
+/**
+ * ff_scr_glass_rim_create — build one edge-hugging ring, concentric with
+ * the VISIBLE glass rather than the framebuffer (`FF_THEME_GLASS_CX/CY/R`,
+ * `docs/hardware/glass-offset.md`), not the puck's own `(206,206)`
+ * center.
+ *
+ * fix/flare-rim-glass-geometry: extracted from `scr_radar.c`'s
+ * `radar_build_rim_tint` (the ORIGINAL, on-glass-proven implementation —
+ * S06/#154/#155) once the flare sender overlay's own rim
+ * (`ff_scr_flare_build_sender_overlay`) turned out to have the exact same
+ * bug the radar rim was fixed for: it was still sized/aligned against the
+ * framebuffer center (`FF_THEME_PUCK_PX - 4`, `lv_obj_center`), so on real
+ * glass it showed the identical "opposite-side arc" sliver radar used to.
+ * Rather than re-derive the fix a second time (and risk the two drifting
+ * again the next time a board's measured offset changes), every rim now
+ * shares this ONE function that knows the glass geometry. `scr_radar.c`'s
+ * `radar_build_rim_tint` is now a thin wrapper over this with `border_px`
+ * pinned at 5 — same size (`2 * FF_THEME_GLASS_R - 4`), same alignment
+ * arithmetic, so its own goldens stay byte-identical (this is an
+ * extraction, not a restyle — same proof shape as `ff_scr_pill_create`'s
+ * own header comment above).
+ *
+ * `screen_flip` is an explicit parameter, not a hidden global — the same
+ * convention `ff_theme_glass_cx`/`_cy` themselves document (multiple
+ * independent translation units include this header; a file-static
+ * "current orientation" would desync across them). Callers already have
+ * `ff_app_settings_t.screen_flip` one frame away (`scr_nav.c` /
+ * `scr_launcher.c` both thread it through to `ff_scr_radar_build`
+ * already).
+ *
+ * Returns the built ring object so a caller that needs to animate it
+ * (the flare sender overlay's pulse) can attach its own `lv_anim_t`
+ * without this factory needing to know about animation at all — the same
+ * "hand back the object, let the caller decide what else happens to it"
+ * shape `ff_scr_pill_create` already uses for its click handler.
+ */
+lv_obj_t *ff_scr_glass_rim_create(lv_obj_t *parent, uint32_t color_hex, lv_opa_t opa, int32_t border_px,
+                                   bool screen_flip);
+
 #ifdef __cplusplus
 }
 #endif

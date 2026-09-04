@@ -347,7 +347,7 @@ void ff_scr_nav_build(ff_app_state_t const *state)
      * `content`) so it paints on top of whatever face is showing —
      * spec: "own screen pulses amber" applies regardless of which face
      * is active. No-op internally when !state->flare.sending. */
-    ff_scr_flare_build_sender_overlay(puck, &state->flare);
+    ff_scr_flare_build_sender_overlay(puck, &state->flare, state->settings.screen_flip);
 
     /* S26 slice d — the message banner, built LAST (on the puck, after
      * the sender overlay) so it paints on top of everything else this

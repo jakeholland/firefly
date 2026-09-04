@@ -60,3 +60,27 @@ lv_obj_t *ff_scr_pill_create(lv_obj_t *parent, char const *text, ff_scr_pill_cfg
 
     return btn;
 }
+
+lv_obj_t *ff_scr_glass_rim_create(lv_obj_t *parent, uint32_t color_hex, lv_opa_t opa, int32_t border_px,
+                                   bool screen_flip)
+{
+    /* Concentric with the VISIBLE glass, not the framebuffer: the bezel
+     * window is offset from the pixel array (FF_THEME_GLASS_*), and a
+     * ring hugging the edge is the one shape where a few px shows —
+     * verbatim geometry from scr_radar.c's original radar_build_rim_tint
+     * (S06/#154/#155), now the one place every edge-hugging ring shares
+     * it (see this function's own doc comment in scr_widgets.h). */
+    lv_obj_t *rim = lv_obj_create(parent);
+    lv_obj_remove_style_all(rim);
+    lv_obj_set_size(rim, 2 * FF_THEME_GLASS_R - 4, 2 * FF_THEME_GLASS_R - 4);
+    lv_obj_set_style_radius(rim, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_bg_opa(rim, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(rim, border_px, 0);
+    lv_obj_set_style_border_color(rim, lv_color_hex(color_hex), 0);
+    lv_obj_set_style_border_opa(rim, opa, 0);
+    lv_obj_clear_flag(rim, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_clear_flag(rim, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_align(rim, LV_ALIGN_CENTER, ff_theme_glass_cx(screen_flip) - FF_THEME_PUCK_RADIUS_PX,
+                 ff_theme_glass_cy(screen_flip) - FF_THEME_PUCK_RADIUS_PX);
+    return rim;
+}

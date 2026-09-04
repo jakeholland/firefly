@@ -62,8 +62,16 @@ void ff_scr_flare_build_takeover(ff_app_flare_t const *flare);
  * locked on you", a live countdown (flare_fmt.h), and a CANCEL button
  * (emits `FF_INTENT_FLARE_END`) >= FF_THEME_MIN_HIT_PX tall.
  * No-op if `!flare->sending`.
+ *
+ * `screen_flip` (fix/flare-rim-glass-geometry, `[api]`): the rim is an
+ * edge-hugging ring, so — same as `ff_scr_radar_build`'s own
+ * `screen_flip` parameter — it must stay concentric with the VISIBLE
+ * glass (`FF_THEME_GLASS_CX/CY`, `docs/hardware/glass-offset.md`), which
+ * mirrors under the case's flipped mount. Pass
+ * `state->settings.screen_flip` straight through, exactly as every
+ * `ff_scr_radar_build` call site already does.
  */
-void ff_scr_flare_build_sender_overlay(lv_obj_t *parent, ff_app_flare_t const *flare);
+void ff_scr_flare_build_sender_overlay(lv_obj_t *parent, ff_app_flare_t const *flare, bool screen_flip);
 
 /**
  * ff_scr_flare_build_lock_chip — draws a small "LOCKED · <NAME>" chip

@@ -522,7 +522,7 @@ void ff_scr_flare_build_takeover(ff_app_flare_t const *flare)
                        NULL);
 }
 
-void ff_scr_flare_build_sender_overlay(lv_obj_t *parent, ff_app_flare_t const *flare)
+void ff_scr_flare_build_sender_overlay(lv_obj_t *parent, ff_app_flare_t const *flare, bool screen_flip)
 {
     if (parent == NULL || flare == NULL || !flare->sending) {
         return;
@@ -533,18 +533,19 @@ void ff_scr_flare_build_sender_overlay(lv_obj_t *parent, ff_app_flare_t const *f
      * whole puck), but animated (STALE's is a static 50%-opacity ring;
      * this one pulses, per spec "own screen pulses amber") so a glance at
      * ANY face while sending reads unmistakably as "I am the one
-     * flaring", not "someone/something near me is stale". */
-    lv_obj_t *rim = lv_obj_create(parent);
-    lv_obj_remove_style_all(rim);
-    lv_obj_set_size(rim, FF_THEME_PUCK_PX - 4, FF_THEME_PUCK_PX - 4);
-    lv_obj_set_style_radius(rim, LV_RADIUS_CIRCLE, 0);
-    lv_obj_set_style_bg_opa(rim, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_border_width(rim, 5, 0);
-    lv_obj_set_style_border_color(rim, lv_color_hex(FF_THEME_COLOR_AMBER), 0);
-    lv_obj_set_style_border_opa(rim, LV_OPA_70, 0);
-    lv_obj_clear_flag(rim, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_clear_flag(rim, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_center(rim);
+     * flaring", not "someone/something near me is stale".
+     *
+     * fix/flare-rim-glass-geometry: this used to be a framebuffer-centred
+     * `FF_THEME_PUCK_PX - 4` ring, `lv_obj_center`'d — i.e. concentric
+     * with (206,206), not the VISIBLE glass. On real glass that is
+     * exactly scr_radar.c's pre-#154/#155 bug: the maintainer's report
+     * ("the opposite-side arc is showing up") is this same bezel artefact
+     * on this screen. Now built by the SAME shared helper Radar's own rim
+     * uses (ff_scr_glass_rim_create, scr_widgets.h) so the two can never
+     * drift apart again — same size (2 * FF_THEME_GLASS_R - 4 = 396, was
+     * 408), same 5px border, same glass-centred alignment, just amber and
+     * animated instead of Radar's static 50%-opacity ring. */
+    lv_obj_t *rim = ff_scr_glass_rim_create(parent, FF_THEME_COLOR_AMBER, LV_OPA_70, 5, screen_flip);
 
     lv_anim_t a;
     lv_anim_init(&a);

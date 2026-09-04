@@ -490,6 +490,99 @@ static void S10_locked_arrow_head_clears_the_lock_chip(void)
     TEST_ASSERT_TRUE_MESSAGE(gap >= 8.0f, msg);
 }
 
+/* ---------------------------------------------------------------------
+ * fix/flare-rim-glass-geometry — the sender overlay's pulsing amber rim
+ * is concentric with the VISIBLE glass, not the framebuffer.
+ *
+ * MAINTAINER REPORT (on glass): "the flare animation is cool, but the
+ * opposite-side arc is showing up on it" — the same bezel artefact
+ * scr_radar.c's rim tint had before #154/#155: a ring hugging the
+ * FRAMEBUFFER edge (centre 206,206) shows a sliver on the right because
+ * the visible glass is offset ~5px from the pixel array
+ * (docs/hardware/glass-offset.md).
+ *
+ * PROXY-PROOF, PER AGENTS.md'S "measuring, not reasoning harder": this
+ * reads the REAL built LVGL widget's coordinates
+ * (`lv_obj_get_coords`/`lv_obj_get_x`/`lv_obj_get_y`/`lv_obj_get_width`),
+ * not `FF_THEME_GLASS_*`'s own arithmetic re-derived a second time — a
+ * test that recomputed `ff_theme_glass_cx(flip) - FF_THEME_PUCK_RADIUS_PX`
+ * itself would pass no matter what the renderer actually drew.
+ *
+ * The rim is the FIRST child `ff_scr_flare_build_sender_overlay` builds
+ * onto a fresh, otherwise-empty parent (before the status label / chip /
+ * CANCEL button), so `lv_obj_get_child(parent, 0)` is it — same
+ * "measure the actual widget" approach `S10_lock_chip_clears_the_status_
+ * bar` above uses via `find_label_with_prefix`, just addressed by
+ * position since the rim carries no label of its own.
+ *
+ * MUTATION CHECK (run manually, see this PR's body for the transcript):
+ * reverting the rim back to `lv_obj_set_size(rim, FF_THEME_PUCK_PX - 4,
+ * FF_THEME_PUCK_PX - 4)` + `lv_obj_center(rim)` (the pre-fix framebuffer-
+ * centred geometry) makes this test fail immediately — the rim's centre
+ * lands on (206,206), not (208,206)/(204,206), and its width/height
+ * reverts to 408, not 396.
+ */
+static void S10_sender_overlay_rim_matches_glass_geometry_case(bool screen_flip)
+{
+    /* Same content-container convention as S10_lock_chip_clears_the_
+     * status_bar above: WINDOW_PX == PUCK_PX == 412, so margin is 0 and
+     * this puck's own coordinate system IS the screen's. */
+    lv_obj_t *puck = lv_obj_create(lv_screen_active());
+    lv_obj_remove_style_all(puck);
+    lv_obj_set_size(puck, FF_THEME_PUCK_PX, FF_THEME_PUCK_PX);
+    lv_obj_set_pos(puck, 0, 0);
+
+    ff_app_flare_t flare;
+    memset(&flare, 0, sizeof(flare));
+    flare.sending = true;
+    flare.send_expires_in_ms = 245000;
+
+    ff_scr_flare_build_sender_overlay(puck, &flare, screen_flip);
+    lv_obj_update_layout(lv_screen_active());
+
+    lv_obj_t *rim = lv_obj_get_child(puck, 0);
+    TEST_ASSERT_NOT_NULL_MESSAGE(rim, "the pulsing rim must be the first thing the sender overlay builds");
+
+    lv_area_t area;
+    lv_obj_get_coords(rim, &area);
+    int32_t width = area.x2 - area.x1 + 1; /* x2/y2 are inclusive last-pixel coords */
+    int32_t height = area.y2 - area.y1 + 1;
+    int32_t cx = area.x1 + width / 2;
+    int32_t cy = area.y1 + height / 2;
+
+    /* 2 * FF_THEME_GLASS_R - 4: identical size arithmetic to scr_radar.c's
+     * rim tint (via the now-shared ff_scr_glass_rim_create), not the old
+     * FF_THEME_PUCK_PX - 4 (408). */
+    int32_t const expect_size = 2 * FF_THEME_GLASS_R - 4;
+    TEST_ASSERT_EQUAL_INT32_MESSAGE(expect_size, width, "rim width must match the shared glass-rim size (396, was 408)");
+    TEST_ASSERT_EQUAL_INT32_MESSAGE(expect_size, height, "rim height must match the shared glass-rim size (396, was 408)");
+
+    /* Literals pinned per this PR's brief: NORMAL (208, 206), FLIPPED
+     * (204, 206) — read straight off ff_theme_glass_cx/cy rather than
+     * re-typed by hand, so a future re-measurement of the board (a
+     * changed FF_THEME_GLASS_CX/CY) can't silently desync this test from
+     * the constant it's supposed to be checking. */
+    int32_t const expect_cx = ff_theme_glass_cx(screen_flip);
+    int32_t const expect_cy = ff_theme_glass_cy(screen_flip);
+    char msg[160];
+    snprintf(msg, sizeof(msg),
+             "rim must be concentric with the VISIBLE glass (%d,%d) for screen_flip=%d, not the framebuffer "
+             "(206,206) — got (%d,%d)",
+             (int)expect_cx, (int)expect_cy, (int)screen_flip, (int)cx, (int)cy);
+    TEST_ASSERT_EQUAL_INT32_MESSAGE(expect_cx, cx, msg);
+    TEST_ASSERT_EQUAL_INT32_MESSAGE(expect_cy, cy, msg);
+}
+
+static void S10_sender_overlay_rim_matches_glass_geometry_normal(void)
+{
+    S10_sender_overlay_rim_matches_glass_geometry_case(/*screen_flip=*/false);
+}
+
+static void S10_sender_overlay_rim_matches_glass_geometry_flipped(void)
+{
+    S10_sender_overlay_rim_matches_glass_geometry_case(/*screen_flip=*/true);
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -499,6 +592,8 @@ int main(void)
     RUN_TEST(S10_ACn_lock_disclosure_is_always_accompanied_by_the_headline);
     RUN_TEST(S10_lock_chip_clears_the_status_bar);
     RUN_TEST(S10_locked_arrow_head_clears_the_lock_chip);
+    RUN_TEST(S10_sender_overlay_rim_matches_glass_geometry_normal);
+    RUN_TEST(S10_sender_overlay_rim_matches_glass_geometry_flipped);
 
     return UNITY_END();
 }
