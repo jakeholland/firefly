@@ -16,26 +16,52 @@
  * CAN be wired to GPIO43/44 via uart_set_pin() — the choice is about
  * avoiding a conflict elsewhere, not about wiring capability.
  *
- *   - UART0 is NOT free by default. GPIO43/44 are ALSO UART0's own
- *     default pins, and this repo's committed sdkconfig.defaults leaves
- *     ESP-IDF's stock console config in place: PRIMARY console = UART0,
- *     SECONDARY console = USB-Serial/JTAG (confirmed against
- *     esp-idf/components/esp_system/Kconfig's ESP_CONSOLE_UART/
- *     ESP_CONSOLE_SECONDARY choices — the default combo, not a project
- *     override — and against this file's own app_main.c, whose S26f
- *     comment states outright "USB-Serial/JTAG is the SECONDARY
- *     console" on the maintainer's real board). esp_console already owns
- *     a uart_driver_install() on UART0 in that configuration; a second
- *     install here would either fail (ESP_ERR_INVALID_STATE) or, if it
- *     somehow didn't, interleave this transport's framed bytes with
- *     plain-text log lines on the same wire. Using UART0 for the mesh
- *     link is only safe once a maintainer deliberately reconfigures the
- *     console to USB-Serial/JTAG ONLY (dropping UART0 from console duty
- *     entirely) — a system-wide sdkconfig change this slice does not
- *     make. FF_UART_PORT_0 exists for that future, verified case.
- *   - UART1 has no such conflict: nothing else in this build touches it.
- *     Remapping it onto GPIO43/44 costs nothing and needs no console
- *     change, so it is the default.
+ * A review round on this slice corrected an earlier version of this
+ * comment that claimed "esp_console already owns a uart_driver_install()
+ * on UART0" — checked against esp-idf/components/esp_driver_uart/src/
+ * uart_vfs.c and that is NOT what happens: the console's normal ESP_LOGx/
+ * stdout path writes via uart_tx_char(), a direct busy-wait poke on the
+ * raw UART TX FIFO register (uart_ll_get_txfifo_len()) — it never calls
+ * uart_driver_install() unless the app opts in via
+ * uart_vfs_dev_use_driver() (this app doesn't). The only esp-idf caller of
+ * uart_driver_install() for anything console-shaped is
+ * components/console/esp_console_repl_chip.c — the interactive REPL
+ * component, unused here. So a second uart_driver_install() on UART0
+ * would not fail at install time the way the earlier comment claimed.
+ *
+ * The real hazard, and why this repo's sdkconfig.defaults/sdkconfig.ci
+ * now set the console to USB-Serial/JTAG ONLY (S15 Amendments,
+ * docs/specs/S15-esp32s3-target.md) rather than leaving ESP-IDF's stock
+ * default (PRIMARY console = UART0, SECONDARY = USB-Serial/JTAG — the
+ * default combo, esp-idf/components/esp_system/Kconfig's ESP_CONSOLE_UART/
+ * ESP_CONSOLE_SECONDARY choices) in place: TWO INDEPENDENT PRODUCERS
+ * writing raw bytes to the SAME physical UART0 TX FIFO register with no
+ * shared coordination. esp_log's uart_tx_char() can fire from any task or
+ * ISR context at any time a log line is emitted; this transport's own
+ * uart_driver_install()'d engine ALSO drives that identical hardware FIFO
+ * from its own interrupt handler. Neither knows the other exists — a log
+ * line and a mesh frame's bytes can interleave or corrupt each other on
+ * the wire. That is shared-FIFO corruption, not an install-time API
+ * conflict.
+ *
+ * UART1 sidesteps that hazard entirely (nothing else in this build ever
+ * touches it) AND is the port this slice keeps even now that the console
+ * has moved to USB-Serial/JTAG only: moving the CONSOLE off UART0 does
+ * not fully silence GPIO43/44 at every point in boot. The ROM's own
+ * first-stage boot banner ("ets ... rst:0x1 (POWERON)...") is
+ * hardware-fixed to UART0's default pins and prints before any flash
+ * code — bootloader or app — has read a single Kconfig byte, so it cannot
+ * be moved by any sdkconfig setting. See the S15 Amendment's
+ * "boot-garbage window" entry for the full reasoning (bounded, one-time
+ * per boot, absorbed by whichever side's framer resync counter sees it —
+ * this device's mc_get_stats().frames_resynced if it arrives on our RX,
+ * the comms brain's own Meshtastic framer if it goes out our TX). Putting
+ * the mesh link on UART1 means this transport's own operation is
+ * completely unaffected by that ROM-level behavior either way.
+ *
+ * UART0 stays offered via FF_UART_PORT_0 for a future maintainer who has
+ * independently verified both of the above no longer apply to their
+ * build — this slice does not attempt either fix.
  *
  * write() honours the #170 backpressure contract stated in
  * mc_client.h's mc_transport_t doc comment (0..len bytes accepted, 0 =
@@ -60,12 +86,19 @@
 extern "C" {
 #endif
 
-/* RX ring: >= 2 KB per spec — a want_config NodeInfo burst can be large
- * (mc_client.h's MC_TICK_MAX_FRAMES doc: "a busy public channel can carry
- * on the order of 100 nodes"), and this ring is drained only once per
- * mc_tick() call (~50 Hz), so it must absorb whatever arrives between
- * ticks without dropping bytes. */
-#define MC_UART_RX_RING_MIN 2048u
+/* RX ring: 8 KB — well above the >=2 KB spec floor (S15c review round:
+ * a want_config NodeInfo burst can be large — mc_client.h's
+ * MC_TICK_MAX_FRAMES doc: "a busy public channel can carry on the order
+ * of 100 nodes" — and this ring is drained only once per mc_tick() call
+ * (~50 Hz), so it must absorb whatever arrives between ticks without
+ * dropping bytes). Raised from the spec-floor 2 KB to 8 KB: DIRAM headroom
+ * on this build is ample (idf.py size on the CONFIG_FF_LINK_UART build:
+ * ~159 KB DIRAM remaining out of 334 KB total, see the S15 Amendment's
+ * gate table), so there is no reason to run the want_config burst case
+ * close to the 2 KB floor when 8 KB costs a few percent of a resource
+ * this build isn't remotely short on — cheap insurance against a larger
+ * real-world burst than the 100-node estimate above. */
+#define MC_UART_RX_RING_MIN 8192u
 /* TX ring: >= 1 KB per spec — comfortably larger than one framed
  * ToRadio message (MC_MAX_FRAME + 4, mc_framing.h), so an ordinary send
  * completes in one write() call under normal drain rates; back-pressure

@@ -34,3 +34,15 @@ CONFIG_FF_BRINGUP_STAGE=3
 # --- Demo mode (S20/S23) — matches the real board ---
 CONFIG_FF_DEMO_MODE=y
 CONFIG_FF_DEMO_LIVE=y
+
+# --- Console: USB-Serial/JTAG only (S15c amendment) -------------------------
+# Redundant with sdkconfig.defaults' own new default (same keys) — restated
+# here, explicitly, because this file is the "what the maintainer's real
+# board actually runs" leg and the console setting is exactly as load-
+# bearing for a real UART mesh link as CONFIG_FF_BRINGUP_STAGE/
+# CONFIG_FF_DEMO_MODE above: this leg must never regress to console-on-
+# UART0 even if sdkconfig.defaults' own entry is ever edited without
+# noticing this file also depends on it.
+CONFIG_ESP_CONSOLE_UART_DEFAULT=n
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
+CONFIG_ESP_CONSOLE_SECONDARY_NONE=y
