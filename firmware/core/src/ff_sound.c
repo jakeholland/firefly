@@ -28,6 +28,11 @@
  *     two-note events are still easy to tell apart by ear).
  *   - TAP: a single very short, non-musical click (not a "note" in the
  *     same sense as the other five — just a tick).
+ *   - MULTITAP_TICK (fix/quick-flare-detection, 2026-09-03): a single
+ *     very short, non-musical blip at `FF_SOUND_MULTITAP_TICK_HZ`
+ *     (ff_sound.h — distinctly higher than TAP's 1200 Hz so the two
+ *     utility sounds stay tellable apart by ear), ~40 ms per the spec's
+ *     "short progress blip" ask.
  */
 static ff_sound_pattern_t const kPatterns[FF_SOUND_COUNT] = {
     [FF_SOUND_FLARE_SENT] = {
@@ -74,6 +79,12 @@ static ff_sound_pattern_t const kPatterns[FF_SOUND_COUNT] = {
         },
         .n = 1,
     },
+    [FF_SOUND_MULTITAP_TICK] = {
+        .steps = {
+            {FF_SOUND_MULTITAP_TICK_HZ, 40},
+        },
+        .n = 1,
+    },
 };
 
 /* Only the vocabulary's SIZE is checked at compile time — an enum
@@ -92,7 +103,7 @@ static ff_sound_pattern_t const kPatterns[FF_SOUND_COUNT] = {
  * test_sound.c) is the ONLY enforcement of both budgets — a real ctest
  * failure on every build, not a weaker guarantee than a compile-time
  * guard would give, just a differently-timed one. */
-_Static_assert(FF_SOUND_COUNT == 6, "ff_sound_event_t grew - add a kPatterns row and update test_sound.c's sweep");
+_Static_assert(FF_SOUND_COUNT == 7, "ff_sound_event_t grew - add a kPatterns row and update test_sound.c's sweep");
 
 ff_sound_pattern_t const *ff_sound_pattern_for(ff_sound_event_t ev)
 {
@@ -105,7 +116,11 @@ bool ff_sound_should_play(ff_sound_event_t ev, bool sounds_on, bool quiet_now)
     if ((int)ev < 0 || ev >= FF_SOUND_COUNT) return false;
     if (!sounds_on) return false;
     if (quiet_now) {
-        return ev == FF_SOUND_FLARE_SENT || ev == FF_SOUND_FLARE_INCOMING;
+        /* fix/quick-flare-detection (2026-09-03): MULTITAP_TICK joins
+         * the two FLARE events in the quiet-hours exemption — see
+         * ff_sound.h's "Quiet hours" section for the reasoning
+         * (interpretation call, flagged there per AGENTS.md). */
+        return ev == FF_SOUND_FLARE_SENT || ev == FF_SOUND_FLARE_INCOMING || ev == FF_SOUND_MULTITAP_TICK;
     }
     return true;
 }
@@ -121,6 +136,7 @@ int ff_sound_priority(ff_sound_event_t ev)
         return 10;
     case FF_SOUND_MESSAGE:
     case FF_SOUND_TAP:
+    case FF_SOUND_MULTITAP_TICK:
     case FF_SOUND_COUNT:
     default:
         return 0;

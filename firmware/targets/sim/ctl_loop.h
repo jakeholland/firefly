@@ -257,16 +257,24 @@ void ff_ctl_loop_pointer_release(ff_ctl_loop_ctx_t *ctx);
  * ff_ctl_loop_boot_press — S10 quick flare test infrastructure: drives
  * ONE synthetic BOOT/HOME physical press through the REAL button path —
  * `ff_button_tick`'s debounce settle, `ff_idle_touch_gate`'s wake-only
- * verdict, `ff_idle_input`'s re-pin, and `ff_shell_home_press` — exactly
- * mirroring app_main.c's per-frame BOOT sampling (see that file's own
- * doc comment on `s_boot_button`/`s_boot_gate`), just choreographed
- * (press-settle, then release-settle) across `--mock-clock` steps the
- * same way `ff_ctl_loop_pointer_press`/`_release` choreograph a
- * synthetic touch. Calling this N times back to back, spaced by
- * whatever gap the caller advances the mock clock between calls, drives
- * the shell's multitap FSM exactly as N real BOOT presses would —
+ * verdict, `ff_idle_input`'s re-pin, and `ff_shell_home_press` for
+ * ordinary HOME dispatch — exactly mirroring app_main.c's per-frame BOOT
+ * sampling (see that file's own doc comment on `s_boot_button`/
+ * `s_boot_gate`), just choreographed (press-settle, then release-settle)
+ * across `--mock-clock` steps the same way `ff_ctl_loop_pointer_press`/
+ * `_release` choreograph a synthetic touch.
+ *
+ * fix/quick-flare-detection (2026-09-03): ALSO feeds
+ * `ff_shell_multitap_edge` once, with the timestamp of this press's own
+ * FIRST raw sample (before the debounce settle above delays it by
+ * `FF_BUTTON_DEBOUNCE_MS`) — mirroring the device's ISR-timestamped edge
+ * capture without needing real hardware; see this function's own
+ * implementation comment (ctl_loop.c) for why the earlier timestamp
+ * matters. Calling this N times back to back, spaced by whatever gap
+ * the caller advances the mock clock between calls, drives the shell's
+ * multitap FSM exactly as N real BOOT presses would —
  * `tests/test_ctl_quick_flare.c`'s whole reason to exist (a real ctl
- * session, not a bare `ff_shell_home_press` unit call, so the S26
+ * session, not a bare `ff_shell_multitap_edge` unit call, so the S26
  * wake-only-touch gate is exercised for real from a genuinely DIM/OFF
  * `ctx->idle`).
  *

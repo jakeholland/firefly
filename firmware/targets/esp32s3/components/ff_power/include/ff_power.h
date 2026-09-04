@@ -26,6 +26,7 @@
 #pragma once
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #include "esp_err.h"
@@ -101,6 +102,84 @@ bool ff_power_pwr_pressed(void);
  * (the reboot BOOT-release guard, S26 AC4) every tick.
  */
 bool ff_power_boot_pressed(void);
+
+/** Capacity of the BOOT-edge ISR ring `ff_power_boot_take_edges` drains
+ * (`[api]` fix/quick-flare-detection, 2026-09-03) — public so a caller
+ * (app_main.c) can size a same-length local drain buffer without
+ * guessing. 8 is a small, cheap-to-allocate-on-the-stack power of two,
+ * comfortably larger than a real 5-press quick-flare burst could ever
+ * fill between two render-loop ticks (~20ms apart) even at an
+ * unrealistically fast human tapping cadence. */
+#define FF_POWER_BOOT_EDGE_RING_LEN 8u
+
+/**
+ * ff_power_boot_isr_init — `[api]` fix/quick-flare-detection (2026-09-03):
+ * arm a GPIO0 falling-edge ISR that timestamps every real BOOT press with
+ * `esp_timer_get_time()` (microsecond hardware timer, independent of the
+ * render loop's cadence) into a small ring buffer — see ff_power.c's own
+ * "BOOT edge ISR + edge ring" comment for the full "why" (worst-case
+ * timing arithmetic is in this PR's own body / docs/specs/S10-flare.md's
+ * Amendments). Call ONCE, at startup, before the render loop's first
+ * tick. Does NOT change `ff_power_boot_pressed()`'s own behavior or the
+ * ordinary debounced HOME-dispatch path (`ff_button_tick` +
+ * `ff_shell_home_press`) at all — this is a second, additional signal
+ * that feeds ONLY the multitap counter (`ff_shell_multitap_edge`,
+ * app/include/ff_shell.h), via `ff_power_boot_take_edges` below.
+ *
+ * Returns the underlying `esp_err_t` (already logged) on failure — a
+ * puck whose ISR fails to install still boots and is fully usable;
+ * quick-flare timing simply degrades to what the debounced-tick path
+ * alone would give (the exact behavior this codebase shipped with
+ * before this PR), never a boot failure or a crash.
+ */
+esp_err_t ff_power_boot_isr_init(void);
+
+/**
+ * ff_power_boot_take_edges — drain up to `max` ISR-captured BOOT press
+ * edges (oldest first, each a millisecond `esp_timer_get_time()/1000`
+ * reading of when that real falling edge fired) into `out_ms`. Returns
+ * how many were actually drained (0 if none pending, or if
+ * `ff_power_boot_isr_init` was never called/failed — the honest "no
+ * signal" case, same posture as `ff_power_batt_mv`'s "never
+ * initialized" 0). Call once per render-loop tick and feed every
+ * drained timestamp straight to `ff_shell_multitap_edge`
+ * (app/include/ff_shell.h) — see that function's own doc comment for
+ * why per-edge timestamps (rather than the tick's own `now_ms`) are
+ * what make the multitap FSM robust to a slow/late drain.
+ *
+ * `out_ms` may be NULL (drains and discards) and `max` may be 0
+ * (returns 0, drains nothing).
+ */
+size_t ff_power_boot_take_edges(uint32_t *out_ms, size_t max);
+
+/**
+ * ff_power_boot_isr_suspend_for_sleep / ff_power_boot_isr_resume_after_sleep
+ * — the light-sleep interaction the BOOT edge ISR needs, `[api]`
+ * fix/quick-flare-detection (2026-09-03). ESP light-sleep GPIO wake only
+ * supports LEVEL interrupt types (not EDGE), and GPIO0's hardware
+ * intr-type register can only hold one type at a time — so the edge ISR
+ * (`GPIO_INTR_NEGEDGE`, armed by `ff_power_boot_isr_init`) and the
+ * existing light-sleep wake config (`GPIO_INTR_LOW_LEVEL`,
+ * `ff_configure_light_sleep_wake`, app_main.c) cannot both be armed at
+ * once. Call `_suspend_for_sleep` immediately before
+ * `esp_light_sleep_start()` and `_resume_after_sleep` immediately after
+ * it returns, passing whether THIS wake looks like it was caused by BOOT
+ * specifically — the caller's own best determination, since this chip's
+ * light-sleep GPIO wake path has no per-pin status readback
+ * (`esp_sleep_get_gpio_wakeup_status` is compiled out for ESP32-S3 here,
+ * gated behind `SOC_GPIO_SUPPORT_DEEPSLEEP_WAKEUP`; app_main.c's own
+ * light-sleep block documents the level-read fallback it uses instead:
+ * `wake_cause == ESP_SLEEP_WAKEUP_GPIO && ff_power_boot_pressed()`,
+ * sound because the wake trigger is LEVEL not EDGE, so a BOOT-caused
+ * wake's pin is still low the instant execution resumes). When true, the
+ * resume call SYNTHESIZES one edge at the current `esp_timer_get_time()`,
+ * since the wake edge itself is never seen by the (disarmed-for-sleep)
+ * NEGEDGE ISR. See each function's own doc comment (ff_power.c) for the
+ * full reasoning. Both are safe no-ops if the edge ISR was never
+ * installed.
+ */
+void ff_power_boot_isr_suspend_for_sleep(void);
+void ff_power_boot_isr_resume_after_sleep(bool wake_was_boot_gpio);
 
 /**
  * ff_power_batt_init — S25 slice c: bring up the battery-sense ADC.

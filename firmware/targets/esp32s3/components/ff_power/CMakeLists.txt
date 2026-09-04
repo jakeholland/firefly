@@ -12,6 +12,7 @@ idf_component_register(
         esp_driver_gpio
         driver
         esp_adc
+        esp_timer # fix/quick-flare-detection — esp_timer_get_time() for the BOOT edge ISR's timestamp
 )
 
 target_compile_options(${COMPONENT_LIB} PRIVATE -Wall -Wextra -Werror)

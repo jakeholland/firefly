@@ -8,8 +8,9 @@
  *     `_Static_assert`s — the header promises both).
  *   - ff_sound_pattern_for's out-of-range rejection.
  *   - ff_sound_should_play's policy table: sounds off silences
- *     everything; quiet hours exempts ONLY FLARE_SENT/FLARE_INCOMING;
- *     otherwise every event plays.
+ *     everything; quiet hours exempts ONLY FLARE_SENT/FLARE_INCOMING/
+ *     MULTITAP_TICK (fix/quick-flare-detection, 2026-09-03); otherwise
+ *     every event plays.
  *   - ff_sound_priority / ff_sound_preempts: FLARE_INCOMING preempts
  *     anything (including a second FLARE_INCOMING); a MESSAGE never
  *     interrupts a FLARE_*.
@@ -109,6 +110,19 @@ static void S27_batt_low_is_a_descending_two_note(void)
     TEST_ASSERT_LESS_THAN_UINT16(p->steps[0].freq_hz, p->steps[1].freq_hz);
 }
 
+/* MULTITAP_TICK (fix/quick-flare-detection): a single short blip at its
+ * own named frequency, distinct from TAP's. */
+static void S27_multitap_tick_is_one_blip_distinct_from_tap(void)
+{
+    ff_sound_pattern_t const *tick = ff_sound_pattern_for(FF_SOUND_MULTITAP_TICK);
+    ff_sound_pattern_t const *tap = ff_sound_pattern_for(FF_SOUND_TAP);
+    TEST_ASSERT_NOT_NULL(tick);
+    TEST_ASSERT_NOT_NULL(tap);
+    TEST_ASSERT_EQUAL_UINT8(1, tick->n);
+    TEST_ASSERT_EQUAL_UINT16(FF_SOUND_MULTITAP_TICK_HZ, tick->steps[0].freq_hz);
+    TEST_ASSERT_NOT_EQUAL_UINT16(tap->steps[0].freq_hz, tick->steps[0].freq_hz);
+}
+
 static void S27_pattern_for_rejects_out_of_range(void)
 {
     TEST_ASSERT_NULL(ff_sound_pattern_for((ff_sound_event_t)-1));
@@ -136,11 +150,14 @@ static void S27_sounds_on_not_quiet_plays_every_event(void)
 }
 
 /* The mutation target (task's mutation (a)): quiet hours must exempt
- * ONLY FLARE_SENT/FLARE_INCOMING - every other event must be silent. */
-static void S27_quiet_hours_exempts_only_the_two_flare_events(void)
+ * ONLY FLARE_SENT/FLARE_INCOMING/MULTITAP_TICK - every other event must
+ * be silent. */
+static void S27_quiet_hours_exempts_only_flare_events_and_multitap_tick(void)
 {
     TEST_ASSERT_TRUE(ff_sound_should_play(FF_SOUND_FLARE_SENT, true, true));
     TEST_ASSERT_TRUE(ff_sound_should_play(FF_SOUND_FLARE_INCOMING, true, true));
+    TEST_ASSERT_TRUE_MESSAGE(ff_sound_should_play(FF_SOUND_MULTITAP_TICK, true, true),
+                              "quick-flare progress blips are a panic-gesture feedback and must survive quiet hours");
 
     TEST_ASSERT_FALSE(ff_sound_should_play(FF_SOUND_MESSAGE, true, true));
     TEST_ASSERT_FALSE(ff_sound_should_play(FF_SOUND_RALLY, true, true));
@@ -209,11 +226,12 @@ int main(void)
     RUN_TEST(S27_message_is_one_blip);
     RUN_TEST(S27_rally_is_two_notes);
     RUN_TEST(S27_batt_low_is_a_descending_two_note);
+    RUN_TEST(S27_multitap_tick_is_one_blip_distinct_from_tap);
     RUN_TEST(S27_pattern_for_rejects_out_of_range);
 
     RUN_TEST(S27_sounds_off_silences_every_event_even_flare_incoming);
     RUN_TEST(S27_sounds_on_not_quiet_plays_every_event);
-    RUN_TEST(S27_quiet_hours_exempts_only_the_two_flare_events);
+    RUN_TEST(S27_quiet_hours_exempts_only_flare_events_and_multitap_tick);
     RUN_TEST(S27_should_play_rejects_out_of_range);
 
     RUN_TEST(S27_flare_incoming_is_the_highest_priority);

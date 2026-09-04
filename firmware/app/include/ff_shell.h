@@ -193,6 +193,7 @@
 #include "ff_heard.h"
 #include "ff_intent.h"
 #include "ff_latlon.h"
+#include "ff_multitap.h" /* fix/quick-flare-detection — FF_MULTITAP_COUNT, sizes ff_multitap_log_t.gaps_ms */
 #include "ff_settings.h"
 #include "ff_sound.h" /* S27 — ff_sound_event_t, returned/consumed by play_sound and the tap-sound query */
 #include "ff_store.h"
@@ -798,15 +799,17 @@ bool ff_shell_pair(ff_shell_t *sh, uint32_t node_id, bool paired);
  *                       UNLESS a flare is already sending (idempotent —
  *                       "if already flaring, a 5-tap does nothing").
  *                       NOT rejected while a takeover is visible (unlike
- *                       every other case here) — see `ff_shell_home_press`
+ *                       every other case here) — see `ff_shell_multitap_edge`
  *                       and this intent's own case in ff_shell.c for why.
  *                       If a COMPOSE or POWER_MENU modal is up (and no
  *                       takeover), POPS it first — neither modal
  *                       composites the sender overlay, so the flare
  *                       would otherwise start invisibly for as long as
  *                       the modal stayed open. Not emitted by a screen;
- *                       only `ff_shell_home_press` dispatches it, on its
- *                       own multitap FSM's 5th press.
+ *                       only `ff_shell_multitap_edge` dispatches it (as of
+ *                       fix/quick-flare-detection, 2026-09-03 — previously
+ *                       `ff_shell_home_press`), on its own multitap FSM's
+ *                       5th press.
  *
  * Every other kind is a documented no-op until its owning slice (c2:
  * remaining core-mutating intents) — see ff_shell.c.
@@ -899,46 +902,122 @@ void ff_shell_sound_sink(void *user, ff_sound_event_t ev);
 void ff_shell_set_sound_muted_for_seed(ff_shell_t *sh, bool muted);
 
 /**
- * ff_shell_home_press — S10 quick flare (docs/specs/S10-flare.md's
- * Amendments, 2026-09-03): the ONE entry point both targets call for
- * every debounced HOME/BOOT press EDGE (`ff_button_tick`'s `true`
- * return — S26 slice e), so the shell owns the whole "5 presses within
- * a window" decision and neither target carries any of it (CLAUDE.md's
- * "no `if` about domain behavior outside core/shell"). Replaces a
- * target building its own `FF_INTENT_HOME` and calling `ff_shell_intent`
- * directly — see targets/esp32s3/main/app_main.c / targets/sim/
- * ctl_loop.c for the call sites this superseded.
+ * ff_multitap_log_t / ff_multitap_log_kind_t — `[api]` fix/quick-flare-
+ * detection (2026-09-03): the honest "what just happened to a quick-
+ * flare attempt" fact `ff_shell_multitap_edge` can hand back to its
+ * caller, so a device target can log it (`ESP_LOGI`) without this
+ * module (or core's gesture-agnostic `ff_multitap_t`) owning any
+ * platform logging call itself. `FF_MULTITAP_LOG_NONE` (the zero value)
+ * means "nothing to report this call" — most calls, since most edges
+ * just extend an in-progress run silently. `FF_MULTITAP_LOG_RESET_GAP`/
+ * `_RESET_WINDOW` fire only when a run of >= 2 presses resets (a lone
+ * HOME tap starting a fresh run of 1 is not a "failed attempt" worth
+ * logging — nothing was attempted). `FF_MULTITAP_LOG_FIRED` fires on
+ * the 5th press. `gaps_ms[0..n-2]` are the reported run's own
+ * inter-press gaps, oldest first (`n` presses have `n-1` gaps); unused
+ * entries are zero.
+ */
+typedef enum {
+    FF_MULTITAP_LOG_NONE = 0,
+    FF_MULTITAP_LOG_RESET_GAP,
+    FF_MULTITAP_LOG_RESET_WINDOW,
+    FF_MULTITAP_LOG_FIRED,
+} ff_multitap_log_kind_t;
+
+typedef struct {
+    ff_multitap_log_kind_t kind;
+    uint8_t  n;                                  /* presses in the reported run (2..FF_MULTITAP_COUNT) */
+    uint32_t gaps_ms[FF_MULTITAP_COUNT - 1u];     /* n-1 inter-press gaps, oldest first */
+} ff_multitap_log_t;
+
+/**
+ * ff_shell_multitap_edge — `[api]` fix/quick-flare-detection (2026-09-03):
+ * THE one entry point either target calls for every raw BOOT/HOME press
+ * EDGE it can identify, each carrying THAT edge's own precise timestamp
+ * — an ISR-captured `esp_timer` reading on-device
+ * (`ff_power_boot_take_edges`, targets/esp32s3/components/ff_power/
+ * include/ff_power.h), or the sim's own pre-debounce sample instant
+ * (`ff_ctl_loop_boot_press`, targets/sim/ctl_loop.c) — so the shell owns
+ * the whole "5 presses within a window" decision from the MOST precise
+ * timing source either target can offer, not the debounce-delayed tick
+ * `ff_shell_home_press` used before this PR (see that function's own
+ * doc comment for why the two were split; this replaces its old
+ * multitap-feeding role entirely — see docs/specs/S10-flare.md's
+ * Amendments for the worst-case timing arithmetic this split fixes).
  *
- * Does exactly two things, in this order:
+ * Does three things, in this order:
  *
- *  1. UNCONDITIONALLY feeds the press into the shell's own
- *     `ff_multitap_t` (core/include/ff_multitap.h) — regardless of
- *     `deliver` below. This is deliberate, not an oversight: a press
- *     that WAKES a DIM/OFF/SLEEP screen is, per S26's wake-only-touch
- *     amendment, swallowed for navigation (delivered to the UI) but it
- *     is still a real physical press of the button, and the spec is
- *     explicit that the first tap of a burst that starts the screen
- *     asleep must still count ("confirm the first tap wakes and
- *     counts"). Counting here, before the `deliver` gate below, is what
- *     makes that true.
- *  2. If `ff_multitap_press` reports the 5th press of one continuous
+ *  1. Software de-bounces the edge against the LAST ACCEPTED edge: an
+ *     `edge_ms` less than `FF_BUTTON_DEBOUNCE_MS` (30 ms) after it is
+ *     silently ignored (a same-press ISR bounce, not a second physical
+ *     press) — see `shell_t.multitap_last_edge_ms`'s own doc comment
+ *     (ff_shell.c) for exactly what "last accepted" tracks.
+ *  2. Feeds the accepted edge to the shell's own `ff_multitap_t`
+ *     (core/include/ff_multitap.h, `ff_multitap_press(&multitap,
+ *     edge_ms)`) and, on presses 2, 3 and 4 of a run that is still LIVE
+ *     (not a run that just reset because this edge landed too late or
+ *     the window elapsed), plays `FF_SOUND_MULTITAP_TICK` via the same
+ *     `shell_sound` choke point every other event uses — gated by
+ *     `sounds_on` (and, per this event's own quiet-hours exemption,
+ *     NOT gated by quiet hours — see ff_sound.h) but deliberately NOT
+ *     by `ui_ticks` (this is progress feedback for a panic gesture, not
+ *     the decorative per-button click `ff_shell_should_tap_sound`
+ *     gates). Never on the 1st press of a run (a lone HOME tap, or the
+ *     first tap of a fresh burst, stays silent) and never on the 5th
+ *     (`FF_SOUND_FLARE_SENT`, fired once the send is confirmed on the
+ *     wire — `shell_flare_wire` — is that press's own feedback).
+ *  3. If `ff_multitap_press` reports the 5th press of one continuous
  *     run, dispatches `FF_INTENT_QUICK_FLARE` (ff_intent.h) — see that
  *     intent's own case in ff_shell.c for what it does (mirrors
  *     FF_INTENT_FLARE_START, idempotent against an already-sending
  *     flare, NOT gated on a visible takeover).
  *
- * `deliver` is the caller's own wake-only-touch-gate decision for THIS
- * press (`ff_idle_touch_gate`, core/include/ff_idle.h) — the same
- * boolean every other input source's delivery already depends on. When
- * true, this also dispatches the ordinary `FF_INTENT_HOME` (navigate to
- * the launcher / no-op, exactly as before this slice) — taps 1-4 (and
- * the 5th) still run this; it is harmless and is what keeps the gesture
- * idempotent (spec: "taps 1-4 keep their normal HOME behaviour"). When
- * false (a wake-only press), HOME is not dispatched — same rule S26
- * already applies to every other input source — but step 1 above still
- * ran, so the press still counted.
+ * 4. Writes an honest attempt-log fact into `*out_log` (if non-NULL —
+ *     `out_log` may be NULL, and every existing caller that does not
+ *     care passes NULL; see `ff_multitap_log_t`'s own doc comment just
+ *     above): `FF_MULTITAP_LOG_RESET_GAP`/`_RESET_WINDOW` when THIS
+ *     edge just reset a run that had already counted >= 2 presses (a
+ *     lone tap starting fresh is not a "failed attempt"),
+ *     `FF_MULTITAP_LOG_FIRED` on the 5th press, `FF_MULTITAP_LOG_NONE`
+ *     otherwise — the device target (app_main.c) is the one place that
+ *     actually calls `ESP_LOGI` with it, this function only decides
+ *     WHAT happened.
  *
- * NULL `sh`: safe no-op (nothing counted, nothing dispatched).
+ * Deliberately does NOT dispatch `FF_INTENT_HOME` or know about the
+ * wake-only-touch gate's `deliver` verdict — that stays
+ * `ff_shell_home_press`'s job, driven independently by the ordinary
+ * debounced press path. A target calls BOTH functions per physical
+ * press: `ff_shell_home_press` once, on the debounced press edge (for
+ * ordinary navigation), and `ff_shell_multitap_edge` once per drained
+ * raw edge (for counting) — see targets/esp32s3/main/app_main.c's BOOT
+ * sampling block for the exact call order.
+ *
+ * NULL `sh`: safe no-op (nothing counted, nothing dispatched, nothing
+ * sounded, `*out_log` still zeroed if non-NULL).
+ */
+void ff_shell_multitap_edge(ff_shell_t *sh, uint32_t edge_ms, ff_multitap_log_t *out_log);
+
+/**
+ * ff_shell_home_press — S26 slice e's BOOT-as-home-button dispatch: the
+ * ONE entry point both targets call for every DEBOUNCED HOME/BOOT press
+ * edge (`ff_button_tick`'s `true` return) to run the ordinary navigation
+ * decision, so neither target carries any `if` about nav behavior
+ * (CLAUDE.md's house rule). Replaces a target building its own
+ * `FF_INTENT_HOME` and calling `ff_shell_intent` directly.
+ *
+ * `[api]` CHANGED, fix/quick-flare-detection (2026-09-03): this function
+ * no longer touches the multitap FSM (`ff_shell_multitap_edge` above now
+ * owns that decision exclusively, fed from a more precise edge source —
+ * see that function's own doc comment for why). Behaviorally, ordinary
+ * HOME navigation itself is UNCHANGED by this split: `deliver` is the
+ * caller's own wake-only-touch-gate decision for THIS press
+ * (`ff_idle_touch_gate`, core/include/ff_idle.h) — the same boolean
+ * every other input source's delivery already depends on. When true,
+ * dispatches `FF_INTENT_HOME` (navigate to the launcher / no-op).
+ * When false (a wake-only press), HOME is not dispatched — same rule
+ * S26 already applies to every other input source.
+ *
+ * NULL `sh`: safe no-op.
  */
 void ff_shell_home_press(ff_shell_t *sh, uint32_t now_ms, bool deliver);
 

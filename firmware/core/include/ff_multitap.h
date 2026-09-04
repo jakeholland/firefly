@@ -2,19 +2,27 @@
  * ff_multitap.h — S10 quick flare: a pure "N presses within a window,
  * no gap too long" counter FSM.
  *
- * Spec: docs/specs/S10-flare.md's Amendments (quick flare, 2026-09-03):
+ * Spec: docs/specs/S10-flare.md's Amendments (quick flare, 2026-09-03;
+ * timing/robustness pass, `fix/quick-flare-detection`, 2026-09-03).
  * "press the HOME (BOOT, GPIO0) button 5 times quickly to flare to the
  * crew, no screen needed." This module is only the COUNTING decision —
- * "was that the 5th press of one real burst?" — fed by debounced press
- * EDGES the caller already has (`ff_button_tick`'s return, S26 slice e:
- * true exactly once per physical press, never a stream while held). It
- * knows nothing about buttons, HOME, flares, or the shell; the shell
- * (app/ff_shell.c, `ff_shell_home_press`) is what turns a true return
- * from `ff_multitap_press` into the actual flare-start action, and what
- * decides whether THIS press edge should also do the ordinary HOME
- * (navigate / wake) thing — that composition is the shell's job, not
- * this module's, so it can be gesture-agnostic and unit-tested with
- * bare integers.
+ * "was that the 5th press of one real burst?" — fed press EDGES the
+ * caller already has, each carrying ITS OWN timestamp of when that
+ * physical press actually happened (see `ff_multitap_press`'s doc
+ * comment — the `now_ms` parameter has always meant "this edge's own
+ * instant," not "whatever tick is running right now"; the
+ * `fix/quick-flare-detection` pass is what made every caller in this
+ * tree actually pass a precise per-edge value instead of a debounce-
+ * delayed tick timestamp — see `ff_shell_multitap_edge`,
+ * app/include/ff_shell.h). It knows nothing about buttons, HOME,
+ * flares, ISRs, or the shell; the shell (app/ff_shell.c,
+ * `ff_shell_multitap_edge`) is what turns a true return from
+ * `ff_multitap_press` into the actual flare-start action — that
+ * composition is the shell's job, not this module's, so it can be
+ * gesture-agnostic and unit-tested with bare integers, including a
+ * "several edges delivered late in one batch" scenario (see
+ * `ff_multitap_press`'s doc comment) that a tick-driven counter with no
+ * per-edge timestamp could never pass.
  *
  * Pure C11, no I/O, no allocation, no clock-reading of its own — same
  * "explicit now_ms in, no hidden clock" shape as `ff_flare.h`/
@@ -39,24 +47,47 @@ extern "C" {
 #define FF_MULTITAP_COUNT ((uint8_t)5u)
 
 /** The longest gap allowed between two consecutive presses within one
- * run — a gap of AT LEAST this length (>= 400 ms, INCLUSIVE — the same
+ * run — a gap of AT LEAST this length (>= 700 ms, INCLUSIVE — the same
  * boundary convention `ff_time_reached` documents: "now_ms == deadline_ms
  * already reached") resets the count (the press that finds the gap too
- * long starts a fresh run of 1, it is not dropped). 400 ms is
- * comfortably longer than any real double-tap cadence but short enough
- * that an idle thumb resting near BOOT cannot accidentally accumulate a
- * run across unrelated presses minutes apart. */
-#define FF_MULTITAP_MAX_GAP_MS ((uint32_t)400u)
+ * long starts a fresh run of 1, it is not dropped).
+ *
+ * RELAXED 400 -> 700 ms, `fix/quick-flare-detection` (2026-09-03,
+ * maintainer report: "the 5 click is a bit finicky"). See that PR's own
+ * body for the full worst-case arithmetic, but the short version: the
+ * device's BOOT sampling cadence (`app_main.c`'s render-loop tick, 20 ms
+ * nominal) plus the 30 ms debounce hold (`ff_button.h`'s
+ * `FF_BUTTON_DEBOUNCE_MS`) plus a slow frame (a face rebuild under
+ * `ff_display_lock`) can each eat tens of ms off the *effective* gap
+ * between two presses that were physically closer together than that —
+ * 400 ms left very little headroom for a real thumb's cadence once that
+ * jitter was subtracted. 700 ms is still comfortably shorter than an
+ * idle thumb's accidental resting cadence near BOOT and short enough
+ * that a pocket brushing the button a few times does not read as one
+ * run, but it absorbs the jitter budget above with room to spare. */
+#define FF_MULTITAP_MAX_GAP_MS ((uint32_t)700u)
 
 /** The longest the WHOLE run (first press to Nth) may span, measured
  * from the run's first press. Independent of, and in addition to, the
  * per-gap bound above: five presses each exactly at the per-gap limit
- * would otherwise total `4 * FF_MULTITAP_MAX_GAP_MS` = 1600 ms, comfortably
- * inside this window, but a slower, still-individually-legal cadence
- * must not be allowed to stretch the whole gesture out indefinitely — a
- * "quick flare" that takes visibly too long to complete stops reading as
- * one deliberate burst. */
-#define FF_MULTITAP_WINDOW_MS ((uint32_t)2500u)
+ * would otherwise total `4 * FF_MULTITAP_MAX_GAP_MS` = 2800 ms (at the
+ * relaxed 700 ms gap bound below), comfortably inside this window, but
+ * a slower, still-individually-legal cadence must not be allowed to
+ * stretch the whole gesture out indefinitely — a "quick flare" that
+ * takes visibly too long to complete stops reading as one deliberate
+ * burst.
+ *
+ * RELAXED 2500 -> 4000 ms, `fix/quick-flare-detection` (2026-09-03,
+ * same pass as the gap bound above) — scaled up roughly in step with
+ * the gap bound (4000 / 700 leaves more headroom than 2500 / 400 did,
+ * deliberately: a human doing a slower, still-clearly-deliberate 5-tap
+ * burst at a relaxed pace should not have the window bound fire ahead
+ * of the gap bound). At these constants a run with every gap exactly at
+ * the per-gap limit still spans only 2800 ms, comfortably under 4000 ms,
+ * so — as before this change — the window bound in practice never fires
+ * ahead of the per-gap bound; it exists as an independent backstop, not
+ * because it is expected to be the thing that resets a real run. */
+#define FF_MULTITAP_WINDOW_MS ((uint32_t)4000u)
 
 /**
  * The whole FSM state. Fully-defined (not opaque), same convention as
@@ -74,12 +105,27 @@ typedef struct {
 void ff_multitap_init(ff_multitap_t *m);
 
 /**
- * ff_multitap_press — feed one debounced press EDGE (the caller has
- * already debounced — see `ff_button_tick`; this is called only on that
- * function's `true` return, never once per tick). Returns true EXACTLY
- * on the tick this press is counted as the `FF_MULTITAP_COUNT`th (5th)
- * press of one continuous run — i.e. exactly once per completed
- * gesture, never on the 4th or the 6th.
+ * ff_multitap_press — feed one press EDGE, timestamped at `now_ms` —
+ * the instant THAT EDGE actually happened, not necessarily "now" in any
+ * wall-clock sense at the moment this function is called. This is what
+ * makes the FSM robust to a caller that cannot always call it promptly:
+ * a device that captured several real edges (say, in an ISR-fed ring
+ * buffer, `ff_power_boot_take_edges`) and only got around to draining
+ * and delivering them on a later, slower tick can call this once per
+ * drained edge, each with THAT edge's own recorded timestamp, and the
+ * gap/window math below comes out identical to if each had been
+ * delivered the instant it happened — a "5 edges recorded at 0/250/
+ * 500/750/1000 ms but all drained and delivered together on one later
+ * tick" batch counts exactly the same as if delivered live (see
+ * `test_multitap.c`'s `S10_multitap_late_batch_delivery_...` tests).
+ * The caller has already de-duplicated true mechanical bounce (a real
+ * press is expected to appear here as ONE edge, not a burst of them a
+ * few ms apart — see `ff_shell_multitap_edge`, app/include/ff_shell.h,
+ * for where that software de-dup actually lives); this function does
+ * not itself detect or discard closely-spaced edges. Returns true
+ * EXACTLY on the edge counted as the `FF_MULTITAP_COUNT`th (5th) press
+ * of one continuous run — i.e. exactly once per completed gesture,
+ * never on the 4th or the 6th.
  *
  * Rules, in the order they're evaluated:
  *  1. If a run is already in progress (`count > 0`) and either the gap
