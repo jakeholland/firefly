@@ -78,11 +78,20 @@ static void wiring_push_if_paired(ff_wiring_ctx_t *w, uint32_t from, ff_feed_kin
  * One classifier shared by the text and private paths (issue #123
  * resolved: mc_events_t.on_private now carries `to`, so a 1:1 rally
  * classifies DIRECT the same way a 1:1 text does — and a whole-crew
- * rally stays BROADCAST, because that is what its `to` says). */
-static ff_feed_dir_t wiring_classify_dir(ff_wiring_ctx_t const *w, uint32_t to)
+ * rally stays BROADCAST, because that is what its `to` says).
+ *
+ * `[api]` 2026-09-03 — no longer file-static: exported as
+ * `ff_wiring_classify_dir` (ff_wiring.h) so S26's banner-opens-
+ * conversation bugfix can classify a banner's destination through the
+ * SAME rule this file uses for the feed item itself, rather than a
+ * second, independently-maintained copy in ff_shell.c. NULL-safe (unlike
+ * the rest of this file's internals, which trust their one caller): a
+ * public entry point gets the NULL guard other modules' public API
+ * already gets. */
+ff_feed_dir_t ff_wiring_classify_dir(ff_wiring_ctx_t const *w, uint32_t to)
 {
     if (to == MC_ADDR_BROADCAST) return FEED_DIR_BROADCAST;
-    if (w->has_self_node && to == w->self_node) return FEED_DIR_DIRECT;
+    if (w != NULL && w->has_self_node && to == w->self_node) return FEED_DIR_DIRECT;
     return FEED_DIR_UNKNOWN;
 }
 
@@ -96,7 +105,7 @@ void ff_wiring_on_private(void *user, uint32_t from, uint32_t to, uint32_t portn
     memset(&msg, 0, sizeof(msg));
     int type = ff_proto_decode(payload, len, &msg);
 
-    ff_feed_dir_t const dir = wiring_classify_dir(w, to);
+    ff_feed_dir_t const dir = ff_wiring_classify_dir(w, to);
 
     switch (type) {
     case FF_PROTO_TYPE_FLARE:
@@ -141,7 +150,7 @@ void ff_wiring_on_text(void *user, uint32_t from, uint32_t to, char const *utf8,
     ff_wiring_ctx_t *w = (ff_wiring_ctx_t *)user;
     if (w == NULL) return;
 
-    wiring_push_if_paired(w, from, FEED_TEXT, wiring_classify_dir(w, to), utf8, len);
+    wiring_push_if_paired(w, from, FEED_TEXT, ff_wiring_classify_dir(w, to), utf8, len);
 }
 
 void ff_wiring_set_self_node(ff_wiring_ctx_t *w, uint32_t self_node)

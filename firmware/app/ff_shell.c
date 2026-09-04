@@ -1102,8 +1102,8 @@ static void shell_ev_position(void *u, uint32_t node, mc_position_t const *p)
 /* S26 slice d — push a BANNER for an incoming MESSAGE/RALLY. Defined
  * below shell_name_of (uses it for the sender-prefixed preview); forward-
  * declared here so shell_ev_text/shell_ev_private can call it. */
-static void shell_notify_push_banner(shell_t *sh, ff_notify_kind_t kind, uint32_t from, char const *body,
-                                      size_t body_len, uint32_t now_ms);
+static void shell_notify_push_banner(shell_t *sh, ff_notify_kind_t kind, uint32_t from, uint32_t to,
+                                      char const *body, size_t body_len, uint32_t now_ms);
 
 static void shell_ev_text(void *u, uint32_t from, uint32_t to, char const *utf8, size_t len)
 {
@@ -1117,7 +1117,7 @@ static void shell_ev_text(void *u, uint32_t from, uint32_t to, char const *utf8,
      * on paired inside shell_notify_push_banner (the S22 stranger rule) —
      * an unpaired sender's text was already dropped from the feed by
      * ff_wiring above, and must never reach the banner queue either. */
-    shell_notify_push_banner(sh, FF_NOTIFY_MESSAGE, from, utf8, len, shell_now(sh));
+    shell_notify_push_banner(sh, FF_NOTIFY_MESSAGE, from, to, utf8, len, shell_now(sh));
 }
 
 static void shell_ev_private(void *u, uint32_t from, uint32_t to, uint32_t portnum,
@@ -1162,7 +1162,7 @@ static void shell_ev_private(void *u, uint32_t from, uint32_t to, uint32_t portn
         /* S26(d): a RALLY is the other banner-eligible kind (spec:
          * "an incoming MESSAGE or RALLY"). msg is still in scope from the
          * decode above — no re-decode. */
-        shell_notify_push_banner(sh, FF_NOTIFY_RALLY, from, msg.body.rally.name, strlen(msg.body.rally.name),
+        shell_notify_push_banner(sh, FF_NOTIFY_RALLY, from, to, msg.body.rally.name, strlen(msg.body.rally.name),
                                   shell_now(sh));
     }
 }
@@ -1231,7 +1231,7 @@ static char const *shell_name_of(shell_t const *sh, uint32_t node_id)
  * shell_notify_push_banner — S26 slice d: event WIRING, not projection
  * (textually here only because it needs shell_name_of's sibling helpers
  * above) — push a BANNER-tier ff_notify entry for an incoming
- * MESSAGE/RALLY from `from`.
+ * MESSAGE/RALLY from `from`, addressed to `to`.
  *
  * Re-checks shell_is_paired(sh, from) itself rather than trusting the
  * caller: this is the SAME paired-crew-sender gate ff_wiring.c's
@@ -1252,9 +1252,24 @@ static char const *shell_name_of(shell_t const *sh, uint32_t node_id)
  * sender's name in its own distinct style (crew color) — never baked
  * into this string, which would either duplicate it or (before a
  * NodeInfo name arrives) freeze an honest gap into permanent text.
+ *
+ * `to` (S26 banner-opens-conversation bugfix, 2026-09-03) is classified
+ * into the queue entry's `conv` via `ff_wiring_classify_dir` — the SAME
+ * classifier `ff_wiring_on_text`/`ff_wiring_on_private` already used to
+ * decide the underlying feed item's own `ff_feed_dir_t`/conversation, so
+ * a banner can never disagree with where its message actually landed in
+ * the inbox. `FEED_DIR_DIRECT` (addressed to me) maps to
+ * `FF_NOTIFY_CONV_DIRECT`; `FEED_DIR_BROADCAST` and `FEED_DIR_UNKNOWN`
+ * both map to `FF_NOTIFY_CONV_CREW` — not a guess, but the same
+ * PLACEMENT rule `ff_inbox.h`'s membership rulebook already documents
+ * for UNKNOWN-direction items ("the communal thread is the only
+ * container that doesn't claim a private 1:1 relationship the data
+ * can't attest"): an inbound item this device cannot attest as
+ * "addressed to me" must not open a specific member's private thread
+ * either, so it is filed the same place the feed files it.
  */
-static void shell_notify_push_banner(shell_t *sh, ff_notify_kind_t kind, uint32_t from, char const *body,
-                                      size_t body_len, uint32_t now_ms)
+static void shell_notify_push_banner(shell_t *sh, ff_notify_kind_t kind, uint32_t from, uint32_t to,
+                                      char const *body, size_t body_len, uint32_t now_ms)
 {
     if (!shell_is_paired(sh, from)) return; /* S22 stranger rule / S26 AC3 */
 
@@ -1262,7 +1277,11 @@ static void shell_notify_push_banner(shell_t *sh, ff_notify_kind_t kind, uint32_
     int n = snprintf(preview, sizeof(preview), "%.*s", (int)body_len, (body != NULL) ? body : "");
     if (n < 0) preview[0] = '\0'; /* snprintf failure: an honestly empty preview, never garbage */
 
-    ff_notify_push_result_t const r = ff_notify_push(&sh->notify, kind, FF_NOTIFY_TIER_BANNER, from, preview, now_ms);
+    ff_feed_dir_t const dir = ff_wiring_classify_dir(&sh->wiring, to);
+    ff_notify_conv_t const conv = (dir == FEED_DIR_DIRECT) ? FF_NOTIFY_CONV_DIRECT : FF_NOTIFY_CONV_CREW;
+
+    ff_notify_push_result_t const r =
+        ff_notify_push(&sh->notify, kind, FF_NOTIFY_TIER_BANNER, from, conv, preview, now_ms);
     sh->wake_pending = true; /* S26(c) wake hook — see the field's comment; a coalesced update is still a
                               * genuinely new arrival worth waking the screen for, even though it does not
                               * get its own sound below (see that gate's own comment). */
@@ -4131,9 +4150,27 @@ void ff_shell_intent(ff_shell_t *sh_pub, ff_intent_t const *in)
          * below must still run in that case. */
         (void)ff_route_goto(&sh->route, FF_APP_FACE_INBOX);
         sh->inbox_rally_armed = false; /* an intervening action disarms (S22 AC4) */
-        sh->inbox_thread_node = node;
+
+        /* S26 banner-opens-conversation bugfix (2026-09-03): route to the
+         * CONVERSATION the message belongs to, not always the sender's
+         * 1:1 thread — `h->conv` is exactly the S24 `ff_inbox`
+         * conversation this banner's underlying feed item was filed
+         * under (shell_notify_push_banner's ff_wiring_classify_dir
+         * call), so this cannot disagree with where the message itself
+         * lives in the inbox. `inbox_thread_node == 0` is the CREW
+         * sentinel this whole file already uses (the
+         * FF_INTENT_INBOX_OPEN_THREAD/PICK precedent just above): a
+         * group/broadcast banner opens the CREW thread, everything else
+         * opens the sender's own 1:1 thread — `node` (the sender) either
+         * way, since a MEMBER conversation's key IS its sender/member id
+         * (ff_inbox.h). The paired-sender re-validation above still
+         * applies to `node` regardless of which thread it routes to: a
+         * CREW-scoped banner still names one specific, now-possibly-
+         * unpaired sender. */
+        bool const to_crew = (h->conv == FF_NOTIFY_CONV_CREW);
+        sh->inbox_thread_node = to_crew ? 0u : node;
         shell_scope_from_thread(sh);
-        (void)ff_inbox_mark_thread_read(&sh->feed, FF_CONV_MEMBER, node);
+        (void)ff_inbox_mark_thread_read(&sh->feed, to_crew ? FF_CONV_CREW : FF_CONV_MEMBER, sh->inbox_thread_node);
         sh->view.inbox.target_kind = sh->inbox_target_kind;
         sh->view.inbox.target_node = sh->inbox_target_node;
         sh->inbox_subview = FF_INBOX_SUB_THREAD;
