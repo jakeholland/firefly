@@ -117,20 +117,62 @@
  *
  * A first draft of this follow-up moved MODE into the header's
  * BACK-to-SEND gap to free the bottom row for a bigger DEL/SPACE.
- * Independent review (PR #193) caught that this put MODE only ~10px from
- * SEND — too close, given the SEND-relocation section above states the
- * rule as "SEND must never be adjacent to SPACE OR DEL" (accidental
- * SENDS, not just from SPACE specifically): a mis-tap sliding off MODE
- * onto SEND would ship a partial message. MODE returned to the bottom
- * row. See FF_COMPOSE_DEL_W's own comment (below) for the real,
- * computed (never hand math) three-key allocation this landed on — DEL
- * 48px / MODE 48px / SPACE 56px, the closest honest fit to the review's
- * own target sizes that the row's real on-glass width (168px at an 8px
- * "glass safety", compose_bottom_row_margin_x) actually allows. SEND's
- * own position/size never changed across either draft. The PRED
- * candidate row's new horizontal scroll (compose_build_pred_strip,
- * lower in this file) is unrelated to this MODE back-and-forth and
- * unaffected by it.
+ * Independent review (PR #193 round 1) caught that this put MODE only
+ * ~10px from SEND — too close, given the SEND-relocation section above
+ * states the rule as "SEND must never be adjacent to SPACE OR DEL"
+ * (accidental SENDS, not just from SPACE specifically): a mis-tap
+ * sliding off MODE onto SEND would ship a partial message. MODE
+ * returned to the bottom row, landing at DEL 48 / MODE 48 / SPACE 56 —
+ * a real, measured improvement over the pre-this-PR sizes, but smaller
+ * than the maintainer's actual target for DEL specifically (52 -> 48 is
+ * a regression on that one control, forced by the bottom row's own
+ * on-glass width at its THEN-frozen Y).
+ *
+ * ## Round 2 (PR #193 review) — unfreezing FF_COMPOSE_GRID_Y, the real
+ * lever
+ *
+ * Round 1's fix treated the bottom row's Y as fixed (frozen by PR #148
+ * review round 3, "the keys/rows below must not move" — a constraint
+ * that predates this maintainer ask entirely and was never revisited
+ * for it). Round 2's review named the real fix: LIFT the row — closer
+ * to the puck's center, the circle is wider, so the SAME three keys get
+ * more width for free, no key needs to shrink at all.
+ *
+ * The obvious way to lift it (moving FF_COMPOSE_GRID_Y itself, shifting
+ * every row including PRED's candidate strip clearance) turns out to be
+ * blocked by a DIFFERENT, already-zero-slack constraint this file
+ * hadn't previously connected to this problem: PRED mode's draft line
+ * and candidate strip. Measured directly (a headless layout dump, not
+ * hand math): the draft line's real rendered height is 16px, so at
+ * FF_COMPOSE_PRED_DRAFT_Y (70) its bottom edge lands at y=86 — only 4px
+ * above FF_COMPOSE_PRED_STRIP_Y (90). That 4px is ALL the slack PRED
+ * mode's own layout has; the strip cannot move up more than a few px
+ * without visually overlapping the draft line's own text, which in turn
+ * caps how far FF_COMPOSE_GRID_Y can move (via the frozen clearance
+ * assert below, `PRED_STRIP_Y + PRED_CHIP_H + FF_HIT_MIN_GAP_PX <=
+ * GRID_Y`) to only ~2px — nowhere near enough to matter for the bottom
+ * row's width.
+ *
+ * The lever that actually works, and stays entirely within what the
+ * review's own instruction already allowed ("keeping every row >=44px"
+ * — this applies to the LETTER/DIGIT grid rows too, not just the bottom
+ * one): shrink the letter/digit/symbol grid's OWN row height
+ * (FF_COMPOSE_GRID_ROW_H, split out from the single FF_COMPOSE_KEY_H
+ * every row used to share) from 56 to 50px — still 6px clear of the
+ * 44px hit floor, comfortably above it, not pinned to it. Because
+ * FF_COMPOSE_GRID_Y (= ROW0's own y) never moves, PRED mode's draft/
+ * strip relationship is COMPLETELY untouched by this — only ROW1, ROW2,
+ * and the bottom row shift up, by 6px each (18px total by the time the
+ * bottom row is reached), which is what actually earns the bottom row
+ * its extra width. FF_COMPOSE_GRID_Y itself stays defined at its
+ * current value (142) not because it's still frozen on principle — it
+ * is explicitly UNFROZEN, per the review's own instruction, and this
+ * file no longer claims otherwise — but because moving it is the one
+ * lever that's actually blocked by real geometry (PRED mode, above),
+ * while shrinking the grid row height is not blocked by anything and
+ * gets the same result. See FF_COMPOSE_DEL_W's own comment (below) for
+ * the resulting three-key allocation, computed against the row's real,
+ * now-much-wider on-glass width, not hand-picked.
  */
 #include "scr_compose.h"
 
@@ -264,51 +306,52 @@ _Static_assert(FF_COMPOSE_BUBBLE_H >= 40, "compose bubble shrank too far fitting
  * 100x46, row1 (4/5/6) is 122x46, row0 (1/2/3) is 132x46 — see this
  * file's PR body for the full before/after). */
 #define FF_COMPOSE_KEY_GAP 8  /* device follow-up: 10 -> 8 (the FF_HIT_MIN_GAP_PX floor); wider keys, tighter stack */
-#define FF_COMPOSE_KEY_H   56 /* SEND-relocation audit: 54 -> 56, the reclaimed BOTTOM_ROW_GAP_EXTRA spent on height;
-                                * >= FF_THEME_MIN_HIT_PX (assert below); see this file's header comment for the
-                                * "why 56, not 57" chord-width search. */
-#define FF_COMPOSE_BOTTOM_ROW_H 56 /* kept equal to FF_COMPOSE_KEY_H — see above */
 
-/* Device follow-up 2 review (PR #193, orchestrator: "put MODE back on
- * the bottom row and still make it larger"): the header relocation this
- * PR originally shipped put MODE ~10px from SEND — too close, given
- * S08's rule ("SEND must never be adjacent to SPACE OR DEL") is really
- * about isolating SEND from ANY accidental-tap neighbor, not just
- * SPACE/DEL by name. MODE returns to the bottom row it lived on before.
- *
- * The requested target (DEL 64 / MODE 52 / SPACE 80, 8px gaps = 212px of
- * content) does not fit this row's real on-glass width — computed via
- * ff_layout_safe_margin_x at the row's own Y with an 8px glass safety
- * (FF_COMPOSE_BOTTOM_ROW_SAFETY_PX below, the FLARE_CHIP_GLASS_SAFETY_PX
- * precedent — scr_flare.c — rather than this file's own more conservative
- * 10px FF_COMPOSE_SAFETY_PX, per the review's own instruction): margin
- * 122px, row width 168px, 152px left for three keys after two 8px gaps.
- * 152 is 44px short of the 196px the target sizes need even before
- * applying the review's own fallback (shrink SPACE to 64, then DEL) —
- * that fallback alone (SPACE 80->64, DEL 64->44, MODE 52->48) still lands
- * at 156px, 4px over budget.
- *
- * Final allocation actually used (156 -> 152, the last 4px taken from
- * SPACE rather than pushing DEL below its OWN pre-existing 52px-era
- * floor, which PR #148's should-fix 4 already flagged once as "a real
- * regression, not an improvement, in a *make buttons bigger* PR"): DEL
- * and MODE both sit at 48px (MODE exactly clears the review's explicit
- * "≥48" floor; DEL trades 4px off its 52px pre-this-PR width rather than
- * the 8px it would take pinning to the bare 44px hit floor), and SPACE —
- * still the most-tapped key on this keypad by a wide margin — takes the
- * remaining 56px, still the largest of the three. Every number here is
- * VERIFIED against the real rendered click-area by
- * test_face_hit_targets.c and test_scr_intent.c's
- * S99_compose_space_del_mode_pinned_dimensions, not this comment's own
- * arithmetic (PR #86's lesson, repeated for the Nth time in this file
- * because it keeps paying off). */
+/* Round 2 (PR #193 review, "unfreeze GRID_Y ... lift the row"): the
+ * letter/digit/symbol grid (rows 0-2) and the bottom row (DEL/MODE/
+ * SPACE) used to share ONE height constant (56, both at the same
+ * documented ceiling). Round 2 splits them: the grid rows shrink to
+ * FF_COMPOSE_GRID_ROW_H (56 -> 50, still 6px clear of the 44px hit
+ * floor, never pinned to it) so ROW1/ROW2/the bottom row all shift up
+ * 6px per row (18px total by the bottom row) WITHOUT moving
+ * FF_COMPOSE_GRID_Y itself (ROW0's own y) — see this file's header
+ * comment, "Round 2", for why moving GRID_Y directly is blocked by
+ * PRED mode's own already-zero-slack draft/strip clearance, and why
+ * this lever isn't. FF_COMPOSE_BOTTOM_ROW_H stays 56 — the ORIGINAL
+ * target height for DEL/MODE/SPACE — unaffected; the bottom row is now
+ * taller than the grid rows above it, which is fine (bigger, not
+ * "matching", was always the actual ask). */
+#define FF_COMPOSE_GRID_ROW_H 50
+#define FF_COMPOSE_BOTTOM_ROW_H 56
+
+/* Device follow-up 2, round 2 (PR #193 review: "the constraint is
+ * vertical, not horizontal — lift the row"). Round 1 (see this file's
+ * header comment) treated the bottom row's Y as fixed and could only
+ * reach DEL 48 / MODE 48 / SPACE 56 — DEL a real regression from its
+ * pre-this-PR 52px. Round 2 lifts the row instead (FF_COMPOSE_GRID_ROW_H
+ * shrinking the grid rows above it, NOT FF_COMPOSE_GRID_Y itself — see
+ * this file's header comment, "Round 2", for why moving GRID_Y directly
+ * is blocked by PRED mode's own draft/strip clearance and why shrinking
+ * the grid row height isn't). Recomputed via ff_layout_safe_margin_x at
+ * the bottom row's NEW y (316, was 334) with the same 8px "glass safety"
+ * (FF_COMPOSE_BOTTOM_ROW_SAFETY_PX, the FLARE_CHIP_GLASS_SAFETY_PX
+ * precedent) round 1 already established: margin 93px, row width 226px,
+ * 210px for three keys after two 8px gaps — 58px more than round 1's
+ * 152px, comfortably enough for the review's full target (DEL 64 / MODE
+ * 56 / SPACE 88 = 208px + gaps). SPACE takes the row's own real
+ * remainder rather than being hand-picked, landing at 90px — 2px OVER
+ * the review's target, not under it. Every number here is VERIFIED
+ * against the real rendered click-area by test_face_hit_targets.c and
+ * test_scr_intent.c's S99_compose_space_del_mode_pinned_dimensions, not
+ * this comment's own arithmetic (PR #86's lesson, repeated for the Nth
+ * time in this file because it keeps paying off). */
 #define FF_COMPOSE_BOTTOM_ROW_SAFETY_PX 8.0f
-#define FF_COMPOSE_DEL_W 48
-#define FF_COMPOSE_MODE_W 48
+#define FF_COMPOSE_DEL_W 64
+#define FF_COMPOSE_MODE_W 56
 _Static_assert(FF_COMPOSE_DEL_W >= FF_THEME_MIN_HIT_PX, "DEL must clear the 44px hit-target floor");
 _Static_assert(FF_COMPOSE_MODE_W >= 48, "MODE must clear the reviewer's explicit >=48px floor (PR #193)");
 
-_Static_assert(FF_COMPOSE_KEY_H >= FF_THEME_MIN_HIT_PX, "compose grid keys must clear the 44px hit-target floor");
+_Static_assert(FF_COMPOSE_GRID_ROW_H >= FF_THEME_MIN_HIT_PX, "compose grid keys must clear the 44px hit-target floor");
 _Static_assert(FF_COMPOSE_BOTTOM_ROW_H >= FF_THEME_MIN_HIT_PX,
                "compose bottom row must clear the 44px hit-target floor");
 _Static_assert(FF_COMPOSE_KEY_GAP >= FF_HIT_MIN_GAP_PX,
@@ -317,9 +360,9 @@ _Static_assert(FF_COMPOSE_KEY_GAP >= FF_HIT_MIN_GAP_PX,
 /* Row 0 (keys 1-3), row 1 (keys 4-6), row 2 (keys 7-9), then the DEL/SPACE/MODE row
  * (SEND relocation: this row no longer carries SEND — see this file's header comment). */
 #define FF_COMPOSE_ROW0_Y (FF_COMPOSE_GRID_Y)
-#define FF_COMPOSE_ROW1_Y (FF_COMPOSE_ROW0_Y + FF_COMPOSE_KEY_H + FF_COMPOSE_KEY_GAP)
-#define FF_COMPOSE_ROW2_Y (FF_COMPOSE_ROW1_Y + FF_COMPOSE_KEY_H + FF_COMPOSE_KEY_GAP)
-#define FF_COMPOSE_BOTTOM_ROW_Y (FF_COMPOSE_ROW2_Y + FF_COMPOSE_KEY_H + FF_COMPOSE_KEY_GAP)
+#define FF_COMPOSE_ROW1_Y (FF_COMPOSE_ROW0_Y + FF_COMPOSE_GRID_ROW_H + FF_COMPOSE_KEY_GAP)
+#define FF_COMPOSE_ROW2_Y (FF_COMPOSE_ROW1_Y + FF_COMPOSE_GRID_ROW_H + FF_COMPOSE_KEY_GAP)
+#define FF_COMPOSE_BOTTOM_ROW_Y (FF_COMPOSE_ROW2_Y + FF_COMPOSE_GRID_ROW_H + FF_COMPOSE_KEY_GAP)
 
 /* S15c guard: the whole T9 stack must stay inside the 412 puck square (the
  * bottom DEL/SPACE/MODE row is the lowest thing on this face). Square-fit
@@ -804,7 +847,7 @@ static void compose_build_grid_row(lv_obj_t *container, ff_app_compose_mode_t mo
     for (int32_t col = 0; col < 3; col++) {
         uint8_t key = (uint8_t)(first_key + col);
         int32_t x = margin_x + col * (key_w + FF_COMPOSE_KEY_GAP);
-        compose_make_key(container, compose_legend_for(mode, key), x, y, key_w, FF_COMPOSE_KEY_H, key,
+        compose_make_key(container, compose_legend_for(mode, key), x, y, key_w, FF_COMPOSE_GRID_ROW_H, key,
                           FF_THEME_COLOR_SURFACE, FF_THEME_COLOR_INK);
     }
 }
@@ -880,9 +923,9 @@ static void compose_build_bottom_row(lv_obj_t *container, ff_app_compose_mode_t 
  * between the margin calculation and the actual child placement. */
 static void compose_build_keys(lv_obj_t *container, ff_app_compose_mode_t mode)
 {
-    int32_t margin_row0 = compose_safe_margin_x(FF_COMPOSE_ROW0_Y, FF_COMPOSE_KEY_H);
-    int32_t margin_row1 = compose_safe_margin_x(FF_COMPOSE_ROW1_Y, FF_COMPOSE_KEY_H);
-    int32_t margin_row2 = compose_safe_margin_x(FF_COMPOSE_ROW2_Y, FF_COMPOSE_KEY_H);
+    int32_t margin_row0 = compose_safe_margin_x(FF_COMPOSE_ROW0_Y, FF_COMPOSE_GRID_ROW_H);
+    int32_t margin_row1 = compose_safe_margin_x(FF_COMPOSE_ROW1_Y, FF_COMPOSE_GRID_ROW_H);
+    int32_t margin_row2 = compose_safe_margin_x(FF_COMPOSE_ROW2_Y, FF_COMPOSE_GRID_ROW_H);
     int32_t margin_bottom = compose_bottom_row_margin_x(FF_COMPOSE_BOTTOM_ROW_Y, FF_COMPOSE_BOTTOM_ROW_H);
 
     compose_build_grid_row(container, mode, FF_COMPOSE_ROW0_Y - FF_COMPOSE_GRID_Y, 1, margin_row0);

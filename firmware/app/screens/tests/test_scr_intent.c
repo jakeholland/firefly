@@ -754,20 +754,22 @@ static void S99_compose_pred_mode_shows_recipient_on_draft_line(void)
 
 /* Every dimension asserted below is the LITERAL measured pixel number
  * this PR's own header comment (scr_compose.c, FF_COMPOSE_DEL_W's own
- * comment) claims — not a re-derivation of the same formula the
- * production code uses, which would pass vacuously even if the
+ * "round 2" comment) claims — not a re-derivation of the same formula
+ * the production code uses, which would pass vacuously even if the
  * underlying design regressed (the proxy-check rule,
- * docs/review/code-review.md item 6). PR #193 review: MODE moved back to
- * the bottom row (too close to SEND in the header), so all three
- * controls are pinned here, all at the bottom row's 56px height.
+ * docs/review/code-review.md item 6). PR #193 review round 2: lifting
+ * the grid rows (FF_COMPOSE_GRID_ROW_H 56->50, NOT FF_COMPOSE_GRID_Y —
+ * see scr_compose.c's own "Round 2" comment for why) reached the
+ * review's full target for DEL/MODE and exceeded it for SPACE.
  * Mutation-verified (fresh build, object hash confirmed changed):
- * reverting FF_COMPOSE_DEL_W to 64 (this PR's own FIRST-draft value,
- * before the review) recomputes SPACE's width to 40 and fails both the
- * DEL and SPACE assertions below — see this PR's body for the exact
- * `ctest` output. SYM mode is used (not the default ABC) purely so
- * "DEL"/"SPACE"/"SYM" are each unambiguous find_button_with_label
- * lookups — ABC mode's grid carries its own "ABC"-legended key (row0,
- * key 2) that would collide with the mode chip's own "ABC" label. */
+ * reverting FF_COMPOSE_DEL_W to round 1's 52 (per the review's own
+ * suggested mutation) recomputes SPACE's width to 102, not 90, and
+ * fails both the DEL and SPACE assertions below — see this PR's body
+ * for the exact `ctest` output. SYM mode is used (not the default ABC)
+ * purely so "DEL"/"SPACE"/"SYM" are each unambiguous
+ * find_button_with_label lookups — ABC mode's grid carries its own
+ * "ABC"-legended key (row0, key 2) that would collide with the mode
+ * chip's own "ABC" label. */
 static void S99_compose_space_del_mode_pinned_dimensions(void)
 {
     ff_app_compose_t compose;
@@ -788,12 +790,12 @@ static void S99_compose_space_del_mode_pinned_dimensions(void)
     lv_obj_get_coords(space, &sa);
     lv_obj_get_coords(mode, &ma);
 
-    TEST_ASSERT_EQUAL_INT32_MESSAGE(48, da.x2 - da.x1 + 1, "DEL width pinned to 48px");
-    TEST_ASSERT_EQUAL_INT32_MESSAGE(56, da.y2 - da.y1 + 1, "DEL height pinned to 56px (matches the digit keys)");
-    TEST_ASSERT_EQUAL_INT32_MESSAGE(56, sa.x2 - sa.x1 + 1, "SPACE width pinned to 56px");
-    TEST_ASSERT_EQUAL_INT32_MESSAGE(56, sa.y2 - sa.y1 + 1, "SPACE height pinned to 56px (matches the digit keys)");
-    TEST_ASSERT_EQUAL_INT32_MESSAGE(48, ma.x2 - ma.x1 + 1, "MODE width pinned to 48px (the reviewer's explicit floor)");
-    TEST_ASSERT_EQUAL_INT32_MESSAGE(56, ma.y2 - ma.y1 + 1, "MODE height pinned to 56px (back on the bottom row)");
+    TEST_ASSERT_EQUAL_INT32_MESSAGE(64, da.x2 - da.x1 + 1, "DEL width pinned to 64px (the review's full target)");
+    TEST_ASSERT_EQUAL_INT32_MESSAGE(56, da.y2 - da.y1 + 1, "DEL height pinned to 56px");
+    TEST_ASSERT_EQUAL_INT32_MESSAGE(90, sa.x2 - sa.x1 + 1, "SPACE width pinned to 90px (2px OVER the review's 88px target)");
+    TEST_ASSERT_EQUAL_INT32_MESSAGE(56, sa.y2 - sa.y1 + 1, "SPACE height pinned to 56px");
+    TEST_ASSERT_EQUAL_INT32_MESSAGE(56, ma.x2 - ma.x1 + 1, "MODE width pinned to 56px (the review's full target)");
+    TEST_ASSERT_EQUAL_INT32_MESSAGE(56, ma.y2 - ma.y1 + 1, "MODE height pinned to 56px");
 }
 
 /* MODE, back on the bottom row (PR #193 review): clears the 44px hit
