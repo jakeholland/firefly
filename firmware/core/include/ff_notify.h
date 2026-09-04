@@ -47,10 +47,22 @@
  * coalesces")
  * `ff_notify_push` first scans the queue for a LIVE entry (currently
  * present — a dismissed/popped/expired entry cannot coalesce into, since
- * it is no longer in `items`) with the same `kind` AND `node_id`. If more
- * than one such entry exists (a real but rare case — two RALLYs from the
- * same sender, spaced further apart than the coalesce window, both still
- * un-expired), the entry with the MOST RECENT `at_ms` is the one
+ * it is no longer in `items`) with the same `kind` AND `node_id` AND
+ * `conv` (see `ff_notify_conv_t` below — S26 banner-opens-conversation
+ * bugfix, 2026-09-03). The `conv` term is not in the spec's literal "same
+ * node+kind" wording, but is required to keep the AC1 rule from silently
+ * conflating two DIFFERENT conversations: without it, the same sender's
+ * group text and 1:1 text arriving within the coalesce window would
+ * merge into ONE queued banner whose `node_id` (identity) is correct but
+ * whose `conv` (destination) can only ever remember the LATER of the two
+ * — a tap would then open the wrong thread for whichever one lost. Two
+ * messages from the same sender addressed to two different conversations
+ * are two separate, honest facts and must stay two separate banners (or
+ * coalesce only with a same-conversation predecessor) — this header's
+ * judgment call 5 below. If more than one same-(kind,node_id,conv) entry
+ * exists (a real but rare case — two RALLYs from the same sender to the
+ * same conversation, spaced further apart than the coalesce window, both
+ * still un-expired), the entry with the MOST RECENT `at_ms` is the one
  * compared against — the natural "the existing live entry" a debounce
  * measures against. If `now_ms` is within `FF_NOTIFY_COALESCE_MS` (2000)
  * of THAT entry's `at_ms` — **inclusive**, so a push at exactly +2000ms
@@ -101,6 +113,17 @@
  *     keeps refreshing in place. Not spec-mandated either way; chosen
  *     for the least-surprising FIFO behavior (a notification that keeps
  *     re-arriving doesn't reorder past ones a user hasn't seen yet).
+ *  5. **`conv` joins `kind`+`node_id` as a coalescing key** (S26
+ *     banner-opens-conversation bugfix, 2026-09-03): the spec's AC1 text
+ *     predates `ff_notify_conv_t` and says only "same node+kind"; this
+ *     header adds the conversation to the match because leaving it out
+ *     would make a coalesce silently DROP a destination fact — see the
+ *     "## Coalescing" section above for the concrete scenario (same
+ *     sender, one message to CREW and one direct, within 2s of each
+ *     other). Widening the AC1 rule this way costs at most one extra
+ *     banner in an already-rare within-2s multi-conversation case, and
+ *     never causes a banner to route to the wrong conversation, which a
+ *     narrower reading of AC1 could.
  */
 #ifndef FF_NOTIFY_H
 #define FF_NOTIFY_H
@@ -125,11 +148,45 @@ extern "C" {
  * "Banner expiry = 6000 ms after at_ms". */
 #define FF_NOTIFY_BANNER_TTL_MS ((uint32_t)6000u)
 
-/** Coalesce window: a push with the same kind+node_id within this many
- * ms of an existing live entry's `at_ms` replaces it instead of adding a
- * new one (spec AC1). Inclusive at the boundary — see this header's top
- * comment, judgment call 2. */
+/** Coalesce window: a push with the same kind+node_id+conv within this
+ * many ms of an existing live entry's `at_ms` replaces it instead of
+ * adding a new one (spec AC1, widened by this header's judgment call 5
+ * to also match `conv` — see the top comment's "## Coalescing" section).
+ * Inclusive at the boundary — see this header's top comment, judgment
+ * call 2. */
 #define FF_NOTIFY_COALESCE_MS ((uint32_t)2000u)
+
+/**
+ * ff_notify_conv_t — which CONVERSATION this notification's underlying
+ * message belongs to (S26 banner-opens-conversation bugfix, 2026-09-03:
+ * docs/specs/S26-device-lifecycle.md Amendments, "a banner opens the
+ * conversation the message belongs to"). Before this field,
+ * `ff_notify_entry_t` carried only `node_id` — the SENDER — and
+ * `FF_INTENT_BANNER_OPEN` (ff_shell.c) assumed a banner's sender and its
+ * conversation were the same thing, which is true for a 1:1 message but
+ * false for a group/broadcast one: tapping a banner for a message KEV
+ * sent to the whole CREW opened KEV's private 1:1 thread instead of the
+ * CREW thread the message actually landed in (S24's `ff_inbox`
+ * membership rules, `core/include/ff_inbox.h`).
+ *
+ * A SMALL, LOCAL enum rather than reusing `ff_inbox.h`'s own
+ * `ff_conv_kind_t` directly: `ff_notify_entry_t` is dependency-light by
+ * design, the same `ff_flare_t` precedent this header's own top comment
+ * already invokes for why the sender's display name/crew color live in
+ * the app-layer `ff_app_banner_t` projection instead of here — and
+ * `ff_inbox.h` pulls in `ff_crew.h`/`ff_sigview.h` to define
+ * `ff_conv_kind_t`, a dependency this queue must not acquire just to
+ * borrow one enum. The two enums deliberately share ONE convention —
+ * CREW is the zero/default value in both (a zeroed key is the communal
+ * thread, never accidentally a specific member) — so a caller bridging
+ * the two (`ff_shell.c`'s `FF_INTENT_BANNER_OPEN` handler, via
+ * `ff_wiring_classify_dir`) is a one-line, order-preserving translation,
+ * never a second independent classification of "which conversation".
+ */
+typedef enum {
+    FF_NOTIFY_CONV_CREW = 0,
+    FF_NOTIFY_CONV_DIRECT,
+} ff_notify_conv_t;
 
 /** What happened. Spec: "kind ∈ MESSAGE · FLARE · RALLY · SYSTEM." Only
  * MESSAGE and RALLY are pushed by this slice's shell wiring; FLARE/SYSTEM
@@ -163,6 +220,12 @@ typedef struct {
     ff_notify_kind_t kind;
     ff_notify_tier_t tier;
     uint32_t         node_id;               /* the sender/subject's node id; 0 = no specific node (SYSTEM) */
+    ff_notify_conv_t conv;                  /* which CONVERSATION the underlying message belongs to
+                                              * (see `ff_notify_conv_t`'s doc comment) — independent of
+                                              * `node_id`: for a CREW notification, `node_id` is still
+                                              * the real SENDER (needed for display and for the
+                                              * paired-sender re-validation on open), it is simply not
+                                              * the conversation to route into on a tap. */
     char             text[FF_NOTIFY_TEXT_MAX]; /* short preview BODY (e.g. the message text, or the
                                               * rally name) — no sender-name prefix: identity is a
                                               * separate concern (node_id here; the caller/renderer
@@ -226,18 +289,23 @@ typedef enum {
 } ff_notify_push_result_t;
 
 /**
- * ff_notify_push — push a notification of `kind`/`tier` from `node_id`
- * with preview `text`, timestamped `now_ms`. `text` is copied and safely
- * truncated to fit `FF_NOTIFY_TEXT_MAX` (NUL-terminated); NULL is treated
- * as "".
+ * ff_notify_push — push a notification of `kind`/`tier` from `node_id`,
+ * belonging to conversation `conv` (S26 banner-opens-conversation
+ * bugfix — see `ff_notify_conv_t`'s doc comment), with preview `text`,
+ * timestamped `now_ms`. `text` is copied and safely truncated to fit
+ * `FF_NOTIFY_TEXT_MAX` (NUL-terminated); NULL is treated as "".
  *
- * COALESCE FIRST (spec AC1): if a live entry with the same `kind` AND
- * `node_id` exists, and `now_ms` is within `FF_NOTIFY_COALESCE_MS` of
- * that entry's `at_ms` (inclusive), this OVERWRITES that entry's
- * `text`/`at_ms`/`expiry_ms` in place — same queue position, no new
- * entry, `ff_notify_count` unchanged — and returns
- * `FF_NOTIFY_PUSH_COALESCED`. See this header's top comment for
- * tie-breaking when more than one live entry matches.
+ * COALESCE FIRST (spec AC1, widened by judgment call 5): if a live entry
+ * with the same `kind` AND `node_id` AND `conv` exists, and `now_ms` is
+ * within `FF_NOTIFY_COALESCE_MS` of that entry's `at_ms` (inclusive),
+ * this OVERWRITES that entry's `text`/`at_ms`/`expiry_ms` in place — same
+ * queue position, no new entry, `ff_notify_count` unchanged — and
+ * returns `FF_NOTIFY_PUSH_COALESCED`. See this header's top comment for
+ * tie-breaking when more than one live entry matches. A push that
+ * differs only in `conv` from an otherwise-matching live entry (same
+ * sender, one message to CREW and one direct, close together) does NOT
+ * coalesce — it is a second, honest fact about a DIFFERENT conversation,
+ * so it always APPENDS instead (below).
  *
  * Otherwise APPENDS a new entry as the newest (`items[count]`) and
  * returns `FF_NOTIFY_PUSH_NEW`. If the queue is already at
@@ -257,7 +325,7 @@ typedef enum {
  * outcomes, never a rejection, same as the bool contract this replaces).
  */
 ff_notify_push_result_t ff_notify_push(ff_notify_t *q, ff_notify_kind_t kind, ff_notify_tier_t tier, uint32_t node_id,
-                                        char const *text, uint32_t now_ms);
+                                        ff_notify_conv_t conv, char const *text, uint32_t now_ms);
 
 /**
  * ff_notify_head — the oldest entry currently queued (spec: "head

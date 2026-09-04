@@ -388,6 +388,15 @@ static void inject_text(uint32_t from, char const *text)
     H.ev.on_text(H.ev.user, from, MY_ID, text, strlen(text));
 }
 
+/* S26 banner-opens-conversation bugfix (2026-09-03) — the GROUP-message
+ * sibling of inject_text above: `to == MC_ADDR_BROADCAST` (not MY_ID),
+ * so ff_wiring_classify_dir reads FEED_DIR_BROADCAST and the item lands
+ * in the CREW conversation, not `from`'s own 1:1 thread. */
+static void inject_text_broadcast(uint32_t from, char const *text)
+{
+    H.ev.on_text(H.ev.user, from, MC_ADDR_BROADCAST, text, strlen(text));
+}
+
 /* 2026-09-02: this file used to have an inject_pulse(from) helper (PULSE,
  * empty body) for "some generic private-portnum inbound signal" — retired
  * along with the wire type (ff_proto.h's RESERVED_01 section). STATUS is
@@ -5669,6 +5678,152 @@ static void S26_banner_open_is_inert_under_a_takeover(void)
 }
 
 /* =================================================================== */
+/* S26 banner-opens-conversation bugfix (2026-09-03,                    */
+/* docs/specs/S26-device-lifecycle.md Amendments): "a banner opens the  */
+/* conversation the message belongs to" — a GROUP/broadcast message's   */
+/* banner must open the CREW thread, never the sender's private 1:1     */
+/* thread. Maintainer repro: tapping the banner for a message that went */
+/* to the GROUP chat opened the sender's 1:1 conversation instead.      */
+/* =================================================================== */
+
+/* The core bug, fixed: a group TEXT from KEV → banner → BANNER_OPEN →
+ * the CREW thread is open — KEV's own direct thread is explicitly NOT
+ * what opened (both the numeric thread key AND the "not KEV" negative
+ * are asserted, the proxy-check discipline: a test that only checked
+ * "some thread opened" could pass on the old, buggy routing too). */
+static void S26_banner_open_group_message_opens_crew_thread_not_senders(void)
+{
+    harness_init(100000u, false);
+    inject_my_info(MY_ID);
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, KEV_ID, true));
+    inject_node(KEV_ID, "KEV", U_EVENING);
+
+    inject_text_broadcast(KEV_ID, "party at main stage");
+    (void)ff_shell_tick(&H.shell, H.clk.t);
+
+    ff_app_banner_t const *b = &ff_shell_view(&H.shell)->banner;
+    TEST_ASSERT_TRUE(b->active);
+    TEST_ASSERT_EQUAL_UINT32(KEV_ID, b->node_id); /* the banner still names the real sender */
+    TEST_ASSERT_EQUAL_UINT16(1, view_conv(0)->unread); /* the CREW row, not KEV's, carries the unread */
+
+    ff_intent_t open = {.kind = FF_INTENT_BANNER_OPEN, .u = {0}};
+    ff_shell_intent(&H.shell, &open);
+    (void)ff_shell_tick(&H.shell, H.clk.t);
+
+    ff_app_state_t const *v = ff_shell_view(&H.shell);
+    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_INBOX, v->active_face);
+    TEST_ASSERT_EQUAL_INT(FF_INBOX_SUB_THREAD, v->inbox.subview);
+    /* The bug, precisely: thread_node used to be KEV_ID (the sender). */
+    TEST_ASSERT_EQUAL_UINT32(0, v->inbox.thread_node);          /* CREW sentinel — the fix */
+    TEST_ASSERT_NOT_EQUAL_UINT32(KEV_ID, v->inbox.thread_node); /* explicitly not the sender's own thread */
+    TEST_ASSERT_FALSE(v->banner.active);                        /* dismissed */
+
+    /* Mark-read hit the CREW conversation, not KEV's (which has no
+     * traffic of its own here and so is honestly absent from the
+     * conversation list per ff_inbox.h's paired-member rule — no
+     * standalone DANA/KEV row exists to assert "still unread" against;
+     * the CREW row's own unread clearing is the honest, available
+     * proof). */
+    TEST_ASSERT_EQUAL_UINT16(0, view_conv(0)->unread);
+}
+
+/* Sibling of the group case: a DIRECT TEXT from KEV opens KEV's own 1:1
+ * thread (unchanged by this bugfix — the existing DANA-flavored
+ * S26_banner_open_routes_marks_read_and_dismisses test above already
+ * covers this shape; this one exists so the group/direct pair sits
+ * side by side with the SAME sender id, making the destination — not
+ * the sender — the only variable between the two tests). */
+static void S26_banner_open_direct_message_opens_senders_thread(void)
+{
+    harness_init(100000u, false);
+    inject_my_info(MY_ID);
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, KEV_ID, true));
+    inject_node(KEV_ID, "KEV", U_EVENING);
+
+    inject_text(KEV_ID, "you close?"); /* to == MY_ID: DIRECT */
+    (void)ff_shell_tick(&H.shell, H.clk.t);
+    TEST_ASSERT_TRUE(ff_shell_view(&H.shell)->banner.active);
+    TEST_ASSERT_EQUAL_UINT16(1, view_conv(KEV_ID)->unread);
+    TEST_ASSERT_EQUAL_UINT16(0, view_conv(0)->unread); /* CREW untouched by a direct message */
+
+    ff_intent_t open = {.kind = FF_INTENT_BANNER_OPEN, .u = {0}};
+    ff_shell_intent(&H.shell, &open);
+    (void)ff_shell_tick(&H.shell, H.clk.t);
+
+    ff_app_state_t const *v = ff_shell_view(&H.shell);
+    TEST_ASSERT_EQUAL_INT(FF_INBOX_SUB_THREAD, v->inbox.subview);
+    TEST_ASSERT_EQUAL_UINT32(KEV_ID, v->inbox.thread_node); /* the sender's own thread, not CREW */
+    TEST_ASSERT_EQUAL_UINT16(0, view_conv(KEV_ID)->unread); /* marked read */
+    TEST_ASSERT_FALSE(v->banner.active);
+}
+
+/* A RALLY to the whole crew (MC_ADDR_BROADCAST) also opens the CREW
+ * thread on tap — the OTHER banner-eligible kind (spec: "an incoming
+ * MESSAGE or RALLY"), same routing rule. */
+static void S26_banner_open_group_rally_opens_crew_thread(void)
+{
+    harness_init(100000u, false);
+    inject_my_info(MY_ID);
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, KEV_ID, true));
+    inject_node(KEV_ID, "KEV", U_EVENING);
+
+    uint8_t buf[FF_PROTO_MAX_PAYLOAD];
+    int n = ff_proto_encode_rally(buf, sizeof(buf), (ff_latlon_t){39.0, -82.0}, "Main Stage");
+    TEST_ASSERT_GREATER_THAN_INT(0, n);
+    H.ev.on_private(H.ev.user, KEV_ID, MC_ADDR_BROADCAST, FF_PORTNUM, buf, (size_t)n);
+    (void)ff_shell_tick(&H.shell, H.clk.t);
+
+    ff_app_banner_t const *b = &ff_shell_view(&H.shell)->banner;
+    TEST_ASSERT_TRUE(b->active);
+    TEST_ASSERT_EQUAL_INT(FF_NOTIFY_RALLY, b->kind);
+    TEST_ASSERT_EQUAL_UINT32(KEV_ID, b->node_id);
+
+    ff_intent_t open = {.kind = FF_INTENT_BANNER_OPEN, .u = {0}};
+    ff_shell_intent(&H.shell, &open);
+    (void)ff_shell_tick(&H.shell, H.clk.t);
+
+    ff_app_state_t const *v = ff_shell_view(&H.shell);
+    TEST_ASSERT_EQUAL_INT(FF_INBOX_SUB_THREAD, v->inbox.subview);
+    TEST_ASSERT_EQUAL_UINT32(0, v->inbox.thread_node); /* CREW, not KEV */
+    TEST_ASSERT_EQUAL_UINT16(0, view_conv(0)->unread); /* marked read */
+}
+
+/* Proxy-check target for the mutation gate (PR body): a naive "route by
+ * node_id only" revert would make this pass DIRECT (node_id happens to
+ * equal the right thread there) but fail GROUP — exactly the asymmetry
+ * S26_banner_open_group_message_opens_crew_thread_not_senders and
+ * S26_banner_open_direct_message_opens_senders_thread together pin down.
+ * A same-sender, two-conversations regression: KEV sends to the group
+ * first, then DIRECT — two separate banners (ff_notify's conv-aware
+ * coalescing — see test_notify.c), and opening the OLDEST (the group
+ * one, still head-of-queue) must land on CREW, not KEV, even though a
+ * KEV-addressed banner is also queued right behind it. */
+static void S26_banner_open_picks_the_head_banners_own_conversation(void)
+{
+    harness_init(100000u, false);
+    inject_my_info(MY_ID);
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, KEV_ID, true));
+    inject_node(KEV_ID, "KEV", U_EVENING);
+
+    inject_text_broadcast(KEV_ID, "party at main stage"); /* queued first (head) */
+    advance(2500u); /* past the 2s coalesce window, so the next push is a second, distinct entry
+                     * (ff_notify's conv-aware coalescing — same sender, different conv, never
+                     * merges regardless of timing, but advancing past the window keeps this test's
+                     * intent legible without leaning on that separately-tested guarantee). */
+    inject_text(KEV_ID, "you coming?");                   /* queued second, DIRECT */
+    (void)ff_shell_tick(&H.shell, H.clk.t);
+
+    ff_intent_t open = {.kind = FF_INTENT_BANNER_OPEN, .u = {0}};
+    ff_shell_intent(&H.shell, &open);
+    (void)ff_shell_tick(&H.shell, H.clk.t);
+
+    ff_app_state_t const *v = ff_shell_view(&H.shell);
+    TEST_ASSERT_EQUAL_UINT32(0, v->inbox.thread_node); /* the HEAD banner's conv (CREW), not the second (DIRECT) */
+    TEST_ASSERT_TRUE(v->banner.active);                /* the second (direct) banner is still queued */
+    TEST_ASSERT_EQUAL_UINT32(KEV_ID, v->banner.node_id);
+}
+
+/* =================================================================== */
 /* S24 slice d — action popup (AC5) + Rally screen (AC6) + opacity (AC8) */
 /*  + the demo-loopback send seam.                                       */
 /* =================================================================== */
@@ -7533,6 +7688,10 @@ int main(void)
     RUN_TEST(S26_banner_open_routes_marks_read_and_dismisses);
     RUN_TEST(S26_banner_open_with_no_banner_is_noop);
     RUN_TEST(S26_banner_open_is_inert_under_a_takeover);
+    RUN_TEST(S26_banner_open_group_message_opens_crew_thread_not_senders);
+    RUN_TEST(S26_banner_open_direct_message_opens_senders_thread);
+    RUN_TEST(S26_banner_open_group_rally_opens_crew_thread);
+    RUN_TEST(S26_banner_open_picks_the_head_banners_own_conversation);
 
     /* S27 sounds. */
     RUN_TEST(S27_flare_start_fires_flare_sent_exactly_once);

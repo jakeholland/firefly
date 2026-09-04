@@ -296,14 +296,23 @@ the same gate for its own AC3-style harness test.
 Core `ff_notify` as above (queue depth 4, FIFO, expiry, `dismiss`, `pop`).
 Shell: an incoming MESSAGE / RALLY (paired sender) enqueues a BANNER; the
 active face renders the banner strip on top (a new `scr_banner` overlay, not a
-face); tap → the sender's thread (S24) and marks read; auto-expire 6 s;
-enqueue wakes the screen via (c). Flare takeover untouched.
+face); tap → **the conversation the message belongs to** (S24 — see AC5
+below and this section's 2026-09-03 Amendment for the full rule and the
+bug it fixes) and marks read; auto-expire 6 s; enqueue wakes the screen via
+(c). Flare takeover untouched.
 - **AC1** `ff_notify` unit tests: FIFO, overflow drops oldest, expiry, dismiss,
   a duplicate (same node+kind within 2 s) coalesces.
 - **AC2** Banner golden on Radar + on a thread; opacity in the render key;
   press state.
 - **AC3** Unpaired sender never produces a banner (S22 stranger rule).
 - **AC4** Field build carries no demo-only banner content (nm check, S23 AC4).
+- **AC5** (2026-09-03 amendment) A banner's tap opens the S24 `ff_inbox`
+  CONVERSATION the underlying message was filed under — the CREW thread for
+  a broadcast/group message, the sender's own 1:1 thread for a message
+  addressed directly to this device — never routed by sender identity
+  alone. Mark-read on open hits that same conversation. See this section's
+  Amendment below for the full rule statement, the bug, and the tests it
+  names.
 
 ### (e) Home button + launcher — `[api]`
 Target: GPIO0 sampled like GPIO6 (same debounce module); core: `ff_route`
@@ -428,3 +437,68 @@ folding flare into `ff_notify` (later), per-user idle timeouts in Settings.
   banner" rule this section already states — `app/ff_wiring.c`'s drop of a
   RESERVED_01 frame (no feed item) means `ff_shell.c`'s banner push never
   even sees one to consider.
+
+- **2026-09-03, maintainer-reported bug fix — "a banner opens the
+  conversation the message belongs to" (slice (d) AC5, above):**
+  tapping the banner for a message that went to the GROUP chat was
+  opening the sender's 1:1 conversation instead of the CREW thread. The
+  rule as shipped before this fix (this section's original prose, "tap →
+  the sender's thread") conflated two different facts that only happen
+  to coincide for a DIRECT message: WHO sent it (`node_id`) and WHICH
+  CONVERSATION it belongs to (S24's `ff_inbox` CREW-vs-member model,
+  `docs/specs/S24-signals-inbox.md`'s "Conversation membership" section —
+  broadcast/UNKNOWN-direction traffic files under CREW, a specifically-
+  addressed-to-me item files under that sender's own thread). `ff_shell.c`
+  routed `FF_INTENT_BANNER_OPEN` by `node_id` alone, so a group message's
+  banner (whose `node_id` is still the real sender, for display) opened
+  that sender's private thread instead of CREW.
+
+  **The fix:** `ff_notify_entry_t` (`core/include/ff_notify.h`) gains a
+  `conv` field (`ff_notify_conv_t`: `FF_NOTIFY_CONV_CREW` /
+  `FF_NOTIFY_CONV_DIRECT`) recording which conversation the push belongs
+  to — a small, dependency-light LOCAL enum (not `ff_inbox.h`'s own
+  `ff_conv_kind_t`, to keep `ff_notify` free of the crew/sigview
+  dependency `ff_inbox.h` carries), sharing that enum's zero-is-CREW
+  convention so the one-line bridge in `ff_shell.c` can never disagree
+  with S24's own membership rule. `ff_notify_push` takes `conv` and now
+  coalesces on `(kind, node_id, conv)` instead of `(kind, node_id)` — a
+  duplicate check widened, not narrowed: the same sender's group message
+  and direct message, even seconds apart, are two distinct facts and stay
+  two banners (`ff_notify.h`'s own judgment call 5 has the full reasoning
+  and the "why AC1's literal wording under-specifies this" note).
+  `ff_wiring.c`'s existing S24 AC1 direction classifier is exported as
+  `ff_wiring_classify_dir` (`[api]`) so the banner push
+  (`shell_notify_push_banner`) classifies a message's destination through
+  the EXACT SAME rule the feed item's own `ff_feed_dir_t` already used —
+  a banner cannot disagree with where its message actually landed in the
+  inbox. `FF_INTENT_BANNER_OPEN` then routes on `h->conv`: CREW opens the
+  CREW thread (`inbox_thread_node = 0`, the sentinel this file's
+  `FF_INTENT_INBOX_OPEN_THREAD`/`PICK` handling already used), anything
+  else opens the sender's own 1:1 thread — and mark-read
+  (`ff_inbox_mark_thread_read`) follows the same split.
+
+  **Tests naming the AC:** `firmware/core/tests/test_notify.c`'s
+  `S26_conv_field_is_stored_by_literal`,
+  `S26_same_sender_group_and_direct_do_not_coalesce`,
+  `S26_same_sender_same_conv_still_coalesces` (the `conv` field/coalescing
+  half); `firmware/app/tests/test_shell.c`'s
+  `S26_banner_open_group_message_opens_crew_thread_not_senders`,
+  `S26_banner_open_direct_message_opens_senders_thread`,
+  `S26_banner_open_group_rally_opens_crew_thread`,
+  `S26_banner_open_picks_the_head_banners_own_conversation` (AC5's routing
+  + mark-read rule, at the shell/intent level); and
+  `firmware/targets/sim/tests/test_ctl_flare_sequence.c`'s
+  `S26_banner_tap_from_the_launcher_lands_on_the_crew_thread_for_a_group_
+  message` (the same rule driven end to end through the real ctl/LVGL
+  stack, asserting the RENDERED thread header reads "CREW" — not merely
+  the view-model field). Mutation-tested: reverting the routing decision
+  to "route by `node_id` only" (the pre-fix behavior) fails the group-
+  routing tests above while leaving the direct-message test green, which
+  is exactly the asymmetry this bug had.
+
+  See `docs/specs/S24-signals-inbox.md`'s `## Model` →
+  `### Inbox/thread view-model — new core module ff_inbox` section, and
+  that module's own header (`core/include/ff_inbox.h`, "Conversation
+  membership" — the fuller rulebook, including the UNKNOWN-direction
+  placement decision this fix's CREW-default relies on), for the
+  authoritative CREW-vs-member filing rule this fix now agrees with.

@@ -212,6 +212,31 @@ static void ctl_tap_button(ff_ctl_loop_ctx_t *ctx, ff_ctl_handlers_t const *h, l
     ctl_tap(ctx, h, x, y);
 }
 
+/* Same recursive lookup as test_ctl_batt.c's/test_scr_inbox_hint.c's
+ * find_label_with_text (duplicated rather than shared — see this file's
+ * own header comment on find_button_with_label for why). The thread
+ * header's "CREW"/member-name label (scr_inbox.c's thread header build)
+ * is a plain lv_label_create child, never inside a button, so this — not
+ * find_button_with_label — is the right lookup for it. */
+static lv_obj_t *find_label_with_text(lv_obj_t *root, char const *text)
+{
+    uint32_t n = lv_obj_get_child_count(root);
+    for (uint32_t i = 0; i < n; i++) {
+        lv_obj_t *child = lv_obj_get_child(root, i);
+        if (lv_obj_check_type(child, &lv_label_class)) {
+            char const *txt = lv_label_get_text(child);
+            if (txt != NULL && strcmp(txt, text) == 0) {
+                return child;
+            }
+        }
+        lv_obj_t *found = find_label_with_text(child, text);
+        if (found != NULL) {
+            return found;
+        }
+    }
+    return NULL;
+}
+
 /**
  * Maintainer-reported bug, reproduced end to end through the REAL ctl/
  * LVGL stack (not a direct ff_shell_intent call — that half is
@@ -223,7 +248,17 @@ static void ctl_tap_button(ff_ctl_loop_ctx_t *ctx, ff_ctl_handlers_t const *h, l
  * land on the sender's thread — the #157 `banner_on_launcher` fixture's
  * live counterpart, driven by an actual finger-shaped tap rather than a
  * fixture snapshot.
- */
+ *
+ * This is the DIRECT (1:1) case: the text is addressed to `MY_ID`
+ * (`self`, injected via `on_my_info` below), so `ff_wiring_classify_dir`
+ * reads it as FEED_DIR_DIRECT and the banner opens DANA's own thread.
+ * The sibling GROUP case (a message addressed to the whole crew, which
+ * must open the CREW thread instead — the banner-opens-conversation
+ * bugfix, 2026-09-03) is
+ * `S26_banner_tap_from_the_launcher_lands_on_the_crew_thread_for_a_group_
+ * message` immediately below: before that bugfix, this same scenario
+ * with `to == MC_ADDR_BROADCAST` used to assert `thread_node == DANA`
+ * here too — a passing test that was quietly asserting the BUG. */
 static void S26_banner_tap_from_the_launcher_lands_on_the_thread(void)
 {
     static ff_shell_t shell;
@@ -251,16 +286,17 @@ static void S26_banner_tap_from_the_launcher_lands_on_the_thread(void)
      * (ff_shell_pair/ff_shell_events) rather than a ctl command, since
      * the ctl protocol has no "inject a text" verb (only `flare` does,
      * for AC10's own reasons — see this file's `ctl_loop_flare`). */
-    enum { DANA = 0x0000DA1Au };
-    TEST_ASSERT_TRUE(ff_shell_pair(&shell, DANA, true));
+    enum { DANA = 0x0000DA1Au, MY_ID = 0x00001111u };
     mc_events_t const ev = ff_shell_events(&shell);
+    ev.on_my_info(ev.user, MY_ID); /* who "me" is, so `to == MY_ID` below classifies DIRECT */
+    TEST_ASSERT_TRUE(ff_shell_pair(&shell, DANA, true));
     mc_nodeinfo_t n;
     memset(&n, 0, sizeof(n));
     n.node_num = DANA;
     n.has_short_name = true;
     strncpy(n.short_name, "DANA", sizeof(n.short_name) - 1);
     ev.on_node(ev.user, &n);
-    ev.on_text(ev.user, DANA, MC_ADDR_BROADCAST, "you close?", strlen("you close?"));
+    ev.on_text(ev.user, DANA, MY_ID, "you close?", strlen("you close?"));
     ctl_settle(&ctx, &h);
     TEST_ASSERT_TRUE(ctx.state.banner.active);
     TEST_ASSERT_EQUAL_UINT32(DANA, ctx.state.banner.node_id);
@@ -278,6 +314,90 @@ static void S26_banner_tap_from_the_launcher_lands_on_the_thread(void)
     TEST_ASSERT_EQUAL(FF_INBOX_SUB_THREAD, ctx.state.inbox.subview);
     TEST_ASSERT_EQUAL_UINT32(DANA, ctx.state.inbox.thread_node);
     TEST_ASSERT_FALSE(ctx.state.banner.active);
+
+    ff_ctl_loop_close(&ctx);
+    ff_shell_close(&shell);
+    lv_deinit();
+}
+
+/**
+ * S26 banner-opens-conversation bugfix (2026-09-03), reproduced end to
+ * end through the REAL ctl/LVGL stack, mirroring the DIRECT case above:
+ * a message addressed to the WHOLE CREW (`to == MC_ADDR_BROADCAST`) must
+ * open the CREW thread on a banner tap, never the sender's private 1:1
+ * thread — even though the banner itself still names a specific sender
+ * (DANA) for display. Asserted two ways: `ctx.state.inbox.thread_node`
+ * is the CREW sentinel (0), and — the "rendered thread header is the
+ * crew thread's" ask — the real rendered thread screen's header label
+ * reads "CREW" (scr_inbox.c's thread-header build), found by the same
+ * live-tree label search `find_label_with_text` uses elsewhere in this
+ * repo, not merely inferred from the view-model field.
+ */
+static void S26_banner_tap_from_the_launcher_lands_on_the_crew_thread_for_a_group_message(void)
+{
+    static ff_shell_t shell;
+    static fp_pack_t pack;
+    static ff_ctl_loop_ctx_t ctx;
+
+    ff_shell_cfg_t shell_cfg;
+    memset(&shell_cfg, 0, sizeof(shell_cfg));
+
+    ff_ctl_loop_cfg_t cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.mock_clock = true;
+
+    TEST_ASSERT_EQUAL_INT(0, ff_ctl_loop_open(&ctx, &shell, &pack, &shell_cfg, &cfg));
+
+    bool quit_flag = false;
+    ff_ctl_handlers_t h = ff_ctl_loop_handlers(&ctx, &quit_flag);
+
+    ctl_settle(&ctx, &h);
+    TEST_ASSERT_EQUAL(FF_APP_FACE_LAUNCHER, ctx.state.active_face); /* the boot default */
+
+    enum { KEV = 0x0000EE00u, MY_ID = 0x00001111u };
+    mc_events_t const ev = ff_shell_events(&shell);
+    ev.on_my_info(ev.user, MY_ID);
+    TEST_ASSERT_TRUE(ff_shell_pair(&shell, KEV, true));
+    mc_nodeinfo_t n;
+    memset(&n, 0, sizeof(n));
+    n.node_num = KEV;
+    n.has_short_name = true;
+    strncpy(n.short_name, "KEV", sizeof(n.short_name) - 1);
+    ev.on_node(ev.user, &n);
+    /* A GROUP text: `to == MC_ADDR_BROADCAST`, not MY_ID. */
+    ev.on_text(ev.user, KEV, MC_ADDR_BROADCAST, "party at main stage", strlen("party at main stage"));
+    ctl_settle(&ctx, &h);
+    TEST_ASSERT_TRUE(ctx.state.banner.active);
+    TEST_ASSERT_EQUAL_UINT32(KEV, ctx.state.banner.node_id); /* the banner still names the real sender */
+
+    lv_obj_t *banner_strip = find_button_with_label(lv_screen_active(), "KEV");
+    TEST_ASSERT_NOT_NULL_MESSAGE(banner_strip, "banner strip not found on the launcher - did it render?");
+    ctl_tap_button(&ctx, &h, banner_strip);
+
+    TEST_ASSERT_EQUAL(FF_APP_FACE_INBOX, ctx.state.active_face);
+    TEST_ASSERT_EQUAL(FF_INBOX_SUB_THREAD, ctx.state.inbox.subview);
+    /* The bug: this used to be KEV (h->node_id, the sender) instead of
+     * the CREW sentinel 0 — a group message opened the sender's private
+     * thread. */
+    TEST_ASSERT_EQUAL_UINT32(0, ctx.state.inbox.thread_node);
+    TEST_ASSERT_NOT_EQUAL_UINT32(KEV, ctx.state.inbox.thread_node);
+    TEST_ASSERT_FALSE(ctx.state.banner.active);
+
+    /* And the REAL rendered thread header — not just the view-model
+     * field — reads "CREW", the same header scr_inbox.c shows when a
+     * user navigates to the CREW thread by hand (scr_inbox.c's
+     * inbox_build_thread_header: the CREW thread's header title is the
+     * literal string "CREW", found nowhere else on this screen — a 1:1
+     * thread's header instead names the member, e.g. "KEV"). Note this
+     * deliberately does NOT also assert the ABSENCE of a "KEV" label:
+     * the CREW thread's own message list legitimately shows KEV's name
+     * as the sender-line attribution on his own message
+     * (inbox_msg_sender_line, `crew_thread && !out`) — that "KEV" is
+     * expected and correct, so its presence would not distinguish the
+     * bug from the fix. thread_node's numeric check above (0, not KEV)
+     * plus this header title together are the honest proof. */
+    lv_obj_t *header = find_label_with_text(lv_screen_active(), "CREW");
+    TEST_ASSERT_NOT_NULL_MESSAGE(header, "thread header does not read CREW - did the wrong thread open?");
 
     ff_ctl_loop_close(&ctx);
     ff_shell_close(&shell);
@@ -987,6 +1107,7 @@ int main(void)
     UNITY_BEGIN();
 
     RUN_TEST(S26_banner_tap_from_the_launcher_lands_on_the_thread);
+    RUN_TEST(S26_banner_tap_from_the_launcher_lands_on_the_crew_thread_for_a_group_message);
     RUN_TEST(S26_flare_go_from_the_launcher_lands_on_radar);
     RUN_TEST(S16_AC10_draft_typed_flare_injected_takeover_clears_draft_survives);
     RUN_TEST(S27_ctl_loop_play_sound_hook_logs_flare_sent);

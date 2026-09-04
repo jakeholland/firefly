@@ -31,17 +31,20 @@ uint8_t ff_notify_count(ff_notify_t const *q)
 }
 
 ff_notify_push_result_t ff_notify_push(ff_notify_t *q, ff_notify_kind_t kind, ff_notify_tier_t tier, uint32_t node_id,
-                                        char const *text, uint32_t now_ms)
+                                        ff_notify_conv_t conv, char const *text, uint32_t now_ms)
 {
     if (q == NULL) return FF_NOTIFY_PUSH_REJECTED;
 
-    /* Coalesce: find the LIVE entry with matching kind+node_id whose
-     * at_ms is the most recent (ties broken by scan order — the queue
-     * holds at most FF_NOTIFY_DEPTH entries, so this is cheap and exact).
-     * See ff_notify.h's top comment for the full rationale. */
+    /* Coalesce: find the LIVE entry with matching kind+node_id+conv
+     * (judgment call 5 — conv joins the match key so a group message and
+     * a direct message from the same sender never merge into one banner
+     * that can only remember one destination) whose at_ms is the most
+     * recent (ties broken by scan order — the queue holds at most
+     * FF_NOTIFY_DEPTH entries, so this is cheap and exact). See
+     * ff_notify.h's top comment for the full rationale. */
     int match = -1;
     for (uint8_t i = 0; i < q->count; i++) {
-        if (q->items[i].kind == kind && q->items[i].node_id == node_id) {
+        if (q->items[i].kind == kind && q->items[i].node_id == node_id && q->items[i].conv == conv) {
             if (match < 0 || (int32_t)(q->items[i].at_ms - q->items[(uint8_t)match].at_ms) > 0) {
                 match = (int)i;
             }
@@ -76,6 +79,7 @@ ff_notify_push_result_t ff_notify_push(ff_notify_t *q, ff_notify_kind_t kind, ff
     e->kind = kind;
     e->tier = tier;
     e->node_id = node_id;
+    e->conv = conv;
     e->at_ms = now_ms;
     e->expiry_ms = expiry_ms;
     if (text != NULL) {
