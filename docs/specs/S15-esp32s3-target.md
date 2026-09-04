@@ -6,7 +6,7 @@ Same app, real hardware: ESP-IDF component build for the Waveshare ESP32-S3-Touc
 ## Deliverables
 1. **ESP-IDF project** under `targets/esp32s3/` (IDF 5.x): components wrap core/meshclient/festpack/app unchanged; `idf.py build flash monitor` works.
 2. **Display+touch driver**: SPD2010 QSPI panel + touch via Waveshare's reference code, adapted into an LVGL v9 display/indev driver at 412×412; target ≥25 fps radar.
-3. **HAL implementations**: `ff_clock` (esp_timer), `ff_store` (NVS), transport UART (GPIO43/44 ⇒ comms brain D6/D7, 115200, matching Meshtastic Serial Module PROTO mode), QMC5883L driver (I2C) + QMI8658 accel (onboard) feeding `ff_geo_heading_deg`, PWM haptics stub (pin per case design), backlight control.
+3. **HAL implementations**: `ff_clock` (esp_timer), `ff_store` (NVS), transport UART (GPIO43/44 ⇒ comms brain D3/D1 = GPIO4/GPIO2 — NOT D6/D7, which Meshtastic gives to the GPS; see docs/hardware/comms-brain.md — 115200, matching Meshtastic Serial Module PROTO mode), QMC5883L driver (I2C) + QMI8658 accel (onboard) feeding `ff_geo_heading_deg`, PWM haptics stub (pin per case design), backlight control.
 4. **Power scaffolding v1**: screen-off on 20 s idle, tilt/tap wake via QMI8658 interrupt; light-sleep tuning is post-Lost-Lands (issue).
 5. **Bundled assets**: Lost Lands festpack embedded via `EMBED_FILES`.
 6. **Comms-brain setup doc** (`docs/comms-brain.md`): flash stock Meshtastic "Seeed XIAO S3", enable Serial Module PROTO on D6/D7, region US, channel setup — with exact CLI commands.
