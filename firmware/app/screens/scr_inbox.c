@@ -174,9 +174,20 @@ _Static_assert(FF_INBOX_FAB_HIT_PX >= FF_THEME_MIN_HIT_PX, "FAB tap target must 
 #define FF_INBOX_THREAD_LIST_H_1TO1  182 /* -> y 262; the chip strip sits below (2px clearance, not the 8px hit floor — the list's own touch target is the exempt FLOATING catcher, Exclusion 4, so this gap is a visual choice, not a hit-adjacency requirement) */
 #define FF_INBOX_THREAD_FADE_H       16  /* PR #149 review round 3: short, so it never meaningfully dims the newest message (was the shared 40px default) */
 
-/* Quick-reply chips (1:1 only): OMW / IN 5 MIN / FLARE, one row, capped
- * on the right so the strip and the FAB's tap target keep the adjacency
- * floor (the same clearance rule as FF_INBOX_ROW_HIT_CLEAR_X). */
+/* Quick-reply chips: OMW / IN 5 MIN / FLARE, one row, capped on the
+ * right so the strip and the FAB's tap target keep the adjacency floor
+ * (the same clearance rule as FF_INBOX_ROW_HIT_CLEAR_X). The 1:1 thread
+ * always shows this strip (its list band, FF_INBOX_THREAD_LIST_H_1TO1,
+ * is deliberately shorter than the CREW band specifically to reserve
+ * this room unconditionally — S24_direct_thread_shows_at_least_4_rows_
+ * at_rest is the reviewed AC that forbids trading it away even on a
+ * long, overflowing thread). The CREW thread (the maintainer's "the
+ * group thread has a bunch of unused blank space" ask, 2026-09-03) gets
+ * the SAME strip, same intents, but GATED on free space — see
+ * FF_INBOX_CHIP_FREE_MIN_PX and inbox_build_thread's gate below — since
+ * unlike 1:1 its band (FF_INBOX_THREAD_LIST_H_CREW) is NOT pre-shrunk to
+ * reserve chip room, so a long CREW thread has none to give without
+ * covering messages. */
 #define FF_INBOX_CHIP_Y         264
 #define FF_INBOX_CHIP_H         44
 #define FF_INBOX_CHIP_GAP       8
@@ -184,6 +195,18 @@ _Static_assert(FF_INBOX_FAB_HIT_PX >= FF_THEME_MIN_HIT_PX, "FAB tap target must 
 _Static_assert(FF_INBOX_CHIP_H >= FF_THEME_MIN_HIT_PX, "quick chips must clear the 44px hit floor");
 _Static_assert(FF_INBOX_CHIP_GAP >= FF_HIT_MIN_GAP_PX,
                "adjacent quick chips must clear the 8px adjacency floor");
+
+/* The CREW thread's free-space gate (2026-09-03 maintainer decision: put
+ * the quick-reply chips in the group thread's unused space instead of
+ * leaving it blank). Free space = band bottom (list top + that thread
+ * type's own list_h) minus the last bubble's bottom (the cumulative `y`
+ * inbox_build_thread's message loop already tracks) — one chip row
+ * needs its own height plus a clearance gap top AND bottom so it never
+ * crowds the last bubble or the band's own lower edge. Below this, CREW
+ * keeps today's layout: no inline row, the full band for messages, the
+ * FAB (Compose/Rally/Flare via the popup) the only way to reach a
+ * send. */
+#define FF_INBOX_CHIP_FREE_MIN_PX (FF_INBOX_CHIP_H + 2 * FF_INBOX_CHIP_GAP)
 
 /* ---------------------------------------------------------------------
  * Action popup (S24 slice d) — the design canvas ActionPopup artboard.
@@ -1609,8 +1632,17 @@ static void inbox_build_chip(lv_obj_t *parent, int32_t x, int32_t w, char const 
     lv_obj_center(l);
 }
 
-/* The 1:1 quick-chip strip: OMW / IN 5 MIN / FLARE, centered in the band
- * left of the FAB clearance (FF_INBOX_CHIP_MAX_RIGHT). */
+/* The quick-chip strip: OMW / IN 5 MIN / FLARE, centered in the band
+ * left of the FAB clearance (FF_INBOX_CHIP_MAX_RIGHT). Shared by both
+ * thread types — the 1:1 caller always builds it, the CREW caller only
+ * when inbox_build_thread's free-space gate passes (see
+ * FF_INBOX_CHIP_FREE_MIN_PX) — same geometry, same emitters
+ * (inbox_chip_reply_cb / inbox_chip_flare_cb), same FF_INTENT_CANNED_
+ * REPLY / FF_INTENT_INBOX_FLARE the shell already aims at "the open
+ * thread's scope" regardless of whether that scope is a member or the
+ * whole crew (ff_shell.c's CANNED_REPLY/INBOX_FLARE handlers resolve
+ * `thread_node == 0` to MC_ADDR_BROADCAST unconditionally — this
+ * function needed no change to work for CREW, only its caller did). */
 static void inbox_build_chips(lv_obj_t *parent)
 {
     static const int32_t w_omw = 66, w_5min = 96, w_flare = 74;
@@ -1815,7 +1847,19 @@ static void inbox_build_thread(lv_obj_t *parent, ff_app_inbox_t const *v, bool c
      * newest row's own text (its natural height clears the fade given the
      * list's own bottom_pad above). */
     inbox_build_bottom_fade_h(parent, FF_INBOX_THREAD_LIST_TOP_Y + list_h, FF_INBOX_THREAD_FADE_H);
-    if (!crew_thread) {
+
+    /* Quick-reply strip: 1:1 unconditionally (see FF_INBOX_CHIP_Y's
+     * comment — its band already reserves the room, always); CREW only
+     * when the band has at least one chip-row of free space LEFT below
+     * the last bubble (`y` here is exactly "last bubble bottom", the
+     * band's own top being 0 in this coordinate frame) — the 2026-09-03
+     * maintainer decision. A thread that overflows (y > list_h, the
+     * scroll-catcher branch above already fired) always fails this by
+     * construction (free_h goes negative), so overflow independently
+     * hides the row without a separate check. */
+    int32_t const free_h = list_h - y;
+    bool const show_chips = crew_thread ? (free_h >= FF_INBOX_CHIP_FREE_MIN_PX) : true;
+    if (show_chips) {
         inbox_build_chips(parent);
     }
     inbox_build_fab(parent);

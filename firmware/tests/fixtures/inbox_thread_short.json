@@ -1,0 +1,24 @@
+{
+  "fixture": "signals_thread_crew_short",
+  "face": "signals",
+  "signals": {
+    "subview": "thread",
+    "thread_node": 0,
+    "thread_name": "CREW",
+    "target_kind": "whole_crew",
+    "convs": [
+      {"conv": "crew", "unread": 0, "item_count": 2,
+       "preview_kind": "text", "preview_dir": "broadcast", "preview_age_ms": 60000,
+       "preview_from": "DANA"},
+      {"conv": "member", "node_id": 111, "name": "DANA", "initial": "D", "color_idx": 0,
+       "presence": "seen", "presence_age_ms": 60000},
+      {"conv": "member", "node_id": 112, "name": "RILEY", "initial": "R", "color_idx": 6,
+       "presence": "seen", "presence_age_ms": 360000}
+    ],
+    "msgs": [
+      {"kind": "text", "dir": "broadcast", "node_id": 111, "from": "DANA", "initial": "D",
+       "color_idx": 0, "text": "on my way!", "age_ms": 120000},
+      {"kind": "text", "dir": "out", "text": "meet at the totem after?", "age_ms": 60000}
+    ]
+  }
+}

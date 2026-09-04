@@ -650,6 +650,70 @@ static void S03_AC4_send_text_matches_byte_golden(void)
 }
 
 /* -------------------------------------------------------------------- */
+/* feat/s10-flare-want-ack — mc_send_private's want_ack reaches the wire */
+/* -------------------------------------------------------------------- */
+
+/* Decode a single outbound ToRadio frame written into `io->tx_buf` (magic
+ * + 2-byte len header, then the protobuf) and return its
+ * MeshPacket.want_ack — the nanopb-level check the task asks for: not
+ * "mc_send_private accepted a bool" but "the bit actually landed in the
+ * encoded ToRadio bytes a real radio would receive". */
+static bool decode_tx_want_ack(mock_io_t const *io)
+{
+    TEST_ASSERT_GREATER_OR_EQUAL_size_t(5u, io->tx_len);
+    TEST_ASSERT_EQUAL_HEX8(MC_FRAME_MAGIC1, io->tx_buf[0]);
+    TEST_ASSERT_EQUAL_HEX8(MC_FRAME_MAGIC2, io->tx_buf[1]);
+    uint16_t flen = (uint16_t)((io->tx_buf[2] << 8) | io->tx_buf[3]);
+    TEST_ASSERT_LESS_OR_EQUAL_size_t(io->tx_len - 4u, flen);
+
+    meshtastic_ToRadio tr = meshtastic_ToRadio_init_zero;
+    pb_istream_t is = pb_istream_from_buffer(io->tx_buf + 4, flen);
+    TEST_ASSERT_TRUE(pb_decode(&is, meshtastic_ToRadio_fields, &tr));
+    TEST_ASSERT_EQUAL_INT(meshtastic_ToRadio_packet_tag, tr.which_payload_variant);
+    return tr.payload_variant.packet.want_ack;
+}
+
+static void S03_want_ack_mc_send_private_true_sets_meshpacket_want_ack(void)
+{
+    mock_io_t io;
+    mock_io_reset(&io);
+    mock_clock_t clk = {.t = 0};
+    ff_clock_t clock = {.now_ms = mock_now, .user = &clk};
+    events_capture_t cap;
+    memset(&cap, 0, sizeof(cap));
+
+    mc_client_t c;
+    mc_init(&c, (mc_transport_t){.write = mock_write, .read = mock_read, .io = &io}, make_events(&cap), &clock);
+    c.state = MC_STATE_READY;
+
+    uint8_t const payload[3] = {0x01, 0x2C, 0x01}; /* arbitrary bytes; content is irrelevant here */
+    int rc = mc_send_private(&c, MC_ADDR_BROADCAST, 269u, payload, sizeof(payload), /*want_ack=*/true);
+
+    TEST_ASSERT_EQUAL_INT(0, rc);
+    TEST_ASSERT_TRUE(decode_tx_want_ack(&io));
+}
+
+static void S03_want_ack_mc_send_private_false_leaves_meshpacket_want_ack_unset(void)
+{
+    mock_io_t io;
+    mock_io_reset(&io);
+    mock_clock_t clk = {.t = 0};
+    ff_clock_t clock = {.now_ms = mock_now, .user = &clk};
+    events_capture_t cap;
+    memset(&cap, 0, sizeof(cap));
+
+    mc_client_t c;
+    mc_init(&c, (mc_transport_t){.write = mock_write, .read = mock_read, .io = &io}, make_events(&cap), &clock);
+    c.state = MC_STATE_READY;
+
+    uint8_t const payload[3] = {0x01, 0x2C, 0x01};
+    int rc = mc_send_private(&c, MC_ADDR_BROADCAST, 269u, payload, sizeof(payload), /*want_ack=*/false);
+
+    TEST_ASSERT_EQUAL_INT(0, rc);
+    TEST_ASSERT_FALSE(decode_tx_want_ack(&io));
+}
+
+/* -------------------------------------------------------------------- */
 /* AC5 — private portnum passthrough                                    */
 /* -------------------------------------------------------------------- */
 
@@ -2404,6 +2468,8 @@ int main(void)
     RUN_TEST(S03_AC3_position_packet_decodes_with_1e7_conversion_and_rx_time);
 
     RUN_TEST(S03_AC4_send_text_matches_byte_golden);
+    RUN_TEST(S03_want_ack_mc_send_private_true_sets_meshpacket_want_ack);
+    RUN_TEST(S03_want_ack_mc_send_private_false_leaves_meshpacket_want_ack_unset);
 
     RUN_TEST(S03_AC5_on_private_fires_for_portnum_256_511_untouched);
     RUN_TEST(S03_AC5_private_portnum_boundary_255_is_not_private);
