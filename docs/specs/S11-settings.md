@@ -50,3 +50,41 @@ a) store seam + settings struct + tests · b) face render + interactions + golde
   Resolution order against a loaded pack lives in `ff_wall_resolve_offset` (`core/include/ff_wall.h`), not here: pack's **stated** offset → settings offset when set → pack's assumed default → `FF_WALL_UNKNOWN`. The settings value deliberately outranks `fp_parse`'s −240 fallback; a value the user configured must not lose to a parser default.
 
   **Release note — a v2 settings blob is discarded, not migrated.** `FF_SETTINGS_FORMAT_VERSION` goes 2 → 3, and `ff_settings_load` rejects any blob whose version does not match, falling back to the full default struct. There is no migration path. The blast radius is wider than the new field: units, share mode, haptics, night glow, water interval, quiet hours, `my_name` **and compass calibration** all reset — and the calibration is the one a user would actually notice having to redo (S12's calibration ritual). Accepted rather than mitigated: this is pre-v1 firmware with no fielded devices, `sizeof(ff_settings_t)` changed anyway so the payload-size check would have rejected the blob regardless, and it matches the precedent set by the v1 → v2 bump. Flagged in the review of PR #37 (D6) as needing to be written down where the next version bump will look for it, which is here.
+
+- **2026-09-03 — Settings audit finding: slice c (GHOST admin-message
+  wiring) is still unimplemented.** A read-only audit
+  (`feat/settings-audit-sections`, trace every consumer of every
+  `ff_settings_t` field) confirmed what this file's own "Slices" list
+  already implies but never called out explicitly: `share_mode` is
+  written and projected by every layer that touches settings (screen,
+  shell, store), but **nothing gates outbound position sharing on it** —
+  not on the sim, not on the device. A wearer can set SHARE to GHOST and
+  the puck keeps sharing position exactly as if it were LIVE. Slice c
+  ("GHOST admin-message wiring (e2e)") is the slice that was always
+  supposed to close this gap (see this spec's own "Behavior" section:
+  "v1 documents that GHOST silences firefly-layer sharing and sets
+  Meshtastic position broadcast off via admin message (slice c; if
+  flaky, GHOST ships firefly-layer-only with README honesty note)") — it
+  never landed.
+
+  **Consequence, this audit:** because SHARE currently has no effect on
+  either target, `feat/settings-audit-sections` hides the SHARE row from
+  the Settings UI (behind `scr_settings.c`'s
+  `FF_SETTINGS_ROW_ENABLE_SHARE`, default off) rather than leave a
+  control on screen that lies about doing something — the "honest data
+  over pretty data" rule (`CLAUDE.md`) applied to a CONTROL, not just a
+  displayed value: a toggle nobody's code reads is exactly as dishonest
+  as a stale timestamp presented as fresh. `share_mode` itself stays
+  persisted and the `FF_SETTING_SHARE_MODE` intent stays wired at the
+  shell level — flipping the row's flag back to `1` is the entire
+  re-enable once slice c actually lands. See
+  `docs/specs/S21-settings-rework.md`'s own 2026-09-03 Amendment for the
+  full audit (all four hidden rows, not just this one) and the section
+  layout that replaced them.
+
+  **Not resolved by this audit** — this is a note, not slice c's
+  implementation. Whoever picks up slice c still owns: the admin-message
+  wire format to the comms brain, the "if flaky, GHOST ships
+  firefly-layer-only with README honesty note" fallback this spec
+  already describes, and un-hiding the SHARE row (one flag flip) once
+  the wiring is real.
