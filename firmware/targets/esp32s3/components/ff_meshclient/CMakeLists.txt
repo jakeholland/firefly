@@ -16,6 +16,16 @@
 # to be linked into firmware. Noted as a REAL FINDING in the S15a PR body
 # anyway, since "which of ff-meshclient's three sources is host-only" is
 # exactly the kind of thing this slice exists to surface.
+# S15c — mc_transport_uart.c/.h: the device's real transport (UART to the
+# comms brain, GPIO43/44 per Kconfig, see mc_transport_uart.h's port-choice
+# comment). Lives directly in THIS component, not firmware/meshclient/ (the
+# host+device-shared tree mc_transport_tcp.c was excluded from for the same
+# reason spelled out above): it #includes <driver/uart.h>, an ESP-IDF-only
+# header, so it could never be "extraction-grade" the way mc_client.c/
+# mc_framing.c are (S03 AC7). Its own include/ dir here (mc_transport_uart.h,
+# and the pure, host-testable mc_transport_uart_accept.h — see
+# firmware/meshclient/CMakeLists.txt's test_transport_uart_accept target)
+# is therefore separate from FF_MC_DIR/include below.
 set(FF_FW_DIR ${CMAKE_CURRENT_LIST_DIR}/../../../..)
 set(FF_MC_DIR ${FF_FW_DIR}/meshclient)
 
@@ -25,10 +35,10 @@ set(FF_MESHCLIENT_SOURCES_ABS ${FF_MESHCLIENT_SOURCES})
 list(TRANSFORM FF_MESHCLIENT_SOURCES_ABS PREPEND "${FF_MC_DIR}/")
 
 idf_component_register(
-    SRCS ${FF_MESHCLIENT_SOURCES_ABS}
-    INCLUDE_DIRS "${FF_MC_DIR}/include"
+    SRCS ${FF_MESHCLIENT_SOURCES_ABS} "mc_transport_uart.c"
+    INCLUDE_DIRS "${FF_MC_DIR}/include" "include"
     REQUIRES ff_platform
-    PRIV_REQUIRES ff_meshclient_proto
+    PRIV_REQUIRES ff_meshclient_proto esp_driver_uart
 )
 
 target_compile_options(${COMPONENT_LIB} PRIVATE -Wall -Wextra -Werror)

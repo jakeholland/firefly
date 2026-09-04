@@ -62,6 +62,10 @@
 #include "ff_sound_emit.h" /* S27 sounds — the screens-level TAP seam (ff_shell_sound_sink's bind target) */
 #include "ff_touchcal.h"
 
+#if CONFIG_FF_LINK_UART
+#include "mc_transport_uart.h" /* S15c — the real mesh transport, comms brain over GPIO43/44 */
+#endif
+
 #include "esp_heap_caps.h" /* PSRAM allocs: shell + demo festpack */
 #if CONFIG_FF_DEMO_MODE /* S20 — the festpack is allocated in PSRAM (see s_demo_pack) */
 #include "ff_demo.h"       /* S20 — demo-mode seeding */
@@ -204,6 +208,142 @@ static ff_shell_t *s_shell_p; /* PSRAM since S24(c/d); internal DRAM stays for L
 static ff_clock_t s_clock;
 static ff_store_t s_store;
 static ff_nvs_store_t s_nvs; /* S21 §4 — backing state for the NVS store */
+
+#if CONFIG_FF_LINK_UART
+/* S15c — the real mesh transport's `io` object. Held for the process
+ * lifetime, same "target-owned, outlives the shell" contract
+ * mc_transport_t's doc comment states for every transport (mirrors the
+ * sim's ff_live_setup_t.tcp). */
+static mc_uart_t s_uart;
+
+#if CONFIG_FF_UART_LOOPBACK_SELFTEST
+#define FF_UART_SELFTEST_LEN 64u
+#define FF_UART_SELFTEST_DEADLINE_MS 100u
+
+/* S15c bench aid — proves the driver + header pins BEFORE the comms
+ * brain (Seeed XIAO ESP32S3 + Wio-SX1262) arrives: with the header's TXD
+ * pin physically jumpered to its RXD pin, writes a known 64-byte pattern
+ * through the SAME mc_transport_t ff_shell_cfg_t.transport is about to
+ * use and reads it back within FF_UART_SELFTEST_DEADLINE_MS, logging
+ * PASS/FAIL with byte counts either way.
+ *
+ * Runs on `t` directly (the transport's own read()/write() callbacks,
+ * not raw uart_* calls) so a PASS genuinely proves the exact
+ * mc_transport_t the shell will run on, not just the driver underneath
+ * it — and BEFORE ff_shell_init/mc_connect, so there is no framed
+ * handshake traffic on the wire yet to collide with the self-test's own
+ * bytes. write()'s 0 return ("try again later", the #170 contract
+ * mc_transport_uart.c implements) is polled rather than escalated —
+ * spinning on esp_timer_get_time() needs no sleep at this scale (64
+ * bytes into a >=1KB TX ring is one write() call in the ordinary case).
+ *
+ * At 115200 8N1, 64 bytes is ~4.4 ms of wire time — comfortably inside
+ * the 100 ms deadline for a genuine loopback. A wrong-crossed TX/RX
+ * jumper reads back 0 bytes (silence — nothing was ever looped back to
+ * RX); a correct jumper but wrong baud would show up as this device
+ * talking to itself at its OWN configured baud, so it always self-
+ * agrees — the baud-mismatch failure mode this self-test cannot catch is
+ * exactly why the bench-handshake doc (docs/specs/S15-esp32s3-target.md
+ * Amendments) separately describes what wrong-baud framing garbage looks
+ * like against the REAL comms brain, where the two sides' bauds can
+ * actually differ. */
+static void ff_uart_loopback_selftest(mc_transport_t *t)
+{
+    uint8_t pattern[FF_UART_SELFTEST_LEN];
+    for (uint32_t i = 0; i < FF_UART_SELFTEST_LEN; i++) {
+        pattern[i] = (uint8_t)i; /* 0x00..0x3F — a known, easily eyeballed sequence */
+    }
+
+    int64_t const deadline_us = esp_timer_get_time() + (int64_t)FF_UART_SELFTEST_DEADLINE_MS * 1000;
+
+    size_t sent = 0;
+    while (sent < FF_UART_SELFTEST_LEN && esp_timer_get_time() < deadline_us) {
+        int const n = t->write(t->io, pattern + sent, FF_UART_SELFTEST_LEN - sent);
+        if (n < 0) {
+            ESP_LOGE(TAG, "S15c UART loopback self-test: FAIL - write() hard error (sent %u/%u bytes)",
+                     (unsigned)sent, (unsigned)FF_UART_SELFTEST_LEN);
+            return;
+        }
+        sent += (size_t)n; /* n==0 (ring momentarily full) just spins to the deadline */
+    }
+    if (sent < FF_UART_SELFTEST_LEN) {
+        ESP_LOGE(TAG, "S15c UART loopback self-test: FAIL - only wrote %u/%u bytes within %u ms",
+                 (unsigned)sent, (unsigned)FF_UART_SELFTEST_LEN, (unsigned)FF_UART_SELFTEST_DEADLINE_MS);
+        return;
+    }
+
+    uint8_t readback[FF_UART_SELFTEST_LEN];
+    size_t got = 0;
+    while (got < FF_UART_SELFTEST_LEN && esp_timer_get_time() < deadline_us) {
+        int const n = t->read(t->io, readback + got, FF_UART_SELFTEST_LEN - got);
+        if (n < 0) {
+            ESP_LOGE(TAG, "S15c UART loopback self-test: FAIL - read() hard error (got %u/%u bytes)",
+                     (unsigned)got, (unsigned)FF_UART_SELFTEST_LEN);
+            return;
+        }
+        got += (size_t)n;
+    }
+    if (got != FF_UART_SELFTEST_LEN) {
+        ESP_LOGE(TAG,
+                 "S15c UART loopback self-test: FAIL - only read back %u/%u bytes within %u ms "
+                 "(silence usually means TXD/RXD are not actually jumpered together)",
+                 (unsigned)got, (unsigned)FF_UART_SELFTEST_LEN, (unsigned)FF_UART_SELFTEST_DEADLINE_MS);
+        return;
+    }
+
+    if (memcmp(pattern, readback, FF_UART_SELFTEST_LEN) != 0) {
+        ESP_LOGE(TAG, "S15c UART loopback self-test: FAIL - %u/%u bytes read back but content mismatched",
+                 (unsigned)FF_UART_SELFTEST_LEN, (unsigned)FF_UART_SELFTEST_LEN);
+        return;
+    }
+
+    ESP_LOGI(TAG, "S15c UART loopback self-test: PASS - wrote and read back %u/%u bytes",
+             (unsigned)FF_UART_SELFTEST_LEN, (unsigned)FF_UART_SELFTEST_LEN);
+}
+#endif /* CONFIG_FF_UART_LOOPBACK_SELFTEST */
+
+/* S15c — open the real mesh transport (comms brain over UART) and return
+ * the mc_transport_t to install into ff_shell_cfg_t.transport, per the
+ * spec's bench-handshake doc: logs the boot line
+ * "link: UART<port> TXD=.. RXD=.. <baud> -> Meshtastic PROTO" once,
+ * whether the open succeeded or failed. On failure, returns a zeroed
+ * transport (both read/write NULL) — ff_shell_init's own documented
+ * "no transport" fallback (ff_shell.h), so a UART driver-install failure
+ * degrades to today's exact no-link behaviour instead of aborting boot. */
+static mc_transport_t ff_link_uart_setup(void)
+{
+    mc_uart_cfg_t const cfg = {
+        .port = (uart_port_t)CONFIG_FF_UART_PORT,
+        .txd_gpio = CONFIG_FF_UART_TXD,
+        .rxd_gpio = CONFIG_FF_UART_RXD,
+        .baud_rate = CONFIG_FF_UART_BAUD,
+        .rx_ring_bytes = MC_UART_RX_RING_MIN,
+        .tx_ring_bytes = MC_UART_TX_RING_MIN,
+    };
+
+    esp_err_t const err = mc_uart_open(&s_uart, &cfg);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG,
+                 "link: UART%d TXD=%d RXD=%d %d -> Meshtastic PROTO -- OPEN FAILED (%s), "
+                 "running with no mesh link",
+                 (int)cfg.port, cfg.txd_gpio, cfg.rxd_gpio, cfg.baud_rate, esp_err_to_name(err));
+        mc_transport_t none;
+        memset(&none, 0, sizeof(none));
+        return none;
+    }
+
+    ESP_LOGI(TAG, "link: UART%d TXD=%d RXD=%d %d -> Meshtastic PROTO", (int)cfg.port, cfg.txd_gpio,
+             cfg.rxd_gpio, cfg.baud_rate);
+
+    mc_transport_t transport = mc_uart_transport(&s_uart);
+
+#if CONFIG_FF_UART_LOOPBACK_SELFTEST
+    ff_uart_loopback_selftest(&transport);
+#endif
+
+    return transport;
+}
+#endif /* CONFIG_FF_LINK_UART */
 
 #if CONFIG_FF_DEMO_MODE && CONFIG_FF_DEMO_LIVE
 /* S23 (slice c) — the live demo's synthetic event source. Held across the
@@ -612,6 +752,28 @@ static void ff_configure_light_sleep_wake(void)
 static bool s_usb_connected_logged = false;
 /* S26 slice f amendment (END) --------------------------------------- */
 
+/* S15c — honest link-state transition logging. ff_shell_link() itself is
+ * pure data-plumbing (ff_shell.c has no ESP_LOGx anywhere — core/app stay
+ * target-agnostic, CLAUDE.md's "core is pure" rule), so a target that
+ * wants the transition on its serial log has to sample and log it
+ * itself. Same "track the last LOGGED value, not every-frame noise"
+ * pattern as `s_usb_connected_logged` right above: NONE -> RECONNECTING
+ * -> CONNECTED (and back to RECONNECTING on a drop) each log exactly
+ * once, not every ~20 ms tick. Starts at FF_SHELL_LINK_NONE, matching
+ * ff_shell_t's own zeroed initial state (ff_shell.c) and this target's
+ * pre-ff_shell_init reality — nothing has connected to anything yet. */
+static ff_shell_link_t s_link_logged = FF_SHELL_LINK_NONE;
+
+static char const *ff_link_state_name(ff_shell_link_t link)
+{
+    switch (link) {
+        case FF_SHELL_LINK_NONE: return "NONE (no transport, or never connected)";
+        case FF_SHELL_LINK_RECONNECTING: return "RECONNECTING (handshake in flight, or retrying after a drop)";
+        case FF_SHELL_LINK_CONNECTED: return "CONNECTED (want_config complete, mc_client READY)";
+        default: return "UNKNOWN";
+    }
+}
+
 /* ff_shell_cfg_t.power_off: called by the shell's FF_INTENT_POWER_OFF
  * handler. Composes the two device-IO calls the spec's slice (b) section
  * names — GPIO7 low (ff_power.h; a pure two-pin HAL with no display
@@ -867,8 +1029,24 @@ void app_main(void)
     cfg.toks = s_demo_toks;
     cfg.ntoks = FP_MAX_TOKENS;
 #endif
-    /* cfg.transport / cfg.haptic left zeroed — see slice a. (cfg.pack set above
-     * only under CONFIG_FF_DEMO_MODE.) */
+    /* cfg.haptic left zeroed — see slice a (no haptic HAL yet). cfg.pack
+     * set above only under CONFIG_FF_DEMO_MODE.
+     *
+     * cfg.transport (S15c): CONFIG_FF_LINK_UART wires the real comms-
+     * brain transport here, BEFORE ff_shell_init — ff_shell_cfg_t.transport
+     * is copied by value, and ff_shell_init itself calls mc_connect the
+     * moment it sees a non-NULL read/write pair (ff_shell.h's own doc
+     * comment). No ff_shell_set_sender call is needed for this path: per
+     * that function's doc, ff_shell_init already binds the outbound
+     * sender to this SAME live mc_client_t by default whenever a real
+     * transport is present — the demo build's loopback sender (below,
+     * CONFIG_FF_DEMO_MODE only) is the one case that needs an explicit
+     * override, precisely because it has no transport to default to.
+     * Left zeroed (today's exact behaviour) when CONFIG_FF_LINK_UART is
+     * off — link stays FF_SHELL_LINK_NONE, matching slice a/b. */
+#if CONFIG_FF_LINK_UART
+    cfg.transport = ff_link_uart_setup();
+#endif
 
     int rc = ff_shell_init(&s_shell, &cfg);
     if (rc != 0) {
@@ -1402,6 +1580,22 @@ void app_main(void)
             ESP_LOGI(TAG, "%s", usb_connected ? "S26f: USB connected — light sleep inhibited"
                                                : "S26f: USB disconnected — light sleep armed");
             s_usb_connected_logged = usb_connected;
+        }
+
+        /* S15c — log a mesh link-state transition ONCE, same "track the
+         * last logged value" pattern as s_usb_connected_logged just
+         * above. `v` (this frame's freshly-projected view, from
+         * ff_shell_tick a few lines up) is not used here on purpose:
+         * ff_shell_link() reads live client state directly, not
+         * anything the view snapshot carries. Fires for every target
+         * (including CONFIG_FF_LINK's NONE default) but only prints
+         * anything the first time link leaves NONE, since a target with
+         * no transport never transitions away from it. */
+        ff_shell_link_t const link_now = ff_shell_link(&s_shell);
+        if (link_now != s_link_logged) {
+            ESP_LOGI(TAG, "S15c link state: %s -> %s", ff_link_state_name(s_link_logged),
+                     ff_link_state_name(link_now));
+            s_link_logged = link_now;
         }
 
         /* S25 slice c — sample the battery ADC every FF_BATT_SAMPLE_PERIOD_MS

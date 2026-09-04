@@ -121,6 +121,129 @@ menu "Firefly bring-up (S15 slice b)"
             demo build is byte-identical with or without this diagnostic
             existing in the tree — verify with `idf.py size` if in doubt.
 
+    menu "Mesh link (S15c — UART transport to the comms brain)"
+
+        choice FF_LINK
+            prompt "Mesh transport"
+            default FF_LINK_NONE
+            help
+                What ff_shell_cfg_t.transport is wired to at boot. NONE
+                (today's default, unchanged behaviour) leaves it zeroed —
+                ff_shell_init skips mc_connect, link stays
+                FF_SHELL_LINK_NONE, and CONFIG_FF_DEMO_MODE's loopback
+                sender (if also enabled) still makes sends visible with
+                no radio at all. UART wires a real mc_client_t to the
+                comms brain over the header exposed on this board (see
+                the options below).
+
+                A TCP option deliberately does NOT appear here: TCP is
+                the SIM target's dev stand-in for talking to meshtasticd
+                (firmware/meshclient/mc_transport_tcp.c) and is excluded
+                from the device build entirely — it is POSIX sockets
+                code that does not exist under ESP-IDF/newlib (see
+                targets/esp32s3/components/ff_meshclient/CMakeLists.txt's
+                own comment). Offering a "TCP" choice item here that
+                could never actually be selected/built would document
+                nothing true about this target.
+
+            config FF_LINK_NONE
+                bool "None (no mesh transport)"
+
+            config FF_LINK_UART
+                bool "UART to comms brain (Meshtastic Serial Module PROTO)"
+        endchoice
+
+        choice FF_UART_PORT
+            prompt "UART port for the mesh transport"
+            depends on FF_LINK_UART
+            default FF_UART_PORT_1
+            help
+                ESP32-S3's UART peripherals route through the GPIO
+                matrix, so EITHER port can be wired to GPIO43/44 via
+                uart_set_pin() — this choice is about avoiding a conflict
+                elsewhere in this build, not about wiring capability.
+
+                UART1 (default): nothing else in this build touches it,
+                so remapping it onto GPIO43/44 costs nothing and needs no
+                other config change.
+
+                UART0: NOT free by default, even though GPIO43/44 are
+                ALSO UART0's own default pins. This target's committed
+                sdkconfig.defaults leaves ESP-IDF's stock console config
+                in place — PRIMARY console = UART0, SECONDARY console =
+                USB-Serial/JTAG (the default combo; see
+                esp-idf's components/esp_system/Kconfig ESP_CONSOLE_UART/
+                ESP_CONSOLE_SECONDARY choices, and this project's own
+                app_main.c S26f comment, which states outright that on
+                the maintainer's real board "USB-Serial/JTAG is the
+                SECONDARY console" — UART0 stays primary). esp_console
+                already owns a uart_driver_install() on UART0 in that
+                configuration; installing this transport's own driver on
+                the same port would either fail outright or interleave
+                framed protobuf bytes with plain-text log lines on the
+                same wire. Select this ONLY after confirming (idf.py
+                menuconfig -> Component config -> ESP System Settings ->
+                Channel for console output) that UART0 is not also the
+                console on your build.
+
+            config FF_UART_PORT_0
+                bool "UART0 (only if console is off it — see help)"
+
+            config FF_UART_PORT_1
+                bool "UART1 (default — no console conflict)"
+        endchoice
+
+        config FF_UART_PORT
+            int
+            depends on FF_LINK_UART
+            default 0 if FF_UART_PORT_0
+            default 1 if FF_UART_PORT_1
+
+        config FF_UART_TXD
+            int "UART TXD GPIO (-> comms brain RXD)"
+            depends on FF_LINK_UART
+            default 43
+            help
+                Puck UART header pin (Waveshare ESP32-S3-Touch-LCD-1.46:
+                TXD/RXD/3V3/5V/GND), per docs/specs/S15-esp32s3-target.md
+                deliverable 3. All pins here are Kconfig so a header
+                remap needs no code change. The wire crosses: this pin
+                goes to the comms brain's RXD.
+
+        config FF_UART_RXD
+            int "UART RXD GPIO (<- comms brain TXD)"
+            depends on FF_LINK_UART
+            default 44
+
+        config FF_UART_BAUD
+            int "UART baud rate"
+            depends on FF_LINK_UART
+            default 115200
+            help
+                Matches Meshtastic's Serial Module PROTO mode, which runs
+                at a fixed 115200 8N1 with no flow control.
+
+        config FF_UART_LOOPBACK_SELFTEST
+            bool "Loopback self-test at boot (TXD jumpered to RXD)"
+            depends on FF_LINK_UART
+            default n
+            help
+                Bench bring-up aid (S15c): before a comms brain (Seeed
+                XIAO ESP32S3 + Wio-SX1262) is available to talk to,
+                jumper the header's TXD pin directly to its RXD pin and
+                enable this. At boot, writes a known 64-byte pattern
+                through the transport and reads it back within 100 ms,
+                logging PASS/FAIL with byte counts — proving the driver
+                and header pins end to end with no second board needed.
+
+                Leave OFF once a real comms brain is wired up: the jumper
+                must be removed first (it would short the puck's own TX
+                to its own RX), and this self-test's writes/reads would
+                otherwise race the real want_config handshake over the
+                same port.
+
+    endmenu
+
     config FF_AUDIO_SELFTEST
         bool "Play FLARE_SENT once at boot (S27 sounds device bring-up aid)"
         default n
