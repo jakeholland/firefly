@@ -112,14 +112,35 @@ extern "C" {
 #endif
 
 /**
+ * FF_WIRE_WANT_ACK — `send_private`'s `flags` bit requesting Meshtastic
+ * `want_ack` on the outgoing `MeshPacket` (`mc_send_private`'s own
+ * `want_ack` bool — see `mc_client.h`). `[api]`, added 2026-09 (S10
+ * "flare frames request want_ack"): before this, `ff_wiring_sender_t` had
+ * no way for a caller to ask for it at all, so the production wrapper
+ * (`wiring_mc_send_private`, `ff_wiring.c`) hardcoded `false` for every
+ * send — see `docs/specs/S10-flare.md`'s "want_ack interpretation call"
+ * amendment for the gap this closes, and its later amendment for which
+ * call sites now set this bit. 0 (no flags) reproduces the old hardcoded
+ * behavior exactly, so every pre-existing call site is unchanged unless
+ * it opts in.
+ */
+#define FF_WIRE_WANT_ACK 0x1u
+
+/**
  * ff_wiring_sender_t — the "can send a message" seam canned replies go
  * through. `ctx` is passed back to both function pointers untouched.
  * Return 0 on success, negative on failure (mirrors mc_send_text/
- * mc_send_private's own return convention).
+ * mc_send_private's own return convention). `send_private`'s `flags` is a
+ * bitmask of `FF_WIRE_WANT_ACK` (only flag defined so far); an
+ * implementer that ignores unrecognized bits is fine — this vtable added
+ * the parameter to an existing signature (`[api]`), so every implementer
+ * in the tree was updated in the same change, but a flag value of 0 is
+ * guaranteed to reproduce prior behavior for any implementer that hasn't
+ * been taught the new bit yet.
  */
 typedef struct {
     int (*send_text)(void *ctx, uint32_t dest, char const *utf8);
-    int (*send_private)(void *ctx, uint32_t dest, uint8_t const *payload, size_t len);
+    int (*send_private)(void *ctx, uint32_t dest, uint8_t const *payload, size_t len, uint32_t flags);
     void *ctx;
 } ff_wiring_sender_t;
 
@@ -170,6 +191,25 @@ void ff_wiring_init(ff_wiring_ctx_t *w, ff_feed_t *feed, ff_crew_t *crew, ff_hea
 void ff_wiring_init_with_sender(ff_wiring_ctx_t *w, ff_feed_t *feed, ff_crew_t *crew, ff_heard_t *heard,
                                  ff_wiring_sender_t sender, void (*haptic_cb)(void *user), void *haptic_user,
                                  ff_clock_t const *clock);
+
+/**
+ * ff_wiring_classify_dir — the S24 AC1 direction classifier
+ * (`ff_wiring.c`'s own top-of-function comment has the full reasoning),
+ * exposed so a caller OUTSIDE this module can classify a destination the
+ * SAME way an inbound item's own direction is classified, instead of
+ * re-deriving the rule and risking drift. `[api]` 2026-09-03 — added for
+ * S26's banner-opens-conversation bugfix: `ff_shell.c`'s
+ * `shell_notify_push_banner` calls this to decide whether a banner
+ * belongs to the CREW conversation or the sender's direct thread, so
+ * that decision can never disagree with where `ff_wiring_on_text`/
+ * `ff_wiring_on_private` actually filed the underlying feed item.
+ * `MC_ADDR_BROADCAST` -> `FEED_DIR_BROADCAST`; our own node id (per
+ * `ff_wiring_set_self_node`) -> `FEED_DIR_DIRECT`; anything else
+ * (including before our own node id is known) -> `FEED_DIR_UNKNOWN`.
+ * NULL `w` is treated as "self node unknown" (always UNKNOWN unless
+ * `to == MC_ADDR_BROADCAST`) rather than crashing.
+ */
+ff_feed_dir_t ff_wiring_classify_dir(ff_wiring_ctx_t const *w, uint32_t to);
 
 /**
  * ff_wiring_on_private — `mc_events_t.on_private`-shaped handler. `user`

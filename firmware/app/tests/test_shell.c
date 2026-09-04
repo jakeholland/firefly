@@ -388,6 +388,15 @@ static void inject_text(uint32_t from, char const *text)
     H.ev.on_text(H.ev.user, from, MY_ID, text, strlen(text));
 }
 
+/* S26 banner-opens-conversation bugfix (2026-09-03) — the GROUP-message
+ * sibling of inject_text above: `to == MC_ADDR_BROADCAST` (not MY_ID),
+ * so ff_wiring_classify_dir reads FEED_DIR_BROADCAST and the item lands
+ * in the CREW conversation, not `from`'s own 1:1 thread. */
+static void inject_text_broadcast(uint32_t from, char const *text)
+{
+    H.ev.on_text(H.ev.user, from, MC_ADDR_BROADCAST, text, strlen(text));
+}
+
 /* 2026-09-02: this file used to have an inject_pulse(from) helper (PULSE,
  * empty body) for "some generic private-portnum inbound signal" — retired
  * along with the wire type (ff_proto.h's RESERVED_01 section). STATUS is
@@ -2837,6 +2846,27 @@ static uint32_t decode_packet_to(uint8_t const *buf, size_t len)
     return tr.payload_variant.packet.to;
 }
 
+/** Decode a single outbound ToRadio frame (as written by mc_send_text /
+ *  mc_send_private into P.tx) and return its MeshPacket.want_ack —
+ *  feat/s10-flare-want-ack's own wire-level check: the flag must reach
+ *  the actual encoded packet through the real production sender
+ *  (wiring_mc_send_private -> mc_send_private), not just the injected
+ *  mock's flags argument. */
+static bool decode_packet_want_ack(uint8_t const *buf, size_t len)
+{
+    TEST_ASSERT_GREATER_OR_EQUAL_size_t(5u, len);
+    TEST_ASSERT_EQUAL_HEX8(MC_FRAME_MAGIC1, buf[0]);
+    TEST_ASSERT_EQUAL_HEX8(MC_FRAME_MAGIC2, buf[1]);
+    uint16_t flen = (uint16_t)((buf[2] << 8) | buf[3]);
+    TEST_ASSERT_LESS_OR_EQUAL_size_t(len - 4u, flen);
+
+    meshtastic_ToRadio tr = meshtastic_ToRadio_init_zero;
+    pb_istream_t is = pb_istream_from_buffer(buf + 4, flen);
+    TEST_ASSERT_TRUE(pb_decode(&is, meshtastic_ToRadio_fields, &tr));
+    TEST_ASSERT_EQUAL_INT(meshtastic_ToRadio_packet_tag, tr.which_payload_variant);
+    return tr.payload_variant.packet.want_ack;
+}
+
 /** Decode a single outbound ToRadio frame's decoded payload bytes as a
  *  NUL-terminated string into `out` (capacity `out_cap`) — the SEND_TEXT
  *  test below's way of checking WHAT was sent, not just to whom. */
@@ -2979,6 +3009,95 @@ static void S24_flare_chip_addresses_member_vs_whole_crew_as_flare(void)
     ff_feed_item_t const *it = ff_feed_at(ff_shell_feed(&H.shell), 0);
     TEST_ASSERT_EQUAL(FEED_FLARE, it->kind);
     TEST_ASSERT_EQUAL(FEED_DIR_OUT, it->dir);
+}
+
+/* feat/s10-flare-want-ack (ruling revised 2026-09-03 review round 2): the
+ * S22/S24 addressed "flare to scope" quick signal (shell_flare_to_scope,
+ * FF_INTENT_INBOX_FLARE) is a DIFFERENT send path from S10's own
+ * self-flare broadcast, but the SAME wire type (0x02 FLARE) — and
+ * docs/specs/S04-firefly-protocol.md's "want_ack true for FLARE only"
+ * rule is BY WIRE TYPE, not by send path (S22/S24 say nothing about
+ * want_ack either way). So both the member-addressed and
+ * whole-crew-broadcast sends must reach the wire with want_ack SET. */
+static void S10_want_ack_inbox_flare_to_scope_sets_want_ack(void)
+{
+    s22_connect_shell();
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, true));
+
+    ff_intent_t sel = {.kind = FF_INTENT_INBOX_SELECT_MEMBER, .u = {0}};
+    sel.u.node_id = DANA;
+    ff_shell_intent(&H.shell, &sel);
+
+    size_t tx_before = P.tx_len;
+    ff_intent_t flare = {.kind = FF_INTENT_INBOX_FLARE, .u = {0}};
+    ff_shell_intent(&H.shell, &flare);
+    TEST_ASSERT_GREATER_THAN_size_t(tx_before, P.tx_len);
+    TEST_ASSERT_TRUE(decode_packet_want_ack(P.tx + tx_before, P.tx_len - tx_before));
+
+    /* Second send: target reset to WHOLE_CREW -> broadcasts, still wants
+     * ack (same wire type, S04's rule doesn't care about destination). */
+    tx_before = P.tx_len;
+    ff_shell_intent(&H.shell, &flare);
+    TEST_ASSERT_GREATER_THAN_size_t(tx_before, P.tx_len);
+    TEST_ASSERT_TRUE(decode_packet_want_ack(P.tx + tx_before, P.tx_len - tx_before));
+}
+
+/* feat/s10-flare-want-ack, review round 2 — closes the adapter coverage
+ * gap flagged on PR #189: every prior want_ack test either called
+ * mc_send_private directly (test_meshclient.c, never touches
+ * wiring_mc_send_private's flags->want_ack mapping) or went through a
+ * MOCK sender (flare_wire_spy_t, which bypasses the real adapter
+ * entirely). This test drives real ff_shell_intent calls through the
+ * REAL production adapter (wiring_mc_send_private -> mc_send_private,
+ * via s22_connect_shell's live, connected mc_client_t) and nanopb-decodes
+ * the actual bytes that hit the wire — the one property this whole PR
+ * exists to prove. A `wiring_mc_send_private` mutation that maps `flags`
+ * to `want_ack` wrong (e.g. `want_ack = (flags == 0u)`) must fail this
+ * test regardless of which direction it gets backwards, because both
+ * directions (true and false) are asserted here on a real MeshPacket. */
+static void S10_want_ack_real_adapter_flare_true_flare_end_false_rally_false(void)
+{
+    s22_connect_shell();
+
+    /* 1) Self-flare FLARE (FF_INTENT_FLARE_START, S10's own Behavior
+     * path, no pairing/target needed — broadcast): wire type 0x02,
+     * want_ack MUST be true. */
+    size_t tx_before = P.tx_len;
+    ff_intent_t const start = {.kind = FF_INTENT_FLARE_START, .u = {0}};
+    ff_shell_intent(&H.shell, &start);
+    TEST_ASSERT_GREATER_THAN_size_t(tx_before, P.tx_len);
+    TEST_ASSERT_EQUAL_INT(FF_PROTO_TYPE_FLARE,
+                          decode_packet_private(P.tx + tx_before, P.tx_len - tx_before, NULL));
+    TEST_ASSERT_TRUE(decode_packet_want_ack(P.tx + tx_before, P.tx_len - tx_before));
+    ff_shell_tick(&H.shell, H.clk.t); /* settle the view projection, mirrors S10_wire_flare_start_accepted_* */
+    TEST_ASSERT_EQUAL(FF_FLARE_WIRE_SENT, ff_shell_view(&H.shell)->flare.wire_state);
+
+    /* 2) FLARE_END (CANCEL after SENT, same shell_flare_wire call site):
+     * wire type 0x03, want_ack MUST be false. */
+    tx_before = P.tx_len;
+    ff_intent_t const cancel = {.kind = FF_INTENT_FLARE_END, .u = {0}};
+    ff_shell_intent(&H.shell, &cancel);
+    TEST_ASSERT_GREATER_THAN_size_t(tx_before, P.tx_len);
+    TEST_ASSERT_EQUAL_INT(FF_PROTO_TYPE_FLARE_END,
+                          decode_packet_private(P.tx + tx_before, P.tx_len - tx_before, NULL));
+    TEST_ASSERT_FALSE(decode_packet_want_ack(P.tx + tx_before, P.tx_len - tx_before));
+
+    /* 3) RALLY (a member send, S22 AC4 path): a different wire type
+     * (0x04), explicitly excluded by S04 — want_ack MUST be false. */
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, true));
+    ff_latlon_t const here = {.lat = 39.7392, .lon = -104.9903};
+    ff_shell_set_my_pos(&H.shell, here);
+    ff_intent_t sel = {.kind = FF_INTENT_INBOX_SELECT_MEMBER, .u = {0}};
+    sel.u.node_id = DANA;
+    ff_shell_intent(&H.shell, &sel);
+
+    tx_before = P.tx_len;
+    ff_intent_t const rally = {.kind = FF_INTENT_INBOX_RALLY, .u = {0}};
+    ff_shell_intent(&H.shell, &rally); /* member rally: sends on the first tap */
+    TEST_ASSERT_GREATER_THAN_size_t(tx_before, P.tx_len);
+    TEST_ASSERT_EQUAL_INT(FF_PROTO_TYPE_RALLY,
+                          decode_packet_private(P.tx + tx_before, P.tx_len - tx_before, NULL));
+    TEST_ASSERT_FALSE(decode_packet_want_ack(P.tx + tx_before, P.tx_len - tx_before));
 }
 
 /* AC4 / honest-data (Tier 3) — a send to a member who was JUST unpaired,
@@ -5559,6 +5678,152 @@ static void S26_banner_open_is_inert_under_a_takeover(void)
 }
 
 /* =================================================================== */
+/* S26 banner-opens-conversation bugfix (2026-09-03,                    */
+/* docs/specs/S26-device-lifecycle.md Amendments): "a banner opens the  */
+/* conversation the message belongs to" — a GROUP/broadcast message's   */
+/* banner must open the CREW thread, never the sender's private 1:1     */
+/* thread. Maintainer repro: tapping the banner for a message that went */
+/* to the GROUP chat opened the sender's 1:1 conversation instead.      */
+/* =================================================================== */
+
+/* The core bug, fixed: a group TEXT from KEV → banner → BANNER_OPEN →
+ * the CREW thread is open — KEV's own direct thread is explicitly NOT
+ * what opened (both the numeric thread key AND the "not KEV" negative
+ * are asserted, the proxy-check discipline: a test that only checked
+ * "some thread opened" could pass on the old, buggy routing too). */
+static void S26_banner_open_group_message_opens_crew_thread_not_senders(void)
+{
+    harness_init(100000u, false);
+    inject_my_info(MY_ID);
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, KEV_ID, true));
+    inject_node(KEV_ID, "KEV", U_EVENING);
+
+    inject_text_broadcast(KEV_ID, "party at main stage");
+    (void)ff_shell_tick(&H.shell, H.clk.t);
+
+    ff_app_banner_t const *b = &ff_shell_view(&H.shell)->banner;
+    TEST_ASSERT_TRUE(b->active);
+    TEST_ASSERT_EQUAL_UINT32(KEV_ID, b->node_id); /* the banner still names the real sender */
+    TEST_ASSERT_EQUAL_UINT16(1, view_conv(0)->unread); /* the CREW row, not KEV's, carries the unread */
+
+    ff_intent_t open = {.kind = FF_INTENT_BANNER_OPEN, .u = {0}};
+    ff_shell_intent(&H.shell, &open);
+    (void)ff_shell_tick(&H.shell, H.clk.t);
+
+    ff_app_state_t const *v = ff_shell_view(&H.shell);
+    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_INBOX, v->active_face);
+    TEST_ASSERT_EQUAL_INT(FF_INBOX_SUB_THREAD, v->inbox.subview);
+    /* The bug, precisely: thread_node used to be KEV_ID (the sender). */
+    TEST_ASSERT_EQUAL_UINT32(0, v->inbox.thread_node);          /* CREW sentinel — the fix */
+    TEST_ASSERT_NOT_EQUAL_UINT32(KEV_ID, v->inbox.thread_node); /* explicitly not the sender's own thread */
+    TEST_ASSERT_FALSE(v->banner.active);                        /* dismissed */
+
+    /* Mark-read hit the CREW conversation, not KEV's (which has no
+     * traffic of its own here and so is honestly absent from the
+     * conversation list per ff_inbox.h's paired-member rule — no
+     * standalone DANA/KEV row exists to assert "still unread" against;
+     * the CREW row's own unread clearing is the honest, available
+     * proof). */
+    TEST_ASSERT_EQUAL_UINT16(0, view_conv(0)->unread);
+}
+
+/* Sibling of the group case: a DIRECT TEXT from KEV opens KEV's own 1:1
+ * thread (unchanged by this bugfix — the existing DANA-flavored
+ * S26_banner_open_routes_marks_read_and_dismisses test above already
+ * covers this shape; this one exists so the group/direct pair sits
+ * side by side with the SAME sender id, making the destination — not
+ * the sender — the only variable between the two tests). */
+static void S26_banner_open_direct_message_opens_senders_thread(void)
+{
+    harness_init(100000u, false);
+    inject_my_info(MY_ID);
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, KEV_ID, true));
+    inject_node(KEV_ID, "KEV", U_EVENING);
+
+    inject_text(KEV_ID, "you close?"); /* to == MY_ID: DIRECT */
+    (void)ff_shell_tick(&H.shell, H.clk.t);
+    TEST_ASSERT_TRUE(ff_shell_view(&H.shell)->banner.active);
+    TEST_ASSERT_EQUAL_UINT16(1, view_conv(KEV_ID)->unread);
+    TEST_ASSERT_EQUAL_UINT16(0, view_conv(0)->unread); /* CREW untouched by a direct message */
+
+    ff_intent_t open = {.kind = FF_INTENT_BANNER_OPEN, .u = {0}};
+    ff_shell_intent(&H.shell, &open);
+    (void)ff_shell_tick(&H.shell, H.clk.t);
+
+    ff_app_state_t const *v = ff_shell_view(&H.shell);
+    TEST_ASSERT_EQUAL_INT(FF_INBOX_SUB_THREAD, v->inbox.subview);
+    TEST_ASSERT_EQUAL_UINT32(KEV_ID, v->inbox.thread_node); /* the sender's own thread, not CREW */
+    TEST_ASSERT_EQUAL_UINT16(0, view_conv(KEV_ID)->unread); /* marked read */
+    TEST_ASSERT_FALSE(v->banner.active);
+}
+
+/* A RALLY to the whole crew (MC_ADDR_BROADCAST) also opens the CREW
+ * thread on tap — the OTHER banner-eligible kind (spec: "an incoming
+ * MESSAGE or RALLY"), same routing rule. */
+static void S26_banner_open_group_rally_opens_crew_thread(void)
+{
+    harness_init(100000u, false);
+    inject_my_info(MY_ID);
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, KEV_ID, true));
+    inject_node(KEV_ID, "KEV", U_EVENING);
+
+    uint8_t buf[FF_PROTO_MAX_PAYLOAD];
+    int n = ff_proto_encode_rally(buf, sizeof(buf), (ff_latlon_t){39.0, -82.0}, "Main Stage");
+    TEST_ASSERT_GREATER_THAN_INT(0, n);
+    H.ev.on_private(H.ev.user, KEV_ID, MC_ADDR_BROADCAST, FF_PORTNUM, buf, (size_t)n);
+    (void)ff_shell_tick(&H.shell, H.clk.t);
+
+    ff_app_banner_t const *b = &ff_shell_view(&H.shell)->banner;
+    TEST_ASSERT_TRUE(b->active);
+    TEST_ASSERT_EQUAL_INT(FF_NOTIFY_RALLY, b->kind);
+    TEST_ASSERT_EQUAL_UINT32(KEV_ID, b->node_id);
+
+    ff_intent_t open = {.kind = FF_INTENT_BANNER_OPEN, .u = {0}};
+    ff_shell_intent(&H.shell, &open);
+    (void)ff_shell_tick(&H.shell, H.clk.t);
+
+    ff_app_state_t const *v = ff_shell_view(&H.shell);
+    TEST_ASSERT_EQUAL_INT(FF_INBOX_SUB_THREAD, v->inbox.subview);
+    TEST_ASSERT_EQUAL_UINT32(0, v->inbox.thread_node); /* CREW, not KEV */
+    TEST_ASSERT_EQUAL_UINT16(0, view_conv(0)->unread); /* marked read */
+}
+
+/* Proxy-check target for the mutation gate (PR body): a naive "route by
+ * node_id only" revert would make this pass DIRECT (node_id happens to
+ * equal the right thread there) but fail GROUP — exactly the asymmetry
+ * S26_banner_open_group_message_opens_crew_thread_not_senders and
+ * S26_banner_open_direct_message_opens_senders_thread together pin down.
+ * A same-sender, two-conversations regression: KEV sends to the group
+ * first, then DIRECT — two separate banners (ff_notify's conv-aware
+ * coalescing — see test_notify.c), and opening the OLDEST (the group
+ * one, still head-of-queue) must land on CREW, not KEV, even though a
+ * KEV-addressed banner is also queued right behind it. */
+static void S26_banner_open_picks_the_head_banners_own_conversation(void)
+{
+    harness_init(100000u, false);
+    inject_my_info(MY_ID);
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, KEV_ID, true));
+    inject_node(KEV_ID, "KEV", U_EVENING);
+
+    inject_text_broadcast(KEV_ID, "party at main stage"); /* queued first (head) */
+    advance(2500u); /* past the 2s coalesce window, so the next push is a second, distinct entry
+                     * (ff_notify's conv-aware coalescing — same sender, different conv, never
+                     * merges regardless of timing, but advancing past the window keeps this test's
+                     * intent legible without leaning on that separately-tested guarantee). */
+    inject_text(KEV_ID, "you coming?");                   /* queued second, DIRECT */
+    (void)ff_shell_tick(&H.shell, H.clk.t);
+
+    ff_intent_t open = {.kind = FF_INTENT_BANNER_OPEN, .u = {0}};
+    ff_shell_intent(&H.shell, &open);
+    (void)ff_shell_tick(&H.shell, H.clk.t);
+
+    ff_app_state_t const *v = ff_shell_view(&H.shell);
+    TEST_ASSERT_EQUAL_UINT32(0, v->inbox.thread_node); /* the HEAD banner's conv (CREW), not the second (DIRECT) */
+    TEST_ASSERT_TRUE(v->banner.active);                /* the second (direct) banner is still queued */
+    TEST_ASSERT_EQUAL_UINT32(KEV_ID, v->banner.node_id);
+}
+
+/* =================================================================== */
 /* S24 slice d — action popup (AC5) + Rally screen (AC6) + opacity (AC8) */
 /*  + the demo-loopback send seam.                                       */
 /* =================================================================== */
@@ -5949,12 +6214,13 @@ static int s24d_loop_send_text(void *c, uint32_t d, char const *u)
     (void)u;
     return 0;
 }
-static int s24d_loop_send_private(void *c, uint32_t d, uint8_t const *p, size_t n)
+static int s24d_loop_send_private(void *c, uint32_t d, uint8_t const *p, size_t n, uint32_t flags)
 {
     (void)c;
     (void)d;
     (void)p;
     (void)n;
+    (void)flags;
     return 0;
 }
 static void S24_demo_loopback_seam_makes_out_items_appear(void)
@@ -6342,6 +6608,7 @@ typedef struct {
     uint8_t  buf[FF_PROTO_MAX_PAYLOAD];
     size_t   len;
     uint32_t dest;
+    uint32_t flags;    /* the flags param of the last send_private ATTEMPT, accepted or refused */
     int      n_sends; /* every ATTEMPT, accepted or refused */
     bool     accept;  /* false: send_private refuses (rc != 0) — "no mesh" */
 } flare_wire_spy_t;
@@ -6356,10 +6623,11 @@ static int flare_wire_spy_send_text(void *ctx, uint32_t dest, char const *utf8)
     return 0; /* unused by these tests; present only because the vtable requires it */
 }
 
-static int flare_wire_spy_send_private(void *ctx, uint32_t dest, uint8_t const *payload, size_t len)
+static int flare_wire_spy_send_private(void *ctx, uint32_t dest, uint8_t const *payload, size_t len, uint32_t flags)
 {
     flare_wire_spy_t *s = (flare_wire_spy_t *)ctx;
     s->n_sends++;
+    s->flags = flags; /* recorded on every attempt, accepted or refused — the caller's ask is real either way */
     if (!s->accept) return -1;
     s->dest = dest;
     s->len = (len > sizeof(s->buf)) ? sizeof(s->buf) : len;
@@ -6402,6 +6670,22 @@ static void S10_wire_flare_start_accepted_sends_one_flare_frame_dur_300(void)
 
     ff_shell_tick(&H.shell, H.clk.t);
     TEST_ASSERT_EQUAL(FF_FLARE_WIRE_SENT, ff_shell_view(&H.shell)->flare.wire_state);
+}
+
+/* feat/s10-flare-want-ack: FLARE_START's broadcast requests want_ack
+ * (S10 spec text, "## Behavior": "broadcast with want_ack") — the flag
+ * reaches the injected sender's send_private call, not just a hardcoded
+ * `false` swallowed inside the production wrapper. */
+static void S10_wire_flare_start_sets_want_ack(void)
+{
+    harness_init(100000u, false);
+    flare_wire_spy_install(true);
+
+    ff_intent_t const start = {.kind = FF_INTENT_FLARE_START, .u = {0}};
+    ff_shell_intent(&H.shell, &start);
+
+    TEST_ASSERT_EQUAL_INT(1, S.n_sends);
+    TEST_ASSERT_BITS(FF_WIRE_WANT_ACK, FF_WIRE_WANT_ACK, S.flags);
 }
 
 /* QUICK_FLARE (5x HOME) mirrors FLARE_START exactly: same one frame. */
@@ -6491,6 +6775,31 @@ static void S10_wire_cancel_after_sent_sends_one_flare_end_frame(void)
         TEST_ASSERT_EQUAL_INT(FF_PROTO_TYPE_FLARE_END, ff_proto_decode(S.buf, S.len, &msg));
     }
     TEST_ASSERT_FALSE(ff_shell_flare(&H.shell)->sending);
+}
+
+/* feat/s10-flare-want-ack (ruling revised 2026-09-03 review round 2):
+ * S04's "want_ack true for FLARE only" is BY WIRE TYPE — FLARE (0x02)
+ * yes, FLARE_END (0x03) no. shell_flare_wire's one send_private call
+ * site handles both the FLARE and FLARE_END encode/send (same call,
+ * flags now computed per-intent), so this pins the FLARE_END half
+ * explicitly: the CANCEL-after-SENT frame must NOT carry want_ack, even
+ * though the FLARE that started this same send did (see
+ * S10_wire_flare_start_sets_want_ack). */
+static void S10_wire_cancel_after_sent_does_not_set_want_ack(void)
+{
+    harness_init(100000u, false);
+    flare_wire_spy_install(true);
+
+    ff_intent_t const start = {.kind = FF_INTENT_FLARE_START, .u = {0}};
+    ff_shell_intent(&H.shell, &start);
+    TEST_ASSERT_EQUAL_INT(1, S.n_sends);
+    TEST_ASSERT_BITS(FF_WIRE_WANT_ACK, FF_WIRE_WANT_ACK, S.flags); /* the FLARE itself did want it */
+
+    ff_intent_t const cancel = {.kind = FF_INTENT_FLARE_END, .u = {0}};
+    ff_shell_intent(&H.shell, &cancel);
+
+    TEST_ASSERT_EQUAL_INT(2, S.n_sends);
+    TEST_ASSERT_EQUAL_UINT32(0u, S.flags & FF_WIRE_WANT_ACK); /* FLARE_END must not */
 }
 
 /* CANCEL while WAITING (never confirmed): ends locally, no frame at all —
@@ -7258,6 +7567,8 @@ int main(void)
     RUN_TEST(S16_b1_shell_footprint_excludes_the_pack);
     RUN_TEST(S22b_inbox_target_survives_rebuild_and_is_gated);
     RUN_TEST(S24_flare_chip_addresses_member_vs_whole_crew_as_flare);
+    RUN_TEST(S10_want_ack_inbox_flare_to_scope_sets_want_ack);
+    RUN_TEST(S10_want_ack_real_adapter_flare_true_flare_end_false_rally_false);
     RUN_TEST(S22_AC4_send_to_just_unpaired_member_is_refused);
     RUN_TEST(S22_AC4_rally_to_member_sends_first_tap);
     RUN_TEST(S22_AC4_rally_without_my_pos_sends_nothing);
@@ -7340,10 +7651,12 @@ int main(void)
     RUN_TEST(S10_quick_flare_launcher_mask_auto_end_dirties_key);
 
     RUN_TEST(S10_wire_flare_start_accepted_sends_one_flare_frame_dur_300);
+    RUN_TEST(S10_wire_flare_start_sets_want_ack);
     RUN_TEST(S10_wire_quick_flare_accepted_sends_one_flare_frame);
     RUN_TEST(S10_wire_flare_start_refused_stays_waiting_no_feed_item);
     RUN_TEST(S10_wire_flare_start_link_returns_after_7s_retries_and_sends);
     RUN_TEST(S10_wire_cancel_after_sent_sends_one_flare_end_frame);
+    RUN_TEST(S10_wire_cancel_after_sent_does_not_set_want_ack);
     RUN_TEST(S10_wire_cancel_while_waiting_sends_no_frame);
     RUN_TEST(S10_wire_auto_end_after_sent_sends_one_flare_end_frame);
     RUN_TEST(S10_wire_flare_sent_chime_does_not_fire_while_waiting);
@@ -7375,6 +7688,10 @@ int main(void)
     RUN_TEST(S26_banner_open_routes_marks_read_and_dismisses);
     RUN_TEST(S26_banner_open_with_no_banner_is_noop);
     RUN_TEST(S26_banner_open_is_inert_under_a_takeover);
+    RUN_TEST(S26_banner_open_group_message_opens_crew_thread_not_senders);
+    RUN_TEST(S26_banner_open_direct_message_opens_senders_thread);
+    RUN_TEST(S26_banner_open_group_rally_opens_crew_thread);
+    RUN_TEST(S26_banner_open_picks_the_head_banners_own_conversation);
 
     /* S27 sounds. */
     RUN_TEST(S27_flare_start_fires_flare_sent_exactly_once);
