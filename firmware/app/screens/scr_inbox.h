@@ -28,10 +28,17 @@
  *     address), kind-specific rows (text/status bubbles, rally callout
  *     with place, flare one-liners), sender identity only where
  *     the model joined one. CREW header carries the `N CREW` roster
- *     fact; a 1:1 header carries the honest presence line and the
+ *     fact; a 1:1 header carries the honest presence line. The
  *     quick-chip strip (OMW / IN 5 MIN emit FF_INTENT_CANNED_REPLY;
  *     FLARE emits FF_INTENT_INBOX_FLARE — the shell aims all three at the
- *     open thread's scope). Both carry the FAB (FF_INTENT_INBOX_NEW —
+ *     open thread's scope, CREW or member alike) always renders in the
+ *     1:1 thread; in the CREW thread (2026-09-03 maintainer decision —
+ *     "put the quick replies in the group thread's unused space") it
+ *     renders inline only when the message list leaves at least one
+ *     chip-row of free space below the last bubble, so it can never
+ *     cover a message — a long CREW thread renders exactly as before,
+ *     no inline row (see scr_inbox.c's FF_INBOX_CHIP_FREE_MIN_PX).
+ *     Both carry the FAB (FF_INTENT_INBOX_NEW —
  *     routed to the scoped action popup in slice d). POPUP/RALLY remain
  *     slice (d) placeholders falling back to the inbox render (see
  *     ff_app_state.h's ff_inbox_subview_t).

@@ -184,3 +184,97 @@ positions/times anywhere (rally rules above).
   a retired-type wire frame is honestly nothing: no feed item, no banner
   (`S26-device-lifecycle.md`'s Notifications section) — see `ff_wiring.h`'s
   header note for the drop ruling.
+
+- **2026-09-03, maintainer decision — quick-reply chips inline in the CREW
+  thread's free space** (maintainer's question: "the group thread has a
+  bunch of unused blank space — should we put the quick replies there or
+  some other affordance?"; decision: put them there). Screen 2 ("Thread ·
+  CREW") above is amended: it now ALSO carries the quick-reply chips
+  screen 3 describes for 1:1 — OMW / IN 5 MIN / FLARE, same intents
+  (`FF_INTENT_CANNED_REPLY` / `FF_INTENT_INBOX_FLARE`), same shared
+  chip-building code (`scr_inbox.c`'s `inbox_build_chips`) — rendered
+  INLINE, anchored just above the FAB row, whenever the message list does
+  NOT overflow the band and leaves at least one chip row's worth of free
+  space below the last bubble. When the thread overflows (no free space to
+  give), CREW keeps the pre-amendment layout exactly: no inline row, the
+  FAB (Compose/Rally/Flare via the popup) the only way to reach a send —
+  the row never covers a message. AC4 is amended accordingly (was "expose
+  quick chips (1:1)"; now "expose quick chips: 1:1 unconditionally, CREW
+  when the band has free space").
+
+  **New AC4a — CREW inline quick-reply chips (free-space gated):**
+  - the free-space test is `band_bottom - last_bubble_bottom >=
+    chip_h + 2*chip_gap` (`scr_inbox.c`'s `FF_INBOX_CHIP_FREE_MIN_PX`,
+    60px = 44px chip height + 2×8px clearance) — tested by
+    `S24c_crew_thread_short_shows_quick_chips_tap_omw_emits_canned_reply`
+    (2-message CREW thread, `tests/fixtures/inbox_thread_short.json` /
+    its golden) and `S24c_crew_thread_empty_shows_quick_chips` (0
+    messages, the maximum possible free space);
+  - an overflowing CREW thread renders NO inline row, unchanged from
+    before this amendment — `S24c_crew_thread_long_has_no_quick_chips`
+    (the existing 12-message fixture; its golden is byte-identical to
+    before this PR, confirming the "no free space" branch is pixel-for-
+    pixel unchanged);
+  - a message arriving that pushes a previously-short thread into
+    overflow drops the row on the next rebuild, never painting it over
+    the new message — `S24c_crew_thread_chip_row_disappears_when_new_
+    messages_overflow`. The render key already covers this: `ff_shell.c`'s
+    `shell_render_key` starts with `memcpy(key, v, sizeof(*key))`, so
+    `key->inbox.thread.msg_count` is the raw, uncoarsened count before any
+    of that function's later coarsening — a message count change already
+    marks the S24 dirty key dirty, unconditionally. No `ff_shell.c` change
+    was needed for this amendment;
+  - a chip's own hit target, press feedback, and drag-off-cancels
+    behavior are unchanged (shared code with the 1:1 strip) —
+    `PL_inbox_crew_chip_drag_off_emits_nothing` mirrors the existing
+    1:1 `PL_inbox_chip_drag_off_emits_nothing`;
+  - `test_face_hit_targets.c`'s fixture sweep picks up
+    `inbox_thread_short.json` automatically (it iterates every
+    `tests/fixtures/*.json`) — no sweep code change needed, 0 violations;
+  - mutation-verified (fresh rebuild, object hash confirmed changed):
+    forcing the inline row to always render (ignoring the free-space
+    gate) fails `S24c_crew_thread_long_has_no_quick_chips` AND
+    `S24c_crew_thread_chip_row_disappears_when_new_messages_overflow`;
+    reverted with a targeted one-line restore, not `git checkout`.
+
+  **Interpretation call, flagged for the maintainer:** the 1:1 thread's
+  own quick-reply strip stays UNCONDITIONAL (not free-space-gated) even
+  though this amendment's task brief asked for "the same code path" for
+  both thread types — `S24_direct_thread_shows_at_least_4_rows_at_rest`
+  is a prior, already-reviewed AC (PR #149) whose own comment says
+  explicitly that "chips present... must not be satisfiable by silently
+  removing the quick-reply strip to buy the 1:1 thread more room," and
+  its fixture (`s24_make_direct_thread_long`, 12 messages) genuinely
+  overflows the 1:1 band — so applying the CREW free-space gate to 1:1
+  too would have made a long 1:1 thread's chips disappear, regressing
+  that AC. Read literally, "the group thread has a bunch of unused blank
+  space" is a CREW-specific complaint anyway (1:1's band,
+  `FF_INBOX_THREAD_LIST_H_1TO1`, is already 18px shorter than CREW's
+  specifically to reserve the chip strip's room unconditionally, which
+  is a different, already-shipped solution to the same "give the chips a
+  home" problem). "Same code path" is honored at the level that matters
+  for reuse — the SAME chip-building function (`inbox_build_chips`) and
+  the SAME emitters/intents serve both thread types; only the GATING
+  condition differs, and only because 1:1's is a compile-time constant
+  (always true) while CREW's is genuinely data-dependent. Also
+  interpretation: the task brief says "the FAB popup remains the way to
+  reach them" for the overflow case — the action popup
+  (`inbox_build_popup`) actually has only Compose/Rally/Flare rows, no
+  OMW/IN 5 MIN rows (never did, for either thread type); read as "the FAB
+  remains a way to send an equivalent message" (Compose, or Flare),
+  not literally "the popup also carries OMW/IN 5 MIN," since it doesn't.
+  Both readings are the maintainer's to override.
+
+  **Fixture/golden note:** none of the three pre-existing thread fixtures
+  changed pixel content. `inbox_thread_crew.json` (4 messages, 184px
+  content in the 200px band) has only 16px free — under the 60px floor,
+  so it still renders no inline row, unchanged.
+  `inbox_thread_crew_long.json` overflows outright, unchanged.
+  `inbox_thread_direct.json`'s 1:1 chips were already unconditional, so
+  the new gate (unconditionally true for 1:1) changes nothing. Verified
+  via `run_goldens.sh` (no `--update-golden`) before generating the one
+  new golden this amendment adds
+  (`tests/fixtures/inbox_thread_short.json` /
+  `tests/golden/inbox_thread_short.png`): `git status --porcelain
+  firmware/tests/golden/` showed only the new file as untracked, every
+  other golden byte-identical on disk.

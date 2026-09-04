@@ -1003,6 +1003,39 @@ static void s24c_make_direct_thread(ff_app_inbox_t *v)
     strncpy(in_m->text, "on my way", sizeof(in_m->text) - 1);
 }
 
+/* 2026-09-03 maintainer decision — "put the quick replies in the group
+ * thread's unused space": a short CREW thread (one inbound, one
+ * outgoing message, mirroring s24c_make_direct_thread's shape) for the
+ * free-space-gated inline chip tests below. Content height (one 50px
+ * inbound TEXT row with its sender line + one 50px outgoing TEXT row =
+ * 100px) leaves 100px free in the 200px CREW band — comfortably clears
+ * FF_INBOX_CHIP_FREE_MIN_PX's 60px floor (scr_inbox.c), so the inline
+ * strip must render. */
+static void s24c_make_crew_thread_short(ff_app_inbox_t *v)
+{
+    memset(v, 0, sizeof(*v));
+    v->subview = FF_INBOX_SUB_THREAD;
+    v->thread_node = 0u;
+    strncpy(v->thread_name, "CREW", sizeof(v->thread_name) - 1);
+    sig_add_conv(v, FF_CONV_CREW, 0u, NULL, 0, 2);
+
+    ff_inbox_msg_t *in_m = &v->thread.msgs[v->thread.msg_count++];
+    memset(in_m, 0, sizeof(*in_m));
+    in_m->kind = FEED_TEXT;
+    in_m->dir = FEED_DIR_BROADCAST;
+    in_m->identity_known = true;
+    in_m->node_id = 111u;
+    strncpy(in_m->name, "DANA", sizeof(in_m->name) - 1);
+    in_m->initial = 'D';
+    strncpy(in_m->text, "on my way!", sizeof(in_m->text) - 1);
+
+    ff_inbox_msg_t *out = &v->thread.msgs[v->thread.msg_count++];
+    memset(out, 0, sizeof(*out));
+    out->kind = FEED_TEXT;
+    out->dir = FEED_DIR_OUT;
+    strncpy(out->text, "meet at the totem after?", sizeof(out->text) - 1);
+}
+
 /* The 1:1 quick chips: OMW and IN 5 MIN emit CANNED_REPLY with the right
  * canned id (the shell aims them at the thread scope — its own test). */
 static void S24c_thread_omw_chip_emits_canned_reply_omw(void)
@@ -1075,9 +1108,43 @@ static void S24c_thread_fab_emits_inbox_new(void)
     TEST_ASSERT_EQUAL(FF_INTENT_INBOX_NEW, s_spy.last.kind);
 }
 
-/* The CREW thread renders NO quick chips (they are the 1:1 screen's) —
- * a chip label must not be findable there. */
-static void S24c_crew_thread_has_no_quick_chips(void)
+/* 2026-09-03 maintainer decision — a CREW thread with free space (few
+ * messages, the maintainer's "unused blank space" complaint) now shows
+ * the SAME inline quick-reply strip the 1:1 thread always has, same
+ * intents: tapping OMW emits CANNED_REPLY with the OMW id, exactly like
+ * S24c_thread_omw_chip_emits_canned_reply_omw's 1:1 case (the shell's
+ * CANNED_REPLY handler already resolved thread_node==0 to broadcast
+ * before this PR — see ff_shell.c — so no shell change was needed to
+ * make this correct). Was S24c_crew_thread_has_no_quick_chips before
+ * this PR (which asserted NO crew thread ever shows chips, using an
+ * EMPTY thread as its fixture); the free-space gate below only narrows
+ * that to overflowing threads — see
+ * S24c_crew_thread_long_has_no_quick_chips further down (needs
+ * s24_make_crew_thread_long, defined below this point in the file). */
+static void S24c_crew_thread_short_shows_quick_chips_tap_omw_emits_canned_reply(void)
+{
+    ff_app_inbox_t v;
+    s24c_make_crew_thread_short(&v);
+
+    lv_obj_t *parent = lv_obj_create(lv_screen_active());
+    ff_scr_inbox_build(parent, &v, false);
+
+    TEST_ASSERT_NOT_NULL_MESSAGE(find_button_with_label(parent, "OMW"),
+                                  "a short CREW thread must show the inline quick-reply strip");
+    TEST_ASSERT_NOT_NULL(find_button_with_label(parent, "IN 5 MIN"));
+    TEST_ASSERT_NOT_NULL(find_button_with_label(parent, "FLARE"));
+
+    click(find_button_with_label(parent, "OMW"));
+    TEST_ASSERT_EQUAL_INT(1, s_spy.count);
+    TEST_ASSERT_EQUAL(FF_INTENT_CANNED_REPLY, s_spy.last.kind);
+    TEST_ASSERT_EQUAL(FF_WIRING_REPLY_OMW, s_spy.last.u.reply);
+}
+
+/* An EMPTY CREW thread (no traffic at all — the quiet-crew edge state)
+ * has the most free space of all, so it shows the strip too; not just
+ * "some" content, per the free-space formula, not a message-count
+ * special case. */
+static void S24c_crew_thread_empty_shows_quick_chips(void)
 {
     ff_app_inbox_t v;
     memset(&v, 0, sizeof(v));
@@ -1088,8 +1155,48 @@ static void S24c_crew_thread_has_no_quick_chips(void)
 
     lv_obj_t *parent = lv_obj_create(lv_screen_active());
     ff_scr_inbox_build(parent, &v, false);
-    TEST_ASSERT_NULL(find_button_with_label(parent, "OMW"));
-    TEST_ASSERT_NULL(find_button_with_label(parent, "FLARE"));
+    TEST_ASSERT_NOT_NULL(find_button_with_label(parent, "OMW"));
+    TEST_ASSERT_NOT_NULL(find_button_with_label(parent, "FLARE"));
+}
+
+/* 2026-09-03 — S24 render-key confirmation (task item 2): ff_shell.c's
+ * shell_render_key does `memcpy(key, v, sizeof(*key))` BEFORE any
+ * coarsening, so `key->inbox.thread.msg_count` is already the raw,
+ * uncoarsened count — a new message arriving already forces the S24
+ * dirty-key rebuild this screen depends on; nothing in ff_shell.c needed
+ * to change for this PR. This test proves the SCREEN half of that
+ * contract directly: given the same rebuild (lv_obj_clean + a fresh
+ * ff_scr_inbox_build) ff_shell.c's dirty-key path performs, a short
+ * CREW thread that gains enough messages to overflow the band must drop
+ * the inline row on that rebuild rather than paint it over the newly
+ * arrived messages. */
+static void S24c_crew_thread_chip_row_disappears_when_new_messages_overflow(void)
+{
+    ff_app_inbox_t v;
+    s24c_make_crew_thread_short(&v);
+
+    lv_obj_t *parent = lv_obj_create(lv_screen_active());
+    lv_obj_set_size(parent, 412, 412);
+    ff_scr_inbox_build(parent, &v, false);
+    TEST_ASSERT_NOT_NULL_MESSAGE(find_button_with_label(parent, "OMW"),
+                                  "short CREW thread must show the inline chip row first");
+
+    for (int i = 0; i < 8 && v.thread.msg_count < FF_INBOX_MAX_MSGS; i++) {
+        ff_inbox_msg_t *m = &v.thread.msgs[v.thread.msg_count++];
+        memset(m, 0, sizeof(*m));
+        m->kind = FEED_TEXT;
+        m->dir = FEED_DIR_BROADCAST;
+        m->identity_known = true;
+        m->node_id = 111u;
+        strncpy(m->name, "DANA", sizeof(m->name) - 1);
+        m->initial = 'D';
+        snprintf(m->text, sizeof(m->text), "extra message %d", i);
+    }
+    lv_obj_clean(parent);
+    ff_scr_inbox_build(parent, &v, false);
+    TEST_ASSERT_NULL_MESSAGE(find_button_with_label(parent, "OMW"),
+                              "the overflowing rebuild must hide the inline chip row, "
+                              "not paint it over the newly arrived messages");
 }
 
 /* =================================================================== */
@@ -1150,6 +1257,28 @@ static void s24_make_direct_thread_long(ff_app_inbox_t *v)
         snprintf(m->text, sizeof(m->text), "message number %d", i);
         m->age_ms = (uint32_t)(60000u * (uint32_t)(12 - i));
     }
+}
+
+/* 2026-09-03 maintainer decision, negative half — a long/overflowing
+ * CREW thread (the existing 12-message fixture above, already well past
+ * the 200px band) keeps "today's layout": no inline chip row, the FAB
+ * (Compose/Rally/Flare via the popup) the only way to reach a send.
+ * Was covered before this PR by S24c_crew_thread_has_no_quick_chips
+ * (an EMPTY-thread fixture, which no longer applies — see
+ * S24c_crew_thread_short_shows_quick_chips_tap_omw_emits_canned_reply /
+ * S24c_crew_thread_empty_shows_quick_chips above); this is the fixture
+ * that actually needs to keep failing the gate. */
+static void S24c_crew_thread_long_has_no_quick_chips(void)
+{
+    ff_app_inbox_t v;
+    s24_make_crew_thread_long(&v);
+
+    lv_obj_t *parent = lv_obj_create(lv_screen_active());
+    lv_obj_set_size(parent, 412, 412);
+    ff_scr_inbox_build(parent, &v, false);
+    TEST_ASSERT_NULL_MESSAGE(find_button_with_label(parent, "OMW"),
+                              "an overflowing CREW thread must not show the inline chip row");
+    TEST_ASSERT_NULL(find_button_with_label(parent, "FLARE"));
 }
 
 /* Finds the one PLAIN lv_obj (not a label/button — lv_label_create
@@ -2972,6 +3101,34 @@ static void PL_inbox_chip_drag_off_emits_nothing(void)
     TEST_ASSERT_EQUAL_INT_MESSAGE(0, s_spy.count, "a slide-off of OMW must never commit CANNED_REPLY");
 }
 
+/* 2026-09-03 — the CREW thread's own inline chip (new this PR) needs the
+ * same drag-off guard: same button base (#173, PRESS_LOCK cleared), same
+ * fixture shape as S24c_crew_thread_short_shows_quick_chips_tap_omw_
+ * emits_canned_reply. */
+static void PL_inbox_crew_chip_drag_off_emits_nothing(void)
+{
+    ff_app_inbox_t v;
+    s24c_make_crew_thread_short(&v);
+
+    lv_obj_t *parent = lv_obj_create(lv_screen_active());
+    lv_obj_set_size(parent, FF_THEME_PUCK_PX, FF_THEME_PUCK_PX);
+    lv_obj_clear_flag(parent, LV_OBJ_FLAG_SCROLLABLE);
+    ff_scr_inbox_build(parent, &v, false);
+    lv_obj_update_layout(lv_screen_active());
+
+    lv_obj_t *btn = find_button_with_label(parent, "OMW");
+    TEST_ASSERT_NOT_NULL(btn);
+    lv_area_t a;
+    lv_obj_get_coords(btn, &a);
+    int32_t cx = (a.x1 + a.x2) / 2;
+    int32_t cy = (a.y1 + a.y2) / 2;
+
+    drag_v(cy, cy + 150, cx);
+
+    TEST_ASSERT_EQUAL_INT_MESSAGE(0, s_spy.count,
+                                   "a slide-off of the CREW thread's OMW chip must never commit CANNED_REPLY");
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -3013,7 +3170,10 @@ int main(void)
     RUN_TEST(S24c_thread_in5min_chip_emits_canned_reply_5min);
     RUN_TEST(S24c_thread_flare_chip_emits_sig_flare);
     RUN_TEST(S24c_thread_fab_emits_inbox_new);
-    RUN_TEST(S24c_crew_thread_has_no_quick_chips);
+    RUN_TEST(S24c_crew_thread_short_shows_quick_chips_tap_omw_emits_canned_reply);
+    RUN_TEST(S24c_crew_thread_empty_shows_quick_chips);
+    RUN_TEST(S24c_crew_thread_chip_row_disappears_when_new_messages_overflow);
+    RUN_TEST(S24c_crew_thread_long_has_no_quick_chips);
     RUN_TEST(S24_crew_thread_overflow_scrolls_on_drag);
     RUN_TEST(S24_direct_thread_overflow_scrolls_on_drag);
     RUN_TEST(S24_thread_message_bubble_not_compressed);
@@ -3072,6 +3232,7 @@ int main(void)
     RUN_TEST(PL_power_off_drag_off_emits_nothing);
     RUN_TEST(PL_power_off_tap_emits_power_off);
     RUN_TEST(PL_inbox_chip_drag_off_emits_nothing);
+    RUN_TEST(PL_inbox_crew_chip_drag_off_emits_nothing);
 
     return UNITY_END();
 }
