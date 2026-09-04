@@ -1,0 +1,21 @@
+{
+  "fixture": "compose_pred_scroll",
+  "face": "compose",
+  "compose": {
+    "to_name": "DANA",
+    "text": "omw to ",
+    "has_pending": false,
+    "mode": "pred",
+    "word": "the",
+    "cand": [
+      { "text": "the" },
+      { "text": "tie" },
+      { "text": "vie" },
+      { "text": "side" },
+      { "text": "ride" },
+      { "text": "wide" }
+    ],
+    "sel": 0,
+    "total_cand": 6
+  }
+}
