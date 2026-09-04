@@ -1514,27 +1514,45 @@ void app_main(void)
          * here. */
         if (idle_state == FF_IDLE_STATE_SLEEP) {
             ESP_LOGI(TAG, "S26f: entering light sleep");
-            /* fix/quick-flare-detection (2026-09-03) — see
-             * ff_power_boot_isr_suspend_for_sleep's own doc comment: GPIO0's
-             * hardware intr-type register cannot hold both the edge ISR's
-             * NEGEDGE and the light-sleep wake config's LOW_LEVEL at once,
-             * and the wake config (armed once at startup,
-             * ff_configure_light_sleep_wake) is what must be live for the
-             * duration of the sleep below. */
+            /* fix/quick-flare-detection (2026-09-03; ordering fixed
+             * 2026-09-04, review round 2) — see
+             * ff_power_boot_isr_suspend_for_sleep's own doc comment for
+             * the exact race this closes: GPIO0's hardware intr-type
+             * register cannot hold both the edge ISR's NEGEDGE and the
+             * light-sleep wake config's LOW_LEVEL at once, and a
+             * still-held BOOT could re-trigger our own edge-ISR handler
+             * on the level condition if its interrupt were left enabled
+             * across this boundary — suspend_for_sleep disables it
+             * before (re-)arming the level wake. */
             ff_power_boot_isr_suspend_for_sleep();
             esp_light_sleep_start();
+            /* fix/quick-flare-detection (2026-09-04, review round 2) —
+             * THE ordering fix: re-arm the edge ISR (NEGEDGE +
+             * gpio_intr_enable) FIRST, before any logging or wake-cause
+             * read — every instruction between esp_light_sleep_start()
+             * returning and this call is a window where a genuine SECOND
+             * press could land with the edge interrupt still disabled
+             * (see ff_power_boot_isr_rearm_after_sleep's own doc comment
+             * for why nothing runs ahead of it). */
+            ff_power_boot_isr_rearm_after_sleep();
+
             esp_sleep_wakeup_cause_t const wake_cause = esp_sleep_get_wakeup_cause();
             char cause_scratch[16];
             ESP_LOGI(TAG, "S26f: light sleep wake, cause=%s",
                      ff_wakeup_cause_str(wake_cause, cause_scratch, sizeof(cause_scratch)));
-            /* fix/quick-flare-detection (2026-09-03) — re-arm the edge ISR
-             * for this new ACTIVE period and, if THIS wake looks like it
-             * was caused by BOOT specifically, synthesize the multitap
-             * edge the ISR itself could not see (see
-             * ff_power_boot_isr_resume_after_sleep's own doc comment for
-             * the full reasoning — a level trigger, not an edge, is what
-             * light sleep's GPIO wake uses, so the wake press must be
-             * reconstructed rather than captured).
+
+            /* fix/quick-flare-detection (2026-09-03) — if THIS wake
+             * looks like it was caused by BOOT specifically, synthesize
+             * the multitap edge the ISR may not have seen (see
+             * ff_power_boot_isr_synthesize_wake_edge's own doc comment
+             * for the full reasoning, including the dedup against an
+             * edge the just-re-armed ISR may ALSO have already captured
+             * for this same press — a level trigger, not an edge, is
+             * what light sleep's GPIO wake uses, so the wake press must
+             * be reconstructed rather than reliably captured, and the
+             * ISR racing this reconstruction is exactly why that
+             * function dedupes internally rather than this file trying
+             * to reason about it here).
              *
              * WHICH-GPIO-woke-us interpretation call: ESP-IDF's
              * per-pin GPIO wake status readback
@@ -1560,11 +1578,13 @@ void app_main(void)
              * costs this ONE edge back to the debounced-tick path's
              * accuracy, not a crash or a stuck state; a false positive
              * (something else woke us while BOOT happened to already be
-             * held) synthesizes one harmless extra edge, deduplicated the
-             * same as any other by `ff_shell_multitap_edge`'s software
-             * de-bounce if it lands within 30ms of a real one. */
+             * held) synthesizes one harmless extra edge, deduplicated by
+             * `ff_power_boot_isr_synthesize_wake_edge`'s own device-side
+             * dedup if it lands within 30ms of one the ISR already
+             * pushed, and by `ff_multitap_press`'s own bounce-reject
+             * rule downstream either way. */
             bool const boot_caused_wake = (wake_cause == ESP_SLEEP_WAKEUP_GPIO) && ff_power_boot_pressed();
-            ff_power_boot_isr_resume_after_sleep(boot_caused_wake);
+            ff_power_boot_isr_synthesize_wake_edge(boot_caused_wake);
         } else {
             vTaskDelay(pdMS_TO_TICKS(20));
         }

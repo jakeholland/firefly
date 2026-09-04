@@ -67,6 +67,35 @@ extern "C" {
  * run, but it absorbs the jitter budget above with room to spare. */
 #define FF_MULTITAP_MAX_GAP_MS ((uint32_t)700u)
 
+/** The shortest gap between two consecutive presses that is believed to
+ * be a GENUINE second press rather than mechanical/ISR contact bounce
+ * of the SAME physical press. A gap strictly LESS than this (< 30 ms,
+ * so exactly 30 ms itself already counts as genuine — `ff_time_reached`'s
+ * same inclusive convention) is ignored entirely: no state is mutated
+ * (`count`/`first_ms`/`last_ms` all left exactly as they were), the
+ * edge is not counted toward the run, and it does not extend, reset, or
+ * fire anything — the caller sees this exactly as if the edge had never
+ * arrived at all (`fix/quick-flare-detection`, 2026-09-04, moved into
+ * core after review: a device's GPIO ISR can legitimately fire more
+ * than once for a single physical press, and de-duplicating that is
+ * domain logic about "was this really a second press", which belongs
+ * here alongside the gap/window rules, not bolted onto a caller).
+ *
+ * Independent of, and much smaller than, `FF_MULTITAP_MAX_GAP_MS` above
+ * — the two constants answer opposite questions on the same axis ("how
+ * short is too short to be real" vs. "how long is too long to still be
+ * the same run"). 30 ms mirrors `ff_button.h`'s `FF_BUTTON_DEBOUNCE_MS`
+ * BY VALUE (a mechanical button's real bounce settles in a similar
+ * window regardless of which layer is doing the rejecting) — kept as
+ * an independent constant rather than shared, same "zero dependency on
+ * that header" reasoning `ff_button.h`'s own top comment gives for not
+ * sharing ITS constant with `ff_power_fsm.h` either.
+ *
+ * Only applies once a run is already in progress (`count > 0`) — a
+ * run's very first press has no prior press to bounce against and is
+ * never rejected. */
+#define FF_MULTITAP_BOUNCE_MS ((uint32_t)30u)
+
 /** The longest the WHOLE run (first press to Nth) may span, measured
  * from the run's first press. Independent of, and in addition to, the
  * per-gap bound above: five presses each exactly at the per-gap limit
@@ -118,23 +147,31 @@ void ff_multitap_init(ff_multitap_t *m);
  * 500/750/1000 ms but all drained and delivered together on one later
  * tick" batch counts exactly the same as if delivered live (see
  * `test_multitap.c`'s `S10_multitap_late_batch_delivery_...` tests).
- * The caller has already de-duplicated true mechanical bounce (a real
- * press is expected to appear here as ONE edge, not a burst of them a
- * few ms apart — see `ff_shell_multitap_edge`, app/include/ff_shell.h,
- * for where that software de-dup actually lives); this function does
- * not itself detect or discard closely-spaced edges. Returns true
- * EXACTLY on the edge counted as the `FF_MULTITAP_COUNT`th (5th) press
- * of one continuous run — i.e. exactly once per completed gesture,
- * never on the 4th or the 6th.
+ * This function DOES detect and discard closely-spaced duplicate edges
+ * itself (`fix/quick-flare-detection`, 2026-09-04 — moved into core
+ * after review; a real press is expected to appear here as ONE edge,
+ * not a burst of them a few ms apart — see `FF_MULTITAP_BOUNCE_MS`'s
+ * own doc comment for why this belongs here). Returns true EXACTLY on
+ * the edge counted as the `FF_MULTITAP_COUNT`th (5th) press of one
+ * continuous run — i.e. exactly once per completed gesture, never on
+ * the 4th or the 6th.
  *
  * Rules, in the order they're evaluated:
- *  1. If a run is already in progress (`count > 0`) and either the gap
- *     since the last press has REACHED `FF_MULTITAP_MAX_GAP_MS` (i.e.
- *     is `>=`, not `>` — `ff_time_reached`'s inclusive boundary), OR
- *     the total span since the run's first press has likewise reached
- *     `FF_MULTITAP_WINDOW_MS`, the run resets — THIS press starts a
- *     brand-new run of 1 (it is the first press of the new run, not
- *     dropped and not counted toward the old one).
+ *  0. If a run is already in progress (`count > 0`) and the gap since
+ *     the last press has NOT yet reached `FF_MULTITAP_BOUNCE_MS` (30 ms
+ *     — i.e. this edge is `< 30 ms` after the last one), this edge is
+ *     bounce: return false immediately, mutating NOTHING (`count`,
+ *     `first_ms`, `last_ms` all stay exactly as they were) — the caller
+ *     cannot even tell this call happened by inspecting the struct
+ *     afterward.
+ *  1. Otherwise, if a run is already in progress (`count > 0`) and
+ *     either the gap since the last press has REACHED
+ *     `FF_MULTITAP_MAX_GAP_MS` (i.e. is `>=`, not `>` —
+ *     `ff_time_reached`'s inclusive boundary), OR the total span since
+ *     the run's first press has likewise reached `FF_MULTITAP_WINDOW_MS`,
+ *     the run resets — THIS press starts a brand-new run of 1 (it is
+ *     the first press of the new run, not dropped and not counted
+ *     toward the old one).
  *  2. Otherwise this press extends the current run (or starts one, if
  *     `count == 0`): `count` increments, `last_ms` (and `first_ms` if
  *     this is press 1) update to `now_ms`.

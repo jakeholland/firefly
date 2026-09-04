@@ -45,6 +45,18 @@ static void S10_multitap_window_is_4000ms(void)
     TEST_ASSERT_EQUAL_UINT32(4000u, FF_MULTITAP_WINDOW_MS);
 }
 
+static void S10_multitap_bounce_ms_is_30ms(void)
+{
+    /* fix/quick-flare-detection (2026-09-04, moved into core after
+     * review). Mutation: dropping the bounce-reject rule entirely fails
+     * S10_multitap_bounce_dedup_0_5_12_300ms_counts_as_exactly_two_presses
+     * below, not this literal (a symbolic-only mutation, e.g. always
+     * returning false from the reject check regardless of the gap,
+     * would leave this constant untouched but still break behavior —
+     * see that test's own comment). */
+    TEST_ASSERT_EQUAL_UINT32(30u, FF_MULTITAP_BOUNCE_MS);
+}
+
 /* ------------------------------------------------------------------- */
 /* init                                                                 */
 /* ------------------------------------------------------------------- */
@@ -158,6 +170,96 @@ static void a_5_press_run_at_600ms_gaps_fires_on_the_5th(void)
     TEST_ASSERT_FALSE(ff_multitap_press(&m, 1200u)); /* 3 */
     TEST_ASSERT_FALSE(ff_multitap_press(&m, 1800u)); /* 4 */
     TEST_ASSERT_TRUE(ff_multitap_press(&m, 2400u));  /* 5 — fires */
+}
+
+/* ------------------------------------------------------------------- */
+/* bounce reject: a gap under FF_MULTITAP_BOUNCE_MS is the SAME         */
+/* physical press bouncing, not a genuine second one — ignored, no      */
+/* state mutated (fix/quick-flare-detection, 2026-09-04, moved into     */
+/* core after review)                                                   */
+/* ------------------------------------------------------------------- */
+
+/* THE mutation-target test the review asked for directly: edges at
+ * 0, 5, 12, 300 ms. 5ms and 12ms after the first press are both well
+ * under the 30ms bounce window (bounce of press 1, not presses 2 and
+ * 3) and must be silently ignored; 300ms is a genuine second press.
+ * Dropping the bounce-reject rule entirely would count all four edges
+ * (none of the gaps reach FF_MULTITAP_MAX_GAP_MS), landing at count==4
+ * instead of the correct count==2 — caught by the intermediate
+ * assertion below, not just the final one. */
+static void S10_multitap_bounce_dedup_0_5_12_300ms_counts_as_exactly_two_presses(void)
+{
+    ff_multitap_t m;
+    ff_multitap_init(&m);
+
+    TEST_ASSERT_FALSE(ff_multitap_press(&m, 0u));  /* 1 — genuine */
+    TEST_ASSERT_FALSE(ff_multitap_press(&m, 5u));  /* bounce of press 1 (5ms < 30ms) — ignored */
+    TEST_ASSERT_FALSE(ff_multitap_press(&m, 12u)); /* bounce of press 1 (12ms < 30ms) — ignored */
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(1u, m.count, "two bounce edges must not have advanced the count at all");
+
+    TEST_ASSERT_FALSE(ff_multitap_press(&m, 300u)); /* 2 — genuine, well clear of the bounce window */
+    TEST_ASSERT_EQUAL_UINT8(2u, m.count);
+}
+
+/* A bounce-rejected edge mutates NOTHING — not just count, first_ms/
+ * last_ms too — proving rule 0 is a true no-op, not a cheaper-looking
+ * "count stays the same but the clock moved" partial update that would
+ * silently corrupt the NEXT real gap's measurement. */
+static void bounce_rejected_edge_leaves_first_and_last_ms_untouched(void)
+{
+    ff_multitap_t m;
+    ff_multitap_init(&m);
+
+    TEST_ASSERT_FALSE(ff_multitap_press(&m, 1000u)); /* 1 */
+    TEST_ASSERT_EQUAL_UINT32(1000u, m.first_ms);
+    TEST_ASSERT_EQUAL_UINT32(1000u, m.last_ms);
+
+    TEST_ASSERT_FALSE(ff_multitap_press(&m, 1010u)); /* bounce, 10ms later */
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(1000u, m.first_ms, "a bounce must not move first_ms");
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(1000u, m.last_ms, "a bounce must not move last_ms either");
+}
+
+/* Boundary: exactly FF_MULTITAP_BOUNCE_MS (30ms) since the last press
+ * has REACHED the bound (ff_time_reached's inclusive convention) and
+ * counts as genuine, not a bounce. */
+static void a_30ms_gap_is_not_a_bounce(void)
+{
+    ff_multitap_t m;
+    ff_multitap_init(&m);
+
+    TEST_ASSERT_FALSE(ff_multitap_press(&m, 0u));
+    TEST_ASSERT_FALSE(ff_multitap_press(&m, FF_MULTITAP_BOUNCE_MS));
+    TEST_ASSERT_EQUAL_UINT8(2u, m.count);
+}
+
+/* Negative control for the boundary above: one ms under is still a
+ * bounce. */
+static void a_29ms_gap_is_still_a_bounce(void)
+{
+    ff_multitap_t m;
+    ff_multitap_init(&m);
+
+    TEST_ASSERT_FALSE(ff_multitap_press(&m, 0u));
+    TEST_ASSERT_FALSE(ff_multitap_press(&m, FF_MULTITAP_BOUNCE_MS - 1u));
+    TEST_ASSERT_EQUAL_UINT8(1u, m.count);
+}
+
+/* A burst with bounces sprinkled between otherwise-genuine presses
+ * still fires on the 5th GENUINE press, not derailed early by the
+ * bounces (proves rule 0 composes correctly with the whole FSM, not
+ * just in isolation). */
+static void a_burst_with_bounces_still_fires_on_the_5th_genuine_press(void)
+{
+    ff_multitap_t m;
+    ff_multitap_init(&m);
+
+    TEST_ASSERT_FALSE(ff_multitap_press(&m, 0u));   /* 1 */
+    TEST_ASSERT_FALSE(ff_multitap_press(&m, 5u));   /* bounce of 1 */
+    TEST_ASSERT_FALSE(ff_multitap_press(&m, 300u)); /* 2 */
+    TEST_ASSERT_FALSE(ff_multitap_press(&m, 305u)); /* bounce of 2 */
+    TEST_ASSERT_FALSE(ff_multitap_press(&m, 600u)); /* 3 */
+    TEST_ASSERT_FALSE(ff_multitap_press(&m, 900u)); /* 4 */
+    TEST_ASSERT_TRUE(ff_multitap_press(&m, 1200u)); /* 5 — fires */
 }
 
 /* ------------------------------------------------------------------- */
@@ -347,6 +449,7 @@ int main(void)
     RUN_TEST(S10_multitap_count_is_5);
     RUN_TEST(S10_multitap_max_gap_is_700ms);
     RUN_TEST(S10_multitap_window_is_4000ms);
+    RUN_TEST(S10_multitap_bounce_ms_is_30ms);
 
     RUN_TEST(init_clears_all_state);
     RUN_TEST(init_is_null_safe);
@@ -357,6 +460,12 @@ int main(void)
     RUN_TEST(a_701ms_gap_resets_the_count);
     RUN_TEST(a_699ms_gap_does_not_reset);
     RUN_TEST(a_5_press_run_at_600ms_gaps_fires_on_the_5th);
+
+    RUN_TEST(S10_multitap_bounce_dedup_0_5_12_300ms_counts_as_exactly_two_presses);
+    RUN_TEST(bounce_rejected_edge_leaves_first_and_last_ms_untouched);
+    RUN_TEST(a_30ms_gap_is_not_a_bounce);
+    RUN_TEST(a_29ms_gap_is_still_a_bounce);
+    RUN_TEST(a_burst_with_bounces_still_fires_on_the_5th_genuine_press);
 
     RUN_TEST(a_5th_press_exactly_at_the_window_boundary_resets_not_fires);
 

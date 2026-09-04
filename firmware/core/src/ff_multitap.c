@@ -22,6 +22,16 @@ bool ff_multitap_press(ff_multitap_t *m, uint32_t now_ms)
     }
 
     if (m->count > 0) {
+        /* Rule 0 — bounce reject (ff_multitap.h's FF_MULTITAP_BOUNCE_MS
+         * doc comment): a gap this short since the last press is the
+         * SAME physical press bouncing, not a genuine second one.
+         * Mutates nothing and returns immediately — evaluated before
+         * rule 1 below, since a bounce this close can never also be "too
+         * long" a gap. */
+        if (!ff_time_reached(now_ms, m->last_ms + FF_MULTITAP_BOUNCE_MS)) {
+            return false;
+        }
+
         bool const gap_too_long = ff_time_reached(now_ms, m->last_ms + FF_MULTITAP_MAX_GAP_MS);
         bool const window_expired = ff_time_reached(now_ms, m->first_ms + FF_MULTITAP_WINDOW_MS);
         if (gap_too_long || window_expired) {

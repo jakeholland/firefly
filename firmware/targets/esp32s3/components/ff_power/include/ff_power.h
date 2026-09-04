@@ -153,33 +153,54 @@ esp_err_t ff_power_boot_isr_init(void);
 size_t ff_power_boot_take_edges(uint32_t *out_ms, size_t max);
 
 /**
- * ff_power_boot_isr_suspend_for_sleep / ff_power_boot_isr_resume_after_sleep
- * — the light-sleep interaction the BOOT edge ISR needs, `[api]`
- * fix/quick-flare-detection (2026-09-03). ESP light-sleep GPIO wake only
- * supports LEVEL interrupt types (not EDGE), and GPIO0's hardware
- * intr-type register can only hold one type at a time — so the edge ISR
- * (`GPIO_INTR_NEGEDGE`, armed by `ff_power_boot_isr_init`) and the
- * existing light-sleep wake config (`GPIO_INTR_LOW_LEVEL`,
- * `ff_configure_light_sleep_wake`, app_main.c) cannot both be armed at
- * once. Call `_suspend_for_sleep` immediately before
- * `esp_light_sleep_start()` and `_resume_after_sleep` immediately after
- * it returns, passing whether THIS wake looks like it was caused by BOOT
- * specifically — the caller's own best determination, since this chip's
- * light-sleep GPIO wake path has no per-pin status readback
- * (`esp_sleep_get_gpio_wakeup_status` is compiled out for ESP32-S3 here,
- * gated behind `SOC_GPIO_SUPPORT_DEEPSLEEP_WAKEUP`; app_main.c's own
- * light-sleep block documents the level-read fallback it uses instead:
- * `wake_cause == ESP_SLEEP_WAKEUP_GPIO && ff_power_boot_pressed()`,
- * sound because the wake trigger is LEVEL not EDGE, so a BOOT-caused
- * wake's pin is still low the instant execution resumes). When true, the
- * resume call SYNTHESIZES one edge at the current `esp_timer_get_time()`,
- * since the wake edge itself is never seen by the (disarmed-for-sleep)
- * NEGEDGE ISR. See each function's own doc comment (ff_power.c) for the
- * full reasoning. Both are safe no-ops if the edge ISR was never
+ * ff_power_boot_isr_suspend_for_sleep / ff_power_boot_isr_rearm_after_sleep
+ * / ff_power_boot_isr_synthesize_wake_edge — the light-sleep interaction
+ * the BOOT edge ISR needs, `[api]` fix/quick-flare-detection (2026-09-03;
+ * split into three functions + a disable/re-enable ordering fix,
+ * 2026-09-04, review round 2 — see ff_power.c's own doc comments for the
+ * exact race this closes: GPIO0's edge-ISR interrupt was staying enabled
+ * into sleep, so a still-held BOOT could re-trigger the handler once the
+ * pin's type flipped to the level-triggered wake type, before the wake
+ * edge was ever cleanly synthesized).
+ *
+ * ESP light-sleep GPIO wake only supports LEVEL interrupt types (not
+ * EDGE), and GPIO0's hardware intr-type register can only hold one type
+ * at a time — so the edge ISR (`GPIO_INTR_NEGEDGE`, armed by
+ * `ff_power_boot_isr_init`) and the light-sleep wake config
+ * (`GPIO_INTR_LOW_LEVEL`) cannot both be armed at once. Call order,
+ * exactly:
+ *  1. `ff_power_boot_isr_suspend_for_sleep()` immediately before
+ *     `esp_light_sleep_start()` — disables the edge interrupt FIRST,
+ *     then arms the level wake. Nothing else touches GPIO0 in between.
+ *  2. `esp_light_sleep_start()`.
+ *  3. `ff_power_boot_isr_rearm_after_sleep()` IMMEDIATELY after that
+ *     call returns — no logging, no `esp_sleep_get_wakeup_cause()` read,
+ *     nothing else first. Re-arms `GPIO_INTR_NEGEDGE` and re-enables the
+ *     interrupt for the new ACTIVE period.
+ *  4. THEN read the wake cause, log it, determine whether THIS wake
+ *     looks like it was caused by BOOT specifically — the caller's own
+ *     best determination, since this chip's light-sleep GPIO wake path
+ *     has no per-pin status readback (`esp_sleep_get_gpio_wakeup_status`
+ *     is compiled out for ESP32-S3 here, gated behind
+ *     `SOC_GPIO_SUPPORT_DEEPSLEEP_WAKEUP`; app_main.c's own light-sleep
+ *     block documents the level-read fallback it uses instead:
+ *     `wake_cause == ESP_SLEEP_WAKEUP_GPIO && ff_power_boot_pressed()`,
+ *     sound because the wake trigger is LEVEL not EDGE, so a BOOT-caused
+ *     wake's pin is still low the instant execution resumes).
+ *  5. `ff_power_boot_isr_synthesize_wake_edge(wake_was_boot_gpio)` —
+ *     when true, pushes a synthesized edge at the current
+ *     `esp_timer_get_time()`, UNLESS a real edge was already pushed
+ *     within `FF_POWER_BOOT_EDGE_DEDUP_MS` of it (the just-re-armed ISR
+ *     may have already captured this exact press — see this function's
+ *     own doc comment, ff_power.c, for when that race window exists).
+ *
+ * See each function's own doc comment (ff_power.c) for the full
+ * reasoning. All three are safe no-ops if the edge ISR was never
  * installed.
  */
 void ff_power_boot_isr_suspend_for_sleep(void);
-void ff_power_boot_isr_resume_after_sleep(bool wake_was_boot_gpio);
+void ff_power_boot_isr_rearm_after_sleep(void);
+void ff_power_boot_isr_synthesize_wake_edge(bool wake_was_boot_gpio);
 
 /**
  * ff_power_batt_init — S25 slice c: bring up the battery-sense ADC.

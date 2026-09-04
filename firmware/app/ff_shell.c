@@ -14,7 +14,6 @@
 #include <string.h>
 
 #include "ff_batt.h" /* S25 slice c — battery gauge: honest mV -> percent + display filter */
-#include "ff_button.h" /* fix/quick-flare-detection — FF_BUTTON_DEBOUNCE_MS, reused as ff_shell_multitap_edge's own software-dedup window */
 #include "ff_geo.h"
 #include "ff_multitap.h" /* S10 quick flare — the N-presses-within-a-window counter FSM */
 #include "ff_notify.h" /* S26(d) — the notification queue */
@@ -161,19 +160,9 @@ typedef struct {
      * ordinary HOME, see its own doc comment for why the two were
      * split). */
     ff_multitap_t multitap;
-    /* fix/quick-flare-detection (2026-09-03) — software de-dup for
-     * `ff_shell_multitap_edge`: the timestamp of the last edge actually
-     * ACCEPTED (fed to `ff_multitap_press`), so a burst of near-
-     * duplicate edges (ISR contact bounce, or a target that for some
-     * reason reports the same physical press twice) collapses to one
-     * count. See that function's own doc comment for the exact rule
-     * ("ignore edges < FF_BUTTON_DEBOUNCE_MS apart"). `multitap_edge_
-     * seen` distinguishes "no edge yet" (so the very first edge is never
-     * compared against a bogus 0) from a legitimate first edge landing
-     * at `now_ms == 0`. */
-    bool multitap_edge_seen;
-    uint32_t multitap_last_edge_ms;
-    /* fix/quick-flare-detection (2026-09-03) — attempt-log bookkeeping,
+    /* fix/quick-flare-detection (2026-09-03; bounce-dedup moved into
+     * core 2026-09-04 — see ff_multitap.h's FF_MULTITAP_BOUNCE_MS) —
+     * attempt-log bookkeeping,
      * shell-owned (not part of core's `ff_multitap_t`, which stays
      * gesture-agnostic per its own header): the inter-press gaps of the
      * CURRENT run, so `ff_shell_multitap_edge`'s optional `out_log`
@@ -4386,22 +4375,19 @@ void ff_shell_multitap_edge(ff_shell_t *sh_pub, uint32_t edge_ms, ff_multitap_lo
     if (sh_pub == NULL) return;
     shell_t *sh = shell_of(sh_pub);
 
-    /* Software de-dup (fix/quick-flare-detection, 2026-09-03) — "ignore
-     * edges < FF_BUTTON_DEBOUNCE_MS (30ms) apart" against the last
-     * ACCEPTED edge (not a sliding per-raw-sample window — see
-     * `multitap_last_edge_ms`'s own doc comment, shell_t): a burst of
-     * near-duplicate edges collapses to the first of the burst.
-     * `ff_time_reached`'s inclusive/wraparound-safe convention, same as
-     * every other deadline check in this codebase. */
-    if (sh->multitap_edge_seen && !ff_time_reached(edge_ms, sh->multitap_last_edge_ms + FF_BUTTON_DEBOUNCE_MS)) {
-        return;
-    }
-    sh->multitap_edge_seen = true;
-    sh->multitap_last_edge_ms = edge_ms;
-
-    /* Attempt-log bookkeeping (fix/quick-flare-detection, 2026-09-03) —
-     * mirror the SAME reset decision `ff_multitap_press` is about to make
-     * internally, evaluated against the PRE-call state, so a caller that
+    /* Bounce rejection (fix/quick-flare-detection, 2026-09-04) now lives
+     * entirely in core (`ff_multitap_press`'s own Rule 0,
+     * `FF_MULTITAP_BOUNCE_MS` — moved there after review: it is domain
+     * logic about "was this really a second press", the same kind of
+     * decision the gap/window rules already make, not something this
+     * layer should re-implement). This function does not pre-filter
+     * edges itself any more; it observes what core actually decided
+     * (below) instead of re-deriving it.
+     *
+     * Attempt-log bookkeeping — mirror the SAME reset decision
+     * `ff_multitap_press` is about to make internally (the gap/window
+     * half only; the bounce half is handled by the post-call check
+     * below), evaluated against the PRE-call state, so a caller that
      * wants an honest device log ("why did that 5-tap attempt fail?")
      * can have one without this module owning any platform logging call
      * itself (CLAUDE.md: "no `if` about domain behavior outside
@@ -4411,21 +4397,40 @@ void ff_shell_multitap_edge(ff_shell_t *sh_pub, uint32_t edge_ms, ff_multitap_lo
      * gaps (shell-owned bookkeeping alongside the core FSM, not inside
      * it — `ff_multitap_t` itself stays exactly as gesture-agnostic as
      * its own header documents). */
-    bool const had_run = sh->multitap.count > 0u;
+    uint8_t const count_before = sh->multitap.count;
     uint32_t const prev_last_ms = sh->multitap.last_ms;
+    bool const had_run = count_before > 0u;
     bool const gap_too_long = had_run && ff_time_reached(edge_ms, sh->multitap.last_ms + FF_MULTITAP_MAX_GAP_MS);
     bool const window_expired = had_run && ff_time_reached(edge_ms, sh->multitap.first_ms + FF_MULTITAP_WINDOW_MS);
-    bool const will_reset = had_run && (gap_too_long || window_expired);
+    bool const would_reset_if_accepted = had_run && (gap_too_long || window_expired);
 
-    if (will_reset && sh->multitap_run_n >= 2u && out_log != NULL) {
+    bool const fifth = ff_multitap_press(&sh->multitap, edge_ms);
+
+    /* Was this edge bounce-rejected by core? The ONLY reliable signal
+     * (rather than re-deriving core's own bounce check a second time,
+     * which would just be the same duplication review flagged) is that
+     * a true bounce-reject mutates NOTHING — both `count` AND `last_ms`
+     * come back byte-identical to their pre-call values. Checking
+     * `count` alone is NOT enough: a run of exactly 1 press followed by
+     * a GENUINE (not bounce) far-future tap resets `count` to 0 and
+     * immediately re-increments it to 1 — same numeric value as
+     * `count_before`, but `last_ms` DID move (to `edge_ms`) in that
+     * case, whereas a real bounce-reject leaves `last_ms` at
+     * `prev_last_ms` exactly (ff_multitap.h's own doc comment, and
+     * `test_multitap.c`'s `bounce_rejected_edge_leaves_first_and_last_
+     * ms_untouched`). */
+    bool const was_bounce_rejected = !fifth && sh->multitap.count == count_before && sh->multitap.last_ms == prev_last_ms;
+    if (was_bounce_rejected) {
+        return; /* nothing counted, nothing logged, nothing sounded — this edge never happened */
+    }
+
+    if (would_reset_if_accepted && sh->multitap_run_n >= 2u && out_log != NULL) {
         out_log->kind = gap_too_long ? FF_MULTITAP_LOG_RESET_GAP : FF_MULTITAP_LOG_RESET_WINDOW;
         out_log->n = sh->multitap_run_n;
         memcpy(out_log->gaps_ms, sh->multitap_run_gaps_ms, (size_t)(sh->multitap_run_n - 1u) * sizeof(uint32_t));
     }
 
-    bool const fifth = ff_multitap_press(&sh->multitap, edge_ms);
-
-    if (will_reset || !had_run) {
+    if (would_reset_if_accepted || !had_run) {
         sh->multitap_run_n = 1u; /* this edge is press 1 of a (re)started run — no gap to record */
     } else {
         /* Continuing an in-progress, still-live run: record the gap

@@ -931,28 +931,31 @@ typedef struct {
 } ff_multitap_log_t;
 
 /**
- * ff_shell_multitap_edge — `[api]` fix/quick-flare-detection (2026-09-03):
- * THE one entry point either target calls for every raw BOOT/HOME press
- * EDGE it can identify, each carrying THAT edge's own precise timestamp
- * — an ISR-captured `esp_timer` reading on-device
- * (`ff_power_boot_take_edges`, targets/esp32s3/components/ff_power/
- * include/ff_power.h), or the sim's own pre-debounce sample instant
- * (`ff_ctl_loop_boot_press`, targets/sim/ctl_loop.c) — so the shell owns
- * the whole "5 presses within a window" decision from the MOST precise
- * timing source either target can offer, not the debounce-delayed tick
- * `ff_shell_home_press` used before this PR (see that function's own
- * doc comment for why the two were split; this replaces its old
- * multitap-feeding role entirely — see docs/specs/S10-flare.md's
- * Amendments for the worst-case timing arithmetic this split fixes).
+ * ff_shell_multitap_edge — `[api]` fix/quick-flare-detection (2026-09-03,
+ * bounce-dedup moved into core 2026-09-04): THE one entry point either
+ * target calls for every raw BOOT/HOME press EDGE it can identify, each
+ * carrying THAT edge's own precise timestamp — an ISR-captured
+ * `esp_timer` reading on-device (`ff_power_boot_take_edges`,
+ * targets/esp32s3/components/ff_power/include/ff_power.h), or the sim's
+ * own pre-debounce sample instant (`ff_ctl_loop_boot_press`,
+ * targets/sim/ctl_loop.c) — so the shell owns the whole "5 presses
+ * within a window" decision from the MOST precise timing source either
+ * target can offer, not the debounce-delayed tick `ff_shell_home_press`
+ * used before this PR (see that function's own doc comment for why the
+ * two were split; this replaces its old multitap-feeding role entirely
+ * — see docs/specs/S10-flare.md's Amendments for the worst-case timing
+ * arithmetic this split fixes). This function does NOT pre-filter
+ * bounced edges itself — `ff_multitap_press` (core/include/ff_multitap.h)
+ * rejects a same-press bounce (`< FF_MULTITAP_BOUNCE_MS`, 30 ms, since
+ * the last press) on its own, mutating nothing; this function only
+ * observes that a call was a no-op (by comparing the FSM's state before
+ * and after) and, if so, does nothing else either — no log, no sound,
+ * no dispatch.
  *
- * Does three things, in this order:
+ * Does three things, in this order, for every edge core did NOT reject
+ * as a bounce:
  *
- *  1. Software de-bounces the edge against the LAST ACCEPTED edge: an
- *     `edge_ms` less than `FF_BUTTON_DEBOUNCE_MS` (30 ms) after it is
- *     silently ignored (a same-press ISR bounce, not a second physical
- *     press) — see `shell_t.multitap_last_edge_ms`'s own doc comment
- *     (ff_shell.c) for exactly what "last accepted" tracks.
- *  2. Feeds the accepted edge to the shell's own `ff_multitap_t`
+ *  1. Feeds the edge to the shell's own `ff_multitap_t`
  *     (core/include/ff_multitap.h, `ff_multitap_press(&multitap,
  *     edge_ms)`) and, on presses 2, 3 and 4 of a run that is still LIVE
  *     (not a run that just reset because this edge landed too late or
@@ -966,13 +969,13 @@ typedef struct {
  *     first tap of a fresh burst, stays silent) and never on the 5th
  *     (`FF_SOUND_FLARE_SENT`, fired once the send is confirmed on the
  *     wire — `shell_flare_wire` — is that press's own feedback).
- *  3. If `ff_multitap_press` reports the 5th press of one continuous
+ *  2. If `ff_multitap_press` reports the 5th press of one continuous
  *     run, dispatches `FF_INTENT_QUICK_FLARE` (ff_intent.h) — see that
  *     intent's own case in ff_shell.c for what it does (mirrors
  *     FF_INTENT_FLARE_START, idempotent against an already-sending
  *     flare, NOT gated on a visible takeover).
  *
- * 4. Writes an honest attempt-log fact into `*out_log` (if non-NULL —
+ * 3. Writes an honest attempt-log fact into `*out_log` (if non-NULL —
  *     `out_log` may be NULL, and every existing caller that does not
  *     care passes NULL; see `ff_multitap_log_t`'s own doc comment just
  *     above): `FF_MULTITAP_LOG_RESET_GAP`/`_RESET_WINDOW` when THIS
