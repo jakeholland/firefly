@@ -2167,7 +2167,7 @@ static void S16_c2_sender_overlay_cancel_emits_flare_end(void)
     disp.send_expires_in_ms = 299000;
 
     lv_obj_t *parent = lv_obj_create(lv_screen_active());
-    ff_scr_flare_build_sender_overlay(parent, &disp);
+    ff_scr_flare_build_sender_overlay(parent, &disp, /*screen_flip=*/false);
 
     click(find_button_with_label(parent, "CANCEL"));
 
