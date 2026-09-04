@@ -581,12 +581,13 @@ static int s27_ctl_sound_send_text(void *ctx, uint32_t dest, char const *utf8)
     (void)utf8;
     return 0;
 }
-static int s27_ctl_sound_send_private(void *ctx, uint32_t dest, uint8_t const *payload, size_t len)
+static int s27_ctl_sound_send_private(void *ctx, uint32_t dest, uint8_t const *payload, size_t len, uint32_t flags)
 {
     (void)ctx;
     (void)dest;
     (void)payload;
     (void)len;
+    (void)flags;
     return 0;
 }
 

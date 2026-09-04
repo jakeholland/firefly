@@ -2846,6 +2846,27 @@ static uint32_t decode_packet_to(uint8_t const *buf, size_t len)
     return tr.payload_variant.packet.to;
 }
 
+/** Decode a single outbound ToRadio frame (as written by mc_send_text /
+ *  mc_send_private into P.tx) and return its MeshPacket.want_ack —
+ *  feat/s10-flare-want-ack's own wire-level check: the flag must reach
+ *  the actual encoded packet through the real production sender
+ *  (wiring_mc_send_private -> mc_send_private), not just the injected
+ *  mock's flags argument. */
+static bool decode_packet_want_ack(uint8_t const *buf, size_t len)
+{
+    TEST_ASSERT_GREATER_OR_EQUAL_size_t(5u, len);
+    TEST_ASSERT_EQUAL_HEX8(MC_FRAME_MAGIC1, buf[0]);
+    TEST_ASSERT_EQUAL_HEX8(MC_FRAME_MAGIC2, buf[1]);
+    uint16_t flen = (uint16_t)((buf[2] << 8) | buf[3]);
+    TEST_ASSERT_LESS_OR_EQUAL_size_t(len - 4u, flen);
+
+    meshtastic_ToRadio tr = meshtastic_ToRadio_init_zero;
+    pb_istream_t is = pb_istream_from_buffer(buf + 4, flen);
+    TEST_ASSERT_TRUE(pb_decode(&is, meshtastic_ToRadio_fields, &tr));
+    TEST_ASSERT_EQUAL_INT(meshtastic_ToRadio_packet_tag, tr.which_payload_variant);
+    return tr.payload_variant.packet.want_ack;
+}
+
 /** Decode a single outbound ToRadio frame's decoded payload bytes as a
  *  NUL-terminated string into `out` (capacity `out_cap`) — the SEND_TEXT
  *  test below's way of checking WHAT was sent, not just to whom. */
@@ -2988,6 +3009,95 @@ static void S24_flare_chip_addresses_member_vs_whole_crew_as_flare(void)
     ff_feed_item_t const *it = ff_feed_at(ff_shell_feed(&H.shell), 0);
     TEST_ASSERT_EQUAL(FEED_FLARE, it->kind);
     TEST_ASSERT_EQUAL(FEED_DIR_OUT, it->dir);
+}
+
+/* feat/s10-flare-want-ack (ruling revised 2026-09-03 review round 2): the
+ * S22/S24 addressed "flare to scope" quick signal (shell_flare_to_scope,
+ * FF_INTENT_INBOX_FLARE) is a DIFFERENT send path from S10's own
+ * self-flare broadcast, but the SAME wire type (0x02 FLARE) — and
+ * docs/specs/S04-firefly-protocol.md's "want_ack true for FLARE only"
+ * rule is BY WIRE TYPE, not by send path (S22/S24 say nothing about
+ * want_ack either way). So both the member-addressed and
+ * whole-crew-broadcast sends must reach the wire with want_ack SET. */
+static void S10_want_ack_inbox_flare_to_scope_sets_want_ack(void)
+{
+    s22_connect_shell();
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, true));
+
+    ff_intent_t sel = {.kind = FF_INTENT_INBOX_SELECT_MEMBER, .u = {0}};
+    sel.u.node_id = DANA;
+    ff_shell_intent(&H.shell, &sel);
+
+    size_t tx_before = P.tx_len;
+    ff_intent_t flare = {.kind = FF_INTENT_INBOX_FLARE, .u = {0}};
+    ff_shell_intent(&H.shell, &flare);
+    TEST_ASSERT_GREATER_THAN_size_t(tx_before, P.tx_len);
+    TEST_ASSERT_TRUE(decode_packet_want_ack(P.tx + tx_before, P.tx_len - tx_before));
+
+    /* Second send: target reset to WHOLE_CREW -> broadcasts, still wants
+     * ack (same wire type, S04's rule doesn't care about destination). */
+    tx_before = P.tx_len;
+    ff_shell_intent(&H.shell, &flare);
+    TEST_ASSERT_GREATER_THAN_size_t(tx_before, P.tx_len);
+    TEST_ASSERT_TRUE(decode_packet_want_ack(P.tx + tx_before, P.tx_len - tx_before));
+}
+
+/* feat/s10-flare-want-ack, review round 2 — closes the adapter coverage
+ * gap flagged on PR #189: every prior want_ack test either called
+ * mc_send_private directly (test_meshclient.c, never touches
+ * wiring_mc_send_private's flags->want_ack mapping) or went through a
+ * MOCK sender (flare_wire_spy_t, which bypasses the real adapter
+ * entirely). This test drives real ff_shell_intent calls through the
+ * REAL production adapter (wiring_mc_send_private -> mc_send_private,
+ * via s22_connect_shell's live, connected mc_client_t) and nanopb-decodes
+ * the actual bytes that hit the wire — the one property this whole PR
+ * exists to prove. A `wiring_mc_send_private` mutation that maps `flags`
+ * to `want_ack` wrong (e.g. `want_ack = (flags == 0u)`) must fail this
+ * test regardless of which direction it gets backwards, because both
+ * directions (true and false) are asserted here on a real MeshPacket. */
+static void S10_want_ack_real_adapter_flare_true_flare_end_false_rally_false(void)
+{
+    s22_connect_shell();
+
+    /* 1) Self-flare FLARE (FF_INTENT_FLARE_START, S10's own Behavior
+     * path, no pairing/target needed — broadcast): wire type 0x02,
+     * want_ack MUST be true. */
+    size_t tx_before = P.tx_len;
+    ff_intent_t const start = {.kind = FF_INTENT_FLARE_START, .u = {0}};
+    ff_shell_intent(&H.shell, &start);
+    TEST_ASSERT_GREATER_THAN_size_t(tx_before, P.tx_len);
+    TEST_ASSERT_EQUAL_INT(FF_PROTO_TYPE_FLARE,
+                          decode_packet_private(P.tx + tx_before, P.tx_len - tx_before, NULL));
+    TEST_ASSERT_TRUE(decode_packet_want_ack(P.tx + tx_before, P.tx_len - tx_before));
+    ff_shell_tick(&H.shell, H.clk.t); /* settle the view projection, mirrors S10_wire_flare_start_accepted_* */
+    TEST_ASSERT_EQUAL(FF_FLARE_WIRE_SENT, ff_shell_view(&H.shell)->flare.wire_state);
+
+    /* 2) FLARE_END (CANCEL after SENT, same shell_flare_wire call site):
+     * wire type 0x03, want_ack MUST be false. */
+    tx_before = P.tx_len;
+    ff_intent_t const cancel = {.kind = FF_INTENT_FLARE_END, .u = {0}};
+    ff_shell_intent(&H.shell, &cancel);
+    TEST_ASSERT_GREATER_THAN_size_t(tx_before, P.tx_len);
+    TEST_ASSERT_EQUAL_INT(FF_PROTO_TYPE_FLARE_END,
+                          decode_packet_private(P.tx + tx_before, P.tx_len - tx_before, NULL));
+    TEST_ASSERT_FALSE(decode_packet_want_ack(P.tx + tx_before, P.tx_len - tx_before));
+
+    /* 3) RALLY (a member send, S22 AC4 path): a different wire type
+     * (0x04), explicitly excluded by S04 — want_ack MUST be false. */
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, true));
+    ff_latlon_t const here = {.lat = 39.7392, .lon = -104.9903};
+    ff_shell_set_my_pos(&H.shell, here);
+    ff_intent_t sel = {.kind = FF_INTENT_INBOX_SELECT_MEMBER, .u = {0}};
+    sel.u.node_id = DANA;
+    ff_shell_intent(&H.shell, &sel);
+
+    tx_before = P.tx_len;
+    ff_intent_t const rally = {.kind = FF_INTENT_INBOX_RALLY, .u = {0}};
+    ff_shell_intent(&H.shell, &rally); /* member rally: sends on the first tap */
+    TEST_ASSERT_GREATER_THAN_size_t(tx_before, P.tx_len);
+    TEST_ASSERT_EQUAL_INT(FF_PROTO_TYPE_RALLY,
+                          decode_packet_private(P.tx + tx_before, P.tx_len - tx_before, NULL));
+    TEST_ASSERT_FALSE(decode_packet_want_ack(P.tx + tx_before, P.tx_len - tx_before));
 }
 
 /* AC4 / honest-data (Tier 3) — a send to a member who was JUST unpaired,
@@ -6104,12 +6214,13 @@ static int s24d_loop_send_text(void *c, uint32_t d, char const *u)
     (void)u;
     return 0;
 }
-static int s24d_loop_send_private(void *c, uint32_t d, uint8_t const *p, size_t n)
+static int s24d_loop_send_private(void *c, uint32_t d, uint8_t const *p, size_t n, uint32_t flags)
 {
     (void)c;
     (void)d;
     (void)p;
     (void)n;
+    (void)flags;
     return 0;
 }
 static void S24_demo_loopback_seam_makes_out_items_appear(void)
@@ -6497,6 +6608,7 @@ typedef struct {
     uint8_t  buf[FF_PROTO_MAX_PAYLOAD];
     size_t   len;
     uint32_t dest;
+    uint32_t flags;    /* the flags param of the last send_private ATTEMPT, accepted or refused */
     int      n_sends; /* every ATTEMPT, accepted or refused */
     bool     accept;  /* false: send_private refuses (rc != 0) — "no mesh" */
 } flare_wire_spy_t;
@@ -6511,10 +6623,11 @@ static int flare_wire_spy_send_text(void *ctx, uint32_t dest, char const *utf8)
     return 0; /* unused by these tests; present only because the vtable requires it */
 }
 
-static int flare_wire_spy_send_private(void *ctx, uint32_t dest, uint8_t const *payload, size_t len)
+static int flare_wire_spy_send_private(void *ctx, uint32_t dest, uint8_t const *payload, size_t len, uint32_t flags)
 {
     flare_wire_spy_t *s = (flare_wire_spy_t *)ctx;
     s->n_sends++;
+    s->flags = flags; /* recorded on every attempt, accepted or refused — the caller's ask is real either way */
     if (!s->accept) return -1;
     s->dest = dest;
     s->len = (len > sizeof(s->buf)) ? sizeof(s->buf) : len;
@@ -6557,6 +6670,22 @@ static void S10_wire_flare_start_accepted_sends_one_flare_frame_dur_300(void)
 
     ff_shell_tick(&H.shell, H.clk.t);
     TEST_ASSERT_EQUAL(FF_FLARE_WIRE_SENT, ff_shell_view(&H.shell)->flare.wire_state);
+}
+
+/* feat/s10-flare-want-ack: FLARE_START's broadcast requests want_ack
+ * (S10 spec text, "## Behavior": "broadcast with want_ack") — the flag
+ * reaches the injected sender's send_private call, not just a hardcoded
+ * `false` swallowed inside the production wrapper. */
+static void S10_wire_flare_start_sets_want_ack(void)
+{
+    harness_init(100000u, false);
+    flare_wire_spy_install(true);
+
+    ff_intent_t const start = {.kind = FF_INTENT_FLARE_START, .u = {0}};
+    ff_shell_intent(&H.shell, &start);
+
+    TEST_ASSERT_EQUAL_INT(1, S.n_sends);
+    TEST_ASSERT_BITS(FF_WIRE_WANT_ACK, FF_WIRE_WANT_ACK, S.flags);
 }
 
 /* QUICK_FLARE (5x HOME) mirrors FLARE_START exactly: same one frame. */
@@ -6646,6 +6775,31 @@ static void S10_wire_cancel_after_sent_sends_one_flare_end_frame(void)
         TEST_ASSERT_EQUAL_INT(FF_PROTO_TYPE_FLARE_END, ff_proto_decode(S.buf, S.len, &msg));
     }
     TEST_ASSERT_FALSE(ff_shell_flare(&H.shell)->sending);
+}
+
+/* feat/s10-flare-want-ack (ruling revised 2026-09-03 review round 2):
+ * S04's "want_ack true for FLARE only" is BY WIRE TYPE — FLARE (0x02)
+ * yes, FLARE_END (0x03) no. shell_flare_wire's one send_private call
+ * site handles both the FLARE and FLARE_END encode/send (same call,
+ * flags now computed per-intent), so this pins the FLARE_END half
+ * explicitly: the CANCEL-after-SENT frame must NOT carry want_ack, even
+ * though the FLARE that started this same send did (see
+ * S10_wire_flare_start_sets_want_ack). */
+static void S10_wire_cancel_after_sent_does_not_set_want_ack(void)
+{
+    harness_init(100000u, false);
+    flare_wire_spy_install(true);
+
+    ff_intent_t const start = {.kind = FF_INTENT_FLARE_START, .u = {0}};
+    ff_shell_intent(&H.shell, &start);
+    TEST_ASSERT_EQUAL_INT(1, S.n_sends);
+    TEST_ASSERT_BITS(FF_WIRE_WANT_ACK, FF_WIRE_WANT_ACK, S.flags); /* the FLARE itself did want it */
+
+    ff_intent_t const cancel = {.kind = FF_INTENT_FLARE_END, .u = {0}};
+    ff_shell_intent(&H.shell, &cancel);
+
+    TEST_ASSERT_EQUAL_INT(2, S.n_sends);
+    TEST_ASSERT_EQUAL_UINT32(0u, S.flags & FF_WIRE_WANT_ACK); /* FLARE_END must not */
 }
 
 /* CANCEL while WAITING (never confirmed): ends locally, no frame at all —
@@ -7413,6 +7567,8 @@ int main(void)
     RUN_TEST(S16_b1_shell_footprint_excludes_the_pack);
     RUN_TEST(S22b_inbox_target_survives_rebuild_and_is_gated);
     RUN_TEST(S24_flare_chip_addresses_member_vs_whole_crew_as_flare);
+    RUN_TEST(S10_want_ack_inbox_flare_to_scope_sets_want_ack);
+    RUN_TEST(S10_want_ack_real_adapter_flare_true_flare_end_false_rally_false);
     RUN_TEST(S22_AC4_send_to_just_unpaired_member_is_refused);
     RUN_TEST(S22_AC4_rally_to_member_sends_first_tap);
     RUN_TEST(S22_AC4_rally_without_my_pos_sends_nothing);
@@ -7495,10 +7651,12 @@ int main(void)
     RUN_TEST(S10_quick_flare_launcher_mask_auto_end_dirties_key);
 
     RUN_TEST(S10_wire_flare_start_accepted_sends_one_flare_frame_dur_300);
+    RUN_TEST(S10_wire_flare_start_sets_want_ack);
     RUN_TEST(S10_wire_quick_flare_accepted_sends_one_flare_frame);
     RUN_TEST(S10_wire_flare_start_refused_stays_waiting_no_feed_item);
     RUN_TEST(S10_wire_flare_start_link_returns_after_7s_retries_and_sends);
     RUN_TEST(S10_wire_cancel_after_sent_sends_one_flare_end_frame);
+    RUN_TEST(S10_wire_cancel_after_sent_does_not_set_want_ack);
     RUN_TEST(S10_wire_cancel_while_waiting_sends_no_frame);
     RUN_TEST(S10_wire_auto_end_after_sent_sends_one_flare_end_frame);
     RUN_TEST(S10_wire_flare_sent_chime_does_not_fire_while_waiting);

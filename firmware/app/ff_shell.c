@@ -2904,16 +2904,24 @@ static bool shell_scope_thread_open(shell_t const *sh)
  *
  * FF_FLARE_INTENT_NONE: no-op.
  *
- * want_ack note (interpretation call, flagged per AGENTS.md — see the PR
- * body): S10's spec text says FLARE broadcasts "with want_ack", but
- * `ff_wiring_sender_t.send_private` (ff_wiring.h) has no want_ack
- * parameter at all — the production wrapper (`wiring_mc_send_private`,
- * ff_wiring.c) hardcodes `false` to the underlying `mc_send_private`
- * call, same as every OTHER sender.send_private call site already in
- * this file (shell_flare_to_scope, the two RALLY sends). Widening that
- * vtable to carry a per-call want_ack is a real gap but out of scope for
- * this PR, which fixes the encode/send being skipped ENTIRELY, not this
- * one flag.
+ * want_ack (feat/s10-flare-want-ack, 2026-09; ruling revised 2026-09-03
+ * review round 2): `docs/specs/S04-firefly-protocol.md` states the rule
+ * BY WIRE TYPE — "want_ack true for FLARE only" — not by send path. This
+ * helper's one send_private call above now computes its `flags`
+ * per-intent: FF_WIRE_WANT_ACK for FF_FLARE_INTENT_SEND_FLARE (wire type
+ * 0x02), `0` for FF_FLARE_INTENT_SEND_FLARE_END (0x03) — see the intent
+ * ternary just above the call. `wiring_mc_send_private` (ff_wiring.c)
+ * forwards whichever value to `mc_send_private`'s own `want_ack` bool, so
+ * `MeshPacket.want_ack` genuinely reflects the wire TYPE being sent, not
+ * merely "this is the self-flare helper". `shell_flare_to_scope` below —
+ * a different send PATH, but the SAME wire type 0x02 FLARE — sets the
+ * identical flag for the identical reason (S04 governs by type, and nothing
+ * in S22/S24 exempts it). The two RALLY sends stay unflagged: RALLY is a
+ * different wire type, explicitly excluded by S04's "FLARE only". This
+ * does NOT change what SENT means: it still tracks "accepted by the
+ * local mc_client", not "acknowledged by any node" — no ack event is
+ * consumed anywhere yet (see this PR's body for the mc_events_t hook a
+ * future ACKED state would use).
  *
  * Link-down detection is likewise NOT a second, explicit `ff_shell_link
  * != FF_SHELL_LINK_CONNECTED` gate here: the sender's own return code
@@ -2934,7 +2942,15 @@ static void shell_flare_wire(shell_t *sh, ff_flare_intent_t intent, uint16_t dur
 
     bool ok = false;
     if (sh->wiring.sender.send_private != NULL) {
-        int const rc = sh->wiring.sender.send_private(sh->wiring.sender.ctx, MC_ADDR_BROADCAST, buf, (size_t)n);
+        /* S04's wire-format rule is by TYPE, not by send path: "want_ack
+         * true for FLARE only" — FLARE (0x02) yes, FLARE_END (0x03) no.
+         * This one call site encodes/sends either (see the intent
+         * ternary above), so the flag itself must follow the intent, not
+         * be a constant. See ff_wiring.h's FF_WIRE_WANT_ACK doc and this
+         * spec's own Amendment (by-type per S04) for the ruling. */
+        uint32_t const flags = (intent == FF_FLARE_INTENT_SEND_FLARE) ? FF_WIRE_WANT_ACK : 0u;
+        int const rc = sh->wiring.sender.send_private(sh->wiring.sender.ctx, MC_ADDR_BROADCAST, buf, (size_t)n,
+                                                        flags);
         ok = (rc == 0);
     }
 
@@ -2986,7 +3002,17 @@ static void shell_flare_to_scope(shell_t *sh)
     uint8_t buf[FF_PROTO_MAX_PAYLOAD];
     int const n = ff_proto_encode_flare(buf, sizeof buf, FF_FLARE_DEFAULT_DUR_S);
     if (n > 0 && sh->wiring.sender.send_private != NULL) {
-        int const rc = sh->wiring.sender.send_private(sh->wiring.sender.ctx, dest, buf, (size_t)n);
+        /* FF_WIRE_WANT_ACK set: S04's rule is BY WIRE TYPE ("want_ack
+         * true for FLARE only"), and this call encodes the identical
+         * wire type 0x02 FLARE the self-flare broadcast does — just
+         * addressed differently (a member or the whole crew, from an
+         * open thread, instead of MC_ADDR_BROADCAST from the Radar
+         * face). Nothing in S22/S24 exempts this send path from S04's
+         * type rule (checked: neither spec mentions want_ack at all), so
+         * per the 2026-09-03 review-round-2 ruling this matches
+         * shell_flare_wire's FLARE case exactly. See this spec's S10
+         * Amendment ("by-type per S04"). */
+        int const rc = sh->wiring.sender.send_private(sh->wiring.sender.ctx, dest, buf, (size_t)n, FF_WIRE_WANT_ACK);
         if (rc == 0) {
             /* My own send lands in the feed (FEED_DIR_OUT) so the thread
              * shows both sides. Accepted sends only; a refused one
@@ -3954,7 +3980,12 @@ void ff_shell_intent(ff_shell_t *sh_pub, ff_intent_t const *in)
             uint8_t buf[FF_PROTO_MAX_PAYLOAD];
             int const n = ff_proto_encode_rally(buf, sizeof buf, pos, name);
             if (n > 0 && sh->wiring.sender.send_private != NULL) {
-                int const rc = sh->wiring.sender.send_private(sh->wiring.sender.ctx, dest, buf, (size_t)n);
+                /* No FF_WIRE_WANT_ACK: RALLY is a different wire type
+                 * (0x04) than FLARE (0x02) — S04's rule is BY TYPE
+                 * ("want_ack true for FLARE only"), and explicitly
+                 * excludes RALLY/STATUS. See this spec's S10 Amendment
+                 * ("by-type per S04"). */
+                int const rc = sh->wiring.sender.send_private(sh->wiring.sender.ctx, dest, buf, (size_t)n, 0);
                 if (rc == 0) {
                     /* Outgoing rally in the feed, carrying the SAME name that
                      * went on the wire (both sides of the thread; accepted
@@ -4027,7 +4058,12 @@ void ff_shell_intent(ff_shell_t *sh_pub, ff_intent_t const *in)
             uint8_t buf[FF_PROTO_MAX_PAYLOAD];
             int const n = ff_proto_encode_rally(buf, sizeof buf, pos, name);
             if (n > 0 && sh->wiring.sender.send_private != NULL) {
-                int const rc = sh->wiring.sender.send_private(sh->wiring.sender.ctx, dest, buf, (size_t)n);
+                /* No FF_WIRE_WANT_ACK: RALLY is a different wire type
+                 * (0x04) than FLARE (0x02) — S04's rule is BY TYPE
+                 * ("want_ack true for FLARE only"), and explicitly
+                 * excludes RALLY/STATUS. See this spec's S10 Amendment
+                 * ("by-type per S04"). */
+                int const rc = sh->wiring.sender.send_private(sh->wiring.sender.ctx, dest, buf, (size_t)n, 0);
                 if (rc == 0) {
                     /* S24 — outgoing rally in the feed, carrying the same
                      * place name that went on the wire (both sides of the

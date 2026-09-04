@@ -58,6 +58,7 @@ typedef struct {
     bool    used_send_private;
     uint8_t last_payload[32];
     size_t  last_payload_len;
+    uint32_t last_flags;
 } mock_sender_state_t;
 
 static int mock_send_text(void *ctx, uint32_t dest, char const *utf8)
@@ -71,12 +72,13 @@ static int mock_send_text(void *ctx, uint32_t dest, char const *utf8)
     return 0;
 }
 
-static int mock_send_private(void *ctx, uint32_t dest, uint8_t const *payload, size_t len)
+static int mock_send_private(void *ctx, uint32_t dest, uint8_t const *payload, size_t len, uint32_t flags)
 {
     mock_sender_state_t *s = (mock_sender_state_t *)ctx;
     s->calls++;
     s->last_dest = dest;
     s->used_send_private = true;
+    s->last_flags = flags;
     size_t n = len;
     if (n > sizeof(s->last_payload)) n = sizeof(s->last_payload);
     memcpy(s->last_payload, payload, n);

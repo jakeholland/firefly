@@ -169,9 +169,15 @@ static int wiring_mc_send_text(void *ctx, uint32_t dest, char const *utf8)
     return mc_send_text((mc_client_t *)ctx, dest, utf8);
 }
 
-static int wiring_mc_send_private(void *ctx, uint32_t dest, uint8_t const *payload, size_t len)
+/* `[api]`: `flags` (FF_WIRE_WANT_ACK — see ff_wiring.h) reaches
+ * mc_send_private's own `want_ack` bool directly. Every pre-existing
+ * caller passed no flags before this parameter existed, and 0 still maps
+ * to `want_ack == false` — unchanged behavior for every call site that
+ * doesn't opt in. */
+static int wiring_mc_send_private(void *ctx, uint32_t dest, uint8_t const *payload, size_t len, uint32_t flags)
 {
-    return mc_send_private((mc_client_t *)ctx, dest, FF_PORTNUM, payload, len, false);
+    bool const want_ack = (flags & FF_WIRE_WANT_ACK) != 0u;
+    return mc_send_private((mc_client_t *)ctx, dest, FF_PORTNUM, payload, len, want_ack);
 }
 
 void ff_wiring_init_with_sender(ff_wiring_ctx_t *w, ff_feed_t *feed, ff_crew_t *crew, ff_heard_t *heard,
