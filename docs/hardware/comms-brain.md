@@ -1,0 +1,69 @@
+# Comms brain: wiring and setup
+
+The UI puck (Waveshare ESP32-S3-Touch-LCD-1.46) talks to the comms brain
+(Seeed XIAO ESP32S3 + Wio-SX1262 running stock Meshtastic) over a 4-wire UART
+link at 115200 8N1, 3.3 V logic both sides, no level shifter. Wiring diagram
+(same content, drawn): https://claude.ai/code/artifact/3fcda222-93b5-41fb-9b63-eed48aa1336a
+
+Pin facts verified 2026-09-04 from docs.waveshare.com (ESP32-S3-Touch-LCD-1.46),
+wiki.seeedstudio.com (XIAO ESP32S3) and meshtastic/firmware
+`variants/esp32s3/seeed_xiao_s3/variant.h`.
+
+## Pin map
+
+| Wire   | Puck header      | XIAO pin      | Meshtastic setting |
+|--------|------------------|---------------|--------------------|
+| data   | TXD · GPIO43     | D3 · GPIO4    | `serial.rxd 4`     |
+| data   | RXD · GPIO44     | D1 · GPIO2    | `serial.txd 2`     |
+| ground | GND              | GND           |                    |
+| power  | 3V3 (or shared battery, see below) | 3V3 (or BAT+) | |
+
+- The puck's console is USB-Serial-JTAG, so its UART header pins GPIO43/44 are free.
+- **Do not use the XIAO's D6/D7 (GPIO43/44)**: Meshtastic's `seeed_xiao_s3` variant
+  assigns them to the L76K GPS (`GPS_TX_PIN 43`, `GPS_RX_PIN 44`). This supersedes
+  S15 deliverable 3's "D6/D7" wording.
+- D2 (GPIO3) is skipped (strapping pin). D8–D10 (GPIO7/8/9) are the radio's SPI;
+  NSS 41, RST 42, BUSY 40, DIO1 39, RXEN 38 are on the B2B connector.
+
+## Power
+
+- **Option B (recommended for the field):** one LiPo, Y-split to both boards'
+  battery inputs (puck MX1.25; XIAO BAT+/BAT- pads on the back). Each board keeps
+  its own regulator. Charge through ONE board's USB at a time (two chargers on
+  one cell must not run together). The XIAO stays on when the puck latches off.
+- **Option A (bench):** puck `3V3` header → XIAO `3V3` pin. The puck's MP1605 buck
+  is rated 2 A; the SX1262 TX burst is ~120 mA. The XIAO's 3V3 pin is its
+  regulator OUTPUT; back-feeding it is common on XIAO but not documented by Seeed —
+  measure before trusting it in the field.
+- Never use the puck's `5V` pin on battery (USB-only). Never power the Wio-SX1262
+  without its antenna.
+
+## Configure the XIAO once (USB, Python CLI)
+
+Flash stock Meshtastic "Seeed XIAO S3" with the web flasher, then:
+
+```
+meshtastic --set lora.region US
+meshtastic --set serial.enabled true --set serial.mode PROTO \
+           --set serial.baud BAUD_115200 --set serial.txd 2 --set serial.rxd 4
+meshtastic --set bluetooth.enabled false        # optional, saves power
+meshtastic --set-owner "Jake"
+meshtastic --ch-set name Firefly --ch-set psk random --ch-index 0   # copy the PSK to every crew node
+```
+
+PROTO mode exposes the protobuf client API (the same one the phone app uses) on
+those pins; the puck's meshclient (S03) speaks it.
+
+## Bring-up order
+
+1. Before the boards arrive: jumper puck TXD↔RXD on its header, flash with
+   `CONFIG_FF_UART_LOOPBACK_SELFTEST=y`, confirm the loopback PASS line in the
+   boot log (proves the driver + header pins alone).
+2. Flash + configure the XIAO over USB (above). Antenna on. Confirm it in the
+   Meshtastic app/CLI.
+3. Power both off. Wire the four lines. Check the cross: puck TXD → XIAO D3,
+   puck RXD ← XIAO D1.
+4. Power up. Puck log: `link: UART… TXD=43 RXD=44 115200`, then the meshclient
+   handshake and READY within a few seconds. Silence = TX/RX swapped; garbage +
+   rising resync counters = wrong baud.
+5. A second node (T1000-E / Heltec) sends a position → Radar within 10 s (S15 AC2).
