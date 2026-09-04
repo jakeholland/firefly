@@ -8,6 +8,7 @@
 #include <SDL.h>
 
 #include "face_dispatch.h"
+#include "ff_face_dispatch.h" /* fix/flare-cancel-taps — ff_face_dispatch_tick, shared with app_main.c */
 
 void ff_sim_lifecycle_init(ff_sim_lifecycle_t *lc)
 {
@@ -35,6 +36,24 @@ ff_idle_state_t ff_sim_lifecycle_pump(ff_idle_t *idle, bool *rebuild_pending, ui
     }
 
     bool const screen_blank = (idle_state == FF_IDLE_STATE_OFF) || (idle_state == FF_IDLE_STATE_SLEEP);
+
+    /* fix/flare-cancel-taps — the sim-side mirror of app_main.c's
+     * per-frame, non-rebuild countdown refresh (that file's own comment
+     * on the identical call has the full diagnosis). Single-threaded
+     * here (no esp_lvgl_port task, no lock needed), but the SAME "every
+     * frame, independent of rebuild_pending/finger_down/dirty" placement
+     * — it only ever changes one label's text, never the tree's shape,
+     * so it is safe under a held finger and gates on nothing but
+     * screen_blank (nothing visible to refresh while blank). Runs before
+     * the rebuild gate below on purpose: if this same frame ALSO does a
+     * real rebuild (a different, legitimate dirty reason), the rebuild's
+     * own fresh projection supersedes this anyway — ordering only
+     * matters for a frame that does NOT rebuild, where this is the one
+     * thing that touches the countdown at all. */
+    if (!screen_blank) {
+        ff_face_dispatch_tick(state);
+    }
+
     if (*rebuild_pending && !finger_down && !screen_blank) {
         lv_obj_clean(lv_screen_active());
         ff_build_face_screen(state);

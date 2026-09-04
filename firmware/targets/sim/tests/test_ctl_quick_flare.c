@@ -354,6 +354,289 @@ static void S10_wire_quick_flare_five_boot_presses_puts_one_flare_frame_on_the_w
     lv_deinit();
 }
 
+/* ---------------------------------------------------------------------
+ * fix/flare-cancel-taps — the diagnosis, pinned as tests.
+ *
+ * MAINTAINER REPORT (on glass, after a 5x HOME quick flare): "the CANCEL
+ * button doesn't work well — taps seem to pass through and I tapped it
+ * multiple times before it actually worked."
+ *
+ * Root cause (a), read+confirmed in ff_shell.c: `shell_render_key`
+ * coarsened `flare.send_expires_in_ms` to whole seconds and left it IN
+ * the render key, so the key dirtied once a second for the WHOLE life
+ * of a send. A dirty key gets a full `lv_obj_clean()` + rebuild
+ * (targets/esp32s3/main/app_main.c / targets/sim/sim_lifecycle.c), which
+ * destroys and recreates the sender overlay's own CANCEL button. A
+ * CANCEL press/release straddling one of those once-a-second rebuilds
+ * has its pressed object deleted out from under it — LVGL never fires
+ * the CLICKED. `S10_flare_countdown_alone_does_not_dirty_key_while_
+ * sending` (firmware/app/tests/test_shell.c) pins the SHELL-level half
+ * of this; the two tests below pin the same property end-to-end,
+ * through a REAL LVGL tree and a REAL synthetic pointer gesture.
+ * ------------------------------------------------------------------- */
+
+/* Advances `ctx->mock_clock_ms` to `target_ms` and pumps once — the
+ * "with a pump between" step the PR brief's repro recipe calls for,
+ * landing a real `ff_shell_tick`/rebuild-gate pass at that exact clock
+ * reading (mirrors app_main.c's per-frame order: time moves, THEN the
+ * frame's tick runs). */
+static void advance_and_pump(ff_ctl_loop_ctx_t *ctx, uint32_t target_ms)
+{
+    ctx->mock_clock_ms = target_ms;
+    ff_ctl_loop_pump(ctx);
+}
+
+/* One straddle attempt: press CANCEL 20ms BEFORE a countdown coarsening
+ * bucket boundary, let time cross it WHILE HELD (a pump lands mid-hold,
+ * exactly like a live tick would on the real device/sim), then release
+ * ~20ms after. Returns true iff `ctx->state.flare.sending` flipped false
+ * as a direct result — i.e. the tap actually registered.
+ *
+ * The two internal `ff_ctl_loop_pointer_press`/`_release` calls each add
+ * their OWN fixed 40ms indev-poll delay (`ctl_loop_pointer_step_delay`,
+ * ctl_loop.c) before the state transition they perform actually gets
+ * processed — accounted for below (subtracting 40 from the target
+ * before each call) so the PROCESSED press/release land as close to
+ * `boundary_ms -/+ 20` as this harness's fixed step size allows, not
+ * merely the raw field write. */
+static bool try_cancel_straddle(ff_ctl_loop_ctx_t *ctx, int32_t cx, int32_t cy, uint32_t boundary_ms)
+{
+    ctx->mock_clock_ms = boundary_ms - 20u - 40u;
+    ff_ctl_loop_pointer_press(ctx, cx, cy); /* processed at boundary_ms - 20 (old bucket) */
+
+    /* "with a pump between": time crosses the boundary while CANCEL is
+     * still held down — a genuine dirty tick (the OLD code's
+     * per-second coarsening bucket flip) lands in the middle of the
+     * gesture, exactly the straddle the maintainer's report describes.
+     * `ctx->mock_clock_ms` is left at `boundary_ms + 20` afterward. */
+    advance_and_pump(ctx, boundary_ms + 20u);
+
+    /* `ff_ctl_loop_pointer_release` adds its own +40ms step delay before
+     * the RELEASED state is actually processed, so this lands at
+     * `boundary_ms + 60` — after the boundary, still well inside the
+     * same held gesture. */
+    ff_ctl_loop_pointer_release(ctx);
+    ff_ctl_loop_pointer_step(ctx); /* one more settle step so the fired intent's rebuild lands */
+    ff_ctl_loop_pump(ctx);
+    lv_timer_handler();
+
+    return !ctx->state.flare.sending;
+}
+
+/* THE straddle test. Tries the gesture at THREE boundaries spread across
+ * the 30s window the brief asks for (early/mid/late) — a FRESH quick
+ * flare each time (a session only ever has one CANCEL to give), and
+ * requires EVERY one of them to end the send on that ONE gesture, no
+ * retry needed. Before this PR's fix this test fails intermittently
+ * exactly at the coarsening boundary (see the PR body for the pre-fix
+ * transcript: 0-3 successes out of these 3 offsets, never a reliable
+ * 3, which is the harness-level shape of "I tapped it multiple times
+ * before it actually worked"). */
+static void S10_quick_flare_cancel_straddling_a_countdown_bucket_boundary_ends_the_send(void)
+{
+    static uint32_t const kOffsetsMs[] = {1000u, 15000u, 29000u}; /* early / mid / late in the 30s window */
+
+    for (size_t i = 0; i < sizeof(kOffsetsMs) / sizeof(kOffsetsMs[0]); i++) {
+        static ff_shell_t shell;
+        static fp_pack_t pack;
+        static ff_ctl_loop_ctx_t ctx;
+
+        ff_shell_cfg_t shell_cfg;
+        memset(&shell_cfg, 0, sizeof(shell_cfg));
+        ff_ctl_loop_cfg_t cfg;
+        memset(&cfg, 0, sizeof(cfg));
+        cfg.mock_clock = true;
+
+        TEST_ASSERT_EQUAL_INT(0, ff_ctl_loop_open(&ctx, &shell, &pack, &shell_cfg, &cfg));
+        bool quit_flag = false;
+        (void)ff_ctl_loop_handlers(&ctx, &quit_flag);
+        ff_ctl_loop_pump(&ctx); /* settle the always-dirty first tick */
+        TEST_ASSERT_EQUAL(FF_APP_FACE_LAUNCHER, ctx.state.active_face);
+
+        for (int tap = 0; tap < 5; tap++) {
+            ff_ctl_loop_boot_press(&ctx);
+            if (tap < 4) {
+                ctx.mock_clock_ms += QF_EXTRA_GAP_MS;
+            }
+            ff_ctl_loop_pump(&ctx);
+        }
+        TEST_ASSERT_TRUE(ctx.state.flare.sending);
+
+        /* Run the clock forward to `kOffsetsMs[i]` into the send (settled,
+         * no gesture) so the boundary this attempt straddles is the
+         * `now + boundary_ms` one, then find CANCEL fresh at that moment
+         * — its exact screen position never moves, but a fresh lookup
+         * keeps this test honest about "the real built object", not an
+         * assumption it survived from before. */
+        advance_and_pump(&ctx, ctx.mock_clock_ms + kOffsetsMs[i]);
+        lv_refr_now(ctx.disp);
+        lv_obj_t *cancel_btn = find_button_with_label(lv_screen_active(), "CANCEL");
+        TEST_ASSERT_NOT_NULL_MESSAGE(cancel_btn, "CANCEL button not found before the straddle attempt");
+        lv_area_t area;
+        lv_obj_get_click_area(cancel_btn, &area);
+        int32_t const cx = (int32_t)(((int32_t)area.x1 + (int32_t)area.x2) / 2);
+        int32_t const cy = (int32_t)(((int32_t)area.y1 + (int32_t)area.y2) / 2);
+
+        /* The next whole-second coarsening boundary from HERE — same
+         * arithmetic shell_coarsen_ms used to apply (ms / 1000, so the
+         * boundary is wherever send_expires_in_ms next crosses a
+         * multiple of 1000). */
+        int32_t const remaining = ctx.state.flare.send_expires_in_ms;
+        uint32_t const rem_mod = (uint32_t)remaining % 1000u;
+        uint32_t to_boundary = (rem_mod == 0u) ? 1000u : rem_mod;
+        /* try_cancel_straddle positions the PROCESSED press 60ms before
+         * `boundary_ms` (20ms of margin plus the harness's own 40ms
+         * indev-poll step delay) — if the boundary found above is closer
+         * than that, targeting it would walk `ctx->mock_clock_ms`
+         * BACKWARD, which is not a real gesture the mock clock (or LVGL's
+         * own indev timing) is meant to represent. Roll forward one more
+         * whole bucket in that case so there is always real headroom. */
+        if (to_boundary < 100u) {
+            to_boundary += 1000u;
+        }
+        uint32_t const boundary_ms = ctx.mock_clock_ms + to_boundary;
+
+        char msg[256]; /* CLAUDE.md: GCC's -Wformat-truncation sizes %u against unsigned int's full
+                         * worst-case width (10 digits), not this call's actual short values — size against
+                         * that worst case rather than tuning the literal length this message happens to be. */
+        snprintf(msg, sizeof(msg),
+                 "straddle attempt at offset %us did not end the send on the FIRST tap — "
+                 "exactly the maintainer's 'tapped it multiple times' report",
+                 (unsigned)(kOffsetsMs[i] / 1000u));
+        TEST_ASSERT_TRUE_MESSAGE(try_cancel_straddle(&ctx, cx, cy, boundary_ms), msg);
+
+        ff_ctl_loop_close(&ctx);
+        ff_shell_close(&shell);
+        lv_deinit();
+    }
+}
+
+/* Zero rebuilds across the whole 30s window while sending, with NO
+ * touch anywhere — isolates "the countdown alone must not rebuild"
+ * from the CANCEL-specific tests above (which only prove a tap survives
+ * a straddle, not that nothing was rebuilding at all in between). Before
+ * this PR's fix, `ctx.rebuild_count` grew by ~30 over this window (one
+ * rebuild per coarsening bucket); after it, zero. */
+static void S10_quick_flare_zero_rebuilds_across_30s_while_sending(void)
+{
+    static ff_shell_t shell;
+    static fp_pack_t pack;
+    static ff_ctl_loop_ctx_t ctx;
+
+    ff_shell_cfg_t shell_cfg;
+    memset(&shell_cfg, 0, sizeof(shell_cfg));
+    ff_ctl_loop_cfg_t cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.mock_clock = true;
+
+    TEST_ASSERT_EQUAL_INT(0, ff_ctl_loop_open(&ctx, &shell, &pack, &shell_cfg, &cfg));
+    bool quit_flag = false;
+    (void)ff_ctl_loop_handlers(&ctx, &quit_flag);
+    ff_ctl_loop_pump(&ctx);
+    TEST_ASSERT_EQUAL(FF_APP_FACE_LAUNCHER, ctx.state.active_face);
+
+    for (int tap = 0; tap < 5; tap++) {
+        ff_ctl_loop_boot_press(&ctx);
+        if (tap < 4) {
+            ctx.mock_clock_ms += QF_EXTRA_GAP_MS;
+        }
+        ff_ctl_loop_pump(&ctx);
+    }
+    TEST_ASSERT_TRUE(ctx.state.flare.sending);
+
+    uint32_t const rebuilds_before = ctx.rebuild_count;
+    uint32_t const start_ms = ctx.mock_clock_ms;
+    for (uint32_t s = 1; s <= 30u; s++) {
+        advance_and_pump(&ctx, start_ms + s * 1000u);
+    }
+
+    TEST_ASSERT_TRUE_MESSAGE(ctx.state.flare.sending, "the send ended on its own within 30s — test setup invalid");
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(rebuilds_before, ctx.rebuild_count,
+                                      "the countdown alone caused a rebuild somewhere in the 30s window while "
+                                      "sending — send_expires_in_ms must stay excluded from the render key");
+
+    ff_ctl_loop_close(&ctx);
+    ff_shell_close(&shell);
+    lv_deinit();
+}
+
+/* Root cause (b): a tap on the DIMMED area — deliberately the SETTINGS
+ * satellite's own center, which the compass-ring geometry places just
+ * ~30px above CANCEL (SETTINGS sits at compass_pos 2 of 4, i.e. straight
+ * down from the hub at the orbit radius, 128px — CANCEL sits at 158px on
+ * the same line) — must be fully ABSORBED while sending: no satellite
+ * navigation, no change to the flare at all. Finds the satellite BEFORE
+ * sending starts (its position never moves) so the lookup itself does
+ * not depend on the dim/catcher behavior under test. */
+static void S10_quick_flare_dim_area_tap_emits_nothing(void)
+{
+    static ff_shell_t shell;
+    static fp_pack_t pack;
+    static ff_ctl_loop_ctx_t ctx;
+
+    ff_shell_cfg_t shell_cfg;
+    memset(&shell_cfg, 0, sizeof(shell_cfg));
+    ff_ctl_loop_cfg_t cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.mock_clock = true;
+
+    TEST_ASSERT_EQUAL_INT(0, ff_ctl_loop_open(&ctx, &shell, &pack, &shell_cfg, &cfg));
+    bool quit_flag = false;
+    (void)ff_ctl_loop_handlers(&ctx, &quit_flag);
+    ff_ctl_loop_pump(&ctx);
+    TEST_ASSERT_EQUAL(FF_APP_FACE_LAUNCHER, ctx.state.active_face);
+    lv_refr_now(ctx.disp);
+
+    lv_obj_t *settings_sat = find_button_with_label(lv_screen_active(), "SETTINGS");
+    TEST_ASSERT_NOT_NULL_MESSAGE(settings_sat, "the launcher's SETTINGS satellite was not found before sending");
+    lv_area_t area;
+    lv_obj_get_click_area(settings_sat, &area);
+    int32_t const cx = (int32_t)(((int32_t)area.x1 + (int32_t)area.x2) / 2);
+    int32_t const cy = (int32_t)(((int32_t)area.y1 + (int32_t)area.y2) / 2);
+
+    for (int tap = 0; tap < 5; tap++) {
+        ff_ctl_loop_boot_press(&ctx);
+        if (tap < 4) {
+            ctx.mock_clock_ms += QF_EXTRA_GAP_MS;
+        }
+        ff_ctl_loop_pump(&ctx);
+    }
+    TEST_ASSERT_TRUE_MESSAGE(ctx.state.flare.sending, "quick flare did not start — test setup invalid");
+
+    /* The 5th BOOT press's `ff_ctl_loop_pump` just tore down and rebuilt
+     * the WHOLE launcher tree (a legitimate dirty transition — `sending`
+     * flipping true) but never ran an actual LVGL layout/refresh pass
+     * over the fresh tree (`ff_ctl_loop_pump` never calls
+     * `lv_timer_handler`/`lv_refr_now`) — so the new `dim_catcher`'s own
+     * `coords` are not yet resolved to its full-puck size at this exact
+     * instant. `lv_refr_now` forces that layout pass now, same as every
+     * other ctl test that taps right after a face rebuild
+     * (`S10_quick_flare_launcher_cancel_button_ends_the_send`'s own
+     * `lv_refr_now` call above the sibling CANCEL tap). Without this, the
+     * very first synthetic press after a rebuild can hit-test against
+     * stale (pre-layout) coordinates — a harness artifact, not a real
+     * on-glass timing (a human's finger cannot physically move fast
+     * enough to land inside that window). */
+    lv_refr_now(ctx.disp);
+
+    ff_ctl_loop_pointer_press(&ctx, cx, cy);
+    ff_ctl_loop_pointer_release(&ctx);
+    ff_ctl_loop_pointer_step(&ctx);
+    ff_ctl_loop_pump(&ctx);
+    lv_timer_handler();
+
+    TEST_ASSERT_TRUE_MESSAGE(ctx.state.flare.sending,
+                              "a tap on the dimmed area (the SETTINGS satellite, ~30px off CANCEL) ended the send "
+                              "or otherwise reached something underneath — it must be fully absorbed");
+    TEST_ASSERT_EQUAL_MESSAGE(FF_APP_FACE_LAUNCHER, ctx.state.active_face,
+                               "a dim-area tap navigated to SETTINGS underneath the sender overlay — "
+                               "the dim layer is not absorbing taps (fix/flare-cancel-taps root cause (b))");
+
+    ff_ctl_loop_close(&ctx);
+    ff_shell_close(&shell);
+    lv_deinit();
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -362,6 +645,10 @@ int main(void)
     RUN_TEST(S10_quick_flare_four_boot_presses_do_not_start_sending);
     RUN_TEST(S10_quick_flare_launcher_cancel_button_ends_the_send);
     RUN_TEST(S10_wire_quick_flare_five_boot_presses_puts_one_flare_frame_on_the_wire);
+
+    RUN_TEST(S10_quick_flare_cancel_straddling_a_countdown_bucket_boundary_ends_the_send);
+    RUN_TEST(S10_quick_flare_zero_rebuilds_across_30s_while_sending);
+    RUN_TEST(S10_quick_flare_dim_area_tap_emits_nothing);
 
     return UNITY_END();
 }

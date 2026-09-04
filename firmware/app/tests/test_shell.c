@@ -6306,6 +6306,27 @@ static void S26c_AC1_keep_awake_true_while_quick_flare_pending(void)
     TEST_ASSERT_TRUE(ff_shell_keep_awake(&view, false));
 }
 
+/* fix/flare-cancel-taps — found by a FAILING ctl-level test, not by
+ * reading (AGENTS.md item 6): a flare `sending` was missing from this
+ * list, so the puck could dim `FF_IDLE_T_DIM_MS` into a 300s send with
+ * no further input, and S26's own wake-only-touch amendment then
+ * swallows the very next tap on CANCEL — it only wakes the screen,
+ * never reaches the button — needing a second, separate tap to actually
+ * cancel. `active_face` deliberately LAUNCHER here (not RADAR): quick
+ * flare can start while the launcher — which itself does NOT keep
+ * awake, per this function's own doc comment — is the active face, so
+ * this proves `sending` holds awake on its own merits, not by riding
+ * along with some other source. */
+static void S26c_AC1_keep_awake_true_while_flare_sending(void)
+{
+    ff_app_state_t view;
+    memset(&view, 0, sizeof(view));
+    view.active_face = FF_APP_FACE_LAUNCHER;
+    view.flare.sending = true;
+
+    TEST_ASSERT_TRUE(ff_shell_keep_awake(&view, false));
+}
+
 /* ------------------------------------------------------------------- */
 /* S10 quick flare (docs/specs/S10-flare.md's Amendments, 2026-09-03):  */
 /* "press HOME 5 times quickly to flare to the crew, no screen needed." */
@@ -6554,18 +6575,29 @@ static void S10_quick_flare_starts_under_a_takeover_but_leaves_it_alone(void)
 /* Review round 2 — the SEND-side flare's own natural auto-end
  * (ff_flare_tick's tick-driven FF_FLARE_INTENT_SEND_FLARE_END at
  * send_expiry_ms, never a FLARE_END/CANCEL intent) with base ==
- * LAUNCHER underneath — the launcher render-key mask's fourth
- * exception (`sending`/`send_expires_in_ms`, ff_shell.c's
- * shell_render_key) must keep the countdown genuinely LIVE in the key,
- * not just restore the initial flip: unlike `takeover_active` (which
- * this mask deliberately keeps masked, since nothing renders it on the
- * launcher), a live send's countdown IS rendered there, so there is no
- * "stable mid-send" negative control the way the sibling takeover test
- * above has one — a live send is EXPECTED to dirty the key as its
- * countdown advances. What this test pins is that the auto-end tick
- * specifically both dirties the key and clears `sending`, proving the
- * mask does not silently freeze the overlay at whatever it looked like
- * partway through. */
+ * LAUNCHER underneath — the launcher render-key mask's fourth exception
+ * (`sending`, ff_shell.c's shell_render_key) must keep the `sending`
+ * flip genuinely live through the mask, not just restore the initial
+ * true. What this test pins is that the auto-end tick both dirties the
+ * key and clears `sending`, proving the mask does not silently freeze
+ * the overlay stuck on glass forever.
+ *
+ * fix/flare-cancel-taps AMENDMENT: this test's ORIGINAL comment claimed
+ * "a live send's countdown IS rendered [on the launcher], so there is no
+ * 'stable mid-send' negative control ... a live send is EXPECTED to
+ * dirty the key as its countdown advances" — true at the time, and
+ * exactly the bug this PR fixes: that per-second dirtying tore the
+ * sender overlay's CANCEL button down and rebuilt it once a second for
+ * the whole life of a send, so a tap whose press/release straddled one
+ * of those rebuilds was silently dropped (the maintainer's "taps seem
+ * to pass through" report). `send_expires_in_ms` is now excluded from
+ * the render key entirely (shell_render_key's own comment on that
+ * field) and the countdown chip is kept live by a separate in-place
+ * label update (`ff_face_dispatch_tick`) instead — so a live send is
+ * now EXPECTED to hold a STABLE (non-dirty) key while its countdown
+ * ticks, and this test's own auto-end assertion below is unaffected:
+ * the dirty tick it pins comes entirely from the `sending` flip, not
+ * from any countdown coarsening. */
 static void S10_quick_flare_launcher_mask_auto_end_dirties_key(void)
 {
     harness_init(100000u, false);
@@ -6978,6 +7010,72 @@ static void S10_wire_launcher_mask_waiting_to_sent_dirties_key(void)
                               "the WAITING->SENT transition did not dirty the launcher key — with every other "
                               "field held constant, this can only mean the mask failed to restore wire_state");
     TEST_ASSERT_EQUAL_INT(FF_APP_FACE_LAUNCHER, ff_shell_view(&H.shell)->active_face);
+}
+
+/* ---------------------------------------------------------------------
+ * fix/flare-cancel-taps — root cause (a), pinned at the shell/render-key
+ * level (see shell_render_key's own top-of-function comment for the
+ * full diagnosis). While `sending` is held constant and `wire_state` is
+ * already SENT, nothing else changing, a whole-second countdown tick
+ * must NOT by itself dirty the render key any more: `send_expires_in_ms`
+ * is excluded from the key entirely now (kept live instead by an
+ * in-place LVGL label update, ff_face_dispatch_tick — outside the
+ * dirty/rebuild mechanism this test observes). Before this fix, every
+ * one of the four ticks below returned dirty=true (the coarsened
+ * send_expires_in_ms bucket moved), which is exactly the per-second
+ * CANCEL-button teardown+rebuild the maintainer's on-glass report
+ * describes. `sending`/`wire_state` themselves DO still dirty — proven
+ * by the positive control in the first assertion and by this test's
+ * sibling `S10_wire_launcher_mask_waiting_to_sent_dirties_key` /
+ * `S10_quick_flare_launcher_mask_auto_end_dirties_key` above — this test
+ * pins only the ONE property its name promises.
+ *
+ * THE PROXY, caught by a mutation dry-run before this test was trusted
+ * (AGENTS.md item 6): the first draft of this test left `active_face ==
+ * FF_APP_FACE_LAUNCHER` (the boot default) and passed even with
+ * `send_expires_in_ms` mutated BACK into a coarsened, un-excluded form
+ * at the top of `shell_render_key` — because the LAUNCHER branch's own
+ * "FOURTH exception" mask (further down that same function) memsets the
+ * whole key and restores only `sending`/`wire_state`, so on the launcher
+ * `send_expires_in_ms` reads 0 EITHER WAY and the mutation was
+ * invisible. Moved to RADAR (`FF_INTENT_LAUNCHER_SELECT` idx 0) so the
+ * top-of-function line under test is what actually decides the key here
+ * — no launcher-only mask sits between this test and the code it claims
+ * to cover. */
+static void S10_flare_countdown_alone_does_not_dirty_key_while_sending(void)
+{
+    harness_init(100000u, false);
+    (void)ff_shell_tick(&H.shell, H.clk.t); /* settle the always-dirty first tick */
+    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_LAUNCHER, ff_shell_view(&H.shell)->active_face);
+
+    ff_intent_t const to_radar = {.kind = FF_INTENT_LAUNCHER_SELECT, .u = {0}};
+    ff_shell_intent(&H.shell, &to_radar);
+    (void)ff_shell_tick(&H.shell, H.clk.t); /* face switch: settle */
+    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_RADAR, ff_shell_view(&H.shell)->active_face);
+
+    flare_wire_spy_install(true); /* accepted immediately: WAITING->SENT settles in the SAME tick as START */
+    ff_intent_t const start = {.kind = FF_INTENT_FLARE_START, .u = {0}};
+    ff_shell_intent(&H.shell, &start);
+    TEST_ASSERT_TRUE_MESSAGE(ff_shell_tick(&H.shell, H.clk.t),
+                              "positive control failed: starting a send must still dirty the key");
+    TEST_ASSERT_TRUE(ff_shell_flare(&H.shell)->sending);
+    TEST_ASSERT_EQUAL(FF_FLARE_WIRE_SENT, ff_shell_flare(&H.shell)->wire_state);
+
+    /* Cross four whole-second coarsening buckets with nothing else
+     * changing — well short of FF_FLARE_RESEND_MS (5000ms, see
+     * S10_wire_no_resend_across_many_ticks_while_sent above), so no
+     * resend attempt (and no wire_state churn) is due in this window
+     * either. Each of these used to flip the key's coarsened
+     * send_expires_in_ms bucket and dirty it once a second. */
+    for (int s = 1; s <= 4; s++) {
+        advance(1000u);
+        TEST_ASSERT_FALSE_MESSAGE(ff_shell_tick(&H.shell, H.clk.t),
+                                   "the countdown crossing a coarsening bucket alone dirtied the render key — "
+                                   "send_expires_in_ms must stay excluded from shell_render_key while sending "
+                                   "(fix/flare-cancel-taps root cause (a))");
+        TEST_ASSERT_TRUE(ff_shell_flare(&H.shell)->sending);
+        TEST_ASSERT_EQUAL(FF_FLARE_WIRE_SENT, ff_shell_flare(&H.shell)->wire_state);
+    }
 }
 
 /* ---------------------------------------------------------------------
@@ -7824,6 +7922,7 @@ int main(void)
     RUN_TEST(S26c_AC1_keep_awake_true_while_touch_cal_running);
     RUN_TEST(S26c_AC1_keep_awake_null_view_is_safe);
     RUN_TEST(S26c_AC1_keep_awake_true_while_quick_flare_pending);
+    RUN_TEST(S26c_AC1_keep_awake_true_while_flare_sending);
 
     /* S10 quick flare — 5x HOME flares to the crew. */
     RUN_TEST(S10_quick_flare_5_home_presses_start_sending);
@@ -7857,6 +7956,7 @@ int main(void)
     RUN_TEST(S10_wire_flare_sent_chime_fires_once_when_retry_succeeds);
     RUN_TEST(S10_wire_no_resend_across_many_ticks_while_sent);
     RUN_TEST(S10_wire_launcher_mask_waiting_to_sent_dirties_key);
+    RUN_TEST(S10_flare_countdown_alone_does_not_dirty_key_while_sending);
 
     /* S26 slice d — ff_notify + message banner. */
     RUN_TEST(S26_AC3_paired_message_pushes_banner);

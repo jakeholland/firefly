@@ -114,6 +114,16 @@ void ff_sim_lifecycle_init(ff_sim_lifecycle_t *lc);
  *      rebuild below, so a dirty tick that lands mid-deferral is never
  *      lost, only delayed (app_main.c's "accumulate dirty, drain on the
  *      first eligible tick" contract).
+ *   3b. (fix/flare-cancel-taps) `ff_face_dispatch_tick(state)` IFF
+ *      `!screen_blank` — the non-rebuild per-frame widget refresh
+ *      (today: the sender overlay's countdown chip, kept live without
+ *      forcing a rebuild — see that function's own doc comment,
+ *      app/ff_face_dispatch.h). Deliberately NOT gated on
+ *      `finger_down`/`rebuild_pending`: it only ever updates a label's
+ *      TEXT, never the tree's shape, so a held finger is never at risk
+ *      from it the way a real rebuild is — mirrors app_main.c's
+ *      identical call, placed the same way relative to the rebuild
+ *      gate below.
  *   4. Rebuild (`lv_obj_clean(lv_screen_active())` +
  *      `ff_build_face_screen(state)`, counting `*rebuild_count`) IFF
  *      `*rebuild_pending && !finger_down && !screen_blank`, where

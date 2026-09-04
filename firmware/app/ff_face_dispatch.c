@@ -82,3 +82,13 @@ void ff_face_dispatch_build(ff_app_state_t const *state, ff_face_dispatch_ctx_t 
         hooks->unknown_face(hooks->user_data, state);
     }
 }
+
+void ff_face_dispatch_tick(ff_app_state_t const *state)
+{
+    if (state == NULL) {
+        return;
+    }
+    if (state->flare.sending) {
+        ff_scr_flare_sender_overlay_tick(state->flare.send_expires_in_ms);
+    }
+}

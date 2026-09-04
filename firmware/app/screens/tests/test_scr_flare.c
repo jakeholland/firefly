@@ -640,6 +640,61 @@ static void S10_wire_sender_overlay_waiting_shows_no_mesh_copy(void)
         "WAITING must not claim 'you are flaring' while nothing has actually reached the mesh");
 }
 
+/* ---------------------------------------------------------------------
+ * fix/flare-cancel-taps — the countdown chip is refreshed IN PLACE
+ * (`ff_scr_flare_sender_overlay_tick`), never by a rebuild: this is the
+ * screen-level proof that a tick call actually moves the chip's own
+ * TEXT while leaving the rest of the tree — CANCEL specifically, the
+ * control the whole fix protects — completely untouched (same object,
+ * same child count). `send_expires_in_ms` is deliberately excluded from
+ * ff_shell.c's render key now (shell_render_key's own doc comment), so
+ * this path is the ONLY thing that keeps the countdown live; a
+ * regression that let the label go stale, or that quietly rebuilt the
+ * tree to update it, both fail here.
+ * ------------------------------------------------------------------- */
+
+static void S10_sender_overlay_countdown_tick_updates_label_in_place(void)
+{
+    ff_app_flare_t disp;
+    memset(&disp, 0, sizeof(disp));
+    disp.sending = true;
+    disp.send_expires_in_ms = 125000; /* "2:05" */
+    disp.wire_state = FF_FLARE_WIRE_SENT;
+
+    ff_scr_flare_build_sender_overlay(lv_screen_active(), &disp, /*screen_flip=*/false);
+    lv_obj_update_layout(lv_screen_active());
+
+    lv_obj_t *countdown_lbl = find_label_with_prefix(lv_screen_active(), "ends in");
+    TEST_ASSERT_NOT_NULL_MESSAGE(countdown_lbl, "the countdown chip must be built while sending");
+    TEST_ASSERT_EQUAL_STRING("ends in 2:05", lv_label_get_text(countdown_lbl));
+
+    lv_obj_t *cancel_lbl_before = find_label_with_prefix(lv_screen_active(), "CANCEL");
+    TEST_ASSERT_NOT_NULL(cancel_lbl_before);
+    lv_obj_t *cancel_btn_before = lv_obj_get_parent(cancel_lbl_before);
+    uint32_t const child_count_before = lv_obj_get_child_count(lv_screen_active());
+
+    ff_scr_flare_sender_overlay_tick(124000); /* one second later: "2:04" */
+
+    TEST_ASSERT_EQUAL_STRING_MESSAGE("ends in 2:04", lv_label_get_text(countdown_lbl),
+                                      "the countdown must advance via an in-place text update on the SAME label");
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(child_count_before, lv_obj_get_child_count(lv_screen_active()),
+                                      "the tick must not rebuild the tree — the screen's own child count changed");
+
+    lv_obj_t *cancel_lbl_after = find_label_with_prefix(lv_screen_active(), "CANCEL");
+    TEST_ASSERT_NOT_NULL(cancel_lbl_after);
+    lv_obj_t *cancel_btn_after = lv_obj_get_parent(cancel_lbl_after);
+    TEST_ASSERT_EQUAL_PTR_MESSAGE(cancel_btn_before, cancel_btn_after,
+                                   "CANCEL's own object identity must survive a countdown tick — this is the "
+                                   "control the whole fix protects");
+
+    /* A second tick, this time via a rebuild-free NO-OP tick before the
+     * overlay exists at all (nothing built yet in a fresh screen) proves
+     * the stashed label pointer safely no-ops rather than touching freed
+     * memory once the overlay is gone. */
+    lv_obj_clean(lv_screen_active());
+    ff_scr_flare_sender_overlay_tick(90000); /* must not crash / touch freed memory */
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -654,6 +709,7 @@ int main(void)
     RUN_TEST(S10_locked_arrow_head_clears_the_lock_chip);
     RUN_TEST(S10_sender_overlay_rim_matches_glass_geometry_normal);
     RUN_TEST(S10_sender_overlay_rim_matches_glass_geometry_flipped);
+    RUN_TEST(S10_sender_overlay_countdown_tick_updates_label_in_place);
 
     return UNITY_END();
 }
