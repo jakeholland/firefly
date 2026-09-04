@@ -22,6 +22,7 @@
 #include "ff_theme.h"
 #include "radar_layout.h"
 #include "scr_nav.h" /* ff_scr_button_create — the shared PRESS_LOCK-clearing button base (#145/#148) */
+#include "scr_widgets.h" /* ff_scr_glass_rim_create — the shared glass-concentric ring factory (fix/flare-rim-glass-geometry) */
 
 /* ---------------------------------------------------------------------
  * lv_line point storage.
@@ -179,21 +180,16 @@ static bool radar_cluster_all_stale(ff_radar_view_t const *r, radar_layout_wedge
  * fixture/golden for the proof the centre actually moves. */
 static void radar_build_rim_tint(lv_obj_t *parent, uint32_t color_hex, lv_opa_t opa, bool screen_flip)
 {
-    lv_obj_t *rim = lv_obj_create(parent);
-    lv_obj_remove_style_all(rim);
-    /* Concentric with the VISIBLE glass, not the framebuffer: the bezel
-     * window is offset from the pixel array (FF_THEME_GLASS_*), and a ring
-     * hugging the edge is the one element where 2 px shows. */
-    lv_obj_set_size(rim, 2 * FF_THEME_GLASS_R - 4, 2 * FF_THEME_GLASS_R - 4);
-    lv_obj_set_style_radius(rim, LV_RADIUS_CIRCLE, 0);
-    lv_obj_set_style_bg_opa(rim, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_border_width(rim, 5, 0); /* was 3: read too thin on glass once the rim sat inside the bezel (maintainer, 2026-09-02) */
-    lv_obj_set_style_border_color(rim, lv_color_hex(color_hex), 0);
-    lv_obj_set_style_border_opa(rim, opa, 0);
-    lv_obj_clear_flag(rim, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_clear_flag(rim, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_align(rim, LV_ALIGN_CENTER, ff_theme_glass_cx(screen_flip) - FF_THEME_PUCK_RADIUS_PX,
-                 ff_theme_glass_cy(screen_flip) - FF_THEME_PUCK_RADIUS_PX);
+    /* fix/flare-rim-glass-geometry: the geometry itself (concentric with
+     * the VISIBLE glass, not the framebuffer — FF_THEME_GLASS_*) now
+     * lives once, in ff_scr_glass_rim_create (scr_widgets.h/.c), so the
+     * flare sender overlay's rim can share it instead of re-deriving its
+     * own copy. This wrapper pins the ONE knob that was ever specific to
+     * Radar's own rim — the 5px border width (was 3: read too thin on
+     * glass once the rim sat inside the bezel, maintainer 2026-09-02) —
+     * and is otherwise byte-identical arithmetic to the pre-extraction
+     * version, so this face's goldens are unaffected by the move. */
+    ff_scr_glass_rim_create(parent, color_hex, opa, 5, screen_flip);
 }
 
 /* Status bar: clock / mesh / battery. Cross-mode chrome, not part of the

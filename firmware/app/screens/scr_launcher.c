@@ -865,7 +865,7 @@ void ff_scr_launcher_build(ff_app_state_t const *state)
     if (state->flare.sending) {
         lv_obj_set_style_opa(content, LV_OPA_30, 0);
     }
-    ff_scr_flare_build_sender_overlay(puck, &state->flare);
+    ff_scr_flare_build_sender_overlay(puck, &state->flare, state->settings.screen_flip);
 
     /* S26 slice d — the message banner, built LAST (after everything
      * above, sender overlay included) so it paints on top of whatever
