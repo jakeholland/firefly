@@ -111,6 +111,68 @@
  * ff_layout_safe_margin_x in this PR's body, then confirmed against the
  * REAL rendered click-area by test_face_hit_targets.c, same as every
  * other number in this file.
+ *
+ * ## Device follow-up 2 ("SPACE/DEL/T9 buttons too small" + "candidate
+ * row should scroll") — MODE's brief header stay, and why it reverted
+ *
+ * A first draft of this follow-up moved MODE into the header's
+ * BACK-to-SEND gap to free the bottom row for a bigger DEL/SPACE.
+ * Independent review (PR #193 round 1) caught that this put MODE only
+ * ~10px from SEND — too close, given the SEND-relocation section above
+ * states the rule as "SEND must never be adjacent to SPACE OR DEL"
+ * (accidental SENDS, not just from SPACE specifically): a mis-tap
+ * sliding off MODE onto SEND would ship a partial message. MODE
+ * returned to the bottom row, landing at DEL 48 / MODE 48 / SPACE 56 —
+ * a real, measured improvement over the pre-this-PR sizes, but smaller
+ * than the maintainer's actual target for DEL specifically (52 -> 48 is
+ * a regression on that one control, forced by the bottom row's own
+ * on-glass width at its THEN-frozen Y).
+ *
+ * ## Round 2 (PR #193 review) — unfreezing FF_COMPOSE_GRID_Y, the real
+ * lever
+ *
+ * Round 1's fix treated the bottom row's Y as fixed (frozen by PR #148
+ * review round 3, "the keys/rows below must not move" — a constraint
+ * that predates this maintainer ask entirely and was never revisited
+ * for it). Round 2's review named the real fix: LIFT the row — closer
+ * to the puck's center, the circle is wider, so the SAME three keys get
+ * more width for free, no key needs to shrink at all.
+ *
+ * The obvious way to lift it (moving FF_COMPOSE_GRID_Y itself, shifting
+ * every row including PRED's candidate strip clearance) turns out to be
+ * blocked by a DIFFERENT, already-zero-slack constraint this file
+ * hadn't previously connected to this problem: PRED mode's draft line
+ * and candidate strip. Measured directly (a headless layout dump, not
+ * hand math): the draft line's real rendered height is 16px, so at
+ * FF_COMPOSE_PRED_DRAFT_Y (70) its bottom edge lands at y=86 — only 4px
+ * above FF_COMPOSE_PRED_STRIP_Y (90). That 4px is ALL the slack PRED
+ * mode's own layout has; the strip cannot move up more than a few px
+ * without visually overlapping the draft line's own text, which in turn
+ * caps how far FF_COMPOSE_GRID_Y can move (via the frozen clearance
+ * assert below, `PRED_STRIP_Y + PRED_CHIP_H + FF_HIT_MIN_GAP_PX <=
+ * GRID_Y`) to only ~2px — nowhere near enough to matter for the bottom
+ * row's width.
+ *
+ * The lever that actually works, and stays entirely within what the
+ * review's own instruction already allowed ("keeping every row >=44px"
+ * — this applies to the LETTER/DIGIT grid rows too, not just the bottom
+ * one): shrink the letter/digit/symbol grid's OWN row height
+ * (FF_COMPOSE_GRID_ROW_H, split out from the single FF_COMPOSE_KEY_H
+ * every row used to share) from 56 to 50px — still 6px clear of the
+ * 44px hit floor, comfortably above it, not pinned to it. Because
+ * FF_COMPOSE_GRID_Y (= ROW0's own y) never moves, PRED mode's draft/
+ * strip relationship is COMPLETELY untouched by this — only ROW1, ROW2,
+ * and the bottom row shift up, by 6px each (18px total by the time the
+ * bottom row is reached), which is what actually earns the bottom row
+ * its extra width. FF_COMPOSE_GRID_Y itself stays defined at its
+ * current value (142) not because it's still frozen on principle — it
+ * is explicitly UNFROZEN, per the review's own instruction, and this
+ * file no longer claims otherwise — but because moving it is the one
+ * lever that's actually blocked by real geometry (PRED mode, above),
+ * while shrinking the grid row height is not blocked by anything and
+ * gets the same result. See FF_COMPOSE_DEL_W's own comment (below) for
+ * the resulting three-key allocation, computed against the row's real,
+ * now-much-wider on-glass width, not hand-picked.
  */
 #include "scr_compose.h"
 
@@ -244,26 +306,52 @@ _Static_assert(FF_COMPOSE_BUBBLE_H >= 40, "compose bubble shrank too far fitting
  * 100x46, row1 (4/5/6) is 122x46, row0 (1/2/3) is 132x46 — see this
  * file's PR body for the full before/after). */
 #define FF_COMPOSE_KEY_GAP 8  /* device follow-up: 10 -> 8 (the FF_HIT_MIN_GAP_PX floor); wider keys, tighter stack */
-#define FF_COMPOSE_KEY_H   56 /* SEND-relocation audit: 54 -> 56, the reclaimed BOTTOM_ROW_GAP_EXTRA spent on height;
-                                * >= FF_THEME_MIN_HIT_PX (assert below); see this file's header comment for the
-                                * "why 56, not 57" chord-width search. */
-#define FF_COMPOSE_BOTTOM_ROW_H 56 /* kept equal to FF_COMPOSE_KEY_H — see above */
 
-/* PR #148 review (should-fix 4): pinning DEL to the bare hit floor
- * shrank it from its pre-this-PR 52px to 44px — a real regression, not
- * an improvement, in a "make buttons bigger" PR. DEL gets its old 52px
- * back; MODE (this row's least-tapped key — mistapping it only cycles
- * keypad pages, never sends or deletes) is the one pinned to the exact
- * floor instead. SPACE still takes whatever the row's own chord-derived
- * width leaves over (computed at build time in compose_build_bottom_row,
- * same "never hand math" discipline as every other number here). See
- * this file's header comment, "SEND relocation". */
-#define FF_COMPOSE_DEL_W 52
-#define FF_COMPOSE_MODE_W FF_THEME_MIN_HIT_PX
+/* Round 2 (PR #193 review, "unfreeze GRID_Y ... lift the row"): the
+ * letter/digit/symbol grid (rows 0-2) and the bottom row (DEL/MODE/
+ * SPACE) used to share ONE height constant (56, both at the same
+ * documented ceiling). Round 2 splits them: the grid rows shrink to
+ * FF_COMPOSE_GRID_ROW_H (56 -> 50, still 6px clear of the 44px hit
+ * floor, never pinned to it) so ROW1/ROW2/the bottom row all shift up
+ * 6px per row (18px total by the bottom row) WITHOUT moving
+ * FF_COMPOSE_GRID_Y itself (ROW0's own y) — see this file's header
+ * comment, "Round 2", for why moving GRID_Y directly is blocked by
+ * PRED mode's own already-zero-slack draft/strip clearance, and why
+ * this lever isn't. FF_COMPOSE_BOTTOM_ROW_H stays 56 — the ORIGINAL
+ * target height for DEL/MODE/SPACE — unaffected; the bottom row is now
+ * taller than the grid rows above it, which is fine (bigger, not
+ * "matching", was always the actual ask). */
+#define FF_COMPOSE_GRID_ROW_H 50
+#define FF_COMPOSE_BOTTOM_ROW_H 56
+
+/* Device follow-up 2, round 2 (PR #193 review: "the constraint is
+ * vertical, not horizontal — lift the row"). Round 1 (see this file's
+ * header comment) treated the bottom row's Y as fixed and could only
+ * reach DEL 48 / MODE 48 / SPACE 56 — DEL a real regression from its
+ * pre-this-PR 52px. Round 2 lifts the row instead (FF_COMPOSE_GRID_ROW_H
+ * shrinking the grid rows above it, NOT FF_COMPOSE_GRID_Y itself — see
+ * this file's header comment, "Round 2", for why moving GRID_Y directly
+ * is blocked by PRED mode's own draft/strip clearance and why shrinking
+ * the grid row height isn't). Recomputed via ff_layout_safe_margin_x at
+ * the bottom row's NEW y (316, was 334) with the same 8px "glass safety"
+ * (FF_COMPOSE_BOTTOM_ROW_SAFETY_PX, the FLARE_CHIP_GLASS_SAFETY_PX
+ * precedent) round 1 already established: margin 93px, row width 226px,
+ * 210px for three keys after two 8px gaps — 58px more than round 1's
+ * 152px, comfortably enough for the review's full target (DEL 64 / MODE
+ * 56 / SPACE 88 = 208px + gaps). SPACE takes the row's own real
+ * remainder rather than being hand-picked, landing at 90px — 2px OVER
+ * the review's target, not under it. Every number here is VERIFIED
+ * against the real rendered click-area by test_face_hit_targets.c and
+ * test_scr_intent.c's S99_compose_space_del_mode_pinned_dimensions, not
+ * this comment's own arithmetic (PR #86's lesson, repeated for the Nth
+ * time in this file because it keeps paying off). */
+#define FF_COMPOSE_BOTTOM_ROW_SAFETY_PX 8.0f
+#define FF_COMPOSE_DEL_W 64
+#define FF_COMPOSE_MODE_W 56
 _Static_assert(FF_COMPOSE_DEL_W >= FF_THEME_MIN_HIT_PX, "DEL must clear the 44px hit-target floor");
-_Static_assert(FF_COMPOSE_MODE_W >= FF_THEME_MIN_HIT_PX, "MODE chip must clear the 44px hit-target floor");
+_Static_assert(FF_COMPOSE_MODE_W >= 48, "MODE must clear the reviewer's explicit >=48px floor (PR #193)");
 
-_Static_assert(FF_COMPOSE_KEY_H >= FF_THEME_MIN_HIT_PX, "compose grid keys must clear the 44px hit-target floor");
+_Static_assert(FF_COMPOSE_GRID_ROW_H >= FF_THEME_MIN_HIT_PX, "compose grid keys must clear the 44px hit-target floor");
 _Static_assert(FF_COMPOSE_BOTTOM_ROW_H >= FF_THEME_MIN_HIT_PX,
                "compose bottom row must clear the 44px hit-target floor");
 _Static_assert(FF_COMPOSE_KEY_GAP >= FF_HIT_MIN_GAP_PX,
@@ -272,9 +360,9 @@ _Static_assert(FF_COMPOSE_KEY_GAP >= FF_HIT_MIN_GAP_PX,
 /* Row 0 (keys 1-3), row 1 (keys 4-6), row 2 (keys 7-9), then the DEL/SPACE/MODE row
  * (SEND relocation: this row no longer carries SEND — see this file's header comment). */
 #define FF_COMPOSE_ROW0_Y (FF_COMPOSE_GRID_Y)
-#define FF_COMPOSE_ROW1_Y (FF_COMPOSE_ROW0_Y + FF_COMPOSE_KEY_H + FF_COMPOSE_KEY_GAP)
-#define FF_COMPOSE_ROW2_Y (FF_COMPOSE_ROW1_Y + FF_COMPOSE_KEY_H + FF_COMPOSE_KEY_GAP)
-#define FF_COMPOSE_BOTTOM_ROW_Y (FF_COMPOSE_ROW2_Y + FF_COMPOSE_KEY_H + FF_COMPOSE_KEY_GAP)
+#define FF_COMPOSE_ROW1_Y (FF_COMPOSE_ROW0_Y + FF_COMPOSE_GRID_ROW_H + FF_COMPOSE_KEY_GAP)
+#define FF_COMPOSE_ROW2_Y (FF_COMPOSE_ROW1_Y + FF_COMPOSE_GRID_ROW_H + FF_COMPOSE_KEY_GAP)
+#define FF_COMPOSE_BOTTOM_ROW_Y (FF_COMPOSE_ROW2_Y + FF_COMPOSE_GRID_ROW_H + FF_COMPOSE_KEY_GAP)
 
 /* S15c guard: the whole T9 stack must stay inside the 412 puck square (the
  * bottom DEL/SPACE/MODE row is the lowest thing on this face). Square-fit
@@ -363,6 +451,28 @@ static int32_t compose_send_x(void)
     float const max_dx = ff_layout_chord_half_width(far_dy, safe_radius);
     int32_t const x2 = (int32_t)floorf((float)FF_THEME_PUCK_RADIUS_PX + max_dx); /* inclusive right edge */
     return x2 - FF_COMPOSE_SEND_HEADER_W + 1;
+}
+
+/**
+ * compose_bottom_row_margin_x — the bottom DEL/MODE/SPACE row's own
+ * horizontal margin, computed like compose_safe_margin_x but with an
+ * 8px "glass safety" (FF_COMPOSE_BOTTOM_ROW_SAFETY_PX) instead of this
+ * file's more conservative file-wide 10px (FF_COMPOSE_SAFETY_PX) — the
+ * FLARE_CHIP_GLASS_SAFETY_PX precedent (scr_flare.c), per PR #193's
+ * review ("compute containment at the bottom row's y with ff_layout's
+ * chord helper and the 8px glass safety"). Scoped to ONLY this row
+ * (not a change to the shared FF_COMPOSE_SAFETY_PX every other row in
+ * this file still uses) so nothing else on this screen moves. See
+ * FF_COMPOSE_DEL_W's own comment for the full margin/row-width
+ * arithmetic this unlocks (122px margin, 168px row, 152px for three
+ * keys after two 8px gaps — still short of the review's literal target,
+ * closest honest fit documented there).
+ */
+static int32_t compose_bottom_row_margin_x(int32_t top_y, int32_t h)
+{
+    float margin = ff_layout_safe_margin_x((float)top_y, (float)h, (float)FF_THEME_PUCK_RADIUS_PX,
+                                            (float)FF_THEME_PUCK_RADIUS_PX, FF_COMPOSE_BOTTOM_ROW_SAFETY_PX);
+    return (int32_t)ceilf(margin);
 }
 
 /* compose_to_left / compose_to_width — PR #148 review round 3 (blocking
@@ -737,22 +847,19 @@ static void compose_build_grid_row(lv_obj_t *container, ff_app_compose_mode_t mo
     for (int32_t col = 0; col < 3; col++) {
         uint8_t key = (uint8_t)(first_key + col);
         int32_t x = margin_x + col * (key_w + FF_COMPOSE_KEY_GAP);
-        compose_make_key(container, compose_legend_for(mode, key), x, y, key_w, FF_COMPOSE_KEY_H, key,
+        compose_make_key(container, compose_legend_for(mode, key), x, y, key_w, FF_COMPOSE_GRID_ROW_H, key,
                           FF_THEME_COLOR_SURFACE, FF_THEME_COLOR_INK);
     }
 }
 
-/* DEL / SPACE / MODE — SEND no longer lives in this row (see this file's
+/* DEL / MODE / SPACE — SEND no longer lives in this row (see this file's
  * header comment, "SEND relocation": SEND moved to the header's top-right
- * corner specifically so it can never again sit edge-to-edge with SPACE).
- *
- * PR #148 review (should-fix 4): pinning BOTH DEL and MODE to the bare
- * 44px floor (the original shape of this fix) shrank DEL from its old
- * 52x54 to 44x56 — a real regression in a PR whose whole point was
- * bigger buttons. MODE (the least-tapped key in this row — mistapping it
- * only cycles ABC/123/SYM/T9) stays AT the floor; DEL gets its own
- * dedicated FF_COMPOSE_DEL_W (52px, its pre-this-PR width) back; SPACE
- * still takes whatever the row's own chord-derived width leaves over —
+ * corner specifically so it can never again sit edge-to-edge with SPACE
+ * OR DEL — the PR #193 review's own restatement of the S08 rule). MODE
+ * returned here from a brief stay in the header (PR #193 review: too
+ * close to SEND there). Sizes are FF_COMPOSE_DEL_W/FF_COMPOSE_MODE_W (see
+ * their own comment for the full margin/row-width arithmetic); SPACE
+ * takes whatever the row's own chord-derived width leaves over —
  * computed here, never hand-picked, same discipline as every other size
  * in this file. */
 static void compose_build_bottom_row(lv_obj_t *container, ff_app_compose_mode_t mode, int32_t y, int32_t margin_x)
@@ -779,13 +886,11 @@ static void compose_build_bottom_row(lv_obj_t *container, ff_app_compose_mode_t 
     compose_make_key(container, compose_legend_for(mode, 0), space_x, y, space_w, FF_COMPOSE_BOTTOM_ROW_H, 0,
                       FF_THEME_COLOR_SURFACE, FF_THEME_COLOR_INK);
 
-    /* Mode chip — relocated here from the header (SEND relocation). Same
-     * "always shows the current mode's name" contract the S08 Amendments
-     * ruling requires (compose_update_mode_chip_label), just a new home:
-     * mis-tapping it only cycles ABC/123/SYM/T9, never sends, so it's the
-     * harmless neighbor SPACE can safely share this row with — and, per
-     * the should-fix above, the one this row's floor-sized key belongs
-     * on, not DEL. */
+    /* Mode chip — back on the bottom row (PR #193 review). Same "always
+     * shows the current mode's name" contract the S08 Amendments ruling
+     * requires (compose_update_mode_chip_label); mis-tapping it only
+     * cycles ABC/123/SYM/T9, never sends, so it's the harmless neighbor
+     * SPACE can safely share this row with. */
     int32_t mode_x = space_x + space_w + FF_COMPOSE_KEY_GAP;
     lv_obj_t *mode_chip = ff_scr_button_create(container);
     lv_obj_remove_style_all(mode_chip);
@@ -818,10 +923,10 @@ static void compose_build_bottom_row(lv_obj_t *container, ff_app_compose_mode_t 
  * between the margin calculation and the actual child placement. */
 static void compose_build_keys(lv_obj_t *container, ff_app_compose_mode_t mode)
 {
-    int32_t margin_row0 = compose_safe_margin_x(FF_COMPOSE_ROW0_Y, FF_COMPOSE_KEY_H);
-    int32_t margin_row1 = compose_safe_margin_x(FF_COMPOSE_ROW1_Y, FF_COMPOSE_KEY_H);
-    int32_t margin_row2 = compose_safe_margin_x(FF_COMPOSE_ROW2_Y, FF_COMPOSE_KEY_H);
-    int32_t margin_bottom = compose_safe_margin_x(FF_COMPOSE_BOTTOM_ROW_Y, FF_COMPOSE_BOTTOM_ROW_H);
+    int32_t margin_row0 = compose_safe_margin_x(FF_COMPOSE_ROW0_Y, FF_COMPOSE_GRID_ROW_H);
+    int32_t margin_row1 = compose_safe_margin_x(FF_COMPOSE_ROW1_Y, FF_COMPOSE_GRID_ROW_H);
+    int32_t margin_row2 = compose_safe_margin_x(FF_COMPOSE_ROW2_Y, FF_COMPOSE_GRID_ROW_H);
+    int32_t margin_bottom = compose_bottom_row_margin_x(FF_COMPOSE_BOTTOM_ROW_Y, FF_COMPOSE_BOTTOM_ROW_H);
 
     compose_build_grid_row(container, mode, FF_COMPOSE_ROW0_Y - FF_COMPOSE_GRID_Y, 1, margin_row0);
     compose_build_grid_row(container, mode, FF_COMPOSE_ROW1_Y - FF_COMPOSE_GRID_Y, 4, margin_row1);
@@ -937,6 +1042,14 @@ static void compose_make_cand_chip(lv_obj_t *strip, char const *text, bool from_
     lv_obj_set_style_bg_opa(chip, LV_OPA_COVER, 0);
     lv_obj_set_style_bg_color(chip, lv_color_hex(selected ? FF_THEME_COLOR_AMBER : FF_THEME_COLOR_SURFACE), 0);
     lv_obj_add_event_cb(chip, compose_cand_click_cb, LV_EVENT_CLICKED, (void *)(uintptr_t)index);
+    /* Device follow-up ("T9 autocomplete words should be horizontally
+     * scrollable"): SNAPPABLE marks this chip as a valid scroll-snap
+     * landing spot for the strip's own lv_obj_set_scroll_snap_x — see
+     * compose_build_pred_strip's own comment. Off by default on any LVGL
+     * object; harmless on a strip that never overflows (fewer/narrower
+     * candidates than fit the viewport), since nothing to snap TO ever
+     * needs to move. */
+    lv_obj_add_flag(chip, LV_OBJ_FLAG_SNAPPABLE);
 
     char buf[FF_APP_COMPOSE_WORD_LEN + 4];
     if (from_pack) {
@@ -956,11 +1069,74 @@ static void compose_make_cand_chip(lv_obj_t *strip, char const *text, bool from_
     }
 }
 
-/* The candidate strip: a centered horizontal row of chips from
- * `cand[0..n_cand)`, plus a trailing › chip when more matches exist than
- * are shown. On a no-match, a single dim "no match" affordance (not a chip,
- * not clickable) — never fabricated candidates. On the cold open
- * (n_cand==0, not a no-match), nothing at all. */
+/* compose_add_pred_scroll_catcher — the PRED strip's own copy of
+ * scr_inbox.c's inbox_add_scroll_catcher (S17 debt cleanup) idiom: a
+ * FLOATING, callback-less, transparent hit-rect sized to the strip's own
+ * viewport, added FIRST (z-order load-bearing, same requirement as
+ * inbox's copy — LVGL's hit search checks children in REVERSE index
+ * order, so every REAL chip, added after this one, still wins whenever a
+ * touch actually lands on it). Needed because — unlike inbox's
+ * edge-to-edge rows — this strip's chips are separated by real
+ * FF_COMPOSE_PRED_CHIP_GAP background gaps a thumb can land in; without
+ * a catcher, a touch there hits nothing at all (LVGL's hit test requires
+ * LV_OBJ_FLAG_CLICKABLE on the object actually under the point) and can
+ * never become a scroll drag. FLOATING + no registered callback is also
+ * what test_face_hit_targets.c's own Exclusion 4
+ * (sweep_is_inert_scroll_catcher) and this file's local
+ * walk_assert_press_feedback (test_scr_intent.c) both already recognize
+ * as "a scroll-relay, not a real control" — this catcher needs neither
+ * its own adjacency clearance against the real chips it overlaps nor its
+ * own press-state feedback, for the same reason inbox's never has. */
+static void compose_add_pred_scroll_catcher(lv_obj_t *strip, int32_t strip_w)
+{
+    lv_obj_t *catcher = lv_obj_create(strip);
+    lv_obj_remove_style_all(catcher);
+    lv_obj_add_flag(catcher, LV_OBJ_FLAG_FLOATING);
+    lv_obj_clear_flag(catcher, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_style_bg_opa(catcher, LV_OPA_TRANSP, 0);
+    lv_obj_set_pos(catcher, 0, 0);
+    lv_obj_set_size(catcher, strip_w, FF_COMPOSE_PRED_CHIP_H);
+}
+
+/* The candidate strip: a horizontal row of chips from `cand[0..n_cand)`,
+ * plus a trailing › chip when more matches exist than are shown. On a
+ * no-match, a single dim "no match" affordance (not a chip, not
+ * clickable) — never fabricated candidates. On the cold open (n_cand==0,
+ * not a no-match), nothing at all.
+ *
+ * Device follow-up ("T9 autocomplete words should be horizontally
+ * scrollable if possible"): before this change `strip` sized itself to
+ * LV_SIZE_CONTENT and was never scrollable — with FF_APP_COMPOSE_MAX_CAND
+ * (6) candidates and real words (not just "the"/"tie"/"vie"), the row's
+ * own content routinely measured wider than the circle's safe width at
+ * this Y (measured: ~377px of chips for a realistic 6-candidate set vs.
+ * ~316px actually safe here), silently painting past the bezel-margin
+ * bar with no fixture ever having exercised n_cand > 3 to catch it. Fixed
+ * by bounding `strip` to its own real chord-derived width (same
+ * compose_safe_margin_x every other row here uses) and making IT the
+ * thing that scrolls: LV_DIR_HOR + lv_obj_set_scroll_snap_x(START) snaps
+ * whichever chip is nearest the left edge into place on release (no
+ * scrollbar — LV_SCROLLBAR_MODE_OFF, matching this codebase's other
+ * scroll lists), left-aligned (LV_FLEX_ALIGN_START, not the old CENTER)
+ * so the first candidate sits flush left and stays there through a fresh
+ * build (a rebuild is a brand-new `strip` object — scroll_x starts at 0
+ * by construction, which is what keeps it "reset to the left on every new
+ * prediction set" without any explicit reset code; see
+ * S99_compose_pred_strip_scroll_resets_on_new_prediction_set).
+ *
+ * `strip` itself stays non-clickable (its chips are the real controls,
+ * same as before) — EXCEPT for a floating scroll-catcher child
+ * (compose_add_pred_scroll_catcher below), the exact idiom
+ * scr_inbox.c's own inbox_add_scroll_catcher already established (S17
+ * debt cleanup) for this identical problem: a chip strip's inter-chip
+ * GAPS (FF_COMPOSE_PRED_CHIP_GAP px each) are real background between
+ * real controls, unlike inbox's edge-to-edge rows, so without a catcher a
+ * touch landing in a gap hits nothing and can't start a scroll drag at
+ * all. Every real chip's own PRESS_LOCK (ff_scr_button_create) is what
+ * then keeps a horizontal drag that DOES start on a chip from ever
+ * committing that chip's SELECT on release — same mechanism
+ * S99_compose_drag_off_key_emits_nothing already proves for the T9 grid,
+ * exercised here by S99_compose_pred_strip_drag_scrolls_not_selects. */
 static void compose_build_pred_strip(lv_obj_t *puck, ff_app_compose_t const *compose)
 {
     if (compose->word_nomatch) {
@@ -975,16 +1151,24 @@ static void compose_build_pred_strip(lv_obj_t *puck, ff_app_compose_t const *com
         return; /* cold open — no strip, never an invented chip */
     }
 
+    int32_t strip_margin = compose_safe_margin_x(FF_COMPOSE_PRED_STRIP_Y, FF_COMPOSE_PRED_CHIP_H);
+    int32_t strip_w = FF_THEME_PUCK_PX - 2 * strip_margin;
+
     lv_obj_t *strip = lv_obj_create(puck);
     lv_obj_remove_style_all(strip);
     lv_obj_set_style_pad_all(strip, 0, 0);
     lv_obj_set_style_pad_column(strip, FF_COMPOSE_PRED_CHIP_GAP, 0);
-    lv_obj_set_size(strip, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+    lv_obj_set_size(strip, strip_w, FF_COMPOSE_PRED_CHIP_H);
+    lv_obj_set_pos(strip, strip_margin, FF_COMPOSE_PRED_STRIP_Y);
     lv_obj_set_flex_flow(strip, LV_FLEX_FLOW_ROW);
-    lv_obj_set_flex_align(strip, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    lv_obj_align(strip, LV_ALIGN_TOP_MID, 0, FF_COMPOSE_PRED_STRIP_Y);
-    lv_obj_clear_flag(strip, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_clear_flag(strip, LV_OBJ_FLAG_CLICKABLE); /* a layout row; its chips are the controls */
+    lv_obj_set_flex_align(strip, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_add_flag(strip, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_clear_flag(strip, LV_OBJ_FLAG_CLICKABLE); /* the floating catcher below covers background taps; chips are the real controls */
+    lv_obj_set_scroll_dir(strip, LV_DIR_HOR);
+    lv_obj_set_scrollbar_mode(strip, LV_SCROLLBAR_MODE_OFF);
+    lv_obj_set_scroll_snap_x(strip, LV_SCROLL_SNAP_START);
+
+    compose_add_pred_scroll_catcher(strip, strip_w);
 
     /* PR1 review nit: sel_cand is a uint8 that can exceed the shown chips
      * (the selection cycled past the window). Guard it — highlight none
@@ -1009,6 +1193,7 @@ static void compose_build_pred_strip(lv_obj_t *puck, ff_app_compose_t const *com
         lv_obj_set_style_bg_opa(more, LV_OPA_COVER, 0);
         lv_obj_set_style_bg_color(more, lv_color_hex(FF_THEME_COLOR_SURFACE), 0);
         lv_obj_add_event_cb(more, compose_cycle_click_cb, LV_EVENT_CLICKED, NULL);
+        lv_obj_add_flag(more, LV_OBJ_FLAG_SNAPPABLE); /* see compose_make_cand_chip's own comment */
         lv_obj_t *lbl = lv_label_create(more);
         lv_label_set_text(lbl, ">");
         lv_obj_set_style_text_font(lbl, FF_THEME_FONT_CHIP, 0);
@@ -1133,6 +1318,9 @@ void ff_scr_compose_build(ff_app_compose_t const *compose)
     lv_obj_center(send_lbl);
     /* SEND is already amber, so it dims on press instead of lighting up. */
     lv_obj_set_style_bg_opa(send, LV_OPA_60, LV_STATE_PRESSED);
+
+    /* MODE chip: back on the bottom row (PR #193 review) — built by
+     * compose_build_bottom_row below, not here. */
 
     /* --- Draft area. ---
      * PRED replaces the surface bubble with the compact predictive draft

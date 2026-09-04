@@ -744,6 +744,287 @@ static void S99_compose_pred_mode_shows_recipient_on_draft_line(void)
 }
 
 /* =================================================================== */
+/* Compose device follow-up 2 ("the keyboard's SPACE, DEL and T9 (mode)  */
+/* buttons are too small — make them a bit larger" + "the T9 autocomplete*/
+/* words should be horizontally scrollable if possible"): bigger          */
+/* DEL/MODE/SPACE on the bottom row (PR #193 review: MODE tried the       */
+/* header first, moved back — too close to SEND), and the PRED candidate  */
+/* row's new horizontal scroll.                                           */
+/* =================================================================== */
+
+/* Every dimension asserted below is the LITERAL measured pixel number
+ * this PR's own header comment (scr_compose.c, FF_COMPOSE_DEL_W's own
+ * "round 2" comment) claims — not a re-derivation of the same formula
+ * the production code uses, which would pass vacuously even if the
+ * underlying design regressed (the proxy-check rule,
+ * docs/review/code-review.md item 6). PR #193 review round 2: lifting
+ * the grid rows (FF_COMPOSE_GRID_ROW_H 56->50, NOT FF_COMPOSE_GRID_Y —
+ * see scr_compose.c's own "Round 2" comment for why) reached the
+ * review's full target for DEL/MODE and exceeded it for SPACE.
+ * Mutation-verified (fresh build, object hash confirmed changed):
+ * reverting FF_COMPOSE_DEL_W to round 1's 52 (per the review's own
+ * suggested mutation) recomputes SPACE's width to 102, not 90, and
+ * fails both the DEL and SPACE assertions below — see this PR's body
+ * for the exact `ctest` output. SYM mode is used (not the default ABC)
+ * purely so "DEL"/"SPACE"/"SYM" are each unambiguous
+ * find_button_with_label lookups — ABC mode's grid carries its own
+ * "ABC"-legended key (row0, key 2) that would collide with the mode
+ * chip's own "ABC" label. */
+static void S99_compose_space_del_mode_pinned_dimensions(void)
+{
+    ff_app_compose_t compose;
+    memset(&compose, 0, sizeof(compose));
+    compose.mode = FF_APP_COMPOSE_SYM;
+    ff_scr_compose_build(&compose);
+    lv_obj_update_layout(lv_screen_active());
+
+    lv_obj_t *del = find_button_with_label(lv_screen_active(), "DEL");
+    lv_obj_t *space = find_button_with_label(lv_screen_active(), "SPACE");
+    lv_obj_t *mode = find_button_with_label(lv_screen_active(), "SYM");
+    TEST_ASSERT_NOT_NULL(del);
+    TEST_ASSERT_NOT_NULL(space);
+    TEST_ASSERT_NOT_NULL(mode);
+
+    lv_area_t da, sa, ma;
+    lv_obj_get_coords(del, &da);
+    lv_obj_get_coords(space, &sa);
+    lv_obj_get_coords(mode, &ma);
+
+    TEST_ASSERT_EQUAL_INT32_MESSAGE(64, da.x2 - da.x1 + 1, "DEL width pinned to 64px (the review's full target)");
+    TEST_ASSERT_EQUAL_INT32_MESSAGE(56, da.y2 - da.y1 + 1, "DEL height pinned to 56px");
+    TEST_ASSERT_EQUAL_INT32_MESSAGE(90, sa.x2 - sa.x1 + 1, "SPACE width pinned to 90px (2px OVER the review's 88px target)");
+    TEST_ASSERT_EQUAL_INT32_MESSAGE(56, sa.y2 - sa.y1 + 1, "SPACE height pinned to 56px");
+    TEST_ASSERT_EQUAL_INT32_MESSAGE(56, ma.x2 - ma.x1 + 1, "MODE width pinned to 56px (the review's full target)");
+    TEST_ASSERT_EQUAL_INT32_MESSAGE(56, ma.y2 - ma.y1 + 1, "MODE height pinned to 56px");
+}
+
+/* MODE, back on the bottom row (PR #193 review): clears the 44px hit
+ * floor, clears the adjacency floor against its row-mates DEL/SPACE, AND
+ * — the specific thing the review's own finding was about — stays far
+ * from SEND (still in the header, untouched). The semantic (floor-
+ * relative, not exact-value) counterpart to the pinned-dimensions test
+ * above. */
+static void S99_compose_mode_clears_floor_gaps_and_stays_far_from_send(void)
+{
+    ff_app_compose_t compose;
+    memset(&compose, 0, sizeof(compose));
+    compose.mode = FF_APP_COMPOSE_SYM;
+    ff_scr_compose_build(&compose);
+    lv_obj_update_layout(lv_screen_active());
+
+    lv_obj_t *del = find_button_with_label(lv_screen_active(), "DEL");
+    lv_obj_t *space = find_button_with_label(lv_screen_active(), "SPACE");
+    lv_obj_t *mode = find_button_with_label(lv_screen_active(), "SYM");
+    lv_obj_t *send = find_button_with_label(lv_screen_active(), "SEND");
+    TEST_ASSERT_NOT_NULL(del);
+    TEST_ASSERT_NOT_NULL(space);
+    TEST_ASSERT_NOT_NULL(mode);
+    TEST_ASSERT_NOT_NULL(send);
+
+    lv_area_t da, sa, ma, sea;
+    lv_obj_get_coords(del, &da);
+    lv_obj_get_coords(space, &sa);
+    lv_obj_get_coords(mode, &ma);
+    lv_obj_get_coords(send, &sea);
+
+    /* Same bottom row as DEL/SPACE. */
+    TEST_ASSERT_EQUAL_INT32_MESSAGE(da.y1, ma.y1, "MODE must sit in the SAME bottom row as DEL/SPACE");
+
+    int32_t w = ma.x2 - ma.x1 + 1;
+    int32_t h = ma.y2 - ma.y1 + 1;
+    TEST_ASSERT_GREATER_OR_EQUAL_INT32_MESSAGE(FF_THEME_MIN_HIT_PX, w, "MODE must clear the 44px hit floor");
+    TEST_ASSERT_GREATER_OR_EQUAL_INT32_MESSAGE(FF_THEME_MIN_HIT_PX, h, "MODE must clear the 44px hit floor");
+
+    /* Adjacency to its row-mate SPACE (MODE sits to SPACE's right). */
+    int32_t gap_space = ma.x1 - sa.x2 - 1;
+    TEST_ASSERT_GREATER_OR_EQUAL_INT32_MESSAGE(FF_HIT_MIN_GAP_PX, gap_space,
+                                               "MODE must clear SPACE by the adjacency floor");
+
+    /* The review's actual finding: MODE must stay far from SEND — SEND
+     * is still in the header, so this is a vertical separation, same
+     * shape S99_compose_space_and_send_clear_the_maintainer_gap_ask
+     * already proves for SPACE. */
+    TEST_ASSERT_TRUE_MESSAGE(sea.y2 < ma.y1, "SEND must be entirely above MODE (no shared row)");
+    int32_t gap_send_y = ma.y1 - sea.y2;
+    TEST_ASSERT_GREATER_OR_EQUAL_INT32_MESSAGE(12, gap_send_y,
+                                               "MODE must clear SEND by >= 12px, same S08 rule as SPACE/DEL");
+}
+
+/* Six real candidates (matching tests/fixtures/compose_pred_scroll.json)
+ * whose combined chip width genuinely overflows the strip's own
+ * chord-derived viewport at this Y (measured: ~377px of chips vs. ~320px
+ * actually safe here) — the exact shape needed to exercise real
+ * scrolling, not just wire the mechanism without ever triggering it. */
+static void compose_fill_six_candidates(ff_app_compose_t *compose)
+{
+    static char const *const words[6] = {"the", "tie", "vie", "side", "ride", "wide"};
+    memset(compose, 0, sizeof(*compose));
+    compose->mode = FF_APP_COMPOSE_PRED;
+    strncpy(compose->to_name, "DANA", sizeof(compose->to_name) - 1);
+    strncpy(compose->text, "omw to ", sizeof(compose->text) - 1);
+    strncpy(compose->word, "the", sizeof(compose->word) - 1);
+    compose->n_cand = 6;
+    compose->total_cand = 6;
+    for (int i = 0; i < 6; i++) {
+        strncpy(compose->cand[i].text, words[i], sizeof(compose->cand[i].text) - 1);
+    }
+    compose->sel_cand = 0;
+}
+
+/* find_pred_strip — the PRED candidate strip lv_obj itself (the scrolling
+ * container), found by locating a known chip by label and stepping up to
+ * its parent. */
+static lv_obj_t *find_pred_strip(lv_obj_t *root, char const *first_chip_label)
+{
+    lv_obj_t *chip = find_button_with_label(root, first_chip_label);
+    if (chip == NULL) return NULL;
+    return lv_obj_get_parent(chip);
+}
+
+/* tap_settled — a single press-then-release with no intermediate reads,
+ * for tapping a control that sits INSIDE a container already scrolled to
+ * a non-zero offset (a programmatic lv_obj_scroll_to_x, not a drag).
+ * Measured directly (this test file, in development): the shared
+ * tap_at()/drag_v() (support/lv_test_harness.h) samples the SAME
+ * stationary point six times before releasing, which works everywhere
+ * else in this file (ordinary, unscrolled controls) but reliably drops
+ * the click specifically when the target's container already sits at
+ * scroll_x > 0 — a single press+release at the identical coordinates
+ * fires the click correctly every time. Scoped local to this file rather
+ * than changed in the shared harness (used by test_scr_banner.c too, and
+ * every other current caller already passes with the six-step version)
+ * — this is the minimal, targeted fix for the one new case this PR
+ * introduces. */
+static void tap_settled(int32_t x, int32_t y)
+{
+    lv_indev_t *indev = lv_indev_create();
+    lv_indev_set_type(indev, LV_INDEV_TYPE_POINTER);
+    lv_indev_set_read_cb(indev, probe_read_cb);
+
+    s_probe_pt.x = (lv_coord_t)x;
+    s_probe_pt.y = (lv_coord_t)y;
+    s_probe_state = LV_INDEV_STATE_PRESSED;
+    s_fake_tick_ms += 40u;
+    lv_timer_handler();
+
+    s_probe_state = LV_INDEV_STATE_RELEASED;
+    s_fake_tick_ms += 40u;
+    lv_timer_handler();
+
+    ff_test_release_probe_indev(indev);
+}
+
+/* A horizontal drag that starts on a real candidate chip and crosses at
+ * least two others must scroll the strip — and must NEVER select a
+ * candidate, the same PRESS_LOCK-cleared drag-off proof
+ * S99_compose_drag_off_key_emits_nothing already gives the T9 grid,
+ * applied here to a genuine scroll gesture instead of a slide-off-and-
+ * release. Drags from "side" (chip index 3) leftward past "the" (index
+ * 0)'s own original left edge — crossing "vie" (2) and "tie" (1) along
+ * the way, i.e. "across two chips" — which also scrolls the strip
+ * FORWARD (finger moves left -> content shifts left -> scroll_x
+ * increases), the same direction convention every other horizontal list
+ * a real thumb swipes uses. */
+static void S99_compose_pred_strip_drag_scrolls_not_selects(void)
+{
+    ff_app_compose_t compose;
+    compose_fill_six_candidates(&compose);
+    ff_scr_compose_build(&compose);
+    lv_obj_update_layout(lv_screen_active());
+
+    lv_obj_t *strip = find_pred_strip(lv_screen_active(), "the");
+    TEST_ASSERT_NOT_NULL(strip);
+    lv_obj_t *chip_the = find_button_with_label(lv_screen_active(), "the");
+    lv_obj_t *chip_side = find_button_with_label(lv_screen_active(), "side");
+    TEST_ASSERT_NOT_NULL(chip_the);
+    TEST_ASSERT_NOT_NULL(chip_side);
+
+    lv_area_t a_the, a_side;
+    lv_obj_get_coords(chip_the, &a_the);
+    lv_obj_get_coords(chip_side, &a_side);
+    int32_t y = (a_side.y1 + a_side.y2) / 2;
+    int32_t start_x = (a_side.x1 + a_side.x2) / 2;
+    int32_t end_x = a_the.x1 - 40; /* comfortably left of "the"'s own original edge */
+
+    drag(start_x, end_x, y);
+
+    TEST_ASSERT_EQUAL_INT_MESSAGE(0, s_spy.count, "a horizontal drag across candidate chips must never select one");
+    TEST_ASSERT_GREATER_THAN_INT32_MESSAGE(0, lv_obj_get_scroll_x(strip),
+                                           "the same drag must actually scroll the candidate strip");
+}
+
+/* After scrolling, a tap on a chip that is now on-screen must select
+ * exactly that candidate — proves the strip stays genuinely tappable
+ * per-chip post-scroll, not just that scrolling itself works. */
+static void S99_compose_pred_strip_tap_after_scroll_selects_right_word(void)
+{
+    ff_app_compose_t compose;
+    compose_fill_six_candidates(&compose);
+    ff_scr_compose_build(&compose);
+    lv_obj_update_layout(lv_screen_active());
+
+    lv_obj_t *strip = find_pred_strip(lv_screen_active(), "the");
+    TEST_ASSERT_NOT_NULL(strip);
+
+    /* lv_obj_get_scroll_x + lv_obj_get_scroll_right, the same "prove
+     * genuine overflow, not just SOME scroll position" idiom S24's own
+     * thread/Rally scroll tests already use. */
+    int32_t max_scroll = lv_obj_get_scroll_x(strip) + lv_obj_get_scroll_right(strip);
+    TEST_ASSERT_GREATER_THAN_INT32_MESSAGE(0, max_scroll, "6 real candidates must genuinely overflow the strip");
+    lv_obj_scroll_to_x(strip, max_scroll, LV_ANIM_OFF);
+    lv_obj_update_layout(lv_screen_active());
+    TEST_ASSERT_GREATER_THAN_INT32(0, lv_obj_get_scroll_x(strip));
+
+    lv_obj_t *wide = find_button_with_label(lv_screen_active(), "wide");
+    TEST_ASSERT_NOT_NULL_MESSAGE(wide, "the last candidate must still be reachable once scrolled fully into view");
+    lv_area_t a;
+    lv_obj_get_coords(wide, &a);
+    tap_settled((a.x1 + a.x2) / 2, (a.y1 + a.y2) / 2);
+
+    TEST_ASSERT_EQUAL_INT_MESSAGE(1, s_spy.count, "a tap on a chip after scrolling must select exactly it");
+    TEST_ASSERT_EQUAL_MESSAGE(FF_INTENT_T9_SELECT, s_spy.last.kind, "must emit T9_SELECT");
+    TEST_ASSERT_EQUAL_INT_MESSAGE(5, s_spy.last.u.t9_key, "\"wide\" is candidate index 5 (0-based, 6 candidates)");
+}
+
+/* A new prediction set (a new keystroke, in shell terms) rebuilds this
+ * screen from scratch — same "one screen built per process/frame"
+ * convention this file's own top comment documents — so the candidate
+ * row's scroll position must NOT carry over from whatever it was before:
+ * the fresh strip starts at scroll_x == 0 by construction (a brand-new
+ * lv_obj), which is what keeps the first candidate visible at the left
+ * after every rebuild without any explicit reset code to get wrong. */
+static void S99_compose_pred_strip_scroll_resets_on_new_prediction_set(void)
+{
+    ff_app_compose_t compose;
+    compose_fill_six_candidates(&compose);
+    ff_scr_compose_build(&compose);
+    lv_obj_update_layout(lv_screen_active());
+
+    lv_obj_t *strip = find_pred_strip(lv_screen_active(), "the");
+    TEST_ASSERT_NOT_NULL(strip);
+    int32_t max_scroll = lv_obj_get_scroll_x(strip) + lv_obj_get_scroll_right(strip);
+    TEST_ASSERT_GREATER_THAN_INT32(0, max_scroll);
+    lv_obj_scroll_to_x(strip, max_scroll, LV_ANIM_OFF);
+    TEST_ASSERT_GREATER_THAN_INT32(0, lv_obj_get_scroll_x(strip));
+
+    /* Simulate the next keystroke's rebuild in-test — same clean+rebuild
+     * shape S99_compose_every_key_has_press_state_feedback already uses
+     * between modes — with a DIFFERENT in-progress selection. */
+    lv_obj_clean(lv_screen_active());
+    ff_app_compose_t compose2;
+    compose_fill_six_candidates(&compose2);
+    strncpy(compose2.word, "vie", sizeof(compose2.word) - 1);
+    compose2.sel_cand = 2;
+    ff_scr_compose_build(&compose2);
+    lv_obj_update_layout(lv_screen_active());
+
+    lv_obj_t *strip2 = find_pred_strip(lv_screen_active(), "the");
+    TEST_ASSERT_NOT_NULL(strip2);
+    TEST_ASSERT_EQUAL_INT32_MESSAGE(0, lv_obj_get_scroll_x(strip2),
+                                    "a fresh prediction-set rebuild must start the candidate row scrolled to the left");
+}
+
+/* =================================================================== */
 /* Signals (S24 slice b): the inbox face's navigation intents            */
 /* =================================================================== */
 
@@ -3093,6 +3374,11 @@ int main(void)
     RUN_TEST(S99_compose_to_every_demo_crew_name_renders_in_full);
     RUN_TEST(S99_compose_to_long_name_ellipsizes_cleanly);
     RUN_TEST(S99_compose_pred_mode_shows_recipient_on_draft_line);
+    RUN_TEST(S99_compose_space_del_mode_pinned_dimensions);
+    RUN_TEST(S99_compose_mode_clears_floor_gaps_and_stays_far_from_send);
+    RUN_TEST(S99_compose_pred_strip_drag_scrolls_not_selects);
+    RUN_TEST(S99_compose_pred_strip_tap_after_scroll_selects_right_word);
+    RUN_TEST(S99_compose_pred_strip_scroll_resets_on_new_prediction_set);
     RUN_TEST(S24b_inbox_member_row_tap_emits_open_thread);
     RUN_TEST(S24b_inbox_crew_row_tap_emits_open_thread_crew);
     RUN_TEST(S24b_inbox_quiet_member_row_is_tappable);

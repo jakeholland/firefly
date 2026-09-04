@@ -488,6 +488,54 @@ static bool sweep_scroll_viewport(lv_obj_t *obj, ff_layout_rect_t *out_vp, lv_ob
     return false;
 }
 
+/* sweep_scroll_viewport_hor — the HORIZONTAL analog of
+ * sweep_scroll_viewport above, for the CIRCLE-CONTAINMENT check only
+ * (see the call site below — adjacency needs no analog: two elements of
+ * the SAME horizontal list are already correctly handled by
+ * sweep_gap_rect_for_pair's existing fallback, since it only clips when a
+ * scroll ancestor is actually FOUND, and this codebase's other-axis
+ * scroll lists never register on the vertical-only sweep_scroll_viewport
+ * — their raw rects already encode the true, scroll-invariant mutual
+ * gap, same reasoning the S21 model's own header comment gives for
+ * within-list vertical pairs, transposed).
+ *
+ * Needed by scr_compose.c's PRED candidate strip (device follow-up: "T9
+ * autocomplete words should be horizontally scrollable") — the first
+ * HORIZONTAL scroll list any screen in this codebase has ever built.
+ * Every prior scroll list here (Settings, Signals, the message thread,
+ * Rally's WHERE list) scrolls VERTICALLY, which is exactly why the S21
+ * model keys off vertical range only, and this file's own header comment
+ * explicitly calls out that the face tileview's horizontal, user-
+ * scroll-DISABLED paging must never be mistaken for one. A genuinely
+ * horizontally-scrollable list with real overflow is the deliberately
+ * distinct case that reasoning always left room for on the orthogonal
+ * axis: same "on-glass when scrolled to, not at its momentary absolute
+ * position" principle, transposed — a control inside a live horizontal
+ * scroll list is checked against the scroll viewport's FIXED y-extent
+ * (horizontal scroll never moves y) across the viewport's whole
+ * horizontal span `[vp.x1, vp.x2]`, the union of every x it can be
+ * scrolled to. "Live horizontal scroll list" = the nearest ancestor with
+ * `LV_OBJ_FLAG_SCROLLABLE` AND a nonzero horizontal scroll range
+ * (`lv_obj_get_scroll_left + lv_obj_get_scroll_right > 0`). */
+static bool sweep_scroll_viewport_hor(lv_obj_t *obj, ff_layout_rect_t *out_vp)
+{
+    lv_obj_t *p = lv_obj_get_parent(obj);
+    while (p != NULL) {
+        if (lv_obj_has_flag(p, LV_OBJ_FLAG_SCROLLABLE) &&
+            (lv_obj_get_scroll_left(p) + lv_obj_get_scroll_right(p) > 0)) {
+            lv_area_t a;
+            lv_obj_get_coords(p, &a);
+            out_vp->x1 = (float)a.x1;
+            out_vp->y1 = (float)a.y1;
+            out_vp->x2 = (float)a.x2 + 1.0f;
+            out_vp->y2 = (float)a.y2 + 1.0f;
+            return true;
+        }
+        p = lv_obj_get_parent(p);
+    }
+    return false;
+}
+
 static void sweep_walk(lv_obj_t *obj, char const *fixture_name, sweep_result_t *out, sweep_clickable_list_t *list)
 {
     uint32_t n = lv_obj_get_child_count(obj);
@@ -556,22 +604,34 @@ static void sweep_walk(lv_obj_t *obj, char const *fixture_name, sweep_result_t *
              * list (the pinned header, a non-scrolling face) keeps the
              * absolute check (circle_rect == r). See this file's header. The
              * SIZE floor above is intrinsic and already used the raw rect, so
-             * scroll cannot rescue a too-small control. */
+             * scroll cannot rescue a too-small control.
+             *
+             * Horizontal analog (sweep_scroll_viewport_hor, its own comment
+             * above): the transposed case for scr_compose.c's PRED candidate
+             * strip — a control inside a live HORIZONTAL scroll list is
+             * checked against the viewport's x-span instead, fixed y-extent
+             * unchanged. The two are mutually exclusive by construction (a
+             * list scrolls vertically XOR horizontally in this codebase; the
+             * vertical check is tried first purely because it existed first,
+             * not because of any priority between them). */
             ff_layout_rect_t circle_rect = r;
             ff_layout_rect_t vp;
             if (sweep_scroll_viewport(child, &vp, NULL)) {
                 circle_rect.y1 = vp.y1;
                 circle_rect.y2 = vp.y2;
+            } else if (sweep_scroll_viewport_hor(child, &vp)) {
+                circle_rect.x1 = vp.x1;
+                circle_rect.x2 = vp.x2;
             }
 
             if (!is_whole_puck_gesture_region && !is_corner_bleed) {
                 if (!ff_layout_rect_in_circle(circle_rect, SWEEP_CX, SWEEP_CY, SWEEP_RADIUS)) {
                     out->violations++;
-                    printf("  HIT-RECT-OFF-GLASS    [%s]  rect=(%d,%d)-(%d,%d)  check-y=[%.0f,%.0f]  "
-                           "circle center=(%.1f,%.1f) r=%.1f\n",
+                    printf("  HIT-RECT-OFF-GLASS    [%s]  rect=(%d,%d)-(%d,%d)  check-x=[%.0f,%.0f]  "
+                           "check-y=[%.0f,%.0f]  circle center=(%.1f,%.1f) r=%.1f\n",
                            fixture_name, (int)area.x1, (int)area.y1, (int)area.x2, (int)area.y2,
-                           (double)circle_rect.y1, (double)circle_rect.y2, (double)SWEEP_CX, (double)SWEEP_CY,
-                           (double)SWEEP_RADIUS);
+                           (double)circle_rect.x1, (double)circle_rect.x2, (double)circle_rect.y1,
+                           (double)circle_rect.y2, (double)SWEEP_CX, (double)SWEEP_CY, (double)SWEEP_RADIUS);
                 }
             }
 
@@ -1218,6 +1278,94 @@ static void S24_AC7b_scroll_list_row_vs_outside_element(void)
     lv_deinit();
 }
 
+/* sweep_build_inscribed_list_hor / sweep_add_hor_item — the HORIZONTAL
+ * counterpart to sweep_build_inscribed_list/sweep_add_row above, for
+ * sweep_scroll_viewport_hor's own pair below (same "not just reasoned
+ * about, measured" rigor the S21 vertical pair already applies — see
+ * this file's header comment, "S21: the sweep goes scroll-aware" — now
+ * transposed to the orthogonal axis scr_compose.c's PRED candidate strip
+ * introduces: the first horizontally-scrolling list any screen in this
+ * codebase has ever built). `strip` is placed centered at absolute
+ * (`y`, `w`, `h`) — the caller adds children in STRIP-relative coords. */
+static lv_obj_t *sweep_build_inscribed_list_hor(int32_t y, int32_t w, int32_t h)
+{
+    lv_obj_t *scr = lv_screen_active();
+    lv_obj_t *puck = lv_obj_create(scr);
+    lv_obj_remove_style_all(puck);
+    lv_obj_set_size(puck, FF_THEME_PUCK_PX, FF_THEME_PUCK_PX);
+    lv_obj_align(puck, LV_ALIGN_CENTER, 0, 0);
+    lv_obj_clear_flag(puck, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_clear_flag(puck, LV_OBJ_FLAG_CLICKABLE);
+
+    lv_obj_t *strip = lv_obj_create(puck);
+    lv_obj_remove_style_all(strip);
+    lv_obj_set_size(strip, w, h);
+    lv_obj_set_pos(strip, (FF_THEME_PUCK_PX - w) / 2, y);
+    lv_obj_set_style_pad_all(strip, 0, 0);
+    lv_obj_clear_flag(strip, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_flag(strip, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scroll_dir(strip, LV_DIR_HOR);
+    return strip;
+}
+
+static lv_obj_t *sweep_add_hor_item(lv_obj_t *strip, int32_t x, int32_t y, int32_t w, int32_t h)
+{
+    lv_obj_t *btn = lv_button_create(strip);
+    lv_obj_remove_style_all(btn);
+    lv_obj_set_size(btn, w, h);
+    lv_obj_set_pos(btn, x, y);
+    return btn;
+}
+
+/* sweep_scroll_viewport_hor's own S21-style PASS case: a well-sized chip
+ * whose RAW (unscrolled) x sits well past the strip's own width — the
+ * compose PRED strip's exact real shape, since its 4th-6th candidate
+ * routinely sits past the visible band at its raw x — must PASS once
+ * checked against the viewport (the strip's own on-glass x-band) it can
+ * actually be scrolled to, not its momentary absolute x. */
+static void S99_hor_sweep_scroll_aware_passes_an_offscreen_but_reachable_chip(void)
+{
+    uint8_t *buf = sweep_test_display_up();
+
+    /* A well-centered, on-glass 200x44 strip at y=100 (a wide part of the
+     * circle — the same kind of band the real PRED strip sits in). */
+    lv_obj_t *strip = sweep_build_inscribed_list_hor(100, 200, 44);
+    (void)sweep_add_hor_item(strip, 300, 0, 44, 44); /* raw x way past the strip's own 200px width */
+    sweep_result_t r = sweep_run_current_screen("s99_hor_offscreen_reachable");
+    TEST_ASSERT_GREATER_THAN_INT_MESSAGE(0, r.checked, "the synthetic horizontal scroll item was not even swept");
+    TEST_ASSERT_EQUAL_INT_MESSAGE(0, r.violations,
+                                  "a well-sized chip scrolled off the current horizontal viewport must PASS (on-"
+                                  "glass wherever it scrolls to, checked against the strip's own on-glass x-band)");
+
+    free(buf);
+    lv_deinit();
+}
+
+/* The relaxation must not neuter the sweep on the horizontal axis either:
+ * a strip whose OWN band is genuinely off-glass (too deep near the pole
+ * for its own width to fit the narrowing circle) must still flag a child
+ * inside it, regardless of horizontal scroll — the check is "the
+ * viewport IS on-glass", not "anything inside a horizontally-scrollable
+ * container is exempt". */
+static void S99_hor_sweep_still_catches_a_strip_genuinely_off_glass(void)
+{
+    uint8_t *buf = sweep_test_display_up();
+
+    /* A 200x220 strip started at y=350, deep in the bottom pole — its own
+     * x-band cannot fit the narrowing circle there (and the tall band
+     * runs well past the panel's own bottom edge). */
+    lv_obj_t *strip = sweep_build_inscribed_list_hor(350, 200, 220);
+    (void)sweep_add_hor_item(strip, 0, 0, 44, 44);
+    sweep_result_t r = sweep_run_current_screen("s99_hor_strip_off_glass");
+    TEST_ASSERT_GREATER_THAN_INT_MESSAGE(0, r.violations,
+                                         "a horizontal scroll strip whose own band is off-glass must still be "
+                                         "flagged — the relaxation checks the viewport itself is on-glass, it "
+                                         "does not exempt anything merely for being horizontally scrollable");
+
+    free(buf);
+    lv_deinit();
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -1229,6 +1377,8 @@ int main(void)
     RUN_TEST(S21_AC2_sweep_scroll_aware_passes_an_offscreen_but_in_band_row);
     RUN_TEST(S21_AC2_sweep_still_catches_bad_controls_in_a_scroll_list);
     RUN_TEST(S24_AC7b_scroll_list_row_vs_outside_element);
+    RUN_TEST(S99_hor_sweep_scroll_aware_passes_an_offscreen_but_reachable_chip);
+    RUN_TEST(S99_hor_sweep_still_catches_a_strip_genuinely_off_glass);
 
     return UNITY_END();
 }
