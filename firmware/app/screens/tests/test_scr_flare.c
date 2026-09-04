@@ -583,9 +583,69 @@ static void S10_sender_overlay_rim_matches_glass_geometry_flipped(void)
     S10_sender_overlay_rim_matches_glass_geometry_case(/*screen_flip=*/true);
 }
 
+/* ---------------------------------------------------------------------
+ * S10 Amendment (2026-09-03, "Wire honesty", fix/flare-wire-send) — the
+ * sender overlay's status line reads off `flare->wire_state`: the
+ * confident "you are flaring" copy only while SENT, the honest amber
+ * "NO MESH" retry copy while WAITING. Screen-level guard for the P0 bug
+ * fix (core/shell coverage lives in test_flare.c/test_shell.c) — this is
+ * the proof the actual label text on the actual overlay changes, not
+ * just the underlying enum.
+ * ------------------------------------------------------------------- */
+
+static void S10_wire_sender_overlay_sent_shows_flaring_copy(void)
+{
+    ff_app_flare_t disp;
+    memset(&disp, 0, sizeof(disp));
+    disp.sending = true;
+    disp.send_expires_in_ms = 245000;
+    disp.wire_state = FF_FLARE_WIRE_SENT;
+
+    ff_scr_flare_build_sender_overlay(lv_screen_active(), &disp, /*screen_flip=*/false);
+    lv_obj_update_layout(lv_screen_active());
+
+    lv_obj_t *status = find_label_with_prefix(lv_screen_active(), "you are flaring");
+    TEST_ASSERT_NOT_NULL_MESSAGE(status, "SENT must keep the original 'you are flaring' copy");
+    TEST_ASSERT_NULL_MESSAGE(find_label_with_prefix(lv_screen_active(), "NO MESH"),
+                              "SENT must not show the NO MESH retry copy");
+    /* Review round 2 (2026-09-03): the COLOUR, not just the text — SENT
+     * keeps the ordinary amber, never the WAITING alert shade. */
+    TEST_ASSERT_TRUE_MESSAGE(
+        lv_color_eq(lv_obj_get_style_text_color(status, LV_PART_MAIN), lv_color_hex(FF_THEME_COLOR_AMBER)),
+        "SENT must render the status line in the ordinary amber, not the WAITING alert shade");
+}
+
+static void S10_wire_sender_overlay_waiting_shows_no_mesh_copy(void)
+{
+    ff_app_flare_t disp;
+    memset(&disp, 0, sizeof(disp));
+    disp.sending = true;
+    disp.send_expires_in_ms = 245000;
+    disp.wire_state = FF_FLARE_WIRE_WAITING;
+
+    ff_scr_flare_build_sender_overlay(lv_screen_active(), &disp, /*screen_flip=*/false);
+    lv_obj_update_layout(lv_screen_active());
+
+    lv_obj_t *status = find_label_with_prefix(lv_screen_active(), "NO MESH");
+    TEST_ASSERT_NOT_NULL_MESSAGE(status, "WAITING must show the honest NO MESH retry copy");
+    /* Review round 2 (2026-09-03): the COLOUR, not just the text — WAITING
+     * must NOT render in the ordinary "confident" amber the SENT copy
+     * uses; it gets the same alert shade the Radar face's STALE
+     * treatment already uses. */
+    TEST_ASSERT_TRUE_MESSAGE(
+        lv_color_eq(lv_obj_get_style_text_color(status, LV_PART_MAIN), lv_color_hex(FF_THEME_COLOR_STALE_AMBER)),
+        "WAITING must render the status line in the alert (stale) amber, not the ordinary SENT amber");
+    TEST_ASSERT_NULL_MESSAGE(
+        find_label_with_prefix(lv_screen_active(), "you are flaring"),
+        "WAITING must not claim 'you are flaring' while nothing has actually reached the mesh");
+}
+
 int main(void)
 {
     UNITY_BEGIN();
+
+    RUN_TEST(S10_wire_sender_overlay_sent_shows_flaring_copy);
+    RUN_TEST(S10_wire_sender_overlay_waiting_shows_no_mesh_copy);
 
     RUN_TEST(S10_ACn_lock_disclosure_chip_stays_inside_the_round_glass);
     RUN_TEST(S10_ACn_lock_disclosure_only_truncates_names_that_dont_fit);

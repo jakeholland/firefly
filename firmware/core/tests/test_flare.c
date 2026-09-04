@@ -69,6 +69,9 @@ static void S10_AC1_send_auto_end_exactly_at_expiry(void)
     ff_flare_t f;
     ff_flare_init(&f);
     ff_flare_send_begin(&f, 10u, 1000u); /* send_expiry_ms = 11000 */
+    ff_flare_wire_mark_attempt(&f, 1000u, true); /* confirmed SENT — the wire-honesty S10_wire_* tests
+                                                    * cover the "never SENT" gate directly; this AC1
+                                                    * test is pinning the timing boundary only. */
 
     ff_flare_result_t before = ff_flare_tick(&f, 10999u);
     TEST_ASSERT_EQUAL(FF_FLARE_INTENT_NONE, before.intent);
@@ -85,6 +88,7 @@ static void S10_AC1_send_cancel_emits_flare_end_once_not_twice(void)
     ff_flare_t f;
     ff_flare_init(&f);
     ff_flare_send_begin(&f, 300u, 0u);
+    ff_flare_wire_mark_attempt(&f, 0u, true); /* confirmed SENT — see S10_wire_* for the "never SENT" gate */
 
     ff_flare_result_t first = ff_flare_send_cancel(&f);
     TEST_ASSERT_EQUAL(FF_FLARE_INTENT_SEND_FLARE_END, first.intent);
@@ -327,6 +331,7 @@ static void S10_AC4_sender_auto_end_emits_flare_end_exactly_once(void)
     ff_flare_t f;
     ff_flare_init(&f);
     ff_flare_send_begin(&f, 5u, 0u); /* send_expiry_ms = 5000 */
+    ff_flare_wire_mark_attempt(&f, 0u, true); /* confirmed SENT — see S10_wire_* for the "never SENT" gate */
 
     ff_flare_result_t r1 = ff_flare_tick(&f, 4999u);
     TEST_ASSERT_EQUAL(FF_FLARE_INTENT_NONE, r1.intent);
@@ -352,6 +357,7 @@ static void S10_ruling1_receive_while_sending_both_states_live_cancel_still_emit
     ff_flare_t f;
     ff_flare_init(&f);
     ff_flare_send_begin(&f, 300u, 0u); /* I am flaring */
+    ff_flare_wire_mark_attempt(&f, 0u, true); /* confirmed SENT — see S10_wire_* for the "never SENT" gate */
     TEST_ASSERT_TRUE(f.sending);
 
     /* Kev flares while I'm still sending. */
@@ -381,6 +387,7 @@ static void S10_ruling1_send_and_receive_expire_independently(void)
     ff_flare_t f;
     ff_flare_init(&f);
     ff_flare_send_begin(&f, 5u, 0u);              /* send_expiry_ms = 5000 */
+    ff_flare_wire_mark_attempt(&f, 0u, true); /* confirmed SENT — see S10_wire_* for the "never SENT" gate */
     ff_flare_on_flare_rx(&f, 9u, true, 20u, 1000u); /* takeover_expiry_ms = 21000 */
 
     /* Send expires first; takeover must still be live. */
@@ -610,6 +617,7 @@ static void S10_wraparound_safe_expiry_check(void)
     ff_flare_init(&f);
     f.sending = true;
     f.send_expiry_ms = UINT32_MAX - 99u;
+    f.wire_state = FF_FLARE_WIRE_SENT; /* confirmed SENT — see S10_wire_* for the "never SENT" gate */
 
     ff_flare_result_t r = ff_flare_tick(&f, 100u);
 
@@ -626,11 +634,186 @@ static void S10_init_zeroes_all_independent_state(void)
 
     TEST_ASSERT_FALSE(f.sending);
     TEST_ASSERT_EQUAL_UINT32(0u, f.send_expiry_ms);
+    TEST_ASSERT_EQUAL(FF_FLARE_WIRE_WAITING, f.wire_state);
+    TEST_ASSERT_EQUAL_UINT16(0u, f.wire_dur_s);
+    TEST_ASSERT_EQUAL_UINT32(0u, f.wire_last_attempt_ms);
     TEST_ASSERT_FALSE(f.takeover_active);
     TEST_ASSERT_EQUAL_UINT32(0u, f.takeover_node_id);
     TEST_ASSERT_EQUAL_UINT32(0u, f.takeover_expiry_ms);
     TEST_ASSERT_EQUAL_UINT32(0u, f.locked_node_id);
     TEST_ASSERT_EQUAL_UINT32(0u, f.locked_expiry_ms);
+}
+
+/* ------------------------------------------------------------------- */
+/* S10 Amendment (2026-09-03, "Wire honesty") — ff_flare_wire_should_
+ * retry / ff_flare_wire_mark_attempt / ff_flare_wire_state /
+ * ff_flare_send_dur_s, and the wire-state-gated FLARE_END on cancel/
+ * auto-end. Fixes the P0 bug: FF_INTENT_FLARE_START/QUICK_FLARE called
+ * ff_flare_send_begin and discarded FF_FLARE_INTENT_SEND_FLARE, so
+ * nothing was ever actually broadcast.                                 */
+/* ------------------------------------------------------------------- */
+
+static void S10_wire_send_begin_starts_waiting(void)
+{
+    ff_flare_t f;
+    ff_flare_init(&f);
+
+    ff_flare_send_begin(&f, 300u, 1000u);
+
+    TEST_ASSERT_EQUAL(FF_FLARE_WIRE_WAITING, ff_flare_wire_state(&f));
+    TEST_ASSERT_EQUAL_UINT16(300u, ff_flare_send_dur_s(&f));
+    TEST_ASSERT_EQUAL_UINT32(1000u, f.wire_last_attempt_ms);
+}
+
+static void S10_wire_mark_attempt_ok_transitions_to_sent(void)
+{
+    ff_flare_t f;
+    ff_flare_init(&f);
+    ff_flare_send_begin(&f, 300u, 1000u);
+    TEST_ASSERT_EQUAL(FF_FLARE_WIRE_WAITING, ff_flare_wire_state(&f));
+
+    ff_flare_wire_mark_attempt(&f, 1000u, true);
+
+    TEST_ASSERT_EQUAL(FF_FLARE_WIRE_SENT, ff_flare_wire_state(&f));
+}
+
+static void S10_wire_mark_attempt_failure_stays_waiting_and_stamps_attempt(void)
+{
+    ff_flare_t f;
+    ff_flare_init(&f);
+    ff_flare_send_begin(&f, 300u, 1000u); /* wire_last_attempt_ms = 1000 */
+
+    ff_flare_wire_mark_attempt(&f, 1000u, false); /* the initial attempt failed */
+    TEST_ASSERT_EQUAL(FF_FLARE_WIRE_WAITING, ff_flare_wire_state(&f));
+    TEST_ASSERT_FALSE(ff_flare_wire_should_retry(&f, 5999u));
+    TEST_ASSERT_TRUE(ff_flare_wire_should_retry(&f, 6000u)); /* 1000 + FF_FLARE_RESEND_MS */
+
+    /* A second failed attempt re-stamps the retry clock from ITS OWN
+     * now_ms, not the original send_begin time. */
+    ff_flare_wire_mark_attempt(&f, 6000u, false);
+    TEST_ASSERT_FALSE(ff_flare_wire_should_retry(&f, 10999u));
+    TEST_ASSERT_TRUE(ff_flare_wire_should_retry(&f, 11000u)); /* 6000 + FF_FLARE_RESEND_MS */
+}
+
+static void S10_wire_should_retry_due_at_exactly_5000ms_not_4999(void)
+{
+    ff_flare_t f;
+    ff_flare_init(&f);
+    ff_flare_send_begin(&f, 300u, 0u); /* wire_last_attempt_ms = 0, still WAITING */
+
+    TEST_ASSERT_FALSE_MESSAGE(ff_flare_wire_should_retry(&f, 4999u), "retry fired one ms early");
+    TEST_ASSERT_TRUE_MESSAGE(ff_flare_wire_should_retry(&f, 5000u), "retry did not fire exactly at FF_FLARE_RESEND_MS");
+}
+
+static void S10_wire_should_retry_false_once_sent(void)
+{
+    ff_flare_t f;
+    ff_flare_init(&f);
+    ff_flare_send_begin(&f, 300u, 0u);
+    ff_flare_wire_mark_attempt(&f, 0u, true);
+
+    /* Once confirmed SENT, no amount of elapsed time should ever ask for
+     * another retry — retries exist only to reach the first confirmation. */
+    TEST_ASSERT_FALSE(ff_flare_wire_should_retry(&f, 999999u));
+}
+
+static void S10_wire_should_retry_false_when_not_sending(void)
+{
+    ff_flare_t f;
+    ff_flare_init(&f);
+    TEST_ASSERT_FALSE(ff_flare_wire_should_retry(&f, 999999u));
+    TEST_ASSERT_FALSE(ff_flare_wire_should_retry(NULL, 999999u));
+}
+
+static void S10_wire_mark_attempt_after_send_ended_is_noop(void)
+{
+    /* A stray/late report (e.g. a retry the shell already had in flight)
+     * arriving after cancel/auto-end must not resurrect the send. */
+    ff_flare_t f;
+    ff_flare_init(&f);
+    ff_flare_send_begin(&f, 300u, 0u);
+    ff_flare_send_cancel(&f);
+    TEST_ASSERT_FALSE(f.sending);
+
+    ff_flare_wire_mark_attempt(&f, 100u, true);
+
+    TEST_ASSERT_FALSE(f.sending);
+    TEST_ASSERT_EQUAL(FF_FLARE_WIRE_WAITING, ff_flare_wire_state(&f));
+}
+
+static void S10_wire_no_end_intent_when_cancel_never_sent(void)
+{
+    /* CANCEL while WAITING (no mesh link the whole time): ends locally,
+     * nothing broadcast — there is no receiver to correct. */
+    ff_flare_t f;
+    ff_flare_init(&f);
+    ff_flare_send_begin(&f, 300u, 0u);
+    TEST_ASSERT_EQUAL(FF_FLARE_WIRE_WAITING, ff_flare_wire_state(&f));
+
+    ff_flare_result_t r = ff_flare_send_cancel(&f);
+
+    TEST_ASSERT_EQUAL(FF_FLARE_INTENT_NONE, r.intent);
+    TEST_ASSERT_FALSE(f.sending);
+}
+
+static void S10_wire_no_end_intent_when_auto_end_never_sent(void)
+{
+    /* Auto-end (tick) mirrors cancel's own gate. */
+    ff_flare_t f;
+    ff_flare_init(&f);
+    ff_flare_send_begin(&f, 5u, 0u); /* send_expiry_ms = 5000, never confirmed */
+
+    ff_flare_result_t r = ff_flare_tick(&f, 5000u);
+
+    TEST_ASSERT_EQUAL(FF_FLARE_INTENT_NONE, r.intent);
+    TEST_ASSERT_FALSE(f.sending);
+}
+
+static void S10_wire_end_exactly_once_when_sent_via_cancel(void)
+{
+    ff_flare_t f;
+    ff_flare_init(&f);
+    ff_flare_send_begin(&f, 300u, 0u);
+    ff_flare_wire_mark_attempt(&f, 0u, true); /* confirmed SENT */
+
+    ff_flare_result_t r1 = ff_flare_send_cancel(&f);
+    TEST_ASSERT_EQUAL(FF_FLARE_INTENT_SEND_FLARE_END, r1.intent);
+
+    ff_flare_result_t r2 = ff_flare_send_cancel(&f);
+    TEST_ASSERT_EQUAL(FF_FLARE_INTENT_NONE, r2.intent); /* not sending any more: no-op, not a second END */
+}
+
+static void S10_wire_end_exactly_once_when_sent_via_auto_end(void)
+{
+    ff_flare_t f;
+    ff_flare_init(&f);
+    ff_flare_send_begin(&f, 5u, 0u); /* send_expiry_ms = 5000 */
+    ff_flare_wire_mark_attempt(&f, 0u, true); /* confirmed SENT (e.g. the initial attempt succeeded) */
+
+    ff_flare_result_t r1 = ff_flare_tick(&f, 5000u);
+    TEST_ASSERT_EQUAL(FF_FLARE_INTENT_SEND_FLARE_END, r1.intent);
+
+    ff_flare_result_t r2 = ff_flare_tick(&f, 999999u);
+    TEST_ASSERT_EQUAL(FF_FLARE_INTENT_NONE, r2.intent); /* not a repeat */
+}
+
+static void S10_wire_retry_then_confirm_matches_original_duration(void)
+{
+    /* A retry resends the SAME fixed dur_s throughout a send's lifetime
+     * (ff_flare_send_dur_s's own doc comment: not a shrinking remaining
+     * time). */
+    ff_flare_t f;
+    ff_flare_init(&f);
+    ff_flare_send_begin(&f, 60u, 1000u);
+    TEST_ASSERT_EQUAL_UINT16(60u, ff_flare_send_dur_s(&f));
+
+    ff_flare_wire_mark_attempt(&f, 1000u, false); /* first attempt fails */
+    TEST_ASSERT_EQUAL_UINT16(60u, ff_flare_send_dur_s(&f)); /* unchanged while retrying */
+
+    TEST_ASSERT_TRUE(ff_flare_wire_should_retry(&f, 6000u));
+    ff_flare_wire_mark_attempt(&f, 6000u, true); /* retry succeeds */
+    TEST_ASSERT_EQUAL(FF_FLARE_WIRE_SENT, ff_flare_wire_state(&f));
+    TEST_ASSERT_EQUAL_UINT16(60u, ff_flare_send_dur_s(&f)); /* still the original duration */
 }
 
 int main(void)
@@ -677,6 +860,19 @@ int main(void)
     RUN_TEST(S10_flare_end_rx_matching_both_takeover_and_lock_clears_both);
     RUN_TEST(S10_wraparound_safe_expiry_check);
     RUN_TEST(S10_init_zeroes_all_independent_state);
+
+    RUN_TEST(S10_wire_send_begin_starts_waiting);
+    RUN_TEST(S10_wire_mark_attempt_ok_transitions_to_sent);
+    RUN_TEST(S10_wire_mark_attempt_failure_stays_waiting_and_stamps_attempt);
+    RUN_TEST(S10_wire_should_retry_due_at_exactly_5000ms_not_4999);
+    RUN_TEST(S10_wire_should_retry_false_once_sent);
+    RUN_TEST(S10_wire_should_retry_false_when_not_sending);
+    RUN_TEST(S10_wire_mark_attempt_after_send_ended_is_noop);
+    RUN_TEST(S10_wire_no_end_intent_when_cancel_never_sent);
+    RUN_TEST(S10_wire_no_end_intent_when_auto_end_never_sent);
+    RUN_TEST(S10_wire_end_exactly_once_when_sent_via_cancel);
+    RUN_TEST(S10_wire_end_exactly_once_when_sent_via_auto_end);
+    RUN_TEST(S10_wire_retry_then_confirm_matches_original_duration);
 
     return UNITY_END();
 }

@@ -876,6 +876,27 @@ static void fx_parse_flare(fx_ctx_t const *c, int obj_i, ff_app_flare_t *fl)
     if (fx_obj_get(c, obj_i, "sending", &t)) fl->sending = fx_bool(c, t, false);
     if (fx_obj_get(c, obj_i, "send_expires_in_ms", &t) && !fx_is_null(c, t))
         fl->send_expires_in_ms = (int32_t)fx_num(c, t, -1.0);
+    /* S10 Amendment (2026-09-03, "Wire honesty") — [api]. Meaningless
+     * (WAITING, the struct's own least-claiming zero value) unless
+     * `sending` is true — same "meaningful iff sending" convention
+     * ff_flare_t.wire_state itself documents, and load-bearing for the
+     * dump/reload round trip: a fixture with no "flare" section at all
+     * leaves this field at the whole-struct memset's WAITING default, so
+     * a `sending` fixture must resolve to the SAME default (WAITING) a
+     * dumped-then-reloaded copy would get if it's actually SENT — never a
+     * SENT default that only the original, hand-authored JSON could
+     * produce. When `sending`, default is SENT deliberately (not
+     * WAITING): every fixture written before this amendment describes a
+     * flare that DID reach the mesh (the only outcome the app could
+     * render at the time), so defaulting SENT-while-sending is what keeps
+     * every existing fixture/golden — flaring_self.json included —
+     * byte-identical without touching them. A fixture author opts into
+     * the honest "not yet on the wire" reading explicitly with
+     * `"waiting": true` (see flaring_self_nomesh.json). */
+    fl->wire_state = fl->sending ? FF_FLARE_WIRE_SENT : FF_FLARE_WIRE_WAITING;
+    if (fl->sending && fx_obj_get(c, obj_i, "waiting", &t) && fx_bool(c, t, false)) {
+        fl->wire_state = FF_FLARE_WIRE_WAITING;
+    }
 
     fl->takeover_expires_in_ms = -1;
     if (fx_obj_get(c, obj_i, "takeover_active", &t)) fl->takeover_active = fx_bool(c, t, false);
