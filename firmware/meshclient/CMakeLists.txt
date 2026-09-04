@@ -72,4 +72,26 @@ if(FF_BUILD_TESTS)
     ff_apply_warnings(test_transport_tcp)
 
     add_test(NAME test_transport_tcp COMMAND test_transport_tcp)
+
+    # S15c — mc_uart_write_accept_len() (device UART transport's write()
+    # backpressure arithmetic, the #170 contract). The transport itself
+    # (targets/esp32s3/components/ff_meshclient/mc_transport_uart.c) is
+    # device-only (ESP-IDF <driver/uart.h>, no sim/host build exists for
+    # it — see this PR's body for the honest gap statement), but the one
+    # pure calculation inside its write() path was factored into a
+    # header with zero ESP-IDF includes
+    # (targets/esp32s3/components/ff_meshclient/include/
+    # mc_transport_uart_accept.h) specifically so it has a real,
+    # host-run test rather than shipping unverified. No link against
+    # ff-meshclient: the header is self-contained (stddef.h only).
+    add_executable(test_transport_uart_accept
+        ${CMAKE_CURRENT_SOURCE_DIR}/../targets/esp32s3/components/ff_meshclient/tests/test_transport_uart_accept.c
+    )
+    target_include_directories(test_transport_uart_accept PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/../targets/esp32s3/components/ff_meshclient/include
+    )
+    target_link_libraries(test_transport_uart_accept PRIVATE unity)
+    ff_apply_warnings(test_transport_uart_accept)
+
+    add_test(NAME test_transport_uart_accept COMMAND test_transport_uart_accept)
 endif()

@@ -18,7 +18,9 @@ wiki.seeedstudio.com (XIAO ESP32S3) and meshtastic/firmware
 | ground | GND              | GND           |                    |
 | power  | 3V3 (or shared battery, see below) | 3V3 (or BAT+) | |
 
-- The puck's console is USB-Serial-JTAG, so its UART header pins GPIO43/44 are free.
+- The puck's console is USB-Serial-JTAG ONLY as of the S15c review round (`firmware/targets/esp32s3/sdkconfig.defaults`/`sdkconfig.ci`: `CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y`, secondary NONE) — a fresh checkout's UART header pins GPIO43/44 are free for exactly this reason. ESP-IDF's stock default before that fix kept UART0 (GPIO43/44's own default peripheral) as the PRIMARY console with USB-Serial/JTAG only a secondary mirror, so the boot log was actually sharing these pins; see `docs/specs/S15-esp32s3-target.md`'s Amendments for the full reasoning (shared-FIFO corruption risk) and the maintainer action items below.
+- **If your board's `sdkconfig` predates this fix** (drift rule, `docs/specs/S15-esp32s3-target.md`): a fresh `sdkconfig.defaults` entry does not reach an already-generated `sdkconfig`. Delete every `CONFIG_ESP_CONSOLE_*` key from the board's `sdkconfig` (or `idf.py fullclean` + reconfigure) and set `CONFIG_FF_LINK_UART=y` by hand before wiring up the comms brain — otherwise the boot log is still on GPIO43/44 despite this file's own claim above, and `FF_LINK` silently stays `NONE`.
+- A residual, un-Kconfig-able boot-garbage window remains regardless: the ROM's own first-stage boot banner is hardware-fixed to UART0's default pins and prints before any Kconfig setting is even read. Brief, one-time per boot, and absorbed by whichever side's framer resync counter sees it — see the S15 Amendment for the full reasoning. This is why the mesh link itself stays on UART1 (`FF_UART_PORT` default), not UART0, even with the console moved off it.
 - **Do not use the XIAO's D6/D7 (GPIO43/44)**: Meshtastic's `seeed_xiao_s3` variant
   assigns them to the L76K GPS (`GPS_TX_PIN 43`, `GPS_RX_PIN 44`). This supersedes
   S15 deliverable 3's "D6/D7" wording.

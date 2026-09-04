@@ -118,3 +118,42 @@ CONFIG_LV_BUILD_DEMOS=n
 # disabled, which this app does not do).
 CONFIG_FREERTOS_PLACE_FUNCTIONS_INTO_FLASH=y
 
+
+# --- Console: USB-Serial/JTAG only, NOT UART0 (S15c amendment) -------------
+# S15c's UART transport claims GPIO43/44 for the mesh link to the comms
+# brain. ESP-IDF's stock default for this target keeps UART0 (whose OWN
+# default TX/RX pins are ALSO GPIO43/44) as the PRIMARY console, with
+# USB-Serial/JTAG only as a SECONDARY mirror (esp-idf's own
+# components/esp_system/Kconfig ESP_CONSOLE_UART/ESP_CONSOLE_SECONDARY
+# choices) — meaning a fresh checkout's boot log would keep printing onto
+# the same physical pins the comms brain listens on. Flipped here so
+# USB-Serial/JTAG is the ONLY console (primary, secondary NONE): no boot
+# log ever reaches GPIO43/44 on a fresh checkout, whether or not
+# CONFIG_FF_LINK is set to UART.
+#
+# This does NOT fully silence GPIO43/44 at every point in boot — see
+# docs/specs/S15-esp32s3-target.md's Amendments ("boot-garbage window")
+# for the one thing this setting cannot reach: the ROM's own first-stage
+# boot banner ("ets ... rst:0x1 (POWERON)..."), which is hardware-fixed to
+# UART0's default pins and prints BEFORE any flash code — bootloader or
+# app — has read a single byte of Kconfig. This setting DOES cover the
+# second-stage bootloader's own log (bootloader_support/src/
+# bootloader_console.c reads this SAME CONFIG_ESP_CONSOLE_* namespace) and
+# every app-level ESP_LOGx call — both moved off UART0 entirely.
+#
+# DRIFT-RULE WARNING (this file's own header, and PR #172): a generated
+# `sdkconfig` that ALREADY EXISTS (the maintainer's real board file,
+# untracked) does NOT pick up this new default — Kconfig only fills in a
+# key that is ABSENT from an existing sdkconfig, and CONFIG_ESP_CONSOLE_*
+# is very much already present there (as CONFIG_ESP_CONSOLE_UART_DEFAULT=y
+# et al.). The maintainer must delete those CONFIG_ESP_CONSOLE_* keys from
+# the board's sdkconfig (or `idf.py fullclean` + reconfigure it entirely)
+# for this new default to actually take effect on real hardware — see the
+# S15 Amendment for the full list of keys and the accompanying
+# CONFIG_FF_LINK_UART=y the maintainer must also set by hand there (a
+# brand-new key, unlike CONFIG_ESP_CONSOLE_*, so it WOULD pick up this
+# file's FF_LINK_NONE default silently otherwise — no drift-rule exception
+# for a key that never existed before).
+CONFIG_ESP_CONSOLE_UART_DEFAULT=n
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
+CONFIG_ESP_CONSOLE_SECONDARY_NONE=y
