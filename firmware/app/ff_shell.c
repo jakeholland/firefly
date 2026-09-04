@@ -1891,14 +1891,6 @@ static void shell_project(shell_t *sh, uint32_t now_ms)
  * The dirty bit, computed over the RENDERED projection
  * ------------------------------------------------------------------- */
 
-/** Milliseconds -> whole seconds, preserving the -1 "not applicable"
- *  sentinel. Countdowns reach the screen through flare_fmt at 1 s
- *  granularity, so that is the granularity they are compared at. */
-static int32_t shell_coarsen_ms(int32_t ms)
-{
-    return (ms < 0) ? -1 : (ms / 1000);
-}
-
 /* Signals rows carry a RAW `age_ms` that advances every tick; the screen
  * renders it through `ff_fmt_age`, which only changes at coarse boundaries
  * (whole SEC under a minute, whole MIN under an hour, whole HR beyond). Key
@@ -1934,9 +1926,57 @@ static void shell_render_key(ff_app_state_t const *v, ff_app_state_t *key)
 {
     memcpy(key, v, sizeof(*key));
 
-    key->flare.send_expires_in_ms = shell_coarsen_ms(v->flare.send_expires_in_ms);
-    key->flare.takeover_expires_in_ms = shell_coarsen_ms(v->flare.takeover_expires_in_ms);
-    key->flare.locked_expires_in_ms = shell_coarsen_ms(v->flare.locked_expires_in_ms);
+    /* fix/flare-cancel-taps — root cause (a). These three fields used to
+     * be coarsened to whole seconds (shell_coarsen_ms) and left IN the
+     * key, on the theory that a countdown reaching the glass through
+     * flare_fmt at 1s granularity should key at that same granularity —
+     * exactly the arrow_deg/age-bucket discipline the rest of this
+     * function still uses correctly elsewhere. The bug: unlike arrow_deg
+     * (which only SLOWS churn) or a coarsened age (which is genuinely
+     * static for up to 59 whole seconds at a time), a live countdown's
+     * coarsened value changes on EVERY tick that crosses a 1s boundary —
+     * i.e. once a second, every second, for the whole life of a send or
+     * a lock. That dirtied the key once a second, and the device answers
+     * a dirty key with `lv_obj_clean()` + a full rebuild
+     * (targets/esp32s3/main/app_main.c) — tearing down and recreating
+     * the sender overlay's own CANCEL button once a second while it was
+     * flaring. A CANCEL press/release straddling that rebuild has its
+     * pressed object deleted out from under it, so LVGL never fires its
+     * CLICKED: the maintainer's "taps seem to pass through and I tapped
+     * it multiple times before it actually worked" report. The takeover
+     * countdown (`takeover_expires_in_ms`) and the lock countdown
+     * (`locked_expires_in_ms`) have the identical per-second churn but
+     * were AUDITED, not assumed, for whether anything on screen actually
+     * depends on them: neither is read by `ff_scr_flare_build_takeover`,
+     * `ff_scr_flare_build_lock_chip`, or anywhere else that renders a
+     * pixel (grepped — their only two consumers in this file are the
+     * projection above and this now-deleted coarsening) — a takeover
+     * shows a headline/bearing/lock-disclosure chip with no ticking
+     * countdown at all, and the LOCKED chip shows only a name. So both
+     * are pure key-pollution: dirtying the key, and rebuilding the
+     * Radar face (while locked) or the takeover screen (while pending)
+     * once a second, for a value nothing ever draws.
+     *
+     * The fix is the SAME "kept OUT of the render key" shape #bug1
+     * (brightness, just below) already established, applied to all
+     * three: `send_expires_in_ms` still needs to reach the glass — it is
+     * genuinely rendered, in the "ends in M:SS" chip
+     * (ff_scr_flare_build_sender_overlay) — so it does so through a NEW,
+     * separate path that updates that ONE label's text in place every
+     * frame, entirely outside the dirty/rebuild mechanism
+     * (`ff_face_dispatch_tick` -> `ff_scr_flare_sender_overlay_tick`,
+     * called every frame from app_main.c/ctl_loop.c the same place
+     * brightness/screen_flip are already applied "live", independent of
+     * the dirty bit). `takeover_expires_in_ms`/`locked_expires_in_ms`
+     * need no such replacement — nothing renders them, so there is
+     * nothing to keep live. `sending`, `takeover_active`, `locked`, and
+     * `wire_state` all stay VERBATIM in the key (via the memcpy above) —
+     * those transitions are real, rendered changes (the overlay's own
+     * presence, and its status line's wording) and must keep dirtying
+     * exactly as before. */
+    key->flare.send_expires_in_ms = 0;
+    key->flare.takeover_expires_in_ms = 0;
+    key->flare.locked_expires_in_ms = 0;
 
     /* The arrow is exponentially smoothed, so with a completely static
      * scene it converges toward its target forever without ever quite
@@ -2268,14 +2308,12 @@ static void shell_render_key(ff_app_state_t const *v, ff_app_state_t *key)
          * the launcher — BOOT's own home — is the active face, which
          * nothing could do before (FLARE_START, the only prior sender,
          * lives on the Radar tile and can never fire from here). Without
-         * restoring the two fields that overlay actually renders, a
-         * `sending` flip (or its countdown) while on the launcher was
-         * masked to zero by the blanket memset below exactly like the
-         * banner bug this mask's SECOND exception fixed — same root
-         * cause, same fix shape: stash before the memset, restore after.
-         * Only `sending`/`send_expires_in_ms` (already coarsened by this
-         * function's own top-of-function pass, a few dozen lines up) —
-         * NOT `takeover_*`/`locked_*`, which this mask must keep
+         * restoring the one field that overlay's own PRESENCE depends
+         * on, a `sending` flip while on the launcher was masked to zero
+         * by the blanket memset below exactly like the banner bug this
+         * mask's SECOND exception fixed — same root cause, same fix
+         * shape: stash before the memset, restore after. Only `sending`
+         * — NOT `takeover_*`/`locked_*`, which this mask must keep
          * suppressed: nothing on the launcher renders them (the takeover
          * routes to its own full-screen face entirely, per the paragraph
          * above), so un-masking them would let an unrelated lock-
@@ -2283,16 +2321,25 @@ static void shell_render_key(ff_app_state_t const *v, ff_app_state_t *key)
          * from under a finger — the exact clobber class this whole mask
          * exists to prevent.
          *
+         * `send_expires_in_ms` does NOT need restoring here any more
+         * (fix/flare-cancel-taps): this function's own top-of-function
+         * pass now sets it to a constant 0 for every face, not a
+         * coarsened live value, so stashing/restoring it through this
+         * mask would only ever restore that same 0 — the countdown chip
+         * stays live through a completely different path
+         * (`ff_face_dispatch_tick`/`ff_scr_flare_sender_overlay_tick`,
+         * outside the render key entirely), see this function's
+         * top-of-function comment on `key->flare.send_expires_in_ms`.
+         *
          * FIFTH exception (S10 Amendment 2026-09-03, "Wire honesty"):
-         * `key->flare.wire_state` joins the same two fields above for the
+         * `key->flare.wire_state` joins `sending` above for the
          * identical reason — the sender overlay now ALSO renders off this
          * field (the "NO MESH — retrying" vs "you are flaring" copy), so
          * a WAITING->SENT flip while on the launcher must dirty the key
-         * exactly like a `sending`/countdown change already does, not be
-         * masked back to its stale value by the blanket memset below. */
+         * exactly like a `sending` change already does, not be masked
+         * back to its stale value by the blanket memset below. */
         ff_app_banner_t const banner = key->banner;
         bool const flare_sending = key->flare.sending;
-        int32_t const flare_send_expires_in_ms = key->flare.send_expires_in_ms;
         ff_flare_wire_state_t const flare_wire_state = key->flare.wire_state;
         ff_app_face_t const af = key->active_face;
         int8_t const batt_pct = key->radar.batt_pct;
@@ -2310,7 +2357,6 @@ static void shell_render_key(ff_app_state_t const *v, ff_app_state_t *key)
         key->banner = banner;
         key->radar.batt_pct = batt_pct;
         key->flare.sending = flare_sending;
-        key->flare.send_expires_in_ms = flare_send_expires_in_ms;
         key->flare.wire_state = flare_wire_state;
     }
 }
@@ -4501,6 +4547,29 @@ bool ff_shell_keep_awake(ff_app_state_t const *view, bool touch_cal_running)
      * screen slide to OFF/SLEEP before the 5th press lands). Mirrors
      * `ff_multitap_pending`, projected verbatim (see shell_project). */
     if (view->quick_flare_pending) {
+        return true;
+    }
+    /* fix/flare-cancel-taps — root cause found while writing this PR's
+     * own straddle test (AGENTS.md item 6, "measure, not reason
+     * harder": a test failure, not a code-reading guess, is what
+     * surfaced this). A SENDING flare was missing from this list —
+     * `takeover_active` and `quick_flare_pending` both already hold the
+     * puck ACTIVE, but `sending` did not, so a send left untouched for
+     * `FF_IDLE_T_DIM_MS` (15s — plenty inside a 300s send) let the idle
+     * FSM dim the screen out from under it. S26's own wake-only-touch
+     * amendment (docs/specs/S26-device-lifecycle.md "(c)") then applies:
+     * "a touch that begins while the screen is not ACTIVE is a wake-only
+     * input and is never delivered to the UI" — so the FIRST tap on
+     * CANCEL after 15s of inactivity only WOKE the screen and was
+     * swallowed, never reaching the button at all. A second, separate
+     * tap was needed to actually cancel — exactly the maintainer's "I
+     * tapped it multiple times before it actually worked" report, and a
+     * mechanism entirely independent of the render-key churn (a) fixes:
+     * this one fires even with ZERO rebuilds happening, any time a send
+     * sits untouched past the dim threshold. A send in progress, with
+     * its own CANCEL button as the only way to stop it early, is exactly
+     * the class of state this predicate exists to keep reachable. */
+    if (view->flare.sending) {
         return true;
     }
     /* S26 slice e — the launcher deliberately does NOT keep awake, unlike

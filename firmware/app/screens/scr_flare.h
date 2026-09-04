@@ -70,8 +70,41 @@ void ff_scr_flare_build_takeover(ff_app_flare_t const *flare);
  * mirrors under the case's flipped mount. Pass
  * `state->settings.screen_flip` straight through, exactly as every
  * `ff_scr_radar_build` call site already does.
+ *
+ * `parent`'s children built here also include a full-puck, genuinely
+ * CLICKABLE (but otherwise inert) "dim catcher" object, added after
+ * whatever base content the caller already built on a SIBLING of
+ * `parent` and before this overlay's own CANCEL button — see
+ * ff_scr_flare_build_sender_overlay's own top-of-function comment
+ * (scr_flare.c) for why a tap anywhere on the dimmed base face must be
+ * absorbed here rather than reaching a real control underneath.
  */
 void ff_scr_flare_build_sender_overlay(lv_obj_t *parent, ff_app_flare_t const *flare, bool screen_flip);
+
+/**
+ * ff_scr_flare_sender_overlay_tick — refresh the sender overlay's
+ * countdown chip TEXT ONLY, in place, without touching the LVGL tree:
+ * the `s_bright_pct` precedent (scr_settings.c) applied to a value that
+ * changes on its own over time rather than only on a button tap.
+ *
+ * `send_expires_in_ms` is the LIVE (uncoarsened) milliseconds remaining
+ * — `ff_app_flare_t.send_expires_in_ms`, read straight from
+ * `ff_shell_view()` — never the render key's copy (that field is now
+ * excluded from the key entirely; see ff_shell.c's shell_render_key
+ * comment). Call this EVERY frame the target ticks, independent of
+ * whether the frame is otherwise dirty — the exact "outside the
+ * dirty/rebuild path" placement app_main.c/ctl_loop.c already use for
+ * live brightness/screen_flip — via the shared `ff_face_dispatch_tick`
+ * (app/ff_face_dispatch.h), not this function directly, so device and
+ * sim can never drift apart on when it runs.
+ *
+ * A safe no-op whenever no sender overlay is currently built (not
+ * sending right now, or the overlay was torn down by some OTHER
+ * rebuild): the label pointer this function updates self-nulls via an
+ * LV_EVENT_DELETE callback the instant LVGL deletes it (scr_flare.c),
+ * so this never touches freed memory.
+ */
+void ff_scr_flare_sender_overlay_tick(int32_t send_expires_in_ms);
 
 /**
  * ff_scr_flare_build_lock_chip — draws a small "LOCKED · <NAME>" chip

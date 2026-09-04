@@ -386,6 +386,61 @@ static void flare_cancel_send_cb(lv_event_t *e)
 }
 
 /* ---------------------------------------------------------------------
+ * fix/flare-cancel-taps — the sender overlay's countdown chip, kept live
+ * WITHOUT a face rebuild.
+ *
+ * `send_expires_in_ms` is deliberately excluded from ff_shell.c's render
+ * key now (shell_render_key's own doc comment has the full diagnosis:
+ * coarsening it into the key dirtied the key once a second for the
+ * whole life of a send, and the device answers a dirty key with a full
+ * `lv_obj_clean()` + rebuild that tore down and recreated this overlay's
+ * own CANCEL button once a second — a CANCEL press/release straddling
+ * one of those rebuilds had its pressed object deleted out from under
+ * it, so LVGL never fired the CLICKED). The countdown still needs to
+ * reach the glass, so it does so the same way `scr_settings.c`'s
+ * `s_bright_pct` keeps the brightness label live without a rebuild: a
+ * stashed pointer to the ONE label that renders it, updated by
+ * `lv_label_set_text` in place, from a call the target's own per-frame
+ * tick makes OUTSIDE the dirty/render-key path entirely
+ * (`ff_face_dispatch_tick` -> `ff_scr_flare_sender_overlay_tick`, called
+ * every frame from app_main.c/ctl_loop.c the same place brightness/
+ * screen_flip are already applied "live" — see those files' own call
+ * sites).
+ *
+ * Unlike `s_bright_pct` (only ever written by a callback on the very
+ * button that owns it, so a torn-down Settings screen can never fire
+ * one), this label's refresh is driven from OUTSIDE the screen, once a
+ * frame, regardless of which face is currently showing — so the pointer
+ * WILL outlive the label whenever some OTHER rebuild reason (navigating
+ * faces while still sending, a banner arriving, ...) tears the tree down
+ * without this file getting a chance to null it out itself. An
+ * `LV_EVENT_DELETE` callback on the label is what makes that safe: LVGL
+ * fires it synchronously from `lv_obj_del`/`lv_obj_clean` (the exact
+ * calls `app_main.c`'s rebuild makes), always under the same LVGL lock
+ * that guards both a rebuild and this tick's own label update — so the
+ * pointer can never be read stale between "the label died" and "this
+ * file finds out". */
+static lv_obj_t *s_sender_countdown_lbl;
+
+static void flare_sender_countdown_lbl_delete_cb(lv_event_t *e)
+{
+    (void)e;
+    s_sender_countdown_lbl = NULL;
+}
+
+void ff_scr_flare_sender_overlay_tick(int32_t send_expires_in_ms)
+{
+    if (s_sender_countdown_lbl == NULL) {
+        return; /* no live overlay right now (not sending, or torn down for an unrelated reason) — no-op */
+    }
+    char countdown[16];
+    ff_flare_fmt_countdown(countdown, sizeof(countdown), send_expires_in_ms);
+    char countdown_line[32];
+    snprintf(countdown_line, sizeof(countdown_line), "ends in %s", countdown);
+    lv_label_set_text(s_sender_countdown_lbl, countdown_line);
+}
+
+/* ---------------------------------------------------------------------
  * Entry points.
  * ------------------------------------------------------------------- */
 
@@ -590,12 +645,54 @@ void ff_scr_flare_build_sender_overlay(lv_obj_t *parent, ff_app_flare_t const *f
     ff_flare_fmt_countdown(countdown, sizeof(countdown), flare->send_expires_in_ms);
     char countdown_line[32];
     snprintf(countdown_line, sizeof(countdown_line), "ends in %s", countdown);
-    flare_make_chip(parent, countdown_line, FF_THEME_COLOR_SURFACE, FF_THEME_COLOR_MUTED, FF_THEME_FONT_CHIP,
-                     (int32_t)FLARE_SENDER_COUNTDOWN_DY);
+    lv_obj_t *countdown_chip = flare_make_chip(parent, countdown_line, FF_THEME_COLOR_SURFACE,
+                                                FF_THEME_COLOR_MUTED, FF_THEME_FONT_CHIP,
+                                                (int32_t)FLARE_SENDER_COUNTDOWN_DY);
+    /* fix/flare-cancel-taps — stash the label `ff_scr_flare_sender_
+     * overlay_tick` (above) refreshes in place every frame, and arm the
+     * self-nulling LV_EVENT_DELETE so the pointer can never go stale
+     * across a rebuild for an unrelated reason (see that function's own
+     * doc comment for the full contract). `flare_make_chip` always
+     * builds the label as the chip's ONLY (first) child. */
+    s_sender_countdown_lbl = lv_obj_get_child(countdown_chip, 0);
+    lv_obj_add_event_cb(s_sender_countdown_lbl, flare_sender_countdown_lbl_delete_cb, LV_EVENT_DELETE, NULL);
+
+    /* fix/flare-cancel-taps — root cause (b). Before this, `content`
+     * (scr_nav.c / scr_launcher.c, the base face this overlay draws on
+     * top of) was merely DIMMED (opacity) while sending, never made
+     * genuinely un-clickable — but LVGL's hit search recurses into a
+     * container's CHILDREN regardless of the container's OWN clickable
+     * flag (it only falls back to consulting an object's own flag once
+     * none of its descendants match), so a tap anywhere on the dimmed
+     * face still reached whatever real control sat under it — a
+     * launcher satellite, an inbox row, a settings toggle — even though
+     * visually the screen read as "grayed out, this is the CANCEL
+     * screen now". The maintainer's report ("taps seem to pass
+     * through") is this: a tap 30px off CANCEL landing on, say, the
+     * launcher's RADAR hub underneath.
+     *
+     * The fix: a GENUINELY clickable catcher, covering the full puck,
+     * with no event callback of its own — added here, after `content`
+     * (already built by the caller before this function ever runs) and
+     * before CANCEL below, so LVGL's front-to-back hit search finds
+     * CANCEL first for a tap that actually lands on it, and finds THIS
+     * object first for every other tap on the puck — absorbing it
+     * (nothing happens) rather than letting the search fall through into
+     * `content`'s subtree. Fully transparent: it changes what a tap DOES,
+     * never what the screen LOOKS like (goldens unaffected). */
+    lv_obj_t *dim_catcher = lv_obj_create(parent);
+    lv_obj_remove_style_all(dim_catcher);
+    lv_obj_set_size(dim_catcher, FF_THEME_PUCK_PX, FF_THEME_PUCK_PX);
+    lv_obj_set_pos(dim_catcher, 0, 0);
+    lv_obj_set_style_bg_opa(dim_catcher, LV_OPA_TRANSP, 0);
+    lv_obj_clear_flag(dim_catcher, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(dim_catcher, LV_OBJ_FLAG_CLICKABLE);
 
     /* CANCEL button, on the puck edge below the status line — >=
      * FF_THEME_MIN_HIT_PX and visually distinct (outlined pill), matching
-     * the takeover screen's DISMISS treatment. */
+     * the takeover screen's DISMISS treatment. Built AFTER dim_catcher
+     * (higher z-order — see that object's own comment) so it keeps
+     * first refusal on any tap that lands on it specifically. */
     flare_make_button(parent, "CANCEL", FF_THEME_COLOR_AMBER, FF_THEME_COLOR_AMBER, false, FLARE_SENDER_CANCEL_W,
                        FLARE_SENDER_CANCEL_H, (int32_t)FLARE_SENDER_CANCEL_DY, flare_cancel_send_cb, NULL);
 }

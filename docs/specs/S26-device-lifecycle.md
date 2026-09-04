@@ -292,6 +292,62 @@ ever wakes (or force-offs) with no other side effect
 altered. The sim's ctl pointer indev (`targets/sim/ctl_loop.c`) mirrors
 the same gate for its own AC3-style harness test.
 
+**AMENDED 2026-09-04, fix/flare-cancel-taps — "the finger-down rebuild
+gate must be atomic with the touch it reads, not just present."**
+Maintainer report, on glass, after a 5x HOME quick flare: a CANCEL tap
+"seems to pass through" and needs multiple attempts. Three of the four
+independent root causes behind that report belong to other specs (the
+sender overlay's own render-key churn and dim-catcher clickability are
+S10 concerns — see `docs/specs/S10-flare.md`'s own Amendment on this
+fix); this device-lifecycle spec owns the fourth, and it is the one
+this AC3 rebuild-gate paragraph already half-states: `rebuild_pending &&
+!ff_display_touch_is_down() && !screen_blank` (`app_main.c`) IS the
+correct gate — but before this fix, `!ff_display_touch_is_down()` was
+read OUTSIDE the `ff_display_lock()` the rebuild a few lines later
+actually takes, not atomically with it.
+
+`ff_display_lock`/`_unlock` are bare aliases for esp_lvgl_port's own
+`lvgl_port_lock`/`_unlock` — the exact mutex esp_lvgl_port's own task
+holds for the ENTIRE duration of every `lv_timer_handler()` call it
+makes, which is where the touch read callback
+(`ff_touch_gate_read_cb`, targets/esp32s3/components/ff_display/
+ff_display.c) actually runs (LVGL's indev read timer fires from inside
+`lv_timer_handler`). So a real window existed between the check and the
+lock: this task reads "no finger down" as true, then — before it reaches
+`ff_display_lock()` — the port task runs a `lv_timer_handler()` pass
+that processes a NEW physical press (`s_touch_raw_down` -> true,
+PRESSED delivered into LVGL), and this task then takes the lock and
+rebuilds anyway, destroying the button that had just gone pressed —
+`rebuild-mid-tap` happening despite the gate that exists specifically to
+prevent it, because the gate's own check-then-act was not atomic with
+the fact it was checking.
+
+**The rule, stated for future gates of this shape:** any decision that
+reads LVGL/touch state and then acts on the LVGL tree must take
+`ff_display_lock()` BEFORE the read and hold it through the act, not
+merely before the act — because the ONE thing that can invalidate the
+read (the port task's own touch processing) runs only inside a
+`lv_timer_handler()` call already serialized against this exact lock.
+Applied here: `app_main.c` now takes `ff_display_lock()` first, then
+re-checks `!ff_display_touch_is_down()` and does the whole
+`lv_obj_clean()`+`ff_face_build()` while still holding it, making the
+check and the port task's own touch processing mutually exclusive for
+the whole gated section.
+
+Not reproducible in the sim (`targets/sim/ctl_loop.c`/`sim_lifecycle.c`
+read `ctx->pointer_state` directly, single-threaded, no cross-task
+handoff, per `sim_lifecycle.h`'s own "RAW pointer-down truth" doc
+comment on `finger_down` — there is no lock, and no race, to close
+there) — verified instead by code reading against esp_lvgl_port's
+documented lock contract and a zero-warning ESP-IDF device build
+(`idf.py build`, `firmware/targets/esp32s3`).
+
+**AC named to this fix:** the device rebuild gate's finger-down check
+and the rebuild it gates are one atomic, lock-held operation
+(`app_main.c`, code-reading + device build, per the paragraph above —
+no automated test possible on this target without hardware-in-the-loop
+touch injection).
+
 ### (d) `ff_notify` + message banner
 Core `ff_notify` as above (queue depth 4, FIFO, expiry, `dismiss`, `pop`).
 Shell: an incoming MESSAGE / RALLY (paired sender) enqueues a BANNER; the

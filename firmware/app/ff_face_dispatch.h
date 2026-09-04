@@ -128,6 +128,32 @@ typedef struct ff_face_dispatch_hooks {
 void ff_face_dispatch_build(ff_app_state_t const *state, ff_face_dispatch_ctx_t *ctx,
                              ff_face_dispatch_hooks_t const *hooks);
 
+/**
+ * ff_face_dispatch_tick — fix/flare-cancel-taps: per-frame, NON-rebuild
+ * widget refresh, shared the same way `ff_face_dispatch_build` shares the
+ * rebuild path. Call this every frame BOTH targets already tick
+ * (app_main.c / ctl_loop.c), regardless of whether the frame is
+ * otherwise dirty — the same "outside the dirty/render-key path"
+ * placement those files already use for live brightness/screen_flip
+ * application, just for an LVGL widget instead of a HAL call this time.
+ *
+ * Today this only forwards to `ff_scr_flare_sender_overlay_tick`
+ * (scr_flare.h) while `state->flare.sending`: the sender overlay's
+ * countdown chip is deliberately excluded from the render key now (see
+ * ff_shell.c's shell_render_key doc comment on `send_expires_in_ms`), so
+ * it needs this separate path to stay live without forcing a face
+ * rebuild every second — the mechanism that used to tear the overlay's
+ * own CANCEL button down (and back up) under a finger. A safe no-op
+ * whenever no sender overlay is currently built (scr_flare.c's own
+ * doc comment on the label pointer this ultimately updates). `state ==
+ * NULL` is a no-op, same convention as `ff_face_dispatch_build`.
+ *
+ * MUST be called under the same lock that guards a rebuild
+ * (`ff_display_lock` on the device; the sim is single-threaded so no
+ * lock is needed there) — this still mutates a live LVGL object.
+ */
+void ff_face_dispatch_tick(ff_app_state_t const *state);
+
 #ifdef __cplusplus
 }
 #endif

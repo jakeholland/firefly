@@ -51,6 +51,7 @@
 #include "ff_button.h"     /* S26 slice e — core: the generic debounced push-button (BOOT-as-home) */
 #include "ff_display.h"
 #include "ff_face.h"
+#include "ff_face_dispatch.h" /* fix/flare-cancel-taps — ff_face_dispatch_tick, the non-rebuild per-frame widget refresh */
 #include "ff_idle.h"       /* S26 slices c+f — core: inactivity -> dim -> screen off -> light sleep */
 #include "ff_intent.h"
 #include "ff_nvs_store.h" /* S21 §4 — the real NVS-backed store */
@@ -1408,12 +1409,67 @@ void app_main(void)
          * drains on the first frame after the finger lifts (or after the
          * screen wakes, whichever is later). */
         bool const screen_blank = (idle_state == FF_IDLE_STATE_OFF) || (idle_state == FF_IDLE_STATE_SLEEP);
-        if (rebuild_pending && !ff_display_touch_is_down() && !screen_blank) {
-            if (ff_display_lock(100 /* ms */)) {
-                lv_obj_clean(lv_screen_active());
-                ff_face_build(v);
+
+        /* fix/flare-cancel-taps — the sender overlay's countdown chip is
+         * excluded from the render key now (see shell_render_key's own
+         * comment, ff_shell.c), so it no longer reaches the glass through
+         * a rebuild at all; it needs this separate, every-frame, NON-
+         * rebuild refresh instead — same "outside the dirty bit" placement
+         * as the screen-flip/brightness applies just above. Guarded by the
+         * SAME display lock the rebuild below takes (this still mutates a
+         * live LVGL object, so it must never run unlocked), but — unlike
+         * the rebuild — never skipped for a held finger or for
+         * `rebuild_pending`: it only ever changes one label's TEXT, never
+         * the tree's shape, so there is nothing here that could disturb a
+         * button under a finger. Skipped while screen_blank for the same
+         * reason the rebuild is: nothing is visible to refresh. */
+        if (v->flare.sending && !screen_blank) {
+            if (ff_display_lock(20 /* ms */)) {
+                ff_face_dispatch_tick(v);
                 ff_display_unlock();
-                rebuild_pending = false;
+            }
+        }
+
+        /* fix/flare-cancel-taps — root cause (c), the device rebuild/touch
+         * race. Before this fix, `!ff_display_touch_is_down()` was read
+         * OUTSIDE the lock the rebuild below takes: the touch read
+         * callback (`ff_touch_gate_read_cb`, targets/esp32s3/components/
+         * ff_display/ff_display.c) runs on esp_lvgl_port's OWN task, inside
+         * its `lv_timer_handler()` call, which esp_lvgl_port itself wraps
+         * in this SAME `lvgl_port_lock()`/`lvgl_port_unlock()` pair
+         * (`ff_display_lock`/`_unlock` are bare aliases for it — see
+         * ff_display.c's own "LVGL task lock" section) — that is the
+         * whole reason the port exposes a lock at all: to serialize any
+         * OTHER task's LVGL calls against its own indev-processing task.
+         * So a window existed: this task could read `!touch_is_down()` as
+         * true, then — before it reached `ff_display_lock()` a few lines
+         * later — the port task could run a full `lv_timer_handler()`
+         * pass that reads a NEW physical press (setting
+         * `s_touch_raw_down` true) and delivers PRESSED into LVGL (the
+         * button under it going into its pressed state), all in the gap.
+         * This task would then take the lock and rebuild anyway,
+         * destroying the very button that had just gone pressed — the
+         * exact "rebuild-mid-tap" class this whole mechanism exists to
+         * prevent, just with the press landing in the one gap the old
+         * check-then-act ordering left open.
+         *
+         * The fix: take the lock FIRST, and re-check `touch_is_down()`
+         * (and do the whole clean+rebuild) WHILE STILL HOLDING it. Since
+         * the port task's own touch-processing only ever runs inside a
+         * `lv_timer_handler()` call made under this same lock, holding it
+         * across the check+rebuild makes the two mutually exclusive: no
+         * new press can be processed (or an existing one released) by the
+         * port task while this task is inside the locked section, so the
+         * finger-down truth this task observes cannot change out from
+         * under it between the check and the rebuild it gates. */
+        if (rebuild_pending && !screen_blank) {
+            if (ff_display_lock(100 /* ms */)) {
+                if (!ff_display_touch_is_down()) {
+                    lv_obj_clean(lv_screen_active());
+                    ff_face_build(v);
+                    rebuild_pending = false;
+                }
+                ff_display_unlock();
             }
         }
 
