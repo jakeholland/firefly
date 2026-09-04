@@ -15,13 +15,16 @@
  */
 #include "ff_power.h"
 
+#include <stddef.h>
 #include <stdint.h>
 
 #include "driver/gpio.h"
 #include "esp_adc/adc_cali.h"
 #include "esp_adc/adc_cali_scheme.h"
 #include "esp_adc/adc_oneshot.h"
+#include "esp_attr.h" /* fix/quick-flare-detection — IRAM_ATTR for the BOOT edge ISR */
 #include "esp_log.h"
+#include "esp_timer.h" /* fix/quick-flare-detection — esp_timer_get_time(), the ISR edge timestamp source */
 
 #include "ff_power_batt_conv.h"
 
@@ -209,6 +212,332 @@ bool ff_power_boot_pressed(void)
     }
 
     return gpio_get_level(FF_PIN_BOOT_KEY) == 0; /* active-LOW, standard ESP32 BOOT-button convention */
+}
+
+/* ---------------------------------------------------------------------
+ * fix/quick-flare-detection (2026-09-03) — BOOT edge ISR + edge ring.
+ *
+ * WHY: `ff_power_boot_pressed()` above is a level SAMPLE — believed only
+ * once `ff_button_tick`'s 30ms debounce elapses, at whatever cadence the
+ * render loop happens to poll it (app_main.c's tick period; see this
+ * PR's own body for the worst-case arithmetic). A physical press shorter
+ * than roughly (tick period + debounce) can be missed entirely, and a
+ * press whose edge lands during a slow frame (a face rebuild under
+ * `ff_display_lock`) is timestamped LATE — both eat into the multitap
+ * gap budget and are exactly the "finicky" symptom the maintainer
+ * reported. This block captures the RAW falling edge in a GPIO ISR,
+ * timestamped by `esp_timer_get_time()` (microsecond hardware timer,
+ * independent of the render loop's own cadence), so a press is recorded
+ * the instant it happens regardless of how busy the main task is.
+ *
+ * The debounced `ff_power_boot_pressed()`/`ff_button_tick` path above is
+ * UNCHANGED and still owns ordinary HOME delivery — this is a second,
+ * additional signal feeding ONLY the multitap counter (via
+ * `ff_shell_multitap_edge`, app_main.c's BOOT sampling block); it never
+ * replaces the debounced path.
+ * ------------------------------------------------------------------- */
+
+/* FF_POWER_BOOT_EDGE_RING_LEN is public (ff_power.h) — app_main.c sizes
+ * its per-tick drain buffer with it. */
+
+/* fix/quick-flare-detection (2026-09-04, review round 2) — the shortest
+ * gap between two ring pushes that is believed to be the SAME physical
+ * press double-recorded (the edge ISR AND the wake-edge synthesis both
+ * capturing it — see `ff_power_boot_isr_synthesize_wake_edge`'s own doc
+ * comment for exactly when that can happen) rather than two genuine
+ * presses. Independent constant, mirrors `ff_multitap.h`'s
+ * `FF_MULTITAP_BOUNCE_MS` / `ff_button.h`'s `FF_BUTTON_DEBOUNCE_MS` BY
+ * VALUE only, same "zero cross-layer dependency" reasoning those two
+ * headers already give for not sharing their own constants with each
+ * other — this is a THIRD, independent layer's own copy of the same
+ * "30 ms is bounce" judgment, not a shared one. (The shell's own
+ * `ff_multitap_press` would also reject a true duplicate via its own
+ * `FF_MULTITAP_BOUNCE_MS` rule even if this layer's dedup somehow
+ * missed one — defense in depth, not the only line of defense.) */
+#define FF_POWER_BOOT_EDGE_DEDUP_MS ((uint32_t)30u)
+
+/* Single-producer (the ISR, pinned to whichever core services GPIO0, OR
+ * the main task itself when synthesizing a wake edge post-resume —
+ * never BOTH at once, since the ISR is disabled across the suspend/
+ * resume boundary, see `ff_power_boot_isr_suspend_for_sleep`'s doc
+ * comment), single-consumer (the main task's own drain,
+ * `ff_power_boot_take_edges`, called once per render-loop tick) ring —
+ * no lock needed under that discipline: the producer only ever advances
+ * `s_boot_edge_head` after writing the slot, and the consumer only ever
+ * advances `s_boot_edge_tail` after reading it, so neither side can
+ * observe a torn write. `volatile` on the indices is what stops the
+ * compiler from caching either across the loop in
+ * `ff_power_boot_take_edges` — the ISR can run between any two consumer
+ * instructions. */
+static volatile uint32_t s_boot_edge_ring[FF_POWER_BOOT_EDGE_RING_LEN];
+static volatile uint8_t  s_boot_edge_head; /* next slot the producer will write */
+static volatile uint8_t  s_boot_edge_tail; /* next slot the consumer will read */
+static volatile uint32_t s_boot_edge_last_push_ms;   /* timestamp of the most recent successful push */
+static volatile bool     s_boot_edge_have_pushed;    /* false until the first successful push ever */
+static bool               s_boot_isr_installed;
+static bool               s_boot_isr_service_installed;
+
+/* IRAM_ATTR explicitly (review round 2) rather than relying on the
+ * compiler inlining this into the also-IRAM_ATTR `ff_power_boot_isr`
+ * below — it has a SECOND caller now
+ * (`ff_power_boot_isr_synthesize_wake_edge`) that is not itself
+ * IRAM_ATTR, and inlining is never a guarantee; a call from flash-resident
+ * code into a flash-resident function is fine for that second caller
+ * (it runs well after resume, flash is mapped again), but the FIRST
+ * caller (the ISR) can fire while flash is not necessarily safely
+ * accessible, so the function itself must live in IRAM regardless of
+ * which caller reaches it. */
+static void IRAM_ATTR ff_power_boot_edge_push(uint32_t ms)
+{
+    uint8_t const head = s_boot_edge_head;
+    uint8_t const next = (uint8_t)((head + 1u) % FF_POWER_BOOT_EDGE_RING_LEN);
+    if (next == s_boot_edge_tail) {
+        /* Ring full — a genuinely pathological burst (>8 undrained
+         * edges) or a consumer that has stopped draining. Drop this
+         * edge rather than overwrite an undrained one (silently
+         * corrupting an earlier edge's timestamp would be worse: a
+         * dropped edge just makes one run undercount, exactly as a
+         * missed sample always could; a corrupted one could fabricate
+         * a false 5th press). Never blocks — this runs in ISR context
+         * on real hardware. */
+        return;
+    }
+    s_boot_edge_ring[head] = ms;
+    s_boot_edge_head = next;
+    s_boot_edge_last_push_ms = ms;
+    s_boot_edge_have_pushed = true;
+}
+
+static void IRAM_ATTR ff_power_boot_isr(void *arg)
+{
+    (void)arg;
+    ff_power_boot_edge_push((uint32_t)(esp_timer_get_time() / 1000));
+}
+
+/**
+ * ff_power_boot_isr_init — arm the GPIO0 falling-edge ISR that feeds
+ * `ff_power_boot_take_edges`. Call once, at startup, before the render
+ * loop's first tick (app_main.c's "S27 sounds device wiring"-style
+ * contiguous init block is the right neighborhood — see that file's own
+ * BOOT sampling comment for exactly where this landed). Idempotent-safe
+ * to call more than once (gpio_config/isr_handler_add re-apply cleanly,
+ * same posture as every other HAL bring-up call in this file), but this
+ * codebase only calls it the one time.
+ *
+ * Reuses `s_boot_key_configured` (the flag `ff_power_boot_pressed`'s own
+ * lazy config sets) so that function's own first call does NOT re-run
+ * `gpio_config` with `GPIO_INTR_DISABLE` and stomp the NEGEDGE type this
+ * function sets below — both functions read/write the SAME GPIO0
+ * hardware intr-type register, so whichever configures the pin first
+ * must be the one whose type sticks, and the ISR's NEGEDGE type is the
+ * one that must win (ff_power_boot_pressed only reads gpio_get_level,
+ * which is unaffected by intr_type either way).
+ */
+esp_err_t ff_power_boot_isr_init(void)
+{
+    const gpio_config_t io = {
+        .pin_bit_mask = 1ULL << FF_PIN_BOOT_KEY,
+        .mode = GPIO_MODE_INPUT,
+        .pull_up_en = GPIO_PULLUP_ENABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_NEGEDGE,
+    };
+    esp_err_t err = gpio_config(&io);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "BOOT-key edge gpio_config(GPIO%d) failed: %s — quick-flare will fall back to the "
+                       "debounced-tick timing this PR set out to improve on",
+                 FF_PIN_BOOT_KEY, esp_err_to_name(err));
+        return err;
+    }
+    s_boot_key_configured = true; /* see this function's own doc comment above */
+
+    if (!s_boot_isr_service_installed) {
+        err = gpio_install_isr_service(0);
+        if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
+            /* INVALID_STATE = some other component already installed
+             * the shared ISR service — not an error for us, we still
+             * just add our own handler below. */
+            ESP_LOGE(TAG, "gpio_install_isr_service failed: %s", esp_err_to_name(err));
+            return err;
+        }
+        s_boot_isr_service_installed = true;
+    }
+
+    err = gpio_isr_handler_add(FF_PIN_BOOT_KEY, ff_power_boot_isr, NULL);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "gpio_isr_handler_add(GPIO%d) failed: %s", FF_PIN_BOOT_KEY, esp_err_to_name(err));
+        return err;
+    }
+
+    s_boot_isr_installed = true;
+    ESP_LOGI(TAG, "BOOT (GPIO%d) edge ISR armed (NEGEDGE) — quick-flare multitap now timed off real press edges",
+             FF_PIN_BOOT_KEY);
+    return ESP_OK;
+}
+
+/**
+ * ff_power_boot_take_edges — drain up to `max` recorded edges (oldest
+ * first) into `out_ms`, returning how many were actually drained. Call
+ * once per render-loop tick (app_main.c's BOOT sampling block); each
+ * drained timestamp is an `esp_timer_get_time()/1000` reading from the
+ * instant a real falling edge fired, meant to be fed straight to
+ * `ff_shell_multitap_edge`. Safe to call with `out_ms == NULL` (drains
+ * and discards — not used anywhere in this codebase, but harmless) or
+ * `max == 0` (returns 0, drains nothing). Returns 0 if the ISR was never
+ * armed (`ff_power_boot_isr_init` not called or failed) — the ring
+ * simply stays empty forever in that case, same honest-degrade posture
+ * as `ff_power_batt_mv`'s "never initialized" path.
+ */
+size_t ff_power_boot_take_edges(uint32_t *out_ms, size_t max)
+{
+    size_t n = 0;
+    while (n < max) {
+        uint8_t const tail = s_boot_edge_tail;
+        if (tail == s_boot_edge_head) break; /* empty */
+        if (out_ms != NULL) {
+            out_ms[n] = s_boot_edge_ring[tail];
+        }
+        s_boot_edge_tail = (uint8_t)((tail + 1u) % FF_POWER_BOOT_EDGE_RING_LEN);
+        n++;
+    }
+    return n;
+}
+
+/**
+ * ff_power_boot_isr_suspend_for_sleep — call immediately before
+ * (re-)configuring the level wake and entering `esp_light_sleep_start()`.
+ *
+ * ## The race this fixes (review round 2, 2026-09-04)
+ * GPIO0's hardware intr-type register is the SAME register the edge
+ * ISR's `GPIO_INTR_NEGEDGE` and the light-sleep wake's
+ * `GPIO_INTR_LOW_LEVEL` both write to (ESP light-sleep GPIO wake only
+ * supports LEVEL types, not EDGE — ESP-IDF's own `gpio_wakeup_enable`
+ * documentation). The FIRST version of this function assumed that
+ * merely LEAVING the type at LOW_LEVEL (armed once at startup,
+ * `ff_configure_light_sleep_wake`, app_main.c) was enough, and did
+ * nothing else — but `gpio_isr_handler_add` (in `ff_power_boot_isr_init`)
+ * leaves our own edge-ISR HANDLER attached and its interrupt ENABLED
+ * regardless of intr_type; a still-held BOOT press, once the type flips
+ * to LOW_LEVEL, would re-trigger THAT handler on the level condition —
+ * a level interrupt does not clear itself the way an edge one does, so
+ * a long-held BOOT could fire it repeatedly (double count, or an ISR
+ * storm for as long as the level holds) BEFORE this file ever got a
+ * chance to synthesize the wake edge cleanly. Confirmed as a real race,
+ * not a theoretical one, by independent review of PR #194.
+ *
+ * ## The fix — disable BEFORE reconfiguring, in this exact order
+ *  1. `gpio_intr_disable(GPIO0)` FIRST — stop our own handler from
+ *     being invoked at all, before anything about the pin's type
+ *     changes. This is the step that actually prevents the storm: once
+ *     the interrupt is masked, changing intr_type underneath it cannot
+ *     call our handler no matter what level the pin sits at.
+ *  2. `gpio_wakeup_enable(GPIO0, GPIO_INTR_LOW_LEVEL)` — (re-)arm the
+ *     level wake trigger for THIS sleep cycle (idempotent re-apply,
+ *     same posture as every other HAL bring-up call in this file;
+ *     `ff_configure_light_sleep_wake`'s own one-time startup call is
+ *     what arms it the FIRST time, before this function has ever run —
+ *     every sleep AFTER the first is armed here instead, since
+ *     `ff_power_boot_isr_rearm_after_sleep`, below, flips the type back
+ *     to NEGEDGE after each wake).
+ *
+ * The caller (app_main.c) proceeds to `esp_light_sleep_start()`
+ * immediately after this returns — no other GPIO0 configuration happens
+ * in between. No-op if the edge ISR was never installed.
+ */
+void ff_power_boot_isr_suspend_for_sleep(void)
+{
+    if (!s_boot_isr_installed) return;
+
+    esp_err_t err = gpio_intr_disable(FF_PIN_BOOT_KEY);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "BOOT-key gpio_intr_disable before sleep failed: %s — the held-BOOT double-count race this "
+                       "function exists to close may not be fully closed this cycle",
+                 esp_err_to_name(err));
+    }
+
+    err = gpio_wakeup_enable(FF_PIN_BOOT_KEY, GPIO_INTR_LOW_LEVEL);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "BOOT-key gpio_wakeup_enable before sleep failed: %s — a BOOT press may not wake this sleep "
+                       "cycle (the earlier startup-time arm may still cover it)",
+                 esp_err_to_name(err));
+    }
+}
+
+/**
+ * ff_power_boot_isr_rearm_after_sleep — call IMMEDIATELY after
+ * `esp_light_sleep_start()` returns, BEFORE anything else — no
+ * `ESP_LOGI`, no `esp_sleep_get_wakeup_cause()` read, nothing (review
+ * round 2's explicit ordering requirement). Re-arms `GPIO_INTR_NEGEDGE`
+ * + re-enables the interrupt so live presses are captured again during
+ * this new ACTIVE period, closing the race `ff_power_boot_isr_suspend_
+ * for_sleep`'s own doc comment describes as fast as possible after
+ * wake — every instruction between `esp_light_sleep_start()` returning
+ * and this call running is time GPIO0 sits at LOW_LEVEL with the
+ * interrupt still disabled (safe — disabled, not storming — but also
+ * not yet capturing a genuine SECOND press that might land in that
+ * window), so nothing is inserted ahead of it. No-op if the edge ISR
+ * was never installed.
+ */
+void ff_power_boot_isr_rearm_after_sleep(void)
+{
+    if (!s_boot_isr_installed) return;
+
+    esp_err_t const err = gpio_set_intr_type(FF_PIN_BOOT_KEY, GPIO_INTR_NEGEDGE);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "BOOT-key NEGEDGE re-arm after light sleep failed: %s — quick-flare edge timing degrades to "
+                       "the debounced-tick path until the next successful re-arm",
+                 esp_err_to_name(err));
+        return; /* don't enable an interrupt whose type we just failed to set */
+    }
+    esp_err_t const enable_err = gpio_intr_enable(FF_PIN_BOOT_KEY);
+    if (enable_err != ESP_OK) {
+        ESP_LOGW(TAG, "BOOT-key gpio_intr_enable after light sleep failed: %s", esp_err_to_name(enable_err));
+    }
+}
+
+/**
+ * ff_power_boot_isr_synthesize_wake_edge — call AFTER
+ * `ff_power_boot_isr_rearm_after_sleep` (above) has already run, once
+ * the caller has determined the wake cause and logged it (order no
+ * longer matters for THIS call — the re-arm was the time-critical part).
+ *
+ * `wake_was_boot_gpio`: the caller's own best determination of whether
+ * THIS wake was caused by BOOT specifically (app_main.c's own
+ * light-sleep block: `esp_sleep_get_wakeup_cause() ==
+ * ESP_SLEEP_WAKEUP_GPIO && ff_power_boot_pressed()` — a level-read
+ * fallback, not a per-pin status register, because
+ * `esp_sleep_get_gpio_wakeup_status()` is compiled out for this chip's
+ * light-sleep GPIO wake path; see that call site's own comment for the
+ * full reasoning on why the level read is sound here). When true, this
+ * function pushes a synthesized edge at the current
+ * `esp_timer_get_time()` (i.e., "now") UNLESS a real edge was already
+ * pushed within `FF_POWER_BOOT_EDGE_DEDUP_MS` (30 ms) — the just-
+ * re-armed NEGEDGE ISR races this call and MAY have already captured
+ * the exact same physical press (e.g. if BOOT was released and the
+ * falling edge of a near-simultaneous SECOND press landed in the brief
+ * window between the wake firing and the re-arm completing); pushing a
+ * synthetic edge on top of that would double-count one physical press.
+ * Without this synthesis at all, the press that woke the puck would
+ * silently not count toward the multitap gesture, even though it is
+ * exactly the kind of "first tap from a dark screen" press S10's own
+ * spec requires to count. The synthesized timestamp is necessarily a
+ * few instructions LATE relative to the true edge (there is no way to
+ * recover the exact wake instant from a level trigger), but that error
+ * is bounded by the wake-resume path's own latency — not a whole tick
+ * period, the way the OLD debounced-tick timing this PR fixes could be
+ * — and is a strictly better estimate than dropping the edge entirely.
+ */
+void ff_power_boot_isr_synthesize_wake_edge(bool wake_was_boot_gpio)
+{
+    if (!s_boot_isr_installed || !wake_was_boot_gpio) return;
+
+    uint32_t const ms = (uint32_t)(esp_timer_get_time() / 1000);
+    if (s_boot_edge_have_pushed && (ms - s_boot_edge_last_push_ms) < FF_POWER_BOOT_EDGE_DEDUP_MS) {
+        /* The re-armed ISR already captured this same physical press —
+         * see this function's own doc comment. Skip the synthesis. */
+        return;
+    }
+    ff_power_boot_edge_push(ms);
 }
 
 /* ---------------------------------------------------------------------

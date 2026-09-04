@@ -6352,7 +6352,15 @@ static void S26c_AC1_keep_awake_true_while_flare_sending(void)
 static void press_home_at(uint32_t t_ms)
 {
     H.clk.t = t_ms;
+    /* fix/quick-flare-detection (2026-09-03): ordinary HOME dispatch and
+     * multitap counting are now two separate calls — see
+     * ff_shell_home_press's and ff_shell_multitap_edge's own doc
+     * comments (ff_shell.h) for why. A real target calls both per
+     * physical press (app_main.c's BOOT sampling block); this test
+     * helper mirrors that exact pairing so every existing S10_* test
+     * below needs no other change. */
     ff_shell_home_press(&H.shell, t_ms, true);
+    ff_shell_multitap_edge(&H.shell, t_ms, NULL);
 }
 
 static void S10_quick_flare_5_home_presses_start_sending(void)
@@ -7139,7 +7147,15 @@ static void S27_flare_start_during_a_takeover_fires_nothing(void)
 /* The OTHER flare-send trigger: the 5x-HOME quick-flare gesture
  * (FF_INTENT_QUICK_FLARE, concurrent PR #183) has its own separate
  * ff_flare_send_begin call site (ff_shell.c) — this proves it also
- * fires FLARE_SENT, not just the Radar-face button. */
+ * fires FLARE_SENT, not just the Radar-face button.
+ *
+ * fix/quick-flare-detection (2026-09-03) update: taps 1-4 must still
+ * never sound FLARE_SENT (unchanged), but presses 2-4 now DO sound
+ * their own progress blip (FF_SOUND_MULTITAP_TICK) — see
+ * `S10_quick_flare_progress_blips_on_presses_2_3_4_only` below for the
+ * dedicated per-press breakdown; this test's own job is narrower: prove
+ * FLARE_SENT specifically is silent through taps 1-4 and fires exactly
+ * once on the 5th, alongside whatever blips also fired. */
 static void S27_quick_flare_gesture_fires_flare_sent_exactly_once(void)
 {
     harness_init(100000u, false);
@@ -7150,12 +7166,182 @@ static void S27_quick_flare_gesture_fires_flare_sent_exactly_once(void)
     press_home_at(100300u);
     press_home_at(100600u);
     press_home_at(100900u);
-    TEST_ASSERT_EQUAL_INT_MESSAGE(0, H.sound.count, "taps 1-4 must not sound FLARE_SENT");
+    TEST_ASSERT_EQUAL_INT_MESSAGE(0, sound_count(FF_SOUND_FLARE_SENT), "taps 1-4 must not sound FLARE_SENT");
+    TEST_ASSERT_EQUAL_INT_MESSAGE(3, sound_count(FF_SOUND_MULTITAP_TICK),
+                                   "presses 2, 3 and 4 should each have sounded a progress blip");
     press_home_at(101200u); /* 5th: starts sending */
 
     TEST_ASSERT_TRUE(ff_shell_flare(&H.shell)->sending);
     TEST_ASSERT_EQUAL_INT(1, sound_count(FF_SOUND_FLARE_SENT));
-    TEST_ASSERT_EQUAL_INT(1, H.sound.count);
+    TEST_ASSERT_EQUAL_INT_MESSAGE(4, H.sound.count, "3 progress blips (presses 2-4) + 1 FLARE_SENT (press 5)");
+}
+
+/* The dedicated per-press breakdown the maintainer's report asks for:
+ * a blip on presses 2, 3 and 4 of a LIVE run, NONE on press 1 (an
+ * ordinary lone HOME tap must stay silent — pinned separately below,
+ * `S10_a_lone_home_tap_makes_no_multitap_sound`), and none from the
+ * 5th press's OWN multitap accounting (FLARE_SENT is that press's
+ * feedback, fired by shell_flare_wire once the wire confirms — see
+ * ff_shell_multitap_edge's doc comment for why the two are mutually
+ * exclusive by construction: count is reset to 0 before this function
+ * ever gets to look at it on the fire tick). */
+static void S10_quick_flare_progress_blips_on_presses_2_3_4_only(void)
+{
+    harness_init(100000u, false);
+    flare_wire_spy_install(true);
+
+    press_home_at(100000u); /* 1 */
+    TEST_ASSERT_EQUAL_INT_MESSAGE(0, H.sound.count, "the first press of a run must stay silent");
+
+    press_home_at(100300u); /* 2 */
+    TEST_ASSERT_EQUAL_INT(1, sound_count(FF_SOUND_MULTITAP_TICK));
+
+    press_home_at(100600u); /* 3 */
+    TEST_ASSERT_EQUAL_INT(2, sound_count(FF_SOUND_MULTITAP_TICK));
+
+    press_home_at(100900u); /* 4 */
+    TEST_ASSERT_EQUAL_INT(3, sound_count(FF_SOUND_MULTITAP_TICK));
+
+    press_home_at(101200u); /* 5 */
+    TEST_ASSERT_EQUAL_INT_MESSAGE(3, sound_count(FF_SOUND_MULTITAP_TICK),
+                                   "the 5th press must not also sound a progress blip");
+    TEST_ASSERT_EQUAL_INT(1, sound_count(FF_SOUND_FLARE_SENT));
+}
+
+/* A lone HOME tap (no run building at all — the very next tap is well
+ * past the gap bound) must never make a multitap sound, blip or
+ * otherwise: this is the ordinary, extremely common case (just pressing
+ * HOME to go home) and it must stay exactly as silent as it always was. */
+static void S10_a_lone_home_tap_makes_no_multitap_sound(void)
+{
+    harness_init(100000u, false);
+
+    press_home_at(100000u);
+    TEST_ASSERT_EQUAL_INT(0, H.sound.count);
+
+    /* A second, unrelated tap long after the gap bound: still just
+     * press 1 of a fresh run, still silent. */
+    press_home_at(100000u + FF_MULTITAP_MAX_GAP_MS + 1000u);
+    TEST_ASSERT_EQUAL_INT(0, H.sound.count);
+}
+
+/* Quiet hours (fix/quick-flare-detection, 2026-09-03): MULTITAP_TICK is
+ * exempt, same as the two FLARE sounds — a quick-flare run in progress
+ * during quiet hours still blips on presses 2-4. Same "latch the wall
+ * clock into quiet hours" technique as S16_AC11/S27's own quiet-hours
+ * tests (harness_seed_settings + inject_node at U_QUIET). */
+static void S10_quick_flare_progress_blips_survive_quiet_hours(void)
+{
+    harness_seed_settings(0); /* UTC, so U_QUIET's 05:00Z is 05:00 local */
+    harness_init(100000u, true);
+    inject_my_info(MY_ID);
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, true));
+    inject_node(DANA, "DANA", U_QUIET);
+    ff_wall_t const w = ff_shell_wall(&H.shell);
+    TEST_ASSERT_TRUE(ff_quiet_now(ff_shell_settings(&H.shell), w.now_min));
+
+    press_home_at(100000u); /* 1 */
+    press_home_at(100300u); /* 2 */
+    TEST_ASSERT_EQUAL_INT_MESSAGE(1, sound_count(FF_SOUND_MULTITAP_TICK),
+                                   "a quick-flare progress blip must survive quiet hours (panic-gesture exemption)");
+}
+
+/* ------------------------------------------------------------------- */
+/* fix/quick-flare-detection (2026-09-03) — the honest attempt log      */
+/* (`ff_shell_multitap_edge`'s optional `ff_multitap_log_t *out_log`).  */
+/* ------------------------------------------------------------------- */
+
+static void S10_multitap_log_none_while_a_run_is_just_extending(void)
+{
+    harness_init(100000u, false);
+    ff_multitap_log_t log;
+
+    ff_shell_multitap_edge(&H.shell, 100000u, &log); /* 1 */
+    TEST_ASSERT_EQUAL_INT_MESSAGE(FF_MULTITAP_LOG_NONE, log.kind, "press 1 of a run is not a failed attempt");
+
+    ff_shell_multitap_edge(&H.shell, 100300u, &log); /* 2 */
+    TEST_ASSERT_EQUAL_INT_MESSAGE(FF_MULTITAP_LOG_NONE, log.kind, "a live, still-extending run has nothing to log yet");
+}
+
+static void S10_multitap_log_a_lone_tap_never_logs_a_reset(void)
+{
+    harness_init(100000u, false);
+    ff_multitap_log_t log;
+
+    ff_shell_multitap_edge(&H.shell, 100000u, &log); /* 1 */
+    TEST_ASSERT_EQUAL_INT(FF_MULTITAP_LOG_NONE, log.kind);
+
+    /* An unrelated tap long after the gap bound: this is press 1 of a
+     * brand-new run, not a reset of a "real" attempt (only 1 press was
+     * ever counted) — must not log RESET_GAP. */
+    ff_shell_multitap_edge(&H.shell, 100000u + FF_MULTITAP_MAX_GAP_MS + 1000u, &log);
+    TEST_ASSERT_EQUAL_INT_MESSAGE(FF_MULTITAP_LOG_NONE, log.kind,
+                                   "a lone tap resetting to a fresh run of 1 is not a failed ATTEMPT");
+}
+
+/* The mutation-relevant case: a run of exactly 2 presses, then a gap
+ * over FF_MULTITAP_MAX_GAP_MS — logs RESET_GAP with the one real gap
+ * recorded. */
+static void S10_multitap_log_reset_gap_after_two_presses(void)
+{
+    harness_init(100000u, false);
+    ff_multitap_log_t log;
+
+    ff_shell_multitap_edge(&H.shell, 100000u, &log); /* 1 */
+    ff_shell_multitap_edge(&H.shell, 100300u, &log); /* 2 — gap 300ms, still live */
+    TEST_ASSERT_EQUAL_INT(FF_MULTITAP_LOG_NONE, log.kind);
+
+    uint32_t const third_ms = 100300u + FF_MULTITAP_MAX_GAP_MS + 1u; /* one over the bound */
+    ff_shell_multitap_edge(&H.shell, third_ms, &log); /* resets — starts a NEW run of 1 */
+    TEST_ASSERT_EQUAL_INT(FF_MULTITAP_LOG_RESET_GAP, log.kind);
+    TEST_ASSERT_EQUAL_UINT8(2u, log.n);
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(300u, log.gaps_ms[0], "the reported run's own single gap (press1->press2)");
+}
+
+/* A full 5-press run reports FIRED with all four of its own gaps. */
+static void S10_multitap_log_fired_reports_every_gap(void)
+{
+    harness_init(100000u, false);
+    ff_multitap_log_t log;
+
+    ff_shell_multitap_edge(&H.shell, 100000u, &log); /* 1 */
+    ff_shell_multitap_edge(&H.shell, 100300u, &log); /* 2, gap 300 */
+    ff_shell_multitap_edge(&H.shell, 100650u, &log); /* 3, gap 350 */
+    ff_shell_multitap_edge(&H.shell, 100900u, &log); /* 4, gap 250 */
+    TEST_ASSERT_EQUAL_INT(FF_MULTITAP_LOG_NONE, log.kind);
+
+    ff_shell_multitap_edge(&H.shell, 101300u, &log); /* 5, gap 400 — fires */
+    TEST_ASSERT_EQUAL_INT(FF_MULTITAP_LOG_FIRED, log.kind);
+    TEST_ASSERT_EQUAL_UINT8(5u, log.n);
+    TEST_ASSERT_EQUAL_UINT32(300u, log.gaps_ms[0]);
+    TEST_ASSERT_EQUAL_UINT32(350u, log.gaps_ms[1]);
+    TEST_ASSERT_EQUAL_UINT32(250u, log.gaps_ms[2]);
+    TEST_ASSERT_EQUAL_UINT32(400u, log.gaps_ms[3]);
+}
+
+/* out_log is genuinely optional — every existing S10_quick_flare_* test
+ * above already exercises NULL through both the reset and fired paths
+ * via press_home_at; this pins the NULL-safety directly and explicitly
+ * against a fresh shell, no crash, no observable behavior change. */
+static void S10_multitap_log_null_out_log_is_a_safe_noop(void)
+{
+    harness_init(100000u, false);
+    ff_shell_multitap_edge(&H.shell, 100000u, NULL); /* 1 */
+    ff_shell_multitap_edge(&H.shell, 100300u, NULL); /* 2 */
+    /* reset path with NULL out_log — must not crash */
+    ff_shell_multitap_edge(&H.shell, 100300u + FF_MULTITAP_MAX_GAP_MS + 1u, NULL);
+
+    /* fired path with NULL out_log — must not crash. Fresh shell so the
+     * timestamps below (deliberately lower than the ones above, to keep
+     * this block simple/self-contained) don't interact with the reset
+     * run's own state. */
+    harness_init(200000u, false);
+    ff_shell_multitap_edge(&H.shell, 200000u, NULL);
+    ff_shell_multitap_edge(&H.shell, 200300u, NULL);
+    ff_shell_multitap_edge(&H.shell, 200600u, NULL);
+    ff_shell_multitap_edge(&H.shell, 200900u, NULL);
+    ff_shell_multitap_edge(&H.shell, 201200u, NULL);
+    TEST_ASSERT_TRUE_MESSAGE(true, "reached here without crashing on either reset or fired with a NULL out_log");
 }
 
 static void S27_inbound_flare_from_paired_sender_fires_flare_incoming_exactly_once(void)
@@ -7748,6 +7934,14 @@ int main(void)
     RUN_TEST(S10_quick_flare_pops_power_menu_modal_and_starts_sending);
     RUN_TEST(S10_quick_flare_starts_under_a_takeover_but_leaves_it_alone);
     RUN_TEST(S10_quick_flare_launcher_mask_auto_end_dirties_key);
+    RUN_TEST(S10_quick_flare_progress_blips_on_presses_2_3_4_only);
+    RUN_TEST(S10_a_lone_home_tap_makes_no_multitap_sound);
+    RUN_TEST(S10_quick_flare_progress_blips_survive_quiet_hours);
+    RUN_TEST(S10_multitap_log_none_while_a_run_is_just_extending);
+    RUN_TEST(S10_multitap_log_a_lone_tap_never_logs_a_reset);
+    RUN_TEST(S10_multitap_log_reset_gap_after_two_presses);
+    RUN_TEST(S10_multitap_log_fired_reports_every_gap);
+    RUN_TEST(S10_multitap_log_null_out_log_is_a_safe_noop);
 
     RUN_TEST(S10_wire_flare_start_accepted_sends_one_flare_frame_dur_300);
     RUN_TEST(S10_wire_flare_start_sets_want_ack);

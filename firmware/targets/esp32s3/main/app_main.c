@@ -312,6 +312,48 @@ static ff_power_fsm_t s_power_fsm;
 static ff_button_t s_boot_button;
 static ff_idle_touch_gate_t s_boot_gate;
 
+/* fix/quick-flare-detection (2026-09-03) — the honest device-side
+ * attempt log docs/specs/S10-flare.md's Amendment asks for: format
+ * `ff_shell_multitap_edge`'s optional `ff_multitap_log_t` fact (a
+ * shell/core decision this file only reads, per CLAUDE.md's "no
+ * platform include in core/shell" — the ESP_LOGI call itself lives
+ * here, nowhere upstream) into
+ *   "quick-flare: n=<count> gaps=<g1,g2,...> ms reason=<gap|window>"
+ * on a reset (a run of >= 2 presses that failed), or
+ *   "quick-flare: fired, gaps=<g1,g2,...> ms"
+ * on the 5th press. `FF_MULTITAP_LOG_NONE` (the common case — most
+ * edges just silently extend an in-progress run) logs nothing. Static,
+ * fixed-size scratch buffer (no heap, no unbounded format string) sized
+ * for the worst case: 4 gaps, each up to 10 digits (a `uint32_t`), comma-
+ * separated. */
+static void ff_log_quick_flare_attempt(ff_multitap_log_t const *log)
+{
+    if (log == NULL || log->kind == FF_MULTITAP_LOG_NONE) {
+        return;
+    }
+
+    char gaps_str[4u * 11u + 1u]; /* up to 4 "NNNNNNNNNN," entries + NUL */
+    size_t off = 0;
+    uint8_t const n_gaps = (log->n > 0u) ? (uint8_t)(log->n - 1u) : 0u;
+    for (uint8_t i = 0; i < n_gaps && off < sizeof(gaps_str); i++) {
+        int written = snprintf(gaps_str + off, sizeof(gaps_str) - off, "%s%u", (i == 0) ? "" : ",",
+                                (unsigned)log->gaps_ms[i]);
+        if (written < 0) break;
+        off += (size_t)written;
+    }
+    if (off >= sizeof(gaps_str)) {
+        off = sizeof(gaps_str) - 1u;
+    }
+    gaps_str[off] = '\0';
+
+    if (log->kind == FF_MULTITAP_LOG_FIRED) {
+        ESP_LOGI(TAG, "quick-flare: fired, gaps=%s ms", gaps_str);
+    } else {
+        char const *reason = (log->kind == FF_MULTITAP_LOG_RESET_GAP) ? "gap" : "window";
+        ESP_LOGI(TAG, "quick-flare: n=%u gaps=%s ms reason=%s", (unsigned)log->n, gaps_str, reason);
+    }
+}
+
 /* ---------------------------------------------------------------------
  * S26 slice c — inactivity -> dim -> screen off.
  *
@@ -683,6 +725,18 @@ void app_main(void)
     /* S26 wake-only-touch amendment — zero BOOT's own gate latch, same
      * placement. */
     ff_idle_touch_gate_init(&s_boot_gate);
+
+    /* fix/quick-flare-detection (2026-09-03) — arm the BOOT edge ISR
+     * that feeds the multitap counter with real press-edge timestamps
+     * (see ff_power.h's own doc comment for the full "why"). Placed
+     * right next to the debouncer/gate above — both exist for the SAME
+     * physical button, initialized together — rather than deferred to
+     * the render loop, so the ISR is live before the first possible
+     * BOOT press. Non-fatal on failure (logged inside
+     * ff_power_boot_isr_init): quick-flare timing degrades to the
+     * debounced-tick path alone (this codebase's pre-PR behavior),
+     * never a boot failure. */
+    (void)ff_power_boot_isr_init();
 
     /* S26 slice c — zero the idle FSM; re-pinned to "now" right before
      * the render loop starts (below), after every one-shot bring-up step
@@ -1246,12 +1300,39 @@ void app_main(void)
          * amendment's own text ("a touch OR BUTTON press that begins
          * while the screen is not ACTIVE..."); it still COUNTS toward
          * the quick-flare gesture regardless (S10's own "the first tap
-         * wakes and counts" requirement — see ff_shell_home_press's doc
-         * comment for why that split lives there, not here). */
+         * wakes and counts" requirement) — as of fix/quick-flare-
+         * detection (2026-09-03), that counting no longer runs through
+         * THIS debounced/tick-sampled path at all (see
+         * `ff_shell_home_press`'s own doc comment for why): it is driven
+         * by the ISR-timestamped edge drain immediately below instead,
+         * which is unconditional on `boot_deliver` for the exact same
+         * reason the old in-line multitap feed was. */
         bool const boot_level = ff_power_boot_pressed();
         bool const boot_deliver = ff_idle_touch_gate(&s_idle, &s_boot_gate, now_ms, boot_level);
         if (ff_button_tick(&s_boot_button, now_ms, boot_level)) {
             ff_shell_home_press(&s_shell, now_ms, boot_deliver);
+        }
+
+        /* fix/quick-flare-detection (2026-09-03) — drain every BOOT press
+         * edge the ISR captured since the last frame (`ff_power_power.h`'s
+         * own doc comment: this is what makes quick-flare timing robust
+         * to a press shorter than this loop's ~20ms tick period, or one
+         * whose edge landed during a slow frame — see this PR's own body
+         * for the worst-case arithmetic) and feed each, with ITS OWN
+         * `esp_timer`-derived timestamp, straight to
+         * `ff_shell_multitap_edge` — the shell's software de-dup (its
+         * own doc comment, ff_shell.h) collapses any ISR contact-bounce
+         * duplicates. Draining the WHOLE ring every frame (not just one
+         * edge) means a burst that arrived faster than this loop can
+         * service it still counts every real press, in order. */
+        {
+            uint32_t edge_ms[FF_POWER_BOOT_EDGE_RING_LEN];
+            size_t const n_edges = ff_power_boot_take_edges(edge_ms, FF_POWER_BOOT_EDGE_RING_LEN);
+            for (size_t i = 0; i < n_edges; i++) {
+                ff_multitap_log_t qf_log;
+                ff_shell_multitap_edge(&s_shell, edge_ms[i], &qf_log);
+                ff_log_quick_flare_attempt(&qf_log);
+            }
         }
 
         /* S26 slice c — feed touch + BOOT into ff_idle_input every frame,
@@ -1489,10 +1570,77 @@ void app_main(void)
          * here. */
         if (idle_state == FF_IDLE_STATE_SLEEP) {
             ESP_LOGI(TAG, "S26f: entering light sleep");
+            /* fix/quick-flare-detection (2026-09-03; ordering fixed
+             * 2026-09-04, review round 2) — see
+             * ff_power_boot_isr_suspend_for_sleep's own doc comment for
+             * the exact race this closes: GPIO0's hardware intr-type
+             * register cannot hold both the edge ISR's NEGEDGE and the
+             * light-sleep wake config's LOW_LEVEL at once, and a
+             * still-held BOOT could re-trigger our own edge-ISR handler
+             * on the level condition if its interrupt were left enabled
+             * across this boundary — suspend_for_sleep disables it
+             * before (re-)arming the level wake. */
+            ff_power_boot_isr_suspend_for_sleep();
             esp_light_sleep_start();
+            /* fix/quick-flare-detection (2026-09-04, review round 2) —
+             * THE ordering fix: re-arm the edge ISR (NEGEDGE +
+             * gpio_intr_enable) FIRST, before any logging or wake-cause
+             * read — every instruction between esp_light_sleep_start()
+             * returning and this call is a window where a genuine SECOND
+             * press could land with the edge interrupt still disabled
+             * (see ff_power_boot_isr_rearm_after_sleep's own doc comment
+             * for why nothing runs ahead of it). */
+            ff_power_boot_isr_rearm_after_sleep();
+
+            esp_sleep_wakeup_cause_t const wake_cause = esp_sleep_get_wakeup_cause();
             char cause_scratch[16];
             ESP_LOGI(TAG, "S26f: light sleep wake, cause=%s",
-                     ff_wakeup_cause_str(esp_sleep_get_wakeup_cause(), cause_scratch, sizeof(cause_scratch)));
+                     ff_wakeup_cause_str(wake_cause, cause_scratch, sizeof(cause_scratch)));
+
+            /* fix/quick-flare-detection (2026-09-03) — if THIS wake
+             * looks like it was caused by BOOT specifically, synthesize
+             * the multitap edge the ISR may not have seen (see
+             * ff_power_boot_isr_synthesize_wake_edge's own doc comment
+             * for the full reasoning, including the dedup against an
+             * edge the just-re-armed ISR may ALSO have already captured
+             * for this same press — a level trigger, not an edge, is
+             * what light sleep's GPIO wake uses, so the wake press must
+             * be reconstructed rather than reliably captured, and the
+             * ISR racing this reconstruction is exactly why that
+             * function dedupes internally rather than this file trying
+             * to reason about it here).
+             *
+             * WHICH-GPIO-woke-us interpretation call: ESP-IDF's
+             * per-pin GPIO wake status readback
+             * (`esp_sleep_get_gpio_wakeup_status`) is gated behind
+             * `SOC_GPIO_SUPPORT_DEEPSLEEP_WAKEUP`, which this chip
+             * (ESP32-S3) does not define for the light-sleep GPIO wake
+             * path this file uses (confirmed: the device build fails
+             * with an undeclared-function error without this fallback,
+             * `esp_sleep.h`'s own `#if SOC_GPIO_SUPPORT_DEEPSLEEP_WAKEUP`
+             * guard) — so there is no hardware status register to ask
+             * "was it GPIO0" the way deep-sleep's ext1 wake can. Instead:
+             * a GPIO-caused wake (`wake_cause == ESP_SLEEP_WAKEUP_GPIO`)
+             * whose BOOT pin STILL reads pressed the instant we resume is
+             * treated as a BOOT-caused wake — sound because the wake
+             * trigger armed on GPIO0 is LEVEL, not edge
+             * (`GPIO_INTR_LOW_LEVEL`, `ff_configure_light_sleep_wake`):
+             * the CPU only wakes while the level condition holds, so a
+             * BOOT-caused wake's pin is, by construction, still low at
+             * the moment execution resumes (the two other armed GPIO
+             * wake sources, PWR/GPIO6 and touch-INT/GPIO4, do not affect
+             * this read). A false negative (BOOT released between the
+             * wake firing and this read — a few instructions) simply
+             * costs this ONE edge back to the debounced-tick path's
+             * accuracy, not a crash or a stuck state; a false positive
+             * (something else woke us while BOOT happened to already be
+             * held) synthesizes one harmless extra edge, deduplicated by
+             * `ff_power_boot_isr_synthesize_wake_edge`'s own device-side
+             * dedup if it lands within 30ms of one the ISR already
+             * pushed, and by `ff_multitap_press`'s own bounce-reject
+             * rule downstream either way. */
+            bool const boot_caused_wake = (wake_cause == ESP_SLEEP_WAKEUP_GPIO) && ff_power_boot_pressed();
+            ff_power_boot_isr_synthesize_wake_edge(boot_caused_wake);
         } else {
             vTaskDelay(pdMS_TO_TICKS(20));
         }

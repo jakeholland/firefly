@@ -148,12 +148,33 @@ typedef struct {
     ff_heard_t heard;
     ff_feed_t feed;
     ff_flare_t flare;
-    /* S10 quick flare (docs/specs/S10-flare.md's Amendments, 2026-09-03):
-     * the shell owns the whole "N presses within a window" decision —
-     * see `ff_shell_home_press` — so both targets stay dumb (they only
-     * forward a debounced HOME/BOOT press edge). Fed exclusively from
-     * `ff_shell_home_press`, nothing else touches this. */
+    /* S10 quick flare (docs/specs/S10-flare.md's Amendments, 2026-09-03;
+     * timing/robustness pass fix/quick-flare-detection, 2026-09-03): the
+     * shell owns the whole "N presses within a window" decision — see
+     * `ff_shell_multitap_edge` — so both targets stay dumb (they only
+     * forward a raw press EDGE, ideally ISR/mock-timestamped rather than
+     * tick-delayed — see that function's own doc comment, ff_shell.h).
+     * Fed exclusively from `ff_shell_multitap_edge`, nothing else
+     * touches this (as of fix/quick-flare-detection: NOT
+     * `ff_shell_home_press` any more — that function now only dispatches
+     * ordinary HOME, see its own doc comment for why the two were
+     * split). */
     ff_multitap_t multitap;
+    /* fix/quick-flare-detection (2026-09-03; bounce-dedup moved into
+     * core 2026-09-04 — see ff_multitap.h's FF_MULTITAP_BOUNCE_MS) —
+     * attempt-log bookkeeping,
+     * shell-owned (not part of core's `ff_multitap_t`, which stays
+     * gesture-agnostic per its own header): the inter-press gaps of the
+     * CURRENT run, so `ff_shell_multitap_edge`'s optional `out_log`
+     * parameter can report an honest "why did that attempt fail" (or
+     * "it fired") without the shell owning any platform logging call
+     * itself. `multitap_run_n` mirrors `ff_multitap_t.count` but is
+     * shell-tracked because it must survive one tick LONGER than the
+     * core field does on a fire (core resets to 0 the instant it
+     * returns true; the log for that same tick still needs the count
+     * that just fired). */
+    uint32_t multitap_run_gaps_ms[FF_MULTITAP_COUNT - 1u];
+    uint8_t multitap_run_n;
     ff_settings_t settings;
     ff_wall_state_t wall;
     ff_radar_smooth_t smooth;
@@ -4286,8 +4307,10 @@ void ff_shell_intent(ff_shell_t *sh_pub, ff_intent_t const *in)
     case FF_INTENT_QUICK_FLARE:
         /* S10 quick flare (docs/specs/S10-flare.md's Amendments,
          * 2026-09-03) — the ONLY place this fires from is
-         * `ff_shell_home_press`, on the tick the shell's own multitap
-         * FSM reports its 5th press. Mirrors FF_INTENT_FLARE_START just
+         * `ff_shell_multitap_edge` (fix/quick-flare-detection,
+         * 2026-09-03 — previously `ff_shell_home_press`), on the edge
+         * the shell's own multitap FSM reports as its 5th press.
+         * Mirrors FF_INTENT_FLARE_START just
          * above EXACTLY (same ff_flare_send_begin call, dur_s=0 so core
          * applies FF_FLARE_DEFAULT_DUR_S, the same now_ms source) with
          * one addition: idempotent against a flare already in flight —
@@ -4390,25 +4413,133 @@ void ff_shell_set_sound_muted_for_seed(ff_shell_t *sh_pub, bool muted)
     sh->sound_muted_for_seed = muted;
 }
 
-void ff_shell_home_press(ff_shell_t *sh_pub, uint32_t now_ms, bool deliver)
+void ff_shell_multitap_edge(ff_shell_t *sh_pub, uint32_t edge_ms, ff_multitap_log_t *out_log)
 {
+    if (out_log != NULL) {
+        memset(out_log, 0, sizeof(*out_log));
+    }
     if (sh_pub == NULL) return;
     shell_t *sh = shell_of(sh_pub);
 
-    /* S10 quick flare — see this function's own doc comment (ff_shell.h)
-     * for why this runs UNCONDITIONALLY, before the `deliver` gate: a
-     * wake-only press still counts toward the gesture even though it is
-     * swallowed for navigation below. */
-    bool const fifth = ff_multitap_press(&sh->multitap, now_ms);
+    /* Bounce rejection (fix/quick-flare-detection, 2026-09-04) now lives
+     * entirely in core (`ff_multitap_press`'s own Rule 0,
+     * `FF_MULTITAP_BOUNCE_MS` — moved there after review: it is domain
+     * logic about "was this really a second press", the same kind of
+     * decision the gap/window rules already make, not something this
+     * layer should re-implement). This function does not pre-filter
+     * edges itself any more; it observes what core actually decided
+     * (below) instead of re-deriving it.
+     *
+     * Attempt-log bookkeeping — mirror the SAME reset decision
+     * `ff_multitap_press` is about to make internally (the gap/window
+     * half only; the bounce half is handled by the post-call check
+     * below), evaluated against the PRE-call state, so a caller that
+     * wants an honest device log ("why did that 5-tap attempt fail?")
+     * can have one without this module owning any platform logging call
+     * itself (CLAUDE.md: "no `if` about domain behavior outside
+     * core/shell", and no platform include in shell either — the actual
+     * ESP_LOGI lives in app_main.c). `sh->multitap_run_n`/
+     * `multitap_run_gaps_ms` track just the CURRENT run's own inter-press
+     * gaps (shell-owned bookkeeping alongside the core FSM, not inside
+     * it — `ff_multitap_t` itself stays exactly as gesture-agnostic as
+     * its own header documents). */
+    uint8_t const count_before = sh->multitap.count;
+    uint32_t const prev_last_ms = sh->multitap.last_ms;
+    bool const had_run = count_before > 0u;
+    bool const gap_too_long = had_run && ff_time_reached(edge_ms, sh->multitap.last_ms + FF_MULTITAP_MAX_GAP_MS);
+    bool const window_expired = had_run && ff_time_reached(edge_ms, sh->multitap.first_ms + FF_MULTITAP_WINDOW_MS);
+    bool const would_reset_if_accepted = had_run && (gap_too_long || window_expired);
 
-    if (deliver) {
-        ff_intent_t const home = {.kind = FF_INTENT_HOME, .u = {0}};
-        ff_shell_intent(sh_pub, &home);
+    bool const fifth = ff_multitap_press(&sh->multitap, edge_ms);
+
+    /* Was this edge bounce-rejected by core? The ONLY reliable signal
+     * (rather than re-deriving core's own bounce check a second time,
+     * which would just be the same duplication review flagged) is that
+     * a true bounce-reject mutates NOTHING — both `count` AND `last_ms`
+     * come back byte-identical to their pre-call values. Checking
+     * `count` alone is NOT enough: a run of exactly 1 press followed by
+     * a GENUINE (not bounce) far-future tap resets `count` to 0 and
+     * immediately re-increments it to 1 — same numeric value as
+     * `count_before`, but `last_ms` DID move (to `edge_ms`) in that
+     * case, whereas a real bounce-reject leaves `last_ms` at
+     * `prev_last_ms` exactly (ff_multitap.h's own doc comment, and
+     * `test_multitap.c`'s `bounce_rejected_edge_leaves_first_and_last_
+     * ms_untouched`). */
+    bool const was_bounce_rejected = !fifth && sh->multitap.count == count_before && sh->multitap.last_ms == prev_last_ms;
+    if (was_bounce_rejected) {
+        return; /* nothing counted, nothing logged, nothing sounded — this edge never happened */
+    }
+
+    if (would_reset_if_accepted && sh->multitap_run_n >= 2u && out_log != NULL) {
+        out_log->kind = gap_too_long ? FF_MULTITAP_LOG_RESET_GAP : FF_MULTITAP_LOG_RESET_WINDOW;
+        out_log->n = sh->multitap_run_n;
+        memcpy(out_log->gaps_ms, sh->multitap_run_gaps_ms, (size_t)(sh->multitap_run_n - 1u) * sizeof(uint32_t));
+    }
+
+    if (would_reset_if_accepted || !had_run) {
+        sh->multitap_run_n = 1u; /* this edge is press 1 of a (re)started run — no gap to record */
+    } else {
+        /* Continuing an in-progress, still-live run: record the gap
+         * since the previous press. */
+        uint32_t const gap = edge_ms - prev_last_ms;
+        if (sh->multitap_run_n >= 1u && sh->multitap_run_n <= FF_MULTITAP_COUNT - 1u) {
+            sh->multitap_run_gaps_ms[sh->multitap_run_n - 1u] = gap;
+        }
+        sh->multitap_run_n++;
+    }
+
+    /* Progress blips — presses 2, 3 and 4 of a LIVE run only (S10
+     * Amendment, 2026-09-03, "visible feedback"). `ff_multitap_press`
+     * resets `count` to 0 the instant it fires the 5th (ff_multitap.h's
+     * own documented rule), so reading `sh->multitap.count` right after
+     * the call distinguishes all four cases without needing a separate
+     * "what press number was that" return value:
+     *   - a fresh/reset run's first press -> count == 1 -> no blip (a
+     *     lone HOME tap, or the first tap of a new burst, must stay
+     *     silent).
+     *   - presses 2-4 of a run that is still live -> count in [2,4] ->
+     *     blip.
+     *   - the 5th press -> `fifth` is true and count has already been
+     *     reset to 0 by ff_multitap_press -> no blip here (FLARE_SENT,
+     *     fired once the send is confirmed on the wire, IS this press's
+     *     feedback — see shell_flare_wire). */
+    if (!fifth && sh->multitap.count >= 2u && sh->multitap.count <= 4u) {
+        shell_sound(sh, FF_SOUND_MULTITAP_TICK);
     }
 
     if (fifth) {
+        if (out_log != NULL) {
+            out_log->kind = FF_MULTITAP_LOG_FIRED;
+            out_log->n = sh->multitap_run_n; /* 5 — the continuing-run branch above just incremented it */
+            memcpy(out_log->gaps_ms, sh->multitap_run_gaps_ms, (size_t)(FF_MULTITAP_COUNT - 1u) * sizeof(uint32_t));
+        }
+        sh->multitap_run_n = 0u; /* mirrors the core FSM's own reset to idle on fire */
         ff_intent_t const qf = {.kind = FF_INTENT_QUICK_FLARE, .u = {0}};
         ff_shell_intent(sh_pub, &qf);
+    }
+}
+
+void ff_shell_home_press(ff_shell_t *sh_pub, uint32_t now_ms, bool deliver)
+{
+    if (sh_pub == NULL) return;
+    /* fix/quick-flare-detection (2026-09-03): now_ms is no longer used
+     * here (see below) — kept as a parameter anyway so every existing
+     * call site's shape (both targets pass `now_ms, deliver` together)
+     * needs no change beyond adding the new ff_shell_multitap_edge call
+     * alongside it. */
+    (void)now_ms;
+
+    /* fix/quick-flare-detection (2026-09-03): this function no longer
+     * touches the multitap FSM at all — see its own doc comment
+     * (ff_shell.h) for why that decision moved to
+     * `ff_shell_multitap_edge`, fed from a more precise edge source
+     * (ISR timestamps on-device, the sim's own pre-debounce timestamp).
+     * What's left here is exactly the ordinary debounced HOME dispatch,
+     * unchanged in behavior: navigate to the launcher (or wake-only, a
+     * no-op for navigation) on `deliver`. */
+    if (deliver) {
+        ff_intent_t const home = {.kind = FF_INTENT_HOME, .u = {0}};
+        ff_shell_intent(sh_pub, &home);
     }
 }
 

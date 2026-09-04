@@ -21,7 +21,8 @@
  *     `ff_sound_preempts(incoming, playing)` — the small priority table a
  *     HAL with exactly one speaker needs to arbitrate.
  *
- * ## Quiet hours: FLARE_* is the one exemption (interpretation call)
+ * ## Quiet hours: FLARE_* (and now MULTITAP_TICK) are the exemptions
+ * (interpretation calls)
  * `ff_quiet_now` normally silences everything (haptics, banners). This
  * spec makes FLARE_INCOMING and FLARE_SENT the exception — "safety beats
  * quiet" — for the same reason `ff_shell.h`'s "HAPTICS AND QUIET HOURS"
@@ -36,6 +37,21 @@
  * the counter-argument (a flare's amber takeover/haptic already wakes
  * everyone; the SOUND on top of that could reasonably stay quiet-gated
  * too) if a future PR wants to revisit it.
+ *
+ * `FF_SOUND_MULTITAP_TICK` (fix/quick-flare-detection, 2026-09-03) joins
+ * the same exemption — a SECOND, independent interpretation call, flagged
+ * per AGENTS.md: the quick-flare gesture (5x HOME) is deliberately usable
+ * "at 2 AM, screen off" (docs/specs/S10-flare.md's own framing for why the
+ * gesture exists at all), and a wearer mid-burst in the dark needs the
+ * same progress feedback regardless of quiet hours — a burst that silently
+ * drops a tap during quiet hours (no blip to notice by) is exactly the
+ * "finicky" failure mode this PR exists to fix, and reintroducing it only
+ * during quiet hours would be a worse regression than a short, quiet tick
+ * sound breaking the quiet-hours contract for the one gesture that is
+ * itself a panic/safety signal. See docs/specs/S10-flare.md's Amendments
+ * for the fuller writeup and the counter-argument (a bare tick, unlike
+ * FLARE_INCOMING's takeover, has no OTHER quiet-hours-breaking side effect
+ * to "already excuse" it).
  *
  * ## Sounds-off is absolute
  * `sounds_on == false` silences every event, `FF_SOUND_FLARE_INCOMING`
@@ -115,6 +131,18 @@ typedef enum {
      *  press is the kind of thing that annoys fast; the maintainer can
      *  flip the default later). See this header's top comment. */
     FF_SOUND_TAP,
+    /** fix/quick-flare-detection (2026-09-03): a short progress blip on
+     *  presses 2, 3 and 4 of a LIVE quick-flare (5x HOME) run — never on
+     *  the 1st press (an ordinary lone HOME tap must stay silent) and
+     *  never on the 5th (which already gets `FF_SOUND_FLARE_SENT` once
+     *  the send is confirmed on the wire). Gated by `sounds_on` ONLY —
+     *  deliberately NOT by `ui_ticks` (this is progress feedback for a
+     *  panic gesture, not a decorative click on every button) — see
+     *  `ff_shell_multitap_edge`'s doc comment (app/include/ff_shell.h)
+     *  for the exact call site, and this header's "Quiet hours" section
+     *  for why this event is ALSO exempt from quiet hours, alongside the
+     *  two FLARE events. */
+    FF_SOUND_MULTITAP_TICK,
     FF_SOUND_COUNT, /* not a real event; the vocabulary's size, for range checks/tests */
 } ff_sound_event_t;
 
@@ -156,6 +184,14 @@ typedef struct {
 #define FF_SOUND_NOTE_B5  988u
 #define FF_SOUND_NOTE_C6 1047u
 
+/** MULTITAP_TICK's own note — a plain, non-musical frequency (not one of
+ * the named equal-temperament notes above, same posture as TAP's 1200 Hz:
+ * "a tick, not a musical phrase") chosen distinctly HIGHER than TAP's
+ * 1200 Hz so the two short utility blips are still tellable apart by ear
+ * if a wearer happens to have both `ui_ticks` on and a quick-flare run in
+ * progress at once. */
+#define FF_SOUND_MULTITAP_TICK_HZ 1600u
+
 /**
  * ff_sound_pattern_for — the fixed, hand-authored pattern for `ev`. Every
  * returned pattern satisfies `n <= FF_SOUND_PATTERN_MAX_STEPS` and a total
@@ -175,9 +211,11 @@ ff_sound_pattern_t const *ff_sound_pattern_for(ff_sound_event_t ev);
  * ff_sound_should_play — the sounds-on / quiet-hours policy (see this
  * header's top comment for the full reasoning):
  *   - `sounds_on == false` -> false for every event, no exception.
- *   - `quiet_now == true` -> true ONLY for FF_SOUND_FLARE_SENT and
- *     FF_SOUND_FLARE_INCOMING ("safety beats quiet"); false for every
- *     other event.
+ *   - `quiet_now == true` -> true ONLY for FF_SOUND_FLARE_SENT,
+ *     FF_SOUND_FLARE_INCOMING, and (fix/quick-flare-detection,
+ *     2026-09-03) FF_SOUND_MULTITAP_TICK ("safety beats quiet" extended
+ *     to the panic gesture's own progress feedback — see this header's
+ *     "Quiet hours" section); false for every other event.
  *   - otherwise -> true for every event in `[0, FF_SOUND_COUNT)`.
  *   - an `ev` outside `[0, FF_SOUND_COUNT)` -> false (reject, not guess).
  *
@@ -195,9 +233,13 @@ bool ff_sound_should_play(ff_sound_event_t ev, bool sounds_on, bool quiet_now);
  *     makes"; preempts anything, including a currently-playing
  *     FLARE_INCOMING of its own — "newest wins", `ff_flare.h`'s rule).
  *   - 10: FF_SOUND_FLARE_SENT, FF_SOUND_RALLY, FF_SOUND_BATT_LOW (NORMAL).
- *   -  0: FF_SOUND_MESSAGE, FF_SOUND_TAP (LOW — spec: "a MESSAGE never
- *     interrupts a FLARE_*"; TAP joins MESSAGE at the bottom tier as the
- *     other purely-informational, easily-dropped sound).
+ *   -  0: FF_SOUND_MESSAGE, FF_SOUND_TAP, FF_SOUND_MULTITAP_TICK (LOW —
+ *     spec: "a MESSAGE never interrupts a FLARE_*"; TAP and
+ *     MULTITAP_TICK join MESSAGE at the bottom tier as short,
+ *     easily-dropped utility sounds — a MULTITAP_TICK that got dropped
+ *     because something else was playing costs nothing: it is pure
+ *     progress feedback, never the thing that decides whether the
+ *     gesture itself fired).
  * An `ev` outside `[0, FF_SOUND_COUNT)` returns 0 (the lowest tier, never
  * preempts anything — the safe default for an unrecognised event).
  */

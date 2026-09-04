@@ -500,9 +500,16 @@ static void ctl_loop_boot_advance(ff_ctl_loop_ctx_t *ctx, uint32_t ms)
  * same order, as app_main.c's device loop: the wake-only-touch gate is
  * consulted against `ctx->idle`'s CURRENT (pre-this-sample) state
  * first, then the debounced press edge is decided and (if it fired)
- * handed to the shell, then the raw level re-pins `ff_idle_input` if
- * held — see app_main.c's own "that order matters" comment on why the
- * gate must run before the re-pin. */
+ * handed to the shell's ORDINARY HOME dispatch, then the raw level
+ * re-pins `ff_idle_input` if held — see app_main.c's own "that order
+ * matters" comment on why the gate must run before the re-pin.
+ *
+ * fix/quick-flare-detection (2026-09-03): `ff_shell_home_press` no
+ * longer feeds the multitap FSM itself (see its own doc comment,
+ * ff_shell.h) — this function's job narrows to exactly what its name
+ * says, the debounced sample. The multitap feed is
+ * `ff_ctl_loop_boot_press`'s own job below, using the RAW press instant
+ * rather than this debounced-and-therefore-delayed one. */
 static void ctl_loop_boot_sample(ff_ctl_loop_ctx_t *ctx, bool level)
 {
     uint32_t const now_ms = ff_ctl_loop_tick_cb();
@@ -519,6 +526,19 @@ void ff_ctl_loop_boot_press(ff_ctl_loop_ctx_t *ctx)
 {
     if (ctx == NULL) return;
 
+    /* fix/quick-flare-detection (2026-09-03): "Sim: ff_ctl_loop_boot_press
+     * passes its own timestamp" — capture the instant of THIS physical
+     * press (before any debounce settling below) and feed it straight to
+     * `ff_shell_multitap_edge`, mirroring the device's ISR-timestamped
+     * edge capture (targets/esp32s3/components/ff_power's
+     * `ff_power_boot_take_edges`) without needing real hardware: the sim
+     * has no GPIO ISR, but it DOES know exactly when this synthetic
+     * press happened, and using that instant (rather than the tick
+     * ff_button_tick eventually fires on, ~31ms later — the two debounce
+     * samples below) is what makes the sim exercise the same "count from
+     * the edge's own timestamp" contract the device now relies on. */
+    uint32_t const edge_ms = ff_ctl_loop_tick_cb();
+
     /* Press: two samples straddling the debounce window so the SECOND
      * one is the tick ff_button_tick actually fires on (a single sample
      * can never fire — the debounce window has not had a chance to
@@ -526,6 +546,8 @@ void ff_ctl_loop_boot_press(ff_ctl_loop_ctx_t *ctx)
     ctl_loop_boot_sample(ctx, true);
     ctl_loop_boot_advance(ctx, FF_BUTTON_DEBOUNCE_MS + 1u);
     ctl_loop_boot_sample(ctx, true);
+
+    ff_shell_multitap_edge(ctx->shell, edge_ms, NULL);
 
     /* Release: same two-sample debounce settle, so the debouncer is
      * ready to fire again on the NEXT press (ff_button.h: "the button
