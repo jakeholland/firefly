@@ -67,3 +67,20 @@ those pins; the puck's meshclient (S03) speaks it.
    handshake and READY within a few seconds. Silence = TX/RX swapped; garbage +
    rising resync counters = wrong baud.
 5. A second node (T1000-E / Heltec) sends a position → Radar within 10 s (S15 AC2).
+
+## The puck's back header (photo, 2026-09-04)
+
+2×10 at 1.27 mm pitch. Left column top→bottom: `13 · 12 · RXD · TXD · G · 3V3 · SDA · SCL · G · BAT`.
+Right column: `17 · 16 · 15 · 14 · 1 · 0 · DP · DN · G · 5V`. The four link wires sit
+together on left rows 3–6 (RXD 44, TXD 43, G, 3V3). Of the extras: 14/16/17 are the
+SD card, 15 is the mic clock; 12/13/0/1 are free GPIO.
+
+**Power option C (via the header):** `BAT` → XIAO `BAT+` pad, `G` → `BAT-`. Measure `BAT`
+with the puck OFF first: ~3.7–4.2 V = raw cell (XIAO stays on when the puck latches off);
+0 V = behind the latch (XIAO powers down with the puck — preferable). One charger at a time.
+
+**Soldering an IDC ribbon directly:** on a 2×10 IDC, conductors alternate rows
+(conductor 1 → pin 1, 2 → the opposite pin, 3 → next down the first row, …); pin 1 is the
+red-stripe edge. Confirm each stripped conductor against the silkscreen with a continuity
+beep before soldering; only 4–5 conductors are needed (RXD, TXD, G, 3V3, optionally BAT).
+Heat-shrink each joint and strain-relieve the ribbon to the case.
