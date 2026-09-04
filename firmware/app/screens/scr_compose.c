@@ -111,6 +111,26 @@
  * ff_layout_safe_margin_x in this PR's body, then confirmed against the
  * REAL rendered click-area by test_face_hit_targets.c, same as every
  * other number in this file.
+ *
+ * ## Device follow-up 2 ("SPACE/DEL/T9 buttons too small" + "candidate
+ * row should scroll") — MODE's brief header stay, and why it reverted
+ *
+ * A first draft of this follow-up moved MODE into the header's
+ * BACK-to-SEND gap to free the bottom row for a bigger DEL/SPACE.
+ * Independent review (PR #193) caught that this put MODE only ~10px from
+ * SEND — too close, given the SEND-relocation section above states the
+ * rule as "SEND must never be adjacent to SPACE OR DEL" (accidental
+ * SENDS, not just from SPACE specifically): a mis-tap sliding off MODE
+ * onto SEND would ship a partial message. MODE returned to the bottom
+ * row. See FF_COMPOSE_DEL_W's own comment (below) for the real,
+ * computed (never hand math) three-key allocation this landed on — DEL
+ * 48px / MODE 48px / SPACE 56px, the closest honest fit to the review's
+ * own target sizes that the row's real on-glass width (168px at an 8px
+ * "glass safety", compose_bottom_row_margin_x) actually allows. SEND's
+ * own position/size never changed across either draft. The PRED
+ * candidate row's new horizontal scroll (compose_build_pred_strip,
+ * lower in this file) is unrelated to this MODE back-and-forth and
+ * unaffected by it.
  */
 #include "scr_compose.h"
 
@@ -249,18 +269,44 @@ _Static_assert(FF_COMPOSE_BUBBLE_H >= 40, "compose bubble shrank too far fitting
                                 * "why 56, not 57" chord-width search. */
 #define FF_COMPOSE_BOTTOM_ROW_H 56 /* kept equal to FF_COMPOSE_KEY_H — see above */
 
-/* PR #148 review (should-fix 4): pinning DEL to the bare hit floor
- * shrank it from its pre-this-PR 52px to 44px — a real regression, not
- * an improvement, in a "make buttons bigger" PR. DEL got its old 52px
- * back at the time; this file's own MODE-relocation below (device
- * follow-up 2) frees another 60px of row width by dropping the bottom
- * row to two keys instead of three, most of which SPACE takes (see
- * compose_build_bottom_row) — DEL gets a further, smaller share of it
- * (52 -> 64px), never hand-picked past what the row's own chord-derived
- * width actually allows. See this file's header comment, "SEND
- * relocation" and "device follow-up 2 — MODE returns to the header". */
-#define FF_COMPOSE_DEL_W 64
+/* Device follow-up 2 review (PR #193, orchestrator: "put MODE back on
+ * the bottom row and still make it larger"): the header relocation this
+ * PR originally shipped put MODE ~10px from SEND — too close, given
+ * S08's rule ("SEND must never be adjacent to SPACE OR DEL") is really
+ * about isolating SEND from ANY accidental-tap neighbor, not just
+ * SPACE/DEL by name. MODE returns to the bottom row it lived on before.
+ *
+ * The requested target (DEL 64 / MODE 52 / SPACE 80, 8px gaps = 212px of
+ * content) does not fit this row's real on-glass width — computed via
+ * ff_layout_safe_margin_x at the row's own Y with an 8px glass safety
+ * (FF_COMPOSE_BOTTOM_ROW_SAFETY_PX below, the FLARE_CHIP_GLASS_SAFETY_PX
+ * precedent — scr_flare.c — rather than this file's own more conservative
+ * 10px FF_COMPOSE_SAFETY_PX, per the review's own instruction): margin
+ * 122px, row width 168px, 152px left for three keys after two 8px gaps.
+ * 152 is 44px short of the 196px the target sizes need even before
+ * applying the review's own fallback (shrink SPACE to 64, then DEL) —
+ * that fallback alone (SPACE 80->64, DEL 64->44, MODE 52->48) still lands
+ * at 156px, 4px over budget.
+ *
+ * Final allocation actually used (156 -> 152, the last 4px taken from
+ * SPACE rather than pushing DEL below its OWN pre-existing 52px-era
+ * floor, which PR #148's should-fix 4 already flagged once as "a real
+ * regression, not an improvement, in a *make buttons bigger* PR"): DEL
+ * and MODE both sit at 48px (MODE exactly clears the review's explicit
+ * "≥48" floor; DEL trades 4px off its 52px pre-this-PR width rather than
+ * the 8px it would take pinning to the bare 44px hit floor), and SPACE —
+ * still the most-tapped key on this keypad by a wide margin — takes the
+ * remaining 56px, still the largest of the three. Every number here is
+ * VERIFIED against the real rendered click-area by
+ * test_face_hit_targets.c and test_scr_intent.c's
+ * S99_compose_space_del_mode_pinned_dimensions, not this comment's own
+ * arithmetic (PR #86's lesson, repeated for the Nth time in this file
+ * because it keeps paying off). */
+#define FF_COMPOSE_BOTTOM_ROW_SAFETY_PX 8.0f
+#define FF_COMPOSE_DEL_W 48
+#define FF_COMPOSE_MODE_W 48
 _Static_assert(FF_COMPOSE_DEL_W >= FF_THEME_MIN_HIT_PX, "DEL must clear the 44px hit-target floor");
+_Static_assert(FF_COMPOSE_MODE_W >= 48, "MODE must clear the reviewer's explicit >=48px floor (PR #193)");
 
 _Static_assert(FF_COMPOSE_KEY_H >= FF_THEME_MIN_HIT_PX, "compose grid keys must clear the 44px hit-target floor");
 _Static_assert(FF_COMPOSE_BOTTOM_ROW_H >= FF_THEME_MIN_HIT_PX,
@@ -365,47 +411,25 @@ static int32_t compose_send_x(void)
 }
 
 /**
- * compose_mode_header_metrics — MODE's [x, w] in the header's BACK-to-SEND
- * gap. Device follow-up 2 (maintainer: "the keyboard's SPACE, DEL and T9
- * (mode) buttons are too small — make them a bit larger"): the bottom
- * DEL/SPACE/MODE row's own chord-derived width at that Y is fixed by the
- * circle (FF_COMPOSE_GRID_Y is frozen — PR #148 review round 3 — and
- * FF_COMPOSE_KEY_H/FF_COMPOSE_KEY_GAP are already at their own documented
- * ceiling/floor), so growing DEL and SPACE meaningfully needs the row to
- * carry fewer keys, not fatter margins. MODE — this row's least-tapped
- * key, per this file's own repeated reasoning — moves back to the header
- * slot it held before the original SEND-relocation swap (this file's
- * header comment, "SEND relocation"), but squeezed into the real ~68px
- * gap between BACK's right edge and SEND's left edge (compose_send_x())
- * that swap always left completely unused, rather than monopolizing the
- * whole corner the way it used to. Computed from BACK/SEND's REAL
- * positions (never hand math, same discipline as compose_send_x itself):
- * centered in the gap, with >= FF_HIT_MIN_GAP_PX clearance to both
- * neighbors. Verified against the real rendered click-area (not this
- * arithmetic) by test_scr_intent.c's
- * S99_compose_mode_header_chip_clears_floor_and_gaps and
- * test_face_hit_targets.c's generic sweep.
- *
- * The trade, spelled out: MODE's HEIGHT drops from the keypad's 56px to
- * the header's 44px band (still 12px clear of the hit floor — it never
- * needed 56px to be reachable, unlike SPACE/DEL) in exchange for a WIDER
- * slot (44 -> ~52px, measured) in a much less crowded row, and — the
- * bigger win — DEL and SPACE both grow substantially in the row that
- * actually matters most (DEL 52->64px; SPACE roughly doubles — see
- * compose_build_bottom_row). This is exactly the trade this file's own
- * task brief anticipated ("if the bottom row cannot fit all three at
- * 56px, say what you traded ... or move MODE up beside the keypad") and
- * it keeps SEND exactly as far from SPACE as it already was (S08 rule) —
- * MODE's relocation touches neither.
+ * compose_bottom_row_margin_x — the bottom DEL/MODE/SPACE row's own
+ * horizontal margin, computed like compose_safe_margin_x but with an
+ * 8px "glass safety" (FF_COMPOSE_BOTTOM_ROW_SAFETY_PX) instead of this
+ * file's more conservative file-wide 10px (FF_COMPOSE_SAFETY_PX) — the
+ * FLARE_CHIP_GLASS_SAFETY_PX precedent (scr_flare.c), per PR #193's
+ * review ("compute containment at the bottom row's y with ff_layout's
+ * chord helper and the 8px glass safety"). Scoped to ONLY this row
+ * (not a change to the shared FF_COMPOSE_SAFETY_PX every other row in
+ * this file still uses) so nothing else on this screen moves. See
+ * FF_COMPOSE_DEL_W's own comment for the full margin/row-width
+ * arithmetic this unlocks (122px margin, 168px row, 152px for three
+ * keys after two 8px gaps — still short of the review's literal target,
+ * closest honest fit documented there).
  */
-static void compose_mode_header_metrics(int32_t *out_x, int32_t *out_w)
+static int32_t compose_bottom_row_margin_x(int32_t top_y, int32_t h)
 {
-    int32_t back_right = compose_safe_margin_x(FF_COMPOSE_HEADER_Y, FF_COMPOSE_HEADER_H) + FF_THEME_MIN_HIT_PX;
-    int32_t send_left = compose_send_x();
-    int32_t gap = send_left - back_right;
-    int32_t w = gap - 2 * FF_HIT_MIN_GAP_PX;
-    *out_w = w;
-    *out_x = back_right + (gap - w) / 2;
+    float margin = ff_layout_safe_margin_x((float)top_y, (float)h, (float)FF_THEME_PUCK_RADIUS_PX,
+                                            (float)FF_THEME_PUCK_RADIUS_PX, FF_COMPOSE_BOTTOM_ROW_SAFETY_PX);
+    return (int32_t)ceilf(margin);
 }
 
 /* compose_to_left / compose_to_width — PR #148 review round 3 (blocking
@@ -785,20 +809,20 @@ static void compose_build_grid_row(lv_obj_t *container, ff_app_compose_mode_t mo
     }
 }
 
-/* DEL / SPACE — SEND no longer lives in this row (see this file's header
- * comment, "SEND relocation": SEND moved to the header's top-right corner
- * specifically so it can never again sit edge-to-edge with SPACE), and as
- * of device follow-up 2 ("SPACE/DEL/MODE too small") MODE no longer does
- * either — see compose_mode_header_metrics's own comment for where it
- * went and why. Freed to a two-key row, DEL gets a bigger dedicated
- * FF_COMPOSE_DEL_W (52 -> 64px) and SPACE — by far the most-tapped key on
- * this keypad — takes whatever the row's own chord-derived width leaves
- * over: computed here, never hand-picked, same discipline as every other
- * size in this file. */
+/* DEL / MODE / SPACE — SEND no longer lives in this row (see this file's
+ * header comment, "SEND relocation": SEND moved to the header's top-right
+ * corner specifically so it can never again sit edge-to-edge with SPACE
+ * OR DEL — the PR #193 review's own restatement of the S08 rule). MODE
+ * returned here from a brief stay in the header (PR #193 review: too
+ * close to SEND there). Sizes are FF_COMPOSE_DEL_W/FF_COMPOSE_MODE_W (see
+ * their own comment for the full margin/row-width arithmetic); SPACE
+ * takes whatever the row's own chord-derived width leaves over —
+ * computed here, never hand-picked, same discipline as every other size
+ * in this file. */
 static void compose_build_bottom_row(lv_obj_t *container, ff_app_compose_mode_t mode, int32_t y, int32_t margin_x)
 {
     int32_t row_w = FF_THEME_PUCK_PX - 2 * margin_x;
-    int32_t space_w = row_w - FF_COMPOSE_DEL_W - FF_COMPOSE_KEY_GAP;
+    int32_t space_w = row_w - FF_COMPOSE_DEL_W - FF_COMPOSE_MODE_W - 2 * FF_COMPOSE_KEY_GAP;
 
     lv_obj_t *del = ff_scr_button_create(container);
     lv_obj_remove_style_all(del);
@@ -818,6 +842,27 @@ static void compose_build_bottom_row(lv_obj_t *container, ff_app_compose_mode_t 
     int32_t space_x = margin_x + FF_COMPOSE_DEL_W + FF_COMPOSE_KEY_GAP;
     compose_make_key(container, compose_legend_for(mode, 0), space_x, y, space_w, FF_COMPOSE_BOTTOM_ROW_H, 0,
                       FF_THEME_COLOR_SURFACE, FF_THEME_COLOR_INK);
+
+    /* Mode chip — back on the bottom row (PR #193 review). Same "always
+     * shows the current mode's name" contract the S08 Amendments ruling
+     * requires (compose_update_mode_chip_label); mis-tapping it only
+     * cycles ABC/123/SYM/T9, never sends, so it's the harmless neighbor
+     * SPACE can safely share this row with. */
+    int32_t mode_x = space_x + space_w + FF_COMPOSE_KEY_GAP;
+    lv_obj_t *mode_chip = ff_scr_button_create(container);
+    lv_obj_remove_style_all(mode_chip);
+    lv_obj_set_size(mode_chip, FF_COMPOSE_MODE_W, FF_COMPOSE_BOTTOM_ROW_H);
+    lv_obj_set_pos(mode_chip, mode_x, y);
+    lv_obj_set_style_bg_color(mode_chip, lv_color_hex(FF_THEME_COLOR_SURFACE), 0);
+    lv_obj_set_style_bg_opa(mode_chip, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(mode_chip, LV_RADIUS_CIRCLE, 0);
+    lv_obj_add_event_cb(mode_chip, compose_mode_chip_click_cb, LV_EVENT_CLICKED, NULL);
+    s_mode_chip_label = lv_label_create(mode_chip);
+    lv_obj_set_style_text_font(s_mode_chip_label, FF_THEME_FONT_CHIP, 0);
+    lv_obj_set_style_text_color(s_mode_chip_label, lv_color_hex(FF_THEME_COLOR_AMBER), 0);
+    lv_obj_center(s_mode_chip_label);
+    compose_key_press_feedback(mode_chip, s_mode_chip_label);
+    compose_update_mode_chip_label();
 }
 
 /* Builds the 3x3 letter/digit/symbol grid (keys 1-9) plus the DEL / 0 /
@@ -838,7 +883,7 @@ static void compose_build_keys(lv_obj_t *container, ff_app_compose_mode_t mode)
     int32_t margin_row0 = compose_safe_margin_x(FF_COMPOSE_ROW0_Y, FF_COMPOSE_KEY_H);
     int32_t margin_row1 = compose_safe_margin_x(FF_COMPOSE_ROW1_Y, FF_COMPOSE_KEY_H);
     int32_t margin_row2 = compose_safe_margin_x(FF_COMPOSE_ROW2_Y, FF_COMPOSE_KEY_H);
-    int32_t margin_bottom = compose_safe_margin_x(FF_COMPOSE_BOTTOM_ROW_Y, FF_COMPOSE_BOTTOM_ROW_H);
+    int32_t margin_bottom = compose_bottom_row_margin_x(FF_COMPOSE_BOTTOM_ROW_Y, FF_COMPOSE_BOTTOM_ROW_H);
 
     compose_build_grid_row(container, mode, FF_COMPOSE_ROW0_Y - FF_COMPOSE_GRID_Y, 1, margin_row0);
     compose_build_grid_row(container, mode, FF_COMPOSE_ROW1_Y - FF_COMPOSE_GRID_Y, 4, margin_row1);
@@ -1231,30 +1276,8 @@ void ff_scr_compose_build(ff_app_compose_t const *compose)
     /* SEND is already amber, so it dims on press instead of lighting up. */
     lv_obj_set_style_bg_opa(send, LV_OPA_60, LV_STATE_PRESSED);
 
-    /* MODE — device follow-up 2 ("SPACE/DEL/MODE too small"): returns to
-     * the header, in the real gap compose_send_x's own corner-fix left
-     * unused between BACK and SEND (see compose_mode_header_metrics's own
-     * comment for the full why/how and the trade this makes). Same
-     * "always shows the current mode's name" contract every mode chip
-     * home so far has kept (compose_update_mode_chip_label) and the same
-     * press-dim feedback every control here uses; mistapping it still
-     * only cycles ABC/123/SYM/T9, never sends. */
-    int32_t mode_x, mode_w;
-    compose_mode_header_metrics(&mode_x, &mode_w);
-    lv_obj_t *mode_chip = ff_scr_button_create(puck);
-    lv_obj_remove_style_all(mode_chip);
-    lv_obj_set_size(mode_chip, mode_w, FF_COMPOSE_HEADER_H);
-    lv_obj_set_pos(mode_chip, mode_x, FF_COMPOSE_HEADER_Y);
-    lv_obj_set_style_bg_color(mode_chip, lv_color_hex(FF_THEME_COLOR_SURFACE), 0);
-    lv_obj_set_style_bg_opa(mode_chip, LV_OPA_COVER, 0);
-    lv_obj_set_style_radius(mode_chip, LV_RADIUS_CIRCLE, 0);
-    lv_obj_add_event_cb(mode_chip, compose_mode_chip_click_cb, LV_EVENT_CLICKED, NULL);
-    s_mode_chip_label = lv_label_create(mode_chip);
-    lv_obj_set_style_text_font(s_mode_chip_label, FF_THEME_FONT_CHIP, 0);
-    lv_obj_set_style_text_color(s_mode_chip_label, lv_color_hex(FF_THEME_COLOR_AMBER), 0);
-    lv_obj_center(s_mode_chip_label);
-    compose_key_press_feedback(mode_chip, s_mode_chip_label);
-    compose_update_mode_chip_label();
+    /* MODE chip: back on the bottom row (PR #193 review) — built by
+     * compose_build_bottom_row below, not here. */
 
     /* --- Draft area. ---
      * PRED replaces the surface bubble with the compact predictive draft

@@ -746,26 +746,28 @@ static void S99_compose_pred_mode_shows_recipient_on_draft_line(void)
 /* =================================================================== */
 /* Compose device follow-up 2 ("the keyboard's SPACE, DEL and T9 (mode)  */
 /* buttons are too small — make them a bit larger" + "the T9 autocomplete*/
-/* words should be horizontally scrollable if possible"): the relocated  */
-/* header MODE chip, the bigger DEL/SPACE, and the PRED candidate row's  */
-/* new horizontal scroll.                                                */
+/* words should be horizontally scrollable if possible"): bigger          */
+/* DEL/MODE/SPACE on the bottom row (PR #193 review: MODE tried the       */
+/* header first, moved back — too close to SEND), and the PRED candidate  */
+/* row's new horizontal scroll.                                           */
 /* =================================================================== */
 
 /* Every dimension asserted below is the LITERAL measured pixel number
- * this PR's own header comment (scr_compose.c) claims — not a
- * re-derivation of the same formula the production code uses, which
- * would pass vacuously even if the underlying design regressed (the
- * proxy-check rule, docs/review/code-review.md item 6). Mutation-verified
- * (fresh build, object hash confirmed changed): reverting
- * FF_COMPOSE_DEL_W to its pre-this-PR 52 recomputes SPACE's width to 104
- * (not 92) and fails the SPACE assertion below — see this PR's body for
- * the exact `ctest` output. SYM mode is used throughout this section
- * (not the default ABC) purely so "DEL"/"SPACE"/"SYM" are each
- * unambiguous find_button_with_label lookups — ABC mode's grid carries
- * its own "ABC"-legended key (row0, key 2) alongside the mode chip's own
- * "ABC" label, and since the mode chip now sits EARLIER in the tree
- * (the header, built before the keypad) it would still resolve correctly
- * by depth-first order, but SYM sidesteps relying on that order at all. */
+ * this PR's own header comment (scr_compose.c, FF_COMPOSE_DEL_W's own
+ * comment) claims — not a re-derivation of the same formula the
+ * production code uses, which would pass vacuously even if the
+ * underlying design regressed (the proxy-check rule,
+ * docs/review/code-review.md item 6). PR #193 review: MODE moved back to
+ * the bottom row (too close to SEND in the header), so all three
+ * controls are pinned here, all at the bottom row's 56px height.
+ * Mutation-verified (fresh build, object hash confirmed changed):
+ * reverting FF_COMPOSE_DEL_W to 64 (this PR's own FIRST-draft value,
+ * before the review) recomputes SPACE's width to 40 and fails both the
+ * DEL and SPACE assertions below — see this PR's body for the exact
+ * `ctest` output. SYM mode is used (not the default ABC) purely so
+ * "DEL"/"SPACE"/"SYM" are each unambiguous find_button_with_label
+ * lookups — ABC mode's grid carries its own "ABC"-legended key (row0,
+ * key 2) that would collide with the mode chip's own "ABC" label. */
 static void S99_compose_space_del_mode_pinned_dimensions(void)
 {
     ff_app_compose_t compose;
@@ -786,19 +788,21 @@ static void S99_compose_space_del_mode_pinned_dimensions(void)
     lv_obj_get_coords(space, &sa);
     lv_obj_get_coords(mode, &ma);
 
-    TEST_ASSERT_EQUAL_INT32_MESSAGE(64, da.x2 - da.x1 + 1, "DEL width pinned to 64px");
+    TEST_ASSERT_EQUAL_INT32_MESSAGE(48, da.x2 - da.x1 + 1, "DEL width pinned to 48px");
     TEST_ASSERT_EQUAL_INT32_MESSAGE(56, da.y2 - da.y1 + 1, "DEL height pinned to 56px (matches the digit keys)");
-    TEST_ASSERT_EQUAL_INT32_MESSAGE(92, sa.x2 - sa.x1 + 1, "SPACE width pinned to 92px");
+    TEST_ASSERT_EQUAL_INT32_MESSAGE(56, sa.x2 - sa.x1 + 1, "SPACE width pinned to 56px");
     TEST_ASSERT_EQUAL_INT32_MESSAGE(56, sa.y2 - sa.y1 + 1, "SPACE height pinned to 56px (matches the digit keys)");
-    TEST_ASSERT_EQUAL_INT32_MESSAGE(51, ma.x2 - ma.x1 + 1, "MODE header-slot width pinned to 51px");
-    TEST_ASSERT_EQUAL_INT32_MESSAGE(44, ma.y2 - ma.y1 + 1, "MODE header-slot height pinned to 44px");
+    TEST_ASSERT_EQUAL_INT32_MESSAGE(48, ma.x2 - ma.x1 + 1, "MODE width pinned to 48px (the reviewer's explicit floor)");
+    TEST_ASSERT_EQUAL_INT32_MESSAGE(56, ma.y2 - ma.y1 + 1, "MODE height pinned to 56px (back on the bottom row)");
 }
 
-/* MODE's relocated header slot: same header row as BACK/SEND, clearing
- * both the 44px hit floor and the FF_HIT_MIN_GAP_PX adjacency floor
- * against its new neighbors on both sides — the semantic (floor-relative,
- * not exact-value) counterpart to the pinned-dimensions test above. */
-static void S99_compose_mode_header_chip_clears_floor_and_gaps(void)
+/* MODE, back on the bottom row (PR #193 review): clears the 44px hit
+ * floor, clears the adjacency floor against its row-mates DEL/SPACE, AND
+ * — the specific thing the review's own finding was about — stays far
+ * from SEND (still in the header, untouched). The semantic (floor-
+ * relative, not exact-value) counterpart to the pinned-dimensions test
+ * above. */
+static void S99_compose_mode_clears_floor_gaps_and_stays_far_from_send(void)
 {
     ff_app_compose_t compose;
     memset(&compose, 0, sizeof(compose));
@@ -806,27 +810,42 @@ static void S99_compose_mode_header_chip_clears_floor_and_gaps(void)
     ff_scr_compose_build(&compose);
     lv_obj_update_layout(lv_screen_active());
 
-    lv_obj_t *back = find_button_with_label(lv_screen_active(), "<");
-    lv_obj_t *send = find_button_with_label(lv_screen_active(), "SEND");
+    lv_obj_t *del = find_button_with_label(lv_screen_active(), "DEL");
+    lv_obj_t *space = find_button_with_label(lv_screen_active(), "SPACE");
     lv_obj_t *mode = find_button_with_label(lv_screen_active(), "SYM");
-    TEST_ASSERT_NOT_NULL(back);
-    TEST_ASSERT_NOT_NULL(send);
+    lv_obj_t *send = find_button_with_label(lv_screen_active(), "SEND");
+    TEST_ASSERT_NOT_NULL(del);
+    TEST_ASSERT_NOT_NULL(space);
     TEST_ASSERT_NOT_NULL(mode);
+    TEST_ASSERT_NOT_NULL(send);
 
-    lv_area_t ba, sa, ma;
-    lv_obj_get_coords(back, &ba);
-    lv_obj_get_coords(send, &sa);
+    lv_area_t da, sa, ma, sea;
+    lv_obj_get_coords(del, &da);
+    lv_obj_get_coords(space, &sa);
     lv_obj_get_coords(mode, &ma);
+    lv_obj_get_coords(send, &sea);
 
-    TEST_ASSERT_EQUAL_INT32_MESSAGE(ba.y1, ma.y1, "MODE must sit in the SAME header row as BACK/SEND");
+    /* Same bottom row as DEL/SPACE. */
+    TEST_ASSERT_EQUAL_INT32_MESSAGE(da.y1, ma.y1, "MODE must sit in the SAME bottom row as DEL/SPACE");
+
     int32_t w = ma.x2 - ma.x1 + 1;
     int32_t h = ma.y2 - ma.y1 + 1;
     TEST_ASSERT_GREATER_OR_EQUAL_INT32_MESSAGE(FF_THEME_MIN_HIT_PX, w, "MODE must clear the 44px hit floor");
     TEST_ASSERT_GREATER_OR_EQUAL_INT32_MESSAGE(FF_THEME_MIN_HIT_PX, h, "MODE must clear the 44px hit floor");
-    int32_t gap_back = ma.x1 - ba.x2 - 1;
-    int32_t gap_send = sa.x1 - ma.x2 - 1;
-    TEST_ASSERT_GREATER_OR_EQUAL_INT32_MESSAGE(FF_HIT_MIN_GAP_PX, gap_back, "MODE must clear BACK by the adjacency floor");
-    TEST_ASSERT_GREATER_OR_EQUAL_INT32_MESSAGE(FF_HIT_MIN_GAP_PX, gap_send, "MODE must clear SEND by the adjacency floor");
+
+    /* Adjacency to its row-mate SPACE (MODE sits to SPACE's right). */
+    int32_t gap_space = ma.x1 - sa.x2 - 1;
+    TEST_ASSERT_GREATER_OR_EQUAL_INT32_MESSAGE(FF_HIT_MIN_GAP_PX, gap_space,
+                                               "MODE must clear SPACE by the adjacency floor");
+
+    /* The review's actual finding: MODE must stay far from SEND — SEND
+     * is still in the header, so this is a vertical separation, same
+     * shape S99_compose_space_and_send_clear_the_maintainer_gap_ask
+     * already proves for SPACE. */
+    TEST_ASSERT_TRUE_MESSAGE(sea.y2 < ma.y1, "SEND must be entirely above MODE (no shared row)");
+    int32_t gap_send_y = ma.y1 - sea.y2;
+    TEST_ASSERT_GREATER_OR_EQUAL_INT32_MESSAGE(12, gap_send_y,
+                                               "MODE must clear SEND by >= 12px, same S08 rule as SPACE/DEL");
 }
 
 /* Six real candidates (matching tests/fixtures/compose_pred_scroll.json)
@@ -3264,7 +3283,7 @@ int main(void)
     RUN_TEST(S99_compose_to_long_name_ellipsizes_cleanly);
     RUN_TEST(S99_compose_pred_mode_shows_recipient_on_draft_line);
     RUN_TEST(S99_compose_space_del_mode_pinned_dimensions);
-    RUN_TEST(S99_compose_mode_header_chip_clears_floor_and_gaps);
+    RUN_TEST(S99_compose_mode_clears_floor_gaps_and_stays_far_from_send);
     RUN_TEST(S99_compose_pred_strip_drag_scrolls_not_selects);
     RUN_TEST(S99_compose_pred_strip_tap_after_scroll_selects_right_word);
     RUN_TEST(S99_compose_pred_strip_scroll_resets_on_new_prediction_set);
