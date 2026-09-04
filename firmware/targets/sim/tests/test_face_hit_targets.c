@@ -82,16 +82,20 @@
  * **Exclusion 1 — same logical control.** A pair is skipped when both
  * elements register the SAME click callback function pointer AND the
  * SAME `user_data` — i.e. a tap on either one reports the identical
- * intent (e.g. scr_settings.c's WATER NUDGE row: the dim label and its
- * own value chip are two separate LVGL objects, both wired to
- * `settings_water_cb` with no user_data, because they are two hit-rects
- * for ONE logical control, not two controls a thumb could confuse). This
- * is deliberately a GEOMETRY-and-wiring test, not a per-screen exception
- * list naming "the label next to the water chip" — the same "measure,
- * not reason harder" standing rule (AGENTS.md's proxy check) the rest of
- * this file already follows. A pair where either side registers NO click
- * callback at all is never treated as composite (both sides NULL would
- * otherwise collide) — checked, not silently paired.
+ * intent (e.g. scr_settings.c's QUIET HOURS row — WATER NUDGE used to be
+ * this doc comment's example too, but it is a hidden row as of the
+ * settings audit 2026-09-03 and no longer built by default, see
+ * scr_settings.c's `FF_SETTINGS_ROW_ENABLE_WATER`; QUIET HOURS is the
+ * same value-row shape and still ships: the dim label and its own value
+ * chip are two separate LVGL objects, both wired to `settings_quiet_cb`
+ * with no user_data, because they are two hit-rects for ONE logical
+ * control, not two controls a thumb could confuse). This is deliberately
+ * a GEOMETRY-and-wiring test, not a per-screen exception list naming "the
+ * label next to the quiet-hours chip" — the same "measure, not reason
+ * harder" standing rule (AGENTS.md's proxy check) the rest of this file
+ * already follows. A pair where either side registers NO click callback
+ * at all is never treated as composite (both sides NULL would otherwise
+ * collide) — checked, not silently paired.
  *
  * **Exclusion 2 — ancestor/descendant.** A pair is skipped when one
  * element is an LVGL ancestor of the other (walking `lv_obj_get_parent`
@@ -821,7 +825,10 @@ static void S08_hit_targets_every_committed_fixture_fits_the_glass(void)
 /* PR #86 code review (should-fix, non-blocking): `sweep_same_composite_
  * control`'s EXCLUSION never actually flips any fixture's PASS/FAIL
  * result today — every currently-committed composite pair (e.g.
- * scr_settings.c's WATER NUDGE label + its own value chip) sits at
+ * scr_settings.c's QUIET HOURS label + its own value chip — WATER NUDGE
+ * used to be this comment's example, but it is a hidden row as of the
+ * settings audit 2026-09-03, scr_settings.c's FF_SETTINGS_ROW_ENABLE_WATER,
+ * so no committed fixture builds it any more) sits at
  * FF_SETTINGS_CHIP_GAP (24px), already comfortably above FF_HIT_MIN_GAP_PX
  * (8px) whether or not the exclusion fires. Mutating the function to
  * `return false;` unconditionally confirmed this: every fixture still
