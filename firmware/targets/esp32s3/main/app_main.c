@@ -125,12 +125,13 @@ static int demo_loopback_send_text(void *ctx, uint32_t dest, const char *utf8)
     (void)utf8;
     return 0;
 }
-static int demo_loopback_send_private(void *ctx, uint32_t dest, const uint8_t *payload, size_t len)
+static int demo_loopback_send_private(void *ctx, uint32_t dest, const uint8_t *payload, size_t len, uint32_t flags)
 {
     (void)ctx;
     (void)dest;
     (void)payload;
     (void)len;
+    (void)flags; /* no real transport in demo mode — nothing to request an ack from */
     return 0;
 }
 static ff_wiring_sender_t ff_demo_loopback_sender(void)
