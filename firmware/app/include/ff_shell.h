@@ -1109,8 +1109,8 @@ uint32_t ff_shell_compose_to_node(ff_shell_t const *sh);
  * `ff_shell_t` — it takes the PROJECTED view (`ff_shell_view`'s return)
  * plus the one fact the view does not carry, so it is unit-testable with
  * a bare `ff_app_state_t` (no shell instance, no clock, no store) the
- * same way `ff_shell.c`'s render-key reduction is exercised. Three of
- * the four sources are already-public view fields:
+ * same way `ff_shell.c`'s render-key reduction is exercised. Four of the
+ * five sources are already-public view fields:
  *
  *  - `view->flare.takeover_active` — a pending flare takeover (the
  *    existing S07 field; this slice adds no new one).
@@ -1124,6 +1124,15 @@ uint32_t ff_shell_compose_to_node(ff_shell_t const *sh);
  *    (S10 quick flare, docs/specs/S10-flare.md's Amendments) — mirrors
  *    `ff_multitap_pending` (core/include/ff_multitap.h); see that
  *    view field's own doc comment in ff_app_state.h.
+ *  - `view->flare.sending` — fix/flare-cancel-taps (found by a failing
+ *    test, not by reading: a quick flare left untouched past
+ *    `FF_IDLE_T_DIM_MS` dimmed the screen out from under an in-progress
+ *    send, and S26's own wake-only-touch amendment then swallows the
+ *    NEXT tap on CANCEL entirely — it only wakes the screen, never
+ *    reaches the button — so a second, separate tap was needed to
+ *    actually cancel. A send's own undo button must stay reachable with
+ *    a single tap for the send's whole life, exactly like a pending
+ *    takeover's GO/DISMISS already do.
  *
  * `touch_cal_running` is the one source the view cannot carry: the S21
  * §3 crosshair capture is a blocking device-runtime flow
@@ -1135,7 +1144,7 @@ uint32_t ff_shell_compose_to_node(ff_shell_t const *sh);
  * OR, and what it feeds) lives in core/shell, never a scattered `if` in
  * app_main.
  *
- * Returns true if ANY of the four hold. `view == NULL` is treated as
+ * Returns true if ANY of the five hold. `view == NULL` is treated as
  * "nothing to hold awake for" (false), same safe-default convention as
  * `ff_shell_link` etc.
  */
