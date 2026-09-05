@@ -406,3 +406,19 @@ if(FF_BUILD_TESTS)
 
     add_test(NAME test_sound COMMAND test_sound)
 endif()
+
+# S28 slice a (core/gesture — on-glass edge-swipe BACK/HOME + long-press
+# flare recognition FSM; docs/specs/S28-gestures.md). Pure C11, no I/O,
+# no LVGL: fed raw touch samples in display-space pixels by the app-level
+# glue (app/ff_gesture_glue.c, S28 slice b/PR2), which owns the
+# LVGL indev plumbing, face/interactive-widget gating, and the eventual
+# ff_intent_t dispatch.
+if(FF_BUILD_TESTS)
+    add_executable(test_gesture
+        tests/test_gesture.c
+    )
+    target_link_libraries(test_gesture PRIVATE ff-core unity)
+    ff_apply_warnings(test_gesture)
+
+    add_test(NAME test_gesture COMMAND test_gesture)
+endif()
