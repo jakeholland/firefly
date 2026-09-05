@@ -2242,6 +2242,22 @@ def build_button_coupon(root, cap, p):
     return slab, cap_body
 
 
+def assert_export_body_size(body, label, max_extent_mm):
+    """Sanity guard against a units/scale bug slipping into an export (a cm
+    value used as mm, an accidental extra scale/move, etc.) -- every real
+    printed body here is well under 120mm and every coupon well under
+    40mm, so a bounding box beyond that in ANY axis is definitely wrong,
+    not a legitimate design. Checked against the live Fusion body (not the
+    written STL bytes) right at export time."""
+    bb = body.boundingBox
+    dx = (bb.maxPoint.x - bb.minPoint.x) / MM
+    dy = (bb.maxPoint.y - bb.minPoint.y) / MM
+    dz = (bb.maxPoint.z - bb.minPoint.z) / MM
+    assert max(dx, dy, dz) <= max_extent_mm, (
+        f'{label}: bbox {round(dx,2)} x {round(dy,2)} x {round(dz,2)} mm '
+        f'exceeds the {max_extent_mm}mm sanity limit -- likely a units/scale bug')
+
+
 def export_stls(design, bodies, variant, base_dir):
     out_dir = os.path.join(base_dir, 'export', variant)
     os.makedirs(out_dir, exist_ok=True)
@@ -2249,6 +2265,7 @@ def export_stls(design, bodies, variant, base_dir):
     paths = {}
     for name in EXPORT_BODY_NAMES:
         body = bodies[name]
+        assert_export_body_size(body, name, 120.0)
         fname = name.replace(' ', '_') + '.stl'
         path = os.path.join(out_dir, fname)
         opts = export_mgr.createSTLExportOptions(body, path)
@@ -2270,6 +2287,7 @@ def export_coupons(design, root, p, base_dir):
     for key, cap in (('power', p['power_cap']), ('home', p['home_cap'])):
         wall, cap_body = build_button_coupon(root, cap, p)
         for label, body in (('wall', wall), ('cap', cap_body)):
+            assert_export_body_size(body, f'{key}_{label}', 40.0)
             fname = f'coupon_{key}_{label}.stl'
             path = os.path.join(out_dir, fname)
             opts = export_mgr.createSTLExportOptions(body, path)
