@@ -1204,6 +1204,11 @@ bool ff_display_touch_is_down(void)
     return s_touch_indev != NULL && s_touch_raw_down;
 }
 
+lv_indev_t *ff_display_touch_indev(void)
+{
+    return s_touch_indev;
+}
+
 /* ---- LVGL task lock (esp_lvgl_port runs LVGL in its own task) --------- */
 bool ff_display_lock(uint32_t timeout_ms)
 {

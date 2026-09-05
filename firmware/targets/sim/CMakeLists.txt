@@ -172,6 +172,7 @@ target_link_libraries(ff-sim-ctl-loop
         ff-sim-ctlout
         ff-sim-face-dispatch
         ff-sim-fixture
+        ff-gesture-glue # S28 slice b — ff_gesture_glue_attach, called once the live shell exists
 )
 ff_apply_warnings(ff-sim-ctl-loop)
 
@@ -291,6 +292,29 @@ if(FF_BUILD_TESTS)
     ff_apply_warnings(test_ctl_quick_flare)
 
     add_test(NAME test_ctl_quick_flare COMMAND test_ctl_quick_flare)
+
+    # S28 slice b (docs/specs/S28-gestures.md, AC11-AC18): on-glass
+    # BACK/HOME/long-press-flare gestures, driven through a real
+    # multi-step drag (not a stationary tap) over the same real
+    # ff-sim-ctl-loop session as the tests above — ff_ctl_loop_open
+    # attaches the gesture glue itself (S28 slice b), so no extra wiring
+    # is needed here.
+    add_executable(test_gesture_glue
+        tests/test_gesture_glue.c
+        screenshot.c
+    )
+    target_link_libraries(test_gesture_glue PRIVATE
+        ff-sim-ctl-loop
+        ff-sim-ctl
+        ff-shell
+        ff-app-ui
+        ff-stb-image-write
+        lvgl::lvgl
+        unity
+    )
+    ff_apply_warnings(test_gesture_glue)
+
+    add_test(NAME test_gesture_glue COMMAND test_gesture_glue)
 
     # S25 slice c (device follow-up PR): the ctl `batt_mv` command reaches
     # a live shell end to end — parse layer, ctl_loop.c's handler,
@@ -430,6 +454,9 @@ target_link_libraries(ffsim PRIVATE
                          # (replaces ff-sim-live); transitive source of ff-core/ff-meshclient
     ff-demo              # S20 — ff_demo_seed: the Firefly Fields demo world (--demo)
     ff-app-ui            # S06b — scr_nav.h/scr_radar.h (app/CMakeLists.txt)
+    ff-gesture-glue      # S28 slice b — ff_gesture_glue_attach, called directly from
+                         # main.c's live window loop and ff_demo_run.c's demo window loop
+                         # (ff-sim-ctl-loop links it too, PRIVATE, for its own --ctl session)
     lvgl::lvgl
     ff-stb-image-write
 )

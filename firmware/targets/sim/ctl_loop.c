@@ -13,6 +13,7 @@
 
 #include "ctl_out_path.h"
 #include "face_dispatch.h"
+#include "ff_gesture_glue.h" /* S28 slice b — on-glass BACK/HOME/long-press-flare */
 #include "ff_intent.h"
 #include "ff_proto.h"
 #include "ff_sound_emit.h" /* S27 — the TAP screens-level sound seam this loop also binds */
@@ -218,6 +219,14 @@ int ff_ctl_loop_open(ff_ctl_loop_ctx_t *ctx, ff_shell_t *shell, fp_pack_t *pack,
         g_ctl_loop_ctx = NULL;
         return -1;
     }
+
+    /* S28 slice b — attach on-glass gesture recognition here, the ONE
+     * place every headless `--ctl` session (and every test that drives
+     * one, e.g. test_wakeonly_touch.c's own pattern) gets it for free,
+     * same "one shared place" reasoning docs/specs/S28-gestures.md asks
+     * for. `shell` is a fully-initialized ff_shell_t* as of the
+     * ff_live_setup call just above. */
+    ff_gesture_glue_attach(ctx->pointer_indev, shell);
 
     if (!ctl_loop_setup_ctl_out_dir(cfg->ctl_out_arg, cfg->screenshot_dir, ctx->ctl_out_dir_real,
                                      sizeof(ctx->ctl_out_dir_real))) {

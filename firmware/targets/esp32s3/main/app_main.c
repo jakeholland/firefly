@@ -52,6 +52,7 @@
 #include "ff_display.h"
 #include "ff_face.h"
 #include "ff_face_dispatch.h" /* fix/flare-cancel-taps — ff_face_dispatch_tick, the non-rebuild per-frame widget refresh */
+#include "ff_gesture_glue.h" /* S28 slice b — on-glass BACK/HOME/long-press-flare */
 #include "ff_idle.h"       /* S26 slices c+f — core: inactivity -> dim -> screen off -> light sleep */
 #include "ff_intent.h"
 #include "ff_nvs_store.h" /* S21 §4 — the real NVS-backed store */
@@ -1238,6 +1239,13 @@ void app_main(void)
          * tap cannot reach `ff_scr_button_create` before this STAGE-3
          * touch bring-up has run anyway, so nothing here depends on the
          * bind having happened at this particular point. */
+
+        /* S28 slice b — on-glass BACK/HOME/long-press-flare, attached to
+         * the SAME touch indev ff_display_touch_start just brought up,
+         * dispatching through this same s_shell (docs/specs/
+         * S28-gestures.md). `ff_display_touch_indev()` cannot be NULL
+         * here — the ESP_OK check above already returned on failure. */
+        ff_gesture_glue_attach(ff_display_touch_indev(), &s_shell);
 
         /* ---- Touch calibration (S15 slice d) ----
          * STAGE 4 (CAL): run the crosshair capture -> solve -> store ->

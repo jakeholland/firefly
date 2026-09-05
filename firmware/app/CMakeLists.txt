@@ -19,7 +19,8 @@ include(${CMAKE_CURRENT_SOURCE_DIR}/screens/sources.cmake)
 ff_check_sources_complete(${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}
     ${CMAKE_CURRENT_SOURCE_DIR}/sources.cmake
     FF_ROUTE_SOURCES FF_INTENT_SOURCES FF_WALL_WINDOW_SOURCES
-    FF_WIRING_SOURCES FF_SHELL_SOURCES FF_DEMO_SOURCES FF_FACE_DISPATCH_SOURCES)
+    FF_WIRING_SOURCES FF_SHELL_SOURCES FF_DEMO_SOURCES FF_FACE_DISPATCH_SOURCES
+    FF_GESTURE_GLUE_SOURCES)
 ff_check_sources_complete(${CMAKE_CURRENT_SOURCE_DIR}/screens ${CMAKE_CURRENT_SOURCE_DIR}
     ${CMAKE_CURRENT_SOURCE_DIR}/screens/sources.cmake
     FF_LAYOUT_SOURCES FF_RADAR_LAYOUT_SOURCES FF_LINEUP_LAYOUT_SOURCES
@@ -462,6 +463,25 @@ if(FF_BUILD_TESTS)
 
     add_test(NAME test_scr_banner COMMAND test_scr_banner)
 endif()
+
+# S28 slice b (app/ff_gesture_glue.c — the LVGL indev glue for
+# core/ff_gesture.h's recognition FSM; docs/specs/S28-gestures.md)
+# ---------------------------------------------------------------------------
+# Links ff-shell PUBLIC (ff_shell.h: ff_shell_view/ff_shell_now_ms/
+# ff_shell_intent — this is the SECOND library, alongside ff-demo below,
+# that a real target attaches directly against a live ff_shell_t rather
+# than going through the process-global ff_intent_emit seam screens use —
+# see ff_gesture_glue.h's own doc comment for why), ff-intent PUBLIC
+# (ff_sound_emit.h's FF_SOUND_TAP seam), and lvgl for the indev/timer
+# plumbing itself. ff_theme.h (header-only, app/theme/) is picked up via
+# the PUBLIC `theme` include dir below, the same directory ff-app-ui
+# publishes it from.
+add_library(ff-gesture-glue STATIC
+    ff_gesture_glue.c
+)
+target_include_directories(ff-gesture-glue PUBLIC theme)
+target_link_libraries(ff-gesture-glue PUBLIC ff-shell ff-intent lvgl::lvgl)
+ff_apply_warnings(ff-gesture-glue)
 
 # S20 (app/ff_demo.c — demo-mode seeding; docs/specs/S20-demo-mode.md)
 # ---------------------------------------------------------------------------

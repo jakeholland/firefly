@@ -73,6 +73,21 @@ lv_obj_t *ff_scr_button_create(lv_obj_t *parent)
     lv_obj_t *btn = lv_button_create(parent);
     lv_obj_clear_flag(btn, LV_OBJ_FLAG_PRESS_LOCK);
     lv_obj_add_event_cb(btn, ff_scr_button_tap_sound_cb, LV_EVENT_CLICKED, NULL);
+    /* S28 amendment (docs/specs/S28-gestures.md, "G3 LONG-PRESS FLARE"):
+     * the ONE tag every real button in the app carries, for the ONE
+     * consumer that needs to tell "this is a widget a thumb aims at"
+     * apart from "this is empty glass" without knowing anything about
+     * any particular screen — the gesture glue (app/ff_gesture_glue.c)
+     * refuses a long-press flare when the press landed on an object (or
+     * an ancestor of one) carrying this flag, so a held FLARE/CANCEL/
+     * settings-row press on the Radar face never also arms the panic
+     * gesture underneath it. `LV_OBJ_FLAG_USER_1` is otherwise unused
+     * anywhere in this codebase (grepped clean before choosing it) —
+     * safe to repurpose as a plain boolean marker here. Set on every
+     * button unconditionally (not just Radar's): a widget built on
+     * another face today could be reachable from Radar tomorrow, and
+     * this costs nothing to carry everywhere. */
+    lv_obj_add_flag(btn, LV_OBJ_FLAG_USER_1);
     return btn;
 }
 

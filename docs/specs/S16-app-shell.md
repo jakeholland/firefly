@@ -345,6 +345,16 @@ Renamed to Lineup/Inbox on 2026-09-01 — see S26 Nav model Amendments; this spe
      read/write transport, which every other `mc_client` test uses, has
      no fd to break and cannot exercise this class of bug at all.
 
+- **2026-09-05, S28 (on-glass navigation gestures) — `FF_INTENT_BACK`
+  gained a source and a rule.** The left-rim edge-swipe gesture (G1) now
+  emits the same `FF_INTENT_BACK` a modal's on-screen "<" always has,
+  and `ff_shell_intent`'s BACK case gained rule (4), "any other base
+  face -> HOME" (previously an unconditional no-op once no modal/
+  sub-view applied). See `docs/specs/S28-gestures.md` for the full
+  gesture set and `app/include/ff_intent.h`'s own inline note on
+  `FF_INTENT_BACK` for the pointer back to `ff_shell.c`'s current rule
+  ladder.
+
 ## Two defects this closes
 
 ### 1. Two inbound pipelines that disagree about trust
