@@ -126,9 +126,15 @@ PARAMS = {
     'usb_liner_outer_stadium': (16.2, 10.2),
 
     # --- lanyard lug (Bottom) ---
+    # z lowered to (0.0, 10.0) (pass-5 printability fix, 2026-09-05): the
+    # lug's underside used to sit at z=3.0 -- a 10x12mm horizontal overhang
+    # floating 3mm above the bed with nothing under it when Bottom prints
+    # face-down on z=0. Extending it down to z=0 puts the underside flush
+    # on the bed for the whole tab, eliminating the overhang; the Ø3.5
+    # vertical hole position (hole_xy) is unchanged.
     'lug': {
         'x': (-5.0, 5.0), 'y_root': -26.5, 'y_tip': -38.5, 'tip_r': 5.0,
-        'z': (3.0, 10.0), 'hole_dia': 3.5, 'hole_xy': (0.0, -33.5),
+        'z': (0.0, 10.0), 'hole_dia': 3.5, 'hole_xy': (0.0, -33.5),
     },
 
     # --- logos (debossed 0.4mm) ---
@@ -154,19 +160,46 @@ PARAMS = {
     'bay': {
         'cavity_r': 26.0,  # nominal half-disc radius this layout was fit to (trim); current has 2mm more
         'battery': {'xyz': (8.0, 40.0, 30.0), 'x': (-20.0, 20.0), 'y': (-4.0, 26.0), 'z': (2.0, 10.0)},
-        'battery_rail_w': 1.2, 'battery_rail_z': (2.0, 6.0),
+        'battery_rail_w': 1.2, 'battery_rail_z': (2.0, 6.0), 'battery_rail_clear': 0.3,
         'battery_strap': {'w': 6.0, 'h': 1.5},  # slot through the rails, not the floor
         'l76k_wired': {'x': (-10.5, 10.5), 'y': (-23.5, -5.5), 'z': (2.0, 6.0)},
         'l76k_frame_wall': 1.0, 'l76k_frame_clear': 0.3, 'l76k_wire_notch_w': 3.0,
+        # pass-5 fix: the PCB now rests on a 0.3mm-tall floor PAD from
+        # z=2.0 (nominal cavity floor top) to z=2.3, not directly on z=2.0
+        # -- the bare cavity floor and the PCB's own insertion tolerance
+        # were landing the PCB body 0.17mm INSIDE the floor. 2.3 is the
+        # PCB's intended resting height (bottom flush on the pad).
+        'l76k_floor_pad_z': (2.0, 2.3),
         'stack': {
             'x': (-22.0, -4.2), 'y': (0.0, 22.3),
             'wio_pcb_bottom_z': 10.5, 'xiao_pcb_bottom_offset': 6.1, 'stack_top_z': 21.0,
         },
-        'tray_wall': 1.2, 'tray_clear': 0.3, 'tray_z_bottom': 10.2,
-        'tray_ledge': {'w': 2.0, 'h': 1.2},  # z tray_z_bottom .. +h, at each short end
+        'tray_wall': 1.2, 'tray_clear': 0.45, 'tray_z_bottom': 10.2,
+        # pass-5 fix (coordinator diagnosis): the ORIGINAL 'Top x XIAO'
+        # interference was an orientation bug, not a footprint-size
+        # problem -- XIAO's native long axis (~22.5mm, including the
+        # USB-C overhang) was being mapped onto world X (see
+        # insert_comms_boards' xiao_doc block, now 'y90' instead of 'y'),
+        # making the stack ~22.5mm wide in X against a tray sized for
+        # Wio's ~17.8mm width. With XIAO correctly rotated so its long
+        # axis lies along world Y (parallel to Wio's own long axis, both
+        # ~22.3-22.5mm), XIAO's real world footprint is 17.78 x 22.48 --
+        # a near-exact match for Wio's 17.78 x 22.32 -- so only a small
+        # symmetric margin is needed, not the earlier asymmetric
+        # multi-mm widening (which this replaces).
+        'tray_x_extra': 0.0,
+        'tray_x_extra_right': 0.0,
+        'tray_ledge': {'w': 2.0, 'h': 2.0},  # z tray_z_bottom .. +h, at each short end (2x2mm 45deg wedge)
         'tray_gap': {'side': '+y', 'w': 6.0},  # for XIAO USB/wires
         'gps_patch': {'xyz': (25.0, 25.0, 8.3), 'x': (-2.8, 22.2), 'y': (-5.0, 20.0), 'z': (10.5, 18.8)},
         'gps_frame_wall': 1.0, 'gps_frame_clear': 0.3,
+        # pass-5 fix: the GPS frame is a plain hanging ring with a clear
+        # 25.5x25.5 opening CENTRED on the patch box (per Jake's spec --
+        # "GPS frame inner = 25.5 x 25.5 with the patch box centred"),
+        # replacing the old ledge-based frame whose shelf, oversized to
+        # reach the Top ceiling, fully overlapped the patch box's z-range
+        # (Top x GPS Patch Reference interference).
+        'gps_frame_opening': 25.5,
         'fpc_keepout': {'x': (-20.0, 20.0), 'y': (-26.0, -15.0), 'z': (12.0, 22.0)},  # Top inner dome wall, reference only
     },
 

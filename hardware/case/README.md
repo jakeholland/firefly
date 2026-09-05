@@ -144,8 +144,18 @@ overlap *volume* and ignores razor-thin (<1e-4 mm³) coincident-face
 "touches" — e.g. the Top posts resting flush on the Screen Plate at
 z=14.1 — which are by design, not a defect.
 
-Both variants currently build with **zero real interference** and all M1+M2
-checks passing.
+**This claim was false — pass 4's `check_interference` excluded
+reference-only bodies, never asserted on `occ_interference` at all, and
+used a `physicalProperties.volume` reading that (confirmed in pass 5)
+reads back as 0.0 for every `analyzeInterference` result in this Fusion
+build, so it was passing vacuously, not because the geometry was clean.**
+Pass 5 rewrote the check (see below) and, as of its second round (the
+XIAO orientation fix + GPS-frame/tray clip), **both variants now build
+with zero real interference, zero real overhangs, and all M1/M2/
+clearance checks passing under `run(..., export=True)`** — verified by
+actually running it, not by trusting the assertion alone. See the
+2026-09-05 pass 5 section below for the methodology and what was
+actually wrong.
 
 **Export size sanity check** — `assert_export_body_size` (2026-09-05):
 every body written by `export_stls`/`export_coupons` is checked against
@@ -322,6 +332,173 @@ checked live at export time, not just spot-verified after the fact. This
 pass also brought the README's params table, screw list, print notes,
 and known-limitations section up to date with everything pass 2/3
 actually changed.
+
+## 2026-09-05 pass 5 (real interferences, printability, verify() rewrite)
+
+Jake ran his own `analyzeInterference` pass over the pass-4 trim build and
+found a long list of real interferences pass 4's `verify()` had claimed
+were zero (see the retraction at the top of Verification above). This
+pass fixed the interference-check methodology itself and worked through
+the reported list. **Fixed and verified clean** (both variants):
+
+- **Button caps vs. the wall hole / Screen Plate / Top** (`Top x Power
+  Button`, `Top x Home Button`, `Screen Plate x {Power,Home} Button`,
+  `Top x Screen Plate`). Root causes, all in `button_geometry()` /
+  `add_button()`: (1) `oriented_box_prism`/`oriented_stadium_prism`
+  extrude ONE-SIDED from the given point along `normal` — they do **not**
+  center on it — but the rib and collar were being positioned by their
+  midpoint as if centered, silently building them a half-thickness/length
+  too far outboard and entirely missing their intended inner half; fixed
+  by passing the true inboard edge (`s_rib_inner`/`s_collar_inner`) as the
+  start point, exactly as the wall hole already did. (2) The wall hole
+  cut was a single straight prism sized off ONE `s_wall` sample at the
+  cap's z-center; the real shoulder curves measurably across the cap's
+  own z-span, so a straight cut left real material uncleared near the
+  curve. Replaced with a hole cut from an ENLARGED COPY of the actual
+  plunger shaft (same construction as the real cap, just bigger,
+  Combine-Intersected against the same `thickened_envelope`) — guaranteed
+  to fully contain the real, curve-trimmed shaft with clearance, since
+  it's built the same way. (3) The retaining tab hangs below the shaft's
+  own z-range and needs its own small hole, added separately. (4) The
+  guide rib's slot (letting the plunger pass through it) is now cut using
+  the real shaft's own construction too (same center/axes), not a
+  hand-rolled box that could drift out of alignment. (5) The Screen
+  Plate's clearance pocket (new `add_button_plate_clearance`) now spans
+  the plunger's FULL travel (wall to just past the plunger tip near the
+  housing), not just the collar region — the plunger keeps a full L×W
+  cross-section all the way to the tip (by construction, since trimming
+  only clips the outward-facing surface), and the plate's footprint
+  reaches that deep on both buttons.
+- **`Bottom x L76K board`** — two causes: the PCB was resting 0.17mm
+  INSIDE the floor (fixed: the L76K frame now has an actual 0.3mm floor
+  PAD from z=2.0 to 2.3, and the PCB is repositioned to rest exactly on
+  top of it, using the PCB's own measured thickness, not a guess); and
+  the bare cavity floor under the frame's footprint — deep in the -y dome
+  tip — curves up above the nominal flat z=2.0 the frame's floor_pad
+  didn't originally account for (same mechanism as the battery fix below;
+  fixed with the same kind of flatten-and-rebuild cut).
+- **`Bottom x Battery Reference`** — the trim cavity's flat floor region
+  only reaches rho=18mm, but the battery box is 40mm wide (needs to reach
+  rho=20mm); the floor genuinely curves up ~0.25mm at the battery's outer
+  edges. Fixed by cutting a shallow flatten box across the battery's exact
+  footprint before adding the rails (a no-op wherever the floor is already
+  flat, e.g. the whole 'current' variant). Rails also now sit
+  `battery_rail_clear` (0.3mm) outside the battery box instead of flush
+  against it.
+- **`Top x <display module body>`** (the FPC tab) — `PARAMS['fpc_relief']`
+  held SPEC's exact pocket coordinates since M1 but nothing ever cut it.
+  Now cut from Top's ceiling underside; the cut is a superset of SPEC's
+  box, widened from probing the actual inserted display occurrence (the
+  real FPC/PMMA-lens geometry is wider and extends lower than SPEC's
+  numbers alone: x roughly ±14 vs SPEC's -6.2..7.02, y down to ~65.8 vs
+  SPEC's 71.44).
+- **`Top x GPS Patch Reference`** (mostly) — the GPS frame was rebuilt
+  from scratch as a plain hanging wall ring with NO ledges and a clean
+  25.5×25.5 opening centred on the patch box, per Jake's spec ("GPS frame
+  inner = 25.5 x 25.5 with the patch box centred") — the old version
+  reused the stack tray's ledge scheme, whose shelf (oversized to reach
+  the ceiling) fully overlapped the patch box's z-range across virtually
+  the whole opening.
+- **Housekeeping**: `dedupe_body`'s "orphaned same-named duplicate"
+  workaround (previously applied only after the case-boss/Top-post joins)
+  turned out to trigger on the new button-plate-clearance and comms-bay
+  joins/cuts too (`Top (1)`, `Screen Plate (1)` appearing as stray root
+  bodies) — `build()` now sweeps all 5 tracked body names through
+  `dedupe_body` unconditionally at the end, not just case screws/posts.
+  Root bodies at the end of `build()` are exactly `['Bottom', 'Home
+  Button', 'Power Button', 'Screen Plate', 'Top']` plus hidden `... 
+  (reference only)` boxes, verified directly.
+- **Printability**: the lanyard lug's underside was a 10×12mm horizontal
+  overhang floating 3mm above the bed (Bottom prints face-down on z=0) —
+  extended down to z=0 so the whole tab sits on the bed (hole position
+  unchanged). The tray/GPS-frame ledges (2mm-wide flat shelves, a full
+  overhang appearing all at once at the far end of the print) are
+  replaced with 45-degree self-supporting wedges (`build_wedge_along_x`)
+  that taper from flush-with-the-wall at the top (prints first) to full
+  protrusion at the bottom (prints last) — the GPS frame no longer has
+  ledges at all (see above), so only the stack tray uses this now.
+- **`verify()` interference gate, rewritten**: runs over every printed
+  body + every inserted board occurrence (passed as whole Occurrences,
+  not individual nested bodies — see `check_interference`'s docstring for
+  why that matters) + the Battery/GPS reference boxes, excluding only the
+  two reference TOOL solids and the FPC keep-out marker, with
+  `areCoincidentFacesIncluded=False` and a bounding-box-volume proxy
+  (Fusion's `physicalProperties.volume` reads 0.0 for every
+  `analyzeInterference` result in this build; `createBodies`/
+  `copyToComponent` on a transient interference result both fail too —
+  see the docstring). Gates on any pair > 0.05 mm³. Also added
+  `verify_min_clearances`: per-board-occurrence, per-body
+  `measureMinimumDistance` against Top/Bottom/Screen Plate (capped at 25
+  bodies per occurrence for MCP-call time budget), asserting ≥
+  `clearance_min` (0.3mm) except at documented intended contacts
+  (`ALLOWED_CONTACTS`): L76K PCB on its frame floor, Wio on its tray
+  wedge, the display glass flush with the top face, its standoffs on the
+  plate.
+- **STL overhang scan** (`scan_stl_overhangs`, printability check B3):
+  triangle-normal analysis of the exported STLs, clustering bed-facing
+  faces steeper than 45° by shared vertices and reporting each cluster's
+  area *and its (x,y) centroid* (so a real cluster can be located, not
+  just sized); `run(export=True)` asserts none exceed 30 mm² outside a
+  documented whitelist. **Clean on both variants** — see round 2 below.
+
+### Round 2 (same day): XIAO orientation fix, GPS-frame clip, overhang whitelist review
+
+The coordinator reviewed the round-1 report above and found the
+remaining "XIAO x GPS Patch Reference" interference was an **orientation
+bug**, not real bay-layout tightness, and asked for the overhang scan's
+false positives to be filtered by inspecting actual geometry rather than
+by cluster size alone. Both are now resolved:
+
+- **XIAO orientation fix**: XIAO's native long axis (~22.5mm, including
+  the USB-C overhang; native bbox x -8.69..13.85 in its own doc) was
+  being mapped onto **world X** by `insert_and_place`'s existing `'y'`
+  thin-axis rotation (native Y, the PCB thickness, correctly went to
+  world Z, but native X passed through unchanged) — while the Wio's own
+  long axis (~22.3mm) runs along **world Y**. The two boards' long axes
+  were perpendicular, so the plugged-together stack's rectangular
+  footprint was `22.48 x 17.78` (X x Y) instead of the Wio-matching
+  `17.78 x 22.48`. Fixed with a new `'y90'` thin-axis mode in
+  `flatten_transform` (native Y -> world Z as before, but ALSO native X
+  -> world Y and native Z -> world X, i.e. an extra 90-degree rotation
+  about world Z) used for XIAO specifically in `insert_comms_boards`. The
+  USB-C connector lands on the world +Y side (toward the display, where
+  the tray's wire gap already is) with this rotation's sign as-is — no
+  further flip needed, confirmed by checking the connector sub-body's
+  world position after the transform. With XIAO's real footprint now
+  matching Wio's almost exactly (17.78 x 22.48 vs Wio's 17.78 x 22.32),
+  the pass-5-round-1 tray widening (`tray_x_extra`/`tray_x_extra_right`,
+  a multi-mm asymmetric hack) was removed entirely — the tray needs no
+  more than its already-small `tray_clear` margin.
+- **`Top x GPS Patch Reference` residual (17.8 mm³), after the orientation
+  fix**: NOT the frame ring (an isolated frame-vs-reference-box check was
+  already clean) — the tray's OWN wall still grazed the antenna's real
+  footprint by ~0.1mm at one corner (x -2.8..-2.7, y up to 20.0), an
+  unavoidable side-effect of the tray's wall thickness at the current
+  absolute bay coordinates. Per "do not move the patch box": the tray
+  itself is now clipped against the antenna's real box (+0.3mm margin)
+  before it's joined to Top, guaranteeing it can never occupy that space
+  regardless of the exact wall/clearance numbers, the same idea as
+  `clip_to_inner_cavity` for bosses/posts applied to the one real fixed
+  obstacle instead of the shell.
+- **Overhang whitelist, reviewed by inspecting actual triangle
+  locations/z-ranges, not just cluster size**: after the bed-plane
+  (0.6mm) and angle (45°±1°) tolerance updates, the remaining >30mm²
+  clusters on both variants were traced to (a) the USB tunnel floor
+  (already a known, accepted 13mm bridge) and (b) the shell's own general
+  flat internal ceiling / R8 inner-fillet-to-wall transition — ordinary
+  hollow-shell overhang that needs slicer supports independent of any
+  specific feature (confirmed by checking the flagged triangles' actual
+  z-range and extent at each location, which span the shell's general
+  ceiling height and width, not a localized shape). Both are whitelisted
+  by location (`top_wl`/`bottom_wl` in `run()`), not by raising the size
+  gate — a genuinely local, unexpected overhang (like the lug or the tray
+  ledges, both real fixes earlier in this pass) would NOT be covered by
+  these location boxes and would still fail the check.
+- **Both variants now pass `run(..., export=True)` end to end**:
+  interference `[]`, `occ_interference` `[]`, all M1/M2 probes, envelope/
+  outer-bump/export-envelope checks, `verify_min_clearances` all `True`,
+  and `bad_clusters_mm2: []` on both Top and Bottom for both variants.
+  The exports/coupons/renders in this repo are from this clean run.
 
 ## Print orientation & settings
 
