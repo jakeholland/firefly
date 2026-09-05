@@ -58,6 +58,10 @@ set(FF_APP_UI_COMPONENT_SOURCES
     # app/screens/), but its SRCS entry belongs in THIS component, not
     # ff_app's; see this file's header comment above for why.
     ${FF_FACE_DISPATCH_SOURCES}
+    # S28 slice b — app/ff_gesture_glue.c: same reasoning as
+    # FF_FACE_DISPATCH_SOURCES above (needs LVGL + ff_shell.h, which
+    # ff_app's own REQUIRES below already publishes transitively).
+    ${FF_GESTURE_GLUE_SOURCES}
 )
 # Every FF_*_SOURCES entry above is relative to firmware/app/ (screens'
 # entries already carry a "screens/" prefix; FF_FACE_DISPATCH_SOURCES

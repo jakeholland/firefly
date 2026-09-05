@@ -81,3 +81,12 @@ set(FF_DEMO_SOURCES
 set(FF_FACE_DISPATCH_SOURCES
     ff_face_dispatch.c
 )
+
+# S28 slice b — app/ff_gesture_glue.c: the LVGL indev glue for
+# core/ff_gesture.h's recognition FSM (docs/specs/S28-gestures.md).
+# Needs LVGL + ff-shell + ff-theme (flip-aware glass geometry), so on
+# the esp32s3 side its SRCS entry lives in the ff_app_ui component (same
+# reasoning as FF_FACE_DISPATCH_SOURCES above), not ff_app's.
+set(FF_GESTURE_GLUE_SOURCES
+    ff_gesture_glue.c
+)

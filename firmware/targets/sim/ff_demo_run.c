@@ -24,6 +24,7 @@
 #include "face_dispatch.h"
 #include "ff_demo.h"
 #include "ff_demo_festpack.h"
+#include "ff_gesture_glue.h" /* S28 slice b — on-glass BACK/HOME/long-press-flare */
 #include "ff_intent.h"
 #include "ff_shell.h"
 #include "screenshot.h"
@@ -203,6 +204,7 @@ int ff_run_demo_window(void)
 
     /* Bind the seam so swipe/tap navigate the seeded world. */
     ff_intent_emit_bind(ff_shell_intent_sink, &shell);
+    ff_gesture_glue_attach(pointer_indev, &shell); /* S28 slice b */
 
     (void)ff_shell_tick(&shell, s_demo_clock_ms);
     ff_build_face_screen(ff_shell_view(&shell));

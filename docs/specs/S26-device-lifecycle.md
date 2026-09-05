@@ -558,3 +558,19 @@ folding flare into `ff_notify` (later), per-user idle timeouts in Settings.
   membership" — the fuller rulebook, including the UNKNOWN-direction
   placement decision this fix's CREW-default relies on), for the
   authoritative CREW-vs-member filing rule this fix now agrees with.
+
+- **2026-09-05, S28 (on-glass navigation gestures) — BOOT/launcher HOME
+  gets an on-glass sibling.** Slice (e)'s BOOT-button HOME
+  (`ff_shell_home_press` -> `FF_INTENT_HOME`) and the launcher's own tap
+  are no longer the only way to reach the launcher: a bottom-rim
+  edge-swipe-up (G2) now emits the same `FF_INTENT_HOME`, and a
+  left-rim edge-swipe (G1) emits `FF_INTENT_BACK`, which itself now
+  falls through to HOME from any base face with no open modal/sub-view
+  (see `docs/specs/S16-app-shell.md`'s own Amendments for that rule
+  change). A third on-glass gesture, long-press-to-flare, is a
+  touch-only sibling of the existing 5-tap-HOME quick flare
+  (`ff_multitap`/`ff_shell_multitap_edge`) — same `FF_INTENT_QUICK_FLARE`
+  destination, gated to the Radar face and to non-interactive glass
+  only. See `docs/specs/S28-gestures.md` for the full gesture set,
+  geometry, and axis-lock rules that keep these from colliding with an
+  ordinary scroll (the PR #130 regression this spec's own history notes).

@@ -156,6 +156,7 @@
 #include "face_dispatch.h" /* PR #25 UX review follow-up — ff_build_face_screen extracted
                              * here (shared with targets/sim/tests/test_face_hit_targets.c)
                              * instead of defined locally in this file. */
+#include "ff_gesture_glue.h" /* S28 slice b — on-glass BACK/HOME/long-press-flare */
 #include "ff_intent.h"     /* S16 slice d — binding the seam for live window mode */
 #include "ff_shell.h"      /* S16b2 — live mode is the app shell now (live.{c,h} retired) */
 #include "ff_sound_emit.h" /* S27 — binding the TAP sound seam for live window mode */
@@ -420,6 +421,7 @@ static int ff_run_window(const char *fixture_path, bool mock_clock, const char *
          * function's doc comment. */
         ff_intent_emit_bind(ff_shell_intent_sink, &s_win_shell);
         ff_sound_emit_bind(ff_shell_sound_sink, &s_win_shell); /* S27 sounds — same bind lifetime */
+        ff_gesture_glue_attach(pointer_indev, &s_win_shell); /* S28 slice b */
 
         if (fixture_path != NULL) {
             ff_app_state_t seed;

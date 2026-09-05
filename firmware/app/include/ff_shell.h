@@ -606,6 +606,33 @@ bool ff_shell_tick(ff_shell_t *sh, uint32_t now_ms);
 ff_app_state_t const *ff_shell_view(ff_shell_t const *sh);
 
 /**
+ * ff_shell_now_ms — [api] S28: the shell's OWN injected monotonic clock
+ * (`ff_shell_cfg_t.clock`), read at the moment of the call — the exact
+ * same value `ff_shell_tick`'s internal bookkeeping (and every other
+ * "now" the shell computes between ticks, e.g. `ff_shell_wall`'s own
+ * quiet-hours read) is built from.
+ *
+ * Added for `ff_gesture_glue` (app/ff_gesture_glue.c): an LVGL indev
+ * event callback fires synchronously from inside `lv_timer_handler()`,
+ * with no caller-supplied "now" parameter to thread through — every sim
+ * target already arranges for `lv_tick_set_cb`'s own source to match
+ * `ff_shell_cfg_t.clock` exactly (so `lv_tick_get()` would read the same
+ * number in practice), but this accessor names the dependency
+ * explicitly ("the shell's injected clock", per docs/specs/
+ * S28-gestures.md) instead of relying on that coincidence holding on
+ * every current and future target — the device's `esp_timer`-backed
+ * `ff_shell_cfg_t.clock` and `esp_lvgl_port`'s own tick source are two
+ * independently-configured things that merely happen to agree today.
+ *
+ * Returns 0 for a NULL `sh` or a `sh` with no clock configured (the
+ * same "cannot honestly do anything without a clock" case
+ * `ff_shell_init` already refuses at construction — this accessor never
+ * sees that `sh`, but stays NULL-safe for symmetry with every other
+ * accessor here).
+ */
+uint32_t ff_shell_now_ms(ff_shell_t const *sh);
+
+/**
  * ff_shell_wall — the wall clock now.
  *
  * A thin accessor over `ff_wall_now()` (slice b0): the latch, the

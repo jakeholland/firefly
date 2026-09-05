@@ -293,6 +293,23 @@ void ff_display_touch_set_idle(ff_idle_t *idle);
 bool ff_display_touch_is_down(void);
 
 /**
+ * ff_display_touch_indev — [api] S28: the device's one touch pointer
+ * indev, the same object `ff_display_touch_start` created and wrapped
+ * with the wake-only-touch gate (`ff_touch_gate_read_cb`). Exposed so
+ * `app_main.c` can hand it to `ff_gesture_glue_attach`
+ * (app/ff_gesture_glue.h) — the ONE other place besides
+ * `ff_display_touch_is_down`'s rebuild-mid-tap poll that needs a handle
+ * onto this indev from outside this file, so a real accessor beats
+ * growing a second `extern lv_indev_t *` the way `ffd_screen_flip`
+ * already warns against for cross-file mutable state.
+ *
+ * Returns NULL if `ff_display_touch_start` has not (yet, or ever)
+ * succeeded — the same "no indev yet" case `ff_display_touch_is_down`
+ * already returns false for.
+ */
+lv_indev_t *ff_display_touch_indev(void);
+
+/**
  * ff_display_set_brightness — set the backlight to `pct` percent via LEDC
  * PWM (#100). Clamped to [10, 100]: 0 would be a black, unrecoverable
  * screen, so the floor is non-zero (this mirrors, and defensively

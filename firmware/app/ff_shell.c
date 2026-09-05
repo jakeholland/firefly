@@ -2691,6 +2691,14 @@ ff_wall_t ff_shell_wall(ff_shell_t const *sh_pub)
     return shell_wall(sh, shell_now(sh));
 }
 
+uint32_t ff_shell_now_ms(ff_shell_t const *sh_pub)
+{
+    if (sh_pub == NULL) {
+        return 0u;
+    }
+    return shell_now(shell_of_const(sh_pub));
+}
+
 void ff_shell_close(ff_shell_t *sh_pub)
 {
     if (sh_pub == NULL) return;
@@ -3433,11 +3441,30 @@ void ff_shell_intent(ff_shell_t *sh_pub, ff_intent_t const *in)
          *   POPUP  -> THREAD (the dimmed thread it sits over)
          *   THREAD -> INBOX
          *   PICKER -> INBOX
-         * A BACK on the inbox itself — or on any other base face — stays a
-         * no-op. `inbox_thread_node` is only cleared on the return to INBOX
+         * `inbox_thread_node` is only cleared on the return to INBOX
          * (POPUP/RALLY keep the scope so the thread underneath is intact).
          * Any pending rally-to-crew confirm disarms on a back step (an
-         * intervening action, S22 AC4). */
+         * intervening action, S22 AC4).
+         *
+         * S28 amendment (docs/specs/S28-gestures.md, "Semantics of
+         * BACK") — extends what used to be an unconditional no-op below
+         * this branch: on any OTHER base face (INBOX at the plain list —
+         * not one of the sub-views this branch already handles above —
+         * SETTINGS, RADAR, LINEUP, MAP), BACK now steps home to the
+         * launcher, same as `FF_INTENT_HOME`. SETTINGS is deliberately
+         * NOT special-cased to "back to a settings root page" here: S21
+         * (docs/specs/S21-settings-rework.md) already removed the
+         * settings-sub-page concept entirely (one continuously-scrolling
+         * list, no `settings_page` view state left to step back through
+         * — see this file's own comment on that near the shell struct's
+         * settings fields) — so the spec's rule (3), "SETTINGS on a
+         * sub-page -> back to the settings root page", has no state to
+         * act on today and falls straight through to rule (4) below,
+         * exactly as it would for any other base face with no open
+         * sub-view. If a settings sub-page concept returns, rule (3)
+         * gets its own branch here first. LAUNCHER stays untouched (the
+         * `!= LAUNCHER` guard) — BACK on the launcher is a no-op, per
+         * spec rule (5). */
         if (sh->route.base == FF_APP_FACE_INBOX && sh->inbox_subview != FF_INBOX_SUB_INBOX) {
             sh->inbox_rally_armed = false;
             switch (sh->inbox_subview) {
@@ -3450,6 +3477,8 @@ void ff_shell_intent(ff_shell_t *sh_pub, ff_intent_t const *in)
                 sh->inbox_thread_node = 0u;
                 break;
             }
+        } else if (sh->route.base != FF_APP_FACE_LAUNCHER) {
+            (void)ff_route_home(&sh->route);
         }
         return;
 

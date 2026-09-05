@@ -106,7 +106,17 @@ typedef enum {
  * write-through: e).
  */
 typedef enum {
-    FF_INTENT_SWIPE, FF_INTENT_BACK, FF_INTENT_OPEN_COMPOSE, FF_INTENT_OPEN_SETTINGS,
+    FF_INTENT_SWIPE,
+    /* [api] S28 amendment (docs/specs/S28-gestures.md, dated 2026-09-05)
+     * — BACK's own semantics grew a rule (4), "any other base face ->
+     * HOME", once the on-glass left-rim edge-swipe (G1) joined the
+     * existing modal/Compose-close and Signals-sub-view-step sources as
+     * a way to emit this same intent. No payload change, no new enum
+     * member — see `ff_shell_intent`'s own `FF_INTENT_BACK` case
+     * (app/ff_shell.c) for the full, current rule ladder; that
+     * function's doc comment is the source of truth this header
+     * deliberately does not duplicate. */
+    FF_INTENT_BACK, FF_INTENT_OPEN_COMPOSE, FF_INTENT_OPEN_SETTINGS,
     /* NOTE: there is deliberately no FF_INTENT_OPEN_MAP. Map used to be a
      * modal opened by a vertical top-swipe (S09 [api]); the
      * horizontal-carousel rework made it an ordinary swipe face between

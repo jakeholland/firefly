@@ -398,9 +398,12 @@ static void S16_c1_open_compose_and_back_round_trip(void)
     send_kind(FF_INTENT_BACK);
     TEST_ASSERT_EQUAL(FF_APP_FACE_INBOX, view()->active_face); /* base intact underneath */
 
-    /* BACK on a bare face is a no-op, not a face change. */
+    /* S28 amendment (docs/specs/S28-gestures.md, "Semantics of BACK",
+     * rule 4) — a SECOND BACK, now with no modal to pop and INBOX at
+     * its plain list (no open sub-view), steps home to the launcher,
+     * the same as FF_INTENT_HOME. */
     send_kind(FF_INTENT_BACK);
-    TEST_ASSERT_EQUAL(FF_APP_FACE_INBOX, view()->active_face);
+    TEST_ASSERT_EQUAL(FF_APP_FACE_LAUNCHER, view()->active_face);
 }
 
 /* =================================================================== */
@@ -541,12 +544,15 @@ static void S16_c1_open_settings_jumps_base_to_the_settings_face(void)
     send_home();
     TEST_ASSERT_EQUAL(FF_APP_FACE_LAUNCHER, view()->active_face);
 
-    /* Jump back to Settings, then confirm BACK on a bare face is a
-     * no-op (there is no modal to pop). */
+    /* Jump back to Settings, then confirm BACK (S28 amendment,
+     * docs/specs/S28-gestures.md rule 4: there is no modal to pop, and
+     * Settings has no sub-page state left to step back through since
+     * S21 — see ff_shell.c's own comment on that — so BACK steps home
+     * to the launcher, same as any other bare base face). */
     send_kind(FF_INTENT_OPEN_SETTINGS);
     TEST_ASSERT_EQUAL(FF_APP_FACE_SETTINGS, view()->active_face);
     send_kind(FF_INTENT_BACK);
-    TEST_ASSERT_EQUAL(FF_APP_FACE_SETTINGS, view()->active_face);
+    TEST_ASSERT_EQUAL(FF_APP_FACE_LAUNCHER, view()->active_face);
 }
 
 /**
