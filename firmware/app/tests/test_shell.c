@@ -1552,6 +1552,46 @@ static void S16_AC4a_dirty_is_the_rendered_projection_not_the_raw_struct(void)
 /* Supporting behaviour the ACs above depend on                         */
 /* =================================================================== */
 
+/* =================================================================== */
+/* S28 (docs/specs/S28-gestures.md, app glue) — ff_shell_now_ms: the     */
+/* shell's injected clock, read at the moment of the call. New [api]    */
+/* accessor, added so app/ff_gesture_glue.c's LVGL indev callback (which */
+/* gets no caller-supplied now_ms) can read "now" the same way every     */
+/* other shell-internal now-read already does (shell_now/ff_shell_wall).*/
+/* =================================================================== */
+
+static void S28_shell_now_ms_null_sh_returns_zero(void)
+{
+    TEST_ASSERT_EQUAL_UINT32(0u, ff_shell_now_ms(NULL));
+}
+
+static void S28_shell_now_ms_tracks_the_injected_clock(void)
+{
+    harness_init(100000u, false);
+    TEST_ASSERT_EQUAL_UINT32(100000u, ff_shell_now_ms(&H.shell));
+
+    /* Stable within a tick: two reads with no intervening clock advance
+     * (no `advance()` call in between) must agree — ff_shell_now_ms is a
+     * pure read of the injected clock, not a counter or a value that
+     * drifts across repeated calls in the same instant. */
+    uint32_t const first_read = ff_shell_now_ms(&H.shell);
+    uint32_t const second_read = ff_shell_now_ms(&H.shell);
+    TEST_ASSERT_EQUAL_UINT32(first_read, second_read);
+
+    /* Advances WITH the injected clock (the harness's own fake_clock_t)
+     * — not some independent tick ff_shell_now_ms keeps itself. */
+    advance(2500u);
+    TEST_ASSERT_EQUAL_UINT32(102500u, ff_shell_now_ms(&H.shell));
+
+    /* Reflects the CURRENT clock read, not a value snapshotted at the
+     * last ff_shell_tick — a tick with no further advance changes
+     * nothing, and a further advance afterward is still seen. */
+    ff_shell_tick(&H.shell, H.clk.t);
+    TEST_ASSERT_EQUAL_UINT32(102500u, ff_shell_now_ms(&H.shell));
+    advance(10u);
+    TEST_ASSERT_EQUAL_UINT32(102510u, ff_shell_now_ms(&H.shell));
+}
+
 static void S16_b1_wall_is_unknown_until_a_plausible_timestamp_arrives(void)
 {
     harness_init(100000u, false);
@@ -7818,6 +7858,8 @@ int main(void)
     RUN_TEST(S16_AC4a_idle_shell_is_not_dirty_for_1000_ticks);
     RUN_TEST(S16_AC4a_dirty_is_the_rendered_projection_not_the_raw_struct);
 
+    RUN_TEST(S28_shell_now_ms_null_sh_returns_zero);
+    RUN_TEST(S28_shell_now_ms_tracks_the_injected_clock);
     RUN_TEST(S16_b1_wall_is_unknown_until_a_plausible_timestamp_arrives);
     RUN_TEST(S16_b1_positions_are_never_stamped_from_the_local_clock);
     RUN_TEST(S16_b1_own_traffic_is_not_treated_as_inbound);

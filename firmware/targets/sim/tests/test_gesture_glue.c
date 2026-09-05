@@ -34,6 +34,7 @@
 #include "ff_intent.h"
 #include "ff_shell.h"
 #include "ff_theme.h"
+#include "scr_nav.h" /* ff_scr_button_create — the real production button factory, for the wait_release regression test */
 
 #include "fp_pack.h"
 
@@ -257,6 +258,16 @@ static void S28_AC11_left_rim_drag_in_open_thread_closes_it(void)
      * dx=60 well past the 56px threshold, |dy|=0. */
     gg_drag(&ctx, GG_LEFT_RIM_X, GG_CENTER_Y, GG_LEFT_RIM_X + 70, GG_CENTER_Y, 5);
 
+    /* THE PROXY this AC's own review round caught (AGENTS.md item 6):
+     * checking `inbox.subview` alone is satisfied even by a BACK that
+     * navigates all the way HOME (rule 4's "any other base face") rather
+     * than the spec's actual "back to the list" (rule 2) — leaving
+     * INBOX entirely stops `ctx.state.inbox` from being repopulated as
+     * INBOX's own subview at all, which this one field can't tell apart
+     * from a genuine close. Asserting `active_face` stays INBOX closes
+     * that gap. */
+    TEST_ASSERT_EQUAL_MESSAGE(FF_APP_FACE_INBOX, ctx.state.active_face,
+                               "a left-rim BACK swipe on an open thread must stay on the Inbox face, not go home");
     TEST_ASSERT_EQUAL_MESSAGE(FF_INBOX_SUB_INBOX, ctx.state.inbox.subview,
                                "a left-rim BACK swipe did not close the open thread");
 
@@ -304,6 +315,82 @@ static void S28_AC12_swipe_60px_inboard_does_not_close_thread_but_still_scrolls(
 
     TEST_ASSERT_GREATER_THAN_INT32_MESSAGE(0, lv_obj_get_scroll_y(list), "a vertical drag inside the thread must still scroll it");
     TEST_ASSERT_EQUAL_MESSAGE(FF_INBOX_SUB_THREAD, ctx.state.inbox.subview, "the vertical scroll drag must not also close the thread");
+
+    ff_ctl_loop_close(&ctx);
+    ff_shell_close(&shell);
+    lv_deinit();
+}
+
+/* ===================================================================
+ * lv_indev_wait_release regression (review round 2 on PR #200 finding
+ * 3) — a BACK recognition mid-drag must swallow the REST of that
+ * gesture for whatever real widget the finger started on, per
+ * ff_gesture_glue.h's own documented contract ("No click, no scroll
+ * continues for the widget under the finger").
+ *
+ * Real production screens never place a genuinely clickable widget
+ * INSIDE the rim zone itself: round-safe framing keeps interactive
+ * content well off the very edge by construction (measured directly —
+ * the Inbox list's own left margin is 62px in practice, comfortably
+ * outside the 36px rim), so there is no existing production widget
+ * this test could drive through unmodified. Builds one REAL button
+ * instead — `ff_scr_button_create`, the exact same factory every
+ * screen uses (app/screens/scr_nav.c), not a bespoke stand-in — sized
+ * wide enough that BOTH the DOWN point and the drag's END point land
+ * inside its own bounds throughout. That last part is what actually
+ * isolates this guarantee: every OTHER drag test in this file ends
+ * OUTSIDE whatever it started on, which the pre-existing #145/#148
+ * PRESS_LOCK-cleared-click fix already suppresses on its own (reviewer
+ * finding 3's own mutation proof: dropping `lv_indev_wait_release`
+ * entirely did not fail any of those 70 tests) — a release still
+ * within the SAME widget's bounds is the one case where LVGL's default
+ * click semantics would otherwise still fire CLICKED.
+ * =================================================================== */
+
+static bool s_wait_release_probe_clicked;
+
+static void wait_release_probe_click_cb(lv_event_t *e)
+{
+    (void)e;
+    s_wait_release_probe_clicked = true;
+}
+
+static void S28_wait_release_swallows_click_on_a_real_widget_under_the_swipe(void)
+{
+    static ff_shell_t shell;
+    static fp_pack_t pack;
+    static ff_ctl_loop_ctx_t ctx;
+    ff_ctl_handlers_t h;
+    open_session(&shell, &pack, &ctx, &h);
+    goto_face(&ctx, 0 /* Radar */);
+    TEST_ASSERT_EQUAL(FF_APP_FACE_RADAR, ctx.state.active_face);
+
+    s_wait_release_probe_clicked = false;
+    lv_obj_t *probe = ff_scr_button_create(lv_screen_active());
+    lv_obj_set_pos(probe, 8, 186);
+    lv_obj_set_size(probe, 212, 40); /* spans x=[8,220] on screen — the whole drag below stays inside it */
+    lv_obj_add_event_cb(probe, wait_release_probe_click_cb, LV_EVENT_CLICKED, NULL);
+    /* lv_obj_get_click_area (and hence LVGL's own hit-testing) reads
+     * cached coords that are only computed by a layout pass — without
+     * forcing one here, the very first touch sample can hit-test
+     * against stale (pre-creation) coordinates and miss this brand-new
+     * object entirely, which would make this test pass FOR THE WRONG
+     * REASON (the probe never gets pressed at all, mutation or not —
+     * this is the exact gap that made an early draft of this test pass
+     * even with `lv_indev_wait_release` removed). Same "force it before
+     * reading/relying on real coords" discipline test_ctl_flare_
+     * sequence.c's own `ctl_settle`/`ctl_tap_button` already document. */
+    lv_obj_update_layout(probe);
+
+    /* The same left-rim BACK motion AC11/AC18 use — DOWN at x=20
+     * (inside both the rim zone and the probe button), dragged to x=90
+     * (dx=70, still well inside the probe's own [8,220] span). */
+    gg_drag(&ctx, GG_LEFT_RIM_X, GG_CENTER_Y, GG_LEFT_RIM_X + 70, GG_CENTER_Y, 5);
+
+    TEST_ASSERT_EQUAL_MESSAGE(FF_APP_FACE_LAUNCHER, ctx.state.active_face,
+                               "setup failed: the BACK gesture did not recognise (rule 4 -> HOME on Radar)");
+    TEST_ASSERT_FALSE_MESSAGE(s_wait_release_probe_clicked,
+                               "a widget under a recognised BACK swipe received CLICKED -- lv_indev_wait_release did not swallow it");
 
     ff_ctl_loop_close(&ctx);
     ff_shell_close(&shell);
@@ -536,6 +623,7 @@ int main(void)
     UNITY_BEGIN();
     RUN_TEST(S28_AC11_left_rim_drag_in_open_thread_closes_it);
     RUN_TEST(S28_AC12_swipe_60px_inboard_does_not_close_thread_but_still_scrolls);
+    RUN_TEST(S28_wait_release_swallows_click_on_a_real_widget_under_the_swipe);
     RUN_TEST(S28_AC13_bottom_rim_swipe_on_radar_lands_on_launcher);
     RUN_TEST(S28_AC14_rim_swipe_on_launcher_is_a_no_op);
     RUN_TEST(S28_AC15_long_press_on_empty_radar_arms_flare_countdown);
