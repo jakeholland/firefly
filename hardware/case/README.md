@@ -222,6 +222,66 @@ Five follow-ups landed after the initial M1-M4 pass, all against the same
    real wall-hole-to-head clearance) is the knob to tune from a coupon fit
    test; a looser fit means a bigger number, a snugger fit a smaller one.
 
+## 2026-09-05 pass 3 (visible-defect fixes the asserts missed)
+
+Renders/STL analysis from pass 2 found real geometry the pass-2 checks
+didn't catch:
+
+1. **L76K board was outside the case.** Positioning by the whole
+   occurrence's aggregate bbox put the actual PCB nowhere near its target
+   -- the assembly's separate GPS patch antenna (25x25x8.3, on a cable)
+   dominates that bbox. Fixed: `find_pcb_like_body` recursively searches
+   the L76K assembly for a body shaped like a small PCB (two dims
+   15-24mm, third <=3mm) and positions BY THAT BODY specifically; the
+   antenna sub-occurrence is hidden. Verified: PCB world bbox now
+   `x -10.48..10.48, y -23.39..-5.61, z 1.83..3.37` against a target of
+   `x -10.5..10.5, y -23.5..-5.5, z ~2.0..3.2`.
+2. **Home button's guide rib punched ~1.45mm through the dome** (a
+   rectangular slab visible in `trim_top.png`/`trim_iso.png` near the
+   home button). Root cause was upstream, in `button_geometry()`:
+   `s_wall` (the button's local "distance to the outer wall along its
+   nub direction") used the flat-plane `x = -outer_radius` approximation,
+   which is a reasonable stand-in for the Power button (mostly in the
+   straight section) but badly wrong for the Home button, which sits in
+   the domed +y end cap (switch y 57.6-63.5, past spine_b=50) -- it
+   overestimated the true wall distance enough that positioning the rib
+   "6mm inboard of the wall" left it outboard of the REAL wall. Confirmed
+   by elimination: even shrinking the rib's own footprint to zero (or
+   negative) margin still overshot, and a Combine-Intersect against the
+   inner-cavity clip tool (the fix used for the bosses/Top posts)
+   consistently raised `FEATURE_FAILED_TO_CREATE` for this specific
+   diagonal-box-against-filleted-revolve combination regardless of margin
+   or cut ordering. Fixed at the source: `s_wall` now calls
+   `true_wall_distance_along_ray` (already used for the M2 cap-proud
+   check, and correct for both the straight section and the domed ends,
+   since the domes are literal revolves of the same profile); `s_inner`
+   and `s_tab_face` were also corrected to subtract along the ray
+   directly rather than reuse a flat-wall-specific `/d2[0]` projection
+   whose sign only happened to work by accident of `d2[0]` being negative.
+   One real consequence: the Home button's cavity is genuinely tight
+   (`s_wall` ~6.1mm from the switch housing along its nub direction, vs.
+   the Power button's much larger straight-section clearance) -- the
+   generator no longer papers over that with an inflated flat-wall
+   number.
+3. **Screen Plate's far corners (near spine_b) sat outside the trim
+   wall** (rho ~33mm against a 26mm inner wall). Fixed: the plate is now
+   Combine-Intersected against a stadium solid at `outer_radius - wall -
+   0.3` (0.3mm clearance inside the inner wall) before its other cutouts,
+   in every variant -- trim's plate now reads `x -25.70..22.89` (was
+   `-26.63..22.89`).
+4. **New verify check, `verify_export_envelope`**, per the coordinator's
+   own STL vertex analysis: for every body build() exports, no vertex may
+   sit beyond `rho_from_spine(p, x, y)` = `outer_radius + 0.15mm`, except
+   the lanyard lug (y below `spine_a.y - outer_radius + 2`, |x| < 5.6) and
+   the two button cap heads (allowed to `+0.45mm`, their designed proud
+   amount). `rho_from_spine` measures distance from the actual pill
+   centerline -- `|x|` in the straight section, distance to the nearer
+   spine endpoint in the domed ends -- matching how the shell itself is
+   built, not a flat per-axis bounding box. All 5 exported bodies (both
+   variants) currently pass with zero offending vertices.
+
+## Print orientation & settings
+
 ## Print orientation & settings
 
 - **Bottom**: print face-down on its flat z=0 face (the KandiWooks

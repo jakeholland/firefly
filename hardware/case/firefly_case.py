@@ -820,6 +820,17 @@ def build_screen_plate(root, p):
     z0, z1 = p['plate_z']
     plate = box_solid(root, po['x'][0], po['x'][1], po['y'][0], po['y'][1], z0, z1)
 
+    # clip the plate's rectangular corners to the cavity outline, 0.3mm
+    # clearance in from the inner wall (2026-09-05 fix): the plate outline
+    # is a plain rectangle sized against the display bay's straight-side
+    # width, but its far corners (near spine_b) landed outside the actual
+    # (curved) cavity wall in every variant -- e.g. trim's (-26.63, 69.6)
+    # corner is at rho~33 against an inner wall of only 26mm.
+    ay, by = p['spine_a'][1], p['spine_b'][1]
+    cavity_r = p['outer_radius'] - p['wall'] - 0.3
+    cavity_outline = stadium_solid(root, ay, by, cavity_r, z0 - 0.5, z1 + 0.5)
+    plate = combine_intersect(root, plate, [cavity_outline])
+
     hc = p['plate_header_cutout']
     cutout = box_solid(root, hc['x'][0], hc['x'][1], hc['y'][0], hc['y'][1], z0 - 0.5, z1 + 0.5)
     plate = combine_cut(root, plate, [cutout])
@@ -901,16 +912,19 @@ def ray_box_exit_2d(center_xy, d_xy, bbox_x, bbox_y):
 def button_geometry(p, switch_bbox, nub_dir, cap):
     """Compute the working points/axes for one side button.
 
-    SIMPLIFICATION (documented in README): the outer wall in the button
-    region is treated as the flat vertical plane x = -outer_radius, even
-    though the real outer surface curves away above z=15 (the R10 shoulder
-    fillet) and the cap z-range (up to ~19.6-20.0mm) reaches into that
-    curved region. Modeling a cap that conforms to the compound curved
-    shoulder was judged disproportionate to the remaining effort budget --
-    the flat-wall approximation keeps the button mechanism's *dimensions*
-    (hole clearance, plunger gap, pocket depth, tab gap) exactly matching
-    SPEC.md, at the cost of a small (~1-2mm at the extremes) wall-contour
-    mismatch that a human pass should true up before printing.
+    2026-09-05: s_wall now uses the REAL curved-shell distance
+    (true_wall_distance_along_ray, evaluated at the cap's vertical center)
+    instead of the flat-plane x=-outer_radius assumption. The flat-wall
+    version was fine for the Power button (mostly in the straight section)
+    but badly wrong for the Home button, which sits in the domed +y end
+    cap (switch y 57.6-63.5, past spine_b=50): it placed the plunger guide
+    rib's flat-wall-relative position so far outboard that the rib itself
+    poked ~1.4mm past the TRUE dome surface, in a way no amount of
+    shrinking the rib's own footprint could fix (confirmed empirically --
+    even a zero-margin rib still overshot). The cap head geometry itself
+    stays fine either way since it's separately trimmed to the true
+    envelope (see build_thickened_envelope / add_button's Combine-
+    Intersect).
     """
     d2 = normalize2(nub_dir)
     t2 = (-d2[1], d2[0])
@@ -921,16 +935,22 @@ def button_geometry(p, switch_bbox, nub_dir, cap):
     t_exit = ray_box_exit_2d((cx, cy), d2, switch_bbox['x'], switch_bbox['y'])
     housing_xy = (cx + t_exit * d2[0], cy + t_exit * d2[1])
 
-    wall_x = -p['outer_radius']
-    s_wall = (wall_x - housing_xy[0]) / d2[0]           # param (along d) at the outer wall face
-    s_inner = s_wall + p['wall'] / d2[0]                # param at the inner (cavity-side) wall face
+    cap_z_center = (cap['z'][0] + cap['z'][1]) / 2.0
+    s_wall = true_wall_distance_along_ray(p, housing_xy, d2, cap_z_center)  # param (along d) at the TRUE outer wall
+    # inner wall face is INBOARD of the outer face (smaller s -- s
+    # increases outward from the housing at s=0), by wall thickness
+    # measured directly along the ray (a generic thin-shell approximation,
+    # not the old flat-wall-specific x-projection, since d2 is not
+    # generally aligned with the local surface normal once the dome is
+    # involved).
+    s_inner = s_wall - p['wall']
     # REST position: the plunger tip sits plunger_travel further from the
     # housing than the FULL-PRESS gap (plunger_tip_gap) -- the collar
     # bottoms on the rib plunger_travel mm before the tip would reach the
     # housing (see PARAMS['plunger_travel'] / 'rib_*' / 'collar').
     s_plunger_tip = p['plunger_tip_gap'] + p['plunger_travel']
     s_outer_face = s_wall + cap['proud']
-    s_tab_face = s_inner + p['tab']['gap'] / d2[0]
+    s_tab_face = s_inner - p['tab']['gap']  # further inboard than the inner wall face by the tab gap
 
     # plunger guide rib: outboard face rib_inboard_offset mm inboard of the
     # outer wall face, rib_thickness mm thick along the travel axis.
@@ -957,7 +977,7 @@ def button_geometry(p, switch_bbox, nub_dir, cap):
     }
 
 
-def add_button(root, bodies, name, switch_bbox, nub_dir, cap, hole_wh, p, thickened_envelope=None):
+def add_button(root, bodies, name, switch_bbox, nub_dir, cap, hole_wh, p, thickened_envelope=None, clip_tool=None):
     g = button_geometry(p, switch_bbox, nub_dir, cap)
     d2, t2 = g['d'], g['t']
     d3, t3 = (d2[0], d2[1], 0.0), (t2[0], t2[1], 0.0)
@@ -1020,7 +1040,21 @@ def add_button(root, bodies, name, switch_bbox, nub_dir, cap, hole_wh, p, thicke
     # keeps the plunger from tilting/rotating, and the collar bottoms on it
     # plunger_travel before the tip would reach the switch housing, so a
     # hard press loads the rib/case instead of the switch's solder joints.
-    attach_margin = 2.0  # rib plate extends this far beyond the plunger cross-section, to attach to nearby wall material
+    # 2026-09-05 fix: the rib plate used to punch ~1.45mm through the dome
+    # near the Home button (close to the spine_b end cap). Root cause was
+    # upstream in button_geometry()'s s_wall -- the flat-wall approximation
+    # placed the rib's "6mm inboard of the wall" relative to a wall that,
+    # for a button actually in the domed cap, was much further away than
+    # the TRUE curved surface, so the rib ended up outboard of the real
+    # wall. Fixed at the source (s_wall now uses
+    # true_wall_distance_along_ray); attach_margin itself was never the
+    # problem (confirmed empirically -- even a zero/negative margin still
+    # overshot before the s_wall fix, and margin=2.0 is clean after it). A
+    # boolean Combine-Intersect against the inner-cavity clip tool was
+    # tried first but raised 'FEATURE_FAILED_TO_CREATE' for this specific
+    # diagonal-box-against-filleted-revolve combination regardless of
+    # margin -- abandoned once the real fix made it unnecessary.
+    attach_margin = 2.0
     rib_len = p['rib_thickness']
     rib_center = (g['rib_center_xy'][0], g['rib_center_xy'][1], z_center)
     rib_plate = oriented_box_prism(root, rib_center, t3, z3, d3,
@@ -1042,7 +1076,7 @@ def add_button(root, bodies, name, switch_bbox, nub_dir, cap, hole_wh, p, thicke
     return bodies
 
 
-def add_buttons(root, bodies, p):
+def add_buttons(root, bodies, p, clip_tool=None):
     # shared thickened envelope (both caps use the same proud amount) --
     # rebuilding the whole outer pill solid + OffsetFaces per button was
     # part of what made the post-redesign build slow enough to risk the
@@ -1053,13 +1087,13 @@ def add_buttons(root, bodies, p):
     bodies = add_button(root, bodies, 'Power Button', p['switch_power_bbox'], p['power_nub_dir'],
                          p['power_cap'], (p['power_cap']['stadium'][0] + 2 * p['cap_clearance'],
                                           p['power_cap']['stadium'][1] + 2 * p['cap_clearance']), p,
-                         thickened_envelope=thickened_envelope)
+                         thickened_envelope=thickened_envelope, clip_tool=clip_tool)
     home_bbox = dict(p['switch_home_bbox'])
     home_bbox['z'] = p['switch_power_bbox']['z']  # z not separately specified in SPEC.md; reuse power's
     bodies = add_button(root, bodies, 'Home Button', home_bbox, p['home_nub_dir'],
                          p['home_cap'], (p['home_cap']['stadium'][0] + 2 * p['cap_clearance'],
                                          p['home_cap']['stadium'][1] + 2 * p['cap_clearance']), p,
-                         thickened_envelope=thickened_envelope)
+                         thickened_envelope=thickened_envelope, clip_tool=clip_tool)
     thickened_envelope.name = 'Cap Trim Envelope (reference only)'
     thickened_envelope.isLightBulbOn = False
     return bodies
@@ -1488,6 +1522,38 @@ def flatten_transform(native_center_mm, thin_axis, target_center_mm):
     return mat
 
 
+def find_pcb_like_body(occ, lo=15.0, hi=24.0, max_thick=3.0):
+    """Recursively search `occ`'s whole subtree for a body shaped like a
+    small PCB (two dims in [lo,hi]mm, third <= max_thick) -- used
+    (2026-09-05) to position the L76K assembly by its actual PCB body
+    instead of the whole occurrence's aggregate bbox, which is dominated
+    by the separate GPS patch antenna on its cable (25x25x8.3, plus lead)
+    and put the board itself outside the case entirely. Returns
+    (body, area, thin_axis) for the largest-area match, or None."""
+    best = None
+
+    def walk(o):
+        nonlocal best
+        for b in o.bRepBodies:
+            bb = b.boundingBox
+            dx = (bb.maxPoint.x - bb.minPoint.x) / MM
+            dy = (bb.maxPoint.y - bb.minPoint.y) / MM
+            dz = (bb.maxPoint.z - bb.minPoint.z) / MM
+            extents = {'x': dx, 'y': dy, 'z': dz}
+            thin_axis = min(extents, key=extents.get)
+            thin = extents[thin_axis]
+            others = sorted(v for k, v in extents.items() if k != thin_axis)
+            if thin <= max_thick and lo <= others[0] <= hi and lo <= others[1] <= hi:
+                area = others[0] * others[1]
+                if best is None or area > best[1]:
+                    best = (b, area, thin_axis)
+        for c in o.childOccurrences:
+            walk(c)
+
+    walk(occ)
+    return best
+
+
 def insert_and_place(design, root, doc, target_center_fn, thin_axis=None):
     """Insert `doc` as a referenced occurrence and rigidly place it
     (2026-09-04 fix): read its native bbox, rotate its thin axis (given, or
@@ -1542,13 +1608,38 @@ def insert_comms_boards(app, root, p):
         occs['xiao'] = occ
 
     if l76k_doc is not None:
+        # Position by the actual PCB body (2026-09-05 fix), not the whole
+        # occurrence's aggregate bbox: the L76K assembly includes a separate
+        # GPS patch antenna on a cable (25x25x8.3), and placing by the
+        # occurrence's combined bbox put the real board outside the case
+        # entirely (its center is nowhere near the PCB's own center once a
+        # long cable/antenna is in the mix).
         fr = p['bay']['l76k_wired']
         lcx = (fr['x'][0] + fr['x'][1]) / 2.0
         lcy = (fr['y'][0] + fr['y'][1]) / 2.0
-        l76k_floor_z = fr['z'][0]
-        occ, dx, dy, dz, thin = insert_and_place(
-            design, root, l76k_doc,
-            lambda dx, dy, dz, thick, _z0=l76k_floor_z: (lcx, lcy, _z0 + thick / 2.0))
+        target_pcb_center = (lcx, lcy, (fr['z'][0] + 1.2) / 2.0 + 1.0)  # PCB ~2.0..3.2 (component side up)
+
+        occ = root.occurrences.addByInsert(l76k_doc.dataFile, adsk.core.Matrix3D.create(), True)
+        match = find_pcb_like_body(occ)
+        assert match is not None, 'no ~18x21mm PCB-like body found in the L76K assembly'
+        pcb_body, area, thin_axis = match
+        bb = pcb_body.boundingBox
+        native_center = ((bb.minPoint.x + bb.maxPoint.x) / 2.0 / MM,
+                          (bb.minPoint.y + bb.maxPoint.y) / 2.0 / MM,
+                          (bb.minPoint.z + bb.maxPoint.z) / 2.0 / MM)
+        occ.transform = flatten_transform(native_center, thin_axis, target_pcb_center)
+        if design.snapshots.hasPendingSnapshot:
+            design.snapshots.add()
+
+        # hide the cable/antenna sub-occurrence so it doesn't render as a
+        # stray part floating outside the case
+        for c in occ.childOccurrences:
+            if 'ANT' in c.name.upper():
+                c.isLightBulbOn = False
+
+        pcb_bb = pcb_body.boundingBox
+        print('L76K PCB world bbox:', [round(v / MM, 2) for v in pcb_bb.minPoint.asArray()],
+              [round(v / MM, 2) for v in pcb_bb.maxPoint.asArray()])
         occs['l76k'] = occ
 
     return occs
@@ -1581,11 +1672,20 @@ def build(app, params):
     clip_tool.isLightBulbOn = False
     bodies = add_case_screws(root, bodies, params, clip_tool=clip_tool)
     bodies = add_top_posts(root, bodies, params, clip_tool=clip_tool)
+    # re-fetch by name: dedupe_body's Remove-feature cleanup inside the
+    # calls above can invalidate previously-held BRepBody references more
+    # broadly than just the body actually removed (see dedupe_body's
+    # docstring) -- clip_tool itself is never removed, but its Python
+    # handle isn't safe to keep using past those calls regardless.
+    for b in root.bRepBodies:
+        if b.name == 'Inner Cavity Clip Tool (reference only)':
+            clip_tool = b
+            break
 
     plate = build_screen_plate(root, params)
     bodies['Screen Plate'] = plate
 
-    bodies = add_buttons(root, bodies, params)
+    bodies = add_buttons(root, bodies, params, clip_tool=clip_tool)
     bodies = add_usb_tunnel(root, bodies, params)
     bodies = add_lug(root, bodies, params)
     bodies = add_flare_logo(root, bodies, params)
@@ -1794,6 +1894,55 @@ def verify_no_outer_bumps(bodies, p):
     return results
 
 
+def rho_from_spine(p, x, y):
+    """Distance from the pill's spine (the segment spine_a-spine_b for the
+    straight section, the nearer spine endpoint for the domed ends) --
+    the true 'how far from the centerline' measure the shell profile is
+    built from (see build_outer_pill_solid)."""
+    ay, by = p['spine_a'][1], p['spine_b'][1]
+    if ay <= y <= by:
+        return abs(x)
+    center_y = ay if y < ay else by
+    return math.hypot(x, y - center_y)
+
+
+def check_body_envelope_vertices(body, p, name, tol=0.15):
+    """Vertex scan (2026-09-05, per the coordinator's own STL analysis):
+    no vertex of an exported body should sit beyond
+    rho = outer_radius + tol from the spine, except the lanyard lug (a
+    real, intentional protrusion at the -y tail: y below the wall-plus-
+    2mm threshold and |x| < 5.6) and the two button cap heads (allowed out
+    to +0.45mm, their designed proud amount)."""
+    ay = p['spine_a'][1]
+    lug_y_thresh = ay - p['outer_radius'] + 2.0
+    lug_x_half = 5.6
+    is_cap = name in ('Power Button', 'Home Button')
+    limit = p['outer_radius'] + (0.45 + 0.05 if is_cap else tol)
+    bad = []
+    for v in body.vertices:
+        pt = v.geometry
+        x, y = pt.x / MM, pt.y / MM
+        if y < lug_y_thresh and abs(x) < lug_x_half:
+            continue
+        rho = rho_from_spine(p, x, y)
+        if rho > limit:
+            bad.append((round(x, 2), round(y, 2), round(pt.z / MM, 2), round(rho, 2)))
+    return bad
+
+
+def verify_export_envelope(bodies_dict, p):
+    """Runs the vertex check above over every body build() actually
+    exports (EXPORT_BODY_NAMES)."""
+    results = {}
+    for name in EXPORT_BODY_NAMES:
+        body = bodies_dict.get(name)
+        if body is None:
+            continue
+        bad = check_body_envelope_vertices(body, p, name)
+        results[name] = (not bad, bad[:5])  # cap the printed sample to 5 offending vertices
+    return results
+
+
 def verify_m1_probe_table(bodies, p):
     """Probe pattern from SPEC.md's reference-geometry table, generalized:
     the same relative z offsets are probed, and the expected rho at each is
@@ -1997,6 +2146,10 @@ def verify(design, params):
     bad_bumps = [r for r in bump_results if r[1]]
     assert not bad_bumps, f'solid material found just outside the outer surface: {bad_bumps}'
 
+    export_envelope_results = verify_export_envelope(by_name, params)
+    bad_export_env = [(k, v) for k, v in export_envelope_results.items() if not v[0]]
+    assert not bad_export_env, f'exported body has vertices outside the allowed envelope: {bad_export_env}'
+
     return {
         'body_names': names,
         'm2_results': m2_results,
@@ -2006,6 +2159,7 @@ def verify(design, params):
         'occ_interference': occ_interference,
         'envelope_results': envelope_results,
         'bump_results': bump_results,
+        'export_envelope_results': export_envelope_results,
     }
 
 
@@ -2217,6 +2371,9 @@ def run(_context: str, variant=None, export=False):
     print('outer-bump probes:')
     for r in result['bump_results']:
         print('  ', r)
+    print('export envelope vertex checks:')
+    for k, v in result['export_envelope_results'].items():
+        print('  ', k, v[0], v[1] if not v[0] else '')
 
     expected_names = sorted(['Bottom', 'Screen Plate', 'Top', 'Power Button', 'Home Button'])
     assert result['body_names'] == expected_names, result['body_names']
