@@ -1063,6 +1063,254 @@ def add_wordmark_logo(root, bodies, p):
 
 
 # ---------------------------------------------------------------------------
+# M3: comms bay (battery / GPS / XIAO+Wio+L76K stack) + board inserts
+# ---------------------------------------------------------------------------
+def safe_half_width(p, y, z, margin=2.0):
+    """Conservative safe |x| bound for bay geometry at (y,z): the pill's
+    inner cavity is a REVOLVE of the same rho(z) profile around each spine
+    endpoint, so away from the straight section (y outside
+    [spine_a.y, spine_b.y]) the safe half-width shrinks radially from the
+    nearest spine point, not just with z. Used to keep bay pockets (whose
+    footprints in SPEC.md were sized against a flat mid-height cross
+    section) from bulging through the actual curved/domed shell -- this is
+    a real limitation of the current bay layout (see README): several bay
+    footprints, especially in the trim variant and near the -y end cap,
+    are tighter than the nominal 'cavity 52mm wide' figure once the floor's
+    curvature is accounted for."""
+    ay, by = p['spine_a'][1], p['spine_b'][1]
+    r = inner_rho_at_z(p, z)
+    if y < ay:
+        d = ay - y
+    elif y > by:
+        d = y - by
+    else:
+        d = 0.0
+    val = math.sqrt(max(r * r - d * d, 0.0))
+    return max(val - margin, 0.1)
+
+
+def clip_box_x_to_cavity(p, x0, x1, y0, y1, z0, z1, margin=2.0):
+    """Returns (x0, x1) clipped to fit the safe cavity envelope, or None if
+    the requested box doesn't fit at all at this (y,z) -- callers should
+    skip building that piece rather than create a degenerate sliver."""
+    lim = min(safe_half_width(p, y, z, margin) for y in (y0, y1) for z in (z0, z1))
+    new_x0, new_x1 = max(x0, -lim), min(x1, lim)
+    if new_x1 - new_x0 < 1.0:
+        return None
+    return new_x0, new_x1
+
+
+def add_battery_bay(root, bodies, p):
+    bat = p['bay']['battery']
+    x0, x1 = bat['x']
+    y0, y1 = bat['y']
+    z0, z1 = bat['z']
+    clip = clip_box_x_to_cavity(p, x0, x1, y0, y1, z0, z0 + 1.5)
+    if clip is not None:
+        x0, x1 = clip
+
+    rail_w = 1.2
+    rail_h = 1.5
+    rail_l = box_solid(root, x0, x0 + rail_w, y0, y1, z0, z0 + rail_h)
+    rail_r = box_solid(root, x1 - rail_w, x1, y0, y1, z0, z0 + rail_h)
+    bodies['Bottom'] = combine_join(root, bodies['Bottom'], [rail_l, rail_r])
+
+    # two 6mm-wide strap slots through the floor, at 1/3 and 2/3 along the
+    # battery's length
+    strap_w = 6.0
+    for frac in (1.0 / 3.0, 2.0 / 3.0):
+        yc = y0 + frac * (y1 - y0)
+        slot = box_solid(root, x0 + rail_w, x1 - rail_w, yc - strap_w / 2.0, yc + strap_w / 2.0,
+                          p['bottom_z'] - 0.5, z0 + 0.5)
+        bodies['Bottom'] = combine_cut(root, bodies['Bottom'], [slot])
+    return bodies
+
+
+def add_gps_frame(root, bodies, p):
+    gps = p['bay']['gps_patch']
+    cx = (gps['x'][0] + gps['x'][1]) / 2.0
+    cy = (gps['y'][0] + gps['y'][1]) / 2.0
+    opening = p['bay']['gps_opening']
+    wall = p['bay']['gps_frame_wall']
+    ceiling = p['top_ceiling_underside_z']
+    frame_depth = gps['z'][1] - gps['z'][0]
+
+    outer = opening + 2 * wall
+    clip = clip_box_x_to_cavity(p, cx - outer / 2.0, cx + outer / 2.0, cy - outer / 2.0, cy + outer / 2.0,
+                                 ceiling - frame_depth, ceiling)
+    if clip is None:
+        return bodies  # doesn't fit at this location for this variant -- skip (see README)
+    ox0, ox1 = clip
+    outer_box = box_solid(root, ox0, ox1, cy - outer / 2.0, cy + outer / 2.0,
+                           ceiling - frame_depth, ceiling)
+    inner_box = box_solid(root, cx - opening / 2.0, cx + opening / 2.0, cy - opening / 2.0, cy + opening / 2.0,
+                           ceiling - frame_depth - 0.5, ceiling + 0.5)
+    frame = combine_cut(root, outer_box, [inner_box])
+    bodies['Top'] = combine_join(root, bodies['Top'], [frame])
+    return bodies
+
+
+def add_stack_frame(root, bodies, p):
+    stack = p['bay']['stack']
+    x0, x1 = stack['x']
+    y0, y1 = stack['y']
+    pad_dia = p['bay']['stack_pad_dia']
+    pad_h = p['bay']['stack_pad_h']
+    clear = p['bay']['stack_frame_clear']
+    z0 = p['bottom_z'] + 2.0  # floor of the bay cavity
+
+    # corner pads always get built, individually clamped to the safe
+    # cavity envelope so they never puncture the shell even where the
+    # nominal footprint (sized for a flat mid-height cross section) doesn't
+    # fully fit -- see safe_half_width's docstring.
+    inset = pad_dia
+    pad_centers = [(x0 + inset, y0 + inset), (x1 - inset, y0 + inset),
+                   (x0 + inset, y1 - inset), (x1 - inset, y1 - inset)]
+    for cx, cy in pad_centers:
+        lim = safe_half_width(p, cy, z0)
+        cx_safe = max(-lim, min(lim, cx))
+        pad = cylinder_solid(root, cx_safe, cy, pad_dia / 2.0, z0, z0 + pad_h)
+        bodies['Bottom'] = combine_join(root, bodies['Bottom'], [pad])
+
+    clip = clip_box_x_to_cavity(p, x0 - clear - 1.2, x1 + clear + 1.2, y0 - clear - 1.2, y1 + clear + 1.2,
+                                 z0, z0 + pad_h)
+    if clip is None:
+        return bodies  # friction frame wall doesn't fit here -- pads alone stand in (see README)
+    fx0, fx1 = clip
+    outer = box_solid(root, fx0, fx1, y0 - clear - 1.2, y1 + clear + 1.2, z0, z0 + pad_h)
+    inner = box_solid(root, x0 - clear, x1 + clear, y0 - clear, y1 + clear, z0 - 0.5, z0 + pad_h + 0.5)
+    frame = combine_cut(root, outer, [inner])
+    bodies['Bottom'] = combine_join(root, bodies['Bottom'], [frame])
+    return bodies
+
+
+def add_l76k_wired_frame(root, bodies, p):
+    if p.get('l76k_mode', 'wired') != 'wired':
+        return bodies
+    fr = p['bay']['l76k_wired']
+    x0, x1 = fr['x']
+    y0, y1 = fr['y']
+    z0 = p['bottom_z'] + 2.0
+    wall = 1.2
+    clip = clip_box_x_to_cavity(p, x0 - wall, x1 + wall, y0 - wall, y1 + wall, z0, z0 + 1.0)
+    if clip is None:
+        return bodies  # doesn't fit at this location for this variant -- skip (see README)
+    fx0, fx1 = clip
+    x0, x1 = max(x0, fx0), min(x1, fx1)
+    outer = box_solid(root, fx0, fx1, y0 - wall, y1 + wall, z0, z0 + 1.0)
+    inner = box_solid(root, x0, x1, y0, y1, z0 - 0.5, z0 + 1.5)
+    frame = combine_cut(root, outer, [inner])
+    bodies['Bottom'] = combine_join(root, bodies['Bottom'], [frame])
+    return bodies
+
+
+def add_wire_channel(root, bodies, p):
+    wc = p['bay']['wire_channel']
+    stack = p['bay']['stack']
+    x_mid = (wc['x'][0] + wc['x'][1]) / 2.0
+    stack_y_top = stack['y'][1]
+    channel = box_solid(root, x_mid - wc['width'] / 2.0, x_mid + wc['width'] / 2.0,
+                         stack_y_top, wc['y'][1], p['bottom_z'] + 1.0, p['bottom_z'] + 3.0)
+    bodies['Bottom'] = combine_cut(root, bodies['Bottom'], [channel])
+    return bodies
+
+
+def add_fpc_keepout_marker(root, p):
+    """Construction-only reference body marking the LoRa FPC antenna
+    keep-out strip -- NOT joined/cut into any printed body, and not
+    included in build()'s returned bodies dict (so it is excluded from
+    exports and from the strict body-name check in verify())."""
+    ko = p['bay']['fpc_keepout']
+    y0 = p['spine_a'][1] - p['outer_radius'] + p['wall']
+    body = box_solid(root, ko['x'][0], ko['x'][1], y0, y0 + 0.5, ko['z'][0], ko['z'][1])
+    body.name = 'FPC Keepout (reference only)'
+    return body
+
+
+def add_comms_bay(root, bodies, p):
+    bodies = add_battery_bay(root, bodies, p)
+    bodies = add_gps_frame(root, bodies, p)
+    bodies = add_stack_frame(root, bodies, p)
+    bodies = add_l76k_wired_frame(root, bodies, p)
+    bodies = add_wire_channel(root, bodies, p)
+    add_fpc_keepout_marker(root, p)
+    return bodies
+
+
+def _bbox_extents(occ):
+    bb = occ.boundingBox
+    dx = (bb.maxPoint.x - bb.minPoint.x) / MM
+    dy = (bb.maxPoint.y - bb.minPoint.y) / MM
+    dz = (bb.maxPoint.z - bb.minPoint.z) / MM
+    center = ((bb.minPoint.x + bb.maxPoint.x) / 2.0 / MM,
+              (bb.minPoint.y + bb.maxPoint.y) / 2.0 / MM,
+              (bb.minPoint.z + bb.maxPoint.z) / 2.0 / MM)
+    return dx, dy, dz, center
+
+
+def insert_board_best_effort(root, doc, target_center_mm, pcb_flat_axis='auto'):
+    """Insert `doc` at the identity transform, inspect its native bounding
+    box, and rigidly move it so its SMALLEST-extent local axis (assumed to
+    be the PCB thickness/component-height direction) points along world Z,
+    centered at target_center_mm.
+
+    SIMPLIFICATION / KNOWN LIMITATION (see README): this heuristic gets the
+    board roughly flat and roughly positioned without hand-inspecting each
+    board file's native authoring axes, but it does not attempt to resolve
+    in-plane (about-Z) rotation, silkscreen orientation, or which face is
+    'up' -- these boards are reference geometry for interference/clearance
+    checking, not for accurate connector-facing renders, and a human pass
+    in Fusion should confirm/nudge final orientation before it's load-bearing.
+    """
+    occ = root.occurrences.addByInsert(doc.dataFile, adsk.core.Matrix3D.create(), True)
+    dx, dy, dz, center = _bbox_extents(occ)
+    extents = {'x': dx, 'y': dy, 'z': dz}
+    thin_axis = min(extents, key=extents.get)
+
+    axis_vec = {'x': (1.0, 0.0, 0.0), 'y': (0.0, 1.0, 0.0), 'z': (0.0, 0.0, 1.0)}
+    remaining = [a for a in ('x', 'y', 'z') if a != thin_axis]
+    to_z = axis_vec[thin_axis]
+    to_x = axis_vec[remaining[0]]
+    to_y = axis_vec[remaining[1]]
+
+    mat = adsk.core.Matrix3D.create()
+    ok = mat.setToAlignCoordinateSystems(
+        P(*center), adsk.core.Vector3D.create(*to_x), adsk.core.Vector3D.create(*to_y),
+        adsk.core.Vector3D.create(*to_z),
+        P(*target_center_mm), adsk.core.Vector3D.create(1, 0, 0),
+        adsk.core.Vector3D.create(0, 1, 0), adsk.core.Vector3D.create(0, 0, 1))
+    assert ok
+    occ.transform = mat
+    return occ
+
+
+def insert_comms_boards(app, root, p):
+    docs = p['board_docs']
+    xiao_doc = get_open_doc(app, docs['xiao'])
+    wio_doc = get_open_doc(app, docs['wio'])
+    l76k_doc = get_open_doc(app, docs['l76k'])
+    occs = {}
+    stack = p['bay']['stack']
+    stack_cx = (stack['x'][0] + stack['x'][1]) / 2.0
+    stack_cy = (stack['y'][0] + stack['y'][1]) / 2.0
+    z_floor = p['bottom_z'] + 2.0 + p['bay']['stack_pad_h']
+
+    if wio_doc is not None:
+        occs['wio'] = insert_board_best_effort(root, wio_doc, (stack_cx, stack_cy, z_floor + 1.1))
+    if xiao_doc is not None:
+        occs['xiao'] = insert_board_best_effort(root, xiao_doc, (stack_cx, stack_cy, z_floor + 6.1 + 0.6))
+    if l76k_doc is not None:
+        if p.get('l76k_mode', 'wired') == 'wired':
+            fr = p['bay']['l76k_wired']
+            lcx = (fr['x'][0] + fr['x'][1]) / 2.0
+            lcy = (fr['y'][0] + fr['y'][1]) / 2.0
+            occs['l76k'] = insert_board_best_effort(root, l76k_doc, (lcx, lcy, p['bottom_z'] + 2.0 + 1.0))
+        else:
+            occs['l76k'] = insert_board_best_effort(root, l76k_doc, (stack_cx, stack_cy, z_floor + 6.1 + 12.0))
+    return occs
+
+
+# ---------------------------------------------------------------------------
 # build() / verify() / run()
 # ---------------------------------------------------------------------------
 def build(app, params):
@@ -1086,7 +1334,10 @@ def build(app, params):
     bodies = add_flare_logo(root, bodies, params)
     bodies = add_wordmark_logo(root, bodies, params)
 
+    bodies = add_comms_bay(root, bodies, params)
+
     insert_display_pcba(app, root, params)
+    insert_comms_boards(app, root, params)
 
     return bodies
 
@@ -1241,7 +1492,11 @@ def verify_m2(bodies_dict, p):
 
 def verify(design, params):
     root = design.rootComponent
-    bodies = [b for b in root.bRepBodies]
+    all_bodies = [b for b in root.bRepBodies]
+    # printed/exported bodies only -- excludes reference-only construction
+    # markers (e.g. the FPC antenna keep-out strip), which are intentionally
+    # not part of build()'s returned bodies dict either.
+    bodies = [b for b in all_bodies if 'reference only' not in b.name]
     names = sorted(b.name for b in bodies)
     case_bodies = [b for b in bodies if b.name in ('Bottom', 'Top')]
 
