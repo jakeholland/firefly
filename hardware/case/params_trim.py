@@ -57,6 +57,14 @@ _HOLE_OFFSET_FROM_TIP = _BASE['lug']['hole_xy'][1] - _BASE['lug']['y_tip']  # +5
 lug['hole_xy'] = (_BASE['lug']['hole_xy'][0], lug['y_tip'] + _HOLE_OFFSET_FROM_TIP)
 PARAMS['lug'] = lug
 
+# --- lug relief box in the Top lip/anchor rings: same offsets from the wall
+#     as the current variant (0.5mm and 4.0mm inside the wall) ---
+_box = dict(PARAMS['lug_relief_box'])
+_old_off_lo = _BASE['lug_relief_box']['y'][0] - _OLD_WALL_Y   # 0.5
+_old_off_hi = _BASE['lug_relief_box']['y'][1] - _OLD_WALL_Y   # 4.0
+_box['y'] = (_NEW_WALL_Y + _old_off_lo, _NEW_WALL_Y + _old_off_hi)
+PARAMS['lug_relief_box'] = _box
+
 # --- comms bay: cavity 52mm wide = battery(30) + stack(17.8) + 3x1.4mm gaps ---
 GAP = 1.4
 half_w = (PARAMS['outer_radius'] - PARAMS['wall'])  # 26.0

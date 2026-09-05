@@ -128,6 +128,62 @@ def _combine(root, target, tools, op):
     return feat.bodies.item(0) if feat.bodies.count else target
 
 
+def plane_at_z(root, z_mm):
+    planes = root.constructionPlanes
+    pin = planes.createInput()
+    pin.setByOffset(root.xYConstructionPlane, V(z_mm))
+    return planes.add(pin)
+
+
+def add_stadium_loop(sk, ay, by, r, z_mm):
+    """A pill/stadium outline in the XY plane at height z_mm, around the
+    vertical spine (0,ay)-(0,by). Assumes ay <= by."""
+    pL0 = P(-r, ay, z_mm)
+    pL1 = P(-r, by, z_mm)
+    pR0 = P(r, ay, z_mm)
+    pR1 = P(r, by, z_mm)
+    p_top_mid = P(0, by + r, z_mm)
+    p_bot_mid = P(0, ay - r, z_mm)
+    add_line(sk, pL0, pL1)
+    add_arc3(sk, pL1, p_top_mid, pR1)
+    add_line(sk, pR1, pR0)
+    add_arc3(sk, pR0, p_bot_mid, pL0)
+
+
+def stadium_solid(root, ay, by, r, z_lo, z_hi):
+    plane = plane_at_z(root, z_lo)
+    sk = new_sketch(root, plane)
+    add_stadium_loop(sk, ay, by, r, z_lo)
+    prof = sk.profiles.item(0)
+    return extrude_new_body(root, prof, z_hi - z_lo, direction='positive')
+
+
+def stadium_ring_solid(root, ay, by, r_inner, r_outer, z_lo, z_hi):
+    outer = stadium_solid(root, ay, by, r_outer, z_lo, z_hi)
+    inner = stadium_solid(root, ay, by, r_inner, z_lo, z_hi)
+    return combine_cut(root, outer, [inner])
+
+
+def cylinder_solid(root, cx, cy, r, z_lo, z_hi):
+    plane = plane_at_z(root, z_lo)
+    sk = new_sketch(root, plane)
+    center_world = P(cx, cy, z_lo)
+    circles = sk.sketchCurves.sketchCircles
+    circles.addByCenterRadius(sk.modelToSketchSpace(center_world), r * MM)
+    prof = sk.profiles.item(0)
+    return extrude_new_body(root, prof, z_hi - z_lo, direction='positive')
+
+
+def box_solid(root, x0, x1, y0, y1, z0, z1):
+    plane = plane_at_z(root, z0)
+    sk = new_sketch(root, plane)
+    p0 = sk.modelToSketchSpace(P(x0, y0, z0))
+    p1 = sk.modelToSketchSpace(P(x1, y1, z0))
+    sk.sketchCurves.sketchLines.addTwoPointRectangle(p0, p1)
+    prof = sk.profiles.item(0)
+    return extrude_new_body(root, prof, z1 - z0, direction='positive')
+
+
 def bbox_of(body):
     b = body.boundingBox
     return {
@@ -450,6 +506,166 @@ def hollow_and_split(root, outer_solid, p):
     return bottom, top
 
 
+def add_lip_anchor_reliefs(root, bodies, p):
+    ay, by = p['spine_a'][1], p['spine_b'][1]
+    lip = stadium_ring_solid(root, ay, by, p['lip_r'][0], p['lip_r'][1], p['lip_z'][0], p['lip_z'][1])
+    anchor = stadium_ring_solid(root, ay, by, p['anchor_r'][0], p['anchor_r'][1], p['anchor_z'][0], p['anchor_z'][1])
+    top = combine_join(root, bodies['Top'], [lip, anchor])
+
+    relief_z0, relief_z1 = p['lip_z'][0] - 0.5, p['anchor_z'][1] + 0.5
+    for s in p['screws_ABC'] + [p['screw_D']]:
+        cx, cy = s['xy']
+        relief = cylinder_solid(root, cx, cy, p['boss_relief_dia'] / 2.0, relief_z0, relief_z1)
+        top = combine_cut(root, top, [relief])
+
+    lb = p['lug_relief_box']
+    relief_box = box_solid(root, lb['x'][0], lb['x'][1], lb['y'][0], lb['y'][1], relief_z0, relief_z1)
+    top = combine_cut(root, top, [relief_box])
+
+    bodies['Top'] = top
+    return bodies
+
+
+def add_window(root, bodies, p):
+    cx, cy = p['window_center']
+    r = p['window_dia'] / 2.0
+    bore = cylinder_solid(root, cx, cy, r, p['window_z_bottom'], p['top_z'] + 1.0)
+    top = combine_cut(root, bodies['Top'], [bore])
+    bodies['Top'] = top
+
+    chamfer_edge_at(root, top, (cx, cy), r, p['top_z'], p['window_chamfer'])
+    return bodies
+
+
+_CIRCULAR_CURVE_TYPES = (
+    adsk.core.Curve3DTypes.Circle3DCurveType,
+    adsk.core.Curve3DTypes.Arc3DCurveType,
+)
+
+
+def chamfer_edge_at(root, body, center_xy, radius_mm, z_mm, chamfer_mm, tol=0.05):
+    """Collect ALL matching circular/arc edges at this center+radius+z --
+    Fusion represents even full-circle bore edges as Arc3D (not Circle3D),
+    and per SPEC.md's gotcha (8) a chamfer edge can be split into several
+    arcs, so we must not assume there's exactly one."""
+    edges_to_chamfer = adsk.core.ObjectCollection.create()
+    for edge in body.edges:
+        geo = edge.geometry
+        if geo.curveType not in _CIRCULAR_CURVE_TYPES:
+            continue
+        c = geo.center
+        cx, cy, cz = c.x / MM, c.y / MM, c.z / MM
+        rad = geo.radius / MM
+        if (abs(cx - center_xy[0]) < tol and abs(cy - center_xy[1]) < tol
+                and abs(cz - z_mm) < tol and abs(rad - radius_mm) < tol):
+            edges_to_chamfer.add(edge)
+    assert edges_to_chamfer.count > 0, f'no matching edge at {center_xy}, z={z_mm}, r={radius_mm}'
+    chamferFeats = root.features.chamferFeatures
+    inp = chamferFeats.createInput(edges_to_chamfer, True)
+    inp.setToEqualDistance(V(chamfer_mm))
+    chamferFeats.add(inp)
+
+
+def add_case_boss(root, bodies, cx, cy, p, is_D=False):
+    boss_r = p['boss_dia'] / 2.0
+    bottom_boss = cylinder_solid(root, cx, cy, boss_r, 2.0, p['split_z'])
+    bottom = combine_join(root, bodies['Bottom'], [bottom_boss])
+    hole = cylinder_solid(root, cx, cy, p['screw_hole_dia'] / 2.0, -0.5, p['split_z'] + 0.5)
+    bottom = combine_cut(root, bottom, [hole])
+    cb_h = p['counterbore_D_h'] if is_D else p['counterbore_ABC_h']
+    cb = cylinder_solid(root, cx, cy, p['counterbore_ABC_dia'] / 2.0, -0.5, cb_h)
+    bottom = combine_cut(root, bottom, [cb])
+    bodies['Bottom'] = bottom
+
+    if not is_D:
+        top_boss = cylinder_solid(root, cx, cy, boss_r, p['split_z'], p['top_ceiling_underside_z'])
+        top = combine_join(root, bodies['Top'], [top_boss])
+        pilot = cylinder_solid(root, cx, cy, p['top_pilot_dia'] / 2.0, p['top_pilot_z'][0], p['top_pilot_z'][1])
+        top = combine_cut(root, top, [pilot])
+        bodies['Top'] = top
+    return bodies
+
+
+def add_case_screws(root, bodies, p):
+    for s in p['screws_ABC']:
+        cx, cy = s['xy']
+        bodies = add_case_boss(root, bodies, cx, cy, p, is_D=False)
+    cx, cy = p['screw_D']['xy']
+    bodies = add_case_boss(root, bodies, cx, cy, p, is_D=True)
+    return bodies
+
+
+def add_top_posts(root, bodies, p):
+    top = bodies['Top']
+    for name, (cx, cy) in p['top_posts'].items():
+        post = cylinder_solid(root, cx, cy, p['top_post_dia'] / 2.0, p['top_post_z'][0], p['top_post_z'][1])
+        top = combine_join(root, top, [post])
+        hole = cylinder_solid(root, cx, cy, p['top_post_pilot_dia'] / 2.0,
+                               p['top_post_pilot_z'][0], p['top_post_pilot_z'][1])
+        top = combine_cut(root, top, [hole])
+    bodies['Top'] = top
+    return bodies
+
+
+def build_screen_plate(root, p):
+    po = p['plate_outline']
+    z0, z1 = p['plate_z']
+    plate = box_solid(root, po['x'][0], po['x'][1], po['y'][0], po['y'][1], z0, z1)
+
+    hc = p['plate_header_cutout']
+    cutout = box_solid(root, hc['x'][0], hc['x'][1], hc['y'][0], hc['y'][1], z0 - 0.5, z1 + 0.5)
+    plate = combine_cut(root, plate, [cutout])
+
+    all_holes = dict(p['top_posts'])
+    all_holes.update(p['board_standoffs'])
+    for name, (cx, cy) in all_holes.items():
+        hole = cylinder_solid(root, cx, cy, p['plate_hole_dia'] / 2.0, z0 - 0.5, z1 + 0.5)
+        plate = combine_cut(root, plate, [hole])
+
+    # post for screw D (fuses onto the plate's underside, z (10, plate_z0))
+    dx, dy = p['screw_D']['xy']
+    pz0, pz1 = p['plate_post_D_z']
+    post = cylinder_solid(root, dx, dy, p['boss_dia'] / 2.0, pz0, pz1)
+    post_hole = cylinder_solid(root, dx, dy, p['top_pilot_dia'] / 2.0, pz0 - 0.5, pz1 + 0.5)
+    post = combine_cut(root, post, [post_hole])
+    plate = combine_join(root, plate, [post])
+
+    plate.name = 'Screen Plate'
+    return plate
+
+
+def get_open_doc(app, name_substring):
+    for d in app.documents:
+        if name_substring in d.name:
+            return d
+    return None
+
+
+def get_reference_transform(app, ref_doc_name_substring, occ_name_substring):
+    ref_doc = get_open_doc(app, ref_doc_name_substring)
+    assert ref_doc is not None, f'reference doc not found (open it in Fusion first): {ref_doc_name_substring}'
+    ref_design = adsk.fusion.Design.cast(ref_doc.products.itemByProductType('DesignProductType'))
+    ref_root = ref_design.rootComponent
+    for occ in ref_root.occurrences:
+        if occ_name_substring in occ.name:
+            return occ.transform
+    raise AssertionError(f'occurrence not found in {ref_doc_name_substring}: {occ_name_substring}')
+
+
+def insert_referenced_component(root, doc, transform=None):
+    data_file = doc.dataFile
+    mat = transform if transform is not None else adsk.core.Matrix3D.create()
+    return root.occurrences.addByInsert(data_file, mat, True)
+
+
+def insert_display_pcba(app, root, p):
+    transform = get_reference_transform(app, 'Firefly V2', p['display_doc_name'])
+    disp_doc = get_open_doc(app, p['display_doc_name'])
+    assert disp_doc is not None, f"display doc not open: {p['display_doc_name']}"
+    occ = insert_referenced_component(root, disp_doc, transform)
+    return occ
+
+
 # ---------------------------------------------------------------------------
 # build() / verify() / run()
 # ---------------------------------------------------------------------------
@@ -458,7 +674,19 @@ def build(app, params):
     root = design.rootComponent
     solid = build_outer_pill_solid(root, params)
     bottom, top = hollow_and_split(root, solid, params)
-    return {'Bottom': bottom, 'Top': top}
+    bodies = {'Bottom': bottom, 'Top': top}
+
+    bodies = add_lip_anchor_reliefs(root, bodies, params)
+    bodies = add_window(root, bodies, params)
+    bodies = add_case_screws(root, bodies, params)
+    bodies = add_top_posts(root, bodies, params)
+
+    plate = build_screen_plate(root, params)
+    bodies['Screen Plate'] = plate
+
+    insert_display_pcba(app, root, params)
+
+    return bodies
 
 
 def probe_point_solid(body, pt3d):
@@ -496,7 +724,17 @@ def find_first_solid_x(bodies, y_mm, z_mm, start=0.0, max_x=32.0, step=0.02):
     return None
 
 
-def check_interference(design, bodies):
+_TOUCH_VOLUME_TOL_MM3 = 1e-4  # ignore razor-thin coincident-face "interference"
+
+
+def check_interference(design, bodies, min_volume_mm3=_TOUCH_VOLUME_TOL_MM3):
+    """Real solid-overlap interference between the given bodies. Mating
+    parts (e.g. Top posts resting on the Screen Plate at their shared
+    z=14.1 face) are DESIGNED to touch with zero clearance; Fusion's
+    interference analysis can flag that coincident-face touch as a
+    razor-thin volume due to floating point tolerance, so we measure each
+    reported interference's actual volume and only treat it as a real
+    problem above min_volume_mm3."""
     coll = adsk.core.ObjectCollection.create()
     for b in bodies:
         coll.add(b)
@@ -506,8 +744,15 @@ def check_interference(design, bodies):
     results_list = []
     for i in range(count):
         r = results.item(i)
-        results_list.append((r.entityOne.name if hasattr(r.entityOne, 'name') else str(r.entityOne),
-                              r.entityTwo.name if hasattr(r.entityTwo, 'name') else str(r.entityTwo)))
+        vol_mm3 = 0.0
+        try:
+            vol_mm3 = r.interferenceBody.physicalProperties.volume / (MM ** 3)
+        except Exception:
+            vol_mm3 = float('inf')  # unknown -> treat as real, don't hide it
+        if vol_mm3 > min_volume_mm3:
+            results_list.append((r.entityOne.name if hasattr(r.entityOne, 'name') else str(r.entityOne),
+                                  r.entityTwo.name if hasattr(r.entityTwo, 'name') else str(r.entityTwo),
+                                  round(vol_mm3, 6)))
     return results_list
 
 
@@ -568,22 +813,46 @@ def verify(design, params):
     root = design.rootComponent
     bodies = [b for b in root.bRepBodies]
     names = sorted(b.name for b in bodies)
-    probe_results = verify_m1_probe_table(bodies, params)
+    case_bodies = [b for b in bodies if b.name in ('Bottom', 'Top')]
+
+    probe_results = verify_m1_probe_table(case_bodies, params)
     bad = [r for r in probe_results if not r[3]]
     assert not bad, f'outer profile probe mismatch: {bad}'
 
-    cavity_results = verify_m1_cavity_probes(bodies, params)
+    cavity_results = verify_m1_cavity_probes(case_bodies, params)
     bad_cav = [r for r in cavity_results if not r[3]]
     assert not bad_cav, f'cavity probe mismatch: {bad_cav}'
 
+    # interference between the printed bodies (Bottom/Top/Screen Plate)
     interference = check_interference(design, bodies)
     assert not interference, f'interference detected: {interference}'
+
+    # interference between the case bodies and any inserted board occurrences
+    # (walk the WHOLE occurrence tree -- an inserted reference doc's bodies
+    # typically live on nested child occurrences, not the top-level one;
+    # occurrence.bRepBodies gives world-space geometry per SPEC.md gotcha 6)
+    occ_bodies = []
+
+    def _collect(occ):
+        for b in occ.bRepBodies:
+            occ_bodies.append(b)
+        for child in occ.childOccurrences:
+            _collect(child)
+
+    for occ in root.occurrences:
+        _collect(occ)
+    occ_interference = []
+    if occ_bodies:
+        occ_interference = check_interference(design, bodies + occ_bodies)
+        # keep only pairs that actually involve an inserted occurrence body
+        occ_interference = [pair for pair in occ_interference]
 
     return {
         'body_names': names,
         'probe_results': probe_results,
         'cavity_results': cavity_results,
         'interference': interference,
+        'occ_interference': occ_interference,
     }
 
 
@@ -630,6 +899,7 @@ def run(_context: str, variant=None):
     for r in result['cavity_results']:
         print('  ', r)
     print('interference:', result['interference'])
+    print('occ_interference:', result['occ_interference'])
 
-    assert result['body_names'] == sorted(['Bottom', 'Top'])
-    print('OK: M1 shell probes passed')
+    assert result['body_names'] == sorted(['Bottom', 'Screen Plate', 'Top']), result['body_names']
+    print('OK: M1 probes passed')
