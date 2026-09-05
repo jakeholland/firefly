@@ -85,13 +85,20 @@
  * when it is not already a roster member.
  *
  * `ff_shell_pair()` is the one entry point that may grow the roster, and
- * it is not reachable from the radio — with ONE deliberate, sim-only,
- * compile-gated exception: `ff_shell_dev_trust_all` (S16 AC6, slice b2)
- * makes an inbound NodeInfo auto-pair its sender. That affordance does
- * not exist in a device build at all (`#if FF_TARGET_SIM` — the branch,
- * the field and the setter are compiled out, not defaulted off), so on
- * device the sentence above holds without exception. See the "Sim-only
- * dev affordances" section at the foot of this header.
+ * it is not reachable from the radio — with ONE deliberate, compile-gated
+ * exception, `ff_shell_dev_trust_all` (S16 AC6, slice b2), which makes an
+ * inbound NodeInfo auto-pair its sender. That affordance is compiled in
+ * for a SIM build unconditionally (`ffsim --dev-trust-all` turns it on
+ * at runtime), and for a DEVICE build only when
+ * `CONFIG_FF_DEV_TRUST_CHANNEL=y` — a bench/field stopgap
+ * (docs/hardware/comms-brain.md) for auto-pairing every node heard on
+ * the private crew channel while the real pairing UI (S12) is still
+ * unbuilt, off by default and never meant to ship on. With neither gate
+ * set (every device build until an operator opts in) the branch, the
+ * field and the setter are compiled out entirely, not merely defaulted
+ * off, so the sentence above holds without exception. See
+ * `ff_shell_dev_trust_all`'s own doc comment near the foot of this
+ * header for exactly what each gate does and does not turn on.
  *
  * ---------------------------------------------------------------------
  * POSITION AGES — never "now"
@@ -721,12 +728,24 @@ mc_events_t ff_shell_events(ff_shell_t *sh);
  * point that may grow the paired roster**.
  *
  * Not reachable from the radio: nothing in `ff_shell.c`'s seven inbound
- * callbacks calls this — except, in a SIM BUILD ONLY, the
- * `ff_shell_dev_trust_all` auto-pair branch, which is compiled out of
- * device builds entirely (see the dev-affordances section below). On
- * device that makes the roster-trust policy a property of the code
- * rather than a comment. The pairing UI (S12) and `--dev-trust-all`
- * are its callers.
+ * callbacks calls this directly — except the `ff_shell_dev_trust_all`
+ * auto-pair branch, which is routed through this SAME function body
+ * (`shell_pair` internally) so there remains exactly one audited growth
+ * path. That branch is compiled in for a sim build unconditionally
+ * (`ffsim --dev-trust-all`), and for a device build ONLY when
+ * `CONFIG_FF_DEV_TRUST_CHANNEL=y` — a bench/field stopgap
+ * (docs/hardware/comms-brain.md) for the Sep 18-20 field test while the
+ * real pairing UI (S12) is unbuilt: it auto-pairs every node heard on
+ * the private crew channel. The Kconfig option defaults to n and, like
+ * the sim-only gate, is compiled out (not merely defaulted off) when
+ * unset. With both gates off — every device build shipped without an
+ * operator explicitly opting in — the roster only grows via this
+ * function called from a user action, and the sentence above holds
+ * without exception. The pairing UI (S12), `--dev-trust-all`, and
+ * `CONFIG_FF_DEV_TRUST_CHANNEL` (via `ff_shell_dev_trust_all`, called
+ * from `app_main.c` at boot) are its callers. See
+ * `ff_shell_dev_trust_all`'s own doc comment for exactly what each gate
+ * turns on.
  *
  * Returns true if `node_id` now has the requested paired state; false if
  * `sh` is NULL, or the roster is full (`FF_CREW_MAX`, no eviction in v1)
@@ -1272,42 +1291,73 @@ bool ff_shell_keep_awake(ff_app_state_t const *view, bool touch_cal_running);
 bool ff_shell_take_wake(ff_shell_t *shell);
 
 /* ---------------------------------------------------------------------
- * Sim-only dev affordances (S16 AC6, slice b2) — COMPILED OUT on device
+ * ff_shell_dev_trust_all — compiled in for a sim build unconditionally,
+ * and for a device build only when CONFIG_FF_DEV_TRUST_CHANNEL=y
+ * ---------------------------------------------------------------------
+ * Unlike the rest of the "Sim-only dev affordances" section below, this
+ * one function has a SECOND, narrower gate: the esp32s3 target's
+ * `app_main.c` calls it at boot, guarded by
+ * `CONFIG_FF_DEV_TRUST_CHANNEL` (firmware/targets/esp32s3/main/
+ * Kconfig.projbuild, default n), to auto-pair every node heard on the
+ * mesh link as a bench/field stopgap (docs/hardware/comms-brain.md)
+ * while the real pairing UI (S12) is unbuilt — the Meshtastic channel is
+ * private, so channel membership is the crew (S04's pairing v1 rule).
+ * With BOTH `FF_TARGET_SIM` undefined and `CONFIG_FF_DEV_TRUST_CHANNEL`
+ * unset (every device build until an operator opts in) there is no
+ * declaration, no field, and no branch — a caller fails to COMPILE,
+ * which is the same "compiled out, not defaulted off" demand the rest
+ * of this section documents: a runtime flag would ship the auto-pair
+ * branch into device firmware, one stray default change from being
+ * live. `targets/sim/main.c` additionally carries an #error guard so a
+ * sim build that loses `FF_TARGET_SIM` fails loudly instead of silently
+ * parsing a flag that does nothing.
+ * ------------------------------------------------------------------- */
+#if defined(FF_TARGET_SIM) || defined(CONFIG_FF_DEV_TRUST_CHANNEL)
+
+/**
+ * ff_shell_dev_trust_all — auto-pair every inbound NodeInfo's sender
+ * into the roster, treating the link itself as the trust boundary.
+ * Off by default in every build; turned on by `ffsim --dev-trust-all`
+ * (sim) or by `app_main.c` at boot when `CONFIG_FF_DEV_TRUST_CHANNEL=y`
+ * (device bench/field stopgap). Logs a line naming itself at startup
+ * either way — the device line is exactly
+ * `"firefly: DEV_TRUST_CHANNEL on — auto-pairing every heard node"`.
+ *
+ * NodeInfo ONLY, never a bare Position (pairing on the most untrusted
+ * packet on the mesh is this spec's headline defect, and neither gate
+ * gets to reintroduce it), routed through `shell_pair` — the SAME
+ * audited body `ff_shell_pair` calls — so there remains exactly one
+ * place a roster slot is created, regardless of which caller reached it.
+ *
+ * A SIM build ALSO gets two more effects that a device build under
+ * `CONFIG_FF_DEV_TRUST_CHANNEL` deliberately does NOT: the self filter
+ * is suspended, and the host's clock is offered to the wall latch (see
+ * `ff_shell_dev_wall_observe` below). Both exist solely because the
+ * dockerized dev meshtasticd is a SINGLE node that is also what
+ * `on_my_info` reports as our own id (firmware/tools/dev/crew_sim.py's
+ * verified-constraints note: the harness's one node plays every role) —
+ * a real device build talks to a real, distinct comms-brain node id, so
+ * there is no such quirk to work around, and `CONFIG_FF_DEV_TRUST_CHANNEL`
+ * only ever reaches the NodeInfo auto-pair effect. Recorded as an S16
+ * AC6 amendment (the sim's extra effects go beyond the AC's wording, and
+ * are deliberately not carried to the device gate).
+ */
+void ff_shell_dev_trust_all(ff_shell_t *sh, bool enabled);
+
+#endif /* FF_TARGET_SIM || CONFIG_FF_DEV_TRUST_CHANNEL */
+
+/* ---------------------------------------------------------------------
+ * Sim-only dev affordances (S16 AC6, slice b2) — COMPILED OUT on device,
+ * NO Kconfig exception (unlike ff_shell_dev_trust_all above)
  * ---------------------------------------------------------------------
  * These exist only when FF_TARGET_SIM is defined (firmware/CMakeLists.txt
  * defines it iff FF_TARGET=sim). In a device build there is no
- * declaration, no field, and no branch — a device-target caller fails to
- * COMPILE, which is the spec's "compiled out, not defaulted off" demand:
- * a runtime flag would ship the auto-pair branch into device firmware,
- * one stray default change from being live. `targets/sim/main.c`
- * additionally carries an #error guard so a sim build that loses the
- * define fails loudly instead of silently parsing a flag that does
- * nothing.
+ * declaration and no field — a device-target caller fails to COMPILE.
+ * `targets/sim/main.c` additionally carries an #error guard so a sim
+ * build that loses the define fails loudly instead of silently parsing
+ * a flag that does nothing.
  * ------------------------------------------------------------------- */
 #if defined(FF_TARGET_SIM)
-
-/**
- * ff_shell_dev_trust_all — `ffsim --dev-trust-all`: treat the dev bench
- * as trusted. Off by default; the sim target enables it only for that
- * flag, and logs a line naming it at startup.
- *
- * Two effects, both needed because the dockerized dev meshtasticd is a
- * SINGLE node that is also what `on_my_info` reports as our own id (see
- * firmware/tools/dev/crew_sim.py's verified-constraints note — the
- * harness's one node plays every role):
- *
- *  1. An inbound **NodeInfo** auto-pairs its sender into the roster —
- *     NodeInfo ONLY, never a bare Position (pairing on the most
- *     untrusted packet on the mesh is this spec's headline defect, and
- *     the dev affordance does not get to reintroduce it).
- *  2. The self filter is suspended: traffic from our own node id is
- *     processed as inbound, so the daemon's node can play a crew member.
- *
- * Recorded as an S16 AC6 amendment (effect 2 goes beyond the AC's
- * wording): without it the flag is useless against the only dev harness
- * this repo has, since every packet the harness can produce is "ours".
- */
-void ff_shell_dev_trust_all(ff_shell_t *sh, bool enabled);
 
 /**
  * ff_shell_dev_wall_observe — offer the HOST's clock to the wall latch,

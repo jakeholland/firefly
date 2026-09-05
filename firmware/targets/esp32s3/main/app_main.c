@@ -1055,6 +1055,26 @@ void app_main(void)
         return;
     }
 
+#if CONFIG_FF_DEV_TRUST_CHANNEL
+    /* DEV/FIELD STOPGAP (docs/hardware/comms-brain.md): the pairing UI
+     * (S12) is unbuilt, and the crew channel is private (own PSK), so
+     * for the Sep 18-20 field test this mirrors ffsim's
+     * --dev-trust-all NodeInfo-only auto-pair (S16 AC6) on device,
+     * through the exact same field/branch in ff_shell.c — see
+     * ff_shell_dev_trust_all's doc comment (ff_shell.h) for precisely
+     * what this does (auto-pair on NodeInfo) and does NOT do on device
+     * (no self-filter suspension, no host-clock wall observation —
+     * those stay FF_TARGET_SIM-only, needed only by the sim's
+     * single-node dev harness). Called after ff_shell_init so the shell
+     * exists; must run before the first inbound NodeInfo can arrive,
+     * which want_config's replay makes possible the moment mc_connect
+     * completes inside ff_shell_init above — there is no window where a
+     * NodeInfo could beat this call. Off by default
+     * (CONFIG_FF_DEV_TRUST_CHANNEL=n); never meant to ship on. */
+    ff_shell_dev_trust_all(&s_shell, true);
+    ESP_LOGI(TAG, "firefly: DEV_TRUST_CHANNEL on — auto-pairing every heard node");
+#endif
+
     /* S25 slice c — push one battery reading immediately after init, so
      * the very first face flushed to glass already has a real (or
      * honestly-unknown, if ff_power_batt_init failed above) reading
