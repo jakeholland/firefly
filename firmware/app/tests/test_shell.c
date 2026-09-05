@@ -125,6 +125,13 @@ typedef struct {
     uint8_t buf[512];
     size_t len;
     bool present;
+    int set_calls; /* S12/S04 — a proxy-killer for "boot re-pair must not
+                     * re-write the exact list it just loaded" (see
+                     * shell_sync_paired_settings's own doc comment,
+                     * ff_shell.c): counts every real `set`, so a test can
+                     * assert NO new write happened rather than merely
+                     * that the bytes still read back the same (which a
+                     * redundant write would also satisfy). */
 } mem_store_t;
 
 static int mem_get(void *io, char const *key, void *buf, size_t n)
@@ -144,6 +151,7 @@ static int mem_set(void *io, char const *key, void const *buf, size_t n)
     memcpy(st->buf, buf, n);
     st->len = n;
     st->present = true;
+    st->set_calls++;
     return (int)n;
 }
 
@@ -7833,6 +7841,152 @@ static void S27_reconnect_handshake_burst_mutes_again(void)
     TEST_ASSERT_EQUAL_INT(2, H.sound.count);
 }
 
+/* ---------------------------------------------------------------------
+ * S12/S04 — the persisted crew roster (format v10): boot re-pair
+ * (order + cap, no eviction), unpair removing from the persisted list,
+ * and the heard-list's honest short-id fallback for a never-named node.
+ * ------------------------------------------------------------------- */
+
+/** Seed the store with a persisted paired list, mirroring
+ *  harness_seed_settings's own "write it now, the NEXT
+ *  harness_init(.., true) loads it" convention. */
+static void harness_seed_paired(uint32_t const *ids, uint8_t count)
+{
+    memset(&H.store_mem, 0, sizeof(H.store_mem));
+    H.store = mem_store(&H.store_mem);
+
+    ff_settings_t s;
+    ff_settings_load(&s, NULL); /* exact defaults */
+    s.paired_count = count;
+    for (uint8_t i = 0; i < count && i < FF_CREW_MAX; i++) {
+        s.paired_ids[i] = ids[i];
+    }
+    ff_settings_save(&s, &H.store);
+}
+
+static void S12_boot_repair_replays_persisted_list_in_order_no_extra_write(void)
+{
+    uint32_t const ids[3] = {0x1001u, 0x1002u, 0x1003u};
+    harness_seed_paired(ids, 3);
+    int const writes_after_seed = H.store_mem.set_calls;
+
+    harness_init(1000u, true);
+
+    ff_crew_t const *crew = ff_shell_crew(&H.shell);
+    TEST_ASSERT_EQUAL_UINT8(3, crew->count);
+    for (uint8_t i = 0; i < 3; i++) {
+        TEST_ASSERT_EQUAL_UINT32(ids[i], crew->members[i].node_id);
+        TEST_ASSERT_TRUE(crew->members[i].paired);
+    }
+
+    /* Boot re-pair must not re-write NVS with the exact list it just
+     * loaded (shell_sync_paired_settings's own doc comment) — the
+     * mutation this proves against: drop the boot re-pair's suppression
+     * (or the equality check it relies on) and this fails even though
+     * the roster contents above still look correct. */
+    TEST_ASSERT_EQUAL_INT(writes_after_seed, H.store_mem.set_calls);
+}
+
+static void S12_boot_repair_caps_at_FF_CREW_MAX_no_eviction(void)
+{
+    uint32_t ids[FF_CREW_MAX];
+    for (uint8_t i = 0; i < FF_CREW_MAX; i++) {
+        ids[i] = 0x2000u + i;
+    }
+    harness_seed_paired(ids, FF_CREW_MAX);
+
+    harness_init(1000u, true);
+
+    ff_crew_t const *crew = ff_shell_crew(&H.shell);
+    TEST_ASSERT_EQUAL_UINT8(FF_CREW_MAX, crew->count);
+    for (uint8_t i = 0; i < FF_CREW_MAX; i++) {
+        TEST_ASSERT_EQUAL_UINT32(ids[i], crew->members[i].node_id);
+        TEST_ASSERT_TRUE(crew->members[i].paired);
+    }
+}
+
+/** A corrupt-but-well-formed blob (right magic/version/size) claiming a
+ *  `paired_count` past FF_CREW_MAX must never make boot re-pair read
+ *  past `paired_ids`' own FF_CREW_MAX-sized array — the mutation this
+ *  proves against: drop ff_settings_load's clamp (ff_settings.c) and
+ *  this either crashes/UBSan-flags under a fresh build or reads garbage
+ *  ids past the array, either way failing the count assertion below. */
+static void S12_boot_repair_clamps_a_corrupt_paired_count(void)
+{
+    memset(&H.store_mem, 0, sizeof(H.store_mem));
+    H.store = mem_store(&H.store_mem);
+
+    ff_settings_t s;
+    ff_settings_load(&s, NULL);
+    for (uint8_t i = 0; i < FF_CREW_MAX; i++) {
+        s.paired_ids[i] = 0x3000u + i;
+    }
+    s.paired_count = 200u; /* corrupt: claims far more than FF_CREW_MAX (8) */
+    ff_settings_save(&s, &H.store);
+
+    harness_init(1000u, true);
+
+    ff_crew_t const *crew = ff_shell_crew(&H.shell);
+    TEST_ASSERT_EQUAL_UINT8(FF_CREW_MAX, crew->count);
+    for (uint8_t i = 0; i < FF_CREW_MAX; i++) {
+        TEST_ASSERT_EQUAL_UINT32(0x3000u + i, crew->members[i].node_id);
+    }
+}
+
+static void S12_unpair_removes_from_the_persisted_list(void)
+{
+    /* Explicit empty store, not just "whatever the previous test's H
+     * left behind" — harness_init(.., true) PRESERVES H.store_mem across
+     * the reset (the seeding convention harness_seed_settings/_paired
+     * rely on), so a test that wants to start from nothing must say so. */
+    memset(&H.store_mem, 0, sizeof(H.store_mem));
+    harness_init(1000u, true);
+
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, 0x4001u, true));
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, 0x4002u, true));
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, 0x4003u, true));
+
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, 0x4002u, false)); /* unpair the middle one */
+
+    ff_settings_t reloaded;
+    ff_settings_load(&reloaded, &H.store);
+    TEST_ASSERT_EQUAL_UINT8(2, reloaded.paired_count);
+    TEST_ASSERT_EQUAL_UINT32(0x4001u, reloaded.paired_ids[0]);
+    TEST_ASSERT_EQUAL_UINT32(0x4003u, reloaded.paired_ids[1]);
+
+    /* Survives a reboot too, not just a re-read of the same live struct. */
+    harness_init(2000u, true);
+    ff_crew_t const *crew = ff_shell_crew(&H.shell);
+    TEST_ASSERT_EQUAL_UINT8(2, crew->count);
+    TEST_ASSERT_EQUAL_UINT32(0x4001u, crew->members[0].node_id);
+    TEST_ASSERT_EQUAL_UINT32(0x4003u, crew->members[1].node_id);
+}
+
+/** A heard node that has never sent a NodeInfo (or sent one with no
+ *  name field) gets an honest short-id render — never a fabricated
+ *  name. The mutation this proves against: any change that starts
+ *  inventing a placeholder name (e.g. "UNKNOWN", or the node id itself
+ *  formatted as decimal) instead of leaving `has_name` false. */
+static void S12_heard_node_with_no_name_shows_an_honest_short_id(void)
+{
+    harness_init(1000u, false);
+
+    inject_rx_meta(STRANGER, MC_RX_PATH_DIRECT, true, -55); /* heard, never NodeInfo'd */
+    ff_shell_tick(&H.shell, H.clk.t);
+
+    ff_app_crew_page_t const *cw = &ff_shell_view(&H.shell)->settings.crew;
+
+    bool found = false;
+    for (uint8_t i = 0; i < cw->heard_count; i++) {
+        if (cw->heard[i].node_id != STRANGER) continue;
+        found = true;
+        TEST_ASSERT_FALSE(cw->heard[i].has_name);
+        TEST_ASSERT_EQUAL_STRING("", cw->heard[i].name);
+        TEST_ASSERT_EQUAL_STRING("aaaa", cw->heard[i].short_id); /* STRANGER == 0x0000AAAA */
+    }
+    TEST_ASSERT_TRUE_MESSAGE(found, "STRANGER should appear in the heard list");
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -7920,6 +8074,12 @@ int main(void)
     RUN_TEST(S16_AC6_dev_trust_all_auto_pairs_on_nodeinfo_only);
     RUN_TEST(S16_AC6_dev_trust_all_lets_the_single_dev_node_play_a_crew_member);
     RUN_TEST(S16_b2_my_info_purges_our_own_id_from_heard);
+
+    RUN_TEST(S12_boot_repair_replays_persisted_list_in_order_no_extra_write);
+    RUN_TEST(S12_boot_repair_caps_at_FF_CREW_MAX_no_eviction);
+    RUN_TEST(S12_boot_repair_clamps_a_corrupt_paired_count);
+    RUN_TEST(S12_unpair_removes_from_the_persisted_list);
+    RUN_TEST(S12_heard_node_with_no_name_shows_an_honest_short_id);
 
     RUN_TEST(S16_AC7_canned_reply_uses_newest_feed_item_or_broadcasts);
     RUN_TEST(S16_c3_send_text_sends_the_shell_owned_draft);

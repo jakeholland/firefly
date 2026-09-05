@@ -13,7 +13,7 @@
  * below only catches size mismatches; two different layouts can share the
  * same sizeof() (e.g. a reordering, or swapping a bool+uint8_t pair) and
  * would otherwise pass validation with silently corrupted semantics. */
-#define FF_SETTINGS_FORMAT_VERSION ((uint16_t)9u)
+#define FF_SETTINGS_FORMAT_VERSION ((uint16_t)10u)
 /* v2: compass_cal_blob (opaque uint8_t[32]) -> compass_cal (ff_geo_cal_t).
  * Same sizeof() risk the header comment warns about (a reordering/retype
  * can share sizeof() with the old layout) doesn't apply numerically here
@@ -118,6 +118,28 @@
  * one migration function per version hop, composed, never a shortcut
  * special case. A blob OLDER than v6 (<=v5) still rejects outright, same
  * boundary as before. */
+/* v10: + paired_ids[FF_CREW_MAX] + paired_count (S12/S04 — the persisted
+ * crew roster; see ff_settings.h's doc comment on the two fields). SAME
+ * chained forward-migration policy v7/v8/v9 established, one hop further:
+ * fielded pucks now hold real v6..v9 blobs (v9 shipped with the same NVS
+ * store), and the honest-data ruling applies to all four. Both new fields
+ * are appended at the very end of ff_settings_t again, so a v9 blob's
+ * payload is a strict prefix of a v10 one, and (chained through v9, v8,
+ * v7) so are v8's, v7's and v6's.
+ *
+ * ff_settings_load reads a v9 blob via the newly-frozen `ff_settings_v9_t`
+ * shadow and fills the two new fields in at their honest default — an
+ * EMPTY list (`paired_count = 0`, `paired_ids` zeroed): a pre-v10 puck
+ * genuinely never persisted a crew (pairing lived only in the in-RAM
+ * `ff_crew_t` roster, lost every reboot), so "nobody yet" is the correct
+ * reading of "this puck never had the field," not a guess — there is no
+ * honest non-empty list to migrate a v9 blob's absent field into (core
+ * settings code has no `ff_crew_t` to read from even if it wanted to).
+ * A v6/v7/v8 blob CHAINS through the same v6->v7->v8->v9 steps already
+ * established, then this new v9->v10 step — one migration function per
+ * version hop, composed, never a shortcut special case. A blob OLDER than
+ * v6 (<=v5) still rejects outright, same boundary as before. */
+
 
 typedef struct {
     uint32_t magic;
@@ -245,6 +267,46 @@ typedef struct {
     bool screen_flip;
 } ff_settings_v8_t;
 
+/**
+ * ff_settings_v9_t — a FROZEN, byte-for-byte mirror of ff_settings_t
+ * exactly as it existed at format version 9 (every field ff_settings_v8_t
+ * has, plus v9's own trailing `sounds_on`/`ui_ticks`; every field
+ * ff_settings_t has TODAY except v10's trailing `paired_ids`/
+ * `paired_count`, S12/S04's persisted crew roster). Same rationale and
+ * same rule as ff_settings_v6_t/_v7_t/_v8_t above: its own independent,
+ * hand-written type, so a later reorder of ff_settings_t's live fields
+ * can't silently change what a v9-blob migration reads. It doubles as the
+ * INTERMEDIATE shape a v6/v7/v8 blob is migrated through on its way to
+ * v10 (ff_settings_migrate_v8 now targets this shadow instead of the live
+ * struct — see that function's own doc comment) — the one v9 shape, never
+ * duplicated. If a future version bump needs its own migration, it adds
+ * its own frozen vN shadow the same way; this one never changes again. */
+typedef struct {
+    bool imperial;
+    uint8_t share_mode;
+    bool haptics;
+    bool night_glow;
+    uint16_t water_min;
+    uint16_t quiet_from_min;
+    uint16_t quiet_to_min;
+    int16_t utc_offset_min;
+    bool utc_offset_set;
+    bool colorblind;
+    uint8_t brightness_pct;
+    char my_name[FF_SETTINGS_NAME_LEN];
+    ff_geo_cal_t compass_cal;
+    bool cal_valid;
+    float touch_ax;
+    float touch_bx;
+    float touch_ay;
+    float touch_by;
+    bool touch_calibrated;
+    bool clock_24h;
+    bool screen_flip;
+    bool sounds_on;
+    bool ui_ticks;
+} ff_settings_v9_t;
+
 static void ff_settings_apply_defaults(ff_settings_t *s)
 {
     memset(s, 0, sizeof(*s));
@@ -303,6 +365,10 @@ static void ff_settings_apply_defaults(ff_settings_t *s)
 
     /* ui_ticks: left zeroed -> false (opt-in; a tick on every press is
      * easy to find annoying — see ff_settings.h's doc comment). */
+
+    /* paired_ids / paired_count: left zeroed -> the empty list. A fresh
+     * puck has paired no one yet — see ff_settings.h's doc comment on the
+     * two fields. */
 }
 
 /* v6 -> v7 forward migration step (see the v8 comment above
@@ -381,40 +447,82 @@ static void ff_settings_migrate_v7(ff_settings_v8_t *v8, ff_settings_v7_t const 
 }
 
 /* v8 -> v9 forward migration step (S27 sounds — see the v9 comment above
- * `ff_settings_header_t`). Same explicit field-by-field convention as
- * every migration step above, same reason. Used for a real v8 blob, AND
- * for a v6 or v7 blob already lifted to v8 shape by the two steps above
- * — one v8->v9 step, run once either way. sounds_on/ui_ticks, which v8
- * never had, are set to THEIR OWN honest defaults — sounds_on=true,
- * ui_ticks=false — see ff_settings.h's doc comments on both fields and
- * this file's v9 comment above `ff_settings_header_t` for why the two
- * differ (unlike every earlier migrated-in field, which always landed at
- * false/off). */
-static void ff_settings_migrate_v8(ff_settings_t *s, ff_settings_v8_t const *v8)
+ * `ff_settings_header_t`, and the v10 comment for why this now targets the
+ * v9 SHADOW rather than the live struct directly — it's the second-to-last
+ * hop of a chained v6 -> v7 -> v8 -> v9 -> v10 upgrade). Same explicit
+ * field-by-field convention as every migration step above, same reason.
+ * Used for a real v8 blob, AND for a v6 or v7 blob already lifted to v8
+ * shape by the two steps above — one v8->v9 step, run once either way.
+ * sounds_on/ui_ticks, which v8 never had, are set to THEIR OWN honest
+ * defaults — sounds_on=true, ui_ticks=false — see ff_settings.h's doc
+ * comments on both fields and this file's v9 comment above
+ * `ff_settings_header_t` for why the two differ (unlike every earlier
+ * migrated-in field, which always landed at false/off). paired_ids/
+ * paired_count do not exist at this shape yet (they're
+ * ff_settings_migrate_v9's fields to fill, one step later). */
+static void ff_settings_migrate_v8(ff_settings_v9_t *v9, ff_settings_v8_t const *v8)
 {
-    s->imperial = v8->imperial;
-    s->share_mode = v8->share_mode;
-    s->haptics = v8->haptics;
-    s->night_glow = v8->night_glow;
-    s->water_min = v8->water_min;
-    s->quiet_from_min = v8->quiet_from_min;
-    s->quiet_to_min = v8->quiet_to_min;
-    s->utc_offset_min = v8->utc_offset_min;
-    s->utc_offset_set = v8->utc_offset_set;
-    s->colorblind = v8->colorblind;
-    s->brightness_pct = v8->brightness_pct;
-    memcpy(s->my_name, v8->my_name, sizeof(s->my_name));
-    s->compass_cal = v8->compass_cal;
-    s->cal_valid = v8->cal_valid;
-    s->touch_ax = v8->touch_ax;
-    s->touch_bx = v8->touch_bx;
-    s->touch_ay = v8->touch_ay;
-    s->touch_by = v8->touch_by;
-    s->touch_calibrated = v8->touch_calibrated;
-    s->clock_24h = v8->clock_24h;
-    s->screen_flip = v8->screen_flip;
-    s->sounds_on = true;  /* v8 never had this field: opt-out feature, see ff_settings.h */
-    s->ui_ticks = false; /* v8 never had this field: opt-in feature, honest "never had it" default */
+    v9->imperial = v8->imperial;
+    v9->share_mode = v8->share_mode;
+    v9->haptics = v8->haptics;
+    v9->night_glow = v8->night_glow;
+    v9->water_min = v8->water_min;
+    v9->quiet_from_min = v8->quiet_from_min;
+    v9->quiet_to_min = v8->quiet_to_min;
+    v9->utc_offset_min = v8->utc_offset_min;
+    v9->utc_offset_set = v8->utc_offset_set;
+    v9->colorblind = v8->colorblind;
+    v9->brightness_pct = v8->brightness_pct;
+    memcpy(v9->my_name, v8->my_name, sizeof(v9->my_name));
+    v9->compass_cal = v8->compass_cal;
+    v9->cal_valid = v8->cal_valid;
+    v9->touch_ax = v8->touch_ax;
+    v9->touch_bx = v8->touch_bx;
+    v9->touch_ay = v8->touch_ay;
+    v9->touch_by = v8->touch_by;
+    v9->touch_calibrated = v8->touch_calibrated;
+    v9->clock_24h = v8->clock_24h;
+    v9->screen_flip = v8->screen_flip;
+    v9->sounds_on = true;  /* v8 never had this field: opt-out feature, see ff_settings.h */
+    v9->ui_ticks = false; /* v8 never had this field: opt-in feature, honest "never had it" default */
+}
+
+/* v9 -> v10 forward migration step (S12/S04 — the persisted crew roster;
+ * see the v10 comment above `ff_settings_header_t`). Same explicit
+ * field-by-field convention as every migration step above, same reason.
+ * Used for a real v9 blob, AND for a v6/v7/v8 blob already lifted to v9
+ * shape by the three steps above — one v9->v10 step, run once either way.
+ * `paired_ids`/`paired_count`, which v9 never had, land at the EMPTY
+ * list: a pre-v10 puck genuinely never persisted a crew (pairing lived
+ * only in RAM), so "nobody yet" is the honest reading, not a guess — see
+ * ff_settings.h's doc comment on the two fields. */
+static void ff_settings_migrate_v9(ff_settings_t *s, ff_settings_v9_t const *v9)
+{
+    s->imperial = v9->imperial;
+    s->share_mode = v9->share_mode;
+    s->haptics = v9->haptics;
+    s->night_glow = v9->night_glow;
+    s->water_min = v9->water_min;
+    s->quiet_from_min = v9->quiet_from_min;
+    s->quiet_to_min = v9->quiet_to_min;
+    s->utc_offset_min = v9->utc_offset_min;
+    s->utc_offset_set = v9->utc_offset_set;
+    s->colorblind = v9->colorblind;
+    s->brightness_pct = v9->brightness_pct;
+    memcpy(s->my_name, v9->my_name, sizeof(s->my_name));
+    s->compass_cal = v9->compass_cal;
+    s->cal_valid = v9->cal_valid;
+    s->touch_ax = v9->touch_ax;
+    s->touch_bx = v9->touch_bx;
+    s->touch_ay = v9->touch_ay;
+    s->touch_by = v9->touch_by;
+    s->touch_calibrated = v9->touch_calibrated;
+    s->clock_24h = v9->clock_24h;
+    s->screen_flip = v9->screen_flip;
+    s->sounds_on = v9->sounds_on;
+    s->ui_ticks = v9->ui_ticks;
+    memset(s->paired_ids, 0, sizeof(s->paired_ids)); /* v9 never had a persisted crew: empty, not a guess */
+    s->paired_count = 0;
 }
 
 void ff_settings_load(ff_settings_t *s, ff_store_t const *st)
@@ -429,14 +537,15 @@ void ff_settings_load(ff_settings_t *s, ff_store_t const *st)
         return;
     }
 
-    /* Sized to the LARGEST blob this build can read (today, v8's). A v6 or
-     * v7 blob is smaller, so either fits the same buffer; `get` (ff_store_t's
-     * documented contract) returns the value's ACTUAL stored length, which
-     * can legitimately be shorter than the buffer's capacity — this is not
-     * "short read" in the corrupt-data sense, it's a real, older, still-
-     * valid record. See the three explicit per-version branches below; no
-     * length is accepted silently, each is checked against the exact size
-     * its claimed version is documented to be. */
+    /* Sized to the LARGEST blob this build can read (today, the live
+     * ff_settings_t's, since FF_SETTINGS_BLOB_LEN is defined off it). A v6,
+     * v7, v8 or v9 blob is smaller, so any of them fits the same buffer;
+     * `get` (ff_store_t's documented contract) returns the value's ACTUAL
+     * stored length, which can legitimately be shorter than the buffer's
+     * capacity — this is not "short read" in the corrupt-data sense, it's a
+     * real, older, still-valid record. See the explicit per-version branches
+     * below; no length is accepted silently, each is checked against the
+     * exact size its claimed version is documented to be. */
     uint8_t buf[FF_SETTINGS_BLOB_LEN];
     int n = st->get(st->io, FF_SETTINGS_STORE_KEY, buf, sizeof(buf));
     if (n < 0 || (size_t)n < sizeof(ff_settings_header_t)) {
@@ -453,7 +562,7 @@ void ff_settings_load(ff_settings_t *s, ff_store_t const *st)
     }
 
     /* Explicit per-version step table (AGENTS.md: "no silent 'accept any
-     * size'") — exactly four versions this build knows how to read, each
+     * size'") — exactly five versions this build knows how to read, each
      * gated on BOTH its own version number and its own exact documented
      * payload size. Anything else (an unknown/future version, a <=v5 blob,
      * or a version/size combination that doesn't match any row) falls
@@ -462,39 +571,69 @@ void ff_settings_load(ff_settings_t *s, ff_store_t const *st)
     if (hdr.version == FF_SETTINGS_FORMAT_VERSION && hdr.payload_size == (uint16_t)sizeof(ff_settings_t) &&
         got == sizeof(hdr) + sizeof(ff_settings_t)) {
         memcpy(s, buf + sizeof(hdr), sizeof(*s));
+        /* Defense in depth for `paired_count` specifically (S12/S04):
+         * every OTHER field here was already bounds-checked by the exact
+         * version+size gate above, but `paired_count` is a plain uint8_t
+         * inside an otherwise-valid blob and a corrupt/hostile value could
+         * still claim up to 255 against the FF_CREW_MAX-sized array behind
+         * it. Clamp rather than reject the whole blob — the paired array's
+         * OWN bound is the hard safety net regardless of what a claimed
+         * count says (see ff_settings.h's doc comment on the field); every
+         * other setting in an otherwise well-formed blob still deserves to
+         * load. */
+        if (s->paired_count > FF_CREW_MAX) {
+            s->paired_count = FF_CREW_MAX;
+        }
+        return;
+    }
+    if (hdr.version == 9u && hdr.payload_size == (uint16_t)sizeof(ff_settings_v9_t) &&
+        got == sizeof(hdr) + sizeof(ff_settings_v9_t)) {
+        ff_settings_v9_t v9;
+        memcpy(&v9, buf + sizeof(hdr), sizeof(v9));
+        ff_settings_migrate_v9(s, &v9);
         return;
     }
     if (hdr.version == 8u && hdr.payload_size == (uint16_t)sizeof(ff_settings_v8_t) &&
         got == sizeof(hdr) + sizeof(ff_settings_v8_t)) {
         ff_settings_v8_t v8;
         memcpy(&v8, buf + sizeof(hdr), sizeof(v8));
-        ff_settings_migrate_v8(s, &v8);
+        /* Chained: v8 -> v9 (shadow) -> v10 (live) — one migration step
+         * each, composed, not a v8->v10 special case (see the v10 comment
+         * above `ff_settings_header_t`). */
+        ff_settings_v9_t v9;
+        ff_settings_migrate_v8(&v9, &v8);
+        ff_settings_migrate_v9(s, &v9);
         return;
     }
     if (hdr.version == 7u && hdr.payload_size == (uint16_t)sizeof(ff_settings_v7_t) &&
         got == sizeof(hdr) + sizeof(ff_settings_v7_t)) {
         ff_settings_v7_t v7;
         memcpy(&v7, buf + sizeof(hdr), sizeof(v7));
-        /* Chained: v7 -> v8 (shadow) -> v9 (live) — one migration step
-         * each, composed, not a v7->v9 special case (see the v9 comment
-         * above `ff_settings_header_t`). */
+        /* Chained: v7 -> v8 (shadow) -> v9 (shadow) -> v10 (live) — one
+         * migration step each, composed, not a v7->v10 special case (see
+         * the v10 comment above `ff_settings_header_t`). */
         ff_settings_v8_t v8;
         ff_settings_migrate_v7(&v8, &v7);
-        ff_settings_migrate_v8(s, &v8);
+        ff_settings_v9_t v9;
+        ff_settings_migrate_v8(&v9, &v8);
+        ff_settings_migrate_v9(s, &v9);
         return;
     }
     if (hdr.version == 6u && hdr.payload_size == (uint16_t)sizeof(ff_settings_v6_t) &&
         got == sizeof(hdr) + sizeof(ff_settings_v6_t)) {
         ff_settings_v6_t v6;
         memcpy(&v6, buf + sizeof(hdr), sizeof(v6));
-        /* Chained: v6 -> v7 (shadow) -> v8 (shadow) -> v9 (live) — one
-         * migration step each, composed, not a v6->v9 special case (see
-         * the v9 comment above `ff_settings_header_t`). */
+        /* Chained: v6 -> v7 (shadow) -> v8 (shadow) -> v9 (shadow) -> v10
+         * (live) — one migration step each, composed, not a v6->v10
+         * special case (see the v10 comment above
+         * `ff_settings_header_t`). */
         ff_settings_v7_t v7;
         ff_settings_migrate_v6(&v7, &v6);
         ff_settings_v8_t v8;
         ff_settings_migrate_v7(&v8, &v7);
-        ff_settings_migrate_v8(s, &v8);
+        ff_settings_v9_t v9;
+        ff_settings_migrate_v8(&v9, &v8);
+        ff_settings_migrate_v9(s, &v9);
         return;
     }
 
