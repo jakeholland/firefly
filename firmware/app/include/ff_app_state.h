@@ -43,6 +43,7 @@
 #include <stdint.h>
 
 #include "ff_flare.h"   /* [api] S10 Amendment 2026-09-03 — ff_flare_wire_state_t, the real `flare.wire_state` field type */
+#include "ff_heard.h"   /* S12/S04 — FF_HEARD_MAX, the CREW page's heard-row cap */
 #include "ff_inbox.h"   /* S24 — ff_inbox_t, the inbox half of the `signals` field */
 #include "ff_notify.h"  /* S26(d) — ff_notify_kind_t, the real `banner` field's kind vocabulary */
 #include "ff_radar.h"   /* S06 — ff_radar_view_t, the real `radar` field type */
@@ -570,8 +571,110 @@ typedef struct {
 } ff_app_flare_t;
 
 /* -------------------------------------------------------------------
+ * CREW page (S12/S04 — "pairing v1 = channel membership + explicit crew
+ * list", docs/specs/S04-firefly-protocol.md; S22's "pairing screen ...
+ * unbuilt" note, finally built here). Reached from Settings (a new
+ * section/row; see scr_settings.c) — NOT a separate ff_app_face_t /
+ * ff_route_t modal (S21 already retired the settings-sub-page concept
+ * this would otherwise have been; see ff_shell.c's FF_INTENT_BACK case,
+ * "SETTINGS is deliberately NOT special-cased ... If a settings sub-page
+ * concept returns, rule (3) gets its own branch here first" — this is
+ * that return). Instead this is a SUB-VIEW of the Settings face, the
+ * exact same shape `ff_inbox_subview_t`/`ff_app_inbox_t` already
+ * establish for Signals: one `ff_settings_subview_t` naming which of two
+ * screens Settings currently shows, bundled into `ff_app_settings_t`
+ * below alongside the crew page's own projected rows.
+ * ------------------------------------------------------------------- */
+
+/** Which Settings sub-screen is showing. LIST is the zero value — the
+ * least-claiming resting state, this header's standing convention. */
+typedef enum {
+    FF_SETTINGS_SUB_LIST = 0,
+    FF_SETTINGS_SUB_CREW,
+} ff_settings_subview_t;
+
+/**
+ * One PAIRED-list row: a roster member, identity + honest presence
+ * (`ff_sigview_presence`, REUSED from S24 — never reimplemented, per the
+ * brief). `presence_age_ms` is meaningful only when `presence` is SEEN or
+ * LOST; LINKED (paired, never sighted) has no honest age, same convention
+ * `ff_inbox_conv_t.presence_age_ms` already uses.
+ */
+typedef struct {
+    uint32_t               node_id;
+    char                   name[FF_APP_NAME_LEN]; /* "" honestly unknown — never fabricated */
+    char                   initial;
+    uint8_t                color_idx;
+    ff_sigview_presence_t  presence;
+    uint32_t               presence_age_ms;
+} ff_app_crew_paired_row_t;
+
+/**
+ * One HEARD-list row: a node this puck has seen on the mesh but not
+ * (yet) paired. `name`/`has_name` come from the shell's heard-name cache
+ * (a NodeInfo short/long name, if one ever arrived) — never fabricated;
+ * `short_id` is the honest fallback the CREW screen renders when no name
+ * is known (the puck's own node-id-derived short form, e.g. "!8f502220"
+ * -> "2220" — whatever the mesh's own convention is, computed by the
+ * shell, never invented here).
+ *
+ * `age_ms` is the RAW last-heard age, deliberately NOT pre-formatted here
+ * — same "screens stay pure renderers" split `ff_inbox_conv_t.preview_
+ * age_ms`/`presence_age_ms` already use (core/include/ff_inbox.h): the
+ * CREW screen calls `ff_fmt_age` itself at build time, and
+ * `shell_render_key` (ff_shell.c) separately coarsens this SAME raw value
+ * to the bucket ff_fmt_age would render for the dirty-bit comparison — a
+ * pre-baked string here would defeat that coarsening (there would be no
+ * raw value left to bucket) and re-open exactly the "sub-bucket tick
+ * dirties the key" bug that rule exists to close.
+ */
+typedef struct {
+    uint32_t node_id;
+    bool     has_name;
+    char     name[FF_APP_NAME_LEN];
+    char     short_id[12]; /* e.g. "2220" — honest fallback, see doc comment above */
+    uint32_t age_ms;       /* raw; see doc comment above for why this is not pre-formatted */
+} ff_app_crew_heard_row_t;
+
+/**
+ * The whole CREW page — built by the shell only while `subview ==
+ * FF_SETTINGS_SUB_CREW` (zeroed otherwise, the `ff_app_rally_t`
+ * precedent). `FF_APP_CREW_HEARD_MAX` is a literal #define ALIAS of
+ * core's own `FF_HEARD_MAX` (not a separately-chosen literal that
+ * happens to match) — a future bump to `FF_HEARD_MAX` moves this cap
+ * automatically, with nothing to keep in sync by hand.
+ */
+#define FF_APP_CREW_HEARD_MAX FF_HEARD_MAX
+
+typedef struct {
+    uint8_t                  paired_count;
+    ff_app_crew_paired_row_t paired[FF_CREW_MAX];
+
+    uint8_t                  heard_count;
+    ff_app_crew_heard_row_t  heard[FF_APP_CREW_HEARD_MAX];
+
+    /* Empty/full-state gates (S12 AC — honest empty states, never a
+     * fabricated reason): `roster_full` drives the ADD-disabled "crew
+     * full (8)" state; `link_connected` (mirrors `ff_shell_link_t ==
+     * FF_SHELL_LINK_CONNECTED`) picks between the two "nobody heard yet"
+     * hint variants when `heard_count == 0` — the comms-brain-down hint
+     * only when the link genuinely isn't up, never as a generic filler. */
+    bool roster_full;
+    bool link_connected;
+} ff_app_crew_page_t;
+
+/* -------------------------------------------------------------------
  * settings (S11) — mirrors ff_settings_t's user-facing fields (omits
  * compass_cal/cal_valid: not renderable/fixturable display data).
+ *
+ * [api] S12/S04 amendment — `subview`/`crew` below are NOT part of that
+ * mirror (ff_settings_t has no such fields; the CREW page is app-layer
+ * projected state, same "not a straight core mirror" territory
+ * `ff_app_inbox_t` already occupies for its own `subview`/`inbox`). Kept
+ * on this struct rather than as siblings on `ff_app_state_t` because the
+ * CREW page IS a Settings sub-view, not a fifth swipe-axis-adjacent
+ * concern — see the CREW page's own doc comment above for the full
+ * routing rationale.
  * ------------------------------------------------------------------- */
 
 typedef struct {
@@ -643,6 +746,14 @@ typedef struct {
      * ff_settings_t.ui_ticks field-for-field. The Settings face renders
      * it as the UI TICKS row's ON|OFF toggle. */
     bool     ui_ticks;
+
+    /* [api] S12/S04 — the CREW sub-view; see this struct's own doc
+     * comment and the CREW page structs above. LIST (0) — the plain
+     * scrolling settings list — for every existing fixture/render, since
+     * this is a struct-append and the field defaults to 0 whenever a
+     * fixture/projection doesn't set it. */
+    ff_settings_subview_t subview;
+    ff_app_crew_page_t    crew;
 } ff_app_settings_t;
 /* S21 removed ff_app_settings_t.page / FF_SETTINGS_PAGE_COUNT (#105's
  * pagination): the Settings face is now one scrolling list, so there is no
@@ -1068,9 +1179,15 @@ typedef struct {
  * target) in place of the small flattened `ff_app_inbox_t` added ~1.2KB,
  * pushing past the old 8KB — bumped to 12KB, still generous headroom over
  * the ~8.2KB actual, and still a runaway-growth tripwire rather than a hard
- * hardware limit. */
-_Static_assert(sizeof(ff_app_state_t) <= 12 * 1024,
-               "ff_app_state_t exceeds its 12KB view-state budget (see this assert's comment)");
+ * hardware limit.
+ *
+ * S12/S04 (the CREW page — `ff_app_crew_page_t`, embedded in
+ * `ff_app_settings_t`) is another such real reason: FF_CREW_MAX (8) paired
+ * rows + FF_APP_CREW_HEARD_MAX (16) heard rows pushed the measured size to
+ * ~12.4KB, past the old 12KB — bumped to 14KB, again generous headroom over
+ * the actual, and still a tripwire rather than a hard limit. */
+_Static_assert(sizeof(ff_app_state_t) <= 14 * 1024,
+               "ff_app_state_t exceeds its 14KB view-state budget (see this assert's comment)");
 
 #ifdef __cplusplus
 }

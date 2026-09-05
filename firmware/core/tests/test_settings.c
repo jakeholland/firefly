@@ -91,6 +91,13 @@ static void ff_assert_defaults(ff_settings_t const *s)
      * see ff_settings.h's doc comment); ui_ticks defaults FALSE (opt-in). */
     TEST_ASSERT_TRUE(s->sounds_on);
     TEST_ASSERT_FALSE(s->ui_ticks);
+
+    /* S12/S04 (format v10): the persisted crew roster defaults to the
+     * EMPTY list — a fresh puck has paired no one yet. */
+    TEST_ASSERT_EQUAL_UINT8(0, s->paired_count);
+    for (size_t i = 0; i < FF_CREW_MAX; i++) {
+        TEST_ASSERT_EQUAL_UINT32(0, s->paired_ids[i]);
+    }
 }
 
 static void S11_AC1_load_with_empty_store_yields_exact_defaults(void)
@@ -1045,6 +1052,307 @@ static void S27_v8_blob_truncated_yields_defaults_not_a_migration(void)
     ff_assert_defaults(&s);
 }
 
+/* v9 -> v10 FORWARD MIGRATION (S12/S04 — the persisted crew roster;
+ * docs/specs/S04-firefly-protocol.md's "pairing v1 = channel membership +
+ * explicit crew list"). Same shape as the v7->v8 / v8->v9 tests above, one
+ * version hop later. A v9 blob (the format S27 sounds shipped, and the one
+ * every fielded puck flashed since holds) is NOT discarded — every v9
+ * value must survive, and the two fields v9 never had (paired_ids/
+ * paired_count) land at the EMPTY list — a v9 puck genuinely never
+ * persisted a crew, so "nobody yet" is the honest reading, not a guess. */
+static void S12_v9_blob_forward_migrates_preserving_every_value(void)
+{
+    mock_store_io_t m;
+    mock_store_reset(&m);
+    ff_store_t st = mock_store_vtable(&m);
+
+    ff_settings_t seed;
+    memset(&seed, 0, sizeof(seed));
+    ff_settings_save(&seed, &st);
+    TEST_ASSERT_TRUE(m.has_value);
+
+    /* Independently declared here (not shared with ff_settings.c's private
+     * ff_settings_v9_t) — same "two independent copies must agree"
+     * reasoning as the v6/v7/v8 mirrors above. */
+    typedef struct {
+        bool imperial;
+        uint8_t share_mode;
+        bool haptics;
+        bool night_glow;
+        uint16_t water_min;
+        uint16_t quiet_from_min;
+        uint16_t quiet_to_min;
+        int16_t utc_offset_min;
+        bool utc_offset_set;
+        bool colorblind;
+        uint8_t brightness_pct;
+        char my_name[FF_SETTINGS_NAME_LEN];
+        ff_geo_cal_t compass_cal;
+        bool cal_valid;
+        float touch_ax;
+        float touch_bx;
+        float touch_ay;
+        float touch_by;
+        bool touch_calibrated;
+        bool clock_24h;
+        bool screen_flip;
+        bool sounds_on;
+        bool ui_ticks;
+    } v9_mirror_t;
+
+    v9_mirror_t v9;
+    memset(&v9, 0, sizeof(v9));
+    v9.imperial = false;
+    v9.share_mode = FF_SHARE_GHOST;
+    v9.haptics = true;
+    v9.night_glow = false;
+    v9.water_min = 45;
+    v9.quiet_from_min = 10;
+    v9.quiet_to_min = 500;
+    v9.utc_offset_min = -300;
+    v9.utc_offset_set = true;
+    v9.colorblind = true;
+    v9.brightness_pct = 88;
+    strncpy(v9.my_name, "Dana", sizeof(v9.my_name) - 1);
+    v9.compass_cal.hard_offset = (ff_vec3_t){0.5f, 0.25f, -0.1f};
+    v9.compass_cal.soft_scale[0] = 1.0f;
+    v9.compass_cal.soft_scale[1] = 1.0f;
+    v9.compass_cal.soft_scale[2] = 1.0f;
+    v9.cal_valid = true;
+    v9.touch_calibrated = true;
+    v9.touch_ax = 1.1f;
+    v9.touch_bx = 2.2f;
+    v9.touch_ay = 0.9f;
+    v9.touch_by = -3.3f;
+    v9.clock_24h = true;
+    v9.screen_flip = true;
+    v9.sounds_on = false; /* a real, non-default value only v9+ could hold */
+    v9.ui_ticks = true;   /* a real, non-default value only v9+ could hold */
+
+    uint16_t const v9_version = 9;
+    memcpy(m.data + 4, &v9_version, sizeof(v9_version));
+    uint16_t const v9_payload_size = (uint16_t)sizeof(v9);
+    memcpy(m.data + 6, &v9_payload_size, sizeof(v9_payload_size));
+    memcpy(m.data + 8, &v9, sizeof(v9));
+    m.len = 8 + sizeof(v9);
+
+    ff_settings_t s;
+    memset(&s, 0xAA, sizeof(s));
+    ff_settings_load(&s, &st);
+
+    /* Every v9 value survives... */
+    TEST_ASSERT_FALSE(s.imperial);
+    TEST_ASSERT_EQUAL_UINT8(FF_SHARE_GHOST, s.share_mode);
+    TEST_ASSERT_TRUE(s.haptics);
+    TEST_ASSERT_FALSE(s.night_glow);
+    TEST_ASSERT_EQUAL_UINT16(45, s.water_min);
+    TEST_ASSERT_EQUAL_UINT16(10, s.quiet_from_min);
+    TEST_ASSERT_EQUAL_UINT16(500, s.quiet_to_min);
+    TEST_ASSERT_EQUAL_INT16(-300, s.utc_offset_min);
+    TEST_ASSERT_TRUE(s.utc_offset_set);
+    TEST_ASSERT_TRUE(s.colorblind);
+    TEST_ASSERT_EQUAL_UINT8(88, s.brightness_pct);
+    TEST_ASSERT_EQUAL_STRING("Dana", s.my_name);
+    TEST_ASSERT_TRUE(s.cal_valid);
+    TEST_ASSERT_EQUAL_MEMORY(&v9.compass_cal, &s.compass_cal, sizeof(ff_geo_cal_t));
+    TEST_ASSERT_TRUE(s.touch_calibrated);
+    TEST_ASSERT_EQUAL_FLOAT(1.1f, s.touch_ax);
+    TEST_ASSERT_EQUAL_FLOAT(2.2f, s.touch_bx);
+    TEST_ASSERT_EQUAL_FLOAT(0.9f, s.touch_ay);
+    TEST_ASSERT_EQUAL_FLOAT(-3.3f, s.touch_by);
+    TEST_ASSERT_TRUE(s.clock_24h);
+    TEST_ASSERT_TRUE(s.screen_flip);
+    TEST_ASSERT_FALSE(s.sounds_on);
+    TEST_ASSERT_TRUE(s.ui_ticks);
+
+    /* ...and the two fields v9 never had land at the EMPTY list — this is
+     * the mutation target: drop the zeroing in ff_settings_migrate_v9 (or
+     * skip it entirely) and this assertion fails. */
+    TEST_ASSERT_EQUAL_UINT8(0, s.paired_count);
+    for (size_t i = 0; i < FF_CREW_MAX; i++) {
+        TEST_ASSERT_EQUAL_UINT32(0, s.paired_ids[i]);
+    }
+}
+
+static void S12_v9_blob_wrong_payload_size_yields_defaults_not_a_migration(void)
+{
+    mock_store_io_t m;
+    mock_store_reset(&m);
+    ff_store_t st = mock_store_vtable(&m);
+
+    ff_settings_t seed;
+    memset(&seed, 0, sizeof(seed));
+    ff_settings_save(&seed, &st);
+    TEST_ASSERT_TRUE(m.has_value);
+
+    typedef struct {
+        bool imperial;
+        uint8_t share_mode;
+        bool haptics;
+        bool night_glow;
+        uint16_t water_min;
+        uint16_t quiet_from_min;
+        uint16_t quiet_to_min;
+        int16_t utc_offset_min;
+        bool utc_offset_set;
+        bool colorblind;
+        uint8_t brightness_pct;
+        char my_name[FF_SETTINGS_NAME_LEN];
+        ff_geo_cal_t compass_cal;
+        bool cal_valid;
+        float touch_ax;
+        float touch_bx;
+        float touch_ay;
+        float touch_by;
+        bool touch_calibrated;
+        bool clock_24h;
+        bool screen_flip;
+        bool sounds_on;
+        bool ui_ticks;
+    } v9_mirror_t;
+
+    v9_mirror_t v9;
+    memset(&v9, 0x55, sizeof(v9));
+
+    uint16_t const v9_version = 9;
+    memcpy(m.data + 4, &v9_version, sizeof(v9_version));
+    uint16_t const wrong_payload_size = (uint16_t)(sizeof(v9) - 1u);
+    memcpy(m.data + 6, &wrong_payload_size, sizeof(wrong_payload_size));
+    memcpy(m.data + 8, &v9, sizeof(v9));
+    m.len = 8 + sizeof(v9);
+
+    ff_settings_t s;
+    memset(&s, 0xAA, sizeof(s));
+    ff_settings_load(&s, &st);
+
+    ff_assert_defaults(&s);
+}
+
+static void S12_v9_blob_truncated_yields_defaults_not_a_migration(void)
+{
+    mock_store_io_t m;
+    mock_store_reset(&m);
+    ff_store_t st = mock_store_vtable(&m);
+
+    ff_settings_t seed;
+    memset(&seed, 0, sizeof(seed));
+    ff_settings_save(&seed, &st);
+    TEST_ASSERT_TRUE(m.has_value);
+
+    typedef struct {
+        bool imperial;
+        uint8_t share_mode;
+        bool haptics;
+        bool night_glow;
+        uint16_t water_min;
+        uint16_t quiet_from_min;
+        uint16_t quiet_to_min;
+        int16_t utc_offset_min;
+        bool utc_offset_set;
+        bool colorblind;
+        uint8_t brightness_pct;
+        char my_name[FF_SETTINGS_NAME_LEN];
+        ff_geo_cal_t compass_cal;
+        bool cal_valid;
+        float touch_ax;
+        float touch_bx;
+        float touch_ay;
+        float touch_by;
+        bool touch_calibrated;
+        bool clock_24h;
+        bool screen_flip;
+        bool sounds_on;
+        bool ui_ticks;
+    } v9_mirror_t;
+
+    v9_mirror_t v9;
+    memset(&v9, 0x66, sizeof(v9));
+
+    uint16_t const v9_version = 9;
+    memcpy(m.data + 4, &v9_version, sizeof(v9_version));
+    uint16_t const v9_payload_size = (uint16_t)sizeof(v9);
+    memcpy(m.data + 6, &v9_payload_size, sizeof(v9_payload_size));
+    memcpy(m.data + 8, &v9, sizeof(v9));
+    m.len = 8 + sizeof(v9) - 4; /* short by 4 bytes — a truncated/corrupt read */
+
+    ff_settings_t s;
+    memset(&s, 0xAA, sizeof(s));
+    ff_settings_load(&s, &st);
+
+    ff_assert_defaults(&s);
+}
+
+/* S12/S04 AC — the v10 round trip: paired_ids/paired_count survive a
+ * plain save/load through the CURRENT (v10) format, in order, with no
+ * truncation up to FF_CREW_MAX. This is the mutation target for "drop the
+ * boot re-pair" style regressions one layer down (ff_shell) — this test
+ * only proves the persistence layer itself carries the list faithfully. */
+static void S12_AC_v10_round_trip_preserves_paired_list(void)
+{
+    mock_store_io_t m;
+    mock_store_reset(&m);
+    ff_store_t st = mock_store_vtable(&m);
+
+    ff_settings_t out;
+    memset(&out, 0, sizeof(out));
+    out.paired_count = FF_CREW_MAX;
+    for (uint8_t i = 0; i < FF_CREW_MAX; i++) {
+        out.paired_ids[i] = 1000u + i;
+    }
+    ff_settings_save(&out, &st);
+
+    ff_settings_t in;
+    memset(&in, 0xAA, sizeof(in));
+    ff_settings_load(&in, &st);
+
+    TEST_ASSERT_EQUAL_UINT8(FF_CREW_MAX, in.paired_count);
+    for (uint8_t i = 0; i < FF_CREW_MAX; i++) {
+        TEST_ASSERT_EQUAL_UINT32(1000u + i, in.paired_ids[i]);
+    }
+}
+
+/**
+ * S12/S04 — a CORRUPT (but otherwise well-formed: right magic/version/
+ * exact payload size) v10 blob whose `paired_count` claims more than
+ * FF_CREW_MAX must be CLAMPED, not trusted verbatim — `paired_ids` is a
+ * fixed FF_CREW_MAX-element array, and any consumer that loops
+ * `for (i = 0; i < s->paired_count; i++) s->paired_ids[i]` (ff_shell.c's
+ * boot re-pair does exactly this) would read past the array's own bound
+ * on a corrupt count this size never trusted. Directly at the settings
+ * layer, not through the shell: a shell-level test alone does not kill
+ * this mutation, because `ff_crew_upsert` independently refuses a 9th+
+ * distinct id once the roster is full — the roster still ends up at the
+ * correct FF_CREW_MAX size even while the shell's snapshot copy is being
+ * read out of bounds one element at a time, so the visible SYMPTOM this
+ * test targets never surfaces one layer up (the AGENTS.md "proxy check"
+ * lesson, applied here rather than found the expensive way later).
+ */
+static void S12_load_clamps_a_corrupt_paired_count_past_FF_CREW_MAX(void)
+{
+    mock_store_io_t m;
+    mock_store_reset(&m);
+    ff_store_t st = mock_store_vtable(&m);
+
+    ff_settings_t out;
+    memset(&out, 0, sizeof(out));
+    for (uint8_t i = 0; i < FF_CREW_MAX; i++) {
+        out.paired_ids[i] = 5000u + i;
+    }
+    out.paired_count = 200u; /* corrupt: claims far more than the array holds */
+    ff_settings_save(&out, &st);
+
+    ff_settings_t in;
+    memset(&in, 0xAA, sizeof(in));
+    ff_settings_load(&in, &st);
+
+    /* The mutation target: drop ff_settings_load's clamp and this fails
+     * (in.paired_count reads back as the corrupt 200, not 8). */
+    TEST_ASSERT_EQUAL_UINT8(FF_CREW_MAX, in.paired_count);
+    for (uint8_t i = 0; i < FF_CREW_MAX; i++) {
+        TEST_ASSERT_EQUAL_UINT32(5000u + i, in.paired_ids[i]);
+    }
+}
+
 /* ---------------------------------------------------------------------
  * AC2 — round-trip save/load equality, including calibration.
  * ------------------------------------------------------------------- */
@@ -1327,6 +1635,11 @@ int main(void)
     RUN_TEST(S27_v8_blob_forward_migrates_preserving_every_value);
     RUN_TEST(S27_v8_blob_wrong_payload_size_yields_defaults_not_a_migration);
     RUN_TEST(S27_v8_blob_truncated_yields_defaults_not_a_migration);
+    RUN_TEST(S12_v9_blob_forward_migrates_preserving_every_value);
+    RUN_TEST(S12_v9_blob_wrong_payload_size_yields_defaults_not_a_migration);
+    RUN_TEST(S12_v9_blob_truncated_yields_defaults_not_a_migration);
+    RUN_TEST(S12_AC_v10_round_trip_preserves_paired_list);
+    RUN_TEST(S12_load_clamps_a_corrupt_paired_count_past_FF_CREW_MAX);
 
     RUN_TEST(S11_AC2_round_trip_save_load_is_exact_including_calibration);
     RUN_TEST(S11_AC2_round_trip_preserves_exact_defaults);

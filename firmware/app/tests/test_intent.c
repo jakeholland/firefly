@@ -2380,10 +2380,19 @@ static void S16_AC8_setting_set_is_rejected_while_a_takeover_is_visible(void)
     ev.on_private(ev.user, DANA, MC_ADDR_BROADCAST, FF_PORTNUM, buf, (size_t)n);
     TEST_ASSERT_TRUE(ff_shell_flare(&h.shell)->takeover_active);
 
+    /* S12/S04 [api]: `ff_shell_pair` above now legitimately persists the
+     * paired list on a REAL pair (shell_sync_paired_settings) — captured
+     * here, after setup, rather than asserting an absolute 0 below, so
+     * this test keeps proving its own actual claim ("a REJECTED
+     * setting-set writes nothing NEW"), not a stale "nothing has ever
+     * been written this test" assumption the new pairing-persistence
+     * seam legitimately breaks. */
+    int const writes_before = h.store_mem.set_calls;
+
     bool const before = ff_shell_settings(&h.shell)->imperial;
     setting_send(&h.shell, FF_SETTING_IMPERIAL, before ? 0 : 1, NULL);
     TEST_ASSERT_EQUAL(before, ff_shell_settings(&h.shell)->imperial); /* rejected: routing rule 4 */
-    TEST_ASSERT_EQUAL_INT(0, h.store_mem.set_calls);
+    TEST_ASSERT_EQUAL_INT(writes_before, h.store_mem.set_calls);
 
     ff_shell_close(&h.shell);
 }
