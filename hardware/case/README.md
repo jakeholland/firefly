@@ -48,8 +48,13 @@ building it.
 | `params_trim.py` | 56×102×25 variant (**default**, Jake's 2026-09-04 decision) — derived from `params_current.py` with documented overrides, not hand-duplicated. |
 | `kandiwooks_logo.json` | KandiWooks wordmark outline loops (mm), extracted from the "KandiWooks Logo" document's 6 bodies. |
 | `SPEC.md` | The original task brief, verbatim. |
-| `export/<variant>/*.stl` | Per-body STL exports (binary). |
+| `export/<variant>/*.stl` | Per-body STL exports (binary): `Bottom`, `Top`, `Screen_Plate`, `Power_Button`, `Home_Button`. |
+| `export/coupons/coupon_{power,home}_{wall,cap}.stl` | Standalone button fit-test coupons (see Print orientation & settings below). |
 | `renders/<variant>_{front,top,right,iso}.png` | Orthographic screenshots. |
+
+Every exported body (case and coupon) is size-checked at export time
+(`assert_export_body_size`, ≤120mm/≤40mm max extent respectively) as a
+guard against a units/scale bug — see Verification below.
 
 ## Parameter table (key numbers)
 
@@ -72,10 +77,16 @@ this is the headline subset.
 | Lanyard tip protrusion beyond wall | 8.5 | 8.5 |
 | Comms bay cavity width | 56 (±28) | 52 (±26) = battery 30 + stack 17.8 + 3×1.4mm gaps |
 
-Screws, display module, screen plate posts/standoffs, USB tunnel, and
-button switch positions are **unchanged** between variants (Jake: "keep
-... at their reference positions") — only the shoulder/envelope and
-lip/anchor/lug/bay numbers scale with `outer_radius`.
+Display module, screen plate posts/standoffs, USB tunnel, and button
+switch positions are **unchanged** between variants (Jake: "keep ... at
+their reference positions") — the shoulder/envelope, lip/anchor/lug/bay
+numbers scale with `outer_radius`, and as of the 2026-09-05 pass-2 fix
+**screws A/B/C also shift inward for trim** (their `current`-variant
+positions punched through the narrower R28 shell): A/C move to
+`x = ±(outer_radius - wall - 3.0)` (±23.0 for trim vs ±22.97/23.74 for
+current), B to `(0, -(outer_radius - wall - 3.0))` (-23.0 vs -24.0); D
+is unchanged at (0, 65.0) in both. See the Screw list section below for
+the exact per-variant values.
 
 ## Verification
 
@@ -136,6 +147,19 @@ z=14.1 — which are by design, not a defect.
 Both variants currently build with **zero real interference** and all M1+M2
 checks passing.
 
+**Export size sanity check** — `assert_export_body_size` (2026-09-05):
+every body written by `export_stls`/`export_coupons` is checked against
+its live Fusion `boundingBox` right at export time (max extent ≤120mm for
+a case body, ≤40mm for a coupon body) — a guard against a units/scale bug
+(a cm value used as mm, a stray extra Move) slipping into a shipped STL
+undetected. Added after a report of a 10x-oversized
+`coupon_power_wall.stl`/`coupon_home_wall.stl` (96×240×186mm); the actual
+cause turned out to be a units mismatch in the *reporting* tool, not the
+export — both the live Fusion geometry right after `build_button_coupon()`
+and the STL bytes on disk (independent struct-level parse) read correctly
+at 9.6×24×17.8/18.6mm — but the assertion now stands as a permanent
+regression guard either way.
+
 ## 2026-09-05 pass 2 (coordinator follow-ups)
 
 Five follow-ups landed after the initial M1-M4 pass, all against the same
@@ -189,11 +213,11 @@ Five follow-ups landed after the initial M1-M4 pass, all against the same
    bounding boxes afterward (`_bbox_extents`, which unions actual body
    boxes rather than trusting `occ.boundingBox`, still unreliable
    immediately post-insert in this session). Boards are visible (not
-   hidden) in the generated document. **Remaining rough edge:** the L76K
-   assembly's own bounding box (likely including its antenna cable/lead)
-   extends well past the small frame built for the bare board (observed y
-   span ~49mm vs. the ~18mm frame) -- worth a visual check in Fusion; the
-   frame itself is sized correctly for the board outline given in SPEC.md.
+   hidden) in the generated document. **Rough edge from this pass, RESOLVED
+   in pass 3 below:** the L76K assembly's own bounding box (including its
+   antenna cable/lead) extended well past the small frame built for the
+   bare board, and positioning by that aggregate box put the actual PCB
+   outside the case entirely.
 4. **Button caps + USB liner trimmed to the real curved shell.** Both were
    built against a flat-wall approximation (documented pass-1 limitation);
    now each is over-built with a few mm of extra margin and then
@@ -280,7 +304,24 @@ didn't catch:
    built, not a flat per-axis bounding box. All 5 exported bodies (both
    variants) currently pass with zero offending vertices.
 
-## Print orientation & settings
+## 2026-09-05 pass 4 (export size guard + README pass)
+
+Coordinator reported `coupon_power_wall.stl`/`coupon_home_wall.stl` as
+10x oversized (96×240×186mm). Investigated by cross-checking two
+independent sources of truth: the live Fusion `boundingBox` immediately
+after `build_button_coupon()` runs, and a struct-level parse of the
+actual STL bytes on disk. Both agreed at 9.6×24×17.8/18.6mm — the correct
+size, matching the coupon's intended "~24×14×2mm slab plus rib/shelf
+(≈10mm deep)" shape. No scale bug found in the generator or the export
+path; the 96×240×186mm figure is exactly 10× the correct numbers on
+every axis, consistent with a units-interpretation issue in whatever
+tool produced that reading rather than a defect here. Added
+`assert_export_body_size` regardless, as a permanent guard against this
+exact failure mode (see Verification above) — every exported body is now
+checked live at export time, not just spot-verified after the fact. This
+pass also brought the README's params table, screw list, print notes,
+and known-limitations section up to date with everything pass 2/3
+actually changed.
 
 ## Print orientation & settings
 
@@ -298,9 +339,11 @@ didn't catch:
   `coupon_power_cap.stl` / `coupon_home_wall.stl` / `coupon_home_cap.stl`
   (in `hardware/case/export/coupons/`) are a ~15-minute fit test for the
   wall-hole/rib/tab/collar mechanism before committing to a full Bottom+Top
-  print. Print all 4 flat, face-down, no supports needed. If the cap binds
-  or rattles in the wall hole, adjust `PARAMS['cap_clearance']`
-  (0.25mm default) and re-export.
+  print. Print all 4 flat, face-down, no supports needed. Wall coupons are
+  ~9.6×24×17.8mm (power) / ~9.6×24×18.6mm (home); cap coupons are
+  ~14.7×10×5.8mm (power) / ~14.7×8.9×6.6mm (home) — small parts, watch for
+  first-layer adhesion. If the cap binds or rattles in the wall hole,
+  adjust `PARAMS['cap_clearance']` (0.25mm default) and re-export.
 
 ## Screw list
 
@@ -314,6 +357,22 @@ didn't catch:
 Bottom bosses A/B/C get a Ø4.5×2.2mm counterbore from z=0; boss D gets a
 deeper Ø4.5×4.0mm counterbore (its screw tip must stay ≤ z=14.1 — the
 USB-C shell sits at z=14.35 just above it).
+
+**Screw A/B/C xy positions differ by variant** (2026-09-05 pass-2 fix —
+`current`'s reference positions punched through trim's narrower shell):
+
+| Screw | current | trim |
+|---|---|---|
+| A | (−22.97, 25.04) | (−23.00, 25.04) |
+| B | (0.0, −24.00) | (0.0, −23.00) |
+| C | (23.74, 25.20) | (23.00, 25.20) |
+| D | (0.0, 65.0) | (0.0, 65.0) *(unchanged)* |
+
+Trim's A/C use `x = ±(outer_radius - wall - 3.0)`, B uses
+`(0, -(outer_radius - wall - 3.0))`; every boss (both variants) is also
+Combine-Intersected against the shared inner-cavity clip tool regardless
+of its nominal position, so it can never punch through the shell even if
+a future variant's numbers are off.
 
 ## Known limitations / deviations from SPEC.md
 
@@ -333,11 +392,15 @@ reason" per the milestone instructions.
    still worthwhile before final fabrication, particularly at the
    -y dome tip where the L76K frame sits.
 4. ~~Comms board occurrences are inserted but NOT positioned~~ **RESOLVED
-   2026-09-05**: XIAO/Wio/L76K are now correctly placed (see the pass 2
-   section above) via `occ.transform` + `design.snapshots.add()`. Remaining
-   rough edge: the L76K assembly's own bounding box (likely including its
-   antenna cable/lead) extends well past the small frame built for the
-   bare board footprint -- worth a visual check in Fusion.
+   2026-09-05 (pass 2)**: XIAO/Wio/L76K are now correctly placed via
+   `occ.transform` + `design.snapshots.add()`. ~~L76K's own bounding box
+   (including its antenna cable/lead) extends well past the small frame
+   built for the bare board, so positioning by that aggregate box put the
+   actual PCB outside the case~~ **RESOLVED 2026-09-05 (pass 3)**:
+   `find_pcb_like_body` positions the assembly by its actual ~18×21mm PCB
+   body specifically (found by shape, not by name), not the whole
+   occurrence's aggregate bbox; the antenna sub-occurrence is hidden. See
+   the pass 3 section above.
 5. **FPC antenna keep-out** is modeled as a simple reference box (not
    joined/cut into any body, excluded from exports) marking the strip
    SPEC.md describes — it is not a real keep-out enforcement (nothing
@@ -352,17 +415,28 @@ reason" per the milestone instructions.
    feature — the plate is already solid there within its outline, so no
    additional geometry seemed implied beyond the Ø2.4 mounting holes
    themselves.
-8. **Plunger guide rib plate slightly overshoots the outer wall** (~0.04mm,
-   trim variant) at its `attach_margin` corners — negligible relative to
-   print tolerance, but a future pass could clip the rib footprint to the
-   actual local shell surface instead of a flat margin around the plunger
-   axis, the same way `clip_box_x_to_cavity` does for the comms bay.
+8. ~~Plunger guide rib plate slightly overshoots the outer wall~~
+   **RESOLVED 2026-09-05 (pass 3), and it was bigger than "slightly"**:
+   the Home button's rib punched ~1.45mm through the dome, not the ~0.04mm
+   this line originally estimated — root-caused to `button_geometry()`'s
+   `s_wall` using the flat-wall approximation for a button that's actually
+   in the domed end cap. Fixed at the source (`s_wall` now uses
+   `true_wall_distance_along_ray`); see the pass 3 section above.
+9. **`verify_export_envelope`'s lug/cap-head exceptions are tuned to the
+   trim variant's geometry** (the lug's `y` threshold is derived from
+   `spine_a.y - outer_radius + 2`, which generalizes correctly across
+   `outer_radius`, but hasn't been independently re-verified against a
+   fresh `current`-variant export since pass 3 landed).
 
 ## Verify() output reference
 
 Running `run()` prints, in order: variant, document name, timeline feature
 count, the printed body names, each body's bounding box, the full M1 outer
 and cavity probe tables (z, expected ρ, found ρ, pass/fail), interference
-results, M2 dimensional/probe checks, and (with `export=True`) the STL
-export paths and screenshot paths. A clean run ends with `OK: M1+M2 probes
-passed`.
+results, M2 dimensional/probe checks, outer-bump probes, the export
+envelope vertex check (one line per exported body, `True`/`False` plus a
+sample of any offending vertex), and (with `export=True`) the STL export
+paths, coupon export paths, and screenshot paths. A clean run ends with
+`OK: M1+M2 probes passed`. `assert_export_body_size` runs silently inside
+`export_stls`/`export_coupons` at export time — no line unless it fails
+(in which case it raises, same as every other `verify()` assertion).
