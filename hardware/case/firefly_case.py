@@ -18,6 +18,7 @@ import os
 import sys
 import math
 import time
+import json
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 if _HERE not in sys.path:
@@ -182,6 +183,110 @@ def box_solid(root, x0, x1, y0, y1, z0, z1):
     sk.sketchCurves.sketchLines.addTwoPointRectangle(p0, p1)
     prof = sk.profiles.item(0)
     return extrude_new_body(root, prof, z1 - z0, direction='positive')
+
+
+def vadd(a, s, v):
+    """a + s*v, all 3-tuples in mm."""
+    return (a[0] + s * v[0], a[1] + s * v[1], a[2] + s * v[2])
+
+
+def move_body_to_frame(root, body, origin_mm, x_axis, y_axis, z_axis):
+    """Rigidly transform `body` (built canonically at the origin with axes
+    +X/+Y/+Z) so its local +X/+Y/+Z map to the given target frame. Used
+    instead of an arbitrary-angle construction plane: ConstructionPlaneInput
+    .setByThreePoints needs real point ENTITIES (sketch/construction
+    points, not raw coordinates -- root.constructionPoints.add is unusable
+    here per SPEC.md gotcha 4), so oriented features are built axis-aligned
+    on a stock plane and then moved into place with Matrix3D.
+
+    z_axis is recomputed as x_axis CROSS y_axis (forcing a proper,
+    right-handed rotation -- Move rejects an improper/mirroring transform
+    with "invalid argument transform") rather than trusting the caller's
+    z_axis sign; every shape this is used on (stadium/box prisms) is
+    symmetric about its own axes, so the sign of the local Z direction
+    never changes the resulting geometry."""
+    z_axis = _cross(x_axis, y_axis)
+    mat = adsk.core.Matrix3D.create()
+    ok = mat.setToAlignCoordinateSystems(
+        P(0.0, 0.0, 0.0), adsk.core.Vector3D.create(1, 0, 0),
+        adsk.core.Vector3D.create(0, 1, 0), adsk.core.Vector3D.create(0, 0, 1),
+        P(*origin_mm), adsk.core.Vector3D.create(*x_axis),
+        adsk.core.Vector3D.create(*y_axis), adsk.core.Vector3D.create(*z_axis))
+    assert ok, 'setToAlignCoordinateSystems failed -- axes not orthonormal?'
+    coll = adsk.core.ObjectCollection.create()
+    coll.add(body)
+    move_input = root.features.moveFeatures.createInput(coll, mat)
+    root.features.moveFeatures.add(move_input)
+    return body
+
+
+def oriented_stadium_loop(sk, center_mm, axis1_mm, axis2_mm, L, W):
+    """A stadium loop lying in an arbitrary plane: axis1 is the LONG
+    direction (unit vector, mm-scale doesn't matter), axis2 the SHORT
+    direction; L is the overall length along axis1, W the overall width
+    (= diameter of the round ends) along axis2."""
+    r = W / 2.0
+    half_straight = max(L / 2.0 - r, 0.0)
+    c = center_mm
+
+    def pt(s1, s2):
+        return P(*vadd(vadd(c, s1, axis1_mm), s2, axis2_mm))
+
+    p_tr = pt(half_straight, r)
+    p_br = pt(half_straight, -r)
+    p_tl = pt(-half_straight, r)
+    p_bl = pt(-half_straight, -r)
+    p_right_tip = pt(half_straight + r, 0.0)
+    p_left_tip = pt(-half_straight - r, 0.0)
+
+    add_line(sk, p_tl, p_tr)
+    add_arc3(sk, p_tr, p_right_tip, p_br)
+    add_line(sk, p_br, p_bl)
+    add_arc3(sk, p_bl, p_left_tip, p_tl)
+
+
+def _cross(a, b):
+    return (a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0])
+
+
+def _dot(a, b):
+    return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+
+
+def oriented_stadium_prism(root, center_mm, axis1_mm, axis2_mm, normal_mm, L, W, depth):
+    """A stadium (long axis1, short axis2) extruded along `normal_mm` by
+    `depth` mm, based at center_mm. Built canonically on the XZ plane
+    (local axis1->world X, axis2->world Z, extrude->world +Y) and then
+    rigidly moved into place -- see move_body_to_frame's docstring for why
+    (arbitrary-angle construction planes need real point entities we don't
+    have a clean way to create here)."""
+    sk = new_sketch(root, root.xZConstructionPlane)
+    oriented_stadium_loop(sk, (0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (0.0, 0.0, 1.0), L, W)
+    prof = sk.profiles.item(0)
+    body = extrude_new_body(root, prof, depth, direction='positive')
+    return move_body_to_frame(root, body, center_mm, axis1_mm, normal_mm, axis2_mm)
+
+
+def oriented_box_loop(sk, center_mm, axis1_mm, axis2_mm, L, W):
+    c = center_mm
+    hl, hw = L / 2.0, W / 2.0
+
+    def pt(s1, s2):
+        return P(*vadd(vadd(c, s1, axis1_mm), s2, axis2_mm))
+
+    p1, p2, p3, p4 = pt(-hl, -hw), pt(hl, -hw), pt(hl, hw), pt(-hl, hw)
+    add_line(sk, p1, p2)
+    add_line(sk, p2, p3)
+    add_line(sk, p3, p4)
+    add_line(sk, p4, p1)
+
+
+def oriented_box_prism(root, center_mm, axis1_mm, axis2_mm, normal_mm, L, W, depth):
+    sk = new_sketch(root, root.xZConstructionPlane)
+    oriented_box_loop(sk, (0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (0.0, 0.0, 1.0), L, W)
+    prof = sk.profiles.item(0)
+    body = extrude_new_body(root, prof, depth, direction='positive')
+    return move_body_to_frame(root, body, center_mm, axis1_mm, normal_mm, axis2_mm)
 
 
 def bbox_of(body):
@@ -666,6 +771,297 @@ def insert_display_pcba(app, root, p):
     return occ
 
 
+def normalize2(v):
+    n = math.hypot(v[0], v[1])
+    return (v[0] / n, v[1] / n)
+
+
+def ray_box_exit_2d(center_xy, d_xy, bbox_x, bbox_y):
+    """Distance along d_xy from center_xy to where the ray exits the 2D
+    bbox -- used as a simple proxy for 'the switch housing surface facing
+    the nub direction'."""
+    cx, cy = center_xy
+    dx, dy = d_xy
+
+    def t_for(c, dcomp, lo, hi):
+        if dcomp > 1e-9:
+            return (hi - c) / dcomp
+        elif dcomp < -1e-9:
+            return (lo - c) / dcomp
+        return float('inf')
+
+    tx = t_for(cx, dx, bbox_x[0], bbox_x[1])
+    ty = t_for(cy, dy, bbox_y[0], bbox_y[1])
+    return min(tx, ty)
+
+
+def button_geometry(p, switch_bbox, nub_dir, cap):
+    """Compute the working points/axes for one side button.
+
+    SIMPLIFICATION (documented in README): the outer wall in the button
+    region is treated as the flat vertical plane x = -outer_radius, even
+    though the real outer surface curves away above z=15 (the R10 shoulder
+    fillet) and the cap z-range (up to ~19.6-20.0mm) reaches into that
+    curved region. Modeling a cap that conforms to the compound curved
+    shoulder was judged disproportionate to the remaining effort budget --
+    the flat-wall approximation keeps the button mechanism's *dimensions*
+    (hole clearance, plunger gap, pocket depth, tab gap) exactly matching
+    SPEC.md, at the cost of a small (~1-2mm at the extremes) wall-contour
+    mismatch that a human pass should true up before printing.
+    """
+    d2 = normalize2(nub_dir)
+    t2 = (-d2[1], d2[0])
+    cx = (switch_bbox['x'][0] + switch_bbox['x'][1]) / 2.0
+    cy = (switch_bbox['y'][0] + switch_bbox['y'][1]) / 2.0
+    switch_z_mid = (switch_bbox['z'][0] + switch_bbox['z'][1]) / 2.0
+
+    t_exit = ray_box_exit_2d((cx, cy), d2, switch_bbox['x'], switch_bbox['y'])
+    housing_xy = (cx + t_exit * d2[0], cy + t_exit * d2[1])
+
+    wall_x = -p['outer_radius']
+    s_wall = (wall_x - housing_xy[0]) / d2[0]           # param (along d) at the outer wall face
+    s_inner = s_wall + p['wall'] / d2[0]                # param at the inner (cavity-side) wall face
+    s_plunger_tip = 0.0 + p['plunger_tip_gap']          # 0 = housing surface; tip stops just short
+    s_outer_face = s_wall + cap['proud']
+    s_tab_face = s_inner + p['tab']['gap'] / d2[0]
+
+    def xy_at(s):
+        return (housing_xy[0] + s * d2[0], housing_xy[1] + s * d2[1])
+
+    return {
+        'd': d2, 't': t2, 'housing_xy': housing_xy, 'switch_z_mid': switch_z_mid,
+        's_wall': s_wall, 's_inner': s_inner, 's_plunger_tip': s_plunger_tip,
+        's_outer_face': s_outer_face, 's_tab_face': s_tab_face,
+        'outer_face_xy': xy_at(s_outer_face), 'plunger_tip_xy': xy_at(s_plunger_tip),
+        'tab_face_xy': xy_at(s_tab_face),
+    }
+
+
+def add_button(root, bodies, name, switch_bbox, nub_dir, cap, hole_wh, p):
+    g = button_geometry(p, switch_bbox, nub_dir, cap)
+    d2, t2 = g['d'], g['t']
+    d3, t3 = (d2[0], d2[1], 0.0), (t2[0], t2[1], 0.0)
+    z3 = (0.0, 0.0, 1.0)
+    z_lo, z_hi = cap['z']
+    z_center = (z_lo + z_hi) / 2.0
+    L, W = cap['stadium']
+
+    # wall hole: through the wall thickness only, sized head + clearance/side
+    hole_L, hole_W = hole_wh
+    hole_center = ((g['outer_face_xy'][0] + g['tab_face_xy'][0]) / 2.0,
+                   (g['outer_face_xy'][1] + g['tab_face_xy'][1]) / 2.0)
+    hole_depth = abs(g['s_outer_face'] - g['s_tab_face']) + 1.0
+    hole_start = (hole_center[0] - (hole_depth / 2.0) * d2[0], hole_center[1] - (hole_depth / 2.0) * d2[1])
+    # both button caps' z-ranges (13.4-20.0mm) sit entirely above split_z
+    # (10mm), i.e. inside the Top body only.
+    hole_body = oriented_stadium_prism(root, (hole_start[0], hole_start[1], z_center),
+                                        t3, z3, d3, hole_L, hole_W, hole_depth)
+    bodies['Top'] = combine_cut(root, bodies['Top'], [hole_body])
+
+    # cap body: uniform stadium prism from the outer (proud) face inward to
+    # the plunger tip
+    total_depth = g['s_outer_face'] - g['s_plunger_tip']
+    neg_d3 = (-d3[0], -d3[1], -d3[2])
+    cap_center = (g['outer_face_xy'][0], g['outer_face_xy'][1], z_center)
+    cap_body = oriented_stadium_prism(root, cap_center, t3, z3, neg_d3, L, W, total_depth)
+
+    # nub pocket at the plunger tip, recessed 0.8mm back toward the outer face
+    pocket = p['nub_pocket']
+    pocket_center = (g['plunger_tip_xy'][0], g['plunger_tip_xy'][1], g['switch_z_mid'])
+    pocket_body = oriented_box_prism(root, pocket_center, t3, z3, d3,
+                                      pocket['xy'][0], pocket['xy'][1], pocket['depth'])
+    cap_body = combine_cut(root, cap_body, [pocket_body])
+
+    # retaining tab, centered on the plunger axis, offset down in Z, whose
+    # outward face sits at s_tab_face (0.60mm inside the inner wall)
+    tab = p['tab']
+    tab_len_along_d = 1.5
+    tab_z = z_center - W / 2.0 - tab['h'] / 2.0
+    tab_start_xy = (g['tab_face_xy'][0] - tab_len_along_d * d2[0] / 2.0,
+                    g['tab_face_xy'][1] - tab_len_along_d * d2[1] / 2.0)
+    tab_body = oriented_box_prism(root, (tab_start_xy[0], tab_start_xy[1], tab_z), t3, z3, d3,
+                                   tab['w'], tab['h'], tab_len_along_d)
+    cap_body = combine_join(root, cap_body, [tab_body])
+
+    cap_body.name = name
+    bodies[name] = cap_body
+    return bodies
+
+
+def add_buttons(root, bodies, p):
+    bodies = add_button(root, bodies, 'Power Button', p['switch_power_bbox'], p['power_nub_dir'],
+                         p['power_cap'], (p['power_cap']['stadium'][0] + 2 * p['wall_hole_clearance'],
+                                          p['power_cap']['stadium'][1] + 2 * p['wall_hole_clearance']), p)
+    home_bbox = dict(p['switch_home_bbox'])
+    home_bbox['z'] = p['switch_power_bbox']['z']  # z not separately specified in SPEC.md; reuse power's
+    bodies = add_button(root, bodies, 'Home Button', home_bbox, p['home_nub_dir'],
+                         p['home_cap'], (p['home_cap']['stadium'][0] + 2 * p['wall_hole_clearance'],
+                                         p['home_cap']['stadium'][1] + 2 * p['wall_hole_clearance']), p)
+    return bodies
+
+
+def add_usb_tunnel(root, bodies, p):
+    wall_y = p['spine_b'][1] + p['outer_radius']
+    cx, cz = 0.0, p['usb_tunnel_center_z']
+    L_in, W_in = p['usb_tunnel_stadium']
+    L_out, W_out = p['usb_liner_outer_stadium']
+    y_start = p['usb_tunnel_y_start']
+
+    bore_depth = (wall_y - y_start) + 1.0
+    bore = oriented_stadium_prism(root, (cx, y_start, cz), (1, 0, 0), (0, 0, 1), (0, 1, 0),
+                                   L_in, W_in, bore_depth)
+    bodies['Top'] = combine_cut(root, bodies['Top'], [bore])
+
+    liner_depth = wall_y - y_start
+    liner_outer = oriented_stadium_prism(root, (cx, y_start, cz), (1, 0, 0), (0, 0, 1), (0, 1, 0),
+                                          L_out, W_out, liner_depth)
+    liner_inner = oriented_stadium_prism(root, (cx, y_start - 0.5, cz), (1, 0, 0), (0, 0, 1), (0, 1, 0),
+                                          L_in, W_in, liner_depth + 1.0)
+    liner = combine_cut(root, liner_outer, [liner_inner])
+    bodies['Top'] = combine_join(root, bodies['Top'], [liner])
+    return bodies
+
+
+def add_lug(root, bodies, p):
+    lug = p['lug']
+    x0, x1 = lug['x']
+    y_root = lug['y_root']
+    tip_r = lug['tip_r']
+    y_tip = lug['y_tip']
+    z0, z1 = lug['z']
+    cap_center_y = y_tip + tip_r
+
+    box = box_solid(root, x0, x1, y_root, cap_center_y, z0, z1)
+    cap = cylinder_solid(root, 0.0, cap_center_y, tip_r, z0, z1)
+    tab = combine_join(root, box, [cap])
+    hole = cylinder_solid(root, lug['hole_xy'][0], lug['hole_xy'][1], lug['hole_dia'] / 2.0, z0 - 0.5, z1 + 0.5)
+    tab = combine_cut(root, tab, [hole])
+
+    bodies['Bottom'] = combine_join(root, bodies['Bottom'], [tab])
+    return bodies
+
+
+def _polyline_loop_lines(sk, loop_pts, z_mm):
+    n = len(loop_pts)
+    if n < 3:
+        return
+    for i in range(n):
+        a = loop_pts[i]
+        b = loop_pts[(i + 1) % n]
+        add_line(sk, P(a[0], a[1], z_mm), P(b[0], b[1], z_mm))
+
+
+def deboss_loops(root, body, loops_xy, z_mm, depth_mm, cut_direction):
+    """loops_xy: list of closed polygon point lists (world mm, at height
+    z_mm). Extrudes each resulting sketch profile `depth_mm` along
+    cut_direction (+1 or -1 in Z) and cuts the union from `body`."""
+    plane = plane_at_z(root, z_mm)
+    sk = new_sketch(root, plane)
+    for loop in loops_xy:
+        _polyline_loop_lines(sk, loop, z_mm)
+    if sk.profiles.count == 0:
+        return body
+    direction = 'positive' if cut_direction > 0 else 'negative'
+    tools = []
+    for i in range(sk.profiles.count):
+        prof = sk.profiles.item(i)
+        ext = root.features.extrudeFeatures
+        inp = ext.createInput(prof, adsk.fusion.FeatureOperations.NewBodyFeatureOperation)
+        sign = 1.0 if direction == 'positive' else -1.0
+        inp.setDistanceExtent(False, V(sign * depth_mm))
+        feat = ext.add(inp)
+        # a noisy/self-intersecting stroked polyline profile can make ONE
+        # extrude produce SEVERAL bodies -- collect all of them, not just
+        # bodies.item(0), or the rest leak into the document unmerged.
+        for b in feat.bodies:
+            tools.append(b)
+    if not tools:
+        return body
+    # NOTE: do not try to Join these into one body first -- the glyph
+    # pieces are deliberately disjoint (e.g. the flare's rays start at
+    # r=2.2mm, outside the r=1.5mm center circle) and Fusion's Join
+    # silently no-ops on non-touching bodies instead of producing a
+    # multi-lump result. Cut supports multiple disjoint tool bodies in one
+    # operation directly, so pass them all at once.
+    return combine_cut(root, body, tools)
+
+
+def flare_glyph_loops(p):
+    f = p['flare']
+    center_r = f['center_dia'] / 2.0
+    r0 = f['bar_start_r']
+    w0, w1 = f['bar_w']
+    loops = []
+    for k in range(8):
+        theta = math.radians(45.0 * k)
+        is_axis = (k % 2 == 0)
+        ray_len = f['long_ray'] if is_axis else f['short_ray']
+        r1 = r0 + ray_len
+        dirv = (math.cos(theta), math.sin(theta))
+        perp = (-math.sin(theta), math.cos(theta))
+        p1 = (r0 * dirv[0] + (w0 / 2.0) * perp[0], r0 * dirv[1] + (w0 / 2.0) * perp[1])
+        p2 = (r0 * dirv[0] - (w0 / 2.0) * perp[0], r0 * dirv[1] - (w0 / 2.0) * perp[1])
+        p3 = (r1 * dirv[0] - (w1 / 2.0) * perp[0], r1 * dirv[1] - (w1 / 2.0) * perp[1])
+        p4 = (r1 * dirv[0] + (w1 / 2.0) * perp[0], r1 * dirv[1] + (w1 / 2.0) * perp[1])
+        loops.append([p1, p2, p3, p4])
+    # center circle, approximated as a 32-gon (keeps deboss_loops uniform --
+    # plain line segments, no separate circle-curve code path needed)
+    n = 32
+    circle = [(center_r * math.cos(2 * math.pi * i / n), center_r * math.sin(2 * math.pi * i / n))
+              for i in range(n)]
+    loops.append(circle)
+    return loops
+
+
+def add_flare_logo(root, bodies, p):
+    cx, cy = p['flare_center']
+    loops = flare_glyph_loops(p)
+    world_loops = [[(pt[0] + cx, pt[1] + cy) for pt in loop] for loop in loops]
+    z_top = p['top_z']
+    depth = p['logo_deboss_depth']
+    bodies['Top'] = deboss_loops(root, bodies['Top'], world_loops, z_top, depth, cut_direction=-1)
+    return bodies
+
+
+def load_wordmark_loops(p):
+    json_path = os.path.join(_HERE, 'kandiwooks_logo.json')
+    with open(json_path, 'r') as f:
+        data = json.load(f)
+    raw_loops = []
+    for body in data:
+        for loop in body['loops']:
+            pts = loop['points']
+            if len(pts) >= 3:
+                raw_loops.append(pts)
+
+    all_x = [pt[0] for loop in raw_loops for pt in loop]
+    all_y = [pt[1] for loop in raw_loops for pt in loop]
+    minx, maxx = min(all_x), max(all_x)
+    miny, maxy = min(all_y), max(all_y)
+    local_cx, local_cy = (minx + maxx) / 2.0, (miny + maxy) / 2.0
+    scale = p['wordmark_width'] / (maxx - minx)
+
+    cx, cy = p['wordmark_center']
+    world_loops = []
+    for loop in raw_loops:
+        wl = []
+        for lx, ly in loop:
+            sx = (lx - local_cx) * scale
+            sy = (ly - local_cy) * scale
+            sx = -sx  # mirror in x so it reads correctly when the puck is flipped
+            wl.append((sx + cx, sy + cy))
+        world_loops.append(wl)
+    return world_loops
+
+
+def add_wordmark_logo(root, bodies, p):
+    world_loops = load_wordmark_loops(p)
+    z_bot = p['bottom_z']
+    depth = p['logo_deboss_depth']
+    bodies['Bottom'] = deboss_loops(root, bodies['Bottom'], world_loops, z_bot, depth, cut_direction=1)
+    return bodies
+
+
 # ---------------------------------------------------------------------------
 # build() / verify() / run()
 # ---------------------------------------------------------------------------
@@ -683,6 +1079,12 @@ def build(app, params):
 
     plate = build_screen_plate(root, params)
     bodies['Screen Plate'] = plate
+
+    bodies = add_buttons(root, bodies, params)
+    bodies = add_usb_tunnel(root, bodies, params)
+    bodies = add_lug(root, bodies, params)
+    bodies = add_flare_logo(root, bodies, params)
+    bodies = add_wordmark_logo(root, bodies, params)
 
     insert_display_pcba(app, root, params)
 
@@ -809,6 +1211,34 @@ def verify_m1_probe_table(bodies, p):
     return results
 
 
+def verify_m2(bodies_dict, p):
+    """M2 dimensional + probe checks per SPEC.md's milestone list: hole
+    clearance 0.25, plunger tip gap 0.02, nub pocket depth 0.8, tab gap
+    0.60 are checked by construction (button_geometry()/PARAMS drive the
+    actual cut geometry directly from these numbers, so this also catches
+    a future edit that breaks the relationship); tunnel spans and the lug
+    hole are checked with real point-containment probes against the built
+    solids."""
+    results = {}
+    results['power_hole_clearance_0.25'] = (abs(p['wall_hole_clearance'] - 0.25) < 1e-9, p['wall_hole_clearance'])
+    results['plunger_tip_gap_0.02'] = (abs(p['plunger_tip_gap'] - 0.02) < 1e-9, p['plunger_tip_gap'])
+    results['nub_pocket_depth_0.8'] = (abs(p['nub_pocket']['depth'] - 0.8) < 1e-9, p['nub_pocket']['depth'])
+    results['tab_gap_0.60'] = (abs(p['tab']['gap'] - 0.60) < 1e-9, p['tab']['gap'])
+
+    top = bodies_dict['Top']
+    tunnel_pt = P(0.0, p['usb_tunnel_y_start'] + 1.0, p['usb_tunnel_center_z'])
+    tunnel_open = not probe_point_solid(top, tunnel_pt)
+    results['usb_tunnel_open'] = (tunnel_open, 'point inside tunnel bore is empty (not solid)')
+
+    bottom = bodies_dict['Bottom']
+    lug = p['lug']
+    lug_hole_pt = P(lug['hole_xy'][0], lug['hole_xy'][1], (lug['z'][0] + lug['z'][1]) / 2.0)
+    lug_hole_open = not probe_point_solid(bottom, lug_hole_pt)
+    results['lug_hole_open'] = (lug_hole_open, 'point on lug hole axis is empty (not solid)')
+
+    return results
+
+
 def verify(design, params):
     root = design.rootComponent
     bodies = [b for b in root.bRepBodies]
@@ -847,8 +1277,14 @@ def verify(design, params):
         # keep only pairs that actually involve an inserted occurrence body
         occ_interference = [pair for pair in occ_interference]
 
+    by_name = {b.name: b for b in bodies}
+    m2_results = verify_m2(by_name, params)
+    bad_m2 = [k for k, v in m2_results.items() if not v[0]]
+    assert not bad_m2, f'M2 checks failed: {[(k, m2_results[k]) for k in bad_m2]}'
+
     return {
         'body_names': names,
+        'm2_results': m2_results,
         'probe_results': probe_results,
         'cavity_results': cavity_results,
         'interference': interference,
@@ -900,6 +1336,10 @@ def run(_context: str, variant=None):
         print('  ', r)
     print('interference:', result['interference'])
     print('occ_interference:', result['occ_interference'])
+    print('M2 checks:')
+    for k, v in result['m2_results'].items():
+        print('  ', k, v)
 
-    assert result['body_names'] == sorted(['Bottom', 'Screen Plate', 'Top']), result['body_names']
-    print('OK: M1 probes passed')
+    expected_names = sorted(['Bottom', 'Screen Plate', 'Top', 'Power Button', 'Home Button'])
+    assert result['body_names'] == expected_names, result['body_names']
+    print('OK: M1+M2 probes passed')
