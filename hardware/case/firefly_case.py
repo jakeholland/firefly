@@ -821,9 +821,22 @@ def button_geometry(p, switch_bbox, nub_dir, cap):
     wall_x = -p['outer_radius']
     s_wall = (wall_x - housing_xy[0]) / d2[0]           # param (along d) at the outer wall face
     s_inner = s_wall + p['wall'] / d2[0]                # param at the inner (cavity-side) wall face
-    s_plunger_tip = 0.0 + p['plunger_tip_gap']          # 0 = housing surface; tip stops just short
+    # REST position: the plunger tip sits plunger_travel further from the
+    # housing than the FULL-PRESS gap (plunger_tip_gap) -- the collar
+    # bottoms on the rib plunger_travel mm before the tip would reach the
+    # housing (see PARAMS['plunger_travel'] / 'rib_*' / 'collar').
+    s_plunger_tip = p['plunger_tip_gap'] + p['plunger_travel']
     s_outer_face = s_wall + cap['proud']
     s_tab_face = s_inner + p['tab']['gap'] / d2[0]
+
+    # plunger guide rib: outboard face rib_inboard_offset mm inboard of the
+    # outer wall face, rib_thickness mm thick along the travel axis.
+    s_rib_outer = s_wall - p['rib_inboard_offset']
+    s_rib_inner = s_rib_outer - p['rib_thickness']
+    # inward stop collar: at rest, its outboard face sits plunger_travel mm
+    # from the rib's inboard face; it is collar['len'] mm long along d.
+    s_collar_outer = s_rib_inner - p['plunger_travel']
+    s_collar_inner = s_collar_outer - p['collar']['len']
 
     def xy_at(s):
         return (housing_xy[0] + s * d2[0], housing_xy[1] + s * d2[1])
@@ -832,8 +845,12 @@ def button_geometry(p, switch_bbox, nub_dir, cap):
         'd': d2, 't': t2, 'housing_xy': housing_xy, 'switch_z_mid': switch_z_mid,
         's_wall': s_wall, 's_inner': s_inner, 's_plunger_tip': s_plunger_tip,
         's_outer_face': s_outer_face, 's_tab_face': s_tab_face,
+        's_rib_outer': s_rib_outer, 's_rib_inner': s_rib_inner,
+        's_collar_outer': s_collar_outer, 's_collar_inner': s_collar_inner,
         'outer_face_xy': xy_at(s_outer_face), 'plunger_tip_xy': xy_at(s_plunger_tip),
         'tab_face_xy': xy_at(s_tab_face),
+        'rib_center_xy': xy_at((s_rib_outer + s_rib_inner) / 2.0),
+        'collar_center_xy': xy_at((s_collar_outer + s_collar_inner) / 2.0),
     }
 
 
@@ -882,6 +899,28 @@ def add_button(root, bodies, name, switch_bbox, nub_dir, cap, hole_wh, p):
     tab_body = oriented_box_prism(root, (tab_start_xy[0], tab_start_xy[1], tab_z), t3, z3, d3,
                                    tab['w'], tab['h'], tab_len_along_d)
     cap_body = combine_join(root, cap_body, [tab_body])
+
+    # --- plunger guide rib (joined to Top) + inward stop collar (joined to
+    # the cap) -- added per Jake's 2026-09-04 print-test feedback: the rib
+    # keeps the plunger from tilting/rotating, and the collar bottoms on it
+    # plunger_travel before the tip would reach the switch housing, so a
+    # hard press loads the rib/case instead of the switch's solder joints.
+    attach_margin = 2.0  # rib plate extends this far beyond the plunger cross-section, to attach to nearby wall material
+    rib_len = p['rib_thickness']
+    rib_center = (g['rib_center_xy'][0], g['rib_center_xy'][1], z_center)
+    rib_plate = oriented_box_prism(root, rib_center, t3, z3, d3,
+                                    L + 2 * attach_margin, W + 2 * attach_margin, rib_len)
+    slot_L = L + 2 * p['rib_slot_clearance']
+    slot_W = W + 2 * p['rib_slot_clearance']
+    slot_body = oriented_box_prism(root, rib_center, t3, z3, d3, slot_L, slot_W, rib_len + 1.0)
+    rib_plate = combine_cut(root, rib_plate, [slot_body])
+    bodies['Top'] = combine_join(root, bodies['Top'], [rib_plate])
+
+    collar = p['collar']
+    collar_center = (g['collar_center_xy'][0], g['collar_center_xy'][1], z_center)
+    collar_body = oriented_box_prism(root, collar_center, t3, z3, d3,
+                                      L, W + 2 * collar['h'], collar['len'])
+    cap_body = combine_join(root, cap_body, [collar_body])
 
     cap_body.name = name
     bodies[name] = cap_body
@@ -1237,50 +1276,59 @@ def add_comms_bay(root, bodies, p):
     return bodies
 
 
+def _collect_occ_bodies(occ):
+    out = []
+    for b in occ.bRepBodies:
+        out.append(b)
+    for c in occ.childOccurrences:
+        out.extend(_collect_occ_bodies(c))
+    return out
+
+
 def _bbox_extents(occ):
-    bb = occ.boundingBox
-    dx = (bb.maxPoint.x - bb.minPoint.x) / MM
-    dy = (bb.maxPoint.y - bb.minPoint.y) / MM
-    dz = (bb.maxPoint.z - bb.minPoint.z) / MM
-    center = ((bb.minPoint.x + bb.maxPoint.x) / 2.0 / MM,
-              (bb.minPoint.y + bb.maxPoint.y) / 2.0 / MM,
-              (bb.minPoint.z + bb.maxPoint.z) / 2.0 / MM)
+    """occ.boundingBox is unreliable (reads back as degenerate 0,0,0)
+    immediately after addByInsert in the same script execution -- union
+    the actual bRepBody bounding boxes (world-space, per SPEC.md gotcha 6)
+    instead, which is correct right away."""
+    bodies = _collect_occ_bodies(occ)
+    assert bodies, 'inserted occurrence has no bRepBodies anywhere in its tree'
+    xs, ys, zs = [], [], []
+    for b in bodies:
+        bb = b.boundingBox
+        xs += [bb.minPoint.x, bb.maxPoint.x]
+        ys += [bb.minPoint.y, bb.maxPoint.y]
+        zs += [bb.minPoint.z, bb.maxPoint.z]
+    dx, dy, dz = (max(xs) - min(xs)) / MM, (max(ys) - min(ys)) / MM, (max(zs) - min(zs)) / MM
+    center = ((min(xs) + max(xs)) / 2.0 / MM, (min(ys) + max(ys)) / 2.0 / MM, (min(zs) + max(zs)) / 2.0 / MM)
     return dx, dy, dz, center
 
 
-def insert_board_best_effort(root, doc, target_center_mm, pcb_flat_axis='auto'):
-    """Insert `doc` at the identity transform, inspect its native bounding
-    box, and rigidly move it so its SMALLEST-extent local axis (assumed to
-    be the PCB thickness/component-height direction) points along world Z,
-    centered at target_center_mm.
+def insert_board_best_effort(root, doc, target_center_mm):
+    """Insert `doc` as a referenced occurrence.
 
-    SIMPLIFICATION / KNOWN LIMITATION (see README): this heuristic gets the
-    board roughly flat and roughly positioned without hand-inspecting each
-    board file's native authoring axes, but it does not attempt to resolve
-    in-plane (about-Z) rotation, silkscreen orientation, or which face is
-    'up' -- these boards are reference geometry for interference/clearance
-    checking, not for accurate connector-facing renders, and a human pass
-    in Fusion should confirm/nudge final orientation before it's load-bearing.
+    KNOWN LIMITATION -- NOT auto-positioned (see README "Known
+    Limitations"): every rigid-transform approach tried here proved
+    unreliable for these specific multi-level nested reference assemblies
+    (XIAO/Wio/L76K, 3-8 occurrence levels deep) within this generator run:
+    occ.transform accepted a pure-translation matrix in an isolated test
+    but silently reverted to identity when applied mid-build; re-reading
+    occ.transform.translation immediately after setting it DID show the
+    new value, yet the occurrence's own bRepBody bounding boxes (collected
+    recursively) sometimes reflected a stale position and sometimes an
+    inconsistently-scaled one (suggesting nested per-occurrence transforms
+    interacting in a way this generator doesn't control correctly);
+    moveFeatures rejected an Occurrence as an input entity outright, and a
+    Move of its constituent bodies failed too since they belong to the
+    referenced document's own component, not root's. Given that
+    instability, this returns the occurrence at the source document's
+    native (identity) placement rather than risk silently-wrong geometry --
+    a human pass in Fusion (drag it in the browser tree, or Move/Align) is
+    needed to actually seat XIAO/Wio/L76K in the bay. target_center_mm is
+    accepted but currently unused; kept in the signature so a future fix
+    (once the transform issue above is root-caused) is a one-line change
+    at the call sites in insert_comms_boards.
     """
     occ = root.occurrences.addByInsert(doc.dataFile, adsk.core.Matrix3D.create(), True)
-    dx, dy, dz, center = _bbox_extents(occ)
-    extents = {'x': dx, 'y': dy, 'z': dz}
-    thin_axis = min(extents, key=extents.get)
-
-    axis_vec = {'x': (1.0, 0.0, 0.0), 'y': (0.0, 1.0, 0.0), 'z': (0.0, 0.0, 1.0)}
-    remaining = [a for a in ('x', 'y', 'z') if a != thin_axis]
-    to_z = axis_vec[thin_axis]
-    to_x = axis_vec[remaining[0]]
-    to_y = axis_vec[remaining[1]]
-
-    mat = adsk.core.Matrix3D.create()
-    ok = mat.setToAlignCoordinateSystems(
-        P(*center), adsk.core.Vector3D.create(*to_x), adsk.core.Vector3D.create(*to_y),
-        adsk.core.Vector3D.create(*to_z),
-        P(*target_center_mm), adsk.core.Vector3D.create(1, 0, 0),
-        adsk.core.Vector3D.create(0, 1, 0), adsk.core.Vector3D.create(0, 0, 1))
-    assert ok
-    occ.transform = mat
     return occ
 
 
@@ -1307,6 +1355,12 @@ def insert_comms_boards(app, root, p):
             occs['l76k'] = insert_board_best_effort(root, l76k_doc, (lcx, lcy, p['bottom_z'] + 2.0 + 1.0))
         else:
             occs['l76k'] = insert_board_best_effort(root, l76k_doc, (stack_cx, stack_cy, z_floor + 6.1 + 12.0))
+
+    # not correctly positioned yet (see insert_board_best_effort's
+    # docstring) -- hide them so renders show the actual printable case
+    # rather than reference boards floating at their native coordinates.
+    for occ in occs.values():
+        occ.isLightBulbOn = False
     return occs
 
 
@@ -1393,6 +1447,12 @@ def check_interference(design, bodies, min_volume_mm3=_TOUCH_VOLUME_TOL_MM3):
         coll.add(b)
     interference_input = design.createInterferenceInput(coll)
     results = design.analyzeInterference(interference_input)
+    if results is None:
+        # analyzeInterference can return None for a very large/complex
+        # collection (e.g. hundreds of tiny nested SMT-component bodies
+        # from an inserted board reference) rather than raising -- treat as
+        # "could not be determined" instead of crashing the whole build.
+        return [('<unavailable>', 'analyzeInterference returned None for this collection')]
     count = results.count
     results_list = []
     for i in range(count):
@@ -1487,6 +1547,44 @@ def verify_m2(bodies_dict, p):
     lug_hole_open = not probe_point_solid(bottom, lug_hole_pt)
     results['lug_hole_open'] = (lug_hole_open, 'point on lug hole axis is empty (not solid)')
 
+    # plunger guide rib + inward stop collar (2026-09-04 addendum)
+    results['rib_slot_clearance_0.25'] = (abs(p['rib_slot_clearance'] - 0.25) < 1e-9, p['rib_slot_clearance'])
+    results['rib_thickness_1.6'] = (abs(p['rib_thickness'] - 1.6) < 1e-9, p['rib_thickness'])
+    results['plunger_travel_0.62'] = (abs(p['plunger_travel'] - 0.62) < 1e-9, p['plunger_travel'])
+    results['rib_inboard_offset_5_to_7'] = (5.0 <= p['rib_inboard_offset'] <= 7.0, p['rib_inboard_offset'])
+    buttons = [
+        ('Power Button', p['switch_power_bbox'], p['power_nub_dir'], p['power_cap']),
+        ('Home Button', dict(p['switch_home_bbox'], z=p['switch_power_bbox']['z']), p['home_nub_dir'], p['home_cap']),
+    ]
+    for name, switch_bbox, nub_dir, cap in buttons:
+        g = button_geometry(p, switch_bbox, nub_dir, cap)
+        rest_gap = g['s_rib_inner'] - g['s_collar_outer']
+        key = name.lower().replace(' ', '_')
+        results[f'{key}_collar_rib_gap_0.62'] = (abs(rest_gap - p['plunger_travel']) < 0.05, round(rest_gap, 4))
+
+        cap_body = bodies_dict.get(name)
+        rib_ok = True
+        if cap_body is not None:
+            # sample a handful of points spanning the rib plate's slot
+            # opening (in the cap's own local tangential/Z plane) and
+            # confirm none of them land inside the cap body -- i.e. the cap
+            # does not intersect the rib's actual MATERIAL (outside the
+            # slot opening, not the slot's clear center where the plunger
+            # is *supposed* to pass through).
+            d2, t2 = g['d'], g['t']
+            L, W = cap['stadium']
+            zc = (cap['z'][0] + cap['z'][1]) / 2.0
+            s_mid = (g['s_rib_outer'] + g['s_rib_inner']) / 2.0
+            cx, cy = g['housing_xy'][0] + s_mid * d2[0], g['housing_xy'][1] + s_mid * d2[1]
+            # just outside the slot opening, well inside the rib plate footprint
+            edge_u = L / 2.0 + p['rib_slot_clearance'] + 0.5
+            edge_z = W / 2.0 + p['rib_slot_clearance'] + 0.5
+            for du, dz in ((edge_u, 0.0), (-edge_u, 0.0), (0.0, edge_z), (0.0, -edge_z)):
+                pt = P(cx + du * t2[0], cy + du * t2[1], zc + dz)
+                if probe_point_solid(cap_body, pt):
+                    rib_ok = False
+        results[f'{key}_cap_clears_rib'] = (rib_ok, 'cap body does not occupy the rib material area around the slot')
+
     return results
 
 
@@ -1547,6 +1645,62 @@ def verify(design, params):
     }
 
 
+EXPORT_BODY_NAMES = ['Bottom', 'Top', 'Screen Plate', 'Power Button', 'Home Button']
+
+
+def export_stls(design, bodies, variant, base_dir):
+    out_dir = os.path.join(base_dir, 'export', variant)
+    os.makedirs(out_dir, exist_ok=True)
+    export_mgr = design.exportManager
+    paths = {}
+    for name in EXPORT_BODY_NAMES:
+        body = bodies[name]
+        fname = name.replace(' ', '_') + '.stl'
+        path = os.path.join(out_dir, fname)
+        opts = export_mgr.createSTLExportOptions(body, path)
+        opts.isBinaryFormat = True
+        export_mgr.execute(opts)
+        paths[name] = path
+    return paths
+
+
+def _set_ortho_camera(app, eye_mm, target_mm, up):
+    viewport = app.activeViewport
+    cam = viewport.camera
+    cam.cameraType = adsk.core.CameraTypes.OrthographicCameraType
+    cam.eye = P(*eye_mm)
+    cam.target = P(*target_mm)
+    cam.upVector = adsk.core.Vector3D.create(*up)
+    cam.isFitView = True
+    viewport.camera = cam
+    return viewport
+
+
+def take_orthographic_screenshots(app, params, out_dir, prefix, width=1000, height=1000):
+    """4 orthographic renders per SPEC.md M4: front, top, right, and an
+    isometric. Per SPEC.md's gotcha 7, the camera must be Orthographic
+    (perspective + explicit viewExtents raises), and cam.isFitView=True
+    after setting eye/target/upVector auto-computes sane extents."""
+    ay, by = params['spine_a'][1], params['spine_b'][1]
+    target = (0.0, (ay + by) / 2.0, params['top_z'] / 2.0)
+    d = params['outer_radius'] * 6.0
+    views = {
+        'front': ((0.0, target[1] - d, target[2]), (0, 0, 1)),
+        'top': ((0.0, target[1], target[2] + d), (0, 1, 0)),
+        'right': ((d, target[1], target[2]), (0, 0, 1)),
+        'iso': ((d * 0.7, target[1] - d * 0.7, target[2] + d * 0.7), (0, 0, 1)),
+    }
+    os.makedirs(out_dir, exist_ok=True)
+    paths = []
+    for name, (eye, up) in views.items():
+        viewport = _set_ortho_camera(app, eye, target, up)
+        path = os.path.join(out_dir, f'{prefix}_{name}.png')
+        ok = viewport.saveAsImageFile(path, width, height)
+        if ok:
+            paths.append(path)
+    return paths
+
+
 def _find_or_create_doc(app, doc_name):
     for d in app.documents:
         if d.name == doc_name:
@@ -1557,9 +1711,11 @@ def _find_or_create_doc(app, doc_name):
     return doc
 
 
-def run(_context: str, variant=None):
+def run(_context: str, variant=None, export=False):
     """variant: optional override ('current' | 'trim'); defaults to the
-    module-level VARIANT (currently 'trim', Jake's default)."""
+    module-level VARIANT (currently 'trim', Jake's default).
+    export: if True, also runs M4 (STL export + 4 orthographic screenshots
+    into SCRATCH_DIR, copied into hardware/case/renders/)."""
     global PARAMS
     params = _VARIANTS[variant] if variant else PARAMS
 
@@ -1598,3 +1754,22 @@ def run(_context: str, variant=None):
     expected_names = sorted(['Bottom', 'Screen Plate', 'Top', 'Power Button', 'Home Button'])
     assert result['body_names'] == expected_names, result['body_names']
     print('OK: M1+M2 probes passed')
+
+    if export:
+        stl_paths = export_stls(design, bodies, params['variant'], _HERE)
+        print('STL exports:')
+        for name, path in stl_paths.items():
+            print('  ', name, '->', path)
+
+        shot_paths = take_orthographic_screenshots(app, params, SCRATCH_DIR, params['variant'])
+        renders_dir = os.path.join(_HERE, 'renders')
+        os.makedirs(renders_dir, exist_ok=True)
+        import shutil
+        copied = []
+        for p_ in shot_paths:
+            dst = os.path.join(renders_dir, os.path.basename(p_))
+            shutil.copyfile(p_, dst)
+            copied.append(dst)
+        print('renders:')
+        for p_ in copied:
+            print('  ', p_)

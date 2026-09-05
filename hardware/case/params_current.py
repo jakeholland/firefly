@@ -101,9 +101,17 @@ PARAMS = {
     'power_cap': {'stadium': (10.0, 5.8), 'z': (13.8, 19.6), 'proud': 0.45, 'y_center': 29.7},
     'home_cap': {'stadium': (8.94, 6.6), 'z': (13.4, 20.0), 'proud': 0.45},
     'wall_hole_clearance': 0.25,
-    'plunger_tip_gap': 0.02,
+    'plunger_tip_gap': 0.02,   # gap at FULL PRESS (collar bottomed on the rib), not at rest
     'nub_pocket': {'xy': (1.3, 1.6), 'depth': 0.8},
     'tab': {'w': 2.9, 'h': 2.0, 'gap': 0.60},
+    # plunger guide rib + inward stop collar (added 2026-09-04 per Jake's
+    # print-test feedback: caps bound, and a hard press loaded the switch's
+    # solder joints with nothing else to stop inward travel).
+    'rib_thickness': 1.6,        # along the plunger travel axis
+    'rib_slot_clearance': 0.25,  # per side, around the plunger cross-section
+    'rib_inboard_offset': 6.0,   # rib's outboard face, mm inboard of the outer wall (5-7mm range)
+    'plunger_travel': 0.62,      # rest-to-bottomed inward travel before the collar hits the rib
+    'collar': {'h': 0.8, 'len': 1.0},  # h = extra flange height beyond the plunger cross-section (Z); len = along travel axis
     # wall_x (the -x outer wall, where the buttons live) is derived at build
     # time as -PARAMS['outer_radius'] -- not duplicated here so it can never
     # drift out of sync between variants.
