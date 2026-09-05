@@ -55,30 +55,21 @@ PARAMS['screws_ABC'] = _screws
 PARAMS['lip_r'] = (24.95, 25.75)
 PARAMS['anchor_r'] = (24.95, 26.40)
 
-# --- lanyard lug: same 8.5mm protrusion beyond the (now closer) wall ---
+# --- lanyard lug/ear: no override needed (2026-09-06 pass 6) ---
+# The ear's position is now derived at BUILD TIME from the shell's TRUE
+# curved surface (true_wall_distance_along_ray, in lug_ear_geometry) from
+# the variant-independent width/protrusion/hole_dia/hole_from_tip/
+# fillet_r/hole_chamfer in PARAMS['lug'] (inherited unmodified from
+# params_current.py) -- it can never drift out of sync with outer_radius
+# the way the old hand-picked y_root/y_tip constants could.
 _OLD_WALL_Y = _BASE['spine_a'][1] - _BASE['outer_radius']   # -30 (current)
 _NEW_WALL_Y = PARAMS['spine_a'][1] - PARAMS['outer_radius']  # -28 (trim)
-_PROTRUSION = _BASE['lug']['y_root'] - _OLD_WALL_Y  # buried depth is negative;
-# recompute using the tip, which is the quantity Jake specified directly:
-_TIP_PROTRUSION = abs(_BASE['lug']['y_tip'] - _OLD_WALL_Y)  # 8.5mm
-_BURIED = _BASE['lug']['y_root'] - _OLD_WALL_Y  # -3.5mm (root sits inside the wall)
-
-lug = dict(PARAMS['lug'])
-lug['y_tip'] = _NEW_WALL_Y - _TIP_PROTRUSION            # -28 - 8.5 = -36.5
-lug['y_root'] = _NEW_WALL_Y + _BURIED                    # -28 - 3.5 = -31.5... see note
-# Jake's note gives the root as buried in the wall; keep the same 3.5mm burial
-# depth measured from the new wall position:
-lug['y_root'] = _NEW_WALL_Y + (_BASE['lug']['y_root'] - _OLD_WALL_Y)
-# hole sits 5mm from the tip (same offset as the current variant)
-_HOLE_OFFSET_FROM_TIP = _BASE['lug']['hole_xy'][1] - _BASE['lug']['y_tip']  # +5.0
-lug['hole_xy'] = (_BASE['lug']['hole_xy'][0], lug['y_tip'] + _HOLE_OFFSET_FROM_TIP)
-PARAMS['lug'] = lug
 
 # --- lug relief box in the Top lip/anchor rings: same offsets from the wall
-#     as the current variant (0.5mm and 4.0mm inside the wall) ---
+#     as the current variant ---
 _box = dict(PARAMS['lug_relief_box'])
-_old_off_lo = _BASE['lug_relief_box']['y'][0] - _OLD_WALL_Y   # 0.5
-_old_off_hi = _BASE['lug_relief_box']['y'][1] - _OLD_WALL_Y   # 4.0
+_old_off_lo = _BASE['lug_relief_box']['y'][0] - _OLD_WALL_Y
+_old_off_hi = _BASE['lug_relief_box']['y'][1] - _OLD_WALL_Y
 _box['y'] = (_NEW_WALL_Y + _old_off_lo, _NEW_WALL_Y + _old_off_hi)
 PARAMS['lug_relief_box'] = _box
 
