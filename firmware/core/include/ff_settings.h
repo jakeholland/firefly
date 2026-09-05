@@ -15,6 +15,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "ff_crew.h" /* FF_CREW_MAX — the persisted paired-list's cap, S12/S04 [api] */
 #include "ff_geo.h"
 #include "ff_store.h"
 
@@ -212,7 +213,46 @@ typedef struct {
      * you tap dozens of times a festival, so this ships silent and the
      * maintainer can flip the default later if the field disagrees. */
     bool ui_ticks;
+
+    /* [api] format v10 amendment (S12/S04 — "pairing v1 = channel
+     * membership + explicit crew list", docs/specs/S04-firefly-protocol.md;
+     * S02's `ff_crew_upsert`/`ff_crew_set_paired`) — the PERSISTED paired
+     * roster, so a puck that pairs its crew in the field keeps them across
+     * a reboot instead of re-hearing-and-re-pairing every session.
+     *
+     * `paired_ids[0..paired_count)` are Meshtastic node ids, in the order
+     * they were (re-)paired — the shell replays them through
+     * `ff_shell_pair` on boot, in this order, which is also the roster
+     * slot order `ff_crew_upsert`'s find-or-create assigns (S16's
+     * `shell_pair` colors each new slot once, by insertion order). `paired_
+     * count` is the authoritative length; bytes past it are leftover and
+     * MUST NOT be read — same "the count is truth, not the array's
+     * contents past it" convention `ff_heard_t.count`/`ff_crew_t.count`
+     * already use.
+     *
+     * Bounded to `FF_CREW_MAX` (S02) — the roster itself can never hold
+     * more, so this list can never legitimately need more either; a
+     * `paired_count` above `FF_CREW_MAX` in a loaded blob is corrupt, not
+     * a bigger crew, and callers must never read past `FF_CREW_MAX` here
+     * regardless of what a hostile/corrupt blob's count claims (see the
+     * struct's own _Static_assert below and `ff_settings_load`'s clamp).
+     *
+     * Default (a fresh puck, or ANY migration into this format from an
+     * older one, v9 included) is the EMPTY list (`paired_count == 0`) —
+     * a pre-v10 puck genuinely had no persisted crew (pairing lived only
+     * in RAM, lost every reboot), so "nobody yet" is the honest reading
+     * of "this puck never had the field", not a guess. Never derived from
+     * `ff_crew_t` at migration time (core settings code has no crew
+     * roster to read from — see ff_settings.c's v10 migration comment). */
+    uint32_t paired_ids[FF_CREW_MAX];
+    uint8_t  paired_count;
 } ff_settings_t;
+
+/* The persisted paired-list can never legitimately exceed the roster it
+ * mirrors — a format change to FF_CREW_MAX must be a deliberate, reviewed
+ * settings-format bump (it changes this struct's layout), not a silent
+ * array-size drift. */
+_Static_assert(FF_CREW_MAX <= UINT8_MAX, "paired_count (uint8_t) can't index a larger FF_CREW_MAX");
 
 /* ff_geo_cal_t must fit the persisted-layout budget above — a layout
  * change to it (or a bump to FF_SETTINGS_CAL_BLOB_LEN) is a settings

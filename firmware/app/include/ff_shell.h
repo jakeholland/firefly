@@ -492,8 +492,26 @@ typedef struct {
  * test_shell.c red-flag check still catches that), and a ~32 KB static
  * shell remains comfortable in the S3's 512 KB SRAM; this stays a
  * runaway-growth tripwire, not a hardware limit.
+ *
+ * RAISED 32.5 KB -> 35 KB in S12/S04 (the persisted crew roster + the
+ * CREW pairing screen), deliberately, per this comment's own instruction:
+ * two additions. (1) The shell's own heard-name cache
+ * (`heard_names[FF_HEARD_MAX]`, S12/S04 — see that field's doc comment on
+ * `shell_t`) is a small, one-copy addition (16 * 20 B = 320 B). (2) The
+ * CREW page (`ff_app_crew_page_t`, embedded in `ff_app_state_t.settings`)
+ * lands TWICE via the `view` + `prev_key` render-key copies, the same
+ * "real view-model state, doubled" shape S22/S24's own raises above
+ * describe — FF_CREW_MAX (8) paired rows + FF_APP_CREW_HEARD_MAX (16)
+ * heard rows per copy. Measured, not estimated: sizeof(shell_t) is
+ * 34,952 B against the old 33,280 B budget (a hard compile failure). 35 KB
+ * (35,840 B) clears it with ~888 B headroom — same tight-round-number
+ * discipline as the earlier raises. Still REAL view-model state (a
+ * pack-embed would add ~23.7 KB more at once — the test_shell.c red-flag
+ * check still catches that), and a ~35 KB static shell remains comfortable
+ * in the S3's 512 KB SRAM; this stays a runaway-growth tripwire, not a
+ * hardware limit.
  */
-#define FF_SHELL_BYTES 33280u
+#define FF_SHELL_BYTES 35840u
 
 /** Alignment of the opaque payload. 8 covers every member the shell
  *  holds today (the widest are `double` inside `ff_latlon_t` and

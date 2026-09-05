@@ -146,6 +146,29 @@ typedef struct {
     /* --- core domain state ------------------------------------------- */
     ff_crew_t crew;
     ff_heard_t heard;
+    /* S12/S04 — heard-but-unpaired nodes' NAMES, kept in the shell (NOT in
+     * `ff_heard_t` itself — core's `ff_heard.h` deliberately carries only
+     * `node_id`/`last_heard_ms`; identity is a meshclient-nodeDB fact and
+     * `ff_heard.h`'s own doc comment already draws that "app is the
+     * consumer, not the owner" line for the LIST — a name cache is no
+     * different). Capped like `ff_heard` (`FF_HEARD_MAX`), same "bounded,
+     * evictable" contract, kept loosely in sync with it rather than
+     * index-identical: `ff_heard_note`/`_remove` can shuffle/evict entries
+     * internally with no way for a caller to observe which physical slot
+     * moved, so this cache is synced by NODE ID, not by array position —
+     * see `shell_heard_name_note`/`shell_heard_name_forget` below. A slot
+     * whose `node_id` is no longer tracked by `sh->heard` is stale and
+     * free to be reused the next time a NEW id needs naming; this is what
+     * lets the cache "follow" heard's own LRU eviction without owning any
+     * eviction policy of its own. Only ever fed from a NodeInfo's short/
+     * long name (shell_ev_node), never invented — a heard id that has
+     * never sent a NodeInfo (or sent one with neither name field set)
+     * simply has no entry here, and the CREW screen (S12) renders that
+     * honestly as a short id, never a fabricated name. */
+    struct {
+        uint32_t node_id;
+        char     name[16]; /* ff_crew_member_t.name's own capacity/convention */
+    } heard_names[FF_HEARD_MAX];
     ff_feed_t feed;
     ff_flare_t flare;
     /* S10 quick flare (docs/specs/S10-flare.md's Amendments, 2026-09-03;
@@ -176,6 +199,14 @@ typedef struct {
     uint32_t multitap_run_gaps_ms[FF_MULTITAP_COUNT - 1u];
     uint8_t multitap_run_n;
     ff_settings_t settings;
+    /* S12/S04 — transient (never persisted itself), set only for the
+     * duration of ff_shell_init's boot re-pair replay loop. See
+     * shell_sync_paired_settings's doc comment for why replaying the
+     * very list that was just loaded must not re-write it to the store,
+     * and why a flag (rather than relying solely on the post-loop
+     * byte-equality check) is what keeps a crash mid-replay from ever
+     * leaving NVS holding a truncated prefix of the real list. */
+    bool paired_sync_suppressed;
     ff_wall_state_t wall;
     ff_radar_smooth_t smooth;
     ff_route_t route;
@@ -220,6 +251,14 @@ typedef struct {
      * INBOX — a fresh entry always lands on the inbox. */
     ff_inbox_subview_t inbox_subview;
     uint32_t         inbox_thread_node;
+
+    /* S12/S04 — the Settings SUB-VIEW state (plain list / CREW page),
+     * same shape as inbox_subview above: persistent for the same "the
+     * view is memset per tick" reason, mutated only by the
+     * FF_INTENT_SETTINGS_OPEN_CREW / BACK intent handlers. Leaving the
+     * Settings face resets to LIST — a fresh entry always lands on the
+     * plain settings list, never a stale CREW page. */
+    ff_settings_subview_t settings_subview;
 
     /* S22 slice d — the RALLY-to-WHOLE_CREW confirm state machine (AC4:
      * "the one loud broadcast requires a confirm"). A first RALLY tap while
@@ -439,6 +478,83 @@ static void shell_copy_str(char *dst, size_t n, char const *src)
 }
 
 /**
+ * shell_heard_name_note — record (or refresh) `node_id`'s display name in
+ * the heard-name cache (see `heard_names`' own doc comment on `shell_t`).
+ * No-op for an empty `name` — a NodeInfo with neither short nor long name
+ * set teaches nothing, and must never overwrite an already-known name with
+ * blank ignorance.
+ *
+ * Sync strategy: an existing entry for `node_id` is refreshed in place;
+ * otherwise the first STALE slot (one whose `node_id` `sh->heard` no
+ * longer tracks — i.e. already LRU-evicted from the list this cache
+ * shadows) is reused. If every slot is currently fresh (every id in the
+ * cache is still tracked by `sh->heard`) there is nothing safe to evict —
+ * `ff_heard_note` (called immediately before this, from `shell_ev_node`)
+ * has ALREADY evicted whatever it needed to make room in `sh->heard`
+ * itself when the list was full, so exactly one cache slot's `node_id`
+ * is guaranteed stale in that case; a full cache with no stale slot only
+ * happens when `sh->heard` itself has room to spare, in which case this
+ * is genuinely a new name with nowhere to go and is silently dropped
+ * (the CREW screen falls back to the honest short-id render for it,
+ * never a fabrication — same fallback an always-unnamed heard node
+ * gets).
+ */
+static void shell_heard_name_note(shell_t *sh, uint32_t node_id, char const *name)
+{
+    if (sh == NULL || name == NULL || name[0] == '\0') return;
+
+    int free_slot = -1;
+    for (uint8_t i = 0; i < FF_HEARD_MAX; i++) {
+        if (sh->heard_names[i].node_id == node_id && sh->heard_names[i].name[0] != '\0') {
+            shell_copy_str(sh->heard_names[i].name, sizeof(sh->heard_names[i].name), name);
+            return;
+        }
+    }
+    for (uint8_t i = 0; i < FF_HEARD_MAX; i++) {
+        if (sh->heard_names[i].name[0] == '\0') {
+            free_slot = (int)i;
+            break;
+        }
+        if (!ff_heard_contains(&sh->heard, sh->heard_names[i].node_id)) {
+            free_slot = (int)i; /* stale: sh->heard already evicted this id */
+            break;
+        }
+    }
+    if (free_slot < 0) return; /* nothing safe to reuse right now (see doc comment) */
+
+    sh->heard_names[free_slot].node_id = node_id;
+    shell_copy_str(sh->heard_names[free_slot].name, sizeof(sh->heard_names[free_slot].name), name);
+}
+
+/** shell_heard_name_forget — clear `node_id`'s cached name, if any. Called
+ * alongside every `ff_heard_remove` so the two never disagree about
+ * whether an id is still tracked (see `shell_ev_my_info`'s self-purge). */
+static void shell_heard_name_forget(shell_t *sh, uint32_t node_id)
+{
+    if (sh == NULL) return;
+    for (uint8_t i = 0; i < FF_HEARD_MAX; i++) {
+        if (sh->heard_names[i].node_id == node_id && sh->heard_names[i].name[0] != '\0') {
+            sh->heard_names[i].node_id = 0;
+            sh->heard_names[i].name[0] = '\0';
+            return;
+        }
+    }
+}
+
+/** shell_heard_name_lookup — `node_id`'s cached name, or "" if none is
+ * known. Never NULL. */
+static char const *shell_heard_name_lookup(shell_t const *sh, uint32_t node_id)
+{
+    if (sh == NULL) return "";
+    for (uint8_t i = 0; i < FF_HEARD_MAX; i++) {
+        if (sh->heard_names[i].node_id == node_id && sh->heard_names[i].name[0] != '\0') {
+            return sh->heard_names[i].name;
+        }
+    }
+    return "";
+}
+
+/**
  * Translate `p`'s provenance/precision into core's own small vocabulary
  * (`ff_crew_pos_meta_t`) — issue #33's "core never sees Meshtastic enums"
  * boundary rule, applied at exactly one place shared by both position
@@ -533,6 +649,44 @@ static bool shell_drop_as_self(shell_t const *sh, uint32_t node_id)
 }
 
 /**
+ * shell_sync_paired_settings — rebuild `sh->settings.paired_ids`/
+ * `paired_count` (S12/S04, format v10) from the CURRENT roster's paired
+ * members, in roster SLOT order — which is also pairing order, since v1
+ * never evicts or reorders (`ff_crew_upsert`'s find-or-create, ff_crew.h)
+ * — and persist through the existing settings-save seam iff the derived
+ * list actually differs from what is already stored (byte-for-byte,
+ * count included). That equality check is what makes replaying the very
+ * list `ff_shell_init`'s boot re-pair just loaded cost no extra NVS
+ * write: only a REAL pair/unpair (a list that actually changed) ever
+ * saves. Called from the one audited roster-growth/shrink path,
+ * `shell_pair`, so every caller of `ff_shell_pair` (the pairing UI, S12)
+ * AND the sim-only --dev-trust-all auto-pair branch (shell_ev_node) get
+ * persistence for free, with no second seam to keep in sync.
+ */
+static void shell_sync_paired_settings(shell_t *sh)
+{
+    uint32_t ids[FF_CREW_MAX];
+    uint8_t count = 0;
+    for (uint8_t i = 0; i < sh->crew.count; i++) {
+        if (sh->crew.members[i].paired) {
+            ids[count++] = sh->crew.members[i].node_id;
+        }
+    }
+
+    bool const changed = (sh->settings.paired_count != count) ||
+                          (memcmp(sh->settings.paired_ids, ids, (size_t)count * sizeof(ids[0])) != 0);
+    if (!changed) return;
+
+    sh->settings.paired_count = count;
+    memset(sh->settings.paired_ids, 0, sizeof(sh->settings.paired_ids));
+    memcpy(sh->settings.paired_ids, ids, (size_t)count * sizeof(ids[0]));
+
+    if (sh->store != NULL && !sh->paired_sync_suppressed) {
+        ff_settings_save(&sh->settings, sh->store);
+    }
+}
+
+/**
  * The one internal path that may grow the roster — ff_shell_pair's body,
  * shared with the sim-only auto-pair branch in shell_ev_node so both go
  * through a single audited place.
@@ -558,6 +712,13 @@ static bool shell_pair(shell_t *sh, uint32_t node_id, bool paired)
         m->color_idx = slot;
     }
     ff_crew_set_paired(&sh->crew, node_id, paired);
+
+    /* S12/S04, format v10 — write the persisted paired list back through
+     * the existing settings-save seam on every pair/unpair (see
+     * shell_sync_paired_settings's own doc comment for why this is the
+     * one place that needs to). */
+    shell_sync_paired_settings(sh);
+
     return true;
 }
 
@@ -927,6 +1088,7 @@ static void shell_ev_my_info(void *u, uint32_t my_node_id)
      * entry the moment we learn who we are, which covers every ordering.
      * Pinned by S16_b2_my_info_purges_our_own_id_from_heard. */
     (void)ff_heard_remove(&sh->heard, my_node_id);
+    shell_heard_name_forget(sh, my_node_id); /* S12/S04 — keep the name cache in sync with the purge above */
 }
 
 static void shell_ev_node(void *u, mc_nodeinfo_t const *n)
@@ -968,6 +1130,12 @@ static void shell_ev_node(void *u, mc_nodeinfo_t const *n)
     }
 #endif
 
+    /* Read once, used by both branches below: the paired-member name
+     * write-through AND the heard-name cache (S12/S04 — a heard node's
+     * name, if any, is worth remembering for the CREW screen's "add from
+     * heard nodes" list even though it isn't in the roster yet). */
+    char const *name = n->has_short_name ? n->short_name : (n->has_long_name ? n->long_name : "");
+
     /* ROSTER TRUST POLICY. Read-only first; a miss is noted in the
      * bounded heard list and dropped. Inbound radio traffic never grows
      * the roster — not even a NodeInfo, which is the friendliest-looking
@@ -975,10 +1143,10 @@ static void shell_ev_node(void *u, mc_nodeinfo_t const *n)
     ff_crew_member_t *m = shell_member(sh, n->node_num);
     if (m == NULL) {
         ff_heard_note(&sh->heard, n->node_num, now);
+        shell_heard_name_note(sh, n->node_num, name); /* S12/S04 — no-op if `name` is empty */
         return;
     }
 
-    char const *name = n->has_short_name ? n->short_name : (n->has_long_name ? n->long_name : "");
     if (name[0] != '\0') {
         shell_copy_str(m->name, sizeof(m->name), name);
         m->initial = name[0];
@@ -1666,6 +1834,87 @@ static void shell_project_settings(shell_t const *sh, ff_app_settings_t *out)
 }
 
 /**
+ * shell_project_crew_page — the CREW sub-view (S12/S04), built EVERY
+ * tick regardless of `subview` (the `ff_app_rally_t` precedent
+ * documents building only while the sub-view is showing; this one is
+ * cheap and small enough — FF_CREW_MAX=8 + FF_APP_CREW_HEARD_MAX=16
+ * fixed rows, no per-row string formatting heavier than ff_fmt_age — that
+ * building it unconditionally is simpler than gating it, and it means a
+ * fixture/test can author `settings.crew` without also faking `subview`
+ * into CREW first).
+ *
+ * PAIRED rows mirror `ff_inbox_build`'s own member-row construction
+ * (core/src/ff_inbox.c) — same honest presence legs fed to
+ * `ff_sigview_presence`, REUSED rather than reimplemented, per the S12
+ * brief. HEARD rows draw from `sh->heard` (bounded/evictable, core) with
+ * names from the shell's own `heard_names` cache (never fabricated — see
+ * that field's doc comment) and an honest short-id fallback
+ * (`shell_short_id`, below) when no name has ever arrived.
+ */
+static void shell_short_id(uint32_t node_id, char *buf, size_t n)
+{
+    /* Honest short id fallback for a heard node with no known name: the
+     * low 16 bits of the node id, hex, matching the mesh's own "last 4
+     * hex digits of the !hhhhhhhh node id" shorthand (the task brief's
+     * own example: "!8f502220" -> "2220") — a deterministic function of
+     * data the puck genuinely has, never an invented name. */
+    snprintf(buf, n, "%04x", (unsigned)(node_id & 0xFFFFu));
+}
+
+static void shell_project_crew_page(shell_t const *sh, uint32_t now_ms, ff_app_settings_t *out)
+{
+    out->subview = sh->settings_subview;
+
+    ff_app_crew_page_t *cw = &out->crew;
+
+    for (uint8_t i = 0; i < sh->crew.count && cw->paired_count < FF_CREW_MAX; i++) {
+        ff_crew_member_t const *m = &sh->crew.members[i];
+        if (!m->paired) continue;
+
+        ff_app_crew_paired_row_t *row = &cw->paired[cw->paired_count++];
+        row->node_id = m->node_id;
+        shell_copy_str(row->name, sizeof(row->name), m->name);
+        row->initial = m->initial;
+        row->color_idx = m->color_idx;
+
+        /* Same honest presence legs ff_inbox_build (core/src/ff_inbox.c)
+         * feeds ff_sigview_presence — position freshness + direct-packet
+         * RSSI age; ASSERTED/NEVER contribute nothing (ff_sigview.h). */
+        ff_freshness_t const fresh = ff_crew_freshness(m, now_ms);
+        uint32_t const pos_age = now_ms - m->pos_age_ms;
+        bool const have_rssi = (m->rssi_dbm != INT16_MIN);
+        uint32_t const rssi_age = now_ms - m->rssi_age_ms;
+
+        uint32_t age = 0;
+        row->presence = ff_sigview_presence(fresh, pos_age, have_rssi, rssi_age, &age);
+        row->presence_age_ms = (row->presence == FF_PRESENCE_LINKED) ? 0u : age;
+    }
+    cw->roster_full = (sh->crew.count >= FF_CREW_MAX);
+
+    uint8_t const heard_n = ff_heard_count(&sh->heard);
+    for (uint8_t i = 0; i < heard_n && cw->heard_count < FF_APP_CREW_HEARD_MAX; i++) {
+        ff_heard_entry_t const *he = ff_heard_at(&sh->heard, i);
+        if (he == NULL) continue;
+
+        ff_app_crew_heard_row_t *row = &cw->heard[cw->heard_count++];
+        row->node_id = he->node_id;
+
+        char const *name = shell_heard_name_lookup(sh, he->node_id);
+        row->has_name = (name[0] != '\0');
+        shell_copy_str(row->name, sizeof(row->name), name);
+        shell_short_id(he->node_id, row->short_id, sizeof(row->short_id));
+
+        /* Raw — see ff_app_crew_heard_row_t's own doc comment on why this
+         * is not pre-formatted here (the CREW screen calls ff_fmt_age
+         * itself; shell_render_key coarsens this same raw value for the
+         * dirty-bit comparison). */
+        row->age_ms = now_ms - he->last_heard_ms;
+    }
+
+    cw->link_connected = (sh->link == FF_SHELL_LINK_CONNECTED);
+}
+
+/**
  * The Map face (S09).
  *
  * Honest-empty unless a pack is loaded with a KNOWN origin: every
@@ -1795,6 +2044,12 @@ static void shell_project(shell_t *sh, uint32_t now_ms)
         sh->inbox_subview     = FF_INBOX_SUB_INBOX;
         sh->inbox_thread_node = 0u;
     }
+    /* S12/S04 — same reset, for the Settings face's own CREW sub-view:
+     * leaving Settings always drops back to the plain list, so a fresh
+     * entry never opens straight onto a stale CREW page. */
+    if (sh->view.active_face != FF_APP_FACE_SETTINGS && sh->prev_face == FF_APP_FACE_SETTINGS) {
+        sh->settings_subview = FF_SETTINGS_SUB_LIST;
+    }
     sh->prev_face = sh->view.active_face;
 
     ff_radar_compute(&sh->view.radar, &sh->smooth, &sh->crew, sh->heading_deg, sh->my_pos, sh->my_pos_ok,
@@ -1841,6 +2096,7 @@ static void shell_project(shell_t *sh, uint32_t now_ms)
      * (shell_render_key) for exactly that reason. */
     sh->view.quick_flare_pending = ff_multitap_pending(&sh->multitap, now_ms);
     shell_project_settings(sh, &sh->view.settings);
+    shell_project_crew_page(sh, now_ms, &sh->view.settings); /* S12/S04 */
     shell_project_map(sh, &sh->view.map);
     shell_project_banner(sh, now_ms, &sh->view.banner); /* S26(d) */
 
@@ -2054,6 +2310,25 @@ static void shell_render_key(ff_app_state_t const *v, ff_app_state_t *key)
     }
     for (uint8_t i = key->inbox.inbox.conv_count; i < FF_INBOX_MAX_CONVS; i++) {
         memset(&key->inbox.inbox.convs[i], 0, sizeof(key->inbox.inbox.convs[i]));
+    }
+
+    /* S12/S04 — the CREW page's own two raw-age fields, same coarsening
+     * discipline as the inbox convs immediately above (this is the exact
+     * bug those comments warn against: a raw ms field left unmasked here
+     * dirties the WHOLE key every tick, not just this page's — found by
+     * S24_AC8_presence_age_keys_rendered_bucket_only/S24c_AC8_thread_
+     * header_presence_keys_rendered_bucket going red the moment this
+     * struct's presence_age_ms was added un-coarsened, since the same
+     * roster member's crew-page row ticks on every frame regardless of
+     * which face is actually visible). */
+    for (uint8_t i = 0; i < key->settings.crew.paired_count && i < FF_CREW_MAX; i++) {
+        ff_app_crew_paired_row_t *kp = &key->settings.crew.paired[i];
+        kp->presence_age_ms = (v->settings.crew.paired[i].presence == FF_PRESENCE_SEEN)
+                                   ? shell_coarsen_age_ms(v->settings.crew.paired[i].presence_age_ms)
+                                   : 0u;
+    }
+    for (uint8_t i = 0; i < key->settings.crew.heard_count && i < FF_APP_CREW_HEARD_MAX; i++) {
+        key->settings.crew.heard[i].age_ms = shell_coarsen_age_ms(v->settings.crew.heard[i].age_ms);
     }
 
     /* S26 slice d — the banner's age, same coarsened-age discipline as
@@ -2482,6 +2757,37 @@ int ff_shell_init(ff_shell_t *sh_pub, ff_shell_cfg_t const *cfg)
     /* Settings are loaded at init and never re-read per tick (S16
      * "Behavior"). A NULL store yields the exact defaults. */
     ff_settings_load(&sh->settings, sh->store);
+
+    /* S12/S04 [api] — boot re-pair: replay the persisted paired list, in
+     * STORED order (which is also pairing order — see
+     * ff_settings.h's doc comment on `paired_ids`), through
+     * `ff_shell_pair` — THE one sanctioned roster-growth path (its own
+     * doc comment; do not add a second one here). `paired_count` was
+     * already clamped to FF_CREW_MAX by `ff_settings_load` itself, so
+     * this can never iterate past `paired_ids`' own bound regardless of
+     * what a corrupt/foreign blob's count claimed, and the freshly-
+     * `ff_crew_init`-ed roster above is empty, so every one of these
+     * calls succeeds (no eviction, nothing already occupying a slot).
+     *
+     * The loaded list is copied to a LOCAL snapshot first and the loop
+     * bound is read from THAT copy, not from `sh->settings.paired_count`
+     * live — `ff_shell_pair` -> `shell_pair` -> `shell_sync_paired_
+     * settings` rewrites `sh->settings.paired_count`/`paired_ids` in
+     * place on every call (to whatever the roster holds SO FAR), so a
+     * loop bound read from the live field would shrink out from under
+     * itself after the very first iteration and silently replay only one
+     * id. Suppressed from re-writing NVS for the duration
+     * (`shell_sync_paired_settings`'s own doc comment): replaying exactly
+     * what was just loaded must converge back to the same bytes, not
+     * bounce the store through every partial prefix on the way there. */
+    uint32_t boot_paired_ids[FF_CREW_MAX];
+    uint8_t const boot_paired_count = sh->settings.paired_count;
+    memcpy(boot_paired_ids, sh->settings.paired_ids, sizeof(boot_paired_ids));
+    sh->paired_sync_suppressed = true;
+    for (uint8_t i = 0; i < boot_paired_count; i++) {
+        (void)ff_shell_pair(sh_pub, boot_paired_ids[i], true);
+    }
+    sh->paired_sync_suppressed = false;
 
     sh->my_pos_ok = false;
     sh->heading_deg = -1.0f; /* unknown, ff_geo_heading_deg's sentinel */
@@ -3451,20 +3757,16 @@ void ff_shell_intent(ff_shell_t *sh_pub, ff_intent_t const *in)
          * this branch: on any OTHER base face (INBOX at the plain list —
          * not one of the sub-views this branch already handles above —
          * SETTINGS, RADAR, LINEUP, MAP), BACK now steps home to the
-         * launcher, same as `FF_INTENT_HOME`. SETTINGS is deliberately
-         * NOT special-cased to "back to a settings root page" here: S21
-         * (docs/specs/S21-settings-rework.md) already removed the
-         * settings-sub-page concept entirely (one continuously-scrolling
-         * list, no `settings_page` view state left to step back through
-         * — see this file's own comment on that near the shell struct's
-         * settings fields) — so the spec's rule (3), "SETTINGS on a
-         * sub-page -> back to the settings root page", has no state to
-         * act on today and falls straight through to rule (4) below,
-         * exactly as it would for any other base face with no open
-         * sub-view. If a settings sub-page concept returns, rule (3)
-         * gets its own branch here first. LAUNCHER stays untouched (the
-         * `!= LAUNCHER` guard) — BACK on the launcher is a no-op, per
-         * spec rule (5). */
+         * launcher, same as `FF_INTENT_HOME`.
+         *
+         * S12/S04 — spec rule (3), "SETTINGS on a sub-page -> back to the
+         * settings root page", NOW HAS state to act on: the CREW sub-view
+         * this spec adds is exactly the settings-sub-page concept S21's
+         * comment above (unchanged, kept for the history) said would need
+         * its own branch here first, and this is that branch. SETTINGS at
+         * the plain list (subview == LIST) still falls through to rule (4)
+         * below unchanged. LAUNCHER stays untouched (the `!= LAUNCHER`
+         * guard) — BACK on the launcher is a no-op, per spec rule (5). */
         if (sh->route.base == FF_APP_FACE_INBOX && sh->inbox_subview != FF_INBOX_SUB_INBOX) {
             sh->inbox_rally_armed = false;
             switch (sh->inbox_subview) {
@@ -3477,6 +3779,8 @@ void ff_shell_intent(ff_shell_t *sh_pub, ff_intent_t const *in)
                 sh->inbox_thread_node = 0u;
                 break;
             }
+        } else if (sh->route.base == FF_APP_FACE_SETTINGS && sh->settings_subview != FF_SETTINGS_SUB_LIST) {
+            sh->settings_subview = FF_SETTINGS_SUB_LIST;
         } else if (sh->route.base != FF_APP_FACE_LAUNCHER) {
             (void)ff_route_home(&sh->route);
         }
@@ -3887,6 +4191,38 @@ void ff_shell_intent(ff_shell_t *sh_pub, ff_intent_t const *in)
                 }
             }
         }
+        return;
+
+    case FF_INTENT_SETTINGS_OPEN_CREW:
+        /* S12/S04 — the Settings "CREW" row. Gated on the takeover exactly
+         * like CALIBRATE_TOUCH above: the row only exists on the Settings
+         * face, so this can only fire while Settings is visible. Opens the
+         * CREW sub-view; the next projection (shell_project_crew_page)
+         * builds its rows fresh, so there is nothing else to prime here. */
+        if (takeover_up) return;
+        sh->settings_subview = FF_SETTINGS_SUB_CREW;
+        return;
+
+    case FF_INTENT_CREW_PAIR:
+        /* S12/S04 — the CREW screen's HEARD-list "ADD" control. Routes
+         * to ff_shell_pair, the one sanctioned roster-growth path (its
+         * own doc comment) — this handler does not touch the roster
+         * itself. A full roster (FF_CREW_MAX, no eviction) makes this a
+         * silent no-op; the screen's own ADD-disabled "crew full (8)"
+         * state (`ff_app_crew_page_t.roster_full`) is what keeps a user
+         * from expecting this to work when it can't, not a return value
+         * this handler has anywhere to surface. */
+        if (takeover_up) return;
+        (void)ff_shell_pair(sh_pub, in->u.node_id, true);
+        return;
+
+    case FF_INTENT_CREW_UNPAIR:
+        /* S12/S04 — the CREW screen's PAIRED-list "REMOVE" control. Same
+         * seam as CREW_PAIR above, `paired=false`: ff_shell_pair (via
+         * shell_pair -> shell_sync_paired_settings) removes `node_id`
+         * from the persisted list on this same call, no second step. */
+        if (takeover_up) return;
+        (void)ff_shell_pair(sh_pub, in->u.node_id, false);
         return;
 
     case FF_INTENT_INBOX_SELECT_MEMBER:
