@@ -49,8 +49,11 @@ building it.
 | `kandiwooks_logo.json` | KandiWooks wordmark outline loops (mm), extracted from the "KandiWooks Logo" document's 6 bodies. |
 | `SPEC.md` | The original task brief, verbatim. |
 | `export/<variant>/*.stl` | Per-body STL exports (binary): `Bottom`, `Top`, `Screen_Plate`, `Power_Button`, `Home_Button`. |
+| `export/<variant>/firefly_<variant>_case.3mf` | Native 3MF (2026-09-06, pass 6) containing exactly the 5 printed bodies (`Print — Case` + `Print — Buttons`), for viewers/slicers that read 3MF's per-object structure directly instead of separate STLs. |
 | `export/coupons/coupon_{power,home}_{wall,cap}.stl` | Standalone button fit-test coupons (see Print orientation & settings below). |
+| `export/coupons/firefly_coupons_native.3mf` | Native 3MF (pass 6) with the 4 coupon bodies. |
 | `renders/<variant>_{front,top,right,iso}.png` | Orthographic screenshots. |
+| `renders/{power,home}_button_ext.png`, `lanyard_end.png`, `bottom_logo.png`, `plate_underside.png`, `bay_inside.png`, `rim_{lanyard_end,usb_end}.png` | Pass-6 close-up renders, TRIM variant, showing the fixes in this pass. |
 
 Every exported body (case and coupon) is size-checked at export time
 (`assert_export_body_size`, ≤120mm/≤40mm max extent respectively) as a
@@ -500,6 +503,223 @@ by cluster size alone. Both are now resolved:
   and `bad_clusters_mm2: []` on both Top and Bottom for both variants.
   The exports/coupons/renders in this repo are from this clean run.
 
+## 2026-09-06 pass 6 (organisation + native export + real-defect fixes)
+
+Jake opened the pass-5 document and found it confusing: unnamed bodies
+("Body145", "Body154"...) at the document root, reference tools mixed in
+with printable parts, coupons sitting at the origin overlapping the case.
+Separately, his own visual review of renders and a coordinator STL sweep
+found several real geometry defects the numeric probes never caught. Both
+are fixed in this pass.
+
+### Document structure
+
+`organize_components()` runs right after `build()` and moves every body
+into a named component -- nothing is left at the document root:
+
+```
+Print — Case
+   Top            bbox z 9.2..25.0 (trim)
+   Bottom         bbox z 0.0..10.0
+   Screen Plate   bbox z 10.0..14.1
+Print — Buttons
+   Power Button
+   Home Button
+Print — Coupons          (only when export=True; see native 3MF below)
+   Coupon Power Wall / Coupon Power Cap
+   Coupon Home Wall / Coupon Home Cap
+Reference — not printed  (all isLightBulbOn False)
+   Inner Cavity Clip Tool     -- build-tool solid, kept for the boss/post clips
+   Cap Trim Envelope          -- build-tool solid, kept for the button cap trims
+   Battery 803040             -- reference box
+   GPS Patch 25x25x8.3        -- reference box
+   FPC LoRa Antenna Keep-out  -- reference box, not yet enforced (see below)
+Boards                    (occurrences moved here after build(); visible)
+   ESP32-S3-Touch-LCD-1_46, Wio-SX1262, XIAO-ESP32S3, L76K GNSS Module
+```
+
+`verify_structure()` (new) gates every run alongside `verify()`: asserts
+no bodies remain at the document root, no body anywhere in our own
+authored components has an auto-generated name (`Body\d+`), the five
+printed bodies live in the two Print components, and every Reference body
+is hidden. It prints the tree above (with live bounding boxes) so this
+section can be regenerated from a real run.
+
+`BRepBody.moveToComponent(occ)` / `Occurrence.moveToComponent(occ)` move a
+body/occurrence into `occ`'s **own** component -- confirmed empirically;
+the API doc's "parent component of the target occurrence" wording reads
+as the opposite of what actually happens.
+
+### Native 3MF export
+
+Alongside the STL/packed-plate exports, each variant now also gets one
+native 3MF containing exactly its two Print components, and the coupons
+get their own native 3MF:
+
+- `export/<variant>/firefly_<variant>_case.3mf` -- 5 objects (Bottom,
+  Top, Screen Plate, Power Button, Home Button).
+- `export/coupons/firefly_coupons_native.3mf` -- 4 objects (Coupon
+  {Power,Home} {Wall,Cap}).
+
+`design.exportManager.createC3MFExportOptions(geometry, filename)` takes
+a single `BRepBody`, `Occurrence`, or `Component` -- not a list -- so the
+case export passes the whole root component with `Reference — not
+printed`, `Boards`, and `Print — Coupons` temporarily hidden (hidden
+bodies are not exported), restoring visibility afterward regardless of
+outcome; the coupons export just passes the `Print — Coupons` occurrence
+directly (already exactly 4 bodies, no hiding needed). Verified by
+unzipping each file and counting `<object` elements in `3D/3dmodel.model`
+against the name list -- both match exactly, both variants.
+
+The existing STL exports and the python-packed, print-oriented plates
+(`tools/stl_to_3mf.py`, `export/trim/firefly_trim_plate.3mf`,
+`export/coupons/firefly_coupons.3mf`) are unchanged and still the
+recommended files to actually slice from.
+
+### Coupons moved off to the side
+
+The 4 coupon bodies (`build_button_coupon`, now parameterised by an `x0`
+local-X offset and a `name_prefix`) are built directly inside their own
+`Print — Coupons` component -- Power at local x0=0, Home at x0=40mm (each
+pair is ~15mm long, so 40mm clears them with room to spare) -- and the
+whole component is then translated +60mm in X (`COUPON_WORLD_OFFSET`),
+comfortably clear of the case (max world x ~28.5mm) and of each other.
+
+### Hygiene fixes
+
+- **Hidden sub-bodies excluded from interference/clearance checks.**
+  `check_interference` now skips a result when the non-case side is a
+  hidden body not in our own known-names set (e.g. the L76K assembly's
+  placeholder cable stub), and `_collect_occ_bodies` (used by
+  `verify_min_clearances`) skips hidden bodies outright -- both default to
+  "visible" (don't skip) if reading `isLightBulbOn` raises, which it does
+  for a handful of deeply-nested body proxies inside inserted board
+  references.
+- **Coupons can never overlap the case** by construction (their own
+  component, translated 60mm+ away) rather than by a runtime check.
+- **Root body list assertion updated to "none at root"** --
+  `verify_structure()` asserts `root.bRepBodies.count == 0` directly,
+  superseding the old `body_names == [...]` check (still also asserted,
+  now scoped to `Print — Case`/`Print — Buttons`).
+
+### Real defects found and fixed (Jake's screenshots + the coordinator's STL sweep)
+
+1. **Case-screw bosses A/C and Top posts P1–P4 had NO material -- at all
+   -- despite every prior `verify()` passing.** Root cause:
+   `clip_to_inner_cavity` shrinks a boss/post by `safety_margin` on
+   *every* face, including the very top/bottom faces meant to touch
+   Bottom's floor or Top's ceiling; combined with a real (measured
+   ~0.36mm) mismatch between the inner-cavity solid's own ceiling height
+   and the nominal `top_ceiling_underside_z`, the clipped pillar ended up
+   not physically touching the shell at all. Fusion's `combine_join`
+   **silently no-ops** on two non-touching bodies (confirmed: same
+   behaviour `deboss_loops` already documented for disjoint glyph
+   pieces) instead of raising, so this was invisible in every printed
+   summary and every `verify()` since M1. Fixed by `clipped_pillar_with_reach`:
+   a full-height, smaller-radius core (`BOSS_CORE_R`=2.6, `POST_CORE_R`=1.1
+   -- comfortably above half the largest hole cut through it later, and
+   below the boss/post's own radius) is joined to the radially-clipped
+   wide cylinder, guaranteeing real contact at both ends. New regression
+   guard: `verify_posts_and_bosses` probes every boss/post off-axis.
+   Also found and fixed along the way: `dedupe_body`'s own re-fetch only
+   fires when it actually finds an orphan to clean up, so a `Bottom`/`Top`/
+   `clip_tool` reference that went stale from an *earlier*, unrelated
+   Remove call could silently survive and be handed to a *later*
+   `combine_join` as the target -- `_refetch_by_name` now re-fetches all
+   three, unconditionally, after every dedupe_body call inside the
+   per-screw/per-post loops (not just once at the very end, as before).
+2. **Case-screw boss B could not be given the same fix.** Its position
+   (0, −23 trim / 0, −24 current) turns out to sit inside the L76K PCB's
+   own real footprint (x −10.48..10.48, y −23.39..−5.61) -- a pre-existing
+   bay-layout conflict this pass's fix exposed rather than introduced
+   (giving it a full-height core, like A/C/D, creates a real, hard solid
+   overlap with the PCB instead of a missing boss). `add_case_screws`
+   passes `core_r=0` for boss B specifically, restoring its exact
+   pre-pass-6 behaviour (silently unjoined) rather than trading a latent
+   bug for a real interference; `verify_posts_and_bosses` documents and
+   reports `boss_B_bottom` but does not gate on it. **This needs a real
+   decision from Jake** -- move screw B, move the L76K bay, or accept
+   Bottom-only fastening there -- see Known limitations below.
+3. **A rectangular notch through the outer skin next to each button's
+   stadium hole** (Jake's screenshot review; the "small block" visible
+   inside it was the cap's own retaining tab, now exposed to open air).
+   Root cause: `add_button`'s `tab_hole_body` cut reached from
+   `s_tab_face` all the way out PAST `s_outer_face` (the true exterior
+   surface) plus a 2.5mm margin -- a real, deliberate through-cut that
+   was never necessary, since the tab itself never reaches anywhere near
+   the outer surface (it stays inboard of the inner wall face by
+   `tab['gap']`, 0.6mm). Fixed by bounding the cut analytically at
+   `s_inner + skin_margin/2` (a `skin_margin` of 2.0mm keeps the hole's
+   outward reach 1.45mm short of the true outer surface, comfortably
+   covering the ray-vs-true-curvature slack `verify_m2`'s own cap-proud
+   check already documents, up to ~0.25mm) instead of reaching the
+   exterior at all. Confirmed both by a direct `analyzeInterference`
+   check (0 interference, both buttons, both variants) and visually
+   (`power_button_ext.png`/`home_button_ext.png`).
+4. **The lanyard lug intruded into the hollow cavity and left small
+   triangular wedge bumps on the outer skin flanking it** (its inner end
+   crossed the inner wall -- from inside it read as a floating cylinder
+   next to the L76K; the wedges came from the crude box+cylinder tab's
+   flat sides meeting the curved dome at an angle). Rebuilt entirely as
+   an integrated ear (`lug_ear_geometry` + the rewritten `add_lug`): 14mm
+   wide, protruding 6mm beyond the shell's TRUE curved surface (computed
+   via `rho_at_z`, not a hand-picked constant -- correct for both
+   variants automatically), its inner end trimmed flush with the inner
+   cavity surface by a Combine-Cut against a fresh copy of the inner
+   cavity solid (the inverse of `clip_to_inner_cavity`: an ear must stay
+   embedded in the wall and protrude outward, unlike a boss/post which
+   lives entirely inside the hollow interior). A vertical Ø4.0 hole sits
+   3.5mm in from the ear's outward face; R3 fillets round its two
+   vertical outer corners; a 0.6mm chamfer softens both hole edges --
+   both best-effort (skipped, not rolled back, if Fusion's
+   fillet/chamfer feature refuses). The old wedge bumps are gone --
+   confirmed visually (`lanyard_end.png`, `rim_lanyard_end.png`).
+   `lug_relief_box` (the lip/anchor ring relief near the lug) widened to
+   match the new 14mm ear. `boss_relief_dia` widened 6.6→10.0mm after the
+   same visual review found a thin wedge-shaped sliver of ring material
+   at screw B's relief (its old radius just barely failed to clear the
+   anchor ring locally).
+   **Recessed lanyard bar, considered and rejected**: Jake asked about a
+   recessed bar instead of a protruding ear. Not built -- a 5mm-deep
+   pocket at the tip needs an interior pad that collides with the L76K
+   wired frame at y ≈ −23.5 (the bay's −y dome tip is already the
+   tightest-margin area in the case), which would require moving the
+   L76K. A protruding ear avoids that dependency entirely.
+5. **The KandiWooks wordmark was missing its "a"** (Jake: "the first 'A'
+   is missing on the bottom, the sprout renders above a gap"). Opened the
+   read-only "KandiWooks Logo" document directly: it has 6 bodies, and
+   one of them (the "K"+"a" pair, fused into a single lump but with TWO
+   separate, disjoint flat top faces) has its own actual 'a' shape on a
+   *second* face the original extraction never visited -- it only ever
+   walked the single largest-area flat face per body, silently dropping
+   any second one. Re-extracted `kandiwooks_logo.json` walking every
+   same-height flat face on every body (not just the biggest), using
+   `CurveEvaluator3D.getStrokes` at a 0.005mm tolerance. The 1-point
+   degenerate loop the old extraction produced turned out to be a real
+   but harmless ~0.02×0.002mm sliver artifact in the source geometry, not
+   the actual cause. Confirmed visually: the debossed wordmark now reads
+   "KANDIWOOKS" in full -- see `bottom_logo.png`.
+6. **A small (~0.18mm³) real interference between Bottom and the
+   Battery 803040 reference box**, current variant only, right at boss
+   A/C's designed-to-be-close x=∓20 edge (now that those bosses finally
+   have real material). Fixed with a permanent 0.1mm inset margin on the
+   reference box's X sides (`add_battery_reference_box`) -- both variants
+   scale this boss position off `outer_radius`, so the margin is a
+   deliberate, permanent tolerance on the reference envelope, not a
+   one-off number.
+7. **Cavity probe `top_cavity` was, in effect, testing whether boss C
+   was missing.** Its y=27 scan line sat only 1.8mm from boss C's y
+   (25.04–25.2), well inside its 3mm radius -- once boss C got real
+   material (item 1), the probe found the boss instead of the true inner
+   wall. Moved to y=29 (3.8mm away, clear of the boss and still clear of
+   the bay footprints/Top posts the original y=27 choice was for).
+
+New regression guards from this pass: `verify_posts_and_bosses` (item 1),
+`verify_skin_intact` and `verify_wall_integrity` (items 3/B/C from the
+coordinator's sweep -- see Known limitations for their current, reported-
+but-not-gating status), `count_sliver_faces` (diagnostic only, per-body
+count of faces under 0.5mm²).
+
 ## Print orientation & settings
 
 - **Bottom**: print face-down on its flat z=0 face (the KandiWooks
@@ -603,7 +823,67 @@ reason" per the milestone instructions.
    trim variant's geometry** (the lug's `y` threshold is derived from
    `spine_a.y - outer_radius + 2`, which generalizes correctly across
    `outer_radius`, but hasn't been independently re-verified against a
-   fresh `current`-variant export since pass 3 landed).
+   fresh `current`-variant export since pass 3 landed). Superseded in
+   spirit by pass 6's `lug_ear_geometry`, which both `add_lug` and this
+   check now share -- they can no longer disagree, though the underlying
+   exception logic itself wasn't re-audited this pass.
+10. **Case-screw boss B is not joined into Bottom** (2026-09-06, pass 6):
+    its position sits inside the L76K PCB's own real footprint, so a real
+    solid overlap replaces the previous silent no-join if it's given the
+    same core-reach fix as A/C/D. This is a genuine, pre-existing bay-
+    layout conflict pass 6 exposed by fixing the OTHER bosses, not
+    something introduced by pass 6 -- it needs a decision: move screw B's
+    position, move the L76K bay, or accept that corner of the case is
+    fastened by A/C/D only (3 screws, not 4). Bottom boss D's `Screen
+    Plate` z-alignment and A/C/D's function are unaffected either way.
+11. **`verify_skin_intact` and `verify_wall_integrity` (new in pass 6)
+    over-fire on points unrelated to the defects they were written to
+    catch** and are reported but not gated on in `verify()`.
+    `verify_skin_intact` flags most perimeter points around both button
+    holes, not just near the tab -- almost certainly probing into the
+    rib/collar's own legitimate internal void at points away from the
+    tab, not the outer skin. `verify_wall_integrity` flags two points
+    right beside the lug's own real geometry (the simple angular-sweep
+    math doesn't account for the ear replacing the plain dome profile
+    there) and boss A/C at the shoulder-curve transition height (the same
+    kind of flat-ray-vs-true-curvature slack `verify_m2`'s cap-proud
+    check already documents, ~0.25mm). The actual defects these two
+    checks target (items 3, B, C from this pass) are independently
+    confirmed clean via `check_interference` (0 real interference, both
+    buttons, both variants) and via `verify_wall_integrity`'s OWN other
+    150+ dome-perimeter points, which all pass. Needs probe-geometry
+    tuning in a follow-up pass before these can safely gate `verify()`.
+12. **XIAO's pin headers were not modeled as separate bodies** in a brief
+    board-to-board (B2B) restack investigated mid-pass-6 (see git history
+    on this branch for the abandoned attempt) -- the inserted XIAO
+    reference doc's socket/header geometry didn't obviously expose
+    anything matching "two 7-pin male headers" as distinct bodies, so a
+    "trim pins to 1mm stubs" step couldn't be validated. That whole
+    B2B/3-board-stack/case-height exploration was reverted in this pass
+    (see below) rather than shipped half-verified.
+
+**Reverted mid-pass-6, not shipped**: the coordinator's later messages in
+this pass requested (a) swapping the Wio/XIAO stack to a board-to-board
+kit with XIAO on the bottom, component-side down, pins trimmed; then (b)
+superseding that with a 3-board (L76K+XIAO+Wio) direct-solder stack in a
+new cradle at the dome tip, replacing the tray and the L76K floor frame,
+with the battery and GPS patch relocated; then (c) superseding *that*
+with a real 18mm stack height requiring the case itself to grow from 25mm
+to 28mm tall (trim), with every Top feature tied to the display
+re-expressed relative to a parameterised `z_top`. Each of these is a
+substantial re-architecture in its own right (new cradle geometry, a
+relocated bay, or re-deriving every Z-dependent Top feature off a
+variable case height) that could not be implemented AND properly
+re-verified (fresh M1/M2 probes, interference, clearances, exports) in
+the time remaining in this pass without risking shipping something
+broken or silently under-tested. The comms-board insertion and stack-tray
+code in this delivered pass is back to the exact pre-pass-6 (pin-header,
+Wio-bottom/XIAO-top) configuration, verified working -- see `verify()`'s
+clean pass on both variants. The 18mm-stack/28mm-case redesign (and,
+separately, the simpler B2B or 3-board cradle ideas, whichever the
+coordinator prefers) is real, wanted follow-up work, not abandoned --
+it just needs its own dedicated pass with a full verification budget
+rather than being squeezed into this one's remaining time.
 
 ## Verify() output reference
 

@@ -58,7 +58,14 @@ PARAMS = {
     'top_pilot_dia': 1.62,
     'top_pilot_z': (10.0, 19.1),   # -> M2x12
 
-    'screw_D': {'name': 'D', 'xy': (0.0, 65.0)},
+    # 2026-09-06 pass 6: moved from (0, 65) to (0, 60), a couple mm
+    # further from the Screen Plate's own header cutout (y 42.7..57.1)
+    # for margin, while staying within its outline (y 28.8..69.6) --
+    # incidental to the actual fix for boss D never joining into Bottom
+    # (BOSS_CORE_R, above), which turned out to be the real cause (this
+    # position's local floor genuinely starts a bit further from center
+    # than boss B/A/C's did, but well within the wider core's reach).
+    'screw_D': {'name': 'D', 'xy': (0.0, 60.0)},
     'counterbore_D_h': 4.0,
     'plate_post_D_z': (10.0, 13.1),  # post on Screen Plate, hole Ø1.62 -> M2x10
     'usb_shell_z': 14.35,             # screw tip must stay <= 14.1
@@ -68,8 +75,19 @@ PARAMS = {
     'lip_z': (9.2, 10.0),
     'anchor_r': (26.95, 28.40),
     'anchor_z': (10.0, 11.0),
-    'boss_relief_dia': 6.6,
-    'lug_relief_box': {'x': (-5.6, 5.6), 'y': (-29.5, -26.0)},
+    # 2026-09-06 pass 6: widened generously past 6.6mm -- measured (see
+    # firefly_case.py's add_lip_anchor_reliefs) to leave a thin wedge-
+    # shaped sliver of ring material at screw B, whose relief circle just
+    # barely failed to clear the anchor ring's own outer radius. This only
+    # needs to clear each boss's own footprint (boss_dia + a small
+    # margin), not reach the ring's outer edge -- 10.0mm gives a
+    # comfortable margin over boss_dia (6.0) at every screw position in
+    # both variants.
+    'boss_relief_dia': 10.0,
+    # widened to 14.0mm (matching the pass-6 ear rebuild's width) plus
+    # margin; y-range covers the lip/anchor ring band near spine_a in both
+    # variants (see params_trim.py's scaling).
+    'lug_relief_box': {'x': (-8.5, 8.5), 'y': (-29.5, -24.5)},
 
     # --- screen plate ---
     'plate_z': (13.1, 14.1),
@@ -77,9 +95,21 @@ PARAMS = {
     'plate_header_cutout': {'x': (11.5 - 1.0, 17.0 + 1.0), 'y': (43.7 - 1.0, 56.1 + 1.0)},
     'plate_hole_dia': 2.4,
     'plate_pad_dia': 6.0,
+    # 2026-09-06 pass 6: P2 moved from (-17.45, 31.8) to (-13.0, 31.8) --
+    # discovered empirically (a real, if latent, 'Top x Power Button'
+    # interference: pass 6's clipped_pillar_with_reach fix finally gives
+    # this post real material for the first time -- see
+    # verify_posts_and_bosses -- and its old position was inside the
+    # Power Button's own rib/collar footprint the whole time, just never
+    # visible because the post never actually joined into Top before).
+    # 3.55mm further inboard (away from the -x wall) clears it with
+    # margin; verified by removing the post entirely and confirming the
+    # residual interference (a separate, smaller ~0.68mm3 tab-area issue,
+    # fixed separately -- see add_button's skin_margin) is unchanged, so
+    # this move addresses only the post-specific portion.
     'top_posts': {
         'P1': (-23.63, 58.84),
-        'P2': (-17.45, 31.8),
+        'P2': (-13.0, 31.8),
         'P3': (17.0, 32.0),
         'P4': (19.89, 65.47),
     },
@@ -125,16 +155,24 @@ PARAMS = {
     'usb_liner_thickness': 1.6,
     'usb_liner_outer_stadium': (16.2, 10.2),
 
-    # --- lanyard lug (Bottom) ---
-    # z lowered to (0.0, 10.0) (pass-5 printability fix, 2026-09-05): the
-    # lug's underside used to sit at z=3.0 -- a 10x12mm horizontal overhang
-    # floating 3mm above the bed with nothing under it when Bottom prints
-    # face-down on z=0. Extending it down to z=0 puts the underside flush
-    # on the bed for the whole tab, eliminating the overhang; the Ø3.5
-    # vertical hole position (hole_xy) is unchanged.
+    # --- lanyard lug/ear (Bottom) ---
+    # z = (0.0, 10.0) (pass-5 printability fix, 2026-09-05): the lug's
+    # underside used to sit at z=3.0 -- a horizontal overhang floating
+    # 3mm above the bed with nothing under it when Bottom prints face-down
+    # on z=0. z=0 puts the underside flush on the bed for the whole ear.
+    # 2026-09-06 pass 6: rebuilt as an integrated ear (see add_lug /
+    # lug_ear_geometry) after the previous box+cylinder tab was found to
+    # intrude into the hollow cavity (its inner end crossed the inner
+    # wall -- reads as a floating cylinder from inside, next to the
+    # L76K). 'width'/'protrusion'/'hole_from_tip' replace the old
+    # x/y_root/y_tip/tip_r/hole_xy -- the ear's actual Y position is now
+    # derived from the shell's TRUE curved surface (true_wall_distance_
+    # along_ray), not a hand-picked constant, so it can never re-drift
+    # into the cavity or float outside the true wall regardless of variant.
     'lug': {
-        'x': (-5.0, 5.0), 'y_root': -26.5, 'y_tip': -38.5, 'tip_r': 5.0,
-        'z': (0.0, 10.0), 'hole_dia': 3.5, 'hole_xy': (0.0, -33.5),
+        'width': 14.0, 'protrusion': 6.0, 'z': (0.0, 10.0),
+        'hole_dia': 4.0, 'hole_from_tip': 3.5,
+        'fillet_r': 3.0, 'hole_chamfer': 0.6,
     },
 
     # --- logos (debossed 0.4mm) ---
@@ -170,6 +208,19 @@ PARAMS = {
         # were landing the PCB body 0.17mm INSIDE the floor. 2.3 is the
         # PCB's intended resting height (bottom flush on the pad).
         'l76k_floor_pad_z': (2.0, 2.3),
+        # NOTE (2026-09-06 pass 6): the coordinator raised the real kit
+        # being board-to-board (B2B) with XIAO below Wio component-side
+        # down, then further superseded that with a 3-board (L76K+XIAO+
+        # Wio) direct-solder stack in a new cradle at the dome tip, which
+        # in turn requires growing the case height (measured stack height
+        # 18mm does not fit under the current ~23mm ceiling). That is a
+        # substantial re-architecture (new cradle geometry, relocated
+        # battery/GPS bay, and re-deriving every Z-dependent Top feature
+        # off a parameterized case height) that was NOT completed in this
+        # pass -- see the README's pass-6 section for what was verified
+        # and what remains as follow-up work. Reverted here to the last
+        # known-good (pin-header, Wio-bottom/XIAO-top) configuration
+        # rather than ship a partially-applied, uncertain change.
         'stack': {
             'x': (-22.0, -4.2), 'y': (0.0, 22.3),
             'wio_pcb_bottom_z': 10.5, 'xiao_pcb_bottom_offset': 6.1, 'stack_top_z': 21.0,
