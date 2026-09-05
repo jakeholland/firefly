@@ -70,6 +70,31 @@ those pins; the puck's meshclient (S03) speaks it.
    rising resync counters = wrong baud.
 5. A second node (T1000-E / Heltec) sends a position → Radar within 10 s (S15 AC2).
 
+## Pairing (crew roster) — bench/field stopgap until S12 ships
+
+A CONNECTED link is not enough on its own: pairing v1 is "channel membership
++ explicit crew list" (`docs/specs/S04-firefly-protocol.md`), and the shell's
+roster-trust policy (S16) refuses to grow the paired crew list from anything
+the radio says — only an explicit user pairing action does that
+(`ff_shell_pair`). Until the real Crew screen (S12) exists to drive that
+action, a puck that is CONNECTED to its comms brain but has never been
+paired shows "no crew linked" and silently drops every position/text from
+the other node — not a bug, the policy working as specified, just with no UI
+yet to use it.
+
+**Bench/field stopgap:** set `CONFIG_FF_DEV_TRUST_CHANNEL=y`
+(`idf.py menuconfig` → Firefly bring-up, or by hand in `sdkconfig`) until
+S12 ships. Every crew channel is already private (its own PSK, set once when
+configuring the XIAO above), so on this bench/field setup channel membership
+already IS the crew — this option auto-pairs any node heard on that channel
+(NodeInfo only, the same S16 AC6 mechanism the sim's `ffsim --dev-trust-all`
+uses in dev). Off by default; it must never ship on by default, and the
+Kconfig help text says so. Watch for
+`firefly: DEV_TRUST_CHANNEL on — auto-pairing every heard node` in the boot
+log to confirm it took. See `firmware/app/include/ff_shell.h`'s
+`ff_shell_dev_trust_all` doc comment for exactly what this does and does not
+change versus the sim flag it mirrors.
+
 ## The puck's back header (photo, 2026-09-04)
 
 2×10 at 1.27 mm pitch. Left column top→bottom: `13 · 12 · RXD · TXD · G · 3V3 · SDA · SCL · G · BAT`.

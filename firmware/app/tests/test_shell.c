@@ -3378,6 +3378,19 @@ static void S16_AC6_nodeinfo_plus_position_via_real_transport_produce_zero_feed_
  * bench — pairing on the most untrusted packet on the mesh is this
  * spec's headline defect, and the dev affordance does not get to
  * reintroduce it.
+ *
+ * This exercises `sh->dev_trust_all` and `shell_ev_node`'s NodeInfo
+ * auto-pair branch directly, via `ff_shell_dev_trust_all` — the SAME
+ * field and branch `CONFIG_FF_DEV_TRUST_CHANNEL` compiles into a device
+ * build and `app_main.c` flips at boot (ff_shell.h's dev/field-stopgap
+ * doc comment). There is no separate device-side logic to pin: this
+ * test IS the coverage for "flag on -> auto-pairs on NodeInfo only" on
+ * both callers, sim and device alike. The Kconfig-off default-behavior
+ * side of the same coverage is `S16_AC5a_unknown_sender_no_feed_no_crew_
+ * slot_one_heard_entry` and `S16_AC5c_position_from_non_roster_node_is_
+ * dropped_and_noted` above, neither of which ever calls
+ * `ff_shell_dev_trust_all` — the roster stays untouched by inbound
+ * traffic exactly as it does in a `CONFIG_FF_DEV_TRUST_CHANNEL=n` build.
  */
 static void S16_AC6_dev_trust_all_auto_pairs_on_nodeinfo_only(void)
 {

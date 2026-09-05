@@ -38,3 +38,37 @@ idf_component_register(
 )
 
 target_compile_options(${COMPONENT_LIB} PRIVATE -Wall -Wextra -Werror)
+
+# CONFIG_FF_DEV_TRUST_CHANNEL (Kconfig.projbuild, default n) gates the
+# device-side dev/field auto-pair stopgap in ff_shell.c/.h — see
+# ff_shell.h's ff_shell_dev_trust_all doc comment.
+#
+# ff_shell.c currently DOES see this macro without any help from here:
+# its own `#include <stdio.h>` resolves (esp-idf's newlib platform
+# include path wins over the toolchain's own copy) into a chain that
+# reaches components/newlib/platform_include/sys/lock.h, which
+# unconditionally `#include "sdkconfig.h"` — and once any header in a
+# translation unit pulls that in, every CONFIG_* macro is visible for
+# the rest of the file, ff_shell.c's own `#if defined(CONFIG_FF_
+# DEV_TRUST_CHANNEL)` guards included. Verified with `-H` against this
+# component's own compile_commands.json entry (see this option's PR body
+# for the full include trace).
+#
+# That is an ACCIDENT of ff_shell.c happening to include <stdio.h> for
+# an unrelated reason, not a documented guarantee — ESP-IDF does NOT
+# force-include sdkconfig.h for every component (confirmed against
+# tools/cmake/kconfig.cmake: SDKCONFIG_HEADER is recorded as a build
+# property and handed to whichever files #include it themselves, never
+# injected as a global -include/-imacros flag). A future edit that drops
+# or reorders that #include would silently revert this option to
+# "compiled out" with no build error — exactly the silent-regression
+# failure mode this repo's own FF_TARGET_SIM discipline exists to avoid
+# (firmware/CMakeLists.txt's own comment on that flag, and targets/sim/
+# main.c's #error guard for the mirror case). So the definition is
+# ALSO supplied explicitly and unconditionally here, PRIVATE to this
+# component only (ff_shell.c is the sole file in it that reads the
+# macro), making the intent a property of the build graph instead of an
+# incidental header side effect:
+if(CONFIG_FF_DEV_TRUST_CHANNEL)
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE CONFIG_FF_DEV_TRUST_CHANNEL=1)
+endif()

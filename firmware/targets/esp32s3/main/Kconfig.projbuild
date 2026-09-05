@@ -244,6 +244,34 @@ menu "Firefly bring-up (S15 slice b)"
 
     endmenu
 
+    config FF_DEV_TRUST_CHANNEL
+        bool "DEV/FIELD STOPGAP: auto-pair every node heard on the link"
+        default n
+        help
+            DEV/FIELD STOPGAP: auto-pair every node heard on the link (the
+            Meshtastic channel is private, so membership is the crew). Off =
+            only the explicit pairing UI grows the roster. Never ship on by
+            default.
+
+            Mirrors the sim target's `ffsim --dev-trust-all` (S16 AC6) on
+            device, through the exact same field and NodeInfo-only
+            auto-pair branch in ff_shell.c/.h (see ff_shell_dev_trust_all's
+            doc comment) — a bare Position still never pairs. Unlike the
+            sim flag, this does NOT suspend the self filter or latch the
+            wall clock from a host observation: those exist only to work
+            around the sim's single-node dev harness playing every role,
+            which does not apply to a real puck talking to a real,
+            distinct comms-brain node id.
+
+            Bench/field stopgap for the Sep 18-20 field test while S12 (the
+            real Crew/pairing screen) is built in parallel — see
+            docs/hardware/comms-brain.md. Logs
+            "firefly: DEV_TRUST_CHANNEL on — auto-pairing every heard node"
+            once at boot when enabled. With this OFF (the default), device
+            builds are byte-for-byte equivalent in roster-trust policy to a
+            build that never had this option: the roster only grows via
+            ff_shell_pair, called from a user action.
+
     config FF_AUDIO_SELFTEST
         bool "Play FLARE_SENT once at boot (S27 sounds device bring-up aid)"
         default n

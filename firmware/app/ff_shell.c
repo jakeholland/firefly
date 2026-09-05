@@ -342,13 +342,17 @@ typedef struct {
      * happened. */
     ff_batt_filter_t batt_filter;
 
-#if defined(FF_TARGET_SIM)
-    /* --dev-trust-all (S16 AC6). SIM ONLY, and deliberately inside the
-     * guard rather than an always-present field defaulted false: the
-     * spec demands the affordance be COMPILED OUT of device builds, and
-     * a field that exists is a field one stray write away from mattering.
-     * The shell's footprint differs by one bool between targets; the
-     * _Static_assert below bounds both. */
+#if defined(FF_TARGET_SIM) || defined(CONFIG_FF_DEV_TRUST_CHANNEL)
+    /* --dev-trust-all (S16 AC6), and its device-side mirror
+     * CONFIG_FF_DEV_TRUST_CHANNEL (bench/field stopgap for the crew
+     * roster while S12's pairing UI is unbuilt — see ff_shell.h's
+     * ff_shell_dev_trust_all doc comment and docs/hardware/comms-brain.md).
+     * Deliberately inside the guard rather than an always-present field
+     * defaulted false: the spec demands the affordance be COMPILED OUT
+     * when neither gate is set, and a field that exists is a field one
+     * stray write away from mattering. The shell's footprint differs by
+     * one bool depending on target/Kconfig; the _Static_assert below
+     * bounds all of them. */
     bool dev_trust_all;
 #endif
 
@@ -523,6 +527,17 @@ static ff_wall_trust_t shell_wall_trust_for(shell_t const *sh, uint32_t node_id)
  * with the filter up the harness's every packet would be "our own
  * traffic" and the dev loop could exercise nothing. The harness's one
  * node plays every role — see ff_shell.h's dev-affordances section.
+ *
+ * This suspension stays FF_TARGET_SIM-only DELIBERATELY, even though
+ * `dev_trust_all` itself is also compiled in on a device build under
+ * CONFIG_FF_DEV_TRUST_CHANNEL (see that field's comment and
+ * ff_shell_dev_trust_all's doc comment): a real puck's own node id and a
+ * real crew member's comms-brain node id are genuinely distinct, so
+ * there is no single-node-plays-every-role quirk to work around on
+ * device, and suspending the self filter there would be an unreviewed
+ * behavior change with no purpose. CONFIG_FF_DEV_TRUST_CHANNEL therefore
+ * shares the field and the NodeInfo auto-pair branch below with
+ * `--dev-trust-all`, but never reaches this early return.
  */
 static bool shell_drop_as_self(shell_t const *sh, uint32_t node_id)
 {
@@ -534,8 +549,9 @@ static bool shell_drop_as_self(shell_t const *sh, uint32_t node_id)
 
 /**
  * The one internal path that may grow the roster — ff_shell_pair's body,
- * shared with the sim-only auto-pair branch in shell_ev_node so both go
- * through a single audited place.
+ * shared with the dev-trust-all auto-pair branch in shell_ev_node (sim
+ * always; device only under CONFIG_FF_DEV_TRUST_CHANNEL) so all of them
+ * go through a single audited place.
  */
 static bool shell_pair(shell_t *sh, uint32_t node_id, bool paired)
 {
@@ -955,14 +971,16 @@ static void shell_ev_node(void *u, mc_nodeinfo_t const *n)
 
     if (shell_drop_as_self(sh, n->node_num)) return; /* never treat our own traffic as inbound */
 
-#if defined(FF_TARGET_SIM)
-    /* --dev-trust-all (S16 AC6): auto-pair on NodeInfo, and on NodeInfo
-     * ONLY — a bare Position must still not grow the roster, even on the
-     * dev bench (pairing on the most untrusted packet on the mesh is the
-     * exact defect S16 exists to close; the dev affordance does not get
-     * to reintroduce it). Routed through shell_pair, the same single
-     * audited growth path ff_shell_pair uses. Compiled out of device
-     * builds entirely; see ff_shell.h's dev-affordances section. */
+#if defined(FF_TARGET_SIM) || defined(CONFIG_FF_DEV_TRUST_CHANNEL)
+    /* --dev-trust-all (S16 AC6) / CONFIG_FF_DEV_TRUST_CHANNEL (its device
+     * bench/field mirror, docs/hardware/comms-brain.md): auto-pair on
+     * NodeInfo, and on NodeInfo ONLY — a bare Position must still not
+     * grow the roster, even under either affordance (pairing on the most
+     * untrusted packet on the mesh is the exact defect S16 exists to
+     * close; neither affordance gets to reintroduce it). Routed through
+     * shell_pair, the same single audited growth path ff_shell_pair
+     * uses. Compiled out entirely when BOTH gates are absent — see
+     * ff_shell.h's dev-affordances section. */
     if (sh->dev_trust_all) {
         (void)shell_pair(sh, n->node_num, true); /* roster full -> falls through to heard, below */
     }
@@ -4577,9 +4595,11 @@ bool ff_shell_pair(ff_shell_t *sh_pub, uint32_t node_id, bool paired)
     if (sh_pub == NULL) return false;
 
     /* THE one place a roster slot may be created (shell_pair, shared —
-     * on sim only — with the opt-in --dev-trust-all NodeInfo branch).
-     * Reachable only from a user action on device; nothing in the seven
-     * inbound callbacks calls it there. */
+     * on sim always, and on device only when CONFIG_FF_DEV_TRUST_CHANNEL
+     * is set — with the opt-in --dev-trust-all / DEV_TRUST_CHANNEL
+     * NodeInfo branch). Reachable only from a user action on a device
+     * built with that Kconfig option off (the shipping default); nothing
+     * in the seven inbound callbacks calls it there. */
     return shell_pair(shell_of(sh_pub), node_id, paired);
 }
 
@@ -4756,15 +4776,26 @@ uint32_t ff_shell_replay_overflow_count(ff_shell_t const *sh_pub)
 }
 
 /* ---------------------------------------------------------------------
- * Sim-only dev affordances (S16 AC6, slice b2) — see ff_shell.h
+ * ff_shell_dev_trust_all — sim always, device under
+ * CONFIG_FF_DEV_TRUST_CHANNEL. See ff_shell.h's doc comment for the
+ * exact split between what the two gates enable.
  * ------------------------------------------------------------------- */
-#if defined(FF_TARGET_SIM)
+#if defined(FF_TARGET_SIM) || defined(CONFIG_FF_DEV_TRUST_CHANNEL)
 
 void ff_shell_dev_trust_all(ff_shell_t *sh_pub, bool enabled)
 {
     if (sh_pub == NULL) return;
     shell_of(sh_pub)->dev_trust_all = enabled;
 }
+
+#endif /* FF_TARGET_SIM || CONFIG_FF_DEV_TRUST_CHANNEL */
+
+/* ---------------------------------------------------------------------
+ * Sim-only dev affordances (S16 AC6, slice b2) — see ff_shell.h. No
+ * device-side Kconfig exception here (unlike ff_shell_dev_trust_all
+ * above): see this function's own header doc comment for why.
+ * ------------------------------------------------------------------- */
+#if defined(FF_TARGET_SIM)
 
 bool ff_shell_dev_wall_observe(ff_shell_t *sh_pub, int64_t unix_now_s)
 {
