@@ -2,7 +2,8 @@
 
 PARAMS = {
     'variant': 'current',
-    'l76k_mode': 'wired',   # 'hat' | 'wired'
+    # NOTE: 'hat' L76K mode was dropped 2026-09-04 (coordinator's bay
+    # redesign) -- the generator now always builds the wired layout.
 
     # --- envelope / spine ---
     'spine_a': (0.0, 0.0),
@@ -100,10 +101,10 @@ PARAMS = {
     'home_nub_dir': (-0.84, 0.54),
     'power_cap': {'stadium': (10.0, 5.8), 'z': (13.8, 19.6), 'proud': 0.45, 'y_center': 29.7},
     'home_cap': {'stadium': (8.94, 6.6), 'z': (13.4, 20.0), 'proud': 0.45},
-    'wall_hole_clearance': 0.25,
     'plunger_tip_gap': 0.02,   # gap at FULL PRESS (collar bottomed on the rib), not at rest
     'nub_pocket': {'xy': (1.3, 1.6), 'depth': 0.8},
     'tab': {'w': 2.9, 'h': 2.0, 'gap': 0.60},
+    'cap_clearance': 0.25,  # per-side clearance between the cap head and its wall hole -- tune here for a fit-test coupon re-print
     # plunger guide rib + inward stop collar (added 2026-09-04 per Jake's
     # print-test feedback: caps bound, and a hard press loaded the switch's
     # solder joints with nothing else to stop inward travel).
@@ -141,16 +142,32 @@ PARAMS = {
     'wordmark_width': 30.0,
 
     # --- comms bay (current variant) ---
+    # Comms bay v2 (2026-09-04 redesign, replaces the earlier flat-cross-
+    # section layout): the lower cavity is a half-disc at the spine_a end
+    # (radius = outer_radius - wall = 26mm for trim / 28mm for current)
+    # plus the straight band y 0..27. These are ABSOLUTE mm positions --
+    # deliberately the SAME for both variants (the hardware doesn't change
+    # size, and trim's R=26 is the tighter constraint; current's R=28 just
+    # has 2mm more slack everywhere). See params_trim.py's docstring note
+    # and README's Known Limitations for why this isn't re-scaled per
+    # variant.
     'bay': {
-        'cavity_x': (-28.0, 28.0), 'cavity_y': (-28.0, 27.0), 'cavity_z': (2.0, 23.0),
-        'battery': {'xyz': (8.0, 30.0, 40.0), 'x': (-27.0, 3.0), 'y': (-25.0, 15.0), 'z': (2.0, 10.0)},
-        'gps_patch': {'xyz': (25.0, 25.0, 8.3), 'x': (-26.0, -1.0), 'y': (-24.0, 1.0), 'z': (10.0, 18.3)},
-        'gps_frame_wall': 1.0, 'gps_opening': 25.5,
-        'stack': {'x': (5.0, 22.8), 'y': (-24.0, -1.7)},
-        'stack_pad_dia': 3.0, 'stack_pad_h': 1.0, 'stack_frame_clear': 0.3,
-        'l76k_wired': {'x': (5.0, 23.0), 'y': (1.0, 22.0), 'z': (2.0, 6.0)},
-        'fpc_keepout': {'x': (-15.0, 15.0), 'z': (3.0, 9.0)},  # on -y end wall, construction only
-        'wire_channel': {'x': (11.5, 17.0), 'y': (43.7, 56.0), 'width': 4.0},
+        'cavity_r': 26.0,  # nominal half-disc radius this layout was fit to (trim); current has 2mm more
+        'battery': {'xyz': (8.0, 40.0, 30.0), 'x': (-20.0, 20.0), 'y': (-4.0, 26.0), 'z': (2.0, 10.0)},
+        'battery_rail_w': 1.2, 'battery_rail_z': (2.0, 6.0),
+        'battery_strap': {'w': 6.0, 'h': 1.5},  # slot through the rails, not the floor
+        'l76k_wired': {'x': (-10.5, 10.5), 'y': (-23.5, -5.5), 'z': (2.0, 6.0)},
+        'l76k_frame_wall': 1.0, 'l76k_frame_clear': 0.3, 'l76k_wire_notch_w': 3.0,
+        'stack': {
+            'x': (-22.0, -4.2), 'y': (0.0, 22.3),
+            'wio_pcb_bottom_z': 10.5, 'xiao_pcb_bottom_offset': 6.1, 'stack_top_z': 21.0,
+        },
+        'tray_wall': 1.2, 'tray_clear': 0.3, 'tray_z_bottom': 10.2,
+        'tray_ledge': {'w': 2.0, 'h': 1.2},  # z tray_z_bottom .. +h, at each short end
+        'tray_gap': {'side': '+y', 'w': 6.0},  # for XIAO USB/wires
+        'gps_patch': {'xyz': (25.0, 25.0, 8.3), 'x': (-2.8, 22.2), 'y': (-5.0, 20.0), 'z': (10.5, 18.8)},
+        'gps_frame_wall': 1.0, 'gps_frame_clear': 0.3,
+        'fpc_keepout': {'x': (-20.0, 20.0), 'y': (-26.0, -15.0), 'z': (12.0, 22.0)},  # Top inner dome wall, reference only
     },
 
     'board_docs': {

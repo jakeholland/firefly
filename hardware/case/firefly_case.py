@@ -535,6 +535,62 @@ def build_inner_pill_solid(root, p):
     return solid
 
 
+def combine_intersect_keep(root, target, tools):
+    coll = adsk.core.ObjectCollection.create()
+    for t in tools:
+        coll.add(t)
+    cf = root.features.combineFeatures
+    inp = cf.createInput(target, coll)
+    inp.operation = adsk.fusion.FeatureOperations.IntersectFeatureOperation
+    inp.isKeepToolBodies = True
+    feat = cf.add(inp)
+    return feat.bodies.item(0) if feat.bodies.count else target
+
+
+def build_inner_cavity_clip_tool(root, p, safety_margin=0.1):
+    """A single inner-cavity solid, shrunk inward by safety_margin, meant
+    to be reused across MANY clip_to_inner_cavity calls (see that
+    function) via combine_intersect_keep instead of rebuilt from scratch
+    each time -- rebuilding the whole extrude+2-revolve+2-join inner solid
+    per boss/post (there can be 10+) was slow enough to risk the MCP call
+    timing out. Caller is responsible for hiding/renaming it as
+    'reference only' once done (see build())."""
+    inner = build_inner_pill_solid(root, p)
+    faces = [f for f in inner.faces]
+    offset_input = root.features.offsetFacesFeatures.createInput(faces, V(-safety_margin))
+    root.features.offsetFacesFeatures.add(offset_input)
+    return inner
+
+
+def clip_to_inner_cavity(root, body, p, clip_tool=None):
+    """Intersect `body` with the inner cavity solid so it can never poke
+    through the outer shell -- used for case-screw bosses and Top posts,
+    whose reference positions were sized against the R30/R28 'current'
+    envelope and can otherwise punch through the narrower trim shell. Pass
+    a shared `clip_tool` (see build_inner_cavity_clip_tool) to reuse one
+    solid across many calls instead of rebuilding it every time."""
+    if clip_tool is not None:
+        return combine_intersect_keep(root, body, [clip_tool])
+    inner = build_inner_cavity_clip_tool(root, p)
+    return combine_intersect(root, body, [inner])
+
+
+def build_thickened_envelope(root, p, offset_mm):
+    """A fresh copy of the outer envelope solid (see build_outer_pill_solid),
+    offset outward by offset_mm on every face (OffsetFaces per SPEC.md
+    gotcha 3 -- createInput takes a Python list of faces). Used
+    (2026-09-04) to trim button caps flush with the REAL curved shell
+    instead of the flat-wall approximation used to build them: intersecting
+    a cap with this thickened solid clips anything that would poke out
+    past (true outer surface + offset_mm), everywhere, following the
+    actual curvature."""
+    solid = build_outer_pill_solid(root, p)
+    faces = [f for f in solid.faces]
+    offset_input = root.features.offsetFacesFeatures.createInput(faces, V(offset_mm))
+    root.features.offsetFacesFeatures.add(offset_input)
+    return solid
+
+
 def build_outer_pill_solid(root, p):
     """Straight-section extrude + two end-cap revolves, unioned into one
     solid outer pill body (before shelling / splitting)."""
@@ -671,10 +727,50 @@ def chamfer_edge_at(root, body, center_xy, radius_mm, z_mm, chamfer_mm, tol=0.05
     chamferFeats.add(inp)
 
 
-def add_case_boss(root, bodies, cx, cy, p, is_D=False):
+def dedupe_body(root, tracked_body, base_name):
+    """Delete any stale same-named duplicate bodies via a Remove feature
+    (2026-09-05 fix): intersecting a cylinder_solid boss/post against the
+    revolve-based inner-cavity clip tool, then joining the clipped result
+    into 'Bottom'/'Top', was silently leaving the PRE-join body behind as
+    an orphaned duplicate ('Bottom (1)', 'Top (1)', ...) instead of
+    updating in place -- reproduced in isolation down to exactly this
+    combination (a real cylinder_solid intersected with the curved/
+    filleted clip tool); root cause not identified further. The orphan is
+    geometrically just a strict SUBSET of tracked_body's current volume
+    (a snapshot from before that boss/post's join), so it is safe to
+    delete outright -- joining it back in (tried first) itself raised
+    'Some input argument is invalid', consistent with it being a fragile
+    byproduct of the same underlying issue."""
+    # Compare by NAME PATTERN, not Python object identity: iterating
+    # root.bRepBodies can hand back a fresh proxy object for the same
+    # underlying body each time, so `b is not tracked_body` is unreliable
+    # and (confirmed by testing) can end up matching -- and then
+    # deleting -- the current body too. Fusion's own auto-rename on a name
+    # collision always keeps the ORIGINAL exact name and suffixes the new
+    # arrival as 'Name (N)', so the orphans are unambiguously exactly the
+    # '(N)'-suffixed ones; the bare base_name is always the live one.
+    stale = [b for b in root.bRepBodies
+             if b.name.startswith(base_name + ' (') and b.name.endswith(')')]
+    if not stale:
+        return tracked_body
+    for b in stale:
+        root.features.removeFeatures.add(b)
+    # inserting a Remove feature can invalidate previously-held BRepBody
+    # Python references (even to bodies not directly removed) -- re-fetch
+    # tracked_body fresh by name rather than keep using the old handle.
+    for b in root.bRepBodies:
+        if b.name == base_name:
+            return b
+    raise AssertionError(f'dedupe_body: {base_name!r} not found after cleanup')
+
+
+def add_case_boss(root, bodies, cx, cy, p, is_D=False, clip_tool=None):
     boss_r = p['boss_dia'] / 2.0
-    bottom_boss = cylinder_solid(root, cx, cy, boss_r, 2.0, p['split_z'])
+    bottom_boss = clip_to_inner_cavity(
+        root, cylinder_solid(root, cx, cy, boss_r, 2.0, p['split_z']), p, clip_tool)
     bottom = combine_join(root, bodies['Bottom'], [bottom_boss])
+    if clip_tool is not None:
+        bottom = dedupe_body(root, bottom, 'Bottom')
     hole = cylinder_solid(root, cx, cy, p['screw_hole_dia'] / 2.0, -0.5, p['split_z'] + 0.5)
     bottom = combine_cut(root, bottom, [hole])
     cb_h = p['counterbore_D_h'] if is_D else p['counterbore_ABC_h']
@@ -683,28 +779,35 @@ def add_case_boss(root, bodies, cx, cy, p, is_D=False):
     bodies['Bottom'] = bottom
 
     if not is_D:
-        top_boss = cylinder_solid(root, cx, cy, boss_r, p['split_z'], p['top_ceiling_underside_z'])
+        top_boss = clip_to_inner_cavity(
+            root, cylinder_solid(root, cx, cy, boss_r, p['split_z'], p['top_ceiling_underside_z']), p, clip_tool)
         top = combine_join(root, bodies['Top'], [top_boss])
+        if clip_tool is not None:
+            top = dedupe_body(root, top, 'Top')
         pilot = cylinder_solid(root, cx, cy, p['top_pilot_dia'] / 2.0, p['top_pilot_z'][0], p['top_pilot_z'][1])
         top = combine_cut(root, top, [pilot])
         bodies['Top'] = top
     return bodies
 
 
-def add_case_screws(root, bodies, p):
+def add_case_screws(root, bodies, p, clip_tool=None):
     for s in p['screws_ABC']:
         cx, cy = s['xy']
-        bodies = add_case_boss(root, bodies, cx, cy, p, is_D=False)
+        bodies = add_case_boss(root, bodies, cx, cy, p, is_D=False, clip_tool=clip_tool)
     cx, cy = p['screw_D']['xy']
-    bodies = add_case_boss(root, bodies, cx, cy, p, is_D=True)
+    bodies = add_case_boss(root, bodies, cx, cy, p, is_D=True, clip_tool=clip_tool)
     return bodies
 
 
-def add_top_posts(root, bodies, p):
+def add_top_posts(root, bodies, p, clip_tool=None):
     top = bodies['Top']
     for name, (cx, cy) in p['top_posts'].items():
-        post = cylinder_solid(root, cx, cy, p['top_post_dia'] / 2.0, p['top_post_z'][0], p['top_post_z'][1])
+        post = clip_to_inner_cavity(
+            root, cylinder_solid(root, cx, cy, p['top_post_dia'] / 2.0, p['top_post_z'][0], p['top_post_z'][1]),
+            p, clip_tool)
         top = combine_join(root, top, [post])
+        if clip_tool is not None:
+            top = dedupe_body(root, top, 'Top')
         hole = cylinder_solid(root, cx, cy, p['top_post_pilot_dia'] / 2.0,
                                p['top_post_pilot_z'][0], p['top_post_pilot_z'][1])
         top = combine_cut(root, top, [hole])
@@ -854,7 +957,7 @@ def button_geometry(p, switch_bbox, nub_dir, cap):
     }
 
 
-def add_button(root, bodies, name, switch_bbox, nub_dir, cap, hole_wh, p):
+def add_button(root, bodies, name, switch_bbox, nub_dir, cap, hole_wh, p, thickened_envelope=None):
     g = button_geometry(p, switch_bbox, nub_dir, cap)
     d2, t2 = g['d'], g['t']
     d3, t3 = (d2[0], d2[1], 0.0), (t2[0], t2[1], 0.0)
@@ -876,11 +979,23 @@ def add_button(root, bodies, name, switch_bbox, nub_dir, cap, hole_wh, p):
     bodies['Top'] = combine_cut(root, bodies['Top'], [hole_body])
 
     # cap body: uniform stadium prism from the outer (proud) face inward to
-    # the plunger tip
-    total_depth = g['s_outer_face'] - g['s_plunger_tip']
+    # the plunger tip. Built with EXTRA margin outward past the nominal
+    # (flat-wall) outer face, then trimmed back with a Combine-Intersect
+    # against a thickened copy of the real curved outer envelope (2026-09-04
+    # fix) -- the flat-wall approximation used to size outer_face_xy can be
+    # either proud of or short of the true curved+0.45mm surface depending
+    # on where along the shoulder curve the button sits, so we over-build
+    # and let the intersect cut it back to exactly 0.45mm proud everywhere.
+    margin = 3.0
+    total_depth = (g['s_outer_face'] - g['s_plunger_tip']) + margin
     neg_d3 = (-d3[0], -d3[1], -d3[2])
-    cap_center = (g['outer_face_xy'][0], g['outer_face_xy'][1], z_center)
+    extended_outer_xy = (g['outer_face_xy'][0] + margin * d2[0], g['outer_face_xy'][1] + margin * d2[1])
+    cap_center = (extended_outer_xy[0], extended_outer_xy[1], z_center)
     cap_body = oriented_stadium_prism(root, cap_center, t3, z3, neg_d3, L, W, total_depth)
+    if thickened_envelope is not None:
+        cap_body = combine_intersect_keep(root, cap_body, [thickened_envelope])
+    else:
+        cap_body = combine_intersect(root, cap_body, [build_thickened_envelope(root, p, cap['proud'])])
 
     # nub pocket at the plunger tip, recessed 0.8mm back toward the outer face
     pocket = p['nub_pocket']
@@ -928,14 +1043,25 @@ def add_button(root, bodies, name, switch_bbox, nub_dir, cap, hole_wh, p):
 
 
 def add_buttons(root, bodies, p):
+    # shared thickened envelope (both caps use the same proud amount) --
+    # rebuilding the whole outer pill solid + OffsetFaces per button was
+    # part of what made the post-redesign build slow enough to risk the
+    # MCP call timing out.
+    assert p['power_cap']['proud'] == p['home_cap']['proud'], 'shared thickened envelope assumes equal proud amounts'
+    thickened_envelope = build_thickened_envelope(root, p, p['power_cap']['proud'])
+
     bodies = add_button(root, bodies, 'Power Button', p['switch_power_bbox'], p['power_nub_dir'],
-                         p['power_cap'], (p['power_cap']['stadium'][0] + 2 * p['wall_hole_clearance'],
-                                          p['power_cap']['stadium'][1] + 2 * p['wall_hole_clearance']), p)
+                         p['power_cap'], (p['power_cap']['stadium'][0] + 2 * p['cap_clearance'],
+                                          p['power_cap']['stadium'][1] + 2 * p['cap_clearance']), p,
+                         thickened_envelope=thickened_envelope)
     home_bbox = dict(p['switch_home_bbox'])
     home_bbox['z'] = p['switch_power_bbox']['z']  # z not separately specified in SPEC.md; reuse power's
     bodies = add_button(root, bodies, 'Home Button', home_bbox, p['home_nub_dir'],
-                         p['home_cap'], (p['home_cap']['stadium'][0] + 2 * p['wall_hole_clearance'],
-                                         p['home_cap']['stadium'][1] + 2 * p['wall_hole_clearance']), p)
+                         p['home_cap'], (p['home_cap']['stadium'][0] + 2 * p['cap_clearance'],
+                                         p['home_cap']['stadium'][1] + 2 * p['cap_clearance']), p,
+                         thickened_envelope=thickened_envelope)
+    thickened_envelope.name = 'Cap Trim Envelope (reference only)'
+    thickened_envelope.isLightBulbOn = False
     return bodies
 
 
@@ -951,12 +1077,20 @@ def add_usb_tunnel(root, bodies, p):
                                    L_in, W_in, bore_depth)
     bodies['Top'] = combine_cut(root, bodies['Top'], [bore])
 
-    liner_depth = wall_y - y_start
+    # liner: built with extra margin past the flat-wall estimate of wall_y,
+    # then trimmed to the REAL curved outer envelope with a Combine-
+    # Intersect (2026-09-04 fix, "as v15 did with a split") -- the +y end
+    # is the domed cap, not a flat wall, so a fixed liner_depth either
+    # falls short of or overshoots the true surface depending on x.
+    margin = 3.0
+    liner_depth = (wall_y - y_start) + margin
     liner_outer = oriented_stadium_prism(root, (cx, y_start, cz), (1, 0, 0), (0, 0, 1), (0, 1, 0),
                                           L_out, W_out, liner_depth)
     liner_inner = oriented_stadium_prism(root, (cx, y_start - 0.5, cz), (1, 0, 0), (0, 0, 1), (0, 1, 0),
                                           L_in, W_in, liner_depth + 1.0)
     liner = combine_cut(root, liner_outer, [liner_inner])
+    envelope = build_outer_pill_solid(root, p)
+    liner = combine_intersect(root, liner, [envelope])
     bodies['Top'] = combine_join(root, bodies['Top'], [liner])
     return bodies
 
@@ -1140,138 +1274,165 @@ def clip_box_x_to_cavity(p, x0, x1, y0, y1, z0, z1, margin=2.0):
 
 
 def add_battery_bay(root, bodies, p):
+    """Battery retention only -- the battery itself has no Fusion doc, so
+    it is modeled as a hidden reference box (add_battery_reference_box)."""
     bat = p['bay']['battery']
     x0, x1 = bat['x']
     y0, y1 = bat['y']
-    z0, z1 = bat['z']
-    clip = clip_box_x_to_cavity(p, x0, x1, y0, y1, z0, z0 + 1.5)
-    if clip is not None:
-        x0, x1 = clip
+    rail_w = p['bay']['battery_rail_w']
+    rz0, rz1 = p['bay']['battery_rail_z']
 
-    rail_w = 1.2
-    rail_h = 1.5
-    rail_l = box_solid(root, x0, x0 + rail_w, y0, y1, z0, z0 + rail_h)
-    rail_r = box_solid(root, x1 - rail_w, x1, y0, y1, z0, z0 + rail_h)
+    rail_l = box_solid(root, x0 - rail_w, x0, y0, y1, rz0, rz1)
+    rail_r = box_solid(root, x1, x1 + rail_w, y0, y1, rz0, rz1)
     bodies['Bottom'] = combine_join(root, bodies['Bottom'], [rail_l, rail_r])
 
-    # two 6mm-wide strap slots through the floor, at 1/3 and 2/3 along the
-    # battery's length
-    strap_w = 6.0
+    # a hook-and-loop strap pair goes THROUGH the rails (not the floor bed
+    # face) at 1/3 and 2/3 along the battery's length
+    strap = p['bay']['battery_strap']
     for frac in (1.0 / 3.0, 2.0 / 3.0):
         yc = y0 + frac * (y1 - y0)
-        slot = box_solid(root, x0 + rail_w, x1 - rail_w, yc - strap_w / 2.0, yc + strap_w / 2.0,
-                          p['bottom_z'] - 0.5, z0 + 0.5)
-        bodies['Bottom'] = combine_cut(root, bodies['Bottom'], [slot])
+        slot_l = box_solid(root, x0 - rail_w - 0.5, x0 + 0.5,
+                            yc - strap['w'] / 2.0, yc + strap['w'] / 2.0, rz0, rz0 + strap['h'])
+        slot_r = box_solid(root, x1 - 0.5, x1 + rail_w + 0.5,
+                            yc - strap['w'] / 2.0, yc + strap['w'] / 2.0, rz0, rz0 + strap['h'])
+        bodies['Bottom'] = combine_cut(root, bodies['Bottom'], [slot_l, slot_r])
+    return bodies
+
+
+def add_battery_reference_box(root, p):
+    """803040 LiPo has no Fusion doc -- modeled as a hidden reference box
+    (excluded from exports) purely to support interference checking."""
+    bat = p['bay']['battery']
+    body = box_solid(root, bat['x'][0], bat['x'][1], bat['y'][0], bat['y'][1], bat['z'][0], bat['z'][1])
+    body.name = 'Battery Reference (reference only)'
+    body.isLightBulbOn = False
+    return body
+
+
+def add_l76k_wired_frame(root, bodies, p):
+    """L76K is always wired (2026-09-04: 'hat' mode dropped) -- flat frame
+    in the dome tip with a wire notch on the +y side."""
+    fr = p['bay']['l76k_wired']
+    x0, x1 = fr['x']
+    y0, y1 = fr['y']
+    z0, z1 = fr['z']
+    wall = p['bay']['l76k_frame_wall']
+    clear = p['bay']['l76k_frame_clear']
+
+    outer = box_solid(root, x0 - clear - wall, x1 + clear + wall, y0 - clear - wall, y1 + clear + wall,
+                       z0, z1 + 0.3)
+    inner = box_solid(root, x0 - clear, x1 + clear, y0 - clear, y1 + clear, z0 - 0.5, z1 + 0.8)
+    frame = combine_cut(root, outer, [inner])
+
+    notch_w = p['bay']['l76k_wire_notch_w']
+    notch = box_solid(root, -notch_w / 2.0, notch_w / 2.0,
+                       y1 + clear - 0.5, y1 + clear + wall + 0.5, z0, z1 + 0.3)
+    frame = combine_cut(root, frame, [notch])
+
+    bodies['Bottom'] = combine_join(root, bodies['Bottom'], [frame])
+    return bodies
+
+
+def build_hanging_frame(root, x0, x1, y0, y1, clearance, wall, z_bottom, z_ceiling,
+                         ledge_w=0.0, ledge_h=0.0, gap_w=0.0, gap_side='+y', gap_center=None):
+    """A thin-walled box 'ring' hanging from the ceiling (z_ceiling) down to
+    z_bottom, open top and bottom, around the (x0,y0)-(x1,y1) footprint +
+    clearance. Used for the stack tray and GPS frame so Bottom/Top both
+    print face-down with no overhangs (2026-09-04 bay redesign): the ring
+    itself needs no bridging since it is a vertical wall, and its top
+    naturally fuses to the existing ceiling on join. Optional short-end
+    ledges (a shelf protruding `ledge_w` inward at each y end, from
+    z_bottom up by ledge_h) and a wire-clearance gap cut through one wall.
+    """
+    ox0, ox1 = x0 - clearance - wall, x1 + clearance + wall
+    oy0, oy1 = y0 - clearance - wall, y1 + clearance + wall
+    ix0, ix1 = x0 - clearance, x1 + clearance
+    iy0, iy1 = y0 - clearance, y1 + clearance
+
+    outer = box_solid(root, ox0, ox1, oy0, oy1, z_bottom, z_ceiling)
+    inner = box_solid(root, ix0, ix1, iy0, iy1, z_bottom - 0.5, z_ceiling + 0.5)
+    frame = combine_cut(root, outer, [inner])
+
+    if ledge_w > 0:
+        ledge1 = box_solid(root, ix0, ix1, iy0, iy0 + ledge_w, z_bottom, z_bottom + ledge_h)
+        ledge2 = box_solid(root, ix0, ix1, iy1 - ledge_w, iy1, z_bottom, z_bottom + ledge_h)
+        frame = combine_join(root, frame, [ledge1, ledge2])
+
+    if gap_w > 0:
+        gc = gap_center if gap_center is not None else (x0 + x1) / 2.0
+        gz0, gz1 = z_bottom, z_bottom + 4.0
+        if gap_side == '+y':
+            notch = box_solid(root, gc - gap_w / 2.0, gc + gap_w / 2.0, oy1 - wall - 0.5, oy1 + 0.5, gz0, gz1)
+        elif gap_side == '-y':
+            notch = box_solid(root, gc - gap_w / 2.0, gc + gap_w / 2.0, oy0 - 0.5, oy0 + wall + 0.5, gz0, gz1)
+        elif gap_side == '+x':
+            notch = box_solid(root, ox1 - wall - 0.5, ox1 + 0.5, gc - gap_w / 2.0, gc + gap_w / 2.0, gz0, gz1)
+        else:
+            notch = box_solid(root, ox0 - 0.5, ox0 + wall + 0.5, gc - gap_w / 2.0, gc + gap_w / 2.0, gz0, gz1)
+        frame = combine_cut(root, frame, [notch])
+
+    return frame
+
+
+def add_stack_tray(root, bodies, p):
+    """XIAO+Wio stack support: an open-top/open-bottom tray hanging from
+    the Top's ceiling (prints with no overhang), with a 2mm ledge at each
+    short (y) end for the Wio PCB to rest on, and a 6mm wire-clearance gap
+    on the +y side for the XIAO's USB-C/antenna wires. The stack itself is
+    inserted from below before the halves close."""
+    stack = p['bay']['stack']
+    x0, x1 = stack['x']
+    y0, y1 = stack['y']
+    tray = build_hanging_frame(
+        root, x0, x1, y0, y1, p['bay']['tray_clear'], p['bay']['tray_wall'],
+        p['bay']['tray_z_bottom'], p['top_ceiling_underside_z'],
+        ledge_w=p['bay']['tray_ledge']['w'], ledge_h=p['bay']['tray_ledge']['h'],
+        gap_w=p['bay']['tray_gap']['w'], gap_side=p['bay']['tray_gap']['side'])
+    bodies['Top'] = combine_join(root, bodies['Top'], [tray])
     return bodies
 
 
 def add_gps_frame(root, bodies, p):
+    """GPS patch antenna: same Top-hanging-frame scheme as the stack tray."""
     gps = p['bay']['gps_patch']
-    cx = (gps['x'][0] + gps['x'][1]) / 2.0
-    cy = (gps['y'][0] + gps['y'][1]) / 2.0
-    opening = p['bay']['gps_opening']
-    wall = p['bay']['gps_frame_wall']
-    ceiling = p['top_ceiling_underside_z']
-    frame_depth = gps['z'][1] - gps['z'][0]
-
-    outer = opening + 2 * wall
-    clip = clip_box_x_to_cavity(p, cx - outer / 2.0, cx + outer / 2.0, cy - outer / 2.0, cy + outer / 2.0,
-                                 ceiling - frame_depth, ceiling)
-    if clip is None:
-        return bodies  # doesn't fit at this location for this variant -- skip (see README)
-    ox0, ox1 = clip
-    outer_box = box_solid(root, ox0, ox1, cy - outer / 2.0, cy + outer / 2.0,
-                           ceiling - frame_depth, ceiling)
-    inner_box = box_solid(root, cx - opening / 2.0, cx + opening / 2.0, cy - opening / 2.0, cy + opening / 2.0,
-                           ceiling - frame_depth - 0.5, ceiling + 0.5)
-    frame = combine_cut(root, outer_box, [inner_box])
+    x0, x1 = gps['x']
+    y0, y1 = gps['y']
+    clear = p['bay']['gps_frame_clear']
+    frame = build_hanging_frame(
+        root, x0, x1, y0, y1, clear, p['bay']['gps_frame_wall'],
+        gps['z'][0] - clear, p['top_ceiling_underside_z'],
+        ledge_w=2.0, ledge_h=1.0)
     bodies['Top'] = combine_join(root, bodies['Top'], [frame])
     return bodies
 
 
-def add_stack_frame(root, bodies, p):
-    stack = p['bay']['stack']
-    x0, x1 = stack['x']
-    y0, y1 = stack['y']
-    pad_dia = p['bay']['stack_pad_dia']
-    pad_h = p['bay']['stack_pad_h']
-    clear = p['bay']['stack_frame_clear']
-    z0 = p['bottom_z'] + 2.0  # floor of the bay cavity
-
-    # corner pads always get built, individually clamped to the safe
-    # cavity envelope so they never puncture the shell even where the
-    # nominal footprint (sized for a flat mid-height cross section) doesn't
-    # fully fit -- see safe_half_width's docstring.
-    inset = pad_dia
-    pad_centers = [(x0 + inset, y0 + inset), (x1 - inset, y0 + inset),
-                   (x0 + inset, y1 - inset), (x1 - inset, y1 - inset)]
-    for cx, cy in pad_centers:
-        lim = safe_half_width(p, cy, z0)
-        cx_safe = max(-lim, min(lim, cx))
-        pad = cylinder_solid(root, cx_safe, cy, pad_dia / 2.0, z0, z0 + pad_h)
-        bodies['Bottom'] = combine_join(root, bodies['Bottom'], [pad])
-
-    clip = clip_box_x_to_cavity(p, x0 - clear - 1.2, x1 + clear + 1.2, y0 - clear - 1.2, y1 + clear + 1.2,
-                                 z0, z0 + pad_h)
-    if clip is None:
-        return bodies  # friction frame wall doesn't fit here -- pads alone stand in (see README)
-    fx0, fx1 = clip
-    outer = box_solid(root, fx0, fx1, y0 - clear - 1.2, y1 + clear + 1.2, z0, z0 + pad_h)
-    inner = box_solid(root, x0 - clear, x1 + clear, y0 - clear, y1 + clear, z0 - 0.5, z0 + pad_h + 0.5)
-    frame = combine_cut(root, outer, [inner])
-    bodies['Bottom'] = combine_join(root, bodies['Bottom'], [frame])
-    return bodies
-
-
-def add_l76k_wired_frame(root, bodies, p):
-    if p.get('l76k_mode', 'wired') != 'wired':
-        return bodies
-    fr = p['bay']['l76k_wired']
-    x0, x1 = fr['x']
-    y0, y1 = fr['y']
-    z0 = p['bottom_z'] + 2.0
-    wall = 1.2
-    clip = clip_box_x_to_cavity(p, x0 - wall, x1 + wall, y0 - wall, y1 + wall, z0, z0 + 1.0)
-    if clip is None:
-        return bodies  # doesn't fit at this location for this variant -- skip (see README)
-    fx0, fx1 = clip
-    x0, x1 = max(x0, fx0), min(x1, fx1)
-    outer = box_solid(root, fx0, fx1, y0 - wall, y1 + wall, z0, z0 + 1.0)
-    inner = box_solid(root, x0, x1, y0, y1, z0 - 0.5, z0 + 1.5)
-    frame = combine_cut(root, outer, [inner])
-    bodies['Bottom'] = combine_join(root, bodies['Bottom'], [frame])
-    return bodies
-
-
-def add_wire_channel(root, bodies, p):
-    wc = p['bay']['wire_channel']
-    stack = p['bay']['stack']
-    x_mid = (wc['x'][0] + wc['x'][1]) / 2.0
-    stack_y_top = stack['y'][1]
-    channel = box_solid(root, x_mid - wc['width'] / 2.0, x_mid + wc['width'] / 2.0,
-                         stack_y_top, wc['y'][1], p['bottom_z'] + 1.0, p['bottom_z'] + 3.0)
-    bodies['Bottom'] = combine_cut(root, bodies['Bottom'], [channel])
-    return bodies
+def add_gps_reference_box(root, p):
+    """GPS patch antenna has no Fusion doc -- hidden reference box only."""
+    gps = p['bay']['gps_patch']
+    body = box_solid(root, gps['x'][0], gps['x'][1], gps['y'][0], gps['y'][1], gps['z'][0], gps['z'][1])
+    body.name = 'GPS Patch Reference (reference only)'
+    body.isLightBulbOn = False
+    return body
 
 
 def add_fpc_keepout_marker(root, p):
     """Construction-only reference body marking the LoRa FPC antenna
-    keep-out strip -- NOT joined/cut into any printed body, and not
-    included in build()'s returned bodies dict (so it is excluded from
-    exports and from the strict body-name check in verify())."""
+    keep-out strip on the Top's inner dome wall -- NOT joined/cut into any
+    printed body, hidden, and excluded from exports."""
     ko = p['bay']['fpc_keepout']
-    y0 = p['spine_a'][1] - p['outer_radius'] + p['wall']
-    body = box_solid(root, ko['x'][0], ko['x'][1], y0, y0 + 0.5, ko['z'][0], ko['z'][1])
+    body = box_solid(root, ko['x'][0], ko['x'][1], ko['y'][0], ko['y'][1], ko['z'][0], ko['z'][1])
     body.name = 'FPC Keepout (reference only)'
+    body.isLightBulbOn = False
     return body
 
 
 def add_comms_bay(root, bodies, p):
     bodies = add_battery_bay(root, bodies, p)
-    bodies = add_gps_frame(root, bodies, p)
-    bodies = add_stack_frame(root, bodies, p)
     bodies = add_l76k_wired_frame(root, bodies, p)
-    bodies = add_wire_channel(root, bodies, p)
+    bodies = add_stack_tray(root, bodies, p)
+    bodies = add_gps_frame(root, bodies, p)
+    add_battery_reference_box(root, p)
+    add_gps_reference_box(root, p)
     add_fpc_keepout_marker(root, p)
     return bodies
 
@@ -1303,64 +1464,93 @@ def _bbox_extents(occ):
     return dx, dy, dz, center
 
 
-def insert_board_best_effort(root, doc, target_center_mm):
-    """Insert `doc` as a referenced occurrence.
+def flatten_transform(native_center_mm, thin_axis, target_center_mm):
+    """Matrix3D that rotates the object (if needed) so its native
+    `thin_axis` points along world Z, then relocates its (rotated) center
+    from native_center_mm to target_center_mm --
+    setToAlignCoordinateSystems does the rotate-about-a-pivot-then-move
+    -the-pivot in one step. thin_axis='z' is a pure translation (identity
+    rotation)."""
+    if thin_axis == 'z':
+        to_x, to_y, to_z = (1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0)
+    elif thin_axis == 'y':
+        to_x, to_y, to_z = (1.0, 0.0, 0.0), (0.0, 0.0, 1.0), (0.0, -1.0, 0.0)  # Y -> Z, Z -> -Y
+    else:  # 'x'
+        to_x, to_y, to_z = (0.0, 0.0, 1.0), (0.0, 1.0, 0.0), (-1.0, 0.0, 0.0)  # X -> Z, Z -> -X
 
-    KNOWN LIMITATION -- NOT auto-positioned (see README "Known
-    Limitations"): every rigid-transform approach tried here proved
-    unreliable for these specific multi-level nested reference assemblies
-    (XIAO/Wio/L76K, 3-8 occurrence levels deep) within this generator run:
-    occ.transform accepted a pure-translation matrix in an isolated test
-    but silently reverted to identity when applied mid-build; re-reading
-    occ.transform.translation immediately after setting it DID show the
-    new value, yet the occurrence's own bRepBody bounding boxes (collected
-    recursively) sometimes reflected a stale position and sometimes an
-    inconsistently-scaled one (suggesting nested per-occurrence transforms
-    interacting in a way this generator doesn't control correctly);
-    moveFeatures rejected an Occurrence as an input entity outright, and a
-    Move of its constituent bodies failed too since they belong to the
-    referenced document's own component, not root's. Given that
-    instability, this returns the occurrence at the source document's
-    native (identity) placement rather than risk silently-wrong geometry --
-    a human pass in Fusion (drag it in the browser tree, or Move/Align) is
-    needed to actually seat XIAO/Wio/L76K in the bay. target_center_mm is
-    accepted but currently unused; kept in the signature so a future fix
-    (once the transform issue above is root-caused) is a one-line change
-    at the call sites in insert_comms_boards.
-    """
+    mat = adsk.core.Matrix3D.create()
+    ok = mat.setToAlignCoordinateSystems(
+        P(*native_center_mm), adsk.core.Vector3D.create(1, 0, 0),
+        adsk.core.Vector3D.create(0, 1, 0), adsk.core.Vector3D.create(0, 0, 1),
+        P(*target_center_mm), adsk.core.Vector3D.create(*to_x),
+        adsk.core.Vector3D.create(*to_y), adsk.core.Vector3D.create(*to_z))
+    assert ok, 'setToAlignCoordinateSystems failed'
+    return mat
+
+
+def insert_and_place(design, root, doc, target_center_fn, thin_axis=None):
+    """Insert `doc` as a referenced occurrence and rigidly place it
+    (2026-09-04 fix): read its native bbox, rotate its thin axis (given, or
+    auto-detected as the smallest extent) onto world Z, translate its
+    center to target_center_fn(dx, dy, dz) -- a callback so the caller can
+    use the board's own flattened thickness (dz after a 'y'/'x' rotation
+    is the native dy/dx) to place its PCB bottom at a specific height --
+    then COMMIT via design.snapshots: per Jake, without a snapshot the
+    assigned transform can be left 'pending' and bounding-box reads come
+    back stale/unchanged. Returns (occurrence, dx, dy, dz, thin_axis)."""
     occ = root.occurrences.addByInsert(doc.dataFile, adsk.core.Matrix3D.create(), True)
-    return occ
+    dx, dy, dz, native_center = _bbox_extents(occ)
+    extents = {'x': dx, 'y': dy, 'z': dz}
+    if thin_axis is None:
+        thin_axis = min(extents, key=extents.get)
+    flattened_thickness = extents[thin_axis]  # this native extent becomes the world-Z extent after rotation
+    target_center_mm = target_center_fn(dx, dy, dz, flattened_thickness)
+    occ.transform = flatten_transform(native_center, thin_axis, target_center_mm)
+    if design.snapshots.hasPendingSnapshot:
+        design.snapshots.add()
+    return occ, dx, dy, dz, thin_axis
 
 
 def insert_comms_boards(app, root, p):
+    design = adsk.fusion.Design.cast(app.activeProduct)
     docs = p['board_docs']
-    xiao_doc = get_open_doc(app, docs['xiao'])
     wio_doc = get_open_doc(app, docs['wio'])
+    xiao_doc = get_open_doc(app, docs['xiao'])
     l76k_doc = get_open_doc(app, docs['l76k'])
     occs = {}
+
     stack = p['bay']['stack']
-    stack_cx = (stack['x'][0] + stack['x'][1]) / 2.0
-    stack_cy = (stack['y'][0] + stack['y'][1]) / 2.0
-    z_floor = p['bottom_z'] + 2.0 + p['bay']['stack_pad_h']
+    cx = (stack['x'][0] + stack['x'][1]) / 2.0
+    cy = (stack['y'][0] + stack['y'][1]) / 2.0
+    wio_pcb_bottom_z = stack['wio_pcb_bottom_z']
+    xiao_pcb_bottom_z = wio_pcb_bottom_z + stack['xiao_pcb_bottom_offset']
 
     if wio_doc is not None:
-        occs['wio'] = insert_board_best_effort(root, wio_doc, (stack_cx, stack_cy, z_floor + 1.1))
-    if xiao_doc is not None:
-        occs['xiao'] = insert_board_best_effort(root, xiao_doc, (stack_cx, stack_cy, z_floor + 6.1 + 0.6))
-    if l76k_doc is not None:
-        if p.get('l76k_mode', 'wired') == 'wired':
-            fr = p['bay']['l76k_wired']
-            lcx = (fr['x'][0] + fr['x'][1]) / 2.0
-            lcy = (fr['y'][0] + fr['y'][1]) / 2.0
-            occs['l76k'] = insert_board_best_effort(root, l76k_doc, (lcx, lcy, p['bottom_z'] + 2.0 + 1.0))
-        else:
-            occs['l76k'] = insert_board_best_effort(root, l76k_doc, (stack_cx, stack_cy, z_floor + 6.1 + 12.0))
+        # Wio's native bbox is thinnest in Z already (assume flat as
+        # authored -- no rotation); its PCB bottom lands at wio_pcb_bottom_z.
+        occ, dx, dy, dz, thin = insert_and_place(
+            design, root, wio_doc,
+            lambda dx, dy, dz, thick: (cx, cy, wio_pcb_bottom_z + thick / 2.0), thin_axis='z')
+        occs['wio'] = occ
 
-    # not correctly positioned yet (see insert_board_best_effort's
-    # docstring) -- hide them so renders show the actual printable case
-    # rather than reference boards floating at their native coordinates.
-    for occ in occs.values():
-        occ.isLightBulbOn = False
+    if xiao_doc is not None:
+        # XIAO plugs DOWN into the Wio's sockets -- its native thickness
+        # axis is Y (per Jake), so rotate that onto world Z.
+        occ, dx, dy, dz, thin = insert_and_place(
+            design, root, xiao_doc,
+            lambda dx, dy, dz, thick: (cx, cy, xiao_pcb_bottom_z + thick / 2.0), thin_axis='y')
+        occs['xiao'] = occ
+
+    if l76k_doc is not None:
+        fr = p['bay']['l76k_wired']
+        lcx = (fr['x'][0] + fr['x'][1]) / 2.0
+        lcy = (fr['y'][0] + fr['y'][1]) / 2.0
+        l76k_floor_z = fr['z'][0]
+        occ, dx, dy, dz, thin = insert_and_place(
+            design, root, l76k_doc,
+            lambda dx, dy, dz, thick, _z0=l76k_floor_z: (lcx, lcy, _z0 + thick / 2.0))
+        occs['l76k'] = occ
+
     return occs
 
 
@@ -1376,8 +1566,21 @@ def build(app, params):
 
     bodies = add_lip_anchor_reliefs(root, bodies, params)
     bodies = add_window(root, bodies, params)
-    bodies = add_case_screws(root, bodies, params)
-    bodies = add_top_posts(root, bodies, params)
+
+    # one shared inner-cavity clip tool, reused for every screw boss + Top
+    # post instead of rebuilt per-call (rebuilding a full extrude+2-revolve
+    # inner solid ~11 times was slow enough to risk the MCP call timing
+    # out) -- hidden as a reference-only leftover once done.
+    clip_tool = build_inner_cavity_clip_tool(root, params)
+    # rename/hide it BEFORE use: dedupe_body's Remove-feature cleanup
+    # (inside add_case_screws/add_top_posts) can invalidate previously-held
+    # BRepBody Python references (same issue it works around for
+    # Bottom/Top), so renaming clip_tool only after those calls would
+    # silently rename a stale handle instead.
+    clip_tool.name = 'Inner Cavity Clip Tool (reference only)'
+    clip_tool.isLightBulbOn = False
+    bodies = add_case_screws(root, bodies, params, clip_tool=clip_tool)
+    bodies = add_top_posts(root, bodies, params, clip_tool=clip_tool)
 
     plate = build_screen_plate(root, params)
     bodies['Screen Plate'] = plate
@@ -1393,7 +1596,33 @@ def build(app, params):
     insert_display_pcba(app, root, params)
     insert_comms_boards(app, root, params)
 
+    remove_stray_generic_bodies(root)
+
     return bodies
+
+
+def remove_stray_generic_bodies(root):
+    """Defensive final sweep (2026-09-05): every intentional body in this
+    generator ends up with an explicit name -- one of build()'s returned
+    names, or a '... (reference only)' marker -- so anything still
+    carrying Fusion's auto-generated generic name ('BodyNN') by the end of
+    build() is presumptively an orphaned byproduct of the same fragile-
+    boolean family as the Bottom/Top duplication dedupe_body works around
+    (a small stray box has been observed even after that fix, from the Top
+    posts / comms-bay region). Geometrically these are redundant --
+    everything the probes/envelope/interference checks care about already
+    passes with them ignored -- so delete them outright rather than leave
+    them to fail the exact body-name check."""
+    import re
+    # name-pattern only, deliberately not object-identity-based: every
+    # intentionally-kept body already has an explicit custom name by this
+    # point (never matches Body\d+), and BRepBody proxy objects returned
+    # by separate root.bRepBodies accesses are not reliably comparable by
+    # Python identity/equality in this API (confirmed while building
+    # dedupe_body above).
+    for b in list(root.bRepBodies):
+        if re.fullmatch(r'Body\d+', b.name):
+            root.features.removeFeatures.add(b)
 
 
 def probe_point_solid(body, pt3d):
@@ -1491,9 +1720,17 @@ def verify_m1_cavity_probes(bodies, p):
     top_bodies = [b for b in bodies if b.name == 'Top']
     bot_bodies = [b for b in bodies if b.name == 'Bottom']
 
+    # y=27 (2026-09-05): the original y=10 now runs straight through the
+    # GPS patch frame's footprint (y -5..20, hanging from the Top ceiling
+    # through this probe's z=22 height) -- find_first_solid_x stops at the
+    # FIRST solid it hits scanning outward, which for the WIDER 'current'
+    # variant is the bay frame's own wall, not the true (further out) shell
+    # cavity wall, giving a false failure. y=27 clears the bay footprints
+    # (battery/stack/L76K/gps all end by y~24) and the Top posts (P2/P3 at
+    # y~32, a clear >2mm miss at the probe x range) in both variants.
     z_top_probe = 22.0
     expect_top = inner_rho_at_z(p, z_top_probe)
-    found = find_first_solid_x(top_bodies, 10.0, z_top_probe)
+    found = find_first_solid_x(top_bodies, 27.0, z_top_probe)
     checks.append(('top_cavity', expect_top, found, found is not None and abs(found - expect_top) <= 0.15))
 
     z_bot_probe = 9.3
@@ -1501,6 +1738,60 @@ def verify_m1_cavity_probes(bodies, p):
     found2 = find_first_solid_x(bot_bodies, 10.0, z_bot_probe)
     checks.append(('bottom_cavity', expect_bot, found2, found2 is not None and abs(found2 - expect_bot) <= 0.15))
     return checks
+
+
+def envelope_bounds(p):
+    """Generously allowed bounding box for Bottom/Top, honoring the
+    KNOWN intentional protrusions (button caps proud of the -x wall, the
+    lanyard lug beyond the spine_a dome) -- used to catch anything else
+    (like the case-screw-boss bump this was added for) poking outside the
+    shell."""
+    ay, by = p['spine_a'][1], p['spine_b'][1]
+    R = p['outer_radius']
+    cap_proud = max(p['power_cap']['proud'], p['home_cap']['proud'])
+    tol = 0.5
+    return {
+        'x': (-(R + cap_proud + tol), R + tol),
+        'y': (min(p['lug']['y_tip'] - p['lug']['tip_r'] - tol, ay - R - tol), by + R + tol),
+        'z': (p['bottom_z'] - tol, p['top_z'] + tol),
+    }
+
+
+def verify_envelope(bodies_dict, p):
+    env = envelope_bounds(p)
+    results = {}
+    for name in ('Bottom', 'Top'):
+        b = bodies_dict.get(name)
+        if b is None:
+            continue
+        bb = bbox_of(b)
+        ok = (bb['x'][0] >= env['x'][0] and bb['x'][1] <= env['x'][1]
+              and bb['y'][0] >= env['y'][0] and bb['y'][1] <= env['y'][1]
+              and bb['z'][0] >= env['z'][0] and bb['z'][1] <= env['z'][1])
+        results[name] = (ok, bb, env)
+    return results
+
+
+def verify_no_outer_bumps(bodies, p):
+    """Probe-scan just outside the outer surface (rho = outer_radius + 0.2)
+    at three heights on each straight side and at both dome ends -- added
+    2026-09-04 after renders showed half-dome bumps at the parting line
+    where case-screw bosses/Top posts (sized for the R30/R28 'current'
+    envelope) punched through the narrower trim shell."""
+    ay, by = p['spine_a'][1], p['spine_b'][1]
+    probe_r = p['outer_radius'] + 0.2
+    y_mid = 25.0  # representative straight-section y (matches the reported bump)
+    results = []
+    for side_x in (probe_r, -probe_r):
+        for z in (5.0, 12.0, 18.0):
+            pt = P(side_x, y_mid, z)
+            hit = any(probe_point_solid(b, pt) for b in bodies)
+            results.append((f'x={side_x:+.1f},y={y_mid},z={z}', hit))
+    for end_y, label in ((ay - probe_r, 'dome_end_a'), (by + probe_r, 'dome_end_b')):
+        pt = P(0.0, end_y, 12.0)
+        hit = any(probe_point_solid(b, pt) for b in bodies)
+        results.append((label, hit))
+    return results
 
 
 def verify_m1_probe_table(bodies, p):
@@ -1522,6 +1813,47 @@ def verify_m1_probe_table(bodies, p):
     return results
 
 
+def true_wall_distance_along_ray(p, housing_xy, d2, z):
+    """The REAL outer-shell distance (mm, along unit direction d2 from
+    housing_xy) at height z, using the analytic rho(z) profile -- exact
+    for the straight section (wall at |x|=rho(z)) and for the domed end
+    caps (a circle of radius rho(z) centered on the nearer spine point,
+    since the dome is a literal revolve of the same profile -- see
+    build_outer_pill_solid). Used to verify the cap-trim intersect
+    (2026-09-04 fix) put the cap exactly `proud` mm outside the true
+    curved surface, not the flat-wall approximation used to build it."""
+    ay, by = p['spine_a'][1], p['spine_b'][1]
+    hx, hy = housing_xy
+    r = rho_at_z(p, z)
+    if ay <= hy <= by:
+        if abs(d2[0]) < 1e-9:
+            return None
+        target = r if d2[0] > 0 else -r
+        return (target - hx) / d2[0]
+    center = (0.0, ay if hy < ay else by)
+    cx, cy = hx - center[0], hy - center[1]
+    b = 2.0 * (cx * d2[0] + cy * d2[1])
+    c_coef = cx * cx + cy * cy - r * r
+    disc = b * b - 4.0 * c_coef
+    if disc < 0:
+        return None
+    root_disc = disc ** 0.5
+    return max((-b + root_disc) / 2.0, (-b - root_disc) / 2.0)
+
+
+def find_outermost_s(body, origin_xy, d2, z, max_s=40.0, step=0.02):
+    """Scan from far outside (max_s) inward along origin_xy + s*d2 at
+    height z and return the first s where `body` is solid -- i.e. the
+    body's outermost point along this ray."""
+    s = max_s
+    while s >= 0.0:
+        pt = P(origin_xy[0] + s * d2[0], origin_xy[1] + s * d2[1], z)
+        if probe_point_solid(body, pt):
+            return s
+        s -= step
+    return None
+
+
 def verify_m2(bodies_dict, p):
     """M2 dimensional + probe checks per SPEC.md's milestone list: hole
     clearance 0.25, plunger tip gap 0.02, nub pocket depth 0.8, tab gap
@@ -1531,7 +1863,7 @@ def verify_m2(bodies_dict, p):
     hole are checked with real point-containment probes against the built
     solids."""
     results = {}
-    results['power_hole_clearance_0.25'] = (abs(p['wall_hole_clearance'] - 0.25) < 1e-9, p['wall_hole_clearance'])
+    results['power_hole_clearance_0.25'] = (abs(p['cap_clearance'] - 0.25) < 1e-9, p['cap_clearance'])
     results['plunger_tip_gap_0.02'] = (abs(p['plunger_tip_gap'] - 0.02) < 1e-9, p['plunger_tip_gap'])
     results['nub_pocket_depth_0.8'] = (abs(p['nub_pocket']['depth'] - 0.8) < 1e-9, p['nub_pocket']['depth'])
     results['tab_gap_0.60'] = (abs(p['tab']['gap'] - 0.60) < 1e-9, p['tab']['gap'])
@@ -1585,6 +1917,28 @@ def verify_m2(bodies_dict, p):
                     rib_ok = False
         results[f'{key}_cap_clears_rib'] = (rib_ok, 'cap body does not occupy the rib material area around the slot')
 
+        # cap-trim-to-curved-shell check (2026-09-04 fix): at 3 heights
+        # across the cap's z-range, the cap's outermost point along d
+        # should sit close to `proud` mm past the REAL curved outer
+        # surface. Tolerance is 0.25mm, not the probe step (0.02mm):
+        # true_wall_distance_along_ray's straight-section formula assumes
+        # a purely radial (rho-only) surface normal, but the R10 shoulder
+        # fillet's actual normal has a Z component too, so "offset by
+        # 0.45mm along the true normal" (what OffsetFaces does) isn't
+        # exactly "rho_at_z(z) + 0.45mm measured at the same z" once a
+        # button height reaches into the curved shoulder (z > 15) --
+        # the built result is confirmed correct via a live probe either
+        # way, just not pinned to sub-0.1mm by this simplified formula.
+        if cap_body is not None:
+            z_lo, z_hi = cap['z']
+            for z in (z_lo + 0.3, (z_lo + z_hi) / 2.0, z_hi - 0.3):
+                s_wall = true_wall_distance_along_ray(p, g['housing_xy'], g['d'], z)
+                s_cap = find_outermost_s(cap_body, g['housing_xy'], g['d'], z)
+                ok = (s_wall is not None and s_cap is not None
+                      and abs(s_cap - (s_wall + cap['proud'])) < 0.25)
+                expect = round(s_wall + cap['proud'], 3) if s_wall is not None else None
+                results[f'{key}_proud_{round(z, 1)}'] = (ok, {'expect': expect, 'found': s_cap})
+
     return results
 
 
@@ -1635,6 +1989,14 @@ def verify(design, params):
     bad_m2 = [k for k, v in m2_results.items() if not v[0]]
     assert not bad_m2, f'M2 checks failed: {[(k, m2_results[k]) for k in bad_m2]}'
 
+    envelope_results = verify_envelope(by_name, params)
+    bad_env = [(k, v) for k, v in envelope_results.items() if not v[0]]
+    assert not bad_env, f'body exceeds allowed envelope: {bad_env}'
+
+    bump_results = verify_no_outer_bumps(case_bodies, params)
+    bad_bumps = [r for r in bump_results if r[1]]
+    assert not bad_bumps, f'solid material found just outside the outer surface: {bad_bumps}'
+
     return {
         'body_names': names,
         'm2_results': m2_results,
@@ -1642,10 +2004,88 @@ def verify(design, params):
         'cavity_results': cavity_results,
         'interference': interference,
         'occ_interference': occ_interference,
+        'envelope_results': envelope_results,
+        'bump_results': bump_results,
     }
 
 
 EXPORT_BODY_NAMES = ['Bottom', 'Top', 'Screen Plate', 'Power Button', 'Home Button']
+
+
+def build_button_coupon(root, cap, p):
+    """A standalone, straight-axis (no diagonal `d`) fit-test coupon for
+    one button: a slab representing the outer wall + a local 6mm 'shelf'
+    the retaining tab bears against + the guide rib with its slot, as one
+    printed body; the cap (head/plunger/nub-pocket/tab/collar) as a
+    second, separate body -- both flat and printable face-down. Uses the
+    SAME PARAMS (cap_clearance, rib_thickness, rib_slot_clearance,
+    plunger_travel, collar, nub_pocket, tab) as the real button, just
+    along a single +X axis instead of the real button's diagonal nub
+    direction, so a fit found here transfers directly to the case build.
+    """
+    L, W = cap['stadium']
+    proud = cap['proud']
+    axis1 = (0.0, 1.0, 0.0)   # tangential
+    z3 = (0.0, 0.0, 1.0)
+    outward = (1.0, 0.0, 0.0)
+    inward = (-1.0, 0.0, 0.0)
+
+    slab_t = 2.0                 # matches the real case wall thickness
+    slab_w, slab_h = 24.0, 14.0
+    shelf_depth = 6.0             # the "retaining-tab shelf"
+    hole_L, hole_W = L + 2 * p['cap_clearance'], W + 2 * p['cap_clearance']
+
+    slab = box_solid(root, 0.0, slab_t, -slab_w / 2.0, slab_w / 2.0, -slab_h / 2.0, slab_h / 2.0)
+    hole = oriented_stadium_prism(root, (-1.0, 0.0, 0.0), axis1, z3, outward, hole_L, hole_W, slab_t + 2.0)
+    slab = combine_cut(root, slab, [hole])
+
+    shelf_outer_LW = (L + 2 * shelf_depth, W + 2 * shelf_depth)
+    shelf_outer = oriented_stadium_prism(root, (slab_t, 0.0, 0.0), axis1, z3, outward,
+                                          shelf_outer_LW[0], shelf_outer_LW[1], shelf_depth)
+    shelf_inner = oriented_stadium_prism(root, (slab_t - 0.5, 0.0, 0.0), axis1, z3, outward,
+                                          hole_L, hole_W, shelf_depth + 1.0)
+    shelf = combine_cut(root, shelf_outer, [shelf_inner])
+    slab = combine_join(root, slab, [shelf])
+
+    rib_outer_x = slab_t + shelf_depth  # rib sits immediately past the shelf
+    rib_len = p['rib_thickness']
+    rib_plate = oriented_stadium_prism(root, (rib_outer_x, 0.0, 0.0), axis1, z3, outward,
+                                        shelf_outer_LW[0], shelf_outer_LW[1], rib_len)
+    slot = oriented_stadium_prism(root, (rib_outer_x - 0.5, 0.0, 0.0), axis1, z3, outward,
+                                   L + 2 * p['rib_slot_clearance'], W + 2 * p['rib_slot_clearance'], rib_len + 1.0)
+    rib_plate = combine_cut(root, rib_plate, [slot])
+    slab = combine_join(root, slab, [rib_plate])
+
+    # cap: head (proud of the slab) + plunger through the hole/shelf/rib to
+    # a nominal tip past the rib, with the collar bottoming on the rib
+    # after plunger_travel and a nub pocket at the tip.
+    rib_inner_x = rib_outer_x + rib_len
+    collar = p['collar']
+    collar_outer_x = rib_inner_x + p['plunger_travel']
+    tip_stub = 3.0  # nominal length past the collar, standing in for "reaching the switch"
+    tip_x = collar_outer_x + collar['len'] + tip_stub
+
+    cap_body = oriented_stadium_prism(root, (-proud, 0.0, 0.0), axis1, z3, inward, L, W, proud + tip_x)
+
+    pocket = p['nub_pocket']
+    pocket_body = oriented_box_prism(root, (tip_x, 0.0, 0.0), axis1, z3, outward,
+                                      pocket['xy'][0], pocket['xy'][1], pocket['depth'])
+    cap_body = combine_cut(root, cap_body, [pocket_body])
+
+    tab = p['tab']
+    tab_len = 1.5
+    tab_z = -W / 2.0 - tab['h'] / 2.0
+    tab_body = oriented_box_prism(root, (slab_t + shelf_depth - tab['gap'] - tab_len, 0.0, tab_z), axis1, z3, outward,
+                                   tab['w'], tab['h'], tab_len)
+    cap_body = combine_join(root, cap_body, [tab_body])
+
+    collar_body = oriented_box_prism(root, (collar_outer_x, 0.0, 0.0), axis1, z3, outward,
+                                      L, W + 2 * collar['h'], collar['len'])
+    cap_body = combine_join(root, cap_body, [collar_body])
+
+    slab.name = 'Coupon Wall'
+    cap_body.name = 'Coupon Cap'
+    return slab, cap_body
 
 
 def export_stls(design, bodies, variant, base_dir):
@@ -1661,6 +2101,27 @@ def export_stls(design, bodies, variant, base_dir):
         opts.isBinaryFormat = True
         export_mgr.execute(opts)
         paths[name] = path
+    return paths
+
+
+def export_coupons(design, root, p, base_dir):
+    """Build + export the button fit-test coupons (2026-09-04 addendum):
+    each coupon is a wall+shelf+rib body and a separate cap body, exported
+    as two STLs each (wall/cap print separately, side by side) --
+    coupon_<button>_wall.stl / coupon_<button>_cap.stl."""
+    out_dir = os.path.join(base_dir, 'export', 'coupons')
+    os.makedirs(out_dir, exist_ok=True)
+    export_mgr = design.exportManager
+    paths = {}
+    for key, cap in (('power', p['power_cap']), ('home', p['home_cap'])):
+        wall, cap_body = build_button_coupon(root, cap, p)
+        for label, body in (('wall', wall), ('cap', cap_body)):
+            fname = f'coupon_{key}_{label}.stl'
+            path = os.path.join(out_dir, fname)
+            opts = export_mgr.createSTLExportOptions(body, path)
+            opts.isBinaryFormat = True
+            export_mgr.execute(opts)
+            paths[f'{key}_{label}'] = path
     return paths
 
 
@@ -1750,6 +2211,12 @@ def run(_context: str, variant=None, export=False):
     print('M2 checks:')
     for k, v in result['m2_results'].items():
         print('  ', k, v)
+    print('envelope checks:')
+    for k, v in result['envelope_results'].items():
+        print('  ', k, v[0], 'bbox', v[1], 'env', v[2])
+    print('outer-bump probes:')
+    for r in result['bump_results']:
+        print('  ', r)
 
     expected_names = sorted(['Bottom', 'Screen Plate', 'Top', 'Power Button', 'Home Button'])
     assert result['body_names'] == expected_names, result['body_names']
@@ -1759,6 +2226,11 @@ def run(_context: str, variant=None, export=False):
         stl_paths = export_stls(design, bodies, params['variant'], _HERE)
         print('STL exports:')
         for name, path in stl_paths.items():
+            print('  ', name, '->', path)
+
+        coupon_paths = export_coupons(design, root, params, _HERE)
+        print('Coupon exports:')
+        for name, path in coupon_paths.items():
             print('  ', name, '->', path)
 
         shot_paths = take_orthographic_screenshots(app, params, SCRATCH_DIR, params['variant'])

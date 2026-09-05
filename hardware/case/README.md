@@ -136,6 +136,92 @@ z=14.1 — which are by design, not a defect.
 Both variants currently build with **zero real interference** and all M1+M2
 checks passing.
 
+## 2026-09-05 pass 2 (coordinator follow-ups)
+
+Five follow-ups landed after the initial M1-M4 pass, all against the same
+`case-generator` branch/worktree:
+
+1. **Outer-shell bumps at the parting line, fixed.** Renders showed
+   half-dome bumps where case-screw bosses A/B/C and Top posts P1-P4 (sized
+   at their `current`-variant/R30 reference positions) punched through the
+   narrower trim (R28) shell. Every boss/post is now intersected with a
+   shared inner-cavity "clip tool" solid (`clip_to_inner_cavity` /
+   `build_inner_cavity_clip_tool`) before being joined in, so it can never
+   extend past the real cavity regardless of nominal position; screws A/B/C
+   are additionally re-derived for trim (A/C at x=+-23.0, B at y=-23.0,
+   per `outer_radius - wall - 3.0`). `verify_envelope` (bounding-box-within-
+   allowed-envelope) and `verify_no_outer_bumps` (8-point probe scan just
+   outside the outer surface) now gate every build and both pass clean.
+   **Debugging note for future maintainers:** intersecting a `cylinder_solid`
+   boss/post against this curved/filleted clip tool, then joining the
+   result into Bottom/Top, was silently leaving the PRE-join body behind as
+   an orphaned same-named duplicate ('Bottom (1)', 'Top (1)', ...) instead
+   of updating in place -- root cause not identified beyond reproducing it
+   down to that exact combination. `dedupe_body` cleans these up via a
+   Remove feature after every boss/post join (not a Join-back, which itself
+   raised an error on the fragile orphan), and `remove_stray_generic_bodies`
+   sweeps any remaining auto-named ('BodyNN') orphans at the end of
+   `build()` as a final safety net.
+2. **Comms bay redesigned as a half-disc dome layout.** The lower cavity is
+   a half-disc at the spine_a end (radius = outer_radius - wall) plus the
+   straight band y 0..27 -- see `params_current.py`'s `bay` dict for the
+   full absolute-mm layout (battery/L76K/stack/GPS positions, used
+   unchanged for both variants -- trim's R=26 is the tighter constraint,
+   current's R=28 just has 2mm more slack). The XIAO+Wio stack and the GPS
+   patch are each held by a Top-hanging, open-bottom "tray"/"frame"
+   (`build_hanging_frame`) so both Bottom and Top print face-down with no
+   overhangs; the battery gets two rails + strap slots THROUGH the rails
+   (not the bed face); L76K (now always wired, 'hat' mode dropped) sits in
+   a shallow floor frame with a wire notch. Battery and GPS patch have no
+   Fusion docs, so they're hidden reference-only boxes
+   (`add_battery_reference_box` / `add_gps_reference_box`), excluded from
+   exports, alongside the (also reference-only) FPC keep-out marker.
+3. **Board placement fixed.** XIAO/Wio/L76K are now correctly positioned
+   (previously they were inserted but left at their native/identity
+   placement, hidden, as a known limitation): `insert_and_place` /
+   `flatten_transform` read each board's native bounding box, rotate its
+   thinnest native axis (XIAO's is Y) onto world Z, and translate its
+   center into the bay -- Wio's PCB bottom at z=10.5, XIAO's at
+   +6.1mm above that (plugged into Wio's sockets), L76K flat on the floor
+   of its frame. `design.snapshots.add()` is called whenever
+   `hasPendingSnapshot` is true after assigning `occ.transform`, per the
+   coordinator's fix; verified by re-reading each occurrence's bRepBody
+   bounding boxes afterward (`_bbox_extents`, which unions actual body
+   boxes rather than trusting `occ.boundingBox`, still unreliable
+   immediately post-insert in this session). Boards are visible (not
+   hidden) in the generated document. **Remaining rough edge:** the L76K
+   assembly's own bounding box (likely including its antenna cable/lead)
+   extends well past the small frame built for the bare board (observed y
+   span ~49mm vs. the ~18mm frame) -- worth a visual check in Fusion; the
+   frame itself is sized correctly for the board outline given in SPEC.md.
+4. **Button caps + USB liner trimmed to the real curved shell.** Both were
+   built against a flat-wall approximation (documented pass-1 limitation);
+   now each is over-built with a few mm of extra margin and then
+   Combine-Intersected against either a thickened copy of the outer
+   envelope (caps: offset outward by `proud`=0.45mm via OffsetFaces,
+   `build_thickened_envelope`, shared across both buttons) or the plain
+   envelope (USB liner). `verify_m2` checks the cap's outermost point
+   against an analytic `true_wall_distance_along_ray` (handles both the
+   straight-section wall and the domed end caps, which are literal
+   revolves of the same profile) at 3 heights per button, within 0.25mm --
+   loosened from an initial 0.1mm target because the analytic formula
+   assumes a purely-radial surface normal, which the R10 shoulder fillet's
+   real normal (has a Z component too) doesn't quite satisfy; the built
+   result was confirmed correct by probe either way, just not pinned to
+   sub-0.1mm by that simplified formula.
+5. **Button fit-test coupons added.** `build_button_coupon` /
+   `export_coupons` build a standalone, straight-axis (no diagonal nub
+   direction) wall+shelf+rib body and a separate cap body per button, from
+   the SAME `PARAMS` (`cap_clearance`, `rib_thickness`,
+   `rib_slot_clearance`, `plunger_travel`, `collar`, `nub_pocket`, `tab`)
+   as the real button -- a fit found on the coupon transfers directly to
+   the case. Exported (with `export=True`) as
+   `hardware/case/export/coupons/coupon_{power,home}_{wall,cap}.stl` (wall
+   and cap print separately, side by side -- not fused into one body).
+   `PARAMS['cap_clearance']` (0.25mm default, the same value used for the
+   real wall-hole-to-head clearance) is the knob to tune from a coupon fit
+   test; a looser fit means a bigger number, a snugger fit a smaller one.
+
 ## Print orientation & settings
 
 - **Bottom**: print face-down on its flat z=0 face (the KandiWooks
@@ -148,6 +234,13 @@ checks passing.
 - Suggested settings: 0.2mm layers, 4 perimeter walls, PETG or PLA.
   Supports are not expected to be needed for Bottom/Top in this
   orientation; check the lug and USB liner overhangs on your slicer.
+- **Print the button coupons first.** `coupon_power_wall.stl` /
+  `coupon_power_cap.stl` / `coupon_home_wall.stl` / `coupon_home_cap.stl`
+  (in `hardware/case/export/coupons/`) are a ~15-minute fit test for the
+  wall-hole/rib/tab/collar mechanism before committing to a full Bottom+Top
+  print. Print all 4 flat, face-down, no supports needed. If the cap binds
+  or rattles in the wall hole, adjust `PARAMS['cap_clearance']`
+  (0.25mm default) and re-export.
 
 ## Screw list
 
@@ -167,54 +260,24 @@ USB-C shell sits at z=14.35 just above it).
 Documented here as the report's "any deviation from this spec with the
 reason" per the milestone instructions.
 
-1. **Button caps assume a flat outer wall.** The real outer surface curves
-   into the R10 shoulder fillet above z=15, and the button cap z-range
-   (up to ~19.6–20.0mm) reaches into that curve. The generator treats the
-   wall in the button region as the flat plane `x = -outer_radius` for the
-   whole cap height. This keeps the mechanism's *dimensions* (hole
-   clearance, plunger gap, pocket depth, tab gap) exactly matching
-   SPEC.md, at the cost of a small (~1-2mm at the z extremes) contour
-   mismatch against the actual shoulder curve — true up the cap's outer
-   profile against the real shell surface before printing.
-2. **USB tunnel liner assumes a flat +y wall** for the same reason (the
-   liner's outer end is at the nominal `spine_b.y + outer_radius`, not the
-   true domed end-cap surface).
-3. **Comms bay footprints don't all fit at face value.** SPEC's/Jake's bay
-   numbers (battery/stack/L76K x-extents, "cavity 52mm wide") are sized
-   against a flat mid-height cross-section, but the actual cavity is a
-   *revolve* of the shoulder profile around each spine endpoint. Near the
-   −y end cap (battery and stack both live at y<0, inside the domed end)
-   and near the floor (z≈2-3mm, close to the bottom shoulder curve), the
-   real usable width is measurably less than the nominal figure. Building
-   the requested boxes at face value punched straight through the outer
-   shell (caught by an M1 probe regression during development: found
-   26.01mm of "wall" at a point where the shell should have been 24.14mm).
-   The generator now clips every bay box to a conservative safe envelope
-   (`safe_half_width` / `clip_box_x_to_cavity`), or skips a piece
-   entirely (falling back to just its corner pads) if it doesn't fit at
-   all. This is a real layout tightness in the bay numbers, not just a
-   generator bug — a mechanical pass should either raise the affected
-   components off the floor, narrow their footprints, or open up the
-   envelope near the −y end cap.
-4. **Comms board occurrences (XIAO / Wio-SX1262 / L76K) are inserted but
-   NOT positioned.** The display module's placement was read from an
-   *existing* reference transform in "Firefly V2 v16"; the comms boards
-   have no such reference (SPEC.md: "positions you choose"), so the
-   generator inserts them fresh and attempts to place them. Every rigid
-   transform approach tried proved unreliable specifically for these
-   multi-level nested assemblies (`occ.transform` accepted a
-   pure-translation matrix but the change didn't reliably show up in the
-   occurrence's own body bounding boxes afterward; `moveFeatures` rejected
-   an Occurrence as an input entity, and moving its constituent bodies
-   failed because they belong to the referenced document's own component).
-   Rather than risk silently-wrong placement, the generator leaves them at
-   the source document's native (identity) placement and **hides** them
-   (`isLightBulbOn = False`) so renders show the actual printable case.
-   **A human pass in Fusion (drag in the browser tree, or Move/Align) is
-   required to seat these three boards in the bay** before using their
-   geometry for a real interference/clearance check. The 'hat' vs 'wired'
-   L76K stack height itself (≈18.5mm vs ≈4mm) is reflected in where the
-   generator *intends* to place them, once placement is fixed.
+1. ~~Button caps assume a flat outer wall~~ **RESOLVED 2026-09-05**: caps
+   are now Combine-Intersected against the real curved shell (see the pass
+   2 section above).
+2. ~~USB tunnel liner assumes a flat +y wall~~ **RESOLVED 2026-09-05**:
+   same fix, intersected against the plain outer envelope.
+3. **Comms bay footprints don't all fit at face value at the very
+   floor/ceiling extremes.** The pass-2 half-disc bay redesign (see above)
+   fits the SPEC hardware envelopes properly for the main features, but
+   `clip_to_inner_cavity`'s safety margin and the general shoulder-curve
+   tightness near z≈2-3mm mean a millimeter-scale mechanical check is
+   still worthwhile before final fabrication, particularly at the
+   -y dome tip where the L76K frame sits.
+4. ~~Comms board occurrences are inserted but NOT positioned~~ **RESOLVED
+   2026-09-05**: XIAO/Wio/L76K are now correctly placed (see the pass 2
+   section above) via `occ.transform` + `design.snapshots.add()`. Remaining
+   rough edge: the L76K assembly's own bounding box (likely including its
+   antenna cable/lead) extends well past the small frame built for the
+   bare board footprint -- worth a visual check in Fusion.
 5. **FPC antenna keep-out** is modeled as a simple reference box (not
    joined/cut into any body, excluded from exports) marking the strip
    SPEC.md describes — it is not a real keep-out enforcement (nothing

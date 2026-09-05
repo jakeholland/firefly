@@ -29,10 +29,27 @@ PARAMS['flat_rho'] = 22.14                  # 24.14 - 2
 # fillet_r (10.0), top/bottom fillet center z (15/10), wall (2.0) unchanged.
 # Derived tangent point: rho = 18 + 10*cos(45) = 25.07 (matches Jake's spec).
 
-# --- window / display / screws / posts / standoffs / plate outline / USB
+# --- window / display / posts / standoffs / plate outline / USB
 #     receptacle position: unchanged -- these stay at their reference
 #     (current-variant) positions inside the now-narrower cavity. ---
-# (nothing to override here: copied verbatim from params_current)
+
+# --- case screws A/B/C: re-derived for the narrower trim wall (2026-09-04
+#     bump fix). At their current-variant (R30) x/y, bosses A/B/C punched
+#     through the trim (R28) outer shell -- caught by an outside-surface
+#     probe scan. New rule: A/C at x = +/-(outer_radius - wall - 3.0), y
+#     unchanged; B at (0, -(outer_radius - wall - 3.0)). D is untouched
+#     (its bump, if any, is handled generically by clip_to_inner_cavity on
+#     every boss/post regardless of variant). ---
+_R3 = PARAMS['outer_radius'] - PARAMS['wall'] - 3.0  # 23.0
+_screws = [dict(s) for s in PARAMS['screws_ABC']]
+for _s in _screws:
+    if _s['name'] == 'A':
+        _s['xy'] = (-_R3, _s['xy'][1])
+    elif _s['name'] == 'B':
+        _s['xy'] = (0.0, -_R3)
+    elif _s['name'] == 'C':
+        _s['xy'] = (_R3, _s['xy'][1])
+PARAMS['screws_ABC'] = _screws
 
 # --- alignment lip / anchor (shrink by the same 2mm as the shoulder) ---
 PARAMS['lip_r'] = (24.95, 25.75)
@@ -65,22 +82,8 @@ _old_off_hi = _BASE['lug_relief_box']['y'][1] - _OLD_WALL_Y   # 4.0
 _box['y'] = (_NEW_WALL_Y + _old_off_lo, _NEW_WALL_Y + _old_off_hi)
 PARAMS['lug_relief_box'] = _box
 
-# --- comms bay: cavity 52mm wide = battery(30) + stack(17.8) + 3x1.4mm gaps ---
-GAP = 1.4
-half_w = (PARAMS['outer_radius'] - PARAMS['wall'])  # 26.0
-bay = copy.deepcopy(PARAMS['bay'])
-bay['cavity_x'] = (-half_w, half_w)
-x0 = -half_w
-battery_x0 = x0 + GAP
-battery_x1 = battery_x0 + 30.0
-stack_x0 = battery_x1 + GAP
-stack_x1 = stack_x0 + 17.8
-assert abs((stack_x1 + GAP) - half_w) < 1e-6, (stack_x1, half_w)
-
-bay['battery']['x'] = (battery_x0, battery_x1)
-bay['stack']['x'] = (stack_x0, stack_x1)
-bay['gps_patch']['x'] = (battery_x0, battery_x0 + 25.0)
-bay['l76k_wired']['x'] = (stack_x0, stack_x0 + 18.0)
-# y/z spans, wire channel, fpc keepout: unchanged from the current variant
-# (Jake's note only calls out the x/width re-layout).
-PARAMS['bay'] = bay
+# --- comms bay v2 (2026-09-04 redesign) ---
+# Deliberately UNCHANGED from params_current: the bay's half-disc layout
+# (see params_current.py's 'bay' comment) uses ABSOLUTE mm positions fit to
+# the tighter trim cavity_r=26; current's cavity_r=28 just has 2mm more
+# slack everywhere the layout doesn't already use. Nothing to override here.
