@@ -249,8 +249,28 @@ PARAMS = {
     'home_nub_dir': (-0.84, 0.54),
     'power_cap': {'stadium': (10.0, 5.8), 'z': (13.8, 19.6), 'proud': 0.45, 'y_center': 29.7},
     'home_cap': {'stadium': (8.94, 6.6), 'z': (13.4, 20.0), 'proud': 0.45},
-    'plunger_tip_gap': 0.02,   # gap at FULL PRESS (collar bottomed on the rib), not at rest
-    'nub_pocket': {'xy': (1.3, 1.6), 'depth': 0.8},
+    # 2026-09-08 pass 9b/finding 10: replaces the old 'plunger_tip_gap'
+    # (0.02mm, defined as a full-press gap FROM THE SWITCH HOUSING via
+    # `housing_xy` -- an approximated bbox-corner point that turned out to
+    # sit 3.3-3.5mm outboard of the real switch body, per a live Fusion
+    # probe of the actual 'SWITCH-TS24CA' body -- see button_geometry's
+    # docstring). `switch_actuator_reach` is the real, measured actuator
+    # nub's own outward reach (mm, from the switch's own bbox center,
+    # along its nub direction) -- an intrinsic property of the switch
+    # part itself, identical for both buttons (same physical part; the
+    # live probe found 1.82mm for both). `plunger_pretravel` is the gap
+    # (mm) between the plunger tip and that REAL actuator, at rest, before
+    # any press starts closing it -- this is what actually gates the
+    # button's reach now; see verify_plunger_reach.
+    'switch_actuator_reach': 1.82,
+    'plunger_pretravel': 0.3,
+    # nub_pocket['xy'][0] (tangential width) widened 1.3 -> 2.4mm
+    # (2026-09-08, same probe): the real actuator nub is ~1.9mm wide
+    # tangentially (z 16.2-17.2 at the housing, per the live scan), not
+    # the 1.3mm the pocket used to assume -- 2.4 keeps the SPEC's 0.25mm/
+    # side clearance convention (1.9 + 2*0.25 rounded up). Height (1.6mm)
+    # is untouched -- the real nub is only ~1.0mm tall, already clear.
+    'nub_pocket': {'xy': (2.4, 1.6), 'depth': 0.8},
     'tab': {'w': 2.9, 'h': 2.0, 'gap': 0.60},
     # how far short of the true outer skin the tab-hole cut stops --
     # shared by add_button (the cut) and verify_skin_intact (the probe
@@ -262,7 +282,28 @@ PARAMS = {
     # solder joints with nothing else to stop inward travel).
     'rib_thickness': 1.6,        # along the plunger travel axis
     'rib_slot_clearance': 0.25,  # per side, around the plunger cross-section
-    'rib_inboard_offset': 6.0,   # rib's outboard face, mm inboard of the outer wall (5-7mm range)
+    # 2026-09-08 pass 9b, finding 9 (collateral discovery): kept at 6.0 --
+    # a live probe of the REAL inserted switch body (see button_geometry's
+    # docstring) found the Home button's rib/collar, at this offset,
+    # genuinely overlapped the real switch (once the reach fix, finding
+    # 10, put the mechanism at its real measured position). A SMALLER
+    # global offset (tried: 3.5) fixes that but trades it for a DIFFERENT
+    # real defect: the rib's own flat-box Z-extent reaches well past
+    # cap_z_center (the one height s_wall is computed at) into the R10
+    # shoulder curve, where the true wall is measurably closer -- a
+    # smaller offset leaves less margin to absorb that gap, and a live
+    # export-envelope check confirmed a real ~0.5mm breach at Power's
+    # rib once the global offset shrank (Power never needed the shrink in
+    # the first place -- 16mm+ of real clearance). Fixed instead with a
+    # PER-BUTTON dynamic clamp in button_geometry (s_rib_inner/s_collar_
+    # inner shift outward only when the nominal 6.0mm offset would
+    # violate real-actuator clearance -- a no-op for Power) plus an
+    # explicit Combine-Intersect of the (now closer-to-wall) rib against
+    # the true outer envelope specifically when that clamp fires, so a
+    # smaller effective offset can never re-open the same breach add_
+    # button's rib_plate/connector code was fixed against here. See
+    # button_geometry's and add_button's own comments for both halves.
+    'rib_inboard_offset': 6.0,   # rib's outboard face, mm inboard of the outer wall (nominal; see comment)
     'plunger_travel': 0.62,      # rest-to-bottomed inward travel before the collar hits the rib
     'collar': {'h': 0.8, 'len': 1.0},  # h = extra flange height beyond the plunger cross-section (Z); len = along travel axis
     # wall_x (the -x outer wall, where the buttons live) is derived at build

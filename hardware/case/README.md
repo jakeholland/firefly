@@ -142,6 +142,15 @@ collar-to-rib gap (0.62±0.05mm) and that the slot clearance is 0.25mm by
 construction, plus a real point-containment check that the cap body never
 occupies the rib's material around the slot.
 
+*(2026-09-08 pass 9b update: `plunger_tip_gap` is retired — it was a
+full-press gap measured from `housing_xy`, an approximated point that
+turned out to sit several mm from the real switch housing; replaced by
+`plunger_pretravel` (0.3mm, a REST gap from the real, live-probed
+actuator). `rib_inboard_offset`'s "5-7mm, default 6.0" is now the nominal
+default only — `button_geometry` shifts it dynamically, per button, when
+the real switch position doesn't leave room for the nominal value. See
+the pass 9b section below for the full root cause/fix on both.)*
+
 **Interference**: `check_interference` runs `design.analyzeInterference`
 between all printed bodies, and separately between the case and any
 inserted board occurrence (walking the full occurrence tree, since a
@@ -1322,6 +1331,253 @@ pass.
   ~14.7×10×5.8mm (power) / ~14.7×8.9×6.6mm (home) — small parts, watch for
   first-layer adhesion. If the cap binds or rattles in the wall hole,
   adjust `PARAMS['cap_clearance']` (0.25mm default) and re-export.
+  **Coupon test procedure (pass 9b, findings 9/10):** with both parts
+  printed, insert the cap through the wall coupon's OPEN (interior) side —
+  head first is impossible by design (see finding 9 below); feed the
+  plunger/collar end in from the side opposite the wall hole, then push
+  the head out through the hole from the inside until it seats flush and
+  proud (~0.45mm). Correct feel: a firm but not tight slide, ending in a
+  definite stop as the collar bottoms on the guide rib (do not force it
+  past this point); the head should sit flush with a small proud lip and
+  not rattle side-to-side. If it won't insert at all, re-check you're
+  feeding it from the correct (open) side — outside-in never works, even
+  on a good print. If it's loose/rattly, reduce `cap_clearance`; if it
+  binds before reaching the collar stop, increase it slightly and
+  re-export. If the collar doesn't bottom out with a real stop (travels
+  too far), check `plunger_travel`/`rib_thickness` weren't hand-edited.
+
+## 2026-09-08 pass 9b (findings 9 and 10 — button insertion + Home plunger reach)
+
+A fresh Fusion MCP session. Both findings turned out to share the same
+root cause upstream (`button_geometry`'s `housing_xy`, the switch's
+assumed position) and were fixed, verified live against the actual
+inserted display PCBA's real switch bodies (not just the analytic SPEC
+bbox), and re-exported together.
+
+### Finding 10: Home cap plunger too short to reach the switch
+
+**Confirmed root cause.** `housing_xy` (`button_geometry`, via
+`ray_box_exit_2d`) is not a real surface — it's the point where a ray
+from the switch bbox's center exits the bbox's own DIAGONAL CORNER, which
+is only real if the switch body fills its bbox all the way out to that
+corner. A live Fusion probe of the actual inserted `SWITCH-TS24CA` body
+(point-containment scan along the exact same ray, using the same
+technique as `find_outermost_s`) found it does not, for either button:
+the real body's outermost point along the ray is only **1.82mm** from the
+bbox center — a raised nub at z 16.2–17.2 (matching SPEC's "nub at
+z≈16.7" and its stated 1.2mm protrusion above a ~0.6mm housing base
+exactly) — **3.5mm (Power) / 3.3mm (Home) short of `t_exit`**, the
+assumed housing point. Everything anchored to the OUTER wall via
+`true_wall_distance_along_ray` (`s_wall`, the cap head/hole, rib, collar)
+is unaffected by this — shifting the ray's origin along its own direction
+shifts those values by the same amount, so the absolute wall point they
+resolve to is identical either way, and every wall-side gate already
+verified clean. Only `s_plunger_tip` (the plunger's reach TOWARD the
+switch) inherited `housing_xy`'s error: built as a small offset from it,
+the nub pocket was actually being built **2.3–2.9mm short of the real
+actuator** — on both buttons, not just the one Jake's print flagged.
+
+**Fix.** `PARAMS['switch_actuator_reach']` = 1.82mm (from the live probe)
+is the real actuator nub's own reach from the switch bbox's center, along
+its nub direction — the same physical part for both buttons, and the
+probe found the identical value at both. `PARAMS['plunger_pretravel']` =
+0.3mm replaces the old `plunger_tip_gap` (0.02mm, a full-press gap FROM
+THE HOUSING, i.e. from the same bad reference point). `button_geometry`
+now computes `s_actuator` (the real reach, converted into the same
+housing_xy-relative convention every other `s_*` value here uses) and
+sets `s_plunger_tip = s_actuator + plunger_pretravel` — the tip rests
+0.3mm from the real actuator at rest, closing over the first 0.3mm of any
+press before it starts moving the actuator itself. `PARAMS['nub_pocket'
+]['xy'][0]` (tangential width) is widened 1.3 → 2.4mm: the same live scan
+found the real nub is ~1.9mm wide tangentially (not 1.3mm), so the old
+pocket would have clipped the sides of the real nub once the plunger
+actually reached it.
+
+**Gate**: `verify_plunger_reach` (new) — live-probes the ACTUAL inserted
+switch body a second time (independent of the constant above, to catch
+future drift) and the ACTUAL built cap body's own tip rim (offset past
+the nub-pocket cutout so the probe lands on real shaft material), and
+asserts their gap matches `plunger_pretravel` within 0.15mm. **Both
+buttons, both variants: `actuator_reach` found 1.82mm (expect 1.82),
+`rest_gap` found 0.3mm (expect 0.3) — exact.**
+
+### Finding 9: button caps cannot be inserted
+
+**Confirmed root cause.** The cap (shaft + collar + retaining tab, one
+rigid printed piece) can only be assembled from the INSIDE of the open
+(Bottom-not-yet-attached) Top half, sliding it outward until the head
+seats in the wall hole — an outside-in, tip-first insertion is
+geometrically impossible (the collar is deliberately `collar['h']`
+=0.8mm wider than the shaft, specifically so it's too wide to slide
+through the rib's own slot and instead bottoms against it during a hard
+press). But the retaining tab sits OUTBOARD of the rib at rest (close to
+the inner wall, not near the collar), so an inside-out insertion still
+has to carry the tab PAST the rib's own axial thickness at some point in
+the stroke. Computed directly from the two features' own geometry (not
+found by trial and error): the tab hangs `tab['h']` (2.0mm) below the
+shaft's slot envelope, but the rib's slot only clears `rib_slot_clearance`
+(0.25mm) below the shaft — a **0.55mm-tall band of real, solid rib
+material** (between the slot's own lower edge and the rib plate's own
+outer edge, `attach_margin` beyond the slot) sits directly in the tab's
+path, for the ENTIRE thickness of the rib — a geometrically guaranteed
+interference for any straight-line insertion, not a tolerance-dependent
+near-miss. The tab is a short, thick stub cast integrally with the shaft
+(not a thin cantilever spring), so asking it to flex ~0.55mm past a hard
+stop is not realistic for a printed PETG/PLA part.
+
+**Fix.** Per the finding's own guidance, relieved the RIB instead of
+asking the tab to deflect: `add_button` now cuts a dedicated lane through
+the rib plate's full thickness, sized to the tab's own footprint plus a
+0.3mm/side running clearance (looser than the working `rib_slot_clearance`
+on purpose — this lane is a one-time assembly pass-through, not an
+operating fit), so the tab slides past freely during assembly with no
+interference and no reliance on flex. It has no effect on the rib's main
+slot (still exactly as before) or on the collar (built and clipped
+separately, never enters this lane).
+
+**Two collateral defects found and fixed while verifying the fix live**
+(both were LATENT — present before this pass, just never previously
+probed for):
+
+1. **The Home button's rib had NO real material at all.** Modeling the
+   insertion sweep required first confirming the rib actually exists as a
+   solid — a live check found `combine_join`ing a fresh copy of the SAME
+   rib box into Top added **exactly 0.0mm³** to Top's volume (confirmed
+   by comparing `Top.physicalProperties.volume` before/after): the rib
+   sits deep in the empty cavity, not touching any other Top feature, and
+   this Fusion build's Combine-Join silently no-ops when the tool body
+   doesn't touch/overlap the target at all — the same class of problem
+   `BOSS_CORE_R`/`POST_CORE_R` already work around for bosses/posts, just
+   never hit for a rib before (Power's rib happened to succeed; nothing
+   in the design guaranteed that). Fixed with a thin (2mm) "reach spoke"
+   — `RIB_CONNECTOR_T_OFFSET`/`RIB_CONNECTOR_W`, shared with
+   `add_button_plate_clearance`'s own cutout so the two can never drift
+   out of sync — from the rib's own edge out to solidly embed 0.3mm
+   inside the true wall (confirmed by live probe to stay short of the
+   outer skin). The connector deliberately OVERLAPS the rib's own edge by
+   0.2mm (not just touches it) — a first version left a 1mm gap "to stay
+   clear of the shaft," which turned out to be the exact same
+   no-touching-bodies problem one level up (worked for 'trim', came back
+   with zero material again for 'current' — same code, same defect,
+   different Fusion tie-break).
+2. **Home's rib/collar overlapped the real switch body.** Once finding
+   10's fix put the mechanism at the switch's real position, a live
+   `check_interference` run found a genuine ~39mm³ `Body1`(the real
+   switch) × `Home Button` overlap: `rib_inboard_offset` (6.0mm, a
+   generator-internal default with no SPEC.md basis) measures the rib
+   from `housing_xy`, and Home's real available room (actuator to true
+   wall) is only ~7.7mm — not enough for the old offset plus
+   `rib_thickness`+`plunger_travel`+`collar['len']`. A global offset
+   reduction (tried: 3.5mm) fixes Home but reopens a DIFFERENT defect for
+   Power: the rib's own flat Z-extent reaches into the R10 shoulder
+   curve above `cap_z_center`, where the true wall is measurably closer
+   than the flat estimate — confirmed live as a real ~0.5mm export-
+   envelope breach at Power once the global margin shrank (Power never
+   needed the reduction — it has 10mm+ of real clearance). Fixed instead
+   with a PER-BUTTON dynamic clamp in `button_geometry`
+   (`rib_actuator_clearance` — shifts rib+collar outward, toward the
+   wall, only as far as needed for the COLLAR — the tighter of the two —
+   to clear the real actuator by 0.3mm; a no-op for Power, both variants,
+   and for Home on 'current', which also has enough room). Wherever the
+   clamp fires (Home/trim only) OR a button's connector spoke lands close
+   enough to the true surface on its own (confirmed live: Home/current,
+   unshifted, still had a ~0.2mm breach from the connector's own
+   tangential offset landing on a non-radial ray relative to the dome) —
+   `add_button` now unconditionally Combine-Intersects the whole
+   rib+connector unit against the TRUE outer solid (`build_outer_pill_
+   solid`, the same technique `add_usb_tunnel`'s liner already uses for
+   this exact "flat box near the curved shoulder" problem — not the
+   inner-cavity clip tool, whose own FEATURE_FAILED_TO_CREATE note
+   doesn't apply to this simpler, unfilleted solid), clipping back
+   anything that would otherwise poke through. Shared once per `add_
+   buttons()` call (not rebuilt per button) to keep this within the MCP
+   call's time budget.
+
+**Gates**: `verify_button_insertion` (new) — sweeps the tab's own
+footprint (5 sample points × 24 steps) along the plunger axis from
+comfortably inboard of the rib to its rest position, checking real
+point-containment against the built Top at every step. `verify_button_
+retention` (new) — live-probes that the collar is still blocked by real
+rib material at the rib's own location (confirms the "too wide to pull
+back out" property survives findings 9/10's fixes) and that the tab is
+still blocked by real wall material just past its own clearance pocket
+(confirms the "can't drift further outward" property), plus restates the
+existing collar-rib-gap/tab-gap construction checks. **Both buttons, both
+variants: 0 bad of 125 insertion-sweep probes each; all retention probes
+True.**
+
+### verify() output, both variants (pass 9b)
+
+Confirmed piecewise against a live document each time (this session's
+Fusion MCP connection made the full `verify()` call itself intermittently
+exceed the client-side timeout once the three new checks were added on
+top of the existing sweep — Fusion completed every call regardless, per
+the pass-9-part-1 infrastructure note; splitting the same checks
+`verify()` runs into several smaller calls against the same open document
+avoided the client timeout without changing what's being checked):
+
+```
+trim:    body_names ['Bottom', 'Home Button', 'Power Button', 'Screen Plate', 'Top']
+         interference [] (base + every board occurrence)
+         export_envelope: all 5 bodies True
+         plunger_reach: actuator_reach True (1.82/1.82), rest_gap True (0.3/0.3) -- both buttons
+         button_insertion: both buttons bad_count 0 of 125
+         button_retention: all True -- both buttons
+         m1 probe / m1 cavity / m2 / envelope / bump / posts_bosses / post_wall /
+         stack3_clearance / skin / wall / fpc_relief / min_clearances: all clean
+
+current: body_names ['Bottom', 'Home Button', 'Power Button', 'Screen Plate', 'Top']
+         interference [] (base + every board occurrence)
+         export_envelope: all 5 bodies True
+         plunger_reach: actuator_reach True (1.82/1.82), rest_gap True (0.3/0.3) -- both buttons
+         button_insertion: both buttons bad_count 0 of 125
+         button_retention: all True -- both buttons
+         m1 probe / m1 cavity / m2 / envelope / bump / posts_bosses / post_wall /
+         skin / wall / fpc_relief / min_clearances: all clean
+```
+
+### Offline STL scan output (pass 9b)
+
+`tools/offline_stl_check.py` — both variants, all 5 exported bodies:
+manifold (0 non-manifold edges), envelope ok, overhang `bad_clusters_mm2`
+`[]`. `OVERALL: PASS` for both `trim` and `current`. The 4 coupon STLs
+(re-exported with the same fixes) checked separately for manifold-ness
+only (the tool's envelope/overhang checks are Bottom/Top-shaped, not
+applicable to the coupon fixtures): all 4 manifold, 0 non-manifold edges.
+
+### Exports, pass 9b
+
+Both variants: `export/<variant>/{Bottom,Top,Screen_Plate,Power_Button,
+Home_Button}.stl` (re-exported — Power/Home Button geometry changed;
+Bottom/Screen_Plate unchanged but re-exported as a byproduct of the same
+pipeline run; Top changed only at the two buttons' rib footprints),
+`export/<variant>/firefly_<variant>_case.3mf` (native, 5 objects,
+re-verified by unzipping and counting `<object` elements against the name
+list), `export/<variant>/firefly_<variant>_plate.3mf` (re-packed via
+`tools/stl_to_3mf.py` — Bottom as-is, Top flipped 180° about X, Screen
+Plate as-is, Power Button `outer-x`, Home Button `outer-rz32.74` — the
+z-rotation needed to bring `home_nub_dir` to -X before the same "outer
+face down" flip `outer-x` applies; Power's own nub_dir is close enough to
+-X that the plain `outer-x` orientation was kept, matching the prior
+pass), and the coupon STLs/3MFs (`export/coupons/coupon_{power,home}_
+{wall,cap}.stl`, `firefly_coupons.3mf`, `firefly_coupons_native.3mf` — 4
+objects, re-verified the same way). Renders: `pass9d_{trim,current}_
+{front,top,right,iso}.png` (standard 4-view, both variants) and `pass9d_
+trim_mechanism_section.png` (Bottom hidden, orthographic from below,
+showing the display PCBA, both switch components, and the header/GPS
+area — a plain interior overview; a tighter close-up isolating just the
+plunger-vs-switch gap was attempted via a selection-based viewport fit
+but Fusion's selection API rejected the body references from this script
+context, so this pass didn't get a dedicated close-up beyond this wider
+interior shot). All viewed directly (not just generated) as part of this
+pass.
+
+### Not completed / open (pass 9b)
+
+Findings 7 (wordmark two-line layout) and 8 (antenna cable channels)
+remain open (out of this pass's scope — findings 9 and 10 only, per this
+pass's brief). The generic "`verify_skin_intact` probes the WHOLE outer
+surface, not named footprints" rework is also still not done.
 
 ## Screw list
 
@@ -1476,16 +1732,15 @@ reason" per the milestone instructions.
     (see below) rather than shipped half-verified.
 13. ~~Findings 4–10 from Jake's pass-7 print review are not yet fixed~~
     **Findings 4 (plate posts P1–P4), 5 (window lip ring), and 6
-    (alignment lip chamfer) RESOLVED 2026-09-08 (pass 9, part 2)** — see
-    that section above for root cause/fix/gate on all three. Findings 7
-    (wordmark two-line layout), 8 (antenna cable channels), and 9–10
-    (button cap insertion path, Home plunger length) are still open —
-    9/10 (button mechanism) are independent of 4–6 and probably the
-    next-easiest to verify in isolation via the existing button coupons.
-    The generic "`verify_skin_intact` probes the WHOLE outer surface, not
-    named footprints" rework requested alongside the original 4–10 list
-    is also still not done; the existing narrower `verify_skin_intact`
-    (button tab holes only, see item 11 above) is unchanged.
+    (alignment lip chamfer) RESOLVED 2026-09-08 (pass 9, part 2)**; **9
+    (button cap insertion path) and 10 (Home plunger length) RESOLVED
+    2026-09-08 (pass 9b)** — see that section above for root cause/fix/
+    gate on all five. Findings 7 (wordmark two-line layout) and 8
+    (antenna cable channels) are still open. The generic "`verify_skin_
+    intact` probes the WHOLE outer surface, not named footprints" rework
+    requested alongside the original 4–10 list is also still not done;
+    the existing narrower `verify_skin_intact` (button tab holes only,
+    see item 11 above) is unchanged.
 14. **Display module cannot be inserted "from inside" or "from the
     front"** (confirmed 2026-09-08, pass 9 part 2, finding 5): the
     module's own PCB (39.2×41.4mm, ~57mm diagonal) is larger than the
@@ -1508,6 +1763,28 @@ reason" per the milestone instructions.
     chamfer/fillets specifically exist beyond that indirect evidence —
     a follow-up pass could add one (e.g. a point-containment check just
     outside the un-chamfered corner's theoretical position).
+16. **`rib_inboard_offset` (nominal 6.0mm) is now a per-button EFFECTIVE
+    value, not a flat constant** (pass 9b, finding 9's collateral fixes):
+    `button_geometry` shifts it dynamically (toward the wall) only when
+    the nominal value would put the rib/collar closer than
+    `rib_actuator_clearance` to the real switch actuator — a no-op for
+    Power on both variants and for Home on 'current', but Home/'trim'
+    builds at an effective ~4.1mm. Documented here since it's a real,
+    load-bearing deviation from the flat "5-7mm" convention the comment
+    used to describe, even though `PARAMS['rib_inboard_offset']` itself
+    is unchanged (still 6.0, still gated 5.0-7.0) — the shift happens at
+    build time, not in PARAMS.
+17. **The rib+connector's Combine-Intersect against the true outer
+    envelope (`add_button`, findings 9/10's collateral fix)** is a best-
+    effort protective clip, same pattern as `add_fpc_brow`'s seam fillet
+    elsewhere in this file — applied unconditionally on both buttons now
+    (see that section's own writeup for why a conditional version missed
+    a real breach on 'current'), confirmed clean via a live export-
+    envelope check on both variants, but there is no dedicated gate that
+    specifically confirms an intersect actually clipped something on the
+    runs where it needed to (as opposed to being a no-op) — `verify_
+    export_envelope` (which does gate) is the actual protection here,
+    same reasoning as item 15's fillets/chamfers.
 
 **Reverted mid-pass-6, not shipped**: the coordinator's later messages in
 this pass requested (a) swapping the Wio/XIAO stack to a board-to-board
@@ -1539,8 +1816,10 @@ count, the printed body names, each body's bounding box, the full M1 outer
 and cavity probe tables (z, expected ρ, found ρ, pass/fail), interference
 results, M2 dimensional/probe checks, outer-bump probes, the export
 envelope vertex check (one line per exported body, `True`/`False` plus a
-sample of any offending vertex), and (with `export=True`) the STL export
-paths, coupon export paths, and screenshot paths. A clean run ends with
-`OK: M1+M2 probes passed`. `assert_export_body_size` runs silently inside
-`export_stls`/`export_coupons` at export time — no line unless it fails
-(in which case it raises, same as every other `verify()` assertion).
+sample of any offending vertex), plunger reach / button insertion /
+button retention checks (pass 9b, findings 9/10 — see that section),
+and (with `export=True`) the STL export paths, coupon export paths, and
+screenshot paths. A clean run ends with `OK: M1+M2 probes passed`.
+`assert_export_body_size` runs silently inside `export_stls`/`export_
+coupons` at export time — no line unless it fails (in which case it
+raises, same as every other `verify()` assertion).

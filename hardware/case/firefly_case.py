@@ -1356,6 +1356,32 @@ BOSS_CORE_R = 2.6   # see clipped_pillar_with_reach -- < boss_dia/2 (3.0), > cou
 # matter here since the join happens BEFORE the hole/counterbore cuts.
 POST_CORE_R = 1.1   # < top_post_dia/2 (2.0), > top_post_pilot_dia/2 (0.81)
 
+# 2026-09-08 pass 9b, finding 9: the rib_plate's reach-to-the-wall
+# 'connector spoke' (add_button) -- shared with add_button_plate_clearance
+# so the Screen Plate's own clearance cutout always covers whatever
+# tangential footprint the connector actually occupies, by construction,
+# instead of two independently-hand-picked margins that can silently
+# drift apart (exactly the class of bug this file's own dedupe_body /
+# lug_ear_geometry docstrings warn about elsewhere).
+#
+# NEGATIVE T_OFFSET is deliberate: a first version used +1.0 (a real GAP
+# between the connector and the rib's own edge, reasoning "stay clear of
+# the shaft") -- but that made the connector-to-rib_plate Combine-Join
+# itself a second instance of the EXACT no-touching-bodies no-op this
+# connector exists to fix (confirmed live: Home's rib had real material
+# for 'trim' but came back completely empty for 'current', same code
+# path, just enough geometry difference to flip which side of Fusion's
+# touching-vs-disjoint inconsistency it landed on). A small NEGATIVE
+# offset makes the connector genuinely OVERLAP the rib's own (already
+# attach_margin-oversized) edge by a real 0.2mm of shared volume --
+# unambiguous, not a boundary case -- while its near face (attach_margin
+# + T_OFFSET = 0.6mm inboard of the shaft's own L/2 edge) still clears
+# the shaft (which only reaches L/2) with margin comfortably more than
+# rib_slot_clearance (0.25mm), the smallest such gap already trusted
+# elsewhere in this file.
+RIB_CONNECTOR_T_OFFSET = -0.2  # OVERLAP with the rib's own (already oversized) edge, not a gap -- see comment
+RIB_CONNECTOR_W = 2.0          # connector's own tangential width
+
 
 def _refetch_by_name(root, name):
     """Re-fetch a body fresh by name. dedupe_body's Remove-feature cleanup
@@ -1644,6 +1670,42 @@ def button_geometry(p, switch_bbox, nub_dir, cap):
     stays fine either way since it's separately trimmed to the true
     envelope (see build_thickened_envelope / add_button's Combine-
     Intersect).
+
+    2026-09-08 pass 9b/finding 10: `housing_xy` (below, via
+    `ray_box_exit_2d`) is NOT the real switch housing surface -- it is
+    where a ray from the switch bbox's center exits the bbox's own
+    DIAGONAL CORNER in the nub direction, which is only a real surface
+    point if the switch body happens to fill its bbox all the way to
+    that corner. Confirmed empirically (a live Fusion probe of the actual
+    inserted 'SWITCH-TS24CA' body, scanning point-containment along the
+    exact same ray) that it does NOT for either button: the real body's
+    outermost point along this diagonal ray is only ~1.8mm from the bbox
+    center (the actual raised nub, z 16.2-17.2, matching SPEC's "nub at
+    z~16.7" and its 1.2mm-above-a-~0.6mm-housing-base shape exactly) --
+    3.5mm (power) / 3.3mm (home) short of `t_exit`, the assumed housing
+    point. `s_wall`/`s_rib_*`/`s_collar_*`/the cap head/hole (all anchored
+    to the OUTER wall via `true_wall_distance_along_ray` from `housing_xy`)
+    are unaffected by this error in absolute position -- shifting the ray
+    origin along its own direction shifts `s_wall` by the same amount, so
+    `housing_xy + s_wall*d2` (the real wall point) comes out identical
+    either way, and every later `verify()` gate on that geometry already
+    passed clean. Only `s_plunger_tip` (the plunger's reach TOWARD the
+    switch) was wrong: built as an offset from `housing_xy`, it inherited
+    that point's own ~3.3-3.5mm error, leaving the nub pocket built
+    2.3-2.9mm short of the real actuator -- "too short to reach the
+    switch", finding 10's actual defect (present on both buttons, not
+    just the one Jake's print test happened to flag).
+
+    Fix: `PARAMS['switch_actuator_reach']` (1.82mm, from the same live
+    probe) is the real actuator nub's own outward reach from the switch
+    bbox's center, along the nub direction -- an intrinsic property of
+    the TS24CA switch body itself (both buttons use the same physical
+    part; the probe found the identical value, 1.82mm, at both). `s_
+    actuator` converts that into the same housing_xy-relative `s`
+    convention everything else here uses, and `s_plunger_tip` (still the
+    plunger's own REST position) is now `s_actuator + plunger_pretravel`
+    -- the tip sits `plunger_pretravel` (0.3mm) further from the switch
+    than the real nub, at rest, not from an uninhabited bbox corner.
     """
     d2 = normalize2(nub_dir)
     t2 = (-d2[1], d2[0])
@@ -1653,6 +1715,10 @@ def button_geometry(p, switch_bbox, nub_dir, cap):
 
     t_exit = ray_box_exit_2d((cx, cy), d2, switch_bbox['x'], switch_bbox['y'])
     housing_xy = (cx + t_exit * d2[0], cy + t_exit * d2[1])
+    # real actuator nub reach, converted from "distance along d2 from the
+    # switch bbox center" (how it was measured) to "distance along d2
+    # from housing_xy" (the convention every other s_* value here uses).
+    s_actuator = p['switch_actuator_reach'] - t_exit
 
     cap_z_center = (cap['z'][0] + cap['z'][1]) / 2.0
     # s_wall: the true (curved-shell) wall distance at the cap's own
@@ -1675,11 +1741,17 @@ def button_geometry(p, switch_bbox, nub_dir, cap):
     # generally aligned with the local surface normal once the dome is
     # involved).
     s_inner = s_wall - p['wall']
-    # REST position: the plunger tip sits plunger_travel further from the
-    # housing than the FULL-PRESS gap (plunger_tip_gap) -- the collar
-    # bottoms on the rib plunger_travel mm before the tip would reach the
-    # housing (see PARAMS['plunger_travel'] / 'rib_*' / 'collar').
-    s_plunger_tip = p['plunger_tip_gap'] + p['plunger_travel']
+    # REST position (2026-09-08 pass 9b/finding 10 fix -- see docstring):
+    # the plunger tip sits `plunger_pretravel` mm further from the switch
+    # than the REAL, measured actuator nub (s_actuator), not an offset
+    # from an uninhabited bbox corner. Pressing the cap moves the whole
+    # plunger inward (decreasing s) by up to `plunger_travel` before the
+    # collar bottoms on the rib -- 0.3mm of that closes the pre-travel gap
+    # to the actuator, the remaining ~0.32mm pushes the actuator itself in
+    # (a normal tactile-switch actuation travel), well short of crashing
+    # the plunger into the switch housing's own base (s~0.6mm on this same
+    # ray, per the live probe) at full press.
+    s_plunger_tip = s_actuator + p['plunger_pretravel']
     s_outer_face = s_wall + cap['proud']
     s_tab_face = s_inner - p['tab']['gap']  # further inboard than the inner wall face by the tab gap
 
@@ -1691,6 +1763,41 @@ def button_geometry(p, switch_bbox, nub_dir, cap):
     # from the rib's inboard face; it is collar['len'] mm long along d.
     s_collar_outer = s_rib_inner - p['plunger_travel']
     s_collar_inner = s_collar_outer - p['collar']['len']
+    # 2026-09-08 pass 9b, finding 9 (collateral discovery): rib_inboard_
+    # offset (nominal 6.0) is measured from s_wall, via housing_xy -- fine
+    # when housing_xy is a close proxy for the real switch (Power), but
+    # for a button where it overshoots the real switch by several mm
+    # (Home -- see this function's own docstring above), the nominal
+    # rib/COLLAR can land almost ON TOP of the real actuator (confirmed
+    # live: a real ~39mm3 rib/collar-vs-switch-body interference at Home
+    # with the nominal offset, once the reach fix (finding 10) put the
+    # mechanism at its real, measured position instead of an offset from
+    # an empty bbox corner). The collar (further inboard than the rib by
+    # plunger_travel + collar['len']) is the tighter constraint, so it
+    # drives the clamp: shift rib+collar outward (toward the wall) only
+    # as far as needed for `s_collar_inner` to clear the real actuator by
+    # `rib_actuator_clearance` -- a no-op for Power (nominal already
+    # clears by 10mm+). Kept as a small, TARGETED shift (not a global
+    # PARAMS reduction, tried and reverted -- see PARAMS['rib_inboard_
+    # offset']'s own comment -- a global reduction also shrank Power's
+    # margin against a DIFFERENT, unrelated risk: the rib's own flat Z-
+    # extent reaching into the R10 shoulder curve above cap_z_center,
+    # where the true wall is measurably closer than the flat estimate --
+    # confirmed live as a real ~0.5mm envelope breach at Power once try).
+    # `rib_actuator_shifted` flags this for add_button, which applies an
+    # extra Combine-Intersect against the true outer envelope to the rib
+    # ONLY when shifted -- the same shoulder-curve risk in reverse (this
+    # shift moves Home's rib closer to ITS OWN wall too), guarded instead
+    # of relied-on-margin like Power's untouched case.
+    rib_actuator_clearance = 0.3
+    min_collar_inner = s_actuator + rib_actuator_clearance
+    rib_actuator_shifted = s_collar_inner < min_collar_inner
+    if rib_actuator_shifted:
+        _shift = min_collar_inner - s_collar_inner
+        s_rib_inner += _shift
+        s_rib_outer += _shift
+        s_collar_outer += _shift
+        s_collar_inner += _shift
 
     def xy_at(s):
         return (housing_xy[0] + s * d2[0], housing_xy[1] + s * d2[1])
@@ -1698,6 +1805,8 @@ def button_geometry(p, switch_bbox, nub_dir, cap):
     return {
         'd': d2, 't': t2, 'housing_xy': housing_xy, 'switch_z_mid': switch_z_mid,
         's_wall': s_wall, 's_inner': s_inner, 's_plunger_tip': s_plunger_tip,
+        's_actuator': s_actuator, 'actuator_xy': xy_at(s_actuator),
+        'rib_actuator_shifted': rib_actuator_shifted,
         's_outer_face': s_outer_face, 's_tab_face': s_tab_face,
         's_rib_outer': s_rib_outer, 's_rib_inner': s_rib_inner,
         's_collar_outer': s_collar_outer, 's_collar_inner': s_collar_inner,
@@ -1720,7 +1829,8 @@ def button_geometry(p, switch_bbox, nub_dir, cap):
     }
 
 
-def add_button(root, bodies, name, switch_bbox, nub_dir, cap, hole_wh, p, thickened_envelope=None, clip_tool=None):
+def add_button(root, bodies, name, switch_bbox, nub_dir, cap, hole_wh, p, thickened_envelope=None, clip_tool=None,
+               outer_envelope=None):
     g = button_geometry(p, switch_bbox, nub_dir, cap)
     d2, t2 = g['d'], g['t']
     d3, t3 = (d2[0], d2[1], 0.0), (t2[0], t2[1], 0.0)
@@ -1889,6 +1999,119 @@ def add_button(root, bodies, name, switch_bbox, nub_dir, cap, hole_wh, p, thicke
                                         L + 2 * p['rib_slot_clearance'], W + 2 * p['rib_slot_clearance'],
                                         total_depth + 4.0)
     rib_plate = combine_cut(root, rib_plate, [slot_body])
+
+    # 2026-09-08 pass 9b, finding 9: the cap (shaft + collar + retaining
+    # tab, all one rigid printed piece) can only be assembled from the
+    # INSIDE of the open (Bottom-not-yet-attached) Top half, sliding it
+    # outward along the plunger axis until the head seats in the wall
+    # hole -- an outside-in, tip-first insertion is geometrically
+    # impossible (the collar, `collar['h']`=0.8mm wider than the shaft, is
+    # deliberately too wide for the rib's own slot -- that is what lets it
+    # bottom out against the rib during a hard press instead of sliding
+    # through it). But the retaining tab sits OUTBOARD of the rib at rest
+    # (s_tab_face > s_rib_outer -- it is close to the inner wall, not the
+    # collar), so an inside-out insertion still has to carry the tab PAST
+    # the rib's own axial thickness at some point in the stroke. The tab
+    # hangs `tab['h']` (2.0mm) below the shaft's own slot envelope, but the
+    # rib's slot cut above only clears `W + 2*rib_slot_clearance` (0.5mm
+    # total) below the shaft -- confirmed by direct geometry (and by a
+    # live insertion sweep, see verify_button_insertion) that a 0.55mm-
+    # tall band of real, solid rib material (between the slot's own lower
+    # edge and the rib plate's own outer edge, `attach_margin` beyond the
+    # slot) sits directly in the tab's path, for every position along the
+    # rib's thickness -- not a tolerance-dependent near-miss, a
+    # geometrically guaranteed interference for ANY straight-line
+    # insertion. The tab is a short, thick stub cast integrally with the
+    # shaft (not a thin cantilever spring), so relying on it to flex
+    # ~0.55mm past a hard stop is not realistic for a printed PETG/PLA
+    # part -- per the finding's own guidance, this relieves the rib
+    # instead of asking the tab to deflect: a dedicated lane, sized to the
+    # tab's own footprint plus a generous (0.3mm/side -- looser than the
+    # working `rib_slot_clearance` on purpose, since this lane is a
+    # one-time assembly pass-through, not an operating fit) clearance, cut
+    # the full thickness of the rib plate so the tab can slide past freely
+    # during assembly. It has no effect on the rib's own guiding function
+    # for the shaft (the main slot, above, is untouched) or on the collar
+    # (built and clipped separately, entirely inboard of the rib -- never
+    # enters this lane).
+    tab_relief_margin = 0.3
+    tab_relief_w = p['tab']['w'] + 2 * tab_relief_margin
+    tab_relief_z_hi = z_center - W / 2.0 + tab_relief_margin
+    tab_relief_z_lo = z_center - W / 2.0 - p['tab']['h'] - tab_relief_margin
+    tab_relief_z_span = tab_relief_z_hi - tab_relief_z_lo
+    tab_relief_z_center = (tab_relief_z_hi + tab_relief_z_lo) / 2.0
+    tab_relief_axial_margin = 0.5  # a bit past the rib's own thickness each end, for a clean full-depth cut
+    rib_start_for_relief = (g['rib_start_xy'][0] - tab_relief_axial_margin * d3[0],
+                             g['rib_start_xy'][1] - tab_relief_axial_margin * d3[1],
+                             tab_relief_z_center)
+    tab_relief_body = oriented_box_prism(root, rib_start_for_relief, t3, z3, d3,
+                                          tab_relief_w, tab_relief_z_span,
+                                          rib_len + 2 * tab_relief_axial_margin)
+    rib_plate = combine_cut(root, rib_plate, [tab_relief_body])
+
+    # 2026-09-08 pass 9b, finding 9 (collateral discovery): the rib_plate
+    # sits deep in the hollow cavity, not touching any other Top feature
+    # -- Combine-Join with a tool body that doesn't touch/overlap the
+    # target's EXISTING solid at all silently NO-OPS in this Fusion
+    # build (confirmed live: joining a fresh copy of the rib box added
+    # exactly 0.0mm3 to Top's volume for the Home button -- the tab-relief
+    # fix above was correct, but there was no real rib there to relieve).
+    # This is the same class of problem BOSS_CORE_R/POST_CORE_R already
+    # work around for bosses/posts (see clipped_pillar_with_reach's
+    # docstring) -- here as a thin (2mm), off-axis 'reach spoke' from the
+    # rib's own outer edge out to solidly EMBED in the real wall (target
+    # `s_wall - 0.3`, staying 0.3mm short of the true outer surface --
+    # confirmed by live probe to never breach the skin -- while reaching
+    # `s_wall - rib_slot_clearance...` comfortably past `s_inner`, into
+    # the middle of the 2mm wall thickness, a robust, unambiguous touch).
+    # Offset in `t` past the rib's own (already oversized by attach_margin)
+    # tangential footprint, so it clears the plunger shaft's own full-
+    # length path (which runs at |t| <= L/2 the entire way from tip to
+    # head) entirely -- it cannot ever touch the cap. Applied to BOTH
+    # buttons (Power's original join happened to succeed without this,
+    # but nothing in the design guaranteed that -- this makes the
+    # guarantee explicit and construction-based instead of incidental).
+    connector_margin = 0.3
+    connector_target_s = g['s_wall'] - connector_margin
+    connector_len = connector_target_s - g['s_rib_outer']
+    if connector_len > 0:
+        connector_t_center = (L / 2.0 + attach_margin) + RIB_CONNECTOR_T_OFFSET + RIB_CONNECTOR_W / 2.0
+        rib_outer_xy = (g['housing_xy'][0] + g['s_rib_outer'] * d2[0], g['housing_xy'][1] + g['s_rib_outer'] * d2[1])
+        connector_start = (rib_outer_xy[0] + connector_t_center * t2[0],
+                            rib_outer_xy[1] + connector_t_center * t2[1], z_center)
+        connector_body = oriented_box_prism(root, connector_start, t3, z3, d3, RIB_CONNECTOR_W, W, connector_len)
+        rib_plate = combine_join(root, rib_plate, [connector_body])
+
+    # 2026-09-08 pass 9b, finding 9 (collateral discovery): the reach-to-
+    # the-wall connector (and, for Home once the actuator-clearance clamp
+    # fires, the rib itself too -- button_geometry's `rib_actuator_
+    # shifted`) can end up close enough to the TRUE curved surface that
+    # the connector_margin (0.3mm, measured only along the t=0 ray) isn't
+    # enough everywhere: a live export-envelope check found a real
+    # ~0.2mm breach at Home on the 'current' variant even WITHOUT the
+    # clamp firing there -- the connector's own tangential offset puts it
+    # on a ray that isn't purely radial from the dome's spine, so its
+    # true distance to the curved wall isn't exactly `s_wall` (computed
+    # for the t=0 ray) either. Rather than chase a bigger-still margin
+    # number, Combine-Intersect the whole rib+connector unit against the
+    # TRUE outer solid -- the same technique add_usb_tunnel's liner
+    # already uses for exactly this "flat box built near the curved
+    # shoulder" problem (NOT the inner-cavity clip tool, whose docstring
+    # note about a FEATURE_FAILED_TO_CREATE on this rib doesn't apply to
+    # this simpler, unfilleted solid) -- clipping back any part that
+    # would otherwise poke past the real surface. Applied unconditionally
+    # (both buttons, both variants) rather than only when the clamp
+    # fires, since the tangential-offset error above is independent of
+    # it; a no-op wherever there's nothing to clip. Shared across both
+    # buttons by the caller (add_buttons) -- like thickened_envelope
+    # above, rebuilding the whole outer pill solid per button was part of
+    # what made this build slow enough to risk the MCP call timing out.
+    rib_outer_envelope = outer_envelope if outer_envelope is not None else build_outer_pill_solid(root, p)
+    if outer_envelope is not None:
+        rib_plate = combine_intersect_keep(root, rib_plate, [rib_outer_envelope])
+    else:
+        rib_plate = combine_intersect(root, rib_plate, [rib_outer_envelope])
+
     # 2026-09-06 pass 6: a Combine-Intersect of rib_plate against the
     # inner-cavity clip tool was tried here as an extra safety net (like
     # the collar's, below) but produced a real, large 'Top x Button'
@@ -1932,19 +2155,26 @@ def add_buttons(root, bodies, p, clip_tool=None):
     # MCP call timing out.
     assert p['power_cap']['proud'] == p['home_cap']['proud'], 'shared thickened envelope assumes equal proud amounts'
     thickened_envelope = build_thickened_envelope(root, p, p['power_cap']['proud'])
+    # 2026-09-08 pass 9b, finding 9: shared plain outer envelope for the
+    # rib-plate's own Combine-Intersect (see add_button) -- same reasoning
+    # as thickened_envelope above, built once here rather than per button.
+    rib_outer_envelope = build_outer_pill_solid(root, p)
 
     bodies = add_button(root, bodies, 'Power Button', p['switch_power_bbox'], p['power_nub_dir'],
                          p['power_cap'], (p['power_cap']['stadium'][0] + 2 * p['cap_clearance'],
                                           p['power_cap']['stadium'][1] + 2 * p['cap_clearance']), p,
-                         thickened_envelope=thickened_envelope, clip_tool=clip_tool)
+                         thickened_envelope=thickened_envelope, clip_tool=clip_tool,
+                         outer_envelope=rib_outer_envelope)
     home_bbox = dict(p['switch_home_bbox'])
     home_bbox['z'] = p['switch_power_bbox']['z']  # z not separately specified in SPEC.md; reuse power's
     bodies = add_button(root, bodies, 'Home Button', home_bbox, p['home_nub_dir'],
                          p['home_cap'], (p['home_cap']['stadium'][0] + 2 * p['cap_clearance'],
                                          p['home_cap']['stadium'][1] + 2 * p['cap_clearance']), p,
-                         thickened_envelope=thickened_envelope, clip_tool=clip_tool)
+                         thickened_envelope=thickened_envelope, clip_tool=clip_tool,
+                         outer_envelope=rib_outer_envelope)
     thickened_envelope.name = 'Cap Trim Envelope'
     thickened_envelope.isLightBulbOn = False
+    root.features.removeFeatures.add(rib_outer_envelope)
     return bodies
 
 
@@ -1981,7 +2211,14 @@ def add_button_plate_clearance(root, bodies, p):
         d2, t2 = g['d'], g['t']
         d3, t3, z3 = (d2[0], d2[1], 0.0), (t2[0], t2[1], 0.0), (0.0, 0.0, 1.0)
         L = cap['stadium'][0]
-        tang_span = L + 2 * (attach_margin + 0.5)
+        # 2026-09-08 pass 9b, finding 9: widened to also cover the rib's
+        # new reach-to-the-wall connector spoke (add_button), which sits
+        # outboard of the rib's own oversized edge by RIB_CONNECTOR_
+        # T_OFFSET + RIB_CONNECTOR_W -- shared constants with add_button
+        # so this can never fall out of sync with what the connector
+        # actually builds (a real 'Top x Screen Plate' interference,
+        # confirmed live, was the previous margin's -- 0.5mm -- shortfall).
+        tang_span = L + 2 * (attach_margin + RIB_CONNECTOR_T_OFFSET + RIB_CONNECTOR_W + 0.5)
         s_hi = g['s_wall'] + cap['proud'] + 1.5     # comfortably past the outer wall
         # 2026-09-05 fix: this used to stop just past the collar
         # (s_collar_inner), leaving the rest of the plunger SHAFT --
@@ -3521,6 +3758,242 @@ def find_outermost_s(body, origin_xy, d2, z, max_s=40.0, step=0.02):
     return None
 
 
+def find_innermost_s(body, origin_xy, d2, z, max_s=40.0, step=0.02):
+    """Mirror of find_outermost_s: scan from the origin (s=0) OUTWARD along
+    origin_xy + s*d2 at height z and return the first s where `body` is
+    solid -- i.e. the body's INNERMOST point along this ray. Used
+    (2026-09-08, pass 9b/finding 10) to find the real switch actuator's
+    own outward reach and the cap's own plunger-tip rim, both measured
+    from the same origin (the switch bbox's center) so their `s` values
+    are directly comparable/subtractable -- see verify_plunger_reach."""
+    s = 0.0
+    while s <= max_s:
+        pt = P(origin_xy[0] + s * d2[0], origin_xy[1] + s * d2[1], z)
+        if probe_point_solid(body, pt):
+            return s
+        s += step
+    return None
+
+
+def find_switch_body(bodies_list, switch_bbox, margin=4.0):
+    """Locate the real 'SWITCH-TS24CA' body within `bodies_list` (the
+    display occurrence's own subtree, via _collect_occ_bodies) whose
+    center lands within `margin` mm of the given SPEC/PARAMS switch bbox
+    -- same identification technique used by the live probe that measured
+    PARAMS['switch_actuator_reach'] in the first place (2026-09-08, pass
+    9b/finding 10)."""
+    x0, x1 = switch_bbox['x'][0] - margin, switch_bbox['x'][1] + margin
+    y0, y1 = switch_bbox['y'][0] - margin, switch_bbox['y'][1] + margin
+    for b in bodies_list:
+        par = b.parentComponent.name if b.parentComponent else ''
+        if 'SWITCH-TS24CA' not in par:
+            continue
+        bb = b.boundingBox
+        cx = (bb.minPoint.x + bb.maxPoint.x) / 2.0 / MM
+        cy = (bb.minPoint.y + bb.maxPoint.y) / 2.0 / MM
+        if x0 <= cx <= x1 and y0 <= cy <= y1:
+            return b
+    return None
+
+
+def verify_plunger_reach(root, bodies_dict, p):
+    """New check (2026-09-08, pass 9b, finding 10): live-probes the REAL
+    inserted display occurrence's own switch bodies (not the analytic
+    PARAMS bbox) to confirm the plunger actually reaches close to the
+    real actuator -- the thing finding 10's fix (button_geometry's
+    `s_actuator`/`plunger_pretravel`, see its docstring) is supposed to
+    guarantee, checked independently of the formula that produced it.
+
+    For each button: (1) re-measures the real actuator's own outward
+    reach from its switch bbox center (the same live scan used to derive
+    PARAMS['switch_actuator_reach'] -- confirms the baked-in constant
+    still matches the actual inserted geometry); (2) probes the BUILT
+    cap body's own tip rim (offset sideways past the nub-pocket cutout,
+    so the probe lands on real shaft material, not the pocket's own empty
+    recess) and computes the live gap between the two -- must be close to
+    `plunger_pretravel` (0.3mm), not the multi-mm miss finding 10 found.
+    """
+    results = {}
+    occ = find_display_occurrence(root, p)
+    if occ is None:
+        return {'ok': None, 'note': 'display occurrence not found'}
+    switch_bodies = _collect_occ_bodies(occ)
+
+    buttons = [
+        ('Power Button', p['switch_power_bbox'], p['power_nub_dir'], p['power_cap']),
+        ('Home Button', dict(p['switch_home_bbox'], z=p['switch_power_bbox']['z']), p['home_nub_dir'], p['home_cap']),
+    ]
+    for name, switch_bbox, nub_dir, cap in buttons:
+        key = name.lower().replace(' ', '_')
+        g = button_geometry(p, switch_bbox, nub_dir, cap)
+        sw_body = find_switch_body(switch_bodies, switch_bbox)
+        if sw_body is None:
+            results[f'{key}_reach'] = (False, 'switch body not found live')
+            continue
+        cx = (switch_bbox['x'][0] + switch_bbox['x'][1]) / 2.0
+        cy = (switch_bbox['y'][0] + switch_bbox['y'][1]) / 2.0
+        d2, t2 = g['d'], g['t']
+        z0, z1 = switch_bbox['z']
+
+        live_reach = None
+        z = z0 + 0.1
+        while z <= z1 - 0.1 + 1e-9:
+            s = find_outermost_s(sw_body, (cx, cy), d2, z, max_s=6.0, step=0.02)
+            if s is not None and (live_reach is None or s > live_reach):
+                live_reach = s
+            z += 0.1
+        expect_reach = p['switch_actuator_reach']
+        reach_ok = live_reach is not None and abs(live_reach - expect_reach) < 0.1
+        results[f'{key}_actuator_reach'] = (reach_ok, {'expect': expect_reach, 'found': live_reach})
+
+        cap_body = bodies_dict.get(name)
+        if cap_body is not None and live_reach is not None:
+            pocket_half_w = p['nub_pocket']['xy'][0] / 2.0
+            rim_offset = pocket_half_w + 0.4  # clear of the pocket footprint, still on the shaft
+            rim_origin = (cx + rim_offset * t2[0], cy + rim_offset * t2[1])
+            rim_s = find_innermost_s(cap_body, rim_origin, d2, g['switch_z_mid'], max_s=8.0, step=0.02)
+            gap = None if rim_s is None else rim_s - live_reach
+            gap_ok = gap is not None and abs(gap - p['plunger_pretravel']) < 0.15
+            results[f'{key}_rest_gap'] = (gap_ok, {'expect': p['plunger_pretravel'], 'found': None if gap is None else round(gap, 3)})
+        else:
+            results[f'{key}_rest_gap'] = (False, 'cap body or live_reach missing')
+    return results
+
+
+def verify_button_insertion(root, bodies_dict, p):
+    """New check (2026-09-08, pass 9b, finding 9): does the retaining
+    tab actually clear the rib as the cap is slid into place from the
+    inside (the only physically possible insertion direction -- see
+    add_button's tab-relief comment)? Sweeps the tab's own footprint
+    (its rest position, from button_geometry + the same construction
+    add_button uses) along the plunger axis from a fully-inboard start
+    (comfortably clear of the rib) to its final rest position, sampling 5
+    points across the tab's cross-section (4 corners + center) at each of
+    N steps and checking real point-containment against the BUILT Top
+    body (which already includes the rib's own tab-relief cut). Reports
+    every (step, point) that comes back solid -- 0 bad is a clean,
+    unobstructed insertion path; any hit is a real, live-confirmed
+    interference, not just the analytic z-band argument in add_button's
+    comment."""
+    results = {}
+    top = bodies_dict.get('Top')
+    if top is None:
+        return {'ok': None, 'note': 'Top body missing'}
+
+    buttons = [
+        ('Power Button', p['switch_power_bbox'], p['power_nub_dir'], p['power_cap']),
+        ('Home Button', dict(p['switch_home_bbox'], z=p['switch_power_bbox']['z']), p['home_nub_dir'], p['home_cap']),
+    ]
+    N_STEPS = 24
+    for name, switch_bbox, nub_dir, cap in buttons:
+        key = name.lower().replace(' ', '_')
+        g = button_geometry(p, switch_bbox, nub_dir, cap)
+        d2, t2 = g['d'], g['t']
+        W = cap['stadium'][1]
+        z_center = (cap['z'][0] + cap['z'][1]) / 2.0
+        tab = p['tab']
+        tab_len_along_d = 1.5
+        tab_z = z_center - W / 2.0 - tab['h'] / 2.0
+        # tab's rest-position start point (matches add_button exactly)
+        tab_start_xy = (g['tab_face_xy'][0] - tab_len_along_d * d2[0] / 2.0,
+                        g['tab_face_xy'][1] - tab_len_along_d * d2[1] / 2.0)
+        # sweep range: from comfortably inboard of the rib (2mm past
+        # s_rib_inner, on the switch side) to the rest position (shift=0).
+        s_tab_face = g['s_tab_face']
+        shift_start = (g['s_rib_inner'] - 2.0) - s_tab_face
+        shift_end = 0.0
+        bad = []
+        checked = 0
+        for i in range(N_STEPS + 1):
+            shift = shift_start + (shift_end - shift_start) * i / N_STEPS
+            base_xy = (tab_start_xy[0] + shift * d2[0], tab_start_xy[1] + shift * d2[1])
+            for du, dv, dw in ((0, -tab['w'] / 2.0, 0), (0, tab['w'] / 2.0, 0),
+                               (tab_len_along_d, -tab['w'] / 2.0, 0), (tab_len_along_d, tab['w'] / 2.0, 0),
+                               (tab_len_along_d / 2.0, 0, 0)):
+                px = base_xy[0] + du * d2[0] + dv * t2[0]
+                py = base_xy[1] + du * d2[1] + dv * t2[1]
+                pz = tab_z + dw
+                checked += 1
+                if probe_point_solid(top, P(px, py, pz)):
+                    bad.append((round(shift, 3), round(px, 2), round(py, 2), round(pz, 2)))
+        results[key] = (len(bad) == 0, {'bad_count': len(bad), 'checked': checked, 'sample': bad[:5]})
+    return results
+
+
+def verify_button_retention(bodies_dict, p):
+    """New check (2026-09-08, pass 9b, finding 9): confirms the cap's two
+    retention features -- once assembled -- actually stop it falling
+    back out of the case, live, on the BUILT bodies (not just the
+    parameter relationships verify_m2 already checks by construction).
+
+    (1) collar-too-wide-for-the-rib-slot (blocks the cap being pulled all
+    the way back OUT through the wall hole): the collar's own oversized
+    flange (`collar['h']` beyond the shaft) is deliberately wider than the
+    rib's slot clearance (`rib_slot_clearance`) -- probes a point at the
+    collar's own outer edge, at the rib's axial location, tangentially
+    centered (well clear of finding 9's new tab-relief lane, which is
+    only `tab['w']+0.6` wide) -- must be SOLID (real, unrelieved rib
+    material blocks it there).
+    (2) tab-cannot-drift-further-OUTWARD (the tab's own hole in Top only
+    extends out to the inner wall face, `s_inner` -- past that, in the
+    tab's own (below-the-shaft) z-band, is solid wall) -- probes a point
+    just outboard of `s_inner` in the tab's z-band -- must be SOLID.
+    (3) restates the already-computed, construction-guaranteed collar-
+    bottoms-on-rib gap (`plunger_travel`, verify_m2's own
+    '..._collar_rib_gap_0.62') and tab clearance (`tab['gap']`) here too,
+    so a single call reports the whole retention picture.
+    """
+    results = {}
+    top = bodies_dict.get('Top')
+    if top is None:
+        return {'ok': None, 'note': 'Top body missing'}
+
+    results['collar_wider_than_rib_slot'] = (p['collar']['h'] > p['rib_slot_clearance'],
+                                              {'collar_h': p['collar']['h'], 'rib_slot_clearance': p['rib_slot_clearance']})
+
+    buttons = [
+        ('Power Button', p['switch_power_bbox'], p['power_nub_dir'], p['power_cap']),
+        ('Home Button', dict(p['switch_home_bbox'], z=p['switch_power_bbox']['z']), p['home_nub_dir'], p['home_cap']),
+    ]
+    for name, switch_bbox, nub_dir, cap in buttons:
+        key = name.lower().replace(' ', '_')
+        g = button_geometry(p, switch_bbox, nub_dir, cap)
+        d2 = g['d']
+        W = cap['stadium'][1]
+        z_center = (cap['z'][0] + cap['z'][1]) / 2.0
+
+        # (1) collar's outer edge at the rib's own axial midpoint, at
+        # tangential center (t=0) -- outside finding 9's tab-relief lane
+        # (which is only below z_center - W/2, not above it).
+        s_rib_mid = (g['s_rib_inner'] + g['s_rib_outer']) / 2.0
+        collar_top_z = z_center + W / 2.0 + p['collar']['h'] - 0.1
+        pt_xy = (g['housing_xy'][0] + s_rib_mid * d2[0], g['housing_xy'][1] + s_rib_mid * d2[1])
+        collar_blocked = probe_point_solid(top, P(pt_xy[0], pt_xy[1], collar_top_z))
+        results[f'{key}_collar_blocked_by_rib'] = (collar_blocked, {'s': round(s_rib_mid, 3), 'z': round(collar_top_z, 3)})
+
+        # (2) just outboard of the tab_hole's OWN real outward reach --
+        # not s_inner itself: add_button's tab_hole cut actually extends
+        # to s_inner + tab_hole_skin_margin/2 (see its own comment,
+        # "This hole's own outward reach is s_inner + skin_margin/2"), a
+        # bit further out than s_inner alone -- probing at s_inner+0.3
+        # (this check's first version) landed INSIDE that hole's own
+        # clearance pocket, not the real wall past it. Real wall material,
+        # not the tab's own clearance pocket.
+        tab = p['tab']
+        tab_z = z_center - W / 2.0 - tab['h'] / 2.0
+        tab_hole_outward_s = g['s_inner'] + p.get('tab_hole_skin_margin', 2.0) / 2.0
+        s_probe = tab_hole_outward_s + 0.3
+        pt2_xy = (g['housing_xy'][0] + s_probe * d2[0], g['housing_xy'][1] + s_probe * d2[1])
+        tab_blocked = probe_point_solid(top, P(pt2_xy[0], pt2_xy[1], tab_z))
+        results[f'{key}_tab_outward_blocked'] = (tab_blocked, {'s': round(s_probe, 3), 'z': round(tab_z, 3)})
+
+        # (3) restate the construction-guaranteed gaps here too.
+        rest_gap = g['s_rib_inner'] - g['s_collar_outer']
+        results[f'{key}_collar_rib_gap_0.62'] = (abs(rest_gap - p['plunger_travel']) < 0.05, round(rest_gap, 4))
+        results[f'{key}_tab_gap_0.60'] = (abs(p['tab']['gap'] - 0.60) < 1e-9, p['tab']['gap'])
+    return results
+
+
 def verify_m2(bodies_dict, p):
     """M2 dimensional + probe checks per SPEC.md's milestone list: hole
     clearance 0.25, plunger tip gap 0.02, nub pocket depth 0.8, tab gap
@@ -3531,7 +4004,12 @@ def verify_m2(bodies_dict, p):
     solids."""
     results = {}
     results['power_hole_clearance_0.25'] = (abs(p['cap_clearance'] - 0.25) < 1e-9, p['cap_clearance'])
-    results['plunger_tip_gap_0.02'] = (abs(p['plunger_tip_gap'] - 0.02) < 1e-9, p['plunger_tip_gap'])
+    # 2026-09-08 pass 9b/finding 10: 'plunger_tip_gap_0.02' (a full-press
+    # gap FROM THE SWITCH HOUSING, via the bbox-corner approximation) is
+    # retired -- see button_geometry's docstring for why that reference
+    # point was never a real surface. 'plunger_pretravel_0.3' is its
+    # replacement: the REST gap to the real, measured actuator nub.
+    results['plunger_pretravel_0.3'] = (abs(p['plunger_pretravel'] - 0.3) < 1e-9, p['plunger_pretravel'])
     results['nub_pocket_depth_0.8'] = (abs(p['nub_pocket']['depth'] - 0.8) < 1e-9, p['nub_pocket']['depth'])
     results['tab_gap_0.60'] = (abs(p['tab']['gap'] - 0.60) < 1e-9, p['tab']['gap'])
 
@@ -4541,6 +5019,31 @@ def verify(design, params):
     bad_post_walls = {k: v for k, v in post_wall_results.items() if v}
     assert not bad_post_walls, f'top post wall/skin check failed: {bad_post_walls}'
 
+    # 2026-09-08 pass 9b (finding 10): live-probed plunger reach against
+    # the REAL inserted switch bodies -- see verify_plunger_reach's
+    # docstring. Gated: a real miss here is exactly finding 10's defect
+    # ("too short to reach the switch").
+    plunger_reach_results = verify_plunger_reach(root, by_name, params)
+    assert 'note' not in plunger_reach_results, f'verify_plunger_reach could not run: {plunger_reach_results}'
+    bad_plunger_reach = [k for k, v in plunger_reach_results.items() if isinstance(v, tuple) and not v[0]]
+    assert not bad_plunger_reach, f'plunger does not reach the real switch actuator: {[(k, plunger_reach_results[k]) for k in bad_plunger_reach]}'
+
+    # 2026-09-08 pass 9b (finding 9): the retaining tab's insertion sweep
+    # past the rib -- see verify_button_insertion's docstring. Gated: any
+    # bad step means the cap physically cannot be assembled.
+    button_insertion_results = verify_button_insertion(root, by_name, params)
+    assert 'note' not in button_insertion_results, f'verify_button_insertion could not run: {button_insertion_results}'
+    bad_insertion = [k for k, v in button_insertion_results.items() if isinstance(v, tuple) and not v[0]]
+    assert not bad_insertion, f'button insertion path blocked by the rib: {[(k, button_insertion_results[k]) for k in bad_insertion]}'
+
+    # 2026-09-08 pass 9b (finding 9): live retention probes (collar-vs-
+    # rib-slot, tab-vs-outward-drift) -- see verify_button_retention's
+    # docstring.
+    button_retention_results = verify_button_retention(by_name, params)
+    assert 'note' not in button_retention_results, f'verify_button_retention could not run: {button_retention_results}'
+    bad_retention = [k for k, v in button_retention_results.items() if not v[0]]
+    assert not bad_retention, f'button retention check failed: {[(k, button_retention_results[k]) for k in bad_retention]}'
+
     # 2026-09-08 pass 9 (finding 5): from-inside display insertion path --
     # diagnostic/reported, NOT gated (see verify_display_insertion_path's
     # docstring for why a real negative result here is an actionable
@@ -4620,6 +5123,9 @@ def verify(design, params):
         'clearance_results': clearance_results,
         'posts_bosses_results': posts_bosses_results,
         'post_wall_results': post_wall_results,
+        'plunger_reach_results': plunger_reach_results,
+        'button_insertion_results': button_insertion_results,
+        'button_retention_results': button_retention_results,
         'display_insertion_results': display_insertion_results,
         'stack3_clearance': stack3_clearance,
         'skin_results': skin_results,
@@ -4684,6 +5190,22 @@ def build_button_coupon(root, cap, p, x0=0.0, name_prefix=''):
     slot = oriented_stadium_prism(root, (x0 + rib_outer_x - 0.5, 0.0, 0.0), axis1, z3, outward,
                                    L + 2 * p['rib_slot_clearance'], W + 2 * p['rib_slot_clearance'], rib_len + 1.0)
     rib_plate = combine_cut(root, rib_plate, [slot])
+    # 2026-09-08 pass 9b, finding 9: same tab-relief lane as add_button's
+    # real rib_plate (see its comment) -- this coupon exists specifically
+    # so Jake can fit-test the insertion mechanism before committing to a
+    # full print, so it must reproduce the same fix, not just the same
+    # (formerly broken) slot.
+    tab_relief_margin = 0.3
+    tab_relief_w = p['tab']['w'] + 2 * tab_relief_margin
+    tab_relief_z_hi = -W / 2.0 + tab_relief_margin
+    tab_relief_z_lo = -W / 2.0 - p['tab']['h'] - tab_relief_margin
+    tab_relief_z_span = tab_relief_z_hi - tab_relief_z_lo
+    tab_relief_z_center = (tab_relief_z_hi + tab_relief_z_lo) / 2.0
+    tab_relief_axial_margin = 0.5
+    tab_relief = oriented_box_prism(root, (x0 + rib_outer_x - tab_relief_axial_margin, 0.0, tab_relief_z_center),
+                                     axis1, z3, outward, tab_relief_w, tab_relief_z_span,
+                                     rib_len + 2 * tab_relief_axial_margin)
+    rib_plate = combine_cut(root, rib_plate, [tab_relief])
     slab = combine_join(root, slab, [rib_plate])
 
     # cap: head (proud of the slab) + plunger through the hole/shelf/rib to
@@ -5083,6 +5605,15 @@ def run(_context: str, variant=None, export=False):
         print('  ', k, v)
     print('top-post wall/skin checks (empty list = pass):')
     for k, v in result.get('post_wall_results', {}).items():
+        print('  ', k, v)
+    print('plunger reach checks (finding 10, live probe against the real switch):')
+    for k, v in result.get('plunger_reach_results', {}).items():
+        print('  ', k, v)
+    print('button insertion sweep (finding 9, live probe of the tab-vs-rib path):')
+    for k, v in result.get('button_insertion_results', {}).items():
+        print('  ', k, v)
+    print('button retention checks (finding 9, live probe):')
+    for k, v in result.get('button_retention_results', {}).items():
         print('  ', k, v)
     print('display from-inside insertion path (finding 5, diagnostic):', result.get('display_insertion_results'))
     print('comms stack3 ceiling clearance:', result.get('stack3_clearance'))
