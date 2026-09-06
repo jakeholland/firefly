@@ -328,6 +328,29 @@ static void dbgconsole_dm_calls_sender_with_parsed_dest(void)
     TEST_ASSERT_EQUAL_STRING("omw", H.sender.last_text);
 }
 
+static void dbgconsole_dm_zero_dest_rejected_without_sending(void)
+{
+    /* `dm 0 ...` / `dm 00000000 ...` both parse to dest==0 (parse_node_hex
+     * accepts any 1-8 hex digits, all-zero included) — `ff_shell_debug_
+     * send_text` would silently collapse that to a broadcast. `dm` must
+     * refuse it instead of ever reaching the sender: proves the seam
+     * itself never fires, not just that the reply text looks right. */
+    harness_init(1000);
+    harness_wire_sender(0);
+
+    capture_t cap;
+    dispatch("dm 0 hi", &cap);
+    TEST_ASSERT_EQUAL_STRING("dbg: ? dm needs a non-zero node id", cap.lines[0]);
+    TEST_ASSERT_EQUAL_INT(0, H.sender.calls);
+
+    dispatch("dm 00000000 hi", &cap);
+    TEST_ASSERT_EQUAL_STRING("dbg: ? dm needs a non-zero node id", cap.lines[0]);
+    TEST_ASSERT_EQUAL_INT(0, H.sender.calls);
+
+    ff_feed_t const *feed = ff_shell_feed(&H.shell);
+    TEST_ASSERT_EQUAL_UINT8(0, ff_feed_count(feed)); /* a rejected dm fabricates no feed item */
+}
+
 static void dbgconsole_flare_start_already_sending_then_cancel(void)
 {
     harness_init(1000);
@@ -362,6 +385,30 @@ static void dbgconsole_wall_reports_unlatched_then_latched_with_trust_and_source
     TEST_ASSERT_TRUE(capture_has_line_containing(&cap, "latched=1"));
     TEST_ASSERT_TRUE(capture_has_line_containing(&cap, "trust=BOOTSTRAP"));
     TEST_ASSERT_TRUE(capture_has_line_containing(&cap, "last_src=!0000aaaa"));
+    /* No pack loaded and no settings offset set: the UTC offset itself
+     * is unknown (offset_min=?), so "assumed" — whether that offset was
+     * a stated value or a guess — has nothing to be assumed ABOUT.
+     * Printing "assumed=0" here would read as "a definite, non-assumed
+     * offset", which is false; the field must read as unknown too. */
+    TEST_ASSERT_TRUE(capture_has_line_containing(&cap, "offset_min=? assumed=?"));
+}
+
+static void dbgconsole_wall_assumed_is_numeric_once_offset_is_known(void)
+{
+    /* Once an offset actually resolves (here: a settings offset the user
+     * set), "assumed" is a real, meaningful flag again and must print
+     * as 0/1, not "?" — the "?" fallback added for the unknown-offset
+     * case above must not swallow the known case too. */
+    harness_init(1000);
+    inject_node(STRANGER, "Strngr", (uint32_t)1789768800u); /* latches the wall clock */
+
+    ff_intent_t const set = {.kind = FF_INTENT_SETTING_SET,
+                              .u = {.setting = {.id = FF_SETTING_UTC_OFFSET_MIN, .v = {.i = -240}}}};
+    ff_shell_intent(&H.shell, &set);
+
+    capture_t cap;
+    dispatch("wall", &cap);
+    TEST_ASSERT_TRUE(capture_has_line_containing(&cap, "offset_min=-240 assumed=0"));
 }
 
 int main(void)
@@ -382,9 +429,11 @@ int main(void)
     RUN_TEST(dbgconsole_send_calls_sender_broadcast_and_updates_feed);
     RUN_TEST(dbgconsole_send_with_no_sender_reports_failed);
     RUN_TEST(dbgconsole_dm_calls_sender_with_parsed_dest);
+    RUN_TEST(dbgconsole_dm_zero_dest_rejected_without_sending);
 
     RUN_TEST(dbgconsole_flare_start_already_sending_then_cancel);
     RUN_TEST(dbgconsole_wall_reports_unlatched_then_latched_with_trust_and_source);
+    RUN_TEST(dbgconsole_wall_assumed_is_numeric_once_offset_is_known);
 
     return UNITY_END();
 }

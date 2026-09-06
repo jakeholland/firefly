@@ -161,6 +161,20 @@ static void dbgconsole_send(ff_shell_t *sh, char const *text, ff_dbgconsole_repl
 
 static void dbgconsole_dm(ff_shell_t *sh, uint32_t dest, char const *text, ff_dbgconsole_reply_fn reply, void *user)
 {
+    /* `ff_shell_debug_send_text` treats dest_node==0 as "no destination
+     * given" and silently collapses it to MC_ADDR_BROADCAST (ff_shell.c) —
+     * correct for `send`, wrong for `dm`, which promises an ADDRESSED
+     * send. `dm 0 ...` / `dm 00000000 ...` both parse to dest==0 (
+     * parse_node_hex accepts any 1-8 hex digits, including all zeros),
+     * and letting that through would reply "dbg: dm ok dest=!00000000"
+     * for a message that actually went to every paired node — a
+     * provenance-mislabeling debug surface, exactly what AGENTS.md's
+     * standing brief calls a real finding, not a nit. Reject before
+     * ever reaching the sender: never silently broadcast a `dm`. */
+    if (dest == 0u) {
+        reply_line(reply, user, "dbg: ? dm needs a non-zero node id");
+        return;
+    }
     int const rc = ff_shell_debug_send_text(sh, dest, text);
     char line[DBGCONSOLE_LINE_BUF];
     snprintf(line, sizeof(line), "dbg: dm %s dest=!%08x", (rc == 0) ? "ok" : "failed", (unsigned)dest);
@@ -216,6 +230,15 @@ static void dbgconsole_wall(ff_shell_t *sh, ff_dbgconsole_reply_fn reply, void *
     char offset_buf[16] = "?";
     if (w.has_offset) snprintf(offset_buf, sizeof(offset_buf), "%d", (int)w.offset_min);
 
+    /* `assumed` is only meaningful once an offset exists at all — with
+     * `!w.has_offset` (offset_buf above is already "?") there is no
+     * assumed-vs-stated distinction to report, so print "?" here too
+     * rather than "0", which would read as "a definite, non-assumed
+     * offset" instead of "not applicable / unknown" (same reasoning as
+     * offset_buf itself, just applied to the flag next to it). */
+    char assumed_buf[4] = "?";
+    if (w.has_offset) snprintf(assumed_buf, sizeof(assumed_buf), "%d", (int)w.offset_assumed);
+
     char src_buf[16] = "none";
     char trust_buf[16] = "none";
     if (w.has_last_obs) {
@@ -224,8 +247,8 @@ static void dbgconsole_wall(ff_shell_t *sh, ff_dbgconsole_reply_fn reply, void *
     }
 
     snprintf(line, sizeof(line),
-             "dbg: wall latched=1 latch_unix=%lld trust=%s offset_min=%s assumed=%d last_src=%s rejected=%u",
-             (long long)w.latch_unix_s, trust_buf, offset_buf, (int)(w.has_offset && w.offset_assumed), src_buf,
+             "dbg: wall latched=1 latch_unix=%lld trust=%s offset_min=%s assumed=%s last_src=%s rejected=%u",
+             (long long)w.latch_unix_s, trust_buf, offset_buf, assumed_buf, src_buf,
              (unsigned)w.rejected_relatches);
     reply_line(reply, user, line);
 }
