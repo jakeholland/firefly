@@ -2856,6 +2856,91 @@ static void S21_AC3_settings_calibrate_touch_row_emits_calibrate_intent(void)
     TEST_ASSERT_EQUAL(FF_INTENT_CALIBRATE_TOUCH, s_spy.last.kind);
 }
 
+/* S12 step 3 — the "COMPASS" value row (DEVICE section, follows
+ * CALIBRATE TOUCH). Tapping either half (the label or the status pill —
+ * settings_build_value_row's own "both tappable" shape) emits the
+ * shell-owned FF_INTENT_COMPASS_CAL_START. This test uses the LABEL
+ * side ("COMPASS"); the paired test below uses the PILL side, proving
+ * both halves are wired, not just whichever one happens to be a plain
+ * lv_button. */
+static void S12step3_settings_compass_row_uncalibrated_shows_unset_and_emits_start(void)
+{
+    ff_app_settings_t s;
+    memset(&s, 0, sizeof(s));
+    s.compass_cal.cal_valid = false;
+
+    ff_scr_settings_build(lv_screen_active(), &s);
+
+    TEST_ASSERT_NOT_NULL(find_label_exact(lv_screen_active(), "UNSET"));
+    click(find_button_with_label(lv_screen_active(), "UNSET"));
+
+    TEST_ASSERT_EQUAL_INT(1, s_spy.count);
+    TEST_ASSERT_EQUAL(FF_INTENT_COMPASS_CAL_START, s_spy.last.kind);
+}
+
+/* A calibrated puck's status pill reads "SET" (not "UNSET") — an honest
+ * status readout, not a stored toggle: tapping it opens the ritual
+ * again (the same START intent), never a cycle-through-values action. */
+static void S12step3_settings_compass_row_calibrated_shows_set_and_emits_start(void)
+{
+    ff_app_settings_t s;
+    memset(&s, 0, sizeof(s));
+    s.compass_cal.cal_valid = true;
+
+    ff_scr_settings_build(lv_screen_active(), &s);
+
+    TEST_ASSERT_NULL(find_label_exact(lv_screen_active(), "UNSET"));
+    click(find_button_with_label(lv_screen_active(), "SET"));
+
+    TEST_ASSERT_EQUAL_INT(1, s_spy.count);
+    TEST_ASSERT_EQUAL(FF_INTENT_COMPASS_CAL_START, s_spy.last.kind);
+}
+
+/* S12 step 3 — the full-screen ritual page (FF_SETTINGS_SUB_COMPASS_CAL).
+ * CANCEL always shows and emits FF_INTENT_COMPASS_CAL_CANCEL; DONE is
+ * ABSENT while `can_finish` is false — a shown control never invites a
+ * finish attempt the session's own state already knows will fail. */
+static void S12step3_ritual_page_cancel_emits_cancel_and_done_is_absent_below_threshold(void)
+{
+    ff_app_settings_t s;
+    memset(&s, 0, sizeof(s));
+    s.subview = FF_SETTINGS_SUB_COMPASS_CAL;
+    s.compass_cal.active = true;
+    s.compass_cal.progress_pct = 40;
+    s.compass_cal.sample_count = 118;
+    s.compass_cal.can_finish = false;
+
+    ff_scr_settings_build(lv_screen_active(), &s);
+
+    TEST_ASSERT_NULL(find_button_with_label(lv_screen_active(), "DONE"));
+
+    click(find_button_with_label(lv_screen_active(), "CANCEL"));
+
+    TEST_ASSERT_EQUAL_INT(1, s_spy.count);
+    TEST_ASSERT_EQUAL(FF_INTENT_COMPASS_CAL_CANCEL, s_spy.last.kind);
+}
+
+/* Once `can_finish` is true, DONE appears and emits
+ * FF_INTENT_COMPASS_CAL_FINISH; CANCEL is still present alongside it. */
+static void S12step3_ritual_page_done_emits_finish_when_can_finish(void)
+{
+    ff_app_settings_t s;
+    memset(&s, 0, sizeof(s));
+    s.subview = FF_SETTINGS_SUB_COMPASS_CAL;
+    s.compass_cal.active = true;
+    s.compass_cal.progress_pct = 100;
+    s.compass_cal.sample_count = 260;
+    s.compass_cal.can_finish = true;
+
+    ff_scr_settings_build(lv_screen_active(), &s);
+
+    TEST_ASSERT_NOT_NULL(find_button_with_label(lv_screen_active(), "CANCEL"));
+    click(find_button_with_label(lv_screen_active(), "DONE"));
+
+    TEST_ASSERT_EQUAL_INT(1, s_spy.count);
+    TEST_ASSERT_EQUAL(FF_INTENT_COMPASS_CAL_FINISH, s_spy.last.kind);
+}
+
 /* S12/S04 — the "CREW" row emits the shell-owned FF_INTENT_SETTINGS_OPEN_
  * CREW (the screen only reports the tap; the shell decides the subview
  * transition). Same click()-injection convention as CALIBRATE TOUCH
@@ -3609,6 +3694,11 @@ int main(void)
     RUN_TEST(S100_settings_brightness_stepper_steps_and_clamps);
     RUN_TEST(S21_AC1_settings_is_one_scrolling_list_every_row_reachable);
     RUN_TEST(S21_AC3_settings_calibrate_touch_row_emits_calibrate_intent);
+
+    RUN_TEST(S12step3_settings_compass_row_uncalibrated_shows_unset_and_emits_start);
+    RUN_TEST(S12step3_settings_compass_row_calibrated_shows_set_and_emits_start);
+    RUN_TEST(S12step3_ritual_page_cancel_emits_cancel_and_done_is_absent_below_threshold);
+    RUN_TEST(S12step3_ritual_page_done_emits_finish_when_can_finish);
 
     RUN_TEST(S12_settings_crew_row_emits_open_crew_intent);
     RUN_TEST(S12_crew_remove_real_tap_emits_unpair_with_node_id);

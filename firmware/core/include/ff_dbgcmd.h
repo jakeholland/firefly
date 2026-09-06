@@ -61,6 +61,8 @@
  *   flare | flare cancel    — quick flare start/cancel
  *   wall                    — wall-clock latch dump
  *   i2c                     — shared I2C bus scan + one-shot compass status
+ *   cal | cal start | cal finish | cal cancel | cal clear
+ *                           — S12 step 3: the compass calibration ritual
  * Anything else is `FF_DBGCMD_ERR_UNKNOWN` — the dispatcher's reply for
  * that is the fixed string `"dbg: ? try help"` (S16-style "the shell
  * decides", except here the deciding is this table).
@@ -73,6 +75,24 @@
  * `firmware/app/include/ff_debug_console.h`, supplied by the device
  * target and left NULL on the sim (see that header for the "unavailable
  * on this target" honest-degrade contract).
+ *
+ * `cal` (S12 step 3, added alongside the compass calibration ritual)
+ * follows `flare`/`flare cancel`'s exact shape — a bare verb plus one of
+ * a small fixed set of sub-verbs, each its OWN `ff_dbgcmd_kind_t` (not a
+ * single kind with a sub-command payload field, matching `FLARE`/
+ * `FLARE_CANCEL`'s own precedent) — extended to four sub-verbs instead
+ * of one:
+ *   cal          — status: progress/sample count of an active session,
+ *                  or the persisted calibration's valid/invalid state
+ *   cal start    — begin a new session (a no-op if one is already active)
+ *   cal finish   — attempt to end the session and persist the fit
+ *   cal cancel   — abandon the session, persisted calibration untouched
+ *   cal clear    — drop the PERSISTED calibration back to identity
+ * This parser carries no calibration policy of its own (same "zero I/O,
+ * zero policy" split every other verb here keeps) — the dispatcher
+ * (`firmware/app/ff_debug_console.c`) routes all five straight through
+ * `ff_shell_intent`/`ff_shell_compass_cal_status`, the SAME seam the
+ * Settings ritual screen uses, never a second path into shell state.
  */
 #ifndef FF_DBGCMD_H
 #define FF_DBGCMD_H
@@ -117,6 +137,11 @@ typedef enum {
     FF_DBGCMD_FLARE_CANCEL, /* "flare cancel" */
     FF_DBGCMD_WALL,
     FF_DBGCMD_I2C,          /* I2C bus scan + one-shot compass status */
+    FF_DBGCMD_CAL,          /* "cal" bare — compass-cal status */
+    FF_DBGCMD_CAL_START,    /* "cal start" */
+    FF_DBGCMD_CAL_FINISH,   /* "cal finish" */
+    FF_DBGCMD_CAL_CANCEL,   /* "cal cancel" */
+    FF_DBGCMD_CAL_CLEAR,    /* "cal clear" */
 } ff_dbgcmd_kind_t;
 
 /** Why a line failed to become a command. `FF_DBGCMD_ERR_EMPTY` is not

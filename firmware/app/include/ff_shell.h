@@ -304,6 +304,26 @@ typedef struct {
     bool (*calibrate_touch)(void *user, ff_touchcal_t *out_cal);
     void *calibrate_touch_user;
 
+    /** S12 step 3 — invoked once the compass calibration ritual
+     *  FINISHes successfully (FF_INTENT_COMPASS_CAL_FINISH, after the
+     *  new calibration has already been written into `ff_settings` and
+     *  persisted) or the stored calibration is dropped
+     *  (FF_INTENT_COMPASS_CAL_CLEAR), so the LIVE compass driver picks
+     *  up the change immediately rather than waiting for a reboot —
+     *  mirrors app_main.c's own boot-time `ff_compass_set_cal(&settings
+     *  ->compass_cal)` call, just re-invoked live instead of once at
+     *  startup. `cal` is NULL on CLEAR (install identity / no
+     *  calibration) and non-NULL (pointing at the just-written
+     *  `ff_settings_t.compass_cal`) on a successful FINISH. Same
+     *  injected-device-IO shape as `calibrate_touch`/`haptic`: NULL is
+     *  a safe no-op — on a target with no compass driver (the sim) or
+     *  one that hasn't wired this hook, only the settings-persisted
+     *  value changes; a future boot would still pick it up via the
+     *  existing boot-time `ff_compass_set_cal` call, exactly like it
+     *  does today. */
+    void (*compass_cal_changed)(void *user, ff_geo_cal_t const *cal);
+    void *compass_cal_changed_user;
+
     /** S26 slice b — the power-menu "Power off" hook, invoked by
      *  FF_INTENT_POWER_OFF (docs/specs/S26-device-lifecycle.md). Same
      *  injected-device-IO shape as `calibrate_touch`/`haptic`: NULL on a
@@ -1271,6 +1291,54 @@ ff_flare_t const *ff_shell_flare(ff_shell_t const *sh);
  *  NULL. Write-through is `FF_INTENT_SETTING_SET` (slice e); persisted
  *  via the injected `ff_store_t` on change, never every tick. */
 ff_settings_t const *ff_shell_settings(ff_shell_t const *sh);
+
+/**
+ * ff_shell_compass_cal_status_t / ff_shell_compass_cal_status — S12
+ * step 3: a one-shot snapshot of the compass calibration ritual, read
+ * by the Settings screen (its "CALIBRATE COMPASS" row and the
+ * full-screen ritual page — the same values `ff_app_compass_cal_t`,
+ * ff_app_state.h, projects into the view) and the bench console's `cal`
+ * command family (ff_dbgcmd.h). See `ff_app_compass_cal_t`'s own doc
+ * comment for the field-by-field rationale — this struct mirrors it
+ * exactly; it exists as a separate getter (rather than reading the
+ * projected view directly) because the bench console dispatcher only
+ * ever holds a bare `ff_shell_t *`, the same reason `ff_shell_flare`/
+ * `ff_shell_crew` exist alongside the view projection.
+ */
+typedef struct {
+    bool     cal_valid;     /* mirrors ff_settings_t.cal_valid */
+    bool     active;        /* a session is open (START'd, not yet FINISH'd/CANCEL'd) */
+    int      progress_pct;  /* ff_geo_cal_progress_pct() of the active session; 0 if none */
+    unsigned sample_count;  /* samples fed so far this session; 0 if none */
+    bool     can_finish;    /* progress_pct >= FF_GEO_CAL_MIN_PROGRESS_PCT; false if none */
+} ff_shell_compass_cal_status_t;
+
+ff_shell_compass_cal_status_t ff_shell_compass_cal_status(ff_shell_t const *sh);
+
+/**
+ * ff_shell_compass_cal_sample — feed one board-frame magnetometer
+ * sample into the active calibration session.
+ *
+ * `mag_board` MUST be the exact same board-frame vector (post
+ * axis-remap, PRE calibration) the platform hands `ff_geo_heading_deg`
+ * for the live heading — ff_compass.h's `ff_compass_last_mag_board`, on
+ * the esp32s3 target, is that value. Feeding a differently-mapped or
+ * already-calibrated vector would fit a calibration against axes the
+ * heading computation doesn't actually use, silently producing a
+ * confidently-wrong correction.
+ *
+ * Safe no-op if `sh` is NULL or no session is active — the platform may
+ * call this unconditionally on its own periodic compass-sample tick
+ * (mirroring `ff_shell_set_heading`/`ff_shell_set_batt_mv`'s own
+ * "always push, the shell decides whether it matters right now" shape),
+ * with no need to first check `ff_shell_compass_cal_status(sh).active`
+ * itself. Recommended cadence: the SAME rate the platform already
+ * samples the compass at (app_main.c's FF_COMPASS_SAMPLE_PERIOD_MS, 10
+ * Hz) — the fit is a running min/max + octant-coverage computation, not
+ * a filter that benefits from a higher rate, and a lower rate simply
+ * takes longer to complete the figure-eight motion.
+ */
+void ff_shell_compass_cal_sample(ff_shell_t *sh, ff_vec3_t mag_board);
 
 /**
  * ff_shell_compose_to_node — the composer's current destination node

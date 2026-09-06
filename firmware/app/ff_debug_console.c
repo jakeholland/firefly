@@ -67,6 +67,11 @@ static void dbgconsole_help(ff_dbgconsole_reply_fn reply, void *user)
     reply_line(reply, user, "dbg: flare cancel             cancel a flare in progress");
     reply_line(reply, user, "dbg: wall                     wall-clock latch dump");
     reply_line(reply, user, "dbg: i2c                      shared I2C bus scan + one-shot compass status");
+    reply_line(reply, user, "dbg: cal                      compass calibration ritual status");
+    reply_line(reply, user, "dbg: cal start                begin a calibration session");
+    reply_line(reply, user, "dbg: cal finish               end the session, persist if coverage is enough");
+    reply_line(reply, user, "dbg: cal cancel               abandon the session, calibration unchanged");
+    reply_line(reply, user, "dbg: cal clear                drop the stored calibration back to identity");
 }
 
 static void dbgconsole_me(ff_shell_t *sh, ff_dbgconsole_reply_fn reply, void *user)
@@ -217,6 +222,89 @@ static void dbgconsole_flare_cancel(ff_shell_t *sh, ff_dbgconsole_reply_fn reply
     reply_line(reply, user, was_sending ? "dbg: flare cancelled" : "dbg: flare not sending");
 }
 
+/* `cal` (S12 step 3, the compass calibration ritual) — bare status plus
+ * four sub-verbs, ALL dispatched through `ff_shell_intent`/
+ * `ff_shell_compass_cal_status`, the SAME seam the Settings ritual
+ * screen uses (ff_dbgcmd.h's own doc comment: "never a second path into
+ * shell state"). Every reply reads state back through that getter
+ * AFTER the intent runs, the same "compare state before/after, since
+ * ff_shell_intent has no return channel" pattern `dbgconsole_flare`
+ * above already establishes — not a value this dispatcher invents. */
+static void dbgconsole_cal_line(ff_shell_compass_cal_status_t const *st, char *out, size_t cap)
+{
+    if (st->active) {
+        snprintf(out, cap, "dbg: cal active=1 progress_pct=%d samples=%u can_finish=%d cal=%s", st->progress_pct,
+                 st->sample_count, st->can_finish ? 1 : 0, st->cal_valid ? "custom" : "identity");
+    } else {
+        snprintf(out, cap, "dbg: cal active=0 cal=%s", st->cal_valid ? "custom" : "identity");
+    }
+}
+
+static void dbgconsole_cal_status(ff_shell_t *sh, ff_dbgconsole_reply_fn reply, void *user)
+{
+    ff_shell_compass_cal_status_t const st = ff_shell_compass_cal_status(sh);
+    char line[DBGCONSOLE_LINE_BUF];
+    dbgconsole_cal_line(&st, line, sizeof(line));
+    reply_line(reply, user, line);
+}
+
+static void dbgconsole_cal_start(ff_shell_t *sh, ff_dbgconsole_reply_fn reply, void *user)
+{
+    bool const was_active = ff_shell_compass_cal_status(sh).active;
+
+    ff_intent_t const in = {.kind = FF_INTENT_COMPASS_CAL_START, .u = {0}};
+    ff_shell_intent(sh, &in);
+
+    reply_line(reply, user, was_active ? "dbg: cal already active" : "dbg: cal started");
+}
+
+static void dbgconsole_cal_finish(ff_shell_t *sh, ff_dbgconsole_reply_fn reply, void *user)
+{
+    ff_shell_compass_cal_status_t const before = ff_shell_compass_cal_status(sh);
+    char line[DBGCONSOLE_LINE_BUF];
+
+    if (!before.active) {
+        reply_line(reply, user, "dbg: cal not active");
+        return;
+    }
+
+    ff_intent_t const in = {.kind = FF_INTENT_COMPASS_CAL_FINISH, .u = {0}};
+    ff_shell_intent(sh, &in);
+
+    ff_shell_compass_cal_status_t const after = ff_shell_compass_cal_status(sh);
+    if (!after.active) {
+        /* The session closed — FF_INTENT_COMPASS_CAL_FINISH's only way to
+         * do that is a successful finish (see its own doc comment). */
+        snprintf(line, sizeof(line), "dbg: cal finished ok progress_pct=%d samples=%u", before.progress_pct,
+                 before.sample_count);
+    } else {
+        snprintf(line, sizeof(line),
+                 "dbg: cal finish failed (need %d%%, have %d%%) — calibration unchanged, session still active",
+                 FF_GEO_CAL_MIN_PROGRESS_PCT, after.progress_pct);
+    }
+    reply_line(reply, user, line);
+}
+
+static void dbgconsole_cal_cancel(ff_shell_t *sh, ff_dbgconsole_reply_fn reply, void *user)
+{
+    bool const was_active = ff_shell_compass_cal_status(sh).active;
+
+    ff_intent_t const in = {.kind = FF_INTENT_COMPASS_CAL_CANCEL, .u = {0}};
+    ff_shell_intent(sh, &in);
+
+    reply_line(reply, user, was_active ? "dbg: cal cancelled" : "dbg: cal not active");
+}
+
+static void dbgconsole_cal_clear(ff_shell_t *sh, ff_dbgconsole_reply_fn reply, void *user)
+{
+    bool const was_valid = ff_shell_compass_cal_status(sh).cal_valid;
+
+    ff_intent_t const in = {.kind = FF_INTENT_COMPASS_CAL_CLEAR, .u = {0}};
+    ff_shell_intent(sh, &in);
+
+    reply_line(reply, user, was_valid ? "dbg: cal cleared" : "dbg: cal already uncalibrated");
+}
+
 static void dbgconsole_wall(ff_shell_t *sh, ff_dbgconsole_reply_fn reply, void *user)
 {
     ff_shell_wall_debug_t const w = ff_shell_wall_debug(sh);
@@ -321,6 +409,11 @@ void ff_dbgconsole_handle_line(ff_shell_t *sh, char const *line, size_t line_len
     case FF_DBGCMD_FLARE_CANCEL: dbgconsole_flare_cancel(sh, reply, user); return;
     case FF_DBGCMD_WALL: dbgconsole_wall(sh, reply, user); return;
     case FF_DBGCMD_I2C: dbgconsole_i2c(i2c_scan, compass_status, user, reply, user); return;
+    case FF_DBGCMD_CAL: dbgconsole_cal_status(sh, reply, user); return;
+    case FF_DBGCMD_CAL_START: dbgconsole_cal_start(sh, reply, user); return;
+    case FF_DBGCMD_CAL_FINISH: dbgconsole_cal_finish(sh, reply, user); return;
+    case FF_DBGCMD_CAL_CANCEL: dbgconsole_cal_cancel(sh, reply, user); return;
+    case FF_DBGCMD_CAL_CLEAR: dbgconsole_cal_clear(sh, reply, user); return;
     case FF_DBGCMD_NONE: break; /* ff_dbgcmd_parse never returns OK with NONE — unreachable */
     }
     reply_line(reply, user, "dbg: ? try help");

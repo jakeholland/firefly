@@ -400,6 +400,88 @@ typedef enum {
     FF_INTENT_SETTINGS_OPEN_CREW,
     FF_INTENT_CREW_PAIR,
     FF_INTENT_CREW_UNPAIR,
+
+    /* [api] S12 step 3 — the compass calibration ritual
+     * (docs/specs/S12-first-run.md Step 3; the 2026-09-03 amendment
+     * there noting no slice had landed, and the core math/persistence
+     * field this closes the loop on: `ff_geo_cal_state_t`/
+     * `ff_geo_cal_begin/_feed/_progress_pct/_finish`, ff_geo.h;
+     * `ff_settings_t.compass_cal`/`.cal_valid`, ff_settings.h). Reached
+     * from Settings' new "CALIBRATE COMPASS" row (mirrors
+     * FF_INTENT_CALIBRATE_TOUCH's "a Settings row, a bare intent, the
+     * shell decides" shape) and the bench console's `cal start`/`cal
+     * finish`/`cal cancel` verbs (ff_dbgcmd.h) — ONE seam, no second
+     * path, same discipline CREW_PAIR/CREW_UNPAIR above document.
+     *
+     * Unlike CALIBRATE_TOUCH's single blocking hook call, this is a
+     * multi-sample SESSION spanning many ticks — the figure-eight
+     * motion takes real wall-clock seconds, fed via
+     * `ff_shell_compass_cal_sample` at the platform's own compass
+     * sample rate (~10 Hz, app_main.c's FF_COMPASS_SAMPLE_PERIOD_MS) —
+     * so three intents span its lifecycle instead of one:
+     *
+     * COMPASS_CAL_START — opens the ritual: begins a fresh
+     *   `ff_geo_cal_state_t` session (`ff_geo_cal_begin`) and switches
+     *   the Settings subview to FF_SETTINGS_SUB_COMPASS_CAL
+     *   (ff_app_state.h). A no-op if a session is ALREADY active —
+     *   starting twice must never silently discard progress already
+     *   collected. No payload.
+     * COMPASS_CAL_CANCEL — abandons the in-progress session with NO
+     *   effect on the persisted calibration (any existing
+     *   `settings.compass_cal`/`cal_valid` is left exactly as it was)
+     *   and returns the Settings subview to LIST. A no-op if no session
+     *   is active. No payload. This is also what BACK does while the
+     *   ritual page is showing (docs/specs/S28-gestures.md) — see
+     *   ff_shell.c's FF_INTENT_BACK case, which cancels an active
+     *   session before resetting the subview, the same "settings
+     *   sub-page -> back to the settings root" rule S12/S04's CREW page
+     *   already established, extended to also tear down the session
+     *   state CREW's sub-view never had.
+     * COMPASS_CAL_FINISH — attempts to end the session
+     *   (`ff_geo_cal_finish`). On success (coverage >=
+     *   FF_GEO_CAL_MIN_PROGRESS_PCT, ff_geo.h): writes
+     *   `settings.compass_cal` + `cal_valid = true`, persists
+     *   (`ff_settings_save`, the same "only on an actual change" gate
+     *   CALIBRATE_TOUCH's case already uses), applies the new
+     *   calibration LIVE via the injected
+     *   `ff_shell_cfg_t.compass_cal_changed` hook (so the running
+     *   compass driver need not wait for a reboot — mirrors
+     *   app_main.c's existing BOOT-time `ff_compass_set_cal` call, just
+     *   re-invoked live), and returns the subview to LIST. On failure
+     *   (coverage still under the threshold): the session stays ACTIVE
+     *   and the old calibration is left untouched — an honest "not
+     *   enough yet, keep rotating" outcome, not a dead end. Because
+     *   `ff_shell_intent` has no return channel (S16's own convention —
+     *   see `dbgconsole_flare`'s before/after comparison in
+     *   ff_debug_console.c for the established pattern), a caller that
+     *   needs to know which happened calls
+     *   `ff_shell_compass_cal_status` afterward: `cal_valid` flipping
+     *   true (or `active` flipping false while it was true) is the
+     *   success signal. A no-op if no session is active. No payload.
+     *
+     * All three are gated on the takeover exactly like SETTING_SET/
+     * CALIBRATE_TOUCH above — the row (and the bench console path,
+     * which dispatches this SAME seam via `ff_shell_intent`, never a
+     * second path into core state) only exists while Settings is
+     * reachable. */
+    FF_INTENT_COMPASS_CAL_START,
+    FF_INTENT_COMPASS_CAL_CANCEL,
+    FF_INTENT_COMPASS_CAL_FINISH,
+    /* [api] S12 step 3 amendment — the bench console's `cal clear` verb:
+     * drop any STORED calibration back to the honest uncalibrated
+     * default (identity, `cal_valid = false`) — S21 §5's "ship
+     * uncalibrated by default" ruling, applied to a puck that already
+     * calibrated and wants to start over (e.g. after moving it to a
+     * different case with a different magnet). Distinct from CANCEL,
+     * which only abandons an IN-PROGRESS session and never touches a
+     * previously-saved calibration: CLEAR acts on the PERSISTED
+     * calibration whether or not a session is active, and no session is
+     * required first — `cal clear` works on a puck that has never
+     * opened the ritual UI at all. Persists only when clearing is
+     * actually a change (`cal_valid` was true) — the same
+     * "write-on-change, never a no-op write" discipline every other
+     * settings mutation in this codebase keeps. No payload. */
+    FF_INTENT_COMPASS_CAL_CLEAR,
 } ff_intent_kind_t;
 
 /**

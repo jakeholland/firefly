@@ -519,6 +519,133 @@ static void dbgconsole_i2c_omits_compass_line_without_a_compass_hook(void)
     TEST_ASSERT_EQUAL_STRING("dbg: i2c 0x20 io-expander, 0x53 touch", cap.lines[0]);
 }
 
+/* ------------------------------------------------------------------- */
+/* S12 step 3 — "cal" and its four sub-verbs                             */
+/* ------------------------------------------------------------------- */
+
+/* Same 14-sample, all-8-octants fixture test_geo.c's own
+ * S01_AC5_calibration_recovers_hard_offset_and_improves_heading and
+ * test_intent.c's S12step3_* tests already use — reused for the same
+ * "provably the same claim" reason those files' own comments give. */
+static const ff_vec3_t s_cal_full_coverage_samples[] = {
+    {0.050000f, -0.480000f, 0.020000f},   {-0.296410f, 0.229808f, -0.297543f},
+    {-0.296410f, -0.289808f, -0.297543f}, {0.396410f, 0.229808f, -0.297543f},
+    {0.396410f, -0.289808f, -0.297543f},  {0.050000f, -0.030000f, 0.570000f},
+    {-0.296410f, -0.289808f, 0.337543f},  {0.396410f, -0.289808f, 0.337543f},
+    {-0.550000f, -0.030000f, 0.020000f},  {0.650000f, -0.030000f, 0.020000f},
+    {-0.296410f, 0.229808f, 0.337543f},   {0.396410f, 0.229808f, 0.337543f},
+    {0.050000f, 0.420000f, 0.020000f},    {0.050000f, -0.030000f, -0.530000f},
+};
+#define CAL_FULL_N (sizeof(s_cal_full_coverage_samples) / sizeof(s_cal_full_coverage_samples[0]))
+
+static void dbgconsole_cal_status_reports_identity_when_uncalibrated_and_inactive(void)
+{
+    harness_init(1000);
+
+    capture_t cap;
+    dispatch("cal", &cap);
+
+    TEST_ASSERT_EQUAL_INT(1, cap.n);
+    TEST_ASSERT_EQUAL_STRING("dbg: cal active=0 cal=identity", cap.lines[0]);
+}
+
+static void dbgconsole_cal_start_then_status_reports_live_progress(void)
+{
+    harness_init(1000);
+
+    capture_t cap;
+    dispatch("cal start", &cap);
+    TEST_ASSERT_EQUAL_STRING("dbg: cal started", cap.lines[0]);
+
+    for (size_t i = 0; i < CAL_FULL_N; i++) {
+        ff_shell_compass_cal_sample(&H.shell, s_cal_full_coverage_samples[i]);
+    }
+
+    dispatch("cal", &cap);
+    TEST_ASSERT_EQUAL_STRING("dbg: cal active=1 progress_pct=100 samples=14 can_finish=1 cal=identity",
+                             cap.lines[0]);
+
+    dispatch("cal start", &cap);
+    TEST_ASSERT_EQUAL_STRING("dbg: cal already active", cap.lines[0]);
+}
+
+static void dbgconsole_cal_finish_below_threshold_reports_failure_and_stays_active(void)
+{
+    harness_init(1000);
+    capture_t cap;
+    dispatch("cal start", &cap);
+
+    ff_vec3_t const clustered[] = {{0.40f, 0.05f, 0.10f}, {0.42f, 0.06f, 0.11f}, {0.38f, 0.04f, 0.09f}};
+    for (size_t i = 0; i < sizeof(clustered) / sizeof(clustered[0]); i++) {
+        ff_shell_compass_cal_sample(&H.shell, clustered[i]);
+    }
+
+    dispatch("cal finish", &cap);
+    TEST_ASSERT_TRUE(capture_has_line_containing(&cap, "dbg: cal finish failed"));
+    TEST_ASSERT_TRUE(ff_shell_compass_cal_status(&H.shell).active);
+    TEST_ASSERT_FALSE(ff_shell_compass_cal_status(&H.shell).cal_valid);
+}
+
+static void dbgconsole_cal_finish_at_full_coverage_reports_ok_and_persists(void)
+{
+    harness_init(1000);
+    capture_t cap;
+    dispatch("cal start", &cap);
+
+    for (size_t i = 0; i < CAL_FULL_N; i++) {
+        ff_shell_compass_cal_sample(&H.shell, s_cal_full_coverage_samples[i]);
+    }
+
+    dispatch("cal finish", &cap);
+    TEST_ASSERT_TRUE(capture_has_line_containing(&cap, "dbg: cal finished ok"));
+    TEST_ASSERT_FALSE(ff_shell_compass_cal_status(&H.shell).active);
+    TEST_ASSERT_TRUE(ff_shell_compass_cal_status(&H.shell).cal_valid);
+
+    dispatch("cal", &cap);
+    TEST_ASSERT_EQUAL_STRING("dbg: cal active=0 cal=custom", cap.lines[0]);
+}
+
+static void dbgconsole_cal_finish_with_no_session_reports_not_active(void)
+{
+    harness_init(1000);
+    capture_t cap;
+    dispatch("cal finish", &cap);
+    TEST_ASSERT_EQUAL_STRING("dbg: cal not active", cap.lines[0]);
+}
+
+static void dbgconsole_cal_cancel_reports_cancelled_then_not_active(void)
+{
+    harness_init(1000);
+    capture_t cap;
+    dispatch("cal start", &cap);
+
+    dispatch("cal cancel", &cap);
+    TEST_ASSERT_EQUAL_STRING("dbg: cal cancelled", cap.lines[0]);
+    TEST_ASSERT_FALSE(ff_shell_compass_cal_status(&H.shell).active);
+
+    dispatch("cal cancel", &cap);
+    TEST_ASSERT_EQUAL_STRING("dbg: cal not active", cap.lines[0]);
+}
+
+static void dbgconsole_cal_clear_drops_a_calibrated_puck_to_identity(void)
+{
+    harness_init(1000);
+    capture_t cap;
+    dispatch("cal start", &cap);
+    for (size_t i = 0; i < CAL_FULL_N; i++) {
+        ff_shell_compass_cal_sample(&H.shell, s_cal_full_coverage_samples[i]);
+    }
+    dispatch("cal finish", &cap);
+    TEST_ASSERT_TRUE(ff_shell_compass_cal_status(&H.shell).cal_valid);
+
+    dispatch("cal clear", &cap);
+    TEST_ASSERT_EQUAL_STRING("dbg: cal cleared", cap.lines[0]);
+    TEST_ASSERT_FALSE(ff_shell_compass_cal_status(&H.shell).cal_valid);
+
+    dispatch("cal clear", &cap);
+    TEST_ASSERT_EQUAL_STRING("dbg: cal already uncalibrated", cap.lines[0]);
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -547,6 +674,14 @@ int main(void)
     RUN_TEST(dbgconsole_i2c_reports_scan_and_compass_status_verbatim);
     RUN_TEST(dbgconsole_i2c_scan_failure_still_reports_compass);
     RUN_TEST(dbgconsole_i2c_omits_compass_line_without_a_compass_hook);
+
+    RUN_TEST(dbgconsole_cal_status_reports_identity_when_uncalibrated_and_inactive);
+    RUN_TEST(dbgconsole_cal_start_then_status_reports_live_progress);
+    RUN_TEST(dbgconsole_cal_finish_below_threshold_reports_failure_and_stays_active);
+    RUN_TEST(dbgconsole_cal_finish_at_full_coverage_reports_ok_and_persists);
+    RUN_TEST(dbgconsole_cal_finish_with_no_session_reports_not_active);
+    RUN_TEST(dbgconsole_cal_cancel_reports_cancelled_then_not_active);
+    RUN_TEST(dbgconsole_cal_clear_drops_a_calibrated_puck_to_identity);
 
     return UNITY_END();
 }

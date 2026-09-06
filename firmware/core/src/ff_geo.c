@@ -200,15 +200,43 @@ void ff_geo_cal_feed(ff_geo_cal_state_t *st, ff_vec3_t mag)
      * necessarily approximate early in the ritual (the center estimate is
      * still moving), but converges as more of the sphere is sampled — by
      * the end of a full figure-eight it correctly reflects the sample
-     * directions relative to the final center. */
+     * directions relative to the final center.
+     *
+     * Coverage-honesty fix (bench finding, PR #219): a sample only
+     * validates an octant when the running span is clearly meaningful AND
+     * the sample itself sits clearly off the running center — see
+     * FF_GEO_CAL_MIN_SPAN_RATIO's doc comment in ff_geo.h for why. Both
+     * checks are relative (ratios), never absolute LSB counts, since the
+     * raw field's units aren't known ahead of time. */
     float cx = (st->min.x + st->max.x) * 0.5f;
     float cy = (st->min.y + st->max.y) * 0.5f;
     float cz = (st->min.z + st->max.z) * 0.5f;
 
+    float span_x = st->max.x - st->min.x;
+    float span_y = st->max.y - st->min.y;
+    float span_z = st->max.z - st->min.z;
+    float max_span = span_x;
+    if (span_y > max_span) max_span = span_y;
+    if (span_z > max_span) max_span = span_z;
+    float radius_est = max_span * 0.5f;
+
+    float sample_mag = sqrtf(mag.x * mag.x + mag.y * mag.y + mag.z * mag.z);
+    if (radius_est < FF_GEO_CAL_MIN_SPAN_RATIO * sample_mag) {
+        return; /* no meaningful spread yet — e.g. a motionless device */
+    }
+
+    float dx = mag.x - cx;
+    float dy = mag.y - cy;
+    float dz = mag.z - cz;
+    float dist = sqrtf(dx * dx + dy * dy + dz * dz);
+    if (dist < 0.5f * radius_est) {
+        return; /* too close to center to confidently classify a direction */
+    }
+
     unsigned char idx = 0;
-    if (mag.x >= cx) idx |= 1u;
-    if (mag.y >= cy) idx |= 2u;
-    if (mag.z >= cz) idx |= 4u;
+    if (dx >= 0.0f) idx |= 1u;
+    if (dy >= 0.0f) idx |= 2u;
+    if (dz >= 0.0f) idx |= 4u;
     st->octant_mask = (unsigned char)(st->octant_mask | (unsigned char)(1u << idx));
 }
 
@@ -231,8 +259,37 @@ bool ff_geo_cal_finish(ff_geo_cal_state_t const *st, ff_geo_cal_t *out)
     if (!st || !out) {
         return false;
     }
-    if (ff_geo_cal_progress_pct(st) < 70) {
+    if (ff_geo_cal_progress_pct(st) < FF_GEO_CAL_MIN_PROGRESS_PCT) {
         return false;
+    }
+
+    /* Coverage-honesty fix (bench finding, PR #219): two independent
+     * shape/scale checks on top of octant coverage. See
+     * FF_GEO_CAL_MIN_AXIS_RATIO / FF_GEO_CAL_MIN_SPAN_RATIO in ff_geo.h. */
+    {
+        float span_x = st->max.x - st->min.x;
+        float span_y = st->max.y - st->min.y;
+        float span_z = st->max.z - st->min.z;
+
+        float max_span = span_x;
+        if (span_y > max_span) max_span = span_y;
+        if (span_z > max_span) max_span = span_z;
+        float min_span = span_x;
+        if (span_y < min_span) min_span = span_y;
+        if (span_z < min_span) min_span = span_z;
+
+        if (min_span < FF_GEO_CAL_MIN_AXIS_RATIO * max_span) {
+            return false; /* needle: all motion swung along ~one axis */
+        }
+
+        float ctr_x = (st->min.x + st->max.x) * 0.5f;
+        float ctr_y = (st->min.y + st->max.y) * 0.5f;
+        float ctr_z = (st->min.z + st->max.z) * 0.5f;
+        float ctr_mag = sqrtf(ctr_x * ctr_x + ctr_y * ctr_y + ctr_z * ctr_z);
+
+        if (max_span < FF_GEO_CAL_MIN_SPAN_RATIO * ctr_mag) {
+            return false; /* overall scale too small to trust (defense in depth) */
+        }
     }
 
     float rx = (st->max.x - st->min.x) * 0.5f;

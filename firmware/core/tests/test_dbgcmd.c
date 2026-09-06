@@ -116,6 +116,49 @@ static void dbgcmd_flare_cancel_parses(void)
     TEST_ASSERT_EQUAL(FF_DBGCMD_FLARE_CANCEL, cmd.kind);
 }
 
+/* S12 step 3 — "cal" and its four sub-verbs, same bare-verb-plus-sub-verb
+ * shape as "flare"/"flare cancel" just above. */
+static void dbgcmd_cal_parses(void)
+{
+    ff_dbgcmd_t cmd;
+    TEST_ASSERT_EQUAL(FF_DBGCMD_ERR_OK, parse_str("cal", &cmd));
+    TEST_ASSERT_EQUAL(FF_DBGCMD_CAL, cmd.kind);
+}
+
+static void dbgcmd_cal_start_parses(void)
+{
+    ff_dbgcmd_t cmd;
+    TEST_ASSERT_EQUAL(FF_DBGCMD_ERR_OK, parse_str("cal start", &cmd));
+    TEST_ASSERT_EQUAL(FF_DBGCMD_CAL_START, cmd.kind);
+}
+
+static void dbgcmd_cal_finish_parses(void)
+{
+    ff_dbgcmd_t cmd;
+    TEST_ASSERT_EQUAL(FF_DBGCMD_ERR_OK, parse_str("cal finish", &cmd));
+    TEST_ASSERT_EQUAL(FF_DBGCMD_CAL_FINISH, cmd.kind);
+}
+
+static void dbgcmd_cal_cancel_parses(void)
+{
+    ff_dbgcmd_t cmd;
+    TEST_ASSERT_EQUAL(FF_DBGCMD_ERR_OK, parse_str("cal cancel", &cmd));
+    TEST_ASSERT_EQUAL(FF_DBGCMD_CAL_CANCEL, cmd.kind);
+}
+
+static void dbgcmd_cal_clear_parses(void)
+{
+    ff_dbgcmd_t cmd;
+    TEST_ASSERT_EQUAL(FF_DBGCMD_ERR_OK, parse_str("cal clear", &cmd));
+    TEST_ASSERT_EQUAL(FF_DBGCMD_CAL_CLEAR, cmd.kind);
+}
+
+static void dbgcmd_cal_with_bad_arg_rejected(void)
+{
+    ff_dbgcmd_t cmd;
+    TEST_ASSERT_EQUAL(FF_DBGCMD_ERR_BAD_ARGS, parse_str("cal xyz", &cmd));
+}
+
 /* ------------------------------------------------------------------- */
 /* CRLF tolerance / whitespace                                          */
 /* ------------------------------------------------------------------- */
@@ -326,6 +369,12 @@ int main(void)
     RUN_TEST(dbgcmd_dm_accepts_0x_prefix);
     RUN_TEST(dbgcmd_flare_parses);
     RUN_TEST(dbgcmd_flare_cancel_parses);
+    RUN_TEST(dbgcmd_cal_parses);
+    RUN_TEST(dbgcmd_cal_start_parses);
+    RUN_TEST(dbgcmd_cal_finish_parses);
+    RUN_TEST(dbgcmd_cal_cancel_parses);
+    RUN_TEST(dbgcmd_cal_clear_parses);
+    RUN_TEST(dbgcmd_cal_with_bad_arg_rejected);
 
     RUN_TEST(dbgcmd_tolerates_crlf);
     RUN_TEST(dbgcmd_tolerates_bare_lf);

@@ -144,19 +144,81 @@ typedef struct {
     unsigned int sample_count;
 } ff_geo_cal_state_t;
 
+/**
+ * FF_GEO_CAL_MIN_PROGRESS_PCT — minimum `ff_geo_cal_progress_pct()`
+ * octant-coverage percentage `ff_geo_cal_finish` requires to produce a
+ * fit (below this, it returns false and leaves the old calibration
+ * untouched — see that function's own doc comment). Named here (S12
+ * step 3, the compass calibration ritual) so a caller that needs to
+ * gate its own UI affordance on "has this session collected enough to
+ * finish" — the ritual screen's DONE button, the bench console's `cal`
+ * status line — reads the SAME number `ff_geo_cal_finish` itself
+ * enforces, rather than a second hand-copied `70` that could drift from
+ * it. Not `[api]`-flagged as a behavior change: the value (70) is
+ * unchanged from what `ff_geo_cal_finish` already did before this
+ * constant existed; this only names it.
+ */
+#define FF_GEO_CAL_MIN_PROGRESS_PCT 70
+
+/**
+ * FF_GEO_CAL_MIN_SPAN_RATIO — coverage-honesty fix (bench finding, PR
+ * #219, 2026-09-06): a stationary puck on the bench reached 100% progress
+ * and a finishable calibration after ~88 samples, because octant
+ * classification was relative to the *running* center estimate
+ * ((min+max)/2) with no check that the running span was ever meaningful
+ * — sensor noise around a single point flips signs relative to that
+ * wobbling center and "covers" octants that were never really visited.
+ *
+ * The raw field's units aren't known ahead of time (this sensor reads
+ * Earth's field at ~245 LSB; another part might read ~7500), so
+ * "meaningful spread" has to be judged RELATIVE to the reading itself,
+ * not against an absolute LSB count. `ff_geo_cal_feed` estimates the
+ * field-sphere radius as half the largest per-axis span seen so far, and
+ * only lets a sample validate an octant when that radius is at least
+ * this fraction of the sample's own magnitude (a stationary cluster's
+ * span is ~1-3% of |mag|, noise-scale) AND the sample itself sits at
+ * least half that radius from the running center (i.e. clearly off to
+ * one side, not sitting in the noise ball around it). `ff_geo_cal_finish`
+ * re-checks the same ratio against the final min/max range as a second,
+ * independent safety net (see `FF_GEO_CAL_MIN_AXIS_RATIO` for its
+ * companion needle/sphere-shape check).
+ */
+#define FF_GEO_CAL_MIN_SPAN_RATIO 0.25f
+
+/**
+ * FF_GEO_CAL_MIN_AXIS_RATIO — companion to `FF_GEO_CAL_MIN_SPAN_RATIO`:
+ * `ff_geo_cal_finish` additionally requires the *smallest* per-axis span
+ * to be at least this fraction of the *largest* per-axis span, i.e. the
+ * sampled region is roughly spherical rather than a needle (all motion
+ * swung along one axis, e.g. a single rock back and forth). A needle can
+ * still combinatorially flip every `octant_mask` bit — Y/Z sensor noise
+ * independent of a wide X sweep visits all 8 sign combinations even
+ * though only one axis was ever meaningfully covered — so this shape
+ * check, not `ff_geo_cal_progress_pct`, is what catches it.
+ */
+#define FF_GEO_CAL_MIN_AXIS_RATIO 0.3f
+
 /** ff_geo_cal_begin — reset calibration state before a new ritual. */
 void ff_geo_cal_begin(ff_geo_cal_state_t *st);
 
 /**
  * ff_geo_cal_feed — feed one raw magnetometer sample during the figure-eight
- * motion. Updates the running per-axis min/max and marks the 3D-direction
- * octant (relative to the current center estimate) as covered.
+ * motion. Updates the running per-axis min/max, then marks the 3D-direction
+ * octant (relative to the current center estimate) as covered — but only
+ * when the sample is clearly off-center: the running span estimate must be
+ * at least `FF_GEO_CAL_MIN_SPAN_RATIO` of the sample's own magnitude (else
+ * there's no meaningful spread yet — e.g. a motionless device, where
+ * min/max differ only by sensor noise), and the sample itself must sit at
+ * least half that span-derived radius from the running center. A rejected
+ * sample still counts toward `sample_count` but leaves `octant_mask`
+ * unchanged. See `FF_GEO_CAL_MIN_SPAN_RATIO`'s doc comment for why.
  */
 void ff_geo_cal_feed(ff_geo_cal_state_t *st, ff_vec3_t mag);
 
 /**
- * ff_geo_cal_progress_pct — fraction of the 8 direction octants seen so
- * far, as a percentage 0..100. Drives the on-device progress ring (S12).
+ * ff_geo_cal_progress_pct — percentage of field-sphere octants covered by
+ * samples that are clearly off-center; a motionless device stays at 0.
+ * Drives the on-device progress ring (S12).
  */
 int ff_geo_cal_progress_pct(ff_geo_cal_state_t const *st);
 
@@ -169,8 +231,16 @@ int ff_geo_cal_progress_pct(ff_geo_cal_state_t const *st);
  * lie on a sphere. `declination_deg` is left 0 (declination is not
  * derivable from magnetometer samples alone; set separately, see S11).
  *
- * Returns false (leaving `*out` unmodified) if octant coverage is below
- * 70% — not enough of the sphere was sampled for a trustworthy fit.
+ * Returns false (leaving `*out` unmodified) if any of the following hold
+ * — the samples don't yet support a trustworthy fit:
+ *  - octant coverage is below `FF_GEO_CAL_MIN_PROGRESS_PCT` (70%);
+ *  - the smallest per-axis span is below `FF_GEO_CAL_MIN_AXIS_RATIO`
+ *    (30%) of the largest — the samples form a needle, not a sphere;
+ *  - the largest per-axis span is below `FF_GEO_CAL_MIN_SPAN_RATIO`
+ *    (25%) of the fitted center's magnitude — a second, independent
+ *    check that the overall scale is meaningful (belt-and-suspenders
+ *    with the per-sample gate in `ff_geo_cal_feed`, which should already
+ *    have kept `ff_geo_cal_progress_pct` at 0 for this case).
  */
 bool ff_geo_cal_finish(ff_geo_cal_state_t const *st, ff_geo_cal_t *out);
 

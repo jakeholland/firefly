@@ -153,6 +153,29 @@ ff_dbgcmd_status_t ff_dbgcmd_parse(char const *line, size_t line_len, ff_dbgcmd_
         }
         return FF_DBGCMD_ERR_BAD_ARGS;
     }
+    if (tok_eq(buf, start, cmd_end, "cal")) {
+        if (arg_start >= end) {
+            out->kind = FF_DBGCMD_CAL;
+            return FF_DBGCMD_ERR_OK;
+        }
+        if (tok_eq(buf, arg_start, end, "start")) {
+            out->kind = FF_DBGCMD_CAL_START;
+            return FF_DBGCMD_ERR_OK;
+        }
+        if (tok_eq(buf, arg_start, end, "finish")) {
+            out->kind = FF_DBGCMD_CAL_FINISH;
+            return FF_DBGCMD_ERR_OK;
+        }
+        if (tok_eq(buf, arg_start, end, "cancel")) {
+            out->kind = FF_DBGCMD_CAL_CANCEL;
+            return FF_DBGCMD_ERR_OK;
+        }
+        if (tok_eq(buf, arg_start, end, "clear")) {
+            out->kind = FF_DBGCMD_CAL_CLEAR;
+            return FF_DBGCMD_ERR_OK;
+        }
+        return FF_DBGCMD_ERR_BAD_ARGS;
+    }
     if (tok_eq(buf, start, cmd_end, "send")) {
         size_t const n = end - arg_start;
         if (n == 0u || n > FF_DBGCMD_TEXT_MAX) return FF_DBGCMD_ERR_BAD_ARGS;
@@ -195,6 +218,11 @@ char const *ff_dbgcmd_kind_name(ff_dbgcmd_kind_t kind)
     case FF_DBGCMD_FLARE_CANCEL: return "FLARE_CANCEL";
     case FF_DBGCMD_WALL: return "WALL";
     case FF_DBGCMD_I2C: return "I2C";
+    case FF_DBGCMD_CAL: return "CAL";
+    case FF_DBGCMD_CAL_START: return "CAL_START";
+    case FF_DBGCMD_CAL_FINISH: return "CAL_FINISH";
+    case FF_DBGCMD_CAL_CANCEL: return "CAL_CANCEL";
+    case FF_DBGCMD_CAL_CLEAR: return "CAL_CLEAR";
     }
     return "?";
 }

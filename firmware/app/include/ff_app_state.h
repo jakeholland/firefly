@@ -591,6 +591,12 @@ typedef struct {
 typedef enum {
     FF_SETTINGS_SUB_LIST = 0,
     FF_SETTINGS_SUB_CREW,
+    /* [api] S12 step 3 — the compass calibration ritual's full-screen
+     * page, reached from the LIST's "CALIBRATE COMPASS" row (see
+     * ff_intent.h's FF_INTENT_COMPASS_CAL_START doc comment for the
+     * full lifecycle). Same "one enum names which of N screens Settings
+     * currently shows" shape CREW already established. */
+    FF_SETTINGS_SUB_COMPASS_CAL,
 } ff_settings_subview_t;
 
 /**
@@ -664,8 +670,51 @@ typedef struct {
 } ff_app_crew_page_t;
 
 /* -------------------------------------------------------------------
+ * COMPASS CAL page (S12 step 3 — docs/specs/S12-first-run.md Step 3).
+ * A small STATUS projection, not a mirror of `ff_geo_cal_t` itself (the
+ * hard/soft-iron numbers are never rendered — CREW's "not renderable/
+ * fixturable display data" reasoning for omitting `ff_settings_t.
+ * compass_cal` from the mirror below still holds for the CALIBRATION
+ * ITSELF; only whether one exists, and the live session's progress, are
+ * display data). Unlike `ff_app_crew_page_t` (zeroed unless `subview ==
+ * FF_SETTINGS_SUB_CREW`, because its arrays are comparatively large),
+ * this struct is always populated regardless of subview: `cal_valid`
+ * alone drives the LIST row's honest "uncalibrated"/"calibrated" status
+ * text, so it must be live even while the ritual page itself isn't
+ * showing.
+ * ------------------------------------------------------------------- */
+typedef struct {
+    /** Mirrors `ff_settings_t.cal_valid` — whether a calibration is
+     * CURRENTLY PERSISTED, independent of whether a session is active
+     * right now. Drives the LIST row's status text. */
+    bool cal_valid;
+    /** True from FF_INTENT_COMPASS_CAL_START until a FINISH that
+     * succeeds, or a CANCEL. */
+    bool active;
+    /** `ff_geo_cal_progress_pct()` of the active session; 0 when
+     * `active` is false. */
+    int progress_pct;
+    /** Samples fed so far this session (`ff_geo_cal_state_t.
+     * sample_count`); 0 when `active` is false. Shown alongside the
+     * percentage so a stalled ritual (e.g. a magnetometer stuck
+     * reporting the exact same reading) is visibly distinguishable from
+     * a healthy one still short of the octants it needs — a rising
+     * sample count with a flat percentage is an honest "something is
+     * wrong" signal `progress_pct` alone cannot give. */
+    unsigned sample_count;
+    /** `progress_pct >= FF_GEO_CAL_MIN_PROGRESS_PCT` (ff_geo.h) — gates
+     * the ritual page's DONE affordance so a shown button never calls
+     * into a finish attempt the session's own state already knows will
+     * fail. False when `active` is false. */
+    bool can_finish;
+} ff_app_compass_cal_t;
+
+/* -------------------------------------------------------------------
  * settings (S11) — mirrors ff_settings_t's user-facing fields (omits
- * compass_cal/cal_valid: not renderable/fixturable display data).
+ * compass_cal: the hard/soft-iron numbers themselves are never
+ * rendered/fixturable display data — see `ff_app_compass_cal_t` above,
+ * which projects the one bit of it that IS display data, `cal_valid`,
+ * plus the live ritual session's own state).
  *
  * [api] S12/S04 amendment — `subview`/`crew` below are NOT part of that
  * mirror (ff_settings_t has no such fields; the CREW page is app-layer
@@ -754,6 +803,12 @@ typedef struct {
      * fixture/projection doesn't set it. */
     ff_settings_subview_t subview;
     ff_app_crew_page_t    crew;
+
+    /* [api] S12 step 3 — the compass calibration ritual's status +
+     * live session projection; see `ff_app_compass_cal_t`'s own doc
+     * comment above for why this is populated regardless of `subview`
+     * (unlike `crew`). */
+    ff_app_compass_cal_t compass_cal;
 } ff_app_settings_t;
 /* S21 removed ff_app_settings_t.page / FF_SETTINGS_PAGE_COUNT (#105's
  * pagination): the Settings face is now one scrolling list, so there is no
