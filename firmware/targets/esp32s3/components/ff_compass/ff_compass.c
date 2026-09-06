@@ -206,13 +206,28 @@ static const char *TAG = "ff_compass";
  * it on its own without touching the L/HMC mapping. VERIFY ON BENCH,
  * same procedure as above, once a QMC5883P board is on hand.
  *
- * IMU (onboard QMI8658): identity, on the working assumption that the
- * IMU's silkscreen axes already match the board's own (it is soldered
- * to the SAME rigid PCB as the screen, not a separately-mounted
- * aftermarket module) — NOT independently verified against
- * Waveshare's schematic. If tilt-compensation looks inverted (heading
- * flips when the puck is tipped rather than staying put), check this
- * table before either magnetometer one above.
+ * IMU (onboard QMI8658): BENCH-VERIFIED 2026-09-05 to be mounted
+ * upside-down relative to the board frame — the identity mapping this
+ * row used to carry (on the working assumption that the IMU's
+ * silkscreen axes already match the board's own, since it's soldered
+ * to the SAME rigid PCB as the screen) produced a rejected heading on
+ * real hardware. With the puck lying flat, face-up, raw QMI8658 accel
+ * read (-1721, -260, -7877); under the (then-)identity map that lands
+ * almost entirely on board -z (~-1g), which `ff_geo_heading_deg` reads
+ * as a ~166 degree tilt — past the tilt-reject threshold, so every
+ * sample was thrown out (heading -1 always). Flipping the IMU's X and
+ * Z signs (Y unchanged) gives accel (1714, -257, 7862) -> board +z ~=
+ * +1g, level, and a steady heading of 104 degrees. Flipping X together
+ * with Z keeps the frame right-handed: this is a 180-degree rotation
+ * about the board's own +y axis, i.e. the chip is effectively soldered
+ * upside-down relative to ff_geo.h's board frame (+x right, +y
+ * forward/top of puck, +z up out of the screen).
+ * TILT CHECK STILL PENDING: only the face-up/face-down (z) sense has
+ * bench evidence so far. The IMU's x/y sense under an actual physical
+ * tilt (nose up/down, left/right roll) has NOT been separately
+ * verified — if tilt-compensation looks inverted or rotated 90 degrees
+ * when the puck is tipped, check FF_IMU_BOARD_X_SRC/Y_SRC (axis swap)
+ * here before assuming the sign is wrong again.
  */
 typedef enum { FF_AXIS_X = 0, FF_AXIS_Y = 1, FF_AXIS_Z = 2 } ff_compass_axis_t;
 
@@ -233,11 +248,11 @@ typedef enum { FF_AXIS_X = 0, FF_AXIS_Y = 1, FF_AXIS_Z = 2 } ff_compass_axis_t;
 #define FF_MAG_QMC5883P_BOARD_Z_SIGN ((int8_t)1)
 
 #define FF_IMU_BOARD_X_SRC FF_AXIS_X
-#define FF_IMU_BOARD_X_SIGN ((int8_t)1)
+#define FF_IMU_BOARD_X_SIGN ((int8_t)-1)
 #define FF_IMU_BOARD_Y_SRC FF_AXIS_Y
 #define FF_IMU_BOARD_Y_SIGN ((int8_t)1)
 #define FF_IMU_BOARD_Z_SRC FF_AXIS_Z
-#define FF_IMU_BOARD_Z_SIGN ((int8_t)1)
+#define FF_IMU_BOARD_Z_SIGN ((int8_t)-1)
 
 static float ff_compass_axis_get(ff_vec3_t v, ff_compass_axis_t a)
 {

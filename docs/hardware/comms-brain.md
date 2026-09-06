@@ -309,6 +309,24 @@ check/correct either row:
    QMI8658 tilt compensation is for); if it does with the IMU confirmed
    present, check the `FF_IMU_BOARD_*` half of the same table.
 
+**IMU mounting — BENCH-VERIFIED 2026-09-05 (z-sense only).** The QMI8658's
+identity mapping was wrong: lying flat, face-up, on the real puck, raw accel
+read `(-1721, -260, -7877)` — under the old identity map that lands on board
+`-z` (~-1g), which `ff_geo_heading_deg` reads as a ~166° tilt and rejects
+every sample (`heading_deg` stuck at -1, always). `FF_IMU_BOARD_X_SIGN` and
+`FF_IMU_BOARD_Z_SIGN` are now `-1` (`Y` stays `+1`) — flipping X together
+with Z keeps the frame right-handed (a 180° rotation about the board's own
+`+y`, i.e. the chip is effectively mounted upside-down relative to the board
+frame). With the fix, the same bench pose gives accel `(1714, -257, 7862)` →
+board `+z` ≈ `+1g` (level) and a steady heading of 104°. **Still pending:**
+this only checks the face-up/face-down (z) sense — the X/Y sense under an
+actual physical tilt (nose up/down, roll left/right) has NOT been separately
+bench-verified. Do the "tilt without wild swinging" check in step 5 above on
+a real puck before trusting tilt compensation; if the arrow rotates the wrong
+way (or 90° off) specifically while tilted (not while flat), check
+`FF_IMU_BOARD_X_SRC`/`FF_IMU_BOARD_Y_SRC` (axis swap) before assuming another
+sign flip is needed.
+
 **Calibration status:** `ff_settings_t.compass_cal` / `.cal_valid`
 (`core/include/ff_settings.h`) is the persisted calibration slot; this driver
 loads it at boot via `ff_shell_settings()` and applies it if `cal_valid` is
