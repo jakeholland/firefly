@@ -1459,6 +1459,16 @@ typedef enum {
  *    attempted push. Purely informational on the bench console (`seq=`);
  *    the freshness comparison it feeds already happened inside
  *    `confirmed`/`mismatch` above.
+ *  - `link` (reboot-session-loss fix, bench finding 2026-09-06): a plain
+ *    mirror of `ff_shell_link(sh)` at the moment this status was read —
+ *    surfaced here so a bench operator watching `name`'s output can SEE
+ *    when a `set_owner` push's expected reboot (`mc_client.h`'s
+ *    `mc_tick()` doc comment has the full mechanism) is in flight
+ *    (`FF_SHELL_LINK_RECONNECTING`) rather than mistaking "still pending"
+ *    for a stuck poll. The retry/timeout schedule this struct's other
+ *    fields describe deliberately does not attempt a `get_owner_request`
+ *    at all while this reads anything other than `FF_SHELL_LINK_
+ *    CONNECTED` — see `ff_shell_tick`'s own doc comment on that gate.
  */
 typedef struct {
     char my_name[FF_SETTINGS_NAME_LEN];      /* mirrors ff_settings_t.my_name, NUL-terminated */
@@ -1481,6 +1491,10 @@ typedef struct {
      * above for the full rationale. */
     bool mismatch;
     uint32_t pushed_seq;
+
+    /* Reboot-session-loss fix (below) — see the struct's own doc comment
+     * above for the full rationale. */
+    ff_shell_link_t link;
 } ff_shell_mesh_name_status_t;
 
 ff_shell_mesh_name_status_t ff_shell_mesh_name_status(ff_shell_t const *sh);

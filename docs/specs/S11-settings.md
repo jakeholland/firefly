@@ -352,3 +352,107 @@ a) store seam + settings struct + tests · b) face render + interactions + golde
   resource limit on concurrent locally-tracked `want_ack` packets — not
   reasoned about further here for lack of a way to verify either
   without real hardware.
+
+  **Correction (2026-09-06, see the round-4/"reboot-session-loss" entry
+  below).** The "honesty note" above was right to hedge: a follow-up
+  bench run with frame-level instrumentation found the actual mechanism
+  behind this round's own transcript — the comms brain reboots a few
+  seconds after `set_owner`, and this device's session with it goes
+  stale until a fresh handshake. This retry-budget fix is still real and
+  still worth keeping (a quiet bench genuinely does also trip the 30 s
+  watchdog, independent of any reboot), but it is not what produced the
+  `ack=none reply=none forever` pattern in the transcript above — that
+  was the reboot the whole time. `FromRadio.rebooted` fires long before
+  the 30 s silence timer ever could.
+
+- **2026-09-06 — Confirmation fix round 4 / "reboot-session-loss" (same
+  PR, bench finding AFTER the round-3 fix above, commit `b828c84`,
+  against the same real puck + comms brain, Meshtastic 2.7.26, this time
+  with frame-level TX/FromRadio/RX instrumentation).** The real root
+  cause behind every round above's `ack=none reply=none forever` pattern
+  on a push after the first one in a session:
+
+  ```
+  push1  TX set_owner id=…14 (ADMIN, want_ack)   TX get_owner_request id=…15 (want_response)
+         FRAMELOG variant=11 ×3 (queueStatus)  FRAMELOG variant=2 → routing ACK for …14
+         FRAMELOG variant=2 → ADMIN get_owner_response for …15  → confirmed ✓ (within 3 s)
+  push2  (8 s later) TX set_owner …16, TX get_owner_request …17
+         FRAMELOG len=2 variant=8            ← FromRadio.rebooted = true  : THE NODE REBOOTED
+         …then only variant=11 (queueStatus) frames for every later TX; no ACK, no reply; the
+         shell's link state never changes (bytes keep arriving so the no-RX watchdog never
+         fires), so the puck never re-handshakes.
+  ```
+
+  Meshtastic's `AdminModule` saves the owner change and schedules a
+  device reboot a few seconds later (`saveChanges()` → `rebootAtMsec()`,
+  when no edit transaction is open). Push 1 is answered just before the
+  reboot; push 2 lands in the reboot window and is lost. After the
+  reboot the far side's `PhoneAPI` session is fresh and ignores this
+  device's packets until a new `want_config` handshake — but this
+  device's own `mc_client` kept treating the link as CONNECTED, because
+  OTHER `FromRadio` traffic (`queueStatus` frames) kept arriving right
+  through the reboot and kept resetting the 30 s no-RX-bytes watchdog.
+  The comms brain applies every push correctly (confirmed via the CLI)
+  — the owner data was never wrong; the puck's own session handling was.
+
+  **Fixed**:
+  1. `mc_client.c` (`meshclient`) now handles `FromRadio.rebooted`
+     (tag 8) as an immediate session loss: drop straight into a fresh
+     `want_config` handshake (a brand-new random nonce, never the
+     pre-reboot one) rather than waiting on the 30 s silence timer that
+     this exact scenario defeats. Observed downstream as the ordinary
+     `on_state(HANDSHAKE)` → `on_state(READY)` sequence any other link
+     drop produces — no second, reboot-specific event needed.
+  2. `ff_shell.c`'s `get_owner_request` retry poll (`ff_shell_tick`) now
+     only fires while the link reads CONNECTED — sending while it is
+     down (mid-reboot) is guaranteed to fail, so the poll stays armed
+     rather than attempting it. A self `NodeInfo` replay arriving as
+     part of the reconnect's own `want_config` dump (before the link
+     reaches CONNECTED) is a first-class confirmation on its own and now
+     stops the poll immediately, the same way a `get_owner_response`
+     already does — so a push commonly confirms via the replay with no
+     extra request needed at all. The bench console's `name` output
+     gains `link=<NONE|RECONNECTING|CONNECTED>` so an operator can tell
+     "pending because the comms brain rebooted" apart from ordinary
+     pending on a live link.
+  3. Round 3's retry-budget fix is unchanged and still correct for its
+     own (different, real) scenario — see the correction note above.
+
+  **Tests**: `test_meshclient.c` gains
+  `S03_debt_reboot_frame_after_ready_drops_state_and_reissues_want_config`,
+  `S03_debt_reboot_stale_config_complete_is_ignored_per_handshake_rules`,
+  `S03_debt_reboot_then_matching_config_complete_reaches_ready_again`
+  (real wire encode/decode throughout — a `rebooted` frame drops READY
+  to HANDSHAKE with a fresh nonce, a config_complete naming the STALE
+  pre-reboot nonce is ignored per the same rule
+  `S03_AC2_handshake_wrong_nonce_stays_in_handshake` already pins, and
+  the full round trip reaches READY again). `test_shell.c` gains
+  `S_name_push_during_reboot_window_polls_only_after_reconnect` and
+  `S_name_two_pushes_eight_seconds_apart_both_confirm_across_a_mid_session_reboot`
+  (the exact bench transcript's own timing). The first of the two
+  `test_shell.c` tests **MUST FAIL** on the pre-fix code — mutation-
+  verified: removing the link-CONNECTED clause from `ff_shell_tick`'s
+  retry condition fails exactly it and the two-pushes test (2 failures)
+  and nothing else in the 253-test suite; reverted after confirming (a
+  stale incremental binary gave a false pass on the first attempt —
+  rebuilding after touching the source reproduced the failure, per
+  AGENTS.md's own stale-binary caveat).
+
+  **Gates**: clang + gcc-14 sim builds green, zero warnings both.
+  `ctest`: 74/74 both compilers (253-test `test_shell`, 95-test
+  `test_meshclient`). `run_goldens.sh`: 90/90 fixtures, byte-identical —
+  no UI changed. esp32s3 device build (`CONFIG_FF_DEBUG_CONSOLE=y`)
+  compiles clean, zero warnings, **not flashed**. See
+  `docs/hardware/comms-brain.md`'s "Root cause found: the comms brain
+  reboots after every `set_owner`" section for the full mechanism and
+  citation.
+
+  **Honesty note on scope**: the reboot mechanism itself is bench-proven
+  against real frame-level instrumentation (the transcript above is a
+  real capture, not a reconstruction), and the meshclient/shell fixes
+  are sim-provable by the tests listed. Not yet re-verified on a fresh
+  bench run: that a push made during the reboot's own handshake window
+  reliably confirms on REAL hardware (as opposed to the sim
+  reproduction here) — the coordinator's next bench session should
+  re-run the two-push, 8-seconds-apart transcript this fix targets.
+  **Do not merge** — same bench-only caveat as the rest of this PR.

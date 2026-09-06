@@ -506,6 +506,23 @@ static uint16_t build_config_complete_frame(uint32_t nonce, uint8_t *out, size_t
     return mc_frame_encode(out, out_cap, payload, (uint16_t)os.bytes_written);
 }
 
+/* NAME-in-Settings reboot-session-loss fix (bench finding, 2026-09-06) —
+ * a `FromRadio.rebooted` frame, Meshtastic's explicit "the radio just
+ * rebooted" tell (mesh.pb.h tag 8). */
+static uint16_t build_rebooted_frame(uint8_t *out, size_t out_cap)
+{
+    meshtastic_FromRadio fr = meshtastic_FromRadio_init_zero;
+    fr.which_payload_variant = meshtastic_FromRadio_rebooted_tag;
+    fr.payload_variant.rebooted = true;
+
+    uint8_t payload[16];
+    pb_ostream_t os = pb_ostream_from_buffer(payload, sizeof(payload));
+    if (!pb_encode(&os, meshtastic_FromRadio_fields, &fr)) {
+        return 0;
+    }
+    return mc_frame_encode(out, out_cap, payload, (uint16_t)os.bytes_written);
+}
+
 static void S03_AC2_connect_sends_want_config_and_enters_handshake(void)
 {
     mock_io_t io;
@@ -1269,6 +1286,165 @@ static void S03_AC6_transport_error_triggers_reconnect(void)
 
     TEST_ASSERT_EQUAL(MC_STATE_DISCONNECTED, mc_state(&c));
     TEST_ASSERT_TRUE(c.reconnect_pending);
+}
+
+/* -------------------------------------------------------------------- */
+/* debt/S03-reboot-session-loss — NAME-in-Settings bench finding,        */
+/* 2026-09-06, real puck + comms brain, Meshtastic 2.7.26.               */
+/*                                                                       */
+/* Root cause (see mc_client.h's mc_tick() doc comment for the full      */
+/* mechanism): Meshtastic's AdminModule reboots the comms brain a few    */
+/* seconds after a set_owner admin write. The PhoneAPI session on the    */
+/* other side of that reboot is fresh and silently ignores this client's */
+/* packets until a new want_config handshake — but mc_client's OWN 30s   */
+/* no-RX-bytes watchdog never noticed, because other FromRadio traffic   */
+/* (queueStatus) kept arriving right through the reboot. FromRadio.      */
+/* rebooted (tag 8) is the explicit tell fixed here: an immediate        */
+/* session loss, not a silence timeout.                                  */
+/* -------------------------------------------------------------------- */
+
+static void S03_debt_reboot_frame_after_ready_drops_state_and_reissues_want_config(void)
+{
+    mock_io_t io;
+    mock_io_reset(&io);
+    mock_clock_t clk = {.t = 0};
+    ff_clock_t clock = {.now_ms = mock_now, .user = &clk};
+    events_capture_t cap;
+    memset(&cap, 0, sizeof(cap));
+
+    mc_client_t c;
+    mc_init(&c, (mc_transport_t){.write = mock_write, .read = mock_read, .io = &io}, make_events(&cap),
+             &clock);
+    c.state = MC_STATE_READY;
+    c.has_my_node_id = true;
+    c.my_node_id = 0x42u;
+    uint32_t const old_want_config_id = 0xDEADBEEFu;
+    c.want_config_id = old_want_config_id;
+
+    uint8_t frame[32];
+    uint16_t flen = build_rebooted_frame(frame, sizeof(frame));
+    TEST_ASSERT_TRUE(flen > 0);
+    io.rx_data = frame;
+    io.rx_len = flen;
+
+    mc_tick(&c, 5000);
+
+    TEST_ASSERT_EQUAL_MESSAGE(MC_STATE_HANDSHAKE, mc_state(&c),
+                              "a rebooted frame must drop READY straight into a fresh handshake");
+    TEST_ASSERT_EQUAL_INT(1, cap.state_count);
+    TEST_ASSERT_EQUAL(MC_STATE_HANDSHAKE, cap.states[0]);
+    TEST_ASSERT_NOT_EQUAL_MESSAGE(old_want_config_id, c.want_config_id,
+                                  "a fresh handshake must pick a NEW nonce, never reuse the pre-reboot one");
+
+    /* Same device, same session identity — a reboot doesn't change who we are. */
+    TEST_ASSERT_TRUE(c.has_my_node_id);
+    TEST_ASSERT_EQUAL_UINT32(0x42u, c.my_node_id);
+
+    /* Not treated as a transport failure or a backoff reconnect: the wire
+     * is fine, only the session on the other end is gone. */
+    TEST_ASSERT_EQUAL_UINT32(0u, c.stats.reconnects);
+    TEST_ASSERT_FALSE(c.reconnect_pending);
+
+    /* A real want_config frame was actually re-issued onto the wire. */
+    TEST_ASSERT_TRUE(io.tx_len >= 4);
+    TEST_ASSERT_EQUAL_UINT8(0x94, io.tx_buf[0]);
+    TEST_ASSERT_EQUAL_UINT8(0xC3, io.tx_buf[1]);
+    uint16_t plen = (uint16_t)((io.tx_buf[2] << 8) | io.tx_buf[3]);
+    meshtastic_ToRadio tr = meshtastic_ToRadio_init_zero;
+    pb_istream_t is = pb_istream_from_buffer(io.tx_buf + 4, plen);
+    TEST_ASSERT_TRUE(pb_decode(&is, meshtastic_ToRadio_fields, &tr));
+    TEST_ASSERT_EQUAL(meshtastic_ToRadio_want_config_id_tag, tr.which_payload_variant);
+    TEST_ASSERT_EQUAL_UINT32(c.want_config_id, tr.payload_variant.want_config_id);
+}
+
+/* "Frames before the new config_complete are ignored/handled per the
+ * handshake rules": a config_complete naming the STALE, pre-reboot nonce
+ * must not complete the NEW handshake — same rule
+ * S03_AC2_handshake_wrong_nonce_stays_in_handshake already pins for an
+ * ordinary connect, now proven across a reboot's nonce rotation too. */
+static void S03_debt_reboot_stale_config_complete_is_ignored_per_handshake_rules(void)
+{
+    mock_io_t io;
+    mock_io_reset(&io);
+    mock_clock_t clk = {.t = 0};
+    ff_clock_t clock = {.now_ms = mock_now, .user = &clk};
+    events_capture_t cap;
+    memset(&cap, 0, sizeof(cap));
+
+    mc_client_t c;
+    mc_init(&c, (mc_transport_t){.write = mock_write, .read = mock_read, .io = &io}, make_events(&cap),
+             &clock);
+    c.state = MC_STATE_READY;
+    uint32_t const old_want_config_id = 0xABCDu;
+    c.want_config_id = old_want_config_id;
+
+    uint8_t frame1[32];
+    uint16_t f1_len = build_rebooted_frame(frame1, sizeof(frame1));
+    TEST_ASSERT_TRUE(f1_len > 0);
+
+    uint8_t frame2[32];
+    /* The PRE-reboot nonce — stale by the time this (synthetic) frame
+     * arrives, since the reboot handling above already picked a fresh one. */
+    uint16_t f2_len = build_config_complete_frame(old_want_config_id, frame2, sizeof(frame2));
+    TEST_ASSERT_TRUE(f2_len > 0);
+
+    uint8_t combined[64];
+    TEST_ASSERT_TRUE((size_t)f1_len + f2_len <= sizeof(combined));
+    memcpy(combined, frame1, f1_len);
+    memcpy(combined + f1_len, frame2, f2_len);
+    io.rx_data = combined;
+    io.rx_len = (size_t)f1_len + f2_len;
+
+    mc_tick(&c, 100);
+
+    TEST_ASSERT_EQUAL_MESSAGE(MC_STATE_HANDSHAKE, mc_state(&c),
+                              "a config_complete naming the PRE-reboot nonce must not complete the NEW handshake");
+    TEST_ASSERT_NOT_EQUAL(old_want_config_id, c.want_config_id);
+    mc_stats_t const stats = mc_get_stats(&c);
+    TEST_ASSERT_GREATER_OR_EQUAL_UINT32(1, stats.decode_skipped);
+}
+
+/* The full round trip: rebooted -> fresh handshake -> the NEW
+ * config_complete (matching the nonce the reboot handling just picked)
+ * reaches READY again, exactly like an ordinary cold connect. */
+static void S03_debt_reboot_then_matching_config_complete_reaches_ready_again(void)
+{
+    mock_io_t io;
+    mock_io_reset(&io);
+    mock_clock_t clk = {.t = 0};
+    ff_clock_t clock = {.now_ms = mock_now, .user = &clk};
+    events_capture_t cap;
+    memset(&cap, 0, sizeof(cap));
+
+    mc_client_t c;
+    mc_init(&c, (mc_transport_t){.write = mock_write, .read = mock_read, .io = &io}, make_events(&cap),
+             &clock);
+    c.state = MC_STATE_READY;
+    c.want_config_id = 0x1111u;
+
+    uint8_t reboot_frame[32];
+    uint16_t rf_len = build_rebooted_frame(reboot_frame, sizeof(reboot_frame));
+    TEST_ASSERT_TRUE(rf_len > 0);
+    io.rx_data = reboot_frame;
+    io.rx_len = rf_len;
+
+    mc_tick(&c, 100); /* READY -> HANDSHAKE, fresh want_config_id */
+    TEST_ASSERT_EQUAL(MC_STATE_HANDSHAKE, mc_state(&c));
+    uint32_t const new_want_config_id = c.want_config_id;
+
+    uint8_t cc_frame[32];
+    uint16_t cc_len = build_config_complete_frame(new_want_config_id, cc_frame, sizeof(cc_frame));
+    TEST_ASSERT_TRUE(cc_len > 0);
+    io.rx_data = cc_frame;
+    io.rx_len = cc_len;
+    io.rx_pos = 0;
+
+    mc_tick(&c, 200); /* HANDSHAKE -> READY */
+
+    TEST_ASSERT_EQUAL(MC_STATE_READY, mc_state(&c));
+    TEST_ASSERT_EQUAL_INT(2, cap.state_count);
+    TEST_ASSERT_EQUAL(MC_STATE_HANDSHAKE, cap.states[0]);
+    TEST_ASSERT_EQUAL(MC_STATE_READY, cap.states[1]);
 }
 
 /* -------------------------------------------------------------------- */
@@ -3252,6 +3428,10 @@ int main(void)
 
     RUN_TEST(S03_AC6_silence_30s_reconnects_ready_disconnected_handshake);
     RUN_TEST(S03_AC6_transport_error_triggers_reconnect);
+
+    RUN_TEST(S03_debt_reboot_frame_after_ready_drops_state_and_reissues_want_config);
+    RUN_TEST(S03_debt_reboot_stale_config_complete_is_ignored_per_handshake_rules);
+    RUN_TEST(S03_debt_reboot_then_matching_config_complete_reaches_ready_again);
 
     RUN_TEST(S03_debt_write_backpressure_below_budget_sends_frame_no_reconnect);
     RUN_TEST(S03_debt_write_backpressure_budget_exhausted_triggers_reconnect);

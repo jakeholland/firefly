@@ -706,7 +706,7 @@ static void dbgconsole_name_bare_reports_unset_and_unknown(void)
     capture_t cap;
     dispatch("name", &cap);
     TEST_ASSERT_EQUAL_STRING(
-        "dbg: name stored=(unset) mesh=unknown confirmed=0 seq=0 pushed=none ack=none reply=none mismatch=0",
+        "dbg: name stored=(unset) mesh=unknown confirmed=0 seq=0 pushed=none ack=none reply=none mismatch=0 link=NONE",
         cap.lines[0]);
 }
 
@@ -725,7 +725,7 @@ static void dbgconsole_name_set_commits_and_reports_confirmed_false(void)
     TEST_ASSERT_EQUAL_STRING("Jake", H.sender.owner_last_long);
     TEST_ASSERT_EQUAL_STRING("JAKE", H.sender.owner_last_short);
     TEST_ASSERT_EQUAL_STRING(
-        "dbg: name stored=Jake mesh=unknown confirmed=0 seq=1 pushed=Jake/JAKE ack=none reply=none mismatch=0",
+        "dbg: name stored=Jake mesh=unknown confirmed=0 seq=1 pushed=Jake/JAKE ack=none reply=none mismatch=0 link=NONE",
         cap.lines[0]);
 }
 
@@ -742,7 +742,7 @@ static void dbgconsole_name_reports_confirmed_once_self_nodeinfo_matches(void)
     inject_self_long_name(MY_ID, "Jake"); /* the mesh caught up */
     dispatch("name", &cap);
     TEST_ASSERT_EQUAL_STRING(
-        "dbg: name stored=Jake mesh=Jake confirmed=1 seq=1 pushed=Jake/JAKE ack=none reply=none mismatch=0",
+        "dbg: name stored=Jake mesh=Jake confirmed=1 seq=1 pushed=Jake/JAKE ack=none reply=none mismatch=0 link=NONE",
         cap.lines[0]);
 }
 
@@ -763,7 +763,7 @@ static void dbgconsole_name_reports_reply_once_get_owner_response_arrives(void)
     H.ev.on_owner(H.ev.user, "Jake", "JAKE");
     dispatch("name", &cap);
     TEST_ASSERT_EQUAL_STRING(
-        "dbg: name stored=Jake mesh=Jake confirmed=1 seq=1 pushed=Jake/JAKE ack=none reply=Jake/JAKE mismatch=0",
+        "dbg: name stored=Jake mesh=Jake confirmed=1 seq=1 pushed=Jake/JAKE ack=none reply=Jake/JAKE mismatch=0 link=NONE",
         cap.lines[0]);
 }
 
@@ -780,7 +780,7 @@ static void dbgconsole_name_reports_nak_as_push_failed_not_pending(void)
     H.ev.on_routing_ack(H.ev.user, 0x77u, false);
     dispatch("name", &cap);
     TEST_ASSERT_EQUAL_STRING(
-        "dbg: name stored=Jake mesh=unknown confirmed=0 seq=1 pushed=Jake/JAKE ack=nak reply=none mismatch=0",
+        "dbg: name stored=Jake mesh=unknown confirmed=0 seq=1 pushed=Jake/JAKE ack=nak reply=none mismatch=0 link=NONE",
         cap.lines[0]);
 }
 
@@ -814,12 +814,12 @@ static void dbgconsole_name_recommitting_the_same_name_does_not_falsely_confirm_
     H.ev.on_owner(H.ev.user, "Jake", "JAKE"); /* first push, genuinely confirmed */
     dispatch("name", &cap);
     TEST_ASSERT_EQUAL_STRING(
-        "dbg: name stored=Jake mesh=Jake confirmed=1 seq=1 pushed=Jake/JAKE ack=none reply=Jake/JAKE mismatch=0",
+        "dbg: name stored=Jake mesh=Jake confirmed=1 seq=1 pushed=Jake/JAKE ack=none reply=Jake/JAKE mismatch=0 link=NONE",
         cap.lines[0]);
 
     dispatch("name Jake", &cap); /* re-commit the SAME text — a fresh push generation */
     TEST_ASSERT_EQUAL_STRING_MESSAGE(
-        "dbg: name stored=Jake mesh=Jake confirmed=0 seq=2 pushed=Jake/JAKE ack=none reply=none mismatch=0",
+        "dbg: name stored=Jake mesh=Jake confirmed=0 seq=2 pushed=Jake/JAKE ack=none reply=none mismatch=0 link=NONE",
         cap.lines[0],
         "stale pre-push equality (mesh=Jake from the FIRST push) must never read as THIS push's confirmation");
 }
@@ -843,7 +843,7 @@ static void dbgconsole_name_reports_mismatch_when_the_reply_names_someone_else(v
     dispatch("name", &cap);
     TEST_ASSERT_EQUAL_STRING(
         "dbg: name stored=Jake mesh=SomeoneElse confirmed=0 seq=1 pushed=Jake/JAKE ack=none reply=SomeoneElse/SOME "
-        "mismatch=1",
+        "mismatch=1 link=NONE",
         cap.lines[0]);
 }
 

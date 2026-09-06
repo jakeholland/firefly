@@ -397,10 +397,19 @@ static void dbgconsole_name_status(ff_shell_t *sh, ff_dbgconsole_reply_fn reply,
      * FRESH reply/self-NodeInfo for THIS push arrived but named a
      * different owner than was pushed, distinct from `ack=nak` (a
      * routing-layer delivery failure, silent on what the admin module's
-     * owner actually ended up being). */
-    snprintf(line, sizeof(line), "dbg: name stored=%s mesh=%s confirmed=%d%s seq=%u pushed=%s ack=%s reply=%s mismatch=%d",
+     * owner actually ended up being).
+     *
+     * Reboot-session-loss fix (bench finding, 2026-09-06): `link=` is the
+     * SAME `link_name()` this file already uses elsewhere (`ff_shell.h`'s
+     * `ff_shell_link_t`), so a bench operator can tell "pending because
+     * the comms brain rebooted and this device is re-handshaking" (link=
+     * RECONNECTING) apart from "pending on a live link, waiting on a
+     * reply" (link=CONNECTED) — see `ff_shell_mesh_name_status_t`'s own
+     * doc comment (`ff_shell.h`) for the retry-gate this reflects. */
+    snprintf(line, sizeof(line),
+             "dbg: name stored=%s mesh=%s confirmed=%d%s seq=%u pushed=%s ack=%s reply=%s mismatch=%d link=%s",
              stored, mesh_buf, st.confirmed ? 1 : 0, st.my_name_from_node ? " (from_node)" : "",
-             (unsigned)st.pushed_seq, pushed_buf, ack_str, reply_buf, st.mismatch ? 1 : 0);
+             (unsigned)st.pushed_seq, pushed_buf, ack_str, reply_buf, st.mismatch ? 1 : 0, link_name(st.link));
     reply_line(reply, user, line);
 }
 

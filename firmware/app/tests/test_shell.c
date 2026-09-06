@@ -9150,6 +9150,12 @@ static void S_name_owner_request_retries_on_timeout_then_stops(void)
     harness_init(1000u, false);
     inject_my_info(MY_ID);
     name_wire_spy_install();
+    /* Reboot-session-loss fix: the retry poll only fires while the link
+     * reads CONNECTED (see ff_shell_tick's own doc comment on the gate) —
+     * a real push can only happen once connected in the first place, so
+     * this establishes that baseline before exercising the retry
+     * schedule itself. */
+    H.ev.on_state(H.ev.user, MC_STATE_READY);
 
     send_bare(FF_INTENT_SETTINGS_OPEN_NAME_EDIT);
     name_key(5);
@@ -9203,6 +9209,15 @@ static void S_name_owner_request_retry_failures_do_not_burn_the_retry_budget(voi
     harness_init(1000u, false);
     inject_my_info(MY_ID);
     name_wire_spy_install();
+    /* Reboot-session-loss fix: the link itself reads CONNECTED throughout
+     * this test — the failure being reproduced here is a send that fails
+     * below the shell (NS.owner_req_rc, simulating e.g. a momentary
+     * transport hiccup the shell hasn't yet been told about), distinct
+     * from the link-level RECONNECTING gate covered by its own tests
+     * below (S_name_push_during_reboot_window_polls_only_after_reconnect
+     * and friends). Both must independently avoid burning the retry
+     * budget. */
+    H.ev.on_state(H.ev.user, MC_STATE_READY);
 
     send_bare(FF_INTENT_SETTINGS_OPEN_NAME_EDIT);
     name_key(5);
@@ -9384,6 +9399,131 @@ static void S_name_commit_resets_push_tracking_for_a_fresh_push(void)
     TEST_ASSERT_FALSE_MESSAGE(st.has_reply, "a stale reply from the PREVIOUS push must not bleed into the new one");
     TEST_ASSERT_EQUAL_STRING("m", st.pushed_long);
     TEST_ASSERT_FALSE_MESSAGE(st.confirmed, "the new push has not been confirmed yet");
+}
+
+/* ====================================================================
+ * Reboot-session-loss fix (bench finding, 2026-09-06, real puck + comms
+ * brain, Meshtastic 2.7.26): AdminModule reboots the comms brain a few
+ * seconds after a set_owner admin write; mc_client.c now treats
+ * FromRadio.rebooted as an immediate session loss and re-handshakes
+ * (see mc_client.h's mc_tick() doc comment) — from the shell's side that
+ * is observed as the SAME on_state sequence any other link drop/reconnect
+ * produces (READY -> HANDSHAKE -> READY), injected here exactly like
+ * S16_AC9's own link tests inject it, with no meshclient/mc_client
+ * involved. `S_name_push_during_reboot_window_polls_only_after_reconnect`
+ * MUST FAIL on the pre-fix code (the retry loop had no link gate at all —
+ * see the PR body for the exact assertion and ctest output before this
+ * fix was reverted back in to confirm it).
+ * ==================================================================== */
+
+/**
+ * "push during a reboot window -> no get_owner_request until CONNECTED,
+ * then confirmation via replay" (task brief). The link drops to
+ * RECONNECTING right after the push's own FIRST get_owner_request has
+ * already gone out (matching the bench transcript: push2's own set_owner
+ * + get_owner_request both left the device before the reboot frame
+ * arrived) — while RECONNECTING, no further attempt may fire no matter
+ * how much time passes (the poll stays armed, not abandoned); once the
+ * link reads CONNECTED again, the self NodeInfo replay that is part of
+ * the SAME want_config dump the reconnect handshake produces is already
+ * a first-class confirmation on its own (shell_ev_node's self-long-name
+ * block), so the poll must not ALSO fire a redundant get_owner_request
+ * once nothing is left to ask for.
+ */
+static void S_name_push_during_reboot_window_polls_only_after_reconnect(void)
+{
+    harness_init(1000u, false);
+    inject_my_info(MY_ID);
+    name_wire_spy_install();
+    H.ev.on_state(H.ev.user, MC_STATE_READY); /* CONNECTED before the push, like real life */
+
+    send_bare(FF_INTENT_SETTINGS_OPEN_NAME_EDIT);
+    name_key(5); /* "j" */
+    send_bare(FF_INTENT_SETTINGS_NAME_COMMIT);
+    TEST_ASSERT_EQUAL_INT(1, NS.owner_req_calls);
+
+    /* The comms brain reboots (AdminModule::saveChanges, a few seconds
+     * after the admin write) — mc_client's own FromRadio.rebooted
+     * handling restarts the handshake, observed here as the shell's
+     * ordinary link-drop sequence. */
+    H.ev.on_state(H.ev.user, MC_STATE_HANDSHAKE);
+    TEST_ASSERT_EQUAL_INT(FF_SHELL_LINK_RECONNECTING, ff_shell_link(&H.shell));
+
+    /* While reconnecting, no matter how long, the poll must not attempt a
+     * single further send — it stays armed instead of wasting retries on
+     * a request guaranteed to fail. */
+    advance(FF_NAME_OWNER_REQ_TIMEOUT_MS * 5u);
+    ff_shell_tick(&H.shell, H.clk.t);
+    TEST_ASSERT_EQUAL_INT_MESSAGE(1, NS.owner_req_calls,
+                                  "no get_owner_request may be attempted while the link is not CONNECTED");
+    TEST_ASSERT_FALSE_MESSAGE(ff_shell_mesh_name_status(&H.shell).confirmed, "sanity: still pending");
+
+    /* The reconnect's want_config dump replays our own NodeInfo with the
+     * new name — arriving, like the real handshake, BEFORE the link
+     * reaches CONNECTED. */
+    inject_self_long_name(MY_ID, "j");
+    H.ev.on_state(H.ev.user, MC_STATE_READY); /* CONNECTED again */
+
+    TEST_ASSERT_TRUE_MESSAGE(ff_shell_mesh_name_status(&H.shell).confirmed,
+                             "the self NodeInfo replay is a first-class confirmation on its own");
+
+    /* Nothing left to ask for — the poll must not fire an extra,
+     * unnecessary get_owner_request now that the link is back up. */
+    advance(FF_NAME_OWNER_REQ_TIMEOUT_MS + 1u);
+    ff_shell_tick(&H.shell, H.clk.t);
+    TEST_ASSERT_EQUAL_INT_MESSAGE(1, NS.owner_req_calls,
+                                  "the replay already confirmed this push — nothing left to poll for");
+}
+
+/**
+ * "two pushes 8 s apart both end confirmed" (task brief), reproducing the
+ * bench transcript's own timing: push 1 confirms normally within a few
+ * seconds; 8 s later, push 2's own admin write triggers ANOTHER reboot
+ * mid-poll (a wearer can retype their name again well within Meshtastic's
+ * post-write reboot window) — push 2 must still end up confirmed, via the
+ * reconnect's self-NodeInfo replay, exactly like the single-push case
+ * above.
+ */
+static void S_name_two_pushes_eight_seconds_apart_both_confirm_across_a_mid_session_reboot(void)
+{
+    harness_init(1000u, false);
+    inject_my_info(MY_ID);
+    name_wire_spy_install();
+    H.ev.on_state(H.ev.user, MC_STATE_READY);
+
+    /* --- push 1: "j" — ack + reply arrive normally, confirms within the
+     * bench's observed ~3s, no reboot involved. --- */
+    send_bare(FF_INTENT_SETTINGS_OPEN_NAME_EDIT);
+    name_key(5);
+    send_bare(FF_INTENT_SETTINGS_NAME_COMMIT);
+    uint32_t const push1_id = NS.out_packet_id + (uint32_t)(NS.calls - 1);
+    advance(3000u);
+    inject_routing_ack(push1_id, true);
+    inject_owner_reply("j", "J");
+    TEST_ASSERT_TRUE_MESSAGE(ff_shell_mesh_name_status(&H.shell).confirmed, "push 1 confirms normally");
+
+    /* --- 8 s later, push 2: "m". Its own set_owner + get_owner_request go
+     * out, then the comms brain reboots mid-poll (the bench's own
+     * transcript: FromRadio.rebooted arrives instead of any ack/reply for
+     * push 2). --- */
+    advance(8000u);
+    send_bare(FF_INTENT_SETTINGS_OPEN_NAME_EDIT);
+    send_bare(FF_INTENT_NAME_T9_BACKSPACE);
+    name_key(6); /* "m" */
+    send_bare(FF_INTENT_SETTINGS_NAME_COMMIT);
+    TEST_ASSERT_EQUAL_INT(2, NS.owner_req_calls);
+    TEST_ASSERT_FALSE(ff_shell_mesh_name_status(&H.shell).confirmed);
+
+    H.ev.on_state(H.ev.user, MC_STATE_HANDSHAKE); /* the reboot's re-handshake begins */
+    advance(FF_NAME_OWNER_REQ_TIMEOUT_MS * 2u);
+    ff_shell_tick(&H.shell, H.clk.t);
+    TEST_ASSERT_EQUAL_INT_MESSAGE(2, NS.owner_req_calls, "no polling while the link is down");
+
+    inject_self_long_name(MY_ID, "m"); /* self NodeInfo replay, part of the new handshake's dump */
+    H.ev.on_state(H.ev.user, MC_STATE_READY); /* CONNECTED again */
+
+    TEST_ASSERT_TRUE_MESSAGE(ff_shell_mesh_name_status(&H.shell).confirmed,
+                             "push 2 also confirms, via the replay, despite the mid-session reboot");
 }
 
 int main(void)
@@ -9674,6 +9814,9 @@ int main(void)
     RUN_TEST(S_name_routing_ack_ignores_an_unrelated_request_id);
     RUN_TEST(S_name_commit_abandons_a_still_pending_previous_poll);
     RUN_TEST(S_name_commit_resets_push_tracking_for_a_fresh_push);
+
+    RUN_TEST(S_name_push_during_reboot_window_polls_only_after_reconnect);
+    RUN_TEST(S_name_two_pushes_eight_seconds_apart_both_confirm_across_a_mid_session_reboot);
     RUN_TEST(S_name_recommitting_the_same_name_does_not_falsely_confirm_from_stale_mesh_state);
     RUN_TEST(S_name_status_reports_pending_not_mismatch_before_any_reply);
     RUN_TEST(S_name_recommit_stale_self_nodeinfo_does_not_falsely_confirm_either);

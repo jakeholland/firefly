@@ -344,3 +344,5 @@ repointed from "CALIBRATE TOUCH" (stale even before this PR: COMPASS
 and CREW already landed after it in earlier amendments, coincidentally
 still within the 256px viewport at the old content height) to "CREW",
 the row that is actually last now.
+
+**2026-09-06 — Confirmation fix round 4 / "reboot-session-loss" touches no layout.** The NAME row's honest-pending behavior during a `set_owner`-triggered comms-brain reboot (≈5–10 s off the mesh — Meshtastic's `AdminModule` reboots a few seconds after every owner write) reuses the row's existing pill states (`...` pending, `!` for a NAK/mismatch, ✓ once confirmed) with no new visual state and no golden regeneration — `run_goldens.sh` stays 90/90 byte-identical. See `docs/specs/S11-settings.md`'s own "Confirmation fix round 4" Amendment for the behavior.

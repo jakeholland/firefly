@@ -436,9 +436,42 @@ static void mc_process_mesh_packet(mc_client_t *c, meshtastic_MeshPacket const *
     }
 }
 
-static void mc_process_from_radio(mc_client_t *c, meshtastic_FromRadio const *fr)
+static void mc_process_from_radio(mc_client_t *c, meshtastic_FromRadio const *fr, uint32_t now_ms)
 {
     switch (fr->which_payload_variant) {
+    case meshtastic_FromRadio_rebooted_tag:
+        /* NAME-in-Settings reboot-session-loss fix (bench finding,
+         * 2026-09-06, real puck + comms brain, Meshtastic 2.7.26): Meshtastic's
+         * AdminModule schedules a device reboot a few seconds after a
+         * set_owner admin write (saveChanges() -> rebootAtMsec(), when no
+         * edit transaction is open — src/modules/AdminModule.cpp). The
+         * PhoneAPI session on the OTHER side of that reboot is fresh and
+         * silently ignores every packet this client sends until a new
+         * want_config handshake — but this library's own mc_tick kept
+         * seeing OTHER FromRadio traffic (queueStatus frames) arrive right
+         * through the reboot, so the 30s no-RX-bytes watchdog alone never
+         * noticed: bytes kept arriving, just never another config_complete.
+         * FromRadio.rebooted (tag 8, "Sent to tell clients the radio has
+         * just rebooted") is the one explicit tell Meshtastic gives a
+         * connected client for this. Treated as an immediate session
+         * loss: drop straight into a fresh want_config handshake (not the
+         * 2s-backoff DISCONNECTED path — the failure here isn't a broken
+         * transport, the wire is fine, only the session on the other end
+         * is gone) so my_info/NodeInfo replay/config_complete all arrive
+         * again, exactly as they would after a cold connect.
+         * mc_begin_handshake() already does everything this needs:
+         * mc_framer_init() (drop anything mid-frame), a fresh random
+         * want_config_id, and mc_set_state(HANDSHAKE) — which fires
+         * on_state(MC_STATE_HANDSHAKE) through the SAME path a real link
+         * drop uses, so a caller (ff_shell.c) sees the ordinary
+         * RECONNECTING -> CONNECTED transition around a reboot without
+         * needing a second, reboot-specific event. Not counted as a
+         * reconnect (mc_stats_t.reconnects) or a decode_skipped/
+         * decode_errors — a well-formed, understood message, not a
+         * failure this library experienced itself. */
+        mc_begin_handshake(c, now_ms);
+        break;
+
     case meshtastic_FromRadio_my_info_tag:
         c->my_node_id = fr->payload_variant.my_info.my_node_num;
         c->has_my_node_id = true;
@@ -568,7 +601,7 @@ void mc_connect(mc_client_t *c)
  * dispatches it, incrementing *frames_dispatched. Shared by mc_tick()'s
  * leftover-carry drain and its fresh-chunk drain so the two can't drift
  * out of sync on what counts as "dispatched" against MC_TICK_MAX_FRAMES. */
-static void mc_tick_feed_byte(mc_client_t *c, uint8_t byte, uint32_t *frames_dispatched)
+static void mc_tick_feed_byte(mc_client_t *c, uint8_t byte, uint32_t *frames_dispatched, uint32_t now_ms)
 {
     uint8_t const *frame_buf = NULL;
     uint16_t frame_len = 0;
@@ -579,7 +612,7 @@ static void mc_tick_feed_byte(mc_client_t *c, uint8_t byte, uint32_t *frames_dis
         meshtastic_FromRadio fr = meshtastic_FromRadio_init_zero;
         pb_istream_t is = pb_istream_from_buffer(frame_buf, frame_len);
         if (pb_decode(&is, meshtastic_FromRadio_fields, &fr)) {
-            mc_process_from_radio(c, &fr);
+            mc_process_from_radio(c, &fr, now_ms);
         } else {
             c->stats.decode_errors++;
         }
@@ -598,7 +631,7 @@ void mc_tick(mc_client_t *c, uint32_t now_ms)
      * feed them to the framer first, before touching the transport again,
      * so ordering across calls is preserved. */
     while (c->tick_carry_pos < c->tick_carry_len && frames_dispatched < MC_TICK_MAX_FRAMES) {
-        mc_tick_feed_byte(c, c->tick_carry_buf[c->tick_carry_pos++], &frames_dispatched);
+        mc_tick_feed_byte(c, c->tick_carry_buf[c->tick_carry_pos++], &frames_dispatched, now_ms);
     }
     if (c->tick_carry_pos >= c->tick_carry_len) {
         c->tick_carry_len = 0;
@@ -635,7 +668,7 @@ void mc_tick(mc_client_t *c, uint32_t now_ms)
                 c->tick_carry_pos = 0;
                 break;
             }
-            mc_tick_feed_byte(c, chunk[i], &frames_dispatched);
+            mc_tick_feed_byte(c, chunk[i], &frames_dispatched, now_ms);
         }
     }
 

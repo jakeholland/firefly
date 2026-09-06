@@ -1468,6 +1468,20 @@ static void shell_ev_node(void *u, mc_nodeinfo_t const *n)
          * as this generation's confirmation. */
         sh->mesh_owner_name_seq = sh->name_pushed_seq;
 
+        /* Reboot-session-loss fix (bench finding, 2026-09-06): a self
+         * NodeInfo replay is exactly as authoritative an answer to "what
+         * does the mesh say our name is" as a get_owner_response — it is
+         * the SAME want_config dump this device's own reconnect handshake
+         * produces (mc_client.c's FromRadio.rebooted handling restarts
+         * that handshake right after the comms brain reboots a push
+         * triggered), it just arrived unsolicited instead of in reply to
+         * this device's own get_owner_request. Stop this push's polling
+         * the same way shell_ev_owner already does for its own reply,
+         * below — either way, there is nothing left worth asking for.
+         * Matches or not: shell_ev_owner stops polling on a mismatching
+         * reply too, for the same reason. */
+        sh->name_owner_req_pending = false;
+
         /* Boot prefill (this feature) — the puck itself has never had a
          * name typed into it (`my_name` still empty), but the comms
          * brain already carries an owner long_name of its own (set
@@ -3623,8 +3637,37 @@ bool ff_shell_tick(ff_shell_t *sh_pub, uint32_t now_ms)
      * next tick and the SAME attempt is retried (cheaply — a not-READY
      * send is a same-thread state check, no I/O) until the transport
      * recovers, with the full retry budget still intact for the reply
-     * that follows. */
-    if (sh->name_owner_req_pending &&
+     * that follows.
+     *
+     * Reboot-session-loss fix (bench finding, 2026-09-06): EXPECT a
+     * `set_owner` push to reboot the comms brain a few seconds later
+     * (Meshtastic's own `AdminModule::saveChanges` — see
+     * `mc_client.h`'s `mc_tick()` doc comment for the citation and the
+     * fix on the meshclient side, `on_state`/link dropping to
+     * RECONNECTING and back around it). Gate the whole retry/timeout
+     * check on `sh->link == FF_SHELL_LINK_CONNECTED`: sending a
+     * get_owner_request while the link is down is not merely wasted (the
+     * round 3 fix above already stops a failed send from burning the
+     * retry budget) — it is *guaranteed* to fail, so there is no reason
+     * to even attempt it or advance the deadline. The poll stays fully
+     * armed (`name_owner_req_pending` untouched) for as long as the link
+     * is not CONNECTED; once it reconnects, this same check resumes on
+     * the very next tick whose deadline has already elapsed. In the
+     * common case that resumption needs no `get_owner_request` at all:
+     * the self NodeInfo replay that is part of every want_config dump —
+     * including the one this device's own reconnect handshake just ran —
+     * arrives DURING the handshake, before the link reaches CONNECTED,
+     * and `shell_ev_node`'s self-long-name block (above) already clears
+     * `name_owner_req_pending` the instant it sees it, exactly like a
+     * `get_owner_response` would. So by the time this check next runs
+     * with the link back up, a push that reconnected via NodeInfo replay
+     * has typically already stopped polling on its own; this block only
+     * ever fires an ADDITIONAL request when that replay genuinely didn't
+     * carry the answer (no self entry in this particular dump, or the
+     * mesh hasn't caught up yet) — never gated on a fixed "few seconds"
+     * timer, since one is unnecessary: the replay is either already in by
+     * the time this runs, or it isn't coming this handshake. */
+    if (sh->link == FF_SHELL_LINK_CONNECTED && sh->name_owner_req_pending &&
         ff_time_reached(now_ms, sh->name_owner_req_sent_ms + FF_NAME_OWNER_REQ_TIMEOUT_MS)) {
         if (sh->name_owner_req_retries < FF_NAME_OWNER_REQ_MAX_RETRIES) {
             int const rc = (sh->wiring.sender.send_get_owner_request != NULL)
@@ -6067,6 +6110,9 @@ ff_shell_mesh_name_status_t ff_shell_mesh_name_status(ff_shell_t const *sh_pub)
     /* Confirmation-fix round 2. */
     st.mismatch = shell_mesh_name_mismatch(sh);
     st.pushed_seq = sh->name_pushed_seq;
+
+    /* Reboot-session-loss fix. */
+    st.link = sh->link;
     return st;
 }
 

@@ -581,7 +581,22 @@ void mc_seed_packet_ids(mc_client_t *c, uint32_t seed);
  * Bounded: dispatches at most MC_TICK_MAX_FRAMES frames per call (see its
  * doc comment near mc_client_t, above) — a large burst drains over
  * several calls, never one, and nothing read from the transport is ever
- * lost when the cap lands mid-chunk (see mc_client_t.tick_carry_*). */
+ * lost when the cap lands mid-chunk (see mc_client_t.tick_carry_*).
+ *
+ * Reboot-session-loss handling (bench finding, 2026-09-06): a
+ * `FromRadio.rebooted` frame from the comms brain (Meshtastic tells a
+ * connected client explicitly when it just rebooted — e.g. a few seconds
+ * after an admin write like `mc_send_set_owner`'s `set_owner`, per
+ * Meshtastic's own `AdminModule::saveChanges`) is treated as an immediate
+ * session loss: the client drops straight into a fresh want_config
+ * handshake (`on_state(MC_STATE_HANDSHAKE)` fires, same as any other link
+ * drop) rather than waiting for the 30s no-RX-bytes watchdog — which,
+ * critically, does NOT reliably fire on its own here, because other
+ * FromRadio traffic (queueStatus) keeps `last_rx_ms` advancing right
+ * through the reboot even though the session on the other end is gone.
+ * A caller that only watches `mc_state()`/`on_state` sees the ordinary
+ * READY -> HANDSHAKE -> READY sequence around a reboot with no separate
+ * event to handle. */
 void mc_tick(mc_client_t *c, uint32_t now_ms);
 
 /** Start (or restart) the want_config handshake. */
