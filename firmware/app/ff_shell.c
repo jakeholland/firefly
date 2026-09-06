@@ -1024,6 +1024,41 @@ static bool shell_observe_wall_nodeinfo(shell_t *sh, uint32_t node_id, uint32_t 
 }
 
 /**
+ * FF_RX_TIME_SKEW_TOLERANCE_S (2026-09-05, the latch-prediction-skew fix)
+ * — how far AHEAD of `ff_wall_unix_now`'s prediction a receive timestamp
+ * may claim to be and still be honoured as "arrived now" rather than
+ * rejected as a future/bogus packet.
+ *
+ * The predicted "now" `shell_rx_ms_from_unix` compares against is built
+ * from TWO truncations, neither of which makes a genuinely live packet
+ * "from the future":
+ *  - `ff_wall_observe`'s latch source is frequently `mc_nodeinfo_t.
+ *    last_heard`, itself whole-seconds-truncated on the wire and a
+ *    SUMMARY of when the sender last heard the node — a LOWER bound on
+ *    "now" at the moment it was cached, not a running clock;
+ *  - `ff_wall_unix_now` predicts forward by `floor(elapsed_ms / 1000)`,
+ *    which only ever under-counts the elapsed time.
+ *
+ * Bench evidence (device instrumentation, 2026-09-05): the wall latched
+ * from this puck's OWN NodeInfo replay at `last_heard = 1788657609`
+ * ~2.6 s after boot. ~164 s later a LIVE self Position arrived with
+ * `rx_time = 1788657773` — the node's real, GPS-disciplined clock, not a
+ * summary — while the latch predicted only ~1788657770-771: the live
+ * packet reads 2-3 s "ahead" of the prediction purely from the two
+ * truncations above. Because the old code rejected any `age_s < 0`
+ * outright, `shell_maybe_adopt_my_pos` never ran on this path and
+ * `my_pos_ok` stayed false forever (Radar: "NO FIX - RADIO ONLY").
+ *
+ * 60 s is comfortably wider than either truncation could plausibly
+ * explain (they are sub-second/low-single-digit-second effects) while
+ * staying far below FF_WALL_LATCH_MAX_AGE_MS (7 days) — a claim beyond
+ * this is not "arrived now measured against a slightly-stale
+ * prediction", it is an actually implausible/hostile future timestamp,
+ * and stays rejected exactly as before.
+ */
+#define FF_RX_TIME_SKEW_TOLERANCE_S ((int64_t)60)
+
+/**
  * Turn a unix receive time into the monotonic timestamp
  * `ff_crew_on_position` wants, or fail.
  *
@@ -1034,11 +1069,19 @@ static bool shell_observe_wall_nodeinfo(shell_t *sh, uint32_t node_id, uint32_t 
  *    a corrupt or hostile clock above the ceiling);
  *  - nothing has latched, so unix seconds cannot be related to the
  *    monotonic clock at all;
- *  - the timestamp claims the future relative to our own derived now;
+ *  - the timestamp claims the future by more than
+ *    FF_RX_TIME_SKEW_TOLERANCE_S relative to our own derived now — see
+ *    that constant's doc comment for why a SMALL forward skew is
+ *    expected and honest rather than a sign of a bogus clock;
  *  - the fix is older than FF_WALL_LATCH_MAX_AGE_MS, past which the
  *    monotonic delta stops being unambiguous.
  *
- * The last case under-claims: a nine-day-old cached fix reads
+ * A forward skew within tolerance is CLAMPED to age 0 ("arrived now"),
+ * not treated as literally negative age — there is no such thing as a
+ * receive time before now, only a "now" prediction that under-counted by
+ * a few seconds (see FF_RX_TIME_SKEW_TOLERANCE_S).
+ *
+ * The max-age case under-claims: a nine-day-old cached fix reads
  * FF_FRESH_NEVER rather than FF_FRESH_LOST. Both mean "do not trust this
  * position"; NEVER additionally declines to claim a fix we cannot place
  * in time, which is the direction this project errs in everywhere else
@@ -1054,8 +1097,9 @@ static bool shell_rx_ms_from_unix(shell_t const *sh, uint32_t unix_s, uint32_t n
     int64_t now_unix = 0;
     if (!ff_wall_unix_now(&sh->wall, now_ms, &now_unix)) return false;
 
-    int64_t const age_s = now_unix - u;
-    if (age_s < 0) return false;
+    int64_t age_s = now_unix - u;
+    if (age_s < -FF_RX_TIME_SKEW_TOLERANCE_S) return false; /* genuinely future: bogus */
+    if (age_s < 0) age_s = 0;                                /* latch-prediction skew: it arrived now */
     if (age_s > (int64_t)(FF_WALL_LATCH_MAX_AGE_MS / 1000u)) return false;
 
     *out_rx_ms = now_ms - (uint32_t)(age_s * 1000);

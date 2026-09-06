@@ -2779,6 +2779,122 @@ static void SELFPOS_AC7_staleness_check_is_wraparound_safe(void)
     TEST_ASSERT_FALSE(ff_shell_view(&H.shell)->map.you_has_pos);
 }
 
+/* ---------------------------------------------------------------------
+ * SELFPOS_AC8/AC9 (2026-09-05) — rx_time -> monotonic latch-prediction
+ * skew tolerance (bench-confirmed device bug: `my_pos_ok` never set).
+ *
+ * The wall latches from THIS puck's own NodeInfo replay's `last_heard`
+ * (whole-seconds-truncated, a summary of "when last heard" cached at
+ * that instant), and the running prediction floors elapsed ms. A LIVE
+ * self Position's `rx_time` — the node's real clock, not a summary — can
+ * therefore read a few seconds AHEAD of that prediction; neither
+ * truncation makes the packet genuinely "from the future". See
+ * FF_RX_TIME_SKEW_TOLERANCE_S's doc comment in ff_shell.c for the exact
+ * bench numbers this mirrors (latch from last_heard=1788657609 at
+ * ~2.6 s, live rx_time=1788657773 at ~164 s -> predicted ~1788657770-771
+ * -> age -2..-3 s).
+ * ------------------------------------------------------------------- */
+
+static void SELFPOS_AC8_live_rx_time_ahead_of_latch_prediction_is_adopted_at_age_zero(void)
+{
+    harness_init(100000u, false);
+    inject_my_info(MY_ID);
+    TEST_ASSERT_EQUAL_INT(0, ff_shell_load_pack(&H.shell, PACK_JSON, sizeof(PACK_JSON) - 1u));
+
+    /* Self's own NodeInfo replay defines the latch. Per the D1 guard
+     * (shell_ev_node's own doc comment, echoed for SELFPOS just above
+     * this function in ff_shell.c) the position THIS SAME reading
+     * carries is deliberately left unadopted — its own value defines
+     * "now", so it cannot honestly be dated. */
+    inject_node_with_position_ex(MY_ID, U_EVENING, 39.0, -82.0, MC_LOC_INTERNAL, false, 0);
+    ff_shell_tick(&H.shell, H.clk.t);
+    TEST_ASSERT_FALSE(ff_shell_view(&H.shell)->map.you_has_pos);
+
+    /* 100 s of monotonic time pass with no further wall observation: the
+     * running prediction is now U_EVENING + 100. */
+    advance(100000u);
+
+    /* A LIVE self Position arrives 3 s AHEAD of that prediction — well
+     * within FF_WALL_RELATCH_DELTA_S (30 s), so ff_wall_observe leaves
+     * the latch exactly as-is (FF_WALL_OBS_AGREED); the skew reaches
+     * shell_rx_ms_from_unix unchanged, exactly reproducing the bench
+     * mechanism. */
+    ff_latlon_t const fix = {39.9371, -82.4152};
+    inject_position_ex(MY_ID, U_EVENING + 103u, fix.lat, fix.lon, MC_LOC_INTERNAL, false, 0);
+    ff_shell_tick(&H.shell, H.clk.t);
+
+    float want_east = 0.0f, want_north = 0.0f;
+    ff_geo_project((ff_latlon_t){39.936, -82.414}, fix, &want_east, &want_north);
+
+    ff_app_map_t const *m = &ff_shell_view(&H.shell)->map;
+    TEST_ASSERT_TRUE(m->you_has_pos);
+    TEST_ASSERT_FLOAT_WITHIN(1.0f, want_east, m->you_east_m);
+    TEST_ASSERT_FLOAT_WITHIN(1.0f, want_north, m->you_north_m);
+
+    /* The skew is CLAMPED to age 0 -- my_pos_ms lands exactly at the
+     * adoption instant, not at some other interpretation of the skew.
+     * Pin that precisely the same boundary way SELFPOS_AC6 pins
+     * staleness: just under FF_CREW_LOST_MS (== FF_SELF_POS_STALE_MS)
+     * later the fix is still fresh; one more ms and it is stale. If the
+     * age were anything other than exactly 0 at adoption (e.g. still
+     * -3, or clamped to some other value), one of these two boundary
+     * checks would flip. */
+    advance(FF_CREW_LOST_MS - 1000u);
+    ff_shell_tick(&H.shell, H.clk.t);
+    TEST_ASSERT_TRUE(ff_shell_view(&H.shell)->map.you_has_pos);
+
+    advance(1000u);
+    ff_shell_tick(&H.shell, H.clk.t);
+    TEST_ASSERT_FALSE(ff_shell_view(&H.shell)->map.you_has_pos);
+}
+
+/* SELFPOS_AC9 — deliberately NOT a test, by design (see the PR body for
+ * the full reachability argument):
+ *
+ * shell_rx_ms_from_unix's tolerance branch (age_s in (-60, -30]) can only
+ * be entered when a reading disagrees with the current predicted "now" by
+ * MORE than FF_WALL_RELATCH_DELTA_S (30 s, ff_wall.c's `delta` check) yet
+ * the wall's latch does not move to it. Walking every current caller
+ * shows that never happens:
+ *
+ *  - Both LIVE paths (self and crew Position, shell_ev_position) and both
+ *    REPLAY paths that age immediately (self and crew NodeInfo,
+ *    shell_ev_node) observe the SAME reading into ff_wall_observe, at the
+ *    SAME tier, before calling shell_rx_ms_from_unix on it. Self is
+ *    always TRUSTED (shell_wall_trust_for); a crew position/NodeInfo is
+ *    only ever aged once the sender is a paired roster member, which is
+ *    also always TRUSTED. For a TRUSTED reading, ff_wall_observe either:
+ *      (a) disagrees by <= 30 s -> FF_WALL_OBS_AGREED, latch untouched,
+ *          so the age computed moments later from the SAME latch against
+ *          the SAME reading is exactly that <= 30 s delta, never > 30; or
+ *      (b) disagrees by > 30 s -> FF_WALL_OBS_RELATCHED, latch snaps TO
+ *          that exact reading, so the age computed moments later is ~0.
+ *    A BOOTSTRAP-tier (unpaired) sender CAN disagree by > 30 s and get
+ *    FF_WALL_OBS_REJECTED without moving the latch — the shape the
+ *    tolerance branch needs — but no caller ever reaches
+ *    shell_rx_ms_from_unix for an unpaired sender's position: both
+ *    shell_ev_node and shell_ev_position return early (heard-note only)
+ *    the moment `ff_crew_find`/`shell_member` comes back NULL, before the
+ *    position/age code runs at all.
+ *  - The deferred REPLAY-SETTLE path (shell_settle_replay) ages a
+ *    buffered `last_heard` against the FINAL settled latch, but only for
+ *    entries strictly less than `burst_latch_base` (the guard on its
+ *    first line) — i.e. only entries that are provably OLDER than the
+ *    value the latch settled to. That comparison is non-negative by
+ *    construction; it can never land in shell_rx_ms_from_unix's negative
+ *    branch at all, let alone past -30 s.
+ *
+ * So for every path that exists in this codebase today, the tolerance
+ * branch beyond FF_WALL_RELATCH_DELTA_S is unreachable — it is
+ * defense-in-depth against a future TRUSTED caller whose own wall
+ * observation the fix does not control (e.g. a BOOTSTRAP-tier reading
+ * that some later change starts aging), not something the current
+ * callers can exercise. Fabricating a test that pokes
+ * shell_rx_ms_from_unix directly (bypassing every real caller's own
+ * wall-observe call) would pass for the wrong reason — it would prove
+ * the branch's arithmetic, not that any real packet can reach it — so no
+ * such test is included; this comment is the record of why. */
+
 static void S16_b1_a_flare_on_a_foreign_portnum_raises_no_takeover(void)
 {
     /* The shell's own flare branch does not go through ff_wiring, so
@@ -8410,6 +8526,7 @@ int main(void)
     RUN_TEST(SELFPOS_AC5_nodeinfo_replay_self_position_internal_adopts);
     RUN_TEST(SELFPOS_AC6_stale_self_fix_reads_nofix_then_a_fresh_packet_restores_it);
     RUN_TEST(SELFPOS_AC7_staleness_check_is_wraparound_safe);
+    RUN_TEST(SELFPOS_AC8_live_rx_time_ahead_of_latch_prediction_is_adopted_at_age_zero);
 
     RUN_TEST(S16_b1_a_flare_on_a_foreign_portnum_raises_no_takeover);
     RUN_TEST(S16_b1_shell_footprint_excludes_the_pack);
