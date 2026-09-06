@@ -18,6 +18,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "ff_geo.h" /* ff_geo_compass_point — RADAR_NOHDG's bearing hint (2026-09-05 amendment) */
 #include "ff_intent.h" /* S16c2 — the emit seam; see radar_flare_cb */
 #include "ff_theme.h"
 #include "radar_layout.h"
@@ -970,6 +971,78 @@ static void radar_render_nofix(lv_obj_t *parent, ff_radar_view_t const *r)
     }
 }
 
+/* 2026-09-05 amendment — RADAR_NOHDG ("no compass"): unlike RADAR_NOFIX,
+ * MY position and the selected member's are both known — there IS a
+ * real distance and a real absolute bearing, only MY heading is missing
+ * (no magnetometer driver yet, or a compass that lost calibration/tilted
+ * out mid-festival). The bench-confirmed gap this fixes: the puck could
+ * compute the distance to a member but still said "NO FIX - RADIO ONLY /
+ * Looking for X", which is false on both counts — there IS a fix, and
+ * the puck isn't "looking" for anything except its own facing.
+ *
+ * Renders the SAME name+distance headline as LIVE (r->dist_str already
+ * carries the honest "issue #47 degraded precision" area-estimate
+ * treatment via `radar_build_distance_label_ex`'s `imprecise` flag, same
+ * as every other has-a-position mode). No arrow at all — there is
+ * nothing to rotate a screen-relative direction against without a
+ * heading — replaced by an amber "NO COMPASS" chip in the vertical spot
+ * the arrow would otherwise occupy. Below the distance, a bearing hint
+ * states the one direction fact THIS mode CAN honestly give: the
+ * absolute true bearing, which needs no heading at all (`r->bearing_deg`,
+ * `ff_geo_compass_point`) — "BEARING 180 - S" is an absolute fact, unlike
+ * an arrow, which would silently claim a screen-relative meaning it
+ * cannot compute.
+ *
+ * Freshness still applies the ordinary STALE rim tint when `r->stale` —
+ * this spec's own "freshness still picks the rim colour... but the mode
+ * stays NOHDG" ruling (docs/specs/S06-radar-face.md's amendment): an
+ * aging position is still worth flagging even though the OUTER mode
+ * doesn't change. `r->place` suppresses it (mirrors RADAR_PLACE's own
+ * "an asserted position doesn't age" rationale) — the KNOWN INTERACTION
+ * ff_radar.h's mode-resolution doc comment records (an asserted/landmark
+ * selection with no heading resolves NOHDG, never reaching RADAR_PLACE),
+ * handled honestly here rather than pretending it can't happen. */
+static void radar_render_nohdg(lv_obj_t *parent, ff_radar_view_t const *r, bool screen_flip)
+{
+    if (r->stale) {
+        radar_build_rim_tint(parent, FF_THEME_COLOR_STALE_AMBER, LV_OPA_50, screen_flip);
+    }
+
+    radar_build_name_label(parent, r->name, (int32_t)RADAR_LAYOUT_STACK_NAME_DY);
+    radar_build_distance_label_ex(parent, r->dist_str, (int32_t)RADAR_LAYOUT_STACK_DIST_DY, r->dist_imprecise);
+
+    /* Alert-amber, not the primary accent — a missing sensor is a "NO
+     * MESH"-class alert per this spec's own "Status bar alert color"
+     * ruling, not a routine LIVE-style accent. */
+    radar_make_chip(parent, "NO COMPASS", FF_THEME_COLOR_STALE_AMBER, FF_THEME_COLOR_BG,
+                     (int32_t)RADAR_LAYOUT_NOHDG_CHIP_DY);
+
+    if (r->bearing_valid) {
+        char point[4];
+        ff_geo_compass_point(r->bearing_deg, point);
+
+        /* ASCII hyphen substituted for the spec's literal "BEARING 180 deg
+         * . S" (degree sign + U+00B0 MIDDLE DOT) — same LVGL built-in
+         * Montserrat bitmap-font ASCII-only constraint documented at
+         * radar_render_nofix's headline text just above in this file; no
+         * DEGREE SIGN or MIDDLE DOT glyph is compiled into the font
+         * subset this codebase vendors. */
+        char hint[24];
+        snprintf(hint, sizeof(hint), "BEARING %d - %s", (int)(r->bearing_deg + 0.5f), point);
+
+        lv_obj_t *hint_lbl = lv_label_create(parent);
+        lv_label_set_text(hint_lbl, hint);
+        /* Spec calls for a mono-styled hint; no monospace font is
+         * vendored yet — same gap FF_THEME_FONT_DISTANCE's own comment
+         * already documents for this face's "36px, mono in spec" number.
+         * FF_THEME_FONT_LABEL (the smallest transcribed size) stands in
+         * until a real mono face is tracked. */
+        lv_obj_set_style_text_font(hint_lbl, FF_THEME_FONT_LABEL, 0);
+        lv_obj_set_style_text_color(hint_lbl, lv_color_hex(FF_THEME_COLOR_MUTED), 0);
+        lv_obj_align(hint_lbl, LV_ALIGN_CENTER, 0, (int32_t)RADAR_LAYOUT_NOHDG_HINT_DY);
+    }
+}
+
 static void radar_render_nosel(lv_obj_t *parent)
 {
     lv_obj_t *headline = lv_label_create(parent);
@@ -1037,6 +1110,9 @@ void ff_scr_radar_build(lv_obj_t *parent, ff_radar_view_t const *radar, bool col
         break;
     case RADAR_NOFIX:
         radar_render_nofix(parent, radar);
+        break;
+    case RADAR_NOHDG:
+        radar_render_nohdg(parent, radar, screen_flip);
         break;
     case RADAR_NOSEL:
     default:

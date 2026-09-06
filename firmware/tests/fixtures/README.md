@@ -76,6 +76,10 @@ unrelated-looking golden diff.)
   "dist_imprecise": false,
   "age_str": "8 SEC",
   "trend": 0,
+  "bearing_deg": 42.0,
+  "bearing_valid": true,
+  "place": false,
+  "stale": false,
   "clock_str": "9:41",
   "batt_pct": 78,
   "mesh_ok": true,
@@ -87,7 +91,7 @@ unrelated-looking golden diff.)
 
 | Key | Type | Default |
 |---|---|---|
-| `mode` | string enum: `live`\|`stale`\|`lost`\|`place`\|`close`\|`nofix`\|`nosel` | `nosel` |
+| `mode` | string enum: `live`\|`stale`\|`lost`\|`place`\|`close`\|`nofix`\|`nohdg`\|`nosel` | `nosel` |
 | `arrow_deg` | number | `0` |
 | `arrow_valid` | bool | `false` |
 | `name` | string (≤15 chars, `FF_APP_NAME_LEN`) | `""` |
@@ -95,6 +99,10 @@ unrelated-looking golden diff.)
 | `dist_imprecise` | bool | `false` | issue #47 — true when `dist_str` is a precision-degraded area estimate (e.g. `"~5.8 km"`), not a point-to-point distance. See `radar_imprecise.json` below. |
 | `age_str` | string (≤11 chars) | `""` |
 | `trend` | integer, -1/0/+1 | `0` |
+| `bearing_deg` | number | `0` | 2026-09-05 amendment — the absolute true bearing (deg, `[0,360)`, 0=north) from `my_pos` to the selection, independent of heading. Meaningless unless `bearing_valid`; see `mode: "nohdg"` below. |
+| `bearing_valid` | bool | `false` | Same "valid defaults false" convention as `arrow_valid`/`flare.takeover_bearing_valid` — a fixture providing `bearing_deg` without this must not be read as an honestly-known bearing. |
+| `place` | bool | `false` | 2026-09-05 amendment — mirrors a dot's own `place`, but for the SELECTION: true iff the selection's own position is an ASSERTED (`LOC_MANUAL`) landmark. Populated for every mode, not just `nohdg` (redundant with `mode == "place"` there, but the one place this is computed in core). |
+| `stale` | bool | `false` | 2026-09-05 amendment — mirrors a dot's own `stale` for the SELECTION: true iff not `place` and the position's freshness isn't LIVE. Primary consumer: `mode: "nohdg"`'s rim tint (freshness still "picks the rim colour" even though the mode itself stays `nohdg` — see `docs/specs/S06-radar-face.md`'s amendment). |
 | `clock_str` | string (≤5 chars) | `""` |
 | `batt_pct` | integer | `0` (note: `-1` is the documented "unknown" sentinel elsewhere in this codebase — pass it explicitly if that's what a fixture needs) |
 | `mesh_ok` | bool | `false` |
@@ -107,6 +115,20 @@ its age. `age_str` is always `""` for this mode (see `ff_radar.h`'s
 `RADAR_PLACE` doc comment for why an age can never be honestly shown for
 an asserted position). A dot's `place: true` marks the same fact on the
 crew ring — mutually exclusive with `stale`.
+
+`mode: "nohdg"` is the 2026-09-05 amendment's addition: my position is
+known and so is the selected member's, but MY heading is not (no
+magnetometer driver yet, or a compass that lost calibration/tilted out
+mid-festival) — bench-confirmed gap: the puck knew the distance to a
+member but still said "NO FIX - RADIO ONLY / Looking for X", which is
+false on both counts. Renders name+distance as in `live`, no arrow, an
+amber "NO COMPASS" chip, and a mono-styled "BEARING <bearing_deg> ·
+<compass point>" hint computed from `bearing_deg` via
+`ff_geo_compass_point` (16-point names, `core/include/ff_geo.h`).
+`place`/`stale` (added alongside `bearing_deg`/`bearing_valid` by the
+same amendment) still pick the rim tint here exactly as they would for
+`live`/`stale`/`place` — freshness doesn't stop mattering just because
+the mode itself stays `nohdg`. See `radar_nohdg.json` below.
 
 A dot's `imprecise: true` (issue #74, S17 slice a) marks that member's
 latest fix as known-degraded precision — same gate as `dist_imprecise`
@@ -428,6 +450,8 @@ and a worst-case crew-ring layout).
 | `radar_never.json` | `lost` (folded — see below) | `""` | `""` | selected member "JAMIE" is paired but has never sent a fix; `age_str[0] == '\0'` is what `scr_radar.c` keys off to show "NO FIX YET" instead of a "LAST SEEN" chip — NOT distinguishable from a genuinely-old fix by `mode` alone (both are `RADAR_LOST`; see `radar_lost.json` above for the other side of that same `mode`) |
 | `radar_place.json` | `place` | `610 m` | `""` (always empty — see `ff_radar.h`'s `RADAR_PLACE` doc comment) | issue #33 — a landmark's asserted (`LOC_MANUAL`) position, "CAMP BASE". Solid arrow (a real coordinate exists), neutral "FIXED POSITION" chip — never "LIVE", never a rim tint, never an invented age. One ring dot (`"C"`, `place: true`) also carries the honest treatment alongside two ordinary live dots |
 | `radar_imprecise.json` | `live` | `~5.8 km` | `8 SEC` | issue #47 — `dist_imprecise: true`; the selected member's precision is known-degraded (13 bits, the default-public-channel case measured on hardware). Freshness/mode are untouched (LIVE, fresh fix) — only the distance is an honest area estimate, dimmed in render and suffixed "- AREA" on the chip, never a metre-looking number |
+| `radar_nohdg.json` | `nohdg` | `492 ft` | `8 SEC` | 2026-09-05 amendment — my heading is unknown (`bearing_valid: true`, `arrow_valid: false`); name+distance stack as in `live`, amber "NO COMPASS" chip in place of the arrow, mono "BEARING 180° · S" hint below the distance (`bearing_deg: 180`). Fresh fix (`stale: false`) so no rim tint — see `radar_nohdg_stale.json` for the tinted case |
+| `radar_nohdg_stale.json` | `nohdg` | `492 ft` (last known) | `12 MIN` | same scenario, but the position itself has aged past LIVE (`stale: true`) — pins "freshness still picks the rim colour... but the mode stays `nohdg`" (the amendment's own wording): the ordinary STALE amber rim tint renders here even though the mode/chip/hint stay exactly as in `radar_nohdg.json` |
 
 **S17 slice a additions** (issue #43's 8-colour palette, the colorblind
 toggle, and issue #74's radar-imprecise dot — `docs/specs/S17-usability-hardening.md`):

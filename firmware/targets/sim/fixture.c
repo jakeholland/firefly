@@ -353,7 +353,9 @@ static bool fx_color_rgb(fx_ctx_t const *c, int i, uint32_t *out)
 static const fx_enum_entry_t fx_radar_mode_table[] = {
     {"live", RADAR_LIVE}, {"stale", RADAR_STALE}, {"lost", RADAR_LOST},
     {"place", RADAR_PLACE}, /* issue #33 */
-    {"close", RADAR_CLOSE}, {"nofix", RADAR_NOFIX}, {"nosel", RADAR_NOSEL},
+    {"close", RADAR_CLOSE}, {"nofix", RADAR_NOFIX},
+    {"nohdg", RADAR_NOHDG}, /* 2026-09-05 amendment */
+    {"nosel", RADAR_NOSEL},
 };
 
 /* fx_parse_radar_dots — fail-loud on an oversized array (orchestrator
@@ -414,6 +416,16 @@ static ff_fixture_result_t fx_parse_radar(fx_ctx_t const *c, int obj_i, ff_radar
     if (fx_obj_get(c, obj_i, "dist_imprecise", &t)) r->dist_imprecise = fx_bool(c, t, false); /* issue #47 */
     if (fx_obj_get(c, obj_i, "age_str", &t)) fx_copy_str(c, t, r->age_str, sizeof(r->age_str));
     if (fx_obj_get(c, obj_i, "trend", &t)) r->trend = (int8_t)fx_num(c, t, 0.0);
+    /* 2026-09-05 amendment: same "valid defaults false" convention as
+     * flare.takeover_bearing_valid/deg just below in this file — a
+     * fixture providing bearing_deg without bearing_valid must not be
+     * read as an honestly-known bearing (see fx_parse_flare's own pair,
+     * and test_fixture.c's flare_takeover_bearing_valid_defaults_false
+     * for the precedent this mirrors). */
+    if (fx_obj_get(c, obj_i, "bearing_deg", &t)) r->bearing_deg = (float)fx_num(c, t, 0.0);
+    if (fx_obj_get(c, obj_i, "bearing_valid", &t)) r->bearing_valid = fx_bool(c, t, false);
+    if (fx_obj_get(c, obj_i, "place", &t)) r->place = fx_bool(c, t, false);
+    if (fx_obj_get(c, obj_i, "stale", &t)) r->stale = fx_bool(c, t, false);
     if (fx_obj_get(c, obj_i, "clock_str", &t)) fx_copy_str(c, t, r->clock_str, sizeof(r->clock_str));
     if (fx_obj_get(c, obj_i, "batt_pct", &t)) r->batt_pct = (int8_t)fx_num(c, t, -1.0);
     if (fx_obj_get(c, obj_i, "mesh_ok", &t)) r->mesh_ok = fx_bool(c, t, false);
@@ -1830,6 +1842,11 @@ int ff_fixture_dump_json(ff_app_state_t const *s, char *buf, size_t buf_sz)
     fw_raw(&w, ",\"age_str\":");
     fw_json_str(&w, s->radar.age_str);
     fw_fmt(&w, ",\"trend\":%d", (int)s->radar.trend);
+    /* 2026-09-05 amendment */
+    fw_fmt(&w, ",\"bearing_deg\":%g", (double)s->radar.bearing_deg);
+    fw_raw(&w, s->radar.bearing_valid ? ",\"bearing_valid\":true" : ",\"bearing_valid\":false");
+    fw_raw(&w, s->radar.place ? ",\"place\":true" : ",\"place\":false");
+    fw_raw(&w, s->radar.stale ? ",\"stale\":true" : ",\"stale\":false");
     fw_raw(&w, ",\"clock_str\":");
     fw_json_str(&w, s->radar.clock_str);
     fw_fmt(&w, ",\"batt_pct\":%d", (int)s->radar.batt_pct);

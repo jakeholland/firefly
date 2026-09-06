@@ -13,6 +13,7 @@
  * (ff_radar_view_t, ff_radar_smooth_t) is fixed-size fields only, safe on
  * the stack. The runtime half (<1ms) is measured directly below.
  */
+#include <stdlib.h> /* strtof — test-only, see this file's own top comment about ff_radar.c itself */
 #include <string.h>
 #include <time.h>
 
@@ -87,7 +88,16 @@ static void S06_AC1_mode_nofix_pos_invalid(void)
     TEST_ASSERT_FALSE(v.arrow_valid);
 }
 
-static void S06_AC1_mode_nofix_heading_invalid(void)
+/* 2026-09-05 amendment: my_pos_ok true + heading invalid + the selected
+ * member HAS a position used to resolve RADAR_NOFIX (the old, folded-in
+ * behavior this test originally pinned) — it now resolves RADAR_NOHDG,
+ * since distance/bearing to the member ARE honestly knowable even
+ * without a heading (see ff_radar.h's mode-resolution doc comment). This
+ * test (renamed from S06_AC1_mode_nofix_heading_invalid) now pins the
+ * NEW behavior; S06_AC1_mode_nofix_heading_invalid_member_has_no_pos
+ * immediately below covers the one case that DOES still stay NOFIX with
+ * an invalid heading. */
+static void S06_AC1_mode_nohdg_heading_invalid_member_has_pos(void)
 {
     ff_crew_t c;
     ff_crew_member_t *m = setup_selected_member(&c);
@@ -103,8 +113,32 @@ static void S06_AC1_mode_nofix_heading_invalid(void)
 
     ff_radar_compute(&v, &sm, &c, -1.0f /* invalid heading sentinel */, my_pos, true, false, 2000u);
 
+    TEST_ASSERT_EQUAL_INT(RADAR_NOHDG, v.mode);
+    TEST_ASSERT_FALSE(v.arrow_valid);
+    TEST_ASSERT_EQUAL_UINT8(0, v.n_dots); /* ring dots are heading-relative; never north-up fallback */
+    TEST_ASSERT_TRUE(v.bearing_valid);    /* geometry alone (two known lat/lons) needs no heading */
+}
+
+/* The one case that DOES still resolve RADAR_NOFIX with an invalid
+ * heading: the member has no position fix at all, so there is nothing
+ * geometric whatsoever to show (no distance, no bearing) — RADAR_NOHDG
+ * would have nothing honest to say either. */
+static void S06_AC1_mode_nofix_heading_invalid_member_has_no_pos(void)
+{
+    ff_crew_t c;
+    setup_selected_member(&c); /* has_pos stays false — never upserted a fix */
+
+    ff_radar_view_t v;
+    memset(&v, 0, sizeof(v));
+    ff_radar_smooth_t sm;
+    ff_radar_smooth_reset(&sm);
+    ff_latlon_t my_pos = {0.0, 0.0};
+
+    ff_radar_compute(&v, &sm, &c, -1.0f, my_pos, true, false, 2000u);
+
     TEST_ASSERT_EQUAL_INT(RADAR_NOFIX, v.mode);
     TEST_ASSERT_FALSE(v.arrow_valid);
+    TEST_ASSERT_FALSE(v.bearing_valid);
 }
 
 static void S06_AC1_mode_nofix_both_pos_and_heading_invalid(void)
@@ -343,6 +377,149 @@ static void S06_AC1_nofix_beats_close_by_rssi(void)
 
     TEST_ASSERT_EQUAL_INT(RADAR_NOFIX, v.mode);
     TEST_ASSERT_FALSE(v.arrow_valid);
+}
+
+/* ---------------------------------------------------------------------
+ * 2026-09-05 amendment — RADAR_NOHDG (docs/specs/S06-radar-face.md).
+ * ------------------------------------------------------------------- */
+
+/* Bearing/distance for the exact bench coordinates cited in the
+ * amendment: a member ~150 m due south of me. Pins both the numeric
+ * bearing (180 deg, i.e. true south) and the distance, with no heading
+ * involved at all. */
+static void S06_NOHDG_bearing_and_distance_for_bench_coords(void)
+{
+    ff_crew_t c;
+    ff_crew_member_t *m = setup_selected_member(&c);
+    m->has_pos = true;
+    m->pos = (ff_latlon_t){47.705785, -122.2820993};
+    m->pos_age_ms = 0u;
+
+    ff_radar_view_t v;
+    memset(&v, 0, sizeof(v));
+    ff_radar_smooth_t sm;
+    ff_radar_smooth_reset(&sm);
+    ff_latlon_t my_pos = {47.707135, -122.2820993};
+
+    ff_radar_compute(&v, &sm, &c, -1.0f /* no heading */, my_pos, true, false, 1000u);
+
+    TEST_ASSERT_EQUAL_INT(RADAR_NOHDG, v.mode);
+    TEST_ASSERT_FALSE(v.arrow_valid);
+    TEST_ASSERT_TRUE(v.bearing_valid);
+    TEST_ASSERT_FLOAT_WITHIN(0.5f, 180.0f, v.bearing_deg);
+    TEST_ASSERT_EQUAL_UINT8(0, v.n_dots);
+
+    /* ~150 m — parse the formatted distance string back rather than
+     * asserting on ff_geo_distance_m directly, so this also exercises
+     * the same ff_fmt_distance path the render layer reads. */
+    float parsed_m = strtof(v.dist_str, NULL);
+    TEST_ASSERT_TRUE_MESSAGE(parsed_m > 100.0f && parsed_m < 200.0f, v.dist_str);
+}
+
+/* NOHDG outranks CLOSE (by RSSI) and outranks the freshness switch: a
+ * compass-less puck reports NOHDG for its selection even when the
+ * member is simultaneously RSSI-close AND has a fresh (would-be-LIVE)
+ * GPS fix — see ff_radar.h's mode-resolution doc comment's explicit
+ * ranking. Constructed so both alternate checks would fire if NOHDG's
+ * early return didn't happen first. */
+static void S06_NOHDG_beats_close_and_freshness(void)
+{
+    ff_crew_t c;
+    ff_crew_member_t *m = setup_selected_member(&c);
+    m->has_pos = true;
+    m->pos = (ff_latlon_t){0.0001, 0.0}; /* ~11.1 m: inside 30 m CLOSE-by-distance */
+    m->pos_age_ms = 0u;                  /* fresh: would be LIVE by freshness alone */
+    m->rssi_dbm = -50;                   /* > -60 dBm: RSSI-close on its own too */
+    m->rssi_age_ms = 0u;
+
+    ff_radar_view_t v;
+    memset(&v, 0, sizeof(v));
+    ff_radar_smooth_t sm;
+    ff_radar_smooth_reset(&sm);
+    ff_latlon_t my_pos = {0.0, 0.0};
+
+    ff_radar_compute(&v, &sm, &c, -1.0f /* no heading */, my_pos, true, false, 1000u);
+
+    TEST_ASSERT_EQUAL_INT(RADAR_NOHDG, v.mode);
+    TEST_ASSERT_FALSE(v.arrow_valid);
+}
+
+/* place/stale (2026-09-05): an ASSERTED (landmark) selection with an
+ * unknown heading still resolves RADAR_NOHDG (the KNOWN INTERACTION
+ * ff_radar.h's mode-resolution doc comment records), but `place` reports
+ * the underlying fact honestly so the renderer can skip the "aging" rim
+ * treatment for it. */
+static void S06_NOHDG_place_flag_true_for_asserted_member(void)
+{
+    ff_crew_t c;
+    ff_crew_member_t *m = setup_selected_member(&c);
+    m->has_pos = true;
+    m->pos = (ff_latlon_t){0.01, 0.0};
+    m->pos_asserted = true;
+    m->pos_age_ms = 999999u; /* irrelevant for an asserted position */
+
+    ff_radar_view_t v;
+    memset(&v, 0, sizeof(v));
+    ff_radar_smooth_t sm;
+    ff_radar_smooth_reset(&sm);
+    ff_latlon_t my_pos = {0.0, 0.0};
+
+    ff_radar_compute(&v, &sm, &c, -1.0f, my_pos, true, false, 1000000u);
+
+    TEST_ASSERT_EQUAL_INT(RADAR_NOHDG, v.mode);
+    TEST_ASSERT_TRUE(v.place);
+    TEST_ASSERT_FALSE(v.stale);
+}
+
+/* place/stale: an ordinary (non-asserted) member whose fix has aged past
+ * the LIVE window reports stale==true while still in RADAR_NOHDG — the
+ * "freshness still picks the rim colour... mode stays NOHDG" ruling. */
+static void S06_NOHDG_stale_flag_true_for_aged_member(void)
+{
+    ff_crew_t c;
+    ff_crew_member_t *m = setup_selected_member(&c);
+    m->has_pos = true;
+    m->pos = (ff_latlon_t){0.01, 0.0};
+    m->pos_age_ms = 0u;
+
+    ff_radar_view_t v;
+    memset(&v, 0, sizeof(v));
+    ff_radar_smooth_t sm;
+    ff_radar_smooth_reset(&sm);
+    ff_latlon_t my_pos = {0.0, 0.0};
+
+    /* now_ms far enough past pos_age_ms to land in the STALE band (past
+     * FF_CREW_LIVE_MS, at/before FF_CREW_LOST_MS). CLOSE is irrelevant
+     * here regardless of distance/RSSI: the !heading_ok branch returns
+     * before ff_crew_close_range is ever consulted. */
+    ff_radar_compute(&v, &sm, &c, -1.0f, my_pos, true, false, 90000u);
+
+    TEST_ASSERT_EQUAL_INT(RADAR_NOHDG, v.mode);
+    TEST_ASSERT_FALSE(v.place);
+    TEST_ASSERT_TRUE(v.stale);
+}
+
+/* place/stale: a freshly-live member (not asserted, not aged) reports
+ * neither flag while in RADAR_NOHDG — no rim tint to draw. */
+static void S06_NOHDG_neither_flag_for_live_member(void)
+{
+    ff_crew_t c;
+    ff_crew_member_t *m = setup_selected_member(&c);
+    m->has_pos = true;
+    m->pos = (ff_latlon_t){0.01, 0.0};
+    m->pos_age_ms = 0u;
+
+    ff_radar_view_t v;
+    memset(&v, 0, sizeof(v));
+    ff_radar_smooth_t sm;
+    ff_radar_smooth_reset(&sm);
+    ff_latlon_t my_pos = {0.0, 0.0};
+
+    ff_radar_compute(&v, &sm, &c, -1.0f, my_pos, true, false, 1000u); /* age 1s: well inside LIVE */
+
+    TEST_ASSERT_EQUAL_INT(RADAR_NOHDG, v.mode);
+    TEST_ASSERT_FALSE(v.place);
+    TEST_ASSERT_FALSE(v.stale);
 }
 
 /* ---------------------------------------------------------------------
@@ -997,7 +1174,8 @@ int main(void)
 
     RUN_TEST(S06_AC1_mode_nosel_no_paired_member);
     RUN_TEST(S06_AC1_mode_nofix_pos_invalid);
-    RUN_TEST(S06_AC1_mode_nofix_heading_invalid);
+    RUN_TEST(S06_AC1_mode_nohdg_heading_invalid_member_has_pos);
+    RUN_TEST(S06_AC1_mode_nofix_heading_invalid_member_has_no_pos);
     RUN_TEST(S06_AC1_mode_nofix_both_pos_and_heading_invalid);
     RUN_TEST(S06_AC1_nofix_age_str_known_but_dist_str_unknown);
     RUN_TEST(S06_AC1_mode_close_by_distance);
@@ -1010,6 +1188,12 @@ int main(void)
     RUN_TEST(S06_AC1_close_by_rssi_wins_over_stale_gps);
     RUN_TEST(S06_AC1_nofix_beats_close_by_rssi);
     RUN_TEST(S06_AC1_compute_leaves_clock_batt_mesh_untouched);
+
+    RUN_TEST(S06_NOHDG_bearing_and_distance_for_bench_coords);
+    RUN_TEST(S06_NOHDG_beats_close_and_freshness);
+    RUN_TEST(S06_NOHDG_place_flag_true_for_asserted_member);
+    RUN_TEST(S06_NOHDG_stale_flag_true_for_aged_member);
+    RUN_TEST(S06_NOHDG_neither_flag_for_live_member);
 
     RUN_TEST(S06_batt_low_boundary_at_threshold_is_low);
     RUN_TEST(S06_batt_low_boundary_one_above_threshold_is_not_low);

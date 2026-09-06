@@ -137,11 +137,31 @@ void ff_radar_compute(ff_radar_view_t *v, ff_radar_smooth_t *smooth, ff_crew_t *
         v->dist_str[0] = '\0';
         v->age_str[0] = '\0';
         v->trend = 0;
+        v->bearing_valid = false; /* 2026-09-05: no selection, no honest bearing either */
+        v->bearing_deg = 0.0f;
+        v->place = false;
+        v->stale = false;
         v->arrow_deg = smooth->smoothed_deg; /* frozen: nothing to smooth toward */
         return;
     }
 
     radar_copy_str(v->name, sizeof(v->name), member->name);
+
+    /* 2026-09-05 amendment: the selection's freshness, computed here —
+     * unconditionally, independent of my_pos_ok/heading_ok — and reduced
+     * into `place`/`stale` right away so RADAR_NOHDG's early return below
+     * still has an honest freshness verdict to render a rim tint from
+     * (see ff_radar.h's doc comment on this pair for the full
+     * rationale). `fresh` itself is reused verbatim by the ordinary
+     * LIVE/STALE/LOST/PLACE switch further down, rather than calling
+     * ff_crew_freshness twice for the same member/now_ms. Mirrors
+     * radar_compute_dots' identical reduction of the same enum for ring
+     * dots. ff_crew_freshness tolerates !member->has_pos (returns
+     * FF_FRESH_NEVER, reducing to place=false/stale=false), so this is
+     * safe before has_pos is even checked below. */
+    ff_freshness_t const fresh = ff_crew_freshness(member, now_ms);
+    v->place = (fresh == FF_FRESH_ASSERTED);
+    v->stale = !v->place && (fresh != FF_FRESH_LIVE);
 
     float distance_m = -1.0f; /* -1: unknown, matches ff_crew_close_range's convention */
     if (my_pos_ok && member->has_pos) {
@@ -200,17 +220,45 @@ void ff_radar_compute(ff_radar_view_t *v, ff_radar_smooth_t *smooth, ff_crew_t *
 
     v->trend = ff_crew_rssi_trend(crew, member->node_id, now_ms);
 
-    bool have_bearing = my_pos_ok && heading_ok && member->has_pos;
+    /* 2026-09-05 amendment: the absolute bearing needs only two known
+     * lat/lons — no heading at all — so it's computed independent of
+     * `heading_ok` (unlike `arrow_deg`/`arrow_valid` below, which need
+     * MY heading too to become a screen-relative rotation). This is what
+     * makes RADAR_NOHDG's "BEARING 180 deg . S" hint honest even though
+     * `arrow_valid` is false in that mode. */
+    bool bearing_known = my_pos_ok && member->has_pos;
+    v->bearing_valid = bearing_known;
+    v->bearing_deg = bearing_known ? ff_geo_bearing_deg(my_pos, member->pos) : 0.0f;
+
+    bool have_bearing = bearing_known && heading_ok;
     if (have_bearing) {
-        float bearing = ff_geo_bearing_deg(my_pos, member->pos);
-        float target = ff_geo_arrow_deg(bearing, heading_deg);
+        float target = ff_geo_arrow_deg(v->bearing_deg, heading_deg);
         v->arrow_deg = radar_smooth_step(smooth, target, now_ms);
     } else {
         v->arrow_deg = smooth->smoothed_deg; /* frozen */
     }
 
-    if (!my_pos_ok || !heading_ok) {
+    if (!my_pos_ok) {
+        /* The TRUE "nothing is known" case: MY position is unknown, so
+         * no distance/bearing/arrow is honestly computable at all,
+         * regardless of heading. See ff_radar.h's mode-resolution doc
+         * comment — this is the one and only NOFIX trigger now; the old
+         * "or heading invalid" half moved to RADAR_NOHDG immediately
+         * below. */
         v->mode = RADAR_NOFIX;
+        v->arrow_valid = false;
+        return;
+    }
+
+    if (!heading_ok) {
+        /* my_pos_ok is true here (the branch above already returned
+         * otherwise) — so distance/bearing to the selection ARE known
+         * whenever the member itself has a position. Only in that case
+         * is there something honest to show without an arrow (RADAR_NOHDG);
+         * with no member position either, there is nothing geometric at
+         * all to report, so this stays RADAR_NOFIX ("if !heading_ok but
+         * the member has no position, stay NOFIX" — S06 amendment). */
+        v->mode = member->has_pos ? RADAR_NOHDG : RADAR_NOFIX;
         v->arrow_valid = false;
         return;
     }
@@ -221,7 +269,6 @@ void ff_radar_compute(ff_radar_view_t *v, ff_radar_smooth_t *smooth, ff_crew_t *
         return;
     }
 
-    ff_freshness_t fresh = ff_crew_freshness(member, now_ms);
     switch (fresh) {
     case FF_FRESH_LIVE:
         v->mode = RADAR_LIVE;

@@ -99,6 +99,18 @@ void radar_layout_build_registry(radar_mode_t mode, bool never_fixed, radar_layo
     case RADAR_NOFIX:
         add_rect(out, -170.0f, RADAR_LAYOUT_NOFIX_HEADLINE_DY - 18.0f, 170.0f, RADAR_LAYOUT_NOFIX_CHIP_DY + 20.0f);
         break;
+    case RADAR_NOHDG:
+        /* 2026-09-05 amendment. No arrow is ever drawn in this mode
+         * (arrow_valid is always false — nothing for
+         * radar_layout_resolve_arrow to do) and radar_compute_dots
+         * forces n_dots to 0 whenever heading is invalid (ring dots are
+         * heading-relative, never north-up), so nothing in this render
+         * actually resolves against this rectangle today. Declared
+         * anyway, matching every other mode's registry entry, so a
+         * future addition to this mode's content is covered by
+         * construction rather than by someone remembering to add it. */
+        add_rect(out, -140.0f, RADAR_LAYOUT_NOHDG_CHIP_DY - 20.0f, 140.0f, RADAR_LAYOUT_NOHDG_HINT_DY + 20.0f);
+        break;
     case RADAR_NOSEL:
     default:
         add_rect(out, -170.0f, RADAR_LAYOUT_NOSEL_HEADLINE_DY - 18.0f, 170.0f, RADAR_LAYOUT_NOSEL_SUB_DY + 15.0f);

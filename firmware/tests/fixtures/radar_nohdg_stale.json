@@ -1,0 +1,21 @@
+{
+  "fixture": "radar_nohdg_stale",
+  "face": "radar",
+  "radar": {
+    "mode": "nohdg",
+    "arrow_deg": 0.0,
+    "arrow_valid": false,
+    "name": "TAYL",
+    "dist_str": "492 ft",
+    "age_str": "12 MIN",
+    "trend": 0,
+    "bearing_deg": 180.0,
+    "bearing_valid": true,
+    "place": false,
+    "stale": true,
+    "clock_str": "9:53",
+    "batt_pct": 78,
+    "mesh_ok": true,
+    "dots": []
+  }
+}
