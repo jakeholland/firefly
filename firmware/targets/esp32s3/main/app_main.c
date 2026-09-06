@@ -886,18 +886,18 @@ static char const *dbgconsole_i2c_known_name(uint8_t addr)
     return NULL;
 }
 
-/* Per-probe I2C timeout. This codebase's usual I2C timeout elsewhere
- * (ff_compass.c's FF_COMPASS_I2C_TIMEOUT_MS) is 20 ms, but a full 7-bit
- * sweep is 112 addresses (0x08..0x77 inclusive) — at 20 ms each, a bus
- * that is fully WEDGED (every probe times out rather than NACKing
- * quickly) would block this render-loop-polled command for up to
- * 112 * 20 ms = 2.24 s, an unacceptable frozen-glass stall for what is
- * supposed to be a cheap bench diagnostic. 5 ms keeps the worst case to
- * 112 * 5 ms = 560 ms — still a visible hitch on a wedged bus, but no
- * longer a multi-second freeze — while a healthy bus (every
- * unpopulated address NACKs near-instantly) never gets close to the
- * worst case at all. */
-#define FF_DBGCONSOLE_I2C_PROBE_TIMEOUT_MS 5
+/* Per-probe I2C timeout. IMPORTANT: at FreeRTOS CONFIG_FREERTOS_HZ=100 (one
+ * tick = 10 ms), a 5 ms timeout rounds DOWN to 0 ticks, causing i2c_master_probe
+ * to timeout immediately without probing. Use 20 ms (exactly 2 ticks at 100 Hz,
+ * the minimum for a reliable timeout). Never lower this again without checking
+ * the tick-rounding math: milliseconds to ticks = ceil(ms * HZ / 1000).
+ *
+ * Full 7-bit sweep is 112 addresses (0x08..0x77 inclusive). A bus that is fully
+ * WEDGED (every probe times out rather than NACKing quickly) would block this
+ * render-loop-polled command for up to 112 * 20 ms ≈ 2.2 s — acceptable for a
+ * bench diagnostic tool, while a healthy bus (unpopulated addresses NACK
+ * near-instantly) never approaches the worst case. */
+#define FF_DBGCONSOLE_I2C_PROBE_TIMEOUT_MS 20
 
 /* `ff_dbgconsole_i2c_scan_fn` (ff_debug_console.h): sweep 0x08..0x77 and
  * write the comma-separated "0xNN[ name]" list into `out`. Returns 0 on
