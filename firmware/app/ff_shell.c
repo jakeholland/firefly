@@ -3044,6 +3044,13 @@ int ff_shell_init(ff_shell_t *sh_pub, ff_shell_cfg_t const *cfg)
 
     mc_events_t const ev = ff_shell_events(sh_pub);
     mc_init(&sh->mc, cfg->transport, ev, sh->clock);
+    /* fix/meshclient-packet-id-seed — give this boot's outgoing packet
+     * ids a distinct starting point (see ff_shell_cfg_t.packet_id_seed
+     * and mc_seed_packet_ids()'s doc comment). Unconditional: 0 (an
+     * unset field, e.g. every test that doesn't set it) is treated as 1
+     * by mc_seed_packet_ids() itself — the same default mc_init() above
+     * already left in place. */
+    mc_seed_packet_ids(&sh->mc, cfg->packet_id_seed);
 
     /* Feed pushes go through ff_wiring, which already owns the
      * crew-paired-sender filter, the heard-note on a miss and the feed

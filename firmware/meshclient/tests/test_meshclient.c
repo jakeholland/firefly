@@ -714,6 +714,197 @@ static void S03_want_ack_mc_send_private_false_leaves_meshpacket_want_ack_unset(
 }
 
 /* -------------------------------------------------------------------- */
+/* fix/meshclient-packet-id-seed — outgoing packet-id generator          */
+/* -------------------------------------------------------------------- */
+
+/* Decode one outbound ToRadio frame starting at byte offset `*offset` of
+ * `io->tx_buf` (io->tx_buf accumulates every frame a test's mc_send_*
+ * calls have written, back to back — mock_write() appends, never
+ * overwrites), return its MeshPacket.id, and advance `*offset` past the
+ * frame so a caller can walk several sends in one test without resetting
+ * the mock transport between them. Same magic+len framing decode_tx_
+ * want_ack already uses, generalized to a cursor. */
+static uint32_t decode_tx_packet_id_advance(mock_io_t const *io, size_t *offset)
+{
+    size_t off = *offset;
+    TEST_ASSERT_GREATER_OR_EQUAL_size_t(off + 4u, io->tx_len);
+    TEST_ASSERT_EQUAL_HEX8(MC_FRAME_MAGIC1, io->tx_buf[off]);
+    TEST_ASSERT_EQUAL_HEX8(MC_FRAME_MAGIC2, io->tx_buf[off + 1]);
+    uint16_t flen = (uint16_t)((io->tx_buf[off + 2] << 8) | io->tx_buf[off + 3]);
+    TEST_ASSERT_LESS_OR_EQUAL_size_t(io->tx_len - off - 4u, flen);
+
+    meshtastic_ToRadio tr = meshtastic_ToRadio_init_zero;
+    pb_istream_t is = pb_istream_from_buffer(io->tx_buf + off + 4, flen);
+    TEST_ASSERT_TRUE(pb_decode(&is, meshtastic_ToRadio_fields, &tr));
+    TEST_ASSERT_EQUAL_INT(meshtastic_ToRadio_packet_tag, tr.which_payload_variant);
+
+    *offset = off + 4u + (size_t)flen;
+    return tr.payload_variant.packet.id;
+}
+
+/* Not calling mc_seed_packet_ids() at all must reproduce the exact
+ * pre-fix sequence (1, 2, 3, ...) — every pre-existing test, including
+ * the AC4 byte-golden fixture, relies on this. This is the compatibility
+ * half of the fix: the new API is opt-in. */
+static void S03_packet_id_unseeded_matches_legacy_sequence(void)
+{
+    mock_io_t io;
+    mock_io_reset(&io);
+    mock_clock_t clk = {.t = 0};
+    ff_clock_t clock = {.now_ms = mock_now, .user = &clk};
+    events_capture_t cap;
+    memset(&cap, 0, sizeof(cap));
+
+    mc_client_t c;
+    mc_init(&c, (mc_transport_t){.write = mock_write, .read = mock_read, .io = &io}, make_events(&cap), &clock);
+    c.state = MC_STATE_READY;
+
+    TEST_ASSERT_EQUAL_INT(0, mc_send_text(&c, MC_ADDR_BROADCAST, "a"));
+    TEST_ASSERT_EQUAL_INT(0, mc_send_text(&c, MC_ADDR_BROADCAST, "b"));
+    TEST_ASSERT_EQUAL_INT(0, mc_send_text(&c, MC_ADDR_BROADCAST, "c"));
+
+    size_t off = 0;
+    TEST_ASSERT_EQUAL_UINT32(1u, decode_tx_packet_id_advance(&io, &off));
+    TEST_ASSERT_EQUAL_UINT32(2u, decode_tx_packet_id_advance(&io, &off));
+    TEST_ASSERT_EQUAL_UINT32(3u, decode_tx_packet_id_advance(&io, &off));
+}
+
+/* Calling mc_seed_packet_ids() moves the starting point: ids start at the
+ * seed and increment by 1 per send, and the counter is shared across
+ * mc_send_text/mc_send_private (the S04 firefly-protocol path) — this is
+ * the "every sender path goes through one generator" audit the task
+ * calls for, proven by observation rather than by reading the source. */
+static void S03_packet_id_seed_sets_starting_point_and_increments(void)
+{
+    mock_io_t io;
+    mock_io_reset(&io);
+    mock_clock_t clk = {.t = 0};
+    ff_clock_t clock = {.now_ms = mock_now, .user = &clk};
+    events_capture_t cap;
+    memset(&cap, 0, sizeof(cap));
+
+    mc_client_t c;
+    mc_init(&c, (mc_transport_t){.write = mock_write, .read = mock_read, .io = &io}, make_events(&cap), &clock);
+    mc_seed_packet_ids(&c, 1000u);
+    c.state = MC_STATE_READY;
+
+    uint8_t const payload[2] = {0xAB, 0xCD};
+    TEST_ASSERT_EQUAL_INT(0, mc_send_text(&c, MC_ADDR_BROADCAST, "hi"));
+    TEST_ASSERT_EQUAL_INT(0, mc_send_private(&c, MC_ADDR_BROADCAST, 269u, payload, sizeof(payload), false));
+    TEST_ASSERT_EQUAL_INT(0, mc_send_text(&c, MC_ADDR_BROADCAST, "again"));
+
+    size_t off = 0;
+    TEST_ASSERT_EQUAL_UINT32(1000u, decode_tx_packet_id_advance(&io, &off));
+    TEST_ASSERT_EQUAL_UINT32(1001u, decode_tx_packet_id_advance(&io, &off));
+    TEST_ASSERT_EQUAL_UINT32(1002u, decode_tx_packet_id_advance(&io, &off));
+}
+
+/* 0 is never a valid Meshtastic packet id (the wire's "unset" sentinel),
+ * so a counter that wraps past UINT32_MAX must skip straight to 1
+ * instead of handing a caller id 0. Also proves seeding with 0 itself is
+ * treated as 1, same as mc_init()'s own default. */
+static void S03_packet_id_skips_zero_on_wrap_and_on_zero_seed(void)
+{
+    /* Wrap case: seed at UINT32_MAX, first id is UINT32_MAX itself
+     * (a seed is a legitimate id, not something to be skipped), second
+     * id is 1, not 0. */
+    {
+        mock_io_t io;
+        mock_io_reset(&io);
+        mock_clock_t clk = {.t = 0};
+        ff_clock_t clock = {.now_ms = mock_now, .user = &clk};
+        events_capture_t cap;
+        memset(&cap, 0, sizeof(cap));
+
+        mc_client_t c;
+        mc_init(&c, (mc_transport_t){.write = mock_write, .read = mock_read, .io = &io}, make_events(&cap),
+                &clock);
+        mc_seed_packet_ids(&c, 0xFFFFFFFFu);
+        c.state = MC_STATE_READY;
+
+        TEST_ASSERT_EQUAL_INT(0, mc_send_text(&c, MC_ADDR_BROADCAST, "x"));
+        TEST_ASSERT_EQUAL_INT(0, mc_send_text(&c, MC_ADDR_BROADCAST, "y"));
+
+        size_t off = 0;
+        TEST_ASSERT_EQUAL_UINT32(0xFFFFFFFFu, decode_tx_packet_id_advance(&io, &off));
+        TEST_ASSERT_EQUAL_UINT32(1u, decode_tx_packet_id_advance(&io, &off));
+    }
+
+    /* Zero-seed case: mc_seed_packet_ids(c, 0) behaves exactly like never
+     * calling it — starts at 1 — rather than handing out id 0. */
+    {
+        mock_io_t io;
+        mock_io_reset(&io);
+        mock_clock_t clk = {.t = 0};
+        ff_clock_t clock = {.now_ms = mock_now, .user = &clk};
+        events_capture_t cap;
+        memset(&cap, 0, sizeof(cap));
+
+        mc_client_t c;
+        mc_init(&c, (mc_transport_t){.write = mock_write, .read = mock_read, .io = &io}, make_events(&cap),
+                &clock);
+        mc_seed_packet_ids(&c, 0u);
+        c.state = MC_STATE_READY;
+
+        TEST_ASSERT_EQUAL_INT(0, mc_send_text(&c, MC_ADDR_BROADCAST, "z"));
+
+        size_t off = 0;
+        TEST_ASSERT_EQUAL_UINT32(1u, decode_tx_packet_id_advance(&io, &off));
+    }
+}
+
+/* The actual regression this fix closes: two client "lifetimes" (e.g. two
+ * boots of the same puck) that mc_init() alone would both start at
+ * packet id 1 — a real collision in the mesh router's (from, id) history,
+ * per the bench log in this fix's PR body — produce disjoint ids once
+ * each lifetime is seeded distinctly (standing in here for "the platform
+ * picked a different random seed each boot"). Fails to even compile
+ * against pre-fix mc_client.h/.c (no mc_seed_packet_ids()); restoring the
+ * old two-line mc_client.c (bare `c->next_packet_id++`, no
+ * mc_seed_packet_ids()) and hand-adapting this test to call it directly
+ * on next_packet_id would still fail the wrap/zero assertions above —
+ * see the fix's PR body for the revert-and-rerun proof. */
+static void S03_packet_id_different_seeds_produce_disjoint_ids(void)
+{
+    mock_io_t io_a, io_b;
+    mock_io_reset(&io_a);
+    mock_io_reset(&io_b);
+    mock_clock_t clk = {.t = 0};
+    ff_clock_t clock = {.now_ms = mock_now, .user = &clk};
+    events_capture_t cap_a, cap_b;
+    memset(&cap_a, 0, sizeof(cap_a));
+    memset(&cap_b, 0, sizeof(cap_b));
+
+    mc_client_t a, b;
+    mc_init(&a, (mc_transport_t){.write = mock_write, .read = mock_read, .io = &io_a}, make_events(&cap_a),
+            &clock);
+    mc_seed_packet_ids(&a, 0x10000000u);
+    a.state = MC_STATE_READY;
+
+    mc_init(&b, (mc_transport_t){.write = mock_write, .read = mock_read, .io = &io_b}, make_events(&cap_b),
+            &clock);
+    mc_seed_packet_ids(&b, 0x80000000u);
+    b.state = MC_STATE_READY;
+
+    uint32_t ids_a[3], ids_b[3];
+    for (int i = 0; i < 3; i++) {
+        TEST_ASSERT_EQUAL_INT(0, mc_send_text(&a, MC_ADDR_BROADCAST, "a"));
+        TEST_ASSERT_EQUAL_INT(0, mc_send_text(&b, MC_ADDR_BROADCAST, "b"));
+    }
+    size_t off_a = 0, off_b = 0;
+    for (int i = 0; i < 3; i++) {
+        ids_a[i] = decode_tx_packet_id_advance(&io_a, &off_a);
+        ids_b[i] = decode_tx_packet_id_advance(&io_b, &off_b);
+    }
+
+    for (int i = 0; i < 3; i++) {
+        for (int j = 0; j < 3; j++) {
+            TEST_ASSERT_FALSE(ids_a[i] == ids_b[j]);
+        }
+    }
+}
+
+/* -------------------------------------------------------------------- */
 /* AC5 — private portnum passthrough                                    */
 /* -------------------------------------------------------------------- */
 
@@ -2470,6 +2661,11 @@ int main(void)
     RUN_TEST(S03_AC4_send_text_matches_byte_golden);
     RUN_TEST(S03_want_ack_mc_send_private_true_sets_meshpacket_want_ack);
     RUN_TEST(S03_want_ack_mc_send_private_false_leaves_meshpacket_want_ack_unset);
+
+    RUN_TEST(S03_packet_id_unseeded_matches_legacy_sequence);
+    RUN_TEST(S03_packet_id_seed_sets_starting_point_and_increments);
+    RUN_TEST(S03_packet_id_skips_zero_on_wrap_and_on_zero_seed);
+    RUN_TEST(S03_packet_id_different_seeds_produce_disjoint_ids);
 
     RUN_TEST(S03_AC5_on_private_fires_for_portnum_256_511_untouched);
     RUN_TEST(S03_AC5_private_portnum_boundary_255_is_not_private);

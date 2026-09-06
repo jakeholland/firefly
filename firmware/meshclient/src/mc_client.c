@@ -39,6 +39,23 @@ static uint32_t mc_rand_next(mc_client_t *c)
     return x;
 }
 
+/* Hands out the next outgoing packet id and advances the counter,
+ * skipping 0 on wrap: 0 is never a valid Meshtastic packet id (see
+ * mc_seed_packet_ids()'s doc comment), so a counter that wraps past
+ * UINT32_MAX must land on 1, not 0, for the *next* call — the id
+ * returned by *this* call (the pre-increment value) is unaffected, so a
+ * client seeded at UINT32_MAX still legitimately hands out UINT32_MAX
+ * once. */
+static uint32_t mc_next_packet_id(mc_client_t *c)
+{
+    uint32_t id = c->next_packet_id;
+    c->next_packet_id++;
+    if (c->next_packet_id == 0u) {
+        c->next_packet_id = 1u;
+    }
+    return id;
+}
+
 static void mc_copy_name(char *dst, char const *src)
 {
     /* src is nanopb's static char[MC_NAME_MAX] field (see
@@ -492,6 +509,14 @@ void mc_init(mc_client_t *c, mc_transport_t t, mc_events_t ev, ff_clock_t const 
     c->last_rx_ms = now;
 }
 
+void mc_seed_packet_ids(mc_client_t *c, uint32_t seed)
+{
+    /* 0 is never a valid Meshtastic packet id (the "unset" convention —
+     * see MC_ADDR_UNKNOWN's doc comment), so a caller passing 0 gets the
+     * same starting point mc_init() already defaults to: 1. */
+    c->next_packet_id = (seed != 0u) ? seed : 1u;
+}
+
 void mc_connect(mc_client_t *c)
 {
     mc_begin_handshake(c, mc_now(c));
@@ -601,7 +626,7 @@ static int mc_send_data_packet(mc_client_t *c, uint32_t dest, uint32_t portnum, 
     tr.which_payload_variant = meshtastic_ToRadio_packet_tag;
 
     meshtastic_MeshPacket *pkt = &tr.payload_variant.packet;
-    pkt->id = c->next_packet_id++;
+    pkt->id = mc_next_packet_id(c);
     pkt->to = dest;
     pkt->want_ack = want_ack;
     if (c->has_my_node_id) {

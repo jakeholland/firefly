@@ -135,6 +135,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h> /* fix/meshclient-packet-id-seed — time(NULL) mixed into the default packet-id seed */
 #include <unistd.h>
 
 #include <SDL.h>
@@ -351,7 +352,7 @@ static int ff_run_headless_once(const char *screenshot_dir, const char *fixture_
  * a process exit — see sim_lifecycle.h's interpretation-call note.
  */
 static int ff_run_window(const char *fixture_path, bool mock_clock, const char *connect_hostport,
-                          const char *pack_path, bool dev_trust_all)
+                          const char *pack_path, bool dev_trust_all, uint32_t packet_id_seed)
 {
     lv_init();
 
@@ -406,6 +407,7 @@ static int ff_run_window(const char *fixture_path, bool mock_clock, const char *
         shell_cfg.ntoks = FP_MAX_TOKENS;
         shell_cfg.play_sound = ff_win_play_sound_cb; /* S27 sounds — stderr log */
         shell_cfg.play_sound_user = NULL;
+        shell_cfg.packet_id_seed = packet_id_seed; /* fix/meshclient-packet-id-seed */
 
         ff_live_setup_cfg_t live_cfg = {
             .connect_hostport = connect_hostport,
@@ -542,6 +544,7 @@ int main(int argc, char **argv)
     const char *connect_hostport = NULL;
     const char *pack_path = NULL;
     const char *ctl_out_arg = NULL;
+    const char *packet_id_seed_str = NULL;
     bool dev_trust_all = false;
     bool demo = false;
 
@@ -566,7 +569,34 @@ int main(int argc, char **argv)
             dev_trust_all = true; /* sim-only by construction — see live_setup.c */
         } else if (strcmp(argv[i], "--demo") == 0) {
             demo = true; /* S20 — seed the fictional Firefly Fields world, no mesh */
+        } else if (strcmp(argv[i], "--packet-id-seed") == 0 && i + 1 < argc) {
+            /* fix/meshclient-packet-id-seed — deterministic override for
+             * tests/scripting; see ff_shell_cfg_t.packet_id_seed. */
+            packet_id_seed_str = argv[++i];
         }
+    }
+
+    /* fix/meshclient-packet-id-seed — ff_shell_cfg_t.packet_id_seed for
+     * whichever shell this run constructs below. Explicit
+     * --packet-id-seed wins (scripts/tests want a fixed, reproducible
+     * sequence — passing 1 reproduces mc_init()'s own legacy default).
+     * Otherwise mix wall time and pid, so two ffsim runs started close
+     * together — standing in for two boots of the same puck — don't
+     * restart the outgoing packet-id counter at the same value and
+     * collide in the mesh router's (from, id) history (see
+     * mc_seed_packet_ids()'s doc comment for the full story). */
+    uint32_t packet_id_seed;
+    if (packet_id_seed_str != NULL) {
+        char *end = NULL;
+        unsigned long v = strtoul(packet_id_seed_str, &end, 10);
+        if (end == packet_id_seed_str || *end != '\0') {
+            fprintf(stderr, "ffsim: --packet-id-seed expects an unsigned integer, got \"%s\"\n",
+                    packet_id_seed_str);
+            return 1;
+        }
+        packet_id_seed = (uint32_t)v;
+    } else {
+        packet_id_seed = (uint32_t)time(NULL) ^ ((uint32_t)getpid() * 2654435761u);
     }
 
     printf("ffsim: %s\n", ff_version_string());
@@ -590,6 +620,7 @@ int main(int argc, char **argv)
         ff_shell_cfg_t shell_cfg;
         memset(&shell_cfg, 0, sizeof(shell_cfg));
         shell_cfg.store = NULL; /* settings persistence is S16 slice e */
+        shell_cfg.packet_id_seed = packet_id_seed; /* fix/meshclient-packet-id-seed */
 
         ff_ctl_loop_cfg_t loop_cfg = {
             .fixture_path = fixture_path,
@@ -680,5 +711,5 @@ int main(int argc, char **argv)
         return ff_run_headless_once(screenshot_dir, fixture_path);
     }
 
-    return ff_run_window(fixture_path, mock_clock, connect_hostport, pack_path, dev_trust_all);
+    return ff_run_window(fixture_path, mock_clock, connect_hostport, pack_path, dev_trust_all, packet_id_seed);
 }

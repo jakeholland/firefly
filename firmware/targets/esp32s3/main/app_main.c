@@ -41,6 +41,7 @@
 #include "driver/usb_serial_jtag.h" /* S26 slice f amendment — usb_serial_jtag_is_connected(), sleep-inhibit sample */
 #include "esp_err.h" /* esp_err_to_name() — S26 slice g's boot-splash failure log */
 #include "esp_log.h"
+#include "esp_random.h" /* fix/meshclient-packet-id-seed — esp_random() for the outgoing packet-id seed */
 #include "esp_sleep.h"  /* S26 slice f — esp_light_sleep_start() + wake-source config */
 #include "esp_system.h" /* esp_restart() — S26 slice b's reboot action */
 #include "esp_timer.h"
@@ -1064,6 +1065,19 @@ void app_main(void)
     memset(&cfg, 0, sizeof(cfg));
     cfg.clock = &s_clock;
     cfg.store = &s_store;
+    /* fix/meshclient-packet-id-seed — a fresh random start for this
+     * boot's outgoing Meshtastic packet ids (ff_shell_cfg_t.
+     * packet_id_seed doc comment / mc_seed_packet_ids()'s doc comment
+     * have the full story: without this, every reboot's mc_init()
+     * restarted the counter at 1, and the mesh router silently dropped a
+     * repeat-id packet as "already seen recently"). Only esp_random()'s
+     * 32 bits go in — the node's own id (my_node_id) isn't known yet at
+     * this point in boot, it only arrives later via on_my_info, well
+     * after the first send may need to happen. That's fine: a uniformly
+     * random 32-bit start makes a collision with any prior boot's ids
+     * negligible against the router's ~10-minute (from, id) history
+     * window, without needing the node id at all. */
+    cfg.packet_id_seed = esp_random();
     /* S21 §3 — the touch-calibration hook the Settings CALIBRATE TOUCH row
      * drives through FF_INTENT_CALIBRATE_TOUCH. */
     cfg.calibrate_touch = ff_calibrate_touch_cb;

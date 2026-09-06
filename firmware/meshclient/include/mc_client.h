@@ -499,8 +499,49 @@ typedef struct mc_client {
 
 /** Initialize a freshly-allocated client. Does not touch the transport or
  * start the handshake — call mc_connect() for that. Safe to call again to
- * fully reset a client (equivalent to a fresh mc_client_t). */
+ * fully reset a client (equivalent to a fresh mc_client_t).
+ *
+ * mc_init() itself always leaves the outgoing packet-id counter
+ * (`next_packet_id`) at the legacy default of 1 — see mc_seed_packet_ids()
+ * below for why a real caller should override that before the first
+ * send. */
 void mc_init(mc_client_t *c, mc_transport_t t, mc_events_t ev, ff_clock_t const *clock);
+
+/**
+ * Seed the outgoing packet-id generator (`next_packet_id`).
+ *
+ * Meshtastic's router keeps a short packet history keyed on (from, id)
+ * and silently drops a repeat as "already seen recently". mc_init()
+ * always starts `next_packet_id` at 1, so two client lifetimes that both
+ * start there (e.g. this device rebooting) collide on every id until the
+ * higher of the two sessions' send counts is exceeded — DMs and
+ * broadcasts vanish with no error, only a log line on the *receiving*
+ * node. Calling this once, any time after mc_init() and before the first
+ * mc_send_text()/mc_send_private()/mc_send_position(), gives each
+ * lifetime a distinct starting point so ids from a fresh boot don't
+ * retread ids a previous boot already used within the router's history
+ * window.
+ *
+ * meshclient stays pure C11 with no RNG dependency of its own — the seed
+ * is the caller's platform's problem: mix time and pid for a desktop/sim
+ * build (or pass a fixed value for deterministic tests — 1 reproduces
+ * mc_init()'s own default, i.e. the pre-this-function sequence), or
+ * `esp_random()` on the ESP32-S3 device build. A 32-bit random start
+ * makes an id collision with a prior session's ids negligible next to
+ * the router's ~10-minute history window; the device can't additionally
+ * mix in its own node id at this point because `my_node_id` only arrives
+ * later, via `on_my_info`, well after the first packet may need to send.
+ *
+ * ids assigned by mc_send_data_packet() start at `seed`, then increment
+ * by 1 per outgoing packet (mc_send_text/mc_send_private/mc_send_position
+ * all share the one counter). 0 is never a valid Meshtastic packet id
+ * (same "unset" convention as MC_ADDR_UNKNOWN), so `seed == 0` is treated
+ * as 1, and the counter skips 0 when it wraps past UINT32_MAX rather than
+ * handing out 0 as a real id.
+ *
+ * Not calling this at all is equivalent to seeding with 1 — mc_init()'s
+ * own default — which is what every existing test relies on. */
+void mc_seed_packet_ids(mc_client_t *c, uint32_t seed);
 
 /** Pump read/parse/heartbeat/reconnect. Call at ~50 Hz (every ~20ms).
  * Bounded: dispatches at most MC_TICK_MAX_FRAMES frames per call (see its
