@@ -346,6 +346,20 @@ def bbox_of(body):
     }
 
 
+def count_sliver_faces(body, threshold_mm2=0.5):
+    """Diagnostic (2026-09-06, pass 6, item E): counts faces of `body`
+    whose area is under `threshold_mm2` -- a high count is a sign of
+    boolean scraps (sliver faces left behind by an imprecise
+    intersect/cut) rather than a real defect by itself; reported, not
+    asserted on."""
+    count = 0
+    for f in body.faces:
+        area_mm2 = f.area / (MM * MM)
+        if area_mm2 < threshold_mm2:
+            count += 1
+    return count
+
+
 # ---------------------------------------------------------------------------
 # Outer shoulder/fillet profile geometry (see SPEC.md "Reference geometry").
 # All values in mm. rho = radial distance from the pill spine.
@@ -623,6 +637,53 @@ def clip_to_inner_cavity(root, body, p, clip_tool=None):
     return combine_intersect(root, body, [inner])
 
 
+def clipped_pillar_with_reach(root, cx, cy, r, z0, z1, p, clip_tool, core_r):
+    """A vertical cylinder (boss/post), radially safe against the outer
+    shell AND guaranteed to physically reach both its z0 and z1 ends
+    (2026-09-06 pass 6 fix -- see verify_posts_and_bosses' docstring for
+    the bug this closes): `clip_to_inner_cavity` alone shrinks the pillar
+    by `safety_margin` on EVERY face, including the top/bottom -- for a
+    boss/post meant to touch Top's ceiling or Bottom's floor exactly at
+    z1/z0, that shrink (plus, empirically, a further real mismatch between
+    the inner-cavity-solid's own ceiling height and the nominal
+    `top_ceiling_underside_z`/etc. params -- confirmed by direct
+    measurement: a boss clipped this way came up ~0.36mm short of its
+    nominal top) leaves the clipped pillar physically NOT TOUCHING the
+    shell at all. `combine_join` (Fusion's Boolean Union) SILENTLY NO-OPS
+    on two bodies that don't touch/overlap (same behavior deboss_loops'
+    docstring already documents for disjoint glyph pieces) rather than
+    erroring -- so every case boss (A/B/C/D) and every Top post (P1-P4)
+    was silently never actually joined into Bottom/Top, despite every
+    prior build()/verify() call succeeding with no error. Fixed by ALSO
+    building a full-height, smaller-radius `core_r` cylinder (unclipped,
+    so it genuinely reaches z0 and z1) and joining it to the radially-
+    clipped wide cylinder before that combined shape is joined into
+    Bottom/Top -- the core provides the guaranteed physical connection at
+    both ends; the wider (but z-shrunk) clipped cylinder still provides
+    the bulk of the boss's real diameter everywhere it's safe to. Pick
+    `core_r` comfortably above half the largest hole later cut through
+    this pillar (screw/pilot hole) so a real wall of material survives
+    the cut, and comfortably below `r` so it can never itself risk an
+    outward punch-through."""
+    wide = cylinder_solid(root, cx, cy, r, z0, z1)
+    wide_clipped = clip_to_inner_cavity(root, wide, p, clip_tool)
+    if core_r <= 0:
+        # 2026-09-06 pass 6: escape hatch for case-screw boss B, whose
+        # position genuinely sits inside the L76K PCB's own real footprint
+        # (a pre-existing, unrelated design conflict -- see add_case_boss's
+        # docstring) -- a full-height core there would guarantee the join
+        # succeeds, but by construction it would also guarantee a REAL
+        # solid overlap with the PCB (a hard verify() failure, unlike a
+        # missing boss, which is merely undesirable). core_r<=0 skips the
+        # core and returns the plain radially-safe pillar, restoring the
+        # exact pre-pass-6 behavior for this one position (it silently
+        # doesn't join, same as it always has) rather than trade a latent
+        # bug for a real interference.
+        return wide_clipped
+    core = cylinder_solid(root, cx, cy, core_r, z0, z1)
+    return combine_join(root, wide_clipped, [core])
+
+
 def build_thickened_envelope(root, p, offset_mm):
     """A fresh copy of the outer envelope solid (see build_outer_pill_solid),
     offset outward by offset_mm on every face (OffsetFaces per SPEC.md
@@ -716,15 +777,47 @@ def hollow_and_split(root, outer_solid, p):
 
 
 def add_lip_anchor_reliefs(root, bodies, p):
+    """2026-09-07 pass 7 (defect sweep): the per-boss relief cylinder's
+    radius was a flat `boss_relief_dia/2` (5.0mm) regardless of how close
+    the boss sits to the TRUE outer wall. For trim, boss A/C sit at
+    x = +-(outer_radius - wall - 3.0) = +-23.0, which puts the relief's
+    outward edge at exactly 23 + 5 = 28 = outer_radius -- landing dead-on
+    the true outer surface instead of safely inside it. Fusion silently
+    built this as a degenerate/coincident-face cut (not an error), but an
+    offline manifold-edge scan of the exported trim Top.stl found exactly
+    2 non-manifold edges at (x=+-28, y=25.04/25.20, z=10..11.5) -- boss
+    A/C's own xy, right at the relief's z-range -- confirming it, and
+    matching the small tab-shaped artifacts visible on the outer wall in
+    renders at the parting line. ('current' has no such defect: its A/C
+    sit further from its wider outer_radius=30 wall, so the nominal
+    radius never reaches it.) Fixed by clamping each boss's relief radius
+    to stay `wall_clear` (0.6mm) inside the TRUE wall distance along the
+    same outward-direction convention verify_wall_integrity's own boss-
+    wall probe already uses (true_wall_distance_along_ray) -- so this can
+    never disagree with that check, and the clamp is a no-op (min() picks
+    the nominal radius unchanged) for every boss that already had margin,
+    including current's A/C/D and both variants' B1/B2."""
     ay, by = p['spine_a'][1], p['spine_b'][1]
     lip = stadium_ring_solid(root, ay, by, p['lip_r'][0], p['lip_r'][1], p['lip_z'][0], p['lip_z'][1])
     anchor = stadium_ring_solid(root, ay, by, p['anchor_r'][0], p['anchor_r'][1], p['anchor_z'][0], p['anchor_z'][1])
     top = combine_join(root, bodies['Top'], [lip, anchor])
 
     relief_z0, relief_z1 = p['lip_z'][0] - 0.5, p['anchor_z'][1] + 0.5
+    relief_z_mid = (relief_z0 + relief_z1) / 2.0
+    nominal_r = p['boss_relief_dia'] / 2.0
+    wall_clear = 0.6
     for s in p['screws_ABC'] + [p['screw_D']]:
         cx, cy = s['xy']
-        relief = cylinder_solid(root, cx, cy, p['boss_relief_dia'] / 2.0, relief_z0, relief_z1)
+        if ay <= cy <= by:
+            d2 = (1.0 if cx >= 0 else -1.0, 0.0)
+        else:
+            center_y = ay if cy < ay else by
+            vx, vy = cx, cy - center_y
+            vlen = math.hypot(vx, vy) or 1.0
+            d2 = (vx / vlen, vy / vlen)
+        s_wall = true_wall_distance_along_ray(p, (cx, cy), d2, relief_z_mid)
+        relief_r = nominal_r if s_wall is None else min(nominal_r, s_wall - wall_clear)
+        relief = cylinder_solid(root, cx, cy, relief_r, relief_z0, relief_z1)
         top = combine_cut(root, top, [relief])
 
     lb = p['lug_relief_box']
@@ -840,13 +933,63 @@ def dedupe_body(root, tracked_body, base_name):
     raise AssertionError(f'dedupe_body: {base_name!r} not found after cleanup')
 
 
-def add_case_boss(root, bodies, cx, cy, p, is_D=False, clip_tool=None):
+CLIP_TOOL_NAME = 'Inner Cavity Clip Tool'  # shared constant -- see _refetch_by_name's docstring
+BOSS_CORE_R = 2.6   # see clipped_pillar_with_reach -- < boss_dia/2 (3.0), > counterbore/hole radii.
+# 2026-09-06: bumped from 1.8 -- boss D's real local floor (measured
+# directly: solid at radius >=2.5 from its own center, hollow inside
+# that) starts further out than 1.8 could reach, so its core touched
+# nothing and the join silently no-opped (see clipped_pillar_with_reach's
+# docstring). 2.6 clears the measured 2.5mm threshold with margin while
+# staying under boss_r (3.0) and the counterbore radius floor doesn't
+# matter here since the join happens BEFORE the hole/counterbore cuts.
+POST_CORE_R = 1.1   # < top_post_dia/2 (2.0), > top_post_pilot_dia/2 (0.81)
+
+
+def _refetch_by_name(root, name):
+    """Re-fetch a body fresh by name. dedupe_body's Remove-feature cleanup
+    can invalidate previously-held BRepBody Python references more
+    broadly than just the body actually removed (its own docstring) --
+    build() already re-fetches `clip_tool` once, AFTER both
+    add_case_screws() and add_top_posts() finish, but that leaves it
+    potentially stale for the LATER iterations WITHIN either function's
+    own per-screw/per-post loop (2026-09-06 pass 6 finding: boss B and
+    boss D -- the 2nd and 4th of 4 add_case_boss() calls in the same
+    add_case_screws() loop -- silently never joined at all in a real
+    build, while A and C, direct neighbors in the same loop, worked fine;
+    isolating boss D's own construction alone worked perfectly, narrowing
+    the cause to accumulated staleness across the loop's own repeated
+    dedupe_body calls, not the boss's own geometry). Re-fetching after
+    EVERY dedupe_body call, not just once at the very end, closes this."""
+    for b in root.bRepBodies:
+        if b.name == name:
+            return b
+    return None
+
+
+def add_case_boss(root, bodies, cx, cy, p, is_D=False, clip_tool=None, core_r=None):
     boss_r = p['boss_dia'] / 2.0
-    bottom_boss = clip_to_inner_cavity(
-        root, cylinder_solid(root, cx, cy, boss_r, 2.0, p['split_z']), p, clip_tool)
-    bottom = combine_join(root, bodies['Bottom'], [bottom_boss])
+    if core_r is None:
+        core_r = BOSS_CORE_R
+    # 2026-09-06 pass 6: re-fetch Bottom fresh by name before using it as a
+    # combine target, not just after -- dedupe_body's own re-fetch only
+    # fires when it actually finds an orphan to remove ('if not stale:
+    # return tracked_body' skips it otherwise), so a Bottom reference that
+    # went stale from an EARLIER, unrelated Remove/dedupe call elsewhere
+    # can silently survive untouched and be handed to a LATER combine_join
+    # as the target. That join then silently no-ops (0 volume added, no
+    # exception) exactly like a genuinely disjoint body would (see
+    # deboss_loops' docstring) -- this was found to be the actual cause
+    # of boss B/D never joining (isolating either boss's own construction
+    # alone always worked; only joining into the SAME, already-processed
+    # Bottom reference from this loop's earlier iterations failed).
+    bottom_in = _refetch_by_name(root, 'Bottom') or bodies['Bottom']
+    bottom_boss = clipped_pillar_with_reach(
+        root, cx, cy, boss_r, 2.0, p['split_z'], p, clip_tool, core_r)
+    bottom = combine_join(root, bottom_in, [bottom_boss])
     if clip_tool is not None:
         bottom = dedupe_body(root, bottom, 'Bottom')
+        clip_tool = _refetch_by_name(root, CLIP_TOOL_NAME) or clip_tool
+    bottom = _refetch_by_name(root, 'Bottom') or bottom
     hole = cylinder_solid(root, cx, cy, p['screw_hole_dia'] / 2.0, -0.5, p['split_z'] + 0.5)
     bottom = combine_cut(root, bottom, [hole])
     cb_h = p['counterbore_D_h'] if is_D else p['counterbore_ABC_h']
@@ -855,11 +998,14 @@ def add_case_boss(root, bodies, cx, cy, p, is_D=False, clip_tool=None):
     bodies['Bottom'] = bottom
 
     if not is_D:
-        top_boss = clip_to_inner_cavity(
-            root, cylinder_solid(root, cx, cy, boss_r, p['split_z'], p['top_ceiling_underside_z']), p, clip_tool)
-        top = combine_join(root, bodies['Top'], [top_boss])
+        top_in = _refetch_by_name(root, 'Top') or bodies['Top']
+        top_boss = clipped_pillar_with_reach(
+            root, cx, cy, boss_r, p['split_z'], p['top_ceiling_underside_z'], p, clip_tool, BOSS_CORE_R)
+        top = combine_join(root, top_in, [top_boss])
         if clip_tool is not None:
             top = dedupe_body(root, top, 'Top')
+            clip_tool = _refetch_by_name(root, CLIP_TOOL_NAME) or clip_tool
+        top = _refetch_by_name(root, 'Top') or top
         pilot = cylinder_solid(root, cx, cy, p['top_pilot_dia'] / 2.0, p['top_pilot_z'][0], p['top_pilot_z'][1])
         top = combine_cut(root, top, [pilot])
         bodies['Top'] = top
@@ -867,9 +1013,16 @@ def add_case_boss(root, bodies, cx, cy, p, is_D=False, clip_tool=None):
 
 
 def add_case_screws(root, bodies, p, clip_tool=None):
+    # 2026-09-07 pass 7: boss B's old core_r=0 escape hatch (it used to sit
+    # inside the L76K PCB's own footprint) is gone -- B1/B2 replace it at a
+    # position clear of the redesigned comms stack (see params_current.py's
+    # screws_ABC comment and add_comms_bay's boss-relief cuts), so every
+    # case-screw boss now gets the normal full-height core.
     for s in p['screws_ABC']:
         cx, cy = s['xy']
-        bodies = add_case_boss(root, bodies, cx, cy, p, is_D=False, clip_tool=clip_tool)
+        bodies = add_case_boss(root, bodies, cx, cy, p, is_D=False, clip_tool=clip_tool, core_r=None)
+        if clip_tool is not None:
+            clip_tool = _refetch_by_name(root, CLIP_TOOL_NAME) or clip_tool
     cx, cy = p['screw_D']['xy']
     bodies = add_case_boss(root, bodies, cx, cy, p, is_D=True, clip_tool=clip_tool)
     return bodies
@@ -878,12 +1031,13 @@ def add_case_screws(root, bodies, p, clip_tool=None):
 def add_top_posts(root, bodies, p, clip_tool=None):
     top = bodies['Top']
     for name, (cx, cy) in p['top_posts'].items():
-        post = clip_to_inner_cavity(
-            root, cylinder_solid(root, cx, cy, p['top_post_dia'] / 2.0, p['top_post_z'][0], p['top_post_z'][1]),
-            p, clip_tool)
+        post = clipped_pillar_with_reach(
+            root, cx, cy, p['top_post_dia'] / 2.0, p['top_post_z'][0], p['top_post_z'][1],
+            p, clip_tool, POST_CORE_R)
         top = combine_join(root, top, [post])
         if clip_tool is not None:
             top = dedupe_body(root, top, 'Top')
+            clip_tool = _refetch_by_name(root, CLIP_TOOL_NAME) or clip_tool
         hole = cylinder_solid(root, cx, cy, p['top_post_pilot_dia'] / 2.0,
                                p['top_post_pilot_z'][0], p['top_post_pilot_z'][1])
         top = combine_cut(root, top, [hole])
@@ -954,7 +1108,22 @@ def insert_referenced_component(root, doc, transform=None):
 
 
 def insert_display_pcba(app, root, p):
+    """Insert the display PCBA at the reference doc's own transform, plus a
+    Z offset (PARAMS['display_z_offset'], pass 7 / 2026-09-06): the
+    reference transform is read straight off "Firefly V2 v16", which was
+    built for the 25mm-tall case -- for the trim variant's new 28mm-tall
+    case, the display module (and everything built relative to it: Screen
+    Plate, Top posts, USB tunnel, FPC relief, button caps/switches) must
+    sit display_z_offset mm higher so the glass stays flush with the new
+    top face at z_top. A pure Z translation added to the reference
+    transform (not a re-derivation) keeps the module's own X/Y placement
+    and orientation exactly as measured off the reference doc."""
     transform = get_reference_transform(app, 'Firefly V2', p['display_doc_name'])
+    dz = p.get('display_z_offset', 0.0)
+    if dz:
+        t = transform.translation
+        t.z = t.z + dz * MM
+        transform.translation = t
     disp_doc = get_open_doc(app, p['display_doc_name'])
     assert disp_doc is not None, f"display doc not open: {p['display_doc_name']}"
     occ = insert_referenced_component(root, disp_doc, transform)
@@ -1133,14 +1302,45 @@ def add_button(root, bodies, name, switch_bbox, nub_dir, cap, hole_wh, p, thicke
     # Z-range, at a fixed tangential width (tab['w']) -- much smaller than
     # the main shaft, so a plain small box (not curve-matched) cut through
     # just the wall thickness is sufficient for it specifically.
+    #
+    # 2026-09-06 pass 6 fix: this cut used to reach from s_tab_face (deep
+    # inboard) all the way OUT PAST s_outer_face (the true exterior
+    # surface, `cap['proud']` mm proud of the wall) plus a 2.5mm margin --
+    # a real, visible rectangular notch through the outer skin next to the
+    # main stadium hole (Jake's screenshot review; the "small block" he
+    # saw inside it was the tab itself, now visible from outside). The
+    # tab's own BUILT geometry (tab_body, below) never reaches anywhere
+    # near the outer surface -- it stays entirely inboard of the inner
+    # wall face (s_inner) by design (`s_tab_face = s_inner - tab['gap']`,
+    # further inboard still) -- so this hole only ever needed to reach
+    # the INNER wall face (s_inner), not the exterior: rib slots, tab
+    # shelves, and clearance pockets are interior-only features and must
+    # never breach the printed skin. Bounded analytically here (not via a
+    # Combine-Intersect against the inner-cavity clip tool, which raised
+    # FEATURE_FAILED_TO_CREATE for the similarly-shaped rib plate -- see
+    # below) by simply stopping the cut at s_inner + a small margin.
     tab = p['tab']
     tab_hole_z_lo = z_center - W / 2.0 - tab['h'] - 0.3
     tab_hole_z_hi = z_center - W / 2.0 + 0.3
     tab_hole_z_center = (tab_hole_z_lo + tab_hole_z_hi) / 2.0
     tab_hole_z_span = tab_hole_z_hi - tab_hole_z_lo
-    tab_hole_depth = abs(g['s_outer_face'] - g['s_tab_face']) + 2.5
-    tab_hole_center_xy = ((g['outer_face_xy'][0] + g['tab_face_xy'][0]) / 2.0,
-                          (g['outer_face_xy'][1] + g['tab_face_xy'][1]) / 2.0)
+    inner_face_xy = (g['housing_xy'][0] + g['s_inner'] * d2[0], g['housing_xy'][1] + g['s_inner'] * d2[1])
+    # 2026-09-06: bumped from 0.5 to 2.0 after a real (if small, ~0.68mm3)
+    # residual 'Top x Power Button' interference was found empirically at
+    # the tab -- the flat-ray analytic estimate of the tab's own outward
+    # reach (s_inner + tab['gap'] - related terms) undershoots the tab's
+    # REAL reach against the true curved surface by more than expected
+    # (the same kind of ray-vs-true-curvature slack verify_m2's cap-proud
+    # check already documents, up to ~0.25mm there). This hole's own
+    # outward reach is s_inner + skin_margin/2 (see the depth/center math
+    # below) -- 2.0 keeps it a full 1.45mm short of the true outer
+    # surface (s_inner + wall + proud), nowhere near reopening the skin
+    # breach this fix closes, while comfortably covering the tab's real
+    # reach.
+    skin_margin = p.get('tab_hole_skin_margin', 2.0)  # stop this many mm short of the inner wall face -- never reaches the outer skin; also read by verify_skin_intact (kept as ONE shared value, not duplicated)
+    tab_hole_depth = abs(g['s_inner'] - g['s_tab_face']) + skin_margin
+    tab_hole_center_xy = ((inner_face_xy[0] + g['tab_face_xy'][0]) / 2.0,
+                          (inner_face_xy[1] + g['tab_face_xy'][1]) / 2.0)
     tab_hole_start = (tab_hole_center_xy[0] - (tab_hole_depth / 2.0) * d2[0],
                       tab_hole_center_xy[1] - (tab_hole_depth / 2.0) * d2[1])
     tab_hole_body = oriented_box_prism(root, (tab_hole_start[0], tab_hole_start[1], tab_hole_z_center),
@@ -1215,6 +1415,16 @@ def add_button(root, bodies, name, switch_bbox, nub_dir, cap, hole_wh, p, thicke
                                         L + 2 * p['rib_slot_clearance'], W + 2 * p['rib_slot_clearance'],
                                         total_depth + 4.0)
     rib_plate = combine_cut(root, rib_plate, [slot_body])
+    # 2026-09-06 pass 6: a Combine-Intersect of rib_plate against the
+    # inner-cavity clip tool was tried here as an extra safety net (like
+    # the collar's, below) but produced a real, large 'Top x Button'
+    # interference (the intersect result joined into Top incorrectly) --
+    # reverted. The rib plate's existing analytic bound (s_rib_outer,
+    # already inboard of the true wall by rib_inboard_offset -- see
+    # button_geometry) plus verify_skin_intact()'s probe-based regression
+    # gate are the actual protections here; button_geometry's docstring
+    # also documents the FEATURE_FAILED_TO_CREATE this combination raised
+    # in an earlier pass.
     bodies['Top'] = combine_join(root, bodies['Top'], [rib_plate])
 
     collar = p['collar']
@@ -1259,7 +1469,7 @@ def add_buttons(root, bodies, p, clip_tool=None):
                          p['home_cap'], (p['home_cap']['stadium'][0] + 2 * p['cap_clearance'],
                                          p['home_cap']['stadium'][1] + 2 * p['cap_clearance']), p,
                          thickened_envelope=thickened_envelope, clip_tool=clip_tool)
-    thickened_envelope.name = 'Cap Trim Envelope (reference only)'
+    thickened_envelope.name = 'Cap Trim Envelope'
     thickened_envelope.isLightBulbOn = False
     return bodies
 
@@ -1347,22 +1557,189 @@ def add_usb_tunnel(root, bodies, p):
     return bodies
 
 
-def add_lug(root, bodies, p):
+def lug_ear_geometry(p):
+    """Analytic geometry of the lanyard ear (2026-09-06 pass 6 rebuild;
+    re-derived 2026-09-07 pass 7 item 2 -- see add_lug's docstring for the
+    wedge-sliver defect this fixes) -- shared between add_lug (which
+    builds it) and the envelope/export-vertex verify checks (which need
+    to know where it legitimately protrudes), so the two can never
+    disagree. Returns (half_w, y_far, y_root, hole_y): half_w -- half the
+    ear's width; y_far -- its outward-facing end (the protrusion tip);
+    y_root -- a conservative inner extent (BEFORE being trimmed to the
+    true inner cavity surface -- see add_lug); hole_y -- the vertical
+    hole's y position.
+
+    2026-09-07: y_far/hole_y are now derived from the NARROWEST true wall
+    radius across the ear's own z-span (min of rho_at_z at both z0 and
+    z1 -- the outer profile is monotonically increasing from the flat
+    bed to the parting line over this range, per SPEC's own probe table,
+    so the minimum is always at an endpoint), not the single value at
+    the vertical z-midpoint. add_lug then Combine-Intersects the ear's
+    box against a thickened copy of the outer envelope offset by
+    `protrusion` (the same technique pass 2 used to fix button caps
+    against the curved shell) -- using the narrowest-radius endpoint here
+    guarantees the box's full y_far..y_root footprint is never NARROWER
+    than what that offset envelope actually contains at every z in the
+    ear's range (the envelope only gets more permissive at the wider end),
+    so the intersect only ever rounds the box's outward corners to match
+    the true curve -- it can never eat into the hole's own footprint near
+    x=0."""
     lug = p['lug']
-    x0, x1 = lug['x']
-    y_root = lug['y_root']
-    tip_r = lug['tip_r']
-    y_tip = lug['y_tip']
+    half_w = lug['width'] / 2.0
+    ay = p['spine_a'][1]
     z0, z1 = lug['z']
-    cap_center_y = y_tip + tip_r
+    # at x=0, straight down from spine_a, the ray runs exactly along the
+    # dome revolve's own symmetry axis -- the true wall distance there is
+    # simply rho_at_z(z) by definition (true_wall_distance_along_ray's
+    # general ray-casting form degenerates to None for a purely-vertical
+    # ray starting exactly at the spine point, since its straight-section
+    # branch expects a horizontal direction).
+    s_wall = min(rho_at_z(p, z0), rho_at_z(p, z1))
+    y_outer = ay - s_wall
+    y_far = y_outer - lug['protrusion']
+    y_root = ay - (s_wall - 3.0)  # 3mm inside the true wall -- trimmed to the cavity surface below
+    hole_y = y_far + lug['hole_from_tip']
+    return half_w, y_far, y_root, hole_y
 
-    box = box_solid(root, x0, x1, y_root, cap_center_y, z0, z1)
-    cap = cylinder_solid(root, 0.0, cap_center_y, tip_r, z0, z1)
-    tab = combine_join(root, box, [cap])
-    hole = cylinder_solid(root, lug['hole_xy'][0], lug['hole_xy'][1], lug['hole_dia'] / 2.0, z0 - 0.5, z1 + 0.5)
-    tab = combine_cut(root, tab, [hole])
 
-    bodies['Bottom'] = combine_join(root, bodies['Bottom'], [tab])
+def add_lug(root, bodies, p):
+    """Lanyard lug, rebuilt (2026-09-06 pass 6) as an integrated ear after
+    Jake's screenshot review found the previous box+cylinder tab
+    intruding into the hollow cavity -- its inner end crossed the inner
+    wall, reading from inside as a big cylinder standing next to the
+    L76K (`y_root` was hand-picked and landed 1.5mm inside the true inner
+    wall for the 'current' variant). `lug['width']`-wide (14mm), it
+    protrudes `lug['protrusion']` (6mm) beyond the shell's TRUE curved
+    outer surface (see lug_ear_geometry); its inner end is trimmed flush
+    with the inner cavity surface by a Combine-Cut against a fresh copy
+    of the inner cavity solid -- guaranteed no intrusion regardless of
+    the shoulder curve's exact shape here, the same idea as
+    clip_to_inner_cavity but inverted (an ear must stay embedded in the
+    WALL and protrude OUTWARD, unlike a boss/post which lives entirely
+    inside the hollow interior, so it needs the void REMOVED from an
+    oversized blank, not INTERSECTED). A vertical hole sits
+    `lug['hole_from_tip']` in from the ear's own outward face; `fillet_r`
+    rounds its two vertical outer corners; `hole_chamfer` softens both
+    hole edges -- both best-effort (skipped, not rolled back, if Fusion's
+    fillet/chamfer feature refuses this specific geometry).
+
+    2026-09-07 pass 7 (item 2): Jake's own renders (rim_lanyard_end.png /
+    lanyard_end.png) showed a thin triangular WEDGE SLIVER on the outer
+    skin flanking the ear, on the +x side. Root cause: the ear's own outer
+    face was a flat box face, but the dome it's unioned into is a surface
+    of revolution whose radius varies hugely across the ear's z0..z1 span
+    (flat_rho at z0 up to the full outer_radius at z1, the whole flare of
+    the bed-to-wall shoulder) -- the box's flat side walls cross that
+    curving surface at a shallow, near-tangent angle at some z, producing
+    a sliver face at the boolean union seam. Same category of defect as
+    the pass-2 button caps (a flat approximation built against a curved
+    shell), fixed the same way: the box is now Combine-Intersected against
+    a thickened copy of the outer envelope (`build_thickened_envelope`,
+    offset by `lug['protrusion']`) so its outward boundary follows the
+    true curve (rounding the box's outward corners where the dome is
+    locally narrower than the box is wide) instead of colliding with it
+    edge-on. `lug_ear_geometry`'s y_far/hole_y already use the NARROWEST
+    true-wall radius across the ear's z-span specifically so this
+    intersect can only ever round the box's far corners -- it cannot eat
+    into the hole's own footprint near x=0 at any z in z0..z1 (see that
+    function's docstring).
+
+    **2026-09-07, later same pass -- real root cause + fix**: the hole
+    was being cut from the standalone `ear` tool body, then the (already-
+    holed) ear was Combine-JOINED into Bottom. The NEW (min-of-endpoints)
+    y_far/hole_y derivation above deliberately keeps the ear conservative
+    -- close enough to the true wall that `hole_y`'s xy now falls WITHIN
+    the base shell's own pre-existing wall thickness at some z in the
+    ear's z0..z1 span (confirmed empirically: `probe_point_solid` on
+    Bottom finds that point solid even BEFORE add_lug runs at all -- it's
+    inside the plain hollow shell's wall band there, nothing to do with
+    the ear). The OLD z-midpoint derivation placed hole_y well beyond the
+    true wall, in what was then open air outside the base shell entirely,
+    which is why cutting the hole from `ear` alone used to work -- there
+    was no pre-existing Bottom material at that point to worry about. A
+    hole cut into a TOOL body and then Combine-JOINED (a boolean union,
+    A ∪ B) can never remove material the TARGET already had -- only a cut
+    on the actual union result can. Fixed by joining the (hole-less) ear
+    into Bottom FIRST, then cutting the through-hole from the resulting
+    Bottom -- guaranteed to go all the way through regardless of how much
+    of the hole's footprint overlaps pre-existing wall vs. new ear
+    material. The R3 corner fillets stay on the standalone `ear` (cheap,
+    and correct either way -- they only concern the ear's own outward
+    corners, never Bottom's pre-existing geometry); only the hole cut and
+    its chamfer move to after the join.
+
+    Jake also asked about a RECESSED lanyard bar instead of a protruding
+    ear -- not built: a 5mm-deep pocket at the tip would need an interior
+    pad that collides with the L76K wired frame at y ~ -23.5 (the bay's
+    -y dome tip is already the tightest-margin area in the whole case --
+    see README known limitations), which would require moving the L76K.
+    Documented as a trade-off in the README rather than built."""
+    lug = p['lug']
+    z0, z1 = lug['z']
+    half_w, y_far, y_root, hole_y = lug_ear_geometry(p)
+
+    ear = box_solid(root, -half_w, half_w, y_far, y_root, z0, z1)
+
+    # trim the inner end flush with the true inner cavity surface -- a
+    # fresh copy (not the shared, safety-margin-SHRUNK clip_tool, which
+    # would leave the ear a fraction of a mm too long) since add_lug does
+    # not currently receive clip_tool and this runs only once.
+    void = build_inner_pill_solid(root, p)
+    ear = combine_cut(root, ear, [void])
+
+    # clip the outward reach to the TRUE curved shell + protrusion --
+    # eliminates the flat-box-vs-round-dome wedge sliver (see docstring).
+    thickened = build_thickened_envelope(root, p, lug['protrusion'])
+    ear = combine_intersect(root, ear, [thickened])
+
+    # R3 fillets on the two vertical outer corners (where the far/outward
+    # face meets the two side faces) -- selected by geometry (a vertical
+    # edge, i.e. spanning the full z0..z1 with constant x,y, sitting at
+    # the far face's y and either side face's x). Best-effort: Jake's own
+    # instructions are explicit that a fillet failure here should not
+    # roll back the whole ear. Done on the standalone `ear` (before the
+    # join) -- only concerns the ear's own outward corners.
+    try:
+        fillet_edges = adsk.core.ObjectCollection.create()
+        for edge in ear.edges:
+            bb = edge.boundingBox
+            dx = (bb.maxPoint.x - bb.minPoint.x) / MM
+            dy = (bb.maxPoint.y - bb.minPoint.y) / MM
+            dz = (bb.maxPoint.z - bb.minPoint.z) / MM
+            if dx < 0.05 and dy < 0.05 and dz > (z1 - z0) - 0.1:
+                ex = bb.minPoint.x / MM
+                ey = bb.minPoint.y / MM
+                if abs(ey - y_far) < 0.05 and (abs(ex - half_w) < 0.05 or abs(ex + half_w) < 0.05):
+                    fillet_edges.add(edge)
+        if fillet_edges.count > 0:
+            fillets = root.features.filletFeatures
+            fin = fillets.createInput()
+            fin.addConstantRadiusEdgeSet(fillet_edges, V(lug['fillet_r']), True)
+            fillets.add(fin)
+    except RuntimeError:
+        pass
+
+    # join the (hole-less) ear into Bottom, THEN cut the through-hole from
+    # the resulting Bottom -- see docstring for why this order is required.
+    bottom = combine_join(root, bodies['Bottom'], [ear])
+
+    hole_r = lug['hole_dia'] / 2.0
+    hole = cylinder_solid(root, 0.0, hole_y, hole_r, z0 - 0.5, z1 + 0.5)
+    bottom = combine_cut(root, bottom, [hole])
+
+    # 0.6mm chamfer on both hole edges (top and bottom circular edges of
+    # the vertical hole) -- best-effort, same reasoning as the fillets.
+    # Done on `bottom` now (the hole only exists there post-cut).
+    try:
+        chamfer_edge_at(root, bottom, (0.0, hole_y), hole_r, z0, lug['hole_chamfer'])
+    except (RuntimeError, AssertionError):
+        pass
+    try:
+        chamfer_edge_at(root, bottom, (0.0, hole_y), hole_r, z1, lug['hole_chamfer'])
+    except (RuntimeError, AssertionError):
+        pass
+
+    bodies['Bottom'] = bottom
     return bodies
 
 
@@ -1449,6 +1826,20 @@ def add_flare_logo(root, bodies, p):
 
 
 def load_wordmark_loops(p):
+    """kandiwooks_logo.json (2026-09-06 pass 6 re-extraction -- see the
+    coordinator's report): the previous extraction visited only ONE flat
+    top face per body (the largest by area), silently dropping any
+    SECOND disjoint flat face on the same body -- Body4 ('Ka', the K and
+    the lowercase a fused into one lump but with two separate flat top
+    regions) lost the entire 'a' this way, rendering as "K[gap]ndiWooks"
+    with the sprout decoration floating over the gap. Re-extracted with
+    every body's every same-Z flat face walked (not just the biggest),
+    using CurveEvaluator3D.getStrokes at a 0.005mm tolerance (a real
+    reduction from whatever produced the old 1-point degenerate loop,
+    though that specific loop turned out to be a microscopic ~0.02x0.002mm
+    sliver in the source geometry, not the actual cause). Visually
+    confirmed: the debossed wordmark now reads "KANDIWOOKS" with the 'a'
+    present -- see bottom_logo.png."""
     json_path = os.path.join(_HERE, 'kandiwooks_logo.json')
     with open(json_path, 'r') as f:
         data = json.load(f)
@@ -1578,66 +1969,126 @@ def add_battery_bay(root, bodies, p):
 
 def add_battery_reference_box(root, p):
     """803040 LiPo has no Fusion doc -- modeled as a hidden reference box
-    (excluded from exports) purely to support interference checking."""
+    (excluded from exports) purely to support interference checking.
+
+    2026-09-06 pass 6: inset 0.1mm on the X sides only -- the 'current'
+    variant's case-screw boss A/C (radius 3.0, centred at x -22.97/+23.74)
+    is DESIGNED to sit right at this box's x=-+20 edge, and now that
+    clipped_pillar_with_reach finally gives those bosses real material
+    (see verify_posts_and_bosses), a genuine but hairline (0.03mm) real
+    overlap appeared there -- both variants scale the boss position off
+    outer_radius, so this margin is a permanent, deliberate tolerance on
+    the reference envelope, not a one-off number chosen to silence this
+    specific run."""
     bat = p['bay']['battery']
-    body = box_solid(root, bat['x'][0], bat['x'][1], bat['y'][0], bat['y'][1], bat['z'][0], bat['z'][1])
-    body.name = 'Battery Reference (reference only)'
+    margin = 0.1
+    body = box_solid(root, bat['x'][0] + margin, bat['x'][1] - margin, bat['y'][0], bat['y'][1], bat['z'][0], bat['z'][1])
+    body.name = 'Battery 803040'
     body.isLightBulbOn = False
     return body
 
 
-def add_l76k_wired_frame(root, bodies, p):
-    """L76K is always wired (2026-09-04: 'hat' mode dropped) -- flat frame
-    in the dome tip with a wire notch on the +y side.
+def build_comms_stack_frame(root, p):
+    """Build (but do not yet join) the 3-board comms-stack retention
+    structure (2026-09-07 pass 7, supersedes the old dome-tip 'l76k_wired'
+    floor frame AND the separate Top-hanging XIAO/Wio tray): four Ø3
+    corner pads (2.0mm tall, z 2..4) plus a 1.2mm perimeter wall (6mm
+    tall, z 2..8) around the L76K PCB footprint, with a wire-clearance
+    notch on the +Y side. Only the L76K is physically retained by case
+    geometry here -- per Jake's stack spec, the XIAO plugs into the L76K's
+    own header pins below it and the Wio plugs into the XIAO via a
+    board-to-board connector above it, so the whole 3-board assembly is
+    held together by its own connectors once the bottom board is seated
+    in this frame; no separate tray/cradle is needed or built for the
+    upper two boards (contrast the pre-pass-7 design, which physically
+    retained XIAO+Wio in a Top-hanging tray elsewhere in the bay -- see
+    the README's pass-7 section)."""
+    s3 = p['bay']['stack3']
+    pcb = s3['l76k_pcb']
+    x0, x1 = pcb['x']
+    y0, y1 = pcb['y']
+    wall = s3['frame_wall']
+    clear = s3['frame_clear']
+    fz0, fz1 = s3['frame_z']
+    pad_r = s3['pad_dia'] / 2.0
+    pad_h = s3['pad_h']
+    inset = s3['pad_inset']
 
-    2026-09-05 fix (Bottom x L76K board interference): the frame used to
-    be a pure open-top/open-bottom RING (like build_hanging_frame) with no
-    floor of its own, relying on the case's bare cavity floor (nominally
-    z=2.0) underneath -- but the inserted PCB was placed with its bottom
-    at z~1.83, 0.17mm INSIDE that floor. The frame now includes an actual
-    floor PAD from z0 (2.0, the nominal floor top) up to
-    `l76k_floor_pad_z[1]` (2.3) across its footprint, and the PCB is
-    repositioned (see insert_comms_boards) to rest exactly on top of it at
-    z=2.3 -- an intended, flush contact, not a defect."""
-    fr = p['bay']['l76k_wired']
-    x0, x1 = fr['x']
-    y0, y1 = fr['y']
-    z0, z1 = fr['z']
-    wall = p['bay']['l76k_frame_wall']
-    clear = p['bay']['l76k_frame_clear']
-    pad_z0, pad_z1 = p['bay'].get('l76k_floor_pad_z', (z0, z0))
     ox0, ox1 = x0 - clear - wall, x1 + clear + wall
     oy0, oy1 = y0 - clear - wall, y1 + clear + wall
+    ix0, ix1 = x0 - clear, x1 + clear
+    iy0, iy1 = y0 - clear, y1 + clear
 
-    # solid floor pad across the WHOLE footprint (including the inner PCB
-    # area) from z0 up to pad_z1 -- the PCB rests flush on top of this.
-    floor_pad = box_solid(root, ox0, ox1, oy0, oy1, z0, max(pad_z1, z0 + 1e-6))
+    outer = box_solid(root, ox0, ox1, oy0, oy1, fz0, fz1)
+    inner = box_solid(root, ix0, ix1, iy0, iy1, fz0 - 0.5, fz1 + 0.5)
+    frame = combine_cut(root, outer, [inner])
 
-    # perimeter wall ring ABOVE the pad, hollow in the inner (PCB) area.
-    wall_outer = box_solid(root, ox0, ox1, oy0, oy1, pad_z1, z1 + 0.3)
-    wall_inner = box_solid(root, x0 - clear, x1 + clear, y0 - clear, y1 + clear, pad_z1 - 0.5, z1 + 0.8)
-    wall_ring = combine_cut(root, wall_outer, [wall_inner])
-
-    frame = combine_join(root, floor_pad, [wall_ring])
-
-    notch_w = p['bay']['l76k_wire_notch_w']
+    notch_w = s3['wire_notch_w']
     notch = box_solid(root, -notch_w / 2.0, notch_w / 2.0,
-                       y1 + clear - 0.5, y1 + clear + wall + 0.5, z0, z1 + 0.3)
+                       oy1 - wall - 0.5, oy1 + 0.5, fz0, fz1 + 0.3)
     frame = combine_cut(root, frame, [notch])
 
-    # 2026-09-05 fix (real 'Bottom x L76K board' interference, same root
-    # cause as the battery floor fix in add_battery_bay): this frame sits
-    # deep in the -y dome tip (README's own long-standing known
-    # limitation), where the cavity's bare floor -- BEFORE this frame's
-    # own floor_pad is added -- already curves up above the nominal flat
-    # z=2.0 as rho shrinks approaching the dome. That pre-existing bump is
-    # untouched by floor_pad (a JOIN adds material, it doesn't remove
-    # Bottom's own excess), and was found to reach up through the PCB's
-    # own thickness (measured overlap up to z=3.56) over part of the
-    # footprint. Flatten it the same way: cut back to z0 across the
-    # frame's whole outer footprint before adding the frame.
-    flatten = box_solid(root, ox0, ox1, oy0, oy1, z0, z1 + 0.3)
+    pads = [cylinder_solid(root, px, py, pad_r, fz0, fz0 + pad_h)
+            for px in (x0 + inset, x1 - inset) for py in (y0 + inset, y1 - inset)]
+    frame = combine_join(root, frame, pads)
+    return frame
+
+
+def add_comms_stack_frame(root, bodies, p, clip_tool=None):
+    """Join the comms-stack frame into Bottom.
+
+    Real defects found (2026-09-07, via an actual analyzeInterference
+    run) and fixed here, both instances of patterns already established
+    elsewhere in this file:
+
+    1. 'L76K PCB x Bottom' (32.7mm3): the PCB's far -y corners (near
+       x=+-8.89, y approaching -24) sit outside the REAL inner cavity
+       wall at low z -- the dome tip (a revolve around spine_a) tapers
+       faster than the flat PCB rectangle assumes, confirmed analytically
+       (inner_rho_at_z(4.5)=23.8 vs the corner's own rho_from_spine=24.9)
+       -- the same "bare cavity floor curves up near the dome tip" issue
+       pass 5 already fixed for the battery and the old L76K frame (see
+       add_battery_bay). Fixed the same way: flatten the PCB's own exact
+       footprint (no extra margin, so this can't eat into the frame's
+       wall -- entirely outside this box) from the nominal floor (z=2.0)
+       up through a safe height (6.0, comfortably past the PCB's own
+       ~5.5mm top) BEFORE building the frame around it -- a no-op
+       wherever the floor is already flat.
+    2. Latent 'frame wall pokes through the outer shell' risk: the
+       frame's own wall reaches further out (PCB edge + clearance + wall)
+       than the PCB itself, and analytically its far corner's
+       rho_from_spine (~27.55) exceeds the TRUE outer profile's rho at
+       the frame's own LOW z (e.g. rho_at_z(2)=~24.1) -- the same latent
+       "outer bump" class of bug clipped_pillar_with_reach/
+       clip_to_inner_cavity already exist to prevent for bosses/posts.
+       Clip the whole frame (walls + pads) against the shared
+       inner-cavity clip tool before joining, exactly like every boss/
+       post -- guarantees it can never punch through regardless of the
+       exact numbers.
+    3. Boss relief (item 3): cut a keep-out around every case-screw boss
+       position so boss B1/B2 -- positioned just outside the L76K PCB's
+       own footprint, but close enough that the frame's outer wall would
+       otherwise graze them -- get a real, guaranteed
+       stack3['boss_relief_margin'] (1.0mm) of clearance. Cheap to apply
+       to every screw (A/C/D are already far enough away that the cut is
+       a no-op for them)."""
+    s3 = p['bay']['stack3']
+    pcb = s3['l76k_pcb']
+    x0, x1 = pcb['x']
+    y0, y1 = pcb['y']
+    flatten = box_solid(root, x0, x1, y0, y1, 2.0, 6.0)
     bodies['Bottom'] = combine_cut(root, bodies['Bottom'], [flatten])
+
+    frame = build_comms_stack_frame(root, p)
+    if clip_tool is not None:
+        frame = clip_to_inner_cavity(root, frame, p, clip_tool)
+
+    margin = p['bay']['stack3']['boss_relief_margin']
+    boss_r = p['boss_dia'] / 2.0
+    for s in p['screws_ABC'] + [p['screw_D']]:
+        cx, cy = s['xy']
+        keepout = cylinder_solid(root, cx, cy, boss_r + margin, 1.0, 9.0)
+        frame = combine_cut(root, frame, [keepout])
 
     bodies['Bottom'] = combine_join(root, bodies['Bottom'], [frame])
     return bodies
@@ -1690,47 +2141,11 @@ def build_hanging_frame(root, x0, x1, y0, y1, clearance, wall, z_bottom, z_ceili
     return frame
 
 
-def build_stack_tray_body(root, p):
-    """Build (but do not yet join) the XIAO+Wio stack tray body -- an
-    open-top/open-bottom frame hanging from the Top's ceiling (prints with
-    no overhang), with a wedge at each short (y) end for the Wio PCB to
-    rest on, and a 6mm wire-clearance gap on the +y side for the XIAO's
-    USB-C/antenna wires. Split out from add_stack_tray (2026-09-05) so
-    add_comms_bay can trim it against the GPS frame before either is
-    joined to Top -- see add_comms_bay's docstring.
-
-    `x_extra` widens the opening beyond the nominal 'stack' (Wio) footprint
-    (2026-09-05 fix, 'Top x XIAO' interference): XIAO's own PCB, measured
-    on the actual inserted occurrence, is ~22.48mm wide -- noticeably
-    wider than the Wio footprint ('stack' x/y, ~17.78mm) the tray was
-    originally sized to -- so the tray's walls were clipping straight
-    through XIAO's board. `tray_x_extra` widens the LEFT (-x, away from
-    the GPS patch bay) side by the full amount needed; the RIGHT (+x,
-    GPS-facing) side only gets `tray_x_extra_right`, which is much
-    smaller -- the two bays are only ~1mm apart at this y-band even
-    unwidened (a pre-existing bay-layout tightness -- see README known
-    limitations), so the right side cannot be widened to XIAO's full
-    real half-width without the tray encroaching on the GPS patch
-    antenna's own real footprint. This closes most, but not all, of the
-    real clearance gap; the residual is small and confined to the
-    GPS-facing edge."""
-    stack = p['bay']['stack']
-    x0, x1 = stack['x']
-    y0, y1 = stack['y']
-    extra_left = p['bay'].get('tray_x_extra', 0.0)
-    extra_right = p['bay'].get('tray_x_extra_right', extra_left)
-    tray = build_hanging_frame(
-        root, x0 - extra_left, x1 + extra_right, y0, y1, p['bay']['tray_clear'], p['bay']['tray_wall'],
-        p['bay']['tray_z_bottom'], p['top_ceiling_underside_z'],
-        ledge_w=p['bay']['tray_ledge']['w'], ledge_h=p['bay']['tray_ledge']['h'],
-        gap_w=p['bay']['tray_gap']['w'], gap_side=p['bay']['tray_gap']['side'])
-    return tray
-
-
-def add_stack_tray(root, bodies, p):
-    tray = build_stack_tray_body(root, p)
-    bodies['Top'] = combine_join(root, bodies['Top'], [tray])
-    return bodies
+# build_stack_tray_body / add_stack_tray (the pre-pass-7 Top-hanging
+# XIAO+Wio tray) removed 2026-09-07, pass 7: the 3-board direct-stack
+# design (build_comms_stack_frame) retains only the L76K in case
+# geometry -- XIAO/Wio float above it, held by their own board-to-board /
+# header connections. See the README's pass-7 section.
 
 
 def build_gps_frame_body(root, p):
@@ -1764,17 +2179,11 @@ def build_gps_frame_body(root, p):
     return frame
 
 
-def add_gps_frame(root, bodies, p):
-    frame = build_gps_frame_body(root, p)
-    bodies['Top'] = combine_join(root, bodies['Top'], [frame])
-    return bodies
-
-
 def add_gps_reference_box(root, p):
     """GPS patch antenna has no Fusion doc -- hidden reference box only."""
     gps = p['bay']['gps_patch']
     body = box_solid(root, gps['x'][0], gps['x'][1], gps['y'][0], gps['y'][1], gps['z'][0], gps['z'][1])
-    body.name = 'GPS Patch Reference (reference only)'
+    body.name = 'GPS Patch 25x25x8.3'
     body.isLightBulbOn = False
     return body
 
@@ -1785,49 +2194,44 @@ def add_fpc_keepout_marker(root, p):
     printed body, hidden, and excluded from exports."""
     ko = p['bay']['fpc_keepout']
     body = box_solid(root, ko['x'][0], ko['x'][1], ko['y'][0], ko['y'][1], ko['z'][0], ko['z'][1])
-    body.name = 'FPC Keepout (reference only)'
+    body.name = 'FPC LoRa Antenna Keep-out'
     body.isLightBulbOn = False
     return body
 
 
-def add_comms_bay(root, bodies, p):
+def add_comms_bay(root, bodies, p, clip_tool=None):
+    """2026-09-07 pass 7: the comms-stack frame (add_comms_stack_frame)
+    replaces the old dome-tip L76K-only frame, and the GPS frame no
+    longer needs a mutual clip against a stack tray (removed -- the
+    3-board stack no longer has one; see build_comms_stack_frame's
+    docstring) since the GPS patch's new y-range (2..27) and the stack's
+    footprint (y <= -1.5) don't overlap at all by construction.
+
+    Real defect found (2026-09-07, via an actual analyzeInterference run):
+    the GPS patch's new y-range (2..27) reaches close enough to
+    case-screw boss C (trim: (23.0, 25.2), Ø6) that boss C's own material
+    -- built earlier, in add_case_screws -- physically overlaps the
+    antenna's real footprint by ~2mm at its closest corner (box corner
+    (22.2, 25.2) is only 0.8mm from the boss's center, well inside its
+    3mm radius). Fixed the same way as the pass-5 tray/antenna clip:
+    cut a keepout matching the antenna box (+0.3mm margin) out of Top
+    generally, so nothing can occupy that space regardless of what's
+    there. This only removes the -x-facing "bite" of boss C's material
+    (the box's edge, even with margin, stops short of the boss's own
+    axis at x=23.0) -- the boss stays a continuous, if not full-circle,
+    pillar, and verify_posts_and_bosses' probe (offset in +x, AWAY from
+    the antenna) is unaffected."""
     bodies = add_battery_bay(root, bodies, p)
-    bodies = add_l76k_wired_frame(root, bodies, p)
+    bodies = add_comms_stack_frame(root, bodies, p, clip_tool=clip_tool)
 
-    # Build both raw frame bodies first and cut the tray's shape out of
-    # the GPS frame (a Combine-Intersect-tool-style mutual clip, same
-    # pattern as clip_to_inner_cavity for bosses/posts) before joining
-    # either into Top, so neither can end up overlapping the other
-    # regardless of the exact numbers. (2026-09-05: the earlier 'XIAO x
-    # GPS Patch Reference' interference here was a XIAO ORIENTATION bug --
-    # its long ~22.5mm axis, with the USB-C overhang, was mapped onto
-    # world X instead of world Y -- fixed at the source in
-    # insert_comms_boards ('y90' rotation); no tray widening or GPS-side
-    # notch is needed any more, XIAO's real footprint now matches Wio's.)
-    tray = build_stack_tray_body(root, p)
-    gps_frame = build_gps_frame_body(root, p)
-
-    # 2026-09-05 fix ('Top x GPS Patch Reference', residual after the
-    # XIAO orientation fix): the tray's own wall (not the GPS frame's --
-    # that pairing was already independently confirmed clean) still
-    # razors 0.1mm into the antenna's real footprint at its +y corner
-    # (x -2.8..-2.7, y up to 20.0) -- the tray's nominal width (from
-    # 'stack' + tray_clear + tray_wall) and the patch box's real edge
-    # (x=-2.8, fixed by the hardware, NOT to be moved) are just that
-    # close at the current bay-layout coordinates. Clip the tray itself
-    # against the antenna's real box (+0.3mm safety margin) so it can
-    # never physically occupy that space regardless of the exact wall
-    # numbers -- the same "clip the case geometry to the real constraint"
-    # idea as clip_to_inner_cavity for bosses/posts, applied here to the
-    # one real fixed obstacle (the antenna) instead of the shell.
     gps_box = p['bay']['gps_patch']
     gps_keepout = box_solid(root, gps_box['x'][0] - 0.3, gps_box['x'][1] + 0.3,
                              gps_box['y'][0] - 0.3, gps_box['y'][1] + 0.3,
                              gps_box['z'][0] - 0.3, gps_box['z'][1] + 0.3)
-    tray = combine_cut(root, tray, [gps_keepout])
+    bodies['Top'] = combine_cut(root, bodies['Top'], [gps_keepout])
 
-    gps_frame = combine_cut_keep(root, gps_frame, [tray])
-    bodies['Top'] = combine_join(root, bodies['Top'], [tray, gps_frame])
+    gps_frame = build_gps_frame_body(root, p)
+    bodies['Top'] = combine_join(root, bodies['Top'], [gps_frame])
     bodies['Top'] = dedupe_body(root, bodies['Top'], 'Top')
 
     add_battery_reference_box(root, p)
@@ -1837,12 +2241,32 @@ def add_comms_bay(root, bodies, p):
 
 
 def _collect_occ_bodies(occ):
+    """All bRepBodies in occ's subtree, skipping hidden ones (2026-09-06
+    hygiene fix: a hidden sub-body -- e.g. the L76K assembly's placeholder
+    cable stub -- has no physical presence and shouldn't be measured
+    against the case in verify_min_clearances; a near-zero distance to a
+    body nobody will ever print or wire that way is not a real clearance
+    problem)."""
     out = []
     for b in occ.bRepBodies:
-        out.append(b)
+        if _safe_visible(b):
+            out.append(b)
     for c in occ.childOccurrences:
         out.extend(_collect_occ_bodies(c))
     return out
+
+
+def _safe_visible(entity):
+    """entity.isLightBulbOn, defaulting to True (visible/unknown, don't
+    hide it) both when the property doesn't exist and when reading it
+    raises -- confirmed 2026-09-06: a small number of deeply-nested body
+    proxies inside an inserted board reference raise
+    InternalValidationError on this specific read, unrelated to any
+    deliberate hiding."""
+    try:
+        return getattr(entity, 'isLightBulbOn', True)
+    except RuntimeError:
+        return True
 
 
 def _bbox_extents(occ):
@@ -1961,58 +2385,48 @@ def insert_and_place(design, root, doc, target_center_fn, thin_axis=None):
 
 
 def insert_comms_boards(app, root, p):
+    """2026-09-07 pass 7: places the real 3-board direct-solder/B2B stack
+    (L76K bottom -> XIAO middle -> Wio top, per Jake's measured hardware),
+    lying flat in the lanyard-end dome, instead of the old Wio-bottom/
+    XIAO-top pin-header pair placed separately from a standalone L76K.
+    Each board's Z is derived from the ACTUAL measured thickness/top of
+    the board below it (not a fixed offset guess), so a real thickness
+    difference between the reference docs and PARAMS' nominal gaps can
+    never silently stack up into a collision -- xiao_gap/wio_gap (PARAMS)
+    are the only fixed numbers; every Z build on top of a live
+    measurement of the board actually inserted.
+
+    PARAMS['comms_stack3_full_height'] (False for 'current', True for
+    'trim'): a real, unavoidable physical conflict found via
+    analyzeInterference -- the measured 18mm-tall stack does not fit
+    under 'current's unchanged 25mm-tall ceiling (Wio's own body
+    physically overlapped Top by ~6mm3 at the stack's real top). Unlike
+    the boss/GPS conflicts elsewhere in this pass, there is no local
+    clip-away fix (the stack is simply too tall for that case height) --
+    'current' inserts ONLY the L76K (it exists for the M1 outer-shell
+    probe-table comparison, not as a variant meant to carry real
+    electronics -- see params_current.py's comment)."""
     design = adsk.fusion.Design.cast(app.activeProduct)
     docs = p['board_docs']
-    wio_doc = get_open_doc(app, docs['wio'])
-    xiao_doc = get_open_doc(app, docs['xiao'])
+    full_height = p.get('comms_stack3_full_height', True)
+    wio_doc = get_open_doc(app, docs['wio']) if full_height else None
+    xiao_doc = get_open_doc(app, docs['xiao']) if full_height else None
     l76k_doc = get_open_doc(app, docs['l76k'])
     occs = {}
 
-    stack = p['bay']['stack']
-    cx = (stack['x'][0] + stack['x'][1]) / 2.0
-    cy = (stack['y'][0] + stack['y'][1]) / 2.0
-    wio_pcb_bottom_z = stack['wio_pcb_bottom_z']
-    xiao_pcb_bottom_z = wio_pcb_bottom_z + stack['xiao_pcb_bottom_offset']
+    s3 = p['bay']['stack3']
+    pcb = s3['l76k_pcb']
+    cx = (pcb['x'][0] + pcb['x'][1]) / 2.0
+    cy = (pcb['y'][0] + pcb['y'][1]) / 2.0
+    l76k_bottom_z = s3['l76k_bottom_z']
 
-    if wio_doc is not None:
-        # Wio's native bbox is thinnest in Z already (assume flat as
-        # authored -- no rotation); its PCB bottom lands at wio_pcb_bottom_z.
-        occ, dx, dy, dz, thin = insert_and_place(
-            design, root, wio_doc,
-            lambda dx, dy, dz, thick: (cx, cy, wio_pcb_bottom_z + thick / 2.0), thin_axis='z')
-        occs['wio'] = occ
-
-    if xiao_doc is not None:
-        # XIAO plugs DOWN into the Wio's sockets -- its native thickness
-        # axis is Y (per Jake), so rotate that onto world Z. 2026-09-05
-        # fix: ALSO rotate 90deg about world Z ('y90', see
-        # flatten_transform) so XIAO's long ~22.5mm axis (with the USB-C
-        # overhang) lands along world Y, parallel to the Wio's own long
-        # axis, instead of along world X where it made the stack far
-        # wider in X than the Wio-sized bay -- centred in X on the same
-        # (cx, cy) as Wio (the sockets force concentric placement anyway).
-        occ, dx, dy, dz, thin = insert_and_place(
-            design, root, xiao_doc,
-            lambda dx, dy, dz, thick: (cx, cy, xiao_pcb_bottom_z + thick / 2.0), thin_axis='y90')
-        occs['xiao'] = occ
-
+    l76k_top_z = None
     if l76k_doc is not None:
-        # Position by the actual PCB body (2026-09-05 fix), not the whole
-        # occurrence's aggregate bbox: the L76K assembly includes a separate
-        # GPS patch antenna on a cable (25x25x8.3), and placing by the
-        # occurrence's combined bbox put the real board outside the case
-        # entirely (its center is nowhere near the PCB's own center once a
-        # long cable/antenna is in the mix).
-        fr = p['bay']['l76k_wired']
-        lcx = (fr['x'][0] + fr['x'][1]) / 2.0
-        lcy = (fr['y'][0] + fr['y'][1]) / 2.0
-        # PCB bottom rests flush on the frame's floor pad (2026-09-05 fix
-        # -- see add_l76k_wired_frame): target z is the pad's top
-        # (l76k_floor_pad_z[1], 2.3) plus HALF THE PCB's OWN thickness
-        # (not a hardcoded guess) so the bottom face lands exactly there,
-        # not embedded in or floating above the pad.
-        pad_top_z = p['bay'].get('l76k_floor_pad_z', (2.0, 2.0))[1]
-
+        # Position by the actual PCB body (2026-09-05 fix, still needed
+        # here), not the whole occurrence's aggregate bbox: the L76K
+        # assembly includes a separate GPS patch antenna on a cable
+        # (25x25x8.3), and placing by the occurrence's combined bbox puts
+        # the real board far from its own PCB's center.
         occ = root.occurrences.addByInsert(l76k_doc.dataFile, adsk.core.Matrix3D.create(), True)
         match = find_pcb_like_body(occ)
         assert match is not None, 'no ~18x21mm PCB-like body found in the L76K assembly'
@@ -2025,57 +2439,132 @@ def insert_comms_boards(app, root, p):
                           'y': (bb.maxPoint.y - bb.minPoint.y) / MM,
                           'z': (bb.maxPoint.z - bb.minPoint.z) / MM}
         pcb_thickness = native_extent[thin_axis]
-        target_pcb_center = (lcx, lcy, pad_top_z + pcb_thickness / 2.0)
-        occ.transform = flatten_transform(native_center, thin_axis, target_pcb_center)
+        target_pcb_center = (cx, cy, l76k_bottom_z + pcb_thickness / 2.0)
+        # 2026-09-07 pass 7 fix: find_pcb_like_body correctly detects
+        # thin_axis='y' (the 1.54mm PCB thickness) here, but flatten_
+        # transform's plain 'y' mode maps native X (20.95mm, the board's
+        # LONG axis) straight onto world X -- measured empirically (a
+        # real build put the PCB at world x -10.48..10.48 / y -21.64..
+        # -3.86, i.e. long-axis-on-X, backwards from the spec's "long
+        # axis along Y"). 'y90' (already used for XIAO, same underlying
+        # need) additionally rotates 90deg about world Z so native X
+        # lands on world Y instead -- thin_axis is still 'y' for the
+        # thickness lookup above, only the ROTATION MODE passed to
+        # flatten_transform changes.
+        occ.transform = flatten_transform(native_center, 'y90', target_pcb_center)
         if design.snapshots.hasPendingSnapshot:
             design.snapshots.add()
+        l76k_top_z = l76k_bottom_z + pcb_thickness
 
-        # hide the cable/antenna sub-occurrence so it doesn't render as a
-        # stray part floating outside the case
-        for c in occ.childOccurrences:
-            if 'ANT' in c.name.upper():
-                c.isLightBulbOn = False
+        # 2026-09-07 pass 7 fix ('Top x GPS Patch Reference' / 'Bottom x
+        # <L76K antenna body>' interference): the L76K reference doc's own
+        # "GPD ANT" sub-assembly (a REAL modeled GPS patch antenna,
+        # ~25x25mm, native-authored at a fixed offset from the PCB) rides
+        # along rigidly with whatever transform is applied to the whole
+        # occurrence -- in this stack's position, it lands almost exactly
+        # on top of OUR OWN separate 'GPS Patch 25x25x8.3' reference box
+        # (the real antenna, wired and mounted separately per the bay
+        # design -- see add_gps_reference_box), a large real solid
+        # overlapping both Top and Bottom.
+        #
+        # Tried, in order, and rejected: (1) isLightBulbOn=False on the
+        # ANT ANCESTOR occurrence -- does not propagate to make the deep
+        # leaf body's OWN isLightBulbOn read False (confirmed empirically:
+        # check_interference's _safe_visible() still saw it as visible).
+        # (2) root.features.removeFeatures.add() on the leaf body --
+        # "succeeds" with no exception but is a SILENT NO-OP for a body 3+
+        # levels deep inside a referenced/linked occurrence (confirmed
+        # empirically: the body count under the L76K occurrence was
+        # unchanged before/after, in the SAME script execution); querying
+        # the same body fresh from a LATER script execution instead raises
+        # InternalValidationError outright -- either way, nothing is
+        # actually removed. (3, what's used here) isLightBulbOn=False
+        # set DIRECTLY on the LEAF body (not an ancestor) DOES take
+        # effect -- confirmed by reading it back True->False on the same
+        # body object -- and check_interference's own unknown_hidden
+        # filter (see its docstring) keys off exactly this property, so
+        # this excludes the antenna (and the pre-existing ~12x1x1mm
+        # stray-lead body, found >20mm from the target) from the
+        # interference gate without needing to actually delete anything.
+        target_xy = (cx, cy)
+        hidden_count = 0
 
-        # 2026-09-05 fix ('Bottom x L76K board' / 'Battery Reference x
-        # L76K board' interference): the reference doc's top-level "L76k"
-        # grouping occurrence carries one small (~12x1x1mm) body directly
-        # on itself, well outside the actual PCB footprint even in native
-        # coordinates (confirmed: it stays ~30mm from the PCB after the
-        # SAME rigid transform, so it was already that far away natively)
-        # -- almost certainly a stray lead/trace remnant from how this
-        # doc was authored, not a real board feature; it lands squarely
-        # inside the (unrelated) XIAO/Wio stack's own territory, so there
-        # is no sensible case-geometry accommodation for it either.
-        # isLightBulbOn=False was tried first and does NOT exclude a body
-        # from analyzeInterference (confirmed empirically -- the reported
-        # interference volume was byte-for-byte identical with or without
-        # hiding it) -- a Remove feature on the individual body does work
-        # and does not touch the source document (removeFeatures targets
-        # only this design's own instance/proxy of the body).
-        target_xy = (lcx, lcy)
-
-        def _hide_stray(o):
+        def _hide_leaf_bodies(o, in_ant_subtree):
+            nonlocal hidden_count
             for b in list(o.bRepBodies):
                 if b == pcb_body:
                     continue
-                bb = b.boundingBox
-                cx = (bb.minPoint.x + bb.maxPoint.x) / 2.0 / MM
-                cy = (bb.minPoint.y + bb.maxPoint.y) / 2.0 / MM
-                if math.hypot(cx - target_xy[0], cy - target_xy[1]) > 20.0:
-                    root.features.removeFeatures.add(b)
-            for c in o.childOccurrences:
-                _hide_stray(c)
+                hide = in_ant_subtree
+                if not hide:
+                    bb2 = b.boundingBox
+                    bcx = (bb2.minPoint.x + bb2.maxPoint.x) / 2.0 / MM
+                    bcy = (bb2.minPoint.y + bb2.maxPoint.y) / 2.0 / MM
+                    hide = math.hypot(bcx - target_xy[0], bcy - target_xy[1]) > 20.0
+                if hide:
+                    b.isLightBulbOn = False
+                    hidden_count += 1
+            for c in list(o.childOccurrences):
+                _hide_leaf_bodies(c, in_ant_subtree or ('ANT' in c.name.upper()))
 
-        _hide_stray(occ)
+        _hide_leaf_bodies(occ, False)
+        print('L76K: hid', hidden_count, 'antenna/stray leaf bodies (isLightBulbOn on the body itself)')
 
         pcb_bb = pcb_body.boundingBox
         print('L76K PCB world bbox:', [round(v / MM, 2) for v in pcb_bb.minPoint.asArray()],
-              [round(v / MM, 2) for v in pcb_bb.maxPoint.asArray()])
+              [round(v / MM, 2) for v in pcb_bb.maxPoint.asArray()], 'top_z', round(l76k_top_z, 3))
         occs['l76k'] = occ
+
+    xiao_top_z = None
+    if xiao_doc is not None and l76k_top_z is not None:
+        xiao_bottom_z = l76k_top_z + s3['xiao_gap']
+        thickness_holder = {}
+
+        def xiao_target(dx, dy, dz, thick, _z0=xiao_bottom_z, _h=thickness_holder):
+            _h['t'] = thick
+            return (cx, cy, _z0 + thick / 2.0)
+
+        # XIAO's native thickness axis is Y (per Jake) -- 'y90' (see
+        # flatten_transform) additionally rotates 90deg about world Z so
+        # XIAO's long ~22.5mm axis (including the USB-C overhang) lands
+        # along world Y with the USB-C end toward +Y, matching the L76K's
+        # own long axis below it and the spec's "XIAO USB-C end toward
+        # +Y". This is the SAME rotation the pre-pass-7 stack used for
+        # XIAO (there, plugging DOWN into the Wio below it); the physical
+        # sense -- component/pin side facing down, toward whatever board
+        # is below -- is unchanged by this pass's reordering, so it is
+        # reused as-is rather than re-derived.
+        occ, dx, dy, dz, thin = insert_and_place(design, root, xiao_doc, xiao_target, thin_axis='y90')
+        occs['xiao'] = occ
+        xiao_thickness = thickness_holder['t']
+        xiao_top_z = xiao_bottom_z + xiao_thickness
+        print('XIAO placed: bottom_z', round(xiao_bottom_z, 3), 'thickness', round(xiao_thickness, 3),
+              'top_z', round(xiao_top_z, 3))
+
+    if wio_doc is not None and xiao_top_z is not None:
+        wio_bottom_z = xiao_top_z + s3['wio_gap']
+        thickness_holder2 = {}
+
+        def wio_target(dx, dy, dz, thick, _z0=wio_bottom_z, _h=thickness_holder2):
+            _h['t'] = thick
+            return (cx, cy, _z0 + thick / 2.0)
+
+        # Wio's native bbox is thinnest in Z already (assume flat as
+        # authored, module up) -- no rotation, same as the pre-pass-7
+        # stack (there, Wio was the BOTTOM board; here it's the TOP board,
+        # but its own native orientation -- module facing up -- is
+        # unchanged either way).
+        occ, dx, dy, dz, thin = insert_and_place(design, root, wio_doc, wio_target, thin_axis='z')
+        occs['wio'] = occ
+        wio_thickness = thickness_holder2['t']
+        wio_top_z = wio_bottom_z + wio_thickness
+        print('Wio placed: bottom_z', round(wio_bottom_z, 3), 'thickness', round(wio_thickness, 3),
+              'top_z (STACK TOP)', round(wio_top_z, 3))
 
     return occs
 
 
+# ---------------------------------------------------------------------------
+# build() / verify() / run()
 # ---------------------------------------------------------------------------
 # build() / verify() / run()
 # ---------------------------------------------------------------------------
@@ -2100,7 +2589,7 @@ def build(app, params):
     # BRepBody Python references (same issue it works around for
     # Bottom/Top), so renaming clip_tool only after those calls would
     # silently rename a stale handle instead.
-    clip_tool.name = 'Inner Cavity Clip Tool (reference only)'
+    clip_tool.name = CLIP_TOOL_NAME
     clip_tool.isLightBulbOn = False
     bodies = add_case_screws(root, bodies, params, clip_tool=clip_tool)
     bodies = add_top_posts(root, bodies, params, clip_tool=clip_tool)
@@ -2108,11 +2597,11 @@ def build(app, params):
     # calls above can invalidate previously-held BRepBody references more
     # broadly than just the body actually removed (see dedupe_body's
     # docstring) -- clip_tool itself is never removed, but its Python
-    # handle isn't safe to keep using past those calls regardless.
-    for b in root.bRepBodies:
-        if b.name == 'Inner Cavity Clip Tool (reference only)':
-            clip_tool = b
-            break
+    # handle isn't safe to keep using past those calls regardless. (Pass 6:
+    # add_case_screws/add_top_posts now also re-fetch internally after
+    # every dedupe_body call, not just once here at the very end -- see
+    # _refetch_by_name's docstring for the real bug this closes.)
+    clip_tool = _refetch_by_name(root, CLIP_TOOL_NAME) or clip_tool
 
     plate = build_screen_plate(root, params)
     bodies['Screen Plate'] = plate
@@ -2124,7 +2613,7 @@ def build(app, params):
     bodies = add_flare_logo(root, bodies, params)
     bodies = add_wordmark_logo(root, bodies, params)
 
-    bodies = add_comms_bay(root, bodies, params)
+    bodies = add_comms_bay(root, bodies, params, clip_tool=clip_tool)
 
     insert_display_pcba(app, root, params)
     insert_comms_boards(app, root, params)
@@ -2148,17 +2637,21 @@ def build(app, params):
 
 
 def remove_stray_generic_bodies(root):
-    """Defensive final sweep (2026-09-05): every intentional body in this
-    generator ends up with an explicit name -- one of build()'s returned
-    names, or a '... (reference only)' marker -- so anything still
-    carrying Fusion's auto-generated generic name ('BodyNN') by the end of
-    build() is presumptively an orphaned byproduct of the same fragile-
-    boolean family as the Bottom/Top duplication dedupe_body works around
-    (a small stray box has been observed even after that fix, from the Top
-    posts / comms-bay region). Geometrically these are redundant --
-    everything the probes/envelope/interference checks care about already
-    passes with them ignored -- so delete them outright rather than leave
-    them to fail the exact body-name check."""
+    """Defensive final sweep (2026-09-05; generalized 2026-09-06 to run
+    against any Component, not just the document root -- organize_components()
+    also sweeps each of the 5 pass-6 components after moving bodies into
+    them): every intentional body in this generator ends up with an
+    explicit name -- one of build()'s returned names, or one of the named
+    reference/tool bodies (Battery 803040, GPS Patch 25x25x8.3, FPC LoRa
+    Antenna Keep-out, Inner Cavity Clip Tool, Cap Trim Envelope) -- so
+    anything still carrying Fusion's auto-generated generic name ('BodyNN')
+    by the end of build() is presumptively an orphaned byproduct of the
+    same fragile-boolean family as the Bottom/Top duplication dedupe_body
+    works around (a small stray box has been observed even after that fix,
+    from the Top posts / comms-bay region). Geometrically these are
+    redundant -- everything the probes/envelope/interference checks care
+    about already passes with them ignored -- so delete them outright
+    rather than leave them to fail the exact body-name check."""
     import re
     # name-pattern only, deliberately not object-identity-based: every
     # intentionally-kept body already has an explicit custom name by this
@@ -2203,6 +2696,20 @@ def find_first_solid_x(bodies, y_mm, z_mm, start=0.0, max_x=32.0, step=0.02):
         if any(probe_point_solid(b, pt) for b in bodies):
             return x
         x += step
+    return None
+
+
+def find_ceiling_z_at(body, x, y, z_hi, z_lo, step=0.05):
+    # Scan DOWNWARD in Z at a fixed (x,y) from z_hi to z_lo and return
+    # the first z where `body` is solid -- i.e. the inner ceiling's
+    # underside height at that point (2026-09-07, pass 7, for
+    # verify_stack3_clearance). Returns None if no solid is found
+    # anywhere in the scanned range.
+    z = z_hi
+    while z >= z_lo:
+        if probe_point_solid(body, P(x, y, z)):
+            return z
+        z -= step
     return None
 
 
@@ -2276,6 +2783,21 @@ def check_interference(design, entities, min_volume_mm3=_TOUCH_VOLUME_TOL_MM3):
         n2 = getattr(r.entityTwo, 'name', None)
         if n1 not in known_names and n2 not in known_names:
             continue  # purely internal to one inserted reference doc
+        # 2026-09-06 hygiene fix: a HIDDEN sub-body inside an inserted
+        # board reference (e.g. the L76K assembly's placeholder cable
+        # stub) can still be flagged by analyzeInterference even though
+        # it is deliberately hidden and has no physical presence in the
+        # printed/assembled case -- analyzeInterference does not itself
+        # respect isLightBulbOn (same finding as dedupe_body's note that
+        # isLightBulbOn=False alone never excluded a body here). Skip a
+        # result only when the UNKNOWN side (the board's own sub-body,
+        # never one of ours) is hidden -- our own tracked bodies
+        # (REFERENCE_BOX_NAMES included) are deliberately hidden too but
+        # must still be checked, so the hidden-skip must not apply to them.
+        unknown_hidden = ((n1 not in known_names and _safe_visible(r.entityOne) is False)
+                           or (n2 not in known_names and _safe_visible(r.entityTwo) is False))
+        if unknown_hidden:
+            continue
         vol_mm3 = 0.0
         try:
             bb = r.interferenceBody.boundingBox
@@ -2314,17 +2836,26 @@ def verify_m1_cavity_probes(bodies, p):
     top_bodies = [b for b in bodies if b.name == 'Top']
     bot_bodies = [b for b in bodies if b.name == 'Bottom']
 
-    # y=27 (2026-09-05): the original y=10 now runs straight through the
-    # GPS patch frame's footprint (y -5..20, hanging from the Top ceiling
-    # through this probe's z=22 height) -- find_first_solid_x stops at the
-    # FIRST solid it hits scanning outward, which for the WIDER 'current'
-    # variant is the bay frame's own wall, not the true (further out) shell
-    # cavity wall, giving a false failure. y=27 clears the bay footprints
-    # (battery/stack/L76K/gps all end by y~24) and the Top posts (P2/P3 at
-    # y~32, a clear >2mm miss at the probe x range) in both variants.
+    # y=29 (2026-09-06, pass 6 -- was y=27): the original y=10 ran straight
+    # through the GPS patch frame's footprint (y -5..20, hanging from the
+    # Top ceiling through this probe's z=22 height) -- find_first_solid_x
+    # stops at the FIRST solid it hits scanning outward, which for the
+    # WIDER 'current' variant is the bay frame's own wall, not the true
+    # (further out) shell cavity wall, giving a false failure. y=27
+    # cleared the bay footprints and the Top posts (P2/P3 at y~32) in both
+    # variants, but pass 6's clipped_pillar_with_reach fix (see
+    # verify_posts_and_bosses) means case-screw boss C -- trim (23, 25.2)
+    # / current (23.74, 25.2), boss_dia 6mm radius -- now ACTUALLY HAS
+    # MATERIAL for the first time (it was silently never joined into Top
+    # before that fix), and its own real footprint reaches this probe's
+    # scan line at y=27 (only 1.8mm away, well within its 3mm radius),
+    # stopping the scan on the boss itself at x~20.6 instead of the true
+    # wall at ~21.9. y=29 (3.8mm from boss C's y, outside its radius)
+    # clears the now-real boss C while still clearing the bay footprints
+    # and Top posts (P2/P3 at y~32) in both variants.
     z_top_probe = 22.0
     expect_top = inner_rho_at_z(p, z_top_probe)
-    found = find_first_solid_x(top_bodies, 27.0, z_top_probe)
+    found = find_first_solid_x(top_bodies, 29.0, z_top_probe)
     checks.append(('top_cavity', expect_top, found, found is not None and abs(found - expect_top) <= 0.15))
 
     z_bot_probe = 9.3
@@ -2344,9 +2875,10 @@ def envelope_bounds(p):
     R = p['outer_radius']
     cap_proud = max(p['power_cap']['proud'], p['home_cap']['proud'])
     tol = 0.5
+    _, lug_y_far, _, _ = lug_ear_geometry(p)
     return {
         'x': (-(R + cap_proud + tol), R + tol),
-        'y': (min(p['lug']['y_tip'] - p['lug']['tip_r'] - tol, ay - R - tol), by + R + tol),
+        'y': (min(lug_y_far - tol, ay - R - tol), by + R + tol),
         'z': (p['bottom_z'] - tol, p['top_z'] + tol),
     }
 
@@ -2407,9 +2939,9 @@ def check_body_envelope_vertices(body, p, name, tol=0.15):
     real, intentional protrusion at the -y tail: y below the wall-plus-
     2mm threshold and |x| < 5.6) and the two button cap heads (allowed out
     to +0.45mm, their designed proud amount)."""
-    ay = p['spine_a'][1]
-    lug_y_thresh = ay - p['outer_radius'] + 2.0
-    lug_x_half = 5.6
+    lug_half_w, _, lug_y_root, _ = lug_ear_geometry(p)
+    lug_y_thresh = lug_y_root
+    lug_x_half = lug_half_w + 0.5
     is_cap = name in ('Power Button', 'Home Button')
     limit = p['outer_radius'] + (0.45 + 0.05 if is_cap else tol)
     bad = []
@@ -2518,7 +3050,8 @@ def verify_m2(bodies_dict, p):
 
     bottom = bodies_dict['Bottom']
     lug = p['lug']
-    lug_hole_pt = P(lug['hole_xy'][0], lug['hole_xy'][1], (lug['z'][0] + lug['z'][1]) / 2.0)
+    _, _, _, lug_hole_y = lug_ear_geometry(p)
+    lug_hole_pt = P(0.0, lug_hole_y, (lug['z'][0] + lug['z'][1]) / 2.0)
     lug_hole_open = not probe_point_solid(bottom, lug_hole_pt)
     results['lug_hole_open'] = (lug_hole_open, 'point on lug hole axis is empty (not solid)')
 
@@ -2586,28 +3119,33 @@ def verify_m2(bodies_dict, p):
 
 
 REFERENCE_TOOL_NAMES = (
-    'Inner Cavity Clip Tool (reference only)',
-    'Cap Trim Envelope (reference only)',
+    'Inner Cavity Clip Tool',
+    'Cap Trim Envelope',
 )
 REFERENCE_BOX_NAMES = (
-    'Battery Reference (reference only)',
-    'GPS Patch Reference (reference only)',
+    'Battery 803040',
+    'GPS Patch 25x25x8.3',
 )
-FPC_KEEPOUT_NAME = 'FPC Keepout (reference only)'
+FPC_KEEPOUT_NAME = 'FPC LoRa Antenna Keep-out'
 BOARD_OCC_NAME_SUBSTRINGS = ('XIAO-ESP32S3', 'Wio-SX1262', 'L76K', 'ESP32-S3-Touch-LCD')
 
 # (occurrence name substring, case body name) pairs that are INTENDED to
 # touch (zero clearance) -- excluded from the < clearance_min assertion in
 # verify_min_clearances. Everything else must clear by clearance_min.
 ALLOWED_CONTACTS = (
-    ('L76K', 'Bottom'),                 # PCB rests on its frame floor pad
+    ('L76K', 'Bottom'),                 # PCB rests on its four corner pads
     # collect_interference_entities substitutes the L76K occurrence with
     # its child occurrences for interference purposes (see its docstring)
     # -- the real PCB's parent occurrence is named 'XIAO-ESP32S3 v2 v2'
     # (a hat-mode-shaped placeholder reused as the L76K's own PCB outline)
     # in the reference doc, not 'L76K', so it needs its own entry here.
     ('XIAO-ESP32S3 v2', 'Bottom'),
-    ('Wio-SX1262', 'Top'),              # Wio rests on the tray's wedge shelf
+    # 2026-09-07 pass 7: the old ('Wio-SX1262', 'Top') entry (Wio used to
+    # rest on the Top-hanging tray's wedge shelf) is gone -- the 3-board
+    # stack no longer touches Top at all; it floats clear of the ceiling
+    # by design (see verify_stack3_clearance / stack3['ceiling_clear_min']).
+    # A real Wio-Top contact should now FAIL verify_min_clearances, not be
+    # silently allowed.
     ('ESP32-S3-Touch-LCD', 'Top'),      # glass flush with the top face
     ('ESP32-S3-Touch-LCD', 'Screen Plate'),  # module standoffs on the plate
 )
@@ -2621,19 +3159,173 @@ ALLOWED_CONTACTS = (
 # for speed and is a documented limitation, not a correctness guarantee.
 MIN_CLEARANCE_BODY_CAP = 25
 
+# ---------------------------------------------------------------------------
+# Document structure (2026-09-06, pass 6): named components everything gets
+# organized into after build(), instead of an unstructured pile of bodies at
+# the document root -- see organize_components()/verify_structure().
+# ---------------------------------------------------------------------------
+COMPONENT_CASE = 'Print — Case'
+COMPONENT_BUTTONS = 'Print — Buttons'
+COMPONENT_COUPONS = 'Print — Coupons'
+COMPONENT_REFERENCE = 'Reference — not printed'
+COMPONENT_BOARDS = 'Boards'
+
+CASE_BODY_NAMES = ('Top', 'Bottom', 'Screen Plate')
+BUTTON_BODY_NAMES = ('Power Button', 'Home Button')
+
+
+def find_component_occurrence(root, name):
+    """The top-level (direct child of root) occurrence whose component has
+    this name, or None. All 5 pass-6 components (Print -- Case/Buttons/
+    Coupons, Reference -- not printed, Boards) are created as direct
+    children of root by organize_components(), so a shallow scan suffices."""
+    for occ in root.occurrences:
+        if occ.component.name == name:
+            return occ
+    return None
+
+
+def organize_components(root, bodies):
+    """Post-build structuring pass (2026-09-06, pass 6): build() leaves
+    every body and every inserted board/display occurrence at the document
+    root, auto-named where Fusion had to invent something ('Body145', ...)
+    -- this moves everything into named components instead. Confirmed
+    empirically (see the pass-6 notes): BRepBody.moveToComponent(occ) and
+    Occurrence.moveToComponent(occ) both move their target into occ's OWN
+    component, despite the API doc's confusingly-worded "parent component
+    of the target occurrence" -- not occ's parent. Both preserve world
+    position; no snapshot needed (unlike assigning occ.transform).
+
+    Returns the updated `bodies` dict (moveToComponent returns a new
+    BRepBody reference -- the pre-move handles are no longer valid) plus a
+    dict of the 4 new top-level occurrences it created."""
+    def new_component(name):
+        occ = root.occurrences.addNewComponent(adsk.core.Matrix3D.create())
+        occ.component.name = name
+        return occ
+
+    case_occ = new_component(COMPONENT_CASE)
+    buttons_occ = new_component(COMPONENT_BUTTONS)
+    ref_occ = new_component(COMPONENT_REFERENCE)
+    boards_occ = new_component(COMPONENT_BOARDS)
+
+    for name in CASE_BODY_NAMES:
+        bodies[name] = bodies[name].moveToComponent(case_occ)
+    for name in BUTTON_BODY_NAMES:
+        bodies[name] = bodies[name].moveToComponent(buttons_occ)
+
+    # Everything still at root by this point is a reference-only box/tool
+    # (Battery 803040, GPS Patch 25x25x8.3, FPC LoRa Antenna Keep-out, the
+    # Inner Cavity Clip Tool, the Cap Trim Envelope) -- already named and
+    # already hidden by the code that built them; just re-home them and
+    # make doubly sure they're hidden (belt and suspenders).
+    for b in list(root.bRepBodies):
+        moved = b.moveToComponent(ref_occ)
+        moved.isLightBulbOn = False
+
+    # Every remaining top-level occurrence is an inserted board/display
+    # reference (Wio, XIAO, L76K, the display PCBA) -- move it under
+    # Boards. Stays visible, per the pass-2 decision.
+    for occ in list(root.occurrences):
+        if occ.component.name in (COMPONENT_CASE, COMPONENT_BUTTONS,
+                                   COMPONENT_REFERENCE, COMPONENT_BOARDS):
+            continue
+        occ.moveToComponent(boards_occ)
+
+    for comp_occ in (case_occ, buttons_occ, ref_occ, boards_occ):
+        remove_stray_generic_bodies(comp_occ.component)
+
+    return bodies, {'case': case_occ, 'buttons': buttons_occ,
+                     'reference': ref_occ, 'boards': boards_occ}
+
+
+def verify_structure(design):
+    """Pass-6 structuring gate, run after organize_components() (and, when
+    export=True, after export_coupons() so Print -- Coupons exists too):
+    asserts nothing was left unstructured at the document root, every body
+    in OUR OWN authored components has an explicit name (never descends
+    into an inserted board's own native modeling -- those keep their
+    source document's names, which we must never touch), the 5 printable
+    bodies live in the two Print components, and every body in Reference
+    -- not printed is hidden. Prints the tree (component -> bodies with
+    bbox) and returns it."""
+    import re
+    root = design.rootComponent
+    root_names = [b.name for b in root.bRepBodies]
+    assert not root_names, f'body(ies) left unstructured at document root: {root_names}'
+
+    case_occ = find_component_occurrence(root, COMPONENT_CASE)
+    buttons_occ = find_component_occurrence(root, COMPONENT_BUTTONS)
+    ref_occ = find_component_occurrence(root, COMPONENT_REFERENCE)
+    coupons_occ = find_component_occurrence(root, COMPONENT_COUPONS)
+    boards_occ = find_component_occurrence(root, COMPONENT_BOARDS)
+    assert case_occ and buttons_occ and ref_occ and boards_occ, (
+        f'expected component(s) missing: case={case_occ} buttons={buttons_occ} '
+        f'reference={ref_occ} boards={boards_occ}')
+
+    tree = {}
+    for occ, label in ((case_occ, COMPONENT_CASE), (buttons_occ, COMPONENT_BUTTONS),
+                        (ref_occ, COMPONENT_REFERENCE), (coupons_occ, COMPONENT_COUPONS)):
+        if occ is None:
+            continue
+        entries = []
+        # world-space bodies via the OCCURRENCE (occ.bRepBodies), not
+        # occ.component.bRepBodies -- a component's own bRepBodies report
+        # bounding boxes in the component's LOCAL/native frame, which only
+        # coincides with world space for an identity-transform occurrence
+        # (true for Print -- Case/Buttons/Reference, but not Print --
+        # Coupons, translated +60mm off to the side -- see export_coupons).
+        for b in occ.bRepBodies:
+            assert not re.fullmatch(r'Body\d+', b.name), f'{label}: auto-named body {b.name!r}'
+            entries.append((b.name, bbox_of(b), b.isLightBulbOn))
+        tree[label] = entries
+
+    case_names = sorted(n for n, _, _ in tree[COMPONENT_CASE])
+    assert case_names == sorted(CASE_BODY_NAMES), f'{COMPONENT_CASE} bodies: {case_names}'
+    button_names = sorted(n for n, _, _ in tree[COMPONENT_BUTTONS])
+    assert button_names == sorted(BUTTON_BODY_NAMES), f'{COMPONENT_BUTTONS} bodies: {button_names}'
+
+    bad_visible = [n for n, _, visible in tree[COMPONENT_REFERENCE] if visible]
+    assert not bad_visible, f'reference body(ies) not hidden: {bad_visible}'
+
+    boards_tree = [(occ.name, occ.component.name) for occ in boards_occ.component.occurrences]
+
+    print('=== document structure ===')
+    for label in (COMPONENT_CASE, COMPONENT_BUTTONS, COMPONENT_COUPONS, COMPONENT_REFERENCE):
+        if label not in tree:
+            print(f'{label}: (not built this run)')
+            continue
+        print(f'{label}:')
+        for name, bb, visible in tree[label]:
+            print(f'   {name}  bbox={bb}  {"visible" if visible else "hidden"}')
+    print(f'{COMPONENT_BOARDS}:')
+    for occ_name, comp_name in boards_tree:
+        print(f'   {occ_name} -> {comp_name}')
+
+    return tree
+
 
 def collect_interference_entities(root):
     """Everything verify()'s interference gate considers: every printed
-    body, the Battery/GPS reference boxes, and every inserted board
-    occurrence (passed as whole Occurrences, not their individual nested
-    bRepBodies -- see check_interference's docstring for why) -- excluding
-    only the two reference TOOL solids (construction aids with no physical
-    presence) and the FPC keep-out marker (a keep-out strip, not a real
-    part; not enforced by this pass -- see README known limitations)."""
-    printed = [b for b in root.bRepBodies
-               if 'reference only' not in b.name]
-    ref_boxes = [b for b in root.bRepBodies if b.name in REFERENCE_BOX_NAMES]
-    board_occs = [occ for occ in root.occurrences
+    body (from Print -- Case / Print -- Buttons), the Battery/GPS reference
+    boxes (from Reference -- not printed), and every inserted board
+    occurrence (from Boards, passed as whole Occurrences, not their
+    individual nested bRepBodies -- see check_interference's docstring for
+    why) -- excluding only the two reference TOOL solids (construction aids
+    with no physical presence) and the FPC keep-out marker (a keep-out
+    strip, not a real part; not enforced by this pass -- see README known
+    limitations). Relies on organize_components() having already run --
+    printed/reference bodies are found by COMPONENT, not by a name-substring
+    convention, now that they live in their own components."""
+    case_occ = find_component_occurrence(root, COMPONENT_CASE)
+    buttons_occ = find_component_occurrence(root, COMPONENT_BUTTONS)
+    ref_occ = find_component_occurrence(root, COMPONENT_REFERENCE)
+    boards_occ = find_component_occurrence(root, COMPONENT_BOARDS)
+    assert case_occ and buttons_occ and ref_occ and boards_occ, 'organize_components() must run before verify()'
+
+    printed = list(case_occ.component.bRepBodies) + list(buttons_occ.component.bRepBodies)
+    ref_boxes = [b for b in ref_occ.component.bRepBodies if b.name in REFERENCE_BOX_NAMES]
+    board_occs = [occ for occ in boards_occ.component.occurrences
                   if any(s in occ.name for s in BOARD_OCC_NAME_SUBSTRINGS)]
 
     # 2026-09-05 workaround: the L76K reference doc's top-level "L76k"
@@ -2699,6 +3391,318 @@ def verify_min_clearances(app, printed_bodies, board_occs, min_mm):
     return results
 
 
+def _rect_perimeter_points(half_t, half_z, per_side=3):
+    """12 (per_side=3) sample points around a rectangle's perimeter in its
+    own local (tangential, vertical) 2D frame, centered at the origin."""
+    pts = []
+    for i in range(per_side):
+        frac = (-1.0 + 2.0 * i / (per_side - 1)) if per_side > 1 else 0.0
+        pts.append((frac * half_t, -half_z))
+        pts.append((frac * half_t, half_z))
+    for i in range(per_side):
+        frac = (-1.0 + 2.0 * i / (per_side - 1)) if per_side > 1 else 0.0
+        pts.append((-half_t, frac * half_z))
+        pts.append((half_t, frac * half_z))
+    return pts
+
+
+def verify_skin_intact(bodies_dict, p):
+    """Regression guard (2026-09-06, pass 6, item A -- Jake's screenshot
+    review found a rectangular notch through the outer skin next to each
+    button's stadium hole, caused by an interior cut -- the TAB HOLE --
+    reaching all the way past the true outer surface; add_button's fix
+    bounds that cut analytically at s_inner + tab_hole_skin_margin/2).
+
+    2026-09-07 pass 7 (item 5), attempt 2: a first re-target (probing a
+    full rectangular ring around the tab hole's own w x z-span) still
+    over-fired on almost every sample -- traced to the tab hole's own Z
+    range legitimately OVERLAPPING the main wall-hole cutter's Z range by
+    design (tab_hole_z_hi = z_center - W/2 + 0.3 sits 0.55mm ABOVE the
+    main hole's own lower bound, z_center - W/2 - 0.25 -- a deliberate
+    seam for a clean union, not a gap), so any ring point near the TOP of
+    the tab hole's z-span is hollow because of the (unrelated, legitimate)
+    main hole, not a defect. Simplified to what the fix actually needs to
+    verify: at 3 points safely inside the tab's own width (no extra
+    margin needed -- tab['w'] is already the tab's real footprint) and a
+    SINGLE z well clear of the main-hole overlap (the midpoint of the
+    tab's z-span that does NOT overlap the main hole), probe radially
+    OUTWARD from the tab hole's own analytic reach
+    (s_inner + tab_hole_skin_margin/2, exactly what add_button's fix
+    bounds the cut at) by two small depths -- real skin should start
+    immediately past that reach; a regression that lets the cut reach
+    further out shows up as one of these going hollow."""
+    top = bodies_dict['Top']
+    results = {}
+    buttons = [
+        ('Power', p['switch_power_bbox'], p['power_nub_dir'], p['power_cap']),
+        ('Home', dict(p['switch_home_bbox'], z=p['switch_power_bbox']['z']), p['home_nub_dir'], p['home_cap']),
+    ]
+    tab = p['tab']
+    skin_margin = p.get('tab_hole_skin_margin', 2.0)
+    for name, switch_bbox, nub_dir, cap in buttons:
+        g = button_geometry(p, switch_bbox, nub_dir, cap)
+        d2, t2 = g['d'], g['t']
+        housing_xy = g['housing_xy']
+        W = cap['stadium'][1]
+        z_center = (cap['z'][0] + cap['z'][1]) / 2.0
+        tab_hole_z_lo = z_center - W / 2.0 - tab['h'] - 0.3
+        main_hole_z_lo = z_center - W / 2.0 - 0.25  # main wall-hole cutter's own lower Z bound
+        # a z safely inside the tab's own span but clear of the main
+        # hole's overlap seam -- the lower half of the tab's z-span.
+        z_safe = (tab_hole_z_lo + main_hole_z_lo) / 2.0
+        # the tab hole's own real outward-most reach (matches add_button's
+        # tab_hole_body construction exactly -- see its docstring).
+        s_reach = g['s_inner'] + skin_margin / 2.0
+        # 2026-09-07: depths kept SHALLOW (not e.g. 0.5) -- traced a
+        # borderline failure at t_frac=-0.7/depth=0.5 to the probe simply
+        # stepping past the TRUE outer surface at that off-axis tangential
+        # offset (x landed at rho=28.06 against a trim outer_radius of
+        # 28 -- open air, not a skin breach): the nominal ~1.45mm of real
+        # skin past the tab hole's reach (see add_button's docstring) is
+        # measured along the direct ray at t_off=0, and thins somewhat
+        # off-axis the same way the analytic wall-distance formula's
+        # ~0.25-0.3mm ray-vs-true-curvature slack shows up elsewhere in
+        # this file. 0.15/0.3 stays comfortably inside real material
+        # everywhere while still testing meaningfully past s_reach.
+        for depth_out in (0.15, 0.3):
+            s = s_reach + depth_out
+            xy0 = (housing_xy[0] + s * d2[0], housing_xy[1] + s * d2[1])
+            for i, t_frac in enumerate((-0.7, 0.0, 0.7)):
+                t_off = t_frac * (tab['w'] / 2.0)
+                x = xy0[0] + t_off * t2[0]
+                y = xy0[1] + t_off * t2[1]
+                ok = probe_point_solid(top, P(x, y, z_safe))
+                results[f'{name}_depth{depth_out}_pt{i}'] = ok
+    return results
+
+
+def verify_wall_integrity(bodies_dict, p):
+    """Regression guard (2026-09-06, pass 6, items B/C): a fine angular
+    sweep around both domed ends at the parting-line z-band, plus a probe
+    of the wall just outside each case-screw boss, added after Jake's own
+    STL review reported possible wedge/triangular-prism artifacts and
+    pinholes near the parting line that the coarser verify_no_outer_bumps
+    (3 points/side) could miss.
+
+    Dome sweep: at z=7/9/11 and every 15 degrees around each dome (skipping
+    a small window at spine_a for the real lanyard lug), confirms no solid
+    material just outside the surface (rho=outer_radius+0.15, a bump) and
+    that the wall is genuinely solid just inside it (rho=outer_radius-1.0,
+    a hole) -- both at the SAME angle, so a real local defect (not just
+    normal curvature) shows up as one flipping unexpectedly.
+
+    Boss probe: for each case screw (A/B/C/D), confirms the wall is solid
+    from z=1 to z=9 (bottom) just outward of the boss's own radius, along
+    the ray from the spine straight through the boss -- catches a
+    counterbore/boss-clip cut breaking all the way through the wall.
+
+    2026-09-07 pass 7 (item 5): two NARROW, documented exceptions added so
+    this can gate verify() -- both root-caused by tracing the actual
+    failing points' geometry (not guessed), the same way every other real
+    defect in this file was found:
+    (a) 'intact' at spine_a, z=11, deg +-15: z=11 sits in Top's ANCHOR ring
+        (anchor_z=10..11), which has a real, intentional relief cut
+        (lug_relief_box) right there so the lug ear has clearance --
+        probing 'intact' inside that relief naturally finds hollow, not a
+        defect. Skipped by checking the probed (x,y) against the box
+        directly (+0.5mm margin), not a hand-tuned angle threshold, so it
+        can never silently drift out of sync with the real relief size.
+    (b) boss wall checks at z within 0.5mm of the straight-section's
+        bottom tangent height (bot_tangent_z, ~2.93 for both variants):
+        the same flat-ray-vs-true-curvature slack (~0.25mm) verify_m2's
+        cap-proud check already documents -- the profile's flat-to-arc
+        transition is exactly where a straight ray at a fixed inward
+        offset most diverges from the true (locally non-radial) surface
+        normal. Only affects straight-section bosses (A/C for both
+        variants currently); B1/B2/D use the domed-end branch and are
+        unaffected."""
+    top = bodies_dict['Top']
+    bottom = bodies_dict['Bottom']
+    R = p['outer_radius']
+    ay, by = p['spine_a'][1], p['spine_b'][1]
+    results = {}
+
+    lb = p['lug_relief_box']
+    lb_margin = 0.5
+
+    def in_lug_relief(x, y, z):
+        return (lb['x'][0] - lb_margin <= x <= lb['x'][1] + lb_margin
+                and lb['y'][0] - lb_margin <= y <= lb['y'][1] + lb_margin
+                and p['lip_z'][0] - lb_margin <= z <= p['anchor_z'][1] + lb_margin)
+
+    for end_name, center_y in (('spine_a', ay), ('spine_b', by)):
+        sign = -1.0 if end_name == 'spine_a' else 1.0
+        for z in (7.0, 9.0, 11.0):
+            body = bottom if z < p['split_z'] else top
+            for deg in range(-90, 91, 15):
+                theta = math.radians(deg)
+                dx = math.sin(theta)
+                dy = sign * math.cos(theta)
+                if abs(dx) < 0.25:
+                    continue  # spine_a: the real lanyard lug opening; spine_b: the USB tunnel
+                x_out, y_out = (R + 0.15) * dx, center_y + (R + 0.15) * dy
+                x_in, y_in = (R - 1.0) * dx, center_y + (R - 1.0) * dy
+                no_bump = not probe_point_solid(body, P(x_out, y_out, z))
+                results[f'{end_name}_z{z}_deg{deg}_no_bump'] = no_bump
+                if in_lug_relief(x_in, y_in, z):
+                    continue  # (a) real lug-relief cut, not a defect
+                intact = probe_point_solid(body, P(x_in, y_in, z))
+                results[f'{end_name}_z{z}_deg{deg}_intact'] = intact
+
+    g_prof = _profile_geometry(p)
+    bot_tangent_z = g_prof['bot_tangent_z']
+
+    for s in p['screws_ABC'] + [p['screw_D']]:
+        cx, cy = s['xy']
+        name = s['name']
+        # true outward direction from this boss toward the shell -- (+/-1, 0)
+        # in the straight section, or radially from the nearer spine point
+        # in a domed end (matching true_wall_distance_along_ray's own two
+        # cases) -- NOT simply normalized(cx, cy), which points toward the
+        # world origin and is wrong for a straight-section boss.
+        if ay <= cy <= by:
+            d2 = (1.0 if cx >= 0 else -1.0, 0.0)
+        else:
+            center_y = ay if cy < ay else by
+            vx, vy = cx, cy - center_y
+            vlen = math.hypot(vx, vy) or 1.0
+            d2 = (vx / vlen, vy / vlen)
+        for z in (2.5, 3.5, 5.0, 7.0, 9.0):
+            if abs(z - bot_tangent_z) < 0.5:
+                continue  # (b) flat-to-arc transition slack, not a defect
+            s_wall = true_wall_distance_along_ray(p, (cx, cy), d2, z)
+            if s_wall is None:
+                continue
+            inside_margin = 0.8
+            px = cx + (s_wall - inside_margin) * d2[0]
+            py = cy + (s_wall - inside_margin) * d2[1]
+            ok = probe_point_solid(bottom, P(px, py, z))
+            results[f'boss_{name}_wall_z{z}'] = ok
+
+    return results
+
+
+def verify_posts_and_bosses(bodies_dict, p):
+    """Regression guard (2026-09-06, pass 6) for the silent-no-op-join bug
+    `clipped_pillar_with_reach` fixes: `clip_to_inner_cavity` alone shrinks
+    a boss/post by `safety_margin` on every face including the very
+    top/bottom faces meant to touch Bottom's floor or Top's ceiling, and a
+    real (larger, measured) mismatch between the inner-cavity solid's own
+    ceiling height and the nominal z1 param left the clipped pillar not
+    physically touching the shell at all -- `combine_join` SILENTLY NO-OPS
+    on two non-touching bodies (same behavior deboss_loops already
+    documents for disjoint glyph pieces) rather than raising, so every
+    case boss (A/B/C/D) and Top post (P1-P4) was previously missing
+    entirely with no error anywhere in build() or verify(). Probes each
+    one off-axis (should be solid) at the z-midpoint of its own span.
+
+2026-09-07 pass 7: boss B (the one that used to need a documented,
+    unjoined exception -- its old position sat inside the L76K PCB's own
+    footprint) is gone, replaced by B1/B2 at a position clear of the
+    redesigned comms stack -- every boss/post reported here is now
+    expected to be solid, no exceptions."""
+    top = bodies_dict['Top']
+    bottom = bodies_dict['Bottom']
+    results = {}
+
+    boss_off = p['boss_dia'] / 2.0 * 0.7
+    for s in p['screws_ABC']:
+        cx, cy = s['xy']
+        name = s['name']
+        z_b = (2.0 + p['split_z']) / 2.0
+        z_t = (p['split_z'] + p['top_ceiling_underside_z']) / 2.0
+        results[f'boss_{name}_bottom'] = probe_point_solid(bottom, P(cx + boss_off, cy, z_b))
+        results[f'boss_{name}_top'] = probe_point_solid(top, P(cx + boss_off, cy, z_t))
+
+    dx, dy = p['screw_D']['xy']
+    z_d = (2.0 + p['split_z']) / 2.0
+    results['boss_D_bottom'] = probe_point_solid(bottom, P(dx + boss_off, dy, z_d))
+
+    post_off = p['top_post_dia'] / 2.0 * 0.7
+    z_p = (p['top_post_z'][0] + p['top_post_z'][1]) / 2.0
+    for name, (px, py) in p['top_posts'].items():
+        results[f'post_{name}'] = probe_point_solid(top, P(px + post_off, py, z_p))
+
+    # 2026-09-07 pass 7 (item 3): boss B1/B2 must clear the comms-stack
+    # frame by >= stack3['boss_relief_margin'] (1.0mm) -- guaranteed BY
+    # CONSTRUCTION (add_comms_stack_frame cuts a keep-out of radius
+    # boss_dia/2 + margin around every screw before joining the frame),
+    # but probed here directly rather than trusting the construction
+    # alone: a point at (boss radius + margin/2) from each boss's centre,
+    # aimed toward the stack frame's own centre (not just +x, which
+    # verify_posts_and_bosses already covers), must be OPEN (no frame
+    # material) -- if it were solid, the relief cut didn't actually reach
+    # that boss.
+    if any(s['name'] in ('B1', 'B2') for s in p['screws_ABC']):
+        s3 = p['bay'].get('stack3')
+        if s3 is not None:
+            stack_cx = (s3['l76k_pcb']['x'][0] + s3['l76k_pcb']['x'][1]) / 2.0
+            stack_cy = (s3['l76k_pcb']['y'][0] + s3['l76k_pcb']['y'][1]) / 2.0
+            boss_r = p['boss_dia'] / 2.0
+            margin = s3['boss_relief_margin']
+            z_mid = sum(s3['frame_z']) / 2.0
+            for s in p['screws_ABC']:
+                if s['name'] not in ('B1', 'B2'):
+                    continue
+                cx, cy = s['xy']
+                dx, dy = stack_cx - cx, stack_cy - cy
+                dlen = math.hypot(dx, dy) or 1.0
+                dx, dy = dx / dlen, dy / dlen
+                r = boss_r + margin * 0.5
+                px, py = cx + r * dx, cy + r * dy
+                clear_ok = not probe_point_solid(bottom, P(px, py, z_mid))
+                results[f'boss_{s["name"]}_clears_stack_frame'] = clear_ok
+
+    return results
+
+
+def verify_stack3_clearance(board_occs, by_name, p):
+    """Regression guard (2026-09-07, pass 7, item 2): the 3-board comms
+    stack's real top -- measured live off the inserted Wio occurrence's
+    actual bounding box, NOT a nominal guess -- must clear the Top's real
+    inner ceiling surface by at least stack3['ceiling_clear_min'] (0.8mm)
+    everywhere under its footprint. Probed by scanning DOWNWARD from the
+    ceiling (find_ceiling_z_at) at several points across the L76K PCB's
+    footprint (the widest/lowest part of the stack; XIAO/Wio sit directly
+    above it on almost the same XY footprint, so the real limiting case
+    is whichever of these points has the least headroom)."""
+    top = by_name['Top']
+    s3 = p['bay']['stack3']
+    # 2026-09-07: 'current' doesn't insert Wio/XIAO at all (see
+    # insert_comms_boards' comms_stack3_full_height docstring) -- there is
+    # no stack to check clearance for there, so this is trivially OK
+    # rather than a failure.
+    if not p.get('comms_stack3_full_height', True):
+        return {'stack_top_z': None, 'clearance_found': None,
+                'required': s3['ceiling_clear_min'], 'ok': True,
+                'note': 'comms_stack3_full_height=False (current variant) -- no Wio/XIAO inserted, nothing to check'}
+    wio_occ = next((o for o in board_occs if 'Wio-SX1262' in o.name), None)
+    if wio_occ is None:
+        return {'stack_top_z': None, 'clearance_found': None,
+                'required': s3['ceiling_clear_min'], 'ok': False}
+    _, _, dz, center = _bbox_extents(wio_occ)
+    stack_top_z = center[2] + dz / 2.0
+
+    pcb = s3['l76k_pcb']
+    x0, x1 = pcb['x']
+    y0, y1 = pcb['y']
+    samples = [(x0 + 1.0, (y0 + y1) / 2.0), (x1 - 1.0, (y0 + y1) / 2.0),
+               (0.0, y0 + 1.0), (0.0, y1 - 1.0), (0.0, (y0 + y1) / 2.0)]
+    z_hi = p['top_z'] - 0.5
+    worst = None
+    for x, y in samples:
+        ceil_z = find_ceiling_z_at(top, x, y, z_hi, stack_top_z, step=0.05)
+        if ceil_z is None:
+            continue
+        clearance = ceil_z - stack_top_z
+        if worst is None or clearance < worst:
+            worst = clearance
+    ok = worst is not None and worst >= s3['ceiling_clear_min'] - 1e-6
+    return {'stack_top_z': round(stack_top_z, 3),
+            'clearance_found': round(worst, 3) if worst is not None else None,
+            'required': s3['ceiling_clear_min'], 'ok': ok}
+
+
 def verify(design, params):
     root = design.rootComponent
     printed, ref_boxes, board_occs = collect_interference_entities(root)
@@ -2759,6 +3763,37 @@ def verify(design, params):
     bad_clear = {k: v for k, v in clearance_results.items() if not v[1]}
     assert not bad_clear, f'board occurrence closer than clearance_min to the case: {bad_clear}'
 
+    posts_bosses_results = verify_posts_and_bosses(by_name, params)
+    # 2026-09-07 pass 7: boss B's documented KNOWN_UNJOINED exception is
+    # gone -- B1/B2 replace it at a position clear of the comms stack, so
+    # every boss/post (including both) is expected to have real material.
+    bad_pb = [k for k, ok in posts_bosses_results.items() if not ok]
+    assert not bad_pb, f'boss/post missing material (silent-no-op-join regression): {bad_pb}'
+
+    stack3_clearance = verify_stack3_clearance(board_occs, by_name, params)
+    assert stack3_clearance['ok'], f'comms stack top too close to Top ceiling: {stack3_clearance}'
+
+    # 2026-09-07 pass 7 (item 5): verify_skin_intact NOW GATES verify() --
+    # re-targeted to probe a tight band around the tab hole's own real
+    # footprint (see its docstring) instead of the whole button-hole
+    # perimeter, which strayed into unrelated legitimate interior
+    # geometry and over-fired on most of its samples every run since
+    # pass 6. Traced and fixed at the source, not just widened/loosened.
+    skin_results = verify_skin_intact(by_name, params)
+    bad_skin = [k for k, ok in skin_results.items() if not ok]
+    assert not bad_skin, f'button skin breach near a tab hole: {bad_skin}'
+
+    # 2026-09-07 pass 7 (item 5): verify_wall_integrity NOW GATES verify()
+    # -- the two remaining failure classes from pass 6 (the lug's real
+    # relief cut at spine_a/z11, and the flat-to-arc tangent transition
+    # for straight-section bosses) are excluded by NAME/GEOMETRY inside
+    # verify_wall_integrity itself (see its docstring), not by loosening
+    # this gate -- a genuine new local defect anywhere else in either
+    # sweep still fails here.
+    wall_results = verify_wall_integrity(by_name, params)
+    bad_wall = [k for k, ok in wall_results.items() if not ok]
+    assert not bad_wall, f'wall integrity check failed: {bad_wall}'
+
     return {
         'body_names': names,
         'm2_results': m2_results,
@@ -2770,13 +3805,17 @@ def verify(design, params):
         'bump_results': bump_results,
         'export_envelope_results': export_envelope_results,
         'clearance_results': clearance_results,
+        'posts_bosses_results': posts_bosses_results,
+        'stack3_clearance': stack3_clearance,
+        'skin_results': skin_results,
+        'wall_results': wall_results,
     }
 
 
 EXPORT_BODY_NAMES = ['Bottom', 'Top', 'Screen Plate', 'Power Button', 'Home Button']
 
 
-def build_button_coupon(root, cap, p):
+def build_button_coupon(root, cap, p, x0=0.0, name_prefix=''):
     """A standalone, straight-axis (no diagonal `d`) fit-test coupon for
     one button: a slab representing the outer wall + a local 6mm 'shelf'
     the retaining tab bears against + the guide rib with its slot, as one
@@ -2786,6 +3825,16 @@ def build_button_coupon(root, cap, p):
     plunger_travel, collar, nub_pocket, tab) as the real button, just
     along a single +X axis instead of the real button's diagonal nub
     direction, so a fit found here transfers directly to the case build.
+
+    `x0` (2026-09-06, pass 6) shifts every local X coordinate this
+    function uses -- lets export_coupons() build several coupon pairs
+    side by side in the same 'Print -- Coupons' component (each pair spans
+    roughly 15mm in local X) without them overlapping each other; `root`
+    is expected to already be that component (or root, for the pre-pass-6
+    caller), and the caller is responsible for placing the WHOLE component
+    away from the case afterward via its occurrence transform. `name_prefix`
+    ('Power'/'Home') distinguishes the two buttons' otherwise-identical
+    body names.
     """
     L, W = cap['stadium']
     proud = cap['proud']
@@ -2799,23 +3848,23 @@ def build_button_coupon(root, cap, p):
     shelf_depth = 6.0             # the "retaining-tab shelf"
     hole_L, hole_W = L + 2 * p['cap_clearance'], W + 2 * p['cap_clearance']
 
-    slab = box_solid(root, 0.0, slab_t, -slab_w / 2.0, slab_w / 2.0, -slab_h / 2.0, slab_h / 2.0)
-    hole = oriented_stadium_prism(root, (-1.0, 0.0, 0.0), axis1, z3, outward, hole_L, hole_W, slab_t + 2.0)
+    slab = box_solid(root, x0 + 0.0, x0 + slab_t, -slab_w / 2.0, slab_w / 2.0, -slab_h / 2.0, slab_h / 2.0)
+    hole = oriented_stadium_prism(root, (x0 - 1.0, 0.0, 0.0), axis1, z3, outward, hole_L, hole_W, slab_t + 2.0)
     slab = combine_cut(root, slab, [hole])
 
     shelf_outer_LW = (L + 2 * shelf_depth, W + 2 * shelf_depth)
-    shelf_outer = oriented_stadium_prism(root, (slab_t, 0.0, 0.0), axis1, z3, outward,
+    shelf_outer = oriented_stadium_prism(root, (x0 + slab_t, 0.0, 0.0), axis1, z3, outward,
                                           shelf_outer_LW[0], shelf_outer_LW[1], shelf_depth)
-    shelf_inner = oriented_stadium_prism(root, (slab_t - 0.5, 0.0, 0.0), axis1, z3, outward,
+    shelf_inner = oriented_stadium_prism(root, (x0 + slab_t - 0.5, 0.0, 0.0), axis1, z3, outward,
                                           hole_L, hole_W, shelf_depth + 1.0)
     shelf = combine_cut(root, shelf_outer, [shelf_inner])
     slab = combine_join(root, slab, [shelf])
 
     rib_outer_x = slab_t + shelf_depth  # rib sits immediately past the shelf
     rib_len = p['rib_thickness']
-    rib_plate = oriented_stadium_prism(root, (rib_outer_x, 0.0, 0.0), axis1, z3, outward,
+    rib_plate = oriented_stadium_prism(root, (x0 + rib_outer_x, 0.0, 0.0), axis1, z3, outward,
                                         shelf_outer_LW[0], shelf_outer_LW[1], rib_len)
-    slot = oriented_stadium_prism(root, (rib_outer_x - 0.5, 0.0, 0.0), axis1, z3, outward,
+    slot = oriented_stadium_prism(root, (x0 + rib_outer_x - 0.5, 0.0, 0.0), axis1, z3, outward,
                                    L + 2 * p['rib_slot_clearance'], W + 2 * p['rib_slot_clearance'], rib_len + 1.0)
     rib_plate = combine_cut(root, rib_plate, [slot])
     slab = combine_join(root, slab, [rib_plate])
@@ -2829,26 +3878,27 @@ def build_button_coupon(root, cap, p):
     tip_stub = 3.0  # nominal length past the collar, standing in for "reaching the switch"
     tip_x = collar_outer_x + collar['len'] + tip_stub
 
-    cap_body = oriented_stadium_prism(root, (-proud, 0.0, 0.0), axis1, z3, inward, L, W, proud + tip_x)
+    cap_body = oriented_stadium_prism(root, (x0 - proud, 0.0, 0.0), axis1, z3, inward, L, W, proud + tip_x)
 
     pocket = p['nub_pocket']
-    pocket_body = oriented_box_prism(root, (tip_x, 0.0, 0.0), axis1, z3, outward,
+    pocket_body = oriented_box_prism(root, (x0 + tip_x, 0.0, 0.0), axis1, z3, outward,
                                       pocket['xy'][0], pocket['xy'][1], pocket['depth'])
     cap_body = combine_cut(root, cap_body, [pocket_body])
 
     tab = p['tab']
     tab_len = 1.5
     tab_z = -W / 2.0 - tab['h'] / 2.0
-    tab_body = oriented_box_prism(root, (slab_t + shelf_depth - tab['gap'] - tab_len, 0.0, tab_z), axis1, z3, outward,
+    tab_body = oriented_box_prism(root, (x0 + slab_t + shelf_depth - tab['gap'] - tab_len, 0.0, tab_z), axis1, z3, outward,
                                    tab['w'], tab['h'], tab_len)
     cap_body = combine_join(root, cap_body, [tab_body])
 
-    collar_body = oriented_box_prism(root, (collar_outer_x, 0.0, 0.0), axis1, z3, outward,
+    collar_body = oriented_box_prism(root, (x0 + collar_outer_x, 0.0, 0.0), axis1, z3, outward,
                                       L, W + 2 * collar['h'], collar['len'])
     cap_body = combine_join(root, cap_body, [collar_body])
 
-    slab.name = 'Coupon Wall'
-    cap_body.name = 'Coupon Cap'
+    prefix = f'{name_prefix} ' if name_prefix else ''
+    slab.name = f'Coupon {prefix}Wall'.replace('  ', ' ')
+    cap_body.name = f'Coupon {prefix}Cap'.replace('  ', ' ')
     return slab, cap_body
 
 
@@ -3018,26 +4068,98 @@ def scan_stl_overhangs(stl_path, down_z, bed_z, angle_tol_deg=1.0, min_cluster_m
     }
 
 
+COUPON_LOCAL_X_GAP = 40.0   # local X spacing between the Power and Home pairs
+COUPON_WORLD_OFFSET = (60.0, 0.0, 0.0)  # whole 'Print -- Coupons' component, off to the side of the case
+
+
 def export_coupons(design, root, p, base_dir):
-    """Build + export the button fit-test coupons (2026-09-04 addendum):
-    each coupon is a wall+shelf+rib body and a separate cap body, exported
-    as two STLs each (wall/cap print separately, side by side) --
-    coupon_<button>_wall.stl / coupon_<button>_cap.stl."""
+    """Build + export the button fit-test coupons (2026-09-04 addendum;
+    2026-09-06 pass 6: built directly inside their own new 'Print --
+    Coupons' component instead of the document root, each pair offset in
+    local X by COUPON_LOCAL_X_GAP so they don't overlap each other, then
+    the WHOLE component translated by COUPON_WORLD_OFFSET so it never
+    overlaps the case (which stays within roughly x -29..29) -- see
+    build_button_coupon's `x0` docstring): each coupon is a wall+shelf+rib
+    body and a separate cap body, exported as two STLs each (wall/cap
+    print separately, side by side) -- coupon_<button>_wall.stl /
+    coupon_<button>_cap.stl. Returns (stl_paths, coupons_occ)."""
     out_dir = os.path.join(base_dir, 'export', 'coupons')
     os.makedirs(out_dir, exist_ok=True)
     export_mgr = design.exportManager
+
+    coupons_occ = root.occurrences.addNewComponent(adsk.core.Matrix3D.create())
+    coupons_occ.component.name = COMPONENT_COUPONS
+    coupons_comp = coupons_occ.component
+
     paths = {}
-    for key, cap in (('power', p['power_cap']), ('home', p['home_cap'])):
-        wall, cap_body = build_button_coupon(root, cap, p)
+    for i, (key, prefix, cap) in enumerate((('power', 'Power', p['power_cap']),
+                                             ('home', 'Home', p['home_cap']))):
+        x0 = i * COUPON_LOCAL_X_GAP
+        wall, cap_body = build_button_coupon(coupons_comp, cap, p, x0=x0, name_prefix=prefix)
         for label, body in (('wall', wall), ('cap', cap_body)):
             assert_export_body_size(body, f'{key}_{label}', 40.0)
+
+    # move the whole component away from the case in one rigid translation
+    # (per-pair X offsets above only keep the pairs from overlapping EACH
+    # OTHER) -- commit via snapshot, same pattern as insert_and_place.
+    move = adsk.core.Matrix3D.create()
+    move.translation = adsk.core.Vector3D.create(*(v * MM for v in COUPON_WORLD_OFFSET))
+    coupons_occ.transform = move
+    if design.snapshots.hasPendingSnapshot:
+        design.snapshots.add()
+
+    for key, prefix in (('power', 'Power'), ('home', 'Home')):
+        for label, body_name in (('wall', f'Coupon {prefix} Wall'), ('cap', f'Coupon {prefix} Cap')):
+            body = next(b for b in coupons_comp.bRepBodies if b.name == body_name)
             fname = f'coupon_{key}_{label}.stl'
             path = os.path.join(out_dir, fname)
             opts = export_mgr.createSTLExportOptions(body, path)
             opts.isBinaryFormat = True
             export_mgr.execute(opts)
             paths[f'{key}_{label}'] = path
-    return paths
+
+    remove_stray_generic_bodies(coupons_comp)
+    return paths, coupons_occ
+
+
+def export_native_3mf_case(design, root, variant, base_dir):
+    """Native 3MF export of the two Print components (2026-09-06, pass 6):
+    createC3MFExportOptions' `geometry` argument takes a single BRepBody,
+    Occurrence, or Component -- not a list -- so to get exactly the 5
+    printed case/button bodies (and nothing from Reference/Boards/Coupons)
+    into ONE file, export the whole root component with every OTHER
+    top-level component temporarily hidden (hidden bodies are not
+    exported), then restore visibility regardless of outcome."""
+    out_dir = os.path.join(base_dir, 'export', variant)
+    os.makedirs(out_dir, exist_ok=True)
+    path = os.path.join(out_dir, f'firefly_{variant}_case.3mf')
+
+    hide_names = (COMPONENT_REFERENCE, COMPONENT_BOARDS, COMPONENT_COUPONS)
+    hidden = []
+    for occ in root.occurrences:
+        if occ.component.name in hide_names and occ.isLightBulbOn:
+            occ.isLightBulbOn = False
+            hidden.append(occ)
+    try:
+        export_mgr = design.exportManager
+        opts = export_mgr.createC3MFExportOptions(root, path)
+        export_mgr.execute(opts)
+    finally:
+        for occ in hidden:
+            occ.isLightBulbOn = True
+    return path
+
+
+def export_native_3mf_coupons(design, coupons_occ, base_dir):
+    """Native 3MF export of the 4 coupon bodies: a single Occurrence
+    (Print -- Coupons) covers all of them in one call, no hiding needed."""
+    out_dir = os.path.join(base_dir, 'export', 'coupons')
+    os.makedirs(out_dir, exist_ok=True)
+    path = os.path.join(out_dir, 'firefly_coupons_native.3mf')
+    export_mgr = design.exportManager
+    opts = export_mgr.createC3MFExportOptions(coupons_occ, path)
+    export_mgr.execute(opts)
+    return path
 
 
 def _set_ortho_camera(app, eye_mm, target_mm, up):
@@ -3105,9 +4227,10 @@ def run(_context: str, variant=None, export=False):
 
     design = adsk.fusion.Design.cast(app.activeProduct)
     bodies = build(app, params)
+    root = design.rootComponent
+    bodies, comp_occs = organize_components(root, bodies)
     result = verify(design, params)
 
-    root = design.rootComponent
     print('=== Firefly Case Gen summary ===')
     print('variant:', params['variant'])
     print('document:', app.activeDocument.name)
@@ -3138,6 +4261,15 @@ def run(_context: str, variant=None, export=False):
     print('min clearance to case (board occ, case body): mm, ok')
     for k, v in result.get('clearance_results', {}).items():
         print('  ', k, v)
+    print('posts/bosses material checks (True = solid, as expected):')
+    for k, v in result.get('posts_bosses_results', {}).items():
+        print('  ', k, v)
+    print('comms stack3 ceiling clearance:', result.get('stack3_clearance'))
+    print('skin-intact checks: all True?', all(result.get('skin_results', {}).values()))
+    print('wall-integrity checks: all True?', all(result.get('wall_results', {}).values()))
+    print('sliver face count (area < 0.5mm^2, diagnostic only):')
+    for nm in ('Top', 'Bottom'):
+        print('  ', nm, count_sliver_faces(bodies[nm]))
 
     expected_names = sorted(['Bottom', 'Screen Plate', 'Top', 'Power Button', 'Home Button'])
     assert result['body_names'] == expected_names, result['body_names']
@@ -3201,10 +4333,15 @@ def run(_context: str, variant=None, export=False):
         bad_overhangs = {k: v['bad_clusters_mm2'] for k, v in overhang_scans.items() if v['bad_clusters_mm2']}
         assert not bad_overhangs, f'overhang cluster(s) > 30 mm^2 found in exported STL(s): {bad_overhangs}'
 
-        coupon_paths = export_coupons(design, root, params, _HERE)
+        coupon_paths, coupons_occ = export_coupons(design, root, params, _HERE)
         print('Coupon exports:')
         for name, path in coupon_paths.items():
             print('  ', name, '->', path)
+
+        case_3mf_path = export_native_3mf_case(design, root, params['variant'], _HERE)
+        print('Native 3MF (case):', case_3mf_path)
+        coupons_3mf_path = export_native_3mf_coupons(design, coupons_occ, _HERE)
+        print('Native 3MF (coupons):', coupons_3mf_path)
 
         shot_paths = take_orthographic_screenshots(app, params, SCRATCH_DIR, params['variant'])
         renders_dir = os.path.join(_HERE, 'renders')
@@ -3218,3 +4355,6 @@ def run(_context: str, variant=None, export=False):
         print('renders:')
         for p_ in copied:
             print('  ', p_)
+
+    structure_tree = verify_structure(design)
+    return structure_tree

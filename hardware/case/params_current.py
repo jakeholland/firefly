@@ -41,14 +41,44 @@ PARAMS = {
     'display_underside_z_min': 12.04,
     'display_header': {'x': (11.5, 17.0), 'y': (43.7, 56.1)},
     'top_ceiling_underside_z': 23.0,
+    'display_z_offset': 0.0,  # pass 7: trim overrides this to +3 (case grows 25->28mm)
+    # 2026-09-07 pass 7 (item 2), real physical conflict found via an
+    # actual analyzeInterference run: the real 3-board B2B stack is
+    # 18mm tall (measured, L76K underside to SX1262-module top); trim's
+    # case grows 25->28mm specifically to fit it (top_ceiling_underside_z
+    # 23->26), but Jake's instruction keeps 'current' at height 25
+    # (top_ceiling_underside_z stays 23) 'for the probe comparison' --
+    # meaning 'current' genuinely CANNOT fit the stack under its
+    # unchanged ceiling (confirmed: Wio's own body physically overlaps
+    # Top by ~6mm3 at the stack's real top, z 22.13-22.94, vs a nominal
+    # 23.0 ceiling that's locally even lower near the dome-tip curve).
+    # This is not a local clip-away-a-corner fix like the boss/GPS
+    # conflicts elsewhere in this pass -- there is no room, period.
+    # 'current' exists solely for the M1 outer-shell probe-table
+    # comparison against the original 60x110x25 reference (see
+    # README/SPEC.md), not as a variant meant to carry real electronics,
+    # so insert_comms_boards inserts ONLY the L76K for 'current' (skips
+    # XIAO/Wio) when this is False -- trim overrides it True.
+    'comms_stack3_full_height': False,
     'fpc_relief': {'x': (-6.2, 7.02), 'y': (71.44, 73.12), 'z': (21.83, 22.93)},
 
     # --- case screws (Bottom -> Top), M2 socket head ---
     'screw_head_dia': 3.8,
     'screw_head_h': 2.0,
+    # 2026-09-07 pass 7: boss B (0,-24/-23) moved off the comms stack --
+    # it sat squarely inside the L76K PCB's own footprint even before the
+    # 3-board stack redesign (see the pre-pass-7 README known-limitations
+    # entry) and now the stack occupies that whole dome-tip footprint.
+    # Replaced with a symmetric pair B1/B2 straddling the stack's centre
+    # line at (+-12.5, -15) -- rho=19.5 from spine_a, comfortably inside
+    # the trim flat bed (flat_rho=22.14) so their Ø4.5 counterbores land
+    # fully on flat material, not the shoulder curve. These are ABSOLUTE
+    # mm positions, deliberately the SAME for both variants (like the bay
+    # layout) -- current's wider shell just has more margin around them.
     'screws_ABC': [
         {'name': 'A', 'xy': (-22.97, 25.04)},
-        {'name': 'B', 'xy': (0.0, -24.0)},
+        {'name': 'B1', 'xy': (-12.5, -15.0)},
+        {'name': 'B2', 'xy': (12.5, -15.0)},
         {'name': 'C', 'xy': (23.74, 25.2)},
     ],
     'boss_dia': 6.0,
@@ -58,7 +88,14 @@ PARAMS = {
     'top_pilot_dia': 1.62,
     'top_pilot_z': (10.0, 19.1),   # -> M2x12
 
-    'screw_D': {'name': 'D', 'xy': (0.0, 65.0)},
+    # 2026-09-06 pass 6: moved from (0, 65) to (0, 60), a couple mm
+    # further from the Screen Plate's own header cutout (y 42.7..57.1)
+    # for margin, while staying within its outline (y 28.8..69.6) --
+    # incidental to the actual fix for boss D never joining into Bottom
+    # (BOSS_CORE_R, above), which turned out to be the real cause (this
+    # position's local floor genuinely starts a bit further from center
+    # than boss B/A/C's did, but well within the wider core's reach).
+    'screw_D': {'name': 'D', 'xy': (0.0, 60.0)},
     'counterbore_D_h': 4.0,
     'plate_post_D_z': (10.0, 13.1),  # post on Screen Plate, hole Ø1.62 -> M2x10
     'usb_shell_z': 14.35,             # screw tip must stay <= 14.1
@@ -68,8 +105,19 @@ PARAMS = {
     'lip_z': (9.2, 10.0),
     'anchor_r': (26.95, 28.40),
     'anchor_z': (10.0, 11.0),
-    'boss_relief_dia': 6.6,
-    'lug_relief_box': {'x': (-5.6, 5.6), 'y': (-29.5, -26.0)},
+    # 2026-09-06 pass 6: widened generously past 6.6mm -- measured (see
+    # firefly_case.py's add_lip_anchor_reliefs) to leave a thin wedge-
+    # shaped sliver of ring material at screw B, whose relief circle just
+    # barely failed to clear the anchor ring's own outer radius. This only
+    # needs to clear each boss's own footprint (boss_dia + a small
+    # margin), not reach the ring's outer edge -- 10.0mm gives a
+    # comfortable margin over boss_dia (6.0) at every screw position in
+    # both variants.
+    'boss_relief_dia': 10.0,
+    # widened to 14.0mm (matching the pass-6 ear rebuild's width) plus
+    # margin; y-range covers the lip/anchor ring band near spine_a in both
+    # variants (see params_trim.py's scaling).
+    'lug_relief_box': {'x': (-8.5, 8.5), 'y': (-29.5, -24.5)},
 
     # --- screen plate ---
     'plate_z': (13.1, 14.1),
@@ -77,9 +125,21 @@ PARAMS = {
     'plate_header_cutout': {'x': (11.5 - 1.0, 17.0 + 1.0), 'y': (43.7 - 1.0, 56.1 + 1.0)},
     'plate_hole_dia': 2.4,
     'plate_pad_dia': 6.0,
+    # 2026-09-06 pass 6: P2 moved from (-17.45, 31.8) to (-13.0, 31.8) --
+    # discovered empirically (a real, if latent, 'Top x Power Button'
+    # interference: pass 6's clipped_pillar_with_reach fix finally gives
+    # this post real material for the first time -- see
+    # verify_posts_and_bosses -- and its old position was inside the
+    # Power Button's own rib/collar footprint the whole time, just never
+    # visible because the post never actually joined into Top before).
+    # 3.55mm further inboard (away from the -x wall) clears it with
+    # margin; verified by removing the post entirely and confirming the
+    # residual interference (a separate, smaller ~0.68mm3 tab-area issue,
+    # fixed separately -- see add_button's skin_margin) is unchanged, so
+    # this move addresses only the post-specific portion.
     'top_posts': {
         'P1': (-23.63, 58.84),
-        'P2': (-17.45, 31.8),
+        'P2': (-13.0, 31.8),
         'P3': (17.0, 32.0),
         'P4': (19.89, 65.47),
     },
@@ -104,6 +164,10 @@ PARAMS = {
     'plunger_tip_gap': 0.02,   # gap at FULL PRESS (collar bottomed on the rib), not at rest
     'nub_pocket': {'xy': (1.3, 1.6), 'depth': 0.8},
     'tab': {'w': 2.9, 'h': 2.0, 'gap': 0.60},
+    # how far short of the true outer skin the tab-hole cut stops --
+    # shared by add_button (the cut) and verify_skin_intact (the probe
+    # target), 2026-09-07 pass 7, so they can never drift out of sync.
+    'tab_hole_skin_margin': 2.0,
     'cap_clearance': 0.25,  # per-side clearance between the cap head and its wall hole -- tune here for a fit-test coupon re-print
     # plunger guide rib + inward stop collar (added 2026-09-04 per Jake's
     # print-test feedback: caps bound, and a hard press loaded the switch's
@@ -125,16 +189,24 @@ PARAMS = {
     'usb_liner_thickness': 1.6,
     'usb_liner_outer_stadium': (16.2, 10.2),
 
-    # --- lanyard lug (Bottom) ---
-    # z lowered to (0.0, 10.0) (pass-5 printability fix, 2026-09-05): the
-    # lug's underside used to sit at z=3.0 -- a 10x12mm horizontal overhang
-    # floating 3mm above the bed with nothing under it when Bottom prints
-    # face-down on z=0. Extending it down to z=0 puts the underside flush
-    # on the bed for the whole tab, eliminating the overhang; the Ø3.5
-    # vertical hole position (hole_xy) is unchanged.
+    # --- lanyard lug/ear (Bottom) ---
+    # z = (0.0, 10.0) (pass-5 printability fix, 2026-09-05): the lug's
+    # underside used to sit at z=3.0 -- a horizontal overhang floating
+    # 3mm above the bed with nothing under it when Bottom prints face-down
+    # on z=0. z=0 puts the underside flush on the bed for the whole ear.
+    # 2026-09-06 pass 6: rebuilt as an integrated ear (see add_lug /
+    # lug_ear_geometry) after the previous box+cylinder tab was found to
+    # intrude into the hollow cavity (its inner end crossed the inner
+    # wall -- reads as a floating cylinder from inside, next to the
+    # L76K). 'width'/'protrusion'/'hole_from_tip' replace the old
+    # x/y_root/y_tip/tip_r/hole_xy -- the ear's actual Y position is now
+    # derived from the shell's TRUE curved surface (true_wall_distance_
+    # along_ray), not a hand-picked constant, so it can never re-drift
+    # into the cavity or float outside the true wall regardless of variant.
     'lug': {
-        'x': (-5.0, 5.0), 'y_root': -26.5, 'y_tip': -38.5, 'tip_r': 5.0,
-        'z': (0.0, 10.0), 'hole_dia': 3.5, 'hole_xy': (0.0, -33.5),
+        'width': 14.0, 'protrusion': 6.0, 'z': (0.0, 10.0),
+        'hole_dia': 4.0, 'hole_from_tip': 3.5,
+        'fillet_r': 3.0, 'hole_chamfer': 0.6,
     },
 
     # --- logos (debossed 0.4mm) ---
@@ -159,46 +231,54 @@ PARAMS = {
     # variant.
     'bay': {
         'cavity_r': 26.0,  # nominal half-disc radius this layout was fit to (trim); current has 2mm more
-        'battery': {'xyz': (8.0, 40.0, 30.0), 'x': (-20.0, 20.0), 'y': (-4.0, 26.0), 'z': (2.0, 10.0)},
+        # battery (2026-09-07 pass 7): shifted +6mm in Y (was -4..26) to
+        # y 2..32, off the comms stack's new dome-tip footprint (the stack
+        # replaces the old bay area the battery used to abut). Same 30mm
+        # span, x/z unchanged -- the display board's underside parts don't
+        # start until z>=12 above y=28, so the battery may extend under
+        # them with no conflict (nothing else occupies z 2..10 there).
+        'battery': {'xyz': (8.0, 40.0, 30.0), 'x': (-20.0, 20.0), 'y': (2.0, 32.0), 'z': (2.0, 10.0)},
         'battery_rail_w': 1.2, 'battery_rail_z': (2.0, 6.0), 'battery_rail_clear': 0.3,
         'battery_strap': {'w': 6.0, 'h': 1.5},  # slot through the rails, not the floor
-        'l76k_wired': {'x': (-10.5, 10.5), 'y': (-23.5, -5.5), 'z': (2.0, 6.0)},
-        'l76k_frame_wall': 1.0, 'l76k_frame_clear': 0.3, 'l76k_wire_notch_w': 3.0,
-        # pass-5 fix: the PCB now rests on a 0.3mm-tall floor PAD from
-        # z=2.0 (nominal cavity floor top) to z=2.3, not directly on z=2.0
-        # -- the bare cavity floor and the PCB's own insertion tolerance
-        # were landing the PCB body 0.17mm INSIDE the floor. 2.3 is the
-        # PCB's intended resting height (bottom flush on the pad).
-        'l76k_floor_pad_z': (2.0, 2.3),
-        'stack': {
-            'x': (-22.0, -4.2), 'y': (0.0, 22.3),
-            'wio_pcb_bottom_z': 10.5, 'xiao_pcb_bottom_offset': 6.1, 'stack_top_z': 21.0,
+
+        # --- 2026-09-07 pass 7: the 3-board comms stack (L76K + XIAO +
+        # Wio), lying flat in the lanyard-end (-y) dome, ON THE BOTTOM.
+        # Supersedes the old 'l76k_wired' floor frame AND the old
+        # Top-hanging 'stack'/tray (XIAO+Wio used to sit separately, in
+        # the straight band on their own wedge-supported tray) -- the real
+        # hardware kit is a direct vertical stack (board-to-board + a
+        # soldered connection to the L76K below), not two independent
+        # placements. Per Jake's measurement: stack height (L76K underside
+        # to SX1262-module top) is 18mm, requiring the case height bump
+        # (see PARAMS['top_z'] / z_top in params_trim.py) to fit under the
+        # ceiling. All ABSOLUTE mm, same for both variants (like the old
+        # bay layout) -- current's wider shell just has more margin.
+        'stack3': {
+            # L76K PCB: long axis along Y, XIAO's USB-C end toward +Y.
+            'l76k_pcb': {'x': (-8.9, 8.9), 'y': (-24.0, -1.5)},
+            'l76k_bottom_z': 4.0,          # PCB bottom, resting on the pads
+            'pad_dia': 3.0, 'pad_h': 2.0,  # 4x corner pads, z 2.0..4.0
+            'pad_inset': 1.8,              # pad center inset from each PCB corner
+            'frame_wall': 1.2, 'frame_clear': 0.3, 'frame_z': (2.0, 8.0),
+            'wire_notch_w': 6.0,           # +Y side (toward the XIAO/Wio wires)
+            'xiao_gap': 3.8,               # XIAO pcb_bottom = L76K pcb_top + this
+            'wio_gap': 1.5,                # Wio pcb_bottom = XIAO pcb_top + this
+            'stack_top_z_nominal': 22.0,   # 4.0 + 18mm measured stack height
+            'ceiling_clear_min': 0.8,      # min gap, stack top -> Top inner surface
+            'boss_relief_margin': 1.0,     # keep-out margin cut into the frame around each case-screw boss
         },
-        'tray_wall': 1.2, 'tray_clear': 0.45, 'tray_z_bottom': 10.2,
-        # pass-5 fix (coordinator diagnosis): the ORIGINAL 'Top x XIAO'
-        # interference was an orientation bug, not a footprint-size
-        # problem -- XIAO's native long axis (~22.5mm, including the
-        # USB-C overhang) was being mapped onto world X (see
-        # insert_comms_boards' xiao_doc block, now 'y90' instead of 'y'),
-        # making the stack ~22.5mm wide in X against a tray sized for
-        # Wio's ~17.8mm width. With XIAO correctly rotated so its long
-        # axis lies along world Y (parallel to Wio's own long axis, both
-        # ~22.3-22.5mm), XIAO's real world footprint is 17.78 x 22.48 --
-        # a near-exact match for Wio's 17.78 x 22.32 -- so only a small
-        # symmetric margin is needed, not the earlier asymmetric
-        # multi-mm widening (which this replaces).
-        'tray_x_extra': 0.0,
-        'tray_x_extra_right': 0.0,
-        'tray_ledge': {'w': 2.0, 'h': 2.0},  # z tray_z_bottom .. +h, at each short end (2x2mm 45deg wedge)
-        'tray_gap': {'side': '+y', 'w': 6.0},  # for XIAO USB/wires
-        'gps_patch': {'xyz': (25.0, 25.0, 8.3), 'x': (-2.8, 22.2), 'y': (-5.0, 20.0), 'z': (10.5, 18.8)},
+
+        'gps_patch': {'xyz': (25.0, 25.0, 8.3), 'x': (-2.8, 22.2), 'y': (2.0, 27.0), 'z': (10.5, 18.8)},
         'gps_frame_wall': 1.0, 'gps_frame_clear': 0.3,
         # pass-5 fix: the GPS frame is a plain hanging ring with a clear
         # 25.5x25.5 opening CENTRED on the patch box (per Jake's spec --
         # "GPS frame inner = 25.5 x 25.5 with the patch box centred"),
         # replacing the old ledge-based frame whose shelf, oversized to
         # reach the Top ceiling, fully overlapped the patch box's z-range
-        # (Top x GPS Patch Reference interference).
+        # (Top x GPS Patch Reference interference). 2026-09-07 pass 7: GPS
+        # patch shifted +7mm in Y (was -5..20) to y 2..27, above the new
+        # battery position (x/z unchanged) -- both now clear of the
+        # relocated comms stack (y < -1.0) by construction.
         'gps_frame_opening': 25.5,
         'fpc_keepout': {'x': (-20.0, 20.0), 'y': (-26.0, -15.0), 'z': (12.0, 22.0)},  # Top inner dome wall, reference only
     },
