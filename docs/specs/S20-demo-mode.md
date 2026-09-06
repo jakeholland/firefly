@@ -127,3 +127,15 @@ Renamed to Lineup/Inbox on 2026-09-01 — see S26 Nav model Amendments; this spe
   above ("demo data is REAL state seeded through the REAL core APIs")
   means the seed is honest DATA, but it is not a live ARRIVAL, and S27's
   sounds are a signal for "something just happened."
+
+- **2026-09-05 — S05 adds the live counterpart, `CONFIG_FF_FIELD_PACK`.**
+  A live (non-demo) build now embeds and loads the real field festpack
+  (`docs/specs/S05-festpack.md`, `firmware/assets/field/lost-lands-2026.festpack.json`)
+  at the same boot-time spot `ff_demo_seed` runs here — same
+  `ff_shell_load_pack` call, same PSRAM pack/jsmn-scratch arrangement, but
+  with NO crew/positions/clock seeding, only the pack itself. Mutually
+  exclusive with `CONFIG_FF_DEMO_MODE` (`depends on !FF_DEMO_MODE` in
+  Kconfig, plus a compile-time `#error` in `app_main.c` against a
+  hand-edited `sdkconfig` setting both). See
+  `docs/hardware/comms-brain.md`'s "Field festpack (CONFIG_FF_FIELD_PACK)"
+  section for the wall-clock plausibility-window consequence.

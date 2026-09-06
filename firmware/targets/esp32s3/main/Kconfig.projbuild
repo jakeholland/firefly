@@ -99,6 +99,30 @@ menu "Firefly bring-up (S15 slice b)"
             produce the same event stream (goldens use fixed snapshots, not
             wall-clock live generation — S23 AC6).
 
+    config FF_FIELD_PACK
+        bool "Embed and load the field festpack at boot (live mode)"
+        depends on !FF_DEMO_MODE
+        default y
+        help
+            S05 field festpack (docs/specs/S05-festpack.md). When enabled,
+            the firmware EMBED_FILES the real field festpack
+            (firmware/assets/field/lost-lands-2026.festpack.json — a
+            verbatim copy of fest-almanac's Lost Lands 2026 pack, see that
+            dir's README) and, on boot, parses it into the shell via
+            ff_shell_load_pack. That is ALL this does: no crew, no
+            positions, and no clock are seeded (honest data — CLAUDE.md).
+            Loading the pack gives the MAP face a real origin, Settings a
+            real UTC offset, and tightens the wall-clock plausibility
+            window to the festival's own dates (±14 days) instead of the
+            compile-time default. Everything else (roster, positions,
+            signals) still comes only from the real mesh.
+
+            Mutually exclusive with CONFIG_FF_DEMO_MODE (a live field
+            build never also seeds the fictional demo world) — enforced
+            both by this "depends on" and by a compile-time #error in
+            app_main.c. Default ON: this is what a live (non-demo) field
+            build should do.
+
     config FF_GLASS_RULER
         bool "Draw the glass-ruler calibration pattern at boot and hold it"
         default n

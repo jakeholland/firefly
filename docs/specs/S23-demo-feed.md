@@ -177,3 +177,11 @@ and demoed against the live feed.
   *decays*" (this spec's "Why", above) read as arrivals, distinct from
   S20's static snapshot — sound is one more face where that distinction
   now shows.
+
+- **2026-09-05 — the `CONFIG_FF_DEMO_MODE` off / "field build" leg above
+  now has its own config.** `docs/specs/S05-festpack.md`'s
+  `CONFIG_FF_FIELD_PACK` (default on, `depends on !FF_DEMO_MODE`) embeds
+  and loads the real field festpack in that leg — still "real mesh, real
+  clock," and still no `ff_demofeed`/generator of any kind, just a real
+  festpack instead of no festpack at all. See
+  `docs/hardware/comms-brain.md`'s "Field festpack" section.

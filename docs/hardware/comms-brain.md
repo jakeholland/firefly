@@ -95,6 +95,32 @@ log to confirm it took. See `firmware/app/include/ff_shell.h`'s
 `ff_shell_dev_trust_all` doc comment for exactly what this does and does not
 change versus the sim flag it mirrors.
 
+## Field festpack (CONFIG_FF_FIELD_PACK)
+
+A live (non-demo) build loads the real field festpack by default: `CONFIG_FF_FIELD_PACK=y`
+(default `y`, `depends on !CONFIG_FF_DEMO_MODE` — mutually exclusive with demo
+mode, enforced by both the Kconfig `depends on` and a compile-time `#error`
+in `app_main.c`) embeds `firmware/assets/field/lost-lands-2026.festpack.json`
+(a verbatim copy of fest-almanac's real Lost Lands 2026 pack — see that
+directory's own README for how to refresh it; never hand-edit it) and, on
+boot, parses it into the shell via `ff_shell_load_pack` at the same point a
+demo build's `ff_demo_seed` runs. That is ALL it does: no crew, no
+positions, and no clock are seeded (honest data — `CLAUDE.md`) — only the
+festpack itself, so the MAP face gets a real origin and Settings gets a real
+UTC offset, from the real mesh. Watch for `firefly: S05 field pack loaded: ...`
+(or the parse-error log line) in the boot log to confirm it took.
+
+**Wall-clock consequence:** loading the pack also tightens the S18 wall-clock
+plausibility window to the festival's own dates via `ff_wall_window_from_pack`
+(±14 days either side of `start_doy`/`end_doy`). For Lost Lands 2026 (Sep
+18–20) that window is **2026-09-04T00:00:00Z through 2026-10-05T00:00:00Z**
+(unix 1788480000 through 1791158400, exclusive ceiling) — every mesh
+timestamp outside it is rejected by the plausibility gate at ANY trust tier
+(the same gate `CONFIG_FF_DEV_TRUST_CHANNEL` above has no effect on). A bench
+run before **2026-09-04** would have had every incoming timestamp rejected
+and the wall clock stuck on the fixed bootstrap window — keep that in mind
+scheduling any pre-field bench test.
+
 ## The puck's back header (photo, 2026-09-04)
 
 2×10 at 1.27 mm pitch. Left column top→bottom: `13 · 12 · RXD · TXD · G · 3V3 · SDA · SCL · G · BAT`.

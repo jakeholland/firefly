@@ -61,6 +61,21 @@ if(FF_BUILD_TESTS)
     ff_apply_warnings(test_demo_pack)
 
     add_test(NAME test_demo_pack COMMAND test_demo_pack)
+
+    # S05 field pack — the real Lost Lands 2026 pack embedded for the
+    # ESP32-S3 field build (firmware/assets/field/, a verbatim copy of
+    # fest-almanac's pack — see that dir's README) parses to the v0.1
+    # schema. Read from the assets dir at test time.
+    add_executable(test_field_pack
+        tests/test_field_pack.c
+    )
+    target_link_libraries(test_field_pack PRIVATE ff-festpack unity)
+    target_compile_definitions(test_field_pack PRIVATE
+        FF_FIELD_PACK_PATH="${CMAKE_CURRENT_SOURCE_DIR}/../assets/field/lost-lands-2026.festpack.json"
+    )
+    ff_apply_warnings(test_field_pack)
+
+    add_test(NAME test_field_pack COMMAND test_field_pack)
 endif()
 
 # S07 — schedule engine (now-playing/next-starred/day-lineup/alarm), slices
