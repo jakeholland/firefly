@@ -974,6 +974,57 @@ static void S47_precision_threshold_boundary(void)
                               "the threshold's own bit count should be at/under close range");
 }
 
+/* ------------------------------------------------------------------- */
+/* 2026-09-06 [api] crew long names — ff_crew_display_name             */
+/* ------------------------------------------------------------------- */
+
+static void LONGNAME_display_name_prefers_long_when_present(void)
+{
+    ff_crew_member_t m;
+    memset(&m, 0, sizeof(m));
+    strcpy(m.name, "TAYL");
+    strcpy(m.long_name, "Taylor");
+
+    TEST_ASSERT_EQUAL_STRING("Taylor", ff_crew_display_name(&m));
+}
+
+static void LONGNAME_display_name_falls_back_to_short_when_long_empty(void)
+{
+    ff_crew_member_t m;
+    memset(&m, 0, sizeof(m));
+    strcpy(m.name, "TAYL");
+    /* m.long_name left "" by the memset above. */
+
+    TEST_ASSERT_EQUAL_STRING("TAYL", ff_crew_display_name(&m));
+}
+
+static void LONGNAME_display_name_both_empty_is_empty(void)
+{
+    ff_crew_member_t m;
+    memset(&m, 0, sizeof(m));
+
+    TEST_ASSERT_EQUAL_STRING("", ff_crew_display_name(&m));
+}
+
+static void LONGNAME_display_name_never_synthesizes_from_short(void)
+{
+    /* Honest-data guard: a member with ONLY a short name must not have a
+     * long name invented from it — the short name itself is returned
+     * verbatim, not e.g. capitalized/expanded. */
+    ff_crew_member_t m;
+    memset(&m, 0, sizeof(m));
+    strcpy(m.name, "KEV");
+
+    char const *got = ff_crew_display_name(&m);
+    TEST_ASSERT_EQUAL_STRING("KEV", got);
+    TEST_ASSERT_NOT_EQUAL(0, strcmp(got, "Kevin")); /* never guessed */
+}
+
+static void LONGNAME_display_name_null_member_is_safe_empty(void)
+{
+    TEST_ASSERT_EQUAL_STRING("", ff_crew_display_name(NULL));
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -1041,6 +1092,12 @@ int main(void)
     RUN_TEST(S47_precision_grid_matches_documented_examples);
     RUN_TEST(S47_precision_grid_out_of_range_bits_is_zero);
     RUN_TEST(S47_precision_threshold_boundary);
+
+    RUN_TEST(LONGNAME_display_name_prefers_long_when_present);
+    RUN_TEST(LONGNAME_display_name_falls_back_to_short_when_long_empty);
+    RUN_TEST(LONGNAME_display_name_both_empty_is_empty);
+    RUN_TEST(LONGNAME_display_name_never_synthesizes_from_short);
+    RUN_TEST(LONGNAME_display_name_null_member_is_safe_empty);
 
     return UNITY_END();
 }

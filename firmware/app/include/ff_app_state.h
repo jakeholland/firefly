@@ -57,6 +57,11 @@ extern "C" {
  * header transcribes (S06/S07/S08/S10/S11) field-for-field; kept as named
  * constants here rather than repeating magic numbers at every field. */
 #define FF_APP_NAME_LEN   16 /* crew short name / my_name (S02, S11) */
+/* 2026-09-06 [api] crew long names: mirrors core's FF_CREW_LONG_NAME_LEN
+ * (ff_crew.h) — the display-name budget for a row/headline with room for
+ * a real name (the CREW page's paired rows), as opposed to
+ * FF_APP_NAME_LEN's short-name/chrome budget above. */
+#define FF_APP_LONG_NAME_LEN 40
 #define FF_APP_STR_SHORT  12 /* dist_str / age_str (S06) */
 #define FF_APP_STAGE_LEN  28 /* stage/artist display names (S05 fp_stage_t/fp_set_t) */
 #define FF_APP_ARTIST_LEN 32
@@ -608,7 +613,17 @@ typedef enum {
  */
 typedef struct {
     uint32_t               node_id;
-    char                   name[FF_APP_NAME_LEN]; /* "" honestly unknown — never fabricated */
+    /* [api] 2026-09-06 crew long names — `name` is now the DISPLAY name
+     * (`ff_crew_display_name`: long name when known, else the short one)
+     * and widened to `FF_APP_LONG_NAME_LEN` to hold it; "" only when
+     * NEITHER has ever arrived (honestly unknown — never fabricated).
+     * `short_name` is always the Meshtastic SHORT name ("TAYL"), carried
+     * alongside so the screen can render it as the secondary muted tag
+     * next to the display name (docs/specs/S12-first-run.md's CREW page
+     * amendment) — "" iff no NodeInfo has arrived at all yet (same case
+     * that also leaves `name` empty). */
+    char                   name[FF_APP_LONG_NAME_LEN];
+    char                   short_name[FF_APP_NAME_LEN];
     char                   initial;
     uint8_t                color_idx;
     ff_sigview_presence_t  presence;

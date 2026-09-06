@@ -153,7 +153,10 @@ static void radar_nohdg_parses_exact_values(void)
 
     TEST_ASSERT_EQUAL_INT(RADAR_NOHDG, s.radar.mode);
     TEST_ASSERT_FALSE(s.radar.arrow_valid);
-    TEST_ASSERT_EQUAL_STRING("TAYL", s.radar.name);
+    /* 2026-09-06 crew long names: this golden now carries the display
+     * name ("Taylor") rather than the short one ("TAYL") — see
+     * ff_crew_display_name / the S12 CREW-page amendment. */
+    TEST_ASSERT_EQUAL_STRING("Taylor", s.radar.name);
     TEST_ASSERT_EQUAL_STRING("492 ft", s.radar.dist_str);
     TEST_ASSERT_TRUE(s.radar.bearing_valid);
     TEST_ASSERT_EQUAL_FLOAT(180.0f, s.radar.bearing_deg);
@@ -692,6 +695,45 @@ static void inbox_section_parses_every_field(void)
     TEST_ASSERT_FALSE(m1->identity_known); /* derived: no `from` key — never a guessed sender */
     TEST_ASSERT_EQUAL_STRING("omw", m1->text);
     TEST_ASSERT_FALSE(m1->unread);
+}
+
+/* 2026-09-06 [api] crew long names — the CREW page's PAIRED-row
+ * `short_name` field: authored explicitly it round-trips verbatim;
+ * omitted it defaults to "" (the memset(0) default, same "absent means
+ * unknown" convention every other optional fixture field uses) — never
+ * fabricated from `name`. */
+static void crew_page_paired_row_short_name_round_trips(void)
+{
+    ff_app_state_t s;
+    char const *json = "{\"settings\": {\"subview\": \"crew\", \"crew\": {\"paired\": ["
+                        "  {\"node_id\": 1, \"name\": \"Riley\", \"short_name\": \"RILEY\","
+                        "   \"initial\": \"R\", \"color_idx\": 0, \"presence\": \"seen\"},"
+                        "  {\"node_id\": 2, \"name\": \"KEV\", \"initial\": \"K\", \"color_idx\": 1,"
+                        "   \"presence\": \"lost\"}"
+                        "]}}}";
+    TEST_ASSERT_EQUAL_INT(FF_FIXTURE_OK, ff_fixture_load_json(json, strlen(json), &s));
+
+    TEST_ASSERT_EQUAL_UINT8(2, s.settings.crew.paired_count);
+    TEST_ASSERT_EQUAL_STRING("Riley", s.settings.crew.paired[0].name);
+    TEST_ASSERT_EQUAL_STRING("RILEY", s.settings.crew.paired[0].short_name);
+    TEST_ASSERT_EQUAL_STRING("KEV", s.settings.crew.paired[1].name);
+    TEST_ASSERT_EQUAL_STRING("", s.settings.crew.paired[1].short_name); /* omitted -> "", never guessed */
+}
+
+/* Round-trip against the actual committed golden fixture (not just an
+ * inline JSON string) — the ellipsis-demo golden this PR adds, which
+ * deliberately carries a display name past the old 16-byte short-name
+ * budget alongside a short secondary tag. */
+static void crew_long_name_golden_parses_exact_values(void)
+{
+    ff_app_state_t s;
+    TEST_ASSERT_EQUAL_INT(FF_FIXTURE_OK, ff_fixture_load_file(fixture_path("crew_long_name.json"), &s));
+
+    TEST_ASSERT_EQUAL_UINT8(2, s.settings.crew.paired_count);
+    TEST_ASSERT_EQUAL_STRING("Riley", s.settings.crew.paired[0].name);
+    TEST_ASSERT_EQUAL_STRING("RILEY", s.settings.crew.paired[0].short_name);
+    TEST_ASSERT_EQUAL_STRING("Bartholomew Montgomery-Fitzgerald", s.settings.crew.paired[1].name);
+    TEST_ASSERT_EQUAL_STRING("BART", s.settings.crew.paired[1].short_name);
 }
 
 /* [api] S10 slice b — ff_app_flare_t's three independent groups (see
@@ -1483,6 +1525,8 @@ int main(void)
     RUN_TEST(now_lineup_section_parses_every_field);
     RUN_TEST(now_mixed_state_carries_both_known_and_unknown);
     RUN_TEST(inbox_section_parses_every_field);
+    RUN_TEST(crew_page_paired_row_short_name_round_trips);
+    RUN_TEST(crew_long_name_golden_parses_exact_values);
     RUN_TEST(flare_section_parses_every_field);
     RUN_TEST(flare_omitted_group_defaults_independently);
     RUN_TEST(flare_takeover_bearing_valid_defaults_false);

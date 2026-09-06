@@ -350,6 +350,20 @@ static void inject_node(uint32_t node, char const *short_name, uint32_t last_hea
     H.ev.on_node(H.ev.user, &n);
 }
 
+/* 2026-09-06 [api] crew long names — same shape as inject_node, plus an
+ * optional Meshtastic LONG name (`long_name == NULL` -> has_long_name
+ * stays false, the "this NodeInfo didn't carry one" case). */
+static void inject_node_with_long_name(uint32_t node, char const *short_name, char const *long_name,
+                                       uint32_t last_heard)
+{
+    mc_nodeinfo_t n = nodeinfo(node, short_name, last_heard);
+    if (long_name != NULL) {
+        n.has_long_name = true;
+        strncpy(n.long_name, long_name, sizeof(n.long_name) - 1);
+    }
+    H.ev.on_node(H.ev.user, &n);
+}
+
 /** A live over-the-air position: on_position with rx_time set. */
 static void inject_position(uint32_t node, uint32_t rx_time, double lat, double lon)
 {
@@ -4987,6 +5001,69 @@ static void S12_crew_page_paired_row_fields_and_roster_full(void)
                              "'crew full (8)' state depends on this being honest");
 }
 
+/* =================================================================== */
+/* 2026-09-06 [api] crew long names — NodeInfo long-name capture and its */
+/* CREW-page projection (display name + secondary short-name tag).      */
+/* =================================================================== */
+
+/* A NodeInfo carrying BOTH names: the projected row shows the LONG name
+ * as `name` (the display name), with the short one riding along as
+ * `short_name` — the S12 CREW page amendment's "display name, short as
+ * a secondary tag" contract. */
+static void LONGNAME_crew_page_row_shows_long_name_with_short_tag(void)
+{
+    harness_init(100000u, false);
+    inject_my_info(MY_ID);
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, true));
+    inject_node_with_long_name(DANA, "DANA", "Dana", H.clk.t);
+    (void)ff_shell_tick(&H.shell, H.clk.t);
+
+    ff_app_crew_paired_row_t const *row = view_crew_paired(DANA);
+    TEST_ASSERT_NOT_NULL(row);
+    TEST_ASSERT_EQUAL_STRING("Dana", row->name);
+    TEST_ASSERT_EQUAL_STRING("DANA", row->short_name);
+}
+
+/* Regression guard: a NodeInfo carrying ONLY a short name (no long name
+ * ever arrived) must render exactly as it did before this feature — no
+ * fabricated tag, `name` falling back to the short one. */
+static void LONGNAME_crew_page_row_short_only_has_no_tag(void)
+{
+    harness_init(100000u, false);
+    inject_my_info(MY_ID);
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, true));
+    inject_node(DANA, "DANA", H.clk.t); /* no long name */
+    (void)ff_shell_tick(&H.shell, H.clk.t);
+
+    ff_app_crew_paired_row_t const *row = view_crew_paired(DANA);
+    TEST_ASSERT_NOT_NULL(row);
+    TEST_ASSERT_EQUAL_STRING("DANA", row->name);
+    TEST_ASSERT_EQUAL_STRING("DANA", row->short_name);
+}
+
+/* Sticky, same as the short name's own established contract: a long
+ * name learned once must survive a LATER NodeInfo that doesn't repeat
+ * it (a replay burst, a partial packet) — never regressed back to the
+ * short-only display, mirroring the pre-existing short-name behavior
+ * this feature must not break (see ff_shell.c's NodeInfo handler doc
+ * comment on `long_name`). */
+static void LONGNAME_nodeinfo_long_name_is_sticky_across_a_nameless_replay(void)
+{
+    harness_init(100000u, false);
+    inject_my_info(MY_ID);
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, true));
+    inject_node_with_long_name(DANA, "DANA", "Dana", H.clk.t);
+    (void)ff_shell_tick(&H.shell, H.clk.t);
+    TEST_ASSERT_EQUAL_STRING("Dana", view_crew_paired(DANA)->name);
+
+    /* A later NodeInfo repeats the short name but omits the long one
+     * (has_long_name stays false) — the previously-learned long name
+     * must not be blanked back out. */
+    inject_node(DANA, "DANA", H.clk.t);
+    (void)ff_shell_tick(&H.shell, H.clk.t);
+    TEST_ASSERT_EQUAL_STRING("Dana", view_crew_paired(DANA)->name);
+}
+
 /* The PAIRED presence-age render-key coarsening (ff_shell.c's
  * shell_render_key, the crew-page block added alongside the inbox
  * convs one) — same three-case shape as S24_AC8 above, on the crew
@@ -8585,6 +8662,10 @@ int main(void)
     RUN_TEST(S12_crew_page_paired_row_fields_and_roster_full);
     RUN_TEST(S12_crew_paired_presence_age_keys_rendered_bucket_only);
     RUN_TEST(S12_crew_heard_age_keys_rendered_bucket_only);
+
+    RUN_TEST(LONGNAME_crew_page_row_shows_long_name_with_short_tag);
+    RUN_TEST(LONGNAME_crew_page_row_short_only_has_no_tag);
+    RUN_TEST(LONGNAME_nodeinfo_long_name_is_sticky_across_a_nameless_replay);
     RUN_TEST(S24_AC3_inbox_intents_are_inert_under_a_takeover);
     /* S24 slice d — popup / rally / opacity / demo-loopback seam. */
     RUN_TEST(S24_popup_flare_sends_flare_to_scope_and_closes);

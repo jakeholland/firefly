@@ -1002,7 +1002,15 @@ static ff_fixture_result_t fx_parse_crew_page(fx_ctx_t const *c, int obj_i, ff_a
 
             int kt;
             if (fx_obj_get(c, row_i, "node_id", &kt)) row->node_id = (uint32_t)fx_num(c, kt, 0.0);
+            /* [api] 2026-09-06 crew long names: `name` is authored as the
+             * DISPLAY name a golden wants to show (long or short — this
+             * fixture format sets view state directly, bypassing core's
+             * ff_crew_display_name, so the fixture simply states the
+             * result). `short_name` is the optional secondary muted tag;
+             * omitted -> "" (the memset(0) default), rendering exactly
+             * like a pre-long-names fixture with no tag at all. */
             if (fx_obj_get(c, row_i, "name", &kt)) fx_copy_str(c, kt, row->name, sizeof(row->name));
+            if (fx_obj_get(c, row_i, "short_name", &kt)) fx_copy_str(c, kt, row->short_name, sizeof(row->short_name));
             if (fx_obj_get(c, row_i, "initial", &kt)) {
                 char buf[2] = {0};
                 fx_copy_str(c, kt, buf, sizeof(buf));

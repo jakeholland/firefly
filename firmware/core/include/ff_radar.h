@@ -101,8 +101,14 @@ typedef enum {
  * FF_RADAR_CLOCK_LEN == FF_WALL_CLOCK_STR_LEN (ff_wall.h), the same budget
  * `ff_fmt_clock` documents itself against; kept as its own named constant
  * (not a wall.h dependency) matching this header's own "spec sketch field
- * widths" convention for the other three. */
-#define FF_RADAR_NAME_LEN  16
+ * widths" convention for the other three.
+ *
+ * FF_RADAR_NAME_LEN widened 16 -> `FF_CREW_LONG_NAME_LEN` (2026-09-06
+ * [api], crew long names): `name` now carries `ff_crew_display_name`'s
+ * result (long name when known, else the short one), not the bare short
+ * name the original spec sketch's 16-byte budget was sized for — see
+ * ff_radar.c's `ff_radar_compute`. */
+#define FF_RADAR_NAME_LEN  FF_CREW_LONG_NAME_LEN
 #define FF_RADAR_STR_LEN   12
 #define FF_RADAR_CLOCK_LEN 9
 _Static_assert(FF_RADAR_CLOCK_LEN == FF_WALL_CLOCK_STR_LEN,

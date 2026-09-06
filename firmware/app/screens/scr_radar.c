@@ -585,12 +585,32 @@ static void radar_draw_arrow(lv_obj_t *parent, radar_layout_arrow_t const *arrow
     }
 }
 
-static lv_obj_t *radar_build_name_label(lv_obj_t *parent, char const *name, int32_t dy)
+/* 2026-09-06 [api] crew long names: `r->name` now carries the DISPLAY
+ * name (`ff_crew_display_name` — long when known, else short), which can
+ * run well past the old short-name budget. `width` bounds the label to
+ * its mode's own reserved-rect footprint (radar_layout.h/.c) and DOTS
+ * long-mode ellipsizes rather than wrapping or overflowing off-glass —
+ * "truncate with an ellipsis at the label's width, never wrap" (the S02/
+ * S06 CREW-long-names amendment). Every call site passes the width of
+ * ITS OWN reserved name/dist/chip rectangle (minus a small margin), so a
+ * genuinely long name never collides with neighboring chrome. */
+static lv_obj_t *radar_build_name_label(lv_obj_t *parent, char const *name, int32_t dy, int32_t width)
 {
     lv_obj_t *label = lv_label_create(parent);
     lv_label_set_text(label, (name != NULL && name[0] != '\0') ? name : "(unnamed)");
     lv_obj_set_style_text_font(label, FF_THEME_FONT_NAME, 0);
     lv_obj_set_style_text_color(label, lv_color_hex(FF_THEME_COLOR_INK), 0);
+    lv_obj_set_width(label, width);
+    /* DOTS mode only truncates to ONE line when the label's HEIGHT is
+     * ALSO bounded — width alone makes LVGL wrap instead (scr_banner.c's
+     * / scr_inbox.c's own documented lesson, applied here). Height is the
+     * font's own single-line height, not an arbitrary round number, so a
+     * short name's box is exactly the size auto-height would have given
+     * it — the DY constants below were tuned against that natural
+     * height, and a taller fixed box would shift the glyphs off it. */
+    lv_obj_set_height(label, lv_font_get_line_height(FF_THEME_FONT_NAME));
+    lv_label_set_long_mode(label, LV_LABEL_LONG_MODE_DOTS);
+    lv_obj_set_style_text_align(label, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_align(label, LV_ALIGN_CENTER, 0, dy);
     return label;
 }
@@ -665,7 +685,7 @@ static void radar_render_live(lv_obj_t *parent, ff_radar_view_t const *r, radar_
                                 &arrow);
     radar_draw_arrow(parent, &arrow, FF_THEME_COLOR_AMBER, LV_OPA_COVER, RADAR_ARROW_SOLID);
 
-    radar_build_name_label(parent, r->name, (int32_t)RADAR_LAYOUT_STACK_NAME_DY);
+    radar_build_name_label(parent, r->name, (int32_t)RADAR_LAYOUT_STACK_NAME_DY, (int32_t)RADAR_LAYOUT_STACK_NAME_W);
     radar_build_distance_label_ex(parent, r->dist_str, (int32_t)RADAR_LAYOUT_STACK_DIST_DY, r->dist_imprecise);
 
     char chip_text[24];
@@ -687,7 +707,7 @@ static void radar_render_stale(lv_obj_t *parent, ff_radar_view_t const *r, radar
      * 28% of 255 rounds to 71. */
     radar_draw_arrow(parent, &arrow, FF_THEME_COLOR_STALE_AMBER, 71, RADAR_ARROW_DASHED);
 
-    radar_build_name_label(parent, r->name, (int32_t)RADAR_LAYOUT_STACK_NAME_DY);
+    radar_build_name_label(parent, r->name, (int32_t)RADAR_LAYOUT_STACK_NAME_DY, (int32_t)RADAR_LAYOUT_STACK_NAME_W);
     radar_build_distance_label_ex(parent, r->dist_str, (int32_t)RADAR_LAYOUT_STACK_DIST_DY, r->dist_imprecise);
 
     char chip_text[40];
@@ -718,7 +738,7 @@ static void radar_render_place(lv_obj_t *parent, ff_radar_view_t const *r, radar
                                 &arrow);
     radar_draw_arrow(parent, &arrow, FF_THEME_COLOR_MUTED, LV_OPA_COVER, RADAR_ARROW_SOLID);
 
-    radar_build_name_label(parent, r->name, (int32_t)RADAR_LAYOUT_STACK_NAME_DY);
+    radar_build_name_label(parent, r->name, (int32_t)RADAR_LAYOUT_STACK_NAME_DY, (int32_t)RADAR_LAYOUT_STACK_NAME_W);
     radar_build_distance_label_ex(parent, r->dist_str, (int32_t)RADAR_LAYOUT_STACK_DIST_DY, r->dist_imprecise);
 
     /* "FIXED POSITION", never "PLACED" — issue #33's binding ruling:
@@ -772,7 +792,7 @@ static void radar_render_lost(lv_obj_t *parent, ff_radar_view_t const *r, radar_
          * untrusted, not to vanish. */
         radar_draw_arrow(parent, &arrow, FF_THEME_COLOR_MUTED, 77, RADAR_ARROW_GHOST);
 
-        radar_build_name_label(parent, r->name, (int32_t)RADAR_LAYOUT_STACK_NAME_DY);
+        radar_build_name_label(parent, r->name, (int32_t)RADAR_LAYOUT_STACK_NAME_DY, (int32_t)RADAR_LAYOUT_STACK_NAME_W);
 
         /* issue #47: `r->dist_str` already carries its OWN leading "~"
          * when dist_imprecise (ff_radar_compute) — radar_dist_with_tilde
@@ -798,7 +818,7 @@ static void radar_render_lost(lv_obj_t *parent, ff_radar_view_t const *r, radar_
         lv_obj_set_style_text_color(headline, lv_color_hex(FF_THEME_COLOR_MUTED), 0);
         lv_obj_align(headline, LV_ALIGN_CENTER, 0, (int32_t)RADAR_LAYOUT_NEVER_HEADLINE_DY);
 
-        radar_build_name_label(parent, r->name, (int32_t)RADAR_LAYOUT_NEVER_NAME_DY);
+        radar_build_name_label(parent, r->name, (int32_t)RADAR_LAYOUT_NEVER_NAME_DY, (int32_t)RADAR_LAYOUT_NEVER_NAME_W);
 
         lv_obj_t *sub = lv_label_create(parent);
         lv_label_set_text(sub, "Waiting for their first GPS fix");
@@ -896,7 +916,7 @@ static void radar_render_close(lv_obj_t *parent, ff_radar_view_t const *r)
     }
     radar_build_distance_label(parent, big_dist, (int32_t)RADAR_LAYOUT_CLOSE_RING_CY);
 
-    radar_build_name_label(parent, r->name, (int32_t)RADAR_LAYOUT_CLOSE_NAME_DY);
+    radar_build_name_label(parent, r->name, (int32_t)RADAR_LAYOUT_CLOSE_NAME_DY, (int32_t)RADAR_LAYOUT_CLOSE_NAME_W);
 
     char const *trend_text = "STEADY";
     uint32_t trend_color = FF_THEME_COLOR_MUTED;
@@ -949,12 +969,24 @@ static void radar_render_nofix(lv_obj_t *parent, ff_radar_view_t const *r)
     lv_obj_align(headline, LV_ALIGN_CENTER, 0, (int32_t)RADAR_LAYOUT_NOFIX_HEADLINE_DY);
 
     if (r->name[0] != '\0') {
-        char sub[40];
+        /* 2026-09-06 crew long names: `r->name` is now the display name
+         * (up to FF_RADAR_NAME_LEN, not the old short-name budget this
+         * buffer used to just barely fit "Looking for " + 16 into) — sized
+         * to fit "Looking for " (12) + the full name + NUL with room to
+         * spare, and bounded/DOTS-ellipsized below rather than silently
+         * snprintf-truncated with no "..." cue. */
+        char sub[12 + FF_RADAR_NAME_LEN];
         snprintf(sub, sizeof(sub), "Looking for %s", r->name);
         lv_obj_t *sub_lbl = lv_label_create(parent);
         lv_label_set_text(sub_lbl, sub);
         lv_obj_set_style_text_font(sub_lbl, FF_THEME_FONT_LABEL, 0);
         lv_obj_set_style_text_color(sub_lbl, lv_color_hex(FF_THEME_COLOR_DIM), 0);
+        lv_obj_set_width(sub_lbl, 320);
+        /* DOTS truncates to one line only with a bounded height too — see
+         * radar_build_name_label's identical fix just above. */
+        lv_obj_set_height(sub_lbl, lv_font_get_line_height(FF_THEME_FONT_LABEL));
+        lv_label_set_long_mode(sub_lbl, LV_LABEL_LONG_MODE_DOTS);
+        lv_obj_set_style_text_align(sub_lbl, LV_TEXT_ALIGN_CENTER, 0);
         lv_obj_align(sub_lbl, LV_ALIGN_CENTER, 0, (int32_t)RADAR_LAYOUT_NOFIX_SUB_DY);
     }
 
@@ -1008,7 +1040,7 @@ static void radar_render_nohdg(lv_obj_t *parent, ff_radar_view_t const *r, bool 
         radar_build_rim_tint(parent, FF_THEME_COLOR_STALE_AMBER, LV_OPA_50, screen_flip);
     }
 
-    radar_build_name_label(parent, r->name, (int32_t)RADAR_LAYOUT_STACK_NAME_DY);
+    radar_build_name_label(parent, r->name, (int32_t)RADAR_LAYOUT_STACK_NAME_DY, (int32_t)RADAR_LAYOUT_STACK_NAME_W);
     radar_build_distance_label_ex(parent, r->dist_str, (int32_t)RADAR_LAYOUT_STACK_DIST_DY, r->dist_imprecise);
 
     /* Alert-amber, not the primary accent — a missing sensor is a "NO
