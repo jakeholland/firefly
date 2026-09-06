@@ -61,6 +61,13 @@ static void dbgcmd_wall_parses(void)
     TEST_ASSERT_EQUAL(FF_DBGCMD_WALL, cmd.kind);
 }
 
+static void dbgcmd_i2c_parses(void)
+{
+    ff_dbgcmd_t cmd;
+    TEST_ASSERT_EQUAL(FF_DBGCMD_ERR_OK, parse_str("i2c", &cmd));
+    TEST_ASSERT_EQUAL(FF_DBGCMD_I2C, cmd.kind);
+}
+
 static void dbgcmd_send_parses_with_text(void)
 {
     ff_dbgcmd_t cmd;
@@ -166,6 +173,7 @@ static void dbgcmd_extra_args_on_zero_arg_command_rejected(void)
     TEST_ASSERT_EQUAL(FF_DBGCMD_ERR_BAD_ARGS, parse_str("me now", &cmd));
     TEST_ASSERT_EQUAL(FF_DBGCMD_ERR_BAD_ARGS, parse_str("roster extra", &cmd));
     TEST_ASSERT_EQUAL(FF_DBGCMD_ERR_BAD_ARGS, parse_str("wall junk", &cmd));
+    TEST_ASSERT_EQUAL(FF_DBGCMD_ERR_BAD_ARGS, parse_str("i2c 0x20", &cmd));
 }
 
 static void dbgcmd_flare_with_bad_arg_rejected(void)
@@ -311,6 +319,7 @@ int main(void)
     RUN_TEST(dbgcmd_roster_parses);
     RUN_TEST(dbgcmd_heard_parses);
     RUN_TEST(dbgcmd_wall_parses);
+    RUN_TEST(dbgcmd_i2c_parses);
     RUN_TEST(dbgcmd_send_parses_with_text);
     RUN_TEST(dbgcmd_dm_parses_with_hex_and_text);
     RUN_TEST(dbgcmd_dm_accepts_bang_prefix);

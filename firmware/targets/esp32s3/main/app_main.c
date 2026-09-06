@@ -850,6 +850,115 @@ static void dbgconsole_reply_write(void *user, char const *line)
     usb_serial_jtag_write_bytes("\r\n", 2, 0);
 }
 
+/* `i2c` bench command — bus scan + one-shot compass status. Device-only
+ * glue: exactly the "no I/O in app" split ff_debug_console.h's own
+ * `ff_dbgconsole_i2c_scan_fn`/`ff_dbgconsole_compass_status_fn` doc
+ * comments document — the dispatcher there just calls whichever hook
+ * the target wired up (both NULL on the sim build, which has no I2C
+ * bus at all). */
+
+/* Known devices on the shared I2C bus (address -> name): this puck's
+ * own drivers (ff_display.c's "Shared I2C bus" comment, ff_compass.h's
+ * GY-273 citations) plus an aftermarket RTC module the coordinator's
+ * bench today has wired to the same back header
+ * (docs/hardware/comms-brain.md). An address not in this table prints
+ * bare (just the hex) — never a guessed name for hardware this table
+ * doesn't know about. */
+typedef struct {
+    uint8_t addr;
+    char const *name;
+} dbgconsole_i2c_known_dev_t;
+
+static dbgconsole_i2c_known_dev_t const s_i2c_known_devs[] = {
+    {0x0D, "qmc5883l"},    /* GY-273 magnetometer, the common silkscreen-lies chip (ff_compass.h) */
+    {0x1E, "hmc5883l"},    /* GY-273 magnetometer, the genuine-chip case (ff_compass.h) */
+    {0x20, "io-expander"}, /* TCA9554 (ff_display.c) */
+    {0x51, "rtc"},         /* aftermarket RTC on the back header */
+    {0x53, "touch"},       /* SPD2010 touch controller (ff_display.c) */
+    {0x6B, "qmi8658"},     /* onboard 6-axis IMU (ff_compass.h) */
+};
+
+static char const *dbgconsole_i2c_known_name(uint8_t addr)
+{
+    for (size_t i = 0; i < sizeof(s_i2c_known_devs) / sizeof(s_i2c_known_devs[0]); ++i) {
+        if (s_i2c_known_devs[i].addr == addr) return s_i2c_known_devs[i].name;
+    }
+    return NULL;
+}
+
+/* Per-probe I2C timeout. This codebase's usual I2C timeout elsewhere
+ * (ff_compass.c's FF_COMPASS_I2C_TIMEOUT_MS) is 20 ms, but a full 7-bit
+ * sweep is 112 addresses (0x08..0x77 inclusive) — at 20 ms each, a bus
+ * that is fully WEDGED (every probe times out rather than NACKing
+ * quickly) would block this render-loop-polled command for up to
+ * 112 * 20 ms = 2.24 s, an unacceptable frozen-glass stall for what is
+ * supposed to be a cheap bench diagnostic. 5 ms keeps the worst case to
+ * 112 * 5 ms = 560 ms — still a visible hitch on a wedged bus, but no
+ * longer a multi-second freeze — while a healthy bus (every
+ * unpopulated address NACKs near-instantly) never gets close to the
+ * worst case at all. */
+#define FF_DBGCONSOLE_I2C_PROBE_TIMEOUT_MS 5
+
+/* `ff_dbgconsole_i2c_scan_fn` (ff_debug_console.h): sweep 0x08..0x77 and
+ * write the comma-separated "0xNN[ name]" list into `out`. Returns 0 on
+ * success — including "found nothing", still a successful scan, just an
+ * empty bus (reported as the literal text "none found") — or -1 if the
+ * shared I2C bus was never brought up at all (`ff_display_i2c_bus()`
+ * returns NULL). */
+static int dbgconsole_i2c_scan(void *user, char *out, size_t cap)
+{
+    (void)user;
+    i2c_master_bus_handle_t const bus = ff_display_i2c_bus();
+    if (bus == NULL || cap == 0u) return -1;
+
+    out[0] = '\0';
+    size_t used = 0u;
+    int found = 0;
+    for (uint16_t addr = 0x08u; addr <= 0x77u; ++addr) {
+        if (i2c_master_probe(bus, addr, FF_DBGCONSOLE_I2C_PROBE_TIMEOUT_MS) != ESP_OK) continue;
+        found++;
+        char const *const name = dbgconsole_i2c_known_name((uint8_t)addr);
+        int n;
+        if (name != NULL) {
+            n = snprintf(out + used, cap - used, "%s0x%02x %s", (used > 0u) ? ", " : "", (unsigned)addr, name);
+        } else {
+            n = snprintf(out + used, cap - used, "%s0x%02x", (used > 0u) ? ", " : "", (unsigned)addr);
+        }
+        if (n < 0 || (size_t)n >= cap - used) break; /* out of room — stop, keep what already fit */
+        used += (size_t)n;
+    }
+    if (found == 0) snprintf(out, cap, "none found");
+    return 0;
+}
+
+/* `ff_dbgconsole_compass_status_fn` (ff_debug_console.h): one-shot
+ * mag/imu/heading line from `ff_compass_status()` — the LAST periodic
+ * sample (see that function's own doc comment), not a fresh I2C
+ * transaction of this command's own — plus the persisted-calibration
+ * flag this file's own boot log already reports
+ * (`ff_shell_settings(...)->cal_valid`). Always succeeds (returns 0):
+ * every field has an honest "absent"/"?" value even with no compass
+ * hardware at all, or before the first periodic sample has run. */
+static int dbgconsole_compass_status(void *user, char *out, size_t cap)
+{
+    (void)user;
+    ff_compass_status_t const st = ff_compass_status();
+
+    char heading_buf[16];
+    if (st.heading_valid) {
+        snprintf(heading_buf, sizeof(heading_buf), "%.0f", (double)st.last_heading_deg);
+    } else {
+        snprintf(heading_buf, sizeof(heading_buf), "?");
+    }
+
+    ff_settings_t const *const settings = ff_shell_settings(&s_shell);
+    bool const cal_valid = (settings != NULL) && settings->cal_valid;
+
+    snprintf(out, cap, "mag=%s imu=%s heading=%s cal=%s", st.mag_present ? "found" : "absent",
+             st.imu_present ? "found" : "absent", heading_buf, cal_valid ? "custom" : "identity");
+    return 0;
+}
+
 /* Drain whatever the USB host has sent since the last frame (non-
  * blocking: ticks_to_wait=0) into the line accumulator, dispatching on
  * every '\n' and tolerating a preceding '\r' (ff_dbgcmd_parse's own CRLF
@@ -875,7 +984,8 @@ static void dbgconsole_poll(ff_shell_t *sh, uint32_t now_ms)
             if (c == '\n') {
                 if (!s_dbgconsole_discarding) {
                     ff_dbgconsole_handle_line(sh, s_dbgconsole_line, s_dbgconsole_line_len, now_ms,
-                                               dbgconsole_reply_write, NULL);
+                                               dbgconsole_reply_write, NULL, dbgconsole_i2c_scan,
+                                               dbgconsole_compass_status);
                 }
                 s_dbgconsole_line_len = 0u;
                 s_dbgconsole_discarding = false;

@@ -137,6 +137,11 @@ ff_dbgcmd_status_t ff_dbgcmd_parse(char const *line, size_t line_len, ff_dbgcmd_
         out->kind = FF_DBGCMD_WALL;
         return FF_DBGCMD_ERR_OK;
     }
+    if (tok_eq(buf, start, cmd_end, "i2c")) {
+        if (arg_start < end) return FF_DBGCMD_ERR_BAD_ARGS;
+        out->kind = FF_DBGCMD_I2C;
+        return FF_DBGCMD_ERR_OK;
+    }
     if (tok_eq(buf, start, cmd_end, "flare")) {
         if (arg_start >= end) {
             out->kind = FF_DBGCMD_FLARE;
@@ -189,6 +194,7 @@ char const *ff_dbgcmd_kind_name(ff_dbgcmd_kind_t kind)
     case FF_DBGCMD_FLARE: return "FLARE";
     case FF_DBGCMD_FLARE_CANCEL: return "FLARE_CANCEL";
     case FF_DBGCMD_WALL: return "WALL";
+    case FF_DBGCMD_I2C: return "I2C";
     }
     return "?";
 }
