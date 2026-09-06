@@ -56,6 +56,14 @@ _Static_assert(FF_COMPOSE_EXTRA_MAX == 280,
  * per ff_shell_tick against power_menu_opened_ms. */
 #define FF_POWER_MENU_TIMEOUT_MS 10000u
 
+/* SELFPOS (2026-09-05) — how old a self-fix adopted from the comms
+ * brain's inbound traffic (shell_maybe_adopt_my_pos) may get before the
+ * radar must stop trusting it and report NOFIX again. Reuses ff_crew.h's
+ * existing LOST threshold rather than inventing a second "how stale is
+ * too stale" constant for the same 10-minute question — our own fix
+ * deserves no more benefit of the doubt than a crew member's does. */
+#define FF_SELF_POS_STALE_MS FF_CREW_LOST_MS
+
 /* S22 slice d — a quick RALLY (the thread quick-chip / whole-crew popup
  * row, distinct from the S24 Rally screen's explicit picker) gathers the
  * crew to the SENDER's own current location, and names the place after
@@ -314,6 +322,25 @@ typedef struct {
     /* --- sensors the shell cannot know by itself --------------------- */
     ff_latlon_t my_pos;
     bool my_pos_ok;
+    /* SELFPOS (2026-09-05) — the monotonic receive time of the reading
+     * currently in `my_pos`, and whether that timestamp is meaningful at
+     * all. Only the INBOUND adoption path (shell_maybe_adopt_my_pos,
+     * fed from shell_ev_position/shell_ev_node) sets `my_pos_ms_valid`
+     * true: a self-fix pulled off the wire has a genuine receive time and
+     * must decay (ff_shell_tick, below) once it is older than
+     * FF_SELF_POS_STALE_MS — the radar must not keep drawing a bearing
+     * off a GPS fix from ten minutes ago as if it were live.
+     *
+     * The PUBLIC ff_shell_set_my_pos (targets/sim's fixture origin,
+     * ff_demo.c's seeded position) deliberately leaves this false: those
+     * callers hand in a position with no wire receive-time attached at
+     * all — a demo/dev fixture, not a live reading — and staleness would
+     * be a fabricated number wrapped around a fabricated number.
+     * `my_pos_ok` from that path stays true until ff_shell_clear_my_pos,
+     * exactly the pre-SELFPOS behavior every existing caller/test
+     * already relies on. */
+    uint32_t my_pos_ms;
+    bool my_pos_ms_valid;
     float heading_deg; /* negative = unknown/unreliable (ff_geo_heading_deg's sentinel) */
     /* S25 slice c — battery gauge. `ff_shell_set_batt_mv` runs each raw
      * pack-voltage reading through the core filter (`ff_batt.h`)
@@ -545,6 +572,70 @@ static bool shell_drop_as_self(shell_t const *sh, uint32_t node_id)
     if (sh->dev_trust_all) return false;
 #endif
     return shell_is_self(sh, node_id);
+}
+
+/**
+ * shell_maybe_adopt_my_pos — SELFPOS (2026-09-05): the comms brain's own
+ * position is where THIS puck is, and until now nothing on device ever
+ * called `ff_shell_set_my_pos` to say so — the Radar face read NOFIX
+ * forever even with a paired crew and a live link. This is the internal
+ * counterpart `ff_shell_set_my_pos` doc-references: same effect
+ * (`my_pos`/`my_pos_ok`), plus it stamps `my_pos_ms`/`my_pos_ms_valid` so
+ * ff_shell_tick can decay it (FF_SELF_POS_STALE_MS, below) — the one
+ * thing the public setter's fixture/demo callers must NOT get, since
+ * their position has no wire receive time behind it at all.
+ *
+ * Called only from shell_ev_position/shell_ev_node, only when
+ * `shell_is_self(sh, node_id)` — deliberately independent of
+ * `shell_drop_as_self`'s `--dev-trust-all` suspension: whether a packet
+ * is treated as our own echo for CREW/FEED purposes is a different
+ * question from whether it is genuinely our own node's fix, and the
+ * dev/bench affordance must not turn self-position adoption on or off.
+ *
+ * `(0,0)` is Meshtastic's own "no fix yet" shape for an internal GPS that
+ * has not locked (a Position sub-message can be present with every field
+ * still at its zero default) — rejected here rather than adopted as a
+ * real point in the Gulf of Guinea (CLAUDE.md: never fake a position).
+ *
+ * Provenance decides whether an otherwise-real fix is trusted at all
+ * (mc_loc_source_t's own doc comment, "MEASURED vs ASSERTED"):
+ *  - MC_LOC_INTERNAL/MC_LOC_EXTERNAL are measurements — adopted always.
+ *  - MC_LOC_MANUAL is an assertion with no measurement behind it at any
+ *    age ("not something to draw a live bearing off by default") —
+ *    adopted only under the SAME dev/bench gate the sim's
+ *    --dev-trust-all / device CONFIG_FF_DEV_TRUST_CHANNEL already use for
+ *    the crew roster (`dev_trust_all`, guarded identically to every other
+ *    read of that field in this file). A shipping puck never adopts a
+ *    typed-in point as if it were where the wearer is standing.
+ *  - MC_LOC_UNKNOWN ("didn't say") is adopted never, either direction —
+ *    same reading mc_loc_source_t gives MC_LOC_UNKNOWN everywhere else
+ *    in this file.
+ *
+ * No log seam exists in this file to report the MANUAL-under-gate/
+ * MANUAL-without-gate distinction (every existing "what happened" fact
+ * in ff_shell.c is a caller-visible return value or an out-parameter —
+ * ff_multitap_log_t, ff_flare_result_t — never a printf; app code has
+ * none per CLAUDE.md), so none is added here rather than inventing one
+ * for this single call site.
+ */
+static void shell_maybe_adopt_my_pos(shell_t *sh, ff_latlon_t pos, mc_loc_source_t loc_source, uint32_t rx_ms)
+{
+    if (pos.lat == 0.0 && pos.lon == 0.0) return; /* no real fix yet */
+
+    bool adopt = false;
+    if (loc_source == MC_LOC_INTERNAL || loc_source == MC_LOC_EXTERNAL) {
+        adopt = true;
+    } else if (loc_source == MC_LOC_MANUAL) {
+#if defined(FF_TARGET_SIM) || defined(CONFIG_FF_DEV_TRUST_CHANNEL)
+        adopt = sh->dev_trust_all;
+#endif
+    }
+    if (!adopt) return;
+
+    sh->my_pos = pos;
+    sh->my_pos_ok = true;
+    sh->my_pos_ms = rx_ms;
+    sh->my_pos_ms_valid = true;
 }
 
 /**
@@ -969,6 +1060,27 @@ static void shell_ev_node(void *u, mc_nodeinfo_t const *n)
         sh->burst_latch_base = n->last_heard;
     }
 
+    /* SELFPOS (2026-09-05) — before the self-drop, on `shell_is_self`
+     * (not `shell_drop_as_self`, see shell_maybe_adopt_my_pos's own doc
+     * comment): our own NodeInfo's cached position, replayed on the
+     * want_config handshake, is this puck's last-known fix. Guarded the
+     * same D1 way shell_ev_node already guards a crew member's replayed
+     * position just below: a reading that itself defined/moved the
+     * still-settling latch cannot honestly be dated (its own value
+     * defines "now"), so it is skipped here rather than adopted with a
+     * fabricated age of ~0. Unlike the crew path, this is not buffered
+     * for a settle-time re-age (S18 slice b) — self does not render in
+     * the crew list, and the next live on_position (which never carries
+     * the D1 guard — rx_time is a real per-packet receive time) supplies
+     * a genuine, unconstructed fix shortly after handshake. */
+    if (shell_is_self(sh, n->node_num) && n->has_position && !defined_the_latch) {
+        uint32_t rx_ms = 0;
+        if (shell_rx_ms_from_unix(sh, n->last_heard, now, &rx_ms)) {
+            ff_latlon_t const self_pos = {n->position.lat, n->position.lon};
+            shell_maybe_adopt_my_pos(sh, self_pos, n->position.loc_source, rx_ms);
+        }
+    }
+
     if (shell_drop_as_self(sh, n->node_num)) return; /* never treat our own traffic as inbound */
 
 #if defined(FF_TARGET_SIM) || defined(CONFIG_FF_DEV_TRUST_CHANNEL)
@@ -1111,6 +1223,24 @@ static void shell_ev_position(void *u, uint32_t node, mc_position_t const *p)
     if (p->has_rx_time) {
         ff_wall_trust_t const tier = shell_wall_trust_for(sh, node);
         (void)ff_wall_observe(&sh->wall, (int64_t)p->rx_time, now, tier);
+    }
+
+    /* SELFPOS (2026-09-05) — same reorder rationale as the wall
+     * observation just above, and the same `shell_is_self`-not-
+     * `shell_drop_as_self` independence shell_maybe_adopt_my_pos's own
+     * doc comment argues: this is a LIVE packet, so (as the wall-observe
+     * comment above already establishes for this exact function) "when
+     * did this arrive" and "what time is it now" genuinely coincide —
+     * no D1 guard needed here, unlike the NodeInfo replay path in
+     * shell_ev_node. `shell_rx_ms_from_unix` both derives the monotonic
+     * receive time and re-applies the plausibility/age gate a hostile or
+     * corrupt `rx_time` needs; a fix that fails it is not adopted. */
+    if (shell_is_self(sh, node) && p->has_rx_time) {
+        uint32_t rx_ms = 0;
+        if (shell_rx_ms_from_unix(sh, p->rx_time, now, &rx_ms)) {
+            ff_latlon_t const self_pos = {p->lat, p->lon};
+            shell_maybe_adopt_my_pos(sh, self_pos, p->loc_source, rx_ms);
+        }
     }
 
     if (shell_drop_as_self(sh, node)) return; /* never treat our own traffic as inbound crew/feed */
@@ -2669,6 +2799,27 @@ bool ff_shell_tick(ff_shell_t *sh_pub, uint32_t now_ms)
      * note for why the multi-tap commit timeout needs an explicit poll).
      * Safe to call every tick unconditionally, pending char or not. */
     ff_t9_tick(&sh->compose_draft, now_ms);
+
+    /* SELFPOS (2026-09-05) — a self-fix adopted from the comms brain's
+     * inbound traffic (shell_maybe_adopt_my_pos, my_pos_ms_valid) decays
+     * back to "unknown" once older than FF_SELF_POS_STALE_MS: honest-data
+     * (CLAUDE.md) forbids the radar drawing a bearing off a ten-minute-
+     * old GPS fix as if it were live. `my_pos_ok` reading false again is
+     * exactly what every downstream reader below (ff_radar_compute,
+     * shell_project_map's you_has_pos, shell_project_rally's on_me_ok,
+     * the Rally-picker intent handlers) already treats as "no position of
+     * mine to compare against" — nothing past this point needs to know
+     * WHY it went false. `ff_time_reached` is wraparound-safe (AC7): a
+     * `now_ms` that has rolled over since `my_pos_ms` still compares
+     * correctly, same as every other monotonic deadline in this file.
+     *
+     * A position set through the PUBLIC ff_shell_set_my_pos
+     * (targets/sim's fixture origin, ff_demo.c) has `my_pos_ms_valid ==
+     * false` and never decays — unchanged from before this feature
+     * existed (see that function's own doc comment). */
+    if (sh->my_pos_ok && sh->my_pos_ms_valid && ff_time_reached(now_ms, sh->my_pos_ms + FF_SELF_POS_STALE_MS)) {
+        sh->my_pos_ok = false;
+    }
 
     shell_project(sh, now_ms);
 
@@ -4609,12 +4760,21 @@ void ff_shell_set_my_pos(ff_shell_t *sh_pub, ff_latlon_t pos)
     shell_t *sh = shell_of(sh_pub);
     sh->my_pos = pos;
     sh->my_pos_ok = true;
+    /* SELFPOS (2026-09-05) — a direct/fixture set carries no wire receive
+     * time, so it must never decay via ff_shell_tick's staleness check
+     * (shell_maybe_adopt_my_pos's own doc comment). Unchanged behavior
+     * for every existing caller (targets/sim's live_setup.c, ff_demo.c,
+     * this file's own tests): my_pos_ok stays true until the caller
+     * explicitly clears it. */
+    sh->my_pos_ms_valid = false;
 }
 
 void ff_shell_clear_my_pos(ff_shell_t *sh_pub)
 {
     if (sh_pub == NULL) return;
-    shell_of(sh_pub)->my_pos_ok = false;
+    shell_t *sh = shell_of(sh_pub);
+    sh->my_pos_ok = false;
+    sh->my_pos_ms_valid = false;
 }
 
 void ff_shell_set_sender(ff_shell_t *sh_pub, ff_wiring_sender_t sender)

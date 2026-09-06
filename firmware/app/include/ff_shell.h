@@ -599,6 +599,15 @@ int ff_shell_load_pack(ff_shell_t *sh, char const *json, size_t len);
  * redundant repaint, never a stale screen.
  *
  * The first tick after `ff_shell_init` always returns true.
+ *
+ * `[api]` SELFPOS (2026-09-05): also decays a self-fix adopted from the
+ * comms brain's inbound traffic (see `ff_shell_set_my_pos`'s doc comment)
+ * back to "unknown" once it is older than ten minutes (the same
+ * FF_CREW_LOST_MS threshold ff_crew.h already uses for a crew member's
+ * own staleness) — `my_pos_ok` reads false again, and every reader of it
+ * (the radar, the map's YOU dot, the Rally "On Me" option) sees NOFIX
+ * rather than a bearing drawn off a ten-minute-old fix. A position set
+ * through `ff_shell_set_my_pos` directly never decays.
  */
 bool ff_shell_tick(ff_shell_t *sh, uint32_t now_ms);
 
@@ -1081,8 +1090,28 @@ void ff_shell_home_press(ff_shell_t *sh, uint32_t now_ms, bool deliver);
  * the sim there is none at all. Until this is called, `my_pos_ok` is
  * false and the radar face honestly reports NOFIX for any selection —
  * "no position of mine to compare against" is a true statement, not a
- * bug. Nothing else ever sets this; see `ff_shell_load_pack` for why a
- * pack's venue origin does not.
+ * bug. See `ff_shell_load_pack` for why a pack's venue origin does not
+ * call this.
+ *
+ * `[api]` SELFPOS (2026-09-05): no longer the only setter. The shell's
+ * own inbound path (`shell_ev_position`/`shell_ev_node` in ff_shell.c)
+ * now adopts the comms brain's OWN position automatically, honestly:
+ * a self Position/NodeInfo whose `loc_source` is MC_LOC_INTERNAL/
+ * MC_LOC_EXTERNAL (a measurement) is adopted unconditionally;
+ * MC_LOC_MANUAL (an assertion, not a measurement — mc_loc_source_t's own
+ * doc comment) only under the same dev/bench gate `--dev-trust-all` /
+ * CONFIG_FF_DEV_TRUST_CHANNEL already use for the crew roster.
+ *
+ * This function stays the explicit, unconditional path for a caller that
+ * genuinely knows the answer out of band — targets/sim's `--pack`
+ * fixture origin (`live_setup.c`), `ff_demo.c`'s seeded position, and
+ * this file's own tests — and its behavior for those callers is
+ * UNCHANGED: `my_pos_ok` stays true until `ff_shell_clear_my_pos`, no
+ * staleness decay. The inbound-adopted position is different: it carries
+ * a real wire receive time and DOES decay — see `ff_shell_tick`'s own
+ * doc comment on the ten-minute self-fix staleness window. A fixture/demo
+ * position set through THIS function has no such receive time to decay
+ * from, so it never does.
  */
 void ff_shell_set_my_pos(ff_shell_t *sh, ff_latlon_t pos);
 

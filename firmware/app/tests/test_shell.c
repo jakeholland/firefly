@@ -70,6 +70,7 @@
 
 #include "ff_crew.h"
 #include "ff_feed.h"
+#include "ff_geo.h" /* SELFPOS — ff_geo_project, for an independent "my_pos equals the packet" check */
 #include "ff_heard.h"
 #include "ff_multitap.h" /* S10 quick flare — FF_MULTITAP_MAX_GAP_MS, for the keep_awake-expiry test */
 #include "ff_proto.h"
@@ -2574,6 +2575,200 @@ static void S18_expired_latch_relatches_trust_blind_through_the_shell(void)
     TEST_ASSERT_EQUAL_INT(FF_WALL_MESH, w.src);
     TEST_ASSERT_EQUAL_INT16(1200, w.now_min);
     TEST_ASSERT_EQUAL_UINT32(0, ff_shell_wall_rejected_relatches(&H.shell));
+}
+
+/* =================================================================== */
+/* SELFPOS (2026-09-05) — wiring the puck's own position from the comms  */
+/* brain (ff_shell.c's shell_maybe_adopt_my_pos), and its staleness.     */
+/*                                                                       */
+/* Every test below reads `ff_app_map_t.you_has_pos`/`you_east_m`/       */
+/* `you_north_m` (via ff_shell_view -> shell_project_map) as the         */
+/* observable for "my_pos_ok" and "my_pos" — the shell has no public     */
+/* getter for either, and the map projection mirrors both verbatim       */
+/* (`out->you_has_pos = sh->my_pos_ok;`, then `ff_geo_project` of        */
+/* `sh->my_pos` against the pack's origin), same technique              */
+/* S16_b1_loading_a_pack_does_not_fabricate_my_position already uses.    */
+/* PACK_JSON's venue is (39.936, -82.414); a self-fix planted exactly    */
+/* there projects to (~0, ~0), the same "exactly at the venue" idiom     */
+/* the existing S09 map test uses for `you_east_m`/`you_north_m`.        */
+/* =================================================================== */
+
+static void SELFPOS_AC1_self_position_internal_adopts_my_pos(void)
+{
+    harness_init(100000u, false);
+    inject_my_info(MY_ID);
+    TEST_ASSERT_EQUAL_INT(0, ff_shell_load_pack(&H.shell, PACK_JSON, sizeof(PACK_JSON) - 1u));
+
+    /* Before any self position arrives: honestly no fix, exactly the gap
+     * this slice closes ("no fix / radio only" even with a connected
+     * link and a paired crew, because nobody ever called
+     * ff_shell_set_my_pos on device). */
+    ff_shell_tick(&H.shell, H.clk.t);
+    TEST_ASSERT_FALSE(ff_shell_view(&H.shell)->map.you_has_pos);
+
+    /* A measured fix (MC_LOC_INTERNAL — the node's own GPS) away from the
+     * venue, so the projection below is a real equality check, not just
+     * "both are zero". */
+    ff_latlon_t const fix = {39.9371, -82.4152};
+    inject_position_ex(MY_ID, U_EVENING, fix.lat, fix.lon, MC_LOC_INTERNAL, false, 0);
+    ff_shell_tick(&H.shell, H.clk.t);
+
+    float want_east = 0.0f, want_north = 0.0f;
+    ff_geo_project((ff_latlon_t){39.936, -82.414}, fix, &want_east, &want_north);
+
+    ff_app_map_t const *m = &ff_shell_view(&H.shell)->map;
+    TEST_ASSERT_TRUE(m->you_has_pos);
+    TEST_ASSERT_FLOAT_WITHIN(1.0f, want_east, m->you_east_m);
+    TEST_ASSERT_FLOAT_WITHIN(1.0f, want_north, m->you_north_m);
+
+    /* Every existing self-drop rule for crew/feed stays untouched
+     * (S16/S18's own coverage of this same event pins it too — this is
+     * the SELFPOS-specific echo of that guarantee). */
+    TEST_ASSERT_EQUAL_UINT8(0, ff_shell_crew(&H.shell)->count);
+    TEST_ASSERT_EQUAL_UINT8(0, ff_heard_count(ff_shell_heard(&H.shell)));
+    TEST_ASSERT_EQUAL_UINT8(0, ff_feed_count(ff_shell_feed(&H.shell)));
+}
+
+static void SELFPOS_AC2_self_position_manual_not_adopted_by_default(void)
+{
+    /* MC_LOC_MANUAL is an ASSERTION, not a measurement (mc_loc_source_t's
+     * own doc comment) — "not something to draw a live bearing off by
+     * default", so my_pos_ok must stay false. dev_trust_all defaults off
+     * (harness_init never sets it). */
+    harness_init(100000u, false);
+    inject_my_info(MY_ID);
+    TEST_ASSERT_EQUAL_INT(0, ff_shell_load_pack(&H.shell, PACK_JSON, sizeof(PACK_JSON) - 1u));
+
+    inject_position_ex(MY_ID, U_EVENING, 39.936, -82.414, MC_LOC_MANUAL, false, 0);
+    ff_shell_tick(&H.shell, H.clk.t);
+
+    TEST_ASSERT_FALSE(ff_shell_view(&H.shell)->map.you_has_pos);
+}
+
+static void SELFPOS_AC3_self_position_manual_adopted_under_dev_trust_all(void)
+{
+    /* The SAME bench/field affordance the sim's --dev-trust-all and the
+     * device's CONFIG_FF_DEV_TRUST_CHANNEL already gate the crew-roster
+     * auto-pair with — a MANUAL/asserted self position is adopted only
+     * here, never on a shipping puck by default (AC2 above). */
+    harness_init(100000u, false);
+    ff_shell_dev_trust_all(&H.shell, true);
+    inject_my_info(MY_ID);
+    TEST_ASSERT_EQUAL_INT(0, ff_shell_load_pack(&H.shell, PACK_JSON, sizeof(PACK_JSON) - 1u));
+
+    inject_position_ex(MY_ID, U_EVENING, 39.936, -82.414, MC_LOC_MANUAL, false, 0);
+    ff_shell_tick(&H.shell, H.clk.t);
+
+    ff_app_map_t const *m = &ff_shell_view(&H.shell)->map;
+    TEST_ASSERT_TRUE(m->you_has_pos);
+    TEST_ASSERT_FLOAT_WITHIN(1.0f, 0.0f, m->you_east_m);
+    TEST_ASSERT_FLOAT_WITHIN(1.0f, 0.0f, m->you_north_m);
+}
+
+static void SELFPOS_AC4_crew_member_position_never_sets_my_pos(void)
+{
+    /* A PAIRED crew member's own measured position — the most favorable
+     * case for the mutation this pins against — must never be read as
+     * ours. Only shell_is_self(node_id) may adopt. */
+    harness_init(100000u, false);
+    inject_my_info(MY_ID);
+    TEST_ASSERT_EQUAL_INT(0, ff_shell_load_pack(&H.shell, PACK_JSON, sizeof(PACK_JSON) - 1u));
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, true));
+
+    inject_position_ex(DANA, U_EVENING, 39.936, -82.414, MC_LOC_INTERNAL, false, 0);
+    ff_shell_tick(&H.shell, H.clk.t);
+
+    TEST_ASSERT_FALSE(ff_shell_view(&H.shell)->map.you_has_pos);
+    /* DANA's own fix DID land, though — this isn't "positions are
+     * broken", only "not read as mine". */
+    TEST_ASSERT_TRUE(member(DANA)->has_pos);
+}
+
+static void SELFPOS_AC5_nodeinfo_replay_self_position_internal_adopts(void)
+{
+    /* The want_config replay shape (no rx_time — mc_client.c hardcodes
+     * has_rx_time=false on this path), carrying OUR OWN cached position.
+     * An unrelated stranger bootstraps the wall FIRST so this self
+     * NodeInfo's own last_heard does not itself define/move the
+     * still-settling latch (shell_ev_node's D1 guard, applied to self
+     * exactly as it already is to a crew member's replayed position) —
+     * otherwise the age would be a construction (~0 by definition), not
+     * a measurement, and the position would be deliberately left
+     * unadopted, same honesty rule as everywhere else in this file. */
+    harness_seed_settings(0);
+    harness_init(100000u, true);
+    inject_my_info(MY_ID);
+    TEST_ASSERT_EQUAL_INT(0, ff_shell_load_pack(&H.shell, PACK_JSON, sizeof(PACK_JSON) - 1u));
+
+    inject_position(STRANGER, U_EVENING, 39.0, -82.0); /* BOOTSTRAP-tier latch */
+    TEST_ASSERT_EQUAL_INT16(1320, ff_shell_wall(&H.shell).now_min);
+
+    inject_node_with_position_ex(MY_ID, U_EVENING, 39.936, -82.414, MC_LOC_INTERNAL, false, 0);
+    ff_shell_tick(&H.shell, H.clk.t);
+
+    ff_app_map_t const *m = &ff_shell_view(&H.shell)->map;
+    TEST_ASSERT_TRUE(m->you_has_pos);
+    TEST_ASSERT_FLOAT_WITHIN(1.0f, 0.0f, m->you_east_m);
+    TEST_ASSERT_FLOAT_WITHIN(1.0f, 0.0f, m->you_north_m);
+
+    TEST_ASSERT_EQUAL_UINT8(0, ff_shell_crew(&H.shell)->count);
+    TEST_ASSERT_EQUAL_UINT8(0, ff_feed_count(ff_shell_feed(&H.shell)));
+}
+
+static void SELFPOS_AC6_stale_self_fix_reads_nofix_then_a_fresh_packet_restores_it(void)
+{
+    harness_init(100000u, false);
+    inject_my_info(MY_ID);
+    TEST_ASSERT_EQUAL_INT(0, ff_shell_load_pack(&H.shell, PACK_JSON, sizeof(PACK_JSON) - 1u));
+
+    uint32_t rx_time = U_EVENING;
+    inject_position_ex(MY_ID, rx_time, 39.936, -82.414, MC_LOC_INTERNAL, false, 0);
+    ff_shell_tick(&H.shell, H.clk.t);
+    TEST_ASSERT_TRUE(ff_shell_view(&H.shell)->map.you_has_pos);
+
+    /* Just under the ten-minute threshold (FF_CREW_LOST_MS, reused rather
+     * than a second constant — ff_shell.c's FF_SELF_POS_STALE_MS):
+     * still fresh. No new position event — only time passes. */
+    advance(FF_CREW_LOST_MS - 1000u);
+    ff_shell_tick(&H.shell, H.clk.t);
+    TEST_ASSERT_TRUE(ff_shell_view(&H.shell)->map.you_has_pos);
+
+    /* At the threshold — ff_time_reached's own documented INCLUSIVE
+     * boundary — the fix is stale: NOFIX, not a fabricated freshness. */
+    advance(1000u);
+    ff_shell_tick(&H.shell, H.clk.t);
+    TEST_ASSERT_FALSE(ff_shell_view(&H.shell)->map.you_has_pos);
+
+    /* A genuinely fresh live packet — real time has actually advanced by
+     * FF_CREW_LOST_MS since the first fix, so this packet's own rx_time
+     * has moved forward by the same amount — restores it. */
+    rx_time += (uint32_t)(FF_CREW_LOST_MS / 1000u);
+    inject_position_ex(MY_ID, rx_time, 39.936, -82.414, MC_LOC_INTERNAL, false, 0);
+    ff_shell_tick(&H.shell, H.clk.t);
+    TEST_ASSERT_TRUE(ff_shell_view(&H.shell)->map.you_has_pos);
+}
+
+static void SELFPOS_AC7_staleness_check_is_wraparound_safe(void)
+{
+    /* Start the monotonic clock close enough to UINT32_MAX that the
+     * staleness window's advance below rolls it over — pins that the
+     * decay check in ff_shell_tick genuinely uses ff_time_reached's
+     * wraparound-safe subtraction rather than a plain `now_ms >=
+     * deadline_ms`, which would misfire across the rollover. */
+    uint32_t const t0 = (uint32_t)(0u - (FF_CREW_LOST_MS / 2u));
+    harness_init(t0, false);
+    inject_my_info(MY_ID);
+    TEST_ASSERT_EQUAL_INT(0, ff_shell_load_pack(&H.shell, PACK_JSON, sizeof(PACK_JSON) - 1u));
+
+    inject_position_ex(MY_ID, U_EVENING, 39.936, -82.414, MC_LOC_INTERNAL, false, 0);
+    ff_shell_tick(&H.shell, H.clk.t);
+    TEST_ASSERT_TRUE(ff_shell_view(&H.shell)->map.you_has_pos);
+
+    advance(FF_CREW_LOST_MS + 1000u);
+    TEST_ASSERT_TRUE(H.clk.t < t0); /* really did wrap through 0 */
+
+    ff_shell_tick(&H.shell, H.clk.t);
+    TEST_ASSERT_FALSE(ff_shell_view(&H.shell)->map.you_has_pos);
 }
 
 static void S16_b1_a_flare_on_a_foreign_portnum_raises_no_takeover(void)
@@ -7902,6 +8097,15 @@ int main(void)
     RUN_TEST(S18_self_trust_is_independent_of_dev_trust_all);
     RUN_TEST(S18_paired_members_backward_nodeinfo_reading_is_still_ignored);
     RUN_TEST(S18_expired_latch_relatches_trust_blind_through_the_shell);
+
+    RUN_TEST(SELFPOS_AC1_self_position_internal_adopts_my_pos);
+    RUN_TEST(SELFPOS_AC2_self_position_manual_not_adopted_by_default);
+    RUN_TEST(SELFPOS_AC3_self_position_manual_adopted_under_dev_trust_all);
+    RUN_TEST(SELFPOS_AC4_crew_member_position_never_sets_my_pos);
+    RUN_TEST(SELFPOS_AC5_nodeinfo_replay_self_position_internal_adopts);
+    RUN_TEST(SELFPOS_AC6_stale_self_fix_reads_nofix_then_a_fresh_packet_restores_it);
+    RUN_TEST(SELFPOS_AC7_staleness_check_is_wraparound_safe);
+
     RUN_TEST(S16_b1_a_flare_on_a_foreign_portnum_raises_no_takeover);
     RUN_TEST(S16_b1_shell_footprint_excludes_the_pack);
     RUN_TEST(S22b_inbox_target_survives_rebuild_and_is_gated);
