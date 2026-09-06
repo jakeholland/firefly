@@ -26,6 +26,7 @@ set(FF_APP_COMPONENT_SOURCES
     ${FF_WIRING_SOURCES}
     ${FF_SHELL_SOURCES}
     ${FF_DEMO_SOURCES}
+    ${FF_DEBUG_CONSOLE_SOURCES} # bench/debug console dispatch (CONFIG_FF_DEBUG_CONSOLE) — ff_debug_console.c
 )
 list(TRANSFORM FF_APP_COMPONENT_SOURCES PREPEND "${FF_APP_DIR}/")
 
@@ -71,4 +72,18 @@ target_compile_options(${COMPONENT_LIB} PRIVATE -Wall -Wextra -Werror)
 # incidental header side effect:
 if(CONFIG_FF_DEV_TRUST_CHANNEL)
     target_compile_definitions(${COMPONENT_LIB} PRIVATE CONFIG_FF_DEV_TRUST_CHANNEL=1)
+endif()
+
+# CONFIG_FF_DEBUG_CONSOLE (Kconfig.projbuild, default n) gates the
+# bench/debug console's debug-only shell API (ff_shell.c/.h's
+# `#if defined(FF_TARGET_SIM) || defined(CONFIG_FF_DEBUG_CONSOLE)`
+# section) and ff_debug_console.c's whole body. Same accidental-but-
+# relied-upon visibility question as CONFIG_FF_DEV_TRUST_CHANNEL above
+# (ff_shell.c's own <stdio.h> include; ff_debug_console.c includes it
+# too, for the same snprintf reason) — supplied explicitly here for the
+# same "property of the build graph, not an incidental header side
+# effect" reason, PRIVATE to this component (both files that read the
+# macro live in it).
+if(CONFIG_FF_DEBUG_CONSOLE)
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE CONFIG_FF_DEBUG_CONSOLE=1)
 endif()

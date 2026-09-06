@@ -121,6 +121,78 @@ run before **2026-09-04** would have had every incoming timestamp rejected
 and the wall clock stuck on the fixed bootstrap window — keep that in mind
 scheduling any pre-field bench test.
 
+## Bench console
+
+An opt-in line-command console lets an end-to-end test (or a human at a
+terminal) trigger sends, flares, and state dumps over the puck's USB
+port — no touchscreen tap needed. Off by default (never ship it on for
+a field build): set `CONFIG_FF_DEBUG_CONSOLE=y` (`idf.py menuconfig` →
+Firefly bring-up → "Bench/debug console", or by hand in `sdkconfig`).
+
+It reads line commands off the USB-Serial-JTAG port — the SAME port
+that already carries the boot log — and is polled only while USB is
+connected (the S26f amendment's own connection sample), so it changes
+nothing about battery/field operation. Connect with any plain serial
+terminal at the puck's USB-Serial-JTAG port (e.g. `idf.py monitor`, or
+`screen /dev/tty.usbmodem* 115200` — the console doesn't care about
+baud, it's USB-CDC), type a command, press Enter.
+
+Commands (replies are `dbg: `-prefixed; an unrecognized or malformed
+line replies `dbg: ? try help`):
+
+| Command | Effect |
+|---|---|
+| `help` | list the commands below |
+| `me` | my node id, link state, my position (ok/lat/lon/age), wall clock (latched?/trust/unix now) |
+| `roster` | paired crew: id, name, presence, position |
+| `heard` | heard-but-unpaired node ids |
+| `send <text>` | crew broadcast — the same send mechanism the composer's SEND button uses |
+| `dm <node_hex> <text>` | addressed send to one node (hex, optional `!` or `0x` prefix) |
+| `flare` | start a quick flare (same path as the physical 5-tap gesture) |
+| `flare cancel` | cancel a flare in progress |
+| `wall` | wall-clock latch dump: latched, trust tier, UTC offset, last observation's source node |
+
+Every acting command dispatches through `ff_shell_intent` (the SAME
+`FF_INTENT_QUICK_FLARE`/`FF_INTENT_FLARE_END` intents the physical
+5-tap gesture and the sender overlay's CANCEL button use) or the
+debug-only `ff_shell_debug_send_text` seam (`app/include/ff_shell.h`)
+— never a new roster-growth path, never a direct mesh send bypassing
+the shell. See that header's doc comment and
+`app/include/ff_debug_console.h` for the full seam discipline, and
+`core/include/ff_dbgcmd.h` for the line parser (table-driven, bounded,
+CRLF-tolerant, unit-tested independent of any shell).
+
+Example session (paired with one crew member, `Dana`, `!0000da1a`):
+
+```
+me
+dbg: me node=!00001000 link=CONNECTED
+dbg: me pos ok=1 lat=40.712800 lon=-74.006000 age_ms=1500
+dbg: me wall latched=1 trust=TRUSTED unix=1789768900
+
+roster
+dbg: roster n=1
+dbg: roster id=!0000da1a name=Dana presence=LIVE has_pos=1 lat=40.700000 lon=-74.010000
+
+send crew, meet at the tent
+dbg: send ok dest=broadcast
+
+dm da1a on my way
+dbg: dm ok dest=!0000da1a
+
+flare
+dbg: flare started dur_s=300
+
+flare cancel
+dbg: flare cancelled
+
+wall
+dbg: wall latched=1 latch_unix=1789768800 trust=TRUSTED offset_min=-240 assumed=0 last_src=!0000da1a rejected=0
+
+xyzzy
+dbg: ? try help
+```
+
 ## The puck's back header (photo, 2026-09-04)
 
 2×10 at 1.27 mm pitch. Left column top→bottom: `13 · 12 · RXD · TXD · G · 3V3 · SDA · SCL · G · BAT`.

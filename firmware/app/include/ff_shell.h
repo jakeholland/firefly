@@ -1445,6 +1445,158 @@ bool ff_shell_dev_wall_observe(ff_shell_t *sh, int64_t unix_now_s);
 
 #endif /* FF_TARGET_SIM */
 
+/* ---------------------------------------------------------------------
+ * Bench/debug console API — compiled in for a sim build
+ * unconditionally, and for a device build only when
+ * CONFIG_FF_DEBUG_CONSOLE=y (firmware/targets/esp32s3/main/
+ * Kconfig.projbuild, default n)
+ * ---------------------------------------------------------------------
+ * Same "compiled out, not defaulted off" contract as
+ * `ff_shell_dev_trust_all` above (see its own doc comment for the full
+ * rationale), applied to a bench/test debug SURFACE rather than a
+ * roster-trust policy: with the Kconfig symbol unset (every field
+ * build), there is no declaration and no branch here at all — a stray
+ * caller fails to COMPILE, not silently no-ops at runtime one default
+ * flip from shipping live.
+ *
+ * Motivation (2026-09-05): every bench send test needed a human tap on
+ * the puck. The esp32s3 target's app_main.c, under this same Kconfig
+ * gate, reads line commands off the USB-Serial-JTAG port — the same
+ * port that carries the boot log — while USB is connected (see that
+ * file's S26f "USB connected — light sleep inhibited" logic; the
+ * console is polled only in that state, so nothing changes for battery
+ * operation), parses them with core's table-driven, I/O-free
+ * `ff_dbgcmd_parse` (firmware/core/include/ff_dbgcmd.h), and dispatches
+ * through `firmware/app/include/ff_debug_console.h`'s
+ * `ff_dbgconsole_dispatch` — which calls ONLY `ff_shell_intent`, the
+ * shell's existing public getters, and the two debug-only functions
+ * below. No new roster-growth path, no direct mc_client send bypassing
+ * the shell, no fabricated state — see docs/hardware/comms-brain.md,
+ * "Bench console", for the full command reference and an example
+ * session.
+ * ------------------------------------------------------------------- */
+#if defined(FF_TARGET_SIM) || defined(CONFIG_FF_DEBUG_CONSOLE)
+
+/**
+ * ff_shell_debug_send_text — [api] debug-only. Send `text` to
+ * `dest_node` (0 or MC_ADDR_BROADCAST both mean the crew broadcast —
+ * the same "no explicit destination" convention `FF_INTENT_SEND_TEXT`
+ * uses) through the exact same mechanism the composer's SEND button
+ * uses: `sh->wiring.sender.send_text`, then — on a 0 return —
+ * `ff_wiring_push_outgoing` so the sent text lands in the feed as
+ * FEED_DIR_OUT exactly like a real send (S24's "sent item appears in
+ * feed").
+ *
+ * DELIBERATELY BYPASSES `ff_shell_intent(FF_INTENT_SEND_TEXT)` and the
+ * whole Compose flow: that path is real UI NAVIGATION (pushes/pops the
+ * Compose modal, consumes `sh->compose_draft`/`sh->compose_to_node`, and
+ * is rejected outright while a takeover is up — routing rule 4). A
+ * bench console command must fire a deterministic send regardless of
+ * whatever the glass happens to be showing, and must not change what it
+ * shows either (this feature's "without touching the glass" design
+ * goal) — so this function reuses the SEND MECHANISM, not the SEND
+ * SCREEN: no route/modal change, no takeover gate, no interaction with
+ * the T9 draft or the real composer's destination state.
+ *
+ * `text` is borrowed for the duration of this call only (the same "not
+ * owned; copied" convention every `ff_intent_t` pointer payload uses,
+ * app/include/ff_intent.h) — both `send_text` and
+ * `ff_wiring_push_outgoing` copy whatever they keep before returning.
+ *
+ * Returns 0 on an accepted send (mirrors `ff_wiring_sender_t.send_text`'s
+ * own convention). Returns -1 without calling the sender at all if
+ * `sh == NULL`, `text == NULL`, or `text` is empty — a debug command
+ * with nothing typed must not broadcast "", the same rule
+ * `FF_INTENT_SEND_TEXT` enforces for an untouched composer — and also if
+ * no sender is wired up (no mesh link: `sh->wiring.sender.send_text ==
+ * NULL`). Otherwise returns whatever `send_text` itself returned; the
+ * feed push happens only on that call's own 0.
+ */
+int ff_shell_debug_send_text(ff_shell_t *sh, uint32_t dest_node, char const *text);
+
+/**
+ * ff_shell_wall_debug_t / ff_shell_wall_debug — [api] debug-only: the
+ * wall-clock latch's own internal state, not just the local-time
+ * PROJECTION `ff_shell_wall()` gives every screen. Exists because the
+ * bench console's `wall` command wants to answer "is it latched, at
+ * what trust tier, offset by how much, and last heard from whom" — none
+ * of which `ff_wall_t` carries (by design: once `src != FF_WALL_UNKNOWN`
+ * it says nothing about how it got that way — see ff_wall.h).
+ *
+ * Every field is either a direct, honest read of `ff_wall_state_t`
+ * (never exposed outside ff_shell.c before this) or of the
+ * observation-source bookkeeping this slice adds specifically to answer
+ * "last observation source" (ff_shell.c's `has_last_wall_obs` field doc
+ * comment has the detail: both `ff_wall_observe` call sites record it,
+ * always, not gated behind any Kconfig — only this GETTER is). Nothing
+ * here is computed, inferred, or guessed; a fact this struct cannot
+ * honestly state reads as its own explicit `has_*` false, never a
+ * fabricated value — CLAUDE.md's "honest data over pretty data",
+ * applied to a debug surface exactly like the rest of this app (see
+ * AGENTS.md's standing brief, "Honesty rules bind debug surfaces too").
+ */
+typedef struct {
+    bool latched;               /* sh->wall's own latch, independent of the
+                                  * plausibility-window/day-mapping ff_wall_t
+                                  * folds it through */
+    int64_t latch_unix_s;       /* meaningful only if latched */
+    bool has_offset;            /* false: neither a loaded pack nor settings
+                                  * states a UTC offset — ff_wall_resolve_offset
+                                  * found no source at all */
+    int16_t offset_min;         /* the resolved offset ff_wall_now() itself
+                                  * uses; meaningful only if has_offset */
+    bool offset_assumed;        /* meaningful only if has_offset */
+    bool has_last_obs;          /* false: no wall observation (of either call
+                                  * site) has run yet this session */
+    ff_wall_trust_t last_obs_trust; /* meaningful only if has_last_obs */
+    uint32_t last_obs_node;         /* meaningful only if has_last_obs */
+    uint32_t rejected_relatches;    /* ff_wall_trust_rejected_count — always
+                                      * meaningful (0 if none refused yet) */
+} ff_shell_wall_debug_t;
+
+ff_shell_wall_debug_t ff_shell_wall_debug(ff_shell_t const *sh);
+
+/**
+ * ff_shell_wall_unix_now — [api] debug-only: the current absolute unix
+ * time, if the wall clock has latched. A thin, honest wrapper over
+ * core's own `ff_wall_unix_now` (ff_wall.h) — no new derivation, just a
+ * seam a debug-only caller outside ff_shell.c can reach. Returns false
+ * (leaving `*out_unix_s` untouched) iff `sh == NULL`, `out_unix_s ==
+ * NULL`, or the clock is still `FF_WALL_UNKNOWN`; true and writes
+ * `*out_unix_s` otherwise.
+ */
+bool ff_shell_wall_unix_now(ff_shell_t const *sh, int64_t *out_unix_s);
+
+/**
+ * ff_shell_my_pos_debug_t / ff_shell_my_pos_debug — [api] debug-only:
+ * this puck's own position exactly as `ff_shell_set_my_pos`/
+ * `shell_maybe_adopt_my_pos` maintain it — `my_pos_ok`, the coordinate,
+ * and (when available) how long ago it was set. No screen currently
+ * projects a raw self lat/lon or a numeric self-position age (the radar
+ * face only ever needs `on_me_ok`/relative bearing to a SELECTED
+ * member, ff_radar.h) — this is a debug-only widening of what was
+ * already tracked, not a new measurement or a new source of position
+ * truth: `ff_shell_set_my_pos`/the SELFPOS wall-observation path remain
+ * the only writers.
+ */
+typedef struct {
+    bool ok;          /* sh's own my_pos_ok */
+    ff_latlon_t pos;  /* meaningful only if ok */
+    bool has_age;      /* false iff no rx-time-stamped adoption has ever run
+                         * (my_pos_ms_valid) — a position set only via the
+                         * dev/test `ff_shell_set_my_pos` seam with no rx
+                         * time has no honest age to report */
+    uint32_t age_ms;   /* now - the position's rx timestamp; meaningful only
+                         * if has_age (and typically only meaningful
+                         * alongside `ok`, though tracked independently —
+                         * see shell_ev_position's own "decays my_pos_ok,
+                         * not my_pos_ms_valid" note in ff_shell.c) */
+} ff_shell_my_pos_debug_t;
+
+ff_shell_my_pos_debug_t ff_shell_my_pos_debug(ff_shell_t const *sh);
+
+#endif /* FF_TARGET_SIM || CONFIG_FF_DEBUG_CONSOLE */
+
 #ifdef __cplusplus
 }
 #endif

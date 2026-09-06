@@ -1,0 +1,177 @@
+/**
+ * ff_dbgcmd.h — core/dbgcmd: the bench/debug console's line-command
+ * PARSER (command policy, no I/O).
+ *
+ * Motivation: on 2026-09-05 every bench send test needed a human tap on
+ * the puck. This module is the pure half of the fix — an opt-in
+ * bench/debug console (`CONFIG_FF_DEBUG_CONSOLE`,
+ * firmware/targets/esp32s3/main/Kconfig.projbuild) that lets an
+ * end-to-end test drive the puck over its USB-Serial-JTAG port instead
+ * of the touchscreen. See docs/hardware/comms-brain.md, "Bench console",
+ * for the full command reference and an example session, and
+ * `firmware/app/include/ff_debug_console.h` for the half that actually
+ * DISPATCHES a parsed command against a live `ff_shell_t`.
+ *
+ * CLAUDE.md's placement rule puts this here, not in `firmware/app/`:
+ * turning one line of ASCII into a structured, bounds-checked command is
+ * command POLICY with zero I/O — no shell, no mc_client, no LVGL, no
+ * serial port. It compiles and is unit-tested (Unity, firmware/core/
+ * tests/test_dbgcmd.c) exactly like any other core module, on every
+ * target, regardless of whether `CONFIG_FF_DEBUG_CONSOLE` is even a
+ * thing in that build (the esp32s3 device target is the only build with
+ * that Kconfig symbol at all; the sim/host build has no Kconfig and
+ * always compiles this in — see ff_debug_console.h for where the
+ * device-only Kconfig gate actually applies).
+ *
+ * ## Table-driven, bounded, CRLF-tolerant
+ * `ff_dbgcmd_parse()` takes a raw byte buffer and an explicit LENGTH
+ * (never a NUL-terminated C string — a line straight off a serial
+ * driver is not guaranteed to be one, and reading past a caller-given
+ * length is exactly the class of bug a 300-byte-line Unity test exists
+ * to catch). It never calls `strlen`/`strcpy` on the input; every loop
+ * is bounded by the passed-in `line_len` or by a `sizeof` of a
+ * fixed-size local/output buffer. A line longer than
+ * `FF_DBGCMD_LINE_MAX` bytes is rejected outright (`FF_DBGCMD_ERR_TOO_LONG`)
+ * before a single byte is copied — never silently truncated, per this
+ * repo's "honest data over pretty data" rule (CLAUDE.md): a bench
+ * engineer who typed (or scripted) a too-long line should see it
+ * rejected, not have it quietly clipped into a different, shorter
+ * command.
+ *
+ * CRLF-tolerant: trailing `\r`, `\n`, or `\r\n` are trimmed before
+ * anything else runs, so a command works whether the caller stripped
+ * the line ending already (the esp32s3 driver does) or handed it over
+ * verbatim (a unit test finding it more convenient to write `"me\r\n"`).
+ *
+ * ## Union validity — per kind, `ff_intent_t`'s own convention
+ * Exactly the member(s) `kind` documents are meaningful on a
+ * `FF_DBGCMD_OK` result; everything else in the struct is unspecified.
+ * `ff_dbgcmd_parse` zero-initializes `*out` on every call (even a
+ * rejected one) so a caller that reads a field it shouldn't gets
+ * deterministic zeros, not stack garbage — but the CONTRACT is "per
+ * kind", exactly like `ff_intent_t` (app/include/ff_intent.h).
+ *
+ * ## Command table (docs/hardware/comms-brain.md has the full reference)
+ *   help                    — command list
+ *   me                      — my node id / link / position / wall clock
+ *   roster                  — paired crew: id, name, presence, position
+ *   heard                   — heard-but-unpaired node ids
+ *   send <text>             — crew broadcast (composer's SEND path)
+ *   dm <node_hex> <text>    — addressed send to one node
+ *   flare | flare cancel    — quick flare start/cancel
+ *   wall                    — wall-clock latch dump
+ * Anything else is `FF_DBGCMD_ERR_UNKNOWN` — the dispatcher's reply for
+ * that is the fixed string `"dbg: ? try help"` (S16-style "the shell
+ * decides", except here the deciding is this table).
+ */
+#ifndef FF_DBGCMD_H
+#define FF_DBGCMD_H
+
+#include <stddef.h>
+#include <stdint.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/** Max accepted raw line length in bytes, EXCLUDING any trailing CR/LF
+ *  the caller included. A line at or under this is eligible to parse; a
+ *  longer one is `FF_DBGCMD_ERR_TOO_LONG` regardless of content —
+ *  checked before any CRLF trimming, so a 257-byte line with a trailing
+ *  "\r\n" (259 bytes total) is still measured against the 256 that
+ *  matter. */
+#define FF_DBGCMD_LINE_MAX 256u
+
+/** Max bytes (excluding the NUL terminator `ff_dbgcmd_t.text`/`u.dm.text`
+ * always carries) for a SEND/DM message body. Comfortably under
+ * `FF_DBGCMD_LINE_MAX` even behind the widest command header this parser
+ * has (`"dm !aabbccdd "`, 13 bytes) — so for both SEND and DM this is
+ * the bound that actually trips on an oversized body
+ * (`FF_DBGCMD_ERR_BAD_ARGS`); the whole-line `FF_DBGCMD_LINE_MAX` gate
+ * above exists independently, for a long line that is garbage for
+ * other reasons (e.g. no recognizable command at all). */
+#define FF_DBGCMD_TEXT_MAX 200u
+
+/** Every line this parser recognizes. `FF_DBGCMD_NONE` is the zero value
+ *  used for "nothing parsed yet" / a rejected line; it is never a
+ *  successful parse's `kind`. */
+typedef enum {
+    FF_DBGCMD_NONE = 0,
+    FF_DBGCMD_HELP,
+    FF_DBGCMD_ME,
+    FF_DBGCMD_ROSTER,
+    FF_DBGCMD_HEARD,
+    FF_DBGCMD_SEND,         /* u.text: crew broadcast body */
+    FF_DBGCMD_DM,           /* u.dm.dest_node + u.dm.text */
+    FF_DBGCMD_FLARE,        /* start a quick flare */
+    FF_DBGCMD_FLARE_CANCEL, /* "flare cancel" */
+    FF_DBGCMD_WALL,
+} ff_dbgcmd_kind_t;
+
+/** Why a line failed to become a command. `FF_DBGCMD_ERR_EMPTY` is not
+ *  really an error — a blank line (or one that is CRLF/whitespace only)
+ *  is the console's own "just pressed Enter" case, and the dispatcher's
+ *  contract (ff_debug_console.h) is to print nothing for it, not "dbg: ?
+ *  try help". Every other value IS a rejection the dispatcher reports. */
+typedef enum {
+    FF_DBGCMD_ERR_OK = 0,
+    FF_DBGCMD_ERR_EMPTY,
+    FF_DBGCMD_ERR_TOO_LONG,
+    FF_DBGCMD_ERR_UNKNOWN_CMD,
+    FF_DBGCMD_ERR_BAD_ARGS,
+} ff_dbgcmd_status_t;
+
+/**
+ * One parsed line. Validity is per-`kind`, exactly `ff_intent_t`'s
+ * convention (app/include/ff_intent.h) — `u.text` is meaningful only for
+ * `FF_DBGCMD_SEND`, `u.dm` only for `FF_DBGCMD_DM`; every other kind
+ * carries no payload at all.
+ */
+typedef struct {
+    ff_dbgcmd_kind_t kind;
+    union {
+        char text[FF_DBGCMD_TEXT_MAX + 1]; /* SEND: NUL-terminated body */
+        struct {
+            uint32_t dest_node;
+            char     text[FF_DBGCMD_TEXT_MAX + 1]; /* NUL-terminated body */
+        } dm;
+    } u;
+} ff_dbgcmd_t;
+
+/**
+ * ff_dbgcmd_parse — parse one line into `*out`.
+ *
+ * `line` need not be NUL-terminated; exactly `line_len` bytes of it are
+ * read, never more (the 300-byte-line Unity test exists to confirm this
+ * — a buffer that ends exactly at `line_len` with no NUL byte anywhere
+ * in it must not be over-read). `line_len == 0` is treated the same as
+ * an all-whitespace line (`FF_DBGCMD_ERR_EMPTY`).
+ *
+ * `*out` is zero-initialized on every call, including a rejected one,
+ * before this function does anything else — a caller that reads a field
+ * it should not (violating the "per kind" contract above) gets
+ * deterministic zeros, never stack garbage from a previous call.
+ *
+ * `line == NULL` or `out == NULL` returns `FF_DBGCMD_ERR_BAD_ARGS`
+ * (`out == NULL` obviously cannot also be zeroed first).
+ *
+ * Returns `FF_DBGCMD_ERR_OK` iff `out->kind` is now a real command
+ * (never `FF_DBGCMD_NONE` on that return value). Every other return
+ * value leaves `out->kind == FF_DBGCMD_NONE`.
+ */
+ff_dbgcmd_status_t ff_dbgcmd_parse(char const *line, size_t line_len, ff_dbgcmd_t *out);
+
+/**
+ * ff_dbgcmd_kind_name / ff_dbgcmd_status_name — short, stable, all-caps
+ * names for logging and test failure messages (mirrors this codebase's
+ * existing `ff_*_name` convention, e.g. `ff_link_state_name`). Never
+ * NULL; an out-of-range value maps to "?".
+ */
+char const *ff_dbgcmd_kind_name(ff_dbgcmd_kind_t kind);
+char const *ff_dbgcmd_status_name(ff_dbgcmd_status_t status);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif /* FF_DBGCMD_H */

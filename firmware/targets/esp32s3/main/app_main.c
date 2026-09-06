@@ -63,6 +63,11 @@
 #include "ff_sound_emit.h" /* S27 sounds — the screens-level TAP seam (ff_shell_sound_sink's bind target) */
 #include "ff_touchcal.h"
 
+#if CONFIG_FF_DEBUG_CONSOLE
+#include "ff_dbgcmd.h"        /* FF_DBGCMD_LINE_MAX — the line-accumulator bound below */
+#include "ff_debug_console.h" /* bench/debug console dispatch — docs/hardware/comms-brain.md */
+#endif
+
 #if CONFIG_FF_LINK_UART
 #include "mc_transport_uart.h" /* S15c — the real mesh transport, comms brain over GPIO43/44 */
 #endif
@@ -781,6 +786,100 @@ static void ff_configure_light_sleep_wake(void)
 static bool s_usb_connected_logged = false;
 /* S26 slice f amendment (END) --------------------------------------- */
 
+#if CONFIG_FF_DEBUG_CONSOLE
+/* ---------------------------------------------------------------------
+ * Bench/debug console (CONFIG_FF_DEBUG_CONSOLE, default OFF) — see
+ * docs/hardware/comms-brain.md, "Bench console", and
+ * app/include/ff_debug_console.h's header comment for the full command
+ * reference and seam discipline. This section is compiled out entirely
+ * when the Kconfig option is off (#if CONFIG_FF_DEBUG_CONSOLE, same
+ * convention as CONFIG_FF_GLASS_RULER's split in ff_display_debug.c).
+ *
+ * Reads off USB-Serial-JTAG via the ESP-IDF driver's own RX ring buffer
+ * (usb_serial_jtag_driver_install + usb_serial_jtag_read_bytes), NOT
+ * through the stdio/VFS console path: this project's committed
+ * sdkconfig makes USB-Serial-JTAG the SECONDARY console (log mirror,
+ * write-only — see FF_UART_PORT's own Kconfig help and the S26f
+ * amendment above), so nothing else on this build ever reads from this
+ * peripheral; installing the driver only claims its unused RX side.
+ * usb_serial_jtag_vfs's TX path used for log output is a separate,
+ * lower-level, non-driver code path
+ * (usb_serial_jtag_ll_write_txfifo, selected by default and never
+ * switched away from — see usb_serial_jtag_vfs_use_driver's own doc
+ * comment in ESP-IDF), so installing this driver for RX does not
+ * disturb the boot log mirrored over the same wire.
+ *
+ * Polled from the render loop below, ONLY while
+ * usb_serial_jtag_is_connected() reads true (the S26f amendment's own
+ * `usb_connected` sample) — never on battery, per this feature's design
+ * goal of zero behaviour change for field operation. */
+static char s_dbgconsole_line[FF_DBGCMD_LINE_MAX + 1];
+static size_t s_dbgconsole_line_len;
+
+static void dbgconsole_init(void)
+{
+    usb_serial_jtag_driver_config_t cfg = USB_SERIAL_JTAG_DRIVER_CONFIG_DEFAULT();
+    esp_err_t const err = usb_serial_jtag_driver_install(&cfg);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "usb_serial_jtag_driver_install failed: %s — bench console disabled this boot",
+                 esp_err_to_name(err));
+    }
+}
+
+/* One reply line -> one write, "\r\n"-terminated for a plain serial
+ * terminal. Best-effort (ticks_to_wait=0, matching the read side's own
+ * non-blocking contract) — a bench console reply is a nicety for
+ * whoever is watching, never something the render loop may block on. */
+static void dbgconsole_reply_write(void *user, char const *line)
+{
+    (void)user;
+    usb_serial_jtag_write_bytes(line, strlen(line), 0);
+    usb_serial_jtag_write_bytes("\r\n", 2, 0);
+}
+
+/* Drain whatever the USB host has sent since the last frame (non-
+ * blocking: ticks_to_wait=0) into the line accumulator, dispatching on
+ * every '\n' and tolerating a preceding '\r' (ff_dbgcmd_parse's own CRLF
+ * trim handles that; this loop only needs to find the line BOUNDARY).
+ * A line that grows past FF_DBGCMD_LINE_MAX before a newline arrives is
+ * dropped ENTIRELY (never dispatched, not even as a truncated prefix) —
+ * `s_dbgconsole_discarding` swallows every byte up to and including the
+ * next '\n' once the accumulator fills, so an overlong line can never
+ * be silently reinterpreted as a shorter, different, VALID command; the
+ * eventual full-length line, had it fit, would have been rejected as
+ * TOO_LONG by ff_dbgcmd_parse anyway (ff_dbgcmd.h) — this is that same
+ * rejection, made before the static buffer would otherwise need to grow
+ * past its fixed size waiting for a newline that may never come. */
+static bool s_dbgconsole_discarding;
+
+static void dbgconsole_poll(ff_shell_t *sh, uint32_t now_ms)
+{
+    uint8_t chunk[64];
+    int n;
+    while ((n = usb_serial_jtag_read_bytes(chunk, sizeof(chunk), 0)) > 0) {
+        for (int i = 0; i < n; ++i) {
+            char const c = (char)chunk[i];
+            if (c == '\n') {
+                if (!s_dbgconsole_discarding) {
+                    ff_dbgconsole_handle_line(sh, s_dbgconsole_line, s_dbgconsole_line_len, now_ms,
+                                               dbgconsole_reply_write, NULL);
+                }
+                s_dbgconsole_line_len = 0u;
+                s_dbgconsole_discarding = false;
+                continue;
+            }
+            if (s_dbgconsole_discarding) continue; /* still swallowing an overlong line */
+            if (s_dbgconsole_line_len < FF_DBGCMD_LINE_MAX) {
+                s_dbgconsole_line[s_dbgconsole_line_len++] = c;
+            } else {
+                s_dbgconsole_discarding = true;
+                s_dbgconsole_line_len = 0u;
+            }
+        }
+    }
+}
+#endif /* CONFIG_FF_DEBUG_CONSOLE */
+
 /* S15c — honest link-state transition logging. ff_shell_link() itself is
  * pure data-plumbing (ff_shell.c has no ESP_LOGx anywhere — core/app stay
  * target-agnostic, CLAUDE.md's "core is pure" rule), so a target that
@@ -1482,6 +1581,13 @@ void app_main(void)
      * sources and the PSRAM/VDD_SDIO interpretation call. */
     ff_configure_light_sleep_wake();
 
+#if CONFIG_FF_DEBUG_CONSOLE
+    /* Bench/debug console (default OFF) — install the USB-Serial-JTAG
+     * driver's RX side once, before the render loop can first poll it.
+     * See dbgconsole_init's own doc comment above. */
+    dbgconsole_init();
+#endif
+
     /* Render lifecycle mirrors the sim (targets/sim/ctl_loop.c): tick the
      * shell every frame, rebuild the LVGL tree ONLY on a dirty tick. The
      * esp_lvgl_port task does the actual flushing; we just own the model. */
@@ -1683,6 +1789,16 @@ void app_main(void)
                                                : "S26f: USB disconnected — light sleep armed");
             s_usb_connected_logged = usb_connected;
         }
+
+#if CONFIG_FF_DEBUG_CONSOLE
+        /* Bench/debug console (default OFF) — poll ONLY while USB is
+         * connected (this same frame's fresh `usb_connected` sample, S26f
+         * amendment): a line command works exactly when a bench USB
+         * cable is plugged in and costs nothing at all on battery. */
+        if (usb_connected) {
+            dbgconsole_poll(&s_shell, now_ms);
+        }
+#endif
 
         /* S15c — log a mesh link-state transition ONCE, same "track the
          * last logged value" pattern as s_usb_connected_logged just

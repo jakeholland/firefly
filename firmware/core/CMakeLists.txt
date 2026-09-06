@@ -422,3 +422,19 @@ if(FF_BUILD_TESTS)
 
     add_test(NAME test_gesture COMMAND test_gesture)
 endif()
+
+# Bench/debug console (CONFIG_FF_DEBUG_CONSOLE) — core/dbgcmd: the
+# line-command parser, pure command policy with no I/O. See ff_dbgcmd.h
+# and docs/hardware/comms-brain.md's "Bench console" section. Compiled
+# and tested on every target regardless of the Kconfig gate, which only
+# exists on the esp32s3 device build (see firmware/app/include/ff_debug_console.h
+# for where that gate actually applies).
+if(FF_BUILD_TESTS)
+    add_executable(test_dbgcmd
+        tests/test_dbgcmd.c
+    )
+    target_link_libraries(test_dbgcmd PRIVATE ff-core unity)
+    ff_apply_warnings(test_dbgcmd)
+
+    add_test(NAME test_dbgcmd COMMAND test_dbgcmd)
+endif()

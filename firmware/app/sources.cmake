@@ -90,3 +90,15 @@ set(FF_FACE_DISPATCH_SOURCES
 set(FF_GESTURE_GLUE_SOURCES
     ff_gesture_glue.c
 )
+
+# Bench/debug console (CONFIG_FF_DEBUG_CONSOLE) — app/ff_debug_console.c:
+# the DISPATCH half (docs/hardware/comms-brain.md's "Bench console"; the
+# pure PARSER half is core/ff_dbgcmd.c). Compiled unconditionally into
+# this list/library — the file's own body is `#if defined(FF_TARGET_SIM)
+# || defined(CONFIG_FF_DEBUG_CONSOLE)` gated (ff_debug_console.h's own
+# doc comment), so with neither defined it compiles to an empty
+# translation unit, same "compiled out entirely, not just linked out"
+# contract ff_display_debug.c's CONFIG_FF_GLASS_RULER half already uses.
+set(FF_DEBUG_CONSOLE_SOURCES
+    ff_debug_console.c
+)

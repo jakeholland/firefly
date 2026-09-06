@@ -313,4 +313,41 @@ menu "Firefly bring-up (S15 slice b)"
             then disable again before a field build — see this spec's
             device on-glass steps for the full bring-up sequence.
 
+    config FF_DEBUG_CONSOLE
+        bool "Bench/debug console over USB-Serial-JTAG (opt-in, bench/test only)"
+        default n
+        help
+            Opt-in bench/debug console: reads line commands off the
+            USB-Serial-JTAG port — the SAME port that already carries the
+            boot log (this project's committed sdkconfig sets
+            CONFIG_ESP_CONSOLE_SECONDARY_USB_SERIAL_JTAG=y) — so an
+            end-to-end test can trigger sends, flares, and state dumps
+            over the puck's USB port without a human tap on the
+            touchscreen. See docs/hardware/comms-brain.md, "Bench
+            console", for the full command reference and an example
+            session.
+
+            Polled once per render-loop frame, and ONLY while
+            usb_serial_jtag_is_connected() reads true (the same S26f
+            amendment sample app_main.c already takes every frame to
+            decide light-sleep inhibit) — a line command works exactly
+            when a bench USB cable is plugged in and does nothing at all
+            on battery, so this changes zero behaviour for field/battery
+            operation. Every command dispatches through ff_shell_intent
+            (the same QUICK_FLARE/FLARE_END intents the physical 5-tap
+            gesture and the sender overlay's CANCEL button use) or the
+            debug-only ff_shell_debug_send_text seam
+            (app/include/ff_shell.h) — never a new roster-growth path,
+            never a direct mc_client send bypassing the shell.
+
+            Default OFF: with this unset, ff_debug_console.c's entire
+            body is `#if defined(FF_TARGET_SIM) ||
+            defined(CONFIG_FF_DEBUG_CONSOLE)` — compiled out entirely,
+            not merely disabled at runtime, exactly like
+            CONFIG_FF_DEV_TRUST_CHANNEL/CONFIG_FF_GLASS_RULER above — and
+            app_main.c's own polling code under this same guard vanishes
+            too, so a field build is byte-for-byte the same with or
+            without this feature existing in the tree. Enable only for a
+            bench/e2e-test build; never ship it on for a field build.
+
 endmenu
