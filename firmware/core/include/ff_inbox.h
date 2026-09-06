@@ -107,8 +107,13 @@ typedef struct {
     ff_conv_kind_t kind;
     uint32_t       node_id; /* MEMBER: the member's node id; CREW: 0 */
 
-    /* Identity — MEMBER only, copied from the paired roster member. */
-    char    name[16];
+    /* Identity — MEMBER only. `name` is the DISPLAY name (2026-09-06
+     * [api], crew long names: `ff_crew_display_name` — long name when
+     * known, else the short one), which is why it's sized
+     * `FF_CREW_LONG_NAME_LEN` rather than the short name's own 16 bytes;
+     * the inbox row (a thread row or the "NEW MESSAGE" whole-crew picker
+     * list) has room for a real name, unlike a ring dot/chip. */
+    char    name[FF_CREW_LONG_NAME_LEN];
     char    initial;
     uint8_t color_idx;
 

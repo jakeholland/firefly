@@ -1139,6 +1139,80 @@ static void S33_AC3_dot_place_flag_set_and_mutually_exclusive_with_stale(void)
 }
 
 /* ------------------------------------------------------------------- */
+/* 2026-09-06 [api] crew long names — headline uses ff_crew_display_name */
+/* ------------------------------------------------------------------- */
+
+static void LONGNAME_headline_uses_long_name_when_known(void)
+{
+    ff_crew_t c;
+    ff_crew_member_t *m = setup_selected_member(&c); /* name "DANA" */
+    strncpy(m->long_name, "Dana", sizeof(m->long_name) - 1);
+    m->has_pos = true;
+    m->pos = (ff_latlon_t){0.01, 0.0};
+    m->pos_age_ms = 0u;
+
+    ff_radar_view_t v;
+    memset(&v, 0, sizeof(v));
+    ff_radar_smooth_t sm;
+    ff_radar_smooth_reset(&sm);
+    ff_latlon_t my_pos = {0.0, 0.0};
+
+    ff_radar_compute(&v, &sm, &c, 0.0f, my_pos, true, false, 0u);
+
+    TEST_ASSERT_EQUAL_INT(RADAR_LIVE, v.mode);
+    TEST_ASSERT_EQUAL_STRING("Dana", v.name); /* long name, not the short "DANA" */
+}
+
+static void LONGNAME_headline_falls_back_to_short_when_long_unknown(void)
+{
+    /* setup_selected_member never sets long_name — this pins that the
+     * pre-existing (short-name) behavior is unchanged when no long name
+     * has ever arrived. Same scenario S06_AC1_mode_live already covers;
+     * kept as its own named test so it reads as a crew-long-names AC,
+     * not an incidental assertion buried in an unrelated mode test. */
+    ff_crew_t c;
+    ff_crew_member_t *m = setup_selected_member(&c); /* name "DANA", long_name "" */
+    m->has_pos = true;
+    m->pos = (ff_latlon_t){0.01, 0.0};
+    m->pos_age_ms = 0u;
+
+    ff_radar_view_t v;
+    memset(&v, 0, sizeof(v));
+    ff_radar_smooth_t sm;
+    ff_radar_smooth_reset(&sm);
+    ff_latlon_t my_pos = {0.0, 0.0};
+
+    ff_radar_compute(&v, &sm, &c, 0.0f, my_pos, true, false, 0u);
+
+    TEST_ASSERT_EQUAL_STRING("DANA", v.name);
+}
+
+static void LONGNAME_headline_long_name_near_full_budget_not_truncated(void)
+{
+    /* FF_RADAR_NAME_LEN == FF_CREW_LONG_NAME_LEN (40): a long name right
+     * at the wire's own 39-byte-plus-NUL bound must survive intact
+     * through ff_radar_compute's copy, not get clipped by a stale 16-byte
+     * assumption left over from the short-name era. */
+    ff_crew_t c;
+    ff_crew_member_t *m = setup_selected_member(&c);
+    char const *long39 = "Bartholomew Montgomery-Fitzgeraldxx"; /* 35 chars */
+    strncpy(m->long_name, long39, sizeof(m->long_name) - 1);
+    m->has_pos = true;
+    m->pos = (ff_latlon_t){0.01, 0.0};
+    m->pos_age_ms = 0u;
+
+    ff_radar_view_t v;
+    memset(&v, 0, sizeof(v));
+    ff_radar_smooth_t sm;
+    ff_radar_smooth_reset(&sm);
+    ff_latlon_t my_pos = {0.0, 0.0};
+
+    ff_radar_compute(&v, &sm, &c, 0.0f, my_pos, true, false, 0u);
+
+    TEST_ASSERT_EQUAL_STRING(long39, v.name);
+}
+
+/* ------------------------------------------------------------------- */
 /* AC6 — allocation-free (by construction, see file header) and fast    */
 /* ------------------------------------------------------------------- */
 
@@ -1221,6 +1295,10 @@ int main(void)
     RUN_TEST(S47_close_by_rssi_unaffected_by_imprecise_position);
 
     RUN_TEST(S06_AC6_compute_runs_well_under_1ms);
+
+    RUN_TEST(LONGNAME_headline_uses_long_name_when_known);
+    RUN_TEST(LONGNAME_headline_falls_back_to_short_when_long_unknown);
+    RUN_TEST(LONGNAME_headline_long_name_near_full_budget_not_truncated);
 
     return UNITY_END();
 }

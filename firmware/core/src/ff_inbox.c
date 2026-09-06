@@ -7,6 +7,7 @@
 #include "ff_inbox.h"
 
 #include <stdint.h>
+#include <stdio.h>
 #include <string.h>
 
 /* ---------------------------------------------------------------------
@@ -168,7 +169,11 @@ void ff_inbox_build(ff_inbox_t *ib, ff_feed_t const *feed, ff_crew_t const *crew
         cv->node_id   = m->node_id;
         cv->initial   = m->initial;
         cv->color_idx = m->color_idx;
-        memcpy(cv->name, m->name, sizeof(cv->name));
+        /* 2026-09-06 [api] crew long names: the row's identity is the
+         * DISPLAY name (ff_crew_display_name), not the bare short name —
+         * `cv->name` is sized for it (ff_inbox.h). snprintf, not memcpy:
+         * the two buffers are no longer the same size. */
+        snprintf(cv->name, sizeof(cv->name), "%s", ff_crew_display_name(m));
 
         /* Presence — the same honest legs ff_sigview_build feeds
          * ff_sigview_presence (position freshness + direct-packet RSSI

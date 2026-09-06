@@ -1358,6 +1358,15 @@ static void shell_ev_node(void *u, mc_nodeinfo_t const *n)
      * name, if any, is worth remembering for the CREW screen's "add from
      * heard nodes" list even though it isn't in the roster yet). */
     char const *name = n->has_short_name ? n->short_name : (n->has_long_name ? n->long_name : "");
+    /* [api] 2026-09-06 crew long names — the LONG name, independent of
+     * the `name` fallback chain above: `name` still prefers SHORT (the
+     * pre-existing, unchanged contract every other reader of `m->name`
+     * depends on), but a paired member's `long_name` field wants the
+     * long name specifically, present or not. Heard (not-yet-paired)
+     * nodes don't get a long-name cache — only the CREW page's PAIRED
+     * rows show the long/short pair (S12 amendment); the heard-name
+     * cache (`shell_heard_name_note`) is unchanged. */
+    char const *long_name = n->has_long_name ? n->long_name : "";
 
     /* ROSTER TRUST POLICY. Read-only first; a miss is noted in the
      * bounded heard list and dropped. Inbound radio traffic never grows
@@ -1373,6 +1382,15 @@ static void shell_ev_node(void *u, mc_nodeinfo_t const *n)
     if (name[0] != '\0') {
         shell_copy_str(m->name, sizeof(m->name), name);
         m->initial = name[0];
+    }
+    /* Sticky, same as `name` just above: only overwritten when THIS
+     * NodeInfo actually carries a long name, never blanked back to ""
+     * by a later replay/packet that happens not to repeat it (the exact
+     * "never regress a previously-learned fact" convention `name`'s own
+     * `if (name[0] != '\0')` guard already establishes for the short
+     * name). */
+    if (long_name[0] != '\0') {
+        shell_copy_str(m->long_name, sizeof(m->long_name), long_name);
     }
     if (n->has_battery_level) {
         m->battery_pct = (int8_t)(n->battery_level > 100u ? 100u : n->battery_level);
@@ -2119,7 +2137,13 @@ static void shell_project_crew_page(shell_t const *sh, uint32_t now_ms, ff_app_s
 
         ff_app_crew_paired_row_t *row = &cw->paired[cw->paired_count++];
         row->node_id = m->node_id;
-        shell_copy_str(row->name, sizeof(row->name), m->name);
+        /* [api] 2026-09-06 crew long names: `name` is the display name
+         * (long when known, else short — ff_crew_display_name); `short_
+         * name` is always the short one, carried separately so the CREW
+         * page can render it as a secondary muted tag next to the
+         * display name (S12 amendment). */
+        shell_copy_str(row->name, sizeof(row->name), ff_crew_display_name(m));
+        shell_copy_str(row->short_name, sizeof(row->short_name), m->name);
         row->initial = m->initial;
         row->color_idx = m->color_idx;
 

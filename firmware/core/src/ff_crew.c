@@ -376,3 +376,11 @@ void ff_fmt_age(char *buf, size_t n, uint32_t age_ms)
         snprintf(buf, n, "%u HR", (unsigned)(age_s / 3600u));
     }
 }
+
+const char *ff_crew_display_name(ff_crew_member_t const *m)
+{
+    if (!m) {
+        return "";
+    }
+    return (m->long_name[0] != '\0') ? m->long_name : m->name;
+}

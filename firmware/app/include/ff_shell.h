@@ -553,8 +553,27 @@ typedef struct {
  * check still catches that), and a ~35 KB static shell remains comfortable
  * in the S3's 512 KB SRAM; this stays a runaway-growth tripwire, not a
  * hardware limit.
+ *
+ * RAISED 35 KB -> 36 KB for crew long names ([api], 2026-09-06),
+ * deliberately, per this comment's own instruction: `ff_crew_member_t`
+ * gained `long_name[FF_CREW_LONG_NAME_LEN]` (40 B * FF_CREW_MAX (8) =
+ * 320 B, one copy — `sh->crew` is not part of the view/prev_key pair),
+ * and three view-model name fields widened from a 16 B short-name budget
+ * to the same 40 B display-name budget — `ff_radar_view_t.name`,
+ * `ff_inbox_conv_t.name` (FF_INBOX_MAX_CONVS = 9 rows), and `ff_app_crew_
+ * paired_row_t.name` plus its new `short_name[FF_APP_NAME_LEN]` tag
+ * field (FF_CREW_MAX = 8 rows) — each landing TWICE via the `view` +
+ * `prev_key` render-key copies, the same doubled shape every prior raise
+ * in this comment describes. Measured, not estimated: sizeof(shell_t) is
+ * 36,264 B against the old 35,840 B budget (a hard compile failure). 36 KB
+ * (36,864 B) clears it with ~600 B headroom — same tight-round-number
+ * discipline as the earlier raises. Still REAL view-model state (a
+ * pack-embed would add ~23.7 KB more at once — the test_shell.c red-flag
+ * check still catches that), and a ~36 KB static shell remains
+ * comfortable in the S3's 512 KB SRAM; this stays a runaway-growth
+ * tripwire, not a hardware limit.
  */
-#define FF_SHELL_BYTES 35840u
+#define FF_SHELL_BYTES 36864u
 
 /** Alignment of the opaque payload. 8 covers every member the shell
  *  holds today (the widest are `double` inside `ff_latlon_t` and

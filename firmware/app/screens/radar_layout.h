@@ -279,11 +279,19 @@ extern "C" {
 #define RADAR_LAYOUT_STACK_NAME_DY 60.0f
 #define RADAR_LAYOUT_STACK_DIST_DY 100.0f
 #define RADAR_LAYOUT_STACK_CHIP_DY 148.0f
+/* 2026-09-06 crew long names: the name label's own width, bounding
+ * `radar_build_name_label`'s DOTS ellipsis (scr_radar.c) to fit inside
+ * this mode's reserved rect below (registry half-width 140 -> 280 total;
+ * 20px margin either side so the ellipsis never kisses the rect edge). */
+#define RADAR_LAYOUT_STACK_NAME_W 260
 
 /* LOST, never fixed. */
 #define RADAR_LAYOUT_NEVER_HEADLINE_DY (-10.0f)
 #define RADAR_LAYOUT_NEVER_NAME_DY 40.0f
 #define RADAR_LAYOUT_NEVER_SUB_DY 90.0f
+/* Reserved rect half-width 170 -> 340 total, same margin convention as
+ * RADAR_LAYOUT_STACK_NAME_W above. */
+#define RADAR_LAYOUT_NEVER_NAME_W 320
 
 /* NOFIX. */
 #define RADAR_LAYOUT_NOFIX_HEADLINE_DY (-10.0f)
@@ -313,6 +321,9 @@ extern "C" {
 #define RADAR_LAYOUT_CLOSE_NAME_DY 59.0f
 #define RADAR_LAYOUT_CLOSE_CHIP_DY 98.0f
 #define RADAR_LAYOUT_CLOSE_FLARE_DY 147.0f
+/* Reserved rect half-width 110 -> 220 total, same margin convention as
+ * RADAR_LAYOUT_STACK_NAME_W above. */
+#define RADAR_LAYOUT_CLOSE_NAME_W 200
 
 /** An axis-aligned rectangle, center-relative (puck center = (0,0)). */
 typedef struct {

@@ -592,6 +592,43 @@ static void S24_AC2_null_guards_are_no_ops_not_crashes(void)
     TEST_ASSERT_NULL(ff_inbox_conv_at(&ib, ff_inbox_conv_count(&ib)));
 }
 
+/* ------------------------------------------------------------------- */
+/* 2026-09-06 [api] crew long names — conv row name is the display name */
+/* ------------------------------------------------------------------- */
+
+static void LONGNAME_conv_row_uses_display_name_when_long_known(void)
+{
+    ff_feed_t f;
+    ff_feed_init(&f);
+    ff_crew_t c;
+    memset(&c, 0, sizeof(c));
+    ff_crew_member_t *m = add_member(&c, DANA, "DANA", 'D', 1, true);
+    strncpy(m->long_name, "Dana", sizeof(m->long_name) - 1);
+
+    ff_inbox_t ib;
+    ff_inbox_build(&ib, &f, &c, NOW);
+
+    ff_inbox_conv_t const *dana = find_conv(&ib, FF_CONV_MEMBER, DANA);
+    TEST_ASSERT_NOT_NULL(dana);
+    TEST_ASSERT_EQUAL_STRING("Dana", dana->name); /* not the short "DANA" */
+}
+
+static void LONGNAME_conv_row_falls_back_to_short_when_long_unknown(void)
+{
+    ff_feed_t f;
+    ff_feed_init(&f);
+    ff_crew_t c;
+    memset(&c, 0, sizeof(c));
+    add_member(&c, DANA, "DANA", 'D', 1, true); /* long_name left "" */
+
+    ff_inbox_t ib;
+    ff_inbox_build(&ib, &f, &c, NOW);
+
+    ff_inbox_conv_t const *dana = find_conv(&ib, FF_CONV_MEMBER, DANA);
+    TEST_ASSERT_NOT_NULL(dana);
+    TEST_ASSERT_EQUAL_STRING("DANA", dana->name);
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -615,6 +652,9 @@ int main(void)
 
     RUN_TEST(S24_AC2_full_roster_fits_conversation_cap);
     RUN_TEST(S24_AC2_null_guards_are_no_ops_not_crashes);
+
+    RUN_TEST(LONGNAME_conv_row_uses_display_name_when_long_known);
+    RUN_TEST(LONGNAME_conv_row_falls_back_to_short_when_long_unknown);
 
     return UNITY_END();
 }

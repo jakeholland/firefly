@@ -145,7 +145,10 @@ void ff_radar_compute(ff_radar_view_t *v, ff_radar_smooth_t *smooth, ff_crew_t *
         return;
     }
 
-    radar_copy_str(v->name, sizeof(v->name), member->name);
+    /* 2026-09-06 [api] crew long names: the headline shows the display
+     * name (long name when known, else the short one — ff_crew.h's
+     * ff_crew_display_name), never the bare short name directly. */
+    radar_copy_str(v->name, sizeof(v->name), ff_crew_display_name(member));
 
     /* 2026-09-05 amendment: the selection's freshness, computed here —
      * unconditionally, independent of my_pos_ok/heading_ok — and reduced

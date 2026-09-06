@@ -122,6 +122,7 @@
 
 #include <math.h>
 #include <stdio.h>
+#include <string.h> /* strcmp — S12 amendment: does a paired row's display name differ from its short tag? */
 
 #include "ff_intent.h" /* the emit seam; FF_INTENT_CALIBRATE_TOUCH */
 #include "ff_layout.h"
@@ -1130,6 +1131,12 @@ static lv_obj_t *settings_crew_row_labels(lv_obj_t *row, int32_t label_w, char c
 {
     lv_obj_t *top_lbl = lv_label_create(row);
     lv_obj_set_width(top_lbl, label_w);
+    /* 2026-09-06 crew long names: DOTS/DOT truncates to ONE line only
+     * when the label's HEIGHT is ALSO bounded — width alone makes LVGL
+     * wrap instead (scr_banner.c's/scr_inbox.c's documented lesson,
+     * newly load-bearing here now a display name + "(SHORT)" tag can run
+     * well past this column's width, where a short name rarely did). */
+    lv_obj_set_height(top_lbl, lv_font_get_line_height(FF_THEME_FONT_LABEL));
     lv_label_set_long_mode(top_lbl, LV_LABEL_LONG_DOT);
     lv_label_set_text(top_lbl, top);
     lv_obj_set_style_text_font(top_lbl, FF_THEME_FONT_LABEL, 0);
@@ -1139,6 +1146,7 @@ static lv_obj_t *settings_crew_row_labels(lv_obj_t *row, int32_t label_w, char c
 
     lv_obj_t *bot_lbl = lv_label_create(row);
     lv_obj_set_width(bot_lbl, label_w);
+    lv_obj_set_height(bot_lbl, lv_font_get_line_height(FF_THEME_FONT_CHIP));
     lv_label_set_long_mode(bot_lbl, LV_LABEL_LONG_DOT);
     lv_label_set_text(bot_lbl, bottom);
     lv_obj_set_style_text_font(bot_lbl, FF_THEME_FONT_CHIP, 0);
@@ -1167,15 +1175,31 @@ static void settings_crew_build_paired_row(lv_obj_t *list, int32_t rel_y, int32_
 
     /* Identity is never fabricated (CLAUDE.md): a paired member with no
      * name yet (NodeInfo hasn't arrived) renders an honest node-id
-     * fallback, never a placeholder word like "unnamed". */
-    char top[FF_APP_NAME_LEN + 4];
+     * fallback, never a placeholder word like "unnamed".
+     *
+     * S12 CREW page amendment (2026-09-06, crew long names): `m->name`
+     * is the DISPLAY name (long when known, else short — `ff_crew_
+     * display_name`, applied in `shell_project_crew_page`); `m->short_
+     * name` is always the short one. When the two differ — i.e. a real
+     * long name is known — the short name rides along as a muted "(TAYL)"
+     * tag, via LVGL's `#RRGGBB text#` recolor markup (the same mechanism
+     * `scr_compose.c`'s pending-character highlight uses). Recolor is
+     * enabled ONLY in that case: a plain name (no tag) never risks a
+     * literal '#' in someone's name being misread as markup. */
+    char top[FF_APP_LONG_NAME_LEN + FF_APP_NAME_LEN + 24];
+    bool has_tag = (m->name[0] != '\0') && (m->short_name[0] != '\0') && (strcmp(m->name, m->short_name) != 0);
     if (m->name[0] != '\0') {
-        snprintf(top, sizeof(top), "%s", m->name);
+        if (has_tag) {
+            snprintf(top, sizeof(top), "%s #%06x (%s)#", m->name, (unsigned)FF_THEME_COLOR_MUTED, m->short_name);
+        } else {
+            snprintf(top, sizeof(top), "%s", m->name);
+        }
     } else {
         snprintf(top, sizeof(top), "#%04x", (unsigned)(m->node_id & 0xFFFFu));
     }
 
-    settings_crew_row_labels(row, label_w, top, status, color);
+    lv_obj_t *top_lbl = settings_crew_row_labels(row, label_w, top, status, color);
+    lv_label_set_recolor(top_lbl, has_tag);
 
     settings_make_pill(row, "REMOVE", row_w - FF_CREW_ACTION_PILL_W, (FF_CREW_ROW_H - FF_SETTINGS_ROW_H) / 2,
                        FF_CREW_ACTION_PILL_W, FF_SETTINGS_ROW_H, FF_THEME_COLOR_SURFACE, FF_THEME_COLOR_STALE_AMBER,

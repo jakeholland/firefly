@@ -60,6 +60,15 @@ extern "C" {
 /** Max crew slots (paired + merely-heard, no eviction — see AC2). */
 #define FF_CREW_MAX 8
 
+/* 2026-09-06 [api] — crew long names. Meshtastic's NodeInfo carries both a
+ * SHORT name (`name`, kept as-is: <=4 chars by product convention, the
+ * value every ring dot/cluster wedge/chip renders because those spots are
+ * chrome-constrained by design) and a LONG name (a real display name, up
+ * to 39 bytes UTF-8 on the wire). 40 = 39 + NUL, the exact wire bound,
+ * not a round number picked for looks. See `ff_crew_display_name` below
+ * for how the two combine into "what a headline/row should show". */
+#define FF_CREW_LONG_NAME_LEN 40
+
 /* Freshness thresholds (docs/specs/S02-core-crew.md, "Behavior" section):
  * LIVE: pos_age < 45s. STALE: 45s - 10min (closed interval: both boundary
  * values land in STALE, since LIVE and LOST are both strict inequalities).
@@ -130,6 +139,17 @@ typedef enum { FF_FRESH_LIVE, FF_FRESH_STALE, FF_FRESH_LOST, FF_FRESH_NEVER, FF_
 typedef struct {
     uint32_t node_id;   /* Meshtastic node num */
     char     name[16];  /* short name, crew-visible; "" until known */
+    /* [api] 2026-09-06 — Meshtastic's long name ("Taylor"), stored
+     * alongside `name` ("TAYL") rather than replacing it: the short form
+     * stays the one every space-constrained render (ring dot, cluster
+     * wedge, chip) uses, honoring the ORIGINAL wire distinction instead
+     * of collapsing it. "" until a NodeInfo carrying a long name has
+     * arrived — never synthesized from `name` (CLAUDE.md: "honest data
+     * over pretty data" extends to identity, not just position/time; a
+     * 4-letter short name is not itself evidence of what the long name
+     * would be). See `ff_crew_display_name`, the one place that decides
+     * what a full-width render shows from this pair. */
+    char     long_name[FF_CREW_LONG_NAME_LEN];
     char     initial;   /* display letter; '\0' until known */
     uint8_t  color_idx; /* index into theme crew palette; app-assigned */
     bool     paired;    /* in my crew (vs merely heard) */
@@ -415,6 +435,26 @@ void ff_fmt_distance(char *buf, size_t n, float meters, bool imperial);
  * freshness thresholds' inclusive-toward-the-next-state convention.
  */
 void ff_fmt_age(char *buf, size_t n, uint32_t age_ms);
+
+/**
+ * ff_crew_display_name — [api] 2026-09-06: the one honest answer to "what
+ * name should a full-width render (Radar headline, Inbox thread rows,
+ * the CREW page) show for this member". Returns `m->long_name` when it's
+ * non-empty, else `m->name` (the short name — the SAME fallback a
+ * pre-long-name puck already showed, so a member never named beyond
+ * their short form loses nothing). NEVER synthesizes a long name from
+ * the short one, and never claims one exists when it doesn't — this is
+ * pure selection between two already-known strings.
+ *
+ * Returns "" (never NULL) if `m` is NULL, so a careless caller gets an
+ * empty string to print rather than a crash — the same defensive
+ * convention this header's other pure helpers use.
+ *
+ * The returned pointer aliases `m`'s own storage and is valid exactly as
+ * long as `m` is (no allocation, no static buffer) — same lifetime rule
+ * as reading `m->name` directly.
+ */
+const char *ff_crew_display_name(ff_crew_member_t const *m);
 
 #ifdef __cplusplus
 }
