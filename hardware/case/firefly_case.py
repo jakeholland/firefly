@@ -981,18 +981,14 @@ def add_case_boss(root, bodies, cx, cy, p, is_D=False, clip_tool=None, core_r=No
 
 
 def add_case_screws(root, bodies, p, clip_tool=None):
+    # 2026-09-07 pass 7: boss B's old core_r=0 escape hatch (it used to sit
+    # inside the L76K PCB's own footprint) is gone -- B1/B2 replace it at a
+    # position clear of the redesigned comms stack (see params_current.py's
+    # screws_ABC comment and add_comms_bay's boss-relief cuts), so every
+    # case-screw boss now gets the normal full-height core.
     for s in p['screws_ABC']:
         cx, cy = s['xy']
-        # 2026-09-06 pass 6: boss B's position sits inside the L76K PCB's
-        # own real footprint (a pre-existing bay-layout conflict this
-        # pass's fixes exposed, not introduced -- see
-        # clipped_pillar_with_reach's core_r<=0 branch and the README's
-        # known-limitations entry). Giving it a full-height core would
-        # guarantee a real solid overlap with the PCB; core_r=0 keeps
-        # boss B at its exact pre-pass-6 behavior (silently unjoined)
-        # instead of trading that latent bug for a hard interference.
-        core_r = 0 if s['name'] == 'B' else None
-        bodies = add_case_boss(root, bodies, cx, cy, p, is_D=False, clip_tool=clip_tool, core_r=core_r)
+        bodies = add_case_boss(root, bodies, cx, cy, p, is_D=False, clip_tool=clip_tool, core_r=None)
         if clip_tool is not None:
             clip_tool = _refetch_by_name(root, CLIP_TOOL_NAME) or clip_tool
     cx, cy = p['screw_D']['xy']
@@ -1080,7 +1076,22 @@ def insert_referenced_component(root, doc, transform=None):
 
 
 def insert_display_pcba(app, root, p):
+    """Insert the display PCBA at the reference doc's own transform, plus a
+    Z offset (PARAMS['display_z_offset'], pass 7 / 2026-09-06): the
+    reference transform is read straight off "Firefly V2 v16", which was
+    built for the 25mm-tall case -- for the trim variant's new 28mm-tall
+    case, the display module (and everything built relative to it: Screen
+    Plate, Top posts, USB tunnel, FPC relief, button caps/switches) must
+    sit display_z_offset mm higher so the glass stays flush with the new
+    top face at z_top. A pure Z translation added to the reference
+    transform (not a re-derivation) keeps the module's own X/Y placement
+    and orientation exactly as measured off the reference doc."""
     transform = get_reference_transform(app, 'Firefly V2', p['display_doc_name'])
+    dz = p.get('display_z_offset', 0.0)
+    if dz:
+        t = transform.translation
+        t.z = t.z + dz * MM
+        transform.translation = t
     disp_doc = get_open_doc(app, p['display_doc_name'])
     assert disp_doc is not None, f"display doc not open: {p['display_doc_name']}"
     occ = insert_referenced_component(root, disp_doc, transform)
@@ -1874,70 +1885,107 @@ def add_battery_reference_box(root, p):
     return body
 
 
-def add_l76k_wired_frame(root, bodies, p):
-    """L76K is always wired (2026-09-04: 'hat' mode dropped) -- flat frame
-    in the dome tip with a wire notch on the +y side.
+def build_comms_stack_frame(root, p):
+    """Build (but do not yet join) the 3-board comms-stack retention
+    structure (2026-09-07 pass 7, supersedes the old dome-tip 'l76k_wired'
+    floor frame AND the separate Top-hanging XIAO/Wio tray): four Ø3
+    corner pads (2.0mm tall, z 2..4) plus a 1.2mm perimeter wall (6mm
+    tall, z 2..8) around the L76K PCB footprint, with a wire-clearance
+    notch on the +Y side. Only the L76K is physically retained by case
+    geometry here -- per Jake's stack spec, the XIAO plugs into the L76K's
+    own header pins below it and the Wio plugs into the XIAO via a
+    board-to-board connector above it, so the whole 3-board assembly is
+    held together by its own connectors once the bottom board is seated
+    in this frame; no separate tray/cradle is needed or built for the
+    upper two boards (contrast the pre-pass-7 design, which physically
+    retained XIAO+Wio in a Top-hanging tray elsewhere in the bay -- see
+    the README's pass-7 section)."""
+    s3 = p['bay']['stack3']
+    pcb = s3['l76k_pcb']
+    x0, x1 = pcb['x']
+    y0, y1 = pcb['y']
+    wall = s3['frame_wall']
+    clear = s3['frame_clear']
+    fz0, fz1 = s3['frame_z']
+    pad_r = s3['pad_dia'] / 2.0
+    pad_h = s3['pad_h']
+    inset = s3['pad_inset']
 
-    2026-09-05 fix (Bottom x L76K board interference): the frame used to
-    be a pure open-top/open-bottom RING (like build_hanging_frame) with no
-    floor of its own, relying on the case's bare cavity floor (nominally
-    z=2.0) underneath -- but the inserted PCB was placed with its bottom
-    at z~1.83, 0.17mm INSIDE that floor. The frame now includes an actual
-    floor PAD from z0 (2.0, the nominal floor top) up to
-    `l76k_floor_pad_z[1]` (2.3) across its footprint, and the PCB is
-    repositioned (see insert_comms_boards) to rest exactly on top of it at
-    z=2.3 -- an intended, flush contact, not a defect."""
-    fr = p['bay']['l76k_wired']
-    x0, x1 = fr['x']
-    y0, y1 = fr['y']
-    z0, z1 = fr['z']
-    wall = p['bay']['l76k_frame_wall']
-    clear = p['bay']['l76k_frame_clear']
-    pad_z0, pad_z1 = p['bay'].get('l76k_floor_pad_z', (z0, z0))
     ox0, ox1 = x0 - clear - wall, x1 + clear + wall
     oy0, oy1 = y0 - clear - wall, y1 + clear + wall
+    ix0, ix1 = x0 - clear, x1 + clear
+    iy0, iy1 = y0 - clear, y1 + clear
 
-    # solid floor pad across the WHOLE footprint (including the inner PCB
-    # area) from z0 up to pad_z1 -- the PCB rests flush on top of this.
-    floor_pad = box_solid(root, ox0, ox1, oy0, oy1, z0, max(pad_z1, z0 + 1e-6))
+    outer = box_solid(root, ox0, ox1, oy0, oy1, fz0, fz1)
+    inner = box_solid(root, ix0, ix1, iy0, iy1, fz0 - 0.5, fz1 + 0.5)
+    frame = combine_cut(root, outer, [inner])
 
-    # perimeter wall ring ABOVE the pad, hollow in the inner (PCB) area.
-    wall_outer = box_solid(root, ox0, ox1, oy0, oy1, pad_z1, z1 + 0.3)
-    wall_inner = box_solid(root, x0 - clear, x1 + clear, y0 - clear, y1 + clear, pad_z1 - 0.5, z1 + 0.8)
-    wall_ring = combine_cut(root, wall_outer, [wall_inner])
-
-    frame = combine_join(root, floor_pad, [wall_ring])
-
-    notch_w = p['bay']['l76k_wire_notch_w']
+    notch_w = s3['wire_notch_w']
     notch = box_solid(root, -notch_w / 2.0, notch_w / 2.0,
-                       y1 + clear - 0.5, y1 + clear + wall + 0.5, z0, z1 + 0.3)
+                       oy1 - wall - 0.5, oy1 + 0.5, fz0, fz1 + 0.3)
     frame = combine_cut(root, frame, [notch])
 
-    # 2026-09-05 fix (real 'Bottom x L76K board' interference, same root
-    # cause as the battery floor fix in add_battery_bay): this frame sits
-    # deep in the -y dome tip (README's own long-standing known
-    # limitation), where the cavity's bare floor -- BEFORE this frame's
-    # own floor_pad is added -- already curves up above the nominal flat
-    # z=2.0 as rho shrinks approaching the dome. That pre-existing bump is
-    # untouched by floor_pad (a JOIN adds material, it doesn't remove
-    # Bottom's own excess), and was found to reach up through the PCB's
-    # own thickness (measured overlap up to z=3.56) over part of the
-    # footprint. Flatten it the same way: cut back to z0 across the
-    # frame's whole outer footprint before adding the frame.
-    # 2026-09-06 pass 6 note: this flatten box's XY footprint used to
-    # also swallow case-screw boss B (0, -23 for trim/-24 current) across
-    # most of its height -- invisible until pass 6 gave boss B real
-    # material for the first time (clipped_pillar_with_reach). A keep-out
-    # cylinder at boss B's position was tried here first, but it just
-    # traded that bug for a real 'L76K PCB x Bottom' interference instead
-    # (boss B's position turned out to sit squarely inside the L76K PCB's
-    # own footprint -- x -10.48..10.48, y -23.39..-5.61 -- so preserving
-    # its full-height material there collided with the PCB directly,
-    # independent of this flatten cut). Fixed at the actual source
-    # instead: boss B moved to (13.0, -23) in PARAMS, clear of the L76K
-    # PCB's x-extent -- see screws_ABC's own comment.
-    flatten = box_solid(root, ox0, ox1, oy0, oy1, z0, z1 + 0.3)
+    pads = [cylinder_solid(root, px, py, pad_r, fz0, fz0 + pad_h)
+            for px in (x0 + inset, x1 - inset) for py in (y0 + inset, y1 - inset)]
+    frame = combine_join(root, frame, pads)
+    return frame
+
+
+def add_comms_stack_frame(root, bodies, p, clip_tool=None):
+    """Join the comms-stack frame into Bottom.
+
+    Real defects found (2026-09-07, via an actual analyzeInterference
+    run) and fixed here, both instances of patterns already established
+    elsewhere in this file:
+
+    1. 'L76K PCB x Bottom' (32.7mm3): the PCB's far -y corners (near
+       x=+-8.89, y approaching -24) sit outside the REAL inner cavity
+       wall at low z -- the dome tip (a revolve around spine_a) tapers
+       faster than the flat PCB rectangle assumes, confirmed analytically
+       (inner_rho_at_z(4.5)=23.8 vs the corner's own rho_from_spine=24.9)
+       -- the same "bare cavity floor curves up near the dome tip" issue
+       pass 5 already fixed for the battery and the old L76K frame (see
+       add_battery_bay). Fixed the same way: flatten the PCB's own exact
+       footprint (no extra margin, so this can't eat into the frame's
+       wall -- entirely outside this box) from the nominal floor (z=2.0)
+       up through a safe height (6.0, comfortably past the PCB's own
+       ~5.5mm top) BEFORE building the frame around it -- a no-op
+       wherever the floor is already flat.
+    2. Latent 'frame wall pokes through the outer shell' risk: the
+       frame's own wall reaches further out (PCB edge + clearance + wall)
+       than the PCB itself, and analytically its far corner's
+       rho_from_spine (~27.55) exceeds the TRUE outer profile's rho at
+       the frame's own LOW z (e.g. rho_at_z(2)=~24.1) -- the same latent
+       "outer bump" class of bug clipped_pillar_with_reach/
+       clip_to_inner_cavity already exist to prevent for bosses/posts.
+       Clip the whole frame (walls + pads) against the shared
+       inner-cavity clip tool before joining, exactly like every boss/
+       post -- guarantees it can never punch through regardless of the
+       exact numbers.
+    3. Boss relief (item 3): cut a keep-out around every case-screw boss
+       position so boss B1/B2 -- positioned just outside the L76K PCB's
+       own footprint, but close enough that the frame's outer wall would
+       otherwise graze them -- get a real, guaranteed
+       stack3['boss_relief_margin'] (1.0mm) of clearance. Cheap to apply
+       to every screw (A/C/D are already far enough away that the cut is
+       a no-op for them)."""
+    s3 = p['bay']['stack3']
+    pcb = s3['l76k_pcb']
+    x0, x1 = pcb['x']
+    y0, y1 = pcb['y']
+    flatten = box_solid(root, x0, x1, y0, y1, 2.0, 6.0)
     bodies['Bottom'] = combine_cut(root, bodies['Bottom'], [flatten])
+
+    frame = build_comms_stack_frame(root, p)
+    if clip_tool is not None:
+        frame = clip_to_inner_cavity(root, frame, p, clip_tool)
+
+    margin = p['bay']['stack3']['boss_relief_margin']
+    boss_r = p['boss_dia'] / 2.0
+    for s in p['screws_ABC'] + [p['screw_D']]:
+        cx, cy = s['xy']
+        keepout = cylinder_solid(root, cx, cy, boss_r + margin, 1.0, 9.0)
+        frame = combine_cut(root, frame, [keepout])
 
     bodies['Bottom'] = combine_join(root, bodies['Bottom'], [frame])
     return bodies
@@ -1990,47 +2038,11 @@ def build_hanging_frame(root, x0, x1, y0, y1, clearance, wall, z_bottom, z_ceili
     return frame
 
 
-def build_stack_tray_body(root, p):
-    """Build (but do not yet join) the XIAO+Wio stack tray body -- an
-    open-top/open-bottom frame hanging from the Top's ceiling (prints with
-    no overhang), with a wedge at each short (y) end for the Wio PCB to
-    rest on, and a 6mm wire-clearance gap on the +y side for the XIAO's
-    USB-C/antenna wires. Split out from add_stack_tray (2026-09-05) so
-    add_comms_bay can trim it against the GPS frame before either is
-    joined to Top -- see add_comms_bay's docstring.
-
-    `x_extra` widens the opening beyond the nominal 'stack' (Wio) footprint
-    (2026-09-05 fix, 'Top x XIAO' interference): XIAO's own PCB, measured
-    on the actual inserted occurrence, is ~22.48mm wide -- noticeably
-    wider than the Wio footprint ('stack' x/y, ~17.78mm) the tray was
-    originally sized to -- so the tray's walls were clipping straight
-    through XIAO's board. `tray_x_extra` widens the LEFT (-x, away from
-    the GPS patch bay) side by the full amount needed; the RIGHT (+x,
-    GPS-facing) side only gets `tray_x_extra_right`, which is much
-    smaller -- the two bays are only ~1mm apart at this y-band even
-    unwidened (a pre-existing bay-layout tightness -- see README known
-    limitations), so the right side cannot be widened to XIAO's full
-    real half-width without the tray encroaching on the GPS patch
-    antenna's own real footprint. This closes most, but not all, of the
-    real clearance gap; the residual is small and confined to the
-    GPS-facing edge."""
-    stack = p['bay']['stack']
-    x0, x1 = stack['x']
-    y0, y1 = stack['y']
-    extra_left = p['bay'].get('tray_x_extra', 0.0)
-    extra_right = p['bay'].get('tray_x_extra_right', extra_left)
-    tray = build_hanging_frame(
-        root, x0 - extra_left, x1 + extra_right, y0, y1, p['bay']['tray_clear'], p['bay']['tray_wall'],
-        p['bay']['tray_z_bottom'], p['top_ceiling_underside_z'],
-        ledge_w=p['bay']['tray_ledge']['w'], ledge_h=p['bay']['tray_ledge']['h'],
-        gap_w=p['bay']['tray_gap']['w'], gap_side=p['bay']['tray_gap']['side'])
-    return tray
-
-
-def add_stack_tray(root, bodies, p):
-    tray = build_stack_tray_body(root, p)
-    bodies['Top'] = combine_join(root, bodies['Top'], [tray])
-    return bodies
+# build_stack_tray_body / add_stack_tray (the pre-pass-7 Top-hanging
+# XIAO+Wio tray) removed 2026-09-07, pass 7: the 3-board direct-stack
+# design (build_comms_stack_frame) retains only the L76K in case
+# geometry -- XIAO/Wio float above it, held by their own board-to-board /
+# header connections. See the README's pass-7 section.
 
 
 def build_gps_frame_body(root, p):
@@ -2064,12 +2076,6 @@ def build_gps_frame_body(root, p):
     return frame
 
 
-def add_gps_frame(root, bodies, p):
-    frame = build_gps_frame_body(root, p)
-    bodies['Top'] = combine_join(root, bodies['Top'], [frame])
-    return bodies
-
-
 def add_gps_reference_box(root, p):
     """GPS patch antenna has no Fusion doc -- hidden reference box only."""
     gps = p['bay']['gps_patch']
@@ -2090,44 +2096,39 @@ def add_fpc_keepout_marker(root, p):
     return body
 
 
-def add_comms_bay(root, bodies, p):
+def add_comms_bay(root, bodies, p, clip_tool=None):
+    """2026-09-07 pass 7: the comms-stack frame (add_comms_stack_frame)
+    replaces the old dome-tip L76K-only frame, and the GPS frame no
+    longer needs a mutual clip against a stack tray (removed -- the
+    3-board stack no longer has one; see build_comms_stack_frame's
+    docstring) since the GPS patch's new y-range (2..27) and the stack's
+    footprint (y <= -1.5) don't overlap at all by construction.
+
+    Real defect found (2026-09-07, via an actual analyzeInterference run):
+    the GPS patch's new y-range (2..27) reaches close enough to
+    case-screw boss C (trim: (23.0, 25.2), Ø6) that boss C's own material
+    -- built earlier, in add_case_screws -- physically overlaps the
+    antenna's real footprint by ~2mm at its closest corner (box corner
+    (22.2, 25.2) is only 0.8mm from the boss's center, well inside its
+    3mm radius). Fixed the same way as the pass-5 tray/antenna clip:
+    cut a keepout matching the antenna box (+0.3mm margin) out of Top
+    generally, so nothing can occupy that space regardless of what's
+    there. This only removes the -x-facing "bite" of boss C's material
+    (the box's edge, even with margin, stops short of the boss's own
+    axis at x=23.0) -- the boss stays a continuous, if not full-circle,
+    pillar, and verify_posts_and_bosses' probe (offset in +x, AWAY from
+    the antenna) is unaffected."""
     bodies = add_battery_bay(root, bodies, p)
-    bodies = add_l76k_wired_frame(root, bodies, p)
+    bodies = add_comms_stack_frame(root, bodies, p, clip_tool=clip_tool)
 
-    # Build both raw frame bodies first and cut the tray's shape out of
-    # the GPS frame (a Combine-Intersect-tool-style mutual clip, same
-    # pattern as clip_to_inner_cavity for bosses/posts) before joining
-    # either into Top, so neither can end up overlapping the other
-    # regardless of the exact numbers. (2026-09-05: the earlier 'XIAO x
-    # GPS Patch Reference' interference here was a XIAO ORIENTATION bug --
-    # its long ~22.5mm axis, with the USB-C overhang, was mapped onto
-    # world X instead of world Y -- fixed at the source in
-    # insert_comms_boards ('y90' rotation); no tray widening or GPS-side
-    # notch is needed any more, XIAO's real footprint now matches Wio's.)
-    tray = build_stack_tray_body(root, p)
-    gps_frame = build_gps_frame_body(root, p)
-
-    # 2026-09-05 fix ('Top x GPS Patch Reference', residual after the
-    # XIAO orientation fix): the tray's own wall (not the GPS frame's --
-    # that pairing was already independently confirmed clean) still
-    # razors 0.1mm into the antenna's real footprint at its +y corner
-    # (x -2.8..-2.7, y up to 20.0) -- the tray's nominal width (from
-    # 'stack' + tray_clear + tray_wall) and the patch box's real edge
-    # (x=-2.8, fixed by the hardware, NOT to be moved) are just that
-    # close at the current bay-layout coordinates. Clip the tray itself
-    # against the antenna's real box (+0.3mm safety margin) so it can
-    # never physically occupy that space regardless of the exact wall
-    # numbers -- the same "clip the case geometry to the real constraint"
-    # idea as clip_to_inner_cavity for bosses/posts, applied here to the
-    # one real fixed obstacle (the antenna) instead of the shell.
     gps_box = p['bay']['gps_patch']
     gps_keepout = box_solid(root, gps_box['x'][0] - 0.3, gps_box['x'][1] + 0.3,
                              gps_box['y'][0] - 0.3, gps_box['y'][1] + 0.3,
                              gps_box['z'][0] - 0.3, gps_box['z'][1] + 0.3)
-    tray = combine_cut(root, tray, [gps_keepout])
+    bodies['Top'] = combine_cut(root, bodies['Top'], [gps_keepout])
 
-    gps_frame = combine_cut_keep(root, gps_frame, [tray])
-    bodies['Top'] = combine_join(root, bodies['Top'], [tray, gps_frame])
+    gps_frame = build_gps_frame_body(root, p)
+    bodies['Top'] = combine_join(root, bodies['Top'], [gps_frame])
     bodies['Top'] = dedupe_body(root, bodies['Top'], 'Top')
 
     add_battery_reference_box(root, p)
@@ -2281,58 +2282,48 @@ def insert_and_place(design, root, doc, target_center_fn, thin_axis=None):
 
 
 def insert_comms_boards(app, root, p):
+    """2026-09-07 pass 7: places the real 3-board direct-solder/B2B stack
+    (L76K bottom -> XIAO middle -> Wio top, per Jake's measured hardware),
+    lying flat in the lanyard-end dome, instead of the old Wio-bottom/
+    XIAO-top pin-header pair placed separately from a standalone L76K.
+    Each board's Z is derived from the ACTUAL measured thickness/top of
+    the board below it (not a fixed offset guess), so a real thickness
+    difference between the reference docs and PARAMS' nominal gaps can
+    never silently stack up into a collision -- xiao_gap/wio_gap (PARAMS)
+    are the only fixed numbers; every Z build on top of a live
+    measurement of the board actually inserted.
+
+    PARAMS['comms_stack3_full_height'] (False for 'current', True for
+    'trim'): a real, unavoidable physical conflict found via
+    analyzeInterference -- the measured 18mm-tall stack does not fit
+    under 'current's unchanged 25mm-tall ceiling (Wio's own body
+    physically overlapped Top by ~6mm3 at the stack's real top). Unlike
+    the boss/GPS conflicts elsewhere in this pass, there is no local
+    clip-away fix (the stack is simply too tall for that case height) --
+    'current' inserts ONLY the L76K (it exists for the M1 outer-shell
+    probe-table comparison, not as a variant meant to carry real
+    electronics -- see params_current.py's comment)."""
     design = adsk.fusion.Design.cast(app.activeProduct)
     docs = p['board_docs']
-    wio_doc = get_open_doc(app, docs['wio'])
-    xiao_doc = get_open_doc(app, docs['xiao'])
+    full_height = p.get('comms_stack3_full_height', True)
+    wio_doc = get_open_doc(app, docs['wio']) if full_height else None
+    xiao_doc = get_open_doc(app, docs['xiao']) if full_height else None
     l76k_doc = get_open_doc(app, docs['l76k'])
     occs = {}
 
-    stack = p['bay']['stack']
-    cx = (stack['x'][0] + stack['x'][1]) / 2.0
-    cy = (stack['y'][0] + stack['y'][1]) / 2.0
-    wio_pcb_bottom_z = stack['wio_pcb_bottom_z']
-    xiao_pcb_bottom_z = wio_pcb_bottom_z + stack['xiao_pcb_bottom_offset']
+    s3 = p['bay']['stack3']
+    pcb = s3['l76k_pcb']
+    cx = (pcb['x'][0] + pcb['x'][1]) / 2.0
+    cy = (pcb['y'][0] + pcb['y'][1]) / 2.0
+    l76k_bottom_z = s3['l76k_bottom_z']
 
-    if wio_doc is not None:
-        # Wio's native bbox is thinnest in Z already (assume flat as
-        # authored -- no rotation); its PCB bottom lands at wio_pcb_bottom_z.
-        occ, dx, dy, dz, thin = insert_and_place(
-            design, root, wio_doc,
-            lambda dx, dy, dz, thick: (cx, cy, wio_pcb_bottom_z + thick / 2.0), thin_axis='z')
-        occs['wio'] = occ
-
-    if xiao_doc is not None:
-        # XIAO plugs DOWN into the Wio's sockets -- its native thickness
-        # axis is Y (per Jake), so rotate that onto world Z. 2026-09-05
-        # fix: ALSO rotate 90deg about world Z ('y90', see
-        # flatten_transform) so XIAO's long ~22.5mm axis (with the USB-C
-        # overhang) lands along world Y, parallel to the Wio's own long
-        # axis, instead of along world X where it made the stack far
-        # wider in X than the Wio-sized bay -- centred in X on the same
-        # (cx, cy) as Wio (the sockets force concentric placement anyway).
-        occ, dx, dy, dz, thin = insert_and_place(
-            design, root, xiao_doc,
-            lambda dx, dy, dz, thick: (cx, cy, xiao_pcb_bottom_z + thick / 2.0), thin_axis='y90')
-        occs['xiao'] = occ
-
+    l76k_top_z = None
     if l76k_doc is not None:
-        # Position by the actual PCB body (2026-09-05 fix), not the whole
-        # occurrence's aggregate bbox: the L76K assembly includes a separate
-        # GPS patch antenna on a cable (25x25x8.3), and placing by the
-        # occurrence's combined bbox put the real board outside the case
-        # entirely (its center is nowhere near the PCB's own center once a
-        # long cable/antenna is in the mix).
-        fr = p['bay']['l76k_wired']
-        lcx = (fr['x'][0] + fr['x'][1]) / 2.0
-        lcy = (fr['y'][0] + fr['y'][1]) / 2.0
-        # PCB bottom rests flush on the frame's floor pad (2026-09-05 fix
-        # -- see add_l76k_wired_frame): target z is the pad's top
-        # (l76k_floor_pad_z[1], 2.3) plus HALF THE PCB's OWN thickness
-        # (not a hardcoded guess) so the bottom face lands exactly there,
-        # not embedded in or floating above the pad.
-        pad_top_z = p['bay'].get('l76k_floor_pad_z', (2.0, 2.0))[1]
-
+        # Position by the actual PCB body (2026-09-05 fix, still needed
+        # here), not the whole occurrence's aggregate bbox: the L76K
+        # assembly includes a separate GPS patch antenna on a cable
+        # (25x25x8.3), and placing by the occurrence's combined bbox puts
+        # the real board far from its own PCB's center.
         occ = root.occurrences.addByInsert(l76k_doc.dataFile, adsk.core.Matrix3D.create(), True)
         match = find_pcb_like_body(occ)
         assert match is not None, 'no ~18x21mm PCB-like body found in the L76K assembly'
@@ -2345,57 +2336,132 @@ def insert_comms_boards(app, root, p):
                           'y': (bb.maxPoint.y - bb.minPoint.y) / MM,
                           'z': (bb.maxPoint.z - bb.minPoint.z) / MM}
         pcb_thickness = native_extent[thin_axis]
-        target_pcb_center = (lcx, lcy, pad_top_z + pcb_thickness / 2.0)
-        occ.transform = flatten_transform(native_center, thin_axis, target_pcb_center)
+        target_pcb_center = (cx, cy, l76k_bottom_z + pcb_thickness / 2.0)
+        # 2026-09-07 pass 7 fix: find_pcb_like_body correctly detects
+        # thin_axis='y' (the 1.54mm PCB thickness) here, but flatten_
+        # transform's plain 'y' mode maps native X (20.95mm, the board's
+        # LONG axis) straight onto world X -- measured empirically (a
+        # real build put the PCB at world x -10.48..10.48 / y -21.64..
+        # -3.86, i.e. long-axis-on-X, backwards from the spec's "long
+        # axis along Y"). 'y90' (already used for XIAO, same underlying
+        # need) additionally rotates 90deg about world Z so native X
+        # lands on world Y instead -- thin_axis is still 'y' for the
+        # thickness lookup above, only the ROTATION MODE passed to
+        # flatten_transform changes.
+        occ.transform = flatten_transform(native_center, 'y90', target_pcb_center)
         if design.snapshots.hasPendingSnapshot:
             design.snapshots.add()
+        l76k_top_z = l76k_bottom_z + pcb_thickness
 
-        # hide the cable/antenna sub-occurrence so it doesn't render as a
-        # stray part floating outside the case
-        for c in occ.childOccurrences:
-            if 'ANT' in c.name.upper():
-                c.isLightBulbOn = False
+        # 2026-09-07 pass 7 fix ('Top x GPS Patch Reference' / 'Bottom x
+        # <L76K antenna body>' interference): the L76K reference doc's own
+        # "GPD ANT" sub-assembly (a REAL modeled GPS patch antenna,
+        # ~25x25mm, native-authored at a fixed offset from the PCB) rides
+        # along rigidly with whatever transform is applied to the whole
+        # occurrence -- in this stack's position, it lands almost exactly
+        # on top of OUR OWN separate 'GPS Patch 25x25x8.3' reference box
+        # (the real antenna, wired and mounted separately per the bay
+        # design -- see add_gps_reference_box), a large real solid
+        # overlapping both Top and Bottom.
+        #
+        # Tried, in order, and rejected: (1) isLightBulbOn=False on the
+        # ANT ANCESTOR occurrence -- does not propagate to make the deep
+        # leaf body's OWN isLightBulbOn read False (confirmed empirically:
+        # check_interference's _safe_visible() still saw it as visible).
+        # (2) root.features.removeFeatures.add() on the leaf body --
+        # "succeeds" with no exception but is a SILENT NO-OP for a body 3+
+        # levels deep inside a referenced/linked occurrence (confirmed
+        # empirically: the body count under the L76K occurrence was
+        # unchanged before/after, in the SAME script execution); querying
+        # the same body fresh from a LATER script execution instead raises
+        # InternalValidationError outright -- either way, nothing is
+        # actually removed. (3, what's used here) isLightBulbOn=False
+        # set DIRECTLY on the LEAF body (not an ancestor) DOES take
+        # effect -- confirmed by reading it back True->False on the same
+        # body object -- and check_interference's own unknown_hidden
+        # filter (see its docstring) keys off exactly this property, so
+        # this excludes the antenna (and the pre-existing ~12x1x1mm
+        # stray-lead body, found >20mm from the target) from the
+        # interference gate without needing to actually delete anything.
+        target_xy = (cx, cy)
+        hidden_count = 0
 
-        # 2026-09-05 fix ('Bottom x L76K board' / 'Battery Reference x
-        # L76K board' interference): the reference doc's top-level "L76k"
-        # grouping occurrence carries one small (~12x1x1mm) body directly
-        # on itself, well outside the actual PCB footprint even in native
-        # coordinates (confirmed: it stays ~30mm from the PCB after the
-        # SAME rigid transform, so it was already that far away natively)
-        # -- almost certainly a stray lead/trace remnant from how this
-        # doc was authored, not a real board feature; it lands squarely
-        # inside the (unrelated) XIAO/Wio stack's own territory, so there
-        # is no sensible case-geometry accommodation for it either.
-        # isLightBulbOn=False was tried first and does NOT exclude a body
-        # from analyzeInterference (confirmed empirically -- the reported
-        # interference volume was byte-for-byte identical with or without
-        # hiding it) -- a Remove feature on the individual body does work
-        # and does not touch the source document (removeFeatures targets
-        # only this design's own instance/proxy of the body).
-        target_xy = (lcx, lcy)
-
-        def _hide_stray(o):
+        def _hide_leaf_bodies(o, in_ant_subtree):
+            nonlocal hidden_count
             for b in list(o.bRepBodies):
                 if b == pcb_body:
                     continue
-                bb = b.boundingBox
-                cx = (bb.minPoint.x + bb.maxPoint.x) / 2.0 / MM
-                cy = (bb.minPoint.y + bb.maxPoint.y) / 2.0 / MM
-                if math.hypot(cx - target_xy[0], cy - target_xy[1]) > 20.0:
-                    root.features.removeFeatures.add(b)
-            for c in o.childOccurrences:
-                _hide_stray(c)
+                hide = in_ant_subtree
+                if not hide:
+                    bb2 = b.boundingBox
+                    bcx = (bb2.minPoint.x + bb2.maxPoint.x) / 2.0 / MM
+                    bcy = (bb2.minPoint.y + bb2.maxPoint.y) / 2.0 / MM
+                    hide = math.hypot(bcx - target_xy[0], bcy - target_xy[1]) > 20.0
+                if hide:
+                    b.isLightBulbOn = False
+                    hidden_count += 1
+            for c in list(o.childOccurrences):
+                _hide_leaf_bodies(c, in_ant_subtree or ('ANT' in c.name.upper()))
 
-        _hide_stray(occ)
+        _hide_leaf_bodies(occ, False)
+        print('L76K: hid', hidden_count, 'antenna/stray leaf bodies (isLightBulbOn on the body itself)')
 
         pcb_bb = pcb_body.boundingBox
         print('L76K PCB world bbox:', [round(v / MM, 2) for v in pcb_bb.minPoint.asArray()],
-              [round(v / MM, 2) for v in pcb_bb.maxPoint.asArray()])
+              [round(v / MM, 2) for v in pcb_bb.maxPoint.asArray()], 'top_z', round(l76k_top_z, 3))
         occs['l76k'] = occ
+
+    xiao_top_z = None
+    if xiao_doc is not None and l76k_top_z is not None:
+        xiao_bottom_z = l76k_top_z + s3['xiao_gap']
+        thickness_holder = {}
+
+        def xiao_target(dx, dy, dz, thick, _z0=xiao_bottom_z, _h=thickness_holder):
+            _h['t'] = thick
+            return (cx, cy, _z0 + thick / 2.0)
+
+        # XIAO's native thickness axis is Y (per Jake) -- 'y90' (see
+        # flatten_transform) additionally rotates 90deg about world Z so
+        # XIAO's long ~22.5mm axis (including the USB-C overhang) lands
+        # along world Y with the USB-C end toward +Y, matching the L76K's
+        # own long axis below it and the spec's "XIAO USB-C end toward
+        # +Y". This is the SAME rotation the pre-pass-7 stack used for
+        # XIAO (there, plugging DOWN into the Wio below it); the physical
+        # sense -- component/pin side facing down, toward whatever board
+        # is below -- is unchanged by this pass's reordering, so it is
+        # reused as-is rather than re-derived.
+        occ, dx, dy, dz, thin = insert_and_place(design, root, xiao_doc, xiao_target, thin_axis='y90')
+        occs['xiao'] = occ
+        xiao_thickness = thickness_holder['t']
+        xiao_top_z = xiao_bottom_z + xiao_thickness
+        print('XIAO placed: bottom_z', round(xiao_bottom_z, 3), 'thickness', round(xiao_thickness, 3),
+              'top_z', round(xiao_top_z, 3))
+
+    if wio_doc is not None and xiao_top_z is not None:
+        wio_bottom_z = xiao_top_z + s3['wio_gap']
+        thickness_holder2 = {}
+
+        def wio_target(dx, dy, dz, thick, _z0=wio_bottom_z, _h=thickness_holder2):
+            _h['t'] = thick
+            return (cx, cy, _z0 + thick / 2.0)
+
+        # Wio's native bbox is thinnest in Z already (assume flat as
+        # authored, module up) -- no rotation, same as the pre-pass-7
+        # stack (there, Wio was the BOTTOM board; here it's the TOP board,
+        # but its own native orientation -- module facing up -- is
+        # unchanged either way).
+        occ, dx, dy, dz, thin = insert_and_place(design, root, wio_doc, wio_target, thin_axis='z')
+        occs['wio'] = occ
+        wio_thickness = thickness_holder2['t']
+        wio_top_z = wio_bottom_z + wio_thickness
+        print('Wio placed: bottom_z', round(wio_bottom_z, 3), 'thickness', round(wio_thickness, 3),
+              'top_z (STACK TOP)', round(wio_top_z, 3))
 
     return occs
 
 
+# ---------------------------------------------------------------------------
+# build() / verify() / run()
 # ---------------------------------------------------------------------------
 # build() / verify() / run()
 # ---------------------------------------------------------------------------
@@ -2444,7 +2510,7 @@ def build(app, params):
     bodies = add_flare_logo(root, bodies, params)
     bodies = add_wordmark_logo(root, bodies, params)
 
-    bodies = add_comms_bay(root, bodies, params)
+    bodies = add_comms_bay(root, bodies, params, clip_tool=clip_tool)
 
     insert_display_pcba(app, root, params)
     insert_comms_boards(app, root, params)
@@ -2527,6 +2593,20 @@ def find_first_solid_x(bodies, y_mm, z_mm, start=0.0, max_x=32.0, step=0.02):
         if any(probe_point_solid(b, pt) for b in bodies):
             return x
         x += step
+    return None
+
+
+def find_ceiling_z_at(body, x, y, z_hi, z_lo, step=0.05):
+    # Scan DOWNWARD in Z at a fixed (x,y) from z_hi to z_lo and return
+    # the first z where `body` is solid -- i.e. the inner ceiling's
+    # underside height at that point (2026-09-07, pass 7, for
+    # verify_stack3_clearance). Returns None if no solid is found
+    # anywhere in the scanned range.
+    z = z_hi
+    while z >= z_lo:
+        if probe_point_solid(body, P(x, y, z)):
+            return z
+        z -= step
     return None
 
 
@@ -2950,14 +3030,19 @@ BOARD_OCC_NAME_SUBSTRINGS = ('XIAO-ESP32S3', 'Wio-SX1262', 'L76K', 'ESP32-S3-Tou
 # touch (zero clearance) -- excluded from the < clearance_min assertion in
 # verify_min_clearances. Everything else must clear by clearance_min.
 ALLOWED_CONTACTS = (
-    ('L76K', 'Bottom'),                 # PCB rests on its frame floor pad
+    ('L76K', 'Bottom'),                 # PCB rests on its four corner pads
     # collect_interference_entities substitutes the L76K occurrence with
     # its child occurrences for interference purposes (see its docstring)
     # -- the real PCB's parent occurrence is named 'XIAO-ESP32S3 v2 v2'
     # (a hat-mode-shaped placeholder reused as the L76K's own PCB outline)
     # in the reference doc, not 'L76K', so it needs its own entry here.
     ('XIAO-ESP32S3 v2', 'Bottom'),
-    ('Wio-SX1262', 'Top'),              # Wio rests on the tray's wedge shelf
+    # 2026-09-07 pass 7: the old ('Wio-SX1262', 'Top') entry (Wio used to
+    # rest on the Top-hanging tray's wedge shelf) is gone -- the 3-board
+    # stack no longer touches Top at all; it floats clear of the ceiling
+    # by design (see verify_stack3_clearance / stack3['ceiling_clear_min']).
+    # A real Wio-Top contact should now FAIL verify_min_clearances, not be
+    # silently allowed.
     ('ESP32-S3-Touch-LCD', 'Top'),      # glass flush with the top face
     ('ESP32-S3-Touch-LCD', 'Screen Plate'),  # module standoffs on the plate
 )
@@ -3340,13 +3425,11 @@ def verify_posts_and_bosses(bodies_dict, p):
     entirely with no error anywhere in build() or verify(). Probes each
     one off-axis (should be solid) at the z-midpoint of its own span.
 
-    boss_B is a KNOWN, documented exception (see add_case_screws and the
-    README's known-limitations entry): its position sits inside the L76K
-    PCB's own real footprint, a pre-existing bay-layout conflict this
-    pass's fix exposed (giving it a full-height core to close this exact
-    bug would create a real, hard 'L76K PCB x Bottom' solid-overlap
-    interference instead) -- verify() does not gate on it, but it is
-    still probed and reported here for visibility."""
+2026-09-07 pass 7: boss B (the one that used to need a documented,
+    unjoined exception -- its old position sat inside the L76K PCB's own
+    footprint) is gone, replaced by B1/B2 at a position clear of the
+    redesigned comms stack -- every boss/post reported here is now
+    expected to be solid, no exceptions."""
     top = bodies_dict['Top']
     bottom = bodies_dict['Bottom']
     results = {}
@@ -3369,7 +3452,84 @@ def verify_posts_and_bosses(bodies_dict, p):
     for name, (px, py) in p['top_posts'].items():
         results[f'post_{name}'] = probe_point_solid(top, P(px + post_off, py, z_p))
 
+    # 2026-09-07 pass 7 (item 3): boss B1/B2 must clear the comms-stack
+    # frame by >= stack3['boss_relief_margin'] (1.0mm) -- guaranteed BY
+    # CONSTRUCTION (add_comms_stack_frame cuts a keep-out of radius
+    # boss_dia/2 + margin around every screw before joining the frame),
+    # but probed here directly rather than trusting the construction
+    # alone: a point at (boss radius + margin/2) from each boss's centre,
+    # aimed toward the stack frame's own centre (not just +x, which
+    # verify_posts_and_bosses already covers), must be OPEN (no frame
+    # material) -- if it were solid, the relief cut didn't actually reach
+    # that boss.
+    if any(s['name'] in ('B1', 'B2') for s in p['screws_ABC']):
+        s3 = p['bay'].get('stack3')
+        if s3 is not None:
+            stack_cx = (s3['l76k_pcb']['x'][0] + s3['l76k_pcb']['x'][1]) / 2.0
+            stack_cy = (s3['l76k_pcb']['y'][0] + s3['l76k_pcb']['y'][1]) / 2.0
+            boss_r = p['boss_dia'] / 2.0
+            margin = s3['boss_relief_margin']
+            z_mid = sum(s3['frame_z']) / 2.0
+            for s in p['screws_ABC']:
+                if s['name'] not in ('B1', 'B2'):
+                    continue
+                cx, cy = s['xy']
+                dx, dy = stack_cx - cx, stack_cy - cy
+                dlen = math.hypot(dx, dy) or 1.0
+                dx, dy = dx / dlen, dy / dlen
+                r = boss_r + margin * 0.5
+                px, py = cx + r * dx, cy + r * dy
+                clear_ok = not probe_point_solid(bottom, P(px, py, z_mid))
+                results[f'boss_{s["name"]}_clears_stack_frame'] = clear_ok
+
     return results
+
+
+def verify_stack3_clearance(board_occs, by_name, p):
+    """Regression guard (2026-09-07, pass 7, item 2): the 3-board comms
+    stack's real top -- measured live off the inserted Wio occurrence's
+    actual bounding box, NOT a nominal guess -- must clear the Top's real
+    inner ceiling surface by at least stack3['ceiling_clear_min'] (0.8mm)
+    everywhere under its footprint. Probed by scanning DOWNWARD from the
+    ceiling (find_ceiling_z_at) at several points across the L76K PCB's
+    footprint (the widest/lowest part of the stack; XIAO/Wio sit directly
+    above it on almost the same XY footprint, so the real limiting case
+    is whichever of these points has the least headroom)."""
+    top = by_name['Top']
+    s3 = p['bay']['stack3']
+    # 2026-09-07: 'current' doesn't insert Wio/XIAO at all (see
+    # insert_comms_boards' comms_stack3_full_height docstring) -- there is
+    # no stack to check clearance for there, so this is trivially OK
+    # rather than a failure.
+    if not p.get('comms_stack3_full_height', True):
+        return {'stack_top_z': None, 'clearance_found': None,
+                'required': s3['ceiling_clear_min'], 'ok': True,
+                'note': 'comms_stack3_full_height=False (current variant) -- no Wio/XIAO inserted, nothing to check'}
+    wio_occ = next((o for o in board_occs if 'Wio-SX1262' in o.name), None)
+    if wio_occ is None:
+        return {'stack_top_z': None, 'clearance_found': None,
+                'required': s3['ceiling_clear_min'], 'ok': False}
+    _, _, dz, center = _bbox_extents(wio_occ)
+    stack_top_z = center[2] + dz / 2.0
+
+    pcb = s3['l76k_pcb']
+    x0, x1 = pcb['x']
+    y0, y1 = pcb['y']
+    samples = [(x0 + 1.0, (y0 + y1) / 2.0), (x1 - 1.0, (y0 + y1) / 2.0),
+               (0.0, y0 + 1.0), (0.0, y1 - 1.0), (0.0, (y0 + y1) / 2.0)]
+    z_hi = p['top_z'] - 0.5
+    worst = None
+    for x, y in samples:
+        ceil_z = find_ceiling_z_at(top, x, y, z_hi, stack_top_z, step=0.05)
+        if ceil_z is None:
+            continue
+        clearance = ceil_z - stack_top_z
+        if worst is None or clearance < worst:
+            worst = clearance
+    ok = worst is not None and worst >= s3['ceiling_clear_min'] - 1e-6
+    return {'stack_top_z': round(stack_top_z, 3),
+            'clearance_found': round(worst, 3) if worst is not None else None,
+            'required': s3['ceiling_clear_min'], 'ok': ok}
 
 
 def verify(design, params):
@@ -3433,11 +3593,14 @@ def verify(design, params):
     assert not bad_clear, f'board occurrence closer than clearance_min to the case: {bad_clear}'
 
     posts_bosses_results = verify_posts_and_bosses(by_name, params)
-    # boss_B_bottom is a documented, deliberate exception -- see
-    # verify_posts_and_bosses' docstring and add_case_screws.
-    KNOWN_UNJOINED = {'boss_B_bottom'}
-    bad_pb = [k for k, ok in posts_bosses_results.items() if not ok and k not in KNOWN_UNJOINED]
+    # 2026-09-07 pass 7: boss B's documented KNOWN_UNJOINED exception is
+    # gone -- B1/B2 replace it at a position clear of the comms stack, so
+    # every boss/post (including both) is expected to have real material.
+    bad_pb = [k for k, ok in posts_bosses_results.items() if not ok]
     assert not bad_pb, f'boss/post missing material (silent-no-op-join regression): {bad_pb}'
+
+    stack3_clearance = verify_stack3_clearance(board_occs, by_name, params)
+    assert stack3_clearance['ok'], f'comms stack top too close to Top ceiling: {stack3_clearance}'
 
     # 2026-09-06: verify_skin_intact is a NEW pass-6 probe and, empirically,
     # over-fires on many perimeter points that are not near the tab_hole
@@ -3477,6 +3640,7 @@ def verify(design, params):
         'export_envelope_results': export_envelope_results,
         'clearance_results': clearance_results,
         'posts_bosses_results': posts_bosses_results,
+        'stack3_clearance': stack3_clearance,
         'skin_results': skin_results,
         'wall_results': wall_results,
     }
@@ -3934,6 +4098,7 @@ def run(_context: str, variant=None, export=False):
     print('posts/bosses material checks (True = solid, as expected):')
     for k, v in result.get('posts_bosses_results', {}).items():
         print('  ', k, v)
+    print('comms stack3 ceiling clearance:', result.get('stack3_clearance'))
     print('skin-intact checks: all True?', all(result.get('skin_results', {}).values()))
     print('wall-integrity checks: all True?', all(result.get('wall_results', {}).values()))
     print('sliver face count (area < 0.5mm^2, diagnostic only):')
