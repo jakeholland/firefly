@@ -355,6 +355,74 @@ Renamed to Lineup/Inbox on 2026-09-01 — see S26 Nav model Amendments; this spe
   `FF_INTENT_BACK` for the pointer back to `ff_shell.c`'s current rule
   ladder.
 
+- **2026-09-05, SELFPOS — the puck's own position, from the comms
+  brain, honestly.** Field bring-up found the gap this closes: Radar
+  showed "no fix / radio only" even with the UART link CONNECTED and
+  the crew paired, because `ff_shell_set_my_pos` (`my_pos_ok`'s only
+  setter, per this header's own "Sensor seam" doc comment) was called
+  by nothing on device — only `targets/sim/live_setup.c`'s dev fixture
+  origin ever called it. Meanwhile `shell_ev_position`/`shell_ev_node`
+  correctly drop the comms brain's OWN traffic for crew/feed purposes
+  (`shell_drop_as_self`, this spec's "Two defects this closes" section)
+  — which left the one position reading that actually IS the wearer
+  unused.
+
+  Ruling, implemented in `ff_shell.c`'s `shell_maybe_adopt_my_pos`
+  (internal; `ff_shell_set_my_pos` stays the public, unconditional
+  setter for targets/sim's fixture origin and `ff_demo.c`'s seeded
+  position — see that function's own doc comment for why those callers
+  are deliberately exempt from everything below):
+
+  > In the shell's inbound path — both `shell_ev_position` for live
+  > Position packets and the NodeInfo/`want_config` replay in
+  > `shell_ev_node` when the node is self — a real (nonzero) lat/lon
+  > reported by `shell_is_self` is adopted as `my_pos` according to its
+  > `loc_source` (`mc_loc_source_t`'s own "MEASURED vs ASSERTED" doc
+  > comment): `MC_LOC_INTERNAL`/`MC_LOC_EXTERNAL` (a measurement) are
+  > adopted unconditionally; `MC_LOC_MANUAL` (an assertion, no
+  > measurement behind it at any age) is adopted only under the same
+  > dev/bench gate `--dev-trust-all` / `CONFIG_FF_DEV_TRUST_CHANNEL`
+  > already use for the crew-roster auto-pair (`sh->dev_trust_all`);
+  > `MC_LOC_UNKNOWN` never adopts, either direction.
+
+  Deliberately checked via `shell_is_self`, NOT `shell_drop_as_self`:
+  whether a packet is treated as our own echo for CREW/FEED purposes
+  (suspended under `--dev-trust-all` so the sim's single dev node can
+  play a crew member too, per this spec's AC6) is an orthogonal
+  question from whether it is genuinely our own node's fix, and the
+  dev/bench affordance must not gate self-position adoption on or off
+  — see `shell_maybe_adopt_my_pos`'s own doc comment.
+
+  The NodeInfo replay path carries the SAME D1 guard (S18's "a timestamp
+  may not age a fix if that same timestamp is what defines the clock the
+  age is measured against") this spec's own Amendments already apply to
+  a crew member's replayed position: a self NodeInfo whose `last_heard`
+  itself defined/moved the still-settling wall latch is not adopted from
+  that same reading — its age would be a construction, not a
+  measurement. The live `on_position` path carries no such guard,
+  exactly as it does not for a crew member's position (`rx_time` is a
+  genuine per-packet receive time).
+
+  **Staleness.** A self-fix adopted from inbound traffic stamps
+  `my_pos_ms` (its monotonic receive time) and decays: `ff_shell_tick`
+  reads `my_pos_ok` back to false once the fix is older than
+  `FF_SELF_POS_STALE_MS` (== `FF_CREW_LOST_MS`, ff_crew.h's existing
+  10-minute crew-staleness threshold — our own fix earns no more benefit
+  of the doubt than a crew member's does), using `ff_time_reached`'s
+  wraparound-safe comparison. Every existing reader of `my_pos_ok`
+  (`ff_radar_compute`, `shell_project_map`'s `you_has_pos`,
+  `shell_project_rally`'s `on_me_ok`) sees NOFIX once stale — no new
+  field for a screen to read, no risk of one reader honoring the decay
+  while another doesn't. A position set through `ff_shell_set_my_pos`
+  directly has no receive time and never decays (unchanged pre-SELFPOS
+  behavior for every existing caller).
+
+  No log seam exists in `ff_shell.c` for a "here's what happened and
+  why" line (every existing "what happened" fact in this file is a
+  caller-visible return value or out-parameter, never a printf — app
+  code has none, per CLAUDE.md) — none is added for this single call
+  site rather than inventing one.
+
 ## Two defects this closes
 
 ### 1. Two inbound pipelines that disagree about trust
