@@ -68,6 +68,14 @@ typedef struct {
 
 static harness_t H;
 
+/* i2c/compass hooks under test — module-scoped so `dispatch()` (used by
+ * every test) can forward them without every call site needing its own
+ * parameter; NULL by default (harness_init resets both), matching the
+ * sim target's own "no I2C bus" reality unless a test opts in by
+ * pointing one at a fake below. */
+static ff_dbgconsole_i2c_scan_fn s_i2c_hook;
+static ff_dbgconsole_compass_status_fn s_compass_hook;
+
 #define MY_ID 0x00001000u
 #define DANA 0x0000DA1Au
 #define STRANGER 0x0000AAAAu
@@ -75,6 +83,8 @@ static harness_t H;
 static void harness_init(uint32_t t0_ms)
 {
     memset(&H, 0, sizeof(H));
+    s_i2c_hook = NULL;
+    s_compass_hook = NULL;
     H.clk.t = t0_ms;
     H.clock.now_ms = fake_now;
     H.clock.user = &H.clk;
@@ -172,7 +182,8 @@ static bool capture_has_line_containing(capture_t const *c, char const *needle)
 static void dispatch(char const *line, capture_t *out)
 {
     capture_reset(out);
-    ff_dbgconsole_handle_line(&H.shell, line, strlen(line), ff_shell_now_ms(&H.shell), capture_reply, out);
+    ff_dbgconsole_handle_line(&H.shell, line, strlen(line), ff_shell_now_ms(&H.shell), capture_reply, out,
+                               s_i2c_hook, s_compass_hook);
 }
 
 /* ------------------------------------------------------------------- */
@@ -188,6 +199,7 @@ static void dbgconsole_help_lists_commands(void)
     TEST_ASSERT_TRUE(cap.n > 1);
     TEST_ASSERT_TRUE(capture_has_line_containing(&cap, "dbg: help"));
     TEST_ASSERT_TRUE(capture_has_line_containing(&cap, "dm <node_hex>"));
+    TEST_ASSERT_TRUE(capture_has_line_containing(&cap, "dbg: i2c"));
 }
 
 static void dbgconsole_unknown_command_gets_try_help(void)
@@ -411,6 +423,102 @@ static void dbgconsole_wall_assumed_is_numeric_once_offset_is_known(void)
     TEST_ASSERT_TRUE(capture_has_line_containing(&cap, "offset_min=-240 assumed=0"));
 }
 
+/* ------------------------------------------------------------------- */
+/* i2c — platform-hook forwarding (fakes here; the real scan/compass    */
+/* implementations live in app_main.c and are exercised only on device) */
+/* ------------------------------------------------------------------- */
+
+static int fake_i2c_scan_ok(void *user, char *out, size_t cap)
+{
+    (void)user;
+    snprintf(out, cap, "0x20 io-expander, 0x53 touch");
+    return 0;
+}
+
+static int fake_i2c_scan_fail(void *user, char *out, size_t cap)
+{
+    (void)user;
+    (void)out;
+    (void)cap;
+    return -1;
+}
+
+static int fake_compass_status_ok(void *user, char *out, size_t cap)
+{
+    (void)user;
+    snprintf(out, cap, "mag=absent imu=found heading=? cal=identity");
+    return 0;
+}
+
+static void dbgconsole_i2c_unavailable_without_a_scan_hook(void)
+{
+    /* No scan hook (the sim target's own reality: no I2C bus at all) —
+     * exactly one honest reply, no fabricated compass line either, even
+     * with a compass hook wired up: nothing to scan means nothing to
+     * follow up on. */
+    harness_init(1000);
+    s_compass_hook = fake_compass_status_ok;
+
+    capture_t cap;
+    dispatch("i2c", &cap);
+
+    TEST_ASSERT_EQUAL_INT(1, cap.n);
+    TEST_ASSERT_EQUAL_STRING("dbg: i2c unavailable on this target", cap.lines[0]);
+}
+
+static void dbgconsole_i2c_reports_scan_and_compass_status_verbatim(void)
+{
+    /* Both hooks present: the scan line and the compass line are the
+     * hook's own text, forwarded byte-for-byte behind this file's
+     * "dbg: i2c "/"dbg: compass " prefixes — proves the text is
+     * forwarded, not reformatted or reinterpreted along the way. */
+    harness_init(1000);
+    s_i2c_hook = fake_i2c_scan_ok;
+    s_compass_hook = fake_compass_status_ok;
+
+    capture_t cap;
+    dispatch("i2c", &cap);
+
+    TEST_ASSERT_EQUAL_INT(2, cap.n);
+    TEST_ASSERT_EQUAL_STRING("dbg: i2c 0x20 io-expander, 0x53 touch", cap.lines[0]);
+    TEST_ASSERT_EQUAL_STRING("dbg: compass mag=absent imu=found heading=? cal=identity", cap.lines[1]);
+}
+
+static void dbgconsole_i2c_scan_failure_still_reports_compass(void)
+{
+    /* A scan hook that reports it could not run (e.g. the bus was never
+     * brought up) gets the honest "scan failed" line — never whatever
+     * partial/stale text might be sitting in its own output buffer —
+     * but the compass line still follows: it comes from the compass
+     * driver's own state, independent of this particular bus sweep. */
+    harness_init(1000);
+    s_i2c_hook = fake_i2c_scan_fail;
+    s_compass_hook = fake_compass_status_ok;
+
+    capture_t cap;
+    dispatch("i2c", &cap);
+
+    TEST_ASSERT_EQUAL_INT(2, cap.n);
+    TEST_ASSERT_EQUAL_STRING("dbg: i2c scan failed", cap.lines[0]);
+    TEST_ASSERT_EQUAL_STRING("dbg: compass mag=absent imu=found heading=? cal=identity", cap.lines[1]);
+}
+
+static void dbgconsole_i2c_omits_compass_line_without_a_compass_hook(void)
+{
+    /* Scan hook present, compass hook NULL (e.g. CONFIG_FF_COMPASS=n on
+     * a build that still has CONFIG_FF_DEBUG_CONSOLE=y): the scan line
+     * still prints; the compass line is omitted entirely, never printed
+     * with fields it cannot honestly answer. */
+    harness_init(1000);
+    s_i2c_hook = fake_i2c_scan_ok;
+
+    capture_t cap;
+    dispatch("i2c", &cap);
+
+    TEST_ASSERT_EQUAL_INT(1, cap.n);
+    TEST_ASSERT_EQUAL_STRING("dbg: i2c 0x20 io-expander, 0x53 touch", cap.lines[0]);
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -434,6 +542,11 @@ int main(void)
     RUN_TEST(dbgconsole_flare_start_already_sending_then_cancel);
     RUN_TEST(dbgconsole_wall_reports_unlatched_then_latched_with_trust_and_source);
     RUN_TEST(dbgconsole_wall_assumed_is_numeric_once_offset_is_known);
+
+    RUN_TEST(dbgconsole_i2c_unavailable_without_a_scan_hook);
+    RUN_TEST(dbgconsole_i2c_reports_scan_and_compass_status_verbatim);
+    RUN_TEST(dbgconsole_i2c_scan_failure_still_reports_compass);
+    RUN_TEST(dbgconsole_i2c_omits_compass_line_without_a_compass_hook);
 
     return UNITY_END();
 }

@@ -60,9 +60,19 @@
  *   dm <node_hex> <text>    — addressed send to one node
  *   flare | flare cancel    — quick flare start/cancel
  *   wall                    — wall-clock latch dump
+ *   i2c                     — shared I2C bus scan + one-shot compass status
  * Anything else is `FF_DBGCMD_ERR_UNKNOWN` — the dispatcher's reply for
  * that is the fixed string `"dbg: ? try help"` (S16-style "the shell
  * decides", except here the deciding is this table).
+ *
+ * `i2c` is zero-arg like `me`/`roster`/`heard`/`wall` (this parser
+ * rejects any trailing argument with `FF_DBGCMD_ERR_BAD_ARGS`, same as
+ * those). It carries no I2C policy of its own — this module has zero
+ * I/O per CLAUDE.md's placement rule — it only recognizes the verb; the
+ * actual bus scan and compass read live behind a platform hook in
+ * `firmware/app/include/ff_debug_console.h`, supplied by the device
+ * target and left NULL on the sim (see that header for the "unavailable
+ * on this target" honest-degrade contract).
  */
 #ifndef FF_DBGCMD_H
 #define FF_DBGCMD_H
@@ -106,6 +116,7 @@ typedef enum {
     FF_DBGCMD_FLARE,        /* start a quick flare */
     FF_DBGCMD_FLARE_CANCEL, /* "flare cancel" */
     FF_DBGCMD_WALL,
+    FF_DBGCMD_I2C,          /* I2C bus scan + one-shot compass status */
 } ff_dbgcmd_kind_t;
 
 /** Why a line failed to become a command. `FF_DBGCMD_ERR_EMPTY` is not

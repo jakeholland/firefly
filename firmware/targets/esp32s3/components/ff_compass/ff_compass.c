@@ -193,6 +193,14 @@ static bool s_imu_present;
 static ff_geo_cal_t s_cal;
 static bool s_cal_valid;
 
+/* Last heading `ff_compass_read()` returned, for `ff_compass_status()`'s
+ * one-shot diagnostic snapshot (ff_compass.h). Explicitly -1 ("unknown"
+ * — the SAME sentinel `ff_compass_read()` itself uses), not the
+ * zero-init a plain `static float` would give: 0 deg is a real,
+ * fabricated-looking heading (due north) and would be dishonest as a
+ * "nothing has been read yet" default. */
+static float s_last_heading_deg = -1.0f;
+
 /* ff_compass_read() runs at 10 Hz (app_main.c's own
  * FF_COMPASS_SAMPLE_PERIOD_MS) from the main render-loop task — a bus
  * fault (NACK/timeout) on that path can repeat every tick for as long
@@ -390,7 +398,8 @@ void ff_compass_set_cal(ff_geo_cal_t const *cal)
 float ff_compass_read(void)
 {
     if (s_mag_kind == FF_COMPASS_MAG_NONE || s_mag_dev == NULL) {
-        return -1.0f; /* honest "unknown" — no magnetometer, never a fabricated heading */
+        s_last_heading_deg = -1.0f; /* honest "unknown" — no magnetometer, never a fabricated heading */
+        return -1.0f;
     }
 
     ff_vec3_t mag_raw = {0};
@@ -403,7 +412,8 @@ float ff_compass_read(void)
                 ESP_LOGW(TAG, "magnetometer read failed (NACK/timeout) — heading reports -1 until it recovers "
                               "(logged once)");
             }
-            return -1.0f; /* -1 sentinel, never a stale heading */
+            s_last_heading_deg = -1.0f; /* -1 sentinel, never a stale heading */
+            return -1.0f;
         }
         mag_raw.x = (float)(int16_t)((buf[1] << 8) | buf[0]);
         mag_raw.y = (float)(int16_t)((buf[3] << 8) | buf[2]);
@@ -415,7 +425,8 @@ float ff_compass_read(void)
                 ESP_LOGW(TAG, "magnetometer read failed (NACK/timeout) — heading reports -1 until it recovers "
                               "(logged once)");
             }
-            return -1.0f; /* -1 sentinel, never a stale heading */
+            s_last_heading_deg = -1.0f; /* -1 sentinel, never a stale heading */
+            return -1.0f;
         }
         /* HMC5883L's own data order is X, Z, Y (not X,Y,Z), big-endian
          * per axis — see this file's FF_HMC5883L_REG_DATA comment. */
@@ -452,5 +463,18 @@ float ff_compass_read(void)
                                                   FF_MAG_BOARD_Y_SRC, FF_MAG_BOARD_Y_SIGN, FF_MAG_BOARD_Z_SRC,
                                                   FF_MAG_BOARD_Z_SIGN);
 
-    return ff_geo_heading_deg(mag_board, accel_board, s_cal_valid ? &s_cal : NULL);
+    float const heading = ff_geo_heading_deg(mag_board, accel_board, s_cal_valid ? &s_cal : NULL);
+    s_last_heading_deg = heading;
+    return heading;
+}
+
+ff_compass_status_t ff_compass_status(void)
+{
+    ff_compass_status_t st = {0};
+    st.mag_present = ff_compass_present();
+    st.mag_kind = ff_compass_mag_kind();
+    st.imu_present = ff_compass_imu_present();
+    st.heading_valid = (s_last_heading_deg >= 0.0f);
+    st.last_heading_deg = s_last_heading_deg;
+    return st;
 }

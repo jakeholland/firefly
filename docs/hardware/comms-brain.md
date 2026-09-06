@@ -151,6 +151,7 @@ line replies `dbg: ? try help`):
 | `flare` | start a quick flare (same path as the physical 5-tap gesture) |
 | `flare cancel` | cancel a flare in progress |
 | `wall` | wall-clock latch dump: latched, trust tier, UTC offset, last observation's source node |
+| `i2c` | shared I2C bus scan (0x08-0x77, known addresses named) plus a one-shot compass status line |
 
 Every acting command dispatches through `ff_shell_intent` (the SAME
 `FF_INTENT_QUICK_FLARE`/`FF_INTENT_FLARE_END` intents the physical
@@ -189,9 +190,30 @@ dbg: flare cancelled
 wall
 dbg: wall latched=1 latch_unix=1789768800 trust=TRUSTED offset_min=-240 assumed=0 last_src=!0000da1a rejected=0
 
+i2c
+dbg: i2c 0x20 io-expander, 0x51 rtc, 0x53 touch, 0x6b qmi8658
+dbg: compass mag=absent imu=found heading=? cal=identity
+
 xyzzy
 dbg: ? try help
 ```
+
+`i2c` is a bench diagnostic, not a shell command in the seam-discipline
+sense above — it reaches no `ff_shell_*` getter at all. Named addresses:
+`0x0d qmc5883l` / `0x1e hmc5883l` (GY-273 magnetometer — whichever chip
+`ff_compass_init` actually finds; see the "Compass" section below),
+`0x20 io-expander` (TCA9554), `0x51 rtc` (an aftermarket RTC module on
+the back header), `0x53 touch` (SPD2010), `0x6b qmi8658` (onboard IMU).
+An address not in this list prints bare (just the hex) rather than a
+guess. The scan is a two-line diagnostic on purpose: the bus sweep
+(what is actually wired up and ACKing) immediately followed by the
+compass driver's own one-shot status (what it believes it found and its
+last heading/calibration state) — so a bench engineer sees in one
+command whether an unresponsive magnetometer is a wiring problem (never
+shows up in the scan) or a driver problem (shows up in the scan but the
+compass line still reports `mag=absent`). On a target with no I2C bus
+at all (the sim build), the whole command replies with a single honest
+line: `dbg: i2c unavailable on this target`.
 
 ## The puck's back header (photo, 2026-09-04)
 

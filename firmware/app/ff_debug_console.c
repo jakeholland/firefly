@@ -66,6 +66,7 @@ static void dbgconsole_help(ff_dbgconsole_reply_fn reply, void *user)
     reply_line(reply, user, "dbg: flare                    start a quick flare");
     reply_line(reply, user, "dbg: flare cancel             cancel a flare in progress");
     reply_line(reply, user, "dbg: wall                     wall-clock latch dump");
+    reply_line(reply, user, "dbg: i2c                      shared I2C bus scan + one-shot compass status");
 }
 
 static void dbgconsole_me(ff_shell_t *sh, ff_dbgconsole_reply_fn reply, void *user)
@@ -253,8 +254,49 @@ static void dbgconsole_wall(ff_shell_t *sh, ff_dbgconsole_reply_fn reply, void *
     reply_line(reply, user, line);
 }
 
+/* `i2c` — two independent hooks (ff_debug_console.h), each optional.
+ * `i2c_scan == NULL` means the WHOLE command is unavailable (nothing to
+ * scan, so nothing to follow up on either) — the single honest reply
+ * `"dbg: i2c unavailable on this target"`, matching the sim build's own
+ * "no I2C bus at all" reality. Otherwise the scan line prints first
+ * (or `"dbg: i2c scan failed"` if the hook itself reports it could not
+ * run — e.g. the bus was never brought up), then the compass line, IF
+ * `compass_status` is non-NULL, independent of whether the scan itself
+ * succeeded: the compass driver's own state doesn't depend on this
+ * particular bus sweep having worked. */
+static void dbgconsole_i2c(ff_dbgconsole_i2c_scan_fn i2c_scan, ff_dbgconsole_compass_status_fn compass_status,
+                            void *hook_user, ff_dbgconsole_reply_fn reply, void *user)
+{
+    /* `line` must fit the longest prefix ("dbg: compass ", 13 bytes)
+     * plus a full `body` (up to DBGCONSOLE_LINE_BUF-1 non-NUL bytes)
+     * plus the NUL: 13 + 199 + 1 = 213. Sized with headroom so GCC's
+     * `-Wformat-truncation` (CLAUDE.md: GCC is the build authority, not
+     * clang) can prove the snprintf below never truncates, rather than
+     * just happening not to at today's buffer sizes. */
+    char body[DBGCONSOLE_LINE_BUF];
+    char line[DBGCONSOLE_LINE_BUF + 16u];
+
+    if (i2c_scan == NULL) {
+        reply_line(reply, user, "dbg: i2c unavailable on this target");
+        return;
+    }
+
+    if (i2c_scan(hook_user, body, sizeof(body)) < 0) {
+        reply_line(reply, user, "dbg: i2c scan failed");
+    } else {
+        snprintf(line, sizeof(line), "dbg: i2c %s", body);
+        reply_line(reply, user, line);
+    }
+
+    if (compass_status != NULL && compass_status(hook_user, body, sizeof(body)) >= 0) {
+        snprintf(line, sizeof(line), "dbg: compass %s", body);
+        reply_line(reply, user, line);
+    }
+}
+
 void ff_dbgconsole_handle_line(ff_shell_t *sh, char const *line, size_t line_len, uint32_t now_ms,
-                                ff_dbgconsole_reply_fn reply, void *user)
+                                ff_dbgconsole_reply_fn reply, void *user, ff_dbgconsole_i2c_scan_fn i2c_scan,
+                                ff_dbgconsole_compass_status_fn compass_status)
 {
     (void)now_ms; /* every command below reaches "now" via a shell getter, not this parameter */
     if (sh == NULL || reply == NULL) return;
@@ -278,6 +320,7 @@ void ff_dbgconsole_handle_line(ff_shell_t *sh, char const *line, size_t line_len
     case FF_DBGCMD_FLARE: dbgconsole_flare(sh, reply, user); return;
     case FF_DBGCMD_FLARE_CANCEL: dbgconsole_flare_cancel(sh, reply, user); return;
     case FF_DBGCMD_WALL: dbgconsole_wall(sh, reply, user); return;
+    case FF_DBGCMD_I2C: dbgconsole_i2c(i2c_scan, compass_status, user, reply, user); return;
     case FF_DBGCMD_NONE: break; /* ff_dbgcmd_parse never returns OK with NONE — unreachable */
     }
     reply_line(reply, user, "dbg: ? try help");

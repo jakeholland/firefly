@@ -89,6 +89,38 @@ extern "C" {
 typedef void (*ff_dbgconsole_reply_fn)(void *user, char const *line);
 
 /**
+ * ff_dbgconsole_i2c_scan_fn / ff_dbgconsole_compass_status_fn — the
+ * `i2c` command's platform hooks (docs/hardware/comms-brain.md, "Bench
+ * console"). This file is app-layer, target-agnostic C — it cannot
+ * touch I2C itself (CLAUDE.md's placement rule: I/O lives in the
+ * target, not `firmware/app/`) — so the actual bus scan and compass
+ * read are supplied by the CALLER as a pair of callbacks, exactly the
+ * seam `ff_dbgconsole_reply_fn` already establishes for output:
+ *
+ *   - `i2c_scan` sweeps the shared I2C bus and writes a single
+ *     human-readable line body (no "dbg: i2c " prefix — this file adds
+ *     that) into `out`, NUL-terminated, at most `cap` bytes including
+ *     the NUL. Returns 0 on success; a negative value means the scan
+ *     could not run at all (e.g. the bus was never brought up) and
+ *     produces the honest `"dbg: i2c scan failed"` reply instead of
+ *     whatever partial/stale text might be sitting in `out`.
+ *   - `compass_status` writes a one-shot compass status line body the
+ *     same way (mag/imu presence, last heading, calibration state) —
+ *     independent of whether the scan itself succeeded, since it comes
+ *     from the compass driver's own state, not the bus sweep.
+ *
+ * The esp32s3 target supplies both (app_main.c) so a bench engineer
+ * gets the same "is my magnetometer even wired up" answer the
+ * coordinator's one-off bench patch gave, permanently and without
+ * touching the touchscreen. The sim build has no I2C bus at all and
+ * passes NULL for both — see `ff_dbgconsole_handle_line`'s own doc
+ * comment for the resulting "unavailable on this target" reply, which
+ * this module states honestly rather than fabricating a scan result.
+ */
+typedef int (*ff_dbgconsole_i2c_scan_fn)(void *user, char *out, size_t cap);
+typedef int (*ff_dbgconsole_compass_status_fn)(void *user, char *out, size_t cap);
+
+/**
  * ff_dbgconsole_handle_line — parse one raw line (via
  * `ff_dbgcmd_parse`) and dispatch it against `sh`, emitting zero or
  * more `"dbg: "`-prefixed reply lines through `reply`.
@@ -108,9 +140,21 @@ typedef void (*ff_dbgconsole_reply_fn)(void *user, char const *line);
  * codebase — never `lv_tick_get()`/a raw platform tick — see
  * `ff_shell_now_ms`), used only where a command needs "now" for an age
  * computation that isn't already folded into a getter.
+ *
+ * `i2c_scan`/`compass_status` are the `i2c` command's platform hooks
+ * (see their own typedefs' doc comment just above) — pass NULL for
+ * either (or both) when the target has no I2C bus to scan (the sim) or
+ * no compass driver built in (`CONFIG_FF_COMPASS=n`); `i2c_scan ==
+ * NULL` alone makes the WHOLE `i2c` command reply with the single line
+ * `"dbg: i2c unavailable on this target"` (no second compass line —
+ * there is nothing to scan, so there is nothing to follow up on
+ * either). `compass_status == NULL` with `i2c_scan` present still
+ * prints the scan line; it just omits the compass line, honestly,
+ * rather than printing one with fields it cannot answer.
  */
 void ff_dbgconsole_handle_line(ff_shell_t *sh, char const *line, size_t line_len, uint32_t now_ms,
-                                ff_dbgconsole_reply_fn reply, void *user);
+                                ff_dbgconsole_reply_fn reply, void *user, ff_dbgconsole_i2c_scan_fn i2c_scan,
+                                ff_dbgconsole_compass_status_fn compass_status);
 
 #endif /* FF_TARGET_SIM || CONFIG_FF_DEBUG_CONSOLE */
 

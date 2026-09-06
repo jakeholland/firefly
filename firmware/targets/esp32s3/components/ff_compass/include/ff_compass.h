@@ -129,6 +129,31 @@ ff_compass_mag_kind_t ff_compass_mag_kind(void);
 bool ff_compass_imu_present(void);
 
 /**
+ * ff_compass_status_t / ff_compass_status — a one-shot snapshot for a
+ * bench diagnostic (the debug console's `i2c` command,
+ * docs/hardware/comms-brain.md), bundling three already-honest facts
+ * this driver tracks into one call rather than three: mag/imu presence
+ * (the same `ff_compass_present`/`ff_compass_imu_present` above) plus
+ * whether the MOST RECENT `ff_compass_read()` call produced a real
+ * heading. "Most recent", not "fresh right now": this reports the last
+ * sample the periodic 10 Hz caller (app_main.c) already took, not a
+ * new I2C transaction of its own — a status query is diagnostic, not
+ * another consumer of bus time. Before the first `ff_compass_read()`
+ * call ever happens (e.g. queried moments after boot, or with
+ * `CONFIG_FF_COMPASS=n` so nothing ever calls it), `heading_valid` is
+ * false and `last_heading_deg` is the same -1 "unknown" sentinel
+ * `ff_compass_read()` itself would return — never a fabricated 0. */
+typedef struct {
+    bool mag_present;
+    ff_compass_mag_kind_t mag_kind;
+    bool imu_present;
+    bool heading_valid;     /* true iff last_heading_deg is a real (non-negative) heading */
+    float last_heading_deg; /* meaningful only when heading_valid; -1 otherwise */
+} ff_compass_status_t;
+
+ff_compass_status_t ff_compass_status(void);
+
+/**
  * ff_compass_set_cal — install (or clear, if `cal` is NULL) the active
  * compass calibration `ff_compass_read()` applies via
  * `ff_geo_heading_deg`. `cal` is COPIED — the caller's storage need not
