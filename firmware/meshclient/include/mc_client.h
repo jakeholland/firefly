@@ -411,6 +411,40 @@ typedef struct {
      */
     void (*on_rx_meta)(void *u, uint32_t from, mc_rx_meta_t const *m);
 
+    /**
+     * NAME in Settings, confirmation-fix follow-up — fires when an
+     * `AdminMessage.get_owner_response` arrives (ADMIN_APP, portnum 6):
+     * the direct, on-demand answer to `mc_send_get_owner_request`, as
+     * opposed to `on_node`'s NodeInfo replay (which the comms brain only
+     * re-sends on its own schedule — the next want_config handshake, or
+     * an hours-scale periodic broadcast — never right after a
+     * `set_owner` push). `long_name`/`short_name` are each "" when the
+     * response's `User` left that field unset (proto3 implicit
+     * presence — absent and empty are the same bytes), never NULL, so a
+     * caller may `strcmp` them directly.
+     *
+     * This library sends `get_owner_request` only to `dest == self` (see
+     * `mc_send_get_owner_request`'s doc comment), so any response this
+     * fires for is definitionally this node's own current owner — no
+     * `from`/self check is needed downstream, unlike `on_node`.
+     */
+    void (*on_owner)(void *u, char const *long_name, char const *short_name);
+
+    /**
+     * NAME in Settings, confirmation-fix follow-up — fires for a
+     * ROUTING_APP reply that reports the outcome of an earlier
+     * `want_ack` send (e.g. `mc_send_set_owner`'s admin write):
+     * `request_id` is the original outgoing `MeshPacket.id` (matches the
+     * `out_packet_id` that send call handed back), `ok` is true only for
+     * `Routing.error_reason == NONE` — every other reason (including a
+     * malformed/absent `error_reason`, which decodes to NONE=0 on the
+     * wire and is therefore indistinguishable from success; see
+     * mc_process_mesh_packet's own comment) is a NAK. A caller that
+     * cannot find a matching in-flight `request_id` should ignore the
+     * event rather than guess which send it belonged to.
+     */
+    void (*on_routing_ack)(void *u, uint32_t request_id, bool ok);
+
     void *user;
 } mc_events_t;
 
@@ -610,8 +644,47 @@ int mc_send_position(mc_client_t *c, ff_latlon_t p);
  *
  * Returns 0 on success, negative on failure (not READY, encode/write
  * failure).
+ *
+ * `out_packet_id` — confirmation-fix follow-up (bench finding: the comms
+ * brain never re-sends its own NodeInfo right after a `set_owner`, so
+ * the OLD "wait for a self NodeInfo" confirmation path could hang
+ * forever) — is OPTIONAL (NULL-safe) and, on a successful send (return
+ * 0 only), receives the outgoing `MeshPacket.id` this call used, so the
+ * caller can correlate a later `mc_events_t.on_routing_ack` reply
+ * against THIS specific push rather than guessing. Left untouched on
+ * failure (return negative) — there is no in-flight packet id to hand
+ * back.
  */
-int mc_send_set_owner(mc_client_t *c, uint32_t dest, char const *long_name, char const *short_name);
+int mc_send_set_owner(mc_client_t *c, uint32_t dest, char const *long_name, char const *short_name,
+                       uint32_t *out_packet_id);
+
+/**
+ * mc_send_get_owner_request — confirmation-fix follow-up: send a
+ * Meshtastic `AdminMessage.get_owner_request`, asking `dest` to reply
+ * with its current owner `User` (`AdminMessage.get_owner_response`,
+ * delivered via `mc_events_t.on_owner`). Exists because the comms brain
+ * does NOT proactively re-announce its own NodeInfo right after a
+ * `set_owner` write lands — only the next want_config handshake or the
+ * periodic (hours-scale) broadcast carries it — so a puck that just
+ * pushed a new owner name has no other honest way to learn "did that
+ * actually take" without either waiting arbitrarily long or asking
+ * directly. This is the asking.
+ *
+ * Rides ADMIN_APP (portnum 6), same as `mc_send_set_owner`. `want_ack`
+ * is false: the value of this call is the `get_owner_response` payload
+ * itself (or its absence, honestly read as "no answer yet" — see
+ * `ff_shell.c`'s retry/timeout handling), not the mesh-level delivery
+ * receipt a `want_ack` NAK/ACK would add on top; a caller that wants
+ * that too can watch `mc_send_set_owner`'s own `out_packet_id`/
+ * `on_routing_ack` pairing instead. `dest` should be this node's own id
+ * for the same "local admin, no key needed" reason `mc_send_set_owner`'s
+ * doc comment explains in full — a request to a REMOTE node's admin
+ * module needs a session passkey this library does not manage.
+ *
+ * Returns 0 on success, negative on failure (not READY, encode/write
+ * failure).
+ */
+int mc_send_get_owner_request(mc_client_t *c, uint32_t dest);
 
 mc_state_t mc_state(mc_client_t const *c);
 mc_stats_t mc_get_stats(mc_client_t const *c);

@@ -3011,6 +3011,40 @@ static void S_name_row_confirmed_shows_checkmark(void)
     TEST_ASSERT_NOT_NULL(find_label_exact(lv_screen_active(), LV_SYMBOL_OK));
 }
 
+/* Confirmation-fix follow-up: a routing NAK for the CURRENT push flips
+ * the pill to "!" (amber) instead of the identical-looking "..." pending
+ * dots — honest bench info, not silence. `confirmed` beats `push_failed`
+ * when the projection somehow carries both (a later confirming reply
+ * always wins over an earlier NAK). */
+static void S_name_row_push_failed_shows_warning(void)
+{
+    ff_app_settings_t s;
+    memset(&s, 0, sizeof(s));
+    snprintf(s.my_name, sizeof(s.my_name), "%s", "Jake");
+    s.mesh_name_confirmed = false;
+    s.mesh_name_push_failed = true;
+
+    ff_scr_settings_build(lv_screen_active(), &s);
+
+    TEST_ASSERT_NULL(find_label_exact(lv_screen_active(), "..."));
+    TEST_ASSERT_NULL(find_label_exact(lv_screen_active(), LV_SYMBOL_OK));
+    TEST_ASSERT_NOT_NULL(find_label_exact(lv_screen_active(), "!"));
+}
+
+static void S_name_row_confirmed_beats_push_failed(void)
+{
+    ff_app_settings_t s;
+    memset(&s, 0, sizeof(s));
+    snprintf(s.my_name, sizeof(s.my_name), "%s", "Jake");
+    s.mesh_name_confirmed = true;
+    s.mesh_name_push_failed = true; /* stale NAK from an earlier attempt this retry superseded */
+
+    ff_scr_settings_build(lv_screen_active(), &s);
+
+    TEST_ASSERT_NOT_NULL(find_label_exact(lv_screen_active(), LV_SYMBOL_OK));
+    TEST_ASSERT_NULL(find_label_exact(lv_screen_active(), "!"));
+}
+
 /* The editor page: title, seeded draft text, and default ABC mode. */
 static void S_name_edit_page_shows_title_and_seeded_draft(void)
 {
@@ -3920,6 +3954,8 @@ int main(void)
     RUN_TEST(S_name_row_unset_shows_placeholder_and_opens_editor);
     RUN_TEST(S_name_row_shows_stored_name_and_pending_pill);
     RUN_TEST(S_name_row_confirmed_shows_checkmark);
+    RUN_TEST(S_name_row_push_failed_shows_warning);
+    RUN_TEST(S_name_row_confirmed_beats_push_failed);
     RUN_TEST(S_name_edit_page_shows_title_and_seeded_draft);
     RUN_TEST(S_name_edit_empty_draft_shows_placeholder);
     RUN_TEST(S_name_edit_abc_letter_key_emits_name_t9_key);

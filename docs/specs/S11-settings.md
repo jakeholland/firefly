@@ -151,3 +151,42 @@ a) store seam + settings struct + tests · b) face render + interactions + golde
   actually reaches the mesh, including the exact firmware citation for
   the no-admin-key local path, and the CLI/phone-app fallback that
   remains available regardless.
+
+- **2026-09-06 — Confirmation fix (same PR, bench finding against a real
+  puck + comms brain, Meshtastic 2.7.26): the pill above never turned ✓
+  in practice.** The bench proved the push itself works (`meshtastic
+  --info` on the comms brain showed the new owner immediately after a
+  `name <text>`), but the ORIGINAL confirmation design above — "wait for
+  a self NodeInfo reporting a matching `long_name`" — assumed the comms
+  brain would re-announce its own identity shortly after a `set_owner`.
+  It does not: `AdminModule::handleSetOwner` updates the local
+  `nodeDB`/owner in place and never re-broadcasts a fresh self NodeInfo
+  on its own; the next one a connected client sees is either the NEXT
+  want_config handshake (a reconnect) or the periodic (hours-scale)
+  NodeInfo broadcast — neither of which happens promptly after a wearer
+  taps DONE. The pill was therefore correct (never dishonestly
+  confirming) but useless (never confirming AT ALL within a session).
+
+  **Fix**: a successful `set_owner` push now immediately follows up with
+  its own read — `AdminMessage.get_owner_request` to this node's own id
+  (`mc_send_get_owner_request`, `meshclient`) — and the reply
+  (`get_owner_response`, delivered via a new `mc_events_t.on_owner`
+  event) is treated exactly like a self NodeInfo for confirmation
+  purposes (`ff_shell.c`'s `shell_ev_owner`). If no reply arrives within
+  ~10 s, the request is retried up to 3 times; if the budget is
+  exhausted with still no reply, the row/console keep reading the honest
+  "..." pending state forever — this fix removes the "confirmation never
+  happens" failure, it does not add a NEW way to fabricate one. The
+  mesh-level delivery outcome of the `set_owner` write itself
+  (`Routing.error_reason`, correlated by outgoing packet id via a new
+  `mc_events_t.on_routing_ack` event) is ALSO now surfaced: a NAK shows
+  as a distinct "!" (amber) on the pill and `ack=nak` on the bench
+  console, rather than looking identical to ordinary pending — this is a
+  routing-layer fact, independent of (and no substitute for) the
+  `get_owner_response`/self-NodeInfo confirmation itself, per this
+  spec's own honest-data rule.
+
+  Bench console gains `pushed=<long>/<short> ack=<none|ok|nak>
+  reply=<none|long/short>` on the `name` command's output — see
+  `docs/hardware/comms-brain.md`'s "How confirmation works" section for
+  the full state machine.

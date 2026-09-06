@@ -6832,7 +6832,7 @@ static void S24_demo_loopback_seam_makes_out_items_appear(void)
     ff_shell_intent(&H.shell, &flare);
     TEST_ASSERT_EQUAL_UINT8(0, ff_feed_count(ff_shell_feed(&H.shell))); /* refused -> no OUT item */
 
-    ff_wiring_sender_t loop = {s24d_loop_send_text, s24d_loop_send_private, NULL, NULL};
+    ff_wiring_sender_t loop = {s24d_loop_send_text, s24d_loop_send_private, NULL, NULL, NULL};
     ff_shell_set_sender(&H.shell, loop);
     ff_shell_intent(&H.shell, &flare);
     TEST_ASSERT_EQUAL_UINT8(1, ff_feed_count(ff_shell_feed(&H.shell))); /* accepted -> OUT item appears */
@@ -7279,7 +7279,7 @@ static void flare_wire_spy_install(bool accept)
 {
     memset(&S, 0, sizeof(S));
     S.accept = accept;
-    ff_wiring_sender_t const sender = {flare_wire_spy_send_text, flare_wire_spy_send_private, &S, NULL};
+    ff_wiring_sender_t const sender = {flare_wire_spy_send_text, flare_wire_spy_send_private, &S, NULL, NULL};
     ff_shell_set_sender(&H.shell, sender);
 }
 
@@ -8538,29 +8538,63 @@ typedef struct {
     uint32_t dest;
     char     long_name[64];
     char     short_name[16];
+    /* Confirmation-fix follow-up. */
+    uint32_t out_packet_id; /* handed back via send_admin_set_owner's out_packet_id on success */
+    int      rc;            /* what send_admin_set_owner returns; 0 (success) by default */
+    int      owner_req_calls;
+    uint32_t owner_req_dest;
+    int      owner_req_rc;  /* what send_get_owner_request returns; 0 (success) by default */
 } name_wire_spy_t;
 
 static name_wire_spy_t NS;
 
 static int name_wire_spy_send_admin_set_owner(void *ctx, uint32_t dest, char const *long_name,
-                                              char const *short_name)
+                                              char const *short_name, uint32_t *out_packet_id)
 {
     name_wire_spy_t *s = (name_wire_spy_t *)ctx;
     s->calls++;
     s->dest = dest;
     snprintf(s->long_name, sizeof(s->long_name), "%s", (long_name != NULL) ? long_name : "");
     snprintf(s->short_name, sizeof(s->short_name), "%s", (short_name != NULL) ? short_name : "");
-    return 0;
+    if (s->rc == 0 && out_packet_id != NULL) {
+        *out_packet_id = s->out_packet_id;
+    }
+    return s->rc;
+}
+
+/* Confirmation-fix follow-up — the get_owner_request follow-up spy, same
+ * shape as the set_owner spy just above. */
+static int name_wire_spy_send_get_owner_request(void *ctx, uint32_t dest)
+{
+    name_wire_spy_t *s = (name_wire_spy_t *)ctx;
+    s->owner_req_calls++;
+    s->owner_req_dest = dest;
+    return s->owner_req_rc;
 }
 
 static void name_wire_spy_install(void)
 {
     memset(&NS, 0, sizeof(NS));
+    NS.out_packet_id = 0xAB12u; /* arbitrary nonzero id for ack-correlation tests to pin against */
     ff_wiring_sender_t sender;
     memset(&sender, 0, sizeof(sender));
     sender.send_admin_set_owner = name_wire_spy_send_admin_set_owner;
+    sender.send_get_owner_request = name_wire_spy_send_get_owner_request;
     sender.ctx = &NS;
     ff_shell_set_sender(&H.shell, sender);
+}
+
+/* Confirmation-fix follow-up — synthetic get_owner_response / routing-ack
+ * event injectors, the same "mock event injector" shape inject_self_long_name
+ * already establishes for on_node. */
+static void inject_owner_reply(char const *long_name, char const *short_name)
+{
+    H.ev.on_owner(H.ev.user, long_name, short_name);
+}
+
+static void inject_routing_ack(uint32_t request_id, bool ok)
+{
+    H.ev.on_routing_ack(H.ev.user, request_id, ok);
 }
 
 static void inject_self_long_name(uint32_t node, char const *long_name)
@@ -8849,6 +8883,227 @@ static void S_name_committing_clears_the_from_node_flag(void)
                               "a real edit overrides the mesh-adopted caption for good");
 }
 
+/* ====================================================================
+ * Confirmation-fix follow-up (bench finding, 2026-09-06): the comms
+ * brain never re-sends its own NodeInfo right after a set_owner, so the
+ * ABOVE block's "wait for a self NodeInfo" confirmation never turns ✓ in
+ * practice. This device now follows every successful push with its own
+ * get_owner_request/on_owner round trip (retried on a timeout, never
+ * assumed to have succeeded), plus honest routing-ack/nak surfacing.
+ * ==================================================================== */
+
+/**
+ * THE follow-up-request test (task brief: "prove ... fails without the
+ * change"). Mutation-verified by hand: commenting out
+ * shell_apply_name_commit's `send_get_owner_request` call (and its
+ * surrounding `if`) fails exactly this test's `NS.owner_req_calls`
+ * assertion (`Expected 1 Was 0`) and no other test in this file — see
+ * the PR body for the exact `ctest` output.
+ */
+static void S_name_commit_sends_get_owner_request_after_a_successful_push(void)
+{
+    harness_init(1000u, false);
+    inject_my_info(MY_ID);
+    name_wire_spy_install();
+
+    send_bare(FF_INTENT_SETTINGS_OPEN_NAME_EDIT);
+    name_key(5); /* 'j' */
+    name_key(6); /* different key -> commits 'j', pending 'm' */
+    send_bare(FF_INTENT_SETTINGS_NAME_COMMIT);
+
+    TEST_ASSERT_EQUAL_INT(1, NS.calls);
+    TEST_ASSERT_EQUAL_INT_MESSAGE(
+        1, NS.owner_req_calls,
+        "a successful set_owner push must immediately follow up with its own get_owner_request — the "
+        "comms brain does not re-send its own NodeInfo right after a set_owner (2026-09-06 bench finding)");
+    TEST_ASSERT_EQUAL_UINT32(MY_ID, NS.owner_req_dest);
+}
+
+static void S_name_commit_skips_the_owner_request_when_the_push_itself_was_skipped(void)
+{
+    harness_init(1000u, false);
+    /* deliberately no inject_my_info — the push itself is skipped */
+    name_wire_spy_install();
+
+    send_bare(FF_INTENT_SETTINGS_OPEN_NAME_EDIT);
+    name_key(5);
+    send_bare(FF_INTENT_SETTINGS_NAME_COMMIT);
+
+    TEST_ASSERT_EQUAL_INT(0, NS.calls);
+    TEST_ASSERT_EQUAL_INT(0, NS.owner_req_calls);
+}
+
+static void S_name_owner_response_matching_flips_confirmed(void)
+{
+    harness_init(1000u, false);
+    inject_my_info(MY_ID);
+    name_wire_spy_install();
+
+    send_bare(FF_INTENT_SETTINGS_OPEN_NAME_EDIT);
+    name_key(5);
+    name_key(6);
+    send_bare(FF_INTENT_SETTINGS_NAME_COMMIT); /* commits "jm" */
+    TEST_ASSERT_FALSE(ff_shell_mesh_name_status(&H.shell).confirmed);
+
+    inject_owner_reply("jm", "JM");
+
+    ff_shell_mesh_name_status_t const st = ff_shell_mesh_name_status(&H.shell);
+    TEST_ASSERT_TRUE(st.has_reply);
+    TEST_ASSERT_EQUAL_STRING("jm", st.reply_long);
+    TEST_ASSERT_EQUAL_STRING("JM", st.reply_short);
+    TEST_ASSERT_TRUE_MESSAGE(st.confirmed, "get_owner_response treated exactly like a matching self NodeInfo");
+}
+
+static void S_name_owner_response_mismatching_does_not_confirm(void)
+{
+    harness_init(1000u, false);
+    inject_my_info(MY_ID);
+    name_wire_spy_install();
+
+    send_bare(FF_INTENT_SETTINGS_OPEN_NAME_EDIT);
+    name_key(5);
+    send_bare(FF_INTENT_SETTINGS_NAME_COMMIT); /* commits "j" */
+
+    inject_owner_reply("SomeoneElse", "SOME");
+
+    ff_shell_mesh_name_status_t const st = ff_shell_mesh_name_status(&H.shell);
+    TEST_ASSERT_TRUE(st.has_reply);
+    TEST_ASSERT_EQUAL_STRING("SomeoneElse", st.reply_long);
+    TEST_ASSERT_FALSE_MESSAGE(st.confirmed, "a mismatching reply is honest bench info, never assumed to confirm");
+}
+
+static void S_name_owner_reply_stops_further_retries(void)
+{
+    harness_init(1000u, false);
+    inject_my_info(MY_ID);
+    name_wire_spy_install();
+
+    send_bare(FF_INTENT_SETTINGS_OPEN_NAME_EDIT);
+    name_key(5);
+    send_bare(FF_INTENT_SETTINGS_NAME_COMMIT);
+    TEST_ASSERT_EQUAL_INT(1, NS.owner_req_calls);
+
+    inject_owner_reply("j", "J");
+
+    advance(FF_NAME_OWNER_REQ_TIMEOUT_MS + 1u);
+    ff_shell_tick(&H.shell, H.clk.t);
+    TEST_ASSERT_EQUAL_INT_MESSAGE(1, NS.owner_req_calls, "a reply already arrived — nothing left to retry for");
+}
+
+/**
+ * The retry/timeout schedule: a request every FF_NAME_OWNER_REQ_TIMEOUT_MS
+ * while no reply arrives, capped at FF_NAME_OWNER_REQ_MAX_RETRIES retries
+ * — after which the row stays honestly pending ("...") forever rather
+ * than ever assuming success.
+ */
+static void S_name_owner_request_retries_on_timeout_then_stops(void)
+{
+    harness_init(1000u, false);
+    inject_my_info(MY_ID);
+    name_wire_spy_install();
+
+    send_bare(FF_INTENT_SETTINGS_OPEN_NAME_EDIT);
+    name_key(5);
+    send_bare(FF_INTENT_SETTINGS_NAME_COMMIT);
+    TEST_ASSERT_EQUAL_INT(1, NS.owner_req_calls);
+
+    for (int i = 0; i < (int)FF_NAME_OWNER_REQ_MAX_RETRIES; i++) {
+        advance(FF_NAME_OWNER_REQ_TIMEOUT_MS + 1u);
+        ff_shell_tick(&H.shell, H.clk.t);
+    }
+    TEST_ASSERT_EQUAL_INT_MESSAGE(1 + (int)FF_NAME_OWNER_REQ_MAX_RETRIES, NS.owner_req_calls,
+                                  "1 initial request + the full retry budget");
+
+    /* Budget exhausted — no further requests no matter how much more
+     * time passes, and NEVER an assumed confirmation. */
+    advance(FF_NAME_OWNER_REQ_TIMEOUT_MS + 1u);
+    ff_shell_tick(&H.shell, H.clk.t);
+    advance(FF_NAME_OWNER_REQ_TIMEOUT_MS + 1u);
+    ff_shell_tick(&H.shell, H.clk.t);
+    TEST_ASSERT_EQUAL_INT(1 + (int)FF_NAME_OWNER_REQ_MAX_RETRIES, NS.owner_req_calls);
+    TEST_ASSERT_FALSE_MESSAGE(ff_shell_mesh_name_status(&H.shell).confirmed,
+                              "exhausting the retry budget never assumes success — stays pending forever");
+}
+
+static void S_name_routing_nak_marks_push_failed(void)
+{
+    harness_init(1000u, false);
+    inject_my_info(MY_ID);
+    name_wire_spy_install();
+
+    send_bare(FF_INTENT_SETTINGS_OPEN_NAME_EDIT);
+    name_key(5);
+    send_bare(FF_INTENT_SETTINGS_NAME_COMMIT);
+
+    inject_routing_ack(NS.out_packet_id, false);
+
+    ff_shell_mesh_name_status_t const st = ff_shell_mesh_name_status(&H.shell);
+    TEST_ASSERT_EQUAL_INT(FF_MESH_NAME_ACK_NAK, st.ack);
+
+    ff_app_settings_t const *s = name_view();
+    TEST_ASSERT_TRUE_MESSAGE(s->mesh_name_push_failed,
+                             "a routing NAK for the CURRENT push must surface honestly, not as pending forever");
+}
+
+static void S_name_routing_ack_ok_does_not_by_itself_confirm(void)
+{
+    harness_init(1000u, false);
+    inject_my_info(MY_ID);
+    name_wire_spy_install();
+
+    send_bare(FF_INTENT_SETTINGS_OPEN_NAME_EDIT);
+    name_key(5);
+    send_bare(FF_INTENT_SETTINGS_NAME_COMMIT);
+
+    inject_routing_ack(NS.out_packet_id, true);
+
+    ff_shell_mesh_name_status_t const st = ff_shell_mesh_name_status(&H.shell);
+    TEST_ASSERT_EQUAL_INT(FF_MESH_NAME_ACK_OK, st.ack);
+    TEST_ASSERT_FALSE_MESSAGE(st.confirmed, "mesh-delivery ack is not the same claim as a matching owner reply");
+}
+
+static void S_name_routing_ack_ignores_an_unrelated_request_id(void)
+{
+    harness_init(1000u, false);
+    inject_my_info(MY_ID);
+    name_wire_spy_install();
+
+    send_bare(FF_INTENT_SETTINGS_OPEN_NAME_EDIT);
+    name_key(5);
+    send_bare(FF_INTENT_SETTINGS_NAME_COMMIT);
+
+    inject_routing_ack(NS.out_packet_id + 1u, false); /* some other in-flight packet's NAK */
+
+    TEST_ASSERT_EQUAL_INT(FF_MESH_NAME_ACK_NONE, ff_shell_mesh_name_status(&H.shell).ack);
+}
+
+static void S_name_commit_resets_push_tracking_for_a_fresh_push(void)
+{
+    harness_init(1000u, false);
+    inject_my_info(MY_ID);
+    name_wire_spy_install();
+
+    send_bare(FF_INTENT_SETTINGS_OPEN_NAME_EDIT);
+    name_key(5);
+    send_bare(FF_INTENT_SETTINGS_NAME_COMMIT); /* pushes "j" */
+    inject_routing_ack(NS.out_packet_id, false); /* NAK'd */
+    inject_owner_reply("j", "J"); /* confirmed */
+    TEST_ASSERT_TRUE(ff_shell_mesh_name_status(&H.shell).confirmed);
+    TEST_ASSERT_EQUAL_INT(FF_MESH_NAME_ACK_NAK, ff_shell_mesh_name_status(&H.shell).ack);
+
+    send_bare(FF_INTENT_SETTINGS_OPEN_NAME_EDIT); /* re-priming the draft from "j" (the confirmed my_name) */
+    send_bare(FF_INTENT_NAME_T9_BACKSPACE); /* clear the primed "j" before typing the new name */
+    name_key(6); /* pushes "m" — a fresh push cycle */
+    send_bare(FF_INTENT_SETTINGS_NAME_COMMIT);
+
+    ff_shell_mesh_name_status_t const st = ff_shell_mesh_name_status(&H.shell);
+    TEST_ASSERT_EQUAL_INT_MESSAGE(FF_MESH_NAME_ACK_NONE, st.ack,
+                                  "a stale NAK from the PREVIOUS push must not bleed into the new one");
+    TEST_ASSERT_FALSE_MESSAGE(st.has_reply, "a stale reply from the PREVIOUS push must not bleed into the new one");
+    TEST_ASSERT_EQUAL_STRING("m", st.pushed_long);
+    TEST_ASSERT_FALSE_MESSAGE(st.confirmed, "the new push has not been confirmed yet");
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -9123,6 +9378,17 @@ int main(void)
     RUN_TEST(S_name_status_reads_pending_when_mesh_name_differs);
     RUN_TEST(S_name_status_confirms_once_a_matching_self_nodeinfo_arrives);
     RUN_TEST(S_name_committing_clears_the_from_node_flag);
+
+    RUN_TEST(S_name_commit_sends_get_owner_request_after_a_successful_push);
+    RUN_TEST(S_name_commit_skips_the_owner_request_when_the_push_itself_was_skipped);
+    RUN_TEST(S_name_owner_response_matching_flips_confirmed);
+    RUN_TEST(S_name_owner_response_mismatching_does_not_confirm);
+    RUN_TEST(S_name_owner_reply_stops_further_retries);
+    RUN_TEST(S_name_owner_request_retries_on_timeout_then_stops);
+    RUN_TEST(S_name_routing_nak_marks_push_failed);
+    RUN_TEST(S_name_routing_ack_ok_does_not_by_itself_confirm);
+    RUN_TEST(S_name_routing_ack_ignores_an_unrelated_request_id);
+    RUN_TEST(S_name_commit_resets_push_tracking_for_a_fresh_push);
 
     return UNITY_END();
 }

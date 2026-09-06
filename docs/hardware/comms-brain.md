@@ -318,14 +318,84 @@ Examples: "Taylor" → "TAYL", "Jake" → "JAKE", "Jo" → "JO".
 
 **Confirmation is never assumed.** Accepting a `set_owner` for send
 proves nothing about whether the comms brain actually applied it —
-`ff_shell.c` never marks the row confirmed until a SELF NodeInfo
-(the want_config replay on reconnect, or a live update following
-`MeshService::reloadOwner`'s own `nodeDB->updateUser` push back to this
-connected client) reports a `long_name` that actually matches what was
-committed (`ff_shell_mesh_name_status`/`shell_mesh_name_confirmed`).
-The Settings row's small status pill and the bench console's `name`
-command both read this same one derivation, never two independent
-guesses.
+`ff_shell.c` never marks the row confirmed until a matching reply
+actually says so (`ff_shell_mesh_name_status`/`shell_mesh_name_confirmed`
+— the ONE derivation both the Settings row's pill and the bench
+console's `name` command read, never two independent guesses). See "How
+confirmation works" immediately below for what "a matching reply" means
+in practice and why the original design needed a fix.
+
+### How confirmation works (bench fix, 2026-09-06)
+
+**The bench finding.** A real puck + comms brain (Meshtastic 2.7.26)
+proved the push itself works — `meshtastic --info` against the comms
+brain showed the new owner immediately after a `name <text>` — but the
+row's pill sat on `...` (pending) indefinitely. Cause: `AdminModule::
+handleSetOwner` updates the comms brain's own `nodeDB`/owner in place
+and does **not** re-broadcast a fresh self NodeInfo afterward. The next
+one a connected client (this puck) would see is either the next
+want_config handshake (a reconnect) or the periodic, hours-scale NodeInfo
+broadcast — neither of which happens promptly after a wearer taps DONE.
+The ORIGINAL "wait for a self NodeInfo" confirmation design (previous
+section) was honest — it never confirmed something that hadn't
+happened — but it was also useless, because the thing it was waiting for
+essentially never arrived within a session.
+
+**The fix.** A successful `set_owner` send now immediately follows up
+with its own read: `AdminMessage.get_owner_request` addressed to this
+node's own id (`mc_send_get_owner_request`, `meshclient/include/
+mc_client.h` — same local-admin, no-key-needed path as `set_owner`
+itself, `want_ack` false since the response payload IS the answer). The
+reply (`get_owner_response`, a `User`) arrives via a new `mc_events_t.
+on_owner` event, and `ff_shell.c`'s `shell_ev_owner` treats it EXACTLY
+like a self NodeInfo for confirmation purposes — same cache
+(`mesh_owner_name`), same comparison (`shell_mesh_name_confirmed`). The
+original self-NodeInfo path (previous section — the want_config replay
+on reconnect, or a live update following `MeshService::reloadOwner`'s
+own `nodeDB->updateUser` push back to this connected client) is kept as
+a SECOND, independent confirmation source — whichever arrives first (or
+either one, on a later reconnect) can confirm.
+
+**Retry/timeout.** If no `get_owner_response` arrives within ~10 s
+(`FF_NAME_OWNER_REQ_TIMEOUT_MS`, `ff_shell.c`), the request is retried,
+up to 3 retries (`FF_NAME_OWNER_REQ_MAX_RETRIES`) — 4 requests total. If
+the budget is exhausted with still no reply, the row/console keep
+reading the honest `...` pending state forever: this fix closes the
+"confirmation never happens" gap, it does not open a new way to
+FABRICATE one. A wearer/coordinator can always retry manually by
+re-committing the same name (DONE, or the bench console's `name
+<text>`), which starts a fresh push-and-poll cycle.
+
+**Mesh-delivery ACK/NAK.** Independently of the `get_owner_response`
+round trip, the `set_owner` WRITE's own mesh-level delivery outcome
+(Meshtastic `Routing.error_reason`, correlated to the outgoing packet id
+via a new `mc_events_t.on_routing_ack` event) is now surfaced too: a NAK
+renders as a distinct `!` (amber) on the pill and `ack=nak` on the bench
+console — honestly different from the ordinary `...` pending state,
+which would otherwise look identical to "still waiting, give it a
+moment". This is a ROUTING-layer fact (did the write reach the comms
+brain's admin module at all), separate from and not a substitute for the
+`get_owner_response`/self-NodeInfo confirmation above — a NAK'd write is
+never treated as pending-but-fine, and an ACK'd write is never, by
+itself, treated as confirmed (`ff_mesh_name_ack_t`'s own doc comment,
+`ff_shell.h`, has the full three-state rationale: NONE/OK/NAK, where
+NONE means "no routing reply yet", not "failed").
+
+**Bench console.** `name`'s output line grows three fields:
+
+```
+dbg: name stored=<my_name> mesh=<mesh_owner_name|unknown> confirmed=<0|1>[ (from_node)] pushed=<none|long/short> ack=<none|ok|nak> reply=<none|long/short>
+```
+
+- `pushed=` — what the CURRENT push cycle actually sent (reset by the
+  NEXT `name <text>`/DONE, never accumulated across pushes); `none`
+  before any push this session.
+- `ack=` — the routing outcome of that push's `set_owner` write; `none`
+  until a routing reply for it arrives.
+- `reply=` — the most recent `get_owner_response` this push's own
+  follow-up request received, if any; `none` until it does. May differ
+  from `mesh=`/`confirmed=` if something else changed the owner in
+  between (that mismatch is itself honest bench info, not an error).
 
 **Fallback.** The Meshtastic phone app and CLI (`meshtastic
 --set-owner "<name>" --set-owner-short "<short>"`) remain a fully

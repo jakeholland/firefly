@@ -100,7 +100,11 @@
  * plus one of a small fixed set of sub-verbs) — an arbitrary NAME has no
  * fixed vocabulary to enumerate:
  *   name          — status: stored puck name, mesh-reported name (if
- *                   any), confirmed/pending
+ *                   any), confirmed/pending, plus the confirmation-fix
+ *                   follow-up's own record of the CURRENT push (what was
+ *                   pushed, its routing ack/nak, and any get_owner_
+ *                   request reply) — see `ff_debug_console.c`'s
+ *                   `dbgconsole_name_status` for the exact line format
  *   name <text>   — commit `<text>` through the SAME path the Settings
  *                   NAME row's DONE button uses (sanitize, persist,
  *                   push the Meshtastic owner update) — so the

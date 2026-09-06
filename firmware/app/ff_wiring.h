@@ -157,12 +157,33 @@ extern "C" {
  * uninitialized local has no such implicit-zero guarantee. May be NULL:
  * `shell_apply_name_commit` checks before calling through it, so a
  * target/test with nothing to bind here simply never pushes a mesh
- * owner update — the local settings write still happens either way. */
+ * owner update — the local settings write still happens either way.
+ *
+ * `send_admin_set_owner`'s `out_packet_id` — confirmation-fix follow-up,
+ * mirrors `mc_send_set_owner`'s own new parameter exactly — is OPTIONAL
+ * (NULL-safe) and, on success, receives the outgoing packet id so
+ * `shell_apply_name_commit` can correlate a later `on_routing_ack` NAK
+ * against THIS push. `[api]`: every implementer in the tree updated in
+ * the same change (there is no old 4-parameter shape left to preserve
+ * source-compat with, unlike `send_private`'s flags addition above).
+ *
+ * `send_get_owner_request` (confirmation-fix follow-up) mirrors
+ * `mc_send_get_owner_request`'s signature exactly — the SAME "test needs
+ * a mock, not a live radio" reason `send_admin_set_owner` itself exists
+ * for. Appended at the END of the struct (not grouped with the two
+ * fields above), so an existing 4-element positional initializer in the
+ * tree (`{send_text, send_private, ctx, send_admin_set_owner}`) still
+ * compiles unchanged, with this field implicitly zero-initialized. May
+ * be NULL: the retry/poll logic in `ff_shell.c` checks before calling
+ * through it, so a target/test with nothing bound here simply never
+ * polls for confirmation (the set_owner push itself is unaffected). */
 typedef struct {
     int (*send_text)(void *ctx, uint32_t dest, char const *utf8);
     int (*send_private)(void *ctx, uint32_t dest, uint8_t const *payload, size_t len, uint32_t flags);
     void *ctx;
-    int (*send_admin_set_owner)(void *ctx, uint32_t dest, char const *long_name, char const *short_name);
+    int (*send_admin_set_owner)(void *ctx, uint32_t dest, char const *long_name, char const *short_name,
+                                 uint32_t *out_packet_id);
+    int (*send_get_owner_request)(void *ctx, uint32_t dest);
 } ff_wiring_sender_t;
 
 typedef struct {

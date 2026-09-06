@@ -52,16 +52,34 @@ typedef struct {
     char     owner_last_long[64];
     char     owner_last_short[16];
     int      owner_rc;
+    uint32_t owner_packet_id; /* confirmation-fix follow-up — handed back on success */
+
+    /* Confirmation-fix follow-up — the get_owner_request follow-up. */
+    int      owner_req_calls;
+    uint32_t owner_req_last_dest;
+    int      owner_req_rc;
 } sender_spy_t;
 
-static int spy_send_admin_set_owner(void *ctx, uint32_t dest, char const *long_name, char const *short_name)
+static int spy_send_admin_set_owner(void *ctx, uint32_t dest, char const *long_name, char const *short_name,
+                                     uint32_t *out_packet_id)
 {
     sender_spy_t *s = (sender_spy_t *)ctx;
     s->owner_calls++;
     s->owner_last_dest = dest;
     snprintf(s->owner_last_long, sizeof(s->owner_last_long), "%s", (long_name != NULL) ? long_name : "");
     snprintf(s->owner_last_short, sizeof(s->owner_last_short), "%s", (short_name != NULL) ? short_name : "");
+    if (s->owner_rc == 0 && out_packet_id != NULL) {
+        *out_packet_id = s->owner_packet_id;
+    }
     return s->owner_rc;
+}
+
+static int spy_send_get_owner_request(void *ctx, uint32_t dest)
+{
+    sender_spy_t *s = (sender_spy_t *)ctx;
+    s->owner_req_calls++;
+    s->owner_req_last_dest = dest;
+    return s->owner_req_rc;
 }
 
 static int spy_send_text(void *ctx, uint32_t dest, char const *utf8)
@@ -125,6 +143,7 @@ static void harness_wire_sender(int rc)
     sender.send_text = spy_send_text;
     sender.ctx = &H.sender;
     sender.send_admin_set_owner = spy_send_admin_set_owner;
+    sender.send_get_owner_request = spy_send_get_owner_request;
     ff_shell_set_sender(&H.shell, sender);
 }
 
@@ -686,7 +705,8 @@ static void dbgconsole_name_bare_reports_unset_and_unknown(void)
     harness_init(1000);
     capture_t cap;
     dispatch("name", &cap);
-    TEST_ASSERT_EQUAL_STRING("dbg: name stored=(unset) mesh=unknown confirmed=0", cap.lines[0]);
+    TEST_ASSERT_EQUAL_STRING("dbg: name stored=(unset) mesh=unknown confirmed=0 pushed=none ack=none reply=none",
+                             cap.lines[0]);
 }
 
 static void dbgconsole_name_set_commits_and_reports_confirmed_false(void)
@@ -703,7 +723,8 @@ static void dbgconsole_name_set_commits_and_reports_confirmed_false(void)
     TEST_ASSERT_EQUAL_UINT32(MY_ID, H.sender.owner_last_dest);
     TEST_ASSERT_EQUAL_STRING("Jake", H.sender.owner_last_long);
     TEST_ASSERT_EQUAL_STRING("JAKE", H.sender.owner_last_short);
-    TEST_ASSERT_EQUAL_STRING("dbg: name stored=Jake mesh=unknown confirmed=0", cap.lines[0]);
+    TEST_ASSERT_EQUAL_STRING("dbg: name stored=Jake mesh=unknown confirmed=0 pushed=Jake/JAKE ack=none reply=none",
+                             cap.lines[0]);
 }
 
 static void dbgconsole_name_reports_confirmed_once_self_nodeinfo_matches(void)
@@ -718,7 +739,44 @@ static void dbgconsole_name_reports_confirmed_once_self_nodeinfo_matches(void)
 
     inject_self_long_name(MY_ID, "Jake"); /* the mesh caught up */
     dispatch("name", &cap);
-    TEST_ASSERT_EQUAL_STRING("dbg: name stored=Jake mesh=Jake confirmed=1", cap.lines[0]);
+    TEST_ASSERT_EQUAL_STRING("dbg: name stored=Jake mesh=Jake confirmed=1 pushed=Jake/JAKE ack=none reply=none",
+                             cap.lines[0]);
+}
+
+/* Confirmation-fix follow-up — the trailing pushed=/ack=/reply= fields
+ * through a full get_owner_response round trip and a routing NAK, both
+ * via the bench console (the coordinator's own bench-test surface). */
+static void dbgconsole_name_reports_reply_once_get_owner_response_arrives(void)
+{
+    harness_init(1000);
+    harness_wire_sender(0);
+    inject_my_info(MY_ID);
+
+    capture_t cap;
+    dispatch("name Jake", &cap);
+    TEST_ASSERT_EQUAL_INT_MESSAGE(1, H.sender.owner_req_calls,
+                                  "a successful push must follow up with its own get_owner_request");
+
+    H.ev.on_owner(H.ev.user, "Jake", "JAKE");
+    dispatch("name", &cap);
+    TEST_ASSERT_EQUAL_STRING(
+        "dbg: name stored=Jake mesh=Jake confirmed=1 pushed=Jake/JAKE ack=none reply=Jake/JAKE", cap.lines[0]);
+}
+
+static void dbgconsole_name_reports_nak_as_push_failed_not_pending(void)
+{
+    harness_init(1000);
+    harness_wire_sender(0);
+    H.sender.owner_packet_id = 0x77u;
+    inject_my_info(MY_ID);
+
+    capture_t cap;
+    dispatch("name Jake", &cap);
+
+    H.ev.on_routing_ack(H.ev.user, 0x77u, false);
+    dispatch("name", &cap);
+    TEST_ASSERT_EQUAL_STRING("dbg: name stored=Jake mesh=unknown confirmed=0 pushed=Jake/JAKE ack=nak reply=none",
+                             cap.lines[0]);
 }
 
 static void dbgconsole_name_set_with_no_node_id_still_commits_locally(void)
@@ -774,6 +832,8 @@ int main(void)
     RUN_TEST(dbgconsole_name_bare_reports_unset_and_unknown);
     RUN_TEST(dbgconsole_name_set_commits_and_reports_confirmed_false);
     RUN_TEST(dbgconsole_name_reports_confirmed_once_self_nodeinfo_matches);
+    RUN_TEST(dbgconsole_name_reports_reply_once_get_owner_response_arrives);
+    RUN_TEST(dbgconsole_name_reports_nak_as_push_failed_not_pending);
     RUN_TEST(dbgconsole_name_set_with_no_node_id_still_commits_locally);
 
     return UNITY_END();

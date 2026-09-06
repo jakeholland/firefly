@@ -624,7 +624,7 @@ static void S27_ctl_loop_play_sound_hook_logs_flare_sent(void)
 
     TEST_ASSERT_EQUAL_INT(0, ff_ctl_loop_open(&ctx, &shell, &pack, &shell_cfg, &cfg));
 
-    ff_wiring_sender_t const accept_sender = {s27_ctl_sound_send_text, s27_ctl_sound_send_private, NULL, NULL};
+    ff_wiring_sender_t const accept_sender = {s27_ctl_sound_send_text, s27_ctl_sound_send_private, NULL, NULL, NULL};
     ff_shell_set_sender(&shell, accept_sender);
 
     TEST_ASSERT_EQUAL_UINT32(0, ff_ctl_loop_sound_log_count(&ctx));

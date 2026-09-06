@@ -314,14 +314,39 @@ static void dbgconsole_cal_clear(ff_shell_t *sh, ff_dbgconsole_reply_fn reply, v
  * runs the EXACT same commit path the row's DONE button does
  * (FF_INTENT_SETTINGS_NAME_COMMIT — sanitize, persist, push), so the
  * coordinator can bench the mesh push against real nodes without the
- * touchscreen. */
+ * touchscreen.
+ *
+ * Confirmation-fix follow-up (bench finding, 2026-09-06) added the
+ * trailing `pushed=<long>/<short> ack=<none|ok|nak> reply=<none|long/
+ * short>` fields: the ORIGINAL `stored=.../mesh=.../confirmed=` trio
+ * alone could not distinguish "no push has happened yet" from "pushed,
+ * still waiting on a reply" from "pushed, got NAK'd" — all three read
+ * identically as `confirmed=0`. These three new fields are the CURRENT
+ * push's own record (`ff_shell_mesh_name_status_t`'s own doc comment has
+ * the full field-by-field rationale): `pushed=none` before any push this
+ * session; `ack=none` until a routing reply for that push arrives (NOT a
+ * failure — see `ff_mesh_name_ack_t`); `reply=none` until this push's
+ * own `get_owner_request` follow-up gets an answer. */
 static void dbgconsole_name_status(ff_shell_t *sh, ff_dbgconsole_reply_fn reply, void *user)
 {
     ff_shell_mesh_name_status_t const st = ff_shell_mesh_name_status(sh);
     char line[DBGCONSOLE_LINE_BUF];
 
     char const *stored = (st.my_name[0] != '\0') ? st.my_name : "(unset)";
-    char mesh_buf[64];
+    /* Confirmation-fix follow-up: mesh_buf/pushed_buf/reply_buf are sized
+     * tightly (24, not a round "plenty" number like the pre-existing
+     * mesh_buf's old 64) because GCC's -Wformat-truncation estimates a
+     * %s argument's worst case as "up to the SOURCE buffer's own declared
+     * capacity" when it cannot prove a tighter bound flow-sensitively —
+     * so an oversized scratch buffer here inflates line[]'s own computed
+     * worst case at line's snprintf below, past DBGCONSOLE_LINE_BUF, and
+     * fails the GCC gate (clang has no equivalent check — CLAUDE.md's
+     * "read every local clean-under-Werror claim as clang's
+     * interpretation" note, again). 24 comfortably covers the real
+     * content (name <=15 + '/' + short <=4, or the literal fallbacks,
+     * all well under 24) with headroom, while keeping line[]'s own
+     * worst-case total near 156 of its 200-byte budget. */
+    char mesh_buf[24];
     if (!st.has_mesh_owner_name) {
         snprintf(mesh_buf, sizeof(mesh_buf), "unknown");
     } else if (st.mesh_owner_name[0] != '\0') {
@@ -330,8 +355,25 @@ static void dbgconsole_name_status(ff_shell_t *sh, ff_dbgconsole_reply_fn reply,
         snprintf(mesh_buf, sizeof(mesh_buf), "(unset)");
     }
 
-    snprintf(line, sizeof(line), "dbg: name stored=%s mesh=%s confirmed=%d%s", stored, mesh_buf,
-             st.confirmed ? 1 : 0, st.my_name_from_node ? " (from_node)" : "");
+    char pushed_buf[24];
+    if (st.has_pushed) {
+        snprintf(pushed_buf, sizeof(pushed_buf), "%s/%s", st.pushed_long, st.pushed_short);
+    } else {
+        snprintf(pushed_buf, sizeof(pushed_buf), "none");
+    }
+
+    char const *ack_str = (st.ack == FF_MESH_NAME_ACK_OK) ? "ok" : (st.ack == FF_MESH_NAME_ACK_NAK) ? "nak" : "none";
+
+    char reply_buf[24];
+    if (st.has_reply) {
+        snprintf(reply_buf, sizeof(reply_buf), "%s/%s", st.reply_long, st.reply_short);
+    } else {
+        snprintf(reply_buf, sizeof(reply_buf), "none");
+    }
+
+    snprintf(line, sizeof(line), "dbg: name stored=%s mesh=%s confirmed=%d%s pushed=%s ack=%s reply=%s", stored,
+             mesh_buf, st.confirmed ? 1 : 0, st.my_name_from_node ? " (from_node)" : "", pushed_buf, ack_str,
+             reply_buf);
     reply_line(reply, user, line);
 }
 

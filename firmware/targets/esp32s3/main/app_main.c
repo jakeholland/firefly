@@ -159,9 +159,11 @@ static int demo_loopback_send_private(void *ctx, uint32_t dest, const uint8_t *p
 static ff_wiring_sender_t ff_demo_loopback_sender(void)
 {
     ff_wiring_sender_t s;
+    memset(&s, 0, sizeof(s)); /* demo mode pushes no mesh owner update — send_admin_set_owner/
+                                * send_get_owner_request stay NULL, same as any other unbound
+                                * sender field (ff_wiring_sender_t's own doc comment) */
     s.send_text = demo_loopback_send_text;
     s.send_private = demo_loopback_send_private;
-    s.ctx = NULL;
     return s;
 }
 

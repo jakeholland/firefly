@@ -965,8 +965,19 @@ static void settings_name_open_cb(lv_event_t *e)
     ff_intent_emit(&in);
 }
 
+/**
+ * `push_failed` — confirmation-fix follow-up: a routing NAK for the
+ * CURRENT push (`ff_app_settings_t.mesh_name_push_failed`'s own doc
+ * comment has the full rationale). Renders as "!" in amber — distinct
+ * from both the checkmark and the plain "..." pending dots, because
+ * "the mesh reported this write failed" is a stronger, more actionable
+ * claim than "still waiting" and this repo's honest-data rule says a
+ * silent identical-looking pending state would bury it. `confirmed`
+ * takes precedence when both are true (a later retry that DID succeed
+ * always wins over an earlier NAK) — checked first, below.
+ */
 static void settings_build_name_row(lv_obj_t *list, int32_t rel_y, int32_t row_w, char const *my_name,
-                                    bool confirmed)
+                                    bool confirmed, bool push_failed)
 {
     lv_obj_t *row = settings_make_row(list, rel_y, row_w);
     int32_t const label_w = row_w - FF_SETTINGS_VALUE_PILL_W - FF_SETTINGS_VALUE_GAP;
@@ -990,8 +1001,10 @@ static void settings_build_name_row(lv_obj_t *list, int32_t rel_y, int32_t row_w
     lv_obj_align(lbl, LV_ALIGN_LEFT_MID, 0, 0);
 
     bool const show_ok = has_name && confirmed;
-    char const *pill_text = has_name ? (show_ok ? LV_SYMBOL_OK : "...") : "N/A";
-    uint32_t const pill_fg = show_ok ? FF_SETTINGS_PILL_VAL_FG : FF_THEME_COLOR_MUTED;
+    bool const show_failed = has_name && !show_ok && push_failed;
+    char const *pill_text = has_name ? (show_ok ? LV_SYMBOL_OK : (show_failed ? "!" : "...")) : "N/A";
+    uint32_t const pill_fg =
+        show_ok ? FF_SETTINGS_PILL_VAL_FG : (show_failed ? FF_THEME_COLOR_AMBER : FF_THEME_COLOR_MUTED);
     settings_make_pill(row, pill_text, row_w - FF_SETTINGS_VALUE_PILL_W, 0, FF_SETTINGS_VALUE_PILL_W,
                        FF_SETTINGS_ROW_H, FF_SETTINGS_PILL_VAL_BG, pill_fg, 0, settings_name_open_cb, NULL);
 }
@@ -1991,7 +2004,8 @@ void ff_scr_settings_build(lv_obj_t *parent, ff_app_settings_t const *settings)
      * "the section header repeats the one row's own name" shape UNITS
      * already establishes for a single-item category. */
     y = settings_build_section_header(list, y, row_w, "NAME", /*first=*/false);
-    settings_build_name_row(list, y, row_w, s_settings.my_name, s_settings.mesh_name_confirmed);
+    settings_build_name_row(list, y, row_w, s_settings.my_name, s_settings.mesh_name_confirmed,
+                            s_settings.mesh_name_push_failed);
     y += FF_SETTINGS_ROW_H; /* last (only) row of NAME */
 
     y = settings_build_section_header(list, y, row_w, "CREW", /*first=*/false);

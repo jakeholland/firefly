@@ -899,6 +899,17 @@ typedef struct {
      * two different answers from the same three facts. */
     bool mesh_name_confirmed;
     bool my_name_from_node;
+    /* Confirmation-fix follow-up (2026-09-06 bench finding) — a routing
+     * NAK for the CURRENT name push (`ff_mesh_name_ack_t`'s doc comment,
+     * ff_shell.h, has the full rationale): "the mesh reported this
+     * specific set_owner write failed", surfaced honestly instead of
+     * leaving the row stuck on a "..." pending state that looks
+     * identical to "still waiting, give it a moment". Same "computed
+     * once by the shell" rule as `mesh_name_confirmed` above — the NAME
+     * row reads this, never re-derives it. `mesh_name_confirmed` takes
+     * precedence when both happen to be true (a later retry that DID
+     * succeed always wins over an earlier NAK). */
+    bool mesh_name_push_failed;
 
     /* [api] NAME in Settings — the "NAME" row's T9 editor sub-view; see
      * `ff_app_name_edit_t`'s own doc comment above for why this is

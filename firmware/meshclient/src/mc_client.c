@@ -390,6 +390,47 @@ static void mc_process_mesh_packet(mc_client_t *c, meshtastic_MeshPacket const *
             c->events.on_private(c->events.user, pkt->from, pkt->to, portnum, d->payload.bytes,
                                   d->payload.size);
         }
+    } else if (portnum == (uint32_t)meshtastic_PortNum_ADMIN_APP) {
+        /* Confirmation-fix follow-up: the only AdminMessage reply this
+         * library currently interprets is get_owner_response (the
+         * on-demand answer to mc_send_get_owner_request). Every other
+         * AdminMessage variant (get_config_response, and the many
+         * others this device never asks for) decodes successfully but
+         * is simply not this library's concern yet — mirrors the
+         * Position "well-formed, nothing to report" precedent just
+         * above: a variant we don't handle is not corruption, so
+         * nothing is counted for it either. */
+        meshtastic_AdminMessage admin = meshtastic_AdminMessage_init_zero;
+        pb_istream_t is = pb_istream_from_buffer(d->payload.bytes, d->payload.size);
+        if (!pb_decode(&is, meshtastic_AdminMessage_fields, &admin)) {
+            c->stats.decode_errors++;
+        } else if (admin.which_payload_variant == meshtastic_AdminMessage_get_owner_response_tag &&
+                   c->events.on_owner != NULL) {
+            meshtastic_User const *owner = &admin.payload_variant.get_owner_response;
+            char long_name[MC_NAME_MAX];
+            char short_name[MC_NAME_MAX];
+            mc_copy_name(long_name, owner->long_name);
+            mc_copy_name(short_name, owner->short_name);
+            c->events.on_owner(c->events.user, long_name, short_name);
+        }
+    } else if (portnum == (uint32_t)meshtastic_PortNum_ROUTING_APP) {
+        /* Confirmation-fix follow-up: the delivery outcome of an earlier
+         * want_ack send (e.g. mc_send_set_owner). `d->request_id` names
+         * the original outgoing MeshPacket.id; the payload is a Routing
+         * message whose error_reason (proto3 implicit presence: NONE==0
+         * is indistinguishable from "absent") says ACK (NONE) or NAK
+         * (anything else) — see mc_events_t.on_routing_ack's own doc
+         * comment for why an absent field reads as NONE/ok here, same as
+         * every other implicit-presence field this library decodes. */
+        meshtastic_Routing routing = meshtastic_Routing_init_zero;
+        pb_istream_t is = pb_istream_from_buffer(d->payload.bytes, d->payload.size);
+        if (!pb_decode(&is, meshtastic_Routing_fields, &routing)) {
+            c->stats.decode_errors++;
+        } else if (c->events.on_routing_ack != NULL) {
+            bool const ok = (routing.which_variant != meshtastic_Routing_error_reason_tag) ||
+                             (routing.variant.error_reason == meshtastic_Routing_Error_NONE);
+            c->events.on_routing_ack(c->events.user, d->request_id, ok);
+        }
     } else {
         c->stats.decode_skipped++;
     }
@@ -613,8 +654,15 @@ void mc_tick(mc_client_t *c, uint32_t now_ms)
     }
 }
 
-static int mc_send_data_packet(mc_client_t *c, uint32_t dest, uint32_t portnum, uint8_t const *payload,
-                                size_t len, bool want_ack)
+/* `out_packet_id` is optional (NULL-safe) — the confirmation-fix
+ * follow-up (`mc_send_set_owner`) needs the id this call assigned so its
+ * caller can correlate a later `on_routing_ack`; every pre-existing
+ * caller (text/private/position, below) passes NULL via the
+ * `mc_send_data_packet` wrapper and is unaffected. Set only on the
+ * success path — a failed send has no in-flight packet to correlate
+ * against. */
+static int mc_send_data_packet_ex(mc_client_t *c, uint32_t dest, uint32_t portnum, uint8_t const *payload,
+                                   size_t len, bool want_ack, uint32_t *out_packet_id)
 {
     if (c->state != MC_STATE_READY) {
         return -1;
@@ -651,7 +699,16 @@ static int mc_send_data_packet(mc_client_t *c, uint32_t dest, uint32_t portnum, 
         mc_fail_and_schedule_reconnect(c, mc_now(c));
         return -1;
     }
+    if (out_packet_id != NULL) {
+        *out_packet_id = pkt->id;
+    }
     return 0;
+}
+
+static int mc_send_data_packet(mc_client_t *c, uint32_t dest, uint32_t portnum, uint8_t const *payload,
+                                size_t len, bool want_ack)
+{
+    return mc_send_data_packet_ex(c, dest, portnum, payload, len, want_ack, NULL);
 }
 
 int mc_send_text(mc_client_t *c, uint32_t dest, char const *utf8)
@@ -696,7 +753,8 @@ int mc_send_position(mc_client_t *c, ff_latlon_t p)
                                 os.bytes_written, false);
 }
 
-int mc_send_set_owner(mc_client_t *c, uint32_t dest, char const *long_name, char const *short_name)
+int mc_send_set_owner(mc_client_t *c, uint32_t dest, char const *long_name, char const *short_name,
+                       uint32_t *out_packet_id)
 {
     if (c->state != MC_STATE_READY) {
         return -1;
@@ -734,7 +792,31 @@ int mc_send_set_owner(mc_client_t *c, uint32_t dest, char const *long_name, char
         return -1;
     }
 
-    return mc_send_data_packet(c, dest, (uint32_t)meshtastic_PortNum_ADMIN_APP, payload, os.bytes_written, true);
+    return mc_send_data_packet_ex(c, dest, (uint32_t)meshtastic_PortNum_ADMIN_APP, payload, os.bytes_written, true,
+                                   out_packet_id);
+}
+
+int mc_send_get_owner_request(mc_client_t *c, uint32_t dest)
+{
+    if (c->state != MC_STATE_READY) {
+        return -1;
+    }
+
+    meshtastic_AdminMessage admin = meshtastic_AdminMessage_init_zero;
+    admin.which_payload_variant = meshtastic_AdminMessage_get_owner_request_tag;
+    admin.payload_variant.get_owner_request = true;
+
+    /* Tiny relative to mc_send_set_owner's 128 (this message carries no
+     * string payload at all, just the oneof tag + a one-byte bool), but
+     * sized the same way for the same reason — headroom, not a
+     * measured-to-the-byte budget. */
+    uint8_t payload[32];
+    pb_ostream_t os = pb_ostream_from_buffer(payload, sizeof(payload));
+    if (!pb_encode(&os, meshtastic_AdminMessage_fields, &admin)) {
+        return -1;
+    }
+
+    return mc_send_data_packet(c, dest, (uint32_t)meshtastic_PortNum_ADMIN_APP, payload, os.bytes_written, false);
 }
 
 mc_state_t mc_state(mc_client_t const *c)

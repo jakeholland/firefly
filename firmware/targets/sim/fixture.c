@@ -1136,6 +1136,9 @@ static ff_fixture_result_t fx_parse_settings(fx_ctx_t const *c, int obj_i, ff_ap
      * facts, not re-derived here), so a fixture that wants a golden of
      * the confirmed (checkmark) NAME-row state sets this explicitly. */
     if (fx_obj_get(c, obj_i, "mesh_name_confirmed", &t)) s->mesh_name_confirmed = fx_bool(c, t, false);
+    /* Confirmation-fix follow-up — same fixture-drives-the-render-layer-
+     * directly reasoning as mesh_name_confirmed just above. */
+    if (fx_obj_get(c, obj_i, "mesh_name_push_failed", &t)) s->mesh_name_push_failed = fx_bool(c, t, false);
     /* utc_offset_set read BEFORE utc_offset_min, same "prove you meant
      * this" ordering as fx_parse_flare's takeover_bearing_valid — a
      * fixture author who sets the minutes but forgets the flag gets an
