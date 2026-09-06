@@ -957,6 +957,88 @@ static const fx_enum_entry_t fx_share_mode_table[] = {
     {"live", 0}, {"zones", 1}, {"ghost", 2},
 };
 
+static const fx_enum_entry_t fx_settings_subview_table[] = {
+    {"list", FF_SETTINGS_SUB_LIST},
+    {"crew", FF_SETTINGS_SUB_CREW},
+};
+
+/* fx_parse_crew_page — S12/S04: PAIRED (name/initial/color_idx/honest
+ * presence, S24's ff_sigview_presence vocabulary REUSED via
+ * fx_presence_table — not a second table) and HEARD (name/short_id/
+ * age_ms) rows, same fail-loud oversized-array treatment as
+ * fx_parse_inbox's `convs` above. `has_name` is DERIVED from a `name`
+ * key being present (the fx_parse_inbox `preview_from` precedent: a
+ * fixture that omits `name` entirely means "never named", the honest
+ * default `has_name = false` already gives via the caller's memset). */
+static ff_fixture_result_t fx_parse_crew_page(fx_ctx_t const *c, int obj_i, ff_app_crew_page_t *cw)
+{
+    int t;
+    if (fx_obj_get(c, obj_i, "roster_full", &t)) cw->roster_full = fx_bool(c, t, false);
+    if (fx_obj_get(c, obj_i, "link_connected", &t)) cw->link_connected = fx_bool(c, t, true);
+
+    int paired_i;
+    if (fx_obj_get(c, obj_i, "paired", &paired_i) && !fx_is_null(c, paired_i)) {
+        jsmntok_t const *at = &c->toks[paired_i];
+        if (at->type != JSMN_ARRAY) return FF_FIXTURE_ERR_JSON;
+        if (at->size > FF_CREW_MAX) return FF_FIXTURE_ERR_TOO_BIG;
+        int idx = paired_i + 1;
+        for (int i = 0; i < at->size; i++) {
+            int row_i = idx;
+            ff_app_crew_paired_row_t *row = &cw->paired[cw->paired_count];
+            memset(row, 0, sizeof(*row));
+
+            int kt;
+            if (fx_obj_get(c, row_i, "node_id", &kt)) row->node_id = (uint32_t)fx_num(c, kt, 0.0);
+            if (fx_obj_get(c, row_i, "name", &kt)) fx_copy_str(c, kt, row->name, sizeof(row->name));
+            if (fx_obj_get(c, row_i, "initial", &kt)) {
+                char buf[2] = {0};
+                fx_copy_str(c, kt, buf, sizeof(buf));
+                row->initial = buf[0];
+            }
+            if (fx_obj_get(c, row_i, "color_idx", &kt)) row->color_idx = (uint8_t)fx_num(c, kt, 0.0);
+            if (fx_obj_get(c, row_i, "presence", &kt)) {
+                int v;
+                ff_fixture_result_t rc = fx_enum(c, kt, fx_presence_table,
+                                                  sizeof(fx_presence_table) / sizeof(fx_presence_table[0]),
+                                                  "settings.crew.paired[].presence", &v);
+                if (rc != FF_FIXTURE_OK) return rc;
+                row->presence = (ff_sigview_presence_t)v;
+            }
+            if (fx_obj_get(c, row_i, "presence_age_ms", &kt)) row->presence_age_ms = (uint32_t)fx_num(c, kt, 0.0);
+
+            cw->paired_count++;
+            idx = fx_skip(c, row_i);
+        }
+    }
+
+    int heard_i;
+    if (fx_obj_get(c, obj_i, "heard", &heard_i) && !fx_is_null(c, heard_i)) {
+        jsmntok_t const *at = &c->toks[heard_i];
+        if (at->type != JSMN_ARRAY) return FF_FIXTURE_ERR_JSON;
+        if (at->size > FF_APP_CREW_HEARD_MAX) return FF_FIXTURE_ERR_TOO_BIG;
+        int idx = heard_i + 1;
+        for (int i = 0; i < at->size; i++) {
+            int row_i = idx;
+            ff_app_crew_heard_row_t *row = &cw->heard[cw->heard_count];
+            memset(row, 0, sizeof(*row));
+
+            int kt;
+            if (fx_obj_get(c, row_i, "node_id", &kt)) row->node_id = (uint32_t)fx_num(c, kt, 0.0);
+            if (fx_obj_get(c, row_i, "name", &kt)) {
+                row->has_name = true;
+                fx_copy_str(c, kt, row->name, sizeof(row->name));
+            }
+            if (fx_obj_get(c, row_i, "short_id", &kt)) fx_copy_str(c, kt, row->short_id, sizeof(row->short_id));
+            if (fx_obj_get(c, row_i, "age_ms", &kt)) row->age_ms = (uint32_t)fx_num(c, kt, 0.0);
+
+            cw->heard_count++;
+            idx = fx_skip(c, row_i);
+        }
+    }
+
+    return FF_FIXTURE_OK;
+}
+
 /* Returns non-OK only for a present-but-unrecognized `share_mode`
  * (issue #28 — see fx_enum's doc comment). */
 static ff_fixture_result_t fx_parse_settings(fx_ctx_t const *c, int obj_i, ff_app_settings_t *s)
@@ -1003,6 +1085,22 @@ static ff_fixture_result_t fx_parse_settings(fx_ctx_t const *c, int obj_i, ff_ap
      * comment); this only moves WHERE the glass-centred rim tint draws
      * in the sim's own un-mirrored coordinate space. */
     if (fx_obj_get(c, obj_i, "screen_flip", &t)) s->screen_flip = fx_bool(c, t, false);
+
+    /* S12/S04 — the CREW sub-view + its page model. */
+    if (fx_obj_get(c, obj_i, "subview", &t)) {
+        int v;
+        ff_fixture_result_t rc = fx_enum(c, t, fx_settings_subview_table,
+                                          sizeof(fx_settings_subview_table) / sizeof(fx_settings_subview_table[0]),
+                                          "settings.subview", &v);
+        if (rc != FF_FIXTURE_OK) return rc;
+        s->subview = (ff_settings_subview_t)v;
+    }
+    int crew_i;
+    if (fx_obj_get(c, obj_i, "crew", &crew_i) && !fx_is_null(c, crew_i)) {
+        ff_fixture_result_t rc = fx_parse_crew_page(c, crew_i, &s->crew);
+        if (rc != FF_FIXTURE_OK) return rc;
+    }
+
     return FF_FIXTURE_OK;
 }
 
@@ -1517,6 +1615,37 @@ static void fw_radar_dot(fw_cur_t *w, ff_radar_dot_t const *d)
     fw_raw(w, d->imprecise ? ",\"imprecise\":true}" : ",\"imprecise\":false}"); /* issue #74 */
 }
 
+/* S12/S04 — field-for-field mirrors of fx_parse_crew_page's two row
+ * shapes, same "a ctl dump must round-trip through the loader" contract
+ * every other fw_* row helper in this file already keeps (AGENTS.md:
+ * "honesty rules bind debug surfaces too"). */
+static void fw_crew_paired_row(fw_cur_t *w, ff_app_crew_paired_row_t const *m)
+{
+    fw_fmt(w, "{\"node_id\":%u", (unsigned)m->node_id);
+    fw_raw(w, ",\"name\":");
+    fw_json_str(w, m->name);
+    char initial[2] = {m->initial, '\0'};
+    fw_raw(w, ",\"initial\":");
+    fw_json_str(w, initial);
+    fw_fmt(w, ",\"color_idx\":%u", (unsigned)m->color_idx);
+    fw_raw(w, ",\"presence\":\"");
+    fw_raw(w, fx_enum_name(fx_presence_table, sizeof(fx_presence_table) / sizeof(fx_presence_table[0]), m->presence,
+                           "linked"));
+    fw_fmt(w, "\",\"presence_age_ms\":%u}", (unsigned)m->presence_age_ms);
+}
+
+static void fw_crew_heard_row(fw_cur_t *w, ff_app_crew_heard_row_t const *h)
+{
+    fw_fmt(w, "{\"node_id\":%u", (unsigned)h->node_id);
+    if (h->has_name) {
+        fw_raw(w, ",\"name\":");
+        fw_json_str(w, h->name);
+    }
+    fw_raw(w, ",\"short_id\":");
+    fw_json_str(w, h->short_id);
+    fw_fmt(w, ",\"age_ms\":%u}", (unsigned)h->age_ms);
+}
+
 static void fw_now_row(fw_cur_t *w, ff_app_now_row_t const *r)
 {
     fw_raw(w, "{\"artist\":");
@@ -1837,6 +1966,28 @@ int ff_fixture_dump_json(ff_app_state_t const *s, char *buf, size_t buf_sz)
     fw_fmt(&w, ",\"brightness_pct\":%u", (unsigned)s->settings.brightness_pct); /* #100 */
     fw_raw(&w, s->settings.clock_24h ? ",\"clock_24h\":true" : ",\"clock_24h\":false"); /* S21 amendment */
     fw_raw(&w, s->settings.screen_flip ? ",\"screen_flip\":true" : ",\"screen_flip\":false"); /* format v8 amendment */
+
+    /* S12/S04 — the CREW sub-view + its page model. */
+    fw_raw(&w, ",\"subview\":\"");
+    fw_raw(&w, fx_enum_name(fx_settings_subview_table,
+                            sizeof(fx_settings_subview_table) / sizeof(fx_settings_subview_table[0]),
+                            s->settings.subview, "list"));
+    fw_raw(&w, "\"");
+    fw_raw(&w, ",\"crew\":{");
+    fw_raw(&w, s->settings.crew.roster_full ? "\"roster_full\":true" : "\"roster_full\":false");
+    fw_raw(&w, s->settings.crew.link_connected ? ",\"link_connected\":true" : ",\"link_connected\":false");
+    fw_raw(&w, ",\"paired\":[");
+    for (uint8_t i = 0; i < s->settings.crew.paired_count; i++) {
+        if (i > 0) fw_raw(&w, ",");
+        fw_crew_paired_row(&w, &s->settings.crew.paired[i]);
+    }
+    fw_raw(&w, "],\"heard\":[");
+    for (uint8_t i = 0; i < s->settings.crew.heard_count; i++) {
+        if (i > 0) fw_raw(&w, ",");
+        fw_crew_heard_row(&w, &s->settings.crew.heard[i]);
+    }
+    fw_raw(&w, "]}");
+
     fw_raw(&w, "}");
 
     /* map (S09) — field-for-field mirror of fx_parse_map so a dump

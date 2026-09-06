@@ -979,7 +979,7 @@ static void radar_render_nosel(lv_obj_t *parent)
     lv_obj_align(headline, LV_ALIGN_CENTER, 0, (int32_t)RADAR_LAYOUT_NOSEL_HEADLINE_DY);
 
     lv_obj_t *sub = lv_label_create(parent);
-    lv_label_set_text(sub, "Pair a friend in Settings");
+    lv_label_set_text(sub, "Pair a friend in Settings > Crew"); /* S12/S04 */
     lv_obj_set_style_text_font(sub, FF_THEME_FONT_LABEL, 0);
     lv_obj_set_style_text_color(sub, lv_color_hex(FF_THEME_COLOR_DIM), 0);
     lv_obj_align(sub, LV_ALIGN_CENTER, 0, (int32_t)RADAR_LAYOUT_NOSEL_SUB_DY);
