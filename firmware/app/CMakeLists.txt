@@ -20,7 +20,7 @@ ff_check_sources_complete(${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR
     ${CMAKE_CURRENT_SOURCE_DIR}/sources.cmake
     FF_ROUTE_SOURCES FF_INTENT_SOURCES FF_WALL_WINDOW_SOURCES
     FF_WIRING_SOURCES FF_SHELL_SOURCES FF_DEMO_SOURCES FF_FACE_DISPATCH_SOURCES
-    FF_GESTURE_GLUE_SOURCES)
+    FF_GESTURE_GLUE_SOURCES FF_DEBUG_CONSOLE_SOURCES)
 ff_check_sources_complete(${CMAKE_CURRENT_SOURCE_DIR}/screens ${CMAKE_CURRENT_SOURCE_DIR}
     ${CMAKE_CURRENT_SOURCE_DIR}/screens/sources.cmake
     FF_LAYOUT_SOURCES FF_RADAR_LAYOUT_SOURCES FF_LINEUP_LAYOUT_SOURCES
@@ -396,6 +396,29 @@ target_include_directories(ff-shell PUBLIC include)
 target_link_libraries(ff-shell PUBLIC ff-app ff-route ff-wiring ff-core ff-meshclient ff-festpack ff-wall-window)
 target_compile_features(ff-shell PUBLIC c_std_11)
 ff_apply_warnings(ff-shell)
+
+# Bench/debug console (CONFIG_FF_DEBUG_CONSOLE) — app/ff_debug_console.c:
+# the dispatch half over a live ff_shell_t (docs/hardware/comms-brain.md,
+# "Bench console"; the pure line parser is core's ff-core library,
+# ff_dbgcmd.c/.h). PUBLIC ff-shell: this module's only job is calling
+# ff_shell_intent/the shell's public getters/the two debug-only shell
+# functions — see ff_debug_console.h's header comment for the full seam
+# discipline. Motivation: on 2026-09-05 every bench send test needed a
+# human tap on the puck.
+add_library(ff-debug-console STATIC ${FF_DEBUG_CONSOLE_SOURCES})
+target_link_libraries(ff-debug-console PUBLIC ff-shell)
+target_compile_features(ff-debug-console PUBLIC c_std_11)
+ff_apply_warnings(ff-debug-console)
+
+if(FF_BUILD_TESTS)
+    add_executable(test_debug_console
+        tests/test_debug_console.c
+    )
+    target_link_libraries(test_debug_console PRIVATE ff-debug-console unity)
+    ff_apply_warnings(test_debug_console)
+
+    add_test(NAME test_debug_console COMMAND test_debug_console)
+endif()
 
 if(FF_BUILD_TESTS)
     add_executable(test_shell

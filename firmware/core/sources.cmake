@@ -53,4 +53,5 @@ set(FF_CORE_SOURCES
     src/ff_multitap.c        # S10 quick flare — N-presses-within-a-window counter FSM
     src/ff_sound.c           # S27 — sound event vocabulary, tone patterns, quiet-hours policy, priority
     src/ff_gesture.c         # S28 slice a — on-glass BACK/HOME swipe + long-press flare recognition FSM
+    src/ff_dbgcmd.c          # bench/debug console — line-command parser (command policy, no I/O)
 )

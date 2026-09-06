@@ -216,6 +216,22 @@ typedef struct {
      * leaving NVS holding a truncated prefix of the real list. */
     bool paired_sync_suppressed;
     ff_wall_state_t wall;
+    /* Bench/debug console (CONFIG_FF_DEBUG_CONSOLE) — the `wall` command
+     * wants the trust tier and source of the latch's most recent
+     * observation, which `ff_wall_state_t` itself does not keep (only
+     * the latch VALUE and a rejected-relatch counter — ff_wall.h). These
+     * three fields record exactly what `shell_wall_trust_for` +
+     * `ff_wall_observe` already compute at both call sites
+     * (shell_observe_wall_nodeinfo, shell_ev_position) and would
+     * otherwise discard — honest bookkeeping of real observations, never
+     * fabricated, always kept (not gated behind the Kconfig macro) since
+     * it is a few bytes of pure struct growth with no behavior change;
+     * only the GETTER that exposes it (`ff_shell_wall_debug`, bottom of
+     * this file) is gated. `has_last_wall_obs` is false until the first
+     * observation of either kind ever runs. */
+    bool has_last_wall_obs;
+    ff_wall_trust_t last_wall_obs_trust;
+    uint32_t last_wall_obs_node;
     ff_radar_smooth_t smooth;
     ff_route_t route;
 
@@ -848,23 +864,32 @@ static bool shell_pair(shell_t *sh, uint32_t node_id, bool paired)
  * "is it quiet right now" must not be answered from a tick that happened
  * before the window opened.
  */
-static ff_wall_t shell_wall(shell_t const *sh, uint32_t now_ms)
+/* Factored out of shell_wall (below) so the bench/debug console's
+ * ff_shell_wall_debug getter — which wants the resolved OFFSET, not just
+ * the local-time projection ff_wall_now folds it into — can reuse the
+ * exact same resolution the real UI clock uses, rather than a second,
+ * driftable copy of this logic. */
+static void shell_wall_offset_cfg(shell_t const *sh, ff_wall_offset_cfg_t *cfg)
 {
-    ff_wall_offset_cfg_t cfg;
-    memset(&cfg, 0, sizeof(cfg));
+    memset(cfg, 0, sizeof(*cfg));
 
     /* pack_loaded is carried explicitly rather than inferred from a
      * non-NULL pointer: fp_parse zeroes *out on failure, and a zeroed
      * fp_pack_t reads as a deliberately STATED offset of UTC, which would
      * outrank the user's configured one (ff_wall.h). */
-    cfg.pack_loaded = sh->pack_loaded && sh->pack != NULL;
-    if (cfg.pack_loaded) {
-        cfg.pack_offset_min = sh->pack->utc_offset_min;
-        cfg.pack_offset_assumed = sh->pack->utc_offset_assumed;
+    cfg->pack_loaded = sh->pack_loaded && sh->pack != NULL;
+    if (cfg->pack_loaded) {
+        cfg->pack_offset_min = sh->pack->utc_offset_min;
+        cfg->pack_offset_assumed = sh->pack->utc_offset_assumed;
     }
-    cfg.settings_offset_set = sh->settings.utc_offset_set;
-    cfg.settings_offset_min = sh->settings.utc_offset_min;
+    cfg->settings_offset_set = sh->settings.utc_offset_set;
+    cfg->settings_offset_min = sh->settings.utc_offset_min;
+}
 
+static ff_wall_t shell_wall(shell_t const *sh, uint32_t now_ms)
+{
+    ff_wall_offset_cfg_t cfg;
+    shell_wall_offset_cfg(sh, &cfg);
     return ff_wall_now(&sh->wall, now_ms, &cfg);
 }
 
@@ -1020,6 +1045,14 @@ static bool shell_observe_wall_nodeinfo(shell_t *sh, uint32_t node_id, uint32_t 
     }
     ff_wall_trust_t const tier = shell_wall_trust_for(sh, node_id);
     ff_wall_obs_t const obs = ff_wall_observe(&sh->wall, (int64_t)last_heard, now_ms, tier);
+    /* Bench/debug console bookkeeping (see the `has_last_wall_obs` field
+     * doc comment) — records this OFFER, not just accepted ones: a
+     * `wall` dump showing "last observation source" should reflect the
+     * latest thing this puck actually saw, including a BOOTSTRAP offer
+     * the trust gate went on to reject. */
+    sh->has_last_wall_obs = true;
+    sh->last_wall_obs_trust = tier;
+    sh->last_wall_obs_node = node_id;
     return obs == FF_WALL_OBS_LATCHED || obs == FF_WALL_OBS_RELATCHED;
 }
 
@@ -1435,6 +1468,11 @@ static void shell_ev_position(void *u, uint32_t node, mc_position_t const *p)
     if (p->has_rx_time) {
         ff_wall_trust_t const tier = shell_wall_trust_for(sh, node);
         (void)ff_wall_observe(&sh->wall, (int64_t)p->rx_time, now, tier);
+        /* Bench/debug console bookkeeping — see shell_observe_wall_nodeinfo's
+         * matching comment and the `has_last_wall_obs` field doc. */
+        sh->has_last_wall_obs = true;
+        sh->last_wall_obs_trust = tier;
+        sh->last_wall_obs_node = node;
     }
 
     /* SELFPOS (2026-09-05) — same reorder rationale as the wall
@@ -5355,3 +5393,81 @@ bool ff_shell_dev_wall_observe(ff_shell_t *sh_pub, int64_t unix_now_s)
 }
 
 #endif /* FF_TARGET_SIM */
+
+/* ---------------------------------------------------------------------
+ * Bench/debug console API — see ff_shell.h's doc comment above these
+ * two functions' declarations for the full rationale and Kconfig gate.
+ * ------------------------------------------------------------------- */
+#if defined(FF_TARGET_SIM) || defined(CONFIG_FF_DEBUG_CONSOLE)
+
+int ff_shell_debug_send_text(ff_shell_t *sh_pub, uint32_t dest_node, char const *text)
+{
+    if (sh_pub == NULL || text == NULL || text[0] == '\0') return -1;
+    shell_t *sh = shell_of(sh_pub);
+    if (sh->wiring.sender.send_text == NULL) return -1;
+
+    uint32_t const dest = (dest_node != 0u) ? dest_node : MC_ADDR_BROADCAST;
+    int const rc = sh->wiring.sender.send_text(sh->wiring.sender.ctx, dest, text);
+    if (rc == 0) {
+        /* Mirrors FF_INTENT_SEND_TEXT's own feed push exactly (S24 —
+         * "sent item appears in feed... with an honest direction"):
+         * accepted sends only, same FEED_TEXT kind. */
+        ff_wiring_push_outgoing(&sh->wiring, FEED_TEXT, dest, text);
+    }
+    return rc;
+}
+
+ff_shell_wall_debug_t ff_shell_wall_debug(ff_shell_t const *sh_pub)
+{
+    ff_shell_wall_debug_t out;
+    memset(&out, 0, sizeof(out));
+    if (sh_pub == NULL) return out;
+    shell_t const *sh = shell_of_const(sh_pub);
+
+    out.latched = sh->wall.latched;
+    out.latch_unix_s = sh->wall.latch_unix_s;
+
+    ff_wall_offset_cfg_t cfg;
+    shell_wall_offset_cfg(sh, &cfg);
+    int16_t offset_min = 0;
+    bool assumed = false;
+    out.has_offset = ff_wall_resolve_offset(&cfg, &offset_min, &assumed);
+    if (out.has_offset) {
+        out.offset_min = offset_min;
+        out.offset_assumed = assumed;
+    }
+
+    out.has_last_obs = sh->has_last_wall_obs;
+    if (out.has_last_obs) {
+        out.last_obs_trust = sh->last_wall_obs_trust;
+        out.last_obs_node = sh->last_wall_obs_node;
+    }
+
+    out.rejected_relatches = ff_wall_trust_rejected_count(&sh->wall);
+    return out;
+}
+
+bool ff_shell_wall_unix_now(ff_shell_t const *sh_pub, int64_t *out_unix_s)
+{
+    if (sh_pub == NULL || out_unix_s == NULL) return false;
+    shell_t const *sh = shell_of_const(sh_pub);
+    return ff_wall_unix_now(&sh->wall, shell_now(sh), out_unix_s);
+}
+
+ff_shell_my_pos_debug_t ff_shell_my_pos_debug(ff_shell_t const *sh_pub)
+{
+    ff_shell_my_pos_debug_t out;
+    memset(&out, 0, sizeof(out));
+    if (sh_pub == NULL) return out;
+    shell_t const *sh = shell_of_const(sh_pub);
+
+    out.ok = sh->my_pos_ok;
+    out.pos = sh->my_pos;
+    out.has_age = sh->my_pos_ms_valid;
+    if (out.has_age) {
+        out.age_ms = shell_now(sh) - sh->my_pos_ms; /* wraparound-safe unsigned subtraction */
+    }
+    return out;
+}
+
+#endif /* FF_TARGET_SIM || CONFIG_FF_DEBUG_CONSOLE */
