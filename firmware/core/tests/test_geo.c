@@ -379,6 +379,162 @@ static void S01_AC5_calibration_below_70pct_coverage_finish_fails(void)
 }
 
 /* ------------------------------------------------------------------- */
+/* AC5 — coverage honesty (S12 step 3 bench finding, PR #219)           */
+/*                                                                       */
+/* Bench finding (2026-09-06, real puck): a motionless puck on the      */
+/* bench reached 100% progress and a finishable "custom" calibration    */
+/* after ~88 samples, raw mag constant to noise (-52,238,-28) +/-3 LSB. */
+/* Root cause: octant classification was relative to the *running*      */
+/* center estimate (min+max)/2 with no check that the running span was  */
+/* actually meaningful, so sensor noise around a single point flips     */
+/* signs relative to that wobbling center and "covers" octants that     */
+/* were never really visited. These three tests must fail against the   */
+/* pre-fix code (run first to confirm — see PR #219's comment) and pass */
+/* once ff_geo_cal_feed/_finish gate on relative, scale-invariant       */
+/* thresholds (FF_GEO_CAL_MIN_SPAN_RATIO, FF_GEO_CAL_MIN_AXIS_RATIO).   */
+/* ------------------------------------------------------------------- */
+
+/* Deterministic +/-3 "noise" cycle (no RNG, portable/reproducible across
+ * clang and gcc-14): three different-period integer sawtooths so the
+ * three axes don't move in lockstep. */
+static float s01_ac5_noise(unsigned i, unsigned period)
+{
+    return (float)((int)(i % period) - (int)(period / 2));
+}
+
+static void S01_AC5_stationary_device_never_reaches_finishable_coverage(void)
+{
+    ff_geo_cal_state_t st;
+    ff_geo_cal_begin(&st);
+
+    /* Real bench vector, +/-3 LSB noise per axis, 300 samples. */
+    for (unsigned i = 0; i < 300; i++) {
+        ff_vec3_t mag = {
+            -52.0f + s01_ac5_noise(i, 7),
+            238.0f + s01_ac5_noise(i * 3u, 7),
+            -28.0f + s01_ac5_noise(i * 5u, 7),
+        };
+        ff_geo_cal_feed(&st, mag);
+    }
+
+    /* At most one octant (noise straddling a running center can validly
+     * flip one bit at the very margins) — nowhere near enough to imply
+     * real sphere coverage. A motionless device must stay at 0 in the
+     * common case; 12% (1/8) is the documented worst-case ceiling. */
+    TEST_ASSERT_TRUE(ff_geo_cal_progress_pct(&st) <= 12);
+
+    ff_geo_cal_t cal;
+    TEST_ASSERT_FALSE(ff_geo_cal_finish(&st, &cal));
+}
+
+static void S01_AC5_needle_along_one_axis_finish_fails(void)
+{
+    ff_geo_cal_state_t st;
+    ff_geo_cal_begin(&st);
+
+    /* Samples spread across a wide range on X only; Y/Z carry only
+     * sensor-noise-scale variation. A real figure-eight covers the whole
+     * field sphere — a single swung axis is not that, even if enough of
+     * the octant *mask* bits happen to flip from axis-independent noise
+     * on Y/Z (which is why the shape check in ff_geo_cal_finish, not
+     * progress_pct, is what must catch this). */
+    const float radius = 250.0f;
+    for (unsigned i = 0; i < 300; i++) {
+        float x = -radius + (2.0f * radius) * ((float)i / 299.0f);
+        ff_vec3_t mag = {
+            x,
+            s01_ac5_noise(i * 3u, 7),
+            s01_ac5_noise(i * 5u, 7),
+        };
+        ff_geo_cal_feed(&st, mag);
+    }
+
+    ff_geo_cal_t cal;
+    TEST_ASSERT_FALSE(ff_geo_cal_finish(&st, &cal));
+}
+
+/* Deterministic Fibonacci-sphere sample generator: N points spread
+ * ~evenly over a sphere of the given radius centered at `center`. Used
+ * by both the sphere-coverage test and its scale-invariance repeat. */
+static ff_vec3_t s01_ac5_fib_sphere_sample(unsigned i, unsigned n, float radius, ff_vec3_t center)
+{
+    const double golden_angle = FF_TEST_PI * (3.0 - sqrt(5.0));
+    double y_unit = 1.0 - (2.0 * (double)i + 1.0) / (double)n; /* (-1, 1) */
+    double r_unit = sqrt(1.0 - y_unit * y_unit);
+    double theta = golden_angle * (double)i;
+
+    ff_vec3_t s;
+    s.x = center.x + (float)(cos(theta) * r_unit * (double)radius);
+    s.y = center.y + (float)(y_unit * (double)radius);
+    s.z = center.z + (float)(sin(theta) * r_unit * (double)radius);
+    return s;
+}
+
+/* Feed order for the Fibonacci-sphere set below: generation order sweeps
+ * one pole to the other monotonically in Y (by construction of the
+ * Fibonacci-sphere formula), which is a poor stand-in for a real
+ * figure-eight — a real one reverses direction across all three axes
+ * many times over. Fed in that raw order, the running-center classifier
+ * in ff_geo_cal_feed (deliberately, correctly) never gets to see a
+ * sample on the "already covered" side of an axis until the sweep
+ * reverses, so it stalls partway (caught while writing this test: 50%,
+ * not 100%, fed in raw order). Ping-pong the feed order (first, last,
+ * second, second-last, ...) instead so both extremes of the sweep are
+ * visited within the first few samples — still a deterministic, fully
+ * reproducible order, just one that actually resembles a hand swinging
+ * the puck back and forth rather than a single one-way ramp. */
+static unsigned s01_ac5_pingpong_index(unsigned k, unsigned n)
+{
+    if (k % 2u == 0u) {
+        return k / 2u;
+    }
+    return n - 1u - (k / 2u);
+}
+
+static void s01_ac5_run_sphere_coverage_case(float radius)
+{
+    const unsigned n = 400;
+    const ff_vec3_t center = {30.0f, -40.0f, 10.0f};
+
+    ff_geo_cal_state_t st;
+    ff_geo_cal_begin(&st);
+    for (unsigned k = 0; k < n; k++) {
+        unsigned i = s01_ac5_pingpong_index(k, n);
+        ff_geo_cal_feed(&st, s01_ac5_fib_sphere_sample(i, n, radius, center));
+    }
+
+    TEST_ASSERT_EQUAL_INT(100, ff_geo_cal_progress_pct(&st));
+
+    ff_geo_cal_t cal;
+    TEST_ASSERT_TRUE(ff_geo_cal_finish(&st, &cal));
+
+    float tol = 0.02f * radius;
+    if (tol < 5.0f) {
+        tol = 5.0f;
+    }
+    TEST_ASSERT_FLOAT_WITHIN(tol, center.x, cal.hard_offset.x);
+    TEST_ASSERT_FLOAT_WITHIN(tol, center.y, cal.hard_offset.y);
+    TEST_ASSERT_FLOAT_WITHIN(tol, center.z, cal.hard_offset.z);
+
+    TEST_ASSERT_FLOAT_WITHIN(0.05f, 1.0f, cal.soft_scale[0]);
+    TEST_ASSERT_FLOAT_WITHIN(0.05f, 1.0f, cal.soft_scale[1]);
+    TEST_ASSERT_FLOAT_WITHIN(0.05f, 1.0f, cal.soft_scale[2]);
+}
+
+static void S01_AC5_sphere_400_samples_full_coverage_and_good_fit(void)
+{
+    s01_ac5_run_sphere_coverage_case(250.0f);
+}
+
+static void S01_AC5_sphere_scale_invariance_at_radius_7500(void)
+{
+    /* Same shape, same relative thresholds, 30x the field magnitude
+     * (this sensor reads Earth's field at ~245 LSB; another part on
+     * another board could read ~7500 — the ratios must not care). */
+    s01_ac5_run_sphere_coverage_case(7500.0f);
+}
+
+/* ------------------------------------------------------------------- */
 /* AC6 — angdiff                                                        */
 /* ------------------------------------------------------------------- */
 
@@ -585,6 +741,10 @@ int main(void)
 
     RUN_TEST(S01_AC5_calibration_recovers_hard_offset_and_improves_heading);
     RUN_TEST(S01_AC5_calibration_below_70pct_coverage_finish_fails);
+    RUN_TEST(S01_AC5_stationary_device_never_reaches_finishable_coverage);
+    RUN_TEST(S01_AC5_needle_along_one_axis_finish_fails);
+    RUN_TEST(S01_AC5_sphere_400_samples_full_coverage_and_good_fit);
+    RUN_TEST(S01_AC5_sphere_scale_invariance_at_radius_7500);
 
     RUN_TEST(S01_AC6_angdiff_table);
 
