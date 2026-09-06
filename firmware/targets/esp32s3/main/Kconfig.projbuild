@@ -69,11 +69,12 @@ menu "Firefly bring-up (S15 slice b)"
             10 Hz (ff_shell_set_heading) so the Radar arrow can point.
 
             Auto-detects which magnetometer chip is actually present
-            (QMC5883L or HMC5883L — see ff_compass.h) at boot; a puck
-            with no magnetometer wired up still boots fine with this ON
-            — the driver logs "no magnetometer" and heading stays the
-            shell's own -1 ("unknown") default forever, same honest
-            degrade as every other optional sensor in this bring-up.
+            (QMC5883L, HMC5883L, or QMC5883P — see ff_compass.h) at
+            boot; a puck with no magnetometer wired up still boots fine
+            with this ON — the driver logs "no magnetometer" and
+            heading stays the shell's own -1 ("unknown") default
+            forever, same honest degrade as every other optional
+            sensor in this bring-up.
 
             Default ON: the GY-273 is part of this project's intended
             hardware (docs/specs/S15-esp32s3-target.md deliverable 3),

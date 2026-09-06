@@ -1,7 +1,8 @@
 /**
- * ff_compass.h — S15 device HAL: GY-273 magnetometer (QMC5883L or
- * HMC5883L, auto-detected) tilt-compensated with the onboard QMI8658
- * accelerometer, on the SAME shared I2C bus `ff_display` already owns
+ * ff_compass.h — S15 device HAL: GY-273 magnetometer (QMC5883L,
+ * HMC5883L, or QMC5883P — auto-detected) tilt-compensated with the
+ * onboard QMI8658 accelerometer, on the SAME shared I2C bus `ff_display`
+ * already owns
  * (SDA GPIO11 / SCL GPIO10 — docs/hardware/comms-brain.md's header pin
  * map; ff_display.c's own "Shared I2C bus" comment). Today `heading_deg`
  * is -1 forever (docs/specs/S12-first-run.md's 2026-09-03 amendment: "no
@@ -41,9 +42,14 @@
  * there is no vendor reference driver for it. Most GY-273 boards
  * actually carry a QMC5883L at I2C address 0x0D even when
  * silkscreened "HMC5883L"; a genuine HMC5883L at 0x1E does turn up on
- * some. `ff_compass_init` auto-detects which is present from each
- * chip's own identification registers — see ff_compass.c for the exact
- * register values and their datasheet citations.
+ * some. A THIRD case, confirmed on the coordinator's own bench
+ * (2026-09-05, real puck, GY-273 wired and powered): current-production
+ * GY-273 clones increasingly ship a **QMC5883P** instead — QST's
+ * successor part, I2C address `0x2C`, CHIP_ID register 0x00 reading
+ * 0x80 (QMC5883P datasheet, QST doc #13-52-19 Rev A, section 9.2.1).
+ * `ff_compass_init` auto-detects which of the three is present from
+ * each chip's own identification registers — see ff_compass.c for the
+ * exact register values and their datasheet citations.
  *
  * ## Honesty contract (CLAUDE.md: "honest data over pretty data")
  * `ff_compass_init` NEVER assumes a magnetometer is present: if neither
@@ -87,20 +93,30 @@ extern "C" {
 
 /** ff_compass_mag_kind_t — which magnetometer chip (if any) `ff_compass_init`
  * found on the bus. Logged and exposed mainly for bring-up/bench
- * debugging — `ff_compass_read()` handles both transparently. */
+ * debugging — `ff_compass_read()` handles all three transparently. */
 typedef enum {
-    FF_COMPASS_MAG_NONE = 0, /* ff_compass_init found neither candidate chip */
+    FF_COMPASS_MAG_NONE = 0, /* ff_compass_init found none of the candidate chips */
     FF_COMPASS_MAG_QMC5883L,
     FF_COMPASS_MAG_HMC5883L,
+    FF_COMPASS_MAG_QMC5883P,
 } ff_compass_mag_kind_t;
+
+/** ff_compass_mag_kind_name — lowercase chip name for `kind`
+ * ("qmc5883l"/"hmc5883l"/"qmc5883p"), or "none" for
+ * `FF_COMPASS_MAG_NONE`. Single source of truth for naming the part in
+ * the boot log, `ff_compass_status()`'s console line
+ * (docs/hardware/comms-brain.md's `i2c` bench command), and anywhere
+ * else that needs to print which chip is in use. */
+char const *ff_compass_mag_kind_name(ff_compass_mag_kind_t kind);
 
 /**
  * ff_compass_init — probe the shared I2C bus `bus` (from
  * `ff_display_i2c_bus()`, called after `ff_display_expander_init()` has
- * brought that bus up) for the onboard QMI8658 IMU and either GY-273
- * magnetometer chip, bringing up whichever it finds. Never opens a
- * second I2C master on these pins — see `ff_display_i2c_bus`'s own doc
- * comment for why that would not even work.
+ * brought that bus up) for the onboard QMI8658 IMU and any of the three
+ * candidate GY-273 magnetometer chips, bringing up whichever it finds.
+ * Never opens a second I2C master on these pins — see
+ * `ff_display_i2c_bus`'s own doc comment for why that would not even
+ * work.
  *
  * Non-fatal, "log and continue" HAL posture (matching every other
  * device bring-up in this codebase, e.g. `ff_power_batt_init`): a

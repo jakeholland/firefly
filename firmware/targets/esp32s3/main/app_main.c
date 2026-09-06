@@ -873,6 +873,7 @@ static dbgconsole_i2c_known_dev_t const s_i2c_known_devs[] = {
     {0x0D, "qmc5883l"},    /* GY-273 magnetometer, the common silkscreen-lies chip (ff_compass.h) */
     {0x1E, "hmc5883l"},    /* GY-273 magnetometer, the genuine-chip case (ff_compass.h) */
     {0x20, "io-expander"}, /* TCA9554 (ff_display.c) */
+    {0x2C, "qmc5883p"},    /* GY-273 magnetometer, QST's successor chip current clones increasingly ship (ff_compass.h) */
     {0x51, "rtc"},         /* aftermarket RTC on the back header */
     {0x53, "touch"},       /* SPD2010 touch controller (ff_display.c) */
     {0x6B, "qmi8658"},     /* onboard 6-axis IMU (ff_compass.h) */
@@ -954,7 +955,12 @@ static int dbgconsole_compass_status(void *user, char *out, size_t cap)
     ff_settings_t const *const settings = ff_shell_settings(&s_shell);
     bool const cal_valid = (settings != NULL) && settings->cal_valid;
 
-    snprintf(out, cap, "mag=%s imu=%s heading=%s cal=%s", st.mag_present ? "found" : "absent",
+    /* mag names the actual chip (ff_compass_mag_kind_name) rather than a
+     * bare "found" — a bench engineer reading this line should not have
+     * to cross-reference the i2c scan above it to know which of the
+     * three candidate parts responded. */
+    snprintf(out, cap, "mag=%s imu=%s heading=%s cal=%s",
+             st.mag_present ? ff_compass_mag_kind_name(st.mag_kind) : "absent",
              st.imu_present ? "found" : "absent", heading_buf, cal_valid ? "custom" : "identity");
     return 0;
 }

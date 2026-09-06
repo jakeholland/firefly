@@ -1,5 +1,5 @@
-# ff_compass — S15 device HAL: GY-273 magnetometer (QMC5883L or
-# HMC5883L, auto-detected at init) tilt-compensated with the onboard
+# ff_compass — S15 device HAL: GY-273 magnetometer (QMC5883L, HMC5883L,
+# or QMC5883P, auto-detected at init) tilt-compensated with the onboard
 # QMI8658 6-axis IMU's accelerometer, feeding ff_geo_heading_deg
 # (firmware/core, pure math) via a push API — ff_compass_read() ->
 # app_main.c -> ff_shell_set_heading, the same shape S25 slice c's
