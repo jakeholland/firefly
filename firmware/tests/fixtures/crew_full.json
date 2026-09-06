@@ -1,0 +1,90 @@
+{
+  "fixture": "crew_full",
+  "face": "settings",
+  "settings": {
+    "my_name": "DANA",
+    "subview": "crew",
+    "crew": {
+      "roster_full": true,
+      "link_connected": true,
+      "paired": [
+        {
+          "node_id": 1,
+          "name": "RILEY",
+          "initial": "R",
+          "color_idx": 0,
+          "presence": "seen",
+          "presence_age_ms": 5000
+        },
+        {
+          "node_id": 2,
+          "name": "KEV",
+          "initial": "K",
+          "color_idx": 1,
+          "presence": "linked",
+          "presence_age_ms": 10000
+        },
+        {
+          "node_id": 3,
+          "name": "SAM",
+          "initial": "S",
+          "color_idx": 2,
+          "presence": "seen",
+          "presence_age_ms": 15000
+        },
+        {
+          "node_id": 4,
+          "name": "AVA",
+          "initial": "A",
+          "color_idx": 3,
+          "presence": "linked",
+          "presence_age_ms": 20000
+        },
+        {
+          "node_id": 5,
+          "name": "MAX",
+          "initial": "M",
+          "color_idx": 4,
+          "presence": "seen",
+          "presence_age_ms": 25000
+        },
+        {
+          "node_id": 6,
+          "name": "ZOE",
+          "initial": "Z",
+          "color_idx": 5,
+          "presence": "linked",
+          "presence_age_ms": 30000
+        },
+        {
+          "node_id": 7,
+          "name": "LEO",
+          "initial": "L",
+          "color_idx": 6,
+          "presence": "seen",
+          "presence_age_ms": 35000
+        },
+        {
+          "node_id": 8,
+          "name": "IVY",
+          "initial": "I",
+          "color_idx": 7,
+          "presence": "linked",
+          "presence_age_ms": 40000
+        }
+      ],
+      "heard": [
+        {
+          "node_id": 3000000001,
+          "short_id": "b201",
+          "age_ms": 20000
+        },
+        {
+          "node_id": 3000000002,
+          "name": "GUEST",
+          "age_ms": 65000
+        }
+      ]
+    }
+  }
+}

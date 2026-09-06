@@ -2856,6 +2856,189 @@ static void S21_AC3_settings_calibrate_touch_row_emits_calibrate_intent(void)
     TEST_ASSERT_EQUAL(FF_INTENT_CALIBRATE_TOUCH, s_spy.last.kind);
 }
 
+/* S12/S04 — the "CREW" row emits the shell-owned FF_INTENT_SETTINGS_OPEN_
+ * CREW (the screen only reports the tap; the shell decides the subview
+ * transition). Same click()-injection convention as CALIBRATE TOUCH
+ * above — a bare action row, no payload to check beyond kind. */
+static void S12_settings_crew_row_emits_open_crew_intent(void)
+{
+    ff_app_settings_t s;
+    memset(&s, 0, sizeof(s));
+
+    ff_scr_settings_build(lv_screen_active(), &s);
+
+    click(find_button_with_label(lv_screen_active(), "CREW"));
+
+    TEST_ASSERT_EQUAL_INT(1, s_spy.count);
+    TEST_ASSERT_EQUAL(FF_INTENT_SETTINGS_OPEN_CREW, s_spy.last.kind);
+}
+
+/* =================================================================== */
+/* S12/S04 — the CREW page: real lv_indev taps (not click()'s direct     */
+/* LV_EVENT_CLICKED injection) on REMOVE/ADD, proving each control       */
+/* routes a genuine coordinate tap to the right node id — the S99        */
+/* compose SEND precedent applied here (a label-only hit trap would      */
+/* still pass a center-only check but miss the rest of the control's     */
+/* visible area). Also the back "<" (-> FF_INTENT_BACK) and the honest   */
+/* empty/full states, which emit nothing to tap at all.                  */
+/* =================================================================== */
+
+#define S12_PAIRED_NODE 0x00004001u
+#define S12_HEARD_NODE  0x00004002u
+
+static void s12_build_crew_page_with_one_of_each(ff_app_crew_page_t *cw)
+{
+    memset(cw, 0, sizeof(*cw));
+    cw->paired_count = 1;
+    cw->paired[0].node_id = S12_PAIRED_NODE;
+    strncpy(cw->paired[0].name, "RILEY", sizeof(cw->paired[0].name) - 1);
+    cw->paired[0].initial = 'R';
+    cw->paired[0].presence = FF_PRESENCE_SEEN;
+    cw->paired[0].presence_age_ms = 8000;
+
+    cw->heard_count = 1;
+    cw->heard[0].node_id = S12_HEARD_NODE;
+    cw->heard[0].has_name = true;
+    strncpy(cw->heard[0].name, "SAM", sizeof(cw->heard[0].name) - 1);
+    cw->heard[0].age_ms = 12000;
+}
+
+static void S12_crew_remove_real_tap_emits_unpair_with_node_id(void)
+{
+    ff_app_settings_t s;
+    memset(&s, 0, sizeof(s));
+    s.subview = FF_SETTINGS_SUB_CREW;
+    s12_build_crew_page_with_one_of_each(&s.crew);
+
+    ff_scr_settings_build(lv_screen_active(), &s);
+    lv_obj_update_layout(lv_screen_active());
+
+    lv_obj_t *remove = find_button_with_label(lv_screen_active(), "REMOVE");
+    TEST_ASSERT_NOT_NULL(remove);
+    lv_area_t a;
+    lv_obj_get_coords(remove, &a);
+
+    tap_at((a.x1 + a.x2) / 2, (a.y1 + a.y2) / 2);
+
+    TEST_ASSERT_EQUAL_INT(1, s_spy.count);
+    TEST_ASSERT_EQUAL(FF_INTENT_CREW_UNPAIR, s_spy.last.kind);
+    TEST_ASSERT_EQUAL_UINT32(S12_PAIRED_NODE, s_spy.last.u.node_id);
+}
+
+/* Corner taps too — same S99_compose_send_full_area_tap rationale: a
+ * hit trap shrunk to the label text would still pass a center tap. */
+static void S12_crew_remove_full_area_tap_emits_unpair_exactly_once(void)
+{
+    ff_app_settings_t s;
+    memset(&s, 0, sizeof(s));
+    s.subview = FF_SETTINGS_SUB_CREW;
+    s12_build_crew_page_with_one_of_each(&s.crew);
+
+    ff_scr_settings_build(lv_screen_active(), &s);
+    lv_obj_update_layout(lv_screen_active());
+
+    lv_obj_t *remove = find_button_with_label(lv_screen_active(), "REMOVE");
+    TEST_ASSERT_NOT_NULL(remove);
+    lv_area_t a;
+    lv_obj_get_coords(remove, &a);
+
+    int32_t const pts[4][2] = {
+        {a.x1 + 1, a.y1 + 1},
+        {a.x2 - 1, a.y1 + 1},
+        {a.x1 + 1, a.y2 - 1},
+        {a.x2 - 1, a.y2 - 1},
+    };
+    char const *const names[4] = {"top-left", "top-right", "bottom-left", "bottom-right"};
+    for (int i = 0; i < 4; i++) {
+        memset(&s_spy, 0, sizeof(s_spy));
+        tap_at(pts[i][0], pts[i][1]);
+        TEST_ASSERT_EQUAL_INT_MESSAGE(1, s_spy.count, names[i]);
+        TEST_ASSERT_EQUAL_MESSAGE(FF_INTENT_CREW_UNPAIR, s_spy.last.kind, names[i]);
+    }
+}
+
+static void S12_crew_add_real_tap_emits_pair_with_node_id(void)
+{
+    ff_app_settings_t s;
+    memset(&s, 0, sizeof(s));
+    s.subview = FF_SETTINGS_SUB_CREW;
+    s12_build_crew_page_with_one_of_each(&s.crew);
+
+    ff_scr_settings_build(lv_screen_active(), &s);
+    lv_obj_update_layout(lv_screen_active());
+
+    lv_obj_t *add = find_button_with_label(lv_screen_active(), "ADD");
+    TEST_ASSERT_NOT_NULL(add);
+    lv_area_t a;
+    lv_obj_get_coords(add, &a);
+
+    tap_at((a.x1 + a.x2) / 2, (a.y1 + a.y2) / 2);
+
+    TEST_ASSERT_EQUAL_INT(1, s_spy.count);
+    TEST_ASSERT_EQUAL(FF_INTENT_CREW_PAIR, s_spy.last.kind);
+    TEST_ASSERT_EQUAL_UINT32(S12_HEARD_NODE, s_spy.last.u.node_id);
+}
+
+/* S12 AC — roster full: ADD is disabled ("FULL (8)"), never routes a
+ * real tap to CREW_PAIR (the mutation this proves against: forgetting
+ * the roster_full gate would still show "ADD" and still pair). */
+static void S12_crew_heard_add_disabled_when_roster_full(void)
+{
+    ff_app_settings_t s;
+    memset(&s, 0, sizeof(s));
+    s.subview = FF_SETTINGS_SUB_CREW;
+    s12_build_crew_page_with_one_of_each(&s.crew);
+    s.crew.roster_full = true;
+
+    ff_scr_settings_build(lv_screen_active(), &s);
+    lv_obj_update_layout(lv_screen_active());
+
+    TEST_ASSERT_NULL(find_button_with_label(lv_screen_active(), "ADD"));
+    lv_obj_t *full = find_button_with_label(lv_screen_active(), "FULL (8)");
+    TEST_ASSERT_NOT_NULL(full);
+    TEST_ASSERT_FALSE(lv_obj_has_flag(full, LV_OBJ_FLAG_CLICKABLE));
+
+    lv_area_t a;
+    lv_obj_get_coords(full, &a);
+    tap_at((a.x1 + a.x2) / 2, (a.y1 + a.y2) / 2);
+    TEST_ASSERT_EQUAL_INT_MESSAGE(0, s_spy.count, "a disabled FULL pill must emit nothing");
+}
+
+/* The CREW page's own back "<" -> FF_INTENT_BACK (the shell pops the
+ * sub-view back to the plain list — see ff_shell.c's BACK-case rule 3). */
+static void S12_crew_back_button_emits_back_intent(void)
+{
+    ff_app_settings_t s;
+    memset(&s, 0, sizeof(s));
+    s.subview = FF_SETTINGS_SUB_CREW;
+
+    ff_scr_settings_build(lv_screen_active(), &s);
+
+    lv_obj_t *back = find_button_with_label(lv_screen_active(), LV_SYMBOL_LEFT);
+    TEST_ASSERT_NOT_NULL(back);
+    click(back);
+
+    TEST_ASSERT_EQUAL_INT(1, s_spy.count);
+    TEST_ASSERT_EQUAL(FF_INTENT_BACK, s_spy.last.kind);
+}
+
+/* Honest empty state: no ADD/REMOVE controls exist to mistap at all
+ * when both lists are empty, and the link-down hint variant renders
+ * only when link_connected is false. */
+static void S12_crew_empty_state_has_no_add_or_remove_controls(void)
+{
+    ff_app_settings_t s;
+    memset(&s, 0, sizeof(s));
+    s.subview = FF_SETTINGS_SUB_CREW;
+    s.crew.link_connected = false;
+
+    ff_scr_settings_build(lv_screen_active(), &s);
+
+    TEST_ASSERT_NULL(find_button_with_label(lv_screen_active(), "ADD"));
+    TEST_ASSERT_NULL(find_button_with_label(lv_screen_active(), "REMOVE"));
+    TEST_ASSERT_NOT_NULL(find_label_exact(lv_screen_active(), "nobody heard yet - is the comms brain linked?"));
+}
+
 /* =================================================================== */
 /* Unbound seam (goldens/headless) — every wired site is a safe no-op   */
 /* =================================================================== */
@@ -3426,6 +3609,14 @@ int main(void)
     RUN_TEST(S100_settings_brightness_stepper_steps_and_clamps);
     RUN_TEST(S21_AC1_settings_is_one_scrolling_list_every_row_reachable);
     RUN_TEST(S21_AC3_settings_calibrate_touch_row_emits_calibrate_intent);
+
+    RUN_TEST(S12_settings_crew_row_emits_open_crew_intent);
+    RUN_TEST(S12_crew_remove_real_tap_emits_unpair_with_node_id);
+    RUN_TEST(S12_crew_remove_full_area_tap_emits_unpair_exactly_once);
+    RUN_TEST(S12_crew_add_real_tap_emits_pair_with_node_id);
+    RUN_TEST(S12_crew_heard_add_disabled_when_roster_full);
+    RUN_TEST(S12_crew_back_button_emits_back_intent);
+    RUN_TEST(S12_crew_empty_state_has_no_add_or_remove_controls);
     RUN_TEST(S16_c1_wired_sites_are_noops_while_the_seam_is_unbound);
 
     RUN_TEST(S26e_launcher_radar_circle_emits_index_0);

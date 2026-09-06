@@ -1094,7 +1094,7 @@ static void inbox_build_no_crew_hint(lv_obj_t *list, int32_t y, int32_t margin_x
     lv_obj_align(headline, LV_ALIGN_TOP_MID, 0, 8);
 
     lv_obj_t *sub = lv_label_create(box);
-    lv_label_set_text(sub, "Paired friends show up here");
+    lv_label_set_text(sub, "Add crew in Settings > Crew"); /* S12/S04 */
     lv_obj_set_style_text_font(sub, FF_THEME_FONT_CHIP, 0);
     lv_obj_set_style_text_color(sub, lv_color_hex(FF_THEME_COLOR_DIM), 0);
     lv_obj_align(sub, LV_ALIGN_TOP_MID, 0, 34);

@@ -169,7 +169,7 @@ static void assert_no_crew_hint_ex(char const *fixture_name, bool expect_visible
     lv_obj_t *headline = find_label_with_text(lv_screen_active(), "NO CREW LINKED YET");
     if (expect_visible) {
         TEST_ASSERT_NOT_NULL_MESSAGE(headline, fixture_name);
-        lv_obj_t *sub = find_label_with_text(lv_screen_active(), "Paired friends show up here");
+        lv_obj_t *sub = find_label_with_text(lv_screen_active(), "Add crew in Settings > Crew"); /* S12/S04 */
         TEST_ASSERT_NOT_NULL_MESSAGE(sub, fixture_name);
     } else {
         TEST_ASSERT_NULL_MESSAGE(headline, fixture_name);

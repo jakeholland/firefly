@@ -1,0 +1,35 @@
+{
+  "fixture": "crew_default",
+  "face": "settings",
+  "settings": {
+    "my_name": "DANA",
+    "subview": "crew",
+    "crew": {
+      "roster_full": false,
+      "link_connected": true,
+      "paired": [
+        {
+          "node_id": 1,
+          "name": "RILEY",
+          "initial": "R",
+          "color_idx": 0,
+          "presence": "seen",
+          "presence_age_ms": 8000
+        },
+        {
+          "node_id": 2,
+          "name": "KEV",
+          "initial": "K",
+          "color_idx": 1,
+          "presence": "lost",
+          "presence_age_ms": 900000
+        }
+      ],
+      "heard": [
+        { "node_id": 2271512608, "name": "SAM", "age_ms": 12000 },
+        { "node_id": 2400446496, "short_id": "8f60", "age_ms": 42000 },
+        { "node_id": 2887057408, "short_id": "ac00", "age_ms": 180000 }
+      ]
+    }
+  }
+}

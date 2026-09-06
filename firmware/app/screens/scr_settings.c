@@ -127,6 +127,7 @@
 #include "ff_layout.h"
 #include "ff_settings.h" /* FF_SHARE_LIVE/_ZONES/_GHOST, FF_BRIGHTNESS_*_PCT */
 #include "ff_theme.h"
+#include "scr_nav.h"     /* S12/S04 — ff_scr_button_create for the CREW page's back button */
 #include "scr_widgets.h" /* ff_scr_pill_create — the shared pill factory (S17 debt cleanup) */
 
 /* ---------------------------------------------------------------------
@@ -889,6 +890,28 @@ static void settings_build_calibrate_row(lv_obj_t *list, int32_t rel_y, int32_t 
 }
 
 /* ---------------------------------------------------------------------
+ * CREW — S12/S04: a full-width action pill, same shape as CALIBRATE
+ * TOUCH above, that opens the CREW sub-view (FF_INTENT_SETTINGS_OPEN_
+ * CREW, no payload — the shell decides, this file only asks). An
+ * ACTION, not a stored value, same as CALIBRATE TOUCH.
+ * ------------------------------------------------------------------- */
+static void settings_crew_open_cb(lv_event_t *e)
+{
+    (void)e;
+    ff_intent_t in = {.kind = FF_INTENT_SETTINGS_OPEN_CREW, .u = {0}};
+    ff_intent_emit(&in);
+}
+
+static void settings_build_crew_open_row(lv_obj_t *list, int32_t rel_y, int32_t row_w)
+{
+    lv_obj_t *pill = settings_make_pill(list, "CREW", 0, rel_y, row_w, FF_SETTINGS_ROW_H, FF_THEME_COLOR_SURFACE,
+                                        FF_THEME_COLOR_AMBER, 2, settings_crew_open_cb, NULL);
+    lv_obj_set_style_border_width(pill, 2, 0);
+    lv_obj_set_style_border_color(pill, lv_color_hex(FF_THEME_COLOR_AMBER), 0);
+    lv_obj_set_style_border_opa(pill, LV_OPA_40 + LV_OPA_10 / 2 /* ~45% */, 0);
+}
+
+/* ---------------------------------------------------------------------
  * Opaque header band (#bug5). REPLACES the former BG->transparent edge-fade
  * scrims. On the RGB565 round panel a gradient scrim leaves a HARD amber
  * edge (colour-step banding) instead of hiding a row that has scrolled to
@@ -966,6 +989,294 @@ static int32_t settings_build_section_header(lv_obj_t *list, int32_t y, int32_t 
 }
 
 /* ---------------------------------------------------------------------
+ * CREW page (S12/S04, docs/specs/S04-firefly-protocol.md's "pairing v1 =
+ * channel membership + explicit crew list"; the S22 note's "pairing
+ * screen ... unbuilt", finally built here) — the Settings SUB-VIEW the
+ * CREW row above opens (ff_settings_subview_t, ff_app_state.h). Two
+ * lists: PAIRED (name + honest presence chip, reused from S24's
+ * ff_sigview_presence, never reimplemented + REMOVE) and HEARD (name or
+ * an honest short-id fallback + seen-age + ADD). Pure renderer of
+ * `ff_app_crew_page_t`: ADD/REMOVE emit FF_INTENT_CREW_PAIR/_UNPAIR with
+ * the target node id, the header's "<" emits FF_INTENT_BACK — the shell
+ * decides every transition (same "screens stay pure renderers" split
+ * this whole file already follows for FF_INTENT_SETTING_SET).
+ *
+ * Layout deliberately mirrors the plain settings list's own geometry
+ * (list_margin/row_w via settings_safe_margin_x, FF_SETTINGS_LIST_Y/H)
+ * so the two pages read as one visual family rather than two unrelated
+ * screens; the header mirrors scr_inbox.c's picker/thread back-button
+ * convention (a real FF_THEME_MIN_HIT_PX circle at its own chord
+ * margin) since THIS page, unlike the plain settings list, is reached
+ * by drilling in rather than by swiping to a base face, so it needs its
+ * own way back.
+ * ------------------------------------------------------------------- */
+#define FF_CREW_BACK_Y  30
+#define FF_CREW_BACK_PX FF_THEME_MIN_HIT_PX
+#define FF_CREW_HDR_Y   (FF_CREW_BACK_Y + (FF_CREW_BACK_PX - 24) / 2) /* optically centered against the back circle */
+
+#define FF_CREW_LIST_Y 100
+#define FF_CREW_LIST_H 256 /* same inscribed-viewport band as the plain settings list */
+
+/* Rows are taller than a plain settings row (S12's two-line "name" +
+ * "presence/age" content, vs. one label) but still clear the 44px hit
+ * floor with real margin; the inter-row gap clears the 8px adjacency
+ * floor with the same slack the plain list's FF_SETTINGS_ROW_GAP uses. */
+#define FF_CREW_ROW_H    56
+#define FF_CREW_ROW_GAP  14
+#define FF_CREW_ROW_STEP (FF_CREW_ROW_H + FF_CREW_ROW_GAP)
+_Static_assert(FF_CREW_ROW_H >= FF_THEME_MIN_HIT_PX, "crew rows must clear the 44px hit-target floor");
+
+#define FF_CREW_ACTION_PILL_W FF_SETTINGS_VALUE_PILL_W
+#define FF_CREW_ACTION_GAP    FF_SETTINGS_VALUE_GAP
+
+static void settings_crew_back_cb(lv_event_t *e)
+{
+    (void)e;
+    ff_intent_t in = {.kind = FF_INTENT_BACK, .u = {0}};
+    ff_intent_emit(&in);
+}
+
+static void settings_crew_pair_cb(lv_event_t *e)
+{
+    uintptr_t node = (uintptr_t)lv_event_get_user_data(e);
+    ff_intent_t in = {.kind = FF_INTENT_CREW_PAIR, .u = {0}};
+    in.u.node_id = (uint32_t)node;
+    ff_intent_emit(&in);
+}
+
+static void settings_crew_unpair_cb(lv_event_t *e)
+{
+    uintptr_t node = (uintptr_t)lv_event_get_user_data(e);
+    ff_intent_t in = {.kind = FF_INTENT_CREW_UNPAIR, .u = {0}};
+    in.u.node_id = (uint32_t)node;
+    ff_intent_emit(&in);
+}
+
+/* Honest presence text/color — S24's ff_sigview_presence vocabulary,
+ * REUSED verbatim (mirrors scr_inbox.c's inbox_presence_text: same
+ * words, same color roles, not reimplemented independently). */
+static void settings_crew_presence_text(ff_sigview_presence_t presence, uint32_t age_ms, char *buf, size_t n,
+                                        uint32_t *out_color)
+{
+    switch (presence) {
+    case FF_PRESENCE_SEEN: {
+        char age_buf[16];
+        ff_fmt_age(age_buf, sizeof(age_buf), age_ms);
+        snprintf(buf, n, "SEEN %s", age_buf);
+        *out_color = FF_THEME_COLOR_STALE_AMBER;
+        break;
+    }
+    case FF_PRESENCE_LOST:
+        snprintf(buf, n, "LOST");
+        *out_color = FF_THEME_COLOR_STALE_AMBER;
+        break;
+    case FF_PRESENCE_LINKED:
+    default:
+        snprintf(buf, n, "LINKED");
+        *out_color = FF_THEME_COLOR_MUTED;
+        break;
+    }
+}
+
+/* Two-line row content (name/id on top, status/age below), left-anchored
+ * in the label column; the ADD/REMOVE pill sits to its right, same
+ * column split settings_build_value_row already uses. */
+static lv_obj_t *settings_crew_row_labels(lv_obj_t *row, int32_t label_w, char const *top, char const *bottom,
+                                          uint32_t bottom_color)
+{
+    lv_obj_t *top_lbl = lv_label_create(row);
+    lv_obj_set_width(top_lbl, label_w);
+    lv_label_set_long_mode(top_lbl, LV_LABEL_LONG_DOT);
+    lv_label_set_text(top_lbl, top);
+    lv_obj_set_style_text_font(top_lbl, FF_THEME_FONT_LABEL, 0);
+    lv_obj_set_style_text_color(top_lbl, lv_color_hex(FF_THEME_COLOR_INK), 0);
+    lv_obj_set_style_text_letter_space(top_lbl, 1, 0);
+    lv_obj_align(top_lbl, LV_ALIGN_TOP_LEFT, 0, 4);
+
+    lv_obj_t *bot_lbl = lv_label_create(row);
+    lv_obj_set_width(bot_lbl, label_w);
+    lv_label_set_long_mode(bot_lbl, LV_LABEL_LONG_DOT);
+    lv_label_set_text(bot_lbl, bottom);
+    lv_obj_set_style_text_font(bot_lbl, FF_THEME_FONT_CHIP, 0);
+    lv_obj_set_style_text_color(bot_lbl, lv_color_hex(bottom_color), 0);
+    lv_obj_set_style_text_letter_space(bot_lbl, 1, 0);
+    lv_obj_align(bot_lbl, LV_ALIGN_BOTTOM_LEFT, 0, -4);
+
+    return top_lbl;
+}
+
+static void settings_crew_build_paired_row(lv_obj_t *list, int32_t rel_y, int32_t row_w,
+                                           ff_app_crew_paired_row_t const *m)
+{
+    lv_obj_t *row = lv_obj_create(list);
+    lv_obj_remove_style_all(row);
+    lv_obj_set_size(row, row_w, FF_CREW_ROW_H);
+    lv_obj_set_pos(row, 0, rel_y);
+    lv_obj_clear_flag(row, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+
+    int32_t const label_w = row_w - FF_CREW_ACTION_PILL_W - FF_CREW_ACTION_GAP;
+
+    char status[24];
+    uint32_t color = FF_THEME_COLOR_MUTED;
+    settings_crew_presence_text(m->presence, m->presence_age_ms, status, sizeof(status), &color);
+
+    /* Identity is never fabricated (CLAUDE.md): a paired member with no
+     * name yet (NodeInfo hasn't arrived) renders an honest node-id
+     * fallback, never a placeholder word like "unnamed". */
+    char top[FF_APP_NAME_LEN + 4];
+    if (m->name[0] != '\0') {
+        snprintf(top, sizeof(top), "%s", m->name);
+    } else {
+        snprintf(top, sizeof(top), "#%04x", (unsigned)(m->node_id & 0xFFFFu));
+    }
+
+    settings_crew_row_labels(row, label_w, top, status, color);
+
+    settings_make_pill(row, "REMOVE", row_w - FF_CREW_ACTION_PILL_W, (FF_CREW_ROW_H - FF_SETTINGS_ROW_H) / 2,
+                       FF_CREW_ACTION_PILL_W, FF_SETTINGS_ROW_H, FF_THEME_COLOR_SURFACE, FF_THEME_COLOR_STALE_AMBER,
+                       0, settings_crew_unpair_cb, (void *)(uintptr_t)m->node_id);
+}
+
+static void settings_crew_build_heard_row(lv_obj_t *list, int32_t rel_y, int32_t row_w,
+                                          ff_app_crew_heard_row_t const *h, bool roster_full)
+{
+    lv_obj_t *row = lv_obj_create(list);
+    lv_obj_remove_style_all(row);
+    lv_obj_set_size(row, row_w, FF_CREW_ROW_H);
+    lv_obj_set_pos(row, 0, rel_y);
+    lv_obj_clear_flag(row, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+
+    int32_t const label_w = row_w - FF_CREW_ACTION_PILL_W - FF_CREW_ACTION_GAP;
+
+    char age_buf[16];
+    ff_fmt_age(age_buf, sizeof(age_buf), h->age_ms);
+    char status[24];
+    snprintf(status, sizeof(status), "SEEN %s", age_buf);
+
+    /* Honest short-id fallback (never a fabricated name) when this heard
+     * node has never sent a NodeInfo we caught a name from. */
+    char top[FF_APP_NAME_LEN + 4];
+    if (h->has_name && h->name[0] != '\0') {
+        snprintf(top, sizeof(top), "%s", h->name);
+    } else {
+        snprintf(top, sizeof(top), "#%s", h->short_id);
+    }
+
+    settings_crew_row_labels(row, label_w, top, status, FF_THEME_COLOR_MUTED);
+
+    /* S12 AC — roster full: ADD disabled with an honest "FULL (8)" state
+     * (interpretation call, PR body: the brief's "crew full (8)" wording
+     * is rendered compactly here since the pill column is only
+     * FF_SETTINGS_VALUE_PILL_W=96px wide). */
+    lv_obj_t *pill;
+    if (roster_full) {
+        pill = settings_make_pill(row, "FULL (8)", row_w - FF_CREW_ACTION_PILL_W,
+                                  (FF_CREW_ROW_H - FF_SETTINGS_ROW_H) / 2, FF_CREW_ACTION_PILL_W, FF_SETTINGS_ROW_H,
+                                  FF_THEME_COLOR_SURFACE, FF_THEME_COLOR_DIM, 0, NULL, NULL);
+        lv_obj_clear_flag(pill, LV_OBJ_FLAG_CLICKABLE);
+    } else {
+        pill = settings_make_pill(row, "ADD", row_w - FF_CREW_ACTION_PILL_W, (FF_CREW_ROW_H - FF_SETTINGS_ROW_H) / 2,
+                                  FF_CREW_ACTION_PILL_W, FF_SETTINGS_ROW_H, FF_THEME_COLOR_SURFACE,
+                                  FF_THEME_COLOR_AMBER, 0, settings_crew_pair_cb, (void *)(uintptr_t)h->node_id);
+    }
+    (void)pill;
+}
+
+/* Honest empty state for the HEARD list (S12 AC): the comms-brain-down
+ * hint ONLY when the link genuinely isn't up (never as generic filler —
+ * CLAUDE.md's "unknown = explicitly unknown" extends to WHY a list is
+ * empty, not just whether it is). */
+static void settings_crew_build_heard_empty(lv_obj_t *list, int32_t rel_y, int32_t row_w, bool link_connected)
+{
+    lv_obj_t *lbl = lv_label_create(list);
+    lv_obj_set_pos(lbl, 0, rel_y);
+    lv_obj_set_width(lbl, row_w);
+    lv_label_set_long_mode(lbl, LV_LABEL_LONG_WRAP);
+    lv_label_set_text(lbl, link_connected ? "nobody heard yet" : "nobody heard yet - is the comms brain linked?");
+    lv_obj_set_style_text_font(lbl, FF_THEME_FONT_CHIP, 0);
+    lv_obj_set_style_text_color(lbl, lv_color_hex(FF_THEME_COLOR_DIM), 0);
+    lv_obj_set_style_text_align(lbl, LV_TEXT_ALIGN_LEFT, 0);
+    lv_obj_clear_flag(lbl, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_clear_flag(lbl, LV_OBJ_FLAG_SCROLLABLE);
+}
+
+static void settings_build_crew_page(lv_obj_t *parent, ff_app_crew_page_t const *cw)
+{
+    lv_obj_t *puck = lv_obj_create(parent);
+    lv_obj_remove_style_all(puck);
+    lv_obj_set_size(puck, FF_THEME_PUCK_PX, FF_THEME_PUCK_PX);
+    lv_obj_align(puck, LV_ALIGN_CENTER, 0, 0);
+    lv_obj_set_style_radius(puck, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_bg_color(puck, lv_color_hex(FF_THEME_COLOR_BG), 0);
+    lv_obj_set_style_bg_opa(puck, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(puck, 0, 0);
+    lv_obj_clear_flag(puck, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_clear_flag(puck, LV_OBJ_FLAG_CLICKABLE);
+
+    /* Header: a real back circle (scr_inbox.c's picker/thread back-button
+     * convention) + a centered "CREW" title. */
+    int32_t const back_margin = settings_safe_margin_x(FF_CREW_BACK_Y, FF_CREW_BACK_PX);
+    lv_obj_t *back = ff_scr_button_create(puck);
+    lv_obj_remove_style_all(back);
+    lv_obj_set_size(back, FF_CREW_BACK_PX, FF_CREW_BACK_PX);
+    lv_obj_set_pos(back, back_margin, FF_CREW_BACK_Y);
+    lv_obj_set_style_radius(back, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_bg_color(back, lv_color_hex(FF_THEME_COLOR_SURFACE), 0);
+    lv_obj_set_style_bg_opa(back, LV_OPA_COVER, 0);
+    lv_obj_add_event_cb(back, settings_crew_back_cb, LV_EVENT_CLICKED, NULL);
+
+    lv_obj_t *glyph = lv_label_create(back);
+    lv_label_set_text(glyph, LV_SYMBOL_LEFT);
+    lv_obj_set_style_text_color(glyph, lv_color_hex(FF_THEME_COLOR_INK), 0);
+    lv_obj_center(glyph);
+
+    lv_obj_t *title = lv_label_create(puck);
+    lv_label_set_text(title, "CREW");
+    lv_obj_set_style_text_font(title, FF_THEME_FONT_HEADLINE, 0);
+    lv_obj_set_style_text_color(title, lv_color_hex(FF_THEME_COLOR_AMBER), 0);
+    lv_obj_set_style_text_letter_space(title, 3, 0);
+    lv_obj_align(title, LV_ALIGN_TOP_MID, 0, FF_CREW_HDR_Y);
+
+    int32_t list_margin = settings_safe_margin_x(FF_CREW_LIST_Y, FF_CREW_LIST_H);
+    int32_t row_w = FF_THEME_PUCK_PX - 2 * list_margin;
+
+    lv_obj_t *list = lv_obj_create(puck);
+    lv_obj_remove_style_all(list);
+    lv_obj_set_size(list, row_w, FF_CREW_LIST_H);
+    lv_obj_set_pos(list, list_margin, FF_CREW_LIST_Y);
+    lv_obj_set_style_bg_opa(list, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(list, 0, 0);
+    lv_obj_set_style_pad_all(list, 0, 0);
+    lv_obj_add_flag(list, LV_OBJ_FLAG_CLICKABLE); /* #bug2 precedent — see the plain list's own comment */
+    lv_obj_add_flag(list, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scroll_dir(list, LV_DIR_VER);
+    lv_obj_set_scrollbar_mode(list, LV_SCROLLBAR_MODE_OFF);
+    s_list = list; /* shares the plain list's scroll-hint hook (ff_scr_settings_apply_scroll_hint) — only
+                    * one of the two lists is ever built at a time per subview. */
+
+    int32_t y = 0;
+    y = settings_build_section_header(list, y, row_w, "PAIRED", /*first=*/true);
+    for (uint8_t i = 0; i < cw->paired_count; i++) {
+        settings_crew_build_paired_row(list, y, row_w, &cw->paired[i]);
+        y += FF_CREW_ROW_STEP;
+    }
+    y = settings_build_section_header(list, y, row_w, "HEARD", /*first=*/false);
+    if (cw->heard_count == 0) {
+        settings_crew_build_heard_empty(list, y, row_w, cw->link_connected);
+        y += FF_SETTINGS_ROW_H;
+    } else {
+        for (uint8_t i = 0; i < cw->heard_count; i++) {
+            settings_crew_build_heard_row(list, y, row_w, &cw->heard[i], cw->roster_full);
+            y += FF_CREW_ROW_STEP;
+        }
+    }
+
+    lv_obj_update_layout(list);
+}
+
+/* ---------------------------------------------------------------------
  * Entry point.
  * ------------------------------------------------------------------- */
 void ff_scr_settings_build(lv_obj_t *parent, ff_app_settings_t const *settings)
@@ -975,6 +1286,16 @@ void ff_scr_settings_build(lv_obj_t *parent, ff_app_settings_t const *settings)
     }
 
     s_settings = *settings;
+
+    /* S12/S04 — the CREW sub-view replaces the plain list entirely while
+     * showing (the ff_scr_inbox_build subview-dispatch precedent: a
+     * settings-change intent's rebuild re-enters this function, so the
+     * check belongs at the very top, not as a special case bolted onto
+     * the list build below). */
+    if (settings->subview == FF_SETTINGS_SUB_CREW) {
+        settings_build_crew_page(parent, &settings->crew);
+        return;
+    }
 
     lv_obj_t *puck = lv_obj_create(parent);
     lv_obj_remove_style_all(puck);
@@ -1114,6 +1435,10 @@ void ff_scr_settings_build(lv_obj_t *parent, ff_app_settings_t const *settings)
     y = settings_build_section_header(list, y, row_w, "DEVICE", /*first=*/false);
     settings_build_calibrate_row(list, y, row_w);
     y += FF_SETTINGS_ROW_H; /* last (only) row of DEVICE */
+
+    y = settings_build_section_header(list, y, row_w, "CREW", /*first=*/false);
+    settings_build_crew_open_row(list, y, row_w);
+    y += FF_SETTINGS_ROW_H; /* last (only) row of CREW */
 
     /* ---------------------------------------------------------------------
      * Hidden rows (settings audit 2026-09-03) — SHARE, HAPTICS, GLOW, WATER

@@ -1,0 +1,14 @@
+{
+  "fixture": "crew_empty",
+  "face": "settings",
+  "settings": {
+    "my_name": "DANA",
+    "subview": "crew",
+    "crew": {
+      "roster_full": false,
+      "link_connected": false,
+      "paired": [],
+      "heard": []
+    }
+  }
+}
