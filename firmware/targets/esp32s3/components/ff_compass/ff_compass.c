@@ -117,6 +117,59 @@ static const char *TAG = "ff_compass";
 #define FF_HMC5883L_MODE_VAL 0x00 /* continuous-measurement mode */
 
 /* =====================================================================
+ * QMC5883P — QST's successor to the QMC5883L, confirmed on the
+ * coordinator's own bench (2026-09-05, real puck, GY-273 module wired
+ * and powered): the console `i2c` scan shows a device at 0x2C that is
+ * neither the QMC5883L (0x0D) nor HMC5883L (0x1E) this driver already
+ * probes. Register map, bit layout, and the two application-note bytes
+ * (0x29 axis-sign, the specific CTRL1/CTRL2 values below) are all
+ * cited from the QMC5883P datasheet, QST document #13-52-19 Rev A
+ * (https://www.icbase.com/File/news/download/QMC5883P_Datasheet.pdf,
+ * fetched 2026-09-05) — table/section numbers below refer to that PDF.
+ * ===================================================================== */
+#define FF_QMC5883P_ADDR 0x2C /* datasheet section 5.4: "The default I2C address for QMC5883P is 2CH" */
+
+#define FF_QMC5883P_REG_CHIPID 0x00 /* Table 14/15: read-only, POR default 0x80 (section 9.2.1) */
+#define FF_QMC5883P_REG_DATA 0x01   /* Table 14/15: 6-byte burst XL,XH,YL,YH,ZL,ZH, little-endian per axis, 2's complement */
+#define FF_QMC5883P_REG_STATUS 0x09 /* Table 16: bit0 DRDY, bit1 OVFL, bits 7:2 RFU — read only */
+#define FF_QMC5883P_REG_CTRL1 0x0A  /* Table 17: OSR2[7:6] | OSR1[5:4] | ODR[3:2] | MODE[1:0] */
+#define FF_QMC5883P_REG_CTRL2 0x0B  /* Table 18: SOFT_RST[7] | SELF_TEST[6] | RFU[5:4] | RNG[3:2] | SET/RESET_MODE[1:0] */
+#define FF_QMC5883P_REG_SIGN 0x29   /* NOT in the register map table (9.1) — an undocumented-but-load-bearing register the datasheet's own "Application Examples" (7.1-7.3) write before every mode setup: "Write Register 29H by 0x06 (Define the sign for X Y and Z axis)" */
+
+#define FF_QMC5883P_CHIPID_VAL 0x80
+
+/* CTRL1 = OSR2<<6 | OSR1<<4 | ODR<<2 | MODE (Table 17's own field layout).
+ * Values picked per this task's spec, each a literal Table 17 column:
+ *   OSR2 = 8   -> column "11" (Table 17: 00=1,01=2,10=4,11=8)        -> 0b11 << 6 = 0xC0
+ *   OSR1 = 8   -> column "00" (Table 17: 00=8,01=4,10=2,11=1)        -> 0b00 << 4 = 0x00
+ *   ODR  = 50Hz-> column "01" (Table 17: 00=10Hz,01=50Hz,10=100Hz,11=200Hz) -> 0b01 << 2 = 0x04
+ *   MODE = continuous -> column "11" (Table 17: 00=Suspend,01=Normal,10=Single,11=Continuous) -> 0b11 = 0x03
+ * CTRL1 = 0xC0 | 0x00 | 0x04 | 0x03 = 0xC7. This driver polls at 10 Hz
+ * (app_main.c's FF_COMPASS_SAMPLE_PERIOD_MS); 50 Hz ODR comfortably
+ * covers that with headroom, matching the other two parts' own
+ * "sample faster than we poll" margin. */
+#define FF_QMC5883P_CTRL1_VAL 0xC7
+
+/* CTRL2 = SOFT_RST<<7 | SELF_TEST<<6 | RNG<<2 | SET/RESET_MODE (Table
+ * 18's own field layout, bits 5:4 RFU).
+ *   RNG            = 2G  -> column "11" (Table 18: 00=30G,01=12G,10=8G,11=2G) -> 0b11 << 2 = 0x0C
+ *   SET/RESET_MODE = on  -> column "00" ("Set and reset on")                 -> 0b00 = 0x00
+ * CTRL2 = 0x0C | 0x00 = 0x0C (SOFT_RST and SELF_TEST both 0 for normal
+ * operation). Soft reset itself is the datasheet's own "Soft Reset
+ * Example" (7.6): write CTRL2 = 0x80 (SOFT_RST bit alone) BEFORE this
+ * configuring write. */
+#define FF_QMC5883P_CTRL2_VAL 0x0C
+#define FF_QMC5883P_SOFT_RST_VAL 0x80 /* datasheet 7.6: "Write Register 0BH by 0x80" */
+#define FF_QMC5883P_SIGN_VAL 0x06     /* datasheet 7.1/7.2/7.3: "Write Register 29H by 0x06" — verified in this datasheet's own worked examples, not just an app note */
+
+/* Sensitivity at the 2G range configured above: 15000 LSB/Gauss
+ * (datasheet Table 2, "Sensitivity", row "Field Range = ±2G"). Not
+ * used in any arithmetic here — ff_geo_heading_deg's atan2 is
+ * scale-invariant across all three magnetometers — kept only so a
+ * reader has the same units reference the QMC5883L/HMC5883L sections
+ * above document for their own ranges. */
+
+/* =====================================================================
  * Axis mapping: sensor frame -> board frame (ff_geo.h's own convention:
  * +x right, +y forward/"top of puck", +z up out of the screen;
  * stationary level accel reads ~(0,0,+1g)). ONE table, two small
@@ -124,18 +177,34 @@ static const char *TAG = "ff_compass";
  * here to correct after a bench check; nothing else in this file
  * encodes either mapping.
  *
- * Magnetometer (GY-273): ASSUMED mounting, unverified on real hardware
- * — the module sits flat against the case wall at the lanyard end,
- * silkscreen component-side facing the same way as the main board's
- * (both toward the glass), with the module's printed +X arrow pointing
- * toward the puck's own +y (away from the lanyard, toward the top of
- * the puck as worn) and its +Y arrow toward the puck's own -x. That
- * mounting is a 90-degree rotation about the shared +z axis: mag +x ->
- * board +y, mag +y -> board -x, mag +z -> board +z (both boards'
- * components face the glass, so no z-flip). VERIFY ON BENCH — if the
- * Radar arrow turns the wrong way (or 90/180 degrees off) when the
- * puck is rotated flat, this is the first place to look; see this
- * driver's introducing PR body for the bench procedure.
+ * Magnetometer (GY-273, QMC5883L/HMC5883L): ASSUMED mounting,
+ * unverified on real hardware — the module sits flat against the case
+ * wall at the lanyard end, silkscreen component-side facing the same
+ * way as the main board's (both toward the glass), with the module's
+ * printed +X arrow pointing toward the puck's own +y (away from the
+ * lanyard, toward the top of the puck as worn) and its +Y arrow toward
+ * the puck's own -x. That mounting is a 90-degree rotation about the
+ * shared +z axis: mag +x -> board +y, mag +y -> board -x, mag +z ->
+ * board +z (both boards' components face the glass, so no z-flip).
+ * VERIFY ON BENCH — if the Radar arrow turns the wrong way (or 90/180
+ * degrees off) when the puck is rotated flat, this is the first place
+ * to look; see this driver's introducing PR body for the bench
+ * procedure.
+ *
+ * Magnetometer (GY-273, QMC5883P): its OWN row, `FF_MAG_QMC5883P_BOARD_*`
+ * below — NOT the same table as the L/HMC pair above. QST's own
+ * Package 3-D View (QMC5883P datasheet section 3.1) draws this part's
+ * +X/+Y/+Z arrows in a different arrangement than the L's package
+ * marking, and since a real bench GY-273 clone board is not guaranteed
+ * to reprint its own silkscreen consistently between the two chip
+ * options it ships, this driver does NOT assume the P's mounting
+ * produces the same board-frame result as the L/HMC row. Seeded here
+ * with the SAME numeric values as that row (same physical module
+ * footprint/case position, so it is the more likely starting guess)
+ * but kept as an independently-editable row so the bench orientation
+ * check (docs/hardware/comms-brain.md's "Compass" section) can correct
+ * it on its own without touching the L/HMC mapping. VERIFY ON BENCH,
+ * same procedure as above, once a QMC5883P board is on hand.
  *
  * IMU (onboard QMI8658): identity, on the working assumption that the
  * IMU's silkscreen axes already match the board's own (it is soldered
@@ -143,7 +212,7 @@ static const char *TAG = "ff_compass";
  * aftermarket module) — NOT independently verified against
  * Waveshare's schematic. If tilt-compensation looks inverted (heading
  * flips when the puck is tipped rather than staying put), check this
- * table before the magnetometer one above.
+ * table before either magnetometer one above.
  */
 typedef enum { FF_AXIS_X = 0, FF_AXIS_Y = 1, FF_AXIS_Z = 2 } ff_compass_axis_t;
 
@@ -153,6 +222,15 @@ typedef enum { FF_AXIS_X = 0, FF_AXIS_Y = 1, FF_AXIS_Z = 2 } ff_compass_axis_t;
 #define FF_MAG_BOARD_Y_SIGN ((int8_t)1)
 #define FF_MAG_BOARD_Z_SRC FF_AXIS_Z
 #define FF_MAG_BOARD_Z_SIGN ((int8_t)1)
+
+/* QMC5883P's own row — see this block's comment above for why it is
+ * separate from FF_MAG_BOARD_* rather than shared with it. */
+#define FF_MAG_QMC5883P_BOARD_X_SRC FF_AXIS_Y
+#define FF_MAG_QMC5883P_BOARD_X_SIGN ((int8_t)-1)
+#define FF_MAG_QMC5883P_BOARD_Y_SRC FF_AXIS_X
+#define FF_MAG_QMC5883P_BOARD_Y_SIGN ((int8_t)1)
+#define FF_MAG_QMC5883P_BOARD_Z_SRC FF_AXIS_Z
+#define FF_MAG_QMC5883P_BOARD_Z_SIGN ((int8_t)1)
 
 #define FF_IMU_BOARD_X_SRC FF_AXIS_X
 #define FF_IMU_BOARD_X_SIGN ((int8_t)1)
@@ -329,6 +407,56 @@ static bool ff_compass_probe_hmc5883l(i2c_master_bus_handle_t bus)
     return false;
 }
 
+static bool ff_compass_probe_qmc5883p(i2c_master_bus_handle_t bus)
+{
+    i2c_master_dev_handle_t dev = NULL;
+    if (ff_compass_add_dev(bus, FF_QMC5883P_ADDR, &dev) != ESP_OK) {
+        return false;
+    }
+
+    uint8_t chip_id = 0;
+    if (ff_compass_reg_read(dev, FF_QMC5883P_REG_CHIPID, &chip_id, 1) != ESP_OK) {
+        /* Nothing ACKed at 0x2C at all — not this chip. */
+        i2c_master_bus_rm_device(dev);
+        return false;
+    }
+    if (chip_id != FF_QMC5883P_CHIPID_VAL) {
+        /* Something answers at 0x2C but its chip id isn't the QMC5883P's
+         * documented 0x80 (datasheet section 9.2.1) — log what it
+         * actually said and walk away rather than guessing which chip
+         * this is (honesty contract, ff_compass.h: no fabricated
+         * heading from an unidentified device). */
+        ESP_LOGW(TAG,
+                 "device @0x%02X answered but chip id 0x%02X != QMC5883P's 0x%02X — not treating as a "
+                 "magnetometer",
+                 FF_QMC5883P_ADDR, chip_id, FF_QMC5883P_CHIPID_VAL);
+        i2c_master_bus_rm_device(dev);
+        return false;
+    }
+
+    /* Bring-up order per the datasheet's own worked examples (7.1/7.2,
+     * "Continuous/Normal Mode Setup Example") plus the soft-reset step
+     * (7.6) FIRST so a warm-boot re-probe (e.g. after a watchdog reset
+     * that never power-cycled the sensor) starts from POR defaults
+     * rather than whatever mode a previous boot left it in. */
+    esp_err_t const rst = ff_compass_reg_write(dev, FF_QMC5883P_REG_CTRL2, FF_QMC5883P_SOFT_RST_VAL);
+    esp_err_t const sign = ff_compass_reg_write(dev, FF_QMC5883P_REG_SIGN, FF_QMC5883P_SIGN_VAL);
+    esp_err_t const c2 = ff_compass_reg_write(dev, FF_QMC5883P_REG_CTRL2, FF_QMC5883P_CTRL2_VAL);
+    esp_err_t const c1 = ff_compass_reg_write(dev, FF_QMC5883P_REG_CTRL1, FF_QMC5883P_CTRL1_VAL);
+    if (rst == ESP_OK && sign == ESP_OK && c2 == ESP_OK && c1 == ESP_OK) {
+        s_mag_dev = dev;
+        s_mag_kind = FF_COMPASS_MAG_QMC5883P;
+        ESP_LOGI(TAG,
+                 "QMC5883P magnetometer found @0x%02X (chip id 0x%02X) — continuous, 50 Hz, 2G, OSR1=8 OSR2=8 "
+                 "(CTRL1=0x%02X CTRL2=0x%02X)",
+                 FF_QMC5883P_ADDR, chip_id, FF_QMC5883P_CTRL1_VAL, FF_QMC5883P_CTRL2_VAL);
+        return true;
+    }
+    ESP_LOGW(TAG, "QMC5883P identified but a bring-up write failed — treating as absent");
+    i2c_master_bus_rm_device(dev);
+    return false;
+}
+
 static void ff_compass_probe_mag(i2c_master_bus_handle_t bus)
 {
     /* QMC5883L first — the far more common chip on a GY-273 board even
@@ -339,11 +467,14 @@ static void ff_compass_probe_mag(i2c_master_bus_handle_t bus)
     if (ff_compass_probe_hmc5883l(bus)) {
         return;
     }
+    if (ff_compass_probe_qmc5883p(bus)) {
+        return;
+    }
 
     ESP_LOGW(TAG,
-             "compass: no magnetometer found (checked QMC5883L @0x%02X, HMC5883L @0x%02X) — heading will read "
-             "unknown (-1) forever",
-             FF_QMC5883L_ADDR, FF_HMC5883L_ADDR);
+             "compass: no magnetometer found (checked QMC5883L @0x%02X, HMC5883L @0x%02X, QMC5883P @0x%02X) — "
+             "heading will read unknown (-1) forever",
+             FF_QMC5883L_ADDR, FF_HMC5883L_ADDR, FF_QMC5883P_ADDR);
 }
 
 /* =====================================================================
@@ -378,6 +509,17 @@ bool ff_compass_present(void)
 ff_compass_mag_kind_t ff_compass_mag_kind(void)
 {
     return s_mag_kind;
+}
+
+char const *ff_compass_mag_kind_name(ff_compass_mag_kind_t kind)
+{
+    switch (kind) {
+    case FF_COMPASS_MAG_QMC5883L: return "qmc5883l";
+    case FF_COMPASS_MAG_HMC5883L: return "hmc5883l";
+    case FF_COMPASS_MAG_QMC5883P: return "qmc5883p";
+    case FF_COMPASS_MAG_NONE: return "none";
+    }
+    return "none"; /* unreachable for a value from this file's own enum, but -Werror wants a return on every path */
 }
 
 bool ff_compass_imu_present(void)
@@ -418,7 +560,7 @@ float ff_compass_read(void)
         mag_raw.x = (float)(int16_t)((buf[1] << 8) | buf[0]);
         mag_raw.y = (float)(int16_t)((buf[3] << 8) | buf[2]);
         mag_raw.z = (float)(int16_t)((buf[5] << 8) | buf[4]);
-    } else { /* FF_COMPASS_MAG_HMC5883L */
+    } else if (s_mag_kind == FF_COMPASS_MAG_HMC5883L) {
         if (ff_compass_reg_read(s_mag_dev, FF_HMC5883L_REG_DATA, buf, sizeof(buf)) != ESP_OK) {
             if (!s_mag_read_warned) {
                 s_mag_read_warned = true;
@@ -433,6 +575,21 @@ float ff_compass_read(void)
         mag_raw.x = (float)(int16_t)((buf[0] << 8) | buf[1]);
         mag_raw.z = (float)(int16_t)((buf[2] << 8) | buf[3]);
         mag_raw.y = (float)(int16_t)((buf[4] << 8) | buf[5]);
+    } else { /* FF_COMPASS_MAG_QMC5883P */
+        if (ff_compass_reg_read(s_mag_dev, FF_QMC5883P_REG_DATA, buf, sizeof(buf)) != ESP_OK) {
+            if (!s_mag_read_warned) {
+                s_mag_read_warned = true;
+                ESP_LOGW(TAG, "magnetometer read failed (NACK/timeout) — heading reports -1 until it recovers "
+                              "(logged once)");
+            }
+            s_last_heading_deg = -1.0f; /* -1 sentinel, never a stale heading */
+            return -1.0f;
+        }
+        /* QMC5883P's data order is X,Y,Z, little-endian per axis, same
+         * shape as the QMC5883L (datasheet Table 15). */
+        mag_raw.x = (float)(int16_t)((buf[1] << 8) | buf[0]);
+        mag_raw.y = (float)(int16_t)((buf[3] << 8) | buf[2]);
+        mag_raw.z = (float)(int16_t)((buf[5] << 8) | buf[4]);
     }
 
     ff_vec3_t accel_board;
@@ -459,9 +616,15 @@ float ff_compass_read(void)
         accel_board = (ff_vec3_t){0.0f, 0.0f, 1.0f}; /* assume level — logged once at init, see ff_compass_probe_imu */
     }
 
-    ff_vec3_t const mag_board = ff_compass_remap(mag_raw, FF_MAG_BOARD_X_SRC, FF_MAG_BOARD_X_SIGN,
-                                                  FF_MAG_BOARD_Y_SRC, FF_MAG_BOARD_Y_SIGN, FF_MAG_BOARD_Z_SRC,
-                                                  FF_MAG_BOARD_Z_SIGN);
+    /* QMC5883P gets its OWN axis-map row (FF_MAG_QMC5883P_BOARD_*) — see
+     * that table's own comment for why it is not shared with the
+     * QMC5883L/HMC5883L row (FF_MAG_BOARD_*) used for the other two. */
+    ff_vec3_t const mag_board = (s_mag_kind == FF_COMPASS_MAG_QMC5883P)
+        ? ff_compass_remap(mag_raw, FF_MAG_QMC5883P_BOARD_X_SRC, FF_MAG_QMC5883P_BOARD_X_SIGN,
+                            FF_MAG_QMC5883P_BOARD_Y_SRC, FF_MAG_QMC5883P_BOARD_Y_SIGN,
+                            FF_MAG_QMC5883P_BOARD_Z_SRC, FF_MAG_QMC5883P_BOARD_Z_SIGN)
+        : ff_compass_remap(mag_raw, FF_MAG_BOARD_X_SRC, FF_MAG_BOARD_X_SIGN, FF_MAG_BOARD_Y_SRC,
+                            FF_MAG_BOARD_Y_SIGN, FF_MAG_BOARD_Z_SRC, FF_MAG_BOARD_Z_SIGN);
 
     float const heading = ff_geo_heading_deg(mag_board, accel_board, s_cal_valid ? &s_cal : NULL);
     s_last_heading_deg = heading;

@@ -191,29 +191,38 @@ wall
 dbg: wall latched=1 latch_unix=1789768800 trust=TRUSTED offset_min=-240 assumed=0 last_src=!0000da1a rejected=0
 
 i2c
-dbg: i2c 0x20 io-expander, 0x51 rtc, 0x53 touch, 0x6b qmi8658
-dbg: compass mag=absent imu=found heading=? cal=identity
+dbg: i2c 0x20 io-expander, 0x2c qmc5883p, 0x51 rtc, 0x53 touch, 0x6b qmi8658
+dbg: compass mag=qmc5883p imu=found heading=127 cal=identity
 
 xyzzy
 dbg: ? try help
 ```
 
+(The scan line above is a real bench capture, 2026-09-05, from a puck
+with a current-production GY-273 clone wired up — see "Chip
+auto-detection" below for why this board answers at `0x2c` rather than
+the `0x0d`/`0x1e` an older clone would.)
+
 `i2c` is a bench diagnostic, not a shell command in the seam-discipline
 sense above — it reaches no `ff_shell_*` getter at all. Named addresses:
-`0x0d qmc5883l` / `0x1e hmc5883l` (GY-273 magnetometer — whichever chip
-`ff_compass_init` actually finds; see the "Compass" section below),
-`0x20 io-expander` (TCA9554), `0x51 rtc` (an aftermarket RTC module on
-the back header), `0x53 touch` (SPD2010), `0x6b qmi8658` (onboard IMU).
-An address not in this list prints bare (just the hex) rather than a
-guess. The scan is a two-line diagnostic on purpose: the bus sweep
-(what is actually wired up and ACKing) immediately followed by the
-compass driver's own one-shot status (what it believes it found and its
-last heading/calibration state) — so a bench engineer sees in one
-command whether an unresponsive magnetometer is a wiring problem (never
-shows up in the scan) or a driver problem (shows up in the scan but the
-compass line still reports `mag=absent`). On a target with no I2C bus
-at all (the sim build), the whole command replies with a single honest
-line: `dbg: i2c unavailable on this target`.
+`0x0d qmc5883l` / `0x1e hmc5883l` / `0x2c qmc5883p` (GY-273
+magnetometer — whichever chip `ff_compass_init` actually finds; see the
+"Compass" section below), `0x20 io-expander` (TCA9554), `0x51 rtc` (an
+aftermarket RTC module on the back header), `0x53 touch` (SPD2010),
+`0x6b qmi8658` (onboard IMU). An address not in this list prints bare
+(just the hex) rather than a guess. The scan is a two-line diagnostic
+on purpose: the bus sweep (what is actually wired up and ACKing)
+immediately followed by the compass driver's own one-shot status (what
+it believes it found and its last heading/calibration state) — so a
+bench engineer sees in one command whether an unresponsive
+magnetometer is a wiring problem (never shows up in the scan) or a
+driver problem (shows up in the scan but the compass line still
+reports `mag=absent`). The compass line's `mag=` field names the
+actual chip (`qmc5883l`/`hmc5883l`/`qmc5883p`) rather than a bare
+"found", so a bench engineer doesn't have to cross-reference the scan
+line above it to know which part responded. On a target with no I2C
+bus at all (the sim build), the whole command replies with a single
+honest line: `dbg: i2c unavailable on this target`.
 
 ## The puck's back header (photo, 2026-09-04)
 
@@ -252,22 +261,34 @@ physical I2C bus the SPD2010 touch controller (0x53) and TCA9554 IO expander
 existing bus (`ff_display_i2c_bus()`), it never opens a second I2C master on
 these pins.
 
-**Chip auto-detection:** most GY-273 boards actually carry a **QMC5883L**
+**Chip auto-detection:** older GY-273 boards actually carry a **QMC5883L**
 (I2C address `0x0D`) even when silkscreened "HMC5883L"; a genuine
-**HMC5883L** (`0x1E`) does turn up on some. `ff_compass_init` probes both at
-boot via each chip's own identification registers and logs which it found
-(or "no magnetometer" if neither ACKs/identifies — the puck still boots and
-runs; the Radar arrow just cannot point). The onboard **QMI8658** IMU is at
-`0x6B` (alt strap `0x6A`); if it fails to identify, the driver falls back to
-an assumed-level accel and logs `compass: no IMU — assuming level` — tilt
-rejection is unavailable on that path (a synthesized always-level reading can
-never indicate tilt).
+**HMC5883L** (`0x1E`) does turn up on some. Current-production GY-273
+clones increasingly ship a **QMC5883P** instead — QST's successor part, I2C
+address `0x2C`, CHIP_ID register (0x00) reading `0x80` — confirmed on the
+coordinator's own bench 2026-09-05 (a real puck with a QMC5883P-equipped
+GY-273 wired and powered; the `i2c` scan above is that capture). `ff_compass_init`
+probes all three at boot via each chip's own identification registers and
+logs which it found (or "no magnetometer" if none ACKs/identifies — the
+puck still boots and runs; the Radar arrow just cannot point). If something
+answers at `0x2C` but its chip id isn't `0x80`, the driver logs the id it
+actually got and treats the device as unidentified rather than guessing —
+same honesty contract as every other "found but didn't check out" case in
+this file. The onboard **QMI8658** IMU is at `0x6B` (alt strap `0x6A`); if
+it fails to identify, the driver falls back to an assumed-level accel and
+logs `compass: no IMU — assuming level` — tilt rejection is unavailable on
+that path (a synthesized always-level reading can never indicate tilt).
 
 **Orientation — verify on the bench.** The magnetometer's mounting
 orientation (which physical axis is which) is an ASSUMPTION, documented and
 isolated to one small `#define` table in `ff_compass.c` ("Axis mapping:
 sensor frame -> board frame"), not verified against a real GY-273 glued into
-a case yet. To check/correct it:
+a case yet. The QMC5883P gets its OWN row in that table
+(`FF_MAG_QMC5883P_BOARD_*`, currently seeded with the same values as the
+QMC5883L/HMC5883L row since it's the same physical module footprint) —
+independently correctable without touching the other chips' mapping, since
+its internal die orientation is not assumed identical to theirs. To
+check/correct either row:
 
 1. Flash a build with `CONFIG_FF_COMPASS=y` (default) and get to the Radar
    face with at least one paired friend so the arrow renders.
@@ -279,9 +300,11 @@ a case yet. To check/correct it:
    problem.
 4. If the arrow moves but in the wrong direction: 90°-off (arrow leads or
    lags the true rotation) means the X/Y source axes are swapped in the
-   `FF_MAG_BOARD_*_SRC` defines; mirrored (arrow turns the opposite way from
-   the puck) means a sign needs flipping (`FF_MAG_BOARD_*_SIGN`). Both are
-   isolated to that one table — no other file encodes the mapping.
+   `FF_MAG_BOARD_*_SRC` (or, on a QMC5883P board, `FF_MAG_QMC5883P_BOARD_*_SRC`)
+   defines; mirrored (arrow turns the opposite way from the puck) means a
+   sign needs flipping (the matching `*_SIGN` define). Both are isolated to
+   that chip's own row — no other file encodes the mapping, and correcting
+   one chip's row never touches another's.
 5. Tilting the puck should not make the arrow swing wildly (that's what the
    QMI8658 tilt compensation is for); if it does with the IMU confirmed
    present, check the `FF_IMU_BOARD_*` half of the same table.
