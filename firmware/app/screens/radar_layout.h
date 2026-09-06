@@ -290,6 +290,19 @@ extern "C" {
 #define RADAR_LAYOUT_NOFIX_SUB_DY 40.0f
 #define RADAR_LAYOUT_NOFIX_CHIP_DY 80.0f
 
+/* NOHDG (2026-09-05 amendment, docs/specs/S06-radar-face.md). Name and
+ * distance reuse RADAR_LAYOUT_STACK_NAME_DY/STACK_DIST_DY verbatim — the
+ * same rows LIVE/STALE/PLACE use — since this mode's headline content
+ * (who, how far) is identical to theirs; only the arrow is missing. The
+ * "NO COMPASS" chip takes the vertical spot the arrow would otherwise
+ * occupy (above the name), and the mono bearing hint goes below the
+ * distance. NOHDG has no separate freshness CHIP row (unlike STALE's
+ * "LAST SEEN" pill) — the spec's own wording is "freshness still picks
+ * the rim... colour", not a second chip, so an aging position here is
+ * signalled by the ordinary STALE rim tint alone (scr_radar.c). */
+#define RADAR_LAYOUT_NOHDG_CHIP_DY (-20.0f)
+#define RADAR_LAYOUT_NOHDG_HINT_DY 130.0f
+
 /* NOSEL. */
 #define RADAR_LAYOUT_NOSEL_HEADLINE_DY (-10.0f)
 #define RADAR_LAYOUT_NOSEL_SUB_DY 40.0f

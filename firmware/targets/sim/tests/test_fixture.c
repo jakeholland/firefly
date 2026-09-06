@@ -144,6 +144,62 @@ static void radar_live_dist_imprecise_defaults_false(void)
     TEST_ASSERT_FALSE(s.radar.dist_imprecise);
 }
 
+/* 2026-09-05 amendment — RADAR_NOHDG: no arrow, a real absolute bearing,
+ * and the fresh-position "no rim tint" case. */
+static void radar_nohdg_parses_exact_values(void)
+{
+    ff_app_state_t s;
+    TEST_ASSERT_EQUAL_INT(FF_FIXTURE_OK, ff_fixture_load_file(fixture_path("radar_nohdg.json"), &s));
+
+    TEST_ASSERT_EQUAL_INT(RADAR_NOHDG, s.radar.mode);
+    TEST_ASSERT_FALSE(s.radar.arrow_valid);
+    TEST_ASSERT_EQUAL_STRING("TAYL", s.radar.name);
+    TEST_ASSERT_EQUAL_STRING("492 ft", s.radar.dist_str);
+    TEST_ASSERT_TRUE(s.radar.bearing_valid);
+    TEST_ASSERT_EQUAL_FLOAT(180.0f, s.radar.bearing_deg);
+    TEST_ASSERT_FALSE(s.radar.place);
+    TEST_ASSERT_FALSE(s.radar.stale);
+    TEST_ASSERT_EQUAL_UINT8(0, s.radar.n_dots); /* ring dots never north-up fall back */
+}
+
+/* The sibling fixture: same scenario, but the position itself has aged —
+ * `stale: true` while `mode` stays "nohdg" (the amendment's own ruling). */
+static void radar_nohdg_stale_parses_exact_values(void)
+{
+    ff_app_state_t s;
+    TEST_ASSERT_EQUAL_INT(FF_FIXTURE_OK, ff_fixture_load_file(fixture_path("radar_nohdg_stale.json"), &s));
+
+    TEST_ASSERT_EQUAL_INT(RADAR_NOHDG, s.radar.mode);
+    TEST_ASSERT_TRUE(s.radar.stale);
+    TEST_ASSERT_FALSE(s.radar.place);
+    TEST_ASSERT_EQUAL_STRING("12 MIN", s.radar.age_str);
+}
+
+/* bearing_valid/place/stale absent (every OTHER committed radar fixture)
+ * must default false — same "absent key -> least-claiming default"
+ * convention as dist_imprecise above and flare.takeover_bearing_valid
+ * elsewhere in this file. */
+static void radar_live_bearing_place_stale_default_false(void)
+{
+    ff_app_state_t s;
+    TEST_ASSERT_EQUAL_INT(FF_FIXTURE_OK, ff_fixture_load_file(fixture_path("radar_live.json"), &s));
+    TEST_ASSERT_FALSE(s.radar.bearing_valid);
+    TEST_ASSERT_FALSE(s.radar.place);
+    TEST_ASSERT_FALSE(s.radar.stale);
+}
+
+/* Mirrors flare_takeover_bearing_valid_defaults_false's own regression:
+ * providing bearing_deg WITHOUT bearing_valid must not be read as an
+ * honestly-known bearing. */
+static void radar_bearing_valid_defaults_false_even_with_bearing_deg_present(void)
+{
+    ff_app_state_t s;
+    char const *json = "{\"radar\": {\"mode\": \"nohdg\", \"bearing_deg\": 90.0}}";
+    TEST_ASSERT_EQUAL_INT(FF_FIXTURE_OK, ff_fixture_load_json(json, strlen(json), &s));
+    TEST_ASSERT_FALSE(s.radar.bearing_valid);
+    TEST_ASSERT_EQUAL_FLOAT(90.0f, s.radar.bearing_deg); /* parsed regardless — just not honestly usable */
+}
+
 /* issue #74 (S17 slice a) — dot-level imprecise, the golden pair. Both
  * fixtures are otherwise identical (see tests/fixtures/README.md's own
  * note on this pair); only dot "R"'s `imprecise` flag differs. */
@@ -1394,6 +1450,10 @@ int main(void)
     RUN_TEST(radar_place_parses_exact_values);
     RUN_TEST(radar_imprecise_parses_exact_values);
     RUN_TEST(radar_live_dist_imprecise_defaults_false);
+    RUN_TEST(radar_nohdg_parses_exact_values);
+    RUN_TEST(radar_nohdg_stale_parses_exact_values);
+    RUN_TEST(radar_live_bearing_place_stale_default_false);
+    RUN_TEST(radar_bearing_valid_defaults_false_even_with_bearing_deg_present);
     RUN_TEST(radar_dot_imprecise_parses_true_only_on_the_flagged_dot);
     RUN_TEST(radar_dot_precise_parses_imprecise_false_on_every_dot);
     RUN_TEST(radar_live_dot_imprecise_defaults_false);

@@ -461,6 +461,90 @@ static void S24_AC6_unproject_inverts_project(void)
 }
 
 /* ------------------------------------------------------------------- */
+/* S06 2026-09-05 amendment — ff_geo_compass_point (RADAR_NOHDG).       */
+/* ------------------------------------------------------------------- */
+
+static void S06_compass_point_cardinal_and_intercardinal_centers(void)
+{
+    char out[4];
+    ff_geo_compass_point(0.0f, out);
+    TEST_ASSERT_EQUAL_STRING("N", out);
+    ff_geo_compass_point(45.0f, out);
+    TEST_ASSERT_EQUAL_STRING("NE", out);
+    ff_geo_compass_point(90.0f, out);
+    TEST_ASSERT_EQUAL_STRING("E", out);
+    ff_geo_compass_point(135.0f, out);
+    TEST_ASSERT_EQUAL_STRING("SE", out);
+    ff_geo_compass_point(180.0f, out);
+    TEST_ASSERT_EQUAL_STRING("S", out); /* pins the S06 spec's own bearing-180 example */
+    ff_geo_compass_point(225.0f, out);
+    TEST_ASSERT_EQUAL_STRING("SW", out);
+    ff_geo_compass_point(270.0f, out);
+    TEST_ASSERT_EQUAL_STRING("W", out);
+    ff_geo_compass_point(315.0f, out);
+    TEST_ASSERT_EQUAL_STRING("NW", out);
+}
+
+static void S06_compass_point_all_16_sector_centers(void)
+{
+    char const *const names[16] = {
+        "N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE", "S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW",
+    };
+    char out[4];
+    for (int i = 0; i < 16; i++) {
+        ff_geo_compass_point((float)i * 22.5f, out);
+        TEST_ASSERT_EQUAL_STRING_MESSAGE(names[i], out, names[i]);
+    }
+}
+
+/* Boundary tie-break: the doc comment pins "exactly on a boundary
+ * resolves to the CLOCKWISE-most (higher-bearing) sector" — 11.25 deg is
+ * the N/NNE seam and must read NNE, not N. */
+static void S06_compass_point_boundary_ties_break_clockwise(void)
+{
+    char out[4];
+    ff_geo_compass_point(11.25f, out);
+    TEST_ASSERT_EQUAL_STRING("NNE", out);
+    ff_geo_compass_point(33.75f, out); /* NNE/NE seam -> NE */
+    TEST_ASSERT_EQUAL_STRING("NE", out);
+    ff_geo_compass_point(348.75f, out); /* NNW/N seam, wraps to idx 16 -> 0 -> N */
+    TEST_ASSERT_EQUAL_STRING("N", out);
+}
+
+/* A full tenth-of-a-degree sweep of every one of the 16 sectors' full
+ * span, checked against the boundary formula directly (not just spot
+ * checks) — AGENTS.md's "measuring, not reasoning harder" for a function
+ * whose whole job is getting every one of 3600 tenth-degree readings
+ * right, not just the ones a human thought to spot-check. */
+static void S06_compass_point_full_tenth_degree_sweep(void)
+{
+    char const *const names[16] = {
+        "N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE", "S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW",
+    };
+    char out[4];
+    for (int tenth = 0; tenth < 3600; tenth++) {
+        float deg = (float)tenth / 10.0f;
+        int expect_idx = ((int)((deg + 11.25f) / 22.5f)) % 16;
+        ff_geo_compass_point(deg, out);
+        TEST_ASSERT_EQUAL_STRING_MESSAGE(names[expect_idx], out, "compass sweep mismatch");
+    }
+}
+
+static void S06_compass_point_wraps_negative_and_over_360(void)
+{
+    char out[4];
+    ff_geo_compass_point(-90.0f, out); /* == 270 -> W */
+    TEST_ASSERT_EQUAL_STRING("W", out);
+    ff_geo_compass_point(720.0f + 45.0f, out); /* two full wraps + 45 -> NE */
+    TEST_ASSERT_EQUAL_STRING("NE", out);
+}
+
+static void S06_compass_point_null_out_is_a_safe_noop(void)
+{
+    ff_geo_compass_point(90.0f, NULL); /* must not crash */
+}
+
+/* ------------------------------------------------------------------- */
 /* AC8 — math.h only, warnings-clean C11 build (enforced by the CMake   */
 /* gate; this is a light end-to-end smoke check).                       */
 /* ------------------------------------------------------------------- */
@@ -509,6 +593,13 @@ int main(void)
     RUN_TEST(S24_AC6_unproject_inverts_project);
 
     RUN_TEST(S01_AC8_module_is_usable_end_to_end);
+
+    RUN_TEST(S06_compass_point_cardinal_and_intercardinal_centers);
+    RUN_TEST(S06_compass_point_all_16_sector_centers);
+    RUN_TEST(S06_compass_point_boundary_ties_break_clockwise);
+    RUN_TEST(S06_compass_point_full_tenth_degree_sweep);
+    RUN_TEST(S06_compass_point_wraps_negative_and_over_360);
+    RUN_TEST(S06_compass_point_null_out_is_a_safe_noop);
 
     return UNITY_END();
 }

@@ -75,6 +75,31 @@ float ff_geo_angdiff_deg(float a, float b);
 float ff_geo_arrow_deg(float bearing_deg, float heading_deg);
 
 /**
+ * ff_geo_compass_point — the 16-point compass name (N, NNE, NE, ENE, E,
+ * ESE, SE, SSE, S, SSW, SW, WSW, W, WNW, NW, NNW) for an absolute true
+ * bearing `deg` (any value; wrapped internally via `ff_geo_wrap_deg`).
+ *
+ * Added for S06's RADAR_NOHDG "no compass" mode (docs/specs/S06-radar-face.md
+ * Amendments): when the device's own heading is unknown, the radar face
+ * still knows the true bearing to a member with a known position and
+ * needs an honest way to say it without implying a screen-relative
+ * direction it cannot compute — "BEARING 180 deg . S" reads as an
+ * absolute fact, unlike an arrow, which would silently claim a
+ * screen-relative meaning with no heading to anchor it.
+ *
+ * Each of the 16 sectors spans 22.5 degrees, centered on its own compass
+ * point (N is centered on 0/360); a value falling exactly on a sector
+ * boundary resolves to the CLOCKWISE-most (higher-bearing) of the two —
+ * an arbitrary but total, pinned tie-break (see ff_geo.c's doc comment
+ * and test_geo.c's boundary sweep).
+ *
+ * Writes a NUL-terminated string (at most 3 letters + NUL) into `out`,
+ * which must have room for 4 bytes; a NULL `out` is a no-op. Pure,
+ * total, allocation-free.
+ */
+void ff_geo_compass_point(float deg, char out[4]);
+
+/**
  * ff_geo_cal_t — compass calibration (hard/soft-iron correction) plus
  * magnetic declination. Persisted by S11; produced by `ff_geo_cal_finish`.
  */

@@ -77,6 +77,20 @@ typedef enum {
     RADAR_PLACE,
     RADAR_CLOSE,
     RADAR_NOFIX,
+    /* 2026-09-05 amendment (docs/specs/S06-radar-face.md, bench-confirmed
+     * gap: `ff_radar_compute` used to fold "my position unknown" and "my
+     * heading unknown" into the SAME RADAR_NOFIX mode, so a puck that
+     * knows exactly where a member is and how far away they are — just
+     * not which way IT is currently facing (no magnetometer driver yet,
+     * or a compass that lost calibration/tilted out mid-festival) — told
+     * the user "NO FIX - RADIO ONLY / Looking for <name>", which is false
+     * on both counts: there IS a fix, and we are not "looking" for
+     * anything, only for our own facing. RADAR_NOHDG is its own mode so
+     * this degraded-but-informative state gets its own honest copy
+     * (distance + absolute bearing, no arrow) instead of collapsing into
+     * NOFIX's "nothing is known" framing. See ff_radar_compute's doc
+     * comment for exactly where this sits in mode-resolution priority. */
+    RADAR_NOHDG,
     RADAR_NOSEL,
 } radar_mode_t;
 
@@ -138,7 +152,7 @@ typedef struct {
 typedef struct {
     radar_mode_t mode;
     float arrow_deg;   /* smoothed screen rotation, [0, 360) */
-    bool  arrow_valid; /* false in CLOSE/NOFIX/NOSEL, and whenever the
+    bool  arrow_valid; /* false in CLOSE/NOFIX/NOHDG/NOSEL, and whenever the
                          * selected member has no position fix to point at
                          * (see ff_radar_compute's doc comment) */
     char  name[FF_RADAR_NAME_LEN];
@@ -156,6 +170,43 @@ typedef struct {
     bool  dist_imprecise;
     char  age_str[FF_RADAR_STR_LEN];
     int8_t trend; /* -1/0/+1, meaningful in CLOSE mode (hot/cold) */
+    /* 2026-09-05 amendment: the ABSOLUTE true bearing (degrees, [0, 360),
+     * 0 = true north) from `my_pos` to the selected member's position —
+     * unlike `arrow_deg`, this needs no heading at all, only two known
+     * lat/lons, so it is honestly computable in RADAR_NOHDG (where
+     * `arrow_valid` is false) as well as every other has-a-position mode.
+     * `bearing_valid` is true iff `my_pos_ok && member->has_pos` (the
+     * same "geometry alone, no heading" gate); when false, `bearing_deg`
+     * is left at 0.0f, which callers must not read as "due north" — check
+     * `bearing_valid` first, exactly like every other conditionally-known
+     * field on this struct. Primary consumer: RADAR_NOHDG's "BEARING
+     * 180 deg . S" hint (scr_radar.c), via `ff_geo_compass_point`. */
+    float bearing_deg;
+    bool  bearing_valid;
+    /* 2026-09-05 amendment: the selected member's OWN position freshness,
+     * mirroring `ff_radar_dot_t.place`/`.stale`'s exact semantics
+     * (computed the same way, via `ff_crew_freshness`) but for the
+     * selection rather than a ring dot. Unlike `mode`, this is populated
+     * independent of heading validity — it only needs `member->has_pos`,
+     * which is why it exists at all: RADAR_NOHDG's early return (heading
+     * unknown) happens BEFORE the ordinary LIVE/STALE/LOST/PLACE
+     * freshness switch below ever runs, so without this pair the
+     * NOHDG renderer would have no honest way to know whether the
+     * position it's showing a bearing to is fresh or aging — see this
+     * spec's "Freshness still picks the rim colour... but the mode stays
+     * NOHDG" amendment. `place` is true iff FF_FRESH_ASSERTED; `stale` is
+     * true iff `!place` and the freshness is anything but FF_FRESH_LIVE
+     * (i.e. STALE or LOST — an asserted position doesn't get the "aging"
+     * treatment, per RADAR_PLACE's own rationale elsewhere in this
+     * header). Both are false when the member has no position at all
+     * (FF_FRESH_NEVER) or when there is no selection (RADAR_NOSEL). For
+     * every mode OTHER than NOHDG this pair is redundant with `mode`
+     * itself (e.g. mode==RADAR_STALE implies stale==true) — it is
+     * computed unconditionally anyway so the ONE place this fact is
+     * derived stays `ff_radar_compute`, not scr_radar.c re-deriving it
+     * (CLAUDE.md: domain logic belongs in core). */
+    bool  place;
+    bool  stale;
     ff_radar_dot_t dots[FF_CREW_MAX];
     uint8_t n_dots;
     /* NOT written by ff_radar_compute — see this header's deviation note. */
@@ -260,10 +311,41 @@ void ff_radar_smooth_reset(ff_radar_smooth_t *s);
  * Mode resolution (highest to lowest priority):
  *  1. RADAR_NOSEL — no member is currently paired (`ff_crew_selected`
  *     returns NULL). Independent of `my_pos_ok`/`heading_deg`.
- *  2. RADAR_NOFIX — a member is selected, but `!my_pos_ok` or
+ *  2. RADAR_NOFIX (the TRUE "nothing is known" case) — a member is
+ *     selected, but `!my_pos_ok`: MY position is unknown, so nothing
+ *     geometric (distance, bearing, arrow) is honestly computable at all,
+ *     regardless of whether `heading_deg` happens to be valid. This check
+ *     alone decides NOFIX now — see RADAR_NOHDG immediately below for the
+ *     other historical NOFIX trigger, which is no longer folded in here.
+ *  3. RADAR_NOHDG (2026-09-05 amendment) — `my_pos_ok` is true (so
+ *     distance/bearing to the selected member ARE known) but
  *     `heading_deg` is invalid (negative — the same "unreliable" sentinel
- *     `ff_geo_heading_deg` returns).
- *  3. RADAR_CLOSE — `ff_crew_close_range()` is true for the selected
+ *     `ff_geo_heading_deg` returns, whether from no magnetometer driver
+ *     or from a compass that lost calibration/tilted out), AND the
+ *     selected member has a known position (`member->has_pos`) — i.e.
+ *     there is a real bearing to honestly report, just not a
+ *     screen-relative arrow direction (that needs MY heading too). If
+ *     `heading_deg` is invalid but the member has NO position, there is
+ *     nothing geometric to show at all (no distance, no bearing) — that
+ *     case stays RADAR_NOFIX, not RADAR_NOHDG (checked in code as: reached
+ *     only after the RADAR_NOFIX check above has already passed, i.e.
+ *     `my_pos_ok` is true; `!heading_ok && !member->has_pos` still
+ *     resolves RADAR_NOFIX for the same "nothing to show" reason).
+ *     Ranks strictly between RADAR_NOFIX above and RADAR_CLOSE/freshness
+ *     below: a compass-less puck never reports CLOSE or LIVE/STALE/LOST
+ *     for its selection, even if the RSSI-close leg would otherwise fire
+ *     — the missing heading is reported honestly rather than silently
+ *     bypassed by an unrelated proximity or freshness reading. KNOWN
+ *     INTERACTION (not a bug, a direct consequence of this priority
+ *     order — recorded so it isn't rediscovered as a surprise): an
+ *     ASSERTED (landmark) member selected while heading is unknown
+ *     resolves to RADAR_NOHDG here, never reaching the freshness switch
+ *     below that would otherwise classify it RADAR_PLACE. Its `place`
+ *     field (below) still reports the fact honestly to the renderer,
+ *     which is expected to skip the "aging" rim tint for it even while
+ *     the outer mode says NOHDG rather than PLACE — see `place`/`stale`'s
+ *     own doc comment.
+ *  4. RADAR_CLOSE — `ff_crew_close_range()` is true for the selected
  *     member (checked before freshness: a member can be RSSI-close even
  *     with a GPS-stale/lost/never/asserted position — proximity by real
  *     signal strength is a fact independent of the position's provenance,
@@ -271,7 +353,7 @@ void ff_radar_smooth_reset(ff_radar_smooth_t *s);
  *     honestly: an asserted coordinate is a real place, just not a fresh
  *     measurement, so "you are standing next to this spot" is a true
  *     statement about geometry, not a false one about currency).
- *  4. Otherwise, `ff_crew_freshness()` of the selected member's position:
+ *  5. Otherwise, `ff_crew_freshness()` of the selected member's position:
  *     FF_FRESH_LIVE -> RADAR_LIVE, FF_FRESH_STALE -> RADAR_STALE,
  *     FF_FRESH_ASSERTED -> RADAR_PLACE (issue #33 — checked as its own
  *     freshness value, so it can never also be LIVE/STALE/LOST no matter
@@ -321,12 +403,48 @@ void ff_radar_smooth_reset(ff_radar_smooth_t *s);
  *
  * `arrow_valid` is true only when a bearing genuinely exists to smooth
  * toward: `my_pos_ok && heading_deg` valid `&&` the selected member has a
- * position fix (`has_pos`). This is `false` for CLOSE/NOFIX/NOSEL per the
- * spec's explicit list, and *also* false for the FF_FRESH_NEVER-as-LOST
- * edge case above (a LOST reading with no bearing data at all would
- * otherwise fabricate a direction — CLAUDE.md: "never fake... positions").
- * Every other LIVE/STALE/LOST case has `arrow_valid == true`, matching the
- * spec exactly.
+ * position fix (`has_pos`). This is `false` for CLOSE/NOFIX/NOHDG/NOSEL
+ * per the spec's explicit list (NOHDG by definition has no valid heading
+ * to rotate a screen-relative arrow against, even though it has a real
+ * bearing — see `bearing_valid` below), and *also* false for the
+ * FF_FRESH_NEVER-as-LOST edge case above (a LOST reading with no bearing
+ * data at all would otherwise fabricate a direction — CLAUDE.md: "never
+ * fake... positions"). Every other LIVE/STALE/LOST case has `arrow_valid
+ * == true`, matching the spec exactly.
+ *
+ * `bearing_deg`/`bearing_valid` (2026-09-05 amendment) are a DIFFERENT,
+ * weaker fact than `arrow_deg`/`arrow_valid`: an absolute true bearing
+ * needs only `my_pos_ok && member->has_pos` — no heading at all — so it
+ * is honestly knowable in RADAR_NOHDG (and every other has-a-position
+ * mode) even when `arrow_valid` is false. `bearing_valid` is exactly
+ * that gate; `bearing_deg` is `ff_geo_bearing_deg(my_pos, member->pos)`
+ * when valid, else left at 0.0f (not to be read as "due north" — check
+ * `bearing_valid` first). This is computed once, right after
+ * `dist_str`/`age_str`, independent of which mode the member ultimately
+ * resolves to.
+ *
+ * `place`/`stale` (2026-09-05 amendment) are `ff_crew_freshness(member,
+ * now_ms)` reduced to the same two booleans `ff_radar_dot_t.place`/
+ * `.stale` already use for ring dots, computed for the SELECTION and
+ * unconditionally (independent of `my_pos_ok`/`heading_ok`/mode) —
+ * `ff_crew_freshness` tolerates a NULL/no-position member by returning
+ * FF_FRESH_NEVER, which reduces to `place == false, stale == false`, so
+ * this is safe to compute right after `member` is established even
+ * before `member->has_pos` is known to be true. Their purpose is
+ * RADAR_NOHDG: that mode's early return happens before the ordinary
+ * LIVE/STALE/LOST/PLACE freshness switch below runs, so without this
+ * pair the NOHDG renderer would have to either fabricate a freshness
+ * verdict or ignore the position's own age entirely — this spec's
+ * ruling is neither: "freshness still picks the rim colour... but the
+ * mode stays NOHDG" (docs/specs/S06-radar-face.md's 2026-09-05
+ * amendment). scr_radar.c's NOHDG renderer applies the ordinary STALE
+ * rim tint when `stale` is true and none when it isn't; `place` being
+ * true suppresses that (an asserted position doesn't age — see
+ * RADAR_PLACE's own rationale above). For every mode other than NOHDG
+ * this pair is simply redundant with `mode` (e.g. `mode == RADAR_STALE`
+ * already implies `stale == true`) — computed unconditionally anyway so
+ * there is exactly one place in the codebase this classification is
+ * derived, not two.
  *
  * `dist_str`/`age_str` are each independently left as `""` ("") when their
  * underlying fact is unknown (no `my_pos` for distance, no fix ever for

@@ -2,6 +2,7 @@
 
 #include <math.h>
 #include <stddef.h> /* NULL */
+#include <string.h> /* memcpy — ff_geo_compass_point */
 
 /* Mean earth radius, meters. Spherical-earth approximation (haversine),
  * good to within 0.5% for terrestrial distances — see spec AC1. */
@@ -43,6 +44,31 @@ float ff_geo_angdiff_deg(float a, float b)
 float ff_geo_arrow_deg(float bearing_deg, float heading_deg)
 {
     return ff_geo_wrap_deg(bearing_deg - heading_deg);
+}
+
+/* S06 RADAR_NOHDG amendment: 16-point compass names, index i covering
+ * [i*22.5 - 11.25, i*22.5 + 11.25) — i.e. N is centered on 0 deg, each
+ * neighbor 22.5 deg further clockwise. A boundary itself (e.g. exactly
+ * 11.25 deg) belongs to the CLOCKWISE-most of the two sectors it touches
+ * (11.25 reads NNE, not N) — an arbitrary but total tie-break, pinned by
+ * test_geo.c's boundary sweep so a future edit here is a deliberate,
+ * reviewed change rather than a silent drift. */
+static char const *const ff_geo_compass_names[16] = {
+    "N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE", "S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW",
+};
+
+void ff_geo_compass_point(float deg, char out[4])
+{
+    if (!out) {
+        return;
+    }
+    float wrapped = ff_geo_wrap_deg(deg); /* [0, 360) */
+    int idx = (int)((wrapped + 11.25f) / 22.5f);
+    idx %= 16; /* wrapped can push idx to exactly 16 (e.g. deg in [348.75, 360)) */
+    char const *name = ff_geo_compass_names[idx];
+    size_t n = strlen(name);
+    memcpy(out, name, n);
+    out[n] = '\0';
 }
 
 float ff_geo_distance_m(ff_latlon_t a, ff_latlon_t b)

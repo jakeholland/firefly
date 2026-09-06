@@ -2492,6 +2492,23 @@ static void shell_render_key(ff_app_state_t const *v, ff_app_state_t *key)
      * 0.1 degrees is LVGL's own rotation unit: below it, no pixel moves. */
     key->radar.arrow_deg = (float)(int32_t)(v->radar.arrow_deg * 10.0f);
 
+    /* 2026-09-05 amendment (RADAR_NOHDG). `bearing_deg` is a plain
+     * geometric fact (ff_geo_bearing_deg(my_pos, member->pos)) — it does
+     * not continuously drift toward a target the way arrow_deg's
+     * exponential smoothing does — but dirty detection here is a raw
+     * struct compare, and repeated lat/lon trig can still produce a
+     * different last-bit float from one tick to the next for an
+     * otherwise-unchanged scene. Coarsened to whole degrees for the same
+     * reason arrow_deg is coarsened above: RADAR_NOHDG's "BEARING 180 -
+     * S" hint only ever needs whole-degree precision
+     * (ff_geo_compass_point's own resolution is 22.5 deg sectors), so a
+     * sub-degree float wobble that changes no rendered pixel must not
+     * mark the view dirty. `mode` (RADAR_NOHDG included) needs no such
+     * treatment — it's a small discrete enum already carried verbatim by
+     * the memcpy above, and an actual mode change IS exactly the kind of
+     * thing that should mark the key dirty. */
+    key->radar.bearing_deg = (float)(int32_t)v->radar.bearing_deg;
+
     /* #bug1 — brightness is kept OUT of the render key (coarsened to a
      * constant). A live brightness drag emits a value change every frame;
      * were it in the key, each would mark the view dirty and force a full
