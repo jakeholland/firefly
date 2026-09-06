@@ -33,24 +33,20 @@ PARAMS['flat_rho'] = 22.14                  # 24.14 - 2
 #     receptacle position: unchanged -- these stay at their reference
 #     (current-variant) positions inside the now-narrower cavity. ---
 
-# --- case screws A/C: re-derived for the narrower trim wall (2026-09-04
-#     bump fix). At their current-variant (R30) x/y, bosses A/C punched
-#     through the trim (R28) outer shell -- caught by an outside-surface
-#     probe scan. New rule: A/C at x = +/-(outer_radius - wall - 3.0), y
-#     unchanged. D is untouched (its bump, if any, is handled generically
-#     by clip_to_inner_cavity on every boss/post regardless of variant).
-#     B1/B2 (2026-09-07 pass 7) are also left untouched here -- they are
-#     ABSOLUTE mm positions sized against the comms stack, not the outer
-#     shell, and rho=19.5 clears even the narrower trim flat bed
-#     (flat_rho=22.14) with margin -- see params_current.py's comment. ---
-_R3 = PARAMS['outer_radius'] - PARAMS['wall'] - 3.0  # 23.0
-_screws = [dict(s) for s in PARAMS['screws_ABC']]
-for _s in _screws:
-    if _s['name'] == 'A':
-        _s['xy'] = (-_R3, _s['xy'][1])
-    elif _s['name'] == 'C':
-        _s['xy'] = (_R3, _s['xy'][1])
-PARAMS['screws_ABC'] = _screws
+# --- case screws A/C: NO override needed here anymore (2026-09-08 pass
+#     9, finding 2). They used to be re-derived per-variant as
+#     x = +/-(outer_radius - wall - 3.0), y unchanged from the reference --
+#     but that rule put A/C partly ON the 45-degree shoulder for BOTH
+#     variants (the boss's OD reached past `flat_rho`, the true limit of
+#     the flat bed at that y), confirmed as the root cause of the printed
+#     part's holes/bumps there. A/C are now ABSOLUTE mm positions at the
+#     dome-tip end (like B1/B2/D), defined once in params_current.py and
+#     inherited unchanged by this deepcopy -- see that file's comment for
+#     the full reasoning (flat_rho containment + clearing the battery/GPS/
+#     display footprints that make y~25 unusable at either variant's
+#     flat_rho). rho=17.44 from spine_a clears trim's tighter flat_rho
+#     (22.14) with ~0.7mm to spare on top of the 1mm margin already baked
+#     into that position, so current (flat_rho=24.14) inherits even more. ---
 
 # --- alignment lip / anchor (shrink by the same 2mm as the shoulder) ---
 PARAMS['lip_r'] = (24.95, 25.75)

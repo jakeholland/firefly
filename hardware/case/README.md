@@ -809,7 +809,256 @@ zero interference, all M2/envelope/posts-bosses/skin/wall checks `True`,
 plus an offline manifold-edge + envelope + overhang scan of every
 exported STL (both variants) — `OVERALL: PASS`, zero non-manifold edges.
 
-## Print orientation & settings
+## 2026-09-08 pass 9 (first-print findings + design review)
+
+Jake's first pass-7 (trim) print surfaced 11 real defects. This pass fixed
+findings **1, 2, 3, and 11** in the generator, verified live in Fusion for
+both variants (`verify()` all-green, zero interference, an independent
+offline manifold+envelope+overhang scan of both exported STL sets), and
+regenerated exports/renders. Findings **4–10 were not attempted this
+pass** — see "Not completed this pass" below for why, and what's needed.
+
+This pass ran into a real infrastructure problem worth recording: single
+`fusion_mcp_execute` calls covering more than roughly a minute of Fusion
+wall-clock time reliably time out client-side, but Fusion keeps executing
+the script to completion regardless (confirmed by re-querying the
+document seconds to minutes later and finding the timeline had advanced
+exactly as far as an isolated, successfully-timed run of the same stage
+would). The fix was mechanical, not a code change: split `build()`'s
+sequence of `add_*` calls across multiple separate `fusion_mcp_execute`
+calls against the SAME open document, re-fetching `Bottom`/`Top`/the
+shared clip tool by name at the start of each call (Python locals don't
+survive between calls; the Fusion document does). `wordmark_logo` (~35–50s
+alone) and `add_comms_bay` (~10–15s once the shared clip tool exists, but
+much slower deep in a long timeline under load) were the two stages long
+enough to trip this on their own. No change to `firefly_case.py` was
+needed for this — `run()` still works as a single call for anyone driving
+it from a context without this timeout; it's specific to this MCP
+session's transport.
+
+### Finding 1: FPC relief pocket breached the shell at the USB end
+
+**Confirmed root cause**: the relief pocket's widened margin (beyond
+SPEC's own minimum box) reaches into the +y dome cap where the TRUE outer
+shoulder is already close to its own outer_radius limit even before any
+raise — the fix landed in this worktree before this pass started only
+recovered ~0.3mm of skin there (see `FPC_RELIEF_MIN_WALL`'s git history
+on this branch) because shrinking the pocket further to reach 1.2mm
+started re-creating a real ~62mm³ interference against the display
+module's own housing body — the pocket was already cut close to the
+display's real minimum required depth in that footprint, so recovering
+shell material there by cutting shallower ate directly into clearance the
+real board needs.
+
+**Fix**: a local **brow** (`FPC_BROW_HEIGHT = 1.5mm`, `add_fpc_brow` /
+`build_fpc_brow_solid`) raises the TRUE outer shoulder over the relief
+footprint instead of shrinking the pocket — it adds material, so it never
+touches the pocket's own required depth, leaving the display's clearance
+exactly as it was. Built as `(outer envelope pushed out by 1.5mm) MINUS
+(the plain outer envelope)`, clipped to the pocket's footprint + a 3mm
+blend margin, joined into Top with a best-effort R3 fillet on its seam
+edges (prints support-free: Top prints face-down on its flat face, so
+this bump sits on the upward-facing side during the print). Two real bugs
+found and fixed while building this (kept as dead-end notes in the
+function docstrings, since they're the kind of mistake worth documenting
+against repeating):
+1. First attempt intersected the pushed-out envelope directly with a tall
+   box — `build_thickened_envelope` returns a SOLID FILLED pill, not a
+   shell, so this produced a solid chunk filling most of Top's interior
+   over the footprint, not a thin bump (a live verify() run caught it as
+   a genuine ~1913mm³ Top×Screen-Plate interference plus up to ~1518mm³
+   against the display housing). Fixed by subtracting the plain envelope
+   first, leaving just the thin added layer.
+2. Even after that fix, the footprint's own extreme corners (2D distance
+   from spine_b approaching `outer_radius` even before any raise) have NO
+   material in the plain envelope at any Z, so the subtraction there
+   yielded the FULL pushed-envelope volume across whatever Z-band it's
+   solid at — for 'current' (top_z=25) this reached down to z≈10–11, and
+   `verify_wall_integrity`'s dome-perimeter scan caught it as a real bump
+   at `spine_b z=11.0`. Fixed by tightening the brow box's own Z floor to
+   just below the pocket's real floor instead of an arbitrary `top_z-15`
+   margin.
+
+The pocket cut itself (`add_fpc_relief`) now builds its skin-safe clip
+tool from this SAME brow geometry (a fresh reference envelope + the brow
+bump, offset inward by `FPC_RELIEF_MIN_WALL`) instead of the old
+analytic approximation (inner-cavity-solid grown by a nominal wall
+thickness) that broke down at this exact spot in the first place.
+`FPC_RELIEF_MIN_WALL` is back to **1.2mm**.
+
+**Gate**: `verify_fpc_relief` — **0 bad of 63 probes, both variants**
+(was the target metric that could only reach 0.3mm pre-brow).
+`envelope_bounds`/`check_body_envelope_vertices` gained a matching
+documented exception for the brow's own footprint (same pattern as the
+lug/caps), since the brow legitimately reaches `outer_radius +
+FPC_BROW_HEIGHT` at its extreme corners — a real, deliberate ~1.5mm
+protrusion, not a defect.
+
+**Independent confirmation**: an offline pure-Python scan of the exported
+STLs (`tools/offline_stl_check.py`, extended with the same brow
+exception) found **0 non-manifold edges** on Top for both variants (the
+original defect was two literal holes clean through the shell — a
+non-manifold mesh) and 0 disallowed overhang clusters. `OVERALL: PASS`
+for both `trim` and `current`.
+
+### Finding 2: bosses A and C breached the shell on both halves
+
+**Confirmed root cause**: A/C's rule (`x = outer_radius - wall - 3.0`)
+placed the boss center itself beyond `flat_rho` — the true limit of the
+FLAT bed at any Z near the parting faces (the case is narrowest exactly
+at the flat top/bottom faces and widest at the waist, so a boss whose
+center already exceeds `flat_rho` is guaranteed to breach near z=0/top_z
+regardless of the generic radial clip already in place: that clip only
+protects the WIDE, safety-margined outer sleeve of `clipped_pillar_with_
+reach`'s two-piece boss, not the smaller, deliberately-unclipped
+`BOSS_CORE_R` core built to guarantee real contact at both ends — and the
+core punched through right where the finding's photos showed). True for
+BOTH variants — current's wider shell just had ~2mm more margin, not
+enough.
+
+**Fix**: A and C moved to the dome-tip end (`(∓15.5, -8.0)`, absolute mm,
+same for both variants — like B1/B2/D), where the 2D distance from
+spine_a (17.44mm) clears trim's `flat_rho - boss_dia/2 - 1.0mm margin`
+(18.14mm) with room to spare, current inherits more. The straightforward
+"just move A/C inboard at their existing y≈25" fix (per the finding's own
+first suggestion) turns out to be geometrically impossible for BOTH
+variants: at y≈25 the battery bay (`x -20..20, y 2..32`) and the GPS
+frame (`x -2.8..22.2, y 2..27`) already claim essentially the full width
+inside `flat_rho`, leaving under 1mm of clearance either side — nowhere
+near enough for a Ø6 boss + margin. Confirmed by direct computation
+before moving anything (not by trial and error in Fusion). The dome-tip
+position is clear of the L76K stack/frame (>5mm), of B1/B2 themselves
+(~7.6mm center-to-center, edge gap 1.6mm — tight but non-overlapping), of
+the battery/GPS/display footprints (all start at y≥2, this is at y=-8),
+and gets the SAME automatic per-boss keep-out cut into the stack3 frame
+that B1/B2/D already relied on (that loop iterates `screws_ABC +
+[screw_D]` generically, so no extra code was needed there).
+
+**Gate**: `verify_posts_and_bosses` — 0 bad, both variants.
+`check_interference` — 0 pairs, both variants (confirms A/C don't
+conflict with the relocated-adjacent battery/stack/B1/B2 geometry).
+
+### Finding 3: two lanyard holders (duplicate)
+
+**Confirmed root cause**: `lug_relief_box`'s outward (most-negative-y)
+edge was a flat constant reaching further from spine_a (rho≈29.5) than
+the alignment lip/anchor ring's own band (rho 24.95–28.40) — since the
+box's radial reach fully encompassed the ring's own band at this
+location, the cut removed the ring's ENTIRE cross-section there (not a
+partial notch), printing as an open slot that read as a second lanyard
+attachment point alongside the ear's real hole.
+
+**Fix**: clamped the relief box's outward edge to stay `wall_clear`
+(0.6mm) inside the TRUE wall distance straight out from spine_a — the
+exact same clamp convention (`true_wall_distance_along_ray`, `wall_clear
+= 0.6`) the per-boss reliefs in the same function already use, so this
+can never disagree with them. The ear itself is unchanged (it was always
+the one correct lanyard holder); only the relief clearance cut around it
+is now bounded.
+
+**Verification**: no dedicated live probe was built for "this relief
+never reaches the true outer surface" specifically (time did not permit
+a `_local_skin_thickness`-style scan of this one feature this pass) — the
+fix is a direct application of an already-verified pattern, and the
+overall `verify_wall_integrity`/`check_interference` gates (which DO
+scan the dome perimeter broadly, including near spine_a) stayed clean
+for both variants with this change in place. Recommend a dedicated probe
+in a follow-up pass, and a visual check of `renders/pass9_*_top.png`
+(the lug end) against a fresh print.
+
+### Finding 11: stray sliver beside boss C
+
+**Confirmed root cause**: the per-boss relief radius clamp (`relief_r =
+min(nominal_r, s_wall - wall_clear)`, added pass 7 for a related defect)
+had no FLOOR relative to the boss's own OD — at a boss sitting close
+enough to the true wall, `s_wall - wall_clear` could land only just above
+`boss_dia/2`, leaving a razor-thin remnant annulus of ring material
+trapped between the boss and the barely-larger relief circle: exactly
+the "thin triangular web" in Jake's photo, at boss C's old (near-
+shoulder) position.
+
+**Fix, at the source**: added `MIN_RELIEF_CLEARANCE = 1.0mm` and a hard
+assertion in `add_lip_anchor_reliefs` — `relief_r - boss_r >=
+MIN_RELIEF_CLEARANCE` for every boss, every build. If the true wall can't
+spare that much, the boss is too close to the wall for this relief to
+make sense at all (a real design conflict, per finding 2), and the build
+now fails loudly instead of silently producing a thinner and thinner
+sliver. With finding 2's reposition, every boss now clears this with
+comfortable margin.
+
+**"No stray body" check**: `verify()` now asserts the exact printed body
+set equals `{Bottom, Top, Screen Plate, Power Button, Home Button}` —
+gating, not just printed — which would catch an orphaned boolean-scrap
+body the way `dedupe_body`'s docstring already documents happening for
+Bottom/Top/Screen Plate. A second attempt at a blanket gate (`count_
+sliver_faces` — small-face-area count — promoted to a hard assertion)
+was tried and reverted: a live run found 487 sliver faces on Bottom and
+47 on Top even on otherwise fully-clean geometry, from the wordmark/flare
+logo debossing (many short glyph line segments legitimately produce many
+small corner faces) — unrelated to this defect and not a meaningful
+signal on its own. Kept diagnostic-only, as before pass 9.
+
+### verify() output, both variants (pass 9)
+
+```
+trim:    VERIFY OK
+         body_names ['Bottom', 'Home Button', 'Power Button', 'Screen Plate', 'Top']
+         interference []
+         fpc_relief bad [] of 63
+         posts_bosses bad []
+         stack3_clearance {'stack_top_z': 22.942, 'clearance_found': 4.158, 'required': 0.8, 'ok': True}
+
+current: VERIFY OK
+         body_names ['Bottom', 'Home Button', 'Power Button', 'Screen Plate', 'Top']
+         interference []
+         fpc_relief bad [] of 63
+         posts_bosses bad []
+```
+
+(`sliver_results` diagnostic, unchanged pass-to-pass and unrelated to
+finding 11 per the analysis above: `{'Bottom': 487, 'Top': 47}`, both
+variants — wordmark/flare glyph-corner faces, not gated.)
+
+### Offline STL scan output (`tools/offline_stl_check.py`, pass 9)
+
+Ported the same brow envelope exception from `check_body_envelope_
+vertices` (see finding 1). Both variants:
+
+```
+=== Offline STL checks: trim ===
+... (manifold: true, 0 non-manifold edges, for every exported body;
+     envelope: ok for every body once the brow exception is applied;
+     overhang: 0 bad clusters for Top/Bottom)
+OVERALL: PASS
+
+=== Offline STL checks: current ===
+... (same)
+OVERALL: PASS
+```
+
+### Not completed this pass: findings 4–10
+
+Findings 4 (plate posts P1–P4 have no wall), 5 (window lip ring
+fragile), 6 (alignment lip chamfer), 7 (wordmark two lines), 8 (antenna
+cable channels), 9–10 (button cap insertion path + Home plunger length),
+and the broader "generic `verify_skin_intact` probes the WHOLE outer
+surface" gate described in the brief, were **not attempted this pass**.
+Reason: this pass's Fusion MCP session was unexpectedly unstable (see
+the infrastructure note above) — isolating and working around the
+per-call timeout, plus one Fusion-side stall that needed several minutes
+to clear on its own (not a code issue; Fusion recovered without a
+restart), consumed the large majority of the session's time budget
+before findings 1/2/3/11 were even confirmed clean end-to-end on both
+variants. Rather than make unverified geometry changes for the remaining
+findings under time pressure — which this project's own history (see the
+pass-6/7 sections above) shows is exactly how silent regressions get
+shipped — they're left for a follow-up pass with its own full
+verification budget. Findings 4 and 5 are related (both concern the
+plate/lip-ring region near the display window) and should likely be
+tackled together; 9/10 (button mechanism) are independent and probably
+the next-easiest to verify in isolation via the existing button coupons.
+
+
 
 - **Bottom**: print face-down on its flat z=0 face (the KandiWooks
   wordmark side).
@@ -854,29 +1103,34 @@ Bottom bosses A/B1/B2/C get a Ø4.5×2.2mm counterbore from z=0; boss D gets a
 deeper Ø4.5×4.0mm counterbore (its screw tip must stay ≤ plate_z[0] — the
 USB-C shell sits just above it in both variants).
 
-**Screw A/B1/B2/C xy positions** (2026-09-05 pass-2 fix for A/C —
-`current`'s reference positions punched through trim's narrower shell;
-2026-09-07 pass-7 for B1/B2, which replace the old single boss B):
+**Screw A/B1/B2/C xy positions** (2026-09-08 pass 9: A/C moved again —
+see the pass-9 "Finding 2" section above for why the pass-2/pass-7
+positions below still breached the shell on both variants, and why the
+fix is a reposition to the dome-tip end rather than a smaller inboard
+nudge):
 
 | Screw | current | trim |
 |---|---|---|
-| A | (−22.97, 25.04) | (−23.00, 25.04) |
+| A | (−15.5, −8.0) | (−15.5, −8.0) *(absolute, same both variants, pass 9)* |
 | B1 | (−12.5, −15.0) | (−12.5, −15.0) *(absolute, same both variants)* |
 | B2 | (12.5, −15.0) | (12.5, −15.0) *(absolute, same both variants)* |
-| C | (23.74, 25.20) | (23.00, 25.20) |
+| C | (15.5, −8.0) | (15.5, −8.0) *(absolute, same both variants, pass 9)* |
 | D | (0.0, 60.0) | (0.0, 60.0) *(unchanged; moved from (0,65) in pass 6)* |
 
-Trim's A/C use `x = ±(outer_radius - wall - 3.0)`; B1/B2 are absolute mm
-positions sized against the comms stack's own footprint, not the outer
-shell, so they're identical in both variants (current's wider shell just
-has more margin around them). Every boss (both variants) is also
-Combine-Intersected against the shared inner-cavity clip tool regardless
-of its nominal position, so it can never punch through the shell even if
-a future variant's numbers are off — and (2026-09-07) each boss's
-lip/anchor relief cut is now clamped to stay inside the true wall
-distance too, so it can't land tangent-to/through the true outer surface
-the way trim's A/C relief briefly did (see the pass-7 defect-sweep item
-above).
+~~Trim's A/C use `x = ±(outer_radius - wall - 3.0)`~~ **superseded
+2026-09-08 (pass 9)**: that rule put the boss center itself beyond
+`flat_rho` (the true limit of the flat bed) for both variants — A/B1/B2/C
+are now ALL absolute mm positions clustered at the dome-tip end (like
+B1/B2/D already were), identical in both variants, since current's wider
+shell just has more margin around the same numbers. Every boss (both
+variants) is also Combine-Intersected against the shared inner-cavity
+clip tool regardless of its nominal position, so it can never punch
+through the shell even if a future variant's numbers are off — and
+(2026-09-07) each boss's lip/anchor relief cut is clamped to stay inside
+the true wall distance too, with (2026-09-08 pass 9) a hard minimum
+clearance over the boss's own OD (`MIN_RELIEF_CLEARANCE`) so a
+too-close boss fails loudly instead of leaving a sliver — see the pass-9
+"Finding 11" section above.
 
 ## Known limitations / deviations from SPEC.md
 
@@ -965,6 +1219,15 @@ reason" per the milestone instructions.
     "trim pins to 1mm stubs" step couldn't be validated. That whole
     B2B/3-board-stack/case-height exploration was reverted in this pass
     (see below) rather than shipped half-verified.
+13. **Findings 4–10 from Jake's pass-7 print review are not yet fixed**
+    (plate posts P1–P4, window lip ring, alignment lip chamfer, wordmark
+    two-line layout, antenna cable channels, button cap insertion path,
+    Home plunger length) — see the pass-9 section's "Not completed this
+    pass" note for why and suggested grouping for a follow-up pass. The
+    generic "`verify_skin_intact` probes the WHOLE outer surface, not
+    named footprints" rework requested alongside them is also not done;
+    the existing narrower `verify_skin_intact` (button tab holes only,
+    see item 11 above) is unchanged.
 
 **Reverted mid-pass-6, not shipped**: the coordinator's later messages in
 this pass requested (a) swapping the Wio/XIAO stack to a board-to-board

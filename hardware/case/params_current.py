@@ -75,11 +75,43 @@ PARAMS = {
     # fully on flat material, not the shoulder curve. These are ABSOLUTE
     # mm positions, deliberately the SAME for both variants (like the bay
     # layout) -- current's wider shell just has more margin around them.
+    #
+    # 2026-09-08 pass 9 (finding 2, first-print holes/bumps at A/C): A and
+    # C used to sit near y=25 (rho~23-24 from spine_a) at x scaled off
+    # outer_radius -- CONFIRMED as the root cause of holes in Bottom's
+    # side wall and bumps on Top's shoulder at both variants: at that y,
+    # the case's flat bed only extends to `flat_rho` (22.14 trim / 24.14
+    # current), so a boss whose OD (boss_dia=6, +1mm margin) reaches
+    # beyond flat_rho sits partly ON the 45-degree shoulder rather than
+    # inside the flat face -- the boss body, its Ø4.5 counterbore (cut
+    # from z=0, i.e. exactly at the shoulder's narrowest point), and the
+    # Top-side M2 pilot near the ceiling all breach the true outer surface
+    # there. The fix ("every boss must fit fully inside flat_rho, with
+    # margin") can't just slide A/C inboard at y=25, though: that y is
+    # deep inside the battery bay's footprint (`bay.battery`: x -20..20,
+    # y 2..32, z 2..10 -- exactly the bottom boss's own z-span) AND the
+    # GPS frame's (x -2.8..22.2, y 2..27, z 10.5..18.8 -- overlapping the
+    # Top-side boss's z-span too) AND the display module's own rectangular
+    # PCB bbox (x +-22.39, y 27.6..73.13) covers everything further up --
+    # there is no (x, y) with |x| small enough to clear flat_rho that
+    # isn't already claimed by one of those three, confirmed by direct
+    # computation (battery alone leaves <1mm of usable width outside its
+    # rails at flat_rho, for either variant). So, per Jake's own fallback
+    # ("shift toward the lanyard end where the cavity is free"), A/C move
+    # to the dome-tip region alongside B1/B2 instead -- ABSOLUTE mm
+    # positions, same for both variants, same reasoning as B1/B2/D. 2D
+    # distance from spine_a is 17.44mm (well inside flat_rho - boss_dia/2
+    # - 1.0mm margin = 18.14mm for trim, the tighter variant, so current
+    # inherits even more margin) and >5mm clear of the L76K stack's own
+    # frame footprint (x <= ~10.4) and of B1/B2 themselves (>=7.6mm
+    # center-to-center) -- add_comms_stack_frame's existing per-boss
+    # keep-out cut (iterates `screws_ABC + [screw_D]` generically) applies
+    # to A/C automatically, same as it already does for B1/B2/D.
     'screws_ABC': [
-        {'name': 'A', 'xy': (-22.97, 25.04)},
+        {'name': 'A', 'xy': (-15.5, -8.0)},
         {'name': 'B1', 'xy': (-12.5, -15.0)},
         {'name': 'B2', 'xy': (12.5, -15.0)},
-        {'name': 'C', 'xy': (23.74, 25.2)},
+        {'name': 'C', 'xy': (15.5, -8.0)},
     ],
     'boss_dia': 6.0,
     'screw_hole_dia': 2.4,

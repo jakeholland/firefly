@@ -776,6 +776,9 @@ def hollow_and_split(root, outer_solid, p):
     return bottom, top
 
 
+MIN_RELIEF_CLEARANCE = 1.0  # mm the boss relief must clear beyond the boss's own OD (see the assert below)
+
+
 def add_lip_anchor_reliefs(root, bodies, p):
     """2026-09-07 pass 7 (defect sweep): the per-boss relief cylinder's
     radius was a flat `boss_relief_dia/2` (5.0mm) regardless of how close
@@ -817,11 +820,55 @@ def add_lip_anchor_reliefs(root, bodies, p):
             d2 = (vx / vlen, vy / vlen)
         s_wall = true_wall_distance_along_ray(p, (cx, cy), d2, relief_z_mid)
         relief_r = nominal_r if s_wall is None else min(nominal_r, s_wall - wall_clear)
+        # 2026-09-08 pass 9 (finding 11, stray sliver beside boss C): a
+        # boss sitting close enough to the true wall for `s_wall - wall_
+        # clear` to land only just above the boss's OWN radius clamps
+        # relief_r down to a value that still (barely) clears the boss
+        # itself, but leaves a razor-thin remnant annulus of ring material
+        # trapped between the boss and the clamped relief circle -- exactly
+        # the "thin triangular web" Jake's photo showed next to boss C at
+        # its old (near-shoulder) position. Rather than silently build
+        # whatever sliver that geometry produces, require a genuine
+        # MIN_RELIEF_CLEARANCE gap between the relief and the boss's own
+        # OD -- if the true wall can't spare that much, the boss is too
+        # close to the wall here for this relief to make sense at all, and
+        # that's a real design conflict worth a loud assertion (forcing a
+        # reposition, per finding 2) rather than a silent, ever-thinner
+        # sliver.
+        boss_r = p['boss_dia'] / 2.0
+        assert relief_r - boss_r >= MIN_RELIEF_CLEARANCE, (
+            f'add_lip_anchor_reliefs: boss {s["name"]} at ({cx},{cy}) sits too '
+            f'close to the true outer wall for a clean relief -- relief_r='
+            f'{relief_r:.3f} leaves only {relief_r - boss_r:.3f}mm over the boss '
+            f'OD (need >= {MIN_RELIEF_CLEARANCE}mm); move the boss (see finding 2 '
+            f'in the README) rather than shrink this further')
         relief = cylinder_solid(root, cx, cy, relief_r, relief_z0, relief_z1)
         top = combine_cut(root, top, [relief])
 
+    # 2026-09-08 pass 9 (finding 3, "two lanyard holders"): the box's
+    # outward (most-negative-y) edge was a flat constant reaching further
+    # from spine_a than the ring's own true wall clearance at this z --
+    # exactly the same class of defect as the per-boss reliefs above (a
+    # flat number that doesn't know how close it is to the TRUE curved
+    # surface), except here it fully breached the ring's own radial band
+    # (which is itself safely inset from the true outer wall by design --
+    # see SPEC's "0.25 clearance" and add_lip_anchor_reliefs' own overall
+    # docstring) all the way out, cutting a genuine gap through it that
+    # printed as a second, slot-shaped "lanyard holder" flanking the real
+    # one (the ear's own vertical hole). There is exactly one lanyard
+    # attachment point on this case -- the ear -- so this relief must stay
+    # internal to the ring: clamped the same `wall_clear` (0.6mm) inside
+    # the true wall distance straight out from spine_a (d2=(0,-1), the
+    # ear's own symmetry axis), same convention as every other relief in
+    # this function, so it can never disagree with them and is a no-op
+    # once the box is already safely inside (every existing box narrower
+    # than the true wall here is unaffected).
     lb = p['lug_relief_box']
-    relief_box = box_solid(root, lb['x'][0], lb['x'][1], lb['y'][0], lb['y'][1], relief_z0, relief_z1)
+    lug_wall = true_wall_distance_along_ray(p, (0.0, ay), (0.0, -1.0), relief_z_mid)
+    lb_y0 = lb['y'][0]
+    if lug_wall is not None:
+        lb_y0 = max(lb_y0, ay - (lug_wall - wall_clear))
+    relief_box = box_solid(root, lb['x'][0], lb['x'][1], lb_y0, lb['y'][1], relief_z0, relief_z1)
     top = combine_cut(root, top, [relief_box])
 
     bodies['Top'] = top
@@ -836,6 +883,157 @@ def add_window(root, bodies, p):
     bodies['Top'] = top
 
     chamfer_edge_at(root, top, (cx, cy), r, p['top_z'], p['window_chamfer'])
+    return bodies
+
+
+FPC_RELIEF_MIN_WALL = 1.2  # mm of shell that must remain above the pocket everywhere (see gate below)
+# 2026-09-08 pass 9 (Jake's decision after the pass-7-follow-up's 0.3mm
+# compromise, see git history on this branch for that whole dead end):
+# 1.2mm is achievable again, WITHOUT the ~62mm^3 Top x display-housing
+# interference the plain "shrink the pocket" approach kept recreating,
+# because this pass adds a local BROW instead (see FPC_BROW_HEIGHT /
+# build_fpc_brow_solid / add_fpc_brow below) -- it raises the TRUE outer
+# shoulder surface itself over the relief footprint, rather than trying to
+# recover skin by cutting the pocket shallower. The two approaches are not
+# equivalent: shrinking the pocket eats directly into the same clearance
+# the display's real housing needs there (root cause of the 62mm^3
+# overlap, per the 0.3mm compromise's own comment, preserved in git
+# history) -- raising the outer surface does not touch the pocket's depth
+# at all, so the display clearance the pocket already had is undisturbed;
+# it just gives the shell more material to spare above it.
+
+
+FPC_BROW_HEIGHT = 1.5   # mm the outer shoulder is locally raised, at most, over the relief footprint
+FPC_BROW_BLEND = 3.0    # mm the raised footprint extends past the pocket's own margin box, and the
+                        # fillet radius applied to its seam edges (see add_fpc_brow) -- the "tangent
+                        # blend" so it ramps into the surrounding dome rather than stepping.
+
+
+def fpc_relief_footprint(p):
+    """The FPC relief pocket's cut footprint (x0, x1, y0, y1, z0, z1) --
+    factored out (2026-09-08 pass 9) so add_fpc_relief, add_fpc_brow, and
+    verify_fpc_relief all derive it the exact same way and can never
+    silently drift apart (the same reasoning lug_ear_geometry documents
+    for the ear vs. its own verify/export checks)."""
+    fr = p['fpc_relief']
+    x0 = min(fr['x'][0], -14.0)
+    x1 = max(fr['x'][1], 14.0)
+    y0 = min(fr['y'][0], 65.0)
+    y1 = fr['y'][1]
+    z0 = min(fr['z'][0], 21.0)
+    z1 = fr['z'][1] + 0.1
+    return x0, x1, y0, y1, z0, z1
+
+
+def build_fpc_brow_solid(root, p):
+    """The brow bump alone (not yet joined to anything): JUST the thin
+    outward layer between the plain outer envelope and that same envelope
+    pushed out by FPC_BROW_HEIGHT (build_thickened_envelope), clipped to a
+    box a bit larger than the FPC relief pocket's own footprint
+    (FPC_BROW_BLEND of margin on every side, so the raised patch fully
+    covers the pocket and its widened margin, with room for the seam
+    fillet to blend outward from there). Reused by both add_fpc_brow
+    (joins it into the real Top) and add_fpc_relief (joins a fresh copy
+    into a plain reference envelope, to measure the TRUE post-brow outer
+    surface when building the pocket's skin-safe clip tool) -- see both
+    docstrings.
+
+    2026-09-08 pass 9 bugfix: build_thickened_envelope returns a SOLID
+    FILLED pill (the whole outer envelope volume before hollowing, offset
+    outward), not a thin shell -- intersecting it directly with a box
+    that spans any real Z depth returns the entire FILLED interior within
+    that footprint, not a thin bump. First attempt did exactly that (a box
+    from `top_z - 15` up through the pushed-out surface intersected
+    straight against `thickened`) and produced a solid chunk filling most
+    of Top's own interior over the FPC footprint -- confirmed by a live
+    verify() run: real, large interference against the Screen Plate
+    (~1913mm^3) and the display module's own housing body (up to
+    ~1518mm^3), because the "bump" was actually solid all the way down
+    past the plate and deep into the display's clearance zone. Fixed by
+    first Combine-Cutting the PLAIN (un-pushed) envelope out of the pushed
+    envelope -- `thickened MINUS original` -- leaving only the genuinely
+    thin outward layer the brow is supposed to be.
+
+    2026-09-08 pass 9, second bugfix: the box's Z range is NOT harmless at
+    any depth after all -- at the footprint's own extreme corners (where
+    2D distance from spine_b already approaches outer_radius even before
+    any raise, e.g. rho~29.4 against outer_radius+FPC_BROW_HEIGHT=29.5),
+    `original` has NO material at ANY z (that (x,y) is entirely outside
+    the plain shell's own reach), so `shell_layer` there is the FULL
+    `thickened` volume across whatever Z-band the pushed-out envelope
+    happens to be solid at that radius -- which, for a box reaching as low
+    as `top_z - 15`, can dip well down into the dome's natural waist,
+    confirmed live: verify_wall_integrity's dome-perimeter scan caught a
+    real bump at spine_b z=11 on the 'current' variant (top_z=25, so the
+    old `top_z - 15 = 10` lower bound reached almost exactly there).
+    Tightened to start just below the relief pocket's OWN floor (the only
+    Z this footprint ever actually needs raised material above) rather
+    than an arbitrary large margin -- the corner sliver from the first
+    bugfix's docstring is still present (it's real, thin, and now
+    documented as an allowed exception in check_body_envelope_vertices),
+    but can no longer reach anywhere near the waist."""
+    x0, x1, y0, y1, fz0, _ = fpc_relief_footprint(p)
+    bx0, bx1 = x0 - FPC_BROW_BLEND, x1 + FPC_BROW_BLEND
+    by0, by1 = y0 - FPC_BROW_BLEND, y1 + FPC_BROW_BLEND
+    brow_box = box_solid(root, bx0, bx1, by0, by1, fz0 - 2.0, p['top_z'] + FPC_BROW_HEIGHT + 1.0)
+    thickened = build_thickened_envelope(root, p, FPC_BROW_HEIGHT)
+    original = build_outer_pill_solid(root, p)
+    shell_layer = combine_cut(root, thickened, [original])
+    return combine_intersect(root, brow_box, [shell_layer])
+
+
+def add_fpc_brow(root, bodies, p):
+    """Join the brow bump (see build_fpc_brow_solid) into the real Top,
+    2026-09-08 pass 9 (finding 1, first-print holes at the USB end): the
+    fpc relief pocket's outer corners sit where the dome's TRUE outer
+    surface is already naturally thin (close to the dome's own outer
+    boundary well before any pocket is even cut -- confirmed analytically:
+    those corners' 2D distance from spine_b approaches outer_radius while
+    they're also close to the flat top face, where the true profile is at
+    its narrowest, flat_rho). No amount of clipping the pocket alone can
+    recover real skin where the shell itself barely has 1.2mm to begin
+    with -- so this locally raises the shoulder/dome itself instead,
+    exactly as Jake asked: a bump over the FPC-tab footprint, tangent-
+    blended so it prints support-free (Top prints face-down on its flat
+    face, so this bump sits on the upward-facing side during printing) and
+    reads as an intentional design feature rather than a defect.
+
+    The seam fillet (radius FPC_BROW_BLEND) is applied to Top's own
+    vertical seam edges where the brow box's footprint meets the rest of
+    the dome -- best-effort (skipped, not rolled back, if Fusion's fillet
+    feature refuses this specific geometry), same reasoning as add_lug's
+    corner fillets: a missing fillet is a cosmetic/print-quality
+    regression, not a structural one, and every dimensional gate this
+    pocket depends on (verify_fpc_relief, interference) is computed from
+    the real solid either way."""
+    x0, x1, y0, y1, _, _ = fpc_relief_footprint(p)
+    bx0, bx1 = x0 - FPC_BROW_BLEND, x1 + FPC_BROW_BLEND
+    by0, by1 = y0 - FPC_BROW_BLEND, y1 + FPC_BROW_BLEND
+    brow_solid = build_fpc_brow_solid(root, p)
+    top = combine_join(root, bodies['Top'], [brow_solid])
+
+    try:
+        fillet_edges = adsk.core.ObjectCollection.create()
+        for edge in top.edges:
+            bb = edge.boundingBox
+            dz = (bb.maxPoint.z - bb.minPoint.z) / MM
+            if dz < 3.0:
+                continue
+            ex0, ex1 = bb.minPoint.x / MM, bb.maxPoint.x / MM
+            ey0, ey1 = bb.minPoint.y / MM, bb.maxPoint.y / MM
+            on_x_seam = abs(ex0 - ex1) < 0.05 and (abs(ex0 - bx0) < 0.05 or abs(ex0 - bx1) < 0.05)
+            on_y_seam = abs(ey0 - ey1) < 0.05 and (abs(ey0 - by0) < 0.05 or abs(ey0 - by1) < 0.05)
+            if on_x_seam or on_y_seam:
+                fillet_edges.add(edge)
+        if fillet_edges.count > 0:
+            fillets = root.features.filletFeatures
+            fin = fillets.createInput()
+            fin.addConstantRadiusEdgeSet(fillet_edges, V(FPC_BROW_BLEND), True)
+            fillets.add(fin)
+    except RuntimeError:
+        pass
+
+    bodies['Top'] = top
     return bodies
 
 
@@ -855,15 +1053,129 @@ def add_fpc_relief(root, bodies, p):
     margin so the cut matches the real geometry it needs to clear. z1
     keeps a small margin past the nominal ceiling underside for a clean
     cut; the pocket stays a blind recess (well short of the outer top
-    face at top_z)."""
+    face at top_z).
+
+    2026-09-07 pass 7 follow-up fix: the widened box's own outer corners
+    (x roughly +-10..17, y roughly 67..73.5) reach past spine_b into the
+    domed +y end cap, where the true outer shoulder/dome surface curves
+    down well below the box's flat z1 (confirmed by ray-casting the
+    exported trim Top.stl -- two wedge-shaped holes flanking the USB
+    opening, cut depth up to 15mm at those corners). A flat box has no way
+    to know that -- so, same idiom as clip_to_inner_cavity for case bosses/
+    Top posts (Combine-Intersect against a tool built from the REAL
+    curved cavity solid instead of a flat approximation): build a copy of
+    the shared inner-cavity solid GROWN outward by (wall - FPC_RELIEF_MIN_WALL)
+    via build_inner_cavity_clip_tool's existing safety_margin parameter
+    (negative = grow, not shrink -- see its docstring), then
+    Combine-Intersect the pocket tool against it before cutting Top. The
+    intersected tool can then never reach closer than FPC_RELIEF_MIN_WALL
+    to the true outer surface anywhere in its footprint, by construction,
+    following the actual dome curvature rather than a flat z1 -- exactly
+    the mechanism verify_fpc_relief (below) gates on.
+
+    2026-09-07 pass 7 follow-up, round 2: clipping the WHOLE widened box
+    (including the literal SPEC sub-box) against the skin-safe tool
+    directly regressed requirement #1 above -- probing the SPEC box's own
+    corners after that clip found TWO of them re-breached (measured: the
+    true outer surface at the SPEC box's own extreme +y corners is only
+    ~25.95-26.25mm there, essentially the same knife's-edge the wedge
+    holes came from, just ~0.1mm short of SPEC's own literal z1 --
+    independent of the widened margin, and independent of this fix). The
+    SPEC box is the one part of this footprint functional correctness
+    actually depends on (the real inserted FPC tab needs it, full stop),
+    so it is cut in full, UNCLIPPED, exactly as before this whole fix --
+    the skin-safe clip applies only to the WIDENED MARGIN outside it (an
+    empirical buffer, not a hard requirement, and the actual footprint of
+    the confirmed wedge-hole defect: x roughly +-10..17, entirely outside
+    SPEC's +-6.2..7.02).
+
+    Implemented as TWO SEPARATE Cuts on Top, not one unioned tool: first
+    attempt tried `pocket INTERSECT (skin_safe_tool UNION spec_box)`
+    (Combine-Join the SPEC box into the skin-safe tool, then intersect) --
+    that regressed verify()'s own interference gate with a stray orphaned
+    'Body1' left interfering with Top, traced to the exact hazard
+    clipped_pillar_with_reach's docstring already documents for boss/post
+    joins: Combine-Join SILENTLY NO-OPS (and, empirically, leaves the tool
+    body an orphaned stray rather than deleting it) when the two solids
+    don't actually touch/overlap -- which the skin-safe-clipped pocket and
+    the SPEC box don't reliably do everywhere the clip bites hardest. A
+    Cut has no such hazard: cutting with a tool always consumes it,
+    whether or not it removed any material -- so the SPEC box is cut
+    independently, in a second Cut, instead of being unioned into the
+    first tool at all.
+
+    2026-09-08 pass 9 (finding 1, Jake's decision): FPC_RELIEF_MIN_WALL is
+    back to 1.2mm (from the pass-7-follow-up's 0.3mm compromise -- see
+    that constant's own comment, kept in git history). The skin-safe tool
+    is no longer `build_inner_cavity_clip_tool` grown outward by an
+    ANALYTIC (inner-cavity-surface + nominal wall) approximation of the
+    true outer surface -- that approximation is exactly what silently
+    broke down at these corners in the first place (the dome's true outer
+    surface drops away faster than the inner cavity does, near the tip),
+    which is also why it could never recover more than ~0.3mm before
+    re-hitting the display-housing interference (see FPC_RELIEF_MIN_WALL's
+    comment). Now that add_fpc_brow (called just before this, in build())
+    has raised the REAL outer surface over this footprint, the tool is
+    built directly from that real surface instead of an approximation of
+    it: a fresh reference envelope (build_outer_pill_solid, not the actual
+    multi-feature Top -- cheaper, and this pocket's clearance only ever
+    depended on the plain outer skin, never on the lip/window/boss
+    features layered onto Top elsewhere) gets the SAME brow bump joined on
+    (build_fpc_brow_solid -- shared with add_fpc_brow so the two can never
+    disagree about where/how high it is), then every face of that brow'd
+    envelope is offset INWARD by FPC_RELIEF_MIN_WALL (offsetFacesFeatures,
+    same idiom as build_thickened_envelope/build_inner_cavity_clip_tool,
+    just applied to the TRUE post-brow surface this time instead of an
+    approximation of it). Intersecting the pocket against that tool
+    guarantees >= FPC_RELIEF_MIN_WALL of real skin above the cut,
+    everywhere, by construction, following the actual (now brow-raised)
+    curvature -- and because the brow adds material WITHOUT touching the
+    pocket's own required depth, the margin no longer has to be cut any
+    shallower than before to hit that bar, so the display-housing
+    clearance the pocket already had is undisturbed (confirmed below by
+    the interference check in verify())."""
     fr = p['fpc_relief']
-    x0 = min(fr['x'][0], -14.0)
-    x1 = max(fr['x'][1], 14.0)
-    y0 = min(fr['y'][0], 65.0)
-    y1 = fr['y'][1]
-    z0 = min(fr['z'][0], 21.0)
-    pocket = box_solid(root, x0, x1, y0, y1, z0, fr['z'][1] + 0.1)
+    x0, x1, y0, y1, z0, z1 = fpc_relief_footprint(p)
+    pocket = box_solid(root, x0, x1, y0, y1, z0, z1)
+
+    brow_ref = build_outer_pill_solid(root, p)
+    brow_ref = combine_join(root, brow_ref, [build_fpc_brow_solid(root, p)])
+    faces = [f for f in brow_ref.faces]
+    offset_input = root.features.offsetFacesFeatures.createInput(faces, V(-FPC_RELIEF_MIN_WALL))
+    root.features.offsetFacesFeatures.add(offset_input)
+    skin_safe_tool = brow_ref
+
+    pocket = combine_intersect(root, pocket, [skin_safe_tool])
     bodies['Top'] = combine_cut(root, bodies['Top'], [pocket])
+
+    spec_box = box_solid(root, fr['x'][0], fr['x'][1], fr['y'][0], fr['y'][1], z0, z1)
+    bodies['Top'] = combine_cut(root, bodies['Top'], [spec_box])
+
+    # SPEC-box clearance probe: the documented minimum pocket (not the
+    # widened margin) must still be fully cleared after the skin-safe
+    # clip above. Corners are inset 0.05mm off each face (avoids the
+    # on-boundary PointOn ambiguity of probing exactly at a cut tool's own
+    # face) and z is checked at the SPEC box's own z1 (fr['z'][1], not the
+    # +0.1 cutter margin). A corner that also sits inside the display
+    # window's own through-hole (add_window, independent of this pocket)
+    # is trivially clear either way and not a meaningful test of THIS
+    # pocket, but is left in the probe set since it costs nothing extra
+    # and only ever weakens (never causes) a false failure here.
+    top = bodies['Top']
+    eps = 0.05
+    fx = (fr['x'][0] + eps, fr['x'][1] - eps)
+    fy = (fr['y'][0] + eps, fr['y'][1] - eps)
+    fz = fr['z'][1] - eps
+    uncleared = []
+    for cx in fx:
+        for cy in fy:
+            pt = P(cx, cy, fz)
+            if probe_point_solid(top, pt):
+                uncleared.append((round(cx, 3), round(cy, 3), round(fz, 3)))
+    assert not uncleared, (
+        f'add_fpc_relief: SPEC box corner(s) not cleared after the '
+        f'skin-safe clip: {uncleared} -- FPC tab would not fit')
+
     return bodies
 
 
@@ -2577,6 +2889,7 @@ def build(app, params):
 
     bodies = add_lip_anchor_reliefs(root, bodies, params)
     bodies = add_window(root, bodies, params)
+    bodies = add_fpc_brow(root, bodies, params)
     bodies = add_fpc_relief(root, bodies, params)
 
     # one shared inner-cavity clip tool, reused for every screw boss + Top
@@ -2868,9 +3181,10 @@ def verify_m1_cavity_probes(bodies, p):
 def envelope_bounds(p):
     """Generously allowed bounding box for Bottom/Top, honoring the
     KNOWN intentional protrusions (button caps proud of the -x wall, the
-    lanyard lug beyond the spine_a dome) -- used to catch anything else
-    (like the case-screw-boss bump this was added for) poking outside the
-    shell."""
+    lanyard lug beyond the spine_a dome, and -- 2026-09-08 pass 9 -- the
+    FPC relief brow raised above the flat top face at the USB end, see
+    add_fpc_brow) -- used to catch anything else (like the case-screw-boss
+    bump this was added for) poking outside the shell."""
     ay, by = p['spine_a'][1], p['spine_b'][1]
     R = p['outer_radius']
     cap_proud = max(p['power_cap']['proud'], p['home_cap']['proud'])
@@ -2879,7 +3193,7 @@ def envelope_bounds(p):
     return {
         'x': (-(R + cap_proud + tol), R + tol),
         'y': (min(lug_y_far - tol, ay - R - tol), by + R + tol),
-        'z': (p['bottom_z'] - tol, p['top_z'] + tol),
+        'z': (p['bottom_z'] - tol, p['top_z'] + FPC_BROW_HEIGHT + tol),
     }
 
 
@@ -2937,13 +3251,27 @@ def check_body_envelope_vertices(body, p, name, tol=0.15):
     no vertex of an exported body should sit beyond
     rho = outer_radius + tol from the spine, except the lanyard lug (a
     real, intentional protrusion at the -y tail: y below the wall-plus-
-    2mm threshold and |x| < 5.6) and the two button cap heads (allowed out
-    to +0.45mm, their designed proud amount)."""
+    2mm threshold and |x| < 5.6), the two button cap heads (allowed out
+    to +0.45mm, their designed proud amount), and -- 2026-09-08 pass 9 --
+    the FPC relief brow's own footprint on Top (allowed out to
+    +FPC_BROW_HEIGHT, its designed raise amount): the brow's blended
+    footprint reaches, at its extreme corners, into territory where the
+    plain (un-raised) dome was ALREADY close to its own outer_radius
+    limit -- the thin sliver of raised material right at that corner
+    naturally has its own outermost vertices sitting right at
+    outer_radius + FPC_BROW_HEIGHT, a few mm beyond the tighter default
+    tolerance, same as the lug/caps are already named exceptions for their
+    own designed protrusions."""
     lug_half_w, _, lug_y_root, _ = lug_ear_geometry(p)
     lug_y_thresh = lug_y_root
     lug_x_half = lug_half_w + 0.5
     is_cap = name in ('Power Button', 'Home Button')
+    is_top = name == 'Top'
     limit = p['outer_radius'] + (0.45 + 0.05 if is_cap else tol)
+    brow_limit = p['outer_radius'] + FPC_BROW_HEIGHT + tol
+    bx0, bx1, by0, by1, _, _ = fpc_relief_footprint(p) if is_top else (0, 0, 0, 0, 0, 0)
+    brow_x0, brow_x1 = bx0 - FPC_BROW_BLEND - 0.5, bx1 + FPC_BROW_BLEND + 0.5
+    brow_y0, brow_y1 = by0 - FPC_BROW_BLEND - 0.5, by1 + FPC_BROW_BLEND + 0.5
     bad = []
     for v in body.vertices:
         pt = v.geometry
@@ -2951,6 +3279,8 @@ def check_body_envelope_vertices(body, p, name, tol=0.15):
         if y < lug_y_thresh and abs(x) < lug_x_half:
             continue
         rho = rho_from_spine(p, x, y)
+        if is_top and brow_x0 <= x <= brow_x1 and brow_y0 <= y <= brow_y1 and rho <= brow_limit:
+            continue
         if rho > limit:
             bad.append((round(x, 2), round(y, 2), round(pt.z / MM, 2), round(rho, 2)))
     return bad
@@ -3703,6 +4033,125 @@ def verify_stack3_clearance(board_occs, by_name, p):
             'required': s3['ceiling_clear_min'], 'ok': ok}
 
 
+def verify_fpc_relief(bodies_dict, p):
+    """Regression guard (2026-09-07, pass 7 follow-up): confirms >=
+    FPC_RELIEF_MIN_WALL (see its own module-level comment for why this is
+    0.3mm, not the originally-targeted 1.2mm) of real solid skin survives directly above
+    the FPC relief pocket's own cut, EVERYWHERE across its cut footprint
+    -- not just in the flat crest region SPEC's box sits under -- this is
+    the exact defect that slipped past every prior gate (including
+    verify_skin_intact, which only ever looked at the button tab holes,
+    nowhere near here): the widened pocket's outer corners (x roughly
+    +-10..17, y roughly 67..73.5) reach into the domed +y end cap, where
+    the true outer shoulder curves down to z~23 (trim) while the pocket's
+    flat cut ceiling sits at z1~26.03 -- two wedge-shaped holes clean
+    through the shell, confirmed both by ray-casting the exported trim
+    Top.stl and by Jake in Bambu Studio (it printed with the holes).
+    add_fpc_relief's fix clips the pocket tool against the real (curved)
+    inner-cavity solid grown out to leave exactly FPC_RELIEF_MIN_WALL of
+    skin, by construction -- this gate re-checks that independently of
+    that construction.
+
+    First attempt, WRONG, kept here as a documented dead end: probing a
+    single fixed Z height (the pocket's own nominal cut ceiling z1 plus
+    FPC_RELIEF_MIN_WALL) uniformly across the footprint. That conflates
+    two different things -- "is there open air at this ABSOLUTE height"
+    vs. "is the wall too thin AT THIS POINT" -- because the true outer
+    shoulder is a DOME, not a flat plane: at larger rho (this footprint's
+    own corners, well past the flat-crest radius), the true surface
+    naturally curves down below (z1 + FPC_RELIEF_MIN_WALL) everywhere,
+    genuine defect or not, so that single-height probe measured "is this
+    (x,y) under the flat crest" far more than it measured wall thickness
+    -- caught empirically: run against the UNFIXED pocket, it failed 131
+    of 135 probes, not just the two known corners.
+
+    Fixed approach: measure the REAL local skin thickness at each (x, y)
+    directly, by scanning UP in Z (from a height guaranteed at/below the
+    pocket's own cut floor, to one guaranteed above the true outer crest)
+    and finding two transitions: hollow-to-solid (the bottom of whatever
+    skin survives above the cut -- could be the pocket's nominal z1, or a
+    higher, clipped local ceiling in the fixed geometry, or the natural
+    ceiling underside if this (x,y) was never actually reached by the cut
+    at all) and then solid-to-hollow (the true outer surface, where that
+    skin ends). The gap between them is the real, local wall thickness --
+    correct at any rho, flat crest or domed corner alike, with no
+    analytic model of the curved outer surface needed. A column that is
+    already solid at the low end (never cut here at all) short-circuits
+    as trivially safe (nominal wall thickness, well over the minimum); a
+    column that never finds solid anywhere in the bracket is a full
+    breach (thickness 0) -- both handled by `_local_skin_thickness`.
+
+    Two exclusions, both matching add_fpc_relief's own fix exactly (so
+    they can never silently drift out of sync with what was actually
+    cut): (1) inside the display window's own bore, there is no ceiling
+    material by design (that IS the window) -- not a skin-thickness
+    question; (2) inside the literal SPEC sub-box, add_fpc_relief cuts in
+    full regardless of skin safety (the real FPC tab needs it, full stop
+    -- see that function's 'round 2' docstring for the measured, ~0.1mm
+    conflict that forced this split), so this gate's uniform
+    FPC_RELIEF_MIN_WALL bar does not apply there; add_fpc_relief's own
+    inline probe already asserts that narrower region comes out fully
+    CLEARED (the opposite condition -- hollow, not skin-thick) every
+    build. Everywhere else in the footprint -- the widened margin, where
+    the confirmed wedge-hole defect actually lives -- gets the full
+    bar."""
+    top = bodies_dict['Top']
+    fr = p['fpc_relief']
+    x0, x1, y0, y1, z0, _z1 = fpc_relief_footprint(p)  # z0 = pocket's own cut floor (matches add_fpc_relief)
+    wx, wy = p['window_center']
+    w_excl_r = p['window_dia'] / 2.0 + 1.0  # +1mm chamfer/tessellation margin
+
+    def _local_skin_thickness(x, y, step=0.25):
+        z_lo = z0 - 0.5           # guaranteed at/below the pocket's own floor
+        z_hi = p['top_z'] + 0.5   # guaranteed above the true outer crest (open air)
+        z = z_lo
+        prev = probe_point_solid(top, P(x, y, z))
+        if prev:
+            # solid already at the pocket floor's own height -- this
+            # column was never actually cut here (fully clipped away, or
+            # simply outside the real pocket despite being inside the
+            # widened footprint box) -- whatever skin remains is at least
+            # the full nominal wall, trivially safe.
+            return None
+        skin_start = None
+        z += step
+        while z <= z_hi:
+            cur = probe_point_solid(top, P(x, y, z))
+            if not prev and cur:
+                skin_start = z
+            elif prev and not cur and skin_start is not None:
+                return z - skin_start
+            prev = cur
+            z += step
+        if skin_start is None:
+            return 0.0          # never found solid anywhere -- full breach
+        return z_hi - skin_start  # solid clear to the scan ceiling -- ample skin
+
+    results = {}
+    nx, ny = 9, 7
+    for i in range(nx):
+        x = x0 + (x1 - x0) * i / (nx - 1)
+        for j in range(ny):
+            y = y0 + (y1 - y0) * j / (ny - 1)
+            key = f'x{round(x, 2)}_y{round(y, 2)}'
+            if math.hypot(x - wx, y - wy) <= w_excl_r:
+                # inside the display window's own bore -- no ceiling
+                # material is expected here by design (that's the whole
+                # point of the window); not a skin-thickness question.
+                results[key] = True
+                continue
+            if fr['x'][0] <= x <= fr['x'][1] and fr['y'][0] <= y <= fr['y'][1]:
+                # inside the literal SPEC sub-box -- add_fpc_relief always
+                # cuts here regardless of skin safety (see its docstring);
+                # its own inline probe gates full clearance there instead.
+                results[key] = True
+                continue
+            thickness = _local_skin_thickness(x, y)
+            ok = thickness is None or thickness >= FPC_RELIEF_MIN_WALL - 0.05
+            results[key] = ok
+    return results
+
+
 def verify(design, params):
     root = design.rootComponent
     printed, ref_boxes, board_occs = collect_interference_entities(root)
@@ -3794,6 +4243,42 @@ def verify(design, params):
     bad_wall = [k for k, ok in wall_results.items() if not ok]
     assert not bad_wall, f'wall integrity check failed: {bad_wall}'
 
+    # 2026-09-07 pass 7 follow-up: verify_fpc_relief gates verify() -- the
+    # FPC relief pocket broke through the true outer shoulder at the USB
+    # end (two wedge holes); see add_fpc_relief's fix and
+    # verify_fpc_relief's own docstring.
+    fpc_relief_results = verify_fpc_relief(by_name, params)
+    bad_fpc_relief = [k for k, ok in fpc_relief_results.items() if not ok]
+    assert not bad_fpc_relief, (
+        f'FPC relief pocket breached the outer shell '
+        f'(< {FPC_RELIEF_MIN_WALL}mm skin remaining): {bad_fpc_relief}')
+
+    # 2026-09-08 pass 9 (finding 11, stray sliver beside boss C):
+    # the exact set of printed bodies must match the documented 5 parts --
+    # a stray orphan body left over from a botched boolean (the same class
+    # of bug dedupe_body/clipped_pillar_with_reach's docstrings already
+    # document for Bottom/Top/Screen Plate) would show up here as an extra
+    # name, or a missing one if a real part silently vanished. This is the
+    # "no body other than the documented set remains" check the finding
+    # asked for -- gating now, not just printed.
+    _expected_printed = sorted(['Bottom', 'Top', 'Screen Plate', 'Power Button', 'Home Button'])
+    assert names == _expected_printed, (
+        f'printed body set does not match the documented 5 parts (stray '
+        f'or missing body?): {names} vs expected {_expected_printed}')
+    # count_sliver_faces (small-area face count) was tried as a SECOND,
+    # blanket gate here too, but reverted: a live run found 487 sliver
+    # faces on Bottom and 47 on Top even on otherwise-clean geometry --
+    # the wordmark/flare logo debossing (deboss_loops, stroking many short
+    # glyph line segments) legitimately produces hundreds of small faces
+    # at letter corners, unrelated to the finding-11 defect (a relief
+    # circle barely clearing a boss's own OD -- fixed AT THE SOURCE by
+    # add_lip_anchor_reliefs' MIN_RELIEF_CLEARANCE assert above, not by
+    # this blanket count). Kept diagnostic-only (see run()'s summary
+    # print), same as pass 6-8; a real per-defect gate would need to
+    # target the specific geometry (e.g. near a boss's own xy), not every
+    # small face in the model.
+    sliver_results = {nm: count_sliver_faces(by_name[nm]) for nm in ('Bottom', 'Top')}
+
     return {
         'body_names': names,
         'm2_results': m2_results,
@@ -3809,6 +4294,8 @@ def verify(design, params):
         'stack3_clearance': stack3_clearance,
         'skin_results': skin_results,
         'wall_results': wall_results,
+        'fpc_relief_results': fpc_relief_results,
+        'sliver_results': sliver_results,
     }
 
 
@@ -4267,6 +4754,9 @@ def run(_context: str, variant=None, export=False):
     print('comms stack3 ceiling clearance:', result.get('stack3_clearance'))
     print('skin-intact checks: all True?', all(result.get('skin_results', {}).values()))
     print('wall-integrity checks: all True?', all(result.get('wall_results', {}).values()))
+    fpc_results = result.get('fpc_relief_results', {})
+    fpc_bad = [k for k, v in fpc_results.items() if not v]
+    print('fpc-relief skin checks:', len(fpc_results), 'probes, all True?', not fpc_bad, 'bad:', fpc_bad)
     print('sliver face count (area < 0.5mm^2, diagnostic only):')
     for nm in ('Top', 'Bottom'):
         print('  ', nm, count_sliver_faces(bodies[nm]))
