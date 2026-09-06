@@ -271,6 +271,22 @@ typedef struct {
      *  handlers — no radio, no handshake, no socket. */
     mc_transport_t transport;
 
+    /** Seeds the outgoing Meshtastic packet-id counter (see
+     *  mc_seed_packet_ids()'s doc comment for the full rationale: without
+     *  this, every boot's mc_init() restarts the counter at 1, and the
+     *  mesh router drops a repeat-id packet as "already seen recently" —
+     *  a real bug, not a hypothetical one). `ff_shell_init` always calls
+     *  mc_seed_packet_ids() with this value, right after mc_init().
+     *
+     *  0 (the zero-initialized default, e.g. every test that doesn't set
+     *  this field) is treated as 1 by mc_seed_packet_ids() itself, which
+     *  is exactly the pre-existing legacy sequence — so leaving this
+     *  unset is backward compatible. A target that talks to a real mesh
+     *  should fill it with a value distinct per boot: the sim/desktop
+     *  target mixes time and pid (or takes `--packet-id-seed` for
+     *  deterministic runs), the esp32s3 target uses `esp_random()`. */
+    uint32_t packet_id_seed;
+
     /** Fired for feed pushes (quiet-hours gated) and flare alerts
      *  (unconditional). NULL = no haptics. */
     void (*haptic)(void *user);
