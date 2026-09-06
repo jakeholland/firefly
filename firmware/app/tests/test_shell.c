@@ -126,6 +126,13 @@ typedef struct {
     uint8_t buf[512];
     size_t len;
     bool present;
+    int set_calls; /* S12/S04 — a proxy-killer for "boot re-pair must not
+                     * re-write the exact list it just loaded" (see
+                     * shell_sync_paired_settings's own doc comment,
+                     * ff_shell.c): counts every real `set`, so a test can
+                     * assert NO new write happened rather than merely
+                     * that the bytes still read back the same (which a
+                     * redundant write would also satisfy). */
 } mem_store_t;
 
 static int mem_get(void *io, char const *key, void *buf, size_t n)
@@ -145,6 +152,7 @@ static int mem_set(void *io, char const *key, void const *buf, size_t n)
     memcpy(st->buf, buf, n);
     st->len = n;
     st->present = true;
+    st->set_calls++;
     return (int)n;
 }
 
@@ -4796,6 +4804,157 @@ static void S24_AC8_presence_age_keys_rendered_bucket_only(void)
 }
 
 /* =================================================================== */
+/* S12/S04 — the CREW page projection (shell_project_crew_page) and its */
+/* own render-key age coarsening. Reviewer finding (PR #206): neither   */
+/* had a test. Modeled directly on S24_AC8_presence_age_keys_rendered_  */
+/* bucket_only above — same harness shape, same tick()-returns-dirty    */
+/* mechanism, same "SEEN same bucket -> clean; bucket crossed -> dirty; */
+/* LOST/un-rendered -> clean" structure, applied to the crew page's two */
+/* raw-age fields instead of the inbox's.                               */
+/* =================================================================== */
+
+/* Find one PAIRED row in the projected crew page by node id. */
+static ff_app_crew_paired_row_t const *view_crew_paired(uint32_t node)
+{
+    ff_app_crew_page_t const *cw = &ff_shell_view(&H.shell)->settings.crew;
+    for (uint8_t i = 0; i < cw->paired_count; i++) {
+        if (cw->paired[i].node_id == node) return &cw->paired[i];
+    }
+    return NULL;
+}
+
+/* Find one HEARD row in the projected crew page by node id. */
+static ff_app_crew_heard_row_t const *view_crew_heard(uint32_t node)
+{
+    ff_app_crew_page_t const *cw = &ff_shell_view(&H.shell)->settings.crew;
+    for (uint8_t i = 0; i < cw->heard_count; i++) {
+        if (cw->heard[i].node_id == node) return &cw->heard[i];
+    }
+    return NULL;
+}
+
+/* shell_project_crew_page's PAIRED-row fields (identity + honest
+ * presence) and `roster_full`, built unconditionally every tick (S12's
+ * own doc comment on that function) regardless of which face is
+ * visible — so this content test needs no navigation at all, unlike the
+ * render-key tests below (which DO need to leave the launcher; see
+ * their own comment). */
+static void S12_crew_page_paired_row_fields_and_roster_full(void)
+{
+    harness_init(100000u, false);
+    inject_my_info(MY_ID);
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, true));
+    inject_node(DANA, "DANA", H.clk.t);
+    inject_rx_meta(DANA, MC_RX_PATH_DIRECT, true, -55); /* real SEEN evidence */
+    (void)ff_shell_tick(&H.shell, H.clk.t);
+
+    ff_app_crew_paired_row_t const *row = view_crew_paired(DANA);
+    TEST_ASSERT_NOT_NULL(row);
+    TEST_ASSERT_EQUAL_STRING("DANA", row->name);
+    TEST_ASSERT_EQUAL_INT('D', row->initial);
+    TEST_ASSERT_EQUAL_INT(FF_PRESENCE_SEEN, row->presence);
+
+    /* Not yet full: one of eight. */
+    TEST_ASSERT_FALSE(ff_shell_view(&H.shell)->settings.crew.roster_full);
+
+    /* Fill the roster to FF_CREW_MAX (DANA already counted). */
+    uint32_t const more[] = {0x5001u, 0x5002u, 0x5003u, 0x5004u, 0x5005u, 0x5006u, 0x5007u};
+    _Static_assert(sizeof(more) / sizeof(more[0]) == FF_CREW_MAX - 1, "fill exactly to FF_CREW_MAX with DANA");
+    for (size_t i = 0; i < sizeof(more) / sizeof(more[0]); i++) {
+        TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, more[i], true));
+    }
+    (void)ff_shell_tick(&H.shell, H.clk.t);
+
+    TEST_ASSERT_EQUAL_UINT8(FF_CREW_MAX, ff_shell_view(&H.shell)->settings.crew.paired_count);
+    TEST_ASSERT_TRUE_MESSAGE(ff_shell_view(&H.shell)->settings.crew.roster_full,
+                             "an eight-member roster must read roster_full — the CREW screen's ADD-disabled "
+                             "'crew full (8)' state depends on this being honest");
+}
+
+/* The PAIRED presence-age render-key coarsening (ff_shell.c's
+ * shell_render_key, the crew-page block added alongside the inbox
+ * convs one) — same three-case shape as S24_AC8 above, on the crew
+ * page's OWN presence_age_ms field. Must leave the launcher first: its
+ * render key masks everything but the unread badge/batt_pct (this
+ * file's own S24_AC8 comment on the same requirement), which would
+ * hide the very bug this test exists to catch. */
+static void S12_crew_paired_presence_age_keys_rendered_bucket_only(void)
+{
+    harness_init(100000u, false);
+    {
+        ff_intent_t const leave_launcher = {.kind = FF_INTENT_LAUNCHER_SELECT, .u = {.launcher_idx = 4u}}; /* Settings */
+        ff_shell_intent(&H.shell, &leave_launcher);
+    }
+    inject_my_info(MY_ID);
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, true));
+
+    inject_rx_meta(DANA, MC_RX_PATH_DIRECT, true, -55);
+    TEST_ASSERT_TRUE(ff_shell_tick(&H.shell, H.clk.t)); /* row appears: dirty */
+    TEST_ASSERT_FALSE(ff_shell_tick(&H.shell, H.clk.t)); /* settled */
+    TEST_ASSERT_EQUAL_INT(FF_PRESENCE_SEEN, view_crew_paired(DANA)->presence);
+
+    /* SEEN, same sub-minute bucket: MUST be clean — bites keying the raw
+     * presence_age_ms, which advances every tick. */
+    advance(400u);
+    TEST_ASSERT_FALSE_MESSAGE(ff_shell_tick(&H.shell, H.clk.t),
+                              "a sub-bucket SEEN-age tick rebuilt the frame - the CREW page's raw "
+                              "presence_age_ms leaked into the render key");
+
+    /* SEEN, bucket crossed ("now" -> "1 MIN"): dirty (positive control —
+     * the rendered text DID change and must repaint). */
+    advance(60000u);
+    TEST_ASSERT_TRUE_MESSAGE(ff_shell_tick(&H.shell, H.clk.t),
+                             "a rendered SEEN-bucket change did not repaint the CREW page");
+    TEST_ASSERT_EQUAL_INT(FF_PRESENCE_SEEN, view_crew_paired(DANA)->presence); /* still SEEN (precondition) */
+    TEST_ASSERT_FALSE(ff_shell_tick(&H.shell, H.clk.t)); /* settled */
+
+    /* Cross into LOST: a rendered CATEGORY change — dirty, then settle. */
+    advance(FF_CREW_LOST_MS);
+    TEST_ASSERT_TRUE(ff_shell_tick(&H.shell, H.clk.t));
+    TEST_ASSERT_EQUAL_INT(FF_PRESENCE_LOST, view_crew_paired(DANA)->presence);
+    TEST_ASSERT_FALSE(ff_shell_tick(&H.shell, H.clk.t)); /* settled */
+
+    /* LOST renders the bare word (no age) — a full bucket crossing while
+     * LOST must stay CLEAN, same "un-rendered age must not dirty" rule. */
+    advance(60000u);
+    TEST_ASSERT_EQUAL_INT(FF_PRESENCE_LOST, view_crew_paired(DANA)->presence); /* still LOST (precondition) */
+    TEST_ASSERT_FALSE_MESSAGE(ff_shell_tick(&H.shell, H.clk.t),
+                              "a LOST member's un-rendered age bucket dirtied the CREW page's frame");
+}
+
+/* The HEARD list's `age_ms` render-key coarsening — same mechanism, on
+ * a heard-but-unpaired node instead of a paired one. HEARD always
+ * renders its age (there is no LOST/LINKED-style "no age" state for a
+ * heard row), so this only needs the sub-bucket-clean / bucket-crossed-
+ * dirty pair, not a third un-rendered case. */
+static void S12_crew_heard_age_keys_rendered_bucket_only(void)
+{
+    harness_init(100000u, false);
+    {
+        ff_intent_t const leave_launcher = {.kind = FF_INTENT_LAUNCHER_SELECT, .u = {.launcher_idx = 4u}}; /* Settings */
+        ff_shell_intent(&H.shell, &leave_launcher);
+    }
+    inject_my_info(MY_ID);
+
+    inject_rx_meta(STRANGER, MC_RX_PATH_DIRECT, true, -55); /* heard, never paired */
+    TEST_ASSERT_TRUE(ff_shell_tick(&H.shell, H.clk.t)); /* row appears: dirty */
+    TEST_ASSERT_FALSE(ff_shell_tick(&H.shell, H.clk.t)); /* settled */
+    TEST_ASSERT_NOT_NULL(view_crew_heard(STRANGER));
+
+    /* Same sub-minute bucket ("now"): MUST be clean. */
+    advance(400u);
+    TEST_ASSERT_FALSE_MESSAGE(ff_shell_tick(&H.shell, H.clk.t),
+                              "a sub-bucket heard-age tick rebuilt the frame - the CREW page's raw "
+                              "heard age_ms leaked into the render key");
+
+    /* Bucket crossed ("now" -> "1 MIN"): dirty (positive control). */
+    advance(60000u);
+    TEST_ASSERT_TRUE_MESSAGE(ff_shell_tick(&H.shell, H.clk.t),
+                             "a rendered heard-age-bucket change did not repaint the CREW page");
+    TEST_ASSERT_NOT_NULL(view_crew_heard(STRANGER)); /* still tracked (precondition) */
+}
+
+/* =================================================================== */
 /* S24 slice c — thread screens: projection, quick chips, churn key     */
 /* =================================================================== */
 
@@ -8028,6 +8187,152 @@ static void S27_reconnect_handshake_burst_mutes_again(void)
     TEST_ASSERT_EQUAL_INT(2, H.sound.count);
 }
 
+/* ---------------------------------------------------------------------
+ * S12/S04 — the persisted crew roster (format v10): boot re-pair
+ * (order + cap, no eviction), unpair removing from the persisted list,
+ * and the heard-list's honest short-id fallback for a never-named node.
+ * ------------------------------------------------------------------- */
+
+/** Seed the store with a persisted paired list, mirroring
+ *  harness_seed_settings's own "write it now, the NEXT
+ *  harness_init(.., true) loads it" convention. */
+static void harness_seed_paired(uint32_t const *ids, uint8_t count)
+{
+    memset(&H.store_mem, 0, sizeof(H.store_mem));
+    H.store = mem_store(&H.store_mem);
+
+    ff_settings_t s;
+    ff_settings_load(&s, NULL); /* exact defaults */
+    s.paired_count = count;
+    for (uint8_t i = 0; i < count && i < FF_CREW_MAX; i++) {
+        s.paired_ids[i] = ids[i];
+    }
+    ff_settings_save(&s, &H.store);
+}
+
+static void S12_boot_repair_replays_persisted_list_in_order_no_extra_write(void)
+{
+    uint32_t const ids[3] = {0x1001u, 0x1002u, 0x1003u};
+    harness_seed_paired(ids, 3);
+    int const writes_after_seed = H.store_mem.set_calls;
+
+    harness_init(1000u, true);
+
+    ff_crew_t const *crew = ff_shell_crew(&H.shell);
+    TEST_ASSERT_EQUAL_UINT8(3, crew->count);
+    for (uint8_t i = 0; i < 3; i++) {
+        TEST_ASSERT_EQUAL_UINT32(ids[i], crew->members[i].node_id);
+        TEST_ASSERT_TRUE(crew->members[i].paired);
+    }
+
+    /* Boot re-pair must not re-write NVS with the exact list it just
+     * loaded (shell_sync_paired_settings's own doc comment) — the
+     * mutation this proves against: drop the boot re-pair's suppression
+     * (or the equality check it relies on) and this fails even though
+     * the roster contents above still look correct. */
+    TEST_ASSERT_EQUAL_INT(writes_after_seed, H.store_mem.set_calls);
+}
+
+static void S12_boot_repair_caps_at_FF_CREW_MAX_no_eviction(void)
+{
+    uint32_t ids[FF_CREW_MAX];
+    for (uint8_t i = 0; i < FF_CREW_MAX; i++) {
+        ids[i] = 0x2000u + i;
+    }
+    harness_seed_paired(ids, FF_CREW_MAX);
+
+    harness_init(1000u, true);
+
+    ff_crew_t const *crew = ff_shell_crew(&H.shell);
+    TEST_ASSERT_EQUAL_UINT8(FF_CREW_MAX, crew->count);
+    for (uint8_t i = 0; i < FF_CREW_MAX; i++) {
+        TEST_ASSERT_EQUAL_UINT32(ids[i], crew->members[i].node_id);
+        TEST_ASSERT_TRUE(crew->members[i].paired);
+    }
+}
+
+/** A corrupt-but-well-formed blob (right magic/version/size) claiming a
+ *  `paired_count` past FF_CREW_MAX must never make boot re-pair read
+ *  past `paired_ids`' own FF_CREW_MAX-sized array — the mutation this
+ *  proves against: drop ff_settings_load's clamp (ff_settings.c) and
+ *  this either crashes/UBSan-flags under a fresh build or reads garbage
+ *  ids past the array, either way failing the count assertion below. */
+static void S12_boot_repair_clamps_a_corrupt_paired_count(void)
+{
+    memset(&H.store_mem, 0, sizeof(H.store_mem));
+    H.store = mem_store(&H.store_mem);
+
+    ff_settings_t s;
+    ff_settings_load(&s, NULL);
+    for (uint8_t i = 0; i < FF_CREW_MAX; i++) {
+        s.paired_ids[i] = 0x3000u + i;
+    }
+    s.paired_count = 200u; /* corrupt: claims far more than FF_CREW_MAX (8) */
+    ff_settings_save(&s, &H.store);
+
+    harness_init(1000u, true);
+
+    ff_crew_t const *crew = ff_shell_crew(&H.shell);
+    TEST_ASSERT_EQUAL_UINT8(FF_CREW_MAX, crew->count);
+    for (uint8_t i = 0; i < FF_CREW_MAX; i++) {
+        TEST_ASSERT_EQUAL_UINT32(0x3000u + i, crew->members[i].node_id);
+    }
+}
+
+static void S12_unpair_removes_from_the_persisted_list(void)
+{
+    /* Explicit empty store, not just "whatever the previous test's H
+     * left behind" — harness_init(.., true) PRESERVES H.store_mem across
+     * the reset (the seeding convention harness_seed_settings/_paired
+     * rely on), so a test that wants to start from nothing must say so. */
+    memset(&H.store_mem, 0, sizeof(H.store_mem));
+    harness_init(1000u, true);
+
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, 0x4001u, true));
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, 0x4002u, true));
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, 0x4003u, true));
+
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, 0x4002u, false)); /* unpair the middle one */
+
+    ff_settings_t reloaded;
+    ff_settings_load(&reloaded, &H.store);
+    TEST_ASSERT_EQUAL_UINT8(2, reloaded.paired_count);
+    TEST_ASSERT_EQUAL_UINT32(0x4001u, reloaded.paired_ids[0]);
+    TEST_ASSERT_EQUAL_UINT32(0x4003u, reloaded.paired_ids[1]);
+
+    /* Survives a reboot too, not just a re-read of the same live struct. */
+    harness_init(2000u, true);
+    ff_crew_t const *crew = ff_shell_crew(&H.shell);
+    TEST_ASSERT_EQUAL_UINT8(2, crew->count);
+    TEST_ASSERT_EQUAL_UINT32(0x4001u, crew->members[0].node_id);
+    TEST_ASSERT_EQUAL_UINT32(0x4003u, crew->members[1].node_id);
+}
+
+/** A heard node that has never sent a NodeInfo (or sent one with no
+ *  name field) gets an honest short-id render — never a fabricated
+ *  name. The mutation this proves against: any change that starts
+ *  inventing a placeholder name (e.g. "UNKNOWN", or the node id itself
+ *  formatted as decimal) instead of leaving `has_name` false. */
+static void S12_heard_node_with_no_name_shows_an_honest_short_id(void)
+{
+    harness_init(1000u, false);
+
+    inject_rx_meta(STRANGER, MC_RX_PATH_DIRECT, true, -55); /* heard, never NodeInfo'd */
+    ff_shell_tick(&H.shell, H.clk.t);
+
+    ff_app_crew_page_t const *cw = &ff_shell_view(&H.shell)->settings.crew;
+
+    bool found = false;
+    for (uint8_t i = 0; i < cw->heard_count; i++) {
+        if (cw->heard[i].node_id != STRANGER) continue;
+        found = true;
+        TEST_ASSERT_FALSE(cw->heard[i].has_name);
+        TEST_ASSERT_EQUAL_STRING("", cw->heard[i].name);
+        TEST_ASSERT_EQUAL_STRING("aaaa", cw->heard[i].short_id); /* STRANGER == 0x0000AAAA */
+    }
+    TEST_ASSERT_TRUE_MESSAGE(found, "STRANGER should appear in the heard list");
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -8125,6 +8430,12 @@ int main(void)
     RUN_TEST(S16_AC6_dev_trust_all_lets_the_single_dev_node_play_a_crew_member);
     RUN_TEST(S16_b2_my_info_purges_our_own_id_from_heard);
 
+    RUN_TEST(S12_boot_repair_replays_persisted_list_in_order_no_extra_write);
+    RUN_TEST(S12_boot_repair_caps_at_FF_CREW_MAX_no_eviction);
+    RUN_TEST(S12_boot_repair_clamps_a_corrupt_paired_count);
+    RUN_TEST(S12_unpair_removes_from_the_persisted_list);
+    RUN_TEST(S12_heard_node_with_no_name_shows_an_honest_short_id);
+
     RUN_TEST(S16_AC7_canned_reply_uses_newest_feed_item_or_broadcasts);
     RUN_TEST(S16_c3_send_text_sends_the_shell_owned_draft);
     RUN_TEST(S08_pred_send_with_unaccepted_candidate_sends_the_visible_word);
@@ -8153,6 +8464,10 @@ int main(void)
     RUN_TEST(S24_AC3_leaving_inbox_face_resets_subview_to_inbox);
     RUN_TEST(S24_AC8_inbox_key_same_bucket_age_tick_is_clean);
     RUN_TEST(S24_AC8_presence_age_keys_rendered_bucket_only);
+
+    RUN_TEST(S12_crew_page_paired_row_fields_and_roster_full);
+    RUN_TEST(S12_crew_paired_presence_age_keys_rendered_bucket_only);
+    RUN_TEST(S12_crew_heard_age_keys_rendered_bucket_only);
     RUN_TEST(S24_AC3_inbox_intents_are_inert_under_a_takeover);
     /* S24 slice d — popup / rally / opacity / demo-loopback seam. */
     RUN_TEST(S24_popup_flare_sends_flare_to_scope_and_closes);

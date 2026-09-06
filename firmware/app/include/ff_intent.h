@@ -382,6 +382,24 @@ typedef enum {
      *   this intent's own case in ff_shell.c for the full three-case
      *   writeup (takeover / modal / neither). */
     FF_INTENT_QUICK_FLARE,
+
+    /* [api] S12/S04 — the CREW pairing screen (docs/specs/S04-firefly-
+     * protocol.md's "pairing v1 = channel membership + explicit crew
+     * list"; S22's "pairing screen ... unbuilt" note, finally built).
+     * SETTINGS_OPEN_CREW opens the CREW sub-view from its Settings row
+     * (no payload) — mirrors FF_INTENT_CALIBRATE_TOUCH's "a Settings row,
+     * a bare intent, the shell decides" shape. CREW_PAIR/CREW_UNPAIR
+     * carry the target node id in `u.node_id` (the SELECT_CREW/
+     * OPEN_COMPOSE convention already established above) and route to
+     * `ff_shell_pair` — the ONE sanctioned roster-growth path (its own
+     * doc comment); these are a new SCREEN-facing name for that same
+     * seam, not a second growth path. Deliberately NOT folded into the
+     * existing `FF_INTENT_SELECT_CREW` (that intent means "make this
+     * paired member the radar/Signals selection" — an unrelated,
+     * already-shipped concept that happens to share a payload shape). */
+    FF_INTENT_SETTINGS_OPEN_CREW,
+    FF_INTENT_CREW_PAIR,
+    FF_INTENT_CREW_UNPAIR,
 } ff_intent_kind_t;
 
 /**
@@ -453,7 +471,11 @@ typedef struct {
          *  See ff_shell_intent's doc in ff_shell.h for the exact rule. For
          *  SIG_SELECT_MEMBER (S22): the tapped Signals row's crew node id,
          *  which the shell validates against the roster (`shell_member_paired`)
-         *  before it becomes the send target. */
+         *  before it becomes the send target. For CREW_PAIR/CREW_UNPAIR
+         *  (S12/S04): the target node id — a HEARD id (CREW_PAIR) or a
+         *  PAIRED roster member (CREW_UNPAIR); the shell routes both to
+         *  `ff_shell_pair`, which is the actual roster-membership check,
+         *  never this screen. */
         uint32_t node_id;
         uint8_t rally_idx;                      /* SELECT_RALLY; RALLY_SELECT_PLACE
                                                  * (S24 d: 0 = On Me, 1.. = landmark) */

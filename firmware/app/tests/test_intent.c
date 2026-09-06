@@ -1851,6 +1851,154 @@ static void S21_AC5_default_touch_cal_is_identity(void)
 }
 
 /* =================================================================== */
+/* S12/S04 — FF_INTENT_SETTINGS_OPEN_CREW / CREW_PAIR / CREW_UNPAIR      */
+/*                                                                       */
+/* Reviewer finding (PR #206): no test dispatched these three through   */
+/* ff_shell_intent at all, so a mutation swapping FF_INTENT_CREW_PAIR's  */
+/* and FF_INTENT_CREW_UNPAIR's case bodies (shell_pair(..., true) <->    */
+/* shell_pair(..., false)) shipped silently. The pair below              */
+/* (S12_crew_pair_intent_pairs_a_heard_node /                            */
+/* S12_crew_unpair_intent_unpairs_a_paired_member) is the "distinct,     */
+/* never folded" shape this file's own top comment already mandates for */
+/* RELEASE_LOCK/TAKEOVER_DISMISS — each asserts the POSITIVE fact its    */
+/* own intent must produce, on the same shell, so swapping the two       */
+/* case bodies fails BOTH on their own positive assertion rather than    */
+/* satisfying a shared proxy.                                            */
+/* =================================================================== */
+
+static void send_crew_node(ff_intent_kind_t kind, uint32_t node_id)
+{
+    ff_intent_t in = {.kind = kind, .u = {0}};
+    in.u.node_id = node_id;
+    ff_shell_intent(&H.shell, &in);
+}
+
+static void S12_settings_open_crew_sets_the_crew_subview(void)
+{
+    harness_init(100000u);
+    nav_home_to(FF_APP_FACE_SETTINGS);
+    TEST_ASSERT_EQUAL(FF_SETTINGS_SUB_LIST, view()->settings.subview);
+
+    send_kind(FF_INTENT_SETTINGS_OPEN_CREW);
+
+    TEST_ASSERT_EQUAL(FF_SETTINGS_SUB_CREW, view()->settings.subview);
+}
+
+static void S12_settings_open_crew_is_rejected_while_a_takeover_is_visible(void)
+{
+    harness_init(100000u);
+    nav_home_to(FF_APP_FACE_SETTINGS);
+
+    pair_named(DANA, "DANA");
+    inject_flare(DANA, 300u);
+    TEST_ASSERT_TRUE(ff_shell_flare(&H.shell)->takeover_active);
+
+    send_kind(FF_INTENT_SETTINGS_OPEN_CREW);
+    TEST_ASSERT_EQUAL(FF_SETTINGS_SUB_LIST, view()->settings.subview);
+
+    /* Positive control: with the takeover cleared, the identical intent
+     * does open the sub-view — so the rejection above is the routing
+     * gate, not an OPEN_CREW path that never works (same shape
+     * S16_c2_flare_start_is_rejected_while_a_takeover_is_visible uses). */
+    send_kind(FF_INTENT_TAKEOVER_DISMISS);
+    send_kind(FF_INTENT_SETTINGS_OPEN_CREW);
+    TEST_ASSERT_EQUAL(FF_SETTINGS_SUB_CREW, view()->settings.subview);
+}
+
+static void S12_crew_pair_intent_pairs_a_heard_node(void)
+{
+    harness_init(100000u);
+
+    ff_crew_t const *crew = ff_shell_crew(&H.shell);
+    TEST_ASSERT_NULL(ff_crew_find(crew, STRANGER));
+
+    send_crew_node(FF_INTENT_CREW_PAIR, STRANGER);
+
+    ff_crew_member_t const *m = ff_crew_find(crew, STRANGER);
+    TEST_ASSERT_NOT_NULL(m);
+    TEST_ASSERT_TRUE(m->paired);
+}
+
+static void S12_crew_unpair_intent_unpairs_a_paired_member(void)
+{
+    harness_init(100000u);
+    pair_named(DANA, "DANA");
+    TEST_ASSERT_TRUE(ff_crew_find(ff_shell_crew(&H.shell), DANA)->paired);
+
+    send_crew_node(FF_INTENT_CREW_UNPAIR, DANA);
+
+    ff_crew_member_t const *m = ff_crew_find(ff_shell_crew(&H.shell), DANA);
+    TEST_ASSERT_NOT_NULL(m); /* still in the roster (no eviction) — just unpaired */
+    TEST_ASSERT_FALSE(m->paired);
+}
+
+static void S12_crew_pair_is_rejected_while_a_takeover_is_visible(void)
+{
+    harness_init(100000u);
+    pair_named(DANA, "DANA");
+    inject_flare(DANA, 300u);
+    TEST_ASSERT_TRUE(ff_shell_flare(&H.shell)->takeover_active);
+
+    send_crew_node(FF_INTENT_CREW_PAIR, STRANGER);
+    TEST_ASSERT_NULL(ff_crew_find(ff_shell_crew(&H.shell), STRANGER));
+
+    send_kind(FF_INTENT_TAKEOVER_DISMISS);
+    send_crew_node(FF_INTENT_CREW_PAIR, STRANGER);
+    TEST_ASSERT_TRUE(ff_crew_find(ff_shell_crew(&H.shell), STRANGER)->paired);
+}
+
+static void S12_crew_unpair_is_rejected_while_a_takeover_is_visible(void)
+{
+    harness_init(100000u);
+    pair_named(DANA, "DANA");
+    inject_flare(DANA, 300u);
+    TEST_ASSERT_TRUE(ff_shell_flare(&H.shell)->takeover_active);
+
+    send_crew_node(FF_INTENT_CREW_UNPAIR, DANA);
+    TEST_ASSERT_TRUE(ff_crew_find(ff_shell_crew(&H.shell), DANA)->paired);
+
+    send_kind(FF_INTENT_TAKEOVER_DISMISS);
+    send_crew_node(FF_INTENT_CREW_UNPAIR, DANA);
+    TEST_ASSERT_FALSE(ff_crew_find(ff_shell_crew(&H.shell), DANA)->paired);
+}
+
+/* The CREW page's own back "<" -> FF_INTENT_BACK pops the sub-view back
+ * to the plain list WITHOUT leaving Settings (ff_shell.c's BACK-case
+ * "rule 3" branch this spec's own comment predicted would need its own
+ * branch "if a settings sub-page concept returns" — this is that
+ * branch, now under test). */
+static void S12_crew_back_returns_to_the_plain_settings_list(void)
+{
+    harness_init(100000u);
+    nav_home_to(FF_APP_FACE_SETTINGS);
+    send_kind(FF_INTENT_SETTINGS_OPEN_CREW);
+    TEST_ASSERT_EQUAL(FF_SETTINGS_SUB_CREW, view()->settings.subview);
+
+    send_kind(FF_INTENT_BACK);
+
+    TEST_ASSERT_EQUAL(FF_SETTINGS_SUB_LIST, view()->settings.subview);
+    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_SETTINGS, view()->active_face); /* BACK stays on Settings, doesn't go home */
+}
+
+/* Leaving Settings entirely (not via BACK) also resets the sub-view —
+ * the same "leaving Signals resets its sub-view" precedent
+ * (shell_project's own reset block) applied to Settings/CREW. A fresh
+ * re-entry must never open straight onto a stale CREW page. */
+static void S12_leaving_settings_resets_the_crew_subview_to_list(void)
+{
+    harness_init(100000u);
+    nav_home_to(FF_APP_FACE_SETTINGS);
+    send_kind(FF_INTENT_SETTINGS_OPEN_CREW);
+    TEST_ASSERT_EQUAL(FF_SETTINGS_SUB_CREW, view()->settings.subview); /* ticks: prev_face latches to SETTINGS */
+
+    nav_home_to(FF_APP_FACE_RADAR); /* leave Settings entirely */
+    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_RADAR, view()->active_face); /* ticks: the leave-Settings reset fires here */
+
+    nav_home_to(FF_APP_FACE_SETTINGS); /* fresh re-entry */
+    TEST_ASSERT_EQUAL(FF_SETTINGS_SUB_LIST, view()->settings.subview);
+}
+
+/* =================================================================== */
 /* S26 slice b — PWR button -> power menu -> soft power-off             */
 /* =================================================================== */
 
@@ -2380,10 +2528,19 @@ static void S16_AC8_setting_set_is_rejected_while_a_takeover_is_visible(void)
     ev.on_private(ev.user, DANA, MC_ADDR_BROADCAST, FF_PORTNUM, buf, (size_t)n);
     TEST_ASSERT_TRUE(ff_shell_flare(&h.shell)->takeover_active);
 
+    /* S12/S04 [api]: `ff_shell_pair` above now legitimately persists the
+     * paired list on a REAL pair (shell_sync_paired_settings) — captured
+     * here, after setup, rather than asserting an absolute 0 below, so
+     * this test keeps proving its own actual claim ("a REJECTED
+     * setting-set writes nothing NEW"), not a stale "nothing has ever
+     * been written this test" assumption the new pairing-persistence
+     * seam legitimately breaks. */
+    int const writes_before = h.store_mem.set_calls;
+
     bool const before = ff_shell_settings(&h.shell)->imperial;
     setting_send(&h.shell, FF_SETTING_IMPERIAL, before ? 0 : 1, NULL);
     TEST_ASSERT_EQUAL(before, ff_shell_settings(&h.shell)->imperial); /* rejected: routing rule 4 */
-    TEST_ASSERT_EQUAL_INT(0, h.store_mem.set_calls);
+    TEST_ASSERT_EQUAL_INT(writes_before, h.store_mem.set_calls);
 
     ff_shell_close(&h.shell);
 }
@@ -2608,6 +2765,15 @@ int main(void)
     RUN_TEST(S21_calibrate_unchanged_refit_skips_the_write);
     RUN_TEST(S21_AC4_calibrated_touch_survives_shell_close_and_reinit_against_the_same_store);
     RUN_TEST(S21_AC5_default_touch_cal_is_identity);
+
+    RUN_TEST(S12_settings_open_crew_sets_the_crew_subview);
+    RUN_TEST(S12_settings_open_crew_is_rejected_while_a_takeover_is_visible);
+    RUN_TEST(S12_crew_pair_intent_pairs_a_heard_node);
+    RUN_TEST(S12_crew_unpair_intent_unpairs_a_paired_member);
+    RUN_TEST(S12_crew_pair_is_rejected_while_a_takeover_is_visible);
+    RUN_TEST(S12_crew_unpair_is_rejected_while_a_takeover_is_visible);
+    RUN_TEST(S12_crew_back_returns_to_the_plain_settings_list);
+    RUN_TEST(S12_leaving_settings_resets_the_crew_subview_to_list);
 
     RUN_TEST(S26b_power_menu_open_pushes_the_modal_and_becomes_visible);
     RUN_TEST(S26b_power_menu_open_is_rejected_while_a_takeover_is_visible);
