@@ -15,11 +15,18 @@
 
 static const char *TAG = "ff_compass";
 
-/* I2C transaction timeout for every read/write below — generous for a
- * bus already proven at 400 kHz by ff_display (touch + IO expander),
- * short enough that a genuinely wedged bus never stalls the 10 Hz
- * sample loop for long. */
-#define FF_COMPASS_I2C_TIMEOUT_MS 100
+/* I2C transaction timeout for every read/write below. This runs in the
+ * main render-loop task (app_main.c's FF_COMPASS_SAMPLE_PERIOD_MS tick,
+ * 10 Hz) on the SAME i2c_master_bus_handle_t the SPD2010 touch driver
+ * uses (ff_display_i2c_bus()) — a transaction that blocks here also
+ * blocks touch reads on that shared handle. A successful transaction
+ * at 400 kHz for a handful of bytes completes in well under 1 ms, so
+ * there is no happy-path cost to keeping this short; a genuinely
+ * wedged bus degrades to the -1 "unknown" sentinel quickly instead of
+ * costing up to 2x this driver's own sample period (and stalling
+ * touch along with it) on every affected tick. PR #212 review finding
+ * #1: was 100 ms. */
+#define FF_COMPASS_I2C_TIMEOUT_MS 20
 
 /* Per-device SCL ceiling handed to i2c_master_bus_add_device — a cap on
  * THIS device's own transactions, not a bus reconfigure (the bus itself
@@ -58,11 +65,17 @@ static const char *TAG = "ff_compass";
  * (not low-power) accel mode family. */
 #define FF_QMI8658_CTRL2_VAL 0x18
 
-/* CTRL7 bit0 = aEN (accelerometer enable) only. The reference driver
- * writes 0x43 (aEN | gEN | bit6) because its own demo also runs the
- * gyro; ff_geo_heading_deg takes mag + accel only, so this driver has
- * no use for gyro data and leaves gEN off. */
-#define FF_QMI8658_CTRL7_VAL 0x01
+/* CTRL7 = aEN | sys_hs. The reference driver writes 0x43 (aEN(bit0) |
+ * gEN(bit1) | sys_hs(bit6)) because its own demo also runs the gyro;
+ * ff_geo_heading_deg takes mag + accel only, so this driver has no use
+ * for gyro data and leaves gEN off. bit6 (sys_hs, "high-speed internal
+ * clock" vs. an ODR-derived clock per QST's own datasheet) is NOT
+ * gyro-related, so it is kept rather than dropped along with gEN —
+ * matching the reference driver's own clock source rather than
+ * introducing an unverified deviation on a path this PR's own bench
+ * note already flags as not independently verified (PR #212 review
+ * finding #3). 0x43 & ~0x02 (gEN) = 0x41. */
+#define FF_QMI8658_CTRL7_VAL 0x41
 
 /* =====================================================================
  * QMC5883L — the far more common chip on a GY-273 board even when
@@ -100,7 +113,7 @@ static const char *TAG = "ff_compass";
 #define FF_HMC5883L_REG_ID_A 0x0A /* ID A/B/C read back ASCII "H43" */
 
 #define FF_HMC5883L_CRA_VAL 0x70  /* 8-sample average, 15 Hz ODR, normal measurement — datasheet default */
-#define FF_HMC5883L_CRB_VAL 0xA0  /* gain = 5 (default) */
+#define FF_HMC5883L_CRB_VAL 0x20  /* GN2:0=001, +-1.3 Ga, 1090 LSB/Gauss -- true POR default (PR #212 review: was 0xA0/+-4.7 Ga/390 LSB/Gauss, which is GN2:0=101, not the default, and throws away resolution Earth's field (~0.25-0.65 Ga) doesn't need) */
 #define FF_HMC5883L_MODE_VAL 0x00 /* continuous-measurement mode */
 
 /* =====================================================================
@@ -179,6 +192,15 @@ static bool s_imu_present;
 
 static ff_geo_cal_t s_cal;
 static bool s_cal_valid;
+
+/* ff_compass_read() runs at 10 Hz (app_main.c's own
+ * FF_COMPASS_SAMPLE_PERIOD_MS) from the main render-loop task — a bus
+ * fault (NACK/timeout) on that path can repeat every tick for as long
+ * as the fault persists. Log the first occurrence of each failure kind
+ * so it isn't silent, then go quiet rather than spamming the log at
+ * 10 Hz for the rest of the session (PR #212 review: gate on this). */
+static bool s_mag_read_warned;
+static bool s_imu_read_warned;
 
 /* =====================================================================
  * Small I2C helpers shared by every probe/bring-up/read below.
@@ -376,14 +398,24 @@ float ff_compass_read(void)
 
     if (s_mag_kind == FF_COMPASS_MAG_QMC5883L) {
         if (ff_compass_reg_read(s_mag_dev, FF_QMC5883L_REG_DATA, buf, sizeof(buf)) != ESP_OK) {
-            return -1.0f;
+            if (!s_mag_read_warned) {
+                s_mag_read_warned = true;
+                ESP_LOGW(TAG, "magnetometer read failed (NACK/timeout) — heading reports -1 until it recovers "
+                              "(logged once)");
+            }
+            return -1.0f; /* -1 sentinel, never a stale heading */
         }
         mag_raw.x = (float)(int16_t)((buf[1] << 8) | buf[0]);
         mag_raw.y = (float)(int16_t)((buf[3] << 8) | buf[2]);
         mag_raw.z = (float)(int16_t)((buf[5] << 8) | buf[4]);
     } else { /* FF_COMPASS_MAG_HMC5883L */
         if (ff_compass_reg_read(s_mag_dev, FF_HMC5883L_REG_DATA, buf, sizeof(buf)) != ESP_OK) {
-            return -1.0f;
+            if (!s_mag_read_warned) {
+                s_mag_read_warned = true;
+                ESP_LOGW(TAG, "magnetometer read failed (NACK/timeout) — heading reports -1 until it recovers "
+                              "(logged once)");
+            }
+            return -1.0f; /* -1 sentinel, never a stale heading */
         }
         /* HMC5883L's own data order is X, Z, Y (not X,Y,Z), big-endian
          * per axis — see this file's FF_HMC5883L_REG_DATA comment. */
@@ -406,6 +438,10 @@ float ff_compass_read(void)
         } else {
             /* A transient read failure degrades to level-assumed rather
              * than feeding ff_geo_heading_deg stale/garbage tilt data. */
+            if (!s_imu_read_warned) {
+                s_imu_read_warned = true;
+                ESP_LOGW(TAG, "IMU accel read failed (NACK/timeout) — assuming level this sample (logged once)");
+            }
             accel_board = (ff_vec3_t){0.0f, 0.0f, 1.0f};
         }
     } else {
