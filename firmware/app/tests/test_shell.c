@@ -4804,6 +4804,157 @@ static void S24_AC8_presence_age_keys_rendered_bucket_only(void)
 }
 
 /* =================================================================== */
+/* S12/S04 — the CREW page projection (shell_project_crew_page) and its */
+/* own render-key age coarsening. Reviewer finding (PR #206): neither   */
+/* had a test. Modeled directly on S24_AC8_presence_age_keys_rendered_  */
+/* bucket_only above — same harness shape, same tick()-returns-dirty    */
+/* mechanism, same "SEEN same bucket -> clean; bucket crossed -> dirty; */
+/* LOST/un-rendered -> clean" structure, applied to the crew page's two */
+/* raw-age fields instead of the inbox's.                               */
+/* =================================================================== */
+
+/* Find one PAIRED row in the projected crew page by node id. */
+static ff_app_crew_paired_row_t const *view_crew_paired(uint32_t node)
+{
+    ff_app_crew_page_t const *cw = &ff_shell_view(&H.shell)->settings.crew;
+    for (uint8_t i = 0; i < cw->paired_count; i++) {
+        if (cw->paired[i].node_id == node) return &cw->paired[i];
+    }
+    return NULL;
+}
+
+/* Find one HEARD row in the projected crew page by node id. */
+static ff_app_crew_heard_row_t const *view_crew_heard(uint32_t node)
+{
+    ff_app_crew_page_t const *cw = &ff_shell_view(&H.shell)->settings.crew;
+    for (uint8_t i = 0; i < cw->heard_count; i++) {
+        if (cw->heard[i].node_id == node) return &cw->heard[i];
+    }
+    return NULL;
+}
+
+/* shell_project_crew_page's PAIRED-row fields (identity + honest
+ * presence) and `roster_full`, built unconditionally every tick (S12's
+ * own doc comment on that function) regardless of which face is
+ * visible — so this content test needs no navigation at all, unlike the
+ * render-key tests below (which DO need to leave the launcher; see
+ * their own comment). */
+static void S12_crew_page_paired_row_fields_and_roster_full(void)
+{
+    harness_init(100000u, false);
+    inject_my_info(MY_ID);
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, true));
+    inject_node(DANA, "DANA", H.clk.t);
+    inject_rx_meta(DANA, MC_RX_PATH_DIRECT, true, -55); /* real SEEN evidence */
+    (void)ff_shell_tick(&H.shell, H.clk.t);
+
+    ff_app_crew_paired_row_t const *row = view_crew_paired(DANA);
+    TEST_ASSERT_NOT_NULL(row);
+    TEST_ASSERT_EQUAL_STRING("DANA", row->name);
+    TEST_ASSERT_EQUAL_INT('D', row->initial);
+    TEST_ASSERT_EQUAL_INT(FF_PRESENCE_SEEN, row->presence);
+
+    /* Not yet full: one of eight. */
+    TEST_ASSERT_FALSE(ff_shell_view(&H.shell)->settings.crew.roster_full);
+
+    /* Fill the roster to FF_CREW_MAX (DANA already counted). */
+    uint32_t const more[] = {0x5001u, 0x5002u, 0x5003u, 0x5004u, 0x5005u, 0x5006u, 0x5007u};
+    _Static_assert(sizeof(more) / sizeof(more[0]) == FF_CREW_MAX - 1, "fill exactly to FF_CREW_MAX with DANA");
+    for (size_t i = 0; i < sizeof(more) / sizeof(more[0]); i++) {
+        TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, more[i], true));
+    }
+    (void)ff_shell_tick(&H.shell, H.clk.t);
+
+    TEST_ASSERT_EQUAL_UINT8(FF_CREW_MAX, ff_shell_view(&H.shell)->settings.crew.paired_count);
+    TEST_ASSERT_TRUE_MESSAGE(ff_shell_view(&H.shell)->settings.crew.roster_full,
+                             "an eight-member roster must read roster_full — the CREW screen's ADD-disabled "
+                             "'crew full (8)' state depends on this being honest");
+}
+
+/* The PAIRED presence-age render-key coarsening (ff_shell.c's
+ * shell_render_key, the crew-page block added alongside the inbox
+ * convs one) — same three-case shape as S24_AC8 above, on the crew
+ * page's OWN presence_age_ms field. Must leave the launcher first: its
+ * render key masks everything but the unread badge/batt_pct (this
+ * file's own S24_AC8 comment on the same requirement), which would
+ * hide the very bug this test exists to catch. */
+static void S12_crew_paired_presence_age_keys_rendered_bucket_only(void)
+{
+    harness_init(100000u, false);
+    {
+        ff_intent_t const leave_launcher = {.kind = FF_INTENT_LAUNCHER_SELECT, .u = {.launcher_idx = 4u}}; /* Settings */
+        ff_shell_intent(&H.shell, &leave_launcher);
+    }
+    inject_my_info(MY_ID);
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, true));
+
+    inject_rx_meta(DANA, MC_RX_PATH_DIRECT, true, -55);
+    TEST_ASSERT_TRUE(ff_shell_tick(&H.shell, H.clk.t)); /* row appears: dirty */
+    TEST_ASSERT_FALSE(ff_shell_tick(&H.shell, H.clk.t)); /* settled */
+    TEST_ASSERT_EQUAL_INT(FF_PRESENCE_SEEN, view_crew_paired(DANA)->presence);
+
+    /* SEEN, same sub-minute bucket: MUST be clean — bites keying the raw
+     * presence_age_ms, which advances every tick. */
+    advance(400u);
+    TEST_ASSERT_FALSE_MESSAGE(ff_shell_tick(&H.shell, H.clk.t),
+                              "a sub-bucket SEEN-age tick rebuilt the frame - the CREW page's raw "
+                              "presence_age_ms leaked into the render key");
+
+    /* SEEN, bucket crossed ("now" -> "1 MIN"): dirty (positive control —
+     * the rendered text DID change and must repaint). */
+    advance(60000u);
+    TEST_ASSERT_TRUE_MESSAGE(ff_shell_tick(&H.shell, H.clk.t),
+                             "a rendered SEEN-bucket change did not repaint the CREW page");
+    TEST_ASSERT_EQUAL_INT(FF_PRESENCE_SEEN, view_crew_paired(DANA)->presence); /* still SEEN (precondition) */
+    TEST_ASSERT_FALSE(ff_shell_tick(&H.shell, H.clk.t)); /* settled */
+
+    /* Cross into LOST: a rendered CATEGORY change — dirty, then settle. */
+    advance(FF_CREW_LOST_MS);
+    TEST_ASSERT_TRUE(ff_shell_tick(&H.shell, H.clk.t));
+    TEST_ASSERT_EQUAL_INT(FF_PRESENCE_LOST, view_crew_paired(DANA)->presence);
+    TEST_ASSERT_FALSE(ff_shell_tick(&H.shell, H.clk.t)); /* settled */
+
+    /* LOST renders the bare word (no age) — a full bucket crossing while
+     * LOST must stay CLEAN, same "un-rendered age must not dirty" rule. */
+    advance(60000u);
+    TEST_ASSERT_EQUAL_INT(FF_PRESENCE_LOST, view_crew_paired(DANA)->presence); /* still LOST (precondition) */
+    TEST_ASSERT_FALSE_MESSAGE(ff_shell_tick(&H.shell, H.clk.t),
+                              "a LOST member's un-rendered age bucket dirtied the CREW page's frame");
+}
+
+/* The HEARD list's `age_ms` render-key coarsening — same mechanism, on
+ * a heard-but-unpaired node instead of a paired one. HEARD always
+ * renders its age (there is no LOST/LINKED-style "no age" state for a
+ * heard row), so this only needs the sub-bucket-clean / bucket-crossed-
+ * dirty pair, not a third un-rendered case. */
+static void S12_crew_heard_age_keys_rendered_bucket_only(void)
+{
+    harness_init(100000u, false);
+    {
+        ff_intent_t const leave_launcher = {.kind = FF_INTENT_LAUNCHER_SELECT, .u = {.launcher_idx = 4u}}; /* Settings */
+        ff_shell_intent(&H.shell, &leave_launcher);
+    }
+    inject_my_info(MY_ID);
+
+    inject_rx_meta(STRANGER, MC_RX_PATH_DIRECT, true, -55); /* heard, never paired */
+    TEST_ASSERT_TRUE(ff_shell_tick(&H.shell, H.clk.t)); /* row appears: dirty */
+    TEST_ASSERT_FALSE(ff_shell_tick(&H.shell, H.clk.t)); /* settled */
+    TEST_ASSERT_NOT_NULL(view_crew_heard(STRANGER));
+
+    /* Same sub-minute bucket ("now"): MUST be clean. */
+    advance(400u);
+    TEST_ASSERT_FALSE_MESSAGE(ff_shell_tick(&H.shell, H.clk.t),
+                              "a sub-bucket heard-age tick rebuilt the frame - the CREW page's raw "
+                              "heard age_ms leaked into the render key");
+
+    /* Bucket crossed ("now" -> "1 MIN"): dirty (positive control). */
+    advance(60000u);
+    TEST_ASSERT_TRUE_MESSAGE(ff_shell_tick(&H.shell, H.clk.t),
+                             "a rendered heard-age-bucket change did not repaint the CREW page");
+    TEST_ASSERT_NOT_NULL(view_crew_heard(STRANGER)); /* still tracked (precondition) */
+}
+
+/* =================================================================== */
 /* S24 slice c — thread screens: projection, quick chips, churn key     */
 /* =================================================================== */
 
@@ -8313,6 +8464,10 @@ int main(void)
     RUN_TEST(S24_AC3_leaving_inbox_face_resets_subview_to_inbox);
     RUN_TEST(S24_AC8_inbox_key_same_bucket_age_tick_is_clean);
     RUN_TEST(S24_AC8_presence_age_keys_rendered_bucket_only);
+
+    RUN_TEST(S12_crew_page_paired_row_fields_and_roster_full);
+    RUN_TEST(S12_crew_paired_presence_age_keys_rendered_bucket_only);
+    RUN_TEST(S12_crew_heard_age_keys_rendered_bucket_only);
     RUN_TEST(S24_AC3_inbox_intents_are_inert_under_a_takeover);
     /* S24 slice d — popup / rally / opacity / demo-loopback seam. */
     RUN_TEST(S24_popup_flare_sends_flare_to_scope_and_closes);
