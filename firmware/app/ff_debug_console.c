@@ -72,6 +72,8 @@ static void dbgconsole_help(ff_dbgconsole_reply_fn reply, void *user)
     reply_line(reply, user, "dbg: cal finish               end the session, persist if coverage is enough");
     reply_line(reply, user, "dbg: cal cancel               abandon the session, calibration unchanged");
     reply_line(reply, user, "dbg: cal clear                drop the stored calibration back to identity");
+    reply_line(reply, user, "dbg: name                     NAME in Settings: stored/mesh/confirmed status");
+    reply_line(reply, user, "dbg: name <text>              set + push the Meshtastic owner update");
 }
 
 static void dbgconsole_me(ff_shell_t *sh, ff_dbgconsole_reply_fn reply, void *user)
@@ -305,6 +307,125 @@ static void dbgconsole_cal_clear(ff_shell_t *sh, ff_dbgconsole_reply_fn reply, v
     reply_line(reply, user, was_valid ? "dbg: cal cleared" : "dbg: cal already uncalibrated");
 }
 
+/* NAME in Settings — bare status plus "set", both dispatched through
+ * `ff_shell_mesh_name_status`/`ff_shell_intent`, the SAME seam the
+ * Settings NAME row and its T9 editor use (this file's own top-comment
+ * "every command that ACTS goes through ff_shell_intent" rule). "set"
+ * runs the EXACT same commit path the row's DONE button does
+ * (FF_INTENT_SETTINGS_NAME_COMMIT — sanitize, persist, push), so the
+ * coordinator can bench the mesh push against real nodes without the
+ * touchscreen.
+ *
+ * Confirmation-fix follow-up (bench finding, 2026-09-06) added the
+ * trailing `pushed=<long>/<short> ack=<none|ok|nak> reply=<none|long/
+ * short>` fields: the ORIGINAL `stored=.../mesh=.../confirmed=` trio
+ * alone could not distinguish "no push has happened yet" from "pushed,
+ * still waiting on a reply" from "pushed, got NAK'd" — all three read
+ * identically as `confirmed=0`. These three new fields are the CURRENT
+ * push's own record (`ff_shell_mesh_name_status_t`'s own doc comment has
+ * the full field-by-field rationale): `pushed=none` before any push this
+ * session; `ack=none` until a routing reply for that push arrives (NOT a
+ * failure — see `ff_mesh_name_ack_t`); `reply=none` until this push's
+ * own `get_owner_request` follow-up gets an answer.
+ *
+ * Confirmation-fix round 2 (2026-09-06, bench finding AFTER commit
+ * 51e4ae1, against a real puck + Meshtastic 2.7.26 comms brain) added
+ * `seq=<N> mismatch=<0|1>`: `seq=` is the push-generation counter that
+ * closes a stale-equality false positive (`name Jake` used to read
+ * `confirmed=1` INSTANTLY whenever the mesh's CACHED name already
+ * happened to equal the one just pushed, even with `reply=none` — see
+ * `ff_shell_mesh_name_status_t`'s doc comment, ff_shell.h, for the full
+ * mechanism); `mismatch=1` is a fresh reply/self-NodeInfo for THIS push
+ * naming a DIFFERENT owner than was pushed, distinct from `ack=nak`
+ * (a routing-layer delivery failure that says nothing about what name
+ * the admin module actually ended up with). The SAME bench run also
+ * found `get_owner_request` itself never got a reply on real hardware
+ * (`reply=none` forever, even past every retry) — a separate,
+ * lower-level fix in `mc_send_get_owner_request`
+ * (`meshclient/include/mc_client.h`'s own doc comment has the
+ * AdminModule citation); this console's `reply=` field is what exposed
+ * it on the bench in the first place. */
+static void dbgconsole_name_status(ff_shell_t *sh, ff_dbgconsole_reply_fn reply, void *user)
+{
+    ff_shell_mesh_name_status_t const st = ff_shell_mesh_name_status(sh);
+    char line[DBGCONSOLE_LINE_BUF];
+
+    char const *stored = (st.my_name[0] != '\0') ? st.my_name : "(unset)";
+    /* Confirmation-fix follow-up: mesh_buf/pushed_buf/reply_buf are sized
+     * tightly (24, not a round "plenty" number like the pre-existing
+     * mesh_buf's old 64) because GCC's -Wformat-truncation estimates a
+     * %s argument's worst case as "up to the SOURCE buffer's own declared
+     * capacity" when it cannot prove a tighter bound flow-sensitively —
+     * so an oversized scratch buffer here inflates line[]'s own computed
+     * worst case at line's snprintf below, past DBGCONSOLE_LINE_BUF, and
+     * fails the GCC gate (clang has no equivalent check — CLAUDE.md's
+     * "read every local clean-under-Werror claim as clang's
+     * interpretation" note, again). 24 comfortably covers the real
+     * content (name <=15 + '/' + short <=4, or the literal fallbacks,
+     * all well under 24) with headroom, while keeping line[]'s own
+     * worst-case total near 156 of its 200-byte budget. */
+    char mesh_buf[24];
+    if (!st.has_mesh_owner_name) {
+        snprintf(mesh_buf, sizeof(mesh_buf), "unknown");
+    } else if (st.mesh_owner_name[0] != '\0') {
+        snprintf(mesh_buf, sizeof(mesh_buf), "%s", st.mesh_owner_name);
+    } else {
+        snprintf(mesh_buf, sizeof(mesh_buf), "(unset)");
+    }
+
+    char pushed_buf[24];
+    if (st.has_pushed) {
+        snprintf(pushed_buf, sizeof(pushed_buf), "%s/%s", st.pushed_long, st.pushed_short);
+    } else {
+        snprintf(pushed_buf, sizeof(pushed_buf), "none");
+    }
+
+    char const *ack_str = (st.ack == FF_MESH_NAME_ACK_OK) ? "ok" : (st.ack == FF_MESH_NAME_ACK_NAK) ? "nak" : "none";
+
+    char reply_buf[24];
+    if (st.has_reply) {
+        snprintf(reply_buf, sizeof(reply_buf), "%s/%s", st.reply_long, st.reply_short);
+    } else {
+        snprintf(reply_buf, sizeof(reply_buf), "none");
+    }
+
+    /* Confirmation-fix round 2 (bench finding, 2026-09-06, AFTER commit
+     * 51e4ae1): `seq=` and `mismatch=` are the bench-visible form of the
+     * stale-equality fix (`ff_shell_mesh_name_status_t`'s own doc
+     * comment has the full mechanism) — `seq=` is the push-generation
+     * counter (0 before any push this session), `mismatch=1` means a
+     * FRESH reply/self-NodeInfo for THIS push arrived but named a
+     * different owner than was pushed, distinct from `ack=nak` (a
+     * routing-layer delivery failure, silent on what the admin module's
+     * owner actually ended up being).
+     *
+     * Reboot-session-loss fix (bench finding, 2026-09-06): `link=` is the
+     * SAME `link_name()` this file already uses elsewhere (`ff_shell.h`'s
+     * `ff_shell_link_t`), so a bench operator can tell "pending because
+     * the comms brain rebooted and this device is re-handshaking" (link=
+     * RECONNECTING) apart from "pending on a live link, waiting on a
+     * reply" (link=CONNECTED) — see `ff_shell_mesh_name_status_t`'s own
+     * doc comment (`ff_shell.h`) for the retry-gate this reflects. */
+    snprintf(line, sizeof(line),
+             "dbg: name stored=%s mesh=%s confirmed=%d%s seq=%u pushed=%s ack=%s reply=%s mismatch=%d link=%s",
+             stored, mesh_buf, st.confirmed ? 1 : 0, st.my_name_from_node ? " (from_node)" : "",
+             (unsigned)st.pushed_seq, pushed_buf, ack_str, reply_buf, st.mismatch ? 1 : 0, link_name(st.link));
+    reply_line(reply, user, line);
+}
+
+static void dbgconsole_name_set(ff_shell_t *sh, char const *text, ff_dbgconsole_reply_fn reply, void *user)
+{
+    /* ff_shell_debug_set_name runs the EXACT SAME commit mechanism the
+     * Settings NAME row's DONE button does (shell_apply_name_commit:
+     * sanitize, persist, push) — see that function's own doc comment
+     * (ff_shell.h) for why this bypasses FF_INTENT_SETTINGS_NAME_COMMIT's
+     * subview-only guard rather than fighting it, the same "reuse the
+     * mechanism, not the screen" shape `ff_shell_debug_send_text` already
+     * establishes for `send`/`dm`. */
+    ff_shell_debug_set_name(sh, text);
+    dbgconsole_name_status(sh, reply, user);
+}
+
 static void dbgconsole_wall(ff_shell_t *sh, ff_dbgconsole_reply_fn reply, void *user)
 {
     ff_shell_wall_debug_t const w = ff_shell_wall_debug(sh);
@@ -414,6 +535,8 @@ void ff_dbgconsole_handle_line(ff_shell_t *sh, char const *line, size_t line_len
     case FF_DBGCMD_CAL_FINISH: dbgconsole_cal_finish(sh, reply, user); return;
     case FF_DBGCMD_CAL_CANCEL: dbgconsole_cal_cancel(sh, reply, user); return;
     case FF_DBGCMD_CAL_CLEAR: dbgconsole_cal_clear(sh, reply, user); return;
+    case FF_DBGCMD_NAME: dbgconsole_name_status(sh, reply, user); return;
+    case FF_DBGCMD_NAME_SET: dbgconsole_name_set(sh, cmd.u.text, reply, user); return;
     case FF_DBGCMD_NONE: break; /* ff_dbgcmd_parse never returns OK with NONE — unreachable */
     }
     reply_line(reply, user, "dbg: ? try help");

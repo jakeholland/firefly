@@ -200,6 +200,7 @@
 #include "ff_heard.h"
 #include "ff_intent.h"
 #include "ff_latlon.h"
+#include "ff_meshname.h" /* FF_MESHNAME_SHORT_LEN — ff_shell_mesh_name_status_t's pushed_short/reply_short sizing */
 #include "ff_multitap.h" /* fix/quick-flare-detection — FF_MULTITAP_COUNT, sizes ff_multitap_log_t.gaps_ms */
 #include "ff_settings.h"
 #include "ff_sound.h" /* S27 — ff_sound_event_t, returned/consumed by play_sound and the tap-sound query */
@@ -1335,6 +1336,170 @@ typedef struct {
 ff_shell_compass_cal_status_t ff_shell_compass_cal_status(ff_shell_t const *sh);
 
 /**
+ * FF_NAME_OWNER_REQ_TIMEOUT_MS / FF_NAME_OWNER_REQ_MAX_RETRIES —
+ * confirmation-fix follow-up (`[api]`, bench finding 2026-09-06): the
+ * `get_owner_request` retry schedule `shell_apply_name_commit`/
+ * `ff_shell_tick` (ff_shell.c) poll on after every successful `set_owner`
+ * push, replacing "wait indefinitely for the comms brain's own NodeInfo
+ * re-broadcast" (which the bench found could be hours away in practice).
+ * A request every `FF_NAME_OWNER_REQ_TIMEOUT_MS` while no reply arrives,
+ * up to `FF_NAME_OWNER_REQ_MAX_RETRIES` retries (that many requests PLUS
+ * the first — 4 total at the default values) — after which the row/
+ * console keep reading the honest "..." pending state forever, NEVER an
+ * assumed confirmation. Public (not file-static) so tests can pin the
+ * exact schedule instead of hardcoding a duplicate number that could
+ * silently drift from the real one.
+ *
+ * Confirmation-fix round 3 (bench finding 2026-09-06, AFTER commit
+ * `eb1cb06`): a retry attempt that never reaches the wire (the
+ * transport not READY — e.g. this device's own quiet-mesh reconnect
+ * mid-poll) does NOT consume one of the `FF_NAME_OWNER_REQ_MAX_RETRIES`
+ * slots and does NOT advance the poll deadline (`ff_shell_tick`'s own
+ * retry block, `ff_shell.c`) — only a send that actually leaves the
+ * device counts. Before this fix, a transport outage lasting longer
+ * than the retry schedule silently burned the ENTIRE budget on sends
+ * that never went anywhere, leaving the poll permanently abandoned
+ * (`name_owner_req_pending` cleared) with no way to ever confirm again
+ * even once the transport recovered — see
+ * `docs/hardware/comms-brain.md`'s "How confirmation works, round 3".
+ */
+#define FF_NAME_OWNER_REQ_TIMEOUT_MS  10000u
+#define FF_NAME_OWNER_REQ_MAX_RETRIES 3u
+
+/**
+ * ff_mesh_name_ack_t — confirmation-fix follow-up: the routing-level
+ * delivery outcome of the CURRENT name push's `set_owner` send, as
+ * reported by `mc_events_t.on_routing_ack` (mesh.pb's `Routing.
+ * error_reason`, correlated by outgoing packet id). Deliberately a
+ * THIRD state, not a bool: NONE is not "false"/"failed" — it is "no
+ * routing reply has arrived yet, or none was expected" (e.g. before any
+ * push, or once ACK'd) — collapsing it into a bool would either read a
+ * brand-new push as already-failed or leave a genuine NAK
+ * indistinguishable from "still waiting". This is a MESH-DELIVERY fact,
+ * separate from and no substitute for `confirmed`: a `set_owner` can be
+ * ACK'd (delivered, NONE) by the local admin module and still never be
+ * echoed back by a matching `get_owner_response`/self NodeInfo (the
+ * exact bench-observed gap this whole follow-up fixes) — `confirmed`
+ * alone remains the ONLY "the name actually took" claim this feature
+ * makes.
+ */
+typedef enum {
+    FF_MESH_NAME_ACK_NONE = 0, /* no routing reply for the current push yet (or nothing pushed this session) */
+    FF_MESH_NAME_ACK_OK,       /* Routing.error_reason == NONE (or absent) — the mesh delivered the write */
+    FF_MESH_NAME_ACK_NAK       /* Routing.error_reason != NONE — the mesh reports the write failed */
+} ff_mesh_name_ack_t;
+
+/**
+ * ff_shell_mesh_name_status_t / ff_shell_mesh_name_status — NAME in
+ * Settings: the puck name's stored/mesh/confirmed state, read by the
+ * Settings screen's NAME row (the same values `ff_app_settings_t`,
+ * ff_app_state.h, projects into the view — `has_mesh_owner_name`/
+ * `mesh_owner_name`/`my_name_from_node` field-for-field) and the bench
+ * console's `name` command. A separate getter for the same reason
+ * `ff_shell_compass_cal_status` exists alongside its own view
+ * projection: the console dispatcher only ever holds a bare
+ * `ff_shell_t *`.
+ *
+ * `confirmed` is the ONE derived fact among the first five fields below
+ * (everything else there is a plain mirror) and is computed the SAME WAY
+ * by both consumers by living in exactly one place (`ff_shell.c`'s
+ * `shell_mesh_name_confirmed`) — `has_mesh_owner_name &&
+ * strcmp(mesh_owner_name, my_name) == 0 && my_name[0] != '\0' &&
+ * mesh_owner_name was observed at or after the CURRENT push generation`.
+ * Never true merely because a push was attempted: only an actual self
+ * NodeInfo OR a matching `get_owner_response` — one that arrived AFTER
+ * this push, not merely a stale cached value that happens to already
+ * match — reporting a MATCHING long_name flips it (this repo's
+ * honest-data rule — "never assume the push succeeded"). An empty
+ * `my_name` reads unconfirmed even if `mesh_owner_name` also happens to
+ * be empty — there is nothing to confirm.
+ *
+ * The "observed at or after the current push generation" clause
+ * (confirmation-fix round 2, bench finding 2026-09-06, AFTER commit
+ * 51e4ae1) closes a stale-equality false positive: `name Jake` reported
+ * `confirmed=1` INSTANTLY when the stored name already happened to equal
+ * a `mesh_owner_name` cached from BEFORE this specific push (an earlier
+ * session's confirmation, or the boot prefill) — a bare string
+ * comparison cannot distinguish "this push was just confirmed" from
+ * "these two values already matched for an unrelated reason". `pushed_seq`
+ * (below) is the bench-visible form of the push-generation counter this
+ * comparison uses internally (`ff_shell.c`'s `name_pushed_seq`/
+ * `mesh_owner_name_seq` field comments have the full mechanism); it does
+ * not itself gate anything a caller of this struct needs to check —
+ * `confirmed`/`mismatch` already have the freshness test baked in.
+ *
+ * `mismatch` — also confirmation-fix round 2 — is true when a FRESH
+ * observation (same freshness test as `confirmed`) has arrived for this
+ * push but does NOT match `my_name`: e.g. `reply_long` came back
+ * reporting a different owner than was pushed (someone else re-set it in
+ * between). Distinct from BOTH `confirmed` (matches) and the plain
+ * pending case (`!confirmed && !mismatch`, meaning no fresh observation
+ * has arrived at all yet) — and distinct from `ack == FF_MESH_NAME_ACK_NAK`
+ * (below), which is a ROUTING-layer delivery failure, silent on what the
+ * admin module's owner actually ended up being. Mutually exclusive with
+ * `confirmed` by construction.
+ *
+ * The remaining fields are the confirmation-fix follow-up's own
+ * bench-visible state (bare `name` console output: "pushed=<long>/
+ * <short> ack=<none|ok|nak> reply=<none|long/short>") — all reset by the
+ * NEXT commit (`shell_apply_name_commit`), so they always describe the
+ * MOST RECENT push, never a stale one from earlier in the session:
+ *  - `has_pushed`/`pushed_long`/`pushed_short`: what the most recent
+ *    `set_owner` send actually carried (the sanitized name + its
+ *    derived short form) — a plain record, not a confirmation.
+ *  - `ack`: see `ff_mesh_name_ack_t`'s own doc comment.
+ *  - `has_reply`/`reply_long`/`reply_short`: the most recent
+ *    `get_owner_response` this push's own follow-up request received (if
+ *    any) — the direct answer `confirmed`'s comparison is checked
+ *    against, surfaced here so the console can show it even when it
+ *    didn't happen to match `my_name` (e.g. someone else re-set the
+ *    owner in between).
+ *  - `pushed_seq` (confirmation-fix round 2): the push-generation counter
+ *    itself — 0 before any push this session, incremented once per
+ *    attempted push. Purely informational on the bench console (`seq=`);
+ *    the freshness comparison it feeds already happened inside
+ *    `confirmed`/`mismatch` above.
+ *  - `link` (reboot-session-loss fix, bench finding 2026-09-06): a plain
+ *    mirror of `ff_shell_link(sh)` at the moment this status was read —
+ *    surfaced here so a bench operator watching `name`'s output can SEE
+ *    when a `set_owner` push's expected reboot (`mc_client.h`'s
+ *    `mc_tick()` doc comment has the full mechanism) is in flight
+ *    (`FF_SHELL_LINK_RECONNECTING`) rather than mistaking "still pending"
+ *    for a stuck poll. The retry/timeout schedule this struct's other
+ *    fields describe deliberately does not attempt a `get_owner_request`
+ *    at all while this reads anything other than `FF_SHELL_LINK_
+ *    CONNECTED` — see `ff_shell_tick`'s own doc comment on that gate.
+ */
+typedef struct {
+    char my_name[FF_SETTINGS_NAME_LEN];      /* mirrors ff_settings_t.my_name, NUL-terminated */
+    bool has_mesh_owner_name;                /* a self NodeInfo/get_owner_response with a long_name has arrived this session */
+    char mesh_owner_name[FF_SETTINGS_NAME_LEN]; /* that long_name; "" if !has_mesh_owner_name */
+    bool confirmed;                          /* see doc comment above */
+    bool my_name_from_node;                  /* my_name was silently adopted from the mesh at boot, never yet re-typed */
+
+    /* Confirmation-fix follow-up (below) — see the struct's own doc
+     * comment above for the full field-by-field rationale. */
+    bool has_pushed;
+    char pushed_long[FF_SETTINGS_NAME_LEN];
+    char pushed_short[FF_MESHNAME_SHORT_LEN];
+    ff_mesh_name_ack_t ack;
+    bool has_reply;
+    char reply_long[FF_SETTINGS_NAME_LEN];
+    char reply_short[FF_MESHNAME_SHORT_LEN];
+
+    /* Confirmation-fix round 2 (below) — see the struct's own doc comment
+     * above for the full rationale. */
+    bool mismatch;
+    uint32_t pushed_seq;
+
+    /* Reboot-session-loss fix (below) — see the struct's own doc comment
+     * above for the full rationale. */
+    ff_shell_link_t link;
+} ff_shell_mesh_name_status_t;
+
+ff_shell_mesh_name_status_t ff_shell_mesh_name_status(ff_shell_t const *sh);
+
+/**
  * ff_shell_compass_cal_sample — feed one board-frame magnetometer
  * sample into the active calibration session.
  *
@@ -1616,6 +1781,31 @@ bool ff_shell_dev_wall_observe(ff_shell_t *sh, int64_t unix_now_s);
  * feed push happens only on that call's own 0.
  */
 int ff_shell_debug_send_text(ff_shell_t *sh, uint32_t dest_node, char const *text);
+
+/**
+ * ff_shell_debug_set_name — [api] debug-only. Runs the EXACT SAME
+ * commit mechanism the Settings NAME row's DONE button uses
+ * (`ff_shell.c`'s `shell_apply_name_commit`: sanitize the puck-name
+ * charset, persist through the existing `FF_SETTING_MY_NAME` seam, push
+ * the Meshtastic owner update when this node's own id is known) —
+ * called with `text` directly, not through a T9 draft.
+ *
+ * DELIBERATELY BYPASSES `ff_shell_intent(FF_INTENT_SETTINGS_NAME_COMMIT)`
+ * and its subview-only guard (`sh->settings_subview ==
+ * FF_SETTINGS_SUB_NAME_EDIT`) — the exact same reasoning
+ * `ff_shell_debug_send_text`'s own doc comment gives for bypassing
+ * `FF_INTENT_SEND_TEXT`/the Compose modal: a bench command must commit a
+ * name deterministically regardless of whatever the glass happens to be
+ * showing (there is no touchscreen T9 session to have opened the editor
+ * in the bench-console-over-USB use case this exists for), and must not
+ * change what it shows either. No route/subview change, no takeover
+ * gate, no interaction with the real editor's `name_draft`/`name_mode`.
+ *
+ * `text` is borrowed for the duration of this call only (`ff_meshname_
+ * sanitize` copies whatever it keeps before returning). No-op if `sh`
+ * or `text` is NULL.
+ */
+void ff_shell_debug_set_name(ff_shell_t *sh, char const *text);
 
 /**
  * ff_shell_wall_debug_t / ff_shell_wall_debug — [api] debug-only: the

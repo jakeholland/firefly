@@ -1,0 +1,20 @@
+{
+  "fixture": "settings_name_push_failed",
+  "face": "settings",
+  "ui_settings_scroll_y": 1000,
+  "settings": {
+    "imperial": true,
+    "share_mode": "live",
+    "haptics": true,
+    "night_glow": true,
+    "water_min": 90,
+    "quiet_from_min": 240,
+    "quiet_to_min": 600,
+    "my_name": "JAKE",
+    "mesh_owner_name": "OLDNAME",
+    "mesh_name_confirmed": false,
+    "mesh_name_push_failed": true,
+    "utc_offset_set": true,
+    "utc_offset_min": -420
+  }
+}

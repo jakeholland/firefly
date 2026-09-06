@@ -5,6 +5,7 @@
 #include "pb_decode.h"
 #include "pb_encode.h"
 
+#include "meshtastic/admin.pb.h" /* mc_send_set_owner — AdminMessage.set_owner */
 #include "meshtastic/mesh.pb.h"
 
 /* -------------------------------------------------------------------- */
@@ -389,14 +390,88 @@ static void mc_process_mesh_packet(mc_client_t *c, meshtastic_MeshPacket const *
             c->events.on_private(c->events.user, pkt->from, pkt->to, portnum, d->payload.bytes,
                                   d->payload.size);
         }
+    } else if (portnum == (uint32_t)meshtastic_PortNum_ADMIN_APP) {
+        /* Confirmation-fix follow-up: the only AdminMessage reply this
+         * library currently interprets is get_owner_response (the
+         * on-demand answer to mc_send_get_owner_request). Every other
+         * AdminMessage variant (get_config_response, and the many
+         * others this device never asks for) decodes successfully but
+         * is simply not this library's concern yet — mirrors the
+         * Position "well-formed, nothing to report" precedent just
+         * above: a variant we don't handle is not corruption, so
+         * nothing is counted for it either. */
+        meshtastic_AdminMessage admin = meshtastic_AdminMessage_init_zero;
+        pb_istream_t is = pb_istream_from_buffer(d->payload.bytes, d->payload.size);
+        if (!pb_decode(&is, meshtastic_AdminMessage_fields, &admin)) {
+            c->stats.decode_errors++;
+        } else if (admin.which_payload_variant == meshtastic_AdminMessage_get_owner_response_tag &&
+                   c->events.on_owner != NULL) {
+            meshtastic_User const *owner = &admin.payload_variant.get_owner_response;
+            char long_name[MC_NAME_MAX];
+            char short_name[MC_NAME_MAX];
+            mc_copy_name(long_name, owner->long_name);
+            mc_copy_name(short_name, owner->short_name);
+            c->events.on_owner(c->events.user, long_name, short_name);
+        }
+    } else if (portnum == (uint32_t)meshtastic_PortNum_ROUTING_APP) {
+        /* Confirmation-fix follow-up: the delivery outcome of an earlier
+         * want_ack send (e.g. mc_send_set_owner). `d->request_id` names
+         * the original outgoing MeshPacket.id; the payload is a Routing
+         * message whose error_reason (proto3 implicit presence: NONE==0
+         * is indistinguishable from "absent") says ACK (NONE) or NAK
+         * (anything else) — see mc_events_t.on_routing_ack's own doc
+         * comment for why an absent field reads as NONE/ok here, same as
+         * every other implicit-presence field this library decodes. */
+        meshtastic_Routing routing = meshtastic_Routing_init_zero;
+        pb_istream_t is = pb_istream_from_buffer(d->payload.bytes, d->payload.size);
+        if (!pb_decode(&is, meshtastic_Routing_fields, &routing)) {
+            c->stats.decode_errors++;
+        } else if (c->events.on_routing_ack != NULL) {
+            bool const ok = (routing.which_variant != meshtastic_Routing_error_reason_tag) ||
+                             (routing.variant.error_reason == meshtastic_Routing_Error_NONE);
+            c->events.on_routing_ack(c->events.user, d->request_id, ok);
+        }
     } else {
         c->stats.decode_skipped++;
     }
 }
 
-static void mc_process_from_radio(mc_client_t *c, meshtastic_FromRadio const *fr)
+static void mc_process_from_radio(mc_client_t *c, meshtastic_FromRadio const *fr, uint32_t now_ms)
 {
     switch (fr->which_payload_variant) {
+    case meshtastic_FromRadio_rebooted_tag:
+        /* NAME-in-Settings reboot-session-loss fix (bench finding,
+         * 2026-09-06, real puck + comms brain, Meshtastic 2.7.26): Meshtastic's
+         * AdminModule schedules a device reboot a few seconds after a
+         * set_owner admin write (saveChanges() -> rebootAtMsec(), when no
+         * edit transaction is open — src/modules/AdminModule.cpp). The
+         * PhoneAPI session on the OTHER side of that reboot is fresh and
+         * silently ignores every packet this client sends until a new
+         * want_config handshake — but this library's own mc_tick kept
+         * seeing OTHER FromRadio traffic (queueStatus frames) arrive right
+         * through the reboot, so the 30s no-RX-bytes watchdog alone never
+         * noticed: bytes kept arriving, just never another config_complete.
+         * FromRadio.rebooted (tag 8, "Sent to tell clients the radio has
+         * just rebooted") is the one explicit tell Meshtastic gives a
+         * connected client for this. Treated as an immediate session
+         * loss: drop straight into a fresh want_config handshake (not the
+         * 2s-backoff DISCONNECTED path — the failure here isn't a broken
+         * transport, the wire is fine, only the session on the other end
+         * is gone) so my_info/NodeInfo replay/config_complete all arrive
+         * again, exactly as they would after a cold connect.
+         * mc_begin_handshake() already does everything this needs:
+         * mc_framer_init() (drop anything mid-frame), a fresh random
+         * want_config_id, and mc_set_state(HANDSHAKE) — which fires
+         * on_state(MC_STATE_HANDSHAKE) through the SAME path a real link
+         * drop uses, so a caller (ff_shell.c) sees the ordinary
+         * RECONNECTING -> CONNECTED transition around a reboot without
+         * needing a second, reboot-specific event. Not counted as a
+         * reconnect (mc_stats_t.reconnects) or a decode_skipped/
+         * decode_errors — a well-formed, understood message, not a
+         * failure this library experienced itself. */
+        mc_begin_handshake(c, now_ms);
+        break;
+
     case meshtastic_FromRadio_my_info_tag:
         c->my_node_id = fr->payload_variant.my_info.my_node_num;
         c->has_my_node_id = true;
@@ -526,7 +601,7 @@ void mc_connect(mc_client_t *c)
  * dispatches it, incrementing *frames_dispatched. Shared by mc_tick()'s
  * leftover-carry drain and its fresh-chunk drain so the two can't drift
  * out of sync on what counts as "dispatched" against MC_TICK_MAX_FRAMES. */
-static void mc_tick_feed_byte(mc_client_t *c, uint8_t byte, uint32_t *frames_dispatched)
+static void mc_tick_feed_byte(mc_client_t *c, uint8_t byte, uint32_t *frames_dispatched, uint32_t now_ms)
 {
     uint8_t const *frame_buf = NULL;
     uint16_t frame_len = 0;
@@ -537,7 +612,7 @@ static void mc_tick_feed_byte(mc_client_t *c, uint8_t byte, uint32_t *frames_dis
         meshtastic_FromRadio fr = meshtastic_FromRadio_init_zero;
         pb_istream_t is = pb_istream_from_buffer(frame_buf, frame_len);
         if (pb_decode(&is, meshtastic_FromRadio_fields, &fr)) {
-            mc_process_from_radio(c, &fr);
+            mc_process_from_radio(c, &fr, now_ms);
         } else {
             c->stats.decode_errors++;
         }
@@ -556,7 +631,7 @@ void mc_tick(mc_client_t *c, uint32_t now_ms)
      * feed them to the framer first, before touching the transport again,
      * so ordering across calls is preserved. */
     while (c->tick_carry_pos < c->tick_carry_len && frames_dispatched < MC_TICK_MAX_FRAMES) {
-        mc_tick_feed_byte(c, c->tick_carry_buf[c->tick_carry_pos++], &frames_dispatched);
+        mc_tick_feed_byte(c, c->tick_carry_buf[c->tick_carry_pos++], &frames_dispatched, now_ms);
     }
     if (c->tick_carry_pos >= c->tick_carry_len) {
         c->tick_carry_len = 0;
@@ -593,7 +668,7 @@ void mc_tick(mc_client_t *c, uint32_t now_ms)
                 c->tick_carry_pos = 0;
                 break;
             }
-            mc_tick_feed_byte(c, chunk[i], &frames_dispatched);
+            mc_tick_feed_byte(c, chunk[i], &frames_dispatched, now_ms);
         }
     }
 
@@ -612,8 +687,43 @@ void mc_tick(mc_client_t *c, uint32_t now_ms)
     }
 }
 
-static int mc_send_data_packet(mc_client_t *c, uint32_t dest, uint32_t portnum, uint8_t const *payload,
-                                size_t len, bool want_ack)
+/* `out_packet_id` is optional (NULL-safe) — the confirmation-fix
+ * follow-up (`mc_send_set_owner`) needs the id this call assigned so its
+ * caller can correlate a later `on_routing_ack`; every pre-existing
+ * caller (text/private/position, below) passes NULL via the
+ * `mc_send_data_packet` wrapper and is unaffected. Set only on the
+ * success path — a failed send has no in-flight packet to correlate
+ * against.
+ *
+ * `want_response` sets `meshtastic_Data.want_response` (confirmation-fix
+ * round 2, bench finding 2026-09-06: a real puck + Meshtastic 2.7.26
+ * comms brain never answered `mc_send_get_owner_request` — `reply=none`
+ * after every retry, despite the `set_owner` write itself landing).
+ * Root cause, confirmed by reading `meshtastic/firmware` tag
+ * `v2.7.26.54e0d8d0`, `src/modules/AdminModule.cpp`,
+ * `AdminModule::handleGetOwner`:
+ *
+ *     void AdminModule::handleGetOwner(const meshtastic_MeshPacket &req)
+ *     {
+ *         if (req.decoded.want_response) {
+ *             ...
+ *             myReply = allocDataProtobuf(res);
+ *             ...
+ *         }
+ *     }
+ *
+ * — `AdminModule` only builds and sends a `get_owner_response` when the
+ * INCOMING request's `Data.want_response` bit is set (the same bit the
+ * Python CLI sets via `wantResponse=True` on every admin read). This
+ * library previously never set it on ANY send, so a real AdminModule
+ * silently declined to reply — the mock-only test suite couldn't catch
+ * this because the sim/test harness answers `get_owner_request` without
+ * checking the bit, unlike the real firmware. Only
+ * `mc_send_get_owner_request` passes `true` here; every other caller
+ * (text/private/position/set_owner) passes `false` — none of them are
+ * asking a `get_*_request` question that needs this bit. */
+static int mc_send_data_packet_ex(mc_client_t *c, uint32_t dest, uint32_t portnum, uint8_t const *payload,
+                                   size_t len, bool want_ack, bool want_response, uint32_t *out_packet_id)
 {
     if (c->state != MC_STATE_READY) {
         return -1;
@@ -636,6 +746,7 @@ static int mc_send_data_packet(mc_client_t *c, uint32_t dest, uint32_t portnum, 
     }
     pkt->which_payload_variant = meshtastic_MeshPacket_decoded_tag;
     pkt->payload_variant.decoded.portnum = (meshtastic_PortNum)portnum;
+    pkt->payload_variant.decoded.want_response = want_response;
     pkt->payload_variant.decoded.payload.size = (pb_size_t)len;
     if (len > 0) {
         memcpy(pkt->payload_variant.decoded.payload.bytes, payload, len);
@@ -650,7 +761,21 @@ static int mc_send_data_packet(mc_client_t *c, uint32_t dest, uint32_t portnum, 
         mc_fail_and_schedule_reconnect(c, mc_now(c));
         return -1;
     }
+    if (out_packet_id != NULL) {
+        *out_packet_id = pkt->id;
+    }
     return 0;
+}
+
+static int mc_send_data_packet(mc_client_t *c, uint32_t dest, uint32_t portnum, uint8_t const *payload,
+                                size_t len, bool want_ack)
+{
+    /* None of this wrapper's callers (text/private/position) are asking a
+     * get_*_request question — want_response stays false. See
+     * mc_send_data_packet_ex's own doc comment. mc_send_get_owner_request
+     * needs want_response == true, so it calls mc_send_data_packet_ex
+     * directly instead of through here. */
+    return mc_send_data_packet_ex(c, dest, portnum, payload, len, want_ack, false, NULL);
 }
 
 int mc_send_text(mc_client_t *c, uint32_t dest, char const *utf8)
@@ -693,6 +818,79 @@ int mc_send_position(mc_client_t *c, ff_latlon_t p)
 
     return mc_send_data_packet(c, MC_ADDR_BROADCAST, (uint32_t)meshtastic_PortNum_POSITION_APP, payload,
                                 os.bytes_written, false);
+}
+
+int mc_send_set_owner(mc_client_t *c, uint32_t dest, char const *long_name, char const *short_name,
+                       uint32_t *out_packet_id)
+{
+    if (c->state != MC_STATE_READY) {
+        return -1;
+    }
+
+    meshtastic_AdminMessage admin = meshtastic_AdminMessage_init_zero;
+    admin.which_payload_variant = meshtastic_AdminMessage_set_owner_tag;
+
+    meshtastic_User *owner = &admin.payload_variant.set_owner;
+    if (long_name != NULL) {
+        /* Bounded, not rejected — MC_NAME_MAX matches the nanopb
+         * max_size these fields were generated with (mc_nanopb.options);
+         * strncpy leaves the buffer without a guaranteed NUL when the
+         * source is exactly as long as (or longer than) the destination,
+         * so the terminator is forced explicitly. */
+        strncpy(owner->long_name, long_name, MC_NAME_MAX - 1u);
+        owner->long_name[MC_NAME_MAX - 1u] = '\0';
+    }
+    if (short_name != NULL) {
+        strncpy(owner->short_name, short_name, MC_NAME_MAX - 1u);
+        owner->short_name[MC_NAME_MAX - 1u] = '\0';
+    }
+
+    /* Only the active oneof member (`set_owner`, a `meshtastic_User`) is
+     * actually encoded — every other AdminMessage payload_variant
+     * (config/module_config/channel/etc, several of them unbounded
+     * callback fields) is untouched zero-init and contributes nothing to
+     * the wire bytes. 128 bytes comfortably covers two MC_NAME_MAX (40)
+     * strings plus protobuf framing overhead, with headroom to spare —
+     * and mc_send_data_packet's own MC_TEXT_MAX (237) gate is the real,
+     * already-enforced ceiling regardless. */
+    uint8_t payload[128];
+    pb_ostream_t os = pb_ostream_from_buffer(payload, sizeof(payload));
+    if (!pb_encode(&os, meshtastic_AdminMessage_fields, &admin)) {
+        return -1;
+    }
+
+    return mc_send_data_packet_ex(c, dest, (uint32_t)meshtastic_PortNum_ADMIN_APP, payload, os.bytes_written, true,
+                                   /*want_response=*/false, out_packet_id);
+}
+
+int mc_send_get_owner_request(mc_client_t *c, uint32_t dest)
+{
+    if (c->state != MC_STATE_READY) {
+        return -1;
+    }
+
+    meshtastic_AdminMessage admin = meshtastic_AdminMessage_init_zero;
+    admin.which_payload_variant = meshtastic_AdminMessage_get_owner_request_tag;
+    admin.payload_variant.get_owner_request = true;
+
+    /* Tiny relative to mc_send_set_owner's 128 (this message carries no
+     * string payload at all, just the oneof tag + a one-byte bool), but
+     * sized the same way for the same reason — headroom, not a
+     * measured-to-the-byte budget. */
+    uint8_t payload[32];
+    pb_ostream_t os = pb_ostream_from_buffer(payload, sizeof(payload));
+    if (!pb_encode(&os, meshtastic_AdminMessage_fields, &admin)) {
+        return -1;
+    }
+
+    /* want_response = true (confirmation-fix round 2) — calls
+     * mc_send_data_packet_ex directly, not the mc_send_data_packet
+     * wrapper, because this is the ONE caller that needs the bit set. See
+     * mc_send_data_packet_ex's own doc comment for the AdminModule
+     * citation this fixes. want_ack stays false — unchanged, see this
+     * function's own doc comment (mc_client.h) for why. */
+    return mc_send_data_packet_ex(c, dest, (uint32_t)meshtastic_PortNum_ADMIN_APP, payload, os.bytes_written, false,
+                                   /*want_response=*/true, NULL);
 }
 
 mc_state_t mc_state(mc_client_t const *c)

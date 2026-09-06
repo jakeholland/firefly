@@ -411,6 +411,40 @@ typedef struct {
      */
     void (*on_rx_meta)(void *u, uint32_t from, mc_rx_meta_t const *m);
 
+    /**
+     * NAME in Settings, confirmation-fix follow-up — fires when an
+     * `AdminMessage.get_owner_response` arrives (ADMIN_APP, portnum 6):
+     * the direct, on-demand answer to `mc_send_get_owner_request`, as
+     * opposed to `on_node`'s NodeInfo replay (which the comms brain only
+     * re-sends on its own schedule — the next want_config handshake, or
+     * an hours-scale periodic broadcast — never right after a
+     * `set_owner` push). `long_name`/`short_name` are each "" when the
+     * response's `User` left that field unset (proto3 implicit
+     * presence — absent and empty are the same bytes), never NULL, so a
+     * caller may `strcmp` them directly.
+     *
+     * This library sends `get_owner_request` only to `dest == self` (see
+     * `mc_send_get_owner_request`'s doc comment), so any response this
+     * fires for is definitionally this node's own current owner — no
+     * `from`/self check is needed downstream, unlike `on_node`.
+     */
+    void (*on_owner)(void *u, char const *long_name, char const *short_name);
+
+    /**
+     * NAME in Settings, confirmation-fix follow-up — fires for a
+     * ROUTING_APP reply that reports the outcome of an earlier
+     * `want_ack` send (e.g. `mc_send_set_owner`'s admin write):
+     * `request_id` is the original outgoing `MeshPacket.id` (matches the
+     * `out_packet_id` that send call handed back), `ok` is true only for
+     * `Routing.error_reason == NONE` — every other reason (including a
+     * malformed/absent `error_reason`, which decodes to NONE=0 on the
+     * wire and is therefore indistinguishable from success; see
+     * mc_process_mesh_packet's own comment) is a NAK. A caller that
+     * cannot find a matching in-flight `request_id` should ignore the
+     * event rather than guess which send it belonged to.
+     */
+    void (*on_routing_ack)(void *u, uint32_t request_id, bool ok);
+
     void *user;
 } mc_events_t;
 
@@ -547,7 +581,22 @@ void mc_seed_packet_ids(mc_client_t *c, uint32_t seed);
  * Bounded: dispatches at most MC_TICK_MAX_FRAMES frames per call (see its
  * doc comment near mc_client_t, above) — a large burst drains over
  * several calls, never one, and nothing read from the transport is ever
- * lost when the cap lands mid-chunk (see mc_client_t.tick_carry_*). */
+ * lost when the cap lands mid-chunk (see mc_client_t.tick_carry_*).
+ *
+ * Reboot-session-loss handling (bench finding, 2026-09-06): a
+ * `FromRadio.rebooted` frame from the comms brain (Meshtastic tells a
+ * connected client explicitly when it just rebooted — e.g. a few seconds
+ * after an admin write like `mc_send_set_owner`'s `set_owner`, per
+ * Meshtastic's own `AdminModule::saveChanges`) is treated as an immediate
+ * session loss: the client drops straight into a fresh want_config
+ * handshake (`on_state(MC_STATE_HANDSHAKE)` fires, same as any other link
+ * drop) rather than waiting for the 30s no-RX-bytes watchdog — which,
+ * critically, does NOT reliably fire on its own here, because other
+ * FromRadio traffic (queueStatus) keeps `last_rx_ms` advancing right
+ * through the reboot even though the session on the other end is gone.
+ * A caller that only watches `mc_state()`/`on_state` sees the ordinary
+ * READY -> HANDSHAKE -> READY sequence around a reboot with no separate
+ * event to handle. */
 void mc_tick(mc_client_t *c, uint32_t now_ms);
 
 /** Start (or restart) the want_config handshake. */
@@ -568,6 +617,104 @@ int mc_send_private(mc_client_t *c, uint32_t dest, uint32_t portnum, uint8_t con
  * Meshtastic node with its own GPS) normally owns and sends position.
  * Returns 0 on success, negative on failure. */
 int mc_send_position(mc_client_t *c, ff_latlon_t p);
+
+/**
+ * mc_send_set_owner — send a Meshtastic AdminMessage.set_owner: sets this
+ * node's `User{long_name, short_name}` — the mesh "owner" identity every
+ * other node and phone app displays for it (`[api]`, NAME-in-Settings
+ * feature).
+ *
+ * Rides ADMIN_APP (portnum 6), `want_ack` is always true (an admin write
+ * worth calling this for is worth the mesh stack retrying, unlike a
+ * best-effort broadcast text) and the packet id comes from the same
+ * seeded generator every other send uses (`mc_seed_packet_ids`).
+ *
+ * `dest` is the destination node id — pass this node's OWN id
+ * (`ff_shell_my_node_id` on the app side) to reach the "local admin, no
+ * key needed" path: Meshtastic's PhoneAPI zeroes `MeshPacket.from` for
+ * EVERY packet a locally-attached client submits ("We don't let clients
+ * assign nodenums to their sent messages" — meshtastic/firmware
+ * `src/mesh/MeshService.cpp:188`, `MeshService::handleToRadio`), and
+ * `AdminModule::handleReceivedProtobuf` only requires a session passkey
+ * when `mp.from != 0` (`src/modules/AdminModule.cpp`) — so a message this
+ * device (acting as the comms brain's own local client, exactly like the
+ * phone app) submits to itself is trusted with no key exchange at all.
+ * Verified by reading meshtastic/firmware tag `v2.7.26` (commit
+ * `54e0d8d0`) — the same firmware version this repo's own S03 spec
+ * amendments hardware-verified other wire behavior against. A `dest`
+ * that is NOT this node's own id would still encode and send, but would
+ * land on `AdminModule`'s passkey-required path on a REMOTE node and be
+ * rejected there; this library does not enforce `dest == self` itself
+ * (the caller already knows its own id, or doesn't call this yet).
+ *
+ * `long_name`/`short_name` may each be NULL or "" to leave that field
+ * unset on the wire — Meshtastic's `AdminModule::handleSetOwner` only
+ * overwrites a field when the incoming `User`'s field is non-empty, so a
+ * NULL/"" `short_name` (for instance) updates only the long name.
+ * Neither is validated against the puck-name charset here (that is
+ * `ff_meshname_sanitize`'s job, one layer up, core/include/ff_meshname.h)
+ * — this function only bounds each to `MC_NAME_MAX - 1` bytes (truncated,
+ * never rejected, matching this library's existing string-field
+ * convention) before encoding.
+ *
+ * Returns 0 on success, negative on failure (not READY, encode/write
+ * failure).
+ *
+ * `out_packet_id` — confirmation-fix follow-up (bench finding: the comms
+ * brain never re-sends its own NodeInfo right after a `set_owner`, so
+ * the OLD "wait for a self NodeInfo" confirmation path could hang
+ * forever) — is OPTIONAL (NULL-safe) and, on a successful send (return
+ * 0 only), receives the outgoing `MeshPacket.id` this call used, so the
+ * caller can correlate a later `mc_events_t.on_routing_ack` reply
+ * against THIS specific push rather than guessing. Left untouched on
+ * failure (return negative) — there is no in-flight packet id to hand
+ * back.
+ */
+int mc_send_set_owner(mc_client_t *c, uint32_t dest, char const *long_name, char const *short_name,
+                       uint32_t *out_packet_id);
+
+/**
+ * mc_send_get_owner_request — confirmation-fix follow-up: send a
+ * Meshtastic `AdminMessage.get_owner_request`, asking `dest` to reply
+ * with its current owner `User` (`AdminMessage.get_owner_response`,
+ * delivered via `mc_events_t.on_owner`). Exists because the comms brain
+ * does NOT proactively re-announce its own NodeInfo right after a
+ * `set_owner` write lands — only the next want_config handshake or the
+ * periodic (hours-scale) broadcast carries it — so a puck that just
+ * pushed a new owner name has no other honest way to learn "did that
+ * actually take" without either waiting arbitrarily long or asking
+ * directly. This is the asking.
+ *
+ * Rides ADMIN_APP (portnum 6), same as `mc_send_set_owner`. `want_ack`
+ * is false: the value of this call is the `get_owner_response` payload
+ * itself (or its absence, honestly read as "no answer yet" — see
+ * `ff_shell.c`'s retry/timeout handling), not the mesh-level delivery
+ * receipt a `want_ack` NAK/ACK would add on top; a caller that wants
+ * that too can watch `mc_send_set_owner`'s own `out_packet_id`/
+ * `on_routing_ack` pairing instead. `dest` should be this node's own id
+ * for the same "local admin, no key needed" reason `mc_send_set_owner`'s
+ * doc comment explains in full — a request to a REMOTE node's admin
+ * module needs a session passkey this library does not manage.
+ *
+ * `meshtastic_Data.want_response` IS set true on the encoded packet
+ * (confirmation-fix round 2, bench finding 2026-09-06: a real puck +
+ * Meshtastic 2.7.26 comms brain never replied at all — `reply=none`
+ * after every retry — because this bit was never set). Verified against
+ * `meshtastic/firmware` tag `v2.7.26.54e0d8d0`,
+ * `src/modules/AdminModule.cpp`, `AdminModule::handleGetOwner`:
+ * `myReply` (the `get_owner_response`) is only built and queued
+ * `if (req.decoded.want_response)` — an admin read with the bit unset is
+ * silently answered with nothing, which is exactly the CLI's own
+ * `wantResponse=True` convention on every admin read. This is
+ * independent of `want_ack` above: `want_response` asks the ADMIN MODULE
+ * for its payload reply; `want_ack` (unused here) would ask the ROUTING
+ * layer for a mesh-delivery receipt. See `mc_send_data_packet_ex`'s own
+ * doc comment (`mc_client.c`) for the full citation with source.
+ *
+ * Returns 0 on success, negative on failure (not READY, encode/write
+ * failure).
+ */
+int mc_send_get_owner_request(mc_client_t *c, uint32_t dest);
 
 mc_state_t mc_state(mc_client_t const *c);
 mc_stats_t mc_get_stats(mc_client_t const *c);

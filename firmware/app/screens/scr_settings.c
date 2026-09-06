@@ -935,6 +935,93 @@ static void settings_build_compass_cal_row(lv_obj_t *list, int32_t rel_y, int32_
 }
 
 /* ---------------------------------------------------------------------
+ * NAME — the puck's own identity, tap-to-edit. A value row
+ * (settings_build_value_row's "label + status pill, both tappable"
+ * shape), NOT reused verbatim: unlike every other row's label (a fixed
+ * uppercase caption — "COMPASS", "UNITS"), this row's LABEL IS THE
+ * STORED VALUE — the whole point of the row is to show the current
+ * name — so it needs its own DOTS-ellipsized, width-bounded render (the
+ * `compose_to`/S08 precedent for a live value that must never bleed
+ * into a neighbour, scr_compose.c's own header comment on the TO row)
+ * rather than the shared helper's fixed-caption label.
+ *
+ * The pill is the small "mesh: NAME OK / pending" state the feature
+ * brief asks for — deliberately NOT the name repeated a second time
+ * (no room, and no value in it): a checkmark (`LV_SYMBOL_OK`) once
+ * `ff_shell_mesh_name_status`'s `confirmed` is true, "..." while
+ * pending, "N/A" when there is nothing to confirm yet (name unset) —
+ * not a bare "-", which collides with the brightness stepper's own
+ * "-" pill label under this test file's tree-order `find_button_with_
+ * label` search (test_scr_intent.c's own S_name_row_unset_* test found
+ * this the hard way).
+ * Confirmed is NEVER assumed from a push merely having been attempted —
+ * only a matching self NodeInfo flips it (this repo's honest-data rule;
+ * see that getter's own doc comment, ff_shell.h).
+ * ------------------------------------------------------------------- */
+static void settings_name_open_cb(lv_event_t *e)
+{
+    (void)e;
+    ff_intent_t in = {.kind = FF_INTENT_SETTINGS_OPEN_NAME_EDIT, .u = {0}};
+    ff_intent_emit(&in);
+}
+
+/**
+ * `push_failed` — confirmation-fix follow-up: a routing NAK for the
+ * CURRENT push (`ff_app_settings_t.mesh_name_push_failed`'s own doc
+ * comment has the full rationale). Renders as "!" in amber — distinct
+ * from both the checkmark and the plain "..." pending dots, because
+ * "the mesh reported this write failed" is a stronger, more actionable
+ * claim than "still waiting" and this repo's honest-data rule says a
+ * silent identical-looking pending state would bury it. `confirmed`
+ * takes precedence when both are true (a later retry that DID succeed
+ * always wins over an earlier NAK) — checked first, below.
+ *
+ * `mismatch` — confirmation-fix round 2: a fresh reply/self-NodeInfo for
+ * the CURRENT push reporting a DIFFERENT owner than was pushed
+ * (`ff_app_settings_t.mesh_name_mismatch`'s own doc comment). Deliberately
+ * rendered with the SAME "!" amber glyph as `push_failed` — both are
+ * "something about this push needs the wearer's attention, don't read
+ * the ... dots as ordinary pending" anomalies, and this row has no
+ * spare pixels for a second distinct warning glyph — but the two are
+ * tracked as SEPARATE booleans (never collapsed into one) because they
+ * are different facts at the shell/console layer: a routing NAK vs. the
+ * admin module answering with the wrong name. `confirmed` still takes
+ * precedence over either.
+ */
+static void settings_build_name_row(lv_obj_t *list, int32_t rel_y, int32_t row_w, char const *my_name,
+                                    bool confirmed, bool push_failed, bool mismatch)
+{
+    lv_obj_t *row = settings_make_row(list, rel_y, row_w);
+    int32_t const label_w = row_w - FF_SETTINGS_VALUE_PILL_W - FF_SETTINGS_VALUE_GAP;
+    bool const has_name = (my_name != NULL) && (my_name[0] != '\0');
+
+    lv_obj_t *hit = lv_obj_create(row);
+    lv_obj_remove_style_all(hit);
+    lv_obj_set_size(hit, label_w, FF_SETTINGS_ROW_H);
+    lv_obj_set_pos(hit, 0, 0);
+    lv_obj_clear_flag(hit, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(hit, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(hit, settings_name_open_cb, LV_EVENT_CLICKED, NULL);
+
+    lv_obj_t *lbl = lv_label_create(hit);
+    lv_label_set_long_mode(lbl, LV_LABEL_LONG_MODE_DOTS);
+    lv_obj_set_width(lbl, label_w);
+    lv_label_set_text(lbl, has_name ? my_name : "(unset)");
+    lv_obj_set_style_text_font(lbl, FF_THEME_FONT_LABEL, 0);
+    lv_obj_set_style_text_color(lbl, lv_color_hex(has_name ? FF_THEME_COLOR_INK : FF_THEME_COLOR_MUTED), 0);
+    lv_obj_set_style_text_letter_space(lbl, 1, 0);
+    lv_obj_align(lbl, LV_ALIGN_LEFT_MID, 0, 0);
+
+    bool const show_ok = has_name && confirmed;
+    bool const show_failed = has_name && !show_ok && (push_failed || mismatch);
+    char const *pill_text = has_name ? (show_ok ? LV_SYMBOL_OK : (show_failed ? "!" : "...")) : "N/A";
+    uint32_t const pill_fg =
+        show_ok ? FF_SETTINGS_PILL_VAL_FG : (show_failed ? FF_THEME_COLOR_AMBER : FF_THEME_COLOR_MUTED);
+    settings_make_pill(row, pill_text, row_w - FF_SETTINGS_VALUE_PILL_W, 0, FF_SETTINGS_VALUE_PILL_W,
+                       FF_SETTINGS_ROW_H, FF_SETTINGS_PILL_VAL_BG, pill_fg, 0, settings_name_open_cb, NULL);
+}
+
+/* ---------------------------------------------------------------------
  * CREW — S12/S04: a full-width action pill, same shape as CALIBRATE
  * TOUCH above, that opens the CREW sub-view (FF_INTENT_SETTINGS_OPEN_
  * CREW, no payload — the shell decides, this file only asks). An
@@ -1509,6 +1596,247 @@ static void settings_build_compass_cal_page(lv_obj_t *parent, ff_app_compass_cal
 }
 
 /* ---------------------------------------------------------------------
+ * NAME editor — the "NAME" row's full-screen T9 page (reuses core's
+ * `ff_t9.h` engine via the shell-owned `name_draft`; NOT the Compose
+ * screen's own keypad renderer — see ff_intent.h's FF_INTENT_
+ * SETTINGS_OPEN_NAME_EDIT doc comment for why this feature keeps its
+ * own small, independent keypad rather than branching scr_compose.c's
+ * already-heavily-amended ABC/123/SYM/PRED rendering on "which draft is
+ * this"). Letters/digits/space only (S12's own charset rule) — two
+ * pages, ABC and 123, no SYM/PRED.
+ *
+ * Header row: a BACK circle (CREW's own convention, `settings_crew_
+ * back_cb` — genuinely reused, not re-implemented, since a BACK press
+ * means exactly the same thing on either page) at the safe left margin,
+ * a DONE pill at the safe right margin — the "SEND relocation" idea S08
+ * settled on for Compose (a commit action belongs in the header, not
+ * fighting the keypad for room below).
+ *
+ * Below that: the live draft text (committed + pending, straight from
+ * `ff_app_name_edit_t.text`), a MODE indicator, then a 3x3 letter/digit
+ * grid and a bottom DEL/SPACE/MODE row. Every row's width comes from
+ * `settings_safe_margin_x` at that row's own Y — the same "never hand
+ * math" discipline every other row in this file uses — so the sweep
+ * (test_face_hit_targets.c) is the real gate on whether this geometry
+ * is actually safe, not eyeballing it.
+ * ------------------------------------------------------------------- */
+#define FF_NAMEEDIT_HDR_Y    20
+#define FF_NAMEEDIT_HDR_PX   FF_THEME_MIN_HIT_PX /* 44 — back circle + DONE pill height */
+#define FF_NAMEEDIT_DONE_W   64
+#define FF_NAMEEDIT_TITLE_Y  74
+#define FF_NAMEEDIT_TEXT_Y   98
+#define FF_NAMEEDIT_TEXT_H   32
+#define FF_NAMEEDIT_MODE_Y   130
+#define FF_NAMEEDIT_GRID_Y   142
+#define FF_NAMEEDIT_KEY_H    FF_THEME_MIN_HIT_PX /* 44 */
+#define FF_NAMEEDIT_ROW_GAP  8
+#define FF_NAMEEDIT_ROW_STEP (FF_NAMEEDIT_KEY_H + FF_NAMEEDIT_ROW_GAP) /* 52 */
+_Static_assert(FF_NAMEEDIT_KEY_H >= FF_THEME_MIN_HIT_PX, "name-editor keys must clear the 44px hit-target floor");
+
+/* ABC mode's key legends — mirrors scr_compose.c's own kAbcLegends
+ * content (a separate, file-static copy: this screen's keypad is
+ * deliberately its own small renderer, not a shared component — see
+ * this section's own top comment). Index 0 unused (SPACE is its own
+ * dedicated bottom-row key, never part of the 1-9 grid here). */
+static char const *const kNameAbcLegends[10] = {
+    "", ".,?!", "ABC", "DEF", "GHI", "JKL", "MNO", "PQRS", "TUV", "WXYZ",
+};
+
+static void settings_name_key_pressed(uint8_t key)
+{
+    ff_intent_t in = {.kind = FF_INTENT_NAME_T9_KEY, .u = {.t9_key = key}};
+    if (s_settings.name_edit.mode == FF_APP_NAME_EDIT_123) {
+        char digit[2] = {(char)('0' + key), '\0'};
+        in.kind = FF_INTENT_NAME_T9_INSERT;
+        in.u.text = digit;
+        ff_intent_emit(&in); /* emit here: `digit` doesn't outlive this block */
+        return;
+    }
+    ff_intent_emit(&in);
+}
+
+static void settings_name_key_click_cb(lv_event_t *e)
+{
+    uintptr_t key = (uintptr_t)lv_event_get_user_data(e);
+    settings_name_key_pressed((uint8_t)key);
+}
+
+static void settings_name_space_cb(lv_event_t *e)
+{
+    (void)e;
+    ff_intent_t in = {.kind = FF_INTENT_NAME_T9_SPACE, .u = {0}};
+    ff_intent_emit(&in);
+}
+
+static void settings_name_backspace_cb(lv_event_t *e)
+{
+    (void)e;
+    ff_intent_t in = {.kind = FF_INTENT_NAME_T9_BACKSPACE, .u = {0}};
+    ff_intent_emit(&in);
+}
+
+static void settings_name_mode_cb(lv_event_t *e)
+{
+    (void)e;
+    ff_intent_t in = {.kind = FF_INTENT_NAME_T9_MODE, .u = {0}};
+    ff_intent_emit(&in);
+}
+
+static void settings_name_done_cb(lv_event_t *e)
+{
+    (void)e;
+    ff_intent_t in = {.kind = FF_INTENT_SETTINGS_NAME_COMMIT, .u = {0}};
+    ff_intent_emit(&in);
+}
+
+/* One row of the 3x9 grid: keys [first_key, first_key+2], evenly split
+ * across the row's own safe width. `mode` picks the legend (ABC letters
+ * vs. literal digits). */
+static void settings_name_build_grid_row(lv_obj_t *puck, ff_app_name_edit_mode_t mode, int32_t y,
+                                         uint8_t first_key)
+{
+    int32_t const margin = settings_safe_margin_x(y, FF_NAMEEDIT_KEY_H);
+    int32_t const row_w = FF_THEME_PUCK_PX - 2 * margin;
+    int32_t const key_w = (row_w - 2 * FF_NAMEEDIT_ROW_GAP) / 3;
+
+    for (uint8_t i = 0; i < 3; i++) {
+        uint8_t const key = (uint8_t)(first_key + i);
+        int32_t const x = margin + (int32_t)i * (key_w + FF_NAMEEDIT_ROW_GAP);
+        /* `key` is always 1-9 by construction (the 3x3 grid never calls
+         * this with a `first_key` that could reach 10), but `uint8_t`'s
+         * full range is 0-255 to GCC's format-truncation checker
+         * (-Wformat-truncation, CLAUDE.md: GCC is the build authority,
+         * not clang, which stayed silent here) — `% 10u` proves the
+         * single-digit bound to the compiler, not just to a human
+         * reading the call sites. */
+        char digit_buf[2];
+        char const *legend = kNameAbcLegends[key];
+        if (mode == FF_APP_NAME_EDIT_123) {
+            snprintf(digit_buf, sizeof(digit_buf), "%u", (unsigned)key % 10u);
+            legend = digit_buf;
+        }
+        lv_obj_t *btn = settings_make_pill(puck, legend, x, y, key_w, FF_NAMEEDIT_KEY_H, FF_THEME_COLOR_SURFACE,
+                                           FF_THEME_COLOR_INK, 0, settings_name_key_click_cb,
+                                           (void *)(uintptr_t)key);
+        lv_obj_set_style_text_font(lv_obj_get_child(btn, 0), FF_THEME_FONT_CHIP, 0);
+    }
+}
+
+static void settings_build_name_edit_page(lv_obj_t *parent, ff_app_name_edit_t const *ne)
+{
+    lv_obj_t *puck = lv_obj_create(parent);
+    lv_obj_remove_style_all(puck);
+    lv_obj_set_size(puck, FF_THEME_PUCK_PX, FF_THEME_PUCK_PX);
+    lv_obj_align(puck, LV_ALIGN_CENTER, 0, 0);
+    lv_obj_set_style_radius(puck, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_bg_color(puck, lv_color_hex(FF_THEME_COLOR_BG), 0);
+    lv_obj_set_style_bg_opa(puck, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(puck, 0, 0);
+    lv_obj_clear_flag(puck, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_clear_flag(puck, LV_OBJ_FLAG_CLICKABLE);
+
+    /* Header: BACK circle (left) + DONE pill (right), both at the safe
+     * margin for this row's own Y band. */
+    int32_t const hdr_margin = settings_safe_margin_x(FF_NAMEEDIT_HDR_Y, FF_NAMEEDIT_HDR_PX);
+
+    lv_obj_t *back = ff_scr_button_create(puck);
+    lv_obj_remove_style_all(back);
+    lv_obj_set_size(back, FF_NAMEEDIT_HDR_PX, FF_NAMEEDIT_HDR_PX);
+    lv_obj_set_pos(back, hdr_margin, FF_NAMEEDIT_HDR_Y);
+    lv_obj_set_style_radius(back, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_bg_color(back, lv_color_hex(FF_THEME_COLOR_SURFACE), 0);
+    lv_obj_set_style_bg_opa(back, LV_OPA_COVER, 0);
+    lv_obj_add_event_cb(back, settings_crew_back_cb, LV_EVENT_CLICKED, NULL); /* BACK means the same thing everywhere */
+    lv_obj_t *glyph = lv_label_create(back);
+    lv_label_set_text(glyph, LV_SYMBOL_LEFT);
+    lv_obj_set_style_text_color(glyph, lv_color_hex(FF_THEME_COLOR_INK), 0);
+    lv_obj_center(glyph);
+
+    ff_scr_pill_cfg_t done_cfg = {
+        .w = FF_NAMEEDIT_DONE_W,
+        .h = FF_NAMEEDIT_HDR_PX,
+        .use_pos = true,
+        .x = FF_THEME_PUCK_PX - hdr_margin - FF_NAMEEDIT_DONE_W,
+        .y = FF_NAMEEDIT_HDR_Y,
+        .radius = LV_RADIUS_CIRCLE,
+        .filled = true,
+        .bg_hex = FF_THEME_COLOR_AMBER,
+        .fg_hex = FF_THEME_COLOR_BG,
+        .press = FF_SCR_PILL_PRESS_DIM,
+        .font = FF_THEME_FONT_LABEL,
+        .letter_space = 1,
+        .cb = settings_name_done_cb,
+        .user_data = NULL,
+    };
+    ff_scr_pill_create(puck, "DONE", &done_cfg);
+
+    lv_obj_t *title = lv_label_create(puck);
+    lv_label_set_text(title, "NAME");
+    lv_obj_set_style_text_font(title, FF_THEME_FONT_HEADLINE, 0);
+    lv_obj_set_style_text_color(title, lv_color_hex(FF_THEME_COLOR_AMBER), 0);
+    lv_obj_set_style_text_letter_space(title, 3, 0);
+    lv_obj_align(title, LV_ALIGN_TOP_MID, 0, FF_NAMEEDIT_TITLE_Y);
+
+    /* Live draft preview — committed + pending, straight from the
+     * projected view (never re-derived here). DOTS-ellipsized like the
+     * NAME row's own label, for the same reason (an at-cap 15-char name
+     * must not bleed past its own safe width). */
+    int32_t const text_margin = settings_safe_margin_x(FF_NAMEEDIT_TEXT_Y, FF_NAMEEDIT_TEXT_H);
+    lv_obj_t *text_lbl = lv_label_create(puck);
+    lv_label_set_long_mode(text_lbl, LV_LABEL_LONG_MODE_DOTS);
+    lv_obj_set_width(text_lbl, FF_THEME_PUCK_PX - 2 * text_margin);
+    lv_label_set_text(text_lbl, (ne->text[0] != '\0') ? ne->text : "(empty)");
+    lv_obj_set_style_text_font(text_lbl, FF_THEME_FONT_NAME, 0);
+    lv_obj_set_style_text_align(text_lbl, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_style_text_color(text_lbl,
+                                lv_color_hex((ne->text[0] != '\0') ? FF_THEME_COLOR_INK : FF_THEME_COLOR_MUTED), 0);
+    lv_obj_set_pos(text_lbl, text_margin, FF_NAMEEDIT_TEXT_Y);
+
+    /* Mode indicator — non-interactive (tap any grid key or the bottom
+     * row's MODE chip to cycle it; this label just states which page is
+     * live, the same "never a mystery toggle" rule S08's own mode-chip
+     * amendment established). */
+    lv_obj_t *mode_lbl = lv_label_create(puck);
+    lv_label_set_text(mode_lbl, (ne->mode == FF_APP_NAME_EDIT_123) ? "123" : "ABC");
+    lv_obj_set_style_text_font(mode_lbl, FF_THEME_FONT_CHIP, 0);
+    lv_obj_set_style_text_color(mode_lbl, lv_color_hex(FF_THEME_COLOR_MUTED), 0);
+    lv_obj_set_style_text_letter_space(mode_lbl, 1, 0);
+    lv_obj_align(mode_lbl, LV_ALIGN_TOP_MID, 0, FF_NAMEEDIT_MODE_Y);
+
+    settings_name_build_grid_row(puck, ne->mode, FF_NAMEEDIT_GRID_Y, 1);
+    settings_name_build_grid_row(puck, ne->mode, FF_NAMEEDIT_GRID_Y + FF_NAMEEDIT_ROW_STEP, 4);
+    settings_name_build_grid_row(puck, ne->mode, FF_NAMEEDIT_GRID_Y + 2 * FF_NAMEEDIT_ROW_STEP, 7);
+
+    /* Bottom row: DEL, SPACE, MODE — SPACE is this row's most-tapped
+     * key and gets the remainder, the same "most-tapped key gets the
+     * remainder" doctrine S08's own bottom-row amendments use. */
+    int32_t const bottom_y = FF_NAMEEDIT_GRID_Y + 3 * FF_NAMEEDIT_ROW_STEP;
+    int32_t const bottom_margin = settings_safe_margin_x(bottom_y, FF_NAMEEDIT_KEY_H);
+    int32_t const bottom_w = FF_THEME_PUCK_PX - 2 * bottom_margin;
+    int32_t const del_w = (bottom_w - 2 * FF_NAMEEDIT_ROW_GAP) / 4;
+    int32_t const mode_w = del_w;
+    int32_t const space_w = bottom_w - del_w - mode_w - 2 * FF_NAMEEDIT_ROW_GAP;
+
+    lv_obj_t *del_btn = settings_make_pill(puck, "DEL", bottom_margin, bottom_y, del_w, FF_NAMEEDIT_KEY_H,
+                                           FF_THEME_COLOR_SURFACE, FF_THEME_COLOR_INK, 0,
+                                           settings_name_backspace_cb, NULL);
+    lv_obj_set_style_text_font(lv_obj_get_child(del_btn, 0), FF_THEME_FONT_CHIP, 0);
+
+    lv_obj_t *space_btn =
+        settings_make_pill(puck, "SPACE", bottom_margin + del_w + FF_NAMEEDIT_ROW_GAP, bottom_y, space_w,
+                           FF_NAMEEDIT_KEY_H, FF_THEME_COLOR_SURFACE, FF_THEME_COLOR_INK, 0, settings_name_space_cb,
+                           NULL);
+    lv_obj_set_style_text_font(lv_obj_get_child(space_btn, 0), FF_THEME_FONT_CHIP, 0);
+
+    lv_obj_t *mode_btn =
+        settings_make_pill(puck, (ne->mode == FF_APP_NAME_EDIT_123) ? "ABC" : "123",
+                           bottom_margin + del_w + space_w + 2 * FF_NAMEEDIT_ROW_GAP, bottom_y, mode_w,
+                           FF_NAMEEDIT_KEY_H, FF_THEME_COLOR_SURFACE, FF_THEME_COLOR_AMBER, 0,
+                           settings_name_mode_cb, NULL);
+    lv_obj_set_style_text_font(lv_obj_get_child(mode_btn, 0), FF_THEME_FONT_CHIP, 0);
+}
+
+/* ---------------------------------------------------------------------
  * Entry point.
  * ------------------------------------------------------------------- */
 void ff_scr_settings_build(lv_obj_t *parent, ff_app_settings_t const *settings)
@@ -1532,6 +1860,12 @@ void ff_scr_settings_build(lv_obj_t *parent, ff_app_settings_t const *settings)
      * above. */
     if (settings->subview == FF_SETTINGS_SUB_COMPASS_CAL) {
         settings_build_compass_cal_page(parent, &settings->compass_cal);
+        return;
+    }
+    /* NAME in Settings — same subview-dispatch-at-the-top shape as
+     * CREW/COMPASS_CAL just above. */
+    if (settings->subview == FF_SETTINGS_SUB_NAME_EDIT) {
+        settings_build_name_edit_page(parent, &settings->name_edit);
         return;
     }
 
@@ -1677,6 +2011,14 @@ void ff_scr_settings_build(lv_obj_t *parent, ff_app_settings_t const *settings)
      * the new last row of DEVICE. */
     settings_build_compass_cal_row(list, y, row_w, s_settings.compass_cal.cal_valid);
     y += FF_SETTINGS_ROW_H; /* last row of DEVICE */
+
+    /* NAME — task brief: "above CREW". Its own single-row section, same
+     * "the section header repeats the one row's own name" shape UNITS
+     * already establishes for a single-item category. */
+    y = settings_build_section_header(list, y, row_w, "NAME", /*first=*/false);
+    settings_build_name_row(list, y, row_w, s_settings.my_name, s_settings.mesh_name_confirmed,
+                            s_settings.mesh_name_push_failed, s_settings.mesh_name_mismatch);
+    y += FF_SETTINGS_ROW_H; /* last (only) row of NAME */
 
     y = settings_build_section_header(list, y, row_w, "CREW", /*first=*/false);
     settings_build_crew_open_row(list, y, row_w);

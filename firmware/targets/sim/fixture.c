@@ -973,6 +973,12 @@ static const fx_enum_entry_t fx_settings_subview_table[] = {
     {"list", FF_SETTINGS_SUB_LIST},
     {"crew", FF_SETTINGS_SUB_CREW},
     {"compass_cal", FF_SETTINGS_SUB_COMPASS_CAL}, /* S12 step 3 */
+    {"name_edit", FF_SETTINGS_SUB_NAME_EDIT},     /* NAME in Settings */
+};
+
+static const fx_enum_entry_t fx_name_edit_mode_table[] = {
+    {"abc", FF_APP_NAME_EDIT_ABC},
+    {"123", FF_APP_NAME_EDIT_123},
 };
 
 /* fx_parse_crew_page — S12/S04: PAIRED (name/initial/color_idx/honest
@@ -1075,6 +1081,25 @@ static ff_fixture_result_t fx_parse_compass_cal(fx_ctx_t const *c, int obj_i, ff
     return FF_FIXTURE_OK;
 }
 
+/* fx_parse_name_edit — NAME in Settings: the "NAME" row's T9 editor
+ * sub-view (ff_app_name_edit_t). Mirrors fx_parse_compass_cal's own
+ * "every field defaults to its memset(0) zero when omitted" shape. */
+static ff_fixture_result_t fx_parse_name_edit(fx_ctx_t const *c, int obj_i, ff_app_name_edit_t *ne)
+{
+    int t;
+    if (fx_obj_get(c, obj_i, "text", &t)) fx_copy_str(c, t, ne->text, sizeof(ne->text));
+    if (fx_obj_get(c, obj_i, "has_pending", &t)) ne->has_pending = fx_bool(c, t, false);
+    if (fx_obj_get(c, obj_i, "mode", &t)) {
+        int v;
+        ff_fixture_result_t rc = fx_enum(c, t, fx_name_edit_mode_table,
+                                          sizeof(fx_name_edit_mode_table) / sizeof(fx_name_edit_mode_table[0]),
+                                          "settings.name_edit.mode", &v);
+        if (rc != FF_FIXTURE_OK) return rc;
+        ne->mode = (ff_app_name_edit_mode_t)v;
+    }
+    return FF_FIXTURE_OK;
+}
+
 /* Returns non-OK only for a present-but-unrecognized `share_mode`
  * (issue #28 — see fx_enum's doc comment). */
 static ff_fixture_result_t fx_parse_settings(fx_ctx_t const *c, int obj_i, ff_app_settings_t *s)
@@ -1095,6 +1120,25 @@ static ff_fixture_result_t fx_parse_settings(fx_ctx_t const *c, int obj_i, ff_ap
     if (fx_obj_get(c, obj_i, "quiet_from_min", &t)) s->quiet_from_min = (uint16_t)fx_num(c, t, 240.0);
     if (fx_obj_get(c, obj_i, "quiet_to_min", &t)) s->quiet_to_min = (uint16_t)fx_num(c, t, 600.0);
     if (fx_obj_get(c, obj_i, "my_name", &t)) fx_copy_str(c, t, s->my_name, sizeof(s->my_name));
+    /* NAME in Settings — the mesh-name cache. `has_mesh_owner_name` is
+     * DERIVED from `mesh_owner_name` being present, same "has_X derived
+     * from the key being present" convention fx_parse_crew_page's HEARD
+     * rows already use for `has_name`. */
+    if (fx_obj_get(c, obj_i, "mesh_owner_name", &t)) {
+        s->has_mesh_owner_name = true;
+        fx_copy_str(c, t, s->mesh_owner_name, sizeof(s->mesh_owner_name));
+    }
+    if (fx_obj_get(c, obj_i, "my_name_from_node", &t)) s->my_name_from_node = fx_bool(c, t, false);
+    /* `mesh_name_confirmed` is normally DERIVED (shell_mesh_name_confirmed,
+     * ff_shell.c) from the two facts above — but a fixture drives the
+     * render layer directly, bypassing the shell entirely (the same
+     * reason ff_app_compass_cal_t.active/cal_valid are fixture-settable
+     * facts, not re-derived here), so a fixture that wants a golden of
+     * the confirmed (checkmark) NAME-row state sets this explicitly. */
+    if (fx_obj_get(c, obj_i, "mesh_name_confirmed", &t)) s->mesh_name_confirmed = fx_bool(c, t, false);
+    /* Confirmation-fix follow-up — same fixture-drives-the-render-layer-
+     * directly reasoning as mesh_name_confirmed just above. */
+    if (fx_obj_get(c, obj_i, "mesh_name_push_failed", &t)) s->mesh_name_push_failed = fx_bool(c, t, false);
     /* utc_offset_set read BEFORE utc_offset_min, same "prove you meant
      * this" ordering as fx_parse_flare's takeover_bearing_valid — a
      * fixture author who sets the minutes but forgets the flag gets an
@@ -1141,6 +1185,13 @@ static ff_fixture_result_t fx_parse_settings(fx_ctx_t const *c, int obj_i, ff_ap
     int cal_i;
     if (fx_obj_get(c, obj_i, "compass_cal", &cal_i) && !fx_is_null(c, cal_i)) {
         ff_fixture_result_t rc = fx_parse_compass_cal(c, cal_i, &s->compass_cal);
+        if (rc != FF_FIXTURE_OK) return rc;
+    }
+
+    /* NAME in Settings — the "NAME" row's T9 editor sub-view. */
+    int name_edit_i;
+    if (fx_obj_get(c, obj_i, "name_edit", &name_edit_i) && !fx_is_null(c, name_edit_i)) {
+        ff_fixture_result_t rc = fx_parse_name_edit(c, name_edit_i, &s->name_edit);
         if (rc != FF_FIXTURE_OK) return rc;
     }
 

@@ -210,3 +210,63 @@ Mutation-tested:
 Both mutations were reverted with targeted edits after a fresh rebuild
 confirmed the failure (object-file hash checked to rule out a stale
 binary).
+
+### `FromRadio.rebooted` is an immediate session loss, not a silence timeout (debt/S03-reboot-session-loss, NAME-in-Settings bench finding 2026-09-06)
+
+Bench finding, real puck + comms brain (Meshtastic 2.7.26), frame-level
+instrumentation: pushing a Meshtastic `set_owner` admin write (S11's NAME
+feature, `mc_send_set_owner`) a second time in the same session got no
+routing ack and no `get_owner_response` reply, forever — even though the
+comms brain's owner really changed every time (confirmed via the CLI).
+Root cause: Meshtastic's `AdminModule` schedules a device reboot a few
+seconds after `set_owner` (`saveChanges()` → `rebootAtMsec()`, when no
+edit transaction is open). The PhoneAPI session on the other side of
+that reboot is fresh and silently ignores this client's packets until a
+new `want_config` handshake — but this library's own 30 s no-RX-bytes
+watchdog (`mc_tick()`, above) never noticed, because OTHER `FromRadio`
+traffic (`queueStatus` frames) kept arriving right through the reboot
+and kept resetting `last_rx_ms`.
+
+**Fix**: `mc_process_from_radio()` now handles `FromRadio.rebooted`
+(tag 8 — Meshtastic's own explicit "the radio just rebooted" tell) as an
+immediate session loss: it calls `mc_begin_handshake()` directly rather
+than waiting on the silence watchdog that this exact scenario defeats.
+`mc_begin_handshake()` already does everything a fresh reconnect needs —
+`mc_framer_init()` (drop anything mid-frame), a brand-new random
+`want_config_id` (never reuses the pre-reboot nonce), and
+`mc_set_state(MC_STATE_HANDSHAKE)`, which fires `on_state` through the
+SAME path an ordinary link drop uses. No second, reboot-specific event
+was added: a caller watching link state alone (e.g. `ff_shell.c`'s
+`FF_SHELL_LINK_*`) sees the ordinary RECONNECTING → CONNECTED sequence
+around a reboot. Not counted as `mc_stats_t.reconnects` (that counter is
+for the backoff-reconnect path specifically) or as
+`decode_skipped`/`decode_errors` — a well-formed, understood message,
+not a failure this library itself experienced. `mc_process_from_radio()`
+and the internal `mc_tick_feed_byte()` helper both gained a `now_ms`
+parameter to thread the tick's own timestamp through to
+`mc_begin_handshake()` rather than re-reading the clock a second time.
+
+Tests (`test_meshclient.c`):
+- `S03_debt_reboot_frame_after_ready_drops_state_and_reissues_want_config`
+  — a `rebooted` frame after READY drops straight to HANDSHAKE with a
+  brand-new `want_config_id` (asserted different from the pre-reboot
+  one) and a real `want_config` `ToRadio` frame is re-encoded onto the
+  wire (decoded back off `mock_io_t.tx_buf` — real encode/decode, not a
+  mock assertion). `my_node_id`/`has_my_node_id` are unaffected (same
+  device, same session identity) and `mc_stats_t.reconnects` stays 0.
+- `S03_debt_reboot_stale_config_complete_is_ignored_per_handshake_rules`
+  — "frames before the new config_complete are handled per the
+  handshake rules": a `config_complete` naming the STALE, pre-reboot
+  nonce must not complete the NEW handshake, the same rule
+  `S03_AC2_handshake_wrong_nonce_stays_in_handshake` already pins for an
+  ordinary connect.
+- `S03_debt_reboot_then_matching_config_complete_reaches_ready_again` —
+  the full round trip: rebooted → fresh handshake → the NEW
+  `config_complete` (matching the nonce the reboot handling just picked)
+  reaches READY again, exactly like an ordinary cold connect.
+
+The app-level consequence (NAME confirmation polling must not waste a
+`get_owner_request` while mid-reboot, and a self-`NodeInfo` replay from
+the reconnect's own `want_config` dump is a first-class confirmation) is
+`ff_shell.c`'s concern, documented in `docs/specs/S11-settings.md`'s
+"Confirmation fix round 4" amendment and `docs/hardware/comms-brain.md`.

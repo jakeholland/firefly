@@ -602,6 +602,10 @@ typedef enum {
      * full lifecycle). Same "one enum names which of N screens Settings
      * currently shows" shape CREW already established. */
     FF_SETTINGS_SUB_COMPASS_CAL,
+    /* [api] NAME in Settings — the "NAME" row's full-screen T9 editor
+     * page, reached via FF_INTENT_SETTINGS_OPEN_NAME_EDIT (ff_intent.h
+     * has the full lifecycle). Same shape as CREW/COMPASS_CAL above. */
+    FF_SETTINGS_SUB_NAME_EDIT,
 } ff_settings_subview_t;
 
 /**
@@ -725,6 +729,45 @@ typedef struct {
 } ff_app_compass_cal_t;
 
 /* -------------------------------------------------------------------
+ * NAME editor page (NAME in Settings). A transient EDITING SESSION, not
+ * a persisted status — populated ONLY while `subview ==
+ * FF_SETTINGS_SUB_NAME_EDIT` (zeroed otherwise), the `ff_app_crew_page_t`
+ * precedent, not `ff_app_compass_cal_t`'s "always populated" one: unlike
+ * compass-cal-valid, there is no "resting" fact about an in-progress edit
+ * worth showing on the LIST row (the LIST row's own resting state reads
+ * `ff_app_settings_t.my_name`/`has_mesh_owner_name` directly, below).
+ * ------------------------------------------------------------------- */
+
+/** Puck name cap, mirroring core's `FF_SETTINGS_NAME_LEN` (ff_settings.h)
+ *  — 15 usable characters + NUL, "max 15 chars for the puck name" per
+ *  this feature's own brief. Kept as an independent literal rather than
+ *  an app-layer include of the core header for one number, the same
+ *  precedent `FF_APP_COMPOSE_TEXT_LEN`'s own doc comment states for
+ *  `ff_t9.h`'s `FF_T9_MAX_LEN`. A `_Static_assert` against
+ *  `FF_SETTINGS_NAME_LEN` lives in `ff_shell.c`, which already includes
+ *  both headers, so a future drift fails the build there rather than
+ *  silently here. */
+#define FF_APP_NAME_EDIT_CAP 15
+/* mirrors ff_t9_text(): committed (<= CAP chars) + one live pending char
+ * + NUL. */
+#define FF_APP_NAME_EDIT_TEXT_LEN (FF_APP_NAME_EDIT_CAP + 2)
+
+/** The name editor's own two-state keypad page — deliberately NOT
+ *  `ff_app_compose_mode_t` (ABC/123/SYM/PRED): a puck name is letters/
+ *  digits/space only, so SYM/PRED are never offered here (ff_intent.h's
+ *  FF_INTENT_NAME_T9_MODE doc comment has the full reasoning). */
+typedef enum {
+    FF_APP_NAME_EDIT_ABC = 0,
+    FF_APP_NAME_EDIT_123,
+} ff_app_name_edit_mode_t;
+
+typedef struct {
+    char                    text[FF_APP_NAME_EDIT_TEXT_LEN]; /* mirrors ff_t9_text() */
+    bool                    has_pending; /* same "last char is live, not committed" flag ff_app_compose_t.has_pending documents */
+    ff_app_name_edit_mode_t mode;
+} ff_app_name_edit_t;
+
+/* -------------------------------------------------------------------
  * settings (S11) — mirrors ff_settings_t's user-facing fields (omits
  * compass_cal: the hard/soft-iron numbers themselves are never
  * rendered/fixturable display data — see `ff_app_compass_cal_t` above,
@@ -824,6 +867,67 @@ typedef struct {
      * comment above for why this is populated regardless of `subview`
      * (unlike `crew`). */
     ff_app_compass_cal_t compass_cal;
+
+    /* [api] NAME in Settings. `has_mesh_owner_name`/`mesh_owner_name`
+     * mirror the shell's own live cache of the self NodeInfo's
+     * `long_name` (`ff_shell.c`'s `shell_ev_node`, on `shell_is_self`) —
+     * "what does the MESH currently say our name is", honestly unknown
+     * (`has_mesh_owner_name == false`) until at least one self NodeInfo
+     * has arrived this session. The NAME row's small "mesh: JAKE OK /
+     * pending" state is `has_mesh_owner_name && strcmp(mesh_owner_name,
+     * my_name) == 0` — computed once, by the shell
+     * (`ff_shell_mesh_name_status`'s doc comment, ff_shell.h, has the
+     * exact rule), not re-derived independently by every renderer, so
+     * the Settings screen and the bench console's `name` command can
+     * never disagree. NEVER assumed true merely because a push was
+     * attempted (this repo's honest-data rule) — only an actual matching
+     * self NodeInfo flips it.
+     *
+     * `my_name_from_node` is true for exactly one case: this puck's own
+     * `my_name` was never set by a human, and boot silently adopted it
+     * from the comms brain's already-configured owner long_name (see
+     * `shell_ev_node`'s doc comment) rather than leaving an honest but
+     * useless "(unset)" caption forever. Not persisted itself (only
+     * `my_name` is) — cleared the moment the wearer edits NAME
+     * themselves, so it never survives past the first real edit. */
+    bool has_mesh_owner_name;
+    char mesh_owner_name[FF_APP_NAME_LEN];
+    /* The derived "confirmed" fact itself (see the doc comment above) —
+     * computed ONCE by the shell (`shell_mesh_name_confirmed`, ff_shell.c,
+     * the same function `ff_shell_mesh_name_status` reads) so this
+     * screen and the bench console's `name` command can never compute
+     * two different answers from the same three facts. */
+    bool mesh_name_confirmed;
+    bool my_name_from_node;
+    /* Confirmation-fix follow-up (2026-09-06 bench finding) — a routing
+     * NAK for the CURRENT name push (`ff_mesh_name_ack_t`'s doc comment,
+     * ff_shell.h, has the full rationale): "the mesh reported this
+     * specific set_owner write failed", surfaced honestly instead of
+     * leaving the row stuck on a "..." pending state that looks
+     * identical to "still waiting, give it a moment". Same "computed
+     * once by the shell" rule as `mesh_name_confirmed` above — the NAME
+     * row reads this, never re-derives it. `mesh_name_confirmed` takes
+     * precedence when both happen to be true (a later retry that DID
+     * succeed always wins over an earlier NAK). */
+    bool mesh_name_push_failed;
+    /* Confirmation-fix round 2 (2026-09-06, bench finding AFTER commit
+     * 51e4ae1) — a FRESH observation for the CURRENT push (same
+     * freshness test `mesh_name_confirmed` uses) that reports a
+     * DIFFERENT owner than was pushed — e.g. someone else re-set it in
+     * between (`shell_mesh_name_mismatch`'s own doc comment, ff_shell.c,
+     * has the full rationale). Distinct from `mesh_name_push_failed`: a
+     * NAK is a routing-layer delivery failure, silent on what the admin
+     * module's owner actually ended up being; this is the admin module
+     * answering with a name that just isn't the one this puck pushed.
+     * Mutually exclusive with `mesh_name_confirmed` by construction. Same
+     * "computed once by the shell" rule as the other two derived fields
+     * above. */
+    bool mesh_name_mismatch;
+
+    /* [api] NAME in Settings — the "NAME" row's T9 editor sub-view; see
+     * `ff_app_name_edit_t`'s own doc comment above for why this is
+     * zeroed outside FF_SETTINGS_SUB_NAME_EDIT, unlike `compass_cal`. */
+    ff_app_name_edit_t name_edit;
 } ff_app_settings_t;
 /* S21 removed ff_app_settings_t.page / FF_SETTINGS_PAGE_COUNT (#105's
  * pagination): the Settings face is now one scrolling list, so there is no

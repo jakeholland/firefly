@@ -180,6 +180,21 @@ static int wiring_mc_send_private(void *ctx, uint32_t dest, uint8_t const *paylo
     return mc_send_private((mc_client_t *)ctx, dest, FF_PORTNUM, payload, len, want_ack);
 }
 
+/* NAME in Settings — thin wrapper to mc_send_set_owner, the same shape
+ * wiring_mc_send_text/_private already establish. */
+static int wiring_mc_send_set_owner(void *ctx, uint32_t dest, char const *long_name, char const *short_name,
+                                     uint32_t *out_packet_id)
+{
+    return mc_send_set_owner((mc_client_t *)ctx, dest, long_name, short_name, out_packet_id);
+}
+
+/* Confirmation-fix follow-up — thin wrapper to mc_send_get_owner_request,
+ * same shape as wiring_mc_send_set_owner above. */
+static int wiring_mc_send_get_owner_request(void *ctx, uint32_t dest)
+{
+    return mc_send_get_owner_request((mc_client_t *)ctx, dest);
+}
+
 void ff_wiring_init_with_sender(ff_wiring_ctx_t *w, ff_feed_t *feed, ff_crew_t *crew, ff_heard_t *heard,
                                  ff_wiring_sender_t sender, void (*haptic_cb)(void *user), void *haptic_user,
                                  ff_clock_t const *clock)
@@ -202,6 +217,8 @@ void ff_wiring_init(ff_wiring_ctx_t *w, ff_feed_t *feed, ff_crew_t *crew, ff_hea
     sender.send_text = wiring_mc_send_text;
     sender.send_private = wiring_mc_send_private;
     sender.ctx = mc;
+    sender.send_admin_set_owner = wiring_mc_send_set_owner;
+    sender.send_get_owner_request = wiring_mc_send_get_owner_request;
     ff_wiring_init_with_sender(w, feed, crew, heard, sender, haptic_cb, haptic_user, clock);
 }
 

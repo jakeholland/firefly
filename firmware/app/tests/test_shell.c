@@ -6832,7 +6832,7 @@ static void S24_demo_loopback_seam_makes_out_items_appear(void)
     ff_shell_intent(&H.shell, &flare);
     TEST_ASSERT_EQUAL_UINT8(0, ff_feed_count(ff_shell_feed(&H.shell))); /* refused -> no OUT item */
 
-    ff_wiring_sender_t loop = {s24d_loop_send_text, s24d_loop_send_private, NULL};
+    ff_wiring_sender_t loop = {s24d_loop_send_text, s24d_loop_send_private, NULL, NULL, NULL};
     ff_shell_set_sender(&H.shell, loop);
     ff_shell_intent(&H.shell, &flare);
     TEST_ASSERT_EQUAL_UINT8(1, ff_feed_count(ff_shell_feed(&H.shell))); /* accepted -> OUT item appears */
@@ -7279,7 +7279,7 @@ static void flare_wire_spy_install(bool accept)
 {
     memset(&S, 0, sizeof(S));
     S.accept = accept;
-    ff_wiring_sender_t const sender = {flare_wire_spy_send_text, flare_wire_spy_send_private, &S};
+    ff_wiring_sender_t const sender = {flare_wire_spy_send_text, flare_wire_spy_send_private, &S, NULL, NULL};
     ff_shell_set_sender(&H.shell, sender);
 }
 
@@ -8526,6 +8526,1006 @@ static void S12_heard_node_with_no_name_shows_an_honest_short_id(void)
     TEST_ASSERT_TRUE_MESSAGE(found, "STRANGER should appear in the heard list");
 }
 
+/* ====================================================================
+ * NAME in Settings — the "NAME" row's T9 editor, persistence, and the
+ * Meshtastic owner push (mc_send_set_owner). A dedicated sender spy
+ * captures `send_admin_set_owner` calls, same shape flare_wire_spy_t
+ * above establishes for `send_private`.
+ * ==================================================================== */
+
+typedef struct {
+    int      calls;
+    uint32_t dest;
+    char     long_name[64];
+    char     short_name[16];
+    /* Confirmation-fix follow-up. */
+    uint32_t out_packet_id; /* handed back via send_admin_set_owner's out_packet_id on success */
+    int      rc;            /* what send_admin_set_owner returns; 0 (success) by default */
+    int      owner_req_calls;
+    uint32_t owner_req_dest;
+    int      owner_req_rc;  /* what send_get_owner_request returns; 0 (success) by default */
+} name_wire_spy_t;
+
+static name_wire_spy_t NS;
+
+static int name_wire_spy_send_admin_set_owner(void *ctx, uint32_t dest, char const *long_name,
+                                              char const *short_name, uint32_t *out_packet_id)
+{
+    name_wire_spy_t *s = (name_wire_spy_t *)ctx;
+    s->calls++;
+    s->dest = dest;
+    snprintf(s->long_name, sizeof(s->long_name), "%s", (long_name != NULL) ? long_name : "");
+    snprintf(s->short_name, sizeof(s->short_name), "%s", (short_name != NULL) ? short_name : "");
+    if (s->rc == 0 && out_packet_id != NULL) {
+        /* Real hardware's packet-id counter (mc_next_packet_id) hands out a
+         * FRESH id on every send — this spy mirrors that instead of
+         * returning the same fixed id on every call, so a test with more
+         * than one push can tell "correlated THIS push's own ack" apart
+         * from "would have matched any push's ack" (a single fixed id
+         * across calls can't distinguish the two). Existing single-push
+         * tests are unaffected: call 1 still returns exactly
+         * `out_packet_id`. */
+        *out_packet_id = s->out_packet_id + (uint32_t)(s->calls - 1);
+    }
+    return s->rc;
+}
+
+/* Confirmation-fix follow-up — the get_owner_request follow-up spy, same
+ * shape as the set_owner spy just above. */
+static int name_wire_spy_send_get_owner_request(void *ctx, uint32_t dest)
+{
+    name_wire_spy_t *s = (name_wire_spy_t *)ctx;
+    s->owner_req_calls++;
+    s->owner_req_dest = dest;
+    return s->owner_req_rc;
+}
+
+static void name_wire_spy_install(void)
+{
+    memset(&NS, 0, sizeof(NS));
+    NS.out_packet_id = 0xAB12u; /* arbitrary nonzero id for ack-correlation tests to pin against */
+    ff_wiring_sender_t sender;
+    memset(&sender, 0, sizeof(sender));
+    sender.send_admin_set_owner = name_wire_spy_send_admin_set_owner;
+    sender.send_get_owner_request = name_wire_spy_send_get_owner_request;
+    sender.ctx = &NS;
+    ff_shell_set_sender(&H.shell, sender);
+}
+
+/* Confirmation-fix follow-up — synthetic get_owner_response / routing-ack
+ * event injectors, the same "mock event injector" shape inject_self_long_name
+ * already establishes for on_node. */
+static void inject_owner_reply(char const *long_name, char const *short_name)
+{
+    H.ev.on_owner(H.ev.user, long_name, short_name);
+}
+
+static void inject_routing_ack(uint32_t request_id, bool ok)
+{
+    H.ev.on_routing_ack(H.ev.user, request_id, ok);
+}
+
+static void inject_self_long_name(uint32_t node, char const *long_name)
+{
+    mc_nodeinfo_t n;
+    memset(&n, 0, sizeof(n));
+    n.node_num = node;
+    n.has_long_name = true;
+    strncpy(n.long_name, long_name, sizeof(n.long_name) - 1);
+    H.ev.on_node(H.ev.user, &n);
+}
+
+static void send_setting_str(ff_setting_id_t id, char const *s)
+{
+    ff_intent_t in = {.kind = FF_INTENT_SETTING_SET, .u = {0}};
+    in.u.setting.id = id;
+    in.u.setting.v.s = s;
+    ff_shell_intent(&H.shell, &in);
+}
+
+static void send_bare(ff_intent_kind_t kind)
+{
+    ff_intent_t const in = {.kind = kind, .u = {0}};
+    ff_shell_intent(&H.shell, &in);
+}
+
+static void name_key(uint8_t key)
+{
+    ff_intent_t const k = {.kind = FF_INTENT_NAME_T9_KEY, .u = {.t9_key = key}};
+    ff_shell_intent(&H.shell, &k);
+}
+
+static ff_app_settings_t const *name_view(void)
+{
+    ff_shell_tick(&H.shell, H.clk.t);
+    return &ff_shell_view(&H.shell)->settings;
+}
+
+static void S_name_open_primes_draft_from_existing_my_name(void)
+{
+    harness_init(1000u, false);
+    send_setting_str(FF_SETTING_MY_NAME, "Jake");
+
+    send_bare(FF_INTENT_SETTINGS_OPEN_NAME_EDIT);
+
+    ff_app_settings_t const *s = name_view();
+    TEST_ASSERT_EQUAL_INT(FF_SETTINGS_SUB_NAME_EDIT, s->subview);
+    TEST_ASSERT_EQUAL_STRING("Jake", s->name_edit.text);
+    TEST_ASSERT_EQUAL_INT(FF_APP_NAME_EDIT_ABC, s->name_edit.mode);
+    TEST_ASSERT_FALSE(s->name_edit.has_pending);
+}
+
+static void S_name_t9_key_updates_the_projected_draft(void)
+{
+    harness_init(1000u, false);
+    send_bare(FF_INTENT_SETTINGS_OPEN_NAME_EDIT);
+
+    name_key(2); /* pending 'a' */
+
+    ff_app_settings_t const *s = name_view();
+    TEST_ASSERT_EQUAL_STRING("a", s->name_edit.text);
+    TEST_ASSERT_TRUE(s->name_edit.has_pending);
+}
+
+static void S_name_t9_mode_toggles_abc_and_123_only(void)
+{
+    harness_init(1000u, false);
+    send_bare(FF_INTENT_SETTINGS_OPEN_NAME_EDIT);
+    TEST_ASSERT_EQUAL_INT(FF_APP_NAME_EDIT_ABC, name_view()->name_edit.mode);
+
+    send_bare(FF_INTENT_NAME_T9_MODE);
+    TEST_ASSERT_EQUAL_INT(FF_APP_NAME_EDIT_123, name_view()->name_edit.mode);
+
+    send_bare(FF_INTENT_NAME_T9_MODE);
+    TEST_ASSERT_EQUAL_INT(FF_APP_NAME_EDIT_ABC, name_view()->name_edit.mode);
+}
+
+static void S_name_t9_backspace_removes_a_character(void)
+{
+    harness_init(1000u, false);
+    send_bare(FF_INTENT_SETTINGS_OPEN_NAME_EDIT);
+    name_key(2); /* pending 'a' */
+    send_bare(FF_INTENT_NAME_T9_BACKSPACE);
+
+    TEST_ASSERT_EQUAL_STRING("", name_view()->name_edit.text);
+}
+
+/* Alternating two different keys commits a fresh character on every
+ * press (ff_t9's own "a DIFFERENT key commits the pending char" rule),
+ * so 20 alternating presses is a simple, deterministic way to grow the
+ * draft well past the 15-char puck-name cap and prove it stops there —
+ * FF_APP_NAME_EDIT_CAP is a cap this feature layers on top of ff_t9's
+ * own 160-char ceiling, not something ff_t9 itself would ever enforce. */
+static void S_name_t9_key_capped_at_fifteen_characters(void)
+{
+    harness_init(1000u, false);
+    send_bare(FF_INTENT_SETTINGS_OPEN_NAME_EDIT);
+
+    for (int i = 0; i < 20; i++) {
+        name_key((i % 2 == 0) ? 2 : 3);
+    }
+
+    TEST_ASSERT_EQUAL_size_t((size_t)FF_APP_NAME_EDIT_CAP, strlen(name_view()->name_edit.text));
+}
+
+static void S_name_back_cancels_without_committing(void)
+{
+    harness_init(1000u, false);
+    send_setting_str(FF_SETTING_MY_NAME, "Jake");
+
+    /* BACK's subview-reset branch (ff_shell.c) keys off the SETTINGS
+     * face being visible, exactly like CREW/COMPASS_CAL's own BACK
+     * behavior — real usage always reaches NAME from the Settings face,
+     * so land there first, the same way S16_c3's own launcher-select
+     * tests do. */
+    ff_intent_t const goto_settings = {.kind = FF_INTENT_LAUNCHER_SELECT, .u = {.launcher_idx = 4u}};
+    ff_shell_intent(&H.shell, &goto_settings);
+
+    send_bare(FF_INTENT_SETTINGS_OPEN_NAME_EDIT);
+    name_key(9); /* pending 'w' — some edit in progress, never committed */
+    send_bare(FF_INTENT_BACK);
+
+    ff_app_settings_t const *s = name_view();
+    TEST_ASSERT_EQUAL_INT(FF_SETTINGS_SUB_LIST, s->subview);
+    TEST_ASSERT_EQUAL_STRING("Jake", ff_shell_settings(&H.shell)->my_name); /* untouched */
+}
+
+static void S_name_commit_persists_the_sanitized_name(void)
+{
+    harness_init(1000u, true);
+    send_bare(FF_INTENT_SETTINGS_OPEN_NAME_EDIT);
+    name_key(5); /* pending 'j' */
+    send_bare(FF_INTENT_SETTINGS_NAME_COMMIT);
+
+    TEST_ASSERT_EQUAL_STRING("j", ff_shell_settings(&H.shell)->my_name);
+    TEST_ASSERT_TRUE_MESSAGE(H.store_mem.present, "NAME commit must persist through the settings store");
+    TEST_ASSERT_EQUAL_INT(FF_SETTINGS_SUB_LIST, name_view()->subview);
+}
+
+/**
+ * THE mesh-push test (task brief: "prove at least the 'push is called'
+ * test fails without the change"). Mutation-verified by hand: commenting
+ * out `shell_apply_name_commit`'s `send_admin_set_owner` call fails this
+ * test's `NS.calls` assertion (`Expected 1 Was 0`) and none of the
+ * others in this block (persistence/draft/BACK are untouched by that
+ * mutation) — see the PR body for the exact `ctest` output.
+ */
+static void S_name_commit_pushes_the_meshtastic_owner_update(void)
+{
+    harness_init(1000u, false);
+    inject_my_info(MY_ID);
+    name_wire_spy_install();
+
+    send_bare(FF_INTENT_SETTINGS_OPEN_NAME_EDIT);
+    /* Two DIFFERENT keys, each committing the previous one's pending
+     * char on the next distinct press (ff_t9's own rule) — a real
+     * two-character name, so this also exercises short-name derivation,
+     * without hand-deriving a full multi-tap word. ff_t9's letter
+     * tables are lowercase (key 5 = j/k/l, key 6 = m/n/o; first press of
+     * each), so the expected long/short names below are the lowercase
+     * result, not a capitalized "Jm". */
+    name_key(5); /* 'j' */
+    name_key(6); /* different key -> commits 'j', pending 'm' */
+    send_bare(FF_INTENT_SETTINGS_NAME_COMMIT);
+
+    TEST_ASSERT_EQUAL_INT(1, NS.calls);
+    TEST_ASSERT_EQUAL_UINT32(MY_ID, NS.dest);
+    TEST_ASSERT_EQUAL_STRING("jm", NS.long_name);
+    TEST_ASSERT_EQUAL_STRING("JM", NS.short_name); /* ff_meshname_derive_short("jm") */
+}
+
+static void S_name_commit_skips_the_push_when_my_node_id_is_unknown(void)
+{
+    harness_init(1000u, false);
+    /* deliberately no inject_my_info */
+    name_wire_spy_install();
+
+    send_bare(FF_INTENT_SETTINGS_OPEN_NAME_EDIT);
+    name_key(5);
+    send_bare(FF_INTENT_SETTINGS_NAME_COMMIT);
+
+    TEST_ASSERT_EQUAL_INT(0, NS.calls);
+    TEST_ASSERT_EQUAL_STRING("j", ff_shell_settings(&H.shell)->my_name); /* local value still commits */
+}
+
+static void S_name_commit_skips_the_push_when_the_sanitized_name_is_empty(void)
+{
+    harness_init(1000u, false);
+    inject_my_info(MY_ID);
+    name_wire_spy_install();
+
+    send_bare(FF_INTENT_SETTINGS_OPEN_NAME_EDIT); /* empty draft, never typed into */
+    send_bare(FF_INTENT_SETTINGS_NAME_COMMIT);
+
+    TEST_ASSERT_EQUAL_INT(0, NS.calls);
+}
+
+static void S_name_commit_drops_disallowed_characters_before_pushing(void)
+{
+    /* ABC mode's key 1 cycles punctuation (". , ? !") — outside the
+     * puck-name charset (letters/digits/space). Typing it, then a
+     * letter, must push only the sanitized survivor. */
+    harness_init(1000u, false);
+    inject_my_info(MY_ID);
+    name_wire_spy_install();
+
+    send_bare(FF_INTENT_SETTINGS_OPEN_NAME_EDIT);
+    name_key(1); /* pending '.' */
+    name_key(2); /* different key -> commits '.', pending 'a' */
+    send_bare(FF_INTENT_SETTINGS_NAME_COMMIT);
+
+    TEST_ASSERT_EQUAL_STRING("a", ff_shell_settings(&H.shell)->my_name);
+    TEST_ASSERT_EQUAL_INT(1, NS.calls);
+    TEST_ASSERT_EQUAL_STRING("a", NS.long_name);
+}
+
+static void S_name_boot_prefill_from_self_nodeinfo_when_my_name_was_empty(void)
+{
+    harness_init(1000u, true);
+    inject_my_info(MY_ID);
+
+    TEST_ASSERT_EQUAL_STRING("", ff_shell_settings(&H.shell)->my_name); /* nothing yet */
+
+    inject_self_long_name(MY_ID, "Taylor");
+
+    TEST_ASSERT_EQUAL_STRING("Taylor", ff_shell_settings(&H.shell)->my_name);
+    TEST_ASSERT_TRUE_MESSAGE(H.store_mem.present, "boot prefill must persist, not just live in memory");
+
+    ff_shell_mesh_name_status_t const st = ff_shell_mesh_name_status(&H.shell);
+    TEST_ASSERT_TRUE(st.has_mesh_owner_name);
+    TEST_ASSERT_EQUAL_STRING("Taylor", st.mesh_owner_name);
+    TEST_ASSERT_TRUE_MESSAGE(st.confirmed, "adopted straight from the mesh — already matches, no push needed");
+    TEST_ASSERT_TRUE(st.my_name_from_node);
+}
+
+static void S_name_boot_prefill_never_overwrites_an_existing_name(void)
+{
+    harness_init(1000u, false);
+    send_setting_str(FF_SETTING_MY_NAME, "Jake");
+    inject_my_info(MY_ID);
+
+    inject_self_long_name(MY_ID, "SomeoneElse");
+
+    TEST_ASSERT_EQUAL_STRING("Jake", ff_shell_settings(&H.shell)->my_name);
+    TEST_ASSERT_FALSE(ff_shell_mesh_name_status(&H.shell).my_name_from_node);
+}
+
+static void S_name_status_reads_pending_when_mesh_name_differs(void)
+{
+    harness_init(1000u, false);
+    send_setting_str(FF_SETTING_MY_NAME, "Jake");
+    inject_my_info(MY_ID);
+
+    inject_self_long_name(MY_ID, "OldName");
+
+    ff_shell_mesh_name_status_t const st = ff_shell_mesh_name_status(&H.shell);
+    TEST_ASSERT_TRUE(st.has_mesh_owner_name);
+    TEST_ASSERT_FALSE_MESSAGE(st.confirmed, "never assume a push succeeded — only a matching self NodeInfo confirms");
+}
+
+static void S_name_status_confirms_once_a_matching_self_nodeinfo_arrives(void)
+{
+    harness_init(1000u, false);
+    send_setting_str(FF_SETTING_MY_NAME, "Jake");
+    inject_my_info(MY_ID);
+    inject_self_long_name(MY_ID, "OldName");
+    TEST_ASSERT_FALSE(ff_shell_mesh_name_status(&H.shell).confirmed);
+
+    inject_self_long_name(MY_ID, "Jake"); /* the mesh caught up */
+
+    TEST_ASSERT_TRUE(ff_shell_mesh_name_status(&H.shell).confirmed);
+}
+
+static void S_name_committing_clears_the_from_node_flag(void)
+{
+    harness_init(1000u, false);
+    inject_my_info(MY_ID);
+    inject_self_long_name(MY_ID, "Taylor"); /* boot-prefills, my_name_from_node = true */
+    TEST_ASSERT_TRUE(ff_shell_mesh_name_status(&H.shell).my_name_from_node);
+
+    send_bare(FF_INTENT_SETTINGS_OPEN_NAME_EDIT);
+    name_key(5);
+    send_bare(FF_INTENT_SETTINGS_NAME_COMMIT);
+
+    TEST_ASSERT_FALSE_MESSAGE(ff_shell_mesh_name_status(&H.shell).my_name_from_node,
+                              "a real edit overrides the mesh-adopted caption for good");
+}
+
+/* ====================================================================
+ * Confirmation-fix follow-up (bench finding, 2026-09-06): the comms
+ * brain never re-sends its own NodeInfo right after a set_owner, so the
+ * ABOVE block's "wait for a self NodeInfo" confirmation never turns ✓ in
+ * practice. This device now follows every successful push with its own
+ * get_owner_request/on_owner round trip (retried on a timeout, never
+ * assumed to have succeeded), plus honest routing-ack/nak surfacing.
+ * ==================================================================== */
+
+/**
+ * THE follow-up-request test (task brief: "prove ... fails without the
+ * change"). Mutation-verified by hand: commenting out
+ * shell_apply_name_commit's `send_get_owner_request` call (and its
+ * surrounding `if`) fails exactly this test's `NS.owner_req_calls`
+ * assertion (`Expected 1 Was 0`) and no other test in this file — see
+ * the PR body for the exact `ctest` output.
+ */
+static void S_name_commit_sends_get_owner_request_after_a_successful_push(void)
+{
+    harness_init(1000u, false);
+    inject_my_info(MY_ID);
+    name_wire_spy_install();
+
+    send_bare(FF_INTENT_SETTINGS_OPEN_NAME_EDIT);
+    name_key(5); /* 'j' */
+    name_key(6); /* different key -> commits 'j', pending 'm' */
+    send_bare(FF_INTENT_SETTINGS_NAME_COMMIT);
+
+    TEST_ASSERT_EQUAL_INT(1, NS.calls);
+    TEST_ASSERT_EQUAL_INT_MESSAGE(
+        1, NS.owner_req_calls,
+        "a successful set_owner push must immediately follow up with its own get_owner_request — the "
+        "comms brain does not re-send its own NodeInfo right after a set_owner (2026-09-06 bench finding)");
+    TEST_ASSERT_EQUAL_UINT32(MY_ID, NS.owner_req_dest);
+}
+
+static void S_name_commit_skips_the_owner_request_when_the_push_itself_was_skipped(void)
+{
+    harness_init(1000u, false);
+    /* deliberately no inject_my_info — the push itself is skipped */
+    name_wire_spy_install();
+
+    send_bare(FF_INTENT_SETTINGS_OPEN_NAME_EDIT);
+    name_key(5);
+    send_bare(FF_INTENT_SETTINGS_NAME_COMMIT);
+
+    TEST_ASSERT_EQUAL_INT(0, NS.calls);
+    TEST_ASSERT_EQUAL_INT(0, NS.owner_req_calls);
+}
+
+static void S_name_owner_response_matching_flips_confirmed(void)
+{
+    harness_init(1000u, false);
+    inject_my_info(MY_ID);
+    name_wire_spy_install();
+
+    send_bare(FF_INTENT_SETTINGS_OPEN_NAME_EDIT);
+    name_key(5);
+    name_key(6);
+    send_bare(FF_INTENT_SETTINGS_NAME_COMMIT); /* commits "jm" */
+    TEST_ASSERT_FALSE(ff_shell_mesh_name_status(&H.shell).confirmed);
+
+    inject_owner_reply("jm", "JM");
+
+    ff_shell_mesh_name_status_t const st = ff_shell_mesh_name_status(&H.shell);
+    TEST_ASSERT_TRUE(st.has_reply);
+    TEST_ASSERT_EQUAL_STRING("jm", st.reply_long);
+    TEST_ASSERT_EQUAL_STRING("JM", st.reply_short);
+    TEST_ASSERT_TRUE_MESSAGE(st.confirmed, "get_owner_response treated exactly like a matching self NodeInfo");
+    TEST_ASSERT_FALSE_MESSAGE(st.mismatch, "confirmed and mismatch are mutually exclusive");
+}
+
+/**
+ * Bench finding (2026-09-06, real puck + comms brain, AFTER commit
+ * eb1cb06): "name Jake H" confirmed perfectly (ack=ok, reply within 3s)
+ * — the FIRST push after boot. Every push after that, in the SAME boot
+ * session, showed ack=none reply=none forever, even after the retry
+ * budget was exhausted. Reproduced here at the shell layer with two
+ * DIFFERENT names pushed back to back, each getting its OWN fresh
+ * packet id (name_wire_spy_send_admin_set_owner now varies its
+ * out_packet_id per call — see that spy's own comment) and its own
+ * fresh ack/reply: both pushes must independently reach ack=ok and
+ * confirmed=1 off THEIR OWN routing ack / get_owner_response, not the
+ * first push's leftovers.
+ */
+static void S_name_second_push_in_the_same_session_also_confirms_via_its_own_reply(void)
+{
+    harness_init(1000u, false);
+    inject_my_info(MY_ID);
+    name_wire_spy_install();
+
+    /* Push 1: "Jake H", confirmed via its own ack + reply. */
+    ff_shell_debug_set_name(&H.shell, "Jake H");
+    TEST_ASSERT_EQUAL_INT(1, NS.calls);
+    TEST_ASSERT_EQUAL_INT(1, NS.owner_req_calls);
+    uint32_t const push1_packet_id = NS.out_packet_id;
+    inject_routing_ack(push1_packet_id, true);
+    inject_owner_reply("Jake H", "JAKE");
+
+    ff_shell_mesh_name_status_t st = ff_shell_mesh_name_status(&H.shell);
+    TEST_ASSERT_TRUE_MESSAGE(st.confirmed, "push 1 confirms off its own ack+reply");
+
+    /* Push 2: a DIFFERENT name, same session, no reboot. Must get its own
+     * fresh packet id, its own get_owner_request, and must be
+     * confirm-able by its own ack+reply — none of push 1's state may
+     * leak forward or suppress push 2's round trip. */
+    ff_shell_debug_set_name(&H.shell, "Jake");
+    TEST_ASSERT_EQUAL_INT_MESSAGE(2, NS.calls, "push 2 must send its own set_owner");
+    TEST_ASSERT_EQUAL_INT_MESSAGE(2, NS.owner_req_calls, "push 2 must send its own get_owner_request follow-up");
+
+    uint32_t const push2_packet_id = push1_packet_id + 1u; /* the spy's next fresh id */
+    TEST_ASSERT_NOT_EQUAL_MESSAGE(push1_packet_id, push2_packet_id, "sanity: the two pushes must not share a packet id");
+
+    inject_routing_ack(push2_packet_id, true);
+    inject_owner_reply("Jake", "JAKE");
+
+    st = ff_shell_mesh_name_status(&H.shell);
+    TEST_ASSERT_TRUE_MESSAGE(st.confirmed, "push 2 must confirm off its OWN ack+reply, in the same session as push 1");
+    TEST_ASSERT_EQUAL_STRING("Jake", st.reply_long);
+}
+
+/* ====================================================================
+ * Confirmation fix round 2 (bench finding, 2026-09-06, AFTER commit
+ * 51e4ae1, real puck + Meshtastic 2.7.26 comms brain): `name Jake` when
+ * the node's name was ALREADY Jake reported `confirmed=1` INSTANTLY,
+ * with `ack=none reply=none` — a false positive from comparing the
+ * pushed name against a `mesh_owner_name` cached from BEFORE this push,
+ * never actually observing anything new for it. Fixed by a
+ * push-generation counter (`name_pushed_seq`/`mesh_owner_name_seq`, see
+ * their own field comments in ff_shell.c) that `shell_mesh_name_confirmed`
+ * now requires the observation to be at least as recent as.
+ * ==================================================================== */
+
+/**
+ * THE false-positive reproduction (task brief: "prove the false-positive
+ * test fails on the current branch"). Mutation-verified by hand:
+ * reverting shell_mesh_name_confirmed's `mesh_owner_name_seq >=
+ * name_pushed_seq` clause (restoring the pre-fix two-clause comparison)
+ * fails exactly this test — `TEST_ASSERT_FALSE` on a `confirmed` that
+ * reads true — and no other test in this file; see the PR body for the
+ * exact `ctest` output. Reverted after confirming.
+ */
+static void S_name_recommitting_the_same_name_does_not_falsely_confirm_from_stale_mesh_state(void)
+{
+    harness_init(1000u, false);
+    inject_my_info(MY_ID);
+    name_wire_spy_install();
+
+    /* First push+confirm cycle: a genuine, fresh reply confirms "Jake". */
+    ff_shell_debug_set_name(&H.shell, "Jake");
+    inject_owner_reply("Jake", "JAKE");
+    TEST_ASSERT_TRUE(ff_shell_mesh_name_status(&H.shell).confirmed);
+
+    /* Re-commit the EXACT SAME text — shell_apply_name_commit's own
+     * documented retry mechanism for a push that may have silently
+     * failed. This starts a FRESH push generation; the cached
+     * mesh_owner_name ("Jake", from the FIRST push's own confirmation)
+     * must not be re-read as evidence for this NEW push before any new
+     * observation arrives for it. */
+    ff_shell_debug_set_name(&H.shell, "Jake");
+
+    ff_shell_mesh_name_status_t const st = ff_shell_mesh_name_status(&H.shell);
+    TEST_ASSERT_FALSE_MESSAGE(st.confirmed,
+                              "stale pre-push equality must never be read as THIS push's confirmation");
+    TEST_ASSERT_FALSE_MESSAGE(st.mismatch, "no fresh observation has arrived for this push yet — pending, not mismatch");
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(2u, st.pushed_seq, "the push-generation counter must have ticked forward");
+}
+
+/**
+ * Before any observation arrives at all for a push, the row must read
+ * plain pending — never mismatch (mismatch requires a FRESH observation
+ * that disagrees; there is none yet here).
+ */
+static void S_name_status_reports_pending_not_mismatch_before_any_reply(void)
+{
+    harness_init(1000u, false);
+    inject_my_info(MY_ID);
+    name_wire_spy_install();
+
+    ff_shell_debug_set_name(&H.shell, "Jake");
+
+    ff_shell_mesh_name_status_t const st = ff_shell_mesh_name_status(&H.shell);
+    TEST_ASSERT_FALSE(st.confirmed);
+    TEST_ASSERT_FALSE_MESSAGE(st.mismatch, "no observation has arrived yet for this push — pending, not mismatch");
+    TEST_ASSERT_EQUAL_UINT32(1u, st.pushed_seq);
+}
+
+/**
+ * A stale self-NodeInfo (the ORIGINAL confirmation source, independent of
+ * get_owner_response) is exactly as stale as a stale reply — the fix
+ * applies uniformly to both observation sources, since both write through
+ * the same mesh_owner_name_seq stamp (shell_ev_node and shell_ev_owner).
+ */
+static void S_name_recommit_stale_self_nodeinfo_does_not_falsely_confirm_either(void)
+{
+    harness_init(1000u, false);
+    inject_my_info(MY_ID);
+    name_wire_spy_install();
+
+    ff_shell_debug_set_name(&H.shell, "Jake");
+    inject_self_long_name(MY_ID, "Jake"); /* confirms via the self-NodeInfo path, not get_owner_response */
+    TEST_ASSERT_TRUE(ff_shell_mesh_name_status(&H.shell).confirmed);
+
+    ff_shell_debug_set_name(&H.shell, "Jake"); /* fresh push generation */
+    TEST_ASSERT_FALSE_MESSAGE(ff_shell_mesh_name_status(&H.shell).confirmed,
+                              "the self-NodeInfo cache is just as stale as a reply cache relative to the new push");
+}
+
+static void S_name_owner_response_mismatching_does_not_confirm(void)
+{
+    harness_init(1000u, false);
+    inject_my_info(MY_ID);
+    name_wire_spy_install();
+
+    send_bare(FF_INTENT_SETTINGS_OPEN_NAME_EDIT);
+    name_key(5);
+    send_bare(FF_INTENT_SETTINGS_NAME_COMMIT); /* commits "j" */
+
+    inject_owner_reply("SomeoneElse", "SOME");
+
+    ff_shell_mesh_name_status_t const st = ff_shell_mesh_name_status(&H.shell);
+    TEST_ASSERT_TRUE(st.has_reply);
+    TEST_ASSERT_EQUAL_STRING("SomeoneElse", st.reply_long);
+    TEST_ASSERT_FALSE_MESSAGE(st.confirmed, "a mismatching reply is honest bench info, never assumed to confirm");
+    /* Confirmation-fix round 2 — a FRESH reply naming a different owner
+     * is its own state (mismatch), distinct from plain pending. */
+    TEST_ASSERT_TRUE_MESSAGE(st.mismatch,
+                             "a fresh reply that disagrees with the pushed name is a mismatch, not plain pending");
+}
+
+static void S_name_owner_reply_stops_further_retries(void)
+{
+    harness_init(1000u, false);
+    inject_my_info(MY_ID);
+    name_wire_spy_install();
+
+    send_bare(FF_INTENT_SETTINGS_OPEN_NAME_EDIT);
+    name_key(5);
+    send_bare(FF_INTENT_SETTINGS_NAME_COMMIT);
+    TEST_ASSERT_EQUAL_INT(1, NS.owner_req_calls);
+
+    inject_owner_reply("j", "J");
+
+    advance(FF_NAME_OWNER_REQ_TIMEOUT_MS + 1u);
+    ff_shell_tick(&H.shell, H.clk.t);
+    TEST_ASSERT_EQUAL_INT_MESSAGE(1, NS.owner_req_calls, "a reply already arrived — nothing left to retry for");
+}
+
+/**
+ * The retry/timeout schedule: a request every FF_NAME_OWNER_REQ_TIMEOUT_MS
+ * while no reply arrives, capped at FF_NAME_OWNER_REQ_MAX_RETRIES retries
+ * — after which the row stays honestly pending ("...") forever rather
+ * than ever assuming success.
+ */
+static void S_name_owner_request_retries_on_timeout_then_stops(void)
+{
+    harness_init(1000u, false);
+    inject_my_info(MY_ID);
+    name_wire_spy_install();
+    /* Reboot-session-loss fix: the retry poll only fires while the link
+     * reads CONNECTED (see ff_shell_tick's own doc comment on the gate) —
+     * a real push can only happen once connected in the first place, so
+     * this establishes that baseline before exercising the retry
+     * schedule itself. */
+    H.ev.on_state(H.ev.user, MC_STATE_READY);
+
+    send_bare(FF_INTENT_SETTINGS_OPEN_NAME_EDIT);
+    name_key(5);
+    send_bare(FF_INTENT_SETTINGS_NAME_COMMIT);
+    TEST_ASSERT_EQUAL_INT(1, NS.owner_req_calls);
+
+    for (int i = 0; i < (int)FF_NAME_OWNER_REQ_MAX_RETRIES; i++) {
+        advance(FF_NAME_OWNER_REQ_TIMEOUT_MS + 1u);
+        ff_shell_tick(&H.shell, H.clk.t);
+    }
+    TEST_ASSERT_EQUAL_INT_MESSAGE(1 + (int)FF_NAME_OWNER_REQ_MAX_RETRIES, NS.owner_req_calls,
+                                  "1 initial request + the full retry budget");
+
+    /* Budget exhausted — no further requests no matter how much more
+     * time passes, and NEVER an assumed confirmation. */
+    advance(FF_NAME_OWNER_REQ_TIMEOUT_MS + 1u);
+    ff_shell_tick(&H.shell, H.clk.t);
+    advance(FF_NAME_OWNER_REQ_TIMEOUT_MS + 1u);
+    ff_shell_tick(&H.shell, H.clk.t);
+    TEST_ASSERT_EQUAL_INT(1 + (int)FF_NAME_OWNER_REQ_MAX_RETRIES, NS.owner_req_calls);
+    TEST_ASSERT_FALSE_MESSAGE(ff_shell_mesh_name_status(&H.shell).confirmed,
+                              "exhausting the retry budget never assumes success — stays pending forever");
+}
+
+/**
+ * Bench finding (2026-09-06, real puck + comms brain, AFTER commit
+ * eb1cb06): the FIRST push after boot confirmed perfectly; every push
+ * after that, in the SAME session, sat on ack=none/reply=none forever —
+ * even past the full retry budget. A quiet bench mesh (just the puck +
+ * comms brain, no other traffic) trips this device's own 30s
+ * no-RX-bytes watchdog (mc_client.c) into a silent reconnect once no
+ * other packet arrives for that long — exactly what a still, two-node
+ * bench produces between typed commands. `send_get_owner_request`
+ * legitimately fails (transport not READY) for any retry attempted
+ * while that reconnect is in flight.
+ *
+ * Reproduced here without needing a real reconnect: the retry loop
+ * (`ff_shell_tick`) must not spend a retry attempt's slot in the
+ * FF_NAME_OWNER_REQ_MAX_RETRIES budget on an attempt that never actually
+ * reached the wire (`send_get_owner_request` returning nonzero) — doing
+ * so silently drains the ENTIRE retry budget while the transport happens
+ * to be down, so once it recovers there is no attempt budget left to
+ * ever ask again, and the row reads pending forever despite the comms
+ * brain being perfectly reachable and answering-ready again. This test
+ * MUST FAIL on the current branch (see the PR body for the exact
+ * assertion and `ctest` output) — it is the sim-level reproduction the
+ * bench finding asked for.
+ */
+static void S_name_owner_request_retry_failures_do_not_burn_the_retry_budget(void)
+{
+    harness_init(1000u, false);
+    inject_my_info(MY_ID);
+    name_wire_spy_install();
+    /* Reboot-session-loss fix: the link itself reads CONNECTED throughout
+     * this test — the failure being reproduced here is a send that fails
+     * below the shell (NS.owner_req_rc, simulating e.g. a momentary
+     * transport hiccup the shell hasn't yet been told about), distinct
+     * from the link-level RECONNECTING gate covered by its own tests
+     * below (S_name_push_during_reboot_window_polls_only_after_reconnect
+     * and friends). Both must independently avoid burning the retry
+     * budget. */
+    H.ev.on_state(H.ev.user, MC_STATE_READY);
+
+    send_bare(FF_INTENT_SETTINGS_OPEN_NAME_EDIT);
+    name_key(5);
+    send_bare(FF_INTENT_SETTINGS_NAME_COMMIT);
+    TEST_ASSERT_EQUAL_INT(1, NS.owner_req_calls);
+
+    /* The transport goes unavailable — e.g. this device's own quiet-mesh
+     * reconnect — for LONGER than the entire retry budget would have
+     * lasted had every attempt counted. None of these attempts may count
+     * as a used retry: the request never left the device. Deliberately
+     * more iterations than FF_NAME_OWNER_REQ_MAX_RETRIES — the old,
+     * buggy code exhausts the whole budget (and gives up, clearing
+     * name_owner_req_pending) well before this loop ends; the fixed code
+     * keeps re-attempting every tick for as long as the transport stays
+     * down, still with a full budget in reserve for when it matters. */
+    NS.owner_req_rc = -1;
+    for (int i = 0; i < (int)FF_NAME_OWNER_REQ_MAX_RETRIES + 5; i++) {
+        advance(FF_NAME_OWNER_REQ_TIMEOUT_MS + 1u);
+        ff_shell_tick(&H.shell, H.clk.t);
+    }
+    TEST_ASSERT_TRUE_MESSAGE(ff_shell_mesh_name_status(&H.shell).confirmed == false,
+                             "sanity: nothing has confirmed yet");
+    int const calls_while_down = NS.owner_req_calls;
+
+    /* The transport recovers (reconnect completes). The NEXT scheduled
+     * retry must actually go out — the poll must still be alive (not
+     * given up on) once the transport is READY again. `inject_owner_reply`
+     * on its own can't tell the two behaviors apart (shell_ev_owner
+     * accepts any reply unconditionally, whether or not a request is
+     * still "pending"), so the real tell is whether a fresh request is
+     * even ATTEMPTED here at all. */
+    NS.owner_req_rc = 0;
+    advance(FF_NAME_OWNER_REQ_TIMEOUT_MS + 1u);
+    ff_shell_tick(&H.shell, H.clk.t);
+    TEST_ASSERT_TRUE_MESSAGE(NS.owner_req_calls > calls_while_down,
+                             "the poll must still attempt a fresh get_owner_request once the transport "
+                             "recovers — the OLD code gives up (clears name_owner_req_pending) once the "
+                             "retry budget is exhausted, which happens well before the transport ever "
+                             "recovers here, so it never attempts again no matter how long it waits");
+
+    inject_owner_reply("j", "J");
+    TEST_ASSERT_TRUE_MESSAGE(ff_shell_mesh_name_status(&H.shell).confirmed,
+                             "once the transport recovers and a genuine request finally reaches the comms "
+                             "brain, its reply must still be able to confirm");
+}
+
+static void S_name_routing_nak_marks_push_failed(void)
+{
+    harness_init(1000u, false);
+    inject_my_info(MY_ID);
+    name_wire_spy_install();
+
+    send_bare(FF_INTENT_SETTINGS_OPEN_NAME_EDIT);
+    name_key(5);
+    send_bare(FF_INTENT_SETTINGS_NAME_COMMIT);
+
+    inject_routing_ack(NS.out_packet_id, false);
+
+    ff_shell_mesh_name_status_t const st = ff_shell_mesh_name_status(&H.shell);
+    TEST_ASSERT_EQUAL_INT(FF_MESH_NAME_ACK_NAK, st.ack);
+
+    ff_app_settings_t const *s = name_view();
+    TEST_ASSERT_TRUE_MESSAGE(s->mesh_name_push_failed,
+                             "a routing NAK for the CURRENT push must surface honestly, not as pending forever");
+}
+
+static void S_name_routing_ack_ok_does_not_by_itself_confirm(void)
+{
+    harness_init(1000u, false);
+    inject_my_info(MY_ID);
+    name_wire_spy_install();
+
+    send_bare(FF_INTENT_SETTINGS_OPEN_NAME_EDIT);
+    name_key(5);
+    send_bare(FF_INTENT_SETTINGS_NAME_COMMIT);
+
+    inject_routing_ack(NS.out_packet_id, true);
+
+    ff_shell_mesh_name_status_t const st = ff_shell_mesh_name_status(&H.shell);
+    TEST_ASSERT_EQUAL_INT(FF_MESH_NAME_ACK_OK, st.ack);
+    TEST_ASSERT_FALSE_MESSAGE(st.confirmed, "mesh-delivery ack is not the same claim as a matching owner reply");
+}
+
+static void S_name_routing_ack_ignores_an_unrelated_request_id(void)
+{
+    harness_init(1000u, false);
+    inject_my_info(MY_ID);
+    name_wire_spy_install();
+
+    send_bare(FF_INTENT_SETTINGS_OPEN_NAME_EDIT);
+    name_key(5);
+    send_bare(FF_INTENT_SETTINGS_NAME_COMMIT);
+
+    inject_routing_ack(NS.out_packet_id + 1u, false); /* some other in-flight packet's NAK */
+
+    TEST_ASSERT_EQUAL_INT(FF_MESH_NAME_ACK_NONE, ff_shell_mesh_name_status(&H.shell).ack);
+}
+
+/**
+ * Task brief requirement: "A push while a previous poll is still pending:
+ * the old poll is abandoned, the new one confirms only its own name."
+ * Unlike S_name_commit_resets_push_tracking_for_a_fresh_push (above,
+ * which re-pushes only AFTER the first push already confirmed), this
+ * commits a SECOND time while the FIRST push's get_owner_request is still
+ * outstanding — no reply, no ack, nothing has arrived for it yet — the
+ * scenario a wearer mashing DONE twice in a row (or a coordinator
+ * re-typing a bench command before the first one's ~10s poll window
+ * elapses) would actually produce.
+ */
+static void S_name_commit_abandons_a_still_pending_previous_poll(void)
+{
+    harness_init(1000u, false);
+    inject_my_info(MY_ID);
+    name_wire_spy_install();
+
+    /* Push 1: "j" — never gets any ack or reply before push 2 lands.
+     * name_wire_spy_send_admin_set_owner (its own comment) hands out
+     * NS.out_packet_id + (calls - 1), a fresh id per call — NS.out_packet_id
+     * itself is the fixed BASE, not the latest returned id, so the actual
+     * per-push ids are computed the same way the spy computes them. */
+    send_bare(FF_INTENT_SETTINGS_OPEN_NAME_EDIT);
+    name_key(5);
+    send_bare(FF_INTENT_SETTINGS_NAME_COMMIT);
+    uint32_t const push1_packet_id = NS.out_packet_id + (uint32_t)(NS.calls - 1);
+    TEST_ASSERT_EQUAL_INT(1, NS.owner_req_calls);
+    TEST_ASSERT_FALSE(ff_shell_mesh_name_status(&H.shell).confirmed);
+
+    /* Push 2: "m" — committed while push 1's poll is STILL pending. */
+    send_bare(FF_INTENT_SETTINGS_OPEN_NAME_EDIT); /* re-primes the draft from "j" */
+    send_bare(FF_INTENT_NAME_T9_BACKSPACE);
+    name_key(6); /* pushes "m" (T9 key 6 = mno) */
+    send_bare(FF_INTENT_SETTINGS_NAME_COMMIT);
+    uint32_t const push2_packet_id = NS.out_packet_id + (uint32_t)(NS.calls - 1);
+    TEST_ASSERT_NOT_EQUAL_MESSAGE(push1_packet_id, push2_packet_id, "push 2 must get its own fresh packet id");
+    TEST_ASSERT_EQUAL_INT_MESSAGE(2, NS.owner_req_calls, "push 2 must send its own get_owner_request follow-up");
+
+    /* Push 1's old, abandoned poll finally answers — this must NOT be
+     * read as evidence for push 2's push generation. */
+    inject_routing_ack(push1_packet_id, true);
+    ff_shell_mesh_name_status_t st = ff_shell_mesh_name_status(&H.shell);
+    TEST_ASSERT_EQUAL_INT_MESSAGE(FF_MESH_NAME_ACK_NONE, st.ack,
+                                  "the OLD push's routing ack must not be read as THIS push's ack");
+    inject_owner_reply("j", "J"); /* push 1's own name, arriving late */
+    st = ff_shell_mesh_name_status(&H.shell);
+    TEST_ASSERT_FALSE_MESSAGE(st.confirmed, "the old poll's own name must never confirm the NEW push");
+    TEST_ASSERT_TRUE_MESSAGE(st.mismatch, "a late reply naming something other than the CURRENT push is a mismatch");
+
+    /* Push 2's OWN reply, naming push 2's OWN text, must confirm. */
+    inject_routing_ack(push2_packet_id, true);
+    inject_owner_reply("m", "M");
+    st = ff_shell_mesh_name_status(&H.shell);
+    TEST_ASSERT_EQUAL_INT(FF_MESH_NAME_ACK_OK, st.ack);
+    TEST_ASSERT_TRUE_MESSAGE(st.confirmed, "push 2 confirms off its OWN ack+reply, abandoning push 1's poll entirely");
+    TEST_ASSERT_EQUAL_STRING("m", st.reply_long);
+}
+
+static void S_name_commit_resets_push_tracking_for_a_fresh_push(void)
+{
+    harness_init(1000u, false);
+    inject_my_info(MY_ID);
+    name_wire_spy_install();
+
+    send_bare(FF_INTENT_SETTINGS_OPEN_NAME_EDIT);
+    name_key(5);
+    send_bare(FF_INTENT_SETTINGS_NAME_COMMIT); /* pushes "j" */
+    inject_routing_ack(NS.out_packet_id, false); /* NAK'd */
+    inject_owner_reply("j", "J"); /* confirmed */
+    TEST_ASSERT_TRUE(ff_shell_mesh_name_status(&H.shell).confirmed);
+    TEST_ASSERT_EQUAL_INT(FF_MESH_NAME_ACK_NAK, ff_shell_mesh_name_status(&H.shell).ack);
+
+    send_bare(FF_INTENT_SETTINGS_OPEN_NAME_EDIT); /* re-priming the draft from "j" (the confirmed my_name) */
+    send_bare(FF_INTENT_NAME_T9_BACKSPACE); /* clear the primed "j" before typing the new name */
+    name_key(6); /* pushes "m" — a fresh push cycle */
+    send_bare(FF_INTENT_SETTINGS_NAME_COMMIT);
+
+    ff_shell_mesh_name_status_t const st = ff_shell_mesh_name_status(&H.shell);
+    TEST_ASSERT_EQUAL_INT_MESSAGE(FF_MESH_NAME_ACK_NONE, st.ack,
+                                  "a stale NAK from the PREVIOUS push must not bleed into the new one");
+    TEST_ASSERT_FALSE_MESSAGE(st.has_reply, "a stale reply from the PREVIOUS push must not bleed into the new one");
+    TEST_ASSERT_EQUAL_STRING("m", st.pushed_long);
+    TEST_ASSERT_FALSE_MESSAGE(st.confirmed, "the new push has not been confirmed yet");
+}
+
+/* ====================================================================
+ * Reboot-session-loss fix (bench finding, 2026-09-06, real puck + comms
+ * brain, Meshtastic 2.7.26): AdminModule reboots the comms brain a few
+ * seconds after a set_owner admin write; mc_client.c now treats
+ * FromRadio.rebooted as an immediate session loss and re-handshakes
+ * (see mc_client.h's mc_tick() doc comment) — from the shell's side that
+ * is observed as the SAME on_state sequence any other link drop/reconnect
+ * produces (READY -> HANDSHAKE -> READY), injected here exactly like
+ * S16_AC9's own link tests inject it, with no meshclient/mc_client
+ * involved. `S_name_push_during_reboot_window_polls_only_after_reconnect`
+ * MUST FAIL on the pre-fix code (the retry loop had no link gate at all —
+ * see the PR body for the exact assertion and ctest output before this
+ * fix was reverted back in to confirm it).
+ * ==================================================================== */
+
+/**
+ * "push during a reboot window -> no get_owner_request until CONNECTED,
+ * then confirmation via replay" (task brief). The link drops to
+ * RECONNECTING right after the push's own FIRST get_owner_request has
+ * already gone out (matching the bench transcript: push2's own set_owner
+ * + get_owner_request both left the device before the reboot frame
+ * arrived) — while RECONNECTING, no further attempt may fire no matter
+ * how much time passes (the poll stays armed, not abandoned); once the
+ * link reads CONNECTED again, the self NodeInfo replay that is part of
+ * the SAME want_config dump the reconnect handshake produces is already
+ * a first-class confirmation on its own (shell_ev_node's self-long-name
+ * block), so the poll must not ALSO fire a redundant get_owner_request
+ * once nothing is left to ask for.
+ */
+static void S_name_push_during_reboot_window_polls_only_after_reconnect(void)
+{
+    harness_init(1000u, false);
+    inject_my_info(MY_ID);
+    name_wire_spy_install();
+    H.ev.on_state(H.ev.user, MC_STATE_READY); /* CONNECTED before the push, like real life */
+
+    send_bare(FF_INTENT_SETTINGS_OPEN_NAME_EDIT);
+    name_key(5); /* "j" */
+    send_bare(FF_INTENT_SETTINGS_NAME_COMMIT);
+    TEST_ASSERT_EQUAL_INT(1, NS.owner_req_calls);
+
+    /* The comms brain reboots (AdminModule::saveChanges, a few seconds
+     * after the admin write) — mc_client's own FromRadio.rebooted
+     * handling restarts the handshake, observed here as the shell's
+     * ordinary link-drop sequence. */
+    H.ev.on_state(H.ev.user, MC_STATE_HANDSHAKE);
+    TEST_ASSERT_EQUAL_INT(FF_SHELL_LINK_RECONNECTING, ff_shell_link(&H.shell));
+
+    /* While reconnecting, no matter how long, the poll must not attempt a
+     * single further send — it stays armed instead of wasting retries on
+     * a request guaranteed to fail. */
+    advance(FF_NAME_OWNER_REQ_TIMEOUT_MS * 5u);
+    ff_shell_tick(&H.shell, H.clk.t);
+    TEST_ASSERT_EQUAL_INT_MESSAGE(1, NS.owner_req_calls,
+                                  "no get_owner_request may be attempted while the link is not CONNECTED");
+    TEST_ASSERT_FALSE_MESSAGE(ff_shell_mesh_name_status(&H.shell).confirmed, "sanity: still pending");
+
+    /* The reconnect's want_config dump replays our own NodeInfo with the
+     * new name — arriving, like the real handshake, BEFORE the link
+     * reaches CONNECTED. */
+    inject_self_long_name(MY_ID, "j");
+    H.ev.on_state(H.ev.user, MC_STATE_READY); /* CONNECTED again */
+
+    TEST_ASSERT_TRUE_MESSAGE(ff_shell_mesh_name_status(&H.shell).confirmed,
+                             "the self NodeInfo replay is a first-class confirmation on its own");
+
+    /* Nothing left to ask for — the poll must not fire an extra,
+     * unnecessary get_owner_request now that the link is back up. */
+    advance(FF_NAME_OWNER_REQ_TIMEOUT_MS + 1u);
+    ff_shell_tick(&H.shell, H.clk.t);
+    TEST_ASSERT_EQUAL_INT_MESSAGE(1, NS.owner_req_calls,
+                                  "the replay already confirmed this push — nothing left to poll for");
+}
+
+/**
+ * "two pushes 8 s apart both end confirmed" (task brief), reproducing the
+ * bench transcript's own timing: push 1 confirms normally within a few
+ * seconds; 8 s later, push 2's own admin write triggers ANOTHER reboot
+ * mid-poll (a wearer can retype their name again well within Meshtastic's
+ * post-write reboot window) — push 2 must still end up confirmed, via the
+ * reconnect's self-NodeInfo replay, exactly like the single-push case
+ * above.
+ */
+static void S_name_two_pushes_eight_seconds_apart_both_confirm_across_a_mid_session_reboot(void)
+{
+    harness_init(1000u, false);
+    inject_my_info(MY_ID);
+    name_wire_spy_install();
+    H.ev.on_state(H.ev.user, MC_STATE_READY);
+
+    /* --- push 1: "j" — ack + reply arrive normally, confirms within the
+     * bench's observed ~3s, no reboot involved. --- */
+    send_bare(FF_INTENT_SETTINGS_OPEN_NAME_EDIT);
+    name_key(5);
+    send_bare(FF_INTENT_SETTINGS_NAME_COMMIT);
+    uint32_t const push1_id = NS.out_packet_id + (uint32_t)(NS.calls - 1);
+    advance(3000u);
+    inject_routing_ack(push1_id, true);
+    inject_owner_reply("j", "J");
+    TEST_ASSERT_TRUE_MESSAGE(ff_shell_mesh_name_status(&H.shell).confirmed, "push 1 confirms normally");
+
+    /* --- 8 s later, push 2: "m". Its own set_owner + get_owner_request go
+     * out, then the comms brain reboots mid-poll (the bench's own
+     * transcript: FromRadio.rebooted arrives instead of any ack/reply for
+     * push 2). --- */
+    advance(8000u);
+    send_bare(FF_INTENT_SETTINGS_OPEN_NAME_EDIT);
+    send_bare(FF_INTENT_NAME_T9_BACKSPACE);
+    name_key(6); /* "m" */
+    send_bare(FF_INTENT_SETTINGS_NAME_COMMIT);
+    TEST_ASSERT_EQUAL_INT(2, NS.owner_req_calls);
+    TEST_ASSERT_FALSE(ff_shell_mesh_name_status(&H.shell).confirmed);
+
+    H.ev.on_state(H.ev.user, MC_STATE_HANDSHAKE); /* the reboot's re-handshake begins */
+    advance(FF_NAME_OWNER_REQ_TIMEOUT_MS * 2u);
+    ff_shell_tick(&H.shell, H.clk.t);
+    TEST_ASSERT_EQUAL_INT_MESSAGE(2, NS.owner_req_calls, "no polling while the link is down");
+
+    inject_self_long_name(MY_ID, "m"); /* self NodeInfo replay, part of the new handshake's dump */
+    H.ev.on_state(H.ev.user, MC_STATE_READY); /* CONNECTED again */
+
+    TEST_ASSERT_TRUE_MESSAGE(ff_shell_mesh_name_status(&H.shell).confirmed,
+                             "push 2 also confirms, via the replay, despite the mid-session reboot");
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -8783,6 +9783,43 @@ int main(void)
     RUN_TEST(S27_sound_muted_for_seed_null_shell_is_a_safe_noop);
     RUN_TEST(S27_handshake_burst_fires_no_sound_live_message_after_settle_sounds);
     RUN_TEST(S27_reconnect_handshake_burst_mutes_again);
+
+    RUN_TEST(S_name_open_primes_draft_from_existing_my_name);
+    RUN_TEST(S_name_t9_key_updates_the_projected_draft);
+    RUN_TEST(S_name_t9_mode_toggles_abc_and_123_only);
+    RUN_TEST(S_name_t9_backspace_removes_a_character);
+    RUN_TEST(S_name_t9_key_capped_at_fifteen_characters);
+    RUN_TEST(S_name_back_cancels_without_committing);
+    RUN_TEST(S_name_commit_persists_the_sanitized_name);
+    RUN_TEST(S_name_commit_pushes_the_meshtastic_owner_update);
+    RUN_TEST(S_name_commit_skips_the_push_when_my_node_id_is_unknown);
+    RUN_TEST(S_name_commit_skips_the_push_when_the_sanitized_name_is_empty);
+    RUN_TEST(S_name_commit_drops_disallowed_characters_before_pushing);
+    RUN_TEST(S_name_boot_prefill_from_self_nodeinfo_when_my_name_was_empty);
+    RUN_TEST(S_name_boot_prefill_never_overwrites_an_existing_name);
+    RUN_TEST(S_name_status_reads_pending_when_mesh_name_differs);
+    RUN_TEST(S_name_status_confirms_once_a_matching_self_nodeinfo_arrives);
+    RUN_TEST(S_name_committing_clears_the_from_node_flag);
+
+    RUN_TEST(S_name_commit_sends_get_owner_request_after_a_successful_push);
+    RUN_TEST(S_name_commit_skips_the_owner_request_when_the_push_itself_was_skipped);
+    RUN_TEST(S_name_owner_response_matching_flips_confirmed);
+    RUN_TEST(S_name_second_push_in_the_same_session_also_confirms_via_its_own_reply);
+    RUN_TEST(S_name_owner_response_mismatching_does_not_confirm);
+    RUN_TEST(S_name_owner_reply_stops_further_retries);
+    RUN_TEST(S_name_owner_request_retries_on_timeout_then_stops);
+    RUN_TEST(S_name_owner_request_retry_failures_do_not_burn_the_retry_budget);
+    RUN_TEST(S_name_routing_nak_marks_push_failed);
+    RUN_TEST(S_name_routing_ack_ok_does_not_by_itself_confirm);
+    RUN_TEST(S_name_routing_ack_ignores_an_unrelated_request_id);
+    RUN_TEST(S_name_commit_abandons_a_still_pending_previous_poll);
+    RUN_TEST(S_name_commit_resets_push_tracking_for_a_fresh_push);
+
+    RUN_TEST(S_name_push_during_reboot_window_polls_only_after_reconnect);
+    RUN_TEST(S_name_two_pushes_eight_seconds_apart_both_confirm_across_a_mid_session_reboot);
+    RUN_TEST(S_name_recommitting_the_same_name_does_not_falsely_confirm_from_stale_mesh_state);
+    RUN_TEST(S_name_status_reports_pending_not_mismatch_before_any_reply);
+    RUN_TEST(S_name_recommit_stale_self_nodeinfo_does_not_falsely_confirm_either);
 
     return UNITY_END();
 }

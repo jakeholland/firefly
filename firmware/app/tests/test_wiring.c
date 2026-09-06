@@ -93,6 +93,8 @@ static ff_wiring_sender_t make_mock_sender(mock_sender_state_t *s)
     sender.send_text = mock_send_text;
     sender.send_private = mock_send_private;
     sender.ctx = s;
+    sender.send_admin_set_owner = NULL; /* unused by this file's tests — see ff_wiring_sender_t's own doc comment */
+    sender.send_get_owner_request = NULL; /* confirmation-fix follow-up — also unused by this file's tests */
     return sender;
 }
 

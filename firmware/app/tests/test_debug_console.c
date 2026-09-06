@@ -45,7 +45,42 @@ typedef struct {
     uint32_t last_dest;
     char last_text[256];
     int rc;
+
+    /* NAME in Settings — `name`/`name <text>` mesh-push capture. */
+    int      owner_calls;
+    uint32_t owner_last_dest;
+    char     owner_last_long[64];
+    char     owner_last_short[16];
+    int      owner_rc;
+    uint32_t owner_packet_id; /* confirmation-fix follow-up — handed back on success */
+
+    /* Confirmation-fix follow-up — the get_owner_request follow-up. */
+    int      owner_req_calls;
+    uint32_t owner_req_last_dest;
+    int      owner_req_rc;
 } sender_spy_t;
+
+static int spy_send_admin_set_owner(void *ctx, uint32_t dest, char const *long_name, char const *short_name,
+                                     uint32_t *out_packet_id)
+{
+    sender_spy_t *s = (sender_spy_t *)ctx;
+    s->owner_calls++;
+    s->owner_last_dest = dest;
+    snprintf(s->owner_last_long, sizeof(s->owner_last_long), "%s", (long_name != NULL) ? long_name : "");
+    snprintf(s->owner_last_short, sizeof(s->owner_last_short), "%s", (short_name != NULL) ? short_name : "");
+    if (s->owner_rc == 0 && out_packet_id != NULL) {
+        *out_packet_id = s->owner_packet_id;
+    }
+    return s->owner_rc;
+}
+
+static int spy_send_get_owner_request(void *ctx, uint32_t dest)
+{
+    sender_spy_t *s = (sender_spy_t *)ctx;
+    s->owner_req_calls++;
+    s->owner_req_last_dest = dest;
+    return s->owner_req_rc;
+}
 
 static int spy_send_text(void *ctx, uint32_t dest, char const *utf8)
 {
@@ -107,6 +142,8 @@ static void harness_wire_sender(int rc)
     memset(&sender, 0, sizeof(sender));
     sender.send_text = spy_send_text;
     sender.ctx = &H.sender;
+    sender.send_admin_set_owner = spy_send_admin_set_owner;
+    sender.send_get_owner_request = spy_send_get_owner_request;
     ff_shell_set_sender(&H.shell, sender);
 }
 
@@ -131,6 +168,19 @@ static mc_nodeinfo_t nodeinfo(uint32_t node, char const *short_name, uint32_t la
 static void inject_node(uint32_t node, char const *short_name, uint32_t last_heard)
 {
     mc_nodeinfo_t n = nodeinfo(node, short_name, last_heard);
+    H.ev.on_node(H.ev.user, &n);
+}
+
+/* NAME in Settings — a self NodeInfo carrying a long_name (the mesh's
+ * own reported owner name), the `name` console command's confirmation
+ * source. */
+static void inject_self_long_name(uint32_t node, char const *long_name)
+{
+    mc_nodeinfo_t n;
+    memset(&n, 0, sizeof(n));
+    n.node_num = node;
+    n.has_long_name = true;
+    strncpy(n.long_name, long_name, sizeof(n.long_name) - 1);
     H.ev.on_node(H.ev.user, &n);
 }
 
@@ -646,6 +696,170 @@ static void dbgconsole_cal_clear_drops_a_calibrated_puck_to_identity(void)
     TEST_ASSERT_EQUAL_STRING("dbg: cal already uncalibrated", cap.lines[0]);
 }
 
+/* ------------------------------------------------------------------- */
+/* NAME in Settings                                                     */
+/* ------------------------------------------------------------------- */
+
+static void dbgconsole_name_bare_reports_unset_and_unknown(void)
+{
+    harness_init(1000);
+    capture_t cap;
+    dispatch("name", &cap);
+    TEST_ASSERT_EQUAL_STRING(
+        "dbg: name stored=(unset) mesh=unknown confirmed=0 seq=0 pushed=none ack=none reply=none mismatch=0 link=NONE",
+        cap.lines[0]);
+}
+
+static void dbgconsole_name_set_commits_and_reports_confirmed_false(void)
+{
+    harness_init(1000);
+    harness_wire_sender(0);
+    inject_my_info(MY_ID);
+
+    capture_t cap;
+    dispatch("name Jake", &cap);
+
+    TEST_ASSERT_EQUAL_STRING("Jake", ff_shell_settings(&H.shell)->my_name);
+    TEST_ASSERT_EQUAL_INT(1, H.sender.owner_calls);
+    TEST_ASSERT_EQUAL_UINT32(MY_ID, H.sender.owner_last_dest);
+    TEST_ASSERT_EQUAL_STRING("Jake", H.sender.owner_last_long);
+    TEST_ASSERT_EQUAL_STRING("JAKE", H.sender.owner_last_short);
+    TEST_ASSERT_EQUAL_STRING(
+        "dbg: name stored=Jake mesh=unknown confirmed=0 seq=1 pushed=Jake/JAKE ack=none reply=none mismatch=0 link=NONE",
+        cap.lines[0]);
+}
+
+static void dbgconsole_name_reports_confirmed_once_self_nodeinfo_matches(void)
+{
+    harness_init(1000);
+    harness_wire_sender(0);
+    inject_my_info(MY_ID);
+
+    capture_t cap;
+    dispatch("name Jake", &cap);
+    TEST_ASSERT_TRUE(strstr(cap.lines[0], "confirmed=0") != NULL);
+
+    inject_self_long_name(MY_ID, "Jake"); /* the mesh caught up */
+    dispatch("name", &cap);
+    TEST_ASSERT_EQUAL_STRING(
+        "dbg: name stored=Jake mesh=Jake confirmed=1 seq=1 pushed=Jake/JAKE ack=none reply=none mismatch=0 link=NONE",
+        cap.lines[0]);
+}
+
+/* Confirmation-fix follow-up — the trailing pushed=/ack=/reply= fields
+ * through a full get_owner_response round trip and a routing NAK, both
+ * via the bench console (the coordinator's own bench-test surface). */
+static void dbgconsole_name_reports_reply_once_get_owner_response_arrives(void)
+{
+    harness_init(1000);
+    harness_wire_sender(0);
+    inject_my_info(MY_ID);
+
+    capture_t cap;
+    dispatch("name Jake", &cap);
+    TEST_ASSERT_EQUAL_INT_MESSAGE(1, H.sender.owner_req_calls,
+                                  "a successful push must follow up with its own get_owner_request");
+
+    H.ev.on_owner(H.ev.user, "Jake", "JAKE");
+    dispatch("name", &cap);
+    TEST_ASSERT_EQUAL_STRING(
+        "dbg: name stored=Jake mesh=Jake confirmed=1 seq=1 pushed=Jake/JAKE ack=none reply=Jake/JAKE mismatch=0 link=NONE",
+        cap.lines[0]);
+}
+
+static void dbgconsole_name_reports_nak_as_push_failed_not_pending(void)
+{
+    harness_init(1000);
+    harness_wire_sender(0);
+    H.sender.owner_packet_id = 0x77u;
+    inject_my_info(MY_ID);
+
+    capture_t cap;
+    dispatch("name Jake", &cap);
+
+    H.ev.on_routing_ack(H.ev.user, 0x77u, false);
+    dispatch("name", &cap);
+    TEST_ASSERT_EQUAL_STRING(
+        "dbg: name stored=Jake mesh=unknown confirmed=0 seq=1 pushed=Jake/JAKE ack=nak reply=none mismatch=0 link=NONE",
+        cap.lines[0]);
+}
+
+/* ====================================================================
+ * Confirmation fix round 2 (bench finding, 2026-09-06, AFTER commit
+ * 51e4ae1, real puck + Meshtastic 2.7.26 comms brain): `name Jake H` ->
+ * `pushed=ok reply=none` forever (fixed at the meshclient layer, see
+ * mc_send_get_owner_request's own doc comment), and `name Jake` when the
+ * node's name is ALREADY Jake reported `confirmed=1` INSTANTLY with
+ * `ack=none reply=none` — a false positive from stale equality, fixed
+ * here by the push-generation (`seq=`) gate.
+ * ==================================================================== */
+
+/**
+ * THE false-positive reproduction, at the console layer, matching the
+ * exact bench transcript: push "Jake", let a matching reply confirm it
+ * for real, then re-issue the EXACT SAME `name Jake` command (this
+ * feature's own retry mechanism for a push that may have silently
+ * failed). Before any NEW reply arrives for this second push, the console
+ * must read pending (`confirmed=0`), never re-use the first push's own
+ * confirmation. `seq=` visibly ticks from 1 to 2 across the two pushes.
+ */
+static void dbgconsole_name_recommitting_the_same_name_does_not_falsely_confirm_from_stale_mesh_state(void)
+{
+    harness_init(1000);
+    harness_wire_sender(0);
+    inject_my_info(MY_ID);
+
+    capture_t cap;
+    dispatch("name Jake", &cap);
+    H.ev.on_owner(H.ev.user, "Jake", "JAKE"); /* first push, genuinely confirmed */
+    dispatch("name", &cap);
+    TEST_ASSERT_EQUAL_STRING(
+        "dbg: name stored=Jake mesh=Jake confirmed=1 seq=1 pushed=Jake/JAKE ack=none reply=Jake/JAKE mismatch=0 link=NONE",
+        cap.lines[0]);
+
+    dispatch("name Jake", &cap); /* re-commit the SAME text — a fresh push generation */
+    TEST_ASSERT_EQUAL_STRING_MESSAGE(
+        "dbg: name stored=Jake mesh=Jake confirmed=0 seq=2 pushed=Jake/JAKE ack=none reply=none mismatch=0 link=NONE",
+        cap.lines[0],
+        "stale pre-push equality (mesh=Jake from the FIRST push) must never read as THIS push's confirmation");
+}
+
+/**
+ * A fresh reply for the current push naming a DIFFERENT owner than was
+ * pushed reports `mismatch=1`, never silently folded into either
+ * `confirmed=1` or the plain `ack=nak` failure path (a routing NAK says
+ * nothing about what name the admin module actually ended up with).
+ */
+static void dbgconsole_name_reports_mismatch_when_the_reply_names_someone_else(void)
+{
+    harness_init(1000);
+    harness_wire_sender(0);
+    inject_my_info(MY_ID);
+
+    capture_t cap;
+    dispatch("name Jake", &cap);
+
+    H.ev.on_owner(H.ev.user, "SomeoneElse", "SOME"); /* someone else re-set the owner in between */
+    dispatch("name", &cap);
+    TEST_ASSERT_EQUAL_STRING(
+        "dbg: name stored=Jake mesh=SomeoneElse confirmed=0 seq=1 pushed=Jake/JAKE ack=none reply=SomeoneElse/SOME "
+        "mismatch=1 link=NONE",
+        cap.lines[0]);
+}
+
+static void dbgconsole_name_set_with_no_node_id_still_commits_locally(void)
+{
+    harness_init(1000);
+    harness_wire_sender(0);
+    /* deliberately no inject_my_info */
+
+    capture_t cap;
+    dispatch("name Jake", &cap);
+
+    TEST_ASSERT_EQUAL_STRING("Jake", ff_shell_settings(&H.shell)->my_name);
+    TEST_ASSERT_EQUAL_INT(0, H.sender.owner_calls); /* no self id known -> no push attempted */
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -682,6 +896,15 @@ int main(void)
     RUN_TEST(dbgconsole_cal_finish_with_no_session_reports_not_active);
     RUN_TEST(dbgconsole_cal_cancel_reports_cancelled_then_not_active);
     RUN_TEST(dbgconsole_cal_clear_drops_a_calibrated_puck_to_identity);
+
+    RUN_TEST(dbgconsole_name_bare_reports_unset_and_unknown);
+    RUN_TEST(dbgconsole_name_set_commits_and_reports_confirmed_false);
+    RUN_TEST(dbgconsole_name_reports_confirmed_once_self_nodeinfo_matches);
+    RUN_TEST(dbgconsole_name_reports_reply_once_get_owner_response_arrives);
+    RUN_TEST(dbgconsole_name_reports_nak_as_push_failed_not_pending);
+    RUN_TEST(dbgconsole_name_recommitting_the_same_name_does_not_falsely_confirm_from_stale_mesh_state);
+    RUN_TEST(dbgconsole_name_reports_mismatch_when_the_reply_names_someone_else);
+    RUN_TEST(dbgconsole_name_set_with_no_node_id_still_commits_locally);
 
     return UNITY_END();
 }

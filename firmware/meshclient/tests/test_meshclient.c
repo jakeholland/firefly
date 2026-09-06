@@ -185,6 +185,18 @@ typedef struct {
     uint32_t my_node_id;
 
     struct {
+        char long_name[64];
+        char short_name[16];
+    } owners[4];
+    int owner_count;
+
+    struct {
+        uint32_t request_id;
+        bool ok;
+    } routing_acks[4];
+    int routing_ack_count;
+
+    struct {
         uint32_t from;
         mc_rx_meta_t meta;
         int seq; /* dispatch order, shared with positions/texts below */
@@ -285,6 +297,28 @@ static void cap_on_my_info(void *u, uint32_t my_node_id)
     c->my_node_id = my_node_id;
 }
 
+static void cap_on_owner(void *u, char const *long_name, char const *short_name)
+{
+    events_capture_t *c = (events_capture_t *)u;
+    if (c->owner_count < (int)(sizeof(c->owners) / sizeof(c->owners[0]))) {
+        snprintf(c->owners[c->owner_count].long_name, sizeof(c->owners[0].long_name), "%s",
+                 (long_name != NULL) ? long_name : "");
+        snprintf(c->owners[c->owner_count].short_name, sizeof(c->owners[0].short_name), "%s",
+                 (short_name != NULL) ? short_name : "");
+        c->owner_count++;
+    }
+}
+
+static void cap_on_routing_ack(void *u, uint32_t request_id, bool ok)
+{
+    events_capture_t *c = (events_capture_t *)u;
+    if (c->routing_ack_count < (int)(sizeof(c->routing_acks) / sizeof(c->routing_acks[0]))) {
+        c->routing_acks[c->routing_ack_count].request_id = request_id;
+        c->routing_acks[c->routing_ack_count].ok = ok;
+        c->routing_ack_count++;
+    }
+}
+
 static mc_events_t make_events(events_capture_t *cap)
 {
     mc_events_t ev;
@@ -296,6 +330,8 @@ static mc_events_t make_events(events_capture_t *cap)
     ev.on_private = cap_on_private;
     ev.on_my_info = cap_on_my_info;
     ev.on_rx_meta = cap_on_rx_meta;
+    ev.on_owner = cap_on_owner;
+    ev.on_routing_ack = cap_on_routing_ack;
     ev.user = cap;
     return ev;
 }
@@ -461,6 +497,23 @@ static uint16_t build_config_complete_frame(uint32_t nonce, uint8_t *out, size_t
     meshtastic_FromRadio fr = meshtastic_FromRadio_init_zero;
     fr.which_payload_variant = meshtastic_FromRadio_config_complete_id_tag;
     fr.payload_variant.config_complete_id = nonce;
+
+    uint8_t payload[16];
+    pb_ostream_t os = pb_ostream_from_buffer(payload, sizeof(payload));
+    if (!pb_encode(&os, meshtastic_FromRadio_fields, &fr)) {
+        return 0;
+    }
+    return mc_frame_encode(out, out_cap, payload, (uint16_t)os.bytes_written);
+}
+
+/* NAME-in-Settings reboot-session-loss fix (bench finding, 2026-09-06) —
+ * a `FromRadio.rebooted` frame, Meshtastic's explicit "the radio just
+ * rebooted" tell (mesh.pb.h tag 8). */
+static uint16_t build_rebooted_frame(uint8_t *out, size_t out_cap)
+{
+    meshtastic_FromRadio fr = meshtastic_FromRadio_init_zero;
+    fr.which_payload_variant = meshtastic_FromRadio_rebooted_tag;
+    fr.payload_variant.rebooted = true;
 
     uint8_t payload[16];
     pb_ostream_t os = pb_ostream_from_buffer(payload, sizeof(payload));
@@ -1233,6 +1286,165 @@ static void S03_AC6_transport_error_triggers_reconnect(void)
 
     TEST_ASSERT_EQUAL(MC_STATE_DISCONNECTED, mc_state(&c));
     TEST_ASSERT_TRUE(c.reconnect_pending);
+}
+
+/* -------------------------------------------------------------------- */
+/* debt/S03-reboot-session-loss — NAME-in-Settings bench finding,        */
+/* 2026-09-06, real puck + comms brain, Meshtastic 2.7.26.               */
+/*                                                                       */
+/* Root cause (see mc_client.h's mc_tick() doc comment for the full      */
+/* mechanism): Meshtastic's AdminModule reboots the comms brain a few    */
+/* seconds after a set_owner admin write. The PhoneAPI session on the    */
+/* other side of that reboot is fresh and silently ignores this client's */
+/* packets until a new want_config handshake — but mc_client's OWN 30s   */
+/* no-RX-bytes watchdog never noticed, because other FromRadio traffic   */
+/* (queueStatus) kept arriving right through the reboot. FromRadio.      */
+/* rebooted (tag 8) is the explicit tell fixed here: an immediate        */
+/* session loss, not a silence timeout.                                  */
+/* -------------------------------------------------------------------- */
+
+static void S03_debt_reboot_frame_after_ready_drops_state_and_reissues_want_config(void)
+{
+    mock_io_t io;
+    mock_io_reset(&io);
+    mock_clock_t clk = {.t = 0};
+    ff_clock_t clock = {.now_ms = mock_now, .user = &clk};
+    events_capture_t cap;
+    memset(&cap, 0, sizeof(cap));
+
+    mc_client_t c;
+    mc_init(&c, (mc_transport_t){.write = mock_write, .read = mock_read, .io = &io}, make_events(&cap),
+             &clock);
+    c.state = MC_STATE_READY;
+    c.has_my_node_id = true;
+    c.my_node_id = 0x42u;
+    uint32_t const old_want_config_id = 0xDEADBEEFu;
+    c.want_config_id = old_want_config_id;
+
+    uint8_t frame[32];
+    uint16_t flen = build_rebooted_frame(frame, sizeof(frame));
+    TEST_ASSERT_TRUE(flen > 0);
+    io.rx_data = frame;
+    io.rx_len = flen;
+
+    mc_tick(&c, 5000);
+
+    TEST_ASSERT_EQUAL_MESSAGE(MC_STATE_HANDSHAKE, mc_state(&c),
+                              "a rebooted frame must drop READY straight into a fresh handshake");
+    TEST_ASSERT_EQUAL_INT(1, cap.state_count);
+    TEST_ASSERT_EQUAL(MC_STATE_HANDSHAKE, cap.states[0]);
+    TEST_ASSERT_NOT_EQUAL_MESSAGE(old_want_config_id, c.want_config_id,
+                                  "a fresh handshake must pick a NEW nonce, never reuse the pre-reboot one");
+
+    /* Same device, same session identity — a reboot doesn't change who we are. */
+    TEST_ASSERT_TRUE(c.has_my_node_id);
+    TEST_ASSERT_EQUAL_UINT32(0x42u, c.my_node_id);
+
+    /* Not treated as a transport failure or a backoff reconnect: the wire
+     * is fine, only the session on the other end is gone. */
+    TEST_ASSERT_EQUAL_UINT32(0u, c.stats.reconnects);
+    TEST_ASSERT_FALSE(c.reconnect_pending);
+
+    /* A real want_config frame was actually re-issued onto the wire. */
+    TEST_ASSERT_TRUE(io.tx_len >= 4);
+    TEST_ASSERT_EQUAL_UINT8(0x94, io.tx_buf[0]);
+    TEST_ASSERT_EQUAL_UINT8(0xC3, io.tx_buf[1]);
+    uint16_t plen = (uint16_t)((io.tx_buf[2] << 8) | io.tx_buf[3]);
+    meshtastic_ToRadio tr = meshtastic_ToRadio_init_zero;
+    pb_istream_t is = pb_istream_from_buffer(io.tx_buf + 4, plen);
+    TEST_ASSERT_TRUE(pb_decode(&is, meshtastic_ToRadio_fields, &tr));
+    TEST_ASSERT_EQUAL(meshtastic_ToRadio_want_config_id_tag, tr.which_payload_variant);
+    TEST_ASSERT_EQUAL_UINT32(c.want_config_id, tr.payload_variant.want_config_id);
+}
+
+/* "Frames before the new config_complete are ignored/handled per the
+ * handshake rules": a config_complete naming the STALE, pre-reboot nonce
+ * must not complete the NEW handshake — same rule
+ * S03_AC2_handshake_wrong_nonce_stays_in_handshake already pins for an
+ * ordinary connect, now proven across a reboot's nonce rotation too. */
+static void S03_debt_reboot_stale_config_complete_is_ignored_per_handshake_rules(void)
+{
+    mock_io_t io;
+    mock_io_reset(&io);
+    mock_clock_t clk = {.t = 0};
+    ff_clock_t clock = {.now_ms = mock_now, .user = &clk};
+    events_capture_t cap;
+    memset(&cap, 0, sizeof(cap));
+
+    mc_client_t c;
+    mc_init(&c, (mc_transport_t){.write = mock_write, .read = mock_read, .io = &io}, make_events(&cap),
+             &clock);
+    c.state = MC_STATE_READY;
+    uint32_t const old_want_config_id = 0xABCDu;
+    c.want_config_id = old_want_config_id;
+
+    uint8_t frame1[32];
+    uint16_t f1_len = build_rebooted_frame(frame1, sizeof(frame1));
+    TEST_ASSERT_TRUE(f1_len > 0);
+
+    uint8_t frame2[32];
+    /* The PRE-reboot nonce — stale by the time this (synthetic) frame
+     * arrives, since the reboot handling above already picked a fresh one. */
+    uint16_t f2_len = build_config_complete_frame(old_want_config_id, frame2, sizeof(frame2));
+    TEST_ASSERT_TRUE(f2_len > 0);
+
+    uint8_t combined[64];
+    TEST_ASSERT_TRUE((size_t)f1_len + f2_len <= sizeof(combined));
+    memcpy(combined, frame1, f1_len);
+    memcpy(combined + f1_len, frame2, f2_len);
+    io.rx_data = combined;
+    io.rx_len = (size_t)f1_len + f2_len;
+
+    mc_tick(&c, 100);
+
+    TEST_ASSERT_EQUAL_MESSAGE(MC_STATE_HANDSHAKE, mc_state(&c),
+                              "a config_complete naming the PRE-reboot nonce must not complete the NEW handshake");
+    TEST_ASSERT_NOT_EQUAL(old_want_config_id, c.want_config_id);
+    mc_stats_t const stats = mc_get_stats(&c);
+    TEST_ASSERT_GREATER_OR_EQUAL_UINT32(1, stats.decode_skipped);
+}
+
+/* The full round trip: rebooted -> fresh handshake -> the NEW
+ * config_complete (matching the nonce the reboot handling just picked)
+ * reaches READY again, exactly like an ordinary cold connect. */
+static void S03_debt_reboot_then_matching_config_complete_reaches_ready_again(void)
+{
+    mock_io_t io;
+    mock_io_reset(&io);
+    mock_clock_t clk = {.t = 0};
+    ff_clock_t clock = {.now_ms = mock_now, .user = &clk};
+    events_capture_t cap;
+    memset(&cap, 0, sizeof(cap));
+
+    mc_client_t c;
+    mc_init(&c, (mc_transport_t){.write = mock_write, .read = mock_read, .io = &io}, make_events(&cap),
+             &clock);
+    c.state = MC_STATE_READY;
+    c.want_config_id = 0x1111u;
+
+    uint8_t reboot_frame[32];
+    uint16_t rf_len = build_rebooted_frame(reboot_frame, sizeof(reboot_frame));
+    TEST_ASSERT_TRUE(rf_len > 0);
+    io.rx_data = reboot_frame;
+    io.rx_len = rf_len;
+
+    mc_tick(&c, 100); /* READY -> HANDSHAKE, fresh want_config_id */
+    TEST_ASSERT_EQUAL(MC_STATE_HANDSHAKE, mc_state(&c));
+    uint32_t const new_want_config_id = c.want_config_id;
+
+    uint8_t cc_frame[32];
+    uint16_t cc_len = build_config_complete_frame(new_want_config_id, cc_frame, sizeof(cc_frame));
+    TEST_ASSERT_TRUE(cc_len > 0);
+    io.rx_data = cc_frame;
+    io.rx_len = cc_len;
+    io.rx_pos = 0;
+
+    mc_tick(&c, 200); /* HANDSHAKE -> READY */
+
+    TEST_ASSERT_EQUAL(MC_STATE_READY, mc_state(&c));
+    TEST_ASSERT_EQUAL_INT(2, cap.state_count);
+    TEST_ASSERT_EQUAL(MC_STATE_HANDSHAKE, cap.states[0]);
+    TEST_ASSERT_EQUAL(MC_STATE_READY, cap.states[1]);
 }
 
 /* -------------------------------------------------------------------- */
@@ -2641,6 +2853,546 @@ static void S03_AC11_precision_overflow_varint_yields_no_position(void)
 }
 
 /* -------------------------------------------------------------------- */
+/* NAME in Settings — mc_send_set_owner (AdminMessage.set_owner)        */
+/* -------------------------------------------------------------------- */
+
+#include "meshtastic/admin.pb.h"
+
+/* Decode one outbound ToRadio frame out of `io->tx_buf`, assert it carries
+ * a MeshPacket on ADMIN_APP addressed to `expect_dest` with `want_ack`
+ * true, decode ITS payload as an AdminMessage, and hand back the
+ * set_owner User it carries — the same "decode the actual wire bytes a
+ * real radio would receive", not just "the call returned 0", discipline
+ * `decode_tx_want_ack` above already established for mc_send_private. */
+static meshtastic_User decode_tx_set_owner(mock_io_t const *io, uint32_t expect_dest)
+{
+    TEST_ASSERT_GREATER_OR_EQUAL_size_t(5u, io->tx_len);
+    TEST_ASSERT_EQUAL_HEX8(MC_FRAME_MAGIC1, io->tx_buf[0]);
+    TEST_ASSERT_EQUAL_HEX8(MC_FRAME_MAGIC2, io->tx_buf[1]);
+    uint16_t flen = (uint16_t)((io->tx_buf[2] << 8) | io->tx_buf[3]);
+    TEST_ASSERT_LESS_OR_EQUAL_size_t(io->tx_len - 4u, flen);
+
+    meshtastic_ToRadio tr = meshtastic_ToRadio_init_zero;
+    pb_istream_t is = pb_istream_from_buffer(io->tx_buf + 4, flen);
+    TEST_ASSERT_TRUE(pb_decode(&is, meshtastic_ToRadio_fields, &tr));
+    TEST_ASSERT_EQUAL_INT(meshtastic_ToRadio_packet_tag, tr.which_payload_variant);
+
+    meshtastic_MeshPacket const *pkt = &tr.payload_variant.packet;
+    TEST_ASSERT_EQUAL_UINT32(expect_dest, pkt->to);
+    TEST_ASSERT_TRUE(pkt->want_ack);
+    TEST_ASSERT_EQUAL_INT(meshtastic_MeshPacket_decoded_tag, pkt->which_payload_variant);
+    TEST_ASSERT_EQUAL_INT((int)meshtastic_PortNum_ADMIN_APP, (int)pkt->payload_variant.decoded.portnum);
+    /* Confirmation-fix round 2: want_response is a get_owner_request-only
+     * concern (AdminModule::handleGetOwner gates ITS reply on it) — a
+     * set_owner WRITE getting it set too would be harmless on a real
+     * AdminModule (handleSetOwner never checks it) but is not something
+     * this library does, so pin it false here rather than leave it
+     * unasserted. */
+    TEST_ASSERT_FALSE_MESSAGE(pkt->payload_variant.decoded.want_response,
+                              "set_owner is a write, not a get_*_request — want_response is not this call's concern");
+
+    meshtastic_AdminMessage admin = meshtastic_AdminMessage_init_zero;
+    pb_istream_t admin_is =
+        pb_istream_from_buffer(pkt->payload_variant.decoded.payload.bytes, pkt->payload_variant.decoded.payload.size);
+    TEST_ASSERT_TRUE(pb_decode(&admin_is, meshtastic_AdminMessage_fields, &admin));
+    TEST_ASSERT_EQUAL_INT(meshtastic_AdminMessage_set_owner_tag, admin.which_payload_variant);
+    return admin.payload_variant.set_owner;
+}
+
+static void feat_set_owner_encodes_long_and_short_name(void)
+{
+    mock_io_t io;
+    mock_io_reset(&io);
+    mock_clock_t clk = {.t = 0};
+    ff_clock_t clock = {.now_ms = mock_now, .user = &clk};
+    events_capture_t cap;
+    memset(&cap, 0, sizeof(cap));
+
+    mc_client_t c;
+    mc_init(&c, (mc_transport_t){.write = mock_write, .read = mock_read, .io = &io}, make_events(&cap), &clock);
+    c.state = MC_STATE_READY;
+
+    uint32_t packet_id = 0xDEADBEEFu; /* poisoned — must be overwritten on success */
+    int rc = mc_send_set_owner(&c, 0x0A0A0A0Au, "Jake", "JAKE", &packet_id);
+
+    TEST_ASSERT_EQUAL_INT(0, rc);
+    meshtastic_User const owner = decode_tx_set_owner(&io, 0x0A0A0A0Au);
+    TEST_ASSERT_EQUAL_STRING("Jake", owner.long_name);
+    TEST_ASSERT_EQUAL_STRING("JAKE", owner.short_name);
+    /* Confirmation-fix follow-up: out_packet_id receives the SAME id the
+     * outgoing MeshPacket actually carried (mc_init's default seed is 1
+     * and nothing else has sent yet), not left at its poisoned value. */
+    TEST_ASSERT_EQUAL_UINT32(1u, packet_id);
+}
+
+static void feat_set_owner_out_packet_id_is_optional(void)
+{
+    /* NULL out_packet_id must not crash — every pre-existing caller in
+     * the tree before this follow-up passed none. */
+    mock_io_t io;
+    mock_io_reset(&io);
+    mock_clock_t clk = {.t = 0};
+    ff_clock_t clock = {.now_ms = mock_now, .user = &clk};
+    events_capture_t cap;
+    memset(&cap, 0, sizeof(cap));
+
+    mc_client_t c;
+    mc_init(&c, (mc_transport_t){.write = mock_write, .read = mock_read, .io = &io}, make_events(&cap), &clock);
+    c.state = MC_STATE_READY;
+
+    TEST_ASSERT_EQUAL_INT(0, mc_send_set_owner(&c, 1u, "Jake", "JAKE", NULL));
+}
+
+static void feat_set_owner_dest_is_whatever_the_caller_passes(void)
+{
+    /* mc_send_set_owner does not itself assert dest == self — that
+     * policy (the "local admin, no key" path only works for a message
+     * addressed to this node's OWN id) is documented as the CALLER's
+     * job (mc_client.h's own doc comment); this test pins that this
+     * library forwards `dest` verbatim rather than silently rewriting
+     * it, using an arbitrary node id `has_my_node_id` was never set to. */
+    mock_io_t io;
+    mock_io_reset(&io);
+    mock_clock_t clk = {.t = 0};
+    ff_clock_t clock = {.now_ms = mock_now, .user = &clk};
+    events_capture_t cap;
+    memset(&cap, 0, sizeof(cap));
+
+    mc_client_t c;
+    mc_init(&c, (mc_transport_t){.write = mock_write, .read = mock_read, .io = &io}, make_events(&cap), &clock);
+    c.state = MC_STATE_READY;
+
+    TEST_ASSERT_EQUAL_INT(0, mc_send_set_owner(&c, 0x12345678u, "Taylor", "TAYL", NULL));
+    (void)decode_tx_set_owner(&io, 0x12345678u); /* asserts dest == 0x12345678 internally */
+}
+
+static void feat_set_owner_null_short_name_leaves_it_unset(void)
+{
+    mock_io_t io;
+    mock_io_reset(&io);
+    mock_clock_t clk = {.t = 0};
+    ff_clock_t clock = {.now_ms = mock_now, .user = &clk};
+    events_capture_t cap;
+    memset(&cap, 0, sizeof(cap));
+
+    mc_client_t c;
+    mc_init(&c, (mc_transport_t){.write = mock_write, .read = mock_read, .io = &io}, make_events(&cap), &clock);
+    c.state = MC_STATE_READY;
+
+    TEST_ASSERT_EQUAL_INT(0, mc_send_set_owner(&c, 1u, "Jo", NULL, NULL));
+    meshtastic_User const owner = decode_tx_set_owner(&io, 1u);
+    TEST_ASSERT_EQUAL_STRING("Jo", owner.long_name);
+    TEST_ASSERT_EQUAL_STRING("", owner.short_name);
+}
+
+static void feat_set_owner_uses_the_seeded_packet_id_counter(void)
+{
+    mock_io_t io;
+    mock_io_reset(&io);
+    mock_clock_t clk = {.t = 0};
+    ff_clock_t clock = {.now_ms = mock_now, .user = &clk};
+    events_capture_t cap;
+    memset(&cap, 0, sizeof(cap));
+
+    mc_client_t c;
+    mc_init(&c, (mc_transport_t){.write = mock_write, .read = mock_read, .io = &io}, make_events(&cap), &clock);
+    mc_seed_packet_ids(&c, 777u);
+    c.state = MC_STATE_READY;
+
+    TEST_ASSERT_EQUAL_INT(0, mc_send_set_owner(&c, 1u, "Jake", "JAKE", NULL));
+
+    meshtastic_ToRadio tr = meshtastic_ToRadio_init_zero;
+    uint16_t flen = (uint16_t)((io.tx_buf[2] << 8) | io.tx_buf[3]);
+    pb_istream_t is = pb_istream_from_buffer(io.tx_buf + 4, flen);
+    TEST_ASSERT_TRUE(pb_decode(&is, meshtastic_ToRadio_fields, &tr));
+    TEST_ASSERT_EQUAL_UINT32(777u, tr.payload_variant.packet.id);
+}
+
+static void feat_set_owner_fails_when_not_ready(void)
+{
+    mock_io_t io;
+    mock_io_reset(&io);
+    mock_clock_t clk = {.t = 0};
+    ff_clock_t clock = {.now_ms = mock_now, .user = &clk};
+    events_capture_t cap;
+    memset(&cap, 0, sizeof(cap));
+
+    mc_client_t c;
+    mc_init(&c, (mc_transport_t){.write = mock_write, .read = mock_read, .io = &io}, make_events(&cap), &clock);
+    /* c.state left at mc_init's default (MC_STATE_DISCONNECTED). */
+
+    uint32_t packet_id = 0xDEADBEEFu;
+    TEST_ASSERT_EQUAL_INT(-1, mc_send_set_owner(&c, 1u, "Jake", "JAKE", &packet_id));
+    TEST_ASSERT_EQUAL_UINT32(0u, io.tx_len); /* nothing written to the wire */
+    TEST_ASSERT_EQUAL_UINT32(0xDEADBEEFu, packet_id); /* untouched on failure */
+}
+
+/* -------------------------------------------------------------------- */
+/* Confirmation-fix follow-up (bench finding, 2026-09-06):              */
+/* mc_send_get_owner_request, get_owner_response -> on_owner, and       */
+/* ROUTING_APP replies -> on_routing_ack.                                */
+/* -------------------------------------------------------------------- */
+
+static void feat_get_owner_request_encodes_the_request(void)
+{
+    mock_io_t io;
+    mock_io_reset(&io);
+    mock_clock_t clk = {.t = 0};
+    ff_clock_t clock = {.now_ms = mock_now, .user = &clk};
+    events_capture_t cap;
+    memset(&cap, 0, sizeof(cap));
+
+    mc_client_t c;
+    mc_init(&c, (mc_transport_t){.write = mock_write, .read = mock_read, .io = &io}, make_events(&cap), &clock);
+    c.state = MC_STATE_READY;
+
+    TEST_ASSERT_EQUAL_INT(0, mc_send_get_owner_request(&c, 0x0A0A0A0Au));
+
+    meshtastic_ToRadio tr = meshtastic_ToRadio_init_zero;
+    uint16_t flen = (uint16_t)((io.tx_buf[2] << 8) | io.tx_buf[3]);
+    pb_istream_t is = pb_istream_from_buffer(io.tx_buf + 4, flen);
+    TEST_ASSERT_TRUE(pb_decode(&is, meshtastic_ToRadio_fields, &tr));
+    TEST_ASSERT_EQUAL_INT(meshtastic_ToRadio_packet_tag, tr.which_payload_variant);
+
+    meshtastic_MeshPacket const *pkt = &tr.payload_variant.packet;
+    TEST_ASSERT_EQUAL_UINT32(0x0A0A0A0Au, pkt->to);
+    TEST_ASSERT_FALSE_MESSAGE(pkt->want_ack, "a read request is best-effort — the response IS the confirmation");
+    /* Confirmation-fix round 2 (bench finding, 2026-09-06): a real
+     * AdminModule (meshtastic/firmware v2.7.26.54e0d8d0,
+     * AdminModule::handleGetOwner) only builds a get_owner_response
+     * `if (req.decoded.want_response)` — this bit was never set before
+     * this fix, so a real node never replied at all. Decoded straight
+     * back off the wire here, not asserted against a mocked struct. */
+    TEST_ASSERT_TRUE_MESSAGE(pkt->payload_variant.decoded.want_response,
+                             "a real AdminModule only answers get_owner_request when want_response is set "
+                             "(AdminModule::handleGetOwner, meshtastic/firmware v2.7.26.54e0d8d0)");
+    TEST_ASSERT_EQUAL_INT((int)meshtastic_PortNum_ADMIN_APP, (int)pkt->payload_variant.decoded.portnum);
+
+    meshtastic_AdminMessage admin = meshtastic_AdminMessage_init_zero;
+    pb_istream_t admin_is =
+        pb_istream_from_buffer(pkt->payload_variant.decoded.payload.bytes, pkt->payload_variant.decoded.payload.size);
+    TEST_ASSERT_TRUE(pb_decode(&admin_is, meshtastic_AdminMessage_fields, &admin));
+    TEST_ASSERT_EQUAL_INT(meshtastic_AdminMessage_get_owner_request_tag, admin.which_payload_variant);
+    TEST_ASSERT_TRUE(admin.payload_variant.get_owner_request);
+}
+
+static void feat_get_owner_request_fails_when_not_ready(void)
+{
+    mock_io_t io;
+    mock_io_reset(&io);
+    mock_clock_t clk = {.t = 0};
+    ff_clock_t clock = {.now_ms = mock_now, .user = &clk};
+    events_capture_t cap;
+    memset(&cap, 0, sizeof(cap));
+
+    mc_client_t c;
+    mc_init(&c, (mc_transport_t){.write = mock_write, .read = mock_read, .io = &io}, make_events(&cap), &clock);
+
+    TEST_ASSERT_EQUAL_INT(-1, mc_send_get_owner_request(&c, 1u));
+    TEST_ASSERT_EQUAL_UINT32(0u, io.tx_len);
+}
+
+/* Builds an inbound FromRadio.packet frame on `portnum` carrying `request_id`
+ * plus arbitrary payload bytes — the same shape build_data_packet_frame
+ * (above) already establishes, extended with request_id since neither
+ * ADMIN_APP's get_owner_response nor ROUTING_APP's ack needs `from`/`to`
+ * populated for this library to dispatch them. */
+static uint16_t build_admin_or_routing_frame(uint32_t portnum, uint32_t request_id, uint8_t const *payload,
+                                              size_t len, uint8_t *out, size_t out_cap)
+{
+    meshtastic_FromRadio fr = meshtastic_FromRadio_init_zero;
+    fr.which_payload_variant = meshtastic_FromRadio_packet_tag;
+    fr.payload_variant.packet.which_payload_variant = meshtastic_MeshPacket_decoded_tag;
+    fr.payload_variant.packet.payload_variant.decoded.portnum = (meshtastic_PortNum)portnum;
+    fr.payload_variant.packet.payload_variant.decoded.request_id = request_id;
+    fr.payload_variant.packet.payload_variant.decoded.payload.size = (pb_size_t)len;
+    if (len > 0) {
+        memcpy(fr.payload_variant.packet.payload_variant.decoded.payload.bytes, payload, len);
+    }
+
+    uint8_t buf[300];
+    pb_ostream_t os = pb_ostream_from_buffer(buf, sizeof(buf));
+    if (!pb_encode(&os, meshtastic_FromRadio_fields, &fr)) {
+        return 0;
+    }
+    return mc_frame_encode(out, out_cap, buf, (uint16_t)os.bytes_written);
+}
+
+static uint16_t build_owner_response_frame(char const *long_name, char const *short_name, uint8_t *out,
+                                            size_t out_cap)
+{
+    meshtastic_AdminMessage admin = meshtastic_AdminMessage_init_zero;
+    admin.which_payload_variant = meshtastic_AdminMessage_get_owner_response_tag;
+    meshtastic_User *owner = &admin.payload_variant.get_owner_response;
+    if (long_name != NULL) {
+        snprintf(owner->long_name, sizeof(owner->long_name), "%s", long_name);
+    }
+    if (short_name != NULL) {
+        snprintf(owner->short_name, sizeof(owner->short_name), "%s", short_name);
+    }
+
+    uint8_t admin_buf[128];
+    pb_ostream_t os = pb_ostream_from_buffer(admin_buf, sizeof(admin_buf));
+    TEST_ASSERT_TRUE(pb_encode(&os, meshtastic_AdminMessage_fields, &admin));
+
+    return build_admin_or_routing_frame((uint32_t)meshtastic_PortNum_ADMIN_APP, 0u, admin_buf, os.bytes_written,
+                                         out, out_cap);
+}
+
+static void feat_get_owner_response_fires_on_owner(void)
+{
+    uint8_t frame[400];
+    uint16_t flen = build_owner_response_frame("Jake", "JAKE", frame, sizeof(frame));
+    TEST_ASSERT_TRUE(flen > 0);
+
+    mock_io_t io;
+    mock_io_reset(&io);
+    io.rx_data = frame;
+    io.rx_len = flen;
+
+    mock_clock_t clk = {.t = 0};
+    ff_clock_t clock = {.now_ms = mock_now, .user = &clk};
+    events_capture_t cap;
+    memset(&cap, 0, sizeof(cap));
+
+    mc_client_t c;
+    mc_init(&c, (mc_transport_t){.write = mock_write, .read = mock_read, .io = &io}, make_events(&cap), &clock);
+    c.state = MC_STATE_READY;
+    mc_tick(&c, 5);
+
+    TEST_ASSERT_EQUAL_INT(1, cap.owner_count);
+    TEST_ASSERT_EQUAL_STRING("Jake", cap.owners[0].long_name);
+    TEST_ASSERT_EQUAL_STRING("JAKE", cap.owners[0].short_name);
+    /* Not counted anywhere — a recognized, well-formed AdminMessage. */
+    TEST_ASSERT_EQUAL_UINT32(0u, c.stats.decode_errors);
+    TEST_ASSERT_EQUAL_UINT32(0u, c.stats.decode_skipped);
+}
+
+/* A get_owner_response with an unset short_name (proto3 implicit
+ * presence) must still fire on_owner, with short_name reported as "" —
+ * never NULL, never fabricated from the long name. */
+static void feat_get_owner_response_unset_short_name_reports_empty(void)
+{
+    uint8_t frame[400];
+    uint16_t flen = build_owner_response_frame("Jo", NULL, frame, sizeof(frame));
+    TEST_ASSERT_TRUE(flen > 0);
+
+    mock_io_t io;
+    mock_io_reset(&io);
+    io.rx_data = frame;
+    io.rx_len = flen;
+
+    mock_clock_t clk = {.t = 0};
+    ff_clock_t clock = {.now_ms = mock_now, .user = &clk};
+    events_capture_t cap;
+    memset(&cap, 0, sizeof(cap));
+
+    mc_client_t c;
+    mc_init(&c, (mc_transport_t){.write = mock_write, .read = mock_read, .io = &io}, make_events(&cap), &clock);
+    c.state = MC_STATE_READY;
+    mc_tick(&c, 5);
+
+    TEST_ASSERT_EQUAL_INT(1, cap.owner_count);
+    TEST_ASSERT_EQUAL_STRING("Jo", cap.owners[0].long_name);
+    TEST_ASSERT_EQUAL_STRING("", cap.owners[0].short_name);
+}
+
+/* Every OTHER AdminMessage variant (this device asks for nothing else
+ * yet) decodes cleanly and fires nothing — not a decode error, mirroring
+ * the Position "well-formed, nothing to report" precedent. */
+static void feat_admin_other_variant_is_silently_ignored(void)
+{
+    meshtastic_AdminMessage admin = meshtastic_AdminMessage_init_zero;
+    admin.which_payload_variant = meshtastic_AdminMessage_get_config_request_tag;
+    admin.payload_variant.get_config_request = meshtastic_AdminMessage_ConfigType_DEVICE_CONFIG;
+
+    uint8_t admin_buf[128];
+    pb_ostream_t os = pb_ostream_from_buffer(admin_buf, sizeof(admin_buf));
+    TEST_ASSERT_TRUE(pb_encode(&os, meshtastic_AdminMessage_fields, &admin));
+
+    uint8_t frame[400];
+    uint16_t flen = build_admin_or_routing_frame((uint32_t)meshtastic_PortNum_ADMIN_APP, 0u, admin_buf,
+                                                  os.bytes_written, frame, sizeof(frame));
+    TEST_ASSERT_TRUE(flen > 0);
+
+    mock_io_t io;
+    mock_io_reset(&io);
+    io.rx_data = frame;
+    io.rx_len = flen;
+
+    mock_clock_t clk = {.t = 0};
+    ff_clock_t clock = {.now_ms = mock_now, .user = &clk};
+    events_capture_t cap;
+    memset(&cap, 0, sizeof(cap));
+
+    mc_client_t c;
+    mc_init(&c, (mc_transport_t){.write = mock_write, .read = mock_read, .io = &io}, make_events(&cap), &clock);
+    c.state = MC_STATE_READY;
+    mc_tick(&c, 5);
+
+    TEST_ASSERT_EQUAL_INT(0, cap.owner_count);
+    TEST_ASSERT_EQUAL_UINT32(0u, c.stats.decode_errors);
+    TEST_ASSERT_EQUAL_UINT32(0u, c.stats.decode_skipped);
+}
+
+static uint16_t build_routing_ack_frame(uint32_t request_id, bool nak, uint8_t *out, size_t out_cap)
+{
+    meshtastic_Routing routing = meshtastic_Routing_init_zero;
+    if (nak) {
+        routing.which_variant = meshtastic_Routing_error_reason_tag;
+        routing.variant.error_reason = meshtastic_Routing_Error_NO_RESPONSE;
+    }
+    /* else: which_variant left at its zero-init default — no error_reason
+     * present at all, matching real Meshtastic's plain-ACK wire shape
+     * (see mc_client.c's mc_process_mesh_packet ROUTING_APP comment). */
+
+    uint8_t routing_buf[64];
+    pb_ostream_t os = pb_ostream_from_buffer(routing_buf, sizeof(routing_buf));
+    TEST_ASSERT_TRUE(pb_encode(&os, meshtastic_Routing_fields, &routing));
+
+    return build_admin_or_routing_frame((uint32_t)meshtastic_PortNum_ROUTING_APP, request_id, routing_buf,
+                                         os.bytes_written, out, out_cap);
+}
+
+static void feat_routing_ack_none_reports_ok(void)
+{
+    uint8_t frame[400];
+    uint16_t flen = build_routing_ack_frame(42u, /*nak=*/false, frame, sizeof(frame));
+    TEST_ASSERT_TRUE(flen > 0);
+
+    mock_io_t io;
+    mock_io_reset(&io);
+    io.rx_data = frame;
+    io.rx_len = flen;
+
+    mock_clock_t clk = {.t = 0};
+    ff_clock_t clock = {.now_ms = mock_now, .user = &clk};
+    events_capture_t cap;
+    memset(&cap, 0, sizeof(cap));
+
+    mc_client_t c;
+    mc_init(&c, (mc_transport_t){.write = mock_write, .read = mock_read, .io = &io}, make_events(&cap), &clock);
+    c.state = MC_STATE_READY;
+    mc_tick(&c, 5);
+
+    TEST_ASSERT_EQUAL_INT(1, cap.routing_ack_count);
+    TEST_ASSERT_EQUAL_UINT32(42u, cap.routing_acks[0].request_id);
+    TEST_ASSERT_TRUE(cap.routing_acks[0].ok);
+}
+
+static void feat_routing_nak_reports_not_ok(void)
+{
+    uint8_t frame[400];
+    uint16_t flen = build_routing_ack_frame(42u, /*nak=*/true, frame, sizeof(frame));
+    TEST_ASSERT_TRUE(flen > 0);
+
+    mock_io_t io;
+    mock_io_reset(&io);
+    io.rx_data = frame;
+    io.rx_len = flen;
+
+    mock_clock_t clk = {.t = 0};
+    ff_clock_t clock = {.now_ms = mock_now, .user = &clk};
+    events_capture_t cap;
+    memset(&cap, 0, sizeof(cap));
+
+    mc_client_t c;
+    mc_init(&c, (mc_transport_t){.write = mock_write, .read = mock_read, .io = &io}, make_events(&cap), &clock);
+    c.state = MC_STATE_READY;
+    mc_tick(&c, 5);
+
+    TEST_ASSERT_EQUAL_INT(1, cap.routing_ack_count);
+    TEST_ASSERT_EQUAL_UINT32(42u, cap.routing_acks[0].request_id);
+    TEST_ASSERT_FALSE(cap.routing_acks[0].ok);
+}
+
+/**
+ * Bench finding (2026-09-06, real puck + Meshtastic 2.7.26 comms brain,
+ * AFTER commit eb1cb06): the FIRST NAME push after boot confirmed
+ * perfectly (ack=ok, reply within 3s); every push after that, in the SAME
+ * boot session, got ack=none reply=none forever, even after the app's
+ * retry budget was exhausted, despite the comms brain's owner really
+ * changing each time. Reproduced here at the mc_client wire level — two
+ * full set_owner + get_owner_request round trips through REAL encode and
+ * REAL decode (not the app-layer spy), each with its own routing ack and
+ * get_owner_response fed back in as raw FromRadio bytes — to check
+ * whether this library itself, not just the app's own bookkeeping,
+ * correlates a SECOND round trip's reply/ack correctly in the same
+ * mc_client_t session.
+ */
+static void feat_two_consecutive_set_owner_round_trips_in_one_session_both_confirm(void)
+{
+    mock_io_t io;
+    mock_io_reset(&io);
+    mock_clock_t clk = {.t = 0};
+    ff_clock_t clock = {.now_ms = mock_now, .user = &clk};
+    events_capture_t cap;
+    memset(&cap, 0, sizeof(cap));
+
+    mc_client_t c;
+    mc_init(&c, (mc_transport_t){.write = mock_write, .read = mock_read, .io = &io}, make_events(&cap), &clock);
+    c.state = MC_STATE_READY;
+
+    /* --- Round 1: "Jake H" --- */
+    uint32_t packet_id_1 = 0;
+    TEST_ASSERT_EQUAL_INT(0, mc_send_set_owner(&c, 0x0A0A0A0Au, "Jake H", "JAKE", &packet_id_1));
+    TEST_ASSERT_EQUAL_INT(0, mc_send_get_owner_request(&c, 0x0A0A0A0Au));
+
+    uint8_t frame1a[400];
+    uint16_t f1a_len = build_routing_ack_frame(packet_id_1, /*nak=*/false, frame1a, sizeof(frame1a));
+    TEST_ASSERT_TRUE(f1a_len > 0);
+    io.rx_data = frame1a;
+    io.rx_len = f1a_len;
+    io.rx_pos = 0;
+    mc_tick(&c, 100);
+
+    uint8_t frame1b[400];
+    uint16_t f1b_len = build_owner_response_frame("Jake H", "JAKE", frame1b, sizeof(frame1b));
+    TEST_ASSERT_TRUE(f1b_len > 0);
+    io.rx_data = frame1b;
+    io.rx_len = f1b_len;
+    io.rx_pos = 0;
+    mc_tick(&c, 200);
+
+    TEST_ASSERT_EQUAL_INT_MESSAGE(1, cap.routing_ack_count, "round 1's own routing ack must be delivered");
+    TEST_ASSERT_EQUAL_UINT32(packet_id_1, cap.routing_acks[0].request_id);
+    TEST_ASSERT_TRUE(cap.routing_acks[0].ok);
+    TEST_ASSERT_EQUAL_INT_MESSAGE(1, cap.owner_count, "round 1's own get_owner_response must be delivered");
+    TEST_ASSERT_EQUAL_STRING("Jake H", cap.owners[0].long_name);
+
+    /* --- Round 2: "Jake", SAME mc_client_t, SAME session, no reboot --- */
+    uint32_t packet_id_2 = 0;
+    TEST_ASSERT_EQUAL_INT(0, mc_send_set_owner(&c, 0x0A0A0A0Au, "Jake", "JAKE", &packet_id_2));
+    TEST_ASSERT_EQUAL_INT(0, mc_send_get_owner_request(&c, 0x0A0A0A0Au));
+    TEST_ASSERT_NOT_EQUAL_MESSAGE(packet_id_1, packet_id_2,
+                                  "each push must get its own fresh outgoing packet id");
+
+    uint8_t frame2a[400];
+    uint16_t f2a_len = build_routing_ack_frame(packet_id_2, /*nak=*/false, frame2a, sizeof(frame2a));
+    TEST_ASSERT_TRUE(f2a_len > 0);
+    io.rx_data = frame2a;
+    io.rx_len = f2a_len;
+    io.rx_pos = 0;
+    mc_tick(&c, 300);
+
+    uint8_t frame2b[400];
+    uint16_t f2b_len = build_owner_response_frame("Jake", "JAKE", frame2b, sizeof(frame2b));
+    TEST_ASSERT_TRUE(f2b_len > 0);
+    io.rx_data = frame2b;
+    io.rx_len = f2b_len;
+    io.rx_pos = 0;
+    mc_tick(&c, 400);
+
+    TEST_ASSERT_EQUAL_INT_MESSAGE(2, cap.routing_ack_count, "round 2's OWN routing ack must ALSO be delivered");
+    TEST_ASSERT_EQUAL_UINT32(packet_id_2, cap.routing_acks[1].request_id);
+    TEST_ASSERT_TRUE(cap.routing_acks[1].ok);
+    TEST_ASSERT_EQUAL_INT_MESSAGE(2, cap.owner_count, "round 2's OWN get_owner_response must ALSO be delivered");
+    TEST_ASSERT_EQUAL_STRING("Jake", cap.owners[1].long_name);
+
+    TEST_ASSERT_EQUAL_UINT32(0u, c.stats.decode_errors);
+}
+
+/* -------------------------------------------------------------------- */
 
 int main(void)
 {
@@ -2676,6 +3428,10 @@ int main(void)
 
     RUN_TEST(S03_AC6_silence_30s_reconnects_ready_disconnected_handshake);
     RUN_TEST(S03_AC6_transport_error_triggers_reconnect);
+
+    RUN_TEST(S03_debt_reboot_frame_after_ready_drops_state_and_reissues_want_config);
+    RUN_TEST(S03_debt_reboot_stale_config_complete_is_ignored_per_handshake_rules);
+    RUN_TEST(S03_debt_reboot_then_matching_config_complete_reaches_ready_again);
 
     RUN_TEST(S03_debt_write_backpressure_below_budget_sends_frame_no_reconnect);
     RUN_TEST(S03_debt_write_backpressure_budget_exhausted_triggers_reconnect);
@@ -2738,6 +3494,22 @@ int main(void)
     RUN_TEST(S03_AC11_nodeinfo_position_carries_precision_bits);
     RUN_TEST(S03_AC11_nodeinfo_absent_precision_bits_reads_absent);
     RUN_TEST(S03_AC11_precision_overflow_varint_yields_no_position);
+
+    RUN_TEST(feat_set_owner_encodes_long_and_short_name);
+    RUN_TEST(feat_set_owner_out_packet_id_is_optional);
+    RUN_TEST(feat_set_owner_dest_is_whatever_the_caller_passes);
+    RUN_TEST(feat_set_owner_null_short_name_leaves_it_unset);
+    RUN_TEST(feat_set_owner_uses_the_seeded_packet_id_counter);
+    RUN_TEST(feat_set_owner_fails_when_not_ready);
+
+    RUN_TEST(feat_get_owner_request_encodes_the_request);
+    RUN_TEST(feat_get_owner_request_fails_when_not_ready);
+    RUN_TEST(feat_get_owner_response_fires_on_owner);
+    RUN_TEST(feat_get_owner_response_unset_short_name_reports_empty);
+    RUN_TEST(feat_admin_other_variant_is_silently_ignored);
+    RUN_TEST(feat_routing_ack_none_reports_ok);
+    RUN_TEST(feat_routing_nak_reports_not_ok);
+    RUN_TEST(feat_two_consecutive_set_owner_round_trips_in_one_session_both_confirm);
 
     return UNITY_END();
 }

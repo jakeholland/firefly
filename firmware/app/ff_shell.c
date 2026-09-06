@@ -15,6 +15,7 @@
 
 #include "ff_batt.h" /* S25 slice c — battery gauge: honest mV -> percent + display filter */
 #include "ff_geo.h"
+#include "ff_meshname.h" /* NAME in Settings — charset sanitize + short-name derivation */
 #include "ff_multitap.h" /* S10 quick flare — the N-presses-within-a-window counter FSM */
 #include "ff_notify.h" /* S26(d) — the notification queue */
 #include "ff_proto.h"
@@ -63,6 +64,10 @@ _Static_assert(FF_COMPOSE_EXTRA_MAX == 280,
  * too stale" constant for the same 10-minute question — our own fix
  * deserves no more benefit of the doubt than a crew member's does. */
 #define FF_SELF_POS_STALE_MS FF_CREW_LOST_MS
+
+/* FF_NAME_OWNER_REQ_TIMEOUT_MS / FF_NAME_OWNER_REQ_MAX_RETRIES — see
+ * ff_shell.h's own doc comment (`[api]`, public so tests can pin the
+ * exact retry schedule instead of hardcoding a duplicate number). */
 
 /* S22 slice d — a quick RALLY (the thread quick-chip / whole-crew popup
  * row, distinct from the S24 Rally screen's explicit picker) gathers the
@@ -299,6 +304,111 @@ typedef struct {
      * hook pair in this struct (haptic, calibrate_touch, ...). */
     void (*compass_cal_changed)(void *user, ff_geo_cal_t const *cal);
     void *compass_cal_changed_user;
+
+    /* NAME in Settings — the "NAME" row's T9 editor session state, same
+     * "persistent across ticks, the view is memset per tick" reason
+     * `settings_subview`/`compass_cal_session` above document. A SECOND,
+     * INDEPENDENT `ff_t9_t` from `compose_draft` (deliberately — see
+     * ff_intent.h's FF_INTENT_NAME_T9_KEY doc comment for why this
+     * feature never branches the Compose screen's own T9/PRED handling
+     * on "which draft is this"). `name_mode` is this editor's own
+     * two-state page (ABC/123 only — `ff_app_name_edit_mode_t`, NOT
+     * `ff_app_compose_mode_t`), reset to ABC on every OPEN. */
+    ff_t9_t                 name_draft;
+    ff_app_name_edit_mode_t name_mode;
+
+    /* NAME in Settings — the shell's live cache of "what does the MESH
+     * currently say our name is", fed only from a SELF NodeInfo
+     * (`shell_ev_node`, on `shell_is_self`) — never fabricated, never
+     * assumed from a push having been attempted. `has_mesh_owner_name`
+     * is false until at least one self NodeInfo carrying a `long_name`
+     * has arrived this session (want_config's replay on connect is the
+     * common case, but a live update after a set_owner push works the
+     * same way). `my_name_from_node` records the one-time boot-prefill
+     * case (see `shell_ev_node`'s own doc comment) so the projected view
+     * can say so; cleared the instant the wearer commits their OWN edit
+     * (`shell_apply_name_commit`), so it never survives past the first
+     * real edit. */
+    bool has_mesh_owner_name;
+    char mesh_owner_name[FF_SETTINGS_NAME_LEN];
+    bool my_name_from_node;
+
+    /* Confirmation-fix round 2 (bench finding, 2026-09-06, AFTER commit
+     * 51e4ae1): `name Jake` reported `confirmed=1`/a checkmark INSTANTLY
+     * when the puck's stored name already happened to equal the mesh's
+     * cached `mesh_owner_name` — a false positive, because
+     * `shell_mesh_name_confirmed` compared two values with no notion of
+     * WHEN `mesh_owner_name` was last observed relative to the push it is
+     * supposedly confirming. A stale observation from BEFORE this push
+     * (e.g. an earlier session's confirmation, or the boot prefill) must
+     * never be read as evidence for a push that hasn't been answered yet.
+     *
+     * `name_pushed_seq` is a monotonic "push generation" counter,
+     * incremented once per attempted push (`shell_apply_name_commit`,
+     * alongside `name_has_pushed`); `mesh_owner_name_seq` is stamped with
+     * the CURRENT `name_pushed_seq` every time `mesh_owner_name`/
+     * `has_mesh_owner_name` is written (`shell_ev_node`'s self-NodeInfo
+     * block, `shell_ev_owner`) — i.e. "as of which push generation was
+     * this observation made". `shell_mesh_name_confirmed` (below) only
+     * ever counts an observation whose stamped generation is >= the
+     * CURRENT push generation: an observation from an earlier generation
+     * is definitionally stale and reads as pending, not confirmed, no
+     * matter what string it holds.
+     *
+     * Both start at 0 and neither is ever reset independently of the
+     * other, so the pre-any-push case (generation 0 vs. an observation
+     * also stamped 0) still compares equal — this is exactly what keeps
+     * the boot-prefill "(from_node)" ✓ semantics working: an observation
+     * that arrives before the wearer has ever pushed anything is not
+     * stale relative to "no push yet", it is simply the only fact there
+     * is, and it is allowed to confirm. */
+    uint32_t name_pushed_seq;
+    uint32_t mesh_owner_name_seq;
+
+    /* Confirmation-fix follow-up (bench finding, 2026-09-06: the comms
+     * brain never re-sends its own NodeInfo right after a `set_owner`,
+     * so the ORIGINAL "wait for a self NodeInfo" path above could hang
+     * pending forever) — this device now follows every successful
+     * `set_owner` push with its own `get_owner_request`/`on_owner`
+     * round trip, polled on a retry/timeout schedule, so confirmation no
+     * longer depends on the comms brain's own broadcast schedule.
+     *
+     * `name_push_*` describes THIS session's most recent push attempt
+     * (reset on every `shell_apply_name_commit`, never accumulated
+     * across pushes): `has_packet_id`/`packet_id` is the outgoing
+     * `set_owner` MeshPacket.id (from `mc_send_set_owner`'s
+     * `out_packet_id`), used only to recognise the matching
+     * `on_routing_ack`; `ack` is that routing outcome
+     * (`ff_shell_mesh_name_status_t`'s own doc comment has the full
+     * three-state rationale); `pushed_long`/`pushed_short` is what was
+     * actually sent (for the bench console's `pushed=` field, and so a
+     * later confirmed/pending render always describes the RIGHT push).
+     *
+     * `owner_req_pending` is true from the moment the first
+     * `get_owner_request` follow-up is sent until either a matching
+     * `get_owner_response` arrives (`shell_ev_owner`, which also stops
+     * the retries) or the retry budget below is exhausted — at which
+     * point it goes false but `confirmed` is NEVER assumed true; the
+     * NAME row and bench console just keep reading the honest "..."
+     * pending state forever (this repo's honest-data rule — see
+     * ff_shell.h's doc comment on `ack`/`confirmed`). `owner_req_sent_ms`
+     * is when the last request/retry actually went out, and
+     * `owner_req_retries` counts retries ALREADY SENT (0 after the
+     * first send, capping at FF_NAME_OWNER_REQ_MAX_RETRIES — see
+     * shell_tick's own poll for the exact schedule: a retry every
+     * FF_NAME_OWNER_REQ_TIMEOUT_MS while pending). */
+    bool               name_has_pushed;      /* a set_owner push has been attempted this session (see shell_apply_name_commit) */
+    bool               name_push_has_packet_id;
+    uint32_t           name_push_packet_id;
+    ff_mesh_name_ack_t name_push_ack;
+    char               name_push_long[FF_SETTINGS_NAME_LEN];
+    char               name_push_short[FF_MESHNAME_SHORT_LEN];
+    bool               name_owner_req_pending;
+    uint32_t           name_owner_req_sent_ms;
+    uint8_t            name_owner_req_retries;
+    bool               name_has_reply;
+    char               name_reply_long[FF_SETTINGS_NAME_LEN];
+    char               name_reply_short[FF_MESHNAME_SHORT_LEN];
 
     /* S22 slice d — the RALLY-to-WHOLE_CREW confirm state machine (AC4:
      * "the one loud broadcast requires a confirm"). A first RALLY tap while
@@ -1336,6 +1446,63 @@ static void shell_ev_node(void *u, mc_nodeinfo_t const *n)
         }
     }
 
+    /* NAME in Settings — before the self-drop, on `shell_is_self` (same
+     * convention as the two self-only blocks just above): our own
+     * NodeInfo's `long_name` is the mesh's current, honest answer to
+     * "what does the comms brain say our name is" — the one fact
+     * `ff_shell_mesh_name_status`'s `confirmed` flag and the NAME row's
+     * small status pill are allowed to read. Recorded on EVERY self
+     * NodeInfo that states a long_name (the want_config replay on
+     * connect, and any later live update — e.g. the one that follows
+     * this device's own set_owner push, S12/S03's `MeshService::
+     * reloadOwner` -> `nodeDB->updateUser` pushing the change straight
+     * back to this connected client), never gated on `defined_the_latch`
+     * (unlike the position adoption above) — a name has no age to get
+     * wrong. */
+    if (shell_is_self(sh, n->node_num) && n->has_long_name) {
+        shell_copy_str(sh->mesh_owner_name, sizeof(sh->mesh_owner_name), n->long_name);
+        sh->has_mesh_owner_name = true;
+        /* Confirmation-fix round 2 — stamp WHICH push generation this
+         * observation belongs to (see the field's own doc comment,
+         * above), so a stale pre-push observation can never be misread
+         * as this generation's confirmation. */
+        sh->mesh_owner_name_seq = sh->name_pushed_seq;
+
+        /* Reboot-session-loss fix (bench finding, 2026-09-06): a self
+         * NodeInfo replay is exactly as authoritative an answer to "what
+         * does the mesh say our name is" as a get_owner_response — it is
+         * the SAME want_config dump this device's own reconnect handshake
+         * produces (mc_client.c's FromRadio.rebooted handling restarts
+         * that handshake right after the comms brain reboots a push
+         * triggered), it just arrived unsolicited instead of in reply to
+         * this device's own get_owner_request. Stop this push's polling
+         * the same way shell_ev_owner already does for its own reply,
+         * below — either way, there is nothing left worth asking for.
+         * Matches or not: shell_ev_owner stops polling on a mismatching
+         * reply too, for the same reason. */
+        sh->name_owner_req_pending = false;
+
+        /* Boot prefill (this feature) — the puck itself has never had a
+         * name typed into it (`my_name` still empty), but the comms
+         * brain already carries an owner long_name of its own (set
+         * previously via the Meshtastic phone app/CLI, or a prior
+         * firmware's own default). Adopt it ONCE, silently, rather than
+         * showing an honest-but-useless "(unset)" caption until the
+         * wearer happens to open Settings and retype the exact name the
+         * mesh already knows — PERSISTED like any other settings
+         * mutation so it survives the very next reboot, not just this
+         * session. Deliberately does NOT push a set_owner back — the
+         * name being adopted came FROM the mesh, so it is already
+         * confirmed by construction the instant this assignment runs. */
+        if (sh->settings.my_name[0] == '\0') {
+            shell_copy_str(sh->settings.my_name, sizeof(sh->settings.my_name), n->long_name);
+            sh->my_name_from_node = true;
+            if (sh->store != NULL) {
+                ff_settings_save(&sh->settings, sh->store);
+            }
+        }
+    }
+
     if (shell_drop_as_self(sh, n->node_num)) return; /* never treat our own traffic as inbound */
 
 #if defined(FF_TARGET_SIM) || defined(CONFIG_FF_DEV_TRUST_CHANNEL)
@@ -1462,6 +1629,75 @@ static void shell_ev_node(void *u, mc_nodeinfo_t const *n)
     /* n->rx_path is a nodeDB SUMMARY with no timestamp (mc_client.h), so
      * it is deliberately not used to attribute RSSI. That question is
      * per-packet and is answered in shell_ev_rx_meta. */
+}
+
+/**
+ * shell_ev_owner — confirmation-fix follow-up: `mc_events_t.on_owner`,
+ * fired for an `AdminMessage.get_owner_response` (the direct answer to
+ * this device's own `get_owner_request`, sent right after every
+ * `set_owner` push — see `shell_apply_name_commit`). Treated exactly
+ * like `shell_ev_node`'s self-NodeInfo `long_name` block above for
+ * confirmation purposes (same cache, same has_mesh_owner_name gate on a
+ * non-empty name): this library only ever addresses `get_owner_request`
+ * to this node's own id (`mc_send_get_owner_request`'s own doc comment),
+ * so any response reaching this callback is definitionally this puck's
+ * own current owner — no self-check needed, unlike NodeInfo replay
+ * (which carries every node on the mesh).
+ *
+ * Recorded even when the reply doesn't match `settings.my_name` (a
+ * mismatch is itself honest bench info — `reply=` in the console output
+ * — not an error): only `shell_mesh_name_confirmed`'s comparison decides
+ * whether that flips the checkmark. Either way, a reply stops this
+ * push's retry polling (`name_owner_req_pending`) — there is nothing
+ * left to ask for.
+ */
+static void shell_ev_owner(void *u, char const *long_name, char const *short_name)
+{
+    shell_t *sh = (shell_t *)u;
+    if (sh == NULL) return;
+
+    if (long_name != NULL && long_name[0] != '\0') {
+        shell_copy_str(sh->mesh_owner_name, sizeof(sh->mesh_owner_name), long_name);
+        sh->has_mesh_owner_name = true;
+        /* Confirmation-fix round 2 — same generation stamp shell_ev_node's
+         * self-NodeInfo block applies, above. */
+        sh->mesh_owner_name_seq = sh->name_pushed_seq;
+    }
+
+    sh->name_has_reply = true;
+    shell_copy_str(sh->name_reply_long, sizeof(sh->name_reply_long), long_name);
+    shell_copy_str(sh->name_reply_short, sizeof(sh->name_reply_short), short_name);
+    sh->name_owner_req_pending = false;
+}
+
+/**
+ * shell_ev_routing_ack — confirmation-fix follow-up: `mc_events_t.
+ * on_routing_ack`, the mesh-delivery outcome (ACK/NAK) of an earlier
+ * `want_ack` send. Only acted on when `request_id` matches THIS shell's
+ * own in-flight `set_owner` push (`name_push_has_packet_id` /
+ * `name_push_packet_id`, set by `shell_apply_name_commit` from
+ * `mc_send_set_owner`'s `out_packet_id`) — a routing reply for anything
+ * else this device happens to have sent (a text, a flare) is simply not
+ * this feature's concern and is ignored here.
+ *
+ * `ff_shell.h`'s `ff_mesh_name_ack_t` doc comment has the full
+ * three-state rationale (NONE is "no reply yet", not "failed"); this
+ * function only ever writes OK or NAK, never NONE (NONE is the
+ * quiescent default `shell_apply_name_commit` resets to on the next
+ * push). A NAK does NOT stop the `get_owner_request` polling — the
+ * routing layer and the actual admin-write outcome are independently
+ * observed facts (this repo's honest-data rule again: a NAK is real
+ * bench info surfaced immediately via `ack=nak`/the pill's "!", but only
+ * a `get_owner_response`/self NodeInfo match is ever allowed to claim
+ * the name itself was accepted).
+ */
+static void shell_ev_routing_ack(void *u, uint32_t request_id, bool ok)
+{
+    shell_t *sh = (shell_t *)u;
+    if (sh == NULL) return;
+    if (!sh->name_push_has_packet_id || request_id != sh->name_push_packet_id) return;
+
+    sh->name_push_ack = ok ? FF_MESH_NAME_ACK_OK : FF_MESH_NAME_ACK_NAK;
 }
 
 static void shell_ev_position(void *u, uint32_t node, mc_position_t const *p)
@@ -2062,6 +2298,50 @@ static void shell_project_now(shell_t const *sh, ff_wall_t wall, ff_app_now_t *o
     }
 }
 
+/**
+ * shell_mesh_name_confirmed — NAME in Settings: the ONE place the
+ * "mesh: JAKE OK / pending" derivation lives, shared by the projected
+ * view (via `shell_project_settings`, below — computed once per tick and
+ * read back by the Settings screen at render time, never re-derived
+ * independently) and `ff_shell_mesh_name_status` (the bench console's
+ * `name` command). See `ff_shell_mesh_name_status_t`'s own doc comment
+ * (ff_shell.h) for the full honesty rule this implements.
+ *
+ * Confirmation-fix round 2 — the `mesh_owner_name_seq >= name_pushed_seq`
+ * clause (see those fields' own doc comment, above) is what closes the
+ * stale-equality false positive: a `mesh_owner_name` that was last
+ * observed BEFORE the current push generation cannot confirm it, even if
+ * the string happens to already match (e.g. re-pushing the same name a
+ * second time, or the mesh's cached identity from a previous session).
+ */
+static bool shell_mesh_name_confirmed(shell_t const *sh)
+{
+    return sh->has_mesh_owner_name && sh->settings.my_name[0] != '\0' &&
+           sh->mesh_owner_name_seq >= sh->name_pushed_seq &&
+           strcmp(sh->mesh_owner_name, sh->settings.my_name) == 0;
+}
+
+/**
+ * shell_mesh_name_mismatch — confirmation-fix round 2: a FRESH observation
+ * (one stamped at or after the current push generation, the same freshness
+ * test `shell_mesh_name_confirmed` uses above) that does NOT match the
+ * pushed name — e.g. this push's own `get_owner_response` came back
+ * reporting a different owner (someone else re-set it in between). This is
+ * its own state, distinct from BOTH `confirmed` (matches) and plain
+ * pending/no-observation-yet (nothing fresh has arrived at all): a NAK
+ * only says the routing layer reported a delivery failure
+ * (`ff_mesh_name_ack_t`), which is silent on whether the admin module
+ * itself ended up with a different owner than expected — this checks that
+ * directly. Mutually exclusive with `shell_mesh_name_confirmed` by
+ * construction (same freshness gate, opposite string comparison).
+ */
+static bool shell_mesh_name_mismatch(shell_t const *sh)
+{
+    return sh->has_mesh_owner_name && sh->settings.my_name[0] != '\0' &&
+           sh->mesh_owner_name_seq >= sh->name_pushed_seq &&
+           strcmp(sh->mesh_owner_name, sh->settings.my_name) != 0;
+}
+
 static void shell_project_settings(shell_t const *sh, ff_app_settings_t *out)
 {
     out->imperial = sh->settings.imperial;
@@ -2095,6 +2375,43 @@ static void shell_project_settings(shell_t const *sh, ff_app_settings_t *out)
     /* format v9 amendment — S27 sounds: SOUNDS/UI TICKS, projected verbatim. */
     out->sounds_on = sh->settings.sounds_on;
     out->ui_ticks = sh->settings.ui_ticks;
+
+    /* NAME in Settings — the mesh-name cache, projected verbatim, plus
+     * the ONE derived fact (see shell_mesh_name_confirmed's own doc
+     * comment, above) so this screen never re-derives it independently. */
+    out->has_mesh_owner_name = sh->has_mesh_owner_name;
+    shell_copy_str(out->mesh_owner_name, sizeof(out->mesh_owner_name), sh->mesh_owner_name);
+    out->mesh_name_confirmed = shell_mesh_name_confirmed(sh);
+    out->my_name_from_node = sh->my_name_from_node;
+    /* Confirmation-fix follow-up — a NAK for the CURRENT push (see
+     * ff_shell.h's ff_mesh_name_ack_t doc comment). Read fresh every
+     * projection, same as mesh_name_confirmed above: if a later retry or
+     * a subsequent push ever does confirm, this flag's row precedence
+     * (settings_build_name_row: confirmed beats push_failed beats
+     * pending) means the checkmark wins regardless of an earlier NAK. */
+    out->mesh_name_push_failed = (sh->name_push_ack == FF_MESH_NAME_ACK_NAK);
+    /* Confirmation-fix round 2 — see shell_mesh_name_mismatch's own doc
+     * comment. Same "computed once by the shell" rule as
+     * mesh_name_confirmed/mesh_name_push_failed above. */
+    out->mesh_name_mismatch = shell_mesh_name_mismatch(sh);
+}
+
+/**
+ * shell_project_name_edit — the "NAME" row's T9 editor sub-view.
+ * Zeroed (via the caller's whole-view memset) unless `subview ==
+ * FF_SETTINGS_SUB_NAME_EDIT` — the `ff_app_crew_page_t` precedent, not
+ * `ff_app_compass_cal_t`'s "always populated" one (`ff_app_name_edit_t`'s
+ * own doc comment has the reasoning).
+ */
+static void shell_project_name_edit(shell_t const *sh, ff_app_settings_t *out)
+{
+    if (sh->settings_subview != FF_SETTINGS_SUB_NAME_EDIT) return;
+
+    ff_app_name_edit_t *ne = &out->name_edit;
+    char const *text = ff_t9_text(&sh->name_draft);
+    shell_copy_str(ne->text, sizeof(ne->text), text);
+    ne->has_pending = sh->name_draft.has_pending;
+    ne->mode = sh->name_mode;
 }
 
 /**
@@ -2399,6 +2716,7 @@ static void shell_project(shell_t *sh, uint32_t now_ms)
     shell_project_settings(sh, &sh->view.settings);
     shell_project_crew_page(sh, now_ms, &sh->view.settings); /* S12/S04 */
     shell_project_compass_cal(sh, &sh->view.settings);       /* S12 step 3 */
+    shell_project_name_edit(sh, &sh->view.settings);         /* NAME in Settings */
     shell_project_map(sh, &sh->view.map);
     shell_project_banner(sh, now_ms, &sh->view.banner); /* S26(d) */
 
@@ -3285,6 +3603,96 @@ bool ff_shell_tick(ff_shell_t *sh_pub, uint32_t now_ms)
      * note for why the multi-tap commit timeout needs an explicit poll).
      * Safe to call every tick unconditionally, pending char or not. */
     ff_t9_tick(&sh->compose_draft, now_ms);
+    ff_t9_tick(&sh->name_draft, now_ms); /* NAME in Settings — same commit-timeout poll, independent draft */
+
+    /* Confirmation-fix follow-up — the get_owner_request retry/timeout
+     * schedule (shell_apply_name_commit sends the first request; this is
+     * every retry after it). Wraparound-safe via ff_time_reached, same
+     * convention as every other deadline check in this function. Stops
+     * on its own once a reply arrives (shell_ev_owner clears
+     * name_owner_req_pending) or the retry budget is exhausted — past
+     * that point the row/console honestly keep reading "..." forever
+     * rather than ever assuming success (see ff_shell.h's doc comment on
+     * ff_mesh_name_ack_t/confirmed).
+     *
+     * Confirmation-fix round 3 (bench finding, 2026-09-06, AFTER commit
+     * eb1cb06): the FIRST push after boot confirmed perfectly; every push
+     * after that, in the SAME session, sat on ack=none/reply=none forever
+     * — even past the full retry budget. A quiet bench mesh (just the
+     * puck + the comms brain, no other traffic) trips this device's own
+     * mc_client 30s no-RX-bytes watchdog into a silent reconnect once
+     * nothing else arrives for that long — exactly what a still, two-node
+     * bench produces in the gaps between typed commands. A retry attempted
+     * while that reconnect is in flight legitimately fails at the
+     * transport (`send_get_owner_request` returns nonzero, mirroring
+     * mc_send_get_owner_request's own `state != MC_STATE_READY` gate) —
+     * and the ORIGINAL code below counted that failed attempt against the
+     * retry budget anyway, silently draining the WHOLE budget while the
+     * transport happened to be down. Once the reconnect completed and the
+     * transport was READY again, there was no budget left to ever ask
+     * again — the row read pending forever despite the comms brain being
+     * perfectly reachable. Fixed: only a send that actually reaches the
+     * wire (return 0) consumes a retry / advances the deadline; a failed
+     * attempt leaves both untouched, so `ff_time_reached` simply re-fires
+     * next tick and the SAME attempt is retried (cheaply — a not-READY
+     * send is a same-thread state check, no I/O) until the transport
+     * recovers, with the full retry budget still intact for the reply
+     * that follows.
+     *
+     * Reboot-session-loss fix (bench finding, 2026-09-06): EXPECT a
+     * `set_owner` push to reboot the comms brain a few seconds later
+     * (Meshtastic's own `AdminModule::saveChanges` — see
+     * `mc_client.h`'s `mc_tick()` doc comment for the citation and the
+     * fix on the meshclient side, `on_state`/link dropping to
+     * RECONNECTING and back around it). Gate the whole retry/timeout
+     * check on `sh->link == FF_SHELL_LINK_CONNECTED`: sending a
+     * get_owner_request while the link is down is not merely wasted (the
+     * round 3 fix above already stops a failed send from burning the
+     * retry budget) — it is *guaranteed* to fail, so there is no reason
+     * to even attempt it or advance the deadline. The poll stays fully
+     * armed (`name_owner_req_pending` untouched) for as long as the link
+     * is not CONNECTED; once it reconnects, this same check resumes on
+     * the very next tick whose deadline has already elapsed. In the
+     * common case that resumption needs no `get_owner_request` at all:
+     * the self NodeInfo replay that is part of every want_config dump —
+     * including the one this device's own reconnect handshake just ran —
+     * arrives DURING the handshake, before the link reaches CONNECTED,
+     * and `shell_ev_node`'s self-long-name block (above) already clears
+     * `name_owner_req_pending` the instant it sees it, exactly like a
+     * `get_owner_response` would. So by the time this check next runs
+     * with the link back up, a push that reconnected via NodeInfo replay
+     * has typically already stopped polling on its own; this block only
+     * ever fires an ADDITIONAL request when that replay genuinely didn't
+     * carry the answer (no self entry in this particular dump, or the
+     * mesh hasn't caught up yet) — never gated on a fixed "few seconds"
+     * timer, since one is unnecessary: the replay is either already in by
+     * the time this runs, or it isn't coming this handshake. */
+    if (sh->link == FF_SHELL_LINK_CONNECTED && sh->name_owner_req_pending &&
+        ff_time_reached(now_ms, sh->name_owner_req_sent_ms + FF_NAME_OWNER_REQ_TIMEOUT_MS)) {
+        if (sh->name_owner_req_retries < FF_NAME_OWNER_REQ_MAX_RETRIES) {
+            int const rc = (sh->wiring.sender.send_get_owner_request != NULL)
+                               ? sh->wiring.sender.send_get_owner_request(sh->wiring.sender.ctx, sh->my_node_id)
+                               : -1;
+            if (rc == 0) {
+                sh->name_owner_req_retries++;
+                sh->name_owner_req_sent_ms = now_ms;
+            }
+            /* else: never reached the wire (transport not ready, e.g. a
+             * reconnect in flight) — must not consume the retry budget or
+             * push the deadline forward; see this block's own doc comment
+             * above. */
+        } else {
+            /* Budget exhausted — stop polling. Deliberately does NOT set
+             * any "failed" flag: get_owner_request is a best-effort read
+             * (mc_send_get_owner_request sends want_ack == false), so a
+             * silent radio drop here is indistinguishable from "no
+             * answer yet" — the honest state for both is the pill/
+             * console's ordinary pending "...", not a distinct failure
+             * (that claim is reserved for an actual routing NAK on the
+             * set_owner WRITE itself — see name_push_ack). */
+            sh->name_owner_req_pending = false;
+        }
+    }
 
     /* SELFPOS (2026-09-05) — a self-fix adopted from the comms brain's
      * inbound traffic (shell_maybe_adopt_my_pos, my_pos_ms_valid) decays
@@ -3377,6 +3785,8 @@ mc_events_t ff_shell_events(ff_shell_t *sh_pub)
     ev.on_private = shell_ev_private;
     ev.on_my_info = shell_ev_my_info;
     ev.on_rx_meta = shell_ev_rx_meta;
+    ev.on_owner = shell_ev_owner; /* confirmation-fix follow-up */
+    ev.on_routing_ack = shell_ev_routing_ack; /* confirmation-fix follow-up */
     ev.user = shell_of(sh_pub);
     return ev;
 }
@@ -4013,6 +4423,117 @@ static void shell_setting_set(shell_t *sh, ff_intent_t const *in)
     }
 }
 
+/**
+ * shell_apply_name_commit — NAME in Settings: sanitize + persist + push.
+ * `raw_text` is the NAME editor's live T9 draft text (`ff_t9_text`),
+ * borrowed for this call only. Shared by both callers that reach the
+ * SAME commit path (FF_INTENT_SETTINGS_NAME_COMMIT below, and the bench
+ * console's `name <text>` — ff_dbgcmd.h — dispatches the exact same
+ * intent, so it is the SAME caller, not a second path).
+ *
+ * Sequence:
+ *  1. `ff_meshname_sanitize` — letters/digits/space, trimmed, bounded to
+ *     FF_SETTINGS_NAME_LEN-1 (core/include/ff_meshname.h has the full
+ *     charset rule).
+ *  2. Commit through the EXISTING `FF_SETTING_MY_NAME` string-payload
+ *     seam (`shell_setting_set`) — persisted on change, exactly like any
+ *     other settings write. No second persistence path.
+ *  3. Push the Meshtastic owner update — INDEPENDENT of whether step 2
+ *     found a change: re-pressing DONE with the SAME text is this
+ *     feature's retry mechanism for a push that may have silently
+ *     failed (this repo's honest-data rule: the shell never assumes a
+ *     push succeeded merely because it was accepted for send — only a
+ *     matching self NodeInfo, `shell_ev_node`, ever flips
+ *     `has_mesh_owner_name`'s comparison to confirmed). Skipped
+ *     entirely, not queued, when the sanitized name is empty (nothing
+ *     meaningful to push — Meshtastic's own AdminModule leaves a field
+ *     unset when the incoming User's field is empty, so this is a
+ *     no-op either way, but skipping it here also skips a needless
+ *     admin round-trip) or when this puck does not yet know its own
+ *     node id (`has_my_node_id` false — there is no "self" to address
+ *     the local-admin path at yet; see mc_send_set_owner's own doc
+ *     comment for why `dest` must be this node's own id).
+ *  4. Confirmation-fix follow-up (bench finding, 2026-09-06): a
+ *     successful push immediately follows up with its own
+ *     `get_owner_request` (`shell_ev_owner` handles the reply) rather
+ *     than waiting on the comms brain's own NodeInfo re-broadcast
+ *     schedule, which — the bench found — can be hours away and leaves
+ *     the confirmation pill pending forever in practice. See
+ *     `ff_shell.h`'s `ff_shell_mesh_name_status_t` doc comment and this
+ *     shell's own `name_push_*`/`name_owner_req_*`/`name_reply_*` field
+ *     comments for the full state machine. EVERY commit — including one
+ *     with an empty or un-pushable name — resets that state fresh, so a
+ *     stale ack/reply from an earlier push never survives into this
+ *     one's display.
+ */
+static void shell_apply_name_commit(shell_t *sh, char const *raw_text)
+{
+    char sanitized[FF_SETTINGS_NAME_LEN];
+    ff_meshname_sanitize(raw_text, sanitized, sizeof(sanitized));
+
+    ff_intent_t const set = {.kind = FF_INTENT_SETTING_SET,
+                             .u = {.setting = {.id = FF_SETTING_MY_NAME, .v = {.s = sanitized}, .transient = false}}};
+    shell_setting_set(sh, &set);
+
+    /* A wearer typing their own name overrides whatever boot silently
+     * adopted from the mesh — from here on the caption is THEIRS. */
+    sh->my_name_from_node = false;
+
+    /* Confirmation-fix follow-up: fresh push cycle, see doc comment above. */
+    sh->name_has_pushed = false;
+    sh->name_push_has_packet_id = false;
+    sh->name_push_packet_id = 0;
+    sh->name_push_ack = FF_MESH_NAME_ACK_NONE;
+    shell_copy_str(sh->name_push_long, sizeof(sh->name_push_long), sanitized);
+    sh->name_push_short[0] = '\0';
+    sh->name_owner_req_pending = false;
+    sh->name_owner_req_sent_ms = 0;
+    sh->name_owner_req_retries = 0;
+    sh->name_has_reply = false;
+    sh->name_reply_long[0] = '\0';
+    sh->name_reply_short[0] = '\0';
+
+    if (sanitized[0] == '\0' || !sh->has_my_node_id) {
+        return;
+    }
+
+    char short_name[FF_MESHNAME_SHORT_LEN];
+    ff_meshname_derive_short(sanitized, short_name);
+    shell_copy_str(sh->name_push_short, sizeof(sh->name_push_short), short_name);
+    sh->name_has_pushed = true;
+
+    /* Confirmation-fix round 2 (bench finding, 2026-09-06) — a fresh push
+     * generation. ANY observation already cached in mesh_owner_name (a
+     * previous confirmation, the boot prefill, someone else's earlier
+     * push) is now stale relative to THIS push: shell_mesh_name_confirmed
+     * requires a NEW observation stamped at or after this generation, so
+     * re-committing the same text — this feature's own retry mechanism
+     * for a push that failed silently — can never read as confirmed
+     * merely because the cached mesh_owner_name already happens to match. */
+    sh->name_pushed_seq++;
+
+    if (sh->wiring.sender.send_admin_set_owner != NULL) {
+        uint32_t packet_id = 0;
+        int const rc =
+            sh->wiring.sender.send_admin_set_owner(sh->wiring.sender.ctx, sh->my_node_id, sanitized, short_name,
+                                                    &packet_id);
+        if (rc == 0) {
+            sh->name_push_has_packet_id = true;
+            sh->name_push_packet_id = packet_id;
+
+            /* Ask "did that take" right away instead of waiting on the
+             * comms brain's own broadcast schedule (see this function's
+             * own doc comment, step 4). */
+            if (sh->wiring.sender.send_get_owner_request != NULL &&
+                sh->wiring.sender.send_get_owner_request(sh->wiring.sender.ctx, sh->my_node_id) == 0) {
+                sh->name_owner_req_pending = true;
+                sh->name_owner_req_sent_ms = shell_now(sh);
+                sh->name_owner_req_retries = 0;
+            }
+        }
+    }
+}
+
 void ff_shell_intent(ff_shell_t *sh_pub, ff_intent_t const *in)
 {
     if (sh_pub == NULL || in == NULL) return;
@@ -4507,6 +5028,53 @@ void ff_shell_intent(ff_shell_t *sh_pub, ff_intent_t const *in)
         (void)ff_t9_insert_text(&sh->compose_draft, in->u.text);
         return;
 
+    case FF_INTENT_NAME_T9_KEY:
+        /* NAME in Settings — a no-op outside the editor (defensive; the
+         * screen that emits this only exists while the subview is
+         * showing). Blocked once the draft already holds
+         * FF_APP_NAME_EDIT_CAP (15) characters, committed+pending
+         * combined — a smaller cap layered on top of ff_t9's own 160,
+         * enforced here rather than inside ff_t9.h (ff_intent.h's own
+         * doc comment on this intent has the full reasoning). */
+        if (takeover_up) return;
+        if (sh->settings_subview != FF_SETTINGS_SUB_NAME_EDIT) return;
+        if (strlen(ff_t9_text(&sh->name_draft)) >= FF_APP_NAME_EDIT_CAP) return;
+        ff_t9_key(&sh->name_draft, in->u.t9_key, shell_now(sh));
+        return;
+
+    case FF_INTENT_NAME_T9_SPACE:
+        if (takeover_up) return;
+        if (sh->settings_subview != FF_SETTINGS_SUB_NAME_EDIT) return;
+        if (strlen(ff_t9_text(&sh->name_draft)) >= FF_APP_NAME_EDIT_CAP) return;
+        ff_t9_space(&sh->name_draft);
+        return;
+
+    case FF_INTENT_NAME_T9_BACKSPACE:
+        if (takeover_up) return;
+        if (sh->settings_subview != FF_SETTINGS_SUB_NAME_EDIT) return;
+        ff_t9_backspace(&sh->name_draft);
+        return;
+
+    case FF_INTENT_NAME_T9_INSERT:
+        /* The editor's 123 page's digits — same cap guard as
+         * NAME_T9_KEY/_SPACE. `in->u.text` is borrowed for this call
+         * only (ff_intent.h, "Payload ownership"); `ff_t9_insert_text`
+         * copies every byte it keeps before returning. */
+        if (takeover_up) return;
+        if (sh->settings_subview != FF_SETTINGS_SUB_NAME_EDIT) return;
+        if (strlen(ff_t9_text(&sh->name_draft)) >= FF_APP_NAME_EDIT_CAP) return;
+        (void)ff_t9_insert_text(&sh->name_draft, in->u.text);
+        return;
+
+    case FF_INTENT_NAME_T9_MODE:
+        /* This editor's own two-state cycle, ABC <-> 123 — never SYM/PRED
+         * (ff_intent.h's own doc comment on this intent has the full
+         * reasoning: a puck name is letters/digits/space). */
+        if (takeover_up) return;
+        if (sh->settings_subview != FF_SETTINGS_SUB_NAME_EDIT) return;
+        sh->name_mode = (sh->name_mode == FF_APP_NAME_EDIT_ABC) ? FF_APP_NAME_EDIT_123 : FF_APP_NAME_EDIT_ABC;
+        return;
+
     case FF_INTENT_SETTING_SET:
         /* Settings write-through + persistence (S16 slice e, AC8; the
          * emit site is S11 slice b's scr_settings.c). Gated on the
@@ -4559,6 +5127,38 @@ void ff_shell_intent(ff_shell_t *sh_pub, ff_intent_t const *in)
          * builds its rows fresh, so there is nothing else to prime here. */
         if (takeover_up) return;
         sh->settings_subview = FF_SETTINGS_SUB_CREW;
+        return;
+
+    case FF_INTENT_SETTINGS_OPEN_NAME_EDIT:
+        /* NAME in Settings — the "NAME" row. Gated on the takeover like
+         * CREW/CALIBRATE_TOUCH above. Primes the editor draft from the
+         * CURRENTLY PERSISTED name (never the mesh's own cached name —
+         * this is an edit of the puck's local value, and prefilling from
+         * a possibly-different mesh name would silently discard an
+         * unconfirmed edit the wearer hasn't pushed yet), resets to ABC,
+         * and opens the sub-view. `ff_t9_insert_text` is atomic and
+         * plain-ASCII-only (its own doc comment) — exactly right for a
+         * name that was itself sanitized to letters/digits/space on the
+         * way in. */
+        if (takeover_up) return;
+        ff_t9_reset(&sh->name_draft);
+        (void)ff_t9_insert_text(&sh->name_draft, sh->settings.my_name);
+        sh->name_mode = FF_APP_NAME_EDIT_ABC;
+        sh->settings_subview = FF_SETTINGS_SUB_NAME_EDIT;
+        return;
+
+    case FF_INTENT_SETTINGS_NAME_COMMIT:
+        /* NAME in Settings — DONE/SEND. See shell_apply_name_commit's own
+         * doc comment for the sanitize -> persist -> mesh-push sequence;
+         * this handler's only job is the takeover gate, the "only from
+         * the editor" guard, and returning to the plain list afterward
+         * (unconditionally — a failed/skipped mesh push is not a reason
+         * to trap the wearer on the editor page; the NAME row's own
+         * pending/OK pill is where that honesty lives). */
+        if (takeover_up) return;
+        if (sh->settings_subview != FF_SETTINGS_SUB_NAME_EDIT) return;
+        shell_apply_name_commit(sh, ff_t9_text(&sh->name_draft));
+        sh->settings_subview = FF_SETTINGS_SUB_LIST;
         return;
 
     case FF_INTENT_CREW_PAIR:
@@ -5485,6 +6085,37 @@ ff_shell_compass_cal_status_t ff_shell_compass_cal_status(ff_shell_t const *sh_p
     return st;
 }
 
+ff_shell_mesh_name_status_t ff_shell_mesh_name_status(ff_shell_t const *sh_pub)
+{
+    ff_shell_mesh_name_status_t st;
+    memset(&st, 0, sizeof(st));
+    if (sh_pub == NULL) return st;
+
+    shell_t const *sh = shell_of_const(sh_pub);
+    shell_copy_str(st.my_name, sizeof(st.my_name), sh->settings.my_name);
+    st.has_mesh_owner_name = sh->has_mesh_owner_name;
+    shell_copy_str(st.mesh_owner_name, sizeof(st.mesh_owner_name), sh->mesh_owner_name);
+    st.confirmed = shell_mesh_name_confirmed(sh);
+    st.my_name_from_node = sh->my_name_from_node;
+
+    /* Confirmation-fix follow-up. */
+    st.has_pushed = sh->name_has_pushed;
+    shell_copy_str(st.pushed_long, sizeof(st.pushed_long), sh->name_push_long);
+    shell_copy_str(st.pushed_short, sizeof(st.pushed_short), sh->name_push_short);
+    st.ack = sh->name_push_ack;
+    st.has_reply = sh->name_has_reply;
+    shell_copy_str(st.reply_long, sizeof(st.reply_long), sh->name_reply_long);
+    shell_copy_str(st.reply_short, sizeof(st.reply_short), sh->name_reply_short);
+
+    /* Confirmation-fix round 2. */
+    st.mismatch = shell_mesh_name_mismatch(sh);
+    st.pushed_seq = sh->name_pushed_seq;
+
+    /* Reboot-session-loss fix. */
+    st.link = sh->link;
+    return st;
+}
+
 void ff_shell_compass_cal_sample(ff_shell_t *sh_pub, ff_vec3_t mag_board)
 {
     if (sh_pub == NULL) return;
@@ -5636,6 +6267,12 @@ int ff_shell_debug_send_text(ff_shell_t *sh_pub, uint32_t dest_node, char const 
         ff_wiring_push_outgoing(&sh->wiring, FEED_TEXT, dest, text);
     }
     return rc;
+}
+
+void ff_shell_debug_set_name(ff_shell_t *sh_pub, char const *text)
+{
+    if (sh_pub == NULL || text == NULL) return;
+    shell_apply_name_commit(shell_of(sh_pub), text);
 }
 
 ff_shell_wall_debug_t ff_shell_wall_debug(ff_shell_t const *sh_pub)
