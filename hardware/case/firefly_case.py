@@ -803,7 +803,57 @@ def add_lip_anchor_reliefs(root, bodies, p):
     ay, by = p['spine_a'][1], p['spine_b'][1]
     lip = stadium_ring_solid(root, ay, by, p['lip_r'][0], p['lip_r'][1], p['lip_z'][0], p['lip_z'][1])
     anchor = stadium_ring_solid(root, ay, by, p['anchor_r'][0], p['anchor_r'][1], p['anchor_z'][0], p['anchor_z'][1])
+
+    # 2026-09-08 pass 9 (finding 5): a STANDALONE copy of the merged
+    # lip+anchor ring, kept as a hidden reference-only body (swept into
+    # 'Reference -- not printed' by organize_components() same as the
+    # other reference tools) -- used ONLY by verify_display_insertion_
+    # path's from-inside sweep check, so that probe is isolated to the
+    # ring alone and not the general shell (the module obviously can't
+    # pass through solid wall -- that's not the question finding 5 asks).
+    ring_ref_lip = stadium_ring_solid(root, ay, by, p['lip_r'][0], p['lip_r'][1], p['lip_z'][0], p['lip_z'][1])
+    ring_ref_anchor = stadium_ring_solid(root, ay, by, p['anchor_r'][0], p['anchor_r'][1], p['anchor_z'][0], p['anchor_z'][1])
+    ring_ref = combine_join(root, ring_ref_lip, [ring_ref_anchor])
+    ring_ref.name = 'Lip Anchor Ring (reference)'
+    ring_ref.isLightBulbOn = False
+
     top = combine_join(root, bodies['Top'], [lip, anchor])
+
+    # 2026-09-08 pass 9 (finding 6): the lip(outer=lip_r[1]) -> anchor
+    # (outer=anchor_r[1]) OUTER-radius step at z=anchor_z[0] is a flat
+    # horizontal shelf (the anchor is wider than the lip directly below
+    # it) whose CAD-space +Z-facing top surface becomes a DOWNWARD-facing,
+    # unsupported overhang once Top prints flipped (face-down on its flat
+    # z=top_z face -- see README print orientation). Bevel that edge with
+    # a stadium-aware chamfer (best-effort, matches add_fpc_brow's seam
+    # fillet pattern) so it prints support-free; the lip's own 0.25mm
+    # nesting clearance (lip_r[1], untouched by finding 5's inward
+    # widening) is unaffected since the chamfer is applied to the OUTER
+    # step, not the lip's own outer edge.
+    seam_chamfer = p.get('lip_ring_seam_chamfer')
+    if seam_chamfer:
+        chamfer_stadium_edge_at(root, top, ay, by, p['anchor_r'][1], p['anchor_z'][0], seam_chamfer)
+
+    # 2026-09-08 pass 9 (finding 5 follow-up, found by a LIVE Fusion
+    # interference check, not by inspection): widening the ring's inner
+    # radius uniformly around the WHOLE perimeter -- not just near the
+    # display window finding 5 is actually about -- reaches into the
+    # comms stack's own real footprint at the -y dome tip. Confirmed
+    # directly: a real ~22mm^3 XIAO-vs-Top interference at almost exactly
+    # `bay.stack3.l76k_pcb`'s own far corner (y -22.2..-23.2, x +-8.88).
+    # The OLD, narrower ring cleared this by construction; the new wider
+    # one doesn't. Cut a keep-out matching that footprint (+1mm margin,
+    # spanning the ring's own z-band) from the ring -- a no-op for
+    # 'current' (XIAO/Wio aren't inserted there) and, near the window
+    # (finding 5's actual target, at the opposite end of the case),
+    # completely unaffected.
+    s3 = p['bay'].get('stack3')
+    if s3 is not None:
+        pcb = s3['l76k_pcb']
+        stack_keepout = box_solid(
+            root, pcb['x'][0] - 1.0, pcb['x'][1] + 1.0, pcb['y'][0] - 1.0, pcb['y'][1] + 1.0,
+            p['lip_z'][0] - 0.5, p['anchor_z'][1] + 0.5)
+        top = combine_cut(root, top, [stack_keepout])
 
     relief_z0, relief_z1 = p['lip_z'][0] - 0.5, p['anchor_z'][1] + 0.5
     relief_z_mid = (relief_z0 + relief_z1) / 2.0
@@ -1185,6 +1235,56 @@ _CIRCULAR_CURVE_TYPES = (
 )
 
 
+def chamfer_stadium_edge_at(root, body, ay, by, r_mm, z_mm, chamfer_mm, tol=0.1):
+    """Best-effort chamfer of a STADIUM-shaped edge loop (a mix of 2
+    straight-line segments and 2 arcs, e.g. the lip/anchor ring's outer
+    radius step) at world z=z_mm, distance r_mm from the spine (|x| in
+    the straight band 0<=y<=50, distance from the nearer spine endpoint
+    in the domed ends) -- `chamfer_edge_at` above only matches circular
+    edges by center+radius, which misses a stadium's straight sides.
+    Matches every edge by its MIDPOINT (works uniformly for line and arc
+    geometry, unlike curveType-specific logic) rather than by center/
+    radius. Best-effort, same pattern as add_fpc_brow's seam fillet: a
+    failed or empty match is not fatal (0 returned), since this is a
+    cosmetic/printability feature, not a dimensional one."""
+    edges = adsk.core.ObjectCollection.create()
+    found = 0
+    for edge in body.edges:
+        bb = edge.boundingBox
+        z0, z1 = bb.minPoint.z / MM, bb.maxPoint.z / MM
+        if abs(z0 - z_mm) > tol or abs(z1 - z_mm) > tol:
+            continue
+        try:
+            ev = edge.evaluator
+            ok, pr0, pr1 = ev.getParameterExtents()
+            if not ok:
+                continue
+            ok2, mid = ev.getPointAtParameter((pr0 + pr1) / 2.0)
+            if not ok2:
+                continue
+        except RuntimeError:
+            continue
+        mx, my = mid.x / MM, mid.y / MM
+        if ay <= my <= by:
+            rho = abs(mx)
+        else:
+            cy = ay if my < ay else by
+            rho = math.hypot(mx, my - cy)
+        if abs(rho - r_mm) < tol:
+            edges.add(edge)
+            found += 1
+    if found == 0:
+        return 0
+    try:
+        chamferFeats = root.features.chamferFeatures
+        inp = chamferFeats.createInput(edges, True)
+        inp.setToEqualDistance(V(chamfer_mm))
+        chamferFeats.add(inp)
+    except RuntimeError:
+        return 0
+    return found
+
+
 def chamfer_edge_at(root, body, center_xy, radius_mm, z_mm, chamfer_mm, tol=0.05):
     """Collect ALL matching circular/arc edges at this center+radius+z --
     Fusion represents even full-circle bore edges as Arc3D (not Circle3D),
@@ -1340,19 +1440,70 @@ def add_case_screws(root, bodies, p, clip_tool=None):
     return bodies
 
 
+POST_WALL_MIN = 1.2  # mm, finding 4: min wall required around the top-post pilot, everywhere the post has ANY material
+
+
 def add_top_posts(root, bodies, p, clip_tool=None):
+    """2026-09-08 pass 9 (finding 4, screen-plate posts snapped): the old
+    POST_CORE_R (1.1mm) -- the narrow, full-height cylinder
+    clipped_pillar_with_reach uses to GUARANTEE the post physically
+    reaches the ceiling (see its own docstring) -- left only a 0.29mm
+    wall around the Ø1.62 pilot at the post's own tip, on every one of
+    P1-P4, regardless of xy position: the "wide" radially-clipped sleeve
+    (full top_post_dia/2) gets clipped away entirely near the ceiling
+    wherever the local cavity boundary is tighter than the post's own
+    radius (see inner_rho_at_z), leaving ONLY the core to provide any
+    material there at all. `core_r` is now derived directly from the
+    pilot + the same POST_WALL_MIN the new verify_post_walls gate checks,
+    so the core alone -- proven to reach the ceiling by construction --
+    already satisfies the wall-around-pilot minimum with no dependency on
+    xy position."""
     top = bodies['Top']
+    pilot_r = p['top_post_pilot_dia'] / 2.0
+    post_r = p['top_post_dia'] / 2.0
+    core_r = min(pilot_r + POST_WALL_MIN, post_r - 0.1)
     for name, (cx, cy) in p['top_posts'].items():
         post = clipped_pillar_with_reach(
-            root, cx, cy, p['top_post_dia'] / 2.0, p['top_post_z'][0], p['top_post_z'][1],
-            p, clip_tool, POST_CORE_R)
+            root, cx, cy, post_r, p['top_post_z'][0], p['top_post_z'][1],
+            p, clip_tool, core_r)
         top = combine_join(root, top, [post])
         if clip_tool is not None:
             top = dedupe_body(root, top, 'Top')
             clip_tool = _refetch_by_name(root, CLIP_TOOL_NAME) or clip_tool
-        hole = cylinder_solid(root, cx, cy, p['top_post_pilot_dia'] / 2.0,
+        top = _refetch_by_name(root, 'Top') or top
+        hole = cylinder_solid(root, cx, cy, pilot_r,
                                p['top_post_pilot_z'][0], p['top_post_pilot_z'][1])
         top = combine_cut(root, top, [hole])
+
+        # finding 4: "root fillet/gusset to the ceiling" -- best-effort
+        # constant-radius fillet on the post's own top circular edge
+        # (center (cx,cy), radius top_post_dia/2, z=top_post_z[1], where
+        # it meets Top's ceiling) for extra strength at the joint. Skipped
+        # (not fatal), same pattern as add_fpc_brow's seam fillet and
+        # add_lug's corner fillets -- a missing fillet here is cosmetic/
+        # structural-bonus, not a dimensional regression (verify_post_
+        # walls checks the actual wall thickness directly, independent of
+        # whether this fillet happens to apply).
+        try:
+            top = _refetch_by_name(root, 'Top') or top
+            fillet_edges = adsk.core.ObjectCollection.create()
+            for edge in top.edges:
+                geo = edge.geometry
+                if geo.curveType not in _CIRCULAR_CURVE_TYPES:
+                    continue
+                c = geo.center
+                if (abs(c.x / MM - cx) < 0.1 and abs(c.y / MM - cy) < 0.1
+                        and abs(c.z / MM - p['top_post_z'][1]) < 0.1
+                        and abs(geo.radius / MM - post_r) < 0.1):
+                    fillet_edges.add(edge)
+            if fillet_edges.count > 0:
+                fillets = root.features.filletFeatures
+                fin = fillets.createInput()
+                fin.addConstantRadiusEdgeSet(fillet_edges, V(1.0), True)
+                fillets.add(fin)
+                top = _refetch_by_name(root, 'Top') or top
+        except RuntimeError:
+            pass
     bodies['Top'] = top
     return bodies
 
@@ -1361,6 +1512,17 @@ def build_screen_plate(root, p):
     po = p['plate_outline']
     z0, z1 = p['plate_z']
     plate = box_solid(root, po['x'][0], po['x'][1], po['y'][0], po['y'][1], z0, z1)
+
+    # 2026-09-08 pass 9 (finding 4): the relocated P1/P2 posts (y=18/24)
+    # sit south of the main outline's own y0 (28.8) -- union a second,
+    # narrower rectangle covering just that west-side post cluster before
+    # the cavity-outline intersect below, so it gets clipped exactly like
+    # the main outline (a no-op everywhere it's already inside the true
+    # cavity, per the params comment's own margin numbers).
+    ext = p.get('plate_south_extension')
+    if ext:
+        ext_box = box_solid(root, ext['x'][0], ext['x'][1], ext['y'][0], ext['y'][1], z0, z1)
+        plate = combine_join(root, plate, [ext_box])
 
     # clip the plate's rectangular corners to the cavity outline, 0.3mm
     # clearance in from the inner wall (2026-09-05 fix): the plate outline
@@ -3986,6 +4148,159 @@ def verify_posts_and_bosses(bodies_dict, p):
     return results
 
 
+def verify_post_walls(bodies_dict, p):
+    """New regression guard (2026-09-08, pass 9, finding 4). Two checks
+    per Top post, both on 8 rays (0,45,...,315 deg) around the post's own
+    axis:
+
+    (a) '<name>_pilot_wall': >= POST_WALL_MIN (1.2mm) of solid material
+    around the Ø1.62 pilot, at 3 z-heights spanning the post's own span
+    (near the plate, mid, near the ceiling). A LIVE point-containment
+    probe (not just trusting the construction), at radius pilot_r +
+    POST_WALL_MIN from the post's axis -- if solid there, real material
+    reaches at least that far given the post's concentric-cylinder
+    construction (pilot hole, core, optional wider clipped sleeve).
+    Returns a list of (angle, z) pairs that came back hollow (empty list
+    = all 8x3 samples solid = pass).
+
+    (b) '<name>_shell_skin': >= 0.6mm of skin between the post's actual
+    OD (top_post_dia/2) and the TRUE outer shell surface, analytic via
+    true_wall_distance_along_ray at the post's own top z (its tightest
+    height, closest to the ceiling fillet's narrowing). Returns a list of
+    (angle, clearance_mm) pairs that came back under the minimum (empty
+    list = pass)."""
+    top = bodies_dict['Top']
+    pilot_r = p['top_post_pilot_dia'] / 2.0
+    post_r = p['top_post_dia'] / 2.0
+    wall_min = POST_WALL_MIN
+    skin_min = 0.6
+    z0, z1 = p['top_post_z']
+    z_samples = [z0 + 0.8, (z0 + z1) / 2.0, z1 - 0.5]
+    angles = [i * 45.0 for i in range(8)]
+    results = {}
+    for name, (cx, cy) in p['top_posts'].items():
+        wall_bad = []
+        for ang in angles:
+            rad = math.radians(ang)
+            dxu, dyu = math.cos(rad), math.sin(rad)
+            for z in z_samples:
+                pt = P(cx + (pilot_r + wall_min) * dxu, cy + (pilot_r + wall_min) * dyu, z)
+                if not probe_point_solid(top, pt):
+                    wall_bad.append((ang, round(z, 2)))
+        results[f'{name}_pilot_wall'] = wall_bad
+
+        skin_bad = []
+        for ang in angles:
+            rad = math.radians(ang)
+            d2 = (math.cos(rad), math.sin(rad))
+            s = true_wall_distance_along_ray(p, (cx, cy), d2, z1)
+            if s is None:
+                continue
+            clear = s - post_r
+            if clear < skin_min:
+                skin_bad.append((ang, round(clear, 3)))
+        results[f'{name}_shell_skin'] = skin_bad
+    return results
+
+
+def probe_bodies_interference_volume(design, body_a, body_b):
+    """Real solid-overlap volume (mm^3) between exactly two standalone
+    bodies -- a minimal, unfiltered variant of check_interference's own
+    bounding-box-volume-proxy technique (see its docstring for why: this
+    Fusion build's `interferenceBody.physicalProperties.volume` always
+    reads 0.0), used where both bodies are throwaway probe tools under
+    our own control rather than named case/board entities that need
+    check_interference's name-based filtering."""
+    coll = adsk.core.ObjectCollection.create()
+    coll.add(body_a)
+    coll.add(body_b)
+    interference_input = design.createInterferenceInput(coll)
+    interference_input.areCoincidentFacesIncluded = False
+    results = design.analyzeInterference(interference_input)
+    if results is None or results.count == 0:
+        return 0.0
+    total = 0.0
+    for i in range(results.count):
+        r = results.item(i)
+        try:
+            bb = r.interferenceBody.boundingBox
+            dx = (bb.maxPoint.x - bb.minPoint.x) / MM
+            dy = (bb.maxPoint.y - bb.minPoint.y) / MM
+            dz = (bb.maxPoint.z - bb.minPoint.z) / MM
+            total += dx * dy * dz
+        except Exception:
+            total = float('inf')
+    return total
+
+
+def find_display_occurrence(root, p):
+    """Locate the inserted display occurrence anywhere under root, by name
+    substring (same convention as get_open_doc) -- it lives directly under
+    root right after build(), or nested under the 'Boards' component once
+    organize_components() has run (verify() always runs after)."""
+    def walk(occ):
+        if p['display_doc_name'] in occ.name or p['display_doc_name'] in occ.component.name:
+            return occ
+        for child in occ.childOccurrences:
+            found = walk(child)
+            if found is not None:
+                return found
+        return None
+    for occ in root.occurrences:
+        found = walk(occ)
+        if found is not None:
+            return found
+    return None
+
+
+def verify_display_insertion_path(design, root, p):
+    """New check (2026-09-08, pass 9, finding 5): can the display module
+    (one rigid inserted occurrence -- glass + PCB + everything else on
+    it) travel straight up (+z) from inside the case, through the
+    lip/anchor ring's own z-band, to its final resting position? Builds a
+    box matching the REAL inserted occurrence's own world bounding box
+    (via _bbox_extents -- no known aggregate-bbox distortion for this
+    board, unlike the L76K's antenna cable), spanning z from just below
+    the ring's own lowest point up to the module's own top (the glass),
+    and measures real interference against the standalone ring reference
+    body (see add_lip_anchor_reliefs) -- isolated to the ring alone, not
+    the general shell, since the question is specifically whether the
+    ring/anchor blocks a from-inside assembly, not whether the module can
+    pass through solid wall (it obviously cannot, and isn't meant to).
+
+    Returns {'ok': None, ...} (not a hard failure) if either the display
+    occurrence or the ring reference body can't be found -- this check is
+    diagnostic/reported per finding 5's own wording ("confirm... and if it
+    only fits from the front, say so"), not gated in verify(), since a
+    real negative result here is an actionable design finding to report,
+    not a build defect to assert against."""
+    ref_occ = find_component_occurrence(root, COMPONENT_REFERENCE)
+    ring_ref = None
+    if ref_occ is not None:
+        for b in ref_occ.component.bRepBodies:
+            if b.name == 'Lip Anchor Ring (reference)':
+                ring_ref = b
+                break
+    occ = find_display_occurrence(root, p)
+    if ring_ref is None or occ is None:
+        return {'ok': None, 'note': f'ring_ref found={ring_ref is not None} display_occ found={occ is not None}'}
+    dx, dy, dz, (cx, cy, cz) = _bbox_extents(occ)
+    x0, x1 = cx - dx / 2.0, cx + dx / 2.0
+    y0, y1 = cy - dy / 2.0, cy + dy / 2.0
+    z_top = cz + dz / 2.0
+    z_lo = p['lip_z'][0] - 1.0
+    sweep = box_solid(root, x0, x1, y0, y1, z_lo, z_top + 0.5)
+    vol = probe_bodies_interference_volume(design, sweep, ring_ref)
+    root.features.removeFeatures.add(sweep)
+    return {
+        'ok': vol <= _TOUCH_VOLUME_TOL_MM3,
+        'interference_mm3': round(vol, 3),
+        'module_bbox_xy': {'x': (round(x0, 2), round(x1, 2)), 'y': (round(y0, 2), round(y1, 2))},
+        'module_top_z': round(z_top, 2),
+        'ring_z_band': p['lip_z'],
+    }
+
+
 def verify_stack3_clearance(board_occs, by_name, p):
     """Regression guard (2026-09-07, pass 7, item 2): the 3-board comms
     stack's real top -- measured live off the inserted Wio occurrence's
@@ -4219,6 +4534,19 @@ def verify(design, params):
     bad_pb = [k for k, ok in posts_bosses_results.items() if not ok]
     assert not bad_pb, f'boss/post missing material (silent-no-op-join regression): {bad_pb}'
 
+    # 2026-09-08 pass 9 (finding 4): the new Ø5/relocated posts' own wall
+    # thickness (around the pilot, and skin to the true outer shell) --
+    # see verify_post_walls' docstring.
+    post_wall_results = verify_post_walls(by_name, params)
+    bad_post_walls = {k: v for k, v in post_wall_results.items() if v}
+    assert not bad_post_walls, f'top post wall/skin check failed: {bad_post_walls}'
+
+    # 2026-09-08 pass 9 (finding 5): from-inside display insertion path --
+    # diagnostic/reported, NOT gated (see verify_display_insertion_path's
+    # docstring for why a real negative result here is an actionable
+    # finding, not a build defect).
+    display_insertion_results = verify_display_insertion_path(design, root, params)
+
     stack3_clearance = verify_stack3_clearance(board_occs, by_name, params)
     assert stack3_clearance['ok'], f'comms stack top too close to Top ceiling: {stack3_clearance}'
 
@@ -4291,6 +4619,8 @@ def verify(design, params):
         'export_envelope_results': export_envelope_results,
         'clearance_results': clearance_results,
         'posts_bosses_results': posts_bosses_results,
+        'post_wall_results': post_wall_results,
+        'display_insertion_results': display_insertion_results,
         'stack3_clearance': stack3_clearance,
         'skin_results': skin_results,
         'wall_results': wall_results,
@@ -4751,6 +5081,10 @@ def run(_context: str, variant=None, export=False):
     print('posts/bosses material checks (True = solid, as expected):')
     for k, v in result.get('posts_bosses_results', {}).items():
         print('  ', k, v)
+    print('top-post wall/skin checks (empty list = pass):')
+    for k, v in result.get('post_wall_results', {}).items():
+        print('  ', k, v)
+    print('display from-inside insertion path (finding 5, diagnostic):', result.get('display_insertion_results'))
     print('comms stack3 ceiling clearance:', result.get('stack3_clearance'))
     print('skin-intact checks: all True?', all(result.get('skin_results', {}).values()))
     print('wall-integrity checks: all True?', all(result.get('wall_results', {}).values()))

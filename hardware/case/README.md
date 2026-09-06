@@ -52,8 +52,11 @@ building it.
 | `export/<variant>/firefly_<variant>_case.3mf` | Native 3MF (2026-09-06, pass 6) containing exactly the 5 printed bodies (`Print — Case` + `Print — Buttons`), for viewers/slicers that read 3MF's per-object structure directly instead of separate STLs. |
 | `export/coupons/coupon_{power,home}_{wall,cap}.stl` | Standalone button fit-test coupons (see Print orientation & settings below). |
 | `export/coupons/firefly_coupons_native.3mf` | Native 3MF (pass 6) with the 4 coupon bodies. |
+| `export/<variant>/firefly_<variant>_plate.3mf` | Packed, print-oriented plate (pass 9 pt 2) — all 5 printed bodies laid out via `tools/stl_to_3mf.py` (Bottom as-is, Top flipped 180° about X, buttons rotated outer-face-down). |
 | `renders/<variant>_{front,top,right,iso}.png` | Orthographic screenshots. |
 | `renders/{power,home}_button_ext.png`, `lanyard_end.png`, `bottom_logo.png`, `plate_underside.png`, `bay_inside.png`, `rim_{lanyard_end,usb_end}.png` | Pass-6 close-up renders, TRIM variant, showing the fixes in this pass. |
+| `renders/pass9c_{trim,current}_{front,top,right,iso}.png` | Pass-9 part-2 orthographic screenshots, both variants (findings 4/5/6). |
+| `renders/pass9c_{posts_closeup,lip_ring_section,lip_chamfer,plate_underside}.png` | Pass-9 part-2 close-ups: the relocated Ø5 posts/header area, the ring near the window, the ring's seam chamfer (wide underside view), and the Screen Plate's new south extension. |
 
 Every exported body (case and coupon) is size-checked at export time
 (`assert_export_body_size`, ≤120mm/≤40mm max extent respectively) as a
@@ -74,8 +77,9 @@ this is the headline subset.
 | Shoulder tangent point ρ | 27.07 | 25.07 |
 | Outer fillet R | 10.0 | 10.0 |
 | Inner fillet R (derived) | 8.0 | 8.0 |
-| Lip ring R | 26.95–27.75 | 24.95–25.75 |
-| Anchor ring R | 26.95–28.40 | 24.95–26.40 |
+| Lip ring R | ~~26.95–27.75~~ 25.95–27.75 *(pass 9 pt 2)* | ~~24.95–25.75~~ 23.95–25.75 *(pass 9 pt 2)* |
+| Anchor ring R | ~~26.95–28.40~~ 25.95–28.40 *(pass 9 pt 2)* | ~~24.95–26.40~~ 23.95–26.40 *(pass 9 pt 2)* |
+| Top post Ø (P1–P4) | ~~4.0~~ 5.0 *(pass 9 pt 2)* | ~~4.0~~ 5.0 *(pass 9 pt 2)* |
 | Window Ø | 45.30 | 45.30 (same, centred (0,50)) |
 | Lanyard tip protrusion beyond wall | 8.5 | 8.5 |
 | Comms bay cavity width | 56 (±28) | 52 (±26) = battery 30 + stack 17.8 + 3×1.4mm gaps |
@@ -1036,33 +1040,272 @@ OVERALL: PASS
 OVERALL: PASS
 ```
 
-### Not completed this pass: findings 4–10
+### Not completed pass 9 part 1: findings 4–10
 
 Findings 4 (plate posts P1–P4 have no wall), 5 (window lip ring
 fragile), 6 (alignment lip chamfer), 7 (wordmark two lines), 8 (antenna
 cable channels), 9–10 (button cap insertion path + Home plunger length),
 and the broader "generic `verify_skin_intact` probes the WHOLE outer
-surface" gate described in the brief, were **not attempted this pass**.
-Reason: this pass's Fusion MCP session was unexpectedly unstable (see
-the infrastructure note above) — isolating and working around the
-per-call timeout, plus one Fusion-side stall that needed several minutes
-to clear on its own (not a code issue; Fusion recovered without a
-restart), consumed the large majority of the session's time budget
-before findings 1/2/3/11 were even confirmed clean end-to-end on both
-variants. Rather than make unverified geometry changes for the remaining
-findings under time pressure — which this project's own history (see the
-pass-6/7 sections above) shows is exactly how silent regressions get
-shipped — they're left for a follow-up pass with its own full
-verification budget. Findings 4 and 5 are related (both concern the
-plate/lip-ring region near the display window) and should likely be
-tackled together; 9/10 (button mechanism) are independent and probably
-the next-easiest to verify in isolation via the existing button coupons.
+surface" gate described in the brief, were **not attempted in the first
+part of this pass**. Reason: that session's Fusion MCP connection was
+unexpectedly unstable (see the infrastructure note above) — isolating
+and working around the per-call timeout, plus one Fusion-side stall that
+needed several minutes to clear on its own (not a code issue; Fusion
+recovered without a restart), consumed the large majority of the
+session's time budget before findings 1/2/3/11 were even confirmed clean
+end-to-end on both variants. **Findings 4, 5, and 6 are fixed in part 2
+of this pass, below** (7, 8, 9–10 remain open — see Known limitations).
 
+## 2026-09-08 pass 9, part 2 (findings 4, 5, 6 — plate posts, window lip
+ring, lip chamfer)
 
+A fresh Fusion MCP session, with its own full verification budget.
+Followed the part-1 infrastructure note's own advice: every `build()`
+stage was run as a separate `fusion_mcp_execute` call against the same
+open document, re-fetching `Bottom`/`Top`/the shared clip tool by name at
+the start of each; `verify()` and the export stages were likewise run as
+separate calls against the already-built document rather than
+re-building from scratch each time.
+
+### Finding 4: screen-plate posts P1–P4 had no real wall
+
+**Confirmed root cause, computed before touching Fusion** (a standalone
+pure-Python script reusing `inner_rho_at_z`/`rho_at_z`/
+`true_wall_distance_along_ray` against the real `PARAMS`, no adsk
+needed): two independent problems, both present on every one of P1–P4
+regardless of position.
+
+1. **`POST_CORE_R` (1.1mm) itself was too thin.** `clipped_pillar_with_
+   reach`'s whole design (see its docstring, pass 6) is that only the
+   narrow, full-height "core" cylinder is PROVEN to reach the ceiling —
+   the wider, radially-clipped "sleeve" gets clipped away entirely
+   wherever the local cavity boundary is tighter than the post's own
+   radius (see `inner_rho_at_z`: near the ceiling, the fillet shrinks the
+   hollow interior's usable radius from the wall's own value down to
+   `fillet_center_rho` exactly at the flat ceiling). With a 1.62mm-dia
+   pilot (0.81mm radius) and `POST_CORE_R`=1.1mm, the wall around the
+   pilot at the post's own tip — the ONE place guaranteed to have any
+   material at all — was only **0.29mm**, on every post, independent of
+   xy. This is very likely the real mechanical cause of "the post by the
+   power button snapped": a paper-thin neck right at the highest-stress
+   point (the screw's own thread-cutting zone).
+2. **P1 and P4's xy positions sat in the crescent between the window
+   bore and the true wall.** Computed directly: at P1/P4's own
+   `top_post_z[1]` (the ceiling), their true-outer-wall clearance
+   (`true_wall_distance_along_ray` minus the post radius) was
+   **negative** — the post already exceeded the true outer surface there
+   — and their distance to the window bore was ~0.5–0.6mm, nowhere near
+   a real minimum. P3 was marginal at Ø4 (~0.11mm to the bore) and went
+   negative at the new Ø5. P2 had plenty of wall margin but was still
+   only ~0.1–0.3mm from the window bore at Ø4/Ø5 — all four were too
+   close to something.
+
+**Fix.** All four posts relocated to **absolute mm, identical in both
+variants** (matching the A/B1/B2/C/D convention already established in
+finding 2): **P1 (−10, 18), P2 (−20, 18), P3 (−10, 24), P4 (−20, 24)** —
+the y 18–24 band south of the display PCB's own bbox (`y` starts 27.6)
+and west of the GPS patch box (`x` starts −2.8; staying at `x <= −10`
+clears the box AND its real printed frame wall, at `x=−4.05`, by
+`>=1.9mm` with no keep-out cut needed at all — computed, not eyeballed).
+This is a plain subset of the brief's candidate zone (b); no keep-out
+into the GPS box turned out to be necessary once the west side was used
+instead of centering on the box. Post diameter **Ø4 → Ø5** (`top_post_
+dia`), since a Ø4 post around a Ø1.62 pilot only has 1.19mm of nominal
+wall — already under the new 1.2mm minimum before any clipping.
+`POST_CORE_R` is now derived, not a flat constant: `core_r =
+pilot_r + POST_WALL_MIN` (0.81+1.2 = **2.01mm**) — the core alone, proven
+by construction to reach the ceiling, now satisfies the wall-around-pilot
+minimum everywhere it exists, with no dependency on xy position at all.
+A best-effort 1.0mm constant-radius fillet ("root fillet/gusset") is
+added at each post's own top edge where it meets the ceiling (same
+best-effort pattern as `add_fpc_brow`'s seam fillet) — confirmed present
+in the built timeline (4 `Fillet` features, one per post, both variants).
+
+**Screen Plate rework.** `PARAMS['plate_south_extension']` (`x
+(-24,-6)`, `y (14,29)`) is unioned onto the plate's existing outline
+before the cavity-outline intersect, reaching the relocated south posts
+without touching the GPS frame (>1.9mm clear) or the header
+cutout/FPC-tab/USB-shell region (all unchanged, north side). S1–S3 board
+standoffs and the existing header cutout are untouched.
+
+**New gate, `verify_post_walls`** — two checks per post, 8 rays (0°,
+45°, ... 315°) each: (a) `<name>_pilot_wall` — live point-containment
+probe at radius `pilot_r + 1.2mm`, at 3 z-heights spanning the post —
+must be solid; (b) `<name>_shell_skin` — analytic `true_wall_distance_
+along_ray` minus the post radius at the post's own top z (its tightest
+height) — must be `>= 0.6mm`. **Both empty (0 bad of 8×3 / 8) for all 4
+posts, both variants** — see the verify() output below.
+
+**A real regression found live, and fixed in the same pass**: after
+relocating the posts, a full `verify()` run reported a genuine ~22mm³
+interference between Top and the XIAO board's own body — traced to
+finding 5's ring-widening (below) reaching, at the OTHER end of the ring
+(the −y comms-stack dome tip, nowhere near P1–P4 or the window), into
+the stack's real footprint. See finding 5's own section for the fix — it
+turned out to be a ring issue, not a post issue, but is recorded here too
+since it was this finding's own `verify()` run that caught it.
+
+### Finding 5: window lip ring fragile
+
+**Root cause of the OUTER-radius ceiling on how much the ring could be
+thickened**: `lip_r[1]`/`anchor_r[1]` are not arbitrary — `lip_r[1]`
+(27.75 current / 25.75 trim) sets the SPEC'd 0.25mm nesting clearance
+between the lip and Bottom's own true inner wall (`outer_radius - wall`),
+and `anchor_r[1]` (28.40 / 26.40) is a deliberate ~0.4mm reach PAST that
+same wall so the anchor band actually fuses into Top's shell on join
+(SPEC: "so it fuses"). Both are load-bearing/fit-critical and were left
+alone. The ring's z-band (9.2–11) sits entirely below the display glass
+(z 20.3+) and PCB (z 17.59+, both +3 for trim) — **no z-overlap with the
+display at all** — so thickening the ring **inward** (shrinking `lip_r
+[0]`/`anchor_r[0]`) can never touch the display's own 0.25mm clearance,
+regardless of how far in it goes at the window end. Widened both bands
+from 0.8mm to **1.8mm** (>= the 1.6mm minimum) by moving the shared inner
+edge in by 2.0mm: trim 24.95→23.95, current 26.95→25.95 (both `lip_r[0]`
+and `anchor_r[0]`, preserving the existing invariant that they match).
+
+**Finding 6's chamfer, same function**: the lip(outer)→anchor(outer)
+radius step at `z=anchor_z[0]` (10.0) — the anchor is wider than the lip
+directly below it — is a flat horizontal shelf whose CAD-space +Z-facing
+top surface becomes a downward-facing, unsupported overhang once Top
+prints flipped (face-down on its flat `z=top_z` face — **Top is the half
+that carries the lip**, per SPEC, and per how `add_lip_anchor_reliefs`
+joins it into `bodies['Top']`). Beveled with a new `chamfer_stadium_
+edge_at` helper (the ring's edge loop is a line+arc "stadium" shape, not
+a plain circle, so the existing `chamfer_edge_at` — which matches by
+center+radius — doesn't apply; the new one matches every edge by its
+MIDPOINT, whether line or arc geometry, against the same rho-from-spine
+convention used throughout the file). `PARAMS['lip_ring_seam_chamfer']`
+= 0.5mm, best-effort (skipped, not fatal, on failure — same pattern as
+`add_fpc_brow`). Confirmed present in the built timeline (`Chamfer1`,
+right after the ring is joined, both variants) and confirmed clean by
+the offline overhang scan (see below) — 0 bad clusters on Top, both
+variants, with no new whitelist entry needed.
+
+**A real regression found live** (not by inspection): after widening the
+ring, a full `verify()` run on trim reported a genuine interference
+(`('Body1', 'Top', 22.1954)`, bbox `x ±8.88, y -22.2..-23.2, z 9.3..10.6`)
+— XIAO's own body against Top. Root cause: widening the ring's inner
+radius applies around the WHOLE perimeter, not just near the window —
+at the far end (the −y comms-stack dome tip), the new, wider ring reaches
+almost exactly into `bay.stack3.l76k_pcb`'s own far corner (`x ±8.9, y
+-24..-1.5`), which the OLD, narrower ring cleared by construction. Fixed
+by cutting a keep-out matching that footprint (+1mm margin, spanning the
+ring's own z-band) from the ring — a no-op for `current` (XIAO/Wio aren't
+inserted there) and, near the window (this finding's actual target, at
+the opposite end of the case), completely unaffected. Re-verified clean
+(`interference []`) on both variants afterward.
+
+**From-inside insertion path — confirmed NOT possible, both variants.**
+New function `verify_display_insertion_path`: a standalone copy of the
+merged lip+anchor ring is kept as a hidden reference body (`Lip Anchor
+Ring (reference)`, swept into `Reference — not printed` like the other
+build-tool solids); a box matching the REAL inserted display occurrence's
+own world bounding box (glass + PCB + everything on it, via
+`_bbox_extents` — no known aggregate-bbox distortion for this board,
+unlike the L76K's antenna cable) is swept from just below the ring's own
+lowest z up to the module's own top, and checked for real interference
+against the ring alone (isolated from the general shell — the question
+is specifically whether the ring/anchor blocks assembly, not whether the
+module can pass through solid wall, which it obviously cannot and isn't
+meant to). Result: **`interference_mm3` = 1176.9 (trim) / 805.3
+(current)** — large, real numbers, not a numerical artifact. This
+matches a simple hand-check: the display PCB's own diagonal (`display_
+pcb` 39.2×41.4 → ~57mm) is bigger than the window bore itself (Ø45.30),
+so no orientation or ring width can make a straight vertical (or
+front-through-the-bore) insertion work — the PCB is physically larger
+than the hole in every direction. **Conclusion, per the brief's own
+fallback**: the module does not fit "from inside" (up through the
+already-assembled shell) OR "from the front" (through the window bore) —
+it must be seated into **Top's own open underside before Bottom is
+attached** (Top and Bottom are two separate, unassembled shells at that
+point in the build; the module is placed once, then Bottom closes over
+it). **Assembly order, added to Print orientation below**: (1) seat the
+display module (glass up into the window bore, PCB resting under the
+lip/anchor/posts) into the separate Top half; (2) place the comms-bay
+hardware (battery, stack, GPS patch, L76K) into the separate Bottom half;
+(3) join Bottom and Top together over both. This is not a new
+restriction the fix introduced — it was already the only physically
+possible order (the window bore was always smaller than the PCB); this
+pass is the first to have actually checked and documented it.
+
+### verify() output, both variants (pass 9 part 2)
+
+```
+trim:    VERIFY OK
+         body_names ['Bottom', 'Home Button', 'Power Button', 'Screen Plate', 'Top']
+         interference []
+         posts_bosses bad []
+         post_wall_results  P1/P2/P3/P4 pilot_wall [] and shell_skin [] (8 rays each)
+         display_insertion_results {'ok': False, 'interference_mm3': 1176.916,
+             'module_bbox_xy': {'x': [-22.39, 22.39], 'y': [27.61, 73.12]},
+             'module_top_z': 28.0, 'ring_z_band': [9.2, 10.0]}
+         stack3_clearance {'stack_top_z': 22.942, 'clearance_found': 4.158, 'required': 0.8, 'ok': True}
+         fpc_relief bad [] / skin bad [] / wall bad []
+
+current: VERIFY OK
+         body_names ['Bottom', 'Home Button', 'Power Button', 'Screen Plate', 'Top']
+         interference []
+         posts_bosses bad []
+         post_wall_results  P1/P2/P3/P4 pilot_wall [] and shell_skin [] (8 rays each)
+         display_insertion_results {'ok': False, 'interference_mm3': 805.308,
+             'module_bbox_xy': {'x': [-22.39, 22.39], 'y': [27.61, 73.12]},
+             'module_top_z': 25.0, 'ring_z_band': [9.2, 10.0]}
+         fpc_relief bad [] / skin bad [] / wall bad []
+```
+
+All other gates (M1/M2 probes, envelope, export-envelope, outer-bump,
+min-clearances, `verify_posts_and_bosses`) also green on both variants —
+same full sweep as pass 9 part 1, re-run end to end.
+
+### Offline STL scan output, part 2 (both variants)
+
+```
+=== Offline STL checks: trim ===
+Bottom: manifold (0 non-manifold edges), envelope ok, overhang bad_clusters_mm2 []
+Top:    manifold (0 non-manifold edges), envelope ok, overhang bad_clusters_mm2 []
+Screen_Plate / Power_Button / Home_Button: manifold ok, envelope ok
+OVERALL: PASS
+
+=== Offline STL checks: current ===
+... (same)
+OVERALL: PASS
+```
+
+### Exports, part 2
+
+Both variants: `export/<variant>/{Bottom,Top,Screen_Plate,Power_Button,
+Home_Button}.stl`, `export/<variant>/firefly_<variant>_case.3mf` (native,
+5 objects each, re-verified by object count), `export/<variant>/
+firefly_<variant>_plate.3mf` (new — packed, print-oriented plate: Bottom
+as-is, Top flipped 180° about X, Screen Plate as-is, both buttons rotated
+outer-face-down, via `tools/stl_to_3mf.py`), and the coupon STLs/3MF
+(unchanged geometry, re-exported as a byproduct of running the export
+pipeline again). Renders: `pass9c_{trim,current}_{front,top,right,iso}.
+png` (standard 4-view, both variants) plus 4 close-ups — `pass9c_posts_
+closeup.png` (interior view from below near the P1–P4/display-header
+area, Bottom hidden), `pass9c_lip_ring_section.png` (close interior view
+looking up at the ring/header area near the window — a literal Fusion
+section-analysis cut was attempted first but did not visibly crop the
+saved screenshot in this session, so this is a close, unsectioned
+interior view instead; the ring's stepped profile is visible in it),
+`pass9c_lip_chamfer.png` (wide isometric of Top's whole underside showing
+the ring running the full perimeter), `pass9c_plate_underside.png` (the
+Screen Plate alone, underside view, showing the new south extension and
+its 4 holes). All viewed directly (not just generated) as part of this
+pass.
 
 - **Bottom**: print face-down on its flat z=0 face (the KandiWooks
   wordmark side).
-- **Top**: print face-down on its flat z=25 face (the flare-glyph side).
+- **Top**: print face-down on its flat z=25 face (the flare-glyph side;
+  **Top carries the alignment lip/anchor ring** — see finding 6 above for
+  its seam chamfer, added specifically so it prints support-free in this
+  orientation).
+- **Assembly order** (finding 5): seat the display module into the
+  separate Top half first (glass up into the window bore, PCB under the
+  lip/anchor/posts), place the comms-bay hardware into the separate
+  Bottom half, then join Bottom and Top — the display module does not fit
+  through the window bore or up through the assembled shell (its own PCB
+  is physically larger than the bore in every direction).
 - **Screen Plate**: flat, either face down.
 - **Power Button / Home Button**: print outer-face-down (the stadium head
   face), with a brim — the caps are small with a fine plunger/tab feature
@@ -1092,7 +1335,7 @@ length. Current per-variant screw map:
 | M2×12 socket head | 4 | ✓ | ✓ | Bottom bosses A/B1/B2/C → Top bosses (Ø1.62 pilot, z 10–19.1 — parting-plane anchored, unchanged by case height) |
 | M2×10 socket head | 1 | ✓ | | Bottom boss D → Screen Plate post (Ø1.62, z 10–13.1) |
 | M2×12 socket head | 1 | | ✓ | Bottom boss D → Screen Plate post (Ø1.62, z 10–16.1 — grows with trim's +3mm case height; same 4.0mm counterbore, so ~12.1mm of real engagement now needs the next size up from M2×10) |
-| M2×6 socket head | 4 | ✓ | ✓ | Top posts P1–P4 → Screen Plate (Ø1.62 pilot, z 14.1–20.6 current / 17.1–23.6 trim — same 6.5mm span, shifts with the plate) |
+| M2×6 socket head | 4 | ✓ | ✓ | Top posts P1–P4 (**Ø5, was Ø4 — see pass-9 part-2 "Finding 4"**) → Screen Plate (Ø1.62 pilot, z 14.1–20.6 current / 17.1–23.6 trim — same 6.5mm span, shifts with the plate) |
 | M2×4 socket head | 3 | ✓ | ✓ | Screen Plate → board SMT standoffs S1–S3 |
 
 So **trim now needs 5×M2×12 + 4×M2×6 + 3×M2×4** (12 screws total, same
@@ -1131,6 +1374,18 @@ the true wall distance too, with (2026-09-08 pass 9) a hard minimum
 clearance over the boss's own OD (`MIN_RELIEF_CLEARANCE`) so a
 too-close boss fails loudly instead of leaving a sliver — see the pass-9
 "Finding 11" section above.
+
+**Screen-plate post P1–P4 xy positions** (2026-09-08 pass 9 part 2 —
+see "Finding 4" above for why the pass-6/SPEC positions below snapped
+in Jake's print and why the fix is a reposition, not just a diameter
+bump): ABSOLUTE mm, identical in both variants, like A/B1/B2/C/D.
+
+| Post | current | trim |
+|---|---|---|
+| P1 | (−10.0, 18.0) | (−10.0, 18.0) *(was (−23.63, 58.84))* |
+| P2 | (−20.0, 18.0) | (−20.0, 18.0) *(was (−13.0, 31.8))* |
+| P3 | (−10.0, 24.0) | (−10.0, 24.0) *(was (17.0, 32.0))* |
+| P4 | (−20.0, 24.0) | (−20.0, 24.0) *(was (19.89, 65.47))* |
 
 ## Known limitations / deviations from SPEC.md
 
@@ -1219,15 +1474,40 @@ reason" per the milestone instructions.
     "trim pins to 1mm stubs" step couldn't be validated. That whole
     B2B/3-board-stack/case-height exploration was reverted in this pass
     (see below) rather than shipped half-verified.
-13. **Findings 4–10 from Jake's pass-7 print review are not yet fixed**
-    (plate posts P1–P4, window lip ring, alignment lip chamfer, wordmark
-    two-line layout, antenna cable channels, button cap insertion path,
-    Home plunger length) — see the pass-9 section's "Not completed this
-    pass" note for why and suggested grouping for a follow-up pass. The
-    generic "`verify_skin_intact` probes the WHOLE outer surface, not
-    named footprints" rework requested alongside them is also not done;
-    the existing narrower `verify_skin_intact` (button tab holes only,
-    see item 11 above) is unchanged.
+13. ~~Findings 4–10 from Jake's pass-7 print review are not yet fixed~~
+    **Findings 4 (plate posts P1–P4), 5 (window lip ring), and 6
+    (alignment lip chamfer) RESOLVED 2026-09-08 (pass 9, part 2)** — see
+    that section above for root cause/fix/gate on all three. Findings 7
+    (wordmark two-line layout), 8 (antenna cable channels), and 9–10
+    (button cap insertion path, Home plunger length) are still open —
+    9/10 (button mechanism) are independent of 4–6 and probably the
+    next-easiest to verify in isolation via the existing button coupons.
+    The generic "`verify_skin_intact` probes the WHOLE outer surface, not
+    named footprints" rework requested alongside the original 4–10 list
+    is also still not done; the existing narrower `verify_skin_intact`
+    (button tab holes only, see item 11 above) is unchanged.
+14. **Display module cannot be inserted "from inside" or "from the
+    front"** (confirmed 2026-09-08, pass 9 part 2, finding 5): the
+    module's own PCB (39.2×41.4mm, ~57mm diagonal) is larger than the
+    window bore (Ø45.30) in every direction, so it must be seated into
+    the separate, unassembled Top half before Bottom is joined on — see
+    the Print orientation section's "Assembly order" bullet. This is a
+    property of the real hardware (the PCB is simply bigger than the
+    bore), not a defect introduced by this generator, but it's a real
+    constraint on how the case must be assembled and is documented here
+    per the "any deviation from SPEC.md" reporting requirement (SPEC.md
+    does not specify an assembly order).
+15. **The lip/anchor ring's seam chamfer (finding 6) and the top-post
+    root fillets (finding 4) are best-effort Fusion chamfer/fillet
+    features**, same pattern as `add_fpc_brow`'s seam fillet and `add_
+    lug`'s corner fillets elsewhere in this file — skipped (not fatal)
+    if the feature call itself fails on a given edge selection. Confirmed
+    present in the built timeline this pass (1 `Chamfer` + 4 `Fillet`
+    features, both variants) and confirmed clean by the offline overhang
+    scan, but there is no dedicated live geometric probe that the
+    chamfer/fillets specifically exist beyond that indirect evidence —
+    a follow-up pass could add one (e.g. a point-containment check just
+    outside the un-chamfered corner's theoretical position).
 
 **Reverted mid-pass-6, not shipped**: the coordinator's later messages in
 this pass requested (a) swapping the Wio/XIAO stack to a board-to-board

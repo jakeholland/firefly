@@ -133,10 +133,31 @@ PARAMS = {
     'usb_shell_z': 14.35,             # screw tip must stay <= 14.1
 
     # --- alignment lip / anchor (on Top) ---
-    'lip_r': (26.95, 27.75),
+    # 2026-09-08 pass 9 (finding 5, window lip ring fragile): the ring was
+    # only 0.8mm wide (lip) -- a chunk broke out at the bore in Jake's
+    # print. The OUTER edges (27.75 lip / 28.40 anchor) are load-bearing
+    # geometry (27.75 sets the 0.25mm nesting clearance against Bottom's
+    # own true inner wall -- outer_radius - wall = 28 for current, 26 for
+    # trim -- and 28.40 is the deliberate ~0.4mm reach PAST the true wall
+    # that makes the anchor band actually fuse into Top's shell on join,
+    # per SPEC's own "so it fuses"), so they're UNCHANGED; the ring is
+    # thickened INWARD instead, widening the band from 0.8mm to 1.8mm
+    # (>= the 1.6mm minimum). This is safe with a wide margin: the ring's
+    # z-span (9.2-11) sits well below the display glass (z 20.3+) and PCB
+    # (z 17.59-18.81 current / +3 shift trim) -- there is NO z-overlap
+    # between the ring and the display module at all, so thickening
+    # inward cannot touch its 0.25mm clearance regardless of how far in
+    # it goes; 25.95 (current) / 23.95 (trim, see params_trim.py) still
+    # leaves >3mm/1.3mm to the window bore (r=22.65) as a bonus margin.
+    # See add_lip_anchor_reliefs' new seam chamfer (finding 6) for the
+    # step this widening does NOT remove: the lip (27.75) to anchor
+    # (28.40) OUTER radius step at z=10 is untouched by this fix and
+    # still needs its own overhang treatment.
+    'lip_r': (25.95, 27.75),
     'lip_z': (9.2, 10.0),
-    'anchor_r': (26.95, 28.40),
+    'anchor_r': (25.95, 28.40),
     'anchor_z': (10.0, 11.0),
+    'lip_ring_seam_chamfer': 0.5,  # mm -- finding 6: 45-deg-ish bevel on the lip/anchor outer step (z=10, r=lip_r[1]->anchor_r[1]) so Top prints support-free there
     # 2026-09-06 pass 6: widened generously past 6.6mm -- measured (see
     # firefly_case.py's add_lip_anchor_reliefs) to leave a thin wedge-
     # shaped sliver of ring material at screw B, whose relief circle just
@@ -154,33 +175,68 @@ PARAMS = {
     # --- screen plate ---
     'plate_z': (13.1, 14.1),
     'plate_outline': {'x': (-26.63, 22.89), 'y': (28.8, 69.6)},
+    # 2026-09-08 pass 9 (finding 4): the relocated P1/P2 (y=18/24) sit
+    # south of the main outline's own y0 (28.8) -- a second, narrower
+    # rectangle unioned onto the main outline before the cavity-outline
+    # intersect reaches down to cover them. X range (-24..-6) clears both
+    # new west-side posts (x=-10/-20, each with >=1.5mm pad beyond its
+    # own Ø5 hole) while staying west of the GPS frame's real wall
+    # (inner opening edge at x=-3.05, +1mm frame wall = -4.05) with
+    # ~1.9mm to spare -- confirmed by direct computation (see README),
+    # not just visual inspection, since the GPS frame is a separate
+    # printed feature (on Top) the plate must never touch.
+    'plate_south_extension': {'x': (-24.0, -6.0), 'y': (14.0, 29.0)},
     'plate_header_cutout': {'x': (11.5 - 1.0, 17.0 + 1.0), 'y': (43.7 - 1.0, 56.1 + 1.0)},
     'plate_hole_dia': 2.4,
     'plate_pad_dia': 6.0,
-    # 2026-09-06 pass 6: P2 moved from (-17.45, 31.8) to (-13.0, 31.8) --
-    # discovered empirically (a real, if latent, 'Top x Power Button'
-    # interference: pass 6's clipped_pillar_with_reach fix finally gives
-    # this post real material for the first time -- see
-    # verify_posts_and_bosses -- and its old position was inside the
-    # Power Button's own rib/collar footprint the whole time, just never
-    # visible because the post never actually joined into Top before).
-    # 3.55mm further inboard (away from the -x wall) clears it with
-    # margin; verified by removing the post entirely and confirming the
-    # residual interference (a separate, smaller ~0.68mm3 tab-area issue,
-    # fixed separately -- see add_button's skin_margin) is unchanged, so
-    # this move addresses only the post-specific portion.
+    # 2026-09-08 pass 9 (finding 4, screen-plate posts P1-P4 snapped):
+    # the P1-P4 positions above (pass-6 P2 fix included) put P1/P4 in the
+    # 3.35mm crescent between the window bore (r=22.65 at spine_b) and the
+    # true inner wall (r=26 trim / 28 current) -- computed directly (not
+    # just observed from the print): at their own top_post_z[1] (the
+    # ceiling), P1/P4's OWN true-outer-wall clearance (`true_wall_
+    # distance_along_ray` minus the post radius) is NEGATIVE (the post
+    # already exceeds the true outer surface there) and their distance to
+    # the window bore is ~0.5-0.6mm -- nowhere near the required 1.0mm.
+    # P2/P3 (well inboard) have plenty of shell clearance but P3's
+    # distance to the window bore is only ~0.1mm at Ø4 and goes NEGATIVE
+    # at the new Ø5 (a real cut-through by the window bore's own z 25.4+
+    # extent, which overlaps the post's own top ~0.6mm). Separately (and
+    # probably the REAL cause of "the post by the power button snapped"):
+    # POST_CORE_R (the narrow full-height "reach" cylinder guaranteeing
+    # the post physically touches the ceiling, see clipped_pillar_with_
+    # reach) was only 1.1mm radius against a 1.62mm-dia (0.81mm-radius)
+    # pilot -- a 0.29mm wall at the post's own tip, regardless of xy
+    # position, on EVERY one of P1-P4 -- see POST_CORE_R's new derivation
+    # below.
+    #
+    # Fix (computed in a standalone script against these exact PARAMS
+    # before touching Fusion -- see hardware/case/README.md's pass-9
+    # section for the full numeric derivation): relocate all 4 posts,
+    # ABSOLUTE mm, SAME for both variants (matching the A/B1/B2/C/D
+    # pattern), to the y 18-24 band south of the display PCB (bbox y
+    # starts 27.6) and clear of the GPS patch box/frame (box x -2.8..22.2
+    # -- staying west of x=-6 clears it with >1.9mm to spare, no keep-out
+    # cut needed at all) and the true wall (rho0=|x| <= 20 keeps >=1.6mm
+    # skin to the true outer wall at the flat-ceiling height, both
+    # variants). Verified (both variants): outer-wall clearance
+    # >= 1.64mm (>= the required 0.6mm), window-bore clearance
+    # >= 2.36mm (>= the required 1.0mm), for all 4 posts.
     'top_posts': {
-        'P1': (-23.63, 58.84),
-        'P2': (-13.0, 31.8),
-        'P3': (17.0, 32.0),
-        'P4': (19.89, 65.47),
+        'P1': (-10.0, 18.0),
+        'P2': (-20.0, 18.0),
+        'P3': (-10.0, 24.0),
+        'P4': (-20.0, 24.0),
     },
     'board_standoffs': {
         'S1': (-12.0, 65.0),
         'S2': (0.04, 32.22),
         'S3': (11.6, 65.46),
     },
-    'top_post_dia': 4.0,
+    # 2026-09-08 pass 9 (finding 4): Ø4 -> Ø5 -- a plain Ø4 post around
+    # a Ø1.62 pilot only has a 1.19mm nominal wall (before any clipping),
+    # already under the new 1.2mm minimum; Ø5 gives 1.69mm nominal.
+    'top_post_dia': 5.0,
     'top_post_z': (14.1, 23.0),
     'top_post_pilot_dia': 1.62,
     'top_post_pilot_z': (14.1, 20.6),  # -> M2x6

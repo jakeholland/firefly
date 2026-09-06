@@ -49,8 +49,14 @@ PARAMS['flat_rho'] = 22.14                  # 24.14 - 2
 #     into that position, so current (flat_rho=24.14) inherits even more. ---
 
 # --- alignment lip / anchor (shrink by the same 2mm as the shoulder) ---
-PARAMS['lip_r'] = (24.95, 25.75)
-PARAMS['anchor_r'] = (24.95, 26.40)
+# 2026-09-08 pass 9 (finding 5, ring thickened 0.8mm -> 1.8mm): OUTER
+# edges (25.75 lip / 26.40 anchor) unchanged -- same reasoning as
+# params_current.py (0.25mm nesting clearance / deliberate anchor-fuse
+# reach past trim's true wall, outer_radius-wall=26) -- only the INNER
+# edge moves in by 2.0mm to grow the band from 0.8mm to 1.8mm wide,
+# exactly mirroring current's 27.75->25.95 (also -1.8mm).
+PARAMS['lip_r'] = (23.95, 25.75)
+PARAMS['anchor_r'] = (23.95, 26.40)
 
 # --- lanyard lug/ear: no override needed (2026-09-06 pass 6) ---
 # The ear's position is now derived at BUILD TIME from the shell's TRUE
