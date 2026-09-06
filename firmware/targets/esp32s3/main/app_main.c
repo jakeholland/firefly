@@ -67,13 +67,22 @@
 #include "mc_transport_uart.h" /* S15c — the real mesh transport, comms brain over GPIO43/44 */
 #endif
 
-#include "esp_heap_caps.h" /* PSRAM allocs: shell + demo festpack */
+#include "esp_heap_caps.h" /* PSRAM allocs: shell + demo/field festpack */
 #if CONFIG_FF_DEMO_MODE /* S20 — the festpack is allocated in PSRAM (see s_demo_pack) */
 #include "ff_demo.h"       /* S20 — demo-mode seeding */
 #if CONFIG_FF_DEMO_LIVE
 #include "ff_demoapply.h" /* S23c — apply an emitted event through the real inbound seam */
 #include "ff_demofeed.h"  /* S23a — the deterministic synthetic event generator */
 #endif
+#endif
+
+/* S05 field festpack and S20 demo mode are mutually exclusive: a live
+ * field build never also seeds the fictional demo world. Kconfig's
+ * `depends on !FF_DEMO_MODE` on FF_FIELD_PACK already prevents this
+ * through menuconfig; this is the compile-time backstop against a
+ * hand-edited sdkconfig setting both directly. */
+#if CONFIG_FF_DEMO_MODE && CONFIG_FF_FIELD_PACK
+#error "CONFIG_FF_DEMO_MODE and CONFIG_FF_FIELD_PACK are mutually exclusive — pick one"
 #endif
 
 static const char *TAG = "firefly";
@@ -189,6 +198,25 @@ static uint32_t ff_demo_clock_now_ms(void *user)
     (void)user;
     return ff_demo_now_ms();
 }
+#endif
+
+#if CONFIG_FF_FIELD_PACK
+/* S05 field festpack (live/field builds, mutually exclusive with
+ * CONFIG_FF_DEMO_MODE — see the #error above). The parsed festpack lives
+ * in PSRAM, same "beside the shell" placement as s_demo_pack above and
+ * for the same reason: ~48KB budget, read a few times a minute, not a
+ * hot per-tick structure that belongs in internal SRAM. Populated by
+ * ff_shell_load_pack below via the shell's cfg.pack. */
+static fp_pack_t *s_field_pack;
+/* S26 slice (a) — the jsmn token scratch fp_parse tokenizes into while
+ * parsing the field festpack above. Same "PSRAM, never internal DIRAM,
+ * intentionally never freed" contract as s_demo_toks above: the shell
+ * stores cfg.toks (ff_shell_cfg_t.toks) and reuses this same pointer on
+ * every subsequent ff_shell_load_pack call for the shell's whole
+ * lifetime, not just this one boot-time parse. */
+static jsmntok_t *s_field_toks;
+extern const uint8_t lost_lands_pack_start[] asm("_binary_lost_lands_2026_festpack_json_start");
+extern const uint8_t lost_lands_pack_end[] asm("_binary_lost_lands_2026_festpack_json_end");
 #endif
 
 /* The monotonic "now" every ff_shell_tick in this file uses: the demo's
@@ -1029,9 +1057,30 @@ void app_main(void)
     }
     cfg.toks = s_demo_toks;
     cfg.ntoks = FP_MAX_TOKENS;
+#elif CONFIG_FF_FIELD_PACK
+    /* S05 — same PSRAM pack + jsmn-scratch arrangement as the demo path
+     * above, just for the real field festpack instead of the fictional
+     * demo one (the two configs are mutually exclusive — see the #error
+     * near the top of this file). cfg.pack/cfg.toks must be set BEFORE
+     * ff_shell_init, which copies them into the shell for every future
+     * ff_shell_load_pack call (ff_shell_cfg_t.pack/.toks doc comments). */
+    s_field_pack = heap_caps_malloc(sizeof(*s_field_pack), MALLOC_CAP_SPIRAM);
+    if (s_field_pack == NULL) {
+        ff_park("field festpack PSRAM alloc failed");
+        return;
+    }
+    cfg.pack = s_field_pack; /* ff_shell_load_pack (below, after ff_shell_init) parses into this */
+
+    s_field_toks = heap_caps_malloc((size_t)FP_MAX_TOKENS * sizeof(jsmntok_t), MALLOC_CAP_SPIRAM);
+    if (s_field_toks == NULL) {
+        ff_park("field festpack token-scratch PSRAM alloc failed");
+        return;
+    }
+    cfg.toks = s_field_toks;
+    cfg.ntoks = FP_MAX_TOKENS;
 #endif
     /* cfg.haptic left zeroed — see slice a (no haptic HAL yet). cfg.pack
-     * set above only under CONFIG_FF_DEMO_MODE.
+     * set above only under CONFIG_FF_DEMO_MODE or CONFIG_FF_FIELD_PACK.
      *
      * cfg.transport (S15c): CONFIG_FF_LINK_UART wires the real comms-
      * brain transport here, BEFORE ff_shell_init — ff_shell_cfg_t.transport
@@ -1134,6 +1183,31 @@ void app_main(void)
          * off — a field image carries no loopback symbol and keeps the real
          * mc_send path. */
         ff_shell_set_sender(&s_shell, ff_demo_loopback_sender());
+    }
+#elif CONFIG_FF_FIELD_PACK
+    /* S05 field festpack — live (non-demo) mode. Loads the real Lost
+     * Lands 2026 pack into the shell so the MAP face gets a real origin,
+     * Settings gets a real UTC offset, and the wall-clock plausibility
+     * window tightens to the festival's own dates. Nothing else: no
+     * crew, no positions, no clock latch — those come only from the real
+     * mesh (honest data, CLAUDE.md). Placed here, in the exact same spot
+     * the demo build's ff_demo_seed runs (after ff_shell_init has copied
+     * cfg.pack/cfg.toks into the shell, before the mesh link's want_config
+     * handshake can deliver its first inbound event), so a field build
+     * never seeds anything the mesh itself is about to supply. */
+    {
+        size_t const pack_len = (size_t)(lost_lands_pack_end - lost_lands_pack_start);
+        int const prc = ff_shell_load_pack(&s_shell, (char const *)lost_lands_pack_start, pack_len);
+        /* S26 slice (a) — s_field_toks is deliberately NOT freed here, same
+         * reasoning as s_demo_toks above: the shell stores cfg.toks and
+         * reuses this pointer on every future ff_shell_load_pack call. */
+        if (prc != 0) {
+            ESP_LOGE(TAG, "S05 field pack load failed (%d) — festpack parse error", prc);
+        } else {
+            ESP_LOGI(TAG, "S05 field pack loaded: %s %u (doy %u..%u) — %u byte festpack, no seeding",
+                     s_field_pack->name, (unsigned)s_field_pack->year, (unsigned)s_field_pack->start_doy,
+                     (unsigned)s_field_pack->end_doy, (unsigned)pack_len);
+        }
     }
 #endif
 

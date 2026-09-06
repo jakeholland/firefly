@@ -5,6 +5,15 @@
 # set. Path is relative to this component dir, up to firmware/assets/demo/.
 set(FF_DEMO_EMBED "${CMAKE_CURRENT_LIST_DIR}/../../../assets/demo/firefly-fields.festpack.json")
 
+# S05 — the field festpack (CONFIG_FF_FIELD_PACK, mutually exclusive with
+# CONFIG_FF_DEMO_MODE — see Kconfig.projbuild). Same EMBED_FILES treatment
+# as the demo pack above: the symbol derives from the filename,
+# _binary_lost_lands_2026_festpack_json_{start,end}. Embedded
+# unconditionally (a few KB of rodata, same as the demo pack); app_main
+# only parses it when CONFIG_FF_FIELD_PACK is set. See
+# firmware/assets/field/README.md for where this file comes from.
+set(FF_FIELD_EMBED "${CMAKE_CURRENT_LIST_DIR}/../../../assets/field/lost-lands-2026.festpack.json")
+
 idf_component_register(
     SRCS
         "app_main.c"
@@ -33,7 +42,7 @@ idf_component_register(
     # esp_driver_usb_serial_jtag/CMakeLists.txt) — no driver_install() call,
     # no sdkconfig change needed here.
     PRIV_REQUIRES esp_timer freertos nvs_flash esp_system esp_driver_usb_serial_jtag
-    EMBED_FILES "${FF_DEMO_EMBED}"
+    EMBED_FILES "${FF_DEMO_EMBED}" "${FF_FIELD_EMBED}"
 )
 
 target_compile_options(${COMPONENT_LIB} PRIVATE -Wall -Wextra -Werror)

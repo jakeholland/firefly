@@ -1,0 +1,188 @@
+{
+  "festpack": "0.1",
+  "festival": {
+    "name": "Lost Lands",
+    "slug": "lost-lands",
+    "year": 2026,
+    "start": "2026-09-18",
+    "end": "2026-09-20",
+    "timezone": "America/New_York",
+    "venue": {
+      "name": "Legend Valley",
+      "lat": 39.9387,
+      "lon": -82.4027,
+      "approximate": true
+    }
+  },
+  "stages": [
+    { "id": "prehistoric", "name": "Prehistoric Stage", "color": "#ffc66b" },
+    { "id": "wompy-woods", "name": "Wompy Woods", "color": "#4fd8c4" },
+    { "id": "subsidia", "name": "Subsidia Stage", "color": "#ff5ca8" },
+    { "id": "forest", "name": "Forest Stage", "color": "#9be07b" },
+    { "id": "crater", "name": "The Crater", "color": "#b08cff" },
+    { "id": "raptor-alley", "name": "Raptor Alley", "color": "#5aa7e6" },
+    { "id": "grove", "name": "The Grove", "color": "#e0c47b" }
+  ],
+  "schedule": [
+    { "artist": "Caspa", "stage": null, "day": "2026-09-16", "start": null, "end": null, "note": "early entry pre-party" },
+    { "artist": "FuntCase", "stage": null, "day": "2026-09-16", "start": null, "end": null, "note": "early entry pre-party" },
+    { "artist": "Dirt Monkey", "stage": null, "day": "2026-09-17", "start": null, "end": null, "note": "early entry pre-party" },
+    { "artist": "Riot Ten", "stage": null, "day": "2026-09-17", "start": null, "end": null, "note": "early entry pre-party" },
+    { "artist": "Excision", "stage": "prehistoric", "day": "2026-09-18", "start": null, "end": null, "note": "2-hour headline set" },
+    { "artist": "NGHTMRE", "stage": null, "day": "2026-09-18", "start": null, "end": null },
+    { "artist": "Borgore", "stage": null, "day": "2026-09-18", "start": null, "end": null },
+    { "artist": "Levity", "stage": null, "day": "2026-09-18", "start": null, "end": null },
+    { "artist": "TYNAN", "stage": null, "day": "2026-09-18", "start": null, "end": null },
+    { "artist": "Doctor P", "stage": null, "day": "2026-09-18", "start": null, "end": null },
+    { "artist": "Hairitage", "stage": null, "day": "2026-09-18", "start": null, "end": null },
+    { "artist": "ILLENIUM", "stage": null, "day": "2026-09-19", "start": null, "end": null },
+    { "artist": "Subtronics B2B LEVEL UP", "stage": null, "day": "2026-09-19", "start": null, "end": null, "note": "B2B" },
+    { "artist": "Seven Lions", "stage": null, "day": "2026-09-19", "start": null, "end": null, "note": "sunset set" },
+    { "artist": "Flux Pavilion", "stage": null, "day": "2026-09-19", "start": null, "end": null },
+    { "artist": "Flosstradamus", "stage": null, "day": "2026-09-19", "start": null, "end": null },
+    { "artist": "Whethan", "stage": null, "day": "2026-09-19", "start": null, "end": null },
+    { "artist": "Excision B2B Space Laces", "stage": null, "day": "2026-09-19", "start": null, "end": null, "note": "B2B, day unconfirmed" },
+    { "artist": "Excision", "stage": "prehistoric", "day": "2026-09-20", "start": null, "end": null, "note": "Detox closing set" },
+    { "artist": "Adventure Club", "stage": null, "day": "2026-09-20", "start": null, "end": null },
+    { "artist": "Eptic B2B LYNY", "stage": null, "day": "2026-09-20", "start": null, "end": null, "note": "B2B" },
+    { "artist": "Krewella", "stage": null, "day": "2026-09-20", "start": null, "end": null },
+    { "artist": "Wax Motif", "stage": null, "day": "2026-09-20", "start": null, "end": null },
+    { "artist": "ATLiens", "stage": null, "day": "2026-09-20", "start": null, "end": null },
+    { "artist": "Boogie T", "stage": null, "day": "2026-09-20", "start": null, "end": null },
+    { "artist": "Ghastly", "stage": null, "day": "2026-09-20", "start": null, "end": null },
+    { "artist": "HALIENE", "stage": null, "day": "2026-09-20", "start": null, "end": null }
+  ],
+  "map": {
+    "features": [
+      {
+        "kind": "poi",
+        "label": "Venue extent (approx.)",
+        "polygon": [
+          [39.9403, -82.4083],
+          [39.9420, -82.4090],
+          [39.9430, -82.4060],
+          [39.9430, -82.4020],
+          [39.9410, -82.4005],
+          [39.9375, -82.4010],
+          [39.9368, -82.4020],
+          [39.9385, -82.4045],
+          [39.9395, -82.4070]
+        ]
+      },
+      {
+        "kind": "entrance",
+        "label": "Tunnel entrance (Rt 13)",
+        "polygon": [[39.9404, -82.4079]]
+      },
+      {
+        "kind": "stage",
+        "stage": "crater",
+        "label": "The Crater",
+        "polygon": [[39.9407, -82.4076]]
+      },
+      {
+        "kind": "stage",
+        "stage": "prehistoric",
+        "label": "Prehistoric Stage",
+        "polygon": [[39.9400, -82.4062]]
+      },
+      {
+        "kind": "water",
+        "label": "Pond",
+        "polygon": [
+          [39.9375, -82.4032],
+          [39.9374, -82.4027],
+          [39.9370, -82.4026],
+          [39.9369, -82.4031],
+          [39.9371, -82.4034],
+          [39.9374, -82.4033]
+        ]
+      },
+      {
+        "kind": "stage",
+        "stage": "wompy-woods",
+        "label": "Wompy Woods",
+        "polygon": [[39.9385, -82.4018]]
+      },
+      {
+        "kind": "poi",
+        "label": "Wompy Woods treeline",
+        "polygon": [
+          [39.9430, -82.4022],
+          [39.9420, -82.4005],
+          [39.9390, -82.4000],
+          [39.9372, -82.4012],
+          [39.9382, -82.4025],
+          [39.9410, -82.4030]
+        ]
+      },
+      {
+        "kind": "stage",
+        "stage": "subsidia",
+        "label": "Subsidia Stage (approx.)",
+        "polygon": [[39.9395, -82.4050]]
+      },
+      {
+        "kind": "stage",
+        "stage": "forest",
+        "label": "Forest Stage (unplaced)",
+        "polygon": null
+      },
+      {
+        "kind": "vendor",
+        "label": "Village Marketplace",
+        "polygon": [[39.9417, -82.4025]]
+      },
+      {
+        "kind": "camping",
+        "label": "RV/tent camping",
+        "polygon": [
+          [39.9425, -82.4040],
+          [39.9422, -82.4012],
+          [39.9405, -82.4008],
+          [39.9385, -82.4020],
+          [39.9390, -82.4042],
+          [39.9410, -82.4048]
+        ]
+      },
+      {
+        "kind": "medical",
+        "label": "First aid (main gate)",
+        "polygon": [[39.9406, -82.4077]]
+      },
+      {
+        "kind": "water",
+        "label": "Water refill (nests, unplaced)",
+        "polygon": null
+      }
+    ],
+    "landmarks": [
+      { "id": "the-dino", "name": "The Dino (brachiosaurus)", "lat": null, "lon": null },
+      { "id": "ferris-wheel", "name": "Ferris Wheel", "lat": null, "lon": null }
+    ]
+  },
+  "meta": {
+    "sources": [
+      "https://www.lostlandsfestival.com/",
+      "https://edm.com/events/lost-lands-daily-lineup-2026-excision",
+      "https://edmidentity.com/2026/05/12/lost-lands-2026-lineup/",
+      "https://www.lostlandsfestival.com/know-before-you-go/",
+      "https://www.lostlandsfestival.com/looking-forward/",
+      "https://imagery.nationalmap.gov/arcgis/rest/services/USGSNAIPImagery/ImageServer",
+      "https://basemap.nationalmap.gov/arcgis/rest/services/USGSTopo/MapServer",
+      "https://hydro.nationalmap.gov/arcgis/rest/services/nhd/MapServer",
+      "https://www.ticketmaster.com/legend-valley-tickets-thornville/venue/42162",
+      "https://www.findlatitudeandlongitude.com/l/7585+kindle+road,+thornville,+oh+43076/3634158/",
+      "https://alltimeedm.com/lost-lands-construction-permanent-tunnel-highway-13/",
+      "https://edm.com/events/lost-lands-tunnel-between-festival-campgrounds/",
+      "https://alltimeedm.com/wp-content/uploads/2023/09/lost-lands-map-2023-jpg.webp"
+    ],
+    "updated": "2026-08-25",
+    "complete": {
+      "lineup": "partial",
+      "set_times": "none",
+      "map": "stylized"
+    },
+    "license": "CC0-1.0 (intended)"
+  }
+}
