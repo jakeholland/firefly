@@ -386,6 +386,27 @@ esp_err_t ff_display_expander_init(void)
     return ESP_OK;
 }
 
+/**
+ * ff_display_i2c_bus — S15 compass: accessor for the shared I2C bus
+ * handle `ff_display_expander_init` brought up above (touch SPD2010
+ * @0x53 + TCA9554 IO expander @0x20 already share it — see this file's
+ * top-of-file "Shared I2C bus" comment). Added so `ff_compass` (the
+ * GY-273 magnetometer driver on the puck's back header, same SDA/SCL
+ * pair) can add its OWN devices onto this bus via
+ * `i2c_master_bus_add_device` rather than opening a second
+ * `i2c_new_master_bus` on pins that are already owned — two masters on
+ * one physical bus is not a thing the I2C protocol supports, and the
+ * ESP-IDF driver has no notion of it either.
+ *
+ * Returns NULL if `ff_display_expander_init()` has not (yet, or ever)
+ * succeeded — the same "no handle yet" case every other accessor in
+ * this file returns for its own not-yet-brought-up resource.
+ */
+i2c_master_bus_handle_t ff_display_i2c_bus(void)
+{
+    return s_i2c_bus;
+}
+
 /* =====================================================================
  * b1 step 2 — QSPI bus + SPD2010 panel init, backlight on.
  * ===================================================================== */
