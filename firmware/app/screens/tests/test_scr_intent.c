@@ -3045,6 +3045,41 @@ static void S_name_row_confirmed_beats_push_failed(void)
     TEST_ASSERT_NULL(find_label_exact(lv_screen_active(), "!"));
 }
 
+/* Confirmation-fix round 2: a fresh reply/self-NodeInfo naming a
+ * DIFFERENT owner than was pushed also flips the pill to "!" (amber) —
+ * the same glyph push_failed uses (this row has no spare pixels for a
+ * second distinct warning glyph), but driven by its OWN, separately
+ * tracked boolean (`mesh_name_mismatch`), never folded into
+ * `mesh_name_push_failed` upstream. */
+static void S_name_row_mismatch_shows_warning(void)
+{
+    ff_app_settings_t s;
+    memset(&s, 0, sizeof(s));
+    snprintf(s.my_name, sizeof(s.my_name), "%s", "Jake");
+    s.mesh_name_confirmed = false;
+    s.mesh_name_mismatch = true;
+
+    ff_scr_settings_build(lv_screen_active(), &s);
+
+    TEST_ASSERT_NULL(find_label_exact(lv_screen_active(), "..."));
+    TEST_ASSERT_NULL(find_label_exact(lv_screen_active(), LV_SYMBOL_OK));
+    TEST_ASSERT_NOT_NULL(find_label_exact(lv_screen_active(), "!"));
+}
+
+static void S_name_row_confirmed_beats_mismatch(void)
+{
+    ff_app_settings_t s;
+    memset(&s, 0, sizeof(s));
+    snprintf(s.my_name, sizeof(s.my_name), "%s", "Jake");
+    s.mesh_name_confirmed = true;
+    s.mesh_name_mismatch = true; /* stale mismatch from an earlier attempt this retry superseded */
+
+    ff_scr_settings_build(lv_screen_active(), &s);
+
+    TEST_ASSERT_NOT_NULL(find_label_exact(lv_screen_active(), LV_SYMBOL_OK));
+    TEST_ASSERT_NULL(find_label_exact(lv_screen_active(), "!"));
+}
+
 /* The editor page: title, seeded draft text, and default ABC mode. */
 static void S_name_edit_page_shows_title_and_seeded_draft(void)
 {
@@ -3956,6 +3991,8 @@ int main(void)
     RUN_TEST(S_name_row_confirmed_shows_checkmark);
     RUN_TEST(S_name_row_push_failed_shows_warning);
     RUN_TEST(S_name_row_confirmed_beats_push_failed);
+    RUN_TEST(S_name_row_mismatch_shows_warning);
+    RUN_TEST(S_name_row_confirmed_beats_mismatch);
     RUN_TEST(S_name_edit_page_shows_title_and_seeded_draft);
     RUN_TEST(S_name_edit_empty_draft_shows_placeholder);
     RUN_TEST(S_name_edit_abc_letter_key_emits_name_t9_key);

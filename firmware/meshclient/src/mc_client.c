@@ -660,9 +660,37 @@ void mc_tick(mc_client_t *c, uint32_t now_ms)
  * caller (text/private/position, below) passes NULL via the
  * `mc_send_data_packet` wrapper and is unaffected. Set only on the
  * success path — a failed send has no in-flight packet to correlate
- * against. */
+ * against.
+ *
+ * `want_response` sets `meshtastic_Data.want_response` (confirmation-fix
+ * round 2, bench finding 2026-09-06: a real puck + Meshtastic 2.7.26
+ * comms brain never answered `mc_send_get_owner_request` — `reply=none`
+ * after every retry, despite the `set_owner` write itself landing).
+ * Root cause, confirmed by reading `meshtastic/firmware` tag
+ * `v2.7.26.54e0d8d0`, `src/modules/AdminModule.cpp`,
+ * `AdminModule::handleGetOwner`:
+ *
+ *     void AdminModule::handleGetOwner(const meshtastic_MeshPacket &req)
+ *     {
+ *         if (req.decoded.want_response) {
+ *             ...
+ *             myReply = allocDataProtobuf(res);
+ *             ...
+ *         }
+ *     }
+ *
+ * — `AdminModule` only builds and sends a `get_owner_response` when the
+ * INCOMING request's `Data.want_response` bit is set (the same bit the
+ * Python CLI sets via `wantResponse=True` on every admin read). This
+ * library previously never set it on ANY send, so a real AdminModule
+ * silently declined to reply — the mock-only test suite couldn't catch
+ * this because the sim/test harness answers `get_owner_request` without
+ * checking the bit, unlike the real firmware. Only
+ * `mc_send_get_owner_request` passes `true` here; every other caller
+ * (text/private/position/set_owner) passes `false` — none of them are
+ * asking a `get_*_request` question that needs this bit. */
 static int mc_send_data_packet_ex(mc_client_t *c, uint32_t dest, uint32_t portnum, uint8_t const *payload,
-                                   size_t len, bool want_ack, uint32_t *out_packet_id)
+                                   size_t len, bool want_ack, bool want_response, uint32_t *out_packet_id)
 {
     if (c->state != MC_STATE_READY) {
         return -1;
@@ -685,6 +713,7 @@ static int mc_send_data_packet_ex(mc_client_t *c, uint32_t dest, uint32_t portnu
     }
     pkt->which_payload_variant = meshtastic_MeshPacket_decoded_tag;
     pkt->payload_variant.decoded.portnum = (meshtastic_PortNum)portnum;
+    pkt->payload_variant.decoded.want_response = want_response;
     pkt->payload_variant.decoded.payload.size = (pb_size_t)len;
     if (len > 0) {
         memcpy(pkt->payload_variant.decoded.payload.bytes, payload, len);
@@ -708,7 +737,12 @@ static int mc_send_data_packet_ex(mc_client_t *c, uint32_t dest, uint32_t portnu
 static int mc_send_data_packet(mc_client_t *c, uint32_t dest, uint32_t portnum, uint8_t const *payload,
                                 size_t len, bool want_ack)
 {
-    return mc_send_data_packet_ex(c, dest, portnum, payload, len, want_ack, NULL);
+    /* None of this wrapper's callers (text/private/position) are asking a
+     * get_*_request question — want_response stays false. See
+     * mc_send_data_packet_ex's own doc comment. mc_send_get_owner_request
+     * needs want_response == true, so it calls mc_send_data_packet_ex
+     * directly instead of through here. */
+    return mc_send_data_packet_ex(c, dest, portnum, payload, len, want_ack, false, NULL);
 }
 
 int mc_send_text(mc_client_t *c, uint32_t dest, char const *utf8)
@@ -793,7 +827,7 @@ int mc_send_set_owner(mc_client_t *c, uint32_t dest, char const *long_name, char
     }
 
     return mc_send_data_packet_ex(c, dest, (uint32_t)meshtastic_PortNum_ADMIN_APP, payload, os.bytes_written, true,
-                                   out_packet_id);
+                                   /*want_response=*/false, out_packet_id);
 }
 
 int mc_send_get_owner_request(mc_client_t *c, uint32_t dest)
@@ -816,7 +850,14 @@ int mc_send_get_owner_request(mc_client_t *c, uint32_t dest)
         return -1;
     }
 
-    return mc_send_data_packet(c, dest, (uint32_t)meshtastic_PortNum_ADMIN_APP, payload, os.bytes_written, false);
+    /* want_response = true (confirmation-fix round 2) — calls
+     * mc_send_data_packet_ex directly, not the mc_send_data_packet
+     * wrapper, because this is the ONE caller that needs the bit set. See
+     * mc_send_data_packet_ex's own doc comment for the AdminModule
+     * citation this fixes. want_ack stays false — unchanged, see this
+     * function's own doc comment (mc_client.h) for why. */
+    return mc_send_data_packet_ex(c, dest, (uint32_t)meshtastic_PortNum_ADMIN_APP, payload, os.bytes_written, false,
+                                   /*want_response=*/true, NULL);
 }
 
 mc_state_t mc_state(mc_client_t const *c)

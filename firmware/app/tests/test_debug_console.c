@@ -705,8 +705,9 @@ static void dbgconsole_name_bare_reports_unset_and_unknown(void)
     harness_init(1000);
     capture_t cap;
     dispatch("name", &cap);
-    TEST_ASSERT_EQUAL_STRING("dbg: name stored=(unset) mesh=unknown confirmed=0 pushed=none ack=none reply=none",
-                             cap.lines[0]);
+    TEST_ASSERT_EQUAL_STRING(
+        "dbg: name stored=(unset) mesh=unknown confirmed=0 seq=0 pushed=none ack=none reply=none mismatch=0",
+        cap.lines[0]);
 }
 
 static void dbgconsole_name_set_commits_and_reports_confirmed_false(void)
@@ -723,8 +724,9 @@ static void dbgconsole_name_set_commits_and_reports_confirmed_false(void)
     TEST_ASSERT_EQUAL_UINT32(MY_ID, H.sender.owner_last_dest);
     TEST_ASSERT_EQUAL_STRING("Jake", H.sender.owner_last_long);
     TEST_ASSERT_EQUAL_STRING("JAKE", H.sender.owner_last_short);
-    TEST_ASSERT_EQUAL_STRING("dbg: name stored=Jake mesh=unknown confirmed=0 pushed=Jake/JAKE ack=none reply=none",
-                             cap.lines[0]);
+    TEST_ASSERT_EQUAL_STRING(
+        "dbg: name stored=Jake mesh=unknown confirmed=0 seq=1 pushed=Jake/JAKE ack=none reply=none mismatch=0",
+        cap.lines[0]);
 }
 
 static void dbgconsole_name_reports_confirmed_once_self_nodeinfo_matches(void)
@@ -739,8 +741,9 @@ static void dbgconsole_name_reports_confirmed_once_self_nodeinfo_matches(void)
 
     inject_self_long_name(MY_ID, "Jake"); /* the mesh caught up */
     dispatch("name", &cap);
-    TEST_ASSERT_EQUAL_STRING("dbg: name stored=Jake mesh=Jake confirmed=1 pushed=Jake/JAKE ack=none reply=none",
-                             cap.lines[0]);
+    TEST_ASSERT_EQUAL_STRING(
+        "dbg: name stored=Jake mesh=Jake confirmed=1 seq=1 pushed=Jake/JAKE ack=none reply=none mismatch=0",
+        cap.lines[0]);
 }
 
 /* Confirmation-fix follow-up — the trailing pushed=/ack=/reply= fields
@@ -760,7 +763,8 @@ static void dbgconsole_name_reports_reply_once_get_owner_response_arrives(void)
     H.ev.on_owner(H.ev.user, "Jake", "JAKE");
     dispatch("name", &cap);
     TEST_ASSERT_EQUAL_STRING(
-        "dbg: name stored=Jake mesh=Jake confirmed=1 pushed=Jake/JAKE ack=none reply=Jake/JAKE", cap.lines[0]);
+        "dbg: name stored=Jake mesh=Jake confirmed=1 seq=1 pushed=Jake/JAKE ack=none reply=Jake/JAKE mismatch=0",
+        cap.lines[0]);
 }
 
 static void dbgconsole_name_reports_nak_as_push_failed_not_pending(void)
@@ -775,8 +779,72 @@ static void dbgconsole_name_reports_nak_as_push_failed_not_pending(void)
 
     H.ev.on_routing_ack(H.ev.user, 0x77u, false);
     dispatch("name", &cap);
-    TEST_ASSERT_EQUAL_STRING("dbg: name stored=Jake mesh=unknown confirmed=0 pushed=Jake/JAKE ack=nak reply=none",
-                             cap.lines[0]);
+    TEST_ASSERT_EQUAL_STRING(
+        "dbg: name stored=Jake mesh=unknown confirmed=0 seq=1 pushed=Jake/JAKE ack=nak reply=none mismatch=0",
+        cap.lines[0]);
+}
+
+/* ====================================================================
+ * Confirmation fix round 2 (bench finding, 2026-09-06, AFTER commit
+ * 51e4ae1, real puck + Meshtastic 2.7.26 comms brain): `name Jake H` ->
+ * `pushed=ok reply=none` forever (fixed at the meshclient layer, see
+ * mc_send_get_owner_request's own doc comment), and `name Jake` when the
+ * node's name is ALREADY Jake reported `confirmed=1` INSTANTLY with
+ * `ack=none reply=none` — a false positive from stale equality, fixed
+ * here by the push-generation (`seq=`) gate.
+ * ==================================================================== */
+
+/**
+ * THE false-positive reproduction, at the console layer, matching the
+ * exact bench transcript: push "Jake", let a matching reply confirm it
+ * for real, then re-issue the EXACT SAME `name Jake` command (this
+ * feature's own retry mechanism for a push that may have silently
+ * failed). Before any NEW reply arrives for this second push, the console
+ * must read pending (`confirmed=0`), never re-use the first push's own
+ * confirmation. `seq=` visibly ticks from 1 to 2 across the two pushes.
+ */
+static void dbgconsole_name_recommitting_the_same_name_does_not_falsely_confirm_from_stale_mesh_state(void)
+{
+    harness_init(1000);
+    harness_wire_sender(0);
+    inject_my_info(MY_ID);
+
+    capture_t cap;
+    dispatch("name Jake", &cap);
+    H.ev.on_owner(H.ev.user, "Jake", "JAKE"); /* first push, genuinely confirmed */
+    dispatch("name", &cap);
+    TEST_ASSERT_EQUAL_STRING(
+        "dbg: name stored=Jake mesh=Jake confirmed=1 seq=1 pushed=Jake/JAKE ack=none reply=Jake/JAKE mismatch=0",
+        cap.lines[0]);
+
+    dispatch("name Jake", &cap); /* re-commit the SAME text — a fresh push generation */
+    TEST_ASSERT_EQUAL_STRING_MESSAGE(
+        "dbg: name stored=Jake mesh=Jake confirmed=0 seq=2 pushed=Jake/JAKE ack=none reply=none mismatch=0",
+        cap.lines[0],
+        "stale pre-push equality (mesh=Jake from the FIRST push) must never read as THIS push's confirmation");
+}
+
+/**
+ * A fresh reply for the current push naming a DIFFERENT owner than was
+ * pushed reports `mismatch=1`, never silently folded into either
+ * `confirmed=1` or the plain `ack=nak` failure path (a routing NAK says
+ * nothing about what name the admin module actually ended up with).
+ */
+static void dbgconsole_name_reports_mismatch_when_the_reply_names_someone_else(void)
+{
+    harness_init(1000);
+    harness_wire_sender(0);
+    inject_my_info(MY_ID);
+
+    capture_t cap;
+    dispatch("name Jake", &cap);
+
+    H.ev.on_owner(H.ev.user, "SomeoneElse", "SOME"); /* someone else re-set the owner in between */
+    dispatch("name", &cap);
+    TEST_ASSERT_EQUAL_STRING(
+        "dbg: name stored=Jake mesh=SomeoneElse confirmed=0 seq=1 pushed=Jake/JAKE ack=none reply=SomeoneElse/SOME "
+        "mismatch=1",
+        cap.lines[0]);
 }
 
 static void dbgconsole_name_set_with_no_node_id_still_commits_locally(void)
@@ -834,6 +902,8 @@ int main(void)
     RUN_TEST(dbgconsole_name_reports_confirmed_once_self_nodeinfo_matches);
     RUN_TEST(dbgconsole_name_reports_reply_once_get_owner_response_arrives);
     RUN_TEST(dbgconsole_name_reports_nak_as_push_failed_not_pending);
+    RUN_TEST(dbgconsole_name_recommitting_the_same_name_does_not_falsely_confirm_from_stale_mesh_state);
+    RUN_TEST(dbgconsole_name_reports_mismatch_when_the_reply_names_someone_else);
     RUN_TEST(dbgconsole_name_set_with_no_node_id_still_commits_locally);
 
     return UNITY_END();

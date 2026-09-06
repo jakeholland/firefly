@@ -8952,6 +8952,94 @@ static void S_name_owner_response_matching_flips_confirmed(void)
     TEST_ASSERT_EQUAL_STRING("jm", st.reply_long);
     TEST_ASSERT_EQUAL_STRING("JM", st.reply_short);
     TEST_ASSERT_TRUE_MESSAGE(st.confirmed, "get_owner_response treated exactly like a matching self NodeInfo");
+    TEST_ASSERT_FALSE_MESSAGE(st.mismatch, "confirmed and mismatch are mutually exclusive");
+}
+
+/* ====================================================================
+ * Confirmation fix round 2 (bench finding, 2026-09-06, AFTER commit
+ * 51e4ae1, real puck + Meshtastic 2.7.26 comms brain): `name Jake` when
+ * the node's name was ALREADY Jake reported `confirmed=1` INSTANTLY,
+ * with `ack=none reply=none` — a false positive from comparing the
+ * pushed name against a `mesh_owner_name` cached from BEFORE this push,
+ * never actually observing anything new for it. Fixed by a
+ * push-generation counter (`name_pushed_seq`/`mesh_owner_name_seq`, see
+ * their own field comments in ff_shell.c) that `shell_mesh_name_confirmed`
+ * now requires the observation to be at least as recent as.
+ * ==================================================================== */
+
+/**
+ * THE false-positive reproduction (task brief: "prove the false-positive
+ * test fails on the current branch"). Mutation-verified by hand:
+ * reverting shell_mesh_name_confirmed's `mesh_owner_name_seq >=
+ * name_pushed_seq` clause (restoring the pre-fix two-clause comparison)
+ * fails exactly this test — `TEST_ASSERT_FALSE` on a `confirmed` that
+ * reads true — and no other test in this file; see the PR body for the
+ * exact `ctest` output. Reverted after confirming.
+ */
+static void S_name_recommitting_the_same_name_does_not_falsely_confirm_from_stale_mesh_state(void)
+{
+    harness_init(1000u, false);
+    inject_my_info(MY_ID);
+    name_wire_spy_install();
+
+    /* First push+confirm cycle: a genuine, fresh reply confirms "Jake". */
+    ff_shell_debug_set_name(&H.shell, "Jake");
+    inject_owner_reply("Jake", "JAKE");
+    TEST_ASSERT_TRUE(ff_shell_mesh_name_status(&H.shell).confirmed);
+
+    /* Re-commit the EXACT SAME text — shell_apply_name_commit's own
+     * documented retry mechanism for a push that may have silently
+     * failed. This starts a FRESH push generation; the cached
+     * mesh_owner_name ("Jake", from the FIRST push's own confirmation)
+     * must not be re-read as evidence for this NEW push before any new
+     * observation arrives for it. */
+    ff_shell_debug_set_name(&H.shell, "Jake");
+
+    ff_shell_mesh_name_status_t const st = ff_shell_mesh_name_status(&H.shell);
+    TEST_ASSERT_FALSE_MESSAGE(st.confirmed,
+                              "stale pre-push equality must never be read as THIS push's confirmation");
+    TEST_ASSERT_FALSE_MESSAGE(st.mismatch, "no fresh observation has arrived for this push yet — pending, not mismatch");
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(2u, st.pushed_seq, "the push-generation counter must have ticked forward");
+}
+
+/**
+ * Before any observation arrives at all for a push, the row must read
+ * plain pending — never mismatch (mismatch requires a FRESH observation
+ * that disagrees; there is none yet here).
+ */
+static void S_name_status_reports_pending_not_mismatch_before_any_reply(void)
+{
+    harness_init(1000u, false);
+    inject_my_info(MY_ID);
+    name_wire_spy_install();
+
+    ff_shell_debug_set_name(&H.shell, "Jake");
+
+    ff_shell_mesh_name_status_t const st = ff_shell_mesh_name_status(&H.shell);
+    TEST_ASSERT_FALSE(st.confirmed);
+    TEST_ASSERT_FALSE_MESSAGE(st.mismatch, "no observation has arrived yet for this push — pending, not mismatch");
+    TEST_ASSERT_EQUAL_UINT32(1u, st.pushed_seq);
+}
+
+/**
+ * A stale self-NodeInfo (the ORIGINAL confirmation source, independent of
+ * get_owner_response) is exactly as stale as a stale reply — the fix
+ * applies uniformly to both observation sources, since both write through
+ * the same mesh_owner_name_seq stamp (shell_ev_node and shell_ev_owner).
+ */
+static void S_name_recommit_stale_self_nodeinfo_does_not_falsely_confirm_either(void)
+{
+    harness_init(1000u, false);
+    inject_my_info(MY_ID);
+    name_wire_spy_install();
+
+    ff_shell_debug_set_name(&H.shell, "Jake");
+    inject_self_long_name(MY_ID, "Jake"); /* confirms via the self-NodeInfo path, not get_owner_response */
+    TEST_ASSERT_TRUE(ff_shell_mesh_name_status(&H.shell).confirmed);
+
+    ff_shell_debug_set_name(&H.shell, "Jake"); /* fresh push generation */
+    TEST_ASSERT_FALSE_MESSAGE(ff_shell_mesh_name_status(&H.shell).confirmed,
+                              "the self-NodeInfo cache is just as stale as a reply cache relative to the new push");
 }
 
 static void S_name_owner_response_mismatching_does_not_confirm(void)
@@ -8970,6 +9058,10 @@ static void S_name_owner_response_mismatching_does_not_confirm(void)
     TEST_ASSERT_TRUE(st.has_reply);
     TEST_ASSERT_EQUAL_STRING("SomeoneElse", st.reply_long);
     TEST_ASSERT_FALSE_MESSAGE(st.confirmed, "a mismatching reply is honest bench info, never assumed to confirm");
+    /* Confirmation-fix round 2 — a FRESH reply naming a different owner
+     * is its own state (mismatch), distinct from plain pending. */
+    TEST_ASSERT_TRUE_MESSAGE(st.mismatch,
+                             "a fresh reply that disagrees with the pushed name is a mismatch, not plain pending");
 }
 
 static void S_name_owner_reply_stops_further_retries(void)
@@ -9389,6 +9481,9 @@ int main(void)
     RUN_TEST(S_name_routing_ack_ok_does_not_by_itself_confirm);
     RUN_TEST(S_name_routing_ack_ignores_an_unrelated_request_id);
     RUN_TEST(S_name_commit_resets_push_tracking_for_a_fresh_push);
+    RUN_TEST(S_name_recommitting_the_same_name_does_not_falsely_confirm_from_stale_mesh_state);
+    RUN_TEST(S_name_status_reports_pending_not_mismatch_before_any_reply);
+    RUN_TEST(S_name_recommit_stale_self_nodeinfo_does_not_falsely_confirm_either);
 
     return UNITY_END();
 }

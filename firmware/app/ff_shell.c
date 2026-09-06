@@ -333,6 +333,38 @@ typedef struct {
     char mesh_owner_name[FF_SETTINGS_NAME_LEN];
     bool my_name_from_node;
 
+    /* Confirmation-fix round 2 (bench finding, 2026-09-06, AFTER commit
+     * 51e4ae1): `name Jake` reported `confirmed=1`/a checkmark INSTANTLY
+     * when the puck's stored name already happened to equal the mesh's
+     * cached `mesh_owner_name` — a false positive, because
+     * `shell_mesh_name_confirmed` compared two values with no notion of
+     * WHEN `mesh_owner_name` was last observed relative to the push it is
+     * supposedly confirming. A stale observation from BEFORE this push
+     * (e.g. an earlier session's confirmation, or the boot prefill) must
+     * never be read as evidence for a push that hasn't been answered yet.
+     *
+     * `name_pushed_seq` is a monotonic "push generation" counter,
+     * incremented once per attempted push (`shell_apply_name_commit`,
+     * alongside `name_has_pushed`); `mesh_owner_name_seq` is stamped with
+     * the CURRENT `name_pushed_seq` every time `mesh_owner_name`/
+     * `has_mesh_owner_name` is written (`shell_ev_node`'s self-NodeInfo
+     * block, `shell_ev_owner`) — i.e. "as of which push generation was
+     * this observation made". `shell_mesh_name_confirmed` (below) only
+     * ever counts an observation whose stamped generation is >= the
+     * CURRENT push generation: an observation from an earlier generation
+     * is definitionally stale and reads as pending, not confirmed, no
+     * matter what string it holds.
+     *
+     * Both start at 0 and neither is ever reset independently of the
+     * other, so the pre-any-push case (generation 0 vs. an observation
+     * also stamped 0) still compares equal — this is exactly what keeps
+     * the boot-prefill "(from_node)" ✓ semantics working: an observation
+     * that arrives before the wearer has ever pushed anything is not
+     * stale relative to "no push yet", it is simply the only fact there
+     * is, and it is allowed to confirm. */
+    uint32_t name_pushed_seq;
+    uint32_t mesh_owner_name_seq;
+
     /* Confirmation-fix follow-up (bench finding, 2026-09-06: the comms
      * brain never re-sends its own NodeInfo right after a `set_owner`,
      * so the ORIGINAL "wait for a self NodeInfo" path above could hang
@@ -1430,6 +1462,11 @@ static void shell_ev_node(void *u, mc_nodeinfo_t const *n)
     if (shell_is_self(sh, n->node_num) && n->has_long_name) {
         shell_copy_str(sh->mesh_owner_name, sizeof(sh->mesh_owner_name), n->long_name);
         sh->has_mesh_owner_name = true;
+        /* Confirmation-fix round 2 — stamp WHICH push generation this
+         * observation belongs to (see the field's own doc comment,
+         * above), so a stale pre-push observation can never be misread
+         * as this generation's confirmation. */
+        sh->mesh_owner_name_seq = sh->name_pushed_seq;
 
         /* Boot prefill (this feature) — the puck itself has never had a
          * name typed into it (`my_name` still empty), but the comms
@@ -1608,6 +1645,9 @@ static void shell_ev_owner(void *u, char const *long_name, char const *short_nam
     if (long_name != NULL && long_name[0] != '\0') {
         shell_copy_str(sh->mesh_owner_name, sizeof(sh->mesh_owner_name), long_name);
         sh->has_mesh_owner_name = true;
+        /* Confirmation-fix round 2 — same generation stamp shell_ev_node's
+         * self-NodeInfo block applies, above. */
+        sh->mesh_owner_name_seq = sh->name_pushed_seq;
     }
 
     sh->name_has_reply = true;
@@ -2252,11 +2292,40 @@ static void shell_project_now(shell_t const *sh, ff_wall_t wall, ff_app_now_t *o
  * independently) and `ff_shell_mesh_name_status` (the bench console's
  * `name` command). See `ff_shell_mesh_name_status_t`'s own doc comment
  * (ff_shell.h) for the full honesty rule this implements.
+ *
+ * Confirmation-fix round 2 — the `mesh_owner_name_seq >= name_pushed_seq`
+ * clause (see those fields' own doc comment, above) is what closes the
+ * stale-equality false positive: a `mesh_owner_name` that was last
+ * observed BEFORE the current push generation cannot confirm it, even if
+ * the string happens to already match (e.g. re-pushing the same name a
+ * second time, or the mesh's cached identity from a previous session).
  */
 static bool shell_mesh_name_confirmed(shell_t const *sh)
 {
     return sh->has_mesh_owner_name && sh->settings.my_name[0] != '\0' &&
+           sh->mesh_owner_name_seq >= sh->name_pushed_seq &&
            strcmp(sh->mesh_owner_name, sh->settings.my_name) == 0;
+}
+
+/**
+ * shell_mesh_name_mismatch — confirmation-fix round 2: a FRESH observation
+ * (one stamped at or after the current push generation, the same freshness
+ * test `shell_mesh_name_confirmed` uses above) that does NOT match the
+ * pushed name — e.g. this push's own `get_owner_response` came back
+ * reporting a different owner (someone else re-set it in between). This is
+ * its own state, distinct from BOTH `confirmed` (matches) and plain
+ * pending/no-observation-yet (nothing fresh has arrived at all): a NAK
+ * only says the routing layer reported a delivery failure
+ * (`ff_mesh_name_ack_t`), which is silent on whether the admin module
+ * itself ended up with a different owner than expected — this checks that
+ * directly. Mutually exclusive with `shell_mesh_name_confirmed` by
+ * construction (same freshness gate, opposite string comparison).
+ */
+static bool shell_mesh_name_mismatch(shell_t const *sh)
+{
+    return sh->has_mesh_owner_name && sh->settings.my_name[0] != '\0' &&
+           sh->mesh_owner_name_seq >= sh->name_pushed_seq &&
+           strcmp(sh->mesh_owner_name, sh->settings.my_name) != 0;
 }
 
 static void shell_project_settings(shell_t const *sh, ff_app_settings_t *out)
@@ -2307,6 +2376,10 @@ static void shell_project_settings(shell_t const *sh, ff_app_settings_t *out)
      * (settings_build_name_row: confirmed beats push_failed beats
      * pending) means the checkmark wins regardless of an earlier NAK. */
     out->mesh_name_push_failed = (sh->name_push_ack == FF_MESH_NAME_ACK_NAK);
+    /* Confirmation-fix round 2 — see shell_mesh_name_mismatch's own doc
+     * comment. Same "computed once by the shell" rule as
+     * mesh_name_confirmed/mesh_name_push_failed above. */
+    out->mesh_name_mismatch = shell_mesh_name_mismatch(sh);
 }
 
 /**
@@ -4356,6 +4429,16 @@ static void shell_apply_name_commit(shell_t *sh, char const *raw_text)
     shell_copy_str(sh->name_push_short, sizeof(sh->name_push_short), short_name);
     sh->name_has_pushed = true;
 
+    /* Confirmation-fix round 2 (bench finding, 2026-09-06) — a fresh push
+     * generation. ANY observation already cached in mesh_owner_name (a
+     * previous confirmation, the boot prefill, someone else's earlier
+     * push) is now stale relative to THIS push: shell_mesh_name_confirmed
+     * requires a NEW observation stamped at or after this generation, so
+     * re-committing the same text — this feature's own retry mechanism
+     * for a push that failed silently — can never read as confirmed
+     * merely because the cached mesh_owner_name already happens to match. */
+    sh->name_pushed_seq++;
+
     if (sh->wiring.sender.send_admin_set_owner != NULL) {
         uint32_t packet_id = 0;
         int const rc =
@@ -5950,6 +6033,10 @@ ff_shell_mesh_name_status_t ff_shell_mesh_name_status(ff_shell_t const *sh_pub)
     st.has_reply = sh->name_has_reply;
     shell_copy_str(st.reply_long, sizeof(st.reply_long), sh->name_reply_long);
     shell_copy_str(st.reply_short, sizeof(st.reply_short), sh->name_reply_short);
+
+    /* Confirmation-fix round 2. */
+    st.mismatch = shell_mesh_name_mismatch(sh);
+    st.pushed_seq = sh->name_pushed_seq;
     return st;
 }
 

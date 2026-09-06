@@ -2706,6 +2706,14 @@ static meshtastic_User decode_tx_set_owner(mock_io_t const *io, uint32_t expect_
     TEST_ASSERT_TRUE(pkt->want_ack);
     TEST_ASSERT_EQUAL_INT(meshtastic_MeshPacket_decoded_tag, pkt->which_payload_variant);
     TEST_ASSERT_EQUAL_INT((int)meshtastic_PortNum_ADMIN_APP, (int)pkt->payload_variant.decoded.portnum);
+    /* Confirmation-fix round 2: want_response is a get_owner_request-only
+     * concern (AdminModule::handleGetOwner gates ITS reply on it) — a
+     * set_owner WRITE getting it set too would be harmless on a real
+     * AdminModule (handleSetOwner never checks it) but is not something
+     * this library does, so pin it false here rather than leave it
+     * unasserted. */
+    TEST_ASSERT_FALSE_MESSAGE(pkt->payload_variant.decoded.want_response,
+                              "set_owner is a write, not a get_*_request — want_response is not this call's concern");
 
     meshtastic_AdminMessage admin = meshtastic_AdminMessage_init_zero;
     pb_istream_t admin_is =
@@ -2873,6 +2881,15 @@ static void feat_get_owner_request_encodes_the_request(void)
     meshtastic_MeshPacket const *pkt = &tr.payload_variant.packet;
     TEST_ASSERT_EQUAL_UINT32(0x0A0A0A0Au, pkt->to);
     TEST_ASSERT_FALSE_MESSAGE(pkt->want_ack, "a read request is best-effort — the response IS the confirmation");
+    /* Confirmation-fix round 2 (bench finding, 2026-09-06): a real
+     * AdminModule (meshtastic/firmware v2.7.26.54e0d8d0,
+     * AdminModule::handleGetOwner) only builds a get_owner_response
+     * `if (req.decoded.want_response)` — this bit was never set before
+     * this fix, so a real node never replied at all. Decoded straight
+     * back off the wire here, not asserted against a mocked struct. */
+    TEST_ASSERT_TRUE_MESSAGE(pkt->payload_variant.decoded.want_response,
+                             "a real AdminModule only answers get_owner_request when want_response is set "
+                             "(AdminModule::handleGetOwner, meshtastic/firmware v2.7.26.54e0d8d0)");
     TEST_ASSERT_EQUAL_INT((int)meshtastic_PortNum_ADMIN_APP, (int)pkt->payload_variant.decoded.portnum);
 
     meshtastic_AdminMessage admin = meshtastic_AdminMessage_init_zero;

@@ -975,9 +975,21 @@ static void settings_name_open_cb(lv_event_t *e)
  * silent identical-looking pending state would bury it. `confirmed`
  * takes precedence when both are true (a later retry that DID succeed
  * always wins over an earlier NAK) — checked first, below.
+ *
+ * `mismatch` — confirmation-fix round 2: a fresh reply/self-NodeInfo for
+ * the CURRENT push reporting a DIFFERENT owner than was pushed
+ * (`ff_app_settings_t.mesh_name_mismatch`'s own doc comment). Deliberately
+ * rendered with the SAME "!" amber glyph as `push_failed` — both are
+ * "something about this push needs the wearer's attention, don't read
+ * the ... dots as ordinary pending" anomalies, and this row has no
+ * spare pixels for a second distinct warning glyph — but the two are
+ * tracked as SEPARATE booleans (never collapsed into one) because they
+ * are different facts at the shell/console layer: a routing NAK vs. the
+ * admin module answering with the wrong name. `confirmed` still takes
+ * precedence over either.
  */
 static void settings_build_name_row(lv_obj_t *list, int32_t rel_y, int32_t row_w, char const *my_name,
-                                    bool confirmed, bool push_failed)
+                                    bool confirmed, bool push_failed, bool mismatch)
 {
     lv_obj_t *row = settings_make_row(list, rel_y, row_w);
     int32_t const label_w = row_w - FF_SETTINGS_VALUE_PILL_W - FF_SETTINGS_VALUE_GAP;
@@ -1001,7 +1013,7 @@ static void settings_build_name_row(lv_obj_t *list, int32_t rel_y, int32_t row_w
     lv_obj_align(lbl, LV_ALIGN_LEFT_MID, 0, 0);
 
     bool const show_ok = has_name && confirmed;
-    bool const show_failed = has_name && !show_ok && push_failed;
+    bool const show_failed = has_name && !show_ok && (push_failed || mismatch);
     char const *pill_text = has_name ? (show_ok ? LV_SYMBOL_OK : (show_failed ? "!" : "...")) : "N/A";
     uint32_t const pill_fg =
         show_ok ? FF_SETTINGS_PILL_VAL_FG : (show_failed ? FF_THEME_COLOR_AMBER : FF_THEME_COLOR_MUTED);
@@ -2005,7 +2017,7 @@ void ff_scr_settings_build(lv_obj_t *parent, ff_app_settings_t const *settings)
      * already establishes for a single-item category. */
     y = settings_build_section_header(list, y, row_w, "NAME", /*first=*/false);
     settings_build_name_row(list, y, row_w, s_settings.my_name, s_settings.mesh_name_confirmed,
-                            s_settings.mesh_name_push_failed);
+                            s_settings.mesh_name_push_failed, s_settings.mesh_name_mismatch);
     y += FF_SETTINGS_ROW_H; /* last (only) row of NAME */
 
     y = settings_build_section_header(list, y, row_w, "CREW", /*first=*/false);

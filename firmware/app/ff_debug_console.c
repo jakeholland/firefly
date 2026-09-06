@@ -326,7 +326,25 @@ static void dbgconsole_cal_clear(ff_shell_t *sh, ff_dbgconsole_reply_fn reply, v
  * the full field-by-field rationale): `pushed=none` before any push this
  * session; `ack=none` until a routing reply for that push arrives (NOT a
  * failure — see `ff_mesh_name_ack_t`); `reply=none` until this push's
- * own `get_owner_request` follow-up gets an answer. */
+ * own `get_owner_request` follow-up gets an answer.
+ *
+ * Confirmation-fix round 2 (2026-09-06, bench finding AFTER commit
+ * 51e4ae1, against a real puck + Meshtastic 2.7.26 comms brain) added
+ * `seq=<N> mismatch=<0|1>`: `seq=` is the push-generation counter that
+ * closes a stale-equality false positive (`name Jake` used to read
+ * `confirmed=1` INSTANTLY whenever the mesh's CACHED name already
+ * happened to equal the one just pushed, even with `reply=none` — see
+ * `ff_shell_mesh_name_status_t`'s doc comment, ff_shell.h, for the full
+ * mechanism); `mismatch=1` is a fresh reply/self-NodeInfo for THIS push
+ * naming a DIFFERENT owner than was pushed, distinct from `ack=nak`
+ * (a routing-layer delivery failure that says nothing about what name
+ * the admin module actually ended up with). The SAME bench run also
+ * found `get_owner_request` itself never got a reply on real hardware
+ * (`reply=none` forever, even past every retry) — a separate,
+ * lower-level fix in `mc_send_get_owner_request`
+ * (`meshclient/include/mc_client.h`'s own doc comment has the
+ * AdminModule citation); this console's `reply=` field is what exposed
+ * it on the bench in the first place. */
 static void dbgconsole_name_status(ff_shell_t *sh, ff_dbgconsole_reply_fn reply, void *user)
 {
     ff_shell_mesh_name_status_t const st = ff_shell_mesh_name_status(sh);
@@ -371,9 +389,18 @@ static void dbgconsole_name_status(ff_shell_t *sh, ff_dbgconsole_reply_fn reply,
         snprintf(reply_buf, sizeof(reply_buf), "none");
     }
 
-    snprintf(line, sizeof(line), "dbg: name stored=%s mesh=%s confirmed=%d%s pushed=%s ack=%s reply=%s", stored,
-             mesh_buf, st.confirmed ? 1 : 0, st.my_name_from_node ? " (from_node)" : "", pushed_buf, ack_str,
-             reply_buf);
+    /* Confirmation-fix round 2 (bench finding, 2026-09-06, AFTER commit
+     * 51e4ae1): `seq=` and `mismatch=` are the bench-visible form of the
+     * stale-equality fix (`ff_shell_mesh_name_status_t`'s own doc
+     * comment has the full mechanism) — `seq=` is the push-generation
+     * counter (0 before any push this session), `mismatch=1` means a
+     * FRESH reply/self-NodeInfo for THIS push arrived but named a
+     * different owner than was pushed, distinct from `ack=nak` (a
+     * routing-layer delivery failure, silent on what the admin module's
+     * owner actually ended up being). */
+    snprintf(line, sizeof(line), "dbg: name stored=%s mesh=%s confirmed=%d%s seq=%u pushed=%s ack=%s reply=%s mismatch=%d",
+             stored, mesh_buf, st.confirmed ? 1 : 0, st.my_name_from_node ? " (from_node)" : "",
+             (unsigned)st.pushed_seq, pushed_buf, ack_str, reply_buf, st.mismatch ? 1 : 0);
     reply_line(reply, user, line);
 }
 

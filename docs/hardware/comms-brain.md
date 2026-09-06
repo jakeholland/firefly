@@ -403,6 +403,106 @@ independent way to set the SAME owner identity directly against the
 comms brain — this feature is additive, not a replacement path, and
 either one can correct the other's mistake.
 
+### How confirmation works, round 2 (bench fix, 2026-09-06, after commit `51e4ae1`)
+
+The round-1 fix above shipped, then a real bench run (real puck, real
+comms brain, Meshtastic 2.7.26) found it neither worked nor was fully
+honest. Two independent bugs:
+
+**Bug 1 — `get_owner_request` never got a reply.** `name Jake H` showed
+`pushed=Jake H/JAKE ack=ok` within 3 s (the `set_owner` write really
+lands — `meshtastic --info` confirmed it) but `reply=none` after 21 s
+and across every retry: this device's own follow-up question was never
+answered. Cause, read straight from `meshtastic/firmware` tag
+`v2.7.26.54e0d8d0`, `src/modules/AdminModule.cpp`:
+
+```
+void AdminModule::handleGetOwner(const meshtastic_MeshPacket &req)
+{
+    if (req.decoded.want_response) {
+        meshtastic_AdminMessage res = meshtastic_AdminMessage_init_default;
+        res.get_owner_response = owner;
+        res.which_payload_variant = meshtastic_AdminMessage_get_owner_response_tag;
+        setPassKey(&res);
+        myReply = allocDataProtobuf(res);
+        ...
+    }
+}
+```
+
+`AdminModule` only builds and queues a `get_owner_response` when the
+INCOMING request's `Data.want_response` bit is set — the same bit the
+Python CLI sets via `wantResponse=True` on every admin read. This
+library's `mc_send_get_owner_request` never set it on any send, so a
+real `AdminModule` silently declined to reply every time; the
+mock-only test harness that originally validated round 1 doesn't
+enforce this check the way real firmware does, so nothing caught it
+before the bench.
+
+**Fix**: `mc_send_data_packet_ex` (`meshclient/src/mc_client.c`) gained
+a `want_response` parameter, threaded onto `meshtastic_Data.
+want_response` on the encoded packet; `mc_send_get_owner_request` is
+the ONE caller that passes `true`. Verified by decoding the actual
+outgoing packet back off the wire in
+`feat_get_owner_request_encodes_the_request`
+(`meshclient/tests/test_meshclient.c`), not just asserting the call
+returned 0.
+
+**Bug 2 — a false positive**, found on the same bench run, independent
+of bug 1: `name Jake` (re-pushing the puck's OWN CURRENT name — this
+feature's documented retry mechanism for a push that may have silently
+failed) reported `confirmed=1` **instantly**, with `ack=none
+reply=none` — before any reply could possibly have arrived yet. Cause:
+`shell_mesh_name_confirmed` compared the stored name against the
+CACHED `mesh_owner_name` with no notion of *when* that cache was last
+written relative to the push it was supposedly confirming. A value left
+over from an EARLIER confirmation (or the boot prefill) that happened
+to already equal the newly-pushed text read as "confirmed" for a
+brand-new push nothing had actually answered yet.
+
+**Fix**: a push-generation counter. `name_pushed_seq` (`ff_shell.c`)
+increments once per attempted push; `mesh_owner_name_seq` is stamped
+with the CURRENT generation every time `mesh_owner_name` is written —
+both by the self-NodeInfo path (`shell_ev_node`) and the
+`get_owner_response` path (`shell_ev_owner`). `shell_mesh_name_confirmed`
+now additionally requires `mesh_owner_name_seq >= name_pushed_seq`: an
+observation stamped from an EARLIER generation is stale and reads as
+pending, never confirmed, regardless of what string it holds. Both
+counters start at 0 and neither resets independently of the other, so
+the pre-any-push case (an observation stamped 0 vs. generation 0) still
+compares equal — this is exactly what keeps the boot-prefill
+"(from_node)" ✓ semantics working: an observation arriving before the
+wearer has ever pushed anything is not stale relative to "no push yet".
+
+A new state, `mismatch`, was added alongside `confirmed`/pending/NAK: a
+FRESH observation (same freshness test as `confirmed`) that does NOT
+match the pushed name — e.g. someone else re-set the owner in between.
+This is distinct from a routing NAK, which is silent on what the admin
+module's owner actually ended up being; it is also distinct from plain
+pending, which means no fresh observation has arrived at all yet.
+
+**Bench console.** `name`'s output line gains two more fields:
+
+```
+dbg: name stored=<my_name> mesh=<mesh_owner_name|unknown> confirmed=<0|1>[ (from_node)] seq=<N> pushed=<none|long/short> ack=<none|ok|nak> reply=<none|long/short> mismatch=<0|1>
+```
+
+- `seq=` — the push-generation counter itself (0 before any push this
+  session), the bench-visible form of the stale-equality fix above.
+- `mismatch=` — see the state's own description just above.
+
+**Mutation-verified, both bugs, against the pre-fix code**: removing
+the `mesh_owner_name_seq >= name_pushed_seq` clause fails exactly
+`S_name_recommitting_the_same_name_does_not_falsely_confirm_from_stale_mesh_state`
+and `S_name_recommit_stale_self_nodeinfo_does_not_falsely_confirm_either`
+(`test_shell.c`) plus
+`dbgconsole_name_recommitting_the_same_name_does_not_falsely_confirm_from_stale_mesh_state`
+(`test_debug_console.c`) — nothing else in either 248/34-test suite;
+reverting `mc_send_get_owner_request`'s `want_response` back to `false`
+fails exactly `feat_get_owner_request_encodes_the_request`
+(`test_meshclient.c`) and nothing else in the 91-test meshclient suite.
+Both mutations reverted after confirming.
+
 ## The puck's back header (photo, 2026-09-04)
 
 2×10 at 1.27 mm pitch. Left column top→bottom: `13 · 12 · RXD · TXD · G · 3V3 · SDA · SCL · G · BAT`.

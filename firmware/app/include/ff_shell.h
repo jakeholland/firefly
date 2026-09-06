@@ -1391,13 +1391,40 @@ typedef enum {
  * (everything else there is a plain mirror) and is computed the SAME WAY
  * by both consumers by living in exactly one place (`ff_shell.c`'s
  * `shell_mesh_name_confirmed`) — `has_mesh_owner_name &&
- * strcmp(mesh_owner_name, my_name) == 0 && my_name[0] != '\0'`. Never
- * true merely because a push was attempted: only an actual self
- * NodeInfo OR a matching `get_owner_response` reporting a MATCHING
- * long_name flips it (this repo's honest-data rule — "never assume the
- * push succeeded"). An empty `my_name` reads unconfirmed even if
- * `mesh_owner_name` also happens to be empty — there is nothing to
- * confirm.
+ * strcmp(mesh_owner_name, my_name) == 0 && my_name[0] != '\0' &&
+ * mesh_owner_name was observed at or after the CURRENT push generation`.
+ * Never true merely because a push was attempted: only an actual self
+ * NodeInfo OR a matching `get_owner_response` — one that arrived AFTER
+ * this push, not merely a stale cached value that happens to already
+ * match — reporting a MATCHING long_name flips it (this repo's
+ * honest-data rule — "never assume the push succeeded"). An empty
+ * `my_name` reads unconfirmed even if `mesh_owner_name` also happens to
+ * be empty — there is nothing to confirm.
+ *
+ * The "observed at or after the current push generation" clause
+ * (confirmation-fix round 2, bench finding 2026-09-06, AFTER commit
+ * 51e4ae1) closes a stale-equality false positive: `name Jake` reported
+ * `confirmed=1` INSTANTLY when the stored name already happened to equal
+ * a `mesh_owner_name` cached from BEFORE this specific push (an earlier
+ * session's confirmation, or the boot prefill) — a bare string
+ * comparison cannot distinguish "this push was just confirmed" from
+ * "these two values already matched for an unrelated reason". `pushed_seq`
+ * (below) is the bench-visible form of the push-generation counter this
+ * comparison uses internally (`ff_shell.c`'s `name_pushed_seq`/
+ * `mesh_owner_name_seq` field comments have the full mechanism); it does
+ * not itself gate anything a caller of this struct needs to check —
+ * `confirmed`/`mismatch` already have the freshness test baked in.
+ *
+ * `mismatch` — also confirmation-fix round 2 — is true when a FRESH
+ * observation (same freshness test as `confirmed`) has arrived for this
+ * push but does NOT match `my_name`: e.g. `reply_long` came back
+ * reporting a different owner than was pushed (someone else re-set it in
+ * between). Distinct from BOTH `confirmed` (matches) and the plain
+ * pending case (`!confirmed && !mismatch`, meaning no fresh observation
+ * has arrived at all yet) — and distinct from `ack == FF_MESH_NAME_ACK_NAK`
+ * (below), which is a ROUTING-layer delivery failure, silent on what the
+ * admin module's owner actually ended up being. Mutually exclusive with
+ * `confirmed` by construction.
  *
  * The remaining fields are the confirmation-fix follow-up's own
  * bench-visible state (bare `name` console output: "pushed=<long>/
@@ -1414,6 +1441,11 @@ typedef enum {
  *    against, surfaced here so the console can show it even when it
  *    didn't happen to match `my_name` (e.g. someone else re-set the
  *    owner in between).
+ *  - `pushed_seq` (confirmation-fix round 2): the push-generation counter
+ *    itself — 0 before any push this session, incremented once per
+ *    attempted push. Purely informational on the bench console (`seq=`);
+ *    the freshness comparison it feeds already happened inside
+ *    `confirmed`/`mismatch` above.
  */
 typedef struct {
     char my_name[FF_SETTINGS_NAME_LEN];      /* mirrors ff_settings_t.my_name, NUL-terminated */
@@ -1431,6 +1463,11 @@ typedef struct {
     bool has_reply;
     char reply_long[FF_SETTINGS_NAME_LEN];
     char reply_short[FF_MESHNAME_SHORT_LEN];
+
+    /* Confirmation-fix round 2 (below) — see the struct's own doc comment
+     * above for the full rationale. */
+    bool mismatch;
+    uint32_t pushed_seq;
 } ff_shell_mesh_name_status_t;
 
 ff_shell_mesh_name_status_t ff_shell_mesh_name_status(ff_shell_t const *sh);

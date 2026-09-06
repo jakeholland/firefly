@@ -910,6 +910,19 @@ typedef struct {
      * precedence when both happen to be true (a later retry that DID
      * succeed always wins over an earlier NAK). */
     bool mesh_name_push_failed;
+    /* Confirmation-fix round 2 (2026-09-06, bench finding AFTER commit
+     * 51e4ae1) — a FRESH observation for the CURRENT push (same
+     * freshness test `mesh_name_confirmed` uses) that reports a
+     * DIFFERENT owner than was pushed — e.g. someone else re-set it in
+     * between (`shell_mesh_name_mismatch`'s own doc comment, ff_shell.c,
+     * has the full rationale). Distinct from `mesh_name_push_failed`: a
+     * NAK is a routing-layer delivery failure, silent on what the admin
+     * module's owner actually ended up being; this is the admin module
+     * answering with a name that just isn't the one this puck pushed.
+     * Mutually exclusive with `mesh_name_confirmed` by construction. Same
+     * "computed once by the shell" rule as the other two derived fields
+     * above. */
+    bool mesh_name_mismatch;
 
     /* [api] NAME in Settings — the "NAME" row's T9 editor sub-view; see
      * `ff_app_name_edit_t`'s own doc comment above for why this is

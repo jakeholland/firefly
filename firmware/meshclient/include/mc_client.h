@@ -681,6 +681,21 @@ int mc_send_set_owner(mc_client_t *c, uint32_t dest, char const *long_name, char
  * doc comment explains in full — a request to a REMOTE node's admin
  * module needs a session passkey this library does not manage.
  *
+ * `meshtastic_Data.want_response` IS set true on the encoded packet
+ * (confirmation-fix round 2, bench finding 2026-09-06: a real puck +
+ * Meshtastic 2.7.26 comms brain never replied at all — `reply=none`
+ * after every retry — because this bit was never set). Verified against
+ * `meshtastic/firmware` tag `v2.7.26.54e0d8d0`,
+ * `src/modules/AdminModule.cpp`, `AdminModule::handleGetOwner`:
+ * `myReply` (the `get_owner_response`) is only built and queued
+ * `if (req.decoded.want_response)` — an admin read with the bit unset is
+ * silently answered with nothing, which is exactly the CLI's own
+ * `wantResponse=True` convention on every admin read. This is
+ * independent of `want_ack` above: `want_response` asks the ADMIN MODULE
+ * for its payload reply; `want_ack` (unused here) would ask the ROUTING
+ * layer for a mesh-delivery receipt. See `mc_send_data_packet_ex`'s own
+ * doc comment (`mc_client.c`) for the full citation with source.
+ *
  * Returns 0 on success, negative on failure (not READY, encode/write
  * failure).
  */

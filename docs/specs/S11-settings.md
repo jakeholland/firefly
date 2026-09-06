@@ -190,3 +190,69 @@ a) store seam + settings struct + tests · b) face render + interactions + golde
   reply=<none|long/short>` on the `name` command's output — see
   `docs/hardware/comms-brain.md`'s "How confirmation works" section for
   the full state machine.
+
+- **2026-09-06 — Confirmation fix round 2 (same PR, bench finding AFTER
+  the fix above, commit `51e4ae1`, against a real puck + comms brain,
+  Meshtastic 2.7.26): the round-1 fix neither worked nor was fully
+  honest.** Two bugs, both found on the SAME bench run:
+
+  1. **`get_owner_request` never got a reply at all.** `name Jake H` ->
+     `pushed=Jake H/JAKE ack=ok` within 3 s (the `set_owner` write itself
+     really lands — confirmed via the CLI) but `reply=none` after 21 s
+     and across every retry. Root cause: Meshtastic's `AdminModule` only
+     answers a `get_*_request` when the request's own
+     `Data.want_response` flag is set (`AdminModule::handleGetOwner`,
+     `meshtastic/firmware` tag `v2.7.26.54e0d8d0`,
+     `src/modules/AdminModule.cpp` — the Python CLI sets
+     `wantResponse=True` on every admin read for exactly this reason).
+     `mc_send_get_owner_request` never set it. **Fixed** by threading a
+     `want_response` parameter through `mc_send_data_packet_ex`
+     (`meshclient/src/mc_client.c`) and setting it true only for
+     `mc_send_get_owner_request` — see that function's own doc comment
+     (`mc_client.h`) for the full citation.
+
+  2. **A false positive**, independent of bug 1: `name Jake` (re-pushing
+     the puck's CURRENT name — this feature's own documented retry
+     mechanism) reported `confirmed=1` **instantly**, with
+     `ack=none reply=none` — before any reply could possibly have
+     arrived. Root cause: `shell_mesh_name_confirmed` compared the
+     stored name against the CACHED `mesh_owner_name` with no notion of
+     WHEN that cache was last written relative to the push it was
+     supposedly confirming — a value left over from an earlier
+     confirmation (or the boot prefill) that happened to already match
+     read as "confirmed" for a brand-new push that had not been answered
+     yet. **Fixed** by a push-generation counter: `name_pushed_seq`
+     increments once per attempted push, `mesh_owner_name_seq` is
+     stamped with the CURRENT generation every time `mesh_owner_name` is
+     written (both the self-NodeInfo path and the `get_owner_response`
+     path), and `shell_mesh_name_confirmed` now additionally requires
+     `mesh_owner_name_seq >= name_pushed_seq` — an observation from an
+     earlier generation is stale and reads as pending, never confirmed,
+     regardless of what string it holds. Both counters start at 0, which
+     is what preserves the boot-prefill "(from_node)" ✓ semantics for
+     the untouched case (an observation before any push is not stale
+     relative to "no push yet"). A NEW state, `mismatch`, was added
+     alongside: a FRESH observation (same freshness test) that does NOT
+     match the pushed name — distinct from both `confirmed` and from a
+     routing NAK, which says nothing about what name the admin module
+     actually ended up with.
+
+  Bench console's `name` output gains `seq=<N>` (the push-generation
+  counter itself) and `mismatch=<0|1>`, alongside the existing
+  `pushed=/ack=/reply=` trio. See `docs/hardware/comms-brain.md`'s "How
+  confirmation works" section (its own round-2 subsection) for the full
+  mechanism, and `ff_shell_mesh_name_status_t`'s doc comment
+  (`ff_shell.h`) for the exact field-by-field rule.
+
+  **Mutation-verified, both bugs, on the pre-fix code**: removing the
+  `mesh_owner_name_seq >= name_pushed_seq` clause fails exactly
+  `S_name_recommitting_the_same_name_does_not_falsely_confirm_from_stale_mesh_state`
+  and
+  `S_name_recommit_stale_self_nodeinfo_does_not_falsely_confirm_either`
+  (`test_shell.c`) plus
+  `dbgconsole_name_recommitting_the_same_name_does_not_falsely_confirm_from_stale_mesh_state`
+  (`test_debug_console.c`) — nothing else in either suite; setting
+  `want_response` back to `false` on `mc_send_get_owner_request`'s
+  encoded packet fails exactly `feat_get_owner_request_encodes_the_request`
+  (`test_meshclient.c`) and nothing else. Both reverted after
+  confirming.
