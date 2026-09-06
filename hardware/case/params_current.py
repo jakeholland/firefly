@@ -164,6 +164,10 @@ PARAMS = {
     'plunger_tip_gap': 0.02,   # gap at FULL PRESS (collar bottomed on the rib), not at rest
     'nub_pocket': {'xy': (1.3, 1.6), 'depth': 0.8},
     'tab': {'w': 2.9, 'h': 2.0, 'gap': 0.60},
+    # how far short of the true outer skin the tab-hole cut stops --
+    # shared by add_button (the cut) and verify_skin_intact (the probe
+    # target), 2026-09-07 pass 7, so they can never drift out of sync.
+    'tab_hole_skin_margin': 2.0,
     'cap_clearance': 0.25,  # per-side clearance between the cap head and its wall hole -- tune here for a fit-test coupon re-print
     # plunger guide rib + inward stop collar (added 2026-09-04 per Jake's
     # print-test feedback: caps bound, and a hard press loaded the switch's
