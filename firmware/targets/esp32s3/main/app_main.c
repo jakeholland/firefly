@@ -50,6 +50,7 @@
 
 #include "ff_audio.h"      /* S27 sounds (device half) — the PCM5101 I2S tone-synth HAL */
 #include "ff_button.h"     /* S26 slice e — core: the generic debounced push-button (BOOT-as-home) */
+#include "ff_compass.h"    /* S15 — GY-273 magnetometer + onboard QMI8658 tilt, feeding ff_shell_set_heading */
 #include "ff_display.h"
 #include "ff_face.h"
 #include "ff_face_dispatch.h" /* fix/flare-cancel-taps — ff_face_dispatch_tick, the non-rebuild per-frame widget refresh */
@@ -628,6 +629,17 @@ static ff_idle_t s_idle;
  * a per-frame sample, as its unit of time (its stale-gap reset is 30s,
  * fifteen ticks at this period). */
 #define FF_BATT_SAMPLE_PERIOD_MS ((uint32_t)2000u)
+
+/* S15 — compass sample tick period. 100 ms (10 Hz) per the spec brief.
+ * Unlike the battery reading above, a heading genuinely needs this fast
+ * a refresh — the Radar arrow tracking a rotating puck at 2 s intervals
+ * would visibly lag; 10 Hz keeps it feeling live against the ~25+ fps
+ * render loop (docs/specs/S15-esp32s3-target.md AC5) without the I2C
+ * bus time costing anything the render budget would notice (two short
+ * bursts — 6 mag bytes + 6 accel bytes — well under a millisecond on a
+ * 400 kHz bus, per FF_COMPASS_I2C_TIMEOUT_MS's own margin,
+ * ff_compass.c). */
+#define FF_COMPASS_SAMPLE_PERIOD_MS ((uint32_t)100u)
 
 /* Human-readable wake cause, for the on-glass log line the spec's AC1
  * asks for ("log sleep entry + wake cause ... so the maintainer can read
@@ -1335,6 +1347,46 @@ void app_main(void)
         return;
     }
 
+#if CONFIG_FF_COMPASS
+    /* S15 — bring up the GY-273 magnetometer + onboard QMI8658 tilt
+     * driver right after the panel bring-up above: that is what brings
+     * the shared I2C bus (touch SPD2010 + TCA9554 expander) up in the
+     * first place (`ff_display_expander_init`, inside
+     * `ff_bringup_panel`), and `ff_compass_init` adds its own devices
+     * onto that SAME handle via `ff_display_i2c_bus()` rather than
+     * opening a second bus (see that accessor's own doc comment). Runs
+     * before the boot splash/LVGL below — nothing about compass bring-
+     * up needs glass up first — so a magnetometer-absent or IMU-absent
+     * finding is in the boot log as early as possible. Non-fatal on
+     * failure (`ff_compass_init` itself only fails on a NULL bus, which
+     * would mean `ff_bringup_panel` lied about succeeding) — a puck
+     * with no magnetometer wired up still boots and runs; the Radar
+     * arrow simply cannot point (heading stays the shell's own -1
+     * "unknown" default forever), same honest-degrade posture as every
+     * other optional sensor in this file (battery ADC, BOOT edge ISR).
+     */
+    esp_err_t const compass_err = ff_compass_init(ff_display_i2c_bus());
+    ESP_LOGI(TAG, "S15 compass init: %s (mag=%s imu=%s)", (compass_err == ESP_OK) ? "ok" : esp_err_to_name(compass_err),
+             ff_compass_present() ? "found" : "absent", ff_compass_imu_present() ? "found" : "absent");
+
+    /* Load whatever calibration the settings store already has — S12's
+     * figure-eight ritual UI that would ever populate this for real has
+     * not shipped (docs/specs/S12-first-run.md's 2026-09-03 amendment),
+     * so `cal_valid` is false on every puck today and this is a no-op
+     * in practice; the plumbing is real, not a placeholder, so the day
+     * that ritual lands, this line needs no change. `view` (fetched
+     * above) is a `ff_app_state_t` snapshot that deliberately OMITS
+     * compass_cal/cal_valid (ff_app_state.h's own doc comment) — the
+     * full settings struct is `ff_shell_settings(&s_shell)`, not `view`. */
+    ff_settings_t const *const compass_settings = ff_shell_settings(&s_shell);
+    if (compass_settings != NULL && compass_settings->cal_valid) {
+        ff_compass_set_cal(&compass_settings->compass_cal);
+        ESP_LOGI(TAG, "S15 compass: loaded a persisted calibration from settings");
+    } else {
+        ESP_LOGI(TAG, "S15 compass: no persisted calibration — running uncalibrated (identity)");
+    }
+#endif
+
     /* format v8 amendment (maintainer ask, 2026-09-02) — apply the SCREEN
      * NORMAL|FLIPPED setting's hardware panel mirror right after the panel
      * is up and BEFORE the boot splash below, so the splash itself (the
@@ -1588,6 +1640,18 @@ void app_main(void)
      * FF_BATT_SAMPLE_PERIOD_MS before reading the ADC again, rather than
      * immediately re-sampling on the loop's very first iteration. */
     uint32_t last_batt_sample_ms = ff_bringup_now_ms();
+
+    /* S15 — same seeding as last_batt_sample_ms just above: the render
+     * loop's own compass sample (below) waits a full
+     * FF_COMPASS_SAMPLE_PERIOD_MS before its first read rather than
+     * firing on this loop's very first iteration. Unlike the battery
+     * reading, there is no "push one reading right after ff_shell_init"
+     * precedent to mirror here — ff_compass_init ran during display
+     * bring-up, well before the shell's settings/heading state is what
+     * a caller would read anyway, and the shell already starts
+     * heading_deg at its own documented -1 default (ff_shell_set_heading's
+     * doc comment) — so there is nothing this seed would need to beat. */
+    uint32_t last_compass_sample_ms = ff_bringup_now_ms();
 
     /* S26 slice f — arm the light-sleep wake sources once, right before
      * the render loop can first reach SLEEP. See
@@ -1844,6 +1908,24 @@ void app_main(void)
             last_batt_sample_ms = now_ms;
             ff_shell_set_batt_mv(&s_shell, ff_power_batt_mv(), now_ms);
         }
+
+#if CONFIG_FF_COMPASS
+        /* S15 — sample the compass every FF_COMPASS_SAMPLE_PERIOD_MS and
+         * forward the result straight to the shell, the exact same
+         * "pure HAL read, no decision made here" shape as the battery
+         * block just above: ff_compass_read() already returns the
+         * shell's own -1 sentinel whenever the reading is absent or
+         * unreliable (no magnetometer, a failed I2C transaction this
+         * sample, tilt past the reliable range, ...) — that negative
+         * value is forwarded to ff_shell_set_heading exactly like any
+         * other reading, never filtered or suppressed here (that
+         * function's own doc comment: "Pass a negative value for
+         * unknown / unreliable"). */
+        if (ff_time_reached(now_ms, last_compass_sample_ms + FF_COMPASS_SAMPLE_PERIOD_MS)) {
+            last_compass_sample_ms = now_ms;
+            ff_shell_set_heading(&s_shell, ff_compass_read());
+        }
+#endif
 
         /* S26 slice c — the idle decision itself: ticked every frame
          * (same "always tick" contract as the PWR FSM), against THIS

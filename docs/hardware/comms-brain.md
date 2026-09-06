@@ -209,3 +209,68 @@ with the puck OFF first: ~3.7–4.2 V = raw cell (XIAO stays on when the puck la
 red-stripe edge. Confirm each stripped conductor against the silkscreen with a continuity
 beep before soldering; only 4–5 conductors are needed (RXD, TXD, G, 3V3, optionally BAT).
 Heat-shrink each joint and strain-relieve the ribbon to the case.
+
+## Compass (magnetometer)
+
+S15's heading driver (`firmware/targets/esp32s3/components/ff_compass/`) reads
+a GY-273 magnetometer off the SAME back header, plus the board's own onboard
+QMI8658 6-axis IMU (soldered to the main PCB, no wiring needed) for tilt
+compensation. Before this driver landed, `heading_deg` read -1 forever
+(docs/specs/S12-first-run.md's 2026-09-03 amendment) — see
+`firmware/targets/esp32s3/components/ff_compass/include/ff_compass.h` for the
+full contract and register-level citations; this section is the wiring +
+bench-facing summary.
+
+**Wiring:** the GY-273's four pins go on the same back header used for the
+comms-brain link above — `VCC`→`3V3`, `GND`→`G`, `SDA`→the header's `SDA`
+(GPIO11), `SCL`→the header's `SCL` (GPIO10). `DRDY` is unconnected (this
+driver polls, it does not use the data-ready interrupt). This is the SAME
+physical I2C bus the SPD2010 touch controller (0x53) and TCA9554 IO expander
+(0x20) already share — the compass driver adds its own device(s) onto that
+existing bus (`ff_display_i2c_bus()`), it never opens a second I2C master on
+these pins.
+
+**Chip auto-detection:** most GY-273 boards actually carry a **QMC5883L**
+(I2C address `0x0D`) even when silkscreened "HMC5883L"; a genuine
+**HMC5883L** (`0x1E`) does turn up on some. `ff_compass_init` probes both at
+boot via each chip's own identification registers and logs which it found
+(or "no magnetometer" if neither ACKs/identifies — the puck still boots and
+runs; the Radar arrow just cannot point). The onboard **QMI8658** IMU is at
+`0x6B` (alt strap `0x6A`); if it fails to identify, the driver falls back to
+an assumed-level accel and logs `compass: no IMU — assuming level` — tilt
+rejection is unavailable on that path (a synthesized always-level reading can
+never indicate tilt).
+
+**Orientation — verify on the bench.** The magnetometer's mounting
+orientation (which physical axis is which) is an ASSUMPTION, documented and
+isolated to one small `#define` table in `ff_compass.c` ("Axis mapping:
+sensor frame -> board frame"), not verified against a real GY-273 glued into
+a case yet. To check/correct it:
+
+1. Flash a build with `CONFIG_FF_COMPASS=y` (default) and get to the Radar
+   face with at least one paired friend so the arrow renders.
+2. Rotate the puck flat (screen up) through a full circle by hand, slowly.
+   The arrow should track — pointing at the same real-world friend direction
+   regardless of which way the puck is held.
+3. If the arrow doesn't move at all: check `ff_compass: no magnetometer` /
+   `no IMU` in the boot log first — a wiring or address problem, not an axis
+   problem.
+4. If the arrow moves but in the wrong direction: 90°-off (arrow leads or
+   lags the true rotation) means the X/Y source axes are swapped in the
+   `FF_MAG_BOARD_*_SRC` defines; mirrored (arrow turns the opposite way from
+   the puck) means a sign needs flipping (`FF_MAG_BOARD_*_SIGN`). Both are
+   isolated to that one table — no other file encodes the mapping.
+5. Tilting the puck should not make the arrow swing wildly (that's what the
+   QMI8658 tilt compensation is for); if it does with the IMU confirmed
+   present, check the `FF_IMU_BOARD_*` half of the same table.
+
+**Calibration status:** `ff_settings_t.compass_cal` / `.cal_valid`
+(`core/include/ff_settings.h`) is the persisted calibration slot; this driver
+loads it at boot via `ff_shell_settings()` and applies it if `cal_valid` is
+set, else runs uncalibrated (identity — no offset, unit scale, zero
+declination). No calibration ritual UI exists yet to ever set `cal_valid`
+true (S12's figure-eight ritual, still unimplemented per that spec's own
+2026-09-03 amendment) — `ff_compass_set_cal()` is the runtime seam that
+ritual will call once it exists. Expect headings to be off by whatever the
+local hard/soft-iron environment (case magnets, nearby electronics) imposes
+until that ritual ships.

@@ -35,6 +35,7 @@
 #ifndef FF_DISPLAY_H
 #define FF_DISPLAY_H
 
+#include "driver/i2c_master.h" /* i2c_master_bus_handle_t — ff_display_i2c_bus's return type (S15 compass) */
 #include "esp_err.h"
 #include "esp_lcd_types.h"
 #include "ff_idle.h" /* ff_idle_t — ff_display_touch_set_idle's parameter; see that function's doc comment */
@@ -77,6 +78,19 @@ extern "C" {
  * logs which step failed).
  */
 esp_err_t ff_display_expander_init(void);
+
+/**
+ * ff_display_i2c_bus — S15 compass: accessor for the shared I2C bus
+ * handle `ff_display_expander_init` brings up (touch SPD2010 @0x53 +
+ * TCA9554 IO expander @0x20 already share it, SDA=GPIO11/SCL=GPIO10).
+ * `ff_compass` (the GY-273 magnetometer on the puck's back header, same
+ * SDA/SCL pair) adds its own devices onto THIS handle via
+ * `i2c_master_bus_add_device` rather than opening a second bus on pins
+ * already owned by one — see this function's definition in ff_display.c
+ * for the full "why" (two I2C masters can never share one physical
+ * bus). Returns NULL before `ff_display_expander_init()` has succeeded.
+ */
+i2c_master_bus_handle_t ff_display_i2c_bus(void);
 
 /**
  * ff_display_panel_init — bring up the SPD2010 over QSPI and turn the
