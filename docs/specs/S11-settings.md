@@ -256,3 +256,99 @@ a) store seam + settings struct + tests · b) face render + interactions + golde
   encoded packet fails exactly `feat_get_owner_request_encodes_the_request`
   (`test_meshclient.c`) and nothing else. Both reverted after
   confirming.
+
+- **2026-09-06 — Confirmation fix round 3 (same PR, bench finding AFTER
+  the round-2 fix above, commit `eb1cb06`, against a real puck + comms
+  brain, Meshtastic 2.7.26): the FIRST push after boot confirmed
+  perfectly (`ack=ok`, a reply within 3 s); every push after that, in the
+  SAME session, sat on `ack=none reply=none` forever — even past the
+  full retry budget.** Bench transcript (one continuous boot session):
+
+  ```
+  name Jake H  → seq=1 … after 3 s:  ack=ok  reply=Jake H/JAKE  confirmed=1  (perfect)
+  name Jake    → seq=2 … after 5s, 30s: ack=none reply=none confirmed=0
+  name Jake Z  → seq=3 … after 4/12/24/36s: ack=none reply=none
+  name Jake    → seq=4 … after 4/16/28s: ack=none reply=none
+  ```
+
+  The comms brain applied every push (its owner really ended at
+  `Jake (JAKE)`, matching the last push) — so `mc_send_set_owner` and
+  `mc_send_get_owner_request` both reach the wire every time. Root
+  cause, found by instrumenting the sim harness rather than guessing at
+  undocumented real-firmware behavior: `ff_shell_tick`'s
+  `get_owner_request` retry loop counted a retry attempt against
+  `FF_NAME_OWNER_REQ_MAX_RETRIES`'s budget **regardless of whether the
+  send actually reached the wire** (`send_get_owner_request`'s return
+  code was discarded). A quiet two-node bench (just the puck + the
+  comms brain, no other mesh traffic) trips this device's own
+  `mc_client` 30 s no-RX-bytes watchdog into a reconnect once nothing
+  else arrives for that long — exactly the gap between typed bench
+  commands once the mesh goes quiet after a push confirms. Any retry
+  attempted while that reconnect is in flight legitimately fails
+  (`send_get_owner_request` returns nonzero, mirroring
+  `mc_send_get_owner_request`'s own `state != MC_STATE_READY` gate) —
+  and the old code spent the WHOLE retry budget on those failed
+  attempts, so once the reconnect completed and the transport was READY
+  again there was no budget left to ever ask again. The row read
+  pending forever despite the comms brain being perfectly reachable.
+
+  **Fixed**: `ff_shell_tick`'s retry block (`ff_shell.c`) now only
+  counts a retry / advances the poll deadline when
+  `send_get_owner_request` actually returns 0 (reached the wire); a
+  failed attempt leaves both untouched, so `ff_time_reached` simply
+  re-fires next tick — a cheap same-thread state check, no I/O — until
+  the transport recovers, with the FULL retry budget still available
+  for the reply that follows.
+
+  **Tests** (`test_shell.c`): `S_name_owner_request_retry_failures_do_not_burn_the_retry_budget`
+  reproduces the exact bug — more transport-down retry attempts than
+  the whole budget, then a recovery — and MUST FAIL on the pre-fix code
+  (`ctest` output: `the poll must still attempt a fresh
+  get_owner_request once the transport recovers`, `Expected TRUE Was
+  FALSE`; mutation-verified: reverting the fix fails exactly this test
+  and none of the other 250 in the suite). Two more tests close the
+  task brief's remaining scenarios: `S_name_second_push_in_the_same_session_also_confirms_via_its_own_reply`
+  (two different names pushed back to back, each with its own fresh
+  packet id, each confirming off its own ack+reply — this one already
+  passed pre-fix, proving the app-level push/poll bookkeeping itself
+  was never the bug) and `S_name_commit_abandons_a_still_pending_previous_poll`
+  (a second push committed while the first push's poll is still
+  outstanding — the old poll's late ack/reply must never confirm or
+  even acknowledge the NEW push, which must confirm only off its own
+  round trip). `test_meshclient.c` gains
+  `feat_two_consecutive_set_owner_round_trips_in_one_session_both_confirm`,
+  the same two-round-trip scenario through REAL wire encode/decode (not
+  the app-layer mock) — also passed pre-fix, confirming the meshclient
+  library's decode dispatch has no per-session "already answered once"
+  state either. Together these three passing tests are the evidence
+  that the bug was specifically in the retry-budget bookkeeping, not in
+  event correlation or the push/poll state machine more broadly.
+
+  **Gates**: clang + gcc-14 sim builds green, zero warnings both.
+  `ctest`: 74/74 both compilers (251-test `test_shell`, 92-test
+  `test_meshclient`). `run_goldens.sh`: 90/90 fixtures, byte-identical —
+  no UI changed, no golden regeneration needed. esp32s3 device build
+  (`CONFIG_FF_DEBUG_CONSOLE=y`) compiles clean, zero warnings, **not
+  flashed**. See `docs/hardware/comms-brain.md`'s "How confirmation
+  works, round 3" subsection for the full mechanism.
+
+  **Honesty note on scope**: this fix addresses a concrete, sim-provable
+  defect (the retry budget could be silently exhausted while the
+  transport was briefly down) that is consistent with the bench
+  transcript's timing (the ~30s/~32s gaps line up with `mc_client`'s
+  own 30s reconnect watchdog on a quiet mesh) and with push 1 always
+  working (its reply arrived in 3s, well inside the 10s window, before
+  any reconnect could have fired). It does **not** claim to be
+  independently bench-verified as the sole cause of every symptom in
+  the transcript above — in particular, a fresh push's OWN immediate
+  `set_owner` routing ack failing on a session that (per this theory)
+  had ALREADY finished reconnecting before the push was even typed is
+  not fully explained by this fix alone, and could not be reproduced in
+  sim absent a real radio. The coordinator's next real-hardware bench
+  run is what will confirm or rule out further causes; if `ack=none`
+  persists on a push's own immediate attempt even after this fix ships,
+  the next place to look is the esp32s3 target's own UART driver/RX
+  path (untested by the sim harness) or a genuine Meshtastic firmware
+  resource limit on concurrent locally-tracked `want_ack` packets — not
+  reasoned about further here for lack of a way to verify either
+  without real hardware.

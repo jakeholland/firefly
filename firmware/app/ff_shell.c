@@ -3599,15 +3599,45 @@ bool ff_shell_tick(ff_shell_t *sh_pub, uint32_t now_ms)
      * name_owner_req_pending) or the retry budget is exhausted — past
      * that point the row/console honestly keep reading "..." forever
      * rather than ever assuming success (see ff_shell.h's doc comment on
-     * ff_mesh_name_ack_t/confirmed). */
+     * ff_mesh_name_ack_t/confirmed).
+     *
+     * Confirmation-fix round 3 (bench finding, 2026-09-06, AFTER commit
+     * eb1cb06): the FIRST push after boot confirmed perfectly; every push
+     * after that, in the SAME session, sat on ack=none/reply=none forever
+     * — even past the full retry budget. A quiet bench mesh (just the
+     * puck + the comms brain, no other traffic) trips this device's own
+     * mc_client 30s no-RX-bytes watchdog into a silent reconnect once
+     * nothing else arrives for that long — exactly what a still, two-node
+     * bench produces in the gaps between typed commands. A retry attempted
+     * while that reconnect is in flight legitimately fails at the
+     * transport (`send_get_owner_request` returns nonzero, mirroring
+     * mc_send_get_owner_request's own `state != MC_STATE_READY` gate) —
+     * and the ORIGINAL code below counted that failed attempt against the
+     * retry budget anyway, silently draining the WHOLE budget while the
+     * transport happened to be down. Once the reconnect completed and the
+     * transport was READY again, there was no budget left to ever ask
+     * again — the row read pending forever despite the comms brain being
+     * perfectly reachable. Fixed: only a send that actually reaches the
+     * wire (return 0) consumes a retry / advances the deadline; a failed
+     * attempt leaves both untouched, so `ff_time_reached` simply re-fires
+     * next tick and the SAME attempt is retried (cheaply — a not-READY
+     * send is a same-thread state check, no I/O) until the transport
+     * recovers, with the full retry budget still intact for the reply
+     * that follows. */
     if (sh->name_owner_req_pending &&
         ff_time_reached(now_ms, sh->name_owner_req_sent_ms + FF_NAME_OWNER_REQ_TIMEOUT_MS)) {
         if (sh->name_owner_req_retries < FF_NAME_OWNER_REQ_MAX_RETRIES) {
-            if (sh->wiring.sender.send_get_owner_request != NULL) {
-                (void)sh->wiring.sender.send_get_owner_request(sh->wiring.sender.ctx, sh->my_node_id);
+            int const rc = (sh->wiring.sender.send_get_owner_request != NULL)
+                               ? sh->wiring.sender.send_get_owner_request(sh->wiring.sender.ctx, sh->my_node_id)
+                               : -1;
+            if (rc == 0) {
+                sh->name_owner_req_retries++;
+                sh->name_owner_req_sent_ms = now_ms;
             }
-            sh->name_owner_req_retries++;
-            sh->name_owner_req_sent_ms = now_ms;
+            /* else: never reached the wire (transport not ready, e.g. a
+             * reconnect in flight) — must not consume the retry budget or
+             * push the deadline forward; see this block's own doc comment
+             * above. */
         } else {
             /* Budget exhausted — stop polling. Deliberately does NOT set
              * any "failed" flag: get_owner_request is a best-effort read

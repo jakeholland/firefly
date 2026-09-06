@@ -503,6 +503,101 @@ fails exactly `feat_get_owner_request_encodes_the_request`
 (`test_meshclient.c`) and nothing else in the 91-test meshclient suite.
 Both mutations reverted after confirming.
 
+### How confirmation works, round 3 (bench fix, 2026-09-06, after commit `eb1cb06`)
+
+The round-2 fix above shipped. A real bench run (same puck, same comms
+brain, Meshtastic 2.7.26) found: the FIRST `name` push after boot
+confirmed perfectly — `ack=ok`, a reply within 3 s. Every push after
+that, in the SAME session, sat on `ack=none reply=none` forever, even
+past the app's full retry budget, despite the comms brain's owner
+genuinely changing every time (`meshtastic --info` ended at
+`Jake (JAKE)`, matching the LAST push):
+
+```
+name Jake H  → seq=1 … after 3 s:  ack=ok  reply=Jake H/JAKE  confirmed=1  (perfect)
+name Jake    → seq=2 … after 5s, 30s: ack=none reply=none confirmed=0
+name Jake Z  → seq=3 … after 4/12/24/36s: ack=none reply=none
+name Jake    → seq=4 … after 4/16/28s: ack=none reply=none
+```
+
+**Root cause (found via the sim harness, not by guessing at
+undocumented firmware behavior).** `ff_shell_tick`'s `get_owner_request`
+retry loop discarded `send_get_owner_request`'s return code — it
+counted every scheduled retry attempt against
+`FF_NAME_OWNER_REQ_MAX_RETRIES`'s budget whether or not the send
+actually reached the wire. A quiet two-node bench (just the puck and
+the comms brain, no other mesh chatter) trips this device's own
+`mc_client` 30 s no-RX-bytes watchdog into a silent reconnect once
+nothing else arrives for that long — exactly the gap a bench operator
+leaves between typed commands once a push has confirmed and the mesh
+goes quiet again. Any retry attempted while that reconnect is in
+flight legitimately fails (`send_get_owner_request` returns nonzero,
+the same `state != MC_STATE_READY` gate `mc_send_get_owner_request`
+itself already documents) — and the pre-fix code spent the ENTIRE
+retry budget on those failed attempts. Once the reconnect completed and
+the transport was READY again, there was no budget left to ever ask
+again: the row read pending forever despite the comms brain being
+perfectly reachable and answering-ready.
+
+**Fix.** `ff_shell_tick`'s retry block (`ff_shell.c`) now only counts a
+retry / advances the poll deadline when `send_get_owner_request`
+actually returns 0 (a genuine send that reached the wire); a failed
+attempt leaves the retry count and deadline untouched, so the SAME
+timeout condition simply re-fires next tick — a cheap same-thread state
+check, no I/O, while the transport stays down — until it recovers, with
+the full retry budget still intact for the reply that follows.
+
+**Tests.** `test_shell.c`'s
+`S_name_owner_request_retry_failures_do_not_burn_the_retry_budget`
+reproduces the exact bug (more transport-down retry attempts than the
+whole budget would allow, then a recovery) and **must fail** on the
+pre-fix code — mutation-verified: reverting the fix (restoring the
+unconditional `retries++`/`sent_ms = now_ms`) fails exactly this test
+and none of the other 250 in the 251-test suite. Two more tests close
+the remaining task-brief scenarios and both **already passed before
+this fix**, which is itself useful evidence about where the bug was
+NOT: `S_name_second_push_in_the_same_session_also_confirms_via_its_own_reply`
+(two different names pushed back to back in one session, each getting
+its own fresh outgoing packet id, each independently confirming off its
+own ack + reply) and `S_name_commit_abandons_a_still_pending_previous_poll`
+(a second push committed while the first push's poll is still
+outstanding — the old poll's late ack/reply must never confirm or
+mismatch-flag the NEW push, which confirms only off its own round
+trip). `test_meshclient.c` gains
+`feat_two_consecutive_set_owner_round_trips_in_one_session_both_confirm`
+— the same two-round-trip scenario through REAL wire encode/decode
+(building actual `ToRadio`/`FromRadio` frames, not the app-layer mock)
+— which also already passed pre-fix, confirming the meshclient
+library's decode dispatch carries no per-session "already answered
+once" state.
+
+**Gates.** clang + gcc-14 sim builds green, zero warnings both.
+`ctest`: 74/74 test binaries both compilers (251-test `test_shell`,
+92-test `test_meshclient`). `run_goldens.sh`: 90/90 fixtures,
+byte-identical — no UI changed. esp32s3 device build
+(`CONFIG_FF_DEBUG_CONSOLE=y`) compiles clean, zero warnings, **not
+flashed**.
+
+**Honesty note on scope.** This fix is a concrete, sim-provable defect
+whose timing is consistent with the bench transcript (the ~30s/~32s
+gaps between checks line up with `mc_client`'s own 30 s reconnect
+watchdog on a quiet mesh, and push 1 always working matches its reply
+arriving in 3 s — well inside the 10 s window, before any reconnect
+could have fired). It is **not** independently bench-verified as the
+sole cause of every symptom above: in particular, a fresh push's OWN
+immediate `set_owner` routing ack failing on a session that, by this
+theory, had already finished reconnecting before the push was even
+typed is not fully explained by this fix alone, and could not be
+reproduced in sim absent a real radio (both the app-layer state machine
+and the meshclient wire-decode layer check out clean in every sim
+reproduction attempted — see the two already-passing tests above). If
+`ack=none` on a push's own first attempt persists on the next real bench
+run after this fix, the next places to look are the esp32s3 target's
+own UART driver/RX path (untested by the sim harness) or a genuine
+Meshtastic firmware resource limit on concurrently-tracked local
+`want_ack` packets — neither reasoned about further here for lack of a
+way to verify without real hardware.
+
 ## The puck's back header (photo, 2026-09-04)
 
 2×10 at 1.27 mm pitch. Left column top→bottom: `13 · 12 · RXD · TXD · G · 3V3 · SDA · SCL · G · BAT`.

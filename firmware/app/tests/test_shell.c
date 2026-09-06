@@ -8557,7 +8557,15 @@ static int name_wire_spy_send_admin_set_owner(void *ctx, uint32_t dest, char con
     snprintf(s->long_name, sizeof(s->long_name), "%s", (long_name != NULL) ? long_name : "");
     snprintf(s->short_name, sizeof(s->short_name), "%s", (short_name != NULL) ? short_name : "");
     if (s->rc == 0 && out_packet_id != NULL) {
-        *out_packet_id = s->out_packet_id;
+        /* Real hardware's packet-id counter (mc_next_packet_id) hands out a
+         * FRESH id on every send — this spy mirrors that instead of
+         * returning the same fixed id on every call, so a test with more
+         * than one push can tell "correlated THIS push's own ack" apart
+         * from "would have matched any push's ack" (a single fixed id
+         * across calls can't distinguish the two). Existing single-push
+         * tests are unaffected: call 1 still returns exactly
+         * `out_packet_id`. */
+        *out_packet_id = s->out_packet_id + (uint32_t)(s->calls - 1);
     }
     return s->rc;
 }
@@ -8955,6 +8963,55 @@ static void S_name_owner_response_matching_flips_confirmed(void)
     TEST_ASSERT_FALSE_MESSAGE(st.mismatch, "confirmed and mismatch are mutually exclusive");
 }
 
+/**
+ * Bench finding (2026-09-06, real puck + comms brain, AFTER commit
+ * eb1cb06): "name Jake H" confirmed perfectly (ack=ok, reply within 3s)
+ * — the FIRST push after boot. Every push after that, in the SAME boot
+ * session, showed ack=none reply=none forever, even after the retry
+ * budget was exhausted. Reproduced here at the shell layer with two
+ * DIFFERENT names pushed back to back, each getting its OWN fresh
+ * packet id (name_wire_spy_send_admin_set_owner now varies its
+ * out_packet_id per call — see that spy's own comment) and its own
+ * fresh ack/reply: both pushes must independently reach ack=ok and
+ * confirmed=1 off THEIR OWN routing ack / get_owner_response, not the
+ * first push's leftovers.
+ */
+static void S_name_second_push_in_the_same_session_also_confirms_via_its_own_reply(void)
+{
+    harness_init(1000u, false);
+    inject_my_info(MY_ID);
+    name_wire_spy_install();
+
+    /* Push 1: "Jake H", confirmed via its own ack + reply. */
+    ff_shell_debug_set_name(&H.shell, "Jake H");
+    TEST_ASSERT_EQUAL_INT(1, NS.calls);
+    TEST_ASSERT_EQUAL_INT(1, NS.owner_req_calls);
+    uint32_t const push1_packet_id = NS.out_packet_id;
+    inject_routing_ack(push1_packet_id, true);
+    inject_owner_reply("Jake H", "JAKE");
+
+    ff_shell_mesh_name_status_t st = ff_shell_mesh_name_status(&H.shell);
+    TEST_ASSERT_TRUE_MESSAGE(st.confirmed, "push 1 confirms off its own ack+reply");
+
+    /* Push 2: a DIFFERENT name, same session, no reboot. Must get its own
+     * fresh packet id, its own get_owner_request, and must be
+     * confirm-able by its own ack+reply — none of push 1's state may
+     * leak forward or suppress push 2's round trip. */
+    ff_shell_debug_set_name(&H.shell, "Jake");
+    TEST_ASSERT_EQUAL_INT_MESSAGE(2, NS.calls, "push 2 must send its own set_owner");
+    TEST_ASSERT_EQUAL_INT_MESSAGE(2, NS.owner_req_calls, "push 2 must send its own get_owner_request follow-up");
+
+    uint32_t const push2_packet_id = push1_packet_id + 1u; /* the spy's next fresh id */
+    TEST_ASSERT_NOT_EQUAL_MESSAGE(push1_packet_id, push2_packet_id, "sanity: the two pushes must not share a packet id");
+
+    inject_routing_ack(push2_packet_id, true);
+    inject_owner_reply("Jake", "JAKE");
+
+    st = ff_shell_mesh_name_status(&H.shell);
+    TEST_ASSERT_TRUE_MESSAGE(st.confirmed, "push 2 must confirm off its OWN ack+reply, in the same session as push 1");
+    TEST_ASSERT_EQUAL_STRING("Jake", st.reply_long);
+}
+
 /* ====================================================================
  * Confirmation fix round 2 (bench finding, 2026-09-06, AFTER commit
  * 51e4ae1, real puck + Meshtastic 2.7.26 comms brain): `name Jake` when
@@ -9117,6 +9174,81 @@ static void S_name_owner_request_retries_on_timeout_then_stops(void)
                               "exhausting the retry budget never assumes success — stays pending forever");
 }
 
+/**
+ * Bench finding (2026-09-06, real puck + comms brain, AFTER commit
+ * eb1cb06): the FIRST push after boot confirmed perfectly; every push
+ * after that, in the SAME session, sat on ack=none/reply=none forever —
+ * even past the full retry budget. A quiet bench mesh (just the puck +
+ * comms brain, no other traffic) trips this device's own 30s
+ * no-RX-bytes watchdog (mc_client.c) into a silent reconnect once no
+ * other packet arrives for that long — exactly what a still, two-node
+ * bench produces between typed commands. `send_get_owner_request`
+ * legitimately fails (transport not READY) for any retry attempted
+ * while that reconnect is in flight.
+ *
+ * Reproduced here without needing a real reconnect: the retry loop
+ * (`ff_shell_tick`) must not spend a retry attempt's slot in the
+ * FF_NAME_OWNER_REQ_MAX_RETRIES budget on an attempt that never actually
+ * reached the wire (`send_get_owner_request` returning nonzero) — doing
+ * so silently drains the ENTIRE retry budget while the transport happens
+ * to be down, so once it recovers there is no attempt budget left to
+ * ever ask again, and the row reads pending forever despite the comms
+ * brain being perfectly reachable and answering-ready again. This test
+ * MUST FAIL on the current branch (see the PR body for the exact
+ * assertion and `ctest` output) — it is the sim-level reproduction the
+ * bench finding asked for.
+ */
+static void S_name_owner_request_retry_failures_do_not_burn_the_retry_budget(void)
+{
+    harness_init(1000u, false);
+    inject_my_info(MY_ID);
+    name_wire_spy_install();
+
+    send_bare(FF_INTENT_SETTINGS_OPEN_NAME_EDIT);
+    name_key(5);
+    send_bare(FF_INTENT_SETTINGS_NAME_COMMIT);
+    TEST_ASSERT_EQUAL_INT(1, NS.owner_req_calls);
+
+    /* The transport goes unavailable — e.g. this device's own quiet-mesh
+     * reconnect — for LONGER than the entire retry budget would have
+     * lasted had every attempt counted. None of these attempts may count
+     * as a used retry: the request never left the device. Deliberately
+     * more iterations than FF_NAME_OWNER_REQ_MAX_RETRIES — the old,
+     * buggy code exhausts the whole budget (and gives up, clearing
+     * name_owner_req_pending) well before this loop ends; the fixed code
+     * keeps re-attempting every tick for as long as the transport stays
+     * down, still with a full budget in reserve for when it matters. */
+    NS.owner_req_rc = -1;
+    for (int i = 0; i < (int)FF_NAME_OWNER_REQ_MAX_RETRIES + 5; i++) {
+        advance(FF_NAME_OWNER_REQ_TIMEOUT_MS + 1u);
+        ff_shell_tick(&H.shell, H.clk.t);
+    }
+    TEST_ASSERT_TRUE_MESSAGE(ff_shell_mesh_name_status(&H.shell).confirmed == false,
+                             "sanity: nothing has confirmed yet");
+    int const calls_while_down = NS.owner_req_calls;
+
+    /* The transport recovers (reconnect completes). The NEXT scheduled
+     * retry must actually go out — the poll must still be alive (not
+     * given up on) once the transport is READY again. `inject_owner_reply`
+     * on its own can't tell the two behaviors apart (shell_ev_owner
+     * accepts any reply unconditionally, whether or not a request is
+     * still "pending"), so the real tell is whether a fresh request is
+     * even ATTEMPTED here at all. */
+    NS.owner_req_rc = 0;
+    advance(FF_NAME_OWNER_REQ_TIMEOUT_MS + 1u);
+    ff_shell_tick(&H.shell, H.clk.t);
+    TEST_ASSERT_TRUE_MESSAGE(NS.owner_req_calls > calls_while_down,
+                             "the poll must still attempt a fresh get_owner_request once the transport "
+                             "recovers — the OLD code gives up (clears name_owner_req_pending) once the "
+                             "retry budget is exhausted, which happens well before the transport ever "
+                             "recovers here, so it never attempts again no matter how long it waits");
+
+    inject_owner_reply("j", "J");
+    TEST_ASSERT_TRUE_MESSAGE(ff_shell_mesh_name_status(&H.shell).confirmed,
+                             "once the transport recovers and a genuine request finally reaches the comms "
+                             "brain, its reply must still be able to confirm");
+}
+
 static void S_name_routing_nak_marks_push_failed(void)
 {
     harness_init(1000u, false);
@@ -9167,6 +9299,64 @@ static void S_name_routing_ack_ignores_an_unrelated_request_id(void)
     inject_routing_ack(NS.out_packet_id + 1u, false); /* some other in-flight packet's NAK */
 
     TEST_ASSERT_EQUAL_INT(FF_MESH_NAME_ACK_NONE, ff_shell_mesh_name_status(&H.shell).ack);
+}
+
+/**
+ * Task brief requirement: "A push while a previous poll is still pending:
+ * the old poll is abandoned, the new one confirms only its own name."
+ * Unlike S_name_commit_resets_push_tracking_for_a_fresh_push (above,
+ * which re-pushes only AFTER the first push already confirmed), this
+ * commits a SECOND time while the FIRST push's get_owner_request is still
+ * outstanding — no reply, no ack, nothing has arrived for it yet — the
+ * scenario a wearer mashing DONE twice in a row (or a coordinator
+ * re-typing a bench command before the first one's ~10s poll window
+ * elapses) would actually produce.
+ */
+static void S_name_commit_abandons_a_still_pending_previous_poll(void)
+{
+    harness_init(1000u, false);
+    inject_my_info(MY_ID);
+    name_wire_spy_install();
+
+    /* Push 1: "j" — never gets any ack or reply before push 2 lands.
+     * name_wire_spy_send_admin_set_owner (its own comment) hands out
+     * NS.out_packet_id + (calls - 1), a fresh id per call — NS.out_packet_id
+     * itself is the fixed BASE, not the latest returned id, so the actual
+     * per-push ids are computed the same way the spy computes them. */
+    send_bare(FF_INTENT_SETTINGS_OPEN_NAME_EDIT);
+    name_key(5);
+    send_bare(FF_INTENT_SETTINGS_NAME_COMMIT);
+    uint32_t const push1_packet_id = NS.out_packet_id + (uint32_t)(NS.calls - 1);
+    TEST_ASSERT_EQUAL_INT(1, NS.owner_req_calls);
+    TEST_ASSERT_FALSE(ff_shell_mesh_name_status(&H.shell).confirmed);
+
+    /* Push 2: "m" — committed while push 1's poll is STILL pending. */
+    send_bare(FF_INTENT_SETTINGS_OPEN_NAME_EDIT); /* re-primes the draft from "j" */
+    send_bare(FF_INTENT_NAME_T9_BACKSPACE);
+    name_key(6); /* pushes "m" (T9 key 6 = mno) */
+    send_bare(FF_INTENT_SETTINGS_NAME_COMMIT);
+    uint32_t const push2_packet_id = NS.out_packet_id + (uint32_t)(NS.calls - 1);
+    TEST_ASSERT_NOT_EQUAL_MESSAGE(push1_packet_id, push2_packet_id, "push 2 must get its own fresh packet id");
+    TEST_ASSERT_EQUAL_INT_MESSAGE(2, NS.owner_req_calls, "push 2 must send its own get_owner_request follow-up");
+
+    /* Push 1's old, abandoned poll finally answers — this must NOT be
+     * read as evidence for push 2's push generation. */
+    inject_routing_ack(push1_packet_id, true);
+    ff_shell_mesh_name_status_t st = ff_shell_mesh_name_status(&H.shell);
+    TEST_ASSERT_EQUAL_INT_MESSAGE(FF_MESH_NAME_ACK_NONE, st.ack,
+                                  "the OLD push's routing ack must not be read as THIS push's ack");
+    inject_owner_reply("j", "J"); /* push 1's own name, arriving late */
+    st = ff_shell_mesh_name_status(&H.shell);
+    TEST_ASSERT_FALSE_MESSAGE(st.confirmed, "the old poll's own name must never confirm the NEW push");
+    TEST_ASSERT_TRUE_MESSAGE(st.mismatch, "a late reply naming something other than the CURRENT push is a mismatch");
+
+    /* Push 2's OWN reply, naming push 2's OWN text, must confirm. */
+    inject_routing_ack(push2_packet_id, true);
+    inject_owner_reply("m", "M");
+    st = ff_shell_mesh_name_status(&H.shell);
+    TEST_ASSERT_EQUAL_INT(FF_MESH_NAME_ACK_OK, st.ack);
+    TEST_ASSERT_TRUE_MESSAGE(st.confirmed, "push 2 confirms off its OWN ack+reply, abandoning push 1's poll entirely");
+    TEST_ASSERT_EQUAL_STRING("m", st.reply_long);
 }
 
 static void S_name_commit_resets_push_tracking_for_a_fresh_push(void)
@@ -9474,12 +9664,15 @@ int main(void)
     RUN_TEST(S_name_commit_sends_get_owner_request_after_a_successful_push);
     RUN_TEST(S_name_commit_skips_the_owner_request_when_the_push_itself_was_skipped);
     RUN_TEST(S_name_owner_response_matching_flips_confirmed);
+    RUN_TEST(S_name_second_push_in_the_same_session_also_confirms_via_its_own_reply);
     RUN_TEST(S_name_owner_response_mismatching_does_not_confirm);
     RUN_TEST(S_name_owner_reply_stops_further_retries);
     RUN_TEST(S_name_owner_request_retries_on_timeout_then_stops);
+    RUN_TEST(S_name_owner_request_retry_failures_do_not_burn_the_retry_budget);
     RUN_TEST(S_name_routing_nak_marks_push_failed);
     RUN_TEST(S_name_routing_ack_ok_does_not_by_itself_confirm);
     RUN_TEST(S_name_routing_ack_ignores_an_unrelated_request_id);
+    RUN_TEST(S_name_commit_abandons_a_still_pending_previous_poll);
     RUN_TEST(S_name_commit_resets_push_tracking_for_a_fresh_push);
     RUN_TEST(S_name_recommitting_the_same_name_does_not_falsely_confirm_from_stale_mesh_state);
     RUN_TEST(S_name_status_reports_pending_not_mismatch_before_any_reply);

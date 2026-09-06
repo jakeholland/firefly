@@ -1349,6 +1349,19 @@ ff_shell_compass_cal_status_t ff_shell_compass_cal_status(ff_shell_t const *sh);
  * assumed confirmation. Public (not file-static) so tests can pin the
  * exact schedule instead of hardcoding a duplicate number that could
  * silently drift from the real one.
+ *
+ * Confirmation-fix round 3 (bench finding 2026-09-06, AFTER commit
+ * `eb1cb06`): a retry attempt that never reaches the wire (the
+ * transport not READY — e.g. this device's own quiet-mesh reconnect
+ * mid-poll) does NOT consume one of the `FF_NAME_OWNER_REQ_MAX_RETRIES`
+ * slots and does NOT advance the poll deadline (`ff_shell_tick`'s own
+ * retry block, `ff_shell.c`) — only a send that actually leaves the
+ * device counts. Before this fix, a transport outage lasting longer
+ * than the retry schedule silently burned the ENTIRE budget on sends
+ * that never went anywhere, leaving the poll permanently abandoned
+ * (`name_owner_req_pending` cleared) with no way to ever confirm again
+ * even once the transport recovered — see
+ * `docs/hardware/comms-brain.md`'s "How confirmation works, round 3".
  */
 #define FF_NAME_OWNER_REQ_TIMEOUT_MS  10000u
 #define FF_NAME_OWNER_REQ_MAX_RETRIES 3u

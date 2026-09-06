@@ -3130,6 +3130,92 @@ static void feat_routing_nak_reports_not_ok(void)
     TEST_ASSERT_FALSE(cap.routing_acks[0].ok);
 }
 
+/**
+ * Bench finding (2026-09-06, real puck + Meshtastic 2.7.26 comms brain,
+ * AFTER commit eb1cb06): the FIRST NAME push after boot confirmed
+ * perfectly (ack=ok, reply within 3s); every push after that, in the SAME
+ * boot session, got ack=none reply=none forever, even after the app's
+ * retry budget was exhausted, despite the comms brain's owner really
+ * changing each time. Reproduced here at the mc_client wire level — two
+ * full set_owner + get_owner_request round trips through REAL encode and
+ * REAL decode (not the app-layer spy), each with its own routing ack and
+ * get_owner_response fed back in as raw FromRadio bytes — to check
+ * whether this library itself, not just the app's own bookkeeping,
+ * correlates a SECOND round trip's reply/ack correctly in the same
+ * mc_client_t session.
+ */
+static void feat_two_consecutive_set_owner_round_trips_in_one_session_both_confirm(void)
+{
+    mock_io_t io;
+    mock_io_reset(&io);
+    mock_clock_t clk = {.t = 0};
+    ff_clock_t clock = {.now_ms = mock_now, .user = &clk};
+    events_capture_t cap;
+    memset(&cap, 0, sizeof(cap));
+
+    mc_client_t c;
+    mc_init(&c, (mc_transport_t){.write = mock_write, .read = mock_read, .io = &io}, make_events(&cap), &clock);
+    c.state = MC_STATE_READY;
+
+    /* --- Round 1: "Jake H" --- */
+    uint32_t packet_id_1 = 0;
+    TEST_ASSERT_EQUAL_INT(0, mc_send_set_owner(&c, 0x0A0A0A0Au, "Jake H", "JAKE", &packet_id_1));
+    TEST_ASSERT_EQUAL_INT(0, mc_send_get_owner_request(&c, 0x0A0A0A0Au));
+
+    uint8_t frame1a[400];
+    uint16_t f1a_len = build_routing_ack_frame(packet_id_1, /*nak=*/false, frame1a, sizeof(frame1a));
+    TEST_ASSERT_TRUE(f1a_len > 0);
+    io.rx_data = frame1a;
+    io.rx_len = f1a_len;
+    io.rx_pos = 0;
+    mc_tick(&c, 100);
+
+    uint8_t frame1b[400];
+    uint16_t f1b_len = build_owner_response_frame("Jake H", "JAKE", frame1b, sizeof(frame1b));
+    TEST_ASSERT_TRUE(f1b_len > 0);
+    io.rx_data = frame1b;
+    io.rx_len = f1b_len;
+    io.rx_pos = 0;
+    mc_tick(&c, 200);
+
+    TEST_ASSERT_EQUAL_INT_MESSAGE(1, cap.routing_ack_count, "round 1's own routing ack must be delivered");
+    TEST_ASSERT_EQUAL_UINT32(packet_id_1, cap.routing_acks[0].request_id);
+    TEST_ASSERT_TRUE(cap.routing_acks[0].ok);
+    TEST_ASSERT_EQUAL_INT_MESSAGE(1, cap.owner_count, "round 1's own get_owner_response must be delivered");
+    TEST_ASSERT_EQUAL_STRING("Jake H", cap.owners[0].long_name);
+
+    /* --- Round 2: "Jake", SAME mc_client_t, SAME session, no reboot --- */
+    uint32_t packet_id_2 = 0;
+    TEST_ASSERT_EQUAL_INT(0, mc_send_set_owner(&c, 0x0A0A0A0Au, "Jake", "JAKE", &packet_id_2));
+    TEST_ASSERT_EQUAL_INT(0, mc_send_get_owner_request(&c, 0x0A0A0A0Au));
+    TEST_ASSERT_NOT_EQUAL_MESSAGE(packet_id_1, packet_id_2,
+                                  "each push must get its own fresh outgoing packet id");
+
+    uint8_t frame2a[400];
+    uint16_t f2a_len = build_routing_ack_frame(packet_id_2, /*nak=*/false, frame2a, sizeof(frame2a));
+    TEST_ASSERT_TRUE(f2a_len > 0);
+    io.rx_data = frame2a;
+    io.rx_len = f2a_len;
+    io.rx_pos = 0;
+    mc_tick(&c, 300);
+
+    uint8_t frame2b[400];
+    uint16_t f2b_len = build_owner_response_frame("Jake", "JAKE", frame2b, sizeof(frame2b));
+    TEST_ASSERT_TRUE(f2b_len > 0);
+    io.rx_data = frame2b;
+    io.rx_len = f2b_len;
+    io.rx_pos = 0;
+    mc_tick(&c, 400);
+
+    TEST_ASSERT_EQUAL_INT_MESSAGE(2, cap.routing_ack_count, "round 2's OWN routing ack must ALSO be delivered");
+    TEST_ASSERT_EQUAL_UINT32(packet_id_2, cap.routing_acks[1].request_id);
+    TEST_ASSERT_TRUE(cap.routing_acks[1].ok);
+    TEST_ASSERT_EQUAL_INT_MESSAGE(2, cap.owner_count, "round 2's OWN get_owner_response must ALSO be delivered");
+    TEST_ASSERT_EQUAL_STRING("Jake", cap.owners[1].long_name);
+
+    TEST_ASSERT_EQUAL_UINT32(0u, c.stats.decode_errors);
+}
+
 /* -------------------------------------------------------------------- */
 
 int main(void)
@@ -3243,6 +3329,7 @@ int main(void)
     RUN_TEST(feat_admin_other_variant_is_silently_ignored);
     RUN_TEST(feat_routing_ack_none_reports_ok);
     RUN_TEST(feat_routing_nak_reports_not_ok);
+    RUN_TEST(feat_two_consecutive_set_owner_round_trips_in_one_session_both_confirm);
 
     return UNITY_END();
 }
