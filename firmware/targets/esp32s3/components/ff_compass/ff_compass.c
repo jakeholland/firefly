@@ -294,6 +294,17 @@ static bool s_cal_valid;
  * "nothing has been read yet" default. */
 static float s_last_heading_deg = -1.0f;
 
+/* S12 step 3 — the board-frame magnetometer vector (post axis-remap,
+ * BEFORE calibration) from the most recent `ff_compass_read()` call,
+ * for `ff_compass_last_mag_board()` (see that function's own doc
+ * comment for why this exists: the calibration ritual needs the EXACT
+ * same vector `ff_geo_heading_deg` is handed, not a second I2C
+ * transaction of its own). Zero-vector default is honest: "no real
+ * reading yet" and "a degenerate/absent magnetometer" both correctly
+ * read as (0,0,0) here, matching `ff_compass_read()`'s own "no mag
+ * present" early-return, which never touches this variable at all. */
+static ff_vec3_t s_last_mag_board = {0.0f, 0.0f, 0.0f};
+
 /* ff_compass_read() runs at 10 Hz (app_main.c's own
  * FF_COMPASS_SAMPLE_PERIOD_MS) from the main render-loop task — a bus
  * fault (NACK/timeout) on that path can repeat every tick for as long
@@ -641,6 +652,8 @@ float ff_compass_read(void)
         : ff_compass_remap(mag_raw, FF_MAG_BOARD_X_SRC, FF_MAG_BOARD_X_SIGN, FF_MAG_BOARD_Y_SRC,
                             FF_MAG_BOARD_Y_SIGN, FF_MAG_BOARD_Z_SRC, FF_MAG_BOARD_Z_SIGN);
 
+    s_last_mag_board = mag_board; /* S12 step 3 — see ff_compass_last_mag_board()'s doc comment */
+
     float const heading = ff_geo_heading_deg(mag_board, accel_board, s_cal_valid ? &s_cal : NULL);
     s_last_heading_deg = heading;
     return heading;
@@ -655,4 +668,9 @@ ff_compass_status_t ff_compass_status(void)
     st.heading_valid = (s_last_heading_deg >= 0.0f);
     st.last_heading_deg = s_last_heading_deg;
     return st;
+}
+
+ff_vec3_t ff_compass_last_mag_board(void)
+{
+    return s_last_mag_board;
 }

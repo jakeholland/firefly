@@ -152,6 +152,11 @@ line replies `dbg: ? try help`):
 | `flare cancel` | cancel a flare in progress |
 | `wall` | wall-clock latch dump: latched, trust tier, UTC offset, last observation's source node |
 | `i2c` | shared I2C bus scan (0x08-0x77, known addresses named) plus a one-shot compass status line |
+| `cal` | compass calibration ritual status: active?, progress %, sample count, can-finish?, and whether a calibration is currently stored |
+| `cal start` | begin a calibration session (S12 step 3, the figure-eight ritual) |
+| `cal finish` | attempt to end the session: persists on >=70% octant coverage, otherwise leaves the old calibration untouched and the session active |
+| `cal cancel` | abandon the session; the stored calibration (if any) is untouched |
+| `cal clear` | drop the STORED calibration back to identity/uncalibrated |
 
 Every acting command dispatches through `ff_shell_intent` (the SAME
 `FF_INTENT_QUICK_FLARE`/`FF_INTENT_FLARE_END` intents the physical
@@ -193,6 +198,19 @@ dbg: wall latched=1 latch_unix=1789768800 trust=TRUSTED offset_min=-240 assumed=
 i2c
 dbg: i2c 0x20 io-expander, 0x2c qmc5883p, 0x51 rtc, 0x53 touch, 0x6b qmi8658
 dbg: compass mag=qmc5883p imu=found heading=127 cal=identity
+
+cal start
+dbg: cal started
+
+(rotate the puck in a figure eight, then check progress)
+cal
+dbg: cal active=1 progress_pct=88 samples=340 can_finish=1 cal=identity
+
+cal finish
+dbg: cal finished ok progress_pct=100 samples=390
+
+cal
+dbg: cal active=0 cal=custom
 
 xyzzy
 dbg: ? try help

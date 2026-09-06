@@ -144,6 +144,22 @@ typedef struct {
     unsigned int sample_count;
 } ff_geo_cal_state_t;
 
+/**
+ * FF_GEO_CAL_MIN_PROGRESS_PCT — minimum `ff_geo_cal_progress_pct()`
+ * octant-coverage percentage `ff_geo_cal_finish` requires to produce a
+ * fit (below this, it returns false and leaves the old calibration
+ * untouched — see that function's own doc comment). Named here (S12
+ * step 3, the compass calibration ritual) so a caller that needs to
+ * gate its own UI affordance on "has this session collected enough to
+ * finish" — the ritual screen's DONE button, the bench console's `cal`
+ * status line — reads the SAME number `ff_geo_cal_finish` itself
+ * enforces, rather than a second hand-copied `70` that could drift from
+ * it. Not `[api]`-flagged as a behavior change: the value (70) is
+ * unchanged from what `ff_geo_cal_finish` already did before this
+ * constant existed; this only names it.
+ */
+#define FF_GEO_CAL_MIN_PROGRESS_PCT 70
+
 /** ff_geo_cal_begin — reset calibration state before a new ritual. */
 void ff_geo_cal_begin(ff_geo_cal_state_t *st);
 
@@ -170,7 +186,8 @@ int ff_geo_cal_progress_pct(ff_geo_cal_state_t const *st);
  * derivable from magnetometer samples alone; set separately, see S11).
  *
  * Returns false (leaving `*out` unmodified) if octant coverage is below
- * 70% — not enough of the sphere was sampled for a trustworthy fit.
+ * `FF_GEO_CAL_MIN_PROGRESS_PCT` (70%) — not enough of the sphere was
+ * sampled for a trustworthy fit.
  */
 bool ff_geo_cal_finish(ff_geo_cal_state_t const *st, ff_geo_cal_t *out);
 

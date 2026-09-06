@@ -70,14 +70,23 @@
  *
  * ## Calibration
  * `ff_settings_t.compass_cal` / `.cal_valid` (core/include/ff_settings.h)
- * is the ONE persisted calibration this codebase has — S12's
- * figure-eight ritual UI that would ever populate it for real has not
- * shipped (S12-first-run.md's own 2026-09-03 amendment). `ff_compass_set_cal`
- * below is the runtime seam that ritual will call once it exists;
- * app_main.c wires it ONCE at boot, from whatever `ff_shell_settings()`
- * already loaded from NVS (identity/`cal_valid == false` on every puck
- * today, since nothing has ever written a real one) — this driver
- * itself never reads or writes settings/NVS.
+ * is the ONE persisted calibration this codebase has. S12 step 3 (the
+ * figure-eight ritual UI, docs/specs/S12-first-run.md's own 2026-09-03
+ * amendment recorded the gap; this driver's own PR closes it) is now
+ * the thing that populates it for real: `ff_compass_set_cal` below is
+ * the runtime seam that ritual calls (via `app_main.c`) the moment a
+ * calibration session FINISHes successfully, and again on CLEAR (with
+ * `cal = NULL`) — see `ff_shell_cfg_t.compass_cal_changed`'s doc
+ * comment (app/include/ff_shell.h). `app_main.c` ALSO still wires it
+ * once at boot, from whatever `ff_shell_settings()` already loaded from
+ * NVS, so a calibration from a PRIOR session survives a reboot without
+ * needing this driver to touch settings/NVS itself — this driver never
+ * reads or writes settings/NVS directly, on either path.
+ *
+ * `ff_compass_last_mag_board` below is the other half of that seam: the
+ * ritual needs raw (pre-calibration) board-frame samples to fit
+ * against, fed at the platform's own compass sample rate — see that
+ * function's own doc comment.
  */
 #pragma once
 
@@ -168,6 +177,31 @@ typedef struct {
 } ff_compass_status_t;
 
 ff_compass_status_t ff_compass_status(void);
+
+/**
+ * ff_compass_last_mag_board — S12 step 3: the board-frame magnetometer
+ * vector (after the per-chip axis remap, BEFORE calibration) from the
+ * MOST RECENT `ff_compass_read()` call — the exact same vector that
+ * call handed `ff_geo_heading_deg`. This is the sample source the
+ * figure-eight calibration ritual (`ff_shell_compass_cal_sample`,
+ * app/include/ff_shell.h) needs: feeding it anything else (raw
+ * sensor-frame bytes, an already-calibrated vector, or a value from a
+ * SECOND I2C transaction that might not agree with the one the live
+ * heading used) would fit a calibration against axes the heading
+ * computation doesn't actually use.
+ *
+ * "Most recent", not "fresh right now" — same convention
+ * `ff_compass_status()`'s own doc comment establishes for
+ * `last_heading_deg`: this reports the last periodic sample
+ * (app_main.c's 10 Hz `ff_compass_read()` tick) already took, not a new
+ * bus transaction of its own. Returns the zero vector before the first
+ * `ff_compass_read()` call ever happens, or on every call while no
+ * magnetometer is present — `ff_compass_read()` never writes this
+ * field on that early-return path, so it stays at its honest
+ * "nothing real yet" zero default (this header's own top comment: this
+ * driver never fabricates a reading it has no sensor evidence for).
+ */
+ff_vec3_t ff_compass_last_mag_board(void);
 
 /**
  * ff_compass_set_cal — install (or clear, if `cal` is NULL) the active

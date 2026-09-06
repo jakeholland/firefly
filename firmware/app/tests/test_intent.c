@@ -1851,6 +1851,332 @@ static void S21_AC5_default_touch_cal_is_identity(void)
 }
 
 /* =================================================================== */
+/* S12 step 3 — FF_INTENT_COMPASS_CAL_START/_CANCEL/_FINISH/_CLEAR       */
+/* (docs/specs/S12-first-run.md Step 3, the compass calibration ritual)  */
+/* =================================================================== */
+
+/* Field-for-field identical to test_geo.c's own
+ * S01_AC5_calibration_recovers_hard_offset_and_improves_heading fixture
+ * (14 samples spanning all 8 octants, fed out of order like a real
+ * figure-eight) — reused rather than re-derived so this file's
+ * "100% coverage after feeding these" claim is provably the same claim
+ * core's own test already proves, not a second hand-picked set that
+ * might happen to work for a different reason. */
+static const ff_vec3_t s_calcal_full_coverage_samples[] = {
+    {0.050000f, -0.480000f, 0.020000f},   {-0.296410f, 0.229808f, -0.297543f},
+    {-0.296410f, -0.289808f, -0.297543f}, {0.396410f, 0.229808f, -0.297543f},
+    {0.396410f, -0.289808f, -0.297543f},  {0.050000f, -0.030000f, 0.570000f},
+    {-0.296410f, -0.289808f, 0.337543f},  {0.396410f, -0.289808f, 0.337543f},
+    {-0.550000f, -0.030000f, 0.020000f},  {0.650000f, -0.030000f, 0.020000f},
+    {-0.296410f, 0.229808f, 0.337543f},   {0.396410f, 0.229808f, 0.337543f},
+    {0.050000f, 0.420000f, 0.020000f},    {0.050000f, -0.030000f, -0.530000f},
+};
+#define CALCAL_FULL_N (sizeof(s_calcal_full_coverage_samples) / sizeof(s_calcal_full_coverage_samples[0]))
+
+/* Clustered in roughly one direction — test_geo.c's own
+ * S01_AC5_calibration_below_70pct_coverage_finish_fails fixture, reused
+ * for the same "provably the same claim" reason above. */
+static const ff_vec3_t s_calcal_low_coverage_samples[] = {
+    {0.40f, 0.05f, 0.10f},
+    {0.42f, 0.06f, 0.11f},
+    {0.38f, 0.04f, 0.09f},
+};
+#define CALCAL_LOW_N (sizeof(s_calcal_low_coverage_samples) / sizeof(s_calcal_low_coverage_samples[0]))
+
+static void calcal_feed_n(ff_shell_t *sh, ff_vec3_t const *samples, size_t n)
+{
+    for (size_t i = 0; i < n; i++) {
+        ff_shell_compass_cal_sample(sh, samples[i]);
+    }
+}
+
+static void send_calcal(ff_shell_t *sh, ff_intent_kind_t kind)
+{
+    ff_intent_t in = {.kind = kind, .u = {0}};
+    ff_shell_intent(sh, &in);
+}
+
+/* The injected ff_shell_cfg_t.compass_cal_changed hook — a spy mirroring
+ * calib_spy_t's shape above (calls + last-seen argument), except this
+ * hook's argument distinguishes "install a real cal" (non-NULL) from
+ * "clear" (NULL, on FF_INTENT_COMPASS_CAL_CLEAR) so a test can assert
+ * WHICH happened, not just that the hook fired. */
+typedef struct {
+    int calls;
+    bool last_was_null;
+    ff_geo_cal_t last_cal; /* meaningful only when !last_was_null */
+} calcal_hook_spy_t;
+
+static void calcal_hook(void *user, ff_geo_cal_t const *cal)
+{
+    calcal_hook_spy_t *sp = (calcal_hook_spy_t *)user;
+    sp->calls++;
+    sp->last_was_null = (cal == NULL);
+    if (cal != NULL) sp->last_cal = *cal;
+}
+
+/* setting_harness_init, plus the compass_cal_changed hook wired to
+ * `spy` — same "can't reuse setting_harness_init because the hook must
+ * be set at ff_shell_init time" reasoning calib_harness_init's own doc
+ * comment gives. */
+static void calcal_harness_init(setting_harness_t *sh, calcal_hook_spy_t *spy)
+{
+    memset(sh, 0, sizeof(*sh));
+    sh->clk.t = 100000u;
+    sh->clock.now_ms = fake_now;
+    sh->clock.user = &sh->clk;
+    sh->store = setting_store(&sh->store_mem);
+
+    ff_shell_cfg_t cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.clock = &sh->clock;
+    cfg.store = &sh->store;
+    cfg.pack = &sh->pack;
+    cfg.compass_cal_changed = calcal_hook;
+    cfg.compass_cal_changed_user = spy;
+
+    TEST_ASSERT_EQUAL_INT(0, ff_shell_init(&sh->shell, &cfg));
+}
+
+/* Session lifecycle: START opens a session (status.active, progress
+ * projects live from fed samples), FINISH on full coverage closes it,
+ * persists exactly once, and calls the live-update hook with the new
+ * cal. This is also this PR's "prove it fails without the feature"
+ * test (AGENTS.md/CLAUDE.md's fail-first proof): reverting
+ * FF_INTENT_COMPASS_CAL_START/_FINISH's case bodies in ff_shell.c to a
+ * bare `return;` (the pre-feature no-op every other not-yet-implemented
+ * intent in this codebase gets) makes `ff_shell_compass_cal_status`
+ * report `active=false`/`cal_valid=false` throughout, failing every
+ * assertion below that expects otherwise — see the PR body for the
+ * exact revert-and-rerun transcript. */
+static void S12step3_session_lifecycle_start_sample_finish_persists_once(void)
+{
+    calcal_hook_spy_t spy = {0};
+    setting_harness_t h;
+    calcal_harness_init(&h, &spy);
+
+    ff_shell_compass_cal_status_t st = ff_shell_compass_cal_status(&h.shell);
+    TEST_ASSERT_FALSE(st.active);
+    TEST_ASSERT_FALSE(st.cal_valid); /* fresh puck: identity, uncalibrated */
+    TEST_ASSERT_EQUAL_INT(0, h.store_mem.set_calls);
+
+    send_calcal(&h.shell, FF_INTENT_COMPASS_CAL_START);
+    st = ff_shell_compass_cal_status(&h.shell);
+    TEST_ASSERT_TRUE(st.active);
+    TEST_ASSERT_EQUAL_INT(0, st.progress_pct);
+    TEST_ASSERT_EQUAL_UINT(0, st.sample_count);
+    TEST_ASSERT_FALSE(st.can_finish);
+
+    /* Progress projects LIVE from fed samples, one at a time — not only
+     * visible once the session ends. */
+    ff_shell_compass_cal_sample(&h.shell, s_calcal_full_coverage_samples[0]);
+    st = ff_shell_compass_cal_status(&h.shell);
+    TEST_ASSERT_EQUAL_UINT(1, st.sample_count);
+
+    calcal_feed_n(&h.shell, s_calcal_full_coverage_samples + 1, CALCAL_FULL_N - 1);
+    st = ff_shell_compass_cal_status(&h.shell);
+    TEST_ASSERT_EQUAL_INT(100, st.progress_pct);
+    TEST_ASSERT_EQUAL_UINT(CALCAL_FULL_N, st.sample_count);
+    TEST_ASSERT_TRUE(st.can_finish);
+
+    send_calcal(&h.shell, FF_INTENT_COMPASS_CAL_FINISH);
+
+    st = ff_shell_compass_cal_status(&h.shell);
+    TEST_ASSERT_FALSE(st.active);   /* session closed */
+    TEST_ASSERT_TRUE(st.cal_valid); /* persisted */
+
+    ff_settings_t const *s = ff_shell_settings(&h.shell);
+    TEST_ASSERT_TRUE(s->cal_valid);
+    TEST_ASSERT_EQUAL_INT(1, h.store_mem.set_calls); /* persisted exactly once */
+
+    TEST_ASSERT_EQUAL_INT(1, spy.calls);
+    TEST_ASSERT_FALSE(spy.last_was_null);
+    TEST_ASSERT_EQUAL_FLOAT(s->compass_cal.hard_offset.x, spy.last_cal.hard_offset.x);
+    TEST_ASSERT_EQUAL_FLOAT(s->compass_cal.hard_offset.y, spy.last_cal.hard_offset.y);
+    TEST_ASSERT_EQUAL_FLOAT(s->compass_cal.hard_offset.z, spy.last_cal.hard_offset.z);
+
+    ff_shell_close(&h.shell);
+}
+
+/* Failure (coverage still under FF_GEO_CAL_MIN_PROGRESS_PCT): the old
+ * calibration (here, the honest never-calibrated default) is left
+ * untouched, nothing is persisted, the live-update hook never fires,
+ * and — the "not a dead end" half of the contract — the session STAYS
+ * ACTIVE so the wearer can keep rotating and try FINISH again. */
+static void S12step3_finish_below_threshold_keeps_old_cal_and_session_active(void)
+{
+    calcal_hook_spy_t spy = {0};
+    setting_harness_t h;
+    calcal_harness_init(&h, &spy);
+
+    send_calcal(&h.shell, FF_INTENT_COMPASS_CAL_START);
+    calcal_feed_n(&h.shell, s_calcal_low_coverage_samples, CALCAL_LOW_N);
+
+    ff_shell_compass_cal_status_t st = ff_shell_compass_cal_status(&h.shell);
+    TEST_ASSERT_TRUE(st.progress_pct < FF_GEO_CAL_MIN_PROGRESS_PCT);
+    TEST_ASSERT_FALSE(st.can_finish);
+
+    send_calcal(&h.shell, FF_INTENT_COMPASS_CAL_FINISH);
+
+    st = ff_shell_compass_cal_status(&h.shell);
+    TEST_ASSERT_TRUE(st.active);    /* honest "not enough yet" — not a dead end */
+    TEST_ASSERT_FALSE(st.cal_valid);
+
+    TEST_ASSERT_FALSE(ff_shell_settings(&h.shell)->cal_valid);
+    TEST_ASSERT_EQUAL_INT(0, h.store_mem.set_calls); /* nothing persisted */
+    TEST_ASSERT_EQUAL_INT(0, spy.calls);             /* live update never fired */
+
+    /* The wearer can keep rotating: more samples now clear the
+     * threshold, and a second FINISH succeeds. */
+    calcal_feed_n(&h.shell, s_calcal_full_coverage_samples, CALCAL_FULL_N);
+    send_calcal(&h.shell, FF_INTENT_COMPASS_CAL_FINISH);
+    TEST_ASSERT_TRUE(ff_shell_settings(&h.shell)->cal_valid);
+    TEST_ASSERT_EQUAL_INT(1, h.store_mem.set_calls);
+
+    ff_shell_close(&h.shell);
+}
+
+/* CANCEL abandons the session with NO effect on the persisted
+ * calibration — proven against an ALREADY-calibrated puck (not just the
+ * identity default), so "untouched" is a real assertion, not
+ * vacuously true of a value that was never set. */
+static void S12step3_cancel_abandons_session_without_touching_persisted_cal(void)
+{
+    calcal_hook_spy_t spy = {0};
+    setting_harness_t h;
+    calcal_harness_init(&h, &spy);
+
+    /* Establish a real, persisted calibration first. */
+    send_calcal(&h.shell, FF_INTENT_COMPASS_CAL_START);
+    calcal_feed_n(&h.shell, s_calcal_full_coverage_samples, CALCAL_FULL_N);
+    send_calcal(&h.shell, FF_INTENT_COMPASS_CAL_FINISH);
+    ff_geo_cal_t const established = ff_shell_settings(&h.shell)->compass_cal;
+    TEST_ASSERT_EQUAL_INT(1, h.store_mem.set_calls);
+
+    send_calcal(&h.shell, FF_INTENT_COMPASS_CAL_START);
+    calcal_feed_n(&h.shell, s_calcal_low_coverage_samples, CALCAL_LOW_N);
+    TEST_ASSERT_TRUE(ff_shell_compass_cal_status(&h.shell).active);
+
+    send_calcal(&h.shell, FF_INTENT_COMPASS_CAL_CANCEL);
+
+    ff_shell_compass_cal_status_t const st = ff_shell_compass_cal_status(&h.shell);
+    TEST_ASSERT_FALSE(st.active);
+    TEST_ASSERT_TRUE(st.cal_valid); /* the earlier calibration is untouched */
+
+    ff_settings_t const *s = ff_shell_settings(&h.shell);
+    TEST_ASSERT_EQUAL_FLOAT(established.hard_offset.x, s->compass_cal.hard_offset.x);
+    TEST_ASSERT_EQUAL_FLOAT(established.hard_offset.y, s->compass_cal.hard_offset.y);
+    TEST_ASSERT_EQUAL_FLOAT(established.hard_offset.z, s->compass_cal.hard_offset.z);
+    TEST_ASSERT_EQUAL_INT(1, h.store_mem.set_calls); /* no second write */
+    TEST_ASSERT_EQUAL_INT(1, spy.calls);             /* only the earlier FINISH's call */
+
+    ff_shell_close(&h.shell);
+}
+
+/* CLEAR drops a persisted calibration to identity/uncalibrated, whether
+ * or not a session is active, and persists (once) — the "starting
+ * over" path CANCEL deliberately does not provide. */
+static void S12step3_clear_drops_persisted_cal_to_identity(void)
+{
+    calcal_hook_spy_t spy = {0};
+    setting_harness_t h;
+    calcal_harness_init(&h, &spy);
+
+    send_calcal(&h.shell, FF_INTENT_COMPASS_CAL_START);
+    calcal_feed_n(&h.shell, s_calcal_full_coverage_samples, CALCAL_FULL_N);
+    send_calcal(&h.shell, FF_INTENT_COMPASS_CAL_FINISH);
+    TEST_ASSERT_TRUE(ff_shell_settings(&h.shell)->cal_valid);
+    TEST_ASSERT_EQUAL_INT(1, h.store_mem.set_calls);
+    TEST_ASSERT_EQUAL_INT(1, spy.calls);
+
+    send_calcal(&h.shell, FF_INTENT_COMPASS_CAL_CLEAR);
+
+    ff_settings_t const *s = ff_shell_settings(&h.shell);
+    TEST_ASSERT_FALSE(s->cal_valid);
+    TEST_ASSERT_EQUAL_FLOAT(0.0f, s->compass_cal.hard_offset.x);
+    TEST_ASSERT_EQUAL_INT(2, h.store_mem.set_calls); /* a second, real write */
+    TEST_ASSERT_EQUAL_INT(2, spy.calls);
+    TEST_ASSERT_TRUE(spy.last_was_null); /* CLEAR's hook call installs "no calibration" */
+
+    /* Clearing an already-uncalibrated puck is a no-op write (S16's
+     * "on change, never every tick" discipline, applied here too). */
+    send_calcal(&h.shell, FF_INTENT_COMPASS_CAL_CLEAR);
+    TEST_ASSERT_EQUAL_INT(2, h.store_mem.set_calls);
+    TEST_ASSERT_EQUAL_INT(2, spy.calls);
+
+    ff_shell_close(&h.shell);
+}
+
+/* Starting twice must never discard progress already collected. */
+static void S12step3_start_twice_does_not_reset_progress(void)
+{
+    calcal_hook_spy_t spy = {0};
+    setting_harness_t h;
+    calcal_harness_init(&h, &spy);
+
+    send_calcal(&h.shell, FF_INTENT_COMPASS_CAL_START);
+    calcal_feed_n(&h.shell, s_calcal_full_coverage_samples, CALCAL_FULL_N);
+    TEST_ASSERT_EQUAL_INT(100, ff_shell_compass_cal_status(&h.shell).progress_pct);
+
+    send_calcal(&h.shell, FF_INTENT_COMPASS_CAL_START); /* a second START */
+
+    ff_shell_compass_cal_status_t const st = ff_shell_compass_cal_status(&h.shell);
+    TEST_ASSERT_TRUE(st.active);
+    TEST_ASSERT_EQUAL_INT(100, st.progress_pct); /* NOT reset to 0 */
+    TEST_ASSERT_EQUAL_UINT(CALCAL_FULL_N, st.sample_count);
+
+    ff_shell_close(&h.shell);
+}
+
+/* ff_shell_compass_cal_sample is a safe no-op with no session active —
+ * the platform is documented to call it unconditionally on its own
+ * periodic tick (ff_shell.h's own doc comment), so this must hold even
+ * before any FF_INTENT_COMPASS_CAL_START has ever fired. */
+static void S12step3_sample_is_a_no_op_without_an_active_session(void)
+{
+    calcal_hook_spy_t spy = {0};
+    setting_harness_t h;
+    calcal_harness_init(&h, &spy);
+
+    calcal_feed_n(&h.shell, s_calcal_full_coverage_samples, CALCAL_FULL_N);
+
+    ff_shell_compass_cal_status_t const st = ff_shell_compass_cal_status(&h.shell);
+    TEST_ASSERT_FALSE(st.active);
+    TEST_ASSERT_EQUAL_INT(0, st.progress_pct);
+    TEST_ASSERT_EQUAL_UINT(0, st.sample_count);
+
+    ff_shell_close(&h.shell);
+}
+
+/* Routing rule 4 (this file's own top comment): START is gated on the
+ * takeover exactly like every other Settings-reachable intent — same
+ * "positive control" shape
+ * S12_settings_open_crew_is_rejected_while_a_takeover_is_visible below
+ * uses for FF_INTENT_SETTINGS_OPEN_CREW. Uses the generic H harness (no
+ * store needed for a routing-only assertion). */
+static void S12step3_start_is_rejected_while_a_takeover_is_visible(void)
+{
+    harness_init(100000u);
+    nav_home_to(FF_APP_FACE_SETTINGS);
+
+    pair_named(DANA, "DANA");
+    inject_flare(DANA, 300u);
+    TEST_ASSERT_TRUE(ff_shell_flare(&H.shell)->takeover_active);
+
+    send_kind(FF_INTENT_COMPASS_CAL_START);
+    TEST_ASSERT_FALSE(ff_shell_compass_cal_status(&H.shell).active);
+    TEST_ASSERT_EQUAL(FF_SETTINGS_SUB_LIST, view()->settings.subview);
+
+    /* Positive control: with the takeover cleared, the identical intent
+     * does open the ritual — so the rejection above is the routing
+     * gate, not a START path that never works. */
+    send_kind(FF_INTENT_TAKEOVER_DISMISS);
+    send_kind(FF_INTENT_COMPASS_CAL_START);
+    TEST_ASSERT_TRUE(ff_shell_compass_cal_status(&H.shell).active);
+    TEST_ASSERT_EQUAL(FF_SETTINGS_SUB_COMPASS_CAL, view()->settings.subview);
+}
+
+/* =================================================================== */
 /* S12/S04 — FF_INTENT_SETTINGS_OPEN_CREW / CREW_PAIR / CREW_UNPAIR      */
 /*                                                                       */
 /* Reviewer finding (PR #206): no test dispatched these three through   */
@@ -2765,6 +3091,14 @@ int main(void)
     RUN_TEST(S21_calibrate_unchanged_refit_skips_the_write);
     RUN_TEST(S21_AC4_calibrated_touch_survives_shell_close_and_reinit_against_the_same_store);
     RUN_TEST(S21_AC5_default_touch_cal_is_identity);
+
+    RUN_TEST(S12step3_session_lifecycle_start_sample_finish_persists_once);
+    RUN_TEST(S12step3_finish_below_threshold_keeps_old_cal_and_session_active);
+    RUN_TEST(S12step3_cancel_abandons_session_without_touching_persisted_cal);
+    RUN_TEST(S12step3_clear_drops_persisted_cal_to_identity);
+    RUN_TEST(S12step3_start_twice_does_not_reset_progress);
+    RUN_TEST(S12step3_sample_is_a_no_op_without_an_active_session);
+    RUN_TEST(S12step3_start_is_rejected_while_a_takeover_is_visible);
 
     RUN_TEST(S12_settings_open_crew_sets_the_crew_subview);
     RUN_TEST(S12_settings_open_crew_is_rejected_while_a_takeover_is_visible);

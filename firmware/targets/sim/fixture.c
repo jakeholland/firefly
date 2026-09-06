@@ -972,6 +972,7 @@ static const fx_enum_entry_t fx_share_mode_table[] = {
 static const fx_enum_entry_t fx_settings_subview_table[] = {
     {"list", FF_SETTINGS_SUB_LIST},
     {"crew", FF_SETTINGS_SUB_CREW},
+    {"compass_cal", FF_SETTINGS_SUB_COMPASS_CAL}, /* S12 step 3 */
 };
 
 /* fx_parse_crew_page — S12/S04: PAIRED (name/initial/color_idx/honest
@@ -1051,6 +1052,21 @@ static ff_fixture_result_t fx_parse_crew_page(fx_ctx_t const *c, int obj_i, ff_a
     return FF_FIXTURE_OK;
 }
 
+/* fx_parse_compass_cal — S12 step 3: the compass calibration ritual's
+ * status object (ff_app_compass_cal_t). Every field defaults to its
+ * memset(0) zero (false/0) when omitted, matching a fresh/never-
+ * calibrated puck's honest state. */
+static ff_fixture_result_t fx_parse_compass_cal(fx_ctx_t const *c, int obj_i, ff_app_compass_cal_t *cc)
+{
+    int t;
+    if (fx_obj_get(c, obj_i, "cal_valid", &t)) cc->cal_valid = fx_bool(c, t, false);
+    if (fx_obj_get(c, obj_i, "active", &t)) cc->active = fx_bool(c, t, false);
+    if (fx_obj_get(c, obj_i, "progress_pct", &t)) cc->progress_pct = (int)fx_num(c, t, 0.0);
+    if (fx_obj_get(c, obj_i, "sample_count", &t)) cc->sample_count = (unsigned)fx_num(c, t, 0.0);
+    if (fx_obj_get(c, obj_i, "can_finish", &t)) cc->can_finish = fx_bool(c, t, false);
+    return FF_FIXTURE_OK;
+}
+
 /* Returns non-OK only for a present-but-unrecognized `share_mode`
  * (issue #28 — see fx_enum's doc comment). */
 static ff_fixture_result_t fx_parse_settings(fx_ctx_t const *c, int obj_i, ff_app_settings_t *s)
@@ -1110,6 +1126,13 @@ static ff_fixture_result_t fx_parse_settings(fx_ctx_t const *c, int obj_i, ff_ap
     int crew_i;
     if (fx_obj_get(c, obj_i, "crew", &crew_i) && !fx_is_null(c, crew_i)) {
         ff_fixture_result_t rc = fx_parse_crew_page(c, crew_i, &s->crew);
+        if (rc != FF_FIXTURE_OK) return rc;
+    }
+
+    /* S12 step 3 — the compass calibration ritual's status. */
+    int cal_i;
+    if (fx_obj_get(c, obj_i, "compass_cal", &cal_i) && !fx_is_null(c, cal_i)) {
+        ff_fixture_result_t rc = fx_parse_compass_cal(c, cal_i, &s->compass_cal);
         if (rc != FF_FIXTURE_OK) return rc;
     }
 
@@ -2004,6 +2027,15 @@ int ff_fixture_dump_json(ff_app_state_t const *s, char *buf, size_t buf_sz)
         fw_crew_heard_row(&w, &s->settings.crew.heard[i]);
     }
     fw_raw(&w, "]}");
+
+    /* S12 step 3 — the compass calibration ritual's status. */
+    fw_raw(&w, ",\"compass_cal\":{");
+    fw_raw(&w, s->settings.compass_cal.cal_valid ? "\"cal_valid\":true" : "\"cal_valid\":false");
+    fw_raw(&w, s->settings.compass_cal.active ? ",\"active\":true" : ",\"active\":false");
+    fw_fmt(&w, ",\"progress_pct\":%d", s->settings.compass_cal.progress_pct);
+    fw_fmt(&w, ",\"sample_count\":%u", s->settings.compass_cal.sample_count);
+    fw_raw(&w, s->settings.compass_cal.can_finish ? ",\"can_finish\":true" : ",\"can_finish\":false");
+    fw_raw(&w, "}");
 
     fw_raw(&w, "}");
 

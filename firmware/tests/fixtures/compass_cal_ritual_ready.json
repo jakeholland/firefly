@@ -1,0 +1,15 @@
+{
+  "fixture": "compass_cal_ritual_ready",
+  "face": "settings",
+  "settings": {
+    "my_name": "DANA",
+    "subview": "compass_cal",
+    "compass_cal": {
+      "cal_valid": true,
+      "active": true,
+      "progress_pct": 100,
+      "sample_count": 260,
+      "can_finish": true
+    }
+  }
+}

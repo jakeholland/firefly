@@ -449,6 +449,26 @@ static bool ff_calibrate_touch_cb(void *user, ff_touchcal_t *out_cal)
     return false;
 }
 
+#if CONFIG_FF_COMPASS
+/* S12 step 3 — ff_shell_cfg_t.compass_cal_changed: fires once a
+ * calibration ritual FINISHes successfully (`cal` non-NULL, already
+ * written into `ff_settings` and persisted by the shell before this
+ * call) or the stored calibration is CLEARed (`cal` NULL). Installs the
+ * change into the LIVE compass driver immediately — the exact same
+ * `ff_compass_set_cal` call this file's own boot-time block below makes
+ * from `ff_shell_settings()`, just re-invoked live so a wearer doesn't
+ * need to reboot to see a just-completed ritual take effect. Guarded by
+ * `CONFIG_FF_COMPASS` — with the compass driver compiled out, this hook
+ * is never wired (cfg.compass_cal_changed stays NULL, a safe no-op per
+ * ff_shell.h's own doc comment on the field). */
+static void ff_compass_cal_changed_cb(void *user, ff_geo_cal_t const *cal)
+{
+    (void)user;
+    ff_compass_set_cal(cal);
+    ESP_LOGI(TAG, "S12 compass: %s", (cal != NULL) ? "live calibration installed" : "calibration cleared (identity)");
+}
+#endif
+
 /* ---------------------------------------------------------------------
  * S26 slice b — PWR button -> power menu -> soft power-off.
  *
@@ -1210,6 +1230,17 @@ void app_main(void)
      * drives through FF_INTENT_CALIBRATE_TOUCH. */
     cfg.calibrate_touch = ff_calibrate_touch_cb;
     cfg.calibrate_touch_user = NULL;
+#if CONFIG_FF_COMPASS
+    /* S12 step 3 — the compass calibration ritual's live-update hook
+     * (see ff_compass_cal_changed_cb above). Set here, before
+     * ff_shell_init, same "live the moment the shell exists" timing
+     * every other injected hook in this block uses; the compass driver
+     * itself isn't brought up until AFTER ff_shell_init (below, at
+     * panel bring-up) — that's fine, `ff_compass_set_cal` is documented
+     * safe to call at any time, including before `ff_compass_init`. */
+    cfg.compass_cal_changed = ff_compass_cal_changed_cb;
+    cfg.compass_cal_changed_user = NULL;
+#endif
     /* S26 slice b — the power-menu action hooks (FF_INTENT_POWER_OFF /
      * FF_INTENT_POWER_REBOOT). See ff_power_off_cb/ff_power_reboot_cb
      * above. */
@@ -1485,13 +1516,15 @@ void app_main(void)
     ESP_LOGI(TAG, "S15 compass init: %s (mag=%s imu=%s)", (compass_err == ESP_OK) ? "ok" : esp_err_to_name(compass_err),
              ff_compass_present() ? "found" : "absent", ff_compass_imu_present() ? "found" : "absent");
 
-    /* Load whatever calibration the settings store already has — S12's
-     * figure-eight ritual UI that would ever populate this for real has
-     * not shipped (docs/specs/S12-first-run.md's 2026-09-03 amendment),
-     * so `cal_valid` is false on every puck today and this is a no-op
-     * in practice; the plumbing is real, not a placeholder, so the day
-     * that ritual lands, this line needs no change. `view` (fetched
-     * above) is a `ff_app_state_t` snapshot that deliberately OMITS
+    /* Load whatever calibration the settings store already has — S12
+     * step 3's figure-eight ritual UI is what populates this for real
+     * now (Settings' "CALIBRATE COMPASS" row / the bench console's `cal`
+     * family); this is the BOOT-time half of that seam, applying a
+     * calibration a PRIOR session already wrote to NVS, so it survives
+     * a reboot. The LIVE half (applying a calibration the moment the
+     * CURRENT session's ritual finishes) is `ff_compass_cal_changed_cb`
+     * above, wired as `cfg.compass_cal_changed`. `view` (fetched above)
+     * is a `ff_app_state_t` snapshot that deliberately OMITS
      * compass_cal/cal_valid (ff_app_state.h's own doc comment) — the
      * full settings struct is `ff_shell_settings(&s_shell)`, not `view`. */
     ff_settings_t const *const compass_settings = ff_shell_settings(&s_shell);
@@ -2040,6 +2073,18 @@ void app_main(void)
         if (ff_time_reached(now_ms, last_compass_sample_ms + FF_COMPASS_SAMPLE_PERIOD_MS)) {
             last_compass_sample_ms = now_ms;
             ff_shell_set_heading(&s_shell, ff_compass_read());
+            /* S12 step 3 — feed the SAME board-frame mag vector (post
+             * axis-remap, pre-calibration) the heading above was just
+             * computed from into the calibration ritual, at this same
+             * ~10 Hz cadence. `ff_shell_compass_cal_sample` is a safe
+             * no-op with no session active, so this can run
+             * unconditionally on every tick — the shell decides whether
+             * a ritual is actually listening (ff_shell.h's own doc
+             * comment on this function). No second I2C transaction:
+             * `ff_compass_last_mag_board()` returns the vector
+             * `ff_compass_read()` above already computed this exact
+             * sample. */
+            ff_shell_compass_cal_sample(&s_shell, ff_compass_last_mag_board());
         }
 #endif
 

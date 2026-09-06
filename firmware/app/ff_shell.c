@@ -284,6 +284,22 @@ typedef struct {
      * plain settings list, never a stale CREW page. */
     ff_settings_subview_t settings_subview;
 
+    /* S12 step 3 — the compass calibration ritual's session state.
+     * `compass_cal_session` is core (ff_geo.h) running min/max +
+     * octant-coverage state, meaningful only while `compass_cal_active`
+     * is true; `ff_geo_cal_begin` (re)initializes it on
+     * FF_INTENT_COMPASS_CAL_START. Persistent across ticks for the same
+     * "the view is memset per tick, this state is not" reason
+     * `settings_subview` above documents. */
+    ff_geo_cal_state_t compass_cal_session;
+    bool               compass_cal_active;
+
+    /* Injected device hook (ff_shell_cfg_t.compass_cal_changed) — see
+     * that field's own doc comment. Copied at init like every other
+     * hook pair in this struct (haptic, calibrate_touch, ...). */
+    void (*compass_cal_changed)(void *user, ff_geo_cal_t const *cal);
+    void *compass_cal_changed_user;
+
     /* S22 slice d — the RALLY-to-WHOLE_CREW confirm state machine (AC4:
      * "the one loud broadcast requires a confirm"). A first RALLY tap while
      * the target is WHOLE_CREW ARMS the confirm (`inbox_rally_armed`, stamped
@@ -2145,6 +2161,27 @@ static void shell_project_crew_page(shell_t const *sh, uint32_t now_ms, ff_app_s
 }
 
 /**
+ * shell_project_compass_cal — S12 step 3: the compass calibration
+ * ritual's status, built EVERY tick regardless of `subview` (the exact
+ * "cheap and small enough to build unconditionally" reasoning
+ * `shell_project_crew_page`'s own doc comment gives, and load-bearing
+ * here for a reason CREW doesn't share: the LIST row's honest status
+ * text needs `cal_valid` live even while the ritual page itself isn't
+ * showing).
+ */
+static void shell_project_compass_cal(shell_t const *sh, ff_app_settings_t *out)
+{
+    ff_app_compass_cal_t *cc = &out->compass_cal;
+    cc->cal_valid = sh->settings.cal_valid;
+    cc->active = sh->compass_cal_active;
+    if (sh->compass_cal_active) {
+        cc->progress_pct = ff_geo_cal_progress_pct(&sh->compass_cal_session);
+        cc->sample_count = sh->compass_cal_session.sample_count;
+        cc->can_finish = cc->progress_pct >= FF_GEO_CAL_MIN_PROGRESS_PCT;
+    }
+}
+
+/**
  * The Map face (S09).
  *
  * Honest-empty unless a pack is loaded with a KNOWN origin: every
@@ -2276,9 +2313,19 @@ static void shell_project(shell_t *sh, uint32_t now_ms)
     }
     /* S12/S04 — same reset, for the Settings face's own CREW sub-view:
      * leaving Settings always drops back to the plain list, so a fresh
-     * entry never opens straight onto a stale CREW page. */
+     * entry never opens straight onto a stale CREW page.
+     *
+     * S12 step 3 amendment — leaving Settings ENTIRELY (not just BACK
+     * off the ritual page — e.g. a launcher/HOME navigation while the
+     * ritual is mid-flight) also cancels an active compass-cal session,
+     * the same "abandon with no effect on the persisted calibration"
+     * outcome FF_INTENT_COMPASS_CAL_CANCEL gives explicitly — a session
+     * left dangling behind a face switch would otherwise keep
+     * `ff_shell_compass_cal_sample` silently accumulating samples no
+     * one is watching. */
     if (sh->view.active_face != FF_APP_FACE_SETTINGS && sh->prev_face == FF_APP_FACE_SETTINGS) {
         sh->settings_subview = FF_SETTINGS_SUB_LIST;
+        sh->compass_cal_active = false;
     }
     sh->prev_face = sh->view.active_face;
 
@@ -2327,6 +2374,7 @@ static void shell_project(shell_t *sh, uint32_t now_ms)
     sh->view.quick_flare_pending = ff_multitap_pending(&sh->multitap, now_ms);
     shell_project_settings(sh, &sh->view.settings);
     shell_project_crew_page(sh, now_ms, &sh->view.settings); /* S12/S04 */
+    shell_project_compass_cal(sh, &sh->view.settings);       /* S12 step 3 */
     shell_project_map(sh, &sh->view.map);
     shell_project_banner(sh, now_ms, &sh->view.banner); /* S26(d) */
 
@@ -2962,6 +3010,8 @@ int ff_shell_init(ff_shell_t *sh_pub, ff_shell_cfg_t const *cfg)
     sh->haptic_user = cfg->haptic_user;
     sh->calibrate_touch = cfg->calibrate_touch;
     sh->calibrate_touch_user = cfg->calibrate_touch_user;
+    sh->compass_cal_changed = cfg->compass_cal_changed;
+    sh->compass_cal_changed_user = cfg->compass_cal_changed_user;
     sh->power_off = cfg->power_off;
     sh->power_off_user = cfg->power_off_user;
     sh->power_reboot = cfg->power_reboot;
@@ -4055,6 +4105,15 @@ void ff_shell_intent(ff_shell_t *sh_pub, ff_intent_t const *in)
                 break;
             }
         } else if (sh->route.base == FF_APP_FACE_SETTINGS && sh->settings_subview != FF_SETTINGS_SUB_LIST) {
+            /* S12 step 3 amendment (docs/specs/S28-gestures.md, "BACK
+             * returns/cancels") — BACK off the compass-cal ritual page
+             * CANCELS the session (same outcome as
+             * FF_INTENT_COMPASS_CAL_CANCEL: no effect on the persisted
+             * calibration), in addition to the subview reset every
+             * settings sub-page already gets here. */
+            if (sh->settings_subview == FF_SETTINGS_SUB_COMPASS_CAL) {
+                sh->compass_cal_active = false;
+            }
             sh->settings_subview = FF_SETTINGS_SUB_LIST;
         } else if (sh->route.base != FF_APP_FACE_LAUNCHER) {
             (void)ff_route_home(&sh->route);
@@ -4499,6 +4558,95 @@ void ff_shell_intent(ff_shell_t *sh_pub, ff_intent_t const *in)
         if (takeover_up) return;
         (void)ff_shell_pair(sh_pub, in->u.node_id, false);
         return;
+
+    case FF_INTENT_COMPASS_CAL_START:
+        /* S12 step 3 — the Settings "CALIBRATE COMPASS" row / the bench
+         * console's `cal start`. Gated on the takeover like every other
+         * Settings-reachable intent above. A no-op if a session is
+         * already active (see this intent's own doc comment,
+         * ff_intent.h) — starting twice must never discard progress
+         * already collected. */
+        if (takeover_up) return;
+        if (!sh->compass_cal_active) {
+            ff_geo_cal_begin(&sh->compass_cal_session);
+            sh->compass_cal_active = true;
+        }
+        sh->settings_subview = FF_SETTINGS_SUB_COMPASS_CAL;
+        return;
+
+    case FF_INTENT_COMPASS_CAL_CANCEL:
+        /* Abandons the in-progress session with NO effect on the
+         * persisted calibration. A no-op if no session is active. */
+        if (takeover_up) return;
+        sh->compass_cal_active = false;
+        if (sh->settings_subview == FF_SETTINGS_SUB_COMPASS_CAL) {
+            sh->settings_subview = FF_SETTINGS_SUB_LIST;
+        }
+        return;
+
+    case FF_INTENT_COMPASS_CAL_FINISH: {
+        /* Attempts to end the session (ff_geo_cal_finish). A no-op if no
+         * session is active — see this intent's own doc comment
+         * (ff_intent.h) for the full success/failure contract. */
+        if (takeover_up) return;
+        if (!sh->compass_cal_active) return;
+
+        ff_geo_cal_t fit;
+        memset(&fit, 0, sizeof(fit));
+        if (ff_geo_cal_finish(&sh->compass_cal_session, &fit)) {
+            ff_settings_t *s = &sh->settings;
+            /* Field-by-field, not memcmp: a stack-local struct's padding
+             * bytes are unspecified, and CALIBRATE_TOUCH's own
+             * write-on-change check (this file's FF_INTENT_CALIBRATE_
+             * TOUCH case) already sets the "compare the fields that
+             * matter" precedent this mirrors. */
+            bool const changed = (!s->cal_valid) || (s->compass_cal.hard_offset.x != fit.hard_offset.x) ||
+                                 (s->compass_cal.hard_offset.y != fit.hard_offset.y) ||
+                                 (s->compass_cal.hard_offset.z != fit.hard_offset.z) ||
+                                 (s->compass_cal.soft_scale[0] != fit.soft_scale[0]) ||
+                                 (s->compass_cal.soft_scale[1] != fit.soft_scale[1]) ||
+                                 (s->compass_cal.soft_scale[2] != fit.soft_scale[2]) ||
+                                 (s->compass_cal.declination_deg != fit.declination_deg);
+            s->compass_cal = fit;
+            s->cal_valid = true;
+            if (changed && sh->store != NULL) {
+                ff_settings_save(s, sh->store);
+            }
+            if (sh->compass_cal_changed != NULL) {
+                sh->compass_cal_changed(sh->compass_cal_changed_user, &s->compass_cal);
+            }
+            sh->compass_cal_active = false;
+            sh->settings_subview = FF_SETTINGS_SUB_LIST;
+        }
+        /* Failure: coverage still under FF_GEO_CAL_MIN_PROGRESS_PCT — the
+         * session stays active (untouched), the old calibration (if any)
+         * is untouched, and the subview stays on the ritual page so the
+         * wearer can keep rotating and try FINISH again. Honest "not
+         * enough yet", never a dead end. */
+        return;
+    }
+
+    case FF_INTENT_COMPASS_CAL_CLEAR: {
+        /* Drops any STORED calibration back to identity/uncalibrated,
+         * whether or not a session is active — see this intent's own doc
+         * comment (ff_intent.h). Does NOT touch an in-progress session's
+         * collected samples (a bench operator clearing an old
+         * calibration mid-ritual should not lose the figure-eight
+         * they've already done). */
+        if (takeover_up) return;
+        ff_settings_t *s = &sh->settings;
+        if (s->cal_valid) {
+            s->cal_valid = false;
+            memset(&s->compass_cal, 0, sizeof(s->compass_cal));
+            if (sh->store != NULL) {
+                ff_settings_save(s, sh->store);
+            }
+            if (sh->compass_cal_changed != NULL) {
+                sh->compass_cal_changed(sh->compass_cal_changed_user, NULL);
+            }
+        }
+        return;
+    }
 
     case FF_INTENT_INBOX_SELECT_MEMBER:
         /* S22 slice b (S24 note: the S22 screen that emitted this is
@@ -5294,6 +5442,31 @@ ff_flare_t const *ff_shell_flare(ff_shell_t const *sh_pub)
 ff_settings_t const *ff_shell_settings(ff_shell_t const *sh_pub)
 {
     return (sh_pub == NULL) ? NULL : &shell_of_const(sh_pub)->settings;
+}
+
+ff_shell_compass_cal_status_t ff_shell_compass_cal_status(ff_shell_t const *sh_pub)
+{
+    ff_shell_compass_cal_status_t st;
+    memset(&st, 0, sizeof(st));
+    if (sh_pub == NULL) return st;
+
+    shell_t const *sh = shell_of_const(sh_pub);
+    st.cal_valid = sh->settings.cal_valid;
+    st.active = sh->compass_cal_active;
+    if (sh->compass_cal_active) {
+        st.progress_pct = ff_geo_cal_progress_pct(&sh->compass_cal_session);
+        st.sample_count = sh->compass_cal_session.sample_count;
+        st.can_finish = st.progress_pct >= FF_GEO_CAL_MIN_PROGRESS_PCT;
+    }
+    return st;
+}
+
+void ff_shell_compass_cal_sample(ff_shell_t *sh_pub, ff_vec3_t mag_board)
+{
+    if (sh_pub == NULL) return;
+    shell_t *sh = shell_of(sh_pub);
+    if (!sh->compass_cal_active) return;
+    ff_geo_cal_feed(&sh->compass_cal_session, mag_board);
 }
 
 uint32_t ff_shell_compose_to_node(ff_shell_t const *sh_pub)

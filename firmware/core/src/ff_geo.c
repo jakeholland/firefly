@@ -231,7 +231,7 @@ bool ff_geo_cal_finish(ff_geo_cal_state_t const *st, ff_geo_cal_t *out)
     if (!st || !out) {
         return false;
     }
-    if (ff_geo_cal_progress_pct(st) < 70) {
+    if (ff_geo_cal_progress_pct(st) < FF_GEO_CAL_MIN_PROGRESS_PCT) {
         return false;
     }
 

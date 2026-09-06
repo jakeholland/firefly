@@ -890,6 +890,50 @@ static void settings_build_calibrate_row(lv_obj_t *list, int32_t rel_y, int32_t 
 }
 
 /* ---------------------------------------------------------------------
+ * COMPASS — S12 step 3. A value row (settings_build_value_row's "label +
+ * status pill, both tappable" shape — QUIET HOURS' own shape, not
+ * CALIBRATE TOUCH's full-width pill): the LABEL side is the action (tap
+ * to open the calibration ritual), the PILL side is an honest STATUS
+ * readout, dimmed when uncalibrated (the same "dim = an honest off/
+ * unset value" convention QUIET HOURS' `quiet_off` already uses), read
+ * from `ff_app_compass_cal_t.cal_valid` (S12 step 3's shell projection,
+ * always populated regardless of `subview` — see that struct's own doc
+ * comment in ff_app_state.h).
+ *
+ * Label reads "COMPASS", not "CALIBRATE COMPASS" — matching this row
+ * shape's own single-word label convention (UNITS, CLOCK, SCREEN — every
+ * existing `settings_build_value_row`/`settings_build_toggle_row` caller
+ * uses one word) and, measured, load-bearing: at this row's label
+ * column width (row_w - FF_SETTINGS_VALUE_PILL_W - FF_SETTINGS_VALUE_GAP)
+ * "CALIBRATE COMPASS" (18 chars) clipped mid-word against the value pill
+ * (caught rendering `settings_scrolled_bottom`'s golden — see the PR
+ * body). The status pill reads "SET"/"UNSET" for the same fixed-96px-
+ * width reason: "CALIBRATED"/"UNCALIBRATED" overflowed the pill and
+ * bled into the row to its right. Honest either way — SET/UNSET says
+ * exactly the same fact "calibrated"/"uncalibrated" would, just in the
+ * width this row shape actually has (the ritual page itself, reached by
+ * tapping this row, spells it out in full: "CALIBRATE COMPASS").
+ *
+ * Tapping EITHER half emits FF_INTENT_COMPASS_CAL_START (the shell
+ * decides: a no-op if a session is somehow already active, opens the
+ * ritual otherwise), never a cycle-through-presets action the pill
+ * shape sometimes implies elsewhere (QUIET HOURS) — this status can
+ * only be changed by completing (or clearing) the ritual itself.
+ * ------------------------------------------------------------------- */
+static void settings_compass_cal_open_cb(lv_event_t *e)
+{
+    (void)e;
+    ff_intent_t in = {.kind = FF_INTENT_COMPASS_CAL_START, .u = {0}};
+    ff_intent_emit(&in);
+}
+
+static void settings_build_compass_cal_row(lv_obj_t *list, int32_t rel_y, int32_t row_w, bool cal_valid)
+{
+    settings_build_value_row(list, rel_y, row_w, "COMPASS", cal_valid ? "SET" : "UNSET",
+                             /*dim=*/!cal_valid, settings_compass_cal_open_cb);
+}
+
+/* ---------------------------------------------------------------------
  * CREW — S12/S04: a full-width action pill, same shape as CALIBRATE
  * TOUCH above, that opens the CREW sub-view (FF_INTENT_SETTINGS_OPEN_
  * CREW, no payload — the shell decides, this file only asks). An
@@ -1277,6 +1321,170 @@ static void settings_build_crew_page(lv_obj_t *parent, ff_app_crew_page_t const 
 }
 
 /* ---------------------------------------------------------------------
+ * COMPASS CAL ritual page — S12 step 3 (docs/specs/S12-first-run.md
+ * Step 3, the compass calibration figure-eight). A small fixed set of
+ * centered elements on a self-contained puck — scr_power_menu.c's
+ * `ff_scr_power_menu_build` shape, not CREW's scrolling list; nothing
+ * here needs to scroll.
+ * ------------------------------------------------------------------- */
+#define FF_CALCAL_TITLE_Y    34
+#define FF_CALCAL_INSTR_Y    78
+#define FF_CALCAL_INSTR_H    50
+#define FF_CALCAL_RING_DIAM  140
+#define FF_CALCAL_RING_Y     130
+#define FF_CALCAL_SAMPLES_Y  (FF_CALCAL_RING_Y + FF_CALCAL_RING_DIAM + 10)
+#define FF_CALCAL_BTN_W      120
+#define FF_CALCAL_BTN_H      FF_SETTINGS_ROW_H /* 48 — clears the hit floor */
+#define FF_CALCAL_BTN_GAP    16
+/* Measured against the round glass (test_face_hit_targets.c's own
+ * sweep, not hand math — a first pass at Y=324 shipped off-glass
+ * buttons, caught by that sweep against this fixture): at this Y/height
+ * the inscribed-circle chord is ~278px wide (ff_layout_safe_margin_x,
+ * FF_SETTINGS_SAFETY_PX=10 buffer), comfortably over the 256px both
+ * buttons + gap need, with ~20px to spare each side. */
+#define FF_CALCAL_BTN_Y      300
+
+_Static_assert(FF_CALCAL_BTN_H >= FF_THEME_MIN_HIT_PX, "compass-cal buttons must clear the 44px hit-target floor");
+
+static void settings_calcal_cancel_cb(lv_event_t *e)
+{
+    (void)e;
+    ff_intent_t in = {.kind = FF_INTENT_COMPASS_CAL_CANCEL, .u = {0}};
+    ff_intent_emit(&in);
+}
+
+static void settings_calcal_finish_cb(lv_event_t *e)
+{
+    (void)e;
+    ff_intent_t in = {.kind = FF_INTENT_COMPASS_CAL_FINISH, .u = {0}};
+    ff_intent_emit(&in);
+}
+
+/* A ring or ring-segment centered horizontally with its TOP at `top_y` —
+ * same "thin lv_arc wrapper, MAIN part only, no clickable/scrollable"
+ * shape scr_launcher.c's `launcher_mk_arc`/scr_radar.c's
+ * `radar_make_cluster_wedge` already establish (not a fourth
+ * reimplementation). Rotated -90 so `[0, sweep_deg)` starts at 12
+ * o'clock and sweeps clockwise, the same "progress reads like a clock"
+ * convention this codebase's wall-clock/battery displays use, rather
+ * than lv_arc's own native 0=3-o'clock zero point. */
+static void settings_calcal_ring(lv_obj_t *parent, int32_t top_y, float sweep_deg, uint32_t color_hex)
+{
+    lv_obj_t *arc = lv_arc_create(parent);
+    lv_obj_remove_style_all(arc);
+    lv_obj_set_size(arc, FF_CALCAL_RING_DIAM, FF_CALCAL_RING_DIAM);
+    lv_obj_align(arc, LV_ALIGN_TOP_MID, 0, top_y);
+    lv_obj_clear_flag(arc, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_clear_flag(arc, LV_OBJ_FLAG_SCROLLABLE);
+    lv_arc_set_rotation(arc, 270);
+    lv_arc_set_bg_angles(arc, 0.0f, (lv_value_precise_t)sweep_deg);
+    lv_obj_set_style_arc_width(arc, 10, LV_PART_MAIN);
+    lv_obj_set_style_arc_color(arc, lv_color_hex(color_hex), LV_PART_MAIN);
+    lv_obj_set_style_arc_opa(arc, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_set_style_arc_rounded(arc, false, LV_PART_MAIN);
+}
+
+static void settings_build_compass_cal_page(lv_obj_t *parent, ff_app_compass_cal_t const *cc)
+{
+    lv_obj_t *puck = lv_obj_create(parent);
+    lv_obj_remove_style_all(puck);
+    lv_obj_set_size(puck, FF_THEME_PUCK_PX, FF_THEME_PUCK_PX);
+    lv_obj_align(puck, LV_ALIGN_CENTER, 0, 0);
+    lv_obj_set_style_radius(puck, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_bg_color(puck, lv_color_hex(FF_THEME_COLOR_BG), 0);
+    lv_obj_set_style_bg_opa(puck, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(puck, 0, 0);
+    lv_obj_clear_flag(puck, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_clear_flag(puck, LV_OBJ_FLAG_CLICKABLE);
+
+    lv_obj_t *title = lv_label_create(puck);
+    lv_label_set_text(title, "CALIBRATE COMPASS");
+    lv_obj_set_style_text_font(title, FF_THEME_FONT_HEADLINE, 0);
+    lv_obj_set_style_text_color(title, lv_color_hex(FF_THEME_COLOR_AMBER), 0);
+    lv_obj_set_style_text_letter_space(title, 1, 0);
+    lv_obj_align(title, LV_ALIGN_TOP_MID, 0, FF_CALCAL_TITLE_Y);
+
+    int32_t const instr_margin = settings_safe_margin_x(FF_CALCAL_INSTR_Y, FF_CALCAL_INSTR_H);
+    int32_t const instr_w = FF_THEME_PUCK_PX - 2 * instr_margin;
+    lv_obj_t *instr = lv_label_create(puck);
+    lv_label_set_long_mode(instr, LV_LABEL_LONG_WRAP);
+    lv_label_set_text(instr, "Rotate the puck slowly in a figure eight");
+    lv_obj_set_width(instr, instr_w);
+    lv_obj_set_style_text_font(instr, FF_THEME_FONT_CHIP, 0);
+    lv_obj_set_style_text_color(instr, lv_color_hex(FF_THEME_COLOR_MUTED), 0);
+    lv_obj_set_style_text_align(instr, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_pos(instr, instr_margin, FF_CALCAL_INSTR_Y);
+
+    /* Progress ring: a dim full-circle track, then an amber arc spanning
+     * `progress_pct` of it. `cc->active` is true for every real render
+     * of this page (the shell only sets FF_SETTINGS_SUB_COMPASS_CAL from
+     * FF_INTENT_COMPASS_CAL_START, which starts the session in the same
+     * dispatch) — the `!active` fallback (0%) only matters for a
+     * fixture/golden that renders this page with no live session. */
+    settings_calcal_ring(puck, FF_CALCAL_RING_Y, 359.9f, FF_THEME_COLOR_SURFACE);
+    int const pct = cc->active ? cc->progress_pct : 0;
+    float const sweep_deg = (float)pct * 3.6f; /* 100% == 360 degrees */
+    if (sweep_deg > 0.05f) {
+        settings_calcal_ring(puck, FF_CALCAL_RING_Y, sweep_deg, FF_THEME_COLOR_AMBER);
+    }
+
+    char pct_buf[8];
+    snprintf(pct_buf, sizeof(pct_buf), "%d%%", pct);
+    lv_obj_t *pct_lbl = lv_label_create(puck);
+    lv_label_set_text(pct_lbl, pct_buf);
+    lv_obj_set_style_text_font(pct_lbl, FF_THEME_FONT_HEADLINE, 0);
+    lv_obj_set_style_text_color(pct_lbl, lv_color_hex(FF_THEME_COLOR_INK), 0);
+    lv_obj_align(pct_lbl, LV_ALIGN_TOP_MID, 0, FF_CALCAL_RING_Y + FF_CALCAL_RING_DIAM / 2 - 12);
+
+    char samp_buf[32];
+    snprintf(samp_buf, sizeof(samp_buf), "%u samples", cc->active ? cc->sample_count : 0u);
+    lv_obj_t *samp_lbl = lv_label_create(puck);
+    lv_label_set_text(samp_lbl, samp_buf);
+    lv_obj_set_style_text_font(samp_lbl, FF_THEME_FONT_CHIP, 0);
+    lv_obj_set_style_text_color(samp_lbl, lv_color_hex(FF_THEME_COLOR_MUTED), 0);
+    lv_obj_align(samp_lbl, LV_ALIGN_TOP_MID, 0, FF_CALCAL_SAMPLES_Y);
+
+    /* CANCEL always; DONE only once the session itself says it would
+     * succeed (`can_finish`) — a shown button never calls into a finish
+     * attempt the session's own state already knows will fail. */
+    bool const show_done = cc->active && cc->can_finish;
+    int32_t const total_w = show_done ? (2 * FF_CALCAL_BTN_W + FF_CALCAL_BTN_GAP) : FF_CALCAL_BTN_W;
+    int32_t const start_x = (FF_THEME_PUCK_PX - total_w) / 2;
+
+    ff_scr_pill_cfg_t cancel_cfg = {
+        .w = FF_CALCAL_BTN_W,
+        .h = FF_CALCAL_BTN_H,
+        .use_pos = true,
+        .x = start_x,
+        .y = FF_CALCAL_BTN_Y,
+        .radius = LV_RADIUS_CIRCLE,
+        .filled = false,
+        .border_width = 3,
+        .bg_hex = FF_THEME_COLOR_MUTED,
+        .fg_hex = FF_THEME_COLOR_INK,
+        .press = FF_SCR_PILL_PRESS_TINT,
+        .press_tint_hex = FF_THEME_COLOR_MUTED,
+        .font = FF_THEME_FONT_NAME,
+        .letter_space = 0,
+        .cb = settings_calcal_cancel_cb,
+        .user_data = NULL,
+    };
+    ff_scr_pill_create(puck, "CANCEL", &cancel_cfg);
+
+    if (show_done) {
+        ff_scr_pill_cfg_t done_cfg = cancel_cfg;
+        done_cfg.x = start_x + FF_CALCAL_BTN_W + FF_CALCAL_BTN_GAP;
+        done_cfg.filled = true;
+        done_cfg.border_width = 0;
+        done_cfg.bg_hex = FF_THEME_COLOR_AMBER;
+        done_cfg.fg_hex = FF_THEME_COLOR_BG;
+        done_cfg.press = FF_SCR_PILL_PRESS_DIM;
+        done_cfg.cb = settings_calcal_finish_cb;
+        ff_scr_pill_create(puck, "DONE", &done_cfg);
+    }
+}
+
+/* ---------------------------------------------------------------------
  * Entry point.
  * ------------------------------------------------------------------- */
 void ff_scr_settings_build(lv_obj_t *parent, ff_app_settings_t const *settings)
@@ -1294,6 +1502,12 @@ void ff_scr_settings_build(lv_obj_t *parent, ff_app_settings_t const *settings)
      * the list build below). */
     if (settings->subview == FF_SETTINGS_SUB_CREW) {
         settings_build_crew_page(parent, &settings->crew);
+        return;
+    }
+    /* S12 step 3 — same subview-dispatch-at-the-top shape as CREW just
+     * above. */
+    if (settings->subview == FF_SETTINGS_SUB_COMPASS_CAL) {
+        settings_build_compass_cal_page(parent, &settings->compass_cal);
         return;
     }
 
@@ -1434,7 +1648,11 @@ void ff_scr_settings_build(lv_obj_t *parent, ff_app_settings_t const *settings)
 
     y = settings_build_section_header(list, y, row_w, "DEVICE", /*first=*/false);
     settings_build_calibrate_row(list, y, row_w);
-    y += FF_SETTINGS_ROW_H; /* last (only) row of DEVICE */
+    y += FF_SETTINGS_ROW_STEP;
+    /* S12 step 3 — CALIBRATE COMPASS now follows CALIBRATE TOUCH; it is
+     * the new last row of DEVICE. */
+    settings_build_compass_cal_row(list, y, row_w, s_settings.compass_cal.cal_valid);
+    y += FF_SETTINGS_ROW_H; /* last row of DEVICE */
 
     y = settings_build_section_header(list, y, row_w, "CREW", /*first=*/false);
     settings_build_crew_open_row(list, y, row_w);
