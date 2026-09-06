@@ -112,7 +112,20 @@ PARAMS['fpc_relief']['z'] = tuple(z + _DZ_TOP for z in PARAMS['fpc_relief']['z']
 PARAMS['plate_z'] = tuple(z + _DZ_TOP for z in PARAMS['plate_z'])
 PARAMS['top_post_z'] = tuple(z + _DZ_TOP for z in PARAMS['top_post_z'])
 PARAMS['top_post_pilot_z'] = tuple(z + _DZ_TOP for z in PARAMS['top_post_pilot_z'])
-PARAMS['plate_post_D_z'] = tuple(z + _DZ_TOP for z in PARAMS['plate_post_D_z'])
+# 2026-09-07 pass 7 fix: plate_post_D_z is (split_z, plate_z[0]) by
+# construction (build_screen_plate's own comment: "post for screw D
+# (fuses onto the plate's underside, z (10, plate_z0))") -- Bottom's own
+# boss D pillar (add_case_boss) stops at the FIXED p['split_z'], not at
+# plate_z[0], so the post's lower bound must stay pinned to split_z
+# (10.0, unchanged by the case-height bump) for the two pieces to stay
+# contiguous. Blindly shifting BOTH tuple elements by _DZ_TOP (as every
+# other plate-anchored z-range above correctly does) instead moved the
+# lower bound to 13.0, leaving a 3mm GAP of missing boss material between
+# Bottom's boss D (still ending at z=10) and the Screen Plate's post
+# (now starting at z=13) -- a real "missing screw post" defect, caught by
+# re-deriving this from first principles rather than trusting the
+# uniform-shift pattern used everywhere else in this file.
+PARAMS['plate_post_D_z'] = (PARAMS['split_z'], PARAMS['plate_z'][0])
 
 PARAMS['usb_receptacle'] = dict(PARAMS['usb_receptacle'])
 PARAMS['usb_receptacle']['z'] = tuple(z + _DZ_TOP for z in PARAMS['usb_receptacle']['z'])

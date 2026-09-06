@@ -720,6 +720,95 @@ coordinator's sweep -- see Known limitations for their current, reported-
 but-not-gating status), `count_sliver_faces` (diagnostic only, per-body
 count of faces under 0.5mm²).
 
+## 2026-09-07 pass 7 (case height, 3-board stack, defect sweep)
+
+Jake asked for the real 18mm-tall 3-board (L76K+XIAO+Wio) direct-solder
+stack (reverted mid-pass-6 as too big a re-architecture for that pass's
+remaining budget — see the pass-6 "Reverted mid-pass-6" note) to actually
+land, plus a follow-up sweep of Jake's own render review.
+
+**Items 1-4** (case height, 3-board stack, boss B1/B2, battery/GPS
+reposition): `PARAMS['top_z']` is now a real per-variant parameter —
+`current` stays at 25 ("for the probe comparison" — Jake's own reference
+geometry never carried the taller stack and isn't meant to), `trim` grows
+to 28 (`_DZ_TOP = 3`), and every Top/plate/display/button z-value tied to
+the ceiling shifts by the same `_DZ_TOP` so the display glass stays flush
+at the new top face (see `params_trim.py`'s "PASS 7" section for the full
+z-table). The comms bay now inserts XIAO+Wio+L76K as a real 3-board stack
+for `trim` (`comms_stack3_full_height=True`; `current` still inserts only
+the L76K — its unchanged 25mm ceiling genuinely cannot fit the stack, see
+`params_current.py`'s comment). Case-screw boss B (its old position sat
+inside the L76K PCB's own footprint even before this pass, per the pass-6
+known-limitation) is retired; `screws_ABC` now lists **A, B1, B2, C** —
+B1/B2 straddle the stack's centreline at absolute `(±12.5, -15.0)` (same
+for both variants, comfortably on the flat bed, clear of the stack by
+construction via a boss-relief keep-out cut into the stack frame). New
+`verify_stack3_clearance` gates the stack's real (live-measured) top
+against the Top ceiling (≥0.8mm required).
+
+**Item 5**: `verify_skin_intact` / `verify_wall_integrity` (pass-6
+diagnostics that over-fired on legitimate geometry — see pass 6's Known
+Limitations) are re-targeted at their real, narrower footprints (the
+tab-hole's own analytic reach; the lug-relief box and the flat-to-arc
+tangent transition excluded by name/geometry, not by loosening the gate)
+and now **gate** `verify()` instead of just reporting.
+
+**Defect sweep** (this session — Jake's render review of the pass-7
+output found three more real issues, all fixed in the generator):
+
+1. **Lanyard lug was a plain, sharp-cornered block, not the tapered ear
+   pass 6 described.** `lug_ear_geometry` was correctly re-derived (using
+   the narrower of `rho_at_z(z0)`/`rho_at_z(z1)`, not the z-midpoint) to
+   stop the wedge-sliver defect, and `add_lug` Combine-Intersects the ear
+   against a thickened copy of the true curved shell to taper it — but
+   the hole was being cut into the standalone ear tool body and then
+   Combine-JOINED into Bottom, and the new, more conservative geometry
+   now puts the hole's xy inside the base shell's own pre-existing wall
+   material at some z in the ear's span (confirmed: solid there even
+   *before* `add_lug` runs). A boolean union can never remove material
+   the target already had, so the hole silently never went all the way
+   through (`verify_m2`'s `lug_hole_open` — previously unchecked before
+   this session's fix loop caught it failing). Fixed by joining the
+   ear first and cutting the through-hole from the resulting Bottom.
+   `lanyard_end.png`/`rim_lanyard_end.png` are regenerated from the fixed
+   geometry — the ear now visibly tapers with the true shoulder curve.
+2. **Case-screw bosses A/C left a non-manifold sliver in the exported
+   trim Top.stl**, found by an *offline* struct-level manifold-edge scan
+   (every edge of a watertight mesh must be shared by exactly 2
+   triangles) — 2 bad edges at `(x=±28, y=25.04/25.20, z=10..11.5)`,
+   exactly boss A/C's own xy and the lip/anchor relief's z-range. Root
+   cause: `add_lip_anchor_reliefs`'s per-boss relief cylinder radius was
+   a flat `boss_relief_dia/2` (5.0mm) regardless of how close the boss
+   sits to the true outer wall — trim's A/C sit at
+   `x = ±(outer_radius - wall - 3.0) = ±23.0`, putting the relief's edge
+   at exactly `23 + 5 = 28 = outer_radius`: dead-on the true surface
+   instead of safely inside it. `current`'s A/C have more margin (wider
+   `outer_radius=30`), so this never manifested there. Fixed by clamping
+   each boss's relief radius to stay 0.6mm inside the true wall distance
+   (`true_wall_distance_along_ray`, the same outward-direction convention
+   `verify_wall_integrity`'s own boss-wall probe already uses) — a no-op
+   for every boss that already had margin.
+3. **Boss D had a 3mm gap of missing material for trim** — a real
+   "missing screw post" defect. `plate_post_D_z` (the Screen Plate's own
+   post for screw D) is supposed to run from the parting line
+   (`split_z=10`, matching where Bottom's own boss-D pillar ends) up to
+   the plate's underside (`plate_z[0]`) — but pass 7's uniform `+_DZ_TOP`
+   shift (correct for every other plate-anchored z-range) also moved
+   this tuple's *lower* bound, from 10.0 to 13.0, leaving Bottom's boss
+   (still ending at z=10) and the plate's post (now starting at z=13)
+   disconnected — no continuous load path for screw D over that span.
+   Fixed by deriving `plate_post_D_z` as `(split_z, plate_z[0])` directly
+   instead of shifting a literal, so the invariant holds regardless of
+   case height. Verified by direct point-containment probing across
+   z=9.5..16 (solid, contiguous, no gap) — no existing `verify()` gate
+   happened to probe this specific boundary, so this was a silent one.
+
+All three are regenerated (not hand-fixed in Fusion) and confirmed by a
+full `run(..., export=True)` on both variants: `OK: M1+M2 probes passed`,
+zero interference, all M2/envelope/posts-bosses/skin/wall checks `True`,
+plus an offline manifold-edge + envelope + overhang scan of every
+exported STL (both variants) — `OVERALL: PASS`, zero non-manifold edges.
+
 ## Print orientation & settings
 
 - **Bottom**: print face-down on its flat z=0 face (the KandiWooks
@@ -744,32 +833,50 @@ count of faces under 0.5mm²).
 
 ## Screw list
 
-| Screw | Qty | Joins |
-|---|---|---|
-| M2×12 socket head | 3 | Bottom bosses A/B/C → Top bosses (Ø1.62 pilot, z 10–19.1) |
-| M2×10 socket head | 1 | Bottom boss D → Screen Plate post (Ø1.62, z 10–14.1) |
-| M2×6 socket head | 4 | Top posts P1–P4 → Screen Plate (Ø1.62 pilot, z 14.1–20.6) |
-| M2×4 socket head | 3 | Screen Plate → board SMT standoffs S1–S3 |
+**2026-09-07 pass 7: boss B split into B1/B2** (its old single position
+sat inside the L76K PCB's own footprint — see the pass-7 section above),
+and boss D's post grows with trim's taller case, changing its screw
+length. Current per-variant screw map:
 
-Bottom bosses A/B/C get a Ø4.5×2.2mm counterbore from z=0; boss D gets a
-deeper Ø4.5×4.0mm counterbore (its screw tip must stay ≤ z=14.1 — the
-USB-C shell sits at z=14.35 just above it).
+| Screw | Qty | current | trim | Joins |
+|---|---|---|---|---|
+| M2×12 socket head | 4 | ✓ | ✓ | Bottom bosses A/B1/B2/C → Top bosses (Ø1.62 pilot, z 10–19.1 — parting-plane anchored, unchanged by case height) |
+| M2×10 socket head | 1 | ✓ | | Bottom boss D → Screen Plate post (Ø1.62, z 10–13.1) |
+| M2×12 socket head | 1 | | ✓ | Bottom boss D → Screen Plate post (Ø1.62, z 10–16.1 — grows with trim's +3mm case height; same 4.0mm counterbore, so ~12.1mm of real engagement now needs the next size up from M2×10) |
+| M2×6 socket head | 4 | ✓ | ✓ | Top posts P1–P4 → Screen Plate (Ø1.62 pilot, z 14.1–20.6 current / 17.1–23.6 trim — same 6.5mm span, shifts with the plate) |
+| M2×4 socket head | 3 | ✓ | ✓ | Screen Plate → board SMT standoffs S1–S3 |
 
-**Screw A/B/C xy positions differ by variant** (2026-09-05 pass-2 fix —
-`current`'s reference positions punched through trim's narrower shell):
+So **trim now needs 5×M2×12 + 4×M2×6 + 3×M2×4** (12 screws total, same
+count as before pass 7 — B1+B2 replaces B 1-for-1, and D's M2×10 becomes
+a 5th M2×12); **current needs 4×M2×12 + 1×M2×10 + 4×M2×6 + 3×M2×4**.
+
+Bottom bosses A/B1/B2/C get a Ø4.5×2.2mm counterbore from z=0; boss D gets a
+deeper Ø4.5×4.0mm counterbore (its screw tip must stay ≤ plate_z[0] — the
+USB-C shell sits just above it in both variants).
+
+**Screw A/B1/B2/C xy positions** (2026-09-05 pass-2 fix for A/C —
+`current`'s reference positions punched through trim's narrower shell;
+2026-09-07 pass-7 for B1/B2, which replace the old single boss B):
 
 | Screw | current | trim |
 |---|---|---|
 | A | (−22.97, 25.04) | (−23.00, 25.04) |
-| B | (0.0, −24.00) | (0.0, −23.00) |
+| B1 | (−12.5, −15.0) | (−12.5, −15.0) *(absolute, same both variants)* |
+| B2 | (12.5, −15.0) | (12.5, −15.0) *(absolute, same both variants)* |
 | C | (23.74, 25.20) | (23.00, 25.20) |
-| D | (0.0, 65.0) | (0.0, 65.0) *(unchanged)* |
+| D | (0.0, 60.0) | (0.0, 60.0) *(unchanged; moved from (0,65) in pass 6)* |
 
-Trim's A/C use `x = ±(outer_radius - wall - 3.0)`, B uses
-`(0, -(outer_radius - wall - 3.0))`; every boss (both variants) is also
+Trim's A/C use `x = ±(outer_radius - wall - 3.0)`; B1/B2 are absolute mm
+positions sized against the comms stack's own footprint, not the outer
+shell, so they're identical in both variants (current's wider shell just
+has more margin around them). Every boss (both variants) is also
 Combine-Intersected against the shared inner-cavity clip tool regardless
 of its nominal position, so it can never punch through the shell even if
-a future variant's numbers are off.
+a future variant's numbers are off — and (2026-09-07) each boss's
+lip/anchor relief cut is now clamped to stay inside the true wall
+distance too, so it can't land tangent-to/through the true outer surface
+the way trim's A/C relief briefly did (see the pass-7 defect-sweep item
+above).
 
 ## Known limitations / deviations from SPEC.md
 
@@ -827,15 +934,12 @@ reason" per the milestone instructions.
    spirit by pass 6's `lug_ear_geometry`, which both `add_lug` and this
    check now share -- they can no longer disagree, though the underlying
    exception logic itself wasn't re-audited this pass.
-10. **Case-screw boss B is not joined into Bottom** (2026-09-06, pass 6):
-    its position sits inside the L76K PCB's own real footprint, so a real
-    solid overlap replaces the previous silent no-join if it's given the
-    same core-reach fix as A/C/D. This is a genuine, pre-existing bay-
-    layout conflict pass 6 exposed by fixing the OTHER bosses, not
-    something introduced by pass 6 -- it needs a decision: move screw B's
-    position, move the L76K bay, or accept that corner of the case is
-    fastened by A/C/D only (3 screws, not 4). Bottom boss D's `Screen
-    Plate` z-alignment and A/C/D's function are unaffected either way.
+10. ~~Case-screw boss B is not joined into Bottom~~ **RESOLVED 2026-09-07
+    (pass 7)**: boss B is retired outright, replaced by B1/B2 at an
+    absolute position clear of the (also new-in-pass-7) 3-board comms
+    stack -- see the pass-7 section above and the Screw list. Every
+    boss/post (A/B1/B2/C/D, P1-P4) now has real, verified material with
+    no documented exception.
 11. **`verify_skin_intact` and `verify_wall_integrity` (new in pass 6)
     over-fire on points unrelated to the defects they were written to
     catch** and are reported but not gated on in `verify()`.

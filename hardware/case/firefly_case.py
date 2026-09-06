@@ -777,15 +777,47 @@ def hollow_and_split(root, outer_solid, p):
 
 
 def add_lip_anchor_reliefs(root, bodies, p):
+    """2026-09-07 pass 7 (defect sweep): the per-boss relief cylinder's
+    radius was a flat `boss_relief_dia/2` (5.0mm) regardless of how close
+    the boss sits to the TRUE outer wall. For trim, boss A/C sit at
+    x = +-(outer_radius - wall - 3.0) = +-23.0, which puts the relief's
+    outward edge at exactly 23 + 5 = 28 = outer_radius -- landing dead-on
+    the true outer surface instead of safely inside it. Fusion silently
+    built this as a degenerate/coincident-face cut (not an error), but an
+    offline manifold-edge scan of the exported trim Top.stl found exactly
+    2 non-manifold edges at (x=+-28, y=25.04/25.20, z=10..11.5) -- boss
+    A/C's own xy, right at the relief's z-range -- confirming it, and
+    matching the small tab-shaped artifacts visible on the outer wall in
+    renders at the parting line. ('current' has no such defect: its A/C
+    sit further from its wider outer_radius=30 wall, so the nominal
+    radius never reaches it.) Fixed by clamping each boss's relief radius
+    to stay `wall_clear` (0.6mm) inside the TRUE wall distance along the
+    same outward-direction convention verify_wall_integrity's own boss-
+    wall probe already uses (true_wall_distance_along_ray) -- so this can
+    never disagree with that check, and the clamp is a no-op (min() picks
+    the nominal radius unchanged) for every boss that already had margin,
+    including current's A/C/D and both variants' B1/B2."""
     ay, by = p['spine_a'][1], p['spine_b'][1]
     lip = stadium_ring_solid(root, ay, by, p['lip_r'][0], p['lip_r'][1], p['lip_z'][0], p['lip_z'][1])
     anchor = stadium_ring_solid(root, ay, by, p['anchor_r'][0], p['anchor_r'][1], p['anchor_z'][0], p['anchor_z'][1])
     top = combine_join(root, bodies['Top'], [lip, anchor])
 
     relief_z0, relief_z1 = p['lip_z'][0] - 0.5, p['anchor_z'][1] + 0.5
+    relief_z_mid = (relief_z0 + relief_z1) / 2.0
+    nominal_r = p['boss_relief_dia'] / 2.0
+    wall_clear = 0.6
     for s in p['screws_ABC'] + [p['screw_D']]:
         cx, cy = s['xy']
-        relief = cylinder_solid(root, cx, cy, p['boss_relief_dia'] / 2.0, relief_z0, relief_z1)
+        if ay <= cy <= by:
+            d2 = (1.0 if cx >= 0 else -1.0, 0.0)
+        else:
+            center_y = ay if cy < ay else by
+            vx, vy = cx, cy - center_y
+            vlen = math.hypot(vx, vy) or 1.0
+            d2 = (vx / vlen, vy / vlen)
+        s_wall = true_wall_distance_along_ray(p, (cx, cy), d2, relief_z_mid)
+        relief_r = nominal_r if s_wall is None else min(nominal_r, s_wall - wall_clear)
+        relief = cylinder_solid(root, cx, cy, relief_r, relief_z0, relief_z1)
         top = combine_cut(root, top, [relief])
 
     lb = p['lug_relief_box']
@@ -1526,28 +1558,43 @@ def add_usb_tunnel(root, bodies, p):
 
 
 def lug_ear_geometry(p):
-    """Analytic geometry of the lanyard ear (2026-09-06 pass 6 rebuild) --
-    shared between add_lug (which builds it) and the envelope/export-
-    vertex verify checks (which need to know where it legitimately
-    protrudes), so the two can never disagree. Derived from the shell's
-    TRUE curved surface (true_wall_distance_along_ray) at the ear's own
-    vertical center, not a hand-picked constant -- correct for both
-    variants automatically. Returns (half_w, y_far, y_root, hole_y):
-    half_w -- half the ear's width; y_far -- its outward-facing end (the
-    protrusion tip); y_root -- a conservative inner extent (BEFORE being
-    trimmed to the true inner cavity surface -- see add_lug); hole_y --
-    the vertical hole's y position."""
+    """Analytic geometry of the lanyard ear (2026-09-06 pass 6 rebuild;
+    re-derived 2026-09-07 pass 7 item 2 -- see add_lug's docstring for the
+    wedge-sliver defect this fixes) -- shared between add_lug (which
+    builds it) and the envelope/export-vertex verify checks (which need
+    to know where it legitimately protrudes), so the two can never
+    disagree. Returns (half_w, y_far, y_root, hole_y): half_w -- half the
+    ear's width; y_far -- its outward-facing end (the protrusion tip);
+    y_root -- a conservative inner extent (BEFORE being trimmed to the
+    true inner cavity surface -- see add_lug); hole_y -- the vertical
+    hole's y position.
+
+    2026-09-07: y_far/hole_y are now derived from the NARROWEST true wall
+    radius across the ear's own z-span (min of rho_at_z at both z0 and
+    z1 -- the outer profile is monotonically increasing from the flat
+    bed to the parting line over this range, per SPEC's own probe table,
+    so the minimum is always at an endpoint), not the single value at
+    the vertical z-midpoint. add_lug then Combine-Intersects the ear's
+    box against a thickened copy of the outer envelope offset by
+    `protrusion` (the same technique pass 2 used to fix button caps
+    against the curved shell) -- using the narrowest-radius endpoint here
+    guarantees the box's full y_far..y_root footprint is never NARROWER
+    than what that offset envelope actually contains at every z in the
+    ear's range (the envelope only gets more permissive at the wider end),
+    so the intersect only ever rounds the box's outward corners to match
+    the true curve -- it can never eat into the hole's own footprint near
+    x=0."""
     lug = p['lug']
     half_w = lug['width'] / 2.0
     ay = p['spine_a'][1]
-    z_mid = (lug['z'][0] + lug['z'][1]) / 2.0
+    z0, z1 = lug['z']
     # at x=0, straight down from spine_a, the ray runs exactly along the
     # dome revolve's own symmetry axis -- the true wall distance there is
-    # simply rho_at_z(z_mid) by definition (true_wall_distance_along_ray's
+    # simply rho_at_z(z) by definition (true_wall_distance_along_ray's
     # general ray-casting form degenerates to None for a purely-vertical
     # ray starting exactly at the spine point, since its straight-section
     # branch expects a horizontal direction).
-    s_wall = rho_at_z(p, z_mid)
+    s_wall = min(rho_at_z(p, z0), rho_at_z(p, z1))
     y_outer = ay - s_wall
     y_far = y_outer - lug['protrusion']
     y_root = ay - (s_wall - 3.0)  # 3mm inside the true wall -- trimmed to the cavity surface below
@@ -1576,6 +1623,51 @@ def add_lug(root, bodies, p):
     hole edges -- both best-effort (skipped, not rolled back, if Fusion's
     fillet/chamfer feature refuses this specific geometry).
 
+    2026-09-07 pass 7 (item 2): Jake's own renders (rim_lanyard_end.png /
+    lanyard_end.png) showed a thin triangular WEDGE SLIVER on the outer
+    skin flanking the ear, on the +x side. Root cause: the ear's own outer
+    face was a flat box face, but the dome it's unioned into is a surface
+    of revolution whose radius varies hugely across the ear's z0..z1 span
+    (flat_rho at z0 up to the full outer_radius at z1, the whole flare of
+    the bed-to-wall shoulder) -- the box's flat side walls cross that
+    curving surface at a shallow, near-tangent angle at some z, producing
+    a sliver face at the boolean union seam. Same category of defect as
+    the pass-2 button caps (a flat approximation built against a curved
+    shell), fixed the same way: the box is now Combine-Intersected against
+    a thickened copy of the outer envelope (`build_thickened_envelope`,
+    offset by `lug['protrusion']`) so its outward boundary follows the
+    true curve (rounding the box's outward corners where the dome is
+    locally narrower than the box is wide) instead of colliding with it
+    edge-on. `lug_ear_geometry`'s y_far/hole_y already use the NARROWEST
+    true-wall radius across the ear's z-span specifically so this
+    intersect can only ever round the box's far corners -- it cannot eat
+    into the hole's own footprint near x=0 at any z in z0..z1 (see that
+    function's docstring).
+
+    **2026-09-07, later same pass -- real root cause + fix**: the hole
+    was being cut from the standalone `ear` tool body, then the (already-
+    holed) ear was Combine-JOINED into Bottom. The NEW (min-of-endpoints)
+    y_far/hole_y derivation above deliberately keeps the ear conservative
+    -- close enough to the true wall that `hole_y`'s xy now falls WITHIN
+    the base shell's own pre-existing wall thickness at some z in the
+    ear's z0..z1 span (confirmed empirically: `probe_point_solid` on
+    Bottom finds that point solid even BEFORE add_lug runs at all -- it's
+    inside the plain hollow shell's wall band there, nothing to do with
+    the ear). The OLD z-midpoint derivation placed hole_y well beyond the
+    true wall, in what was then open air outside the base shell entirely,
+    which is why cutting the hole from `ear` alone used to work -- there
+    was no pre-existing Bottom material at that point to worry about. A
+    hole cut into a TOOL body and then Combine-JOINED (a boolean union,
+    A ∪ B) can never remove material the TARGET already had -- only a cut
+    on the actual union result can. Fixed by joining the (hole-less) ear
+    into Bottom FIRST, then cutting the through-hole from the resulting
+    Bottom -- guaranteed to go all the way through regardless of how much
+    of the hole's footprint overlaps pre-existing wall vs. new ear
+    material. The R3 corner fillets stay on the standalone `ear` (cheap,
+    and correct either way -- they only concern the ear's own outward
+    corners, never Bottom's pre-existing geometry); only the hole cut and
+    its chamfer move to after the join.
+
     Jake also asked about a RECESSED lanyard bar instead of a protruding
     ear -- not built: a 5mm-deep pocket at the tip would need an interior
     pad that collides with the L76K wired frame at y ~ -23.5 (the bay's
@@ -1595,16 +1687,18 @@ def add_lug(root, bodies, p):
     void = build_inner_pill_solid(root, p)
     ear = combine_cut(root, ear, [void])
 
-    hole_r = lug['hole_dia'] / 2.0
-    hole = cylinder_solid(root, 0.0, hole_y, hole_r, z0 - 0.5, z1 + 0.5)
-    ear = combine_cut(root, ear, [hole])
+    # clip the outward reach to the TRUE curved shell + protrusion --
+    # eliminates the flat-box-vs-round-dome wedge sliver (see docstring).
+    thickened = build_thickened_envelope(root, p, lug['protrusion'])
+    ear = combine_intersect(root, ear, [thickened])
 
     # R3 fillets on the two vertical outer corners (where the far/outward
     # face meets the two side faces) -- selected by geometry (a vertical
     # edge, i.e. spanning the full z0..z1 with constant x,y, sitting at
     # the far face's y and either side face's x). Best-effort: Jake's own
     # instructions are explicit that a fillet failure here should not
-    # roll back the whole ear.
+    # roll back the whole ear. Done on the standalone `ear` (before the
+    # join) -- only concerns the ear's own outward corners.
     try:
         fillet_edges = adsk.core.ObjectCollection.create()
         for edge in ear.edges:
@@ -1625,18 +1719,27 @@ def add_lug(root, bodies, p):
     except RuntimeError:
         pass
 
+    # join the (hole-less) ear into Bottom, THEN cut the through-hole from
+    # the resulting Bottom -- see docstring for why this order is required.
+    bottom = combine_join(root, bodies['Bottom'], [ear])
+
+    hole_r = lug['hole_dia'] / 2.0
+    hole = cylinder_solid(root, 0.0, hole_y, hole_r, z0 - 0.5, z1 + 0.5)
+    bottom = combine_cut(root, bottom, [hole])
+
     # 0.6mm chamfer on both hole edges (top and bottom circular edges of
     # the vertical hole) -- best-effort, same reasoning as the fillets.
+    # Done on `bottom` now (the hole only exists there post-cut).
     try:
-        chamfer_edge_at(root, ear, (0.0, hole_y), hole_r, z0, lug['hole_chamfer'])
+        chamfer_edge_at(root, bottom, (0.0, hole_y), hole_r, z0, lug['hole_chamfer'])
     except (RuntimeError, AssertionError):
         pass
     try:
-        chamfer_edge_at(root, ear, (0.0, hole_y), hole_r, z1, lug['hole_chamfer'])
+        chamfer_edge_at(root, bottom, (0.0, hole_y), hole_r, z1, lug['hole_chamfer'])
     except (RuntimeError, AssertionError):
         pass
 
-    bodies['Bottom'] = combine_join(root, bodies['Bottom'], [ear])
+    bodies['Bottom'] = bottom
     return bodies
 
 
