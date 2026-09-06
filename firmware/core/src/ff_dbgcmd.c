@@ -200,6 +200,18 @@ ff_dbgcmd_status_t ff_dbgcmd_parse(char const *line, size_t line_len, ff_dbgcmd_
         out->kind = FF_DBGCMD_DM;
         return FF_DBGCMD_ERR_OK;
     }
+    if (tok_eq(buf, start, cmd_end, "name")) {
+        if (arg_start >= end) {
+            out->kind = FF_DBGCMD_NAME;
+            return FF_DBGCMD_ERR_OK;
+        }
+        size_t const n = end - arg_start;
+        if (n > FF_DBGCMD_TEXT_MAX) return FF_DBGCMD_ERR_BAD_ARGS;
+        memcpy(out->u.text, buf + arg_start, n);
+        out->u.text[n] = '\0';
+        out->kind = FF_DBGCMD_NAME_SET;
+        return FF_DBGCMD_ERR_OK;
+    }
 
     return FF_DBGCMD_ERR_UNKNOWN_CMD;
 }
@@ -223,6 +235,8 @@ char const *ff_dbgcmd_kind_name(ff_dbgcmd_kind_t kind)
     case FF_DBGCMD_CAL_FINISH: return "CAL_FINISH";
     case FF_DBGCMD_CAL_CANCEL: return "CAL_CANCEL";
     case FF_DBGCMD_CAL_CLEAR: return "CAL_CLEAR";
+    case FF_DBGCMD_NAME: return "NAME";
+    case FF_DBGCMD_NAME_SET: return "NAME_SET";
     }
     return "?";
 }

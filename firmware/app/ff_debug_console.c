@@ -72,6 +72,8 @@ static void dbgconsole_help(ff_dbgconsole_reply_fn reply, void *user)
     reply_line(reply, user, "dbg: cal finish               end the session, persist if coverage is enough");
     reply_line(reply, user, "dbg: cal cancel               abandon the session, calibration unchanged");
     reply_line(reply, user, "dbg: cal clear                drop the stored calibration back to identity");
+    reply_line(reply, user, "dbg: name                     NAME in Settings: stored/mesh/confirmed status");
+    reply_line(reply, user, "dbg: name <text>              set + push the Meshtastic owner update");
 }
 
 static void dbgconsole_me(ff_shell_t *sh, ff_dbgconsole_reply_fn reply, void *user)
@@ -305,6 +307,47 @@ static void dbgconsole_cal_clear(ff_shell_t *sh, ff_dbgconsole_reply_fn reply, v
     reply_line(reply, user, was_valid ? "dbg: cal cleared" : "dbg: cal already uncalibrated");
 }
 
+/* NAME in Settings — bare status plus "set", both dispatched through
+ * `ff_shell_mesh_name_status`/`ff_shell_intent`, the SAME seam the
+ * Settings NAME row and its T9 editor use (this file's own top-comment
+ * "every command that ACTS goes through ff_shell_intent" rule). "set"
+ * runs the EXACT same commit path the row's DONE button does
+ * (FF_INTENT_SETTINGS_NAME_COMMIT — sanitize, persist, push), so the
+ * coordinator can bench the mesh push against real nodes without the
+ * touchscreen. */
+static void dbgconsole_name_status(ff_shell_t *sh, ff_dbgconsole_reply_fn reply, void *user)
+{
+    ff_shell_mesh_name_status_t const st = ff_shell_mesh_name_status(sh);
+    char line[DBGCONSOLE_LINE_BUF];
+
+    char const *stored = (st.my_name[0] != '\0') ? st.my_name : "(unset)";
+    char mesh_buf[64];
+    if (!st.has_mesh_owner_name) {
+        snprintf(mesh_buf, sizeof(mesh_buf), "unknown");
+    } else if (st.mesh_owner_name[0] != '\0') {
+        snprintf(mesh_buf, sizeof(mesh_buf), "%s", st.mesh_owner_name);
+    } else {
+        snprintf(mesh_buf, sizeof(mesh_buf), "(unset)");
+    }
+
+    snprintf(line, sizeof(line), "dbg: name stored=%s mesh=%s confirmed=%d%s", stored, mesh_buf,
+             st.confirmed ? 1 : 0, st.my_name_from_node ? " (from_node)" : "");
+    reply_line(reply, user, line);
+}
+
+static void dbgconsole_name_set(ff_shell_t *sh, char const *text, ff_dbgconsole_reply_fn reply, void *user)
+{
+    /* ff_shell_debug_set_name runs the EXACT SAME commit mechanism the
+     * Settings NAME row's DONE button does (shell_apply_name_commit:
+     * sanitize, persist, push) — see that function's own doc comment
+     * (ff_shell.h) for why this bypasses FF_INTENT_SETTINGS_NAME_COMMIT's
+     * subview-only guard rather than fighting it, the same "reuse the
+     * mechanism, not the screen" shape `ff_shell_debug_send_text` already
+     * establishes for `send`/`dm`. */
+    ff_shell_debug_set_name(sh, text);
+    dbgconsole_name_status(sh, reply, user);
+}
+
 static void dbgconsole_wall(ff_shell_t *sh, ff_dbgconsole_reply_fn reply, void *user)
 {
     ff_shell_wall_debug_t const w = ff_shell_wall_debug(sh);
@@ -414,6 +457,8 @@ void ff_dbgconsole_handle_line(ff_shell_t *sh, char const *line, size_t line_len
     case FF_DBGCMD_CAL_FINISH: dbgconsole_cal_finish(sh, reply, user); return;
     case FF_DBGCMD_CAL_CANCEL: dbgconsole_cal_cancel(sh, reply, user); return;
     case FF_DBGCMD_CAL_CLEAR: dbgconsole_cal_clear(sh, reply, user); return;
+    case FF_DBGCMD_NAME: dbgconsole_name_status(sh, reply, user); return;
+    case FF_DBGCMD_NAME_SET: dbgconsole_name_set(sh, cmd.u.text, reply, user); return;
     case FF_DBGCMD_NONE: break; /* ff_dbgcmd_parse never returns OK with NONE — unreachable */
     }
     reply_line(reply, user, "dbg: ? try help");

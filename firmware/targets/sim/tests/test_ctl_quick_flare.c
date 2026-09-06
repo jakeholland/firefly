@@ -320,7 +320,7 @@ static void S10_wire_quick_flare_five_boot_presses_puts_one_flare_frame_on_the_w
     TEST_ASSERT_EQUAL_INT(0, ff_ctl_loop_open(&ctx, &shell, &pack, &shell_cfg, &cfg));
 
     memset(&QS, 0, sizeof(QS));
-    ff_wiring_sender_t const spy = {qf_wire_spy_send_text, qf_wire_spy_send_private, &QS};
+    ff_wiring_sender_t const spy = {qf_wire_spy_send_text, qf_wire_spy_send_private, &QS, NULL};
     ff_shell_set_sender(&shell, spy);
 
     bool quit_flag = false;

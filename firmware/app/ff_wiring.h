@@ -128,7 +128,7 @@ extern "C" {
 
 /**
  * ff_wiring_sender_t — the "can send a message" seam canned replies go
- * through. `ctx` is passed back to both function pointers untouched.
+ * through. `ctx` is passed back to every function pointer untouched.
  * Return 0 on success, negative on failure (mirrors mc_send_text/
  * mc_send_private's own return convention). `send_private`'s `flags` is a
  * bitmask of `FF_WIRE_WANT_ACK` (only flag defined so far); an
@@ -137,11 +137,32 @@ extern "C" {
  * in the tree was updated in the same change, but a flag value of 0 is
  * guaranteed to reproduce prior behavior for any implementer that hasn't
  * been taught the new bit yet.
- */
+ *
+ * `send_admin_set_owner` (`[api]`, NAME-in-Settings feature) mirrors
+ * `mc_send_set_owner`'s signature exactly (mc_client.h) — the NAME row's
+ * DONE handler (`ff_shell.c`'s `shell_apply_name_commit`) goes through
+ * this, not a direct `mc_send_set_owner` call, for the SAME reason
+ * `send_text`/`send_private` already do: a unit test needs a "mock mc"
+ * that just records the call, with no live transport/handshake
+ * (ff_wiring.h's own top comment, "this module's mock mc for AC6").
+ * Deliberately placed AFTER `ctx`, not grouped with the other two
+ * function pointers above it: every existing 3-element positional
+ * initializer of this struct in the tree (`{send_text, send_private,
+ * ctx}`) still compiles unchanged, with this field implicitly
+ * zero-initialized (aggregate-initialization rules) rather than silently
+ * misassigned to the wrong member — see this struct's own `[api]` PR
+ * for the full reasoning. A struct built field-by-field
+ * (`sender.send_text = ...`) must still set this field explicitly (NULL
+ * if the test/target genuinely has nothing to bind it to) — an
+ * uninitialized local has no such implicit-zero guarantee. May be NULL:
+ * `shell_apply_name_commit` checks before calling through it, so a
+ * target/test with nothing to bind here simply never pushes a mesh
+ * owner update — the local settings write still happens either way. */
 typedef struct {
     int (*send_text)(void *ctx, uint32_t dest, char const *utf8);
     int (*send_private)(void *ctx, uint32_t dest, uint8_t const *payload, size_t len, uint32_t flags);
     void *ctx;
+    int (*send_admin_set_owner)(void *ctx, uint32_t dest, char const *long_name, char const *short_name);
 } ff_wiring_sender_t;
 
 typedef struct {

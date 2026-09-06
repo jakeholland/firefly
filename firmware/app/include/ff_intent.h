@@ -482,6 +482,79 @@ typedef enum {
      * "write-on-change, never a no-op write" discipline every other
      * settings mutation in this codebase keeps. No payload. */
     FF_INTENT_COMPASS_CAL_CLEAR,
+
+    /* -------------------------------------------------------------
+     * NAME in Settings — the "NAME" row's T9 editor sub-view. Same
+     * "a Settings row, a bare intent, the shell decides" shape
+     * FF_INTENT_SETTINGS_OPEN_CREW / FF_INTENT_COMPASS_CAL_START already
+     * establish, and a DEDICATED small set of T9 intents (NOT the
+     * Compose screen's FF_INTENT_T9_KEY/_SPACE/_BACKSPACE/_MODE) so this
+     * feature never has to branch the Compose screen's own — already
+     * heavily amended — T9/PRED handling on "which draft is this,
+     * really". The shell owns a second, independent `ff_t9_t` for this
+     * (`ff_shell.c`'s `name_draft`), reusing the SAME core engine
+     * (core/include/ff_t9.h) — genuinely reused, just not the same LVGL
+     * screen or the same live struct instance as the composer. See
+     * `scr_settings.c`'s NAME-editor page for the render side.
+     * ------------------------------------------------------------- */
+
+    /* OPEN — the Settings "NAME" row. Gated on the takeover like every
+     * other Settings-reachable intent. Primes the shell's name-editor
+     * draft from the currently persisted `ff_settings_t.my_name`
+     * (`ff_t9_insert_text`, atomic, same seam a fresh session's prefill
+     * uses) and resets the editor to ABC mode, then switches the
+     * subview to FF_SETTINGS_SUB_NAME_EDIT. No payload. */
+    FF_INTENT_SETTINGS_OPEN_NAME_EDIT,
+
+    /* Multi-tap letter/digit key, 0-9 — meaningful only while the
+     * subview is FF_SETTINGS_SUB_NAME_EDIT (a no-op otherwise, same
+     * defensive shape FF_INTENT_COMPASS_CAL_FINISH gives a no-session
+     * FINISH). `u.t9_key` carries the key, exactly like FF_INTENT_T9_KEY.
+     * Blocked (silently ignored) once the draft's committed+pending text
+     * already holds FF_SETTINGS_NAME_LEN-1 (15) characters — see
+     * `ff_shell.c`'s NAME_T9_KEY case for the exact guard; this is a
+     * SMALLER, feature-specific cap layered on top of `ff_t9.h`'s own
+     * 160-char ceiling, not a change to that engine. */
+    FF_INTENT_NAME_T9_KEY,
+
+    /* Commit any pending character, then append a space — same 15-char
+     * cap as FF_INTENT_NAME_T9_KEY. No payload. */
+    FF_INTENT_NAME_T9_SPACE,
+
+    /* Remove one character (pending first, then committed) — no cap
+     * (backspace only ever shrinks). No payload. */
+    FF_INTENT_NAME_T9_BACKSPACE,
+
+    /* Atomic literal insert — the editor's 123 page's digits (`u.text`,
+     * borrowed for this call only, ff_intent.h's "Payload ownership")
+     * go through this, mirroring FF_INTENT_T9_INSERT's own role for the
+     * Compose screen's 123/SYM pages. Same 15-char cap as
+     * FF_INTENT_NAME_T9_KEY/_SPACE. */
+    FF_INTENT_NAME_T9_INSERT,
+
+    /* Cycle the name editor's OWN two-state keypad page, ABC <-> 123 —
+     * deliberately not the Compose screen's four-state PRED/ABC/123/SYM
+     * cycle: a puck name is letters/digits/space (S12's own "charset
+     * A-Z0-9 space" rule, restated for this row), so SYM/PRED have no
+     * place here and are never offered. No payload. */
+    FF_INTENT_NAME_T9_MODE,
+
+    /* DONE/SEND on the NAME editor. Sanitizes the draft's text (core's
+     * `ff_meshname_sanitize` — letters/digits/space, trimmed, bounded to
+     * FF_SETTINGS_NAME_LEN-1), commits it through the EXISTING
+     * FF_SETTING_MY_NAME string-payload seam below (persisted on change,
+     * exactly like any other settings write), then — independent of
+     * whether the LOCAL value actually changed, so re-pressing DONE with
+     * the same text is how a wearer retries a push that may have failed
+     * silently on a flaky link (the mesh never confirms a push
+     * succeeded merely by accepting the call; see `ff_shell.c`'s
+     * `shell_apply_name_commit` and this repo's own honest-data rule) —
+     * pushes the Meshtastic AdminMessage.set_owner (long name verbatim,
+     * short name derived by `ff_meshname_derive_short`) to this node's
+     * own id, when it is known (skipped, not queued, if the puck hasn't
+     * learned its own node id yet: `has_my_node_id` false). Returns the
+     * subview to FF_SETTINGS_SUB_LIST either way. No payload. */
+    FF_INTENT_SETTINGS_NAME_COMMIT,
 } ff_intent_kind_t;
 
 /**

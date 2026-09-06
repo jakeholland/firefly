@@ -2641,6 +2641,148 @@ static void S03_AC11_precision_overflow_varint_yields_no_position(void)
 }
 
 /* -------------------------------------------------------------------- */
+/* NAME in Settings — mc_send_set_owner (AdminMessage.set_owner)        */
+/* -------------------------------------------------------------------- */
+
+#include "meshtastic/admin.pb.h"
+
+/* Decode one outbound ToRadio frame out of `io->tx_buf`, assert it carries
+ * a MeshPacket on ADMIN_APP addressed to `expect_dest` with `want_ack`
+ * true, decode ITS payload as an AdminMessage, and hand back the
+ * set_owner User it carries — the same "decode the actual wire bytes a
+ * real radio would receive", not just "the call returned 0", discipline
+ * `decode_tx_want_ack` above already established for mc_send_private. */
+static meshtastic_User decode_tx_set_owner(mock_io_t const *io, uint32_t expect_dest)
+{
+    TEST_ASSERT_GREATER_OR_EQUAL_size_t(5u, io->tx_len);
+    TEST_ASSERT_EQUAL_HEX8(MC_FRAME_MAGIC1, io->tx_buf[0]);
+    TEST_ASSERT_EQUAL_HEX8(MC_FRAME_MAGIC2, io->tx_buf[1]);
+    uint16_t flen = (uint16_t)((io->tx_buf[2] << 8) | io->tx_buf[3]);
+    TEST_ASSERT_LESS_OR_EQUAL_size_t(io->tx_len - 4u, flen);
+
+    meshtastic_ToRadio tr = meshtastic_ToRadio_init_zero;
+    pb_istream_t is = pb_istream_from_buffer(io->tx_buf + 4, flen);
+    TEST_ASSERT_TRUE(pb_decode(&is, meshtastic_ToRadio_fields, &tr));
+    TEST_ASSERT_EQUAL_INT(meshtastic_ToRadio_packet_tag, tr.which_payload_variant);
+
+    meshtastic_MeshPacket const *pkt = &tr.payload_variant.packet;
+    TEST_ASSERT_EQUAL_UINT32(expect_dest, pkt->to);
+    TEST_ASSERT_TRUE(pkt->want_ack);
+    TEST_ASSERT_EQUAL_INT(meshtastic_MeshPacket_decoded_tag, pkt->which_payload_variant);
+    TEST_ASSERT_EQUAL_INT((int)meshtastic_PortNum_ADMIN_APP, (int)pkt->payload_variant.decoded.portnum);
+
+    meshtastic_AdminMessage admin = meshtastic_AdminMessage_init_zero;
+    pb_istream_t admin_is =
+        pb_istream_from_buffer(pkt->payload_variant.decoded.payload.bytes, pkt->payload_variant.decoded.payload.size);
+    TEST_ASSERT_TRUE(pb_decode(&admin_is, meshtastic_AdminMessage_fields, &admin));
+    TEST_ASSERT_EQUAL_INT(meshtastic_AdminMessage_set_owner_tag, admin.which_payload_variant);
+    return admin.payload_variant.set_owner;
+}
+
+static void feat_set_owner_encodes_long_and_short_name(void)
+{
+    mock_io_t io;
+    mock_io_reset(&io);
+    mock_clock_t clk = {.t = 0};
+    ff_clock_t clock = {.now_ms = mock_now, .user = &clk};
+    events_capture_t cap;
+    memset(&cap, 0, sizeof(cap));
+
+    mc_client_t c;
+    mc_init(&c, (mc_transport_t){.write = mock_write, .read = mock_read, .io = &io}, make_events(&cap), &clock);
+    c.state = MC_STATE_READY;
+
+    int rc = mc_send_set_owner(&c, 0x0A0A0A0Au, "Jake", "JAKE");
+
+    TEST_ASSERT_EQUAL_INT(0, rc);
+    meshtastic_User const owner = decode_tx_set_owner(&io, 0x0A0A0A0Au);
+    TEST_ASSERT_EQUAL_STRING("Jake", owner.long_name);
+    TEST_ASSERT_EQUAL_STRING("JAKE", owner.short_name);
+}
+
+static void feat_set_owner_dest_is_whatever_the_caller_passes(void)
+{
+    /* mc_send_set_owner does not itself assert dest == self — that
+     * policy (the "local admin, no key" path only works for a message
+     * addressed to this node's OWN id) is documented as the CALLER's
+     * job (mc_client.h's own doc comment); this test pins that this
+     * library forwards `dest` verbatim rather than silently rewriting
+     * it, using an arbitrary node id `has_my_node_id` was never set to. */
+    mock_io_t io;
+    mock_io_reset(&io);
+    mock_clock_t clk = {.t = 0};
+    ff_clock_t clock = {.now_ms = mock_now, .user = &clk};
+    events_capture_t cap;
+    memset(&cap, 0, sizeof(cap));
+
+    mc_client_t c;
+    mc_init(&c, (mc_transport_t){.write = mock_write, .read = mock_read, .io = &io}, make_events(&cap), &clock);
+    c.state = MC_STATE_READY;
+
+    TEST_ASSERT_EQUAL_INT(0, mc_send_set_owner(&c, 0x12345678u, "Taylor", "TAYL"));
+    (void)decode_tx_set_owner(&io, 0x12345678u); /* asserts dest == 0x12345678 internally */
+}
+
+static void feat_set_owner_null_short_name_leaves_it_unset(void)
+{
+    mock_io_t io;
+    mock_io_reset(&io);
+    mock_clock_t clk = {.t = 0};
+    ff_clock_t clock = {.now_ms = mock_now, .user = &clk};
+    events_capture_t cap;
+    memset(&cap, 0, sizeof(cap));
+
+    mc_client_t c;
+    mc_init(&c, (mc_transport_t){.write = mock_write, .read = mock_read, .io = &io}, make_events(&cap), &clock);
+    c.state = MC_STATE_READY;
+
+    TEST_ASSERT_EQUAL_INT(0, mc_send_set_owner(&c, 1u, "Jo", NULL));
+    meshtastic_User const owner = decode_tx_set_owner(&io, 1u);
+    TEST_ASSERT_EQUAL_STRING("Jo", owner.long_name);
+    TEST_ASSERT_EQUAL_STRING("", owner.short_name);
+}
+
+static void feat_set_owner_uses_the_seeded_packet_id_counter(void)
+{
+    mock_io_t io;
+    mock_io_reset(&io);
+    mock_clock_t clk = {.t = 0};
+    ff_clock_t clock = {.now_ms = mock_now, .user = &clk};
+    events_capture_t cap;
+    memset(&cap, 0, sizeof(cap));
+
+    mc_client_t c;
+    mc_init(&c, (mc_transport_t){.write = mock_write, .read = mock_read, .io = &io}, make_events(&cap), &clock);
+    mc_seed_packet_ids(&c, 777u);
+    c.state = MC_STATE_READY;
+
+    TEST_ASSERT_EQUAL_INT(0, mc_send_set_owner(&c, 1u, "Jake", "JAKE"));
+
+    meshtastic_ToRadio tr = meshtastic_ToRadio_init_zero;
+    uint16_t flen = (uint16_t)((io.tx_buf[2] << 8) | io.tx_buf[3]);
+    pb_istream_t is = pb_istream_from_buffer(io.tx_buf + 4, flen);
+    TEST_ASSERT_TRUE(pb_decode(&is, meshtastic_ToRadio_fields, &tr));
+    TEST_ASSERT_EQUAL_UINT32(777u, tr.payload_variant.packet.id);
+}
+
+static void feat_set_owner_fails_when_not_ready(void)
+{
+    mock_io_t io;
+    mock_io_reset(&io);
+    mock_clock_t clk = {.t = 0};
+    ff_clock_t clock = {.now_ms = mock_now, .user = &clk};
+    events_capture_t cap;
+    memset(&cap, 0, sizeof(cap));
+
+    mc_client_t c;
+    mc_init(&c, (mc_transport_t){.write = mock_write, .read = mock_read, .io = &io}, make_events(&cap), &clock);
+    /* c.state left at mc_init's default (MC_STATE_DISCONNECTED). */
+
+    TEST_ASSERT_EQUAL_INT(-1, mc_send_set_owner(&c, 1u, "Jake", "JAKE"));
+    TEST_ASSERT_EQUAL_UINT32(0u, io.tx_len); /* nothing written to the wire */
+}
+
+/* -------------------------------------------------------------------- */
 
 int main(void)
 {
@@ -2738,6 +2880,12 @@ int main(void)
     RUN_TEST(S03_AC11_nodeinfo_position_carries_precision_bits);
     RUN_TEST(S03_AC11_nodeinfo_absent_precision_bits_reads_absent);
     RUN_TEST(S03_AC11_precision_overflow_varint_yields_no_position);
+
+    RUN_TEST(feat_set_owner_encodes_long_and_short_name);
+    RUN_TEST(feat_set_owner_dest_is_whatever_the_caller_passes);
+    RUN_TEST(feat_set_owner_null_short_name_leaves_it_unset);
+    RUN_TEST(feat_set_owner_uses_the_seeded_packet_id_counter);
+    RUN_TEST(feat_set_owner_fails_when_not_ready);
 
     return UNITY_END();
 }

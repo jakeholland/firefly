@@ -1,0 +1,13 @@
+{
+  "fixture": "settings_name_edit",
+  "face": "settings",
+  "settings": {
+    "my_name": "JAKE",
+    "subview": "name_edit",
+    "name_edit": {
+      "text": "JAKE",
+      "has_pending": false,
+      "mode": "abc"
+    }
+  }
+}

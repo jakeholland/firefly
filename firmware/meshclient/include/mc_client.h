@@ -569,6 +569,50 @@ int mc_send_private(mc_client_t *c, uint32_t dest, uint32_t portnum, uint8_t con
  * Returns 0 on success, negative on failure. */
 int mc_send_position(mc_client_t *c, ff_latlon_t p);
 
+/**
+ * mc_send_set_owner — send a Meshtastic AdminMessage.set_owner: sets this
+ * node's `User{long_name, short_name}` — the mesh "owner" identity every
+ * other node and phone app displays for it (`[api]`, NAME-in-Settings
+ * feature).
+ *
+ * Rides ADMIN_APP (portnum 6), `want_ack` is always true (an admin write
+ * worth calling this for is worth the mesh stack retrying, unlike a
+ * best-effort broadcast text) and the packet id comes from the same
+ * seeded generator every other send uses (`mc_seed_packet_ids`).
+ *
+ * `dest` is the destination node id — pass this node's OWN id
+ * (`ff_shell_my_node_id` on the app side) to reach the "local admin, no
+ * key needed" path: Meshtastic's PhoneAPI zeroes `MeshPacket.from` for
+ * EVERY packet a locally-attached client submits ("We don't let clients
+ * assign nodenums to their sent messages" — meshtastic/firmware
+ * `src/mesh/MeshService.cpp:188`, `MeshService::handleToRadio`), and
+ * `AdminModule::handleReceivedProtobuf` only requires a session passkey
+ * when `mp.from != 0` (`src/modules/AdminModule.cpp`) — so a message this
+ * device (acting as the comms brain's own local client, exactly like the
+ * phone app) submits to itself is trusted with no key exchange at all.
+ * Verified by reading meshtastic/firmware tag `v2.7.26` (commit
+ * `54e0d8d0`) — the same firmware version this repo's own S03 spec
+ * amendments hardware-verified other wire behavior against. A `dest`
+ * that is NOT this node's own id would still encode and send, but would
+ * land on `AdminModule`'s passkey-required path on a REMOTE node and be
+ * rejected there; this library does not enforce `dest == self` itself
+ * (the caller already knows its own id, or doesn't call this yet).
+ *
+ * `long_name`/`short_name` may each be NULL or "" to leave that field
+ * unset on the wire — Meshtastic's `AdminModule::handleSetOwner` only
+ * overwrites a field when the incoming `User`'s field is non-empty, so a
+ * NULL/"" `short_name` (for instance) updates only the long name.
+ * Neither is validated against the puck-name charset here (that is
+ * `ff_meshname_sanitize`'s job, one layer up, core/include/ff_meshname.h)
+ * — this function only bounds each to `MC_NAME_MAX - 1` bytes (truncated,
+ * never rejected, matching this library's existing string-field
+ * convention) before encoding.
+ *
+ * Returns 0 on success, negative on failure (not READY, encode/write
+ * failure).
+ */
+int mc_send_set_owner(mc_client_t *c, uint32_t dest, char const *long_name, char const *short_name);
+
 mc_state_t mc_state(mc_client_t const *c);
 mc_stats_t mc_get_stats(mc_client_t const *c);
 

@@ -2812,23 +2812,26 @@ static void S21_AC1_settings_is_one_scrolling_list_every_row_reachable(void)
 
     /* "Reachable by scrolling": scroll the ONE list all the way down
      * (LVGL clamps to the real content range) and prove the LAST row,
-     * CALIBRATE TOUCH, actually lands INSIDE the list's own viewport
-     * band at that scroll position — not merely present somewhere
-     * off-glass in the object tree. */
+     * CREW (NAME in Settings' own section landed directly above it,
+     * ahead of this test's prior "CALIBRATE TOUCH" pick — CALIBRATE
+     * TOUCH stopped being the list's last row once COMPASS/CREW/NAME all
+     * landed after it; CREW is the current bottom), actually lands
+     * INSIDE the list's own viewport band at that scroll position — not
+     * merely present somewhere off-glass in the object tree. */
     lv_obj_t *list = find_scrollable(lv_screen_active());
     TEST_ASSERT_NOT_NULL_MESSAGE(list, "no scrollable settings list container found");
     lv_obj_update_layout(list);
     lv_obj_scroll_to_y(list, LV_COORD_MAX, LV_ANIM_OFF);
     lv_obj_update_layout(list);
 
-    lv_obj_t *cal = find_button_with_label(lv_screen_active(), "CALIBRATE TOUCH");
+    lv_obj_t *cal = find_button_with_label(lv_screen_active(), "CREW");
     TEST_ASSERT_NOT_NULL(cal);
     lv_area_t cal_area;
     lv_obj_get_coords(cal, &cal_area);
     lv_area_t list_area;
     lv_obj_get_coords(list, &list_area);
     TEST_ASSERT_TRUE_MESSAGE(cal_area.y1 >= list_area.y1 && cal_area.y2 <= list_area.y2,
-                             "CALIBRATE TOUCH did not scroll into the list viewport");
+                             "CREW did not scroll into the list viewport");
 
     /* The header (SETTINGS + name) is built directly on the puck, never
      * inside the scroll list, so it is unaffected by scrolling the list
@@ -2939,6 +2942,220 @@ static void S12step3_ritual_page_done_emits_finish_when_can_finish(void)
 
     TEST_ASSERT_EQUAL_INT(1, s_spy.count);
     TEST_ASSERT_EQUAL(FF_INTENT_COMPASS_CAL_FINISH, s_spy.last.kind);
+}
+
+/* ===================================================================
+ * NAME in Settings — the "NAME" row (LIST) and its full-screen T9
+ * editor (FF_SETTINGS_SUB_NAME_EDIT). Same click()-injection convention
+ * every other row in this file uses.
+ * =================================================================== */
+
+/* An unset name shows the honest "(unset)" placeholder (never a
+ * fabricated name) and still opens the editor on tap. The LABEL side is
+ * a plain clickable `lv_obj` (settings_build_value_row's own "hit"
+ * shape, not an `lv_button`), so — matching this file's own established
+ * convention for a value row's paired label/pill halves (see the
+ * COMPASS row tests above) — the click is injected on the PILL side,
+ * which IS a real button (`ff_scr_pill_create`). Both halves share the
+ * same callback, so this exercises the row's one real action either
+ * way. */
+static void S_name_row_unset_shows_placeholder_and_opens_editor(void)
+{
+    ff_app_settings_t s;
+    memset(&s, 0, sizeof(s));
+
+    ff_scr_settings_build(lv_screen_active(), &s);
+
+    TEST_ASSERT_NOT_NULL(find_label_exact(lv_screen_active(), "(unset)"));
+    click(find_button_with_label(lv_screen_active(), "N/A")); /* the pill: nothing to confirm yet */
+
+    TEST_ASSERT_EQUAL_INT(1, s_spy.count);
+    TEST_ASSERT_EQUAL(FF_INTENT_SETTINGS_OPEN_NAME_EDIT, s_spy.last.kind);
+}
+
+/* A stored name renders as its own label (not a fixed caption — this
+ * row's whole point), and the status pill reads the honest confirmed/
+ * pending state: pending ("...") when not yet confirmed by a matching
+ * self NodeInfo. */
+static void S_name_row_shows_stored_name_and_pending_pill(void)
+{
+    ff_app_settings_t s;
+    memset(&s, 0, sizeof(s));
+    snprintf(s.my_name, sizeof(s.my_name), "%s", "Jake");
+    s.mesh_name_confirmed = false;
+
+    ff_scr_settings_build(lv_screen_active(), &s);
+
+    TEST_ASSERT_NOT_NULL(find_label_exact(lv_screen_active(), "Jake"));
+    TEST_ASSERT_NOT_NULL(find_label_exact(lv_screen_active(), "..."));
+
+    click(find_button_with_label(lv_screen_active(), "...")); /* the pill side — see the unset test's own note */
+    TEST_ASSERT_EQUAL_INT(1, s_spy.count);
+    TEST_ASSERT_EQUAL(FF_INTENT_SETTINGS_OPEN_NAME_EDIT, s_spy.last.kind);
+}
+
+/* Confirmed flips the pill to the checkmark glyph — never assumed, only
+ * ever set here by the fixture/projection directly (this test proves
+ * the RENDER side of that honesty rule; ff_shell.c's own tests prove the
+ * derivation side). */
+static void S_name_row_confirmed_shows_checkmark(void)
+{
+    ff_app_settings_t s;
+    memset(&s, 0, sizeof(s));
+    snprintf(s.my_name, sizeof(s.my_name), "%s", "Jake");
+    s.mesh_name_confirmed = true;
+
+    ff_scr_settings_build(lv_screen_active(), &s);
+
+    TEST_ASSERT_NULL(find_label_exact(lv_screen_active(), "..."));
+    TEST_ASSERT_NOT_NULL(find_label_exact(lv_screen_active(), LV_SYMBOL_OK));
+}
+
+/* The editor page: title, seeded draft text, and default ABC mode. */
+static void S_name_edit_page_shows_title_and_seeded_draft(void)
+{
+    ff_app_settings_t s;
+    memset(&s, 0, sizeof(s));
+    s.subview = FF_SETTINGS_SUB_NAME_EDIT;
+    snprintf(s.name_edit.text, sizeof(s.name_edit.text), "%s", "Jake");
+    s.name_edit.mode = FF_APP_NAME_EDIT_ABC;
+
+    ff_scr_settings_build(lv_screen_active(), &s);
+
+    TEST_ASSERT_NOT_NULL(find_label_exact(lv_screen_active(), "NAME"));
+    TEST_ASSERT_NOT_NULL(find_label_exact(lv_screen_active(), "Jake"));
+    TEST_ASSERT_NOT_NULL(find_label_exact(lv_screen_active(), "ABC"));
+    TEST_ASSERT_NOT_NULL(find_button_with_label(lv_screen_active(), "DONE"));
+}
+
+/* An empty draft shows the honest "(empty)" placeholder, never blank
+ * (which would be indistinguishable from a rendering bug) or a
+ * fabricated default. */
+static void S_name_edit_empty_draft_shows_placeholder(void)
+{
+    ff_app_settings_t s;
+    memset(&s, 0, sizeof(s));
+    s.subview = FF_SETTINGS_SUB_NAME_EDIT;
+
+    ff_scr_settings_build(lv_screen_active(), &s);
+
+    TEST_ASSERT_NOT_NULL(find_label_exact(lv_screen_active(), "(empty)"));
+}
+
+/* ABC mode: a letter key emits FF_INTENT_NAME_T9_KEY with the raw key
+ * number — same "only .kind/.u.t9_key are safely asserted" shape S16_c3's
+ * own compose key tests document (ff_intent.h, "Payload ownership"). */
+static void S_name_edit_abc_letter_key_emits_name_t9_key(void)
+{
+    ff_app_settings_t s;
+    memset(&s, 0, sizeof(s));
+    s.subview = FF_SETTINGS_SUB_NAME_EDIT;
+    s.name_edit.mode = FF_APP_NAME_EDIT_ABC;
+
+    ff_scr_settings_build(lv_screen_active(), &s);
+
+    click(find_button_with_label(lv_screen_active(), "DEF")); /* key 3 */
+
+    TEST_ASSERT_EQUAL_INT(1, s_spy.count);
+    TEST_ASSERT_EQUAL(FF_INTENT_NAME_T9_KEY, s_spy.last.kind);
+    TEST_ASSERT_EQUAL_UINT8(3, s_spy.last.u.t9_key);
+}
+
+static void S_name_edit_space_key_emits_name_t9_space(void)
+{
+    ff_app_settings_t s;
+    memset(&s, 0, sizeof(s));
+    s.subview = FF_SETTINGS_SUB_NAME_EDIT;
+
+    ff_scr_settings_build(lv_screen_active(), &s);
+
+    click(find_button_with_label(lv_screen_active(), "SPACE"));
+
+    TEST_ASSERT_EQUAL_INT(1, s_spy.count);
+    TEST_ASSERT_EQUAL(FF_INTENT_NAME_T9_SPACE, s_spy.last.kind);
+}
+
+static void S_name_edit_del_key_emits_name_t9_backspace(void)
+{
+    ff_app_settings_t s;
+    memset(&s, 0, sizeof(s));
+    s.subview = FF_SETTINGS_SUB_NAME_EDIT;
+    snprintf(s.name_edit.text, sizeof(s.name_edit.text), "%s", "J");
+
+    ff_scr_settings_build(lv_screen_active(), &s);
+
+    click(find_button_with_label(lv_screen_active(), "DEL"));
+
+    TEST_ASSERT_EQUAL_INT(1, s_spy.count);
+    TEST_ASSERT_EQUAL(FF_INTENT_NAME_T9_BACKSPACE, s_spy.last.kind);
+}
+
+/* The mode chip's own label names the OTHER page (tap to switch to it —
+ * the "never a mystery toggle" rule S08's own mode-chip amendment
+ * established), and tapping it emits NAME_T9_MODE. */
+static void S_name_edit_mode_chip_emits_name_t9_mode(void)
+{
+    ff_app_settings_t s;
+    memset(&s, 0, sizeof(s));
+    s.subview = FF_SETTINGS_SUB_NAME_EDIT;
+    s.name_edit.mode = FF_APP_NAME_EDIT_ABC;
+
+    ff_scr_settings_build(lv_screen_active(), &s);
+
+    click(find_button_with_label(lv_screen_active(), "123")); /* names the page it switches TO */
+
+    TEST_ASSERT_EQUAL_INT(1, s_spy.count);
+    TEST_ASSERT_EQUAL(FF_INTENT_NAME_T9_MODE, s_spy.last.kind);
+}
+
+/* 123 mode: a digit key emits FF_INTENT_NAME_T9_INSERT — kind only is
+ * asserted (the payload is a borrowed pointer into a stack buffer
+ * that's already gone by the time click() returns, ff_intent.h's
+ * "Payload ownership" — the same reason S16_c3's compose 123/SYM tests
+ * assert kind only); the byte content is pinned at the shell level
+ * instead (test_shell.c). */
+static void S_name_edit_123_digit_key_emits_name_t9_insert(void)
+{
+    ff_app_settings_t s;
+    memset(&s, 0, sizeof(s));
+    s.subview = FF_SETTINGS_SUB_NAME_EDIT;
+    s.name_edit.mode = FF_APP_NAME_EDIT_123;
+
+    ff_scr_settings_build(lv_screen_active(), &s);
+
+    click(find_button_with_label(lv_screen_active(), "5"));
+
+    TEST_ASSERT_EQUAL_INT(1, s_spy.count);
+    TEST_ASSERT_EQUAL(FF_INTENT_NAME_T9_INSERT, s_spy.last.kind);
+}
+
+static void S_name_edit_done_emits_commit(void)
+{
+    ff_app_settings_t s;
+    memset(&s, 0, sizeof(s));
+    s.subview = FF_SETTINGS_SUB_NAME_EDIT;
+    snprintf(s.name_edit.text, sizeof(s.name_edit.text), "%s", "Jake");
+
+    ff_scr_settings_build(lv_screen_active(), &s);
+
+    click(find_button_with_label(lv_screen_active(), "DONE"));
+
+    TEST_ASSERT_EQUAL_INT(1, s_spy.count);
+    TEST_ASSERT_EQUAL(FF_INTENT_SETTINGS_NAME_COMMIT, s_spy.last.kind);
+}
+
+static void S_name_edit_back_emits_back_intent(void)
+{
+    ff_app_settings_t s;
+    memset(&s, 0, sizeof(s));
+    s.subview = FF_SETTINGS_SUB_NAME_EDIT;
+
+    ff_scr_settings_build(lv_screen_active(), &s);
+
+    click(find_button_with_label(lv_screen_active(), LV_SYMBOL_LEFT));
+
+    TEST_ASSERT_EQUAL_INT(1, s_spy.count);
+    TEST_ASSERT_EQUAL(FF_INTENT_BACK, s_spy.last.kind);
 }
 
 /* S12/S04 — the "CREW" row emits the shell-owned FF_INTENT_SETTINGS_OPEN_
@@ -3699,6 +3916,19 @@ int main(void)
     RUN_TEST(S12step3_settings_compass_row_calibrated_shows_set_and_emits_start);
     RUN_TEST(S12step3_ritual_page_cancel_emits_cancel_and_done_is_absent_below_threshold);
     RUN_TEST(S12step3_ritual_page_done_emits_finish_when_can_finish);
+
+    RUN_TEST(S_name_row_unset_shows_placeholder_and_opens_editor);
+    RUN_TEST(S_name_row_shows_stored_name_and_pending_pill);
+    RUN_TEST(S_name_row_confirmed_shows_checkmark);
+    RUN_TEST(S_name_edit_page_shows_title_and_seeded_draft);
+    RUN_TEST(S_name_edit_empty_draft_shows_placeholder);
+    RUN_TEST(S_name_edit_abc_letter_key_emits_name_t9_key);
+    RUN_TEST(S_name_edit_space_key_emits_name_t9_space);
+    RUN_TEST(S_name_edit_del_key_emits_name_t9_backspace);
+    RUN_TEST(S_name_edit_mode_chip_emits_name_t9_mode);
+    RUN_TEST(S_name_edit_123_digit_key_emits_name_t9_insert);
+    RUN_TEST(S_name_edit_done_emits_commit);
+    RUN_TEST(S_name_edit_back_emits_back_intent);
 
     RUN_TEST(S12_settings_crew_row_emits_open_crew_intent);
     RUN_TEST(S12_crew_remove_real_tap_emits_unpair_with_node_id);

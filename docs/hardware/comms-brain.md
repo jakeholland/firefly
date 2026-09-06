@@ -157,13 +157,16 @@ line replies `dbg: ? try help`):
 | `cal finish` | attempt to end the session: persists on >=70% octant coverage, otherwise leaves the old calibration untouched and the session active |
 | `cal cancel` | abandon the session; the stored calibration (if any) is untouched |
 | `cal clear` | drop the STORED calibration back to identity/uncalibrated |
+| `name` | NAME in Settings: stored puck name, mesh-reported name (if any), confirmed/pending, and whether the name was silently adopted from the mesh at boot |
+| `name <text>` | commit `<text>` through the EXACT SAME path the Settings NAME row's DONE button uses — sanitize (letters/digits/space), persist, push the Meshtastic owner update — so the mesh push can be bench-tested against real nodes over USB |
 
 Every acting command dispatches through `ff_shell_intent` (the SAME
 `FF_INTENT_QUICK_FLARE`/`FF_INTENT_FLARE_END` intents the physical
-5-tap gesture and the sender overlay's CANCEL button use) or the
-debug-only `ff_shell_debug_send_text` seam (`app/include/ff_shell.h`)
-— never a new roster-growth path, never a direct mesh send bypassing
-the shell. See that header's doc comment and
+5-tap gesture and the sender overlay's CANCEL button use) or one of the
+debug-only seams — `ff_shell_debug_send_text` for `send`/`dm`,
+`ff_shell_debug_set_name` for `name <text>` (both `app/include/
+ff_shell.h`) — never a new roster-growth path, never a direct mesh send
+bypassing the shell. See that header's doc comment and
 `app/include/ff_debug_console.h` for the full seam discipline, and
 `core/include/ff_dbgcmd.h` for the line parser (table-driven, bounded,
 CRLF-tolerant, unit-tested independent of any shell).
@@ -212,6 +215,17 @@ dbg: cal finished ok progress_pct=100 samples=390
 cal
 dbg: cal active=0 cal=custom
 
+name
+dbg: name stored=(unset) mesh=unknown confirmed=0
+
+name Jake
+dbg: name stored=Jake mesh=unknown confirmed=0
+
+(the comms brain's own NodeInfo replay arrives a moment later)
+
+name
+dbg: name stored=Jake mesh=Jake confirmed=1
+
 xyzzy
 dbg: ? try help
 ```
@@ -241,6 +255,83 @@ actual chip (`qmc5883l`/`hmc5883l`/`qmc5883p`) rather than a bare
 line above it to know which part responded. On a target with no I2C
 bus at all (the sim build), the whole command replies with a single
 honest line: `dbg: i2c unavailable on this target`.
+
+## NAME → Meshtastic owner (how the puck's name reaches the mesh)
+
+The Settings "NAME" row (and the bench console's `name <text>`) commit
+to two places, in order:
+
+1. **Locally** — `ff_settings_t.my_name`, persisted through the same
+   `FF_SETTING_MY_NAME` write-through seam every other setting uses (S16
+   slice e). This is what the puck itself remembers.
+2. **The comms brain** — a Meshtastic `AdminMessage` carrying
+   `set_owner: User{ long_name, short_name }`, sent over the SAME UART
+   connection this device already uses as a Meshtastic *client* of the
+   comms brain (S03's meshclient library — `mc_send_set_owner`,
+   `firmware/meshclient/include/mc_client.h`), addressed to the comms
+   brain's OWN node id (`ff_shell_my_node_id`). `want_ack` is always
+   true and the packet id comes from the same seeded generator every
+   other send on this connection uses.
+
+**Why no admin key is needed.** A client attached over UART/Serial/BLE
+— which is exactly this device's relationship to the comms brain, the
+same one the official phone app has — gets its outgoing packets'
+`MeshPacket.from` zeroed by the comms brain's own firmware before
+anything else touches them:
+
+```
+// meshtastic/firmware, src/mesh/MeshService.cpp:188 (MeshService::handleToRadio)
+p.from = 0;                          // We don't let clients assign nodenums to their sent messages
+```
+
+`AdminModule::handleReceivedProtobuf` (`src/modules/AdminModule.cpp`)
+only requires a session passkey when `mp.from != 0`:
+
+```
+} else if (mp.from == 0) {
+    if (config.security.is_managed) { ... }        // local admin: passkey NOT required
+}
+...
+if (mp.from != 0 && !messageIsRequest(r) && !messageIsResponse(r)) {
+    if (!checkPassKey(r)) { ... }                   // remote admin: passkey required
+}
+```
+
+So a `set_owner` this device submits over its own UART connection to
+the comms brain arrives with `from == 0` and is trusted without a key
+exchange — the exact same "local admin" trust the phone app's own
+`set_owner` flow relies on. Verified by reading `meshtastic/firmware`
+tag `v2.7.26` (commit `54e0d8d0`) — the same firmware version this
+repo's own S03 spec amendments hardware-verified other wire behavior
+against (`docs/specs/S03-meshclient.md`, precision_bits/rx_snr).
+`mc_send_set_owner`'s own doc comment (`mc_client.h`) carries this same
+citation next to the code it justifies.
+
+**Short name derivation** (`ff_meshname_derive_short`,
+`core/include/ff_meshname.h`): the first 4 alphanumeric characters of
+the long name, uppercased, in that order — non-alphanumeric characters
+(spaces, punctuation) are dropped BEFORE truncating, not after, so a
+name like "Jake H" derives from the full alphanumeric run ("JakeH")
+rather than losing the H to an early space. A name with fewer than 4
+alphanumeric characters is never padded with anything fabricated.
+Examples: "Taylor" → "TAYL", "Jake" → "JAKE", "Jo" → "JO".
+
+**Confirmation is never assumed.** Accepting a `set_owner` for send
+proves nothing about whether the comms brain actually applied it —
+`ff_shell.c` never marks the row confirmed until a SELF NodeInfo
+(the want_config replay on reconnect, or a live update following
+`MeshService::reloadOwner`'s own `nodeDB->updateUser` push back to this
+connected client) reports a `long_name` that actually matches what was
+committed (`ff_shell_mesh_name_status`/`shell_mesh_name_confirmed`).
+The Settings row's small status pill and the bench console's `name`
+command both read this same one derivation, never two independent
+guesses.
+
+**Fallback.** The Meshtastic phone app and CLI (`meshtastic
+--set-owner "<name>" --set-owner-short "<short>"`) remain a fully
+independent way to set the SAME owner identity directly against the
+comms brain — this feature is additive, not a replacement path, and
+either one can correct the other's mistake.
 
 ## The puck's back header (photo, 2026-09-04)
 

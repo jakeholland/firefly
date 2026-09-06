@@ -6832,7 +6832,7 @@ static void S24_demo_loopback_seam_makes_out_items_appear(void)
     ff_shell_intent(&H.shell, &flare);
     TEST_ASSERT_EQUAL_UINT8(0, ff_feed_count(ff_shell_feed(&H.shell))); /* refused -> no OUT item */
 
-    ff_wiring_sender_t loop = {s24d_loop_send_text, s24d_loop_send_private, NULL};
+    ff_wiring_sender_t loop = {s24d_loop_send_text, s24d_loop_send_private, NULL, NULL};
     ff_shell_set_sender(&H.shell, loop);
     ff_shell_intent(&H.shell, &flare);
     TEST_ASSERT_EQUAL_UINT8(1, ff_feed_count(ff_shell_feed(&H.shell))); /* accepted -> OUT item appears */
@@ -7279,7 +7279,7 @@ static void flare_wire_spy_install(bool accept)
 {
     memset(&S, 0, sizeof(S));
     S.accept = accept;
-    ff_wiring_sender_t const sender = {flare_wire_spy_send_text, flare_wire_spy_send_private, &S};
+    ff_wiring_sender_t const sender = {flare_wire_spy_send_text, flare_wire_spy_send_private, &S, NULL};
     ff_shell_set_sender(&H.shell, sender);
 }
 
@@ -8526,6 +8526,329 @@ static void S12_heard_node_with_no_name_shows_an_honest_short_id(void)
     TEST_ASSERT_TRUE_MESSAGE(found, "STRANGER should appear in the heard list");
 }
 
+/* ====================================================================
+ * NAME in Settings — the "NAME" row's T9 editor, persistence, and the
+ * Meshtastic owner push (mc_send_set_owner). A dedicated sender spy
+ * captures `send_admin_set_owner` calls, same shape flare_wire_spy_t
+ * above establishes for `send_private`.
+ * ==================================================================== */
+
+typedef struct {
+    int      calls;
+    uint32_t dest;
+    char     long_name[64];
+    char     short_name[16];
+} name_wire_spy_t;
+
+static name_wire_spy_t NS;
+
+static int name_wire_spy_send_admin_set_owner(void *ctx, uint32_t dest, char const *long_name,
+                                              char const *short_name)
+{
+    name_wire_spy_t *s = (name_wire_spy_t *)ctx;
+    s->calls++;
+    s->dest = dest;
+    snprintf(s->long_name, sizeof(s->long_name), "%s", (long_name != NULL) ? long_name : "");
+    snprintf(s->short_name, sizeof(s->short_name), "%s", (short_name != NULL) ? short_name : "");
+    return 0;
+}
+
+static void name_wire_spy_install(void)
+{
+    memset(&NS, 0, sizeof(NS));
+    ff_wiring_sender_t sender;
+    memset(&sender, 0, sizeof(sender));
+    sender.send_admin_set_owner = name_wire_spy_send_admin_set_owner;
+    sender.ctx = &NS;
+    ff_shell_set_sender(&H.shell, sender);
+}
+
+static void inject_self_long_name(uint32_t node, char const *long_name)
+{
+    mc_nodeinfo_t n;
+    memset(&n, 0, sizeof(n));
+    n.node_num = node;
+    n.has_long_name = true;
+    strncpy(n.long_name, long_name, sizeof(n.long_name) - 1);
+    H.ev.on_node(H.ev.user, &n);
+}
+
+static void send_setting_str(ff_setting_id_t id, char const *s)
+{
+    ff_intent_t in = {.kind = FF_INTENT_SETTING_SET, .u = {0}};
+    in.u.setting.id = id;
+    in.u.setting.v.s = s;
+    ff_shell_intent(&H.shell, &in);
+}
+
+static void send_bare(ff_intent_kind_t kind)
+{
+    ff_intent_t const in = {.kind = kind, .u = {0}};
+    ff_shell_intent(&H.shell, &in);
+}
+
+static void name_key(uint8_t key)
+{
+    ff_intent_t const k = {.kind = FF_INTENT_NAME_T9_KEY, .u = {.t9_key = key}};
+    ff_shell_intent(&H.shell, &k);
+}
+
+static ff_app_settings_t const *name_view(void)
+{
+    ff_shell_tick(&H.shell, H.clk.t);
+    return &ff_shell_view(&H.shell)->settings;
+}
+
+static void S_name_open_primes_draft_from_existing_my_name(void)
+{
+    harness_init(1000u, false);
+    send_setting_str(FF_SETTING_MY_NAME, "Jake");
+
+    send_bare(FF_INTENT_SETTINGS_OPEN_NAME_EDIT);
+
+    ff_app_settings_t const *s = name_view();
+    TEST_ASSERT_EQUAL_INT(FF_SETTINGS_SUB_NAME_EDIT, s->subview);
+    TEST_ASSERT_EQUAL_STRING("Jake", s->name_edit.text);
+    TEST_ASSERT_EQUAL_INT(FF_APP_NAME_EDIT_ABC, s->name_edit.mode);
+    TEST_ASSERT_FALSE(s->name_edit.has_pending);
+}
+
+static void S_name_t9_key_updates_the_projected_draft(void)
+{
+    harness_init(1000u, false);
+    send_bare(FF_INTENT_SETTINGS_OPEN_NAME_EDIT);
+
+    name_key(2); /* pending 'a' */
+
+    ff_app_settings_t const *s = name_view();
+    TEST_ASSERT_EQUAL_STRING("a", s->name_edit.text);
+    TEST_ASSERT_TRUE(s->name_edit.has_pending);
+}
+
+static void S_name_t9_mode_toggles_abc_and_123_only(void)
+{
+    harness_init(1000u, false);
+    send_bare(FF_INTENT_SETTINGS_OPEN_NAME_EDIT);
+    TEST_ASSERT_EQUAL_INT(FF_APP_NAME_EDIT_ABC, name_view()->name_edit.mode);
+
+    send_bare(FF_INTENT_NAME_T9_MODE);
+    TEST_ASSERT_EQUAL_INT(FF_APP_NAME_EDIT_123, name_view()->name_edit.mode);
+
+    send_bare(FF_INTENT_NAME_T9_MODE);
+    TEST_ASSERT_EQUAL_INT(FF_APP_NAME_EDIT_ABC, name_view()->name_edit.mode);
+}
+
+static void S_name_t9_backspace_removes_a_character(void)
+{
+    harness_init(1000u, false);
+    send_bare(FF_INTENT_SETTINGS_OPEN_NAME_EDIT);
+    name_key(2); /* pending 'a' */
+    send_bare(FF_INTENT_NAME_T9_BACKSPACE);
+
+    TEST_ASSERT_EQUAL_STRING("", name_view()->name_edit.text);
+}
+
+/* Alternating two different keys commits a fresh character on every
+ * press (ff_t9's own "a DIFFERENT key commits the pending char" rule),
+ * so 20 alternating presses is a simple, deterministic way to grow the
+ * draft well past the 15-char puck-name cap and prove it stops there —
+ * FF_APP_NAME_EDIT_CAP is a cap this feature layers on top of ff_t9's
+ * own 160-char ceiling, not something ff_t9 itself would ever enforce. */
+static void S_name_t9_key_capped_at_fifteen_characters(void)
+{
+    harness_init(1000u, false);
+    send_bare(FF_INTENT_SETTINGS_OPEN_NAME_EDIT);
+
+    for (int i = 0; i < 20; i++) {
+        name_key((i % 2 == 0) ? 2 : 3);
+    }
+
+    TEST_ASSERT_EQUAL_size_t((size_t)FF_APP_NAME_EDIT_CAP, strlen(name_view()->name_edit.text));
+}
+
+static void S_name_back_cancels_without_committing(void)
+{
+    harness_init(1000u, false);
+    send_setting_str(FF_SETTING_MY_NAME, "Jake");
+
+    /* BACK's subview-reset branch (ff_shell.c) keys off the SETTINGS
+     * face being visible, exactly like CREW/COMPASS_CAL's own BACK
+     * behavior — real usage always reaches NAME from the Settings face,
+     * so land there first, the same way S16_c3's own launcher-select
+     * tests do. */
+    ff_intent_t const goto_settings = {.kind = FF_INTENT_LAUNCHER_SELECT, .u = {.launcher_idx = 4u}};
+    ff_shell_intent(&H.shell, &goto_settings);
+
+    send_bare(FF_INTENT_SETTINGS_OPEN_NAME_EDIT);
+    name_key(9); /* pending 'w' — some edit in progress, never committed */
+    send_bare(FF_INTENT_BACK);
+
+    ff_app_settings_t const *s = name_view();
+    TEST_ASSERT_EQUAL_INT(FF_SETTINGS_SUB_LIST, s->subview);
+    TEST_ASSERT_EQUAL_STRING("Jake", ff_shell_settings(&H.shell)->my_name); /* untouched */
+}
+
+static void S_name_commit_persists_the_sanitized_name(void)
+{
+    harness_init(1000u, true);
+    send_bare(FF_INTENT_SETTINGS_OPEN_NAME_EDIT);
+    name_key(5); /* pending 'j' */
+    send_bare(FF_INTENT_SETTINGS_NAME_COMMIT);
+
+    TEST_ASSERT_EQUAL_STRING("j", ff_shell_settings(&H.shell)->my_name);
+    TEST_ASSERT_TRUE_MESSAGE(H.store_mem.present, "NAME commit must persist through the settings store");
+    TEST_ASSERT_EQUAL_INT(FF_SETTINGS_SUB_LIST, name_view()->subview);
+}
+
+/**
+ * THE mesh-push test (task brief: "prove at least the 'push is called'
+ * test fails without the change"). Mutation-verified by hand: commenting
+ * out `shell_apply_name_commit`'s `send_admin_set_owner` call fails this
+ * test's `NS.calls` assertion (`Expected 1 Was 0`) and none of the
+ * others in this block (persistence/draft/BACK are untouched by that
+ * mutation) — see the PR body for the exact `ctest` output.
+ */
+static void S_name_commit_pushes_the_meshtastic_owner_update(void)
+{
+    harness_init(1000u, false);
+    inject_my_info(MY_ID);
+    name_wire_spy_install();
+
+    send_bare(FF_INTENT_SETTINGS_OPEN_NAME_EDIT);
+    /* Two DIFFERENT keys, each committing the previous one's pending
+     * char on the next distinct press (ff_t9's own rule) — a real
+     * two-character name, so this also exercises short-name derivation,
+     * without hand-deriving a full multi-tap word. ff_t9's letter
+     * tables are lowercase (key 5 = j/k/l, key 6 = m/n/o; first press of
+     * each), so the expected long/short names below are the lowercase
+     * result, not a capitalized "Jm". */
+    name_key(5); /* 'j' */
+    name_key(6); /* different key -> commits 'j', pending 'm' */
+    send_bare(FF_INTENT_SETTINGS_NAME_COMMIT);
+
+    TEST_ASSERT_EQUAL_INT(1, NS.calls);
+    TEST_ASSERT_EQUAL_UINT32(MY_ID, NS.dest);
+    TEST_ASSERT_EQUAL_STRING("jm", NS.long_name);
+    TEST_ASSERT_EQUAL_STRING("JM", NS.short_name); /* ff_meshname_derive_short("jm") */
+}
+
+static void S_name_commit_skips_the_push_when_my_node_id_is_unknown(void)
+{
+    harness_init(1000u, false);
+    /* deliberately no inject_my_info */
+    name_wire_spy_install();
+
+    send_bare(FF_INTENT_SETTINGS_OPEN_NAME_EDIT);
+    name_key(5);
+    send_bare(FF_INTENT_SETTINGS_NAME_COMMIT);
+
+    TEST_ASSERT_EQUAL_INT(0, NS.calls);
+    TEST_ASSERT_EQUAL_STRING("j", ff_shell_settings(&H.shell)->my_name); /* local value still commits */
+}
+
+static void S_name_commit_skips_the_push_when_the_sanitized_name_is_empty(void)
+{
+    harness_init(1000u, false);
+    inject_my_info(MY_ID);
+    name_wire_spy_install();
+
+    send_bare(FF_INTENT_SETTINGS_OPEN_NAME_EDIT); /* empty draft, never typed into */
+    send_bare(FF_INTENT_SETTINGS_NAME_COMMIT);
+
+    TEST_ASSERT_EQUAL_INT(0, NS.calls);
+}
+
+static void S_name_commit_drops_disallowed_characters_before_pushing(void)
+{
+    /* ABC mode's key 1 cycles punctuation (". , ? !") — outside the
+     * puck-name charset (letters/digits/space). Typing it, then a
+     * letter, must push only the sanitized survivor. */
+    harness_init(1000u, false);
+    inject_my_info(MY_ID);
+    name_wire_spy_install();
+
+    send_bare(FF_INTENT_SETTINGS_OPEN_NAME_EDIT);
+    name_key(1); /* pending '.' */
+    name_key(2); /* different key -> commits '.', pending 'a' */
+    send_bare(FF_INTENT_SETTINGS_NAME_COMMIT);
+
+    TEST_ASSERT_EQUAL_STRING("a", ff_shell_settings(&H.shell)->my_name);
+    TEST_ASSERT_EQUAL_INT(1, NS.calls);
+    TEST_ASSERT_EQUAL_STRING("a", NS.long_name);
+}
+
+static void S_name_boot_prefill_from_self_nodeinfo_when_my_name_was_empty(void)
+{
+    harness_init(1000u, true);
+    inject_my_info(MY_ID);
+
+    TEST_ASSERT_EQUAL_STRING("", ff_shell_settings(&H.shell)->my_name); /* nothing yet */
+
+    inject_self_long_name(MY_ID, "Taylor");
+
+    TEST_ASSERT_EQUAL_STRING("Taylor", ff_shell_settings(&H.shell)->my_name);
+    TEST_ASSERT_TRUE_MESSAGE(H.store_mem.present, "boot prefill must persist, not just live in memory");
+
+    ff_shell_mesh_name_status_t const st = ff_shell_mesh_name_status(&H.shell);
+    TEST_ASSERT_TRUE(st.has_mesh_owner_name);
+    TEST_ASSERT_EQUAL_STRING("Taylor", st.mesh_owner_name);
+    TEST_ASSERT_TRUE_MESSAGE(st.confirmed, "adopted straight from the mesh — already matches, no push needed");
+    TEST_ASSERT_TRUE(st.my_name_from_node);
+}
+
+static void S_name_boot_prefill_never_overwrites_an_existing_name(void)
+{
+    harness_init(1000u, false);
+    send_setting_str(FF_SETTING_MY_NAME, "Jake");
+    inject_my_info(MY_ID);
+
+    inject_self_long_name(MY_ID, "SomeoneElse");
+
+    TEST_ASSERT_EQUAL_STRING("Jake", ff_shell_settings(&H.shell)->my_name);
+    TEST_ASSERT_FALSE(ff_shell_mesh_name_status(&H.shell).my_name_from_node);
+}
+
+static void S_name_status_reads_pending_when_mesh_name_differs(void)
+{
+    harness_init(1000u, false);
+    send_setting_str(FF_SETTING_MY_NAME, "Jake");
+    inject_my_info(MY_ID);
+
+    inject_self_long_name(MY_ID, "OldName");
+
+    ff_shell_mesh_name_status_t const st = ff_shell_mesh_name_status(&H.shell);
+    TEST_ASSERT_TRUE(st.has_mesh_owner_name);
+    TEST_ASSERT_FALSE_MESSAGE(st.confirmed, "never assume a push succeeded — only a matching self NodeInfo confirms");
+}
+
+static void S_name_status_confirms_once_a_matching_self_nodeinfo_arrives(void)
+{
+    harness_init(1000u, false);
+    send_setting_str(FF_SETTING_MY_NAME, "Jake");
+    inject_my_info(MY_ID);
+    inject_self_long_name(MY_ID, "OldName");
+    TEST_ASSERT_FALSE(ff_shell_mesh_name_status(&H.shell).confirmed);
+
+    inject_self_long_name(MY_ID, "Jake"); /* the mesh caught up */
+
+    TEST_ASSERT_TRUE(ff_shell_mesh_name_status(&H.shell).confirmed);
+}
+
+static void S_name_committing_clears_the_from_node_flag(void)
+{
+    harness_init(1000u, false);
+    inject_my_info(MY_ID);
+    inject_self_long_name(MY_ID, "Taylor"); /* boot-prefills, my_name_from_node = true */
+    TEST_ASSERT_TRUE(ff_shell_mesh_name_status(&H.shell).my_name_from_node);
+
+    send_bare(FF_INTENT_SETTINGS_OPEN_NAME_EDIT);
+    name_key(5);
+    send_bare(FF_INTENT_SETTINGS_NAME_COMMIT);
+
+    TEST_ASSERT_FALSE_MESSAGE(ff_shell_mesh_name_status(&H.shell).my_name_from_node,
+                              "a real edit overrides the mesh-adopted caption for good");
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -8783,6 +9106,23 @@ int main(void)
     RUN_TEST(S27_sound_muted_for_seed_null_shell_is_a_safe_noop);
     RUN_TEST(S27_handshake_burst_fires_no_sound_live_message_after_settle_sounds);
     RUN_TEST(S27_reconnect_handshake_burst_mutes_again);
+
+    RUN_TEST(S_name_open_primes_draft_from_existing_my_name);
+    RUN_TEST(S_name_t9_key_updates_the_projected_draft);
+    RUN_TEST(S_name_t9_mode_toggles_abc_and_123_only);
+    RUN_TEST(S_name_t9_backspace_removes_a_character);
+    RUN_TEST(S_name_t9_key_capped_at_fifteen_characters);
+    RUN_TEST(S_name_back_cancels_without_committing);
+    RUN_TEST(S_name_commit_persists_the_sanitized_name);
+    RUN_TEST(S_name_commit_pushes_the_meshtastic_owner_update);
+    RUN_TEST(S_name_commit_skips_the_push_when_my_node_id_is_unknown);
+    RUN_TEST(S_name_commit_skips_the_push_when_the_sanitized_name_is_empty);
+    RUN_TEST(S_name_commit_drops_disallowed_characters_before_pushing);
+    RUN_TEST(S_name_boot_prefill_from_self_nodeinfo_when_my_name_was_empty);
+    RUN_TEST(S_name_boot_prefill_never_overwrites_an_existing_name);
+    RUN_TEST(S_name_status_reads_pending_when_mesh_name_differs);
+    RUN_TEST(S_name_status_confirms_once_a_matching_self_nodeinfo_arrives);
+    RUN_TEST(S_name_committing_clears_the_from_node_flag);
 
     return UNITY_END();
 }

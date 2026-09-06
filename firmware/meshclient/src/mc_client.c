@@ -5,6 +5,7 @@
 #include "pb_decode.h"
 #include "pb_encode.h"
 
+#include "meshtastic/admin.pb.h" /* mc_send_set_owner — AdminMessage.set_owner */
 #include "meshtastic/mesh.pb.h"
 
 /* -------------------------------------------------------------------- */
@@ -693,6 +694,47 @@ int mc_send_position(mc_client_t *c, ff_latlon_t p)
 
     return mc_send_data_packet(c, MC_ADDR_BROADCAST, (uint32_t)meshtastic_PortNum_POSITION_APP, payload,
                                 os.bytes_written, false);
+}
+
+int mc_send_set_owner(mc_client_t *c, uint32_t dest, char const *long_name, char const *short_name)
+{
+    if (c->state != MC_STATE_READY) {
+        return -1;
+    }
+
+    meshtastic_AdminMessage admin = meshtastic_AdminMessage_init_zero;
+    admin.which_payload_variant = meshtastic_AdminMessage_set_owner_tag;
+
+    meshtastic_User *owner = &admin.payload_variant.set_owner;
+    if (long_name != NULL) {
+        /* Bounded, not rejected — MC_NAME_MAX matches the nanopb
+         * max_size these fields were generated with (mc_nanopb.options);
+         * strncpy leaves the buffer without a guaranteed NUL when the
+         * source is exactly as long as (or longer than) the destination,
+         * so the terminator is forced explicitly. */
+        strncpy(owner->long_name, long_name, MC_NAME_MAX - 1u);
+        owner->long_name[MC_NAME_MAX - 1u] = '\0';
+    }
+    if (short_name != NULL) {
+        strncpy(owner->short_name, short_name, MC_NAME_MAX - 1u);
+        owner->short_name[MC_NAME_MAX - 1u] = '\0';
+    }
+
+    /* Only the active oneof member (`set_owner`, a `meshtastic_User`) is
+     * actually encoded — every other AdminMessage payload_variant
+     * (config/module_config/channel/etc, several of them unbounded
+     * callback fields) is untouched zero-init and contributes nothing to
+     * the wire bytes. 128 bytes comfortably covers two MC_NAME_MAX (40)
+     * strings plus protobuf framing overhead, with headroom to spare —
+     * and mc_send_data_packet's own MC_TEXT_MAX (237) gate is the real,
+     * already-enforced ceiling regardless. */
+    uint8_t payload[128];
+    pb_ostream_t os = pb_ostream_from_buffer(payload, sizeof(payload));
+    if (!pb_encode(&os, meshtastic_AdminMessage_fields, &admin)) {
+        return -1;
+    }
+
+    return mc_send_data_packet(c, dest, (uint32_t)meshtastic_PortNum_ADMIN_APP, payload, os.bytes_written, true);
 }
 
 mc_state_t mc_state(mc_client_t const *c)

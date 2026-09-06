@@ -30,11 +30,21 @@ NANOPB_REPO="https://github.com/nanopb/nanopb.git"
 MESHTASTIC_PROTOBUFS_REPO="https://github.com/meshtastic/protobufs.git"
 
 # The specific .proto files we generate C for. This is mesh.proto's full
-# transitive import closure (not the whole meshtastic/protobufs repo —
-# admin.proto, atak's siblings under module_config, etc. that mesh.proto
-# doesn't reach are left out). Decode scope v1 only touches MyNodeInfo,
-# NodeInfo, Position and MeshPacket TEXT/POSITION/PRIVATE, but nanopb still
-# needs the full oneof member types to compile FromRadio/ToRadio.
+# transitive import closure (not the whole meshtastic/protobufs repo — atak's
+# siblings under module_config, etc. that mesh.proto doesn't reach are left
+# out). Decode scope v1 only touches MyNodeInfo, NodeInfo, Position and
+# MeshPacket TEXT/POSITION/PRIVATE, but nanopb still needs the full oneof
+# member types to compile FromRadio/ToRadio.
+#
+# admin.proto was added for the NAME-in-Settings feature (mc_send_set_owner,
+# mc_client.h/.c): it rides ADMIN_APP (portnum 6) with an AdminMessage
+# carrying `set_owner: User{...}` — sending a Meshtastic owner name needs the
+# generated AdminMessage type, which mesh.proto's own transitive closure does
+# not pull in (mesh.proto is decoded FROM the radio; admin.proto is only ever
+# encoded TO it). AdminMessage's payload_variant reuses User (mesh.proto) and
+# Channel/Config/ModuleConfig (already generated above), so no new
+# mc_nanopb.options entries were needed — User.long_name/short_name already
+# have max_size:40 from the existing pattern.
 PROTO_FILES=(
     meshtastic/mesh.proto
     meshtastic/channel.proto
@@ -45,6 +55,8 @@ PROTO_FILES=(
     meshtastic/portnums.proto
     meshtastic/telemetry.proto
     meshtastic/xmodem.proto
+    meshtastic/admin.proto
+    meshtastic/connection_status.proto # admin.proto's own import (DeviceConnectionStatus)
 )
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

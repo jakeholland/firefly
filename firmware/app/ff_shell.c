@@ -15,6 +15,7 @@
 
 #include "ff_batt.h" /* S25 slice c — battery gauge: honest mV -> percent + display filter */
 #include "ff_geo.h"
+#include "ff_meshname.h" /* NAME in Settings — charset sanitize + short-name derivation */
 #include "ff_multitap.h" /* S10 quick flare — the N-presses-within-a-window counter FSM */
 #include "ff_notify.h" /* S26(d) — the notification queue */
 #include "ff_proto.h"
@@ -299,6 +300,34 @@ typedef struct {
      * hook pair in this struct (haptic, calibrate_touch, ...). */
     void (*compass_cal_changed)(void *user, ff_geo_cal_t const *cal);
     void *compass_cal_changed_user;
+
+    /* NAME in Settings — the "NAME" row's T9 editor session state, same
+     * "persistent across ticks, the view is memset per tick" reason
+     * `settings_subview`/`compass_cal_session` above document. A SECOND,
+     * INDEPENDENT `ff_t9_t` from `compose_draft` (deliberately — see
+     * ff_intent.h's FF_INTENT_NAME_T9_KEY doc comment for why this
+     * feature never branches the Compose screen's own T9/PRED handling
+     * on "which draft is this"). `name_mode` is this editor's own
+     * two-state page (ABC/123 only — `ff_app_name_edit_mode_t`, NOT
+     * `ff_app_compose_mode_t`), reset to ABC on every OPEN. */
+    ff_t9_t                 name_draft;
+    ff_app_name_edit_mode_t name_mode;
+
+    /* NAME in Settings — the shell's live cache of "what does the MESH
+     * currently say our name is", fed only from a SELF NodeInfo
+     * (`shell_ev_node`, on `shell_is_self`) — never fabricated, never
+     * assumed from a push having been attempted. `has_mesh_owner_name`
+     * is false until at least one self NodeInfo carrying a `long_name`
+     * has arrived this session (want_config's replay on connect is the
+     * common case, but a live update after a set_owner push works the
+     * same way). `my_name_from_node` records the one-time boot-prefill
+     * case (see `shell_ev_node`'s own doc comment) so the projected view
+     * can say so; cleared the instant the wearer commits their OWN edit
+     * (`shell_apply_name_commit`), so it never survives past the first
+     * real edit. */
+    bool has_mesh_owner_name;
+    char mesh_owner_name[FF_SETTINGS_NAME_LEN];
+    bool my_name_from_node;
 
     /* S22 slice d — the RALLY-to-WHOLE_CREW confirm state machine (AC4:
      * "the one loud broadcast requires a confirm"). A first RALLY tap while
@@ -1336,6 +1365,44 @@ static void shell_ev_node(void *u, mc_nodeinfo_t const *n)
         }
     }
 
+    /* NAME in Settings — before the self-drop, on `shell_is_self` (same
+     * convention as the two self-only blocks just above): our own
+     * NodeInfo's `long_name` is the mesh's current, honest answer to
+     * "what does the comms brain say our name is" — the one fact
+     * `ff_shell_mesh_name_status`'s `confirmed` flag and the NAME row's
+     * small status pill are allowed to read. Recorded on EVERY self
+     * NodeInfo that states a long_name (the want_config replay on
+     * connect, and any later live update — e.g. the one that follows
+     * this device's own set_owner push, S12/S03's `MeshService::
+     * reloadOwner` -> `nodeDB->updateUser` pushing the change straight
+     * back to this connected client), never gated on `defined_the_latch`
+     * (unlike the position adoption above) — a name has no age to get
+     * wrong. */
+    if (shell_is_self(sh, n->node_num) && n->has_long_name) {
+        shell_copy_str(sh->mesh_owner_name, sizeof(sh->mesh_owner_name), n->long_name);
+        sh->has_mesh_owner_name = true;
+
+        /* Boot prefill (this feature) — the puck itself has never had a
+         * name typed into it (`my_name` still empty), but the comms
+         * brain already carries an owner long_name of its own (set
+         * previously via the Meshtastic phone app/CLI, or a prior
+         * firmware's own default). Adopt it ONCE, silently, rather than
+         * showing an honest-but-useless "(unset)" caption until the
+         * wearer happens to open Settings and retype the exact name the
+         * mesh already knows — PERSISTED like any other settings
+         * mutation so it survives the very next reboot, not just this
+         * session. Deliberately does NOT push a set_owner back — the
+         * name being adopted came FROM the mesh, so it is already
+         * confirmed by construction the instant this assignment runs. */
+        if (sh->settings.my_name[0] == '\0') {
+            shell_copy_str(sh->settings.my_name, sizeof(sh->settings.my_name), n->long_name);
+            sh->my_name_from_node = true;
+            if (sh->store != NULL) {
+                ff_settings_save(&sh->settings, sh->store);
+            }
+        }
+    }
+
     if (shell_drop_as_self(sh, n->node_num)) return; /* never treat our own traffic as inbound */
 
 #if defined(FF_TARGET_SIM) || defined(CONFIG_FF_DEV_TRUST_CHANNEL)
@@ -2062,6 +2129,21 @@ static void shell_project_now(shell_t const *sh, ff_wall_t wall, ff_app_now_t *o
     }
 }
 
+/**
+ * shell_mesh_name_confirmed — NAME in Settings: the ONE place the
+ * "mesh: JAKE OK / pending" derivation lives, shared by the projected
+ * view (via `shell_project_settings`, below — computed once per tick and
+ * read back by the Settings screen at render time, never re-derived
+ * independently) and `ff_shell_mesh_name_status` (the bench console's
+ * `name` command). See `ff_shell_mesh_name_status_t`'s own doc comment
+ * (ff_shell.h) for the full honesty rule this implements.
+ */
+static bool shell_mesh_name_confirmed(shell_t const *sh)
+{
+    return sh->has_mesh_owner_name && sh->settings.my_name[0] != '\0' &&
+           strcmp(sh->mesh_owner_name, sh->settings.my_name) == 0;
+}
+
 static void shell_project_settings(shell_t const *sh, ff_app_settings_t *out)
 {
     out->imperial = sh->settings.imperial;
@@ -2095,6 +2177,32 @@ static void shell_project_settings(shell_t const *sh, ff_app_settings_t *out)
     /* format v9 amendment — S27 sounds: SOUNDS/UI TICKS, projected verbatim. */
     out->sounds_on = sh->settings.sounds_on;
     out->ui_ticks = sh->settings.ui_ticks;
+
+    /* NAME in Settings — the mesh-name cache, projected verbatim, plus
+     * the ONE derived fact (see shell_mesh_name_confirmed's own doc
+     * comment, above) so this screen never re-derives it independently. */
+    out->has_mesh_owner_name = sh->has_mesh_owner_name;
+    shell_copy_str(out->mesh_owner_name, sizeof(out->mesh_owner_name), sh->mesh_owner_name);
+    out->mesh_name_confirmed = shell_mesh_name_confirmed(sh);
+    out->my_name_from_node = sh->my_name_from_node;
+}
+
+/**
+ * shell_project_name_edit — the "NAME" row's T9 editor sub-view.
+ * Zeroed (via the caller's whole-view memset) unless `subview ==
+ * FF_SETTINGS_SUB_NAME_EDIT` — the `ff_app_crew_page_t` precedent, not
+ * `ff_app_compass_cal_t`'s "always populated" one (`ff_app_name_edit_t`'s
+ * own doc comment has the reasoning).
+ */
+static void shell_project_name_edit(shell_t const *sh, ff_app_settings_t *out)
+{
+    if (sh->settings_subview != FF_SETTINGS_SUB_NAME_EDIT) return;
+
+    ff_app_name_edit_t *ne = &out->name_edit;
+    char const *text = ff_t9_text(&sh->name_draft);
+    shell_copy_str(ne->text, sizeof(ne->text), text);
+    ne->has_pending = sh->name_draft.has_pending;
+    ne->mode = sh->name_mode;
 }
 
 /**
@@ -2399,6 +2507,7 @@ static void shell_project(shell_t *sh, uint32_t now_ms)
     shell_project_settings(sh, &sh->view.settings);
     shell_project_crew_page(sh, now_ms, &sh->view.settings); /* S12/S04 */
     shell_project_compass_cal(sh, &sh->view.settings);       /* S12 step 3 */
+    shell_project_name_edit(sh, &sh->view.settings);         /* NAME in Settings */
     shell_project_map(sh, &sh->view.map);
     shell_project_banner(sh, now_ms, &sh->view.banner); /* S26(d) */
 
@@ -3285,6 +3394,7 @@ bool ff_shell_tick(ff_shell_t *sh_pub, uint32_t now_ms)
      * note for why the multi-tap commit timeout needs an explicit poll).
      * Safe to call every tick unconditionally, pending char or not. */
     ff_t9_tick(&sh->compose_draft, now_ms);
+    ff_t9_tick(&sh->name_draft, now_ms); /* NAME in Settings — same commit-timeout poll, independent draft */
 
     /* SELFPOS (2026-09-05) — a self-fix adopted from the comms brain's
      * inbound traffic (shell_maybe_adopt_my_pos, my_pos_ms_valid) decays
@@ -4013,6 +4123,62 @@ static void shell_setting_set(shell_t *sh, ff_intent_t const *in)
     }
 }
 
+/**
+ * shell_apply_name_commit — NAME in Settings: sanitize + persist + push.
+ * `raw_text` is the NAME editor's live T9 draft text (`ff_t9_text`),
+ * borrowed for this call only. Shared by both callers that reach the
+ * SAME commit path (FF_INTENT_SETTINGS_NAME_COMMIT below, and the bench
+ * console's `name <text>` — ff_dbgcmd.h — dispatches the exact same
+ * intent, so it is the SAME caller, not a second path).
+ *
+ * Sequence:
+ *  1. `ff_meshname_sanitize` — letters/digits/space, trimmed, bounded to
+ *     FF_SETTINGS_NAME_LEN-1 (core/include/ff_meshname.h has the full
+ *     charset rule).
+ *  2. Commit through the EXISTING `FF_SETTING_MY_NAME` string-payload
+ *     seam (`shell_setting_set`) — persisted on change, exactly like any
+ *     other settings write. No second persistence path.
+ *  3. Push the Meshtastic owner update — INDEPENDENT of whether step 2
+ *     found a change: re-pressing DONE with the SAME text is this
+ *     feature's retry mechanism for a push that may have silently
+ *     failed (this repo's honest-data rule: the shell never assumes a
+ *     push succeeded merely because it was accepted for send — only a
+ *     matching self NodeInfo, `shell_ev_node`, ever flips
+ *     `has_mesh_owner_name`'s comparison to confirmed). Skipped
+ *     entirely, not queued, when the sanitized name is empty (nothing
+ *     meaningful to push — Meshtastic's own AdminModule leaves a field
+ *     unset when the incoming User's field is empty, so this is a
+ *     no-op either way, but skipping it here also skips a needless
+ *     admin round-trip) or when this puck does not yet know its own
+ *     node id (`has_my_node_id` false — there is no "self" to address
+ *     the local-admin path at yet; see mc_send_set_owner's own doc
+ *     comment for why `dest` must be this node's own id).
+ */
+static void shell_apply_name_commit(shell_t *sh, char const *raw_text)
+{
+    char sanitized[FF_SETTINGS_NAME_LEN];
+    ff_meshname_sanitize(raw_text, sanitized, sizeof(sanitized));
+
+    ff_intent_t const set = {.kind = FF_INTENT_SETTING_SET,
+                             .u = {.setting = {.id = FF_SETTING_MY_NAME, .v = {.s = sanitized}, .transient = false}}};
+    shell_setting_set(sh, &set);
+
+    /* A wearer typing their own name overrides whatever boot silently
+     * adopted from the mesh — from here on the caption is THEIRS. */
+    sh->my_name_from_node = false;
+
+    if (sanitized[0] == '\0' || !sh->has_my_node_id) {
+        return;
+    }
+
+    char short_name[FF_MESHNAME_SHORT_LEN];
+    ff_meshname_derive_short(sanitized, short_name);
+
+    if (sh->wiring.sender.send_admin_set_owner != NULL) {
+        (void)sh->wiring.sender.send_admin_set_owner(sh->wiring.sender.ctx, sh->my_node_id, sanitized, short_name);
+    }
+}
+
 void ff_shell_intent(ff_shell_t *sh_pub, ff_intent_t const *in)
 {
     if (sh_pub == NULL || in == NULL) return;
@@ -4507,6 +4673,53 @@ void ff_shell_intent(ff_shell_t *sh_pub, ff_intent_t const *in)
         (void)ff_t9_insert_text(&sh->compose_draft, in->u.text);
         return;
 
+    case FF_INTENT_NAME_T9_KEY:
+        /* NAME in Settings — a no-op outside the editor (defensive; the
+         * screen that emits this only exists while the subview is
+         * showing). Blocked once the draft already holds
+         * FF_APP_NAME_EDIT_CAP (15) characters, committed+pending
+         * combined — a smaller cap layered on top of ff_t9's own 160,
+         * enforced here rather than inside ff_t9.h (ff_intent.h's own
+         * doc comment on this intent has the full reasoning). */
+        if (takeover_up) return;
+        if (sh->settings_subview != FF_SETTINGS_SUB_NAME_EDIT) return;
+        if (strlen(ff_t9_text(&sh->name_draft)) >= FF_APP_NAME_EDIT_CAP) return;
+        ff_t9_key(&sh->name_draft, in->u.t9_key, shell_now(sh));
+        return;
+
+    case FF_INTENT_NAME_T9_SPACE:
+        if (takeover_up) return;
+        if (sh->settings_subview != FF_SETTINGS_SUB_NAME_EDIT) return;
+        if (strlen(ff_t9_text(&sh->name_draft)) >= FF_APP_NAME_EDIT_CAP) return;
+        ff_t9_space(&sh->name_draft);
+        return;
+
+    case FF_INTENT_NAME_T9_BACKSPACE:
+        if (takeover_up) return;
+        if (sh->settings_subview != FF_SETTINGS_SUB_NAME_EDIT) return;
+        ff_t9_backspace(&sh->name_draft);
+        return;
+
+    case FF_INTENT_NAME_T9_INSERT:
+        /* The editor's 123 page's digits — same cap guard as
+         * NAME_T9_KEY/_SPACE. `in->u.text` is borrowed for this call
+         * only (ff_intent.h, "Payload ownership"); `ff_t9_insert_text`
+         * copies every byte it keeps before returning. */
+        if (takeover_up) return;
+        if (sh->settings_subview != FF_SETTINGS_SUB_NAME_EDIT) return;
+        if (strlen(ff_t9_text(&sh->name_draft)) >= FF_APP_NAME_EDIT_CAP) return;
+        (void)ff_t9_insert_text(&sh->name_draft, in->u.text);
+        return;
+
+    case FF_INTENT_NAME_T9_MODE:
+        /* This editor's own two-state cycle, ABC <-> 123 — never SYM/PRED
+         * (ff_intent.h's own doc comment on this intent has the full
+         * reasoning: a puck name is letters/digits/space). */
+        if (takeover_up) return;
+        if (sh->settings_subview != FF_SETTINGS_SUB_NAME_EDIT) return;
+        sh->name_mode = (sh->name_mode == FF_APP_NAME_EDIT_ABC) ? FF_APP_NAME_EDIT_123 : FF_APP_NAME_EDIT_ABC;
+        return;
+
     case FF_INTENT_SETTING_SET:
         /* Settings write-through + persistence (S16 slice e, AC8; the
          * emit site is S11 slice b's scr_settings.c). Gated on the
@@ -4559,6 +4772,38 @@ void ff_shell_intent(ff_shell_t *sh_pub, ff_intent_t const *in)
          * builds its rows fresh, so there is nothing else to prime here. */
         if (takeover_up) return;
         sh->settings_subview = FF_SETTINGS_SUB_CREW;
+        return;
+
+    case FF_INTENT_SETTINGS_OPEN_NAME_EDIT:
+        /* NAME in Settings — the "NAME" row. Gated on the takeover like
+         * CREW/CALIBRATE_TOUCH above. Primes the editor draft from the
+         * CURRENTLY PERSISTED name (never the mesh's own cached name —
+         * this is an edit of the puck's local value, and prefilling from
+         * a possibly-different mesh name would silently discard an
+         * unconfirmed edit the wearer hasn't pushed yet), resets to ABC,
+         * and opens the sub-view. `ff_t9_insert_text` is atomic and
+         * plain-ASCII-only (its own doc comment) — exactly right for a
+         * name that was itself sanitized to letters/digits/space on the
+         * way in. */
+        if (takeover_up) return;
+        ff_t9_reset(&sh->name_draft);
+        (void)ff_t9_insert_text(&sh->name_draft, sh->settings.my_name);
+        sh->name_mode = FF_APP_NAME_EDIT_ABC;
+        sh->settings_subview = FF_SETTINGS_SUB_NAME_EDIT;
+        return;
+
+    case FF_INTENT_SETTINGS_NAME_COMMIT:
+        /* NAME in Settings — DONE/SEND. See shell_apply_name_commit's own
+         * doc comment for the sanitize -> persist -> mesh-push sequence;
+         * this handler's only job is the takeover gate, the "only from
+         * the editor" guard, and returning to the plain list afterward
+         * (unconditionally — a failed/skipped mesh push is not a reason
+         * to trap the wearer on the editor page; the NAME row's own
+         * pending/OK pill is where that honesty lives). */
+        if (takeover_up) return;
+        if (sh->settings_subview != FF_SETTINGS_SUB_NAME_EDIT) return;
+        shell_apply_name_commit(sh, ff_t9_text(&sh->name_draft));
+        sh->settings_subview = FF_SETTINGS_SUB_LIST;
         return;
 
     case FF_INTENT_CREW_PAIR:
@@ -5485,6 +5730,21 @@ ff_shell_compass_cal_status_t ff_shell_compass_cal_status(ff_shell_t const *sh_p
     return st;
 }
 
+ff_shell_mesh_name_status_t ff_shell_mesh_name_status(ff_shell_t const *sh_pub)
+{
+    ff_shell_mesh_name_status_t st;
+    memset(&st, 0, sizeof(st));
+    if (sh_pub == NULL) return st;
+
+    shell_t const *sh = shell_of_const(sh_pub);
+    shell_copy_str(st.my_name, sizeof(st.my_name), sh->settings.my_name);
+    st.has_mesh_owner_name = sh->has_mesh_owner_name;
+    shell_copy_str(st.mesh_owner_name, sizeof(st.mesh_owner_name), sh->mesh_owner_name);
+    st.confirmed = shell_mesh_name_confirmed(sh);
+    st.my_name_from_node = sh->my_name_from_node;
+    return st;
+}
+
 void ff_shell_compass_cal_sample(ff_shell_t *sh_pub, ff_vec3_t mag_board)
 {
     if (sh_pub == NULL) return;
@@ -5636,6 +5896,12 @@ int ff_shell_debug_send_text(ff_shell_t *sh_pub, uint32_t dest_node, char const 
         ff_wiring_push_outgoing(&sh->wiring, FEED_TEXT, dest, text);
     }
     return rc;
+}
+
+void ff_shell_debug_set_name(ff_shell_t *sh_pub, char const *text)
+{
+    if (sh_pub == NULL || text == NULL) return;
+    shell_apply_name_commit(shell_of(sh_pub), text);
 }
 
 ff_shell_wall_debug_t ff_shell_wall_debug(ff_shell_t const *sh_pub)

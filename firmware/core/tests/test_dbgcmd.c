@@ -159,6 +159,44 @@ static void dbgcmd_cal_with_bad_arg_rejected(void)
     TEST_ASSERT_EQUAL(FF_DBGCMD_ERR_BAD_ARGS, parse_str("cal xyz", &cmd));
 }
 
+/* NAME in Settings — "name" (bare, status) and "name <text>" (set). */
+static void dbgcmd_name_bare_parses(void)
+{
+    ff_dbgcmd_t cmd;
+    TEST_ASSERT_EQUAL(FF_DBGCMD_ERR_OK, parse_str("name", &cmd));
+    TEST_ASSERT_EQUAL(FF_DBGCMD_NAME, cmd.kind);
+}
+
+static void dbgcmd_name_set_parses_with_text(void)
+{
+    ff_dbgcmd_t cmd;
+    TEST_ASSERT_EQUAL(FF_DBGCMD_ERR_OK, parse_str("name Jake", &cmd));
+    TEST_ASSERT_EQUAL(FF_DBGCMD_NAME_SET, cmd.kind);
+    TEST_ASSERT_EQUAL_STRING("Jake", cmd.u.text);
+}
+
+/* A name with a space is a legal name (S12's own "charset A-Z0-9 space"
+ * rule) — the rest-of-line argument must not be re-tokenized. */
+static void dbgcmd_name_set_keeps_interior_spaces(void)
+{
+    ff_dbgcmd_t cmd;
+    TEST_ASSERT_EQUAL(FF_DBGCMD_ERR_OK, parse_str("name Jake H", &cmd));
+    TEST_ASSERT_EQUAL(FF_DBGCMD_NAME_SET, cmd.kind);
+    TEST_ASSERT_EQUAL_STRING("Jake H", cmd.u.text);
+}
+
+static void dbgcmd_name_set_text_over_max_length_rejected(void)
+{
+    char line[8 + FF_DBGCMD_TEXT_MAX + 2];
+    memcpy(line, "name ", 5);
+    memset(line + 5, 'x', FF_DBGCMD_TEXT_MAX + 1u);
+    size_t const len = 5 + FF_DBGCMD_TEXT_MAX + 1u;
+
+    ff_dbgcmd_t cmd;
+    TEST_ASSERT_EQUAL(FF_DBGCMD_ERR_BAD_ARGS, ff_dbgcmd_parse(line, len, &cmd));
+    TEST_ASSERT_EQUAL(FF_DBGCMD_NONE, cmd.kind);
+}
+
 /* ------------------------------------------------------------------- */
 /* CRLF tolerance / whitespace                                          */
 /* ------------------------------------------------------------------- */
@@ -375,6 +413,11 @@ int main(void)
     RUN_TEST(dbgcmd_cal_cancel_parses);
     RUN_TEST(dbgcmd_cal_clear_parses);
     RUN_TEST(dbgcmd_cal_with_bad_arg_rejected);
+
+    RUN_TEST(dbgcmd_name_bare_parses);
+    RUN_TEST(dbgcmd_name_set_parses_with_text);
+    RUN_TEST(dbgcmd_name_set_keeps_interior_spaces);
+    RUN_TEST(dbgcmd_name_set_text_over_max_length_rejected);
 
     RUN_TEST(dbgcmd_tolerates_crlf);
     RUN_TEST(dbgcmd_tolerates_bare_lf);

@@ -438,3 +438,15 @@ if(FF_BUILD_TESTS)
 
     add_test(NAME test_dbgcmd COMMAND test_dbgcmd)
 endif()
+
+# NAME in Settings — core/meshname: puck-name charset sanitize + Meshtastic
+# short-name derivation. Pure C11, no I/O. See ff_meshname.h.
+if(FF_BUILD_TESTS)
+    add_executable(test_meshname
+        tests/test_meshname.c
+    )
+    target_link_libraries(test_meshname PRIVATE ff-core unity)
+    ff_apply_warnings(test_meshname)
+
+    add_test(NAME test_meshname COMMAND test_meshname)
+endif()

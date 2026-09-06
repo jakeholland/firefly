@@ -320,3 +320,27 @@ Settings face change (`settings_brightness`, `settings_colorblind_on`,
 `settings_clock_24h` renders the LAUNCHER face, not Settings, so it is
 untouched. Every non-`settings_*` golden (69 fixtures) is byte-identical
 (`git status` on `firmware/tests/golden/` shows no other changes).
+
+**2026-09-06 — NAME in Settings adds a fifth section (`feat/settings-
+my-name-owner`).** A new single-row **NAME** section (the same
+"section header repeats the one row's own name" shape UNITS already
+establishes for a lone-item category) lands directly above CREW —
+DISPLAY, SOUND, UNITS, **NAME**, DEVICE, CREW. Every row from DEVICE
+onward shifts down by one `FF_SETTINGS_ROW_STEP` + one section-header
+footprint; `settings_scrolled_bottom` (the only committed fixture whose
+scroll offset reaches this far down the list) is the one golden that
+actually changed pixel-for-pixel — every other `settings_*` golden
+renders a viewport that never scrolls this deep, so it is byte-
+identical. Two new fixtures/goldens: `settings_name_edit` (the NAME
+row's full-screen T9 editor page) and `settings_name_confirmed` (the
+row's checkmark state). See `docs/specs/S11-settings.md`'s own
+2026-09-06 Amendment for the feature itself; this entry is the layout
+bookkeeping. `test_face_hit_targets.c`'s sweep covers the new row and
+the new editor page generically — no sweep-file change needed (87
+fixtures now, 0 violations). `test_scr_intent.c`'s own
+`S21_AC1_settings_is_one_scrolling_list_every_row_reachable` — which
+proves the list's true LAST row scrolls fully into the viewport — was
+repointed from "CALIBRATE TOUCH" (stale even before this PR: COMPASS
+and CREW already landed after it in earlier amendments, coincidentally
+still within the 256px viewport at the old content height) to "CREW",
+the row that is actually last now.

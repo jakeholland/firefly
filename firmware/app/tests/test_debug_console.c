@@ -45,7 +45,24 @@ typedef struct {
     uint32_t last_dest;
     char last_text[256];
     int rc;
+
+    /* NAME in Settings — `name`/`name <text>` mesh-push capture. */
+    int      owner_calls;
+    uint32_t owner_last_dest;
+    char     owner_last_long[64];
+    char     owner_last_short[16];
+    int      owner_rc;
 } sender_spy_t;
+
+static int spy_send_admin_set_owner(void *ctx, uint32_t dest, char const *long_name, char const *short_name)
+{
+    sender_spy_t *s = (sender_spy_t *)ctx;
+    s->owner_calls++;
+    s->owner_last_dest = dest;
+    snprintf(s->owner_last_long, sizeof(s->owner_last_long), "%s", (long_name != NULL) ? long_name : "");
+    snprintf(s->owner_last_short, sizeof(s->owner_last_short), "%s", (short_name != NULL) ? short_name : "");
+    return s->owner_rc;
+}
 
 static int spy_send_text(void *ctx, uint32_t dest, char const *utf8)
 {
@@ -107,6 +124,7 @@ static void harness_wire_sender(int rc)
     memset(&sender, 0, sizeof(sender));
     sender.send_text = spy_send_text;
     sender.ctx = &H.sender;
+    sender.send_admin_set_owner = spy_send_admin_set_owner;
     ff_shell_set_sender(&H.shell, sender);
 }
 
@@ -131,6 +149,19 @@ static mc_nodeinfo_t nodeinfo(uint32_t node, char const *short_name, uint32_t la
 static void inject_node(uint32_t node, char const *short_name, uint32_t last_heard)
 {
     mc_nodeinfo_t n = nodeinfo(node, short_name, last_heard);
+    H.ev.on_node(H.ev.user, &n);
+}
+
+/* NAME in Settings — a self NodeInfo carrying a long_name (the mesh's
+ * own reported owner name), the `name` console command's confirmation
+ * source. */
+static void inject_self_long_name(uint32_t node, char const *long_name)
+{
+    mc_nodeinfo_t n;
+    memset(&n, 0, sizeof(n));
+    n.node_num = node;
+    n.has_long_name = true;
+    strncpy(n.long_name, long_name, sizeof(n.long_name) - 1);
     H.ev.on_node(H.ev.user, &n);
 }
 
@@ -646,6 +677,63 @@ static void dbgconsole_cal_clear_drops_a_calibrated_puck_to_identity(void)
     TEST_ASSERT_EQUAL_STRING("dbg: cal already uncalibrated", cap.lines[0]);
 }
 
+/* ------------------------------------------------------------------- */
+/* NAME in Settings                                                     */
+/* ------------------------------------------------------------------- */
+
+static void dbgconsole_name_bare_reports_unset_and_unknown(void)
+{
+    harness_init(1000);
+    capture_t cap;
+    dispatch("name", &cap);
+    TEST_ASSERT_EQUAL_STRING("dbg: name stored=(unset) mesh=unknown confirmed=0", cap.lines[0]);
+}
+
+static void dbgconsole_name_set_commits_and_reports_confirmed_false(void)
+{
+    harness_init(1000);
+    harness_wire_sender(0);
+    inject_my_info(MY_ID);
+
+    capture_t cap;
+    dispatch("name Jake", &cap);
+
+    TEST_ASSERT_EQUAL_STRING("Jake", ff_shell_settings(&H.shell)->my_name);
+    TEST_ASSERT_EQUAL_INT(1, H.sender.owner_calls);
+    TEST_ASSERT_EQUAL_UINT32(MY_ID, H.sender.owner_last_dest);
+    TEST_ASSERT_EQUAL_STRING("Jake", H.sender.owner_last_long);
+    TEST_ASSERT_EQUAL_STRING("JAKE", H.sender.owner_last_short);
+    TEST_ASSERT_EQUAL_STRING("dbg: name stored=Jake mesh=unknown confirmed=0", cap.lines[0]);
+}
+
+static void dbgconsole_name_reports_confirmed_once_self_nodeinfo_matches(void)
+{
+    harness_init(1000);
+    harness_wire_sender(0);
+    inject_my_info(MY_ID);
+
+    capture_t cap;
+    dispatch("name Jake", &cap);
+    TEST_ASSERT_TRUE(strstr(cap.lines[0], "confirmed=0") != NULL);
+
+    inject_self_long_name(MY_ID, "Jake"); /* the mesh caught up */
+    dispatch("name", &cap);
+    TEST_ASSERT_EQUAL_STRING("dbg: name stored=Jake mesh=Jake confirmed=1", cap.lines[0]);
+}
+
+static void dbgconsole_name_set_with_no_node_id_still_commits_locally(void)
+{
+    harness_init(1000);
+    harness_wire_sender(0);
+    /* deliberately no inject_my_info */
+
+    capture_t cap;
+    dispatch("name Jake", &cap);
+
+    TEST_ASSERT_EQUAL_STRING("Jake", ff_shell_settings(&H.shell)->my_name);
+    TEST_ASSERT_EQUAL_INT(0, H.sender.owner_calls); /* no self id known -> no push attempted */
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -682,6 +770,11 @@ int main(void)
     RUN_TEST(dbgconsole_cal_finish_with_no_session_reports_not_active);
     RUN_TEST(dbgconsole_cal_cancel_reports_cancelled_then_not_active);
     RUN_TEST(dbgconsole_cal_clear_drops_a_calibrated_puck_to_identity);
+
+    RUN_TEST(dbgconsole_name_bare_reports_unset_and_unknown);
+    RUN_TEST(dbgconsole_name_set_commits_and_reports_confirmed_false);
+    RUN_TEST(dbgconsole_name_reports_confirmed_once_self_nodeinfo_matches);
+    RUN_TEST(dbgconsole_name_set_with_no_node_id_still_commits_locally);
 
     return UNITY_END();
 }

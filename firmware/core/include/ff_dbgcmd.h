@@ -63,6 +63,7 @@
  *   i2c                     — shared I2C bus scan + one-shot compass status
  *   cal | cal start | cal finish | cal cancel | cal clear
  *                           — S12 step 3: the compass calibration ritual
+ *   name | name <text>     — NAME in Settings: status / set + mesh push
  * Anything else is `FF_DBGCMD_ERR_UNKNOWN` — the dispatcher's reply for
  * that is the fixed string `"dbg: ? try help"` (S16-style "the shell
  * decides", except here the deciding is this table).
@@ -93,6 +94,24 @@
  * (`firmware/app/ff_debug_console.c`) routes all five straight through
  * `ff_shell_intent`/`ff_shell_compass_cal_status`, the SAME seam the
  * Settings ritual screen uses, never a second path into shell state.
+ *
+ * `name` (NAME in Settings) follows `send`'s exact shape (a bare verb
+ * that also accepts a rest-of-line argument), not `cal`'s (a bare verb
+ * plus one of a small fixed set of sub-verbs) — an arbitrary NAME has no
+ * fixed vocabulary to enumerate:
+ *   name          — status: stored puck name, mesh-reported name (if
+ *                   any), confirmed/pending
+ *   name <text>   — commit `<text>` through the SAME path the Settings
+ *                   NAME row's DONE button uses (sanitize, persist,
+ *                   push the Meshtastic owner update) — so the
+ *                   coordinator can test the mesh push over USB without
+ *                   the touchscreen
+ * The rest-of-line argument is NOT trimmed/sanitized by this parser
+ * (same "this module carries zero policy" rule every other verb here
+ * keeps) — `<text>` is handed to the dispatcher verbatim, which routes
+ * it through `FF_INTENT_SETTINGS_NAME_COMMIT`'s own path
+ * (`ff_shell.c`'s `shell_apply_name_commit`, core's
+ * `ff_meshname_sanitize`) exactly like a real T9-authored name would be.
  */
 #ifndef FF_DBGCMD_H
 #define FF_DBGCMD_H
@@ -142,6 +161,8 @@ typedef enum {
     FF_DBGCMD_CAL_FINISH,   /* "cal finish" */
     FF_DBGCMD_CAL_CANCEL,   /* "cal cancel" */
     FF_DBGCMD_CAL_CLEAR,    /* "cal clear" */
+    FF_DBGCMD_NAME,         /* "name" bare — stored/mesh/confirmed status */
+    FF_DBGCMD_NAME_SET,     /* "name <text>": u.text — commit + mesh push */
 } ff_dbgcmd_kind_t;
 
 /** Why a line failed to become a command. `FF_DBGCMD_ERR_EMPTY` is not
@@ -159,9 +180,11 @@ typedef enum {
 
 /**
  * One parsed line. Validity is per-`kind`, exactly `ff_intent_t`'s
- * convention (app/include/ff_intent.h) — `u.text` is meaningful only for
- * `FF_DBGCMD_SEND`, `u.dm` only for `FF_DBGCMD_DM`; every other kind
- * carries no payload at all.
+ * convention (app/include/ff_intent.h) — `u.text` is meaningful for
+ * `FF_DBGCMD_SEND` AND `FF_DBGCMD_NAME_SET` (the same field, reused —
+ * both are "the rest of the line is a text body" shapes with nothing
+ * else to disambiguate on), `u.dm` only for `FF_DBGCMD_DM`; every other
+ * kind carries no payload at all.
  */
 typedef struct {
     ff_dbgcmd_kind_t kind;

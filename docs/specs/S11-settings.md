@@ -88,3 +88,66 @@ a) store seam + settings struct + tests · b) face render + interactions + golde
   firefly-layer-only with README honesty note" fallback this spec
   already describes, and un-hiding the SHARE row (one flag flip) once
   the wiring is real.
+
+- **2026-09-06 — NAME in Settings lands (`feat/settings-my-name-owner`):
+  `my_name` gets an editor and a mesh push.** Before this PR, `my_name`
+  was a real, persisted `ff_settings_t` field with a working write-through
+  seam (`FF_INTENT_SETTING_SET`/`FF_SETTING_MY_NAME`, wired since S16
+  slice e) — but no UI ever emitted it (`scr_settings.c`'s own header
+  comment used to say so explicitly: "`my_name` is NOT editable in this
+  slice") and nothing pushed it anywhere the crew could see: the caption
+  under SETTINGS was purely local, never reaching the comms brain's
+  Meshtastic owner identity (what every other node/phone app on the mesh
+  actually displays for this puck).
+
+  **What landed:**
+  1. A **NAME** row (its own single-row section, S21's "UNITS" precedent
+     for a lone-member category, placed directly above CREW) showing the
+     stored name — DOTS-ellipsized at the 15-char cap, same `compose_to`
+     precedent scr_compose.c's own TO row uses — plus a small honest
+     status pill: `LV_SYMBOL_OK` once confirmed, "..." while pending,
+     "N/A" when there is nothing to confirm yet (name unset). Tapping
+     either half opens a full-screen T9 editor
+     (`FF_SETTINGS_SUB_NAME_EDIT`) that reuses core's `ff_t9.h` engine
+     through a SECOND, independent `ff_t9_t` (`ff_shell.c`'s
+     `name_draft`) — deliberately not scr_compose.c's own keypad
+     renderer or its `compose_draft`; see `ff_intent.h`'s
+     `FF_INTENT_SETTINGS_OPEN_NAME_EDIT` doc comment for why. ABC/123
+     modes only (letters/digits/space — this spec's own "charset A-Z0-9
+     space" rule, no SYM/PRED). BACK cancels (discards the draft); DONE
+     commits.
+  2. **Commit path**: DONE (or the bench console's `name <text>`)
+     sanitizes the draft (`ff_meshname_sanitize`, core) through the
+     EXISTING `FF_SETTING_MY_NAME` string-payload seam — persisted on
+     change, no second persistence path — then pushes a Meshtastic
+     `AdminMessage.set_owner` (long name verbatim, short name derived by
+     `ff_meshname_derive_short`: first 4 alphanumeric characters,
+     uppercased, non-alphanumerics dropped BEFORE truncating — "Taylor"
+     -> "TAYL", "Jake" -> "JAKE", "Jo" -> "JO", never padded with
+     anything fabricated) to this node's own id, over the SAME local
+     client connection this device already is to the comms brain — no
+     admin key needed for a message addressed to yourself (see
+     `mc_send_set_owner`'s own doc comment, `meshclient/include/
+     mc_client.h`, for the exact firmware citation). Independent of
+     whether the LOCAL value changed: re-pressing DONE with the same
+     text is the retry mechanism for a push that failed silently on a
+     flaky link.
+  3. **Honesty**: the row's status pill is NEVER assumed confirmed
+     merely because a push was accepted for send — only an actual
+     self NodeInfo reporting a MATCHING `long_name` flips it
+     (`ff_shell_mesh_name_status`/`shell_mesh_name_confirmed`,
+     ff_shell.c). Boot: if the stored name is empty and a self NodeInfo
+     already carries one (e.g. set previously via the phone app/CLI),
+     it is silently adopted once and persisted (`my_name_from_node`),
+     rather than showing an honest-but-useless "(unset)" forever.
+  4. **Bench console**: `name` (status: stored/mesh/confirmed) and
+     `name <text>` (the exact same commit mechanism the row's DONE
+     button uses, bypassing the subview-only guard the same way
+     `ff_shell_debug_send_text` already bypasses Compose's modal
+     requirement — see `ff_shell_debug_set_name`'s own doc comment) —
+     see `docs/hardware/comms-brain.md`.
+
+  See `docs/hardware/comms-brain.md`'s own new section for how the name
+  actually reaches the mesh, including the exact firmware citation for
+  the no-admin-key local path, and the CLI/phone-app fallback that
+  remains available regardless.

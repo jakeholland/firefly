@@ -34,6 +34,12 @@ set(FF_MESHCLIENT_PROTO_SOURCES
     proto/meshtastic/portnums.pb.c
     proto/meshtastic/telemetry.pb.c
     proto/meshtastic/xmodem.pb.c
+    # NAME in Settings — admin.proto: AdminMessage.set_owner, the wire type
+    # mc_send_set_owner (mc_client.h) encodes. Not part of mesh.proto's own
+    # transitive closure (mesh.proto is decoded FROM the radio; admin.proto
+    # is only ever encoded TO it) — see tools/gen_nanopb.sh's own comment.
+    proto/meshtastic/admin.pb.c
+    proto/meshtastic/connection_status.pb.c # admin.proto's own import (DeviceConnectionStatus)
 )
 
 # S03 — the library itself: framing + want_config handshake + nodeDB +

@@ -1335,6 +1335,37 @@ typedef struct {
 ff_shell_compass_cal_status_t ff_shell_compass_cal_status(ff_shell_t const *sh);
 
 /**
+ * ff_shell_mesh_name_status_t / ff_shell_mesh_name_status — NAME in
+ * Settings: the puck name's stored/mesh/confirmed state, read by the
+ * Settings screen's NAME row (the same values `ff_app_settings_t`,
+ * ff_app_state.h, projects into the view — `has_mesh_owner_name`/
+ * `mesh_owner_name`/`my_name_from_node` field-for-field) and the bench
+ * console's `name` command. A separate getter for the same reason
+ * `ff_shell_compass_cal_status` exists alongside its own view
+ * projection: the console dispatcher only ever holds a bare
+ * `ff_shell_t *`.
+ *
+ * `confirmed` is the ONE derived fact here (everything else is a plain
+ * mirror) and is computed the SAME WAY by both consumers by living in
+ * exactly one place (`ff_shell.c`'s `shell_mesh_name_confirmed`) —
+ * `has_mesh_owner_name && strcmp(mesh_owner_name, my_name) == 0 &&
+ * my_name[0] != '\0'`. Never true merely because a push was attempted:
+ * only an actual self NodeInfo reporting a MATCHING long_name flips it
+ * (this repo's honest-data rule — "never assume the push succeeded").
+ * An empty `my_name` reads unconfirmed even if `mesh_owner_name` also
+ * happens to be empty — there is nothing to confirm.
+ */
+typedef struct {
+    char my_name[FF_SETTINGS_NAME_LEN];      /* mirrors ff_settings_t.my_name, NUL-terminated */
+    bool has_mesh_owner_name;                /* a self NodeInfo with a long_name has arrived this session */
+    char mesh_owner_name[FF_SETTINGS_NAME_LEN]; /* that long_name; "" if !has_mesh_owner_name */
+    bool confirmed;                          /* see doc comment above */
+    bool my_name_from_node;                  /* my_name was silently adopted from the mesh at boot, never yet re-typed */
+} ff_shell_mesh_name_status_t;
+
+ff_shell_mesh_name_status_t ff_shell_mesh_name_status(ff_shell_t const *sh);
+
+/**
  * ff_shell_compass_cal_sample — feed one board-frame magnetometer
  * sample into the active calibration session.
  *
@@ -1616,6 +1647,31 @@ bool ff_shell_dev_wall_observe(ff_shell_t *sh, int64_t unix_now_s);
  * feed push happens only on that call's own 0.
  */
 int ff_shell_debug_send_text(ff_shell_t *sh, uint32_t dest_node, char const *text);
+
+/**
+ * ff_shell_debug_set_name — [api] debug-only. Runs the EXACT SAME
+ * commit mechanism the Settings NAME row's DONE button uses
+ * (`ff_shell.c`'s `shell_apply_name_commit`: sanitize the puck-name
+ * charset, persist through the existing `FF_SETTING_MY_NAME` seam, push
+ * the Meshtastic owner update when this node's own id is known) —
+ * called with `text` directly, not through a T9 draft.
+ *
+ * DELIBERATELY BYPASSES `ff_shell_intent(FF_INTENT_SETTINGS_NAME_COMMIT)`
+ * and its subview-only guard (`sh->settings_subview ==
+ * FF_SETTINGS_SUB_NAME_EDIT`) — the exact same reasoning
+ * `ff_shell_debug_send_text`'s own doc comment gives for bypassing
+ * `FF_INTENT_SEND_TEXT`/the Compose modal: a bench command must commit a
+ * name deterministically regardless of whatever the glass happens to be
+ * showing (there is no touchscreen T9 session to have opened the editor
+ * in the bench-console-over-USB use case this exists for), and must not
+ * change what it shows either. No route/subview change, no takeover
+ * gate, no interaction with the real editor's `name_draft`/`name_mode`.
+ *
+ * `text` is borrowed for the duration of this call only (`ff_meshname_
+ * sanitize` copies whatever it keeps before returning). No-op if `sh`
+ * or `text` is NULL.
+ */
+void ff_shell_debug_set_name(ff_shell_t *sh, char const *text);
 
 /**
  * ff_shell_wall_debug_t / ff_shell_wall_debug — [api] debug-only: the
