@@ -59,6 +59,9 @@ building it.
 | `renders/pass9c_{posts_closeup,lip_ring_section,lip_chamfer,plate_underside}.png` | Pass-9 part-2 close-ups: the relocated Ø5 posts/header area, the ring near the window, the ring's seam chamfer (wide underside view), and the Screen Plate's new south extension. |
 | `renders/pass10b_{trim,current}_{front,top,right,iso}.png` | Pass-10 REDO orthographic screenshots, both variants — the clean pill silhouette after removing the rejected brow. |
 | `renders/pass10b_mag_pocket.png` | Pass-10 REDO close-up (trim only): looking up into Top's ceiling from inside the cavity, showing the compass module's retaining fence, rest pads, and ceiling pegs above the GPS patch. |
+| `renders/pass11_{trim,current}_{front,top,right,iso}.png` | Pass-11 orthographic screenshots, both variants — window bore fix + (trim) re-oriented compass mount, clean silhouette. |
+| `renders/pass11_{window_closeup,brow}.png` | Pass-11 close-ups (trim): the window bore reading as a clean open circle, with the FPC brow's tiered risers visible outside it, not filling it. |
+| `renders/pass11_mag_pocket.png` | Pass-11 close-up (trim only): looking up into Top's ceiling from inside the cavity, showing the re-oriented/repositioned compass mount (fence, pegs, pads, south-wall wire notch) clear of the nearby case-screw bosses. |
 
 Every exported body (case and coupon) is size-checked at export time
 (`assert_export_body_size`, ≤120mm/≤40mm max extent respectively) as a
@@ -2545,6 +2548,237 @@ See the removed/added items in "Known limitations / deviations from
 SPEC.md" below (items 23-25 marked N/A or resolved; items 27-28 new) for
 what this pass leaves open.
 
+## 2026-09-11 pass 11 (brow filled the window bore; compass mount moved
+off the display; new openings-open gate)
+
+Three coordinator-reported items, all fixed and re-verified live for
+both variants: (1) the FPC brow (pass 9) silently refilling the top of
+the window bore, confirmed by Jake's own ray-cast of the pass-9 export;
+(2) the compass mount (pass 10 REDO) sitting too close to the window/
+display, confirmed by Jake's review of `pass10b_mag_pocket.png`; (3) a
+new `verify_openings_open` gate so a defect of the FIRST kind -- an
+opening silently plugged by later-added geometry -- can never regress
+unnoticed again.
+
+### Defect 1 root cause: build ORDER, not the brow's own shape
+
+`build()` calls `add_window()` (cuts the bore + chamfers its rim) BEFORE
+`add_fpc_brow()` (raises the shoulder over the FPC relief footprint at
+the USB end). `build_fpc_brow_solid` derives each brow tier from a
+FRESH, unbored reference pill (`build_outer_pill_solid`/
+`build_thickened_envelope`) -- it has no notion that Top's real window
+bore already exists -- so wherever a tier's own footprint box (widened by
+`FPC_BROW_BLEND`) overlaps the bore's XY footprint (it does: the bore's
+own upper rim, y roughly 62-71 for |x| lteq 14-17, sits almost exactly
+under the brow's footprint at the USB end), joining that tier into Top
+blindly refills whatever part of the now-open bore falls inside it.
+
+**Fix**: `build_fpc_brow_solid` now Combine-Cuts the finished brow
+against a cylinder covering the window bore's own true opening (radius
+= bore radius + its own chamfer, so the chamfered rim is excluded too)
+spanning from the glass ledge (`window_z_bottom`) up through the highest
+point any brow tier could ever reach (`top_z + FPC_BROW_HEIGHT`) --
+shared by both `add_fpc_brow` and `add_fpc_relief`'s skin-safe-tool
+derivation (both call `build_fpc_brow_solid`), so the two can never
+disagree. Reordering `add_window`/`add_fpc_brow` instead (the other
+option in the brief) was rejected: `add_window`'s `chamfer_edge_at`
+requires the bore's ENTIRE rim to sit at a single, flat z (`top_z`) to
+find a matching circular edge to chamfer -- if the brow ran first and
+raised part of that rim locally, the chamfer would either fail outright
+or leave part of the rim un-chamfered. The exclusion-cut approach keeps
+`add_window`'s own construction (and its ledge/chamfer numbers)
+byte-for-byte identical to pass 9, touches nothing but the brow, and the
+brow still fully covers the FPC relief footprint OUTSIDE the bore
+(confirmed: `verify_fpc_relief` 0 bad of 63 probes, both variants,
+unchanged from pass 9).
+
+**Before/after bore-scan numbers**:
+
+- **Before** (live Fusion probe against a fresh build from the
+  UNMODIFIED `origin/main` `firefly_case.py`, same document technique as
+  every other stage this pass): `window_column_probe_points` x 6 z levels
+  (102 probes, window column, trim) -- **3 bad of 102**, all three at
+  `z=28.5`: `(13.01, 63.01, 28.5)`, `(0.0, 68.4, 28.5)`,
+  `(-13.01, 63.01, 28.5)` -- consistent with Jake's own report ("every
+  sample from y=62 to 71 hits solid at z 28.52 or 29.50").
+- **After** (this branch): the same live probe reports **0 bad of 102**
+  (`verify_openings_open`'s `window_column` entry, `(True, [])`), both
+  variants. Independently, the standalone offline ray-cast
+  `/private/tmp/claude-501/borescan.py` (parity-crossing test, no
+  dependency on `firefly_case.py`'s own point-containment code) against
+  the EXPORTED `export/trim/Top.stl`: 37 xy points (rings at 40%/85% of
+  bore radius + centre) x 9 z levels (`window_z_bottom` through
+  `top_z + 0.5`) = **333 probes, 0 blocked** --
+  `RESULT: PASS -- bore column is open at every sample from the ledge
+  through the top`. Same tool against `export/current/Top.stl`
+  (z 22.4-25.5): **333 probes, 0 blocked**. (Run with
+  `uv run --with numpy python borescan.py <path> --r 21.0 --z-bottom
+  <ledge> --z-top <top_z+0.5> --n-z 9`; an early run at the literal bore
+  radius, `--r 21.65`, hit a ray/mesh-edge tangency artifact at the
+  extreme rim -- not a real defect, see the script's own retry note --
+  fixed by sampling 1mm further inside the bore, matching the generator's
+  own probe convention.)
+
+### Defect 2 root cause: header/wire edge pointed at the display, and the mount hugged the GPS patch's own centre instead of its south edge
+
+Pass 10 REDO's placement centred the mount on the GPS patch's own y-span
+(2..27, centre 14.5) with the header/wire edge (local x=+8.96) mapped to
+the LARGER world Y -- i.e. toward the display/window end. Both effects
+compounded: the fence's own north edge (25.3) sat only ~1.4mm from the
+window bore's true rim (computed; matches Jake's ~1mm visual estimate),
+and the five header wires exited directly into that gap.
+
+**Fix** (`PARAMS['mag_module']`, `params_current.py`; `mag_world_y`,
+`firefly_case.py`):
+
+1. **Orientation flipped.** `mag_world_y` is now `-local_x + offset`
+   (was `+local_x + offset`): the header/wire edge (local x=+8.96) now
+   maps to the SMALLER world Y (toward the lanyard end); the
+   mounting-hole edge (local x=-9.64) now maps to the LARGER world Y
+   (toward the display end). `mag_pcb_world_footprint` (sorts the two
+   mapped Y values, since the mapping's direction is no longer assumed)
+   and `mag_pad_world_positions` (computes its edge inset in the LOCAL
+   frame, then maps once) were both made sign-agnostic so this is a pure
+   PARAMS change; `add_mag_module`'s fence notch moved from `gap_side=
+   '+y'` to `'-y'`.
+2. **Footprint shifted** as far -Y and +X as the GPS frame's own real
+   opening (x -3.05..22.45, y 1.75..27.25) allows with a >=0.5mm safety
+   margin against touching the frame's own wall on any side (computed in
+   pure Python against these exact PARAMS before touching Fusion --
+   `world_y_from_local_x_offset` 14.84 -> **12.71**,
+   `world_x_from_local_y_offset` 9.37 -> **13.07**).
+
+**New position** (world mm, trim; unchanged formula for current, but the
+mount is skipped there regardless -- see `mag_module_fits`): PCB
+`x 6.4..20.4, y 3.75..22.35`; fence `x 4.9..21.9, y 2.25..23.85`; pegs
+(mounting-hole side, now toward +Y/display) at `(8.9, 19.92)` and
+`(18.1, 19.92)`; pads (header side, now toward -Y/lanyard end) at
+`(7.4, 4.75)` and `(19.4, 4.75)`; wire-exit notch centred at `x=13.41` on
+the fence's SOUTH wall.
+
+**Clearances** (live-probed against the real built geometry, `verify_
+mag_pocket`'s two new checks):
+
+| | old (pass 10b) | new (pass 11) | gate |
+|---|---|---|---|
+| Window-bore true-opening clearance (worst corner) | ~1.4mm (computed) | **3.955mm** | >= `MAG_DISPLAY_RING_MIN_CLEAR` (3mm) |
+| Display back-side bbox clearance | ~2.3mm (pass 10's own number) | **3.765mm** | >= 3mm |
+| GPS frame wall margin (south / east / north / west) | n/a | 0.5 / 0.55 / 3.4 / 7.95mm | > 0 (no new interference) |
+
+3.955mm/3.765mm fall short of the brief's 5mm stretch target -- pushing
+either further south or east starts eating the GPS frame's own real
+wall/opening boundary (the frame-margin numbers above are already down
+to the 0.5mm safety floor on the south and east sides); this is a real
+geometric ceiling given the frame's fixed footprint, not an oversight,
+and both numbers clear the 3mm gate with margin.
+
+**"Window lip ring" disambiguation**: `mag_window_bore_clearance`
+measures distance to the window BORE's own true opening (radius =
+`window_dia/2`, centred on `window_center`), not `PARAMS['lip_r']` (the
+buried alignment lip/anchor ring at z 9.2-11) -- `stadium_ring_solid`
+only puts that ring near |x| roughly 26-28 in the straight section
+(nowhere near this mount's x 5-22 footprint), so it cannot be what
+Jake's pass-10b review saw. The bore's own rim, visible from directly
+inside the cavity looking up at the ceiling (exactly pass10b_mag_
+pocket.png's camera angle), is the real "ring" -- and the numbers match
+(computed ~1.4mm at the OLD placement vs. Jake's own "~1mm" estimate).
+
+**`ff_compass.c`**: the module local-frame -> puck-world-frame mapping
+table is updated for the flip (local +x -> puck -y, was +y; local -x ->
+puck +y, was -y) -- see that file's own 2026-09-11 comment block. The
+row's numeric axis-source/sign values remain an unverified placeholder
+either way (unchanged by this pass -- still needs a bench check).
+
+### New gate: `verify_openings_open`
+
+Every documented "should be hollow all the way through" opening --
+window column, USB tunnel, both button holes, the lug hole, both antenna
+cable channels, and (pass 11) the compass mount's own wire-exit notch --
+is now probed point-by-point along its own extent, not just for skin
+thickness or interference. This is what actually catches defect 1 (no
+pre-existing gate did): `window_column` fails on unmodified `origin/main`
+(3 bad of 102, see above) and passes clean after the brow fix.
+
+Two of the gate's own probes needed a fix during development (both
+process notes, not product defects -- kept in the function's docstring):
+`antenna_lora`'s outer ~10-20% (toward the true wall) reads solid, not
+open, because `_antenna_skin_safe_channel`'s Combine-Intersect against
+the skin-safe envelope legitimately trims the cut's far end a bit short
+of the naive `s_wall - channel_min_skin` estimate this gate's `channel_
+len` approximates -- sampled fractions moved inside the confirmed-open
+0-70% band. `mag_wire_notch`'s first version sampled SOUTH of the
+fence's own outer edge (the open gap between the fence and the GPS
+frame's wall, never real fence material at all); fixed to sample THROUGH
+the actual wall band (`fy0` to `fy0 + fence_wall`) at the notch's own x.
+
+### `verify()` output, both variants (pass 11, run piecewise per the
+Fusion-MCP infrastructure note above)
+
+```
+trim:    body_names ['Bottom', 'Home Button', 'Power Button', 'Screen Plate', 'Top']
+         interference [] (base + all 6 board occurrences individually)
+         m1/cavity/m2/envelope/bump/export-envelope/clearance checks: all clean
+         posts_bosses/post_walls/plunger_reach/button_insertion/button_retention: all clean
+         display_insertion: {'ok': False, ...} -- diagnostic only, NOT gated (pre-existing, unrelated to this pass)
+         stack3_clearance {'stack_top_z': 22.942, 'clearance_found': 4.158, 'required': 0.8, 'ok': True}
+         skin/wall checks: all clean
+         fpc_relief bad [] of 63
+         wordmark/antenna checks: all clean
+         mag_pocket {'envelope_open': (True, []), 'pegs_have_material': (True, []),
+                     'pads_have_material': (True, []), 'fence_has_material': (True, []),
+                     'window_bore_clear': (True, 3.955), 'display_back_clear': (True, 3.765)}
+         openings_open: window_column/usb_tunnel/power_button_hole/home_button_hole/
+                        lug_hole/antenna_lora/antenna_gps/mag_wire_notch -- all (True, [])
+
+current: body_names ['Bottom', 'Home Button', 'Power Button', 'Screen Plate', 'Top']
+         interference [] (base + all board occurrences)
+         m1/cavity/m2/envelope/bump/export-envelope/clearance checks: all clean
+         posts_bosses/post_walls/plunger_reach/button_insertion/button_retention: all clean
+         display_insertion: {'ok': False, ...} -- diagnostic only, NOT gated
+         stack3_clearance {'ok': True, 'note': 'comms_stack3_full_height=False -- no Wio/XIAO inserted'}
+         skin/wall checks: all clean
+         fpc_relief bad [] of 63
+         wordmark/antenna checks: all clean (antenna_lora skipped -- LoRa route is trim-only)
+         mag_pocket: all 6 checks (True, []) -- mag_module_fits(p) is False, mount skipped entirely
+         openings_open: all (True, []) (mag_wire_notch/antenna_lora auto-pass, mount/LoRa skipped)
+```
+
+### Offline STL scan + independent bore ray-cast (pass 11)
+
+`tools/offline_stl_check.py`: `OVERALL: PASS`, both variants (0
+non-manifold edges on every body, envelope ok, `bad_clusters_mm2: []` on
+Top/Bottom for both). `/private/tmp/claude-501/borescan.py`: `RESULT:
+PASS` on both `export/trim/Top.stl` and `export/current/Top.stl` (333
+probes each, 0 blocked) -- see the before/after numbers above.
+
+### Exports and renders (pass 11)
+
+Both variants: `export/<variant>/{Bottom,Top,Screen_Plate,Power_Button,
+Home_Button}.stl` (Top changed in both variants -- the window-column
+exclusion cut in the brow, plus the re-oriented/repositioned compass
+mount for trim; Bottom/Screen_Plate/buttons unchanged in content, Bottom
+STLs re-exported with the usual small tessellation-only byte diff),
+`export/<variant>/firefly_<variant>_case.3mf` (native, 5 objects),
+`export/<variant>/firefly_<variant>_plate.3mf` (re-packed via
+`tools/stl_to_3mf.py`, same per-part orientation convention as every
+prior pass). Coupons (`export/coupons/coupon_*.stl`,
+`firefly_coupons_native.3mf`) re-exported as a byproduct of the same
+pipeline run -- byte-identical, the button mechanism is untouched by
+this pass.
+
+Renders: `pass11_{trim,current}_{front,top,right,iso}.png` (standard
+4-view, both variants -- clean pill silhouette, no bumps, matches pass
+10b's iso/top/right for `current` since that variant never had a
+compass mount to begin with); `pass11_window_closeup.png` /
+`pass11_brow.png` (close-ups of the window bore and the FPC brow's
+tiered risers, trim -- the bore reads as a clean open circle, with the
+brow's stepped risers visible outside it, not inside it); `pass11_mag_
+pocket.png` (trim only, Bottom/buttons/boards/reference bodies hidden,
+camera inside the cavity looking up at the ceiling -- the mount's fence,
+both peg mounting holes, both rest pads, and the wire-exit notch on the
+south wall are all visible, well clear of the nearest case-screw bosses
+at the lanyard end). All viewed directly as part of this pass.
+
 ## Screw list
 
 **2026-09-07 pass 7: boss B split into B1/B2** (its old single position
@@ -2851,6 +3085,20 @@ reason" per the milestone instructions.
     at this thickness (1-2mm cantilevered print detail against light
     spring pressure) for the assembly to survive repeated openings. The
     foam pad is a real BOM/assembly-order item, not a modeled part.
+29. **Pass 11's mag-mount reposition reaches 3.955mm/3.765mm window-bore/
+    display clearance, short of the brief's 5mm stretch target** — the
+    GPS frame's own real opening (x -3.05..22.45, y 1.75..27.25) is the
+    binding constraint: the fence is already down to a 0.5mm safety
+    margin from that frame's own wall on both the south and east sides
+    (see the pass-11 section's frame-margin table), so reaching 5mm would
+    mean either shrinking that margin (risking a real interference with
+    the GPS frame itself) or reworking the frame's own footprint, which
+    is out of this pass's scope. Both clearances comfortably clear the
+    hard 3mm gate (`MAG_DISPLAY_RING_MIN_CLEAR`) with real margin.
+    `verify_display_insertion_path`'s pre-existing diagnostic-only
+    failure (module can't be inserted "from inside" past the lip/anchor
+    ring, `ok: False`) is unrelated to and unchanged by this pass — see
+    item 14.
 
 **Reverted mid-pass-6, not shipped**: the coordinator's later messages in
 this pass requested (a) swapping the Wio/XIAO stack to a board-to-board
