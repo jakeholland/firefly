@@ -91,9 +91,35 @@ PARAMS['lug_relief_box'] = _box
 # anchored to the PARTING PLANE (lip/anchor, Top case-screw bosses' pilot
 # depth, the lug/ear, Bottom itself) is untouched -- see README pass-7
 # section for the full rationale/z-table.
-_DZ_TOP = 3.0  # 28 - 25
+#
+# --- PASS 12 (2026-09-11/12, Jake: "move the top to be longer"): grows
+# again, 28 -> 30mm (_DZ_TOP 3.0 -> 5.0), on the SAME mechanism -- every
+# z-anchored feature below shifts by the new _DZ_TOP automatically, no
+# other line in this file needed to change. IMPORTANT, checked before
+# committing to this (see hardware/case/README.md's pass-12 section for
+# the full derivation): this height bump does NOT, and provably CANNOT,
+# recover any skin at the FPC relief pocket / remove the shoulder "brow"
+# (add_fpc_brow in firefly_case.py) the way Jake's own framing of the ask
+# assumed. `rho_at_z(p, z) = flat_rho + (top_z - z)` in the flat-chamfer
+# band right under the top face -- and PARAMS['fpc_relief']['z'] (below)
+# shifts by the SAME _DZ_TOP as top_z itself, so `top_z - z` at the
+# pocket's own z1 is algebraically IDENTICAL for top_z=28, 30, or any
+# other value: the pocket, the display module, and the shoulder profile
+# all translate together. Confirmed numerically (a standalone script
+# reusing rho_at_z/rho_from_spine verbatim): the SPEC box's worst corner
+# (7.02, 73.12) has exactly 0.048mm of shoulder margin at top_z=28, 30,
+# AND 40 -- unchanged to the mm. The real reason trim needs the brow and
+# 'current' does not is trim's 2mm-smaller flat_rho/outer_radius (22.14
+# vs 24.14), not case height -- 'current' has 2.048mm of margin at the
+# identical corner, purely from its wider shoulder. The brow therefore
+# STAYS (unmodified -- its own construction already correctly re-derives
+# from `p` at whatever top_z is current, so it needs no code change for
+# this height bump); see build_fpc_brow_solid's module comment and the
+# pass-12 README section for the live verify_fpc_relief numbers at 30mm
+# (unchanged from pass 11: 0 bad of 63, brow in place).
+_DZ_TOP = 5.0  # 30 - 25
 
-PARAMS['top_z'] = 28.0
+PARAMS['top_z'] = 30.0
 # top_fillet_center_z = top_z - fillet_r (10.0) -- keeps the outer R10
 # fillet tangent to the (now higher) flat top face, same derivation as the
 # 'current'-variant number (15.0 = 25 - 10).

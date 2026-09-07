@@ -2779,24 +2779,317 @@ both peg mounting holes, both rest pads, and the wire-exit notch on the
 south wall are all visible, well clear of the nearest case-screw bosses
 at the lanyard end). All viewed directly as part of this pass.
 
+## 2026-09-12 pass 12 (30mm Top / no brow investigated, button holes clean)
+
+Jake's request, from a review of pass-11 renders/prints: "We can't have
+this weird thickness thing, we probably need to move the top to be
+longer. The power button has a thickness issue too." Two changes, both
+re-verified live for both variants.
+
+### Change 1: trim `top_z` 28 → 30mm — the brow stays, and here is why
+
+The ask was to raise trim's case height and delete the FPC-relief
+"brow" (`add_fpc_brow`/`build_fpc_brow_solid`/`FPC_BROW_TIERS`,
+pass 9) on the theory that a taller Top leaves more skin above the
+pocket. **This does not work, and cannot work, under the current
+z-shift convention — confirmed both analytically and live, not assumed:**
+
+`rho_at_z(p, z) = flat_rho + (top_z - z)` in the flat-chamfer band right
+under the top face (see `_profile_geometry`/`rho_at_z`). Every z-anchored
+feature that matters here — `PARAMS['fpc_relief']['z']`, the display
+module via `display_z_offset` — shifts by the exact same `_DZ_TOP` as
+`top_z` itself (`params_trim.py`'s own convention). So `top_z - z` at the
+pocket's own z1 is **algebraically invariant to top_z**: raising the case
+height translates the pocket, the display, and the shoulder profile
+together and changes nothing about their relationship. A standalone
+script reusing `rho_at_z`/`rho_from_spine` verbatim (no Fusion needed)
+confirms this to the millimetre:
+
+```
+trim @28: worst SPEC-box corner (7.02, 73.12) margin = 0.048mm
+trim @30: worst SPEC-box corner (7.02, 73.12) margin = 0.048mm   (identical)
+trim @40 (sanity): same corner, margin = 0.048mm                (identical)
+current @25: same corner, margin = 2.048mm  (current's WIDER flat_rho, not its height)
+```
+
+The real reason trim needs the brow and `current` does not is trim's
+2mm-smaller `flat_rho`/`outer_radius` (22.14 vs 24.14) — a **radius**
+question, not a height one. `top_z` was raised to 30mm anyway (a real,
+independent improvement — see below for what it does buy), and
+`add_fpc_brow` was actually deleted and rebuilt at 30mm to get real
+numbers rather than trust the algebra alone: `verify_fpc_relief` failed
+with the **identical** bad corner as pass 9–11. The brow was restored
+unmodified (its own construction already re-derives correctly from `p`
+at whatever `top_z` is current — no code change needed for the height
+bump) rather than ship a real, physical hole in the shell. Live,
+brow-in-place, at `top_z=30`:
+
+```
+verify_fpc_relief(trim):    0 bad of 63 probes
+verify_fpc_relief(current): 0 bad of 63 probes  (unchanged, top_z=25, frozen)
+```
+
+The ~62mm³ `Top x <display module>` interference pass 9 hit when
+shrinking the pocket instead of raising the brow **does not return**:
+the brow's mechanism (raise the outer surface, never touch the pocket's
+own depth) is untouched by this pass, and the full `verify()` interference
+gate — every printed body + every inserted board occurrence — reports
+`[]` for both variants at 30mm (see the full output below).
+
+**What raising `top_z` to 30mm actually buys** (all confirmed live, see
+Change 3 below): +2mm of straight-wall height in the middle of the case,
+which lengthens every ceiling-anchored screw engagement and grows the
+mag-mount/comms-stack clearances by the same 2mm, without touching
+anything anchored to the parting plane (Bottom, the lip/anchor rings, the
+lug, screws A/B1/B2/C's pilot depth). `current` is **not** touched
+(frozen at 25mm, unchanged from pass 7's own decision, "for the probe
+comparison") — it does not need the brow removed (it never needed the
+brow in the first place, being wider) and was never asked to grow.
+
+### Change 2: button holes — tab-relief lane was reaching the true outer skin
+
+**Confirmed root cause**, from Jake's own ray-cast of the pass-11 export
+(`sidescan.py`, reproduced here against the checked-in
+`export/trim/Top.stl` with no Fusion needed for the "before" half):
+`add_button`'s `tab_hole_body` cut (the WALL clearance pocket for the
+retaining tab, distinct from the main stadium `hole_cutter`) was bounded
+only along its own ray centerline (`s_inner + tab_hole_skin_margin/2`,
+~1.45mm short of the true outer surface at t=0) — nothing bounded its
+off-axis tangential corners (it spans `tab['w']+2mm` tangentially) against
+the TRUE CURVED wall, the same class of bug this file has already fixed
+for the main wall hole, the USB liner, and the rib+connector. Live probe
+of the unmodified `origin/main` Top body at Jake's own reported points:
+
+```
+Power (-x wall), y=32, z=15/16/17: SOLID found ONLY at x -21.5..-20.0 (rib
+  material), HOLLOW everywhere else from x=-30 out through x=-15 — a real
+  hole clean through the outer wall, not a thin spot.
+Home  (-x wall), y=64-66, z=19-21: HOLLOW across the entire plausible
+  wall band (x -28..-14) — same class of breach.
+```
+
+**Fix** (`add_button`, `add_buttons`): a new shared clip tool
+(`tab_clip_tool`), Combine-Intersected against `tab_hole_body` (the wall
+cut) and `tab_relief_body` (the matching lane cut through the RIB) before
+either cut is applied — "the wall hole is the stadium only." Margin
+calibration mattered and was tuned live, not guessed once:
+
+- This file already has an established idiom for "stay clear of the true
+  wall by a safety margin" — `wall_clear = 0.6` in
+  `add_lip_anchor_reliefs`/`add_lug`, applied as `s_wall - wall_clear`.
+  `build_inner_cavity_clip_tool`'s own `safety_margin` is relative to the
+  INNER CAVITY (already `wall` inboard of `s_wall`), so matching that
+  convention needs `safety_margin = wall_clear - p['wall']` (negative:
+  the tool must be grown outward past the bare cavity to reach
+  `s_wall - 0.6`).
+- **First attempt** used a naive `safety_margin=+0.6` (reading "wall +
+  0.6mm inward" as measured from `s_wall` directly, i.e.
+  `s_inner - 0.6`) — this over-clipped: it sits INBOARD of the tab's own
+  real outward reach (`s_inner+0.15`, from `tab_body`'s own construction),
+  clipping the clearance cut short of the tab it exists to clear.
+  Live `verify()`: a real `Top x Power Button` (5.57mm³) / `Top x Home
+  Button` (7.06mm³) interference — the tab poking into wall material the
+  over-clipped cut no longer removed.
+- **Fixed** with `wall_clear=0.6` → boundary `s_inner+1.4` (1.25mm of
+  slack past the tab's real reach, still 0.6mm short of the true wall,
+  a no-op at t=0 since the plain analytic bound already sits inboard of
+  it — it only bites off-axis, exactly where the breach was).
+- A separate, smaller live interference (~0.13mm³, both buttons) traced
+  to an unrelated mistake made in the same pass: the COLLAR's own clip
+  was swapped from the standard `clip_tool` to the new, looser
+  `tab_clip_tool`, reopening a diagonal-corner overshoot pass 5 had
+  already fixed for the collar with the tight default margin. Reverted —
+  the collar never needed touching.
+
+**Gates, both live-run before/after** (before = unmodified `origin/main`
+at `top_z=28`; after = this branch at `top_z=30`):
+
+```
+BEFORE (verify_openings_open, new *_button_hole_footprint check, run
+        against origin/main's own geometry):
+  power_button_hole_footprint: False — 1 bad point,
+    ('open-outside-hole', -27.68, 31.91, 14.85)
+  home_button_hole_footprint: True  (this grid's own coverage didn't land
+    on Home's specific breach band — see verify_skin_intact below, and
+    the direct point-probe evidence above, for the actual confirmation)
+  verify_skin_intact: 24 probes (pre-widening), 0 bad (the pre-pass-12
+    check's own footprint was too narrow to see this defect at all —
+    see below for why it was widened)
+
+AFTER (this branch, top_z=30, tab_clip_tool in place):
+  power_button_hole_footprint: True  (0 bad)
+  home_button_hole_footprint:  True  (0 bad)
+  verify_skin_intact: 48 probes (widened), 0 bad
+  check_interference([Top, Bottom, Power Button, Home Button]): []
+  verify_button_insertion: 0 bad of 125, both buttons
+  verify_button_retention: all True, both buttons
+```
+
+`verify_openings_open`'s new `power_button_hole_footprint` /
+`home_button_hole_footprint` entries grid-scan the (tangential, z) plane
+around each hole at a fixed depth just inside the true wall, re-deriving
+the TRUE wall position **per sample** via `true_wall_distance_along_ray`
+(not a flat offset from a single centerline point — an early version did
+that and produced its own false positive, a probe point at x=-32.18
+against a trim `outer_radius` of 28, simply open air far outside the
+part, nothing to do with the real geometry) — every point inside the
+actual cut stadium (`hole_wh` = cap stadium + `2*cap_clearance`/side,
+matching `add_button`'s own `hole_cutter` exactly) must be open; every
+other grid point must be blocked. `verify_skin_intact` was widened from
+a single z sample to 4 across the tab's own full z-span (Jake's reported
+breach z's, 15/18-20, sit at the BOTTOM of the tab region, which the
+pre-pass-12 single-midpoint sample never reached) — its tangential span
+was tried at the wider `tab_relief_w` too, reverted: that width, at the
+existing shallow depth (0.15/0.3), reproduced the exact same "probe steps
+past the true curved surface off-axis" false positive as the footprint
+check's own first attempt (the file's established ~0.25-0.3mm
+ray-vs-curvature slack showing up again) — kept at the plain `tab['w']`;
+the new footprint gate is the one that actually covers the wider lane.
+
+**Independent, tool-limitation caveat, disclosed rather than hidden**:
+re-running `sidescan.py` (the flat, axis-aligned ray-cast tool, unchanged
+from Jake's own script) against the FRESH pass-12 export shows Power
+completely clean (matches the live gates exactly) but still prints
+"positive-x" values in Home's y=63-68 band. Direct, curve-aware live
+point-probing at those exact (t, z) positions (recomputing the true wall
+via `true_wall_distance_along_ray` at each sample, not a flat offset) —
+and a fine-grained sweep of the whole region — found **zero** points that
+are both outside the intended stadium and hollow; every "positive" read
+from the flat tool corresponds to a point that is legitimately INSIDE
+Home's own (diagonal) hole footprint. This is a known-shape limitation of
+a pure-axis ray-cast on a button whose nub direction is ~33° off the wall
+normal (Power's is much closer to axis-aligned, which is exactly why it
+reads clean on the same tool): the tool cannot distinguish "hollow because
+it's the hole" from "hollow because material is missing" the way the
+curve-aware analytic gates (matching this file's own established
+methodology, used to verify every other opening in this document) can.
+Recommended follow-up: a diagonal-ray variant of `sidescan.py` for a
+fully tool-independent third check, if Jake wants one before printing.
+
+### Change 3: re-verified at 30mm
+
+Full `verify()`, both variants, run piecewise (build split across many
+`fusion_mcp_execute` calls against the same open document, re-fetching
+bodies/clip tools by name each time, per this repo's own Fusion-MCP
+infrastructure note):
+
+```
+trim (top_z=30):    body_names ['Bottom','Home Button','Power Button','Screen Plate','Top']
+                     interference []
+                     fpc_relief bad 0 of 63
+                     stack3_clearance {'stack_top_z': 22.942, 'clearance_found': 6.158,
+                                        'required': 0.8, 'ok': True}
+                     mag_pocket: all 6 checks True (window_bore_clear 3.955, display_back_clear 3.765
+                                 -- both UNCHANGED from pass 11: XY clearances don't depend on top_z)
+                     openings_open: all True (window_column/usb_tunnel/both button holes+footprints/
+                                    lug_hole/antenna_lora/antenna_gps/mag_wire_notch)
+                     verify() completed with no AssertionError -- every gate in the file passed
+
+current (top_z=25, frozen): body_names (same 5)
+                     interference []
+                     fpc_relief bad 0 of 63
+                     stack3_clearance {'ok': True, note: comms_stack3_full_height=False}
+                     mag_pocket: all True (mount skipped -- mag_module_fits still False, unchanged)
+                     openings_open: all True
+                     verify() completed with no AssertionError
+```
+
+**Mag mount free height** (`mag_module_clearance`/`mag_pcb_bottom_world_z`,
+trim only — `current` still can't host it): the RAW gap
+(`top_ceiling_underside_z - bay.gps_patch.z[1]`) grows exactly with the
++2mm height bump, **7.2 → 9.2mm**; the mount's own spare beyond its
+4.5mm footprint (`mag_module_clearance`, the number `mag_module_fits`
+actually gates on) grows **2.7 → 4.7mm**. The mount stays on the ceiling,
+unmoved in XY — `window_bore_clear` (3.955mm) and `display_back_clear`
+(3.765mm) are pure XY measurements and are byte-for-byte unchanged from
+pass 11.
+
+**Post walls, lip ring, antenna channels, wordmark**: all re-verified
+live at `top_z=30` (`verify_post_walls`, `verify_wordmark`,
+`verify_antenna_channels`) — all clean, no numeric changes beyond the
+Z-shift every ceiling-anchored feature already carries (these checks are
+built from `p` and were never hand-tuned to a specific `top_z`).
+
+**Offline STL scan** (`tools/offline_stl_check.py`, run against the fresh
+pass-12 exports): `OVERALL: PASS`, both variants — 0 non-manifold edges
+on every body, envelope OK, `bad_clusters_mm2: []`.
+
+### Exports and renders (pass 12)
+
+Both variants: `export/<variant>/{Bottom,Top,Screen_Plate,Power_Button,
+Home_Button}.stl` (all 5 re-exported — Top changed the most: taller
+straight wall for trim, clean button-hole footprint for both;
+`export/<variant>/firefly_<variant>_case.3mf` (native, 5 objects),
+`export/<variant>/firefly_<variant>_plate.3mf` (re-packed via
+`tools/stl_to_3mf.py`, same per-part orientation convention as every
+prior pass: Bottom as-is, Top `flipx`, Screen Plate as-is, Power Button
+`outer-x`, Home Button `outer-rz32.74`). Coupons
+(`export/coupons/coupon_{power,home}_{wall,cap}.stl`,
+`firefly_coupons.3mf`, `firefly_coupons_native.3mf`) re-exported from the
+trim-variant pipeline (the coupons are variant-independent — same
+`PARAMS['power_cap']`/`home_cap`/tab/rib/collar numbers either way).
+
+Renders: `pass12_trim_{front,top,right,iso}.png` /
+`pass12_current_{front,top,right,iso}.png` (standard 4-view, both
+variants — clean pill silhouette, no bumps); `pass12_usb_end_top.png`
+(top-down close-up of the window/USB end, trim — a clean round bore, no
+visible step or notch at the shoulder); `pass12_power_button_straight.png`
+/ `pass12_home_button_straight2.png` (straight-on views of the -x wall,
+trim — each shows a single clean stadium opening with no secondary
+notch or slot beside or below it, the direct visual confirmation of
+Change 2). All viewed directly (not just generated) as part of this pass.
+A translucent tan/beige rectangle visible in several renders is a Fusion
+viewport/UI overlay artifact (not model geometry — every reference body
+was confirmed hidden, `isLightBulbOn=False`, before rendering); it does
+not appear in the exported STL/3MF files.
+
+### Known limitations added this pass
+
+- **The FPC-relief brow (`add_fpc_brow`) is permanent under the current
+  z-shift parameterisation**, not a pass-9-era stopgap — see Change 1
+  above for the algebraic/live proof that no `top_z` value removes the
+  need for it on trim. Removing it would require either widening trim's
+  `flat_rho`/`outer_radius` (a real envelope change, not requested this
+  pass) or a different pocket-depth/skin-margin trade at the exact SPEC
+  box corner (7.02, 73.12) — out of scope here.
+- **`sidescan.py`'s flat, axis-aligned ray-cast has a blind spot for
+  diagonally-oriented button holes** (Home's nub direction is ~33° off
+  the wall normal) — see Change 2's independent-confirmation note. It
+  remains a good, fast tool for axis-aligned features (it caught Power's
+  real defect cleanly) but a diagonal variant would be needed to fully
+  retire the curve-aware live gates as the sole authority for Home.
+
 ## Screw list
 
 **2026-09-07 pass 7: boss B split into B1/B2** (its old single position
 sat inside the L76K PCB's own footprint — see the pass-7 section above),
 and boss D's post grows with trim's taller case, changing its screw
-length. Current per-variant screw map:
+length. **2026-09-12 pass 12: trim's Top grew again (28→30mm), so screw
+D's own engagement grows again too** — recomputed directly from `PARAMS`
+(`plate_post_D_z[1] - counterbore_D_h`), not by re-deriving the pass-7
+formula by hand: trim's post now needs **14.1mm** of real engagement
+(`plate_post_D_z=(10.0, 18.1)`, `counterbore_D_h=4.0`) — M2×12 (12mm) is
+now too short, so trim's screw D moves to **M2×16**. Every other screw's
+required length is unchanged by the pass-12 height bump: A/B1/B2/C's
+`top_pilot_z=(10.0, 19.1)` is parting-plane-anchored (independent of
+`top_z` by construction — see that param's own comment), and P1–P4's
+`top_post_pilot_z` span stays exactly 6.5mm (both its ends shift by the
+same `_DZ_TOP`, `(19.1, 25.6)` at pass 12 vs `(17.1, 23.6)` at pass 11 —
+same length, just repositioned higher). Current per-variant screw map:
 
 | Screw | Qty | current | trim | Joins |
 |---|---|---|---|---|
 | M2×12 socket head | 4 | ✓ | ✓ | Bottom bosses A/B1/B2/C → Top bosses (Ø1.62 pilot, z 10–19.1 — parting-plane anchored, unchanged by case height) |
 | M2×10 socket head | 1 | ✓ | | Bottom boss D → Screen Plate post (Ø1.62, z 10–13.1) |
-| M2×12 socket head | 1 | | ✓ | Bottom boss D → Screen Plate post (Ø1.62, z 10–16.1 — grows with trim's +3mm case height; same 4.0mm counterbore, so ~12.1mm of real engagement now needs the next size up from M2×10) |
-| M2×6 socket head | 4 | ✓ | ✓ | Top posts P1–P4 (**Ø5, was Ø4 — see pass-9 part-2 "Finding 4"**) → Screen Plate (Ø1.62 pilot, z 14.1–20.6 current / 17.1–23.6 trim — same 6.5mm span, shifts with the plate) |
+| M2×16 socket head | 1 | | ✓ | Bottom boss D → Screen Plate post (Ø1.62, z 10–18.1 — grows again with trim's pass-12 +2mm case height; same 4.0mm counterbore, so 14.1mm of real engagement needs the next size up from pass 7–11's M2×12) |
+| M2×6 socket head | 4 | ✓ | ✓ | Top posts P1–P4 (**Ø5, was Ø4 — see pass-9 part-2 "Finding 4"**) → Screen Plate (Ø1.62 pilot, z 14.1–20.6 current / 19.1–25.6 trim — same 6.5mm span, shifts with the plate) |
 | M2×4 socket head | 3 | ✓ | ✓ | Screen Plate → board SMT standoffs S1–S3 |
 
-So **trim now needs 5×M2×12 + 4×M2×6 + 3×M2×4** (12 screws total, same
-count as before pass 7 — B1+B2 replaces B 1-for-1, and D's M2×10 becomes
-a 5th M2×12); **current needs 4×M2×12 + 1×M2×10 + 4×M2×6 + 3×M2×4**.
+So **trim now needs 4×M2×12 + 1×M2×16 + 4×M2×6 + 3×M2×4** (12 screws
+total, same count as pass 7 — B1+B2 replaces B 1-for-1, and D's screw
+grows a size again, M2×10 → M2×12 (pass 7) → M2×16 (pass 12));
+**current needs 4×M2×12 + 1×M2×10 + 4×M2×6 + 3×M2×4** (unchanged,
+frozen at 25mm).
 
 Bottom bosses A/B1/B2/C get a Ø4.5×2.2mm counterbore from z=0; boss D gets a
 deeper Ø4.5×4.0mm counterbore (its screw tip must stay ≤ plate_z[0] — the
