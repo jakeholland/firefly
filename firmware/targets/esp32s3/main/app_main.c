@@ -980,10 +980,14 @@ static int dbgconsole_compass_status(void *user, char *out, size_t cap)
     /* mag names the actual chip (ff_compass_mag_kind_name) rather than a
      * bare "found" — a bench engineer reading this line should not have
      * to cross-reference the i2c scan above it to know which of the
-     * three candidate parts responded. */
+     * three candidate parts responded. imu likewise names the three-state
+     * ff_compass_imu_state_t (absent/no-data/ok, ff_compass_imu_state_name)
+     * rather than a bare found/absent — "no-data" is the state that
+     * flags a QMI8658 which identified and configured but never produced
+     * plausible accel data (2026-09-07 second-board bench evidence). */
     snprintf(out, cap, "mag=%s imu=%s heading=%s cal=%s",
              st.mag_present ? ff_compass_mag_kind_name(st.mag_kind) : "absent",
-             st.imu_present ? "found" : "absent", heading_buf, cal_valid ? "custom" : "identity");
+             ff_compass_imu_state_name(st.imu_state), heading_buf, cal_valid ? "custom" : "identity");
     return 0;
 }
 
@@ -1516,7 +1520,7 @@ void app_main(void)
      */
     esp_err_t const compass_err = ff_compass_init(ff_display_i2c_bus());
     ESP_LOGI(TAG, "S15 compass init: %s (mag=%s imu=%s)", (compass_err == ESP_OK) ? "ok" : esp_err_to_name(compass_err),
-             ff_compass_present() ? "found" : "absent", ff_compass_imu_present() ? "found" : "absent");
+             ff_compass_present() ? "found" : "absent", ff_compass_imu_state_name(ff_compass_status().imu_state));
 
     /* Load whatever calibration the settings store already has — S12
      * step 3's figure-eight ritual UI is what populates this for real

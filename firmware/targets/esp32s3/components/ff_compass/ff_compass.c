@@ -10,6 +10,7 @@
 #include <string.h>
 
 #include "esp_log.h"
+#include "esp_timer.h" /* esp_timer_get_time() — invalid-data/re-init timing, matching ff_display.c/ff_power.c's own now_ms convention */
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
@@ -50,7 +51,63 @@ static const char *TAG = "ff_compass";
 #define FF_QMI8658_REG_CTRL1 0x02
 #define FF_QMI8658_REG_CTRL2 0x03
 #define FF_QMI8658_REG_CTRL7 0x08
+#define FF_QMI8658_REG_STATUS0 0x2E /* Output Data Status Register, Table 27 */
+#define FF_QMI8658_REG_RESET 0x60   /* Soft Reset Register, Table 31 */
 #define FF_QMI8658_REG_AX_L 0x35 /* 6-byte burst: AX_L,AX_H,AY_L,AY_H,AZ_L,AZ_H */
+
+/* Second-board bring-up hardening (2026-09-07 bench evidence: a factory-
+ * fresh QMI8658 identified correctly at WHO_AM_I but then produced
+ * 0x8000/0x7FFF sentinel accel samples forever — the accel engine never
+ * actually started, even though every bring-up write returned ESP_OK).
+ * Register facts below are cited from the QST QMI8658C datasheet
+ * (Rev 0.9, "© 2022 QST Corporation", fetched 2026-09-07 via
+ * https://files.waveshare.com/wiki/common/QMI8658A.pdf — Waveshare's own
+ * mirror of the part datasheet for this exact board):
+ *
+ * - "RESET  w  96  0x60  Soft Reset Register - Write 0xB0 to this
+ *   register from any modes, will trigger the sensor reset process
+ *   immediately." (Table 31, section 5.8)
+ * - "STATUS0  r  46  0x2E  Output Data Over Run and Data Availability."
+ *   (Table 27), bit-field table: bit0 aDA "Accelerometer new data
+ *   available: 0 = No updates since last read, 1 = New data available."
+ *   (section on STATUS0, same page)
+ * - Section 7.1/7.2 ("General Mode Transitioning"/"Transition Times"):
+ *   "Upon exiting the No Power state ... or exiting a Software Reset
+ *   state, the part will enter the Power-On Default state" — System Turn
+ *   On Time t0 is typ. 150 ms (Table 7 note 8), then Accel Turn On Time
+ *   adds t2 (typ. 3 ms) + t5 (3/ODR). This driver does NOT block boot for
+ *   that full worst-case sum: FF_QMI8658_RESET_SETTLE_MS below only
+ *   guarantees the RESET register's own hardware-reset window has
+ *   cleared before the bring-up writes land (matching this task's
+ *   bench-verified minimum); FF_QMI8658_DATA_READY_TIMEOUT_MS's STATUS0
+ *   poll is what actually gates the first trusted read, so it — not a
+ *   fixed sleep — absorbs whatever the real accel turn-on time is on a
+ *   given part.
+ */
+#define FF_QMI8658_RESET_VAL 0xB0
+#define FF_QMI8658_RESET_SETTLE_MS 15 /* >= the reset-to-command-acceptance minimum this task specifies */
+#define FF_QMI8658_STATUS0_ADA_BIT 0x01u /* STATUS0 bit0 — accel new-data-available */
+#define FF_QMI8658_DATA_READY_POLL_MS 5
+#define FF_QMI8658_DATA_READY_TIMEOUT_MS 200 /* generous bound over the datasheet's typ. accel turn-on time */
+
+/* Runtime data validation + rate-limited re-init (see this file's
+ * ff_compass_imu_validate/ff_compass_imu_maybe_reinit). A raw axis
+ * sitting exactly at the int16 rail (0x8000 or 0x7FFF) is QMI8658's own
+ * ADC/analog-engine sentinel/saturation pattern, never a real sample;
+ * the magnitude band below is a plausibility check on top of that,
+ * bounding "gravity plus whatever tilt+noise a handheld puck sees" at
+ * the CTRL2-configured ±4g range (8192 LSB/g, QMI8658C datasheet Table 7
+ * "Sensitivity Scale Factor" row "±4g -> 8,192"). 0.3g/3g are this
+ * task's own thresholds, not a datasheet value. */
+#define FF_QMI8658_ACCEL_SENTINEL_MIN ((int16_t)-32768) /* 0x8000 */
+#define FF_QMI8658_ACCEL_SENTINEL_MAX ((int16_t)32767)  /* 0x7FFF */
+#define FF_QMI8658_ACCEL_LSB_PER_G 8192.0f               /* at CTRL2's configured ACC_RANGE_4G */
+#define FF_QMI8658_ACCEL_MIN_G 0.3f
+#define FF_QMI8658_ACCEL_MAX_G 3.0f
+
+#define FF_QMI8658_REINIT_INVALID_MS 2000u  /* re-run bring-up once invalid data persists this long */
+#define FF_QMI8658_REINIT_RATE_LIMIT_MS 5000u /* never attempt a re-init more often than this */
+#define FF_QMI8658_REINIT_MAX_ATTEMPTS 5      /* give up after this many consecutive failed re-inits */
 
 /* CTRL1 bit6 = address auto-increment, needed for the 6-byte AX_L..AZ_H
  * burst read below. Cited verbatim from the reference driver's own
@@ -336,6 +393,29 @@ static i2c_master_dev_handle_t s_imu_dev;
 static ff_compass_mag_kind_t s_mag_kind = FF_COMPASS_MAG_NONE;
 static bool s_imu_present;
 
+/* imu=ok|no-data|absent (ff_compass.h) — ABSENT until/unless
+ * ff_compass_probe_imu identifies the chip at all; NO_DATA once
+ * identified and configured but every accel sample so far has failed
+ * ff_compass_imu_validate (the second-board defect this driver now
+ * detects instead of silently fabricating a level reading forever); OK
+ * once at least one sample has validated. Only ever moves ABSENT ->
+ * {NO_DATA, OK} or NO_DATA <-> OK — never back to ABSENT while s_imu_dev
+ * stays open, since a re-init that fails a WHO_AM_I re-check tears the
+ * device down and this driver treats that as staying NO_DATA (a chip
+ * that answered once is not "absent", it is unhealthy). */
+static ff_compass_imu_state_t s_imu_state = FF_COMPASS_IMU_ABSENT;
+
+/* Runtime re-init bookkeeping for ff_compass_imu_maybe_reinit — see that
+ * function's own doc comment. All three are in units of
+ * esp_timer_get_time()/1000 milliseconds (ff_display.c/ff_power.c's own
+ * now_ms convention); 0 is a valid sentinel for
+ * "not currently in an invalid streak" / "never attempted yet" since
+ * esp_timer_get_time() is relative to boot, never exactly 0 by the time
+ * this driver's first sample runs. */
+static uint32_t s_imu_invalid_since_ms;
+static uint32_t s_imu_last_reinit_ms;
+static int s_imu_reinit_attempts;
+
 static ff_geo_cal_t s_cal;
 static bool s_cal_valid;
 
@@ -366,6 +446,7 @@ static ff_vec3_t s_last_mag_board = {0.0f, 0.0f, 0.0f};
  * 10 Hz for the rest of the session (PR #212 review: gate on this). */
 static bool s_mag_read_warned;
 static bool s_imu_read_warned;
+static bool s_imu_invalid_warned; /* same "log once" posture, for ff_compass_imu_validate rejections */
 
 /* =====================================================================
  * Small I2C helpers shared by every probe/bring-up/read below.
@@ -394,6 +475,90 @@ static esp_err_t ff_compass_reg_read(i2c_master_dev_handle_t dev, uint8_t reg, u
 /* =====================================================================
  * Probe + bring-up: onboard QMI8658 IMU.
  * ===================================================================== */
+
+/* Address the IMU identified at, kept so a runtime re-init
+ * (ff_compass_imu_maybe_reinit) can re-run the SAME bring-up sequence on
+ * the SAME already-open device handle without re-probing both
+ * candidate addresses again. Meaningless while s_imu_dev is NULL. */
+static uint16_t s_imu_addr;
+
+/* ff_compass_imu_bringup — the QMI8658 bring-up sequence proper, run
+ * against an already-open `dev` at `addr` (for logging only): soft
+ * reset, settle, re-verify WHO_AM_I, then CTRL1/CTRL2/CTRL7. Shared by
+ * the initial probe (ff_compass_probe_imu) and the runtime re-init path
+ * (ff_compass_imu_maybe_reinit) — see this file's FF_QMI8658_REG_RESET
+ * block comment for the datasheet citations behind every step and every
+ * timing constant used here. Returns ESP_OK only if every step
+ * succeeded AND the post-reset WHO_AM_I re-read still matches; any
+ * failure leaves `dev`'s registers in whatever partial state the failed
+ * write left them in (same posture the pre-existing code already had
+ * for a bring-up write failure) — the caller decides whether that means
+ * "treat as absent" (first probe) or "still configured, try again
+ * later" (re-init). */
+static esp_err_t ff_compass_imu_bringup(i2c_master_dev_handle_t dev, uint16_t addr)
+{
+    /* 1. Soft reset (RESET=0x60, write 0xB0 — QMI8658C datasheet Table
+     * 31, cited in full on FF_QMI8658_REG_RESET above). */
+    esp_err_t const rst = ff_compass_reg_write(dev, FF_QMI8658_REG_RESET, FF_QMI8658_RESET_VAL);
+    if (rst != ESP_OK) {
+        ESP_LOGW(TAG, "QMI8658 @0x%02X: soft-reset write failed (%s)", addr, esp_err_to_name(rst));
+        return rst;
+    }
+
+    /* 2. Settle — see FF_QMI8658_RESET_SETTLE_MS's own comment for why
+     * this is NOT the datasheet's full ~150 ms System Turn On Time. */
+    vTaskDelay(pdMS_TO_TICKS(FF_QMI8658_RESET_SETTLE_MS));
+
+    /* 3. Re-verify WHO_AM_I post-reset — a chip that just reset should
+     * still identify the same way; if it doesn't (NACK, wrong value),
+     * something is wrong with the reset itself and writing config on
+     * top of it would be building on an unverified foundation. */
+    uint8_t who = 0;
+    esp_err_t const who_err = ff_compass_reg_read(dev, FF_QMI8658_REG_WHO_AM_I, &who, 1);
+    if (who_err != ESP_OK || who != FF_QMI8658_WHO_AM_I_VAL) {
+        ESP_LOGW(TAG, "QMI8658 @0x%02X: post-reset WHO_AM_I re-check failed (err=%s who=0x%02X)", addr,
+                 esp_err_to_name(who_err), who);
+        return (who_err != ESP_OK) ? who_err : ESP_ERR_INVALID_RESPONSE;
+    }
+
+    /* 4-6. CTRL1 (address auto-increment), CTRL2 (accel range/ODR),
+     * CTRL7 (aEN|sys_hs) — same bytes/citations the pre-existing code
+     * already used, just now run after a verified reset rather than
+     * straight after the first WHO_AM_I. */
+    esp_err_t const c1 = ff_compass_reg_write(dev, FF_QMI8658_REG_CTRL1, FF_QMI8658_CTRL1_VAL);
+    esp_err_t const c2 = ff_compass_reg_write(dev, FF_QMI8658_REG_CTRL2, FF_QMI8658_CTRL2_VAL);
+    esp_err_t const c7 = ff_compass_reg_write(dev, FF_QMI8658_REG_CTRL7, FF_QMI8658_CTRL7_VAL);
+    if (c1 != ESP_OK || c2 != ESP_OK || c7 != ESP_OK) {
+        ESP_LOGW(TAG, "QMI8658 @0x%02X: bring-up write failed (CTRL1=%s CTRL2=%s CTRL7=%s)", addr,
+                 esp_err_to_name(c1), esp_err_to_name(c2), esp_err_to_name(c7));
+        return ESP_FAIL;
+    }
+    return ESP_OK;
+}
+
+/* ff_compass_imu_wait_data_ready — poll STATUS0 (0x2E) bit0 (aDA) until
+ * it reads 1 or `timeout_ms` elapses, per this file's FF_QMI8658_REG_RESET
+ * block comment. Returns true iff aDA was observed set — this is a
+ * diagnostic wait for the BOOT log/initial state only
+ * (ff_compass_probe_imu); ff_compass_read() does its own per-sample
+ * validation regardless of what this returned, so a false here degrades
+ * the reported imu_state (NO_DATA instead of OK) rather than ever
+ * blocking a real read. */
+static bool ff_compass_imu_wait_data_ready(i2c_master_dev_handle_t dev, uint32_t timeout_ms)
+{
+    uint32_t waited_ms = 0;
+    while (waited_ms <= timeout_ms) {
+        uint8_t status0 = 0;
+        if (ff_compass_reg_read(dev, FF_QMI8658_REG_STATUS0, &status0, 1) == ESP_OK &&
+            (status0 & FF_QMI8658_STATUS0_ADA_BIT) != 0) {
+            return true;
+        }
+        vTaskDelay(pdMS_TO_TICKS(FF_QMI8658_DATA_READY_POLL_MS));
+        waited_ms += FF_QMI8658_DATA_READY_POLL_MS;
+    }
+    return false;
+}
+
 static void ff_compass_probe_imu(i2c_master_bus_handle_t bus)
 {
     uint16_t const addrs[2] = {FF_QMI8658_ADDR_PRIMARY, FF_QMI8658_ADDR_ALT};
@@ -407,25 +572,95 @@ static void ff_compass_probe_imu(i2c_master_bus_handle_t bus)
         uint8_t who = 0;
         esp_err_t err = ff_compass_reg_read(dev, FF_QMI8658_REG_WHO_AM_I, &who, 1);
         if (err == ESP_OK && who == FF_QMI8658_WHO_AM_I_VAL) {
-            esp_err_t const c1 = ff_compass_reg_write(dev, FF_QMI8658_REG_CTRL1, FF_QMI8658_CTRL1_VAL);
-            esp_err_t const c2 = ff_compass_reg_write(dev, FF_QMI8658_REG_CTRL2, FF_QMI8658_CTRL2_VAL);
-            esp_err_t const c7 = ff_compass_reg_write(dev, FF_QMI8658_REG_CTRL7, FF_QMI8658_CTRL7_VAL);
-            if (c1 == ESP_OK && c2 == ESP_OK && c7 == ESP_OK) {
-                vTaskDelay(pdMS_TO_TICKS(10)); /* let the accel engine settle before the first real read */
+            if (ff_compass_imu_bringup(dev, addrs[i]) == ESP_OK) {
                 s_imu_dev = dev;
+                s_imu_addr = addrs[i];
                 s_imu_present = true;
+                bool const ready = ff_compass_imu_wait_data_ready(dev, FF_QMI8658_DATA_READY_TIMEOUT_MS);
+                s_imu_state = ready ? FF_COMPASS_IMU_OK : FF_COMPASS_IMU_NO_DATA;
                 ESP_LOGI(TAG,
-                         "QMI8658 IMU found @0x%02X (WHO_AM_I=0x%02X) — accel up (CTRL2=0x%02X CTRL7=0x%02X)",
-                         addrs[i], who, FF_QMI8658_CTRL2_VAL, FF_QMI8658_CTRL7_VAL);
+                         "QMI8658 IMU found @0x%02X (WHO_AM_I=0x%02X) — accel up (CTRL2=0x%02X CTRL7=0x%02X), "
+                         "data-ready=%s",
+                         addrs[i], who, FF_QMI8658_CTRL2_VAL, FF_QMI8658_CTRL7_VAL, ready ? "yes" : "NOT YET");
+                if (!ready) {
+                    ESP_LOGW(TAG,
+                             "QMI8658 @0x%02X: STATUS0 aDA never set within %u ms of bring-up — accel engine may "
+                             "not have started (bench evidence, 2026-09-07: this happens on a real board even "
+                             "though every bring-up write returned ESP_OK); ff_compass_read will keep validating "
+                             "every sample and re-run bring-up if data never becomes real",
+                             addrs[i], (unsigned)FF_QMI8658_DATA_READY_TIMEOUT_MS);
+                }
                 return;
             }
-            ESP_LOGW(TAG, "QMI8658 @0x%02X identified but a bring-up write failed — treating as absent",
-                     addrs[i]);
+            ESP_LOGW(TAG, "QMI8658 @0x%02X identified but bring-up failed — treating as absent", addrs[i]);
         }
         i2c_master_bus_rm_device(dev);
     }
 
     ESP_LOGW(TAG, "compass: no IMU — assuming level (tilt compensation unavailable on this path)");
+}
+
+/* ff_compass_imu_validate — true iff `raw` (sensor-frame, pre-remap) is
+ * plausible real accelerometer data at the CTRL2-configured ±4g range:
+ * no axis sits exactly at the int16 rail (the QMI8658's own
+ * saturation/never-converted sentinel pattern — this file's
+ * FF_QMI8658_REG_RESET block comment cites where 0.3g/3g come from) and
+ * the vector's magnitude falls within [0.3g, 3g]. Comparing squared
+ * magnitude against squared bounds avoids a sqrtf on this file's 10 Hz
+ * hot path for no behavioral difference (both sides are non-negative by
+ * construction). */
+static bool ff_compass_imu_validate(int16_t rx, int16_t ry, int16_t rz)
+{
+    if (rx == FF_QMI8658_ACCEL_SENTINEL_MIN || rx == FF_QMI8658_ACCEL_SENTINEL_MAX ||
+        ry == FF_QMI8658_ACCEL_SENTINEL_MIN || ry == FF_QMI8658_ACCEL_SENTINEL_MAX ||
+        rz == FF_QMI8658_ACCEL_SENTINEL_MIN || rz == FF_QMI8658_ACCEL_SENTINEL_MAX) {
+        return false;
+    }
+
+    float const min_lsb = FF_QMI8658_ACCEL_MIN_G * FF_QMI8658_ACCEL_LSB_PER_G;
+    float const max_lsb = FF_QMI8658_ACCEL_MAX_G * FF_QMI8658_ACCEL_LSB_PER_G;
+    float const mag_sq = (float)rx * (float)rx + (float)ry * (float)ry + (float)rz * (float)rz;
+    return mag_sq >= (min_lsb * min_lsb) && mag_sq <= (max_lsb * max_lsb);
+}
+
+/* ff_compass_imu_maybe_reinit — called from ff_compass_read() only while
+ * the current sample just failed ff_compass_imu_validate. Tracks how
+ * long the invalid streak has run (`now_ms`) and, once it exceeds
+ * FF_QMI8658_REINIT_INVALID_MS, re-runs ff_compass_imu_bringup on the
+ * SAME device handle — rate-limited to at most once per
+ * FF_QMI8658_REINIT_RATE_LIMIT_MS and capped at
+ * FF_QMI8658_REINIT_MAX_ATTEMPTS total attempts, so a permanently dead
+ * accel engine (this task's own bench case) logs a bounded number of
+ * retries rather than hammering the shared I2C bus forever. Every
+ * attempt and its outcome is logged — never silent. Leaves s_imu_state
+ * at NO_DATA regardless of outcome; ff_compass_read's own caller moves
+ * it back to OK the moment a subsequent sample validates. */
+static void ff_compass_imu_maybe_reinit(uint32_t now_ms)
+{
+    if (s_imu_invalid_since_ms == 0) {
+        s_imu_invalid_since_ms = (now_ms != 0) ? now_ms : 1; /* 0 stays reserved for "no streak" */
+        return;
+    }
+    if ((now_ms - s_imu_invalid_since_ms) < FF_QMI8658_REINIT_INVALID_MS) {
+        return;
+    }
+    if (s_imu_reinit_attempts >= FF_QMI8658_REINIT_MAX_ATTEMPTS) {
+        return; /* already gave up — logged once, on the attempt that hit the cap below */
+    }
+    if (s_imu_last_reinit_ms != 0 && (now_ms - s_imu_last_reinit_ms) < FF_QMI8658_REINIT_RATE_LIMIT_MS) {
+        return;
+    }
+
+    s_imu_last_reinit_ms = (now_ms != 0) ? now_ms : 1;
+    s_imu_reinit_attempts++;
+    esp_err_t const err = ff_compass_imu_bringup(s_imu_dev, s_imu_addr);
+    ESP_LOGW(TAG, "QMI8658 @0x%02X: accel data invalid for >%u ms — re-init attempt %d/%d: %s", s_imu_addr,
+             (unsigned)FF_QMI8658_REINIT_INVALID_MS, s_imu_reinit_attempts, FF_QMI8658_REINIT_MAX_ATTEMPTS,
+             (err == ESP_OK) ? "bring-up ok, watching next samples" : esp_err_to_name(err));
+    if (s_imu_reinit_attempts >= FF_QMI8658_REINIT_MAX_ATTEMPTS) {
+        ESP_LOGW(TAG, "QMI8658 @0x%02X: giving up after %d re-init attempts — imu=no-data until next boot",
+                 s_imu_addr, s_imu_reinit_attempts);
+    }
 }
 
 /* =====================================================================
@@ -565,6 +800,11 @@ esp_err_t ff_compass_init(i2c_master_bus_handle_t bus)
     s_imu_dev = NULL;
     s_mag_kind = FF_COMPASS_MAG_NONE;
     s_imu_present = false;
+    s_imu_addr = 0;
+    s_imu_state = FF_COMPASS_IMU_ABSENT;
+    s_imu_invalid_since_ms = 0;
+    s_imu_last_reinit_ms = 0;
+    s_imu_reinit_attempts = 0;
 
     if (bus == NULL) {
         ESP_LOGE(TAG, "ff_compass_init called with a NULL I2C bus handle (ff_display_i2c_bus not up yet?)");
@@ -599,6 +839,16 @@ char const *ff_compass_mag_kind_name(ff_compass_mag_kind_t kind)
     case FF_COMPASS_MAG_NONE: return "none";
     }
     return "none"; /* unreachable for a value from this file's own enum, but -Werror wants a return on every path */
+}
+
+char const *ff_compass_imu_state_name(ff_compass_imu_state_t state)
+{
+    switch (state) {
+    case FF_COMPASS_IMU_ABSENT: return "absent";
+    case FF_COMPASS_IMU_NO_DATA: return "no-data";
+    case FF_COMPASS_IMU_OK: return "ok";
+    }
+    return "absent"; /* unreachable for a value from this file's own enum, but -Werror wants a return on every path */
 }
 
 bool ff_compass_imu_present(void)
@@ -675,13 +925,40 @@ float ff_compass_read(void)
     if (s_imu_present && s_imu_dev != NULL) {
         uint8_t abuf[6];
         if (ff_compass_reg_read(s_imu_dev, FF_QMI8658_REG_AX_L, abuf, sizeof(abuf)) == ESP_OK) {
-            ff_vec3_t const accel_raw = {
-                .x = (float)(int16_t)((abuf[1] << 8) | abuf[0]),
-                .y = (float)(int16_t)((abuf[3] << 8) | abuf[2]),
-                .z = (float)(int16_t)((abuf[5] << 8) | abuf[4]),
-            };
-            accel_board = ff_compass_remap(accel_raw, FF_IMU_BOARD_X_SRC, FF_IMU_BOARD_X_SIGN, FF_IMU_BOARD_Y_SRC,
-                                            FF_IMU_BOARD_Y_SIGN, FF_IMU_BOARD_Z_SRC, FF_IMU_BOARD_Z_SIGN);
+            int16_t const rx = (int16_t)((abuf[1] << 8) | abuf[0]);
+            int16_t const ry = (int16_t)((abuf[3] << 8) | abuf[2]);
+            int16_t const rz = (int16_t)((abuf[5] << 8) | abuf[4]);
+
+            if (ff_compass_imu_validate(rx, ry, rz)) {
+                ff_vec3_t const accel_raw = {.x = (float)rx, .y = (float)ry, .z = (float)rz};
+                accel_board = ff_compass_remap(accel_raw, FF_IMU_BOARD_X_SRC, FF_IMU_BOARD_X_SIGN,
+                                                FF_IMU_BOARD_Y_SRC, FF_IMU_BOARD_Y_SIGN, FF_IMU_BOARD_Z_SRC,
+                                                FF_IMU_BOARD_Z_SIGN);
+                s_imu_state = FF_COMPASS_IMU_OK;
+                s_imu_invalid_since_ms = 0;
+                s_imu_reinit_attempts = 0; /* a real sample recovered — a future fault gets a fresh backoff budget */
+            } else {
+                /* Sentinel (0x8000/0x7FFF) or out-of-[0.3g,3g] data —
+                 * the second-board defect this driver now catches
+                 * instead of feeding ff_geo_heading_deg a fabricated
+                 * level vector forever (this file's FF_QMI8658_REG_RESET
+                 * block comment has the bench evidence and datasheet
+                 * citations). Degrade exactly like a transient NACK
+                 * (assumed level, never a fabricated tilt), but ALSO
+                 * track how long this has been going on so a
+                 * permanently-stuck accel engine gets a bounded re-init
+                 * retry rather than reading "assumed level" forever. */
+                if (!s_imu_invalid_warned) {
+                    s_imu_invalid_warned = true;
+                    ESP_LOGW(TAG,
+                             "IMU accel data invalid (raw (%d,%d,%d) — sentinel or outside [%.1fg,%.1fg]) — "
+                             "assuming level this sample (logged once; re-init retried if this persists)",
+                             rx, ry, rz, (double)FF_QMI8658_ACCEL_MIN_G, (double)FF_QMI8658_ACCEL_MAX_G);
+                }
+                s_imu_state = FF_COMPASS_IMU_NO_DATA;
+                accel_board = (ff_vec3_t){0.0f, 0.0f, 1.0f};
+                ff_compass_imu_maybe_reinit((uint32_t)(esp_timer_get_time() / 1000));
+            }
         } else {
             /* A transient read failure degrades to level-assumed rather
              * than feeding ff_geo_heading_deg stale/garbage tilt data. */
@@ -718,6 +995,7 @@ ff_compass_status_t ff_compass_status(void)
     st.mag_present = ff_compass_present();
     st.mag_kind = ff_compass_mag_kind();
     st.imu_present = ff_compass_imu_present();
+    st.imu_state = s_imu_state;
     st.heading_valid = (s_last_heading_deg >= 0.0f);
     st.last_heading_deg = s_last_heading_deg;
     return st;
