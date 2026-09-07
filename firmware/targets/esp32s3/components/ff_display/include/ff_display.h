@@ -93,6 +93,53 @@ esp_err_t ff_display_expander_init(void);
 i2c_master_bus_handle_t ff_display_i2c_bus(void);
 
 /**
+ * ff_display_i2c_bus_lock / ff_display_i2c_bus_unlock — take/release the
+ * mutex guarding the shared I2C bus `ff_display_i2c_bus()` returns.
+ *
+ * Bench finding (2026-09-07, real puck, GY-273 wired to the same bus as
+ * the SPD2010 touch controller): with `ff_compass` compiled in, the
+ * touch indev reported a phantom press at an invalid point roughly once
+ * a second even with no finger on the glass, and NO real touch (tap,
+ * swipe, back gesture) ever reached the UI — 40s with the compass
+ * compiled out showed zero phantom presses. Root cause: the SPD2010
+ * touch read (esp_lcd_touch_spd2010's `tp_read_data`) is NOT one atomic
+ * I2C transaction — it is a WRITE that latches an internal register
+ * pointer immediately followed by a SEPARATE READ, sometimes looped 2-3x
+ * to drain a multi-packet HDP payload. The ESP-IDF `i2c_master` driver's
+ * own bus lock only serializes ONE `i2c_master_transmit`/`_receive` call
+ * at a time — it does nothing to stop `ff_compass_read()` (a SEPARATE
+ * FreeRTOS task: app_main's main render loop, 10 Hz) from slipping a
+ * transaction to the magnetometer/IMU (0x2C/0x2C-ish/0x6B) in BETWEEN
+ * two of the touch driver's own calls, on the SAME shared bus handle.
+ * That interleaving is what corrupted the touch read into reporting a
+ * point that survived every existing clamp.
+ *
+ * These two calls close that window: the touch read path
+ * (`ff_display.c`'s `ff_touch_gate_read_cb`, wrapping the vendored
+ * esp_lvgl_port touch read callback) and `ff_compass_read()` both take
+ * this mutex around their ENTIRE multi-transaction sequence — not just
+ * one `i2c_master` call — so the two protocols can never interleave on
+ * the wire.
+ *
+ * `timeout_ms` of 0 waits forever (matching `ff_display_lock`'s own
+ * convention above); returns false — without touching the bus — on a
+ * timeout. Both current callers pass a short, non-zero timeout and
+ * treat a failed lock as "skip this poll/sample" rather than block: see
+ * `ff_touch_gate_read_cb` (reports no touch this poll, tries again a
+ * few ms later) and `ff_compass_read` (reports the honest -1 "unknown"
+ * heading this sample, same posture as a NACK/timeout already had).
+ * Neither caller ever waits more than a few ms, so the LVGL task is
+ * never blocked for long even under a genuinely wedged bus.
+ *
+ * Safe to call before `ff_display_expander_init()` has brought the bus
+ * up (or if it never succeeds): both functions are then a documented
+ * no-op (lock always "succeeds" instantly, unlock does nothing) — there
+ * is no bus yet for anything to interleave on.
+ */
+bool ff_display_i2c_bus_lock(uint32_t timeout_ms);
+void ff_display_i2c_bus_unlock(void);
+
+/**
  * ff_display_panel_init — bring up the SPD2010 over QSPI and turn the
  * backlight on. Requires ff_display_expander_init() to have released
  * LCD_RST first. On success the panel is initialised, oriented, and

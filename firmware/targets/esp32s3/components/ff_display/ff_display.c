@@ -51,6 +51,7 @@
 #include "esp_lvgl_port.h"
 #include "esp_timer.h" /* S26 slice (g) — esp_timer_get_time() for the boot-splash timing log */
 #include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h" /* touch-vs-compass I2C fix: s_i2c_bus_mutex, ff_display_i2c_bus_lock/unlock */
 #include "freertos/task.h"
 
 static const char *TAG = "ff_display";
@@ -149,6 +150,14 @@ _Static_assert(FF_LCD_X_GAP % 4 == 0 && FF_LCD_Y_GAP % 4 == 0,
  * (see ff_display_internal.h's own doc comment for why an extern
  * declaration, not an accessor function). */
 static i2c_master_bus_handle_t s_i2c_bus;
+/* Guards the shared bus's MULTI-transaction protocols (the SPD2010
+ * touch read and ff_compass_read's mag+imu sample) against interleaving
+ * across the two FreeRTOS tasks that issue them — see
+ * ff_display_i2c_bus_lock's doc comment (ff_display.h) for the bench
+ * evidence and full rationale. Created alongside s_i2c_bus in
+ * ff_display_expander_init; NULL (and both lock/unlock a documented
+ * no-op) before that. */
+static SemaphoreHandle_t s_i2c_bus_mutex;
 static esp_io_expander_handle_t s_io_exp;
 static esp_lcd_panel_io_handle_t s_panel_io;
 esp_lcd_panel_handle_t ffd_panel;
@@ -345,6 +354,17 @@ esp_err_t ff_display_expander_init(void)
     ESP_LOGI(TAG, "I2C bus up (port %d, SDA=%d SCL=%d, %d Hz)", FF_I2C_PORT, FF_PIN_I2C_SDA,
              FF_PIN_I2C_SCL, FF_I2C_HZ);
 
+    /* Touch-vs-compass I2C fix: the mutex ff_display_i2c_bus_lock/unlock
+     * expose, created here (right alongside the bus itself) so it is
+     * live before either periodic user (the LVGL touch poll, the
+     * compass sample tick) can possibly run. See that function's doc
+     * comment (ff_display.h) for the full rationale. */
+    s_i2c_bus_mutex = xSemaphoreCreateMutex();
+    if (s_i2c_bus_mutex == NULL) {
+        ESP_LOGE(TAG, "i2c bus mutex create failed (OOM)");
+        return ESP_ERR_NO_MEM;
+    }
+
     /* TCA9554 @ 0x20 (ADDRESS_000). If the ACK below fails, the expander
      * is the wrong part/address — everything downstream stays dark. */
     err = esp_io_expander_new_i2c_tca9554(s_i2c_bus, ESP_IO_EXPANDER_I2C_TCA9554_ADDRESS_000,
@@ -405,6 +425,26 @@ esp_err_t ff_display_expander_init(void)
 i2c_master_bus_handle_t ff_display_i2c_bus(void)
 {
     return s_i2c_bus;
+}
+
+/* See ff_display.h's doc comment on these two for the full rationale
+ * (the touch-vs-compass I2C interleaving bug and fix). NULL-mutex (bus
+ * not up yet) is a documented no-op in both directions, matching this
+ * file's existing "no handle yet" convention for every other accessor. */
+bool ff_display_i2c_bus_lock(uint32_t timeout_ms)
+{
+    if (s_i2c_bus_mutex == NULL) {
+        return true;
+    }
+    TickType_t const ticks = (timeout_ms == 0) ? portMAX_DELAY : pdMS_TO_TICKS(timeout_ms);
+    return xSemaphoreTake(s_i2c_bus_mutex, ticks) == pdTRUE;
+}
+
+void ff_display_i2c_bus_unlock(void)
+{
+    if (s_i2c_bus_mutex != NULL) {
+        xSemaphoreGive(s_i2c_bus_mutex);
+    }
 }
 
 /* =====================================================================
@@ -1000,8 +1040,25 @@ lv_display_t *ff_display_lvgl_start(void)
 /* =====================================================================
  * b3 — SPD2010 touch -> LVGL pointer indev (the ONLY input path).
  * ===================================================================== */
+/* Minimum gap between consecutive "touch @" log lines. A real finger
+ * press/drag fires LV_EVENT_PRESSED at most once per press (LVGL, not
+ * this callback, decides when that event fires), but a
+ * misbehaving/corrupted touch controller cycling PRESSED<->RELEASED
+ * rapidly could otherwise spam this at whatever rate the LVGL indev
+ * polls — see ff_display_i2c_bus_lock's doc comment for the exact bug
+ * this repo hit. 200 ms is generous headroom above a genuine human tap
+ * cadence while still bounding the worst case. */
+#define FF_TOUCH_LOG_MIN_GAP_MS 200
+
 static void ff_touch_press_log_cb(lv_event_t *e)
 {
+    static int64_t s_last_log_us;
+    int64_t const now_us = esp_timer_get_time();
+    if (s_last_log_us != 0 && (now_us - s_last_log_us) < (int64_t)FF_TOUCH_LOG_MIN_GAP_MS * 1000) {
+        return;
+    }
+    s_last_log_us = now_us;
+
     lv_indev_t *indev = lv_event_get_indev(e);
     lv_point_t p;
     lv_indev_get_point(indev, &p);
@@ -1093,10 +1150,33 @@ void ff_display_touch_set_idle(ff_idle_t *idle)
  * PRESSED style, no CLICKED. Wake itself happens via `ff_idle_touch_gate`
  * firing `ff_idle_input` internally (same call every other input source
  * makes) — this function does not call it separately. */
+/* Timeout for acquiring the shared I2C bus lock (ff_display_i2c_bus_lock)
+ * before this poll's SPD2010 touch read. See that function's doc comment
+ * for why this exists at all. Short on purpose: this runs on every LVGL
+ * indev poll, and ff_compass_read's own worst-case hold (a real bus
+ * fault on one of its two reads) is bounded by FF_COMPASS_I2C_TIMEOUT_MS
+ * — this only needs to outlast that, not guard against it forever. A
+ * failed lock skips THIS poll's touch read entirely (reported as no
+ * touch, never a press) rather than block the LVGL task. */
+#define FF_TOUCH_I2C_LOCK_TIMEOUT_MS 20
+
 static void ff_touch_gate_read_cb(lv_indev_t *indev, lv_indev_data_t *data)
 {
-    if (s_touch_orig_read_cb != NULL) {
-        s_touch_orig_read_cb(indev, data);
+    /* Touch-vs-compass I2C fix (ff_display_i2c_bus_lock's own doc
+     * comment has the full bench evidence): fence the ENTIRE
+     * multi-transaction SPD2010 read behind the shared bus mutex so it
+     * can never interleave with ff_compass_read's own multi-transaction
+     * sample on the other task. A failed lock reports no touch this
+     * poll — the next poll (milliseconds away) tries again — rather
+     * than risk reading mid-compass-transaction garbage or blocking the
+     * LVGL task waiting it out. */
+    if (ff_display_i2c_bus_lock(FF_TOUCH_I2C_LOCK_TIMEOUT_MS)) {
+        if (s_touch_orig_read_cb != NULL) {
+            s_touch_orig_read_cb(indev, data);
+        }
+        ff_display_i2c_bus_unlock();
+    } else {
+        data->state = LV_INDEV_STATE_RELEASED;
     }
 
     bool const physically_down = (data->state == LV_INDEV_STATE_PRESSED);
