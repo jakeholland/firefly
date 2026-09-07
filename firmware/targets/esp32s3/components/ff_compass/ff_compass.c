@@ -200,31 +200,41 @@ static const char *TAG = "ff_compass";
  * options it ships, this driver does NOT assume the P's mounting
  * produces the same board-frame result as the L/HMC row.
  *
- * 2026-09-10 (hardware/case pass 10): the module's mounting CHANGED —
- * it now sits in a fixed, fenced pocket at the lanyard end (case-screw-
- * boss-C-adjacent, standing on edge against the inner wall, NOT taped
- * flat against it as this comment used to describe) — see hardware/
- * case/README.md's pass-10 section for the placement/verify numbers.
- * The row's numeric values below are the OLD flat-mount guess and are
- * NOT valid for this mounting; they are left in place only so the
- * driver keeps building, and MUST be re-derived on the bench (or from
- * the QMC5883P's own datasheet Package 3-D View) before trusting a
- * single heading reading. What IS fixed by the new pocket's own
- * geometry (`firefly_case.py`'s `mag_module` orientation comment) is
- * the module's PCB-frame mapping into the puck's own (x,y,z) — i.e.
- * which physical edge of the module points which way, NOT yet which
- * sensor axis that is (that still needs the chip's silkscreen/
- * datasheet orientation on top of this):
+ * 2026-09-10 (hardware/case pass 10, REDONE same day): the module's
+ * mounting CHANGED — the coordinator rejected the first pass-10 fix (a
+ * fenced pocket standing on edge at the lanyard end) for putting a boxy
+ * bump on the case's outer silhouette. It now hangs COMPONENTS-DOWN from
+ * the TOP's own inner ceiling, directly above the GPS patch antenna's
+ * frame (no pocket, no brow, no outer-wall contact at all) — see
+ * hardware/case/README.md's pass-10 section for the placement/verify
+ * numbers. The row's numeric values below are still an OLD guess (from
+ * before EITHER real mounting existed) and are NOT valid for this
+ * mounting; they are left in place only so the driver keeps building,
+ * and MUST be re-derived on the bench (or from the QMC5883P's own
+ * datasheet Package 3-D View) before trusting a single heading reading.
+ * What IS fixed by the new mount's own geometry (`firefly_case.py`'s
+ * `mag_module` orientation comment) is the module's PCB-frame mapping
+ * into the puck's own (x,y,z) — i.e. which physical edge of the module
+ * points which way, NOT yet which sensor axis that is (that still needs
+ * the chip's silkscreen/datasheet orientation on top of this):
  *   - module's long PCB edge, HEADER side (local +x, 18.6mm axis)
- *     -> puck +z (up, toward the glass)
+ *     -> puck +y (toward the display end — the short wire run to the
+ *     back header's SDA/SCL/3V3/G)
  *   - module's long PCB edge, MOUNTING-HOLE side (local -x)
- *     -> puck -z (down, toward the floor; both pegs are here)
- *   - module's short PCB edge, local +y -> puck -y (toward the lanyard)
- *   - module's short PCB edge, local -y -> puck +y (toward the display)
- *   - module's COMPONENT/sensor face (local +z) -> puck -x (left) --
- *     faces the open cavity, away from the wall
- *   - module's SOLDER/header face (local -z) -> puck +x (right) --
- *     faces the outer wall/brow
+ *     -> puck -y (toward the lanyard end; both ceiling pegs are here)
+ *   - module's short PCB edge, local +y -> puck +x
+ *   - module's short PCB edge, local -y -> puck -x
+ *     (this axis is an arbitrary handedness choice — the mount places
+ *     both pegs and both rest pads by explicit (x,y) pairs, not by a
+ *     directional rule, so it carries no functional constraint)
+ *   - module's COMPONENT/sensor face (local +z) -> puck -z (DOWN,
+ *     toward the GPS patch/Bottom — the module is mounted
+ *     components-down, hanging off two Ø2.7 ceiling pegs + two rest
+ *     pads)
+ *   - module's SOLDER/header face (local -z) -> puck +z (UP, toward
+ *     the Top's ceiling — both mounting holes share local x=-7.21, i.e.
+ *     the same local z=0 plane, so both pegs land flush against the
+ *     same ceiling standoff)
  * Bench procedure: with this mapping known, place the sensor flat on a
  * known heading, read raw XYZ, and solve for (src, sign) per axis the
  * same way the L/HMC row above was derived — do NOT assume the values

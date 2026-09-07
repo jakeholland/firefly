@@ -98,21 +98,10 @@ def check_envelope(tris, params, name):
     brow_x0, brow_x1 = fx0 - FPC_BROW_BLEND - 0.5, fx1 + FPC_BROW_BLEND + 0.5
     brow_y0, brow_y1 = fy0 - FPC_BROW_BLEND - 0.5, fy1 + FPC_BROW_BLEND + 0.5
 
-    # 2026-09-10 pass 10: the compass-module mount's own brow (add_mag_brow
-    # in firefly_case.py, joined into BOTH Bottom and Top) intentionally
-    # raises the outer surface by up to mag_module['brow_height'] over its
-    # own footprint -- ported the same exception firefly_case.py's live
-    # check_body_envelope_vertices carries, so this offline script can't
-    # disagree with it.
-    is_case_body = name in ('Bottom', 'Top')
-    mm = params.get('mag_module')
-    mag_x0 = mag_x1 = mag_y0 = mag_y1 = mag_limit = None
-    if mm and is_case_body:
-        mmy0, mmy1 = mm['world_y']
-        fw = mm['fence_wall']
-        mag_x0, mag_x1 = mm['world_x'][1] - 3.0, mm['brow_x'][1] + 0.5
-        mag_y0, mag_y1 = mmy0 - fw - 1.5, mmy1 + fw + 1.5
-        mag_limit = outer_r + mm['brow_height'] + 0.15
+    # 2026-09-10 pass 10 REDO: the compass-module mount no longer has a
+    # brow (the rejected vertical-wall version did; the new ceiling-hung
+    # mount hangs well inboard of the true outer wall) -- no exemption
+    # needed here any more.
 
     bad = []
     seen = set()
@@ -127,8 +116,6 @@ def check_envelope(tris, params, name):
                 continue
             rho = rho_from_spine(ay, by, x, y)
             if is_top and brow_x0 <= x <= brow_x1 and brow_y0 <= y <= brow_y1 and rho <= brow_limit:
-                continue
-            if mm and is_case_body and mag_x0 <= x <= mag_x1 and mag_y0 <= y <= mag_y1 and rho <= mag_limit:
                 continue
             if rho > limit:
                 bad.append((round(x, 2), round(y, 2), round(z, 2), round(rho, 2)))
@@ -244,28 +231,17 @@ def scan_stl_overhangs(tris, down_z, bed_z, angle_tol_deg=1.0, min_cluster_mm2=3
 TOP_WL = [
     (-8.0, 8.0, 65.0, 81.0, 'usb_tunnel_floor'),
     (-32.0, 32.0, -12.0, 79.0, 'general_ceiling_overhang'),
-    # 2026-09-10 pass 10: the compass-module mount's own pocket/brow on
-    # the Top side ('current' variant -- real cluster centroid confirmed
-    # at (23.2,-15.3), 35mm^2) -- same reasoning/box as BOTTOM_WL's
-    # mag_module_pocket entry below, mirrored onto Top since the pocket
-    # spans both halves.
-    (15.0, 26.0, -20.0, 0.0, 'mag_module_pocket'),
 ]
 BOTTOM_WL = [
     (-15.0, 15.0, -26.0, -15.0, 'l76k_frame_ceiling'),
-    # 2026-09-10 pass 10: the compass-module mount's two Ø2.7 pegs are
-    # horizontal cylinders (axis along world X, printed with Bottom's own
-    # bed at z=0) -- their own underside arc is a real, but tiny, local
-    # overhang (~4.5mm^2 of unsupported arc per peg at worst, well under
-    # typical FDM bridging tolerance for a feature this size), plus a
-    # short flat span across the pocket's own back wall/floor. Whitelisted
-    # by location (both real cluster centroids, (23.2,-14.2) and
-    # (18.4,-4.7), fall inside this box), same reasoning as
-    # l76k_frame_ceiling above -- a genuinely local, unexpected overhang
-    # elsewhere in this footprint would NOT be covered by this box and
-    # would still fail the check.
-    (15.0, 26.0, -20.0, 0.0, 'mag_module_pocket'),
 ]
+# 2026-09-10 pass 10 REDO: the old 'mag_module_pocket' entries above (both
+# TOP_WL and BOTTOM_WL) were sized for the rejected vertical-wall mount's
+# horizontal pegs -- the new ceiling-hung mount (pegs/pads/fence, all
+# hanging from Top's own ceiling, nowhere near Bottom) falls entirely
+# within 'general_ceiling_overhang' on Top and touches Bottom not at all.
+# If a live scan of the new geometry reports a real local cluster here,
+# add a fresh entry sized from the actual reported centroid.
 
 
 def main():

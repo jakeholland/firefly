@@ -480,90 +480,90 @@ PARAMS = {
         'channel_min_skin': 1.2,
     },
 
-    # --- compass module mount (pass 10, 2026-09-06) ---
+    # --- compass module mount (pass 10 REDO, 2026-09-06) ---
     # GY-273 (QMC5883P) mount. Measured off Jake's Fusion model "HMC5883L
     # Mag v1" (mm, MODULE'S OWN LOCAL FRAME -- PCB top face at local
     # z=1.0, components on top; the five header pins are soldered from
     # BELOW in Jake's build).
     #
-    # Placement (see README's pass-10 section for the full free-volume
-    # derivation of candidates a/b/c): candidate (a), mounting on the
-    # Top's inner dome above the 3-board comms stack, is OUT --
-    # verify_stack3_clearance's own trim number (~4.2mm) is under the
-    # 4.5mm this would need. Candidate (b), flat on the Bottom floor
-    # between the stack and the lanyard wall, is OUT -- the stack's own
-    # frame already runs to within ~1.5mm of the true wall there (see
-    # 'bay.stack3'), nowhere near enough for an 18.6x14mm board in any
-    # flat orientation. Candidate (c), standing vertically against the
-    # lanyard-end inner wall, IS where this lands -- but a rigorous 2D
-    # grid search (pure Python, no Fusion -- see README) found the area
-    # immediately flanking the lug relief itself (|x|<13mm at the lug's
-    # own y) has under 10mm^2 free, nowhere near enough even standing on
-    # edge. The clear spot is a few mm further out, past BOTH dome-tip
-    # case-screw bosses (B2 at (12.5,-15), C at (15.5,-8)), on the +x
-    # side, using a local outward BROW (brow_height, same technique as
-    # add_fpc_brow) to recover the last ~1-3mm this candidate needs at
-    # the pocket's own Z extremes (the flat mid-band, z 10-18 trim, has
-    # natural room to spare; only the curved ends near the floor/ceiling
-    # are tight) -- computed to clear the true (brow-raised) outer
-    # surface by >=0.5mm at every corner, both variants (current, with
-    # its 2mm-larger outer_radius, clears with much more margin at the
-    # SAME brow height -- see the placement derivation for the numbers).
+    # Placement REDONE this pass: the coordinator rejected the original
+    # pass-10 placement (standing on edge at the lanyard end, needing an
+    # outward BROW -- see git history / the PR's earlier revisions) for
+    # putting a boxy bump on the pill's outer silhouette, which must stay
+    # clean. New placement: hanging from the TOP'S OWN INNER CEILING,
+    # directly above the GPS patch frame's open chimney (bay.gps_patch) --
+    # entirely inside space that is ALREADY open cavity (the GPS frame's
+    # ring wall retains the patch antenna only up to its own z[1]=18.8;
+    # above that, up through the ceiling, the frame's 25.5x25.5 opening is
+    # hollow by construction -- see build_gps_frame_body). No outer-wall
+    # interaction at all, no brow, no pocket cut needed.
     #
-    # Orientation (local -> world, SAME for both variants): local +x
-    # (the 18.6mm PCB axis, header edge at local x=+7.44) -> world +Z
-    # (up, toward the Top ceiling); local -x (mounting-hole edge, local
-    # x=-7.21) -> world -Z (down, toward the Bottom floor -- both pegs
-    # land on Bottom); local +y -> world -Y (toward the lanyard tip);
-    # local -y -> world +Y (toward the battery/GPS end); local +z (the
-    # component/sensor face) -> world -X (toward the open cavity/pocket
-    # opening); local -z (the header/solder face) -> world +X (toward
-    # the outer wall/brow). See mag_world_z/mag_world_y in
-    # firefly_case.py for the exact transform and firmware/ff_compass.c's
-    # own comment for the resulting axis-remap table.
+    # Stack height budget (ceiling down to the patch): standoff_h (2.5mm,
+    # doubling as the header/solder-joint allowance, local_header_below)
+    # + PCB thickness (1.0mm) + component bump (local_component_h, 1.0mm)
+    # = 4.5mm. Spare above the patch = top_ceiling_underside_z - 4.5 -
+    # gps_patch z[1] (18.8) -- see mag_module_clearance/mag_module_fits in
+    # firefly_case.py. TRIM: 26.0 - 4.5 - 18.8 = 2.7mm spare -- fits.
+    # CURRENT: 23.0 - 4.5 - 18.8 = -0.3mm -- does NOT fit (current's
+    # ceiling was frozen at the old 25mm-case height in pass 7, "for the
+    # probe comparison", and never grew the 3mm trim did) -- the mount is
+    # skipped entirely for 'current' (mag_module_fits returns False),
+    # same pattern as comms_stack3_full_height already skipping the
+    # 3-board stack there. See README's pass-10 section for the full
+    # writeup of why 'current' can't host this identically.
+    #
+    # XY placement: the module's long axis (local x, 18.6mm, header at
+    # +x) runs along world Y, CENTRED on the GPS patch's own y-span (2.0
+    # to 27.0, centre 14.5) -- footprint y 5.2..23.8, +1.5mm fence margin
+    # each side (3.7..25.3), comfortably inside the frame's own opening
+    # (y 1.75..27.25, ~2mm margin both ends). The short axis (local y,
+    # 14.0mm) runs along world X, CENTRED on the patch's own x-centre
+    # (9.7) -- footprint x 2.7..16.7, +1.5mm fence margin (1.2..18.2),
+    # again ~4mm inside the frame's opening (x -3.05..22.45) and >8mm
+    # clear of Screen Plate posts P2/P4 (x=-10, Ø5, edge at -7.5) on the
+    # west side. Both centred choices maximise margin on every side
+    # instead of hugging one specific number -- verified directly against
+    # these PARAMS (rho_from_spine / the gps_patch and top_posts entries
+    # above) before ever touching Fusion; see README's pass-10 section
+    # for the full computation.
+    #
+    # Orientation (local -> world, SAME for both variants, world_x/
+    # world_y are pure TRANSLATIONS -- see mag_world_x/mag_world_y in
+    # firefly_case.py): local +x (18.6mm axis, HEADER edge, local
+    # x=+8.96) -> world +Y (toward the display end, short wire run to the
+    # back header's SDA/SCL/3V3/G); local -x (MOUNTING-HOLE edge, local
+    # x=-9.64) -> world -Y (toward the lanyard end). local +y -> world +x;
+    # local -y -> world -x (arbitrary handedness choice, no functional
+    # constraint on this axis -- both pegs/pads are placed by explicit
+    # local (x,y) pairs, not by a directional rule). local +z (the
+    # COMPONENT/sensor face, away from the PCB) -> world -Z (DOWN, toward
+    # the GPS patch/Bottom -- the module is mounted components-down);
+    # local -z (the HEADER/solder-pin face) -> world +Z (UP, toward the
+    # ceiling -- both peg mounting holes share local x=-7.21, i.e. the
+    # SAME local z=0 plane, so both land at the same world Z, flush
+    # against the ceiling standoff). See firmware/targets/esp32s3/
+    # components/ff_compass/ff_compass.c's own updated comment for the
+    # resulting axis-remap table.
     'mag_module': {
         'local_pcb': {'x': (-9.64, 8.96), 'y': (-6.67, 7.33)},  # 18.6 x 14.0mm
         'local_component_h': 1.0,   # max component height above local PCB top (sensor, ~3x3 at (-0.9, 0.5))
-        'local_header_below': 2.5,  # allowance below local PCB bottom for header solder joints/wire exit
-        'local_mount_holes': [(-7.21, -4.17), (-7.21, 5.03)],  # Ø2.7 peg holes, 9.2mm spacing
+        'local_header_below': 2.5,  # allowance below local PCB bottom for header solder joints/pins -- doubles as standoff_h
+        'local_mount_holes': [(-7.21, -4.17), (-7.21, 5.03)],  # Ø3.0 real mounting holes, 9.2mm spacing
         'local_header': {'x': 7.44, 'y': [-4.81, -2.21, 0.39, 2.89, 5.49], 'dia': 1.0},
-        'peg_dia': 2.7, 'peg_h': 2.5,
-        'fence_wall': 1.2, 'fence_clear': 0.3,
-        'header_notch_w': 3.0,
-        # World placement -- absolute mm, SAME for both variants (the
-        # boss/stack/lug layout this is computed against does not scale
-        # with outer_radius; see the docstring above). All of world_x /
-        # brow_x are ANALYTIC constants (computed in pure Python against
-        # rho_from_spine + outer_radius, not derived from a live Fusion
-        # boolean against the real curved shell like every other
-        # skin-safe cut in this file) -- deliberately, for build speed:
-        # a full build_outer_pill_solid() is an expensive multi-feature
-        # construction (extrude + 2 revolves + joins), and this mount
-        # would otherwise need it rebuilt a dozen-plus times (brow lo/hi,
-        # skin-safe tool lo/hi/notch) -- confirmed live: a first attempt
-        # using that pattern (mirroring add_fpc_brow/add_fpc_relief
-        # exactly) never finished within several minutes of real Fusion
-        # time and was abandoned. Instead, brow_x1 / world_x[1] are
-        # picked so that EVERY point in the footprint (worst corner:
-        # x=brow_x1, y=world_y[0]-fence_wall, the most tangentially
-        # remote point) satisfies hypot(x, y) <= outer_radius+brow_height
-        # (the brow's own designed-protrusion exemption, see
-        # check_body_envelope_vertices) with >=0.3mm to spare, and
-        # world_x[1]+min_wall <= brow_x1 with >=0.5mm to spare (the pass-10
-        # placement's own clearance target) -- verified in pure Python
-        # against these exact numbers before ever touching Fusion (see
-        # README's pass-10 section for the check). 'current' (2mm larger
-        # outer_radius) clears both with substantially more margin at
-        # the SAME numbers.
-        'world_x': (19.2, 23.8),   # (opening/cavity-facing, back wall near the outer skin) -- 4.6mm radial depth
-        'world_y': (-18.5, -1.5),  # (toward the lanyard tip, toward the battery end)
-        'world_y_mid': -10.0,      # local_y = 0 maps here; world_y = world_y_mid - local_y
-        'world_z0': 4.0,           # world_z for local_x = local_pcb['x'][0] (-9.64)
-        'peg_root_x': 23.8,        # peg cylinder's outward (root) end -- flush with the pocket's own back wall
-        'peg_reach_margin': 0.3,   # extra length past the nominal peg_h, cheap insurance against roundoff
-        'brow_height': 5.0,
-        'brow_x': (17.0, 25.5),    # brow box's own radial span (inner bound is a don't-care -- see add_mag_brow)
-        'min_wall': 1.2,
-        'boss_c_margin_check': {'xy': (15.5, -8.0), 'margin': 0.5},  # documents the boss-C clearance the placement was chosen against
+        'mount_hole_dia': 3.0,
+        'peg_dia': 2.7,        # peg OD -- 0.3mm total clearance in the Ø3.0 mounting hole
+        'pad_dia': 3.0,        # header-side rest-pad OD (no through-hole, just a resting boss)
+        'standoff_h': 2.5,     # == local_header_below: ceiling-to-PCB-bottom gap, for both pegs and pads
+        'fence_wall': 1.2, 'fence_clear': 0.3, 'fence_h': 3.5,  # low retaining fence around the PCB outline
+        'header_notch_w': 3.0,  # wire-exit notch in the fence's header-edge wall
+        # World placement -- pure translations, SAME for both variants
+        # (the GPS-patch/post layout this is centred against doesn't
+        # scale with outer_radius; both offsets are simply
+        # local-axis-origin -> world-axis-origin distances):
+        # world_y = local_x + world_y_from_local_x_offset,
+        # world_x = local_y + world_x_from_local_y_offset.
+        'world_y_from_local_x_offset': 14.84,  # local_pcb x-span (-9.64..8.96) -> world y 5.2..23.8 (centred on gps_patch y 2..27)
+        'world_x_from_local_y_offset': 9.37,   # local_pcb y-span (-6.67..7.33) -> world x 2.7..16.7 (centred on gps_patch x-centre 9.7)
+        'min_patch_clearance': 1.0,  # required spare (mm) between component bottom and the GPS patch top for a variant to host this mount at all
     },
 }
