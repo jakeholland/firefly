@@ -479,4 +479,91 @@ PARAMS = {
         'channel_width': 2.0, 'channel_depth': 1.6, 'channel_fillet': 0.3,
         'channel_min_skin': 1.2,
     },
+
+    # --- compass module mount (pass 10, 2026-09-06) ---
+    # GY-273 (QMC5883P) mount. Measured off Jake's Fusion model "HMC5883L
+    # Mag v1" (mm, MODULE'S OWN LOCAL FRAME -- PCB top face at local
+    # z=1.0, components on top; the five header pins are soldered from
+    # BELOW in Jake's build).
+    #
+    # Placement (see README's pass-10 section for the full free-volume
+    # derivation of candidates a/b/c): candidate (a), mounting on the
+    # Top's inner dome above the 3-board comms stack, is OUT --
+    # verify_stack3_clearance's own trim number (~4.2mm) is under the
+    # 4.5mm this would need. Candidate (b), flat on the Bottom floor
+    # between the stack and the lanyard wall, is OUT -- the stack's own
+    # frame already runs to within ~1.5mm of the true wall there (see
+    # 'bay.stack3'), nowhere near enough for an 18.6x14mm board in any
+    # flat orientation. Candidate (c), standing vertically against the
+    # lanyard-end inner wall, IS where this lands -- but a rigorous 2D
+    # grid search (pure Python, no Fusion -- see README) found the area
+    # immediately flanking the lug relief itself (|x|<13mm at the lug's
+    # own y) has under 10mm^2 free, nowhere near enough even standing on
+    # edge. The clear spot is a few mm further out, past BOTH dome-tip
+    # case-screw bosses (B2 at (12.5,-15), C at (15.5,-8)), on the +x
+    # side, using a local outward BROW (brow_height, same technique as
+    # add_fpc_brow) to recover the last ~1-3mm this candidate needs at
+    # the pocket's own Z extremes (the flat mid-band, z 10-18 trim, has
+    # natural room to spare; only the curved ends near the floor/ceiling
+    # are tight) -- computed to clear the true (brow-raised) outer
+    # surface by >=0.5mm at every corner, both variants (current, with
+    # its 2mm-larger outer_radius, clears with much more margin at the
+    # SAME brow height -- see the placement derivation for the numbers).
+    #
+    # Orientation (local -> world, SAME for both variants): local +x
+    # (the 18.6mm PCB axis, header edge at local x=+7.44) -> world +Z
+    # (up, toward the Top ceiling); local -x (mounting-hole edge, local
+    # x=-7.21) -> world -Z (down, toward the Bottom floor -- both pegs
+    # land on Bottom); local +y -> world -Y (toward the lanyard tip);
+    # local -y -> world +Y (toward the battery/GPS end); local +z (the
+    # component/sensor face) -> world -X (toward the open cavity/pocket
+    # opening); local -z (the header/solder face) -> world +X (toward
+    # the outer wall/brow). See mag_world_z/mag_world_y in
+    # firefly_case.py for the exact transform and firmware/ff_compass.c's
+    # own comment for the resulting axis-remap table.
+    'mag_module': {
+        'local_pcb': {'x': (-9.64, 8.96), 'y': (-6.67, 7.33)},  # 18.6 x 14.0mm
+        'local_component_h': 1.0,   # max component height above local PCB top (sensor, ~3x3 at (-0.9, 0.5))
+        'local_header_below': 2.5,  # allowance below local PCB bottom for header solder joints/wire exit
+        'local_mount_holes': [(-7.21, -4.17), (-7.21, 5.03)],  # Ø2.7 peg holes, 9.2mm spacing
+        'local_header': {'x': 7.44, 'y': [-4.81, -2.21, 0.39, 2.89, 5.49], 'dia': 1.0},
+        'peg_dia': 2.7, 'peg_h': 2.5,
+        'fence_wall': 1.2, 'fence_clear': 0.3,
+        'header_notch_w': 3.0,
+        # World placement -- absolute mm, SAME for both variants (the
+        # boss/stack/lug layout this is computed against does not scale
+        # with outer_radius; see the docstring above). All of world_x /
+        # brow_x are ANALYTIC constants (computed in pure Python against
+        # rho_from_spine + outer_radius, not derived from a live Fusion
+        # boolean against the real curved shell like every other
+        # skin-safe cut in this file) -- deliberately, for build speed:
+        # a full build_outer_pill_solid() is an expensive multi-feature
+        # construction (extrude + 2 revolves + joins), and this mount
+        # would otherwise need it rebuilt a dozen-plus times (brow lo/hi,
+        # skin-safe tool lo/hi/notch) -- confirmed live: a first attempt
+        # using that pattern (mirroring add_fpc_brow/add_fpc_relief
+        # exactly) never finished within several minutes of real Fusion
+        # time and was abandoned. Instead, brow_x1 / world_x[1] are
+        # picked so that EVERY point in the footprint (worst corner:
+        # x=brow_x1, y=world_y[0]-fence_wall, the most tangentially
+        # remote point) satisfies hypot(x, y) <= outer_radius+brow_height
+        # (the brow's own designed-protrusion exemption, see
+        # check_body_envelope_vertices) with >=0.3mm to spare, and
+        # world_x[1]+min_wall <= brow_x1 with >=0.5mm to spare (the pass-10
+        # placement's own clearance target) -- verified in pure Python
+        # against these exact numbers before ever touching Fusion (see
+        # README's pass-10 section for the check). 'current' (2mm larger
+        # outer_radius) clears both with substantially more margin at
+        # the SAME numbers.
+        'world_x': (19.2, 23.8),   # (opening/cavity-facing, back wall near the outer skin) -- 4.6mm radial depth
+        'world_y': (-18.5, -1.5),  # (toward the lanyard tip, toward the battery end)
+        'world_y_mid': -10.0,      # local_y = 0 maps here; world_y = world_y_mid - local_y
+        'world_z0': 4.0,           # world_z for local_x = local_pcb['x'][0] (-9.64)
+        'peg_root_x': 23.8,        # peg cylinder's outward (root) end -- flush with the pocket's own back wall
+        'peg_reach_margin': 0.3,   # extra length past the nominal peg_h, cheap insurance against roundoff
+        'brow_height': 5.0,
+        'brow_x': (17.0, 25.5),    # brow box's own radial span (inner bound is a don't-care -- see add_mag_brow)
+        'min_wall': 1.2,
+        'boss_c_margin_check': {'xy': (15.5, -8.0), 'margin': 0.5},  # documents the boss-C clearance the placement was chosen against
+    },
 }

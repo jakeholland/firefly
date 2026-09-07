@@ -3320,6 +3320,334 @@ def verify_antenna_channels(bodies_dict, p):
     return results
 
 
+# ---------------------------------------------------------------------------
+# Compass module mount (pass 10, 2026-09-06). See params_current.py's own
+# 'mag_module' comment for the placement derivation (candidates a/b/c) and
+# the local->world orientation this section implements.
+# ---------------------------------------------------------------------------
+
+def mag_world_z(p, local_x):
+    """Module local x (the 18.6mm PCB axis) -> world Z."""
+    mm = p['mag_module']
+    return mm['world_z0'] + (local_x - mm['local_pcb']['x'][0])
+
+
+def mag_world_y(p, local_y):
+    """Module local y (the 14.0mm PCB axis) -> world Y (mirrored, see the
+    orientation comment in params_current.py)."""
+    mm = p['mag_module']
+    return mm['world_y_mid'] - local_y
+
+
+def mag_pocket_footprint(p):
+    """The pocket's own cut box: x0/x1 (opening/cavity-facing, back wall
+    near the outer skin -- an ANALYTIC constant, see params_current.py's
+    'mag_module' comment for why this isn't derived from a live Fusion
+    clip the way every other skin-safe cut in this file is), y0/y1
+    (tangential, with the fence margin already folded in) and z0/z1
+    (vertical, exactly the PCB's own 18.6mm span -- no header/mount-hole
+    margin needed at the Z ends since the pocket is open at both, see
+    add_mag_pocket's docstring)."""
+    mm = p['mag_module']
+    x0, x1 = mm['world_x']
+    y0, y1 = mm['world_y']
+    fw = mm['fence_wall']
+    z0 = mm['world_z0']
+    z1 = mag_world_z(p, mm['local_pcb']['x'][1])
+    return x0, x1, y0 - fw, y1 + fw, z0, z1
+
+
+def mag_header_notch_footprint(p):
+    """A small explicit notch past the pocket's own Z1 (header) end, 3mm
+    wide (header_notch_w) in Y, centred on the header holes' own y-span
+    -- literally satisfies "a 3mm notch in the fence at the header edge
+    for the five wires" (the pocket itself is already fully open there,
+    see add_mag_pocket's docstring, so this is a small explicit widening
+    rather than a cut through an otherwise-solid wall)."""
+    mm = p['mag_module']
+    hdr = mm['local_header']
+    ys = [mag_world_y(p, y) for y in hdr['y']]
+    y_mid = (min(ys) + max(ys)) / 2.0
+    w = mm['header_notch_w']
+    x0, x1, _, _, _, z1 = mag_pocket_footprint(p)
+    return x0, x1, y_mid - w / 2.0, y_mid + w / 2.0, z1, z1 + 3.0
+
+
+def mag_peg_world_positions(p):
+    """The two peg (y, z) world positions, from local_mount_holes."""
+    mm = p['mag_module']
+    return [(mag_world_y(p, ly), mag_world_z(p, lx)) for lx, ly in mm['local_mount_holes']]
+
+
+def mag_split_z(p):
+    """The REAL Bottom/Top split for anything in this footprint -- NOT
+    p['split_z'] (10.0) directly. The alignment lip is joined into Top
+    down to lip_z[0] (9.2, BELOW split_z -- it nests inside Bottom's own
+    wall with a 0.25mm clearance, see add_lip_anchor_reliefs) and wraps
+    the WHOLE perimeter, including this footprint's own (x,y) -- a first
+    attempt using split_z directly here built Bottom's own brow/pocket up
+    to z=10, overlapping Top's real lip material at z 9.2-10 in the same
+    (x,y), a genuine ~136mm^3 Top x Bottom interference (confirmed by a
+    live verify() run). Splitting at lip_z[0]-0.2 instead keeps Bottom's
+    own material strictly below the lip's real z-range; the pocket cut on
+    the Top side (add_mag_pocket) is correspondingly extended down to the
+    same point, so it removes the lip/anchor ring's own material in this
+    footprint too (the pocket must be a genuinely continuous slot for an
+    18.6mm-tall board to physically pass through it)."""
+    return p['lip_z'][0] - 0.2
+
+
+def mag_brow_box(p, lo=True):
+    """The brow's own box: x0/x1 come from mag_module['brow_x'], an
+    ANALYTIC constant (see params_current.py's comment): x1 is picked so
+    the box's own farthest corner (x1, y0-fence_wall) satisfies the
+    brow's designed-protrusion exemption (outer_radius + brow_height,
+    see check_body_envelope_vertices) with margin to spare, on BOTH
+    variants -- a plain box, not a copy of the real curved shell (see
+    mag_pocket_footprint's docstring for why: a live Fusion clip here
+    made this feature too slow to build in practice). x0 is a
+    don't-care -- it only needs to reach far enough inward that the
+    box's outward portion genuinely fuses with whatever is already
+    there (open cavity or natural wall) when joined; the exact value
+    has no effect on the result once joined.
+
+    lo (Bottom) and hi (Top) use DIFFERENT, deliberately non-adjacent Z
+    splits -- NOT a clean handoff at one point -- after a live verify()
+    run found two DISTINCT real interferences here, fixed one at a time:
+    (1) lo's own z1 is mag_split_z (9.0), not p['split_z'] (10.0):
+    Bottom's brow, if it reached any higher, would occupy the same
+    (x,y,z) as the real alignment lip (joined into TOP down to lip_z[0]
+    = 9.2, nested with only a 0.25mm clearance against Bottom's own
+    TRUE inner wall -- see add_lip_anchor_reliefs) -- a genuine ~136mm^3
+    Top x Bottom overlap the first time this used p['split_z'] directly.
+    (2) hi's own z0 is p['split_z'] (10.0), not mag_split_z: Top's brow,
+    if it reached any LOWER, would occupy the same (x,y,z) as BOTTOM's
+    OWN NATURAL WALL there (unrelated to the lip -- Bottom legitimately
+    has real wall material out to its own outer_radius everywhere below
+    z=10, and this brow's footprint is wide enough, radially, to reach
+    into it) -- a second, equally real ~136mm^3 overlap, confirmed live,
+    that persisted even after fix (1) alone (a lo/hi split at one shared
+    point can only avoid ONE of these two conflicts, not both -- they
+    sit on opposite sides of the same boundary for different reasons).
+    Between the two splits (9.0 and 10.0) there's a 1mm-tall band, in
+    the brow's own tangential FENCE MARGIN only (not the pocket's own
+    narrower footprint, which add_mag_pocket cuts through this whole
+    band from both sides regardless), where neither brow half adds
+    anything -- a no-op gap, not a defect: Bottom's own natural wall and
+    Top's own real lip already coexist there with their own genuine
+    0.25mm clearance, exactly as they do everywhere else on the case."""
+    x0, x1 = p['mag_module']['brow_x']
+    _, _, y0, y1, z0, z1 = mag_pocket_footprint(p)
+    margin = 1.0
+    if lo:
+        return x0, x1, y0 - margin, y1 + margin, z0 - margin, mag_split_z(p)
+    return x0, x1, y0 - margin, y1 + margin, p['split_z'], z1 + margin
+
+
+def add_mag_brow(root, bodies, p):
+    """Join the mag-module brow into Bottom (z < split_z) and Top
+    (z >= split_z) -- the footprint straddles the parting line (a
+    taller feature, 18.6mm, than either half's own convenient z-range).
+    A single box per half (see mag_brow_box) -- deliberately NOT derived
+    from a live copy of the real curved shell (see mag_pocket_footprint's
+    docstring): this is a small, non-visible bump at the lanyard end,
+    and the analytic sizing already guarantees it stays within its own
+    designed-protrusion exemption on both variants."""
+    lo = box_solid(root, *mag_brow_box(p, lo=True))
+    bodies['Bottom'] = combine_join(root, bodies['Bottom'], [lo])
+    bodies['Bottom'] = dedupe_body(root, bodies['Bottom'], 'Bottom')
+
+    hi = box_solid(root, *mag_brow_box(p, lo=False))
+    bodies['Top'] = combine_join(root, bodies['Top'], [hi])
+    bodies['Top'] = dedupe_body(root, bodies['Top'], 'Top')
+    return bodies
+
+
+def add_mag_pocket(root, bodies, p):
+    """Cut the compass-module pocket into Bottom (z < mag_split_z) and
+    Top (z >= mag_split_z) -- a single open box per half (component-face
+    to header/solder allowance, mag_module['world_x']'s full analytic
+    depth -- see mag_pocket_footprint's docstring for why this is a
+    plain box, not a live skin-safe clip). The split is mag_split_z, NOT
+    p['split_z'] directly (see that function's docstring): the Top-side
+    cut is extended down to it specifically so it removes the alignment
+    lip/anchor ring's own real material in this footprint too -- without
+    that, the ring (which wraps the whole perimeter, including this
+    xy) would leave a solid plug blocking the pocket at z 9.2-11,
+    regardless of what add_mag_brow does or doesn't overlap. Unlike a
+    flat-mount fence (whose SPEC-described 0.3mm-clearance perimeter
+    walls make sense for a board dropped in from directly above), this
+    module stands on edge against a curved wall: the retaining "fence"
+    here is simply the solid brow/skin material left standing around the
+    pocket's own tangential (Y) and vertical (Z) margins (fence_wall,
+    already folded into mag_pocket_footprint's y0/y1) -- there is no
+    separate fence body to build. The header end (world Z high, see the
+    orientation comment) is also cut generously open by this same box,
+    and gets one additional small explicit notch
+    (mag_header_notch_footprint) past its own Z1 edge for the five
+    wires, matching SPEC's "3mm notch" literally even though the pocket
+    itself is already open there.
+
+    2026-09-06 fix (real ~136mm^3 Top x Bottom interference, confirmed
+    live): the brow's own lo/hi halves split cleanly at mag_split_z with
+    no z overlap (by construction, see mag_brow_box), but the CUTS here
+    were splitting at that same point too -- leaving BOTTOM's natural
+    wall material (the plain, un-brow'd shell -- present at this rho
+    regardless of the brow, since the wall is naturally ~2mm thick here)
+    intact from mag_split_z up to its own true ceiling (p['split_z'],
+    10.0), genuinely overlapping TOP's real lip/anchor ring material
+    (which nests into exactly that band by design, with only a 0.25mm
+    clearance -- see add_lip_anchor_reliefs -- not the ~4.5mm this
+    pocket's own footprint pushes into). Fixed by widening BOTH cuts to
+    jointly blanket the whole mag_split_z..p['split_z'] transition band
+    from both sides: pocket_lo now cuts up to Bottom's own true ceiling
+    (p['split_z']) instead of stopping at mag_split_z, and pocket_hi
+    starts at mag_split_z instead of p['split_z'] -- between them, every
+    body's material (natural wall, brow, or ring) in this xy footprint
+    is removed across the full transition, regardless of which body it
+    belongs to. A cut is idempotent over any range that's already empty,
+    so widening either one costs nothing where there was nothing to
+    remove."""
+    x0, x1, y0, y1, z0, z1 = mag_pocket_footprint(p)
+
+    pocket_lo = box_solid(root, x0, x1, y0, y1, z0 - 1.0, p['split_z'])
+    bodies['Bottom'] = combine_cut(root, bodies['Bottom'], [pocket_lo])
+    bodies['Bottom'] = dedupe_body(root, bodies['Bottom'], 'Bottom')
+
+    pocket_hi = box_solid(root, x0, x1, y0, y1, mag_split_z(p), z1 + 1.0)
+    nx0, nx1, ny0, ny1, nz0, nz1 = mag_header_notch_footprint(p)
+    notch = box_solid(root, nx0, nx1, ny0, ny1, nz0, nz1)
+    pocket_hi = combine_join(root, pocket_hi, [notch])
+    bodies['Top'] = combine_cut(root, bodies['Top'], [pocket_hi])
+    bodies['Top'] = dedupe_body(root, bodies['Top'], 'Top')
+    return bodies
+
+
+def add_mag_pegs(root, bodies, p):
+    """Two Ø2.7 pegs (peg_dia), rooted well inside the brow'd skin
+    (peg_root_x) and reaching peg_h + peg_reach_margin into the pocket --
+    the extra reach margin means the peg is guaranteed to actually enter
+    the open pocket regardless of exactly how deep the skin-safe clip cut
+    it (see add_mag_pocket), rather than depending on both numbers
+    agreeing to the millimetre. Both mount holes share the same local_x
+    (-7.21), so both land at the SAME world Z (mag_world_z) -- within
+    Bottom's own range for this placement, confirmed by construction
+    (world_z0 + 2.43 = 6.43, well inside 0..split_z) -- so both pegs join
+    into Bottom only."""
+    mm = p['mag_module']
+    peg_r = mm['peg_dia'] / 2.0
+    x_root = mm['peg_root_x']
+    x_tip = x_root - (mm['peg_h'] + mm['peg_reach_margin'])
+    pegs = []
+    for py, pz in mag_peg_world_positions(p):
+        peg = extrude_new_body_from_circle(root, x_tip, x_root, py, pz, peg_r)
+        pegs.append(peg)
+    bodies['Bottom'] = combine_join(root, bodies['Bottom'], pegs)
+    bodies['Bottom'] = dedupe_body(root, bodies['Bottom'], 'Bottom')
+    return bodies
+
+
+def extrude_new_body_from_circle(root, x0, x1, cy, cz, r):
+    """A cylinder whose AXIS runs along world X (from x0 to x1) at a
+    fixed (y, z) -- the mag-module pegs are radial, unlike every other
+    cylinder in this file (cylinder_solid's axis is always world Z), so
+    this is a small dedicated helper rather than a generalised
+    cylinder_solid (whose many existing callers all assume a vertical
+    axis)."""
+    planes = root.constructionPlanes
+    plane_in = planes.createInput()
+    plane_in.setByOffset(root.yZConstructionPlane, V(x0))
+    plane_yz = planes.add(plane_in)
+    sk = new_sketch(root, plane_yz)
+    center = sk.modelToSketchSpace(P(x0, cy, cz))
+    sk.sketchCurves.sketchCircles.addByCenterRadius(center, r * MM)
+    prof = sk.profiles.item(0)
+    return extrude_new_body(root, prof, x1 - x0, direction='positive')
+
+
+def add_mag_module(root, bodies, p, clip_tool=None):
+    """Compass module (GY-273/QMC5883P) mount -- pass 10. Order matters:
+    the brow must be joined in before the pocket is cut (the pocket's
+    own x1 assumes the brow's material is already there to cut into),
+    and the pocket must be cut before the pegs are added (a peg added
+    first would just be cut away again). clip_tool is accepted for
+    signature symmetry with the other add_* calls in build() but not
+    used here -- this feature uses analytic (pure-Python) sizing instead
+    of a live Fusion clip against either the shared inner-cavity tool or
+    a fresh copy of the outer shell (see mag_pocket_footprint's and
+    mag_brow_box's own docstrings for why: a first attempt mirroring
+    add_fpc_brow/add_fpc_relief's live-clip technique exactly needed the
+    expensive full-shell solid rebuilt over a dozen times and never
+    finished within several minutes of real Fusion time)."""
+    bodies = add_mag_brow(root, bodies, p)
+    bodies = add_mag_pocket(root, bodies, p)
+    bodies = add_mag_pegs(root, bodies, p)
+    return bodies
+
+
+def verify_mag_pocket(bodies_dict, p):
+    """Pass-10 gate: (1) the module's own reference envelope (PCB +
+    component bump + header/solder allowance, sampled at both ends and
+    the middle of its local_pcb y-span) is actually open (hollow) in the
+    built Bottom/Top -- confirms the pocket really was cut where the
+    placement says it is; (2) both pegs have real material at their
+    root; (3) neither peg pokes out past the true (brow-raised) outer
+    surface (checked the same way verify_no_outer_bumps/verify_wall_
+    integrity do elsewhere in this file -- a point just outside peg_root_x
+    at each peg's own (y,z) must be OUTSIDE both Bottom and the brow'd
+    reference envelope, i.e. this is real skin, not a breach)."""
+    mm = p['mag_module']
+    bottom = bodies_dict['Bottom']
+    top = bodies_dict['Top']
+    results = {}
+
+    # (1) module envelope open -- probe at 3 points along the local y
+    # span (both PCB ends + centre), each combining the component-bump
+    # face and the header/solder face, at whichever world Z their local
+    # x corresponds to.
+    lpcb = mm['local_pcb']
+    probe_local_x = [lpcb['x'][0] + 0.3, (lpcb['x'][0] + lpcb['x'][1]) / 2.0, lpcb['x'][1] - 0.3]
+    probe_local_y = [lpcb['y'][0] + 0.3, (lpcb['y'][0] + lpcb['y'][1]) / 2.0, lpcb['y'][1] - 0.3]
+    x_component = mm['world_x'][0] + 0.5     # just inside the pocket opening (component side)
+    bad_envelope = []
+    for lx in probe_local_x:
+        wz = mag_world_z(p, lx)
+        body = bottom if wz < p['split_z'] else top
+        for ly in probe_local_y:
+            wy = mag_world_y(p, ly)
+            pt = P(x_component, wy, wz)
+            if probe_point_solid(body, pt):
+                bad_envelope.append((round(x_component, 2), round(wy, 2), round(wz, 2)))
+    results['envelope_open'] = (not bad_envelope, bad_envelope[:5])
+
+    # (2) pegs have real material at their root.
+    peg_r_check = mm['peg_dia'] / 2.0
+    x_root_probe = mm['peg_root_x'] - (mm['peg_h'] + mm['peg_reach_margin']) / 2.0  # midpoint of the peg's own length
+    bad_pegs = []
+    for py, pz in mag_peg_world_positions(p):
+        if not probe_point_solid(bottom, P(x_root_probe, py, pz)):
+            bad_pegs.append((round(x_root_probe, 2), round(py, 2), round(pz, 2)))
+    results['pegs_have_material'] = (not bad_pegs, bad_pegs[:5])
+
+    # (3) fence/peg root does not breach the true (brow-raised) skin --
+    # a point mag_module['min_wall'] * 0.5 further out than peg_root_x
+    # (i.e. still inside the intended skin) must be solid (real skin, not
+    # a breach); a point 0.5mm further out than the true+brow surface
+    # itself must be OUTSIDE the body (no outer bump).
+    bad_skin = []
+    for py, pz in mag_peg_world_positions(p):
+        # The true (brow-raised) outer surface's rho at this peg's own Z,
+        # vs. the peg root's own distance from the spine (rho_from_spine
+        # handles the domed-end case, which this placement always is).
+        outer_rho = rho_at_z(p, pz) + mm['brow_height']
+        margin = outer_rho - rho_from_spine(p, mm['peg_root_x'], py)
+        if margin < 0.5:
+            bad_skin.append((round(py, 2), round(pz, 2), round(margin, 3)))
+    results['peg_root_within_skin'] = (not bad_skin, bad_skin[:5])
+
+    return results
+
+
 def _collect_occ_bodies(occ):
     """All bRepBodies in occ's subtree, skipping hidden ones (2026-09-06
     hygiene fix: a hidden sub-body -- e.g. the L76K assembly's placeholder
@@ -3696,6 +4024,7 @@ def build(app, params):
 
     bodies = add_comms_bay(root, bodies, params, clip_tool=clip_tool)
     bodies = add_antenna_channels(root, bodies, params, clip_tool=clip_tool)
+    bodies = add_mag_module(root, bodies, params, clip_tool=clip_tool)
 
     insert_display_pcba(app, root, params)
     insert_comms_boards(app, root, params)
@@ -4030,17 +4359,25 @@ def check_body_envelope_vertices(body, p, name, tol=0.15):
     naturally has its own outermost vertices sitting right at
     outer_radius + FPC_BROW_HEIGHT, a few mm beyond the tighter default
     tolerance, same as the lug/caps are already named exceptions for their
-    own designed protrusions."""
+    own designed protrusions. 2026-09-10 pass 10: the compass-module brow
+    (Bottom AND Top, since that footprint straddles the parting line --
+    see mag_pocket_footprint) is exactly the same kind of designed
+    protrusion, allowed out to +mag_module['brow_height']."""
     lug_half_w, _, lug_y_root, _ = lug_ear_geometry(p)
     lug_y_thresh = lug_y_root
     lug_x_half = lug_half_w + 0.5
     is_cap = name in ('Power Button', 'Home Button')
     is_top = name == 'Top'
+    is_case_body = name in ('Top', 'Bottom')
     limit = p['outer_radius'] + (0.45 + 0.05 if is_cap else tol)
     brow_limit = p['outer_radius'] + FPC_BROW_HEIGHT + tol
     bx0, bx1, by0, by1, _, _ = fpc_relief_footprint(p) if is_top else (0, 0, 0, 0, 0, 0)
     brow_x0, brow_x1 = bx0 - FPC_BROW_BLEND - 0.5, bx1 + FPC_BROW_BLEND + 0.5
     brow_y0, brow_y1 = by0 - FPC_BROW_BLEND - 0.5, by1 + FPC_BROW_BLEND + 0.5
+    _, mmx1, mmy0, mmy1, _, _ = mag_brow_box(p, lo=True) if is_case_body else (0, 0, 0, 0, 0, 0)
+    mag_x0, mag_x1 = mmx1 - 3.0, mmx1 + 0.5  # a band around the brow box's own outer face
+    mag_y0, mag_y1 = mmy0 - 0.5, mmy1 + 0.5
+    mag_limit = p['outer_radius'] + p.get('mag_module', {}).get('brow_height', 0.0) + tol
     bad = []
     for v in body.vertices:
         pt = v.geometry
@@ -4049,6 +4386,8 @@ def check_body_envelope_vertices(body, p, name, tol=0.15):
             continue
         rho = rho_from_spine(p, x, y)
         if is_top and brow_x0 <= x <= brow_x1 and brow_y0 <= y <= brow_y1 and rho <= brow_limit:
+            continue
+        if is_case_body and mag_x0 <= x <= mag_x1 and mag_y0 <= y <= mag_y1 and rho <= mag_limit:
             continue
         if rho > limit:
             bad.append((round(x, 2), round(y, 2), round(pt.z / MM, 2), round(rho, 2)))
@@ -4870,6 +5209,18 @@ def verify_wall_integrity(bodies_dict, p):
                 and lb['y'][0] - lb_margin <= y <= lb['y'][1] + lb_margin
                 and p['lip_z'][0] - lb_margin <= z <= p['anchor_z'][1] + lb_margin)
 
+    # 2026-09-10 pass 10: the compass-module brow is exactly the same
+    # kind of deliberate local exception as the lug relief above -- a
+    # real, designed bump (see mag_brow_box), not a defect, at x/y/z this
+    # dome sweep would otherwise probe straight through.
+    mmx0_lo, mmx1, mmy0, mmy1, mmz0_lo, _ = mag_brow_box(p, lo=True)
+    _, _, _, _, _, mmz1_hi = mag_brow_box(p, lo=False)
+
+    def in_mag_footprint(x, y, z):
+        return (mmx0_lo - 1.0 <= x <= mmx1 + 1.0
+                and mmy0 - 0.5 <= y <= mmy1 + 0.5
+                and mmz0_lo - 1.0 <= z <= mmz1_hi + 1.0)
+
     for end_name, center_y in (('spine_a', ay), ('spine_b', by)):
         sign = -1.0 if end_name == 'spine_a' else 1.0
         for z in (7.0, 9.0, 11.0):
@@ -4882,6 +5233,8 @@ def verify_wall_integrity(bodies_dict, p):
                     continue  # spine_a: the real lanyard lug opening; spine_b: the USB tunnel
                 x_out, y_out = (R + 0.15) * dx, center_y + (R + 0.15) * dy
                 x_in, y_in = (R - 1.0) * dx, center_y + (R - 1.0) * dy
+                if end_name == 'spine_a' and in_mag_footprint(x_out, y_out, z):
+                    continue  # real mag-module brow, not a defect
                 no_bump = not probe_point_solid(body, P(x_out, y_out, z))
                 results[f'{end_name}_z{z}_deg{deg}_no_bump'] = no_bump
                 if in_lug_relief(x_in, y_in, z):
@@ -4916,6 +5269,12 @@ def verify_wall_integrity(bodies_dict, p):
             inside_margin = 0.8
             px = cx + (s_wall - inside_margin) * d2[0]
             py = cy + (s_wall - inside_margin) * d2[1]
+            if in_mag_footprint(px, py, z):
+                continue  # (c) 2026-09-10 pass 10: boss C's own wall-check
+                # ray, at these z, lands inside the mag-module pocket's
+                # own footprint (the pocket opens only 0.7mm past boss C's
+                # OD -- see params_current.py's 'mag_module' comment) --
+                # real, intentional open pocket there, not a defect.
             ok = probe_point_solid(bottom, P(px, py, z))
             results[f'boss_{name}_wall_z{z}'] = ok
 
@@ -5547,6 +5906,14 @@ def verify(design, params):
     assert not bad_antenna, (
         f'antenna channel check failed: {[(k, antenna_results[k]) for k in bad_antenna]}')
 
+    # 2026-09-10 pass 10: compass module (GY-273/QMC5883P) mount pocket --
+    # envelope open, pegs have material, peg root doesn't breach the true
+    # (brow-raised) outer skin. See verify_mag_pocket's own docstring.
+    mag_pocket_results = verify_mag_pocket(by_name, params)
+    bad_mag = [k for k, v in mag_pocket_results.items() if not v[0]]
+    assert not bad_mag, (
+        f'mag module pocket check failed: {[(k, mag_pocket_results[k]) for k in bad_mag]}')
+
     # 2026-09-08 pass 9 (finding 11, stray sliver beside boss C):
     # the exact set of printed bodies must match the documented 5 parts --
     # a stray orphan body left over from a botched boolean (the same class
@@ -5596,6 +5963,7 @@ def verify(design, params):
         'fpc_relief_results': fpc_relief_results,
         'wordmark_results': wordmark_results,
         'antenna_results': antenna_results,
+        'mag_pocket_results': mag_pocket_results,
         'sliver_results': sliver_results,
     }
 
@@ -6093,6 +6461,9 @@ def run(_context: str, variant=None, export=False):
     print('antenna channel checks (finding 8, LoRa/GPS u.FL routes):')
     for k, v in result.get('antenna_results', {}).items():
         print('  ', k, v)
+    print('mag module pocket checks (pass 10, compass mount):')
+    for k, v in result.get('mag_pocket_results', {}).items():
+        print('  ', k, v)
     print('sliver face count (area < 0.5mm^2, diagnostic only):')
     for nm in ('Top', 'Bottom'):
         print('  ', nm, count_sliver_faces(bodies[nm]))
@@ -6144,12 +6515,23 @@ def run(_context: str, variant=None, export=False):
         top_wl = [
             (-8.0, 8.0, 65.0, 81.0, 'usb_tunnel_floor'),
             (-32.0, 32.0, -12.0, 79.0, 'general_ceiling_overhang'),
+            # mag_module_pocket (pass 10, 'current' variant): the compass
+            # module's own pocket/brow on the Top side -- see
+            # tools/offline_stl_check.py's TOP_WL for the same entry.
+            (15.0, 26.0, -20.0, 0.0, 'mag_module_pocket'),
         ]
         # l76k_frame_ceiling: the L76K wired frame's own ceiling-side
         # transition at the -y dome tip (y -26..-15) -- same fillet-
         # transition story as the Top ones above, on Bottom this time.
+        # mag_module_pocket (pass 10): the compass-module mount's two
+        # Ø2.7 horizontal pegs' own underside arc, plus a short flat span
+        # across the pocket's own back wall -- see tools/offline_stl_
+        # check.py's BOTTOM_WL for the same whitelist entry and its
+        # reasoning (real cluster centroids confirmed at (23.2,-14.2)
+        # and (18.4,-4.7), both inside this box).
         bottom_wl = [
             (-15.0, 15.0, -26.0, -15.0, 'l76k_frame_ceiling'),
+            (15.0, 26.0, -20.0, 0.0, 'mag_module_pocket'),
         ]
         overhang_scans = {}
         for name, down_z, bed_z, wl in (('Top', 1.0, params['top_z'], top_wl), ('Bottom', -1.0, params['bottom_z'], bottom_wl)):

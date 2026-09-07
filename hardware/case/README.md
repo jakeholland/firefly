@@ -2113,9 +2113,14 @@ body:
    halves -- the frame's own wire-clearance notch and the GPS channel
    (Finding 8, pass 9e) are both already open at this point, no fishing
    a cable through a closed shell.
-6. **Tape the magnetometer at the lanyard end** (its own mounting pocket
-   is pass-8/future work, per the coordinator's brief -- for this pass
-   it rides along as a taped-in-place component, not a modelled fit).
+6. **Press the compass module (GY-273/QMC5883P) into its pocket**, in
+   Bottom, standing on edge past case-screw boss C at the lanyard end
+   (pass 10 -- see that section below for the full placement/orientation
+   derivation) -- the module's two mounting holes drop onto the pocket's
+   Ø2.7 pegs, header edge up; do this before Bottom and Top close, same
+   as the comms-bay hardware above (the pocket is a blind recess open
+   only toward the cavity -- there is no way to insert the module after
+   the halves are joined).
 7. **Join Bottom and Top together on the alignment lip** (Finding 5 /
    pass 9 part 2's widened 1.8mm ring, with its own seam chamfer for a
    support-free print) -- this is the step that closes over everything
@@ -2257,6 +2262,245 @@ loose button-cap bodies sitting in frame, so the case reads off-centre in
 that one specific image; the wordmark's own centring was verified
 analytically instead, see Finding 7 above, not by eye against this
 render). All viewed directly as part of this pass.
+
+## 2026-09-10 pass 10 (fixed pocket for the compass module, GY-273/QMC5883P)
+
+Jake's brief: a fixed mount for the compass module (taped in until now)
+so the firmware's axis map and calibration get one repeatable
+orientation. Module geometry measured off Jake's Fusion model "HMC5883L
+Mag v1" (mm, module's own local frame): PCB 18.6 x 14.0 x 1.0 (local x
+-9.64..8.96, local y -6.67..7.33), components <=1.0mm on top (sensor
+~3x3 at local (-0.9,0.5)), five header pins soldered from below (local
+x=+7.44, local y = -4.81/-2.21/0.39/2.89/5.49, Ø1.0), two Ø2.7-peg
+mounting holes at local (-7.21,-4.17) and (-7.21,5.03) (9.2mm apart).
+
+### Placement: computed before touching Fusion
+
+Per the brief's own candidate order, each was checked with pure-Python
+probes against `PARAMS` (`rho_at_z`, `rho_from_spine`,
+`true_wall_distance_along_ray` -- the same analytic functions
+`verify()` already uses, no Fusion needed) before any Fusion work:
+
+- **(a) Top's inner dome above the 3-board comms stack -- OUT.**
+  `verify_stack3_clearance`'s own live number (re-confirmed this pass,
+  trim): `stack_top_z=22.942, clearance_found=4.158, required=0.8`. The
+  brief's own bar for this candidate was >=4.5mm; 4.158mm is under it.
+  Not the 0.8mm floor (plenty of margin over the *minimum*), but short
+  of the *headroom this module would actually need* once its own
+  pocket/fence is added -- ruled out by the numbers, not by inspection.
+- **(b) Flat on the Bottom floor between the stack and the lanyard
+  wall -- OUT.** The comms-stack frame's own outer wall (`bay.stack3`)
+  already runs to within ~1.5mm of the true dome-tip wall at its
+  furthest (-y) extent (frame outer y -25.5 vs. the true wall at
+  y=-24..-26 depending on x) -- nowhere near the ~4.5mm radial depth an
+  18.6x14mm board needs in ANY flat orientation, confirmed by a direct
+  rectangle-fit search (see below) finding under 10mm^2 free there.
+- **(c) Standing vertically against the lanyard-end inner wall -- IN,
+  but not literally "beside the lug relief".** A rigorous 2D grid
+  search (pure Python: for every candidate footprint, check every
+  corner against `rho_from_spine(x,y) <= inner cavity radius at that
+  z`, `hypot(x-boss_cx, y-boss_cy) >= boss radius + margin` for every
+  case-screw boss, and clear of the frame/battery/GPS boxes) found the
+  area immediately flanking the lug ear itself (|x|<13mm at the lug's
+  own y-depth) has under 10mm^2 free -- nowhere near enough even on
+  edge. The real clear spot is a few mm further out: past BOTH dome-tip
+  bosses B2 (12.5,-15) and C (15.5,-8) on the +x side, using a local
+  outward BROW (the same technique as `add_fpc_brow`, just a plain
+  analytically-sized box here -- see "Why a plain box, not a live
+  clip" below) to recover the last ~1-3mm of radial depth this spot
+  needs at the pocket's own Z extremes (the flat mid-band, z 10-18
+  trim, already has room to spare; only the curved floor/ceiling
+  transitions are tight).
+
+Chosen footprint (absolute mm, SAME for both variants -- the boss/
+stack/lug layout this is computed against does not scale with
+`outer_radius`; `current`'s 2mm-larger radius just clears every number
+below with more margin):
+
+| | value |
+|---|---|
+| Pocket opening (cavity-facing) -> back wall | x 19.2 -> 23.8 (4.6mm radial depth) |
+| Pocket tangential span (fence margin included) | y -18.5 -> -1.5 (17.0mm, matches the 14mm PCB + 0.3mm clearance/side + 1.2mm fence/side) |
+| Pocket vertical span | z 4.0 -> 22.6 (18.6mm, exactly the PCB's own long axis) |
+| Brow (local outward raise) | height 5.0mm, box x 17.0 -> 25.5, footprint y/z as above +-1mm |
+| Peg root / pocket back wall | x 23.8 |
+| Boss C clearance (pocket opening to boss C's own OD) | 19.2 - 15.5 - 3.0 = 0.7mm (>= the 0.5mm target) |
+| Brow's own worst-corner margin below its designed-protrusion exemption | trim 0.78mm, current 2.78mm (both >= 0.5mm target) |
+
+All of these were computed analytically first (see
+`/private/tmp/claude-501/case-pass10-scratch/probe_placement.py` and
+`verify_mag_numbers.py` from this pass's own working notes) and then
+confirmed against the real built geometry by `verify_mag_pocket` (below)
+-- not the other way around.
+
+**Why a plain analytic box, not a live Fusion clip against the real
+curved shell** (unlike every other skin-safe cut in this file --
+`add_fpc_relief`/`add_fpc_brow`): a first attempt mirrored that pattern
+exactly (build the outer pill solid, offset it out by `brow_height`,
+subtract the original, intersect with a footprint box, twice -- once
+per Bottom/Top half -- then build a SECOND "skin-safe tool" the same
+way for the pocket cut itself). That needed `build_outer_pill_solid`
+(a whole extrude + 2 revolves + joins, already one of the more
+expensive constructions in this file) rebuilt roughly a dozen times for
+this one small feature and never finished within several minutes of
+real Fusion wall-clock time -- abandoned in favour of sizing the brow/
+pocket boxes directly from the analytic profile functions (`rho_at_z`,
+`rho_from_spine`), verified in pure Python to clear every real
+obstacle (bosses, the alignment lip/anchor ring, the true outer
+surface with brow) by the numbers in the table above, before ever
+building it in Fusion. See `mag_pocket_footprint`/`mag_brow_box`'s own
+docstrings in `firefly_case.py` for the exact derivation.
+
+### Orientation (fixed and documented)
+
+Local -> world mapping (module's own PCB frame -> the case generator's
+world mm), same for both variants:
+
+- Local **+x** (the 18.6mm PCB axis, **header edge**, local x=+7.44) ->
+  world **+Z** (up, toward the Top ceiling).
+- Local **-x** (the **mounting-hole edge**, local x=-7.21) -> world
+  **-Z** (down, toward the Bottom floor -- both pegs land on Bottom,
+  confirmed by construction: both mount holes share the same local x,
+  so both map to the same world z=6.43, well inside Bottom's own
+  0..`split_z` range).
+- Local **+y** -> world **-Y** (toward the lanyard tip).
+- Local **-y** -> world **+Y** (toward the battery/GPS end).
+- Local **+z** (the **component/sensor face**) -> world **-X** (toward
+  the open cavity -- the pocket's own opening).
+- Local **-z** (the **header/solder face**) -> world **+X** (toward the
+  outer wall/brow -- the pocket's own back wall).
+
+In words: the module stands on its long (18.6mm) edge, header up,
+mounting-hole edge down on the two pegs, sensor face looking into the
+open cavity (away from the wall), header/solder face toward the wall
+(where the added radial depth budget for the 2.5mm solder-joint
+allowance lives). See `ff_compass.c`'s own updated comment (firmware
+pass) for what this means for the axis-remap table -- the PCB-frame
+mapping above is fixed by this pocket's own geometry; translating it
+into which *sensor* axis (QMC5883P's own silkscreen/datasheet frame)
+that corresponds to still needs a bench check, same as every other row
+in that table.
+
+### Geometry
+
+- **Pocket**: a single open box per half (Bottom z 4.0-10.0, Top
+  10.0-22.6+1 -- plus a bit more on both sides to also clear the
+  alignment lip/anchor ring's own real material, see `mag_split_z`'s
+  docstring for why the cut's own split point isn't `split_z` itself),
+  sized from `mag_module['world_x']`/`['world_y']` (an analytic
+  constant, not a live clip -- see above). Acts as its own "fence": the
+  solid brow/skin material left standing around the pocket's tangential
+  (Y) and vertical (Z) margins retains the board; there is no separate
+  free-standing fence body.
+- **Pegs**: two Ø2.7 x 2.8mm-effective-reach cylinders (`peg_h` 2.5mm +
+  a 0.3mm reach margin), axis along world X, rooted at the pocket's own
+  back wall (x=23.8, comfortably inside the brow's skin) and reaching
+  inward to the mounting-hole positions -- both on Bottom (see
+  Orientation above).
+- **Header notch**: a small explicit 3mm-wide (Y) box past the pocket's
+  own Z1 edge, centred on the header holes' own y-span, for the five
+  wires -- literally satisfies the brief's "3mm notch", even though the
+  pocket itself is already open there by construction.
+- **Brow**: a single analytically-sized box (not multi-tier like
+  `add_fpc_brow` -- this footprint has no neighbouring feature to blend
+  into), joined into Bottom (z up to `mag_split_z`, ~9.0) and Top (z
+  from `p['split_z']`, 10.0) -- see `mag_brow_box`'s own docstring for
+  why the lo/hi split points are deliberately NOT the same value: two
+  distinct real ~136mm^3 Top x Bottom interferences were found and
+  fixed this pass (one at each boundary, for different reasons -- the
+  real alignment lip nesting into Bottom's wall on one side, Bottom's
+  own natural wall material on the other), both confirmed live via
+  `analyzeInterference` before and after the fix.
+- **Ring relief**: the pocket's own Top-side cut is widened down to
+  `mag_split_z` (not `p['split_z']`) specifically so it removes the
+  alignment lip/anchor ring's real material in this footprint too --
+  without that, the ring (which wraps the whole perimeter) would leave
+  a solid plug blocking the pocket at z 9.2-11.
+- **`PARAMS['mag_module']`** (`params_current.py`, inherited unmodified
+  by `params_trim.py`): local module geometry, peg/fence dimensions,
+  and the world placement table above, with the placement-derivation
+  comment inline.
+- **`verify_mag_pocket`** (`firefly_case.py`): (1) `envelope_open` --
+  the module's own reference envelope (PCB + component bump + header/
+  solder allowance, sampled at both PCB ends + centre) is genuinely
+  hollow in the built Bottom/Top; (2) `pegs_have_material` -- both pegs
+  have real material at their root; (3) `peg_root_within_skin` -- the
+  peg root stays >=0.5mm inside the true (brow-raised) outer surface,
+  no bump. All three gate `verify()` (added to its assertion chain, not
+  just reported).
+
+### Trim first, then current
+
+Built and verified trim first (the default variant). The SAME
+`PARAMS['mag_module']` numbers, unmodified, also verify clean on
+`current` (its 2mm-larger `outer_radius` gives every clearance in the
+table above more margin, not less) -- no per-variant override needed,
+same pattern as the bay/screw layout elsewhere in this file.
+
+### `verify()` output, both variants (pass 10)
+
+Confirmed piecewise (build, then `organize_components`, then `verify`,
+each its own `fusion_mcp_execute` call against the same open document,
+writing results to a JSON file on disk rather than trusting a call's
+return value -- this pass's own build/verify cycle needed 3 rounds to
+land clean, see the interference fixes above, and the file-write
+pattern meant no result was ever lost to a client-side timeout):
+
+```
+trim:    body_names ['Bottom', 'Home Button', 'Power Button', 'Screen Plate', 'Top']
+         interference []
+         stack3_clearance {'stack_top_z': 22.942, 'clearance_found': 4.158, 'required': 0.8, 'ok': True}
+         mag_pocket_results {'envelope_open': [True, []], 'pegs_have_material': [True, []], 'peg_root_within_skin': [True, []]}
+         envelope/bump/export-envelope/posts-bosses/post-wall/wall/skin/fpc-relief/wordmark/antenna: all clean
+         OK: M1+M2 probes passed
+
+current: body_names ['Bottom', 'Home Button', 'Power Button', 'Screen Plate', 'Top']
+         interference []
+         stack3_clearance {'stack_top_z': None, 'clearance_found': None, 'required': 0.8, 'ok': True, 'note': 'comms_stack3_full_height=False -- no Wio/XIAO inserted, nothing to check'}
+         mag_pocket_results {'envelope_open': [True, []], 'pegs_have_material': [True, []], 'peg_root_within_skin': [True, []]}
+         envelope/bump/export-envelope/posts-bosses/post-wall/wall/skin/fpc-relief/wordmark/antenna: all clean
+         OK: M1+M2 probes passed
+```
+
+### Offline STL scan output (`tools/offline_stl_check.py`, pass 10)
+
+`OVERALL: PASS`, both variants, 0 non-manifold edges, 0 envelope
+breaches, 0 disallowed overhang clusters -- after adding two new,
+by-location whitelist entries (`mag_module_pocket`, both `TOP_WL` and
+`BOTTOM_WL`, and the matching entries in `firefly_case.py`'s own
+`run()`): the two Ø2.7 pegs are horizontal cylinders (axis along world
+X), and their own underside arc, plus a short flat span across the
+pocket's own back wall, is a real but small local overhang (~41mm^2
+worst cluster) -- well within typical FDM bridging tolerance for a
+feature this size, same category as `l76k_frame_ceiling`'s existing
+entry, not redesigned into a teardrop/self-supporting profile this
+pass (a reasonable follow-up, see Known limitations).
+
+### Exports and renders (pass 10)
+
+Both variants: `export/<variant>/{Bottom,Top,Screen_Plate,Power_Button,
+Home_Button}.stl` (Bottom/Top changed -- the new pocket/brow/peg
+geometry; Screen_Plate/Power_Button/Home_Button byte-for-byte
+re-exports, untouched by this pass), `export/<variant>/firefly_
+<variant>_case.3mf` (native, Fusion's own exporter), `export/<variant>/
+firefly_<variant>_plate.3mf` (re-packed via `tools/stl_to_3mf.py` --
+Bottom as-is, Top flipped 180 about X, buttons rotated outer-face-down,
+same convention as every prior pass). Coupons untouched (button
+mechanism unaffected by this pass).
+
+Renders: `pass10_{trim,current}_{front,top,right,iso}.png` (standard
+4-view, both variants), plus `pass10_mag_pocket.png` (a close-up,
+Top and the comms boards hidden, looking into the pocket area from
+outside the +x wall -- shows the brow's own raised profile clearly;
+the two Ø2.7 pegs are small enough at this framing to blend into the
+general grey mass rather than read as distinct pins, a documentation
+limitation, not a geometry one -- see Known limitations) and
+`pass10_mag_pocket_open.png` (a wider interior overview, Top hidden,
+showing the pocket area alongside the comms stack and display glass
+for context). All viewed directly as part of this pass.
+
+See items 23-26 in "Known limitations / deviations from SPEC.md" below
+for what this pass leaves open.
 
 ## Screw list
 
@@ -2512,6 +2756,50 @@ reason" per the milestone instructions.
     (same idea as `pass9c_lip_ring_section.png` for the window lip) would
     give more confidence than the current wide shot. Not modified this
     pass.
+23. **The compass module's two Ø2.7 pegs (pass 10) are plain cylinders,
+    not a self-supporting (teardrop/flat-bottom) profile** — their own
+    underside arc is a real, small (~41mm² worst cluster) horizontal
+    overhang, whitelisted by location (`mag_module_pocket` in both
+    `tools/offline_stl_check.py` and `firefly_case.py`'s own overhang
+    scan) rather than redesigned — well within typical FDM bridging
+    tolerance for a Ø2.7mm feature this short, but a genuinely
+    self-supporting peg profile (matching `build_wedge_along_x`'s
+    existing 45-degree self-supporting technique elsewhere in this
+    file) would be a cleaner follow-up.
+24. **`pass10_mag_pocket.png` does not clearly resolve the compass
+    module's two individual pegs** at its chosen framing/distance — the
+    brow's own raised profile is clearly visible, but the small Ø2.7
+    pegs blend into the surrounding grey material. The pocket/peg
+    geometry itself is independently confirmed by `verify_mag_pocket`'s
+    three live probes (see the pass-10 section above), so this is a
+    render-quality/documentation gap, not an unverified feature — a
+    follow-up pass could add a dedicated interior shot with more
+    aggressive body isolation (hiding the Screen Plate and lip/anchor
+    ring too, not just Top and the comms boards).
+25. **The mag-module brow/pocket boxes (pass 10) are sized from the
+    analytic outer-radius profile (`rho_at_z`/`rho_from_spine`), not a
+    live Fusion clip against the real curved shell** — see that
+    section's "Why a plain analytic box" for why (a live-clip attempt,
+    mirroring `add_fpc_brow`/`add_fpc_relief` exactly, needed the
+    expensive full-shell solid rebuilt roughly a dozen times and never
+    finished within several minutes of real Fusion wall-clock time).
+    Verified safe by direct computation against every real obstacle in
+    the footprint (bosses, the alignment lip/anchor ring, the true
+    outer surface with brow) with >=0.5mm margin at the worst corner on
+    both variants, and independently confirmed by `verify_mag_pocket`'s
+    live probes post-build — but this is a different verification
+    methodology than every other skin-safe cut in this file, worth
+    flagging for a future maintainer rather than silently blending in.
+26. **The QMC5883P's own sensor-axis-to-PCB-silkscreen relationship is
+    still unknown** — pass 10 fixes the compass module's PHYSICAL
+    mounting (which PCB edge points which way in the puck's own frame,
+    see that section's Orientation above) and updates `ff_compass.c`'s
+    comment to say so, but translating that into the firmware's
+    `FF_MAG_QMC5883P_BOARD_*` axis-remap table still needs a bench
+    check against the real chip's silkscreen/datasheet Package 3-D
+    View — the table's current numeric values are the OLD flat-mount
+    guess and are explicitly flagged as stale in that file's comment,
+    not updated with new (unverified) numbers.
 
 **Reverted mid-pass-6, not shipped**: the coordinator's later messages in
 this pass requested (a) swapping the Wio/XIAO stack to a board-to-board
