@@ -80,28 +80,18 @@ def check_envelope(tris, params, name):
     lug_y_thresh = y_root
     lug_x_half = half_w + 0.5
     is_cap = name in ('Power_Button', 'Home_Button')
-    is_top = name == 'Top'
     limit = outer_r + (0.45 + 0.05 if is_cap else 0.15)
 
-    # 2026-09-08 pass 9: the FPC relief brow (add_fpc_brow in
-    # firefly_case.py) intentionally raises Top's outer surface by up to
-    # FPC_BROW_HEIGHT (1.5mm) over the relief pocket's own footprint --
-    # ported the same exception firefly_case.py's live
-    # check_body_envelope_vertices now carries, so this offline script
-    # can't disagree with it.
-    FPC_BROW_HEIGHT = 1.5
-    FPC_BROW_BLEND = 3.0
-    brow_limit = outer_r + FPC_BROW_HEIGHT + 0.15
-    fr = params['fpc_relief']
-    fx0, fx1 = min(fr['x'][0], -14.0), max(fr['x'][1], 14.0)
-    fy0, fy1 = min(fr['y'][0], 65.0), fr['y'][1]
-    brow_x0, brow_x1 = fx0 - FPC_BROW_BLEND - 0.5, fx1 + FPC_BROW_BLEND + 0.5
-    brow_y0, brow_y1 = fy0 - FPC_BROW_BLEND - 0.5, fy1 + FPC_BROW_BLEND + 0.5
-
-    # 2026-09-10 pass 10 REDO: the compass-module mount no longer has a
-    # brow (the rejected vertical-wall version did; the new ceiling-hung
-    # mount hangs well inboard of the true outer wall) -- no exemption
-    # needed here any more.
+    # 2026-09-08 pass 9 through pass 12: the FPC relief brow (add_fpc_brow
+    # in firefly_case.py) intentionally raised Top's outer surface over
+    # the relief pocket's own footprint, and this offline script carried
+    # a ported exception matching firefly_case.py's live
+    # check_body_envelope_vertices so the two could never disagree.
+    # 2026-09-13 pass 12b: the brow is deleted (usb_end_extension_mm
+    # recovers the same skin by lengthening the envelope instead of
+    # raising it -- see firefly_case.py's FPC_RELIEF_MIN_WALL module
+    # comment), so this script is back to exactly its pre-pass-9 shape,
+    # same as pass 10 REDO already did for the compass-mount exemption.
 
     bad = []
     seen = set()
@@ -115,8 +105,6 @@ def check_envelope(tris, params, name):
             if y < lug_y_thresh and abs(x) < lug_x_half:
                 continue
             rho = rho_from_spine(ay, by, x, y)
-            if is_top and brow_x0 <= x <= brow_x1 and brow_y0 <= y <= brow_y1 and rho <= brow_limit:
-                continue
             if rho > limit:
                 bad.append((round(x, 2), round(y, 2), round(z, 2), round(rho, 2)))
     return {'ok': not bad, 'limit': limit, 'sample_bad': bad[:5], 'bad_count': len(bad)}

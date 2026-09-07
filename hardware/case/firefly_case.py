@@ -21,13 +21,30 @@ import time
 import json
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
-if _HERE not in sys.path:
-    sys.path.insert(0, _HERE)
+# 2026-09-12 pass 12: Fusion's embedded interpreter has been observed to
+# accumulate sys.path entries from MANY past worktrees/passes across its
+# whole lifetime (a live session found /private/tmp/claude-501/case-pass10,
+# case-pass11, .../case-pass12-scratch/orig, and the main repo checkout all
+# still present) -- each one has its OWN params_current.py/params_trim.py,
+# and `if _HERE not in sys.path: sys.path.insert(0, _HERE)` only helps the
+# FIRST time this file runs in a given interpreter: once _HERE is already
+# present (anywhere in the list), a LATER script that inserts a different
+# worktree's dir at index 0 permanently shadows this one's own params
+# modules for every subsequent run() in the same interpreter, even though
+# THIS file (identified by its own absolute path) is what's executing --
+# confirmed live: running a comparison build from a second worktree path
+# left a real Firefly Case Gen document built against that OTHER worktree's
+# params_trim.py (top_z=28) after this file's own params_trim.py had
+# already been edited to top_z=30. Fixed by unconditionally moving _HERE to
+# the FRONT every time, not just inserting it once.
+sys.path = [p for p in sys.path if p != _HERE]
+sys.path.insert(0, _HERE)
 
 # Fusion's embedded Python interpreter stays alive across separate script
 # executions, so sys.modules from a previous run() would otherwise serve
-# STALE params_current/params_trim content on the next run. Force a fresh
-# import every time this file is executed.
+# STALE params_current/params_trim content on the next run -- and, per the
+# above, possibly from a DIFFERENT worktree's file of the same name. Force
+# a fresh import every time this file is executed.
 for _mod in ('params_current', 'params_trim'):
     sys.modules.pop(_mod, None)
 
@@ -36,7 +53,8 @@ from params_trim import PARAMS as PARAMS_TRIM
 
 # ---------------------------------------------------------------------------
 # Variant switch. Change this (or set firefly_case.VARIANT before calling
-# run()) to pick which case gets built. 'trim' (56x102x25) is Jake's default;
+# run()) to pick which case gets built. 'trim' (56x103.8x28, pass 12b) is
+# Jake's default;
 # 'current' (60x110x25, matches the "Firefly V2 v15/v16" reference) stays
 # buildable for the probe-table comparison against that reference.
 # ---------------------------------------------------------------------------
@@ -825,7 +843,7 @@ def add_lip_anchor_reliefs(root, bodies, p):
     # it) whose CAD-space +Z-facing top surface becomes a DOWNWARD-facing,
     # unsupported overhang once Top prints flipped (face-down on its flat
     # z=top_z face -- see README print orientation). Bevel that edge with
-    # a stadium-aware chamfer (best-effort, matches add_fpc_brow's seam
+    # a stadium-aware chamfer (best-effort, matches add_lug's corner
     # fillet pattern) so it prints support-free; the lip's own 0.25mm
     # nesting clearance (lip_r[1], untouched by finding 5's inward
     # widening) is unaffected since the chamfer is applied to the OUTER
@@ -940,60 +958,39 @@ FPC_RELIEF_MIN_WALL = 1.2  # mm of shell that must remain above the pocket every
 # 2026-09-08 pass 9 (Jake's decision after the pass-7-follow-up's 0.3mm
 # compromise, see git history on this branch for that whole dead end):
 # 1.2mm is achievable again, WITHOUT the ~62mm^3 Top x display-housing
-# interference the plain "shrink the pocket" approach kept recreating,
-# because this pass adds a local BROW instead (see FPC_BROW_HEIGHT /
-# build_fpc_brow_solid / add_fpc_brow below) -- it raises the TRUE outer
-# shoulder surface itself over the relief footprint, rather than trying to
-# recover skin by cutting the pocket shallower. The two approaches are not
-# equivalent: shrinking the pocket eats directly into the same clearance
-# the display's real housing needs there (root cause of the 62mm^3
-# overlap, per the 0.3mm compromise's own comment, preserved in git
-# history) -- raising the outer surface does not touch the pocket's depth
-# at all, so the display clearance the pocket already had is undisturbed;
-# it just gives the shell more material to spare above it.
-
-
-FPC_BROW_HEIGHT = 1.5   # mm the outer shoulder is locally raised, at most, over the relief footprint
-FPC_BROW_BLEND = 3.0    # mm the raised footprint extends past the pocket's own margin box, and the
-                        # fillet radius applied to its seam edges (see add_fpc_brow) -- the "tangent
-                        # blend" so it ramps into the surrounding dome rather than stepping.
-
-# 2026-09-09 pass 9g (coordinator's render sweep, "the FPC brow is a
-# slab"): a single box-clipped push-out at the full FPC_BROW_HEIGHT
-# everywhere in its footprint, however well the seam is filleted
-# afterward, still has a real ~1.5mm vertical step baked into its own
-# construction right at the seam (build_thickened_envelope's push is
-# UNIFORM across the footprint, so the "shell_layer" this cuts against
-# original is exactly FPC_BROW_HEIGHT thick everywhere it exists -- the
-# box intersect just crops that uniform-thickness layer to a rectangle,
-# it can never taper it) -- confirmed as the root cause of pass9_trim_
-# iso/right/top's visible plateau, independent of whether the seam fillet
-# below happens to apply. Fixed by building the brow as a small stack of
-# NESTED, wider-and-shallower tiers (a manual "wedding cake" loft
-# approximation, reusing only already-proven primitives -- box_solid,
-# build_thickened_envelope, the boolean combine_* ops -- rather than a
-# true loft/two-distance-chamfer, which would need new, unverified Fusion
-# API calls this pass's time budget doesn't cover a live iteration
-# cycle for): tier 0 (margin 0, height FPC_BROW_HEIGHT) sits tight over
-# the pocket exactly as before; tier 1 (margin FPC_BROW_BLEND, height
-# FPC_BROW_HEIGHT*0.35) is a wide, shallow shoulder around it. Each tier
-# boundary is now a much shorter riser (0.975mm / 0.525mm, vs. the old
-# single 1.5mm cliff) spread over the SAME 3mm of blend margin as before
-# -- a visibly gentler mound even before any fillet is attempted, and a
-# best-effort constant-radius fillet (same skip-on-failure pattern as
-# before) is applied at BOTH risers, not just the outer seam.
-FPC_BROW_TIERS = (
-    (0.0, FPC_BROW_HEIGHT),
-    (FPC_BROW_BLEND, FPC_BROW_HEIGHT * 0.35),
-)
+# interference the plain "shrink the pocket" approach kept recreating --
+# shrinking the pocket eats directly into the same clearance the
+# display's real housing needs there (root cause of the 62mm^3 overlap,
+# preserved in git history).
+#
+# 2026-09-12 pass 12 (Jake asked to delete a local "brow" bump -- pass 9's
+# original fix for this same 1.2mm bar -- by raising trim's top_z
+# instead): proved both analytically and live that height cannot do it
+# (`rho_at_z(p, z) = flat_rho + (top_z - z)` shifts the pocket and the
+# shoulder profile together, so `top_z - z` at the pocket's own z1 is
+# invariant to top_z -- see README's pass-12 section) -- so the brow
+# stayed, unmodified, through pass 12.
+#
+# 2026-09-13 pass 12b (Jake: "move the top to be longer" -- meaning the
+# case, at the USB end, not the height): `usb_end_extension_mm` (see
+# params_current.py/params_trim.py) grows the outer envelope's own +y
+# dome outward instead, which DOES recover real skin here (a length
+# change, not a height one, and it moves the shoulder profile's own
+# reach at this corner rather than translating pocket+shoulder together
+# -- see README's pass-12b section for the live numbers). With enough
+# skin recovered this way, the brow (`add_fpc_brow`/
+# `build_fpc_brow_solid`/`FPC_BROW_TIERS`, pass 9-12) is no longer needed
+# and has been deleted outright -- `verify_fpc_relief` passes with a
+# plain, un-raised shoulder now; see that gate's own live numbers in the
+# README for the before/after probe counts.
 
 
 def fpc_relief_footprint(p):
     """The FPC relief pocket's cut footprint (x0, x1, y0, y1, z0, z1) --
-    factored out (2026-09-08 pass 9) so add_fpc_relief, add_fpc_brow, and
-    verify_fpc_relief all derive it the exact same way and can never
-    silently drift apart (the same reasoning lug_ear_geometry documents
-    for the ear vs. its own verify/export checks)."""
+    factored out (2026-09-08 pass 9) so add_fpc_relief and
+    verify_fpc_relief derive it the exact same way and can never silently
+    drift apart (the same reasoning lug_ear_geometry documents for the
+    ear vs. its own verify/export checks)."""
     fr = p['fpc_relief']
     x0 = min(fr['x'][0], -14.0)
     x1 = max(fr['x'][1], 14.0)
@@ -1002,193 +999,6 @@ def fpc_relief_footprint(p):
     z0 = min(fr['z'][0], 21.0)
     z1 = fr['z'][1] + 0.1
     return x0, x1, y0, y1, z0, z1
-
-
-def build_fpc_brow_solid(root, p):
-    """The brow bump alone (not yet joined to anything): JUST the thin
-    outward layer between the plain outer envelope and that same envelope
-    pushed out by FPC_BROW_HEIGHT (build_thickened_envelope), clipped to a
-    box a bit larger than the FPC relief pocket's own footprint
-    (FPC_BROW_BLEND of margin on every side, so the raised patch fully
-    covers the pocket and its widened margin, with room for the seam
-    fillet to blend outward from there). Reused by both add_fpc_brow
-    (joins it into the real Top) and add_fpc_relief (joins a fresh copy
-    into a plain reference envelope, to measure the TRUE post-brow outer
-    surface when building the pocket's skin-safe clip tool) -- see both
-    docstrings.
-
-    2026-09-08 pass 9 bugfix: build_thickened_envelope returns a SOLID
-    FILLED pill (the whole outer envelope volume before hollowing, offset
-    outward), not a thin shell -- intersecting it directly with a box
-    that spans any real Z depth returns the entire FILLED interior within
-    that footprint, not a thin bump. First attempt did exactly that (a box
-    from `top_z - 15` up through the pushed-out surface intersected
-    straight against `thickened`) and produced a solid chunk filling most
-    of Top's own interior over the FPC footprint -- confirmed by a live
-    verify() run: real, large interference against the Screen Plate
-    (~1913mm^3) and the display module's own housing body (up to
-    ~1518mm^3), because the "bump" was actually solid all the way down
-    past the plate and deep into the display's clearance zone. Fixed by
-    first Combine-Cutting the PLAIN (un-pushed) envelope out of the pushed
-    envelope -- `thickened MINUS original` -- leaving only the genuinely
-    thin outward layer the brow is supposed to be.
-
-    2026-09-08 pass 9, second bugfix: the box's Z range is NOT harmless at
-    any depth after all -- at the footprint's own extreme corners (where
-    2D distance from spine_b already approaches outer_radius even before
-    any raise, e.g. rho~29.4 against outer_radius+FPC_BROW_HEIGHT=29.5),
-    `original` has NO material at ANY z (that (x,y) is entirely outside
-    the plain shell's own reach), so `shell_layer` there is the FULL
-    `thickened` volume across whatever Z-band the pushed-out envelope
-    happens to be solid at that radius -- which, for a box reaching as low
-    as `top_z - 15`, can dip well down into the dome's natural waist,
-    confirmed live: verify_wall_integrity's dome-perimeter scan caught a
-    real bump at spine_b z=11 on the 'current' variant (top_z=25, so the
-    old `top_z - 15 = 10` lower bound reached almost exactly there).
-    Tightened to start just below the relief pocket's OWN floor (the only
-    Z this footprint ever actually needs raised material above) rather
-    than an arbitrary large margin -- the corner sliver from the first
-    bugfix's docstring is still present (it's real, thin, and now
-    documented as an allowed exception in check_body_envelope_vertices),
-    but can no longer reach anywhere near the waist.
-
-    2026-09-09 pass 9g (coordinator's render sweep, "the FPC brow is a
-    slab"): now builds and unions FPC_BROW_TIERS (see that constant's own
-    comment) instead of a single box -- each tier is exactly this same
-    thickened-minus-original-clipped-to-a-box construction, just at a
-    smaller margin/height pair, so both bugfixes above still apply
-    per-tier unchanged. A fresh `original` copy is built for every tier
-    (combine_cut consumes its tool body, per _combine's isKeepToolBodies=
-    False) -- more Fusion calls than the old single-box version, which is
-    why this is run as its own separate fusion_mcp_execute stage (see
-    README's infrastructure note).
-
-    2026-09-11 pass 11 (defect 1, "the FPC brow fills the top of the
-    window"): build() calls add_window() BEFORE add_fpc_brow() (the
-    window's own ledge/chamfer geometry is unchanged from pass 9 and
-    stays that way -- see add_window's own docstring for why reordering
-    THAT call was rejected), which means every tier built above is
-    derived from a FRESH `build_outer_pill_solid`/`build_thickened_
-    envelope` pair -- a plain, unbored pill -- with no notion that Top's
-    real window bore already exists. Wherever a tier's own box footprint
-    (x/y0/1 above, widened by FPC_BROW_BLEND) overlaps the window bore's
-    XY footprint (it does: the bore's own upper rim, at y roughly 62-71
-    for x within about +-14, sits almost exactly under the brow's own
-    footprint at the USB end), the tier solid still carries real material
-    there -- and joining it into Top (add_fpc_brow, right after this)
-    blindly refills that part of the now-open bore, confirmed by Jake's
-    own ray-cast of the pass-9 export (every sample from y=62..71 inside
-    the bore hit solid at z 28.52/29.50, a slab across the top ~10mm of
-    the window). Fixed HERE, at the single choke point both add_fpc_brow
-    and add_fpc_relief's skin-safe-tool derivation share (see both
-    docstrings) -- Combine-Cut the finished `brow` against a cylinder
-    covering the window bore's own true opening (radius = window bore
-    radius + its own chamfer, so the chamfered rim is excluded too) from
-    the glass ledge (window_z_bottom) up through the highest point any
-    brow tier could ever reach (top_z + FPC_BROW_HEIGHT) -- the brow can
-    then never carry material back into the window column, regardless of
-    how its footprint box overlaps the bore in XY, while everywhere
-    OUTSIDE that column (the actual FPC-relief footprint this brow exists
-    to cover) is completely unaffected. See verify_openings_open (new
-    this pass) for the live gate this fixes, and README's pass-11 section
-    for the before/after bore-scan numbers."""
-    x0, x1, y0, y1, fz0, _ = fpc_relief_footprint(p)
-    brow = None
-    for margin, height in FPC_BROW_TIERS:
-        bx0, bx1 = x0 - margin, x1 + margin
-        by0, by1 = y0 - margin, y1 + margin
-        tier_box = box_solid(root, bx0, bx1, by0, by1, fz0 - 2.0, p['top_z'] + FPC_BROW_HEIGHT + 1.0)
-        thickened = build_thickened_envelope(root, p, height)
-        original = build_outer_pill_solid(root, p)
-        shell_layer = combine_cut(root, thickened, [original])
-        tier_solid = combine_intersect(root, tier_box, [shell_layer])
-        brow = tier_solid if brow is None else combine_join(root, brow, [tier_solid])
-
-    # Exclude the window bore's own column (pass 11, defect 1 -- see the
-    # docstring above): never let the brow carry material back into the
-    # window opening, no matter how its footprint overlaps the bore.
-    wcx, wcy = p['window_center']
-    w_excl_r = p['window_dia'] / 2.0 + p['window_chamfer']
-    w_excl_z0 = p['window_z_bottom'] - 1.0
-    w_excl_z1 = p['top_z'] + FPC_BROW_HEIGHT + 1.0
-    window_col = cylinder_solid(root, wcx, wcy, w_excl_r, w_excl_z0, w_excl_z1)
-    brow = combine_cut(root, brow, [window_col])
-    return brow
-
-
-def add_fpc_brow(root, bodies, p):
-    """Join the brow bump (see build_fpc_brow_solid) into the real Top,
-    2026-09-08 pass 9 (finding 1, first-print holes at the USB end): the
-    fpc relief pocket's outer corners sit where the dome's TRUE outer
-    surface is already naturally thin (close to the dome's own outer
-    boundary well before any pocket is even cut -- confirmed analytically:
-    those corners' 2D distance from spine_b approaches outer_radius while
-    they're also close to the flat top face, where the true profile is at
-    its narrowest, flat_rho). No amount of clipping the pocket alone can
-    recover real skin where the shell itself barely has 1.2mm to begin
-    with -- so this locally raises the shoulder/dome itself instead,
-    exactly as Jake asked: a bump over the FPC-tab footprint, tangent-
-    blended so it prints support-free (Top prints face-down on its flat
-    face, so this bump sits on the upward-facing side during printing) and
-    reads as an intentional design feature rather than a defect.
-
-    The seam fillets are applied to Top's own vertical seam edges where
-    EACH tier's own footprint meets the next one out (see FPC_BROW_TIERS)
-    -- best-effort (skipped, not rolled back, if Fusion's fillet feature
-    refuses this specific geometry), same reasoning as add_lug's corner
-    fillets: a missing fillet is a cosmetic/print-quality regression, not
-    a structural one, and every dimensional gate this pocket depends on
-    (verify_fpc_relief, interference) is computed from the real solid
-    either way. 2026-09-09 pass 9g: now one fillet pass PER tier boundary
-    (radius = that tier's own margin, same convention as before -- a
-    fillet radius roughly matching the lateral run available at that seam)
-    instead of a single FPC_BROW_BLEND-radius pass on the old single box's
-    seam -- each riser is shorter now (see FPC_BROW_TIERS's own comment),
-    so a fillet is more likely to actually apply at each of them."""
-    x0, x1, y0, y1, _, _ = fpc_relief_footprint(p)
-    brow_solid = build_fpc_brow_solid(root, p)
-    top = combine_join(root, bodies['Top'], [brow_solid])
-
-    for margin, _height in FPC_BROW_TIERS:
-        bx0, bx1 = x0 - margin, x1 + margin
-        by0, by1 = y0 - margin, y1 + margin
-        fillet_r = max(0.5, min(margin, 1.5)) if margin > 0 else 1.0
-        try:
-            top = _refetch_by_name(root, 'Top') or top
-            fillet_edges = adsk.core.ObjectCollection.create()
-            for edge in top.edges:
-                bb = edge.boundingBox
-                dz = (bb.maxPoint.z - bb.minPoint.z) / MM
-                if dz < 0.2:
-                    continue
-                ex0, ex1 = bb.minPoint.x / MM, bb.maxPoint.x / MM
-                ey0, ey1 = bb.minPoint.y / MM, bb.maxPoint.y / MM
-                on_x_seam = abs(ex0 - ex1) < 0.05 and (abs(ex0 - bx0) < 0.05 or abs(ex0 - bx1) < 0.05)
-                on_y_seam = abs(ey0 - ey1) < 0.05 and (abs(ey0 - by0) < 0.05 or abs(ey0 - by1) < 0.05)
-                if on_x_seam or on_y_seam:
-                    fillet_edges.add(edge)
-            if fillet_edges.count > 0:
-                fillets = root.features.filletFeatures
-                fin = fillets.createInput()
-                # 2026-09-09 pass 9g: isTangentChain=False (was True) --
-                # each seam edge here is short (0.4-2mm) and sits right
-                # next to a lot of unrelated dome tessellation edges;
-                # tangent-chain matching risked silently pulling in a much
-                # larger loop than intended and failing the whole fillet
-                # solve, which is very likely why NEITHER tier's fillet
-                # produced a timeline Fillet feature on the first live
-                # build this pass (confirmed: 0 Fillet/Chamfer features
-                # attributable to add_fpc_brow in that build's timeline).
-                # Exact-selection (no chaining) is more conservative but
-                # far more likely to actually succeed on this geometry.
-                fin.addConstantRadiusEdgeSet(fillet_edges, V(fillet_r), False)
-                fillets.add(fin)
-                top = _refetch_by_name(root, 'Top') or top
-        except RuntimeError:
-            pass
-
-    bodies['Top'] = top
-    return bodies
 
 
 def add_fpc_relief(root, bodies, p):
@@ -1268,36 +1078,38 @@ def add_fpc_relief(root, bodies, p):
     surface drops away faster than the inner cavity does, near the tip),
     which is also why it could never recover more than ~0.3mm before
     re-hitting the display-housing interference (see FPC_RELIEF_MIN_WALL's
-    comment). Now that add_fpc_brow (called just before this, in build())
-    has raised the REAL outer surface over this footprint, the tool is
-    built directly from that real surface instead of an approximation of
-    it: a fresh reference envelope (build_outer_pill_solid, not the actual
+    comment). The tool is built directly from the real outer surface: a
+    fresh reference envelope (build_outer_pill_solid, not the actual
     multi-feature Top -- cheaper, and this pocket's clearance only ever
     depended on the plain outer skin, never on the lip/window/boss
-    features layered onto Top elsewhere) gets the SAME brow bump joined on
-    (build_fpc_brow_solid -- shared with add_fpc_brow so the two can never
-    disagree about where/how high it is), then every face of that brow'd
-    envelope is offset INWARD by FPC_RELIEF_MIN_WALL (offsetFacesFeatures,
-    same idiom as build_thickened_envelope/build_inner_cavity_clip_tool,
-    just applied to the TRUE post-brow surface this time instead of an
-    approximation of it). Intersecting the pocket against that tool
-    guarantees >= FPC_RELIEF_MIN_WALL of real skin above the cut,
-    everywhere, by construction, following the actual (now brow-raised)
-    curvature -- and because the brow adds material WITHOUT touching the
-    pocket's own required depth, the margin no longer has to be cut any
-    shallower than before to hit that bar, so the display-housing
-    clearance the pocket already had is undisturbed (confirmed below by
-    the interference check in verify())."""
+    features layered onto Top elsewhere), with every face offset INWARD
+    by FPC_RELIEF_MIN_WALL (offsetFacesFeatures, same idiom as
+    build_thickened_envelope/build_inner_cavity_clip_tool). Intersecting
+    the pocket against that tool guarantees >= FPC_RELIEF_MIN_WALL of
+    real skin above the cut, everywhere, by construction, following the
+    actual dome curvature.
+
+    2026-09-08 pass 9 through pass 12 (finding 1's original fix, since
+    superseded): a local "brow" (`add_fpc_brow`/`build_fpc_brow_solid`)
+    raised this same reference envelope over the pocket's footprint
+    before the inward offset, because pass 9's SPEC-box corner did not
+    clear 1.2mm on the plain (un-raised) envelope. 2026-09-13 pass 12b
+    (Jake: "move the top to be longer" -- the case, not the height):
+    `usb_end_extension_mm` (see params_current.py/params_trim.py) grows
+    the outer envelope's own +y dome outward instead, which recovers
+    real skin at this same corner directly (see README's pass-12b
+    section for the live derivation/numbers) -- with that margin
+    recovered structurally, the brow added nothing further and has been
+    deleted; `build_outer_pill_solid(root, p)` alone is now the
+    reference envelope this tool offsets inward from."""
     fr = p['fpc_relief']
     x0, x1, y0, y1, z0, z1 = fpc_relief_footprint(p)
     pocket = box_solid(root, x0, x1, y0, y1, z0, z1)
 
-    brow_ref = build_outer_pill_solid(root, p)
-    brow_ref = combine_join(root, brow_ref, [build_fpc_brow_solid(root, p)])
-    faces = [f for f in brow_ref.faces]
+    skin_safe_tool = build_outer_pill_solid(root, p)
+    faces = [f for f in skin_safe_tool.faces]
     offset_input = root.features.offsetFacesFeatures.createInput(faces, V(-FPC_RELIEF_MIN_WALL))
     root.features.offsetFacesFeatures.add(offset_input)
-    skin_safe_tool = brow_ref
 
     pocket = combine_intersect(root, pocket, [skin_safe_tool])
     bodies['Top'] = combine_cut(root, bodies['Top'], [pocket])
@@ -1348,7 +1160,7 @@ def chamfer_stadium_edge_at(root, body, ay, by, r_mm, z_mm, chamfer_mm, tol=0.1)
     edges by center+radius, which misses a stadium's straight sides.
     Matches every edge by its MIDPOINT (works uniformly for line and arc
     geometry, unlike curveType-specific logic) rather than by center/
-    radius. Best-effort, same pattern as add_fpc_brow's seam fillet: a
+    radius. Best-effort, same pattern as add_lug's corner fillets: a
     failed or empty match is not fatal (0 returned), since this is a
     cosmetic/printability feature, not a dimensional one."""
     edges = adsk.core.ObjectCollection.create()
@@ -1609,7 +1421,7 @@ def add_top_posts(root, bodies, p, clip_tool=None):
         # constant-radius fillet on the post's own top circular edge
         # (center (cx,cy), radius top_post_dia/2, z=top_post_z[1], where
         # it meets Top's ceiling) for extra strength at the joint. Skipped
-        # (not fatal), same pattern as add_fpc_brow's seam fillet and
+        # (not fatal), same pattern as
         # add_lug's corner fillets -- a missing fillet here is cosmetic/
         # structural-bonus, not a dimensional regression (verify_post_
         # walls checks the actual wall thickness directly, independent of
@@ -1934,7 +1746,7 @@ def button_geometry(p, switch_bbox, nub_dir, cap):
 
 
 def add_button(root, bodies, name, switch_bbox, nub_dir, cap, hole_wh, p, thickened_envelope=None, clip_tool=None,
-               outer_envelope=None):
+               outer_envelope=None, tab_clip_tool=None):
     g = button_geometry(p, switch_bbox, nub_dir, cap)
     d2, t2 = g['d'], g['t']
     d3, t3 = (d2[0], d2[1], 0.0), (t2[0], t2[1], 0.0)
@@ -2033,6 +1845,37 @@ def add_button(root, bodies, name, switch_bbox, nub_dir, cap, hole_wh, p, thicke
                       tab_hole_center_xy[1] - (tab_hole_depth / 2.0) * d2[1])
     tab_hole_body = oriented_box_prism(root, (tab_hole_start[0], tab_hole_start[1], tab_hole_z_center),
                                         t3, z3, d3, tab['w'] + 2.0, tab_hole_z_span, tab_hole_depth)
+    # 2026-09-12 pass 12 (Jake's sidescan of the pass-11 export/trim/Top.stl
+    # found a real ray-through breach below each button's main hole -- a
+    # slot in the outer wall, with a stepped interior surface visible
+    # through it -- at (y~32, z~15) for Power and (y~68, z~18-20) for
+    # Home): the analytic bound above (s_end = s_inner + skin_margin/2,
+    # ~1.45mm short of the true outer surface along the ray's own t=0
+    # centerline, per the comment above) is only checked ON that
+    # centerline -- this cut is a flat, uncurved box spanning tab['w']+2mm
+    # tangentially, and nothing here previously bounded its off-axis
+    # corners against the TRUE (curved) wall the way the main hole/USB
+    # liner/rib+connector already do elsewhere in this file. Combine-
+    # Intersect against a tight clip tool (`tab_clip_tool`, built once in
+    # add_buttons -- see its own comment for the exact margin, tuned to
+    # `s_wall - wall_clear(0.6)` = s_inner+1.4mm, the SAME "stay clear of
+    # the true wall" convention add_lip_anchor_reliefs/add_lug already use
+    # -- the SAME general mechanism bosses/posts use via
+    # clip_to_inner_cavity, just aimed at s_wall instead of the inner
+    # cavity) guarantees this cut can never reach closer than 0.6mm to the
+    # true skin anywhere in its footprint, on or off axis, while still
+    # comfortably covering the tab's real reach (its own outward-most
+    # point, s_inner+0.15 from add_button's tab_body construction, sits
+    # 1.25mm inside this tool's boundary). A no-op at t=0, where the plain
+    # analytic bound (s_inner + skin_margin/2 = s_inner+1.0) already sits
+    # inboard of this tool's own s_inner+1.4 boundary -- it only bites
+    # off-axis, where the true wall curves in closer than the centerline
+    # assumes. See verify_openings_open's new `*_button_hole_footprint`
+    # gate (added this pass) for the live
+    # regression check this closes, and verify_skin_intact's widened probe
+    # grid for the direct before/after numbers.
+    if tab_clip_tool is not None:
+        tab_hole_body = combine_intersect_keep(root, tab_hole_body, [tab_clip_tool])
     bodies['Top'] = combine_cut(root, bodies['Top'], [tab_hole_body])
 
     # nub pocket at the plunger tip, recessed 0.8mm back toward the outer face
@@ -2151,6 +1994,17 @@ def add_button(root, bodies, name, switch_bbox, nub_dir, cap, hole_wh, p, thicke
     tab_relief_body = oriented_box_prism(root, rib_start_for_relief, t3, z3, d3,
                                           tab_relief_w, tab_relief_z_span,
                                           rib_len + 2 * tab_relief_axial_margin)
+    # 2026-09-12 pass 12: same tab_clip_tool as the wall's own tab_hole_body
+    # cut above (see its comment) -- this lane only ever needs to reach the
+    # rib's own thickness (already bounded by tab_relief_axial_margin), but
+    # clipping it too guarantees it can never contribute a path toward the
+    # true outer skin regardless of how it interacts with rib_plate's later
+    # Combine-Intersect against rib_outer_envelope, matching Jake's own
+    # description of the defect ("the tab-relief lane cut through the rib
+    # AND the outer skin"). A no-op wherever the lane was already safely
+    # inboard.
+    if tab_clip_tool is not None:
+        tab_relief_body = combine_intersect_keep(root, tab_relief_body, [tab_clip_tool])
     rib_plate = combine_cut(root, rib_plate, [tab_relief_body])
 
     # 2026-09-08 pass 9b, finding 9 (collateral discovery): the rib_plate
@@ -2243,6 +2097,19 @@ def add_button(root, bodies, name, switch_bbox, nub_dir, cap, hole_wh, p, thicke
     # where the intersect is well-behaved -- clip it to the inner cavity
     # (same tool used for case-screw bosses/Top posts) as a direct
     # guarantee, rather than one more hand-derived margin number.
+    # 2026-09-12 pass 12: tried swapping this to the looser tab_clip_tool
+    # (built for the tab_hole_body/tab_relief_body cuts, which need to
+    # reach much further outward than the collar ever does -- see that
+    # tool's own comment) per a literal reading of "rib/collar must stay
+    # strictly inside the cavity" -- WRONG, confirmed by a live
+    # interference hit (0.13mm3, Top x Power Button): this is exactly the
+    # diagonal-corner overshoot the comment above already documents and
+    # already fixes with the TIGHT default clip_tool -- tab_clip_tool's
+    # boundary sits much further outboard (calibrated for a completely
+    # different job), so swapping to it silently reopened the old defect.
+    # Reverted to the original clip_tool (unchanged from pass 5); the
+    # "stay inside the cavity" requirement for the collar was already
+    # satisfied before this pass touched anything here.
     if clip_tool is not None:
         collar_body = clip_to_inner_cavity(root, collar_body, p, clip_tool)
     cap_body = combine_join(root, cap_body, [collar_body])
@@ -2263,22 +2130,65 @@ def add_buttons(root, bodies, p, clip_tool=None):
     # rib-plate's own Combine-Intersect (see add_button) -- same reasoning
     # as thickened_envelope above, built once here rather than per button.
     rib_outer_envelope = build_outer_pill_solid(root, p)
+    # 2026-09-12 pass 12: shared tight clip tool for the tab_hole_body cut
+    # (wall) and the tab_relief_body cut (rib) -- see add_button's
+    # tab_hole_body comment for the full root-cause/fix writeup. Built
+    # once here, same reasoning as thickened_envelope/rib_outer_envelope
+    # above. NOT used for the collar (see that comment in add_button --
+    # a first attempt swapped it in there too and reopened an already-
+    # fixed diagonal-corner overshoot defect).
+    #
+    # Margin: this file already has an established convention for "stay
+    # clear of the TRUE (curved) outer wall by a safety margin" --
+    # `wall_clear = 0.6` in add_lip_anchor_reliefs/add_lug, applied as
+    # `s_wall - wall_clear` (0.6mm short of the true wall).
+    # `build_inner_cavity_clip_tool`'s own `safety_margin` parameter is
+    # relative to a DIFFERENT reference point -- the INNER CAVITY surface
+    # (already `wall` inboard of s_wall), not s_wall itself -- so matching
+    # the s_wall-0.6 convention needs `safety_margin = wall_clear -
+    # p['wall']` (negative here, since wall_clear(0.6) < wall(2.0): the
+    # tool must be GROWN outward past the bare inner cavity, not shrunk,
+    # to reach that same s_wall-0.6 target).
+    #
+    # A first attempt used safety_margin=+0.6 directly (reading the task's
+    # "offset inward by wall + 0.6mm" as "wall+0.6mm inward from s_wall",
+    # i.e. s_inner-0.6) -- confirmed WRONG by a live verify() run: it put
+    # the boundary INBOARD of the tab's own real outward reach
+    # (s_tab_face + tab_len_along_d/2 = s_inner+0.15, from add_button's own
+    # tab_body construction), clipping tab_hole_body's clearance cut short
+    # of the tab it exists to clear and producing a real ~5.6mm3 (Power) /
+    # ~7.1mm3 (Home) Top-x-Button interference -- the cap's own tab poking
+    # into wall material the (over-)clipped cut no longer removed. Fixed
+    # with `wall_clear=0.6` (s_inner+1.4 boundary -- 1.25mm of slack past
+    # the tab's own need, still a full 0.6mm short of the true wall, and a
+    # no-op at t=0 since the plain analytic bound, s_inner+1.0, already
+    # sits inboard of it). A separate small residual interference
+    # (~0.13mm3) traced to this same live-testing round turned out to be
+    # the COLLAR clip swap (see add_button's own comment), NOT this
+    # margin -- re-verified after reverting that swap: 0 interference,
+    # both buttons, footprint/skin-intact gates clean, at this exact
+    # wall_clear=0.6 value (a 0.3 retune tried in between is NOT needed
+    # and was reverted -- it reopened a footprint-check failure of its
+    # own for no benefit, since the real interference was elsewhere).
+    wall_clear = 0.6
+    tab_clip_tool = build_inner_cavity_clip_tool(root, p, safety_margin=wall_clear - p['wall'])
 
     bodies = add_button(root, bodies, 'Power Button', p['switch_power_bbox'], p['power_nub_dir'],
                          p['power_cap'], (p['power_cap']['stadium'][0] + 2 * p['cap_clearance'],
                                           p['power_cap']['stadium'][1] + 2 * p['cap_clearance']), p,
                          thickened_envelope=thickened_envelope, clip_tool=clip_tool,
-                         outer_envelope=rib_outer_envelope)
+                         outer_envelope=rib_outer_envelope, tab_clip_tool=tab_clip_tool)
     home_bbox = dict(p['switch_home_bbox'])
     home_bbox['z'] = p['switch_power_bbox']['z']  # z not separately specified in SPEC.md; reuse power's
     bodies = add_button(root, bodies, 'Home Button', home_bbox, p['home_nub_dir'],
                          p['home_cap'], (p['home_cap']['stadium'][0] + 2 * p['cap_clearance'],
                                          p['home_cap']['stadium'][1] + 2 * p['cap_clearance']), p,
                          thickened_envelope=thickened_envelope, clip_tool=clip_tool,
-                         outer_envelope=rib_outer_envelope)
+                         outer_envelope=rib_outer_envelope, tab_clip_tool=tab_clip_tool)
     thickened_envelope.name = 'Cap Trim Envelope'
     thickened_envelope.isLightBulbOn = False
     root.features.removeFeatures.add(rib_outer_envelope)
+    root.features.removeFeatures.add(tab_clip_tool)
     return bodies
 
 
@@ -3172,7 +3082,7 @@ def _antenna_skin_safe_channel(root, p, center_mm, axis1_mm, axis2_mm, length, w
 
 def _best_effort_fillet(root, body, min_dz, radius):
     """Best-effort constant-radius fillet on a body's own vertical-ish
-    edges (dz >= min_dz) -- same pattern as add_fpc_brow's seam fillet:
+    edges (dz >= min_dz) -- same pattern as add_lug's corner fillets:
     skipped (not fatal) if Fusion's fillet feature refuses this specific
     edge selection. Used to round the antenna channel's own long edges
     ('filleted' per the finding's own channel spec) -- cosmetic/print-
@@ -3424,9 +3334,10 @@ def mag_pcb_bottom_world_z(p):
     """World Z of the module's local z=0 plane (PCB bottom / header-pin
     face) -- hangs `standoff_h` below Top's own inner ceiling. Derived
     directly from `top_ceiling_underside_z` so it automatically tracks
-    each variant's own case height (23.0 current / 26.0 trim) with no
-    per-variant override needed -- see mag_module_fits for why 'current'
-    still can't host this mount despite the formula working for both."""
+    each variant's own case height (23.0 current / 28.0 trim as of pass 12,
+    was 26.0 pre-pass-12) with no per-variant override needed -- see
+    mag_module_fits for why 'current' still can't host this mount despite
+    the formula working for both."""
     return p['top_ceiling_underside_z'] - p['mag_module']['standoff_h']
 
 
@@ -3444,8 +3355,15 @@ def mag_module_clearance(p):
     surface: local z = PCB thickness (1.0) + component bump) and the GPS
     patch's own top (bay.gps_patch z[1] = 18.8) -- the number that decides
     whether a variant can host this mount at all (see mag_module_fits).
-    TRIM: 2.7mm. CURRENT: -0.3mm (a real overlap -- its ceiling never grew
-    the 3mm trim did, see params_current.py's comment)."""
+    TRIM (pass 12, top_z=30): 4.7mm (was 2.7mm pre-pass-12, top_z=28 --
+    the RAW gap this mount's own 4.5mm footprint (standoff_h + PCB +
+    component bump) sits inside of also grows, from
+    top_ceiling_underside_z(26) - gps_patch_z1(18.8) = 7.2mm to
+    28-18.8=9.2mm at pass 12, since bay.gps_patch is NOT z-shifted by
+    _DZ_TOP -- see params_current.py's bay comment -- while the ceiling
+    rises with top_z by the same _DZ_TOP delta). CURRENT: -0.3mm
+    (unchanged, still a real overlap -- its ceiling never grew, see
+    params_current.py's comment)."""
     mm = p['mag_module']
     lowest_world_z = mag_world_z(p, 1.0 + mm['local_component_h'])
     patch_top = p['bay']['gps_patch']['z'][1]
@@ -4071,7 +3989,6 @@ def build(app, params):
 
     bodies = add_lip_anchor_reliefs(root, bodies, params)
     bodies = add_window(root, bodies, params)
-    bodies = add_fpc_brow(root, bodies, params)
     bodies = add_fpc_relief(root, bodies, params)
 
     # one shared inner-cavity clip tool, reused for every screw boss + Top
@@ -4363,12 +4280,14 @@ def verify_m1_cavity_probes(bodies, p):
 
 
 def envelope_bounds(p):
-    """Generously allowed bounding box for Bottom/Top, honoring the
-    KNOWN intentional protrusions (button caps proud of the -x wall, the
-    lanyard lug beyond the spine_a dome, and -- 2026-09-08 pass 9 -- the
-    FPC relief brow raised above the flat top face at the USB end, see
-    add_fpc_brow) -- used to catch anything else (like the case-screw-boss
-    bump this was added for) poking outside the shell."""
+    """Generously allowed bounding box for Bottom/Top, honoring the KNOWN
+    intentional protrusions (button caps proud of the -x wall, the
+    lanyard lug beyond the spine_a dome) -- used to catch anything else
+    (like the case-screw-boss bump this was added for) poking outside
+    the shell. 2026-09-08 pass 9 through pass 12 also allowed for the FPC
+    relief brow raised above the flat top face at the USB end
+    (`add_fpc_brow`) -- deleted in pass 12b (see FPC_RELIEF_MIN_WALL's
+    module comment), so the z bound is back to a plain `top_z + tol`."""
     ay, by = p['spine_a'][1], p['spine_b'][1]
     R = p['outer_radius']
     cap_proud = max(p['power_cap']['proud'], p['home_cap']['proud'])
@@ -4377,7 +4296,7 @@ def envelope_bounds(p):
     return {
         'x': (-(R + cap_proud + tol), R + tol),
         'y': (min(lug_y_far - tol, ay - R - tol), by + R + tol),
-        'z': (p['bottom_z'] - tol, p['top_z'] + FPC_BROW_HEIGHT + tol),
+        'z': (p['bottom_z'] - tol, p['top_z'] + tol),
     }
 
 
@@ -4435,31 +4354,20 @@ def check_body_envelope_vertices(body, p, name, tol=0.15):
     no vertex of an exported body should sit beyond
     rho = outer_radius + tol from the spine, except the lanyard lug (a
     real, intentional protrusion at the -y tail: y below the wall-plus-
-    2mm threshold and |x| < 5.6), the two button cap heads (allowed out
-    to +0.45mm, their designed proud amount), and -- 2026-09-08 pass 9 --
-    the FPC relief brow's own footprint on Top (allowed out to
-    +FPC_BROW_HEIGHT, its designed raise amount): the brow's blended
-    footprint reaches, at its extreme corners, into territory where the
-    plain (un-raised) dome was ALREADY close to its own outer_radius
-    limit -- the thin sliver of raised material right at that corner
-    naturally has its own outermost vertices sitting right at
-    outer_radius + FPC_BROW_HEIGHT, a few mm beyond the tighter default
-    tolerance, same as the lug/caps are already named exceptions for their
-    own designed protrusions. 2026-09-10 pass 10 REDO: the compass-module
-    mount no longer has a brow -- it hangs from the ceiling well inboard
-    of the true outer wall (see params_current.py's mag_module comment)
-    -- so this function needs no mag-specific exemption any more; it is
-    back to exactly its pre-pass-10 shape."""
+    2mm threshold and |x| < 5.6) and the two button cap heads (allowed
+    out to +0.45mm, their designed proud amount). 2026-09-08 pass 9
+    through pass 12 also exempted the FPC relief brow's own raised
+    footprint on Top (`add_fpc_brow`) -- deleted in pass 12b (see
+    FPC_RELIEF_MIN_WALL's module comment: `usb_end_extension_mm` now
+    recovers the same skin by lengthening the envelope instead of
+    raising it), so this function is back to exactly its pre-pass-9
+    shape, same as 2026-09-10 pass 10 REDO already did for the
+    compass-module mount's own now-removed exemption."""
     lug_half_w, _, lug_y_root, _ = lug_ear_geometry(p)
     lug_y_thresh = lug_y_root
     lug_x_half = lug_half_w + 0.5
     is_cap = name in ('Power Button', 'Home Button')
-    is_top = name == 'Top'
     limit = p['outer_radius'] + (0.45 + 0.05 if is_cap else tol)
-    brow_limit = p['outer_radius'] + FPC_BROW_HEIGHT + tol
-    bx0, bx1, by0, by1, _, _ = fpc_relief_footprint(p) if is_top else (0, 0, 0, 0, 0, 0)
-    brow_x0, brow_x1 = bx0 - FPC_BROW_BLEND - 0.5, bx1 + FPC_BROW_BLEND + 0.5
-    brow_y0, brow_y1 = by0 - FPC_BROW_BLEND - 0.5, by1 + FPC_BROW_BLEND + 0.5
     bad = []
     for v in body.vertices:
         pt = v.geometry
@@ -4467,8 +4375,6 @@ def check_body_envelope_vertices(body, p, name, tol=0.15):
         if y < lug_y_thresh and abs(x) < lug_x_half:
             continue
         rho = rho_from_spine(p, x, y)
-        if is_top and brow_x0 <= x <= brow_x1 and brow_y0 <= y <= brow_y1 and rho <= brow_limit:
-            continue
         if rho > limit:
             bad.append((round(x, 2), round(y, 2), round(pt.z / MM, 2), round(rho, 2)))
     return bad
@@ -5189,7 +5095,21 @@ def verify_skin_intact(bodies_dict, p):
     (s_inner + tab_hole_skin_margin/2, exactly what add_button's fix
     bounds the cut at) by two small depths -- real skin should start
     immediately past that reach; a regression that lets the cut reach
-    further out shows up as one of these going hollow."""
+    further out shows up as one of these going hollow.
+
+    2026-09-12 pass 12 (widened per Jake's sidescan of the pass-11 export:
+    a real ray-through breach at (y~32, z~15) Power / (y~68, z~18-20)
+    Home, both LOWER and WIDER than the single z_safe / tab['w']-only
+    footprint this check used through pass 11): a single z sample and a
+    +-tab['w']/2 tangential span could not have caught a defect sitting
+    outside that footprint by construction. Now scans the tab's FULL z
+    span (not just its midpoint) and the WIDER tab_relief_w footprint
+    (tab['w'] + 2*tab_relief_margin, matching the rib's own relief-lane
+    cut exactly -- see add_button) instead of the bare tab width, at the
+    same two outward depths as before. This is a direct, tighter
+    regression check on the same fix add_button's tab_clip_tool applies;
+    verify_openings_open's new `*_button_hole_footprint` gate is the
+    broader, ray-cast-style check across the whole hole."""
     top = bodies_dict['Top']
     results = {}
     buttons = [
@@ -5206,9 +5126,10 @@ def verify_skin_intact(bodies_dict, p):
         z_center = (cap['z'][0] + cap['z'][1]) / 2.0
         tab_hole_z_lo = z_center - W / 2.0 - tab['h'] - 0.3
         main_hole_z_lo = z_center - W / 2.0 - 0.25  # main wall-hole cutter's own lower Z bound
-        # a z safely inside the tab's own span but clear of the main
-        # hole's overlap seam -- the lower half of the tab's z-span.
-        z_safe = (tab_hole_z_lo + main_hole_z_lo) / 2.0
+        # scan the tab's own full z-span (its lowest extent up to just
+        # short of the main-hole overlap seam) rather than a single
+        # midpoint sample -- 4 evenly spaced z's.
+        z_samples = [tab_hole_z_lo + k * (main_hole_z_lo - tab_hole_z_lo) / 3.0 for k in range(4)]
         # the tab hole's own real outward-most reach (matches add_button's
         # tab_hole_body construction exactly -- see its docstring).
         s_reach = g['s_inner'] + skin_margin / 2.0
@@ -5223,6 +5144,16 @@ def verify_skin_intact(bodies_dict, p):
         # ~0.25-0.3mm ray-vs-true-curvature slack shows up elsewhere in
         # this file. 0.15/0.3 stays comfortably inside real material
         # everywhere while still testing meaningfully past s_reach.
+        # 2026-09-12 pass 12: kept the tangential span at tab['w']/2 (NOT
+        # tab_relief_w/2, the wider rib-lane footprint) -- widening it here
+        # reproduced the exact "probe steps past the true curved surface
+        # at a wider off-axis offset" false positive described just above
+        # (confirmed live: at tab_relief_w/2, depth 0.3 landed in real
+        # open air past a genuinely thinner-but-still-real skin sliver,
+        # not a defect). The wider footprint is exactly what the new
+        # `*_button_hole_footprint` gate in verify_openings_open checks,
+        # using the curve-aware (true_wall_distance_along_ray-per-offset)
+        # method that this flat-offset probe can't safely do at that width.
         for depth_out in (0.15, 0.3):
             s = s_reach + depth_out
             xy0 = (housing_xy[0] + s * d2[0], housing_xy[1] + s * d2[1])
@@ -5230,8 +5161,9 @@ def verify_skin_intact(bodies_dict, p):
                 t_off = t_frac * (tab['w'] / 2.0)
                 x = xy0[0] + t_off * t2[0]
                 y = xy0[1] + t_off * t2[1]
-                ok = probe_point_solid(top, P(x, y, z_safe))
-                results[f'{name}_depth{depth_out}_pt{i}'] = ok
+                for j, z_safe in enumerate(z_samples):
+                    ok = probe_point_solid(top, P(x, y, z_safe))
+                    results[f'{name}_depth{depth_out}_pt{i}_z{j}'] = ok
     return results
 
 
@@ -5836,6 +5768,21 @@ def window_column_probe_points(p, n_angle=8, radii_fracs=(0.4, 0.85)):
     return pts
 
 
+def _in_stadium(t, z, L, W):
+    """True if local point (t, z) sits inside a stadium (capsule) whose
+    long axis L runs along t and short axis W runs along z, centered at
+    the origin -- rounded ends (radius W/2) at t=+-L/2, flat sides at
+    z=+-W/2 for |t| <= L/2-W/2. Matches this file's own stadium convention
+    (cap['stadium'] = (L, W), long axis tangential -- see button_geometry/
+    add_button/SPEC.md's "long axis tangential" description)."""
+    half_flat = max(L / 2.0 - W / 2.0, 0.0)
+    r = W / 2.0
+    if abs(t) <= half_flat:
+        return abs(z) <= r
+    dt = abs(t) - half_flat
+    return math.hypot(dt, z) <= r
+
+
 def verify_openings_open(root, bodies_dict, p):
     """New gate (2026-09-11, pass 11): every documented "opening" in this
     design -- a feature meant to be hollow all the way through, not just
@@ -5929,6 +5876,90 @@ def verify_openings_open(root, bodies_dict, p):
             if probe_point_solid(top, P(x, y, cap_z_center)):
                 bad.append((round(x, 2), round(y, 2), round(cap_z_center, 2)))
         results[label] = (not bad, bad[:20])
+
+    # --- button hole OUTER FOOTPRINT (2026-09-12 pass 12, new) ---
+    # The check above only confirms the hole is open ALONG its own axis at
+    # t=0 -- it says nothing about whether the wall's opening is EXACTLY
+    # the intended stadium. Jake's own ray-cast of the pass-11 export
+    # (sidescan.py, rays along +-x over a (y,z) grid) found a real breach
+    # OUTSIDE each hole's stadium: a slot below the main opening, with a
+    # stepped interior surface visible through it -- root-caused to
+    # add_button's tab_hole_body (a flat, uncurved cut into Top for the
+    # tab's own clearance) not being bounded against the true curved wall
+    # off its own centerline (see that function's now-updated comment).
+    # This gate grid-scans the (tangential, z) plane around each hole, at
+    # a fixed radial depth just inside the true wall (s_wall -
+    # footprint_probe_depth), and classifies every sample by whether it
+    # falls inside the ACTUAL cut stadium (hole_wh = cap stadium +
+    # 2*cap_clearance/side, matching add_button's own hole_cutter exactly)
+    # or outside it: inside must be OPEN (the hole), outside must be
+    # BLOCKED (real wall skin) -- any mismatch is reported by kind
+    # ('blocked-inside-hole' or 'open-outside-hole') plus the exact world
+    # point, directly comparable to a ray-cast. The z range reaches well
+    # below the hole stadium into the tab's own region (down to
+    # z_center - W/2 - tab['h'] - 1.5), the exact band the sidescan found
+    # breached. FAILS on pre-pass-12 `origin/main` (the tab_hole_body cut
+    # reaches outside the stadium there); PASSES once add_button's
+    # tab_clip_tool fix is in place -- see README's pass-12 section for
+    # the live before/after numbers.
+    # 2026-09-12 pass 12 fix (found live, before this comment existed): a
+    # flat tangential displacement from a single s_probe computed at t=0
+    # drifts the probe point PAST the true curved wall entirely at larger
+    # |t_off| (Power's nub_dir is diagonal, not purely radial -- moving
+    # tangentially at a fixed "depth along d2" does not track the true
+    # surface) -- an early version of this loop flagged 'open-outside-
+    # hole' at x=-32.18 for trim (outer_radius=28), open air nowhere near
+    # the actual shell, a false positive from the probe method, not a
+    # defect. Fixed the same way true_wall_distance_along_ray is used
+    # everywhere else in this file for an off-axis ray: recompute the
+    # TRUE wall position fresh at each (t_off, z) sample, from a ray
+    # ORIGINATING at the tangentially-shifted point (not by shifting an
+    # already-computed s=s_wall point sideways) -- follows the real
+    # curvature at every sample instead of assuming a locally flat wall.
+    footprint_probe_depth = 0.4
+    for label, switch_bbox, nub_dir, cap in (
+            ('power_button_hole', p['switch_power_bbox'], p['power_nub_dir'], p['power_cap']),
+            ('home_button_hole', home_bbox, p['home_nub_dir'], p['home_cap'])):
+        g = button_geometry(p, switch_bbox, nub_dir, cap)
+        d2, t2 = g['d'], g['t']
+        cap_z_center = (cap['z'][0] + cap['z'][1]) / 2.0
+        L, W = cap['stadium']
+        hole_L, hole_W = L + 2 * p['cap_clearance'], W + 2 * p['cap_clearance']
+        t_fracs = (-1.0, -0.6, -0.2, 0.2, 0.6, 1.0)
+        t_half = hole_L / 2.0 + 2.5
+        z_lo_off = -(hole_W / 2.0 + p['tab']['h'] + 1.5)
+        z_hi_off = hole_W / 2.0 + 1.0
+        # 2026-09-12 pass 12 fix (found live, 'current' variant): Top only
+        # exists from split_z upward (Bottom owns everything below it) --
+        # 'current's home_cap sits low enough (z_lo_off reaches z=9.65
+        # against split_z=10) that an unclamped grid probes BELOW split_z,
+        # where probe_point_solid(top, ...) is trivially never-solid
+        # regardless of any real defect (Top's own geometry doesn't extend
+        # there) -- a false 'open-outside-hole' with no connection to the
+        # button mechanism at all. Trim never hit this (its +5mm height
+        # shift moves every button z-range well clear of split_z), which
+        # is exactly why this was missed until testing 'current' live.
+        z_lo_off = max(z_lo_off, p['split_z'] - cap_z_center + 0.1)
+        z_samples = [z_lo_off + k * (z_hi_off - z_lo_off) / 6.0 for k in range(7)]
+        bad = []
+        for tf in t_fracs:
+            t_off = tf * t_half
+            local_origin = (g['housing_xy'][0] + t_off * t2[0], g['housing_xy'][1] + t_off * t2[1])
+            for z_off in z_samples:
+                z = cap_z_center + z_off
+                s_wall_local = true_wall_distance_along_ray(p, local_origin, d2, z)
+                if s_wall_local is None:
+                    continue
+                s_probe = s_wall_local - footprint_probe_depth
+                x = local_origin[0] + s_probe * d2[0]
+                y = local_origin[1] + s_probe * d2[1]
+                inside = _in_stadium(t_off, z_off, hole_L, hole_W)
+                is_solid = probe_point_solid(top, P(x, y, z))
+                if inside and is_solid:
+                    bad.append(('blocked-inside-hole', round(x, 2), round(y, 2), round(z, 2)))
+                elif not inside and not is_solid:
+                    bad.append(('open-outside-hole', round(x, 2), round(y, 2), round(z, 2)))
+        results[f'{label}_footprint'] = (not bad, bad[:20])
 
     # --- lug hole ---
     _, _, _, hole_y = lug_ear_geometry(p)

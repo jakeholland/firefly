@@ -2,6 +2,8 @@
 
 This is the full task specification as given, preserved verbatim for reference during the build.
 
+> **2026-09-13 pass 12b editorial note** (the one deliberate deviation from "preserved verbatim," per this pass's own instruction to update this file): the trim variant's envelope below reads "56 × 102 × 25" and "spine (0,0)-(0,50)" — both are the ORIGINAL M1 numbers this brief was written against. As of pass 7 the height grew to 28mm (3-board comms stack), and as of pass 12b the +y (USB) end of the spine grew by `PARAMS['usb_end_extension_mm']` (1.8mm for trim, 0 for current) to recover FPC-relief skin without a "brow" bump — current envelope is **56 × 103.8 × 28** for trim, spine **(0,0)–(0,51.8)** for the OUTER envelope only (every absolute-mm reference position below — window, FPC relief, buttons, posts, screw_D — is untouched, still anchored to y=50). See `hardware/case/README.md`'s pass-7 and pass-12b sections for the full derivation/live numbers; the reference geometry below is left as originally written rather than hand-edited in place.
+
 ---
 
 You are building a scripted, parametric Fusion 360 generator for the Firefly festival-puck case ("case as code"), replacing a fragile 165-feature direct-modeling file. Work in the repo /Users/jakeholland/Developer/Firefly: create a git worktree first: `git -C /Users/jakeholland/Developer/Firefly worktree add -b case-generator /private/tmp/claude-501/case-generator origin/main` and work there under `hardware/case/`. Commit as you go (no PR until asked). Save this whole prompt as `hardware/case/SPEC.md` first. Build with FOREGROUND commands only; write logs to your own scratch dir under /private/tmp/claude-501/case-generator-scratch/.

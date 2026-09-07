@@ -1,13 +1,20 @@
-"""Firefly case parameters -- 'trim' variant (56 x 102 x 25).
+"""Firefly case parameters -- 'trim' variant (56 x 105.8 x 28, pass 12b).
 
 Per Jake's decision (2026-09-04): trim is the DEFAULT variant. It keeps the
-SAME spine as 'current' -- (0,0)-(0,50) -- and the SAME reference positions
-for the display module, screen plate, top posts, board standoffs, USB
-tunnel and buttons. Only the outer envelope shrinks (outer_radius 30 -> 28,
-so the pill ends land at y -28 and y 78) and the shoulder profile's radial
-placement shrinks by the same 2mm (fillet_center_rho 20 -> 18), plus the
-lip/anchor rings, lanyard lug, and comms-bay layout are re-derived for the
-narrower cavity (52mm wide instead of 56mm).
+SAME spine_a and the SAME reference positions for the display module,
+screen plate, top posts, board standoffs, USB tunnel and buttons. Only the
+outer envelope shrinks (outer_radius 30 -> 28) and the shoulder profile's
+radial placement shrinks by the same 2mm (fillet_center_rho 20 -> 18), plus
+the lip/anchor rings, lanyard lug, and comms-bay layout are re-derived for
+the narrower cavity (52mm wide instead of 56mm).
+
+2026-09-12/13 pass 12b: spine_b's own y is no longer a flat 50.0 -- it is
+50.0 + PARAMS['usb_end_extension_mm'] (see that param's comment in
+params_current.py, and the README's pass-12b section for the full
+derivation/live numbers). This lengthens the outer envelope AND the inner
+cavity at the +y (USB) dome end only -- every other reference position in
+this file (window, FPC relief, plate, posts, buttons, screw_D) is an
+ABSOLUTE mm coordinate, untouched by spine_b, exactly as it was before.
 
 wall_x (the -x outer wall the buttons sit against) and anything else that is
 a pure function of outer_radius/wall are computed at BUILD TIME in
@@ -22,7 +29,38 @@ PARAMS['variant'] = 'trim'
 
 # --- envelope: same spine, smaller outer radius ---
 PARAMS['spine_a'] = (0.0, 0.0)
-PARAMS['spine_b'] = (0.0, 50.0)
+
+# --- PASS 12b (2026-09-12/13, Jake: "we probably need to move the top to
+# be longer" -- meaning the case needs to be LONGER at the USB end, not
+# taller; see README's pass-12b section for the full derivation this
+# comment summarizes): `usb_end_extension_mm` pushes spine_b's own y
+# outward, growing the outer envelope + inner cavity + USB tunnel +
+# lip/anchor ring ends at the +y (dome/USB) end ONLY -- see
+# params_current.py's comment on this param for the single mechanism
+# (rho_from_spine/rho_at_z/wall_y all key off spine_b) that makes this
+# work with no other code change, and why every absolute-mm feature
+# (window, FPC relief, plate, posts, buttons, screw_D) is untouched.
+#
+# Exact minimum computed by bisecting a standalone reuse of
+# rho_at_z/rho_from_spine (tools/pass12b_ext_calc.py) for the smallest
+# ext giving >=1.5mm of real skin (1.2mm required + 0.3mm to spare) at
+# the FPC relief pocket's own worst (unprotected, literal-SPEC-box)
+# corner (7.02, 73.12): 1.522mm using the corner's literal coordinates,
+# 1.456mm using the same 0.05mm inset add_fpc_relief's own probe uses --
+# both far under the 3.0mm Jake asked about, so the smaller number wins
+# per his own instruction. Picked 1.8mm, not the bare minimum: it clears
+# the 1.5mm skin target with an extra ~0.26mm on top (skin 1.764mm, see
+# the README table) for the same ~0.25-0.3mm flat-ray-vs-true-curvature
+# tessellation slack this file already documents in half a dozen other
+# probes (verify_wall_integrity, the pass-12 button footprint gates), and
+# it stays under the 2.0mm ceiling where the USB tunnel's own recess
+# depth (wall_y - usb_tunnel_y_start, 4.5mm at ext=0) would exceed 6.5mm
+# -- the point past which a standard USB-C plug's overmold no longer
+# reaches the receptacle (see add_usb_tunnel's docstring / the README's
+# pass-12b section for the live check). At 1.8mm the recess is 6.3mm --
+# 0.2mm under that ceiling, no tunnel/counterbore change needed.
+PARAMS['usb_end_extension_mm'] = 1.8
+PARAMS['spine_b'] = (0.0, 50.0 + PARAMS['usb_end_extension_mm'])
 PARAMS['outer_radius'] = 28.0
 PARAMS['fillet_center_rho'] = 18.0          # 20 - 2
 PARAMS['flat_rho'] = 22.14                  # 24.14 - 2
@@ -91,7 +129,21 @@ PARAMS['lug_relief_box'] = _box
 # anchored to the PARTING PLANE (lip/anchor, Top case-screw bosses' pilot
 # depth, the lug/ear, Bottom itself) is untouched -- see README pass-7
 # section for the full rationale/z-table.
-_DZ_TOP = 3.0  # 28 - 25
+#
+# --- PASS 12 (2026-09-11/12, "move the top to be longer" -- FIRST
+# attempt, REVERTED in pass 12b): raised top_z 28 -> 30 on the theory a
+# taller Top leaves more skin above the FPC relief pocket. Proved both
+# analytically and live that this cannot work under this file's z-shift
+# convention -- `rho_at_z(p, z) = flat_rho + (top_z - z)` in the flat-
+# chamfer band, and PARAMS['fpc_relief']['z'] shifts by the exact same
+# _DZ_TOP as top_z itself, so `top_z - z` at the pocket's own z1 is
+# algebraically INVARIANT to top_z (confirmed: the SPEC box's worst
+# corner (7.02, 73.12) has the identical 0.048mm of margin at top_z=28,
+# 30, and 40) -- and it cost real M2x16-vs-M2x12 screw-D engagement for
+# nothing. See the README's pass-12 section for that whole investigation
+# (kept for the record) and pass-12b section for why the fix is a LONGER
+# case at the USB end (`usb_end_extension_mm`, above), not a taller one.
+_DZ_TOP = 3.0  # 28 - 25 (pass 7's number, reinstated pass 12b)
 
 PARAMS['top_z'] = 28.0
 # top_fillet_center_z = top_z - fillet_r (10.0) -- keeps the outer R10
