@@ -24,7 +24,7 @@
  * i2c_master_receive(). The registry has no newer version fixing this
  * (2.0.1 is latest as of 2026-08-26), so the one-line fix lives here.
  *
- * FUNCTIONAL CHANGES FROM UPSTREAM v2.0.1 (FOUR sites — a future re-sync to a
+ * FUNCTIONAL CHANGES FROM UPSTREAM v2.0.1 (FIVE sites — a future re-sync to a
  * fixed release must account for ALL of them; each is marked "FIREFLY PATCH"
  * inline):
  *   1. `i2c_read` macro: lcd_cmd 0 -> -1 (the init-read fix described above).
@@ -35,6 +35,13 @@
  *   3. `read_tp_hdp`: guard the zero-length i2c read (read_len == 0).
  *   4. `read_tp_hdp` remain-data path: guard the zero-length i2c read
  *      (next_packet_len == 0).
+ *   5. `read_data`: drop any point whose x/y falls outside
+ *      tp->config.x_max/y_max before it ever reaches tp->data.coords —
+ *      a corrupted read (bench-confirmed cause: unfenced I2C
+ *      interleaving with another device on the same shared bus, see
+ *      ff_display_i2c_bus_lock's doc comment in ff_display.h) can
+ *      return ESP_OK with a nonzero touch_num and an out-of-range
+ *      coordinate, which upstream would report as a genuine press.
  * (2)-(4) are the read-side twins of the same new-i2c_master zero-length-
  * transfer rejection that (1) fixes on the init path. Everything else is
  * byte-for-byte upstream.
@@ -211,14 +218,30 @@ static esp_err_t read_data(esp_lcd_touch_handle_t tp)
     portENTER_CRITICAL(&tp->data.lock);
     /* Expect Number of touched points */
     touch_cnt = (touch.touch_num > CONFIG_ESP_LCD_TOUCH_MAX_POINTS ? CONFIG_ESP_LCD_TOUCH_MAX_POINTS : touch.touch_num);
-    tp->data.points = touch_cnt;
 
-    /* Fill all coordinates */
+    /* FIREFLY PATCH (touch-vs-compass I2C fix): x_max/y_max (this
+     * driver's config, set to the panel's own resolution by
+     * ff_display_touch_start) is the only coordinate range a genuine
+     * touch on THIS glass can ever report. A corrupted read (e.g. the
+     * shared-I2C-bus interleaving ff_display_i2c_bus_lock's doc comment
+     * describes) can still make tp_read_data() return ESP_OK with a
+     * nonzero touch_num and garbage rpt[].x/.y outside that range — the
+     * bench-observed phantom press. Drop any such point here, at the
+     * source, rather than let it reach LVGL as a "real" press that only
+     * a downstream clamp happens to make look plausible: compact the
+     * valid points to the front and shrink the reported count, so an
+     * all-garbage read degrades to the same honest "0 points" a
+     * NACK/timeout already produces. */
+    uint8_t valid_cnt = 0;
     for (int i = 0; i < touch_cnt; i++) {
-        tp->data.coords[i].x = touch.rpt[i].x;
-        tp->data.coords[i].y = touch.rpt[i].y;
-        tp->data.coords[i].strength = touch.rpt[i].weight;
+        if (touch.rpt[i].x < tp->config.x_max && touch.rpt[i].y < tp->config.y_max) {
+            tp->data.coords[valid_cnt].x = touch.rpt[i].x;
+            tp->data.coords[valid_cnt].y = touch.rpt[i].y;
+            tp->data.coords[valid_cnt].strength = touch.rpt[i].weight;
+            valid_cnt++;
+        }
     }
+    tp->data.points = valid_cnt;
     portEXIT_CRITICAL(&tp->data.lock);
 
     return ESP_OK;

@@ -11,6 +11,7 @@
 
 #include "esp_log.h"
 #include "esp_timer.h" /* esp_timer_get_time() — invalid-data/re-init timing, matching ff_display.c/ff_power.c's own now_ms convention */
+#include "ff_display.h" /* ff_display_i2c_bus_lock/unlock — the touch-vs-compass shared I2C bus mutex, see that function's doc comment */
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
@@ -28,6 +29,17 @@ static const char *TAG = "ff_compass";
  * touch along with it) on every affected tick. PR #212 review finding
  * #1: was 100 ms. */
 #define FF_COMPASS_I2C_TIMEOUT_MS 20
+
+/* Timeout for acquiring ff_display's shared I2C bus lock
+ * (ff_display_i2c_bus_lock, ff_display.h) before this sample's mag+imu
+ * reads — see that function's doc comment for the touch-vs-compass
+ * interleaving bug this closes. Same 20 ms budget as
+ * FF_COMPASS_I2C_TIMEOUT_MS just above, for the same reason: the
+ * touch driver's own multi-transaction read normally finishes in a
+ * fraction of a millisecond, so there is no happy-path cost, and a
+ * genuinely wedged touch path degrades THIS sample to -1 quickly
+ * instead of blocking the main render-loop task. */
+#define FF_COMPASS_I2C_BUS_LOCK_TIMEOUT_MS 20
 
 /* Per-device SCL ceiling handed to i2c_master_bus_add_device — a cap on
  * THIS device's own transactions, not a bus reconfigure (the bus itself
@@ -447,6 +459,7 @@ static ff_vec3_t s_last_mag_board = {0.0f, 0.0f, 0.0f};
 static bool s_mag_read_warned;
 static bool s_imu_read_warned;
 static bool s_imu_invalid_warned; /* same "log once" posture, for ff_compass_imu_validate rejections */
+static bool s_i2c_lock_warned; /* same "log once" posture, for a failed ff_display_i2c_bus_lock acquire */
 
 /* =====================================================================
  * Small I2C helpers shared by every probe/bring-up/read below.
@@ -873,6 +886,26 @@ float ff_compass_read(void)
         return -1.0f;
     }
 
+    /* Touch-vs-compass I2C fix: fence this ENTIRE multi-transaction
+     * sample (mag read + imu read below, both against the shared bus
+     * ff_display_i2c_bus() returns) against the touch driver's own
+     * multi-transaction SPD2010 read (ff_display.c's
+     * ff_touch_gate_read_cb) — see ff_display_i2c_bus_lock's doc
+     * comment (ff_display.h) for the bench evidence this closes. A
+     * failed lock (touch mid-poll) degrades this sample to the same
+     * honest -1 "unknown" sentinel a NACK/timeout already produces,
+     * rather than block the main render-loop task or risk an
+     * interleaved read. Held until every return below — unlocked right
+     * before each one. */
+    if (!ff_display_i2c_bus_lock(FF_COMPASS_I2C_BUS_LOCK_TIMEOUT_MS)) {
+        if (!s_i2c_lock_warned) {
+            s_i2c_lock_warned = true;
+            ESP_LOGW(TAG, "shared I2C bus busy (touch mid-read) — heading reports -1 this sample (logged once)");
+        }
+        s_last_heading_deg = -1.0f;
+        return -1.0f;
+    }
+
     ff_vec3_t mag_raw = {0};
     uint8_t buf[6];
 
@@ -884,6 +917,7 @@ float ff_compass_read(void)
                               "(logged once)");
             }
             s_last_heading_deg = -1.0f; /* -1 sentinel, never a stale heading */
+            ff_display_i2c_bus_unlock();
             return -1.0f;
         }
         mag_raw.x = (float)(int16_t)((buf[1] << 8) | buf[0]);
@@ -897,6 +931,7 @@ float ff_compass_read(void)
                               "(logged once)");
             }
             s_last_heading_deg = -1.0f; /* -1 sentinel, never a stale heading */
+            ff_display_i2c_bus_unlock();
             return -1.0f;
         }
         /* HMC5883L's own data order is X, Z, Y (not X,Y,Z), big-endian
@@ -912,6 +947,7 @@ float ff_compass_read(void)
                               "(logged once)");
             }
             s_last_heading_deg = -1.0f; /* -1 sentinel, never a stale heading */
+            ff_display_i2c_bus_unlock();
             return -1.0f;
         }
         /* QMC5883P's data order is X,Y,Z, little-endian per axis, same
@@ -986,6 +1022,7 @@ float ff_compass_read(void)
 
     float const heading = ff_geo_heading_deg(mag_board, accel_board, s_cal_valid ? &s_cal : NULL);
     s_last_heading_deg = heading;
+    ff_display_i2c_bus_unlock();
     return heading;
 }
 

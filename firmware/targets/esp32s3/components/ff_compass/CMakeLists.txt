@@ -17,6 +17,11 @@
 # esp_timer_get_time(), the monotonic now_ms source for the invalid-data
 # streak timing and re-init rate limiting (ff_display.c/ff_power.c's own
 # now_ms convention — see ff_compass.c's ff_compass_imu_maybe_reinit).
+# ff_display (PRIV_REQUIRES, touch-vs-compass I2C fix): ff_compass.c calls
+# ff_display_i2c_bus_lock/unlock (ff_display.h) to fence its own
+# multi-transaction sample against the SPD2010 touch driver's — see that
+# function's doc comment. Private, not public: ff_compass.h itself
+# declares nothing that needs ff_display's types.
 idf_component_register(
     SRCS "ff_compass.c"
     INCLUDE_DIRS "include"
@@ -24,7 +29,7 @@ idf_component_register(
         ff_core
         log
         esp_driver_i2c
-    PRIV_REQUIRES freertos esp_timer
+    PRIV_REQUIRES freertos esp_timer ff_display
 )
 
 target_compile_options(${COMPONENT_LIB} PRIVATE -Wall -Wextra -Werror)
