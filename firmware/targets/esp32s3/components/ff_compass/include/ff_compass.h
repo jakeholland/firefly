@@ -34,6 +34,22 @@
  * that file's own bit-layout `#define`s) are cited again at each use
  * site in ff_compass.c.
  *
+ * 2026-09-07 (second-board bench evidence): the reference demo's own
+ * bring-up (WHO_AM_I check, then straight to CTRL1/CTRL2/CTRL7) is not
+ * sufficient on every board — a second unit identified correctly and
+ * every bring-up write returned ESP_OK, yet the accel engine never
+ * produced real data (permanent 0x8000/0x7FFF sentinel samples). This
+ * driver now also: soft-resets the chip first (RESET register 0x60 =
+ * 0xB0) and re-verifies WHO_AM_I post-reset before configuring; polls
+ * STATUS0 (0x2E) bit0 (aDA) for data-ready at bring-up; validates every
+ * accel sample at read time (rejecting sentinel/out-of-range values
+ * rather than trusting them); and re-runs the bring-up sequence,
+ * rate-limited, if data stays invalid for more than a couple of
+ * seconds. See ff_compass.c's FF_QMI8658_REG_RESET block comment for
+ * the datasheet citations and every timing constant's rationale, and
+ * `ff_compass_imu_state_t` below for the resulting three-state health
+ * fact this makes visible.
+ *
  * ## Hardware — GY-273 magnetometer (assumed wiring, auto-detected part)
  * The GY-273 is an AFTERMARKET module wired to the puck's own back
  * header (docs/hardware/comms-brain.md's header pin map: SDA/SCL on the
@@ -67,6 +83,17 @@
  * the field consequence: tilt rejection (the >60 degree cutoff
  * `ff_geo_heading_deg` otherwise applies) is unavailable on that path,
  * since a synthesized always-level accel can never indicate tilt.
+ *
+ * The SAME assumed-level fallback also covers a QMI8658 that identifies
+ * and configures successfully but never produces plausible data
+ * (`ff_compass_imu_state_t`'s `FF_COMPASS_IMU_NO_DATA` — the 2026-09-07
+ * second-board case above): the honesty contract does not distinguish
+ * "no chip" from "chip present but not trustworthy" in the accel value
+ * it feeds `ff_geo_heading_deg` (both get the same assumed-level
+ * vector), but it DOES distinguish them in `ff_compass_status()` and the
+ * boot/runtime log, so a bench operator is never left thinking a
+ * NO_DATA IMU is healthy just because `ff_compass_imu_present()` is
+ * true.
  *
  * ## Calibration
  * `ff_settings_t.compass_cal` / `.cal_valid` (core/include/ff_settings.h)
@@ -117,6 +144,27 @@ typedef enum {
  * (docs/hardware/comms-brain.md's `i2c` bench command), and anywhere
  * else that needs to print which chip is in use. */
 char const *ff_compass_mag_kind_name(ff_compass_mag_kind_t kind);
+
+/** ff_compass_imu_state_t — bring-up/data-health state of the onboard
+ * QMI8658, a finer-grained fact than `ff_compass_imu_present()` alone
+ * (added after 2026-09-07 bench evidence: a SECOND board identified the
+ * chip correctly and every bring-up write returned ESP_OK, yet the
+ * accel engine never produced a real sample — the WHO_AM_I probe alone
+ * cannot distinguish that from a genuinely healthy IMU). See
+ * ff_compass.c's FF_QMI8658_REG_RESET block comment for the full
+ * bring-up sequence and datasheet citations this state reflects. */
+typedef enum {
+    FF_COMPASS_IMU_ABSENT = 0, /* ff_compass_init never identified a QMI8658 at all */
+    FF_COMPASS_IMU_NO_DATA,    /* identified and configured, but every accel sample so far failed validation
+                                   (sentinel/out-of-range) — heading falls back to assumed-level, same as ABSENT */
+    FF_COMPASS_IMU_OK,         /* identified, configured, and at least one accel sample has validated */
+} ff_compass_imu_state_t;
+
+/** ff_compass_imu_state_name — lowercase name for `state`
+ * ("absent"/"no-data"/"ok"), for the boot log and `ff_compass_status()`'s
+ * console line (docs/hardware/comms-brain.md's `i2c` bench command),
+ * mirroring `ff_compass_mag_kind_name`'s role for the magnetometer. */
+char const *ff_compass_imu_state_name(ff_compass_imu_state_t state);
 
 /**
  * ff_compass_init — probe the shared I2C bus `bus` (from
@@ -172,8 +220,9 @@ typedef struct {
     bool mag_present;
     ff_compass_mag_kind_t mag_kind;
     bool imu_present;
-    bool heading_valid;     /* true iff last_heading_deg is a real (non-negative) heading */
-    float last_heading_deg; /* meaningful only when heading_valid; -1 otherwise */
+    ff_compass_imu_state_t imu_state; /* finer-grained than imu_present alone — see that type's own doc comment */
+    bool heading_valid;               /* true iff last_heading_deg is a real (non-negative) heading */
+    float last_heading_deg;           /* meaningful only when heading_valid; -1 otherwise */
 } ff_compass_status_t;
 
 ff_compass_status_t ff_compass_status(void);

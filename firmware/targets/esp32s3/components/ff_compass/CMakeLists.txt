@@ -12,9 +12,11 @@
 # see ff_display_i2c_bus()). ff_core: ff_geo.h (ff_geo_heading_deg,
 # ff_geo_cal_t, ff_vec3_t) — plain math, zero core STATE touched, same
 # category ff_display already includes core headers under (that
-# component's own top-of-file comment). freertos: one short vTaskDelay
-# after the IMU's bring-up writes, letting the accel engine settle
-# before the first read.
+# component's own top-of-file comment). freertos: vTaskDelay for the
+# IMU's soft-reset settle/data-ready poll waits. esp_timer:
+# esp_timer_get_time(), the monotonic now_ms source for the invalid-data
+# streak timing and re-init rate limiting (ff_display.c/ff_power.c's own
+# now_ms convention — see ff_compass.c's ff_compass_imu_maybe_reinit).
 idf_component_register(
     SRCS "ff_compass.c"
     INCLUDE_DIRS "include"
@@ -22,7 +24,7 @@ idf_component_register(
         ff_core
         log
         esp_driver_i2c
-    PRIV_REQUIRES freertos
+    PRIV_REQUIRES freertos esp_timer
 )
 
 target_compile_options(${COMPONENT_LIB} PRIVATE -Wall -Wextra -Werror)
