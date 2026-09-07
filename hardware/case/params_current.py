@@ -479,4 +479,91 @@ PARAMS = {
         'channel_width': 2.0, 'channel_depth': 1.6, 'channel_fillet': 0.3,
         'channel_min_skin': 1.2,
     },
+
+    # --- compass module mount (pass 10 REDO, 2026-09-06) ---
+    # GY-273 (QMC5883P) mount. Measured off Jake's Fusion model "HMC5883L
+    # Mag v1" (mm, MODULE'S OWN LOCAL FRAME -- PCB top face at local
+    # z=1.0, components on top; the five header pins are soldered from
+    # BELOW in Jake's build).
+    #
+    # Placement REDONE this pass: the coordinator rejected the original
+    # pass-10 placement (standing on edge at the lanyard end, needing an
+    # outward BROW -- see git history / the PR's earlier revisions) for
+    # putting a boxy bump on the pill's outer silhouette, which must stay
+    # clean. New placement: hanging from the TOP'S OWN INNER CEILING,
+    # directly above the GPS patch frame's open chimney (bay.gps_patch) --
+    # entirely inside space that is ALREADY open cavity (the GPS frame's
+    # ring wall retains the patch antenna only up to its own z[1]=18.8;
+    # above that, up through the ceiling, the frame's 25.5x25.5 opening is
+    # hollow by construction -- see build_gps_frame_body). No outer-wall
+    # interaction at all, no brow, no pocket cut needed.
+    #
+    # Stack height budget (ceiling down to the patch): standoff_h (2.5mm,
+    # doubling as the header/solder-joint allowance, local_header_below)
+    # + PCB thickness (1.0mm) + component bump (local_component_h, 1.0mm)
+    # = 4.5mm. Spare above the patch = top_ceiling_underside_z - 4.5 -
+    # gps_patch z[1] (18.8) -- see mag_module_clearance/mag_module_fits in
+    # firefly_case.py. TRIM: 26.0 - 4.5 - 18.8 = 2.7mm spare -- fits.
+    # CURRENT: 23.0 - 4.5 - 18.8 = -0.3mm -- does NOT fit (current's
+    # ceiling was frozen at the old 25mm-case height in pass 7, "for the
+    # probe comparison", and never grew the 3mm trim did) -- the mount is
+    # skipped entirely for 'current' (mag_module_fits returns False),
+    # same pattern as comms_stack3_full_height already skipping the
+    # 3-board stack there. See README's pass-10 section for the full
+    # writeup of why 'current' can't host this identically.
+    #
+    # XY placement: the module's long axis (local x, 18.6mm, header at
+    # +x) runs along world Y, CENTRED on the GPS patch's own y-span (2.0
+    # to 27.0, centre 14.5) -- footprint y 5.2..23.8, +1.5mm fence margin
+    # each side (3.7..25.3), comfortably inside the frame's own opening
+    # (y 1.75..27.25, ~2mm margin both ends). The short axis (local y,
+    # 14.0mm) runs along world X, CENTRED on the patch's own x-centre
+    # (9.7) -- footprint x 2.7..16.7, +1.5mm fence margin (1.2..18.2),
+    # again ~4mm inside the frame's opening (x -3.05..22.45) and >8mm
+    # clear of Screen Plate posts P2/P4 (x=-10, Ø5, edge at -7.5) on the
+    # west side. Both centred choices maximise margin on every side
+    # instead of hugging one specific number -- verified directly against
+    # these PARAMS (rho_from_spine / the gps_patch and top_posts entries
+    # above) before ever touching Fusion; see README's pass-10 section
+    # for the full computation.
+    #
+    # Orientation (local -> world, SAME for both variants, world_x/
+    # world_y are pure TRANSLATIONS -- see mag_world_x/mag_world_y in
+    # firefly_case.py): local +x (18.6mm axis, HEADER edge, local
+    # x=+8.96) -> world +Y (toward the display end, short wire run to the
+    # back header's SDA/SCL/3V3/G); local -x (MOUNTING-HOLE edge, local
+    # x=-9.64) -> world -Y (toward the lanyard end). local +y -> world +x;
+    # local -y -> world -x (arbitrary handedness choice, no functional
+    # constraint on this axis -- both pegs/pads are placed by explicit
+    # local (x,y) pairs, not by a directional rule). local +z (the
+    # COMPONENT/sensor face, away from the PCB) -> world -Z (DOWN, toward
+    # the GPS patch/Bottom -- the module is mounted components-down);
+    # local -z (the HEADER/solder-pin face) -> world +Z (UP, toward the
+    # ceiling -- both peg mounting holes share local x=-7.21, i.e. the
+    # SAME local z=0 plane, so both land at the same world Z, flush
+    # against the ceiling standoff). See firmware/targets/esp32s3/
+    # components/ff_compass/ff_compass.c's own updated comment for the
+    # resulting axis-remap table.
+    'mag_module': {
+        'local_pcb': {'x': (-9.64, 8.96), 'y': (-6.67, 7.33)},  # 18.6 x 14.0mm
+        'local_component_h': 1.0,   # max component height above local PCB top (sensor, ~3x3 at (-0.9, 0.5))
+        'local_header_below': 2.5,  # allowance below local PCB bottom for header solder joints/pins -- doubles as standoff_h
+        'local_mount_holes': [(-7.21, -4.17), (-7.21, 5.03)],  # Ø3.0 real mounting holes, 9.2mm spacing
+        'local_header': {'x': 7.44, 'y': [-4.81, -2.21, 0.39, 2.89, 5.49], 'dia': 1.0},
+        'mount_hole_dia': 3.0,
+        'peg_dia': 2.7,        # peg OD -- 0.3mm total clearance in the Ø3.0 mounting hole
+        'pad_dia': 3.0,        # header-side rest-pad OD (no through-hole, just a resting boss)
+        'standoff_h': 2.5,     # == local_header_below: ceiling-to-PCB-bottom gap, for both pegs and pads
+        'fence_wall': 1.2, 'fence_clear': 0.3, 'fence_h': 3.5,  # low retaining fence around the PCB outline
+        'header_notch_w': 3.0,  # wire-exit notch in the fence's header-edge wall
+        # World placement -- pure translations, SAME for both variants
+        # (the GPS-patch/post layout this is centred against doesn't
+        # scale with outer_radius; both offsets are simply
+        # local-axis-origin -> world-axis-origin distances):
+        # world_y = local_x + world_y_from_local_x_offset,
+        # world_x = local_y + world_x_from_local_y_offset.
+        'world_y_from_local_x_offset': 14.84,  # local_pcb x-span (-9.64..8.96) -> world y 5.2..23.8 (centred on gps_patch y 2..27)
+        'world_x_from_local_y_offset': 9.37,   # local_pcb y-span (-6.67..7.33) -> world x 2.7..16.7 (centred on gps_patch x-centre 9.7)
+        'min_patch_clearance': 1.0,  # required spare (mm) between component bottom and the GPS patch top for a variant to host this mount at all
+    },
 }

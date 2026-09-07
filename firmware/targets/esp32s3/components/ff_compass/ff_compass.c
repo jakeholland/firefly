@@ -198,12 +198,50 @@ static const char *TAG = "ff_compass";
  * marking, and since a real bench GY-273 clone board is not guaranteed
  * to reprint its own silkscreen consistently between the two chip
  * options it ships, this driver does NOT assume the P's mounting
- * produces the same board-frame result as the L/HMC row. Seeded here
- * with the SAME numeric values as that row (same physical module
- * footprint/case position, so it is the more likely starting guess)
- * but kept as an independently-editable row so the bench orientation
- * check (docs/hardware/comms-brain.md's "Compass" section) can correct
- * it on its own without touching the L/HMC mapping. VERIFY ON BENCH,
+ * produces the same board-frame result as the L/HMC row.
+ *
+ * 2026-09-10 (hardware/case pass 10, REDONE same day): the module's
+ * mounting CHANGED — the coordinator rejected the first pass-10 fix (a
+ * fenced pocket standing on edge at the lanyard end) for putting a boxy
+ * bump on the case's outer silhouette. It now hangs COMPONENTS-DOWN from
+ * the TOP's own inner ceiling, directly above the GPS patch antenna's
+ * frame (no pocket, no brow, no outer-wall contact at all) — see
+ * hardware/case/README.md's pass-10 section for the placement/verify
+ * numbers. The row's numeric values below are still an OLD guess (from
+ * before EITHER real mounting existed) and are NOT valid for this
+ * mounting; they are left in place only so the driver keeps building,
+ * and MUST be re-derived on the bench (or from the QMC5883P's own
+ * datasheet Package 3-D View) before trusting a single heading reading.
+ * What IS fixed by the new mount's own geometry (`firefly_case.py`'s
+ * `mag_module` orientation comment) is the module's PCB-frame mapping
+ * into the puck's own (x,y,z) — i.e. which physical edge of the module
+ * points which way, NOT yet which sensor axis that is (that still needs
+ * the chip's silkscreen/datasheet orientation on top of this):
+ *   - module's long PCB edge, HEADER side (local +x, 18.6mm axis)
+ *     -> puck +y (toward the display end — the short wire run to the
+ *     back header's SDA/SCL/3V3/G)
+ *   - module's long PCB edge, MOUNTING-HOLE side (local -x)
+ *     -> puck -y (toward the lanyard end; both ceiling pegs are here)
+ *   - module's short PCB edge, local +y -> puck +x
+ *   - module's short PCB edge, local -y -> puck -x
+ *     (this axis is an arbitrary handedness choice — the mount places
+ *     both pegs and both rest pads by explicit (x,y) pairs, not by a
+ *     directional rule, so it carries no functional constraint)
+ *   - module's COMPONENT/sensor face (local +z) -> puck -z (DOWN,
+ *     toward the GPS patch/Bottom — the module is mounted
+ *     components-down, hanging off two Ø2.7 ceiling pegs + two rest
+ *     pads)
+ *   - module's SOLDER/header face (local -z) -> puck +z (UP, toward
+ *     the Top's ceiling — both mounting holes share local x=-7.21, i.e.
+ *     the same local z=0 plane, so both pegs land flush against the
+ *     same ceiling standoff)
+ * Bench procedure: with this mapping known, place the sensor flat on a
+ * known heading, read raw XYZ, and solve for (src, sign) per axis the
+ * same way the L/HMC row above was derived — do NOT assume the values
+ * below are a safe starting guess anymore, the whole mounting geometry
+ * changed. Kept as an independently-editable row so this bench check
+ * (docs/hardware/comms-brain.md's "Compass" section) can correct it on
+ * its own without touching the L/HMC mapping. VERIFY ON BENCH,
  * same procedure as above, once a QMC5883P board is on hand.
  *
  * IMU (onboard QMI8658): BENCH-VERIFIED 2026-09-05 to be mounted

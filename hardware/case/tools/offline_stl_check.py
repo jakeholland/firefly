@@ -98,6 +98,11 @@ def check_envelope(tris, params, name):
     brow_x0, brow_x1 = fx0 - FPC_BROW_BLEND - 0.5, fx1 + FPC_BROW_BLEND + 0.5
     brow_y0, brow_y1 = fy0 - FPC_BROW_BLEND - 0.5, fy1 + FPC_BROW_BLEND + 0.5
 
+    # 2026-09-10 pass 10 REDO: the compass-module mount no longer has a
+    # brow (the rejected vertical-wall version did; the new ceiling-hung
+    # mount hangs well inboard of the true outer wall) -- no exemption
+    # needed here any more.
+
     bad = []
     seen = set()
     for _, v1, v2, v3 in tris:
@@ -230,6 +235,13 @@ TOP_WL = [
 BOTTOM_WL = [
     (-15.0, 15.0, -26.0, -15.0, 'l76k_frame_ceiling'),
 ]
+# 2026-09-10 pass 10 REDO: the old 'mag_module_pocket' entries above (both
+# TOP_WL and BOTTOM_WL) were sized for the rejected vertical-wall mount's
+# horizontal pegs -- the new ceiling-hung mount (pegs/pads/fence, all
+# hanging from Top's own ceiling, nowhere near Bottom) falls entirely
+# within 'general_ceiling_overhang' on Top and touches Bottom not at all.
+# If a live scan of the new geometry reports a real local cluster here,
+# add a fresh entry sized from the actual reported centroid.
 
 
 def main():

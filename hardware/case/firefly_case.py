@@ -3320,6 +3320,256 @@ def verify_antenna_channels(bodies_dict, p):
     return results
 
 
+# ---------------------------------------------------------------------------
+# Compass module mount (pass 10 REDO, 2026-09-06). Replaces the original
+# pass-10 vertical-wall-mount + outward brow (rejected by the coordinator
+# for putting a boxy bump on the pill's clean outer silhouette -- see git
+# history for that earlier version) with a ceiling-hung mount directly
+# above the GPS patch frame's own open chimney -- no outer-wall contact,
+# no brow, no pocket cut. See params_current.py's own 'mag_module'
+# comment for the full placement derivation and the local->world
+# orientation this section implements.
+# ---------------------------------------------------------------------------
+
+def mag_world_y(p, local_x):
+    """Module local x (the 18.6mm PCB axis, header edge at +x) -> world Y.
+    A pure translation (see params_current.py's mag_module comment)."""
+    return local_x + p['mag_module']['world_y_from_local_x_offset']
+
+
+def mag_world_x(p, local_y):
+    """Module local y (the 14.0mm PCB axis) -> world X. A pure
+    translation."""
+    return local_y + p['mag_module']['world_x_from_local_y_offset']
+
+
+def mag_pcb_bottom_world_z(p):
+    """World Z of the module's local z=0 plane (PCB bottom / header-pin
+    face) -- hangs `standoff_h` below Top's own inner ceiling. Derived
+    directly from `top_ceiling_underside_z` so it automatically tracks
+    each variant's own case height (23.0 current / 26.0 trim) with no
+    per-variant override needed -- see mag_module_fits for why 'current'
+    still can't host this mount despite the formula working for both."""
+    return p['top_ceiling_underside_z'] - p['mag_module']['standoff_h']
+
+
+def mag_world_z(p, local_z):
+    """Module local z (thickness axis; local z=0 is the PCB bottom/header
+    face, +z runs toward the component/top face) -> world Z. Local +z
+    maps to world -Z (the module is mounted COMPONENTS-DOWN -- see
+    params_current.py's orientation comment): increasing local z moves
+    AWAY from the ceiling, toward the GPS patch below."""
+    return mag_pcb_bottom_world_z(p) - local_z
+
+
+def mag_module_clearance(p):
+    """Spare mm between the module's lowest physical point (component top
+    surface: local z = PCB thickness (1.0) + component bump) and the GPS
+    patch's own top (bay.gps_patch z[1] = 18.8) -- the number that decides
+    whether a variant can host this mount at all (see mag_module_fits).
+    TRIM: 2.7mm. CURRENT: -0.3mm (a real overlap -- its ceiling never grew
+    the 3mm trim did, see params_current.py's comment)."""
+    mm = p['mag_module']
+    lowest_world_z = mag_world_z(p, 1.0 + mm['local_component_h'])
+    patch_top = p['bay']['gps_patch']['z'][1]
+    return lowest_world_z - patch_top
+
+
+def mag_module_fits(p):
+    """True if this variant's ceiling gives the module enough room above
+    the GPS patch (mag_module_clearance >= min_patch_clearance). False
+    for 'current' -- see that function's docstring. Guards
+    add_mag_module/verify_mag_pocket exactly the way
+    comms_stack3_full_height already guards the 3-board stack for
+    'current'."""
+    return mag_module_clearance(p) >= p['mag_module']['min_patch_clearance']
+
+
+def mag_pcb_world_footprint(p):
+    """World (x0, x1, y0, y1) of the bare PCB outline (no fence/clearance
+    margin) -- local_pcb's own x-span maps to world Y, y-span to world X
+    (see the module-frame axis mapping in params_current.py)."""
+    mm = p['mag_module']
+    lx0, lx1 = mm['local_pcb']['x']
+    ly0, ly1 = mm['local_pcb']['y']
+    y0, y1 = mag_world_y(p, lx0), mag_world_y(p, lx1)
+    x0, x1 = mag_world_x(p, ly0), mag_world_x(p, ly1)
+    return x0, x1, y0, y1
+
+
+def mag_peg_world_positions(p):
+    """World (x, y) of the two Ø2.7 peg / mounting-hole positions."""
+    mm = p['mag_module']
+    return [(mag_world_x(p, ly), mag_world_y(p, lx)) for lx, ly in mm['local_mount_holes']]
+
+
+def mag_pad_world_positions(p):
+    """World (x, y) of the two header-side rest pads -- the PCB's own two
+    corners on the header edge (local x = local_pcb x[1]), inset 1.0mm in
+    from each side edge so the pad sits solidly under the board rather
+    than exactly at its corner."""
+    mm = p['mag_module']
+    lx = mm['local_pcb']['x'][1]
+    ly0, ly1 = mm['local_pcb']['y']
+    wy = mag_world_y(p, lx)
+    inset = 1.0
+    return [(mag_world_x(p, ly0) + inset, wy - inset), (mag_world_x(p, ly1) - inset, wy - inset)]
+
+
+def mag_header_notch_center_x(p):
+    """World X of the header notch centre -- the mean of the 5 header
+    pins' own local y positions, mapped through mag_world_x."""
+    mm = p['mag_module']
+    ys = mm['local_header']['y']
+    mid_local_y = (min(ys) + max(ys)) / 2.0
+    return mag_world_x(p, mid_local_y)
+
+
+def add_mag_module(root, bodies, p, clip_tool=None):
+    """Compass module (GY-273/QMC5883P) mount -- pass 10 REDO. Hangs from
+    Top's own inner ceiling directly above the GPS patch frame's open
+    chimney (see params_current.py's mag_module comment for the full
+    derivation): the module lives entirely in space that is ALREADY open
+    cavity, so unlike the rejected pass-10 version there is no cut, no
+    brow, and no outer-wall interaction at all -- only material ADDED
+    (pegs, rest pads, a low retaining fence), all hanging from the
+    ceiling. Skipped entirely when mag_module_fits(p) is False ('current'
+    -- its ceiling sits 0.3mm too low for the 4.5mm standoff+PCB+
+    component stack, see that function's docstring), same pattern as the
+    3-board comms stack being skipped there."""
+    if not mag_module_fits(p):
+        return bodies
+    top = bodies['Top']
+    mm = p['mag_module']
+    ceiling = p['top_ceiling_underside_z']
+    pcb_bottom = mag_pcb_bottom_world_z(p)
+
+    # Two Ø2.7 pegs into the mounting holes, hanging from the ceiling down
+    # to the PCB's own bottom face (peg height == standoff_h, by
+    # construction). clipped_pillar_with_reach -- the same helper
+    # add_top_posts uses -- guarantees real contact with the ceiling even
+    # though this footprint sits nowhere near the true outer shell (its
+    # radial clip against the inner-cavity tool is a no-op here; the
+    # full-height core is what actually matters, guaranteeing the join
+    # doesn't silently no-op the way a plain clipped cylinder can -- see
+    # that function's own docstring).
+    peg_r = mm['peg_dia'] / 2.0
+    peg_core_r = peg_r - 0.35
+    pegs = [clipped_pillar_with_reach(root, px, py, peg_r, pcb_bottom, ceiling, p, clip_tool, peg_core_r)
+            for px, py in mag_peg_world_positions(p)]
+    top = combine_join(root, top, pegs)
+    top = dedupe_body(root, top, 'Top')
+    if clip_tool is not None:
+        clip_tool = _refetch_by_name(root, CLIP_TOOL_NAME) or clip_tool
+    top = _refetch_by_name(root, 'Top') or top
+
+    # Two small rest pads under the header-side corners, same standoff
+    # height as the pegs, so the PCB sits level (both ends at the same
+    # world Z -- the mounting-hole edge on its pegs, the header edge on
+    # its pads).
+    pad_r = mm['pad_dia'] / 2.0
+    pad_core_r = pad_r - 0.35
+    pads = [clipped_pillar_with_reach(root, px, py, pad_r, pcb_bottom, ceiling, p, clip_tool, pad_core_r)
+            for px, py in mag_pad_world_positions(p)]
+    top = combine_join(root, top, pads)
+    top = dedupe_body(root, top, 'Top')
+    if clip_tool is not None:
+        clip_tool = _refetch_by_name(root, CLIP_TOOL_NAME) or clip_tool
+    top = _refetch_by_name(root, 'Top') or top
+
+    # Low retaining fence around the PCB outline (0.3mm clearance + 1.2mm
+    # wall, 3.5mm deep from the ceiling) -- reuses build_hanging_frame,
+    # the same GPS-frame/stack-tray idiom used everywhere else in this
+    # file for a wall ring hanging off the ceiling. Open with a 3mm notch
+    # centred on the header pins for the wire run (gap_side='+y': the
+    # header edge is at the larger-Y end, toward the display). z_ceiling
+    # is pushed 0.3mm PAST the nominal ceiling so the fence genuinely
+    # embeds into Top's existing skin instead of merely touching it --
+    # the same non-touching-join risk clipped_pillar_with_reach's own
+    # docstring documents for pillars, applied here by hand since the
+    # fence isn't a simple cylinder.
+    x0, x1, y0, y1 = mag_pcb_world_footprint(p)
+    fence = build_hanging_frame(
+        root, x0, x1, y0, y1, mm['fence_clear'], mm['fence_wall'],
+        ceiling - mm['fence_h'], ceiling + 0.3,
+        gap_w=mm['header_notch_w'], gap_side='+y', gap_center=mag_header_notch_center_x(p))
+    top = combine_join(root, top, [fence])
+    top = dedupe_body(root, top, 'Top')
+
+    bodies['Top'] = top
+    return bodies
+
+
+def verify_mag_pocket(bodies_dict, p):
+    """Pass-10-REDO gate: (1) the module's own component-side reference
+    envelope (PCB + component bump, sampled at 3 points along the header/
+    mount-hole axis, at the local-y centreline) is genuinely hollow --
+    confirms the fence/pegs/pads didn't accidentally fill the board's own
+    footprint; (2) both pegs have real material at mid-height; (3) both
+    rest pads have real material at mid-height; (4) the fence wall has
+    real material at two sample points away from the header notch. All
+    four report (True, []) when mag_module_fits(p) is False ('current')
+    -- see add_mag_module's docstring."""
+    mm = p['mag_module']
+    if not mag_module_fits(p):
+        return {
+            'envelope_open': (True, []), 'pegs_have_material': (True, []),
+            'pads_have_material': (True, []), 'fence_has_material': (True, []),
+        }
+    top = bodies_dict['Top']
+    results = {}
+
+    # (1) component envelope open -- 3 points along the local_x (header/
+    # mount-hole) axis, at the local_y centre, at the component's own
+    # mid-height (farthest half of the stack from the ceiling).
+    lpcb = mm['local_pcb']
+    probe_local_x = [lpcb['x'][0] + 0.5, (lpcb['x'][0] + lpcb['x'][1]) / 2.0, lpcb['x'][1] - 0.5]
+    local_y_mid = (lpcb['y'][0] + lpcb['y'][1]) / 2.0
+    wx_mid = mag_world_x(p, local_y_mid)
+    z_component = mag_world_z(p, 1.0 + mm['local_component_h'] * 0.5)
+    bad_envelope = []
+    for lx in probe_local_x:
+        wy = mag_world_y(p, lx)
+        pt = P(wx_mid, wy, z_component)
+        if probe_point_solid(top, pt):
+            bad_envelope.append((round(wx_mid, 2), round(wy, 2), round(z_component, 2)))
+    results['envelope_open'] = (not bad_envelope, bad_envelope[:5])
+
+    # (2)/(3) pegs and pads have real material at mid-height (halfway
+    # between the ceiling and the PCB's own bottom face).
+    ceiling = p['top_ceiling_underside_z']
+    pcb_bottom = mag_pcb_bottom_world_z(p)
+    z_mid = (ceiling + pcb_bottom) / 2.0
+
+    bad_pegs = []
+    for px, py in mag_peg_world_positions(p):
+        if not probe_point_solid(top, P(px, py, z_mid)):
+            bad_pegs.append((round(px, 2), round(py, 2), round(z_mid, 2)))
+    results['pegs_have_material'] = (not bad_pegs, bad_pegs[:5])
+
+    bad_pads = []
+    for px, py in mag_pad_world_positions(p):
+        if not probe_point_solid(top, P(px, py, z_mid)):
+            bad_pads.append((round(px, 2), round(py, 2), round(z_mid, 2)))
+    results['pads_have_material'] = (not bad_pads, bad_pads[:5])
+
+    # (4) fence has material -- probe the west and south wall centrelines
+    # (both away from the header notch, which is in the north wall).
+    x0, x1, y0, y1 = mag_pcb_world_footprint(p)
+    clear, wall = mm['fence_clear'], mm['fence_wall']
+    fence_mid_z = ceiling - mm['fence_h'] / 2.0
+    west_wall_x = x0 - clear - wall / 2.0
+    south_wall_y = y0 - clear - wall / 2.0
+    probe_pts = [(west_wall_x, (y0 + y1) / 2.0), ((x0 + x1) / 2.0, south_wall_y)]
+    bad_fence = []
+    for wx, wy in probe_pts:
+        if not probe_point_solid(top, P(wx, wy, fence_mid_z)):
+            bad_fence.append((round(wx, 2), round(wy, 2), round(fence_mid_z, 2)))
+    results['fence_has_material'] = (not bad_fence, bad_fence[:5])
+
+    return results
+
+
 def _collect_occ_bodies(occ):
     """All bRepBodies in occ's subtree, skipping hidden ones (2026-09-06
     hygiene fix: a hidden sub-body -- e.g. the L76K assembly's placeholder
@@ -3696,6 +3946,7 @@ def build(app, params):
 
     bodies = add_comms_bay(root, bodies, params, clip_tool=clip_tool)
     bodies = add_antenna_channels(root, bodies, params, clip_tool=clip_tool)
+    bodies = add_mag_module(root, bodies, params, clip_tool=clip_tool)
 
     insert_display_pcba(app, root, params)
     insert_comms_boards(app, root, params)
@@ -4030,7 +4281,11 @@ def check_body_envelope_vertices(body, p, name, tol=0.15):
     naturally has its own outermost vertices sitting right at
     outer_radius + FPC_BROW_HEIGHT, a few mm beyond the tighter default
     tolerance, same as the lug/caps are already named exceptions for their
-    own designed protrusions."""
+    own designed protrusions. 2026-09-10 pass 10 REDO: the compass-module
+    mount no longer has a brow -- it hangs from the ceiling well inboard
+    of the true outer wall (see params_current.py's mag_module comment)
+    -- so this function needs no mag-specific exemption any more; it is
+    back to exactly its pre-pass-10 shape."""
     lug_half_w, _, lug_y_root, _ = lug_ear_geometry(p)
     lug_y_thresh = lug_y_root
     lug_x_half = lug_half_w + 0.5
@@ -4870,6 +5125,12 @@ def verify_wall_integrity(bodies_dict, p):
                 and lb['y'][0] - lb_margin <= y <= lb['y'][1] + lb_margin
                 and p['lip_z'][0] - lb_margin <= z <= p['anchor_z'][1] + lb_margin)
 
+    # 2026-09-10 pass 10 REDO: the compass-module mount no longer has a
+    # brow (it hangs from the ceiling well inboard of the true outer
+    # wall, nowhere near this dome sweep's own footprint) -- no exemption
+    # needed here any more; this function is back to exactly its
+    # pre-pass-10 shape.
+
     for end_name, center_y in (('spine_a', ay), ('spine_b', by)):
         sign = -1.0 if end_name == 'spine_a' else 1.0
         for z in (7.0, 9.0, 11.0):
@@ -5547,6 +5808,14 @@ def verify(design, params):
     assert not bad_antenna, (
         f'antenna channel check failed: {[(k, antenna_results[k]) for k in bad_antenna]}')
 
+    # 2026-09-10 pass 10: compass module (GY-273/QMC5883P) mount pocket --
+    # envelope open, pegs have material, peg root doesn't breach the true
+    # (brow-raised) outer skin. See verify_mag_pocket's own docstring.
+    mag_pocket_results = verify_mag_pocket(by_name, params)
+    bad_mag = [k for k, v in mag_pocket_results.items() if not v[0]]
+    assert not bad_mag, (
+        f'mag module pocket check failed: {[(k, mag_pocket_results[k]) for k in bad_mag]}')
+
     # 2026-09-08 pass 9 (finding 11, stray sliver beside boss C):
     # the exact set of printed bodies must match the documented 5 parts --
     # a stray orphan body left over from a botched boolean (the same class
@@ -5596,6 +5865,7 @@ def verify(design, params):
         'fpc_relief_results': fpc_relief_results,
         'wordmark_results': wordmark_results,
         'antenna_results': antenna_results,
+        'mag_pocket_results': mag_pocket_results,
         'sliver_results': sliver_results,
     }
 
@@ -6093,6 +6363,9 @@ def run(_context: str, variant=None, export=False):
     print('antenna channel checks (finding 8, LoRa/GPS u.FL routes):')
     for k, v in result.get('antenna_results', {}).items():
         print('  ', k, v)
+    print('mag module pocket checks (pass 10, compass mount):')
+    for k, v in result.get('mag_pocket_results', {}).items():
+        print('  ', k, v)
     print('sliver face count (area < 0.5mm^2, diagnostic only):')
     for nm in ('Top', 'Bottom'):
         print('  ', nm, count_sliver_faces(bodies[nm]))
@@ -6141,6 +6414,14 @@ def run(_context: str, variant=None, export=False):
         # is NOT a substitute for auditing genuinely local/unexpected
         # overhangs -- which is exactly what caught the lug and the tray
         # ledges earlier in this same pass.
+        # 2026-09-10 pass 10 REDO: the old 'mag_module_pocket' whitelist
+        # entries (both Top and Bottom, sized for the rejected vertical-
+        # wall-mount's horizontal pegs/pocket) are removed -- the new
+        # ceiling-hung mount's own pegs/pads/fence live entirely within
+        # 'general_ceiling_overhang' (Top only; the mount no longer
+        # touches Bottom at all), so no dedicated entry is needed. If a
+        # real local cluster shows up here after a live scan, add it back
+        # sized from the actual reported centroid, not guessed.
         top_wl = [
             (-8.0, 8.0, 65.0, 81.0, 'usb_tunnel_floor'),
             (-32.0, 32.0, -12.0, 79.0, 'general_ceiling_overhang'),
