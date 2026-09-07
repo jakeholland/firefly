@@ -8,6 +8,29 @@ PARAMS = {
     # --- envelope / spine ---
     'spine_a': (0.0, 0.0),
     'spine_b': (0.0, 50.0),
+    # 2026-09-12/13 pass 12b (Jake: "move the top to be longer" -- see
+    # hardware/case/README.md's pass-12b section): the ONLY thing that
+    # needs to grow to give the FPC relief pocket more skin at the USB
+    # end is the OUTER envelope's length at the dome-tip (+y) end, not
+    # its height -- pass 12 proved analytically and live that raising
+    # top_z cannot touch this (rho_at_z's z-shift is invariant to top_z).
+    # `usb_end_extension_mm` is added to spine_b's own y (below, right
+    # after this dict) rather than hand-editing spine_b directly: every
+    # function in this file that measures "distance from the pill's
+    # spine" (rho_from_spine, rho_at_z-driven envelope/cavity/verify
+    # code, add_usb_tunnel's wall_y, add_lip_anchor_reliefs' ring ends,
+    # true_wall_distance_along_ray) already treats spine_b as THE single
+    # source of truth for where the +y dome sits -- so growing it here
+    # moves the outer shell, the inner cavity, the USB tunnel, and the
+    # lip/anchor ring ends together, automatically, with no other code
+    # change, while every feature given as an ABSOLUTE mm position
+    # (window_center, fpc_relief, plate_outline, top_posts,
+    # board_standoffs, power_cap/home_cap, screw_D) stays exactly where
+    # it is -- it was never derived from spine_b to begin with. 'current'
+    # does not need this (its wider flat_rho/outer_radius already gives
+    # 2.048mm of skin at the same corner with zero extension -- see the
+    # pass-12b README section for the live numbers), so it stays 0.
+    'usb_end_extension_mm': 0.0,
     'outer_radius': 30.0,
     'wall': 2.0,
     'split_z': 10.0,
@@ -594,3 +617,11 @@ PARAMS = {
         'min_patch_clearance': 1.0,  # required spare (mm) between component bottom and the GPS patch top for a variant to host this mount at all
     },
 }
+
+# --- pass 12b: apply the USB-end extension to the dome-tip spine point.
+# See PARAMS['usb_end_extension_mm']'s own comment above for why this is
+# the single mechanism that moves the outer envelope/inner cavity/USB
+# tunnel/lip+anchor ring ends together while everything given as an
+# absolute mm coordinate elsewhere in this file is untouched. A no-op
+# here (spine_b unchanged) since 'current' keeps usb_end_extension_mm=0.
+PARAMS['spine_b'] = (PARAMS['spine_b'][0], PARAMS['spine_b'][1] + PARAMS['usb_end_extension_mm'])

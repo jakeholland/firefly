@@ -45,9 +45,10 @@ building it.
 |---|---|
 | `firefly_case.py` | The generator: geometry, `build()`, `verify()`, `run()`. |
 | `params_current.py` | 60×110×25 variant — matches the "Firefly V2 v15/v16" reference. All SPEC.md numbers live here. |
-| `params_trim.py` | 56×102×25 variant (**default**, Jake's 2026-09-04 decision) — derived from `params_current.py` with documented overrides, not hand-duplicated. |
+| `params_trim.py` | 56×103.8×28 variant (**default**, Jake's 2026-09-04 decision; envelope updated 2026-09-06/07 pass 7 height, 2026-09-13 pass 12b length) — derived from `params_current.py` with documented overrides, not hand-duplicated. |
 | `kandiwooks_logo.json` | KandiWooks wordmark outline loops (mm), extracted from the "KandiWooks Logo" document's 6 bodies. |
-| `SPEC.md` | The original task brief, verbatim. |
+| `SPEC.md` | The original task brief, verbatim (plus one 2026-09-13 editorial note flagging the envelope numbers it was written against). |
+| `tools/pass12b_ext_calc.py` | Standalone, no-Fusion-needed script (2026-09-13) deriving the minimum `usb_end_extension_mm` — reuses `rho_at_z`/`rho_from_spine` verbatim. |
 | `export/<variant>/*.stl` | Per-body STL exports (binary): `Bottom`, `Top`, `Screen_Plate`, `Power_Button`, `Home_Button`. |
 | `export/<variant>/firefly_<variant>_case.3mf` | Native 3MF (2026-09-06, pass 6) containing exactly the 5 printed bodies (`Print — Case` + `Print — Buttons`), for viewers/slicers that read 3MF's per-object structure directly instead of separate STLs. |
 | `export/coupons/coupon_{power,home}_{wall,cap}.stl` | Standalone button fit-test coupons (see Print orientation & settings below). |
@@ -62,6 +63,11 @@ building it.
 | `renders/pass11_{trim,current}_{front,top,right,iso}.png` | Pass-11 orthographic screenshots, both variants — window bore fix + (trim) re-oriented compass mount, clean silhouette. |
 | `renders/pass11_{window_closeup,brow}.png` | Pass-11 close-ups (trim): the window bore reading as a clean open circle, with the FPC brow's tiered risers visible outside it, not filling it. |
 | `renders/pass11_mag_pocket.png` | Pass-11 close-up (trim only): looking up into Top's ceiling from inside the cavity, showing the re-oriented/repositioned compass mount (fence, pegs, pads, south-wall wire notch) clear of the nearby case-screw bosses. |
+| `renders/pass12_{trim,current}_{front,top,right,iso}.png` | Pass-12 orthographic screenshots, both variants, at `top_z=30` (since reverted — see pass 12b). |
+| `renders/pass12_usb_end_top.png`, `pass12_power_button_straight.png`, `pass12_home_button_straight2.png` | Pass-12 close-ups (trim, `top_z=30`): the USB end and both button holes. |
+| `renders/pass12b_trim_{front,top,right,iso}.png` | Pass-12b orthographic screenshots (trim, current numbers: `top_z=28`, `usb_end_extension_mm=1.8`) — clean pill silhouette, longer at the USB end, no bumps. |
+| `renders/pass12b_usb_end.png` | Pass-12b close-up (trim): the window/USB end with the FPC brow deleted — a smooth, unbroken shoulder curve into the dome tip, no step/notch/plateau. |
+| `renders/pass12b_power_button.png`, `pass12b_home_button.png` | Pass-12b close-ups (trim): zoomed, straight-on (fixed `viewExtents`, not `isFitView`) views of each button hole on the -x wall — a single clean stadium opening each, no secondary notch. |
 
 Every exported body (case and coupon) is size-checked at export time
 (`assert_export_body_size`, ≤120mm/≤40mm max extent respectively) as a
@@ -74,9 +80,11 @@ this is the headline subset.
 
 | | current | trim |
 |---|---|---|
-| Outer envelope | 60 × 110 × 25 | 56 × 102 × 25 |
+| Outer envelope | 60 × 110 × 25 | ~~56 × 102 × 25~~ 56 × 103.8 × 28 *(pass 7 height 25→28; pass 12b length 102→103.8, `usb_end_extension_mm`)* |
 | Outer radius | 30.0 | 28.0 |
-| Spine | (0,0)–(0,50) | (0,0)–(0,50) *(unchanged)* |
+| Spine (OUTER envelope only) | (0,0)–(0,50) | ~~(0,0)–(0,50)~~ (0,0)–(0,51.8) *(pass 12b: `usb_end_extension_mm`=1.8 grows the +y dome end only — every absolute-mm feature (window, FPC relief, buttons, posts, screw_D) stays anchored to y=50, see the pass-12b README section)* |
+| `usb_end_extension_mm` | 0.0 | 1.8 *(pass 12b — exact minimum for ≥1.5mm FPC-relief skin was 1.522mm/1.456mm, both < the 3.0mm asked about; see pass-12b section)* |
+| Case height (`top_z`) | 25.0 *(frozen, pass 7)* | ~~30.0~~ 28.0 *(pass 12b: reverted pass 12's height bump — proven not to help the FPC pocket; see pass-12 and pass-12b sections)* |
 | Wall | 2.0 | 2.0 |
 | Shoulder flat radius | 24.14 | 22.14 |
 | Shoulder tangent point ρ | 27.07 | 25.07 |
@@ -839,7 +847,7 @@ each row is in that row's own dated section below.
 
 | # | Finding | Fix | Gate | Status |
 |---|---|---|---|---|
-| J1 | FPC relief pocket breached the shell at the USB end | Local **brow** raises the outer shoulder over the pocket footprint instead of shrinking the pocket | `verify_fpc_relief` 0 bad of 63, both variants | Fixed (pass 9), reshaped (pass 9g, see #2 below) |
+| J1 | FPC relief pocket breached the shell at the USB end | Local **brow** raises the outer shoulder over the pocket footprint instead of shrinking the pocket | `verify_fpc_relief` 0 bad of 63, both variants | Fixed (pass 9), reshaped (pass 9g, see #2 below), **brow deleted and replaced by `usb_end_extension_mm` lengthening the +y dome instead — pass 12b, still 0 bad of 63** |
 | J2 | Bosses A/C breached the shell on both halves | A/C relocated to the dome-tip end, absolute mm, both variants | `verify_posts_and_bosses` 0 bad, `check_interference` 0 pairs | Fixed (pass 9) |
 | J3 | Two lanyard holders (duplicate) | `lug_relief_box` outward edge clamped to `wall_clear` inside the true wall | `verify_wall_integrity`/`check_interference` clean; no dedicated probe | Fixed (pass 9) |
 | J4 | Screen-plate posts P1-P4 had no real wall | `POST_CORE_R` derived from pilot+`POST_WALL_MIN`; Ø4→Ø5; relocated off the window-bore crescent | `verify_post_walls` 0 bad of 8×3/8 per post | Fixed (pass 9 pt 2), **rebalanced pass 9g (see #1)** |
@@ -851,7 +859,7 @@ each row is in that row's own dated section below.
 | J10 | Home plunger too short to reach the switch | `switch_actuator_reach`/`plunger_pretravel` derived from a live probe of the real switch body | `verify_plunger_reach` exact match, both buttons/variants | Fixed (pass 9b) |
 | J11 | Stray sliver beside boss C | `MIN_RELIEF_CLEARANCE` hard assertion in `add_lip_anchor_reliefs` | Build-time assertion (fails loudly, not silently) | Fixed (pass 9) |
 | 1 | **Plate post layout unbalanced** (10×6mm SW cluster, plate held at one corner) | P1-P4 spread to a full 10×11mm rectangle (same proven x=-20/-10 column, y stretched 14-25) | `verify_post_walls` 0 bad, both variants; window/wall clearance re-derived analytically | **Fixed (pass 9g)** |
-| 2 | **FPC brow is a slab** (flat plateau, visible step) | Rebuilt as 2 nested tiers (`FPC_BROW_TIERS`) instead of 1 box -- each riser ~0.5-1.0mm instead of one 1.5mm cliff | `verify_fpc_relief` still 0 bad of 63, both variants; visually confirmed tapered (not fully smooth -- see Known limitations) | **Partially fixed (pass 9g)** |
+| 2 | **FPC brow is a slab** (flat plateau, visible step) | Rebuilt as 2 nested tiers (`FPC_BROW_TIERS`) instead of 1 box -- each riser ~0.5-1.0mm instead of one 1.5mm cliff | `verify_fpc_relief` still 0 bad of 63, both variants; visually confirmed tapered (not fully smooth -- see Known limitations) | Partially fixed (pass 9g); **moot — the brow itself was deleted, pass 12b (see #J1)** |
 | 3 | Generic `verify_skin_intact` should probe the whole outer surface | Not attempted this pass (time budget) | -- | **Not done (pass 9g)** -- unchanged from item 11 in Known limitations |
 | 4 | Overhang review of every exported part | Re-ran `tools/offline_stl_check.py` on both variants' fresh exports | `OVERALL: PASS`, 0 bad overhang clusters, both variants | **Done (pass 9g)** |
 | 5 | Assembly order not documented | Written up below and in the PR body | N/A (documentation) | **Done (pass 9g)** |
@@ -3052,6 +3060,14 @@ not appear in the exported STL/3MF files.
   `flat_rho`/`outer_radius` (a real envelope change, not requested this
   pass) or a different pocket-depth/skin-margin trade at the exact SPEC
   box corner (7.02, 73.12) — out of scope here.
+  **SUPERSEDED 2026-09-13, pass 12b**: this held for a HEIGHT
+  (`top_z`) change specifically, exactly as this section's own algebra
+  says — it was never a claim about `flat_rho`/`outer_radius` (a radius
+  question) OR about the spine's own LENGTH (a Y-position question,
+  independent of `top_z`). `usb_end_extension_mm` grows the outer
+  envelope's +y dome outward instead, which recovers real skin at the
+  exact same corner (see the pass-12b section below) — the brow is
+  deleted, not permanent.
 - **`sidescan.py`'s flat, axis-aligned ray-cast has a blind spot for
   diagonally-oriented button holes** (Home's nub direction is ~33° off
   the wall normal) — see Change 2's independent-confirmation note. It
@@ -3059,37 +3075,268 @@ not appear in the exported STL/3MF files.
   real defect cleanly) but a diagonal variant would be needed to fully
   retire the curve-aware live gates as the sole authority for Home.
 
+## 2026-09-13 pass 12b (USB end lengthened, no brow — height reverted)
+
+Jake's follow-up after reviewing pass-12 renders/prints: "we probably
+need to move the top to be longer" — meaning the case needed to be
+LONGER at the USB end, not taller (pass 12's own investigation already
+proved height can't touch the FPC-relief pocket — see that section
+above). Three changes, all re-verified live for both variants.
+
+### Change 1: `top_z` reverted 30 → 28 (`_DZ_TOP` 5.0 → 3.0)
+
+Pass 12's height bump fixed nothing (proven both analytically and live
+in that pass) and forced screw D from M2×12 to M2×16 for no benefit.
+Reverted to pass 7's 28mm outright — `top_z=28`, `_DZ_TOP=3.0`, restoring
+every z-anchored feature (display, FPC relief, plate, posts, USB
+receptacle/tunnel-center-z, button caps/switch bboxes) to its pass 7–11
+position. The pass-12 button-hole fixes (`tab_clip_tool`, the
+`*_button_hole_footprint` gates in `verify_openings_open`) are untouched
+— nothing in this pass modifies `add_button`/`add_buttons`.
+
+### Change 2: `usb_end_extension_mm` — the case gets longer at the dome end
+
+**The mechanism**: a new parameter, `PARAMS['usb_end_extension_mm']`
+(0.0 for `current`; 1.8 for `trim`), is added to `spine_b`'s own y in
+`params_current.py`/`params_trim.py` (`spine_b = (0.0, 50.0 + ext)`) —
+**not** implemented as a code change in `firefly_case.py`. This works
+because every function that shapes or measures the OUTER shell already
+keys off `spine_a`/`spine_b` as the single source of truth for where the
++y dome sits: `build_outer_pill_solid`/`build_inner_pill_solid` (the
+outer envelope AND the inner cavity — both straight-extrude length and
+the +y end-cap revolve's own position), `rho_from_spine`/`rho_at_z`
+(every skin/wall-thickness/envelope-vertex check), `add_usb_tunnel`'s
+`wall_y = spine_b.y + outer_radius` (the tunnel's own bore/liner depth),
+`add_lip_anchor_reliefs`' stadium ring (the lip/anchor ring's +y end),
+and `true_wall_distance_along_ray` (the pass-12 button footprint gates,
+`safe_half_width` for the comms bay). Every ONE of these moves the +y
+dome outward by `ext`, automatically, with **zero** other code change.
+Meanwhile every feature given as an ABSOLUTE mm coordinate — `window_
+center=(0,50)`, `fpc_relief`'s x/y/z box, `plate_outline`, `top_posts`/
+`board_standoffs`, `power_cap`/`home_cap`, `screw_D['xy']=(0,60)`, the
+lanyard lug (anchored at `spine_a`, the OTHER end, untouched) — was never
+derived from `spine_b` to begin with, so it stays exactly at y=50 (or its
+own literal position), exactly as Jake asked.
+
+**Why this recovers skin where height could not**: at a fixed point
+beyond `spine_b` (like the FPC relief pocket's own worst corner), `rho_
+from_spine` measures distance from the NEAREST spine endpoint — moving
+that endpoint closer (`spine_b.y` 50 → 51.8) shrinks the measured
+distance for every point beyond it, which — per `rho_at_z`'s inverse —
+means the true outer crest above that point sits HIGHER (more skin
+remains above the pocket's own fixed cut floor). `top_z` could never do
+this: it translates the pocket, the display, AND the shoulder profile
+together (pass 12's own proof), so their relationship — and thus the
+skin above the pocket — never changes. Lengthening the spine changes
+that relationship directly, at the one corner that needed it.
+
+**Exact minimum `ext`** (`tools/pass12b_ext_calc.py` — a standalone,
+no-Fusion-needed script reusing `rho_at_z`/`rho_from_spine` verbatim,
+bisecting for the smallest `usb_end_extension_mm` giving ≥1.5mm of real
+skin — the required 1.2mm plus 0.3mm to spare — at the FPC relief
+pocket's own worst, UNPROTECTED corner, the literal SPEC box's own
+(7.02, 73.12), which `add_fpc_relief` cuts in full regardless of the
+skin-safe clip that protects the rest of the widened footprint):
+
+```
+$ python3 tools/pass12b_ext_calc.py
+--- trim: top_z=28.0, flat_rho=22.14, outer_radius=28.0, usb_end_extension_mm=1.8 ---
+  eps=0.0  ext=1.522  worst_corner=(7.02, 73.12)  rho=22.710  skin=1.500mm  margin_over_1.2=+0.300mm
+  eps=0.0 -> exact min ext for skin>=1.5mm (1.2 required + 0.3 spare): 1.5222mm
+  eps=0.05 -> exact min ext for skin>=1.5mm (1.2 required + 0.3 spare): 1.4560mm   (add_fpc_relief's own 0.05mm corner inset)
+  USB tunnel recess depth at ext=1.8: 6.30mm (OK)
+--- current: ... usb_end_extension_mm=0.0 ---
+  eps=0.0  ext=0.000  worst_corner=(7.02, 73.12)  rho=24.162  skin=2.048mm  margin_over_1.2=+0.848mm   (current never needed any extension)
+```
+
+Both exact minimums (1.522mm / 1.456mm) are well under the 3.0mm Jake
+asked about, so **the smaller number wins per his own instruction** —
+but rather than ship right at the bare minimum, **`usb_end_extension_mm`
+= 1.8mm** was chosen: it clears the 1.5mm skin target with ~0.26–0.37mm
+of extra pad (skin 1.764mm at the literal corner, 1.827mm at the
+0.05mm-inset corner `add_fpc_relief`'s own probe actually checks) for
+the same ~0.25–0.3mm flat-ray-vs-true-curvature tessellation slack this
+file already documents in half a dozen other live probes, while staying
+under the 2.0mm point where the USB tunnel's own recess depth would
+exceed the 6.5mm plug-overmold ceiling (Change 3). `current` needs
+**0.0mm** — it already has 2.048mm of skin at the identical corner from
+its own wider `flat_rho`/`outer_radius`, confirmed unaffected by this
+change (see the live numbers below).
+
+**New envelope**: trim becomes **56 × 103.8 × 28** (102 + 1.8mm), spine
+**(0,0)–(0,51.8)** for the OUTER envelope only. `current` is unchanged
+(60 × 110 × 25, spine (0,0)–(0,50)).
+
+### Change 3: USB-C tunnel recess — checked, not changed
+
+The USB tunnel bore/liner depth is `wall_y - usb_tunnel_y_start`, where
+`wall_y = spine_b.y + outer_radius` — it grows by exactly `ext` along
+with the dome, automatically (`add_usb_tunnel`, no code change). The
+display module's own USB-C receptacle is at a FIXED y (73.0, part of the
+inserted board reference, not spine-derived), so the recess a cable's
+plug has to reach through — the gap between the case's own outer skin
+and the receptacle's contact face — grows by the same `ext`:
+
+```
+recess = spine_b.y + outer_radius - usb_tunnel_y_start
+trim:    4.5mm (ext=0)  ->  6.3mm (ext=1.8)
+current: 6.5mm (ext=0, unchanged)
+```
+
+A standard USB-C plug's overmold needs to reach within roughly 6.5mm of
+the receptacle face to seat at all (past that, the overmold's own
+shoulder hits the case's outer face before the contacts reach the
+receptacle) — trim's new 6.3mm recess stays 0.2mm under that ceiling, so
+**no tunnel/counterbore change was needed**; the existing liner
+(`usb_liner_outer_stadium`, Combine-Intersected against the true curved
+outer envelope, already spanning nearly the tunnel's full depth) already
+covers the longer bore correctly, confirmed live (bore/liner both
+present and correctly clipped in the fresh export, no interference).
+
+### Change 4: the FPC-relief brow is deleted
+
+With the extension recovering real skin at the pocket's own worst
+corner, `add_fpc_brow`/`build_fpc_brow_solid`/`FPC_BROW_TIERS` (pass 9's
+original fix for this same 1.2mm bar) are no longer needed and have been
+removed outright, along with their call in `build()`, their exemptions
+in `check_body_envelope_vertices`/`envelope_bounds`/`tools/offline_stl_
+check.py`, and the FPC_BROW_HEIGHT-based z-bound in `envelope_bounds`
+(back to a plain `top_z + tol`). `add_fpc_relief`'s skin-safe tool is now
+just `build_outer_pill_solid(root, p)` offset inward by
+`FPC_RELIEF_MIN_WALL` — no brow join. **`verify_fpc_relief` passes clean
+with a plain, un-raised shoulder**:
+
+```
+verify_fpc_relief(trim):    63 probes, 0 bad   (was 0 bad of 63 WITH the brow, pass 9-12 -- identical pass rate, brow now unnecessary)
+verify_fpc_relief(current): 63 probes, 0 bad   (unchanged, current never had a brow)
+```
+
+The ~62mm³ `Top x <display module>` interference pass 9 hit when
+shrinking the pocket instead of raising the brow **does not return**:
+this pass never touches the pocket's own cut depth or footprint at all
+(only the pocket's ANCHOR point relative to `spine_b` moved, via the
+shared spine mechanism, not the pocket geometry itself) — `check_
+interference` reports `[]` for every printed body + every inserted
+board occurrence, both variants, live (see below).
+
+### Live verify(), both variants, full piecewise run (re-fetching bodies
+by name across separate `fusion_mcp_execute` calls against the same open
+document, per this repo's own Fusion-MCP infrastructure note)
+
+```
+trim (top_z=28, usb_end_extension_mm=1.8):
+  body_names: ['Bottom', 'Home Button', 'Power Button', 'Screen Plate', 'Top']
+  interference: []
+  fpc_relief: 63 probes, 0 bad
+  stack3_clearance: {'stack_top_z': 22.942, 'clearance_found': 4.158, 'required': 0.8, 'ok': True}
+  mag_pocket_results: envelope_open/pegs_have_material/pads_have_material/fence_has_material all True;
+                       window_bore_clear 3.955mm, display_back_clear 3.765mm (both byte-for-byte
+                       unchanged from pass 11 -- pure XY measurements, untouched by this pass)
+  openings_results: 0 bad (window_column/usb_tunnel/both button holes+footprints/lug_hole/
+                     antenna_lora/antenna_gps/mag_wire_notch all True)
+  verify() completed with no AssertionError -- every gate in the file passed
+
+current (top_z=25, usb_end_extension_mm=0, frozen):
+  body_names: (same 5)
+  interference: []
+  fpc_relief: 63 probes, 0 bad
+  stack3_clearance: {'ok': True, note: 'comms_stack3_full_height=False (current variant) -- no
+                      Wio/XIAO inserted, nothing to check'}
+  mag_pocket_results: all True (mount skipped -- mag_module_fits still False, unchanged;
+                       window_bore_clear/display_back_clear both [] -- check skipped, not run)
+  openings_results: 0 bad
+  verify() completed with no AssertionError
+```
+
+**Offline STL scan** (`tools/offline_stl_check.py`, updated this pass to
+drop its own ported brow exemption — see Change 4): `OVERALL: PASS`,
+both variants — 0 non-manifold edges on every body, envelope OK
+(`check_envelope.ok=True` for Bottom/Top/Screen_Plate/Power_Button/
+Home_Button), `bad_clusters_mm2: []`.
+
+### Exports and renders (pass 12b)
+
+Both variants, freshly re-generated: `export/<variant>/{Bottom,Top,
+Screen_Plate,Power_Button,Home_Button}.stl` (Top and Bottom changed the
+most for trim — longer +y dome, reverted height, clean shoulder with no
+brow); `export/<variant>/firefly_<variant>_case.3mf` (native, via
+`run(..., export=True)`); `export/<variant>/firefly_<variant>_plate.3mf`
+(re-packed via `tools/stl_to_3mf.py`, same per-part orientation
+convention as every prior pass: Bottom as-is, Top `flipx`, Screen Plate
+as-is, Power Button `outer-x`, Home Button `outer-rz32.74`). Coupons
+(`export/coupons/coupon_{power,home}_{wall,cap}.stl`,
+`firefly_coupons_native.3mf`) re-exported from the trim-variant pipeline
+— geometrically unchanged (this pass never touches `power_cap`/
+`home_cap`/tab/rib/collar numbers), re-exported anyway for a fresh,
+consistent set alongside everything else.
+
+Renders (all viewed directly, not just generated): `pass12b_trim_
+{front,top,right,iso}.png` — clean pill silhouette, longer at the USB
+end, no bumps, window bore reads as a clean open circle;
+`pass12b_usb_end.png` — a close, angled view of the window/USB end
+showing a smooth, unbroken shoulder curve into the dome tip with **no
+step, notch, or plateau** where the brow used to sit, and the USB-C
+opening visible on the shoulder with a clean round throat;
+`pass12b_power_button.png` / `pass12b_home_button.png` — zoomed,
+straight-on views of the -x wall at each button's own position (a fixed
+`viewExtents` orthographic camera, not `isFitView`, since fit-view
+always frames the WHOLE visible model regardless of target — the
+technique this pass had to work out live after an initial attempt
+produced two byte-identical "close-ups" that were actually still
+whole-case shots): each shows a single clean stadium opening, no
+secondary notch or slot beside or below it — the pass-12 tab-lane fix
+holding up under the reverted height and the longer envelope alike.
+
+### Known limitations / notes added this pass
+
+- **`usb_end_extension_mm` only ever grows the +y (USB) dome end.** A
+  future request to lengthen the OTHER end (spine_a, the lanyard end)
+  would need its own parameter and its own audit of every `spine_a`
+  consumer (`lug_ear_geometry` in particular, which anchors the lanyard
+  ear there) — not attempted here, out of scope for this pass.
+- **The exact-minimum-vs-chosen-value gap (1.8mm chosen vs ~1.5mm exact
+  minimum) is a deliberate pad, not a rounding artifact** — see Change 2
+  for the tessellation-slack and USB-recess reasoning that bounds it on
+  both sides (`ext` too small under-recovers skin; `ext` too large
+  starts eating into the USB plug's own reach).
+- **`tools/pass12b_ext_calc.py` is a standalone analytic helper**, not
+  invoked by `build()`/`verify()` — it exists purely to derive/document
+  the `usb_end_extension_mm` value chosen in `params_trim.py`, the same
+  role pass 12's own (uncommitted) standalone script played for its own
+  investigation.
+
 ## Screw list
 
 **2026-09-07 pass 7: boss B split into B1/B2** (its old single position
 sat inside the L76K PCB's own footprint — see the pass-7 section above),
 and boss D's post grows with trim's taller case, changing its screw
-length. **2026-09-12 pass 12: trim's Top grew again (28→30mm), so screw
-D's own engagement grows again too** — recomputed directly from `PARAMS`
-(`plate_post_D_z[1] - counterbore_D_h`), not by re-deriving the pass-7
-formula by hand: trim's post now needs **14.1mm** of real engagement
-(`plate_post_D_z=(10.0, 18.1)`, `counterbore_D_h=4.0`) — M2×12 (12mm) is
-now too short, so trim's screw D moves to **M2×16**. Every other screw's
-required length is unchanged by the pass-12 height bump: A/B1/B2/C's
-`top_pilot_z=(10.0, 19.1)` is parting-plane-anchored (independent of
-`top_z` by construction — see that param's own comment), and P1–P4's
-`top_post_pilot_z` span stays exactly 6.5mm (both its ends shift by the
-same `_DZ_TOP`, `(19.1, 25.6)` at pass 12 vs `(17.1, 23.6)` at pass 11 —
-same length, just repositioned higher). Current per-variant screw map:
+length. **2026-09-12 pass 12 (REVERTED 2026-09-13, pass 12b): trim's Top
+briefly grew to 30mm, forcing screw D to M2×16** — this pass reverted
+`top_z` back to 28 (the height bump did not fix the FPC-relief pocket it
+was meant to help, and cost this real screw-size regression for nothing —
+see the pass-12 and pass-12b sections above). D's engagement is back to
+the pass-7/9/11 numbers: `plate_post_D_z=(10.0, 16.1)`,
+`counterbore_D_h=4.0` → **12.1mm** of real engagement, M2×12. Every other
+screw is unaffected by the height revert (A/B1/B2/C's `top_pilot_z=
+(10.0, 19.1)` is parting-plane-anchored, independent of `top_z`; P1–P4's
+`top_post_pilot_z` span stays exactly 6.5mm, back to `(17.1, 23.6)` from
+pass 12's `(19.1, 25.6)`) and none of this pass's OTHER change
+(`usb_end_extension_mm`, an outer-envelope-only Y shift) touches any
+screw's Z engagement at all. Current per-variant screw map:
 
 | Screw | Qty | current | trim | Joins |
 |---|---|---|---|---|
 | M2×12 socket head | 4 | ✓ | ✓ | Bottom bosses A/B1/B2/C → Top bosses (Ø1.62 pilot, z 10–19.1 — parting-plane anchored, unchanged by case height) |
 | M2×10 socket head | 1 | ✓ | | Bottom boss D → Screen Plate post (Ø1.62, z 10–13.1) |
-| M2×16 socket head | 1 | | ✓ | Bottom boss D → Screen Plate post (Ø1.62, z 10–18.1 — grows again with trim's pass-12 +2mm case height; same 4.0mm counterbore, so 14.1mm of real engagement needs the next size up from pass 7–11's M2×12) |
-| M2×6 socket head | 4 | ✓ | ✓ | Top posts P1–P4 (**Ø5, was Ø4 — see pass-9 part-2 "Finding 4"**) → Screen Plate (Ø1.62 pilot, z 14.1–20.6 current / 19.1–25.6 trim — same 6.5mm span, shifts with the plate) |
+| M2×12 socket head | 1 | | ✓ | Bottom boss D → Screen Plate post (Ø1.62, z 10–16.1 — grows with trim's +3mm case height over `current`; same 4.0mm counterbore, so 12.1mm of real engagement needs the next size up from `current`'s M2×10 — pass-9/11 numbers, restored 2026-09-13 pass 12b after pass 12's temporary M2×16) |
+| M2×6 socket head | 4 | ✓ | ✓ | Top posts P1–P4 (**Ø5, was Ø4 — see pass-9 part-2 "Finding 4"**) → Screen Plate (Ø1.62 pilot, z 14.1–20.6 current / 17.1–23.6 trim — same 6.5mm span, shifts with the plate) |
 | M2×4 socket head | 3 | ✓ | ✓ | Screen Plate → board SMT standoffs S1–S3 |
 
-So **trim now needs 4×M2×12 + 1×M2×16 + 4×M2×6 + 3×M2×4** (12 screws
-total, same count as pass 7 — B1+B2 replaces B 1-for-1, and D's screw
-grows a size again, M2×10 → M2×12 (pass 7) → M2×16 (pass 12));
-**current needs 4×M2×12 + 1×M2×10 + 4×M2×6 + 3×M2×4** (unchanged,
-frozen at 25mm).
+So **trim needs 5×M2×12 + 4×M2×6 + 3×M2×4** (12 screws total, same count
+as pass 7 — B1+B2 replaces B 1-for-1, and D's M2×10 becomes a 5th
+M2×12); **current needs 4×M2×12 + 1×M2×10 + 4×M2×6 + 3×M2×4**
+(unchanged, frozen at 25mm). Pass 12's `4×M2×12 + 1×M2×16` for trim is
+superseded — do not use it.
 
 Bottom bosses A/B1/B2/C get a Ø4.5×2.2mm counterbore from z=0; boss D gets a
 deeper Ø4.5×4.0mm counterbore (its screw tip must stay ≤ plate_z[0] — the
@@ -3252,7 +3499,7 @@ reason" per the milestone instructions.
     does not specify an assembly order).
 15. **The lip/anchor ring's seam chamfer (finding 6) and the top-post
     root fillets (finding 4) are best-effort Fusion chamfer/fillet
-    features**, same pattern as `add_fpc_brow`'s seam fillet and `add_
+    features**, same pattern as `add_
     lug`'s corner fillets elsewhere in this file — skipped (not fatal)
     if the feature call itself fails on a given edge selection. Confirmed
     present in the built timeline this pass (1 `Chamfer` + 4 `Fillet`
@@ -3274,7 +3521,7 @@ reason" per the milestone instructions.
     build time, not in PARAMS.
 17. **The rib+connector's Combine-Intersect against the true outer
     envelope (`add_button`, findings 9/10's collateral fix)** is a best-
-    effort protective clip, same pattern as `add_fpc_brow`'s seam fillet
+    effort protective clip, same pattern as `add_lug`'s corner fillets
     elsewhere in this file — applied unconditionally on both buttons now
     (see that section's own writeup for why a conditional version missed
     a real breach on 'current'), confirmed clean via a live export-
