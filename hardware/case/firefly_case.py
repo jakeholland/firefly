@@ -958,6 +958,35 @@ FPC_BROW_BLEND = 3.0    # mm the raised footprint extends past the pocket's own 
                         # fillet radius applied to its seam edges (see add_fpc_brow) -- the "tangent
                         # blend" so it ramps into the surrounding dome rather than stepping.
 
+# 2026-09-09 pass 9g (coordinator's render sweep, "the FPC brow is a
+# slab"): a single box-clipped push-out at the full FPC_BROW_HEIGHT
+# everywhere in its footprint, however well the seam is filleted
+# afterward, still has a real ~1.5mm vertical step baked into its own
+# construction right at the seam (build_thickened_envelope's push is
+# UNIFORM across the footprint, so the "shell_layer" this cuts against
+# original is exactly FPC_BROW_HEIGHT thick everywhere it exists -- the
+# box intersect just crops that uniform-thickness layer to a rectangle,
+# it can never taper it) -- confirmed as the root cause of pass9_trim_
+# iso/right/top's visible plateau, independent of whether the seam fillet
+# below happens to apply. Fixed by building the brow as a small stack of
+# NESTED, wider-and-shallower tiers (a manual "wedding cake" loft
+# approximation, reusing only already-proven primitives -- box_solid,
+# build_thickened_envelope, the boolean combine_* ops -- rather than a
+# true loft/two-distance-chamfer, which would need new, unverified Fusion
+# API calls this pass's time budget doesn't cover a live iteration
+# cycle for): tier 0 (margin 0, height FPC_BROW_HEIGHT) sits tight over
+# the pocket exactly as before; tier 1 (margin FPC_BROW_BLEND, height
+# FPC_BROW_HEIGHT*0.35) is a wide, shallow shoulder around it. Each tier
+# boundary is now a much shorter riser (0.975mm / 0.525mm, vs. the old
+# single 1.5mm cliff) spread over the SAME 3mm of blend margin as before
+# -- a visibly gentler mound even before any fillet is attempted, and a
+# best-effort constant-radius fillet (same skip-on-failure pattern as
+# before) is applied at BOTH risers, not just the outer seam.
+FPC_BROW_TIERS = (
+    (0.0, FPC_BROW_HEIGHT),
+    (FPC_BROW_BLEND, FPC_BROW_HEIGHT * 0.35),
+)
+
 
 def fpc_relief_footprint(p):
     """The FPC relief pocket's cut footprint (x0, x1, y0, y1, z0, z1) --
@@ -1021,15 +1050,30 @@ def build_fpc_brow_solid(root, p):
     than an arbitrary large margin -- the corner sliver from the first
     bugfix's docstring is still present (it's real, thin, and now
     documented as an allowed exception in check_body_envelope_vertices),
-    but can no longer reach anywhere near the waist."""
+    but can no longer reach anywhere near the waist.
+
+    2026-09-09 pass 9g (coordinator's render sweep, "the FPC brow is a
+    slab"): now builds and unions FPC_BROW_TIERS (see that constant's own
+    comment) instead of a single box -- each tier is exactly this same
+    thickened-minus-original-clipped-to-a-box construction, just at a
+    smaller margin/height pair, so both bugfixes above still apply
+    per-tier unchanged. A fresh `original` copy is built for every tier
+    (combine_cut consumes its tool body, per _combine's isKeepToolBodies=
+    False) -- more Fusion calls than the old single-box version, which is
+    why this is run as its own separate fusion_mcp_execute stage (see
+    README's infrastructure note)."""
     x0, x1, y0, y1, fz0, _ = fpc_relief_footprint(p)
-    bx0, bx1 = x0 - FPC_BROW_BLEND, x1 + FPC_BROW_BLEND
-    by0, by1 = y0 - FPC_BROW_BLEND, y1 + FPC_BROW_BLEND
-    brow_box = box_solid(root, bx0, bx1, by0, by1, fz0 - 2.0, p['top_z'] + FPC_BROW_HEIGHT + 1.0)
-    thickened = build_thickened_envelope(root, p, FPC_BROW_HEIGHT)
-    original = build_outer_pill_solid(root, p)
-    shell_layer = combine_cut(root, thickened, [original])
-    return combine_intersect(root, brow_box, [shell_layer])
+    brow = None
+    for margin, height in FPC_BROW_TIERS:
+        bx0, bx1 = x0 - margin, x1 + margin
+        by0, by1 = y0 - margin, y1 + margin
+        tier_box = box_solid(root, bx0, bx1, by0, by1, fz0 - 2.0, p['top_z'] + FPC_BROW_HEIGHT + 1.0)
+        thickened = build_thickened_envelope(root, p, height)
+        original = build_outer_pill_solid(root, p)
+        shell_layer = combine_cut(root, thickened, [original])
+        tier_solid = combine_intersect(root, tier_box, [shell_layer])
+        brow = tier_solid if brow is None else combine_join(root, brow, [tier_solid])
+    return brow
 
 
 def add_fpc_brow(root, bodies, p):
@@ -1048,40 +1092,60 @@ def add_fpc_brow(root, bodies, p):
     face, so this bump sits on the upward-facing side during printing) and
     reads as an intentional design feature rather than a defect.
 
-    The seam fillet (radius FPC_BROW_BLEND) is applied to Top's own
-    vertical seam edges where the brow box's footprint meets the rest of
-    the dome -- best-effort (skipped, not rolled back, if Fusion's fillet
-    feature refuses this specific geometry), same reasoning as add_lug's
-    corner fillets: a missing fillet is a cosmetic/print-quality
-    regression, not a structural one, and every dimensional gate this
-    pocket depends on (verify_fpc_relief, interference) is computed from
-    the real solid either way."""
+    The seam fillets are applied to Top's own vertical seam edges where
+    EACH tier's own footprint meets the next one out (see FPC_BROW_TIERS)
+    -- best-effort (skipped, not rolled back, if Fusion's fillet feature
+    refuses this specific geometry), same reasoning as add_lug's corner
+    fillets: a missing fillet is a cosmetic/print-quality regression, not
+    a structural one, and every dimensional gate this pocket depends on
+    (verify_fpc_relief, interference) is computed from the real solid
+    either way. 2026-09-09 pass 9g: now one fillet pass PER tier boundary
+    (radius = that tier's own margin, same convention as before -- a
+    fillet radius roughly matching the lateral run available at that seam)
+    instead of a single FPC_BROW_BLEND-radius pass on the old single box's
+    seam -- each riser is shorter now (see FPC_BROW_TIERS's own comment),
+    so a fillet is more likely to actually apply at each of them."""
     x0, x1, y0, y1, _, _ = fpc_relief_footprint(p)
-    bx0, bx1 = x0 - FPC_BROW_BLEND, x1 + FPC_BROW_BLEND
-    by0, by1 = y0 - FPC_BROW_BLEND, y1 + FPC_BROW_BLEND
     brow_solid = build_fpc_brow_solid(root, p)
     top = combine_join(root, bodies['Top'], [brow_solid])
 
-    try:
-        fillet_edges = adsk.core.ObjectCollection.create()
-        for edge in top.edges:
-            bb = edge.boundingBox
-            dz = (bb.maxPoint.z - bb.minPoint.z) / MM
-            if dz < 3.0:
-                continue
-            ex0, ex1 = bb.minPoint.x / MM, bb.maxPoint.x / MM
-            ey0, ey1 = bb.minPoint.y / MM, bb.maxPoint.y / MM
-            on_x_seam = abs(ex0 - ex1) < 0.05 and (abs(ex0 - bx0) < 0.05 or abs(ex0 - bx1) < 0.05)
-            on_y_seam = abs(ey0 - ey1) < 0.05 and (abs(ey0 - by0) < 0.05 or abs(ey0 - by1) < 0.05)
-            if on_x_seam or on_y_seam:
-                fillet_edges.add(edge)
-        if fillet_edges.count > 0:
-            fillets = root.features.filletFeatures
-            fin = fillets.createInput()
-            fin.addConstantRadiusEdgeSet(fillet_edges, V(FPC_BROW_BLEND), True)
-            fillets.add(fin)
-    except RuntimeError:
-        pass
+    for margin, _height in FPC_BROW_TIERS:
+        bx0, bx1 = x0 - margin, x1 + margin
+        by0, by1 = y0 - margin, y1 + margin
+        fillet_r = max(0.5, min(margin, 1.5)) if margin > 0 else 1.0
+        try:
+            top = _refetch_by_name(root, 'Top') or top
+            fillet_edges = adsk.core.ObjectCollection.create()
+            for edge in top.edges:
+                bb = edge.boundingBox
+                dz = (bb.maxPoint.z - bb.minPoint.z) / MM
+                if dz < 0.2:
+                    continue
+                ex0, ex1 = bb.minPoint.x / MM, bb.maxPoint.x / MM
+                ey0, ey1 = bb.minPoint.y / MM, bb.maxPoint.y / MM
+                on_x_seam = abs(ex0 - ex1) < 0.05 and (abs(ex0 - bx0) < 0.05 or abs(ex0 - bx1) < 0.05)
+                on_y_seam = abs(ey0 - ey1) < 0.05 and (abs(ey0 - by0) < 0.05 or abs(ey0 - by1) < 0.05)
+                if on_x_seam or on_y_seam:
+                    fillet_edges.add(edge)
+            if fillet_edges.count > 0:
+                fillets = root.features.filletFeatures
+                fin = fillets.createInput()
+                # 2026-09-09 pass 9g: isTangentChain=False (was True) --
+                # each seam edge here is short (0.4-2mm) and sits right
+                # next to a lot of unrelated dome tessellation edges;
+                # tangent-chain matching risked silently pulling in a much
+                # larger loop than intended and failing the whole fillet
+                # solve, which is very likely why NEITHER tier's fillet
+                # produced a timeline Fillet feature on the first live
+                # build this pass (confirmed: 0 Fillet/Chamfer features
+                # attributable to add_fpc_brow in that build's timeline).
+                # Exact-selection (no chaining) is more conservative but
+                # far more likely to actually succeed on this geometry.
+                fin.addConstantRadiusEdgeSet(fillet_edges, V(fillet_r), False)
+                fillets.add(fin)
+                top = _refetch_by_name(root, 'Top') or top
+        except RuntimeError:
+            pass
 
     bodies['Top'] = top
     return bodies

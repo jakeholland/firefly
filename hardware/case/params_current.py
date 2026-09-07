@@ -185,7 +185,15 @@ PARAMS = {
     # ~1.9mm to spare -- confirmed by direct computation (see README),
     # not just visual inspection, since the GPS frame is a separate
     # printed feature (on Top) the plate must never touch.
-    'plate_south_extension': {'x': (-24.0, -6.0), 'y': (14.0, 29.0)},
+    # 2026-09-09 pass 9g (coordinator's render sweep, "plate post layout
+    # is unbalanced"): y0 lowered 14.0 -> 10.0 and y1 raised 29.0 -> 29.5
+    # for a clean >=4mm pad (post r 2.5 + 1.5mm margin) past BOTH new post
+    # rows' own edges -- P1/P2 (y=14, south row) now sit mid-span instead
+    # of flush on the old y0=14 edge (which left a 0mm pad -- the post
+    # holes would have notched straight through the plate's own south
+    # edge), and P3/P4 (y=25, north row) keep the same 4.5mm pad as
+    # before. See 'top_posts' below for the full spread rationale.
+    'plate_south_extension': {'x': (-24.0, -6.0), 'y': (10.0, 29.5)},
     'plate_header_cutout': {'x': (11.5 - 1.0, 17.0 + 1.0), 'y': (43.7 - 1.0, 56.1 + 1.0)},
     'plate_hole_dia': 2.4,
     'plate_pad_dia': 6.0,
@@ -222,11 +230,41 @@ PARAMS = {
     # variants). Verified (both variants): outer-wall clearance
     # >= 1.64mm (>= the required 0.6mm), window-bore clearance
     # >= 2.36mm (>= the required 1.0mm), for all 4 posts.
+    # 2026-09-09 pass 9g (coordinator's render sweep, "plate post layout
+    # is unbalanced"): pass-9-part-2's fix above put all four posts in a
+    # 10x6mm cluster in the SW corner of the plate (x -10/-20, y 18/24) --
+    # geometrically valid (every gate green) but a real design defect on
+    # its own: the Screen Plate is effectively held at one corner, with
+    # nothing supporting its NE 2/3, so it can flex/rattle there. Computed
+    # (pure-Python probes of these exact PARAMS, no Fusion needed --
+    # true_wall_distance_along_ray for shell skin, Euclidean distance to
+    # window_center for bore clearance -- see hardware/case/README.md's
+    # pass-9g section for the full grid search) before touching Fusion:
+    # a full rectangle spanning the SAME safe x column (-20/-10, already
+    # proven clean by pass-9-part-2 -- shell skin 1.64mm trim / 3.64mm
+    # current at x=-20, >=13.6mm at x=-10, both >>the 0.6mm minimum) but
+    # stretched in y from the tight 18-24 band to the full safe 14-25
+    # band: y=14 at the south end (the plate_south_extension's own south
+    # edge, unconstrained by the window at this x) and y=25 at the north
+    # end (window-bore-limited -- at x=-10, y=25.83 is the analytic
+    # cutoff for the required 1.0mm clearance; y=25 leaves 1.78mm to
+    # spare, vs. the window bore itself, and 2.6mm to the display PCB's
+    # own bbox, which starts at y=27.6). This nearly doubles the support
+    # footprint (10x6mm -> 10x11mm, ~83% more bounding-box area) using
+    # ONLY y-axis moves -- the x positions, and therefore every x-derived
+    # margin (shell skin, GPS-frame clearance, the plate's own south-
+    # extension x-range), are UNCHANGED from the already-verified pass-9
+    # part-2 fix. Window-bore clearance for all 4 (analytic, both
+    # variants -- window position/radius don't vary by variant):
+    # P1 15.16mm, P2 12.55mm, P3 6.09mm, P4 1.78mm -- all comfortably
+    # >= the 1.0mm minimum. Re-verified live via verify_post_walls
+    # (pilot_wall/shell_skin, 8 rays x 3 z / 8 rays per post) after the
+    # move -- see the pass-9g section.
     'top_posts': {
-        'P1': (-10.0, 18.0),
-        'P2': (-20.0, 18.0),
-        'P3': (-10.0, 24.0),
-        'P4': (-20.0, 24.0),
+        'P1': (-20.0, 14.0),
+        'P2': (-10.0, 14.0),
+        'P3': (-20.0, 25.0),
+        'P4': (-10.0, 25.0),
     },
     'board_standoffs': {
         'S1': (-12.0, 65.0),

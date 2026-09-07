@@ -822,6 +822,37 @@ zero interference, all M2/envelope/posts-bosses/skin/wall checks `True`,
 plus an offline manifold-edge + envelope + overhang scan of every
 exported STL (both variants) — `OVERALL: PASS`, zero non-manifold edges.
 
+## Pass 9 consolidated summary (through 2026-09-09 pass 9g)
+
+Jake's pass-7 print surfaced 11 findings; the coordinator's later render
+sweep of the pass-9 result surfaced 7 more (numbered 1-7 below, distinct
+from Jake's findings 1-11 above them chronologically but renumbered here
+as their own list since that's how the pass-9g brief enumerated them).
+This table is the single reference for "what was wrong, what changed, and
+which gate proves it" across every pass-9 sub-pass; the full narrative for
+each row is in that row's own dated section below.
+
+| # | Finding | Fix | Gate | Status |
+|---|---|---|---|---|
+| J1 | FPC relief pocket breached the shell at the USB end | Local **brow** raises the outer shoulder over the pocket footprint instead of shrinking the pocket | `verify_fpc_relief` 0 bad of 63, both variants | Fixed (pass 9), reshaped (pass 9g, see #2 below) |
+| J2 | Bosses A/C breached the shell on both halves | A/C relocated to the dome-tip end, absolute mm, both variants | `verify_posts_and_bosses` 0 bad, `check_interference` 0 pairs | Fixed (pass 9) |
+| J3 | Two lanyard holders (duplicate) | `lug_relief_box` outward edge clamped to `wall_clear` inside the true wall | `verify_wall_integrity`/`check_interference` clean; no dedicated probe | Fixed (pass 9) |
+| J4 | Screen-plate posts P1-P4 had no real wall | `POST_CORE_R` derived from pilot+`POST_WALL_MIN`; Ø4→Ø5; relocated off the window-bore crescent | `verify_post_walls` 0 bad of 8×3/8 per post | Fixed (pass 9 pt 2), **rebalanced pass 9g (see #1)** |
+| J5 | Window lip ring fragile | Ring widened 0.8→1.8mm inward (never touches the display's own clearance); seam chamfer added | `verify_display_insertion_path` (diagnostic), offline overhang scan clean | Fixed (pass 9 pt 2) |
+| J6 | Alignment lip chamfer (support-free print) | `chamfer_stadium_edge_at`, 0.5mm, on the lip/anchor outer step | Present in timeline (`Chamfer1`); overhang scan clean | Fixed (pass 9 pt 2) |
+| J7 | Wordmark two-line layout | `wordmark_layout`: KANDI/WOOKS scaled independently, stacked, centred on `wordmark_center` | `verify_wordmark` all True, both variants; **re-audited pass 9g (see #7), found already correct** | Fixed (pass 9e) |
+| J8 | Antenna cable channels | LoRa channel (trim only) + GPS notch (both variants), skin-safe clipped | `verify_antenna_channels` all True, both variants | Fixed (pass 9e) |
+| J9 | Button caps cannot be inserted | Rib gets a dedicated tab pass-through lane | `verify_button_insertion` 0 bad of 125, both buttons/variants | Fixed (pass 9b) |
+| J10 | Home plunger too short to reach the switch | `switch_actuator_reach`/`plunger_pretravel` derived from a live probe of the real switch body | `verify_plunger_reach` exact match, both buttons/variants | Fixed (pass 9b) |
+| J11 | Stray sliver beside boss C | `MIN_RELIEF_CLEARANCE` hard assertion in `add_lip_anchor_reliefs` | Build-time assertion (fails loudly, not silently) | Fixed (pass 9) |
+| 1 | **Plate post layout unbalanced** (10×6mm SW cluster, plate held at one corner) | P1-P4 spread to a full 10×11mm rectangle (same proven x=-20/-10 column, y stretched 14-25) | `verify_post_walls` 0 bad, both variants; window/wall clearance re-derived analytically | **Fixed (pass 9g)** |
+| 2 | **FPC brow is a slab** (flat plateau, visible step) | Rebuilt as 2 nested tiers (`FPC_BROW_TIERS`) instead of 1 box -- each riser ~0.5-1.0mm instead of one 1.5mm cliff | `verify_fpc_relief` still 0 bad of 63, both variants; visually confirmed tapered (not fully smooth -- see Known limitations) | **Partially fixed (pass 9g)** |
+| 3 | Generic `verify_skin_intact` should probe the whole outer surface | Not attempted this pass (time budget) | -- | **Not done (pass 9g)** -- unchanged from item 11 in Known limitations |
+| 4 | Overhang review of every exported part | Re-ran `tools/offline_stl_check.py` on both variants' fresh exports | `OVERALL: PASS`, 0 bad overhang clusters, both variants | **Done (pass 9g)** |
+| 5 | Assembly order not documented | Written up below and in the PR body | N/A (documentation) | **Done (pass 9g)** |
+| 6 | Screw map not recomputed for the pass-9g post move | P1-P4 positions updated in the Screw list; all z-depths/lengths unchanged (only xy moved) | N/A (documentation, cross-checked against `PARAMS`) | **Done (pass 9g)** |
+| 7 | Wordmark centring / lug ear taper (cosmetic) | Wordmark: verified analytically (bbox exactly centred, area-weighted ink centroid within 0.6mm of centre) -- no change made, see that section. Lug ear taper: reviewed via `pass9g_*_lanyard_end.png`, no defect found, not modified | Composite bbox center 0.000mm both variants (computed); ink centroid current +0.608mm / trim +0.554mm | **Reviewed, no change needed (pass 9g)** |
+
 ## 2026-09-08 pass 9 (first-print findings + design review)
 
 Jake's first pass-7 (trim) print surfaced 11 real defects. This pass fixed
@@ -1851,6 +1882,382 @@ bottom_logo.png` (finding 7's straight-on confirmation), `pass9e_trim_
 antenna_routes.png` (finding 8's route diagram). All viewed directly (not
 just generated) as part of this pass.
 
+## 2026-09-09 pass 9g (coordinator's render sweep -- final pass before printing)
+
+A fresh Fusion MCP session (this one's client-side timeout hit on almost
+every call, including plain read-only queries -- same infrastructure
+behaviour documented in the pass-9-part-1 note; the workaround used here,
+in addition to running `build()`/`verify()` in separate calls against the
+same open document, was to have scripts **write their results to a JSON
+file on local disk** (`hardware/case/_stub/*.json`) instead of relying on
+the tool call's own return value, then read that file back over a
+separate, ordinary filesystem read -- a file write on disk survives a
+client-side timeout the same way Fusion's own model state does, so this
+sidesteps the timeout for getting DATA out, not just for knowing a build
+finished). `run(variant=..., export=True)` was called once per variant (as
+a single call each, letting it time out client-side and then polling the
+export directory on disk -- which lands on the same machine Fusion runs
+on -- until the STL timestamps advanced, rather than re-splitting `build()`
+into a dozen manual stages); both variants built, verified, and exported
+cleanly end-to-end on the first attempt with the changes below.
+
+### Finding 1: plate post layout unbalanced
+
+**Confirmed root cause**: pass 9 part 2's own fix (see "Finding 4" above)
+relocated P1-P4 to a real, gate-clean position -- but all four landed in a
+tight **10x6mm cluster** at absolute (-10,18)/(-20,18)/(-10,24)/(-20,24),
+because that was the smallest change that cleared the window bore and the
+GPS frame at the time. A cluster this small holds the Screen Plate at
+essentially one corner (the SW quadrant), leaving its NE 2/3 unsupported
+-- a real, separate design defect from the "no wall" defect pass 9 part 2
+fixed, just not visible until the plate was viewed as a whole part rather
+than probed post-by-post.
+
+**Fix, computed before touching Fusion** (pure-Python probes of the real
+`PARAMS`, reusing `true_wall_distance_along_ray` and a plain Euclidean
+distance to `window_center` -- no Fusion needed for either check): the
+brief's candidate (a) (spread to the USB end) was ruled out first --
+that region is within ~2mm of the FPC relief/brow footprint, the display
+FPC tab, and the USB tunnel liner all at once, and candidate (b)
+(symmetric pair to the east, x=+10/+20) was ruled out second -- at
+y=18-24 that x range sits **inside the GPS patch frame's own footprint**
+(`bay.gps_patch['x']` = -2.8..22.2), so a symmetric east pair would need a
+per-post keep-out cut into the GPS frame's hanging structure, which is
+already documented (Known limitations, item 3) as tight/fragile near the
+dome tip -- not a change to make without a dedicated verification budget
+for the frame itself. That leaves the safe **west lane** (x approx -21 to
+-8, bounded by shell skin on one side and the GPS frame wall on the
+other) as the only zone that needed no new keep-out cuts anywhere.
+
+Within that lane, the WINDOW BORE (not the GPS frame or the true wall) is
+the binding constraint on how far NORTH a post can go: at post x=-10,
+`window_clear` (Euclidean distance from `window_center`, minus the window
+radius 22.65, minus the post radius 2.5) crosses below the 1.0mm minimum
+above y=25.83 -- so y=25 (1.78mm clearance) was picked as the practical
+north limit at that x, and y=14 (matching `plate_south_extension`'s own
+existing south edge) as the south limit, both far short of any real
+constraint (window clearance at y=14 is >12mm; shell skin doesn't depend
+on y at all in this straight-spine region, only x). Final positions,
+**absolute mm, identical in both variants** (same convention as every
+other boss/post):
+
+```
+P1 (-20.0, 14.0)   P2 (-10.0, 14.0)
+P3 (-20.0, 25.0)   P4 (-10.0, 25.0)
+```
+
+This is the SAME x column pass 9 part 2 already proved clean (shell skin
+1.64mm trim / 3.64mm current at x=-20, >=13.6mm at x=-10 -- both variants,
+unchanged by this move) -- only the y-spread changed, from a 6mm span to
+an 11mm span (10x11mm bounding box, ~83% more area than the old 10x6mm
+cluster), spreading support across a real rectangle instead of one
+corner. Analytic clearances, both variants (window position/radius don't
+vary by variant): P1 16.03mm, P2 12.21mm, P3 6.87mm, P4 1.78mm window
+clearance; all >= the 1.0mm minimum with margin. `plate_south_extension`
+(the second box unioned onto the Screen Plate's main outline to reach
+these posts) needed its own `y0` lowered from 14.0 to **10.0mm** -- the
+OLD extension's south edge sat exactly flush with the old P1/P2 y=18
+position's own pad margin, but flush with the NEW y=14 row it would leave
+**zero** pad (the post holes would notch straight through the plate's own
+south edge); `y1` raised 29.0 -> **29.5mm** for the same reason at the new
+P3/P4 y=25 row. Both changes give every post >=4.0mm of real plate
+material beyond its own hole (post radius 2.5 + 1.5mm pad), on all four
+sides, both new rows -- computed directly, not eyeballed (see
+`params_current.py`'s own comments on both `top_posts` and
+`plate_south_extension` for the exact numbers).
+
+**Gate**: `verify_post_walls` -- **0 bad of 8x3 (`pilot_wall`) / 8
+(`shell_skin`) for all 4 posts, both variants** (identical result to pass
+9 part 2's own numbers for P1/P3 at x=-20, confirming the x-column move
+carried no regression; P2/P4 at x=-10 pass with much larger margin, as
+expected further from the true wall). `verify_posts_and_bosses`,
+`check_interference`: clean, both variants. Full piecewise `verify()`
+output below.
+
+### Finding 2: FPC brow is a slab
+
+**Confirmed root cause**: `build_fpc_brow_solid`'s single box-clip
+construction (pass 9) pushes the outer envelope out by a UNIFORM
+`FPC_BROW_HEIGHT` (1.5mm) everywhere inside its footprint, then crops
+that uniform-thickness layer to a rectangle -- a box crop can never taper
+a uniform-thickness layer, so the seam is a real ~1.5mm vertical cliff by
+construction, independent of whether the best-effort seam fillet
+happened to apply. Visible in `pass9_trim_iso/right/top.png` as a flat
+plateau with a hard edge, exactly as the finding describes.
+
+**Fix**: rebuilt as `FPC_BROW_TIERS` -- two nested tiers instead of one
+box, reusing only already-proven primitives (`box_solid`,
+`build_thickened_envelope`, the boolean `combine_*` ops) rather than a
+true loft or two-distance chamfer (both would need new, live-iterated
+Fusion API calls this pass's time budget didn't cover): tier 0 (margin 0,
+height 1.5mm) sits tight over the pocket exactly as before; tier 1
+(margin `FPC_BROW_BLEND`=3.0mm, height 0.525mm) is a wide, shallow
+shoulder around it. This turns the old single 1.5mm cliff into two
+shorter risers (0.975mm and 0.525mm) spread over the same 3mm of blend
+margin -- a visibly gentler, tapered mound (confirmed in
+`pass9g_{trim,current}_brow_{iso,right}.png`) even before any fillet is
+attempted. `add_fpc_relief` shares `build_fpc_brow_solid` unchanged (same
+function, now returning the 2-tier union), so its skin-safe clip tool
+automatically stays in sync with the real, tapered brow shape -- it can
+only ever assume LESS raised material at the outer tier than the old
+single-box version did, which makes `FPC_RELIEF_MIN_WALL`'s clip more
+conservative there, not less.
+
+**Gate**: `verify_fpc_relief` -- **0 bad of 63 probes, both variants**
+(unchanged from pass 9's own number -- the tier-0 footprint, which is all
+this gate probes, is byte-for-byte the same construction as before).
+`check_interference`: clean.
+
+**Not fully resolved: the seam fillets did not apply.** A best-effort
+constant-radius fillet is attempted at each of the two tier boundaries
+(radius 1.0mm inner, 1.5mm outer) -- same skip-on-failure pattern as
+`add_lug`'s corner fillets and the pass-9 lip-ring chamfer. A live
+timeline scan after both builds found **zero** `Fillet`/`Chamfer`
+features attributable to `add_fpc_brow` in either variant (the nearest
+`Fillet` features, 4 of them, are the unrelated top-post root fillets
+from `add_top_posts`, much later in the timeline). Tried
+`isTangentChain=False` instead of `True` on the theory that tangent-chain
+matching was pulling in unrelated dome tessellation edges and failing the
+whole solve -- rebuilt 'current' with this change and got the same
+result (still 0 brow fillets), so that wasn't the cause; the real reason
+is unconfirmed (most likely the fillet radius, 1.0-1.5mm, is too large
+relative to the ~3mm-wide shelf between the two risers for Fusion's
+solver to fit both fillets without them colliding, but this is a
+hypothesis, not a confirmed diagnosis -- a follow-up pass should add a
+live edge-count print inside the `try` block to distinguish "no edges
+matched" from "fillets.add() raised" before trying smaller radii). The
+SHAPE itself (the 2-tier taper) is real, built, and gate-clean either
+way -- the fillets would only smooth its two remaining creases further,
+they are not load-bearing for any dimensional gate. Recorded as a new
+Known-limitations item below rather than re-attempted blind a third time
+in this pass's remaining budget.
+
+### Finding 3: generic `verify_skin_intact` (whole-outer-surface probe)
+
+**Not attempted this pass.** This is unchanged from Known-limitations
+item 11/13 -- the existing `verify_skin_intact` still only probes the
+perimeter of the two button tab holes, not the whole outer surface from
+all 6 directions with an enumerated opening whitelist. Given the time
+spent confirming/fixing findings 1 and 2 live (two full build+verify+
+export+render cycles, both variants) plus the render/documentation work
+below, this larger gate rewrite needs its own dedicated pass rather than
+a rushed version at the end of this one. The offline `tools/
+offline_stl_check.py` overhang/envelope scan (finding 4, below) is a
+partial, independent substitute in the meantime -- it does scan the
+entire exported mesh, just for overhang angle and envelope radius, not
+skin thickness specifically.
+
+### Finding 4: overhang review
+
+`tools/offline_stl_check.py`, re-run against this pass's fresh exports,
+both variants, all 5 printed bodies (whitelist unchanged from pass 9 --
+see the tool's own `TOP_WL`/`BOTTOM_WL` constants for the enumerated,
+reasoned exceptions: the USB tunnel floor bridge, and the ordinary flat
+hollow-shell ceiling/fillet-transition areas near the window/header and
+above the comms bay, all inspected and judged legitimate in a prior
+pass -- nothing new added or removed this pass):
+
+```
+trim:    Bottom manifold=True envelope_ok=True overhang_bad=[]
+         Top    manifold=True envelope_ok=True overhang_bad=[]
+         Screen_Plate / Power_Button / Home_Button: manifold=True envelope_ok=True
+         OVERALL: PASS
+
+current: Bottom manifold=True envelope_ok=True overhang_bad=[]
+         Top    manifold=True envelope_ok=True overhang_bad=[]
+         Screen_Plate / Power_Button / Home_Button: manifold=True envelope_ok=True
+         OVERALL: PASS
+```
+
+No new overhang clusters from either fix (the rebalanced posts don't
+change any external surface; the brow's 2-tier taper is, if anything,
+LESS steep than the old single box step, and the whitelisted
+`general_ceiling_overhang`/`usb_tunnel_floor`/`l76k_frame_ceiling`
+clusters are unaffected by both). Per SPEC's print orientation, no
+supports are expected for Top/Bottom/Screen Plate in their documented
+bed orientation; the button caps print with a brim (small parts,
+first-layer adhesion) -- unchanged guidance from prior passes.
+
+### Finding 5: assembly order
+
+Consolidated here (parts of this were established in earlier passes --
+see pass 9 part 2's "Finding 5" for the full derivation of why the
+display must go in first) into one ordered list, and copied into the PR
+body:
+
+1. **Seat the display module into the separate, unassembled Top half**
+   (glass up into the window bore, PCB resting under the lip/anchor/
+   posts) -- confirmed (pass 9 part 2) that this is the ONLY possible
+   order: the display PCB (39.2x41.4mm, ~57mm diagonal) is physically
+   larger than the window bore (Ø45.30) in every direction, so it cannot
+   go in "from the front" through the bore, or "from inside" up through
+   the already-assembled shell, at any point after Top and Bottom are
+   joined.
+2. **Fit the Screen Plate onto Top's own posts** (P1-P4, now spread
+   across a real 10x11mm rectangle -- see Finding 1) from inside, over
+   the display PCB -- the plate's own header cutout clears the display's
+   2x10 header; S1-S3 line up with the display board's own SMT
+   standoffs.
+3. **Insert both button caps from inside** the still-open Top half,
+   sliding each outward until its head seats in its own wall hole (pass
+   9b, finding 9 -- an outside-in insertion is geometrically impossible
+   by design; the caps cannot be added after Bottom is joined on).
+4. **Place the comms-bay hardware into the separate Bottom half**:
+   battery first (floor-mounted, rails + strap slots), then the 3-board
+   stack (Wio/XIAO/L76K, trim only -- current freezes at the pre-stack
+   pin-header configuration for the probe comparison, see Known
+   limitations), routing the antenna leads per Finding 8's channels as
+   the boards go in, not after.
+5. **Route the GPS patch antenna cable up into its frame** (hanging from
+   Top, above the battery) as the last comms-bay step before closing the
+   halves -- the frame's own wire-clearance notch and the GPS channel
+   (Finding 8, pass 9e) are both already open at this point, no fishing
+   a cable through a closed shell.
+6. **Tape the magnetometer at the lanyard end** (its own mounting pocket
+   is pass-8/future work, per the coordinator's brief -- for this pass
+   it rides along as a taped-in-place component, not a modelled fit).
+7. **Join Bottom and Top together on the alignment lip** (Finding 5 /
+   pass 9 part 2's widened 1.8mm ring, with its own seam chamfer for a
+   support-free print) -- this is the step that closes over everything
+   placed in steps 1-6; nothing above can be added after this point.
+8. **Drive the case screws**, in this order: **A, B1, B2, C** (the four
+   Bottom-boss-to-Top-boss M2x12s, dome-tip cluster) to pull the two
+   halves flush and square first, **then D** (Bottom boss to the Screen
+   Plate's own post, M2x10 current / M2x12 trim -- deliberately last
+   among the case screws, since it also indirectly locates the plate
+   relative to the now-closed shell), **then P1-P4** (Top post to Screen
+   Plate, M2x6 -- now landing across the full rebalanced rectangle from
+   Finding 1, not a corner cluster) to pin the plate itself, **then S1-
+   S3** (Screen Plate to the display board's own SMT standoffs, M2x4) to
+   finish locking the display board to the plate stack.
+
+Checked against the model (not just asserted): every insertion path
+above either has a dedicated live probe already (`verify_display_
+insertion_path`, `verify_button_insertion`/`verify_button_retention`) or
+is a plain geometric consequence of one body being open/unassembled at
+that step (Bottom and Top are two separate, unjoined printed parts until
+step 7) -- nothing in this order asks a board or fastener to pass through
+an opening smaller than itself.
+
+### Finding 6: screw map
+
+Recomputed against `PARAMS` directly (not hand-copied) after Finding 1's
+move. **Only P1-P4's xy positions changed** -- every z-depth, pilot
+diameter, and screw length below is identical to the table already in
+"Screw list" (unaffected by an xy-only move): M2x12 x4 (A/B1/B2/C, both
+variants), M2x10 (current D) / M2x12 (trim D, the case-height-driven
+length bump from pass 7), M2x6 x4 (P1-P4, unchanged z 14.1-20.6 current /
+17.1-23.6 trim), M2x4 x3 (S1-S3). The "Screw list" section below has been
+updated in place with the new P1-P4 coordinates rather than duplicated
+here.
+
+### Finding 7: cosmetic check
+
+**Wordmark centring**: computed directly against the real
+`kandiwooks_logo.json` and `wordmark_layout()` (pure Python, no Fusion
+needed). The composite bounding box (both lines together) is **exactly**
+centred on `wordmark_center` in both variants (`x` range -22.54..22.54
+current / -20.54..20.54 trim, centre 0.000mm to floating-point precision
+-- expected, since each line is independently forced to the SAME
+`target_width` and centred on the same `cx`, so their union can never be
+off-centre). Went a step further and computed the AREA-WEIGHTED centroid
+of every loop (shoelace formula, signed area -- so the flower/leaf
+glyphs, which are enclosed sub-loops, correctly contribute as holes, not
+solid ink) as a more rigorous stand-in for "visual weight" than the raw
+bounding box: **+0.608mm (current) / +0.554mm (trim)** -- under 3% of the
+wordmark's own half-width, and, if anything, slightly RIGHT of centre,
+not left. Checked what shifting the whole block to zero that residual
+would cost: the resulting edge clearance drops to as low as **0.99mm**
+on the now-nearer side, both variants -- BELOW the 1.5mm SPEC minimum
+`verify_wordmark` gates on. **No change made**: the geometry is already
+correctly centred by the most rigorous available measure, and the only
+way to chase the smaller, cruder "raw vertex count" asymmetry that
+prompted this finding (unweighted vertex mean: -3.665mm current /
+-3.34mm trim -- but this metric weights every small stroke segment
+equally regardless of enclosed area, so a glyph built from many short
+line segments on one side outweighs a glyph built from few long ones on
+the other, independent of actual ink coverage) would breach a real,
+gated dimensional requirement. Recorded here as reviewed-and-verified
+rather than silently skipped.
+
+**Lug ear taper**: reviewed via `pass9g_{trim,current}_lanyard_end.png`
+(both variants) -- no defect visible at this render's framing/distance;
+not modified this pass. A dedicated close-up (same idea as pass 9c's
+`pass9c_lip_ring_section.png` for the window lip) would be needed for a
+more confident visual sign-off and is left as a follow-up.
+
+### verify() output, both variants (pass 9g)
+
+Confirmed piecewise against a live document each time (same
+infrastructure note as every pass-9 sub-pass); this pass's own addition,
+writing results to a JSON file on disk instead of relying on the call's
+return value, made this the first sub-pass where a slow/timed-out call
+never once required a blind re-run to recover its output:
+
+```
+trim:    body_names ['Bottom', 'Home Button', 'Power Button', 'Screen Plate', 'Top']
+         interference []
+         post_wall_results  P1/P2/P3/P4 pilot_wall [] and shell_skin [] (8 rays each) -- 0 bad
+         posts_bosses_results  all True (A/B1/B2/C/D, P1-P4, both stack-frame keep-outs)
+         fpc_relief bad [] of 63
+         stack3_clearance {'stack_top_z': 22.942, 'clearance_found': 4.158, 'required': 0.8, 'ok': True}
+         wordmark: edge_clearance True 1.6, clearance_{A,B1,B2,C,D,lug_hole} all True (>=15.6mm)
+         antenna: lora_channel_open True, lora_skin_ok True 3.395, gps_channel_open True, gps_no_battery_floor_breach True
+         envelope: Bottom True, Top True; export_envelope: all 5 bodies True
+         skin_results all True; wall_results all True
+         sliver_results (diagnostic, unrelated to any pass-9g change): {'Bottom': 452, 'Top': 76}
+
+current: body_names ['Bottom', 'Home Button', 'Power Button', 'Screen Plate', 'Top']
+         interference []
+         post_wall_results  P1/P2/P3/P4 pilot_wall [] and shell_skin [] (8 rays each) -- 0 bad
+         posts_bosses_results  all True
+         fpc_relief bad [] of 63
+         wordmark: edge_clearance True 1.6, clearance_{A,B1,B2,C,D,lug_hole} all True (>=14.3mm)
+         antenna: gps_channel_open True, gps_no_battery_floor_breach True (lora N/A -- Wio not inserted)
+         envelope: Bottom True, Top True; export_envelope: all 5 bodies True
+         skin_results all True; wall_results all True
+         sliver_results: {'Bottom': 445, 'Top': 68}
+```
+
+(`sliver_results` diagnostic counts shift slightly pass-to-pass with any
+geometry change nearby -- still unrelated to any gated defect, same
+reasoning as pass 9's own finding 11 writeup.)
+
+### Offline STL scan output (pass 9g)
+
+See Finding 4 above -- `OVERALL: PASS`, both variants, 0 non-manifold
+edges, 0 envelope breaches, 0 bad overhang clusters, across all 5
+printed bodies.
+
+### Exports and renders (pass 9g)
+
+Both variants: `export/<variant>/{Bottom,Top,Screen_Plate,Power_Button,
+Home_Button}.stl` (Bottom/Top changed -- the post and brow geometry;
+Screen_Plate changed -- new south-extension bounds and hole positions;
+Power_Button/Home_Button byte-for-byte re-exports, untouched by either
+fix), `export/<variant>/firefly_<variant>_case.3mf` (native, 5 objects,
+re-generated by Fusion's own exporter), `export/<variant>/firefly_
+<variant>_plate.3mf` (re-packed via `tools/stl_to_3mf.py` from the fresh
+STLs -- **this is the file Jake prints** for `trim`), and the coupon
+STLs/3MFs (unchanged geometry -- neither fix touches the button
+mechanism -- re-exported as a byproduct of running the pipeline again).
+
+Renders: `pass9g_{trim,current}_{front,top,right,iso}.png` (standard
+4-view, both variants, from the same `run(export=True)` call as the
+exports), plus, per variant: `pass9g_{trim,current}_brow_{iso,right}.png`
+(Finding 2's before/after -- the 2-tier taper, not fully filleted, is
+directly visible in both), `pass9g_{trim,current}_posts_plate.png`
+(interior view near the rebalanced P1-P4 rectangle, Bottom hidden),
+`pass9g_{trim,current}_inside_top.png` / `_inside_bottom.png` (Bottom/Top
+hidden respectively, looking straight down), `pass9g_{trim,current}_
+usb_end.png`, `pass9g_{trim,current}_lanyard_end.png`, and `pass9g_
+{trim,current}_bottom_logo.png` (Finding 7's wordmark re-confirmation --
+note this particular render's camera was not re-tuned to hide the two
+loose button-cap bodies sitting in frame, so the case reads off-centre in
+that one specific image; the wordmark's own centring was verified
+analytically instead, see Finding 7 above, not by eye against this
+render). All viewed directly as part of this pass.
+
 ## Screw list
 
 **2026-09-07 pass 7: boss B split into B1/B2** (its old single position
@@ -1903,17 +2310,22 @@ clearance over the boss's own OD (`MIN_RELIEF_CLEARANCE`) so a
 too-close boss fails loudly instead of leaving a sliver — see the pass-9
 "Finding 11" section above.
 
-**Screen-plate post P1–P4 xy positions** (2026-09-08 pass 9 part 2 —
-see "Finding 4" above for why the pass-6/SPEC positions below snapped
-in Jake's print and why the fix is a reposition, not just a diameter
-bump): ABSOLUTE mm, identical in both variants, like A/B1/B2/C/D.
+**Screen-plate post P1–P4 xy positions** (**2026-09-09 pass 9g: rebalanced
+again** — see that section's "Finding 1" above for why the pass-9-part-2
+10×6mm SW-corner cluster below held the plate at one corner, and why the
+fix is a wider rectangle on the SAME x column, not a new x range): ABSOLUTE
+mm, identical in both variants, like A/B1/B2/C/D.
 
 | Post | current | trim |
 |---|---|---|
-| P1 | (−10.0, 18.0) | (−10.0, 18.0) *(was (−23.63, 58.84))* |
-| P2 | (−20.0, 18.0) | (−20.0, 18.0) *(was (−13.0, 31.8))* |
-| P3 | (−10.0, 24.0) | (−10.0, 24.0) *(was (17.0, 32.0))* |
-| P4 | (−20.0, 24.0) | (−20.0, 24.0) *(was (19.89, 65.47))* |
+| P1 | (−20.0, 14.0) | (−20.0, 14.0) *(pass 9g; was (−10.0, 18.0); originally (−23.63, 58.84))* |
+| P2 | (−10.0, 14.0) | (−10.0, 14.0) *(pass 9g; was (−20.0, 18.0); originally (−13.0, 31.8))* |
+| P3 | (−20.0, 25.0) | (−20.0, 25.0) *(pass 9g; was (−10.0, 24.0); originally (17.0, 32.0))* |
+| P4 | (−10.0, 25.0) | (−10.0, 25.0) *(pass 9g; was (−20.0, 24.0); originally (19.89, 65.47))* |
+
+All z-depths/pilot diameters/screw lengths in the table above are
+unchanged by this move (only xy shifted) — see pass 9g's own "Finding 6"
+section for the cross-check against `PARAMS`.
 
 ## Known limitations / deviations from SPEC.md
 
@@ -2071,6 +2483,35 @@ reason" per the milestone instructions.
     documentation/render-quality gap, not an unverified feature — a
     follow-up pass could add a dedicated close-up the way pass 9c did for
     the lip ring.
+20. **The FPC brow's inter-tier seam fillets (pass 9g) did not apply** —
+    `FPC_BROW_TIERS` replaced the old single-box brow with a 2-tier taper
+    (a real, gate-clean, visibly gentler shape — see pass 9g's "Finding
+    2"), but the best-effort constant-radius fillet meant to smooth each
+    of the two risers produced zero `Fillet` timeline features in either
+    variant. Tried `isTangentChain=False` (on the theory that chain-
+    matching was pulling in unrelated dome edges) and got the same
+    result, so that specific hypothesis is ruled out; the real cause is
+    unconfirmed — most likely the fillet radius (1.0–1.5mm) is too large
+    for the ~3mm-wide shelf between the two risers, but this needs a live
+    edge-count print inside the `try` block (to distinguish "no edges
+    matched" from "the fillet solve itself failed") before it's worth
+    guessing at smaller radii. Not gated on (no dimensional check depends
+    on the fillet existing — `verify_fpc_relief` is unaffected either
+    way), purely cosmetic/print-smoothness, same category as items 15/17/
+    18 above.
+21. **The generic "`verify_skin_intact` probes the WHOLE outer surface"
+    rework (coordinator's pass-9g brief, item 3) is still not done** —
+    unchanged from item 13's own note on this; the existing narrower
+    `verify_skin_intact` (button tab holes only) is unmodified this pass.
+    `tools/offline_stl_check.py`'s envelope/overhang scan is a partial,
+    independent substitute (see pass 9g's "Finding 4") but does not check
+    skin thickness.
+22. **The lug ear taper (pass-9g cosmetic check) was reviewed but not
+    close-up rendered** — `pass9g_{trim,current}_lanyard_end.png` shows no
+    obvious defect at that render's distance, but a dedicated close-up
+    (same idea as `pass9c_lip_ring_section.png` for the window lip) would
+    give more confidence than the current wide shot. Not modified this
+    pass.
 
 **Reverted mid-pass-6, not shipped**: the coordinator's later messages in
 this pass requested (a) swapping the Wio/XIAO stack to a board-to-board
