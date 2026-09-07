@@ -2536,49 +2536,144 @@ def add_flare_logo(root, bodies, p):
     return bodies
 
 
-def load_wordmark_loops(p):
-    """kandiwooks_logo.json (2026-09-06 pass 6 re-extraction -- see the
-    coordinator's report): the previous extraction visited only ONE flat
-    top face per body (the largest by area), silently dropping any
-    SECOND disjoint flat face on the same body -- Body4 ('Ka', the K and
-    the lowercase a fused into one lump but with two separate flat top
-    regions) lost the entire 'a' this way, rendering as "K[gap]ndiWooks"
-    with the sprout decoration floating over the gap. Re-extracted with
-    every body's every same-Z flat face walked (not just the biggest),
-    using CurveEvaluator3D.getStrokes at a 0.005mm tolerance (a real
-    reduction from whatever produced the old 1-point degenerate loop,
-    though that specific loop turned out to be a microscopic ~0.02x0.002mm
-    sliver in the source geometry, not the actual cause). Visually
-    confirmed: the debossed wordmark now reads "KANDIWOOKS" with the 'a'
-    present -- see bottom_logo.png."""
-    json_path = os.path.join(_HERE, 'kandiwooks_logo.json')
-    with open(json_path, 'r') as f:
-        data = json.load(f)
+## 2026-09-08 pass 9e (finding 7, two-line wordmark): the single-line
+## wordmark printed tiny (30mm wide across all 10 letters) and was hard to
+## read. Split kandiwooks_logo.json's 6 bodies into the two WORDS by body
+## NAME (not a runtime x-extent heuristic -- the words visually overlap in
+## x once you include the tall flourish on the 'i', so a pure x-threshold
+## split cannot separate them; see the analysis in README's pass-9e
+## section for how these two groups were identified from the raw JSON
+## bboxes before writing any of this): 'Body1' is the 'i' (its single
+## loop's y-extent, -0.36..5.27, is far taller than any other glyph's
+## ~2.3-2.4mm cap height -- this is a decorative flourish/sprout on the
+## dot, part of the 'i', not a separate glyph), 'Body2' is the 'd',
+## 'Body4' is 'k'+'a' fused (touching strokes -- same fusion the original
+## docstring already documented), 'Body5' is the 'n': together, in x
+## order, K-a-n-d-i = "KANDI". 'Body3' is 'W'+'o'+'o'+'k' fused into one
+## lump (its 2 small enclosed loops are the flower/leaf glyphs standing in
+## for the two O's -- see SPEC.md/the finding brief), 'Body6' is the 's':
+## W-o-o-k-s = "WOOKS". The flower/leaf O-glyphs are Body3's own enclosed
+## loops, so they travel with WOOKS automatically.
+WORDMARK_LINE1_BODIES = ('Body1', 'Body2', 'Body4', 'Body5')  # "KANDI" (top line)
+WORDMARK_LINE2_BODIES = ('Body3', 'Body6')                    # "WOOKS" (bottom line, carries the flower/leaf O glyphs)
+WORDMARK_EDGE_CLEARANCE = 1.6  # mm from the widest debossed point to flat_rho (spec asks >=1.5; +0.1 margin)
+WORDMARK_LINE_GAP = 2.0        # mm, vertical gap between the two lines' own local bboxes
+
+
+def _wordmark_word_raw_loops(data, body_names):
     raw_loops = []
     for body in data:
+        if body['name'] not in body_names:
+            continue
         for loop in body['loops']:
             pts = loop['points']
             if len(pts) >= 3:
                 raw_loops.append(pts)
+    return raw_loops
 
-    all_x = [pt[0] for loop in raw_loops for pt in loop]
-    all_y = [pt[1] for loop in raw_loops for pt in loop]
-    minx, maxx = min(all_x), max(all_x)
-    miny, maxy = min(all_y), max(all_y)
+
+def _wordmark_local_bbox(raw_loops):
+    xs = [pt[0] for loop in raw_loops for pt in loop]
+    ys = [pt[1] for loop in raw_loops for pt in loop]
+    return min(xs), max(xs), min(ys), max(ys)
+
+
+def _wordmark_place_word(raw_loops, bbox, scale, center_xy):
+    """Uniform-scale + recenter a word's own raw loops to `center_xy`,
+    mirrored in x -- same convention as the original single-line
+    load_wordmark_loops (confirmed pass 6: reads correctly from the
+    outside of the back face once mirrored this way)."""
+    minx, maxx, miny, maxy = bbox
     local_cx, local_cy = (minx + maxx) / 2.0, (miny + maxy) / 2.0
-    scale = p['wordmark_width'] / (maxx - minx)
-
-    cx, cy = p['wordmark_center']
-    world_loops = []
+    cx, cy = center_xy
+    out = []
     for loop in raw_loops:
         wl = []
         for lx, ly in loop:
-            sx = (lx - local_cx) * scale
+            sx = -(lx - local_cx) * scale  # mirror in x so it reads correctly when the puck is flipped
             sy = (ly - local_cy) * scale
-            sx = -sx  # mirror in x so it reads correctly when the puck is flipped
             wl.append((sx + cx, sy + cy))
-        world_loops.append(wl)
-    return world_loops
+        out.append(wl)
+    return out
+
+
+def wordmark_layout(p):
+    """Compute the two-line "KANDI" / "WOOKS" layout (finding 7): each
+    word is scaled INDEPENDENTLY to the same target width -- derived from
+    `flat_rho` (the flat bed's own true radius at the Bottom face, not a
+    fixed mm constant) so the wordmark fills the flat back face's usable
+    width regardless of variant, leaving WORDMARK_EDGE_CLEARANCE to the
+    flat-face edge -- then stacked vertically (KANDI above WOOKS) with
+    WORDMARK_LINE_GAP between their own local bboxes, centred as a whole
+    block on `wordmark_center`. Both words happen to have almost
+    identical native widths (12.52mm / 12.58mm in the source JSON), so
+    this gives them nearly the same font scale, matching how the original
+    single-line wordmark was one uniform scale throughout.
+
+    The block's y-span (checked live for both variants: ~[8.5,41.5]
+    current / ~[9.9,40.1] trim) sits entirely inside the straight spine
+    section (spine_a.y=0 to spine_b.y=50), where `rho_from_spine` is
+    exactly |x| independent of y -- so the only real constraint on how
+    wide the words can go is the flat_rho/x bound checked here; every
+    case-screw counterbore (A/B1/B2/C at y=-8/-15, D at y=60) and the
+    lanyard lug (y<=-26.5) sit well outside this y-band (>=14mm clear at
+    minimum, both variants -- see verify_wordmark and README's pass-9e
+    section for the exact numbers), so their own 1.5mm clearance
+    requirement is satisfied with large margin by construction, not by a
+    dynamic per-boss shrink."""
+    json_path = os.path.join(_HERE, 'kandiwooks_logo.json')
+    with open(json_path, 'r') as f:
+        data = json.load(f)
+
+    line1_raw = _wordmark_word_raw_loops(data, WORDMARK_LINE1_BODIES)
+    line2_raw = _wordmark_word_raw_loops(data, WORDMARK_LINE2_BODIES)
+    assert line1_raw, 'no loops found for wordmark line 1 (KANDI) -- check WORDMARK_LINE1_BODIES against the JSON'
+    assert line2_raw, 'no loops found for wordmark line 2 (WOOKS) -- check WORDMARK_LINE2_BODIES against the JSON'
+
+    b1 = _wordmark_local_bbox(line1_raw)
+    b2 = _wordmark_local_bbox(line2_raw)
+    target_width = 2.0 * (p['flat_rho'] - WORDMARK_EDGE_CLEARANCE)
+    scale1 = target_width / (b1[1] - b1[0])
+    scale2 = target_width / (b2[1] - b2[0])
+    h1 = (b1[3] - b1[2]) * scale1
+    h2 = (b2[3] - b2[2]) * scale2
+    total_h = h1 + WORDMARK_LINE_GAP + h2
+
+    cx, cy = p['wordmark_center']
+    y1 = cy + (total_h / 2.0 - h1 / 2.0)  # line 1 ("KANDI"): the higher-y line
+    y2 = cy - (total_h / 2.0 - h2 / 2.0)  # line 2 ("WOOKS"): the lower-y line
+
+    line1_loops = _wordmark_place_word(line1_raw, b1, scale1, (cx, y1))
+    line2_loops = _wordmark_place_word(line2_raw, b2, scale2, (cx, y2))
+
+    return {
+        'line1_loops': line1_loops, 'line2_loops': line2_loops,
+        'line1_bbox_local': b1, 'line2_bbox_local': b2,
+        'scale1': scale1, 'scale2': scale2, 'target_width': target_width,
+        'y1_center': y1, 'y2_center': y2,
+        'line1_y_range': (y1 - h1 / 2.0, y1 + h1 / 2.0),
+        'line2_y_range': (y2 - h2 / 2.0, y2 + h2 / 2.0),
+        'half_width': target_width / 2.0,
+    }
+
+
+def load_wordmark_loops(p):
+    """kandiwooks_logo.json (2026-09-06 pass 6 re-extraction; 2026-09-08
+    pass 9e/finding 7 split into two independently-scaled/stacked lines --
+    see `wordmark_layout`'s docstring for the current two-line geometry
+    and WORDMARK_LINE1_BODIES/WORDMARK_LINE2_BODIES's comment for how the
+    6 bodies were identified as "KANDI" / "WOOKS"). Original pass-6 note,
+    still true of the underlying extraction: the previous extraction
+    visited only ONE flat top face per body (the largest by area),
+    silently dropping any SECOND disjoint flat face on the same body --
+    Body4 ('Ka', the K and the lowercase a fused into one lump but with
+    two separate flat top regions) lost the entire 'a' this way,
+    rendering as "K[gap]ndiWooks" with the sprout decoration floating
+    over the gap. Re-extracted with every body's every same-Z flat face
+    walked (not just the biggest), using CurveEvaluator3D.getStrokes at a
+    0.005mm tolerance."""
+    layout = wordmark_layout(p)
+    return layout['line1_loops'] + layout['line2_loops']
 
 
 def add_wordmark_logo(root, bodies, p):
@@ -2949,6 +3044,216 @@ def add_comms_bay(root, bodies, p, clip_tool=None):
     add_gps_reference_box(root, p)
     add_fpc_keepout_marker(root, p)
     return bodies
+
+
+def _antenna_skin_safe_channel(root, p, center_mm, axis1_mm, axis2_mm, length, width, height):
+    """A box channel (length along axis1, width along axis2, height in Z),
+    Combine-Intersected against a copy of the plain outer envelope offset
+    INWARD by `channel_min_skin` -- same idiom as add_fpc_relief's
+    skin_safe_tool (see its docstring): guarantees the cut can never
+    reach closer than `channel_min_skin` to the TRUE outer surface,
+    however far out `length` was asked to reach, following the real
+    curvature (not a flat-wall estimate). Used for the LoRa channel,
+    which is cut close to the true outer dome wall; the GPS/stack-frame
+    crossings are deep inside the cavity and don't need this clip (see
+    add_antenna_channels)."""
+    a = p['antenna']
+    box = oriented_box_prism(root, center_mm, axis1_mm, axis2_mm, (0.0, 0.0, 1.0), length, width, height)
+    envelope = build_outer_pill_solid(root, p)
+    faces = [f for f in envelope.faces]
+    offset_input = root.features.offsetFacesFeatures.createInput(faces, V(-a['channel_min_skin']))
+    root.features.offsetFacesFeatures.add(offset_input)
+    return combine_intersect(root, box, [envelope])
+
+
+def _best_effort_fillet(root, body, min_dz, radius):
+    """Best-effort constant-radius fillet on a body's own vertical-ish
+    edges (dz >= min_dz) -- same pattern as add_fpc_brow's seam fillet:
+    skipped (not fatal) if Fusion's fillet feature refuses this specific
+    edge selection. Used to round the antenna channel's own long edges
+    ('filleted' per the finding's own channel spec) -- cosmetic/print-
+    quality only, never load-bearing, so a skip here never weakens any
+    verify() gate."""
+    try:
+        edges = adsk.core.ObjectCollection.create()
+        for edge in body.edges:
+            bb = edge.boundingBox
+            dz = (bb.maxPoint.z - bb.minPoint.z) / MM
+            if dz >= min_dz:
+                edges.add(edge)
+        if edges.count > 0:
+            fillets = root.features.filletFeatures
+            fin = fillets.createInput()
+            fin.addConstantRadiusEdgeSet(edges, V(radius), True)
+            fillets.add(fin)
+    except RuntimeError:
+        pass
+    return body
+
+
+def add_antenna_channels(root, bodies, p, clip_tool=None):
+    """Finding 8 (2026-09-08, pass 9e): two coax/FPC cable runs that must
+    not get pinched when the case halves close -- (a) the Wio-SX1262's
+    u.FL to the LoRa FPC antenna keep-out strip on Top's inner dome wall,
+    (b) the L76K's u.FL to the GPS patch antenna in its frame above the
+    battery. Both routes derived from LIVE-PROBED u.FL connector
+    positions (`PARAMS['antenna']`, see its own comment) -- not the SPEC
+    box centers -- so the cut actually lines up with the real inserted
+    hardware.
+
+    LoRa route (Top only, 'trim' only -- see below): the Wio's u.FL sits
+    ~3.5mm inboard of the true inner cavity wall at its own bearing from
+    spine_a (live-computed: `true_wall_distance_along_ray` from the
+    connector's own xy, along its own outward radial direction, = 5.59mm
+    to the TRUE OUTER surface) -- a real gap of open cavity, not a
+    connector sitting flush against the wall. Cut a single radial channel
+    from the connector's own point outward, LENGTH = that true-wall
+    distance minus `channel_min_skin` (1.2mm) -- so it reaches exactly to
+    within the required skin minimum of the true outer surface, by
+    construction, and no further, via `_antenna_skin_safe_channel`'s
+    Combine-Intersect against the skin-safe envelope (open cavity along
+    most of this length is a geometric no-op for the cut; only the last
+    ~0.8mm, inside the actual 2mm shell, removes real material). This is
+    the ONE crossing that's actually near the true outer skin, hence the
+    only one using the skin-safe clip.
+
+    GPS route (Bottom -> Top, both variants -- the L76K is always
+    inserted): the L76K's u.FL sits inside the stack3 frame's own hollow
+    interior, well within the EXISTING `wire_notch_w` cut
+    (build_comms_stack_frame's own +Y wire-clearance notch, x +-3,
+    already spans the connector's x=2.1 and z=5.92 -- confirmed by
+    direct comparison of the numbers, not assumed) -- so the cable's
+    first crossing (out of the stack3 frame) needs NO new cut, it already
+    has one. From there the route runs straight up (same x, rising in Z)
+    through open cavity -- clear of the battery (battery's own y starts
+    at 2.0, the GPS frame's south wall band sits at y 0.75-1.75, entirely
+    south of it; the battery's own z-range, 2-10, sits entirely BELOW
+    this route's z 10.5-12.5 crossing -- no overlap in x, y, OR z with
+    the battery reference box) -- to the GPS frame's own south wall
+    (1.0mm), which IS a real, complete, un-gapped ring (build_gps_
+    frame_body / build_hanging_frame -- no gap_w passed) and DOES need a
+    new cut here, the one genuinely new channel this route needs. The
+    route stays well inboard of the alignment lip/anchor ring (rho ~2.3mm
+    from spine_a here, vs the ring's own inner radius 23.95mm/trim,
+    25.95mm/current) -- per the finding's own conditional ("a notch in
+    the parting-line lip IF a cable must cross the halves"), this route
+    crosses z=split_z but never touches the ring itself, so no lip notch
+    is cut; the plain shell wall is nowhere near this xy (deep in open
+    cavity) so there is no solid material to cross at the parting plane
+    either. Cut directly into Top (a plain box spanning the wall's own
+    y-band with margin) -- deep in the cavity, nowhere near the true
+    outer surface, so no skin-safe clip is needed here (unlike the LoRa
+    channel)."""
+    a = p['antenna']
+    w, h = a['channel_width'], a['channel_depth']
+    fillet_r = a['channel_fillet']
+
+    # --- LoRa: Wio u.FL -> Top's inner dome wall ('trim' only) ---
+    if p.get('comms_stack3_full_height', True):
+        ux, uy, uz = a['lora_ufl_xyz']
+        ay = p['spine_a'][1]
+        d = math.hypot(ux, uy - ay)
+        dirv = (ux / d, (uy - ay) / d)  # radial, outward from spine_a
+        s_wall = true_wall_distance_along_ray(p, (ux, uy), dirv, uz)
+        assert s_wall is not None, 'LoRa antenna channel: no true-wall intersection along the connector ray'
+        channel_len = s_wall - a['channel_min_skin']
+        assert channel_len > 0, f'LoRa antenna channel: connector already within channel_min_skin of the true wall ({s_wall})'
+        tang = (-dirv[1], dirv[0])  # tangential, perpendicular to dirv
+        center = (ux + (channel_len / 2.0) * dirv[0], uy + (channel_len / 2.0) * dirv[1], uz)
+        dirv3 = (dirv[0], dirv[1], 0.0)
+        tang3 = (tang[0], tang[1], 0.0)
+        channel = _antenna_skin_safe_channel(root, p, center, dirv3, tang3, channel_len, w, h)
+        channel = _best_effort_fillet(root, channel, 0.0, fillet_r)
+        bodies['Top'] = combine_cut(root, bodies['Top'], [channel])
+        bodies['Top'] = dedupe_body(root, bodies['Top'], 'Top')
+
+    # --- GPS: L76K u.FL -> GPS frame's south wall (both variants) ---
+    gps = p['bay']['gps_patch']
+    gps_half = p['bay']['gps_frame_opening'] / 2.0
+    gcx = (gps['x'][0] + gps['x'][1]) / 2.0
+    gcy = (gps['y'][0] + gps['y'][1]) / 2.0
+    gy0 = gcy - gps_half  # frame opening's own south edge
+    gwall = p['bay']['gps_frame_wall']
+    ux, uy, uz = a['gps_ufl_xyz']
+    notch_x0, notch_x1 = ux - w / 2.0, ux + w / 2.0
+    notch_y0, notch_y1 = gy0 - gwall - 0.15, gy0 + 0.15  # spans the wall band, small margin each side
+    notch_z0, notch_z1 = p['split_z'] + 0.5, p['split_z'] + 2.5  # z 10.5-12.5 -- above the battery's own z<=10.0
+    gps_notch = box_solid(root, notch_x0, notch_x1, notch_y0, notch_y1, notch_z0, notch_z1)
+    gps_notch = _best_effort_fillet(root, gps_notch, 0.0, fillet_r)
+    bodies['Top'] = combine_cut(root, bodies['Top'], [gps_notch])
+    bodies['Top'] = dedupe_body(root, bodies['Top'], 'Top')
+
+    return bodies
+
+
+def antenna_channel_geometry(p):
+    """Analytic geometry shared between add_antenna_channels (the build)
+    and verify_antenna_channels (the gate) -- computed once here so the
+    two can never disagree. Returns a dict keyed by channel name; each
+    entry has 'probe_xyz' (a point INSIDE the cut, to confirm it's
+    hollow), 'skin_dir'/'skin_origin' (for a true_wall_distance_along_ray
+    skin-thickness re-check, LoRa only), and 'battery_check' (bbox to
+    confirm no overlap with the battery footprint, GPS only)."""
+    a = p['antenna']
+    out = {}
+    if p.get('comms_stack3_full_height', True):
+        ux, uy, uz = a['lora_ufl_xyz']
+        ay = p['spine_a'][1]
+        d = math.hypot(ux, uy - ay)
+        dirv = (ux / d, (uy - ay) / d)
+        s_wall = true_wall_distance_along_ray(p, (ux, uy), dirv, uz)
+        channel_len = s_wall - a['channel_min_skin']
+        probe_s = min(channel_len * 0.5, channel_len - 0.1) if channel_len > 0.2 else channel_len / 2.0
+        probe = (ux + probe_s * dirv[0], uy + probe_s * dirv[1], uz)
+        out['lora'] = {'probe_xyz': probe, 'origin_xy': (ux, uy), 'dir': dirv, 'z': uz, 's_wall': s_wall}
+    gps = p['bay']['gps_patch']
+    gps_half = p['bay']['gps_frame_opening'] / 2.0
+    gcy = (gps['y'][0] + gps['y'][1]) / 2.0
+    gy0 = gcy - gps_half
+    gwall = p['bay']['gps_frame_wall']
+    ux, uy, uz = a['gps_ufl_xyz']
+    notch_z0, notch_z1 = p['split_z'] + 0.5, p['split_z'] + 2.5
+    probe = (ux, gy0 - gwall / 2.0, (notch_z0 + notch_z1) / 2.0)
+    out['gps'] = {'probe_xyz': probe, 'battery_bbox': p['bay']['battery'], 'notch_z': (notch_z0, notch_z1)}
+    return out
+
+
+def verify_antenna_channels(bodies_dict, p):
+    """Finding 8 gate (2026-09-08, pass 9e): (1) each channel's own
+    cross-section is actually open (hollow) at a live-probed interior
+    point -- confirms the cut happened where the analytic route says it
+    should; (2) the LoRa channel's own skin-safety re-check -- a fresh
+    `true_wall_distance_along_ray` from its probe point must show
+    >= channel_min_skin remaining to the true outer surface (independent
+    of the Combine-Intersect construction that's supposed to guarantee
+    this, same "trust but verify" pattern as verify_post_walls); (3) the
+    GPS notch's own bbox does not overlap the battery reference footprint
+    (analytic, both variants) -- the "no breach of the battery bay floor"
+    check the finding asked for (the notch's z-band, split_z+0.5..+2.5,
+    sits entirely above the battery's own z<=10.0 by construction, so
+    this is a regression guard, not a live discovery)."""
+    top = bodies_dict['Top']
+    geo = antenna_channel_geometry(p)
+    results = {}
+
+    if 'lora' in geo:
+        g = geo['lora']
+        px, py, pz = g['probe_xyz']
+        is_open = not probe_point_solid(top, P(px, py, pz))
+        results['lora_channel_open'] = (is_open, (round(px, 3), round(py, 3), round(pz, 3)))
+        s_check = true_wall_distance_along_ray(p, (px, py), g['dir'], pz)
+        skin_ok = s_check is not None and s_check >= p['antenna']['channel_min_skin'] - 0.05
+        results['lora_skin_ok'] = (skin_ok, round(s_check, 3) if s_check is not None else None)
+
+    g = geo['gps']
+    px, py, pz = g['probe_xyz']
+    is_open = not probe_point_solid(top, P(px, py, pz))
+    results['gps_channel_open'] = (is_open, (round(px, 3), round(py, 3), round(pz, 3)))
+    bat = g['battery_bbox']
+    z_clear = g['notch_z'][0] >= bat['z'][1]
+    results['gps_no_battery_floor_breach'] = (z_clear, (g['notch_z'], bat['z']))
+
+    return results
 
 
 def _collect_occ_bodies(occ):
@@ -3326,6 +3631,7 @@ def build(app, params):
     bodies = add_wordmark_logo(root, bodies, params)
 
     bodies = add_comms_bay(root, bodies, params, clip_tool=clip_tool)
+    bodies = add_antenna_channels(root, bodies, params, clip_tool=clip_tool)
 
     insert_display_pcba(app, root, params)
     insert_comms_boards(app, root, params)
@@ -4945,6 +5251,83 @@ def verify_fpc_relief(bodies_dict, p):
     return results
 
 
+def verify_wordmark(bodies_dict, p):
+    """Finding 7 gate (2026-09-08, pass 9e): the two-line KANDI/WOOKS
+    wordmark. Three groups of checks, all computed against the SAME
+    `wordmark_layout` the build itself used (so this can never disagree
+    with what was actually cut): (1) analytic clearance from the
+    wordmark's own rectangle (per line) to every case-screw counterbore
+    (A/B1/B2/C/D) and to the lanyard ear's hole, >= 1.5mm -- cheap and
+    exact, no Fusion probe needed since these are all axis-aligned
+    shapes; (2) analytic clearance from the wordmark's own half-width to
+    `flat_rho` (the flat-face edge), >= 1.5mm; (3) a live grid probe
+    across both lines' bboxes on the real built `Bottom` body: at
+    z = bottom_z + depth/2 (mid-deboss), a real, non-trivial fraction of
+    sample points must read hollow (confirms the deboss actually cut
+    something, catching a wholesale "wordmark missing" regression) but
+    not ALL of them (confirms it isn't over-cutting the whole footprint
+    solid); at z = bottom_z - 0.05 (just outside the flat bed) every
+    sample must read hollow (no material floats below the bed); at
+    z = bottom_z + depth + 0.15 (just past the deboss depth) every sample
+    must read SOLID -- the "no breach of the floor" check: the deboss
+    must stop at `logo_deboss_depth` and not reach any deeper (e.g. into
+    the battery-bay floor cuts, which live 1.6mm+ deeper still).
+
+    This is a numeric smoke test, not a substitute for actually looking
+    at the render (per the finding's own instruction) -- it cannot tell
+    "K" from "A" or catch a subtly wrong glyph, only that debossing
+    happened in the right place, to the right depth, clear of the
+    hardware. See pass9e_bottom_logo.png for the visual confirmation."""
+    bottom = bodies_dict['Bottom']
+    layout = wordmark_layout(p)
+    depth = p['logo_deboss_depth']
+    z_bot = p['bottom_z']
+    half_w = layout['half_width']
+    results = {}
+
+    edge_clearance = p['flat_rho'] - half_w
+    results['edge_clearance'] = (edge_clearance >= 1.5 - 1e-6, round(edge_clearance, 3))
+
+    def rect_dist(x0, x1, y0, y1, px, py):
+        dx = max(x0 - px, 0.0, px - x1)
+        dy = max(y0 - py, 0.0, py - y1)
+        return math.hypot(dx, dy)
+
+    cb_r = p['counterbore_ABC_dia'] / 2.0
+    targets = [(s['name'], s['xy'], cb_r) for s in p['screws_ABC']]
+    targets.append((p['screw_D']['name'], p['screw_D']['xy'], cb_r))
+    _, _, _, hole_y = lug_ear_geometry(p)
+    targets.append(('lug_hole', (0.0, hole_y), p['lug']['hole_dia'] / 2.0))
+    for name, (sx, sy), r in targets:
+        d1 = rect_dist(-half_w, half_w, layout['line1_y_range'][0], layout['line1_y_range'][1], sx, sy) - r
+        d2 = rect_dist(-half_w, half_w, layout['line2_y_range'][0], layout['line2_y_range'][1], sx, sy) - r
+        d = min(d1, d2)
+        results[f'clearance_{name}'] = (d >= 1.5 - 1e-6, round(d, 3))
+
+    cut_pts, solid_pts = 0, 0
+    below_ok, beyond_ok = True, True
+    for (y_lo, y_hi) in (layout['line1_y_range'], layout['line2_y_range']):
+        nx, ny = 14, 6
+        for i in range(nx):
+            x = -half_w + (2.0 * half_w) * i / (nx - 1)
+            for j in range(ny):
+                y = y_lo + (y_hi - y_lo) * j / (ny - 1)
+                if probe_point_solid(bottom, P(x, y, z_bot + depth / 2.0)):
+                    solid_pts += 1
+                else:
+                    cut_pts += 1
+                if probe_point_solid(bottom, P(x, y, z_bot - 0.05)):
+                    below_ok = False
+                if not probe_point_solid(bottom, P(x, y, z_bot + depth + 0.15)):
+                    beyond_ok = False
+    total = cut_pts + solid_pts
+    cut_fraction = (cut_pts / total) if total else 0.0
+    results['deboss_present'] = (0.05 <= cut_fraction <= 0.85, round(cut_fraction, 3))
+    results['floor_intact_below_depth'] = (beyond_ok, beyond_ok)
+    results['no_material_below_bed'] = (below_ok, below_ok)
+    return results
+
+
 def verify(design, params):
     root = design.rootComponent
     printed, ref_boxes, board_occs = collect_interference_entities(root)
@@ -5084,6 +5467,22 @@ def verify(design, params):
         f'FPC relief pocket breached the outer shell '
         f'(< {FPC_RELIEF_MIN_WALL}mm skin remaining): {bad_fpc_relief}')
 
+    # 2026-09-08 pass 9e (finding 7): two-line KANDI/WOOKS wordmark --
+    # counterbore/edge clearance + live deboss-depth/floor probe. See
+    # verify_wordmark's own docstring.
+    wordmark_results = verify_wordmark(by_name, params)
+    bad_wordmark = [k for k, v in wordmark_results.items() if not v[0]]
+    assert not bad_wordmark, (
+        f'wordmark check failed: {[(k, wordmark_results[k]) for k in bad_wordmark]}')
+
+    # 2026-09-08 pass 9e (finding 8): LoRa/GPS antenna cable channels --
+    # channel-open probe + LoRa skin-safety re-check + GPS battery-floor
+    # clearance. See verify_antenna_channels's own docstring.
+    antenna_results = verify_antenna_channels(by_name, params)
+    bad_antenna = [k for k, v in antenna_results.items() if not v[0]]
+    assert not bad_antenna, (
+        f'antenna channel check failed: {[(k, antenna_results[k]) for k in bad_antenna]}')
+
     # 2026-09-08 pass 9 (finding 11, stray sliver beside boss C):
     # the exact set of printed bodies must match the documented 5 parts --
     # a stray orphan body left over from a botched boolean (the same class
@@ -5131,6 +5530,8 @@ def verify(design, params):
         'skin_results': skin_results,
         'wall_results': wall_results,
         'fpc_relief_results': fpc_relief_results,
+        'wordmark_results': wordmark_results,
+        'antenna_results': antenna_results,
         'sliver_results': sliver_results,
     }
 
@@ -5622,6 +6023,12 @@ def run(_context: str, variant=None, export=False):
     fpc_results = result.get('fpc_relief_results', {})
     fpc_bad = [k for k, v in fpc_results.items() if not v]
     print('fpc-relief skin checks:', len(fpc_results), 'probes, all True?', not fpc_bad, 'bad:', fpc_bad)
+    print('wordmark checks (finding 7, two-line KANDI/WOOKS):')
+    for k, v in result.get('wordmark_results', {}).items():
+        print('  ', k, v)
+    print('antenna channel checks (finding 8, LoRa/GPS u.FL routes):')
+    for k, v in result.get('antenna_results', {}).items():
+        print('  ', k, v)
     print('sliver face count (area < 0.5mm^2, diagnostic only):')
     for nm in ('Top', 'Bottom'):
         print('  ', nm, count_sliver_faces(bodies[nm]))

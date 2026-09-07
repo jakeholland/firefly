@@ -419,4 +419,26 @@ PARAMS = {
     },
 
     'clearance_min': 0.3,
+
+    # --- antenna cable channels (finding 8, 2026-09-08 pass 9e) ---
+    # Live-probed world-mm centers of the two u.FL connectors this design
+    # actually routes cables from: queried directly off the Wio-SX1262/
+    # L76K reference docs' own 'U.FL Connector' sub-occurrence bodies in
+    # a real built 'trim' document (root.allOccurrences -> bRepBodies,
+    # world-space per SPEC.md gotcha 6) -- see README's pass-9e section
+    # for the query and its independent cross-check (hand-derived from
+    # insert_comms_boards' own placement transforms + separately-probed
+    # native board thicknesses, matching this live read to within
+    # 0.005mm). `gps_ufl_xyz` is the SAME in both variants -- the L76K's
+    # placement (l76k_bottom_z, the stack3 PCB footprint) doesn't depend
+    # on case height, and L76K is always inserted (see insert_comms_
+    # boards). `lora_ufl_xyz` is only meaningful when the Wio is actually
+    # inserted (comms_stack3_full_height=True, i.e. 'trim') -- add_
+    # antenna_channels skips the LoRa route entirely for 'current'.
+    'antenna': {
+        'gps_ufl_xyz': (2.095, -21.435, 5.92),
+        'lora_ufl_xyz': (3.444, -21.961, 19.895),
+        'channel_width': 2.0, 'channel_depth': 1.6, 'channel_fillet': 0.3,
+        'channel_min_skin': 1.2,
+    },
 }

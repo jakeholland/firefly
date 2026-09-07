@@ -1579,6 +1579,278 @@ remain open (out of this pass's scope — findings 9 and 10 only, per this
 pass's brief). The generic "`verify_skin_intact` probes the WHOLE outer
 surface, not named footprints" rework is also still not done.
 
+## 2026-09-08 pass 9e (findings 7, 8 — two-line wordmark, antenna channels)
+
+A fresh Fusion MCP session (this one noticeably slower/more prone to the
+part-1 infrastructure note's client-side timeout than prior passes —
+several individual stages, including plain read-only queries, needed 2-4
+minutes of real wall-clock time before the SAME script that had just
+timed out client-side turned out to have completed normally server-side;
+`build()` was run in 4 separate stages against the same open document,
+`verify()` and the export/render stages likewise, per the pass-9-part-1
+and pass-9b notes' own advice). Both findings verified live for both
+variants (piecewise, for the same reason), plus an offline pure-Python
+scan of the exported STLs and direct visual inspection of every new
+render — nothing in this section is reported from code alone.
+
+### Finding 7: KandiWooks wordmark larger, two lines
+
+**Root cause / analysis, computed offline against the real
+`kandiwooks_logo.json` before touching Fusion** (same discipline as pass
+9's finding 4): the 6 extracted bodies needed to split into the two words
+"KANDI"/"WOOKS" by NAME, not a runtime x-extent threshold — `Body1` (the
+'i') carries a tall decorative flourish/sprout on its dot (y −0.36..5.27,
+more than double every other glyph's ~2.3–2.4mm cap height) that visually
+arcs out over the start of "WOOKS" in x, so any pure x-threshold split
+would have to cut through that overlap. Sorting the 6 bodies by their own
+`minx` instead puts `Body4` ('k'+'a' fused, touching strokes — same
+fusion the pass-6 docstring already documented), `Body5` ('n'), `Body2`
+('d'), `Body1` ('i') as the first 4 (K-a-n-d-i = "KANDI") and `Body3`
+('W'+'o'+'o'+'k' fused — its 2 small enclosed loops are the flower/leaf
+glyphs standing in for the O's, per SPEC.md) and `Body6` ('s') as the
+last 2 (W-o-o-k-s = "WOOKS") — confirmed with a standalone even-odd-fill
+raster of the actual loop data (no Fusion needed) before this was ever
+implemented: all 5+5 letters present, no gaps, in the expected order.
+
+**Fix**: `wordmark_layout` (new) scales KANDI and WOOKS INDEPENDENTLY to
+the same target width — `2 * (flat_rho - WORDMARK_EDGE_CLEARANCE)`,
+`WORDMARK_EDGE_CLEARANCE` = 1.6mm (>= SPEC's own 1.5mm ask, +0.1mm
+margin) — derived from `flat_rho`, not a fixed mm constant, so the
+wordmark fills the flat back face's usable width in both variants
+(target width 45.08mm current / 41.08mm trim). Both words happen to have
+almost identical native widths in the source JSON (12.52mm / 12.58mm),
+so this gives them nearly the same font scale, matching how the original
+single-line wordmark was one uniform scale throughout. Stacked vertically
+(KANDI above WOOKS) with a 2.0mm gap between their own local bboxes,
+centred as one block on the existing `wordmark_center` (0,25) — same
+mirroring convention as before (confirmed pass 6, unchanged here: each
+word's own local x is negated before translating into place).
+
+**Every case-screw counterbore and the lug clear by a wide margin, by
+construction, not by a dynamic per-boss shrink**: the block's whole
+y-span sits entirely inside the straight spine section (spine_a.y=0 to
+spine_b.y=50), where `rho_from_spine` is exactly `|x|` independent of y —
+so widening the wordmark can only ever push its `|x|` extent toward
+`flat_rho`, never toward any of the counterbores (A/B1/B2/C at y=−8/−15,
+D at y=60) or the lanyard ear (y<=−26.5), all of which sit OUTSIDE
+`[0,50]` entirely. Live-computed clearances (both >=1.5mm required):
+
+```
+current: line1(KANDI) y[20.59,41.44] line2(WOOKS) y[8.56,18.59]
+         clearance_A 14.309  clearance_B1 21.309  clearance_B2 21.309
+         clearance_C 14.309  clearance_D 16.309  clearance_lug_hole 33.199
+trim:    line1(KANDI) y[21.07,40.07] line2(WOOKS) y[9.93,19.07]
+         clearance_A 15.679  clearance_B1 22.679  clearance_B2 22.679
+         clearance_C 15.679  clearance_D 17.679  clearance_lug_hole 32.569
+```
+
+**Gate**: `verify_wordmark` (new) — edge clearance (>=1.5mm; exactly
+1.6mm by construction, both variants), clearance to A/B1/B2/C/D and the
+lug hole (>=1.5mm; all >=14mm found, both variants), and a live grid
+probe (14×6 per line, both lines) on the built `Bottom`: mid-deboss depth
+must read hollow over a real, non-trivial fraction of the footprint
+(found 0.357, both variants — comfortably inside the sane [0.05, 0.85]
+band), never solid below the flat bed, and always solid again just past
+`logo_deboss_depth` (0.4mm) — the "no breach of the floor" check (the
+battery-bay floor cuts live a further 1.6mm+ deeper still, so this is
+also a floor-safety margin, not just a depth check). **All checks True,
+both variants** (see the `WORDMARK` results in the piecewise verify()
+output below).
+
+**Visual confirmation**: `pass9e_trim_bottom_logo.png` /
+`pass9e_current_bottom_logo.png` — straight-on Bottom-face renders using
+the generator's own custom orthographic camera (`_set_ortho_camera`,
+eye on the −Z axis below the part, up=+Y — the SAME convention the
+pass-6 `bottom_logo.png` reference render used). Both read "KANDI" over
+"WOOKS" left-to-right, every letter present (K-A-N-D-I, W-O-O-K-S with
+the flower/leaf glyphs in place of the O's, the sprout on the "I" intact
+and not mirrored-within-itself), comfortably inside the flat bed with
+visible clearance to every counterbore. **A real dead end worth
+recording**: Fusion's generic view-cube `direction='bottom'` preset (used
+for a quick sanity check before building the real camera call) renders
+this SAME geometry MIRRORED (reading "IᗡNɐʞ" / "SʞooM", i.e. correctly
+mirrored-for-viewing-through-material but in the wrong-handed camera
+convention for "look at the physical underside") — confirmed by
+comparing both renders directly; the discrepancy is entirely in which
+camera convention was used, not the geometry, which needed no changes
+once the correct (established) camera setup was used.
+
+### Finding 8: Antenna cable channels
+
+**u.FL connector positions, live-probed (2026-09-08)**: queried the
+Wio-SX1262 and L76K reference docs' own `'U.FL Connector'` sub-occurrence
+bodies directly (`root.allOccurrences` → `bRepBodies`, world-space per
+SPEC.md gotcha 6) — first in each board's OWN native document (to locate
+the connector relative to its own PCB), then confirmed a second time
+directly in a real built 'trim' case document (the actual inserted,
+placed occurrence) — both readings agreed to within 0.005mm, and also
+matched a THIRD, independent hand-derivation from `insert_comms_boards`'
+own placement-transform math plus separately-probed native board
+thicknesses, computed before touching Fusion at all. Final values: Wio's
+u.FL (LoRa) at **(3.444, −21.961, 19.895)mm**, L76K's u.FL (GPS) at
+**(2.095, −21.435, 5.92)mm** — both stored in `PARAMS['antenna']`
+(`params_current.py`, inherited unchanged by trim: L76K's own placement
+doesn't depend on case height, and current's Wio position, while
+unused when the Wio isn't inserted, is the same physical part positioned
+the same way whenever it IS).
+
+**LoRa route** (Wio u.FL → the FPC keep-out strip on Top's inner dome
+wall, **'trim' only** — 'current' never inserts the Wio, see
+`comms_stack3_full_height`): the connector sits ~3.5mm inboard of the
+true inner cavity wall along its own outward radial bearing from
+spine_a — live-computed via `true_wall_distance_along_ray` from the
+connector's own xy: **5.589mm** to the TRUE outer surface, a real gap of
+open cavity, not a connector sitting flush against the shell. Cut ONE
+radial channel (`add_antenna_channels`) from the connector's own point
+outward, length = that true-wall distance minus the 1.2mm skin minimum
+(**4.389mm**) — Combine-Intersected against a copy of the plain outer
+envelope offset inward by 1.2mm (`_antenna_skin_safe_channel`, same idiom
+as `add_fpc_relief`'s skin-safe tool, see that function's own docstring),
+so the cut can never reach closer than 1.2mm to the true outer surface
+however far it's asked to reach, following the real dome curvature
+rather than a flat estimate. Cross-section 2.0mm wide (tangential) ×
+1.6mm tall (Z), best-effort filleted (0.3mm, same skip-on-failure pattern
+as `add_fpc_brow`'s seam fillet).
+
+**GPS route** (L76K u.FL → the GPS patch's own frame above the battery,
+**both variants** — the L76K is always inserted): the connector sits
+INSIDE the stack3 frame's own hollow interior, already within the
+frame's EXISTING wire-clearance notch (`build_comms_stack_frame`'s own
+`wire_notch_w`, x ±3mm — the connector's own x=2.1 and z=5.92 both fall
+inside it, confirmed by direct numeric comparison, not assumed) — so
+this crossing needs no new cut at all. From there the route runs
+straight north (same x), rising in Z, clear of the battery on all three
+axes (the GPS frame's own south wall band, y 0.75–1.75, sits south of
+the battery's y>=2 start; the route's z crossing, split_z+0.5..+2.5, sits
+entirely above the battery's own z<=10.0 — confirmed both analytically
+and by the live gate below) to the GPS frame's own south wall (1.0mm — a
+real, complete, un-gapped ring: `build_gps_frame_body` passes no
+`gap_w`) — the ONE genuinely new cut this route needs. **The route
+stays well inboard of the alignment lip/anchor ring** (rho ~2.3mm from
+spine_a here, vs the ring's own inner radius 23.95mm trim / 25.95mm
+current) — per the finding's own conditional ("a notch in the
+parting-line lip IF a cable must cross the halves"), this route crosses
+z=split_z but never touches the ring, and there is no other solid wall
+material at this xy at the parting plane either (deep in open cavity) —
+so no lip notch was cut. This is a deliberate, computed routing choice
+(picking the inboard path specifically to avoid needing one), not an
+oversight — documented here per the "any deviation from SPEC.md"
+reporting convention even though it's a null result.
+
+**Gate**: `verify_antenna_channels` (new) — each channel's own
+cross-section reads hollow at a live-probed interior point; the LoRa
+channel's own skin distance re-checked LIVE at that same probe point
+(found 3.395mm >= the 1.2mm minimum — comfortably clear at the
+midpoint probed; the construction itself, not this probe, is what
+guarantees exactly 1.2mm at the channel's own outer tip); the GPS
+notch's own z-band (10.5–12.5) confirmed to sit entirely above the
+battery's real z-range (2.0–10.0) — the "no breach of the battery bay
+floor" check. **Both variants**:
+
+```
+current: gps_channel_open True (2.095, 1.25, 11.5)
+         gps_no_battery_floor_breach True ((10.5, 12.5), (2.0, 10.0))
+trim:    lora_channel_open True (3.784, -24.129, 19.895)
+         lora_skin_ok True 3.395
+         gps_channel_open True (2.095, 1.25, 11.5)
+         gps_no_battery_floor_breach True ((10.5, 12.5), (2.0, 10.0))
+```
+
+**Render / route documentation**: `pass9e_trim_antenna_routes.png` — an
+interior isometric view (Bottom hidden, Top ghosted to 15% opacity,
+board occurrences hidden) with both routes drawn as thick (1.6mm,
+exaggerated for visibility — the real channels are 2.0×1.6mm) construction
+rods between the connector points and their respective wall crossings,
+built as temporary hidden-then-deleted reference bodies (never part of
+any exported geometry or the interference gate) purely for this render.
+The GPS route's rod is clearly visible running from the stack area north
+past the battery/GPS boxes; the short LoRa rod (a 4.4mm stub) is harder
+to make out at this camera distance next to the display module — this is
+a real limitation of this specific render, not of the underlying
+geometry (which is independently confirmed by the live probes above),
+and a follow-up pass could add a dedicated close-up the way pass 9c did
+for the lip ring.
+
+### verify() output, both variants (pass 9e)
+
+Confirmed piecewise against a live document each time, same reasoning as
+pass 9b (this session's Fusion MCP connection made even simple read-only
+queries exceed the client-side timeout while `build()`/`verify()` were
+still running server-side — waiting them out and re-querying, rather
+than assuming failure, was the correct move every time this pass: no
+call in this pass actually failed and needed a real fix except the one
+noted under "Bugs found and fixed" below):
+
+```
+trim:    body_names ['Bottom', 'Home Button', 'Power Button', 'Screen Plate', 'Top']
+         interference []
+         wordmark: edge_clearance True 1.6, clearance_{A,B1,B2,C,D,lug_hole} all True (>=15.6mm)
+         wordmark: deboss_present True 0.357, floor_intact_below_depth True, no_material_below_bed True
+         antenna: lora_channel_open True, lora_skin_ok True 3.395
+         antenna: gps_channel_open True, gps_no_battery_floor_breach True
+         full verify() (all M1/M2/posts/walls/buttons/fpc-relief/stack3/export-envelope gates
+             from pass 9/9b, unchanged this pass): ran to completion twice without rollback
+             (timeline advanced +4 features each time, matching verify_display_insertion_path's
+             own reference-body construction -- an AssertionError anywhere in verify() rolls
+             back the WHOLE script's changes per SPEC.md gotcha 1, so two clean, non-reverted
+             runs are direct evidence every assertion in verify() passed, both times)
+
+current: body_names ['Bottom', 'Home Button', 'Power Button', 'Screen Plate', 'Top']
+         interference []
+         wordmark: edge_clearance True 1.6, clearance_{A,B1,B2,C,D,lug_hole} all True (>=14.3mm)
+         wordmark: deboss_present True 0.357, floor_intact_below_depth True, no_material_below_bed True
+         antenna: gps_channel_open True, gps_no_battery_floor_breach True (lora route N/A -- Wio not inserted)
+         full verify(): ran to completion once without rollback (timeline advanced +4 features,
+             same reasoning as trim)
+```
+
+### Bug found and fixed while building the antenna channels
+
+`oriented_box_prism` (and the shared `move_body_to_frame` it calls)
+expects 3-element `(x,y,z)` direction vectors for all three axes — the
+first `add_antenna_channels` attempt passed the LoRa channel's `dirv`/
+`tang` as plain 2-tuples (the natural output of the file's existing 2D
+`normalize2`/radial-direction helpers, used everywhere else in this file
+for flat XY math), which raised `IndexError: tuple index out of range`
+inside `_cross` the first time it actually ran (`z_axis =
+_cross(x_axis, y_axis)`, indexing `a[2]`/`b[2]` on a 2-tuple). Caught
+immediately by the very next live run (this is exactly the kind of error
+SPEC.md's "put asserts at the end, no try/except around modeling" gotcha
+is meant to surface loudly rather than silently) — fixed by converting
+both direction vectors to 3-tuples (`z=0.0`) right before the
+`oriented_box_prism` call. No other code in the file mixes 2D and 3D
+direction-vector conventions this way; kept as a documented one-off in
+`add_antenna_channels` rather than changing the 2D helpers, which are
+correct and heavily used as-is.
+
+### Offline STL scan output (pass 9e)
+
+`tools/offline_stl_check.py`, unchanged this pass — both variants, all 5
+exported bodies (Bottom/Top changed; Screen_Plate/Power_Button/
+Home_Button unchanged, re-exported as a byproduct of the same pipeline
+run): manifold (0 non-manifold edges), envelope ok, overhang
+`bad_clusters_mm2` `[]`. **`OVERALL: PASS` for both `trim` and
+`current`.**
+
+### Exports (pass 9e)
+
+Both variants: `export/<variant>/{Bottom,Top,Screen_Plate,Power_Button,
+Home_Button}.stl` (Bottom/Top changed — the wordmark and antenna-channel
+cuts; Screen_Plate/Power_Button/Home_Button byte-for-byte re-exports, not
+touched by either finding), `export/<variant>/firefly_<variant>_case.3mf`
+(native, 5 objects), `export/<variant>/firefly_<variant>_plate.3mf`
+(re-packed via `tools/stl_to_3mf.py` — Bottom as-is, Top flipped 180°
+about X, Screen Plate as-is, Power Button `outer-x`, Home Button
+`outer-rz32.74` — unchanged orientation scheme from pass 9b, since
+`home_nub_dir`/`power_nub_dir` are fixed PARAMS values independent of
+variant), and the coupon STLs/3MFs (unchanged geometry — neither finding
+touches the button mechanism — re-exported as a byproduct of running the
+export pipeline again). Renders: `pass9e_{trim,current}_{front,top,right,
+iso}.png` (standard 4-view, both variants), `pass9e_{trim,current}_
+bottom_logo.png` (finding 7's straight-on confirmation), `pass9e_trim_
+antenna_routes.png` (finding 8's route diagram). All viewed directly (not
+just generated) as part of this pass.
+
 ## Screw list
 
 **2026-09-07 pass 7: boss B split into B1/B2** (its old single position
@@ -1734,11 +2006,11 @@ reason" per the milestone instructions.
     **Findings 4 (plate posts P1–P4), 5 (window lip ring), and 6
     (alignment lip chamfer) RESOLVED 2026-09-08 (pass 9, part 2)**; **9
     (button cap insertion path) and 10 (Home plunger length) RESOLVED
-    2026-09-08 (pass 9b)** — see that section above for root cause/fix/
-    gate on all five. Findings 7 (wordmark two-line layout) and 8
-    (antenna cable channels) are still open. The generic "`verify_skin_
-    intact` probes the WHOLE outer surface, not named footprints" rework
-    requested alongside the original 4–10 list is also still not done;
+    2026-09-08 (pass 9b)**; **7 (wordmark two-line layout) and 8 (antenna
+    cable channels) RESOLVED 2026-09-08 (pass 9e)** — see that section
+    above for root cause/fix/gate on all seven. The generic "`verify_
+    skin_intact` probes the WHOLE outer surface, not named footprints"
+    rework requested alongside the original 4–10 list is still not done;
     the existing narrower `verify_skin_intact` (button tab holes only,
     see item 11 above) is unchanged.
 14. **Display module cannot be inserted "from inside" or "from the
@@ -1785,6 +2057,20 @@ reason" per the milestone instructions.
     runs where it needed to (as opposed to being a no-op) — `verify_
     export_envelope` (which does gate) is the actual protection here,
     same reasoning as item 15's fillets/chamfers.
+18. **The antenna channels' own fillets (finding 8, `_best_effort_
+    fillet`) are best-effort**, same skip-on-failure pattern as items 15
+    and 17 above — cosmetic only (a sharp-cornered channel still routes
+    and clears the same gates), not re-verified by a dedicated probe
+    beyond the offline overhang scan staying clean.
+19. **`pass9e_trim_antenna_routes.png` does not clearly show the LoRa
+    route** (finding 8) — it is a short (4.4mm) stub next to the display
+    module at the render's chosen camera distance/angle, unlike the
+    longer, clearly-visible GPS route in the same image. The channel's
+    own existence and skin safety are independently confirmed by the live
+    `verify_antenna_channels` probes (see that section), so this is a
+    documentation/render-quality gap, not an unverified feature — a
+    follow-up pass could add a dedicated close-up the way pass 9c did for
+    the lip ring.
 
 **Reverted mid-pass-6, not shipped**: the coordinator's later messages in
 this pass requested (a) swapping the Wio/XIAO stack to a board-to-board
@@ -1818,8 +2104,10 @@ results, M2 dimensional/probe checks, outer-bump probes, the export
 envelope vertex check (one line per exported body, `True`/`False` plus a
 sample of any offending vertex), plunger reach / button insertion /
 button retention checks (pass 9b, findings 9/10 — see that section),
-and (with `export=True`) the STL export paths, coupon export paths, and
-screenshot paths. A clean run ends with `OK: M1+M2 probes passed`.
+wordmark checks (pass 9e, finding 7) and antenna channel checks (pass 9e,
+finding 8 — see that section), and (with `export=True`) the STL export
+paths, coupon export paths, and screenshot paths. A clean run ends with
+`OK: M1+M2 probes passed`.
 `assert_export_body_size` runs silently inside `export_stls`/`export_
 coupons` at export time — no line unless it fails (in which case it
 raises, same as every other `verify()` assertion).
