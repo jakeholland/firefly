@@ -207,34 +207,49 @@ static const char *TAG = "ff_compass";
  * the TOP's own inner ceiling, directly above the GPS patch antenna's
  * frame (no pocket, no brow, no outer-wall contact at all) — see
  * hardware/case/README.md's pass-10 section for the placement/verify
- * numbers. The row's numeric values below are still an OLD guess (from
- * before EITHER real mounting existed) and are NOT valid for this
- * mounting; they are left in place only so the driver keeps building,
- * and MUST be re-derived on the bench (or from the QMC5883P's own
- * datasheet Package 3-D View) before trusting a single heading reading.
- * What IS fixed by the new mount's own geometry (`firefly_case.py`'s
- * `mag_module` orientation comment) is the module's PCB-frame mapping
- * into the puck's own (x,y,z) — i.e. which physical edge of the module
- * points which way, NOT yet which sensor axis that is (that still needs
- * the chip's silkscreen/datasheet orientation on top of this):
+ * numbers.
+ *
+ * 2026-09-11 (hardware/case pass 11, defect 2): the mount's ORIENTATION
+ * FLIPPED — Jake's review of the pass-10b renders found the header/wire
+ * edge pointing toward the display end, with the fence only ~1mm from
+ * the window bore's own true rim there and the wires exiting straight
+ * into that gap. The mount is now shifted and re-oriented (see
+ * `firefly_case.py`'s `mag_module` orientation comment and README's
+ * pass-11 section for the full derivation) so the header/wire edge
+ * points toward the LANYARD end instead, with >=4mm clear of both the
+ * window bore and the display module's own back-side bbox. The PCB-frame
+ * mapping below is UPDATED for this flip (local +x now maps to puck -y,
+ * not +y as pass 10 had it) — the row's numeric axis-source/sign values
+ * are still an OLD guess (from before EITHER real mounting existed) and
+ * remain NOT valid for either mounting; they are left in place only so
+ * the driver keeps building, and MUST be re-derived on the bench (or
+ * from the QMC5883P's own datasheet Package 3-D View) before trusting a
+ * single heading reading. What IS fixed by the mount's own geometry is
+ * the module's PCB-frame mapping into the puck's own (x,y,z) — i.e.
+ * which physical edge of the module points which way, NOT yet which
+ * sensor axis that is (that still needs the chip's silkscreen/datasheet
+ * orientation on top of this):
  *   - module's long PCB edge, HEADER side (local +x, 18.6mm axis)
- *     -> puck +y (toward the display end — the short wire run to the
- *     back header's SDA/SCL/3V3/G)
+ *     -> puck -y (pass 11: was +y — toward the LANYARD end now, the
+ *     short wire run to the back header's SDA/SCL/3V3/G no longer
+ *     points at the display/window)
  *   - module's long PCB edge, MOUNTING-HOLE side (local -x)
- *     -> puck -y (toward the lanyard end; both ceiling pegs are here)
+ *     -> puck +y (pass 11: was -y — toward the display end now; both
+ *     ceiling pegs are here)
  *   - module's short PCB edge, local +y -> puck +x
  *   - module's short PCB edge, local -y -> puck -x
- *     (this axis is an arbitrary handedness choice — the mount places
- *     both pegs and both rest pads by explicit (x,y) pairs, not by a
- *     directional rule, so it carries no functional constraint)
+ *     (this axis is an arbitrary handedness choice, UNCHANGED by pass
+ *     11 — the mount places both pegs and both rest pads by explicit
+ *     (x,y) pairs, not by a directional rule, so it carries no
+ *     functional constraint)
  *   - module's COMPONENT/sensor face (local +z) -> puck -z (DOWN,
  *     toward the GPS patch/Bottom — the module is mounted
  *     components-down, hanging off two Ø2.7 ceiling pegs + two rest
- *     pads)
+ *     pads; UNCHANGED by pass 11)
  *   - module's SOLDER/header face (local -z) -> puck +z (UP, toward
  *     the Top's ceiling — both mounting holes share local x=-7.21, i.e.
  *     the same local z=0 plane, so both pegs land flush against the
- *     same ceiling standoff)
+ *     same ceiling standoff; UNCHANGED by pass 11)
  * Bench procedure: with this mapping known, place the sensor flat on a
  * known heading, read raw XYZ, and solve for (src, sign) per axis the
  * same way the L/HMC row above was derived — do NOT assume the values

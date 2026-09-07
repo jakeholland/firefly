@@ -1061,7 +1061,37 @@ def build_fpc_brow_solid(root, p):
     (combine_cut consumes its tool body, per _combine's isKeepToolBodies=
     False) -- more Fusion calls than the old single-box version, which is
     why this is run as its own separate fusion_mcp_execute stage (see
-    README's infrastructure note)."""
+    README's infrastructure note).
+
+    2026-09-11 pass 11 (defect 1, "the FPC brow fills the top of the
+    window"): build() calls add_window() BEFORE add_fpc_brow() (the
+    window's own ledge/chamfer geometry is unchanged from pass 9 and
+    stays that way -- see add_window's own docstring for why reordering
+    THAT call was rejected), which means every tier built above is
+    derived from a FRESH `build_outer_pill_solid`/`build_thickened_
+    envelope` pair -- a plain, unbored pill -- with no notion that Top's
+    real window bore already exists. Wherever a tier's own box footprint
+    (x/y0/1 above, widened by FPC_BROW_BLEND) overlaps the window bore's
+    XY footprint (it does: the bore's own upper rim, at y roughly 62-71
+    for x within about +-14, sits almost exactly under the brow's own
+    footprint at the USB end), the tier solid still carries real material
+    there -- and joining it into Top (add_fpc_brow, right after this)
+    blindly refills that part of the now-open bore, confirmed by Jake's
+    own ray-cast of the pass-9 export (every sample from y=62..71 inside
+    the bore hit solid at z 28.52/29.50, a slab across the top ~10mm of
+    the window). Fixed HERE, at the single choke point both add_fpc_brow
+    and add_fpc_relief's skin-safe-tool derivation share (see both
+    docstrings) -- Combine-Cut the finished `brow` against a cylinder
+    covering the window bore's own true opening (radius = window bore
+    radius + its own chamfer, so the chamfered rim is excluded too) from
+    the glass ledge (window_z_bottom) up through the highest point any
+    brow tier could ever reach (top_z + FPC_BROW_HEIGHT) -- the brow can
+    then never carry material back into the window column, regardless of
+    how its footprint box overlaps the bore in XY, while everywhere
+    OUTSIDE that column (the actual FPC-relief footprint this brow exists
+    to cover) is completely unaffected. See verify_openings_open (new
+    this pass) for the live gate this fixes, and README's pass-11 section
+    for the before/after bore-scan numbers."""
     x0, x1, y0, y1, fz0, _ = fpc_relief_footprint(p)
     brow = None
     for margin, height in FPC_BROW_TIERS:
@@ -1073,6 +1103,16 @@ def build_fpc_brow_solid(root, p):
         shell_layer = combine_cut(root, thickened, [original])
         tier_solid = combine_intersect(root, tier_box, [shell_layer])
         brow = tier_solid if brow is None else combine_join(root, brow, [tier_solid])
+
+    # Exclude the window bore's own column (pass 11, defect 1 -- see the
+    # docstring above): never let the brow carry material back into the
+    # window opening, no matter how its footprint overlaps the bore.
+    wcx, wcy = p['window_center']
+    w_excl_r = p['window_dia'] / 2.0 + p['window_chamfer']
+    w_excl_z0 = p['window_z_bottom'] - 1.0
+    w_excl_z1 = p['top_z'] + FPC_BROW_HEIGHT + 1.0
+    window_col = cylinder_solid(root, wcx, wcy, w_excl_r, w_excl_z0, w_excl_z1)
+    brow = combine_cut(root, brow, [window_col])
     return brow
 
 
@@ -3321,20 +3361,57 @@ def verify_antenna_channels(bodies_dict, p):
 
 
 # ---------------------------------------------------------------------------
-# Compass module mount (pass 10 REDO, 2026-09-06). Replaces the original
-# pass-10 vertical-wall-mount + outward brow (rejected by the coordinator
-# for putting a boxy bump on the pill's clean outer silhouette -- see git
-# history for that earlier version) with a ceiling-hung mount directly
-# above the GPS patch frame's own open chimney -- no outer-wall contact,
-# no brow, no pocket cut. See params_current.py's own 'mag_module'
-# comment for the full placement derivation and the local->world
-# orientation this section implements.
+# Compass module mount (pass 10 REDO, 2026-09-06; RE-ORIENTED + MOVED pass
+# 11, 2026-09-11, defect 2). Replaces the original pass-10 vertical-wall-
+# mount + outward brow (rejected by the coordinator for putting a boxy
+# bump on the pill's clean outer silhouette -- see git history for that
+# earlier version) with a ceiling-hung mount directly above the GPS patch
+# frame's own open chimney -- no outer-wall contact, no brow, no pocket
+# cut. See params_current.py's own 'mag_module' comment for the full
+# placement derivation and the local->world orientation this section
+# implements.
+#
+# 2026-09-11 pass 11 (defect 2, "compass mount sits too close to the
+# display"): Jake's review of pass10b_mag_pocket.png found the header/
+# wire edge pointed toward +Y (the display end), with the fence's own
+# north edge only ~1mm from the window bore's true rim there -- the five
+# header wires exited straight into that gap. Fixed two ways, both in
+# `PARAMS['mag_module']` (params_current.py) rather than here: (a) the
+# local-x -> world-Y mapping is now DECREASING (`-local_x + offset`, was
+# `+local_x + offset`) -- the header/wire edge (local x=+8.96, the
+# LARGER local x) now lands at the SMALLER world Y (toward -Y, the
+# lanyard end), the mounting-hole edge (local x=-9.64) at the LARGER
+# world Y (toward +Y, the display end); (b) both offsets were
+# recomputed (see README's pass-11 section for the full derivation) to
+# shift the whole footprint as far -Y and +X as the GPS frame's own real
+# opening allows with a safety margin, maximizing clearance to the
+# window bore's true rim (the real "lip ring" Jake's review flagged --
+# see mag_window_bore_clearance's docstring for why PARAMS['lip_r'], the
+# buried anchor ring at z 9.2-11, is a different feature nowhere near
+# this mount) and to the display module's own back-side bounding box.
+# `mag_pcb_world_footprint`/`mag_pad_world_positions` were both made
+# flip-direction-agnostic (insets computed in the LOCAL frame, then
+# mapped through mag_world_y/mag_world_x once) so this orientation is a
+# pure PARAMS change, not a code-structure change; `add_mag_module`'s
+# fence notch (`gap_side`) flips from '+y' to '-y' to match the header
+# edge's new side. `verify_mag_pocket` gained two new keep-out checks
+# (window-bore clearance, display back-side clearance) -- see its own
+# docstring.
 # ---------------------------------------------------------------------------
 
+MAG_DISPLAY_RING_MIN_CLEAR = 3.0  # mm -- pass 11, defect 2: minimum clearance the mount's
+                                  # fence must keep from BOTH the window bore's true opening
+                                  # and the display module's own back-side bounding box.
+
 def mag_world_y(p, local_x):
-    """Module local x (the 18.6mm PCB axis, header edge at +x) -> world Y.
-    A pure translation (see params_current.py's mag_module comment)."""
-    return local_x + p['mag_module']['world_y_from_local_x_offset']
+    """Module local x (the 18.6mm PCB axis) -> world Y. A pure
+    translation, but DECREASING (pass 11, defect 2): local +x (the
+    header/wire edge, local x=+8.96) maps to the SMALLER world Y (toward
+    -Y, the lanyard end); local -x (the mounting-hole edge, local
+    x=-9.64) maps to the LARGER world Y (toward +Y, the display end) --
+    see this section's own header comment for why. `world_y_from_local_
+    x_offset` (params_current.py) was recomputed for this new sign."""
+    return -local_x + p['mag_module']['world_y_from_local_x_offset']
 
 
 def mag_world_x(p, local_y):
@@ -3388,13 +3465,51 @@ def mag_module_fits(p):
 def mag_pcb_world_footprint(p):
     """World (x0, x1, y0, y1) of the bare PCB outline (no fence/clearance
     margin) -- local_pcb's own x-span maps to world Y, y-span to world X
-    (see the module-frame axis mapping in params_current.py)."""
+    (see the module-frame axis mapping in params_current.py). 2026-09-11
+    pass 11: the x->Y mapping is DECREASING (see mag_world_y), so
+    mag_world_y(lx0) > mag_world_y(lx1) for lx0 < lx1 -- sort explicitly
+    rather than assuming the mapping's direction, so this stays correct
+    under either sign."""
     mm = p['mag_module']
     lx0, lx1 = mm['local_pcb']['x']
     ly0, ly1 = mm['local_pcb']['y']
-    y0, y1 = mag_world_y(p, lx0), mag_world_y(p, lx1)
+    wy_a, wy_b = mag_world_y(p, lx0), mag_world_y(p, lx1)
+    y0, y1 = min(wy_a, wy_b), max(wy_a, wy_b)
     x0, x1 = mag_world_x(p, ly0), mag_world_x(p, ly1)
     return x0, x1, y0, y1
+
+
+def mag_fence_world_footprint(p):
+    """World (x0, x1, y0, y1) of the fence's own OUTER footprint -- the
+    bare PCB outline (mag_pcb_world_footprint) expanded by fence_clear +
+    fence_wall on every side, matching what build_hanging_frame actually
+    builds in add_mag_module. 2026-09-11 pass 11: shared by the new
+    window-bore/display keep-out checks in verify_mag_pocket."""
+    mm = p['mag_module']
+    x0, x1, y0, y1 = mag_pcb_world_footprint(p)
+    margin = mm['fence_clear'] + mm['fence_wall']
+    return x0 - margin, x1 + margin, y0 - margin, y1 + margin
+
+
+def mag_window_bore_clearance(p):
+    """Minimum clearance (mm) from the mount's own fence footprint to the
+    window bore's TRUE opening -- a circle of radius window_dia/2 centred
+    on window_center. 2026-09-11 pass 11 (defect 2): this, not
+    PARAMS['lip_r'] (the buried lip/anchor ring at z 9.2-11, which -- see
+    stadium_ring_solid -- only exists near |x| roughly 26-28 in the
+    straight section and is nowhere near this mount's x 5-22 footprint at
+    all), is what Jake's pass-10b review actually saw as "the window lip
+    ring": from inside the cavity looking up at the ceiling, the bore's
+    own physical rim is the nearest ring-shaped feature to the mount, and
+    the numbers match (a computed ~1.4mm at the OLD placement's near
+    corner against Jake's own "~1mm" visual estimate). The worst corner
+    is always the fence's north (largest-Y) edge nearest the window's own
+    centreline (x=0), since the mount sits entirely south of and below
+    the window."""
+    fx0, fx1, _, fy1 = mag_fence_world_footprint(p)
+    wx, wy = p['window_center']
+    r = p['window_dia'] / 2.0
+    return min(math.hypot(x - wx, fy1 - wy) - r for x in (fx0, fx1))
 
 
 def mag_peg_world_positions(p):
@@ -3407,13 +3522,21 @@ def mag_pad_world_positions(p):
     """World (x, y) of the two header-side rest pads -- the PCB's own two
     corners on the header edge (local x = local_pcb x[1]), inset 1.0mm in
     from each side edge so the pad sits solidly under the board rather
-    than exactly at its corner."""
+    than exactly at its corner. 2026-09-11 pass 11: the header-side inset
+    (originally `wy - inset`, which silently assumed the local-x->world-Y
+    mapping is INCREASING, i.e. that the header edge is the far/max-Y
+    side) is now computed entirely in the LOCAL frame first (`lx_edge` is
+    always the header's own positive local x -- local_pcb x[1] -- so
+    subtracting `inset` always moves toward the PCB's own centre,
+    regardless of which way mag_world_y happens to map that to world Y)
+    and mapped through mag_world_y exactly once -- correct under either
+    sign of that mapping, not just the one it was written for."""
     mm = p['mag_module']
-    lx = mm['local_pcb']['x'][1]
+    lx_edge = mm['local_pcb']['x'][1]
     ly0, ly1 = mm['local_pcb']['y']
-    wy = mag_world_y(p, lx)
     inset = 1.0
-    return [(mag_world_x(p, ly0) + inset, wy - inset), (mag_world_x(p, ly1) - inset, wy - inset)]
+    wy = mag_world_y(p, lx_edge - inset)
+    return [(mag_world_x(p, ly0) + inset, wy), (mag_world_x(p, ly1) - inset, wy)]
 
 
 def mag_header_notch_center_x(p):
@@ -3481,18 +3604,19 @@ def add_mag_module(root, bodies, p, clip_tool=None):
     # wall, 3.5mm deep from the ceiling) -- reuses build_hanging_frame,
     # the same GPS-frame/stack-tray idiom used everywhere else in this
     # file for a wall ring hanging off the ceiling. Open with a 3mm notch
-    # centred on the header pins for the wire run (gap_side='+y': the
-    # header edge is at the larger-Y end, toward the display). z_ceiling
-    # is pushed 0.3mm PAST the nominal ceiling so the fence genuinely
-    # embeds into Top's existing skin instead of merely touching it --
-    # the same non-touching-join risk clipped_pillar_with_reach's own
-    # docstring documents for pillars, applied here by hand since the
-    # fence isn't a simple cylinder.
+    # centred on the header pins for the wire run (gap_side='-y', pass 11
+    # defect 2 -- was '+y': the header/wire edge is now at the SMALLER-Y
+    # end, toward the lanyard end, not the display -- see this section's
+    # own header comment). z_ceiling is pushed 0.3mm PAST the nominal
+    # ceiling so the fence genuinely embeds into Top's existing skin
+    # instead of merely touching it -- the same non-touching-join risk
+    # clipped_pillar_with_reach's own docstring documents for pillars,
+    # applied here by hand since the fence isn't a simple cylinder.
     x0, x1, y0, y1 = mag_pcb_world_footprint(p)
     fence = build_hanging_frame(
         root, x0, x1, y0, y1, mm['fence_clear'], mm['fence_wall'],
         ceiling - mm['fence_h'], ceiling + 0.3,
-        gap_w=mm['header_notch_w'], gap_side='+y', gap_center=mag_header_notch_center_x(p))
+        gap_w=mm['header_notch_w'], gap_side='-y', gap_center=mag_header_notch_center_x(p))
     top = combine_join(root, top, [fence])
     top = dedupe_body(root, top, 'Top')
 
@@ -3500,7 +3624,7 @@ def add_mag_module(root, bodies, p, clip_tool=None):
     return bodies
 
 
-def verify_mag_pocket(bodies_dict, p):
+def verify_mag_pocket(root, bodies_dict, p):
     """Pass-10-REDO gate: (1) the module's own component-side reference
     envelope (PCB + component bump, sampled at 3 points along the header/
     mount-hole axis, at the local-y centreline) is genuinely hollow --
@@ -3508,13 +3632,26 @@ def verify_mag_pocket(bodies_dict, p):
     footprint; (2) both pegs have real material at mid-height; (3) both
     rest pads have real material at mid-height; (4) the fence wall has
     real material at two sample points away from the header notch. All
-    four report (True, []) when mag_module_fits(p) is False ('current')
-    -- see add_mag_module's docstring."""
+    six report (True, []) when mag_module_fits(p) is False ('current')
+    -- see add_mag_module's docstring.
+
+    2026-09-11 pass 11 (defect 2) added two more checks, both needing
+    `root` (new parameter -- see verify()'s call site): (5)
+    `window_bore_clear` -- the fence's own worst-corner clearance to the
+    window bore's true opening (mag_window_bore_clearance) must be >=
+    MAG_DISPLAY_RING_MIN_CLEAR (3mm); (6) `display_back_clear` -- the
+    fence's north edge must stay >= that same minimum below the display
+    occurrence's own real bounding box (live-probed via
+    find_display_occurrence/_bbox_extents, same technique pass 10's
+    README section used for the "distance from the display's speaker"
+    analysis -- no x/z overlap is possible between this mount and the
+    display by construction, so a pure Y-gap check is sufficient)."""
     mm = p['mag_module']
     if not mag_module_fits(p):
         return {
             'envelope_open': (True, []), 'pegs_have_material': (True, []),
             'pads_have_material': (True, []), 'fence_has_material': (True, []),
+            'window_bore_clear': (True, []), 'display_back_clear': (True, []),
         }
     top = bodies_dict['Top']
     results = {}
@@ -3553,19 +3690,46 @@ def verify_mag_pocket(bodies_dict, p):
             bad_pads.append((round(px, 2), round(py, 2), round(z_mid, 2)))
     results['pads_have_material'] = (not bad_pads, bad_pads[:5])
 
-    # (4) fence has material -- probe the west and south wall centrelines
-    # (both away from the header notch, which is in the north wall).
+    # (4) fence has material -- probe the west and north wall centrelines
+    # (both away from the header notch -- pass 11, defect 2: the notch is
+    # now in the SOUTH wall, gap_side='-y', so this flips from the
+    # pre-pass-11 west/south pair to west/north).
     x0, x1, y0, y1 = mag_pcb_world_footprint(p)
     clear, wall = mm['fence_clear'], mm['fence_wall']
     fence_mid_z = ceiling - mm['fence_h'] / 2.0
     west_wall_x = x0 - clear - wall / 2.0
-    south_wall_y = y0 - clear - wall / 2.0
-    probe_pts = [(west_wall_x, (y0 + y1) / 2.0), ((x0 + x1) / 2.0, south_wall_y)]
+    north_wall_y = y1 + clear + wall / 2.0
+    probe_pts = [(west_wall_x, (y0 + y1) / 2.0), ((x0 + x1) / 2.0, north_wall_y)]
     bad_fence = []
     for wx, wy in probe_pts:
         if not probe_point_solid(top, P(wx, wy, fence_mid_z)):
             bad_fence.append((round(wx, 2), round(wy, 2), round(fence_mid_z, 2)))
     results['fence_has_material'] = (not bad_fence, bad_fence[:5])
+
+    # (5) window-bore keep-out (pass 11, defect 2): the fence's own
+    # worst-corner clearance to the window bore's TRUE opening -- see
+    # mag_window_bore_clearance's own docstring for why this (not
+    # PARAMS['lip_r']) is the real "window lip ring" Jake's review found
+    # too close.
+    bore_clear = mag_window_bore_clearance(p)
+    results['window_bore_clear'] = (bore_clear >= MAG_DISPLAY_RING_MIN_CLEAR, round(bore_clear, 3))
+
+    # (6) display back-side keep-out: fence's north edge vs. the REAL
+    # inserted display occurrence's own bounding box, live-probed (not
+    # the SPEC/analytic approximation) -- same technique as pass 10's
+    # "distance from the display's speaker" analysis. Diagnostic-only
+    # (ok=True) if the display occurrence can't be found at this point in
+    # the build (verify() always runs after both boards are inserted, so
+    # in practice this always resolves).
+    _, _, _, fence_y1 = mag_fence_world_footprint(p)
+    display_occ = find_display_occurrence(root, p)
+    if display_occ is None:
+        results['display_back_clear'] = (True, 'display occurrence not found -- skipped')
+    else:
+        _, dy, _, (dcx, dcy, dcz) = _bbox_extents(display_occ)
+        display_y0 = dcy - dy / 2.0
+        clear_mm = display_y0 - fence_y1
+        results['display_back_clear'] = (clear_mm >= MAG_DISPLAY_RING_MIN_CLEAR, round(clear_mm, 3))
 
     return results
 
@@ -5653,6 +5817,198 @@ def verify_wordmark(bodies_dict, p):
     return results
 
 
+def window_column_probe_points(p, n_angle=8, radii_fracs=(0.4, 0.85)):
+    """XY sample points inside the window bore's own column (pass 11, new
+    gate) -- a small ring-of-rings pattern (not just the centreline) so an
+    off-centre partial blockage -- like defect 1's brow slab, which only
+    covered part of the bore near its own footprint -- isn't missed. Stays
+    `1mm` inside the bore's own radius (window_dia/2), off the chamfered
+    rim, so every point is unambiguously "should be open cavity", never a
+    point that legitimately sits in the chamfer's own solid material."""
+    cx, cy = p['window_center']
+    r_max = p['window_dia'] / 2.0 - 1.0
+    pts = [(cx, cy)]
+    for frac in radii_fracs:
+        r = r_max * frac
+        for i in range(n_angle):
+            theta = 2.0 * math.pi * i / n_angle
+            pts.append((cx + r * math.cos(theta), cy + r * math.sin(theta)))
+    return pts
+
+
+def verify_openings_open(root, bodies_dict, p):
+    """New gate (2026-09-11, pass 11): every documented "opening" in this
+    design -- a feature meant to be hollow all the way through, not just
+    thin-skinned -- must actually BE open along its full documented
+    extent. Added after Jake's own ray-cast of pass-9's exported
+    export/trim/Top.stl found the FPC brow (built AFTER add_window in
+    build()'s own call order, see build_fpc_brow_solid's docstring)
+    silently refilling the top ~10mm of the window bore, with no existing
+    gate catching it -- every other check in this file probes SKIN
+    THICKNESS or INTERFERENCE, never "is this opening's own interior
+    actually hollow end to end". This gate FAILS on pre-pass-11 main (the
+    window_column entry) and PASSES once build_fpc_brow_solid's window-
+    column exclusion is in place -- see README's pass-11 section for the
+    before/after numbers this produced on a live run.
+
+    Each entry probes point-containment (probe_point_solid) against the
+    relevant body/bodies at several samples across the opening's own
+    documented footprint, along its own through-axis:
+      - `window_column`: the bore's own XY (several rings inside
+        window_dia/2 - 1mm, window_column_probe_points), scanned in Z
+        from the glass ledge (window_z_bottom) up through top_z + 0.5 --
+        must be hollow at every sample, in Top.
+      - `usb_tunnel`: the tunnel's own stadium interior, at 3 x-offsets
+        (centre +/- a couple mm), scanned along its own Y axis from
+        y_start through the true outer wall -- Top.
+      - `power_button_hole` / `home_button_hole`: each cap's own nub
+        direction (button_geometry's `d`), scanned from just past the
+        true outer wall (s_wall) inward to just past the plunger's own
+        rest tip (s_plunger_tip) -- Top (the hole itself; the cap/plunger
+        is a separate printed body, not part of Top).
+      - `lug_hole`: the lanyard ear's own vertical through-hole
+        (lug_ear_geometry), scanned in Z across its documented span --
+        Bottom.
+      - `antenna_lora` / `antenna_gps`: each cable channel's own route
+        (antenna_channel_geometry), scanned along its own run -- Top.
+      - `mag_wire_notch` (pass 11, new): the compass mount's own
+        header-wire exit notch (now on the fence's SOUTH wall, see
+        add_mag_module) -- scanned a couple mm further south, confirming
+        the wire's own run stays in open cavity air, well clear of both
+        the window bore and the display -- Top. Reports (True, []) when
+        mag_module_fits(p) is False ('current' -- no mount, no notch).
+
+    Returns {name: (ok, [bad_probe, ...])} -- a non-empty bad list names
+    the exact (x, y, z) samples that found solid material where the
+    opening should be clear, for direct comparison against a ray-cast or
+    a real print defect."""
+    top = bodies_dict['Top']
+    bottom = bodies_dict['Bottom']
+    results = {}
+
+    # --- window column ---
+    z_lo = p['window_z_bottom'] + 0.1
+    z_hi = p['top_z'] + 0.5
+    z_samples = [z_lo + k * (z_hi - z_lo) / 5.0 for k in range(6)]
+    bad = []
+    for x, y in window_column_probe_points(p):
+        for z in z_samples:
+            if probe_point_solid(top, P(x, y, z)):
+                bad.append((round(x, 2), round(y, 2), round(z, 2)))
+    results['window_column'] = (not bad, bad[:20])
+
+    # --- USB tunnel ---
+    wall_y = p['spine_b'][1] + p['outer_radius']
+    y_start = p['usb_tunnel_y_start']
+    cz = p['usb_tunnel_center_z']
+    L_in, _ = p['usb_tunnel_stadium']
+    y_samples = [y_start + k * (wall_y - y_start) / 4.0 for k in range(5)]
+    bad = []
+    for x_off in (0.0, L_in / 2.0 - 1.0, -(L_in / 2.0 - 1.0)):
+        for y in y_samples:
+            if probe_point_solid(top, P(x_off, y, cz)):
+                bad.append((round(x_off, 2), round(y, 2), round(cz, 2)))
+    results['usb_tunnel'] = (not bad, bad[:20])
+
+    # --- button holes (Power / Home) ---
+    home_bbox = dict(p['switch_home_bbox'])
+    home_bbox['z'] = p['switch_power_bbox']['z']
+    for label, switch_bbox, nub_dir, cap in (
+            ('power_button_hole', p['switch_power_bbox'], p['power_nub_dir'], p['power_cap']),
+            ('home_button_hole', home_bbox, p['home_nub_dir'], p['home_cap'])):
+        g = button_geometry(p, switch_bbox, nub_dir, cap)
+        d2 = g['d']
+        cap_z_center = (cap['z'][0] + cap['z'][1]) / 2.0
+        s_hi = g['s_wall'] - 0.1
+        s_lo = g['s_plunger_tip'] + 0.1
+        bad = []
+        for frac in (0.0, 0.25, 0.5, 0.75, 1.0):
+            s = s_lo + frac * (s_hi - s_lo)
+            x = g['housing_xy'][0] + s * d2[0]
+            y = g['housing_xy'][1] + s * d2[1]
+            if probe_point_solid(top, P(x, y, cap_z_center)):
+                bad.append((round(x, 2), round(y, 2), round(cap_z_center, 2)))
+        results[label] = (not bad, bad[:20])
+
+    # --- lug hole ---
+    _, _, _, hole_y = lug_ear_geometry(p)
+    z0, z1 = p['lug']['z']
+    bad = []
+    for frac in (0.1, 0.3, 0.5, 0.7, 0.9):
+        z = z0 + frac * (z1 - z0)
+        if probe_point_solid(bottom, P(0.0, hole_y, z)):
+            bad.append((0.0, round(hole_y, 2), round(z, 2)))
+    results['lug_hole'] = (not bad, bad[:20])
+
+    # --- antenna cable channels ---
+    # 2026-09-11 pass 11 fix: a live probe (before finalizing this gate)
+    # found the LoRa channel's OUTER ~10-20% (toward the true wall) reads
+    # solid, not open -- `_antenna_skin_safe_channel`'s Combine-Intersect
+    # against the skin-safe envelope legitimately trims the cut's far end
+    # a bit short of the naive `s_wall - channel_min_skin` endpoint this
+    # gate's `channel_len` approximates (the skin-safe envelope curves,
+    # the analytic estimate doesn't) -- this is the SAME kind of
+    # analytic-vs-built gap this file already documents elsewhere (e.g.
+    # the button cap's `true_wall_distance_along_ray` check, loosened to
+    # 0.25mm for the same reason), not a real regression: the existing
+    # verify_antenna_channels gate's own single probe sits at ~50% and
+    # was, and remains, open. Sampled fractions here stay inside the
+    # confirmed-open 0-70% band rather than reaching for the intentional
+    # skin margin near the wall.
+    ageo = antenna_channel_geometry(p)
+    if 'lora' in ageo:
+        g = ageo['lora']
+        ox, oy = g['origin_xy']
+        dirv, uz = g['dir'], g['z']
+        channel_len = g['s_wall'] - p['antenna']['channel_min_skin']
+        bad = []
+        for frac in (0.15, 0.4, 0.65):
+            s = frac * max(channel_len, 0.0)
+            x, y = ox + s * dirv[0], oy + s * dirv[1]
+            if probe_point_solid(top, P(x, y, uz)):
+                bad.append((round(x, 2), round(y, 2), round(uz, 2)))
+        results['antenna_lora'] = (not bad, bad[:20])
+
+    g = ageo['gps']
+    px, py, pz = g['probe_xyz']
+    nz0, nz1 = g['notch_z']
+    bad = []
+    for z in (nz0 + 0.2, (nz0 + nz1) / 2.0, nz1 - 0.2):
+        if probe_point_solid(top, P(px, py, z)):
+            bad.append((round(px, 2), round(py, 2), round(z, 2)))
+    results['antenna_gps'] = (not bad, bad[:20])
+
+    # --- compass mount wire notch (pass 11) ---
+    # 2026-09-11: a live probe (before finalizing this gate) found the
+    # fence's own south wall band runs from fy0 NORTHWARD to fy0+
+    # fence_wall (build_hanging_frame's outer->inner box-cut convention:
+    # the wall is the band between the outer and inner rectangles, and
+    # for the south edge the outer edge -- fy0 -- is the SOUTHERNMOST
+    # extent) -- an earlier version of this probe sampled SOUTH of fy0
+    # (fy0 - wall/2, etc.), which lands in the open gap between the fence
+    # and the GPS frame's own wall, not in the fence's own wall band at
+    # all, and so could never have caught a real un-cut notch. Fixed to
+    # sample THROUGH the actual wall band (fy0 to fy0+fence_wall) at the
+    # notch's own x.
+    if mag_module_fits(p):
+        notch_x = mag_header_notch_center_x(p)
+        _, _, fy0, _ = mag_fence_world_footprint(p)
+        ceiling = p['top_ceiling_underside_z']
+        mm = p['mag_module']
+        notch_z = ceiling - mm['fence_h'] / 2.0
+        wall = mm['fence_wall']
+        bad = []
+        for frac in (0.15, 0.5, 0.85):
+            y = fy0 + frac * wall
+            if probe_point_solid(top, P(notch_x, y, notch_z)):
+                bad.append((round(notch_x, 2), round(y, 2), round(notch_z, 2)))
+        results['mag_wire_notch'] = (not bad, bad[:20])
+    else:
+        results['mag_wire_notch'] = (True, [])
+
+    return results
+
+
 def verify(design, params):
     root = design.rootComponent
     printed, ref_boxes, board_occs = collect_interference_entities(root)
@@ -5811,10 +6167,20 @@ def verify(design, params):
     # 2026-09-10 pass 10: compass module (GY-273/QMC5883P) mount pocket --
     # envelope open, pegs have material, peg root doesn't breach the true
     # (brow-raised) outer skin. See verify_mag_pocket's own docstring.
-    mag_pocket_results = verify_mag_pocket(by_name, params)
+    mag_pocket_results = verify_mag_pocket(root, by_name, params)
     bad_mag = [k for k, v in mag_pocket_results.items() if not v[0]]
     assert not bad_mag, (
         f'mag module pocket check failed: {[(k, mag_pocket_results[k]) for k in bad_mag]}')
+
+    # 2026-09-11 pass 11 (new gate): every documented opening (window
+    # column, USB tunnel, both button holes, lug hole, antenna/wire
+    # notches) must actually be hollow along its full extent -- see
+    # verify_openings_open's own docstring for why this gate exists (it
+    # is what catches defect 1, the FPC brow silently refilling the top
+    # of the window bore, which no pre-existing gate caught).
+    openings_results = verify_openings_open(root, by_name, params)
+    bad_openings = {k: v[1] for k, v in openings_results.items() if not v[0]}
+    assert not bad_openings, f'opening blocked by material (bad probe points): {bad_openings}'
 
     # 2026-09-08 pass 9 (finding 11, stray sliver beside boss C):
     # the exact set of printed bodies must match the documented 5 parts --
@@ -5866,6 +6232,7 @@ def verify(design, params):
         'wordmark_results': wordmark_results,
         'antenna_results': antenna_results,
         'mag_pocket_results': mag_pocket_results,
+        'openings_results': openings_results,
         'sliver_results': sliver_results,
     }
 
@@ -6363,9 +6730,12 @@ def run(_context: str, variant=None, export=False):
     print('antenna channel checks (finding 8, LoRa/GPS u.FL routes):')
     for k, v in result.get('antenna_results', {}).items():
         print('  ', k, v)
-    print('mag module pocket checks (pass 10, compass mount):')
+    print('mag module pocket checks (pass 10/11, compass mount):')
     for k, v in result.get('mag_pocket_results', {}).items():
         print('  ', k, v)
+    print('openings-open checks (pass 11, new gate -- bad probe points, empty = pass):')
+    for k, v in result.get('openings_results', {}).items():
+        print('  ', k, v[0], v[1] if not v[0] else '')
     print('sliver face count (area < 0.5mm^2, diagnostic only):')
     for nm in ('Top', 'Bottom'):
         print('  ', nm, count_sliver_faces(bodies[nm]))

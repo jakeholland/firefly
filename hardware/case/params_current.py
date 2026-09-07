@@ -512,38 +512,65 @@ PARAMS = {
     # 3-board stack there. See README's pass-10 section for the full
     # writeup of why 'current' can't host this identically.
     #
-    # XY placement: the module's long axis (local x, 18.6mm, header at
-    # +x) runs along world Y, CENTRED on the GPS patch's own y-span (2.0
-    # to 27.0, centre 14.5) -- footprint y 5.2..23.8, +1.5mm fence margin
-    # each side (3.7..25.3), comfortably inside the frame's own opening
-    # (y 1.75..27.25, ~2mm margin both ends). The short axis (local y,
-    # 14.0mm) runs along world X, CENTRED on the patch's own x-centre
-    # (9.7) -- footprint x 2.7..16.7, +1.5mm fence margin (1.2..18.2),
-    # again ~4mm inside the frame's opening (x -3.05..22.45) and >8mm
-    # clear of Screen Plate posts P2/P4 (x=-10, Ø5, edge at -7.5) on the
-    # west side. Both centred choices maximise margin on every side
-    # instead of hugging one specific number -- verified directly against
-    # these PARAMS (rho_from_spine / the gps_patch and top_posts entries
-    # above) before ever touching Fusion; see README's pass-10 section
-    # for the full computation.
+    # XY placement/orientation REDONE AGAIN 2026-09-11, pass 11 (defect 2,
+    # "compass mount sits too close to the display"): Jake's review of
+    # pass10b_mag_pocket.png found the header edge (and its 5 solder
+    # wires) pointing toward +Y -- the display end -- with the fence's own
+    # north edge only ~1mm from the window bore's true rim there (see
+    # firefly_case.py's mag_window_bore_clearance docstring for why the
+    # bore, not the buried lip_r ring at z 9.2-11, is the real "ring"
+    # Jake saw), and the wires exiting straight into that gap. Two
+    # independent fixes, both computed in pure Python against these exact
+    # PARAMS before touching Fusion (see README's pass-11 section for the
+    # full derivation/search):
+    #   (a) ORIENTATION FLIPPED: the local-x -> world-Y mapping is now
+    #       DECREASING (mag_world_y: `-local_x + offset`, was `+local_x +
+    #       offset`) -- the header/wire edge (local x=+8.96) now maps to
+    #       the SMALLER world Y (toward -Y, the lanyard end); the
+    #       mounting-hole edge (local x=-9.64) maps to the LARGER world Y
+    #       (toward +Y, the display end). The wires no longer point at
+    #       the window/display at all.
+    #   (b) FOOTPRINT SHIFTED as far -Y and +X as the GPS frame's own
+    #       real opening (x -3.05..22.45, y 1.75..27.25) allows with a
+    #       >=0.5mm safety margin on every side that would otherwise
+    #       touch the frame's own wall -- maximizing clearance to the
+    #       window bore's true rim (the tightest constraint) without
+    #       drifting into new interference with the GPS frame itself.
+    # Result (world mm, both offsets below): PCB x 6.4..20.4, y 3.75..
+    # 22.35; fence x 4.9..21.9, y 2.25..23.85. Window-bore clearance at
+    # the worst (west, north) fence corner: 3.96mm (was ~1.4mm) --
+    # >= MAG_DISPLAY_RING_MIN_CLEAR (3mm, firefly_case.py) with margin,
+    # short of the 5mm stretch target only because pushing further south
+    # or east starts eating the GPS frame's own real wall/opening
+    # boundary (see the frame-margin numbers in README's pass-11 section)
+    # -- a genuine geometric ceiling, not an oversight. Display back-side
+    # bbox clearance (fence north edge to display bbox y0=27.6): 3.75mm
+    # (was ~2.3mm). Both re-verified live by verify_mag_pocket's two new
+    # keep-out checks (window_bore_clear/display_back_clear), not just
+    # this analytic pass.
+    #
+    # Stack height budget is UNCHANGED by this pass (still standoff_h
+    # 2.5mm + PCB 1.0mm + component bump 1.0mm = 4.5mm; TRIM 2.7mm spare,
+    # CURRENT -0.3mm -- mount still skipped for 'current', see
+    # mag_module_fits).
     #
     # Orientation (local -> world, SAME for both variants, world_x/
     # world_y are pure TRANSLATIONS -- see mag_world_x/mag_world_y in
     # firefly_case.py): local +x (18.6mm axis, HEADER edge, local
-    # x=+8.96) -> world +Y (toward the display end, short wire run to the
-    # back header's SDA/SCL/3V3/G); local -x (MOUNTING-HOLE edge, local
-    # x=-9.64) -> world -Y (toward the lanyard end). local +y -> world +x;
-    # local -y -> world -x (arbitrary handedness choice, no functional
-    # constraint on this axis -- both pegs/pads are placed by explicit
-    # local (x,y) pairs, not by a directional rule). local +z (the
-    # COMPONENT/sensor face, away from the PCB) -> world -Z (DOWN, toward
-    # the GPS patch/Bottom -- the module is mounted components-down);
-    # local -z (the HEADER/solder-pin face) -> world +Z (UP, toward the
-    # ceiling -- both peg mounting holes share local x=-7.21, i.e. the
-    # SAME local z=0 plane, so both land at the same world Z, flush
-    # against the ceiling standoff). See firmware/targets/esp32s3/
-    # components/ff_compass/ff_compass.c's own updated comment for the
-    # resulting axis-remap table.
+    # x=+8.96) -> world -Y (toward the LANYARD end, short wire run away
+    # from the display/window); local -x (MOUNTING-HOLE edge, local
+    # x=-9.64) -> world +Y (toward the display end). local +y -> world
+    # +x; local -y -> world -x (arbitrary handedness choice, no
+    # functional constraint on this axis -- both pegs/pads are placed by
+    # explicit local (x,y) pairs, not by a directional rule; UNCHANGED by
+    # pass 11). local +z (the COMPONENT/sensor face, away from the PCB)
+    # -> world -Z (DOWN, toward the GPS patch/Bottom -- the module is
+    # mounted components-down); local -z (the HEADER/solder-pin face) ->
+    # world +Z (UP, toward the ceiling -- both peg mounting holes share
+    # local x=-7.21, i.e. the SAME local z=0 plane, so both land at the
+    # same world Z, flush against the ceiling standoff). See
+    # firmware/targets/esp32s3/components/ff_compass/ff_compass.c's own
+    # updated comment for the resulting axis-remap table.
     'mag_module': {
         'local_pcb': {'x': (-9.64, 8.96), 'y': (-6.67, 7.33)},  # 18.6 x 14.0mm
         'local_component_h': 1.0,   # max component height above local PCB top (sensor, ~3x3 at (-0.9, 0.5))
@@ -555,15 +582,15 @@ PARAMS = {
         'pad_dia': 3.0,        # header-side rest-pad OD (no through-hole, just a resting boss)
         'standoff_h': 2.5,     # == local_header_below: ceiling-to-PCB-bottom gap, for both pegs and pads
         'fence_wall': 1.2, 'fence_clear': 0.3, 'fence_h': 3.5,  # low retaining fence around the PCB outline
-        'header_notch_w': 3.0,  # wire-exit notch in the fence's header-edge wall
+        'header_notch_w': 3.0,  # wire-exit notch in the fence's header-edge wall (SOUTH wall as of pass 11 -- see add_mag_module's gap_side)
         # World placement -- pure translations, SAME for both variants
         # (the GPS-patch/post layout this is centred against doesn't
         # scale with outer_radius; both offsets are simply
         # local-axis-origin -> world-axis-origin distances):
-        # world_y = local_x + world_y_from_local_x_offset,
+        # world_y = -local_x + world_y_from_local_x_offset  (pass 11: sign flipped, see above),
         # world_x = local_y + world_x_from_local_y_offset.
-        'world_y_from_local_x_offset': 14.84,  # local_pcb x-span (-9.64..8.96) -> world y 5.2..23.8 (centred on gps_patch y 2..27)
-        'world_x_from_local_y_offset': 9.37,   # local_pcb y-span (-6.67..7.33) -> world x 2.7..16.7 (centred on gps_patch x-centre 9.7)
+        'world_y_from_local_x_offset': 12.71,  # pass 11 (was 14.84): local_pcb x-span -> world y 3.75..22.35 (shifted -Y from the GPS patch's own centred position, header edge now the -Y/min-y end)
+        'world_x_from_local_y_offset': 13.07,  # pass 11 (was 9.37): local_pcb y-span -> world x 6.4..20.4 (shifted +X, away from the window's own x=0 centreline)
         'min_patch_clearance': 1.0,  # required spare (mm) between component bottom and the GPS patch top for a variant to host this mount at all
     },
 }
