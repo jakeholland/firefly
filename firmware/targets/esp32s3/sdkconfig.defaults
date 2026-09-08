@@ -157,3 +157,101 @@ CONFIG_FREERTOS_PLACE_FUNCTIONS_INTO_FLASH=y
 CONFIG_ESP_CONSOLE_UART_DEFAULT=n
 CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
 CONFIG_ESP_CONSOLE_SECONDARY_NONE=y
+
+# --- Task watchdog (TWDT), 2026-09-08 QA hardening item 1b -----------------
+# Previously ABSENT from this file entirely — a fresh checkout got
+# whatever ESP-IDF's own Kconfig defaults happen to be (TWDT on, 5s
+# timeout, idle tasks only, panic OFF) purely by luck, not by this
+# project's own choice. Made explicit here and reconfigured at runtime to
+# match (app_main.c's `ff_configure_task_watchdog`, which is the actual
+# authority on the timeout value — see that function's own doc comment;
+# these keys exist so TWDT is at least ON, with a sane starting timeout,
+# before app_main.c's own reconfigure call runs, and so `idf.py
+# menuconfig` shows the real picture instead of an invisible IDF default).
+#   - CONFIG_ESP_TASK_WDT_PANIC intentionally NOT set here (stays at
+#     ESP-IDF's own Kconfig default, off) — a reboot-on-hang policy is a
+#     real tradeoff (a frozen puck in the field vs. an unexpected reboot
+#     from a slow-but-legitimate operation) that wants the maintainer's
+#     own sign-off rather than a default flipped silently underneath
+#     them. app_main.c's `ff_configure_task_watchdog` matches this at
+#     runtime (`trigger_panic = false`) so the watchdog still logs a trip
+#     (task names + a stack dump) but does not reset the device. The
+#     opt-in reboot-on-trip behavior lives on branch
+#     `qa/wdt-panic-optin`, a one-commit PR against main, for the
+#     maintainer to merge if/when they want it.
+#   - CONFIG_ESP_TASK_WDT_TIMEOUT_S=15 matches app_main.c's
+#     FF_TASK_WDT_TIMEOUT_S; kept in sync by convention, not by any
+#     mechanical link between the two — a future change to one should
+#     update the other (see FF_TASK_WDT_TIMEOUT_S's own doc comment).
+#   - CHECK_IDLE_TASK_CPU0/1=y: unchanged from ESP-IDF's own default,
+#     stated explicitly rather than left implicit.
+#
+# DRIFT-RULE WARNING (this file's own header, and PR #172): the
+# maintainer's real board sdkconfig already has every CONFIG_ESP_TASK_WDT_*
+# key present (CONFIG_ESP_TASK_WDT_TIMEOUT_S=5, CONFIG_ESP_TASK_WDT_PANIC
+# unset) from an earlier configure — this new default will NOT reach that
+# board until those keys are deleted from it (or the whole file is
+# regenerated) and `idf.py reconfigure` run. Until then the board keeps
+# running with a 5s, non-panicking watchdog from Kconfig's OWN default —
+# app_main.c's own `esp_task_wdt_reconfigure()` call overrides the
+# TIMEOUT_S value at runtime regardless of what's in sdkconfig, so this
+# drift only matters for the WINDOW between boot and that call (a few
+# hundred ms at most) and for `idf.py menuconfig`'s displayed value.
+CONFIG_ESP_TASK_WDT_EN=y
+CONFIG_ESP_TASK_WDT_INIT=y
+CONFIG_ESP_TASK_WDT_TIMEOUT_S=15
+CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU0=y
+CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU1=y
+
+# --- FreeRTOS trace facility, 2026-09-08 QA hardening item 2 ---------------
+# Previously off (ESP-IDF's own Kconfig default). Required for
+# `uxTaskGetSystemState()` — the only FreeRTOS API that ENUMERATES every
+# task — which the new `perf` bench console command (app_main.c,
+# `dbgconsole_perf`) uses to report every task's stack high-water mark,
+# per this hardening pass's own brief ("task stack high-water marks for
+# every task"). Small, fixed per-task RAM cost (each TCB grows by a
+# handful of bytes for the extra bookkeeping this enables) — not
+# reference-counted or measured separately in this pass; if DIRAM ever
+# gets tight enough to matter, `idf.py size-components` will show it
+# under the FreeRTOS component's own growth.
+#
+# DRIFT-RULE CORRECTION (2026-09-08, gate re-run for #239): this pass's
+# own earlier diff analysis claimed the maintainer's real board sdkconfig
+# was missing this key entirely and would pick up this default for free.
+# That was wrong — the board's sdkconfig already carries
+# "# CONFIG_FREERTOS_USE_TRACE_FACILITY is not set" explicitly (confirmed
+# against the real file, not re-derived), which the drift rule (this
+# file's own header) means Kconfig will NOT overwrite with this new
+# default. Left as-is on the real board, `perf`'s stack high-water-mark
+# reporting FAILS TO LINK — `uxTaskGetSystemState` is compiled out
+# entirely when the trace facility is off, not merely a no-op — so this
+# is a hard build break, not a degraded-but-booting gap. The maintainer
+# must delete the `CONFIG_FREERTOS_USE_TRACE_FACILITY` line from their
+# local sdkconfig (same mechanism as the ESP_TASK_WDT_* / STACK_CHECK_*
+# keys above/below) and run `idf.py reconfigure` before `perf` will build
+# against the real board.
+CONFIG_FREERTOS_USE_TRACE_FACILITY=y
+
+# --- Stack smashing protection, 2026-09-08 QA hardening item 4 -------------
+# Previously entirely OFF, and DELIBERATELY so in the sense that
+# CONFIG_COMPILER_STACK_CHECK_MODE_NONE=y is explicitly PRESENT (not
+# merely defaulted) on the maintainer's real board sdkconfig — i.e. this
+# is not a "nobody thought about it" gap, it is an existing explicit
+# setting this PR proposes changing. NORM ("emit a guard variable for
+# functions with vulnerable objects — arrays, large local buffers —
+# checked on return; halt on a mismatch" — esp-idf's own Kconfig help) is
+# the standard balance: STRONG/ALL instrument every function (measurable
+# code-size and per-call overhead this target's 25+ fps render budget
+# doesn't need to pay for); NONE means a stack-smashing bug corrupts
+# memory silently instead of halting somewhere close to the actual fault
+# — the opposite of "honest data" for a crash report. DRIFT-RULE WARNING
+# (this file's own header, and PR #172): because the key is explicitly
+# PRESENT (=y) on the maintainer's board, not absent, this default will
+# NOT reach that board on its own — `idf.py reconfigure` alone is not
+# enough. The maintainer must delete BOTH
+# `CONFIG_COMPILER_STACK_CHECK_MODE_NONE` and its legacy-namespace mirror
+# `CONFIG_STACK_CHECK_NONE` (this same choice is duplicated under both
+# Kconfig prefixes on a generated sdkconfig — confirmed by reading the
+# maintainer's file) from the board's sdkconfig, or `idf.py fullclean` +
+# reconfigure it entirely, for this new default to actually take effect.
+CONFIG_COMPILER_STACK_CHECK_MODE_NORM=y

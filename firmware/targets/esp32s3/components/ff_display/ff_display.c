@@ -30,6 +30,7 @@
 #include "ff_display.h"
 #include "ff_display_internal.h"
 
+#include <inttypes.h> /* PRIu32 — the I2C health-tick log lines below */
 #include <math.h> /* sqrtf — the boot splash's ray-unit-vector precompute, ff_display_draw_boot_splash */
 #include <string.h>
 
@@ -444,6 +445,103 @@ void ff_display_i2c_bus_unlock(void)
 {
     if (s_i2c_bus_mutex != NULL) {
         xSemaphoreGive(s_i2c_bus_mutex);
+    }
+}
+
+/* =====================================================================
+ * I2C health + bus recovery (2026-09-08 QA hardening).
+ *
+ * Cracked-panel bench finding: the SPD2010 touch controller can fail
+ * every multi-transaction read (NACK/timeout) roughly every 40 ms
+ * without ever fully WEDGING the bus (each transaction still times out
+ * and returns — see esp_lcd_touch_spd2010.c's own health counter for
+ * that ordinary-failure case, which needs no recovery, only quieter
+ * logging). This block covers the DIFFERENT, rarer failure: the bus
+ * itself sticks (a slave holding SDA low mid-transaction, e.g. a wedged
+ * touch controller that dies mid-ACK) so EVERY transaction on the shared
+ * bus — including the compass's — starts failing, not just touch's.
+ * `i2c_master_bus_reset()` (ESP-IDF's own `i2c_master.c`,
+ * `s_i2c_master_clear_bus`) performs the standard I2C recovery: clocks
+ * SCL up to 9 times with SDA released, which frees a slave stuck
+ * mid-ACK, then resets the peripheral's own FSM.
+ *
+ * `ff_display_i2c_health_tick`, called periodically (app_main.c's render
+ * loop, a few-second cadence — see that file's own call site) rather
+ * than from the touch poll itself: recovery is a comparatively heavy,
+ * bus-wide operation (it also resets the compass's in-flight state) and
+ * must not run on every failed poll — only when the FAILURE RATE stays
+ * high across an entire tick period, which is what a genuinely stuck bus
+ * looks like as opposed to an ordinary intermittent NACK. */
+static uint32_t s_i2c_last_touch_fail_total;
+static uint32_t s_i2c_recovery_attempts;
+static uint32_t s_i2c_recovery_last_ms;
+
+/* A tick period's worth of failures at or above this is "the bus looks
+ * stuck", not "an intermittent NACK" — the touch poll runs at LVGL's
+ * indev rate (~30 ms), so a healthy bus recovering on its own between
+ * failures would show far fewer than one failure per poll across a
+ * multi-second tick. */
+#define FF_I2C_RECOVERY_FAIL_THRESHOLD 20u
+/* Never attempt recovery more than once per this many ms — a genuinely
+ * broken (not merely stuck) controller would otherwise trigger a bus
+ * reset on every tick forever; one attempt per cooldown window is enough
+ * to recover a transient stick without hammering the peripheral. */
+#define FF_I2C_RECOVERY_COOLDOWN_MS 10000u
+
+void ff_display_i2c_health_tick(uint32_t now_ms)
+{
+    if (s_i2c_bus == NULL) {
+        return; /* bus not up yet — nothing to check or recover */
+    }
+
+    uint32_t total_fail = 0;
+    esp_lcd_touch_spd2010_touch_health(&total_fail, NULL);
+    uint32_t const new_fail = total_fail - s_i2c_last_touch_fail_total; /* wraps correctly if it ever wraps */
+    s_i2c_last_touch_fail_total = total_fail;
+
+    if (new_fail < FF_I2C_RECOVERY_FAIL_THRESHOLD) {
+        return; /* healthy, or an ordinary intermittent NACK — no recovery needed */
+    }
+    if (s_i2c_recovery_last_ms != 0 && (uint32_t)(now_ms - s_i2c_recovery_last_ms) < FF_I2C_RECOVERY_COOLDOWN_MS) {
+        return; /* already tried recently — give it time before trying again */
+    }
+
+    s_i2c_recovery_last_ms = now_ms;
+    s_i2c_recovery_attempts++;
+    ESP_LOGW(TAG, "I2C bus recovery: %" PRIu32 " touch read failures this tick (attempt #%" PRIu32 ") — clocking SCL",
+             new_fail, s_i2c_recovery_attempts);
+
+    /* Both callers of ff_display_i2c_bus_lock treat a failed lock as
+     * "skip this poll/sample" (see that function's doc comment), so a
+     * bounded wait here — rather than 0/forever — cannot itself hang the
+     * caller of THIS function (app_main's render loop) if a transaction
+     * happens to be genuinely in flight right now; it simply defers
+     * recovery to the next tick. */
+    if (!ff_display_i2c_bus_lock(50)) {
+        ESP_LOGW(TAG, "I2C bus recovery: could not get the bus lock this tick, will retry next tick");
+        return;
+    }
+    esp_err_t const err = i2c_master_bus_reset(s_i2c_bus);
+    ff_display_i2c_bus_unlock();
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "i2c_master_bus_reset failed: %s", esp_err_to_name(err));
+    } else {
+        ESP_LOGI(TAG, "I2C bus recovery: SCL clocked, bus FSM reset");
+    }
+}
+
+/**
+ * [api] I2C health, for the Diagnostics page / bench `diag` console line —
+ * touch-read failures (esp_lcd_touch_spd2010's own counter, this file's
+ * thin passthrough so callers need one include, not two) plus how many
+ * times THIS file has attempted a bus recovery.
+ */
+void ff_display_i2c_health(uint32_t *out_touch_fail_total, uint32_t *out_touch_fail_per_min,
+                            uint32_t *out_recovery_attempts)
+{
+    esp_lcd_touch_spd2010_touch_health(out_touch_fail_total, out_touch_fail_per_min);
+    if (out_recovery_attempts != NULL) {
+        *out_recovery_attempts = s_i2c_recovery_attempts;
     }
 }
 
@@ -941,6 +1039,106 @@ static void ff_display_invalidate_align_cb(lv_event_t *e)
 }
 
 /* =====================================================================
+ * 2026-09-08 QA hardening item 2 — LVGL refresh/flush perf windows.
+ *
+ * `LV_EVENT_REFR_START`/`_READY` bracket ONE `lv_timer_handler` refresh
+ * cycle (LVGL 9.5's own instrumentation, `src/misc/lv_event.h` — "sent
+ * even if there is nothing to redraw", so an idle cycle is a real,
+ * cheap sample, not a gap); `LV_EVENT_FLUSH_START`/`_FINISH` bracket ONE
+ * `flush_cb` call — with this component's strip buffering (b2's own
+ * comment above), that can fire several times per refresh cycle. Both
+ * fire on the esp_lvgl_port task; `ff_display_perf_get` is called from
+ * app_main's own render-loop task (the `perf` console command) — the
+ * spinlock below is the same cross-task-counter discipline
+ * esp_lcd_touch_spd2010.c's `portENTER_CRITICAL(&tp->data.lock)` already
+ * uses for exactly this shape (a producer task, a different consumer). */
+typedef struct {
+    uint32_t window_start_ms;
+    uint32_t count, sum_us, min_us, max_us; /* the still-open window */
+    uint32_t last_count, last_avg_us, last_min_us, last_max_us; /* the last CLOSED window */
+} ff_perf_window_t;
+
+#define FF_PERF_WINDOW_MS ((uint32_t)5000u) /* "over the last 5s" per the QA-hardening brief */
+
+static portMUX_TYPE s_perf_lock = portMUX_INITIALIZER_UNLOCKED;
+static ff_perf_window_t s_refresh_perf;
+static ff_perf_window_t s_flush_perf;
+static int64_t s_refresh_start_us;
+static int64_t s_flush_start_us;
+
+/* Must be called with s_perf_lock held. Rotates `w` into a fresh window
+ * if the current one has run its full FF_PERF_WINDOW_MS, then folds one
+ * sample in — same "windowed, close-and-snapshot" shape as
+ * esp_lcd_touch_spd2010.c's own touch-health counter. */
+static void ff_perf_window_record(ff_perf_window_t *w, uint32_t now_ms, uint32_t dur_us)
+{
+    if (w->window_start_ms == 0u) {
+        w->window_start_ms = now_ms; /* first sample ever */
+    } else if ((uint32_t)(now_ms - w->window_start_ms) >= FF_PERF_WINDOW_MS) {
+        w->last_count = w->count;
+        w->last_avg_us = (w->count > 0u) ? (w->sum_us / w->count) : 0u;
+        w->last_min_us = w->min_us;
+        w->last_max_us = w->max_us;
+        w->count = 0u;
+        w->sum_us = 0u;
+        w->min_us = 0u;
+        w->max_us = 0u;
+        w->window_start_ms = now_ms;
+    }
+    if (w->count == 0u || dur_us < w->min_us) w->min_us = dur_us;
+    if (dur_us > w->max_us) w->max_us = dur_us;
+    w->sum_us += dur_us;
+    w->count++;
+}
+
+static void ff_display_refr_start_cb(lv_event_t *e)
+{
+    (void)e;
+    s_refresh_start_us = esp_timer_get_time();
+}
+
+static void ff_display_refr_ready_cb(lv_event_t *e)
+{
+    (void)e;
+    int64_t const now_us = esp_timer_get_time();
+    uint32_t const dur_us = (uint32_t)(now_us - s_refresh_start_us);
+    portENTER_CRITICAL(&s_perf_lock);
+    ff_perf_window_record(&s_refresh_perf, (uint32_t)(now_us / 1000), dur_us);
+    portEXIT_CRITICAL(&s_perf_lock);
+}
+
+static void ff_display_flush_start_cb(lv_event_t *e)
+{
+    (void)e;
+    s_flush_start_us = esp_timer_get_time();
+}
+
+static void ff_display_flush_finish_cb(lv_event_t *e)
+{
+    (void)e;
+    int64_t const now_us = esp_timer_get_time();
+    uint32_t const dur_us = (uint32_t)(now_us - s_flush_start_us);
+    portENTER_CRITICAL(&s_perf_lock);
+    ff_perf_window_record(&s_flush_perf, (uint32_t)(now_us / 1000), dur_us);
+    portEXIT_CRITICAL(&s_perf_lock);
+}
+
+void ff_display_perf_get(ff_display_perf_t *out)
+{
+    if (out == NULL) return;
+    portENTER_CRITICAL(&s_perf_lock);
+    out->refresh_count = s_refresh_perf.last_count;
+    out->refresh_min_us = s_refresh_perf.last_min_us;
+    out->refresh_avg_us = s_refresh_perf.last_avg_us;
+    out->refresh_max_us = s_refresh_perf.last_max_us;
+    out->flush_count = s_flush_perf.last_count;
+    out->flush_min_us = s_flush_perf.last_min_us;
+    out->flush_avg_us = s_flush_perf.last_avg_us;
+    out->flush_max_us = s_flush_perf.last_max_us;
+    portEXIT_CRITICAL(&s_perf_lock);
+}
+
+/* =====================================================================
  * b2 — LVGL v9 via esp_lvgl_port, lv_display backed by the panel.
  * ===================================================================== */
 lv_display_t *ff_display_lvgl_start(void)
@@ -1032,6 +1230,12 @@ lv_display_t *ff_display_lvgl_start(void)
     }
     lv_display_add_event_cb(ffd_lv_disp, ff_display_invalidate_align_cb,
                             LV_EVENT_INVALIDATE_AREA, NULL);
+    /* 2026-09-08 QA hardening item 2 — perf instrumentation, see the
+     * block above ff_display_perf_get for the full rationale. */
+    lv_display_add_event_cb(ffd_lv_disp, ff_display_refr_start_cb, LV_EVENT_REFR_START, NULL);
+    lv_display_add_event_cb(ffd_lv_disp, ff_display_refr_ready_cb, LV_EVENT_REFR_READY, NULL);
+    lv_display_add_event_cb(ffd_lv_disp, ff_display_flush_start_cb, LV_EVENT_FLUSH_START, NULL);
+    lv_display_add_event_cb(ffd_lv_disp, ff_display_flush_finish_cb, LV_EVENT_FLUSH_FINISH, NULL);
     ESP_LOGI(TAG, "lv_display added (%dx%d RGB565, %d-line full-width strips, internal DMA)",
              FF_LCD_H_RES, FF_LCD_V_RES, FF_LVGL_STRIP_LINES);
     return ffd_lv_disp;

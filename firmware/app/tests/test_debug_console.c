@@ -113,6 +113,8 @@ static harness_t H;
  * pointing one at a fake below. */
 static ff_dbgconsole_i2c_scan_fn s_i2c_hook;
 static ff_dbgconsole_compass_status_fn s_compass_hook;
+static ff_dbgconsole_i2c_health_fn s_i2c_health_hook;
+static ff_dbgconsole_perf_fn s_perf_hook;
 
 #define MY_ID 0x00001000u
 #define DANA 0x0000DA1Au
@@ -123,6 +125,8 @@ static void harness_init(uint32_t t0_ms)
     memset(&H, 0, sizeof(H));
     s_i2c_hook = NULL;
     s_compass_hook = NULL;
+    s_i2c_health_hook = NULL;
+    s_perf_hook = NULL;
     H.clk.t = t0_ms;
     H.clock.now_ms = fake_now;
     H.clock.user = &H.clk;
@@ -263,7 +267,7 @@ static void dispatch(char const *line, capture_t *out)
 {
     capture_reset(out);
     ff_dbgconsole_handle_line(&H.shell, line, strlen(line), ff_shell_now_ms(&H.shell), capture_reply, out,
-                               s_i2c_hook, s_compass_hook);
+                               s_i2c_hook, s_compass_hook, s_i2c_health_hook, s_perf_hook);
 }
 
 /* ------------------------------------------------------------------- */
@@ -564,6 +568,24 @@ static int fake_compass_status_ok(void *user, char *out, size_t cap)
     return 0;
 }
 
+static int fake_i2c_health_ok(void *user, char *out, size_t cap)
+{
+    (void)user;
+    snprintf(out, cap, "read_fail_total=3 read_fail_per_min=0 bus_recoveries=0");
+    return 0;
+}
+
+/* 2026-09-08 QA hardening — `perf`'s hook is handed the reply sink
+ * directly (ff_dbgconsole_perf_fn's own doc comment); this fake emits
+ * two lines to prove BOTH the call happens and multi-line output
+ * reaches the caller unmangled. */
+static void fake_perf_ok(void *user, ff_dbgconsole_reply_fn reply, void *reply_user)
+{
+    (void)user;
+    reply(reply_user, "dbg: perf frame_ms min=2 avg=4 max=11 (5s window)");
+    reply(reply_user, "dbg: perf heap free=123456 min_ever=98765 largest_block=65536");
+}
+
 static void dbgconsole_i2c_unavailable_without_a_scan_hook(void)
 {
     /* No scan hook (the sim target's own reality: no I2C bus at all) —
@@ -631,6 +653,88 @@ static void dbgconsole_i2c_omits_compass_line_without_a_compass_hook(void)
 
     TEST_ASSERT_EQUAL_INT(1, cap.n);
     TEST_ASSERT_EQUAL_STRING("dbg: i2c 0x20 io-expander, 0x53 touch", cap.lines[0]);
+}
+
+static void dbgconsole_i2c_reports_touch_health_when_the_hook_is_present(void)
+{
+    /* 2026-09-08 QA hardening — the third hook, same forwarding contract
+     * as compass_status: present, its line follows the compass line
+     * verbatim behind "dbg: touch ". */
+    harness_init(1000);
+    s_i2c_hook = fake_i2c_scan_ok;
+    s_compass_hook = fake_compass_status_ok;
+    s_i2c_health_hook = fake_i2c_health_ok;
+
+    capture_t cap;
+    dispatch("i2c", &cap);
+
+    TEST_ASSERT_EQUAL_INT(3, cap.n);
+    TEST_ASSERT_EQUAL_STRING("dbg: i2c 0x20 io-expander, 0x53 touch", cap.lines[0]);
+    TEST_ASSERT_EQUAL_STRING("dbg: compass mag=absent imu=found heading=? cal=identity", cap.lines[1]);
+    TEST_ASSERT_EQUAL_STRING("dbg: touch read_fail_total=3 read_fail_per_min=0 bus_recoveries=0", cap.lines[2]);
+}
+
+static void dbgconsole_i2c_omits_touch_line_without_a_health_hook(void)
+{
+    /* NULL health hook (e.g. a build predating this feature, or the sim)
+     * — the scan + compass lines still print; the touch line is omitted
+     * entirely, same honest-omission rule as the compass hook above. */
+    harness_init(1000);
+    s_i2c_hook = fake_i2c_scan_ok;
+    s_compass_hook = fake_compass_status_ok;
+
+    capture_t cap;
+    dispatch("i2c", &cap);
+
+    TEST_ASSERT_EQUAL_INT(2, cap.n);
+    TEST_ASSERT_EQUAL_STRING("dbg: i2c 0x20 io-expander, 0x53 touch", cap.lines[0]);
+    TEST_ASSERT_EQUAL_STRING("dbg: compass mag=absent imu=found heading=? cal=identity", cap.lines[1]);
+}
+
+/* ------------------------------------------------------------------- */
+/* 2026-09-08 QA hardening — `perf`                                     */
+/* ------------------------------------------------------------------- */
+
+static void dbgconsole_perf_unavailable_without_a_hook(void)
+{
+    /* No hook (the sim target's own reality: no render loop/task-stack
+     * API to report) — exactly one honest reply. */
+    harness_init(1000);
+
+    capture_t cap;
+    dispatch("perf", &cap);
+
+    TEST_ASSERT_EQUAL_INT(1, cap.n);
+    TEST_ASSERT_EQUAL_STRING("dbg: perf unavailable on this target", cap.lines[0]);
+}
+
+static void dbgconsole_perf_forwards_the_hooks_own_lines_verbatim(void)
+{
+    /* With a hook present, the dispatcher hands it the reply sink
+     * directly and prints nothing of its own — proving the "hook owns
+     * its own line count and prefix" contract ff_dbgconsole_perf_fn's
+     * doc comment states. */
+    harness_init(1000);
+    s_perf_hook = fake_perf_ok;
+
+    capture_t cap;
+    dispatch("perf", &cap);
+
+    TEST_ASSERT_EQUAL_INT(2, cap.n);
+    TEST_ASSERT_EQUAL_STRING("dbg: perf frame_ms min=2 avg=4 max=11 (5s window)", cap.lines[0]);
+    TEST_ASSERT_EQUAL_STRING("dbg: perf heap free=123456 min_ever=98765 largest_block=65536", cap.lines[1]);
+}
+
+static void dbgconsole_perf_with_extra_arg_rejected_end_to_end(void)
+{
+    harness_init(1000);
+    s_perf_hook = fake_perf_ok;
+
+    capture_t cap;
+    dispatch("perf now", &cap);
+
+    TEST_ASSERT_EQUAL_INT(1, cap.n);
+    TEST_ASSERT_EQUAL_STRING("dbg: ? try help", cap.lines[0]);
 }
 
 /* ------------------------------------------------------------------- */
@@ -991,6 +1095,11 @@ int main(void)
     RUN_TEST(dbgconsole_i2c_reports_scan_and_compass_status_verbatim);
     RUN_TEST(dbgconsole_i2c_scan_failure_still_reports_compass);
     RUN_TEST(dbgconsole_i2c_omits_compass_line_without_a_compass_hook);
+    RUN_TEST(dbgconsole_i2c_reports_touch_health_when_the_hook_is_present);
+    RUN_TEST(dbgconsole_i2c_omits_touch_line_without_a_health_hook);
+    RUN_TEST(dbgconsole_perf_unavailable_without_a_hook);
+    RUN_TEST(dbgconsole_perf_forwards_the_hooks_own_lines_verbatim);
+    RUN_TEST(dbgconsole_perf_with_extra_arg_rejected_end_to_end);
 
     RUN_TEST(dbgconsole_cal_status_reports_identity_when_uncalibrated_and_inactive);
     RUN_TEST(dbgconsole_cal_start_then_status_reports_live_progress);

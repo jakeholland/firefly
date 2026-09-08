@@ -902,19 +902,50 @@ static bool shell_is_self(shell_t const *sh, uint32_t node_id)
 /**
  * shell_wall_trust_for — S18 slice a, AC2: classify a source's trust tier
  * for `ff_wall_observe`. A paired crew member (via `ff_crew_find` inside
- * `shell_is_paired` — never creates) or our own node id is TRUSTED;
- * everything else (unknown, merely-heard, or explicitly unpaired) is
- * BOOTSTRAP. Deliberately uses `shell_is_self`, NOT `shell_drop_as_self`:
- * whether a packet is treated as our own echo (and suspended under
- * `--dev-trust-all`) is an orthogonal question from whether this node's
- * clock is genuinely ours — the trust classification must not change
- * under the sim-only bench flag.
+ * `shell_is_paired` — never creates) is TRUSTED; everything else (unknown,
+ * merely-heard, or explicitly unpaired) is BOOTSTRAP. Deliberately uses
+ * `shell_is_self`, NOT `shell_drop_as_self`: whether a packet is treated as
+ * our own echo (and suspended under `--dev-trust-all`) is an orthogonal
+ * question from whether this node's clock is genuinely ours — the trust
+ * classification must not change under the sim-only bench flag.
+ *
+ * **Field fix (2026-09-08) — self is TRUSTED only with GPS evidence.** The
+ * S18 spec's own rationale for trusting self unconditionally is "the local
+ * comms-brain's own GPS-DISCIPLINED receive clock (that node *is* you)" —
+ * but before this fix, `node_id == our own` alone was treated as that
+ * evidence, with no check that the reading actually came from a GPS fix.
+ * Bench report, 2026-09-07: after a power cycle, the comms brain's own
+ * un-disciplined RTC (not yet corrected by a GPS lock) reported a stale-but-
+ * plausible time attached to `self`'s own NodeInfo/Position, which this
+ * function graded TRUSTED — so it not only bootstrapped the (empty) latch
+ * fine (bootstrap accepts any tier, by design) but was *displayed* and
+ * *defended* as a trusted, load-bearing anchor, exactly the honesty gap
+ * S18 exists to close. `self_has_gps_evidence` is the caller's honest
+ * answer to "does THIS reading carry proof of an actual GPS fix" — a live
+ * Position's `loc_source == MC_LOC_INTERNAL/EXTERNAL` (measured by GPS, not
+ * merely stated), or the equivalent evidence on a replayed self NodeInfo's
+ * cached position. Without it, self is demoted to BOOTSTRAP: it can still
+ * bootstrap an empty latch (a cold start must begin somewhere — unchanged),
+ * but a disagreeing reading can no longer yank an established latch merely
+ * because the node_id happens to be ours. A paired member's trust is
+ * unaffected — this fix is scoped to the specific "that node *is* you"
+ * claim, which is the one the spec ties to GPS discipline.
  */
-static ff_wall_trust_t shell_wall_trust_for(shell_t const *sh, uint32_t node_id)
+static ff_wall_trust_t shell_wall_trust_for(shell_t const *sh, uint32_t node_id, bool self_has_gps_evidence)
 {
-    if (shell_is_self(sh, node_id)) return FF_WALL_TRUST_TRUSTED;
+    if (shell_is_self(sh, node_id)) return self_has_gps_evidence ? FF_WALL_TRUST_TRUSTED : FF_WALL_TRUST_BOOTSTRAP;
     if (shell_is_paired(sh, node_id)) return FF_WALL_TRUST_TRUSTED;
     return FF_WALL_TRUST_BOOTSTRAP;
+}
+
+/* A position's loc_source is GPS-measurement evidence (not merely stated) —
+ * see shell_wall_trust_for's field-fix doc comment above. Shared by both
+ * the live on_position path and the NodeInfo replay path (a self NodeInfo's
+ * own cached `position.loc_source`) so the two call sites can't drift on
+ * what counts as "GPS evidence". */
+static bool shell_pos_is_gps_evidence(mc_loc_source_t loc_source)
+{
+    return loc_source == MC_LOC_INTERNAL || loc_source == MC_LOC_EXTERNAL;
 }
 
 /**
@@ -1288,15 +1319,19 @@ static void shell_sound(shell_t *sh, ff_sound_event_t ev)
  * (`shell_ev_position`), not this one. What IS new here is the tier
  * `ff_wall_observe` receives for the forward readings this function does
  * offer: `shell_wall_trust_for` classifies `node_id` (self or paired ->
- * TRUSTED, else BOOTSTRAP) exactly like every other call site.
+ * TRUSTED, else BOOTSTRAP) exactly like every other call site — self is
+ * TRUSTED only when `self_has_gps_evidence` (the caller's read of this
+ * NodeInfo's own cached `position.loc_source`) says so; see
+ * `shell_wall_trust_for`'s 2026-09-08 field-fix doc comment.
  */
-static bool shell_observe_wall_nodeinfo(shell_t *sh, uint32_t node_id, uint32_t last_heard, uint32_t now_ms)
+static bool shell_observe_wall_nodeinfo(shell_t *sh, uint32_t node_id, uint32_t last_heard, uint32_t now_ms,
+                                         bool self_has_gps_evidence)
 {
     int64_t predicted = 0;
     if (ff_wall_unix_now(&sh->wall, now_ms, &predicted) && (int64_t)last_heard <= predicted) {
         return false; /* told us nothing new about the clock */
     }
-    ff_wall_trust_t const tier = shell_wall_trust_for(sh, node_id);
+    ff_wall_trust_t const tier = shell_wall_trust_for(sh, node_id, self_has_gps_evidence);
     ff_wall_obs_t const obs = ff_wall_observe(&sh->wall, (int64_t)last_heard, now_ms, tier);
     /* Bench/debug console bookkeeping (see the `has_last_wall_obs` field
      * doc comment) — records this OFFER, not just accepted ones: a
@@ -1537,8 +1572,20 @@ static void shell_ev_node(void *u, mc_nodeinfo_t const *n)
 
     /* Before the self-check: our own NodeInfo carries the freshest
      * `last_heard` of any node in the dump, and it is the one the
-     * bootstrap most wants. */
-    bool const defined_the_latch = shell_observe_wall_nodeinfo(sh, n->node_num, n->last_heard, now);
+     * bootstrap most wants.
+     *
+     * 2026-09-08 field fix: whether THIS NodeInfo's `last_heard` is GPS
+     * evidence for a self reading (shell_wall_trust_for) is read off its
+     * own cached `position.loc_source` — a self NodeInfo carrying no
+     * position, or a position never GPS-measured, is not proof the
+     * comms brain's clock is GPS-disciplined, so it demotes to BOOTSTRAP
+     * (can still bootstrap an empty latch; cannot yank an established one
+     * on the strength of node_id alone). Harmless to compute for a
+     * non-self node_id — shell_wall_trust_for only consults it when
+     * shell_is_self is true. */
+    bool const self_gps_evidence = n->has_position && shell_pos_is_gps_evidence(n->position.loc_source);
+    bool const defined_the_latch =
+        shell_observe_wall_nodeinfo(sh, n->node_num, n->last_heard, now, self_gps_evidence);
 
     /* S18 slice b (#50): while the replay burst is still settling the latch
      * (link not yet READY), remember the greatest last_heard that has
@@ -1876,9 +1923,15 @@ static void shell_ev_position(void *u, uint32_t node, mc_position_t const *p)
      * source, offered unconditionally in both directions (unlike a
      * NodeInfo's cached `last_heard` — see shell_observe_wall_nodeinfo).
      * The plausibility window in ff_wall_observe is the guard, and
-     * shell_wall_trust_for classifies the tier: self or a paired member
-     * is TRUSTED and can move a disagreeing fresh latch (#49's fix);
-     * anyone else is BOOTSTRAP and cannot.
+     * shell_wall_trust_for classifies the tier: a paired member is always
+     * TRUSTED and can move a disagreeing fresh latch (#49's fix); self is
+     * TRUSTED only when THIS position is actual GPS evidence
+     * (`loc_source == MC_LOC_INTERNAL/EXTERNAL` — 2026-09-08 field fix, see
+     * shell_wall_trust_for's doc comment: a self reading with no GPS
+     * provenance is not proof the comms brain's clock is disciplined, so
+     * it demotes to BOOTSTRAP and can bootstrap but not yank an
+     * established latch); anyone else is BOOTSTRAP and cannot move it
+     * either way.
      *
      * Note this path deliberately does NOT carry shell_ev_node's
      * "don't age from the reading that defined the latch" guard (D1).
@@ -1887,7 +1940,7 @@ static void shell_ev_position(void *u, uint32_t node, mc_position_t const *p)
      * ~0 is a measurement, not a construction. See ff_shell.h for the
      * assumption that rests on. */
     if (p->has_rx_time) {
-        ff_wall_trust_t const tier = shell_wall_trust_for(sh, node);
+        ff_wall_trust_t const tier = shell_wall_trust_for(sh, node, shell_pos_is_gps_evidence(p->loc_source));
         (void)ff_wall_observe(&sh->wall, (int64_t)p->rx_time, now, tier);
         /* Bench/debug console bookkeeping — see shell_observe_wall_nodeinfo's
          * matching comment and the `has_last_wall_obs` field doc. */

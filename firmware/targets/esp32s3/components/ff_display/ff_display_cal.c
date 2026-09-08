@@ -23,6 +23,7 @@
 #include <string.h>
 
 #include "esp_log.h"
+#include "esp_task_wdt.h" /* 2026-09-08 QA hardening — esp_task_wdt_reset() in the blocking capture wait, below */
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
@@ -190,9 +191,22 @@ esp_err_t ff_display_run_calibration(ff_touchcal_t *out_cal)
     ESP_LOGI(TAG, "S15d calibration started: tap each of %d crosshairs on the glass",
              FF_CAL_TARGET_COUNT);
 
-    /* Block this task until the LVGL-task event cb has captured all five. */
+    /* Block this task until the LVGL-task event cb has captured all five.
+     * 2026-09-08 QA hardening: this can legitimately take seconds to tens
+     * of seconds (a human tapping five targets), with no upper bound —
+     * far past the render-loop task's own generous TWDT timeout
+     * (app_main.c's ff_configure_task_watchdog). Since this loop runs on
+     * THAT SAME task (see this function's own doc comment, ff_display.h:
+     * "runs the crosshair flow off the UI task" — off the LVGL/UI task,
+     * not off the caller's own), `esp_task_wdt_reset()`'s implicit
+     * "current task" contract applies directly — no different from the
+     * render loop's own per-iteration reset, just on a slower cadence
+     * matched to this loop's own poll period. A harmless no-op if the
+     * render-loop task was never subscribed (degraded-boot case, already
+     * logged once at subscribe time). */
     while (!s_cal.done) {
         vTaskDelay(pdMS_TO_TICKS(20));
+        esp_task_wdt_reset();
     }
 
     ffd_cal_capturing = false; /* every point is captured; live touch handling resumes normally */

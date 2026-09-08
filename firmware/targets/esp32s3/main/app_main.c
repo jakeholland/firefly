@@ -32,6 +32,7 @@
  * see the git history of this file / the S15a PR body. NVS store and UART
  * transport remain later slices (c/d/e).
  */
+#include <inttypes.h> /* PRIu32 — the I2C/watchdog/perf health lines below */
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdio.h> /* S26 slice f — snprintf, ff_wakeup_cause_str's fallback branch */
@@ -44,6 +45,7 @@
 #include "esp_random.h" /* fix/meshclient-packet-id-seed — esp_random() for the outgoing packet-id seed */
 #include "esp_sleep.h"  /* S26 slice f — esp_light_sleep_start() + wake-source config */
 #include "esp_system.h" /* esp_restart() — S26 slice b's reboot action */
+#include "esp_task_wdt.h" /* 2026-09-08 QA hardening — render-loop task + LVGL-liveness watchdog coverage */
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -685,6 +687,64 @@ static ff_idle_t s_idle;
  * so this deliberately does not run at that faster cadence. */
 #define FF_DEVICE_STATS_SAMPLE_PERIOD_MS ((uint32_t)2000u)
 
+/* 2026-09-08 QA hardening — I2C health-tick period
+ * (ff_display_i2c_health_tick). 3 s: slower than the touch poll's own
+ * ~30 ms cadence on purpose — the tick's whole job is to look at a
+ * multi-second WINDOW of failures and decide whether the bus looks
+ * genuinely stuck (see that function's own doc comment for the
+ * threshold/cooldown reasoning), not to react to a single failed poll. */
+#define FF_I2C_HEALTH_TICK_PERIOD_MS ((uint32_t)3000u)
+
+/* ---------------------------------------------------------------------
+ * 2026-09-08 QA hardening item 2 — render-loop frame-time + face-rebuild
+ * stats for the `perf` bench console command.
+ *
+ * `ff_perf_window_t`/`ff_perf_window_record` are a deliberate, small
+ * DUPLICATE of ff_display.c's own copy (same struct shape, same
+ * windowing rule: min/avg/max/count over the trailing CLOSED
+ * FF_PERF_WINDOW_MS period) rather than a shared header: this copy is
+ * single-task (the render loop is the only reader AND writer — no
+ * esp_lvgl_port task involved), so it needs none of that file's
+ * cross-task spinlock, and factoring four lines of struct-plus-record
+ * logic into a shared library for two unrelated, differently-threaded
+ * callers would cost more than it saves. Always compiled (not gated
+ * behind CONFIG_FF_DEBUG_CONSOLE) — recording a few words of stats every
+ * frame is cheap regardless of whether anything ever reads them this
+ * boot, and keeping the RECORDING path un-gated means a future second
+ * consumer (a future Diagnostics-page surfacing, say) needs no new
+ * plumbing here. */
+typedef struct {
+    uint32_t window_start_ms;
+    uint32_t count, sum_us, min_us, max_us;                     /* the still-open window */
+    uint32_t last_count, last_avg_us, last_min_us, last_max_us; /* the last CLOSED window */
+} ff_perf_window_t;
+
+#define FF_PERF_WINDOW_MS ((uint32_t)5000u) /* "over the last 5s" per the QA-hardening brief */
+
+static void ff_perf_window_record(ff_perf_window_t *w, uint32_t now_ms, uint32_t dur_us)
+{
+    if (w->window_start_ms == 0u) {
+        w->window_start_ms = now_ms; /* first sample ever */
+    } else if ((uint32_t)(now_ms - w->window_start_ms) >= FF_PERF_WINDOW_MS) {
+        w->last_count = w->count;
+        w->last_avg_us = (w->count > 0u) ? (w->sum_us / w->count) : 0u;
+        w->last_min_us = w->min_us;
+        w->last_max_us = w->max_us;
+        w->count = 0u;
+        w->sum_us = 0u;
+        w->min_us = 0u;
+        w->max_us = 0u;
+        w->window_start_ms = now_ms;
+    }
+    if (w->count == 0u || dur_us < w->min_us) w->min_us = dur_us;
+    if (dur_us > w->max_us) w->max_us = dur_us;
+    w->sum_us += dur_us;
+    w->count++;
+}
+
+static ff_perf_window_t s_frame_perf;
+static uint32_t s_face_rebuild_count; /* lifetime total — a rate is less useful here than "how many since boot" */
+
 /* Human-readable wake cause, for the on-glass log line the spec's AC1
  * asks for ("log sleep entry + wake cause ... so the maintainer can read
  * it on glass"). Deliberately NOT a full switch over every
@@ -801,6 +861,117 @@ static void ff_configure_light_sleep_wake(void)
 
     ESP_LOGI(TAG, "S26f light-sleep wake sources armed: timer=%dms, GPIO wake on PWR(6)/BOOT(0)/touch-INT(%d), VDD_SDIO forced ON",
              (int)(FF_LIGHT_SLEEP_TIMER_WAKE_US / 1000), (int)FF_PIN_TOUCH_INT);
+}
+
+/* ---------------------------------------------------------------------
+ * 2026-09-08 QA hardening — task watchdog (TWDT) coverage for the render
+ * loop AND the LVGL task, item 1b of the QA sweep.
+ *
+ * The render-loop task IS `app_main`'s own task (IDF's "main" task never
+ * returns here — the `while (true)` loop below runs on it directly), so
+ * subscribing it is the ordinary `esp_task_wdt_add(NULL)` +
+ * `esp_task_wdt_reset()` pattern — done once, right before the loop
+ * starts (this function), and reset once per iteration (see the loop
+ * body's own call). One deliberate exception: `ff_display_run_calibration`
+ * (S15d, `ff_display_cal.c`) BLOCKS this SAME task in its own
+ * `vTaskDelay` loop for as long as a human takes to tap five crosshairs —
+ * seconds to tens of seconds, no upper bound — so that loop resets the
+ * watchdog itself (same task, same "current task" implicit API); see
+ * that file's own doc comment on the call.
+ *
+ * The LVGL task (esp_lvgl_port's own internally-created "taskLVGL") is
+ * DIFFERENT: `esp_task_wdt_reset()` only ever resets on behalf of the
+ * CALLING task (esp_task_wdt.h's own doc comment — there is no public
+ * API to feed another task's entry from outside it), and esp_lvgl_port
+ * is a managed component we do not vendor/patch (unlike
+ * esp_lcd_touch_spd2010) — there is no seam to inject a reset call
+ * inside its own task loop. Subscribing "taskLVGL" directly via
+ * `esp_task_wdt_add()` from here would therefore ALWAYS trip (nothing
+ * would ever reset it), which is worse than no coverage at all.
+ *
+ * Instead: a TWDT "user" entry (`esp_task_wdt_add_user`, which any task
+ * may feed on its behalf) stands in for "the LVGL task is responsive",
+ * fed from THIS task's render loop by probing `ff_display_lock()` with a
+ * generous-but-bounded timeout — the exact mutex esp_lvgl_port's own
+ * task holds for the ENTIRE duration of every `lv_timer_handler()` pass
+ * it makes (S26's own amendment on this fact, app_main.c's rebuild-gate
+ * history above). A successful, prompt lock IS proof of liveness: an
+ * LVGL task that is genuinely hung (e.g. stuck inside a touch I2C
+ * transaction that somehow evaded this fix's own per-transaction
+ * timeout) holds that lock forever, so the probe starts timing out, this
+ * file stops feeding the user watchdog, and the TWDT fires on its own
+ * schedule — the same outcome a direct task subscription would give,
+ * reached through a seam this codebase actually owns. See the render
+ * loop's own call site (`ff_lvgl_liveness_tick`) for the probe cadence
+ * and timeout. */
+#define FF_TASK_WDT_TIMEOUT_S ((uint32_t)15u) /* generous: render-loop iterations are single-digit ms; see the PR body for the measured perf numbers this margin is checked against */
+#define FF_LVGL_LIVENESS_PROBE_TIMEOUT_MS ((uint32_t)2000u) /* generous vs. an ordinary <100ms lv_timer_handler pass (S26f's own timing notes) — this is a hang detector, not a frame-budget check */
+#define FF_LVGL_LIVENESS_TICK_PERIOD_MS ((uint32_t)500u)
+
+static esp_task_wdt_user_handle_t s_lvgl_wdt_user;
+static bool s_lvgl_wdt_user_ok;
+
+static void ff_configure_task_watchdog(void)
+{
+    /* CONFIG_ESP_TASK_WDT_INIT already auto-initializes the TWDT at boot
+     * (sdkconfig.defaults, this QA-hardening pass) with
+     * CONFIG_ESP_TASK_WDT_TIMEOUT_S as its timeout — reconfigure it here
+     * to FF_TASK_WDT_TIMEOUT_S instead of only relying on the Kconfig
+     * default staying in sync, since the two numbers must actually agree
+     * for the "generous" reasoning above to hold. Idempotent: a build
+     * with TWDT already disabled (CONFIG_ESP_TASK_WDT_INIT=n) reports the
+     * failure and continues — no task watchdog is a degraded-but-booting
+     * state, same posture as every other non-fatal HAL failure in this
+     * file. */
+    esp_task_wdt_config_t const wdt_cfg = {
+        .timeout_ms = FF_TASK_WDT_TIMEOUT_S * 1000u,
+        .idle_core_mask = (1u << 0) | (1u << 1), /* keep watching both idle tasks, same as sdkconfig's own CHECK_IDLE_TASK_CPU0/1 */
+        .trigger_panic = false, /* log-on-trip only for now — see sdkconfig.defaults' own comment on CONFIG_ESP_TASK_WDT_PANIC: a reboot-on-hang policy is a real tradeoff (frozen puck in the field vs. a spurious field reboot) that wants the maintainer's own sign-off, tracked separately on branch qa/wdt-panic-optin rather than defaulted on here */
+    };
+    esp_err_t err = esp_task_wdt_reconfigure(&wdt_cfg);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "esp_task_wdt_reconfigure failed: %s — task watchdog coverage is degraded this boot", esp_err_to_name(err));
+    }
+
+    err = esp_task_wdt_add(NULL); /* subscribe the render-loop task (this one — see this block's own doc comment) */
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "esp_task_wdt_add(render loop) failed: %s — this task is NOT covered by the watchdog this boot",
+                 esp_err_to_name(err));
+    }
+
+    err = esp_task_wdt_add_user("lvgl_liveness", &s_lvgl_wdt_user);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "esp_task_wdt_add_user(lvgl_liveness) failed: %s — LVGL-task hang detection is NOT active this boot",
+                 esp_err_to_name(err));
+        s_lvgl_wdt_user_ok = false;
+    } else {
+        s_lvgl_wdt_user_ok = true;
+    }
+
+    ESP_LOGI(TAG, "task watchdog armed: timeout=%us panic=%s render-loop=subscribed lvgl-liveness=%s",
+             (unsigned)FF_TASK_WDT_TIMEOUT_S, wdt_cfg.trigger_panic ? "y" : "n", s_lvgl_wdt_user_ok ? "y" : "n");
+}
+
+/* Called from the render loop every FF_LVGL_LIVENESS_TICK_PERIOD_MS (see
+ * that constant's own doc comment above): the liveness probe itself. */
+static void ff_lvgl_liveness_tick(void)
+{
+    if (!s_lvgl_wdt_user_ok) {
+        return; /* no user handle — degraded boot, see ff_configure_task_watchdog */
+    }
+    if (ff_display_lock(FF_LVGL_LIVENESS_PROBE_TIMEOUT_MS)) {
+        ff_display_unlock();
+        esp_task_wdt_reset_user(s_lvgl_wdt_user);
+    }
+    /* A failed probe resets nothing THIS tick — if the LVGL task is
+     * genuinely hung, consecutive misses accumulate toward the TWDT's own
+     * timeout and it fires on schedule (this function's own doc comment
+     * above). No log here: `ff_display_lock`'s own callers already log
+     * their own timeout context where it matters more (the touch-vs-
+     * compass bus-busy line, the rebuild-gate's own path) — this probe
+     * runs every 500ms and would otherwise flood the console during a
+     * real hang, the exact failure mode item 1a's rate-limiting fixed
+     * for the touch read path. */
 }
 
 /* ---------------------------------------------------------------------
@@ -1013,6 +1184,125 @@ static int dbgconsole_compass_status(void *user, char *out, size_t cap)
     return 0;
 }
 
+/* `ff_dbgconsole_i2c_health_fn` (ff_debug_console.h, 2026-09-08 QA
+ * hardening) — thin passthrough onto ff_display_i2c_health(): touch
+ * read-failure total/per-minute rate + bus-recovery attempt count. */
+static int dbgconsole_i2c_health(void *user, char *out, size_t cap)
+{
+    (void)user;
+    uint32_t total_fail = 0, fail_per_min = 0, recoveries = 0;
+    ff_display_i2c_health(&total_fail, &fail_per_min, &recoveries);
+    snprintf(out, cap, "read_fail_total=%" PRIu32 " read_fail_per_min=%" PRIu32 " bus_recoveries=%" PRIu32,
+             total_fail, fail_per_min, recoveries);
+    return 0;
+}
+
+/* `ff_dbgconsole_perf_fn` (ff_debug_console.h, 2026-09-08 QA hardening
+ * item 2) — "make the perf command the tool the owner will use in the
+ * morning". Emits its own already-`"dbg: perf "`-prefixed lines directly
+ * through `reply` (see that typedef's own doc comment for why this hook
+ * shape differs from i2c_scan/compass_status/i2c_health's single-line
+ * `out`/`cap` contract) — device-only data (heap, per-task stacks, this
+ * FILE's own render-loop stats) that has no home in ff_shell_t. */
+
+/* One windowed min/avg/max/n line, `n/a` (not a fabricated 0) for a
+ * window that hasn't closed yet — see ff_display_perf_t's own doc
+ * comment on why 0 would be a lie here (an instant refresh is not the
+ * same fact as "no data yet"). Shared by all three windowed metrics
+ * below so their formatting can't drift against each other. */
+static void dbgconsole_perf_window_line(char const *label, uint32_t count, uint32_t min_us, uint32_t avg_us,
+                                         uint32_t max_us, ff_dbgconsole_reply_fn reply, void *user)
+{
+    char line[96];
+    if (count == 0u) {
+        snprintf(line, sizeof(line), "dbg: perf %s n/a (window not closed yet)", label);
+    } else {
+        snprintf(line, sizeof(line), "dbg: perf %s min_us=%" PRIu32 " avg_us=%" PRIu32 " max_us=%" PRIu32 " n=%" PRIu32,
+                 label, min_us, avg_us, max_us, count);
+    }
+    reply(user, line);
+}
+
+static void dbgconsole_perf(void *hook_user, ff_dbgconsole_reply_fn reply, void *reply_user)
+{
+    (void)hook_user;
+
+    /* Render-loop frame time — this file's own s_frame_perf, recorded
+     * every iteration (see that struct's own doc comment). Snapshot
+     * without a lock: single-task producer AND consumer (the render
+     * loop itself, the only place this console is polled from — see
+     * dbgconsole_poll's own call site), so there is no cross-task race
+     * to guard against here (unlike ff_display_perf_get's LVGL stats,
+     * below, which DO cross tasks). */
+    dbgconsole_perf_window_line("frame", s_frame_perf.last_count, s_frame_perf.last_min_us, s_frame_perf.last_avg_us,
+                                 s_frame_perf.last_max_us, reply, reply_user);
+
+    /* LVGL lv_timer_handler refresh cycle + per-flush time — esp_lvgl_port's
+     * own task, via LVGL 9.5's own instrumentation events (ff_display.c). */
+    ff_display_perf_t disp_perf;
+    ff_display_perf_get(&disp_perf);
+    dbgconsole_perf_window_line("lvgl_refresh", disp_perf.refresh_count, disp_perf.refresh_min_us,
+                                 disp_perf.refresh_avg_us, disp_perf.refresh_max_us, reply, reply_user);
+    dbgconsole_perf_window_line("flush", disp_perf.flush_count, disp_perf.flush_min_us, disp_perf.flush_avg_us,
+                                 disp_perf.flush_max_us, reply, reply_user);
+
+    /* Face rebuild count — lifetime total (this file's own
+     * s_face_rebuild_count), not windowed: "how many since boot" is the
+     * actionable question for a rebuild (each one is a real,
+     * discrete UI event — a screen change, a dirty tick — not a
+     * continuous-rate thing like frame time). */
+    {
+        char line[48];
+        snprintf(line, sizeof(line), "dbg: perf face_rebuilds=%" PRIu32, s_face_rebuild_count);
+        reply(reply_user, line);
+    }
+
+    /* Heap — MALLOC_CAP_DEFAULT, the same "everything the default
+     * allocator could still hand out" query this file's own DIAGNOSTICS
+     * push (ff_shell_set_device_stats, the render loop below) already
+     * uses for `free_heap`, so the two numbers are directly comparable.
+     * heap_caps_get_minimum_free_size is ESP-IDF's own running-minimum
+     * tracker (since boot) — no windowing needed, it already IS the
+     * honest lifetime worst case. */
+    {
+        size_t const free_now = heap_caps_get_free_size(MALLOC_CAP_DEFAULT);
+        size_t const free_min_ever = heap_caps_get_minimum_free_size(MALLOC_CAP_DEFAULT);
+        size_t const largest_block = heap_caps_get_largest_free_block(MALLOC_CAP_DEFAULT);
+        char line[96];
+        snprintf(line, sizeof(line), "dbg: perf heap free=%u min_ever=%u largest_block=%u", (unsigned)free_now,
+                 (unsigned)free_min_ever, (unsigned)largest_block);
+        reply(reply_user, line);
+    }
+
+    /* Per-task stack high-water marks — every task, per the QA-hardening
+     * brief. uxTaskGetSystemState (needs CONFIG_FREERTOS_USE_TRACE_FACILITY,
+     * sdkconfig.defaults, this pass) is the only FreeRTOS API that
+     * ENUMERATES every task; a fixed-size stack array bounds this bench
+     * command's own stack use to something reasonable (32 tasks is
+     * comfortably more than this project's own task count — the array
+     * silently caps rather than overflowing if that's ever wrong, and
+     * the count actually returned is reported so a truncation would be
+     * visible, not silent). Reported as BYTES remaining (the high-water
+     * mark FreeRTOS itself tracks is in words; multiplied here so a
+     * bench reader doesn't have to know the platform's word size), the
+     * same unit a stack-overflow crash log already reports in. */
+    {
+        enum { FF_PERF_MAX_TASKS = 32 };
+        static TaskStatus_t s_task_status[FF_PERF_MAX_TASKS]; /* static: ~1.3KB, too large for this task's own stack */
+        UBaseType_t const n = uxTaskGetSystemState(s_task_status, FF_PERF_MAX_TASKS, NULL);
+        for (UBaseType_t i = 0; i < n; i++) {
+            char line[64];
+            snprintf(line, sizeof(line), "dbg: perf stack %-16s high_water_bytes=%u", s_task_status[i].pcTaskName,
+                     (unsigned)(s_task_status[i].usStackHighWaterMark * sizeof(StackType_t)));
+            reply(reply_user, line);
+        }
+        if (n == 0u) {
+            reply(reply_user, "dbg: perf stack (uxTaskGetSystemState returned nothing — "
+                               "CONFIG_FREERTOS_USE_TRACE_FACILITY missing from this build?)");
+        }
+    }
+}
+
 /* Drain whatever the USB host has sent since the last frame (non-
  * blocking: ticks_to_wait=0) into the line accumulator, dispatching on
  * every '\n' and tolerating a preceding '\r' (ff_dbgcmd_parse's own CRLF
@@ -1039,7 +1329,7 @@ static void dbgconsole_poll(ff_shell_t *sh, uint32_t now_ms)
                 if (!s_dbgconsole_discarding) {
                     ff_dbgconsole_handle_line(sh, s_dbgconsole_line, s_dbgconsole_line_len, now_ms,
                                                dbgconsole_reply_write, NULL, dbgconsole_i2c_scan,
-                                               dbgconsole_compass_status);
+                                               dbgconsole_compass_status, dbgconsole_i2c_health, dbgconsole_perf);
                 }
                 s_dbgconsole_line_len = 0u;
                 s_dbgconsole_discarding = false;
@@ -1839,11 +2129,26 @@ void app_main(void)
      * facts, not a live sensor reading a wearer would watch tick. */
     uint32_t last_device_stats_ms = ff_bringup_now_ms();
 
+    /* 2026-09-08 QA hardening — same periodic-sample seeding shape as the
+     * three above: the render loop's own I2C health tick (below) waits a
+     * full FF_I2C_HEALTH_TICK_PERIOD_MS before its first check. */
+    uint32_t last_i2c_health_ms = ff_bringup_now_ms();
+
+    /* 2026-09-08 QA hardening — same periodic-sample seeding shape as the
+     * three above: the LVGL-liveness watchdog probe (below) waits a full
+     * FF_LVGL_LIVENESS_TICK_PERIOD_MS before its first check. */
+    uint32_t last_lvgl_liveness_ms = ff_bringup_now_ms();
+
     /* S26 slice f — arm the light-sleep wake sources once, right before
      * the render loop can first reach SLEEP. See
      * ff_configure_light_sleep_wake's own doc comment above for the wake
      * sources and the PSRAM/VDD_SDIO interpretation call. */
     ff_configure_light_sleep_wake();
+
+    /* 2026-09-08 QA hardening — arm the task watchdog (render-loop task +
+     * LVGL-liveness user entry) once, right before the loop that resets
+     * it starts. See ff_configure_task_watchdog's own doc comment. */
+    ff_configure_task_watchdog();
 
 #if CONFIG_FF_DEBUG_CONSOLE
     /* Bench/debug console (default OFF) — install the USB-Serial-JTAG
@@ -1856,6 +2161,26 @@ void app_main(void)
      * shell every frame, rebuild the LVGL tree ONLY on a dirty tick. The
      * esp_lvgl_port task does the actual flushing; we just own the model. */
     while (true) {
+        /* 2026-09-08 QA hardening — feed the render-loop task's own TWDT
+         * subscription every iteration (see ff_configure_task_watchdog's
+         * doc comment). Harmless no-op if the subscribe above failed
+         * (returns ESP_ERR_NOT_FOUND, ignored — logged once already, at
+         * subscribe time). Deliberately the very first statement in the
+         * loop: every branch below (including a possibly-long-blocking
+         * calibration run, whose own loop resets separately) is then
+         * downstream of a fresh reset. */
+        esp_task_wdt_reset();
+
+        /* 2026-09-08 QA hardening item 2 — render-loop frame-time
+         * measurement for the `perf` console command. Deliberately
+         * brackets the WHOLE iteration body (down to this loop's own
+         * pacing delay/light-sleep branch at the bottom) rather than any
+         * one sub-step: "frame time" here means "how long this
+         * iteration's real work took", the number that actually answers
+         * "is the render loop keeping up" — see ff_perf_frame_tick's own
+         * doc comment for the windowing shape. */
+        int64_t const frame_start_us = esp_timer_get_time();
+
         /* S21 §3 (device-runtime): drain a deferred CALIBRATE-TOUCH request in
          * THIS (main) task. ff_display_run_calibration blocks waiting for the
          * LVGL task to capture the taps, so it must not run from the click
@@ -1878,6 +2203,7 @@ void app_main(void)
                 lv_obj_clean(lv_screen_active());
                 ff_face_build(ff_shell_view(&s_shell));
                 ff_display_unlock();
+                s_face_rebuild_count++; /* 2026-09-08 QA hardening — perf command */
             }
             /* S26 slice c — the blocking capture above (five taps' worth
              * of real, human-paced time) ran with no ff_idle_tick call
@@ -2148,6 +2474,24 @@ void app_main(void)
          * comment). Without CONFIG_FF_COMPASS compiled in at all, this
          * honestly reports "no compass" (FF_APP_MAG_NONE/FF_APP_IMU_ABSENT)
          * rather than a stale or fabricated reading. */
+        /* 2026-09-08 QA hardening — watch the touch driver's own read-
+         * failure health counter and attempt SCL bus recovery if a whole
+         * tick period looks genuinely stuck (ff_display_i2c_health_tick's
+         * own doc comment has the threshold/cooldown reasoning and the
+         * "why not react to a single failed poll" rationale). */
+        if (ff_time_reached(now_ms, last_i2c_health_ms + FF_I2C_HEALTH_TICK_PERIOD_MS)) {
+            last_i2c_health_ms = now_ms;
+            ff_display_i2c_health_tick(now_ms);
+        }
+
+        /* 2026-09-08 QA hardening — LVGL-liveness watchdog probe. See
+         * ff_configure_task_watchdog's doc comment for why this is a
+         * lock-probe proxy rather than a direct TWDT task subscription. */
+        if (ff_time_reached(now_ms, last_lvgl_liveness_ms + FF_LVGL_LIVENESS_TICK_PERIOD_MS)) {
+            last_lvgl_liveness_ms = now_ms;
+            ff_lvgl_liveness_tick();
+        }
+
         if (ff_time_reached(now_ms, last_device_stats_ms + FF_DEVICE_STATS_SAMPLE_PERIOD_MS)) {
             last_device_stats_ms = now_ms;
             size_t const free_heap = heap_caps_get_free_size(MALLOC_CAP_DEFAULT);
@@ -2290,6 +2634,7 @@ void app_main(void)
                     lv_obj_clean(lv_screen_active());
                     ff_face_build(v);
                     rebuild_pending = false;
+                    s_face_rebuild_count++; /* 2026-09-08 QA hardening — perf command */
                 }
                 ff_display_unlock();
             }
@@ -2383,6 +2728,16 @@ void app_main(void)
             bool const boot_caused_wake = (wake_cause == ESP_SLEEP_WAKEUP_GPIO) && ff_power_boot_pressed();
             ff_power_boot_isr_synthesize_wake_edge(boot_caused_wake);
         } else {
+            /* 2026-09-08 QA hardening item 2 — close out this iteration's
+             * frame-time sample right before the pacing delay, so the
+             * measured "frame time" is real work only, never inflated by
+             * this deliberate 20ms throttle. Not recorded on the SLEEP
+             * branch above — light sleep itself can take well over 20ms
+             * (the whole point) and would otherwise dominate every
+             * window's max with a number that means "the device slept",
+             * not "the render loop was slow". */
+            int64_t const frame_end_us = esp_timer_get_time();
+            ff_perf_window_record(&s_frame_perf, now_ms, (uint32_t)(frame_end_us - frame_start_us));
             vTaskDelay(pdMS_TO_TICKS(20));
         }
     }
