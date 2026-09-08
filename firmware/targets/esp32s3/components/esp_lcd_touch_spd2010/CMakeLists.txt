@@ -13,6 +13,7 @@ idf_component_register(
     SRCS "esp_lcd_touch_spd2010.c"
     INCLUDE_DIRS "include"
     REQUIRES "esp_lcd" "esp_lcd_touch"
+    PRIV_REQUIRES "esp_timer"
 )
 
 target_compile_definitions(${COMPONENT_LIB} PRIVATE
