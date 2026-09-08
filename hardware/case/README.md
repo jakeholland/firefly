@@ -3305,6 +3305,326 @@ holding up under the reverted height and the longer envelope alike.
   role pass 12's own (uncommitted) standalone script played for its own
   investigation.
 
+## 2026-09-14 pass 13 (root fillets on every post/boss, wordmark
+recentred and smaller, battery connector access through the plate)
+
+Jake's follow-up after the pass-12 print: "the posts... are flimsy and
+easy to pop off right now" (strength), "the KandiWooks logo can be a bit
+smaller and centered vertically, and center the 'KANDI' part so it's
+centered as if the sprout on the I isn't there" (wordmark), and "can we
+make the battery plug accessible when the plate is screwed on the
+Waveshare?" (battery connector). Three independent changes, all
+re-verified live for both variants; a new `verify_root_fillets` gate and
+a new `verify_battery_connector_access` gate now run as part of the
+regular `verify()` sweep.
+
+### Item 1: root fillets/collars at every post and boss
+
+**Investigated the pass-9/9g fillet history first, per the brief's own
+instruction, rather than guessing.** Two DIFFERENT best-effort fillet
+attempts exist in the pre-pass-13 code: the top-post root fillet (pass 9,
+finding 4 — a real `fillets.createInput` call, 1.0mm radius, confirmed
+present in the built timeline) and the FPC-brow seam fillet (pass 9g —
+confirmed to produce ZERO `Fillet` features either variant; moot now
+since pass 12b deleted the brow entirely). Neither the case bosses
+(A/B1/B2/C/D) nor the compass-mount pegs/pads had ANY root
+reinforcement before this pass — the brief's "the generator already
+attempted best-effort fillets... investigate why" applies most directly
+to the top posts, so that is where the live investigation started.
+
+**Root cause, confirmed live with the new `verify_root_fillets` gate**
+(probes a ring of 8 points around each post/boss at OD/2+0.6mm, at
+0.4mm into the post from its own root plane, both variants): a first
+version of `add_root_reinforcement` tried a real fillet first (radius
+1.8mm — solved from the fillet's own quarter-circle geometry,
+`added_radius(dz) = R - sqrt(R^2-(R-dz)^2)`, to be the smallest radius
+that clears the gate's 0.6mm requirement on its own) and used a
+45-degree conical collar (`cone_frustum_solid`, boolean-joined) only as
+a fallback when the fillet API raised. Live-probed, that version passed
+at only SOME of each post's 8 angles (e.g. `top_post_P1` solid at
+135/180/225° only) — not the all-or-nothing result the pass-9g
+investigation assumed. The real cause: `clipped_pillar_with_reach`'s own
+two-part design (a narrow full-height "core" plus a wider "sleeve" that
+gets radially CLIPPED away wherever the local inner-cavity boundary is
+tighter than the post's own radius) means the root edge is NOT a full
+circle — it's several disconnected arcs, and `fillets.createInput` (a
+real, valid feature) only reinforces the arcs it's given, leaving the
+clipped, core-only stretches with nothing at all.
+
+**Fix, in two steps, both confirmed live:**
+1. The 45-degree conical collar is now ALWAYS added, unconditionally —
+   a plain, full 360° solid of revolution (`cone_frustum_solid`, per
+   SPEC's own gotcha 5: a single-loop profile revolved, not a tapered
+   extrude), so `combine_join` adds its whole volume regardless of the
+   underlying pillar's own cross-section at that height. `ROOT_COLLAR_
+   RISE` = 1.5mm (≥ the brief's 1.2mm floor) for the top posts and case
+   bosses, `PEG_COLLAR_RISE` = 1.1mm for the small (Ø2.7/Ø3.0) compass
+   pegs/pads — both sized so the collar's own linear taper
+   (`added_radius(dz) = collar_rise - dz`) clears the gate's 0.6mm
+   requirement at dz=0.4mm with margin (1.1mm and 0.7mm respectively),
+   independent of the post/boss's own radius.
+2. The real-fillet attempt was REMOVED entirely (not just made
+   best-effort-and-ignored) after a second live finding: an intermediate
+   version that tried the fillet first and ALWAYS ALSO added the collar
+   passed `verify_root_fillets` cleanly, but an offline STL scan found 4
+   non-manifold edges on both Bottom and Top, at the exact boss radius
+   from boss A's and C's own centres, right at the collar/pillar seam —
+   the partial fillet arc and the collar's cone surface are both real,
+   correct geometry independently, but were never designed to be
+   tangent to each other, and the seam between them tessellates into a
+   sliver. Skipping the fillet attempt removes the interaction; the
+   collar alone was already sufficient for the strength gate on its own
+   (proven by the mag pegs/pads, which never had a fillet attempt at all
+   and never had a manifold issue), so nothing is lost. Both collar ends
+   also get a small 0.05mm overlap (`ROOT_COLLAR_OVERLAP`) into the
+   existing pillar/floor/ceiling material rather than exactly touching
+   it — the same defensive margin `add_mag_module`'s fence already uses
+   ("pushed 0.3mm PAST the nominal ceiling") against this identical class
+   of coincident-surface tessellation issue.
+
+**Coverage** — every post/boss listed in the brief, live-confirmed via
+the on-disk fillet-decision log (`_root_fillet_log.jsonl`, gitignored,
+written by `add_root_reinforcement`/`build()` so the per-feature method
+survives across the piecewise `fusion_mcp_execute` calls this pass used):
+Top plate posts P1–P4 (`add_top_posts`), case bosses A/B1/B2/C on BOTH
+halves — Bottom-side root at z=2.0 (the floor) and Top-side root at
+z=top_ceiling_underside_z (the ceiling) — and boss D on Bottom only
+(`add_case_boss`), plus the compass-mount pegs and pads (`add_mag_module`,
+'trim' only — the compass module is skipped on 'current' per
+`mag_module_fits`). **Method used, every single feature, both variants:
+conical collar** (`method='collar'` in the log) — no true fillet applied
+anywhere in the final code, for the reasons above; this is the honest
+answer to "say which you used per feature," not a partial mix. 17
+features on trim (13 posts/bosses + 4 compass pegs/pads), 13 on current
+(no compass module).
+
+The GPS frame and comms-stack frame walls (rectangular, not circular, so
+`add_root_reinforcement`'s edge-matching doesn't apply) each get a
+separate best-effort 0.6mm constant-radius fillet at their own
+floor/ceiling seam (`_best_effort_fillet_at_z`, new helper, same
+skip-on-failure pattern as `_best_effort_fillet`) — cosmetic/print-
+quality only per the brief's own "0.6mm is enough there," not gated by
+`verify_root_fillets`, and not independently re-confirmed live this pass
+(out of the time budget; a future pass could add a light probe the same
+way `verify_root_fillets` does for the circular features).
+
+**Print orientation unaffected**: the Top still prints face-down on its
+flat ceiling face, so every post/boss root (and its collar, always ≤
+`ROOT_COLLAR_RISE`/`PEG_COLLAR_RISE` past the nominal OD, sloped at 45°)
+sits at the BED side of that face — no new overhang. The offline overhang
+scan (below) stays clean on both variants with the existing whitelist,
+no new entries needed.
+
+### Item 2: KandiWooks wordmark — smaller, recentred, sprout-aware
+
+**Scale**: `WORDMARK_SCALE_FACTOR = 0.8` multiplies the existing
+`target_width` formula (`2 × (flat_rho - WORDMARK_EDGE_CLEARANCE)`) — 80%
+of the pass-9e usable width, both variants, computed from `flat_rho` so
+it stays correct if the flat bed's own radius ever changes again.
+
+**Vertical centring**: new `wordmark_vertical_span(p)` computes the
+usable y-span on the flat back face directly from existing, already-
+verified geometry — the lanyard lug's own `y_root` (`lug_ear_geometry`,
+whichever of its two candidate values reaches further toward the
+wordmark) plus `WORDMARK_VERTICAL_CLEARANCE` (1.5mm, matching
+`verify_wordmark`'s own clearance floor) on the south end, and screw D's
+counterbore radius plus the same 1.5mm on the north end. The two-line
+block is centred on this span's own midpoint — replacing the old fixed
+`params['wordmark_center']` y value (25.0) entirely; only the x-component
+(0.0, the case's own centreline) is still read from params. Live numbers:
+trim span `(-17.64, 56.25)` (73.89mm available, block occupies 24.51mm),
+current span `(-19.64, 56.25)` (75.89mm available) — large margin either
+way, so this was never a tight fit, just uncentred before.
+
+**Horizontal centring, ignoring the sprout**: new `_wordmark_split_
+sprout` separates the 'i' glyph's sprout flourish from its own dot+stem
+base within `kandiwooks_logo.json`'s Body1/loop[1] — the two are drawn as
+ONE continuous 70-point outline (not two separate loops, as a naive read
+of the pass-9e comment might suggest), found by locating the closed
+loop's two large (~2.6mm) Euclidean-gap edges (every other consecutive
+edge in the loop is under ~0.8mm) and taking the smaller of the two arcs
+they bound as the stem (4 points, x 6.87–7.89/y −0.36–2.3 — a normal
+letter-height quad) vs. the sprout (66 points, reaching y=5.27). KANDI's
+own x-centring (`_wordmark_place_word`'s new `x_center_bbox` parameter)
+now uses a bbox built from Body2/4/5's full loops plus ONLY Body1's stem
+sub-loop — live-confirmed the readable letters (K-a-n-d-i, sans sprout)
+land exactly on world x=0.0 (both variants), with the sprout hanging off
+to the right as designed (its own full geometry is untouched — only the
+CENTRING calculation excludes it; the sprout still counts toward KANDI's
+scale/height, since it's real debossed ink occupying real vertical
+space). WOOKS is unaffected (no sprout-like flourish to exclude).
+
+**`verify_wordmark` re-checked live, both variants, large margins
+throughout**:
+```
+trim:    edge_clearance 5.708, clearance_A/C 12.798, clearance_B1/B2 19.798,
+         clearance_D 26.188, clearance_lug_hole 29.688, deboss_present 0.363
+current: edge_clearance 6.108, clearance_A/C 10.702, clearance_B1/B2 17.702,
+         clearance_D 26.092, clearance_lug_hole 29.592, deboss_present 0.363
+```
+All well past the 1.5mm floor the gate itself enforces. Rendered
+`pass13_bottom_logo.png` / `pass13_current_bottom_logo.png` straight-on
+and looked at both — KANDI/WOOKS read correctly, smaller than pass-9e,
+vertically centred between the D-screw hole and the lug end, and the
+leaf/sprout glyph hangs cleanly off the 'i' to the right without
+dragging the readable letters off-centre.
+
+### Item 3: battery connector access through the Screen Plate
+
+**Located the connector**, per the brief's own instruction to find it in
+the inserted display occurrence: the ESP32-S3-Touch-LCD-1.46's own
+component tree (walked live via `find_display_occurrence` +
+`_collect_occ_bodies`/`childOccurrences`, ~424 bodies, mostly anonymous
+STEP-import "Body1"s) has exactly one 2-pin connector-shaped part with a
+real designator — `HP1_25MM-2P-SMT-HORIZONTAL` (a 1.25mm-pitch 2-pin
+horizontal SMT connector; the u.FL RF connector, `J6_ASM`, is the only
+other real connector-family part, ruled out by name and by being on the
+opposite/display side of the board). World bbox measured live on the
+built trim document: x `-11.32..-3.67`, y `32.80..38.00`, z
+`17.20..20.60` (trim, `display_z_offset=+3`) — stored in
+`params_current.py` as `battery_connector_bbox` un-offset back to the
+base/current frame (z `14.20..17.60`), with `display_z_offset` re-applied
+at read time via the new `battery_connector_world_bbox(p)`, same
+convention as every other display-relative z value in this file. Its
+z-range sits immediately below `display_pcb`'s own z (17.59 base) —
+consistent with "on the back of the display PCB."
+
+**Confirmed the plate covers it** before changing anything, per the
+brief's own "if it does not cover it, say so and change nothing": a live
+56/63-point grid probe at the plate's own mid-z, across the connector's
+footprint + 3mm margin, read solid plate material at every point except
+the 7 samples nearest the true edges of that margin — the plate does
+cover the connector, by a wide margin, on both variants (same XY
+footprint, same plate outline).
+
+**The cut**: new `battery_connector_window(p)` computes footprint +
+`BATTERY_CONNECTOR_MARGIN` (1.5mm) on every side, plus `BATTERY_
+CONNECTOR_LEAD_EXTRA` (6.0mm) on the −x ("west") side — the connector's
+own long axis is X (7.65mm) vs. Y (5.2mm, so X is the mating/lead axis),
+and its −x side faces open cavity toward the outer wall while its +x
+side faces further into the board's own interior, so −x is the side a
+lead/plug can actually approach from and where finger/tweezer room is
+needed. The window is then clamped generically against every Top-post
+and board-standoff hole (`p['top_posts']` + `p['board_standoffs']`, not
+hand-picked) so none loses more than `BATTERY_CONNECTOR_MIN_PLATE`
+(1.2mm) of surrounding plate material — only S2 (0.04, 32.22) is ever
+close enough to matter for the current layout, clamping the window's own
++x edge from −2.17 to exactly −2.36 (1.2mm net clearance to S2's hole,
+by construction). `add_battery_connector_access` cuts this window from
+the Screen Plate right after the existing button-plunger clearance cuts.
+
+**`verify_battery_connector_access` re-checked live, both variants**:
+`window_open` (24-point grid across the connector's own footprint, at
+the plate's mid-z) and `hole_clearance` (every P/S hole vs. the
+constructed window) both come back empty (pass) on trim and current.
+Rendered `pass13_plate_battery_window.png` / `pass13_current_plate_
+battery_window.png` (Screen Plate isolated, the real connector body lit
+up alongside it) and looked at both — the connector sits cleanly inside
+the cut window with visible clearance on every side.
+
+**Assembly order: unchanged.** The window makes the connector reachable
+with the plate already screwed on, in either order — plugging the
+battery before or after the plate no longer matters, so pass 9's
+documented order (display seated in Top, bay hardware placed in Bottom,
+then the halves joined, screen plate and its screws last) stands as-is;
+this pass adds "battery can be plugged/unplugged at any time after,
+through the new window" rather than changing any existing step.
+
+### `verify()` output, both variants, full piecewise run (each gate run
+as its own `fusion_mcp_execute` call against the same already-built
+document, per this file's own established workflow for calls that risk
+the ~60s client-side timeout)
+
+```
+trim:    body_names ['Bottom', 'Home Button', 'Power Button', 'Screen Plate', 'Top']
+         m1 probe bad [] / cavity bad []
+         root_fillet bad {}  (17 features, all pass at all 8 angles)
+         battery_access {'window_open': [], 'hole_clearance': []}
+         interference []
+         envelope bad [] / bump bad [] / export_env bad [] / clearance bad {}
+         posts_bosses bad [] / post_walls bad {}
+         wordmark: edge_clearance (True, 5.708), clearance_D (True, 26.188),
+                   clearance_lug_hole (True, 29.688), deboss_present (True, 0.363)
+         plunger bad [] / button_insertion bad [] / button_retention bad {}
+         stack3 {'stack_top_z': 22.942, 'clearance_found': 4.158, 'required': 0.8, 'ok': True}
+         skin bad [] / wall bad [] / fpc bad [] / antenna bad [] / mag bad [] / openings bad {}
+
+current: body_names ['Bottom', 'Home Button', 'Power Button', 'Screen Plate', 'Top']
+         m1 probe bad [] / cavity bad []
+         root_fillet bad {}  (13 features, all pass at all 8 angles)
+         battery_access {'window_open': [], 'hole_clearance': []}
+         interference []
+         envelope bad [] / bump bad [] / export_env bad [] / clearance bad {}
+         posts_bosses bad [] / post_walls bad {}
+         wordmark: edge_clearance (True, 6.108), clearance_D (True, 26.092),
+                   clearance_lug_hole (True, 29.592), deboss_present (True, 0.363)
+         plunger bad [] / button_insertion bad [] / button_retention bad {}
+         stack3 {'ok': True, 'note': 'no Wio/XIAO inserted, nothing to check'}
+         skin bad [] / wall bad [] / fpc bad [] / antenna bad [] / mag bad [] / openings bad {}
+```
+
+### Offline STL scan output (`tools/offline_stl_check.py`, pass 13)
+
+```
+=== Offline STL checks: trim ===
+Bottom: manifold (0 non-manifold edges), envelope ok, overhang bad_clusters_mm2 []
+Top:    manifold (0 non-manifold edges), envelope ok, overhang bad_clusters_mm2 []
+Screen_Plate / Power_Button / Home_Button: manifold ok, envelope ok
+OVERALL: PASS
+
+=== Offline STL checks: current ===
+Bottom: manifold (0 non-manifold edges), envelope ok, overhang bad_clusters_mm2 []
+Top:    manifold (0 non-manifold edges), envelope ok, overhang bad_clusters_mm2 []
+Screen_Plate / Power_Button / Home_Button: manifold ok, envelope ok
+OVERALL: PASS
+```
+(The intermediate fillet+collar version's 4-non-manifold-edge regression,
+found and root-caused mid-pass, is described in item 1 above and is
+fixed in this final code/export — not present in these numbers.)
+
+### Exports and renders (pass 13)
+
+Both variants: `export/<variant>/{Bottom,Top,Screen_Plate,Power_Button,
+Home_Button}.stl` (all 5 re-exported), `export/<variant>/firefly_
+<variant>_case.3mf` (native, 5 objects), `export/<variant>/firefly_
+<variant>_plate.3mf` (re-packed via `tools/stl_to_3mf.py`, same per-part
+orientation as every prior pass — Bottom as-is, Top `flipx`, Screen Plate
+as-is, Power Button `outer-x`, Home Button `outer-rz32.74`). Renders (new
+this pass, both variants unless noted): `pass13_bottom_logo.png` /
+`pass13_current_bottom_logo.png` (straight-on, item 2), `pass13_plate_
+battery_window.png` / `pass13_current_plate_battery_window.png` (Screen
+Plate + the real connector body, item 3), `pass13_post_root_closeup.png`
+(trim, P1, showing the collar's flare where it meets the ceiling),
+`pass13_boss_root_closeup.png` (trim, boss C) — plus the standard 4-view
+(`{trim,current}_{front,top,right,iso}.png`, re-rendered as a byproduct
+of the export run).
+
+### Known limitations / notes added this pass
+
+- **The GPS-frame/stack-frame wall fillets (0.6mm, `_best_effort_fillet_
+  at_z`) are not independently re-confirmed live this pass** — applied
+  in the same best-effort, skip-on-failure pattern as every other
+  cosmetic fillet in this file, not gated by any dimensional check, and
+  out of this pass's time budget to probe directly. A follow-up pass
+  could add a light live check the same way `verify_root_fillets` does
+  for the circular posts/bosses.
+- **No true Fillet feature is used anywhere in the post/boss root
+  reinforcement any more** — every one of the 17 (trim) / 13 (current)
+  reinforced roots uses the conical-collar fallback exclusively (see item
+  1's own writeup for the live-evidenced reason: a partial fillet plus a
+  collar creates a real non-manifold seam, and the collar alone was
+  already sufficient). This is a deliberate simplification, not a
+  regression — `fillet_r`/`tol` remain as (currently unused) parameters
+  on `add_root_reinforcement` for a future pass that wants to retry a
+  real fillet with a different edge-selection strategy (e.g. restricting
+  it to posts/bosses whose full root loop is confirmed circular first).
+- **`_root_fillet_log.jsonl`** (a small JSON-lines file written by
+  `add_root_reinforcement`/`build()` under `hardware/case/`, one line per
+  reinforced feature) is a debugging/reporting aid for this pass's own
+  investigation, not a generator input or output — it is not tracked in
+  git (see `.gitignore`) and can be safely deleted; a fresh `build()` run
+  recreates it.
+
 ## Screw list
 
 **2026-09-07 pass 7: boss B split into B1/B2** (its old single position
@@ -3497,17 +3817,20 @@ reason" per the milestone instructions.
     constraint on how the case must be assembled and is documented here
     per the "any deviation from SPEC.md" reporting requirement (SPEC.md
     does not specify an assembly order).
-15. **The lip/anchor ring's seam chamfer (finding 6) and the top-post
+15. ~~The lip/anchor ring's seam chamfer (finding 6) and the top-post
     root fillets (finding 4) are best-effort Fusion chamfer/fillet
-    features**, same pattern as `add_
-    lug`'s corner fillets elsewhere in this file — skipped (not fatal)
-    if the feature call itself fails on a given edge selection. Confirmed
-    present in the built timeline this pass (1 `Chamfer` + 4 `Fillet`
-    features, both variants) and confirmed clean by the offline overhang
-    scan, but there is no dedicated live geometric probe that the
-    chamfer/fillets specifically exist beyond that indirect evidence —
-    a follow-up pass could add one (e.g. a point-containment check just
-    outside the un-chamfered corner's theoretical position).
+    features~~ **root fillets RESOLVED 2026-09-07 (pass 13, item 1)**:
+    the top-post fillet (still a real, best-effort 1.0mm
+    `fillets.createInput` call, unchanged since pass 9) is superseded by
+    `add_root_reinforcement`, live-probed via the new `verify_root_
+    fillets` gate — see pass 13's own section below for the full
+    investigation (a plain fillet only reaches ~0.2mm of real material at
+    the probe height even when it applies; the actual, root-caused fix is
+    a 45-degree conical collar, boolean-joined, on every post AND every
+    case boss A/B1/B2/C/D, not just the 4 top posts this item used to
+    describe). The lip/anchor ring's OWN seam chamfer (a `chamferFeatures`
+    call, a different feature from the post/boss fillets) is untouched by
+    pass 13 and remains best-effort/unprobed as originally described here.
 16. **`rib_inboard_offset` (nominal 6.0mm) is now a per-button EFFECTIVE
     value, not a flat constant** (pass 9b, finding 9's collateral fixes):
     `button_geometry` shifts it dynamically (toward the wall) only when
