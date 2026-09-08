@@ -14,7 +14,8 @@ void ff_gesture_cfg_default(ff_gesture_cfg_t *cfg, int16_t cx, int16_t cy, int16
     cfg->cx = cx;
     cfg->cy = cy;
     cfg->r  = r;
-    cfg->rim_px          = 28;
+    cfg->back_rim_px     = 44; /* ff_gesture.h's "Edge tolerance" section — widened from a shared rim_px=28 */
+    cfg->home_rim_px     = 64; /* ditto — widened from a shared rim_px=28 */
     cfg->back_travel_px  = 56;
     cfg->home_travel_px  = 64;
     cfg->axis_lock_px    = 24;
@@ -23,6 +24,7 @@ void ff_gesture_cfg_default(ff_gesture_cfg_t *cfg, int16_t cx, int16_t cy, int16
     cfg->long_slop_px    = 12;
     cfg->long_press_enabled = false; /* the glue arms this per active face */
     cfg->stall_gap_ms   = 150; /* ff_gesture.h's "Stall tolerance" section */
+    cfg->edge_slop_px   = 16;  /* ff_gesture.h's "Edge tolerance" section */
 }
 
 void ff_gesture_init(ff_gesture_t *g, const ff_gesture_cfg_t *cfg)
@@ -41,13 +43,16 @@ void ff_gesture_set_long_press(ff_gesture_t *g, bool enabled)
     g->cfg.long_press_enabled = enabled;
 }
 
-/* in_circle — squared-distance compare, no sqrt needed: dist^2 <= r^2. */
+/* in_circle — squared-distance compare, no sqrt needed: dist^2 <= r^2.
+ * Padded by cfg->edge_slop_px (ff_gesture.h's "Edge tolerance" section)
+ * — admission only; every OTHER use of cfg->r (the rim-zone formulas)
+ * stays exact. */
 static bool gesture_in_circle(ff_gesture_cfg_t const *cfg, int16_t x, int16_t y)
 {
     int32_t const ddx = (int32_t)x - (int32_t)cfg->cx;
     int32_t const ddy = (int32_t)y - (int32_t)cfg->cy;
     int32_t const dist_sq = ddx * ddx + ddy * ddy;
-    int32_t const r = (int32_t)cfg->r;
+    int32_t const r = (int32_t)cfg->r + (int32_t)cfg->edge_slop_px;
     return dist_sq <= r * r;
 }
 
@@ -88,8 +93,8 @@ ff_gesture_kind_t ff_gesture_feed(ff_gesture_t *g, bool down, int16_t x, int16_t
         }
 
         g->phase = FF_GESTURE_PHASE_TRACKING;
-        g->back_alive = (x <= (int16_t)(g->cfg.cx - g->cfg.r + g->cfg.rim_px));
-        g->home_alive = (y >= (int16_t)(g->cfg.cy + g->cfg.r - g->cfg.rim_px));
+        g->back_alive = (x <= (int16_t)(g->cfg.cx - g->cfg.r + g->cfg.back_rim_px));
+        g->home_alive = (y >= (int16_t)(g->cfg.cy + g->cfg.r - g->cfg.home_rim_px));
         g->long_alive = g->cfg.long_press_enabled;
         return FF_GESTURE_NONE; /* a DOWN sample itself never recognises anything */
     }
