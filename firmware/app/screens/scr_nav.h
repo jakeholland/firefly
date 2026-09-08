@@ -24,19 +24,61 @@ extern "C" {
 
 /**
  * ff_scr_button_create — the ONE way any screen file makes an LVGL button.
- * `lv_button_create` + `lv_obj_clear_flag(btn, LV_OBJ_FLAG_PRESS_LOCK)`.
  *
- * LVGL sets `LV_OBJ_FLAG_PRESS_LOCK` ("keep the object pressed, and still
- * fire LV_EVENT_CLICKED on release, even if the press slid off it") on
- * every object by default (lv_obj.c). Left set, a real finger — or the
- * sim's drag/gesture harness — that presses a control and slides off
- * before lifting STILL commits that control's tap on release. At a
- * festival, on a 412px round glass, with one thumb: a press that starts
- * on FLARE or Power-off and slides away (a stumble, a drag gesture that
- * merely passes over the control) must never fire — sliding off is the
- * one universal "I changed my mind" gesture LVGL almost doesn't give you
- * for free.
+ * fix/tap-lost-midpress-rebuild (2026-09-07) amendment — read this before
+ * touching the PRESS_LOCK flag on this button; the history below is not
+ * incidental, it is what the CURRENT mechanism has to preserve.
  *
+ * ## The two conflicting requirements
+ * (1) A press that starts on a control and SLIDES well away before
+ *     lifting must never commit that control's tap (the #145/#148/banner
+ *     history two paragraphs down) — a stumble, or a drag gesture that
+ *     merely passes over FLARE or Power-off, must read as "I changed my
+ *     mind", not a tap.
+ * (2) A press that never meaningfully moves — a stationary finger, on a
+ *     412px round glass whose touch controller (especially before this
+ *     puck's own touch calibration ritual has run — S21's "ship
+ *     uncalibrated by default" honest-data rule) reports a few px of raw
+ *     coordinate noise around the true contact point — must still commit
+ *     on release. Every ~33ms LVGL indev poll, LVGL re-hit-tests the
+ *     CURRENT point from scratch UNLESS the pressed object carries
+ *     `LV_OBJ_FLAG_PRESS_LOCK` (`indev_proc_press`, lv_indev.c): with the
+ *     flag cleared — which used to be this function's ENTIRE
+ *     implementation, see below — even a one-sample, sub-hit-rect
+ *     excursion that snaps right back the very next poll permanently
+ *     clears LVGL's internal `pointer.pressed` bit for the rest of that
+ *     touch (it can only become true again on a fresh RELEASED->PRESSED
+ *     transition), so `indev_proc_release` never delivers CLICKED even
+ *     though the SAME object is still what the finger is visually
+ *     resting on at release. This is the maintainer's on-glass bench
+ *     report this fix is named for ("most taps take a few tries" on
+ *     Inbox/Compose/Signals — logged with `move=0px` at the app's own,
+ *     coarser gesture-engine threshold, i.e. exactly the class of
+ *     movement too small to matter anywhere else in this codebase but
+ *     large enough to trip LVGL's zero-tolerance re-search) — see
+ *     docs/specs/S26-device-lifecycle.md's dated amendment for the full
+ *     trace and diagnosis.
+ *
+ * ## The fix: PRESS_LOCK stays SET (LVGL's default); slide-off-cancels is
+ * now enforced explicitly, with a real distance tolerance
+ * `ff_scr_button_pressing_cb` (scr_nav.c) tracks the DOWN point and
+ * calls `lv_indev_wait_release()` — the exact function
+ * `app/ff_gesture_glue.c` already uses for BACK/HOME — the first time
+ * total displacement exceeds `FF_SCR_BUTTON_SLIDE_CANCEL_PX` (scr_nav.c;
+ * reuses `ff_gesture_cfg_t.long_slop_px`'s own precedent, 12px, for "this
+ * is still basically a stationary press"). `lv_indev_wait_release` makes
+ * every remaining `indev_proc_press` call for this touch a no-op and
+ * fires PRESS_LOST (not CLICKED) on release — same mechanism, same
+ * observable "never commits" result the old PRESS_LOCK-clearing achieved
+ * for a REAL 150px slide (`test_scr_intent.c`'s `PL_*_drag_off_*` /
+ * `S99_compose_drag_off_*` / `S26e_launcher_drag_across_satellites_
+ * emits_nothing` family — all still pass, unmodified, because every one
+ * of them drags well past 12px) — but with PRESS_LOCK left SET, LVGL's
+ * own per-poll re-search never runs at all, so a few px of raw touch
+ * noise that never reaches OUR threshold can no longer touch
+ * `pointer.pressed` in the first place.
+ *
+ * ## Origin of the requirement PRESS_LOCK-clearing used to satisfy
  * This was found and fixed per-screen, twice, before being generalized
  * here: the launcher hub/satellites (#145, `scr_launcher.c`) and compose's
  * keypad/chips (#148, `scr_compose.c`'s retired `compose_clear_press_lock`)
@@ -45,8 +87,9 @@ extern "C" {
  * `lv_button_create` directly, everywhere in `app/screens/` — see
  * `test_scr_intent.c`'s drag-off tests (the `S99_compose_drag_off_*` /
  * `S26e_launcher_drag_across_satellites_emits_nothing` family, and the
- * per-face ones this fix's own PR added) for the real-indev proof that a
- * slide-off emits nothing while a stationary tap still does.
+ * per-face `PL_*_drag_off_*` ones) for the real-indev proof that a real
+ * slide-off still emits nothing while a stationary tap — even a jittery
+ * one — still does.
  */
 lv_obj_t *ff_scr_button_create(lv_obj_t *parent);
 

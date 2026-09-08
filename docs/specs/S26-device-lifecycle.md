@@ -425,6 +425,180 @@ opposite outcome from that harness's shared logic. No golden changed
 (92/92 byte-identical against committed goldens) — this amendment
 changes input delivery timing, not any rendered pixel.
 
+**AMENDED 2026-09-07, fix/tap-lost-midpress-rebuild — "most taps take a
+few tries" on Inbox/Compose/Signals; the finger-down rebuild gate was
+innocent.** Maintainer bench trace, Jake's puck on main `72324ab`,
+logging in the gesture glue's indev event callback (`LV_EVENT_ALL` on
+the indev, `app/ff_gesture_glue.c`):
+
+```
+INBOX   (187,160) dur=184ms move=0px -> RELEASED            (no click)
+INBOX   (143,167) dur=189ms move=0px -> RELEASED            (no click)
+INBOX   (199,181) dur=119ms move=0px -> RELEASED SHORT_CLICKED CLICKED
+COMPOSE (215,168) dur=185ms move=0px -> RELEASED            (no click)
+COMPOSE (216,166) dur=191ms move=0px -> RELEASED            (no click)
+COMPOSE (210,168) dur= 40ms move=0px -> RELEASED SHORT_CLICKED CLICKED
+COMPOSE ( 78,108) dur=221ms move=0px -> RELEASED            (no click)
+COMPOSE (101,261) dur=188ms move=0px -> RELEASED            (no click)
+COMPOSE (104,261) dur=189ms move=0px -> RELEASED            (no click)
+COMPOSE ( 97,262) dur=240ms move=0px -> RELEASED SHORT_CLICKED CLICKED
+COMPOSE ( 78,213) dur=390ms move=0px -> RELEASED            (no click)
+COMPOSE ( 74,209) dur=429ms move=0px -> RELEASED            (no click)
+COMPOSE (224,216) dur=280ms move=0px -> RELEASED SHORT_CLICKED CLICKED
+```
+
+Roughly half of motionless taps produced RELEASED with no CLICKED. No
+`touch swallowed` and no `i2c bus busy` lines fired, and the gesture
+engine's own poll (every 20 ms) saw a continuous PRESSED indev state
+throughout every one of these — the touch input itself was fine; LVGL's
+internal `pointer.pressed` bit was the thing going false.
+
+**First, what this ISN'T (verified, not assumed):** the coordinator's
+initial reading suspected the SAME class of bug the 2026-09-04 amendment
+above fixed — something tearing down and rebuilding the widget under a
+still-held finger, either via a race in the finger-down rebuild gate or
+a second, ungated `lv_obj_clean`/`ff_face_build` call site outside it.
+Both were run down and ruled out:
+
+  - Every `lv_obj_clean`/`ff_face_build`(`ff_build_face_screen`) call
+    site in both targets was enumerated (grep, not sampling) — the ONE
+    per-frame gated call in `app_main.c` (mirrored exactly by
+    `ff_sim_lifecycle_pump`, `targets/sim/sim_lifecycle.c`) is the only
+    call site reachable during ordinary use; the others are one-shot
+    boot/calibration-recovery builds that cannot race a live tap.
+  - The gate's own lock discipline was re-verified directly against the
+    vendored `esp_lvgl_port` 2.9.0 source
+    (`managed_components/espressif__esp_lvgl_port/src/lvgl9/
+    esp_lvgl_port.c`): `lvgl_port_task`'s loop calls `lv_indev_read()`
+    (where the touch read callback sets `s_touch_raw_down`) and
+    `lv_timer_handler()` back to back under the SAME non-blocking
+    `lvgl_port_lock(0)` — confirming the 2026-09-04 amendment's own
+    claim, not just trusting its comment.
+  - `firmware/targets/sim/tests/test_ctl_rebuild_under_finger_screens.c`
+    (new) generalizes `test_ctl_rebuild_under_finger.c`'s launcher-only
+    proof to the three faces this report actually named — an Inbox
+    row, a Compose T9 key, and a Settings row, each held through a
+    genuine dirty tick (an inbound message from a freshly-paired
+    sender, the SAME producer the existing launcher test uses) —
+    asserting object identity and PRESSED survive, and CLICKED still
+    lands on release. All three **pass on main, unmodified** — the
+    finger-down rebuild gate already generalizes correctly; it was
+    never this report's cause.
+
+**The real root cause: `ff_scr_button_create` (`app/screens/scr_nav.c`)
+clears `LV_OBJ_FLAG_PRESS_LOCK` on every button in the app, and LVGL's
+per-poll re-hit-test has zero tolerance for it.** `indev_proc_press`
+(vendored `lvgl__lvgl` 9.5.0, `src/indev/lv_indev.c`) re-runs
+`pointer_search_obj()` at the indev's CURRENT point on every ~33ms poll
+whenever the pressed object lacks `PRESS_LOCK` — not gated on how far
+the point moved, just "what is under this exact pixel right now". If
+that search ever returns anything other than the object already tracked
+as pressed — even for ONE poll, even if the very next poll finds the
+SAME object again — LVGL treats it as "a new object was found" and sets
+`indev->pointer.pressed = (indev->prev_state == RELEASED)`. Mid-hold,
+`prev_state` is PRESSED, so this evaluates false and **stays** false for
+the rest of that touch (it can only become true again on a fresh
+RELEASED→PRESSED transition) — so `indev_proc_release`'s `if
+(scroll_obj == NULL) { if (pointer.pressed) { deliver CLICKED } }` never
+fires, even though the SAME widget is exactly what the finger is resting
+on at release. No rebuild, no deletion, no second object even alive:
+`act_obj` at release time correctly reads back the original button.
+
+`ff_scr_button_create` clears PRESS_LOCK deliberately, for a real and
+separately-necessary reason (#145/#148, the launcher-hub/compose-keypad
+slide-off-cancels-a-tap fix, generalized into this one choke point): "a
+press that starts on FLARE or Power-off and slides away before lifting
+must never commit" (see `scr_nav.h`'s own doc comment, pre-amendment).
+LVGL's `PRESS_LOCK` is the only flag governing this, and it is binary —
+set, and ANY excursion (a deliberate 150px slide, or a single-poll 2px
+wobble) is tolerated and still commits on release; cleared, and NEITHER
+is. The #145/#148 fix chose "clear it, tolerate nothing" to correctly
+stop the slide; the untested side effect is that it ALSO stops a
+control from surviving a touch-controller's own raw coordinate noise —
+which matters most exactly where a press is most likely to sit, near a
+control's edge rather than dead-center, and exactly on a puck that ships
+"touch uncalibrated by default" (S21's own honest-data rule,
+`firefly-touch-cal-default.md`) rather than pre-loading a factory
+calibration that would otherwise narrow this noise.
+
+**The fix:** `ff_scr_button_create` now leaves `LV_OBJ_FLAG_PRESS_LOCK`
+SET (LVGL's own default) — so the zero-tolerance re-search above never
+runs at all for an already-pressed button — and enforces slide-off-
+cancels-a-tap EXPLICITLY and TOLERANTLY instead: a new PRESSED/PRESSING
+event pair on the button itself tracks the touch's down point and calls
+`lv_indev_wait_release()` — the SAME function `app/ff_gesture_glue.c`
+already uses for the BACK/HOME edge-swipe gestures — the first time
+total displacement from that down point exceeds
+`FF_SCR_BUTTON_SLIDE_CANCEL_PX` (12px; reuses `ff_gesture_cfg_t.
+long_slop_px`'s own precedent value and reasoning — core/include/
+ff_gesture.h's G3 doc comment — "how much wobble is still basically a
+stationary press", made once already for the exact same class of noise
+on the exact same glass). `lv_indev_wait_release` makes every remaining
+`indev_proc_press` call for that touch a no-op and fires `PRESS_LOST`
+(never `CLICKED`) on release (`lv_indev.c`'s own `wait_until_release`
+handling) — the identical observable "never commits" outcome the old
+PRESS_LOCK-clearing produced for a real slide, just with a 12px floor
+under it instead of a single raw pixel. Full mechanism and history:
+`scr_nav.h`'s doc comment on `ff_scr_button_create`.
+
+One collateral finding, caught by `test_face_hit_targets` rather than
+assumed away: adding the new PRESSED/PRESSING callbacks BEFORE the
+existing tap-sound `CLICKED` callback regressed that sweep from 0 to 54
+adjacency-floor violations against real, committed fixtures. Cause:
+the sweep's own "are these two pills really ONE composite control"
+exclusion (`sweep_same_composite_control`) identifies a button purely by
+`lv_obj_get_event_dsc(obj, 0)` — event descriptor INDEX 0's callback
+and user_data — and every button in the app happens to share the exact
+same tap-sound callback (`ff_scr_button_tap_sound_cb`, always `NULL`
+user_data) at that index, which is what lets a toggle row's two pills
+(sharing one real `cb`) register as one composite control at all.
+Adding the new tracking callbacks FIRST put a per-button-unique
+`malloc`'d pointer at index 0 instead, which — correctly, by the
+sweep's own rule, but not the intended effect — made no two buttons in
+the app look like the same composite control anymore. Fixed by keeping
+the tap-sound `CLICKED` registration first (`scr_nav.c`'s own comment
+on the ordering has the full derivation); the new tracking callbacks
+register after it and are unaffected by their own position, since LVGL
+dispatches by event code, not by index.
+
+**Tests** (fail-first, confirmed against a temporarily-reverted
+`scr_nav.c`/`scr_nav.h` before landing the fix, then confirmed green
+after):
+  - `firmware/app/screens/tests/test_scr_intent.c`'s new
+    `S26_compose_key_survives_a_tiny_edge_jitter_and_still_commits` —
+    presses the Compose DEF key 3px inside its own top edge (near the
+    boundary, not dead-center — where the bug needs a press to start),
+    jitters 5px total (2px PAST the edge into the inter-key gap, then
+    straight back to the down point — comfortably under the 12px
+    tolerance above), releases at the SAME point it started. **Fails on
+    main** (`s_spy.count` reads 0); **passes** with the fix.
+    Unmodified, this file's whole existing `S99_compose_drag_off_*` /
+    `S26e_launcher_drag_across_satellites_emits_nothing` /
+    `PL_*_drag_off_*` family (every real 150px+ drag-off proof from
+    #145/#148's own generalization) still passes — a genuine slide is
+    still cancelled, only a few-px in-place jitter now survives.
+  - `firmware/targets/sim/tests/test_ctl_rebuild_under_finger_screens.c`
+    (new, described above) — not fail-first for THIS bug (the finger-
+    down rebuild gate was never broken), but locks in, as permanent
+    regression coverage, the property the coordinator's initial
+    diagnosis asked to verify: an Inbox row / Compose key / Settings
+    row survives a genuine mid-press dirty tick with its object
+    identity and PRESSED state intact, and its CLICKED still lands on
+    release.
+
+**Gates:** clang and gcc-14 sim builds, zero warnings; `ctest --test-dir
+build` 75/75 (74 pre-existing + the 2 new files above; one pre-existing
+test, `test_scr_intent`, gained the one new `RUN_TEST` line), on both
+compilers; no golden changed (`test_png_diff` green on both builds —
+this fix changes input-event handling, not any rendered pixel);
+`idf.py build` (`firmware/targets/esp32s3`, sdkconfig copied from the
+real device config plus `CONFIG_FF_DEBUG_CONSOLE=y`/
+`CONFIG_FF_COMPASS=y`, built to a scratch directory, not flashed) clean.
+Does not touch `scr_settings.c`'s DIAGNOSTICS section or its scroll
+persistence (a concurrent, unrelated fix on `fix/diag-scroll-persist`
+owns that file's diagnostics area) — this fix's only settings-adjacent
+test presses the DISPLAY section's CLOCK toggle instead.
+
 ### (d) `ff_notify` + message banner
 Core `ff_notify` as above (queue depth 4, FIFO, expiry, `dismiss`, `pop`).
 Shell: an incoming MESSAGE / RALLY (paired sender) enqueues a BANNER; the
