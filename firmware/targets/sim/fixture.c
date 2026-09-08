@@ -1448,6 +1448,16 @@ static ff_fixture_result_t fx_parse_diag(fx_ctx_t const *c, int obj_i, ff_app_di
         d->free_heap_bytes = (uint32_t)fx_num(c, t, 0.0);
     }
 
+    /* 7. Mic (S30) — same flat, `has_*`-derived-from-presence convention
+     * as every field above: a fixture that wants "MIC absent" simply
+     * omits all four keys (mic_present's own zero-init default is
+     * false), matching what the sim itself reports on a real target
+     * with no ff_mic hardware (ff_shell_set_mic_status never called). */
+    if (fx_obj_get(c, obj_i, "mic_present", &t)) d->mic_present = fx_bool(c, t, false);
+    if (fx_obj_get(c, obj_i, "mic_running", &t)) d->mic_running = fx_bool(c, t, false);
+    if (fx_obj_get(c, obj_i, "has_mic_level", &t)) d->has_mic_level = fx_bool(c, t, false);
+    if (fx_obj_get(c, obj_i, "mic_envelope_dbfs", &t)) d->mic_envelope_dbfs = (float)fx_num(c, t, 0.0);
+
     return FF_FIXTURE_OK;
 }
 

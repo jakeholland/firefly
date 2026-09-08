@@ -59,6 +59,7 @@
 #include "ff_gesture_glue.h" /* S28 slice b — on-glass BACK/HOME/long-press-flare */
 #include "ff_idle.h"       /* S26 slices c+f — core: inactivity -> dim -> screen off -> light sleep */
 #include "ff_intent.h"
+#include "ff_mic.h"        /* S30 — onboard I2S1 mic HAL */
 #include "ff_nvs_store.h" /* S21 §4 — the real NVS-backed store */
 #include "ff_power.h"      /* S25 — battery keep-alive latch (must fire first) + S26b PWR/BOOT sampling */
 #include "ff_power_fsm.h"  /* S26 slice b — core: the press-timing FSM + reboot BOOT-release guard */
@@ -1303,6 +1304,95 @@ static void dbgconsole_perf(void *hook_user, ff_dbgconsole_reply_fn reply, void 
     }
 }
 
+/* `ff_dbgconsole_mic_fn` (ff_debug_console.h, S30) — the `mic`/`mic on`/
+ * `mic off`/`mic watch <secs>` bench commands' one platform hook. Calls
+ * `ff_mic_status`/`ff_mic_start`/`ff_mic_stop`/`ff_mic_level` directly —
+ * unconditionally, no `#if CONFIG_FF_MIC` guard here, mirroring
+ * `dbgconsole_compass_status`'s own unguarded shape above (this HAL is
+ * always linked; with CONFIG_FF_MIC=n, `ff_mic_init` was never called
+ * from app_main's own bring-up above, so `ff_mic_status().present`
+ * honestly reads false forever — the exact same "component always
+ * linked, only the init call site is source-gated" precedent
+ * ff_compass already established). */
+static void dbgconsole_mic_status_line(char *out, size_t cap)
+{
+    ff_mic_status_t const st = ff_mic_status();
+    if (!st.present) {
+        snprintf(out, cap, "dbg: mic present=0");
+        return;
+    }
+    ff_mic_level_t const lvl = ff_mic_level();
+    snprintf(out, cap,
+             "dbg: mic present=1 running=%d rate_hz=%u frames=%u errs=%u age_ms=%u rms_dbfs=%.1f peak_dbfs=%.1f "
+             "env_dbfs=%.1f",
+             st.running ? 1 : 0, (unsigned)st.sample_rate_hz, (unsigned)st.frames_read, (unsigned)st.read_errors,
+             (unsigned)st.last_read_age_ms, (double)lvl.rms_dbfs, (double)lvl.peak_dbfs, (double)lvl.envelope_dbfs);
+}
+
+/* `mic watch <secs>` — see ff_dbgconsole_mic_fn's own doc comment
+ * (ff_debug_console.h) for why this deliberately BLOCKS the calling
+ * (render-loop) task for up to `watch_secs` seconds rather than ticking
+ * asynchronously: the deliverable's own "print once per 250ms for up to
+ * 30s, then stop" is a small, explicitly-bounded bench diagnostic, and a
+ * blocking loop here is far simpler and lower-risk than threading a
+ * multi-second async state machine through the render loop's own per-
+ * frame poll for a command that is never issued during ordinary
+ * operation (this console only exists at all with a bench USB cable
+ * plugged in — see dbgconsole_poll's own top comment). Feeds THIS task's
+ * own TWDT subscription (esp_task_wdt_reset, ff_configure_task_watchdog)
+ * every iteration so a full 30s watch never trips it — the outer render
+ * loop's own once-per-iteration reset (below, in the main loop body)
+ * cannot run while this call has not yet returned. */
+static void dbgconsole_mic_watch(uint32_t watch_secs, ff_dbgconsole_reply_fn reply, void *reply_user)
+{
+    enum { FF_MIC_WATCH_PERIOD_MS = 250u };
+    uint32_t const n_prints = (watch_secs * 1000u) / FF_MIC_WATCH_PERIOD_MS;
+
+    for (uint32_t i = 0; i < n_prints; i++) {
+        esp_task_wdt_reset();
+        vTaskDelay(pdMS_TO_TICKS(FF_MIC_WATCH_PERIOD_MS));
+
+        ff_mic_status_t const st = ff_mic_status();
+        char line[112];
+        if (!st.present) {
+            snprintf(line, sizeof(line), "dbg: mic watch present=0");
+        } else {
+            ff_mic_level_t const lvl = ff_mic_level();
+            snprintf(line, sizeof(line), "dbg: mic watch rms_dbfs=%.1f peak_dbfs=%.1f env_dbfs=%.1f",
+                     (double)lvl.rms_dbfs, (double)lvl.peak_dbfs, (double)lvl.envelope_dbfs);
+        }
+        reply(reply_user, line);
+    }
+    esp_task_wdt_reset();
+    reply(reply_user, "dbg: mic watch done");
+}
+
+static void dbgconsole_mic(void *hook_user, ff_dbgconsole_mic_action_t action, uint32_t watch_secs,
+                            ff_dbgconsole_reply_fn reply, void *reply_user)
+{
+    (void)hook_user;
+    char line[112];
+    switch (action) {
+    case FF_DBGCONSOLE_MIC_STATUS:
+        dbgconsole_mic_status_line(line, sizeof(line));
+        reply(reply_user, line);
+        return;
+    case FF_DBGCONSOLE_MIC_ON:
+        ff_mic_start();
+        dbgconsole_mic_status_line(line, sizeof(line));
+        reply(reply_user, line);
+        return;
+    case FF_DBGCONSOLE_MIC_OFF:
+        ff_mic_stop();
+        dbgconsole_mic_status_line(line, sizeof(line));
+        reply(reply_user, line);
+        return;
+    case FF_DBGCONSOLE_MIC_WATCH:
+        dbgconsole_mic_watch(watch_secs, reply, reply_user);
+        return;
+    }
+}
+
 /* Drain whatever the USB host has sent since the last frame (non-
  * blocking: ticks_to_wait=0) into the line accumulator, dispatching on
  * every '\n' and tolerating a preceding '\r' (ff_dbgcmd_parse's own CRLF
@@ -1329,7 +1419,8 @@ static void dbgconsole_poll(ff_shell_t *sh, uint32_t now_ms)
                 if (!s_dbgconsole_discarding) {
                     ff_dbgconsole_handle_line(sh, s_dbgconsole_line, s_dbgconsole_line_len, now_ms,
                                                dbgconsole_reply_write, NULL, dbgconsole_i2c_scan,
-                                               dbgconsole_compass_status, dbgconsole_i2c_health, dbgconsole_perf);
+                                               dbgconsole_compass_status, dbgconsole_i2c_health, dbgconsole_perf,
+                                               dbgconsole_mic);
                 }
                 s_dbgconsole_line_len = 0u;
                 s_dbgconsole_discarding = false;
@@ -1609,6 +1700,26 @@ void app_main(void)
     if (audio_err != ESP_OK) {
         ESP_LOGE(TAG, "ff_audio_init failed (%s) — continuing bring-up with sound disabled", esp_err_to_name(audio_err));
     }
+
+#if CONFIG_FF_MIC
+    /* S30 — bring up the onboard I2S1 mic right alongside the speaker
+     * bring-up just above: unlike ff_compass, this HAL shares no I2C
+     * bus, no display bring-up dependency, and (deliberately — see
+     * ff_mic.h's own wiring citation) no I2S PORT with ff_audio's own
+     * I2S0 speaker channel, so there is no boot-order constraint tying
+     * it to panel/LVGL bring-up the way ff_audio's OWN fix/audio-init-
+     * order-seed-silence history documents for itself. Off by default
+     * (ff_mic_init allocates the channel but leaves the reader task
+     * idle — ff_mic.h's "Power policy") — nothing here starts it; the
+     * bench console's `mic on` (dbgconsole_mic below) or a future S29/
+     * Music face is what will. Non-fatal on failure, same "log and
+     * continue" posture as every other HAL bring-up in this file — a
+     * puck with no working mic still boots and is fully usable. */
+    esp_err_t const mic_err = ff_mic_init();
+    if (mic_err != ESP_OK) {
+        ESP_LOGE(TAG, "ff_mic_init failed (%s) — continuing bring-up with mic disabled", esp_err_to_name(mic_err));
+    }
+#endif
 
     /* S27 sounds — bind the TAP seam here too, alongside ff_audio_init
      * (moved from its old spot inside STAGE 3's touch bring-up below).
@@ -2502,6 +2613,19 @@ void app_main(void)
 #else
             ff_shell_set_device_stats(&s_shell, true, (uint32_t)free_heap, FF_APP_MAG_NONE, FF_APP_IMU_ABSENT);
 #endif
+
+            /* S30 — MIC row (Settings -> DIAGNOSTICS), same 2s cadence as
+             * the free-heap/compass push just above (docs/specs/S30-
+             * audio-input.md's own "cadence" note). Unconditional call,
+             * no `#if CONFIG_FF_MIC` here — see dbgconsole_mic's own
+             * comment for why this HAL is safe (and honest) to read
+             * regardless of the Kconfig gate. */
+            {
+                ff_mic_status_t const mst = ff_mic_status();
+                ff_mic_level_t const mlvl = ff_mic_level();
+                bool const has_level = mst.present && mst.running && (mst.frames_read > 0u);
+                ff_shell_set_mic_status(&s_shell, mst.present, mst.running, has_level, mlvl.envelope_dbfs);
+            }
         }
 
         /* S26 slice c — the idle decision itself: ticked every frame
@@ -2519,9 +2643,19 @@ void app_main(void)
          * esp_light_sleep_start() below. Same OR composition as a
          * two-source inhibit already needs (usb_connected here is
          * itself already a single source; audio just adds a second),
-         * neither source alone owns the parameter. */
+         * neither source alone owns the parameter.
+         *
+         * S30 mic bring-up adds a THIRD source: `ff_mic_status().running`
+         * — the I2S1 RX channel is actively DMA'ing while the mic reader
+         * task is on, and light sleep mid-frame would drop or corrupt
+         * whatever the DMA was in the middle of, the same "don't cut off
+         * in-flight I2S work" reasoning ff_audio_busy() already applies
+         * to the speaker's I2S0 TX channel. Unconditional call (no `#if
+         * CONFIG_FF_MIC`) — see dbgconsole_mic's own comment; `running`
+         * honestly reads false forever with the Kconfig gate off or the
+         * mic never started, contributing nothing to this OR. */
         bool const keep_awake = ff_shell_keep_awake(v, false);
-        bool const sleep_inhibit = usb_connected || ff_audio_busy();
+        bool const sleep_inhibit = usb_connected || ff_audio_busy() || ff_mic_status().running;
         ff_idle_state_t const idle_state = ff_idle_tick(&s_idle, now_ms, keep_awake, sleep_inhibit);
 
         /* Backlight enact — the VALUE is core's decision

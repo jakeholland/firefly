@@ -937,6 +937,12 @@ typedef struct {
     char     fw_build_date[16];
     bool     has_free_heap; /* device only — always false on the sim (no esp-idf heap allocator to query) */
     uint32_t free_heap_bytes;
+
+    /* --- 7. Mic (S30, docs/specs/S30-audio-input.md) --- */
+    bool  mic_present;   /* false = init failed, or no-data for 1s straight (the driver's own sentinel check) */
+    bool  mic_running;   /* meaningful only when mic_present */
+    bool  has_mic_level; /* true iff mic_present && mic_running && at least one frame has been read */
+    float mic_envelope_dbfs; /* meaningful only when has_mic_level — the smoothed 300ms attack/release number */
 } ff_app_diag_t;
 
 /* -------------------------------------------------------------------

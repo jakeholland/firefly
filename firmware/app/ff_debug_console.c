@@ -154,6 +154,10 @@ static void dbgconsole_help(ff_dbgconsole_reply_fn reply, void *user)
     reply_line(reply, user, "dbg: ping <node_hex>          S29: one immediate bench PING, outside FIND");
     reply_line(reply, user, "dbg: find <node_hex>          S29: start a FIND session on that node");
     reply_line(reply, user, "dbg: find off                 S29: cancel the active FIND session");
+    reply_line(reply, user, "dbg: mic                      S30: one-shot mic status + level");
+    reply_line(reply, user, "dbg: mic on                   S30: start the mic channel + reader task");
+    reply_line(reply, user, "dbg: mic off                  S30: stop them");
+    reply_line(reply, user, "dbg: mic watch <secs>         S30: print RMS/peak/envelope every 250ms, 1-30s");
 }
 
 static void dbgconsole_me(ff_shell_t *sh, ff_dbgconsole_reply_fn reply, void *user)
@@ -787,10 +791,26 @@ static void dbgconsole_perf(ff_dbgconsole_perf_fn perf, void *hook_user, ff_dbgc
     perf(hook_user, reply, user);
 }
 
+/* `mic`/`mic on`/`mic off`/`mic watch <secs>` — see ff_dbgconsole_mic_fn's
+ * own doc comment (ff_debug_console.h) for the single-hook-four-action
+ * shape and the `mic watch` blocking-duration contract. `mic == NULL`
+ * (the sim) is the one case this function itself handles, mirroring
+ * dbgconsole_perf's identical NULL contract just above. */
+static void dbgconsole_mic(ff_dbgconsole_mic_fn mic, ff_dbgconsole_mic_action_t action, uint32_t watch_secs,
+                            void *hook_user, ff_dbgconsole_reply_fn reply, void *user)
+{
+    if (mic == NULL) {
+        reply_line(reply, user, "dbg: mic unavailable on this target");
+        return;
+    }
+    mic(hook_user, action, watch_secs, reply, user);
+}
+
 void ff_dbgconsole_handle_line(ff_shell_t *sh, char const *line, size_t line_len, uint32_t now_ms,
                                 ff_dbgconsole_reply_fn reply, void *user, ff_dbgconsole_i2c_scan_fn i2c_scan,
                                 ff_dbgconsole_compass_status_fn compass_status,
-                                ff_dbgconsole_i2c_health_fn i2c_health, ff_dbgconsole_perf_fn perf)
+                                ff_dbgconsole_i2c_health_fn i2c_health, ff_dbgconsole_perf_fn perf,
+                                ff_dbgconsole_mic_fn mic)
 {
     (void)now_ms; /* every command below reaches "now" via a shell getter, not this parameter */
     if (sh == NULL || reply == NULL) return;
@@ -827,6 +847,12 @@ void ff_dbgconsole_handle_line(ff_shell_t *sh, char const *line, size_t line_len
     case FF_DBGCMD_PING: dbgconsole_ping(sh, cmd.u.node, reply, user); return;
     case FF_DBGCMD_FIND: dbgconsole_find(sh, cmd.u.node, reply, user); return;
     case FF_DBGCMD_FIND_OFF: dbgconsole_find_off(sh, reply, user); return;
+    case FF_DBGCMD_MIC: dbgconsole_mic(mic, FF_DBGCONSOLE_MIC_STATUS, 0u, user, reply, user); return;
+    case FF_DBGCMD_MIC_ON: dbgconsole_mic(mic, FF_DBGCONSOLE_MIC_ON, 0u, user, reply, user); return;
+    case FF_DBGCMD_MIC_OFF: dbgconsole_mic(mic, FF_DBGCONSOLE_MIC_OFF, 0u, user, reply, user); return;
+    case FF_DBGCMD_MIC_WATCH:
+        dbgconsole_mic(mic, FF_DBGCONSOLE_MIC_WATCH, cmd.u.mic_watch_secs, user, reply, user);
+        return;
     case FF_DBGCMD_NONE: break; /* ff_dbgcmd_parse never returns OK with NONE — unreachable */
     }
     reply_line(reply, user, "dbg: ? try help");

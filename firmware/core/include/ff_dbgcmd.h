@@ -132,6 +132,28 @@
  * `dbgconsole_diag`) reads the SAME `ff_app_diag_t` the Settings
  * DIAGNOSTICS page renders, via `ff_shell_diag_debug` (`ff_shell.h`) — one
  * projection, two presentations, never a second computation.
+ *
+ * `mic` (S30 mic bring-up, docs/specs/S30-audio-input.md) follows
+ * `cal`'s exact shape — a bare verb plus one of a small fixed set of
+ * sub-verbs, each its OWN `ff_dbgcmd_kind_t`:
+ *   mic          — one-shot status + level (present/running/rms/peak/
+ *                  envelope), all honest when absent — the bare status
+ *                  a bench operator checks before/after `mic on`
+ *   mic on       — start the I2S1 mic channel + reader task
+ *   mic off      — stop them (channel disabled, task idle)
+ *   mic watch <secs> — print RMS/peak/envelope once per 250ms for up to
+ *                  30s, then stop; `<secs>` is 1-30 decimal, no prefix.
+ *                  A value outside that range, or non-decimal, or a
+ *                  missing/extra argument, is `FF_DBGCMD_ERR_BAD_ARGS` —
+ *                  this parser enforces the 1-30 BOUND itself (not left
+ *                  to the dispatcher) so a caller can never construct an
+ *                  in-vocabulary `FF_DBGCMD_MIC_WATCH` with an out-of-
+ *                  range duration in the first place.
+ * This parser carries no mic policy of its own (same "zero I/O, zero
+ * policy" split every other verb here keeps) — the dispatcher
+ * (`firmware/app/ff_debug_console.c`) routes all four through a single
+ * platform hook (`ff_dbgconsole_mic_fn`, `ff_debug_console.h`), honestly
+ * unavailable on a target with no mic driver wired up (the sim).
  */
 #ifndef FF_DBGCMD_H
 #define FF_DBGCMD_H
@@ -161,6 +183,10 @@ extern "C" {
  * other reasons (e.g. no recognizable command at all). */
 #define FF_DBGCMD_TEXT_MAX 200u
 
+/** `mic watch <secs>` bounds — see this header's top comment, "mic". */
+#define FF_DBGCMD_MIC_WATCH_MIN_S 1u
+#define FF_DBGCMD_MIC_WATCH_MAX_S 30u
+
 /** Every line this parser recognizes. `FF_DBGCMD_NONE` is the zero value
  *  used for "nothing parsed yet" / a rejected line; it is never a
  *  successful parse's `kind`. */
@@ -188,6 +214,10 @@ typedef enum {
     FF_DBGCMD_PING,         /* S29 PR2: "ping <node_hex>" — u.node: one immediate bench PING */
     FF_DBGCMD_FIND,         /* S29 PR2: "find <node_hex>" — u.node: start a FIND session */
     FF_DBGCMD_FIND_OFF,     /* S29 PR2: "find off" — cancel the active FIND session */
+    FF_DBGCMD_MIC,          /* S30: "mic" bare — one-shot status + level */
+    FF_DBGCMD_MIC_ON,       /* S30: "mic on" */
+    FF_DBGCMD_MIC_OFF,      /* S30: "mic off" */
+    FF_DBGCMD_MIC_WATCH,    /* S30: "mic watch <secs>" — u.mic_watch_secs, 1-30 */
 } ff_dbgcmd_kind_t;
 
 /** Why a line failed to become a command. `FF_DBGCMD_ERR_EMPTY` is not
@@ -210,8 +240,12 @@ typedef enum {
  * both are "the rest of the line is a text body" shapes with nothing
  * else to disambiguate on), `u.dm` only for `FF_DBGCMD_DM`, `u.node`
  * only for `FF_DBGCMD_PING`/`FF_DBGCMD_FIND` (S29 PR2 — a bare hex node
- * id, `parse_node_hex`'s exact shape, no text body); every other kind
- * (including `FF_DBGCMD_FIND_OFF`) carries no payload at all.
+ * id, `parse_node_hex`'s exact shape, no text body), `u.mic_watch_secs`
+ * only for `FF_DBGCMD_MIC_WATCH` (S30 — already validated into
+ * `[FF_DBGCMD_MIC_WATCH_MIN_S, FF_DBGCMD_MIC_WATCH_MAX_S]` by this
+ * parser); every other kind (including `FF_DBGCMD_FIND_OFF`, `FF_DBGCMD_
+ * MIC`, `FF_DBGCMD_MIC_ON`, `FF_DBGCMD_MIC_OFF`) carries no payload at
+ * all.
  */
 typedef struct {
     ff_dbgcmd_kind_t kind;
@@ -221,7 +255,8 @@ typedef struct {
             uint32_t dest_node;
             char     text[FF_DBGCMD_TEXT_MAX + 1]; /* NUL-terminated body */
         } dm;
-        uint32_t node; /* S29 PR2: PING/FIND target node id */
+        uint32_t node;             /* S29 PR2: PING/FIND target node id */
+        uint32_t mic_watch_secs;   /* S30: "mic watch <secs>" duration, already bounds-checked */
     } u;
 } ff_dbgcmd_t;
 

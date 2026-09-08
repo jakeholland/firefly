@@ -56,4 +56,5 @@ set(FF_CORE_SOURCES
     src/ff_dbgcmd.c          # bench/debug console — line-command parser (command policy, no I/O)
     src/ff_meshname.c        # NAME in Settings — charset sanitize + Meshtastic short-name derivation
     src/ff_find.c             # S29 PR2 — FIND mode session state machine (active pings)
+    src/ff_miclevel.c        # S30 — mic level math (RMS/peak dBFS, DC-block HPF, attack/release envelope)
 )

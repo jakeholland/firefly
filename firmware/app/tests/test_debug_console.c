@@ -135,6 +135,7 @@ static ff_dbgconsole_i2c_scan_fn s_i2c_hook;
 static ff_dbgconsole_compass_status_fn s_compass_hook;
 static ff_dbgconsole_i2c_health_fn s_i2c_health_hook;
 static ff_dbgconsole_perf_fn s_perf_hook;
+static ff_dbgconsole_mic_fn s_mic_hook;
 
 #define MY_ID 0x00001000u
 #define DANA 0x0000DA1Au
@@ -147,6 +148,7 @@ static void harness_init(uint32_t t0_ms)
     s_compass_hook = NULL;
     s_i2c_health_hook = NULL;
     s_perf_hook = NULL;
+    s_mic_hook = NULL;
     H.clk.t = t0_ms;
     H.clock.now_ms = fake_now;
     H.clock.user = &H.clk;
@@ -289,7 +291,7 @@ static void dispatch(char const *line, capture_t *out)
 {
     capture_reset(out);
     ff_dbgconsole_handle_line(&H.shell, line, strlen(line), ff_shell_now_ms(&H.shell), capture_reply, out,
-                               s_i2c_hook, s_compass_hook, s_i2c_health_hook, s_perf_hook);
+                               s_i2c_hook, s_compass_hook, s_i2c_health_hook, s_perf_hook, s_mic_hook);
 }
 
 /* ------------------------------------------------------------------- */
@@ -848,6 +850,148 @@ static void dbgconsole_perf_with_extra_arg_rejected_end_to_end(void)
 }
 
 /* ------------------------------------------------------------------- */
+/* S30 — `mic` / `mic on` / `mic off` / `mic watch <secs>`               */
+/* ------------------------------------------------------------------- */
+
+/* Records the LAST call's action/watch_secs (ff_dbgconsole_mic_fn's own
+ * single-hook-four-action shape) so a test can assert the dispatcher
+ * routed the right verb through, and emits one already-prefixed line
+ * naming what it was called with — proving both routing AND verbatim
+ * forwarding in one fake, same shape fake_perf_ok established above. */
+static ff_dbgconsole_mic_action_t s_mic_last_action;
+static uint32_t s_mic_last_watch_secs;
+static int s_mic_call_count;
+
+static void fake_mic_ok(void *user, ff_dbgconsole_mic_action_t action, uint32_t watch_secs,
+                         ff_dbgconsole_reply_fn reply, void *reply_user)
+{
+    (void)user;
+    s_mic_last_action = action;
+    s_mic_last_watch_secs = watch_secs;
+    s_mic_call_count++;
+
+    char line[64];
+    char const *name = "?";
+    switch (action) {
+    case FF_DBGCONSOLE_MIC_STATUS: name = "status"; break;
+    case FF_DBGCONSOLE_MIC_ON: name = "on"; break;
+    case FF_DBGCONSOLE_MIC_OFF: name = "off"; break;
+    case FF_DBGCONSOLE_MIC_WATCH: name = "watch"; break;
+    }
+    snprintf(line, sizeof(line), "dbg: mic fake action=%s watch_secs=%u", name, (unsigned)watch_secs);
+    reply(reply_user, line);
+}
+
+static void dbgconsole_mic_unavailable_without_a_hook(void)
+{
+    /* No hook (the sim target's own reality: no mic driver at all) —
+     * exactly one honest reply for every one of the four verbs. */
+    harness_init(1000);
+
+    capture_t cap;
+    dispatch("mic", &cap);
+    TEST_ASSERT_EQUAL_INT(1, cap.n);
+    TEST_ASSERT_EQUAL_STRING("dbg: mic unavailable on this target", cap.lines[0]);
+
+    dispatch("mic on", &cap);
+    TEST_ASSERT_EQUAL_INT(1, cap.n);
+    TEST_ASSERT_EQUAL_STRING("dbg: mic unavailable on this target", cap.lines[0]);
+
+    dispatch("mic off", &cap);
+    TEST_ASSERT_EQUAL_INT(1, cap.n);
+    TEST_ASSERT_EQUAL_STRING("dbg: mic unavailable on this target", cap.lines[0]);
+
+    dispatch("mic watch 5", &cap);
+    TEST_ASSERT_EQUAL_INT(1, cap.n);
+    TEST_ASSERT_EQUAL_STRING("dbg: mic unavailable on this target", cap.lines[0]);
+}
+
+static void dbgconsole_mic_status_routes_to_the_hook(void)
+{
+    harness_init(1000);
+    s_mic_hook = fake_mic_ok;
+    s_mic_call_count = 0;
+
+    capture_t cap;
+    dispatch("mic", &cap);
+
+    TEST_ASSERT_EQUAL_INT(1, s_mic_call_count);
+    TEST_ASSERT_EQUAL_INT(FF_DBGCONSOLE_MIC_STATUS, s_mic_last_action);
+    TEST_ASSERT_EQUAL_UINT32(0u, s_mic_last_watch_secs);
+    TEST_ASSERT_EQUAL_INT(1, cap.n);
+    TEST_ASSERT_EQUAL_STRING("dbg: mic fake action=status watch_secs=0", cap.lines[0]);
+}
+
+static void dbgconsole_mic_on_routes_to_the_hook(void)
+{
+    harness_init(1000);
+    s_mic_hook = fake_mic_ok;
+
+    capture_t cap;
+    dispatch("mic on", &cap);
+
+    TEST_ASSERT_EQUAL_INT(FF_DBGCONSOLE_MIC_ON, s_mic_last_action);
+    TEST_ASSERT_EQUAL_STRING("dbg: mic fake action=on watch_secs=0", cap.lines[0]);
+}
+
+static void dbgconsole_mic_off_routes_to_the_hook(void)
+{
+    harness_init(1000);
+    s_mic_hook = fake_mic_ok;
+
+    capture_t cap;
+    dispatch("mic off", &cap);
+
+    TEST_ASSERT_EQUAL_INT(FF_DBGCONSOLE_MIC_OFF, s_mic_last_action);
+    TEST_ASSERT_EQUAL_STRING("dbg: mic fake action=off watch_secs=0", cap.lines[0]);
+}
+
+static void dbgconsole_mic_watch_passes_seconds_through(void)
+{
+    harness_init(1000);
+    s_mic_hook = fake_mic_ok;
+
+    capture_t cap;
+    dispatch("mic watch 12", &cap);
+
+    TEST_ASSERT_EQUAL_INT(FF_DBGCONSOLE_MIC_WATCH, s_mic_last_action);
+    TEST_ASSERT_EQUAL_UINT32(12u, s_mic_last_watch_secs);
+    TEST_ASSERT_EQUAL_STRING("dbg: mic fake action=watch watch_secs=12", cap.lines[0]);
+}
+
+static void dbgconsole_mic_watch_out_of_range_never_reaches_the_hook(void)
+{
+    /* Rejected at the PARSER (ff_dbgcmd.c's own range check) — the hook
+     * must never even be called, proving the dispatcher trusts the
+     * parser's bound rather than re-validating (or worse, silently
+     * clamping) an out-of-range duration itself. */
+    harness_init(1000);
+    s_mic_hook = fake_mic_ok;
+    s_mic_call_count = 0;
+
+    capture_t cap;
+    dispatch("mic watch 31", &cap);
+
+    TEST_ASSERT_EQUAL_INT(0, s_mic_call_count);
+    TEST_ASSERT_EQUAL_INT(1, cap.n);
+    TEST_ASSERT_EQUAL_STRING("dbg: ? try help", cap.lines[0]);
+}
+
+static void dbgconsole_mic_bad_sub_verb_rejected_end_to_end(void)
+{
+    harness_init(1000);
+    s_mic_hook = fake_mic_ok;
+    s_mic_call_count = 0;
+
+    capture_t cap;
+    dispatch("mic bogus", &cap);
+
+    TEST_ASSERT_EQUAL_INT(0, s_mic_call_count);
+    TEST_ASSERT_EQUAL_INT(1, cap.n);
+    TEST_ASSERT_EQUAL_STRING("dbg: ? try help", cap.lines[0]);
+}
+
+/* ------------------------------------------------------------------- */
 /* S12 step 3 — "cal" and its four sub-verbs                             */
 /* ------------------------------------------------------------------- */
 
@@ -1217,6 +1361,14 @@ int main(void)
     RUN_TEST(dbgconsole_perf_unavailable_without_a_hook);
     RUN_TEST(dbgconsole_perf_forwards_the_hooks_own_lines_verbatim);
     RUN_TEST(dbgconsole_perf_with_extra_arg_rejected_end_to_end);
+
+    RUN_TEST(dbgconsole_mic_unavailable_without_a_hook);
+    RUN_TEST(dbgconsole_mic_status_routes_to_the_hook);
+    RUN_TEST(dbgconsole_mic_on_routes_to_the_hook);
+    RUN_TEST(dbgconsole_mic_off_routes_to_the_hook);
+    RUN_TEST(dbgconsole_mic_watch_passes_seconds_through);
+    RUN_TEST(dbgconsole_mic_watch_out_of_range_never_reaches_the_hook);
+    RUN_TEST(dbgconsole_mic_bad_sub_verb_rejected_end_to_end);
 
     RUN_TEST(dbgconsole_cal_status_reports_identity_when_uncalibrated_and_inactive);
     RUN_TEST(dbgconsole_cal_start_then_status_reports_live_progress);

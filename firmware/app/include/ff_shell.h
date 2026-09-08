@@ -1360,6 +1360,42 @@ void ff_shell_set_batt_mv(ff_shell_t *sh, uint16_t pack_mv, uint32_t now_ms);
 void ff_shell_set_device_stats(ff_shell_t *sh, bool ok, uint32_t free_heap_bytes, ff_app_mag_kind_t mag_kind,
                                 ff_app_imu_state_t imu_state);
 
+/**
+ * ff_shell_set_mic_status — [api] S30 mic bring-up: push the DIAGNOSTICS
+ * page's MIC row facts, the sibling `ff_shell_set_device_stats`'s own
+ * doc comment invites ("or a sibling setter") for a fact that lives on
+ * the esp32s3-only `ff_mic` component this header cannot depend on
+ * (same boundary `ff_shell_set_device_stats` already crosses for the
+ * compass — CLAUDE.md's placement rule, `firmware/app/` never includes
+ * an esp32s3-only component header). A target ticks `ff_mic_status()`/
+ * `ff_mic_level()` on its own periodic cadence (app_main.c, the SAME
+ * `FF_DEVICE_STATS_SAMPLE_PERIOD_MS` 2s tick `ff_shell_set_device_stats`
+ * already uses) and calls this with the result; the sim never calls it
+ * at all (no mic hardware), so `mic_present` stays at the shell's own
+ * false default forever there — the DIAGNOSTICS page's honest "MIC
+ * absent".
+ *
+ * `present` — mirrors `ff_mic_status_t.present` (ff_mic.h) verbatim:
+ * false means either init never succeeded, or the driver's own
+ * "all-zero or stuck data for 1s" sentinel check tripped — this
+ * function does not distinguish the two reasons (neither does the
+ * DIAGNOSTICS row; both read "MIC absent", honestly, since neither is a
+ * working microphone).
+ *
+ * `running` is meaningful only when `present` is true. `has_level` +
+ * `envelope_dbfs` are meaningful only when BOTH `present` and `running`
+ * are true AND the driver has actually read at least one frame yet
+ * (`has_level` false for the brief window right after `mic on` before
+ * the reader task's first frame lands — the row reads "MIC on" with no
+ * number rather than a fabricated 0 dBFS for that window).
+ *
+ * `present == false` clears `running`/`has_level` too (mirrors
+ * `ff_shell_set_device_stats`'s own `ok == false` early-return
+ * contract) — an absent mic cannot honestly be "running" or have a
+ * "level".
+ */
+void ff_shell_set_mic_status(ff_shell_t *sh, bool present, bool running, bool has_level, float envelope_dbfs);
+
 /* ---------------------------------------------------------------------
  * Read-only accessors (status bar, pairing UI, tests)
  * ------------------------------------------------------------------- */
