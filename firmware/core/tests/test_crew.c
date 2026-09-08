@@ -254,6 +254,87 @@ static void S02_AC3_on_position_age_advances_with_now_ms(void)
 }
 
 /* ------------------------------------------------------------------- */
+/* S29 — ff_crew_on_heard: overwrite semantics + find-or-create parity   */
+/* ------------------------------------------------------------------- */
+
+static void S29_on_heard_find_or_creates_slot(void)
+{
+    ff_crew_t c;
+    ff_crew_init(&c, NULL);
+
+    TEST_ASSERT_NULL(ff_crew_find(&c, 9u));
+    ff_crew_on_heard(&c, 9u, 1000u, true);
+
+    ff_crew_member_t const *m = ff_crew_find(&c, 9u);
+    TEST_ASSERT_NOT_NULL(m);
+    TEST_ASSERT_TRUE(m->has_heard);
+    TEST_ASSERT_EQUAL_UINT32(1000u, m->last_heard_ms);
+    TEST_ASSERT_TRUE(m->heard_direct);
+}
+
+static void S29_on_heard_existing_slot_is_reused_not_duplicated(void)
+{
+    ff_crew_t c;
+    ff_crew_init(&c, NULL);
+
+    ff_crew_member_t *upserted = ff_crew_upsert(&c, 9u);
+    ff_crew_on_heard(&c, 9u, 1000u, true);
+
+    TEST_ASSERT_EQUAL_UINT8(1u, c.count);
+    TEST_ASSERT_EQUAL_PTR(upserted, ff_crew_find(&c, 9u));
+}
+
+static void S29_on_heard_latest_sighting_wins_direct_to_relay(void)
+{
+    ff_crew_t c;
+    ff_crew_init(&c, NULL);
+
+    ff_crew_on_heard(&c, 9u, 1000u, true);
+    ff_crew_on_heard(&c, 9u, 5000u, false);
+
+    ff_crew_member_t const *m = ff_crew_find(&c, 9u);
+    TEST_ASSERT_TRUE(m->has_heard);
+    TEST_ASSERT_EQUAL_UINT32(5000u, m->last_heard_ms);
+    TEST_ASSERT_FALSE(m->heard_direct); /* the LATEST sighting, not the direct one, wins */
+}
+
+static void S29_on_heard_latest_sighting_wins_relay_to_direct(void)
+{
+    ff_crew_t c;
+    ff_crew_init(&c, NULL);
+
+    ff_crew_on_heard(&c, 9u, 1000u, false);
+    ff_crew_on_heard(&c, 9u, 5000u, true);
+
+    ff_crew_member_t const *m = ff_crew_find(&c, 9u);
+    TEST_ASSERT_TRUE(m->has_heard);
+    TEST_ASSERT_EQUAL_UINT32(5000u, m->last_heard_ms);
+    TEST_ASSERT_TRUE(m->heard_direct);
+}
+
+static void S29_on_heard_null_crew_is_safe(void)
+{
+    ff_crew_on_heard(NULL, 9u, 1000u, true); /* must not crash */
+}
+
+static void S29_on_heard_leaves_rssi_untouched(void)
+{
+    /* ff_crew_on_heard is a DIFFERENT fact than ff_crew_on_rssi — a relay
+     * sighting must never touch rssi_dbm/rssi_age_ms (see ff_crew.h's
+     * doc comment: only ff_crew_on_rssi's direct-only contract owns
+     * those fields). */
+    ff_crew_t c;
+    ff_crew_init(&c, NULL);
+
+    ff_crew_member_t *m = ff_crew_upsert(&c, 9u);
+    TEST_ASSERT_EQUAL_INT16(INT16_MIN, m->rssi_dbm); /* never-direct sentinel */
+
+    ff_crew_on_heard(&c, 9u, 1000u, false);
+    TEST_ASSERT_EQUAL_INT16(INT16_MIN, m->rssi_dbm); /* still untouched */
+    TEST_ASSERT_TRUE(m->has_heard);
+}
+
+/* ------------------------------------------------------------------- */
 /* AC4 — close-range 8-row truth table                                  */
 /* ------------------------------------------------------------------- */
 
@@ -1052,7 +1133,7 @@ static void HEARD_on_heard_finds_or_creates_and_sets_fields(void)
     ff_crew_t c;
     ff_crew_init(&c, &clk);
 
-    ff_crew_on_heard(&c, 7u, 5000u);
+    ff_crew_on_heard(&c, 7u, 5000u, true);
     ff_crew_member_t const *m = ff_crew_find(&c, 7u);
     TEST_ASSERT_NOT_NULL(m);
     TEST_ASSERT_TRUE(m->has_heard);
@@ -1061,7 +1142,7 @@ static void HEARD_on_heard_finds_or_creates_and_sets_fields(void)
 
 static void HEARD_on_heard_null_crew_is_safe(void)
 {
-    ff_crew_on_heard(NULL, 7u, 5000u); /* must not crash */
+    ff_crew_on_heard(NULL, 7u, 5000u, true); /* must not crash */
 }
 
 static void HEARD_freshly_heard_is_heard(void)
@@ -1174,6 +1255,13 @@ int main(void)
 
     RUN_TEST(S02_AC3_on_position_first_fix_is_never_to_live);
     RUN_TEST(S02_AC3_on_position_age_advances_with_now_ms);
+
+    RUN_TEST(S29_on_heard_find_or_creates_slot);
+    RUN_TEST(S29_on_heard_existing_slot_is_reused_not_duplicated);
+    RUN_TEST(S29_on_heard_latest_sighting_wins_direct_to_relay);
+    RUN_TEST(S29_on_heard_latest_sighting_wins_relay_to_direct);
+    RUN_TEST(S29_on_heard_null_crew_is_safe);
+    RUN_TEST(S29_on_heard_leaves_rssi_untouched);
 
     RUN_TEST(S02_AC4_close_range_truth_table);
     RUN_TEST(S02_AC4_close_range_boundary_distance_exclusive);

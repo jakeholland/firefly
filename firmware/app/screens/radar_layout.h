@@ -325,6 +325,59 @@ extern "C" {
  * RADAR_LAYOUT_STACK_NAME_W above. */
 #define RADAR_LAYOUT_CLOSE_NAME_W 200
 
+/* SIGNAL (S29, docs/specs/S29-radio-only.md). Name/chip/age/[trend]
+ * headline stack. The GHOST variant (reached via the freshness-switch
+ * LOST/NEVER path when a real prior fix is on file) additionally draws
+ * the existing ghost arrow (RADAR_ARROW_GHOST, same styling as
+ * RADAR_LOST's) and a "LAST KNOWN ..." chip below the trend row — one
+ * extra row past the non-ghost variant's stack, five rows total. Kept
+ * BELOW the puck's vertical center (like every other arrow-bearing
+ * mode's stack: LIVE/STALE/LOST all sit at DY 40-172) so the arrow keeps
+ * the same wide-open upper band those modes rely on — an early draft of
+ * this stack started at DY -10 (near center) and failed
+ * test_arrow_sweep_signal_ghost outright (no bearing could clear
+ * minimum arrow length against that much reserved area); moved down and
+ * tightened to the gaps below once that sweep pinned the actual
+ * constraint (interpretation call, no prior UX-review numbers to match
+ * — first-pass layout, not yet human-reviewed pixel art). Fits above
+ * RADAR_LAYOUT_PAGE_DOT_DY (186) with margin even for the 5-row ghost
+ * case. */
+#define RADAR_LAYOUT_SIGNAL_NAME_DY         46.0f
+#define RADAR_LAYOUT_SIGNAL_CHIP_DY         72.0f /* tier / VIA RELAY / RADIO SILENT chip */
+#define RADAR_LAYOUT_SIGNAL_AGE_DY          98.0f /* "heard <age> ago" line */
+#define RADAR_LAYOUT_SIGNAL_TREND_DY       124.0f /* WARMER/COLDER/STEADY chip, only when signal_tier != FF_SIGNAL_NONE */
+#define RADAR_LAYOUT_SIGNAL_LASTKNOWN_DY   156.0f /* ghost variant only: "LAST KNOWN <age>, <dist> <compass>" */
+#define RADAR_LAYOUT_SIGNAL_NAME_W 320
+
+/* Inner "signal ring" (S29): fixed radius smaller than
+ * RADAR_LAYOUT_RING_RADIUS_PX, evenly spaced over a fixed UPPER arc
+ * (clear of the bottom-center name/chip stack every mode uses) so no
+ * bearing is ever implied — these dots have no bearing by definition
+ * (S29's Scope cut 3: not resolved through radar_layout's collision
+ * resolver at all, laid out by simple even angular spacing in
+ * scr_radar.c directly).
+ *
+ * Correction to this spec's original draft (flagged per AGENTS.md): the
+ * draft named "-160deg..-20deg" for the arc, reasoning it was "clear of
+ * the bottom-center stack" — checked against this file's own
+ * deg_to_offset() convention (0 = straight up, positive = CLOCKWISE), and
+ * that range is wrong: -160deg is DOWN-and-left (sin(-160)<0, and
+ * -cos(-160)>0 = below center), not up. The actual arc from -160 to -20
+ * sweeps the LEFT side of the puck (down-left -> left -> up-left), not an
+ * "upper" arc clear of the bottom stack at all. Recomputed here: every
+ * mode's headline stack lives at dy>=0 (LIVE/STALE/LOST/SIGNAL's own
+ * stack all start at DY>=40; see those constants above), so the arc that
+ * is actually clear of them is the upper semicircle where dy<=0, i.e.
+ * θ in [-90,90] (left, through straight up, to right) — narrowed
+ * slightly further, to [-80,80], and the radius trimmed from the draft's
+ * 130 to 120, so a dot at θ near 0 (closest approach to the status bar's
+ * reserved rect, y -177..-143) keeps a real pixel margin instead of
+ * nearly touching it (130 left only ~1px; 120 leaves ~11px). */
+#define RADAR_LAYOUT_SIGNAL_RING_RADIUS_PX 120.0f
+#define RADAR_LAYOUT_SIGNAL_RING_ARC_START_DEG (-80.0f)
+#define RADAR_LAYOUT_SIGNAL_RING_ARC_END_DEG   80.0f
+#define RADAR_LAYOUT_SIGNAL_RING_DOT_PX 24.0f /* smaller than RADAR_LAYOUT_DOT_PX — "a signal, not a placed friend" */
+
 /** An axis-aligned rectangle, center-relative (puck center = (0,0)). */
 typedef struct {
     float x1, y1, x2, y2;

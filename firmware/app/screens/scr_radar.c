@@ -15,6 +15,7 @@
  */
 #include "scr_radar.h"
 
+#include <math.h> /* sinf/cosf — S29's signal ring (radar_build_signal_ring), see its own doc comment */
 #include <stdio.h>
 #include <string.h>
 
@@ -422,6 +423,94 @@ static void radar_build_dots(lv_obj_t *parent, ff_radar_view_t const *r, radar_l
         lv_obj_center(label);
 
         lv_obj_align(dot, LV_ALIGN_CENTER, (int32_t)resolved[i].dx, (int32_t)resolved[i].dy);
+    }
+}
+
+/* S29 (docs/specs/S29-radio-only.md) — tier -> chip/dot color, the exact
+ * mapping the spec names (STRONG/GOOD share the LIVE accent; WEAK gets
+ * the STALE amber; FAINT is muted). FF_SIGNAL_NONE (via-relay/no reading)
+ * is never passed a color through this function — callers branch on
+ * `via_relay` separately (see radar_render_signal / radar_build_signal_ring). */
+static uint32_t radar_signal_tier_color(ff_signal_tier_t tier)
+{
+    switch (tier) {
+    case FF_SIGNAL_STRONG:
+    case FF_SIGNAL_GOOD:
+        return FF_THEME_COLOR_LIVE_GREEN;
+    case FF_SIGNAL_WEAK:
+        return FF_THEME_COLOR_STALE_AMBER;
+    case FF_SIGNAL_FAINT:
+    case FF_SIGNAL_NONE:
+    default:
+        return FF_THEME_COLOR_MUTED;
+    }
+}
+
+/* S29 — the inner "signal ring": paired members who are heard but have
+ * no placeable position (ff_radar_view_t.signal_dots[], mutually
+ * exclusive with the ordinary dots[] ring — see ff_radar.h). Drawn
+ * UNCONDITIONALLY (independent of `radar->mode`/selection), same as
+ * radar_build_dots above, since these facts need no selection or bearing
+ * frame at all.
+ *
+ * Scope cut 3 (S29 spec): this does NOT go through radar_layout's
+ * collision resolver — that resolver's whole reason for existing is
+ * placing BEARING-based dots without colliding with fixed chrome;
+ * signal-ring dots have no bearing by definition (no fabricated
+ * direction — that's the entire point of a separate ring), so they are
+ * laid out here by simple even angular spacing over a fixed radius/arc
+ * (RADAR_LAYOUT_SIGNAL_RING_RADIUS_PX / _ARC_START_DEG / _ARC_END_DEG,
+ * radar_layout.h), using the SAME "0 deg = up, clockwise" convention
+ * radar_layout.c's own (file-local) deg_to_offset uses — duplicated here
+ * rather than exposed from that module, since this is deliberately NOT
+ * a radar_layout placement (see that header's own doc comment on why). */
+static void radar_build_signal_ring(lv_obj_t *parent, ff_radar_view_t const *r)
+{
+    if (r->n_signal_dots == 0) {
+        return;
+    }
+    int n = (r->n_signal_dots < FF_CREW_MAX) ? (int)r->n_signal_dots : FF_CREW_MAX;
+
+    float const arc_start = RADAR_LAYOUT_SIGNAL_RING_ARC_START_DEG;
+    float const arc_end = RADAR_LAYOUT_SIGNAL_RING_ARC_END_DEG;
+    float const arc_span = arc_end - arc_start;
+
+    for (int i = 0; i < n; i++) {
+        float deg = (n == 1) ? (arc_start + arc_span * 0.5f) : (arc_start + arc_span * ((float)i / (float)(n - 1)));
+        float rad = deg * 3.14159265358979323846f / 180.0f;
+        float dx = RADAR_LAYOUT_SIGNAL_RING_RADIUS_PX * sinf(rad);
+        float dy = -RADAR_LAYOUT_SIGNAL_RING_RADIUS_PX * cosf(rad);
+
+        ff_radar_signal_dot_t const *d = &r->signal_dots[i];
+
+        lv_obj_t *dot = lv_obj_create(parent);
+        lv_obj_remove_style_all(dot);
+        lv_obj_set_size(dot, (int32_t)RADAR_LAYOUT_SIGNAL_RING_DOT_PX, (int32_t)RADAR_LAYOUT_SIGNAL_RING_DOT_PX);
+        lv_obj_set_style_radius(dot, LV_RADIUS_CIRCLE, 0);
+        lv_obj_clear_flag(dot, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_clear_flag(dot, LV_OBJ_FLAG_CLICKABLE);
+
+        /* "A signal, not a placed friend" (S29 spec): NO initial letter
+         * — visually distinct from a placed ring dot (radar_build_dots
+         * above always carries one). A tier-colored FILLED disc with a
+         * thin ring outline for a usable reading; a HOLLOW outline-only
+         * ring (no fill) for via-relay/no-reading — same "different
+         * silhouette for a different kind of fact" idiom RADAR_PLACE's
+         * square marker already established elsewhere on this face. */
+        if (d->tier != FF_SIGNAL_NONE) {
+            uint32_t hex = radar_signal_tier_color(d->tier);
+            lv_obj_set_style_bg_color(dot, lv_color_hex(hex), 0);
+            lv_obj_set_style_bg_opa(dot, LV_OPA_COVER, 0);
+            lv_obj_set_style_border_width(dot, 2, 0);
+            lv_obj_set_style_border_color(dot, lv_color_hex(FF_THEME_COLOR_BG), 0);
+            lv_obj_set_style_border_opa(dot, LV_OPA_COVER, 0);
+        } else {
+            lv_obj_set_style_bg_opa(dot, LV_OPA_TRANSP, 0);
+            lv_obj_set_style_border_width(dot, 2, 0);
+            lv_obj_set_style_border_color(dot, lv_color_hex(FF_THEME_COLOR_DIM), 0);
+            lv_obj_set_style_border_opa(dot, LV_OPA_70, 0);
+        }
+        lv_obj_align(dot, LV_ALIGN_CENTER, (int32_t)dx, (int32_t)dy);
     }
 }
 
@@ -1090,6 +1179,101 @@ static void radar_render_nohdg(lv_obj_t *parent, ff_radar_view_t const *r, bool 
     }
 }
 
+/* S29 (docs/specs/S29-radio-only.md) — RADAR_SIGNAL, the radio-only
+ * fallback: reached only where the OLD logic had nothing left to say
+ * (see ff_radar.h's S29 amendment for the exact mode-resolution rule
+ * this renderer never re-derives, only draws). Two variants, keyed on
+ * `r->arrow_valid` (the SAME field/gate every other mode already uses
+ * for "is there something to point at"):
+ *  - non-ghost (arrow_valid false): headline stack only — name, a
+ *    signal chip (tier / VIA RELAY / RADIO SILENT), a "heard <age> ago"
+ *    line, and a trend chip when there's a real tier to refine.
+ *  - ghost (arrow_valid true): the SAME stack, plus the existing ghost
+ *    arrow (RADAR_LOST's real-fix styling, reused verbatim) and a
+ *    "LAST KNOWN <age>, <dist> <compass>" chip — dist_str/age_str are
+ *    already the member's last-known fix (computed unconditionally
+ *    earlier in ff_radar_compute), not new fields.
+ *
+ * Signal is NEVER rendered as distance — every chip/label here says
+ * "signal", never implies metres (CLAUDE.md's "never fake... positions"
+ * extended to never dressing up a dBm reading as a place). */
+static void radar_render_signal(lv_obj_t *parent, ff_radar_view_t const *r, radar_layout_registry_t const *reg,
+                                 bool locked)
+{
+    radar_build_name_label(parent, r->name, (int32_t)RADAR_LAYOUT_SIGNAL_NAME_DY,
+                            (int32_t)RADAR_LAYOUT_SIGNAL_NAME_W);
+
+    if (r->signal_tier != FF_SIGNAL_NONE) {
+        char const *tier_text = "SIGNAL";
+        switch (r->signal_tier) {
+        case FF_SIGNAL_STRONG: tier_text = "STRONG SIGNAL"; break;
+        case FF_SIGNAL_GOOD: tier_text = "GOOD SIGNAL"; break;
+        case FF_SIGNAL_WEAK: tier_text = "WEAK SIGNAL"; break;
+        case FF_SIGNAL_FAINT: tier_text = "FAINT SIGNAL"; break;
+        case FF_SIGNAL_NONE: default: break; /* unreachable in this branch */
+        }
+        radar_make_chip(parent, tier_text, radar_signal_tier_color(r->signal_tier), FF_THEME_COLOR_BG,
+                         (int32_t)RADAR_LAYOUT_SIGNAL_CHIP_DY);
+    } else if (r->signal_via_relay) {
+        radar_make_chip(parent, "VIA RELAY", FF_THEME_COLOR_SURFACE, FF_THEME_COLOR_INK,
+                         (int32_t)RADAR_LAYOUT_SIGNAL_CHIP_DY);
+    } else {
+        /* Should be unreachable — RADAR_SIGNAL's own mode-resolution
+         * rule only ever selects this mode when member->has_heard is
+         * true (ff_radar.h) — but the renderer stays honest rather than
+         * assuming, per this spec's own instruction. */
+        radar_make_chip(parent, "RADIO SILENT", FF_THEME_COLOR_SURFACE, FF_THEME_COLOR_MUTED,
+                         (int32_t)RADAR_LAYOUT_SIGNAL_CHIP_DY);
+    }
+
+    if (r->signal_age_str[0] != '\0') {
+        char age_line[32];
+        snprintf(age_line, sizeof(age_line), "heard %s ago", r->signal_age_str);
+        lv_obj_t *age_lbl = lv_label_create(parent);
+        lv_label_set_text(age_lbl, age_line);
+        lv_obj_set_style_text_font(age_lbl, FF_THEME_FONT_LABEL, 0);
+        lv_obj_set_style_text_color(age_lbl, lv_color_hex(FF_THEME_COLOR_DIM), 0);
+        lv_obj_align(age_lbl, LV_ALIGN_CENTER, 0, (int32_t)RADAR_LAYOUT_SIGNAL_AGE_DY);
+    }
+
+    /* Trend chip: only when there's a real tier to refine — a trend on
+     * top of "no direct reading" would be a fabricated refinement of
+     * nothing (S29 spec). Same three colors CLOSE's own trend chip
+     * uses, WARMER/COLDER wording per this spec (CLOSE's own distance-
+     * based trend says GETTING CLOSER/FARTHER — different words for a
+     * different, signal-not-distance fact). */
+    if (r->signal_tier != FF_SIGNAL_NONE) {
+        char const *trend_text = "STEADY";
+        uint32_t trend_color = FF_THEME_COLOR_MUTED;
+        if (r->trend > 0) {
+            trend_text = "WARMER";
+            trend_color = FF_THEME_COLOR_LIVE_GREEN;
+        } else if (r->trend < 0) {
+            trend_text = "COLDER";
+            trend_color = FF_THEME_COLOR_STALE_AMBER;
+        }
+        radar_make_chip(parent, trend_text, trend_color, FF_THEME_COLOR_BG, (int32_t)RADAR_LAYOUT_SIGNAL_TREND_DY);
+    }
+
+    if (r->arrow_valid) {
+        radar_layout_arrow_t arrow;
+        radar_layout_resolve_arrow(reg, r->arrow_deg,
+                                    locked ? RADAR_LAYOUT_ARROW_REACH_LOCKED_PX : RADAR_LAYOUT_ARROW_LEN_PX, &arrow);
+        radar_draw_arrow(parent, &arrow, FF_THEME_COLOR_MUTED, 77, RADAR_ARROW_GHOST);
+
+        char chip_text[48];
+        if (r->bearing_valid) {
+            char point[4];
+            ff_geo_compass_point(r->bearing_deg, point);
+            snprintf(chip_text, sizeof(chip_text), "LAST KNOWN %s, %s %s", r->age_str, r->dist_str, point);
+        } else {
+            snprintf(chip_text, sizeof(chip_text), "LAST KNOWN %s, %s", r->age_str, r->dist_str);
+        }
+        radar_make_chip(parent, chip_text, FF_THEME_COLOR_DIM, FF_THEME_COLOR_INK,
+                         (int32_t)RADAR_LAYOUT_SIGNAL_LASTKNOWN_DY);
+    }
+}
+
 static void radar_render_nosel(lv_obj_t *parent)
 {
     lv_obj_t *headline = lv_label_create(parent);
@@ -1130,6 +1314,10 @@ void ff_scr_radar_build(lv_obj_t *parent, ff_radar_view_t const *radar, bool col
     radar_layout_build_registry(radar->mode, never_fixed, &reg);
 
     radar_build_dots(parent, radar, &reg, colorblind);
+    /* S29 — the inner signal ring is drawn unconditionally too, same as
+     * radar_build_dots above (independent of radar->mode/selection —
+     * these facts need no selection or bearing frame at all). */
+    radar_build_signal_ring(parent, radar);
 
     /* `locked` (fix/radar-lock-chip-clears-status-bar follow-up): true
      * iff the Radar-face lock chip (scr_flare.c's
@@ -1137,8 +1325,9 @@ void ff_scr_radar_build(lv_obj_t *parent, ff_radar_view_t const *radar, bool col
      * content — the caller (scr_nav.c) passes state->flare.locked
      * directly, the SAME fact that gates the chip itself, so the two can
      * never disagree about whether the chip is showing. Only the
-     * arrow-drawing modes (LIVE/STALE/PLACE/LOST) read it — CLOSE draws
-     * no compass arrow at all, and NOFIX/NOSEL draw no arrow either. */
+     * arrow-drawing modes (LIVE/STALE/PLACE/LOST/SIGNAL-ghost) read it —
+     * CLOSE draws no compass arrow at all, and NOFIX/NOSEL draw no arrow
+     * either. */
     switch (radar->mode) {
     case RADAR_LIVE:
         radar_render_live(parent, radar, &reg, locked);
@@ -1160,6 +1349,9 @@ void ff_scr_radar_build(lv_obj_t *parent, ff_radar_view_t const *radar, bool col
         break;
     case RADAR_NOHDG:
         radar_render_nohdg(parent, radar, screen_flip);
+        break;
+    case RADAR_SIGNAL:
+        radar_render_signal(parent, radar, &reg, locked);
         break;
     case RADAR_NOSEL:
     default:

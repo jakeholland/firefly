@@ -104,6 +104,74 @@ static void radar_compute_dots(ff_radar_view_t *v, ff_crew_t const *crew, float 
     }
 }
 
+/* S29 — see ff_radar.h's doc comment: boundary-exact, RSSI-only (SNR
+ * refinement deliberately deferred). */
+ff_signal_tier_t ff_radar_signal_tier(int16_t rssi_dbm)
+{
+    if (rssi_dbm > FF_SIGNAL_STRONG_MIN_DBM) return FF_SIGNAL_STRONG;
+    if (rssi_dbm >= FF_SIGNAL_GOOD_MIN_DBM) return FF_SIGNAL_GOOD;
+    if (rssi_dbm >= FF_SIGNAL_WEAK_MIN_DBM) return FF_SIGNAL_WEAK;
+    return FF_SIGNAL_FAINT;
+}
+
+/* S29 signal ring: every PAIRED member with `!has_pos && has_heard` gets
+ * an entry — a member WITH a position is already on the ordinary
+ * `dots[]` ring instead (radar_compute_dots above), never both. No
+ * bearing frame needed at all (unlike radar_compute_dots), so this runs
+ * regardless of my_pos_ok/heading_ok. Sorted STRONG -> GOOD -> WEAK ->
+ * FAINT -> NONE(via relay), stable within a tier by roster order — a
+ * simple insertion by tier rank since FF_CREW_MAX is tiny (8). */
+static int radar_signal_tier_rank(ff_signal_tier_t t)
+{
+    /* Higher rank sorts first. FF_SIGNAL_STRONG (4) already has the
+     * highest numeric value; the enum order IS the sort order. */
+    return (int)t;
+}
+
+static void radar_compute_signal_dots(ff_radar_view_t *v, ff_crew_t const *crew)
+{
+    v->n_signal_dots = 0;
+    if (!crew) {
+        return;
+    }
+
+    for (uint8_t i = 0; i < crew->count && v->n_signal_dots < FF_CREW_MAX; i++) {
+        ff_crew_member_t const *m = &crew->members[i];
+        if (!m->paired || m->has_pos || !m->has_heard) {
+            continue;
+        }
+
+        /* Zero-initialized (not just field-assigned): this struct has a
+         * compiler-inserted padding byte between `color_idx` (uint8_t)
+         * and `tier` (enum, 4-byte aligned) that a field-by-field
+         * assignment never touches — an un-zeroed local's padding is
+         * indeterminate stack garbage that can differ between otherwise-
+         * identical calls, and the render-key dirty check downstream
+         * (ff_shell.c's shell_render_key) is a raw memcmp of the whole
+         * view struct, so garbage padding bytes would spuriously dirty
+         * every frame even when nothing about this dot actually changed. */
+        ff_radar_signal_dot_t entry = {0};
+        entry.initial = m->initial;
+        entry.color_idx = m->color_idx;
+        entry.via_relay = !m->heard_direct;
+        bool const tier_usable = m->heard_direct && m->rssi_dbm != INT16_MIN;
+        entry.tier = tier_usable ? ff_radar_signal_tier(m->rssi_dbm) : FF_SIGNAL_NONE;
+
+        /* Stable insertion sort by descending tier rank (STRONG first,
+         * NONE/via-relay last); equal-rank entries keep roster order
+         * because this only ever shifts entries with a STRICTLY lower
+         * rank than the one being inserted. */
+        uint8_t insert_at = v->n_signal_dots;
+        while (insert_at > 0 &&
+               radar_signal_tier_rank(v->signal_dots[insert_at - 1].tier) < radar_signal_tier_rank(entry.tier)) {
+            v->signal_dots[insert_at] = v->signal_dots[insert_at - 1];
+            insert_at--;
+        }
+        v->signal_dots[insert_at] = entry;
+        v->n_signal_dots++;
+    }
+}
+
 /* ------------------------------------------------------------------- */
 /* public API                                                            */
 /* ------------------------------------------------------------------- */
@@ -128,6 +196,10 @@ void ff_radar_compute(ff_radar_view_t *v, ff_radar_smooth_t *smooth, ff_crew_t *
     bool heading_ok = heading_deg >= 0.0f;
 
     radar_compute_dots(v, crew, heading_deg, heading_ok, my_pos, my_pos_ok, now_ms);
+    /* S29: independent of selection/my_pos_ok/heading — see ff_radar.h's
+     * doc comment. Computed here, before the NOSEL early return, so the
+     * signal ring is populated even with nothing selected. */
+    radar_compute_signal_dots(v, crew);
 
     ff_crew_member_t *member = ff_crew_selected(crew);
     if (!member) {
@@ -142,6 +214,10 @@ void ff_radar_compute(ff_radar_view_t *v, ff_radar_smooth_t *smooth, ff_crew_t *
         v->place = false;
         v->stale = false;
         v->heard_presence = FF_CREW_PRESENCE_NEVER; /* no selection, nothing to have heard */
+        v->signal_tier = FF_SIGNAL_NONE; /* S29: no selection, nothing to classify */
+        v->signal_heard = false;
+        v->signal_via_relay = false;
+        v->signal_age_str[0] = '\0';
         v->arrow_deg = smooth->smoothed_deg; /* frozen: nothing to smooth toward */
         return;
     }
@@ -172,6 +248,19 @@ void ff_radar_compute(ff_radar_view_t *v, ff_radar_smooth_t *smooth, ff_crew_t *
      * unconditionally, same "always populated, independent of
      * my_pos_ok/heading_ok" treatment place/stale get just above. */
     v->heard_presence = ff_crew_presence(member, now_ms);
+
+    /* S29: computed unconditionally (independent of mode), right after
+     * the place/stale reduction — see ff_radar.h's doc comment. */
+    v->signal_heard = member->has_heard;
+    v->signal_age_str[0] = '\0';
+    if (member->has_heard) {
+        ff_fmt_age(v->signal_age_str, sizeof(v->signal_age_str), now_ms - member->last_heard_ms);
+    }
+    v->signal_via_relay = member->has_heard && !member->heard_direct;
+    {
+        bool const tier_usable = member->heard_direct && member->rssi_dbm != INT16_MIN;
+        v->signal_tier = tier_usable ? ff_radar_signal_tier(member->rssi_dbm) : FF_SIGNAL_NONE;
+    }
 
     float distance_m = -1.0f; /* -1: unknown, matches ff_crew_close_range's convention */
     if (my_pos_ok && member->has_pos) {
@@ -254,8 +343,15 @@ void ff_radar_compute(ff_radar_view_t *v, ff_radar_smooth_t *smooth, ff_crew_t *
          * regardless of heading. See ff_radar.h's mode-resolution doc
          * comment — this is the one and only NOFIX trigger now; the old
          * "or heading invalid" half moved to RADAR_NOHDG immediately
-         * below. */
-        v->mode = RADAR_NOFIX;
+         * below.
+         *
+         * S29: a dead end for geometry, but not for the radio — if the
+         * member has been heard at all, that's a real reading worth
+         * showing instead of a flat "nothing is known" (RADAR_SIGNAL, no
+         * ghost arrow possible here: my own position is unknown, so
+         * there is nothing to point at even with a real bearing on file
+         * for the member). */
+        v->mode = member->has_heard ? RADAR_SIGNAL : RADAR_NOFIX;
         v->arrow_valid = false;
         return;
     }
@@ -266,9 +362,9 @@ void ff_radar_compute(ff_radar_view_t *v, ff_radar_smooth_t *smooth, ff_crew_t *
          * whenever the member itself has a position. Only in that case
          * is there something honest to show without an arrow (RADAR_NOHDG);
          * with no member position either, there is nothing geometric at
-         * all to report, so this stays RADAR_NOFIX ("if !heading_ok but
-         * the member has no position, stay NOFIX" — S06 amendment). */
-        v->mode = member->has_pos ? RADAR_NOHDG : RADAR_NOFIX;
+         * all to report — S29: fall back to RADAR_SIGNAL when the member
+         * has been heard (was unconditionally RADAR_NOFIX). */
+        v->mode = member->has_pos ? RADAR_NOHDG : (member->has_heard ? RADAR_SIGNAL : RADAR_NOFIX);
         v->arrow_valid = false;
         return;
     }
@@ -294,8 +390,12 @@ void ff_radar_compute(ff_radar_view_t *v, ff_radar_smooth_t *smooth, ff_crew_t *
     case FF_FRESH_NEVER:
     default:
         /* FF_FRESH_NEVER folded into RADAR_LOST — see ff_radar.h's doc
-         * comment for the rationale. */
-        v->mode = RADAR_LOST;
+         * comment for the rationale. S29: a member heard on the radio
+         * even though their position is LOST/NEVER gets RADAR_SIGNAL
+         * instead of a flat RADAR_LOST — `have_bearing` below already
+         * gives the renderer an honest ghost arrow (real fix, LOST) vs.
+         * no arrow (NEVER) for free, exactly as it did for RADAR_LOST. */
+        v->mode = member->has_heard ? RADAR_SIGNAL : RADAR_LOST;
         break;
     }
     v->arrow_valid = have_bearing;

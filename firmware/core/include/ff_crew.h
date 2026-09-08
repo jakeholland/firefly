@@ -249,9 +249,22 @@ typedef struct {
      * rssi_age_ms above — actual elapsed age is `now_ms -
      * last_heard_ms`, computed by `ff_crew_presence`, never read here
      * directly. `has_heard` is false (and `last_heard_ms` meaningless)
-     * until the first `ff_crew_on_heard` call for this node. */
+     * until the first `ff_crew_on_heard` call for this node.
+     *
+     * 2026-09-08 [S29] radio-only folded its own parallel `heard_age_ms`/
+     * `heard_direct` tracker into this one record rather than keep two
+     * "was this node heard" facts side by side (see PR #238's now-resolved
+     * "S29 MERGE POINT" note, formerly here). `heard_direct` is the one
+     * field S29 needed that this record didn't already carry: whether the
+     * LATEST sighting (not necessarily the latest direct RSSI) arrived
+     * DIRECT, i.e. rx_path == MC_RX_PATH_DIRECT. Like `last_heard_ms`/
+     * `has_heard`, it is written for EVERY rx_path (unlike `rssi_dbm`/
+     * `rssi_age_ms`, direct-only per `ff_crew_on_rssi`'s contract) — a
+     * relayed sighting is still a real "we heard about them" fact, just
+     * not a licensed RSSI reading. */
     uint32_t last_heard_ms;
     bool     has_heard;
+    bool     heard_direct;
 } ff_crew_member_t;
 
 /**
@@ -408,12 +421,21 @@ float ff_crew_pos_precision_grid_m(uint8_t precision_bits);
 void ff_crew_on_rssi(ff_crew_t *c, uint32_t node_id, int16_t rssi_dbm);
 
 /**
- * ff_crew_on_heard — record that ANY packet arrived from `node_id` at
- * `rx_time_ms`, independent of what kind of packet it was, whether it
- * carried a position, or whether it arrived direct or relayed. Find-or-
- * creates the slot (same effect-not-name/no-eviction convention as
- * `ff_crew_on_position`/`ff_crew_on_rssi`). The ONLY writer of
- * `last_heard_ms`/`has_heard` — see `ff_crew_presence`, the only reader.
+ * ff_crew_on_heard — record that a packet arrived from `node_id` at
+ * `rx_time_ms`, independent of what kind of packet it was or whether it
+ * carried a position, and whether it arrived DIRECT or via a relay
+ * (`direct`). Find-or-creates the slot (same effect-not-name/no-eviction
+ * convention as `ff_crew_on_position`/`ff_crew_on_rssi`). The ONLY writer
+ * of `last_heard_ms`/`has_heard`/`heard_direct` — see `ff_crew_presence`,
+ * the primary reader.
+ *
+ * Unconditionally overwrites all three fields — the LATEST sighting always
+ * wins, same "latest fix wins, never sticky" rule `ff_crew_on_position`
+ * already documents. Unlike `ff_crew_on_rssi` (direct-only — a relayed
+ * packet's RSSI belongs to the relay, not the sender), this is called for
+ * every rx_path: "was this member heard at all, and how" is a real fact
+ * worth recording even when it isn't licensed to update a signal-strength
+ * reading.
  *
  * The caller decides what counts as "heard" (see `app/ff_shell.c`'s
  * `shell_ev_rx_meta`, which calls this from `mc_events_t.on_rx_meta` —
@@ -422,7 +444,7 @@ void ff_crew_on_rssi(ff_crew_t *c, uint32_t node_id, int16_t rssi_dbm);
  * comment in mc_client.h); core takes the timestamp on faith, same as
  * `ff_crew_on_position`'s `rx_time_ms`.
  */
-void ff_crew_on_heard(ff_crew_t *c, uint32_t node_id, uint32_t rx_time_ms);
+void ff_crew_on_heard(ff_crew_t *c, uint32_t node_id, uint32_t rx_time_ms, bool direct);
 
 /**
  * ff_crew_presence — classify how recently the radio has heard ANY

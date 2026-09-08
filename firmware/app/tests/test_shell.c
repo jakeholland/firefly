@@ -1732,6 +1732,49 @@ static void S16_b1_rssi_is_attributed_only_on_a_direct_path(void)
     TEST_ASSERT_EQUAL_INT16(-40, member(DANA)->rssi_dbm);
 }
 
+/**
+ * S29 (docs/specs/S29-radio-only.md) — unlike ff_crew_on_rssi above,
+ * ff_crew_on_heard is recorded for EVERY rx_path from a paired sender,
+ * not just DIRECT: "was this member heard at all, and how" is a real
+ * fact even for a relayed packet, just not a licensed RSSI reading.
+ */
+static void S29_heard_recorded_for_both_direct_and_relay_when_paired(void)
+{
+    harness_init(100000u, false);
+    inject_my_info(MY_ID);
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, true));
+
+    TEST_ASSERT_FALSE(member(DANA)->has_heard);
+
+    inject_rx_meta(DANA, MC_RX_PATH_INDIRECT, true, -40);
+    TEST_ASSERT_TRUE(member(DANA)->has_heard);
+    TEST_ASSERT_FALSE(member(DANA)->heard_direct);
+    TEST_ASSERT_EQUAL_INT16(INT16_MIN, member(DANA)->rssi_dbm); /* relay never touches rssi */
+
+    inject_rx_meta(DANA, MC_RX_PATH_DIRECT, true, -40);
+    TEST_ASSERT_TRUE(member(DANA)->has_heard);
+    TEST_ASSERT_TRUE(member(DANA)->heard_direct);
+    TEST_ASSERT_EQUAL_INT16(-40, member(DANA)->rssi_dbm);
+}
+
+/* Same paired trust gate ff_crew_on_rssi's own unpaired test pins —
+ * applied identically to ff_crew_on_heard. */
+static void S29_heard_never_recorded_for_a_known_but_unpaired_sender(void)
+{
+    harness_init(100000u, false);
+    inject_my_info(MY_ID);
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, true));
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, false));
+    TEST_ASSERT_FALSE(member(DANA)->paired);
+
+    inject_rx_meta(DANA, MC_RX_PATH_DIRECT, true, -40);
+    TEST_ASSERT_FALSE(member(DANA)->has_heard);
+
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, true));
+    inject_rx_meta(DANA, MC_RX_PATH_DIRECT, true, -40);
+    TEST_ASSERT_TRUE(member(DANA)->has_heard);
+}
+
 
 /**
  * #35 remainder — the has_rssi gate, the third and previously UNPINNED
@@ -1813,19 +1856,28 @@ static void S16_b1_close_mode_triggers_live_via_direct_rssi_from_paired_peer(voi
 
     ff_shell_tick(&H.shell, H.clk.t);
     /* Baseline: paired, my own fix known, DANA never sent a fix or an
-     * RSSI sample — FF_FRESH_NEVER folds into RADAR_LOST (ff_radar.h),
-     * distinguishable from a real stale fix by the empty age_str. Not
-     * CLOSE: nothing has told the radar DANA is close yet. */
+     * RSSI sample, and has never been heard on the radio at all either
+     * — FF_FRESH_NEVER folds into RADAR_LOST (ff_radar.h), distinguishable
+     * from a real stale fix by the empty age_str. Not CLOSE: nothing has
+     * told the radar DANA is close yet. */
     TEST_ASSERT_EQUAL_INT(RADAR_LOST, ff_shell_view(&H.shell)->radar.mode);
     TEST_ASSERT_EQUAL_STRING("", ff_shell_view(&H.shell)->radar.age_str);
 
-    /* Negative control: an INDIRECT packet, even a loud one, must not
-     * move the mode — a relay's signal is not a distance proxy for the
+    /* Negative control for RSSI/CLOSE specifically: an INDIRECT packet,
+     * even a loud one, must not move the mode toward CLOSE or attribute
+     * any RSSI — a relay's signal is not a distance proxy for the
      * originator (the whole reason mc_rx_path_t exists; issue #35's
-     * hardware findings caught exactly this on a live mesh). */
+     * hardware findings caught exactly this on a live mesh). S29
+     * (docs/specs/S29-radio-only.md) amendment: the mode itself DOES move
+     * — off the dead-end RADAR_LOST reading and onto RADAR_SIGNAL,
+     * because the radio DID hear DANA (via relay) even though it isn't
+     * licensed to report a distance/RSSI for her. */
     inject_rx_meta(DANA, MC_RX_PATH_INDIRECT, true, -40);
     ff_shell_tick(&H.shell, H.clk.t);
-    TEST_ASSERT_EQUAL_INT(RADAR_LOST, ff_shell_view(&H.shell)->radar.mode);
+    TEST_ASSERT_EQUAL_INT(RADAR_SIGNAL, ff_shell_view(&H.shell)->radar.mode);
+    TEST_ASSERT_TRUE(ff_shell_view(&H.shell)->radar.signal_via_relay);
+    TEST_ASSERT_EQUAL_INT(FF_SIGNAL_NONE, ff_shell_view(&H.shell)->radar.signal_tier);
+    TEST_ASSERT_EQUAL_INT16(INT16_MIN, member(DANA)->rssi_dbm); /* still no attributed RSSI */
 
     /* The real thing: a live DIRECT packet from a paired peer, through
      * the actual on_rx_meta callback — no test seam bypassing it. */
@@ -1836,12 +1888,17 @@ static void S16_b1_close_mode_triggers_live_via_direct_rssi_from_paired_peer(voi
 
     /* Age-out: FF_CREW_CLOSE_RANGE_RSSI_AGE_MS later with no fresh
      * sample, the RSSI leg of ff_crew_close_range goes stale and CLOSE
-     * must release — stale RSSI must not hold a CLOSE lock forever.
-     * Falls back to the same paired-but-never-fixed LOST reading as the
-     * baseline, since DANA still has no position fix of her own. */
+     * must release — stale RSSI must not hold a CLOSE lock forever. S29:
+     * DANA is still paired-but-never-fixed (no position of her own), but
+     * she HAS been heard (the DIRECT packet above), so this now falls to
+     * RADAR_SIGNAL rather than the old bare RADAR_LOST baseline — the
+     * radio's own evidence stays a first-class reading instead of
+     * collapsing back to a dead end the moment CLOSE releases. */
     advance(FF_CREW_CLOSE_RANGE_RSSI_AGE_MS);
     ff_shell_tick(&H.shell, H.clk.t);
-    TEST_ASSERT_EQUAL_INT(RADAR_LOST, ff_shell_view(&H.shell)->radar.mode);
+    TEST_ASSERT_EQUAL_INT(RADAR_SIGNAL, ff_shell_view(&H.shell)->radar.mode);
+    TEST_ASSERT_FALSE(ff_shell_view(&H.shell)->radar.signal_via_relay); /* last sighting was DIRECT */
+    TEST_ASSERT_EQUAL_INT(FF_SIGNAL_STRONG, ff_shell_view(&H.shell)->radar.signal_tier); /* -50 dBm */
 }
 
 /* ------------------------------------------------------------------- */
@@ -10578,6 +10635,8 @@ int main(void)
     RUN_TEST(S16_b1_positions_are_never_stamped_from_the_local_clock);
     RUN_TEST(S16_b1_own_traffic_is_not_treated_as_inbound);
     RUN_TEST(S16_b1_rssi_is_attributed_only_on_a_direct_path);
+    RUN_TEST(S29_heard_recorded_for_both_direct_and_relay_when_paired);
+    RUN_TEST(S29_heard_never_recorded_for_a_known_but_unpaired_sender);
     RUN_TEST(S16_b1_rssi_never_recorded_for_a_known_but_unpaired_sender);
     RUN_TEST(S16_b1_rssi_absent_reading_records_nothing_even_direct_and_paired);
     RUN_TEST(S16_b1_close_mode_triggers_live_via_direct_rssi_from_paired_peer);

@@ -111,6 +111,18 @@ void radar_layout_build_registry(radar_mode_t mode, bool never_fixed, radar_layo
          * construction rather than by someone remembering to add it. */
         add_rect(out, -140.0f, RADAR_LAYOUT_NOHDG_CHIP_DY - 20.0f, 140.0f, RADAR_LAYOUT_NOHDG_HINT_DY + 20.0f);
         break;
+    case RADAR_SIGNAL:
+        /* S29 — one rect generous enough for BOTH the non-ghost and
+         * ghost variants (only one ever renders per frame; over-
+         * reserving for the shorter variant is the same convention
+         * RADAR_NOHDG's own entry above already documents). Covers name
+         * through the ghost-only LAST KNOWN row. Width matched to
+         * RADAR_LAYOUT_STACK_NAME_W's own -140..140 (LIVE/STALE/LOST) —
+         * test_arrow_sweep_signal_ghost pins that this stays narrow
+         * enough for the ghost arrow to clear at every bearing. */
+        add_rect(out, -140.0f, RADAR_LAYOUT_SIGNAL_NAME_DY - 20.0f, 140.0f,
+                  RADAR_LAYOUT_SIGNAL_LASTKNOWN_DY + 20.0f);
+        break;
     case RADAR_NOSEL:
     default:
         add_rect(out, -170.0f, RADAR_LAYOUT_NOSEL_HEADLINE_DY - 18.0f, 170.0f, RADAR_LAYOUT_NOSEL_SUB_DY + 15.0f);

@@ -91,8 +91,83 @@ typedef enum {
      * NOFIX's "nothing is known" framing. See ff_radar_compute's doc
      * comment for exactly where this sits in mode-resolution priority. */
     RADAR_NOHDG,
+    /* S29 (docs/specs/S29-radio-only.md) — "no fix, indoor mode / in the
+     * trees" fallback: reached ONLY where the old logic had nothing left
+     * to say (a dead end that would otherwise be NOFIX or LOST) AND the
+     * radio has some evidence to offer instead (the selected member's
+     * `has_heard`). Never preempts a mode that already carries real
+     * geometry (LIVE/STALE/PLACE/CLOSE/NOHDG) — see ff_radar_compute's
+     * doc comment for the exact mode-resolution table this slots into. */
+    RADAR_SIGNAL,
     RADAR_NOSEL,
 } radar_mode_t;
+
+/**
+ * ff_signal_tier_t — S29: a coarse, honest classification of a DIRECT
+ * packet's RSSI, used ONLY when there is a licensed direct reading to
+ * classify (see `ff_radar_signal_tier`'s own doc comment — this is never
+ * computed from a relayed packet's RSSI, same rule `ff_crew_on_rssi`
+ * already enforces at the point RSSI is recorded at all).
+ *
+ * FF_SIGNAL_NONE is the explicit "no usable direct reading" value — the
+ * zero value, so a zeroed `ff_radar_view_t` reads as "no signal claimed"
+ * rather than accidentally reading as a real tier.
+ */
+typedef enum {
+    FF_SIGNAL_NONE = 0,
+    FF_SIGNAL_FAINT,
+    FF_SIGNAL_WEAK,
+    FF_SIGNAL_GOOD,
+    FF_SIGNAL_STRONG,
+} ff_signal_tier_t;
+
+/* S29 signal-tier thresholds — a product judgment call (same category as
+ * ff_crew.h's FF_CREW_RSSI_TREND_THRESHOLD_DBM), anchored to ordinary
+ * SX1262 LoRa practice rather than derived from a spec number: a
+ * LONG_FAST (SF11/BW250) link's usable range on this hardware runs
+ * roughly -80 dBm (very strong, effectively line-of-sight/close) down to
+ * the modem's own demodulation floor near -125..-130 dBm at 0 dB SNR.
+ * -110 dBm still carries several dB of margin above that floor on a
+ * clean channel, so it is the line between "still comfortably decodable"
+ * (WEAK) and "surviving on margin, expect drops" (FAINT). -95 dBm splits
+ * STRONG from an ordinary, perfectly serviceable link (GOOD) at roughly
+ * the midpoint of the practical range. See docs/specs/S29-radio-only.md
+ * for the full derivation. SNR is deliberately NOT part of this — see
+ * `ff_radar_signal_tier`'s own doc comment for why that refinement is a
+ * named, deferred follow-up rather than wired in here. */
+/* Four non-overlapping, gap-free half-open intervals partitioning the
+ * whole int16_t range: STRONG (-80, +inf); GOOD [-95, -80] (note: closed
+ * at BOTH ends — -80 itself is GOOD, not STRONG, since STRONG's own
+ * bound is a strict `>`); WEAK [-110, -95); FAINT (-inf, -110). */
+#define FF_SIGNAL_STRONG_MIN_DBM (-80)  /* > -80 dBm: STRONG */
+#define FF_SIGNAL_GOOD_MIN_DBM   (-95)  /* [-95, -80]: GOOD (exactly -80 is GOOD, not STRONG) */
+#define FF_SIGNAL_WEAK_MIN_DBM   (-110) /* [-110, -95): WEAK; < -110: FAINT */
+
+/**
+ * ff_radar_signal_tier — classify a direct-packet RSSI reading into one
+ * of the four named tiers above. Pure, total function of its one
+ * argument — boundary-exact at the three thresholds (`>` STRONG_MIN is
+ * STRONG, `>=` GOOD_MIN is GOOD, `>=` WEAK_MIN is WEAK, else FAINT).
+ *
+ * Callers must gate on "is there a licensed direct reading at all"
+ * BEFORE calling this — it has no way to tell a genuine -120 dBm sample
+ * from "never heard direct" (`ff_crew_member_t.rssi_dbm ==
+ * INT16_MIN`, or the member's latest sighting wasn't direct at all);
+ * see `ff_radar_compute`'s own `signal_tier` computation for the exact
+ * gate (`heard_direct && rssi_dbm != INT16_MIN`).
+ *
+ * Deferred, not implemented (docs/specs/S29-radio-only.md's scope cut,
+ * flagged per AGENTS.md): the owner's "SNR can refine" is not wired in
+ * here. Tiering is RSSI-only. LoRa SNR near the demodulation floor while
+ * RSSI reads strong usually means "elevated noise floor from
+ * interference," not "weak signal" — a nice-to-have polish on top of a
+ * correctly-classified RSSI reading, not a behavior this milestone
+ * depends on. Wiring it in would mean widening `ff_crew_on_rssi`'s
+ * signature (three existing non-test call sites, three test files) for
+ * a refinement that doesn't change this function's basic classification
+ * in the common case.
+ */
+ff_signal_tier_t ff_radar_signal_tier(int16_t rssi_dbm);
 
 /* Small-string budgets, transcribed from the spec sketch's field widths
  * (name[16], dist_str[12], age_str[12], clock_str[6]) — clock_str widened
@@ -148,6 +223,22 @@ typedef struct {
      * either (or neither) of them. */
     bool    imprecise;
 } ff_radar_dot_t;
+
+/**
+ * ff_radar_signal_dot_t — S29: one entry on the inner "signal ring" — a
+ * paired member who is heard (`ff_crew_member_t.has_heard`) but has no
+ * placeable position (`!has_pos`). A member WITH a position is always on
+ * the ordinary `dots[]` ring instead, never both (`ff_radar_compute`
+ * enforces this mutual exclusivity) — this ring exists specifically for
+ * the "we hear them but have never placed them" case `dots[]` cannot
+ * represent (it has no bearing to draw at all).
+ */
+typedef struct {
+    char    initial;
+    uint8_t color_idx;
+    ff_signal_tier_t tier; /* FF_SIGNAL_NONE if via_relay (no licensed direct reading) */
+    bool    via_relay;
+} ff_radar_signal_dot_t;
 
 /**
  * ff_radar_view_t — the whole radar-face view-state snapshot. See
@@ -231,6 +322,23 @@ typedef struct {
     ff_crew_presence_t heard_presence;
     ff_radar_dot_t dots[FF_CREW_MAX];
     uint8_t n_dots;
+
+    /* S29 (docs/specs/S29-radio-only.md) — computed UNCONDITIONALLY,
+     * independent of `mode`, right after the place/stale reduction
+     * above (same "compute the fact once, regardless of which mode it
+     * ends up feeding" pattern `place`/`stale`/`bearing_deg` already
+     * use). Signal is NEVER rendered as distance — every consumer of
+     * these fields must say "signal", never imply metres. */
+    ff_signal_tier_t signal_tier; /* FF_SIGNAL_NONE when no usable DIRECT reading exists */
+    bool  signal_heard;           /* true iff heard at all, direct or relay */
+    bool  signal_via_relay;       /* true iff signal_heard && latest sighting was NOT direct */
+    char  signal_age_str[FF_RADAR_STR_LEN]; /* "" if !signal_heard, else age since last heard */
+    /* `trend` above doubles as SIGNAL's WARMER(+1)/COLDER(-1)/STEADY(0)
+     * — same ff_crew_rssi_trend() call CLOSE mode already makes, no new
+     * field needed. */
+    ff_radar_signal_dot_t signal_dots[FF_CREW_MAX];
+    uint8_t n_signal_dots; /* sorted STRONG->GOOD->WEAK->FAINT->NONE(via-relay); tie-break: roster order */
+
     /* NOT written by ff_radar_compute — see this header's deviation note. */
     char  clock_str[FF_RADAR_CLOCK_LEN];
     int8_t batt_pct;
@@ -532,6 +640,70 @@ void ff_radar_smooth_reset(ff_radar_smooth_t *s);
  * Allocation-free, <1 ms on any host CPU (S06 AC6) — bounded work over
  * `FF_CREW_MAX` (8) members, no I/O, no libc calls beyond `<string.h>`
  * memcpy-shaped helpers and `<math.h>` trig/`expf`.
+ *
+ * ## S29 amendment (docs/specs/S29-radio-only.md, 2026-09) — RADAR_SIGNAL
+ * `RADAR_SIGNAL` supersedes the relevant slice of the mode-resolution
+ * table above: everywhere the old logic reached a dead end (NOFIX or the
+ * FF_FRESH_LOST/NEVER half of LOST) with `member->has_heard` true, the
+ * mode is now RADAR_SIGNAL instead — the radio's own evidence (RSSI/SNR,
+ * direct-vs-relay, "heard how long ago") is a first-class, honestly-
+ * labeled reading rather than a dead end. Precisely:
+ *  - Step 2 (NOFIX, `!my_pos_ok`): `member->has_heard ? RADAR_SIGNAL :
+ *    RADAR_NOFIX` (was unconditionally RADAR_NOFIX). No ghost arrow here
+ *    — `arrow_valid` stays false (my own position is unknown, so there
+ *    is nothing to smooth an arrow toward even if the member has one).
+ *  - Step 3 (NOHDG, `my_pos_ok && !heading_ok`): unchanged when
+ *    `member->has_pos` (NOHDG still wins — it has real geometry);
+ *    `member->has_heard ? RADAR_SIGNAL : RADAR_NOFIX` when the member
+ *    has no position (was unconditionally RADAR_NOFIX).
+ *  - Step 5 (freshness), FF_FRESH_LOST/FF_FRESH_NEVER only:
+ *    `member->has_heard ? RADAR_SIGNAL : RADAR_LOST` (was unconditionally
+ *    RADAR_LOST). LIVE/STALE/PLACE/CLOSE are completely untouched —
+ *    RADAR_SIGNAL never preempts a mode that already carries real
+ *    geometry. Reached here, `my_pos_ok && heading_ok` are both already
+ *    true, so the function's existing `v->arrow_valid = have_bearing`
+ *    line already does the right thing for free: true iff the member
+ *    ALSO `has_pos` (a real, if very old, fix — the GHOST case), false
+ *    for FF_FRESH_NEVER (nothing to ghost). `dist_str`/`age_str` are
+ *    already computed unconditionally earlier in this function from the
+ *    member's last-known fix, so the ghost sub-case already carries
+ *    exactly "last known distance"/"last known age" with no new fields.
+ *    Positions never expire out of the crew model, so there is no
+ *    separate "position-LOST window" gate — the ghost is available for
+ *    exactly as long as RADAR_LOST's own "LAST SEEN" chip already is.
+ *
+ * `signal_tier`/`signal_heard`/`signal_via_relay`/`signal_age_str` are
+ * computed UNCONDITIONALLY (independent of mode), from `member->
+ * has_heard`/`last_heard_ms`/`heard_direct` (ff_crew.h) and — ONLY when
+ * the latest sighting was direct AND a licensed RSSI reading exists
+ * (`heard_direct && rssi_dbm != INT16_MIN`) — `ff_radar_signal_tier
+ * (member->rssi_dbm)`; FF_SIGNAL_NONE otherwise (including the
+ * via-relay case: a relayed packet's RSSI belongs to the relay, never
+ * the sender — same rule `ff_crew_on_rssi`'s own callers already
+ * enforce). `signal_age_str` mirrors `age_str`'s own `ff_fmt_age`
+ * convention, from `now_ms - member->last_heard_ms`, "" when
+ * `!signal_heard`. `v->trend` (existing field, existing
+ * `ff_crew_rssi_trend` call) is left exactly as-is — SIGNAL reads it as
+ * WARMER(+1)/COLDER(-1)/STEADY(0) the same way CLOSE already does.
+ *
+ * `signal_dots[]`/`n_signal_dots` are computed unconditionally too
+ * (parallel to `dots[]`, independent of selection and of
+ * `my_pos_ok`/heading — these dots need no bearing frame at all): every
+ * PAIRED member with `!has_pos && has_heard` gets an entry (a member
+ * WITH a position is already on the ordinary ring via `dots[]`, never
+ * both — the two arrays are mutually exclusive by construction). Sorted
+ * STRONG -> GOOD -> WEAK -> FAINT -> NONE(via relay), stable within a
+ * tier by roster order.
+ *
+ * Scope cut (docs/specs/S29-radio-only.md, flagged per AGENTS.md): the
+ * GHOST case above only covers the FRIEND's last-known position, never a
+ * cached copy of OUR OWN historical fix — `ff_radar_compute` has no input
+ * for "my last-known position before GPS dropped" (only the *current*
+ * `my_pos`/`my_pos_ok`), so a ghost only renders when `my_pos_ok` is
+ * currently true but the member's position is what has gone stale/absent
+ * (reached via the freshness-switch path, not the NOFIX path). The
+ * my-own-fix-just-dropped case still gets the live SIGNAL headline
+ * (tier/age/trend), just no ghost arrow.
  */
 void ff_radar_compute(ff_radar_view_t *v, ff_radar_smooth_t *smooth, ff_crew_t *crew, float heading_deg,
                        ff_latlon_t my_pos, bool my_pos_ok, bool imperial, uint32_t now_ms);

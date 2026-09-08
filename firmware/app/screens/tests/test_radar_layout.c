@@ -139,6 +139,18 @@ static void test_dot_sweep_nosel(void)
 {
     sweep_single_dot_never_overlaps_registry(RADAR_NOSEL, false, "NOSEL");
 }
+static void test_dot_sweep_signal(void)
+{
+    /* S29 — the ORDINARY ring (dots[]) can be non-empty at the same time
+     * a member is selected in RADAR_SIGNAL mode (another paired member
+     * with a real position fix); this pins that SIGNAL's own headline
+     * reservation is geometrically sound against that ring, same as
+     * every other mode's coverage above. The inner "signal ring" itself
+     * (signal_dots[]) is NOT resolved through this module at all (S29
+     * Scope cut 3 — laid out by simple even angular spacing in
+     * scr_radar.c directly), so it has no sweep here. */
+    sweep_single_dot_never_overlaps_registry(RADAR_SIGNAL, false, "SIGNAL");
+}
 
 /* ---------------------------------------------------------------------
  * AC — arrow: full tenth-degree sweep for every mode that actually shows
@@ -205,6 +217,14 @@ static void test_arrow_sweep_place(void)
      * (ff_radar.h's RADAR_PLACE paragraph), through the same LIVE/STALE
      * registry rect. */
     sweep_arrow_never_overlaps_registry_or_changes_bearing(RADAR_PLACE, "PLACE");
+}
+
+static void test_arrow_sweep_signal_ghost(void)
+{
+    /* S29 — the GHOST variant (a real prior fix on file, member
+     * has_heard) draws the same RADAR_ARROW_GHOST styling RADAR_LOST's
+     * real-fix case does, through SIGNAL's own (generous) registry rect. */
+    sweep_arrow_never_overlaps_registry_or_changes_bearing(RADAR_SIGNAL, "SIGNAL (ghost)");
 }
 
 static void test_arrow_not_shortened_when_clear(void)
@@ -545,11 +565,13 @@ int main(void)
     RUN_TEST(test_dot_sweep_nofix);
     RUN_TEST(test_dot_sweep_nosel);
     RUN_TEST(test_dot_sweep_place);
+    RUN_TEST(test_dot_sweep_signal);
 
     RUN_TEST(test_arrow_sweep_live);
     RUN_TEST(test_arrow_sweep_stale);
     RUN_TEST(test_arrow_sweep_lost);
     RUN_TEST(test_arrow_sweep_place);
+    RUN_TEST(test_arrow_sweep_signal_ghost);
     RUN_TEST(test_arrow_not_shortened_when_clear);
 
     RUN_TEST(test_all_8_dots_same_bearing_close_mode_cluster_not_hidden);

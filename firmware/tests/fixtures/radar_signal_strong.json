@@ -1,0 +1,29 @@
+{
+  "fixture": "radar_signal_strong",
+  "face": "radar",
+  "radar": {
+    "mode": "signal",
+    "arrow_deg": 0.0,
+    "arrow_valid": false,
+    "name": "DANA",
+    "dist_str": "",
+    "age_str": "",
+    "trend": 1,
+    "bearing_deg": 0.0,
+    "bearing_valid": false,
+    "place": false,
+    "stale": false,
+    "signal_tier": "strong",
+    "signal_heard": true,
+    "signal_via_relay": false,
+    "signal_age_str": "8 SEC",
+    "clock_str": "9:50",
+    "batt_pct": 61,
+    "mesh_ok": true,
+    "dots": [],
+    "signal_dots": [
+      {"initial": "R", "color_idx": 1, "tier": "weak", "via_relay": false},
+      {"initial": "M", "color_idx": 2, "tier": "none", "via_relay": true}
+    ]
+  }
+}

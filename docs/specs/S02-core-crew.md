@@ -168,3 +168,21 @@ a) model + upsert + freshness · b) formatting · c) close-range + RSSI trend ·
     `S16_AC9_want_config_replay_does_not_refresh_position_age` (same
     bump), `firmware/app/tests/test_demoapply.c`'s
     `test_S23c_poke_refreshes_presence` (re-based onto heard).
+
+- **2026-09-08, rebase amendment — S29 folded into the heard record**
+  (`docs/specs/S29-radio-only.md`, `feat/s29-radio-only-fallback`,
+  rebased onto this commit): S29 was developed concurrently and had
+  independently added its own `has_heard`/`heard_age_ms`/`heard_direct`
+  tracker to `ff_crew_member_t` for its RADAR_SIGNAL view, flagged in its
+  own spec as a "MERGE POINT" pending whichever branch landed on `main`
+  first. Since this amendment's `last_heard_ms`/`has_heard`/
+  `ff_crew_on_heard`/`ff_crew_presence` reached `main` first, S29's
+  tracker was folded into THIS one at rebase rather than kept side by
+  side: `ff_crew_on_heard` gained a fourth parameter, `bool direct`,
+  unconditionally writing a new `heard_direct` field alongside
+  `last_heard_ms`/`has_heard` (same "the latest sighting always wins"
+  rule as the other two fields). `ff_crew_presence`'s behavior and
+  signature are unchanged — `heard_direct` is not one of its inputs, it
+  exists purely for RADAR_SIGNAL's direct-vs-relay distinction. This
+  spec's own AC9 tests are unaffected; the new field is covered by S29's
+  own `test_crew.c`/`test_shell.c` additions instead.
