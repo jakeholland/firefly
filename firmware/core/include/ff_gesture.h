@@ -57,8 +57,9 @@
  *    face (and, per touch, per whether the press landed on an
  *    interactive widget — see that function's own doc comment).
  *
- * A touch whose DOWN point is outside the glass circle entirely (past
- * `r + cfg.edge_slop_px` — this header's own "Edge tolerance" section)
+ * A touch whose DOWN point is admitted by NEITHER the padded glass
+ * circle (past `r + cfg.edge_slop_px`) NOR either rim zone (this
+ * header's own "Edge tolerance" and "Edge tolerance, part 3" sections)
  * can never produce ANY of the three gestures (a corner-pixel touch is
  * not "on the glass" at all) — this is the FSM's own guard, checked once at
  * DOWN, not something the glue has to remember to apply.
@@ -134,6 +135,57 @@
  * S28_AC9's own corner-pixel example remains ~280px away, comfortably
  * outside even with this slop applied).
  *
+ * ## Edge tolerance, part 3 — rim admission independent of the visual
+ * circle (2026-09-07 map-back-gesture-stall amendment, round 3)
+ * Part 2's `edge_slop_px` pads the admission circle by a flat 16px in
+ * EVERY direction — but a real BACK/HOME swipe starts at the extreme
+ * edge of the touch panel, and the panel is not clipped to the round
+ * bezel: it reports finger positions out to `x=0`/`x=panel_size_px-1`
+ * along the WHOLE left edge, at any `y`, because the panel is a square
+ * sensor under a round window. Bench evidence (Jake's puck, live
+ * theme geometry `cx=208, cy=206, r=200`, 2026-09-07): a clean left-rim
+ * BACK swipe on the Map face, `DOWN(5,119)`, was `ABORTED` at DOWN —
+ * `dist((5,119),(208,206)) ≈ 220.9px`, past even the padded radius
+ * `r+edge_slop_px=216`. The SAME shape of swipe on Settings,
+ * `DOWN(5,183)`, was admitted (`dist ≈ 204px ≤ 216`) and recognised
+ * BACK normally. The only difference is how far `y` sits from `cy`
+ * (119 is 87px off-centre; 183 is only 23px off) — a flat circular pad
+ * can never cover every `y` along the rim without also being wide
+ * enough to swallow genuinely off-glass corner touches (`S28_AC9`'s own
+ * `(0,0)` example), because the circle simply is not the right SHAPE
+ * for admitting a touch whose defining feature is "started at the
+ * physical edge, however far up or down that edge".
+ *
+ * The fix: `gesture_down_admitted` (ff_gesture.c) admits a DOWN if
+ * EITHER the padded-circle check above passes, OR the point falls in
+ * one of the two rim zones this module already computes `back_alive`/
+ * `home_alive` from — `x <= cx - r + back_rim_px` for the BACK zone,
+ * `y >= cy + r - home_rim_px` for the HOME zone — PROVIDED the point is
+ * also a sane panel coordinate (`0 <= x,y < cfg.panel_size_px`, new
+ * field, default 412 — this header's own "the panel size should come
+ * from config, not a literal" convention, matching `FF_THEME_PUCK_PX`)
+ * and, on the axis PERPENDICULAR to that rim, still within the circle's
+ * own unpadded span (`cy-r <= y <= cy+r` for the BACK zone, `cx-r <= x
+ * <= cx+r` for the HOME zone). That perpendicular bound is what keeps
+ * `S28_AC9`'s corner pixel — `x` well inside the BACK rim's threshold,
+ * but `y` far above the circle's own top — from being admitted just
+ * because it happens to share one coordinate with a real rim touch: a
+ * round window has no glass left up in that corner for a finger to
+ * physically touch, no matter how far left `x` reads. The two rim
+ * zones this admits are exactly the ones `back_alive`/`home_alive`
+ * already gate everything else on, so nothing downstream (axis lock,
+ * ratio, window, stall tolerance) changes shape — a rim-admitted touch
+ * that then moves the wrong axis first is disqualified exactly the way
+ * it always was.
+ *
+ * The `0 <= x,y < panel_size_px` bound also does the job the old
+ * zero-tolerance circle check used to do incidentally: rejecting the
+ * driver's own invalid-point sentinels (`(-1,-1)`, or a raw `0xFFFF`
+ * that arrives here already narrowed to `int16_t -1` by the caller) —
+ * those are never "on the glass" under any interpretation, rim or
+ * circle, and this bound is what actually says so explicitly now that
+ * the rim zones no longer imply it for free.
+ *
  * Pure C11, no I/O, no allocation. `ff_gesture_t` is fully-defined (not
  * opaque), same convention as `ff_multitap_t`/`ff_flare_t`: safe on the
  * stack or in a static; zero-initialize or call `ff_gesture_init()`
@@ -195,6 +247,12 @@ typedef struct {
      * admission check only; `r` itself (and the rim-zone formulas above)
      * stay exact. */
     int16_t edge_slop_px;
+    /* This header's "Edge tolerance, part 3" section: the touch panel's
+     * own size (a square sensor; the round glass sits inside it), used
+     * ONLY to sanity-bound a rim-admitted DOWN and to reject the
+     * driver's invalid-point sentinels. NOT the glass circle — that is
+     * `cx`/`cy`/`r` above. */
+    int16_t panel_size_px;
 } ff_gesture_cfg_t;
 
 /**
@@ -208,7 +266,10 @@ typedef struct {
  * glue arms it explicitly once a face is known — see
  * `ff_gesture_set_long_press`), `stall_gap_ms=150` (this header's
  * "Stall tolerance" section), `edge_slop_px=16` (this header's "Edge
- * tolerance" section). NULL-safe (no-op on a NULL `cfg`).
+ * tolerance" section), `panel_size_px=412` (this header's "Edge
+ * tolerance, part 3" section — matches `FF_THEME_PUCK_PX`; the glue may
+ * override it explicitly rather than relying on this default staying in
+ * sync). NULL-safe (no-op on a NULL `cfg`).
  */
 void ff_gesture_cfg_default(ff_gesture_cfg_t *cfg, int16_t cx, int16_t cy, int16_t r);
 

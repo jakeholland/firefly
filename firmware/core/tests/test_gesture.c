@@ -65,6 +65,9 @@ static void gesture_cfg_default_pins_spec_constants(void)
     TEST_ASSERT_FALSE(cfg.long_press_enabled);
     TEST_ASSERT_EQUAL_UINT16(150, cfg.stall_gap_ms);
     TEST_ASSERT_EQUAL_INT16(16, cfg.edge_slop_px);
+    /* 2026-09-07 map-back-gesture-stall amendment, round 3: new field,
+     * ff_gesture.h's "Edge tolerance, part 3" section. */
+    TEST_ASSERT_EQUAL_INT16(412, cfg.panel_size_px);
 }
 
 /* ------------------------------------------------------------------- */
@@ -523,6 +526,145 @@ static void S28_AC17_bench_map_vertical_first_stays_none(void)
 }
 
 /* ------------------------------------------------------------------- */
+/* fix/map-back-gesture-stall (2026-09-07, round 3) — rim admission     */
+/* independent of the visual glass circle (ff_gesture.h's own "Edge     */
+/* tolerance, part 3" section). Geometry throughout THIS section is the */
+/* LIVE theme geometry (GLASS_CX/CY/R = 208/206/200), matching the      */
+/* on-glass evidence: Jake's puck, running 678dd33 + bench sample       */
+/* logging, 2026-09-07. NOTE ON NUMBERING: continuing the sequential    */
+/* AC18... numbering here collides with slice b's own AC11-AC18 (a      */
+/* different file/module, different criteria) — same known, flagged     */
+/* collision this file's AC11/AC12 section already documents; not a     */
+/* copy-paste mistake.                                                  */
+/* ------------------------------------------------------------------- */
+
+/* AC18 — the exact MAP trace from the on-glass evidence: a clean
+ * left-rim BACK swipe, DOWN(5,119), never recognised before this
+ * amendment (k=0 on every sample) because DOWN(5,119) is
+ * dist~220.9px from (208,206) — past even the padded admission circle
+ * (r+edge_slop_px=216) — so the touch was ABORTED before rim-zone logic
+ * ever ran. Fixed by `gesture_down_admitted`'s rim-zone OR: x=5 is
+ * within the BACK rim (cx-r+back_rim_px=52) and y=119 is within the
+ * circle's own unpadded vertical span (cy-r..cy+r = 6..406). Mutation-
+ * proven: reverting the admission check to plain `gesture_in_circle`
+ * makes the first (non-DOWN) assertion below fail (the touch is
+ * ABORTED, so every later sample also returns NONE, including the one
+ * that must return BACK). Timestamps and points are the bench log's
+ * own values, fed verbatim (the duplicate-pair samples are the touch
+ * controller's ~40 ms update rate observed through a 20 ms poll). */
+static void S28_AC18_puck_map_theme_geometry_left_rim_swipe_recognises_back(void)
+{
+    ff_gesture_t g;
+    gesture_new(&g, false);
+
+    TEST_ASSERT_EQUAL(FF_GESTURE_NONE, ff_gesture_feed(&g, true, 5, 119, 2370552));
+    TEST_ASSERT_EQUAL(FF_GESTURE_NONE, ff_gesture_feed(&g, true, 5, 119, 2370568));
+    TEST_ASSERT_EQUAL(FF_GESTURE_NONE, ff_gesture_feed(&g, true, 5, 119, 2370588));
+    TEST_ASSERT_EQUAL(FF_GESTURE_NONE, ff_gesture_feed(&g, true, 12, 122, 2370608));
+    TEST_ASSERT_EQUAL(FF_GESTURE_NONE, ff_gesture_feed(&g, true, 12, 122, 2370628));
+    /* dx=89-5=84 >= 56 (first threshold crossing): |dy|=21 <= 0.6*84=50.4,
+     * 2370648-2370552=96ms well within the 500ms window -> BACK, exactly
+     * at the sample the on-glass evidence names. */
+    TEST_ASSERT_EQUAL(FF_GESTURE_BACK, ff_gesture_feed(&g, true, 89, 140, 2370648));
+    /* S28_AC8 — nothing further fires for the rest of this touch. */
+    TEST_ASSERT_EQUAL(FF_GESTURE_NONE, ff_gesture_feed(&g, true, 89, 140, 2370668));
+    TEST_ASSERT_EQUAL(FF_GESTURE_NONE, ff_gesture_feed(&g, true, 151, 153, 2370688));
+    TEST_ASSERT_EQUAL(FF_GESTURE_NONE, ff_gesture_feed(&g, true, 151, 153, 2370708));
+    TEST_ASSERT_EQUAL(FF_GESTURE_NONE, ff_gesture_feed(&g, true, 195, 163, 2370728));
+    TEST_ASSERT_EQUAL(FF_GESTURE_NONE, ff_gesture_feed(&g, true, 195, 163, 2370748));
+    TEST_ASSERT_EQUAL(FF_GESTURE_NONE, ff_gesture_feed(&g, false, 195, 163, 2370768));
+}
+
+/* AC19 — the on-glass evidence's own positive control: the same kind of
+ * swipe on Settings, DOWN(5,183), WAS recognised before this amendment
+ * (dist~204px, inside r+edge_slop_px=216) — kept here as a regression
+ * guard that the rim-zone OR does not change an already-working case. */
+static void S28_AC19_puck_settings_theme_geometry_left_rim_swipe_recognises_back(void)
+{
+    ff_gesture_t g;
+    gesture_new(&g, false);
+
+    TEST_ASSERT_EQUAL(FF_GESTURE_NONE, ff_gesture_feed(&g, true, 5, 183, 2372960));
+    TEST_ASSERT_EQUAL(FF_GESTURE_NONE, ff_gesture_feed(&g, true, 5, 183, 2372980));
+    TEST_ASSERT_EQUAL(FF_GESTURE_NONE, ff_gesture_feed(&g, true, 23, 188, 2373020));
+    TEST_ASSERT_EQUAL(FF_GESTURE_NONE, ff_gesture_feed(&g, true, 23, 188, 2373040));
+    /* dx=98-5=93 >= 56: |dy|=16 <= 0.6*93=55.8, 2373178-2372960=218ms
+     * within the window -> BACK, exactly at the sample the on-glass
+     * evidence names. */
+    TEST_ASSERT_EQUAL(FF_GESTURE_BACK, ff_gesture_feed(&g, true, 98, 199, 2373178));
+}
+
+/* AC20 — left-rim DOWNs at x=5, various y, are all admitted (a
+ * qualifying horizontal swipe from each recognises BACK) — the general
+ * case the MAP trace (AC18) is one instance of: a real BACK swipe can
+ * start anywhere along the left edge, not just near the vertical
+ * centre line the old zero-tolerance circle effectively required. */
+static void S28_AC20_left_rim_downs_at_various_y_all_admitted(void)
+{
+    int16_t const ys[] = {60, 119, 206, 300, 350};
+    for (size_t i = 0; i < sizeof(ys) / sizeof(ys[0]); i++) {
+        ff_gesture_t g;
+        gesture_new(&g, false);
+        TEST_ASSERT_EQUAL(FF_GESTURE_NONE, ff_gesture_feed(&g, true, 5, ys[i], 0));
+        TEST_ASSERT_EQUAL(FF_GESTURE_BACK, ff_gesture_feed(&g, true, 65, ys[i], 100));
+    }
+}
+
+/* AC21 — a rim-admitted DOWN does not weaken the axis lock: DOWN(5,119)
+ * (the same MAP point as AC18) followed by a mostly-vertical drag must
+ * still read as NONE, not BACK — proving rim admission only widens WHERE
+ * a touch is allowed to start, not what counts as a swipe once it has. */
+static void S28_AC21_admitted_rim_start_with_vertical_drag_is_none(void)
+{
+    ff_gesture_t g;
+    gesture_new(&g, false);
+
+    TEST_ASSERT_EQUAL(FF_GESTURE_NONE, ff_gesture_feed(&g, true, 5, 119, 0));
+    /* dx=2, dy=61: |dy|=61 > axis_lock_px(24) while dx(2) < 56 ->
+     * disqualified as a scroll before BACK's threshold is ever reached. */
+    TEST_ASSERT_EQUAL(FF_GESTURE_NONE, ff_gesture_feed(&g, true, 7, 180, 56));
+}
+
+/* AC22 — the driver's own invalid-point sentinels are still rejected:
+ * (-1,-1) and a raw 0xFFFF (already narrowed to int16_t -1 by the
+ * caller, same as (-1,-1) at this API boundary) must not be admitted
+ * by either the circle or a rim zone just because -1 <= the BACK rim's
+ * x threshold. */
+static void S28_AC22_invalid_points_rejected(void)
+{
+    ff_gesture_t g1;
+    gesture_new(&g1, false);
+    TEST_ASSERT_EQUAL(FF_GESTURE_NONE, ff_gesture_feed(&g1, true, -1, -1, 0));
+    /* Would satisfy BACK's travel/ratio/window if the DOWN had been
+     * admitted. */
+    TEST_ASSERT_EQUAL(FF_GESTURE_NONE, ff_gesture_feed(&g1, true, 59, -1, 100));
+
+    ff_gesture_t g2;
+    gesture_new(&g2, false);
+    /* 0xFFFF narrows to int16_t -1 at this API boundary — the same
+     * point as (-1,-1) above, fed via the literal the driver actually
+     * emits. */
+    TEST_ASSERT_EQUAL(FF_GESTURE_NONE, ff_gesture_feed(&g2, true, (int16_t)0xFFFFu, (int16_t)0xFFFFu, 0));
+    TEST_ASSERT_EQUAL(FF_GESTURE_NONE, ff_gesture_feed(&g2, true, 59, -1, 100));
+}
+
+/* AC23 — bottom-rim HOME from the launcher trace: Jake starting HOME at
+ * y=358 with this section's cx/cy/r. Home zone starts at
+ * y >= cy+r-home_rim_px = 206+200-64 = 342, so y=358 qualifies (and is
+ * also inside the padded circle here — dist~152.3 <= 216 — so this is a
+ * regression guard on the home-rim math rather than a rim-admission-only
+ * case, but pins the exact numbers from the coordinator's brief). */
+static void S28_AC23_bottom_rim_home_from_launcher_trace(void)
+{
+    ff_gesture_t g;
+    gesture_new(&g, false);
+
+    TEST_ASSERT_EQUAL(FF_GESTURE_NONE, ff_gesture_feed(&g, true, 217, 358, 0));
+    /* up=80 >= 64, |dx|=0, elapsed=200ms -> mean speed 0.4 px/ms >= 0.25. */
+    TEST_ASSERT_EQUAL(FF_GESTURE_HOME, ff_gesture_feed(&g, true, 217, 278, 200));
+}
+
+/* ------------------------------------------------------------------- */
 /* NULL safety                                                          */
 /* ------------------------------------------------------------------- */
 
@@ -564,6 +706,13 @@ int main(void)
     RUN_TEST(S28_AC15_bench_map_edge_admits_and_recognises_back);
     RUN_TEST(S28_AC16_bench_map_stall_recognises_back);
     RUN_TEST(S28_AC17_bench_map_vertical_first_stays_none);
+
+    RUN_TEST(S28_AC18_puck_map_theme_geometry_left_rim_swipe_recognises_back);
+    RUN_TEST(S28_AC19_puck_settings_theme_geometry_left_rim_swipe_recognises_back);
+    RUN_TEST(S28_AC20_left_rim_downs_at_various_y_all_admitted);
+    RUN_TEST(S28_AC21_admitted_rim_start_with_vertical_drag_is_none);
+    RUN_TEST(S28_AC22_invalid_points_rejected);
+    RUN_TEST(S28_AC23_bottom_rim_home_from_launcher_trace);
 
     RUN_TEST(gesture_null_safe);
 

@@ -25,6 +25,7 @@ void ff_gesture_cfg_default(ff_gesture_cfg_t *cfg, int16_t cx, int16_t cy, int16
     cfg->long_press_enabled = false; /* the glue arms this per active face */
     cfg->stall_gap_ms   = 150; /* ff_gesture.h's "Stall tolerance" section */
     cfg->edge_slop_px   = 16;  /* ff_gesture.h's "Edge tolerance" section */
+    cfg->panel_size_px  = 412; /* ff_gesture.h's "Edge tolerance, part 3" section; matches FF_THEME_PUCK_PX */
 }
 
 void ff_gesture_init(ff_gesture_t *g, const ff_gesture_cfg_t *cfg)
@@ -56,6 +57,46 @@ static bool gesture_in_circle(ff_gesture_cfg_t const *cfg, int16_t x, int16_t y)
     return dist_sq <= r * r;
 }
 
+/* gesture_down_admitted — the full DOWN-time admission gate (ff_gesture.h's
+ * "Edge tolerance, part 3" section). A DOWN is admitted if it is a sane
+ * panel coordinate AND (it lands in the padded glass circle OR it lands
+ * in one of the two rim zones G1/G2 already key off, bounded on the
+ * PERPENDICULAR axis to the circle's own unpadded span so a corner touch
+ * that merely shares one coordinate with a real rim touch — S28_AC9 —
+ * is still rejected). The rim-zone thresholds here are exactly
+ * `back_alive`/`home_alive`'s own formulas; nothing downstream changes
+ * shape because of this — a rim-admitted touch is disqualified by axis
+ * lock/ratio/window exactly as it always was. */
+static bool gesture_down_admitted(ff_gesture_cfg_t const *cfg, int16_t x, int16_t y)
+{
+    if (x < 0 || x >= cfg->panel_size_px || y < 0 || y >= cfg->panel_size_px) {
+        /* Not a real panel coordinate at all — e.g. the driver's
+         * invalid-point sentinel (-1,-1), or a raw 0xFFFF already
+         * narrowed to int16_t -1 by the caller. */
+        return false;
+    }
+
+    if (gesture_in_circle(cfg, x, y)) {
+        return true;
+    }
+
+    int32_t const back_rim_edge = (int32_t)cfg->cx - (int32_t)cfg->r + (int32_t)cfg->back_rim_px;
+    bool const in_back_rim =
+        ((int32_t)x <= back_rim_edge) &&
+        ((int32_t)y >= (int32_t)cfg->cy - (int32_t)cfg->r) &&
+        ((int32_t)y <= (int32_t)cfg->cy + (int32_t)cfg->r);
+    if (in_back_rim) {
+        return true;
+    }
+
+    int32_t const home_rim_edge = (int32_t)cfg->cy + (int32_t)cfg->r - (int32_t)cfg->home_rim_px;
+    bool const in_home_rim =
+        ((int32_t)y >= home_rim_edge) &&
+        ((int32_t)x >= (int32_t)cfg->cx - (int32_t)cfg->r) &&
+        ((int32_t)x <= (int32_t)cfg->cx + (int32_t)cfg->r);
+    return in_home_rim;
+}
+
 ff_gesture_kind_t ff_gesture_feed(ff_gesture_t *g, bool down, int16_t x, int16_t y, uint32_t now_ms)
 {
     if (g == NULL) {
@@ -81,10 +122,11 @@ ff_gesture_kind_t ff_gesture_feed(ff_gesture_t *g, bool down, int16_t x, int16_t
         g->home_threshold_evaluated = false;
         g->stall_checked = false;
 
-        if (!gesture_in_circle(&g->cfg, x, y)) {
-            /* S28_AC9 — a DOWN outside the glass circle can never
-             * become G1/G2/G3. Latched for this touch's whole
-             * lifetime; only the matching UP clears it. */
+        if (!gesture_down_admitted(&g->cfg, x, y)) {
+            /* S28_AC9 — a DOWN admitted by neither the glass circle nor
+             * either rim zone can never become G1/G2/G3. Latched for
+             * this touch's whole lifetime; only the matching UP clears
+             * it. */
             g->phase = FF_GESTURE_PHASE_ABORTED;
             g->back_alive = false;
             g->home_alive = false;
