@@ -653,3 +653,32 @@ if(FF_BUILD_TESTS)
 
     add_test(NAME test_scr_inbox_hint COMMAND test_scr_inbox_hint)
 endif()
+
+# ---------------------------------------------------------------------------
+# S14 hardening pass, item 3 — ff_bench: sim micro-benchmark target. See
+# targets/sim/bench/ff_bench_main.c's header for what it measures and why
+# it lives here (needs ff-sim-face-dispatch/ff-sim-ctl-loop's real,
+# headless-LVGL ctl-loop session to reach ff_build_face_screen with a
+# fully-populated view — the same infrastructure test_ctl_batt.c etc.
+# already use). Always built (any compiler, both zero-warning gates) but
+# deliberately NOT add_test()'d: wall-clock timings are machine-dependent,
+# so this is a tool a human/PR runs deliberately, not a ctest a CI
+# runner's own load would make flaky.
+# ---------------------------------------------------------------------------
+add_executable(ff_bench
+    bench/ff_bench_main.c
+    screenshot.c
+)
+target_link_libraries(ff_bench PRIVATE
+    ff-sim-ctl-loop
+    ff-sim-ctl
+    ff-sim-face-dispatch
+    ff-shell
+    ff-app-ui
+    ff-stb-image-write
+    lvgl::lvgl
+)
+if(UNIX)
+    target_link_libraries(ff_bench PRIVATE m) # ff_map_place_labels' cosf/sinf — see ff-core's own note in core/CMakeLists.txt
+endif()
+ff_apply_warnings(ff_bench)
