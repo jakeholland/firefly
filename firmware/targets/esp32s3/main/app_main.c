@@ -498,14 +498,19 @@ static ff_power_fsm_t s_power_fsm;
  * (CLAUDE.md's house rule).
  *
  * `s_boot_gate` (S26 wake-only-touch amendment, 2026-09-02 maintainer
- * decision) is BOOT's own `ff_idle_touch_gate_t` instance — a SEPARATE
- * one from `ff_display.c`'s touch gate (ff_idle_touch_gate_t's own doc
- * comment: one instance per physical input source), since BOOT and
- * touch are independent gestures that must never share a latch. A BOOT
- * press that begins while the screen is not ACTIVE wakes it but is
- * never forwarded as FF_INTENT_HOME — same rule as touch, applied to
- * this repo's other physical input (docs/specs/S26-device-lifecycle.md
- * "(c)" amendment: "a touch OR BUTTON press...").
+ * decision, amended 2026-09-07) is BOOT's own `ff_idle_touch_gate_t`
+ * instance — a SEPARATE one from `ff_display.c`'s touch gate
+ * (ff_idle_touch_gate_t's own doc comment: one instance per physical
+ * input source), since BOOT and touch are independent gestures that
+ * must never share a latch. A BOOT press that begins while the screen
+ * is OFF or SLEEP (dark) wakes it but is never forwarded as
+ * FF_INTENT_HOME — same rule as touch, applied to this repo's other
+ * physical input (docs/specs/S26-device-lifecycle.md "(c)" amendment:
+ * "a touch OR BUTTON press..."). Per the 2026-09-07 amendment, a BOOT
+ * press that begins at DIM (screen visible) IS forwarded as
+ * FF_INTENT_HOME, same as touch's own DIM case — no reason for BOOT to
+ * differ, since the amendment's whole premise ("nothing to protect
+ * against on a readable screen") applies equally to a physical button.
  * ------------------------------------------------------------------- */
 static ff_button_t s_boot_button;
 static ff_idle_touch_gate_t s_boot_gate;
@@ -662,6 +667,14 @@ static ff_idle_t s_idle;
  * 400 kHz bus, per FF_COMPASS_I2C_TIMEOUT_MS's own margin,
  * ff_compass.c). */
 #define FF_COMPASS_SAMPLE_PERIOD_MS ((uint32_t)100u)
+
+/* DIAGNOSTICS — device-stats push period (free heap + compass chip
+ * identification, `ff_shell_set_device_stats`). 2 s, the same cadence as
+ * the battery sample above: both are slow-changing facts a wearer would
+ * check on the DIAGNOSTICS page, not something needing the compass's own
+ * 10 Hz refresh — and heap_caps_get_free_size() walks every heap region,
+ * so this deliberately does not run at that faster cadence. */
+#define FF_DEVICE_STATS_SAMPLE_PERIOD_MS ((uint32_t)2000u)
 
 /* Human-readable wake cause, for the on-glass log line the spec's AC1
  * asks for ("log sleep entry + wake cause ... so the maintainer can read
@@ -1808,6 +1821,15 @@ void app_main(void)
      * doc comment) — so there is nothing this seed would need to beat. */
     uint32_t last_compass_sample_ms = ff_bringup_now_ms();
 
+    /* DIAGNOSTICS — same periodic-sample seeding shape as
+     * last_batt_sample_ms/last_compass_sample_ms above: the render
+     * loop's own device-stats push (below) waits a full
+     * FF_DEVICE_STATS_SAMPLE_PERIOD_MS before its first push. Slower
+     * than the battery/compass cadence deliberately — free heap and
+     * compass chip identification are both slow-changing bring-up-shaped
+     * facts, not a live sensor reading a wearer would watch tick. */
+    uint32_t last_device_stats_ms = ff_bringup_now_ms();
+
     /* S26 slice f — arm the light-sleep wake sources once, right before
      * the render loop can first reach SLEEP. See
      * ff_configure_light_sleep_wake's own doc comment above for the wake
@@ -1915,11 +1937,15 @@ void app_main(void)
          * sim mirror (targets/sim/ctl_loop.c) caught and fixed the same
          * way. `boot_deliver` is passed straight through to
          * `ff_shell_home_press` as `deliver` — a BOOT press that woke the
-         * screen is wake-only for NAVIGATION, same rule as touch, per the
-         * amendment's own text ("a touch OR BUTTON press that begins
-         * while the screen is not ACTIVE..."); it still COUNTS toward
-         * the quick-flare gesture regardless (S10's own "the first tap
-         * wakes and counts" requirement) — as of fix/quick-flare-
+         * screen from OFF or SLEEP (dark) is wake-only for NAVIGATION,
+         * same rule as touch, per the amendment's own text ("a touch OR
+         * BUTTON press that begins while the screen is not ACTIVE...");
+         * per the 2026-09-07 amendment, a BOOT press that begins at DIM
+         * (screen visible) IS delivered — `ff_idle_touch_gate` itself
+         * makes that call, so nothing here branches on idle state. It
+         * still COUNTS toward the quick-flare gesture regardless (S10's
+         * own "the first tap wakes and counts" requirement) — as of
+         * fix/quick-flare-
          * detection (2026-09-03), that counting no longer runs through
          * THIS debounced/tick-sampled path at all (see
          * `ff_shell_home_press`'s own doc comment for why): it is driven
@@ -2093,6 +2119,37 @@ void app_main(void)
             ff_shell_compass_cal_sample(&s_shell, ff_compass_last_mag_board());
         }
 #endif
+
+        /* DIAGNOSTICS — push the device-only facts the Settings
+         * DIAGNOSTICS page's Compass/Device sections cannot get any
+         * other way (`ff_shell_set_device_stats`'s own doc comment,
+         * ff_shell.h, has the full "why these specifically" reasoning).
+         * `heap_caps_get_free_size(MALLOC_CAP_DEFAULT)` is the same
+         * "everything the default allocator could still hand out" query
+         * this file's own boot-log PSRAM accounting already uses
+         * elsewhere. Compass identification reuses the LAST periodic
+         * sample (`ff_compass_status()`, the same one-shot getter the
+         * bench console's `i2c` command already reads, see
+         * dbgconsole_compass_status above) — no extra I2C transaction.
+         * `ff_compass_mag_kind_t`/`ff_compass_imu_state_t` (this
+         * component's own enums) are cast to their app-layer mirrors
+         * (`ff_app_mag_kind_t`/`ff_app_imu_state_t`, ff_app_state.h) —
+         * the two enums are declared field-for-field identical
+         * specifically so this cast is safe (see either type's own doc
+         * comment). Without CONFIG_FF_COMPASS compiled in at all, this
+         * honestly reports "no compass" (FF_APP_MAG_NONE/FF_APP_IMU_ABSENT)
+         * rather than a stale or fabricated reading. */
+        if (ff_time_reached(now_ms, last_device_stats_ms + FF_DEVICE_STATS_SAMPLE_PERIOD_MS)) {
+            last_device_stats_ms = now_ms;
+            size_t const free_heap = heap_caps_get_free_size(MALLOC_CAP_DEFAULT);
+#if CONFIG_FF_COMPASS
+            ff_compass_status_t const cst = ff_compass_status();
+            ff_shell_set_device_stats(&s_shell, true, (uint32_t)free_heap, (ff_app_mag_kind_t)cst.mag_kind,
+                                       (ff_app_imu_state_t)cst.imu_state);
+#else
+            ff_shell_set_device_stats(&s_shell, true, (uint32_t)free_heap, FF_APP_MAG_NONE, FF_APP_IMU_ABSENT);
+#endif
+        }
 
         /* S26 slice c — the idle decision itself: ticked every frame
          * (same "always tick" contract as the PWR FSM), against THIS

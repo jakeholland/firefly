@@ -7,6 +7,7 @@
 
 #include "meshtastic/admin.pb.h" /* mc_send_set_owner — AdminMessage.set_owner */
 #include "meshtastic/mesh.pb.h"
+#include "meshtastic/telemetry.pb.h" /* Diagnostics — Telemetry.device_metrics decode */
 
 /* -------------------------------------------------------------------- */
 /* Small helpers                                                        */
@@ -121,6 +122,15 @@ static void mc_position_from_pb(meshtastic_Position const *pb, bool has_rx_time,
     if (out->has_precision_bits) {
         out->precision_bits = pb->precision_bits;
     } /* else: left zeroed by the memset above, benign for flag-ignoring callers */
+
+    /* sats_in_view: implicit presence, 0 folds to absent — see the
+     * field's own doc comment in mc_client.h for the full reasoning. No
+     * upper-bound garbage check (unlike precision_bits): any nonzero
+     * count is plausible. */
+    out->has_sats_in_view = (pb->sats_in_view >= 1u);
+    if (out->has_sats_in_view) {
+        out->sats_in_view = pb->sats_in_view;
+    }
 }
 
 /**
@@ -385,6 +395,35 @@ static void mc_process_mesh_packet(mc_client_t *c, meshtastic_MeshPacket const *
          * does for the same condition (`ni->has_position &&
          * ni->position.has_latitude_i && ni->position.has_longitude_i`,
          * with no else branch at all). */
+    } else if (portnum == (uint32_t)meshtastic_PortNum_TELEMETRY_APP) {
+        /* Diagnostics — see mc_events_t.on_telemetry's own doc comment.
+         * `Telemetry` is a oneof over several metric kinds; this library
+         * decodes only the device_metrics variant. */
+        meshtastic_Telemetry tel = meshtastic_Telemetry_init_zero;
+        pb_istream_t is = pb_istream_from_buffer(d->payload.bytes, d->payload.size);
+        if (!pb_decode(&is, meshtastic_Telemetry_fields, &tel)) {
+            c->stats.decode_errors++;
+        } else if (tel.which_variant == meshtastic_Telemetry_device_metrics_tag) {
+            meshtastic_DeviceMetrics const *dm = &tel.variant.device_metrics;
+            mc_telemetry_t out;
+            memset(&out, 0, sizeof(out));
+            out.has_battery_level = dm->has_battery_level;
+            out.battery_level = dm->battery_level;
+            out.has_channel_utilization = dm->has_channel_utilization;
+            out.channel_utilization = dm->channel_utilization;
+            out.has_air_util_tx = dm->has_air_util_tx;
+            out.air_util_tx = dm->air_util_tx;
+            out.has_uptime_seconds = dm->has_uptime_seconds;
+            out.uptime_seconds = dm->uptime_seconds;
+            if (c->events.on_telemetry != NULL) {
+                c->events.on_telemetry(c->events.user, pkt->from, &out);
+            }
+        }
+        /* else: a well-formed Telemetry carrying some OTHER variant
+         * (environment/power/local-stats/...) — not corruption, and not
+         * this library's concern yet. Same "well-formed, nothing to
+         * report" precedent as Position/ADMIN_APP above; nothing is
+         * counted. */
     } else if (portnum >= MC_PORTNUM_PRIVATE_MIN && portnum <= MC_PORTNUM_PRIVATE_MAX) {
         if (c->events.on_private != NULL) {
             c->events.on_private(c->events.user, pkt->from, pkt->to, portnum, d->payload.bytes,

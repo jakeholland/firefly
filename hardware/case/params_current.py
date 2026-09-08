@@ -62,6 +62,18 @@ PARAMS = {
     'display_bbox': {'x': (-22.39, 22.39), 'y': (27.6, 73.13), 'z': (20.3, 25.0)},
     'display_pcb': {'xy': (39.2, 41.4), 'z': (17.59, 18.81)},
     'display_underside_z_min': 12.04,
+    # pass 13, item 3: the Waveshare display module's own 2-pin JST-style
+    # battery socket ("HP1_25MM-2P-SMT-HORIZONTAL" in the inserted
+    # occurrence's own component tree -- a 1.25mm-pitch 2-pin horizontal
+    # SMT connector), live-probed in the inserted display occurrence
+    # (world bbox measured on the trim build, then un-offset by trim's
+    # own +3mm display_z_offset back to this, the base/current, frame --
+    # see insert_display_pcba's docstring for why the offset exists and
+    # add_battery_connector_access for how it's re-applied). x/y are
+    # identical in both variants (same reference transform); z is offset
+    # per-variant via display_z_offset like every other display-relative
+    # z value in this file.
+    'battery_connector_bbox': {'x': (-11.32, -3.67), 'y': (32.80, 38.00), 'z': (14.20, 17.60)},
     'display_header': {'x': (11.5, 17.0), 'y': (43.7, 56.1)},
     'top_ceiling_underside_z': 23.0,
     'display_z_offset': 0.0,  # pass 7: trim overrides this to +3 (case grows 25->28mm)

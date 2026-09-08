@@ -195,6 +195,33 @@ static void inject_position(uint32_t node, uint32_t rx_time, double lat, double 
     H.ev.on_position(H.ev.user, node, &p);
 }
 
+/* DIAGNOSTICS — a self-position fix with source, so `diag`'s POSITION
+ * section has more than "ok=0" to report. Mirrors test_shell.c's own
+ * inject_position_ex, kept local since this file otherwise has no need
+ * for loc_source/precision on its existing `inject_position` above. */
+static void inject_position_ex(uint32_t node, uint32_t rx_time, double lat, double lon, mc_loc_source_t loc_source)
+{
+    mc_position_t p;
+    memset(&p, 0, sizeof(p));
+    p.lat = lat;
+    p.lon = lon;
+    p.has_rx_time = (rx_time != 0u);
+    p.rx_time = rx_time;
+    p.loc_source = loc_source;
+    H.ev.on_position(H.ev.user, node, &p);
+}
+
+/* DIAGNOSTICS — MESH section's last-RF reading. */
+static void inject_rx_meta(uint32_t from, mc_rx_path_t path, bool has_rssi, int16_t rssi)
+{
+    mc_rx_meta_t m;
+    memset(&m, 0, sizeof(m));
+    m.rx_path = path;
+    m.has_rssi = has_rssi;
+    m.rssi_dbm = rssi;
+    H.ev.on_rx_meta(H.ev.user, from, &m);
+}
+
 /* ------------------------------------------------------------------- */
 /* reply capture                                                        */
 /* ------------------------------------------------------------------- */
@@ -250,6 +277,7 @@ static void dbgconsole_help_lists_commands(void)
     TEST_ASSERT_TRUE(capture_has_line_containing(&cap, "dbg: help"));
     TEST_ASSERT_TRUE(capture_has_line_containing(&cap, "dm <node_hex>"));
     TEST_ASSERT_TRUE(capture_has_line_containing(&cap, "dbg: i2c"));
+    TEST_ASSERT_TRUE(capture_has_line_containing(&cap, "dbg: diag"));
 }
 
 static void dbgconsole_unknown_command_gets_try_help(void)
@@ -860,6 +888,44 @@ static void dbgconsole_name_set_with_no_node_id_still_commits_locally(void)
     TEST_ASSERT_EQUAL_INT(0, H.sender.owner_calls); /* no self id known -> no push attempted */
 }
 
+/* DIAGNOSTICS — `diag` (SEAM tests: does the command reach
+ * `ff_shell_diag_debug` and print what it says, not "does every field
+ * project correctly" — that exhaustive coverage lives in test_shell.c's
+ * S_diag_* tests against the same getter). */
+static void dbgconsole_diag_reports_unknowns_when_nothing_known(void)
+{
+    harness_init(1000);
+    capture_t cap;
+    dispatch("diag", &cap);
+
+    TEST_ASSERT_EQUAL_INT(7, cap.n); /* one line per section, Mesh split across two (roster/RF + airtime) */
+    TEST_ASSERT_TRUE(capture_has_line_containing(&cap, "dbg: diag link=NONE node=!00000000 name=?/?"));
+    TEST_ASSERT_TRUE(capture_has_line_containing(&cap, "dbg: diag pos src=unknown ok=0"));
+    TEST_ASSERT_TRUE(capture_has_line_containing(&cap, "dbg: diag mesh crew=0 heard=0 rssi_dbm=? snr_db=?"));
+    TEST_ASSERT_TRUE(capture_has_line_containing(&cap, "dbg: diag time latched=0 trust=? src_node=? offset_min=?"));
+    TEST_ASSERT_TRUE(capture_has_line_containing(&cap, "dbg: diag compass mag=none present=0 imu=absent heading_deg=?"));
+    TEST_ASSERT_TRUE(capture_has_line_containing(&cap, "dbg: diag device batt_mv=? batt_pct=?"));
+}
+
+static void dbgconsole_diag_reports_observed_facts(void)
+{
+    harness_init(1000);
+    inject_my_info(MY_ID);
+    /* A plausible last_heard latches the wall clock (BOOTSTRAP tier,
+     * unpaired sender) and, on the self node, adopts the position. */
+    inject_position_ex(MY_ID, (uint32_t)1789768900u, 40.0, -74.0, MC_LOC_INTERNAL);
+    inject_node(STRANGER, "Strngr", (uint32_t)1789768800u);
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, true));
+    inject_rx_meta(DANA, MC_RX_PATH_DIRECT, true, -61);
+
+    capture_t cap;
+    dispatch("diag", &cap);
+
+    TEST_ASSERT_TRUE(capture_has_line_containing(&cap, "dbg: diag link=NONE node=!00001000"));
+    TEST_ASSERT_TRUE(capture_has_line_containing(&cap, "dbg: diag pos src=internal ok=1 lat=40.000000 lon=-74.000000"));
+    TEST_ASSERT_TRUE(capture_has_line_containing(&cap, "dbg: diag mesh crew=1 heard=1 rssi_dbm=-61"));
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -905,6 +971,9 @@ int main(void)
     RUN_TEST(dbgconsole_name_recommitting_the_same_name_does_not_falsely_confirm_from_stale_mesh_state);
     RUN_TEST(dbgconsole_name_reports_mismatch_when_the_reply_names_someone_else);
     RUN_TEST(dbgconsole_name_set_with_no_node_id_still_commits_locally);
+
+    RUN_TEST(dbgconsole_diag_reports_unknowns_when_nothing_known);
+    RUN_TEST(dbgconsole_diag_reports_observed_facts);
 
     return UNITY_END();
 }

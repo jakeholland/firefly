@@ -124,6 +124,7 @@
 #include <stdio.h>
 #include <string.h> /* strcmp — S12 amendment: does a paired row's display name differ from its short tag? */
 
+#include "ff_crew.h" /* ff_fmt_age — DIAGNOSTICS page's age formatting */
 #include "ff_intent.h" /* the emit seam; FF_INTENT_CALIBRATE_TOUCH */
 #include "ff_layout.h"
 #include "ff_settings.h" /* FF_SHARE_LIVE/_ZONES/_GHOST, FF_BRIGHTNESS_*_PCT */
@@ -932,6 +933,29 @@ static void settings_build_compass_cal_row(lv_obj_t *list, int32_t rel_y, int32_
 {
     settings_build_value_row(list, rel_y, row_w, "COMPASS", cal_valid ? "SET" : "UNSET",
                              /*dim=*/!cal_valid, settings_compass_cal_open_cb);
+}
+
+/* ---------------------------------------------------------------------
+ * DIAGNOSTICS — a full-width action pill, same shape as CALIBRATE
+ * TOUCH/CREW above, that opens the DIAGNOSTICS sub-view
+ * (FF_INTENT_SETTINGS_OPEN_DIAGNOSTICS, no payload — the shell decides,
+ * this file only asks). An ACTION, not a stored value.
+ * ------------------------------------------------------------------- */
+static void settings_diag_open_row_cb(lv_event_t *e)
+{
+    (void)e;
+    ff_intent_t in = {.kind = FF_INTENT_SETTINGS_OPEN_DIAGNOSTICS, .u = {0}};
+    ff_intent_emit(&in);
+}
+
+static void settings_build_diag_open_row(lv_obj_t *list, int32_t rel_y, int32_t row_w)
+{
+    lv_obj_t *pill = settings_make_pill(list, "DIAGNOSTICS", 0, rel_y, row_w, FF_SETTINGS_ROW_H,
+                                        FF_THEME_COLOR_SURFACE, FF_THEME_COLOR_AMBER, 2, settings_diag_open_row_cb,
+                                        NULL);
+    lv_obj_set_style_border_width(pill, 2, 0);
+    lv_obj_set_style_border_color(pill, lv_color_hex(FF_THEME_COLOR_AMBER), 0);
+    lv_obj_set_style_border_opa(pill, LV_OPA_40 + LV_OPA_10 / 2 /* ~45% */, 0);
 }
 
 /* ---------------------------------------------------------------------
@@ -1837,6 +1861,386 @@ static void settings_build_name_edit_page(lv_obj_t *parent, ff_app_name_edit_t c
 }
 
 /* ---------------------------------------------------------------------
+ * DIAGNOSTICS page (Settings -> "DIAGNOSTICS" row). A full-screen,
+ * scrollable, READ-ONLY status dump of `ff_app_diag_t` — link, my
+ * position, mesh link-quality, wall clock, compass, device. Same back-
+ * circle-plus-scroll-list SHAPE as the CREW page, reached the same way
+ * (drilling in rather than swiping to a base face, so it needs its own
+ * way back) — but its OWN header geometry, NOT `FF_CREW_BACK_Y`/`_HDR_Y`
+ * directly: "DIAGNOSTICS" (11 chars) at `FF_THEME_FONT_HEADLINE` is wide
+ * enough that CREW's `y=30` header row (chosen for CREW/NAME's own
+ * 4-char titles) leaves too little width beside the back circle at that
+ * height — rendering `settings_diag_full.json` showed the title's own
+ * left edge sitting UNDER the back button. `FF_DIAG_BACK_Y` sits lower,
+ * where the round glass is measurably wider, so a title box anchored
+ * right of the back circle has room for the full word with no wrap and
+ * no overlap, by construction (see `settings_build_diag_page`'s own
+ * comment on the header). `FF_DIAG_LIST_Y`/`_LIST_H` shift/shrink to
+ * match — the list is a scroll container regardless, so a few px less
+ * viewport height costs nothing but one more scroll tick.
+ *
+ * Rows are plain, non-interactive text ("LABEL: value") — this
+ * codebase vendors no monospace font (see `FF_THEME_FONT_DISTANCE`'s
+ * own doc comment above: "mono in spec... no mono vendored"), so
+ * `FF_THEME_FONT_CHIP` stands in, matching every other compact-text
+ * row in this file. Rows are far shorter than the 44px hit-target
+ * floor because they are not controls — only the BACK circle (this
+ * page) and the "DIAGNOSTICS" open row (the plain LIST) are real
+ * controls anywhere in this feature.
+ *
+ * Honest data throughout (CLAUDE.md): every fact renders "--"/"unknown"
+ * whenever `ff_app_diag_t`'s own has_-flag (or enum-UNKNOWN member) says
+ * it must — this file never guesses at a value the projection did not
+ * honestly provide.
+ */
+#define FF_DIAG_ROW_H    20
+#define FF_DIAG_ROW_GAP  6
+#define FF_DIAG_ROW_STEP (FF_DIAG_ROW_H + FF_DIAG_ROW_GAP)
+
+#define FF_DIAG_BACK_Y  44 /* lower than FF_CREW_BACK_Y(30) — see this section's own header comment */
+#define FF_DIAG_BACK_PX FF_THEME_MIN_HIT_PX
+#define FF_DIAG_HDR_Y   (FF_DIAG_BACK_Y + (FF_DIAG_BACK_PX - 24) / 2) /* optically centered against the back circle */
+#define FF_DIAG_LIST_Y  114 /* FF_CREW_LIST_Y(100) shifted down by the header's own 14px drop */
+#define FF_DIAG_LIST_H  242 /* FF_CREW_LIST_H(256) shortened by that same 14px */
+
+static void settings_diag_back_cb(lv_event_t *e)
+{
+    (void)e;
+    ff_intent_t in = {.kind = FF_INTENT_BACK, .u = {0}};
+    ff_intent_emit(&in);
+}
+
+/* One "LABEL: value" line, muted label + ink value via LVGL recolor
+ * markup — the same `#RRGGBB text#` mechanism the CREW page's short-name
+ * tag already uses (settings_crew_build_paired_row, above). Returns the
+ * next row's y so callers chain `y = settings_diag_line(...)`. */
+static int32_t settings_diag_line(lv_obj_t *list, int32_t y, int32_t row_w, char const *label, char const *value)
+{
+    lv_obj_t *lbl = lv_label_create(list);
+    lv_obj_set_pos(lbl, 0, y);
+    lv_obj_set_width(lbl, row_w);
+    lv_obj_set_height(lbl, lv_font_get_line_height(FF_THEME_FONT_CHIP));
+    lv_label_set_long_mode(lbl, LV_LABEL_LONG_DOT);
+    char buf[128];
+    snprintf(buf, sizeof(buf), "#%06x %s:# %s", (unsigned)FF_THEME_COLOR_MUTED, label, value);
+    lv_label_set_text(lbl, buf);
+    lv_label_set_recolor(lbl, true);
+    lv_obj_set_style_text_font(lbl, FF_THEME_FONT_CHIP, 0);
+    lv_obj_set_style_text_color(lbl, lv_color_hex(FF_THEME_COLOR_INK), 0);
+    lv_obj_set_style_text_letter_space(lbl, 1, 0);
+    lv_obj_clear_flag(lbl, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_clear_flag(lbl, LV_OBJ_FLAG_SCROLLABLE);
+    return y + FF_DIAG_ROW_STEP;
+}
+
+/* Honest age formatting: "--" when the fact this age describes was
+ * never observed at all (see `ff_app_diag_t`'s own has_*-flag
+ * convention), `ff_fmt_age`'s own coarse human age otherwise. */
+static void settings_diag_age(char *buf, size_t n, bool has, uint32_t age_ms)
+{
+    if (!has) {
+        snprintf(buf, n, "--");
+        return;
+    }
+    ff_fmt_age(buf, n, age_ms);
+}
+
+/* Boundary-translation name tables — mirror ff_app_state.h's own
+ * "ff_app_diag_t's five small enums" doc comment: each name table below
+ * is this SCREEN's own vocabulary (lowercase where the fact reads as
+ * prose, e.g. "internal GPS"; upper-case where it reads as a state,
+ * e.g. "CONNECTED", matching this file's existing link/presence text
+ * conventions elsewhere in the file). */
+static char const *settings_diag_link_name(ff_app_link_t l)
+{
+    switch (l) {
+    case FF_APP_LINK_RECONNECTING: return "RECONNECTING";
+    case FF_APP_LINK_CONNECTED: return "CONNECTED";
+    case FF_APP_LINK_NONE:
+    default: return "NONE";
+    }
+}
+
+static char const *settings_diag_pos_src_name(ff_app_pos_src_t s)
+{
+    switch (s) {
+    case FF_APP_POS_SRC_MANUAL: return "manual";
+    case FF_APP_POS_SRC_INTERNAL: return "internal GPS";
+    case FF_APP_POS_SRC_EXTERNAL: return "external GPS";
+    case FF_APP_POS_SRC_UNKNOWN:
+    default: return "unknown";
+    }
+}
+
+static char const *settings_diag_trust_name(ff_app_wall_trust_t t)
+{
+    switch (t) {
+    case FF_APP_WALL_TRUST_TRUSTED: return "trusted";
+    case FF_APP_WALL_TRUST_CORROBORATED: return "corroborated";
+    case FF_APP_WALL_TRUST_BOOTSTRAP:
+    default: return "bootstrap";
+    }
+}
+
+static char const *settings_diag_mag_kind_name(ff_app_mag_kind_t k)
+{
+    switch (k) {
+    case FF_APP_MAG_QMC5883L: return "QMC5883L";
+    case FF_APP_MAG_HMC5883L: return "HMC5883L";
+    case FF_APP_MAG_QMC5883P: return "QMC5883P";
+    case FF_APP_MAG_NONE:
+    default: return "none";
+    }
+}
+
+static char const *settings_diag_imu_state_name(ff_app_imu_state_t s)
+{
+    switch (s) {
+    case FF_APP_IMU_NO_DATA: return "no-data";
+    case FF_APP_IMU_OK: return "ok";
+    case FF_APP_IMU_ABSENT:
+    default: return "absent";
+    }
+}
+
+static void settings_build_diag_page(lv_obj_t *parent, ff_app_diag_t const *d)
+{
+    lv_obj_t *puck = lv_obj_create(parent);
+    lv_obj_remove_style_all(puck);
+    lv_obj_set_size(puck, FF_THEME_PUCK_PX, FF_THEME_PUCK_PX);
+    lv_obj_align(puck, LV_ALIGN_CENTER, 0, 0);
+    lv_obj_set_style_radius(puck, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_bg_color(puck, lv_color_hex(FF_THEME_COLOR_BG), 0);
+    lv_obj_set_style_bg_opa(puck, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(puck, 0, 0);
+    lv_obj_clear_flag(puck, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_clear_flag(puck, LV_OBJ_FLAG_CLICKABLE);
+
+    /* Header: a real back circle (CREW's own convention, at THIS page's
+     * own lower `FF_DIAG_BACK_Y` — see this section's top comment for
+     * why) + a title centered in the space to its RIGHT, not puck-wide
+     * centering: a fixed-width label starting right after the back
+     * button, right-margin mirrored to `back_margin` for symmetry,
+     * internally center-aligned — guaranteed clear of the back button by
+     * construction regardless of title length, so a future rename to a
+     * still-longer string cannot reintroduce the overlap this geometry
+     * was found (rendering settings_diag_full.json) to have at CREW's
+     * own header height. */
+    int32_t const back_margin = settings_safe_margin_x(FF_DIAG_BACK_Y, FF_DIAG_BACK_PX);
+    lv_obj_t *back = ff_scr_button_create(puck);
+    lv_obj_remove_style_all(back);
+    lv_obj_set_size(back, FF_DIAG_BACK_PX, FF_DIAG_BACK_PX);
+    lv_obj_set_pos(back, back_margin, FF_DIAG_BACK_Y);
+    lv_obj_set_style_radius(back, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_bg_color(back, lv_color_hex(FF_THEME_COLOR_SURFACE), 0);
+    lv_obj_set_style_bg_opa(back, LV_OPA_COVER, 0);
+    lv_obj_add_event_cb(back, settings_diag_back_cb, LV_EVENT_CLICKED, NULL);
+
+    lv_obj_t *glyph = lv_label_create(back);
+    lv_label_set_text(glyph, LV_SYMBOL_LEFT);
+    lv_obj_set_style_text_color(glyph, lv_color_hex(FF_THEME_COLOR_INK), 0);
+    lv_obj_center(glyph);
+
+    int32_t const title_left = back_margin + FF_DIAG_BACK_PX;
+    int32_t const title_w = FF_THEME_PUCK_PX - title_left - back_margin;
+    lv_obj_t *title = lv_label_create(puck);
+    lv_label_set_text(title, "DIAGNOSTICS");
+    lv_obj_set_style_text_font(title, FF_THEME_FONT_HEADLINE, 0);
+    lv_obj_set_style_text_color(title, lv_color_hex(FF_THEME_COLOR_AMBER), 0);
+    lv_obj_set_style_text_letter_space(title, 1, 0);
+    lv_obj_set_style_text_align(title, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_width(title, title_w);
+    lv_obj_set_pos(title, title_left, FF_DIAG_HDR_Y);
+
+    int32_t list_margin = settings_safe_margin_x(FF_DIAG_LIST_Y, FF_DIAG_LIST_H);
+    int32_t row_w = FF_THEME_PUCK_PX - 2 * list_margin;
+
+    lv_obj_t *list = lv_obj_create(puck);
+    lv_obj_remove_style_all(list);
+    lv_obj_set_size(list, row_w, FF_DIAG_LIST_H);
+    lv_obj_set_pos(list, list_margin, FF_DIAG_LIST_Y);
+    lv_obj_set_style_bg_opa(list, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(list, 0, 0);
+    lv_obj_set_style_pad_all(list, 0, 0);
+    lv_obj_add_flag(list, LV_OBJ_FLAG_CLICKABLE); /* #bug2 precedent — see the plain list's own comment */
+    lv_obj_add_flag(list, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scroll_dir(list, LV_DIR_VER);
+    lv_obj_set_scrollbar_mode(list, LV_SCROLLBAR_MODE_OFF);
+    s_list = list; /* shares the plain list's scroll-hint hook — only one of these lists is ever built at a time per subview */
+
+    char buf[64];
+    int32_t y = 0;
+
+    /* --- 1. Link --- */
+    y = settings_build_section_header(list, y, row_w, "LINK", /*first=*/true);
+    y = settings_diag_line(list, y, row_w, "STATE", settings_diag_link_name(d->link));
+    if (d->my_node_id != 0u) {
+        snprintf(buf, sizeof(buf), "!%08x", (unsigned)d->my_node_id);
+    } else {
+        snprintf(buf, sizeof(buf), "unknown");
+    }
+    y = settings_diag_line(list, y, row_w, "NODE", buf);
+    snprintf(buf, sizeof(buf), "%s / %s", d->has_short_name ? d->short_name : "--",
+             d->has_long_name ? d->long_name : "--");
+    y = settings_diag_line(list, y, row_w, "NAME", buf);
+    settings_diag_age(buf, sizeof(buf), d->has_last_frame_age, d->last_frame_age_ms);
+    y = settings_diag_line(list, y, row_w, "LAST FRAME", buf);
+    snprintf(buf, sizeof(buf), "%u ok / %u err", (unsigned)d->frames_ok, (unsigned)d->decode_errors);
+    y = settings_diag_line(list, y, row_w, "FRAMES", buf);
+    snprintf(buf, sizeof(buf), "%u", (unsigned)d->reconnects);
+    y = settings_diag_line(list, y, row_w, "RECONNECTS", buf);
+
+    /* --- 2. Position (mine) --- */
+    y = settings_build_section_header(list, y, row_w, "POSITION", /*first=*/false);
+    y = settings_diag_line(list, y, row_w, "SOURCE", settings_diag_pos_src_name(d->pos_src));
+    if (d->pos_ok) {
+        snprintf(buf, sizeof(buf), "%.5f, %.5f", d->pos_lat, d->pos_lon);
+    } else {
+        snprintf(buf, sizeof(buf), "--");
+    }
+    y = settings_diag_line(list, y, row_w, "LAT/LON", buf);
+    if (d->pos_has_altitude) {
+        snprintf(buf, sizeof(buf), "%d m", (int)d->pos_altitude_m);
+    } else {
+        snprintf(buf, sizeof(buf), "unknown");
+    }
+    y = settings_diag_line(list, y, row_w, "ALTITUDE", buf);
+    if (d->pos_has_sats) {
+        snprintf(buf, sizeof(buf), "%u", (unsigned)d->pos_sats_in_view);
+    } else {
+        snprintf(buf, sizeof(buf), "unknown");
+    }
+    y = settings_diag_line(list, y, row_w, "SATS", buf);
+    if (d->pos_has_precision_bits) {
+        snprintf(buf, sizeof(buf), "%u bits", (unsigned)d->pos_precision_bits);
+    } else {
+        snprintf(buf, sizeof(buf), "unknown");
+    }
+    y = settings_diag_line(list, y, row_w, "PRECISION", buf);
+    settings_diag_age(buf, sizeof(buf), d->pos_has_age, d->pos_age_ms);
+    y = settings_diag_line(list, y, row_w, "AGE", buf);
+
+    /* --- 3. Mesh --- */
+    y = settings_build_section_header(list, y, row_w, "MESH", /*first=*/false);
+    snprintf(buf, sizeof(buf), "%u crew / %u heard", (unsigned)d->crew_count, (unsigned)d->heard_count);
+    y = settings_diag_line(list, y, row_w, "ROSTER", buf);
+    if (d->has_last_rssi || d->has_last_snr) {
+        char rssi_buf[16];
+        char snr_buf[16];
+        if (d->has_last_rssi) {
+            snprintf(rssi_buf, sizeof(rssi_buf), "%d dBm", (int)d->last_rssi_dbm);
+        } else {
+            snprintf(rssi_buf, sizeof(rssi_buf), "--");
+        }
+        if (d->has_last_snr) {
+            snprintf(snr_buf, sizeof(snr_buf), "%.1f dB", (double)d->last_snr_db);
+        } else {
+            snprintf(snr_buf, sizeof(snr_buf), "--");
+        }
+        snprintf(buf, sizeof(buf), "%s / %s (%s)", rssi_buf, snr_buf, d->last_rf_direct ? "direct" : "relayed/unk");
+    } else {
+        snprintf(buf, sizeof(buf), "unknown");
+    }
+    y = settings_diag_line(list, y, row_w, "LAST RF", buf);
+    settings_diag_age(buf, sizeof(buf), d->has_last_rf_age, d->last_rf_age_ms);
+    y = settings_diag_line(list, y, row_w, "RF AGE", buf);
+    if (d->has_chan_util || d->has_air_util_tx) {
+        char cu[16];
+        char au[16];
+        if (d->has_chan_util) {
+            snprintf(cu, sizeof(cu), "%.0f%%", (double)d->chan_util_pct);
+        } else {
+            snprintf(cu, sizeof(cu), "--");
+        }
+        if (d->has_air_util_tx) {
+            snprintf(au, sizeof(au), "%.0f%%", (double)d->air_util_tx_pct);
+        } else {
+            snprintf(au, sizeof(au), "--");
+        }
+        snprintf(buf, sizeof(buf), "chan %s / tx %s", cu, au);
+    } else {
+        snprintf(buf, sizeof(buf), "unknown");
+    }
+    y = settings_diag_line(list, y, row_w, "AIRTIME", buf);
+    settings_diag_age(buf, sizeof(buf), d->has_telemetry_age, d->telemetry_age_ms);
+    y = settings_diag_line(list, y, row_w, "TELEM AGE", buf);
+    settings_diag_age(buf, sizeof(buf), d->has_pos_broadcast_age, d->pos_broadcast_age_ms);
+    y = settings_diag_line(list, y, row_w, "POS BCAST", buf);
+
+    /* --- 4. Time --- */
+    y = settings_build_section_header(list, y, row_w, "TIME", /*first=*/false);
+    y = settings_diag_line(list, y, row_w, "LATCHED", d->wall_latched ? "yes" : "no");
+    y = settings_diag_line(list, y, row_w, "TRUST",
+                           d->wall_has_trust ? settings_diag_trust_name(d->wall_trust) : "unknown");
+    if (d->wall_has_src_node) {
+        snprintf(buf, sizeof(buf), "!%08x", (unsigned)d->wall_src_node);
+    } else {
+        snprintf(buf, sizeof(buf), "unknown");
+    }
+    y = settings_diag_line(list, y, row_w, "SRC NODE", buf);
+    if (d->wall_has_offset) {
+        snprintf(buf, sizeof(buf), "%+d min%s", (int)d->wall_offset_min, d->wall_offset_assumed ? " (assumed)" : "");
+    } else {
+        snprintf(buf, sizeof(buf), "unknown");
+    }
+    y = settings_diag_line(list, y, row_w, "OFFSET", buf);
+    y = settings_diag_line(list, y, row_w, "LOCAL", d->has_local_time ? d->local_time_str : "unknown");
+
+    /* --- 5. Compass --- */
+    y = settings_build_section_header(list, y, row_w, "COMPASS", /*first=*/false);
+    y = settings_diag_line(list, y, row_w, "MAGNETOMETER", settings_diag_mag_kind_name(d->mag_kind));
+    y = settings_diag_line(list, y, row_w, "IMU", settings_diag_imu_state_name(d->imu_state));
+    if (d->heading_valid) {
+        snprintf(buf, sizeof(buf), "%.0f deg", (double)d->heading_deg);
+    } else {
+        snprintf(buf, sizeof(buf), "unknown");
+    }
+    y = settings_diag_line(list, y, row_w, "HEADING", buf);
+    y = settings_diag_line(list, y, row_w, "CALIBRATION", d->compass_cal_set ? "set" : "identity");
+
+    /* --- 6. Device --- */
+    y = settings_build_section_header(list, y, row_w, "DEVICE", /*first=*/false);
+    if (d->has_batt_mv || d->batt_pct >= 0) {
+        char mv[16];
+        char pct[16];
+        if (d->has_batt_mv) {
+            snprintf(mv, sizeof(mv), "%u mV", (unsigned)d->batt_mv);
+        } else {
+            snprintf(mv, sizeof(mv), "--");
+        }
+        if (d->batt_pct >= 0) {
+            snprintf(pct, sizeof(pct), "%d%%", (int)d->batt_pct);
+        } else {
+            snprintf(pct, sizeof(pct), "--");
+        }
+        snprintf(buf, sizeof(buf), "%s / %s", mv, pct);
+    } else {
+        snprintf(buf, sizeof(buf), "unknown");
+    }
+    y = settings_diag_line(list, y, row_w, "BATTERY", buf);
+    {
+        unsigned const h = d->uptime_s / 3600u;
+        unsigned const m = (d->uptime_s % 3600u) / 60u;
+        unsigned const s = d->uptime_s % 60u;
+        snprintf(buf, sizeof(buf), "%uh%02um%02us", h, m, s);
+    }
+    y = settings_diag_line(list, y, row_w, "UPTIME", buf);
+    snprintf(buf, sizeof(buf), "%s / %s", (d->fw_git_sha[0] != '\0') ? d->fw_git_sha : "unknown",
+             (d->fw_build_date[0] != '\0') ? d->fw_build_date : "unknown");
+    y = settings_diag_line(list, y, row_w, "FIRMWARE", buf);
+    if (d->has_free_heap) {
+        snprintf(buf, sizeof(buf), "%u B", (unsigned)d->free_heap_bytes);
+    } else {
+        snprintf(buf, sizeof(buf), "--");
+    }
+    y = settings_diag_line(list, y, row_w, "FREE HEAP", buf);
+    (void)y; /* the final cursor value is only informative */
+
+    lv_obj_update_layout(list);
+    lv_obj_scroll_to_y(list, 0, LV_ANIM_OFF);
+}
+
+/* ---------------------------------------------------------------------
  * Entry point.
  * ------------------------------------------------------------------- */
 void ff_scr_settings_build(lv_obj_t *parent, ff_app_settings_t const *settings)
@@ -1866,6 +2270,12 @@ void ff_scr_settings_build(lv_obj_t *parent, ff_app_settings_t const *settings)
      * CREW/COMPASS_CAL just above. */
     if (settings->subview == FF_SETTINGS_SUB_NAME_EDIT) {
         settings_build_name_edit_page(parent, &settings->name_edit);
+        return;
+    }
+    /* DIAGNOSTICS — same subview-dispatch-at-the-top shape as
+     * CREW/COMPASS_CAL/NAME_EDIT just above. */
+    if (settings->subview == FF_SETTINGS_SUB_DIAGNOSTICS) {
+        settings_build_diag_page(parent, &settings->diag);
         return;
     }
 
@@ -2007,9 +2417,11 @@ void ff_scr_settings_build(lv_obj_t *parent, ff_app_settings_t const *settings)
     y = settings_build_section_header(list, y, row_w, "DEVICE", /*first=*/false);
     settings_build_calibrate_row(list, y, row_w);
     y += FF_SETTINGS_ROW_STEP;
-    /* S12 step 3 — CALIBRATE COMPASS now follows CALIBRATE TOUCH; it is
-     * the new last row of DEVICE. */
+    /* S12 step 3 — CALIBRATE COMPASS follows CALIBRATE TOUCH. */
     settings_build_compass_cal_row(list, y, row_w, s_settings.compass_cal.cal_valid);
+    y += FF_SETTINGS_ROW_STEP;
+    /* DIAGNOSTICS — the new last row of DEVICE. */
+    settings_build_diag_open_row(list, y, row_w);
     y += FF_SETTINGS_ROW_H; /* last row of DEVICE */
 
     /* NAME — task brief: "above CREW". Its own single-row section, same

@@ -159,6 +159,7 @@ line replies `dbg: ? try help`):
 | `cal clear` | drop the STORED calibration back to identity/uncalibrated |
 | `name` | NAME in Settings: stored puck name, mesh-reported name (if any), confirmed/pending, and whether the name was silently adopted from the mesh at boot |
 | `name <text>` | commit `<text>` through the EXACT SAME path the Settings NAME row's DONE button uses — sanitize (letters/digits/space), persist, push the Meshtastic owner update — so the mesh push can be bench-tested against real nodes over USB |
+| `diag` | DIAGNOSTICS: the SAME facts the Settings DIAGNOSTICS page shows — link, my position, mesh link-quality, wall clock, compass, device — as seven `dbg: diag ...` lines |
 
 Every acting command dispatches through `ff_shell_intent` (the SAME
 `FF_INTENT_QUICK_FLARE`/`FF_INTENT_FLARE_END` intents the physical
@@ -225,6 +226,15 @@ dbg: name stored=Jake mesh=unknown confirmed=0
 
 name
 dbg: name stored=Jake mesh=Jake confirmed=1
+
+diag
+dbg: diag link=CONNECTED node=!00001000 name=DANA/Dana last_frame_ms=800 frames_ok=12045 decode_err=2 reconnects=1
+dbg: diag pos src=internal ok=1 lat=39.937100 lon=-82.415200 alt_m=287 sats=9 precision_bits=32 age_ms=4200
+dbg: diag mesh crew=1 heard=0 rssi_dbm=-61 snr_db=7.5 direct=1 rf_age_ms=1500
+dbg: diag mesh chan_util_pct=12 air_util_tx_pct=3 telemetry_age_ms=60000 pos_bcast_age_ms=4200
+dbg: diag time latched=1 trust=trusted src_node=!00001000 offset_min=-300 assumed=0 local=9:46 pm
+dbg: diag compass mag=QMC5883P present=1 imu=ok heading_deg=87 cal=set
+dbg: diag device batt_mv=3900 batt_pct=82 uptime_s=5025 fw=8c94bef2057c/2026-09-07 free_heap=123456
 
 xyzzy
 dbg: ? try help
