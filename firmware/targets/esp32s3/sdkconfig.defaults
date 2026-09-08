@@ -202,3 +202,32 @@ CONFIG_ESP_TASK_WDT_INIT=y
 CONFIG_ESP_TASK_WDT_TIMEOUT_S=15
 CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU0=y
 CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU1=y
+
+# --- FreeRTOS trace facility, 2026-09-08 QA hardening item 2 ---------------
+# Previously off (ESP-IDF's own Kconfig default). Required for
+# `uxTaskGetSystemState()` — the only FreeRTOS API that ENUMERATES every
+# task — which the new `perf` bench console command (app_main.c,
+# `dbgconsole_perf`) uses to report every task's stack high-water mark,
+# per this hardening pass's own brief ("task stack high-water marks for
+# every task"). Small, fixed per-task RAM cost (each TCB grows by a
+# handful of bytes for the extra bookkeeping this enables) — not
+# reference-counted or measured separately in this pass; if DIRAM ever
+# gets tight enough to matter, `idf.py size-components` will show it
+# under the FreeRTOS component's own growth.
+#
+# DRIFT-RULE CORRECTION (2026-09-08, gate re-run for #239): this pass's
+# own earlier diff analysis claimed the maintainer's real board sdkconfig
+# was missing this key entirely and would pick up this default for free.
+# That was wrong — the board's sdkconfig already carries
+# "# CONFIG_FREERTOS_USE_TRACE_FACILITY is not set" explicitly (confirmed
+# against the real file, not re-derived), which the drift rule (this
+# file's own header) means Kconfig will NOT overwrite with this new
+# default. Left as-is on the real board, `perf`'s stack high-water-mark
+# reporting FAILS TO LINK — `uxTaskGetSystemState` is compiled out
+# entirely when the trace facility is off, not merely a no-op — so this
+# is a hard build break, not a degraded-but-booting gap. The maintainer
+# must delete the `CONFIG_FREERTOS_USE_TRACE_FACILITY` line from their
+# local sdkconfig (same mechanism as the ESP_TASK_WDT_* / STACK_CHECK_*
+# keys above/below) and run `idf.py reconfigure` before `perf` will build
+# against the real board.
+CONFIG_FREERTOS_USE_TRACE_FACILITY=y

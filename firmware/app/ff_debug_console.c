@@ -150,6 +150,7 @@ static void dbgconsole_help(ff_dbgconsole_reply_fn reply, void *user)
     reply_line(reply, user, "dbg: name                     NAME in Settings: stored/mesh/confirmed status");
     reply_line(reply, user, "dbg: name <text>              set + push the Meshtastic owner update");
     reply_line(reply, user, "dbg: diag                     DIAGNOSTICS: link/position/mesh/time/compass/device");
+    reply_line(reply, user, "dbg: perf                     frame/LVGL/flush timing, heap, per-task stack high-water");
 }
 
 static void dbgconsole_me(ff_shell_t *sh, ff_dbgconsole_reply_fn reply, void *user)
@@ -735,10 +736,23 @@ static void dbgconsole_i2c(ff_dbgconsole_i2c_scan_fn i2c_scan, ff_dbgconsole_com
     }
 }
 
+/* `perf` — see ff_dbgconsole_perf_fn's own doc comment for why this is a
+ * straight forward, unlike the single-line i2c/compass/i2c_health hooks:
+ * the hook is handed the reply sink directly and prints its own already-
+ * prefixed lines. NULL is the one case this function itself handles. */
+static void dbgconsole_perf(ff_dbgconsole_perf_fn perf, void *hook_user, ff_dbgconsole_reply_fn reply, void *user)
+{
+    if (perf == NULL) {
+        reply_line(reply, user, "dbg: perf unavailable on this target");
+        return;
+    }
+    perf(hook_user, reply, user);
+}
+
 void ff_dbgconsole_handle_line(ff_shell_t *sh, char const *line, size_t line_len, uint32_t now_ms,
                                 ff_dbgconsole_reply_fn reply, void *user, ff_dbgconsole_i2c_scan_fn i2c_scan,
                                 ff_dbgconsole_compass_status_fn compass_status,
-                                ff_dbgconsole_i2c_health_fn i2c_health)
+                                ff_dbgconsole_i2c_health_fn i2c_health, ff_dbgconsole_perf_fn perf)
 {
     (void)now_ms; /* every command below reaches "now" via a shell getter, not this parameter */
     if (sh == NULL || reply == NULL) return;
@@ -771,6 +785,7 @@ void ff_dbgconsole_handle_line(ff_shell_t *sh, char const *line, size_t line_len
     case FF_DBGCMD_NAME: dbgconsole_name_status(sh, reply, user); return;
     case FF_DBGCMD_NAME_SET: dbgconsole_name_set(sh, cmd.u.text, reply, user); return;
     case FF_DBGCMD_DIAG: dbgconsole_diag(sh, reply, user); return;
+    case FF_DBGCMD_PERF: dbgconsole_perf(perf, user, reply, user); return;
     case FF_DBGCMD_NONE: break; /* ff_dbgcmd_parse never returns OK with NONE — unreachable */
     }
     reply_line(reply, user, "dbg: ? try help");

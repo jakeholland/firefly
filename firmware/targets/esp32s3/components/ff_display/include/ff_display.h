@@ -165,6 +165,27 @@ void ff_display_i2c_health(uint32_t *out_touch_fail_total, uint32_t *out_touch_f
                             uint32_t *out_recovery_attempts);
 
 /**
+ * [api] ff_display_perf_t / ff_display_perf_get — 2026-09-08 QA hardening
+ * item 2: LVGL `lv_timer_handler` refresh-cycle time and per-flush time,
+ * for the `perf` bench console command (app_main.c). Populated from
+ * `LV_EVENT_REFR_START`/`_READY` and `LV_EVENT_FLUSH_START`/`_FINISH`
+ * (LVGL 9.5's own instrumentation events — no esp_lvgl_port patch
+ * needed), the same "windowed, min/avg/max over the last CLOSED ~5s
+ * period" shape `ff_display_i2c_health`'s per-minute rate already uses:
+ * `*_count == 0` means the window hasn't closed yet (boot, or LVGL truly
+ * idle that whole window) — `*_min_us` is meaningless in that case and
+ * the caller should print "n/a", not 0 (0 would honestly-lie as "an
+ * instant refresh"). All times in microseconds. Any output pointer may
+ * be NULL.
+ */
+typedef struct {
+    uint32_t refresh_count, refresh_min_us, refresh_avg_us, refresh_max_us;
+    uint32_t flush_count, flush_min_us, flush_avg_us, flush_max_us;
+} ff_display_perf_t;
+
+void ff_display_perf_get(ff_display_perf_t *out);
+
+/**
  * ff_display_panel_init — bring up the SPD2010 over QSPI and turn the
  * backlight on. Requires ff_display_expander_init() to have released
  * LCD_RST first. On success the panel is initialised, oriented, and

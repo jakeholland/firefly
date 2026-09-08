@@ -695,6 +695,56 @@ static ff_idle_t s_idle;
  * threshold/cooldown reasoning), not to react to a single failed poll. */
 #define FF_I2C_HEALTH_TICK_PERIOD_MS ((uint32_t)3000u)
 
+/* ---------------------------------------------------------------------
+ * 2026-09-08 QA hardening item 2 — render-loop frame-time + face-rebuild
+ * stats for the `perf` bench console command.
+ *
+ * `ff_perf_window_t`/`ff_perf_window_record` are a deliberate, small
+ * DUPLICATE of ff_display.c's own copy (same struct shape, same
+ * windowing rule: min/avg/max/count over the trailing CLOSED
+ * FF_PERF_WINDOW_MS period) rather than a shared header: this copy is
+ * single-task (the render loop is the only reader AND writer — no
+ * esp_lvgl_port task involved), so it needs none of that file's
+ * cross-task spinlock, and factoring four lines of struct-plus-record
+ * logic into a shared library for two unrelated, differently-threaded
+ * callers would cost more than it saves. Always compiled (not gated
+ * behind CONFIG_FF_DEBUG_CONSOLE) — recording a few words of stats every
+ * frame is cheap regardless of whether anything ever reads them this
+ * boot, and keeping the RECORDING path un-gated means a future second
+ * consumer (a future Diagnostics-page surfacing, say) needs no new
+ * plumbing here. */
+typedef struct {
+    uint32_t window_start_ms;
+    uint32_t count, sum_us, min_us, max_us;                     /* the still-open window */
+    uint32_t last_count, last_avg_us, last_min_us, last_max_us; /* the last CLOSED window */
+} ff_perf_window_t;
+
+#define FF_PERF_WINDOW_MS ((uint32_t)5000u) /* "over the last 5s" per the QA-hardening brief */
+
+static void ff_perf_window_record(ff_perf_window_t *w, uint32_t now_ms, uint32_t dur_us)
+{
+    if (w->window_start_ms == 0u) {
+        w->window_start_ms = now_ms; /* first sample ever */
+    } else if ((uint32_t)(now_ms - w->window_start_ms) >= FF_PERF_WINDOW_MS) {
+        w->last_count = w->count;
+        w->last_avg_us = (w->count > 0u) ? (w->sum_us / w->count) : 0u;
+        w->last_min_us = w->min_us;
+        w->last_max_us = w->max_us;
+        w->count = 0u;
+        w->sum_us = 0u;
+        w->min_us = 0u;
+        w->max_us = 0u;
+        w->window_start_ms = now_ms;
+    }
+    if (w->count == 0u || dur_us < w->min_us) w->min_us = dur_us;
+    if (dur_us > w->max_us) w->max_us = dur_us;
+    w->sum_us += dur_us;
+    w->count++;
+}
+
+static ff_perf_window_t s_frame_perf;
+static uint32_t s_face_rebuild_count; /* lifetime total — a rate is less useful here than "how many since boot" */
+
 /* Human-readable wake cause, for the on-glass log line the spec's AC1
  * asks for ("log sleep entry + wake cause ... so the maintainer can read
  * it on glass"). Deliberately NOT a full switch over every
@@ -1147,6 +1197,112 @@ static int dbgconsole_i2c_health(void *user, char *out, size_t cap)
     return 0;
 }
 
+/* `ff_dbgconsole_perf_fn` (ff_debug_console.h, 2026-09-08 QA hardening
+ * item 2) — "make the perf command the tool the owner will use in the
+ * morning". Emits its own already-`"dbg: perf "`-prefixed lines directly
+ * through `reply` (see that typedef's own doc comment for why this hook
+ * shape differs from i2c_scan/compass_status/i2c_health's single-line
+ * `out`/`cap` contract) — device-only data (heap, per-task stacks, this
+ * FILE's own render-loop stats) that has no home in ff_shell_t. */
+
+/* One windowed min/avg/max/n line, `n/a` (not a fabricated 0) for a
+ * window that hasn't closed yet — see ff_display_perf_t's own doc
+ * comment on why 0 would be a lie here (an instant refresh is not the
+ * same fact as "no data yet"). Shared by all three windowed metrics
+ * below so their formatting can't drift against each other. */
+static void dbgconsole_perf_window_line(char const *label, uint32_t count, uint32_t min_us, uint32_t avg_us,
+                                         uint32_t max_us, ff_dbgconsole_reply_fn reply, void *user)
+{
+    char line[96];
+    if (count == 0u) {
+        snprintf(line, sizeof(line), "dbg: perf %s n/a (window not closed yet)", label);
+    } else {
+        snprintf(line, sizeof(line), "dbg: perf %s min_us=%" PRIu32 " avg_us=%" PRIu32 " max_us=%" PRIu32 " n=%" PRIu32,
+                 label, min_us, avg_us, max_us, count);
+    }
+    reply(user, line);
+}
+
+static void dbgconsole_perf(void *hook_user, ff_dbgconsole_reply_fn reply, void *reply_user)
+{
+    (void)hook_user;
+
+    /* Render-loop frame time — this file's own s_frame_perf, recorded
+     * every iteration (see that struct's own doc comment). Snapshot
+     * without a lock: single-task producer AND consumer (the render
+     * loop itself, the only place this console is polled from — see
+     * dbgconsole_poll's own call site), so there is no cross-task race
+     * to guard against here (unlike ff_display_perf_get's LVGL stats,
+     * below, which DO cross tasks). */
+    dbgconsole_perf_window_line("frame", s_frame_perf.last_count, s_frame_perf.last_min_us, s_frame_perf.last_avg_us,
+                                 s_frame_perf.last_max_us, reply, reply_user);
+
+    /* LVGL lv_timer_handler refresh cycle + per-flush time — esp_lvgl_port's
+     * own task, via LVGL 9.5's own instrumentation events (ff_display.c). */
+    ff_display_perf_t disp_perf;
+    ff_display_perf_get(&disp_perf);
+    dbgconsole_perf_window_line("lvgl_refresh", disp_perf.refresh_count, disp_perf.refresh_min_us,
+                                 disp_perf.refresh_avg_us, disp_perf.refresh_max_us, reply, reply_user);
+    dbgconsole_perf_window_line("flush", disp_perf.flush_count, disp_perf.flush_min_us, disp_perf.flush_avg_us,
+                                 disp_perf.flush_max_us, reply, reply_user);
+
+    /* Face rebuild count — lifetime total (this file's own
+     * s_face_rebuild_count), not windowed: "how many since boot" is the
+     * actionable question for a rebuild (each one is a real,
+     * discrete UI event — a screen change, a dirty tick — not a
+     * continuous-rate thing like frame time). */
+    {
+        char line[48];
+        snprintf(line, sizeof(line), "dbg: perf face_rebuilds=%" PRIu32, s_face_rebuild_count);
+        reply(reply_user, line);
+    }
+
+    /* Heap — MALLOC_CAP_DEFAULT, the same "everything the default
+     * allocator could still hand out" query this file's own DIAGNOSTICS
+     * push (ff_shell_set_device_stats, the render loop below) already
+     * uses for `free_heap`, so the two numbers are directly comparable.
+     * heap_caps_get_minimum_free_size is ESP-IDF's own running-minimum
+     * tracker (since boot) — no windowing needed, it already IS the
+     * honest lifetime worst case. */
+    {
+        size_t const free_now = heap_caps_get_free_size(MALLOC_CAP_DEFAULT);
+        size_t const free_min_ever = heap_caps_get_minimum_free_size(MALLOC_CAP_DEFAULT);
+        size_t const largest_block = heap_caps_get_largest_free_block(MALLOC_CAP_DEFAULT);
+        char line[96];
+        snprintf(line, sizeof(line), "dbg: perf heap free=%u min_ever=%u largest_block=%u", (unsigned)free_now,
+                 (unsigned)free_min_ever, (unsigned)largest_block);
+        reply(reply_user, line);
+    }
+
+    /* Per-task stack high-water marks — every task, per the QA-hardening
+     * brief. uxTaskGetSystemState (needs CONFIG_FREERTOS_USE_TRACE_FACILITY,
+     * sdkconfig.defaults, this pass) is the only FreeRTOS API that
+     * ENUMERATES every task; a fixed-size stack array bounds this bench
+     * command's own stack use to something reasonable (32 tasks is
+     * comfortably more than this project's own task count — the array
+     * silently caps rather than overflowing if that's ever wrong, and
+     * the count actually returned is reported so a truncation would be
+     * visible, not silent). Reported as BYTES remaining (the high-water
+     * mark FreeRTOS itself tracks is in words; multiplied here so a
+     * bench reader doesn't have to know the platform's word size), the
+     * same unit a stack-overflow crash log already reports in. */
+    {
+        enum { FF_PERF_MAX_TASKS = 32 };
+        static TaskStatus_t s_task_status[FF_PERF_MAX_TASKS]; /* static: ~1.3KB, too large for this task's own stack */
+        UBaseType_t const n = uxTaskGetSystemState(s_task_status, FF_PERF_MAX_TASKS, NULL);
+        for (UBaseType_t i = 0; i < n; i++) {
+            char line[64];
+            snprintf(line, sizeof(line), "dbg: perf stack %-16s high_water_bytes=%u", s_task_status[i].pcTaskName,
+                     (unsigned)(s_task_status[i].usStackHighWaterMark * sizeof(StackType_t)));
+            reply(reply_user, line);
+        }
+        if (n == 0u) {
+            reply(reply_user, "dbg: perf stack (uxTaskGetSystemState returned nothing — "
+                               "CONFIG_FREERTOS_USE_TRACE_FACILITY missing from this build?)");
+        }
+    }
+}
+
 /* Drain whatever the USB host has sent since the last frame (non-
  * blocking: ticks_to_wait=0) into the line accumulator, dispatching on
  * every '\n' and tolerating a preceding '\r' (ff_dbgcmd_parse's own CRLF
@@ -1173,7 +1329,7 @@ static void dbgconsole_poll(ff_shell_t *sh, uint32_t now_ms)
                 if (!s_dbgconsole_discarding) {
                     ff_dbgconsole_handle_line(sh, s_dbgconsole_line, s_dbgconsole_line_len, now_ms,
                                                dbgconsole_reply_write, NULL, dbgconsole_i2c_scan,
-                                               dbgconsole_compass_status, dbgconsole_i2c_health);
+                                               dbgconsole_compass_status, dbgconsole_i2c_health, dbgconsole_perf);
                 }
                 s_dbgconsole_line_len = 0u;
                 s_dbgconsole_discarding = false;
@@ -2015,6 +2171,16 @@ void app_main(void)
          * downstream of a fresh reset. */
         esp_task_wdt_reset();
 
+        /* 2026-09-08 QA hardening item 2 — render-loop frame-time
+         * measurement for the `perf` console command. Deliberately
+         * brackets the WHOLE iteration body (down to this loop's own
+         * pacing delay/light-sleep branch at the bottom) rather than any
+         * one sub-step: "frame time" here means "how long this
+         * iteration's real work took", the number that actually answers
+         * "is the render loop keeping up" — see ff_perf_frame_tick's own
+         * doc comment for the windowing shape. */
+        int64_t const frame_start_us = esp_timer_get_time();
+
         /* S21 §3 (device-runtime): drain a deferred CALIBRATE-TOUCH request in
          * THIS (main) task. ff_display_run_calibration blocks waiting for the
          * LVGL task to capture the taps, so it must not run from the click
@@ -2037,6 +2203,7 @@ void app_main(void)
                 lv_obj_clean(lv_screen_active());
                 ff_face_build(ff_shell_view(&s_shell));
                 ff_display_unlock();
+                s_face_rebuild_count++; /* 2026-09-08 QA hardening — perf command */
             }
             /* S26 slice c — the blocking capture above (five taps' worth
              * of real, human-paced time) ran with no ff_idle_tick call
@@ -2467,6 +2634,7 @@ void app_main(void)
                     lv_obj_clean(lv_screen_active());
                     ff_face_build(v);
                     rebuild_pending = false;
+                    s_face_rebuild_count++; /* 2026-09-08 QA hardening — perf command */
                 }
                 ff_display_unlock();
             }
@@ -2560,6 +2728,16 @@ void app_main(void)
             bool const boot_caused_wake = (wake_cause == ESP_SLEEP_WAKEUP_GPIO) && ff_power_boot_pressed();
             ff_power_boot_isr_synthesize_wake_edge(boot_caused_wake);
         } else {
+            /* 2026-09-08 QA hardening item 2 — close out this iteration's
+             * frame-time sample right before the pacing delay, so the
+             * measured "frame time" is real work only, never inflated by
+             * this deliberate 20ms throttle. Not recorded on the SLEEP
+             * branch above — light sleep itself can take well over 20ms
+             * (the whole point) and would otherwise dominate every
+             * window's max with a number that means "the device slept",
+             * not "the render loop was slow". */
+            int64_t const frame_end_us = esp_timer_get_time();
+            ff_perf_window_record(&s_frame_perf, now_ms, (uint32_t)(frame_end_us - frame_start_us));
             vTaskDelay(pdMS_TO_TICKS(20));
         }
     }

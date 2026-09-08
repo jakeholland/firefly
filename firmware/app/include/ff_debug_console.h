@@ -135,6 +135,29 @@ typedef int (*ff_dbgconsole_compass_status_fn)(void *user, char *out, size_t cap
 typedef int (*ff_dbgconsole_i2c_health_fn)(void *user, char *out, size_t cap);
 
 /**
+ * ff_dbgconsole_perf_fn — the `perf` command's platform hook (2026-09-08
+ * QA hardening item 2: "make the perf command the tool the owner will
+ * use in the morning"). Unlike the single-line `out`/`cap` hooks above,
+ * `perf` reports a variable, target-dependent NUMBER of lines (render-
+ * loop/LVGL-refresh/flush timing, heap, and one line PER FreeRTOS task
+ * for its stack high-water mark) — this device-only data has no home in
+ * `ff_shell_t` (unlike `diag`'s `ff_shell_diag_debug`), so the hook is
+ * handed the SAME reply sink `ff_dbgconsole_handle_line`'s own caller
+ * supplied, and emits as many already-`"dbg: perf "`-prefixed lines as
+ * it needs, directly — this file's dispatcher (`ff_debug_console.c`)
+ * never itself touches `heap_caps_*`/`uxTaskGetSystemState` (CLAUDE.md's
+ * "I/O lives in the target" placement rule; this module stays
+ * target-agnostic C). `perf == NULL` (the sim, which has no render loop
+ * or task-stack API of its own to report) replies with the single
+ * honest line `"dbg: perf unavailable on this target"`. The esp32s3
+ * target wires this to a function in `app_main.c` (device-only; not a
+ * public `ff_display`/`ff_power`/etc. HAL entry, since it also reads
+ * this FILE's own render-loop-local stats — frame timing, face-rebuild
+ * count — that live nowhere else).
+ */
+typedef void (*ff_dbgconsole_perf_fn)(void *user, ff_dbgconsole_reply_fn reply, void *reply_user);
+
+/**
  * ff_dbgconsole_handle_line — parse one raw line (via
  * `ff_dbgcmd_parse`) and dispatch it against `sh`, emitting zero or
  * more `"dbg: "`-prefixed reply lines through `reply`.
@@ -170,7 +193,7 @@ typedef int (*ff_dbgconsole_i2c_health_fn)(void *user, char *out, size_t cap);
 void ff_dbgconsole_handle_line(ff_shell_t *sh, char const *line, size_t line_len, uint32_t now_ms,
                                 ff_dbgconsole_reply_fn reply, void *user, ff_dbgconsole_i2c_scan_fn i2c_scan,
                                 ff_dbgconsole_compass_status_fn compass_status,
-                                ff_dbgconsole_i2c_health_fn i2c_health);
+                                ff_dbgconsole_i2c_health_fn i2c_health, ff_dbgconsole_perf_fn perf);
 
 #endif /* FF_TARGET_SIM || CONFIG_FF_DEBUG_CONSOLE */
 
