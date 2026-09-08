@@ -55,6 +55,81 @@ static char const *presence_name(ff_freshness_t f)
     return "?";
 }
 
+/* DIAGNOSTICS — small name tables for `ff_app_diag_t`'s own app-layer
+ * enums (`ff_app_link_t`/`ff_app_pos_src_t`/`ff_app_wall_trust_t`/
+ * `ff_app_mag_kind_t`/`ff_app_imu_state_t`, ff_app_state.h). Deliberately
+ * separate from `link_name`/`trust_name` above, which take the LOWER-
+ * layer `ff_shell_link_t`/`ff_wall_trust_t` types other commands read
+ * directly — `diag` reads only `ff_app_diag_t` (the same struct the
+ * Settings DIAGNOSTICS page renders, via `ff_shell_diag_debug`), so its
+ * own name tables key off the APP-layer enums, matching
+ * `scr_settings.c`'s own (independent, screen-side) name tables for the
+ * same enums — this repo's existing "each layer names its own boundary
+ * type" precedent, not a copy-paste to fix. */
+static char const *diag_link_name(ff_app_link_t l)
+{
+    switch (l) {
+    case FF_APP_LINK_RECONNECTING: return "RECONNECTING";
+    case FF_APP_LINK_CONNECTED: return "CONNECTED";
+    case FF_APP_LINK_NONE:
+    default: return "NONE";
+    }
+}
+
+static char const *diag_pos_src_name(ff_app_pos_src_t s)
+{
+    switch (s) {
+    case FF_APP_POS_SRC_MANUAL: return "manual";
+    case FF_APP_POS_SRC_INTERNAL: return "internal";
+    case FF_APP_POS_SRC_EXTERNAL: return "external";
+    case FF_APP_POS_SRC_UNKNOWN:
+    default: return "unknown";
+    }
+}
+
+static char const *diag_wall_trust_name(ff_app_wall_trust_t t)
+{
+    switch (t) {
+    case FF_APP_WALL_TRUST_TRUSTED: return "trusted";
+    case FF_APP_WALL_TRUST_CORROBORATED: return "corroborated";
+    case FF_APP_WALL_TRUST_BOOTSTRAP:
+    default: return "bootstrap";
+    }
+}
+
+static char const *diag_mag_kind_name(ff_app_mag_kind_t k)
+{
+    switch (k) {
+    case FF_APP_MAG_QMC5883L: return "QMC5883L";
+    case FF_APP_MAG_HMC5883L: return "HMC5883L";
+    case FF_APP_MAG_QMC5883P: return "QMC5883P";
+    case FF_APP_MAG_NONE:
+    default: return "none";
+    }
+}
+
+static char const *diag_imu_state_name(ff_app_imu_state_t s)
+{
+    switch (s) {
+    case FF_APP_IMU_NO_DATA: return "no-data";
+    case FF_APP_IMU_OK: return "ok";
+    case FF_APP_IMU_ABSENT:
+    default: return "absent";
+    }
+}
+
+/* "?" for an age/value this fact's own has_-flag says was never
+ * observed — matches `dbgconsole_wall`'s own `offset_buf`/`assumed_buf`
+ * "?" convention above for the same "not applicable, not zero" reason. */
+static void diag_u32_or_q(char *buf, size_t n, bool has, uint32_t v)
+{
+    if (has) {
+        snprintf(buf, n, "%u", (unsigned)v);
+    } else {
+        snprintf(buf, n, "?");
+    }
+}
+
 static void dbgconsole_help(ff_dbgconsole_reply_fn reply, void *user)
 {
     reply_line(reply, user, "dbg: help                    this list");
@@ -74,6 +149,7 @@ static void dbgconsole_help(ff_dbgconsole_reply_fn reply, void *user)
     reply_line(reply, user, "dbg: cal clear                drop the stored calibration back to identity");
     reply_line(reply, user, "dbg: name                     NAME in Settings: stored/mesh/confirmed status");
     reply_line(reply, user, "dbg: name <text>              set + push the Meshtastic owner update");
+    reply_line(reply, user, "dbg: diag                     DIAGNOSTICS: link/position/mesh/time/compass/device");
 }
 
 static void dbgconsole_me(ff_shell_t *sh, ff_dbgconsole_reply_fn reply, void *user)
@@ -426,6 +502,128 @@ static void dbgconsole_name_set(ff_shell_t *sh, char const *text, ff_dbgconsole_
     dbgconsole_name_status(sh, reply, user);
 }
 
+/* DIAGNOSTICS — `diag`: the SAME `ff_app_diag_t` the Settings DIAGNOSTICS
+ * page renders (`ff_shell_diag_debug`, ff_shell.h — one projection, two
+ * presentations, per that function's own doc comment), printed as one
+ * line per section (link/position/mesh/time/compass/device) — Mesh
+ * split across TWO lines (roster+RF, then airtime) rather than one,
+ * purely to stay inside DBGCONSOLE_LINE_BUF under GCC's
+ * `-Wformat-truncation` (its worst-case estimate for eight `%s` fields
+ * in one line exceeded the budget even though no real value ever comes
+ * close — see that split's own comment) — so a bench operator gets the
+ * whole page in seven reply lines without opening it on the touchscreen.
+ * Every "?" below is this fact's own `has_*`-flag (or enum-UNKNOWN
+ * member) reading false — never a fabricated value, same honest-data
+ * discipline as every other command in this file. */
+static void dbgconsole_diag(ff_shell_t *sh, ff_dbgconsole_reply_fn reply, void *user)
+{
+    ff_app_diag_t const d = ff_shell_diag_debug(sh);
+    char line[DBGCONSOLE_LINE_BUF];
+    char buf1[24];
+
+    /* 1. Link */
+    diag_u32_or_q(buf1, sizeof(buf1), d.has_last_frame_age, d.last_frame_age_ms);
+    snprintf(line, sizeof(line), "dbg: diag link=%s node=!%08x name=%s/%s last_frame_ms=%s frames_ok=%u decode_err=%u reconnects=%u",
+             diag_link_name(d.link), (unsigned)d.my_node_id, d.has_short_name ? d.short_name : "?",
+             d.has_long_name ? d.long_name : "?", buf1, (unsigned)d.frames_ok, (unsigned)d.decode_errors,
+             (unsigned)d.reconnects);
+    reply_line(reply, user, line);
+
+    /* 2. Position (mine) */
+    diag_u32_or_q(buf1, sizeof(buf1), d.pos_has_age, d.pos_age_ms);
+    if (d.pos_ok) {
+        char alt_buf[16] = "?";
+        char sats_buf[16] = "?";
+        char prec_buf[16] = "?";
+        if (d.pos_has_altitude) snprintf(alt_buf, sizeof(alt_buf), "%d", (int)d.pos_altitude_m);
+        if (d.pos_has_sats) snprintf(sats_buf, sizeof(sats_buf), "%u", (unsigned)d.pos_sats_in_view);
+        if (d.pos_has_precision_bits) snprintf(prec_buf, sizeof(prec_buf), "%u", (unsigned)d.pos_precision_bits);
+        snprintf(line, sizeof(line),
+                 "dbg: diag pos src=%s ok=1 lat=%.6f lon=%.6f alt_m=%s sats=%s precision_bits=%s age_ms=%s",
+                 diag_pos_src_name(d.pos_src), d.pos_lat, d.pos_lon, alt_buf, sats_buf, prec_buf, buf1);
+    } else {
+        snprintf(line, sizeof(line), "dbg: diag pos src=%s ok=0", diag_pos_src_name(d.pos_src));
+    }
+    reply_line(reply, user, line);
+
+    /* 3. Mesh — split into three reply lines (roster / RF / airtime)
+     * rather than one long one: cramming all eight optional %s fields
+     * into a single DBGCONSOLE_LINE_BUF(200)-byte line left GCC's
+     * `-Wformat-truncation` unable to prove no truncation (CLAUDE.md:
+     * GCC is the build authority, not clang, which has no equivalent
+     * check) — it estimates each `%s`'s worst case as its SOURCE
+     * buffer's own declared capacity, and eight scratch buffers plus the
+     * literal text comfortably exceeds 200 even though no REAL value
+     * ever gets close. Splitting removes the arithmetic entirely rather
+     * than fighting it with ever-tighter buffer sizes. */
+    {
+        char rssi_buf[8] = "?";
+        char snr_buf[8] = "?";
+        char direct_buf[2] = "?";
+        char rf_age_buf[16];
+        if (d.has_last_rssi) snprintf(rssi_buf, sizeof(rssi_buf), "%d", (int)d.last_rssi_dbm);
+        if (d.has_last_snr) snprintf(snr_buf, sizeof(snr_buf), "%.1f", (double)d.last_snr_db);
+        if (d.has_last_rssi || d.has_last_snr) snprintf(direct_buf, sizeof(direct_buf), "%d", d.last_rf_direct ? 1 : 0);
+        diag_u32_or_q(rf_age_buf, sizeof(rf_age_buf), d.has_last_rf_age, d.last_rf_age_ms);
+        snprintf(line, sizeof(line), "dbg: diag mesh crew=%u heard=%u rssi_dbm=%s snr_db=%s direct=%s rf_age_ms=%s",
+                 (unsigned)d.crew_count, (unsigned)d.heard_count, rssi_buf, snr_buf, direct_buf, rf_age_buf);
+    }
+    reply_line(reply, user, line);
+    {
+        char cu_buf[8] = "?";
+        char au_buf[8] = "?";
+        char telem_age_buf[16];
+        char bcast_age_buf[16];
+        if (d.has_chan_util) snprintf(cu_buf, sizeof(cu_buf), "%.0f", (double)d.chan_util_pct);
+        if (d.has_air_util_tx) snprintf(au_buf, sizeof(au_buf), "%.0f", (double)d.air_util_tx_pct);
+        diag_u32_or_q(telem_age_buf, sizeof(telem_age_buf), d.has_telemetry_age, d.telemetry_age_ms);
+        diag_u32_or_q(bcast_age_buf, sizeof(bcast_age_buf), d.has_pos_broadcast_age, d.pos_broadcast_age_ms);
+        snprintf(line, sizeof(line), "dbg: diag mesh chan_util_pct=%s air_util_tx_pct=%s telemetry_age_ms=%s pos_bcast_age_ms=%s",
+                 cu_buf, au_buf, telem_age_buf, bcast_age_buf);
+    }
+    reply_line(reply, user, line);
+
+    /* 4. Time */
+    {
+        char src_buf[16] = "?";
+        char offset_buf[16] = "?";
+        char assumed_buf[4] = "?";
+        if (d.wall_has_src_node) snprintf(src_buf, sizeof(src_buf), "!%08x", (unsigned)d.wall_src_node);
+        if (d.wall_has_offset) {
+            snprintf(offset_buf, sizeof(offset_buf), "%d", (int)d.wall_offset_min);
+            snprintf(assumed_buf, sizeof(assumed_buf), "%d", d.wall_offset_assumed ? 1 : 0);
+        }
+        snprintf(line, sizeof(line), "dbg: diag time latched=%d trust=%s src_node=%s offset_min=%s assumed=%s local=%s",
+                 d.wall_latched ? 1 : 0, d.wall_has_trust ? diag_wall_trust_name(d.wall_trust) : "?", src_buf,
+                 offset_buf, assumed_buf, d.has_local_time ? d.local_time_str : "?");
+    }
+    reply_line(reply, user, line);
+
+    /* 5. Compass */
+    {
+        char heading_buf[16] = "?";
+        if (d.heading_valid) snprintf(heading_buf, sizeof(heading_buf), "%.0f", (double)d.heading_deg);
+        snprintf(line, sizeof(line), "dbg: diag compass mag=%s present=%d imu=%s heading_deg=%s cal=%s",
+                 diag_mag_kind_name(d.mag_kind), d.mag_present ? 1 : 0, diag_imu_state_name(d.imu_state), heading_buf,
+                 d.compass_cal_set ? "set" : "identity");
+    }
+    reply_line(reply, user, line);
+
+    /* 6. Device */
+    {
+        char batt_mv_buf[16] = "?";
+        char batt_pct_buf[8] = "?";
+        char heap_buf[16] = "?";
+        if (d.has_batt_mv) snprintf(batt_mv_buf, sizeof(batt_mv_buf), "%u", (unsigned)d.batt_mv);
+        if (d.batt_pct >= 0) snprintf(batt_pct_buf, sizeof(batt_pct_buf), "%d", (int)d.batt_pct);
+        if (d.has_free_heap) snprintf(heap_buf, sizeof(heap_buf), "%u", (unsigned)d.free_heap_bytes);
+        snprintf(line, sizeof(line), "dbg: diag device batt_mv=%s batt_pct=%s uptime_s=%u fw=%s/%s free_heap=%s",
+                 batt_mv_buf, batt_pct_buf, (unsigned)d.uptime_s, d.fw_git_sha[0] != '\0' ? d.fw_git_sha : "unknown",
+                 d.fw_build_date[0] != '\0' ? d.fw_build_date : "unknown", heap_buf);
+    }
+    reply_line(reply, user, line);
+}
+
 static void dbgconsole_wall(ff_shell_t *sh, ff_dbgconsole_reply_fn reply, void *user)
 {
     ff_shell_wall_debug_t const w = ff_shell_wall_debug(sh);
@@ -537,6 +735,7 @@ void ff_dbgconsole_handle_line(ff_shell_t *sh, char const *line, size_t line_len
     case FF_DBGCMD_CAL_CLEAR: dbgconsole_cal_clear(sh, reply, user); return;
     case FF_DBGCMD_NAME: dbgconsole_name_status(sh, reply, user); return;
     case FF_DBGCMD_NAME_SET: dbgconsole_name_set(sh, cmd.u.text, reply, user); return;
+    case FF_DBGCMD_DIAG: dbgconsole_diag(sh, reply, user); return;
     case FF_DBGCMD_NONE: break; /* ff_dbgcmd_parse never returns OK with NONE — unreachable */
     }
     reply_line(reply, user, "dbg: ? try help");

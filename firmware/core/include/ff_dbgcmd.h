@@ -64,6 +64,9 @@
  *   cal | cal start | cal finish | cal cancel | cal clear
  *                           — S12 step 3: the compass calibration ritual
  *   name | name <text>     — NAME in Settings: status / set + mesh push
+ *   diag                    — DIAGNOSTICS: link/position/mesh/time/compass/
+ *                             device facts, the same ones the Settings
+ *                             DIAGNOSTICS page shows
  * Anything else is `FF_DBGCMD_ERR_UNKNOWN` — the dispatcher's reply for
  * that is the fixed string `"dbg: ? try help"` (S16-style "the shell
  * decides", except here the deciding is this table).
@@ -116,6 +119,14 @@
  * it through `FF_INTENT_SETTINGS_NAME_COMMIT`'s own path
  * (`ff_shell.c`'s `shell_apply_name_commit`, core's
  * `ff_meshname_sanitize`) exactly like a real T9-authored name would be.
+ *
+ * `diag` (DIAGNOSTICS) is zero-arg like `me`/`roster`/`heard`/`wall`/`i2c`
+ * above — a bare status dump, no sub-verb, no argument. It carries no
+ * projection policy of its own (same "zero I/O, zero policy" split every
+ * verb here keeps): the dispatcher (`ff_debug_console.c`'s
+ * `dbgconsole_diag`) reads the SAME `ff_app_diag_t` the Settings
+ * DIAGNOSTICS page renders, via `ff_shell_diag_debug` (`ff_shell.h`) — one
+ * projection, two presentations, never a second computation.
  */
 #ifndef FF_DBGCMD_H
 #define FF_DBGCMD_H
@@ -167,6 +178,7 @@ typedef enum {
     FF_DBGCMD_CAL_CLEAR,    /* "cal clear" */
     FF_DBGCMD_NAME,         /* "name" bare — stored/mesh/confirmed status */
     FF_DBGCMD_NAME_SET,     /* "name <text>": u.text — commit + mesh push */
+    FF_DBGCMD_DIAG,         /* DIAGNOSTICS: link/position/mesh/time/compass/device dump */
 } ff_dbgcmd_kind_t;
 
 /** Why a line failed to become a command. `FF_DBGCMD_ERR_EMPTY` is not

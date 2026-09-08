@@ -456,3 +456,129 @@ a) store seam + settings struct + tests · b) face render + interactions + golde
   reproduction here) — the coordinator's next bench session should
   re-run the two-push, 8-seconds-apart transcript this fix targets.
   **Do not merge** — same bench-only caveat as the rest of this PR.
+
+- **2026-09-07 — DIAGNOSTICS page (`feat/settings-diagnostics-page`):
+  Settings gains a full-screen, read-only status dump, plus a matching
+  `diag` bench-console command.** Jake's ask ("a debug type screen
+  showing gps stats and meshtastic stats and such") lands as a new
+  **DIAGNOSTICS** row (bottom of the DEVICE section, after CALIBRATE
+  COMPASS) that opens a full-screen scrollable page with six sections —
+  Link, Position (mine), Mesh, Time, Compass, Device — every fact
+  showing "--"/"unknown" whenever its own `ff_app_diag_t` has_-flag (or
+  enum-UNKNOWN member) says it was never observed, per this project's
+  honest-data rule. BACK returns to the plain Settings list via the
+  existing generic subview rule — no new intent case needed for it.
+
+  **New/changed surfaces** (all `[api]`):
+  - `ff_app_diag_t` (`app/include/ff_app_state.h`) — the page's own
+    view-model struct, built ONLY while `subview ==
+    FF_SETTINGS_SUB_DIAGNOSTICS` (the NAME-editor precedent, not CREW's
+    "always built" one). Five small enums mirror lower-layer types
+    field-for-field at the app/shell boundary (`ff_shell_link_t`,
+    `mc_loc_source_t`, `ff_wall_trust_t`, and the esp32s3-only
+    `ff_compass_mag_kind_t`/`ff_compass_imu_state_t`) rather than
+    including those headers directly.
+  - `FF_INTENT_SETTINGS_OPEN_DIAGNOSTICS` (`ff_intent.h`) — the row's
+    bare intent, same "a Settings row, a bare intent, the shell decides"
+    shape as CREW/NAME.
+  - `mc_telemetry_t` / `mc_events_t.on_telemetry` (`meshclient`) — this
+    library did not decode `TELEMETRY_APP` (portnum 67) at all before
+    this; it now decodes the `device_metrics` variant only (channel
+    utilization, air-util TX, battery level, uptime), silently skipping
+    every other `Telemetry` variant, matching the existing "well-formed,
+    nothing this library understands yet" precedent on ADMIN_APP.
+  - `mc_position_t.sats_in_view`/`has_sats_in_view` (`meshclient`) —
+    `Position.sats_in_view` was decoded nowhere before; same implicit-
+    presence-folds-to-absent treatment as `precision_bits`.
+  - `ff_shell_set_device_stats` (`ff_shell.h`) — a push API (mirrors
+    `ff_shell_set_batt_mv`/`_set_heading`'s shape) for the two facts with
+    genuinely no reading on the sim: free heap and compass chip/IMU
+    identification. Wired into `app_main.c`'s render loop at a 2 s
+    cadence (`FF_DEVICE_STATS_SAMPLE_PERIOD_MS`) — `heap_caps_get_free_
+    size(MALLOC_CAP_DEFAULT)` plus the LAST periodic `ff_compass_status()`
+    sample (no extra I2C transaction); honestly reports "no compass"
+    when `CONFIG_FF_COMPASS` isn't compiled in at all.
+  - `ff_shell_diag_debug` (`ff_shell.h`, debug-only) — the bench
+    console's read: computes the SAME `ff_app_diag_t` the page renders
+    (`shell_compute_diag`, shared by both callers) regardless of whether
+    the DIAGNOSTICS sub-view is actually open, since a bench operator
+    should not have to navigate the touchscreen first.
+  - `diag` (bench console, `FF_DBGCMD_DIAG`) — zero-arg, prints the same
+    facts as seven `dbg: diag ...` reply lines (Mesh splits across two,
+    purely to stay inside `DBGCONSOLE_LINE_BUF` under GCC's
+    `-Wformat-truncation` worst-case estimate — see that split's own
+    comment, `ff_debug_console.c`). See `docs/hardware/comms-brain.md`'s
+    Bench console section for the full line format and an example
+    transcript.
+  - `ff_build_info.h` (new) — `FF_BUILD_GIT_SHA`/`FF_BUILD_DATE`
+    compile-time defines for the Device section's "firmware build id".
+    No such identifier existed anywhere in this codebase before. Both
+    `#define`s fall back to `"unknown"`/`__DATE__` when nothing overrides
+    them; `firmware/app/CMakeLists.txt` (sim) and
+    `targets/esp32s3/components/ff_app/CMakeLists.txt` (device) both
+    supply the real values via `git rev-parse`/`git show` against
+    whatever commit the checkout's `HEAD` points at, when a working git
+    + repository is available — same value on both targets, since both
+    build from the same checkout.
+
+  **Interpretation call, recorded per CLAUDE.md/AGENTS.md**:
+  `pos_broadcast_age_ms` (Mesh section) is the SAME timestamp as
+  `pos_age_ms` (Position section), surfaced a second time — this puck
+  never originates its own Position broadcast (that is the comms
+  brain's job), so "how fresh is my fix" and "is my position still
+  going out" collapse to the one observation this puck actually has.
+
+  **Interpretation call #2**: the task brief's own parenthetical read
+  as "Device (battery mV/%, uptime, firmware build id, free heap —
+  device only; '--' on sim)" — taken literally, that would mean the
+  WHOLE Device section reads unknown on the sim. This lands narrower,
+  matching what is actually true fact-by-fact: `free_heap_bytes` and
+  the Compass section's `mag_kind`/`imu_state` are genuinely device-only
+  (nothing on the sim ever calls `ff_shell_set_device_stats`), but
+  `uptime_s` is the shell's own clock and is equally real on both
+  targets (`ff_shell_now_ms` since `ff_shell_init`), and battery/
+  firmware-build-id are structurally available on the sim too (the ctl
+  socket's `batt_pack_mv` command already pushes a real reading through
+  `ff_shell_set_batt_mv` for exactly this kind of test; the git-derived
+  build id is computed once, identically, for whichever target the
+  checkout is built for). Reporting a genuinely-known uptime/battery
+  value as "unknown" on the sim to match the parenthetical literally
+  would itself be the dishonest option this project's own "honest data
+  over pretty data" rule warns against — so only the two facts with NO
+  possible reading on the sim are gated that way.
+
+  **Tests**: `S_diag_all_unknown_when_nothing_observed` and
+  `S_diag_reports_observed_facts` (`app/tests/test_shell.c`) — unknowns
+  stay unknown, then every fact populates once genuinely observed,
+  checked against BOTH the page's own projection and
+  `ff_shell_diag_debug` (proving the two presentations agree).
+  `S_diag_pos_age_keys_rendered_bucket_only` pins the render-key
+  coarsened-age discipline (sub-bucket tick clean, bucket-crossing tick
+  dirty) the spec calls for. **Fail-first proof**: temporarily reverting
+  `shell_project_diag_page`/`ff_shell_diag_debug` to a no-op (not
+  calling `shell_compute_diag` at all) was confirmed to fail all three
+  tests before the fix, restored after confirming. `core/tests/
+  test_dbgcmd.c` gains `dbgcmd_diag_parses`/`_with_extra_arg_rejected`;
+  `app/tests/test_debug_console.c` gains
+  `dbgconsole_diag_reports_unknowns_when_nothing_known`/
+  `_reports_observed_facts` (seam-level: the command reaches
+  `ff_shell_diag_debug` and prints what it says).
+
+  **Goldens**: two new fixtures, `settings_diag_full`/
+  `settings_diag_unknown` (`firmware/tests/fixtures/`) — fully populated
+  and all-unknown, per this feature's own fail-first honesty proof.
+  Adding the DIAGNOSTICS row to DEVICE shifted every row below it down
+  by one `FF_SETTINGS_ROW_STEP` — see `docs/specs/S21-settings-rework.md`'s
+  own entry for the affected `settings_*` goldens.
+
+  **Layout finding, fixed same PR**: `settings_diag_full.json`'s first
+  render showed the page's own back-circle glyph overlapping the "D" of
+  "DIAGNOSTICS" — CREW/NAME's shared header geometry
+  (`FF_CREW_BACK_Y`/`_HDR_Y`, puck-wide-centered title) has room for
+  their own 4-char titles beside the back circle at that height, but not
+  an 11-character one. Fixed with DIAGNOSTICS' own, slightly lower
+  header constants (`FF_DIAG_BACK_Y`/`_HDR_Y`/`_LIST_Y`/`_LIST_H`) where
+  the round glass is measurably wider, plus a toolbar-style title (fixed
+  box starting right of the back button, internally centered) that stays
+  clear of the back button by construction regardless of title length —
+  not just at today's font/word.

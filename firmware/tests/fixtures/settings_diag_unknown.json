@@ -1,0 +1,8 @@
+{
+  "fixture": "settings_diag_unknown",
+  "face": "settings",
+  "settings": {
+    "subview": "diagnostics",
+    "diag": {}
+  }
+}

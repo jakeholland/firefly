@@ -346,3 +346,29 @@ still within the 256px viewport at the old content height) to "CREW",
 the row that is actually last now.
 
 **2026-09-06 — Confirmation fix round 4 / "reboot-session-loss" touches no layout.** The NAME row's honest-pending behavior during a `set_owner`-triggered comms-brain reboot (≈5–10 s off the mesh — Meshtastic's `AdminModule` reboots a few seconds after every owner write) reuses the row's existing pill states (`...` pending, `!` for a NAK/mismatch, ✓ once confirmed) with no new visual state and no golden regeneration — `run_goldens.sh` stays 90/90 byte-identical. See `docs/specs/S11-settings.md`'s own "Confirmation fix round 4" Amendment for the behavior.
+
+**2026-09-07 — DIAGNOSTICS adds one row to DEVICE (`feat/settings-
+diagnostics-page`).** A new **DIAGNOSTICS** row lands at the bottom of
+the DEVICE section, after CALIBRATE COMPASS — DISPLAY, SOUND, UNITS,
+NAME, DEVICE (CALIBRATE TOUCH, CALIBRATE COMPASS, **DIAGNOSTICS**),
+CREW. Every row from CREW onward shifts down by one
+`FF_SETTINGS_ROW_STEP`; `settings_name_confirmed`, `settings_name_push_
+failed`, and `settings_scrolled_bottom` are the three committed
+fixtures whose scroll offset reaches this far down the list and
+actually changed pixel-for-pixel — every other `settings_*` golden
+renders a viewport that never scrolls this deep, so it is byte-
+identical. `test_scr_intent.c`'s own `S21_AC1_settings_is_one_
+scrolling_list_every_row_reachable` still targets "CREW" as the list's
+true last row (unchanged by this PR — DIAGNOSTICS lands ABOVE CREW, not
+after it) and needed no repointing.
+
+Two new fixtures/goldens for the DIAGNOSTICS page itself,
+`settings_diag_full`/`settings_diag_unknown` (subview `diagnostics`,
+its own full-screen page, not the scrolling list) — see
+`docs/specs/S11-settings.md`'s own 2026-09-07 Amendment for the feature
+and its own header-geometry finding (the page uses `FF_DIAG_BACK_Y`/
+`_HDR_Y`/`_LIST_Y`/`_LIST_H`, NOT `FF_CREW_BACK_Y`/`_HDR_Y` — CREW/
+NAME's shared header row has room for their own 4-char titles beside
+the back circle, not "DIAGNOSTICS"'s 11). `test_face_hit_targets.c`'s
+sweep covers the new row and the new page generically — no sweep-file
+change needed.

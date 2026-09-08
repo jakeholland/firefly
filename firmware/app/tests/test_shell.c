@@ -9526,6 +9526,276 @@ static void S_name_two_pushes_eight_seconds_apart_both_confirm_across_a_mid_sess
                              "push 2 also confirms, via the replay, despite the mid-session reboot");
 }
 
+/* =================================================================== */
+/* DIAGNOSTICS (Settings -> "DIAGNOSTICS" page) — shell_compute_diag's   */
+/* projection, exercised both through the real Settings sub-view        */
+/* (shell_project_diag_page) and the bench-console-only getter          */
+/* (ff_shell_diag_debug) — both wrap the SAME computation, so a single   */
+/* helper below reads whichever one a test asks for.                    */
+/* =================================================================== */
+
+static void inject_telemetry(uint32_t from, bool has_chan_util, float chan_util, bool has_air_util_tx,
+                              float air_util_tx)
+{
+    mc_telemetry_t t;
+    memset(&t, 0, sizeof(t));
+    t.has_channel_utilization = has_chan_util;
+    t.channel_utilization = chan_util;
+    t.has_air_util_tx = has_air_util_tx;
+    t.air_util_tx = air_util_tx;
+    H.ev.on_telemetry(H.ev.user, from, &t);
+}
+
+/* Opens the DIAGNOSTICS sub-view and reads its projected page — the same
+ * `ff_app_diag_t *` `settings_build_diag_page` (scr_settings.c) renders
+ * from. Leaves the launcher first (S12's own crew-page render-key tests
+ * establish why: the launcher's render key masks fields this page's
+ * dirty-bit tests need visible). */
+static ff_app_diag_t const *diag_view(void)
+{
+    ff_intent_t const leave_launcher = {.kind = FF_INTENT_LAUNCHER_SELECT, .u = {.launcher_idx = 4u}}; /* Settings */
+    ff_shell_intent(&H.shell, &leave_launcher);
+    send_bare(FF_INTENT_SETTINGS_OPEN_DIAGNOSTICS);
+    ff_shell_tick(&H.shell, H.clk.t);
+    return &ff_shell_view(&H.shell)->settings.diag;
+}
+
+/* Unknowns stay unknown: a freshly-initialized shell with NO events
+ * injected at all must report every fact as honestly absent — never a
+ * fabricated zero/default reading as if it were observed. Covers both
+ * presentations (the Settings page's own projection AND the bench
+ * console's `ff_shell_diag_debug`, which this test proves agree). */
+static void S_diag_all_unknown_when_nothing_observed(void)
+{
+    harness_init(1000u, false);
+
+    ff_app_diag_t const *d = diag_view();
+    TEST_ASSERT_EQUAL_INT(FF_APP_LINK_NONE, d->link);
+    TEST_ASSERT_EQUAL_UINT32(0u, d->my_node_id);
+    TEST_ASSERT_FALSE(d->has_short_name);
+    TEST_ASSERT_FALSE(d->has_long_name);
+    TEST_ASSERT_FALSE(d->has_last_frame_age);
+    TEST_ASSERT_EQUAL_UINT32(0u, d->frames_ok);
+    TEST_ASSERT_EQUAL_UINT32(0u, d->decode_errors);
+    TEST_ASSERT_EQUAL_UINT32(0u, d->reconnects);
+
+    TEST_ASSERT_FALSE(d->pos_ok);
+    TEST_ASSERT_EQUAL_INT(FF_APP_POS_SRC_UNKNOWN, d->pos_src);
+    TEST_ASSERT_FALSE(d->pos_has_age);
+
+    TEST_ASSERT_EQUAL_UINT8(0, d->crew_count);
+    TEST_ASSERT_EQUAL_UINT8(0, d->heard_count);
+    TEST_ASSERT_FALSE(d->has_last_rssi);
+    TEST_ASSERT_FALSE(d->has_last_snr);
+    TEST_ASSERT_FALSE(d->has_last_rf_age);
+    TEST_ASSERT_FALSE(d->has_chan_util);
+    TEST_ASSERT_FALSE(d->has_air_util_tx);
+    TEST_ASSERT_FALSE(d->has_telemetry_age);
+    TEST_ASSERT_FALSE(d->has_pos_broadcast_age);
+
+    TEST_ASSERT_FALSE(d->wall_latched);
+    TEST_ASSERT_FALSE(d->wall_has_trust);
+    TEST_ASSERT_FALSE(d->wall_has_src_node);
+    TEST_ASSERT_FALSE(d->wall_has_offset);
+    TEST_ASSERT_FALSE(d->has_local_time);
+
+    TEST_ASSERT_EQUAL_INT(FF_APP_MAG_NONE, d->mag_kind);
+    TEST_ASSERT_FALSE(d->mag_present);
+    TEST_ASSERT_EQUAL_INT(FF_APP_IMU_ABSENT, d->imu_state);
+    TEST_ASSERT_FALSE(d->heading_valid);
+    TEST_ASSERT_FALSE(d->compass_cal_set); /* fresh settings default to identity */
+
+    TEST_ASSERT_FALSE(d->has_batt_mv);
+    TEST_ASSERT_EQUAL_INT8(-1, d->batt_pct);
+    TEST_ASSERT_FALSE(d->has_free_heap);
+
+    /* Always honestly known, both targets — never gated behind a has_*
+     * flag per ff_app_diag_t's own doc comment. harness_init(1000u, ..)
+     * starts the mock clock at 1000ms, hence 1s, not 0. */
+    TEST_ASSERT_EQUAL_UINT32(1u, d->uptime_s);
+
+    /* The bench console's own getter must agree exactly with what the
+     * page just rendered — "one projection, two presentations", not two
+     * independent computations that could quietly drift apart. */
+    ff_app_diag_t const bench = ff_shell_diag_debug(&H.shell);
+    TEST_ASSERT_EQUAL_INT(d->link, bench.link);
+    TEST_ASSERT_FALSE(bench.pos_ok);
+    TEST_ASSERT_EQUAL_INT(FF_APP_MAG_NONE, bench.mag_kind);
+}
+
+/* Every fact populates once genuinely observed — link, my position
+ * (source/lat/lon/altitude/sats/precision/age), mesh (crew/heard counts,
+ * last RF, airtime telemetry, position-broadcast age), wall clock, and
+ * device stats. One big scenario rather than one test per field: every
+ * assertion below reads a DIFFERENT struct member, so a single dropped
+ * assignment in shell_compute_diag fails exactly one TEST_ASSERT here,
+ * which is enough to localize it. */
+static void S_diag_reports_observed_facts(void)
+{
+    harness_seed_settings(-300); /* UTC-5, so wall_has_offset reads true */
+    harness_init(1000u, true);
+
+    inject_my_info(MY_ID);
+    H.ev.on_state(H.ev.user, MC_STATE_READY);
+
+    /* Link: a self NodeInfo carrying both names. */
+    {
+        mc_nodeinfo_t n;
+        memset(&n, 0, sizeof(n));
+        n.node_num = MY_ID;
+        n.has_short_name = true;
+        strncpy(n.short_name, "JAKE", sizeof(n.short_name) - 1);
+        n.has_long_name = true;
+        strncpy(n.long_name, "Jake Holland", sizeof(n.long_name) - 1);
+        n.last_heard = U_EVENING; /* also latches the wall clock, TRUSTED (self) */
+        H.ev.on_node(H.ev.user, &n);
+    }
+
+    /* Position (mine): a full mc_position_t, altitude/sats/precision
+     * included — inject_position_ex (used elsewhere in this file) does
+     * not carry those, so this test builds its own event directly. */
+    {
+        mc_position_t p;
+        memset(&p, 0, sizeof(p));
+        p.lat = 39.9371;
+        p.lon = -82.4152;
+        p.has_rx_time = true;
+        p.rx_time = U_EVENING + 5u;
+        p.loc_source = MC_LOC_INTERNAL;
+        p.has_altitude = true;
+        p.altitude_m = 287;
+        p.has_sats_in_view = true;
+        p.sats_in_view = 9u;
+        p.has_precision_bits = true;
+        p.precision_bits = 32u;
+        H.ev.on_position(H.ev.user, MY_ID, &p);
+    }
+
+    /* Mesh: one paired crew member, one merely-heard stranger, plus a
+     * direct RSSI/SNR reading and this node's own telemetry. */
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, true));
+    inject_node(DANA, "Dana", U_EVENING);
+    inject_node(STRANGER, "Strngr", U_EVENING);
+    inject_rx_meta(DANA, MC_RX_PATH_DIRECT, true, -61);
+    inject_telemetry(MY_ID, true, 12.5f, true, 3.0f);
+
+    /* Device: battery + free heap/compass identification. */
+    ff_shell_set_batt_mv(&H.shell, 3900u, H.clk.t);
+    ff_shell_set_device_stats(&H.shell, true, 123456u, FF_APP_MAG_QMC5883P, FF_APP_IMU_OK);
+    ff_shell_set_heading(&H.shell, 87.0f);
+
+    advance(2000u);
+
+    ff_app_diag_t const *d = diag_view();
+
+    /* 1. Link */
+    TEST_ASSERT_EQUAL_INT(FF_APP_LINK_CONNECTED, d->link);
+    TEST_ASSERT_EQUAL_UINT32(MY_ID, d->my_node_id);
+    TEST_ASSERT_TRUE(d->has_short_name);
+    TEST_ASSERT_EQUAL_STRING("JAKE", d->short_name);
+    TEST_ASSERT_TRUE(d->has_long_name);
+    TEST_ASSERT_EQUAL_STRING("Jake Holland", d->long_name);
+
+    /* 2. Position (mine) */
+    TEST_ASSERT_TRUE(d->pos_ok);
+    TEST_ASSERT_EQUAL_INT(FF_APP_POS_SRC_INTERNAL, d->pos_src);
+    TEST_ASSERT_DOUBLE_WITHIN(0.0001, 39.9371, d->pos_lat);
+    TEST_ASSERT_DOUBLE_WITHIN(0.0001, -82.4152, d->pos_lon);
+    TEST_ASSERT_TRUE(d->pos_has_altitude);
+    TEST_ASSERT_EQUAL_INT32(287, d->pos_altitude_m);
+    TEST_ASSERT_TRUE(d->pos_has_sats);
+    TEST_ASSERT_EQUAL_UINT32(9u, d->pos_sats_in_view);
+    TEST_ASSERT_TRUE(d->pos_has_precision_bits);
+    TEST_ASSERT_EQUAL_UINT32(32u, d->pos_precision_bits);
+    TEST_ASSERT_TRUE(d->pos_has_age);
+
+    /* 3. Mesh */
+    TEST_ASSERT_EQUAL_UINT8(1, d->crew_count);
+    TEST_ASSERT_EQUAL_UINT8(1, d->heard_count); /* STRANGER only — DANA is paired, not heard */
+    TEST_ASSERT_TRUE(d->has_last_rssi);
+    TEST_ASSERT_EQUAL_INT16(-61, d->last_rssi_dbm);
+    TEST_ASSERT_TRUE(d->last_rf_direct);
+    TEST_ASSERT_TRUE(d->has_last_rf_age);
+    TEST_ASSERT_TRUE(d->has_chan_util);
+    TEST_ASSERT_FLOAT_WITHIN(0.01f, 12.5f, d->chan_util_pct);
+    TEST_ASSERT_TRUE(d->has_air_util_tx);
+    TEST_ASSERT_FLOAT_WITHIN(0.01f, 3.0f, d->air_util_tx_pct);
+    TEST_ASSERT_TRUE(d->has_telemetry_age);
+    TEST_ASSERT_TRUE(d->has_pos_broadcast_age);
+    TEST_ASSERT_EQUAL_UINT32(d->pos_age_ms, d->pos_broadcast_age_ms); /* same observation, surfaced twice */
+
+    /* 4. Time */
+    TEST_ASSERT_TRUE(d->wall_latched);
+    TEST_ASSERT_TRUE(d->wall_has_trust);
+    TEST_ASSERT_EQUAL_INT(FF_APP_WALL_TRUST_TRUSTED, d->wall_trust); /* self NodeInfo */
+    TEST_ASSERT_TRUE(d->wall_has_src_node);
+    TEST_ASSERT_EQUAL_UINT32(MY_ID, d->wall_src_node);
+    TEST_ASSERT_TRUE(d->wall_has_offset);
+    TEST_ASSERT_EQUAL_INT16(-300, d->wall_offset_min);
+    TEST_ASSERT_FALSE(d->wall_offset_assumed); /* explicitly configured, not guessed */
+    TEST_ASSERT_TRUE(d->has_local_time);
+    TEST_ASSERT_TRUE(strlen(d->local_time_str) > 0);
+
+    /* 5. Compass */
+    TEST_ASSERT_EQUAL_INT(FF_APP_MAG_QMC5883P, d->mag_kind);
+    TEST_ASSERT_TRUE(d->mag_present);
+    TEST_ASSERT_EQUAL_INT(FF_APP_IMU_OK, d->imu_state);
+    TEST_ASSERT_TRUE(d->heading_valid);
+    TEST_ASSERT_FLOAT_WITHIN(0.01f, 87.0f, d->heading_deg);
+
+    /* 6. Device */
+    TEST_ASSERT_TRUE(d->has_batt_mv);
+    TEST_ASSERT_EQUAL_UINT16(3900u, d->batt_mv);
+    TEST_ASSERT_TRUE(d->has_free_heap);
+    TEST_ASSERT_EQUAL_UINT32(123456u, d->free_heap_bytes);
+    TEST_ASSERT_TRUE(strlen(d->fw_git_sha) > 0);
+    TEST_ASSERT_TRUE(strlen(d->fw_build_date) > 0);
+
+    /* The bench console's getter must report the SAME facts as the page
+     * (one computation, two presentations). */
+    ff_app_diag_t const bench = ff_shell_diag_debug(&H.shell);
+    TEST_ASSERT_TRUE(bench.pos_ok);
+    TEST_ASSERT_EQUAL_INT(FF_APP_POS_SRC_INTERNAL, bench.pos_src);
+    TEST_ASSERT_EQUAL_UINT8(1, bench.crew_count);
+    TEST_ASSERT_EQUAL_INT(FF_APP_MAG_QMC5883P, bench.mag_kind);
+}
+
+/* The DIAGNOSTICS page's own age fields use the coarsened-age render-key
+ * discipline (spec: "render key coarsens ages to buckets"), same
+ * mechanism S12's crew-page presence-age tests already pin — a sub-
+ * bucket tick must stay CLEAN (no repaint) while a bucket-crossing tick
+ * must go DIRTY. Exercised on `pos_age_ms`, the same field
+ * `pos_broadcast_age_ms` mirrors exactly (see shell_compute_diag's own
+ * comment on why they're the same observation, so testing one covers
+ * the other's mechanism too). */
+static void S_diag_pos_age_keys_rendered_bucket_only(void)
+{
+    harness_init(100000u, false);
+    inject_my_info(MY_ID);
+    {
+        ff_intent_t const leave_launcher = {.kind = FF_INTENT_LAUNCHER_SELECT, .u = {.launcher_idx = 4u}};
+        ff_shell_intent(&H.shell, &leave_launcher);
+    }
+    send_bare(FF_INTENT_SETTINGS_OPEN_DIAGNOSTICS);
+
+    inject_position_ex(MY_ID, U_EVENING, 39.9371, -82.4152, MC_LOC_INTERNAL, false, 0);
+    TEST_ASSERT_TRUE(ff_shell_tick(&H.shell, H.clk.t)); /* fix appears: dirty */
+    TEST_ASSERT_FALSE(ff_shell_tick(&H.shell, H.clk.t)); /* settled */
+    TEST_ASSERT_TRUE(ff_shell_view(&H.shell)->settings.diag.pos_has_age);
+
+    /* Same sub-minute bucket: MUST be clean — bites keying the raw
+     * pos_age_ms, which advances every tick. */
+    advance(400u);
+    TEST_ASSERT_FALSE_MESSAGE(ff_shell_tick(&H.shell, H.clk.t),
+                              "a sub-bucket DIAGNOSTICS pos-age tick rebuilt the frame - raw pos_age_ms "
+                              "leaked into the render key");
+
+    /* Bucket crossed ("now" -> "1 MIN"): dirty. */
+    advance(60000u);
+    TEST_ASSERT_TRUE_MESSAGE(ff_shell_tick(&H.shell, H.clk.t),
+                             "a rendered DIAGNOSTICS pos-age bucket change did not repaint the page");
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -9820,6 +10090,10 @@ int main(void)
     RUN_TEST(S_name_recommitting_the_same_name_does_not_falsely_confirm_from_stale_mesh_state);
     RUN_TEST(S_name_status_reports_pending_not_mismatch_before_any_reply);
     RUN_TEST(S_name_recommit_stale_self_nodeinfo_does_not_falsely_confirm_either);
+
+    RUN_TEST(S_diag_all_unknown_when_nothing_observed);
+    RUN_TEST(S_diag_reports_observed_facts);
+    RUN_TEST(S_diag_pos_age_keys_rendered_bucket_only);
 
     return UNITY_END();
 }

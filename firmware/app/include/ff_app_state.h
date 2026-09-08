@@ -606,6 +606,14 @@ typedef enum {
      * page, reached via FF_INTENT_SETTINGS_OPEN_NAME_EDIT (ff_intent.h
      * has the full lifecycle). Same shape as CREW/COMPASS_CAL above. */
     FF_SETTINGS_SUB_NAME_EDIT,
+    /* [api] DIAGNOSTICS — Settings' "DIAGNOSTICS" row's full-screen,
+     * scrollable status page (link/position/mesh/time/compass/device
+     * facts), reached via FF_INTENT_SETTINGS_OPEN_DIAGNOSTICS
+     * (ff_intent.h has the full lifecycle). Same shape as CREW/
+     * COMPASS_CAL/NAME_EDIT above — BACK (FF_INTENT_BACK's existing
+     * generic "any non-LIST settings subview returns to LIST" rule)
+     * needs no new case. */
+    FF_SETTINGS_SUB_DIAGNOSTICS,
 } ff_settings_subview_t;
 
 /**
@@ -768,6 +776,169 @@ typedef struct {
 } ff_app_name_edit_t;
 
 /* -------------------------------------------------------------------
+ * DIAGNOSTICS page (Settings -> "DIAGNOSTICS" row). A honest, all-facts
+ * status dump — link, my position, mesh link-quality, wall clock,
+ * compass, device — built by the shell ONLY while `subview ==
+ * FF_SETTINGS_SUB_DIAGNOSTICS` (zeroed otherwise, the `ff_app_crew_
+ * page_t` precedent, not `ff_app_compass_cal_t`'s "always populated"
+ * one: unlike compass-cal-valid, no OTHER row needs a live fact from
+ * this page while it isn't showing).
+ *
+ * This is a regular Settings page, shipped in every build — NOT gated
+ * behind `CONFIG_FF_DEBUG_CONSOLE` (that Kconfig gate is for the
+ * unrelated USB bench console, ff_debug_console.h). "Honest data over
+ * pretty data" (CLAUDE.md) applies here exactly as everywhere else:
+ * every fact that can be unknown carries its own `has_*`/enum-UNKNOWN
+ * flag, checked by the renderer before drawing anything but "--" /
+ * "unknown". Ages are real ages (raw milliseconds, like every other
+ * age this codebase projects — e.g. `ff_app_crew_heard_row_t.age_ms`)
+ * so a screen build formats them (`ff_fmt_age`) rather than caching a
+ * pre-formatted string that would go stale between renders.
+ *
+ * The five small enums below each mirror a lower-layer type field-for-
+ * field (`ff_shell_link_t`, `mc_loc_source_t`, `ff_wall_trust_t`,
+ * `ff_compass_mag_kind_t`, `ff_compass_imu_state_t`) rather than being
+ * included directly: `ff_app_state.h` sits BELOW `ff_shell.h` (which
+ * includes this header, not the reverse) and has never depended on
+ * `mc_client.h` (meshclient) or the esp32s3-only `ff_compass` component
+ * — the same boundary-crossing translation this codebase already uses
+ * everywhere a lower-layer's wire/target enum would otherwise leak
+ * upward (e.g. `mc_client.c`'s own `mc_loc_source_t`, translated from
+ * Meshtastic's protobuf `LocSource` for exactly this reason). The
+ * shell's projection (`ff_shell.c`) does the one-line switch at each
+ * boundary; `ff_shell_set_device_stats` (ff_shell.h) reuses the mag/imu
+ * pair directly as its own parameter type, so there is no third,
+ * separate copy of that vocabulary.
+ */
+
+/** Mirrors `ff_shell_link_t` (ff_shell.h) field-for-field. */
+typedef enum {
+    FF_APP_LINK_NONE = 0,
+    FF_APP_LINK_RECONNECTING,
+    FF_APP_LINK_CONNECTED,
+} ff_app_link_t;
+
+/** Mirrors `mc_loc_source_t` (meshclient/include/mc_client.h) field-for-field. */
+typedef enum {
+    FF_APP_POS_SRC_UNKNOWN = 0,
+    FF_APP_POS_SRC_MANUAL,
+    FF_APP_POS_SRC_INTERNAL,
+    FF_APP_POS_SRC_EXTERNAL,
+} ff_app_pos_src_t;
+
+/** Mirrors `ff_wall_trust_t` (core/include/ff_wall.h) field-for-field. */
+typedef enum {
+    FF_APP_WALL_TRUST_BOOTSTRAP = 0,
+    FF_APP_WALL_TRUST_TRUSTED,
+    FF_APP_WALL_TRUST_CORROBORATED,
+} ff_app_wall_trust_t;
+
+/** Mirrors `ff_compass_mag_kind_t` (esp32s3 target's ff_compass component)
+ *  field-for-field. Also `ff_shell_set_device_stats`'s own parameter
+ *  type (ff_shell.h) — see this section's top comment. */
+typedef enum {
+    FF_APP_MAG_NONE = 0,
+    FF_APP_MAG_QMC5883L,
+    FF_APP_MAG_HMC5883L,
+    FF_APP_MAG_QMC5883P,
+} ff_app_mag_kind_t;
+
+/** Mirrors `ff_compass_imu_state_t` (esp32s3 target's ff_compass component)
+ *  field-for-field. */
+typedef enum {
+    FF_APP_IMU_ABSENT = 0,
+    FF_APP_IMU_NO_DATA,
+    FF_APP_IMU_OK,
+} ff_app_imu_state_t;
+
+typedef struct {
+    /* --- 1. Link --- */
+    ff_app_link_t link;
+    uint32_t      my_node_id;      /* 0 = not yet known (mirrors ff_shell_my_node_id's own contract) */
+    bool          has_short_name;  /* mesh-confirmed short name (self NodeInfo), not the editable Settings my_name */
+    char          short_name[FF_APP_NAME_LEN];
+    bool          has_long_name;   /* mesh-confirmed long name (self NodeInfo) — same fact ff_app_settings_t.mesh_owner_name already tracks, repeated here for a self-contained page */
+    char          long_name[FF_APP_NAME_LEN];
+    bool          has_last_frame_age;
+    uint32_t      last_frame_age_ms; /* time since the last FromRadio frame the framer completed */
+    uint32_t      frames_ok;         /* mc_stats_t.frames_ok, since boot */
+    uint32_t      decode_errors;     /* mc_stats_t.decode_errors, since boot */
+    uint32_t      reconnects;        /* mc_stats_t.reconnects, since boot */
+
+    /* --- 2. Position (mine) --- */
+    ff_app_pos_src_t pos_src;
+    bool             pos_ok;
+    double           pos_lat;
+    double           pos_lon;
+    bool             pos_has_altitude;
+    int32_t          pos_altitude_m;
+    bool             pos_has_sats;
+    uint32_t         pos_sats_in_view;
+    bool             pos_has_precision_bits;
+    uint32_t         pos_precision_bits;
+    bool             pos_has_age;
+    uint32_t         pos_age_ms;
+
+    /* --- 3. Mesh --- */
+    uint8_t  crew_count;  /* paired count, ff_crew_t */
+    uint8_t  heard_count; /* ff_heard_count */
+    bool     has_last_rssi;
+    int16_t  last_rssi_dbm;
+    bool     has_last_snr;
+    float    last_snr_db;
+    bool     last_rf_direct; /* meaningful only when has_last_rssi or has_last_snr — mc_rx_path_t == DIRECT */
+    bool     has_last_rf_age;
+    uint32_t last_rf_age_ms;
+    bool     has_chan_util;
+    float    chan_util_pct;   /* this node's own telemetry, port 67 */
+    bool     has_air_util_tx;
+    float    air_util_tx_pct; /* this node's own telemetry, port 67 */
+    bool     has_telemetry_age;
+    uint32_t telemetry_age_ms;
+    /* Position-broadcast age: this puck never ORIGINATES a Position
+     * broadcast of its own (that is the comms brain's job — see
+     * SELFPOS, ff_shell.c) — adopting the comms brain's self-reported
+     * fix (pos_age_ms above) IS the only observable "is the mesh still
+     * broadcasting my position" signal this puck has, so this is the
+     * SAME timestamp as `pos_age_ms`, surfaced a second time under Mesh
+     * to answer a different question ("is my position still going out"
+     * vs. "how fresh is my fix") — not a second, independently-tracked
+     * age. Interpretation call, recorded per CLAUDE.md/AGENTS.md. */
+    bool     has_pos_broadcast_age;
+    uint32_t pos_broadcast_age_ms;
+
+    /* --- 4. Time --- */
+    bool                 wall_latched;
+    bool                 wall_has_trust;   /* false: no observation has run yet this session */
+    ff_app_wall_trust_t  wall_trust;
+    bool                 wall_has_src_node;
+    uint32_t             wall_src_node;
+    bool                 wall_has_offset;
+    int16_t              wall_offset_min;
+    bool                 wall_offset_assumed;
+    bool                 has_local_time;
+    char                 local_time_str[FF_RADAR_CLOCK_LEN]; /* ff_fmt_clock's own format, "" if !has_local_time */
+
+    /* --- 5. Compass --- */
+    ff_app_mag_kind_t   mag_kind;
+    bool                mag_present;
+    ff_app_imu_state_t  imu_state;
+    bool                heading_valid;
+    float               heading_deg;  /* meaningful only when heading_valid */
+    bool                compass_cal_set; /* mirrors ff_settings_t.cal_valid — set vs. identity */
+
+    /* --- 6. Device --- */
+    bool     has_batt_mv;
+    uint16_t batt_mv;
+    int8_t   batt_pct;   /* -1 = unknown, same convention as ff_radar_view_t.batt_pct */
+    uint32_t uptime_s;   /* the SHELL's own uptime (time since ff_shell_init) — always known, both targets */
+    char     fw_git_sha[16];
+    char     fw_build_date[16];
+    bool     has_free_heap; /* device only — always false on the sim (no esp-idf heap allocator to query) */
+    uint32_t free_heap_bytes;
+} ff_app_diag_t;
+
+/* -------------------------------------------------------------------
  * settings (S11) — mirrors ff_settings_t's user-facing fields (omits
  * compass_cal: the hard/soft-iron numbers themselves are never
  * rendered/fixturable display data — see `ff_app_compass_cal_t` above,
@@ -928,6 +1099,11 @@ typedef struct {
      * `ff_app_name_edit_t`'s own doc comment above for why this is
      * zeroed outside FF_SETTINGS_SUB_NAME_EDIT, unlike `compass_cal`. */
     ff_app_name_edit_t name_edit;
+
+    /* [api] DIAGNOSTICS — the "DIAGNOSTICS" row's full-screen status
+     * page; see `ff_app_diag_t`'s own doc comment above for why this is
+     * zeroed outside FF_SETTINGS_SUB_DIAGNOSTICS, unlike `compass_cal`. */
+    ff_app_diag_t diag;
 } ff_app_settings_t;
 /* S21 removed ff_app_settings_t.page / FF_SETTINGS_PAGE_COUNT (#105's
  * pagination): the Settings face is now one scrolling list, so there is no

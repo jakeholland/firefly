@@ -555,6 +555,22 @@ typedef enum {
      * learned its own node id yet: `has_my_node_id` false). Returns the
      * subview to FF_SETTINGS_SUB_LIST either way. No payload. */
     FF_INTENT_SETTINGS_NAME_COMMIT,
+
+    /* [api] DIAGNOSTICS — the Settings "DIAGNOSTICS" row. Same "a
+     * Settings row, a bare intent, the shell decides" shape
+     * FF_INTENT_SETTINGS_OPEN_CREW/FF_INTENT_SETTINGS_OPEN_NAME_EDIT
+     * already establish. Gated on the takeover like every other
+     * Settings-reachable intent; switches the subview to
+     * FF_SETTINGS_SUB_DIAGNOSTICS. The next projection
+     * (shell_project_diag_page, ff_shell.c) builds the page's rows
+     * fresh from live shell/meshclient state, so there is nothing else
+     * to prime here. BACK off the page needs no dedicated case: it
+     * falls through FF_INTENT_BACK's existing generic "any non-LIST
+     * settings subview returns to LIST" rule, same as CREW's own BACK
+     * path (COMPASS_CAL is the only subview with EXTRA behavior on
+     * BACK — cancelling its live session — and DIAGNOSTICS has no
+     * analogous in-progress state to cancel). No payload. */
+    FF_INTENT_SETTINGS_OPEN_DIAGNOSTICS,
 } ff_intent_kind_t;
 
 /**
