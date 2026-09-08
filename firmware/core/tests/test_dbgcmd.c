@@ -300,6 +300,58 @@ static void dbgcmd_mic_unknown_sub_verb_rejected(void)
     TEST_ASSERT_EQUAL(FF_DBGCMD_ERR_BAD_ARGS, parse_str("mic bogus", &cmd));
 }
 
+/* S31 — "music" / "music seed <n>". Same shape as the mic tests above. */
+
+static void dbgcmd_music_parses(void)
+{
+    ff_dbgcmd_t cmd;
+    TEST_ASSERT_EQUAL(FF_DBGCMD_ERR_OK, parse_str("music", &cmd));
+    TEST_ASSERT_EQUAL(FF_DBGCMD_MUSIC, cmd.kind);
+}
+
+static void dbgcmd_music_with_extra_arg_rejected(void)
+{
+    ff_dbgcmd_t cmd;
+    TEST_ASSERT_EQUAL(FF_DBGCMD_ERR_BAD_ARGS, parse_str("music status", &cmd));
+}
+
+static void dbgcmd_music_seed_parses(void)
+{
+    ff_dbgcmd_t cmd;
+    TEST_ASSERT_EQUAL(FF_DBGCMD_ERR_OK, parse_str("music seed 42", &cmd));
+    TEST_ASSERT_EQUAL(FF_DBGCMD_MUSIC_SEED, cmd.kind);
+    TEST_ASSERT_EQUAL_UINT32(42u, cmd.u.music_seed);
+}
+
+static void dbgcmd_music_seed_accepts_zero_and_max_3_digit(void)
+{
+    ff_dbgcmd_t cmd;
+    TEST_ASSERT_EQUAL(FF_DBGCMD_ERR_OK, parse_str("music seed 0", &cmd));
+    TEST_ASSERT_EQUAL_UINT32(0u, cmd.u.music_seed);
+    TEST_ASSERT_EQUAL(FF_DBGCMD_ERR_OK, parse_str("music seed 999", &cmd));
+    TEST_ASSERT_EQUAL_UINT32(999u, cmd.u.music_seed);
+}
+
+static void dbgcmd_music_seed_rejects_non_decimal(void)
+{
+    ff_dbgcmd_t cmd;
+    TEST_ASSERT_EQUAL(FF_DBGCMD_ERR_BAD_ARGS, parse_str("music seed abc", &cmd));
+    TEST_ASSERT_EQUAL(FF_DBGCMD_ERR_BAD_ARGS, parse_str("music seed -5", &cmd));
+}
+
+static void dbgcmd_music_seed_rejects_missing_or_trailing_arg(void)
+{
+    ff_dbgcmd_t cmd;
+    TEST_ASSERT_EQUAL(FF_DBGCMD_ERR_BAD_ARGS, parse_str("music seed", &cmd));
+    TEST_ASSERT_EQUAL(FF_DBGCMD_ERR_BAD_ARGS, parse_str("music seed 42 now", &cmd));
+}
+
+static void dbgcmd_music_unknown_sub_verb_rejected(void)
+{
+    ff_dbgcmd_t cmd;
+    TEST_ASSERT_EQUAL(FF_DBGCMD_ERR_BAD_ARGS, parse_str("music bogus", &cmd));
+}
+
 static void dbgcmd_flare_parses(void)
 {
     ff_dbgcmd_t cmd;
@@ -631,6 +683,14 @@ int main(void)
     RUN_TEST(dbgcmd_mic_watch_rejects_non_decimal);
     RUN_TEST(dbgcmd_mic_watch_rejects_missing_or_trailing_arg);
     RUN_TEST(dbgcmd_mic_unknown_sub_verb_rejected);
+
+    RUN_TEST(dbgcmd_music_parses);
+    RUN_TEST(dbgcmd_music_with_extra_arg_rejected);
+    RUN_TEST(dbgcmd_music_seed_parses);
+    RUN_TEST(dbgcmd_music_seed_accepts_zero_and_max_3_digit);
+    RUN_TEST(dbgcmd_music_seed_rejects_non_decimal);
+    RUN_TEST(dbgcmd_music_seed_rejects_missing_or_trailing_arg);
+    RUN_TEST(dbgcmd_music_unknown_sub_verb_rejected);
 
     RUN_TEST(dbgcmd_flare_parses);
     RUN_TEST(dbgcmd_flare_cancel_parses);

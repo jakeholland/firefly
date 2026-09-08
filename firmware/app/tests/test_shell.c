@@ -68,6 +68,7 @@
 
 #include "ff_shell.h"
 
+#include "ff_beat.h" /* S31 — FF_BEAT_LOUD_THRESHOLD, for the music.loudness render-key bucket pin */
 #include "ff_crew.h"
 #include "ff_feed.h"
 #include "ff_geo.h" /* SELFPOS — ff_geo_project, for an independent "my_pos equals the packet" check */
@@ -10854,6 +10855,21 @@ static void churn_setup_add_live_peer(void)
     ff_shell_set_my_pos(&H.shell, (ff_latlon_t){39.936, -82.414});
 }
 
+/** S31 — a steady MIC beat input on top of `churn_setup_common`, what
+ *  the MUSIC budget's own scenario needs to give `music.loudness`
+ *  something nonzero to coarsen at all (with no input pushed, loudness
+ *  stays 0 forever and the QUIET/LOUD bucketing this test exists to
+ *  check never has anything to leak — same "give the coarsening
+ *  something to exercise" reasoning `churn_setup_add_map_pack`'s own
+ *  comment gives). A CONSTANT level settles floor==ceil (see
+ *  ff_beat_update's own auto-ranging doc comment) and stays put —
+ *  `churn_run` never perturbs this itself, so this single push is
+ *  enough for the whole 60s run. */
+static void churn_setup_add_music_input(void)
+{
+    ff_shell_set_beat_input(&H.shell, true, -20.0f, -20.0f, false, 0.0f, H.clk.t);
+}
+
 /** Drain the one-time dirty tick(s) setup/navigation itself leaves
  *  behind, so `churn_run`'s count reflects steady-state noise only. */
 static void churn_settle(void)
@@ -10936,6 +10952,91 @@ static void S16_render_key_churn_budget_diagnostics(void)
     uint32_t const churned = churn_run();
     TEST_ASSERT_LESS_OR_EQUAL_UINT32_MESSAGE(
         120u, churned, "DIAGNOSTICS render key churned more than 120/min over the S16 churn scenario");
+}
+
+/* S31 — the Music face's own churn-budget discipline (docs/specs/
+ * S31-music-swarm.md: "the particle state must NOT drive the shell
+ * render key"). `music.beat_count`/`bpm_estimate` are always zeroed and
+ * `loudness` is bucketed to the QUIET/LOUD word threshold
+ * (`shell_render_key`'s own comment on `music.*`) — this pins the
+ * AGGREGATE budget against the shared churn scenario (heading/device-
+ * stats/link noise, none of which the Music face draws); the dedicated
+ * `S31_music_loudness_keys_rendered_word_bucket_only` test just below
+ * pins the bucketing MECHANISM itself, the same two-test split S30's
+ * mic envelope work (`S16_render_key_churn_budget_diagnostics` +
+ * `S30_diag_mic_envelope_keys_rendered_whole_db_bucket_only`) already
+ * established. */
+static void S16_render_key_churn_budget_music(void)
+{
+    churn_setup_common();
+    churn_setup_add_music_input();
+    ff_intent_t const to_music = {.kind = FF_INTENT_LAUNCHER_SELECT, .u = {.launcher_idx = 5u}};
+    ff_shell_intent(&H.shell, &to_music);
+    churn_settle();
+    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_MUSIC, ff_shell_view(&H.shell)->active_face);
+    uint32_t const churned = churn_run();
+    TEST_ASSERT_LESS_OR_EQUAL_UINT32_MESSAGE(
+        60u, churned, "MUSIC render key churned more than 60/min over the S16 churn scenario");
+}
+
+/* S31 — pins the QUIET/LOUD bucketing MECHANISM directly: a settled
+ * quiet baseline (loudness pinned at 0 by a constant-level input — see
+ * ff_beat_update's own auto-ranging doc comment for why a CONSTANT
+ * level settles floor==ceil) produces no further churn, and pushing
+ * toward a genuinely louder, sustained level (the exact recipe
+ * test_beat.c's own a_sustained_loud_level_after_a_quiet_baseline_
+ * reads_loud already proves clears FF_BEAT_LOUD_THRESHOLD) dirties the
+ * render key EXACTLY ONCE across 75 ticks of a continuously-changing
+ * raw loudness float — proof the key compares the bucketed WORD, not
+ * the raw value (a broken/reverted bucket would dirty on every one of
+ * those 75 ticks instead of the one real QUIET->LOUD crossing). */
+static void S31_music_loudness_keys_rendered_word_bucket_only(void)
+{
+    harness_init(100000u, false);
+    inject_my_info(MY_ID);
+    {
+        ff_intent_t const to_music = {.kind = FF_INTENT_LAUNCHER_SELECT, .u = {.launcher_idx = 5u}};
+        ff_shell_intent(&H.shell, &to_music);
+    }
+    TEST_ASSERT_TRUE(ff_shell_tick(&H.shell, H.clk.t)); /* the face transition itself: dirty */
+    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_MUSIC, ff_shell_view(&H.shell)->active_face);
+
+    /* The FIRST beat_input push flips music.source NONE -> MIC — a
+     * real, rendered change (the source chip) that must dirty, exactly
+     * once, before the "stays clean while settled" assertion below. */
+    advance(20u);
+    ff_shell_set_beat_input(&H.shell, true, -55.0f, -55.0f, false, 0.0f, H.clk.t);
+    TEST_ASSERT_TRUE_MESSAGE(ff_shell_tick(&H.shell, H.clk.t),
+                             "the MIC source appearing did not dirty the render key");
+
+    /* Quiet baseline settle — constant level, loudness pinned at 0
+     * (see ff_beat_update's own auto-ranging doc comment). */
+    for (int i = 0; i < 99; i++) {
+        advance(20u);
+        ff_shell_set_beat_input(&H.shell, true, -55.0f, -55.0f, false, 0.0f, H.clk.t);
+    }
+    TEST_ASSERT_FALSE_MESSAGE(ff_shell_tick(&H.shell, H.clk.t),
+                              "a settled quiet MUSIC loudness churned the render key while staying QUIET");
+    TEST_ASSERT_TRUE(ff_shell_view(&H.shell)->music.loudness < FF_BEAT_LOUD_THRESHOLD);
+
+    /* Push toward a genuinely louder, sustained level — the raw
+     * loudness float changes on EVERY one of these 75 ticks (the
+     * auto-ranging floor/ceiling is actively moving), but it crosses
+     * FF_BEAT_LOUD_THRESHOLD exactly once on its way from ~0 to >0.8. */
+    uint32_t dirty_ticks = 0u;
+    for (int i = 0; i < 75; i++) {
+        advance(20u);
+        ff_shell_set_beat_input(&H.shell, true, -20.0f, -20.0f, false, 0.0f, H.clk.t);
+        if (ff_shell_tick(&H.shell, H.clk.t)) dirty_ticks++;
+    }
+    TEST_ASSERT_GREATER_OR_EQUAL_FLOAT_MESSAGE(
+        FF_BEAT_LOUD_THRESHOLD, ff_shell_view(&H.shell)->music.loudness,
+        "setup did not push loudness across FF_BEAT_LOUD_THRESHOLD - this test would not exercise the "
+        "QUIET->LOUD crossing at all");
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(
+        1u, dirty_ticks,
+        "MUSIC loudness dirtied the render key more than once while crossing from QUIET to LOUD exactly "
+        "once - raw loudness leaked into the key instead of the QUIET/LOUD word bucket");
 }
 
 int main(void)
@@ -11264,6 +11365,8 @@ int main(void)
     RUN_TEST(S16_render_key_churn_budget_map);
     RUN_TEST(S16_render_key_churn_budget_radar_live_peer);
     RUN_TEST(S16_render_key_churn_budget_diagnostics);
+    RUN_TEST(S16_render_key_churn_budget_music);
+    RUN_TEST(S31_music_loudness_keys_rendered_word_bucket_only);
 
     RUN_TEST(S29_ping_auto_reply_produces_pong_with_our_rssi_reading);
     RUN_TEST(S29_ping_auto_reply_skipped_when_no_rssi_reading);

@@ -476,3 +476,28 @@ if(FF_BUILD_TESTS)
 
     add_test(NAME test_miclevel COMMAND test_miclevel)
 endif()
+
+# S31 — core/beat: Music/Swarm beat + loudness detector (auto-ranging
+# floor/ceiling, MIC fast/slow onset, IMU peak-pick onset). Pure C11, no
+# I/O, host-testable. See ff_beat.h.
+if(FF_BUILD_TESTS)
+    add_executable(test_beat
+        tests/test_beat.c
+    )
+    target_link_libraries(test_beat PRIVATE ff-core unity)
+    ff_apply_warnings(test_beat)
+
+    add_test(NAME test_beat COMMAND test_beat)
+endif()
+
+# S31 — core/swarm: Music/Swarm's deterministic 60-particle simulation.
+# Pure C11, no I/O, host-testable. See ff_swarm.h.
+if(FF_BUILD_TESTS)
+    add_executable(test_swarm
+        tests/test_swarm.c
+    )
+    target_link_libraries(test_swarm PRIVATE ff-core unity)
+    ff_apply_warnings(test_swarm)
+
+    add_test(NAME test_swarm COMMAND test_swarm)
+endif()

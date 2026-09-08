@@ -218,6 +218,8 @@ typedef enum {
     FF_DBGCMD_MIC_ON,       /* S30: "mic on" */
     FF_DBGCMD_MIC_OFF,      /* S30: "mic off" */
     FF_DBGCMD_MIC_WATCH,    /* S30: "mic watch <secs>" — u.mic_watch_secs, 1-30 */
+    FF_DBGCMD_MUSIC,        /* S31: "music" bare — source/loudness/bpm-estimate */
+    FF_DBGCMD_MUSIC_SEED,   /* S31: "music seed <n>" — u.music_seed, bench-determinism reseed */
 } ff_dbgcmd_kind_t;
 
 /** Why a line failed to become a command. `FF_DBGCMD_ERR_EMPTY` is not
@@ -243,9 +245,13 @@ typedef enum {
  * id, `parse_node_hex`'s exact shape, no text body), `u.mic_watch_secs`
  * only for `FF_DBGCMD_MIC_WATCH` (S30 — already validated into
  * `[FF_DBGCMD_MIC_WATCH_MIN_S, FF_DBGCMD_MIC_WATCH_MAX_S]` by this
- * parser); every other kind (including `FF_DBGCMD_FIND_OFF`, `FF_DBGCMD_
- * MIC`, `FF_DBGCMD_MIC_ON`, `FF_DBGCMD_MIC_OFF`) carries no payload at
- * all.
+ * parser), `u.music_seed` only for `FF_DBGCMD_MUSIC_SEED` (S31 — "music
+ * seed <n>", a plain decimal via the same `parse_u32_dec` helper `mic
+ * watch` uses, capped at that helper's own 3-digit/999 ceiling — no
+ * further range check needed, unlike `mic watch`'s duration, since any
+ * u32 is a legal PRNG seed); every other kind (including `FF_DBGCMD_
+ * FIND_OFF`, `FF_DBGCMD_MIC`, `FF_DBGCMD_MIC_ON`, `FF_DBGCMD_MIC_OFF`,
+ * `FF_DBGCMD_MUSIC`) carries no payload at all.
  */
 typedef struct {
     ff_dbgcmd_kind_t kind;
@@ -257,6 +263,7 @@ typedef struct {
         } dm;
         uint32_t node;             /* S29 PR2: PING/FIND target node id */
         uint32_t mic_watch_secs;   /* S30: "mic watch <secs>" duration, already bounds-checked */
+        uint32_t music_seed;       /* S31: "music seed <n>" — the swarm PRNG seed to apply next build */
     } u;
 } ff_dbgcmd_t;
 

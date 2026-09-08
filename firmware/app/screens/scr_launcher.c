@@ -39,24 +39,30 @@
  * constraint to fight, which is exactly why it clears both hazards with
  * far more margin than the shape it replaces.
  *
- * ## N-agnostic satellite layout — the Music-readiness contract
+ * ## N-agnostic satellite layout — the Music-readiness contract, CASHED IN
  * Every satellite's placement angle is COMPUTED, not hand-typed:
  * `ff_scr_launcher_satellite_deg(compass_pos, n)` returns
  * `compass_pos * (360 / n)` (0 = top, clockwise) — a small pure
  * function, unit-tested directly (app/screens/tests/test_scr_intent.c's
- * `S26e_satellite_deg_is_n_agnostic`) against both today's N=4 (the
- * four cardinal points) and a hypothetical N=5 (the design canvas's own
- * pentagon), independent of anything this file renders. `sats[]` stores
- * each entry's `compass_pos` (which of the N evenly-spaced slots it
- * occupies), not the angle itself — see that array's own comment for
+ * `S26e_satellite_deg_is_n_agnostic`) against both N=4 (the four
+ * cardinal points this file shipped with) and N=5 (the design canvas's
+ * own pentagon), independent of anything this file renders. `sats[]`
+ * stores each entry's `compass_pos` (which of the N evenly-spaced slots
+ * it occupies), not the angle itself — see that array's own comment for
  * why array order is launcher_idx order rather than compass order (an
- * existing test's benefit). Adding a fifth real, routable app later
- * means `LAUNCHER_SAT_COUNT = 5` and one new descriptor with
- * `compass_pos = 4` — the angle set itself is computed by the same
- * formula, never retyped. Today `n` is 4: this file does NOT ship a
- * "Music" tile — there is no fifth app to route to yet, and a tappable
- * circle that goes nowhere is its own kind of dishonesty (CLAUDE.md's
- * honesty rule extends past data to controls).
+ * existing test's benefit).
+ *
+ * S31 (Music/Swarm) is exactly the "adding a fifth real, routable app"
+ * this comment used to describe hypothetically: `LAUNCHER_SAT_COUNT` is
+ * now 5, and Music's own descriptor is `compass_pos = 4` (the next open
+ * slot, appended after Map — see `sats[]`'s own comment for why the
+ * OTHER four keep their existing `compass_pos` values unchanged rather
+ * than being reshuffled into some other pentagon order this file has no
+ * design-canvas reference for). The angle set itself
+ * (`{0, 72, 144, 216, 288}`) is still computed, never retyped — only the
+ * launcher goldens move, because five satellites at 72 degree steps
+ * really do sit at different pixels than four at 90 degree steps (see
+ * the PR body for the full list of goldens this regenerates).
  *
  * ## Removed from the design canvas: the orbit tick
  * The canvas's "Home · at rest" artboard also drew a small 2x10px amber
@@ -98,13 +104,14 @@
  * "every icon + label turns BG on press") over exact visual match to
  * the mockup's fills. Interpretation call, noted per AGENTS.md.
  *
- * ## Index -> face mapping: UNCHANGED
+ * ## Index -> face mapping: UNCHANGED (Music appended, nothing renumbered)
  * `launcher_idx` (0=Radar, 1=Now/Lineup, 2=Signals/Inbox, 3=Map,
- * 4=Settings — `ff_intent.h`'s `FF_INTENT_LAUNCHER_SELECT` payload,
- * `ff_shell.c`'s `k_launcher_faces` table) is NOT touched by this visual
- * rework: it is a semantic identifier, independent of where a circle is
- * DRAWN. The compass ring's satellite RENDER order (Inbox top, Lineup
- * right, Settings bottom, Map left, clockwise) is new; the index each
+ * 4=Settings, 5=Music [S31] — `ff_intent.h`'s `FF_INTENT_LAUNCHER_SELECT`
+ * payload, `ff_shell.c`'s `k_launcher_faces` table) is NOT touched by
+ * this visual rework: it is a semantic identifier, independent of where
+ * a circle is DRAWN. The compass ring's satellite RENDER order (Inbox
+ * top, Lineup right, Settings bottom, Map left, Music the new fifth
+ * slot, clockwise) is new; the index each
  * one emits when tapped is the same value the retired grid emitted for
  * that same face. No routing test changes.
  */
@@ -130,7 +137,7 @@
 #define LAUNCHER_SAT_DIAM      88    /* design: satellite discs */
 #define LAUNCHER_SAT_ICON_PX   30    /* design: satellite icon size */
 #define LAUNCHER_ORBIT_RADIUS_PX 128.0f /* design: satellite orbit radius from center */
-#define LAUNCHER_SAT_COUNT     4     /* today: Inbox, Lineup, Settings, Map — see this file's top comment */
+#define LAUNCHER_SAT_COUNT     5     /* S31 — Inbox, Lineup, Settings, Map, Music — see this file's top comment */
 
 #define LAUNCHER_HUB_ICON_DY   (-9)  /* icon centered above the hub's own center, label below (design flex column) */
 #define LAUNCHER_HUB_CAPTION_DY 26
@@ -489,6 +496,22 @@ static void launcher_icon_settings(lv_obj_t *icon, int32_t px)
     }
 }
 
+/* Music/Swarm (S31): three fireflies of varying size, an abstract loose
+ * cluster — deliberately NOT a musical-note/headphone/speaker glyph.
+ * "It is the brand, moving" (docs/specs/S31-music-swarm.md's own
+ * concept sheet): the face IS the swarm, so its launcher icon is a
+ * small swarm, not a generic "music app" pictogram. No mockup artboard
+ * is in-tree for this icon (this file's own top comment, "Icon
+ * pipeline") — a good-faith, internally-consistent composition,
+ * flagged per AGENTS.md's "note the interpretation" rule. */
+static void launcher_icon_music(lv_obj_t *icon, int32_t px)
+{
+    (void)px;
+    launcher_mk_dot(icon, 8, 11, 12);
+    launcher_mk_dot(icon, 5, 21, 8);
+    launcher_mk_dot(icon, 6, 18, 21);
+}
+
 /* ---------------------------------------------------------------------
  * Circle builders — hub + satellite.
  * ------------------------------------------------------------------- */
@@ -844,6 +867,12 @@ void ff_scr_launcher_build(ff_app_state_t const *state)
         {launcher_icon_inbox, "INBOX", 2, true, 0},
         {launcher_icon_map, "MAP", 3, false, 3},
         {launcher_icon_settings, "SETTINGS", 4, false, 2},
+        /* S31 — the fifth satellite, appended at the next open compass
+         * slot (4, -> 288deg at this N=5); the other four keep their
+         * EXISTING compass_pos values unchanged (0/1/2/3) rather than
+         * being reshuffled into some other order — see this file's top
+         * comment, "N-agnostic satellite layout", for why. */
+        {launcher_icon_music, "MUSIC", 5, false, 4},
     };
     for (int i = 0; i < LAUNCHER_SAT_COUNT; i++) {
         float const deg = ff_scr_launcher_satellite_deg(sats[i].compass_pos, LAUNCHER_SAT_COUNT);

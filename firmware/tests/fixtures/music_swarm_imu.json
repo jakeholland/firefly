@@ -1,0 +1,13 @@
+{
+  "fixture": "music_swarm_imu",
+  "face": "music",
+  "radar": {
+    "clock_str": "9:48 pm",
+    "batt_pct": 42
+  },
+  "music": {
+    "seed": 424242,
+    "source": "imu",
+    "loudness": 0.55
+  }
+}

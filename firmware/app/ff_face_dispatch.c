@@ -6,6 +6,7 @@
 #include "scr_compose.h"
 #include "scr_flare.h" /* S10 slice b — full-screen receive takeover */
 #include "scr_launcher.h" /* S26 slice e — the BOOT-button launcher */
+#include "scr_music.h" /* S31 — the Music/Swarm face, its own top-level branch (see below for why not scr_nav) */
 #include "scr_nav.h"   /* the five base faces — Radar/Now/Signals/Map/Settings render through here */
 #include "scr_power_menu.h" /* S26 slice b — the PWR-button power menu modal */
 #include "scr_settings.h" /* the Settings scroll reset/hint hooks (the face itself is built by scr_nav) */
@@ -78,6 +79,20 @@ void ff_face_dispatch_build(ff_app_state_t const *state, ff_face_dispatch_ctx_t 
          * (unlike the power menu): the Signals circle's unread badge is
          * its one dynamic fact (scr_launcher.h's top comment). */
         ff_scr_launcher_build(state);
+    } else if (state->active_face == FF_APP_FACE_MUSIC) {
+        /* S31 — Music/Swarm gets its OWN top-level branch, NOT
+         * `ff_scr_nav_build`'s shared five-base-face shell: that shell's
+         * chrome (status bar, back-gesture-eligible content) is shaped
+         * around the RADAR/NOW/SIGNALS/MAP/SETTINGS quintet and Music's
+         * own per-frame particle timer/draw-op pool
+         * (`scr_music.c`'s own top comment) has nothing in common with
+         * it — same "own dedicated build function" shape COMPOSE/
+         * POWER_MENU/LAUNCHER already use for the identical reason
+         * (each is visually/structurally its own thing, not a sixth
+         * scr_nav tile). BACK/HOME still work here regardless — S28's
+         * gesture recognition reads raw indev points independent of
+         * which screen is built (`ff_gesture_glue.c`), not this file. */
+        ff_scr_music_build(state);
     } else if (hooks != NULL && hooks->unknown_face != NULL) {
         hooks->unknown_face(hooks->user_data, state);
     }

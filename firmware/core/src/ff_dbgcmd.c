@@ -326,6 +326,32 @@ ff_dbgcmd_status_t ff_dbgcmd_parse(char const *line, size_t line_len, ff_dbgcmd_
         return FF_DBGCMD_ERR_BAD_ARGS;
     }
 
+    /* S31 — "music" bare, "music seed <n>". Same bare-verb-plus-
+     * fixed-sub-verb shape as `mic` above; "seed" carries one decimal
+     * argument, reusing `parse_u32_dec` verbatim (no extra range check —
+     * see ff_dbgcmd.h's own doc comment on `u.music_seed`). */
+    if (tok_eq(buf, start, cmd_end, "music")) {
+        if (arg_start >= end) {
+            out->kind = FF_DBGCMD_MUSIC;
+            return FF_DBGCMD_ERR_OK;
+        }
+        size_t const sub_end = token_end(buf, arg_start, end);
+        if (tok_eq(buf, arg_start, sub_end, "seed")) {
+            size_t const seed_start = skip_space(buf, sub_end, end);
+            if (seed_start >= end) return FF_DBGCMD_ERR_BAD_ARGS; /* no seed value */
+            size_t const seed_end = token_end(buf, seed_start, end);
+            uint32_t seed = 0u;
+            if (!parse_u32_dec(buf + seed_start, seed_end - seed_start, &seed)) {
+                return FF_DBGCMD_ERR_BAD_ARGS;
+            }
+            if (skip_space(buf, seed_end, end) < end) return FF_DBGCMD_ERR_BAD_ARGS; /* trailing garbage */
+            out->u.music_seed = seed;
+            out->kind = FF_DBGCMD_MUSIC_SEED;
+            return FF_DBGCMD_ERR_OK;
+        }
+        return FF_DBGCMD_ERR_BAD_ARGS;
+    }
+
     return FF_DBGCMD_ERR_UNKNOWN_CMD;
 }
 
@@ -359,6 +385,8 @@ char const *ff_dbgcmd_kind_name(ff_dbgcmd_kind_t kind)
     case FF_DBGCMD_MIC_ON: return "MIC_ON";
     case FF_DBGCMD_MIC_OFF: return "MIC_OFF";
     case FF_DBGCMD_MIC_WATCH: return "MIC_WATCH";
+    case FF_DBGCMD_MUSIC: return "MUSIC";
+    case FF_DBGCMD_MUSIC_SEED: return "MUSIC_SEED";
     }
     return "?";
 }

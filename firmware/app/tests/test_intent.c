@@ -199,6 +199,7 @@ static void nav_home_to(ff_app_face_t face)
     case FF_APP_FACE_INBOX: idx = 2; break;
     case FF_APP_FACE_MAP: idx = 3; break;
     case FF_APP_FACE_SETTINGS: idx = 4; break;
+    case FF_APP_FACE_MUSIC: idx = 5; break; /* S31 */
     default: TEST_FAIL_MESSAGE("nav_home_to: not a launcher circle"); return;
     }
     send_home(); /* BOOT: a no-op if already on the launcher */
@@ -324,6 +325,7 @@ static void S26e_launcher_select_reaches_every_circle_and_the_badge_projects(voi
     harness_init(100000u);
     ff_app_face_t const circles[] = {
         FF_APP_FACE_RADAR, FF_APP_FACE_LINEUP, FF_APP_FACE_INBOX, FF_APP_FACE_MAP, FF_APP_FACE_SETTINGS,
+        FF_APP_FACE_MUSIC, /* S31 */
     };
     for (size_t i = 0; i < sizeof(circles) / sizeof(circles[0]); i++) {
         harness_init(100000u);
@@ -351,7 +353,9 @@ static void S26e_launcher_select_out_of_range_index_is_a_noop(void)
 {
     harness_init(100000u);
     TEST_ASSERT_EQUAL(FF_APP_FACE_LAUNCHER, view()->active_face); /* the boot default */
-    send_launcher_select(5u); /* one past the last real circle (0..4) */
+    /* S31 — Music (idx 5) is now a real circle; the out-of-range probe
+     * moves to one past IT (0..5). */
+    send_launcher_select(6u); /* one past the last real circle (0..5) */
     TEST_ASSERT_EQUAL(FF_APP_FACE_LAUNCHER, view()->active_face); /* still open */
     send_launcher_select(255u);
     TEST_ASSERT_EQUAL(FF_APP_FACE_LAUNCHER, view()->active_face);

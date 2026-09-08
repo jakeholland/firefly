@@ -14,6 +14,7 @@
 #include <string.h>
 
 #include "ff_batt.h" /* S25 slice c — battery gauge: honest mV -> percent + display filter */
+#include "ff_beat.h" /* S31 — Music/Swarm beat/loudness detector */
 #include "ff_build_info.h" /* DIAGNOSTICS — FF_BUILD_GIT_SHA / FF_BUILD_DATE */
 #include "ff_find.h" /* S29 PR2 — FIND mode session state machine */
 #include "ff_geo.h"
@@ -681,6 +682,16 @@ typedef struct {
     bool  mic_running;
     bool  mic_has_level;
     float mic_envelope_dbfs;
+
+    /* S31 Music/Swarm — the beat/loudness detector, fed by
+     * ff_shell_set_beat_input (see that function's own doc comment)
+     * only while app_main.c has decided the Music face wants it.
+     * `music_seed` is the bench console's `music seed <n>` override,
+     * FF_SWARM_DEFAULT_SEED until then — see ff_shell_set_music_seed. */
+    ff_beat_t beat;
+    uint32_t  music_seed;
+    bool      has_beat_input_ms;   /* false until ff_shell_set_beat_input's first call, so that call's dt_ms is never a fabricated gap */
+    uint32_t  last_beat_input_ms;
 
 #if defined(FF_TARGET_SIM) || defined(CONFIG_FF_DEV_TRUST_CHANNEL)
     /* --dev-trust-all (S16 AC6), and its device-side mirror
@@ -3287,6 +3298,20 @@ static void shell_project(shell_t *sh, uint32_t now_ms)
     if (sh->view.active_face != FF_APP_FACE_RADAR && sh->prev_face == FF_APP_FACE_RADAR) {
         ff_find_leave_face(&sh->find);
     }
+    /* S31 — same face-transition-triggers-cleanup shape as the three
+     * blocks above: leaving Music resets the beat detector
+     * (ff_beat_reset) so a stale floor/ceiling/refractory/onset state
+     * from this session never bleeds into the next one — mirrors
+     * ff_mic_start's own "resets the DC-blocking filter and envelope
+     * state on every start" discipline (docs/specs/S30-audio-input.md),
+     * applied here on the shell's own face-EXIT edge since the shell
+     * itself never calls ff_mic_start/stop (that stays app_main.c's
+     * job, see ff_shell_set_beat_input's own doc comment) — this is the
+     * one hook the shell DOES own for "Music session just ended". */
+    if (sh->view.active_face != FF_APP_FACE_MUSIC && sh->prev_face == FF_APP_FACE_MUSIC) {
+        ff_beat_reset(&sh->beat);
+        sh->has_beat_input_ms = false; /* the next ff_shell_set_beat_input call is a fresh start, not a huge stale-dt gap */
+    }
     sh->prev_face = sh->view.active_face;
 
     ff_radar_compute(&sh->view.radar, &sh->smooth, &sh->crew, sh->heading_deg, sh->my_pos, sh->my_pos_ok,
@@ -3305,6 +3330,26 @@ static void shell_project(shell_t *sh, uint32_t now_ms)
      * (ff_shell.h) for how test_shell.c drives it. */
     sh->view.radar.batt_pct = sh->batt_filter.displayed_pct;
     sh->view.radar.mesh_ok = (sh->link == FF_SHELL_LINK_CONNECTED);
+
+    /* S31 Music/Swarm — project the beat detector's own state,
+     * unconditionally, same "always projected, the render key decides
+     * what churns" shape clock_str/batt_pct above already use. `sh->beat`
+     * only actually MOVES while app_main.c is pushing samples via
+     * ff_shell_set_beat_input (Music-face-gated — see that function's
+     * own doc comment), so this is a cheap no-op copy the rest of the
+     * time. `music.seed` is likewise always projected so scr_music.c's
+     * build function can read it regardless of which face triggered the
+     * rebuild. */
+    switch (sh->beat.source) {
+    case FF_BEAT_SOURCE_MIC: sh->view.music.source = FF_APP_MUSIC_SRC_MIC; break;
+    case FF_BEAT_SOURCE_IMU: sh->view.music.source = FF_APP_MUSIC_SRC_IMU; break;
+    case FF_BEAT_SOURCE_NONE:
+    default: sh->view.music.source = FF_APP_MUSIC_SRC_NONE; break;
+    }
+    sh->view.music.loudness = sh->beat.loudness;
+    sh->view.music.beat_count = sh->beat.beat_count;
+    sh->view.music.bpm_estimate = sh->beat.bpm_estimate;
+    sh->view.music.seed = sh->music_seed;
 
     /* S27 sounds — BATT_LOW fires once per CROSSING into the low band,
      * not on every tick the reading happens to be low (an edge detector
@@ -3756,6 +3801,37 @@ static void shell_render_key(ff_app_state_t const *v, ff_app_state_t *key)
      * `?:` gate is needed here either: rounding an already-zero value
      * still yields zero. */
     key->settings.diag.mic_envelope_dbfs = (float)(int32_t)v->settings.diag.mic_envelope_dbfs; /* whole dB, matches the page's "%.0f dBFS" */
+
+    /* S31 Music/Swarm — same "bucket to what the chrome actually
+     * prints, zero what nothing draws" discipline as the DIAGNOSTICS
+     * block just above, but EXPLICITLY gated on active_face here: unlike
+     * `settings.diag`, `shell_project` projects `music.*` UNCONDITIONALLY
+     * every tick (not gated to `active_face == FF_APP_FACE_MUSIC`; see
+     * that projection's own comment for why — `sh->beat` freezes/resets
+     * on its own via the face-transition-cleanup block instead), so a
+     * stale nonzero value from a PRIOR Music session would otherwise
+     * carry straight through this function's top-of-function memcpy
+     * exactly the way `heading_deg` needed its own explicit gate above
+     * for the identical reason. `beat_count`/`bpm_estimate` are zeroed
+     * UNCONDITIONALLY (like `send_expires_in_ms` at the top of this
+     * function): the particle sim reads `beat_count` itself, by diffing
+     * it every frame OUTSIDE this render key (scr_music.c's own LVGL
+     * timer, the same "outside the dirty path" mechanism the flare
+     * sender overlay's countdown chip uses — ff_beat.h's own top comment
+     * on why a diffed counter, not a per-tick edge flag), and
+     * `bpm_estimate` is console-only (the `music` bench command), never
+     * drawn on glass at all. `loudness` is bucketed to the QUIET/LOUD
+     * WORD threshold `scr_music.c`'s own chrome renders at
+     * (`FF_BEAT_LOUD_THRESHOLD`, ff_beat.h) — a single shared threshold
+     * constant, not a duplicated rounding formula, since this is a
+     * boolean-ish word compare rather than a printed-number bucket
+     * width. */
+    key->music.beat_count = 0u;
+    key->music.bpm_estimate = 0.0f;
+    key->music.source =
+        (v->active_face == FF_APP_FACE_MUSIC) ? v->music.source : FF_APP_MUSIC_SRC_NONE;
+    key->music.loudness =
+        (v->active_face == FF_APP_FACE_MUSIC && v->music.loudness >= FF_BEAT_LOUD_THRESHOLD) ? 1.0f : 0.0f;
 
     /* On-glass report 2026-09-07 — the Map face's own heading, the exact
      * `arrow_deg` lesson one struct over. `shell_project_map` projects
@@ -5568,15 +5644,17 @@ void ff_shell_intent(ff_shell_t *sh_pub, ff_intent_t const *in)
     case FF_INTENT_LAUNCHER_SELECT: {
         /* S26 slice e, amended 2026-09-01 — a launcher circle tap.
          * `u.launcher_idx` is a small int (0=Radar, 1=Now, 2=Signals,
-         * 3=Map, 4=Settings — the launcher's own fixed circle order,
-         * scr_launcher.c), not a domain enum (ff_intent.h stays
-         * dependency-free) — mapped to a real face here, the one place
-         * both vocabularies are in scope. Radar is index 0 as of this
-         * amendment: it is an ordinary circle now, no longer excluded.
-         * ff_route_launcher_select itself is the real guard (only
-         * meaningful while the launcher is showing with nothing over
-         * it); the takeover check here is the same routing-rule-4 belt
-         * this file applies to every other nav intent. */
+         * 3=Map, 4=Settings, 5=Music [S31] — the launcher's own fixed
+         * circle order, scr_launcher.c), not a domain enum (ff_intent.h
+         * stays dependency-free) — mapped to a real face here, the one
+         * place both vocabularies are in scope. Radar is index 0 as of
+         * this amendment: it is an ordinary circle now, no longer
+         * excluded. ff_route_launcher_select itself is the real guard
+         * (only meaningful while the launcher is showing with nothing
+         * over it, and only accepts a face on ff_route.c's own
+         * k_swipe_axis — Music joined that array in S31 for exactly
+         * this); the takeover check here is the same routing-rule-4
+         * belt this file applies to every other nav intent. */
         if (takeover_up) return;
         static ff_app_face_t const k_launcher_faces[] = {
             FF_APP_FACE_RADAR,
@@ -5584,6 +5662,7 @@ void ff_shell_intent(ff_shell_t *sh_pub, ff_intent_t const *in)
             FF_APP_FACE_INBOX,
             FF_APP_FACE_MAP,
             FF_APP_FACE_SETTINGS,
+            FF_APP_FACE_MUSIC,
         };
         uint8_t const idx = in->u.launcher_idx;
         if (idx >= (sizeof(k_launcher_faces) / sizeof(k_launcher_faces[0]))) return;
@@ -7070,6 +7149,65 @@ void ff_shell_set_mic_status(ff_shell_t *sh_pub, bool present, bool running, boo
     if (sh->mic_has_level) sh->mic_envelope_dbfs = envelope_dbfs;
 }
 
+void ff_shell_set_beat_input(ff_shell_t *sh_pub, bool mic_present, float mic_rms_dbfs, float mic_env_dbfs,
+                              bool imu_present, float accel_z_g, uint32_t now_ms)
+{
+    if (sh_pub == NULL) return;
+    shell_t *sh = shell_of(sh_pub);
+
+    uint32_t dt_ms = FF_BEAT_REFRACTORY_MS; /* fallback for the very first call — see below */
+    if (sh->has_beat_input_ms) {
+        dt_ms = now_ms - sh->last_beat_input_ms; /* short-session subtraction, same convention ff_beat.c's own beat_fire uses */
+    } else {
+        sh->has_beat_input_ms = true;
+        dt_ms = 0u; /* the first sample establishes state; it must not be treated as though a large gap preceded it */
+    }
+    sh->last_beat_input_ms = now_ms;
+
+    ff_beat_sample_t sample = {0};
+    if (mic_present) {
+        /* Honesty: mic wins whenever present — see this function's own
+         * doc comment, ff_shell.h. */
+        sample.source = FF_BEAT_SOURCE_MIC;
+        sample.rms_dbfs = mic_rms_dbfs;
+        sample.env_dbfs = mic_env_dbfs;
+    } else if (imu_present) {
+        sample.source = FF_BEAT_SOURCE_IMU;
+        /* Board-frame Z is gravity-inclusive (~+1g when level, see
+         * ff_compass_last_accel_board's own doc comment) — subtract the
+         * assumed baseline so the detector sees the DYNAMIC (bounce)
+         * component, centered on 0, that ff_beat_update's IMU peak-
+         * picker expects. */
+        sample.accel_mag_g = accel_z_g - 1.0f;
+    } else {
+        sample.source = FF_BEAT_SOURCE_NONE;
+    }
+
+    ff_beat_update(&sh->beat, &sample, dt_ms, now_ms);
+}
+
+ff_shell_music_debug_t ff_shell_music_debug(ff_shell_t const *sh_pub)
+{
+    ff_shell_music_debug_t out = {0};
+    if (sh_pub == NULL) return out;
+    shell_t const *sh = shell_of_const(sh_pub);
+    switch (sh->beat.source) {
+    case FF_BEAT_SOURCE_MIC: out.source = FF_APP_MUSIC_SRC_MIC; break;
+    case FF_BEAT_SOURCE_IMU: out.source = FF_APP_MUSIC_SRC_IMU; break;
+    case FF_BEAT_SOURCE_NONE:
+    default: out.source = FF_APP_MUSIC_SRC_NONE; break;
+    }
+    out.loudness = sh->beat.loudness;
+    out.bpm_estimate = sh->beat.bpm_estimate;
+    return out;
+}
+
+void ff_shell_set_music_seed(ff_shell_t *sh_pub, uint32_t seed)
+{
+    if (sh_pub == NULL) return;
+    shell_of(sh_pub)->music_seed = seed;
+}
+
 ff_shell_link_t ff_shell_link(ff_shell_t const *sh_pub)
 {
     return (sh_pub == NULL) ? FF_SHELL_LINK_NONE : shell_of_const(sh_pub)->link;
@@ -7249,6 +7387,20 @@ bool ff_shell_keep_awake(ff_app_state_t const *view, bool touch_cal_running)
      * never keyed off modal vs. base, only off `active_face`, so there
      * was nothing here to revisit. Considered and rejected per
      * AGENTS.md's "note the interpretation" — see the PR body. */
+    /* S31 Music/Swarm — the Music face keeps the puck awake ONLY while
+     * it is hearing/feeling something above the auto-ranged floor
+     * (docs/specs/S31-music-swarm.md's own "Power policy": "do not keep
+     * a silent room awake forever"). Unlike POWER_MENU/quick-flare/
+     * sending above, simply BEING the active face is not enough —
+     * `view->music.loudness` is the live (unbucketed — this reads
+     * `view`, never the render key) loudness ff_shell_set_beat_input
+     * last computed; a silent/still room settles it back toward 0 (see
+     * ff_beat_update's own "source == NONE decays loudness" doc
+     * comment) and this predicate lets the idle FSM dim/sleep normally
+     * from there, same as any other quiet face. */
+    if (view->active_face == FF_APP_FACE_MUSIC && view->music.loudness > FF_BEAT_KEEPAWAKE_LOUDNESS) {
+        return true;
+    }
     return false;
 }
 

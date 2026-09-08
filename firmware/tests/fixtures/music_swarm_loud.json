@@ -1,0 +1,16 @@
+{
+  "fixture": "music_swarm_loud",
+  "face": "music",
+  "radar": {
+    "clock_str": "9:47 pm",
+    "batt_pct": 74
+  },
+  "music": {
+    "seed": 424242,
+    "mic_stream": {
+      "kind": "click",
+      "bpm": 128,
+      "loud": 0.85
+    }
+  }
+}
