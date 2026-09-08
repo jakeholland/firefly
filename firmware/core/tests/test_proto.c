@@ -420,6 +420,147 @@ static void S04_AC2_ack_ping_rejects_one_trailing_byte(void)
 }
 
 /* ------------------------------------------------------------------- */
+/* S29 (docs/specs/S29-radio-only.md) — PING / PONG                     */
+/* ------------------------------------------------------------------- */
+
+static void S29_ping_round_trips_table(void)
+{
+    uint32_t const nonces[] = {0u, 1u, 12345u, 0x7FFFFFFFu, 0xFFFFFFFFu};
+    for (size_t i = 0; i < sizeof(nonces) / sizeof(nonces[0]); i++) {
+        uint8_t buf[8];
+        int len = ff_proto_encode_ping(buf, sizeof(buf), nonces[i]);
+        TEST_ASSERT_EQUAL_INT(6, len); /* envelope(2) + nonce(4) */
+
+        ff_proto_msg_t out;
+        int type = ff_proto_decode(buf, (size_t)len, &out);
+        TEST_ASSERT_EQUAL_INT(FF_PROTO_TYPE_PING, type);
+        TEST_ASSERT_EQUAL_UINT32(nonces[i], out.body.ping.nonce);
+    }
+}
+
+typedef struct {
+    uint32_t nonce;
+    int16_t  rssi_dbm;
+    bool     has_snr;
+    int16_t  snr_x10;
+} pong_row_t;
+
+static void S29_pong_round_trips_table(void)
+{
+    pong_row_t const rows[] = {
+        {1u, -55, true, -35},    /* -3.5 dB */
+        {2u, -110, false, 999},  /* has_snr false: encoder must not leak snr_x10 onto the wire */
+        {3u, 0, true, 0},        /* SX126x can legitimately report exactly 0 dBm */
+        {4u, INT16_MIN, true, INT16_MIN},
+        {5u, INT16_MAX, true, INT16_MAX},
+    };
+    for (size_t i = 0; i < sizeof(rows) / sizeof(rows[0]); i++) {
+        pong_row_t const *r = &rows[i];
+        uint8_t buf[16];
+        int len = ff_proto_encode_pong(buf, sizeof(buf), r->nonce, r->rssi_dbm, r->has_snr, r->snr_x10);
+        TEST_ASSERT_EQUAL_INT(11, len); /* envelope(2) + nonce(4) + rssi(2) + has_snr(1) + snr_x10(2) */
+
+        ff_proto_msg_t out;
+        int type = ff_proto_decode(buf, (size_t)len, &out);
+        TEST_ASSERT_EQUAL_INT(FF_PROTO_TYPE_PONG, type);
+        TEST_ASSERT_EQUAL_UINT32(r->nonce, out.body.pong.nonce);
+        TEST_ASSERT_EQUAL_INT16(r->rssi_dbm, out.body.pong.rssi_dbm);
+        TEST_ASSERT_EQUAL(r->has_snr, out.body.pong.has_snr);
+        if (r->has_snr) {
+            TEST_ASSERT_EQUAL_INT16(r->snr_x10, out.body.pong.snr_x10);
+        } else {
+            TEST_ASSERT_EQUAL_INT16(0, out.body.pong.snr_x10); /* absent never leaks a fabricated reading */
+        }
+    }
+}
+
+/* Explicit hand-computed bytes, same style as
+ * S04_AC3_rally_latlon_1e7_matches_hand_computed_bytes — pins the exact
+ * wire layout (little-endian nonce, then rssi, then the has_snr byte,
+ * then snr_x10), not just "encode then decode gets the same struct
+ * back" (which would pass even if encode/decode secretly agreed on a
+ * DIFFERENT, wrong byte order). */
+static void S29_pong_hand_computed_bytes(void)
+{
+    uint8_t expected[] = {
+        (uint8_t)FF_PROTO_VERSION, (uint8_t)FF_PROTO_TYPE_PONG,
+        0x2A, 0x00, 0x00, 0x00, /* nonce = 42 */
+        0xC9, 0xFF,             /* rssi_dbm = -55 (0xFFC9 as i16 LE) */
+        0x01,                   /* has_snr = true */
+        0xDD, 0xFF,             /* snr_x10 = -35 (0xFFDD as i16 LE) */
+    };
+
+    uint8_t buf[16];
+    int len = ff_proto_encode_pong(buf, sizeof(buf), 42u, -55, true, -35);
+    TEST_ASSERT_EQUAL_INT((int)sizeof(expected), len);
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(expected, buf, sizeof(expected));
+
+    ff_proto_msg_t out;
+    int type = ff_proto_decode(expected, sizeof(expected), &out);
+    TEST_ASSERT_EQUAL_INT(FF_PROTO_TYPE_PONG, type);
+    TEST_ASSERT_EQUAL_UINT32(42u, out.body.pong.nonce);
+    TEST_ASSERT_EQUAL_INT16(-55, out.body.pong.rssi_dbm);
+    TEST_ASSERT_TRUE(out.body.pong.has_snr);
+    TEST_ASSERT_EQUAL_INT16(-35, out.body.pong.snr_x10);
+}
+
+static void S29_ping_truncated_body_is_ignored(void)
+{
+    /* Needs 4 body bytes (nonce); give it 0..3. */
+    for (size_t body_len = 0; body_len < 4; body_len++) {
+        uint8_t buf[6] = {(uint8_t)FF_PROTO_VERSION, (uint8_t)FF_PROTO_TYPE_PING, 0, 0, 0, 0};
+        ff_proto_msg_t out;
+        TEST_ASSERT_EQUAL_INT(0, ff_proto_decode(buf, 2u + body_len, &out));
+    }
+}
+
+static void S29_ping_rejects_one_trailing_byte(void)
+{
+    uint8_t buf[] = {(uint8_t)FF_PROTO_VERSION, (uint8_t)FF_PROTO_TYPE_PING, 0x01, 0x02, 0x03, 0x04, 0x00};
+    ff_proto_msg_t out;
+    TEST_ASSERT_EQUAL_INT(0, ff_proto_decode(buf, sizeof(buf), &out));
+}
+
+static void S29_pong_truncated_body_is_ignored(void)
+{
+    /* Needs 9 body bytes; give it every shorter length. */
+    uint8_t full[11] = {(uint8_t)FF_PROTO_VERSION, (uint8_t)FF_PROTO_TYPE_PONG,
+                         0x2A, 0x00, 0x00, 0x00, 0xC9, 0xFF, 0x01, 0xDD, 0xFF};
+    for (size_t body_len = 0; body_len < 9; body_len++) {
+        ff_proto_msg_t out;
+        TEST_ASSERT_EQUAL_INT(0, ff_proto_decode(full, 2u + body_len, &out));
+    }
+}
+
+static void S29_pong_rejects_one_trailing_byte(void)
+{
+    uint8_t buf[] = {(uint8_t)FF_PROTO_VERSION, (uint8_t)FF_PROTO_TYPE_PONG,
+                      0x2A, 0x00, 0x00, 0x00, 0xC9, 0xFF, 0x01, 0xDD, 0xFF, 0x00};
+    ff_proto_msg_t out;
+    TEST_ASSERT_EQUAL_INT(0, ff_proto_decode(buf, sizeof(buf), &out));
+}
+
+static void S29_ping_buffer_too_small_writes_nothing(void)
+{
+    uint8_t sentinel[6];
+    sentinel_fill(sentinel, sizeof(sentinel));
+    uint8_t buf[6];
+    memcpy(buf, sentinel, sizeof(buf));
+    TEST_ASSERT_EQUAL_INT(-1, ff_proto_encode_ping(buf, 5, 42u)); /* needs 6 */
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(sentinel, buf, sizeof(buf));
+}
+
+static void S29_pong_buffer_too_small_writes_nothing(void)
+{
+    uint8_t sentinel[11];
+    sentinel_fill(sentinel, sizeof(sentinel));
+    uint8_t buf[11];
+    memcpy(buf, sentinel, sizeof(buf));
+    TEST_ASSERT_EQUAL_INT(-1, ff_proto_encode_pong(buf, 10, 42u, -55, true, -35)); /* needs 11 */
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(sentinel, buf, sizeof(buf));
+}
+
+/* ------------------------------------------------------------------- */
 /* AC3 — 1e-7 fixed point matches Meshtastic's convention               */
 /* ------------------------------------------------------------------- */
 
@@ -591,6 +732,16 @@ int main(void)
     RUN_TEST(S04_AC2_empty_body_types_reject_one_trailing_byte);
     RUN_TEST(S04_AC2_flare_rejects_one_trailing_byte);
     RUN_TEST(S04_AC2_ack_ping_rejects_one_trailing_byte);
+
+    RUN_TEST(S29_ping_round_trips_table);
+    RUN_TEST(S29_pong_round_trips_table);
+    RUN_TEST(S29_pong_hand_computed_bytes);
+    RUN_TEST(S29_ping_truncated_body_is_ignored);
+    RUN_TEST(S29_ping_rejects_one_trailing_byte);
+    RUN_TEST(S29_pong_truncated_body_is_ignored);
+    RUN_TEST(S29_pong_rejects_one_trailing_byte);
+    RUN_TEST(S29_ping_buffer_too_small_writes_nothing);
+    RUN_TEST(S29_pong_buffer_too_small_writes_nothing);
 
     RUN_TEST(S04_AC3_rally_latlon_1e7_matches_hand_computed_bytes);
 

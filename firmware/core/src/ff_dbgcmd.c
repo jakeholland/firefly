@@ -222,6 +222,48 @@ ff_dbgcmd_status_t ff_dbgcmd_parse(char const *line, size_t line_len, ff_dbgcmd_
         out->kind = FF_DBGCMD_NAME_SET;
         return FF_DBGCMD_ERR_OK;
     }
+    /* S29 PR2 — "ping <node_hex>": exactly `dm`'s node-id shape, minus
+     * the trailing text body (a bench probe has no message). Any
+     * trailing token after the node id is rejected, not ignored — same
+     * "explicit unknown, never silently plausible" discipline this
+     * parser applies everywhere else. */
+    if (tok_eq(buf, start, cmd_end, "ping")) {
+        if (arg_start >= end) return FF_DBGCMD_ERR_BAD_ARGS; /* no node id */
+        size_t const node_end = token_end(buf, arg_start, end);
+        uint32_t node = 0u;
+        if (!parse_node_hex(buf + arg_start, node_end - arg_start, &node)) {
+            return FF_DBGCMD_ERR_BAD_ARGS;
+        }
+        if (skip_space(buf, node_end, end) < end) return FF_DBGCMD_ERR_BAD_ARGS; /* trailing garbage */
+        out->u.node = node;
+        out->kind = FF_DBGCMD_PING;
+        return FF_DBGCMD_ERR_OK;
+    }
+    /* S29 PR2 — "find <node_hex>" starts a session (same node-id shape
+     * as `ping`); "find off" cancels it. `off` is checked as a literal
+     * token match on the SAME slot a node hex would occupy, mirroring
+     * `flare`/`flare cancel`'s own bare-verb-plus-fixed-sub-verb shape —
+     * "off" is never a valid hex token containing only 0/f digits
+     * confusable with a node id here, since parse_node_hex requires the
+     * WHOLE token to be hex digits (optionally `!`/`0x`-prefixed) and
+     * "off" starts with a non-hex 'o'. */
+    if (tok_eq(buf, start, cmd_end, "find")) {
+        if (arg_start >= end) return FF_DBGCMD_ERR_BAD_ARGS; /* no node id, no "off" */
+        size_t const arg_end = token_end(buf, arg_start, end);
+        if (tok_eq(buf, arg_start, arg_end, "off")) {
+            if (skip_space(buf, arg_end, end) < end) return FF_DBGCMD_ERR_BAD_ARGS;
+            out->kind = FF_DBGCMD_FIND_OFF;
+            return FF_DBGCMD_ERR_OK;
+        }
+        uint32_t node = 0u;
+        if (!parse_node_hex(buf + arg_start, arg_end - arg_start, &node)) {
+            return FF_DBGCMD_ERR_BAD_ARGS;
+        }
+        if (skip_space(buf, arg_end, end) < end) return FF_DBGCMD_ERR_BAD_ARGS;
+        out->u.node = node;
+        out->kind = FF_DBGCMD_FIND;
+        return FF_DBGCMD_ERR_OK;
+    }
 
     return FF_DBGCMD_ERR_UNKNOWN_CMD;
 }
@@ -249,6 +291,9 @@ char const *ff_dbgcmd_kind_name(ff_dbgcmd_kind_t kind)
     case FF_DBGCMD_NAME_SET: return "NAME_SET";
     case FF_DBGCMD_DIAG: return "DIAG";
     case FF_DBGCMD_PERF: return "PERF";
+    case FF_DBGCMD_PING: return "PING";
+    case FF_DBGCMD_FIND: return "FIND";
+    case FF_DBGCMD_FIND_OFF: return "FIND_OFF";
     }
     return "?";
 }

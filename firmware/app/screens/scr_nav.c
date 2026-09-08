@@ -432,7 +432,7 @@ void ff_scr_nav_build(ff_app_state_t const *state)
          * disagree about whether the chip is on screen. See
          * scr_radar.h's doc comment on that parameter. */
         ff_scr_radar_build(content, &state->radar, state->settings.colorblind, state->settings.screen_flip,
-                            state->flare.locked);
+                            state->flare.locked, &state->find);
         /* S10 slice b: the Radar face's lock chip — a child of the
          * Radar content specifically, so it only ever appears alongside
          * Radar's own content. */
@@ -456,7 +456,7 @@ void ff_scr_nav_build(ff_app_state_t const *state)
         break;
     default:
         ff_scr_radar_build(content, &state->radar, state->settings.colorblind, state->settings.screen_flip,
-                            state->flare.locked);
+                            state->flare.locked, &state->find);
         ff_scr_flare_build_lock_chip(content, &state->flare);
         break;
     }

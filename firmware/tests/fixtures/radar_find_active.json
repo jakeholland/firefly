@@ -1,0 +1,36 @@
+{
+  "fixture": "radar_find_active",
+  "face": "radar",
+  "radar": {
+    "mode": "signal",
+    "arrow_deg": 0.0,
+    "arrow_valid": false,
+    "name": "DANA",
+    "dist_str": "",
+    "age_str": "",
+    "trend": 1,
+    "bearing_deg": 0.0,
+    "bearing_valid": false,
+    "place": false,
+    "stale": false,
+    "signal_tier": "good",
+    "signal_heard": true,
+    "signal_via_relay": false,
+    "signal_age_str": "4 SEC",
+    "clock_str": "10:41",
+    "batt_pct": 54,
+    "mesh_ok": true,
+    "dots": [],
+    "signal_dots": []
+  },
+  "find": {
+    "active": true,
+    "target_node_id": 3494928410,
+    "ping_count": 4,
+    "has_their_reading": true,
+    "their_rssi_of_us": -72,
+    "their_has_snr": true,
+    "their_snr_of_us": -2.5,
+    "their_reading_age_ms": 4000
+  }
+}

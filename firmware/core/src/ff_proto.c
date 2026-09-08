@@ -45,6 +45,17 @@ static int32_t get_i32le(uint8_t const *p)
     return (int32_t)get_u32le(p);
 }
 
+/* S29 — PONG's rssi/snr_x10 fields. */
+static void put_i16le(uint8_t *p, int16_t v)
+{
+    put_u16le(p, (uint16_t)v);
+}
+
+static int16_t get_i16le(uint8_t const *p)
+{
+    return (int16_t)get_u16le(p);
+}
+
 /* RALLY lat/lon: same fixed-point convention as Meshtastic's own
  * meshtastic_Position.latitude_i/longitude_i (degrees * 1e7, round to
  * nearest, ties away from zero) — see mc_client.c's mc_send_position /
@@ -153,6 +164,36 @@ int ff_proto_encode_status(uint8_t *buf, size_t n, char const *status)
     return (int)total;
 }
 
+/* S29 — see ff_proto.h's "PING / PONG" section. */
+int ff_proto_encode_ping(uint8_t *buf, size_t n, uint32_t nonce)
+{
+    size_t total = FF_PROTO_ENVELOPE_LEN + 4u;
+    if (buf == NULL || n < total) {
+        return -1;
+    }
+    put_envelope(buf, (uint8_t)FF_PROTO_TYPE_PING);
+    put_u32le(buf + 2, nonce);
+    return (int)total;
+}
+
+int ff_proto_encode_pong(uint8_t *buf, size_t n, uint32_t nonce, int16_t rssi_dbm, bool has_snr, int16_t snr_x10)
+{
+    size_t total = FF_PROTO_ENVELOPE_LEN + 4u + 2u + 1u + 2u;
+    if (buf == NULL || n < total) {
+        return -1;
+    }
+    put_envelope(buf, (uint8_t)FF_PROTO_TYPE_PONG);
+    put_u32le(buf + 2, nonce);
+    put_i16le(buf + 6, rssi_dbm);
+    buf[8] = has_snr ? 1u : 0u;
+    /* `has_snr` false writes 0 on the wire — never a fabricated reading,
+     * same "absent means unknown, not zero" convention mc_rx_meta_t's
+     * own has_snr/snr_db pair uses; the decoder honors the flag, not
+     * this raw value. */
+    put_i16le(buf + 9, has_snr ? snr_x10 : 0);
+    return (int)total;
+}
+
 /* -------------------------------------------------------------------- */
 /* Decoder                                                               */
 /* -------------------------------------------------------------------- */
@@ -239,6 +280,25 @@ int ff_proto_decode(uint8_t const *buf, size_t n, ff_proto_msg_t *out)
         }
         out->type = type;
         out->body.ack_ping.nonce = get_u32le(body);
+        return type;
+
+    case FF_PROTO_TYPE_PING:
+        if (body_len != 4u) {
+            return 0;
+        }
+        out->type = type;
+        out->body.ping.nonce = get_u32le(body);
+        return type;
+
+    case FF_PROTO_TYPE_PONG:
+        if (body_len != 9u) { /* nonce(4) + rssi(2) + has_snr(1) + snr_x10(2) */
+            return 0;
+        }
+        out->type = type;
+        out->body.pong.nonce = get_u32le(body);
+        out->body.pong.rssi_dbm = get_i16le(body + 4);
+        out->body.pong.has_snr = (body[6] != 0u);
+        out->body.pong.snr_x10 = get_i16le(body + 7);
         return type;
 
     default:

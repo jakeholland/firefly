@@ -163,7 +163,7 @@ static void S26d_AC2_banner_disjoint_from_radar_name_distance_stack(void)
     lv_obj_t *parent = lv_obj_create(lv_screen_active());
     lv_obj_set_size(parent, FF_THEME_WINDOW_PX, FF_THEME_WINDOW_PX);
     ff_scr_radar_build(parent, &r, false, false /* screen_flip (#158): banner tests use the unflipped glass */,
-                        /*locked=*/false);
+                        /*locked=*/false, NULL);
 
     ff_app_banner_t b;
     make_banner(&b);
@@ -243,7 +243,7 @@ static void S26d_AC2_banner_covers_mesh_status_label(void)
     lv_obj_t *parent = lv_obj_create(lv_screen_active());
     lv_obj_set_size(parent, FF_THEME_WINDOW_PX, FF_THEME_WINDOW_PX);
     ff_scr_radar_build(parent, &r, false, false /* screen_flip (#158): banner tests use the unflipped glass */,
-                        /*locked=*/false);
+                        /*locked=*/false, NULL);
 
     ff_app_banner_t b;
     make_banner(&b);
@@ -279,7 +279,7 @@ static void S26d_AC2_banner_covers_status_text_row_band(void)
     lv_obj_t *parent = lv_obj_create(lv_screen_active());
     lv_obj_set_size(parent, FF_THEME_WINDOW_PX, FF_THEME_WINDOW_PX);
     ff_scr_radar_build(parent, &r, false, false /* screen_flip (#158): banner tests use the unflipped glass */,
-                        /*locked=*/false);
+                        /*locked=*/false, NULL);
     lv_obj_update_layout(parent);
 
     /* Cross-check the hardcoded band against the real rendered labels —

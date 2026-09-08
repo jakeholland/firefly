@@ -42,6 +42,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "ff_find.h"    /* S29 PR2 — ff_find_t, the real `find` field type */
 #include "ff_flare.h"   /* [api] S10 Amendment 2026-09-03 — ff_flare_wire_state_t, the real `flare.wire_state` field type */
 #include "ff_heard.h"   /* S12/S04 — FF_HEARD_MAX, the CREW page's heard-row cap */
 #include "ff_inbox.h"   /* S24 — ff_inbox_t, the inbox half of the `signals` field */
@@ -1498,6 +1499,14 @@ typedef struct {
     ff_app_inbox_t   inbox; /* S24 — sub-view + the core ff_inbox_t, rendered directly */
     ff_app_compose_t  compose;
     ff_app_flare_t    flare;
+    /* S29 PR2 — the active FIND session, reused directly (no separate
+     * app-layer projection type, unlike `flare`/`ff_app_flare_t`):
+     * `ff_find_t` is already a plain, render-friendly struct with no
+     * core-only concepts a screen shouldn't see (the same reason
+     * `ff_radar_view_t`/`ff_crew_t` are used directly elsewhere in this
+     * struct) — see ff_shell.c's own tick projection for the verbatim
+     * copy this field gets each frame. */
+    ff_find_t         find;
     ff_app_settings_t settings;
     ff_app_map_t      map;
     ff_app_banner_t   banner; /* S26(d) — the ff_notify queue's head; scr_banner.c's whole input */

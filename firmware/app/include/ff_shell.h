@@ -196,6 +196,7 @@
 #include "ff_clock.h"
 #include "ff_crew.h"
 #include "ff_feed.h"
+#include "ff_find.h" /* S29 PR2 — ff_find_t, returned by ff_shell_find */
 #include "ff_flare.h"
 #include "ff_heard.h"
 #include "ff_intent.h"
@@ -1401,6 +1402,13 @@ uint32_t ff_shell_retired_frame_count(ff_shell_t const *sh);
  *  comment for why it is not also in `active_face`. */
 ff_flare_t const *ff_shell_flare(ff_shell_t const *sh);
 
+/** ff_shell_find — S29 PR2: the active FIND session, read-only. NULL if
+ *  `sh` is NULL. Same "screens/tests read the state directly" seam
+ *  ff_shell_flare/ff_shell_crew already provide — a renderer checks
+ *  `->active` before showing any FIND chrome, exactly as it checks
+ *  `ff_shell_flare(sh)->takeover_active` today. */
+ff_find_t const *ff_shell_find(ff_shell_t const *sh);
+
 /** ff_shell_settings — current settings, read-only. NULL if `sh` is
  *  NULL. Write-through is `FF_INTENT_SETTING_SET` (slice e); persisted
  *  via the injected `ff_store_t` on change, never every tick. */
@@ -1943,6 +1951,34 @@ int ff_shell_debug_send_text(ff_shell_t *sh, uint32_t dest_node, char const *tex
  * or `text` is NULL.
  */
 void ff_shell_debug_set_name(ff_shell_t *sh, char const *text);
+
+/**
+ * ff_shell_debug_ping — [api] debug-only, S29 PR2. One immediate,
+ * bench-only PING to `node_id` — OUTSIDE the FIND session machinery
+ * entirely (`ff_find_t` is untouched by this call): a single probe, not
+ * a session start. Uses a fixed sentinel nonce (0xFFFFFFFF) rather than
+ * drawing from any active session's own nonce counter, so a bench ping's
+ * PONG can never be coincidentally mistaken for an active FIND session's
+ * reply by `ff_find_on_pong`'s nonce-match gate.
+ *
+ * Returns 0 on an accepted send (mirrors `ff_wiring_sender_t.send_private`'s
+ * own convention). Returns -1 without sending if `sh == NULL`,
+ * `node_id == 0`, or no sender is wired up.
+ */
+int ff_shell_debug_ping(ff_shell_t *sh, uint32_t node_id);
+
+/**
+ * ff_shell_debug_find_start / ff_shell_debug_find_stop — [api]
+ * debug-only, S29 PR2. Starts (or cancels) an ordinary FIND session on
+ * `sh->find`, exactly as the UI gesture would (`ff_find_start`/
+ * `ff_find_stop` directly — no route/face change, matching this
+ * section's "without touching the glass" design goal every other
+ * debug-only function here follows). `find_start` no-ops if `sh` is
+ * NULL or `node_id == 0`; `find_stop` no-ops if `sh` is NULL (safe to
+ * call with no active session).
+ */
+void ff_shell_debug_find_start(ff_shell_t *sh, uint32_t node_id);
+void ff_shell_debug_find_stop(ff_shell_t *sh);
 
 /**
  * ff_shell_wall_debug_t / ff_shell_wall_debug — [api] debug-only: the

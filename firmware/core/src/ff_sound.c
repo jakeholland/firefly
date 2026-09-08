@@ -85,6 +85,25 @@ static ff_sound_pattern_t const kPatterns[FF_SOUND_COUNT] = {
         },
         .n = 1,
     },
+    /* S29 PR2: FIND_WARMER/COLDER, a rising/falling two-note pair like
+     * RALLY/BATT_LOW's own two-note events, but at different pitches so
+     * all four two-note events stay tellable apart by ear (RALLY G5-B5
+     * rising, BATT_LOW E5-C5 falling, FIND_WARMER G5-C6 rising — a
+     * bigger, brighter leap than RALLY's — FIND_COLDER B5-G5 falling). */
+    [FF_SOUND_FIND_WARMER] = {
+        .steps = {
+            {FF_SOUND_NOTE_G5, 100},
+            {FF_SOUND_NOTE_C6, 140},
+        },
+        .n = 2,
+    },
+    [FF_SOUND_FIND_COLDER] = {
+        .steps = {
+            {FF_SOUND_NOTE_B5, 140},
+            {FF_SOUND_NOTE_G5, 180},
+        },
+        .n = 2,
+    },
 };
 
 /* Only the vocabulary's SIZE is checked at compile time — an enum
@@ -103,7 +122,7 @@ static ff_sound_pattern_t const kPatterns[FF_SOUND_COUNT] = {
  * test_sound.c) is the ONLY enforcement of both budgets — a real ctest
  * failure on every build, not a weaker guarantee than a compile-time
  * guard would give, just a differently-timed one. */
-_Static_assert(FF_SOUND_COUNT == 7, "ff_sound_event_t grew - add a kPatterns row and update test_sound.c's sweep");
+_Static_assert(FF_SOUND_COUNT == 9, "ff_sound_event_t grew - add a kPatterns row and update test_sound.c's sweep");
 
 ff_sound_pattern_t const *ff_sound_pattern_for(ff_sound_event_t ev)
 {
@@ -137,6 +156,8 @@ int ff_sound_priority(ff_sound_event_t ev)
     case FF_SOUND_MESSAGE:
     case FF_SOUND_TAP:
     case FF_SOUND_MULTITAP_TICK:
+    case FF_SOUND_FIND_WARMER: /* S29 PR2 — informational nudge, same LOW tier as MESSAGE */
+    case FF_SOUND_FIND_COLDER:
     case FF_SOUND_COUNT:
     default:
         return 0;

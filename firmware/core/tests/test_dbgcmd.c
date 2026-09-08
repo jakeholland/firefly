@@ -132,6 +132,92 @@ static void dbgcmd_dm_accepts_0x_prefix(void)
     TEST_ASSERT_EQUAL_STRING("text here", cmd.u.dm.text);
 }
 
+/* S29 PR2 — "ping <node_hex>" / "find <node_hex>" / "find off": exactly
+ * `dm`'s node-id parsing (see ff_dbgcmd.h's own doc comment on why —
+ * the draft spec originally claimed a name-based resolution that
+ * doesn't exist anywhere in this codebase; corrected to mirror `dm`'s
+ * actual shape). */
+static void dbgcmd_ping_parses_hex_node(void)
+{
+    ff_dbgcmd_t cmd;
+    TEST_ASSERT_EQUAL(FF_DBGCMD_ERR_OK, parse_str("ping a1b2c3d4", &cmd));
+    TEST_ASSERT_EQUAL(FF_DBGCMD_PING, cmd.kind);
+    TEST_ASSERT_EQUAL_UINT32(0xa1b2c3d4u, cmd.u.node);
+}
+
+static void dbgcmd_ping_accepts_bang_and_0x_prefix(void)
+{
+    ff_dbgcmd_t cmd;
+    TEST_ASSERT_EQUAL(FF_DBGCMD_ERR_OK, parse_str("ping !a1b2c3d4", &cmd));
+    TEST_ASSERT_EQUAL_UINT32(0xa1b2c3d4u, cmd.u.node);
+    TEST_ASSERT_EQUAL(FF_DBGCMD_ERR_OK, parse_str("ping 0xFF", &cmd));
+    TEST_ASSERT_EQUAL_UINT32(0xFFu, cmd.u.node);
+}
+
+static void dbgcmd_ping_no_node_is_bad_args(void)
+{
+    ff_dbgcmd_t cmd;
+    TEST_ASSERT_EQUAL(FF_DBGCMD_ERR_BAD_ARGS, parse_str("ping", &cmd));
+    TEST_ASSERT_EQUAL(FF_DBGCMD_ERR_BAD_ARGS, parse_str("ping   ", &cmd));
+}
+
+static void dbgcmd_ping_bad_hex_is_bad_args(void)
+{
+    ff_dbgcmd_t cmd;
+    TEST_ASSERT_EQUAL(FF_DBGCMD_ERR_BAD_ARGS, parse_str("ping zzzz", &cmd));
+}
+
+static void dbgcmd_ping_rejects_trailing_text(void)
+{
+    /* Unlike dm, ping has no text body at all — anything after the node
+     * id is trailing garbage, not a message. */
+    ff_dbgcmd_t cmd;
+    TEST_ASSERT_EQUAL(FF_DBGCMD_ERR_BAD_ARGS, parse_str("ping a1b2c3d4 extra", &cmd));
+}
+
+static void dbgcmd_find_parses_hex_node(void)
+{
+    ff_dbgcmd_t cmd;
+    TEST_ASSERT_EQUAL(FF_DBGCMD_ERR_OK, parse_str("find a1b2c3d4", &cmd));
+    TEST_ASSERT_EQUAL(FF_DBGCMD_FIND, cmd.kind);
+    TEST_ASSERT_EQUAL_UINT32(0xa1b2c3d4u, cmd.u.node);
+}
+
+static void dbgcmd_find_off_parses(void)
+{
+    ff_dbgcmd_t cmd;
+    TEST_ASSERT_EQUAL(FF_DBGCMD_ERR_OK, parse_str("find off", &cmd));
+    TEST_ASSERT_EQUAL(FF_DBGCMD_FIND_OFF, cmd.kind);
+}
+
+static void dbgcmd_find_off_rejects_trailing_text(void)
+{
+    ff_dbgcmd_t cmd;
+    TEST_ASSERT_EQUAL(FF_DBGCMD_ERR_BAD_ARGS, parse_str("find off now", &cmd));
+}
+
+static void dbgcmd_find_no_arg_is_bad_args(void)
+{
+    ff_dbgcmd_t cmd;
+    TEST_ASSERT_EQUAL(FF_DBGCMD_ERR_BAD_ARGS, parse_str("find", &cmd));
+}
+
+static void dbgcmd_find_bad_hex_is_bad_args(void)
+{
+    ff_dbgcmd_t cmd;
+    /* "off1" is neither the literal "off" nor a valid hex token ('o' is
+     * not a hex digit) — must be rejected, not silently coerced toward
+     * either interpretation. */
+    TEST_ASSERT_EQUAL(FF_DBGCMD_ERR_BAD_ARGS, parse_str("find off1", &cmd));
+    TEST_ASSERT_EQUAL(FF_DBGCMD_ERR_BAD_ARGS, parse_str("find zzzz", &cmd));
+}
+
+static void dbgcmd_find_rejects_trailing_text_after_node(void)
+{
+    ff_dbgcmd_t cmd;
+    TEST_ASSERT_EQUAL(FF_DBGCMD_ERR_BAD_ARGS, parse_str("find a1b2c3d4 extra", &cmd));
+}
+
 static void dbgcmd_flare_parses(void)
 {
     ff_dbgcmd_t cmd;
@@ -439,6 +525,18 @@ int main(void)
     RUN_TEST(dbgcmd_dm_parses_with_hex_and_text);
     RUN_TEST(dbgcmd_dm_accepts_bang_prefix);
     RUN_TEST(dbgcmd_dm_accepts_0x_prefix);
+
+    RUN_TEST(dbgcmd_ping_parses_hex_node);
+    RUN_TEST(dbgcmd_ping_accepts_bang_and_0x_prefix);
+    RUN_TEST(dbgcmd_ping_no_node_is_bad_args);
+    RUN_TEST(dbgcmd_ping_bad_hex_is_bad_args);
+    RUN_TEST(dbgcmd_ping_rejects_trailing_text);
+    RUN_TEST(dbgcmd_find_parses_hex_node);
+    RUN_TEST(dbgcmd_find_off_parses);
+    RUN_TEST(dbgcmd_find_off_rejects_trailing_text);
+    RUN_TEST(dbgcmd_find_no_arg_is_bad_args);
+    RUN_TEST(dbgcmd_find_bad_hex_is_bad_args);
+    RUN_TEST(dbgcmd_find_rejects_trailing_text_after_node);
     RUN_TEST(dbgcmd_flare_parses);
     RUN_TEST(dbgcmd_flare_cancel_parses);
     RUN_TEST(dbgcmd_cal_parses);

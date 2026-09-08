@@ -22,6 +22,7 @@
 #include "ff_feed.h"
 #include "ff_flare.h"
 #include "ff_heard.h"
+#include "ff_proto.h" /* S29 PR2 — decode-verify ping/find's own PING wire bytes */
 
 void setUp(void) {}
 void tearDown(void) {}
@@ -58,6 +59,13 @@ typedef struct {
     int      owner_req_calls;
     uint32_t owner_req_last_dest;
     int      owner_req_rc;
+
+    /* S29 PR2 — ping/find use send_private, not send_text. */
+    int      private_calls;
+    uint32_t private_last_dest;
+    uint8_t  private_last_payload[64];
+    size_t   private_last_len;
+    int      private_rc;
 } sender_spy_t;
 
 static int spy_send_admin_set_owner(void *ctx, uint32_t dest, char const *long_name, char const *short_name,
@@ -92,6 +100,18 @@ static int spy_send_text(void *ctx, uint32_t dest, char const *utf8, uint32_t *o
         *out_packet_id = (uint32_t)s->calls; /* nonzero, distinct per call — plenty for this file's seam tests */
     }
     return s->rc;
+}
+
+/* S29 PR2 — ping/find's own sender path. */
+static int spy_send_private(void *ctx, uint32_t dest, uint8_t const *payload, size_t len, uint32_t flags)
+{
+    (void)flags;
+    sender_spy_t *s = (sender_spy_t *)ctx;
+    s->private_calls++;
+    s->private_last_dest = dest;
+    s->private_last_len = (len < sizeof(s->private_last_payload)) ? len : sizeof(s->private_last_payload);
+    memcpy(s->private_last_payload, payload, s->private_last_len);
+    return s->private_rc;
 }
 
 typedef struct {
@@ -145,9 +165,11 @@ static void harness_init(uint32_t t0_ms)
 static void harness_wire_sender(int rc)
 {
     H.sender.rc = rc;
+    H.sender.private_rc = rc; /* S29 PR2 — same accepted/refused convention as send_text */
     ff_wiring_sender_t sender;
     memset(&sender, 0, sizeof(sender));
     sender.send_text = spy_send_text;
+    sender.send_private = spy_send_private;
     sender.ctx = &H.sender;
     sender.send_admin_set_owner = spy_send_admin_set_owner;
     sender.send_get_owner_request = spy_send_get_owner_request;
@@ -479,6 +501,94 @@ static void dbgconsole_dm_zero_dest_rejected_without_sending(void)
 
     ff_feed_t const *feed = ff_shell_feed(&H.shell);
     TEST_ASSERT_EQUAL_UINT8(0, ff_feed_count(feed)); /* a rejected dm fabricates no feed item */
+}
+
+/* ------------------------------------------------------------------- */
+/* S29 PR2 — ping / find / find off                                     */
+/* ------------------------------------------------------------------- */
+
+static void dbgconsole_ping_calls_send_private_with_parsed_dest(void)
+{
+    harness_init(1000);
+    harness_wire_sender(0);
+
+    capture_t cap;
+    dispatch("ping a1b2c3d4", &cap);
+
+    TEST_ASSERT_EQUAL_STRING("dbg: ping ok dest=!a1b2c3d4", cap.lines[0]);
+    TEST_ASSERT_EQUAL_INT(1, H.sender.private_calls);
+    TEST_ASSERT_EQUAL_UINT32(0xa1b2c3d4u, H.sender.private_last_dest);
+
+    /* The payload is a real, decodable PING — not just "something was
+     * sent". Does NOT start a FIND session (outside the machinery). */
+    ff_proto_msg_t msg;
+    int const type = ff_proto_decode(H.sender.private_last_payload, H.sender.private_last_len, &msg);
+    TEST_ASSERT_EQUAL_INT(FF_PROTO_TYPE_PING, type);
+    TEST_ASSERT_FALSE(ff_shell_find(&H.shell)->active);
+}
+
+static void dbgconsole_ping_zero_dest_rejected_without_sending(void)
+{
+    harness_init(1000);
+    harness_wire_sender(0);
+
+    capture_t cap;
+    dispatch("ping 0", &cap);
+    TEST_ASSERT_EQUAL_STRING("dbg: ? ping needs a non-zero node id", cap.lines[0]);
+    TEST_ASSERT_EQUAL_INT(0, H.sender.private_calls);
+}
+
+static void dbgconsole_find_starts_session_on_parsed_target(void)
+{
+    harness_init(1000);
+    harness_wire_sender(0);
+
+    capture_t cap;
+    dispatch("find a1b2c3d4", &cap);
+
+    TEST_ASSERT_EQUAL_STRING("dbg: find started target=!a1b2c3d4", cap.lines[0]);
+    ff_find_t const *f = ff_shell_find(&H.shell);
+    TEST_ASSERT_TRUE(f->active);
+    TEST_ASSERT_EQUAL_UINT32(0xa1b2c3d4u, f->target_node_id);
+    /* Starting a session does not itself send — the tick loop does, on
+     * its own 10s cadence (see ff_find_tick's own doc comment). */
+    TEST_ASSERT_EQUAL_INT(0, H.sender.private_calls);
+}
+
+static void dbgconsole_find_zero_dest_rejected_without_starting(void)
+{
+    harness_init(1000);
+    harness_wire_sender(0);
+
+    capture_t cap;
+    dispatch("find 0", &cap);
+    TEST_ASSERT_EQUAL_STRING("dbg: ? find needs a non-zero node id", cap.lines[0]);
+    TEST_ASSERT_FALSE(ff_shell_find(&H.shell)->active);
+}
+
+static void dbgconsole_find_off_stops_an_active_session(void)
+{
+    harness_init(1000);
+    harness_wire_sender(0);
+
+    dispatch("find a1b2c3d4", &(capture_t){0});
+    TEST_ASSERT_TRUE(ff_shell_find(&H.shell)->active);
+
+    capture_t cap;
+    dispatch("find off", &cap);
+    TEST_ASSERT_EQUAL_STRING("dbg: find off", cap.lines[0]);
+    TEST_ASSERT_FALSE(ff_shell_find(&H.shell)->active);
+}
+
+static void dbgconsole_find_off_with_no_active_session_is_a_safe_no_op(void)
+{
+    harness_init(1000);
+    harness_wire_sender(0);
+
+    capture_t cap;
+    dispatch("find off", &cap);
+    TEST_ASSERT_EQUAL_STRING("dbg: find off", cap.lines[0]);
+    TEST_ASSERT_FALSE(ff_shell_find(&H.shell)->active);
 }
 
 static void dbgconsole_flare_start_already_sending_then_cancel(void)
@@ -1086,6 +1196,13 @@ int main(void)
     RUN_TEST(dbgconsole_send_with_no_send_text_fn_reports_failed);
     RUN_TEST(dbgconsole_dm_calls_sender_with_parsed_dest);
     RUN_TEST(dbgconsole_dm_zero_dest_rejected_without_sending);
+
+    RUN_TEST(dbgconsole_ping_calls_send_private_with_parsed_dest);
+    RUN_TEST(dbgconsole_ping_zero_dest_rejected_without_sending);
+    RUN_TEST(dbgconsole_find_starts_session_on_parsed_target);
+    RUN_TEST(dbgconsole_find_zero_dest_rejected_without_starting);
+    RUN_TEST(dbgconsole_find_off_stops_an_active_session);
+    RUN_TEST(dbgconsole_find_off_with_no_active_session_is_a_safe_no_op);
 
     RUN_TEST(dbgconsole_flare_start_already_sending_then_cancel);
     RUN_TEST(dbgconsole_wall_reports_unlatched_then_latched_with_trust_and_source);

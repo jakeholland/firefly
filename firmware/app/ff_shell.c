@@ -15,6 +15,7 @@
 
 #include "ff_batt.h" /* S25 slice c — battery gauge: honest mV -> percent + display filter */
 #include "ff_build_info.h" /* DIAGNOSTICS — FF_BUILD_GIT_SHA / FF_BUILD_DATE */
+#include "ff_find.h" /* S29 PR2 — FIND mode session state machine */
 #include "ff_geo.h"
 #include "ff_meshname.h" /* NAME in Settings — charset sanitize + short-name derivation */
 #include "ff_multitap.h" /* S10 quick flare — the N-presses-within-a-window counter FSM */
@@ -218,6 +219,14 @@ typedef struct {
     uint32_t outbox_next_id;  /* monotonic, skips 0 — mirrors mc_next_packet_id's own convention */
 
     ff_flare_t flare;
+    /* S29 PR2 — FIND mode (docs/specs/S29-radio-only.md): the active
+     * "ping this node every 10s" session, from the Radar/SIGNAL face
+     * with a friend selected, or from the `find <node_hex>` console
+     * command. Ticked alongside `flare` in ff_shell_tick; stopped via
+     * `ff_find_leave_face` whenever the Radar face is no longer the
+     * active face (see shell_apply_intent's FF_INTENT_LAUNCHER_SELECT /
+     * navigation handling). */
+    ff_find_t find;
     /* S10 quick flare (docs/specs/S10-flare.md's Amendments, 2026-09-03;
      * timing/robustness pass fix/quick-flare-detection, 2026-09-03): the
      * shell owns the whole "N presses within a window" decision — see
@@ -1243,6 +1252,38 @@ static void shell_haptic_alert(shell_t *sh)
 }
 
 /**
+ * S29 PR2 (docs/specs/S29-radio-only.md) — FIND mode's warmer/colder
+ * haptic pulses. Ordinary gating, same shape `shell_haptic_feed` uses
+ * (haptics-on AND not quiet hours) — a signal-quality nudge during an
+ * active, user-initiated FIND session is routine feedback, not a
+ * safety-critical alert, so it earns no quiet-hours exemption the way
+ * FLARE_INCOMING does.
+ *
+ * INTERPRETATION CALL, flagged per AGENTS.md (see docs/specs/
+ * S29-radio-only.md's own note on this): `ff_wiring_ctx_t.haptic_cb` is
+ * a bare single-shot buzz with no duration/pattern parameter, and there
+ * is no haptic HAL on the device target yet — "a distinct (longer/
+ * lower) pattern" is not implementable through the seam that actually
+ * exists. The approximation shipped here: WARMER fires the single-buzz
+ * hook once, COLDER fires it TWICE back-to-back — tellable apart by
+ * count, not by pattern shape, until a real haptic HAL exists.
+ */
+static void shell_find_haptic_warmer(shell_t *sh)
+{
+    if (!sh->settings.haptics) return;
+    if (shell_quiet_now(sh)) return;
+    shell_haptic_fire(sh);
+}
+
+static void shell_find_haptic_colder(shell_t *sh)
+{
+    if (!sh->settings.haptics) return;
+    if (shell_quiet_now(sh)) return;
+    shell_haptic_fire(sh);
+    shell_haptic_fire(sh);
+}
+
+/**
  * shell_sound — S27 sounds (docs/specs/S27-sounds.md): the ONE place
  * every shell-driven sound event (FLARE_SENT, FLARE_INCOMING, MESSAGE,
  * RALLY, BATT_LOW — everything except TAP, which reaches the same
@@ -2012,6 +2053,51 @@ static void shell_ev_text(void *u, uint32_t from, uint32_t to, char const *utf8,
     shell_notify_push_banner(sh, FF_NOTIFY_MESSAGE, from, to, utf8, len, shell_now(sh));
 }
 
+/**
+ * S29 PR2 — PING auto-reply. ANY puck receiving a PING replies once,
+ * immediately, with a PONG carrying `mc_rx_meta_t`'s reading of THAT
+ * ping packet — regardless of pairing (a PING is already direct/
+ * addressed, unlike a broadcast, so there is no "am I in scope"
+ * ambiguity a pairing filter would resolve; see ff_proto.h's "PING /
+ * PONG" section for the full reasoning). `on_rx_meta` fires before any
+ * payload event for the same packet (mc_client.c's own documented
+ * ordering), so `sh->last_rx_meta_*` — captured unconditionally in
+ * shell_ev_rx_meta — already reflects THIS ping by the time this runs.
+ *
+ * No PONG at all if `!last_rx_meta_has_rssi`: an RSSI reading absent
+ * means the radio's own measurement for this packet was implausible/
+ * malformed (mc_client.h's MC_RSSI_MIN/MAX_DBM gate), and a replier that
+ * can't trust its own RSSI for the packet it is actively replying to has
+ * nothing honest to report (see ff_proto_pong_t's own doc comment).
+ */
+static void shell_find_auto_reply_ping(shell_t *sh, uint32_t from, uint32_t nonce)
+{
+    if (!sh->last_rx_meta_has_rssi) return;
+    if (sh->wiring.sender.send_private == NULL) return;
+
+    int16_t snr_x10 = 0;
+    bool const has_snr = sh->last_rx_meta_has_snr;
+    if (has_snr) {
+        float scaled = sh->last_rx_meta_snr * 10.0f;
+        /* Defensive clamp to the wire's i16 range — mc_rx_meta_t's own
+         * plausibility gate (MC_SNR_MIN/MAX_DB, +/-128) already keeps
+         * snr_db well inside +/-3276.8 after *10, so this never actually
+         * triggers on real input; kept as a belt-and-suspenders bound
+         * rather than trusting that gate to never change. */
+        if (scaled > 32767.0f) scaled = 32767.0f;
+        if (scaled < -32768.0f) scaled = -32768.0f;
+        snr_x10 = (int16_t)scaled;
+    }
+
+    uint8_t buf[FF_PROTO_MAX_PAYLOAD];
+    int const n = ff_proto_encode_pong(buf, sizeof buf, nonce, sh->last_rx_meta_rssi, has_snr, snr_x10);
+    if (n <= 0) return;
+
+    /* want_ack = false: a PONG is itself a reply, not a message that
+     * needs its own delivery confirmation loop. */
+    (void)sh->wiring.sender.send_private(sh->wiring.sender.ctx, from, buf, (size_t)n, 0u);
+}
+
 static void shell_ev_private(void *u, uint32_t from, uint32_t to, uint32_t portnum,
                               uint8_t const *payload, size_t len)
 {
@@ -2056,6 +2142,29 @@ static void shell_ev_private(void *u, uint32_t from, uint32_t to, uint32_t portn
          * decode above — no re-decode. */
         shell_notify_push_banner(sh, FF_NOTIFY_RALLY, from, to, msg.body.rally.name, strlen(msg.body.rally.name),
                                   shell_now(sh));
+    } else if (type == FF_PROTO_TYPE_PING) {
+        /* S29 PR2 — no pairing filter here, see shell_find_auto_reply_ping's
+         * own doc comment for why. */
+        shell_find_auto_reply_ping(sh, from, msg.body.ping.nonce);
+    } else if (type == FF_PROTO_TYPE_PONG) {
+        /* S29 PR2 — the sender-side half: this PONG is a reply to OUR
+         * own active FIND session (ff_find_on_pong no-ops unless
+         * `from` matches the current target AND the nonce matches the
+         * last ping we actually sent — see that function's own doc
+         * comment). Our own reading of THEM (how strong THEIR signal
+         * looks to us) needs no new plumbing here — a PONG is an
+         * ordinary direct packet, so shell_ev_rx_meta's existing
+         * ff_crew_on_rssi/ff_crew_on_heard calls already recorded it. */
+        ff_find_haptic_t const h = ff_find_on_pong(&sh->find, from, msg.body.pong.nonce, msg.body.pong.rssi_dbm,
+                                                    msg.body.pong.has_snr, (float)msg.body.pong.snr_x10 / 10.0f,
+                                                    shell_now(sh));
+        if (h == FF_FIND_HAPTIC_WARMER) {
+            shell_find_haptic_warmer(sh);
+            shell_sound(sh, FF_SOUND_FIND_WARMER);
+        } else if (h == FF_FIND_HAPTIC_COLDER) {
+            shell_find_haptic_colder(sh);
+            shell_sound(sh, FF_SOUND_FIND_COLDER);
+        }
     }
 }
 
@@ -3121,6 +3230,13 @@ static void shell_project(shell_t *sh, uint32_t now_ms)
         sh->settings_subview = FF_SETTINGS_SUB_LIST;
         sh->compass_cal_active = false;
     }
+    /* S29 PR2 — same face-transition-triggers-cleanup shape as the two
+     * blocks above: FIND stops "on leaving the Radar face" (spec), so a
+     * session left dangling behind a face switch doesn't keep pinging a
+     * node no one is watching for. */
+    if (sh->view.active_face != FF_APP_FACE_RADAR && sh->prev_face == FF_APP_FACE_RADAR) {
+        ff_find_leave_face(&sh->find);
+    }
     sh->prev_face = sh->view.active_face;
 
     ff_radar_compute(&sh->view.radar, &sh->smooth, &sh->crew, sh->heading_deg, sh->my_pos, sh->my_pos_ok,
@@ -3160,6 +3276,9 @@ static void shell_project(shell_t *sh, uint32_t now_ms)
     shell_project_now(sh, wall, &sh->view.now);
     shell_project_inbox(sh, now_ms, &sh->view.inbox);
     shell_project_flare(sh, now_ms, &sh->view.flare);
+    /* S29 PR2 — verbatim copy, no projection function needed (see
+     * ff_app_state.h's own doc comment on this field for why). */
+    sh->view.find = sh->find;
     /* S10 quick flare — a pure query, mirrored verbatim into the view so
      * `ff_shell_keep_awake` (which takes the projected view, not the
      * shell) can consult it. Renders nothing (see the field's own doc
@@ -4264,6 +4383,11 @@ static int shell_send_or_queue_text(shell_t *sh, uint32_t dest, char const *text
  * comment for what it does. */
 static void shell_flare_wire(shell_t *sh, ff_flare_intent_t intent, uint16_t dur_s, uint32_t now_ms);
 
+/* S29 PR2 — FIND mode's own tick-driven sender, same forward-declaration
+ * shape as shell_flare_wire above (defined further down; ff_shell_tick
+ * needs it here). */
+static void shell_find_wire(shell_t *sh, ff_find_result_t const *r);
+
 bool ff_shell_tick(ff_shell_t *sh_pub, uint32_t now_ms)
 {
     if (sh_pub == NULL) return false;
@@ -4342,6 +4466,15 @@ bool ff_shell_tick(ff_shell_t *sh_pub, uint32_t now_ms)
      * correctly skipped — no redundant retry after the send is over. */
     if (sh->flare.sending && ff_flare_wire_should_retry(&sh->flare, now_ms)) {
         shell_flare_wire(sh, FF_FLARE_INTENT_SEND_FLARE, ff_flare_send_dur_s(&sh->flare), now_ms);
+    }
+
+    /* S29 PR2 — FIND mode's own tick-driven sender: ff_find_tick owns
+     * the 10s cadence / 5min-30-ping cap entirely (ff_find.h) — this
+     * call site just acts on whatever it says, same "tick returns an
+     * intent, the shell acts on it" shape the flare block above uses. */
+    {
+        ff_find_result_t const find_r = ff_find_tick(&sh->find, now_ms);
+        shell_find_wire(sh, &find_r);
     }
 
     /* S26 slice d — drop any BANNER whose 6s TTL has elapsed (spec:
@@ -4889,6 +5022,31 @@ static void shell_flare_wire(shell_t *sh, ff_flare_intent_t intent, uint16_t dur
      * FLARE feed item was already pushed when sending began; an END is a
      * cancellation, not a new event to surface) and no core state to
      * touch (already cleared by the caller before this ran). */
+}
+
+/* S29 PR2 — FIND mode's tick-driven sender: encode + send one PING,
+ * direct-addressed to the active session's target, `want_ack = false`
+ * (S29 spec: "a PING that never arrives is itself information — silence
+ * after several missed pings is 'not hearing them,' not a routing
+ * failure to retry"). Fire-and-forget: no feed item (a FIND ping is a
+ * bench probe, not a Signals-visible message), no core state to update
+ * beyond what `ff_find_tick` already recorded before calling this. */
+static void shell_find_wire(shell_t *sh, ff_find_result_t const *r)
+{
+    if (r->intent != FF_FIND_INTENT_SEND_PING) return;
+    if (sh->wiring.sender.send_private == NULL) return;
+
+    uint8_t buf[FF_PROTO_MAX_PAYLOAD];
+    int const n = ff_proto_encode_ping(buf, sizeof buf, r->nonce);
+    if (n <= 0) return;
+
+    (void)sh->wiring.sender.send_private(sh->wiring.sender.ctx, sh->find.target_node_id, buf, (size_t)n, 0u);
+    /* Return code deliberately unchecked beyond this: unlike FLARE (which
+     * tracks a WAITING/SENT wire-state machine with retries), a single
+     * missed PING send is indistinguishable in outcome from a PING that
+     * was sent but never answered — both just mean "no PONG this
+     * round", which the next tick's cadence already handles honestly
+     * with no separate retry path needed. */
 }
 
 /* Encode + send a FLARE ("come find me") to the CURRENT resolved scope,
@@ -6873,6 +7031,14 @@ ff_flare_t const *ff_shell_flare(ff_shell_t const *sh_pub)
     return (sh_pub == NULL) ? NULL : &shell_of_const(sh_pub)->flare;
 }
 
+/* S29 PR2 — FIND session state, read-only. NULL if `sh` is NULL. Same
+ * "screens/tests read the state directly, no reach-into-shell_t" seam
+ * ff_shell_flare/ff_shell_crew already provide. */
+ff_find_t const *ff_shell_find(ff_shell_t const *sh_pub)
+{
+    return (sh_pub == NULL) ? NULL : &shell_of_const(sh_pub)->find;
+}
+
 ff_settings_t const *ff_shell_settings(ff_shell_t const *sh_pub)
 {
     return (sh_pub == NULL) ? NULL : &shell_of_const(sh_pub)->settings;
@@ -7083,6 +7249,35 @@ void ff_shell_debug_set_name(ff_shell_t *sh_pub, char const *text)
 {
     if (sh_pub == NULL || text == NULL) return;
     shell_apply_name_commit(shell_of(sh_pub), text);
+}
+
+/* S29 PR2 — see ff_shell.h's own doc comment for why this uses a fixed
+ * sentinel nonce rather than the shared session counter. */
+#define FF_SHELL_DEBUG_PING_NONCE 0xFFFFFFFFu
+
+int ff_shell_debug_ping(ff_shell_t *sh_pub, uint32_t node_id)
+{
+    if (sh_pub == NULL || node_id == 0u) return -1;
+    shell_t *sh = shell_of(sh_pub);
+    if (sh->wiring.sender.send_private == NULL) return -1;
+
+    uint8_t buf[FF_PROTO_MAX_PAYLOAD];
+    int const n = ff_proto_encode_ping(buf, sizeof buf, FF_SHELL_DEBUG_PING_NONCE);
+    if (n <= 0) return -1;
+    return sh->wiring.sender.send_private(sh->wiring.sender.ctx, node_id, buf, (size_t)n, 0u);
+}
+
+void ff_shell_debug_find_start(ff_shell_t *sh_pub, uint32_t node_id)
+{
+    if (sh_pub == NULL || node_id == 0u) return;
+    shell_t *sh = shell_of(sh_pub);
+    ff_find_start(&sh->find, node_id, shell_now(sh));
+}
+
+void ff_shell_debug_find_stop(ff_shell_t *sh_pub)
+{
+    if (sh_pub == NULL) return;
+    ff_find_stop(&shell_of(sh_pub)->find);
 }
 
 ff_shell_wall_debug_t ff_shell_wall_debug(ff_shell_t const *sh_pub)

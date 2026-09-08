@@ -347,6 +347,13 @@ extern "C" {
 #define RADAR_LAYOUT_SIGNAL_AGE_DY          98.0f /* "heard <age> ago" line */
 #define RADAR_LAYOUT_SIGNAL_TREND_DY       124.0f /* WARMER/COLDER/STEADY chip, only when signal_tier != FF_SIGNAL_NONE */
 #define RADAR_LAYOUT_SIGNAL_LASTKNOWN_DY   156.0f /* ghost variant only: "LAST KNOWN <age>, <dist> <compass>" */
+/* S29 PR2 — FIND mode's own "THEY HEAR YOU" chip, non-ghost variant only
+ * (see radar_render_signal's own doc comment for the scope cut) — same
+ * numeric row LASTKNOWN_DY occupies in the ghost variant; the two are
+ * never drawn together, so sharing the row is safe and keeps the
+ * already-tight registry rect (radar_layout.c's RADAR_SIGNAL case) from
+ * needing to grow any further toward RADAR_LAYOUT_PAGE_DOT_DY. */
+#define RADAR_LAYOUT_SIGNAL_FIND_DY 156.0f
 #define RADAR_LAYOUT_SIGNAL_NAME_W 320
 
 /* Inner "signal ring" (S29): fixed radius smaller than
