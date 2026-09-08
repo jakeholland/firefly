@@ -147,7 +147,10 @@ void ff_crew_on_rssi(ff_crew_t *c, uint32_t node_id, int16_t rssi_dbm)
     }
 }
 
-void ff_crew_on_heard(ff_crew_t *c, uint32_t node_id, uint32_t rx_time_ms)
+/* S29 — see ff_crew.h's doc comment. Every rx_path (not just DIRECT,
+ * unlike ff_crew_on_rssi above) unconditionally overwrites the three
+ * "heard" fields — the latest sighting always wins. */
+void ff_crew_on_heard(ff_crew_t *c, uint32_t node_id, uint32_t rx_time_ms, bool direct)
 {
     if (!c) {
         return;
@@ -158,6 +161,7 @@ void ff_crew_on_heard(ff_crew_t *c, uint32_t node_id, uint32_t rx_time_ms)
     }
     m->last_heard_ms = rx_time_ms; /* absolute rx timestamp - see header note */
     m->has_heard = true;
+    m->heard_direct = direct;
 }
 
 /* ------------------------------------------------------------------- */

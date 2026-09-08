@@ -1,0 +1,26 @@
+{
+  "fixture": "radar_signal_faint_relay",
+  "face": "radar",
+  "radar": {
+    "mode": "signal",
+    "arrow_deg": 0.0,
+    "arrow_valid": false,
+    "name": "Taylor",
+    "dist_str": "",
+    "age_str": "",
+    "trend": 0,
+    "bearing_deg": 0.0,
+    "bearing_valid": false,
+    "place": false,
+    "stale": false,
+    "signal_tier": "none",
+    "signal_heard": true,
+    "signal_via_relay": true,
+    "signal_age_str": "2 MIN",
+    "clock_str": "9:41",
+    "batt_pct": 78,
+    "mesh_ok": true,
+    "dots": [],
+    "signal_dots": []
+  }
+}

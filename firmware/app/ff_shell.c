@@ -2128,9 +2128,13 @@ static void shell_ev_rx_meta(void *u, uint32_t from, mc_rx_meta_t const *m)
      * NOT gated on rx_path/has_rssi like the RSSI leg above — this fact
      * isn't about signal strength or proximity, only "is the radio still
      * hearing them," so a relayed packet counts exactly the same as a
-     * direct one. `ff_crew_on_heard` find-or-creates too, same
-     * effect-not-name rule as `ff_crew_on_rssi`'s own comment; the find
-     * + paired check above has already gated it.
+     * direct one — but S29 (docs/specs/S29-radio-only.md) needs to know
+     * WHICH, so the direct-vs-relay bit rides along as `heard_direct`
+     * rather than gating this call. `ff_crew_on_heard` records
+     * has_heard/last_heard_ms/heard_direct, which both `ff_crew_presence`
+     * (LOST-vs-heard) and RADAR_SIGNAL (ff_radar.h) read. Find-or-creates
+     * too, same effect-not-name rule as `ff_crew_on_rssi`'s own comment;
+     * the find + paired check above has already gated it.
      *
      * SCOPE NOTE (flagged per AGENTS.md, not implemented here): the
      * boot/reconnect NodeInfo REPLAY path (`shell_ev_node`, driven by
@@ -2149,7 +2153,7 @@ static void shell_ev_rx_meta(void *u, uint32_t from, mc_rx_meta_t const *m)
      * ordinary NodeInfo/telemetry re-announcements ARE live MeshPackets
      * and already fire `on_rx_meta` before this function returns. */
     if (sender->paired) {
-        ff_crew_on_heard(&sh->crew, from, now);
+        ff_crew_on_heard(&sh->crew, from, now, m->rx_path == MC_RX_PATH_DIRECT);
     }
 
     /* m->has_snr / m->snr_db: nothing in core consumes SNR yet. Left
@@ -3372,6 +3376,47 @@ static void shell_render_key(ff_app_state_t const *v, ff_app_state_t *key)
      * the memcpy above, and an actual mode change IS exactly the kind of
      * thing that should mark the key dirty. */
     key->radar.bearing_deg = (float)(int32_t)v->radar.bearing_deg;
+
+    /* S29 (docs/specs/S29-radio-only.md) — `signal_age_str` is a
+     * formatted "heard N ago" string that changes purely from elapsed
+     * time (crossing ff_fmt_age's minute/hour buckets), same shape as
+     * the flare countdown strings zeroed just above `arrow_deg` in this
+     * function — independent of whether Radar is even the active face
+     * (this whole struct is carried into the key regardless, per this
+     * function's "S16 whole-struct-memcmp" note). That is a LATENT gap
+     * this codebase already has for `age_str`/`dist_str` too (never
+     * previously exercised, because no radar field changed purely from
+     * elapsed time for a member with NO position fix — RADAR_SIGNAL is
+     * the first mode reachable with `has_pos == false` whose selection
+     * state still advances with the clock alone, via `has_heard`/
+     * `last_heard_ms` rather than `pos`/`pos_age_ms`). Zeroed here so S29
+     * doesn't regress `S24_AC8_presence_age_keys_rendered_bucket_only`/
+     * `S12_crew_paired_presence_age_keys_rendered_bucket_only`'s
+     * "un-rendered age must not dirty the frame" invariant while the
+     * Radar face isn't showing. `signal_tier`/`signal_heard`/
+     * `signal_via_relay`/`signal_dots[]` are NOT zeroed — they only
+     * change on a genuine new rx event (`ff_crew_on_heard`/
+     * `ff_crew_on_rssi`), a real dirtying event, not per-tick churn.
+     * MERGE POINT for `fix/render-key-churn`, now resolved: that PR
+     * landed a bucketing/coarsening fix for its own three fields
+     * (radar.dots[].ring_deg, map.you_heading_deg, the DIAGNOSTICS
+     * live-stat fields) rather than the "only include the active face's
+     * projection" redesign this comment once anticipated -- it left this
+     * zeroing untouched, so this narrow, local mitigation remains the
+     * current approach for signal_age_str. A live SIGNAL screen still
+     * repaints promptly on every new packet (signal_tier/mode/dots
+     * already dirty the key then); the residual gap is only a "heard N
+     * ago" text not advancing during a fully silent stretch while
+     * ALREADY on the Radar face -- no worse than age_str's own
+     * pre-existing gap.
+     *
+     * The WHOLE buffer is zeroed (not just [0]) — the dirty check below
+     * is a raw `memcmp` of this struct, not a `strcmp`: two different
+     * frames' un-zeroed tail bytes (leftover from a longer previous
+     * string, e.g. "8 SEC" then "1 MIN") would still differ even with a
+     * matching NUL-terminated prefix, silently reintroducing the exact
+     * churn this fix removes. */
+    memset(key->radar.signal_age_str, 0, sizeof(key->radar.signal_age_str));
 
     /* #bug1 — brightness is kept OUT of the render key (coarsened to a
      * constant). A live brightness drag emits a value change every frame;

@@ -1,0 +1,26 @@
+{
+  "fixture": "radar_signal_lastknown",
+  "face": "radar",
+  "radar": {
+    "mode": "signal",
+    "arrow_deg": 205.0,
+    "arrow_valid": true,
+    "name": "DANA",
+    "dist_str": "1.1 km",
+    "age_str": "42 MIN",
+    "trend": -1,
+    "bearing_deg": 205.0,
+    "bearing_valid": true,
+    "place": false,
+    "stale": false,
+    "signal_tier": "good",
+    "signal_heard": true,
+    "signal_via_relay": false,
+    "signal_age_str": "3 MIN",
+    "clock_str": "10:12",
+    "batt_pct": 33,
+    "mesh_ok": true,
+    "dots": [],
+    "signal_dots": []
+  }
+}

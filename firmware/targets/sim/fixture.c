@@ -370,6 +370,7 @@ static const fx_enum_entry_t fx_radar_mode_table[] = {
     {"place", RADAR_PLACE}, /* issue #33 */
     {"close", RADAR_CLOSE}, {"nofix", RADAR_NOFIX},
     {"nohdg", RADAR_NOHDG}, /* 2026-09-05 amendment */
+    {"signal", RADAR_SIGNAL}, /* S29 */
     {"nosel", RADAR_NOSEL},
 };
 
@@ -384,6 +385,16 @@ static const fx_enum_entry_t fx_radar_mode_table[] = {
 static const fx_enum_entry_t fx_crew_presence_table[] = {
     {"heard", FF_CREW_PRESENCE_HEARD}, {"stale", FF_CREW_PRESENCE_STALE},
     {"lost", FF_CREW_PRESENCE_LOST}, {"never", FF_CREW_PRESENCE_NEVER},
+};
+
+/* S29 — ff_signal_tier_t, for both radar.signal_tier and each
+ * signal_dots[] entry's own tier. */
+static const fx_enum_entry_t fx_signal_tier_table[] = {
+    {"none", FF_SIGNAL_NONE},
+    {"faint", FF_SIGNAL_FAINT},
+    {"weak", FF_SIGNAL_WEAK},
+    {"good", FF_SIGNAL_GOOD},
+    {"strong", FF_SIGNAL_STRONG},
 };
 
 /* fx_parse_radar_dots — fail-loud on an oversized array (orchestrator
@@ -426,6 +437,40 @@ static ff_fixture_result_t fx_parse_radar_dots(fx_ctx_t const *c, int arr_i, ff_
     return FF_FIXTURE_OK;
 }
 
+/* S29 — signal_dots[], same "fail-loud on oversized array" convention as
+ * fx_parse_radar_dots above. */
+static ff_fixture_result_t fx_parse_radar_signal_dots(fx_ctx_t const *c, int arr_i, ff_radar_view_t *r)
+{
+    jsmntok_t const *at = &c->toks[arr_i];
+    if (at->type != JSMN_ARRAY) return FF_FIXTURE_ERR_JSON;
+    if (at->size > FF_CREW_MAX) return FF_FIXTURE_ERR_TOO_BIG;
+    int idx = arr_i + 1;
+    for (int i = 0; i < at->size; i++) {
+        int obj_i = idx;
+        ff_radar_signal_dot_t *d = &r->signal_dots[r->n_signal_dots];
+        memset(d, 0, sizeof(*d));
+        int t;
+        if (fx_obj_get(c, obj_i, "initial", &t)) {
+            char buf[2];
+            fx_copy_str(c, t, buf, sizeof(buf));
+            d->initial = buf[0];
+        }
+        if (fx_obj_get(c, obj_i, "color_idx", &t)) d->color_idx = (uint8_t)fx_num(c, t, 0.0);
+        if (fx_obj_get(c, obj_i, "tier", &t)) {
+            int v;
+            ff_fixture_result_t rc = fx_enum(c, t, fx_signal_tier_table,
+                                              sizeof(fx_signal_tier_table) / sizeof(fx_signal_tier_table[0]),
+                                              "radar.signal_dots[].tier", &v);
+            if (rc != FF_FIXTURE_OK) return rc;
+            d->tier = (ff_signal_tier_t)v;
+        }
+        if (fx_obj_get(c, obj_i, "via_relay", &t)) d->via_relay = fx_bool(c, t, false);
+        r->n_signal_dots++;
+        idx = fx_skip(c, obj_i);
+    }
+    return FF_FIXTURE_OK;
+}
+
 static ff_fixture_result_t fx_parse_radar(fx_ctx_t const *c, int obj_i, ff_radar_view_t *r)
 {
     int t;
@@ -462,12 +507,30 @@ static ff_fixture_result_t fx_parse_radar(fx_ctx_t const *c, int obj_i, ff_radar
         if (rc != FF_FIXTURE_OK) return rc;
         r->heard_presence = (ff_crew_presence_t)v;
     }
+    /* S29 — same "valid/set defaults false/empty" convention as
+     * bearing_deg/bearing_valid above. */
+    if (fx_obj_get(c, obj_i, "signal_tier", &t)) {
+        int v;
+        ff_fixture_result_t rc = fx_enum(c, t, fx_signal_tier_table,
+                                          sizeof(fx_signal_tier_table) / sizeof(fx_signal_tier_table[0]),
+                                          "radar.signal_tier", &v);
+        if (rc != FF_FIXTURE_OK) return rc;
+        r->signal_tier = (ff_signal_tier_t)v;
+    }
+    if (fx_obj_get(c, obj_i, "signal_heard", &t)) r->signal_heard = fx_bool(c, t, false);
+    if (fx_obj_get(c, obj_i, "signal_via_relay", &t)) r->signal_via_relay = fx_bool(c, t, false);
+    if (fx_obj_get(c, obj_i, "signal_age_str", &t)) fx_copy_str(c, t, r->signal_age_str, sizeof(r->signal_age_str));
     if (fx_obj_get(c, obj_i, "clock_str", &t)) fx_copy_str(c, t, r->clock_str, sizeof(r->clock_str));
     if (fx_obj_get(c, obj_i, "batt_pct", &t)) r->batt_pct = (int8_t)fx_num(c, t, -1.0);
     if (fx_obj_get(c, obj_i, "mesh_ok", &t)) r->mesh_ok = fx_bool(c, t, false);
     int dots_i;
     if (fx_obj_get(c, obj_i, "dots", &dots_i) && !fx_is_null(c, dots_i)) {
         ff_fixture_result_t rc = fx_parse_radar_dots(c, dots_i, r);
+        if (rc != FF_FIXTURE_OK) return rc;
+    }
+    int signal_dots_i;
+    if (fx_obj_get(c, obj_i, "signal_dots", &signal_dots_i) && !fx_is_null(c, signal_dots_i)) {
+        ff_fixture_result_t rc = fx_parse_radar_signal_dots(c, signal_dots_i, r);
         if (rc != FF_FIXTURE_OK) return rc;
     }
     return FF_FIXTURE_OK;
@@ -1989,6 +2052,21 @@ static void fw_radar_dot(fw_cur_t *w, ff_radar_dot_t const *d)
     fw_raw(w, d->imprecise ? ",\"imprecise\":true}" : ",\"imprecise\":false}"); /* issue #74 */
 }
 
+/* S29 — mirrors fx_parse_radar_signal_dots field-for-field, same
+ * round-trip contract every other fw_* writer in this file follows. */
+static void fw_radar_signal_dot(fw_cur_t *w, ff_radar_signal_dot_t const *d)
+{
+    char initial[2] = {d->initial, '\0'};
+    fw_raw(w, "{\"initial\":");
+    fw_json_str(w, initial);
+    fw_fmt(w, ",\"color_idx\":%u", (unsigned)d->color_idx);
+    fw_raw(w, ",\"tier\":\"");
+    fw_raw(w, fx_enum_name(fx_signal_tier_table, sizeof(fx_signal_tier_table) / sizeof(fx_signal_tier_table[0]),
+                            d->tier, "none"));
+    fw_raw(w, "\"");
+    fw_raw(w, d->via_relay ? ",\"via_relay\":true}" : ",\"via_relay\":false}");
+}
+
 /* S12/S04 — field-for-field mirrors of fx_parse_crew_page's two row
  * shapes, same "a ctl dump must round-trip through the loader" contract
  * every other fw_* row helper in this file already keeps (AGENTS.md:
@@ -2222,6 +2300,15 @@ int ff_fixture_dump_json(ff_app_state_t const *s, char *buf, size_t buf_sz)
     fw_raw(&w, fx_enum_name(fx_crew_presence_table, sizeof(fx_crew_presence_table) / sizeof(fx_crew_presence_table[0]),
                              s->radar.heard_presence, "never"));
     fw_raw(&w, "\"");
+    /* S29 */
+    fw_raw(&w, ",\"signal_tier\":\"");
+    fw_raw(&w, fx_enum_name(fx_signal_tier_table, sizeof(fx_signal_tier_table) / sizeof(fx_signal_tier_table[0]),
+                             s->radar.signal_tier, "none"));
+    fw_raw(&w, "\"");
+    fw_raw(&w, s->radar.signal_heard ? ",\"signal_heard\":true" : ",\"signal_heard\":false");
+    fw_raw(&w, s->radar.signal_via_relay ? ",\"signal_via_relay\":true" : ",\"signal_via_relay\":false");
+    fw_raw(&w, ",\"signal_age_str\":");
+    fw_json_str(&w, s->radar.signal_age_str);
     fw_raw(&w, ",\"clock_str\":");
     fw_json_str(&w, s->radar.clock_str);
     fw_fmt(&w, ",\"batt_pct\":%d", (int)s->radar.batt_pct);
@@ -2230,6 +2317,12 @@ int ff_fixture_dump_json(ff_app_state_t const *s, char *buf, size_t buf_sz)
     for (uint8_t i = 0; i < s->radar.n_dots; i++) {
         if (i > 0) fw_raw(&w, ",");
         fw_radar_dot(&w, &s->radar.dots[i]);
+    }
+    fw_raw(&w, "]");
+    fw_raw(&w, ",\"signal_dots\":[");
+    for (uint8_t i = 0; i < s->radar.n_signal_dots; i++) {
+        if (i > 0) fw_raw(&w, ",");
+        fw_radar_signal_dot(&w, &s->radar.signal_dots[i]);
     }
     fw_raw(&w, "]}");
 

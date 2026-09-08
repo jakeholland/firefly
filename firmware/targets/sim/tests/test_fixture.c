@@ -971,6 +971,32 @@ static void radar_dots_at_cap_still_loads_ok(void)
     TEST_ASSERT_EQUAL_UINT8(FF_CREW_MAX, s.radar.n_dots);
 }
 
+/* S29 — signal_dots[], same fail-loud-on-oversized-array convention as
+ * radar_dots_over_cap_fails_loud/radar_dots_at_cap_still_loads_ok above. */
+static void radar_signal_dots_over_cap_fails_loud(void)
+{
+    char json[512];
+    build_n_element_array_json(json, sizeof(json), "radar", "signal_dots", FF_CREW_MAX + 1);
+
+    ff_app_state_t s;
+    memset(&s, 0xAA, sizeof(s));
+    TEST_ASSERT_EQUAL_INT(FF_FIXTURE_ERR_TOO_BIG, ff_fixture_load_json(json, strlen(json), &s));
+
+    ff_app_state_t zero;
+    memset(&zero, 0, sizeof(zero));
+    TEST_ASSERT_EQUAL_MEMORY(&zero, &s, sizeof(s));
+}
+
+static void radar_signal_dots_at_cap_still_loads_ok(void)
+{
+    char json[512];
+    build_n_element_array_json(json, sizeof(json), "radar", "signal_dots", FF_CREW_MAX);
+
+    ff_app_state_t s;
+    TEST_ASSERT_EQUAL_INT(FF_FIXTURE_OK, ff_fixture_load_json(json, strlen(json), &s));
+    TEST_ASSERT_EQUAL_UINT8(FF_CREW_MAX, s.radar.n_signal_dots);
+}
+
 static void now_rows_over_cap_fails_loud(void)
 {
     char json[512];
@@ -1116,6 +1142,29 @@ static void dump_then_reload_round_trips_committed_fixture(void)
      * deterministically zero on both sides — a whole-struct compare is
      * the strongest statement of "round-trips exactly" available and
      * catches any field this test forgot to name individually. */
+    TEST_ASSERT_EQUAL_MEMORY(&original, &reloaded, sizeof(original));
+}
+
+/* S29 — same round-trip contract as dump_then_reload_round_trips_
+ * committed_fixture above, exercised against a SIGNAL fixture so the
+ * new signal_tier/signal_heard/signal_via_relay/signal_age_str/
+ * signal_dots[] fields are covered by the same "dump -> reload ==
+ * original" whole-struct guarantee, not just the pre-S29 fields. */
+static void dump_then_reload_round_trips_signal_fixture(void)
+{
+    ff_app_state_t original;
+    TEST_ASSERT_EQUAL_INT(FF_FIXTURE_OK, ff_fixture_load_file(fixture_path("radar_signal_strong.json"), &original));
+    TEST_ASSERT_EQUAL_INT(RADAR_SIGNAL, original.radar.mode);
+    TEST_ASSERT_TRUE(original.radar.n_signal_dots > 0); /* exercises the signal_dots[] array too */
+
+    char json[FF_FIXTURE_DUMP_MAX];
+    int n = ff_fixture_dump_json(&original, json, sizeof(json));
+    TEST_ASSERT_GREATER_THAN_INT(0, n);
+    TEST_ASSERT_EQUAL_UINT32((uint32_t)strlen(json), (uint32_t)n);
+
+    ff_app_state_t reloaded;
+    TEST_ASSERT_EQUAL_INT(FF_FIXTURE_OK, ff_fixture_load_json(json, (size_t)n, &reloaded));
+
     TEST_ASSERT_EQUAL_MEMORY(&original, &reloaded, sizeof(original));
 }
 
@@ -1544,6 +1593,8 @@ int main(void)
 
     RUN_TEST(radar_dots_over_cap_fails_loud);
     RUN_TEST(radar_dots_at_cap_still_loads_ok);
+    RUN_TEST(radar_signal_dots_over_cap_fails_loud);
+    RUN_TEST(radar_signal_dots_at_cap_still_loads_ok);
     RUN_TEST(now_rows_over_cap_fails_loud);
     RUN_TEST(now_lineup_over_cap_fails_loud);
     RUN_TEST(now_lineup_at_cap_still_loads_ok);
@@ -1557,6 +1608,7 @@ int main(void)
     RUN_TEST(stem_handles_null_path);
 
     RUN_TEST(dump_then_reload_round_trips_committed_fixture);
+    RUN_TEST(dump_then_reload_round_trips_signal_fixture);
     RUN_TEST(dump_then_reload_round_trips_settings_default_fixture);
     RUN_TEST(bug5a_ui_settings_scroll_y_parses_and_round_trips);
     RUN_TEST(dump_then_reload_round_trips_flare_takeover_locked_fixture);

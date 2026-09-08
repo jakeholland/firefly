@@ -316,6 +316,348 @@ static void S06_AC1_mode_lost_via_never_had_a_fix(void)
 }
 
 /* ---------------------------------------------------------------------
+ * S29 (docs/specs/S29-radio-only.md) — RADAR_SIGNAL mode resolution.
+ * Mirrors the has_heard-true / has_heard-false arm of each of the three
+ * branch points ff_radar.h's S29 amendment names.
+ * ------------------------------------------------------------------- */
+
+static void S29_nofix_falls_back_to_signal_when_heard(void)
+{
+    ff_crew_t c;
+    ff_crew_member_t *m = setup_selected_member(&c);
+    ff_crew_on_heard(&c, 1001u, 1500u, true); /* heard, direct */
+
+    ff_radar_view_t v;
+    memset(&v, 0, sizeof(v));
+    ff_radar_smooth_t sm;
+    ff_radar_smooth_reset(&sm);
+    ff_latlon_t my_pos = {0.0, 0.0};
+
+    ff_radar_compute(&v, &sm, &c, 0.0f, my_pos, /*my_pos_ok=*/false, false, 2000u);
+
+    TEST_ASSERT_EQUAL_INT(RADAR_SIGNAL, v.mode);
+    TEST_ASSERT_FALSE(v.arrow_valid); /* my own position unknown: no ghost possible */
+    TEST_ASSERT_TRUE(v.signal_heard);
+    (void)m;
+}
+
+static void S29_nofix_stays_nofix_when_never_heard(void)
+{
+    ff_crew_t c;
+    setup_selected_member(&c); /* never heard */
+
+    ff_radar_view_t v;
+    memset(&v, 0, sizeof(v));
+    ff_radar_smooth_t sm;
+    ff_radar_smooth_reset(&sm);
+    ff_latlon_t my_pos = {0.0, 0.0};
+
+    ff_radar_compute(&v, &sm, &c, 0.0f, my_pos, /*my_pos_ok=*/false, false, 2000u);
+
+    TEST_ASSERT_EQUAL_INT(RADAR_NOFIX, v.mode);
+    TEST_ASSERT_FALSE(v.signal_heard);
+}
+
+static void S29_nohdg_no_member_position_falls_back_to_signal_when_heard(void)
+{
+    ff_crew_t c;
+    setup_selected_member(&c); /* has_pos stays false */
+    ff_crew_on_heard(&c, 1001u, 1500u, false); /* heard via relay */
+
+    ff_radar_view_t v;
+    memset(&v, 0, sizeof(v));
+    ff_radar_smooth_t sm;
+    ff_radar_smooth_reset(&sm);
+    ff_latlon_t my_pos = {0.0, 0.0};
+
+    ff_radar_compute(&v, &sm, &c, -1.0f /* heading invalid */, my_pos, /*my_pos_ok=*/true, false, 2000u);
+
+    TEST_ASSERT_EQUAL_INT(RADAR_SIGNAL, v.mode);
+    TEST_ASSERT_FALSE(v.arrow_valid);
+    TEST_ASSERT_TRUE(v.signal_heard);
+    TEST_ASSERT_TRUE(v.signal_via_relay);
+}
+
+static void S29_nohdg_no_member_position_stays_nofix_when_never_heard(void)
+{
+    ff_crew_t c;
+    setup_selected_member(&c); /* has_pos stays false, never heard */
+
+    ff_radar_view_t v;
+    memset(&v, 0, sizeof(v));
+    ff_radar_smooth_t sm;
+    ff_radar_smooth_reset(&sm);
+    ff_latlon_t my_pos = {0.0, 0.0};
+
+    ff_radar_compute(&v, &sm, &c, -1.0f, my_pos, /*my_pos_ok=*/true, false, 2000u);
+
+    TEST_ASSERT_EQUAL_INT(RADAR_NOFIX, v.mode);
+    TEST_ASSERT_FALSE(v.signal_heard);
+}
+
+static void S29_nohdg_with_member_position_is_unaffected_by_heard(void)
+{
+    /* NOHDG must still win when the member HAS a position, regardless of
+     * has_heard — RADAR_SIGNAL never preempts a mode with real geometry. */
+    ff_crew_t c;
+    ff_crew_member_t *m = setup_selected_member(&c);
+    m->has_pos = true;
+    m->pos = (ff_latlon_t){0.01, 0.0};
+    m->pos_age_ms = 1000u;
+    ff_crew_on_heard(&c, 1001u, 1500u, true);
+
+    ff_radar_view_t v;
+    memset(&v, 0, sizeof(v));
+    ff_radar_smooth_t sm;
+    ff_radar_smooth_reset(&sm);
+    ff_latlon_t my_pos = {0.0, 0.0};
+
+    ff_radar_compute(&v, &sm, &c, -1.0f, my_pos, true, false, 2000u);
+
+    TEST_ASSERT_EQUAL_INT(RADAR_NOHDG, v.mode);
+}
+
+static void S29_lost_falls_back_to_signal_when_heard(void)
+{
+    /* 2026-09-07 [api] presence-heard-vs-position: FF_CREW_LOST_MS
+     * widened 10min -> 20min (ff_crew.h) — now_ms/heard-time bumped from
+     * 700000/690000 to comfortably past the new 1200000ms threshold,
+     * same convention as S06_AC1_mode_lost's own bump above. */
+    ff_crew_t c;
+    ff_crew_member_t *m = setup_selected_member(&c);
+    m->has_pos = true;
+    m->pos = (ff_latlon_t){0.01, 0.0};
+    m->pos_age_ms = 0u; /* age at now_ms=1300000 is 1300000ms: LOST (>1200000ms) */
+    ff_crew_on_heard(&c, 1001u, 1290000u, true);
+
+    ff_radar_view_t v;
+    memset(&v, 0, sizeof(v));
+    ff_radar_smooth_t sm;
+    ff_radar_smooth_reset(&sm);
+    ff_latlon_t my_pos = {0.0, 0.0};
+
+    ff_radar_compute(&v, &sm, &c, 0.0f, my_pos, true, false, 1300000u);
+
+    TEST_ASSERT_EQUAL_INT(RADAR_SIGNAL, v.mode);
+    /* Ghost path: a REAL fix exists (has_pos true), so the arrow is
+     * still honestly valid, and dist_str/age_str are the "last known"
+     * facts computed unconditionally earlier in ff_radar_compute. */
+    TEST_ASSERT_TRUE(v.arrow_valid);
+    TEST_ASSERT_TRUE(v.dist_str[0] != '\0');
+    TEST_ASSERT_TRUE(v.age_str[0] != '\0');
+    TEST_ASSERT_TRUE(v.signal_heard);
+}
+
+static void S29_lost_stays_lost_when_never_heard(void)
+{
+    /* Same 1300000ms bump as the sibling test above. */
+    ff_crew_t c;
+    ff_crew_member_t *m = setup_selected_member(&c);
+    m->has_pos = true;
+    m->pos = (ff_latlon_t){0.01, 0.0};
+    m->pos_age_ms = 0u;
+
+    ff_radar_view_t v;
+    memset(&v, 0, sizeof(v));
+    ff_radar_smooth_t sm;
+    ff_radar_smooth_reset(&sm);
+    ff_latlon_t my_pos = {0.0, 0.0};
+
+    ff_radar_compute(&v, &sm, &c, 0.0f, my_pos, true, false, 1300000u);
+
+    TEST_ASSERT_EQUAL_INT(RADAR_LOST, v.mode);
+    TEST_ASSERT_FALSE(v.signal_heard);
+}
+
+/* Never-fixed (FF_FRESH_NEVER) member, but heard on the radio: RADAR_SIGNAL,
+ * with NO ghost — arrow_valid stays false and dist_str/age_str stay ""
+ * (no fabricated ghost for a member with no real fix on file at all). */
+static void S29_never_fixed_but_heard_signal_has_no_ghost(void)
+{
+    ff_crew_t c;
+    setup_selected_member(&c); /* has_pos left false: never fixed */
+    ff_crew_on_heard(&c, 1001u, 122000u, true);
+
+    ff_radar_view_t v;
+    memset(&v, 0, sizeof(v));
+    ff_radar_smooth_t sm;
+    ff_radar_smooth_reset(&sm);
+    ff_latlon_t my_pos = {0.0, 0.0};
+
+    ff_radar_compute(&v, &sm, &c, 0.0f, my_pos, true, false, 123456u);
+
+    TEST_ASSERT_EQUAL_INT(RADAR_SIGNAL, v.mode);
+    TEST_ASSERT_FALSE(v.arrow_valid); /* no real fix to point at */
+    TEST_ASSERT_EQUAL_STRING("", v.dist_str);
+    TEST_ASSERT_EQUAL_STRING("", v.age_str);
+    TEST_ASSERT_TRUE(v.signal_heard);
+    TEST_ASSERT_TRUE(v.signal_age_str[0] != '\0');
+}
+
+static void S29_close_and_live_stale_place_unaffected_by_heard(void)
+{
+    /* CLOSE/LIVE/STALE/PLACE must never be preempted by RADAR_SIGNAL even
+     * when the member has_heard — RADAR_SIGNAL only fires where the old
+     * logic had nothing left to say. Spot-check LIVE. */
+    ff_crew_t c;
+    ff_crew_member_t *m = setup_selected_member(&c);
+    m->has_pos = true;
+    m->pos = (ff_latlon_t){0.001, 0.0}; /* far enough to avoid CLOSE-by-distance */
+    m->pos_age_ms = 1000u;              /* fresh: LIVE */
+    ff_crew_on_heard(&c, 1001u, 1500u, true);
+
+    ff_radar_view_t v;
+    memset(&v, 0, sizeof(v));
+    ff_radar_smooth_t sm;
+    ff_radar_smooth_reset(&sm);
+    ff_latlon_t my_pos = {0.0, 0.0};
+
+    ff_radar_compute(&v, &sm, &c, 0.0f, my_pos, true, false, 2000u);
+
+    TEST_ASSERT_EQUAL_INT(RADAR_LIVE, v.mode);
+}
+
+/* ---------------------------------------------------------------------
+ * S29 — ff_radar_signal_tier boundary-exactness (both sides of each of
+ * the three thresholds).
+ * ------------------------------------------------------------------- */
+
+static void S29_signal_tier_boundaries(void)
+{
+    /* Four non-overlapping, gap-free intervals (see ff_radar.h's
+     * FF_SIGNAL_GOOD_MIN_DBM comment): STRONG (-80,+inf); GOOD [-95,-80]
+     * (closed at both ends — -80 itself is GOOD, not STRONG); WEAK
+     * [-110,-95); FAINT (-inf,-110). */
+    TEST_ASSERT_EQUAL_INT(FF_SIGNAL_STRONG, ff_radar_signal_tier(-79));
+    TEST_ASSERT_EQUAL_INT(FF_SIGNAL_STRONG, ff_radar_signal_tier(-1));
+    TEST_ASSERT_EQUAL_INT(FF_SIGNAL_GOOD, ff_radar_signal_tier(-80)); /* exactly -80: NOT strong */
+    TEST_ASSERT_EQUAL_INT(FF_SIGNAL_GOOD, ff_radar_signal_tier(-94));
+    TEST_ASSERT_EQUAL_INT(FF_SIGNAL_GOOD, ff_radar_signal_tier(-95)); /* exactly -95: still GOOD, not weak */
+    TEST_ASSERT_EQUAL_INT(FF_SIGNAL_WEAK, ff_radar_signal_tier(-96));
+    TEST_ASSERT_EQUAL_INT(FF_SIGNAL_WEAK, ff_radar_signal_tier(-109));
+    TEST_ASSERT_EQUAL_INT(FF_SIGNAL_WEAK, ff_radar_signal_tier(-110)); /* exactly -110: still WEAK, not faint */
+    TEST_ASSERT_EQUAL_INT(FF_SIGNAL_FAINT, ff_radar_signal_tier(-111));
+    TEST_ASSERT_EQUAL_INT(FF_SIGNAL_FAINT, ff_radar_signal_tier(-140));
+}
+
+/* ---------------------------------------------------------------------
+ * S29 — signal_dots[] computation.
+ * ------------------------------------------------------------------- */
+
+static void S29_signal_dots_unpaired_excluded(void)
+{
+    ff_crew_t c;
+    ff_crew_init(&c, NULL);
+    ff_crew_upsert(&c, 2001u); /* unpaired */
+    ff_crew_on_heard(&c, 2001u, 1000u, true);
+    ff_crew_on_rssi(&c, 2001u, -70);
+
+    ff_radar_view_t v;
+    memset(&v, 0, sizeof(v));
+    ff_radar_smooth_t sm;
+    ff_radar_smooth_reset(&sm);
+    ff_latlon_t my_pos = {0.0, 0.0};
+
+    ff_radar_compute(&v, &sm, &c, 0.0f, my_pos, true, false, 2000u);
+
+    TEST_ASSERT_EQUAL_UINT8(0, v.n_signal_dots);
+}
+
+static void S29_signal_dots_member_with_position_excluded(void)
+{
+    /* A member with a position is already on the ordinary ring
+     * (dots[]), never both — mutual exclusivity. */
+    ff_crew_t c;
+    ff_crew_init(&c, NULL);
+    ff_crew_member_t *m = ff_crew_upsert(&c, 2001u);
+    ff_crew_set_paired(&c, 2001u, true);
+    m->has_pos = true;
+    m->pos = (ff_latlon_t){0.01, 0.0};
+    m->pos_age_ms = 1000u;
+    ff_crew_on_heard(&c, 2001u, 1500u, true);
+
+    ff_radar_view_t v;
+    memset(&v, 0, sizeof(v));
+    ff_radar_smooth_t sm;
+    ff_radar_smooth_reset(&sm);
+    ff_latlon_t my_pos = {0.0, 0.0};
+
+    ff_radar_compute(&v, &sm, &c, 0.0f, my_pos, true, false, 2000u);
+
+    TEST_ASSERT_EQUAL_UINT8(0, v.n_signal_dots);
+    TEST_ASSERT_EQUAL_UINT8(1, v.n_dots); /* placed on the ordinary ring instead */
+}
+
+static void S29_signal_dots_never_heard_excluded(void)
+{
+    ff_crew_t c;
+    ff_crew_init(&c, NULL);
+    ff_crew_upsert(&c, 2001u);
+    ff_crew_set_paired(&c, 2001u, true); /* paired, no position, never heard */
+
+    ff_radar_view_t v;
+    memset(&v, 0, sizeof(v));
+    ff_radar_smooth_t sm;
+    ff_radar_smooth_reset(&sm);
+    ff_latlon_t my_pos = {0.0, 0.0};
+
+    ff_radar_compute(&v, &sm, &c, 0.0f, my_pos, true, false, 2000u);
+
+    TEST_ASSERT_EQUAL_UINT8(0, v.n_signal_dots);
+}
+
+static void S29_signal_dots_sort_order_mixed_tier(void)
+{
+    ff_crew_t c;
+    ff_crew_init(&c, NULL);
+
+    /* Roster order: WEAK, STRONG, FAINT-via-relay, GOOD. Expected sorted
+     * order: STRONG, GOOD, WEAK, NONE(via relay) — stable within a tier
+     * by roster order (no ties here, but exercised anyway). */
+    ff_crew_member_t *w = ff_crew_upsert(&c, 1u);
+    w->initial = 'W';
+    ff_crew_set_paired(&c, 1u, true);
+    ff_crew_on_heard(&c, 1u, 1000u, true);
+    ff_crew_on_rssi(&c, 1u, -100); /* WEAK */
+
+    ff_crew_member_t *s = ff_crew_upsert(&c, 2u);
+    s->initial = 'S';
+    ff_crew_set_paired(&c, 2u, true);
+    ff_crew_on_heard(&c, 2u, 1000u, true);
+    ff_crew_on_rssi(&c, 2u, -50); /* STRONG */
+
+    ff_crew_member_t *r = ff_crew_upsert(&c, 3u);
+    r->initial = 'R';
+    ff_crew_set_paired(&c, 3u, true);
+    ff_crew_on_heard(&c, 3u, 1000u, false); /* via relay: no licensed RSSI */
+
+    ff_crew_member_t *g = ff_crew_upsert(&c, 4u);
+    g->initial = 'G';
+    ff_crew_set_paired(&c, 4u, true);
+    ff_crew_on_heard(&c, 4u, 1000u, true);
+    ff_crew_on_rssi(&c, 4u, -90); /* GOOD */
+
+    ff_radar_view_t v;
+    memset(&v, 0, sizeof(v));
+    ff_radar_smooth_t sm;
+    ff_radar_smooth_reset(&sm);
+    ff_latlon_t my_pos = {0.0, 0.0};
+
+    ff_radar_compute(&v, &sm, &c, 0.0f, my_pos, true, false, 2000u);
+
+    TEST_ASSERT_EQUAL_UINT8(4, v.n_signal_dots);
+    TEST_ASSERT_EQUAL_INT('S', v.signal_dots[0].initial);
+    TEST_ASSERT_EQUAL_INT(FF_SIGNAL_STRONG, v.signal_dots[0].tier);
+    TEST_ASSERT_EQUAL_INT('G', v.signal_dots[1].initial);
+    TEST_ASSERT_EQUAL_INT(FF_SIGNAL_GOOD, v.signal_dots[1].tier);
+    TEST_ASSERT_EQUAL_INT('W', v.signal_dots[2].initial);
+    TEST_ASSERT_EQUAL_INT(FF_SIGNAL_WEAK, v.signal_dots[2].tier);
+    TEST_ASSERT_EQUAL_INT('R', v.signal_dots[3].initial);
+    TEST_ASSERT_EQUAL_INT(FF_SIGNAL_NONE, v.signal_dots[3].tier);
+    TEST_ASSERT_TRUE(v.signal_dots[3].via_relay);
+}
+
+/* ---------------------------------------------------------------------
  * AC1 — mode-priority interaction cases (PR #13 review finding #1).
  *
  * The rows above each hold every OTHER input fixed at a value that can't
@@ -1265,6 +1607,21 @@ int main(void)
     RUN_TEST(S06_AC1_mode_stale);
     RUN_TEST(S06_AC1_mode_lost);
     RUN_TEST(S06_AC1_mode_lost_via_never_had_a_fix);
+
+    RUN_TEST(S29_nofix_falls_back_to_signal_when_heard);
+    RUN_TEST(S29_nofix_stays_nofix_when_never_heard);
+    RUN_TEST(S29_nohdg_no_member_position_falls_back_to_signal_when_heard);
+    RUN_TEST(S29_nohdg_no_member_position_stays_nofix_when_never_heard);
+    RUN_TEST(S29_nohdg_with_member_position_is_unaffected_by_heard);
+    RUN_TEST(S29_lost_falls_back_to_signal_when_heard);
+    RUN_TEST(S29_lost_stays_lost_when_never_heard);
+    RUN_TEST(S29_never_fixed_but_heard_signal_has_no_ghost);
+    RUN_TEST(S29_close_and_live_stale_place_unaffected_by_heard);
+    RUN_TEST(S29_signal_tier_boundaries);
+    RUN_TEST(S29_signal_dots_unpaired_excluded);
+    RUN_TEST(S29_signal_dots_member_with_position_excluded);
+    RUN_TEST(S29_signal_dots_never_heard_excluded);
+    RUN_TEST(S29_signal_dots_sort_order_mixed_tier);
 
     RUN_TEST(S06_AC1_close_by_rssi_wins_over_stale_gps);
     RUN_TEST(S06_AC1_nofix_beats_close_by_rssi);
