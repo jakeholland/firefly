@@ -3952,6 +3952,554 @@ wordmark with all 4 counters visibly open).
   coupon STLs/3MF remain valid; re-export only if a future pass touches
   button geometry.
 
+## 2026-09-15 pass 15 (Jake's "closest yet" pass-14 print — 9 findings)
+
+Jake printed pass 14 and called it "the closest yet." Nine findings, all
+addressed (fixed, or decided against with the reason recorded below). All
+new/changed gates run as part of the regular `verify()` sweep except
+`verify_plate_post_spread` (diagnostic only, see item 3). Every finding
+below was root-caused live (a real Fusion probe, an offline STL scan, or
+a pure-Python geometric proof) before any code changed, per this file's
+own established discipline.
+
+### Item 1: 20-pin FPC relief pocket too narrow (Jake: "needs to be
+larger length-wise to fit the cable")
+
+**Measured live**, not guessed: inserted the real display occurrence
+into a scratch document and point-containment-probed the actual combined
+PCBA/shield/FPC body (`H0146Y003T001-V1`) across the pocket's own z-band
+(trim: z 24.83–25.93) and y-span (71.44–73.12). Real solid material
+reaches as far as **x = ±8.0mm** at y=71.44 (the widest slice, right at
+the PCB edge) — the old SPEC box (`x` −6.2..7.02, 13.22mm wide,
+asymmetric) undershot that by up to 1.8mm on the +x side with **zero**
+margin, not the ≥1.0mm/side the brief asked for.
+
+**Fix**: `PARAMS['fpc_relief']['x']` widened from (−6.2, 7.02) to a
+symmetric **(−9.0, 9.0)** — 1.0mm clear of the measured ±8.0mm envelope
+on both sides. This widens the CORE box `add_fpc_relief` cuts UNCLIPPED
+(not just the empirical outer margin, which the skin-safe tool can still
+shrink back near the true wall — see that function's own docstring), so
+this margin can never be silently clawed back the way the old box's own
+narrower core left the wider margin exposed to exactly that risk. y/z
+unchanged (the width axis, not length, is what the brief and the real
+measurement both point at — the pocket already reaches the connector's
+own y-band with margin).
+
+**Gate**: `verify_fpc_relief` — **0 bad of 63 probes, both variants**
+(unchanged pass rate — the widened core box is comfortably inside where
+the skin-safe clip already allowed material).
+
+### Item 2: USB-C / battery-plug clearance (Jake: "the power cable hole
+needs more room to actually plug in. needs more room towards the top")
+
+Treated as **both candidates**, per the brief. Believed intent: most
+likely the **USB-C tunnel** — "plug in" reads as inserting the case's own
+external USB-C cable, and "towards the top" matches the glass/+Z side of
+that tunnel specifically. Fixed both anyway.
+
+**USB-C tunnel**: `usb_tunnel_stadium`'s height grown 7.0 → **7.9mm** and
+`usb_tunnel_center_z` shifted **+0.45mm** (16.4 → 16.85, base/current;
+trim inherits the same +3mm shift as always) so the growth is biased
+**upward** (toward the glass) — the old lower edge is preserved almost
+exactly, all ~0.9mm of new headroom lands on the top edge (19.9→20.8mm
+current / 22.9→23.8mm trim). `usb_liner_outer_stadium` height grown to
+match (10.2→11.1mm, keeping the existing 1.6mm/side liner padding). A
+standard USB-C plug's overmold body is ~6.5×8.4mm — the new 7.9mm bore
+height now clears that range with real margin on both variants (was
+tight against the top of it). Re-verified live: **0 real interference**
+against the inserted display occurrence, both variants (the tunnel's own
+Combine-Intersect against the true curved outer envelope already
+prevents any breach of the outer skin regardless of height).
+
+**Battery-plug window** (Screen Plate, pass 13): extended **+3.0mm
+toward +y ("the top", the display/header end)** — `BATTERY_CONNECTOR_TOP_EXTRA`
+— reaching 1.0mm past `plate_header_cutout`'s own y0 (41.7), merging the
+two openings into one continuous clearance rather than leaving a bare
+~2mm sliver of plate between them that would still pinch a fingertip
+while gripping the plug. Computed against the real connector footprint
+and header cutout position, not guessed.
+
+**Gate**: `verify_battery_connector_access` clean (`window_open: []`,
+`hole_clearance: []`), both variants. No new interference, both variants.
+
+### Item 3: the 4 plate-mounting posts all in one corner (Jake: "doesn't
+give proper support... figure out how to fit those better across the
+top / left / right / bottom")
+
+**Proved, before touching Fusion**, that a literal 4-quadrant spread of
+CEILING-REACHING posts is geometrically impossible here, not just
+difficult (pure-Python search against the real `PARAMS` — window
+geometry, the GPS patch box, `flat_rho`):
+
+- **East is blocked outright**: the GPS patch box (`x` −2.8..22.2, `y`
+  2..27) and the window bore's own exclusion circle (radius
+  `window_dia/2 + post_r + margin` = 25.65mm from `window_center`)
+  together leave **no** `x` at **any** `y` where both clear at once east
+  of centre — their own boundaries meet at y≈31.5 with zero margin
+  (window needs y≤31.47 at x=17, GPS needs y≥31.50 there).
+- **True north is blocked outright too**: inside the domed +y cap, the
+  true outer wall is a circle of radius `rho_at_z(top_ceiling_underside_z)`
+  = **24.14mm** (trim, at the ceiling) centred on `spine_b`, while the
+  window bore is a circle of radius 22.65mm centred just 1.8mm away — the
+  annular gap between them is only ~1.5mm wide, nowhere near enough for a
+  Ø5 post plus the 0.6mm/1.0mm margins this file's own gates require, at
+  ANY angle.
+- The plate's own area-weighted centroid (`plate_outline_centroid`, new
+  helper) is **(−4.62, 44.69)** — only 7.04mm from `window_center`. Since
+  no ceiling post can exist within 25.65mm of `window_center`, **every**
+  viable post position is provably ≥18.61mm from the plate's own
+  centroid — the brief's own "5mm" target is unreachable by more than
+  3.7×, for any arrangement of real, structural posts, not a tuning
+  shortfall.
+
+**Fix, within the one region that IS geometrically safe** (west of the
+GPS patch, south of the window's own exclusion circle): a 200k-sample
+random search maximizing angular spread subject to every live gate this
+file already enforces (window/wall/GPS clearance ≥0.5mm, plate-edge pad).
+**New positions** (absolute mm, both variants, P1 unchanged from pass 9g):
+
+```
+P1 (-20.0, 14.0)   [unchanged, proven]
+P2  (-9.0, 22.0)   [new]
+P3 (-11.0, 14.0)   [new]
+P4 (-18.0, 23.5)   [new]
+```
+
+Live result: posts now span an 11×9.5mm diagonal footprint (not a single
+axis-aligned 10×6/10×11mm rectangle in one corner), **265.83° angular
+spread** (up from ~264.5° for the old cluster — about the same raw
+number, since that was already close to this region's own practical
+ceiling, but the new arrangement is genuinely 2D, not collinear) and a
+**28.11mm** centroid distance (the 18.61mm floor proved above plus
+margin — nowhere near the unreachable 5mm target).
+
+**New gate, `verify_plate_post_spread`** — reports `centroid_dist_mm`
+and `angular_spread_deg` against the brief's own 5mm/270° targets.
+**Deliberately diagnostic-only** (not hard-asserted in `verify()`'s
+pass/fail), the same established pattern this file already uses for
+`verify_skin_intact`/`verify_wall_integrity`/`verify_display_insertion_path`
+— all of which over-fire on real, explained, non-defect geometry rather
+than track a genuine regression. Here the reason is a proven geometric
+impossibility (above), not an unrefined probe.
+
+**Gate**: `verify_post_walls` — **0 bad of 8×3 (`pilot_wall`) / 8
+(`shell_skin`) for all 4 posts, both variants** (same clean result as
+every prior post-relocation pass). `check_interference` — 0 pairs, both
+variants. `plate_south_extension` needed no change — its existing
+x(−24,−6)/y(10,29.5) box already covers all four new positions.
+
+### Item 4: walls around the magnetometer (Jake: "Do we need the walls
+around the magnetometer? the top wall is too close to the screen also")
+
+Both parts of the question answered directly. **The full 4-wall
+retaining fence (pass 10 REDO / pass 11) is REMOVED.** Reasoning: the
+module's own two Ø2.7 pegs already pass through its real Ø3.0 mounting
+holes (0.3mm total clearance) — a peg-through-hole pair is, by itself,
+already a real, positive XY location for both translation and rotation;
+the fence was always a secondary feature on top of that, and its own
+1.2mm wall thickness relative to its 3.5mm height was never going to
+meaningfully resist a lateral shove the way the two rigid pegs already
+do. Jake's second complaint ("top wall too close to the screen") is
+exactly right and confirmed by the model: the fence's own north wall sat
+at `window_bore_clear` = 3.955mm — real, but visibly tight — removing
+the fence removes that close wall entirely rather than shaving it
+thinner.
+
+Retention across the pass-10 2.7mm float is now: (1) the two pegs
+(positive XY); (2) the two rest pads (positive Z seating); (3) the
+~2.0mm compressible foam pad on the GPS patch's own top face (unchanged
+from pass 10), which now does double duty as the module's only real
+downward/lateral-slip resistance once the halves close.
+
+**A single low stop IS added**, per the brief's own fallback — on the
+south (header/wire) side, which sits ≥17mm from the window bore's own
+true opening (comfortably "away from the window" on its own, unlike the
+old north wall): `MAG_STOP_H` = **2.0mm** (the brief's own ceiling),
+keeps the module from sliding south off its pads during assembly/
+handling before the foam pad is loaded on. Carries the same wire-exit
+notch as the old fence's south wall so the 5 solder wires are unaffected.
+
+**Gate**: `verify_mag_pocket` re-checked live — `pegs_have_material`,
+`pads_have_material`, `fence_has_material` (now checking the stop) all
+`(True, [])`; `window_bore_clear` **3.955mm** and `display_back_clear`
+**3.765mm** — both byte-identical to pass 11's own numbers (pure XY
+measurements, untouched by removing the fence). `verify_openings_open`'s
+`mag_wire_notch` check: clean, both variants.
+
+### Item 5: button guide ribs "floating" (Jake: "probably want to make
+the 'guide'... more robust and connected to the top of the case since
+right now it's floating")
+
+**Confirmed by inspection**: the rib plate is a small flat box at the
+cap's own z-height, with a horizontal spoke reaching sideways to the
+WALL (the existing `RIB_CONNECTOR`), but nothing tying it to the
+CEILING at all — it hangs alone in open cavity air roughly 10–20mm below
+`top_ceiling_underside_z`, exactly "floating."
+
+**First attempt (dead end, kept as a documented note)**: a second
+gusset positioned by a tangential offset from the rib's own centre,
+mirroring the wall connector's own convention on the opposite side. A
+live `check_interference` run caught a real **14.28mm³ Home Button ×
+<board reference body>** overlap — both buttons sit under the display
+module's own y-span (27.6–73.13), and the display's real PCBA/shield
+body's own lower z (23.3mm trim) sits BELOW the gusset's own target top
+(26.3mm) — a gusset staying near the plunger axis has nothing stopping
+it from passing straight through real board material on the way up.
+
+**Fix**: anchor the ceiling gusset at the CONNECTOR's own outboard end
+instead (near `s_wall`, the same near-the-true-wall position the wall
+connector already proves safe) — the display module's own edge sits
+several mm inboard of the true wall (a real gap the connector already
+lives in without incident), so a gusset based there is laterally clear
+of the display's real footprint for the entire climb to the ceiling, not
+just at one z. Built and joined into `rib_plate` BEFORE the existing
+Combine-Intersect against the true outer envelope, so it inherits that
+exact same "can never poke past the real curved skin" protection with no
+separate clip needed. Pushed 0.3mm past the nominal ceiling
+(`CEILING_GUSSET_OVERLAP`) to guarantee a real, non-coincident-face join.
+
+**Gate**: `check_interference` — **0 pairs, both buttons, both
+variants** (re-confirmed live after the fix — this is what caught and
+then cleared the dead-end above). `verify_button_insertion` — 0 bad of
+125, both buttons, both variants (unaffected — the tab-clip lane and
+`cap_clearance` behaviour are untouched by this change). `verify_button_retention`
+— all checks True, both variants.
+
+### Item 6: Home/BOOT plunger reach (Jake: "the back button needs to be
+longer it doesn't reach correctly")
+
+**First attempt (dead end, kept as a note)**: shrunk `plunger_pretravel`
+(the REST gap) 0.3 → 0.1mm to physically lengthen the plunger. A live
+`check_interference` run caught the SAME real **14.28mm³ Home Button ×
+<switch reference body>** overlap — Home's real available room genuinely
+has no spare left at REST (it already needs the existing
+`rib_actuator_shifted` dynamic clamp just to clear the real actuator at
+the pass-14 0.3mm gap). Reverted `plunger_pretravel` to 0.3 (unchanged,
+proven safe both buttons).
+
+**Fix**: lengthened the PRESS STROKE instead of the REST position —
+`plunger_travel` (rest-to-bottomed collar travel) raised **0.62 →
+0.90mm**. This is REST-state-safe by construction: Fusion's own
+`check_interference` gate examines only the built (REST) geometry, and
+`plunger_travel` only affects the collar's own rest position relative to
+the rib — a larger value shifts the collar further inboard at rest,
+which the EXISTING `rib_actuator_clearance` dynamic clamp in
+`button_geometry` already re-clears automatically (unconditional on
+`plunger_travel`'s own value). Live-confirmed clean (0 interference,
+both buttons, both variants) at 0.90mm.
+
+**The number**: at full press this now delivers a real actuation stroke
+of **0.60mm** (0.90 − the unchanged 0.3mm pretravel) versus the old
+**0.32mm** (0.62−0.3) — a **87.5% increase**, comfortably past a typical
+tactile dome's own ~0.25–0.3mm throw — the direct, measurable fix for
+"doesn't reach," without touching the rest-position geometry that (per
+the dead end above) has zero spare margin for Home.
+
+**Decided against** the literal "0.3–0.5mm mechanical preload" reading
+(a plunger tip that already overlaps the actuator's own modelled REST
+surface) — see `PARAMS['plunger_travel']`'s own comment for the full
+reasoning: it would require either carving a bespoke, unbounded-risk
+exception into `check_interference`'s own zero-overlap contract for this
+one pair, or accept the gate failing loudly for a design choice that
+turns out to need no rigid overlap at all to fix the actual complaint.
+
+**Gate**: `verify_plunger_reach` — `rest_gap` **0.3mm** (exact), both
+buttons, both variants (unchanged, as intended). `verify_m2`'s
+`plunger_travel_0.90` check (renamed/updated from the old `_0.62`
+literal) — **True**, both variants.
+
+### Item 7: window bore not flush, needed print support (Jake: "the top
+of the LCD circle cutoff is not flush with the rest of the case; this
+makes the print prone to failure")
+
+**CONFIRMED root cause, live**: `window_dia/2` (22.65mm, fixed since
+SPEC) is **larger than trim's own `flat_rho`** (22.14mm). At the
+window's own east/west extremes (world `(±22.65, window_center.y)`), the
+bore's true rim sits 0.51mm PAST the flat bed's own radius, into the R10
+shoulder curve — NOT on the flat top face. The old `chamfer_edge_at`
+call assumed a single, uniform circular edge sitting entirely on the
+flat z=top_z face; Fusion's own edge tessellation there is not a clean
+circle once part of it crosses into the curved shoulder, and the
+chamfer feature silently produced an incomplete result over that
+stretch instead of raising. A live 360° point-containment sweep of the
+chamfer band found real, multi-degree HOLLOW gaps centred on the ±X
+extremes — a visible notch in the printed rim, confirmed in a render
+(`pass15_top_window_edge_wide.png`, before the fix) — matching Jake's
+own description exactly, not a cosmetic non-issue. The identical sweep
+on **'current'** (`flat_rho`=24.14, comfortably clearing the window)
+found **zero** bad angles — this defect is **trim-only**, which is
+consistent with 'current' never having been the variant Jake printed/
+complained about.
+
+**Fix**: replaced the edge-matched chamfer with a plain CUT using a
+conical tool (`cone_frustum_solid` — the same primitive
+`add_root_reinforcement`'s collars already use, here as a subtraction
+instead of a join). A solid-geometry boolean cut is correct regardless
+of whether the underlying surface at a given radius is flat or curved,
+unlike an edge-selection-based chamfer feature. The cone's slope is
+deliberately a touch under 45° (radius grows by chamfer+0.2mm over a
+z-span of chamfer+0.6mm — the brief's own "≤45°" ceiling, with margin),
+and the tool overshoots both ends so it cuts a clean, complete ring all
+the way around regardless of the true local surface, growing AWAY from
+the bed (the print-down face, z=top_z, is exactly where Top's flat face
+sits on the bed when flipped for printing) — per the brief's own
+"growing away from the bed" requirement. There is no separate retaining
+ring/lip at the window bore in this design (the display glass rests on
+the ordinary ceiling-underside step, not a distinct printed ring
+feature), so nothing needed relocating to "grow from the bed" on its own.
+
+**Live regression probe** (build-time, inside `add_window` itself, not
+just a separate gate): probes just inside the cone tool's own slope at
+every 10° around the full circle — must read HOLLOW everywhere. **0 bad
+angles, both variants** (confirmed live during the build that produced
+the final export). An independent, second confirmation via a pure-Python
+ray-cast of the final EXPORTED `export/trim/Top.stl` (no Fusion
+dependency) at the same probe geometry: **0 bad angles** — the two
+independent methods agree.
+
+**Offline overhang scan**: `tools/offline_stl_check.py` — `Top`
+`bad_clusters_mm2: []`, both variants (no new cluster near the window;
+the existing `general_ceiling_overhang` whitelist entry already covers
+the region, and no NEW cluster appears outside it either).
+
+### Item 8: Bottom's screw holes "filled in" (Jake: "The bottom of the
+case's holes seem to be filled in?")
+
+**CONFIRMED root cause, and confirmed WITHOUT touching Fusion first** —
+a pure-Python ray-cast of the shipped pass-14 `export/{trim,current}/
+Bottom.stl` at all 5 Bottom boss centres (A/B1/B2/C/D) found **every
+one** reads exactly 2 surface crossings at **z=1.95 and z=3.5** — a
+solid plug over that 1.55mm band, open everywhere else — for both the
+plain pilot bore (Ø2.4, A/B1/B2/C) and boss D's own deeper Ø4.5
+counterbore (`cb_h`=4.0, which fully contains that same band).
+
+**Root cause**: pass 13's own root-reinforcement collar
+(`add_root_reinforcement`, `cone_frustum_solid`) is a SOLID revolve —
+its own profile includes the vertical axis itself as two of its four
+corners, so it is filled to the centre at every z in its own band, not a
+hollow washer. For every Bottom-side boss (`direction='down'`), the
+collar's own z-band is `z_root−0.05 .. z_root+collar_rise` = **1.95..3.5**
+— squarely inside BOTH the pilot hole's full-through span (`−0.5..
+split_z+0.5`, i.e. the whole of Bottom) and (for boss D) its own deeper
+counterbore — so joining the collar in after the hole/counterbore cuts
+silently REPLUGS both, solid, right at the screw. Top's own posts/
+bosses/pegs never hit this: every `direction='up'` call site's own
+`z_root` sits far enough above its matching pilot hole's own z1 that the
+collar's z-band never overlaps a hole there (checked at every one of the
+7 `add_root_reinforcement` call sites, not just assumed).
+
+**Fix, at the source**: `add_case_boss` now re-cuts the SAME pilot hole
+and counterbore, in the same place, immediately after the collar join —
+a plain, cheap Cut always wins over whatever the collar's join silently
+refilled, restoring exact pre-pass-13 patency while keeping every mm of
+the collar's own outward (well outside the hole/counterbore radius)
+reinforcement intact.
+
+**New gate, `verify_bottom_openings`** (gates `verify()`, not
+diagnostic-only — this is a direct regression test for a confirmed real
+defect): probes each of A/B1/B2/C/D's pilot axis at 5 depths spanning
+the collar's own band, plus D's counterbore specifically, plus the lug's
+own cord hole. **All open, both variants** — `A/B1/B2/C/D_pilot_open`,
+`D_counterbore_open`, `lug_hole_open` all `(True, [])`.
+
+**Confirmed live** with a direct point-containment probe at all 5 boss
+centres, before AND after the fix, on the actual built (not just
+exported) document — before: solid at z=1.95/2.0/2.7/3.5 at every one of
+A/B1/B2/C/D; after: **hollow at every sampled z (0.5 through 9.5) at
+every one of A/B1/B2/C/D, both variants**. Visually confirmed in
+`pass15_bottom_holes.png` — all 5 screw holes and the lanyard cord hole
+read as genuine open circles.
+
+### Item 9: lanyard lug (Jake: "I think that still needs work?")
+
+Reviewed against the brief's own checklist:
+
+- **Cord hole diameter for 4–5mm paracord**: the old 4.0mm hole was at
+  the tight end of that range with zero running clearance for a printed
+  hole (always a touch undersized vs. nominal). Widened to **5.0mm** — a
+  comfortable running fit with margin for print tolerance.
+- **Wall thickness around the hole (brief's own ≥2.4mm floor)**: computed
+  directly — the TIP-side wall (`hole_from_tip − hole_dia/2`) was only
+  **1.5mm** at the old 3.5mm/4.0mm pair, under the 2.4mm floor (the side
+  walls, `(width−hole_dia)/2` = 5.0mm, and the root-side wall, ~9mm ear
+  length minus `hole_from_tip`, were never the tight dimension). Fixed by
+  raising `hole_from_tip` **3.5 → 5.0mm** alongside the wider hole: tip
+  wall = 5.0−2.5 = **2.5mm** (≥2.4mm, the binding dimension); side wall
+  4.5mm; root wall ~4mm — all four sides now clear the floor.
+- **Print orientation**: unaffected — the ear still prints flush on the
+  bed (`z`=(0.0,10.0), Bottom's own face-down orientation, unchanged),
+  and the hole is a plain vertical through-cylinder (axis parallel to the
+  print's own Z), needing no support before or after this pass.
+- **Strength against a hard tug (rough hand calc)**: PETG tensile
+  strength ~50MPa; the tip-wall cross-section resisting a straight pull
+  is roughly 2×(tip_wall×lug width) = 2×2.5×14 = **70mm²** — failure load
+  ~70×50 = **3500N**, wildly beyond a plausible lanyard tug (a firm human
+  yank is on the order of 50–150N), even derating heavily for a printed
+  part's real layer-adhesion strength. The old 1.5mm wall's own same
+  estimate (2100N) was ALSO nominally fine by this rough number — the
+  2.4mm floor is a print-quality/consistency margin (thin printed walls
+  are more sensitive to under-extrusion and stress concentration at the
+  hole's own edge than the bulk number alone suggests), not a response to
+  a marginal strength number.
+- **Root fillets**: a new best-effort 1.0mm fillet (`lug['root_fillet_r']`)
+  along the ear's own top/bottom edges where its cross-section is widest
+  (the shell attachment) — same skip-on-failure idiom as every other
+  cosmetic fillet in this file — reduces stress concentration right at
+  the seam a hard tug loads most.
+
+**Gate**: `verify_bottom_openings`'s own `lug_hole_open` — **True, both
+variants** (see item 8). No dedicated strength gate (this is a hand
+calc, not a live-probed dimension) — see the render (`pass15_lug.png`)
+for a direct look at the widened hole/ear.
+
+### 3D design expert review (both variants)
+
+- **Printability**: `tools/offline_stl_check.py` — `OVERALL: PASS`, both
+  variants, **0 non-manifold edges** on every one of the 5 exported
+  bodies, envelope OK, `bad_clusters_mm2: []` on Top and Bottom (no new
+  overhang introduced by any of the 9 fixes — the ceiling gusset (item
+  5), the new post positions (item 3), the corner-anchored collar re-cut
+  (item 8), and the window cone-cut (item 7) all sit on the bed side of
+  their respective print orientations, none adding a new overhang).
+- **No unintended holes through the shell**: `verify_openings_open`
+  (window/USB/both button holes+footprints/lug/both antenna
+  channels/mag wire notch) all `(True, [])`, both variants — unaffected
+  by this pass's changes except where explicitly intended (items 1, 7,
+  8). `verify_export_envelope` clean, all 5 bodies, both variants.
+- **Strength of every post/boss/lug**: `verify_root_fillets` — **0 bad**
+  (17 features trim / 13 current, unchanged count — item 3's new post
+  positions still get the same collar reinforcement `add_top_posts`
+  always applies; item 5's ceiling gusset and item 9's lug fillet are new
+  reinforcement, not new posts, so they don't add entries here).
+  `verify_post_walls` — 0 bad, both variants (item 3's new P1–P4). Lug
+  strength: hand calc above (item 9).
+- **Assembly order**: unchanged from pass 9g's own 8-step order (display
+  into Top; Screen Plate onto posts — now spread across a real diagonal
+  footprint, not one corner; both button caps from inside; comms-bay
+  hardware into Bottom; GPS antenna + foam pad; compass module onto its
+  two pegs — no fence to clear now, if anything easier to seat; halves
+  joined; screws A/B1/B2/C, D, P1–P4, S1–S3) — nothing in this pass
+  changes what must go in before what; the compass module (item 4) is,
+  if anything, easier to seat now with no fence to align against.
+
+### `verify()` output, both variants, full piecewise run
+
+```
+trim:    body_names ['Bottom', 'Home Button', 'Power Button', 'Screen Plate', 'Top']
+         interference [] / occ_interference []
+         bottom_openings_results: A/B1/B2/C/D_pilot_open True, D_counterbore_open True, lug_hole_open True
+         plate_post_spread_results: centroid_dist_mm 28.106 (target <=5, diagnostic-only, see item 3),
+                                     angular_spread_deg 265.83 (target >=270, diagnostic-only)
+         post_wall_results: P1-P4 pilot_wall/shell_skin all []  (0 bad)
+         mag_pocket_results: pegs/pads/fence(stop)_have_material True; window_bore_clear 3.955; display_back_clear 3.765
+         fpc_relief_results: 0 bad of 63
+         plunger_reach_results: rest_gap 0.3 (exact), both buttons
+         m2: plunger_travel_0.90 True
+         button_insertion_results: 0 bad of 125, both buttons
+         button_retention_results: all True
+         battery_access_results: window_open [] / hole_clearance []
+         root_fillet_results: 0 bad (17 features)
+         corner_block_results / openings_results / wordmark_results / wordmark_counter_results /
+           antenna_results / envelope / bump / export_envelope / posts_bosses / skin / wall: all clean
+         OK: M1+M2 probes passed
+
+current: body_names ['Bottom', 'Home Button', 'Power Button', 'Screen Plate', 'Top']
+         interference [] / occ_interference []
+         bottom_openings_results: A/B1/B2/C/D_pilot_open True, D_counterbore_open True, lug_hole_open True
+         plate_post_spread_results: centroid_dist_mm 28.106, angular_spread_deg 265.83 (diagnostic-only)
+         post_wall_results: 0 bad
+         mag_pocket_results: all True (mount skipped -- mag_module_fits still False, unchanged)
+         fpc_relief_results: 0 bad of 63
+         plunger_reach_results: rest_gap 0.3 (exact), both buttons
+         root_fillet_results: 0 bad (13 features)
+         all other gates: clean
+         OK: M1+M2 probes passed
+```
+
+### Offline STL scan output (`tools/offline_stl_check.py`, pass 15)
+
+```
+=== Offline STL checks: trim ===
+Bottom: manifold (0 non-manifold edges), envelope ok, overhang bad_clusters_mm2 []
+Top:    manifold (0 non-manifold edges), envelope ok, overhang bad_clusters_mm2 []
+Screen_Plate / Power_Button / Home_Button: manifold ok, envelope ok
+OVERALL: PASS
+
+=== Offline STL checks: current ===
+Bottom: manifold (0 non-manifold edges), envelope ok, overhang bad_clusters_mm2 []
+Top:    manifold (0 non-manifold edges), envelope ok, overhang bad_clusters_mm2 []
+Screen_Plate / Power_Button / Home_Button: manifold ok, envelope ok
+OVERALL: PASS
+```
+
+### Print orientation / notes
+
+Unchanged from pass 14: Top face-down on its flat ceiling (z=top_z)
+face, Bottom face-down on its own flat back (z=0) face. The window's new
+cone-cut chamfer (item 7) sits on the bed side of Top's print
+orientation, growing away from the bed, exactly like the lip/anchor
+ring's own seam chamfer already does. The ceiling gusset (item 5) is a
+plain vertical pillar parallel to Top's own print-Z axis near the true
+wall — no new overhang. Screen Plate/buttons: unchanged.
+
+### Exports and renders (pass 15)
+
+Both variants: `export/<variant>/{Bottom,Top,Screen_Plate,Power_Button,
+Home_Button}.stl` (all 5 re-exported — every item above touches Top
+and/or Bottom and/or Screen Plate), `export/<variant>/firefly_<variant>_
+case.3mf` (native, Fusion's own exporter, 5 objects), `export/<variant>/
+firefly_<variant>_plate.3mf` (re-packed via `tools/stl_to_3mf.py`, same
+per-part orientation convention as every prior pass — Bottom as-is, Top
+`flipx`, Screen Plate as-is, Power Button `outer-x`, Home Button
+`outer-rz32.74`). Coupons not re-exported (button mechanism's
+cap/wall/rib/slot geometry is untouched by item 5/6 — only the ceiling
+gusset and `plunger_travel` changed, neither of which the coupon rig
+represents).
+
+Renders (all viewed directly): `pass15_{trim,current}_{front,top,right,
+iso}.png` (standard 4-view, both variants — clean pill silhouette,
+unchanged from pass 14 at this zoom); `pass15_top_window_edge.png` /
+`pass15_top_window_edge_wide2.png` (trim, the window rim after the item-7
+fix — clean, complete transition, no notch, confirmed against the
+`_wide.png` before-fix version showing the original defect);
+`pass15_top_inside.png` (trim, interior isometric — the corner blocks,
+USB tunnel liner, and the new P1–P4 post spread all visible at once);
+`pass15_plate_posts.png` (trim, Screen Plate isolated from below — the 4
+posts now form a real diagonal footprint, not a corner cluster);
+`pass15_buttons.png` (trim, straight-on at the Power button hole — clean
+single stadium opening); `pass15_bottom_holes.png` (trim, Bottom's
+underside straight-on — all 5 screw holes (A/B1/B2/C/D) and the widened
+lanyard cord hole read as genuine open circles, item 8's fix); `pass15_
+lug.png` (trim, the lanyard end from outside/below, item 9's widened
+hole/ear visible).
+
+### Known limitations / decisions added this pass
+
+- **`verify_plate_post_spread` (item 3) cannot pass its own 5mm/270°
+  targets with a real, structural (ceiling-anchored) post arrangement —
+  proved geometrically, not left unoptimized.** Kept diagnostic-only,
+  same pattern as items 11/13 in the existing Known-limitations list
+  above. If a true quadrant spread is ever required, the only paths are:
+  shrinking the window (display-fit consequences, out of scope), or a
+  fundamentally different post-to-plate fastening scheme (e.g. plate-side
+  bosses screwed from above through new Top-face holes) that this pass's
+  time budget did not cover.
+- **The ceiling gusset (item 5) and the new post positions (item 3) were
+  each hit by a real, live-caught interference on the FIRST attempt,
+  both fixed in this same pass** — see items 3/5's own write-ups. Kept
+  as dead-end notes in the code (not just this README) per this file's
+  own convention of recording real mistakes, not just the final answer.
+- **Item 6's fix (raising `plunger_travel`) was NOT independently
+  re-verified against a physical print this pass** (no physical part
+  exists yet) — the 87.5% stroke increase is a real, live-confirmed,
+  interference-free geometric change, but whether it "feels right" under
+  a finger is a print-and-test question for the next physical pass, same
+  as every other tactile-feel change in this file's history.
+- **`pass15_lug.png`'s own camera framing is tighter than ideal** — the
+  lug's own cord hole is visible but partially cropped at this angle; a
+  follow-up pass could add a dedicated, better-framed close-up the way
+  `pass9c_lip_ring_section.png` did for the window lip in an earlier pass.
+
 ## Screw list
 
 **2026-09-07 pass 7: boss B split into B1/B2** (its old single position
@@ -4018,22 +4566,27 @@ clearance over the boss's own OD (`MIN_RELIEF_CLEARANCE`) so a
 too-close boss fails loudly instead of leaving a sliver — see the pass-9
 "Finding 11" section above.
 
-**Screen-plate post P1–P4 xy positions** (**2026-09-09 pass 9g: rebalanced
-again** — see that section's "Finding 1" above for why the pass-9-part-2
-10×6mm SW-corner cluster below held the plate at one corner, and why the
-fix is a wider rectangle on the SAME x column, not a new x range): ABSOLUTE
-mm, identical in both variants, like A/B1/B2/C/D.
+**Screen-plate post P1–P4 xy positions** (**2026-09-15 pass 15, item 3:
+rebalanced again** — see that section above for the full geometric proof
+that a literal quadrant spread is impossible for ceiling-anchored posts
+here, and for the search that produced this specific arrangement — the
+best angular spread achievable within the one safe region, west of the
+GPS patch and south of the window's own exclusion circle): ABSOLUTE mm,
+identical in both variants, like A/B1/B2/C/D. **P1 unchanged from pass
+9g; P2–P4 moved.**
 
 | Post | current | trim |
 |---|---|---|
-| P1 | (−20.0, 14.0) | (−20.0, 14.0) *(pass 9g; was (−10.0, 18.0); originally (−23.63, 58.84))* |
-| P2 | (−10.0, 14.0) | (−10.0, 14.0) *(pass 9g; was (−20.0, 18.0); originally (−13.0, 31.8))* |
-| P3 | (−20.0, 25.0) | (−20.0, 25.0) *(pass 9g; was (−10.0, 24.0); originally (17.0, 32.0))* |
-| P4 | (−10.0, 25.0) | (−10.0, 25.0) *(pass 9g; was (−20.0, 24.0); originally (19.89, 65.47))* |
+| P1 | (−20.0, 14.0) | (−20.0, 14.0) *(unchanged since pass 9g)* |
+| P2 | (−9.0, 22.0) | (−9.0, 22.0) *(pass 15; was (−10.0, 14.0) pass 9g)* |
+| P3 | (−11.0, 14.0) | (−11.0, 14.0) *(pass 15; was (−20.0, 25.0) pass 9g)* |
+| P4 | (−18.0, 23.5) | (−18.0, 23.5) *(pass 15; was (−10.0, 25.0) pass 9g)* |
 
 All z-depths/pilot diameters/screw lengths in the table above are
-unchanged by this move (only xy shifted) — see pass 9g's own "Finding 6"
-section for the cross-check against `PARAMS`.
+unchanged by this move (only xy shifted, and `plate_south_extension`
+needed no change — its existing x(−24,−6)/y(10,29.5) box already covers
+all four new positions) — see the pass-15 "item 3" section above for the
+live `verify_post_walls`/`check_interference` confirmation.
 
 ## Known limitations / deviations from SPEC.md
 
