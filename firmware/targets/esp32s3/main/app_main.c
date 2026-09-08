@@ -45,6 +45,7 @@
 #include "esp_random.h" /* fix/meshclient-packet-id-seed — esp_random() for the outgoing packet-id seed */
 #include "esp_sleep.h"  /* S26 slice f — esp_light_sleep_start() + wake-source config */
 #include "esp_system.h" /* esp_restart() — S26 slice b's reboot action */
+#include "esp_task_wdt.h" /* 2026-09-08 QA hardening — render-loop task + LVGL-liveness watchdog coverage */
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -810,6 +811,117 @@ static void ff_configure_light_sleep_wake(void)
 
     ESP_LOGI(TAG, "S26f light-sleep wake sources armed: timer=%dms, GPIO wake on PWR(6)/BOOT(0)/touch-INT(%d), VDD_SDIO forced ON",
              (int)(FF_LIGHT_SLEEP_TIMER_WAKE_US / 1000), (int)FF_PIN_TOUCH_INT);
+}
+
+/* ---------------------------------------------------------------------
+ * 2026-09-08 QA hardening — task watchdog (TWDT) coverage for the render
+ * loop AND the LVGL task, item 1b of the QA sweep.
+ *
+ * The render-loop task IS `app_main`'s own task (IDF's "main" task never
+ * returns here — the `while (true)` loop below runs on it directly), so
+ * subscribing it is the ordinary `esp_task_wdt_add(NULL)` +
+ * `esp_task_wdt_reset()` pattern — done once, right before the loop
+ * starts (this function), and reset once per iteration (see the loop
+ * body's own call). One deliberate exception: `ff_display_run_calibration`
+ * (S15d, `ff_display_cal.c`) BLOCKS this SAME task in its own
+ * `vTaskDelay` loop for as long as a human takes to tap five crosshairs —
+ * seconds to tens of seconds, no upper bound — so that loop resets the
+ * watchdog itself (same task, same "current task" implicit API); see
+ * that file's own doc comment on the call.
+ *
+ * The LVGL task (esp_lvgl_port's own internally-created "taskLVGL") is
+ * DIFFERENT: `esp_task_wdt_reset()` only ever resets on behalf of the
+ * CALLING task (esp_task_wdt.h's own doc comment — there is no public
+ * API to feed another task's entry from outside it), and esp_lvgl_port
+ * is a managed component we do not vendor/patch (unlike
+ * esp_lcd_touch_spd2010) — there is no seam to inject a reset call
+ * inside its own task loop. Subscribing "taskLVGL" directly via
+ * `esp_task_wdt_add()` from here would therefore ALWAYS trip (nothing
+ * would ever reset it), which is worse than no coverage at all.
+ *
+ * Instead: a TWDT "user" entry (`esp_task_wdt_add_user`, which any task
+ * may feed on its behalf) stands in for "the LVGL task is responsive",
+ * fed from THIS task's render loop by probing `ff_display_lock()` with a
+ * generous-but-bounded timeout — the exact mutex esp_lvgl_port's own
+ * task holds for the ENTIRE duration of every `lv_timer_handler()` pass
+ * it makes (S26's own amendment on this fact, app_main.c's rebuild-gate
+ * history above). A successful, prompt lock IS proof of liveness: an
+ * LVGL task that is genuinely hung (e.g. stuck inside a touch I2C
+ * transaction that somehow evaded this fix's own per-transaction
+ * timeout) holds that lock forever, so the probe starts timing out, this
+ * file stops feeding the user watchdog, and the TWDT fires on its own
+ * schedule — the same outcome a direct task subscription would give,
+ * reached through a seam this codebase actually owns. See the render
+ * loop's own call site (`ff_lvgl_liveness_tick`) for the probe cadence
+ * and timeout. */
+#define FF_TASK_WDT_TIMEOUT_S ((uint32_t)15u) /* generous: render-loop iterations are single-digit ms; see the PR body for the measured perf numbers this margin is checked against */
+#define FF_LVGL_LIVENESS_PROBE_TIMEOUT_MS ((uint32_t)2000u) /* generous vs. an ordinary <100ms lv_timer_handler pass (S26f's own timing notes) — this is a hang detector, not a frame-budget check */
+#define FF_LVGL_LIVENESS_TICK_PERIOD_MS ((uint32_t)500u)
+
+static esp_task_wdt_user_handle_t s_lvgl_wdt_user;
+static bool s_lvgl_wdt_user_ok;
+
+static void ff_configure_task_watchdog(void)
+{
+    /* CONFIG_ESP_TASK_WDT_INIT already auto-initializes the TWDT at boot
+     * (sdkconfig.defaults, this QA-hardening pass) with
+     * CONFIG_ESP_TASK_WDT_TIMEOUT_S as its timeout — reconfigure it here
+     * to FF_TASK_WDT_TIMEOUT_S instead of only relying on the Kconfig
+     * default staying in sync, since the two numbers must actually agree
+     * for the "generous" reasoning above to hold. Idempotent: a build
+     * with TWDT already disabled (CONFIG_ESP_TASK_WDT_INIT=n) reports the
+     * failure and continues — no task watchdog is a degraded-but-booting
+     * state, same posture as every other non-fatal HAL failure in this
+     * file. */
+    esp_task_wdt_config_t const wdt_cfg = {
+        .timeout_ms = FF_TASK_WDT_TIMEOUT_S * 1000u,
+        .idle_core_mask = (1u << 0) | (1u << 1), /* keep watching both idle tasks, same as sdkconfig's own CHECK_IDLE_TASK_CPU0/1 */
+        .trigger_panic = false, /* log-on-trip only for now — see sdkconfig.defaults' own comment on CONFIG_ESP_TASK_WDT_PANIC: a reboot-on-hang policy is a real tradeoff (frozen puck in the field vs. a spurious field reboot) that wants the maintainer's own sign-off, tracked separately on branch qa/wdt-panic-optin rather than defaulted on here */
+    };
+    esp_err_t err = esp_task_wdt_reconfigure(&wdt_cfg);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "esp_task_wdt_reconfigure failed: %s — task watchdog coverage is degraded this boot", esp_err_to_name(err));
+    }
+
+    err = esp_task_wdt_add(NULL); /* subscribe the render-loop task (this one — see this block's own doc comment) */
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "esp_task_wdt_add(render loop) failed: %s — this task is NOT covered by the watchdog this boot",
+                 esp_err_to_name(err));
+    }
+
+    err = esp_task_wdt_add_user("lvgl_liveness", &s_lvgl_wdt_user);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "esp_task_wdt_add_user(lvgl_liveness) failed: %s — LVGL-task hang detection is NOT active this boot",
+                 esp_err_to_name(err));
+        s_lvgl_wdt_user_ok = false;
+    } else {
+        s_lvgl_wdt_user_ok = true;
+    }
+
+    ESP_LOGI(TAG, "task watchdog armed: timeout=%us panic=%s render-loop=subscribed lvgl-liveness=%s",
+             (unsigned)FF_TASK_WDT_TIMEOUT_S, wdt_cfg.trigger_panic ? "y" : "n", s_lvgl_wdt_user_ok ? "y" : "n");
+}
+
+/* Called from the render loop every FF_LVGL_LIVENESS_TICK_PERIOD_MS (see
+ * that constant's own doc comment above): the liveness probe itself. */
+static void ff_lvgl_liveness_tick(void)
+{
+    if (!s_lvgl_wdt_user_ok) {
+        return; /* no user handle — degraded boot, see ff_configure_task_watchdog */
+    }
+    if (ff_display_lock(FF_LVGL_LIVENESS_PROBE_TIMEOUT_MS)) {
+        ff_display_unlock();
+        esp_task_wdt_reset_user(s_lvgl_wdt_user);
+    }
+    /* A failed probe resets nothing THIS tick — if the LVGL task is
+     * genuinely hung, consecutive misses accumulate toward the TWDT's own
+     * timeout and it fires on schedule (this function's own doc comment
+     * above). No log here: `ff_display_lock`'s own callers already log
+     * their own timeout context where it matters more (the touch-vs-
+     * compass bus-busy line, the rebuild-gate's own path) — this probe
+     * runs every 500ms and would otherwise flood the console during a
+     * real hang, the exact failure mode item 1a's rate-limiting fixed
+     * for the touch read path. */
 }
 
 /* ---------------------------------------------------------------------
@@ -1866,11 +1978,21 @@ void app_main(void)
      * full FF_I2C_HEALTH_TICK_PERIOD_MS before its first check. */
     uint32_t last_i2c_health_ms = ff_bringup_now_ms();
 
+    /* 2026-09-08 QA hardening — same periodic-sample seeding shape as the
+     * three above: the LVGL-liveness watchdog probe (below) waits a full
+     * FF_LVGL_LIVENESS_TICK_PERIOD_MS before its first check. */
+    uint32_t last_lvgl_liveness_ms = ff_bringup_now_ms();
+
     /* S26 slice f — arm the light-sleep wake sources once, right before
      * the render loop can first reach SLEEP. See
      * ff_configure_light_sleep_wake's own doc comment above for the wake
      * sources and the PSRAM/VDD_SDIO interpretation call. */
     ff_configure_light_sleep_wake();
+
+    /* 2026-09-08 QA hardening — arm the task watchdog (render-loop task +
+     * LVGL-liveness user entry) once, right before the loop that resets
+     * it starts. See ff_configure_task_watchdog's own doc comment. */
+    ff_configure_task_watchdog();
 
 #if CONFIG_FF_DEBUG_CONSOLE
     /* Bench/debug console (default OFF) — install the USB-Serial-JTAG
@@ -1883,6 +2005,16 @@ void app_main(void)
      * shell every frame, rebuild the LVGL tree ONLY on a dirty tick. The
      * esp_lvgl_port task does the actual flushing; we just own the model. */
     while (true) {
+        /* 2026-09-08 QA hardening — feed the render-loop task's own TWDT
+         * subscription every iteration (see ff_configure_task_watchdog's
+         * doc comment). Harmless no-op if the subscribe above failed
+         * (returns ESP_ERR_NOT_FOUND, ignored — logged once already, at
+         * subscribe time). Deliberately the very first statement in the
+         * loop: every branch below (including a possibly-long-blocking
+         * calibration run, whose own loop resets separately) is then
+         * downstream of a fresh reset. */
+        esp_task_wdt_reset();
+
         /* S21 §3 (device-runtime): drain a deferred CALIBRATE-TOUCH request in
          * THIS (main) task. ff_display_run_calibration blocks waiting for the
          * LVGL task to capture the taps, so it must not run from the click
@@ -2183,6 +2315,14 @@ void app_main(void)
         if (ff_time_reached(now_ms, last_i2c_health_ms + FF_I2C_HEALTH_TICK_PERIOD_MS)) {
             last_i2c_health_ms = now_ms;
             ff_display_i2c_health_tick(now_ms);
+        }
+
+        /* 2026-09-08 QA hardening — LVGL-liveness watchdog probe. See
+         * ff_configure_task_watchdog's doc comment for why this is a
+         * lock-probe proxy rather than a direct TWDT task subscription. */
+        if (ff_time_reached(now_ms, last_lvgl_liveness_ms + FF_LVGL_LIVENESS_TICK_PERIOD_MS)) {
+            last_lvgl_liveness_ms = now_ms;
+            ff_lvgl_liveness_tick();
         }
 
         if (ff_time_reached(now_ms, last_device_stats_ms + FF_DEVICE_STATS_SAMPLE_PERIOD_MS)) {

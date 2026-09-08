@@ -35,6 +35,8 @@ idf_component_register(
         esp_driver_ledc
         driver
         esp_timer # S26 slice (g) — esp_timer_get_time() for the boot-splash timing log
+    PRIV_REQUIRES
+        esp_system # 2026-09-08 QA hardening — esp_task_wdt.h, used only inside ff_display_cal.c's blocking calibration wait, never exposed via this component's public header
 )
 
 target_compile_options(${COMPONENT_LIB} PRIVATE -Wall -Wextra -Werror)

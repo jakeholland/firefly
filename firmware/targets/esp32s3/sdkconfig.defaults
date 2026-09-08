@@ -157,3 +157,48 @@ CONFIG_FREERTOS_PLACE_FUNCTIONS_INTO_FLASH=y
 CONFIG_ESP_CONSOLE_UART_DEFAULT=n
 CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
 CONFIG_ESP_CONSOLE_SECONDARY_NONE=y
+
+# --- Task watchdog (TWDT), 2026-09-08 QA hardening item 1b -----------------
+# Previously ABSENT from this file entirely — a fresh checkout got
+# whatever ESP-IDF's own Kconfig defaults happen to be (TWDT on, 5s
+# timeout, idle tasks only, panic OFF) purely by luck, not by this
+# project's own choice. Made explicit here and reconfigured at runtime to
+# match (app_main.c's `ff_configure_task_watchdog`, which is the actual
+# authority on the timeout value — see that function's own doc comment;
+# these keys exist so TWDT is at least ON, with a sane starting timeout,
+# before app_main.c's own reconfigure call runs, and so `idf.py
+# menuconfig` shows the real picture instead of an invisible IDF default).
+#   - CONFIG_ESP_TASK_WDT_PANIC intentionally NOT set here (stays at
+#     ESP-IDF's own Kconfig default, off) — a reboot-on-hang policy is a
+#     real tradeoff (a frozen puck in the field vs. an unexpected reboot
+#     from a slow-but-legitimate operation) that wants the maintainer's
+#     own sign-off rather than a default flipped silently underneath
+#     them. app_main.c's `ff_configure_task_watchdog` matches this at
+#     runtime (`trigger_panic = false`) so the watchdog still logs a trip
+#     (task names + a stack dump) but does not reset the device. The
+#     opt-in reboot-on-trip behavior lives on branch
+#     `qa/wdt-panic-optin`, a one-commit PR against main, for the
+#     maintainer to merge if/when they want it.
+#   - CONFIG_ESP_TASK_WDT_TIMEOUT_S=15 matches app_main.c's
+#     FF_TASK_WDT_TIMEOUT_S; kept in sync by convention, not by any
+#     mechanical link between the two — a future change to one should
+#     update the other (see FF_TASK_WDT_TIMEOUT_S's own doc comment).
+#   - CHECK_IDLE_TASK_CPU0/1=y: unchanged from ESP-IDF's own default,
+#     stated explicitly rather than left implicit.
+#
+# DRIFT-RULE WARNING (this file's own header, and PR #172): the
+# maintainer's real board sdkconfig already has every CONFIG_ESP_TASK_WDT_*
+# key present (CONFIG_ESP_TASK_WDT_TIMEOUT_S=5, CONFIG_ESP_TASK_WDT_PANIC
+# unset) from an earlier configure — this new default will NOT reach that
+# board until those keys are deleted from it (or the whole file is
+# regenerated) and `idf.py reconfigure` run. Until then the board keeps
+# running with a 5s, non-panicking watchdog from Kconfig's OWN default —
+# app_main.c's own `esp_task_wdt_reconfigure()` call overrides the
+# TIMEOUT_S value at runtime regardless of what's in sdkconfig, so this
+# drift only matters for the WINDOW between boot and that call (a few
+# hundred ms at most) and for `idf.py menuconfig`'s displayed value.
+CONFIG_ESP_TASK_WDT_EN=y
+CONFIG_ESP_TASK_WDT_INIT=y
+CONFIG_ESP_TASK_WDT_TIMEOUT_S=15
+CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU0=y
+CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU1=y
