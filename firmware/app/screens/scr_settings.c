@@ -2033,6 +2033,46 @@ static char const *settings_diag_imu_state_name(ff_app_imu_state_t s)
     }
 }
 
+/* fix/render-key-churn (2026-09-07) — this page's own text must show
+ * EXACTLY what `shell_render_key` (ff_shell.c) uses to decide whether a
+ * rebuild is warranted, or the two silently drift: a value that changes
+ * by less than the key's bucket width would then update on screen (this
+ * page prints `ff_app_diag_t` fields close to verbatim) with no redraw
+ * ever scheduled to show it — a STALE-DISPLAY bug, the opposite failure
+ * from the churn these buckets exist to kill. These three helpers
+ * duplicate `shell_render_key`'s own bucketing formulas (deliberately
+ * duplicated, not shared — this codebase's "one projection, two
+ * presentations" precedent, `shell_compute_diag`'s own doc comment,
+ * covers computing the FACT once; it does not extend to three one-line
+ * roundings that must simply stay textually identical to their
+ * ff_shell.c counterparts) so that "the key changed" and "the page would
+ * draw differently" are the same statement by construction, in both
+ * directions. RSSI (already whole `%d dBm`) and channel/air utilization
+ * (already `%.0f%%`, matching the key's own round-to-nearest-percent)
+ * needed no display change — only SNR, battery mV, and free heap, all
+ * three left byte/mV/dB-precise on the page while the key already
+ * bucketed them, get one here. */
+static float settings_diag_bucket_snr_db(float v)
+{
+    /* 0.5 dB buckets, truncating toward zero — same formula as
+     * `key->settings.diag.last_snr_db` in shell_render_key. */
+    return (float)(int32_t)(v * 2.0f) / 2.0f;
+}
+
+static uint16_t settings_diag_bucket_batt_mv(uint16_t v)
+{
+    /* 10 mV buckets, round-to-nearest — same formula as
+     * `key->settings.diag.batt_mv` in shell_render_key. */
+    return (uint16_t)(((v + 5u) / 10u) * 10u);
+}
+
+static uint32_t settings_diag_bucket_heap_kb(uint32_t bytes)
+{
+    /* Whole KB, truncating — same 1024-byte grid `key->settings.diag.
+     * free_heap_bytes` floors to in shell_render_key before comparing. */
+    return bytes / 1024u;
+}
+
 static void settings_build_diag_page(lv_obj_t *parent, ff_app_diag_t const *d)
 {
     lv_obj_t *puck = lv_obj_create(parent);
@@ -2169,7 +2209,7 @@ static void settings_build_diag_page(lv_obj_t *parent, ff_app_diag_t const *d)
             snprintf(rssi_buf, sizeof(rssi_buf), "--");
         }
         if (d->has_last_snr) {
-            snprintf(snr_buf, sizeof(snr_buf), "%.1f dB", (double)d->last_snr_db);
+            snprintf(snr_buf, sizeof(snr_buf), "%.1f dB", (double)settings_diag_bucket_snr_db(d->last_snr_db));
         } else {
             snprintf(snr_buf, sizeof(snr_buf), "--");
         }
@@ -2240,7 +2280,7 @@ static void settings_build_diag_page(lv_obj_t *parent, ff_app_diag_t const *d)
         char mv[16];
         char pct[16];
         if (d->has_batt_mv) {
-            snprintf(mv, sizeof(mv), "%u mV", (unsigned)d->batt_mv);
+            snprintf(mv, sizeof(mv), "%u mV", (unsigned)settings_diag_bucket_batt_mv(d->batt_mv));
         } else {
             snprintf(mv, sizeof(mv), "--");
         }
@@ -2265,7 +2305,7 @@ static void settings_build_diag_page(lv_obj_t *parent, ff_app_diag_t const *d)
              (d->fw_build_date[0] != '\0') ? d->fw_build_date : "unknown");
     y = settings_diag_line(list, y, row_w, "FIRMWARE", buf);
     if (d->has_free_heap) {
-        snprintf(buf, sizeof(buf), "%u B", (unsigned)d->free_heap_bytes);
+        snprintf(buf, sizeof(buf), "%u KB", (unsigned)settings_diag_bucket_heap_kb(d->free_heap_bytes));
     } else {
         snprintf(buf, sizeof(buf), "--");
     }

@@ -3279,6 +3279,30 @@ static void shell_render_key(ff_app_state_t const *v, ff_app_state_t *key)
      * 0.1 degrees is LVGL's own rotation unit: below it, no pixel moves. */
     key->radar.arrow_deg = (float)(int32_t)(v->radar.arrow_deg * 10.0f);
 
+    /* On-glass report 2026-09-07 — the crew ring dots' own bearing, found
+     * by the same "grep the view for floats" audit that caught
+     * `map.you_heading_deg` below. `ff_radar_dot_t.ring_deg`
+     * (`ff_radar_compute`'s `radar_compute_dots`) is `ff_geo_arrow_deg`
+     * (bearing - heading), recomputed from the RAW `heading_deg` every
+     * tick with NO smoothing (unlike `arrow_deg` above, which is the
+     * exponentially-smoothed selection arrow) — so with a stationary
+     * puck and jittering compass noise, every paired member's ring dot
+     * wobbled the key at the raw compass sample rate the moment ANY dot
+     * was on screen (Radar face, any mode with a live peer), independent
+     * of whether the selection arrow itself had converged. `scr_radar.c`
+     * places each dot from this angle via `radar_layout_resolve_dots` —
+     * ordinary trig into pixel coordinates, the same "0.1 degrees is
+     * LVGL's rotation unit, below it no pixel moves" floor `arrow_deg`
+     * above already uses — so the identical 0.1-degree coarsening
+     * applies here. Dots beyond `n_dots` are already zero (the
+     * whole-view memset at the top of `shell_project`, before
+     * `ff_radar_compute` ever runs — see that memset's own call site);
+     * rounding an already-zero angle stays zero, so this loop needs no
+     * separate `i < n_dots` gate to stay honest. */
+    for (uint8_t i = 0; i < FF_CREW_MAX; i++) {
+        key->radar.dots[i].ring_deg = (float)(int32_t)(v->radar.dots[i].ring_deg * 10.0f);
+    }
+
     /* 2026-09-05 amendment (RADAR_NOHDG). `bearing_deg` is a plain
      * geometric fact (ff_geo_bearing_deg(my_pos, member->pos)) — it does
      * not continuously drift toward a target the way arrow_deg's
@@ -3402,6 +3426,72 @@ static void shell_render_key(ff_app_state_t const *v, ff_app_state_t *key)
      * more) still dirties and rebuilds correctly. */
     key->settings.diag.heading_deg =
         v->settings.diag.heading_valid ? (float)(int32_t)v->settings.diag.heading_deg : 0.0f;
+
+    /* On-glass report 2026-09-07 ("the screen is flickering") — the rest
+     * of the DIAGNOSTICS page's own live-radio/device fields, same
+     * "coarsen to what settings_build_diag_page actually prints"
+     * discipline as `heading_deg` immediately above. Unlike the five ages
+     * and heading_deg (all pre-existing), these were left VERBATIM in the
+     * key — a raw float/counter carried straight through the top-of-
+     * function memcpy — so ordinary per-packet radio noise (RSSI/SNR/
+     * airtime telemetry) and per-push device-stats noise (battery ADC,
+     * heap) dirtied the key on every sample while DIAGNOSTICS was open,
+     * each answered by the same full-page lv_obj_clean()+rebuild the
+     * heading_deg fix above already documents the cost of. Every field
+     * here is already ZEROED outside FF_SETTINGS_SUB_DIAGNOSTICS by
+     * `shell_project_diag_page`'s own early return (out->diag is never
+     * touched, so it stays at `shell_project`'s whole-view memset zero) —
+     * unlike heading_deg/the five ages above, which need an explicit
+     * `?:` gate here because THIS function's memcpy is what would
+     * otherwise carry a stale nonzero value forward, these coarsening
+     * formulas are applied unconditionally: rounding an already-zero
+     * value away-from-page still yields zero, so no separate subview
+     * check is needed here either.
+     *
+     * `frames_ok`/`decode_errors`/`reconnects` and `uptime_s`/`batt_pct`
+     * are deliberately left OUT of this list (still verbatim via the
+     * memcpy): the three counters only change on a real received frame
+     * (an actual "FRAMES 41 ok / 0 err" -> "42 ok" text change — the
+     * page's own doc comment upstream calls this "acceptable on this
+     * page only"), `uptime_s` is the page's live ticking clock (H:MM:SS
+     * — the one field this page is SUPPOSED to churn once a second,
+     * same as any other clock display) and `batt_pct` is already
+     * hysteresis-filtered by `ff_batt_filter_t` before it ever reaches
+     * this struct (S25c's own doc comment, same reasoning the launcher
+     * mask further down gives for leaving THAT copy of batt_pct alone).
+     */
+    /* NOTE: these four formulas are duplicated verbatim (not shared) in
+     * scr_settings.c's settings_diag_bucket_{snr_db,batt_mv,heap_kb}
+     * helpers, which bucket `settings_build_diag_page`'s own printed text
+     * the SAME way — so "the key changed" and "the page would draw
+     * differently" stay the same statement in both directions; a bucket
+     * width here with no matching change on the page would make the
+     * display go stale instead of merely churning (the DIAGNOSTICS page
+     * itself was changed 2026-09-07 to print SNR/battery/heap at these
+     * bucket widths — see that file for why RSSI and chan/air-util needed
+     * no matching change). Keep the two sides textually identical if you
+     * touch either. */
+    key->settings.diag.last_snr_db = (float)(int32_t)(v->settings.diag.last_snr_db * 2.0f); /* 0.5 dB buckets, matches the page's (now-bucketed) "%.1f dB" */
+    key->settings.diag.chan_util_pct = (float)(int32_t)(v->settings.diag.chan_util_pct + 0.5f);   /* matches the page's "%.0f%%" */
+    key->settings.diag.air_util_tx_pct = (float)(int32_t)(v->settings.diag.air_util_tx_pct + 0.5f); /* matches the page's "%.0f%%" */
+    key->settings.diag.batt_mv = (uint16_t)(((v->settings.diag.batt_mv + 5u) / 10u) * 10u); /* 10 mV buckets, matches the page's (now-bucketed) "%u mV" */
+    key->settings.diag.free_heap_bytes = (v->settings.diag.free_heap_bytes / 1024u) * 1024u; /* whole-KB buckets, matches the page's (now-KB) "%u KB" */
+
+    /* On-glass report 2026-09-07 — the Map face's own heading, the exact
+     * `arrow_deg` lesson one struct over. `shell_project_map` projects
+     * `map.you_heading_deg` straight from the raw `sh->heading_deg`
+     * (ff_shell.c, `shell_project_map`'s last two lines) with no
+     * smoothing at all — so with a stationary puck and 10 Hz compass
+     * noise, the YOU arrow's key dirtied at the raw sample rate any time
+     * the Map face was open, exactly the Radar `arrow_deg`/ring-dot
+     * problem above. `map_draw_you` (scr_map.c) draws it as a rotated
+     * triangle (`map_rotate`, plain trig into pixel coordinates) — the
+     * same "rotated arrow" shape `arrow_deg`'s own doc comment
+     * anticipates, so the identical 0.1-degree/LVGL-rotation-unit
+     * coarsening applies verbatim. Already zero when `you_heading_valid`
+     * is false (`shell_project_map`'s own ternary), so rounding needs no
+     * separate gate here either. */
+    key->map.you_heading_deg = (float)(int32_t)(v->map.you_heading_deg * 10.0f);
 
     /* S26 slice d — the banner's age, same coarsened-age discipline as
      * every preview/presence age above: scr_banner.c renders it only
