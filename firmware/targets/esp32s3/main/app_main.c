@@ -926,7 +926,7 @@ static void ff_configure_task_watchdog(void)
     esp_task_wdt_config_t const wdt_cfg = {
         .timeout_ms = FF_TASK_WDT_TIMEOUT_S * 1000u,
         .idle_core_mask = (1u << 0) | (1u << 1), /* keep watching both idle tasks, same as sdkconfig's own CHECK_IDLE_TASK_CPU0/1 */
-        .trigger_panic = false, /* log-on-trip only for now — see sdkconfig.defaults' own comment on CONFIG_ESP_TASK_WDT_PANIC: a reboot-on-hang policy is a real tradeoff (frozen puck in the field vs. a spurious field reboot) that wants the maintainer's own sign-off, tracked separately on branch qa/wdt-panic-optin rather than defaulted on here */
+        .trigger_panic = true, /* opt-in: see sdkconfig.defaults' own comment on CONFIG_ESP_TASK_WDT_PANIC — the maintainer's explicit choice that a watchdog trip resets the device (frozen puck in the field) rather than only logging (risking a spurious reboot on a false-positive trip) */
     };
     esp_err_t err = esp_task_wdt_reconfigure(&wdt_cfg);
     if (err != ESP_OK) {
