@@ -33,6 +33,9 @@
  */
 #include "scr_nav.h"
 
+#include <stdint.h>
+#include <stdlib.h>
+
 #include "ff_sound_emit.h" /* S27 — the TAP sound seam every button reports through */
 #include "ff_theme.h"
 #include "scr_banner.h" /* S26 slice d — the ff_notify message banner overlay */
@@ -47,8 +50,9 @@
  * ff_scr_button_create — see scr_nav.h's doc comment for the full
  * rationale. One call, no branching: every screen file's buttons go
  * through this instead of `lv_button_create` directly, so the
- * PRESS_LOCK fix (#145/#148) lives in exactly one place instead of
- * being re-discovered per screen.
+ * slide-off-cancels-a-tap mechanism (#145/#148, now fix/tap-lost-
+ * midpress-rebuild's jitter-tolerant amendment) lives in exactly one
+ * place instead of being re-discovered per screen.
  *
  * S27 amendment (docs/specs/S27-sounds.md, "Shell seam") — this is also
  * the ONE choke point every button in the app funnels through, which is
@@ -68,11 +72,125 @@ static void ff_scr_button_tap_sound_cb(lv_event_t *e)
     ff_sound_emit(FF_SOUND_TAP);
 }
 
+/* fix/tap-lost-midpress-rebuild — how far (in px, from the DOWN point)
+ * a still-held press may drift before it is treated as a genuine
+ * slide-off rather than touch-controller/coordinate noise. Reuses
+ * `ff_gesture_cfg_t.long_slop_px`'s own precedent value (ff_gesture.c's
+ * `ff_gesture_cfg_default`, core/ff_gesture.h's G3 doc comment: "total
+ * movement never exceeding long_slop_px... counts as still held in
+ * place") — the SAME "how much wobble is still basically a stationary
+ * press" judgment call this codebase already made once, for the exact
+ * same class of noise, on the exact same glass. Every existing drag-off
+ * test in test_scr_intent.c drags at least 150px, comfortably past this
+ * — see scr_nav.h's doc comment for the mutation-check precedent this
+ * amendment must keep green. */
+#define FF_SCR_BUTTON_SLIDE_CANCEL_PX 12
+
+/* Per-button press-tracking state — malloc'd at PRESSED, freed at
+ * LV_EVENT_DELETE, same "ctx tied to an LVGL object's own lifetime"
+ * idiom `app/ff_gesture_glue.c`'s `ff_gesture_glue_ctx_t` already uses
+ * (that file's own DELETE-handler doc comment). One instance per
+ * button, not a single shared static: unlike the gesture glue (one
+ * indev, one ctx for the whole app), many buttons can exist at once and
+ * each needs its OWN down-point. */
+typedef struct {
+    lv_point_t down_point;
+} ff_scr_button_press_ctx_t;
+
+static void ff_scr_button_press_event_cb(lv_event_t *e)
+{
+    lv_event_code_t const code = lv_event_get_code(e);
+
+    if (code == LV_EVENT_DELETE) {
+        free(lv_event_get_user_data(e));
+        return;
+    }
+
+    ff_scr_button_press_ctx_t *ctx = lv_event_get_user_data(e);
+    if (ctx == NULL) {
+        return;
+    }
+    lv_indev_t *indev = lv_indev_active();
+    if (indev == NULL) {
+        return; /* not indev-driven (e.g. a synthetic LV_EVENT_CLICKED in a test) — nothing to track */
+    }
+
+    if (code == LV_EVENT_PRESSED) {
+        /* Re-armed at every DOWN, same "nothing here needs to be
+         * un-armed mid-touch, geometry is computed fresh" shape
+         * ff_gesture_glue.c's own gesture_glue_on_pressed uses. */
+        lv_indev_get_point(indev, &ctx->down_point);
+        return;
+    }
+
+    if (code == LV_EVENT_PRESSING) {
+        lv_point_t p;
+        lv_indev_get_point(indev, &p);
+        int32_t const dx = (int32_t)p.x - (int32_t)ctx->down_point.x;
+        int32_t const dy = (int32_t)p.y - (int32_t)ctx->down_point.y;
+        if (dx * dx + dy * dy > FF_SCR_BUTTON_SLIDE_CANCEL_PX * FF_SCR_BUTTON_SLIDE_CANCEL_PX) {
+            /* A genuine slide-off, past the noise tolerance above — the
+             * SAME function app/ff_gesture_glue.c already uses for
+             * BACK/HOME: no further press processing this touch, and
+             * PRESS_LOST (not CLICKED) fires on release (lv_indev.c's
+             * own `wait_until_release` handling in indev_proc_release). */
+            lv_indev_wait_release(indev);
+        }
+    }
+}
+
 lv_obj_t *ff_scr_button_create(lv_obj_t *parent)
 {
     lv_obj_t *btn = lv_button_create(parent);
-    lv_obj_clear_flag(btn, LV_OBJ_FLAG_PRESS_LOCK);
+    /* fix/tap-lost-midpress-rebuild — LV_OBJ_FLAG_PRESS_LOCK is LEFT SET
+     * (LVGL's own default, lv_obj.c) so LVGL's per-poll re-hit-test
+     * (`indev_proc_press`, lv_indev.c — skipped entirely when this flag
+     * is set) never runs at all for an already-pressed button: a few px
+     * of raw touch-controller noise around a stationary finger can no
+     * longer flip LVGL's internal `pointer.pressed` bit and silently
+     * swallow the eventual CLICKED. Slide-off-cancels-a-tap (the
+     * original reason this function used to CLEAR the flag, #145/#148)
+     * is now enforced explicitly and tolerantly instead — see this
+     * function's own press/pressing handler below and scr_nav.h's doc
+     * comment for the full mechanism and history. */
+    /* This CLICKED handler is added FIRST, deliberately, so it stays event
+     * descriptor INDEX 0 on every button in the app — order matters here
+     * for a reason that has nothing to do with sound: test_face_hit_
+     * targets.c's adjacency-floor sweep identifies "two pills are really
+     * ONE composite control" (its own `sweep_same_composite_control`,
+     * Exclusion 1 — e.g. a toggle row's two pills sharing one `cb`) by
+     * reading ONLY `lv_obj_get_event_dsc(obj, 0)`'s callback/user_data —
+     * index 0, not "whichever handler actually distinguishes this
+     * button". `ff_sound_emit(FF_SOUND_TAP)` below is shared and takes a
+     * constant NULL user_data, so it never accidentally aliases two
+     * DIFFERENT controls into looking like the same composite one. The
+     * press/pressing tracking wired further down carries a PER-BUTTON
+     * malloc'd `press_ctx` as its user_data specifically so a slide's
+     * down-point is never shared across buttons — added at a LATER
+     * index for exactly that reason: were it index 0 instead, the sweep
+     * above would (correctly, by its own rule, but wrongly in effect)
+     * conclude that no two buttons in the whole app are ever the same
+     * composite control, since no two buttons share a malloc'd pointer —
+     * silently disabling that exclusion for everything except this
+     * fix's own hand-crafted synthetic test objects. Confirmed empirically
+     * before landing this comment: swapping the two calls' order regresses
+     * `test_face_hit_targets` from 0 to 54 violations against the real,
+     * COMMITTED production fixtures. */
     lv_obj_add_event_cb(btn, ff_scr_button_tap_sound_cb, LV_EVENT_CLICKED, NULL);
+    /* fix/tap-lost-midpress-rebuild — slide-off-cancels-a-tap tracking
+     * (see this function's own PRESS_LOCK comment above and scr_nav.h's
+     * doc comment for the full mechanism). malloc failure (never
+     * observed; OOM on this target already means imminent abort
+     * elsewhere) degrades to "PRESS_LOCK set, no explicit slide-cancel"
+     * rather than a null-deref — a button that can still be tapped and
+     * simply cannot be slid off of cleanly is a safe fallback, never a
+     * crash. */
+    ff_scr_button_press_ctx_t *press_ctx = malloc(sizeof(*press_ctx));
+    if (press_ctx != NULL) {
+        lv_obj_add_event_cb(btn, ff_scr_button_press_event_cb, LV_EVENT_PRESSED, press_ctx);
+        lv_obj_add_event_cb(btn, ff_scr_button_press_event_cb, LV_EVENT_PRESSING, press_ctx);
+        lv_obj_add_event_cb(btn, ff_scr_button_press_event_cb, LV_EVENT_DELETE, press_ctx);
+    }
     /* S28 amendment (docs/specs/S28-gestures.md, "G3 LONG-PRESS FLARE"):
      * the ONE tag every real button in the app carries, for the ONE
      * consumer that needs to tell "this is a widget a thumb aims at"

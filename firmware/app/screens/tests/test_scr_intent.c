@@ -582,6 +582,86 @@ static void S99_compose_drag_off_key_emits_nothing(void)
     TEST_ASSERT_EQUAL_INT_MESSAGE(0, s_spy.count, "a slide-off of a T9 key must never commit T9_KEY");
 }
 
+/* =================================================================== *
+ * fix/tap-lost-midpress-rebuild — jitter-tolerant tap, the OTHER half of
+ * the PRESS_LOCK trade-off the two drag-off tests above prove one side
+ * of. LVGL re-hit-tests the CURRENT point from scratch on every ~33ms
+ * indev poll unless the pressed object carries LV_OBJ_FLAG_PRESS_LOCK
+ * (indev_proc_press, lv_indev.c). With the flag CLEARED — this file's
+ * two drag-off tests above are proof that clearing it neutralizes a
+ * REAL 150px slide — even a one-sample excursion of a couple px, that
+ * snaps right back the very next poll, permanently clears LVGL's
+ * internal `pointer.pressed` bit for the rest of that touch (it can
+ * only become true again on a fresh RELEASED->PRESSED transition), so
+ * `indev_proc_release` never delivers CLICKED even though the SAME
+ * object is exactly what the finger is resting on at release. A press
+ * that lands near a control's EDGE (not dead-center — theme geometry
+ * comment: "GLASS OFFSET... bezel ~5px right of the pixel array", plus
+ * this puck's own honest "ship touch uncalibrated by default" stance,
+ * S21) is exactly where a few px of raw touch-controller noise can
+ * cross that boundary. This is the maintainer's on-glass bench report
+ * this fix is named for ("most taps take a few tries" on Inbox/Compose/
+ * Signals, logged at `move=0px` — the app's own, coarser gesture-engine
+ * threshold, the exact class of movement too small to matter ANYWHERE
+ * else in this codebase but large enough to trip LVGL's zero-tolerance
+ * re-search) — see docs/specs/S26-device-lifecycle.md's dated
+ * amendment for the full trace and diagnosis, and scr_nav.h's doc
+ * comment on `ff_scr_button_create` for the fix.
+ *
+ * Presses 3px inside DEF's own top edge (not dead-center — the exact
+ * "near a boundary" placement the bug needs), jitters 5px total (2px
+ * PAST the edge, into the inter-key gap, then straight back to the
+ * down point) — comfortably under FF_SCR_BUTTON_SLIDE_CANCEL_PX (12,
+ * scr_nav.c), and released back at the SAME point it started. FAILS
+ * on main (PRESS_LOCK cleared unconditionally): s_spy.count reads 0.
+ * PASSES once ff_scr_button_create leaves PRESS_LOCK set and enforces
+ * slide-cancel explicitly instead. */
+static void S26_compose_key_survives_a_tiny_edge_jitter_and_still_commits(void)
+{
+    ff_app_compose_t compose;
+    memset(&compose, 0, sizeof(compose));
+    ff_scr_compose_build(&compose);
+    lv_obj_update_layout(lv_screen_active());
+
+    lv_obj_t *def = find_button_with_label(lv_screen_active(), "DEF");
+    TEST_ASSERT_NOT_NULL(def);
+    lv_area_t a;
+    lv_obj_get_coords(def, &a);
+    int32_t const cx = (a.x1 + a.x2) / 2;
+    int32_t const y_down = a.y1 + 3;  /* 3px inside the top edge — near the boundary, not dead-center */
+    int32_t const y_out = a.y1 - 2;   /* 2px PAST the edge, into the inter-key gap — the jitter's peak */
+
+    lv_indev_t *indev = lv_indev_create();
+    lv_indev_set_type(indev, LV_INDEV_TYPE_POINTER);
+    lv_indev_set_read_cb(indev, probe_read_cb);
+
+    s_probe_pt.x = (lv_coord_t)cx;
+    s_probe_pt.y = (lv_coord_t)y_down;
+    s_probe_state = LV_INDEV_STATE_PRESSED;
+    s_fake_tick_ms += 40u;
+    lv_timer_handler(); /* DOWN, on DEF, 3px inside its top edge */
+
+    s_probe_pt.y = (lv_coord_t)y_out;
+    s_fake_tick_ms += 40u;
+    lv_timer_handler(); /* jitter OUT — 2px past the edge, into the gap between keys */
+
+    s_probe_pt.y = (lv_coord_t)y_down;
+    s_fake_tick_ms += 40u;
+    lv_timer_handler(); /* jitter back — the SAME down point, still resting on DEF */
+
+    s_probe_state = LV_INDEV_STATE_RELEASED;
+    s_fake_tick_ms += 40u;
+    lv_timer_handler(); /* release, exactly where the touch began */
+
+    ff_test_release_probe_indev(indev);
+
+    TEST_ASSERT_EQUAL_INT_MESSAGE(1, s_spy.count,
+                                  "a 5px in-place jitter (2px past DEF's own edge, then straight back) lost the "
+                                  "tap — LVGL's per-poll re-search flipped pointer.pressed false even though "
+                                  "DEF is exactly where the touch started and ended");
+    TEST_ASSERT_EQUAL(FF_INTENT_T9_KEY, s_spy.last.kind);
+}
+
 /* =================================================================== */
 /* Compose SEND corner-distance (PR #148 review, should-fix 3): SEND's   */
 /* farthest corner must sit within (radius - safety) = 196px of the      */
@@ -3923,6 +4003,7 @@ int main(void)
     RUN_TEST(S99_compose_pred_candidates_have_press_state_feedback);
     RUN_TEST(S99_compose_drag_off_send_emits_nothing);
     RUN_TEST(S99_compose_drag_off_key_emits_nothing);
+    RUN_TEST(S26_compose_key_survives_a_tiny_edge_jitter_and_still_commits);
     RUN_TEST(S99_compose_send_corner_clears_bezel_margin_bar);
     RUN_TEST(S99_compose_to_short_name_renders_in_full_no_dots);
     RUN_TEST(S99_compose_to_every_demo_crew_name_renders_in_full);

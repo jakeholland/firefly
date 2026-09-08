@@ -270,6 +270,31 @@ if(FF_BUILD_TESTS)
 
     add_test(NAME test_ctl_rebuild_under_finger COMMAND test_ctl_rebuild_under_finger)
 
+    # fix/tap-lost-midpress-rebuild: the SAME property as
+    # test_ctl_rebuild_under_finger above (object identity + PRESSED
+    # survive a mid-press dirty tick; CLICKED still lands on release),
+    # proven on the three faces the maintainer's on-glass bench trace
+    # actually reported dropped taps on — an Inbox row, a Compose T9
+    # key, and a Settings row — none of which shell_render_key masks or
+    # coarsens the way the launcher/flare-takeover/power-menu branches
+    # already do. See the test file's own top comment.
+    add_executable(test_ctl_rebuild_under_finger_screens
+        tests/test_ctl_rebuild_under_finger_screens.c
+        screenshot.c
+    )
+    target_link_libraries(test_ctl_rebuild_under_finger_screens PRIVATE
+        ff-sim-ctl-loop
+        ff-sim-ctl
+        ff-shell
+        ff-app-ui
+        ff-stb-image-write
+        lvgl::lvgl
+        unity
+    )
+    ff_apply_warnings(test_ctl_rebuild_under_finger_screens)
+
+    add_test(NAME test_ctl_rebuild_under_finger_screens COMMAND test_ctl_rebuild_under_finger_screens)
+
     # S10 quick flare (docs/specs/S10-flare.md's Amendments, 2026-09-03):
     # 5 BOOT/HOME presses through the REAL button path
     # (ff_ctl_loop_boot_press, ctl_loop.h) starting from a genuinely
