@@ -69,12 +69,52 @@ extern "C" {
  * for how the two combine into "what a headline/row should show". */
 #define FF_CREW_LONG_NAME_LEN 40
 
-/* Freshness thresholds (docs/specs/S02-core-crew.md, "Behavior" section):
- * LIVE: pos_age < 45s. STALE: 45s - 10min (closed interval: both boundary
- * values land in STALE, since LIVE and LOST are both strict inequalities).
- * LOST: pos_age > 10min. */
+/* Freshness thresholds (docs/specs/S02-core-crew.md, "Behavior" section,
+ * amended 2026-09-07 — presence-heard-vs-position, the owner's verified
+ * "why are we LOST?" investigation): LIVE: pos_age < 45s. STALE: 45s -
+ * 20min (closed interval: both boundary values land in STALE, since LIVE
+ * and LOST are both strict inequalities). LOST: pos_age > 20min.
+ *
+ * Widened from 10 to 20 min: an outdoor crew node broadcasts its own
+ * position on Meshtastic's default `position.position_broadcast_secs`
+ * (900s / 15 min) with smart broadcast — the OLD 10-min LOST threshold
+ * was SHORTER than that one interval, so a stationary friend was
+ * guaranteed to cross into LOST before their own radio ever sent a
+ * second fix. 20 min gives a full default interval of slack past the
+ * 15-min cadence (docs/hardware/comms-brain.md's setup block now also
+ * recommends dropping the interval to 120s for a festival crew, which
+ * makes the practical wait far shorter than either number here).
+ *
+ * This axis stays POSITION-ONLY, by design: it answers "how old is this
+ * member's last known coordinate," nothing about whether the radio is
+ * still hearing them at all. See FF_CREW_HEARD_LIVE_MS/
+ * FF_CREW_HEARD_LOST_MS and `ff_crew_presence` just below for the
+ * separate radio-silence axis that now drives the "LOST" chips/labels
+ * (Inbox rows, CREW page) that used to read THIS axis alone — indoors,
+ * with no GPS fix, a member's last outdoor position ages into LOST here
+ * while their NodeInfo/telemetry keep arriving every few minutes; that
+ * is honest position staleness, not radio silence, and the two must
+ * never be conflated into one word again. */
 #define FF_CREW_LIVE_MS ((uint32_t)45u * 1000u)
-#define FF_CREW_LOST_MS ((uint32_t)600u * 1000u)
+#define FF_CREW_LOST_MS ((uint32_t)1200u * 1000u)
+
+/* HEARD-presence thresholds (docs/specs/S02-core-crew.md amendment,
+ * 2026-09-07) — a SEPARATE axis from FF_CREW_LIVE_MS/FF_CREW_LOST_MS
+ * above: "has the radio heard ANY packet from this node" (NodeInfo,
+ * telemetry, a direct RSSI sample, a decoded text/private frame — see
+ * `ff_crew_on_heard`), never gated on a position ever having arrived.
+ *
+ * HEARD: heard_age < 2 min — tied to roughly one Meshtastic
+ * NodeInfo/telemetry re-announce cadence (the stock default telemetry
+ * interval is ~30 min, but NodeInfo/rx_meta-visible traffic from an
+ * active node is typically far more frequent; 2 min gives a firm "still
+ * definitely around" band without waiting out a whole telemetry cycle).
+ * STALE: 2min - 10min. LOST: heard_age > 10min — no packet of ANY kind
+ * in ten minutes is the genuine "gone quiet" signal (see
+ * `ff_crew_presence`). NEVER: no packet ever received from this node
+ * (`has_heard == false`). */
+#define FF_CREW_HEARD_LIVE_MS ((uint32_t)120u * 1000u)
+#define FF_CREW_HEARD_LOST_MS ((uint32_t)600u * 1000u)
 
 /* Close-range predicate thresholds (S02 spec, consumed by S06). */
 #define FF_CREW_CLOSE_RANGE_M         30.0f
@@ -118,6 +158,33 @@ extern "C" {
  * minutes earlier). So FF_FRESH_ASSERTED must not be read as "placed
  * recently" either; it is silent on age, not falsely reassuring about it. */
 typedef enum { FF_FRESH_LIVE, FF_FRESH_STALE, FF_FRESH_LOST, FF_FRESH_NEVER, FF_FRESH_ASSERTED } ff_freshness_t;
+
+/* 2026-09-07 — presence-heard-vs-position (owner-verified "why are we
+ * LOST?" investigation, docs/specs/S02-core-crew.md amendment). Above,
+ * `ff_crew_freshness` is POSITION age only, by design (see this header's
+ * own doc comment on `pos_age_ms`) — it never considers whether the
+ * radio has heard anything from a node at all. Indoors (no GPS fix), a
+ * member's last outdoor position ages into LOST while their
+ * NodeInfo/telemetry keep arriving every few minutes; outdoors, a
+ * stationary friend's own radio may not re-send a position for up to 15
+ * minutes (Meshtastic's default `position.position_broadcast_secs`) yet
+ * is still being heard from constantly. `ff_crew_presence` answers the
+ * honest question this member never could: "is the radio still hearing
+ * this person" — an axis orthogonal to "how old is their last known
+ * position." Chips/labels that render "LOST" (Inbox rows, the CREW page
+ * — via `ff_sigview_presence`, now driven by this enum) read THIS axis,
+ * never position age. Radar/Map PLACEMENT (`ff_radar_compute`'s mode,
+ * arrow style, rim tint) keeps reading `ff_crew_freshness` alone — a
+ * stale position is still drawn as stale — but the radar CHIP TEXT for a
+ * member with no fix at all also consults this enum, to read "near, no
+ * fix" instead of implying total silence when the radio plainly isn't
+ * silent (see ff_radar.h's `heard_presence` field). */
+typedef enum {
+    FF_CREW_PRESENCE_HEARD, /* heard_age < FF_CREW_HEARD_LIVE_MS (2 min) */
+    FF_CREW_PRESENCE_STALE, /* FF_CREW_HEARD_LIVE_MS <= heard_age <= FF_CREW_HEARD_LOST_MS */
+    FF_CREW_PRESENCE_LOST,  /* heard_age > FF_CREW_HEARD_LOST_MS (10 min) — the radio has genuinely gone quiet */
+    FF_CREW_PRESENCE_NEVER, /* has_heard == false — no packet ever received from this node */
+} ff_crew_presence_t;
 
 /* issue #47 — degraded precision must not render metre-level confidence.
  *
@@ -172,6 +239,19 @@ typedef struct {
 
     int16_t  rssi_dbm;    /* last direct-packet RSSI, INT16_MIN if never direct */
     uint32_t rssi_age_ms; /* absolute rx clock timestamp — see header note above */
+
+    /* 2026-09-07 [api] presence-heard-vs-position — timestamp of the
+     * MOST RECENT packet heard from this node, of ANY kind (NodeInfo,
+     * telemetry, a direct RSSI sample, a decoded text/private frame —
+     * whatever `ff_crew_on_heard`'s caller last saw), independent of
+     * whether that packet carried a position or was direct/relayed.
+     * Absolute rx clock timestamp, same convention as pos_age_ms/
+     * rssi_age_ms above — actual elapsed age is `now_ms -
+     * last_heard_ms`, computed by `ff_crew_presence`, never read here
+     * directly. `has_heard` is false (and `last_heard_ms` meaningless)
+     * until the first `ff_crew_on_heard` call for this node. */
+    uint32_t last_heard_ms;
+    bool     has_heard;
 } ff_crew_member_t;
 
 /**
@@ -326,6 +406,39 @@ float ff_crew_pos_precision_grid_m(uint8_t precision_bits);
  * trend-window history (see `ff_crew_rssi_trend`).
  */
 void ff_crew_on_rssi(ff_crew_t *c, uint32_t node_id, int16_t rssi_dbm);
+
+/**
+ * ff_crew_on_heard — record that ANY packet arrived from `node_id` at
+ * `rx_time_ms`, independent of what kind of packet it was, whether it
+ * carried a position, or whether it arrived direct or relayed. Find-or-
+ * creates the slot (same effect-not-name/no-eviction convention as
+ * `ff_crew_on_position`/`ff_crew_on_rssi`). The ONLY writer of
+ * `last_heard_ms`/`has_heard` — see `ff_crew_presence`, the only reader.
+ *
+ * The caller decides what counts as "heard" (see `app/ff_shell.c`'s
+ * `shell_ev_rx_meta`, which calls this from `mc_events_t.on_rx_meta` —
+ * fired for every inbound MeshPacket naming a sender, the most complete
+ * "who has this puck heard" signal available, per that event's own doc
+ * comment in mc_client.h); core takes the timestamp on faith, same as
+ * `ff_crew_on_position`'s `rx_time_ms`.
+ */
+void ff_crew_on_heard(ff_crew_t *c, uint32_t node_id, uint32_t rx_time_ms);
+
+/**
+ * ff_crew_presence — classify how recently the radio has heard ANY
+ * packet from `m`, as of `now_ms`. See the presence-heard-vs-position
+ * doc comment above `ff_crew_presence_t` for why this is a SEPARATE axis
+ * from `ff_crew_freshness` (which stays position-only).
+ *
+ * FF_CREW_PRESENCE_NEVER if `m` is NULL or `m->has_heard` is false (same
+ * defensive-NULL convention `ff_crew_freshness` establishes for its own
+ * NEVER case). Otherwise HEARD/STALE/LOST from `now_ms -
+ * m->last_heard_ms` (wraparound-safe unsigned subtraction) against
+ * FF_CREW_HEARD_LIVE_MS/FF_CREW_HEARD_LOST_MS, inclusive-toward-STALE at
+ * the boundary — same convention `ff_crew_freshness` uses for its own
+ * thresholds.
+ */
+ff_crew_presence_t ff_crew_presence(ff_crew_member_t const *m, uint32_t now_ms);
 
 /**
  * ff_crew_freshness — classify how much to trust `m`'s position, as of

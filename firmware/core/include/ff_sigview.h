@@ -19,7 +19,7 @@
  *   - `ff_target_kind_t` (`FF_TARGET_WHOLE_CREW` / `FF_TARGET_MEMBER`) —
  *     the send-scope vocabulary the app-level send machinery (S22 slice d
  *     confirm-armed logic, now living in the shell) still uses as a
- *     value type. The state machine that used to live in `ff_sigview_t`
+ *     value type. The state machine that once lived in `ff_sigview_t`
  *     (target_select/clear/reset_after_send, rally confirm) has moved to
  *     the shell; this header keeps only the enum.
  *
@@ -28,12 +28,23 @@
  *
  * ## Honesty rule this module is bound by (CLAUDE.md, [[firefly-touch-cal-default]])
  * **Presence is a freshness value, never a guessed "online"/"now".**
- * `ff_sigview_presence` derives its result only from real evidence — a
- * measured position age (`ff_crew_freshness`) and/or a direct-packet RSSI
- * age. A member never heard from classifies as `FF_PRESENCE_LINKED`
- * (paired but no sighting) — NOT a fabricated recent time. An ASSERTED
- * position (Meshtastic LOC_MANUAL, issue #33) is silent on age and so
- * contributes no sighting age here.
+ *
+ * 2026-09-07 amendment (presence-heard-vs-position, owner-verified "why
+ * are we LOST?" investigation — docs/specs/S02-core-crew.md's own
+ * amendment): `ff_sigview_presence` used to derive SEEN/LOST from a
+ * measured POSITION age and/or a direct-packet RSSI age — which meant a
+ * member heard constantly over NodeInfo/telemetry, but indoors with no
+ * GPS fix (or simply not due for their next position broadcast — up to
+ * 15 min on Meshtastic's stock default), read "LOST" even though the
+ * radio was plainly still hearing them. That conflated two different
+ * facts: "how old is their last known position" (`ff_crew_freshness`,
+ * unchanged, position-only) and "is the radio still hearing this
+ * person" (`ff_crew_presence`, core/ff_crew.h — ANY packet of any kind,
+ * gated on nothing but a receive). This function now derives SEEN/LOST
+ * from THAT axis alone — the one the "LOST" word on an Inbox row or the
+ * CREW page has always meant to the person reading it. A member never
+ * heard from at all still classifies as `FF_PRESENCE_LINKED` (paired,
+ * no sighting) — NOT a fabricated recent time.
  *
  * Pure C11, no I/O, no LVGL, zero heap allocation.
  */
@@ -43,7 +54,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-#include "ff_crew.h" /* ff_freshness_t — ff_sigview_presence's pos_fresh input */
+#include "ff_crew.h" /* ff_crew_presence_t — ff_sigview_presence's heard-presence input */
 
 #ifdef __cplusplus
 extern "C" {
@@ -55,15 +66,17 @@ extern "C" {
  * quiet member. Derived by `ff_sigview_presence`; see the honesty note in
  * this header's top comment.
  *
- *  - FF_PRESENCE_SEEN   — recent evidence exists (a measured position
- *                         and/or a direct packet within FF_CREW_LOST_MS);
- *                         the row carries the sighting age in `age_ms`,
- *                         which the screen formats ("SEEN 6 MIN").
- *  - FF_PRESENCE_LOST   — evidence exists but the freshest sighting is
- *                         older than FF_CREW_LOST_MS; `age_ms` still
- *                         carries the (old) real age.
- *  - FF_PRESENCE_LINKED — paired, but NO sighting has ever arrived (no
- *                         measured position, no direct packet). There is
+ *  - FF_PRESENCE_SEEN   — the radio has heard ANY packet from this member
+ *                         (`ff_crew_presence` HEARD or STALE — within
+ *                         FF_CREW_HEARD_LOST_MS); the row carries the
+ *                         heard age in `age_ms`, which the screen formats
+ *                         ("SEEN 6 MIN").
+ *  - FF_PRESENCE_LOST   — has been heard before, but the freshest packet
+ *                         is older than FF_CREW_HEARD_LOST_MS
+ *                         (`ff_crew_presence` LOST); `age_ms` still
+ *                         carries the (old) real heard age.
+ *  - FF_PRESENCE_LINKED — paired, but NO packet has ever arrived from
+ *                         this node (`ff_crew_presence` NEVER). There is
  *                         no honest age; `age_ms` is 0 and meaningless.
  */
 typedef enum {
@@ -84,36 +97,32 @@ typedef enum {
 
 /**
  * ff_sigview_presence — classify a member's presence as of `now_ms` from
- * its real evidence, and (for SEEN/LOST) report the freshest sighting age
- * via `out_age_ms`.
+ * its real HEARD evidence (`ff_crew_presence`, core/ff_crew.h — ANY
+ * packet, never position-gated), and (for SEEN/LOST) report the heard
+ * age via `out_age_ms`.
  *
- * Inputs are the honest, already-computed signals so the function is pure
- * and each branch is directly testable without constructing a whole
- * member:
- *   - `pos_fresh`     : the member's position freshness
- *                       (`ff_crew_freshness`).
- *   - `pos_age_ms`    : age of that position fix; a MEANINGFUL sighting
- *                       age ONLY when `pos_fresh` is LIVE / STALE / LOST.
- *                       For NEVER (no fix) and ASSERTED (silent on age,
- *                       issue #33) the position leg offers no age and is
- *                       ignored regardless of this value.
- *   - `have_rssi`     : true iff a direct packet has ever been heard
- *                       (`m->rssi_dbm != INT16_MIN`).
- *   - `rssi_age_ms`   : age of that last direct packet; used only when
- *                       `have_rssi`.
- *   - `out_age_ms`    : optional; on SEEN/LOST set to the freshest (min)
- *                       of the available sighting ages; left untouched on
- *                       LINKED. May be NULL.
+ * Inputs:
+ *   - `heard`      : the member's heard-presence classification
+ *                    (`ff_crew_presence(m, now_ms)`).
+ *   - `heard_age_ms`: age of the freshest packet heard from this member
+ *                    (`now_ms - m->last_heard_ms`); meaningful ONLY when
+ *                    `heard != FF_CREW_PRESENCE_NEVER` — ignored
+ *                    otherwise, same as this function's caller (there is
+ *                    no honest age to pass when nothing has ever been
+ *                    heard).
+ *   - `out_age_ms` : optional; on SEEN/LOST set to `heard_age_ms`
+ *                    verbatim; left untouched on LINKED. May be NULL.
  *
  * Result:
- *   - no evidence at all               -> FF_PRESENCE_LINKED.
- *   - freshest sighting <= FF_CREW_LOST_MS -> FF_PRESENCE_SEEN.
- *   - freshest sighting  > FF_CREW_LOST_MS -> FF_PRESENCE_LOST.
- * (The <=/> split matches ff_crew's own inclusive-toward-STALE boundary
- * convention: an age of exactly FF_CREW_LOST_MS is still SEEN.)
+ *   - FF_CREW_PRESENCE_NEVER          -> FF_PRESENCE_LINKED.
+ *   - FF_CREW_PRESENCE_HEARD / STALE  -> FF_PRESENCE_SEEN.
+ *   - FF_CREW_PRESENCE_LOST           -> FF_PRESENCE_LOST.
+ * `ff_crew_presence` has already applied the inclusive-toward-STALE
+ * boundary convention, so this is a direct passthrough, not a second
+ * threshold comparison — exactly one place decides where the boundary
+ * sits (core/ff_crew.h's FF_CREW_HEARD_LIVE_MS/FF_CREW_HEARD_LOST_MS).
  */
-ff_sigview_presence_t ff_sigview_presence(ff_freshness_t pos_fresh, uint32_t pos_age_ms, bool have_rssi,
-                                          uint32_t rssi_age_ms, uint32_t *out_age_ms);
+ff_sigview_presence_t ff_sigview_presence(ff_crew_presence_t heard, uint32_t heard_age_ms, uint32_t *out_age_ms);
 
 #ifdef __cplusplus
 }

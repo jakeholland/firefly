@@ -373,6 +373,19 @@ static const fx_enum_entry_t fx_radar_mode_table[] = {
     {"nosel", RADAR_NOSEL},
 };
 
+/* 2026-09-07 [api] presence-heard-vs-position: radar.heard_presence
+ * (ff_radar_view_t, ff_radar.h) — same string-enum convention as
+ * fx_radar_mode_table above. Absent -> FF_CREW_PRESENCE_NEVER (the
+ * LEAST-claiming value, set explicitly below in fx_parse_settings/init,
+ * NOT the enum's zero value FF_CREW_PRESENCE_HEARD — a memset-zeroed
+ * fixture must not silently claim "heard recently", same "explicit safe
+ * default, not the raw zero value" reasoning as radar.mode's RADAR_NOSEL
+ * default just below in this file). */
+static const fx_enum_entry_t fx_crew_presence_table[] = {
+    {"heard", FF_CREW_PRESENCE_HEARD}, {"stale", FF_CREW_PRESENCE_STALE},
+    {"lost", FF_CREW_PRESENCE_LOST}, {"never", FF_CREW_PRESENCE_NEVER},
+};
+
 /* fx_parse_radar_dots — fail-loud on an oversized array (orchestrator
  * ruling on PR review finding #3/#4: consistent with fp_parse's
  * FP_ERR_TOO_BIG and the honest-data culture, an over-cap array is
@@ -441,6 +454,14 @@ static ff_fixture_result_t fx_parse_radar(fx_ctx_t const *c, int obj_i, ff_radar
     if (fx_obj_get(c, obj_i, "bearing_valid", &t)) r->bearing_valid = fx_bool(c, t, false);
     if (fx_obj_get(c, obj_i, "place", &t)) r->place = fx_bool(c, t, false);
     if (fx_obj_get(c, obj_i, "stale", &t)) r->stale = fx_bool(c, t, false);
+    if (fx_obj_get(c, obj_i, "heard_presence", &t)) {
+        int v;
+        ff_fixture_result_t rc = fx_enum(c, t, fx_crew_presence_table,
+                                          sizeof(fx_crew_presence_table) / sizeof(fx_crew_presence_table[0]),
+                                          "radar.heard_presence", &v);
+        if (rc != FF_FIXTURE_OK) return rc;
+        r->heard_presence = (ff_crew_presence_t)v;
+    }
     if (fx_obj_get(c, obj_i, "clock_str", &t)) fx_copy_str(c, t, r->clock_str, sizeof(r->clock_str));
     if (fx_obj_get(c, obj_i, "batt_pct", &t)) r->batt_pct = (int8_t)fx_num(c, t, -1.0);
     if (fx_obj_get(c, obj_i, "mesh_ok", &t)) r->mesh_ok = fx_bool(c, t, false);
@@ -1676,6 +1697,14 @@ ff_fixture_result_t ff_fixture_load_json(char const *json, size_t len, ff_app_st
      * out). Section parsers below may still override these from
      * explicit JSON fields. */
     out->radar.mode = RADAR_NOSEL;
+    /* 2026-09-07 [api] presence-heard-vs-position: same "least-claiming,
+     * not the raw zero value" reasoning as radar.mode just above —
+     * FF_CREW_PRESENCE_HEARD is enum value 0 (ff_crew.h), so a plain
+     * memset(0) would silently claim "heard recently" for a fixture that
+     * never mentions heard_presence at all. FF_CREW_PRESENCE_NEVER is
+     * the honest default: "this fixture asserted nothing about whether
+     * the radio has heard this member." */
+    out->radar.heard_presence = FF_CREW_PRESENCE_NEVER;
     /* S16 slice a: `face` defaults to RADAR — and it must STAY RADAR,
      * which runs deliberately AGAINST the "least-claiming first enum
      * member" convention this block otherwise applies (radar.mode above
@@ -2188,6 +2217,11 @@ int ff_fixture_dump_json(ff_app_state_t const *s, char *buf, size_t buf_sz)
     fw_raw(&w, s->radar.bearing_valid ? ",\"bearing_valid\":true" : ",\"bearing_valid\":false");
     fw_raw(&w, s->radar.place ? ",\"place\":true" : ",\"place\":false");
     fw_raw(&w, s->radar.stale ? ",\"stale\":true" : ",\"stale\":false");
+    /* 2026-09-07 [api] presence-heard-vs-position */
+    fw_raw(&w, ",\"heard_presence\":\"");
+    fw_raw(&w, fx_enum_name(fx_crew_presence_table, sizeof(fx_crew_presence_table) / sizeof(fx_crew_presence_table[0]),
+                             s->radar.heard_presence, "never"));
+    fw_raw(&w, "\"");
     fw_raw(&w, ",\"clock_str\":");
     fw_json_str(&w, s->radar.clock_str);
     fw_fmt(&w, ",\"batt_pct\":%d", (int)s->radar.batt_pct);

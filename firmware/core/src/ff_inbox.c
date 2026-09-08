@@ -175,16 +175,15 @@ void ff_inbox_build(ff_inbox_t *ib, ff_feed_t const *feed, ff_crew_t const *crew
          * the two buffers are no longer the same size. */
         snprintf(cv->name, sizeof(cv->name), "%s", ff_crew_display_name(m));
 
-        /* Presence — the same honest legs ff_sigview_build feeds
-         * ff_sigview_presence (position freshness + direct-packet RSSI
-         * age; ASSERTED/NEVER contribute nothing — ff_sigview.h). */
-        ff_freshness_t fresh     = ff_crew_freshness(m, now_ms);
-        uint32_t       pos_age   = now_ms - m->pos_age_ms;
-        bool           have_rssi = (m->rssi_dbm != INT16_MIN);
-        uint32_t       rssi_age  = now_ms - m->rssi_age_ms;
+        /* Presence — 2026-09-07: HEARD-based (ff_crew_presence, ANY
+         * packet), not position/RSSI-based — see ff_sigview.h's top
+         * comment for why. `heard_age` is meaningful only when `heard`
+         * isn't NEVER; ff_sigview_presence ignores it otherwise. */
+        ff_crew_presence_t heard     = ff_crew_presence(m, now_ms);
+        uint32_t            heard_age = m->has_heard ? (now_ms - m->last_heard_ms) : 0u;
 
         uint32_t age       = 0;
-        cv->presence       = ff_sigview_presence(fresh, pos_age, have_rssi, rssi_age, &age);
+        cv->presence       = ff_sigview_presence(heard, heard_age, &age);
         cv->presence_valid = true;
         cv->presence_age_ms = (cv->presence == FF_PRESENCE_LINKED) ? 0u : age;
 

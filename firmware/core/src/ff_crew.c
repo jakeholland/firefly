@@ -147,9 +147,37 @@ void ff_crew_on_rssi(ff_crew_t *c, uint32_t node_id, int16_t rssi_dbm)
     }
 }
 
+void ff_crew_on_heard(ff_crew_t *c, uint32_t node_id, uint32_t rx_time_ms)
+{
+    if (!c) {
+        return;
+    }
+    ff_crew_member_t *m = crew_find_or_create(c, node_id, NULL);
+    if (!m) {
+        return;
+    }
+    m->last_heard_ms = rx_time_ms; /* absolute rx timestamp - see header note */
+    m->has_heard = true;
+}
+
 /* ------------------------------------------------------------------- */
-/* freshness / close-range / trend                                      */
+/* freshness / presence / close-range / trend                           */
 /* ------------------------------------------------------------------- */
+
+ff_crew_presence_t ff_crew_presence(ff_crew_member_t const *m, uint32_t now_ms)
+{
+    if (!m || !m->has_heard) {
+        return FF_CREW_PRESENCE_NEVER;
+    }
+    uint32_t age = now_ms - m->last_heard_ms; /* wraparound-safe unsigned subtraction */
+    if (age < FF_CREW_HEARD_LIVE_MS) {
+        return FF_CREW_PRESENCE_HEARD;
+    }
+    if (age <= FF_CREW_HEARD_LOST_MS) {
+        return FF_CREW_PRESENCE_STALE;
+    }
+    return FF_CREW_PRESENCE_LOST;
+}
 
 ff_freshness_t ff_crew_freshness(ff_crew_member_t const *m, uint32_t now_ms)
 {

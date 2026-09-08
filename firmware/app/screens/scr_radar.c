@@ -811,9 +811,24 @@ static void radar_render_lost(lv_obj_t *parent, ff_radar_view_t const *r, radar_
          * to point at, honestly) — no arrow, no rim tint, no invented
          * distance. A distinct headline so this is never confused with a
          * "LAST SEEN" reading (CLAUDE.md honesty rule; PR #13 review
-         * finding #2). */
+         * finding #2).
+         *
+         * 2026-09-07 amendment (presence-heard-vs-position) — mode ==
+         * RADAR_LOST alone says nothing about whether the RADIO has
+         * heard this member; `r->heard_presence` (ff_radar.h) does. A
+         * member the radio is still hearing (NodeInfo/telemetry) but who
+         * has never sent a GPS fix is NOT the same story as a member the
+         * radio genuinely hasn't heard from at all — the old, single
+         * "waiting for a fix" copy read as "silence" either way. Only
+         * the SUBTEXT changes here (never the headline's own claim about
+         * a fix, never the arrow/rim-tint/PLACEMENT above, which all
+         * stay position-freshness-driven per this amendment's own
+         * ruling — see ff_radar.h's `heard_presence` doc comment). */
+        bool const heard_recently = (r->heard_presence == FF_CREW_PRESENCE_HEARD ||
+                                     r->heard_presence == FF_CREW_PRESENCE_STALE);
+
         lv_obj_t *headline = lv_label_create(parent);
-        lv_label_set_text(headline, "NO FIX YET");
+        lv_label_set_text(headline, heard_recently ? "NEAR, NO FIX" : "NO FIX YET");
         lv_obj_set_style_text_font(headline, FF_THEME_FONT_HEADLINE, 0);
         lv_obj_set_style_text_color(headline, lv_color_hex(FF_THEME_COLOR_MUTED), 0);
         lv_obj_align(headline, LV_ALIGN_CENTER, 0, (int32_t)RADAR_LAYOUT_NEVER_HEADLINE_DY);
@@ -821,7 +836,7 @@ static void radar_render_lost(lv_obj_t *parent, ff_radar_view_t const *r, radar_
         radar_build_name_label(parent, r->name, (int32_t)RADAR_LAYOUT_NEVER_NAME_DY, (int32_t)RADAR_LAYOUT_NEVER_NAME_W);
 
         lv_obj_t *sub = lv_label_create(parent);
-        lv_label_set_text(sub, "Waiting for their first GPS fix");
+        lv_label_set_text(sub, heard_recently ? "Heard recently, no GPS fix yet" : "Waiting for their first GPS fix");
         lv_obj_set_style_text_font(sub, FF_THEME_FONT_LABEL, 0);
         lv_obj_set_style_text_color(sub, lv_color_hex(FF_THEME_COLOR_DIM), 0);
         lv_obj_align(sub, LV_ALIGN_CENTER, 0, (int32_t)RADAR_LAYOUT_NEVER_SUB_DY);
