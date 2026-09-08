@@ -179,6 +179,7 @@ typedef enum {
     FF_DBGCMD_NAME,         /* "name" bare — stored/mesh/confirmed status */
     FF_DBGCMD_NAME_SET,     /* "name <text>": u.text — commit + mesh push */
     FF_DBGCMD_DIAG,         /* DIAGNOSTICS: link/position/mesh/time/compass/device dump */
+    FF_DBGCMD_PERF,         /* 2026-09-08 QA hardening — frame/flush timing, heap, stack high-water dump */
 } ff_dbgcmd_kind_t;
 
 /** Why a line failed to become a command. `FF_DBGCMD_ERR_EMPTY` is not

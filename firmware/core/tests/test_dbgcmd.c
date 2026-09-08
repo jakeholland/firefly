@@ -83,6 +83,21 @@ static void dbgcmd_diag_with_extra_arg_rejected(void)
     TEST_ASSERT_EQUAL(FF_DBGCMD_NONE, cmd.kind);
 }
 
+/* 2026-09-08 QA hardening — `perf` is zero-arg, same shape as `diag`. */
+static void dbgcmd_perf_parses(void)
+{
+    ff_dbgcmd_t cmd;
+    TEST_ASSERT_EQUAL(FF_DBGCMD_ERR_OK, parse_str("perf", &cmd));
+    TEST_ASSERT_EQUAL(FF_DBGCMD_PERF, cmd.kind);
+}
+
+static void dbgcmd_perf_with_extra_arg_rejected(void)
+{
+    ff_dbgcmd_t cmd;
+    TEST_ASSERT_EQUAL(FF_DBGCMD_ERR_BAD_ARGS, parse_str("perf now", &cmd));
+    TEST_ASSERT_EQUAL(FF_DBGCMD_NONE, cmd.kind);
+}
+
 static void dbgcmd_send_parses_with_text(void)
 {
     ff_dbgcmd_t cmd;
@@ -418,6 +433,8 @@ int main(void)
     RUN_TEST(dbgcmd_i2c_parses);
     RUN_TEST(dbgcmd_diag_parses);
     RUN_TEST(dbgcmd_diag_with_extra_arg_rejected);
+    RUN_TEST(dbgcmd_perf_parses);
+    RUN_TEST(dbgcmd_perf_with_extra_arg_rejected);
     RUN_TEST(dbgcmd_send_parses_with_text);
     RUN_TEST(dbgcmd_dm_parses_with_hex_and_text);
     RUN_TEST(dbgcmd_dm_accepts_bang_prefix);

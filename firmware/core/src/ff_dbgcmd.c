@@ -205,6 +205,11 @@ ff_dbgcmd_status_t ff_dbgcmd_parse(char const *line, size_t line_len, ff_dbgcmd_
         out->kind = FF_DBGCMD_DIAG;
         return FF_DBGCMD_ERR_OK;
     }
+    if (tok_eq(buf, start, cmd_end, "perf")) {
+        if (arg_start < end) return FF_DBGCMD_ERR_BAD_ARGS;
+        out->kind = FF_DBGCMD_PERF;
+        return FF_DBGCMD_ERR_OK;
+    }
     if (tok_eq(buf, start, cmd_end, "name")) {
         if (arg_start >= end) {
             out->kind = FF_DBGCMD_NAME;
@@ -243,6 +248,7 @@ char const *ff_dbgcmd_kind_name(ff_dbgcmd_kind_t kind)
     case FF_DBGCMD_NAME: return "NAME";
     case FF_DBGCMD_NAME_SET: return "NAME_SET";
     case FF_DBGCMD_DIAG: return "DIAG";
+    case FF_DBGCMD_PERF: return "PERF";
     }
     return "?";
 }
