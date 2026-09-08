@@ -14,7 +14,8 @@ void ff_gesture_cfg_default(ff_gesture_cfg_t *cfg, int16_t cx, int16_t cy, int16
     cfg->cx = cx;
     cfg->cy = cy;
     cfg->r  = r;
-    cfg->rim_px          = 28;
+    cfg->back_rim_px     = 44; /* ff_gesture.h's "Edge tolerance" section — widened from a shared rim_px=28 */
+    cfg->home_rim_px     = 64; /* ditto — widened from a shared rim_px=28 */
     cfg->back_travel_px  = 56;
     cfg->home_travel_px  = 64;
     cfg->axis_lock_px    = 24;
@@ -22,6 +23,9 @@ void ff_gesture_cfg_default(ff_gesture_cfg_t *cfg, int16_t cx, int16_t cy, int16
     cfg->long_ms         = 1200;
     cfg->long_slop_px    = 12;
     cfg->long_press_enabled = false; /* the glue arms this per active face */
+    cfg->stall_gap_ms   = 150; /* ff_gesture.h's "Stall tolerance" section */
+    cfg->edge_slop_px   = 16;  /* ff_gesture.h's "Edge tolerance" section */
+    cfg->panel_size_px  = 412; /* ff_gesture.h's "Edge tolerance, part 3" section; matches FF_THEME_PUCK_PX */
 }
 
 void ff_gesture_init(ff_gesture_t *g, const ff_gesture_cfg_t *cfg)
@@ -40,14 +44,57 @@ void ff_gesture_set_long_press(ff_gesture_t *g, bool enabled)
     g->cfg.long_press_enabled = enabled;
 }
 
-/* in_circle — squared-distance compare, no sqrt needed: dist^2 <= r^2. */
+/* in_circle — squared-distance compare, no sqrt needed: dist^2 <= r^2.
+ * Padded by cfg->edge_slop_px (ff_gesture.h's "Edge tolerance" section)
+ * — admission only; every OTHER use of cfg->r (the rim-zone formulas)
+ * stays exact. */
 static bool gesture_in_circle(ff_gesture_cfg_t const *cfg, int16_t x, int16_t y)
 {
     int32_t const ddx = (int32_t)x - (int32_t)cfg->cx;
     int32_t const ddy = (int32_t)y - (int32_t)cfg->cy;
     int32_t const dist_sq = ddx * ddx + ddy * ddy;
-    int32_t const r = (int32_t)cfg->r;
+    int32_t const r = (int32_t)cfg->r + (int32_t)cfg->edge_slop_px;
     return dist_sq <= r * r;
+}
+
+/* gesture_down_admitted — the full DOWN-time admission gate (ff_gesture.h's
+ * "Edge tolerance, part 3" section). A DOWN is admitted if it is a sane
+ * panel coordinate AND (it lands in the padded glass circle OR it lands
+ * in one of the two rim zones G1/G2 already key off, bounded on the
+ * PERPENDICULAR axis to the circle's own unpadded span so a corner touch
+ * that merely shares one coordinate with a real rim touch — S28_AC9 —
+ * is still rejected). The rim-zone thresholds here are exactly
+ * `back_alive`/`home_alive`'s own formulas; nothing downstream changes
+ * shape because of this — a rim-admitted touch is disqualified by axis
+ * lock/ratio/window exactly as it always was. */
+static bool gesture_down_admitted(ff_gesture_cfg_t const *cfg, int16_t x, int16_t y)
+{
+    if (x < 0 || x >= cfg->panel_size_px || y < 0 || y >= cfg->panel_size_px) {
+        /* Not a real panel coordinate at all — e.g. the driver's
+         * invalid-point sentinel (-1,-1), or a raw 0xFFFF already
+         * narrowed to int16_t -1 by the caller. */
+        return false;
+    }
+
+    if (gesture_in_circle(cfg, x, y)) {
+        return true;
+    }
+
+    int32_t const back_rim_edge = (int32_t)cfg->cx - (int32_t)cfg->r + (int32_t)cfg->back_rim_px;
+    bool const in_back_rim =
+        ((int32_t)x <= back_rim_edge) &&
+        ((int32_t)y >= (int32_t)cfg->cy - (int32_t)cfg->r) &&
+        ((int32_t)y <= (int32_t)cfg->cy + (int32_t)cfg->r);
+    if (in_back_rim) {
+        return true;
+    }
+
+    int32_t const home_rim_edge = (int32_t)cfg->cy + (int32_t)cfg->r - (int32_t)cfg->home_rim_px;
+    bool const in_home_rim =
+        ((int32_t)y >= home_rim_edge) &&
+        ((int32_t)x >= (int32_t)cfg->cx - (int32_t)cfg->r) &&
+        ((int32_t)x <= (int32_t)cfg->cx + (int32_t)cfg->r);
+    return in_home_rim;
 }
 
 ff_gesture_kind_t ff_gesture_feed(ff_gesture_t *g, bool down, int16_t x, int16_t y, uint32_t now_ms)
@@ -73,11 +120,13 @@ ff_gesture_kind_t ff_gesture_feed(ff_gesture_t *g, bool down, int16_t x, int16_t
         g->last_y = y;
         g->back_threshold_evaluated = false;
         g->home_threshold_evaluated = false;
+        g->stall_checked = false;
 
-        if (!gesture_in_circle(&g->cfg, x, y)) {
-            /* S28_AC9 — a DOWN outside the glass circle can never
-             * become G1/G2/G3. Latched for this touch's whole
-             * lifetime; only the matching UP clears it. */
+        if (!gesture_down_admitted(&g->cfg, x, y)) {
+            /* S28_AC9 — a DOWN admitted by neither the glass circle nor
+             * either rim zone can never become G1/G2/G3. Latched for
+             * this touch's whole lifetime; only the matching UP clears
+             * it. */
             g->phase = FF_GESTURE_PHASE_ABORTED;
             g->back_alive = false;
             g->home_alive = false;
@@ -86,8 +135,8 @@ ff_gesture_kind_t ff_gesture_feed(ff_gesture_t *g, bool down, int16_t x, int16_t
         }
 
         g->phase = FF_GESTURE_PHASE_TRACKING;
-        g->back_alive = (x <= (int16_t)(g->cfg.cx - g->cfg.r + g->cfg.rim_px));
-        g->home_alive = (y >= (int16_t)(g->cfg.cy + g->cfg.r - g->cfg.rim_px));
+        g->back_alive = (x <= (int16_t)(g->cfg.cx - g->cfg.r + g->cfg.back_rim_px));
+        g->home_alive = (y >= (int16_t)(g->cfg.cy + g->cfg.r - g->cfg.home_rim_px));
         g->long_alive = g->cfg.long_press_enabled;
         return FF_GESTURE_NONE; /* a DOWN sample itself never recognises anything */
     }
@@ -107,6 +156,25 @@ ff_gesture_kind_t ff_gesture_feed(ff_gesture_t *g, bool down, int16_t x, int16_t
         /* Already DONE (a gesture already fired this touch, S28_AC8) or
          * ABORTED (S28_AC9) — every further sample until UP is a no-op. */
         return FF_GESTURE_NONE;
+    }
+
+    /* Stall tolerance (ff_gesture.h's own section on this) — checked
+     * ONCE, on the very first sample fed after DOWN, never again for
+     * this touch. A gap this large proves the DEVICE, not the finger,
+     * was slow (a stalled poll loop — real bench evidence, see that
+     * header section), so the window's own clock is moved forward to
+     * this sample rather than charging the stall against `window_ms`.
+     * Only `t0` moves; `x0`/`y0` (the touch's real spatial origin) are
+     * untouched, so `dx`/`dy` below still measure genuine displacement
+     * from where the finger actually started (S28_AC11). A normal gap
+     * (<= stall_gap_ms) changes nothing (S28_AC12 — this is a stall
+     * exception, not a general timing relaxation). */
+    if (!g->stall_checked) {
+        g->stall_checked = true;
+        uint32_t const gap_ms = now_ms - g->t0; /* wraparound-safe: same subtraction convention ff_time_reached itself uses */
+        if (gap_ms > (uint32_t)g->cfg.stall_gap_ms) {
+            g->t0 = now_ms;
+        }
     }
 
     int32_t const dx  = (int32_t)x - (int32_t)g->x0;

@@ -26,7 +26,7 @@
  *
  * ## Gesture rules (mirrors the spec's own wording exactly)
  *  - G1 BACK: DOWN inside the glass circle AND within the LEFT rim zone
- *    (`x <= cx - r + rim_px`). The finger must then travel
+ *    (`x <= cx - r + back_rim_px`). The finger must then travel
  *    `dx >= back_travel_px` within `window_ms` of DOWN, with
  *    `|dy| <= 0.6*dx` evaluated the FIRST sample where dx reaches that
  *    threshold (not re-checked on a later, larger dx — see
@@ -37,11 +37,15 @@
  *    real scroll gesture starting near the rim from ever firing BACK
  *    (docs/specs/S28-gestures.md's own history note on PR #130).
  *  - G2 HOME: DOWN inside the circle AND within the BOTTOM rim zone
- *    (`y >= cy + r - rim_px`). Symmetric to G1 on the vertical axis
+ *    (`y >= cy + r - home_rim_px`). Symmetric to G1 on the vertical axis
  *    (`dy <= -home_travel_px`, i.e. "up" by that many px, axis-locked
  *    against `|dx|`), PLUS a minimum mean speed (`up / elapsed_ms >=
  *    0.25`) evaluated at the same moment as the ratio check — a slow
  *    deliberate drag upward from the bottom edge must not fire HOME.
+ *    (2026-09-07 map-back-gesture-stall amendment: `back_rim_px`/
+ *    `home_rim_px` used to be one shared `rim_px` field, pinned at 28 for
+ *    both zones — see this header's own "Edge tolerance" section below
+ *    for why they were split and widened to 44/64.)
  *  - G3 LONG_PRESS: DOWN anywhere inside the circle (no rim
  *    restriction), held for `long_ms` with total movement never
  *    exceeding `long_slop_px` from the DOWN point. Recognised from
@@ -53,9 +57,11 @@
  *    face (and, per touch, per whether the press landed on an
  *    interactive widget — see that function's own doc comment).
  *
- * A touch whose DOWN point is outside the glass circle entirely can
- * never produce ANY of the three gestures (a corner-pixel touch is not
- * "on the glass" at all) — this is the FSM's own guard, checked once at
+ * A touch whose DOWN point is admitted by NEITHER the padded glass
+ * circle (past `r + cfg.edge_slop_px`) NOR either rim zone (this
+ * header's own "Edge tolerance" and "Edge tolerance, part 3" sections)
+ * can never produce ANY of the three gestures (a corner-pixel touch is
+ * not "on the glass" at all) — this is the FSM's own guard, checked once at
  * DOWN, not something the glue has to remember to apply.
  *
  * ## Timing — wrap-safe
@@ -64,6 +70,121 @@
  * convention every other core FSM in this repo uses (`ff_multitap.h`,
  * `ff_idle.h`, `ff_power_fsm.h`, ...), so a `now_ms` that wraps past
  * `UINT32_MAX` mid-touch still recognises correctly (S28_AC10).
+ *
+ * ## Stall tolerance (2026-09-07 amendment, docs/specs/S28-gestures.md)
+ * `window_ms` is measured from the DOWN sample — but DOWN is also the
+ * ONLY sample a stalled poll loop is guaranteed to have delivered before
+ * it froze (real bench evidence: a press on the Map face stalled the
+ * device's LVGL/touch-poll loop for ~520ms — see the spec's dated
+ * amendment for the numbers). Without this rule, that stall alone burns
+ * the whole 500ms window before the FIRST post-stall sample even
+ * arrives, and a real, well-formed 56px swipe recognises as NONE simply
+ * because the device was busy, not because the finger did anything
+ * wrong — on the Map face specifically, this made BACK/HOME
+ * unreachable (there is no other way off that face).
+ *
+ * The fix, applied ONCE per touch, at the FIRST sample after DOWN (never
+ * re-applied to any later sample, so it cannot repeatedly "refresh" a
+ * window during an otherwise-ordinary drag): if that first sample
+ * arrives `> cfg.stall_gap_ms` after `t0` (DOWN's own timestamp) — i.e.
+ * the gap itself proves the device, not the finger, was the slow party
+ * — the window's own clock (`t0`) is moved forward to that sample's
+ * `now_ms`, and every subsequent `window_ms`/ratio/speed check
+ * (G1 and G2 alike, since both read `t0`) is evaluated against THAT
+ * start instead of the original DOWN time. The touch's SPATIAL origin
+ * (`x0`/`y0`, and therefore every `dx`/`dy` this FSM ever computes) is
+ * left untouched — only the clock moves, never where the finger
+ * started, so `back_travel_px`/`home_travel_px` still mean genuine
+ * physical displacement from the real touch-down point.
+ *
+ * A gap `<= stall_gap_ms` (the ordinary case — nothing was stalled)
+ * changes nothing: `t0` stays put and every rule behaves exactly as it
+ * did before this amendment. This is deliberately a NARROW exception,
+ * not a general "be more lenient about timing": a genuinely slow but
+ * evenly-sampled swipe (no single gap over `stall_gap_ms`, just a lot
+ * of them, each fine on its own, adding up past `window_ms` in total)
+ * gets no help from this rule and must still read as NONE — see
+ * S28_AC12, the negative control that is this amendment's own proxy
+ * guard (AGENTS.md item 6): "a stall-tolerant window recognises a late
+ * swipe" is satisfied just as well by an FSM that simply doubled
+ * `window_ms` outright, which would wrongly let a slow drag through.
+ *
+ * ## Edge tolerance (2026-09-07 map-back-gesture-stall amendment, part 2)
+ * The DOWN-in-circle guard (this header's own top note, S28_AC9) compares
+ * the raw touch point against `cx`/`cy`/`r` with ZERO tolerance —
+ * `dist(x,y; cx,cy) <= r`, exactly. Real bench data (docs/specs/
+ * S28-gestures.md's dated amendment) shows genuine, deliberate rim-zone
+ * touches — the exact motion G1/G2 exist to recognise — landing a few
+ * pixels PAST that boundary: a fingertip pressed right at the physical
+ * glass edge does not measure as a perfect circle at the pixel level,
+ * because `r` itself is already a slightly-trimmed value (see the theme
+ * layer's own comment on `FF_THEME_GLASS_R`: "203 measured; pulled in 3
+ * px so a ring on it clears the bezel lip" — trimmed for VISUAL
+ * clearance, not for touch admission) and per-touch measurement noise
+ * adds a little more on top. Before this amendment, a DOWN sample that
+ * landed even 1px past `r` was `FF_GESTURE_PHASE_ABORTED` outright —
+ * before ANY rim-zone, axis-lock, or window logic ever ran — silently
+ * eating a perfectly legitimate edge swipe.
+ *
+ * The fix: `cfg.edge_slop_px` (new field, default 16) pads ONLY the
+ * admission check — `dist(x,y; cx,cy) <= r + edge_slop_px` — leaving
+ * every other use of `r` (the rim-zone formulas above) exactly as
+ * precise as before. A DOWN this far outside the visual ring is still
+ * unambiguously "on the glass" (16px is a small fraction of the ~200px
+ * radius, and nowhere close to admitting a genuinely off-glass touch —
+ * S28_AC9's own corner-pixel example remains ~280px away, comfortably
+ * outside even with this slop applied).
+ *
+ * ## Edge tolerance, part 3 — rim admission independent of the visual
+ * circle (2026-09-07 map-back-gesture-stall amendment, round 3)
+ * Part 2's `edge_slop_px` pads the admission circle by a flat 16px in
+ * EVERY direction — but a real BACK/HOME swipe starts at the extreme
+ * edge of the touch panel, and the panel is not clipped to the round
+ * bezel: it reports finger positions out to `x=0`/`x=panel_size_px-1`
+ * along the WHOLE left edge, at any `y`, because the panel is a square
+ * sensor under a round window. Bench evidence (Jake's puck, live
+ * theme geometry `cx=208, cy=206, r=200`, 2026-09-07): a clean left-rim
+ * BACK swipe on the Map face, `DOWN(5,119)`, was `ABORTED` at DOWN —
+ * `dist((5,119),(208,206)) ≈ 220.9px`, past even the padded radius
+ * `r+edge_slop_px=216`. The SAME shape of swipe on Settings,
+ * `DOWN(5,183)`, was admitted (`dist ≈ 204px ≤ 216`) and recognised
+ * BACK normally. The only difference is how far `y` sits from `cy`
+ * (119 is 87px off-centre; 183 is only 23px off) — a flat circular pad
+ * can never cover every `y` along the rim without also being wide
+ * enough to swallow genuinely off-glass corner touches (`S28_AC9`'s own
+ * `(0,0)` example), because the circle simply is not the right SHAPE
+ * for admitting a touch whose defining feature is "started at the
+ * physical edge, however far up or down that edge".
+ *
+ * The fix: `gesture_down_admitted` (ff_gesture.c) admits a DOWN if
+ * EITHER the padded-circle check above passes, OR the point falls in
+ * one of the two rim zones this module already computes `back_alive`/
+ * `home_alive` from — `x <= cx - r + back_rim_px` for the BACK zone,
+ * `y >= cy + r - home_rim_px` for the HOME zone — PROVIDED the point is
+ * also a sane panel coordinate (`0 <= x,y < cfg.panel_size_px`, new
+ * field, default 412 — this header's own "the panel size should come
+ * from config, not a literal" convention, matching `FF_THEME_PUCK_PX`)
+ * and, on the axis PERPENDICULAR to that rim, still within the circle's
+ * own unpadded span (`cy-r <= y <= cy+r` for the BACK zone, `cx-r <= x
+ * <= cx+r` for the HOME zone). That perpendicular bound is what keeps
+ * `S28_AC9`'s corner pixel — `x` well inside the BACK rim's threshold,
+ * but `y` far above the circle's own top — from being admitted just
+ * because it happens to share one coordinate with a real rim touch: a
+ * round window has no glass left up in that corner for a finger to
+ * physically touch, no matter how far left `x` reads. The two rim
+ * zones this admits are exactly the ones `back_alive`/`home_alive`
+ * already gate everything else on, so nothing downstream (axis lock,
+ * ratio, window, stall tolerance) changes shape — a rim-admitted touch
+ * that then moves the wrong axis first is disqualified exactly the way
+ * it always was.
+ *
+ * The `0 <= x,y < panel_size_px` bound also does the job the old
+ * zero-tolerance circle check used to do incidentally: rejecting the
+ * driver's own invalid-point sentinels (`(-1,-1)`, or a raw `0xFFFF`
+ * that arrives here already narrowed to `int16_t -1` by the caller) —
+ * those are never "on the glass" under any interpretation, rim or
+ * circle, and this bound is what actually says so explicitly now that
+ * the rim zones no longer imply it for free.
  *
  * Pure C11, no I/O, no allocation. `ff_gesture_t` is fully-defined (not
  * opaque), same convention as `ff_multitap_t`/`ff_flare_t`: safe on the
@@ -104,23 +225,51 @@ typedef enum {
  */
 typedef struct {
     int16_t cx, cy, r;          /* the glass circle this touch space hit-tests against */
-    int16_t rim_px;              /* how deep the LEFT/BOTTOM rim zones reach in from the circle's own edge */
+    /* How deep the LEFT (G1) / BOTTOM (G2) rim zones reach in from the
+     * circle's own edge. Two independent fields (2026-09-07 map-back-
+     * gesture-stall amendment — used to be one shared `rim_px`, split
+     * because bench evidence called for widening them by different
+     * amounts: see docs/specs/S28-gestures.md's dated amendment). */
+    int16_t back_rim_px;
+    int16_t home_rim_px;
     int16_t back_travel_px;      /* G1's required rightward dx */
     int16_t home_travel_px;      /* G2's required upward travel (i.e. -dy) */
     int16_t axis_lock_px;        /* the off-axis travel that disqualifies G1/G2 as a scroll */
-    uint16_t window_ms;          /* G1/G2 must reach their travel threshold within this long of DOWN */
+    uint16_t window_ms;          /* G1/G2 must reach their travel threshold within this long of DOWN (or of the first post-stall sample — see this header's "Stall tolerance" section) */
     uint16_t long_ms;            /* G3's required hold duration */
     int16_t long_slop_px;        /* G3's allowed total movement from the DOWN point */
     bool long_press_enabled;     /* G3 armed at all — the glue flips this per active face (+ per touch, see ff_gesture_set_long_press) */
+    /* This header's "Stall tolerance" section has the full rationale
+     * and bench evidence. Checked ONCE per touch, at the first sample
+     * after DOWN only. */
+    uint16_t stall_gap_ms;
+    /* This header's "Edge tolerance" section. Pads the DOWN-in-circle
+     * admission check only; `r` itself (and the rim-zone formulas above)
+     * stay exact. */
+    int16_t edge_slop_px;
+    /* This header's "Edge tolerance, part 3" section: the touch panel's
+     * own size (a square sensor; the round glass sits inside it), used
+     * ONLY to sanity-bound a rim-admitted DOWN and to reject the
+     * driver's invalid-point sentinels. NOT the glass circle — that is
+     * `cx`/`cy`/`r` above. */
+    int16_t panel_size_px;
 } ff_gesture_cfg_t;
 
 /**
  * ff_gesture_cfg_default — fill `*cfg` with the spec's pinned defaults:
- * `cx`/`cy`/`r` from the caller, `rim_px=28`, `back_travel_px=56`,
+ * `cx`/`cy`/`r` from the caller, `back_rim_px=44`, `home_rim_px=64`
+ * (2026-09-07 amendment — widened from a shared `rim_px=28`, this
+ * header's "Edge tolerance" section and docs/specs/S28-gestures.md's
+ * dated amendment have the bench evidence), `back_travel_px=56`,
  * `home_travel_px=64`, `axis_lock_px=24`, `window_ms=500`,
  * `long_ms=1200`, `long_slop_px=12`, `long_press_enabled=false` (the
  * glue arms it explicitly once a face is known — see
- * `ff_gesture_set_long_press`). NULL-safe (no-op on a NULL `cfg`).
+ * `ff_gesture_set_long_press`), `stall_gap_ms=150` (this header's
+ * "Stall tolerance" section), `edge_slop_px=16` (this header's "Edge
+ * tolerance" section), `panel_size_px=412` (this header's "Edge
+ * tolerance, part 3" section — matches `FF_THEME_PUCK_PX`; the glue may
+ * override it explicitly rather than relying on this default staying in
+ * sync). NULL-safe (no-op on a NULL `cfg`).
  */
 void ff_gesture_cfg_default(ff_gesture_cfg_t *cfg, int16_t cx, int16_t cy, int16_t r);
 
@@ -146,6 +295,7 @@ typedef struct {
     bool long_alive;               /* G3 still a live candidate for this touch (disqualified by slop) */
     bool back_threshold_evaluated; /* G1's ratio/window check has already run once (pass or fail, no retry) */
     bool home_threshold_evaluated; /* G2's ratio/window/speed check has already run once */
+    bool stall_checked;            /* the first-post-DOWN-sample stall check (this header's "Stall tolerance" section) has already run for this touch */
 } ff_gesture_t;
 
 /* Internal phase values for `ff_gesture_t.phase` — not an enum typedef
@@ -218,6 +368,14 @@ void ff_gesture_set_long_press(ff_gesture_t *g, bool enabled);
  * finger straightens out afterward — S28_AC6). The axis-lock
  * disqualification (`axis_lock_px`) is checked on every sample BEFORE
  * that threshold is reached, not after.
+ *
+ * The very FIRST sample fed after DOWN also runs the one-shot stall
+ * check this header's "Stall tolerance" section documents (moving the
+ * window's own clock forward if that sample arrived suspiciously late)
+ * — before anything else this sample might otherwise trigger, so a
+ * sample that is BOTH the delayed first-post-stall sample AND the one
+ * that happens to cross a travel threshold is judged against the
+ * adjusted window, not the stale one.
  *
  * NULL `g`: returns FF_GESTURE_NONE, touches nothing.
  */
