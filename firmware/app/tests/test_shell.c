@@ -10090,6 +10090,373 @@ static void S_diag_heading_keys_rendered_whole_degree_only(void)
                              "a rendered DIAGNOSTICS heading change did not repaint the page");
 }
 
+/* =================================================================== */
+/* fix/render-key-churn (2026-09-08) — per-face render-key churn budget */
+/* =================================================================== */
+
+/**
+ * inject_rx_meta_snr — inject_rx_meta (above) plus SNR, which that
+ * helper never set (every existing caller only needed RSSI). A
+ * dedicated helper rather than growing inject_rx_meta's own parameter
+ * list: every one of its ~30 existing call sites would need touching
+ * for a parameter this file's churn scenario is the only caller of.
+ */
+static void inject_rx_meta_snr(uint32_t from, mc_rx_path_t path, int16_t rssi, float snr_db)
+{
+    mc_rx_meta_t m;
+    memset(&m, 0, sizeof(m));
+    m.rx_path = path;
+    m.has_rssi = true;
+    m.rssi_dbm = rssi;
+    m.has_snr = true;
+    m.snr_db = snr_db;
+    H.ev.on_rx_meta(H.ev.user, from, &m);
+}
+
+/* fix/render-key-churn (2026-09-08) — the three DIAGNOSTICS fields this
+ * fix newly buckets, same shape and same reason as
+ * S_diag_pos_age_keys_rendered_bucket_only/S_diag_heading_keys_rendered_
+ * whole_degree_only just above: a sub-bucket change MUST stay clean (a
+ * real bug here reads as the SNR/battery/heap row flickering the page
+ * on every radio/ADC sample while DIAGNOSTICS is open), a bucket-
+ * crossing change MUST go dirty (the opposite bug reads as the row
+ * going stale — see ff_shell.c's shell_render_key comment on these
+ * three fields and scr_settings.c's settings_diag_bucket_* helpers,
+ * which print the SAME bucket width so the two can never disagree).
+ * These three are unit-level pins on the exact fields fix/render-key-
+ * churn's on-glass report named; S16_render_key_churn_budget_diagnostics
+ * (below) is the separate, coarser aggregate budget the same fix's
+ * spec amendment asks for — passing at the task's own 2s/3s stimulus
+ * cadence with or without this bucketing (that cadence alone already
+ * fits the 120/min budget), which is why these three exist: the
+ * aggregate budget passing is not proof this bucketing is correct or
+ * even present. */
+static void S_diag_snr_keys_rendered_half_db_bucket_only(void)
+{
+    harness_init(100000u, false);
+    inject_my_info(MY_ID);
+    {
+        ff_intent_t const leave_launcher = {.kind = FF_INTENT_LAUNCHER_SELECT, .u = {.launcher_idx = 4u}};
+        ff_shell_intent(&H.shell, &leave_launcher);
+    }
+    send_bare(FF_INTENT_SETTINGS_OPEN_DIAGNOSTICS);
+
+    inject_rx_meta_snr(MY_ID, MC_RX_PATH_DIRECT, -60, 6.0f);
+    TEST_ASSERT_TRUE(ff_shell_tick(&H.shell, H.clk.t)); /* SNR appears: dirty */
+    TEST_ASSERT_FALSE(ff_shell_tick(&H.shell, H.clk.t)); /* settled */
+    TEST_ASSERT_TRUE(ff_shell_view(&H.shell)->settings.diag.has_last_snr);
+    TEST_ASSERT_FLOAT_WITHIN(0.01f, 6.0f, ff_shell_view(&H.shell)->settings.diag.last_snr_db);
+
+    /* Sub-0.5dB radio noise, same rendered bucket: MUST be clean. */
+    advance(100u);
+    inject_rx_meta_snr(MY_ID, MC_RX_PATH_DIRECT, -60, 6.2f);
+    TEST_ASSERT_FALSE_MESSAGE(ff_shell_tick(&H.shell, H.clk.t),
+                              "a sub-0.5dB DIAGNOSTICS SNR tick rebuilt the frame - raw last_snr_db "
+                              "leaked into the render key");
+
+    /* A real, rendered 0.5dB-or-more move: dirty. */
+    advance(100u);
+    inject_rx_meta_snr(MY_ID, MC_RX_PATH_DIRECT, -60, 6.6f);
+    TEST_ASSERT_TRUE_MESSAGE(ff_shell_tick(&H.shell, H.clk.t),
+                             "a rendered DIAGNOSTICS SNR change did not repaint the page");
+}
+
+static void S_diag_batt_mv_keys_rendered_ten_mv_bucket_only(void)
+{
+    harness_init(100000u, false);
+    inject_my_info(MY_ID);
+    {
+        ff_intent_t const leave_launcher = {.kind = FF_INTENT_LAUNCHER_SELECT, .u = {.launcher_idx = 4u}};
+        ff_shell_intent(&H.shell, &leave_launcher);
+    }
+    send_bare(FF_INTENT_SETTINGS_OPEN_DIAGNOSTICS);
+
+    ff_shell_set_batt_mv(&H.shell, 3700u, H.clk.t);
+    TEST_ASSERT_TRUE(ff_shell_tick(&H.shell, H.clk.t)); /* battery appears: dirty */
+    TEST_ASSERT_FALSE(ff_shell_tick(&H.shell, H.clk.t)); /* settled */
+    TEST_ASSERT_TRUE(ff_shell_view(&H.shell)->settings.diag.has_batt_mv);
+    TEST_ASSERT_EQUAL_UINT16(3700u, ff_shell_view(&H.shell)->settings.diag.batt_mv);
+
+    /* Sub-10mV ADC noise, same rendered bucket: MUST be clean. */
+    advance(100u);
+    ff_shell_set_batt_mv(&H.shell, 3704u, H.clk.t);
+    TEST_ASSERT_FALSE_MESSAGE(ff_shell_tick(&H.shell, H.clk.t),
+                              "a sub-10mV DIAGNOSTICS battery tick rebuilt the frame - raw batt_mv "
+                              "leaked into the render key");
+
+    /* A real, rendered 10mV-or-more move: dirty. */
+    advance(100u);
+    ff_shell_set_batt_mv(&H.shell, 3716u, H.clk.t);
+    TEST_ASSERT_TRUE_MESSAGE(ff_shell_tick(&H.shell, H.clk.t),
+                             "a rendered DIAGNOSTICS battery change did not repaint the page");
+}
+
+static void S_diag_free_heap_keys_rendered_whole_kb_bucket_only(void)
+{
+    harness_init(100000u, false);
+    inject_my_info(MY_ID);
+    {
+        ff_intent_t const leave_launcher = {.kind = FF_INTENT_LAUNCHER_SELECT, .u = {.launcher_idx = 4u}};
+        ff_shell_intent(&H.shell, &leave_launcher);
+    }
+    send_bare(FF_INTENT_SETTINGS_OPEN_DIAGNOSTICS);
+
+    ff_shell_set_device_stats(&H.shell, true, 180224u, FF_APP_MAG_QMC5883P, FF_APP_IMU_OK); /* 176 KB exactly */
+    TEST_ASSERT_TRUE(ff_shell_tick(&H.shell, H.clk.t)); /* heap appears: dirty */
+    TEST_ASSERT_FALSE(ff_shell_tick(&H.shell, H.clk.t)); /* settled */
+    TEST_ASSERT_TRUE(ff_shell_view(&H.shell)->settings.diag.has_free_heap);
+    TEST_ASSERT_EQUAL_UINT32(180224u, ff_shell_view(&H.shell)->settings.diag.free_heap_bytes);
+
+    /* Sub-1KB allocator noise, same rendered bucket: MUST be clean. */
+    advance(100u);
+    ff_shell_set_device_stats(&H.shell, true, 180500u, FF_APP_MAG_QMC5883P, FF_APP_IMU_OK);
+    TEST_ASSERT_FALSE_MESSAGE(ff_shell_tick(&H.shell, H.clk.t),
+                              "a sub-1KB DIAGNOSTICS heap tick rebuilt the frame - raw free_heap_bytes "
+                              "leaked into the render key");
+
+    /* A real, rendered 1KB-or-more move: dirty. */
+    advance(100u);
+    ff_shell_set_device_stats(&H.shell, true, 181500u, FF_APP_MAG_QMC5883P, FF_APP_IMU_OK);
+    TEST_ASSERT_TRUE_MESSAGE(ff_shell_tick(&H.shell, H.clk.t),
+                             "a rendered DIAGNOSTICS heap change did not repaint the page");
+}
+
+/**
+ * churn_heading — a deterministic, autocorrelated ±0.3 deg compass
+ * wobble around a fixed 90 deg heading (a STATIONARY puck — the
+ * on-glass report's own scene, "the screen is flickering" while
+ * sitting still), sampled at whatever `t_ms` the caller asks for.
+ *
+ * A plain triangle wave, not independent random noise per sample:
+ * real magnetometer jitter is ADC dithering around a settling value —
+ * strongly autocorrelated sample to sample — not a fresh independent
+ * draw every 100 ms. Deliberately, too: an independent-noise model at
+ * a 0.3 deg amplitude has no bucket-safe shape at all against a 0.1 deg
+ * render-key bucket (the swing is 6 buckets wide), so it would cross a
+ * bucket on nearly every sample by construction — asserting something
+ * about the random generator, not about `shell_render_key`. The
+ * triangle wave's own period (24 s) keeps consecutive 100 ms samples
+ * ~0.005 deg apart, crossing each 0.1 deg grid line exactly once per
+ * half-period — a small, countable rate, the shape a fixed-cadence
+ * hardware compass timer actually produces. Base 90 deg is arbitrary
+ * but comfortably clear of the 0/360 wraparound seam. */
+static float churn_heading(uint32_t t_ms)
+{
+    float const base = 90.0f;
+    float const amp = 0.3f;
+    uint32_t const period_ms = 24000u;
+    uint32_t const half_ms = period_ms / 2u;
+    uint32_t const phase_ms = t_ms % period_ms;
+    float offset;
+    if (phase_ms < half_ms) {
+        offset = -amp + 2.0f * amp * ((float)phase_ms / (float)half_ms);
+    } else {
+        offset = amp - 2.0f * amp * ((float)(phase_ms - half_ms) / (float)half_ms);
+    }
+    return base + offset;
+}
+
+#define FF_CHURN_TICK_MS 100u  /* the on-glass FF_COMPASS_SAMPLE_PERIOD_MS cadence */
+#define FF_CHURN_SECONDS 60u
+#define FF_CHURN_TICKS (FF_CHURN_SECONDS * (1000u / FF_CHURN_TICK_MS))
+
+/**
+ * churn_run — the shared scenario (docs/specs/S16-app-shell.md, this
+ * file's own 2026-09-08 Amendment): drives 60 simulated seconds of
+ * `churn_heading` at 10 Hz, a device-stats push (genuinely different
+ * heap/battery each time) every 2 s, a link frame (rx_meta + this
+ * node's own telemetry, genuinely different RSSI/SNR/util each time)
+ * every 3 s, and the shell's own clock ticking throughout — against
+ * WHATEVER face/subview `churn_setup_*` below already left active — and
+ * returns how many of the 600 ticks came back dirty (`ff_shell_tick`'s
+ * own "true = rendered view changed" contract).
+ *
+ * Heading/device-stats/link-frame are injected UNCONDITIONALLY, on
+ * every face's run, deliberately: real hardware keeps sampling the
+ * compass and pushing device/telemetry stats regardless of which face
+ * happens to be on screen, so a churn test that only perturbed the face
+ * "supposed to" care would miss a coarsening bug in a field that leaks
+ * into a face that never asked for it. `shell_project`'s own body runs
+ * `ff_radar_compute`/`shell_project_map` every tick UNCONDITIONALLY of
+ * `active_face` (radar smoothing and the map's YOU projection are
+ * independent of the current selection/face, per their own doc
+ * comments) — the DIAGNOSTICS-only fields are the one exception, an
+ * inert no-op outside `FF_SETTINGS_SUB_DIAGNOSTICS`
+ * (`shell_project_diag_page`'s own early return keeps `view.settings.diag`
+ * zero regardless of what this function injects), which is why the
+ * link-frame/device-stats pushes are safe to run unconditionally too.
+ * What each `churn_setup_*` function controls is whether that leak has
+ * anything to leak IN THE FIRST PLACE: `shell_project_map` is honestly
+ * empty (see its own "Honest-empty unless a pack is loaded" doc
+ * comment) with no pack loaded, and `ff_radar_compute`'s ring stays at
+ * `n_dots == 0` with no paired, positioned crew member — so the
+ * Launcher/Inbox/Diagnostics setups below, which load neither, are not
+ * missing coverage of that leak; they are the test that the leak stays
+ * un-armed by construction while nothing has actually asked to see a
+ * map or a crew member, which is exactly what "the key changes only
+ * when something the ACTIVE face draws would draw differently" means
+ * for a face that draws neither. */
+static uint32_t churn_run(void)
+{
+    uint32_t dirty = 0;
+    for (uint32_t tick = 0; tick < FF_CHURN_TICKS; tick++) {
+        uint32_t const t_ms = (tick + 1u) * FF_CHURN_TICK_MS;
+
+        ff_shell_set_heading(&H.shell, churn_heading(t_ms));
+
+        if (t_ms % 2000u == 0u) {
+            uint32_t const push_idx = t_ms / 2000u;
+            ff_shell_set_device_stats(&H.shell, true, 180000u + push_idx * 173u, FF_APP_MAG_QMC5883P,
+                                       FF_APP_IMU_OK);
+            ff_shell_set_batt_mv(&H.shell, (uint16_t)(3700u + (push_idx % 7u) * 11u), H.clk.t);
+        }
+        if (t_ms % 3000u == 0u) {
+            uint32_t const frame_idx = t_ms / 3000u;
+            inject_rx_meta_snr(MY_ID, MC_RX_PATH_DIRECT, (int16_t)(-60 + (int16_t)(frame_idx % 5u)),
+                                6.0f + (float)(frame_idx % 4u) * 0.4f);
+            inject_telemetry(MY_ID, true, 10.0f + (float)(frame_idx % 6u), true, 2.0f + (float)(frame_idx % 3u));
+        }
+
+        advance(FF_CHURN_TICK_MS);
+        if (ff_shell_tick(&H.shell, H.clk.t)) dirty++;
+    }
+    return dirty;
+}
+
+/** Common rig every per-face churn test shares: MY_ID known, heading at
+ *  `churn_heading`'s own t=0 value, and one push of every OTHER stimulus
+ *  `churn_run` will keep perturbing, so the measured run starts from
+ *  steady state rather than counting the one-time "a fact just
+ *  appeared" dirty ticks a fresh field always produces on its first
+ *  tick. Deliberately carries NO map pack and NO paired/positioned crew
+ *  member — see `churn_run`'s own doc comment for why that absence is
+ *  itself part of what the Launcher/Inbox/Diagnostics tests check. */
+static void churn_setup_common(void)
+{
+    harness_init(100000u, false);
+    inject_my_info(MY_ID);
+    ff_shell_set_heading(&H.shell, churn_heading(0u));
+    ff_shell_set_device_stats(&H.shell, true, 180000u, FF_APP_MAG_QMC5883P, FF_APP_IMU_OK);
+    ff_shell_set_batt_mv(&H.shell, 3700u, H.clk.t);
+    inject_rx_meta_snr(MY_ID, MC_RX_PATH_DIRECT, -60, 6.0f);
+    inject_telemetry(MY_ID, true, 10.0f, true, 2.0f);
+}
+
+/** Adds a known-origin map pack + my own fix on top of
+ *  `churn_setup_common` — what the MAP budget's own scenario needs to
+ *  give `map.you_heading_deg` something to draw at all (see
+ *  `shell_project_map`'s "Honest-empty unless a pack is loaded" doc
+ *  comment: with no pack, the field this test exists to check stays
+ *  zero and the coarsening under test never runs). */
+static void churn_setup_add_map_pack(void)
+{
+    TEST_ASSERT_EQUAL_INT(0, ff_shell_load_pack(&H.shell, PACK_JSON_MAP, sizeof(PACK_JSON_MAP) - 1u));
+    ff_shell_set_my_pos(&H.shell, (ff_latlon_t){39.936, -82.414});
+}
+
+/** Adds a paired, positioned DANA on top of `churn_setup_common` — "a
+ *  live peer", the RADAR budget's own wording, and what
+ *  `radar_compute_dots` needs to put a dot on the ring at all (with no
+ *  paired member carrying a fix, `n_dots` stays 0 and the ring's own
+ *  coarsening this test exists to check never runs — see
+ *  `radar_compute_dots`'s own doc comment). Sets my own fix too — the
+ *  same `my_pos_ok` gate `radar_compute_dots` requires — but loads no
+ *  map pack: ring dots need no pack (`ff_radar_compute` takes crew/
+ *  my_pos/heading only), and skipping one keeps this scenario from
+ *  ALSO exercising the Map leak `churn_run`'s doc comment describes,
+ *  which is not what the RADAR budget is about. */
+static void churn_setup_add_live_peer(void)
+{
+    TEST_ASSERT_TRUE(ff_shell_pair(&H.shell, DANA, true));
+    inject_node(DANA, "DANA", U_EVENING);
+    inject_position(DANA, U_EVENING, 39.9365, -82.4135);
+    ff_shell_set_my_pos(&H.shell, (ff_latlon_t){39.936, -82.414});
+}
+
+/** Drain the one-time dirty tick(s) setup/navigation itself leaves
+ *  behind, so `churn_run`'s count reflects steady-state noise only. */
+static void churn_settle(void)
+{
+    for (int i = 0; i < 16 && ff_shell_tick(&H.shell, H.clk.t); i++) {
+        advance(FF_CHURN_TICK_MS);
+    }
+}
+
+static void S16_render_key_churn_budget_launcher(void)
+{
+    churn_setup_common();
+    /* No navigation: LAUNCHER is the boot default (S26e, amended
+     * 2026-09-01) and the face this scenario's stimuli are most likely
+     * to run behind in practice. churn_settle's own first tick is what
+     * actually projects active_face for the first time (harness_init
+     * alone never ticks the shell), so it runs BEFORE this assertion,
+     * same order every test below uses. */
+    churn_settle();
+    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_LAUNCHER, ff_shell_view(&H.shell)->active_face);
+    uint32_t const churned = churn_run();
+    TEST_ASSERT_LESS_OR_EQUAL_UINT32_MESSAGE(
+        60u, churned, "LAUNCHER render key churned more than 60/min over the S16 churn scenario");
+}
+
+static void S16_render_key_churn_budget_inbox(void)
+{
+    churn_setup_common();
+    ff_intent_t const to_inbox = {.kind = FF_INTENT_LAUNCHER_SELECT, .u = {.launcher_idx = 2u}};
+    ff_shell_intent(&H.shell, &to_inbox);
+    churn_settle();
+    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_INBOX, ff_shell_view(&H.shell)->active_face);
+    uint32_t const churned = churn_run();
+    TEST_ASSERT_LESS_OR_EQUAL_UINT32_MESSAGE(
+        60u, churned, "INBOX render key churned more than 60/min over the S16 churn scenario");
+}
+
+static void S16_render_key_churn_budget_map(void)
+{
+    churn_setup_common();
+    churn_setup_add_map_pack();
+    ff_intent_t const to_map = {.kind = FF_INTENT_LAUNCHER_SELECT, .u = {.launcher_idx = 3u}};
+    ff_shell_intent(&H.shell, &to_map);
+    churn_settle();
+    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_MAP, ff_shell_view(&H.shell)->active_face);
+    TEST_ASSERT_TRUE_MESSAGE(ff_shell_view(&H.shell)->map.you_heading_valid,
+                              "setup did not produce a valid YOU heading - the scenario would not "
+                              "exercise map.you_heading_deg's coarsening at all");
+    uint32_t const churned = churn_run();
+    TEST_ASSERT_LESS_OR_EQUAL_UINT32_MESSAGE(
+        60u, churned, "MAP render key churned more than 60/min over the S16 churn scenario");
+}
+
+static void S16_render_key_churn_budget_radar_live_peer(void)
+{
+    churn_setup_common();
+    churn_setup_add_live_peer();
+    ff_intent_t const to_radar = {.kind = FF_INTENT_LAUNCHER_SELECT, .u = {.launcher_idx = 0u}};
+    ff_shell_intent(&H.shell, &to_radar);
+    churn_settle();
+    TEST_ASSERT_EQUAL_INT(FF_APP_FACE_RADAR, ff_shell_view(&H.shell)->active_face);
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(1, ff_shell_view(&H.shell)->radar.n_dots,
+                                     "setup did not produce a live peer dot on the ring - the scenario "
+                                     "would not exercise radar.dots[].ring_deg's coarsening at all");
+    uint32_t const churned = churn_run();
+    TEST_ASSERT_LESS_OR_EQUAL_UINT32_MESSAGE(
+        120u, churned, "RADAR (live peer) render key churned more than 120/min over the S16 churn scenario");
+}
+
+static void S16_render_key_churn_budget_diagnostics(void)
+{
+    churn_setup_common();
+    {
+        ff_intent_t const to_settings = {.kind = FF_INTENT_LAUNCHER_SELECT, .u = {.launcher_idx = 4u}};
+        ff_shell_intent(&H.shell, &to_settings);
+    }
+    send_bare(FF_INTENT_SETTINGS_OPEN_DIAGNOSTICS);
+    churn_settle();
+    TEST_ASSERT_EQUAL_INT(FF_SETTINGS_SUB_DIAGNOSTICS, ff_shell_view(&H.shell)->settings.subview);
+    uint32_t const churned = churn_run();
+    TEST_ASSERT_LESS_OR_EQUAL_UINT32_MESSAGE(
+        120u, churned, "DIAGNOSTICS render key churned more than 120/min over the S16 churn scenario");
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -10399,6 +10766,16 @@ int main(void)
     RUN_TEST(S_diag_reports_observed_facts);
     RUN_TEST(S_diag_pos_age_keys_rendered_bucket_only);
     RUN_TEST(S_diag_heading_keys_rendered_whole_degree_only);
+
+    RUN_TEST(S_diag_snr_keys_rendered_half_db_bucket_only);
+    RUN_TEST(S_diag_batt_mv_keys_rendered_ten_mv_bucket_only);
+    RUN_TEST(S_diag_free_heap_keys_rendered_whole_kb_bucket_only);
+
+    RUN_TEST(S16_render_key_churn_budget_launcher);
+    RUN_TEST(S16_render_key_churn_budget_inbox);
+    RUN_TEST(S16_render_key_churn_budget_map);
+    RUN_TEST(S16_render_key_churn_budget_radar_live_peer);
+    RUN_TEST(S16_render_key_churn_budget_diagnostics);
 
     return UNITY_END();
 }

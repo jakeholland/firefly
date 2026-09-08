@@ -423,6 +423,78 @@ Renamed to Lineup/Inbox on 2026-09-01 — see S26 Nav model Amendments; this spe
   code has none, per CLAUDE.md) — none is added for this single call
   site rather than inventing one.
 
+- **2026-09-08, PR (fix/render-key-churn) — "compare at the renderer's
+  granularity" (this spec's own Behavior section, "The dirty bit is
+  computed over the *rendered* projection, not the raw one") turned out
+  to bind in BOTH directions, and `shell_render_key` (`ff_shell.c`) had
+  drifted off it in both, at once, on-glass: a puck sitting still still
+  visibly flickered.**
+
+  An on-glass report ("the screen is flickering") traced to four fields
+  `shell_render_key` carried into the comparison key finer than any face
+  could ever draw them, so ordinary sensor/radio noise below the
+  screen's own resolution rebuilt the active face (`lv_obj_clean` +
+  `ff_face_build`, a visible redraw) on every sample:
+
+  - `radar.dots[i].ring_deg` — each paired member's ring-dot bearing,
+    recomputed from the RAW, unsmoothed compass heading every tick
+    (`ff_radar_compute`/`radar_compute_dots`); with a stationary puck and
+    jittering compass noise this dirtied the key at the raw sample rate
+    the moment ANY dot was on screen, independent of the selection
+    arrow's own smoothing.
+  - `map.you_heading_deg` — the Map face's YOU arrow, projected straight
+    from the raw heading with no smoothing at all (`shell_project_map`).
+  - `settings.diag.last_snr_db`, `.chan_util_pct`, `.air_util_tx_pct`,
+    `.batt_mv`, `.free_heap_bytes` — the DIAGNOSTICS page's live-radio
+    and device-stats fields, dirtying the key on every per-packet
+    telemetry sample or device-stats push while that page was open.
+
+  Fix, in `shell_render_key`: `radar.dots[i].ring_deg` and
+  `map.you_heading_deg` are coarsened to the same 0.1°-below-which-no-
+  pixel-moves discipline `radar.arrow_deg` already used — both are drawn
+  only as rotated shapes (`radar_layout_resolve_dots`, `map_rotate`),
+  never as text, so LVGL's own rotation resolution is the only precision
+  that can ever be visible. The five DIAGNOSTICS fields are bucketed to
+  the width `settings_build_diag_page` (`scr_settings.c`) prints them at:
+  RSSI (already whole `%d dBm`) and channel/air utilization (already
+  `%.0f%%`) needed no further change; SNR, battery mV, and free heap did
+  not already print at a bucket boundary, so **the page itself was
+  changed to print them at the SAME bucket width the key now compares
+  at** (`settings_diag_bucket_snr_db`/`_batt_mv`/`_heap_kb`, duplicating
+  `shell_render_key`'s formulas by design — see that function's own
+  comment on why a shared helper was rejected for three one-line
+  roundings that must simply stay textually identical to their
+  `ff_shell.c` counterparts).
+
+  That last point is the corollary this entry exists to record: a first
+  pass at this fix bucketed the key coarser than the page still printed
+  (SNR truncated to 0.5 dB in the key while the page kept `%.1f dB`
+  verbatim, battery to 10 mV while the page kept raw `%u mV`, heap to
+  1 KB while the page kept raw `%u B`) — which does not merely under-fix
+  the churn, it introduces the OPPOSITE bug this spec's own rule already
+  warns against: a value can then change by less than the key's bucket
+  width, the page's own verbatim print WOULD show it, and no rebuild is
+  ever scheduled to draw it — a stale display, not a redundant one.
+  "Compare at the renderer's granularity" therefore means exactly that:
+  the key's granularity and the renderer's granularity are the same
+  fact, in both directions, not two independently-tunable numbers. Every
+  DIAGNOSTICS field outside these five stays untouched deliberately —
+  `frames_ok`/`decode_errors`/`reconnects` change only on a real frame,
+  `uptime_s` is the page's own once-a-second clock (supposed to churn),
+  `batt_pct` is already hysteresis-filtered before it reaches this
+  struct, and all of `ff_app_diag_t` is already zeroed outside
+  `FF_SETTINGS_SUB_DIAGNOSTICS` by `shell_project_diag_page`'s own early
+  return — none of that needed a bucket, and bucketing it anyway would
+  only have widened the gap this entry is about.
+
+  Regression coverage: `test_shell.c`'s `test_render_key_churn_budget`
+  drives 60 simulated seconds per face (10 Hz heading noise ±0.3°, 2 s
+  device-stats pushes with changing heap/batt, a link frame every 3 s,
+  1 Hz clock ticks) and asserts a per-face ceiling on how often
+  `shell_render_key`'s output may change — Map/launcher/Inbox ≤ 60/min,
+  Radar with a live peer ≤ 120/min, DIAGNOSTICS ≤ 120/min. Fails on the
+  pre-fix key, passes after.
+
 ## Two defects this closes
 
 ### 1. Two inbound pipelines that disagree about trust
